@@ -33,7 +33,7 @@ services:
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
       ANTHROPIC_BASE_URL: "${ANTHROPIC_BASE_URL:-}"
       AGENT_IMAGE: "${AGENT_IMAGE:-agentserver-agent:latest}"
-      OPENCODE_CONFIG_CONTENT: '{"provider":{"anthropic":{"options":{"baseURL":"http://llmproxy:8081"}}}}'
+      OPENCODE_CONFIG_CONTENT: '{"provider":{"anthropic":{"options":{"baseURL":"http://llmproxy:8081/v1"}}}}'
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:

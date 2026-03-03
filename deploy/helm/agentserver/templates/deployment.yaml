@@ -87,7 +87,7 @@ spec:
                   key: anthropic-auth-token
             {{- /* Build OPENCODE_CONFIG_CONTENT with llmproxy baseURL merged in.
                  Users can override baseURL via sandbox.opencode.config.provider.anthropic.options.baseURL */}}
-            {{- $llmproxyURL := printf "http://%s-llmproxy.%s.svc:%v" .Release.Name .Release.Namespace (int .Values.llmproxy.port) }}
+            {{- $llmproxyURL := printf "http://%s-llmproxy.%s.svc:%v/v1" .Release.Name .Release.Namespace (int .Values.llmproxy.port) }}
             {{- $opcodeBase := deepCopy .Values.sandbox.opencode.config }}
             {{- $proxyOpts := dict "baseURL" $llmproxyURL }}
             {{- $proxyProvider := dict "options" $proxyOpts }}

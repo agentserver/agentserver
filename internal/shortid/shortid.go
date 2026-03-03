@@ -9,9 +9,9 @@ import (
 // case-insensitive — browsers and DNS normalise them to lowercase.
 const charset = "0123456789abcdefghijklmnopqrstuvwxyz"
 
-// Generate returns a cryptographically random 16-character base36 string.
+// Generate returns a cryptographically random 8-character base36 string.
 func Generate() string {
-	b := make([]byte, 16)
+	b := make([]byte, 8)
 	max := big.NewInt(int64(len(charset)))
 	for i := range b {
 		n, err := rand.Int(rand.Reader, max)

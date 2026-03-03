@@ -5,6 +5,10 @@ ENV BUN_RUNTIME_TRANSPILER_CACHE_PATH=${BUN_RUNTIME_TRANSPILER_CACHE_PATH}
 
 # Disable runtime fetch of models.dev — the binary already bundles a snapshot.
 ENV OPENCODE_DISABLE_MODELS_FETCH=1
+# Skip built-in plugin install/version checks — plugins are pre-installed below.
+ENV OPENCODE_DISABLE_DEFAULT_PLUGINS=1
+# Skip auto-update checks on startup.
+ENV OPENCODE_DISABLE_AUTOUPDATE=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ripgrep git ca-certificates curl unzip \
@@ -21,12 +25,36 @@ COPY opencode-bin /usr/local/bin/opencode
 
 RUN useradd -m -d /home/agent agent
 
-# Pre-install default plugins so first request doesn't trigger bun install.
 USER agent
-RUN mkdir -p /home/agent/.cache/opencode && \
-    cd /home/agent/.cache/opencode && \
+
+# Pre-install @opencode-ai/plugin in ~/.config/opencode so Config.needsInstall() is
+# satisfied at runtime. installDependencies() writes @opencode-ai/plugin at the exact
+# Installation.VERSION into package.json, then runs `bun install`. We extract the
+# version from the compiled binary and replicate the same step at build time.
+RUN OPENCODE_VERSION=$(opencode --version 2>/dev/null | head -1) && \
+    mkdir -p /home/agent/.config/opencode && \
+    cd /home/agent/.config/opencode && \
+    echo "{\"dependencies\":{\"@opencode-ai/plugin\":\"${OPENCODE_VERSION}\"}}" > package.json && \
+    bun install
+
+# Pre-install LSP servers into ~/.local/share/opencode/bin so first spawn doesn't
+# download from the network. These match the `bun install` calls in lsp/server.ts:
+#   - typescript-language-server (+ typescript): for .ts/.js/.tsx/.jsx
+#   - pyright: for .py
+#   - bash-language-server: for .sh/.bash
+#   - yaml-language-server: for .yaml/.yml
+#   - dockerfile-language-server-nodejs: for Dockerfile
+RUN mkdir -p /home/agent/.local/share/opencode/bin && \
+    cd /home/agent/.local/share/opencode/bin && \
     echo '{"dependencies":{}}' > package.json && \
-    bun add --exact opencode-anthropic-auth@0.0.13
+    bun add typescript-language-server typescript pyright \
+        bash-language-server yaml-language-server \
+        dockerfile-language-server-nodejs
+
+# Install gopls — lsp/server.ts runs `go install golang.org/x/tools/gopls@latest`.
+ENV GOPATH=/home/agent/go
+RUN go install golang.org/x/tools/gopls@latest
+ENV PATH="/home/agent/go/bin:${PATH}"
 
 RUN mkdir -p /home/agent/projects
 

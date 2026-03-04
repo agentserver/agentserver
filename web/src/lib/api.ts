@@ -251,6 +251,9 @@ export interface TraceItem {
   requestCount: number
   totalInputTokens: number
   totalOutputTokens: number
+  totalCacheReadTokens: number
+  totalCacheCreationTokens: number
+  models: string
 }
 
 export interface UsageResponse {

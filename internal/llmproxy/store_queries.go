@@ -154,7 +154,10 @@ func (s *Store) QueryTraces(opts QueryOpts) ([]TraceWithStats, int64, error) {
 		SELECT t.id, t.sandbox_id, t.workspace_id, t.source, t.created_at, t.updated_at,
 			COALESCE(COUNT(u.id), 0),
 			COALESCE(SUM(u.input_tokens), 0),
-			COALESCE(SUM(u.output_tokens), 0)
+			COALESCE(SUM(u.output_tokens), 0),
+			COALESCE(SUM(u.cache_read_input_tokens), 0),
+			COALESCE(SUM(u.cache_creation_input_tokens), 0),
+			COALESCE(STRING_AGG(DISTINCT u.model, ', '), '')
 		FROM traces t
 		LEFT JOIN usage u ON u.trace_id = t.id
 		%s
@@ -173,7 +176,9 @@ func (s *Store) QueryTraces(opts QueryOpts) ([]TraceWithStats, int64, error) {
 		var ts TraceWithStats
 		if err := rows.Scan(&ts.ID, &ts.SandboxID, &ts.WorkspaceID, &ts.Source,
 			&ts.CreatedAt, &ts.UpdatedAt, &ts.RequestCount,
-			&ts.TotalInputTokens, &ts.TotalOutputTokens); err != nil {
+			&ts.TotalInputTokens, &ts.TotalOutputTokens,
+			&ts.TotalCacheReadTokens, &ts.TotalCacheCreationTokens,
+			&ts.Models); err != nil {
 			return nil, 0, fmt.Errorf("scan trace: %w", err)
 		}
 		results = append(results, ts)

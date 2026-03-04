@@ -357,25 +357,31 @@ function TracesTab({ traces, tracesTotal, tracesPage, totalPages, onPageChange }
   }
 
   return (
-    <div className="max-w-4xl">
+    <div className="max-w-5xl">
       <div className="rounded-lg border border-[var(--border)] bg-[var(--card)] overflow-hidden">
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b border-[var(--border)] bg-[var(--secondary)]/50">
               <th className="text-left py-2.5 px-4 font-medium text-[var(--muted-foreground)]">Source</th>
-              <th className="text-right py-2.5 px-4 font-medium text-[var(--muted-foreground)]">Requests</th>
+              <th className="text-left py-2.5 px-4 font-medium text-[var(--muted-foreground)]">Model</th>
+              <th className="text-right py-2.5 px-4 font-medium text-[var(--muted-foreground)]">Req</th>
               <th className="text-right py-2.5 px-4 font-medium text-[var(--muted-foreground)]">Input</th>
               <th className="text-right py-2.5 px-4 font-medium text-[var(--muted-foreground)]">Output</th>
+              <th className="text-right py-2.5 px-4 font-medium text-[var(--muted-foreground)]">Cache R</th>
+              <th className="text-right py-2.5 px-4 font-medium text-[var(--muted-foreground)]">Cache W</th>
               <th className="text-right py-2.5 px-4 font-medium text-[var(--muted-foreground)]">Last active</th>
             </tr>
           </thead>
           <tbody>
             {traces.map((t) => (
               <tr key={t.id} className="border-b border-[var(--border)] last:border-0 hover:bg-[var(--secondary)]/30 transition-colors">
-                <td className="py-2.5 px-4 text-[var(--foreground)] font-mono truncate max-w-[180px]">{t.source || t.id.slice(0, 8)}</td>
+                <td className="py-2.5 px-4 text-[var(--foreground)] font-mono truncate max-w-[140px]">{t.source || t.id.slice(0, 8)}</td>
+                <td className="py-2.5 px-4 text-[var(--muted-foreground)] font-mono truncate max-w-[160px]" title={t.models}>{t.models || '-'}</td>
                 <td className="py-2.5 px-4 text-right text-[var(--muted-foreground)]">{t.requestCount}</td>
                 <td className="py-2.5 px-4 text-right text-[var(--muted-foreground)]">{formatTokens(t.totalInputTokens)}</td>
                 <td className="py-2.5 px-4 text-right text-[var(--muted-foreground)]">{formatTokens(t.totalOutputTokens)}</td>
+                <td className="py-2.5 px-4 text-right text-[var(--muted-foreground)]">{formatTokens(t.totalCacheReadTokens)}</td>
+                <td className="py-2.5 px-4 text-right text-[var(--muted-foreground)]">{formatTokens(t.totalCacheCreationTokens)}</td>
                 <td className="py-2.5 px-4 text-right text-[var(--muted-foreground)] whitespace-nowrap">{new Date(t.updatedAt).toLocaleString()}</td>
               </tr>
             ))}

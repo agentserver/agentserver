@@ -52,9 +52,12 @@ type UsageSummary struct {
 // TraceWithStats is a trace with aggregated request statistics.
 type TraceWithStats struct {
 	Trace
-	RequestCount    int64 `json:"requestCount"`
-	TotalInputTokens  int64 `json:"totalInputTokens"`
-	TotalOutputTokens int64 `json:"totalOutputTokens"`
+	RequestCount             int64  `json:"requestCount"`
+	TotalInputTokens         int64  `json:"totalInputTokens"`
+	TotalOutputTokens        int64  `json:"totalOutputTokens"`
+	TotalCacheReadTokens     int64  `json:"totalCacheReadTokens"`
+	TotalCacheCreationTokens int64  `json:"totalCacheCreationTokens"`
+	Models                   string `json:"models"`
 }
 
 // QueryOpts filters for usage/trace queries.

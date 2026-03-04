@@ -18,9 +18,11 @@ import {
 import {
   getSandboxUsage,
   getSandboxTraces,
+  getTraceDetail,
   type Sandbox,
   type UsageSummary,
   type TraceItem,
+  type TokenUsageItem,
 } from '../lib/api'
 import { ConfirmModal } from './Modals'
 
@@ -200,7 +202,7 @@ export function SandboxDetail({ sandbox, onPause, onResume, onDelete }: SandboxD
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-6">
         {tab === 'overview' && <OverviewTab sandbox={sandbox} usageData={usageData} totals={{ totalRequests, totalInput, totalOutput, totalCacheRead, totalCacheWrite }} />}
-        {tab === 'traces' && <TracesTab traces={traces} tracesTotal={tracesTotal} tracesPage={tracesPage} totalPages={totalPages} onPageChange={setTracesPage} />}
+        {tab === 'traces' && <TracesTab sandboxId={sandbox.id} traces={traces} tracesTotal={tracesTotal} tracesPage={tracesPage} totalPages={totalPages} onPageChange={setTracesPage} />}
       </div>
 
       {/* Modals */}
@@ -340,13 +342,36 @@ function StatCell({ label, value }: { label: string; value: string }) {
   )
 }
 
-function TracesTab({ traces, tracesTotal, tracesPage, totalPages, onPageChange }: {
+function TracesTab({ sandboxId, traces, tracesTotal, tracesPage, totalPages, onPageChange }: {
+  sandboxId: string
   traces: TraceItem[]
   tracesTotal: number
   tracesPage: number
   totalPages: number
   onPageChange: (page: number) => void
 }) {
+  const [expandedTraceId, setExpandedTraceId] = useState<string | null>(null)
+  const [traceRequests, setTraceRequests] = useState<Record<string, TokenUsageItem[]>>({})
+  const [loadingTraceId, setLoadingTraceId] = useState<string | null>(null)
+
+  const toggleExpand = async (traceId: string) => {
+    if (expandedTraceId === traceId) {
+      setExpandedTraceId(null)
+      return
+    }
+    setExpandedTraceId(traceId)
+    if (traceRequests[traceId]) return
+    setLoadingTraceId(traceId)
+    try {
+      const detail = await getTraceDetail(sandboxId, traceId)
+      setTraceRequests((prev) => ({ ...prev, [traceId]: detail.requests || [] }))
+    } catch {
+      // leave empty on error
+    } finally {
+      setLoadingTraceId(null)
+    }
+  }
+
   if (traces.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-[var(--muted-foreground)]">
@@ -362,6 +387,7 @@ function TracesTab({ traces, tracesTotal, tracesPage, totalPages, onPageChange }
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b border-[var(--border)] bg-[var(--secondary)]/50">
+              <th className="w-8 py-2.5 px-2" />
               <th className="text-left py-2.5 px-4 font-medium text-[var(--muted-foreground)]">Source</th>
               <th className="text-left py-2.5 px-4 font-medium text-[var(--muted-foreground)]">Model</th>
               <th className="text-right py-2.5 px-4 font-medium text-[var(--muted-foreground)]">Req</th>
@@ -373,18 +399,70 @@ function TracesTab({ traces, tracesTotal, tracesPage, totalPages, onPageChange }
             </tr>
           </thead>
           <tbody>
-            {traces.map((t) => (
-              <tr key={t.id} className="border-b border-[var(--border)] last:border-0 hover:bg-[var(--secondary)]/30 transition-colors">
-                <td className="py-2.5 px-4 text-[var(--foreground)] font-mono truncate max-w-[140px]">{t.source || t.id.slice(0, 8)}</td>
-                <td className="py-2.5 px-4 text-[var(--muted-foreground)] font-mono truncate max-w-[160px]" title={t.models}>{t.models || '-'}</td>
-                <td className="py-2.5 px-4 text-right text-[var(--muted-foreground)]">{t.request_count}</td>
-                <td className="py-2.5 px-4 text-right text-[var(--muted-foreground)]">{formatTokens(t.total_input_tokens)}</td>
-                <td className="py-2.5 px-4 text-right text-[var(--muted-foreground)]">{formatTokens(t.total_output_tokens)}</td>
-                <td className="py-2.5 px-4 text-right text-[var(--muted-foreground)]">{formatTokens(t.total_cache_read_tokens)}</td>
-                <td className="py-2.5 px-4 text-right text-[var(--muted-foreground)]">{formatTokens(t.total_cache_creation_tokens)}</td>
-                <td className="py-2.5 px-4 text-right text-[var(--muted-foreground)] whitespace-nowrap">{new Date(t.updated_at).toLocaleString()}</td>
-              </tr>
-            ))}
+            {traces.map((t) => {
+              const isExpanded = expandedTraceId === t.id
+              const isLoading = loadingTraceId === t.id
+              const requests = traceRequests[t.id]
+              return (
+                <>
+                  <tr key={t.id} className="border-b border-[var(--border)] last:border-0 hover:bg-[var(--secondary)]/30 transition-colors cursor-pointer" onClick={() => toggleExpand(t.id)}>
+                    <td className="py-2.5 px-2 text-center text-[var(--muted-foreground)]">
+                      <ChevronRight size={14} className={`inline-block transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                    </td>
+                    <td className="py-2.5 px-4 text-[var(--foreground)] font-mono truncate max-w-[140px]">{t.source || t.id.slice(0, 8)}</td>
+                    <td className="py-2.5 px-4 text-[var(--muted-foreground)] font-mono truncate max-w-[160px]" title={t.models}>{t.models || '-'}</td>
+                    <td className="py-2.5 px-4 text-right text-[var(--muted-foreground)]">{t.request_count}</td>
+                    <td className="py-2.5 px-4 text-right text-[var(--muted-foreground)]">{formatTokens(t.total_input_tokens)}</td>
+                    <td className="py-2.5 px-4 text-right text-[var(--muted-foreground)]">{formatTokens(t.total_output_tokens)}</td>
+                    <td className="py-2.5 px-4 text-right text-[var(--muted-foreground)]">{formatTokens(t.total_cache_read_tokens)}</td>
+                    <td className="py-2.5 px-4 text-right text-[var(--muted-foreground)]">{formatTokens(t.total_cache_creation_tokens)}</td>
+                    <td className="py-2.5 px-4 text-right text-[var(--muted-foreground)] whitespace-nowrap">{new Date(t.updated_at).toLocaleString()}</td>
+                  </tr>
+                  {isExpanded && (
+                    <tr key={`${t.id}-detail`} className="border-b border-[var(--border)] last:border-0">
+                      <td colSpan={9} className="p-0">
+                        {isLoading ? (
+                          <div className="py-4 text-center text-xs text-[var(--muted-foreground)]">Loading requests...</div>
+                        ) : requests && requests.length > 0 ? (
+                          <table className="w-full text-xs bg-[var(--secondary)]/30">
+                            <thead>
+                              <tr className="border-b border-[var(--border)]">
+                                <th className="text-left py-2 px-4 pl-10 font-medium text-[var(--muted-foreground)]">Model</th>
+                                <th className="text-right py-2 px-4 font-medium text-[var(--muted-foreground)]">Input</th>
+                                <th className="text-right py-2 px-4 font-medium text-[var(--muted-foreground)]">Output</th>
+                                <th className="text-right py-2 px-4 font-medium text-[var(--muted-foreground)]">Cache R</th>
+                                <th className="text-right py-2 px-4 font-medium text-[var(--muted-foreground)]">Cache W</th>
+                                <th className="text-right py-2 px-4 font-medium text-[var(--muted-foreground)]">Duration</th>
+                                <th className="text-right py-2 px-4 font-medium text-[var(--muted-foreground)]">TTFT</th>
+                                <th className="text-center py-2 px-4 font-medium text-[var(--muted-foreground)]">Stream</th>
+                                <th className="text-right py-2 px-4 font-medium text-[var(--muted-foreground)]">Time</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {requests.map((req) => (
+                                <tr key={req.id} className="border-b border-[var(--border)] last:border-0">
+                                  <td className="py-2 px-4 pl-10 text-[var(--foreground)] font-mono truncate max-w-[160px]">{req.model}</td>
+                                  <td className="py-2 px-4 text-right text-[var(--muted-foreground)]">{formatTokens(req.input_tokens)}</td>
+                                  <td className="py-2 px-4 text-right text-[var(--muted-foreground)]">{formatTokens(req.output_tokens)}</td>
+                                  <td className="py-2 px-4 text-right text-[var(--muted-foreground)]">{formatTokens(req.cache_read_input_tokens)}</td>
+                                  <td className="py-2 px-4 text-right text-[var(--muted-foreground)]">{formatTokens(req.cache_creation_input_tokens)}</td>
+                                  <td className="py-2 px-4 text-right text-[var(--muted-foreground)]">{req.duration ? `${(req.duration / 1000).toFixed(1)}s` : '-'}</td>
+                                  <td className="py-2 px-4 text-right text-[var(--muted-foreground)]">{req.ttft ? `${req.ttft}ms` : '-'}</td>
+                                  <td className="py-2 px-4 text-center text-[var(--muted-foreground)]">{req.streaming ? 'Yes' : 'No'}</td>
+                                  <td className="py-2 px-4 text-right text-[var(--muted-foreground)] whitespace-nowrap">{new Date(req.created_at).toLocaleString()}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        ) : (
+                          <div className="py-4 text-center text-xs text-[var(--muted-foreground)]">No requests in this trace</div>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </>
+              )
+            })}
           </tbody>
         </table>
       </div>

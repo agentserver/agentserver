@@ -277,6 +277,32 @@ export async function getSandboxTraces(id: string, limit: number, offset: number
   return res.json()
 }
 
+export interface TokenUsageItem {
+  id: string
+  trace_id: string
+  provider: string
+  model: string
+  input_tokens: number
+  output_tokens: number
+  cache_creation_input_tokens: number
+  cache_read_input_tokens: number
+  streaming: boolean
+  duration: number
+  ttft: number
+  created_at: string
+}
+
+export interface TraceDetailResponse {
+  trace: TraceItem
+  requests: TokenUsageItem[]
+}
+
+export async function getTraceDetail(sandboxId: string, traceId: string): Promise<TraceDetailResponse> {
+  const res = await fetch(`/api/sandboxes/${sandboxId}/traces/${traceId}`)
+  if (!res.ok) throw new Error('Failed to get trace detail')
+  return res.json()
+}
+
 // Agent registration code API
 
 export async function createAgentCode(workspaceId: string): Promise<{ code: string; expires_at: string }> {

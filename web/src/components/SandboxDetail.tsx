@@ -23,6 +23,7 @@ import {
   type UsageSummary,
   type TraceItem,
   type TokenUsageItem,
+  type TraceDetailResponse,
 } from '../lib/api'
 import { ConfirmModal } from './Modals'
 
@@ -35,7 +36,7 @@ interface SandboxDetailProps {
   onDelete: (id: string) => void
 }
 
-const TRACES_PER_PAGE = 20
+export const TRACES_PER_PAGE = 20
 
 function formatTokens(n: number): string {
   return n.toLocaleString()
@@ -202,7 +203,7 @@ export function SandboxDetail({ sandbox, onPause, onResume, onDelete }: SandboxD
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-6">
         {tab === 'overview' && <OverviewTab sandbox={sandbox} usageData={usageData} totals={{ totalRequests, totalInput, totalOutput, totalCacheRead, totalCacheWrite }} />}
-        {tab === 'traces' && <TracesTab sandboxId={sandbox.id} traces={traces} tracesTotal={tracesTotal} tracesPage={tracesPage} totalPages={totalPages} onPageChange={setTracesPage} />}
+        {tab === 'traces' && <TracesTab traces={traces} tracesTotal={tracesTotal} tracesPage={tracesPage} totalPages={totalPages} onPageChange={setTracesPage} fetchDetail={(traceId) => getTraceDetail(sandbox.id, traceId)} />}
       </div>
 
       {/* Modals */}
@@ -342,13 +343,13 @@ function StatCell({ label, value }: { label: string; value: string }) {
   )
 }
 
-function TracesTab({ sandboxId, traces, tracesTotal, tracesPage, totalPages, onPageChange }: {
-  sandboxId: string
+export function TracesTab({ traces, tracesTotal, tracesPage, totalPages, onPageChange, fetchDetail }: {
   traces: TraceItem[]
   tracesTotal: number
   tracesPage: number
   totalPages: number
   onPageChange: (page: number) => void
+  fetchDetail: (traceId: string) => Promise<TraceDetailResponse>
 }) {
   const [expandedTraceId, setExpandedTraceId] = useState<string | null>(null)
   const [traceRequests, setTraceRequests] = useState<Record<string, TokenUsageItem[]>>({})
@@ -363,7 +364,7 @@ function TracesTab({ sandboxId, traces, tracesTotal, tracesPage, totalPages, onP
     if (traceRequests[traceId]) return
     setLoadingTraceId(traceId)
     try {
-      const detail = await getTraceDetail(sandboxId, traceId)
+      const detail = await fetchDetail(traceId)
       setTraceRequests((prev) => ({ ...prev, [traceId]: detail.requests || [] }))
     } catch {
       // leave empty on error
@@ -388,6 +389,7 @@ function TracesTab({ sandboxId, traces, tracesTotal, tracesPage, totalPages, onP
           <thead>
             <tr className="border-b border-[var(--border)] bg-[var(--secondary)]/50">
               <th className="w-8 py-2.5 px-2" />
+              <th className="text-left py-2.5 px-4 font-medium text-[var(--muted-foreground)]">Session</th>
               <th className="text-left py-2.5 px-4 font-medium text-[var(--muted-foreground)]">Source</th>
               <th className="text-left py-2.5 px-4 font-medium text-[var(--muted-foreground)]">Model</th>
               <th className="text-right py-2.5 px-4 font-medium text-[var(--muted-foreground)]">Req</th>
@@ -409,7 +411,8 @@ function TracesTab({ sandboxId, traces, tracesTotal, tracesPage, totalPages, onP
                     <td className="py-2.5 px-2 text-center text-[var(--muted-foreground)]">
                       <ChevronRight size={14} className={`inline-block transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
                     </td>
-                    <td className="py-2.5 px-4 text-[var(--foreground)] font-mono truncate max-w-[140px]">{t.source || t.id.slice(0, 8)}</td>
+                    <td className="py-2.5 px-4 text-[var(--muted-foreground)] font-mono truncate max-w-[120px]" title={t.id}>{t.id.slice(0, 12)}</td>
+                    <td className="py-2.5 px-4 text-[var(--foreground)] font-mono truncate max-w-[140px]">{t.source || '-'}</td>
                     <td className="py-2.5 px-4 text-[var(--muted-foreground)] font-mono truncate max-w-[160px]" title={t.models}>{t.models || '-'}</td>
                     <td className="py-2.5 px-4 text-right text-[var(--muted-foreground)]">{t.request_count}</td>
                     <td className="py-2.5 px-4 text-right text-[var(--muted-foreground)]">{formatTokens(t.total_input_tokens)}</td>
@@ -420,14 +423,15 @@ function TracesTab({ sandboxId, traces, tracesTotal, tracesPage, totalPages, onP
                   </tr>
                   {isExpanded && (
                     <tr key={`${t.id}-detail`} className="border-b border-[var(--border)] last:border-0">
-                      <td colSpan={9} className="p-0">
+                      <td colSpan={10} className="p-0">
                         {isLoading ? (
                           <div className="py-4 text-center text-xs text-[var(--muted-foreground)]">Loading requests...</div>
                         ) : requests && requests.length > 0 ? (
                           <table className="w-full text-xs bg-[var(--secondary)]/30">
                             <thead>
                               <tr className="border-b border-[var(--border)]">
-                                <th className="text-left py-2 px-4 pl-10 font-medium text-[var(--muted-foreground)]">Model</th>
+                                <th className="text-left py-2 px-4 pl-10 font-medium text-[var(--muted-foreground)]">Msg ID</th>
+                                <th className="text-left py-2 px-4 font-medium text-[var(--muted-foreground)]">Model</th>
                                 <th className="text-right py-2 px-4 font-medium text-[var(--muted-foreground)]">Input</th>
                                 <th className="text-right py-2 px-4 font-medium text-[var(--muted-foreground)]">Output</th>
                                 <th className="text-right py-2 px-4 font-medium text-[var(--muted-foreground)]">Cache R</th>
@@ -441,7 +445,8 @@ function TracesTab({ sandboxId, traces, tracesTotal, tracesPage, totalPages, onP
                             <tbody>
                               {requests.map((req) => (
                                 <tr key={req.id} className="border-b border-[var(--border)] last:border-0">
-                                  <td className="py-2 px-4 pl-10 text-[var(--foreground)] font-mono truncate max-w-[160px]">{req.model}</td>
+                                  <td className="py-2 px-4 pl-10 text-[var(--muted-foreground)] font-mono truncate max-w-[120px]" title={req.message_id || ''}>{req.message_id ? req.message_id.slice(0, 12) : '-'}</td>
+                                  <td className="py-2 px-4 text-[var(--foreground)] font-mono truncate max-w-[160px]">{req.model}</td>
                                   <td className="py-2 px-4 text-right text-[var(--muted-foreground)]">{formatTokens(req.input_tokens)}</td>
                                   <td className="py-2 px-4 text-right text-[var(--muted-foreground)]">{formatTokens(req.output_tokens)}</td>
                                   <td className="py-2 px-4 text-right text-[var(--muted-foreground)]">{formatTokens(req.cache_read_input_tokens)}</td>

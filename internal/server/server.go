@@ -216,6 +216,8 @@ func (s *Server) Router() http.Handler {
 		r.Get("/api/sandboxes/{id}/usage", s.handleSandboxUsage)
 		r.Get("/api/sandboxes/{id}/traces", s.handleSandboxTraces)
 		r.Get("/api/sandboxes/{id}/traces/{traceId}", s.handleTraceDetail)
+		r.Get("/api/workspaces/{wid}/traces", s.handleWorkspaceTraces)
+		r.Get("/api/workspaces/{wid}/traces/{traceId}", s.handleWorkspaceTraceDetail)
 
 		// Agent registration code generation
 		r.Post("/api/workspaces/{wid}/agent-code", s.handleCreateAgentCode)
@@ -1247,6 +1249,39 @@ func (s *Server) handleTraceDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, ok := s.requireWorkspaceMember(w, r, sbx.WorkspaceID); !ok {
+		return
+	}
+	if s.LLMProxyURL == "" {
+		http.Error(w, "llmproxy not configured", http.StatusServiceUnavailable)
+		return
+	}
+	traceId := chi.URLParam(r, "traceId")
+	proxyURL := s.LLMProxyURL + "/api/traces/" + traceId
+	s.proxyLLMRequest(w, proxyURL)
+}
+
+func (s *Server) handleWorkspaceTraces(w http.ResponseWriter, r *http.Request) {
+	wid := chi.URLParam(r, "wid")
+	if _, ok := s.requireWorkspaceMember(w, r, wid); !ok {
+		return
+	}
+	if s.LLMProxyURL == "" {
+		http.Error(w, "llmproxy not configured", http.StatusServiceUnavailable)
+		return
+	}
+	proxyURL := s.LLMProxyURL + "/api/traces?workspace_id=" + wid
+	if limit := r.URL.Query().Get("limit"); limit != "" {
+		proxyURL += "&limit=" + limit
+	}
+	if offset := r.URL.Query().Get("offset"); offset != "" {
+		proxyURL += "&offset=" + offset
+	}
+	s.proxyLLMRequest(w, proxyURL)
+}
+
+func (s *Server) handleWorkspaceTraceDetail(w http.ResponseWriter, r *http.Request) {
+	wid := chi.URLParam(r, "wid")
+	if _, ok := s.requireWorkspaceMember(w, r, wid); !ok {
 		return
 	}
 	if s.LLMProxyURL == "" {

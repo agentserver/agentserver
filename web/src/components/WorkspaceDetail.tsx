@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import {
   Clock,
   Users,
@@ -7,19 +7,24 @@ import {
   UserPlus,
   Trash2,
   X,
+  MessageSquare,
 } from 'lucide-react'
 import {
   listMembers,
   addMember,
   removeMember,
   getWorkspaceDefaults,
+  getWorkspaceTraces,
+  getWorkspaceTraceDetail,
   type Workspace,
   type WorkspaceMember,
   type WorkspaceSandboxDefaults,
+  type TraceItem,
 } from '../lib/api'
 import { ConfirmModal } from './Modals'
+import { TracesTab, TRACES_PER_PAGE } from './SandboxDetail'
 
-type Tab = 'overview' | 'members'
+type Tab = 'overview' | 'members' | 'traces'
 
 interface WorkspaceDetailProps {
   workspace: Workspace
@@ -30,23 +35,45 @@ export function WorkspaceDetail({ workspace }: WorkspaceDetailProps) {
   const [members, setMembers] = useState<WorkspaceMember[]>([])
   const [sbxQuota, setSbxQuota] = useState<{ current: number; max: number } | null>(null)
   const [defaults, setDefaults] = useState<WorkspaceSandboxDefaults | null>(null)
+  const [traces, setTraces] = useState<TraceItem[]>([])
+  const [tracesTotal, setTracesTotal] = useState(0)
+  const [tracesPage, setTracesPage] = useState(0)
 
   useEffect(() => {
     setTab('overview')
     setMembers([])
     setSbxQuota(null)
     setDefaults(null)
+    setTraces([])
+    setTracesTotal(0)
+    setTracesPage(0)
 
     listMembers(workspace.id).then(setMembers).catch(() => {})
     getWorkspaceDefaults(workspace.id).then((d) => {
       setDefaults(d)
       setSbxQuota({ current: d.current_sandboxes, max: d.max_sandboxes })
     }).catch(() => {})
+    getWorkspaceTraces(workspace.id, TRACES_PER_PAGE, 0).then((r) => {
+      setTraces(r.traces || [])
+      setTracesTotal(r.total || 0)
+    }).catch(() => {})
   }, [workspace.id])
+
+  useEffect(() => {
+    if (tracesPage === 0) return
+    getWorkspaceTraces(workspace.id, TRACES_PER_PAGE, tracesPage * TRACES_PER_PAGE).then((r) => {
+      setTraces(r.traces || [])
+      setTracesTotal(r.total || 0)
+    }).catch(() => {})
+  }, [workspace.id, tracesPage])
+
+  const totalPages = Math.ceil(tracesTotal / TRACES_PER_PAGE)
+  const fetchDetail = useCallback((traceId: string) => getWorkspaceTraceDetail(workspace.id, traceId), [workspace.id])
 
   const tabs: { key: Tab; label: string; icon: React.ReactNode }[] = [
     { key: 'overview', label: 'Overview', icon: <LayoutDashboard size={15} /> },
     { key: 'members', label: 'Members', icon: <Users size={15} /> },
+    { key: 'traces', label: 'Traces', icon: <MessageSquare size={15} /> },
   ]
 
   return (
@@ -77,6 +104,11 @@ export function WorkspaceDetail({ workspace }: WorkspaceDetailProps) {
                   {members.length}
                 </span>
               )}
+              {t.key === 'traces' && tracesTotal > 0 && (
+                <span className="ml-0.5 rounded-full bg-[var(--muted)] px-1.5 py-0 text-[10px] text-[var(--muted-foreground)]">
+                  {tracesTotal}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -96,6 +128,16 @@ export function WorkspaceDetail({ workspace }: WorkspaceDetailProps) {
             workspaceId={workspace.id}
             members={members}
             setMembers={setMembers}
+          />
+        )}
+        {tab === 'traces' && (
+          <TracesTab
+            traces={traces}
+            tracesTotal={tracesTotal}
+            tracesPage={tracesPage}
+            totalPages={totalPages}
+            onPageChange={setTracesPage}
+            fetchDetail={fetchDetail}
           />
         )}
       </div>

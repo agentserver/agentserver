@@ -282,6 +282,7 @@ export interface TokenUsageItem {
   trace_id: string
   provider: string
   model: string
+  message_id?: string
   input_tokens: number
   output_tokens: number
   cache_creation_input_tokens: number
@@ -299,6 +300,18 @@ export interface TraceDetailResponse {
 
 export async function getTraceDetail(sandboxId: string, traceId: string): Promise<TraceDetailResponse> {
   const res = await fetch(`/api/sandboxes/${sandboxId}/traces/${traceId}`)
+  if (!res.ok) throw new Error('Failed to get trace detail')
+  return res.json()
+}
+
+export async function getWorkspaceTraces(workspaceId: string, limit: number, offset: number): Promise<TracesResponse> {
+  const res = await fetch(`/api/workspaces/${workspaceId}/traces?limit=${limit}&offset=${offset}`)
+  if (!res.ok) throw new Error('Failed to get workspace traces')
+  return res.json()
+}
+
+export async function getWorkspaceTraceDetail(workspaceId: string, traceId: string): Promise<TraceDetailResponse> {
+  const res = await fetch(`/api/workspaces/${workspaceId}/traces/${traceId}`)
   if (!res.ok) throw new Error('Failed to get trace detail')
   return res.json()
 }

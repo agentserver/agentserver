@@ -1,0 +1,315 @@
+import { useState, useEffect } from 'react'
+import {
+  Clock,
+  Users,
+  LayoutDashboard,
+  Box,
+  Layers,
+  UserPlus,
+  Trash2,
+  X,
+} from 'lucide-react'
+import {
+  listMembers,
+  addMember,
+  removeMember,
+  getWorkspacesQuota,
+  getWorkspaceDefaults,
+  type Workspace,
+  type WorkspaceMember,
+  type WorkspaceSandboxDefaults,
+} from '../lib/api'
+import { ConfirmModal } from './Modals'
+
+type Tab = 'overview' | 'members'
+
+interface WorkspaceDetailProps {
+  workspace: Workspace
+}
+
+export function WorkspaceDetail({ workspace }: WorkspaceDetailProps) {
+  const [tab, setTab] = useState<Tab>('overview')
+  const [members, setMembers] = useState<WorkspaceMember[]>([])
+  const [wsQuota, setWsQuota] = useState<{ current: number; max: number } | null>(null)
+  const [sbxQuota, setSbxQuota] = useState<{ current: number; max: number } | null>(null)
+  const [defaults, setDefaults] = useState<WorkspaceSandboxDefaults | null>(null)
+
+  useEffect(() => {
+    setTab('overview')
+    setMembers([])
+    setWsQuota(null)
+    setSbxQuota(null)
+    setDefaults(null)
+
+    listMembers(workspace.id).then(setMembers).catch(() => {})
+    getWorkspacesQuota().then(setWsQuota).catch(() => {})
+    getWorkspaceDefaults(workspace.id).then((d) => {
+      setDefaults(d)
+      setSbxQuota({ current: d.currentSandboxes, max: d.maxSandboxes })
+    }).catch(() => {})
+  }, [workspace.id])
+
+  const tabs: { key: Tab; label: string; icon: React.ReactNode }[] = [
+    { key: 'overview', label: 'Overview', icon: <LayoutDashboard size={15} /> },
+    { key: 'members', label: 'Members', icon: <Users size={15} /> },
+  ]
+
+  return (
+    <div className="flex h-full w-full flex-col">
+      {/* Header */}
+      <div className="shrink-0 border-b border-[var(--border)] bg-[var(--card)] px-6 py-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <h1 className="text-lg font-semibold text-[var(--foreground)] truncate">{workspace.name}</h1>
+            <div className="mt-1 text-xs text-[var(--muted-foreground)]">Workspace</div>
+          </div>
+        </div>
+        <div className="mt-4 flex gap-1">
+          {tabs.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                tab === t.key
+                  ? 'bg-[var(--secondary)] text-[var(--foreground)]'
+                  : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--secondary)]/50'
+              }`}
+            >
+              {t.icon}
+              {t.label}
+              {t.key === 'members' && members.length > 0 && (
+                <span className="ml-0.5 rounded-full bg-[var(--muted)] px-1.5 py-0 text-[10px] text-[var(--muted-foreground)]">
+                  {members.length}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto p-6">
+        {tab === 'overview' && (
+          <OverviewTab
+            workspace={workspace}
+            wsQuota={wsQuota}
+            sbxQuota={sbxQuota}
+            defaults={defaults}
+          />
+        )}
+        {tab === 'members' && (
+          <MembersTab
+            workspaceId={workspace.id}
+            members={members}
+            setMembers={setMembers}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function OverviewTab({ workspace, wsQuota, sbxQuota, defaults }: {
+  workspace: Workspace
+  wsQuota: { current: number; max: number } | null
+  sbxQuota: { current: number; max: number } | null
+  defaults: WorkspaceSandboxDefaults | null
+}) {
+  return (
+    <div className="flex flex-col gap-6 max-w-3xl">
+      {/* Info cards */}
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+        <InfoCard icon={<Clock size={14} />} label="Created" value={new Date(workspace.createdAt).toLocaleString()} />
+        {wsQuota && (
+          <InfoCard
+            icon={<Layers size={14} />}
+            label="Workspaces"
+            value={`${wsQuota.current} / ${wsQuota.max === 0 ? '\u221E' : wsQuota.max}`}
+          />
+        )}
+        {sbxQuota && (
+          <InfoCard
+            icon={<Box size={14} />}
+            label="Sandboxes"
+            value={`${sbxQuota.current} / ${sbxQuota.max === 0 ? '\u221E' : sbxQuota.max}`}
+          />
+        )}
+      </div>
+
+      {/* Resource limits */}
+      {defaults && (
+        <div className="rounded-lg border border-[var(--border)] bg-[var(--card)]">
+          <div className="flex items-center gap-2 border-b border-[var(--border)] px-5 py-3">
+            <span className="text-sm font-medium text-[var(--foreground)]">Resource Limits</span>
+          </div>
+          <div className="grid grid-cols-2 gap-px bg-[var(--border)] sm:grid-cols-4">
+            <StatCell label="Max CPU" value={`${(defaults.maxSandboxCpu / 1000).toFixed(1)} cores`} />
+            <StatCell label="Max Memory" value={`${Math.round(defaults.maxSandboxMemory / (1024 * 1024))} MB`} />
+            <StatCell label="Max Idle" value={defaults.maxIdleTimeout > 0 ? `${Math.round(defaults.maxIdleTimeout / 60)} min` : 'Unlimited'} />
+            <StatCell label="Max Sandboxes" value={defaults.maxSandboxes === 0 ? '\u221E' : String(defaults.maxSandboxes)} />
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MembersTab({ workspaceId, members, setMembers }: {
+  workspaceId: string
+  members: WorkspaceMember[]
+  setMembers: React.Dispatch<React.SetStateAction<WorkspaceMember[]>>
+}) {
+  const [showAdd, setShowAdd] = useState(false)
+  const [addUsername, setAddUsername] = useState('')
+  const [addRole, setAddRole] = useState('developer')
+  const [addError, setAddError] = useState<string | null>(null)
+  const [confirmRemove, setConfirmRemove] = useState<WorkspaceMember | null>(null)
+
+  const handleAdd = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!addUsername.trim()) return
+    setAddError(null)
+    try {
+      const m = await addMember(workspaceId, addUsername.trim(), addRole)
+      setMembers((prev) => [...prev, m])
+      setAddUsername('')
+      setShowAdd(false)
+    } catch {
+      setAddError('Failed to add member. User may not exist.')
+    }
+  }
+
+  const doRemove = async (userId: string) => {
+    setConfirmRemove(null)
+    try {
+      await removeMember(workspaceId, userId)
+      setMembers((prev) => prev.filter((m) => m.userId !== userId))
+    } catch { /* ignore */ }
+  }
+
+  const roleColors: Record<string, string> = {
+    owner: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
+    maintainer: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
+    developer: 'bg-green-500/10 text-green-400 border-green-500/20',
+    guest: 'bg-gray-500/10 text-[var(--muted-foreground)] border-gray-500/20',
+  }
+
+  return (
+    <div className="max-w-2xl">
+      <div className="flex items-center justify-between mb-4">
+        <span className="text-sm font-medium text-[var(--foreground)]">
+          {members.length} member{members.length !== 1 ? 's' : ''}
+        </span>
+        <button
+          onClick={() => setShowAdd((v) => !v)}
+          className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-xs font-medium text-[var(--foreground)] hover:bg-[var(--secondary)] transition-colors"
+        >
+          {showAdd ? <X size={13} /> : <UserPlus size={13} />}
+          {showAdd ? 'Cancel' : 'Add member'}
+        </button>
+      </div>
+
+      {showAdd && (
+        <form onSubmit={handleAdd} className="mb-4 rounded-lg border border-[var(--border)] bg-[var(--card)] p-4">
+          <div className="flex gap-3">
+            <input
+              autoFocus
+              type="text"
+              value={addUsername}
+              onChange={(e) => setAddUsername(e.target.value)}
+              placeholder="Username"
+              className="flex-1 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
+            />
+            <select
+              value={addRole}
+              onChange={(e) => setAddRole(e.target.value)}
+              className="rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
+            >
+              <option value="developer">Developer</option>
+              <option value="maintainer">Maintainer</option>
+              <option value="guest">Guest</option>
+            </select>
+            <button
+              type="submit"
+              disabled={!addUsername.trim()}
+              className="rounded-md bg-[var(--primary)] px-4 py-1.5 text-sm font-medium text-[var(--primary-foreground)] hover:opacity-90 disabled:opacity-50"
+            >
+              Add
+            </button>
+          </div>
+          {addError && (
+            <p className="mt-2 text-xs text-red-400">{addError}</p>
+          )}
+        </form>
+      )}
+
+      <div className="rounded-lg border border-[var(--border)] bg-[var(--card)] overflow-hidden">
+        {members.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-12 text-[var(--muted-foreground)]">
+            <Users size={32} className="mb-3 opacity-30" />
+            <span className="text-sm">No members</span>
+          </div>
+        ) : (
+          <div className="divide-y divide-[var(--border)]">
+            {members.map((m) => (
+              <div key={m.userId} className="group flex items-center justify-between px-4 py-3 hover:bg-[var(--secondary)]/30 transition-colors">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--secondary)] text-xs font-medium text-[var(--foreground)]">
+                    {(m.username || '?')[0].toUpperCase()}
+                  </div>
+                  <span className="text-sm text-[var(--foreground)] truncate">{m.username}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className={`rounded-full border px-2.5 py-0.5 text-[10px] font-medium ${roleColors[m.role] || roleColors.guest}`}>
+                    {m.role}
+                  </span>
+                  {m.role !== 'owner' && (
+                    <button
+                      onClick={() => setConfirmRemove(m)}
+                      className="hidden rounded p-1 text-[var(--muted-foreground)] hover:bg-red-500/10 hover:text-red-400 group-hover:block transition-colors"
+                      title="Remove member"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {confirmRemove && (
+        <ConfirmModal
+          title="Remove Member"
+          message={`Remove "${confirmRemove.username}" from this workspace?`}
+          confirmLabel="Remove"
+          destructive
+          onConfirm={() => doRemove(confirmRemove.userId)}
+          onCancel={() => setConfirmRemove(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+function InfoCard({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-4 py-3">
+      <div className="flex items-center gap-1.5 text-[var(--muted-foreground)] mb-1">
+        {icon}
+        <span className="text-xs">{label}</span>
+      </div>
+      <div className="text-sm font-medium text-[var(--foreground)] truncate">{value}</div>
+    </div>
+  )
+}
+
+function StatCell({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="bg-[var(--card)] px-4 py-3">
+      <div className="text-xs text-[var(--muted-foreground)]">{label}</div>
+      <div className="text-sm font-semibold text-[var(--foreground)] mt-0.5">{value}</div>
+    </div>
+  )
+}

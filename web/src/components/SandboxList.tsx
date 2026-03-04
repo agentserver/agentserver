@@ -3,18 +3,14 @@ import { Plus, Trash2, Pause, Play, Loader2, LogOut, ChevronDown, Sun, Moon, Mon
 import {
   type Workspace,
   type Sandbox,
-  type WorkspaceMember,
   createSandbox,
   deleteSandbox,
   pauseSandbox,
   resumeSandbox,
   createWorkspace,
   deleteWorkspace,
-  listMembers,
   createAgentCode,
   logout,
-  getWorkspacesQuota,
-  getWorkspaceDefaults,
 } from '../lib/api'
 import type { UserInfo } from '../App'
 import { CreateSandboxModal } from './CreateSandboxModal'
@@ -35,6 +31,7 @@ interface SandboxListProps {
   user: UserInfo | null
   onLogout: () => void
   onShowAdmin?: () => void
+  onShowWorkspaceDetail?: () => void
 }
 
 function StatusDot({ status }: { status: string }) {
@@ -87,6 +84,7 @@ export function SandboxList({
   user,
   onLogout,
   onShowAdmin,
+  onShowWorkspaceDetail,
 }: SandboxListProps) {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -96,13 +94,6 @@ export function SandboxList({
   const [confirmPause, setConfirmPause] = useState<{ id: string; name: string } | null>(null)
   const [confirmDeleteWs, setConfirmDeleteWs] = useState<{ id: string; name: string } | null>(null)
   const [showCreateWs, setShowCreateWs] = useState(false)
-  const [wsDetail, setWsDetail] = useState<{
-    name: string
-    members: WorkspaceMember[]
-    createdAt: string
-    workspaceQuota?: { current: number; max: number }
-    sandboxQuota?: { current: number; max: number }
-  } | null>(null)
   const [agentCodeData, setAgentCodeData] = useState<{ code: string; expiresAt: string; command: string } | null>(null)
   const [quotaError, setQuotaError] = useState<string | null>(null)
   const [theme, setThemeState] = useState<'system' | 'light' | 'dark'>(() => {
@@ -276,32 +267,6 @@ export function SandboxList({
     }
   }
 
-  const showWorkspaceDetail = async () => {
-    if (!selectedWorkspaceId) return
-    const ws = workspaces.find((w) => w.id === selectedWorkspaceId)
-    if (!ws) return
-    let members: WorkspaceMember[] = []
-    try {
-      members = await listMembers(selectedWorkspaceId)
-    } catch {
-      // ignore
-    }
-    let workspaceQuota: { current: number; max: number } | undefined
-    let sandboxQuota: { current: number; max: number } | undefined
-    try {
-      workspaceQuota = await getWorkspacesQuota()
-    } catch {
-      // ignore
-    }
-    try {
-      const defaults = await getWorkspaceDefaults(selectedWorkspaceId)
-      sandboxQuota = { current: defaults.currentSandboxes, max: defaults.maxSandboxes }
-    } catch {
-      // ignore
-    }
-    setWsDetail({ name: ws.name, members, createdAt: ws.createdAt, workspaceQuota, sandboxQuota })
-  }
-
   const handleLogout = async () => {
     setMenuOpen(false)
     try {
@@ -471,9 +436,9 @@ export function SandboxList({
       </div>
 
       {/* Workspace detail */}
-      {selectedWorkspaceId && (
+      {selectedWorkspaceId && onShowWorkspaceDetail && (
         <button
-          onClick={showWorkspaceDetail}
+          onClick={onShowWorkspaceDetail}
           className="flex w-full items-center gap-2 border-t border-[var(--border)] px-3 py-2 text-sm text-[var(--muted-foreground)] hover:bg-[var(--secondary)]"
         >
           <Settings size={14} />
@@ -593,67 +558,6 @@ export function SandboxList({
           onConfirm={doCreateWorkspace}
           onCancel={() => setShowCreateWs(false)}
         />
-      )}
-
-      {wsDetail && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setWsDetail(null)}>
-          <div
-            className="w-full max-w-sm rounded-lg border border-[var(--border)] bg-[var(--card)] p-6 shadow-xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h2 className="text-lg font-semibold text-[var(--foreground)] mb-4">Workspace Details</h2>
-            <div className="flex flex-col gap-3 text-sm">
-              <div className="flex justify-between">
-                <span className="text-[var(--muted-foreground)]">Name</span>
-                <span className="text-[var(--foreground)] font-medium">{wsDetail.name}</span>
-              </div>
-              <div>
-                <span className="text-[var(--muted-foreground)]">Members</span>
-                <div className="mt-1 flex flex-col gap-1">
-                  {wsDetail.members.length === 0 && (
-                    <span className="text-[var(--muted-foreground)] italic">None</span>
-                  )}
-                  {wsDetail.members.map((m) => (
-                    <div key={m.userId} className="flex items-center justify-between rounded px-2 py-1 bg-[var(--secondary)]">
-                      <span className="text-[var(--foreground)]">{m.username}</span>
-                      <span className="rounded bg-[var(--muted)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--muted-foreground)]">
-                        {m.role}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-[var(--muted-foreground)]">Created</span>
-                <span className="text-[var(--foreground)] font-medium">{new Date(wsDetail.createdAt).toLocaleString()}</span>
-              </div>
-              {wsDetail.workspaceQuota && (
-                <div className="flex justify-between">
-                  <span className="text-[var(--muted-foreground)]">Workspaces</span>
-                  <span className="text-[var(--foreground)] font-medium">
-                    {wsDetail.workspaceQuota.current} / {wsDetail.workspaceQuota.max === 0 ? '\u221E' : wsDetail.workspaceQuota.max}
-                  </span>
-                </div>
-              )}
-              {wsDetail.sandboxQuota && (
-                <div className="flex justify-between">
-                  <span className="text-[var(--muted-foreground)]">Sandboxes</span>
-                  <span className="text-[var(--foreground)] font-medium">
-                    {wsDetail.sandboxQuota.current} / {wsDetail.sandboxQuota.max === 0 ? '\u221E' : wsDetail.sandboxQuota.max}
-                  </span>
-                </div>
-              )}
-            </div>
-            <div className="flex justify-end mt-5">
-              <button
-                onClick={() => setWsDetail(null)}
-                className="rounded-md border border-[var(--border)] px-4 py-2 text-sm font-medium text-[var(--foreground)] hover:bg-[var(--secondary)]"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
       )}
 
       {agentCodeData && (

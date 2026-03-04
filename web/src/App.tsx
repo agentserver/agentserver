@@ -14,6 +14,7 @@ import {
 import { Login } from './components/Login'
 import { SandboxList } from './components/SandboxList'
 import { SandboxDetail } from './components/SandboxDetail'
+import { WorkspaceDetail } from './components/WorkspaceDetail'
 import { AdminPanel } from './components/AdminPanel'
 
 export interface UserInfo {
@@ -34,6 +35,7 @@ export default function App() {
   const [activeSandboxId, setActiveSandboxId] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [showAdmin, setShowAdmin] = useState(false)
+  const [showWorkspaceDetail, setShowWorkspaceDetail] = useState(false)
 
   const refreshSandboxes = useCallback(async () => {
     if (!selectedWorkspaceId) return
@@ -66,6 +68,7 @@ export default function App() {
       setSandboxes([])
       setActiveSandboxId(null)
     }
+    setShowWorkspaceDetail(false)
   }, [selectedWorkspaceId, refreshSandboxes])
 
   const handleSelectWorkspace = useCallback((id: string) => {
@@ -103,6 +106,24 @@ export default function App() {
     } catch { /* ignore */ }
   }, [activeSandboxId])
 
+  const handleSelectSandbox = useCallback((id: string) => {
+    setActiveSandboxId(id)
+    setShowWorkspaceDetail(false)
+    setShowAdmin(false)
+  }, [])
+
+  const handleShowWorkspaceDetail = useCallback(() => {
+    setShowWorkspaceDetail(true)
+    setActiveSandboxId(null)
+    setShowAdmin(false)
+  }, [])
+
+  const handleShowAdmin = useCallback(() => {
+    setShowAdmin(true)
+    setActiveSandboxId(null)
+    setShowWorkspaceDetail(false)
+  }, [])
+
   if (authed === null) {
     return (
       <div className="flex min-h-screen items-center justify-center">
@@ -127,15 +148,20 @@ export default function App() {
   }
 
   const activeSandboxData = sandboxes.find((s) => s.id === activeSandboxId)
+  const selectedWorkspace = workspaces.find((w) => w.id === selectedWorkspaceId)
 
   let mainContent
-  if (creating) {
+  if (showAdmin) {
+    mainContent = <AdminPanel onBack={() => setShowAdmin(false)} />
+  } else if (creating) {
     mainContent = (
       <div className="flex flex-col items-center justify-center gap-3 h-full">
         <Loader2 size={24} className="animate-spin text-[var(--muted-foreground)]" />
         <span className="text-[var(--muted-foreground)]">Creating sandbox...</span>
       </div>
     )
+  } else if (showWorkspaceDetail && selectedWorkspace) {
+    mainContent = <WorkspaceDetail workspace={selectedWorkspace} />
   } else if (activeSandboxId && activeSandboxData) {
     mainContent = (
       <SandboxDetail
@@ -163,20 +189,17 @@ export default function App() {
         sandboxes={sandboxes}
         setSandboxes={setSandboxes}
         activeSandboxId={activeSandboxId}
-        onSelectSandbox={setActiveSandboxId}
+        onSelectSandbox={handleSelectSandbox}
         onRefreshSandboxes={refreshSandboxes}
         creating={creating}
         setCreating={setCreating}
         user={user}
         onLogout={handleLogout}
-        onShowAdmin={user?.role === 'admin' ? () => setShowAdmin(true) : undefined}
+        onShowAdmin={user?.role === 'admin' ? handleShowAdmin : undefined}
+        onShowWorkspaceDetail={handleShowWorkspaceDetail}
       />
       <div className="flex flex-1 flex-col bg-[var(--background)]">
-        {showAdmin ? (
-          <AdminPanel onBack={() => setShowAdmin(false)} />
-        ) : (
-          mainContent
-        )}
+        {mainContent}
       </div>
     </div>
   )

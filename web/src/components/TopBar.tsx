@@ -17,7 +17,7 @@ interface TopBarProps {
   user: UserInfo | null
   onLogout: () => void
   onShowAdmin?: () => void
-  onShowManageProjects: () => void
+  onShowManageWorkspaces: () => void
 }
 
 function UserAvatar({ name, picture }: { name: string; picture?: string | null }) {
@@ -46,7 +46,7 @@ export function TopBar({
   user,
   onLogout,
   onShowAdmin,
-  onShowManageProjects,
+  onShowManageWorkspaces,
 }: TopBarProps) {
   const [wsDropdownOpen, setWsDropdownOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -191,12 +191,12 @@ export function TopBar({
                   <button
                     onClick={() => {
                       setWsDropdownOpen(false)
-                      onShowManageProjects()
+                      onShowManageWorkspaces()
                     }}
                     className="flex w-full items-center gap-2 px-3 py-2 text-sm text-[var(--muted-foreground)] hover:bg-[var(--secondary)]"
                   >
                     <Settings size={14} />
-                    Manage Projects
+                    Manage Workspaces
                   </button>
                 </div>
               </div>

@@ -16,7 +16,7 @@ import { Login } from './components/Login'
 import { TopBar } from './components/TopBar'
 import { SandboxList } from './components/SandboxList'
 import { SandboxDetail } from './components/SandboxDetail'
-import { ManageProjects } from './components/ManageProjects'
+import { ManageWorkspaces } from './components/ManageWorkspaces'
 import { AdminPanel } from './components/AdminPanel'
 
 export interface UserInfo {
@@ -157,6 +157,17 @@ export default function App() {
     )
   }
 
+  const sandboxList = (
+    <SandboxList
+      selectedWorkspaceId={selectedWorkspaceId}
+      sandboxes={sandboxes}
+      setSandboxes={setSandboxes}
+      onRefreshSandboxes={refreshSandboxes}
+      creating={creating}
+      setCreating={setCreating}
+    />
+  )
+
   const defaultContent = creating ? (
     <div className="flex flex-col items-center justify-center gap-3 h-full">
       <Loader2 size={24} className="animate-spin text-[var(--muted-foreground)]" />
@@ -165,6 +176,15 @@ export default function App() {
   ) : (
     <div className="flex items-center justify-center h-full">
       <span className="text-[var(--muted-foreground)]">Select or create a sandbox</span>
+    </div>
+  )
+
+  const sandboxLayout = (content: React.ReactNode) => (
+    <div className="flex flex-1 min-h-0">
+      {sandboxList}
+      <div className="flex flex-1 flex-col bg-[var(--background)]">
+        {content}
+      </div>
     </div>
   )
 
@@ -178,49 +198,37 @@ export default function App() {
         user={user}
         onLogout={handleLogout}
         onShowAdmin={user?.role === 'admin' ? () => navigate('/admin') : undefined}
-        onShowManageProjects={() => navigate('/workspaces')}
+        onShowManageWorkspaces={() => navigate('/workspaces')}
       />
-      <div className="flex flex-1 min-h-0">
-        <SandboxList
-          selectedWorkspaceId={selectedWorkspaceId}
-          sandboxes={sandboxes}
-          setSandboxes={setSandboxes}
-          onRefreshSandboxes={refreshSandboxes}
-          creating={creating}
-          setCreating={setCreating}
+      <Routes>
+        <Route path="/" element={sandboxLayout(defaultContent)} />
+        <Route
+          path="/sandboxes/:id"
+          element={sandboxLayout(
+            <SandboxDetailRoute
+              sandboxes={sandboxes}
+              onPause={handlePause}
+              onResume={handleResume}
+              onDelete={handleDelete}
+            />
+          )}
         />
-        <div className="flex flex-1 flex-col bg-[var(--background)]">
-          <Routes>
-            <Route path="/" element={defaultContent} />
-            <Route
-              path="/sandboxes/:id"
-              element={
-                <SandboxDetailRoute
-                  sandboxes={sandboxes}
-                  onPause={handlePause}
-                  onResume={handleResume}
-                  onDelete={handleDelete}
-                />
-              }
+        <Route
+          path="/workspaces"
+          element={
+            <ManageWorkspaces
+              workspaces={workspaces}
+              selectedWorkspaceId={selectedWorkspaceId}
+              onSelectWorkspace={handleSelectWorkspace}
             />
-            <Route
-              path="/workspaces"
-              element={
-                <ManageProjects
-                  workspaces={workspaces}
-                  selectedWorkspaceId={selectedWorkspaceId}
-                  onSelectWorkspace={handleSelectWorkspace}
-                />
-              }
-            />
-            <Route
-              path="/admin"
-              element={<AdminPanel onBack={() => navigate('/')} />}
-            />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </div>
-      </div>
+          }
+        />
+        <Route
+          path="/admin"
+          element={<AdminPanel onBack={() => navigate('/')} />}
+        />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
     </div>
   )
 }

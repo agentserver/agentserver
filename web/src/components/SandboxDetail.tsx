@@ -343,13 +343,14 @@ function StatCell({ label, value }: { label: string; value: string }) {
   )
 }
 
-export function TracesTab({ traces, tracesTotal, tracesPage, totalPages, onPageChange, fetchDetail }: {
+export function TracesTab({ traces, tracesTotal, tracesPage, totalPages, onPageChange, fetchDetail, showSandboxId }: {
   traces: TraceItem[]
   tracesTotal: number
   tracesPage: number
   totalPages: number
   onPageChange: (page: number) => void
   fetchDetail: (traceId: string) => Promise<TraceDetailResponse>
+  showSandboxId?: boolean
 }) {
   const [expandedTraceId, setExpandedTraceId] = useState<string | null>(null)
   const [traceRequests, setTraceRequests] = useState<Record<string, TokenUsageItem[]>>({})
@@ -390,6 +391,7 @@ export function TracesTab({ traces, tracesTotal, tracesPage, totalPages, onPageC
             <tr className="border-b border-[var(--border)] bg-[var(--secondary)]/50">
               <th className="w-8 py-2.5 px-2" />
               <th className="text-left py-2.5 px-4 font-medium text-[var(--muted-foreground)]">Session</th>
+              {showSandboxId && <th className="text-left py-2.5 px-4 font-medium text-[var(--muted-foreground)]">Sandbox</th>}
               <th className="text-left py-2.5 px-4 font-medium text-[var(--muted-foreground)]">Source</th>
               <th className="text-right py-2.5 px-4 font-medium text-[var(--muted-foreground)]">Req</th>
               <th className="text-right py-2.5 px-4 font-medium text-[var(--muted-foreground)]">Input</th>
@@ -411,6 +413,7 @@ export function TracesTab({ traces, tracesTotal, tracesPage, totalPages, onPageC
                       <ChevronRight size={14} className={`inline-block transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
                     </td>
                     <td className="py-2.5 px-4 text-[var(--muted-foreground)] font-mono truncate max-w-[200px]" title={t.id}>{t.id}</td>
+                    {showSandboxId && <td className="py-2.5 px-4 text-[var(--muted-foreground)] font-mono truncate max-w-[140px]" title={t.sandbox_id}>{t.sandbox_id}</td>}
                     <td className="py-2.5 px-4 text-[var(--foreground)] font-mono truncate max-w-[140px]">{t.source || '-'}</td>
                     <td className="py-2.5 px-4 text-right text-[var(--muted-foreground)]">{t.request_count}</td>
                     <td className="py-2.5 px-4 text-right text-[var(--muted-foreground)]">{formatTokens(t.total_input_tokens)}</td>

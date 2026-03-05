@@ -2,13 +2,13 @@ import { type Workspace } from '../lib/api'
 import { WorkspaceDetail } from './WorkspaceDetail'
 import { FolderOpen } from 'lucide-react'
 
-interface ManageProjectsProps {
+interface ManageWorkspacesProps {
   workspaces: Workspace[]
   selectedWorkspaceId: string | null
   onSelectWorkspace: (id: string) => void
 }
 
-export function ManageProjects({ workspaces, selectedWorkspaceId, onSelectWorkspace }: ManageProjectsProps) {
+export function ManageWorkspaces({ workspaces, selectedWorkspaceId, onSelectWorkspace }: ManageWorkspacesProps) {
   const selectedWorkspace = workspaces.find((w) => w.id === selectedWorkspaceId)
 
   return (

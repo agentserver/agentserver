@@ -138,6 +138,7 @@ export function WorkspaceDetail({ workspace }: WorkspaceDetailProps) {
             totalPages={totalPages}
             onPageChange={setTracesPage}
             fetchDetail={fetchDetail}
+            showSandboxId
           />
         )}
       </div>

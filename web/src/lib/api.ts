@@ -542,3 +542,29 @@ export async function adminDeleteWorkspaceQuota(workspaceId: string): Promise<vo
   const res = await fetch(`/api/admin/workspaces/${workspaceId}/quota`, { method: 'DELETE' })
   if (!res.ok) throw new Error('Failed to delete workspace quota')
 }
+
+// LLM Quota management (proxied to llmproxy)
+export interface LLMQuotaResponse {
+  default_max_rpd: number
+  workspace_quota: { workspace_id: string; max_rpd: number | null; updated_at: string } | null
+}
+
+export async function adminGetWorkspaceLLMQuota(workspaceId: string): Promise<LLMQuotaResponse> {
+  const res = await fetch(`/api/admin/workspaces/${workspaceId}/llm-quota`)
+  if (!res.ok) throw new Error('Failed to get LLM quota')
+  return res.json()
+}
+
+export async function adminSetWorkspaceLLMQuota(workspaceId: string, maxRpd: number): Promise<void> {
+  const res = await fetch(`/api/admin/workspaces/${workspaceId}/llm-quota`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ max_rpd: maxRpd }),
+  })
+  if (!res.ok) throw new Error('Failed to set LLM quota')
+}
+
+export async function adminDeleteWorkspaceLLMQuota(workspaceId: string): Promise<void> {
+  const res = await fetch(`/api/admin/workspaces/${workspaceId}/llm-quota`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('Failed to delete LLM quota')
+}

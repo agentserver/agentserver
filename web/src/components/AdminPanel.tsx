@@ -19,6 +19,9 @@ import {
   adminGetWorkspaceQuota,
   adminSetWorkspaceQuota,
   adminDeleteWorkspaceQuota,
+  adminGetWorkspaceLLMQuota,
+  adminSetWorkspaceLLMQuota,
+  adminDeleteWorkspaceLLMQuota,
 } from '../lib/api'
 
 type Tab = 'users' | 'workspaces' | 'sandboxes' | 'settings'
@@ -655,11 +658,20 @@ function WorkspaceQuotaModal({ workspace, onClose }: { workspace: AdminWorkspace
   const [maxTotalCpu, setMaxTotalCpu] = useState('')
   const [maxTotalMemory, setMaxTotalMemory] = useState('')
   const [maxDriveSize, setMaxDriveSize] = useState('')
+  const [maxRpd, setMaxRpd] = useState('')
+  const [defaultMaxRpd, setDefaultMaxRpd] = useState(0)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    adminGetWorkspaceQuota(workspace.id).then((d) => {
+    Promise.all([
+      adminGetWorkspaceQuota(workspace.id),
+      adminGetWorkspaceLLMQuota(workspace.id).catch(() => null),
+    ]).then(([d, rpd]) => {
       setData(d)
+      if (rpd) {
+        setDefaultMaxRpd(rpd.default_max_rpd)
+        setMaxRpd(rpd.workspace_quota?.max_rpd != null ? String(rpd.workspace_quota.max_rpd) : '')
+      }
       setMaxSbx(d.overrides?.max_sandboxes != null ? String(d.overrides.max_sandboxes) : '')
       setMaxSandboxCpu(d.overrides?.max_sandbox_cpu != null ? String(d.overrides.max_sandbox_cpu) : '')
       setMaxSandboxMemory(d.overrides?.max_sandbox_memory != null ? String(d.overrides.max_sandbox_memory) : '')
@@ -690,6 +702,10 @@ function WorkspaceQuotaModal({ workspace, onClose }: { workspace: AdminWorkspace
         ...(totalMem !== undefined && !isNaN(totalMem) ? { max_total_memory: totalMem } : {}),
         ...(drive !== undefined && !isNaN(drive) ? { max_drive_size: drive } : {}),
       })
+      const rpd = maxRpd !== '' ? parseInt(maxRpd, 10) : undefined
+      if (rpd !== undefined && !isNaN(rpd) && rpd >= 0) {
+        await adminSetWorkspaceLLMQuota(workspace.id, rpd)
+      }
       onClose()
     } catch {
       // ignore
@@ -702,6 +718,7 @@ function WorkspaceQuotaModal({ workspace, onClose }: { workspace: AdminWorkspace
     setSaving(true)
     try {
       await adminDeleteWorkspaceQuota(workspace.id)
+      await adminDeleteWorkspaceLLMQuota(workspace.id).catch(() => {})
       onClose()
     } catch {
       // ignore
@@ -825,10 +842,24 @@ function WorkspaceQuotaModal({ workspace, onClose }: { workspace: AdminWorkspace
               />
               <p className="text-xs text-[var(--muted-foreground)] mt-1">Bytes, e.g. 10737418240 = 10 GiB. Applied on creation.</p>
             </div>
+            <div>
+              <label className="block text-sm font-medium text-[var(--foreground)] mb-1">
+                Max requests per day (RPD)
+              </label>
+              <input
+                type="number"
+                min="0"
+                value={maxRpd}
+                onChange={(e) => setMaxRpd(e.target.value)}
+                placeholder={String(defaultMaxRpd)}
+                className={inputClass}
+              />
+              <p className="text-xs text-[var(--muted-foreground)] mt-1">LLM API requests per day. 0 = unlimited.</p>
+            </div>
             <div className="flex justify-between mt-2">
               <button
                 onClick={handleRevert}
-                disabled={saving || !data.overrides}
+                disabled={saving || (!data.overrides && maxRpd === "")}
                 className="rounded-md border border-[var(--border)] px-3 py-2 text-sm font-medium text-[var(--foreground)] hover:bg-[var(--secondary)] disabled:opacity-50"
               >
                 Revert to defaults

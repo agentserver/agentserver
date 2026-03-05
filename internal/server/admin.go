@@ -1,8 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -456,4 +458,52 @@ func (s *Server) handleAdminDeleteWorkspaceQuota(w http.ResponseWriter, r *http.
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// proxyLLMProxyRequest forwards an HTTP request to the llmproxy internal API.
+func (s *Server) proxyLLMProxyRequest(w http.ResponseWriter, method, path string, body []byte) {
+	if s.LLMProxyURL == "" {
+		http.Error(w, "llmproxy not configured", http.StatusServiceUnavailable)
+		return
+	}
+	url := s.LLMProxyURL + path
+	req, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if body != nil {
+		req.Body = io.NopCloser(bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("llmproxy proxy error: %v", err)
+		http.Error(w, "llmproxy unavailable", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
+}
+
+func (s *Server) handleAdminGetWorkspaceLLMQuota(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	s.proxyLLMProxyRequest(w, http.MethodGet, "/internal/quotas/"+workspaceID, nil)
+}
+
+func (s *Server) handleAdminSetWorkspaceLLMQuota(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	s.proxyLLMProxyRequest(w, http.MethodPut, "/internal/quotas/"+workspaceID, body)
+}
+
+func (s *Server) handleAdminDeleteWorkspaceLLMQuota(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	s.proxyLLMProxyRequest(w, http.MethodDelete, "/internal/quotas/"+workspaceID, nil)
 }

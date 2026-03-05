@@ -241,6 +241,11 @@ func (s *Server) Router() http.Handler {
 			r.Get("/workspaces/{id}/quota", s.handleAdminGetWorkspaceQuota)
 			r.Put("/workspaces/{id}/quota", s.handleAdminSetWorkspaceQuota)
 			r.Delete("/workspaces/{id}/quota", s.handleAdminDeleteWorkspaceQuota)
+
+			// Workspace LLM quota management (proxied to llmproxy)
+			r.Get("/workspaces/{id}/llm-quota", s.handleAdminGetWorkspaceLLMQuota)
+			r.Put("/workspaces/{id}/llm-quota", s.handleAdminSetWorkspaceLLMQuota)
+			r.Delete("/workspaces/{id}/llm-quota", s.handleAdminDeleteWorkspaceLLMQuota)
 		})
 	})
 

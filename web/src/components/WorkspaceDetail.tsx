@@ -14,11 +14,13 @@ import {
   addMember,
   removeMember,
   getWorkspaceDefaults,
+  getWorkspaceLLMQuota,
   getWorkspaceTraces,
   getWorkspaceTraceDetail,
   type Workspace,
   type WorkspaceMember,
   type WorkspaceSandboxDefaults,
+  type WorkspaceLLMQuota,
   type TraceItem,
 } from '../lib/api'
 import { ConfirmModal } from './Modals'
@@ -35,6 +37,7 @@ export function WorkspaceDetail({ workspace }: WorkspaceDetailProps) {
   const [members, setMembers] = useState<WorkspaceMember[]>([])
   const [sbxQuota, setSbxQuota] = useState<{ current: number; max: number } | null>(null)
   const [defaults, setDefaults] = useState<WorkspaceSandboxDefaults | null>(null)
+  const [llmQuota, setLlmQuota] = useState<WorkspaceLLMQuota | null>(null)
   const [traces, setTraces] = useState<TraceItem[]>([])
   const [tracesTotal, setTracesTotal] = useState(0)
   const [tracesPage, setTracesPage] = useState(0)
@@ -44,6 +47,7 @@ export function WorkspaceDetail({ workspace }: WorkspaceDetailProps) {
     setMembers([])
     setSbxQuota(null)
     setDefaults(null)
+    setLlmQuota(null)
     setTraces([])
     setTracesTotal(0)
     setTracesPage(0)
@@ -53,6 +57,7 @@ export function WorkspaceDetail({ workspace }: WorkspaceDetailProps) {
       setDefaults(d)
       setSbxQuota({ current: d.current_sandboxes, max: d.max_sandboxes })
     }).catch(() => {})
+    getWorkspaceLLMQuota(workspace.id).then(setLlmQuota).catch(() => {})
     getWorkspaceTraces(workspace.id, TRACES_PER_PAGE, 0).then((r) => {
       setTraces(r.traces || [])
       setTracesTotal(r.total || 0)
@@ -121,6 +126,7 @@ export function WorkspaceDetail({ workspace }: WorkspaceDetailProps) {
             workspace={workspace}
             sbxQuota={sbxQuota}
             defaults={defaults}
+            llmQuota={llmQuota}
           />
         )}
         {tab === 'members' && (
@@ -146,11 +152,13 @@ export function WorkspaceDetail({ workspace }: WorkspaceDetailProps) {
   )
 }
 
-function OverviewTab({ workspace, sbxQuota, defaults }: {
+function OverviewTab({ workspace, sbxQuota, defaults, llmQuota }: {
   workspace: Workspace
   sbxQuota: { current: number; max: number } | null
   defaults: WorkspaceSandboxDefaults | null
+  llmQuota: WorkspaceLLMQuota | null
 }) {
+  const effectiveMaxRpd = llmQuota?.workspace_quota?.max_rpd ?? llmQuota?.default_max_rpd ?? null
   return (
     <div className="flex flex-col gap-6 max-w-3xl">
       {/* Info cards */}
@@ -161,6 +169,13 @@ function OverviewTab({ workspace, sbxQuota, defaults }: {
             icon={<Box size={14} />}
             label="Sandboxes"
             value={`${sbxQuota.current} / ${sbxQuota.max === 0 ? '\u221E' : sbxQuota.max}`}
+          />
+        )}
+        {effectiveMaxRpd !== null && (
+          <InfoCard
+            icon={<Box size={14} />}
+            label="Max RPD"
+            value={effectiveMaxRpd === 0 ? '\u221E' : String(effectiveMaxRpd)}
           />
         )}
       </div>

@@ -205,6 +205,9 @@ func (s *Server) Router() http.Handler {
 		r.Put("/api/workspaces/{id}/members/{userId}", s.handleUpdateMemberRole)
 		r.Delete("/api/workspaces/{id}/members/{userId}", s.handleRemoveMember)
 
+		// Workspace LLM quota (read-only for members)
+		r.Get("/api/workspaces/{id}/llm-quota", s.handleGetWorkspaceLLMQuota)
+
 		// Sandbox routes
 		r.Get("/api/workspaces/{wid}/sandboxes", s.handleListSandboxes)
 		r.Post("/api/workspaces/{wid}/sandboxes", s.handleCreateSandbox)
@@ -833,6 +836,15 @@ func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleGetWorkspaceLLMQuota returns the LLM RPD quota for a workspace (read-only for members).
+func (s *Server) handleGetWorkspaceLLMQuota(w http.ResponseWriter, r *http.Request) {
+	wsID := chi.URLParam(r, "id")
+	if !s.requireWorkspaceRole(w, r, wsID, "owner", "maintainer", "developer") {
+		return
+	}
+	s.proxyLLMProxyRequest(w, http.MethodGet, "/internal/quotas/"+wsID, nil)
 }
 
 // --- Sandbox handlers ---

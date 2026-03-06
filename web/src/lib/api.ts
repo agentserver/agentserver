@@ -192,6 +192,17 @@ export async function getWorkspaceDefaults(workspaceId: string): Promise<Workspa
   return res.json()
 }
 
+export interface WorkspaceLLMQuota {
+  default_max_rpd: number
+  workspace_quota: { workspace_id: string; max_rpd: number | null; updated_at: string } | null
+}
+
+export async function getWorkspaceLLMQuota(workspaceId: string): Promise<WorkspaceLLMQuota> {
+  const res = await fetch(`/api/workspaces/${workspaceId}/llm-quota`)
+  if (!res.ok) throw new Error('Failed to get LLM quota')
+  return res.json()
+}
+
 export async function listSandboxes(workspaceId: string): Promise<Sandbox[]> {
   const res = await fetch(`/api/workspaces/${workspaceId}/sandboxes`)
   if (!res.ok) throw new Error('Failed to list sandboxes')

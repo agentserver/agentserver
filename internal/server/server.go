@@ -92,10 +92,10 @@ func New(a *auth.Auth, oidcMgr *auth.OIDCManager, database *db.DB, sandboxStore 
 	return s
 }
 
-// createDefaultWorkspace creates a "Default Workspace" for a newly registered user.
+// createDefaultWorkspace creates a "Default workspace" for a newly registered user.
 func (s *Server) createDefaultWorkspace(userID string) {
 	id := uuid.New().String()
-	if err := s.DB.CreateWorkspace(id, "Default Workspace"); err != nil {
+	if err := s.DB.CreateWorkspace(id, "Default workspace"); err != nil {
 		log.Printf("failed to create default workspace for user %s: %v", userID, err)
 		return
 	}

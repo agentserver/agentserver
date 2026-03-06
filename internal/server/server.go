@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -85,7 +86,34 @@ func New(a *auth.Auth, oidcMgr *auth.OIDCManager, database *db.DB, sandboxStore 
 		activityLast:            make(map[string]time.Time),
 	}
 	s.initOpencodeAssetIndex()
+	if s.OIDC != nil {
+		s.OIDC.OnUserCreated = s.createDefaultWorkspace
+	}
 	return s
+}
+
+// createDefaultWorkspace creates a "Default Workspace" for a newly registered user.
+func (s *Server) createDefaultWorkspace(userID string) {
+	id := uuid.New().String()
+	if err := s.DB.CreateWorkspace(id, "Default Workspace"); err != nil {
+		log.Printf("failed to create default workspace for user %s: %v", userID, err)
+		return
+	}
+	if err := s.DB.AddWorkspaceMember(id, userID, "owner"); err != nil {
+		log.Printf("failed to add owner to default workspace for user %s: %v", userID, err)
+		s.DB.DeleteWorkspace(id)
+		return
+	}
+	if s.NamespaceManager != nil {
+		ns, err := s.NamespaceManager.EnsureNamespace(context.Background(), id)
+		if err != nil {
+			log.Printf("failed to create namespace for default workspace %s: %v", id, err)
+			return
+		}
+		if err := s.DB.SetWorkspaceNamespace(id, ns); err != nil {
+			log.Printf("failed to set namespace for default workspace %s: %v", id, err)
+		}
+	}
 }
 
 // throttledActivity updates activity at most once per 30 seconds per sandbox.
@@ -197,6 +225,7 @@ func (s *Server) Router() http.Handler {
 		r.Post("/api/workspaces", s.handleCreateWorkspace)
 		r.Get("/api/workspaces/quota", s.handleGetWorkspacesQuota)
 		r.Get("/api/workspaces/{id}", s.handleGetWorkspace)
+		r.Patch("/api/workspaces/{id}", s.handleRenameWorkspace)
 		r.Delete("/api/workspaces/{id}", s.handleDeleteWorkspace)
 
 		// Workspace member routes
@@ -213,6 +242,7 @@ func (s *Server) Router() http.Handler {
 		r.Post("/api/workspaces/{wid}/sandboxes", s.handleCreateSandbox)
 		r.Get("/api/workspaces/{wid}/defaults", s.handleGetWorkspaceDefaults)
 		r.Get("/api/sandboxes/{id}", s.handleGetSandbox)
+		r.Patch("/api/sandboxes/{id}", s.handleRenameSandbox)
 		r.Delete("/api/sandboxes/{id}", s.handleDeleteSandbox)
 		r.Post("/api/sandboxes/{id}/pause", s.handlePauseSandbox)
 		r.Post("/api/sandboxes/{id}/resume", s.handleResumeSandbox)
@@ -329,6 +359,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			log.Printf("failed to set first user as admin: %v", err)
 		}
 	}
+
+	s.createDefaultWorkspace(id)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -659,6 +691,32 @@ func (s *Server) handleGetWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(s.toWorkspaceResponse(ws))
+}
+
+func (s *Server) handleRenameWorkspace(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !s.requireWorkspaceRole(w, r, id, "owner", "maintainer") {
+		return
+	}
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+	if err := s.DB.UpdateWorkspaceName(id, req.Name); err != nil {
+		log.Printf("failed to rename workspace %s: %v", id, err)
+		http.Error(w, "failed to rename workspace", http.StatusInternalServerError)
+		return
+	}
+	ws, err := s.DB.GetWorkspace(id)
+	if err != nil || ws == nil {
+		http.Error(w, "failed to get workspace", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(s.toWorkspaceResponse(ws))
 }
@@ -1104,6 +1162,33 @@ func (s *Server) handleGetSandbox(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireWorkspaceMember(w, r, sbx.WorkspaceID); !ok {
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(s.toSandboxResponse(sbx, authTokenFromRequest(r)))
+}
+
+func (s *Server) handleRenameSandbox(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	sbx, ok := s.Sandboxes.Get(id)
+	if !ok {
+		http.Error(w, "sandbox not found", http.StatusNotFound)
+		return
+	}
+	if _, ok := s.requireWorkspaceMember(w, r, sbx.WorkspaceID); !ok {
+		return
+	}
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+	if err := s.DB.UpdateSandboxName(id, req.Name); err != nil {
+		log.Printf("failed to rename sandbox %s: %v", id, err)
+		http.Error(w, "failed to rename sandbox", http.StatusInternalServerError)
+		return
+	}
+	sbx.Name = req.Name
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(s.toSandboxResponse(sbx, authTokenFromRequest(r)))
 }

@@ -30,9 +30,10 @@ type Provider interface {
 
 // OIDCManager orchestrates multiple OIDC/OAuth2 providers.
 type OIDCManager struct {
-	providers map[string]Provider
-	baseURL   string
-	auth      *Auth
+	providers     map[string]Provider
+	baseURL       string
+	auth          *Auth
+	OnUserCreated func(userID string) // called when a brand-new user is created via OIDC
 }
 
 // NewOIDCManager creates a new manager. baseURL is the external redirect base (e.g. "https://app.example.com").
@@ -157,11 +158,15 @@ func (m *OIDCManager) HandleCallback(w http.ResponseWriter, r *http.Request, pro
 	}
 
 	// Resolve or create user.
-	userID, err := m.resolveUser(providerName, subject, email, displayName, login, avatarURL)
+	userID, isNew, err := m.resolveUser(providerName, subject, email, displayName, login, avatarURL)
 	if err != nil {
 		log.Printf("OIDC resolve user failed for %s: %v", providerName, err)
 		http.Error(w, "failed to resolve user", http.StatusInternalServerError)
 		return
+	}
+
+	if isNew && m.OnUserCreated != nil {
+		m.OnUserCreated(userID)
 	}
 
 	// Issue session token.
@@ -177,16 +182,15 @@ func (m *OIDCManager) HandleCallback(w http.ResponseWriter, r *http.Request, pro
 }
 
 // resolveUser finds or creates a user for the given OIDC identity.
-func (m *OIDCManager) resolveUser(provider, subject, email, displayName, login, avatarURL string) (string, error) {
+func (m *OIDCManager) resolveUser(provider, subject, email, displayName, login, avatarURL string) (string, bool, error) {
 	database := m.auth.DB()
 
 	// 1. Check if this OIDC identity is already linked.
 	oi, err := database.GetOIDCIdentity(provider, subject)
 	if err != nil {
-		return "", fmt.Errorf("lookup oidc identity: %w", err)
+		return "", false, fmt.Errorf("lookup oidc identity: %w", err)
 	}
 	if oi != nil {
-		// Update avatar, display name, and email on each login.
 		if avatarURL != "" {
 			_ = database.UpdateUserPicture(oi.UserID, avatarURL)
 		}
@@ -196,7 +200,7 @@ func (m *OIDCManager) resolveUser(provider, subject, email, displayName, login, 
 		if email != "" {
 			_ = database.UpdateOIDCIdentityEmail(provider, subject, email)
 		}
-		return oi.UserID, nil
+		return oi.UserID, false, nil
 	}
 
 	var emailPtr *string
@@ -208,12 +212,11 @@ func (m *OIDCManager) resolveUser(provider, subject, email, displayName, login, 
 	if email != "" {
 		user, err := database.GetUserByEmail(email)
 		if err != nil {
-			return "", fmt.Errorf("lookup user by email: %w", err)
+			return "", false, fmt.Errorf("lookup user by email: %w", err)
 		}
 		if user != nil {
-			// Link this OIDC identity to the existing user.
 			if err := database.CreateOIDCIdentity(provider, subject, user.ID, emailPtr); err != nil {
-				return "", fmt.Errorf("link oidc identity: %w", err)
+				return "", false, fmt.Errorf("link oidc identity: %w", err)
 			}
 			if avatarURL != "" {
 				_ = database.UpdateUserPicture(user.ID, avatarURL)
@@ -221,24 +224,22 @@ func (m *OIDCManager) resolveUser(provider, subject, email, displayName, login, 
 			if displayName != "" {
 				_ = database.UpdateUserName(user.ID, displayName)
 			}
-			return user.ID, nil
+			return user.ID, false, nil
 		}
 	}
 
 	// 3. Create a new user (email is required).
 	if email == "" {
-		return "", fmt.Errorf("OIDC provider did not return an email address")
+		return "", false, fmt.Errorf("OIDC provider did not return an email address")
 	}
 	userID := uuid.New().String()
-	// Prefer the provider login (e.g. GitHub username) over the display name.
 	username := login
 	if username == "" {
 		username = sanitizeUsername(displayName, userID)
 	}
 	if err := database.CreateUserWithEmail(userID, username, nil, email); err != nil {
-		return "", fmt.Errorf("create user: %w", err)
+		return "", false, fmt.Errorf("create user: %w", err)
 	}
-	// First registered user becomes admin.
 	if count, err := database.CountUsers(); err == nil && count == 1 {
 		_ = database.UpdateUserRole(userID, "admin")
 	}
@@ -249,9 +250,9 @@ func (m *OIDCManager) resolveUser(provider, subject, email, displayName, login, 
 		_ = database.UpdateUserName(userID, displayName)
 	}
 	if err := database.CreateOIDCIdentity(provider, subject, userID, emailPtr); err != nil {
-		return "", fmt.Errorf("create oidc identity: %w", err)
+		return "", false, fmt.Errorf("create oidc identity: %w", err)
 	}
-	return userID, nil
+	return userID, true, nil
 }
 
 // sanitizeUsername generates a safe username from the display name.

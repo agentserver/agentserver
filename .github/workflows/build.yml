@@ -158,65 +158,10 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Cross-compile agent client binary
-        run: |
-          mkdir -p dist
-          for PAIR in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
-            OS=${PAIR%%/*}
-            ARCH=${PAIR##*/}
-            OUT=dist/agentserver-${OS}-${ARCH}
-            [ "$OS" = "windows" ] && OUT="${OUT}.exe"
-            echo "Building agentserver agent client ${OS}/${ARCH}..."
-            CGO_ENABLED=0 GOOS=$OS GOARCH=$ARCH go build -ldflags="-s -w" -o "$OUT" ./cmd/agentserver-agent
-          done
-
-      - name: Generate checksums
-        run: cd dist && sha256sum agentserver-* > checksums.txt
-
-      - name: Generate changelog
-        id: changelog
-        run: |
-          PREV_TAG=$(git tag --sort=-version:refname | head -n 2 | tail -n 1)
-          if [ -z "$PREV_TAG" ]; then
-            COMMITS=$(git log --oneline --pretty=format:"- %s (%h)" HEAD)
-          else
-            COMMITS=$(git log --oneline --pretty=format:"- %s (%h)" ${PREV_TAG}..HEAD)
-          fi
-          TAG=${GITHUB_REF#refs/tags/}
-          {
-            echo "body<<CHANGELOG_EOF"
-            echo "## Agent Client"
-            echo ""
-            echo "Download the \`agentserver\` binary for your platform below to connect a local opencode instance:"
-            echo ""
-            echo "\`\`\`bash"
-            echo "agentserver connect --server https://your-server --code <registration-code>"
-            echo "\`\`\`"
-            echo ""
-            echo "## Docker Images"
-            echo ""
-            echo "\`\`\`"
-            echo "ghcr.io/agentserver/agentserver:${TAG}"
-            echo "ghcr.io/agentserver/opencode-agent:${TAG}"
-            echo "ghcr.io/agentserver/llmproxy:${TAG}"
-            echo "\`\`\`"
-            echo ""
-            echo "## Helm Chart"
-            echo ""
-            echo "\`\`\`bash"
-            echo "helm install agentserver oci://ghcr.io/agentserver/charts/agentserver --version ${TAG#v}"
-            echo "\`\`\`"
-            echo ""
-            echo "## Changes"
-            echo ""
-            echo "$COMMITS"
-            echo "CHANGELOG_EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      - uses: softprops/action-gh-release@v2
+      - uses: goreleaser/goreleaser-action@v6
         with:
-          body: ${{ steps.changelog.outputs.body }}
-          generate_release_notes: false
-          files: |
-            dist/agentserver-*
-            dist/checksums.txt
+          version: '~> v2'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

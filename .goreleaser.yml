@@ -1,0 +1,79 @@
+project_name: agentserver
+
+builds:
+  - id: agentserver-agent
+    main: ./cmd/agentserver-agent
+    binary: agentserver
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: agentserver-agent
+    builds:
+      - agentserver-agent
+    format: tar.gz
+    name_template: "agentserver-{{ .Os }}-{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+
+release:
+  github:
+    owner: agentserver
+    name: agentserver
+  header: |
+    ## Agent Client
+
+    Download the `agentserver` binary for your platform below to connect a local opencode instance:
+
+    ```bash
+    agentserver connect --server https://your-server --code <registration-code>
+    ```
+
+    ### Install via Homebrew
+
+    ```bash
+    brew install agentserver/tap/agentserver
+    ```
+
+    ## Docker Images
+
+    ```
+    ghcr.io/agentserver/agentserver:{{ .Tag }}
+    ghcr.io/agentserver/opencode-agent:{{ .Tag }}
+    ghcr.io/agentserver/llmproxy:{{ .Tag }}
+    ```
+
+    ## Helm Chart
+
+    ```bash
+    helm install agentserver oci://ghcr.io/agentserver/charts/agentserver --version {{ trimprefix .Tag "v" }}
+    ```
+
+brews:
+  - name: agentserver
+    repository:
+      owner: agentserver
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/agentserver/agentserver"
+    description: "Connect local opencode to agentserver via WebSocket tunnel"
+    license: "MIT"
+    test: |
+      system "#{bin}/agentserver", "--help"

@@ -158,6 +158,23 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Decode notary key
+        env:
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+        run: echo "$MACOS_NOTARY_KEY" | base64 -d > "$RUNNER_TEMP/notary_key.p8"
+
+      - name: Verify notary credentials
+        env:
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          echo "KEY length: ${#MACOS_NOTARY_KEY}"
+          echo "KEY_ID length: ${#MACOS_NOTARY_KEY_ID}"
+          echo "ISSUER_ID length: ${#MACOS_NOTARY_ISSUER_ID}"
+          echo "KEY first 4: ${MACOS_NOTARY_KEY:0:4}"
+          echo "KEY last 4: ${MACOS_NOTARY_KEY: -4}"
+
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: '~> v2'
@@ -169,4 +186,4 @@ jobs:
           MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
           MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
           MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
-          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY: ${{ runner.temp }}/notary_key.p8

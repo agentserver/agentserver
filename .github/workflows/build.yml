@@ -165,6 +165,70 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Update Homebrew Formula
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          VERSION=${TAG#v}
+
+          # Download the source tarball and compute its SHA256
+          curl -sL "https://github.com/agentserver/agentserver/archive/refs/tags/${TAG}.tar.gz" -o /tmp/source.tar.gz
+          SHA=$(sha256sum /tmp/source.tar.gz | awk '{print $1}')
+
+          cat > /tmp/agentserver.rb << 'FORMULA'
+          # This file was generated during release. DO NOT EDIT.
+          class Agentserver < Formula
+            desc "Connect local opencode to agentserver via WebSocket tunnel"
+            homepage "https://github.com/agentserver/agentserver"
+            url "https://github.com/agentserver/agentserver/archive/refs/tags/v__VERSION__.tar.gz"
+            sha256 "__SHA__"
+            license "MIT"
+
+            depends_on "go" => :build
+
+            def install
+              ldflags = "-s -w -X github.com/agentserver/agentserver/internal/agent.Version=#{version}"
+              system "go", "build", *std_go_args(ldflags:), "./cmd/agentserver-agent"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/agentserver --version")
+            end
+          end
+          FORMULA
+
+          # Substitute version and SHA into the formula
+          sed -i "s/__VERSION__/${VERSION}/g" /tmp/agentserver.rb
+          sed -i "s/__SHA__/${SHA}/g" /tmp/agentserver.rb
+
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' /tmp/agentserver.rb
+
+          CONTENT=$(base64 -w 0 /tmp/agentserver.rb)
+
+          # Delete old Cask if it exists
+          OLD_CASK_SHA=$(gh api repos/agentserver/homebrew-tap/contents/Casks/agentserver.rb --jq '.sha' 2>/dev/null || echo "")
+          if [ -n "$OLD_CASK_SHA" ]; then
+            gh api -X DELETE repos/agentserver/homebrew-tap/contents/Casks/agentserver.rb \
+              -f message="chore: remove old agentserver cask in favor of formula" \
+              -f sha="$OLD_CASK_SHA"
+          fi
+
+          # Create or update the Formula
+          EXISTING_SHA=$(gh api repos/agentserver/homebrew-tap/contents/Formula/agentserver.rb --jq '.sha' 2>/dev/null || echo "")
+
+          if [ -n "$EXISTING_SHA" ]; then
+            gh api -X PUT repos/agentserver/homebrew-tap/contents/Formula/agentserver.rb \
+              -f message="chore: update agentserver formula to ${VERSION}" \
+              -f content="$CONTENT" \
+              -f sha="$EXISTING_SHA"
+          else
+            gh api -X PUT repos/agentserver/homebrew-tap/contents/Formula/agentserver.rb \
+              -f message="chore: add agentserver formula ${VERSION}" \
+              -f content="$CONTENT"
+          fi
+
   sign-macos:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-latest
@@ -233,82 +297,45 @@ jobs:
             xcrun notarytool submit "work-${ARCH}/agentserver.zip" \
               --keychain-profile "notary-profile" \
               --keychain "$KEYCHAIN_PATH" \
-              --wait
+              --output-format json > "/tmp/submit-${ARCH}.json"
+
+            SUBMISSION_ID=$(python3 -c "import json; print(json.load(open('/tmp/submit-${ARCH}.json'))['id'])")
+            echo "Submission ID: $SUBMISSION_ID"
+
+            # Poll with retry on network errors
+            for i in $(seq 1 120); do
+              sleep 15
+              if STATUS_JSON=$(xcrun notarytool info "$SUBMISSION_ID" \
+                --keychain-profile "notary-profile" \
+                --keychain "$KEYCHAIN_PATH" \
+                --output-format json 2>&1); then
+                STATUS=$(echo "$STATUS_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+                echo "Attempt $i: status=$STATUS"
+                if [ "$STATUS" = "Accepted" ]; then
+                  echo "Notarization accepted!"
+                  break
+                elif [ "$STATUS" = "Invalid" ] || [ "$STATUS" = "Rejected" ]; then
+                  echo "Notarization failed: $STATUS"
+                  xcrun notarytool log "$SUBMISSION_ID" \
+                    --keychain-profile "notary-profile" \
+                    --keychain "$KEYCHAIN_PATH" 2>&1 || true
+                  exit 1
+                fi
+              else
+                echo "Attempt $i: network error, retrying..."
+              fi
+            done
+
+            if [ "$STATUS" != "Accepted" ]; then
+              echo "Notarization timed out (status=$STATUS)"
+              exit 1
+            fi
 
             tar -czf "$ASSET" -C "work-${ARCH}" agentserver
             gh release upload "$TAG" "$ASSET" --clobber -R agentserver/agentserver
 
             echo "::endgroup::"
           done
-
-      - name: Update checksums and Homebrew Cask
-        env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          TAG=${GITHUB_REF#refs/tags/}
-          VERSION=${TAG#v}
-
-          SHA_AMD64=$(shasum -a 256 agentserver-darwin-amd64.tar.gz | awk '{print $1}')
-          SHA_ARM64=$(shasum -a 256 agentserver-darwin-arm64.tar.gz | awk '{print $1}')
-
-          gh release download "$TAG" -p "agentserver-linux-amd64.tar.gz" -R agentserver/agentserver -D /tmp
-          gh release download "$TAG" -p "agentserver-linux-arm64.tar.gz" -R agentserver/agentserver -D /tmp
-          SHA_LINUX_AMD64=$(shasum -a 256 /tmp/agentserver-linux-amd64.tar.gz | awk '{print $1}')
-          SHA_LINUX_ARM64=$(shasum -a 256 /tmp/agentserver-linux-arm64.tar.gz | awk '{print $1}')
-
-          cat > /tmp/agentserver.rb << CASK
-          # This file was generated during release. DO NOT EDIT.
-          cask "agentserver" do
-            name "agentserver"
-            desc "Connect local opencode to agentserver via WebSocket tunnel"
-            homepage "https://github.com/agentserver/agentserver"
-            version "${VERSION}"
-
-            livecheck do
-              skip "Auto-generated on release."
-            end
-
-            binary "agentserver"
-
-            on_macos do
-              on_intel do
-                url "https://github.com/agentserver/agentserver/releases/download/v#{version}/agentserver-darwin-amd64.tar.gz"
-                sha256 "${SHA_AMD64}"
-              end
-              on_arm do
-                url "https://github.com/agentserver/agentserver/releases/download/v#{version}/agentserver-darwin-arm64.tar.gz"
-                sha256 "${SHA_ARM64}"
-              end
-            end
-
-            on_linux do
-              on_intel do
-                url "https://github.com/agentserver/agentserver/releases/download/v#{version}/agentserver-linux-amd64.tar.gz"
-                sha256 "${SHA_LINUX_AMD64}"
-              end
-              on_arm do
-                url "https://github.com/agentserver/agentserver/releases/download/v#{version}/agentserver-linux-arm64.tar.gz"
-                sha256 "${SHA_LINUX_ARM64}"
-              end
-            end
-
-            # No zap stanza required
-          end
-          CASK
-
-          CONTENT=$(base64 -i /tmp/agentserver.rb)
-          EXISTING_SHA=$(gh api repos/agentserver/homebrew-tap/contents/Casks/agentserver.rb --jq '.sha' 2>/dev/null || echo "")
-
-          if [ -n "$EXISTING_SHA" ]; then
-            gh api -X PUT repos/agentserver/homebrew-tap/contents/Casks/agentserver.rb \
-              -f message="chore: update agentserver cask to ${VERSION} (signed+notarized)" \
-              -f content="$CONTENT" \
-              -f sha="$EXISTING_SHA"
-          else
-            gh api -X PUT repos/agentserver/homebrew-tap/contents/Casks/agentserver.rb \
-              -f message="chore: add agentserver cask ${VERSION} (signed+notarized)" \
-              -f content="$CONTENT"
-          fi
 
       - name: Cleanup keychain
         if: always()

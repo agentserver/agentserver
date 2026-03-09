@@ -48,7 +48,6 @@ internal/sandboxproxy/
     openclaw_proxy.go              — moved from server/openclaw_proxy.go
     tunnel.go                      — moved from server/tunnel.go
     error_page.go                  — moved from server/error_page.go
-    activity.go                    — throttledActivity helper
 ```
 
 ## Shared Packages (read-only reuse)
@@ -56,7 +55,7 @@ internal/sandboxproxy/
 | Package | Usage |
 |---------|-------|
 | `internal/db` | Query sandbox info, validate tunnel token, update heartbeat/activity |
-| `internal/auth` | Validate user cookie tokens (shared JWT secret) |
+| `internal/auth` | Validate user cookie tokens (DB-backed token lookup) |
 | `internal/sbxstore` | In-memory sandbox store (Resolve by ID/shortID) |
 | `internal/tunnel` | Registry + Protocol (unchanged) |
 | `internal/shortid` | Short ID parsing |
@@ -85,7 +84,6 @@ type Server struct {
 | Variable | Description |
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL connection string |
-| `AUTH_JWT_SECRET` | Shared JWT secret with agentserver |
 | `BASE_DOMAIN` | Base domain for subdomain routing |
 | `OPENCODE_ASSET_DOMAIN` | Shared static asset domain |
 | `OPENCODE_SUBDOMAIN_PREFIX` | Subdomain prefix for opencode (default: "code") |
@@ -132,3 +130,11 @@ Subdomain traffic routed by Ingress Host-header rules to sandbox-proxy. API traf
 - Proxy token validation stays in agentserver (llmproxy calls agentserver)
 - Both services share the same DB and same `internal/db` package
 - Mono-repo: new binary at `cmd/sandboxproxy/`, shared internal packages
+
+## Remaining Coupling Points
+
+1. **`BaseDomain` / subdomain prefixes** — agentserver still reads `BASE_DOMAIN`, `OPENCODE_SUBDOMAIN_PREFIX`, and `OPENCLAW_SUBDOMAIN_PREFIX` env vars to generate sandbox URLs in API responses (`toSandboxResponse`). Both services must be configured with the same values.
+
+2. **`TunnelRegistry`** — agentserver still holds a `TunnelRegistry` instance. When a workspace or sandbox is deleted via the API, agentserver closes the tunnel connection. Since the tunnel is actually managed by sandbox-proxy, this registry in agentserver will always be empty. The close-on-delete behavior now depends on sandbox-proxy detecting the DB status change (sandbox deleted → tunnel auth fails on next heartbeat). Alternatively, agentserver could call an internal API on sandbox-proxy to close tunnels — but this is acceptable as-is since tunnel heartbeats expire naturally.
+
+3. **`sbxstore.Store`** — both services create independent in-memory stores loaded from the same DB. Updates made by one service (e.g., sandbox-proxy updating activity) are not immediately visible to the other's in-memory cache. This is acceptable since `sbxstore` refreshes from DB on each `Resolve()` call for cache misses.

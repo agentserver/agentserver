@@ -1,4 +1,4 @@
-package server
+package sandboxproxy
 
 import (
 	"context"

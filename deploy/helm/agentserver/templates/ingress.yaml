@@ -37,8 +37,8 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: {{ .Release.Name }}
+                name: {{ .Release.Name }}-sandboxproxy
                 port:
-                  number: {{ .Values.service.port }}
+                  number: {{ .Values.sandboxProxy.port }}
     {{- end }}
 {{- end }}

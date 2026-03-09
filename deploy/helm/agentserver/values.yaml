@@ -121,6 +121,14 @@ llmproxy:
   # Default max requests per day per workspace (0 = unlimited).
   defaultMaxRpd: 0
 
+sandboxProxy:
+  image:
+    repository: ghcr.io/agentserver/sandboxproxy
+    tag: latest
+    pullPolicy: Always
+  replicaCount: 1
+  port: 8082
+
 service:
   type: ClusterIP
   port: 8080

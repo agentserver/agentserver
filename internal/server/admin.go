@@ -65,16 +65,54 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdminListWorkspaces(w http.ResponseWriter, r *http.Request) {
-	workspaces, err := s.DB.ListAllWorkspaces()
+	workspaces, err := s.DB.ListAllWorkspacesAdmin()
 	if err != nil {
 		log.Printf("admin: failed to list workspaces: %v", err)
 		http.Error(w, "failed to list workspaces", http.StatusInternalServerError)
 		return
 	}
 
-	resp := make([]workspaceResponse, len(workspaces))
+	rd := s.getResourceDefaults()
+
+	type ownerInfo struct {
+		ID       string  `json:"id"`
+		Username string  `json:"username"`
+		Name     *string `json:"name"`
+		Picture  *string `json:"picture"`
+	}
+	type adminWorkspaceResponse struct {
+		ID            string    `json:"id"`
+		Name          string    `json:"name"`
+		CreatedAt     string    `json:"created_at"`
+		UpdatedAt     string    `json:"updated_at"`
+		Owner         *ownerInfo `json:"owner"`
+		SandboxCount  int       `json:"sandbox_count"`
+		MaxSandboxes  int       `json:"max_sandboxes"`
+	}
+
+	resp := make([]adminWorkspaceResponse, len(workspaces))
 	for i, ws := range workspaces {
-		resp[i] = s.toWorkspaceResponse(ws)
+		r := adminWorkspaceResponse{
+			ID:           ws.ID,
+			Name:         ws.Name,
+			CreatedAt:    ws.CreatedAt.Format(time.RFC3339),
+			UpdatedAt:    ws.UpdatedAt.Format(time.RFC3339),
+			SandboxCount: ws.SandboxCount,
+			MaxSandboxes: rd.MaxSandboxesPerWorkspace,
+		}
+		if ws.OwnerID != nil {
+			r.Owner = &ownerInfo{
+				ID:       *ws.OwnerID,
+				Username: *ws.OwnerUsername,
+				Name:     ws.OwnerName,
+				Picture:  ws.OwnerPicture,
+			}
+		}
+		// Check for workspace-level quota override.
+		if wq, err := s.DB.GetWorkspaceQuota(ws.ID); err == nil && wq != nil && wq.MaxSandboxes != nil {
+			r.MaxSandboxes = *wq.MaxSandboxes
+		}
+		resp[i] = r
 	}
 
 	w.Header().Set("Content-Type", "application/json")

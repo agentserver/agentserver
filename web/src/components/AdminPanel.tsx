@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
-import { ArrowLeft, Loader2, Users, Box, Container, Settings } from 'lucide-react'
+import { Routes, Route, Navigate, useNavigate, useLocation, useParams } from 'react-router-dom'
+import { ArrowLeft, Loader2, Users, Box, Container, Settings, ChevronRight } from 'lucide-react'
 import {
   type AdminUser,
   type AdminWorkspace,
@@ -25,67 +26,25 @@ import {
   adminDeleteWorkspaceLLMQuota,
 } from '../lib/api'
 
-type Tab = 'users' | 'workspaces' | 'sandboxes' | 'settings'
+const tabs = [
+  { path: 'users', label: 'Users', icon: Users },
+  { path: 'workspaces', label: 'Workspaces', icon: Box },
+  { path: 'sandboxes', label: 'Sandboxes', icon: Container },
+  { path: 'settings', label: 'Settings', icon: Settings },
+] as const
 
-interface AdminPanelProps {
-  onBack: () => void
-}
+export function AdminPanel() {
+  const navigate = useNavigate()
+  const location = useLocation()
 
-export function AdminPanel({ onBack }: AdminPanelProps) {
-  const [tab, setTab] = useState<Tab>('users')
-  const [users, setUsers] = useState<AdminUser[]>([])
-  const [workspaces, setWorkspaces] = useState<AdminWorkspace[]>([])
-  const [sandboxes, setSandboxes] = useState<AdminSandbox[]>([])
-  const [loading, setLoading] = useState(false)
-
-  useEffect(() => {
-    setLoading(true)
-    const fetch = async () => {
-      try {
-        switch (tab) {
-          case 'users':
-            setUsers(await adminListUsers())
-            break
-          case 'workspaces':
-            setWorkspaces(await adminListWorkspaces())
-            break
-          case 'sandboxes':
-            setSandboxes(await adminListSandboxes())
-            break
-        }
-      } catch {
-        // ignore
-      } finally {
-        setLoading(false)
-      }
-    }
-    fetch()
-  }, [tab])
-
-  const handleRoleChange = async (userId: string, newRole: string) => {
-    try {
-      await adminUpdateUserRole(userId, newRole)
-      setUsers((prev) =>
-        prev.map((u) => (u.id === userId ? { ...u, role: newRole } : u))
-      )
-    } catch {
-      // ignore
-    }
-  }
-
-  const tabs: { key: Tab; label: string; icon: typeof Users }[] = [
-    { key: 'users', label: 'Users', icon: Users },
-    { key: 'workspaces', label: 'Workspaces', icon: Box },
-    { key: 'sandboxes', label: 'Sandboxes', icon: Container },
-    { key: 'settings', label: 'Settings', icon: Settings },
-  ]
+  const activeTab = tabs.find((t) => location.pathname.startsWith(`/admin/${t.path}`))?.path ?? 'users'
 
   return (
     <div className="flex h-full w-full bg-[var(--background)]">
       {/* Sidebar */}
       <div className="flex w-52 flex-col border-r border-[var(--border)]">
         <button
-          onClick={onBack}
+          onClick={() => navigate('/')}
           className="flex items-center gap-2 px-4 py-4 text-sm text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
         >
           <ArrowLeft size={16} />
@@ -94,10 +53,10 @@ export function AdminPanel({ onBack }: AdminPanelProps) {
         <nav className="flex flex-col gap-0.5 px-2">
           {tabs.map((t) => (
             <button
-              key={t.key}
-              onClick={() => setTab(t.key)}
+              key={t.path}
+              onClick={() => navigate(`/admin/${t.path}`)}
               className={`flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-                tab === t.key
+                activeTab === t.path
                   ? 'bg-[var(--secondary)] text-[var(--foreground)]'
                   : 'text-[var(--muted-foreground)] hover:bg-[var(--secondary)] hover:text-[var(--foreground)]'
               }`}
@@ -111,19 +70,124 @@ export function AdminPanel({ onBack }: AdminPanelProps) {
 
       {/* Content */}
       <div className="flex-1 overflow-auto p-6">
-        {loading ? (
-          <div className="flex items-center justify-center py-12">
-            <Loader2 size={24} className="animate-spin text-[var(--muted-foreground)]" />
-          </div>
-        ) : (
-          <>
-            {tab === 'users' && <UsersTable users={users} onRoleChange={handleRoleChange} />}
-            {tab === 'workspaces' && <WorkspacesTable workspaces={workspaces} />}
-            {tab === 'sandboxes' && <SandboxesTable sandboxes={sandboxes} />}
-            {tab === 'settings' && <SettingsTab />}
-          </>
-        )}
+        <Routes>
+          <Route index element={<Navigate to="users" replace />} />
+          <Route path="users" element={<UsersTab />} />
+          <Route path="workspaces" element={<WorkspacesTab />} />
+          <Route path="workspaces/:workspaceId/sandboxes" element={<WorkspaceSandboxesTab />} />
+          <Route path="sandboxes" element={<SandboxesTab />} />
+          <Route path="settings" element={<SettingsTab />} />
+          <Route path="*" element={<Navigate to="users" replace />} />
+        </Routes>
       </div>
+    </div>
+  )
+}
+
+function UsersTab() {
+  const [users, setUsers] = useState<AdminUser[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    adminListUsers().then(setUsers).catch(() => {}).finally(() => setLoading(false))
+  }, [])
+
+  const handleRoleChange = async (userId: string, newRole: string) => {
+    try {
+      await adminUpdateUserRole(userId, newRole)
+      setUsers((prev) => prev.map((u) => (u.id === userId ? { ...u, role: newRole } : u)))
+    } catch {
+      // ignore
+    }
+  }
+
+  if (loading) return <LoadingSpinner />
+  return <UsersTable users={users} onRoleChange={handleRoleChange} />
+}
+
+function WorkspacesTab() {
+  const [workspaces, setWorkspaces] = useState<AdminWorkspace[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    adminListWorkspaces().then(setWorkspaces).catch(() => {}).finally(() => setLoading(false))
+  }, [])
+
+  if (loading) return <LoadingSpinner />
+  return <WorkspacesTable workspaces={workspaces} />
+}
+
+function WorkspaceSandboxesTab() {
+  const { workspaceId } = useParams<{ workspaceId: string }>()
+  const navigate = useNavigate()
+  const [sandboxes, setSandboxes] = useState<AdminSandbox[]>([])
+  const [loading, setLoading] = useState(true)
+  const [workspaceName, setWorkspaceName] = useState('')
+
+  useEffect(() => {
+    if (!workspaceId) return
+    Promise.all([
+      adminListSandboxes(),
+      adminListWorkspaces(),
+    ]).then(([allSandboxes, allWorkspaces]) => {
+      setSandboxes(allSandboxes.filter((s) => s.workspace_id === workspaceId))
+      const ws = allWorkspaces.find((w) => w.id === workspaceId)
+      if (ws) setWorkspaceName(ws.name)
+    }).catch(() => {}).finally(() => setLoading(false))
+  }, [workspaceId])
+
+  if (loading) return <LoadingSpinner />
+
+  return (
+    <div>
+      <div className="mb-4 flex items-center gap-2 text-sm text-[var(--muted-foreground)]">
+        <button onClick={() => navigate('/admin/workspaces')} className="hover:text-[var(--foreground)]">
+          Workspaces
+        </button>
+        <ChevronRight size={14} />
+        <span className="text-[var(--foreground)]">{workspaceName || workspaceId}</span>
+      </div>
+      <SandboxesTable sandboxes={sandboxes} />
+    </div>
+  )
+}
+
+function SandboxesTab() {
+  const [sandboxes, setSandboxes] = useState<AdminSandbox[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    adminListSandboxes().then(setSandboxes).catch(() => {}).finally(() => setLoading(false))
+  }, [])
+
+  if (loading) return <LoadingSpinner />
+  return <SandboxesTable sandboxes={sandboxes} />
+}
+
+function LoadingSpinner() {
+  return (
+    <div className="flex items-center justify-center py-12">
+      <Loader2 size={24} className="animate-spin text-[var(--muted-foreground)]" />
+    </div>
+  )
+}
+
+function OwnerAvatar({ owner }: { owner: AdminWorkspace['owner'] }) {
+  if (!owner) return <span className="text-[var(--muted-foreground)]">—</span>
+
+  const displayName = owner.name || owner.username
+  const initials = (displayName || '?').charAt(0).toUpperCase()
+
+  return (
+    <div className="flex items-center gap-2">
+      {owner.picture ? (
+        <img src={owner.picture} alt="" className="h-6 w-6 rounded-full object-cover" />
+      ) : (
+        <div className="flex h-6 w-6 items-center justify-center rounded-full bg-[var(--secondary)] text-xs font-medium text-[var(--foreground)]">
+          {initials}
+        </div>
+      )}
+      <span className="text-[var(--foreground)]">{displayName}</span>
     </div>
   )
 }
@@ -194,6 +258,7 @@ function UsersTable({
 }
 
 function WorkspacesTable({ workspaces }: { workspaces: AdminWorkspace[] }) {
+  const navigate = useNavigate()
   const [quotaWorkspace, setQuotaWorkspace] = useState<AdminWorkspace | null>(null)
   const [quotaMap, setQuotaMap] = useState<Map<string, LLMQuotaResponse>>(new Map())
 
@@ -224,12 +289,12 @@ function WorkspacesTable({ workspaces }: { workspaces: AdminWorkspace[] }) {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-[var(--border)] bg-[var(--muted)]">
+              <th className="px-4 py-3 text-left font-medium text-[var(--muted-foreground)]">Owner</th>
               <th className="px-4 py-3 text-left font-medium text-[var(--muted-foreground)]">Name</th>
-              <th className="px-4 py-3 text-left font-medium text-[var(--muted-foreground)]">ID</th>
+              <th className="px-4 py-3 text-left font-medium text-[var(--muted-foreground)]">Sandboxes</th>
               <th className="px-4 py-3 text-left font-medium text-[var(--muted-foreground)]">RPD</th>
               <th className="px-4 py-3 text-left font-medium text-[var(--muted-foreground)]">Quota</th>
               <th className="px-4 py-3 text-left font-medium text-[var(--muted-foreground)]">Created At</th>
-              <th className="px-4 py-3 text-left font-medium text-[var(--muted-foreground)]">Updated At</th>
             </tr>
           </thead>
           <tbody>
@@ -238,10 +303,22 @@ function WorkspacesTable({ workspaces }: { workspaces: AdminWorkspace[] }) {
               const effectiveMax = q?.workspace_quota?.max_rpd ?? q?.default_max_rpd ?? null
               const used = q?.today_request_count ?? 0
               const limitStr = effectiveMax === null ? '—' : effectiveMax === 0 ? '\u221E' : String(effectiveMax)
+              const maxSbxStr = ws.max_sandboxes === 0 ? '\u221E' : String(ws.max_sandboxes)
               return (
                 <tr key={ws.id} className="border-b border-[var(--border)] last:border-b-0">
+                  <td className="px-4 py-3">
+                    <OwnerAvatar owner={ws.owner} />
+                  </td>
                   <td className="px-4 py-3 text-[var(--foreground)]">{ws.name}</td>
-                  <td className="px-4 py-3 font-mono text-xs text-[var(--muted-foreground)]">{ws.id}</td>
+                  <td className="px-4 py-3">
+                    <button
+                      onClick={() => navigate(`/admin/workspaces/${ws.id}/sandboxes`)}
+                      className="text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                    >
+                      {ws.sandbox_count} / {maxSbxStr}
+                      <ChevronRight size={14} className="ml-1 inline-block" />
+                    </button>
+                  </td>
                   <td className="px-4 py-3 text-[var(--muted-foreground)]">{q ? `${used} / ${limitStr}` : '—'}</td>
                   <td className="px-4 py-3">
                     <button
@@ -253,9 +330,6 @@ function WorkspacesTable({ workspaces }: { workspaces: AdminWorkspace[] }) {
                   </td>
                   <td className="px-4 py-3 text-[var(--muted-foreground)]">
                     {new Date(ws.created_at).toLocaleString()}
-                  </td>
-                  <td className="px-4 py-3 text-[var(--muted-foreground)]">
-                    {new Date(ws.updated_at).toLocaleString()}
                   </td>
                 </tr>
               )
@@ -398,13 +472,7 @@ function SettingsTab() {
     }
   }
 
-  if (!defaults) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <Loader2 size={24} className="animate-spin text-[var(--muted-foreground)]" />
-      </div>
-    )
-  }
+  if (!defaults) return <LoadingSpinner />
 
   return (
     <div className="max-w-md">
@@ -622,9 +690,7 @@ function UserQuotaModal({ user, onClose }: { user: AdminUser; onClose: () => voi
           Quota: {user.username}
         </h2>
         {loading ? (
-          <div className="flex items-center justify-center py-8">
-            <Loader2 size={24} className="animate-spin text-[var(--muted-foreground)]" />
-          </div>
+          <LoadingSpinner />
         ) : data ? (
           <div className="flex flex-col gap-4">
             <p className="text-xs text-[var(--muted-foreground)]">
@@ -765,9 +831,7 @@ function WorkspaceQuotaModal({ workspace, onClose }: { workspace: AdminWorkspace
           Workspace Quota: {workspace.name}
         </h2>
         {loading ? (
-          <div className="flex items-center justify-center py-8">
-            <Loader2 size={24} className="animate-spin text-[var(--muted-foreground)]" />
-          </div>
+          <LoadingSpinner />
         ) : data ? (
           <div className="flex flex-col gap-4">
             <p className="text-xs text-[var(--muted-foreground)]">

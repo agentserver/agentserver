@@ -388,11 +388,21 @@ export interface AdminUser {
   created_at: string
 }
 
+export interface AdminWorkspaceOwner {
+  id: string
+  username: string
+  name: string | null
+  picture: string | null
+}
+
 export interface AdminWorkspace {
   id: string
   name: string
   created_at: string
   updated_at: string
+  owner: AdminWorkspaceOwner | null
+  sandbox_count: number
+  max_sandboxes: number
 }
 
 export interface AdminSandbox {

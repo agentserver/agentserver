@@ -266,6 +266,46 @@ func (db *DB) ListAllWorkspaces() ([]*Workspace, error) {
 	return workspaces, rows.Err()
 }
 
+// AdminWorkspaceInfo holds enriched workspace data for the admin panel.
+type AdminWorkspaceInfo struct {
+	Workspace
+	OwnerID       *string
+	OwnerUsername *string
+	OwnerName    *string
+	OwnerPicture *string
+	SandboxCount int
+}
+
+func (db *DB) ListAllWorkspacesAdmin() ([]*AdminWorkspaceInfo, error) {
+	rows, err := db.Query(
+		`SELECT w.id, w.name, w.k8s_namespace, w.created_at, w.updated_at,
+		        u.id, u.username, u.name, u.picture,
+		        (SELECT COUNT(*) FROM sandboxes s WHERE s.workspace_id = w.id)
+		 FROM workspaces w
+		 LEFT JOIN workspace_members wm ON w.id = wm.workspace_id AND wm.role = 'owner'
+		 LEFT JOIN users u ON wm.user_id = u.id
+		 ORDER BY w.created_at ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list all workspaces admin: %w", err)
+	}
+	defer rows.Close()
+
+	var workspaces []*AdminWorkspaceInfo
+	for rows.Next() {
+		w := &AdminWorkspaceInfo{}
+		if err := rows.Scan(
+			&w.ID, &w.Name, &w.K8sNamespace, &w.CreatedAt, &w.UpdatedAt,
+			&w.OwnerID, &w.OwnerUsername, &w.OwnerName, &w.OwnerPicture,
+			&w.SandboxCount,
+		); err != nil {
+			return nil, fmt.Errorf("scan admin workspace: %w", err)
+		}
+		workspaces = append(workspaces, w)
+	}
+	return workspaces, rows.Err()
+}
+
 func (db *DB) AddWorkspaceVolume(id, workspaceID, pvcName, mountPath string) error {
 	_, err := db.Exec(
 		`INSERT INTO workspace_volumes (id, workspace_id, pvc_name, mount_path) VALUES ($1, $2, $3, $4)`,

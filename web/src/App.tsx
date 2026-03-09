@@ -237,8 +237,8 @@ export default function App() {
           }
         />
         <Route
-          path="/admin"
-          element={<AdminPanel onBack={() => navigate('/')} />}
+          path="/admin/*"
+          element={<AdminPanel />}
         />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

@@ -11,6 +11,8 @@ const (
 	FrameTypeRequest   = "request"
 	FrameTypeStream    = "stream"
 	FrameTypeAgentInfo = "agent_info"
+	FrameTypePing      = "ping"
+	FrameTypePong      = "pong"
 )
 
 // RequestHeader is the JSON metadata for a request frame (server → agent).

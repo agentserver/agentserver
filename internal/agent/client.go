@@ -129,40 +129,28 @@ func (c *Client) connectAndServe(ctx context.Context) error {
 
 	log.Printf("tunnel connected (sandbox: %s)", c.SandboxID)
 
-	// Send agent info as a JSON text message.
-	agentInfo := collectAgentInfo(c.OpencodeURL)
-	infoMsg := struct {
-		Type string         `json:"type"`
-		Data *AgentInfoData `json:"data"`
-	}{
-		Type: tunnel.FrameTypeAgentInfo,
-		Data: agentInfo,
-	}
-	if infoBytes, err := json.Marshal(infoMsg); err == nil {
-		if err := conn.Write(ctx, websocket.MessageText, infoBytes); err != nil {
-			log.Printf("failed to send agent info: %v", err)
-		}
-	} else {
-		log.Printf("failed to marshal agent info: %v", err)
+	// Send initial agent info.
+	if err := c.sendAgentInfo(ctx, conn); err != nil {
+		return fmt.Errorf("send initial agent info: %w", err)
 	}
 
-	// Start client-side ping to keep connection alive through proxies.
-	// Sends a ping every 20s so that both directions have traffic,
-	// preventing intermediate proxies (e.g. Cloudflare) from closing
-	// the WebSocket due to idle timeout.
-	pingCtx, pingCancel := context.WithCancel(ctx)
-	defer pingCancel()
+	// Periodically re-send agent info as keepalive. This serves as
+	// application-level upstream traffic (visible to proxies), while
+	// also keeping the server's agent metadata fresh (disk, memory, etc.).
+	// The server sends application-level ping frames for downstream traffic.
+	infoCtx, infoCancel := context.WithCancel(ctx)
+	defer infoCancel()
 	go func() {
 		ticker := time.NewTicker(20 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-pingCtx.Done():
+			case <-infoCtx.Done():
 				return
 			case <-ticker.C:
-				if err := conn.Ping(pingCtx); err != nil {
-					log.Printf("client ping failed: %v", err)
-					pingCancel()
+				if err := c.sendAgentInfo(infoCtx, conn); err != nil {
+					log.Printf("failed to send agent info: %v", err)
+					infoCancel()
 					return
 				}
 			}
@@ -171,7 +159,7 @@ func (c *Client) connectAndServe(ctx context.Context) error {
 
 	// Read and process binary frames.
 	for {
-		_, data, err := conn.Read(pingCtx)
+		_, data, err := conn.Read(infoCtx)
 		if err != nil {
 			return fmt.Errorf("read: %w", err)
 		}
@@ -188,6 +176,20 @@ func (c *Client) connectAndServe(ctx context.Context) error {
 			continue
 		}
 
+		if hdr.Type == tunnel.FrameTypePong {
+			continue
+		}
+
+		if hdr.Type == tunnel.FrameTypePing {
+			pongHeader := struct {
+				Type string `json:"type"`
+			}{Type: tunnel.FrameTypePong}
+			if msg, err := tunnel.EncodeFrame(pongHeader, nil); err == nil {
+				conn.Write(infoCtx, websocket.MessageBinary, msg)
+			}
+			continue
+		}
+
 		if hdr.Type == tunnel.FrameTypeRequest {
 			var reqHeader tunnel.RequestHeader
 			if err := json.Unmarshal(headerJSON, &reqHeader); err != nil {
@@ -197,6 +199,22 @@ func (c *Client) connectAndServe(ctx context.Context) error {
 			go c.handleRequest(ctx, conn, &reqHeader, payload)
 		}
 	}
+}
+
+func (c *Client) sendAgentInfo(ctx context.Context, conn *websocket.Conn) error {
+	agentInfo := collectAgentInfo(c.OpencodeURL)
+	infoMsg := struct {
+		Type string         `json:"type"`
+		Data *AgentInfoData `json:"data"`
+	}{
+		Type: tunnel.FrameTypeAgentInfo,
+		Data: agentInfo,
+	}
+	infoBytes, err := json.Marshal(infoMsg)
+	if err != nil {
+		return fmt.Errorf("marshal agent info: %w", err)
+	}
+	return conn.Write(ctx, websocket.MessageText, infoBytes)
 }
 
 // maxChunkSize is the maximum raw bytes per stream chunk.

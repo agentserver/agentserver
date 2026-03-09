@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"nhooyr.io/websocket"
 )
@@ -174,6 +175,19 @@ func (t *Tunnel) readLoop() {
 		var incoming IncomingHeader
 		if err := json.Unmarshal(headerJSON, &incoming); err != nil {
 			log.Printf("tunnel %s: failed to unmarshal header: %v", t.SandboxID, err)
+			continue
+		}
+
+		// Reply to application-level pings with a pong.
+		if incoming.Type == FrameTypePing {
+			pongHeader := struct {
+				Type string `json:"type"`
+			}{Type: FrameTypePong}
+			if msg, err := EncodeFrame(pongHeader, nil); err == nil {
+				writeCtx, writeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				t.Conn.Write(writeCtx, websocket.MessageBinary, msg)
+				writeCancel()
+			}
 			continue
 		}
 

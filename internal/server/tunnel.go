@@ -72,12 +72,17 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	s.DB.UpdateSandboxHeartbeat(sandboxID)
 
 	// Start heartbeat ticker.
+	// Sends both WebSocket control pings (for protocol-level liveness detection)
+	// and application-level ping data frames (visible to proxies as real traffic).
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
 	go func() {
 		ticker := time.NewTicker(20 * time.Second)
 		defer ticker.Stop()
+		pingHeader := struct {
+			Type string `json:"type"`
+		}{Type: tunnel.FrameTypePing}
 		for {
 			select {
 			case <-ctx.Done():
@@ -85,8 +90,16 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 			case <-t.Done():
 				return
 			case <-ticker.C:
+				// Application-level ping (proxy-visible downstream traffic).
+				msg, _ := tunnel.EncodeFrame(pingHeader, nil)
+				if err := conn.Write(ctx, websocket.MessageBinary, msg); err != nil {
+					log.Printf("tunnel %s: ping write failed: %v", sandboxID, err)
+					cancel()
+					return
+				}
+				// WebSocket control ping (protocol-level liveness).
 				if err := conn.Ping(ctx); err != nil {
-					log.Printf("tunnel %s: ping failed: %v", sandboxID, err)
+					log.Printf("tunnel %s: control ping failed: %v", sandboxID, err)
 					cancel()
 					return
 				}

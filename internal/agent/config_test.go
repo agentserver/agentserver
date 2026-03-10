@@ -202,7 +202,7 @@ func TestRegistryNextPort(t *testing.T) {
 		t.Errorf("NextPort on empty registry = %d, want %d", port, basePort)
 	}
 
-	// After adding an entry, returns max+1.
+	// After adding an entry at basePort, returns basePort+1.
 	reg.Put(&RegistryEntry{
 		Dir:          "/home/user/project",
 		WorkspaceID:  "ws-1",
@@ -213,15 +213,33 @@ func TestRegistryNextPort(t *testing.T) {
 		t.Errorf("NextPort = %d, want 4097", port)
 	}
 
-	// Adding a higher port bumps it further.
+	// Adding a higher port — next port fills the gap.
 	reg.Put(&RegistryEntry{
 		Dir:          "/home/user/project2",
 		WorkspaceID:  "ws-1",
-		OpencodePort: 5000,
+		OpencodePort: 4098,
 	})
 	port = reg.NextPort()
-	if port != 5001 {
-		t.Errorf("NextPort = %d, want 5001", port)
+	if port != 4097 {
+		t.Errorf("NextPort = %d, want 4097 (gap fill)", port)
+	}
+
+	// Fill the gap — next port is after the contiguous block.
+	reg.Put(&RegistryEntry{
+		Dir:          "/home/user/project3",
+		WorkspaceID:  "ws-1",
+		OpencodePort: 4097,
+	})
+	port = reg.NextPort()
+	if port != 4099 {
+		t.Errorf("NextPort = %d, want 4099", port)
+	}
+
+	// Removing an entry frees its port for reuse.
+	reg.Remove("/home/user/project", "ws-1") // frees 4096
+	port = reg.NextPort()
+	if port != 4096 {
+		t.Errorf("NextPort after remove = %d, want 4096 (reuse)", port)
 	}
 }
 

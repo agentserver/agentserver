@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 const basePort = 4096
@@ -69,22 +70,21 @@ func (r *Registry) Remove(dir, workspaceID string) bool {
 	return false
 }
 
-// NextPort returns the next available opencode port.
-// Empty registry returns basePort; otherwise returns max(existing ports) + 1.
+// NextPort returns the lowest available port starting from basePort.
+// It finds the first gap in the used port range to reuse freed ports.
 func (r *Registry) NextPort() int {
 	if len(r.Entries) == 0 {
 		return basePort
 	}
-	max := 0
+	used := make(map[int]bool, len(r.Entries))
 	for _, e := range r.Entries {
-		if e.OpencodePort > max {
-			max = e.OpencodePort
+		used[e.OpencodePort] = true
+	}
+	for port := basePort; ; port++ {
+		if !used[port] {
+			return port
 		}
 	}
-	if max < basePort {
-		return basePort
-	}
-	return max + 1
 }
 
 // DefaultRegistryDir returns the default directory for agentserver config.
@@ -131,6 +131,55 @@ func SaveRegistry(path string, reg *Registry) error {
 		return fmt.Errorf("write registry: %w", err)
 	}
 	return nil
+}
+
+// LockedRegistryFile holds an exclusive lock on the registry for safe
+// read-modify-write operations. Call Close() when done.
+type LockedRegistryFile struct {
+	Path string
+	Reg  *Registry
+	lock *os.File
+}
+
+// LockRegistry acquires an exclusive file lock and loads the registry.
+// The caller must call Close() when done to release the lock and
+// optionally save changes via Save() before Close().
+func LockRegistry(path string) (*LockedRegistryFile, error) {
+	lockPath := path + ".lock"
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0700); err != nil {
+		return nil, fmt.Errorf("create registry dir: %w", err)
+	}
+
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("open lock file: %w", err)
+	}
+
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("acquire lock: %w", err)
+	}
+
+	reg, err := LoadRegistry(path)
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+
+	return &LockedRegistryFile{Path: path, Reg: reg, lock: f}, nil
+}
+
+// Save writes the registry to disk while the lock is held.
+func (l *LockedRegistryFile) Save() error {
+	return SaveRegistry(l.Path, l.Reg)
+}
+
+// Close releases the file lock.
+func (l *LockedRegistryFile) Close() {
+	if l.lock != nil {
+		l.lock.Close()
+		l.lock = nil
+	}
 }
 
 // MaybeMigrateLegacy migrates a legacy agent.json to registry.json if the

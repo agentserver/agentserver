@@ -33,24 +33,24 @@ func RunConnect(opts ConnectOptions) {
 		log.Fatalf("Failed to get working directory: %v", err)
 	}
 
-	// Load registry.
 	registryPath := DefaultRegistryPath()
-	reg, err := LoadRegistry(registryPath)
-	if err != nil {
-		log.Fatalf("Failed to load registry: %v", err)
-	}
 
-	// Attempt legacy migration.
+	// Attempt legacy migration (before locking — migration creates the file).
 	legacyPath := DefaultConfigPath()
-	migrated, err := MaybeMigrateLegacy(legacyPath, registryPath, cwd)
-	if err != nil {
+	if migrated, err := MaybeMigrateLegacy(legacyPath, registryPath, cwd); err != nil {
 		log.Printf("Warning: legacy migration failed: %v", err)
-	}
-	if migrated != nil {
-		reg = migrated
+	} else if migrated != nil {
 		log.Printf("Migrated legacy config to registry")
 	}
 
+	// Lock registry for the read-modify-write cycle.
+	locked, err := LockRegistry(registryPath)
+	if err != nil {
+		log.Fatalf("Failed to load registry: %v", err)
+	}
+	defer locked.Close()
+
+	reg := locked.Reg
 	var entry *RegistryEntry
 
 	if opts.Code != "" {
@@ -89,7 +89,7 @@ func RunConnect(opts ConnectOptions) {
 		}
 
 		reg.Put(entry)
-		if err := SaveRegistry(registryPath, reg); err != nil {
+		if err := locked.Save(); err != nil {
 			log.Printf("Warning: failed to save registry: %v", err)
 		} else {
 			log.Printf("Registry saved to %s", registryPath)
@@ -104,7 +104,11 @@ func RunConnect(opts ConnectOptions) {
 			entry = entries[0]
 		default:
 			if opts.WorkspaceID == "" {
-				log.Fatalf("Multiple workspaces registered for this directory. Use --workspace to disambiguate.\nRegistered workspace IDs:")
+				log.Printf("Multiple workspaces registered for this directory:")
+				for _, e := range entries {
+					log.Printf("  workspace=%s  name=%s  sandbox=%s", e.WorkspaceID, e.Name, e.SandboxID)
+				}
+				log.Fatal("Use --workspace to specify which one to connect.")
 			}
 			entry = reg.Find(cwd, opts.WorkspaceID)
 			if entry == nil {
@@ -112,12 +116,23 @@ func RunConnect(opts ConnectOptions) {
 			}
 		}
 		log.Printf("Using saved credentials (sandbox: %s)", entry.SandboxID)
+		if opts.Server != "" {
+			entry.Server = opts.Server
+		}
 	}
 
 	// Determine opencode port: command-line override or entry value.
 	opencodePort := entry.OpencodePort
 	if opts.OpencodePortSet {
 		opencodePort = opts.OpencodePort
+		// Persist the override so subsequent reconnects use the same port.
+		if entry.OpencodePort != opencodePort {
+			entry.OpencodePort = opencodePort
+			reg.Put(entry)
+			if err := locked.Save(); err != nil {
+				log.Printf("Warning: failed to save port override: %v", err)
+			}
+		}
 	}
 
 	// Auto-start opencode if requested.

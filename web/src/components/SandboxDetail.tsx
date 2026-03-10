@@ -311,7 +311,7 @@ export function SandboxDetail({ sandbox, onPause, onResume, onDelete, onRename }
 function AgentInfoSection({ info }: { info: AgentInfo }) {
   const items = [
     { icon: <Server size={14} />, label: 'Hostname', value: info.hostname },
-    { icon: <FolderOpen size={14} />, label: 'Workdir', value: info.workdir },
+    { icon: <FolderOpen size={14} />, label: 'Workdir', value: info.workdir || '-' },
     { icon: <Laptop size={14} />, label: 'OS', value: `${info.platform} ${info.platform_version}` },
     { icon: <Cpu size={14} />, label: 'Arch', value: info.kernel_arch },
     { icon: <Cpu size={14} />, label: 'CPU', value: info.cpu_model_name ? `${info.cpu_model_name} (${info.cpu_count_logical} cores)` : `${info.cpu_count_logical} cores` },

@@ -89,6 +89,15 @@ var removeCmd = &cobra.Command{
 		removeWorkspace, _ := cmd.Flags().GetString("workspace")
 		removeDir, _ := cmd.Flags().GetString("dir")
 
+		if removeDir == "" {
+			var err error
+			removeDir, err = os.Getwd()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: failed to get working directory: %v\n", err)
+				os.Exit(1)
+			}
+		}
+
 		reg, err := agent.LoadRegistry(agent.DefaultRegistryPath())
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -142,12 +151,8 @@ func init() {
 	connectCmd.Flags().StringVar(&opencodeBin, "opencode-bin", "opencode", "Path to the opencode binary")
 	connectCmd.Flags().IntVar(&opencodePort, "opencode-port", 4096, "Port to start opencode on")
 
-	cwd, err := os.Getwd()
-	if err != nil {
-		cwd = "."
-	}
 	removeCmd.Flags().String("workspace", "", "Workspace ID of the agent to remove")
-	removeCmd.Flags().String("dir", cwd, "Directory of the agent to remove")
+	removeCmd.Flags().String("dir", "", "Directory of the agent to remove (default: current directory)")
 }
 
 func main() {

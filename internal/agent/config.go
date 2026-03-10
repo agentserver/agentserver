@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"syscall"
 )
 
 const basePort = 4096
@@ -155,7 +154,7 @@ func LockRegistry(path string) (*LockedRegistryFile, error) {
 		return nil, fmt.Errorf("open lock file: %w", err)
 	}
 
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := flockExclusive(f.Fd()); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("acquire lock: %w", err)
 	}

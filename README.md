@@ -32,28 +32,57 @@ agentserver is to [opencode](https://github.com/opencode-ai/opencode) what [code
 - **Local tunneling** — Connect a local opencode instance via WebSocket, no public IP needed
 - **Multi-tenancy** — Workspaces with role-based access (owner / maintainer / developer / guest)
 - **Two backends** — Docker (single node) or Kubernetes with [Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox) + gVisor isolation
-- **SSO ready** — GitHub OAuth and generic OIDC out of the box
+- **SSO ready** — GitHub OAuth and generic OIDC (Keycloak, Authentik, etc.) out of the box
 - **API key proxy** — Sandboxes never see the real Anthropic key; injected server-side
+- **LLM proxy** — Dedicated proxy service with per-workspace rate limiting (RPD quotas) and usage tracking
+- **Admin panel** — Manage users, quotas, and system settings from the web UI
 - **Batteries included** — Sandbox image ships with Go, Rust, C/C++, Node.js, Python 3, and common tools
-- **Deploy anywhere** — Pre-built binaries (Linux/macOS/Windows) and a Helm one-liner for Kubernetes
+- **Deploy anywhere** — Pre-built binaries, Homebrew, Docker Compose, or Helm for Kubernetes
 
 ## Architecture
 
+agentserver consists of three services that can run as a single binary or be deployed independently:
+
 ```
-Browser ──▶ agentserver (Go) ──▶ sandbox pod / container
-               │                   └─ opencode serve (:4096)
-               │
-               ├─ PostgreSQL (users, workspaces, sandboxes)
-               ├─ Anthropic API proxy (injects real API key)
-               │
-               │               WebSocket tunnel
-Local machine ─┼──▶ agentserver connect ──────────────▶ agentserver
-               └─ opencode serve (:4096)                    │
-                                                    Browser access via
-                                                    subdomain proxy
+                                                ┌──────────────────┐
+                                                │  sandbox pod /   │
+                                           ┌───▶│  container       │
+                                           │    │  └─ opencode     │
+Browser ──▶ sandbox-proxy (:8082) ─────────┤    └──────────────────┘
+            (subdomain routing)            │        WebSocket tunnel
+                                           └───▶ local agent machine
+                                                  └─ opencode serve
+
+Browser ──▶ agentserver (:8080) ──────────────▶ PostgreSQL
+            ├─ REST API                         (users, workspaces,
+            ├─ admin panel                       sandboxes, quotas)
+            ├─ agent registration
+            └─ tunnel endpoints
+
+Sandbox ──▶ llmproxy (:8081) ──────────────▶ Anthropic API
+            ├─ token validation                (real key injected
+            ├─ RPD quota enforcement            server-side)
+            └─ usage tracking
 ```
 
+| Service | Default Port | Description |
+|---------|-------------|-------------|
+| **agentserver** | `:8080` | Main API server, web UI, tunnel endpoints |
+| **llmproxy** | `:8081` | LLM API proxy with rate limiting and usage tracking |
+| **sandbox-proxy** | `:8082` | Subdomain-based routing to sandbox services |
+
 ## Quick Start
+
+### Docker Compose (recommended for local use)
+
+```bash
+git clone https://github.com/agentserver/agentserver.git && cd agentserver
+docker build -f Dockerfile.opencode -t agentserver-agent:latest .
+export ANTHROPIC_API_KEY="sk-ant-..."
+docker compose up -d
+```
+
+Open `http://localhost:8080` in your browser.
 
 ### Helm (Kubernetes)
 
@@ -67,42 +96,54 @@ helm install agentserver oci://ghcr.io/agentserver/charts/agentserver \
   --set baseDomain="cli.example.com"
 ```
 
-### Docker Compose (Local)
+### Pre-built Binaries
+
+Download from [GitHub Releases](https://github.com/agentserver/agentserver/releases), or install via Homebrew:
 
 ```bash
-git clone https://github.com/agentserver/agentserver.git && cd agentserver
-docker build -f Dockerfile.opencode -t agentserver-agent:latest .
-export ANTHROPIC_API_KEY="sk-ant-..."
-docker compose up -d
+brew install agentserver/tap/agentserver
 ```
-
-Open `http://localhost:8080` in your browser.
 
 ## Local Agent Tunneling
 
 Connect a locally-running opencode instance to agentserver — no public IP or third-party tunnel needed.
 
-1. In the Web UI, click the laptop icon next to "Sandboxes" to generate a registration code
+1. In the Web UI, click the laptop icon next to "Sandboxes" to generate a registration code.
+
 2. On your local machine:
 
 ```bash
-# Register with the code
+# First time — register with the server
 agentserver connect \
   --server https://cli.example.com \
   --code <registration-code> \
   --name "My MacBook"
 
-# Subsequent runs auto-reconnect using saved credentials
+# Subsequent runs — auto-reconnect using saved credentials
 agentserver connect
 ```
 
 3. A **local** sandbox appears in the Web UI — click "Open" to access your local opencode through the browser.
 
+### Multi-agent support
+
+Register multiple agents on the same machine, each targeting a different directory and workspace:
+
+```bash
+# List all registered agents
+agentserver list
+
+# Remove a registration
+agentserver remove --workspace <workspace-id>
+```
+
+Agent credentials are stored in `~/.agentserver/registry.json`.
+
 **Tunnel features:** zero-config networking, auto-reconnect with backoff, binary WebSocket protocol (no base64 overhead), real-time SSE streaming, offline detection with auto-recovery.
 
 ## Configuration
 
-See the full [Helm values](#helm-values), [environment variables](#environment-variables), and [API reference](docs/api-reference.md) below.
+See the [API reference](docs/api-reference.md) for full endpoint documentation.
 
 <details>
 <summary><strong>Helm Values</strong></summary>
@@ -132,6 +173,67 @@ See the full [Helm values](#helm-values), [environment variables](#environment-v
 | `ingress.host` | Ingress hostname | `agentserver.example.com` |
 | `ingress.tls` | Enable TLS (cert-manager) | `false` |
 | `gateway.enabled` | Enable Gateway API HTTPRoute | `false` |
+
+</details>
+
+<details>
+<summary><strong>Environment Variables (Main Server)</strong></summary>
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DATABASE_URL` | PostgreSQL connection string | (required) |
+| `ANTHROPIC_API_KEY` | Anthropic API key | (required) |
+| `ANTHROPIC_BASE_URL` | Custom API base URL | `https://api.anthropic.com` |
+| `ANTHROPIC_AUTH_TOKEN` | Anthropic auth token (alternative to API key) | - |
+| `OPENCODE_CONFIG_CONTENT` | JSON opencode config for sandbox pods | - |
+| `BASE_DOMAIN` | Base domain for subdomain routing | - |
+| `BASE_SCHEME` | URL scheme (`http` or `https`) | `https` |
+| `IDLE_TIMEOUT` | Auto-pause timeout (e.g. `30m`) | `30m` |
+| `AGENT_IMAGE` | Container image for sandbox agents | `ghcr.io/agentserver/opencode-agent:latest` |
+| `LLMPROXY_URL` | Base URL of the LLM proxy service | - |
+| `PASSWORD_AUTH_ENABLED` | Enable password-based auth | `true` |
+| `OIDC_REDIRECT_BASE_URL` | External URL for OIDC callbacks | - |
+| `GITHUB_CLIENT_ID` | GitHub OAuth client ID | - |
+| `GITHUB_CLIENT_SECRET` | GitHub OAuth client secret | - |
+| `OIDC_ISSUER_URL` | Generic OIDC issuer URL | - |
+| `OIDC_CLIENT_ID` | Generic OIDC client ID | - |
+| `OIDC_CLIENT_SECRET` | Generic OIDC client secret | - |
+| `SANDBOX_NAMESPACE_PREFIX` | K8s namespace prefix | `agent-ws` |
+| `NETWORKPOLICY_ENABLED` | Enable K8s NetworkPolicy isolation | `false` |
+| `NETWORKPOLICY_DENY_CIDRS` | CIDRs to deny in network policies | - |
+| `AGENTSERVER_NAMESPACE` | agentserver's own K8s namespace | - |
+| `STORAGE_CLASS` | K8s storage class for PVCs | (cluster default) |
+| `USER_DRIVE_SIZE` | Per-workspace storage size | `10Gi` |
+| `USER_DRIVE_STORAGE_CLASS` | Storage class for workspace drives | inherits `STORAGE_CLASS` |
+
+</details>
+
+<details>
+<summary><strong>Environment Variables (LLM Proxy)</strong></summary>
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `LLMPROXY_LISTEN_ADDR` | HTTP listen address | `:8081` |
+| `LLMPROXY_DATABASE_URL` | Proxy's own PostgreSQL connection URL | - |
+| `LLMPROXY_AGENTSERVER_URL` | agentserver internal API URL for token validation | (required) |
+| `ANTHROPIC_API_KEY` | Anthropic API key | (required*) |
+| `ANTHROPIC_AUTH_TOKEN` | Anthropic auth token (alternative to API key) | (required*) |
+| `ANTHROPIC_BASE_URL` | Upstream Anthropic API URL | `https://api.anthropic.com` |
+| `LLMPROXY_DEFAULT_MAX_RPD` | Default max requests per day per workspace (0 = unlimited) | `0` |
+
+</details>
+
+<details>
+<summary><strong>Environment Variables (Sandbox Proxy)</strong></summary>
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DATABASE_URL` | PostgreSQL connection string | (required) |
+| `LISTEN_ADDR` | HTTP listen address | `:8082` |
+| `BASE_DOMAIN` | Base domain for subdomain routing | (required) |
+| `OPENCODE_SUBDOMAIN_PREFIX` | Subdomain prefix for opencode sandboxes | `code` |
+| `OPENCLAW_SUBDOMAIN_PREFIX` | Subdomain prefix for openclaw sandboxes | `claw` |
+| `OPENCODE_ASSET_DOMAIN` | Domain for opencode static assets | `opencodeapp.{BASE_DOMAIN}` |
 
 </details>
 
@@ -180,36 +282,35 @@ helm upgrade agentserver oci://ghcr.io/agentserver/charts/agentserver \
 
 </details>
 
-<details>
-<summary><strong>Environment Variables</strong></summary>
+## Building from Source
 
-| Variable | Description |
-|----------|-------------|
-| `DATABASE_URL` | PostgreSQL connection string |
-| `ANTHROPIC_API_KEY` | Anthropic API key |
-| `ANTHROPIC_BASE_URL` | Custom API base URL |
-| `ANTHROPIC_AUTH_TOKEN` | Anthropic auth token (alternative to API key) |
-| `OPENCODE_CONFIG_CONTENT` | JSON opencode config for sandbox pods |
-| `BASE_DOMAIN` | Base domain for subdomain routing |
-| `BASE_SCHEME` | URL scheme (`http` or `https`) |
-| `IDLE_TIMEOUT` | Auto-pause timeout (e.g. `30m`) |
-| `AGENT_IMAGE` | Container image for sandbox agents |
-| `OIDC_REDIRECT_BASE_URL` | External URL for OIDC callbacks |
-| `GITHUB_CLIENT_ID` | GitHub OAuth client ID |
-| `GITHUB_CLIENT_SECRET` | GitHub OAuth client secret |
-| `OIDC_ISSUER_URL` | Generic OIDC issuer URL |
-| `OIDC_CLIENT_ID` | Generic OIDC client ID |
-| `OIDC_CLIENT_SECRET` | Generic OIDC client secret |
+```bash
+# Prerequisites: Go 1.26, Node.js, pnpm, bun
 
-</details>
+# Build everything (frontend + backend)
+make build
+
+# Build individual components
+make backend          # Go binary → bin/agentserver
+make frontend         # React frontend → web/dist/
+make agent            # Local agent binary → bin/agentserver-agent
+make agent-all        # Agent for all platforms (linux/darwin/windows, amd64/arm64)
+make llmproxy         # LLM proxy binary → bin/llmproxy
+
+# Docker images
+make docker           # Main server image
+make docker-agent     # Agent container image
+make docker-llmproxy  # LLM proxy image
+make docker-all       # All images
+```
 
 ## Contributing
 
 ```bash
-# Backend
+# Terminal 1: Start backend
 go run . serve --db-url "postgres://..." --backend docker
 
-# Frontend (separate terminal)
+# Terminal 2: Start frontend dev server
 cd web && pnpm install && pnpm dev
 ```
 

@@ -38,19 +38,21 @@ type AgentInfoData struct {
 	DiskFree        uint64                `json:"disk_free"`
 	AgentVersion    string                `json:"agent_version"`
 	OpencodeVersion string                `json:"opencode_version"`
+	Workdir         string                `json:"workdir"`
 	HostInfo        *host.InfoStat        `json:"host_info,omitempty"`
 	CPUInfo         *cpuInfoDetail        `json:"cpu_info,omitempty"`
 	MemoryInfo      *mem.VirtualMemoryStat `json:"memory_info,omitempty"`
 	DiskInfo        *disk.UsageStat       `json:"disk_info,omitempty"`
 }
 
-func collectAgentInfo(opencodeURL string) *AgentInfoData {
+func collectAgentInfo(opencodeURL string, workdir string) *AgentInfoData {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	info := &AgentInfoData{
 		AgentVersion:    Version,
 		OpencodeVersion: fetchOpencodeVersion(opencodeURL),
+		Workdir:         workdir,
 	}
 
 	// Host info

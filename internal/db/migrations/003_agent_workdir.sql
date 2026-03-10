@@ -1,0 +1,1 @@
+ALTER TABLE agent_info ADD COLUMN workdir TEXT NOT NULL DEFAULT '';

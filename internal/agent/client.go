@@ -24,17 +24,19 @@ type Client struct {
 	TunnelToken   string
 	OpencodeURL   string
 	OpencodeToken string
+	Workdir       string
 	httpClient    *http.Client
 }
 
 // NewClient creates a new agent tunnel client.
-func NewClient(serverURL, sandboxID, tunnelToken, opencodeURL, opencodeToken string) *Client {
+func NewClient(serverURL, sandboxID, tunnelToken, opencodeURL, opencodeToken, workdir string) *Client {
 	return &Client{
 		ServerURL:     serverURL,
 		SandboxID:     sandboxID,
 		TunnelToken:   tunnelToken,
 		OpencodeURL:   opencodeURL,
 		OpencodeToken: opencodeToken,
+		Workdir:       workdir,
 		httpClient: &http.Client{
 			Timeout: 0, // No timeout for SSE streams.
 		},
@@ -202,7 +204,7 @@ func (c *Client) connectAndServe(ctx context.Context) error {
 }
 
 func (c *Client) sendAgentInfo(ctx context.Context, conn *websocket.Conn) error {
-	agentInfo := collectAgentInfo(c.OpencodeURL)
+	agentInfo := collectAgentInfo(c.OpencodeURL, c.Workdir)
 	infoMsg := struct {
 		Type string         `json:"type"`
 		Data *AgentInfoData `json:"data"`

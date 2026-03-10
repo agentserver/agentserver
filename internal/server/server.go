@@ -368,6 +368,7 @@ type agentInfoResponse struct {
 	DiskFree        int64  `json:"disk_free"`
 	AgentVersion    string `json:"agent_version"`
 	OpencodeVersion string `json:"opencode_version"`
+	Workdir         string `json:"workdir"`
 	UpdatedAt       string `json:"updated_at"`
 }
 
@@ -453,6 +454,7 @@ func (s *Server) toSandboxResponse(sbx *sbxstore.Sandbox, authToken string) sand
 				DiskFree:        ai.DiskFree,
 				AgentVersion:    ai.AgentVersion,
 				OpencodeVersion: ai.OpencodeVersion,
+				Workdir:         ai.Workdir,
 				UpdatedAt:       ai.UpdatedAt.Format(time.RFC3339),
 			}
 		}

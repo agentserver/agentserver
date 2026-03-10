@@ -157,7 +157,7 @@ func RunConnect(opts ConnectOptions) {
 		opts.OpencodeURL = fmt.Sprintf("http://localhost:%d", opencodePort)
 	}
 
-	tunnelClient := NewClient(entry.Server, entry.SandboxID, entry.TunnelToken, opts.OpencodeURL, opts.OpencodeToken)
+	tunnelClient := NewClient(entry.Server, entry.SandboxID, entry.TunnelToken, opts.OpencodeURL, opts.OpencodeToken, cwd)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

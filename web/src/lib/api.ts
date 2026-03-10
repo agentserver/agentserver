@@ -47,6 +47,7 @@ export interface AgentInfo {
   disk_free: number
   agent_version: string
   opencode_version: string
+  workdir: string
   updated_at: string
 }
 

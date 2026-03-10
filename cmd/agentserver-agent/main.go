@@ -1,22 +1,24 @@
 package main
 
 import (
+	"fmt"
 	"os"
+	"text/tabwriter"
 
 	"github.com/agentserver/agentserver/internal/agent"
 	"github.com/spf13/cobra"
 )
 
 var (
-	server           string
-	code             string
-	name             string
-	opencodeURL      string
+	server        string
+	code          string
+	name          string
+	workspaceID   string
+	opencodeURL   string
 	opencodeToken string
-	configPath       string
-	autoStart        bool
-	opencodeBin      string
-	opencodePort     int
+	autoStart     bool
+	opencodeBin   string
+	opencodePort  int
 )
 
 var rootCmd = &cobra.Command{
@@ -37,32 +39,115 @@ By default, opencode serve is started automatically on --opencode-port (4096).
 Use --auto-start=false to disable this and manage opencode manually.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		agent.RunConnect(agent.ConnectOptions{
-			Server:           server,
-			Code:             code,
-			Name:             name,
-			OpencodeURL:      opencodeURL,
-			OpencodeURLSet:   cmd.Flags().Changed("opencode-url"),
-			OpencodeToken:    opencodeToken,
-			ConfigPath:       configPath,
-			AutoStart:        autoStart,
-			OpencodeBin:      opencodeBin,
-			OpencodePort:     opencodePort,
+			Server:          server,
+			Code:            code,
+			Name:            name,
+			WorkspaceID:     workspaceID,
+			OpencodeURL:     opencodeURL,
+			OpencodeURLSet:  cmd.Flags().Changed("opencode-url"),
+			OpencodeToken:   opencodeToken,
+			AutoStart:       autoStart,
+			OpencodeBin:     opencodeBin,
+			OpencodePort:    opencodePort,
+			OpencodePortSet: cmd.Flags().Changed("opencode-port"),
 		})
 	},
 }
 
+var listCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List all registered agents",
+	Run: func(cmd *cobra.Command, args []string) {
+		reg, err := agent.LoadRegistry(agent.DefaultRegistryPath())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+		if len(reg.Entries) == 0 {
+			fmt.Println("No agents registered.")
+			return
+		}
+
+		w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(w, "DIRECTORY\tNAME\tWORKSPACE\tPORT\tSANDBOX")
+		for _, e := range reg.Entries {
+			dir := e.Dir
+			if len(dir) > 40 {
+				dir = "..." + dir[len(dir)-37:]
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\n", dir, e.Name, e.WorkspaceID, e.OpencodePort, e.SandboxID)
+		}
+		w.Flush()
+	},
+}
+
+var removeCmd = &cobra.Command{
+	Use:   "remove",
+	Short: "Remove an agent registration",
+	Run: func(cmd *cobra.Command, args []string) {
+		removeWorkspace, _ := cmd.Flags().GetString("workspace")
+		removeDir, _ := cmd.Flags().GetString("dir")
+
+		reg, err := agent.LoadRegistry(agent.DefaultRegistryPath())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+		entries := reg.FindByDir(removeDir)
+		if len(entries) == 0 {
+			fmt.Fprintf(os.Stderr, "No agents registered for directory: %s\n", removeDir)
+			os.Exit(1)
+		}
+
+		var wsID string
+		switch {
+		case removeWorkspace != "":
+			wsID = removeWorkspace
+		case len(entries) == 1:
+			wsID = entries[0].WorkspaceID
+		default:
+			fmt.Fprintf(os.Stderr, "Multiple agents registered for this directory. Use --workspace to specify which one:\n")
+			for _, e := range entries {
+				fmt.Fprintf(os.Stderr, "  workspace=%s  name=%s  sandbox=%s\n", e.WorkspaceID, e.Name, e.SandboxID)
+			}
+			os.Exit(1)
+		}
+
+		if !reg.Remove(removeDir, wsID) {
+			fmt.Fprintf(os.Stderr, "No entry found for dir=%q workspace=%q\n", removeDir, wsID)
+			os.Exit(1)
+		}
+
+		if err := agent.SaveRegistry(agent.DefaultRegistryPath(), reg); err != nil {
+			fmt.Fprintf(os.Stderr, "Error saving registry: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Removed agent registration (dir=%s, workspace=%s)\n", removeDir, wsID)
+	},
+}
+
 func init() {
-	rootCmd.AddCommand(connectCmd)
+	rootCmd.AddCommand(connectCmd, listCmd, removeCmd)
 
 	connectCmd.Flags().StringVar(&server, "server", "", "Agent server URL (e.g., https://cli.example.com)")
 	connectCmd.Flags().StringVar(&code, "code", "", "One-time registration code from Web UI")
 	connectCmd.Flags().StringVar(&name, "name", "", "Name for this agent (default: hostname)")
+	connectCmd.Flags().StringVar(&workspaceID, "workspace", "", "Workspace ID to connect to")
 	connectCmd.Flags().StringVar(&opencodeURL, "opencode-url", "", "Local opencode server URL (default: http://localhost:{opencode-port})")
 	connectCmd.Flags().StringVar(&opencodeToken, "opencode-token", "", "Local opencode server token")
-	connectCmd.Flags().StringVar(&configPath, "config", "", "Config file path (default: ~/.agentserver/agent.json)")
 	connectCmd.Flags().BoolVar(&autoStart, "auto-start", true, "Automatically start opencode serve")
 	connectCmd.Flags().StringVar(&opencodeBin, "opencode-bin", "opencode", "Path to the opencode binary")
 	connectCmd.Flags().IntVar(&opencodePort, "opencode-port", 4096, "Port to start opencode on")
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+	removeCmd.Flags().String("workspace", "", "Workspace ID of the agent to remove")
+	removeCmd.Flags().String("dir", cwd, "Directory of the agent to remove")
 }
 
 func main() {

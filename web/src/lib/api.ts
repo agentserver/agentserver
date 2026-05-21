@@ -33,6 +33,33 @@ export type MintCodexTokenResponse = components['schemas']['CodexTokenMintRespon
 // Codex Browser Sessions — generated types from OpenAPI spec
 export type CodexBrowser = components['schemas']['CodexBrowserItem']
 
+// Misc — generated types from OpenAPI spec
+export type CredentialBinding = components['schemas']['CredentialBindingItem']
+export type CredentialBindingCreateRequest = components['schemas']['CredentialBindingCreateRequest']
+export type CredentialBindingCreateResponse = components['schemas']['CredentialBindingCreateResponse']
+export type CredentialBindingPatchRequest = components['schemas']['CredentialBindingPatchRequest']
+export type WorkspaceSandboxDefaults = components['schemas']['WorkspaceDefaultsResponse']
+export type ModelserverStatus = components['schemas']['ModelServerStatusResponse']
+export type TraceItem = components['schemas']['TraceRecord']
+export type TracesResponse = components['schemas']['TraceListResponse']
+export type ExecutorItem = components['schemas']['ExecutorItem']
+export type ExecutorRegisterResponse = components['schemas']['ExecutorRegisterResponse']
+export type AgentInteractionItem = components['schemas']['AgentInteractionItem']
+export type OperationRecord = components['schemas']['OperationRecord']
+export type WorkspaceOperationsResponse = components['schemas']['WorkspaceOperationsResponse']
+
+// Admin — generated types from OpenAPI spec
+export type AdminUser = components['schemas']['AdminUserItem']
+export type AdminWorkspaceOwner = components['schemas']['AdminOwnerInfo']
+export type AdminWorkspace = components['schemas']['AdminWorkspaceItem']
+export type AdminSandbox = components['schemas']['AdminSandboxItem']
+export type QuotaDefaults = components['schemas']['AdminQuotaDefaultsResponse']
+export type UserQuotaResponse = components['schemas']['AdminUserQuotaResponse']
+export type UserQuotaOverrides = components['schemas']['AdminUserQuotaOverrides']
+export type WorkspaceQuotaResponse = components['schemas']['AdminWorkspaceQuotaResponse']
+export type WorkspaceQuotaDefaults = components['schemas']['AdminWorkspaceQuotaDefaults']
+export type WorkspaceQuotaOverrides = components['schemas']['AdminWorkspaceQuotaOverrides']
+
 export interface TelegramConfigureResult {
   connected: boolean
   bot_id: string
@@ -206,14 +233,6 @@ export async function removeMember(workspaceId: string, userId: string): Promise
 
 // Sandbox API
 
-export interface WorkspaceSandboxDefaults {
-  max_sandbox_cpu: number    // millicores
-  max_sandbox_memory: number // bytes
-  max_idle_timeout: number   // seconds
-  max_sandboxes: number      // 0 = unlimited
-  current_sandboxes: number
-}
-
 export async function getWorkspaceDefaults(workspaceId: string): Promise<WorkspaceSandboxDefaults> {
   const res = await fetch(`/api/workspaces/${workspaceId}/defaults`)
   if (!res.ok) throw new Error('Failed to get workspace defaults')
@@ -257,14 +276,6 @@ export async function deleteWorkspaceLLMConfig(workspaceId: string): Promise<voi
 }
 
 // ModelServer connection
-export interface ModelserverStatus {
-  connected: boolean
-  project_id?: string
-  project_name?: string
-  models?: LLMModel[]
-  connected_at?: string
-}
-
 export async function getModelserverStatus(workspaceId: string): Promise<ModelserverStatus> {
   const res = await fetch(`/api/workspaces/${workspaceId}/modelserver/status`)
   if (!res.ok) throw new Error('Failed to fetch modelserver status')
@@ -453,22 +464,14 @@ export async function deleteWorkspaceIMChannel(workspaceId: string, channelId: s
 
 // Credential Bindings (kubeconfig / external API credentials)
 
-export interface CredentialBinding {
-  id: string
-  display_name: string
-  server_url: string
-  auth_type: string
-  public_meta: Record<string, any>
-  is_default: boolean
-  created_at: string
-}
-
 export async function listCredentialBindings(workspaceId: string, kind: string): Promise<CredentialBinding[]> {
   const res = await fetch(`/api/workspaces/${workspaceId}/credentials/${kind}`)
   if (!res.ok) throw new Error('Failed to list credential bindings')
   return res.json()
 }
 
+// DeviceCodeResponse is kept as a strict subtype of CredentialBindingCreateResponse
+// for callers that rely on user_code/verification_uri being non-optional.
 export interface DeviceCodeResponse {
   id: string
   status: 'pending_device_code'
@@ -591,28 +594,8 @@ export async function unbindSandboxFromChannel(sandboxId: string): Promise<void>
 /** @deprecated use SandboxUsageSummary (generated alias) */
 export type UsageSummary = SandboxUsageSummary
 
-export interface TraceItem {
-  id: string
-  sandbox_id: string
-  workspace_id: string
-  source: string
-  created_at: string
-  updated_at: string
-  request_count: number
-  total_input_tokens: number
-  total_output_tokens: number
-  total_cache_read_tokens: number
-  total_cache_creation_tokens: number
-  models: string
-}
-
 /** @deprecated use SandboxUsage (generated alias) */
 export type UsageResponse = SandboxUsage
-
-export interface TracesResponse {
-  traces: TraceItem[]
-  total: number
-}
 
 export async function getSandboxUsage(id: string): Promise<SandboxUsage> {
   return apiFetch<SandboxUsage>({
@@ -668,42 +651,6 @@ export async function getWorkspaceTraceDetail(workspaceId: string, traceId: stri
 
 // Admin API
 
-export interface AdminUser {
-  id: string
-  email: string
-  name: string | null
-  role: string
-  created_at: string
-}
-
-export interface AdminWorkspaceOwner {
-  id: string
-  email: string
-  name: string | null
-  picture: string | null
-}
-
-export interface AdminWorkspace {
-  id: string
-  name: string
-  created_at: string
-  updated_at: string
-  owner: AdminWorkspaceOwner | null
-  sandbox_count: number
-  max_sandboxes: number
-}
-
-export interface AdminSandbox {
-  id: string
-  name: string
-  workspace_id: string
-  type: string
-  status: string
-  created_at: string
-  last_activity_at: string | null
-  is_local: boolean
-}
-
 export async function adminListUsers(): Promise<AdminUser[]> {
   const res = await fetch('/api/admin/users')
   if (!res.ok) throw new Error('Failed to list users')
@@ -729,56 +676,6 @@ export async function adminUpdateUserRole(userId: string, role: string): Promise
     body: JSON.stringify({ role }),
   })
   if (!res.ok) throw new Error('Failed to update user role')
-}
-
-// Quota types
-
-export interface QuotaDefaults {
-  max_workspaces_per_user: number
-  max_sandboxes_per_workspace: number
-  max_workspace_drive_size: number   // bytes
-  max_sandbox_cpu: number           // millicores
-  max_sandbox_memory: number        // bytes
-  max_idle_timeout: number          // seconds
-  ws_max_total_cpu: number           // millicores
-  ws_max_total_memory: number        // bytes
-  ws_max_idle_timeout: number        // seconds
-}
-
-export interface UserQuotaOverrides {
-  max_workspaces: number | null
-  updated_at: string
-}
-
-export interface UserQuotaResponse {
-  defaults: { max_workspaces_per_user: number }
-  overrides: UserQuotaOverrides | null
-}
-
-export interface WorkspaceQuotaOverrides {
-  max_sandboxes: number | null
-  max_sandbox_cpu: number | null    // millicores
-  max_sandbox_memory: number | null // bytes
-  max_idle_timeout: number | null   // seconds
-  max_total_cpu: number | null      // millicores
-  max_total_memory: number | null   // bytes
-  max_drive_size: number | null     // bytes
-  updated_at: string
-}
-
-export interface WorkspaceQuotaDefaults {
-  max_sandboxes: number
-  max_sandbox_cpu: number           // millicores
-  max_sandbox_memory: number        // bytes
-  max_idle_timeout: number          // seconds
-  max_total_cpu: number             // millicores
-  max_total_memory: number          // bytes
-  max_drive_size: number            // bytes
-}
-
-export interface WorkspaceQuotaResponse {
-  defaults: WorkspaceQuotaDefaults
-  overrides: WorkspaceQuotaOverrides | null
 }
 
 export interface QuotaExceededError {

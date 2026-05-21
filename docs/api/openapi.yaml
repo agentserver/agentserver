@@ -5135,6 +5135,8 @@ components:
       type: object
     TraceListResponse:
       properties:
+        total:
+          type: integer
         traces:
           items:
             $ref: "#/components/schemas/TraceRecord"
@@ -5172,8 +5174,13 @@ components:
       required:
         - created_at
         - id
+        - request_count
         - sandbox_id
         - source
+        - total_cache_creation_tokens
+        - total_cache_read_tokens
+        - total_input_tokens
+        - total_output_tokens
         - updated_at
         - workspace_id
       type: object

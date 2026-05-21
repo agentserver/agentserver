@@ -585,17 +585,19 @@ type TraceRecord struct {
 	Source                   string `json:"source" validate:"required" example:"codex"`
 	CreatedAt                string `json:"created_at" validate:"required"`
 	UpdatedAt                string `json:"updated_at" validate:"required"`
-	RequestCount             int64  `json:"request_count"`
-	TotalInputTokens         int64  `json:"total_input_tokens"`
-	TotalOutputTokens        int64  `json:"total_output_tokens"`
-	TotalCacheReadTokens     int64  `json:"total_cache_read_tokens"`
-	TotalCacheCreationTokens int64  `json:"total_cache_creation_tokens"`
+	RequestCount             int64  `json:"request_count" validate:"required"`
+	TotalInputTokens         int64  `json:"total_input_tokens" validate:"required"`
+	TotalOutputTokens        int64  `json:"total_output_tokens" validate:"required"`
+	TotalCacheReadTokens     int64  `json:"total_cache_read_tokens" validate:"required"`
+	TotalCacheCreationTokens int64  `json:"total_cache_creation_tokens" validate:"required"`
 	Models                   string `json:"models,omitempty"`
 } // @name TraceRecord
 
 // TraceListResponse wraps a list of trace records.
+// total is the total count for pagination (set by llmproxy).
 type TraceListResponse struct {
 	Traces []TraceRecord `json:"traces" validate:"required"`
+	Total  int64         `json:"total"`
 } // @name TraceListResponse
 
 // ExecutorItem is one entry returned by GET /api/workspaces/{wid}/executors.

@@ -7,9 +7,14 @@
 //     callers can branch on { status: 401 } etc.
 
 export class ApiError extends Error {
-  constructor(public status: number, public body: unknown, message?: string) {
+  readonly status: number
+  readonly body: unknown
+
+  constructor(status: number, body: unknown, message?: string) {
     super(message ?? `HTTP ${status}`)
     this.name = 'ApiError'
+    this.status = status
+    this.body = body
   }
 }
 

@@ -149,6 +149,9 @@ components:
         password:
           example: hunter2
           type: string
+      required:
+        - email
+        - password
       type: object
     AuthMeResponse:
       properties:
@@ -163,6 +166,10 @@ components:
         role:
           example: developer
           type: string
+      required:
+        - email
+        - id
+        - role
       type: object
     AuthRegisterResponse:
       properties:
@@ -172,10 +179,15 @@ components:
         id:
           example: 7e7a4f6c-...
           type: string
+      required:
+        - email
+        - id
       type: object
     AuthStatusResponse:
       properties:
         status:
           example: ok
           type: string
+      required:
+        - status
       type: object

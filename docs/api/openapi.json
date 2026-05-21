@@ -226,6 +226,10 @@
         "schemas": {
             "AuthCredentials": {
                 "type": "object",
+                "required": [
+                    "email",
+                    "password"
+                ],
                 "properties": {
                     "email": {
                         "type": "string",
@@ -239,6 +243,11 @@
             },
             "AuthMeResponse": {
                 "type": "object",
+                "required": [
+                    "email",
+                    "id",
+                    "role"
+                ],
                 "properties": {
                     "email": {
                         "type": "string"
@@ -260,6 +269,10 @@
             },
             "AuthRegisterResponse": {
                 "type": "object",
+                "required": [
+                    "email",
+                    "id"
+                ],
                 "properties": {
                     "email": {
                         "type": "string",
@@ -273,6 +286,9 @@
             },
             "AuthStatusResponse": {
                 "type": "object",
+                "required": [
+                    "status"
+                ],
                 "properties": {
                     "status": {
                         "type": "string",

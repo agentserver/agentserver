@@ -8,36 +8,40 @@ package server
 // Group additions by API tag (Auth, Workspaces, …). Add new types
 // alphabetically within each group so PRs from different tags don't
 // trip over each other.
+//
+// IMPORTANT: required JSON fields need `binding:"required"` so swag
+// emits them in the OpenAPI schema's `required` array. Without it the
+// frontend codegen treats every field as `T | undefined`.
 
 // --- Auth ---
 
 // AuthCredentials is the email+password body for POST /api/auth/login
 // and POST /api/auth/register.
 type AuthCredentials struct {
-	Email    string `json:"email" example:"alice@example.com"`
-	Password string `json:"password" example:"hunter2"`
+	Email    string `json:"email" example:"alice@example.com" binding:"required"`
+	Password string `json:"password" example:"hunter2" binding:"required"`
 } //@name AuthCredentials
 
 // AuthStatusResponse is the {"status":"ok"} envelope returned by
 // /api/auth/login, /api/auth/logout, and /api/auth/check on success.
 type AuthStatusResponse struct {
-	Status string `json:"status" example:"ok"`
+	Status string `json:"status" example:"ok" binding:"required"`
 } //@name AuthStatusResponse
 
 // AuthRegisterResponse is what POST /api/auth/register returns on
 // success: the new user's id and the email it was registered with.
 type AuthRegisterResponse struct {
-	ID    string `json:"id"    example:"7e7a4f6c-..."`
-	Email string `json:"email" example:"alice@example.com"`
+	ID    string `json:"id"    example:"7e7a4f6c-..." binding:"required"`
+	Email string `json:"email" example:"alice@example.com" binding:"required"`
 } //@name AuthRegisterResponse
 
 // AuthMeResponse is the current user payload returned by GET /api/auth/me.
 // Name and Picture are populated from OIDC profile data when present
 // (login via password leaves both empty).
 type AuthMeResponse struct {
-	ID      string  `json:"id"`
-	Email   string  `json:"email"`
+	ID      string  `json:"id" binding:"required"`
+	Email   string  `json:"email" binding:"required"`
 	Name    *string `json:"name,omitempty"`
 	Picture *string `json:"picture,omitempty"`
-	Role    string  `json:"role" example:"developer"`
+	Role    string  `json:"role" example:"developer" binding:"required"`
 } //@name AuthMeResponse

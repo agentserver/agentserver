@@ -161,8 +161,10 @@ components:
           type: string
         name:
           type: string
+          nullable: true
         picture:
           type: string
+          nullable: true
         role:
           example: developer
           type: string

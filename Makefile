@@ -74,13 +74,26 @@ jupyter-smoke: jupyter-image
 # on internal/server handler funcs. Source of truth for the frontend
 # TypeScript codegen.
 SWAG ?= $(shell go env GOPATH)/bin/swag
+# swagger2openapi is a web/ devDependency; invoke via pnpm exec so no
+# npx-redownload on every CI run.
+S2O := pnpm --dir web exec swagger2openapi
+
+# x-nullable-to-nullable: post-process a JSON file to convert swag's
+# x-nullable:"true" vendor extension into the OpenAPI 3.0 nullable:true
+# keyword (swagger2openapi does not do this automatically).
+define X_NULLABLE_JSON
+walk(if type == "object" and .["x-nullable"] == "true" then del(.["x-nullable"]) + {nullable: true} else . end)
+endef
 
 # Generates Swagger 2.0 from swaggo annotations, then upconverts to
 # OpenAPI 3.0 via swagger2openapi (openapi-typescript v7 requires 3.x).
+# Note: pnpm --dir web exec changes cwd to web/, so we use absolute paths.
 openapi:
 	$(SWAG) init -g internal/server/swagger.go --parseDependency --outputTypes yaml,json -o docs/api/ -d ./
-	@npx --yes -p swagger2openapi swagger2openapi --yaml --outfile docs/api/openapi.yaml docs/api/swagger.yaml
-	@npx --yes -p swagger2openapi swagger2openapi             --outfile docs/api/openapi.json docs/api/swagger.json
+	@$(S2O) --yaml --outfile $(CURDIR)/docs/api/openapi.yaml $(CURDIR)/docs/api/swagger.yaml
+	@$(S2O)         --outfile $(CURDIR)/docs/api/openapi.json $(CURDIR)/docs/api/swagger.json
+	@jq '$(X_NULLABLE_JSON)' docs/api/openapi.json > docs/api/openapi.json.tmp && mv docs/api/openapi.json.tmp docs/api/openapi.json
+	@python3 -c "import sys,re; d=open('docs/api/openapi.yaml').read(); d=re.sub(r\"x-nullable: '?\\\"?true'?\\\"?\", 'nullable: true', d); open('docs/api/openapi.yaml','w').write(d)"
 	@rm -f docs/api/swagger.yaml docs/api/swagger.json
 
 # Drift check: regenerate to a temp dir and diff. CI uses this to
@@ -88,8 +101,10 @@ openapi:
 openapi-check:
 	@rm -rf /tmp/openapi-check && mkdir -p /tmp/openapi-check
 	@$(SWAG) init -g internal/server/swagger.go --parseDependency --outputTypes yaml,json -o /tmp/openapi-check/ -d ./ >/dev/null
-	@npx --yes -p swagger2openapi swagger2openapi --yaml --outfile /tmp/openapi-check/openapi.yaml /tmp/openapi-check/swagger.yaml >/dev/null
-	@npx --yes -p swagger2openapi swagger2openapi             --outfile /tmp/openapi-check/openapi.json /tmp/openapi-check/swagger.json >/dev/null
+	@$(S2O) --yaml --outfile /tmp/openapi-check/openapi.yaml /tmp/openapi-check/swagger.yaml >/dev/null
+	@$(S2O)         --outfile /tmp/openapi-check/openapi.json /tmp/openapi-check/swagger.json >/dev/null
+	@jq '$(X_NULLABLE_JSON)' /tmp/openapi-check/openapi.json > /tmp/openapi-check/openapi.json.tmp && mv /tmp/openapi-check/openapi.json.tmp /tmp/openapi-check/openapi.json
+	@python3 -c "import sys,re; d=open('/tmp/openapi-check/openapi.yaml').read(); d=re.sub(r\"x-nullable: '?\\\"?true'?\\\"?\", 'nullable: true', d); open('/tmp/openapi-check/openapi.yaml','w').write(d)"
 	@diff -u docs/api/openapi.yaml /tmp/openapi-check/openapi.yaml || (echo "FAIL: docs/api/openapi.yaml is stale — run 'make openapi' and commit"; exit 1)
 	@diff -u docs/api/openapi.json /tmp/openapi-check/openapi.json || (echo "FAIL: docs/api/openapi.json is stale — run 'make openapi' and commit"; exit 1)
 	@echo "openapi-check: spec matches handler annotations"

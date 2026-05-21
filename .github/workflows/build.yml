@@ -38,6 +38,13 @@ jobs:
         with:
           node-version: '20'
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install web deps (for swagger2openapi)
+        run: pnpm --dir web install --frozen-lockfile
+
       - name: Install swag CLI
         run: go install github.com/swaggo/swag/cmd/swag@latest
 

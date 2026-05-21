@@ -1,3 +1,6 @@
+import { apiFetch, ApiError } from './apiClient'
+import type { components } from './api-generated/schema'
+
 export type SandboxStatus = 'creating' | 'running' | 'pausing' | 'paused' | 'resuming' | 'offline'
 export type WorkspaceRole = 'owner' | 'maintainer' | 'developer' | 'guest'
 
@@ -82,26 +85,44 @@ export interface AgentInfo {
 }
 
 export async function login(email: string, password: string): Promise<boolean> {
-  const res = await fetch('/api/auth/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
-  })
-  return res.ok
+  try {
+    await apiFetch<components['schemas']['AuthStatusResponse']>({
+      method: 'POST',
+      path: '/api/auth/login',
+      body: { email, password } satisfies components['schemas']['AuthCredentials'],
+    })
+    return true
+  } catch (err) {
+    if (err instanceof ApiError) return false
+    throw err
+  }
 }
 
 export async function register(email: string, password: string): Promise<boolean> {
-  const res = await fetch('/api/auth/register', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
-  })
-  return res.ok
+  try {
+    await apiFetch<components['schemas']['AuthRegisterResponse']>({
+      method: 'POST',
+      path: '/api/auth/register',
+      body: { email, password } satisfies components['schemas']['AuthCredentials'],
+    })
+    return true
+  } catch (err) {
+    if (err instanceof ApiError) return false
+    throw err
+  }
 }
 
 export async function checkAuth(): Promise<boolean> {
-  const res = await fetch('/api/auth/check')
-  return res.ok
+  try {
+    await apiFetch<components['schemas']['AuthStatusResponse']>({
+      method: 'GET',
+      path: '/api/auth/check',
+    })
+    return true
+  } catch (err) {
+    if (err instanceof ApiError) return false
+    throw err
+  }
 }
 
 export async function getOIDCProviders(): Promise<{ providers: string[]; password_auth: boolean }> {
@@ -115,13 +136,29 @@ export async function getOIDCProviders(): Promise<{ providers: string[]; passwor
 }
 
 export async function getMe(): Promise<{ id: string; email: string; name?: string | null; picture?: string | null; role: string }> {
-  const res = await fetch('/api/auth/me')
-  if (!res.ok) throw new Error('Failed to get user info')
-  return res.json()
+  const data = await apiFetch<components['schemas']['AuthMeResponse']>({
+    method: 'GET',
+    path: '/api/auth/me',
+  })
+  return {
+    id: data.id,
+    email: data.email,
+    name: data.name ?? null,
+    picture: data.picture ?? null,
+    role: data.role,
+  }
 }
 
 export async function logout(): Promise<void> {
-  await fetch('/api/auth/logout', { method: 'POST' })
+  try {
+    await apiFetch<components['schemas']['AuthStatusResponse']>({
+      method: 'POST',
+      path: '/api/auth/logout',
+    })
+  } catch {
+    // logout is idempotent — swallow any error so the SPA can always
+    // navigate to the login screen.
+  }
 }
 
 // Workspace API

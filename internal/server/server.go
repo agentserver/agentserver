@@ -599,10 +599,7 @@ func (s *Server) Router() http.Handler {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-	}
+	var req AuthCredentials
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
@@ -614,14 +611,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	auth.SetTokenCookie(w, token)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	json.NewEncoder(w).Encode(AuthStatusResponse{Status: "ok"})
 }
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-	}
+	var req AuthCredentials
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
@@ -660,7 +654,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"id": id, "email": req.Email})
+	json.NewEncoder(w).Encode(AuthRegisterResponse{ID: id, Email: req.Email})
 }
 
 func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
@@ -669,7 +663,7 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	json.NewEncoder(w).Encode(AuthStatusResponse{Status: "ok"})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -686,7 +680,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 	})
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	json.NewEncoder(w).Encode(AuthStatusResponse{Status: "ok"})
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -697,13 +691,14 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"id":      user.ID,
-		"email":   user.Email,
-		"name":    user.Name,
-		"picture": user.Picture,
-		"role":    user.Role,
-	})
+	resp := AuthMeResponse{ID: user.ID, Email: user.Email, Role: user.Role}
+	if user.Name != nil && *user.Name != "" {
+		resp.Name = user.Name
+	}
+	if user.Picture != nil && *user.Picture != "" {
+		resp.Picture = user.Picture
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 // --- Response types ---

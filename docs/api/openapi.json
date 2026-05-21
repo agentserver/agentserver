@@ -1,0 +1,25 @@
+{
+    "openapi": "3.0.0",
+    "info": {
+        "description": "Public REST API for agentserver. Generated from\nGo handler annotations via swaggo/swag; see\ndocs/api/README.md for regeneration instructions.",
+        "title": "agentserver API",
+        "contact": {},
+        "version": "0.1.0"
+    },
+    "paths": {},
+    "servers": [
+        {
+            "url": "/"
+        }
+    ],
+    "components": {
+        "securitySchemes": {
+            "CookieAuth": {
+                "description": "Session cookie set by POST /api/auth/login. All non-auth endpoints assume this cookie.",
+                "type": "apiKey",
+                "name": "agentserver-token",
+                "in": "cookie"
+            }
+        }
+    }
+}

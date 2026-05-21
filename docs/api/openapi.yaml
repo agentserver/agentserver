@@ -1,0 +1,20 @@
+openapi: 3.0.0
+info:
+  contact: {}
+  description: |-
+    Public REST API for agentserver. Generated from
+    Go handler annotations via swaggo/swag; see
+    docs/api/README.md for regeneration instructions.
+  title: agentserver API
+  version: 0.1.0
+paths: {}
+servers:
+  - url: /
+components:
+  securitySchemes:
+    CookieAuth:
+      description: Session cookie set by POST /api/auth/login. All non-auth endpoints
+        assume this cookie.
+      in: cookie
+      name: agentserver-token
+      type: apiKey

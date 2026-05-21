@@ -1,4 +1,4 @@
-.PHONY: dev build clean frontend backend agent agent-all llmproxy credentialproxy test docker docker-agent docker-llmproxy docker-credentialproxy docker-openclaw docker-all
+.PHONY: dev build clean frontend backend agent agent-all llmproxy credentialproxy test docker docker-agent docker-llmproxy docker-credentialproxy docker-openclaw docker-all openapi openapi-check
 
 # Development: run frontend dev server + Go backend
 dev:
@@ -69,3 +69,27 @@ jupyter-image:
 jupyter-smoke: jupyter-image
 	mkdir -p notebook/smoke-workspace
 	docker compose -f notebook/docker-compose.smoke.yml up --build
+
+# OpenAPI: generate docs/api/openapi.{yaml,json} from swaggo annotations
+# on internal/server handler funcs. Source of truth for the frontend
+# TypeScript codegen.
+SWAG ?= $(shell go env GOPATH)/bin/swag
+
+# Generates Swagger 2.0 from swaggo annotations, then upconverts to
+# OpenAPI 3.0 via swagger2openapi (openapi-typescript v7 requires 3.x).
+openapi:
+	$(SWAG) init -g internal/server/swagger.go --parseDependency --outputTypes yaml,json -o docs/api/ -d ./
+	@npx --yes -p swagger2openapi swagger2openapi --yaml --outfile docs/api/openapi.yaml docs/api/swagger.yaml
+	@npx --yes -p swagger2openapi swagger2openapi             --outfile docs/api/openapi.json docs/api/swagger.json
+	@rm -f docs/api/swagger.yaml docs/api/swagger.json
+
+# Drift check: regenerate to a temp dir and diff. CI uses this to
+# catch handler annotations that weren't re-swagged before commit.
+openapi-check:
+	@rm -rf /tmp/openapi-check && mkdir -p /tmp/openapi-check
+	@$(SWAG) init -g internal/server/swagger.go --parseDependency --outputTypes yaml,json -o /tmp/openapi-check/ -d ./ >/dev/null
+	@npx --yes -p swagger2openapi swagger2openapi --yaml --outfile /tmp/openapi-check/openapi.yaml /tmp/openapi-check/swagger.yaml >/dev/null
+	@npx --yes -p swagger2openapi swagger2openapi             --outfile /tmp/openapi-check/openapi.json /tmp/openapi-check/swagger.json >/dev/null
+	@diff -u docs/api/openapi.yaml /tmp/openapi-check/openapi.yaml || (echo "FAIL: docs/api/openapi.yaml is stale — run 'make openapi' and commit"; exit 1)
+	@diff -u docs/api/openapi.json /tmp/openapi-check/openapi.json || (echo "FAIL: docs/api/openapi.json is stale — run 'make openapi' and commit"; exit 1)
+	@echo "openapi-check: spec matches handler annotations"

@@ -493,3 +493,313 @@ type CodexBrowserItem struct {
 	ConnectedAt    *time.Time `json:"connected_at,omitempty"`
 	DisconnectedAt *time.Time `json:"disconnected_at,omitempty"`
 } // @name CodexBrowserItem
+
+// --- Misc ---
+
+// CredentialBindingItem is one entry in the list returned by
+// GET /api/workspaces/{id}/credentials/{kind}.
+// public_meta is an arbitrary JSON object whose shape depends on the provider kind.
+type CredentialBindingItem struct {
+	ID          string          `json:"id" validate:"required"`
+	DisplayName string          `json:"display_name" validate:"required"`
+	ServerURL   string          `json:"server_url"`
+	AuthType    string          `json:"auth_type" validate:"required" example:"static"`
+	PublicMeta  interface{}     `json:"public_meta"`
+	IsDefault   bool            `json:"is_default"`
+	CreatedAt   string          `json:"created_at" validate:"required"`
+} // @name CredentialBindingItem
+
+// CredentialBindingCreateRequest is the body for POST /api/workspaces/{id}/credentials/{kind}.
+// config is a provider-specific JSON or YAML credential blob.
+type CredentialBindingCreateRequest struct {
+	DisplayName string `json:"display_name" validate:"required" example:"My K8s Cluster"`
+	Config      string `json:"config" validate:"required" example:"{\"server\": \"https://...\"}"`
+} // @name CredentialBindingCreateRequest
+
+// CredentialBindingCreateResponse is returned (201) by the create endpoint, or
+// (202) when the provider initiates an OIDC device code flow.
+// When status is "pending_device_code", verification_uri, user_code and expires_in
+// are set; the caller must long-poll the device-complete endpoint.
+type CredentialBindingCreateResponse struct {
+	ID              string `json:"id" validate:"required"`
+	DisplayName     string `json:"display_name,omitempty"`
+	ServerURL       string `json:"server_url,omitempty"`
+	AuthType        string `json:"auth_type,omitempty"`
+	IsDefault       bool   `json:"is_default"`
+	Status          string `json:"status,omitempty" example:"pending_device_code"`
+	VerificationURI string `json:"verification_uri,omitempty"`
+	UserCode        string `json:"user_code,omitempty"`
+	ExpiresIn       int    `json:"expires_in,omitempty"`
+} // @name CredentialBindingCreateResponse
+
+// CredentialBindingPatchRequest is the body for PATCH /api/workspaces/{id}/credentials/{kind}/{bindingId}.
+// Only display_name is patchable at present.
+type CredentialBindingPatchRequest struct {
+	DisplayName *string `json:"display_name" extensions:"x-nullable=true" example:"Renamed Cluster"`
+} // @name CredentialBindingPatchRequest
+
+// WorkspaceOperationsResponse is returned by GET /api/workspaces/{id}/operations.
+type WorkspaceOperationsResponse struct {
+	Operations []OperationRecord `json:"operations" validate:"required"`
+} // @name WorkspaceOperationsResponse
+
+// OperationRecord is a single entry in the operations log.
+// arguments, arguments_meta and result_meta are arbitrary JSON objects.
+type OperationRecord struct {
+	ID            string      `json:"id" validate:"required"`
+	WorkspaceID   string      `json:"workspace_id" validate:"required"`
+	UserID        *string     `json:"user_id,omitempty" extensions:"x-nullable=true"`
+	Source        string      `json:"source" validate:"required" example:"codex"`
+	ThreadID      *string     `json:"thread_id,omitempty" extensions:"x-nullable=true"`
+	RequestID     *string     `json:"request_id,omitempty" extensions:"x-nullable=true"`
+	EnvID         string      `json:"env_id" validate:"required"`
+	Tool          string      `json:"tool" validate:"required" example:"shell"`
+	Arguments     interface{} `json:"arguments,omitempty"`
+	ArgumentsMeta interface{} `json:"arguments_meta,omitempty"`
+	IsError       bool        `json:"is_error"`
+	ResultSummary *string     `json:"result_summary,omitempty" extensions:"x-nullable=true"`
+	ResultMeta    interface{} `json:"result_meta,omitempty"`
+	StartedAt     string      `json:"started_at" validate:"required"`
+	CompletedAt   string      `json:"completed_at" validate:"required"`
+	DurationMs    int32       `json:"duration_ms" validate:"required"`
+	NotebookPath  *string     `json:"notebook_path,omitempty" extensions:"x-nullable=true"`
+	CellID        *string     `json:"cell_id,omitempty" extensions:"x-nullable=true"`
+} // @name OperationRecord
+
+// WorkspaceDefaultsResponse is returned by GET /api/workspaces/{wid}/defaults.
+// It provides the effective quota limits for the workspace and the current sandbox count.
+type WorkspaceDefaultsResponse struct {
+	MaxSandboxCPU    int   `json:"max_sandbox_cpu" validate:"required"`
+	MaxSandboxMemory int64 `json:"max_sandbox_memory" validate:"required"`
+	MaxIdleTimeout   int   `json:"max_idle_timeout" validate:"required"`
+	MaxSandboxes     int   `json:"max_sandboxes" validate:"required"`
+	CurrentSandboxes int   `json:"current_sandboxes" validate:"required"`
+} // @name WorkspaceDefaultsResponse
+
+// TraceRecord is one entry in the LLM trace list returned by the traces endpoints.
+// All token/request count fields come from the llmproxy aggregation.
+type TraceRecord struct {
+	ID                       string `json:"id" validate:"required"`
+	SandboxID                string `json:"sandbox_id" validate:"required"`
+	WorkspaceID              string `json:"workspace_id" validate:"required"`
+	Source                   string `json:"source" validate:"required" example:"codex"`
+	CreatedAt                string `json:"created_at" validate:"required"`
+	UpdatedAt                string `json:"updated_at" validate:"required"`
+	RequestCount             int64  `json:"request_count"`
+	TotalInputTokens         int64  `json:"total_input_tokens"`
+	TotalOutputTokens        int64  `json:"total_output_tokens"`
+	TotalCacheReadTokens     int64  `json:"total_cache_read_tokens"`
+	TotalCacheCreationTokens int64  `json:"total_cache_creation_tokens"`
+	Models                   string `json:"models,omitempty"`
+} // @name TraceRecord
+
+// TraceListResponse wraps a list of trace records.
+type TraceListResponse struct {
+	Traces []TraceRecord `json:"traces" validate:"required"`
+} // @name TraceListResponse
+
+// ExecutorItem is one entry returned by GET /api/workspaces/{wid}/executors.
+// All session fields (client_ip, client_ua, codex_version, os,
+// connected_at, disconnected_at) come from the last seen connection;
+// they are omitted when the executor has never connected.
+type ExecutorItem struct {
+	ExeID          string     `json:"exe_id" validate:"required"`
+	Name           string     `json:"name" validate:"required"`
+	Description    string     `json:"description,omitempty"`
+	IsDefault      bool       `json:"is_default"`
+	IsOnline       bool       `json:"is_online"`
+	LastSeenAt     *time.Time `json:"last_seen_at,omitempty" extensions:"x-nullable=true"`
+	ClientIP       string     `json:"client_ip,omitempty"`
+	ClientUA       string     `json:"client_ua,omitempty"`
+	CodexVersion   string     `json:"codex_version,omitempty"`
+	OS             string     `json:"os,omitempty"`
+	ConnectedAt    *time.Time `json:"connected_at,omitempty" extensions:"x-nullable=true"`
+	DisconnectedAt *time.Time `json:"disconnected_at,omitempty" extensions:"x-nullable=true"`
+} // @name ExecutorItem
+
+// ExecutorRegisterRequest is the body for POST /api/workspaces/{wid}/executors.
+type ExecutorRegisterRequest struct {
+	Name        string `json:"name" validate:"required" example:"my-dev-machine"`
+	Description string `json:"description,omitempty" example:"Main development laptop"`
+} // @name ExecutorRegisterRequest
+
+// ExecutorConnectCommands holds the connect-command variants returned by the
+// register endpoint. At present only the agent_identity variant is surfaced.
+type ExecutorConnectCommands struct {
+	AgentIdentity string `json:"agent_identity" validate:"required"`
+} // @name ExecutorConnectCommands
+
+// ExecutorRegisterResponse is returned (201) by POST /api/workspaces/{wid}/executors.
+// agent_identity_jwt and connect_commands are only set when the codex auth shim is configured.
+// connect_command is a convenience alias for connect_commands.agent_identity.
+type ExecutorRegisterResponse struct {
+	ExeID            string                  `json:"exe_id" validate:"required"`
+	ConnectCommand   string                  `json:"connect_command,omitempty"`
+	AgentIdentityJWT string                  `json:"agent_identity_jwt,omitempty"`
+	ConnectCommands  ExecutorConnectCommands  `json:"connect_commands,omitempty"`
+} // @name ExecutorRegisterResponse
+
+// ModelServerStatusResponse is returned by GET /api/workspaces/{id}/modelserver/status.
+// When connected is false all other fields are absent.
+type ModelServerStatusResponse struct {
+	Connected   bool     `json:"connected" validate:"required"`
+	ProjectID   string   `json:"project_id,omitempty"`
+	ProjectName string   `json:"project_name,omitempty"`
+	Models      []string `json:"models,omitempty"`
+	ConnectedAt string   `json:"connected_at,omitempty"`
+} // @name ModelServerStatusResponse
+
+// AgentInteractionItem is one entry in the audit trail returned by
+// GET /api/workspaces/{wid}/agent-interactions.
+// detail is an arbitrary JSON object; it is absent when empty.
+type AgentInteractionItem struct {
+	ID         int64       `json:"id" validate:"required"`
+	ActorID    *string     `json:"actor_id" extensions:"x-nullable=true"`
+	Action     string      `json:"action" validate:"required" example:"task.created"`
+	TargetID   string      `json:"target_id" validate:"required"`
+	TargetType string      `json:"target_type" validate:"required" example:"task"`
+	Detail     interface{} `json:"detail,omitempty"`
+	CreatedAt  string      `json:"created_at" validate:"required"`
+} // @name AgentInteractionItem
+
+// --- Admin ---
+
+// AdminUserItem is one entry returned by GET /api/admin/users.
+type AdminUserItem struct {
+	ID        string  `json:"id" validate:"required"`
+	Email     string  `json:"email" validate:"required"`
+	Name      *string `json:"name" extensions:"x-nullable=true"`
+	Role      string  `json:"role" validate:"required" example:"user"`
+	CreatedAt string  `json:"created_at" validate:"required"`
+} // @name AdminUserItem
+
+// AdminOwnerInfo is the owner summary embedded in AdminWorkspaceItem.
+type AdminOwnerInfo struct {
+	ID      string  `json:"id" validate:"required"`
+	Email   string  `json:"email" validate:"required"`
+	Name    *string `json:"name" extensions:"x-nullable=true"`
+	Picture *string `json:"picture" extensions:"x-nullable=true"`
+} // @name AdminOwnerInfo
+
+// AdminWorkspaceItem is one entry returned by GET /api/admin/workspaces.
+type AdminWorkspaceItem struct {
+	ID           string          `json:"id" validate:"required"`
+	Name         string          `json:"name" validate:"required"`
+	CreatedAt    string          `json:"created_at" validate:"required"`
+	UpdatedAt    string          `json:"updated_at" validate:"required"`
+	Owner        *AdminOwnerInfo `json:"owner" extensions:"x-nullable=true"`
+	SandboxCount int             `json:"sandbox_count"`
+	MaxSandboxes int             `json:"max_sandboxes"`
+} // @name AdminWorkspaceItem
+
+// AdminSandboxItem is one entry returned by GET /api/admin/sandboxes.
+type AdminSandboxItem struct {
+	ID             string  `json:"id" validate:"required"`
+	Name           string  `json:"name" validate:"required"`
+	WorkspaceID    string  `json:"workspace_id" validate:"required"`
+	Type           string  `json:"type" validate:"required" example:"opencode"`
+	Status         string  `json:"status" validate:"required" example:"running"`
+	CreatedAt      string  `json:"created_at" validate:"required"`
+	LastActivityAt *string `json:"last_activity_at,omitempty" extensions:"x-nullable=true"`
+	IsLocal        bool    `json:"is_local"`
+} // @name AdminSandboxItem
+
+// AdminUpdateUserRoleRequest is the body for PUT /api/admin/users/{id}/role.
+type AdminUpdateUserRoleRequest struct {
+	Role string `json:"role" validate:"required" example:"admin"`
+} // @name AdminUpdateUserRoleRequest
+
+// AdminQuotaDefaultsResponse is returned by GET /api/admin/quotas/defaults
+// and PUT /api/admin/quotas/defaults.
+type AdminQuotaDefaultsResponse struct {
+	MaxWorkspacesPerUser     int   `json:"max_workspaces_per_user" validate:"required"`
+	MaxSandboxesPerWorkspace int   `json:"max_sandboxes_per_workspace" validate:"required"`
+	MaxWorkspaceDriveSize    int64 `json:"max_workspace_drive_size" validate:"required"`
+	MaxSandboxCPU            int   `json:"max_sandbox_cpu" validate:"required"`
+	MaxSandboxMemory         int64 `json:"max_sandbox_memory" validate:"required"`
+	MaxIdleTimeout           int   `json:"max_idle_timeout" validate:"required"`
+	WsMaxTotalCPU            int   `json:"ws_max_total_cpu" validate:"required"`
+	WsMaxTotalMemory         int64 `json:"ws_max_total_memory" validate:"required"`
+	WsMaxIdleTimeout         int   `json:"ws_max_idle_timeout" validate:"required"`
+} // @name AdminQuotaDefaultsResponse
+
+// AdminQuotaDefaultsUpdateRequest is the body for PUT /api/admin/quotas/defaults.
+// All fields are optional; only supplied keys are applied.
+type AdminQuotaDefaultsUpdateRequest struct {
+	MaxWorkspacesPerUser     *int   `json:"max_workspaces_per_user,omitempty"`
+	MaxSandboxesPerWorkspace *int   `json:"max_sandboxes_per_workspace,omitempty"`
+	MaxWorkspaceDriveSize    *int64 `json:"max_workspace_drive_size,omitempty"`
+	MaxSandboxCPU            *int   `json:"max_sandbox_cpu,omitempty"`
+	MaxSandboxMemory         *int64 `json:"max_sandbox_memory,omitempty"`
+	MaxIdleTimeout           *int   `json:"max_idle_timeout,omitempty"`
+	WsMaxTotalCPU            *int   `json:"ws_max_total_cpu,omitempty"`
+	WsMaxTotalMemory         *int64 `json:"ws_max_total_memory,omitempty"`
+	WsMaxIdleTimeout         *int   `json:"ws_max_idle_timeout,omitempty"`
+} // @name AdminQuotaDefaultsUpdateRequest
+
+// AdminUserQuotaDefaults is the system-default quota sub-object embedded in
+// AdminUserQuotaResponse.
+type AdminUserQuotaDefaults struct {
+	MaxWorkspacesPerUser int `json:"max_workspaces_per_user" validate:"required"`
+} // @name AdminUserQuotaDefaults
+
+// AdminUserQuotaOverrides is the per-user override sub-object embedded in
+// AdminUserQuotaResponse. null when no override is set.
+type AdminUserQuotaOverrides struct {
+	MaxWorkspaces *int   `json:"max_workspaces" extensions:"x-nullable=true"`
+	UpdatedAt     string `json:"updated_at" validate:"required"`
+} // @name AdminUserQuotaOverrides
+
+// AdminUserQuotaResponse is returned by GET /api/admin/users/{id}/quota.
+type AdminUserQuotaResponse struct {
+	Defaults  AdminUserQuotaDefaults   `json:"defaults" validate:"required"`
+	Overrides *AdminUserQuotaOverrides `json:"overrides" extensions:"x-nullable=true"`
+} // @name AdminUserQuotaResponse
+
+// AdminSetUserQuotaRequest is the body for PUT /api/admin/users/{id}/quota.
+type AdminSetUserQuotaRequest struct {
+	MaxWorkspaces *int `json:"max_workspaces" extensions:"x-nullable=true"`
+} // @name AdminSetUserQuotaRequest
+
+// AdminWorkspaceQuotaDefaults is the system-default quota sub-object embedded in
+// AdminWorkspaceQuotaResponse.
+type AdminWorkspaceQuotaDefaults struct {
+	MaxSandboxes     int   `json:"max_sandboxes" validate:"required"`
+	MaxSandboxCPU    int   `json:"max_sandbox_cpu" validate:"required"`
+	MaxSandboxMemory int64 `json:"max_sandbox_memory" validate:"required"`
+	MaxIdleTimeout   int   `json:"max_idle_timeout" validate:"required"`
+	MaxTotalCPU      int   `json:"max_total_cpu" validate:"required"`
+	MaxTotalMemory   int64 `json:"max_total_memory" validate:"required"`
+	MaxDriveSize     int64 `json:"max_drive_size" validate:"required"`
+} // @name AdminWorkspaceQuotaDefaults
+
+// AdminWorkspaceQuotaOverrides is the per-workspace override sub-object embedded in
+// AdminWorkspaceQuotaResponse. null when no override is set.
+type AdminWorkspaceQuotaOverrides struct {
+	MaxSandboxes     *int   `json:"max_sandboxes" extensions:"x-nullable=true"`
+	MaxSandboxCPU    *int   `json:"max_sandbox_cpu" extensions:"x-nullable=true"`
+	MaxSandboxMemory *int64 `json:"max_sandbox_memory" extensions:"x-nullable=true"`
+	MaxIdleTimeout   *int   `json:"max_idle_timeout" extensions:"x-nullable=true"`
+	MaxTotalCPU      *int   `json:"max_total_cpu" extensions:"x-nullable=true"`
+	MaxTotalMemory   *int64 `json:"max_total_memory" extensions:"x-nullable=true"`
+	MaxDriveSize     *int64 `json:"max_drive_size" extensions:"x-nullable=true"`
+	UpdatedAt        string `json:"updated_at" validate:"required"`
+} // @name AdminWorkspaceQuotaOverrides
+
+// AdminWorkspaceQuotaResponse is returned by GET /api/admin/workspaces/{id}/quota.
+type AdminWorkspaceQuotaResponse struct {
+	Defaults  AdminWorkspaceQuotaDefaults   `json:"defaults" validate:"required"`
+	Overrides *AdminWorkspaceQuotaOverrides `json:"overrides" extensions:"x-nullable=true"`
+} // @name AdminWorkspaceQuotaResponse
+
+// AdminSetWorkspaceQuotaRequest is the body for PUT /api/admin/workspaces/{id}/quota.
+// All fields are optional; only supplied keys are applied (merged with existing).
+type AdminSetWorkspaceQuotaRequest struct {
+	MaxSandboxes     *int   `json:"max_sandboxes,omitempty" extensions:"x-nullable=true"`
+	MaxSandboxCPU    *int   `json:"max_sandbox_cpu,omitempty" extensions:"x-nullable=true"`
+	MaxSandboxMemory *int64 `json:"max_sandbox_memory,omitempty" extensions:"x-nullable=true"`
+	MaxIdleTimeout   *int   `json:"max_idle_timeout,omitempty" extensions:"x-nullable=true"`
+	MaxTotalCPU      *int   `json:"max_total_cpu,omitempty" extensions:"x-nullable=true"`
+	MaxTotalMemory   *int64 `json:"max_total_memory,omitempty" extensions:"x-nullable=true"`
+	MaxDriveSize     *int64 `json:"max_drive_size,omitempty" extensions:"x-nullable=true"`
+} // @name AdminSetWorkspaceQuotaRequest

@@ -9,3 +9,7 @@ AuthKey_*.p8
 .worktrees/
 .claude/worktrees/
 notebook/smoke-workspace/
+
+# Generated from docs/api/openapi.yaml via `pnpm openapi:gen` —
+# never commit; CI and local dev regenerate on demand.
+web/src/lib/api-generated/

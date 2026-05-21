@@ -12,6 +12,19 @@ import (
 
 // handleListInteractions returns the audit trail for a workspace.
 // GET /api/workspaces/{wid}/agent-interactions
+//
+//	@Summary   List agent interaction audit trail for a workspace
+//	@Tags      Misc
+//	@Produce   json
+//	@Param     wid     path   string  true  "Workspace ID"
+//	@Param     limit   query  int     false "Max entries (1–200, default 50)"
+//	@Param     offset  query  int     false "Pagination offset"
+//	@Success   200  {array}   AgentInteractionItem
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "not a workspace member"
+//	@Failure   500  {string}  string  "internal error"
+//	@Security  CookieAuth
+//	@Router    /api/workspaces/{wid}/agent-interactions [get]
 func (s *Server) handleListInteractions(w http.ResponseWriter, r *http.Request) {
 	wid := chi.URLParam(r, "wid")
 	if _, ok := s.requireWorkspaceMember(w, r, wid); !ok {
@@ -41,18 +54,9 @@ func (s *Server) handleListInteractions(w http.ResponseWriter, r *http.Request) 
 		items = []db.AgentInteraction{}
 	}
 
-	type interactionResponse struct {
-		ID          int64            `json:"id"`
-		ActorID     *string          `json:"actor_id"`
-		Action      string           `json:"action"`
-		TargetID    string           `json:"target_id"`
-		TargetType  string           `json:"target_type"`
-		Detail      *json.RawMessage `json:"detail,omitempty"`
-		CreatedAt   string           `json:"created_at"`
-	}
-	result := make([]interactionResponse, len(items))
+	result := make([]AgentInteractionItem, len(items))
 	for i, item := range items {
-		result[i] = interactionResponse{
+		result[i] = AgentInteractionItem{
 			ID:         item.ID,
 			ActorID:    item.ActorID,
 			Action:     item.Action,

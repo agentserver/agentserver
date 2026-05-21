@@ -53,6 +53,19 @@ type pendingDeviceFlow struct {
 	completing     sync.Once
 }
 
+// handleListCredentialBindings lists credential bindings for a workspace+kind.
+// GET /api/workspaces/{id}/credentials/{kind}
+//
+//	@Summary   List credential bindings for a workspace
+//	@Tags      Misc
+//	@Produce   json
+//	@Param     id    path  string  true  "Workspace ID"
+//	@Param     kind  path  string  true  "Credential kind (e.g. kubernetes)"
+//	@Success   200  {array}   CredentialBindingItem
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   500  {string}  string  "internal error"
+//	@Security  CookieAuth
+//	@Router    /api/workspaces/{id}/credentials/{kind} [get]
 func (s *Server) handleListCredentialBindings(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "id")
 	kind := chi.URLParam(r, "kind")
@@ -64,19 +77,9 @@ func (s *Server) handleListCredentialBindings(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	type bindingResp struct {
-		ID          string         `json:"id"`
-		DisplayName string         `json:"display_name"`
-		ServerURL   string         `json:"server_url"`
-		AuthType    string         `json:"auth_type"`
-		PublicMeta  json.RawMessage `json:"public_meta"`
-		IsDefault   bool           `json:"is_default"`
-		CreatedAt   string         `json:"created_at"`
-	}
-
-	result := make([]bindingResp, 0, len(bindings))
+	result := make([]CredentialBindingItem, 0, len(bindings))
 	for _, b := range bindings {
-		result = append(result, bindingResp{
+		result = append(result, CredentialBindingItem{
 			ID:          b.ID,
 			DisplayName: b.DisplayName,
 			ServerURL:   b.ServerURL,
@@ -91,6 +94,25 @@ func (s *Server) handleListCredentialBindings(w http.ResponseWriter, r *http.Req
 	json.NewEncoder(w).Encode(result)
 }
 
+// handleCreateCredentialBinding creates a new credential binding.
+// POST /api/workspaces/{id}/credentials/{kind}
+//
+//	@Summary   Create a credential binding for a workspace
+//	@Description On success returns 201 with the new binding. When the provider requires OIDC device code authentication returns 202 with verification_uri and user_code; poll device-complete to finalize.
+//	@Tags      Misc
+//	@Accept    json
+//	@Produce   json
+//	@Param     id    path  string                          true  "Workspace ID"
+//	@Param     kind  path  string                          true  "Credential kind (e.g. kubernetes)"
+//	@Param     body  body  CredentialBindingCreateRequest  true  "Credential config"
+//	@Success   201  {object}  CredentialBindingCreateResponse  "Binding created"
+//	@Success   202  {object}  CredentialBindingCreateResponse  "OIDC device code flow initiated"
+//	@Failure   400  {string}  string  "bad request"
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   409  {string}  string  "duplicate display_name"
+//	@Failure   500  {string}  string  "internal error"
+//	@Security  CookieAuth
+//	@Router    /api/workspaces/{id}/credentials/{kind} [post]
 func (s *Server) handleCreateCredentialBinding(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "id")
 	kind := chi.URLParam(r, "kind")
@@ -200,6 +222,21 @@ func (s *Server) handleCreateCredentialBinding(w http.ResponseWriter, r *http.Re
 	})
 }
 
+// handleDeleteCredentialBinding deletes a credential binding.
+// DELETE /api/workspaces/{id}/credentials/{kind}/{bindingId}
+//
+//	@Summary   Delete a credential binding
+//	@Tags      Misc
+//	@Param     id         path  string  true  "Workspace ID"
+//	@Param     kind       path  string  true  "Credential kind"
+//	@Param     bindingId  path  string  true  "Binding ID"
+//	@Success   204  "deleted"
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   404  {string}  string  "not found"
+//	@Failure   409  {string}  string  "cannot delete default binding while others exist"
+//	@Failure   500  {string}  string  "internal error"
+//	@Security  CookieAuth
+//	@Router    /api/workspaces/{id}/credentials/{kind}/{bindingId} [delete]
 func (s *Server) handleDeleteCredentialBinding(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "id")
 	kind := chi.URLParam(r, "kind")
@@ -239,6 +276,19 @@ func (s *Server) handleDeleteCredentialBinding(w http.ResponseWriter, r *http.Re
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleSetDefaultCredentialBinding sets a binding as the default for its kind.
+// POST /api/workspaces/{id}/credentials/{kind}/{bindingId}/set-default
+//
+//	@Summary   Set a credential binding as the default
+//	@Tags      Misc
+//	@Param     id         path  string  true  "Workspace ID"
+//	@Param     kind       path  string  true  "Credential kind"
+//	@Param     bindingId  path  string  true  "Binding ID"
+//	@Success   204  "updated"
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   500  {string}  string  "internal error"
+//	@Security  CookieAuth
+//	@Router    /api/workspaces/{id}/credentials/{kind}/{bindingId}/set-default [post]
 func (s *Server) handleSetDefaultCredentialBinding(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "id")
 	kind := chi.URLParam(r, "kind")
@@ -253,6 +303,23 @@ func (s *Server) handleSetDefaultCredentialBinding(w http.ResponseWriter, r *htt
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handlePatchCredentialBinding updates mutable fields of a credential binding.
+// PATCH /api/workspaces/{id}/credentials/{kind}/{bindingId}
+//
+//	@Summary   Patch a credential binding (rename)
+//	@Tags      Misc
+//	@Accept    json
+//	@Param     id         path  string                          true  "Workspace ID"
+//	@Param     kind       path  string                          true  "Credential kind"
+//	@Param     bindingId  path  string                          true  "Binding ID"
+//	@Param     body       body  CredentialBindingPatchRequest   true  "Fields to update"
+//	@Success   204  "updated"
+//	@Failure   400  {string}  string  "bad request"
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   404  {string}  string  "not found"
+//	@Failure   500  {string}  string  "internal error"
+//	@Security  CookieAuth
+//	@Router    /api/workspaces/{id}/credentials/{kind}/{bindingId} [patch]
 func (s *Server) handlePatchCredentialBinding(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "id")
 	kind := chi.URLParam(r, "kind")
@@ -371,6 +438,24 @@ func (s *Server) handleCreateOIDCBinding(
 }
 
 // handleDeviceCodeComplete long-polls until the OIDC device code flow completes.
+// POST /api/workspaces/{id}/credentials/{kind}/{bindingId}/device-complete
+//
+//	@Summary   Complete an OIDC device code flow for a pending credential binding
+//	@Description Long-polls until the user authorizes the device code. Returns 201 with the created binding on success.
+//	@Tags      Misc
+//	@Produce   json
+//	@Param     id         path  string  true  "Workspace ID"
+//	@Param     kind       path  string  true  "Credential kind"
+//	@Param     bindingId  path  string  true  "Pending binding ID"
+//	@Success   201  {object}  CredentialBindingCreateResponse  "Binding created"
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "device code authorization failed"
+//	@Failure   404  {string}  string  "no pending device code flow found"
+//	@Failure   409  {string}  string  "duplicate display_name or flow already being completed"
+//	@Failure   410  {string}  string  "device code flow expired"
+//	@Failure   500  {string}  string  "internal error"
+//	@Security  CookieAuth
+//	@Router    /api/workspaces/{id}/credentials/{kind}/{bindingId}/device-complete [post]
 func (s *Server) handleDeviceCodeComplete(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "id")
 	kind := chi.URLParam(r, "kind")

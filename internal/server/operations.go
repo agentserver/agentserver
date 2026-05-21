@@ -174,6 +174,24 @@ func (s *Server) getInternalOperations(w http.ResponseWriter, r *http.Request) {
 // membership enforced. Filter query params are the same as
 // getInternalOperations; workspace_id is forced from the URL so a
 // caller can't query a workspace they're not a member of.
+//
+//	@Summary   List operations log entries for a workspace
+//	@Tags      Misc
+//	@Produce   json
+//	@Param     id      path   string  true   "Workspace ID"
+//	@Param     env_id  query  string  false  "Filter by environment ID"
+//	@Param     tool    query  string  false  "Filter by tool name"
+//	@Param     source  query  string  false  "Filter by source (e.g. codex)"
+//	@Param     is_error query bool   false  "Filter by error flag"
+//	@Param     since   query  string  false  "Return entries after this RFC3339 timestamp"
+//	@Param     limit   query  int     false  "Max rows to return"
+//	@Success   200  {object}  WorkspaceOperationsResponse
+//	@Failure   400  {string}  string  "bad request"
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "not a workspace member"
+//	@Failure   500  {string}  string  "internal error"
+//	@Security  CookieAuth
+//	@Router    /api/workspaces/{id}/operations [get]
 func (s *Server) getWorkspaceOperations(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "id")
 	if wsID == "" {

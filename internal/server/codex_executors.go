@@ -60,6 +60,21 @@ type ConnectCommands struct {
 //
 // Returns the raw registration_token ONCE — UI must show it immediately
 // and let the user copy. agentserver does not store the raw token.
+//
+//	@Summary   Register a new codex remote executor for a workspace
+//	@Tags      Misc
+//	@Accept    json
+//	@Produce   json
+//	@Param     wid   path  string                   true  "Workspace ID"
+//	@Param     body  body  ExecutorRegisterRequest  true  "Executor registration payload"
+//	@Success   201  {object}  ExecutorRegisterResponse
+//	@Failure   400  {string}  string  "bad request / invalid name"
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "insufficient role (owner/maintainer required)"
+//	@Failure   502  {string}  string  "upstream gateway error"
+//	@Failure   503  {string}  string  "executors not configured"
+//	@Security  CookieAuth
+//	@Router    /api/workspaces/{wid}/executors [post]
 func (s *Server) handleRegisterExecutor(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromContext(r.Context())
 	if userID == "" {
@@ -170,6 +185,17 @@ func (s *Server) handleRegisterExecutor(w http.ResponseWriter, r *http.Request) 
 
 // handleListExecutors returns executors bound to the workspace.
 // ACL: any workspace member.
+//
+//	@Summary   List codex remote executors for a workspace
+//	@Tags      Misc
+//	@Produce   json
+//	@Param     wid  path  string  true  "Workspace ID"
+//	@Success   200  {array}   ExecutorItem
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "not a workspace member"
+//	@Failure   502  {string}  string  "upstream gateway error"
+//	@Security  CookieAuth
+//	@Router    /api/workspaces/{wid}/executors [get]
 func (s *Server) handleListExecutors(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromContext(r.Context())
 	if userID == "" {
@@ -199,6 +225,19 @@ func (s *Server) handleListExecutors(w http.ResponseWriter, r *http.Request) {
 
 // handleUnbindExecutor removes an executor from the workspace. ACL:
 // owner/maintainer of the workspace.
+//
+//	@Summary   Remove a codex remote executor from a workspace
+//	@Tags      Misc
+//	@Param     wid     path  string  true  "Workspace ID"
+//	@Param     exe_id  path  string  true  "Executor ID"
+//	@Success   204  "removed"
+//	@Failure   400  {string}  string  "bad request"
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "insufficient role (owner/maintainer required)"
+//	@Failure   502  {string}  string  "upstream gateway error"
+//	@Failure   503  {string}  string  "executors not configured"
+//	@Security  CookieAuth
+//	@Router    /api/workspaces/{wid}/executors/{exe_id} [delete]
 func (s *Server) handleUnbindExecutor(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromContext(r.Context())
 	if userID == "" {

@@ -641,12 +641,13 @@ type ExecutorRegisterResponse struct {
 
 // ModelServerStatusResponse is returned by GET /api/workspaces/{id}/modelserver/status.
 // When connected is false all other fields are absent.
+// models entries have the same {id, name} shape as LLMModel.
 type ModelServerStatusResponse struct {
-	Connected   bool     `json:"connected" validate:"required"`
-	ProjectID   string   `json:"project_id,omitempty"`
-	ProjectName string   `json:"project_name,omitempty"`
-	Models      []string `json:"models,omitempty"`
-	ConnectedAt string   `json:"connected_at,omitempty"`
+	Connected   bool       `json:"connected" validate:"required"`
+	ProjectID   string     `json:"project_id,omitempty"`
+	ProjectName string     `json:"project_name,omitempty"`
+	Models      []LLMModel `json:"models,omitempty"`
+	ConnectedAt string     `json:"connected_at,omitempty"`
 } // @name ModelServerStatusResponse
 
 // AgentInteractionItem is one entry in the audit trail returned by

@@ -1569,6 +1569,16 @@ func (s *Server) handleDeleteWorkspaceLLMConfig(w http.ResponseWriter, r *http.R
 
 // --- Sandbox handlers ---
 
+//	@Summary   Get workspace quota defaults and current sandbox count
+//	@Tags      Misc
+//	@Produce   json
+//	@Param     wid  path  string  true  "Workspace ID"
+//	@Success   200  {object}  WorkspaceDefaultsResponse
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "insufficient role"
+//	@Failure   500  {string}  string  "internal error"
+//	@Security  CookieAuth
+//	@Router    /api/workspaces/{wid}/defaults [get]
 func (s *Server) handleGetWorkspaceDefaults(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "wid")
 	if !s.requireWorkspaceRole(w, r, wsID, "owner", "maintainer", "developer") {
@@ -1590,12 +1600,12 @@ func (s *Server) handleGetWorkspaceDefaults(w http.ResponseWriter, r *http.Reque
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"max_sandbox_cpu":    wd.MaxSandboxCPU,
-		"max_sandbox_memory": wd.MaxSandboxMemory,
-		"max_idle_timeout":   wd.MaxIdleTimeout,
-		"max_sandboxes":      wd.MaxSandboxes,
-		"current_sandboxes":  currentSandboxes,
+	json.NewEncoder(w).Encode(WorkspaceDefaultsResponse{
+		MaxSandboxCPU:    wd.MaxSandboxCPU,
+		MaxSandboxMemory: wd.MaxSandboxMemory,
+		MaxIdleTimeout:   wd.MaxIdleTimeout,
+		MaxSandboxes:     wd.MaxSandboxes,
+		CurrentSandboxes: currentSandboxes,
 	})
 }
 
@@ -2185,6 +2195,19 @@ func (s *Server) handleSandboxUsage(w http.ResponseWriter, r *http.Request) {
 	s.proxyLLMRequest(w, proxyURL)
 }
 
+//	@Summary   List LLM traces for a sandbox
+//	@Tags      Misc
+//	@Produce   json
+//	@Param     id      path   string  true   "Sandbox ID"
+//	@Param     limit   query  int     false  "Max entries to return"
+//	@Param     offset  query  int     false  "Pagination offset"
+//	@Success   200  {object}  TraceListResponse
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "not a workspace member"
+//	@Failure   404  {string}  string  "sandbox not found"
+//	@Failure   503  {string}  string  "llmproxy not configured"
+//	@Security  CookieAuth
+//	@Router    /api/sandboxes/{id}/traces [get]
 func (s *Server) handleSandboxTraces(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	sbx, ok := s.Sandboxes.Get(id)
@@ -2209,6 +2232,18 @@ func (s *Server) handleSandboxTraces(w http.ResponseWriter, r *http.Request) {
 	s.proxyLLMRequest(w, proxyURL)
 }
 
+//	@Summary   Get a single LLM trace for a sandbox
+//	@Tags      Misc
+//	@Produce   json
+//	@Param     id       path  string  true  "Sandbox ID"
+//	@Param     traceId  path  string  true  "Trace ID"
+//	@Success   200  {object}  TraceRecord
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "not a workspace member"
+//	@Failure   404  {string}  string  "sandbox not found"
+//	@Failure   503  {string}  string  "llmproxy not configured"
+//	@Security  CookieAuth
+//	@Router    /api/sandboxes/{id}/traces/{traceId} [get]
 func (s *Server) handleTraceDetail(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	sbx, ok := s.Sandboxes.Get(id)
@@ -2228,6 +2263,18 @@ func (s *Server) handleTraceDetail(w http.ResponseWriter, r *http.Request) {
 	s.proxyLLMRequest(w, proxyURL)
 }
 
+//	@Summary   List LLM traces for a workspace
+//	@Tags      Misc
+//	@Produce   json
+//	@Param     wid     path   string  true   "Workspace ID"
+//	@Param     limit   query  int     false  "Max entries to return"
+//	@Param     offset  query  int     false  "Pagination offset"
+//	@Success   200  {object}  TraceListResponse
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "not a workspace member"
+//	@Failure   503  {string}  string  "llmproxy not configured"
+//	@Security  CookieAuth
+//	@Router    /api/workspaces/{wid}/traces [get]
 func (s *Server) handleWorkspaceTraces(w http.ResponseWriter, r *http.Request) {
 	wid := chi.URLParam(r, "wid")
 	if _, ok := s.requireWorkspaceMember(w, r, wid); !ok {
@@ -2247,6 +2294,17 @@ func (s *Server) handleWorkspaceTraces(w http.ResponseWriter, r *http.Request) {
 	s.proxyLLMRequest(w, proxyURL)
 }
 
+//	@Summary   Get a single LLM trace for a workspace
+//	@Tags      Misc
+//	@Produce   json
+//	@Param     wid      path  string  true  "Workspace ID"
+//	@Param     traceId  path  string  true  "Trace ID"
+//	@Success   200  {object}  TraceRecord
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "not a workspace member"
+//	@Failure   503  {string}  string  "llmproxy not configured"
+//	@Security  CookieAuth
+//	@Router    /api/workspaces/{wid}/traces/{traceId} [get]
 func (s *Server) handleWorkspaceTraceDetail(w http.ResponseWriter, r *http.Request) {
 	wid := chi.URLParam(r, "wid")
 	if _, ok := s.requireWorkspaceMember(w, r, wid); !ok {

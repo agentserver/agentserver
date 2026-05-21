@@ -8,6 +8,597 @@ info:
   title: agentserver API
   version: 0.1.0
 paths:
+  /api/admin/quotas/defaults:
+    get:
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminQuotaDefaultsResponse"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: admin role required
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Get system-wide quota defaults (admin)
+      tags:
+        - Admin
+    put:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminQuotaDefaultsUpdateRequest"
+        description: Quota fields to update (all optional)
+        required: true
+      responses:
+        "200":
+          description: Updated defaults
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminQuotaDefaultsResponse"
+        "400":
+          description: bad request
+          content:
+            application/json:
+              schema:
+                type: string
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: admin role required
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Update system-wide quota defaults (admin)
+      tags:
+        - Admin
+  /api/admin/sandboxes:
+    get:
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: "#/components/schemas/AdminSandboxItem"
+                type: array
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: admin role required
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: List all sandboxes (admin)
+      tags:
+        - Admin
+  /api/admin/users:
+    get:
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: "#/components/schemas/AdminUserItem"
+                type: array
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: admin role required
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: List all users (admin)
+      tags:
+        - Admin
+  "/api/admin/users/{id}/quota":
+    delete:
+      parameters:
+        - description: User ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: deleted
+        "401":
+          description: unauthorized
+          content:
+            "*/*":
+              schema:
+                type: string
+        "403":
+          description: admin role required
+          content:
+            "*/*":
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            "*/*":
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Delete per-user quota override (admin)
+      tags:
+        - Admin
+    get:
+      parameters:
+        - description: User ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminUserQuotaResponse"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: admin role required
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Get per-user quota override (admin)
+      tags:
+        - Admin
+    put:
+      parameters:
+        - description: User ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminSetUserQuotaRequest"
+        description: Quota overrides
+        required: true
+      responses:
+        "204":
+          description: saved
+        "400":
+          description: bad request
+          content:
+            "*/*":
+              schema:
+                type: string
+        "401":
+          description: unauthorized
+          content:
+            "*/*":
+              schema:
+                type: string
+        "403":
+          description: admin role required
+          content:
+            "*/*":
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            "*/*":
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Set per-user quota override (admin)
+      tags:
+        - Admin
+  "/api/admin/users/{id}/role":
+    put:
+      parameters:
+        - description: User ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminUpdateUserRoleRequest"
+        description: New role (user or admin)
+        required: true
+      responses:
+        "204":
+          description: updated
+        "400":
+          description: bad request / invalid role
+          content:
+            "*/*":
+              schema:
+                type: string
+        "401":
+          description: unauthorized
+          content:
+            "*/*":
+              schema:
+                type: string
+        "403":
+          description: admin role required
+          content:
+            "*/*":
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            "*/*":
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Update a user's role (admin)
+      tags:
+        - Admin
+  /api/admin/workspaces:
+    get:
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: "#/components/schemas/AdminWorkspaceItem"
+                type: array
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: admin role required
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: List all workspaces (admin)
+      tags:
+        - Admin
+  "/api/admin/workspaces/{id}/llm-quota":
+    delete:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: deleted
+        "401":
+          description: unauthorized
+          content:
+            "*/*":
+              schema:
+                type: string
+        "403":
+          description: admin role required
+          content:
+            "*/*":
+              schema:
+                type: string
+        "502":
+          description: llmproxy unavailable
+          content:
+            "*/*":
+              schema:
+                type: string
+        "503":
+          description: llmproxy not configured
+          content:
+            "*/*":
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Delete workspace LLM quota override (admin, proxied to llmproxy)
+      tags:
+        - Admin
+    get:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LLMQuotaResponse"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: admin role required
+          content:
+            application/json:
+              schema:
+                type: string
+        "502":
+          description: llmproxy unavailable
+          content:
+            application/json:
+              schema:
+                type: string
+        "503":
+          description: llmproxy not configured
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Get workspace LLM quota (admin, proxied to llmproxy)
+      tags:
+        - Admin
+    put:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: saved
+        "400":
+          description: bad request
+          content:
+            "*/*":
+              schema:
+                type: string
+        "401":
+          description: unauthorized
+          content:
+            "*/*":
+              schema:
+                type: string
+        "403":
+          description: admin role required
+          content:
+            "*/*":
+              schema:
+                type: string
+        "502":
+          description: llmproxy unavailable
+          content:
+            "*/*":
+              schema:
+                type: string
+        "503":
+          description: llmproxy not configured
+          content:
+            "*/*":
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Set workspace LLM quota override (admin, proxied to llmproxy)
+      tags:
+        - Admin
+  "/api/admin/workspaces/{id}/quota":
+    delete:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: deleted
+        "401":
+          description: unauthorized
+          content:
+            "*/*":
+              schema:
+                type: string
+        "403":
+          description: admin role required
+          content:
+            "*/*":
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            "*/*":
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Delete workspace quota override (admin)
+      tags:
+        - Admin
+    get:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminWorkspaceQuotaResponse"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: admin role required
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Get workspace quota override (admin)
+      tags:
+        - Admin
+    put:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminSetWorkspaceQuotaRequest"
+        description: Quota overrides (all optional, merged with existing)
+        required: true
+      responses:
+        "204":
+          description: saved
+        "400":
+          description: bad request
+          content:
+            "*/*":
+              schema:
+                type: string
+        "401":
+          description: unauthorized
+          content:
+            "*/*":
+              schema:
+                type: string
+        "403":
+          description: admin role required
+          content:
+            "*/*":
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            "*/*":
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Set workspace quota override (admin)
+      tags:
+        - Admin
   /api/agent/discovery/agents:
     get:
       responses:
@@ -970,6 +1561,112 @@ paths:
       summary: Resume a paused sandbox (cloud sandboxes only)
       tags:
         - Sandboxes
+  "/api/sandboxes/{id}/traces":
+    get:
+      parameters:
+        - description: Sandbox ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - description: Max entries to return
+          in: query
+          name: limit
+          schema:
+            type: integer
+        - description: Pagination offset
+          in: query
+          name: offset
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TraceListResponse"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: not a workspace member
+          content:
+            application/json:
+              schema:
+                type: string
+        "404":
+          description: sandbox not found
+          content:
+            application/json:
+              schema:
+                type: string
+        "503":
+          description: llmproxy not configured
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: List LLM traces for a sandbox
+      tags:
+        - Misc
+  "/api/sandboxes/{id}/traces/{traceId}":
+    get:
+      parameters:
+        - description: Sandbox ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - description: Trace ID
+          in: path
+          name: traceId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TraceRecord"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: not a workspace member
+          content:
+            application/json:
+              schema:
+                type: string
+        "404":
+          description: sandbox not found
+          content:
+            application/json:
+              schema:
+                type: string
+        "503":
+          description: llmproxy not configured
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Get a single LLM trace for a sandbox
+      tags:
+        - Misc
   "/api/sandboxes/{id}/usage":
     get:
       parameters:
@@ -1272,6 +1969,337 @@ paths:
       summary: Rename a workspace
       tags:
         - Workspaces
+  "/api/workspaces/{id}/credentials/{kind}":
+    get:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - description: Credential kind (e.g. kubernetes)
+          in: path
+          name: kind
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: "#/components/schemas/CredentialBindingItem"
+                type: array
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: List credential bindings for a workspace
+      tags:
+        - Misc
+    post:
+      description: On success returns 201 with the new binding. When the provider
+        requires OIDC device code authentication returns 202 with
+        verification_uri and user_code; poll device-complete to finalize.
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - description: Credential kind (e.g. kubernetes)
+          in: path
+          name: kind
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CredentialBindingCreateRequest"
+        description: Credential config
+        required: true
+      responses:
+        "201":
+          description: Binding created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CredentialBindingCreateResponse"
+        "202":
+          description: OIDC device code flow initiated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CredentialBindingCreateResponse"
+        "400":
+          description: bad request
+          content:
+            application/json:
+              schema:
+                type: string
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "409":
+          description: duplicate display_name
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Create a credential binding for a workspace
+      tags:
+        - Misc
+  "/api/workspaces/{id}/credentials/{kind}/{bindingId}":
+    delete:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - description: Credential kind
+          in: path
+          name: kind
+          required: true
+          schema:
+            type: string
+        - description: Binding ID
+          in: path
+          name: bindingId
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: deleted
+        "401":
+          description: unauthorized
+          content:
+            "*/*":
+              schema:
+                type: string
+        "404":
+          description: not found
+          content:
+            "*/*":
+              schema:
+                type: string
+        "409":
+          description: cannot delete default binding while others exist
+          content:
+            "*/*":
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            "*/*":
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Delete a credential binding
+      tags:
+        - Misc
+    patch:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - description: Credential kind
+          in: path
+          name: kind
+          required: true
+          schema:
+            type: string
+        - description: Binding ID
+          in: path
+          name: bindingId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CredentialBindingPatchRequest"
+        description: Fields to update
+        required: true
+      responses:
+        "204":
+          description: updated
+        "400":
+          description: bad request
+          content:
+            "*/*":
+              schema:
+                type: string
+        "401":
+          description: unauthorized
+          content:
+            "*/*":
+              schema:
+                type: string
+        "404":
+          description: not found
+          content:
+            "*/*":
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            "*/*":
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Patch a credential binding (rename)
+      tags:
+        - Misc
+  "/api/workspaces/{id}/credentials/{kind}/{bindingId}/device-complete":
+    post:
+      description: Long-polls until the user authorizes the device code. Returns 201
+        with the created binding on success.
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - description: Credential kind
+          in: path
+          name: kind
+          required: true
+          schema:
+            type: string
+        - description: Pending binding ID
+          in: path
+          name: bindingId
+          required: true
+          schema:
+            type: string
+      responses:
+        "201":
+          description: Binding created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CredentialBindingCreateResponse"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: device code authorization failed
+          content:
+            application/json:
+              schema:
+                type: string
+        "404":
+          description: no pending device code flow found
+          content:
+            application/json:
+              schema:
+                type: string
+        "409":
+          description: duplicate display_name or flow already being completed
+          content:
+            application/json:
+              schema:
+                type: string
+        "410":
+          description: device code flow expired
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Complete an OIDC device code flow for a pending credential binding
+      tags:
+        - Misc
+  "/api/workspaces/{id}/credentials/{kind}/{bindingId}/set-default":
+    post:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - description: Credential kind
+          in: path
+          name: kind
+          required: true
+          schema:
+            type: string
+        - description: Binding ID
+          in: path
+          name: bindingId
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: updated
+        "401":
+          description: unauthorized
+          content:
+            "*/*":
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            "*/*":
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Set a credential binding as the default
+      tags:
+        - Misc
   "/api/workspaces/{id}/im/channels":
     get:
       parameters:
@@ -1883,6 +2911,249 @@ paths:
       summary: Change a member's role (owner only)
       tags:
         - Workspaces
+  "/api/workspaces/{id}/modelserver/connect":
+    get:
+      description: Redirects the browser to the ModelServer OAuth authorization URL.
+        Returns 302.
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "302":
+          description: redirect to ModelServer OAuth
+        "401":
+          description: unauthorized
+          content:
+            "*/*":
+              schema:
+                type: string
+        "403":
+          description: insufficient role (owner/maintainer required)
+          content:
+            "*/*":
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            "*/*":
+              schema:
+                type: string
+        "501":
+          description: ModelServer OAuth not configured
+          content:
+            "*/*":
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Initiate ModelServer OAuth connection for a workspace
+      tags:
+        - Misc
+  "/api/workspaces/{id}/modelserver/disconnect":
+    delete:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: disconnected
+        "401":
+          description: unauthorized
+          content:
+            "*/*":
+              schema:
+                type: string
+        "403":
+          description: insufficient role (owner/maintainer required)
+          content:
+            "*/*":
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            "*/*":
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Disconnect ModelServer from a workspace
+      tags:
+        - Misc
+  "/api/workspaces/{id}/modelserver/status":
+    get:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelServerStatusResponse"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: not a workspace member
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Get ModelServer connection status for a workspace
+      tags:
+        - Misc
+  "/api/workspaces/{id}/operations":
+    get:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - description: Filter by environment ID
+          in: query
+          name: env_id
+          schema:
+            type: string
+        - description: Filter by tool name
+          in: query
+          name: tool
+          schema:
+            type: string
+        - description: Filter by source (e.g. codex)
+          in: query
+          name: source
+          schema:
+            type: string
+        - description: Filter by error flag
+          in: query
+          name: is_error
+          schema:
+            type: boolean
+        - description: Return entries after this RFC3339 timestamp
+          in: query
+          name: since
+          schema:
+            type: string
+        - description: Max rows to return
+          in: query
+          name: limit
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceOperationsResponse"
+        "400":
+          description: bad request
+          content:
+            application/json:
+              schema:
+                type: string
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: not a workspace member
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: List operations log entries for a workspace
+      tags:
+        - Misc
+  "/api/workspaces/{wid}/agent-interactions":
+    get:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: wid
+          required: true
+          schema:
+            type: string
+        - description: Max entries (1–200, default 50)
+          in: query
+          name: limit
+          schema:
+            type: integer
+        - description: Pagination offset
+          in: query
+          name: offset
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: "#/components/schemas/AgentInteractionItem"
+                type: array
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: not a workspace member
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: List agent interaction audit trail for a workspace
+      tags:
+        - Misc
   "/api/workspaces/{wid}/agents":
     get:
       parameters:
@@ -1965,6 +3236,196 @@ paths:
       summary: List Codex browser sessions for a workspace
       tags:
         - Codex Browser Sessions
+  "/api/workspaces/{wid}/defaults":
+    get:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: wid
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceDefaultsResponse"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: insufficient role
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Get workspace quota defaults and current sandbox count
+      tags:
+        - Misc
+  "/api/workspaces/{wid}/executors":
+    get:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: wid
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: "#/components/schemas/ExecutorItem"
+                type: array
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: not a workspace member
+          content:
+            application/json:
+              schema:
+                type: string
+        "502":
+          description: upstream gateway error
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: List codex remote executors for a workspace
+      tags:
+        - Misc
+    post:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: wid
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecutorRegisterRequest"
+        description: Executor registration payload
+        required: true
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecutorRegisterResponse"
+        "400":
+          description: bad request / invalid name
+          content:
+            application/json:
+              schema:
+                type: string
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: insufficient role (owner/maintainer required)
+          content:
+            application/json:
+              schema:
+                type: string
+        "502":
+          description: upstream gateway error
+          content:
+            application/json:
+              schema:
+                type: string
+        "503":
+          description: executors not configured
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Register a new codex remote executor for a workspace
+      tags:
+        - Misc
+  "/api/workspaces/{wid}/executors/{exe_id}":
+    delete:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: wid
+          required: true
+          schema:
+            type: string
+        - description: Executor ID
+          in: path
+          name: exe_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: removed
+        "400":
+          description: bad request
+          content:
+            "*/*":
+              schema:
+                type: string
+        "401":
+          description: unauthorized
+          content:
+            "*/*":
+              schema:
+                type: string
+        "403":
+          description: insufficient role (owner/maintainer required)
+          content:
+            "*/*":
+              schema:
+                type: string
+        "502":
+          description: upstream gateway error
+          content:
+            "*/*":
+              schema:
+                type: string
+        "503":
+          description: executors not configured
+          content:
+            "*/*":
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Remove a codex remote executor from a workspace
+      tags:
+        - Misc
   "/api/workspaces/{wid}/sandboxes":
     get:
       parameters:
@@ -2141,6 +3602,100 @@ paths:
       summary: Create a delegated task in a workspace
       tags:
         - Agent
+  "/api/workspaces/{wid}/traces":
+    get:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: wid
+          required: true
+          schema:
+            type: string
+        - description: Max entries to return
+          in: query
+          name: limit
+          schema:
+            type: integer
+        - description: Pagination offset
+          in: query
+          name: offset
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TraceListResponse"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: not a workspace member
+          content:
+            application/json:
+              schema:
+                type: string
+        "503":
+          description: llmproxy not configured
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: List LLM traces for a workspace
+      tags:
+        - Misc
+  "/api/workspaces/{wid}/traces/{traceId}":
+    get:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: wid
+          required: true
+          schema:
+            type: string
+        - description: Trace ID
+          in: path
+          name: traceId
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TraceRecord"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: not a workspace member
+          content:
+            application/json:
+              schema:
+                type: string
+        "503":
+          description: llmproxy not configured
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Get a single LLM trace for a workspace
+      tags:
+        - Misc
   /api/workspaces/quota:
     get:
       responses:
@@ -2187,6 +3742,277 @@ components:
       name: agentserver-token
       type: apiKey
   schemas:
+    AdminOwnerInfo:
+      properties:
+        email:
+          type: string
+        id:
+          type: string
+        name:
+          type: string
+          nullable: true
+        picture:
+          type: string
+          nullable: true
+      required:
+        - email
+        - id
+      type: object
+    AdminQuotaDefaultsResponse:
+      properties:
+        max_idle_timeout:
+          type: integer
+        max_sandbox_cpu:
+          type: integer
+        max_sandbox_memory:
+          type: integer
+        max_sandboxes_per_workspace:
+          type: integer
+        max_workspace_drive_size:
+          type: integer
+        max_workspaces_per_user:
+          type: integer
+        ws_max_idle_timeout:
+          type: integer
+        ws_max_total_cpu:
+          type: integer
+        ws_max_total_memory:
+          type: integer
+      required:
+        - max_idle_timeout
+        - max_sandbox_cpu
+        - max_sandbox_memory
+        - max_sandboxes_per_workspace
+        - max_workspace_drive_size
+        - max_workspaces_per_user
+        - ws_max_idle_timeout
+        - ws_max_total_cpu
+        - ws_max_total_memory
+      type: object
+    AdminQuotaDefaultsUpdateRequest:
+      properties:
+        max_idle_timeout:
+          type: integer
+        max_sandbox_cpu:
+          type: integer
+        max_sandbox_memory:
+          type: integer
+        max_sandboxes_per_workspace:
+          type: integer
+        max_workspace_drive_size:
+          type: integer
+        max_workspaces_per_user:
+          type: integer
+        ws_max_idle_timeout:
+          type: integer
+        ws_max_total_cpu:
+          type: integer
+        ws_max_total_memory:
+          type: integer
+      type: object
+    AdminSandboxItem:
+      properties:
+        created_at:
+          type: string
+        id:
+          type: string
+        is_local:
+          type: boolean
+        last_activity_at:
+          type: string
+          nullable: true
+        name:
+          type: string
+        status:
+          example: running
+          type: string
+        type:
+          example: opencode
+          type: string
+        workspace_id:
+          type: string
+      required:
+        - created_at
+        - id
+        - name
+        - status
+        - type
+        - workspace_id
+      type: object
+    AdminSetUserQuotaRequest:
+      properties:
+        max_workspaces:
+          type: integer
+          nullable: true
+      type: object
+    AdminSetWorkspaceQuotaRequest:
+      properties:
+        max_drive_size:
+          type: integer
+          nullable: true
+        max_idle_timeout:
+          type: integer
+          nullable: true
+        max_sandbox_cpu:
+          type: integer
+          nullable: true
+        max_sandbox_memory:
+          type: integer
+          nullable: true
+        max_sandboxes:
+          type: integer
+          nullable: true
+        max_total_cpu:
+          type: integer
+          nullable: true
+        max_total_memory:
+          type: integer
+          nullable: true
+      type: object
+    AdminUpdateUserRoleRequest:
+      properties:
+        role:
+          example: admin
+          type: string
+      required:
+        - role
+      type: object
+    AdminUserItem:
+      properties:
+        created_at:
+          type: string
+        email:
+          type: string
+        id:
+          type: string
+        name:
+          type: string
+          nullable: true
+        role:
+          example: user
+          type: string
+      required:
+        - created_at
+        - email
+        - id
+        - role
+      type: object
+    AdminUserQuotaDefaults:
+      properties:
+        max_workspaces_per_user:
+          type: integer
+      required:
+        - max_workspaces_per_user
+      type: object
+    AdminUserQuotaOverrides:
+      properties:
+        max_workspaces:
+          type: integer
+          nullable: true
+        updated_at:
+          type: string
+      required:
+        - updated_at
+      type: object
+    AdminUserQuotaResponse:
+      properties:
+        defaults:
+          $ref: "#/components/schemas/AdminUserQuotaDefaults"
+        overrides:
+          allOf:
+            - $ref: "#/components/schemas/AdminUserQuotaOverrides"
+          nullable: true
+      required:
+        - defaults
+      type: object
+    AdminWorkspaceItem:
+      properties:
+        created_at:
+          type: string
+        id:
+          type: string
+        max_sandboxes:
+          type: integer
+        name:
+          type: string
+        owner:
+          allOf:
+            - $ref: "#/components/schemas/AdminOwnerInfo"
+          nullable: true
+        sandbox_count:
+          type: integer
+        updated_at:
+          type: string
+      required:
+        - created_at
+        - id
+        - name
+        - updated_at
+      type: object
+    AdminWorkspaceQuotaDefaults:
+      properties:
+        max_drive_size:
+          type: integer
+        max_idle_timeout:
+          type: integer
+        max_sandbox_cpu:
+          type: integer
+        max_sandbox_memory:
+          type: integer
+        max_sandboxes:
+          type: integer
+        max_total_cpu:
+          type: integer
+        max_total_memory:
+          type: integer
+      required:
+        - max_drive_size
+        - max_idle_timeout
+        - max_sandbox_cpu
+        - max_sandbox_memory
+        - max_sandboxes
+        - max_total_cpu
+        - max_total_memory
+      type: object
+    AdminWorkspaceQuotaOverrides:
+      properties:
+        max_drive_size:
+          type: integer
+          nullable: true
+        max_idle_timeout:
+          type: integer
+          nullable: true
+        max_sandbox_cpu:
+          type: integer
+          nullable: true
+        max_sandbox_memory:
+          type: integer
+          nullable: true
+        max_sandboxes:
+          type: integer
+          nullable: true
+        max_total_cpu:
+          type: integer
+          nullable: true
+        max_total_memory:
+          type: integer
+          nullable: true
+        updated_at:
+          type: string
+      required:
+        - updated_at
+      type: object
+    AdminWorkspaceQuotaResponse:
+      properties:
+        defaults:
+          $ref: "#/components/schemas/AdminWorkspaceQuotaDefaults"
+        overrides:
+          allOf:
+            - $ref: "#/components/schemas/AdminWorkspaceQuotaOverrides"
+          nullable: true
+      required:
+        - defaults
+      type: object
     AgentCardItem:
       properties:
         agent_id:
@@ -2280,6 +4106,31 @@ components:
         - platform_version
         - updated_at
         - workdir
+      type: object
+    AgentInteractionItem:
+      properties:
+        action:
+          example: task.created
+          type: string
+        actor_id:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+        detail: {}
+        id:
+          type: integer
+        target_id:
+          type: string
+        target_type:
+          example: task
+          type: string
+      required:
+        - action
+        - created_at
+        - id
+        - target_id
+        - target_type
       type: object
     AgentMailboxMessage:
       properties:
@@ -2670,6 +4521,135 @@ components:
         - token
         - workspace_id
       type: object
+    CredentialBindingCreateRequest:
+      properties:
+        config:
+          example: '{"server": "https://..."}'
+          type: string
+        display_name:
+          example: My K8s Cluster
+          type: string
+      required:
+        - config
+        - display_name
+      type: object
+    CredentialBindingCreateResponse:
+      properties:
+        auth_type:
+          type: string
+        display_name:
+          type: string
+        expires_in:
+          type: integer
+        id:
+          type: string
+        is_default:
+          type: boolean
+        server_url:
+          type: string
+        status:
+          example: pending_device_code
+          type: string
+        user_code:
+          type: string
+        verification_uri:
+          type: string
+      required:
+        - id
+      type: object
+    CredentialBindingItem:
+      properties:
+        auth_type:
+          example: static
+          type: string
+        created_at:
+          type: string
+        display_name:
+          type: string
+        id:
+          type: string
+        is_default:
+          type: boolean
+        public_meta: {}
+        server_url:
+          type: string
+      required:
+        - auth_type
+        - created_at
+        - display_name
+        - id
+      type: object
+    CredentialBindingPatchRequest:
+      properties:
+        display_name:
+          example: Renamed Cluster
+          type: string
+          nullable: true
+      type: object
+    ExecutorConnectCommands:
+      properties:
+        agent_identity:
+          type: string
+      required:
+        - agent_identity
+      type: object
+    ExecutorItem:
+      properties:
+        client_ip:
+          type: string
+        client_ua:
+          type: string
+        codex_version:
+          type: string
+        connected_at:
+          type: string
+          nullable: true
+        description:
+          type: string
+        disconnected_at:
+          type: string
+          nullable: true
+        exe_id:
+          type: string
+        is_default:
+          type: boolean
+        is_online:
+          type: boolean
+        last_seen_at:
+          type: string
+          nullable: true
+        name:
+          type: string
+        os:
+          type: string
+      required:
+        - exe_id
+        - name
+      type: object
+    ExecutorRegisterRequest:
+      properties:
+        description:
+          example: Main development laptop
+          type: string
+        name:
+          example: my-dev-machine
+          type: string
+      required:
+        - name
+      type: object
+    ExecutorRegisterResponse:
+      properties:
+        agent_identity_jwt:
+          type: string
+        connect_command:
+          type: string
+        connect_commands:
+          $ref: "#/components/schemas/ExecutorConnectCommands"
+        exe_id:
+          type: string
+      required:
+        - exe_id
+      type: object
     IMBinding:
       properties:
         bot_id:
@@ -2938,6 +4918,76 @@ components:
       required:
         - role
       type: object
+    ModelServerStatusResponse:
+      properties:
+        connected:
+          type: boolean
+        connected_at:
+          type: string
+        models:
+          items:
+            $ref: "#/components/schemas/LLMModel"
+          type: array
+        project_id:
+          type: string
+        project_name:
+          type: string
+      required:
+        - connected
+      type: object
+    OperationRecord:
+      properties:
+        arguments: {}
+        arguments_meta: {}
+        cell_id:
+          type: string
+          nullable: true
+        completed_at:
+          type: string
+        duration_ms:
+          type: integer
+        env_id:
+          type: string
+        id:
+          type: string
+        is_error:
+          type: boolean
+        notebook_path:
+          type: string
+          nullable: true
+        request_id:
+          type: string
+          nullable: true
+        result_meta: {}
+        result_summary:
+          type: string
+          nullable: true
+        source:
+          example: codex
+          type: string
+        started_at:
+          type: string
+        thread_id:
+          type: string
+          nullable: true
+        tool:
+          example: shell
+          type: string
+        user_id:
+          type: string
+          nullable: true
+        workspace_id:
+          type: string
+      required:
+        - completed_at
+        - duration_ms
+        - env_id
+        - id
+        - source
+        - started_at
+        - tool
+        - workspace_id
+      type: object
     Sandbox:
       properties:
         agent_info:
@@ -3083,6 +5133,50 @@ components:
         - provider
         - request_count
       type: object
+    TraceListResponse:
+      properties:
+        traces:
+          items:
+            $ref: "#/components/schemas/TraceRecord"
+          type: array
+      required:
+        - traces
+      type: object
+    TraceRecord:
+      properties:
+        created_at:
+          type: string
+        id:
+          type: string
+        models:
+          type: string
+        request_count:
+          type: integer
+        sandbox_id:
+          type: string
+        source:
+          example: codex
+          type: string
+        total_cache_creation_tokens:
+          type: integer
+        total_cache_read_tokens:
+          type: integer
+        total_input_tokens:
+          type: integer
+        total_output_tokens:
+          type: integer
+        updated_at:
+          type: string
+        workspace_id:
+          type: string
+      required:
+        - created_at
+        - id
+        - sandbox_id
+        - source
+        - updated_at
+        - workspace_id
+      type: object
     Workspace:
       properties:
         created_at:
@@ -3107,6 +5201,25 @@ components:
       required:
         - name
       type: object
+    WorkspaceDefaultsResponse:
+      properties:
+        current_sandboxes:
+          type: integer
+        max_idle_timeout:
+          type: integer
+        max_sandbox_cpu:
+          type: integer
+        max_sandbox_memory:
+          type: integer
+        max_sandboxes:
+          type: integer
+      required:
+        - current_sandboxes
+        - max_idle_timeout
+        - max_sandbox_cpu
+        - max_sandbox_memory
+        - max_sandboxes
+      type: object
     WorkspaceMember:
       properties:
         email:
@@ -3123,6 +5236,15 @@ components:
         - email
         - role
         - user_id
+      type: object
+    WorkspaceOperationsResponse:
+      properties:
+        operations:
+          items:
+            $ref: "#/components/schemas/OperationRecord"
+          type: array
+      required:
+        - operations
       type: object
     WorkspaceQuotaResponse:
       properties:

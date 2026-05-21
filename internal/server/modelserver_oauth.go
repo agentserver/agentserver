@@ -29,6 +29,18 @@ const (
 
 // handleModelserverConnect initiates the OAuth flow to connect a workspace to a ModelServer project.
 // GET /api/workspaces/{id}/modelserver/connect
+//
+//	@Summary   Initiate ModelServer OAuth connection for a workspace
+//	@Description Redirects the browser to the ModelServer OAuth authorization URL. Returns 302.
+//	@Tags      Misc
+//	@Param     id  path  string  true  "Workspace ID"
+//	@Success   302  "redirect to ModelServer OAuth"
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "insufficient role (owner/maintainer required)"
+//	@Failure   501  {string}  string  "ModelServer OAuth not configured"
+//	@Failure   500  {string}  string  "internal error"
+//	@Security  CookieAuth
+//	@Router    /api/workspaces/{id}/modelserver/connect [get]
 func (s *Server) handleModelserverConnect(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "id")
 	if !s.requireWorkspaceRole(w, r, wsID, "owner", "maintainer") {
@@ -342,6 +354,16 @@ func (s *Server) fetchModelserverModels(accessToken string) []db.LLMModel {
 
 // handleModelserverDisconnect removes the ModelServer connection for a workspace.
 // DELETE /api/workspaces/{id}/modelserver/disconnect
+//
+//	@Summary   Disconnect ModelServer from a workspace
+//	@Tags      Misc
+//	@Param     id  path  string  true  "Workspace ID"
+//	@Success   204  "disconnected"
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "insufficient role (owner/maintainer required)"
+//	@Failure   500  {string}  string  "internal error"
+//	@Security  CookieAuth
+//	@Router    /api/workspaces/{id}/modelserver/disconnect [delete]
 func (s *Server) handleModelserverDisconnect(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "id")
 	if !s.requireWorkspaceRole(w, r, wsID, "owner", "maintainer") {
@@ -359,6 +381,17 @@ func (s *Server) handleModelserverDisconnect(w http.ResponseWriter, r *http.Requ
 
 // handleModelserverStatus returns the ModelServer connection status for a workspace.
 // GET /api/workspaces/{id}/modelserver/status
+//
+//	@Summary   Get ModelServer connection status for a workspace
+//	@Tags      Misc
+//	@Produce   json
+//	@Param     id  path  string  true  "Workspace ID"
+//	@Success   200  {object}  ModelServerStatusResponse
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "not a workspace member"
+//	@Failure   500  {string}  string  "internal error"
+//	@Security  CookieAuth
+//	@Router    /api/workspaces/{id}/modelserver/status [get]
 func (s *Server) handleModelserverStatus(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "id")
 	if _, ok := s.requireWorkspaceMember(w, r, wsID); !ok {
@@ -374,17 +407,19 @@ func (s *Server) handleModelserverStatus(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	if conn == nil {
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"connected": false,
-		})
+		json.NewEncoder(w).Encode(ModelServerStatusResponse{Connected: false})
 		return
 	}
 
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"connected":    true,
-		"project_id":   conn.ProjectID,
-		"project_name": conn.ProjectName,
-		"models":       conn.Models,
-		"connected_at": conn.CreatedAt.Format(time.RFC3339),
+	models := make([]LLMModel, len(conn.Models))
+	for i, m := range conn.Models {
+		models[i] = LLMModel{ID: m.ID, Name: m.Name}
+	}
+	json.NewEncoder(w).Encode(ModelServerStatusResponse{
+		Connected:   true,
+		ProjectID:   conn.ProjectID,
+		ProjectName: conn.ProjectName,
+		Models:      models,
+		ConnectedAt: conn.CreatedAt.Format(time.RFC3339),
 	})
 }

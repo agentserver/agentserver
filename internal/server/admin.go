@@ -31,6 +31,15 @@ func (s *Server) requireAdmin(next http.Handler) http.Handler {
 	})
 }
 
+//	@Summary   List all users (admin)
+//	@Tags      Admin
+//	@Produce   json
+//	@Success   200  {array}   AdminUserItem
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "admin role required"
+//	@Failure   500  {string}  string  "internal error"
+//	@Security  CookieAuth
+//	@Router    /api/admin/users [get]
 func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 	users, err := s.DB.ListAllUsers()
 	if err != nil {
@@ -39,17 +48,9 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	type adminUserResponse struct {
-		ID        string  `json:"id"`
-		Email     string  `json:"email"`
-		Name      *string `json:"name"`
-		Role      string  `json:"role"`
-		CreatedAt string  `json:"created_at"`
-	}
-
-	resp := make([]adminUserResponse, len(users))
+	resp := make([]AdminUserItem, len(users))
 	for i, u := range users {
-		resp[i] = adminUserResponse{
+		resp[i] = AdminUserItem{
 			ID:        u.ID,
 			Email:     u.Email,
 			Name:      u.Name,
@@ -62,6 +63,15 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+//	@Summary   List all workspaces (admin)
+//	@Tags      Admin
+//	@Produce   json
+//	@Success   200  {array}   AdminWorkspaceItem
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "admin role required"
+//	@Failure   500  {string}  string  "internal error"
+//	@Security  CookieAuth
+//	@Router    /api/admin/workspaces [get]
 func (s *Server) handleAdminListWorkspaces(w http.ResponseWriter, r *http.Request) {
 	workspaces, err := s.DB.ListAllWorkspacesAdmin()
 	if err != nil {
@@ -72,25 +82,9 @@ func (s *Server) handleAdminListWorkspaces(w http.ResponseWriter, r *http.Reques
 
 	rd := s.getResourceDefaults()
 
-	type ownerInfo struct {
-		ID      string  `json:"id"`
-		Email   string  `json:"email"`
-		Name    *string `json:"name"`
-		Picture *string `json:"picture"`
-	}
-	type adminWorkspaceResponse struct {
-		ID            string    `json:"id"`
-		Name          string    `json:"name"`
-		CreatedAt     string    `json:"created_at"`
-		UpdatedAt     string    `json:"updated_at"`
-		Owner         *ownerInfo `json:"owner"`
-		SandboxCount  int       `json:"sandbox_count"`
-		MaxSandboxes  int       `json:"max_sandboxes"`
-	}
-
-	resp := make([]adminWorkspaceResponse, len(workspaces))
+	resp := make([]AdminWorkspaceItem, len(workspaces))
 	for i, ws := range workspaces {
-		r := adminWorkspaceResponse{
+		item := AdminWorkspaceItem{
 			ID:           ws.ID,
 			Name:         ws.Name,
 			CreatedAt:    ws.CreatedAt.Format(time.RFC3339),
@@ -103,7 +97,7 @@ func (s *Server) handleAdminListWorkspaces(w http.ResponseWriter, r *http.Reques
 			if ws.OwnerEmail != nil {
 				ownerEmail = *ws.OwnerEmail
 			}
-			r.Owner = &ownerInfo{
+			item.Owner = &AdminOwnerInfo{
 				ID:      *ws.OwnerID,
 				Email:   ownerEmail,
 				Name:    ws.OwnerName,
@@ -112,15 +106,24 @@ func (s *Server) handleAdminListWorkspaces(w http.ResponseWriter, r *http.Reques
 		}
 		// Check for workspace-level quota override.
 		if wq, err := s.DB.GetWorkspaceQuota(ws.ID); err == nil && wq != nil && wq.MaxSandboxes != nil {
-			r.MaxSandboxes = *wq.MaxSandboxes
+			item.MaxSandboxes = *wq.MaxSandboxes
 		}
-		resp[i] = r
+		resp[i] = item
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
 
+//	@Summary   List all sandboxes (admin)
+//	@Tags      Admin
+//	@Produce   json
+//	@Success   200  {array}   AdminSandboxItem
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "admin role required"
+//	@Failure   500  {string}  string  "internal error"
+//	@Security  CookieAuth
+//	@Router    /api/admin/sandboxes [get]
 func (s *Server) handleAdminListSandboxes(w http.ResponseWriter, r *http.Request) {
 	sandboxes, err := s.DB.ListAllSandboxes()
 	if err != nil {
@@ -129,20 +132,9 @@ func (s *Server) handleAdminListSandboxes(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	type adminSandboxResponse struct {
-		ID             string  `json:"id"`
-		Name           string  `json:"name"`
-		WorkspaceID    string  `json:"workspace_id"`
-		Type           string  `json:"type"`
-		Status         string  `json:"status"`
-		CreatedAt      string  `json:"created_at"`
-		LastActivityAt *string `json:"last_activity_at"`
-		IsLocal        bool    `json:"is_local"`
-	}
-
-	resp := make([]adminSandboxResponse, len(sandboxes))
+	resp := make([]AdminSandboxItem, len(sandboxes))
 	for i, sbx := range sandboxes {
-		r := adminSandboxResponse{
+		item := AdminSandboxItem{
 			ID:          sbx.ID,
 			Name:        sbx.Name,
 			WorkspaceID: sbx.WorkspaceID,
@@ -153,21 +145,31 @@ func (s *Server) handleAdminListSandboxes(w http.ResponseWriter, r *http.Request
 		}
 		if sbx.LastActivityAt.Valid {
 			s := sbx.LastActivityAt.Time.Format(time.RFC3339)
-			r.LastActivityAt = &s
+			item.LastActivityAt = &s
 		}
-		resp[i] = r
+		resp[i] = item
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
 
+//	@Summary   Update a user's role (admin)
+//	@Tags      Admin
+//	@Accept    json
+//	@Param     id    path  string                      true  "User ID"
+//	@Param     body  body  AdminUpdateUserRoleRequest  true  "New role (user or admin)"
+//	@Success   204  "updated"
+//	@Failure   400  {string}  string  "bad request / invalid role"
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "admin role required"
+//	@Failure   500  {string}  string  "internal error"
+//	@Security  CookieAuth
+//	@Router    /api/admin/users/{id}/role [put]
 func (s *Server) handleAdminUpdateUserRole(w http.ResponseWriter, r *http.Request) {
 	targetID := chi.URLParam(r, "id")
 
-	var req struct {
-		Role string `json:"role"`
-	}
+	var req AdminUpdateUserRoleRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Role == "" {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
@@ -186,34 +188,44 @@ func (s *Server) handleAdminUpdateUserRole(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusNoContent)
 }
 
+//	@Summary   Get system-wide quota defaults (admin)
+//	@Tags      Admin
+//	@Produce   json
+//	@Success   200  {object}  AdminQuotaDefaultsResponse
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "admin role required"
+//	@Security  CookieAuth
+//	@Router    /api/admin/quotas/defaults [get]
 func (s *Server) handleAdminGetQuotaDefaults(w http.ResponseWriter, r *http.Request) {
 	rd := s.getResourceDefaults()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"max_workspaces_per_user":      rd.MaxWorkspacesPerUser,
-		"max_sandboxes_per_workspace":  rd.MaxSandboxesPerWorkspace,
-		"max_workspace_drive_size":     rd.MaxWorkspaceDriveSize,
-		"max_sandbox_cpu":              rd.MaxSandboxCPU,
-		"max_sandbox_memory":           rd.MaxSandboxMemory,
-		"max_idle_timeout":             rd.MaxIdleTimeout,
-		"ws_max_total_cpu":             rd.WsMaxTotalCPU,
-		"ws_max_total_memory":          rd.WsMaxTotalMemory,
-		"ws_max_idle_timeout":          rd.WsMaxIdleTimeout,
+	json.NewEncoder(w).Encode(AdminQuotaDefaultsResponse{
+		MaxWorkspacesPerUser:     rd.MaxWorkspacesPerUser,
+		MaxSandboxesPerWorkspace: rd.MaxSandboxesPerWorkspace,
+		MaxWorkspaceDriveSize:    rd.MaxWorkspaceDriveSize,
+		MaxSandboxCPU:            rd.MaxSandboxCPU,
+		MaxSandboxMemory:         rd.MaxSandboxMemory,
+		MaxIdleTimeout:           rd.MaxIdleTimeout,
+		WsMaxTotalCPU:            rd.WsMaxTotalCPU,
+		WsMaxTotalMemory:         rd.WsMaxTotalMemory,
+		WsMaxIdleTimeout:         rd.WsMaxIdleTimeout,
 	})
 }
 
+//	@Summary   Update system-wide quota defaults (admin)
+//	@Tags      Admin
+//	@Accept    json
+//	@Produce   json
+//	@Param     body  body  AdminQuotaDefaultsUpdateRequest  true  "Quota fields to update (all optional)"
+//	@Success   200  {object}  AdminQuotaDefaultsResponse  "Updated defaults"
+//	@Failure   400  {string}  string  "bad request"
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "admin role required"
+//	@Failure   500  {string}  string  "internal error"
+//	@Security  CookieAuth
+//	@Router    /api/admin/quotas/defaults [put]
 func (s *Server) handleAdminSetQuotaDefaults(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		MaxWorkspacesPerUser     *int   `json:"max_workspaces_per_user"`
-		MaxSandboxesPerWorkspace *int   `json:"max_sandboxes_per_workspace"`
-		MaxWorkspaceDriveSize    *int64 `json:"max_workspace_drive_size"`
-		MaxSandboxCPU            *int   `json:"max_sandbox_cpu"`
-		MaxSandboxMemory         *int64 `json:"max_sandbox_memory"`
-		MaxIdleTimeout           *int   `json:"max_idle_timeout"`
-		WsMaxTotalCPU            *int   `json:"ws_max_total_cpu"`
-		WsMaxTotalMemory         *int64 `json:"ws_max_total_memory"`
-		WsMaxIdleTimeout         *int   `json:"ws_max_idle_timeout"`
-	}
+	var req AdminQuotaDefaultsUpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
@@ -293,26 +305,33 @@ func (s *Server) handleAdminSetQuotaDefaults(w http.ResponseWriter, r *http.Requ
 
 	rd := s.getResourceDefaults()
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"max_workspaces_per_user":      rd.MaxWorkspacesPerUser,
-		"max_sandboxes_per_workspace":  rd.MaxSandboxesPerWorkspace,
-		"max_workspace_drive_size":     rd.MaxWorkspaceDriveSize,
-		"max_sandbox_cpu":              rd.MaxSandboxCPU,
-		"max_sandbox_memory":           rd.MaxSandboxMemory,
-		"max_idle_timeout":             rd.MaxIdleTimeout,
-		"ws_max_total_cpu":             rd.WsMaxTotalCPU,
-		"ws_max_total_memory":          rd.WsMaxTotalMemory,
-		"ws_max_idle_timeout":          rd.WsMaxIdleTimeout,
+	json.NewEncoder(w).Encode(AdminQuotaDefaultsResponse{
+		MaxWorkspacesPerUser:     rd.MaxWorkspacesPerUser,
+		MaxSandboxesPerWorkspace: rd.MaxSandboxesPerWorkspace,
+		MaxWorkspaceDriveSize:    rd.MaxWorkspaceDriveSize,
+		MaxSandboxCPU:            rd.MaxSandboxCPU,
+		MaxSandboxMemory:         rd.MaxSandboxMemory,
+		MaxIdleTimeout:           rd.MaxIdleTimeout,
+		WsMaxTotalCPU:            rd.WsMaxTotalCPU,
+		WsMaxTotalMemory:         rd.WsMaxTotalMemory,
+		WsMaxIdleTimeout:         rd.WsMaxIdleTimeout,
 	})
 }
 
+//	@Summary   Get per-user quota override (admin)
+//	@Tags      Admin
+//	@Produce   json
+//	@Param     id  path  string  true  "User ID"
+//	@Success   200  {object}  AdminUserQuotaResponse
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "admin role required"
+//	@Failure   500  {string}  string  "internal error"
+//	@Security  CookieAuth
+//	@Router    /api/admin/users/{id}/quota [get]
 func (s *Server) handleAdminGetUserQuota(w http.ResponseWriter, r *http.Request) {
 	targetID := chi.URLParam(r, "id")
 
 	rd := s.getResourceDefaults()
-	defaults := map[string]interface{}{
-		"max_workspaces_per_user": rd.MaxWorkspacesPerUser,
-	}
 
 	uq, err := s.DB.GetUserQuota(targetID)
 	if err != nil {
@@ -321,27 +340,38 @@ func (s *Server) handleAdminGetUserQuota(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	var overrides interface{}
+	resp := AdminUserQuotaResponse{
+		Defaults: AdminUserQuotaDefaults{
+			MaxWorkspacesPerUser: rd.MaxWorkspacesPerUser,
+		},
+	}
 	if uq != nil {
-		overrides = map[string]interface{}{
-			"max_workspaces": uq.MaxWorkspaces,
-			"updated_at":     uq.UpdatedAt.Format(time.RFC3339),
+		resp.Overrides = &AdminUserQuotaOverrides{
+			MaxWorkspaces: uq.MaxWorkspaces,
+			UpdatedAt:     uq.UpdatedAt.Format(time.RFC3339),
 		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"defaults":  defaults,
-		"overrides": overrides,
-	})
+	json.NewEncoder(w).Encode(resp)
 }
 
+//	@Summary   Set per-user quota override (admin)
+//	@Tags      Admin
+//	@Accept    json
+//	@Param     id    path  string                    true  "User ID"
+//	@Param     body  body  AdminSetUserQuotaRequest  true  "Quota overrides"
+//	@Success   204  "saved"
+//	@Failure   400  {string}  string  "bad request"
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "admin role required"
+//	@Failure   500  {string}  string  "internal error"
+//	@Security  CookieAuth
+//	@Router    /api/admin/users/{id}/quota [put]
 func (s *Server) handleAdminSetUserQuota(w http.ResponseWriter, r *http.Request) {
 	targetID := chi.URLParam(r, "id")
 
-	var req struct {
-		MaxWorkspaces *int `json:"max_workspaces"`
-	}
+	var req AdminSetUserQuotaRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
@@ -361,6 +391,15 @@ func (s *Server) handleAdminSetUserQuota(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusNoContent)
 }
 
+//	@Summary   Delete per-user quota override (admin)
+//	@Tags      Admin
+//	@Param     id  path  string  true  "User ID"
+//	@Success   204  "deleted"
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "admin role required"
+//	@Failure   500  {string}  string  "internal error"
+//	@Security  CookieAuth
+//	@Router    /api/admin/users/{id}/quota [delete]
 func (s *Server) handleAdminDeleteUserQuota(w http.ResponseWriter, r *http.Request) {
 	targetID := chi.URLParam(r, "id")
 
@@ -373,19 +412,20 @@ func (s *Server) handleAdminDeleteUserQuota(w http.ResponseWriter, r *http.Reque
 	w.WriteHeader(http.StatusNoContent)
 }
 
+//	@Summary   Get workspace quota override (admin)
+//	@Tags      Admin
+//	@Produce   json
+//	@Param     id  path  string  true  "Workspace ID"
+//	@Success   200  {object}  AdminWorkspaceQuotaResponse
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "admin role required"
+//	@Failure   500  {string}  string  "internal error"
+//	@Security  CookieAuth
+//	@Router    /api/admin/workspaces/{id}/quota [get]
 func (s *Server) handleAdminGetWorkspaceQuota(w http.ResponseWriter, r *http.Request) {
 	workspaceID := chi.URLParam(r, "id")
 
 	rd := s.getResourceDefaults()
-	defaults := map[string]interface{}{
-		"max_sandboxes":      rd.MaxSandboxesPerWorkspace,
-		"max_sandbox_cpu":    rd.MaxSandboxCPU,
-		"max_sandbox_memory": rd.MaxSandboxMemory,
-		"max_idle_timeout":   rd.MaxIdleTimeout,
-		"max_total_cpu":      rd.WsMaxTotalCPU,
-		"max_total_memory":   rd.WsMaxTotalMemory,
-		"max_drive_size":     rd.MaxWorkspaceDriveSize,
-	}
 
 	wq, err := s.DB.GetWorkspaceQuota(workspaceID)
 	if err != nil {
@@ -394,39 +434,50 @@ func (s *Server) handleAdminGetWorkspaceQuota(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	var overrides interface{}
+	resp := AdminWorkspaceQuotaResponse{
+		Defaults: AdminWorkspaceQuotaDefaults{
+			MaxSandboxes:     rd.MaxSandboxesPerWorkspace,
+			MaxSandboxCPU:    rd.MaxSandboxCPU,
+			MaxSandboxMemory: rd.MaxSandboxMemory,
+			MaxIdleTimeout:   rd.MaxIdleTimeout,
+			MaxTotalCPU:      rd.WsMaxTotalCPU,
+			MaxTotalMemory:   rd.WsMaxTotalMemory,
+			MaxDriveSize:     rd.MaxWorkspaceDriveSize,
+		},
+	}
 	if wq != nil {
-		overrides = map[string]interface{}{
-			"max_sandboxes":      wq.MaxSandboxes,
-			"max_sandbox_cpu":    wq.MaxSandboxCPU,
-			"max_sandbox_memory": wq.MaxSandboxMemory,
-			"max_idle_timeout":   wq.MaxIdleTimeout,
-			"max_total_cpu":      wq.MaxTotalCPU,
-			"max_total_memory":   wq.MaxTotalMemory,
-			"max_drive_size":     wq.MaxDriveSize,
-			"updated_at":         wq.UpdatedAt.Format(time.RFC3339),
+		resp.Overrides = &AdminWorkspaceQuotaOverrides{
+			MaxSandboxes:     wq.MaxSandboxes,
+			MaxSandboxCPU:    wq.MaxSandboxCPU,
+			MaxSandboxMemory: wq.MaxSandboxMemory,
+			MaxIdleTimeout:   wq.MaxIdleTimeout,
+			MaxTotalCPU:      wq.MaxTotalCPU,
+			MaxTotalMemory:   wq.MaxTotalMemory,
+			MaxDriveSize:     wq.MaxDriveSize,
+			UpdatedAt:        wq.UpdatedAt.Format(time.RFC3339),
 		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"defaults":  defaults,
-		"overrides": overrides,
-	})
+	json.NewEncoder(w).Encode(resp)
 }
 
+//	@Summary   Set workspace quota override (admin)
+//	@Tags      Admin
+//	@Accept    json
+//	@Param     id    path  string                         true  "Workspace ID"
+//	@Param     body  body  AdminSetWorkspaceQuotaRequest  true  "Quota overrides (all optional, merged with existing)"
+//	@Success   204  "saved"
+//	@Failure   400  {string}  string  "bad request"
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "admin role required"
+//	@Failure   500  {string}  string  "internal error"
+//	@Security  CookieAuth
+//	@Router    /api/admin/workspaces/{id}/quota [put]
 func (s *Server) handleAdminSetWorkspaceQuota(w http.ResponseWriter, r *http.Request) {
 	workspaceID := chi.URLParam(r, "id")
 
-	var req struct {
-		MaxSandboxes     *int   `json:"max_sandboxes"`
-		MaxSandboxCPU    *int   `json:"max_sandbox_cpu"`
-		MaxSandboxMemory *int64 `json:"max_sandbox_memory"`
-		MaxIdleTimeout   *int   `json:"max_idle_timeout"`
-		MaxTotalCPU      *int   `json:"max_total_cpu"`
-		MaxTotalMemory   *int64 `json:"max_total_memory"`
-		MaxDriveSize     *int64 `json:"max_drive_size"`
-	}
+	var req AdminSetWorkspaceQuotaRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
@@ -488,6 +539,15 @@ func (s *Server) handleAdminSetWorkspaceQuota(w http.ResponseWriter, r *http.Req
 	w.WriteHeader(http.StatusNoContent)
 }
 
+//	@Summary   Delete workspace quota override (admin)
+//	@Tags      Admin
+//	@Param     id  path  string  true  "Workspace ID"
+//	@Success   204  "deleted"
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "admin role required"
+//	@Failure   500  {string}  string  "internal error"
+//	@Security  CookieAuth
+//	@Router    /api/admin/workspaces/{id}/quota [delete]
 func (s *Server) handleAdminDeleteWorkspaceQuota(w http.ResponseWriter, r *http.Request) {
 	workspaceID := chi.URLParam(r, "id")
 
@@ -528,11 +588,34 @@ func (s *Server) proxyLLMProxyRequest(w http.ResponseWriter, method, path string
 	io.Copy(w, resp.Body)
 }
 
+//	@Summary   Get workspace LLM quota (admin, proxied to llmproxy)
+//	@Tags      Admin
+//	@Produce   json
+//	@Param     id  path  string  true  "Workspace ID"
+//	@Success   200  {object}  LLMQuotaResponse
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "admin role required"
+//	@Failure   502  {string}  string  "llmproxy unavailable"
+//	@Failure   503  {string}  string  "llmproxy not configured"
+//	@Security  CookieAuth
+//	@Router    /api/admin/workspaces/{id}/llm-quota [get]
 func (s *Server) handleAdminGetWorkspaceLLMQuota(w http.ResponseWriter, r *http.Request) {
 	workspaceID := chi.URLParam(r, "id")
 	s.proxyLLMProxyRequest(w, http.MethodGet, "/internal/quotas/"+workspaceID, nil)
 }
 
+//	@Summary   Set workspace LLM quota override (admin, proxied to llmproxy)
+//	@Tags      Admin
+//	@Accept    json
+//	@Param     id  path  string  true  "Workspace ID"
+//	@Success   200  "saved"
+//	@Failure   400  {string}  string  "bad request"
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "admin role required"
+//	@Failure   502  {string}  string  "llmproxy unavailable"
+//	@Failure   503  {string}  string  "llmproxy not configured"
+//	@Security  CookieAuth
+//	@Router    /api/admin/workspaces/{id}/llm-quota [put]
 func (s *Server) handleAdminSetWorkspaceLLMQuota(w http.ResponseWriter, r *http.Request) {
 	workspaceID := chi.URLParam(r, "id")
 	body, err := io.ReadAll(r.Body)
@@ -543,6 +626,16 @@ func (s *Server) handleAdminSetWorkspaceLLMQuota(w http.ResponseWriter, r *http.
 	s.proxyLLMProxyRequest(w, http.MethodPut, "/internal/quotas/"+workspaceID, body)
 }
 
+//	@Summary   Delete workspace LLM quota override (admin, proxied to llmproxy)
+//	@Tags      Admin
+//	@Param     id  path  string  true  "Workspace ID"
+//	@Success   204  "deleted"
+//	@Failure   401  {string}  string  "unauthorized"
+//	@Failure   403  {string}  string  "admin role required"
+//	@Failure   502  {string}  string  "llmproxy unavailable"
+//	@Failure   503  {string}  string  "llmproxy not configured"
+//	@Security  CookieAuth
+//	@Router    /api/admin/workspaces/{id}/llm-quota [delete]
 func (s *Server) handleAdminDeleteWorkspaceLLMQuota(w http.ResponseWriter, r *http.Request) {
 	workspaceID := chi.URLParam(r, "id")
 	s.proxyLLMProxyRequest(w, http.MethodDelete, "/internal/quotas/"+workspaceID, nil)

@@ -7,6 +7,1001 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/admin/quotas/defaults": {
+      "get": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Get system-wide quota defaults (admin)",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminQuotaDefaultsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Update system-wide quota defaults (admin)",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminQuotaDefaultsUpdateRequest"
+              }
+            }
+          },
+          "description": "Quota fields to update (all optional)",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Updated defaults",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminQuotaDefaultsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/sandboxes": {
+      "get": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Admin"
+        ],
+        "summary": "List all sandboxes (admin)",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AdminSandboxItem"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/users": {
+      "get": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Admin"
+        ],
+        "summary": "List all users (admin)",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AdminUserItem"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/users/{id}/quota": {
+      "get": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Get per-user quota override (admin)",
+        "parameters": [
+          {
+            "description": "User ID",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserQuotaResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Set per-user quota override (admin)",
+        "parameters": [
+          {
+            "description": "User ID",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminSetUserQuotaRequest"
+              }
+            }
+          },
+          "description": "Quota overrides",
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "saved"
+          },
+          "400": {
+            "description": "bad request",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "admin role required",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Delete per-user quota override (admin)",
+        "parameters": [
+          {
+            "description": "User ID",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "deleted"
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "admin role required",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/users/{id}/role": {
+      "put": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Update a user's role (admin)",
+        "parameters": [
+          {
+            "description": "User ID",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminUpdateUserRoleRequest"
+              }
+            }
+          },
+          "description": "New role (user or admin)",
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "updated"
+          },
+          "400": {
+            "description": "bad request / invalid role",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "admin role required",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/workspaces": {
+      "get": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Admin"
+        ],
+        "summary": "List all workspaces (admin)",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AdminWorkspaceItem"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/workspaces/{id}/llm-quota": {
+      "get": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Get workspace LLM quota (admin, proxied to llmproxy)",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMQuotaResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "llmproxy unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "llmproxy not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Set workspace LLM quota override (admin, proxied to llmproxy)",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "saved"
+          },
+          "400": {
+            "description": "bad request",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "admin role required",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "llmproxy unavailable",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "llmproxy not configured",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Delete workspace LLM quota override (admin, proxied to llmproxy)",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "deleted"
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "admin role required",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "llmproxy unavailable",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "llmproxy not configured",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/workspaces/{id}/quota": {
+      "get": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Get workspace quota override (admin)",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminWorkspaceQuotaResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Set workspace quota override (admin)",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminSetWorkspaceQuotaRequest"
+              }
+            }
+          },
+          "description": "Quota overrides (all optional, merged with existing)",
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "saved"
+          },
+          "400": {
+            "description": "bad request",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "admin role required",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Delete workspace quota override (admin)",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "deleted"
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "admin role required",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/agent/discovery/agents": {
       "get": {
         "tags": [
@@ -1605,6 +2600,183 @@
         }
       }
     },
+    "/api/sandboxes/{id}/traces": {
+      "get": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Misc"
+        ],
+        "summary": "List LLM traces for a sandbox",
+        "parameters": [
+          {
+            "description": "Sandbox ID",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Max entries to return",
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Pagination offset",
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TraceListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not a workspace member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "sandbox not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "llmproxy not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/sandboxes/{id}/traces/{traceId}": {
+      "get": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Misc"
+        ],
+        "summary": "Get a single LLM trace for a sandbox",
+        "parameters": [
+          {
+            "description": "Sandbox ID",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Trace ID",
+            "name": "traceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TraceRecord"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not a workspace member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "sandbox not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "llmproxy not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/sandboxes/{id}/usage": {
       "get": {
         "security": [
@@ -2138,6 +3310,544 @@
             "description": "internal error",
             "content": {
               "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspaces/{id}/credentials/{kind}": {
+      "get": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Misc"
+        ],
+        "summary": "List credential bindings for a workspace",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Credential kind (e.g. kubernetes)",
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CredentialBindingItem"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "description": "On success returns 201 with the new binding. When the provider requires OIDC device code authentication returns 202 with verification_uri and user_code; poll device-complete to finalize.",
+        "tags": [
+          "Misc"
+        ],
+        "summary": "Create a credential binding for a workspace",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Credential kind (e.g. kubernetes)",
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CredentialBindingCreateRequest"
+              }
+            }
+          },
+          "description": "Credential config",
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Binding created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialBindingCreateResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "OIDC device code flow initiated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialBindingCreateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "duplicate display_name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspaces/{id}/credentials/{kind}/{bindingId}": {
+      "delete": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Misc"
+        ],
+        "summary": "Delete a credential binding",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Credential kind",
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Binding ID",
+            "name": "bindingId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "deleted"
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "cannot delete default binding while others exist",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Misc"
+        ],
+        "summary": "Patch a credential binding (rename)",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Credential kind",
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Binding ID",
+            "name": "bindingId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CredentialBindingPatchRequest"
+              }
+            }
+          },
+          "description": "Fields to update",
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "updated"
+          },
+          "400": {
+            "description": "bad request",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspaces/{id}/credentials/{kind}/{bindingId}/device-complete": {
+      "post": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "description": "Long-polls until the user authorizes the device code. Returns 201 with the created binding on success.",
+        "tags": [
+          "Misc"
+        ],
+        "summary": "Complete an OIDC device code flow for a pending credential binding",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Credential kind",
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Pending binding ID",
+            "name": "bindingId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Binding created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialBindingCreateResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "device code authorization failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "no pending device code flow found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "duplicate display_name or flow already being completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "device code flow expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspaces/{id}/credentials/{kind}/{bindingId}/set-default": {
+      "post": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Misc"
+        ],
+        "summary": "Set a credential binding as the default",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Credential kind",
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Binding ID",
+            "name": "bindingId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "updated"
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "*/*": {
                 "schema": {
                   "type": "string"
                 }
@@ -3159,6 +4869,410 @@
         }
       }
     },
+    "/api/workspaces/{id}/modelserver/connect": {
+      "get": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "description": "Redirects the browser to the ModelServer OAuth authorization URL. Returns 302.",
+        "tags": [
+          "Misc"
+        ],
+        "summary": "Initiate ModelServer OAuth connection for a workspace",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "redirect to ModelServer OAuth"
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "insufficient role (owner/maintainer required)",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "ModelServer OAuth not configured",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspaces/{id}/modelserver/disconnect": {
+      "delete": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Misc"
+        ],
+        "summary": "Disconnect ModelServer from a workspace",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "disconnected"
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "insufficient role (owner/maintainer required)",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspaces/{id}/modelserver/status": {
+      "get": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Misc"
+        ],
+        "summary": "Get ModelServer connection status for a workspace",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelServerStatusResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not a workspace member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspaces/{id}/operations": {
+      "get": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Misc"
+        ],
+        "summary": "List operations log entries for a workspace",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by environment ID",
+            "name": "env_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by tool name",
+            "name": "tool",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by source (e.g. codex)",
+            "name": "source",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by error flag",
+            "name": "is_error",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Return entries after this RFC3339 timestamp",
+            "name": "since",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Max rows to return",
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceOperationsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not a workspace member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspaces/{wid}/agent-interactions": {
+      "get": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Misc"
+        ],
+        "summary": "List agent interaction audit trail for a workspace",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "wid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Max entries (1–200, default 50)",
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Pagination offset",
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AgentInteractionItem"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not a workspace member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/workspaces/{wid}/agents": {
       "get": {
         "security": [
@@ -3288,6 +5402,324 @@
             "description": "internal error",
             "content": {
               "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspaces/{wid}/defaults": {
+      "get": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Misc"
+        ],
+        "summary": "Get workspace quota defaults and current sandbox count",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "wid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceDefaultsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "insufficient role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspaces/{wid}/executors": {
+      "get": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Misc"
+        ],
+        "summary": "List codex remote executors for a workspace",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "wid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ExecutorItem"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not a workspace member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "upstream gateway error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Misc"
+        ],
+        "summary": "Register a new codex remote executor for a workspace",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "wid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecutorRegisterRequest"
+              }
+            }
+          },
+          "description": "Executor registration payload",
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutorRegisterResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "bad request / invalid name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "insufficient role (owner/maintainer required)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "upstream gateway error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "executors not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspaces/{wid}/executors/{exe_id}": {
+      "delete": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Misc"
+        ],
+        "summary": "Remove a codex remote executor from a workspace",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "wid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Executor ID",
+            "name": "exe_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "removed"
+          },
+          "400": {
+            "description": "bad request",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "insufficient role (owner/maintainer required)",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "upstream gateway error",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "executors not configured",
+            "content": {
+              "*/*": {
                 "schema": {
                   "type": "string"
                 }
@@ -3587,6 +6019,163 @@
           }
         }
       }
+    },
+    "/api/workspaces/{wid}/traces": {
+      "get": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Misc"
+        ],
+        "summary": "List LLM traces for a workspace",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "wid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Max entries to return",
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Pagination offset",
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TraceListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not a workspace member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "llmproxy not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspaces/{wid}/traces/{traceId}": {
+      "get": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "Misc"
+        ],
+        "summary": "Get a single LLM trace for a workspace",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "wid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Trace ID",
+            "name": "traceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TraceRecord"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "not a workspace member",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "llmproxy not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "servers": [
@@ -3628,6 +6217,401 @@
       }
     },
     "schemas": {
+      "AdminOwnerInfo": {
+        "type": "object",
+        "required": [
+          "email",
+          "id"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "nullable": true
+          },
+          "picture": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "AdminQuotaDefaultsResponse": {
+        "type": "object",
+        "required": [
+          "max_idle_timeout",
+          "max_sandbox_cpu",
+          "max_sandbox_memory",
+          "max_sandboxes_per_workspace",
+          "max_workspace_drive_size",
+          "max_workspaces_per_user",
+          "ws_max_idle_timeout",
+          "ws_max_total_cpu",
+          "ws_max_total_memory"
+        ],
+        "properties": {
+          "max_idle_timeout": {
+            "type": "integer"
+          },
+          "max_sandbox_cpu": {
+            "type": "integer"
+          },
+          "max_sandbox_memory": {
+            "type": "integer"
+          },
+          "max_sandboxes_per_workspace": {
+            "type": "integer"
+          },
+          "max_workspace_drive_size": {
+            "type": "integer"
+          },
+          "max_workspaces_per_user": {
+            "type": "integer"
+          },
+          "ws_max_idle_timeout": {
+            "type": "integer"
+          },
+          "ws_max_total_cpu": {
+            "type": "integer"
+          },
+          "ws_max_total_memory": {
+            "type": "integer"
+          }
+        }
+      },
+      "AdminQuotaDefaultsUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "max_idle_timeout": {
+            "type": "integer"
+          },
+          "max_sandbox_cpu": {
+            "type": "integer"
+          },
+          "max_sandbox_memory": {
+            "type": "integer"
+          },
+          "max_sandboxes_per_workspace": {
+            "type": "integer"
+          },
+          "max_workspace_drive_size": {
+            "type": "integer"
+          },
+          "max_workspaces_per_user": {
+            "type": "integer"
+          },
+          "ws_max_idle_timeout": {
+            "type": "integer"
+          },
+          "ws_max_total_cpu": {
+            "type": "integer"
+          },
+          "ws_max_total_memory": {
+            "type": "integer"
+          }
+        }
+      },
+      "AdminSandboxItem": {
+        "type": "object",
+        "required": [
+          "created_at",
+          "id",
+          "name",
+          "status",
+          "type",
+          "workspace_id"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "is_local": {
+            "type": "boolean"
+          },
+          "last_activity_at": {
+            "type": "string",
+            "nullable": true
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "example": "running"
+          },
+          "type": {
+            "type": "string",
+            "example": "opencode"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminSetUserQuotaRequest": {
+        "type": "object",
+        "properties": {
+          "max_workspaces": {
+            "type": "integer",
+            "nullable": true
+          }
+        }
+      },
+      "AdminSetWorkspaceQuotaRequest": {
+        "type": "object",
+        "properties": {
+          "max_drive_size": {
+            "type": "integer",
+            "nullable": true
+          },
+          "max_idle_timeout": {
+            "type": "integer",
+            "nullable": true
+          },
+          "max_sandbox_cpu": {
+            "type": "integer",
+            "nullable": true
+          },
+          "max_sandbox_memory": {
+            "type": "integer",
+            "nullable": true
+          },
+          "max_sandboxes": {
+            "type": "integer",
+            "nullable": true
+          },
+          "max_total_cpu": {
+            "type": "integer",
+            "nullable": true
+          },
+          "max_total_memory": {
+            "type": "integer",
+            "nullable": true
+          }
+        }
+      },
+      "AdminUpdateUserRoleRequest": {
+        "type": "object",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "role": {
+            "type": "string",
+            "example": "admin"
+          }
+        }
+      },
+      "AdminUserItem": {
+        "type": "object",
+        "required": [
+          "created_at",
+          "email",
+          "id",
+          "role"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "nullable": true
+          },
+          "role": {
+            "type": "string",
+            "example": "user"
+          }
+        }
+      },
+      "AdminUserQuotaDefaults": {
+        "type": "object",
+        "required": [
+          "max_workspaces_per_user"
+        ],
+        "properties": {
+          "max_workspaces_per_user": {
+            "type": "integer"
+          }
+        }
+      },
+      "AdminUserQuotaOverrides": {
+        "type": "object",
+        "required": [
+          "updated_at"
+        ],
+        "properties": {
+          "max_workspaces": {
+            "type": "integer",
+            "nullable": true
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminUserQuotaResponse": {
+        "type": "object",
+        "required": [
+          "defaults"
+        ],
+        "properties": {
+          "defaults": {
+            "$ref": "#/components/schemas/AdminUserQuotaDefaults"
+          },
+          "overrides": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AdminUserQuotaOverrides"
+              }
+            ],
+            "nullable": true
+          }
+        }
+      },
+      "AdminWorkspaceItem": {
+        "type": "object",
+        "required": [
+          "created_at",
+          "id",
+          "name",
+          "updated_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "max_sandboxes": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "owner": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AdminOwnerInfo"
+              }
+            ],
+            "nullable": true
+          },
+          "sandbox_count": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminWorkspaceQuotaDefaults": {
+        "type": "object",
+        "required": [
+          "max_drive_size",
+          "max_idle_timeout",
+          "max_sandbox_cpu",
+          "max_sandbox_memory",
+          "max_sandboxes",
+          "max_total_cpu",
+          "max_total_memory"
+        ],
+        "properties": {
+          "max_drive_size": {
+            "type": "integer"
+          },
+          "max_idle_timeout": {
+            "type": "integer"
+          },
+          "max_sandbox_cpu": {
+            "type": "integer"
+          },
+          "max_sandbox_memory": {
+            "type": "integer"
+          },
+          "max_sandboxes": {
+            "type": "integer"
+          },
+          "max_total_cpu": {
+            "type": "integer"
+          },
+          "max_total_memory": {
+            "type": "integer"
+          }
+        }
+      },
+      "AdminWorkspaceQuotaOverrides": {
+        "type": "object",
+        "required": [
+          "updated_at"
+        ],
+        "properties": {
+          "max_drive_size": {
+            "type": "integer",
+            "nullable": true
+          },
+          "max_idle_timeout": {
+            "type": "integer",
+            "nullable": true
+          },
+          "max_sandbox_cpu": {
+            "type": "integer",
+            "nullable": true
+          },
+          "max_sandbox_memory": {
+            "type": "integer",
+            "nullable": true
+          },
+          "max_sandboxes": {
+            "type": "integer",
+            "nullable": true
+          },
+          "max_total_cpu": {
+            "type": "integer",
+            "nullable": true
+          },
+          "max_total_memory": {
+            "type": "integer",
+            "nullable": true
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        }
+      },
+      "AdminWorkspaceQuotaResponse": {
+        "type": "object",
+        "required": [
+          "defaults"
+        ],
+        "properties": {
+          "defaults": {
+            "$ref": "#/components/schemas/AdminWorkspaceQuotaDefaults"
+          },
+          "overrides": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AdminWorkspaceQuotaOverrides"
+              }
+            ],
+            "nullable": true
+          }
+        }
+      },
       "AgentCardItem": {
         "type": "object",
         "required": [
@@ -3755,6 +6739,40 @@
           },
           "workdir": {
             "type": "string"
+          }
+        }
+      },
+      "AgentInteractionItem": {
+        "type": "object",
+        "required": [
+          "action",
+          "created_at",
+          "id",
+          "target_id",
+          "target_type"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "example": "task.created"
+          },
+          "actor_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "detail": {},
+          "id": {
+            "type": "integer"
+          },
+          "target_id": {
+            "type": "string"
+          },
+          "target_type": {
+            "type": "string",
+            "example": "task"
           }
         }
       },
@@ -4311,6 +7329,195 @@
           }
         }
       },
+      "CredentialBindingCreateRequest": {
+        "type": "object",
+        "required": [
+          "config",
+          "display_name"
+        ],
+        "properties": {
+          "config": {
+            "type": "string",
+            "example": "{\"server\": \"https://...\"}"
+          },
+          "display_name": {
+            "type": "string",
+            "example": "My K8s Cluster"
+          }
+        }
+      },
+      "CredentialBindingCreateResponse": {
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "auth_type": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "expires_in": {
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "is_default": {
+            "type": "boolean"
+          },
+          "server_url": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "example": "pending_device_code"
+          },
+          "user_code": {
+            "type": "string"
+          },
+          "verification_uri": {
+            "type": "string"
+          }
+        }
+      },
+      "CredentialBindingItem": {
+        "type": "object",
+        "required": [
+          "auth_type",
+          "created_at",
+          "display_name",
+          "id"
+        ],
+        "properties": {
+          "auth_type": {
+            "type": "string",
+            "example": "static"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "is_default": {
+            "type": "boolean"
+          },
+          "public_meta": {},
+          "server_url": {
+            "type": "string"
+          }
+        }
+      },
+      "CredentialBindingPatchRequest": {
+        "type": "object",
+        "properties": {
+          "display_name": {
+            "type": "string",
+            "example": "Renamed Cluster",
+            "nullable": true
+          }
+        }
+      },
+      "ExecutorConnectCommands": {
+        "type": "object",
+        "required": [
+          "agent_identity"
+        ],
+        "properties": {
+          "agent_identity": {
+            "type": "string"
+          }
+        }
+      },
+      "ExecutorItem": {
+        "type": "object",
+        "required": [
+          "exe_id",
+          "name"
+        ],
+        "properties": {
+          "client_ip": {
+            "type": "string"
+          },
+          "client_ua": {
+            "type": "string"
+          },
+          "codex_version": {
+            "type": "string"
+          },
+          "connected_at": {
+            "type": "string",
+            "nullable": true
+          },
+          "description": {
+            "type": "string"
+          },
+          "disconnected_at": {
+            "type": "string",
+            "nullable": true
+          },
+          "exe_id": {
+            "type": "string"
+          },
+          "is_default": {
+            "type": "boolean"
+          },
+          "is_online": {
+            "type": "boolean"
+          },
+          "last_seen_at": {
+            "type": "string",
+            "nullable": true
+          },
+          "name": {
+            "type": "string"
+          },
+          "os": {
+            "type": "string"
+          }
+        }
+      },
+      "ExecutorRegisterRequest": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "example": "Main development laptop"
+          },
+          "name": {
+            "type": "string",
+            "example": "my-dev-machine"
+          }
+        }
+      },
+      "ExecutorRegisterResponse": {
+        "type": "object",
+        "required": [
+          "exe_id"
+        ],
+        "properties": {
+          "agent_identity_jwt": {
+            "type": "string"
+          },
+          "connect_command": {
+            "type": "string"
+          },
+          "connect_commands": {
+            "$ref": "#/components/schemas/ExecutorConnectCommands"
+          },
+          "exe_id": {
+            "type": "string"
+          }
+        }
+      },
       "IMBinding": {
         "type": "object",
         "required": [
@@ -4705,6 +7912,103 @@
           }
         }
       },
+      "ModelServerStatusResponse": {
+        "type": "object",
+        "required": [
+          "connected"
+        ],
+        "properties": {
+          "connected": {
+            "type": "boolean"
+          },
+          "connected_at": {
+            "type": "string"
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LLMModel"
+            }
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "project_name": {
+            "type": "string"
+          }
+        }
+      },
+      "OperationRecord": {
+        "type": "object",
+        "required": [
+          "completed_at",
+          "duration_ms",
+          "env_id",
+          "id",
+          "source",
+          "started_at",
+          "tool",
+          "workspace_id"
+        ],
+        "properties": {
+          "arguments": {},
+          "arguments_meta": {},
+          "cell_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "completed_at": {
+            "type": "string"
+          },
+          "duration_ms": {
+            "type": "integer"
+          },
+          "env_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "is_error": {
+            "type": "boolean"
+          },
+          "notebook_path": {
+            "type": "string",
+            "nullable": true
+          },
+          "request_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "result_meta": {},
+          "result_summary": {
+            "type": "string",
+            "nullable": true
+          },
+          "source": {
+            "type": "string",
+            "example": "codex"
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "thread_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "tool": {
+            "type": "string",
+            "example": "shell"
+          },
+          "user_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        }
+      },
       "Sandbox": {
         "type": "object",
         "required": [
@@ -4911,6 +8215,70 @@
           }
         }
       },
+      "TraceListResponse": {
+        "type": "object",
+        "required": [
+          "traces"
+        ],
+        "properties": {
+          "traces": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TraceRecord"
+            }
+          }
+        }
+      },
+      "TraceRecord": {
+        "type": "object",
+        "required": [
+          "created_at",
+          "id",
+          "sandbox_id",
+          "source",
+          "updated_at",
+          "workspace_id"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "models": {
+            "type": "string"
+          },
+          "request_count": {
+            "type": "integer"
+          },
+          "sandbox_id": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string",
+            "example": "codex"
+          },
+          "total_cache_creation_tokens": {
+            "type": "integer"
+          },
+          "total_cache_read_tokens": {
+            "type": "integer"
+          },
+          "total_input_tokens": {
+            "type": "integer"
+          },
+          "total_output_tokens": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        }
+      },
       "Workspace": {
         "type": "object",
         "required": [
@@ -4946,6 +8314,33 @@
           }
         }
       },
+      "WorkspaceDefaultsResponse": {
+        "type": "object",
+        "required": [
+          "current_sandboxes",
+          "max_idle_timeout",
+          "max_sandbox_cpu",
+          "max_sandbox_memory",
+          "max_sandboxes"
+        ],
+        "properties": {
+          "current_sandboxes": {
+            "type": "integer"
+          },
+          "max_idle_timeout": {
+            "type": "integer"
+          },
+          "max_sandbox_cpu": {
+            "type": "integer"
+          },
+          "max_sandbox_memory": {
+            "type": "integer"
+          },
+          "max_sandboxes": {
+            "type": "integer"
+          }
+        }
+      },
       "WorkspaceMember": {
         "type": "object",
         "required": [
@@ -4967,6 +8362,20 @@
           },
           "user_id": {
             "type": "string"
+          }
+        }
+      },
+      "WorkspaceOperationsResponse": {
+        "type": "object",
+        "required": [
+          "operations"
+        ],
+        "properties": {
+          "operations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OperationRecord"
+            }
           }
         }
       },

@@ -598,6 +598,19 @@ func (s *Server) Router() http.Handler {
 	})
 }
 
+// handleLogin authenticates a user with email + password and sets the
+// agentserver-token cookie on success.
+//
+//	@Summary     Log in with email + password
+//	@Description Validates credentials; on success sets the session cookie and returns {"status":"ok"}.
+//	@Tags        Auth
+//	@Accept      json
+//	@Produce     json
+//	@Param       body  body      AuthCredentials  true  "Email and password"
+//	@Success     200   {object}  AuthStatusResponse
+//	@Failure     400   {string}  string  "bad request"
+//	@Failure     401   {string}  string  "invalid credentials"
+//	@Router      /api/auth/login [post]
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req AuthCredentials
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -614,6 +627,21 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(AuthStatusResponse{Status: "ok"})
 }
 
+// handleRegister creates a new user account; the first user
+// registered on a fresh install is promoted to admin and gets a
+// default workspace.
+//
+//	@Summary     Register a new user
+//	@Description On success returns the new user id. The first registered user becomes admin.
+//	@Tags        Auth
+//	@Accept      json
+//	@Produce     json
+//	@Param       body  body      AuthCredentials  true  "Email and password"
+//	@Success     201   {object}  AuthRegisterResponse
+//	@Failure     400   {string}  string  "bad request / email and password required"
+//	@Failure     409   {string}  string  "email already taken"
+//	@Failure     500   {string}  string  "internal error / failed to create user"
+//	@Router      /api/auth/register [post]
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req AuthCredentials
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -657,6 +685,16 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(AuthRegisterResponse{ID: id, Email: req.Email})
 }
 
+// handleAuthCheck reports whether the request carries a valid
+// agentserver-token cookie. Used by the SPA as a cheap session probe.
+//
+//	@Summary     Check session validity
+//	@Tags        Auth
+//	@Produce     json
+//	@Success     200  {object}  AuthStatusResponse
+//	@Failure     401  {string}  string  "unauthorized"
+//	@Security    CookieAuth
+//	@Router      /api/auth/check [get]
 func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.Auth.ValidateRequest(r); !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -666,6 +704,14 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(AuthStatusResponse{Status: "ok"})
 }
 
+// handleLogout clears the agentserver-token cookie. Idempotent —
+// returns 200 even if the caller wasn't logged in.
+//
+//	@Summary  Log out (clear session cookie)
+//	@Tags     Auth
+//	@Produce  json
+//	@Success  200  {object}  AuthStatusResponse
+//	@Router   /api/auth/logout [post]
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	// Cookie Domain must match the issuance side (auth.SetTokenCookie)
 	// or the browser won't actually clear the cross-subdomain cookie.
@@ -683,6 +729,15 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(AuthStatusResponse{Status: "ok"})
 }
 
+// handleMe returns the authenticated user's profile.
+//
+//	@Summary   Get current user profile
+//	@Tags      Auth
+//	@Produce   json
+//	@Success   200  {object}  AuthMeResponse
+//	@Failure   404  {string}  string  "user not found"
+//	@Security  CookieAuth
+//	@Router    /api/auth/me [get]
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromContext(r.Context())
 	user, err := s.Auth.GetUserByID(userID)

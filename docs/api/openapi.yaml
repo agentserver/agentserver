@@ -7,10 +7,132 @@ info:
     docs/api/README.md for regeneration instructions.
   title: agentserver API
   version: 0.1.0
-paths: {}
+paths:
+  /api/auth/check:
+    get:
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthStatusResponse"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Check session validity
+      tags:
+        - Auth
+  /api/auth/login:
+    post:
+      description: Validates credentials; on success sets the session cookie and
+        returns {"status":"ok"}.
+      requestBody:
+        $ref: "#/components/requestBodies/AuthCredentials"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthStatusResponse"
+        "400":
+          description: bad request
+          content:
+            application/json:
+              schema:
+                type: string
+        "401":
+          description: invalid credentials
+          content:
+            application/json:
+              schema:
+                type: string
+      summary: Log in with email + password
+      tags:
+        - Auth
+  /api/auth/logout:
+    post:
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthStatusResponse"
+      summary: Log out (clear session cookie)
+      tags:
+        - Auth
+  /api/auth/me:
+    get:
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthMeResponse"
+        "404":
+          description: user not found
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Get current user profile
+      tags:
+        - Auth
+  /api/auth/register:
+    post:
+      description: On success returns the new user id. The first registered user
+        becomes admin.
+      requestBody:
+        $ref: "#/components/requestBodies/AuthCredentials"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthRegisterResponse"
+        "400":
+          description: bad request / email and password required
+          content:
+            application/json:
+              schema:
+                type: string
+        "409":
+          description: email already taken
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: internal error / failed to create user
+          content:
+            application/json:
+              schema:
+                type: string
+      summary: Register a new user
+      tags:
+        - Auth
 servers:
   - url: /
 components:
+  requestBodies:
+    AuthCredentials:
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AuthCredentials"
+      description: Email and password
+      required: true
   securitySchemes:
     CookieAuth:
       description: Session cookie set by POST /api/auth/login. All non-auth endpoints
@@ -18,3 +140,42 @@ components:
       in: cookie
       name: agentserver-token
       type: apiKey
+  schemas:
+    AuthCredentials:
+      properties:
+        email:
+          example: alice@example.com
+          type: string
+        password:
+          example: hunter2
+          type: string
+      type: object
+    AuthMeResponse:
+      properties:
+        email:
+          type: string
+        id:
+          type: string
+        name:
+          type: string
+        picture:
+          type: string
+        role:
+          example: developer
+          type: string
+      type: object
+    AuthRegisterResponse:
+      properties:
+        email:
+          example: alice@example.com
+          type: string
+        id:
+          example: 7e7a4f6c-...
+          type: string
+      type: object
+    AuthStatusResponse:
+      properties:
+        status:
+          example: ok
+          type: string
+      type: object

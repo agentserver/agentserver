@@ -16,20 +16,20 @@ package server
 type AuthCredentials struct {
 	Email    string `json:"email" example:"alice@example.com"`
 	Password string `json:"password" example:"hunter2"`
-}
+} //@name AuthCredentials
 
 // AuthStatusResponse is the {"status":"ok"} envelope returned by
 // /api/auth/login, /api/auth/logout, and /api/auth/check on success.
 type AuthStatusResponse struct {
 	Status string `json:"status" example:"ok"`
-}
+} //@name AuthStatusResponse
 
 // AuthRegisterResponse is what POST /api/auth/register returns on
 // success: the new user's id and the email it was registered with.
 type AuthRegisterResponse struct {
 	ID    string `json:"id"    example:"7e7a4f6c-..."`
 	Email string `json:"email" example:"alice@example.com"`
-}
+} //@name AuthRegisterResponse
 
 // AuthMeResponse is the current user payload returned by GET /api/auth/me.
 // Name and Picture are populated from OIDC profile data when present
@@ -40,4 +40,4 @@ type AuthMeResponse struct {
 	Name    *string `json:"name,omitempty"`
 	Picture *string `json:"picture,omitempty"`
 	Role    string  `json:"role" example:"developer"`
-}
+} //@name AuthMeResponse

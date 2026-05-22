@@ -94,6 +94,7 @@ func (s *Server) handleListScheduledTasks(w http.ResponseWriter, r *http.Request
 	}
 	rows, err := s.DB.ListScheduledTasksByWorkspace(wid, r.URL.Query().Get("status"))
 	if err != nil {
+		log.Printf("list scheduled tasks %s: %v", wid, err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -126,7 +127,12 @@ func (s *Server) handleGetScheduledTask(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	runs, _ := s.DB.ListScheduledTaskRuns(t.ID, 20)
+	runs, err := s.DB.ListScheduledTaskRuns(t.ID, 20)
+	if err != nil {
+		log.Printf("list scheduled task runs %s: %v", t.ID, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"task": scheduledTaskResponse{
 			TaskID:     t.SeriesID,
@@ -160,7 +166,12 @@ func (s *Server) handlePauseScheduledTask(w http.ResponseWriter, r *http.Request
 	if _, ok := s.requireWorkspaceMember(w, r, wid); !ok {
 		return
 	}
-	n, _ := s.DB.PauseScheduledSeries(wid, sid)
+	n, err := s.DB.PauseScheduledSeries(wid, sid)
+	if err != nil {
+		log.Printf("pause scheduled series %s/%s: %v", wid, sid, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"paused": n})
 }
 
@@ -170,7 +181,12 @@ func (s *Server) handleResumeScheduledTask(w http.ResponseWriter, r *http.Reques
 	if _, ok := s.requireWorkspaceMember(w, r, wid); !ok {
 		return
 	}
-	n, _ := s.DB.ResumeScheduledSeries(wid, sid)
+	n, err := s.DB.ResumeScheduledSeries(wid, sid)
+	if err != nil {
+		log.Printf("resume scheduled series %s/%s: %v", wid, sid, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"resumed": n})
 }
 
@@ -206,6 +222,7 @@ func (s *Server) handleUpdateScheduledTask(w http.ResponseWriter, r *http.Reques
 	}
 	n, err := s.DB.UpdateScheduledSeries(wid, sid, upd)
 	if err != nil {
+		log.Printf("update scheduled series %s/%s: %v", wid, sid, err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -218,12 +235,22 @@ func (s *Server) handleGetScheduledTaskRuns(w http.ResponseWriter, r *http.Reque
 	if _, ok := s.requireWorkspaceMember(w, r, wid); !ok {
 		return
 	}
-	t, _ := s.DB.GetScheduledTaskBySeries(wid, sid)
+	t, err := s.DB.GetScheduledTaskBySeries(wid, sid)
+	if err != nil {
+		log.Printf("get scheduled task by series %s/%s: %v", wid, sid, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	if t == nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	runs, _ := s.DB.ListScheduledTaskRuns(t.ID, 50)
+	runs, err := s.DB.ListScheduledTaskRuns(t.ID, 50)
+	if err != nil {
+		log.Printf("list scheduled task runs %s: %v", t.ID, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, http.StatusOK, runs)
 }
 

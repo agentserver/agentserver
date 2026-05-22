@@ -1,5 +1,6 @@
 import { HomeHero } from './HomeHero'
 import { HomeNav } from './HomeNav'
+import { HomePillars } from './HomePillars'
 import { HomeQuote } from './HomeQuote'
 
 export function Home() {
@@ -9,6 +10,7 @@ export function Home() {
       <main className="mx-auto max-w-6xl px-6">
         <HomeHero />
         <HomeQuote />
+        <HomePillars />
       </main>
     </div>
   )

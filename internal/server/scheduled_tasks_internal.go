@@ -234,6 +234,7 @@ func (s *Server) handleInternalListScheduledTasks(w http.ResponseWriter, r *http
 			Recurrence: t.Recurrence,
 			Status:     t.Status,
 			Timezone:   t.Timezone,
+			Prompt:     t.Prompt,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

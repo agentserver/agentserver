@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { RefreshCw, AlertCircle, X } from 'lucide-react'
 import {
   listOperations,
-  type Operation,
+  type OperationRecord,
   type ListOperationsFilters,
 } from '../lib/api'
 
@@ -12,15 +12,15 @@ interface Props {
 
 const AUTO_REFRESH_INTERVAL_MS = 30_000
 
-const SOURCES: Array<'' | 'sdk' | 'tui' | 'llm'> = ['', 'sdk', 'tui', 'llm']
+const SOURCES: string[] = ['', 'sdk', 'tui', 'llm']
 
 export default function OperationsPanel({ workspaceId }: Props) {
   const [filters, setFilters] = useState<ListOperationsFilters>({ limit: 100 })
-  const [ops, setOps] = useState<Operation[]>([])
+  const [ops, setOps] = useState<OperationRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [autoRefresh, setAutoRefresh] = useState(false)
-  const [selected, setSelected] = useState<Operation | null>(null)
+  const [selected, setSelected] = useState<OperationRecord | null>(null)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -65,7 +65,7 @@ export default function OperationsPanel({ workspaceId }: Props) {
             onChange={(e) =>
               setFilters((f) => ({
                 ...f,
-                source: (e.target.value || undefined) as ListOperationsFilters['source'],
+                source: e.target.value || undefined,
               }))
             }
           >
@@ -199,7 +199,7 @@ function OperationDetailModal({
   op,
   onClose,
 }: {
-  op: Operation
+  op: OperationRecord
   onClose: () => void
 }) {
   return (
@@ -240,12 +240,16 @@ function OperationDetailModal({
               </pre>
             </div>
           )}
-          {op.arguments_meta && (
-            <div className="text-xs text-[var(--muted-foreground)]">
-              arguments truncated: {op.arguments_meta.size_bytes} bytes, sha256{' '}
-              <code className="text-[var(--foreground)]">{op.arguments_meta.sha256.slice(0, 12)}…</code>
-            </div>
-          )}
+          {op.arguments_meta != null && (() => {
+            const meta = op.arguments_meta as { truncated?: true; size_bytes?: number; sha256?: string }
+            if (meta.size_bytes === undefined) return null
+            return (
+              <div className="text-xs text-[var(--muted-foreground)]">
+                arguments truncated: {meta.size_bytes} bytes, sha256{' '}
+                <code className="text-[var(--foreground)]">{(meta.sha256 ?? '').slice(0, 12)}…</code>
+              </div>
+            )
+          })()}
           {op.result_summary && (
             <div>
               <div className="mb-1 text-xs text-[var(--muted-foreground)]">result_summary</div>
@@ -254,11 +258,15 @@ function OperationDetailModal({
               </pre>
             </div>
           )}
-          {op.result_meta && (
-            <div className="text-xs text-[var(--muted-foreground)]">
-              result truncated: total {op.result_meta.total_bytes} bytes
-            </div>
-          )}
+          {op.result_meta != null && (() => {
+            const meta = op.result_meta as { total_bytes?: number }
+            if (meta.total_bytes === undefined) return null
+            return (
+              <div className="text-xs text-[var(--muted-foreground)]">
+                result truncated: total {meta.total_bytes} bytes
+              </div>
+            )
+          })()}
         </div>
       </div>
     </div>

@@ -2729,7 +2729,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TraceRecord"
+                  "$ref": "#/components/schemas/TraceDetailResponse"
                 }
               }
             }
@@ -6139,7 +6139,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TraceRecord"
+                  "$ref": "#/components/schemas/TraceDetailResponse"
                 }
               }
             }
@@ -7734,6 +7734,7 @@
       "IMWeixinQRWaitResponse": {
         "type": "object",
         "required": [
+          "connected",
           "status"
         ],
         "properties": {
@@ -8215,6 +8216,24 @@
           }
         }
       },
+      "TraceDetailResponse": {
+        "type": "object",
+        "required": [
+          "requests",
+          "trace"
+        ],
+        "properties": {
+          "requests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TraceRequest"
+            }
+          },
+          "trace": {
+            "$ref": "#/components/schemas/TraceRecord"
+          }
+        }
+      },
       "TraceListResponse": {
         "type": "object",
         "required": [
@@ -8281,6 +8300,69 @@
           },
           "updated_at": {
             "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TraceRequest": {
+        "type": "object",
+        "required": [
+          "cache_creation_input_tokens",
+          "cache_read_input_tokens",
+          "created_at",
+          "duration",
+          "id",
+          "input_tokens",
+          "model",
+          "output_tokens",
+          "provider",
+          "sandbox_id",
+          "workspace_id"
+        ],
+        "properties": {
+          "cache_creation_input_tokens": {
+            "type": "integer"
+          },
+          "cache_read_input_tokens": {
+            "type": "integer"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "duration": {
+            "type": "integer"
+          },
+          "id": {
+            "type": "string"
+          },
+          "input_tokens": {
+            "type": "integer"
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "output_tokens": {
+            "type": "integer"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "sandbox_id": {
+            "type": "string"
+          },
+          "streaming": {
+            "type": "boolean"
+          },
+          "trace_id": {
+            "type": "string"
+          },
+          "ttft": {
+            "type": "integer"
           },
           "workspace_id": {
             "type": "string"

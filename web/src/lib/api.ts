@@ -920,28 +920,10 @@ export async function unbindRemoteExecutor(workspaceId: string, exeId: string): 
 
 // === Operations (Plan 3c) ===
 
-export interface Operation {
-  id: string
-  workspace_id: string
-  user_id?: string | null
-  source: 'sdk' | 'tui' | 'llm'
-  thread_id?: string | null
-  env_id: string
-  tool: string
-  arguments?: unknown
-  arguments_meta?: { truncated: true; size_bytes: number; sha256: string } | null
-  is_error: boolean
-  result_summary?: string | null
-  result_meta?: { truncated: true; total_bytes: number } | null
-  started_at: string  // RFC3339
-  completed_at: string
-  duration_ms: number
-}
-
 export interface ListOperationsFilters {
   env_id?: string
   tool?: string
-  source?: 'sdk' | 'tui' | 'llm'
+  source?: string
   is_error?: boolean
   since?: string  // RFC3339Nano
   limit?: number  // default 100, max 1000
@@ -949,18 +931,12 @@ export interface ListOperationsFilters {
 
 /**
  * List operations for a workspace, server-side filtered.
- *
- * Backend endpoint `GET /api/workspaces/{id}/operations` is a small
- * follow-up that lands AFTER Plan 2 (#84) and this PR merge. It wraps
- * Plan 2's internal endpoint with user-session auth + membership check.
- * Until that lands, this client returns the "X is not available" error
- * if the endpoint 404s.
  */
 export async function listOperations(
   workspaceId: string,
   filters: ListOperationsFilters = {},
-): Promise<Operation[]> {
-  const params = new URLSearchParams({ workspace_id: workspaceId })
+): Promise<OperationRecord[]> {
+  const params = new URLSearchParams()
   if (filters.env_id) params.set('env_id', filters.env_id)
   if (filters.tool) params.set('tool', filters.tool)
   if (filters.source) params.set('source', filters.source)
@@ -968,13 +944,8 @@ export async function listOperations(
   if (filters.since) params.set('since', filters.since)
   if (filters.limit) params.set('limit', String(filters.limit))
 
-  const res = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/operations?${params}`, {
-    credentials: 'include',
-  })
-  if (!res.ok) {
-    const body = await res.text()
-    throw new Error(`listOperations: ${res.status} ${body || res.statusText}`)
-  }
-  const data = await res.json()
+  const qs = params.toString()
+  const path = `/api/workspaces/${encodeURIComponent(workspaceId)}/operations${qs ? `?${qs}` : ''}`
+  const data = await apiFetch<WorkspaceOperationsResponse>({ method: 'GET', path })
   return data.operations ?? []
 }

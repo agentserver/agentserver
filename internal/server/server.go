@@ -2237,7 +2237,7 @@ func (s *Server) handleSandboxTraces(w http.ResponseWriter, r *http.Request) {
 //	@Produce   json
 //	@Param     id       path  string  true  "Sandbox ID"
 //	@Param     traceId  path  string  true  "Trace ID"
-//	@Success   200  {object}  TraceRecord
+//	@Success   200  {object}  TraceDetailResponse
 //	@Failure   401  {string}  string  "unauthorized"
 //	@Failure   403  {string}  string  "not a workspace member"
 //	@Failure   404  {string}  string  "sandbox not found"
@@ -2299,7 +2299,7 @@ func (s *Server) handleWorkspaceTraces(w http.ResponseWriter, r *http.Request) {
 //	@Produce   json
 //	@Param     wid      path  string  true  "Workspace ID"
 //	@Param     traceId  path  string  true  "Trace ID"
-//	@Success   200  {object}  TraceRecord
+//	@Success   200  {object}  TraceDetailResponse
 //	@Failure   401  {string}  string  "unauthorized"
 //	@Failure   403  {string}  string  "not a workspace member"
 //	@Failure   503  {string}  string  "llmproxy not configured"

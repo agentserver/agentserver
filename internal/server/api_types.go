@@ -111,7 +111,7 @@ type LLMConfigResponse struct {
 	Configured bool       `json:"configured" validate:"required"`
 	BaseURL    string     `json:"base_url"`
 	APIKey     string     `json:"api_key"`
-	Models     []LLMModel `json:"models"`
+	Models     []LLMModel `json:"models,omitempty"`
 	UpdatedAt  *string    `json:"updated_at" extensions:"x-nullable=true"`
 } // @name LLMConfigResponse
 
@@ -223,7 +223,7 @@ type IMWeixinQRStartResponse struct {
 // qrcode_url is only present when status is "expired" (new QR code generated).
 // bot_id and user_id are only present when status is "confirmed".
 type IMWeixinQRWaitResponse struct {
-	Connected  bool    `json:"connected"`
+	Connected  bool    `json:"connected" validate:"required"`
 	Status     string  `json:"status" validate:"required" example:"wait"`
 	Message    *string `json:"message,omitempty" extensions:"x-nullable=true"`
 	QRCodeURL  *string `json:"qrcode_url,omitempty" extensions:"x-nullable=true"`
@@ -599,6 +599,33 @@ type TraceListResponse struct {
 	Traces []TraceRecord `json:"traces" validate:"required"`
 	Total  int64         `json:"total"`
 } // @name TraceListResponse
+
+// TraceRequest is one row in the requests array of TraceDetailResponse.
+// Fields mirror what the LLM proxy emits for a single API call (TokenUsage).
+type TraceRequest struct {
+	ID                       string `json:"id" validate:"required"`
+	TraceID                  string `json:"trace_id,omitempty"`
+	SandboxID                string `json:"sandbox_id" validate:"required"`
+	WorkspaceID              string `json:"workspace_id" validate:"required"`
+	Provider                 string `json:"provider" validate:"required"`
+	Model                    string `json:"model" validate:"required"`
+	MessageID                string `json:"message_id,omitempty"`
+	InputTokens              int64  `json:"input_tokens" validate:"required"`
+	OutputTokens             int64  `json:"output_tokens" validate:"required"`
+	CacheCreationInputTokens int64  `json:"cache_creation_input_tokens" validate:"required"`
+	CacheReadInputTokens     int64  `json:"cache_read_input_tokens" validate:"required"`
+	Streaming                bool   `json:"streaming"`
+	Duration                 int64  `json:"duration" validate:"required"`
+	TTFT                     int64  `json:"ttft"`
+	CreatedAt                string `json:"created_at" validate:"required"`
+} // @name TraceRequest
+
+// TraceDetailResponse is the body returned by /traces/{traceId} endpoints.
+// It pairs the trace metadata with the list of per-request records.
+type TraceDetailResponse struct {
+	Trace    TraceRecord    `json:"trace" validate:"required"`
+	Requests []TraceRequest `json:"requests" validate:"required"`
+} // @name TraceDetailResponse
 
 // ExecutorItem is one entry returned by GET /api/workspaces/{wid}/executors.
 // All session fields (client_ip, client_ua, codex_version, os,

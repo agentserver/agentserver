@@ -1637,7 +1637,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TraceRecord"
+                $ref: "#/components/schemas/TraceDetailResponse"
         "401":
           description: unauthorized
           content:
@@ -3672,7 +3672,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TraceRecord"
+                $ref: "#/components/schemas/TraceDetailResponse"
         "401":
           description: unauthorized
           content:
@@ -4815,6 +4815,7 @@ components:
           type: string
           nullable: true
       required:
+        - connected
         - status
       type: object
     LLMConfigResponse:
@@ -5133,6 +5134,18 @@ components:
         - provider
         - request_count
       type: object
+    TraceDetailResponse:
+      properties:
+        requests:
+          items:
+            $ref: "#/components/schemas/TraceRequest"
+          type: array
+        trace:
+          $ref: "#/components/schemas/TraceRecord"
+      required:
+        - requests
+        - trace
+      type: object
     TraceListResponse:
       properties:
         total:
@@ -5182,6 +5195,51 @@ components:
         - total_input_tokens
         - total_output_tokens
         - updated_at
+        - workspace_id
+      type: object
+    TraceRequest:
+      properties:
+        cache_creation_input_tokens:
+          type: integer
+        cache_read_input_tokens:
+          type: integer
+        created_at:
+          type: string
+        duration:
+          type: integer
+        id:
+          type: string
+        input_tokens:
+          type: integer
+        message_id:
+          type: string
+        model:
+          type: string
+        output_tokens:
+          type: integer
+        provider:
+          type: string
+        sandbox_id:
+          type: string
+        streaming:
+          type: boolean
+        trace_id:
+          type: string
+        ttft:
+          type: integer
+        workspace_id:
+          type: string
+      required:
+        - cache_creation_input_tokens
+        - cache_read_input_tokens
+        - created_at
+        - duration
+        - id
+        - input_tokens
+        - model
+        - output_tokens
+        - provider
+        - sandbox_id
         - workspace_id
       type: object
     Workspace:

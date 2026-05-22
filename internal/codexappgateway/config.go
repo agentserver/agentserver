@@ -72,6 +72,14 @@ type ServeConfig struct {
 	OperationLogURL    string
 	OperationLogSecret string // X-Internal-Secret header value
 	OperationLogChan   int    // bounded channel capacity, default 1024
+
+	// Scheduler config — when AgentserverInternalURL is empty the scheduler is
+	// disabled (no point polling without an agentserver to call).
+	SchedulerTickInterval  time.Duration // CXG_SCHED_TICK         (default 15s)
+	SchedulerLeaseSeconds  int           // CXG_SCHED_LEASE_SECONDS (default 1800)
+	SchedulerConcurrency   int           // CXG_SCHED_CONCURRENCY   (default 4)
+	ImbridgeBaseURL        string        // CXG_IMBRIDGE_BASE_URL   (e.g. http://imbridgesvc:6090)
+	ImbridgeInternalSecret string        // CXG_IMBRIDGE_SECRET     (same value as imbridge's INTERNAL_API_SECRET)
 }
 
 func LoadServeConfigFromEnv() (ServeConfig, error) {
@@ -178,6 +186,33 @@ func LoadServeConfigFromEnv() (ServeConfig, error) {
 			cfg.LogLevel = slog.LevelError
 		}
 	}
+	// Scheduler config — defaults applied here; also enforced in scheduler.New
+	// but we want them visible in config dumps.
+	cfg.SchedulerTickInterval = 15 * time.Second
+	cfg.SchedulerLeaseSeconds = 1800
+	cfg.SchedulerConcurrency = 4
+	if v := os.Getenv("CXG_SCHED_TICK"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			cfg.SchedulerTickInterval = 15 * time.Second
+		} else {
+			cfg.SchedulerTickInterval = d
+		}
+	}
+	if v := os.Getenv("CXG_SCHED_LEASE_SECONDS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err == nil && n > 0 {
+			cfg.SchedulerLeaseSeconds = n
+		}
+	}
+	if v := os.Getenv("CXG_SCHED_CONCURRENCY"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err == nil && n > 0 {
+			cfg.SchedulerConcurrency = n
+		}
+	}
+	cfg.ImbridgeBaseURL = os.Getenv("CXG_IMBRIDGE_BASE_URL")
+	cfg.ImbridgeInternalSecret = os.Getenv("CXG_IMBRIDGE_SECRET")
 	return cfg, nil
 }
 

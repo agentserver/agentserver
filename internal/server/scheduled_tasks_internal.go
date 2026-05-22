@@ -51,6 +51,12 @@ func (s *Server) handleInternalLeaseScheduledTasks(w http.ResponseWriter, r *htt
 		return
 	}
 
+	// Partial-batch failure semantics: LeaseDueScheduledTasks has already
+	// committed; if CreateScheduledTaskRun or the last_run_id stamp fails
+	// mid-batch we return 500 and leave behind orphaned run rows + tasks
+	// stuck in 'running' for the rest of the batch. The dispatcher recovers
+	// when lease_until expires (leaseSeconds from now), at which point the
+	// next tick re-claims them.
 	out := make([]leaseResponseItem, 0, len(leased))
 	for _, t := range leased {
 		runID := "run_" + uuid.New().String()

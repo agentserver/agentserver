@@ -221,6 +221,7 @@ func (s *Server) handleInternalListScheduledTasks(w http.ResponseWriter, r *http
 	wid := chi.URLParam(r, "wid")
 	rows, err := s.DB.ListScheduledTasksByWorkspace(wid, r.URL.Query().Get("status"))
 	if err != nil {
+		log.Printf("internal list scheduled tasks %s: %v", wid, err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -244,6 +245,7 @@ func (s *Server) handleInternalCancelScheduledTask(w http.ResponseWriter, r *htt
 	sid := chi.URLParam(r, "seriesId")
 	n, err := s.DB.CancelScheduledSeries(wid, sid)
 	if err != nil {
+		log.Printf("internal cancel scheduled series %s/%s: %v", wid, sid, err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -256,6 +258,7 @@ func (s *Server) handleInternalPauseScheduledTask(w http.ResponseWriter, r *http
 	sid := chi.URLParam(r, "seriesId")
 	n, err := s.DB.PauseScheduledSeries(wid, sid)
 	if err != nil {
+		log.Printf("internal pause scheduled series %s/%s: %v", wid, sid, err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -268,6 +271,7 @@ func (s *Server) handleInternalResumeScheduledTask(w http.ResponseWriter, r *htt
 	sid := chi.URLParam(r, "seriesId")
 	n, err := s.DB.ResumeScheduledSeries(wid, sid)
 	if err != nil {
+		log.Printf("internal resume scheduled series %s/%s: %v", wid, sid, err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -308,6 +312,7 @@ func (s *Server) handleInternalUpdateScheduledTask(w http.ResponseWriter, r *htt
 	}
 	n, err := s.DB.UpdateScheduledSeries(wid, sid, upd)
 	if err != nil {
+		log.Printf("internal update scheduled series %s/%s: %v", wid, sid, err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

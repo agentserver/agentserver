@@ -11,13 +11,15 @@ interface Props {
   workspaceId: string
 }
 
-const EXPIRY_OPTIONS = [
-  { label: '7 days',   days: 7   },
-  { label: '30 days',  days: 30  },
-  { label: '90 days',  days: 90  },
-  { label: '180 days', days: 180 },
-  { label: '365 days', days: 365 },
-] as const
+// YYYY-MM-DD in local time, offset by `days` from today.
+function dateOffsetStr(days: number): string {
+  const d = new Date()
+  d.setDate(d.getDate() + days)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
 
 export default function CodexTokensPanel({ workspaceId }: Props) {
   const [browsers, setBrowsers] = useState<CodexBrowser[]>([])
@@ -25,7 +27,7 @@ export default function CodexTokensPanel({ workspaceId }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [showMint, setShowMint] = useState(false)
   const [newName, setNewName] = useState('')
-  const [expiryDays, setExpiryDays] = useState<number>(90)
+  const [expiresDate, setExpiresDate] = useState<string>(() => dateOffsetStr(90))
   const [generated, setGenerated] = useState<MintCodexTokenResponse | null>(null)
   const [copied, setCopied] = useState(false)
   const [revokeTarget, setRevokeTarget] = useState<CodexBrowser | null>(null)
@@ -51,9 +53,10 @@ export default function CodexTokensPanel({ workspaceId }: Props) {
   }, [refresh])
 
   const onMint = async () => {
-    if (!newName.trim()) return
+    if (!newName.trim() || !expiresDate) return
     try {
-      const expiresAt = new Date(Date.now() + expiryDays * 24 * 60 * 60 * 1000).toISOString()
+      // Use end-of-day local time so picking "today" doesn't immediately expire.
+      const expiresAt = new Date(`${expiresDate}T23:59:59`).toISOString()
       const resp = await mintCodexToken({
         workspace_id: workspaceId,
         name: newName.trim(),
@@ -62,7 +65,7 @@ export default function CodexTokensPanel({ workspaceId }: Props) {
       setGenerated(resp)
       setShowMint(false)
       setNewName('')
-      setExpiryDays(90)
+      setExpiresDate(dateOffsetStr(90))
       void refresh()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -172,16 +175,15 @@ codex --remote wss://codex-app.${typeof window !== 'undefined' ? window.location
                 />
               </div>
               <div>
-                <label className="mb-1 block text-sm font-medium text-[var(--foreground)]">Expires in</label>
-                <select
-                  value={expiryDays}
-                  onChange={(e) => setExpiryDays(parseInt(e.target.value, 10))}
+                <label className="mb-1 block text-sm font-medium text-[var(--foreground)]">Expires on</label>
+                <input
+                  type="date"
+                  value={expiresDate}
+                  min={dateOffsetStr(0)}
+                  max={dateOffsetStr(365)}
+                  onChange={(e) => setExpiresDate(e.target.value)}
                   className="w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
-                >
-                  {EXPIRY_OPTIONS.map((opt) => (
-                    <option key={opt.days} value={opt.days}>{opt.label}</option>
-                  ))}
-                </select>
+                />
               </div>
               <div className="flex justify-end gap-2">
                 <button
@@ -193,7 +195,7 @@ codex --remote wss://codex-app.${typeof window !== 'undefined' ? window.location
                 </button>
                 <button
                   type="submit"
-                  disabled={!newName.trim()}
+                  disabled={!newName.trim() || !expiresDate}
                   className="rounded-md bg-[var(--primary)] px-4 py-2 text-sm font-medium text-[var(--primary-foreground)] hover:opacity-90 disabled:opacity-50"
                 >
                   Generate

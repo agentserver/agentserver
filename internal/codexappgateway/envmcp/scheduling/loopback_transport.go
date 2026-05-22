@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -33,8 +34,9 @@ func NewLoopbackTransport(base, token string) *LoopbackTransport {
 
 // Call POSTs body as JSON to baseURL/<action> with X-Loopback-Token set.
 func (t *LoopbackTransport) Call(ctx context.Context, action string, body any) (json.RawMessage, error) {
-	b, _ := json.Marshal(body)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/"+action, bytes.NewReader(b))
+	raw, _ := json.Marshal(body)
+	raw = injectTimezone(raw)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+"/"+action, bytes.NewReader(raw))
 	if err != nil {
 		return nil, err
 	}
@@ -50,4 +52,28 @@ func (t *LoopbackTransport) Call(ctx context.Context, action string, body any) (
 		return nil, fmt.Errorf("loopback %s: status %d: %s", action, resp.StatusCode, string(out))
 	}
 	return out, nil
+}
+
+// injectTimezone adds {"timezone": os.Getenv("TZ")} into a JSON object body
+// when the body is an object, "timezone" is absent, and TZ is non-empty.
+// Non-object bodies (or already-set timezone) pass through unchanged.
+func injectTimezone(body json.RawMessage) json.RawMessage {
+	tz := os.Getenv("TZ")
+	if tz == "" {
+		return body
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body // not an object → pass through
+	}
+	if _, present := m["timezone"]; present {
+		return body
+	}
+	tzBytes, _ := json.Marshal(tz)
+	m["timezone"] = tzBytes
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
 }

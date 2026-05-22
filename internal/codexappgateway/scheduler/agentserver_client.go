@@ -71,6 +71,27 @@ func (c *AgentserverClient) PostResult(ctx context.Context, req ResultRequest) e
 	return c.post(ctx, "/api/internal/scheduled-tasks/result", req, nil)
 }
 
+// ListChannels fetches the IM channels for a workspace so the dispatcher can
+// fan-out broadcast results. Called by Dispatcher.report.
+func (c *AgentserverClient) ListChannels(ctx context.Context, workspaceID string) ([]ChannelRef, error) {
+	var out []ChannelRef
+	req, err := http.NewRequestWithContext(ctx, "GET",
+		c.base+"/api/internal/workspaces/"+workspaceID+"/im-channels", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("X-Internal-Secret", c.secret)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("list channels: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("list channels: status %d", resp.StatusCode)
+	}
+	return out, json.NewDecoder(resp.Body).Decode(&out)
+}
+
 func (c *AgentserverClient) post(ctx context.Context, path string, body, out any) error {
 	b, _ := json.Marshal(body)
 	req, _ := http.NewRequestWithContext(ctx, "POST", c.base+path, bytes.NewReader(b))

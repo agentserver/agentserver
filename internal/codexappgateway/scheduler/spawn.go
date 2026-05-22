@@ -54,6 +54,18 @@ func (s *Spawner) Run(ctx context.Context, in SpawnInput) (SpawnResult, error) {
 	cmd.Env = append(cmd.Env, s.extraEnv...)
 	cmd.Stdin = strings.NewReader(in.Prompt)
 
+	// Run child in its own process group so we can signal the whole tree
+	// (including grandchildren) when timeout fires.
+	setProcessGroup(cmd)
+	// Bound the time cmd.Wait can block on goroutines (stdin/stdout copy) after
+	// the process group is killed — without this, a leaked grandchild that
+	// inherited stdout keeps Wait blocked until the grandchild dies on its own.
+	cmd.WaitDelay = 2 * time.Second
+	cmd.Cancel = func() error {
+		killProcessGroup(cmd)
+		return nil
+	}
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &limitedWriter{w: &stdout, max: transcriptCap}
 	cmd.Stderr = &limitedWriter{w: &stderr, max: 64 << 10}

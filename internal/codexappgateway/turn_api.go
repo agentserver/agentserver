@@ -22,24 +22,24 @@ type turnRunner interface {
 // turnAPIRequest mirrors the REST request defined in the design spec.
 // Field names use camelCase to align 1:1 with codex v2 protocol.
 type turnAPIRequest struct {
-	WorkspaceID string          `json:"workspaceId"`
-	ThreadID    *string         `json:"threadId,omitempty"`
-	Params      json.RawMessage `json:"params"`
-	TimeoutMs   int             `json:"timeoutMs,omitempty"`
-}
+	WorkspaceID string          `json:"workspaceId" validate:"required" example:"ws-7e7a4f6c"`
+	ThreadID    *string         `json:"threadId,omitempty" extensions:"x-nullable=true"`
+	Params      json.RawMessage `json:"params" validate:"required" swaggertype:"object"`
+	TimeoutMs   int             `json:"timeoutMs,omitempty" example:"300000"`
+} // @name TurnAPIRequest
 
 // turnAPIResponse: either Turn (codex Turn raw) OR Transport, never both.
 // ThreadID is always populated (existing or newly-created).
 type turnAPIResponse struct {
-	ThreadID  string          `json:"threadId"`
-	Turn      json.RawMessage `json:"turn,omitempty"`
-	Transport *transportError `json:"transport,omitempty"`
-}
+	ThreadID  string          `json:"threadId" validate:"required"`
+	Turn      json.RawMessage `json:"turn,omitempty" swaggertype:"object"`
+	Transport *transportError `json:"transport,omitempty" extensions:"x-nullable=true"`
+} // @name TurnAPIResponse
 
 type transportError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
+	Code    string `json:"code" validate:"required" example:"brokerTimeout"`
+	Message string `json:"message" validate:"required"`
+} // @name TurnTransportError
 
 type turnAPIHandler struct {
 	runner turnRunner
@@ -53,6 +53,23 @@ const defaultTurnTimeout = 60 * time.Minute
 // package layout. Keep in sync if the scope string ever changes.
 const turnsSubmitScope = "turns:submit"
 
+// ServeHTTP handles POST /api/turns. Accepts either a workspace API key
+// (Authorization: Bearer wak_<...>) or X-Internal-Secret. The bearer
+// path requires the `turns:submit` scope on the presented key.
+//
+//	@Summary     Submit a codex turn
+//	@Description On success, returns either {turn} (codex's raw Turn JSON) or {transport} (a structured transport error). threadId is always populated — when omitted on input, a new thread is created and its id returned. timeoutMs defaults to 300000 (5 minutes) when omitted. Bearer auth requires the `turns:submit` scope; X-Internal-Secret bypasses the scope check.
+//	@Tags        Turns
+//	@Accept      json
+//	@Produce     json
+//	@Param       body  body      TurnAPIRequest  true  "Turn submission"
+//	@Success     200   {object}  TurnAPIResponse
+//	@Failure     400   {string}  string  "invalid json / workspaceId required / params required"
+//	@Failure     401   {string}  string  "unauthorized"
+//	@Failure     403   {string}  string  "api key not authorized for workspace / missing scope: turns:submit"
+//	@Security    WorkspaceAPIKey
+//	@Security    InternalSecret
+//	@Router      /api/turns [post]
 func (h *turnAPIHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req turnAPIRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

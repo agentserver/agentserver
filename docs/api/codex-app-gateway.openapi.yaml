@@ -1,0 +1,114 @@
+openapi: 3.0.0
+info:
+  contact: {}
+  description: |-
+    Public REST surface of codex-app-gateway: submit codex
+    turns from external integrators via a workspace-scoped
+    bearer API key. The WS endpoint at "/" is not part of
+    this spec — it follows codex's --remote protocol.
+  title: codex-app-gateway API
+  version: 0.1.0
+paths:
+  /api/turns:
+    post:
+      description: On success, returns either {turn} (codex's raw Turn JSON) or
+        {transport} (a structured transport error). threadId is always populated
+        — when omitted on input, a new thread is created and its id returned.
+        timeoutMs defaults to 300000 (5 minutes) when omitted. Bearer auth
+        requires the `turns:submit` scope; X-Internal-Secret bypasses the scope
+        check.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TurnAPIRequest"
+        description: Turn submission
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TurnAPIResponse"
+        "400":
+          description: invalid json / workspaceId required / params required
+          content:
+            application/json:
+              schema:
+                type: string
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: "api key not authorized for workspace / missing scope: turns:submit"
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - WorkspaceAPIKey: []
+        - InternalSecret: []
+      summary: Submit a codex turn
+      tags:
+        - Turns
+servers:
+  - url: /
+components:
+  securitySchemes:
+    InternalSecret:
+      description: Pre-shared secret for in-cluster RPC. Not for public consumers.
+      in: header
+      name: X-Internal-Secret
+      type: apiKey
+    WorkspaceAPIKey:
+      description: Bearer prefix required. Mint via agentserver's POST
+        /api/workspaces/{wid}/api-keys.
+      in: header
+      name: Authorization
+      type: apiKey
+  schemas:
+    TurnAPIRequest:
+      properties:
+        params:
+          type: object
+        threadId:
+          type: string
+          nullable: true
+        timeoutMs:
+          example: 300000
+          type: integer
+        workspaceId:
+          example: ws-7e7a4f6c
+          type: string
+      required:
+        - params
+        - workspaceId
+      type: object
+    TurnAPIResponse:
+      properties:
+        threadId:
+          type: string
+        transport:
+          allOf:
+            - $ref: "#/components/schemas/TurnTransportError"
+          nullable: true
+        turn:
+          type: object
+      required:
+        - threadId
+      type: object
+    TurnTransportError:
+      properties:
+        code:
+          example: brokerTimeout
+          type: string
+        message:
+          type: string
+      required:
+        - code
+        - message
+      type: object

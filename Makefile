@@ -1,4 +1,4 @@
-.PHONY: dev build clean frontend backend agent agent-all llmproxy credentialproxy test docker docker-agent docker-llmproxy docker-credentialproxy docker-openclaw docker-all openapi openapi-check
+.PHONY: dev build clean frontend backend agent agent-all llmproxy credentialproxy test docker docker-agent docker-llmproxy docker-credentialproxy docker-openclaw docker-all openapi openapi-check openapi-codex-app-gateway openapi-codex-app-gateway-check
 
 # Development: run frontend dev server + Go backend
 dev:
@@ -108,3 +108,29 @@ openapi-check:
 	@diff -u docs/api/openapi.yaml /tmp/openapi-check/openapi.yaml || (echo "FAIL: docs/api/openapi.yaml is stale — run 'make openapi' and commit"; exit 1)
 	@diff -u docs/api/openapi.json /tmp/openapi-check/openapi.json || (echo "FAIL: docs/api/openapi.json is stale — run 'make openapi' and commit"; exit 1)
 	@echo "openapi-check: spec matches handler annotations"
+
+# codex-app-gateway has its own OpenAPI spec covering /api/turns. Separate
+# file because it's a different binary with a different host and different
+# deployment lifecycle.
+CXG_SPEC := docs/api/codex-app-gateway.openapi
+
+openapi-codex-app-gateway:
+	$(SWAG) init -g swagger.go --outputTypes yaml,json -o $(CXG_SPEC).tmp/ -d ./internal/codexappgateway
+	@$(S2O) --yaml --outfile $(CURDIR)/$(CXG_SPEC).yaml $(CURDIR)/$(CXG_SPEC).tmp/swagger.yaml
+	@$(S2O)         --outfile $(CURDIR)/$(CXG_SPEC).json $(CURDIR)/$(CXG_SPEC).tmp/swagger.json
+	@jq '$(X_NULLABLE_JSON)' $(CXG_SPEC).json > $(CXG_SPEC).json.tmp && mv $(CXG_SPEC).json.tmp $(CXG_SPEC).json
+	@python3 -c "import sys,re; d=open('$(CXG_SPEC).yaml').read(); d=re.sub(r\"x-nullable: '?\\\"?true'?\\\"?\", 'nullable: true', d); open('$(CXG_SPEC).yaml','w').write(d)"
+	@rm -rf $(CXG_SPEC).tmp
+
+openapi-codex-app-gateway-check:
+	@rm -rf /tmp/cxg-openapi-check && mkdir -p /tmp/cxg-openapi-check
+	@$(SWAG) init -g swagger.go --outputTypes yaml,json -o /tmp/cxg-openapi-check/ -d ./internal/codexappgateway >/dev/null
+	@$(S2O) --yaml --outfile /tmp/cxg-openapi-check/openapi.yaml /tmp/cxg-openapi-check/swagger.yaml >/dev/null
+	@$(S2O)         --outfile /tmp/cxg-openapi-check/openapi.json /tmp/cxg-openapi-check/swagger.json >/dev/null
+	@jq '$(X_NULLABLE_JSON)' /tmp/cxg-openapi-check/openapi.json > /tmp/cxg-openapi-check/openapi.json.tmp && mv /tmp/cxg-openapi-check/openapi.json.tmp /tmp/cxg-openapi-check/openapi.json
+	@python3 -c "import sys,re; d=open('/tmp/cxg-openapi-check/openapi.yaml').read(); d=re.sub(r\"x-nullable: '?\\\"?true'?\\\"?\", 'nullable: true', d); open('/tmp/cxg-openapi-check/openapi.yaml','w').write(d)"
+	@diff -u $(CXG_SPEC).yaml /tmp/cxg-openapi-check/openapi.yaml || \
+	    (echo "FAIL: $(CXG_SPEC).yaml is stale — run 'make openapi-codex-app-gateway' and commit"; exit 1)
+	@diff -u $(CXG_SPEC).json /tmp/cxg-openapi-check/openapi.json || \
+	    (echo "FAIL: $(CXG_SPEC).json is stale — run 'make openapi-codex-app-gateway' and commit"; exit 1)
+	@echo "openapi-codex-app-gateway-check: spec matches handler annotations"

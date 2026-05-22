@@ -61,3 +61,16 @@ Currently annotated: **Auth** (5 endpoints). Remaining tags
 (Workspaces, Sandboxes, IM Channels, Codex Tokens, Codex Browser
 Sessions, Agent Discovery / Tasks / Mailbox, Misc) land in Phase 1.b,
 one PR per tag.
+
+## Second spec: codex-app-gateway
+
+`codex-app-gateway.openapi.{yaml,json}` documents the public REST surface
+of the codex-app-gateway binary (the public `/api/turns` endpoint).
+
+Different host (`codex-app.agent.cs.ac.cn`), different binary, different
+deployment lifecycle — kept separate from the agentserver spec by design.
+
+Regenerate with `make openapi-codex-app-gateway`; CI drift gate runs
+`make openapi-codex-app-gateway-check`.
+
+The agentserver spec (`openapi.{yaml,json}`) does NOT include /api/turns.

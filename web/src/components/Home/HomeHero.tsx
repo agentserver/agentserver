@@ -52,7 +52,7 @@ export function HomeHero() {
               href="https://github.com/agentserver/agentserver"
               target="_blank"
               rel="noopener noreferrer"
-              className="font-mono text-sm px-4 py-2 rounded-md border border-[var(--border)] hover:bg-[var(--accent)]"
+              className="font-mono text-sm px-4 py-2 rounded-md border border-[var(--border)] hover:opacity-90"
             >
               {t('hero.cta.secondary')}
             </a>

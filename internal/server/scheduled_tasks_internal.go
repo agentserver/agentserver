@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/robfig/cron/v3"
 
@@ -158,4 +159,157 @@ func (s *Server) handleInternalScheduledTaskResult(w http.ResponseWriter, r *htt
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "nextRunId": newID})
+}
+
+// --------------------------------------------------------------------------
+// Internal workspace-scoped endpoints — no member check; auth is
+// X-Internal-Secret only. Called from codex-app-gateway's loopback proxy.
+// --------------------------------------------------------------------------
+
+// handleInternalCreateScheduledTask is POST /api/internal/workspaces/{wid}/scheduled-tasks.
+func (s *Server) handleInternalCreateScheduledTask(w http.ResponseWriter, r *http.Request) {
+	wid := chi.URLParam(r, "wid")
+	var req scheduledTaskRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if req.Prompt == "" || req.ProcessAfter == "" {
+		http.Error(w, "prompt and processAfter required", http.StatusBadRequest)
+		return
+	}
+	tz := req.Timezone
+	if tz == "" {
+		tz = "UTC"
+	}
+	when, err := db.ParseZonedToUTC(req.ProcessAfter, tz)
+	if err != nil {
+		http.Error(w, "invalid processAfter: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	id := "sch_" + uuid.New().String()
+	task := &db.ScheduledTask{
+		ID:             id,
+		WorkspaceID:    wid,
+		SeriesID:       id,
+		CreatorKind:    "mcp",
+		Prompt:         req.Prompt,
+		Script:         req.Script,
+		Timezone:       tz,
+		Recurrence:     req.Recurrence,
+		ProcessAfter:   when,
+		Status:         "pending",
+		TimeoutSeconds: 600,
+	}
+	if err := s.DB.CreateScheduledTask(task); err != nil {
+		log.Printf("internal create scheduled task: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusCreated, scheduledTaskResponse{
+		TaskID:     id,
+		SeriesID:   id,
+		RunsAt:     when.UTC().Format(time.RFC3339),
+		Recurrence: req.Recurrence,
+		Status:     "pending",
+		Timezone:   tz,
+	})
+}
+
+// handleInternalListScheduledTasks is GET /api/internal/workspaces/{wid}/scheduled-tasks.
+func (s *Server) handleInternalListScheduledTasks(w http.ResponseWriter, r *http.Request) {
+	wid := chi.URLParam(r, "wid")
+	rows, err := s.DB.ListScheduledTasksByWorkspace(wid, r.URL.Query().Get("status"))
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	out := make([]scheduledTaskResponse, 0, len(rows))
+	for _, t := range rows {
+		out = append(out, scheduledTaskResponse{
+			TaskID:     t.SeriesID,
+			SeriesID:   t.SeriesID,
+			RunsAt:     t.ProcessAfter.UTC().Format(time.RFC3339),
+			Recurrence: t.Recurrence,
+			Status:     t.Status,
+			Timezone:   t.Timezone,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleInternalCancelScheduledTask is POST /api/internal/workspaces/{wid}/scheduled-tasks/{seriesId}/cancel.
+func (s *Server) handleInternalCancelScheduledTask(w http.ResponseWriter, r *http.Request) {
+	wid := chi.URLParam(r, "wid")
+	sid := chi.URLParam(r, "seriesId")
+	n, err := s.DB.CancelScheduledSeries(wid, sid)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"cancelled": n})
+}
+
+// handleInternalPauseScheduledTask is POST /api/internal/workspaces/{wid}/scheduled-tasks/{seriesId}/pause.
+func (s *Server) handleInternalPauseScheduledTask(w http.ResponseWriter, r *http.Request) {
+	wid := chi.URLParam(r, "wid")
+	sid := chi.URLParam(r, "seriesId")
+	n, err := s.DB.PauseScheduledSeries(wid, sid)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"paused": n})
+}
+
+// handleInternalResumeScheduledTask is POST /api/internal/workspaces/{wid}/scheduled-tasks/{seriesId}/resume.
+func (s *Server) handleInternalResumeScheduledTask(w http.ResponseWriter, r *http.Request) {
+	wid := chi.URLParam(r, "wid")
+	sid := chi.URLParam(r, "seriesId")
+	n, err := s.DB.ResumeScheduledSeries(wid, sid)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"resumed": n})
+}
+
+// handleInternalUpdateScheduledTask is PATCH /api/internal/workspaces/{wid}/scheduled-tasks/{seriesId}.
+func (s *Server) handleInternalUpdateScheduledTask(w http.ResponseWriter, r *http.Request) {
+	wid := chi.URLParam(r, "wid")
+	sid := chi.URLParam(r, "seriesId")
+	var req scheduledTaskRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	upd := db.ScheduledTaskUpdate{}
+	if req.Prompt != "" {
+		p := req.Prompt
+		upd.Prompt = &p
+	}
+	if req.Recurrence != nil {
+		upd.Recurrence = req.Recurrence
+	}
+	if req.Script != nil {
+		upd.Script = req.Script
+	}
+	if req.ProcessAfter != "" {
+		tz := req.Timezone
+		if tz == "" {
+			tz = "UTC"
+		}
+		t, err := db.ParseZonedToUTC(req.ProcessAfter, tz)
+		if err != nil {
+			http.Error(w, "invalid processAfter", http.StatusBadRequest)
+			return
+		}
+		upd.ProcessAfter = &t
+	}
+	n, err := s.DB.UpdateScheduledSeries(wid, sid, upd)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"updated": n})
 }

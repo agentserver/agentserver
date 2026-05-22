@@ -286,6 +286,25 @@ func (s *Server) Router() http.Handler {
 		s.handleInternalListIMChannels(w, r)
 	})
 
+	// Internal workspace-scoped scheduled-task endpoints — no member check;
+	// called from codex-app-gateway loopback proxy. Auth: X-Internal-Secret.
+	internalScheduledTaskMiddleware := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			secret := os.Getenv("INTERNAL_API_SECRET")
+			if secret != "" && r.Header.Get("X-Internal-Secret") != secret {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			next(w, r)
+		}
+	}
+	r.Post("/api/internal/workspaces/{wid}/scheduled-tasks", internalScheduledTaskMiddleware(s.handleInternalCreateScheduledTask))
+	r.Get("/api/internal/workspaces/{wid}/scheduled-tasks", internalScheduledTaskMiddleware(s.handleInternalListScheduledTasks))
+	r.Post("/api/internal/workspaces/{wid}/scheduled-tasks/{seriesId}/cancel", internalScheduledTaskMiddleware(s.handleInternalCancelScheduledTask))
+	r.Post("/api/internal/workspaces/{wid}/scheduled-tasks/{seriesId}/pause", internalScheduledTaskMiddleware(s.handleInternalPauseScheduledTask))
+	r.Post("/api/internal/workspaces/{wid}/scheduled-tasks/{seriesId}/resume", internalScheduledTaskMiddleware(s.handleInternalResumeScheduledTask))
+	r.Patch("/api/internal/workspaces/{wid}/scheduled-tasks/{seriesId}", internalScheduledTaskMiddleware(s.handleInternalUpdateScheduledTask))
+
 	// Internal API for ModelServer token retrieval (no cookie auth).
 	r.Get("/internal/workspaces/{id}/modelserver-token", s.handleInternalModelserverToken)
 

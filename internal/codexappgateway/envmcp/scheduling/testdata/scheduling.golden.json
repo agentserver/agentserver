@@ -1,0 +1,76 @@
+{
+  "tools": [
+    {
+      "name": "schedule_task",
+      "description": "Schedule a one-shot or recurring task. The user's timezone is declared in the <context timezone=\"...\"/> header of your prompt — interpret the user's \"9pm\" etc. in that zone. Cron expressions are interpreted in the user's timezone too.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "prompt": {"type": "string", "description": "Task instructions/prompt"},
+          "processAfter": {"type": "string", "description": "ISO 8601 timestamp for the first run. Accepts either UTC (ending in \"Z\" or \"+00:00\") or a naive local timestamp (no offset) which is interpreted in the user's timezone (e.g. \"2026-01-15T21:00:00\" = 9pm user-local). Prefer naive local."},
+          "recurrence": {"type": "string", "description": "Cron expression for recurring tasks (e.g., \"0 9 * * 1-5\" = weekdays at 9am user-local). Evaluated in the user's timezone."},
+          "script": {"type": "string", "description": "Optional pre-agent script to run before processing"}
+        },
+        "required": ["prompt", "processAfter"]
+      }
+    },
+    {
+      "name": "list_tasks",
+      "description": "List scheduled tasks. Returns one row per series — the live (pending or paused) occurrence. The id shown is the series id, which is what update_task / cancel_task / pause_task / resume_task expect.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {"type": "string", "description": "Filter by status: pending or paused (default: both)"}
+        }
+      }
+    },
+    {
+      "name": "update_task",
+      "description": "Update a scheduled task. Pass the series id from list_tasks. Any field omitted is left unchanged. Use this instead of cancel + reschedule when adjusting an existing task.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "taskId": {"type": "string", "description": "Series id of the task to update (as shown by list_tasks)"},
+          "prompt": {"type": "string", "description": "New task prompt (optional)"},
+          "recurrence": {"type": "string", "description": "New cron expression (optional). Pass empty string to clear and make the task one-shot."},
+          "processAfter": {"type": "string", "description": "New ISO 8601 timestamp for the next run (optional). Accepts either UTC (ending in \"Z\" / \"+00:00\") or a naive local timestamp interpreted in the user's timezone."},
+          "script": {"type": "string", "description": "New pre-agent script (optional). Pass empty string to clear."}
+        },
+        "required": ["taskId"]
+      }
+    },
+    {
+      "name": "cancel_task",
+      "description": "Cancel a scheduled task.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "taskId": {"type": "string", "description": "Task ID to cancel"}
+        },
+        "required": ["taskId"]
+      }
+    },
+    {
+      "name": "pause_task",
+      "description": "Pause a scheduled task. It will not run until resumed.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "taskId": {"type": "string", "description": "Task ID to pause"}
+        },
+        "required": ["taskId"]
+      }
+    },
+    {
+      "name": "resume_task",
+      "description": "Resume a paused task.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "taskId": {"type": "string", "description": "Task ID to resume"}
+        },
+        "required": ["taskId"]
+      }
+    }
+  ]
+}

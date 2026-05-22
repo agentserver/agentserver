@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/agentserver/agentserver/internal/codexappgateway/broker"
 	"github.com/agentserver/agentserver/internal/codexappgateway/codexhome"
 	"github.com/agentserver/agentserver/internal/codexappgateway/oplog"
+	"github.com/agentserver/agentserver/internal/codexappgateway/scheduler"
 	"github.com/agentserver/agentserver/internal/codexappgateway/supervisor"
 	"github.com/agentserver/agentserver/internal/codexexecgateway/execmodel"
 	"github.com/agentserver/agentserver/internal/clientmeta"
@@ -47,11 +49,12 @@ const (
 
 // Server is the codex-app-gateway HTTP/WS server.
 type Server struct {
-	cfg  ServeConfig
-	auth auth.Authenticator
-	sup  *supervisor.Supervisor
-	homeMgr      *codexhome.Manager
-	logger       *slog.Logger
+	cfg      ServeConfig
+	codexBin string
+	auth     auth.Authenticator
+	sup      *supervisor.Supervisor
+	homeMgr  *codexhome.Manager
+	logger   *slog.Logger
 
 	// apiKeyValidator validates Bearer wak_<...> tokens against agentserver's
 	// /internal/workspace-api-keys/validate RPC. May be nil in dev/test
@@ -119,6 +122,7 @@ func NewServer(cfg ServeConfig, codexBin, selfBin string, logger *slog.Logger) (
 	}
 	s := &Server{
 		cfg:             cfg,
+		codexBin:        codexBin,
 		auth:            auth.NewRemoteVerifier(cfg.AgentserverInternalURL, cfg.AgentserverInternalSecret),
 		sup:             sup,
 		homeMgr:         mgr,
@@ -228,6 +232,31 @@ func (s *Server) Run(ctx context.Context, listenAddr string) error {
 	reaperCtx, reaperCancel := context.WithCancel(context.Background())
 	defer reaperCancel()
 	go reaper.Run(reaperCtx)
+
+	if s.cfg.AgentserverInternalURL != "" {
+		schedCfg := scheduler.Config{
+			AgentserverBase: s.cfg.AgentserverInternalURL,
+			InternalSecret:  s.cfg.AgentserverInternalSecret,
+			ImbridgeBase:    s.cfg.ImbridgeBaseURL,
+			ImbridgeSecret:  s.cfg.ImbridgeInternalSecret,
+			CodexBin:        s.codexBin,
+			PodID:           os.Getenv("POD_NAME"),
+			PID:             os.Getpid(),
+			TickInterval:    s.cfg.SchedulerTickInterval,
+			LeaseSeconds:    s.cfg.SchedulerLeaseSeconds,
+			Concurrency:     s.cfg.SchedulerConcurrency,
+		}
+		sched := scheduler.New(schedCfg, s.logger)
+		schedCtx, schedCancel := context.WithCancel(context.Background())
+		defer schedCancel()
+		go sched.Run(schedCtx)
+		s.logger.Info("scheduler enabled",
+			"agentserver", s.cfg.AgentserverInternalURL,
+			"tick", schedCfg.TickInterval,
+			"concurrency", schedCfg.Concurrency)
+	} else {
+		s.logger.Info("scheduler disabled (CXG_AGENTSERVER_INTERNAL_URL unset)")
+	}
 
 	ln, err := wsbridge.ListenWithKeepAlive(ctx, "tcp", listenAddr)
 	if err != nil {

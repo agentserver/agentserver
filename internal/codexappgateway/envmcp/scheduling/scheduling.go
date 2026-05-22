@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/agentserver/agentserver/internal/envtools/tools"
 )
@@ -79,7 +80,7 @@ func (*scheduleTaskTool) InputSchema() json.RawMessage {
 }`)
 }
 func (s *scheduleTaskTool) Call(ctx context.Context, args json.RawMessage) (tools.MCPCallToolResult, error) {
-	return forward(ctx, s.t, "schedule", args)
+	return forwardJSON(ctx, s.t, "schedule", args, formatScheduleResponse)
 }
 
 // ---- list_tasks ----
@@ -99,7 +100,7 @@ func (*listTasksTool) InputSchema() json.RawMessage {
 }`)
 }
 func (l *listTasksTool) Call(ctx context.Context, args json.RawMessage) (tools.MCPCallToolResult, error) {
-	return forward(ctx, l.t, "list", args)
+	return forwardJSON(ctx, l.t, "list", args, formatListResponse)
 }
 
 // ---- update_task ----
@@ -132,7 +133,7 @@ func (u *updateTaskTool) Call(ctx context.Context, args json.RawMessage) (tools.
 	if len(m) <= 1 {
 		return errorResult("at least one field to update is required"), nil
 	}
-	return forward(ctx, u.t, "update", args)
+	return forwardJSON(ctx, u.t, "update", args, formatActionResponse("update", args))
 }
 
 // ---- cancel_task / pause_task / resume_task ----
@@ -145,7 +146,7 @@ func (*cancelTaskTool) InputSchema() json.RawMessage {
 	return taskIDOnlySchema("Task ID to cancel")
 }
 func (c *cancelTaskTool) Call(ctx context.Context, args json.RawMessage) (tools.MCPCallToolResult, error) {
-	return forward(ctx, c.t, "cancel", args)
+	return forwardJSON(ctx, c.t, "cancel", args, formatActionResponse("cancel", args))
 }
 
 type pauseTaskTool struct{ t ScheduleTransport }
@@ -156,7 +157,7 @@ func (*pauseTaskTool) InputSchema() json.RawMessage {
 	return taskIDOnlySchema("Task ID to pause")
 }
 func (p *pauseTaskTool) Call(ctx context.Context, args json.RawMessage) (tools.MCPCallToolResult, error) {
-	return forward(ctx, p.t, "pause", args)
+	return forwardJSON(ctx, p.t, "pause", args, formatActionResponse("pause", args))
 }
 
 type resumeTaskTool struct{ t ScheduleTransport }
@@ -167,7 +168,7 @@ func (*resumeTaskTool) InputSchema() json.RawMessage {
 	return taskIDOnlySchema("Task ID to resume")
 }
 func (r *resumeTaskTool) Call(ctx context.Context, args json.RawMessage) (tools.MCPCallToolResult, error) {
-	return forward(ctx, r.t, "resume", args)
+	return forwardJSON(ctx, r.t, "resume", args, formatActionResponse("resume", args))
 }
 
 // ---- helpers ----
@@ -180,17 +181,103 @@ func taskIDOnlySchema(desc string) json.RawMessage {
 }`, desc))
 }
 
-func forward(ctx context.Context, t ScheduleTransport, action string, body json.RawMessage) (tools.MCPCallToolResult, error) {
+// forwardJSON forwards the call, then runs format on the upstream JSON to
+// produce a human-readable text response (nanoclaw parity).
+func forwardJSON(ctx context.Context, t ScheduleTransport, action string, args json.RawMessage, format func(json.RawMessage) string) (tools.MCPCallToolResult, error) {
 	if t == nil {
 		return errorResult("transport not configured"), nil
 	}
-	out, err := t.Call(ctx, action, body)
+	out, err := t.Call(ctx, action, args)
 	if err != nil {
 		return errorResult(err.Error()), nil
 	}
 	return tools.MCPCallToolResult{
-		Content: []tools.MCPToolContent{{Type: "text", Text: string(out)}},
+		Content: []tools.MCPToolContent{{Type: "text", Text: format(out)}},
 	}, nil
+}
+
+func formatScheduleResponse(raw json.RawMessage) string {
+	var r struct {
+		TaskID     string  `json:"taskId"`
+		RunsAt     string  `json:"runsAt"`
+		Recurrence *string `json:"recurrence,omitempty"`
+	}
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return string(raw)
+	}
+	recur := ""
+	if r.Recurrence != nil && *r.Recurrence != "" {
+		recur = fmt.Sprintf(", recurrence: %s", *r.Recurrence)
+	}
+	return fmt.Sprintf("Task scheduled (id: %s, runs at: %s%s)", r.TaskID, r.RunsAt, recur)
+}
+
+func formatListResponse(raw json.RawMessage) string {
+	var rows []struct {
+		TaskID     string  `json:"taskId"`
+		Status     string  `json:"status"`
+		RunsAt     string  `json:"runsAt"`
+		Recurrence *string `json:"recurrence,omitempty"`
+		Prompt     string  `json:"prompt,omitempty"`
+	}
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return string(raw)
+	}
+	if len(rows) == 0 {
+		return "No tasks found."
+	}
+	var sb strings.Builder
+	for _, t := range rows {
+		recur := ""
+		if t.Recurrence != nil && *t.Recurrence != "" {
+			recur = fmt.Sprintf("recur=%s ", *t.Recurrence)
+		}
+		prompt := t.Prompt
+		if len(prompt) > 80 {
+			prompt = prompt[:80]
+		}
+		fmt.Fprintf(&sb, "- %s [%s] at=%s %s→ %s\n", t.TaskID, t.Status, t.RunsAt, recur, prompt)
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+func formatActionResponse(action string, args json.RawMessage) func(json.RawMessage) string {
+	return func(raw json.RawMessage) string {
+		var req struct {
+			TaskID string `json:"taskId"`
+		}
+		_ = json.Unmarshal(args, &req)
+		var resp map[string]int
+		_ = json.Unmarshal(raw, &resp)
+		var n int
+		for _, v := range resp {
+			n = v
+			break
+		}
+		switch action {
+		case "cancel":
+			if n == 0 {
+				return fmt.Sprintf("Task cancellation: no live task matched id %q.", req.TaskID)
+			}
+			return fmt.Sprintf("Task cancellation requested: %s", req.TaskID)
+		case "pause":
+			if n == 0 {
+				return fmt.Sprintf("Task pause: no pending task matched id %q.", req.TaskID)
+			}
+			return fmt.Sprintf("Task pause requested: %s", req.TaskID)
+		case "resume":
+			if n == 0 {
+				return fmt.Sprintf("Task resume: no paused task matched id %q.", req.TaskID)
+			}
+			return fmt.Sprintf("Task resume requested: %s", req.TaskID)
+		case "update":
+			if n == 0 {
+				return fmt.Sprintf("Task update: no live task matched id %q.", req.TaskID)
+			}
+			return fmt.Sprintf("Task update requested: %s", req.TaskID)
+		}
+		return string(raw)
+	}
 }
 
 func errorResult(msg string) tools.MCPCallToolResult {

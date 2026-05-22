@@ -28,6 +28,7 @@ type scheduledTaskResponse struct {
 	Recurrence *string `json:"recurrence,omitempty"`
 	Status     string  `json:"status"`
 	Timezone   string  `json:"timezone"`
+	Prompt     string  `json:"prompt,omitempty"`
 }
 
 func (s *Server) handleCreateScheduledTask(w http.ResponseWriter, r *http.Request) {
@@ -107,6 +108,7 @@ func (s *Server) handleListScheduledTasks(w http.ResponseWriter, r *http.Request
 			Recurrence: t.Recurrence,
 			Status:     t.Status,
 			Timezone:   t.Timezone,
+			Prompt:     t.Prompt,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

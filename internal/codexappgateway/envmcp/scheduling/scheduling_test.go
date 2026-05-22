@@ -71,6 +71,59 @@ func TestScheduleTask_ForwardsToTransport(t *testing.T) {
 	if captured.body["prompt"] != "hi" {
 		t.Fatalf("body=%v", captured.body)
 	}
+	want := "Task scheduled (id: sch_x, runs at: 2099-01-01T00:00:00Z)"
+	if len(res.Content) == 0 || res.Content[0].Text != want {
+		t.Fatalf("expected formatted response %q, got %+v", want, res.Content)
+	}
+}
+
+func TestFormatScheduleResponse_WithRecurrence(t *testing.T) {
+	recur := "0 9 * * 1-5"
+	raw, _ := json.Marshal(map[string]any{
+		"taskId":     "sch_abc",
+		"runsAt":     "2026-06-01T09:00:00Z",
+		"recurrence": recur,
+	})
+	got := formatScheduleResponse(raw)
+	want := "Task scheduled (id: sch_abc, runs at: 2026-06-01T09:00:00Z, recurrence: 0 9 * * 1-5)"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestFormatListResponse_Empty(t *testing.T) {
+	got := formatListResponse(json.RawMessage(`[]`))
+	if got != "No tasks found." {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestFormatListResponse_WithRows(t *testing.T) {
+	raw := json.RawMessage(`[{"taskId":"sch_1","status":"pending","runsAt":"2026-06-01T09:00:00Z","prompt":"do the thing"}]`)
+	got := formatListResponse(raw)
+	if !strings.Contains(got, "sch_1") || !strings.Contains(got, "pending") || !strings.Contains(got, "do the thing") {
+		t.Fatalf("unexpected list format: %q", got)
+	}
+}
+
+func TestFormatActionResponse_CancelNoMatch(t *testing.T) {
+	args := json.RawMessage(`{"taskId":"sch_x"}`)
+	raw := json.RawMessage(`{"cancelled":0}`)
+	got := formatActionResponse("cancel", args)(raw)
+	want := `Task cancellation: no live task matched id "sch_x".`
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestFormatActionResponse_CancelMatch(t *testing.T) {
+	args := json.RawMessage(`{"taskId":"sch_y"}`)
+	raw := json.RawMessage(`{"cancelled":1}`)
+	got := formatActionResponse("cancel", args)(raw)
+	want := "Task cancellation requested: sch_y"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
 }
 
 func TestUpdateTask_RejectsEmptyUpdate(t *testing.T) {

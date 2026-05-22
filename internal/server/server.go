@@ -526,6 +526,16 @@ func (s *Server) Router() http.Handler {
 		r.Get("/api/tasks/{id}", s.handleGetTask)
 		r.Post("/api/tasks/{id}/cancel", s.handleCancelTask)
 
+		// Scheduled tasks
+		r.Post("/api/workspaces/{wid}/scheduled-tasks", s.handleCreateScheduledTask)
+		r.Get("/api/workspaces/{wid}/scheduled-tasks", s.handleListScheduledTasks)
+		r.Get("/api/workspaces/{wid}/scheduled-tasks/{seriesId}", s.handleGetScheduledTask)
+		r.Patch("/api/workspaces/{wid}/scheduled-tasks/{seriesId}", s.handleUpdateScheduledTask)
+		r.Post("/api/workspaces/{wid}/scheduled-tasks/{seriesId}/cancel", s.handleCancelScheduledTask)
+		r.Post("/api/workspaces/{wid}/scheduled-tasks/{seriesId}/pause", s.handlePauseScheduledTask)
+		r.Post("/api/workspaces/{wid}/scheduled-tasks/{seriesId}/resume", s.handleResumeScheduledTask)
+		r.Get("/api/workspaces/{wid}/scheduled-tasks/{seriesId}/runs", s.handleGetScheduledTaskRuns)
+
 		// Agent interaction audit trail
 		r.Get("/api/workspaces/{wid}/agent-interactions", s.handleListInteractions)
 

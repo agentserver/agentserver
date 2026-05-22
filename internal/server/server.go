@@ -259,6 +259,25 @@ func (s *Server) Router() http.Handler {
 		s.handleCodexSessionUpdate(w, r)
 	})
 
+	// Internal API for dispatcher: lease due tasks + record results.
+	// Auth: X-Internal-Secret matching INTERNAL_API_SECRET.
+	r.Post("/api/internal/scheduled-tasks/lease", func(w http.ResponseWriter, r *http.Request) {
+		secret := os.Getenv("INTERNAL_API_SECRET")
+		if secret != "" && r.Header.Get("X-Internal-Secret") != secret {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		s.handleInternalLeaseScheduledTasks(w, r)
+	})
+	r.Post("/api/internal/scheduled-tasks/result", func(w http.ResponseWriter, r *http.Request) {
+		secret := os.Getenv("INTERNAL_API_SECRET")
+		if secret != "" && r.Header.Get("X-Internal-Secret") != secret {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		s.handleInternalScheduledTaskResult(w, r)
+	})
+
 	// Internal API for ModelServer token retrieval (no cookie auth).
 	r.Get("/internal/workspaces/{id}/modelserver-token", s.handleInternalModelserverToken)
 

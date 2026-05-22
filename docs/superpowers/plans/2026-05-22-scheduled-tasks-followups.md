@@ -2,24 +2,14 @@
 
 > Companion to `2026-05-22-scheduled-tasks.md`. These are issues surfaced by the final whole-feature code review (post-Task 12) that were **deferred to follow-up work** because they require architectural decisions or non-trivial wiring not covered by the original plan.
 
-## C2 — Spawned `codex exec` has no credentials and no PATH
+## C2 — ~~Spawned `codex exec` has no credentials and no PATH~~ ✅ Resolved
 
-**Status**: deferred. Every scheduled fire in production will fail until this is wired.
+Fixed in commit for "fix(scheduler): inject workspace Bearer + PATH/HOME into spawned codex env (resolves C2)". `Dispatcher.codexEnv(ctx, t)` now:
+- Inherits PATH, HOME, CODEX_HOME from the dispatcher process env (selective whitelist).
+- Fetches per-workspace Bearer via `WorkspaceTokenFetcher.GetOrCreate(ctx, workspaceID)` and sets it under `ModelProviderEnvKey` (e.g. `CODEX_API_KEY=<token>`), same mechanism as the live-spawn path uses.
+- On token-fetch failure, fires `status='failed'` with the error in summary, instead of spawning a credential-less codex.
 
-**Where**:
-- `internal/codexappgateway/scheduler/dispatcher.go` — `codexEnv(t)` returns only `{"TZ=..."}`.
-- `internal/codexappgateway/scheduler/spawn.go` — `cmd.Env = append([]string{}, in.Env...)` does not inherit anything from the parent process.
-- `internal/codexappgateway/scheduler/loop.go` — `Loop.New` does not receive any credential fetcher.
-
-**Why deferred**: requires deciding how scheduler.Loop fetches per-workspace credentials. The live-spawn path uses `wsTokenClient.GetOrCreate(ctx, workspaceID)` (see `internal/codexappgateway/server.go:makeBuildConfig`); the scheduler should do the same, but that means passing `*WorkspaceTokenClient` (or an interface mirror) into `scheduler.Config` and using it in `dispatcher.Fire` before spawning. Also need to decide which env vars to inherit (PATH, HOME, CODEX_HOME) vs. set explicitly per spawn.
-
-**Sketch of fix**:
-1. Add `WorkspaceTokens` field (interface with `GetOrCreate(ctx, wsID) (string, error)`) to `scheduler.Config`.
-2. In `dispatcher.Fire`, before `SpawnExec`, fetch the workspace token and build env.
-3. In `Spawner.Run`, optionally inherit a whitelist of parent env vars (PATH, HOME) — or set them explicitly via Loop config.
-4. Test with a fake `WorkspaceTokens` that returns a static string.
-
-**Spec reference**: §"Fire pipeline" step 3 — "env: CODEX_HOME=<per-spawn>, ANTHROPIC_API_KEY=<workspace cred>, TZ=<task.timezone>". The plan task 12 wired CodexBin but not creds; the spec had this in the §"Open questions for implementation" section.
+`scriptEnv(t)` deliberately does NOT include the token — pre-task scripts shouldn't see provider credentials.
 
 ## I2 — ~~`scheduling.instructions.md` ships but is never bundled into MCP tool registration~~ ✅ Resolved
 

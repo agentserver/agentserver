@@ -245,6 +245,8 @@ func (s *Server) Run(ctx context.Context, listenAddr string) error {
 			TickInterval:    s.cfg.SchedulerTickInterval,
 			LeaseSeconds:    s.cfg.SchedulerLeaseSeconds,
 			Concurrency:     s.cfg.SchedulerConcurrency,
+			Tokens:          NewWorkspaceTokenClient(s.cfg.AgentserverInternalURL, s.cfg.AgentserverInternalSecret),
+			ModelEnvKey:     s.cfg.ModelProviderEnvKey,
 		}
 		sched := scheduler.New(schedCfg, s.logger)
 		schedCtx, schedCancel := context.WithCancel(context.Background())

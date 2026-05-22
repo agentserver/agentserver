@@ -11,6 +11,14 @@ import (
 	"time"
 )
 
+// WorkspaceTokenFetcher resolves a workspace's Bearer token (the same one
+// the live-spawn path uses). Implementations are in the codexappgateway
+// package; the scheduler holds only the interface to keep this package
+// importable from tests without that dependency.
+type WorkspaceTokenFetcher interface {
+	GetOrCreate(ctx context.Context, workspaceID string) (string, error)
+}
+
 type LeaseRequest struct {
 	Limit        int    `json:"limit"`
 	LeaseSeconds int    `json:"leaseSeconds"`

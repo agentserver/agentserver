@@ -44,12 +44,16 @@ func (b *Broadcaster) Send(ctx context.Context, workspaceID, text string, channe
 			"to_user_id": c.UserID,
 			"text":       text,
 		})
-		req, _ := http.NewRequestWithContext(ctx, "POST", b.base+"/api/internal/imbridge/send", bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, "POST", b.base+"/api/internal/imbridge/send", bytes.NewReader(body))
+		if err != nil {
+			rep.Errors[c.ID] = err.Error()
+			continue
+		}
 		req.Header.Set("Content-Type", "application/json")
 		if b.secret != "" {
 			req.Header.Set("X-Internal-Secret", b.secret)
 		}
-		resp, err := b.http.Do(req)
+		resp, err := b.http.Do(req) //nolint:govet // err shadowing intentional
 		if err != nil {
 			rep.Errors[c.ID] = err.Error()
 			continue

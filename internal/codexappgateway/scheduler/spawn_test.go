@@ -44,15 +44,21 @@ func TestSpawnExec_Timeout(t *testing.T) {
 	must(t, os.WriteFile(bin, []byte("#!/bin/sh\nsleep 10\n"), 0o755))
 
 	s := NewSpawner(bin, nil)
+	start := time.Now()
 	res, err := s.Run(context.Background(), SpawnInput{
 		Prompt:  "x",
 		Timeout: 200 * time.Millisecond,
 	})
+	elapsed := time.Since(start)
+
 	if err == nil && res.ExitCode == 0 {
 		t.Fatalf("expected non-zero exit; got %+v", res)
 	}
 	if !res.TimedOut {
 		t.Fatalf("expected TimedOut=true; got %+v", res)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("Run took %s; expected <5s after 200ms timeout (likely leaked subprocess)", elapsed)
 	}
 }
 

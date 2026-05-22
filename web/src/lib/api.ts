@@ -60,17 +60,8 @@ export type WorkspaceQuotaResponse = components['schemas']['AdminWorkspaceQuotaR
 export type WorkspaceQuotaDefaults = components['schemas']['AdminWorkspaceQuotaDefaults']
 export type WorkspaceQuotaOverrides = components['schemas']['AdminWorkspaceQuotaOverrides']
 
-export interface TelegramConfigureResult {
-  connected: boolean
-  bot_id: string
-  bot_name: string
-}
-
-export interface MatrixConfigureResult {
-  connected: boolean
-  bot_id: string
-  user_id: string
-}
+export type TelegramConfigureResult = components['schemas']['IMTelegramConfigureResponse']
+export type MatrixConfigureResult = components['schemas']['IMMatrixConfigureResponse']
 
 export type Sandbox = components['schemas']['Sandbox']
 export type SandboxCreateRequest = components['schemas']['SandboxCreateRequest']
@@ -366,19 +357,8 @@ export async function resumeSandbox(id: string): Promise<components['schemas']['
 
 // WeChat QR Login API
 
-export interface WeixinQRStartResult {
-  qrcode_url: string
-  message: string
-}
-
-export interface WeixinQRWaitResult {
-  connected: boolean
-  status: 'wait' | 'scaned' | 'confirmed' | 'expired'
-  message: string
-  qrcode_url?: string
-  bot_id?: string
-  user_id?: string
-}
+export type WeixinQRStartResult = components['schemas']['IMWeixinQRStartResponse']
+export type WeixinQRWaitResult = components['schemas']['IMWeixinQRWaitResponse']
 
 export async function weixinQRStart(sandboxId: string): Promise<WeixinQRStartResult> {
   const res = await fetch(`/api/sandboxes/${sandboxId}/im/weixin/qr-start`, { method: 'POST' })
@@ -610,26 +590,8 @@ export async function getSandboxTraces(id: string, limit: number, offset: number
   return res.json()
 }
 
-export interface TokenUsageItem {
-  id: string
-  trace_id: string
-  provider: string
-  model: string
-  message_id?: string
-  input_tokens: number
-  output_tokens: number
-  cache_creation_input_tokens: number
-  cache_read_input_tokens: number
-  streaming: boolean
-  duration: number
-  ttft: number
-  created_at: string
-}
-
-export interface TraceDetailResponse {
-  trace: TraceItem
-  requests: TokenUsageItem[]
-}
+export type TokenUsageItem = components['schemas']['TraceRequest']
+export type TraceDetailResponse = components['schemas']['TraceDetailResponse']
 
 export async function getTraceDetail(sandboxId: string, traceId: string): Promise<TraceDetailResponse> {
   const res = await fetch(`/api/sandboxes/${sandboxId}/traces/${traceId}`)
@@ -847,23 +809,7 @@ export async function revokeCodexToken(id: string): Promise<void> {
 
 // Remote Executor API
 
-export interface RemoteExecutor {
-  exe_id: string
-  name: string
-  description: string
-  is_default: boolean
-  last_seen_at?: string
-  // Live online state from the gateway's in-memory registry. The old
-  // client-side `last_seen_at < 90s` heuristic showed freshly-disconnected
-  // executors as online for 90s; this is the authoritative replacement.
-  is_online: boolean
-  client_ip?: string
-  client_ua?: string
-  codex_version?: string
-  os?: string
-  connected_at?: string
-  disconnected_at?: string
-}
+export type RemoteExecutor = components['schemas']['ExecutorItem']
 
 export async function listCodexBrowsers(workspaceId: string): Promise<CodexBrowser[]> {
   return apiFetch<CodexBrowser[]>({
@@ -872,27 +818,9 @@ export async function listCodexBrowsers(workspaceId: string): Promise<CodexBrows
   })
 }
 
-export interface RegisterExecutorRequest {
-  // Workspace-unique name shown to the LLM (env_id parameter).
-  name: string
-  description?: string
-}
-
-export interface ConnectCommands {
-  agent_identity?: string
-}
-
-export interface RegisterExecutorResponse {
-  exe_id: string
-  // Same string as connect_commands.agent_identity, kept for older
-  // clients that read the single-string field.
-  connect_command?: string
-  // The Agent Identity JWT minted for this executor.
-  agent_identity_jwt?: string
-  // Single-variant Agent-Identity command bundle. Present only when
-  // codexAuth is enabled.
-  connect_commands?: ConnectCommands
-}
+export type RegisterExecutorRequest = components['schemas']['ExecutorRegisterRequest']
+export type ConnectCommands = components['schemas']['ExecutorConnectCommands']
+export type RegisterExecutorResponse = components['schemas']['ExecutorRegisterResponse']
 
 export async function listRemoteExecutors(workspaceId: string): Promise<RemoteExecutor[]> {
   const res = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/executors`)

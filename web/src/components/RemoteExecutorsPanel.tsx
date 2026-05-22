@@ -73,13 +73,13 @@ export default function RemoteExecutorsPanel({ workspaceId }: Props) {
     id: r.exe_id,
     name: r.name,
     description: r.description,
-    is_online: r.is_online,
+    is_online: r.is_online ?? false,
     client_ip: r.client_ip,
     os: r.os,
     codex_version: r.codex_version,
-    connected_at: r.connected_at,
-    disconnected_at: r.disconnected_at,
-    lastSeenFallback: r.last_seen_at,
+    connected_at: r.connected_at ?? undefined,
+    disconnected_at: r.disconnected_at ?? undefined,
+    lastSeenFallback: r.last_seen_at ?? undefined,
   }))
 
   const findRow = (id: string) => rows.find((r) => r.exe_id === id)

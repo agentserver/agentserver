@@ -20,6 +20,8 @@ type Config struct {
 	TickInterval    time.Duration
 	LeaseSeconds    int
 	Concurrency     int
+	Tokens          WorkspaceTokenFetcher // workspace Bearer fetcher; nil disables credential injection
+	ModelEnvKey     string               // env var name to set with the token (e.g. "CODEX_API_KEY")
 }
 
 // Loop polls agentserver-main for due tasks and dispatches them concurrently.
@@ -40,6 +42,8 @@ func New(cfg Config, logger *slog.Logger) *Loop {
 		agent,
 		NewSpawner(cfg.CodexBin, nil),
 		NewBroadcaster(cfg.ImbridgeBase, cfg.ImbridgeSecret),
+		cfg.Tokens,
+		cfg.ModelEnvKey,
 	)
 	if cfg.TickInterval <= 0 {
 		cfg.TickInterval = 15 * time.Second

@@ -277,6 +277,14 @@ func (s *Server) Router() http.Handler {
 		}
 		s.handleInternalScheduledTaskResult(w, r)
 	})
+	r.Get("/api/internal/workspaces/{wid}/im-channels", func(w http.ResponseWriter, r *http.Request) {
+		secret := os.Getenv("INTERNAL_API_SECRET")
+		if secret != "" && r.Header.Get("X-Internal-Secret") != secret {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		s.handleInternalListIMChannels(w, r)
+	})
 
 	// Internal API for ModelServer token retrieval (no cookie auth).
 	r.Get("/internal/workspaces/{id}/modelserver-token", s.handleInternalModelserverToken)

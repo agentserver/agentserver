@@ -1,11 +1,15 @@
 <h1 align="center">agentserver</h1>
 
 <p align="center">
-  <strong>Personally command and deploy AI agents across every location and device — from one place.</strong>
+  <strong>Your Personal Compute Network — command devices anywhere, from your WeChat chat window.</strong>
 </p>
 
 <p align="center">
-  <a href="https://platform.agentserver.dev"><img src="https://img.shields.io/badge/Try%20Now-platform.agentserver.dev-blue?style=for-the-badge" alt="Try Now"></a>
+  English &nbsp;·&nbsp; <a href="README.zh.md">简体中文</a>
+</p>
+
+<p align="center">
+  <a href="https://agent.cs.ac.cn"><img src="https://img.shields.io/badge/Try%20Now-agent.cs.ac.cn-blue?style=for-the-badge" alt="Try Now"></a>
 </p>
 
 <p align="center">
@@ -25,7 +29,7 @@
 
 > 📖 Read the full vision: [Overview of agentserver](Overview%20of%20agentserver.pdf) (slide deck, Apr 2026)
 
-agentserver is a self-hosted platform for **operating a fleet of coding agents from one console** — cloud sandboxes, your laptop, your desktop, even your phone, all reachable through the same Web UI or an IM channel (WeChat / Weixin, Telegram, …).
+agentserver turns the laptops, desktops, cloud sandboxes, and even the phones scattered across your life into **one Personal Compute Network** — a single workspace you can command from a browser, a CLI, a Jupyter notebook, or a WeChat chat window. Each device runs a coding agent (codex, opencode, or Claude Code); agentserver is the control plane that registers them, brokers their credentials, routes your prompts, and lets you (and your collaborators) drive them all from one place.
 
 It is the answer to a question Addy Osmani frames as the path from L1 (no AI) to L8 (build your own orchestrator)*: once you are juggling 10+ agents across machines, you stop being a *conductor* and become an *orchestrator*. agentserver is the orchestration layer.
 
@@ -33,23 +37,52 @@ It is the answer to a question Addy Osmani frames as the path from L1 (no AI) to
 
 ### How it differs from what already exists
 
-| Tool | Local agents | Cloud sandboxes | Cross-device peering |
-|------|:---:|:---:|:---:|
-| OpenClaw / Claude Code Remote | one at a time | — | — |
-| Claude Code on the web | — | ✅ | — |
-| Claude Code Agent Teams | — | ✅ (subagents) | — |
-| **agentserver** | **✅ many** | **✅** | **✅** |
+| Tool | Local agents | Cloud sandboxes | Cross-device peering | Chat-app channel |
+|------|:---:|:---:|:---:|:---:|
+| OpenClaw / Claude Code Remote | one at a time | — | — | — |
+| Claude Code on the web | — | ✅ | — | — |
+| Claude Code Agent Teams | — | ✅ (subagents) | — | — |
+| **agentserver** | **✅ many** | **✅** | **✅** | **✅ (WeChat / Telegram)** |
 
 ## Why agentserver?
 
-- **One console, every device** — Operate cloud sandboxes, local laptops/desktops, and IM-bound agents from the same workspace.
-- **Local tunneling, zero public IP** — A local opencode/Claude Code/Codex instance dials home over WebSocket and appears as a sandbox in the UI.
-- **Sandboxes** — Per-task containers with pause/resume and idle auto-pause; Docker (single node) or Kubernetes with [Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox) + gVisor.
-- **Multi-tenancy by workspace** — Cloud and local agents register into the *same* workspace registry; role-based access (owner / maintainer / developer / guest).
-- **Credential & LLM proxy** — Sandboxes never see real provider keys; per-workspace RPD quotas and usage tracking enforced server-side.
-- **IM bridge (WIP)** — Drive agents from WeChat / Weixin or Telegram via `imbridge`; no terminal required.
+- **Command from your pocket** — Drive your agents from a WeChat / Weixin or Telegram chat. No terminal required when you are away from the desk.
+- **One workspace, every device** — Cloud sandboxes, local laptops/desktops, and IM-bound agents all register into the *same* workspace registry and show up side-by-side in the Web UI.
+- **Local tunneling, zero public IP** — A local opencode / Claude Code / codex instance dials home over WebSocket and appears as a sandbox in the UI. No port-forwarding, no third-party tunnel.
+- **Sandboxes that pause and resume** — Per-task containers with idle auto-pause; Docker (single node) or Kubernetes with [Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox) + gVisor.
+- **"Old-school" coding still welcome** — A built-in Jupyter notebook environment lets users who prefer hand-written code talk to the same workspace, the same files, and the same credentials the agents use.
+- **Multi-user collaboration** — Invite friends or teammates into your Personal Compute Network; role-based access (owner / maintainer / developer / guest) decides who can do what.
+- **Credential & LLM proxy** — Sandboxes never see real provider keys; per-workspace RPD quotas and usage tracking are enforced server-side.
 - **SSO ready** — GitHub OAuth and generic OIDC (Keycloak, Authentik, …).
-- **Deploy anywhere** — Pre-built binaries, Homebrew, Docker Compose, or Helm for Kubernetes.
+- **Deploy anywhere** — Use the hosted instance at [agent.cs.ac.cn](https://agent.cs.ac.cn), or self-host via pre-built binaries, Homebrew, Docker Compose, or Helm.
+
+## Using the hosted instance (7 steps)
+
+The fastest way to feel what agentserver does is to use the managed instance at **[agent.cs.ac.cn](https://agent.cs.ac.cn)**. Self-hosters get the same flow against their own domain.
+
+**1. Register an account.** Sign up at [https://agent.cs.ac.cn](https://agent.cs.ac.cn).
+
+**2. Link a model account.** Bring your own ChatGPT / Anthropic / API-key credential, or pick one of the managed model accounts offered on-platform.
+
+**3. Plug your devices into the network.** Install codex (or opencode) on every machine you want to enroll — laptop, desktop, home server, cloud VM:
+
+```bash
+# macOS
+brew install codex
+
+# everywhere else
+npm i -g @openai/codex
+```
+
+In the Web UI, generate a registration code and run the printed command on the device. Run it under `tmux`, `systemd`, or any detached supervisor so the agent survives logout. The device now appears as a sandbox in your workspace.
+
+**4. Pick a "command machine."** This is the device you actually type from — usually your daily-driver laptop. Drop its registration code in, and it gains the ability to dispatch work to every other device in the network.
+
+**5. (Optional) Open a Jupyter notebook.** Prefer writing code by hand? Spin up a notebook environment from the Web UI: `ctx` is pre-injected into every kernel and gives you the same file system, credentials, and tools the agents use. We call this the "old-school" path — same workspace, no LLM in the loop unless you want one.
+
+**6. Bind WeChat / Weixin.** Scan the QR code on the platform to attach your personal WeChat account. Switch the bound agent to codex mode, and you can now type instructions — in natural language — into any WeChat chat and have them executed on the right device. This is the headline experience: **command compute from anywhere your phone has signal.**
+
+**7. Invite collaborators.** Add friends or teammates to your workspace so they can share devices, sandboxes, and credentials with role-scoped permissions.
 
 ## Roadmap: Three Stages
 
@@ -72,7 +105,7 @@ agentserver is being built in three stages. The diagrams and full reasoning live
 Today's deployment (Stage 1, with Stage 2 services landing):
 
 ```
-                  World (Anthropic, GitHub, …)
+                  World (Anthropic, OpenAI, GitHub, …)
                           ▲
                           │ egress
               ┌───────────┴────────────┐
@@ -87,8 +120,9 @@ Browser ───────────▶ agentserver  ─┤    ┌───
                      (:8080)       │    │ sandbox pod /    │
                      • REST API    ├───▶│ container        │
                      • admin UI    │    │ └─ opencode /    │
-                     • registry    │    │    nanoclaw      │
-                     • tunnels     │    └──────────────────┘
+                     • registry    │    │    nanoclaw /    │
+                     • tunnels     │    │    codex         │
+                          │        │    └──────────────────┘
                           │        │
                           │        └──▶ local laptop / desktop / phone
                           │              └─ agentserver-agent (WS tunnel)
@@ -98,9 +132,9 @@ Browser ───────────▶ agentserver  ─┤    ┌───
                    sandboxes, quotas,
                    sessions, mailboxes)
 
-Browser ──▶ sandboxproxy (:8082) ─▶ subdomain routing to sandbox services
-codex CLI ─▶ codex-exec-gateway ──▶ rendezvous for `codex exec --remote` executors
-codex app ─▶ codex-app-gateway  ──▶ per-workspace codex app-server subprocess pool
+Browser   ──▶ sandboxproxy (:8082)        ─▶ subdomain routing to sandbox services
+Jupyter   ──▶ codex-app-gateway (:8086)   ─▶ per-workspace codex app-server subprocess
+codex CLI ──▶ codex-exec-gateway (:6060)  ─▶ rendezvous for `codex exec --remote` executors
 ```
 
 | Service | Default Port | Role |
@@ -110,7 +144,7 @@ codex app ─▶ codex-app-gateway  ──▶ per-workspace codex app-server sub
 | **sandboxproxy** | `:8082` | Subdomain-based routing to sandbox services |
 | **credentialproxy** | — | Server-side injection of provider credentials |
 | **imbridge** | — | IM channel bridge (WeChat / Weixin, Telegram) |
-| **codex-app-gateway** | `:8086` | Per-workspace codex app-server subprocess + ws bridge for codex desktop / web client |
+| **codex-app-gateway** | `:8086` | Per-workspace codex app-server subprocess + ws bridge for codex desktop / Jupyter clients |
 | **codex-exec-gateway** | `:6060` | Rendezvous endpoint for `codex exec --remote` executors (user-local processes) |
 
 ## Code of Conduct
@@ -122,7 +156,7 @@ agentserver follows four house rules that shape every change:
 - ✅ **Fully automated DevOps.** Build, test, release, and deployment are end-to-end automated.
 - ✅ **Dogfooding & bootstrapping.** agentserver is built (partially) *with* agentserver — every feature is used by our own agents before it ships.
 
-## Quick Start
+## Self-Hosting
 
 ### Docker Compose (recommended for local use)
 
@@ -157,7 +191,7 @@ brew install agentserver/tap/agentserver
 
 ## Local Agent Tunneling
 
-Connect a locally-running opencode instance to agentserver — no public IP or third-party tunnel needed.
+Connect a locally-running opencode / codex instance to agentserver — no public IP or third-party tunnel needed.
 
 1. In the Web UI, click the laptop icon next to "Sandboxes" to generate a registration code.
 
@@ -174,7 +208,7 @@ agentserver connect \
 agentserver connect
 ```
 
-3. A **local** sandbox appears in the Web UI — click "Open" to access your local opencode through the browser.
+3. A **local** sandbox appears in the Web UI — click "Open" to access your local agent through the browser.
 
 ### Multi-agent support
 
@@ -369,6 +403,13 @@ cd web && pnpm install && pnpm dev
 ```
 
 Per the [Code of Conduct](#code-of-conduct), production code is AI-generated. Pull requests authored by an agent (with a human reviewer) are welcome; the repo is dogfooded against itself.
+
+## Community & Contact
+
+- **Hosted instance** — [agent.cs.ac.cn](https://agent.cs.ac.cn) (closed beta — sign up and we'll let you in)
+- **Issues & feature requests** — [github.com/agentserver/agentserver/issues](https://github.com/agentserver/agentserver/issues)
+- **Business / partnership inquiries** — [agentserver@mryao.org](mailto:agentserver@mryao.org)
+- **Like the project?** ⭐ a star on GitHub helps more people find it.
 
 ## License
 

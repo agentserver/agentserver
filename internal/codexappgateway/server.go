@@ -278,6 +278,15 @@ func (s *Server) Routes() http.Handler {
 	r.Get("/", s.handleCodexAppWS)
 	r.Get("/codex-app/ws", s.handleCodexAppWS)
 	r.Get("/internal/connected", s.handleInternalConnected)
+	// Loopback scheduled-task proxy — env-mcp POSTs all actions here;
+	// each handler resolves workspace from X-Loopback-Token and forwards
+	// to agentserver-main's /api/internal/workspaces/{wid}/scheduled-tasks/…
+	r.Post("/internal/scheduled-tasks/schedule", s.handleInternalScheduledTask("schedule"))
+	r.Post("/internal/scheduled-tasks/list", s.handleInternalScheduledTask("list"))
+	r.Post("/internal/scheduled-tasks/cancel", s.handleInternalScheduledTask("cancel"))
+	r.Post("/internal/scheduled-tasks/pause", s.handleInternalScheduledTask("pause"))
+	r.Post("/internal/scheduled-tasks/resume", s.handleInternalScheduledTask("resume"))
+	r.Post("/internal/scheduled-tasks/update", s.handleInternalScheduledTask("update"))
 	turnHandler := &turnAPIHandler{
 		runner: newPoolRunner(s.brokerPool),
 	}

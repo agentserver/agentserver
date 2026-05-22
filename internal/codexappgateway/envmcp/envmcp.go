@@ -14,6 +14,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/agentserver/agentserver/internal/codexappgateway/envmcp/scheduling"
 	"github.com/agentserver/agentserver/internal/envtools/bridge"
 	"github.com/agentserver/agentserver/internal/envtools/nameresolver"
 	"github.com/agentserver/agentserver/internal/envtools/tools"
@@ -93,6 +94,13 @@ func Run(ctx context.Context, args RunArgs, stdin io.Reader, stdout, stderr io.W
 		tools.NewApplyPatchTool(pool, resolver),
 		tools.NewCopyPathTool(pool, resolver, relayClient),
 	}
+	// Register scheduling tools — forward via loopback to app-gateway which
+	// then proxies to agentserver-main's internal workspace-scoped endpoints.
+	schedTransport := scheduling.NewLoopbackTransport(
+		strings.TrimRight(args.AppGatewayInternal, "/")+"/internal/scheduled-tasks",
+		lbToken,
+	)
+	toolList = append(toolList, scheduling.NewSchedulingTools(schedTransport)...)
 	srv := NewMCPServer("agentserver", toolList, logger)
 	if err := srv.Serve(ctx, stdin, stdout); err != nil {
 		return fmt.Errorf("mcp serve: %w", err)

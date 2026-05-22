@@ -114,7 +114,13 @@ func (d *Dispatcher) Fire(ctx context.Context, t Task) error {
 func (d *Dispatcher) report(ctx context.Context, t Task, r ResultRequest, broadcastText string, shouldBroadcast bool) error {
 	if shouldBroadcast {
 		channels, err := d.agent.ListChannels(ctx, t.WorkspaceID)
-		if err == nil && len(channels) > 0 {
+		switch {
+		case err != nil:
+			// Record so the operator can distinguish "no IM channels bound" from
+			// "agentserver unreachable" when grepping run history.
+			b, _ := json.Marshal(map[string]string{"_list_channels": err.Error()})
+			r.BroadcastErrors = b
+		case len(channels) > 0:
 			rep := d.broadcaster.Send(ctx, t.WorkspaceID, renderIMText(t, r, broadcastText), channels)
 			r.BroadcastTo = rep.To
 			b, _ := json.Marshal(rep.Errors)

@@ -1,3 +1,4 @@
+import { HomeCompare } from './HomeCompare'
 import { HomeHero } from './HomeHero'
 import { HomeNav } from './HomeNav'
 import { HomePillars } from './HomePillars'
@@ -11,6 +12,7 @@ export function Home() {
         <HomeHero />
         <HomeQuote />
         <HomePillars />
+        <HomeCompare />
       </main>
     </div>
   )

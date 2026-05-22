@@ -1,4 +1,4 @@
-.PHONY: dev build clean frontend backend agent agent-all llmproxy credentialproxy test docker docker-agent docker-llmproxy docker-credentialproxy docker-openclaw docker-all openapi openapi-check
+.PHONY: dev build clean frontend backend agent agent-all llmproxy credentialproxy test docker docker-agent docker-llmproxy docker-credentialproxy docker-openclaw docker-all openapi openapi-check api-docs api-docs-check
 
 # Development: run frontend dev server + Go backend
 dev:
@@ -108,3 +108,16 @@ openapi-check:
 	@diff -u docs/api/openapi.yaml /tmp/openapi-check/openapi.yaml || (echo "FAIL: docs/api/openapi.yaml is stale — run 'make openapi' and commit"; exit 1)
 	@diff -u docs/api/openapi.json /tmp/openapi-check/openapi.json || (echo "FAIL: docs/api/openapi.json is stale — run 'make openapi' and commit"; exit 1)
 	@echo "openapi-check: spec matches handler annotations"
+
+# API reference docs: render per-tag Markdown pages under docs/api/reference/
+# from docs/api/openapi.yaml. Public developer surface only (no Admin/Misc).
+api-docs:
+	@python3 scripts/gen_api_reference.py
+
+# Drift check: regenerate to a temp dir and diff. CI uses this to catch
+# committed openapi.yaml changes that weren't followed by `make api-docs`.
+api-docs-check:
+	@rm -rf /tmp/api-docs-check && mkdir -p /tmp/api-docs-check
+	@python3 scripts/gen_api_reference.py --output /tmp/api-docs-check >/dev/null
+	@diff -ru docs/api/reference /tmp/api-docs-check || (echo "FAIL: docs/api/reference/ is stale — run 'make api-docs' and commit"; exit 1)
+	@echo "api-docs-check: reference matches openapi.yaml"

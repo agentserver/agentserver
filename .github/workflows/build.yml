@@ -51,6 +51,12 @@ jobs:
       - name: OpenAPI drift check
         run: make openapi-check
 
+      - name: Install PyYAML (for API docs generator)
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: API reference drift check
+        run: make api-docs-check
+
   build-server:
     runs-on: ubuntu-latest
     needs: [test]

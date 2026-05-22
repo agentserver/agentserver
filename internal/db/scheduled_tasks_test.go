@@ -117,8 +117,11 @@ func TestScheduledTask_CancelMatchesBySeriesID(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("cancelled %d, want 1 (only the live row)", n)
 	}
-	got, _ := d.GetScheduledTaskBySeries(wsID, "sch_old")
-	if got.Status != "cancelled" {
-		t.Fatalf("status=%s", got.Status)
+	got, err := d.GetScheduledTaskBySeries(wsID, "sch_old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.Status != "cancelled" {
+		t.Fatalf("got %#v", got)
 	}
 }

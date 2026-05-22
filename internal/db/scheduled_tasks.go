@@ -277,7 +277,9 @@ func (db *DB) UpdateScheduledSeries(wsID, seriesID string, u ScheduledTaskUpdate
 	return int(n), nil
 }
 
-// CreateScheduledTaskRun writes a 'running' run row at fire start.
+// CreateScheduledTaskRun inserts a run row with a placeholder status of 'succeeded'.
+// The scheduled_task_runs CHECK constraint has no 'running' value, so we pick a
+// schema-legal placeholder; FinalizeRunAndAdvance overwrites it with the real outcome.
 func (db *DB) CreateScheduledTaskRun(r *ScheduledTaskRun) error {
 	_, err := db.Exec(
 		`INSERT INTO scheduled_task_runs (id, task_id, series_id, started_at, status)

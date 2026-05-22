@@ -3,7 +3,11 @@ package scheduling
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/agentserver/agentserver/internal/envtools/tools"
@@ -81,6 +85,47 @@ func TestUpdateTask_RejectsEmptyUpdate(t *testing.T) {
 	}
 	if len(res.Content) == 0 || res.Content[0].Text != "Error: at least one field to update is required" {
 		t.Fatalf("unexpected error content: %+v", res.Content)
+	}
+}
+
+func TestLoopbackTransport_InjectsTimezone(t *testing.T) {
+	t.Setenv("TZ", "Asia/Shanghai")
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = string(b)
+		w.WriteHeader(200)
+		w.Write([]byte("{}"))
+	}))
+	defer srv.Close()
+
+	tr := NewLoopbackTransport(srv.URL, "tok")
+	_, err := tr.Call(context.Background(), "schedule", json.RawMessage(`{"prompt":"x","processAfter":"2099-01-01T09:00:00"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, `"timezone":"Asia/Shanghai"`) {
+		t.Fatalf("expected timezone injected, got: %s", got)
+	}
+}
+
+func TestLoopbackTransport_RespectsExplicitTimezone(t *testing.T) {
+	t.Setenv("TZ", "Asia/Shanghai")
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = string(b)
+		w.WriteHeader(200)
+		w.Write([]byte("{}"))
+	}))
+	defer srv.Close()
+	tr := NewLoopbackTransport(srv.URL, "tok")
+	_, err := tr.Call(context.Background(), "schedule", json.RawMessage(`{"prompt":"x","processAfter":"...","timezone":"UTC"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, `"timezone":"UTC"`) || strings.Contains(got, "Asia/Shanghai") {
+		t.Fatalf("explicit tz must win; got: %s", got)
 	}
 }
 

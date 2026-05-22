@@ -89,7 +89,10 @@ func (c *AgentserverClient) ListChannels(ctx context.Context, workspaceID string
 	if resp.StatusCode/100 != 2 {
 		return nil, fmt.Errorf("list channels: status %d", resp.StatusCode)
 	}
-	return out, json.NewDecoder(resp.Body).Decode(&out)
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode channels: %w", err)
+	}
+	return out, nil
 }
 
 func (c *AgentserverClient) post(ctx context.Context, path string, body, out any) error {

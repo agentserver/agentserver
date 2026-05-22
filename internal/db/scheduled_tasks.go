@@ -165,7 +165,7 @@ func (db *DB) LeaseDueScheduledTasks(limit, leaseSeconds int, owner string) ([]S
 		 UPDATE scheduled_tasks t
 		    SET lease_until = NOW() + make_interval(secs => $2::int),
 		        lease_owner = $3,
-		        status      = 'running',
+		        tries       = tries + 1,
 		        updated_at  = NOW()
 		   FROM due
 		  WHERE t.id = due.id
@@ -354,7 +354,7 @@ func (db *DB) FinalizeRunAndAdvance(in FinalizeRunInput, nextAfter *time.Time, n
 			`UPDATE scheduled_tasks
 			    SET status='completed', recurrence=NULL,
 			        lease_until=NULL, lease_owner=NULL,
-			        last_run_id=$2, tries=tries+1, updated_at=NOW()
+			        last_run_id=$2, updated_at=NOW()
 			  WHERE id=$1`, in.TaskID, in.RunID); err != nil {
 			return err
 		}
@@ -366,7 +366,7 @@ func (db *DB) FinalizeRunAndAdvance(in FinalizeRunInput, nextAfter *time.Time, n
 		if _, err = tx.Exec(
 			`UPDATE scheduled_tasks
 			    SET status=$2, lease_until=NULL, lease_owner=NULL,
-			        last_run_id=$3, tries=tries+1, updated_at=NOW()
+			        last_run_id=$3, updated_at=NOW()
 			  WHERE id=$1`, in.TaskID, newStatus, in.RunID); err != nil {
 			return err
 		}

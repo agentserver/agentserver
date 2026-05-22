@@ -45,15 +45,23 @@ type limitedWriter struct {
 	n   int
 }
 
+// Write silently drops bytes beyond max. Always reports len(p) consumed (no
+// io.ErrShortWrite) so io.Copy keeps draining the underlying pipe — without
+// this, a long-running bash script that printed > max bytes would block on
+// stdout once io.Copy stopped reading, hanging us until scriptHardLimit.
 func (lw *limitedWriter) Write(p []byte) (int, error) {
 	rem := lw.max - lw.n
 	if rem <= 0 {
 		return len(p), nil
-	} // silently drop overflow
-	if len(p) > rem {
-		p = p[:rem]
 	}
-	n, err := lw.w.Write(p)
+	toWrite := p
+	if len(p) > rem {
+		toWrite = p[:rem]
+	}
+	n, err := lw.w.Write(toWrite)
 	lw.n += n
-	return n, err
+	if err != nil {
+		return n, err
+	}
+	return len(p), nil
 }

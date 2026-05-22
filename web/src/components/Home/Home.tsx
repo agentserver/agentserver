@@ -1,10 +1,11 @@
-import { HomeCompare } from './HomeCompare'
-import { HomeFinalCTA } from './HomeFinalCTA'
-import { HomeHero } from './HomeHero'
 import { HomeNav } from './HomeNav'
-import { HomeOnboarding } from './HomeOnboarding'
-import { HomePillars } from './HomePillars'
+import { HomeHero } from './HomeHero'
 import { HomeQuote } from './HomeQuote'
+import { HomePillars } from './HomePillars'
+import { HomeCompare } from './HomeCompare'
+import { HomeOnboarding } from './HomeOnboarding'
+import { HomeFinalCTA } from './HomeFinalCTA'
+import { HomeFooter } from './HomeFooter'
 
 export function Home() {
   return (
@@ -18,6 +19,7 @@ export function Home() {
         <HomeOnboarding />
         <HomeFinalCTA />
       </main>
+      <HomeFooter />
     </div>
   )
 }

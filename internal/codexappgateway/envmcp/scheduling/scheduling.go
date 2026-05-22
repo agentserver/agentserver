@@ -47,7 +47,24 @@ type scheduleTaskTool struct{ t ScheduleTransport }
 
 func (*scheduleTaskTool) Name() string { return "schedule_task" }
 func (*scheduleTaskTool) Description() string {
-	return `Schedule a one-shot or recurring task. The user's timezone is declared in the <context timezone="..."/> header of your prompt — interpret the user's "9pm" etc. in that zone. Cron expressions are interpreted in the user's timezone too.`
+	return `Schedule a one-shot or recurring task. Tasks persist across sessions and restarts.
+
+TIMEZONE: your local timezone is attached automatically server-side from the TZ env. Use naive local timestamps like "2026-01-15T21:00:00" for processAfter — they will be interpreted in your zone. Cron expressions in recurrence are also evaluated in your zone.
+
+RECURRING TASKS WITH script (recommended for frequent polling):
+Frequent recurring tasks — more than a few times a day — consume API credits and can risk account restrictions. Add a bash ` + "`script`" + ` that runs first; you will only be called when the check passes.
+
+How it works:
+  1. Provide a bash script alongside the prompt.
+  2. When the task fires, the script runs first.
+  3. Script must print JSON to stdout: {"wakeAgent": true|false, "data": {...}}
+  4. If wakeAgent=false → nothing happens, the task waits for next run.
+  5. If wakeAgent=true → you receive the script's data + your prompt and handle.
+
+When NOT to use scripts:
+  If a task requires your judgment every time (daily briefings, reminders, reports), skip the script. Do not attempt sentiment analysis or NLP in scripts.
+
+Always test your script first by running it directly to verify the JSON shape.`
 }
 func (*scheduleTaskTool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{

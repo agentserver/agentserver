@@ -21,17 +21,9 @@
 
 **Spec reference**: §"Fire pipeline" step 3 — "env: CODEX_HOME=<per-spawn>, ANTHROPIC_API_KEY=<workspace cred>, TZ=<task.timezone>". The plan task 12 wired CodexBin but not creds; the spec had this in the §"Open questions for implementation" section.
 
-## I2 — `scheduling.instructions.md` ships but is never bundled into MCP tool registration
+## I2 — ~~`scheduling.instructions.md` ships but is never bundled into MCP tool registration~~ ✅ Resolved
 
-**Status**: deferred. Agents currently don't see the script-usage / API-credit-cost guidance.
-
-**Where**: `internal/codexappgateway/envmcp/scheduling/scheduling.instructions.md` exists on disk; no `//go:embed` directive references it; no tool returns its content in `Description()` or as a separate documentation surface.
-
-**Why deferred**: requires deciding HOW nanoclaw surfaces its instructions doc to the agent. Two reasonable approaches:
-- **Embed into `schedule_task.Description()`**: append the markdown content to the description string. Would need to update `testdata/scheduling.golden.json` to match the new long description.
-- **Add a 7th `scheduling_instructions` tool** (or use the MCP resources mechanism if available): returns the markdown when called. Cleaner separation but requires extending the env-mcp protocol.
-
-The nanoclaw reference (`/root/nanoclaw/container/agent-runner/src/mcp-tools/scheduling.instructions.md` + how it's loaded) should be checked first to mirror that pattern.
+✅ Resolved — content folded into `schedule_task` Description() in commit for "fix(scheduling): inline script guidance into schedule_task description; drop unused TZ header reference".
 
 ## Acknowledged gaps (NOT regressions, but worth noting)
 

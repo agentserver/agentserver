@@ -1,4 +1,5 @@
 import { HomeCompare } from './HomeCompare'
+import { HomeFinalCTA } from './HomeFinalCTA'
 import { HomeHero } from './HomeHero'
 import { HomeNav } from './HomeNav'
 import { HomeOnboarding } from './HomeOnboarding'
@@ -15,6 +16,7 @@ export function Home() {
         <HomePillars />
         <HomeCompare />
         <HomeOnboarding />
+        <HomeFinalCTA />
       </main>
     </div>
   )

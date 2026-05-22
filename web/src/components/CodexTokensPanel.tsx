@@ -79,9 +79,14 @@ export default function CodexTokensPanel({ workspaceId }: Props) {
     }
   }
 
-  const copyToken = async () => {
+  const buildCommand = (token: string) =>
+    `export AGENTSERVER_TOKEN='${token}'
+codex --remote wss://codex-app.${typeof window !== 'undefined' ? window.location.host : '<host>'}:443 \\
+      --remote-auth-token-env AGENTSERVER_TOKEN`
+
+  const copyCommand = async () => {
     if (!generated) return
-    await navigator.clipboard.writeText(generated.token)
+    await navigator.clipboard.writeText(buildCommand(generated.token))
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
   }
@@ -214,22 +219,17 @@ export default function CodexTokensPanel({ workspaceId }: Props) {
             <p className="mb-3 text-sm text-[var(--muted-foreground)]">
               Copy it now — you won't see it again.
             </p>
-            <div className="mb-4 flex items-center gap-2">
-              <code className="flex-1 break-all rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-2 font-mono text-xs text-[var(--foreground)]">
-                {generated.token}
-              </code>
+            <div className="mb-4 flex items-start gap-2">
+              <pre className="flex-1 overflow-x-auto rounded-md border border-[var(--border)] bg-[var(--background)] p-3 text-[11px] text-[var(--foreground)]">{buildCommand(generated.token)}</pre>
               <button
-                onClick={copyToken}
+                onClick={copyCommand}
                 className="rounded-md border border-[var(--border)] p-2 text-[var(--foreground)] hover:bg-[var(--secondary)]"
-                aria-label="Copy token"
+                aria-label="Copy command"
                 title="Copy"
               >
                 {copied ? <Check size={14} /> : <Copy size={14} />}
               </button>
             </div>
-            <pre className="mb-4 overflow-x-auto rounded-md border border-[var(--border)] bg-[var(--background)] p-3 text-[11px] text-[var(--foreground)]">{`export AGENTSERVER_TOKEN='${generated.token}'
-codex --remote wss://codex-app.${typeof window !== 'undefined' ? window.location.host : '<host>'}:443 \\
-      --remote-auth-token-env AGENTSERVER_TOKEN`}</pre>
             <div className="flex justify-end">
               <button
                 onClick={() => setGenerated(null)}

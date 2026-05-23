@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -39,6 +40,45 @@ func TestVerifyCapabilityToken_Workspace(t *testing.T) {
 	}
 	if got.TurnID != "trn_prod" || got.WorkspaceID != "ws_prod" {
 		t.Fatalf("payload: %+v", got)
+	}
+}
+
+func TestVerifyCapabilityToken_RoundTripsUserID(t *testing.T) {
+	secret := []byte("k")
+	tok := mintToken(t, secret, CapPayload{
+		TurnID: "t", WorkspaceID: "w", UserID: "u_alice",
+		EXP: time.Now().Unix() + 60,
+	})
+	got, err := VerifyCapabilityToken(tok, secret)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if got.UserID != "u_alice" {
+		t.Fatalf("UserID: got %q, want u_alice", got.UserID)
+	}
+}
+
+// TestVerifyCapabilityToken_OldTokenHasNoUserID pins the backward-compat
+// guarantee: a token minted by an older codex-app-gateway (without the
+// user_id field) still verifies, and UserID comes back as "".
+func TestVerifyCapabilityToken_OldTokenHasNoUserID(t *testing.T) {
+	secret := []byte("k")
+	// Hand-craft a payload missing user_id entirely (mimics pre-T7 mint).
+	header := []byte(`{"alg":"HS256","typ":"CXG"}`)
+	payloadJSON := []byte(`{"turn_id":"t","workspace_id":"w","iat":0,"exp":` +
+		fmt.Sprint(time.Now().Unix()+60) + `}`)
+	enc := base64.RawURLEncoding
+	signingInput := enc.EncodeToString(header) + "." + enc.EncodeToString(payloadJSON)
+	mac := hmac.New(sha256.New, secret)
+	mac.Write([]byte(signingInput))
+	tok := signingInput + "." + enc.EncodeToString(mac.Sum(nil))
+
+	got, err := VerifyCapabilityToken(tok, secret)
+	if err != nil {
+		t.Fatalf("old-style token failed to verify: %v", err)
+	}
+	if got.UserID != "" {
+		t.Fatalf("UserID should be empty for old token, got %q", got.UserID)
 	}
 }
 

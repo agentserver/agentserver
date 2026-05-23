@@ -20,8 +20,15 @@ import (
 type CapPayload struct {
 	TurnID      string `json:"turn_id"`
 	WorkspaceID string `json:"workspace_id"`
-	IAT         int64  `json:"iat"`
-	EXP         int64  `json:"exp"`
+	// UserID is the workspace member who triggered the cap-token mint.
+	// Optional for backward compatibility: tokens minted by older
+	// codex-app-gateway versions don't carry it, which Verify accepts
+	// (UserID is left as ""). The exec-audit subsystem stores it on
+	// the session row when present — see
+	// docs/superpowers/specs/2026-05-23-codex-exec-gateway-audit-design.md.
+	UserID string `json:"user_id,omitempty"`
+	IAT    int64  `json:"iat"`
+	EXP    int64  `json:"exp"`
 }
 
 var (

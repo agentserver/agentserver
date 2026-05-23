@@ -136,16 +136,14 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 	// happens — better than silently swapping who receives the next
 	// frame.
 	session := newBridgeSession(streamID, inbound, bridgeWS)
-	if evicted := inbound.addRoute(streamID, session); evicted != nil {
-		s.logger.Warn("bridge: stream_id collision; evicting prior session",
-			"exe_id", exeID, "stream_id", streamID)
-		evicted.close(errors.New("evicted by stream_id collision"))
-	}
-
-	// Open the audit session AFTER route registration but BEFORE the
-	// pump starts. SessionOpen mints a UUID even when audit is disabled
-	// (noopRecorder), so session.auditSessionID is always non-empty for
-	// the pumps.
+	// Open the audit session BEFORE addRoute so the inbound reader can
+	// never observe session.auditSessionID being written concurrently
+	// with its own read of the field. In production the protocol
+	// guarantees no inbound frame for streamID arrives before our
+	// forwarded Resume, but ordering the assignment first removes a
+	// latent race a future refactor could trip. SessionOpen mints a
+	// UUID even when audit is disabled (noopRecorder), so
+	// session.auditSessionID is always non-empty for the pumps.
 	auditSessID := s.recorder.SessionOpen(audit.SessionMeta{
 		WorkspaceID: payload.WorkspaceID,
 		UserID:      payload.UserID,
@@ -158,6 +156,11 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 		OpenedAt:    time.Now().UTC(),
 	})
 	session.auditSessionID = auditSessID
+	if evicted := inbound.addRoute(streamID, session); evicted != nil {
+		s.logger.Warn("bridge: stream_id collision; evicting prior session",
+			"exe_id", exeID, "stream_id", streamID)
+		evicted.close(errors.New("evicted by stream_id collision"))
+	}
 
 	defer func() {
 		inbound.removeRoute(streamID, session)

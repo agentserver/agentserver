@@ -96,14 +96,16 @@ const (
 // or "" to reject (preventing open redirect). Accepts:
 //
 //   - relative paths starting with "/" but not "//" (protocol-relative);
-//   - absolute https URLs whose host matches the configured cookie domain
-//     (e.g. "https://codex-auth.agent.cs.ac.cn/..." when cookieDomain is
-//     ".agent.cs.ac.cn"). This is the only way device/PKCE flows on the
-//     codex-auth subdomain can bounce back after main-app OIDC login.
+//   - absolute https URLs whose host shares a cookie-domain tree with
+//     reqHost (e.g. "https://codex-auth.agent.cs.ac.cn/..." is allowed
+//     when reqHost is "platform.agent.cs.ac.cn" and the cookie domain
+//     for that host is "agent.cs.ac.cn"). This is the only way
+//     device/PKCE flows on the codex-auth subdomain can bounce back
+//     after main-app OIDC login.
 //
 // Rejects control chars (CR/LF header injection), oversize strings, and
 // anything that doesn't fit one of the two shapes above.
-func safeNext(next string) string {
+func safeNext(reqHost, next string) string {
 	if next == "" || len(next) > 2048 {
 		return ""
 	}
@@ -122,13 +124,15 @@ func safeNext(next string) string {
 	if err != nil || u.Scheme != "https" || u.Host == "" {
 		return ""
 	}
-	cd := cookieDomain()
+	cd := cookieDomainForHost(reqHost)
 	if cd == "" {
 		return ""
 	}
-	// cd looks like ".agent.cs.ac.cn"; require Host ends with it,
-	// and isn't itself just the bare leading-dot (defensive).
-	if !strings.HasSuffix("."+u.Host, cd) {
+	targetHost := u.Host
+	if i := strings.IndexByte(targetHost, ':'); i >= 0 {
+		targetHost = targetHost[:i]
+	}
+	if targetHost != cd && !strings.HasSuffix(targetHost, "."+cd) {
 		return ""
 	}
 	return next
@@ -158,7 +162,7 @@ func (m *OIDCManager) HandleLogin(w http.ResponseWriter, r *http.Request, provid
 		MaxAge:   int(stateCookieTTL.Seconds()),
 	})
 
-	if next := safeNext(r.URL.Query().Get("next")); next != "" {
+	if next := safeNext(r.Host, r.URL.Query().Get("next")); next != "" {
 		http.SetCookie(w, &http.Cookie{
 			Name:     nextCookieName,
 			Value:    next,
@@ -253,11 +257,11 @@ func (m *OIDCManager) HandleCallback(w http.ResponseWriter, r *http.Request, pro
 		return
 	}
 
-	SetTokenCookie(w, authToken)
+	SetTokenCookie(w, r, authToken)
 
 	dest := "/"
 	if c, err := r.Cookie(nextCookieName); err == nil {
-		if next := safeNext(c.Value); next != "" {
+		if next := safeNext(r.Host, c.Value); next != "" {
 			dest = next
 		}
 		http.SetCookie(w, &http.Cookie{

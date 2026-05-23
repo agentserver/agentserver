@@ -17,13 +17,34 @@ const (
 	tokenTTL   = 7 * 24 * time.Hour
 )
 
-// cookieDomain returns the Domain attribute for the session cookie.
-// Empty (the default) means a host-only cookie scoped to the exact
-// host that set it. When set to e.g. ".agent.cs.ac.cn" it lets the
-// cookie cross subdomains — necessary for the codex-auth subdomain to
-// SSO with the main app session.
-func cookieDomain() string {
-	return os.Getenv("AGENTSERVER_COOKIE_DOMAIN")
+// cookieDomainForHost returns the Domain attribute to set on the session
+// cookie for a request whose Host header is host. Returns "" when no
+// configured entry covers host — the browser then scopes the cookie to
+// the exact host.
+//
+// AGENTSERVER_COOKIE_DOMAINS is a comma-separated list of full domains
+// (e.g. "agent.cs.ac.cn,platform.agentserver.dev"). One helm release can
+// serve multiple platform hostnames; each request picks the entry whose
+// tree contains its Host. AGENTSERVER_COOKIE_DOMAIN (singular, no list)
+// is read as a fallback for older charts.
+func cookieDomainForHost(host string) string {
+	if i := strings.IndexByte(host, ':'); i >= 0 {
+		host = host[:i]
+	}
+	raw := os.Getenv("AGENTSERVER_COOKIE_DOMAINS")
+	if raw == "" {
+		raw = os.Getenv("AGENTSERVER_COOKIE_DOMAIN")
+	}
+	for _, d := range strings.Split(raw, ",") {
+		d = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(d), "."))
+		if d == "" {
+			continue
+		}
+		if host == d || strings.HasSuffix(host, "."+d) {
+			return d
+		}
+	}
+	return ""
 }
 
 type contextKey string
@@ -172,15 +193,30 @@ func (a *Auth) DB() *db.DB {
 	return a.db
 }
 
-func SetTokenCookie(w http.ResponseWriter, token string) {
+func SetTokenCookie(w http.ResponseWriter, r *http.Request, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     cookieName,
 		Value:    token,
 		Path:     "/",
-		Domain:   cookieDomain(),
+		Domain:   cookieDomainForHost(r.Host),
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(tokenTTL.Seconds()),
+	})
+}
+
+// ClearTokenCookie writes an expired Set-Cookie with the same Name/Path/
+// Domain attributes SetTokenCookie used, so the browser actually drops it.
+func ClearTokenCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     cookieName,
+		Value:    "",
+		Path:     "/",
+		Domain:   cookieDomainForHost(r.Host),
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
 	})
 }

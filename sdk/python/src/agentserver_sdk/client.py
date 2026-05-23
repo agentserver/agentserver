@@ -1,6 +1,6 @@
 """HTTP client for agentserver SDK.
 
-Talks REST to codex-exec-gateway's /api/sdk/* endpoints. One HTTPClient
+Talks REST to codex-exec-gateway's /api/connectors/* endpoints. One HTTPClient
 per Ctx. Bearer-authenticated; the gateway resolves user_id from the
 token server-side.
 """

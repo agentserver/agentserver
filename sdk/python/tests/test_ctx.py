@@ -19,7 +19,7 @@ async def test_envs_returns_parsed_list(stub_client):
             ]
         }
 
-    stub.register("POST", "/api/sdk/envs/list", envs)
+    stub.register("POST", "/api/connectors/envs/list", envs)
     result = await ctx.envs()
     assert len(result) == 1
     assert result[0].name == "my-mac"
@@ -37,7 +37,7 @@ async def test_envs_hits_gateway_every_call(stub_client):
         calls["n"] += 1
         return 200, {"envs": []}
 
-    stub.register("POST", "/api/sdk/envs/list", envs)
+    stub.register("POST", "/api/connectors/envs/list", envs)
     await ctx.envs()
     await ctx.envs()
     await ctx.envs()
@@ -56,7 +56,7 @@ async def test_env_by_name_returns_matching_env(stub_client):
             ]
         }
 
-    stub.register("POST", "/api/sdk/envs/list", envs)
+    stub.register("POST", "/api/connectors/envs/list", envs)
     alpha = await ctx.env("alpha")
     assert alpha.name == "alpha"
     assert alpha.type == "shell"
@@ -69,7 +69,7 @@ async def test_env_by_name_missing_raises_key_error(stub_client):
     async def envs(body, query):
         return 200, {"envs": []}
 
-    stub.register("POST", "/api/sdk/envs/list", envs)
+    stub.register("POST", "/api/connectors/envs/list", envs)
     with pytest.raises(KeyError):
         await ctx.env("nope")
 

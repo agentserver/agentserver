@@ -23,7 +23,7 @@ type Tool interface {
 // tool can shape it as needed without a wider schema.
 type MCPCallToolResult struct {
 	Content           []MCPToolContent `json:"content"`
-	StructuredContent json.RawMessage  `json:"structuredContent,omitempty"`
+	StructuredContent json.RawMessage  `json:"structuredContent,omitempty" swaggertype:"object"`
 	IsError           bool             `json:"isError"`
 }
 

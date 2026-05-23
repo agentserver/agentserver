@@ -31,7 +31,7 @@ async def test_call_injects_environment_id(stub_client):
         assert body["tool"] == "shell"
         return 200, {"isError": False, "content": [], "structuredContent": {}}
 
-    stub.register("POST", "/api/sdk/envs/alpha/tool/call", tool)
+    stub.register("POST", "/api/connectors/envs/alpha/tool/call", tool)
     env = make_env(client, tools=[_tool("shell")])
     await env.call("shell", {"command": ["ls"]})
 
@@ -51,7 +51,7 @@ async def test_shell_str_wraps_as_single_argv(stub_client):
             "isError": False,
         }
 
-    stub.register("POST", "/api/sdk/envs/alpha/tool/call", tool)
+    stub.register("POST", "/api/connectors/envs/alpha/tool/call", tool)
     env = make_env(client, tools=[_tool("shell")])
     await env.shell("hostname")
     assert received["arguments"]["command"] == ["hostname"]
@@ -69,7 +69,7 @@ async def test_shell_list_passed_through_and_timeout_in_ms(stub_client):
             "isError": False,
         }
 
-    stub.register("POST", "/api/sdk/envs/alpha/tool/call", tool)
+    stub.register("POST", "/api/connectors/envs/alpha/tool/call", tool)
     env = make_env(client, tools=[_tool("shell")])
     await env.shell(["sh", "-c", "ls | wc -l"], timeout=2.5, cwd="/work")
     args = received["arguments"]
@@ -91,7 +91,7 @@ async def test_shell_non_zero_exit_does_not_raise(stub_client):
             "isError": False,
         }
 
-    stub.register("POST", "/api/sdk/envs/alpha/tool/call", tool)
+    stub.register("POST", "/api/connectors/envs/alpha/tool/call", tool)
     env = make_env(client, tools=[_tool("shell")])
     r = await env.shell(["grep", "x", "/etc/hosts"])
     assert r.exit_code == 1
@@ -108,7 +108,7 @@ async def test_shell_returns_shell_result(stub_client):
             "isError": False,
         }
 
-    stub.register("POST", "/api/sdk/envs/alpha/tool/call", tool)
+    stub.register("POST", "/api/connectors/envs/alpha/tool/call", tool)
     env = make_env(client, tools=[_tool("shell")])
     r = await env.shell("echo hi")
     assert isinstance(r, ShellResult)
@@ -127,7 +127,7 @@ async def test_read_file_returns_bytes(stub_client):
             "isError": False,
         }
 
-    stub.register("POST", "/api/sdk/envs/alpha/tool/call", tool)
+    stub.register("POST", "/api/connectors/envs/alpha/tool/call", tool)
     env = make_env(client, tools=[_tool("read_file")])
     data = await env.read_file("/x")
     assert data == payload
@@ -139,7 +139,7 @@ async def test_is_error_raises_tool_error(stub_client):
     async def tool(body, query):
         return 200, {"isError": True, "content": [{"type": "text", "text": "boom"}]}
 
-    stub.register("POST", "/api/sdk/envs/alpha/tool/call", tool)
+    stub.register("POST", "/api/connectors/envs/alpha/tool/call", tool)
     env = make_env(client, tools=[_tool("shell")])
     with pytest.raises(ToolError) as ei:
         await env.shell("badcmd")
@@ -156,7 +156,7 @@ async def test_write_file_passes_bytes_as_b64(stub_client):
         received.update(body)
         return 200, {"isError": False, "content": []}
 
-    stub.register("POST", "/api/sdk/envs/alpha/tool/call", tool)
+    stub.register("POST", "/api/connectors/envs/alpha/tool/call", tool)
     env = make_env(client, tools=[_tool("write_file")])
     await env.write_file("/x", b"\x00\x01\x02")
     args = received["arguments"]
@@ -172,7 +172,7 @@ async def test_apply_patch_passes_through(stub_client):
         received.update(body)
         return 200, {"isError": False, "content": []}
 
-    stub.register("POST", "/api/sdk/envs/alpha/tool/call", tool)
+    stub.register("POST", "/api/connectors/envs/alpha/tool/call", tool)
     env = make_env(client, tools=[_tool("apply_patch")])
     await env.apply_patch("*** Patch...")
     assert received["arguments"]["patch"] == "*** Patch..."
@@ -188,7 +188,7 @@ async def test_custom_tool_called_via_attribute(stub_client):
             "isError": False,
         }
 
-    stub.register("POST", "/api/sdk/envs/hpc-a/tool/call", tool)
+    stub.register("POST", "/api/connectors/envs/hpc-a/tool/call", tool)
     custom = ToolMetadata(
         name="submit_task",
         description="submit HPC job",

@@ -34,7 +34,7 @@ class Ctx:
         """List envs currently connected to the workspace. Hits the gateway
         on every call — executors connect/disconnect, and a stale list is
         usually worse than a fresh HTTP round-trip."""
-        listing = await self._client.post("/api/sdk/envs/list", {})
+        listing = await self._client.post("/api/connectors/envs/list", {})
         envs: list[Env] = []
         for e in listing.get("envs", []):
             tools = [ToolMetadata.from_dict(t) for t in e.get("tools", [])]

@@ -59,7 +59,7 @@ class Env:
         args = dict(arguments or {})
         args.setdefault("environment_id", self.name)
         raw = await self._client.post(
-            f"/api/sdk/envs/{quote(self.name)}/tool/call",
+            f"/api/connectors/envs/{quote(self.name)}/tool/call",
             {"tool": tool, "arguments": args},
         )
         if raw.get("isError"):

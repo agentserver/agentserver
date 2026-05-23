@@ -22,7 +22,7 @@ type Chunk struct {
 
 // Session is one long-running process spawned via tools.UnifiedExec /
 // exec_command. The SDK polls Output, writes stdin, and terminates via
-// the corresponding /api/sdk/processes/{sid}/* endpoints.
+// the corresponding /api/connectors/processes/{sid}/* endpoints.
 type Session struct {
 	ID          string
 	WorkspaceID string

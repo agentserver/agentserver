@@ -1,4 +1,4 @@
-"""ASGI stub for the codex-exec-gateway /api/sdk/* surface.
+"""ASGI stub for the codex-exec-gateway /api/connectors/* surface.
 
 Each test registers a dict of `(method, path) -> handler` where handler
 receives the parsed JSON body (or {} for GETs) and returns

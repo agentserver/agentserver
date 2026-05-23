@@ -12,20 +12,20 @@ import (
 	"github.com/agentserver/agentserver/internal/envtools/tools"
 )
 
-// toolDesc is the per-tool entry in envs/list responses. The SDK uses
-// these to populate Env.tools. No JSON schema — server validates tool
-// args; SDK trusts.
-type toolDesc struct {
+// ConnectorTool is the per-tool entry in envs/list responses. The SDK
+// uses these to populate its client-side Env.tools. The server validates
+// tool arguments at /tool/call time; this descriptor carries no schema.
+type ConnectorTool struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
-	Kind        string `json:"kind"`
+	Kind        string `json:"kind"  enums:"core,custom"`
 }
 
 // coreTools returns the fixed list of tools the SDK knows about. Kept
 // hardcoded so envs/list doesn't depend on the tool registry being
 // populated (which only matters for tool/call).
-func coreTools() []toolDesc {
-	return []toolDesc{
+func coreTools() []ConnectorTool {
+	return []ConnectorTool{
 		{Name: "shell", Kind: "core", Description: "Run a command synchronously."},
 		{Name: "read_file", Kind: "core", Description: "Read a file by path."},
 		{Name: "write_file", Kind: "core", Description: "Write a file by path."},
@@ -35,20 +35,55 @@ func coreTools() []toolDesc {
 	}
 }
 
-type envEntry struct {
-	Name      string     `json:"name"`
-	Type      string     `json:"type"`
-	IsDefault bool       `json:"is_default"`
-	Tools     []toolDesc `json:"tools"`
-	LastSeen  string     `json:"last_seen,omitempty"`
+// ConnectorEnv is one connected executor as returned by /envs/list.
+// LastSeen is RFC3339 UTC.
+type ConnectorEnv struct {
+	Name      string          `json:"name"`
+	Type      string          `json:"type"            example:"executor"`
+	IsDefault bool            `json:"is_default"`
+	Tools     []ConnectorTool `json:"tools"`
+	LastSeen  string          `json:"last_seen,omitempty"`
 }
 
-// toolCallReq is the request body for POST /api/sdk/envs/{name}/tool/call.
-type toolCallReq struct {
-	Tool      string         `json:"tool"`
+// ConnectorEnvsListResponse is the response body for /envs/list.
+type ConnectorEnvsListResponse struct {
+	Envs []ConnectorEnv `json:"envs"`
+}
+
+// ConnectorToolCallRequest is the request body for
+// POST /api/connectors/envs/{name}/tool/call.
+type ConnectorToolCallRequest struct {
+	Tool      string         `json:"tool"      example:"shell"`
 	Arguments map[string]any `json:"arguments"`
 }
 
+// ConnectorErrorResponse is the JSON envelope returned by every 4xx/5xx
+// connector response.
+type ConnectorErrorResponse struct {
+	Error ConnectorErrorBody `json:"error"`
+}
+
+type ConnectorErrorBody struct {
+	Code    string `json:"code"     example:"unknown_tool"`
+	Message string `json:"message"`
+}
+
+// handleToolCall dispatches a generic MCP tool call against the named
+// executor and returns the MCP result envelope. exec_command results
+// auto-register a session so subsequent /processes/{sid}/* calls work.
+//
+//	@Summary    Call an MCP tool on a connected executor
+//	@Tags       Connectors
+//	@Accept     json
+//	@Produce    json
+//	@Param      name  path  string                    true  "Connected environment name (from /envs/list)"
+//	@Param      body  body  ConnectorToolCallRequest  true  "Tool name and arguments. The gateway injects environment_id from the path; callers can omit it."
+//	@Success    200   {object}  tools.MCPCallToolResult
+//	@Failure    400   {object}  ConnectorErrorResponse  "bad_request | unknown_tool | bad_arguments"
+//	@Failure    401   {object}  ConnectorErrorResponse  "missing or invalid bearer token"
+//	@Failure    500   {object}  ConnectorErrorResponse  "workspace_init | tool_error"
+//	@Security   BearerAuth
+//	@Router     /api/connectors/envs/{name}/tool/call [post]
 func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	wsID := workspaceFromCtx(r.Context())
 	wsCtx, err := s.wsCtxFor(wsID)
@@ -57,7 +92,7 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = chi.URLParam(r, "name") // env name; tool args carry environment_id, resolver maps to exe
-	var req toolCallReq
+	var req ConnectorToolCallRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
@@ -103,6 +138,17 @@ func extractSessionID(result tools.MCPCallToolResult) string {
 	return sid
 }
 
+// handleEnvsList returns every executor currently connected on behalf
+// of the caller's workspace, each tagged with the SDK-callable tool set.
+//
+//	@Summary    List connected executors for the calling workspace
+//	@Tags       Connectors
+//	@Produce    json
+//	@Success    200  {object}  ConnectorEnvsListResponse
+//	@Failure    401  {object}  ConnectorErrorResponse  "missing or invalid bearer token"
+//	@Failure    500  {object}  ConnectorErrorResponse  "registry_error"
+//	@Security   BearerAuth
+//	@Router     /api/connectors/envs/list [post]
 func (s *Server) handleEnvsList(w http.ResponseWriter, r *http.Request) {
 	wsID := workspaceFromCtx(r.Context())
 	connected, err := s.Registry.Connected(r.Context(), wsID)
@@ -110,9 +156,9 @@ func (s *Server) handleEnvsList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "registry_error", err.Error())
 		return
 	}
-	envs := make([]envEntry, 0, len(connected))
+	envs := make([]ConnectorEnv, 0, len(connected))
 	for _, c := range connected {
-		envs = append(envs, envEntry{
+		envs = append(envs, ConnectorEnv{
 			Name:      c.Name,
 			Type:      "executor",
 			IsDefault: c.IsDefault,
@@ -120,20 +166,37 @@ func (s *Server) handleEnvsList(w http.ResponseWriter, r *http.Request) {
 			LastSeen:  c.LastSeenAt,
 		})
 	}
-	writeJSON(w, map[string]any{"envs": envs})
+	writeJSON(w, ConnectorEnvsListResponse{Envs: envs})
 }
 
-// stdinReq is the request body for POST /api/sdk/processes/{sid}/stdin.
-type stdinReq struct {
-	DataB64 string `json:"data_b64"`
+// ConnectorStdinRequest is the request body for
+// POST /api/connectors/processes/{sid}/stdin.
+type ConnectorStdinRequest struct {
+	DataB64 string `json:"data_b64"  example:"aGVsbG8="`
 }
 
-// outputChunk is one entry in the chunks array returned by
-// GET /api/sdk/processes/{sid}/output.
-type outputChunk struct {
-	Stream string `json:"stream"`
+// ConnectorOutputChunk is one entry in the chunks array returned by
+// GET /api/connectors/processes/{sid}/output.
+type ConnectorOutputChunk struct {
+	Stream string `json:"stream"   enums:"stdout,stderr"`
 	Data   string `json:"data_b64"`
 	Seq    int    `json:"seq"`
+}
+
+// ConnectorOutputResponse is the response body for /processes/{sid}/output.
+// ExitCode is null while the process is still running.
+type ConnectorOutputResponse struct {
+	Chunks       []ConnectorOutputChunk `json:"chunks"`
+	ExitCode     *int                   `json:"exit_code"  extensions:"x-nullable=true"`
+	SessionAlive bool                   `json:"session_alive"`
+	Truncated    bool                   `json:"truncated"`
+	LostBytes    int                    `json:"lost_bytes"`
+}
+
+// ConnectorOKResponse is the response body for /processes/{sid}/stdin and
+// /processes/{sid}/terminate on success.
+type ConnectorOKResponse struct {
+	OK bool `json:"ok"  example:"true"`
 }
 
 // sessionFromReq looks up the session by chi URL param "sid" and
@@ -153,12 +216,28 @@ func (s *Server) sessionFromReq(w http.ResponseWriter, r *http.Request) (*proces
 	return sess, true
 }
 
+// handleStdin forwards a base64-encoded chunk of stdin to a running
+// process started via exec_command.
+//
+//	@Summary    Write to a running process's stdin
+//	@Tags       Connectors
+//	@Accept     json
+//	@Produce    json
+//	@Param      sid   path  string                 true  "Session id returned by exec_command"
+//	@Param      body  body  ConnectorStdinRequest  true  "Base64-encoded stdin chunk"
+//	@Success    200   {object}  ConnectorOKResponse
+//	@Failure    400   {object}  ConnectorErrorResponse  "bad_request | bad_base64"
+//	@Failure    401   {object}  ConnectorErrorResponse  "missing or invalid bearer token"
+//	@Failure    403   {object}  ConnectorErrorResponse  "session belongs to a different workspace"
+//	@Failure    404   {object}  ConnectorErrorResponse  "session_not_found"
+//	@Security   BearerAuth
+//	@Router     /api/connectors/processes/{sid}/stdin [post]
 func (s *Server) handleStdin(w http.ResponseWriter, r *http.Request) {
 	_, ok := s.sessionFromReq(w, r)
 	if !ok {
 		return
 	}
-	var req stdinReq
+	var req ConnectorStdinRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
@@ -170,9 +249,24 @@ func (s *Server) handleStdin(w http.ResponseWriter, r *http.Request) {
 	// TODO: wire bridge.WriteStdin(session.ExeID, session.ExeSessionID, data).
 	// For v0.61.0 the endpoint contract is testable; full bridge integration
 	// lands in a follow-up once Session has the exe-side fields wired.
-	writeJSON(w, map[string]any{"ok": true})
+	writeJSON(w, ConnectorOKResponse{OK: true})
 }
 
+// handleOutput returns every chunk with Seq > since, the current exit
+// code (nil while running), and a truncation flag if the per-session
+// ring buffer overflowed.
+//
+//	@Summary    Poll a running process's stdout/stderr
+//	@Tags       Connectors
+//	@Produce    json
+//	@Param      sid    path   string  true   "Session id returned by exec_command"
+//	@Param      since  query  int     false  "Highest seq already seen; only newer chunks are returned"
+//	@Success    200    {object}  ConnectorOutputResponse
+//	@Failure    401    {object}  ConnectorErrorResponse  "missing or invalid bearer token"
+//	@Failure    403    {object}  ConnectorErrorResponse  "session belongs to a different workspace"
+//	@Failure    404    {object}  ConnectorErrorResponse  "session_not_found"
+//	@Security   BearerAuth
+//	@Router     /api/connectors/processes/{sid}/output [get]
 func (s *Server) handleOutput(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.sessionFromReq(w, r)
 	if !ok {
@@ -181,23 +275,35 @@ func (s *Server) handleOutput(w http.ResponseWriter, r *http.Request) {
 	sinceStr := r.URL.Query().Get("since")
 	since, _ := strconv.Atoi(sinceStr)
 	chunks, exit, alive := sess.OutputSince(since)
-	out := make([]outputChunk, 0, len(chunks))
+	out := make([]ConnectorOutputChunk, 0, len(chunks))
 	for _, c := range chunks {
-		out = append(out, outputChunk{
+		out = append(out, ConnectorOutputChunk{
 			Stream: c.Stream,
 			Data:   base64.StdEncoding.EncodeToString(c.Data),
 			Seq:    c.Seq,
 		})
 	}
-	writeJSON(w, map[string]any{
-		"chunks":        out,
-		"exit_code":     exit,
-		"session_alive": alive,
-		"truncated":     sess.LostBytes() > 0,
-		"lost_bytes":    sess.LostBytes(),
+	writeJSON(w, ConnectorOutputResponse{
+		Chunks:       out,
+		ExitCode:     exit,
+		SessionAlive: alive,
+		Truncated:    sess.LostBytes() > 0,
+		LostBytes:    sess.LostBytes(),
 	})
 }
 
+// handleTerminate kills the running process and forgets the session.
+//
+//	@Summary    Terminate a running process
+//	@Tags       Connectors
+//	@Produce    json
+//	@Param      sid  path  string  true  "Session id returned by exec_command"
+//	@Success    200  {object}  ConnectorOKResponse
+//	@Failure    401  {object}  ConnectorErrorResponse  "missing or invalid bearer token"
+//	@Failure    403  {object}  ConnectorErrorResponse  "session belongs to a different workspace"
+//	@Failure    404  {object}  ConnectorErrorResponse  "session_not_found"
+//	@Security   BearerAuth
+//	@Router     /api/connectors/processes/{sid}/terminate [post]
 func (s *Server) handleTerminate(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.sessionFromReq(w, r)
 	if !ok {
@@ -208,5 +314,5 @@ func (s *Server) handleTerminate(w http.ResponseWriter, r *http.Request) {
 	// pattern (next GET output sees session_alive=false + exit_code=-1).
 	sess.SetExit(-1)
 	s.Sessions.Forget(sess.ID)
-	writeJSON(w, map[string]any{"ok": true})
+	writeJSON(w, ConnectorOKResponse{OK: true})
 }

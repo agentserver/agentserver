@@ -34,6 +34,7 @@ EXTERNAL_TAGS: list[tuple[str, str]] = [
     ("Codex Tokens", "codex-tokens.md"),
     ("Codex Browser Sessions", "codex-browser-sessions.md"),
     ("IM Channels", "im-channels.md"),
+    ("Connectors", "connectors.md"),
 ]
 
 METHOD_ORDER = ["get", "post", "put", "patch", "delete"]

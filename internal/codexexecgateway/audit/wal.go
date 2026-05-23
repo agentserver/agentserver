@@ -236,12 +236,15 @@ func (w *WAL) enforceQuotaLocked() error {
 }
 
 // WALReader is a single-consumer forward iterator over every WAL file
-// in Dir (sorted by name). Use Next to pull one record at a time.
+// in Dir (sorted by name). Use Next or NextWithSize to pull one record
+// at a time.
 type WALReader struct {
-	dir   string
-	files []string
-	cur   *os.File
-	curIx int
+	dir       string
+	files     []string
+	cur       *os.File
+	curIx     int
+	cursor    *Cursor // optional; if set, NextWithSize seeks past offset on first open
+	seekedCur bool    // whether we've seeked into the current file already
 }
 
 func OpenWALReader(dir string) (*WALReader, error) {
@@ -296,4 +299,82 @@ func (r *WALReader) Close() error {
 		r.cur = nil
 	}
 	return nil
+}
+
+// SeekPastCursor positions the reader to start at the first byte past
+// the cursor's offset for each file. Fully-consumed files are dropped
+// from the iteration; the first remaining file (if partially consumed)
+// has its seek applied lazily on the first NextWithSize call.
+func (r *WALReader) SeekPastCursor(c *Cursor) error {
+	out := r.files[:0]
+	for _, p := range r.files {
+		name := filepath.Base(p)
+		info, err := os.Stat(p)
+		if err != nil {
+			return err
+		}
+		if c.Offset(name) >= info.Size() {
+			continue // already fully consumed
+		}
+		out = append(out, p)
+	}
+	r.files = out
+	r.curIx = 0
+	r.cursor = c
+	r.seekedCur = false
+	return nil
+}
+
+// NextWithSize is like Next but also returns the byte count consumed
+// (4-byte length prefix + body). The uploader uses this to Advance the
+// Cursor by exactly the bytes shipped in a successful batch.
+//
+// Requires SeekPastCursor to have been called first (it's how the
+// reader knows the per-file starting offset).
+func (r *WALReader) NextWithSize() (*pb.WALRecord, string, int64, error) {
+	for {
+		if r.cur == nil {
+			if r.curIx >= len(r.files) {
+				return nil, "", 0, io.EOF
+			}
+			f, err := os.Open(r.files[r.curIx])
+			if err != nil {
+				return nil, "", 0, err
+			}
+			r.cur = f
+			r.seekedCur = false
+		}
+		// Lazy-seek past the cursor offset on first read of each file.
+		if !r.seekedCur {
+			if r.cursor != nil {
+				off := r.cursor.Offset(filepath.Base(r.files[r.curIx]))
+				if off > 0 {
+					if _, err := r.cur.Seek(off, io.SeekStart); err != nil {
+						return nil, "", 0, err
+					}
+				}
+			}
+			r.seekedCur = true
+		}
+		var lenBuf [4]byte
+		if _, err := io.ReadFull(r.cur, lenBuf[:]); err != nil {
+			_ = r.cur.Close()
+			r.cur = nil
+			r.curIx++
+			if err == io.EOF {
+				continue
+			}
+			return nil, "", 0, err
+		}
+		length := binary.BigEndian.Uint32(lenBuf[:])
+		body := make([]byte, length)
+		if _, err := io.ReadFull(r.cur, body); err != nil {
+			return nil, "", 0, err
+		}
+		var rec pb.WALRecord
+		if err := proto.Unmarshal(body, &rec); err != nil {
+			return nil, "", 0, err
+		}
+		return &rec, filepath.Base(r.files[r.curIx]), int64(4 + length), nil
+	}
 }

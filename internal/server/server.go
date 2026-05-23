@@ -214,6 +214,18 @@ func (s *Server) Router() http.Handler {
 		s.handleWorkspaceProxyToken(w, r)
 	})
 
+	// Internal API for codex-app-gateway uploader: ingest a batch of
+	// exec-audit WAL records. Auth: X-Internal-Secret matching
+	// INTERNAL_API_SECRET. Body: application/x-protobuf BatchRecords.
+	r.Post("/internal/exec-audit/batch", func(w http.ResponseWriter, r *http.Request) {
+		secret := os.Getenv("INTERNAL_API_SECRET")
+		if secret != "" && r.Header.Get("X-Internal-Secret") != secret {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		s.postInternalExecAuditBatch(w, r)
+	})
+
 	// Internal API for codex-app-gateway to verify a remote-access bearer.
 	// Auth: X-Internal-Secret matching INTERNAL_API_SECRET.
 	r.Post("/api/internal/codex/tokens/verify", func(w http.ResponseWriter, r *http.Request) {

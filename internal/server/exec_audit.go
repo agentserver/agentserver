@@ -217,6 +217,24 @@ func tsToTime(ts *timestamppb.Timestamp) *time.Time {
 
 // ---------- internal mirrors (X-Internal-Secret) ----------
 
+// getInternalExecAuditSessions lists audit sessions for a workspace.
+//
+//	@Summary  List exec-audit sessions (internal)
+//	@Tags     Exec-Audit
+//	@Produce  json
+//	@Param    X-Internal-Secret header   string  true  "Shared secret"
+//	@Param    workspace_id      query    string  true  "Workspace ID"
+//	@Param    exe_id            query    string  false "Executor ID filter"
+//	@Param    user_id           query    string  false "User ID filter"
+//	@Param    turn_id           query    string  false "Turn ID filter"
+//	@Param    since             query    string  false "RFC3339 lower bound (opened_at)"
+//	@Param    until             query    string  false "RFC3339 upper bound (opened_at)"
+//	@Param    limit             query    int     false "Max rows (default 50)"
+//	@Success  200 {object} ListAuditSessionsResponse
+//	@Failure  400 {string} string
+//	@Failure  401 {string} string
+//	@Failure  500 {string} string
+//	@Router   /internal/exec-audit/sessions [get]
 func (s *Server) getInternalExecAuditSessions(w http.ResponseWriter, r *http.Request) {
 	f, err := parseSessionsFilter(r.URL.Query())
 	if err != nil {
@@ -232,6 +250,18 @@ func (s *Server) getInternalExecAuditSessions(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, ListAuditSessionsResponse{Sessions: sessionsToDTO(rows)})
 }
 
+// getInternalExecAuditSession returns one session plus its first 20 calls.
+//
+//	@Summary  Get an exec-audit session detail (internal)
+//	@Tags     Exec-Audit
+//	@Produce  json
+//	@Param    X-Internal-Secret header   string  true  "Shared secret"
+//	@Param    session_id        path     string  true  "Session ID"
+//	@Success  200 {object} AuditSessionDetail
+//	@Failure  401 {string} string
+//	@Failure  404 {string} string
+//	@Failure  500 {string} string
+//	@Router   /internal/exec-audit/sessions/{session_id} [get]
 func (s *Server) getInternalExecAuditSession(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "session_id")
 	sess, err := s.DB.GetAuditSession(id)
@@ -259,6 +289,27 @@ func (s *Server) getInternalExecAuditSession(w http.ResponseWriter, r *http.Requ
 	})
 }
 
+// getInternalExecAuditCalls lists audit calls for a workspace.
+//
+//	@Summary  List exec-audit calls (internal)
+//	@Tags     Exec-Audit
+//	@Produce  json
+//	@Param    X-Internal-Secret header   string  true  "Shared secret"
+//	@Param    workspace_id      query    string  true  "Workspace ID"
+//	@Param    session_id        query    string  false "Session ID filter"
+//	@Param    exe_id            query    string  false "Executor ID filter"
+//	@Param    user_id           query    string  false "User ID filter"
+//	@Param    source            query    string  false "Source filter (e.g. mcp_rpc, sse_event)"
+//	@Param    method            query    string  false "RPC method filter"
+//	@Param    is_error          query    bool    false "Filter on error flag"
+//	@Param    since             query    string  false "RFC3339 lower bound (started_at)"
+//	@Param    until             query    string  false "RFC3339 upper bound (started_at)"
+//	@Param    limit             query    int     false "Max rows (default 50)"
+//	@Success  200 {object} ListAuditCallsResponse
+//	@Failure  400 {string} string
+//	@Failure  401 {string} string
+//	@Failure  500 {string} string
+//	@Router   /internal/exec-audit/calls [get]
 func (s *Server) getInternalExecAuditCalls(w http.ResponseWriter, r *http.Request) {
 	f, err := parseCallsFilter(r.URL.Query())
 	if err != nil {
@@ -274,6 +325,18 @@ func (s *Server) getInternalExecAuditCalls(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, ListAuditCallsResponse{Calls: callsToDTO(rows)})
 }
 
+// getInternalExecAuditCall returns one call plus payload previews.
+//
+//	@Summary  Get an exec-audit call detail (internal)
+//	@Tags     Exec-Audit
+//	@Produce  json
+//	@Param    X-Internal-Secret header   string  true  "Shared secret"
+//	@Param    call_id           path     string  true  "Call ID"
+//	@Success  200 {object} AuditCallDetail
+//	@Failure  401 {string} string
+//	@Failure  404 {string} string
+//	@Failure  500 {string} string
+//	@Router   /internal/exec-audit/calls/{call_id} [get]
 func (s *Server) getInternalExecAuditCall(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "call_id")
 	call, err := s.DB.GetAuditCall(id)
@@ -298,6 +361,25 @@ func (s *Server) getInternalExecAuditCall(w http.ResponseWriter, r *http.Request
 
 // ---------- workspace-scoped wrappers ----------
 
+// getWorkspaceExecAuditSessions lists exec-audit sessions for the caller's workspace.
+//
+//	@Summary   List exec-audit sessions (workspace-scoped)
+//	@Tags      Exec-Audit
+//	@Produce   json
+//	@Param     id         path   string  true  "Workspace ID"
+//	@Param     exe_id     query  string  false "Executor ID filter"
+//	@Param     user_id    query  string  false "User ID filter"
+//	@Param     turn_id    query  string  false "Turn ID filter"
+//	@Param     since      query  string  false "RFC3339 lower bound (opened_at)"
+//	@Param     until      query  string  false "RFC3339 upper bound (opened_at)"
+//	@Param     limit      query  int     false "Max rows (default 50)"
+//	@Success   200 {object} ListAuditSessionsResponse
+//	@Failure   400 {string} string
+//	@Failure   401 {string} string
+//	@Failure   403 {string} string
+//	@Failure   500 {string} string
+//	@Security  CookieAuth
+//	@Router    /api/workspaces/{id}/exec-audit/sessions [get]
 func (s *Server) getWorkspaceExecAuditSessions(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "id")
 	if wsID == "" {
@@ -313,6 +395,20 @@ func (s *Server) getWorkspaceExecAuditSessions(w http.ResponseWriter, r *http.Re
 	s.getInternalExecAuditSessions(w, r)
 }
 
+// getWorkspaceExecAuditSession returns one session in the caller's workspace.
+//
+//	@Summary   Get exec-audit session (workspace-scoped)
+//	@Tags      Exec-Audit
+//	@Produce   json
+//	@Param     id          path  string  true  "Workspace ID"
+//	@Param     session_id  path  string  true  "Session ID"
+//	@Success   200 {object} AuditSessionDetail
+//	@Failure   401 {string} string
+//	@Failure   403 {string} string
+//	@Failure   404 {string} string
+//	@Failure   500 {string} string
+//	@Security  CookieAuth
+//	@Router    /api/workspaces/{id}/exec-audit/sessions/{session_id} [get]
 func (s *Server) getWorkspaceExecAuditSession(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "id")
 	if _, ok := s.requireWorkspaceMember(w, r, wsID); !ok {
@@ -334,6 +430,28 @@ func (s *Server) getWorkspaceExecAuditSession(w http.ResponseWriter, r *http.Req
 	s.getInternalExecAuditSession(w, r) // safe: chi URL param still set
 }
 
+// getWorkspaceExecAuditCalls lists exec-audit calls in the caller's workspace.
+//
+//	@Summary   List exec-audit calls (workspace-scoped)
+//	@Tags      Exec-Audit
+//	@Produce   json
+//	@Param     id          path   string  true  "Workspace ID"
+//	@Param     session_id  query  string  false "Session ID filter"
+//	@Param     exe_id      query  string  false "Executor ID filter"
+//	@Param     user_id     query  string  false "User ID filter"
+//	@Param     source      query  string  false "Source filter"
+//	@Param     method      query  string  false "RPC method filter"
+//	@Param     is_error    query  bool    false "Filter on error flag"
+//	@Param     since       query  string  false "RFC3339 lower bound (started_at)"
+//	@Param     until       query  string  false "RFC3339 upper bound (started_at)"
+//	@Param     limit       query  int     false "Max rows (default 50)"
+//	@Success   200 {object} ListAuditCallsResponse
+//	@Failure   400 {string} string
+//	@Failure   401 {string} string
+//	@Failure   403 {string} string
+//	@Failure   500 {string} string
+//	@Security  CookieAuth
+//	@Router    /api/workspaces/{id}/exec-audit/calls [get]
 func (s *Server) getWorkspaceExecAuditCalls(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "id")
 	if _, ok := s.requireWorkspaceMember(w, r, wsID); !ok {
@@ -345,6 +463,20 @@ func (s *Server) getWorkspaceExecAuditCalls(w http.ResponseWriter, r *http.Reque
 	s.getInternalExecAuditCalls(w, r)
 }
 
+// getWorkspaceExecAuditCall returns one call in the caller's workspace.
+//
+//	@Summary   Get exec-audit call (workspace-scoped)
+//	@Tags      Exec-Audit
+//	@Produce   json
+//	@Param     id       path  string  true  "Workspace ID"
+//	@Param     call_id  path  string  true  "Call ID"
+//	@Success   200 {object} AuditCallDetail
+//	@Failure   401 {string} string
+//	@Failure   403 {string} string
+//	@Failure   404 {string} string
+//	@Failure   500 {string} string
+//	@Security  CookieAuth
+//	@Router    /api/workspaces/{id}/exec-audit/calls/{call_id} [get]
 func (s *Server) getWorkspaceExecAuditCall(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "id")
 	if _, ok := s.requireWorkspaceMember(w, r, wsID); !ok {
@@ -364,6 +496,23 @@ func (s *Server) getWorkspaceExecAuditCall(w http.ResponseWriter, r *http.Reques
 	s.getInternalExecAuditCall(w, r)
 }
 
+// getWorkspaceExecAuditCallPayload streams the raw request/response payload
+// for a call. Use side=request or side=response.
+//
+//	@Summary   Get exec-audit call payload (workspace-scoped)
+//	@Tags      Exec-Audit
+//	@Produce   application/octet-stream
+//	@Param     id       path   string  true   "Workspace ID"
+//	@Param     call_id  path   string  true   "Call ID"
+//	@Param     side     query  string  true   "request|response"
+//	@Success   200 {string} binary
+//	@Failure   400 {string} string
+//	@Failure   401 {string} string
+//	@Failure   403 {string} string
+//	@Failure   404 {string} string
+//	@Failure   500 {string} string
+//	@Security  CookieAuth
+//	@Router    /api/workspaces/{id}/exec-audit/calls/{call_id}/payload [get]
 func (s *Server) getWorkspaceExecAuditCallPayload(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "id")
 	if _, ok := s.requireWorkspaceMember(w, r, wsID); !ok {

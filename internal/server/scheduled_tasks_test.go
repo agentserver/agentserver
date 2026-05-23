@@ -36,7 +36,7 @@ func mustCreateWorkspaceAndMember(t *testing.T, d *db.DB, userID string) string 
 }
 
 func TestScheduledTasks_CreateListCancel(t *testing.T) {
-	srv, cleanup := newTestServerTUI(t, "")
+	srv, cleanup := newTestServerTUI(t)
 	defer cleanup()
 
 	const userID = "u_test_sched"

@@ -8,12 +8,8 @@ import (
 )
 
 // newTestServerTUI opens the integration DB and returns a *Server wired
-// with it. The ccBrokerURL parameter is preserved for compatibility with
-// the operations_*_test.go signatures but is no longer applied — the
-// stateless-cc stack has been removed.
-//
-// Skips when TEST_DATABASE_URL is unset.
-func newTestServerTUI(t *testing.T, _ string) (*Server, func()) {
+// with it. Skips when TEST_DATABASE_URL is unset.
+func newTestServerTUI(t *testing.T) (*Server, func()) {
 	t.Helper()
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {

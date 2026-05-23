@@ -245,18 +245,6 @@ internal:
 # all API key holders must re-mint after a pepper change.
 secretsPepper: ""
 
-# Operation log (Plan 2): codex-app-gateway records every MCP tool call to
-# agentserver's /internal/operations endpoint for audit + replay.
-operations:
-  # When true, codex-app-gateway POSTs every mcpServer/tool/call to
-  # agentserver's /internal/operations. Disable to revert to pre-Plan-2
-  # behavior (no logging).
-  enabled: true
-  # Retention in days. 0 disables the cleanup loop.
-  retentionDays: 90
-  # Bounded channel capacity inside the gateway. Drops on overflow.
-  channelCapacity: 1024
-
 # codexGateway: shared secrets for the codex-app-gateway / codex-exec-gateway
 # pair. Both pods read from the same auto-generated k8s Secret so the cap
 # tokens app-gw mints are verifiable by exec-gw, and the internal API

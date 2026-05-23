@@ -16,7 +16,6 @@ import (
 	"github.com/agentserver/agentserver/internal/codexappgateway/auth"
 	"github.com/agentserver/agentserver/internal/codexappgateway/broker"
 	"github.com/agentserver/agentserver/internal/codexappgateway/codexhome"
-	"github.com/agentserver/agentserver/internal/codexappgateway/oplog"
 	"github.com/agentserver/agentserver/internal/codexappgateway/scheduler"
 	"github.com/agentserver/agentserver/internal/codexappgateway/supervisor"
 	"github.com/agentserver/agentserver/internal/codexexecgateway/execmodel"
@@ -69,10 +68,6 @@ type Server struct {
 	buildConfig func(ctx context.Context, workspaceID, loopbackToken string) (supervisor.SpawnConfig, error)
 
 	execClient connectedClient // exposed for the loopback /internal/connected handler
-
-	// oplogClient is nil when OperationLogURL/Secret are empty.
-	oplogClient *oplog.Client
-	oplogList   *oplog.ListClient
 
 	// brokerPool caches per-workspace broker.Conn instances (max idle 5 min).
 	// Initialized in NewServer; nil in lightweight test Server literals.
@@ -135,9 +130,6 @@ func NewServer(cfg ServeConfig, codexBin, selfBin string, logger *slog.Logger) (
 		makeSupervisorResolver(s.sup, s.buildConfig),
 		5*time.Minute,
 	)
-	if cfg.OperationLogURL != "" && cfg.OperationLogSecret != "" {
-		s.oplogClient = oplog.NewClient(cfg.OperationLogURL, cfg.OperationLogSecret, cfg.OperationLogChan)
-	}
 	return s, nil
 }
 
@@ -273,18 +265,12 @@ func (s *Server) Run(ctx context.Context, listenAddr string) error {
 		defer cancel()
 		_ = httpSrv.Shutdown(shutdownCtx)
 		s.sup.ShutdownAll(shutdownCtx)
-		if s.oplogClient != nil {
-			s.oplogClient.Close()
-		}
 		if s.brokerPool != nil {
 			s.brokerPool.Close()
 		}
 		return nil
 	case err := <-errCh:
 		s.sup.ShutdownAll(context.Background())
-		if s.oplogClient != nil {
-			s.oplogClient.Close()
-		}
 		if s.brokerPool != nil {
 			s.brokerPool.Close()
 		}

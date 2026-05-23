@@ -235,8 +235,6 @@ spec:
                   key: secrets-pepper
                   optional: true
             {{- end }}
-            - name: AGENTSERVER_OPERATIONS_RETENTION_DAYS
-              value: {{ .Values.operations.retentionDays | quote }}
             {{- if .Values.codexExecGateway.publicHost }}
             - name: CODEX_EXEC_GATEWAY_PUBLIC_HOST
               value: {{ .Values.codexExecGateway.publicHost | quote }}

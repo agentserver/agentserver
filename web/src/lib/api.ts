@@ -45,8 +45,6 @@ export type TracesResponse = components['schemas']['TraceListResponse']
 export type ExecutorItem = components['schemas']['ExecutorItem']
 export type ExecutorRegisterResponse = components['schemas']['ExecutorRegisterResponse']
 export type AgentInteractionItem = components['schemas']['AgentInteractionItem']
-export type OperationRecord = components['schemas']['OperationRecord']
-export type WorkspaceOperationsResponse = components['schemas']['WorkspaceOperationsResponse']
 
 // Admin — generated types from OpenAPI spec
 export type AdminUser = components['schemas']['AdminUserItem']
@@ -892,34 +890,3 @@ export async function revokeWorkspaceAPIKey(workspaceId: string, keyId: string):
   }
 }
 
-// === Operations (Plan 3c) ===
-
-export interface ListOperationsFilters {
-  env_id?: string
-  tool?: string
-  source?: string
-  is_error?: boolean
-  since?: string  // RFC3339Nano
-  limit?: number  // default 100, max 1000
-}
-
-/**
- * List operations for a workspace, server-side filtered.
- */
-export async function listOperations(
-  workspaceId: string,
-  filters: ListOperationsFilters = {},
-): Promise<OperationRecord[]> {
-  const params = new URLSearchParams()
-  if (filters.env_id) params.set('env_id', filters.env_id)
-  if (filters.tool) params.set('tool', filters.tool)
-  if (filters.source) params.set('source', filters.source)
-  if (filters.is_error !== undefined) params.set('is_error', String(filters.is_error))
-  if (filters.since) params.set('since', filters.since)
-  if (filters.limit) params.set('limit', String(filters.limit))
-
-  const qs = params.toString()
-  const path = `/api/workspaces/${encodeURIComponent(workspaceId)}/operations${qs ? `?${qs}` : ''}`
-  const data = await apiFetch<WorkspaceOperationsResponse>({ method: 'GET', path })
-  return data.operations ?? []
-}

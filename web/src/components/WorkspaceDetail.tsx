@@ -19,7 +19,6 @@ import {
   Globe,
   Server,
   Brain,
-  Activity,
 } from 'lucide-react'
 import {
   listMembers,
@@ -65,7 +64,6 @@ import { TelegramConfigModal } from './TelegramConfigModal'
 import { MatrixConfigModal } from './MatrixConfigModal'
 import CodexTokensPanel from './CodexTokensPanel'
 import RemoteExecutorsPanel from './RemoteExecutorsPanel'
-import OperationsPanel from './OperationsPanel'
 import { SandboxList } from './SandboxList'
 
 export type Tab =
@@ -76,7 +74,6 @@ export type Tab =
   | 'llm'
   | 'im'
   | 'traces'
-  | 'operations'
   | 'credentials'
   | 'members'
   | 'api-keys'
@@ -107,7 +104,6 @@ const TAB_TO_SLUG: Record<Tab, string> = {
   llm: 'llm',
   im: 'im',
   traces: 'traces',
-  operations: 'operations',
   credentials: 'credentials',
   members: 'members',
   'api-keys': 'api-keys',
@@ -197,7 +193,6 @@ export function WorkspaceDetail({ workspace, onRename, initialTab, sandboxOverri
     { key: 'llm', label: 'LLM', icon: <Brain size={16} /> },
     { key: 'im', label: 'IM', icon: <Bot size={16} /> },
     { key: 'traces', label: 'Traces', icon: <MessageSquare size={16} />, badge: tracesTotal > 0 ? tracesTotal : undefined },
-    { key: 'operations', label: 'Operations', icon: <Activity size={16} /> },
     { key: 'credentials', label: 'Credentials', icon: <Key size={16} /> },
     { key: 'members', label: 'Members', icon: <Users size={16} />, badge: members.length > 0 ? members.length : undefined },
     // Always visible — gate-by-role was causing this entry to pop in after
@@ -280,9 +275,6 @@ export function WorkspaceDetail({ workspace, onRename, initialTab, sandboxOverri
               fetchDetail={fetchDetail}
               showSandboxId
             />
-          )}
-          {tab === 'operations' && (
-            <OperationsPanel workspaceId={workspace.id} />
           )}
           {tab === 'credentials' && (
             <CredentialsTab workspaceId={workspace.id} />

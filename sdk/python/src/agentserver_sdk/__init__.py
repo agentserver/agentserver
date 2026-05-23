@@ -4,7 +4,7 @@ from .ctx import Ctx
 from .env import Env
 from .errors import ConnectionError, NotConnectedError, SdkError, ToolError
 from .process import Process
-from .types import OperationRecord, ShellResult, ToolMetadata
+from .types import ShellResult, ToolMetadata
 
 __version__ = "0.1.0"
 __all__ = [
@@ -13,7 +13,6 @@ __all__ = [
     "Process",
     "ShellResult",
     "ToolMetadata",
-    "OperationRecord",
     "SdkError",
     "ConnectionError",
     "NotConnectedError",

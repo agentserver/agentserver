@@ -67,12 +67,6 @@ type ServeConfig struct {
 	// list_environments).
 	ListenAddr string
 
-	// OperationLog endpoint + auth. When OperationLogURL is empty,
-	// oplogClient is nil and Submit calls are no-ops.
-	OperationLogURL    string
-	OperationLogSecret string // X-Internal-Secret header value
-	OperationLogChan   int    // bounded channel capacity, default 1024
-
 	// Scheduler config — when AgentserverInternalURL is empty the scheduler is
 	// disabled (no point polling without an agentserver to call).
 	SchedulerTickInterval  time.Duration // CXG_SCHED_TICK         (default 15s)
@@ -123,16 +117,6 @@ func LoadServeConfigFromEnv() (ServeConfig, error) {
 	}
 	cfg.AgentserverInternalURL = os.Getenv("CXG_AGENTSERVER_INTERNAL_URL")
 	cfg.AgentserverInternalSecret = os.Getenv("CXG_AGENTSERVER_INTERNAL_SECRET")
-	cfg.OperationLogURL = os.Getenv("CXG_OPLOG_URL")
-	cfg.OperationLogSecret = os.Getenv("CXG_OPLOG_SECRET")
-	cfg.OperationLogChan = 1024
-	if v := os.Getenv("CXG_OPLOG_CHAN"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n <= 0 {
-			return cfg, fmt.Errorf("parse CXG_OPLOG_CHAN: %q", v)
-		}
-		cfg.OperationLogChan = n
-	}
 	if cfg.S3.Endpoint == "" {
 		return cfg, fmt.Errorf("CXG_S3_ENDPOINT is required")
 	}

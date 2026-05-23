@@ -12,7 +12,7 @@ import (
 func TestScheduledTasks_LeaseAndResult(t *testing.T) {
 	secret := "test-internal-secret"
 	t.Setenv("INTERNAL_API_SECRET", secret)
-	srv, cleanup := newTestServerTUI(t, "")
+	srv, cleanup := newTestServerTUI(t)
 	defer cleanup()
 
 	wsID := "ws_sched_lease_" + strings.ReplaceAll(t.Name(), "/", "_")

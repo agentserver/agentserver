@@ -317,6 +317,18 @@ var serveCmd = &cobra.Command{
 		healthMon := server.NewAgentHealthMonitor(database)
 		go healthMon.Run(healthCtx)
 
+		// Exec-audit retention loop. Default 90 days; 0 disables.
+		auditRetentionDays := 90
+		if v := os.Getenv("AGENTSERVER_EXEC_AUDIT_RETENTION_DAYS"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+				auditRetentionDays = n
+			} else {
+				log.Printf("Warning: AGENTSERVER_EXEC_AUDIT_RETENTION_DAYS=%q invalid, using default %d", v, auditRetentionDays)
+			}
+		}
+		go srv.StartAuditRetentionLoop(healthCtx,
+			time.Duration(auditRetentionDays)*24*time.Hour, time.Hour)
+
 		httpServer := &http.Server{Addr: addr, Handler: srv.Router()}
 
 		// Graceful shutdown on SIGTERM/SIGINT

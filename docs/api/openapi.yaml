@@ -3236,81 +3236,6 @@ paths:
       summary: Get ModelServer connection status for a workspace
       tags:
         - Misc
-  "/api/workspaces/{id}/operations":
-    get:
-      parameters:
-        - description: Workspace ID
-          in: path
-          name: id
-          required: true
-          schema:
-            type: string
-        - description: Filter by environment ID
-          in: query
-          name: env_id
-          schema:
-            type: string
-        - description: Filter by tool name
-          in: query
-          name: tool
-          schema:
-            type: string
-        - description: Filter by source (e.g. codex)
-          in: query
-          name: source
-          schema:
-            type: string
-        - description: Filter by error flag
-          in: query
-          name: is_error
-          schema:
-            type: boolean
-        - description: Return entries after this RFC3339 timestamp
-          in: query
-          name: since
-          schema:
-            type: string
-        - description: Max rows to return
-          in: query
-          name: limit
-          schema:
-            type: integer
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/WorkspaceOperationsResponse"
-        "400":
-          description: bad request
-          content:
-            application/json:
-              schema:
-                type: string
-        "401":
-          description: unauthorized
-          content:
-            application/json:
-              schema:
-                type: string
-        "403":
-          description: not a workspace member
-          content:
-            application/json:
-              schema:
-                type: string
-        "500":
-          description: internal error
-          content:
-            application/json:
-              schema:
-                type: string
-      security:
-        - CookieAuth: []
-      summary: List operations log entries for a workspace
-      tags:
-        - Misc
   "/api/workspaces/{wid}/agent-interactions":
     get:
       parameters:
@@ -5320,59 +5245,6 @@ components:
       required:
         - connected
       type: object
-    OperationRecord:
-      properties:
-        arguments: {}
-        arguments_meta: {}
-        cell_id:
-          type: string
-          nullable: true
-        completed_at:
-          type: string
-        duration_ms:
-          type: integer
-        env_id:
-          type: string
-        id:
-          type: string
-        is_error:
-          type: boolean
-        notebook_path:
-          type: string
-          nullable: true
-        request_id:
-          type: string
-          nullable: true
-        result_meta: {}
-        result_summary:
-          type: string
-          nullable: true
-        source:
-          example: codex
-          type: string
-        started_at:
-          type: string
-        thread_id:
-          type: string
-          nullable: true
-        tool:
-          example: shell
-          type: string
-        user_id:
-          type: string
-          nullable: true
-        workspace_id:
-          type: string
-      required:
-        - completed_at
-        - duration_ms
-        - env_id
-        - id
-        - source
-        - started_at
-        - tool
-        - workspace_id
-      type: object
     Sandbox:
       properties:
         agent_info:
@@ -5767,15 +5639,6 @@ components:
         - email
         - role
         - user_id
-      type: object
-    WorkspaceOperationsResponse:
-      properties:
-        operations:
-          items:
-            $ref: "#/components/schemas/OperationRecord"
-          type: array
-      required:
-        - operations
       type: object
     WorkspaceQuotaResponse:
       properties:

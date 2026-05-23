@@ -5857,6 +5857,7 @@ components:
           type: array
         exit_code:
           type: integer
+          nullable: true
         lost_bytes:
           type: integer
         session_alive:
@@ -5900,9 +5901,7 @@ components:
         isError:
           type: boolean
         structuredContent:
-          items:
-            type: integer
-          type: array
+          type: object
       type: object
     tools.MCPToolContent:
       properties:

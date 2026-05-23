@@ -184,9 +184,10 @@ type ConnectorOutputChunk struct {
 }
 
 // ConnectorOutputResponse is the response body for /processes/{sid}/output.
+// ExitCode is null while the process is still running.
 type ConnectorOutputResponse struct {
 	Chunks       []ConnectorOutputChunk `json:"chunks"`
-	ExitCode     *int                   `json:"exit_code"`
+	ExitCode     *int                   `json:"exit_code"  extensions:"x-nullable=true"`
 	SessionAlive bool                   `json:"session_alive"`
 	Truncated    bool                   `json:"truncated"`
 	LostBytes    int                    `json:"lost_bytes"`

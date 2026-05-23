@@ -257,7 +257,7 @@ Terminate a running process
 {
   content?: []tools.MCPToolContent
   isError?: boolean
-  structuredContent?: []integer
+  structuredContent?: object
 }
 ```
 

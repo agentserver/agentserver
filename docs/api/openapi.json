@@ -9330,7 +9330,8 @@
             }
           },
           "exit_code": {
-            "type": "integer"
+            "type": "integer",
+            "nullable": true
           },
           "lost_bytes": {
             "type": "integer"
@@ -9396,10 +9397,7 @@
             "type": "boolean"
           },
           "structuredContent": {
-            "type": "array",
-            "items": {
-              "type": "integer"
-            }
+            "type": "object"
           }
         }
       },

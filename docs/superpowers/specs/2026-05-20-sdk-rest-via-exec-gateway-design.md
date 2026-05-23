@@ -33,7 +33,7 @@ The fix is to stop using codex as a transport for non-LLM operations. The SDK ca
 Jupyter sandbox (agentserver-sdk)
         │  HTTPS Bearer=<proxyToken>
         ▼
-codex-exec-gateway  ── new router group /api/connectors/* ──┐
+codex-exec-gateway  ── new router group /api/sdk/* ──┐
         │                                             │
         │ ProxyTokenAuth.Verify(token):               │
         │   LRU cache (5m TTL, 30s neg cache)         │
@@ -41,19 +41,19 @@ codex-exec-gateway  ── new router group /api/connectors/* ──┐
         │   /internal/validate-proxy-token            │
         │   → {workspace_id, user_id}                 │
         │                                             │
-        ├─ /api/connectors/envs/list                         │
+        ├─ /api/sdk/envs/list                         │
         │   ↳ store.Connected(ctx, wsID)              │
         │     (reuses existing /api/exec-gateway/connected handler logic)
         │                                             │
-        └─ /api/connectors/envs/{name}/tool/call             │
+        └─ /api/sdk/envs/{name}/tool/call             │
            ├─ nameresolver: name → exe_id             │
            ├─ envtools.Registry[tool].Call(args, br)  │
            └─ bridge.Pool.Get(exe_id)                 │
                   ↳ existing /bridge/{exe_id} WS ─→ executor
         │
-        ├─ /api/connectors/processes/{sid}/stdin
-        ├─ /api/connectors/processes/{sid}/output?since=N
-        └─ /api/connectors/processes/{sid}/terminate
+        ├─ /api/sdk/processes/{sid}/stdin
+        ├─ /api/sdk/processes/{sid}/output?since=N
+        └─ /api/sdk/processes/{sid}/terminate
               ↳ SessionManager owns long-lived bridge handle + ring buffer
 ```
 
@@ -100,16 +100,16 @@ internal/codexexecgateway/sdk/
 
 ### REST endpoints
 
-All under `/api/connectors/*`. Bearer is sandbox proxyToken; middleware injects `workspace_id` into request context.
+All under `/api/sdk/*`. Bearer is sandbox proxyToken; middleware injects `workspace_id` into request context.
 
 ```
-POST /api/connectors/envs/list
+POST /api/sdk/envs/list
   req:  {}
   resp: {"envs":[{"name":"my-mac","type":"executor","is_default":true,
                   "tools":[{"name":"shell","kind":"core","description":"…"}, ...],
                   "last_seen":"2026-05-19T08:00:00Z"}]}
 
-POST /api/connectors/envs/{name}/tool/call
+POST /api/sdk/envs/{name}/tool/call
   req:  {"tool":"shell","arguments":{"command":"ls"}}
   resp: {"isError":false,
          "content":[{"type":"text","text":"file1\nfile2\n"}],
@@ -117,18 +117,18 @@ POST /api/connectors/envs/{name}/tool/call
   (covers shell/read_file/write_file/apply_patch/copy_path/exec_command;
    exec_command's structuredContent carries session_id)
 
-POST /api/connectors/processes/{sid}/stdin
+POST /api/sdk/processes/{sid}/stdin
   req:  {"data_b64":"…"}
   resp: {"ok":true}
 
-GET  /api/connectors/processes/{sid}/output?since=N
+GET  /api/sdk/processes/{sid}/output?since=N
   resp: {"chunks":[{"stream":"stdout"|"stderr","data_b64":"…","seq":N+1},…],
          "exit_code":null|<int>,
          "session_alive":true|false,
          "truncated":false,
          "lost_bytes":0}
 
-POST /api/connectors/processes/{sid}/terminate
+POST /api/sdk/processes/{sid}/terminate
   req:  {}
   resp: {"ok":true}
 ```
@@ -175,9 +175,9 @@ Output beyond 1 MiB ring evicts oldest chunks; response carries `truncated:true`
 `sdk/python/src/agentserver_sdk/`:
 
 - `client.py` — replace `WSClient` with `HTTPClient` (httpx.AsyncClient). No initialize/initialized/thread/start handshake. No reader task, no pending-futures dict.
-- `ctx.py` — `Ctx.envs()` calls `POST /api/connectors/envs/list`.
-- `env.py` — `Env.call(tool, args)` calls `POST /api/connectors/envs/{name}/tool/call`.
-- `process.py` — `Process.__aenter__` calls `Env.call("exec_command", ...)` (which returns `session_id` in structuredContent), then `write_stdin`/`read_output`/`terminate` hit the `/api/connectors/processes/*` endpoints directly.
+- `ctx.py` — `Ctx.envs()` calls `POST /api/sdk/envs/list`.
+- `env.py` — `Env.call(tool, args)` calls `POST /api/sdk/envs/{name}/tool/call`.
+- `process.py` — `Process.__aenter__` calls `Env.call("exec_command", ...)` (which returns `session_id` in structuredContent), then `write_stdin`/`read_output`/`terminate` hit the `/api/sdk/processes/*` endpoints directly.
 - `pyproject.toml` — swap `websockets` → `httpx`.
 
 `Env`'s shape simplifies: no `thread_id`, no inputSchema (server validates, SDK trusts). `ToolMetadata` keeps `{name, description, kind}`.

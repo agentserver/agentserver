@@ -340,6 +340,21 @@ codexExecGateway:
   relayMaxPerWorkspace: 0  # e.g. 16 — concurrent relays per workspace
   resources: {}
 
+# Exec-gateway audit (Plan 2b): records every JSON-RPC frame on envmcp WS
+# bridges, every SDK REST call (/api/connectors/*) and every relay PUT/GET.
+# WAL on the pod local disk → uploader batches to agentserver Postgres via
+# /internal/exec-audit/batch. When disabled (the default), the gateway
+# loads a noop recorder so there is zero perf impact.
+execAudit:
+  enabled: false             # opt-in until validated in staging; flip to true to roll out
+  payloadMaxBytes: 4194304   # 4 MiB hard cap; larger payloads stored as sha256+size only
+  walOverflow: fail          # "fail" refuses new bridge handshakes when WAL disk quota hit
+  walDiskQuotaBytes: 0       # 0 = use binary default (10 GiB)
+  pvc:
+    enabled: true            # set false to use emptyDir (records lost on pod restart)
+    storageClass: ""         # "" = cluster default
+    size: 20Gi
+
 service:
   type: ClusterIP
   port: 8080

@@ -1,0 +1,20 @@
+{{- if and .Values.codexExecGateway.enabled .Values.execAudit.enabled .Values.execAudit.pvc.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-codex-exec-gateway-audit
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: codex-exec-gateway
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: audit
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.execAudit.pvc.storageClass }}
+  storageClassName: {{ .Values.execAudit.pvc.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.execAudit.pvc.size | default "20Gi" | quote }}
+{{- end }}

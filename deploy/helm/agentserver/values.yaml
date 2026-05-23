@@ -44,6 +44,11 @@ platform:
   # Domain for the platform web UI (e.g. "platform.agentserver.dev").
   # Used for OIDC redirect URLs (auto-derived as https://<domain>).
   domain: ""
+  # Additional platform domains served by the same release (e.g. an
+  # overseas mirror). Each entry becomes a configured cookie-domain
+  # tree; per-request the server picks the entry whose tree contains
+  # the request's Host header.
+  additionalDomains: []
   defaultQuotas:
     userMaxWorkspaces: 10
     workspaceMaxSandboxes: 20

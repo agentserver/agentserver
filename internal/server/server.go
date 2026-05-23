@@ -699,7 +699,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid credentials", http.StatusUnauthorized)
 		return
 	}
-	auth.SetTokenCookie(w, token)
+	auth.SetTokenCookie(w, r, token)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(AuthStatusResponse{Status: "ok"})
 }
@@ -801,16 +801,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	// Cookie Domain must match the issuance side (auth.SetTokenCookie)
 	// or the browser won't actually clear the cross-subdomain cookie.
-	http.SetCookie(w, &http.Cookie{
-		Name:     "agentserver-token",
-		Value:    "",
-		Path:     "/",
-		Domain:   os.Getenv("AGENTSERVER_COOKIE_DOMAIN"),
-		MaxAge:   -1,
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteLaxMode,
-	})
+	auth.ClearTokenCookie(w, r)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(AuthStatusResponse{Status: "ok"})
 }

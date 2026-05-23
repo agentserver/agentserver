@@ -80,32 +80,3 @@ class ToolMetadata:
             input_schema=d.get("inputSchema", {}),
             kind="core" if name in CORE_TOOLS else "custom",
         )
-
-
-@dataclass
-class OperationRecord:
-    id: str
-    env_id: str
-    tool: str
-    is_error: bool
-    started_at: str
-    duration_ms: int
-    user_id: str | None
-    source: str
-    arguments: dict[str, Any] | None = None
-    result_summary: str | None = None
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> OperationRecord:
-        return cls(
-            id=d["id"],
-            env_id=d["env_id"],
-            tool=d["tool"],
-            is_error=bool(d.get("is_error", False)),
-            started_at=d.get("started_at", ""),
-            duration_ms=int(d.get("duration_ms", 0)),
-            user_id=d.get("user_id"),
-            source=d.get("source", ""),
-            arguments=d.get("arguments"),
-            result_summary=d.get("result_summary"),
-        )

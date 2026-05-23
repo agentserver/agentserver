@@ -1,4 +1,4 @@
-.PHONY: dev build clean frontend backend agent agent-all llmproxy credentialproxy test docker docker-agent docker-llmproxy docker-credentialproxy docker-openclaw docker-all openapi openapi-check api-docs api-docs-check
+.PHONY: dev build clean frontend backend agent agent-all llmproxy credentialproxy test docker docker-agent docker-llmproxy docker-credentialproxy docker-openclaw docker-all openapi openapi-check api-docs api-docs-check proto
 
 # Development: run frontend dev server + Go backend
 dev:
@@ -121,3 +121,9 @@ api-docs-check:
 	@python3 scripts/gen_api_reference.py --output /tmp/api-docs-check >/dev/null
 	@diff -ru docs/api/reference /tmp/api-docs-check || (echo "FAIL: docs/api/reference/ is stale — run 'make api-docs' and commit"; exit 1)
 	@echo "api-docs-check: reference matches openapi.yaml"
+
+# Generate Go code from .proto files. Requires protoc + protoc-gen-go on PATH.
+# Install protoc-gen-go: go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+proto:
+	protoc --go_out=. --go_opt=paths=source_relative \
+	    internal/server/exec_audit_pb/audit.proto

@@ -851,3 +851,75 @@ type WorkspaceAPIKey struct {
 	LastUsedAt *string  `json:"last_used_at" extensions:"x-nullable=true"`
 	RevokedAt  *string  `json:"revoked_at" extensions:"x-nullable=true"`
 } // @name WorkspaceAPIKey
+
+// AuditSessionSummary is the per-row shape in ListAuditSessionsResponse.
+type AuditSessionSummary struct {
+	ID              string `json:"id" validate:"required"`
+	WorkspaceID     string `json:"workspace_id" validate:"required"`
+	UserID          string `json:"user_id,omitempty"`
+	ExeID           string `json:"exe_id" validate:"required"`
+	TurnID          string `json:"turn_id,omitempty"`
+	StreamID        string `json:"stream_id" validate:"required"`
+	ClientIP        string `json:"client_ip,omitempty"`
+	OpenedAt        string `json:"opened_at" validate:"required"` // RFC3339
+	ClosedAt        string `json:"closed_at,omitempty"`           // RFC3339
+	CloseReason     string `json:"close_reason,omitempty"`
+	FramesToBackend int    `json:"frames_to_backend"`
+	FramesToClient  int    `json:"frames_to_client"`
+	BytesToBackend  int64  `json:"bytes_to_backend"`
+	BytesToClient   int64  `json:"bytes_to_client"`
+} // @name AuditSessionSummary
+
+// AuditCallSummary is the per-row shape in ListAuditCallsResponse and
+// AuditSessionDetail.FirstCalls.
+type AuditCallSummary struct {
+	ID             string `json:"id" validate:"required"`
+	SessionID      string `json:"session_id,omitempty"`
+	WorkspaceID    string `json:"workspace_id" validate:"required"`
+	UserID         string `json:"user_id,omitempty"`
+	ExeID          string `json:"exe_id" validate:"required"`
+	Source         string `json:"source" validate:"required"` // envmcp|rest|relay
+	RPCID          string `json:"rpc_id,omitempty"`
+	RPCMethod      string `json:"rpc_method,omitempty"`
+	RPCKind        string `json:"rpc_kind,omitempty"`
+	RequestSize    int    `json:"request_size"`
+	RequestSha256  string `json:"request_sha256,omitempty"`
+	ResponseSize   int    `json:"response_size"`
+	ResponseSha256 string `json:"response_sha256,omitempty"`
+	IsError        bool   `json:"is_error"`
+	ErrorSummary   string `json:"error_summary,omitempty"`
+	StartedAt      string `json:"started_at" validate:"required"` // RFC3339
+	CompletedAt    string `json:"completed_at,omitempty"`         // RFC3339
+	DurationMs     int    `json:"duration_ms,omitempty"`
+} // @name AuditCallSummary
+
+// AuditCallDetail extends AuditCallSummary with request/response previews
+// (first 8 KiB of the decompressed payload, utf-8 decoded). Use the
+// .../calls/{id}/payload endpoint to download the full bytes.
+type AuditCallDetail struct {
+	AuditCallSummary
+	RequestPreview  string `json:"request_preview,omitempty"`
+	ResponsePreview string `json:"response_preview,omitempty"`
+} // @name AuditCallDetail
+
+type AuditSessionDetail struct {
+	Session    AuditSessionSummary `json:"session" validate:"required"`
+	FirstCalls []AuditCallSummary  `json:"first_calls" validate:"required"`
+} // @name AuditSessionDetail
+
+type ListAuditSessionsResponse struct {
+	Sessions   []AuditSessionSummary `json:"sessions" validate:"required"`
+	NextCursor string                `json:"next_cursor,omitempty"`
+} // @name ListAuditSessionsResponse
+
+type ListAuditCallsResponse struct {
+	Calls      []AuditCallSummary `json:"calls" validate:"required"`
+	NextCursor string             `json:"next_cursor,omitempty"`
+} // @name ListAuditCallsResponse
+
+// ExecAuditBatchAckResponse is the JSON body returned by
+// POST /internal/exec-audit/batch.
+type ExecAuditBatchAckResponse struct {
+	Processed int `json:"processed"`
+	Skipped   int `json:"skipped"`
+} // @name ExecAuditBatchAckResponse

@@ -2508,6 +2508,336 @@ paths:
       summary: Set a credential binding as the default
       tags:
         - Misc
+  "/api/workspaces/{id}/exec-audit/calls":
+    get:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - description: Session ID filter
+          in: query
+          name: session_id
+          schema:
+            type: string
+        - description: Executor ID filter
+          in: query
+          name: exe_id
+          schema:
+            type: string
+        - description: User ID filter
+          in: query
+          name: user_id
+          schema:
+            type: string
+        - description: Source filter
+          in: query
+          name: source
+          schema:
+            type: string
+        - description: RPC method filter
+          in: query
+          name: method
+          schema:
+            type: string
+        - description: Filter on error flag
+          in: query
+          name: is_error
+          schema:
+            type: boolean
+        - description: RFC3339 lower bound (started_at)
+          in: query
+          name: since
+          schema:
+            type: string
+        - description: RFC3339 upper bound (started_at)
+          in: query
+          name: until
+          schema:
+            type: string
+        - description: Max rows (default 50)
+          in: query
+          name: limit
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListAuditCallsResponse"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                type: string
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: List exec-audit calls (workspace-scoped)
+      tags:
+        - Exec-Audit
+  "/api/workspaces/{id}/exec-audit/calls/{call_id}":
+    get:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - description: Call ID
+          in: path
+          name: call_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditCallDetail"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                type: string
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Get exec-audit call (workspace-scoped)
+      tags:
+        - Exec-Audit
+  "/api/workspaces/{id}/exec-audit/calls/{call_id}/payload":
+    get:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - description: Call ID
+          in: path
+          name: call_id
+          required: true
+          schema:
+            type: string
+        - description: request|response
+          in: query
+          name: side
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+        "400":
+          description: Bad Request
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+        "401":
+          description: Unauthorized
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+        "403":
+          description: Forbidden
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+        "404":
+          description: Not Found
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+        "500":
+          description: Internal Server Error
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Get exec-audit call payload (workspace-scoped)
+      tags:
+        - Exec-Audit
+  "/api/workspaces/{id}/exec-audit/sessions":
+    get:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - description: Executor ID filter
+          in: query
+          name: exe_id
+          schema:
+            type: string
+        - description: User ID filter
+          in: query
+          name: user_id
+          schema:
+            type: string
+        - description: Turn ID filter
+          in: query
+          name: turn_id
+          schema:
+            type: string
+        - description: RFC3339 lower bound (opened_at)
+          in: query
+          name: since
+          schema:
+            type: string
+        - description: RFC3339 upper bound (opened_at)
+          in: query
+          name: until
+          schema:
+            type: string
+        - description: Max rows (default 50)
+          in: query
+          name: limit
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListAuditSessionsResponse"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                type: string
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: List exec-audit sessions (workspace-scoped)
+      tags:
+        - Exec-Audit
+  "/api/workspaces/{id}/exec-audit/sessions/{session_id}":
+    get:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+        - description: Session ID
+          in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditSessionDetail"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                type: string
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Get exec-audit session (workspace-scoped)
+      tags:
+        - Exec-Audit
   "/api/workspaces/{id}/im/channels":
     get:
       parameters:
@@ -4004,6 +4334,290 @@ paths:
       summary: Get per-user workspace quota
       tags:
         - Workspaces
+  /internal/exec-audit/batch:
+    post:
+      parameters:
+        - description: Shared secret
+          in: header
+          name: X-Internal-Secret
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecAuditBatchAckResponse"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                type: string
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                type: string
+      summary: Ingest a batch of exec-gateway audit records (internal)
+      tags:
+        - Exec-Audit
+  /internal/exec-audit/calls:
+    get:
+      parameters:
+        - description: Shared secret
+          in: header
+          name: X-Internal-Secret
+          required: true
+          schema:
+            type: string
+        - description: Workspace ID
+          in: query
+          name: workspace_id
+          required: true
+          schema:
+            type: string
+        - description: Session ID filter
+          in: query
+          name: session_id
+          schema:
+            type: string
+        - description: Executor ID filter
+          in: query
+          name: exe_id
+          schema:
+            type: string
+        - description: User ID filter
+          in: query
+          name: user_id
+          schema:
+            type: string
+        - description: Source filter (e.g. mcp_rpc, sse_event)
+          in: query
+          name: source
+          schema:
+            type: string
+        - description: RPC method filter
+          in: query
+          name: method
+          schema:
+            type: string
+        - description: Filter on error flag
+          in: query
+          name: is_error
+          schema:
+            type: boolean
+        - description: RFC3339 lower bound (started_at)
+          in: query
+          name: since
+          schema:
+            type: string
+        - description: RFC3339 upper bound (started_at)
+          in: query
+          name: until
+          schema:
+            type: string
+        - description: Max rows (default 50)
+          in: query
+          name: limit
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListAuditCallsResponse"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                type: string
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                type: string
+      summary: List exec-audit calls (internal)
+      tags:
+        - Exec-Audit
+  "/internal/exec-audit/calls/{call_id}":
+    get:
+      parameters:
+        - description: Shared secret
+          in: header
+          name: X-Internal-Secret
+          required: true
+          schema:
+            type: string
+        - description: Call ID
+          in: path
+          name: call_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditCallDetail"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                type: string
+      summary: Get an exec-audit call detail (internal)
+      tags:
+        - Exec-Audit
+  /internal/exec-audit/sessions:
+    get:
+      parameters:
+        - description: Shared secret
+          in: header
+          name: X-Internal-Secret
+          required: true
+          schema:
+            type: string
+        - description: Workspace ID
+          in: query
+          name: workspace_id
+          required: true
+          schema:
+            type: string
+        - description: Executor ID filter
+          in: query
+          name: exe_id
+          schema:
+            type: string
+        - description: User ID filter
+          in: query
+          name: user_id
+          schema:
+            type: string
+        - description: Turn ID filter
+          in: query
+          name: turn_id
+          schema:
+            type: string
+        - description: RFC3339 lower bound (opened_at)
+          in: query
+          name: since
+          schema:
+            type: string
+        - description: RFC3339 upper bound (opened_at)
+          in: query
+          name: until
+          schema:
+            type: string
+        - description: Max rows (default 50)
+          in: query
+          name: limit
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListAuditSessionsResponse"
+        "400":
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                type: string
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                type: string
+      summary: List exec-audit sessions (internal)
+      tags:
+        - Exec-Audit
+  "/internal/exec-audit/sessions/{session_id}":
+    get:
+      parameters:
+        - description: Shared secret
+          in: header
+          name: X-Internal-Secret
+          required: true
+          schema:
+            type: string
+        - description: Session ID
+          in: path
+          name: session_id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditSessionDetail"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "404":
+          description: Not Found
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                type: string
+      summary: Get an exec-audit session detail (internal)
+      tags:
+        - Exec-Audit
 servers:
   - url: /
 components:
@@ -4679,6 +5293,157 @@ components:
       required:
         - status
       type: object
+    AuditCallDetail:
+      properties:
+        completed_at:
+          description: RFC3339
+          type: string
+        duration_ms:
+          type: integer
+        error_summary:
+          type: string
+        exe_id:
+          type: string
+        id:
+          type: string
+        is_error:
+          type: boolean
+        request_preview:
+          type: string
+        request_sha256:
+          type: string
+        request_size:
+          type: integer
+        response_preview:
+          type: string
+        response_sha256:
+          type: string
+        response_size:
+          type: integer
+        rpc_id:
+          type: string
+        rpc_kind:
+          type: string
+        rpc_method:
+          type: string
+        session_id:
+          type: string
+        source:
+          description: envmcp|rest|relay
+          type: string
+        started_at:
+          description: RFC3339
+          type: string
+        user_id:
+          type: string
+        workspace_id:
+          type: string
+      required:
+        - exe_id
+        - id
+        - source
+        - started_at
+        - workspace_id
+      type: object
+    AuditCallSummary:
+      properties:
+        completed_at:
+          description: RFC3339
+          type: string
+        duration_ms:
+          type: integer
+        error_summary:
+          type: string
+        exe_id:
+          type: string
+        id:
+          type: string
+        is_error:
+          type: boolean
+        request_sha256:
+          type: string
+        request_size:
+          type: integer
+        response_sha256:
+          type: string
+        response_size:
+          type: integer
+        rpc_id:
+          type: string
+        rpc_kind:
+          type: string
+        rpc_method:
+          type: string
+        session_id:
+          type: string
+        source:
+          description: envmcp|rest|relay
+          type: string
+        started_at:
+          description: RFC3339
+          type: string
+        user_id:
+          type: string
+        workspace_id:
+          type: string
+      required:
+        - exe_id
+        - id
+        - source
+        - started_at
+        - workspace_id
+      type: object
+    AuditSessionDetail:
+      properties:
+        first_calls:
+          items:
+            $ref: "#/components/schemas/AuditCallSummary"
+          type: array
+        session:
+          $ref: "#/components/schemas/AuditSessionSummary"
+      required:
+        - first_calls
+        - session
+      type: object
+    AuditSessionSummary:
+      properties:
+        bytes_to_backend:
+          type: integer
+        bytes_to_client:
+          type: integer
+        client_ip:
+          type: string
+        close_reason:
+          type: string
+        closed_at:
+          description: RFC3339
+          type: string
+        exe_id:
+          type: string
+        frames_to_backend:
+          type: integer
+        frames_to_client:
+          type: integer
+        id:
+          type: string
+        opened_at:
+          description: RFC3339
+          type: string
+        stream_id:
+          type: string
+        turn_id:
+          type: string
+        user_id:
+          type: string
+        workspace_id:
+          type: string
+      required:
+        - exe_id
+        - id
+        - opened_at
+        - stream_id
+        - workspace_id
+      type: object
     AuthCredentials:
       properties:
         email:
@@ -4894,6 +5659,13 @@ components:
           example: Renamed Cluster
           type: string
           nullable: true
+      type: object
+    ExecAuditBatchAckResponse:
+      properties:
+        processed:
+          type: integer
+        skipped:
+          type: integer
       type: object
     ExecutorConnectCommands:
       properties:
@@ -5207,6 +5979,28 @@ components:
       required:
         - updated_at
         - workspace_id
+      type: object
+    ListAuditCallsResponse:
+      properties:
+        calls:
+          items:
+            $ref: "#/components/schemas/AuditCallSummary"
+          type: array
+        next_cursor:
+          type: string
+      required:
+        - calls
+      type: object
+    ListAuditSessionsResponse:
+      properties:
+        next_cursor:
+          type: string
+        sessions:
+          items:
+            $ref: "#/components/schemas/AuditSessionSummary"
+          type: array
+      required:
+        - sessions
       type: object
     MemberAddRequest:
       properties:

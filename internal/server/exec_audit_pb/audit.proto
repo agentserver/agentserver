@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package execaudit;
+
+option go_package = "github.com/agentserver/agentserver/internal/server/exec_audit_pb;execauditpb";
+
+import "google/protobuf/timestamp.proto";
+
+// BatchRecords is the body of POST /internal/exec-audit/batch.
+message BatchRecords {
+  string gateway_id = 1;
+  repeated WALRecord records = 2;
+}
+
+// WALRecord is one entry in either the gateway's on-disk WAL or the
+// batched upload body. Exactly one body field is set.
+message WALRecord {
+  string id = 1;  // UUID of the underlying audit row (session or call)
+  oneof body {
+    SessionOpen  session_open  = 2;
+    SessionClose session_close = 3;
+    CallStart    call_start    = 4;
+    CallEnd      call_end      = 5;
+  }
+  google.protobuf.Timestamp written_at = 7;
+}
+
+message SessionOpen {
+  string workspace_id = 1;
+  string user_id      = 2;
+  string exe_id       = 3;
+  string turn_id      = 4;
+  string stream_id    = 5;
+  string client_ip    = 6;
+  google.protobuf.Timestamp cap_iat   = 7;
+  google.protobuf.Timestamp cap_exp   = 8;
+  google.protobuf.Timestamp opened_at = 9;
+}
+
+message SessionClose {
+  string session_id        = 1;
+  google.protobuf.Timestamp closed_at = 2;
+  string close_reason      = 3;
+  int32 frames_to_backend  = 4;
+  int32 frames_to_client   = 5;
+  int64 bytes_to_backend   = 6;
+  int64 bytes_to_client    = 7;
+}
+
+message CallStart {
+  string call_id      = 1;
+  string session_id   = 2;  // empty for rest/relay
+  string workspace_id = 3;
+  string user_id      = 4;
+  string exe_id       = 5;
+  string source       = 6;  // "envmcp"|"rest"|"relay"
+  string rpc_id       = 7;
+  string rpc_method   = 8;
+  string rpc_kind     = 9;
+  bytes request_bytes = 10; // inline if size <= payload_max; empty if >
+  int32 request_size  = 11;
+  string request_sha256 = 12;
+  google.protobuf.Timestamp started_at = 13;
+}
+
+message CallEnd {
+  string call_id = 1;
+  google.protobuf.Timestamp completed_at = 2;
+  bool is_error = 3;
+  string error_summary = 4;
+  bytes response_bytes = 5;
+  int32 response_size  = 6;
+  string response_sha256 = 7;
+}

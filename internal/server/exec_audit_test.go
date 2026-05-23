@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/agentserver/agentserver/internal/db"
 	pb "github.com/agentserver/agentserver/internal/server/exec_audit_pb"
+	"github.com/go-chi/chi/v5"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -150,29 +152,43 @@ func TestPostInternalExecAuditBatch_Idempotent(t *testing.T) {
 	}
 }
 
+// execAuditOnlyRouter wires just the POST /internal/exec-audit/batch route
+// with its X-Internal-Secret wrapper, mirroring server.go's registration.
+// Used by the bad-CT / bad-secret tests so they don't need TEST_DATABASE_URL
+// to verify wire-level contracts (auth + content-type) that fire before any
+// DAL call.
+func execAuditOnlyRouter(s *Server) http.Handler {
+	r := chi.NewRouter()
+	r.Post("/internal/exec-audit/batch", func(w http.ResponseWriter, r *http.Request) {
+		secret := os.Getenv("INTERNAL_API_SECRET")
+		if secret != "" && r.Header.Get("X-Internal-Secret") != secret {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		s.postInternalExecAuditBatch(w, r)
+	})
+	return r
+}
+
 func TestPostInternalExecAuditBatch_RejectsBadContentType(t *testing.T) {
-	srv, cleanup := newTestServerTUI(t)
-	defer cleanup()
 	t.Setenv("INTERNAL_API_SECRET", "test-internal-secret")
 	req := httptest.NewRequest(http.MethodPost, "/internal/exec-audit/batch", bytes.NewReader([]byte("hello")))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Internal-Secret", "test-internal-secret")
 	rr := httptest.NewRecorder()
-	srv.Router().ServeHTTP(rr, req)
+	execAuditOnlyRouter(&Server{}).ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rr.Code)
 	}
 }
 
 func TestPostInternalExecAuditBatch_RejectsBadSecret(t *testing.T) {
-	srv, cleanup := newTestServerTUI(t)
-	defer cleanup()
 	t.Setenv("INTERNAL_API_SECRET", "test-internal-secret")
 	req := httptest.NewRequest(http.MethodPost, "/internal/exec-audit/batch", bytes.NewReader([]byte("body")))
 	req.Header.Set("Content-Type", "application/x-protobuf")
 	req.Header.Set("X-Internal-Secret", "wrong-secret")
 	rr := httptest.NewRecorder()
-	srv.Router().ServeHTTP(rr, req)
+	execAuditOnlyRouter(&Server{}).ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", rr.Code)
 	}

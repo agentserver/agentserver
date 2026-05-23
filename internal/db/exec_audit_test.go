@@ -144,6 +144,15 @@ func TestUpdateAuditSessionClose(t *testing.T) {
 	}
 }
 
+func TestUpdateAuditSessionClose_MissingRowReturnsErr(t *testing.T) {
+	d := newTestDB(t)
+	err := d.UpdateAuditSessionClose(uuid.NewString(), time.Now().UTC(),
+		"nope", 0, 0, 0, 0)
+	if !errors.Is(err, ErrAuditRowMissing) {
+		t.Fatalf("expected ErrAuditRowMissing, got %v", err)
+	}
+}
+
 func TestUpsertAuditCall_Idempotent(t *testing.T) {
 	d := newTestDB(t)
 	id := uuid.NewString()
@@ -280,6 +289,15 @@ func TestUpdateAuditCallEnd(t *testing.T) {
 	// duration_ms ≈ 100 (allow 80..120 for any clock fuzz)
 	if gotDurationMs < 80 || gotDurationMs > 120 {
 		t.Errorf("duration_ms: got %d, want ~100", gotDurationMs)
+	}
+}
+
+func TestUpdateAuditCallEnd_MissingRowReturnsErr(t *testing.T) {
+	d := newTestDB(t)
+	err := d.UpdateAuditCallEnd(uuid.NewString(), time.Now().UTC(),
+		false, "", nil, 0, nil)
+	if !errors.Is(err, ErrAuditRowMissing) {
+		t.Fatalf("expected ErrAuditRowMissing, got %v", err)
 	}
 }
 
@@ -601,5 +619,89 @@ func TestPruneAuditOlderThan_CascadesAndSweepOrphans(t *testing.T) {
 	}
 	if _, err := d.GetAuditPayload(newPID); err != nil {
 		t.Errorf("new payload: %v", err)
+	}
+}
+
+// TestPruneAuditOlderThan_PreservesCallsOnSurvivingSession pins the post-fix
+// behavior: a long-running session whose opened_at is recent enough to
+// survive the cutoff keeps ALL its calls, even calls older than the cutoff.
+// Pre-fix, the second DELETE (`WHERE started_at < cutoff`) would prune those
+// calls and leave a session with a truncated middle.
+func TestPruneAuditOlderThan_PreservesCallsOnSurvivingSession(t *testing.T) {
+	d := newTestDB(t)
+	ws := "ws_prune_long_" + uuid.NewString()[:8]
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	cutoff := now.Add(-5 * 24 * time.Hour)
+
+	// Session opened recently (survives) but with an old call attached.
+	sessID := uuid.NewString()
+	callID := uuid.NewString()
+	t.Cleanup(func() {
+		d.Exec(`DELETE FROM exec_audit_calls WHERE id=$1`, callID)
+		d.Exec(`DELETE FROM exec_audit_sessions WHERE id=$1`, sessID)
+	})
+	if err := d.UpsertAuditSession(AuditSession{
+		ID: sessID, WorkspaceID: ws, ExeID: "exe_long", StreamID: "sl",
+		OpenedAt: now.Add(-1 * time.Hour), // recent
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sp := sessID
+	if err := d.UpsertAuditCall(AuditCall{
+		ID: callID, SessionID: &sp, WorkspaceID: ws, ExeID: "exe_long",
+		Source: "envmcp", StartedAt: now.Add(-10 * 24 * time.Hour), // OLD call on a NEW session
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, _, err := d.PruneAuditOlderThan(cutoff); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both the session and the old call must survive — call should not be
+	// orphaned out from under its parent session.
+	if _, err := d.GetAuditSession(sessID); err != nil {
+		t.Errorf("session unexpectedly pruned: %v", err)
+	}
+	if _, err := d.GetAuditCall(callID); err != nil {
+		t.Errorf("session-attached old call unexpectedly pruned: %v", err)
+	}
+}
+
+// TestPruneAuditOlderThan_DeletesStandaloneRestCalls pins the surviving
+// behavior of the second DELETE clause: session-less (source=rest/relay)
+// calls older than the cutoff are removed.
+func TestPruneAuditOlderThan_DeletesStandaloneRestCalls(t *testing.T) {
+	d := newTestDB(t)
+	ws := "ws_prune_rest_" + uuid.NewString()[:8]
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	cutoff := now.Add(-5 * 24 * time.Hour)
+
+	oldCallID := uuid.NewString()
+	newCallID := uuid.NewString()
+	t.Cleanup(func() {
+		d.Exec(`DELETE FROM exec_audit_calls WHERE id IN ($1, $2)`, oldCallID, newCallID)
+	})
+	if err := d.UpsertAuditCall(AuditCall{
+		ID: oldCallID, WorkspaceID: ws, ExeID: "exe_rest", Source: "rest",
+		StartedAt: now.Add(-10 * 24 * time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.UpsertAuditCall(AuditCall{
+		ID: newCallID, WorkspaceID: ws, ExeID: "exe_rest", Source: "rest",
+		StartedAt: now.Add(-1 * time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, _, err := d.PruneAuditOlderThan(cutoff); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.GetAuditCall(oldCallID); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("old standalone call: got err=%v, want sql.ErrNoRows", err)
+	}
+	if _, err := d.GetAuditCall(newCallID); err != nil {
+		t.Errorf("new standalone call unexpectedly pruned: %v", err)
 	}
 }

@@ -87,8 +87,17 @@ func (db *DB) UpsertAuditSession(s AuditSession) error {
 	return err
 }
 
+// ErrAuditRowMissing is returned by UpdateAuditSessionClose /
+// UpdateAuditCallEnd when the target row does not exist. The ingest
+// handler treats this as "skip + log", so the next retry from the
+// gateway-side WAL (after the matching Open / Start record lands)
+// completes the row. Without surfacing this, an out-of-order batch
+// would silently drop the close.
+var ErrAuditRowMissing = errors.New("exec_audit: row not found")
+
 // UpdateAuditSessionClose stamps the close-time fields on an existing
 // session row. Frames/bytes counters are absolute totals (not deltas).
+// Returns ErrAuditRowMissing if no row with the given id exists.
 func (db *DB) UpdateAuditSessionClose(id string, closedAt time.Time, reason string,
 	framesToBackend, framesToClient int,
 	bytesToBackend, bytesToClient int64,
@@ -99,8 +108,15 @@ func (db *DB) UpdateAuditSessionClose(id string, closedAt time.Time, reason stri
                frames_to_backend = $4, frames_to_client = $5,
                bytes_to_backend = $6, bytes_to_client = $7
          WHERE id = $1`
-	_, err := db.Exec(q, id, closedAt, reason, framesToBackend, framesToClient, bytesToBackend, bytesToClient)
-	return err
+	res, err := db.Exec(q, id, closedAt, reason, framesToBackend, framesToClient, bytesToBackend, bytesToClient)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrAuditRowMissing
+	}
+	return nil
 }
 
 // AuditCall is one row in exec_audit_calls — a single logical call:
@@ -160,7 +176,8 @@ func (db *DB) UpsertAuditCall(c AuditCall) error {
 // UpdateAuditCallEnd stamps the completion fields on an existing call
 // row and derives duration_ms from (completedAt - started_at) in SQL so
 // it stays consistent even if the caller's clock has drifted between
-// CallStart and CallEnd.
+// CallStart and CallEnd. Returns ErrAuditRowMissing if no row with the
+// given id exists.
 func (db *DB) UpdateAuditCallEnd(callID string,
 	completedAt time.Time, isError bool, errorSummary string,
 	responsePayloadID *string, responseSize int, responseSha256 *string,
@@ -175,9 +192,16 @@ func (db *DB) UpdateAuditCallEnd(callID string,
                response_sha256 = $7,
                duration_ms = CAST(EXTRACT(EPOCH FROM ($2 - started_at)) * 1000 AS INTEGER)
          WHERE id = $1`
-	_, err := db.Exec(q, callID, completedAt, isError, errorSummary,
+	res, err := db.Exec(q, callID, completedAt, isError, errorSummary,
 		responsePayloadID, responseSize, responseSha256)
-	return err
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrAuditRowMissing
+	}
+	return nil
 }
 
 // ListAuditSessionsFilter is the search criteria for ListAuditSessions.
@@ -442,8 +466,12 @@ func (db *DB) PruneAuditOlderThan(cutoff time.Time) (sessions, calls, payloads i
 	sessions, _ = res.RowsAffected()
 
 	// Standalone calls (source = rest/relay) that were never attached to
-	// a session. Cascade above already removed session-attached calls.
-	res, err = db.Exec(`DELETE FROM exec_audit_calls WHERE started_at < $1`, cutoff)
+	// a session. Cascade above already removed session-attached calls,
+	// and we deliberately do NOT delete session-attached calls older than
+	// the cutoff — a long-running session keeps its full call history as
+	// long as the session itself survives, otherwise its detail view would
+	// show silently-truncated middles.
+	res, err = db.Exec(`DELETE FROM exec_audit_calls WHERE started_at < $1 AND session_id IS NULL`, cutoff)
 	if err != nil {
 		return sessions, 0, 0, err
 	}

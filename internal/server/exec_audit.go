@@ -73,7 +73,8 @@ func (s *Server) postInternalExecAuditBatch(w http.ResponseWriter, r *http.Reque
 	skipped := 0
 	for _, rec := range batch.GetRecords() {
 		if err := s.applyAuditRecord(r.Context(), rec); err != nil {
-			log.Printf("exec-audit: apply failed id=%s err=%v", rec.GetId(), err)
+			log.Printf("exec-audit: apply failed id=%s %s err=%v",
+				rec.GetId(), recordTriageContext(rec), err)
 			skipped++
 			continue
 		}
@@ -569,19 +570,54 @@ func (s *Server) getWorkspaceExecAuditCallPayload(w http.ResponseWriter, r *http
 
 const auditPreviewBytes = 8 * 1024
 
+// previewPayload best-effort decodes a stored payload to a utf8 preview
+// (first auditPreviewBytes). Returns "" if the payload row is missing
+// (expected — retention may have pruned it). Other errors (DB connection,
+// corrupted blob) are logged before returning "" so a blank preview in
+// the UI is never silently hiding an integrity bug.
 func previewPayload(d *db.DB, id string) string {
 	p, err := d.GetAuditPayload(id)
 	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("exec-audit: preview payload id=%s db: %v", id, err)
+		}
 		return ""
 	}
 	raw, err := zstdDecompress(p.Compressed)
 	if err != nil {
+		log.Printf("exec-audit: preview payload id=%s decompress: %v", id, err)
 		return ""
 	}
 	if len(raw) > auditPreviewBytes {
 		raw = raw[:auditPreviewBytes]
 	}
 	return string(raw) // utf8 lossy if binary — acceptable for preview
+}
+
+// recordTriageContext returns a short space-separated string with the
+// record kind plus the most useful identifiers per kind, for log lines
+// when a record can't be applied. Keeps log volume bounded while giving
+// operators enough to find the offending bridge in other logs.
+func recordTriageContext(rec *pb.WALRecord) string {
+	if rec == nil {
+		return "kind=nil"
+	}
+	switch b := rec.Body.(type) {
+	case *pb.WALRecord_SessionOpen:
+		op := b.SessionOpen
+		return fmt.Sprintf("kind=SessionOpen ws=%s exe=%s stream=%s",
+			op.GetWorkspaceId(), op.GetExeId(), op.GetStreamId())
+	case *pb.WALRecord_SessionClose:
+		return fmt.Sprintf("kind=SessionClose session=%s", b.SessionClose.GetSessionId())
+	case *pb.WALRecord_CallStart:
+		cs := b.CallStart
+		return fmt.Sprintf("kind=CallStart ws=%s exe=%s source=%s method=%s",
+			cs.GetWorkspaceId(), cs.GetExeId(), cs.GetSource(), cs.GetRpcMethod())
+	case *pb.WALRecord_CallEnd:
+		return fmt.Sprintf("kind=CallEnd call=%s", b.CallEnd.GetCallId())
+	default:
+		return "kind=unknown"
+	}
 }
 
 func parseSessionsFilter(q url.Values) (db.ListAuditSessionsFilter, error) {

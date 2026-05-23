@@ -12,4 +12,9 @@
 //	@in                          cookie
 //	@name                        agentserver-token
 //	@description                 Session cookie set by POST /api/auth/login. All non-auth endpoints assume this cookie.
+//
+//	@securityDefinitions.apikey  BearerAuth
+//	@in                          header
+//	@name                        Authorization
+//	@description                 `Authorization: Bearer <token>` with an OAuth access token, a `proxy_token` from POST /api/agent/register, or a workspace API key (`wak_*`).
 package server

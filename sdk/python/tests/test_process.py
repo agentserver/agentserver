@@ -40,8 +40,8 @@ async def test_spawn_calls_exec_command_and_sets_session_id(stub_client):
         terminated.append(True)
         return 200, {"ok": True}
 
-    stub.register("POST", "/api/sdk/envs/my-mac/tool/call", exec_cmd)
-    stub.register("POST", "/api/sdk/processes/sid-1/terminate", terminate)
+    stub.register("POST", "/api/connectors/envs/my-mac/tool/call", exec_cmd)
+    stub.register("POST", "/api/connectors/processes/sid-1/terminate", terminate)
 
     env = make_env(client)
     async with env.spawn("./run.sh") as proc:
@@ -70,9 +70,9 @@ async def test_process_write_stdin(stub_client):
     async def terminate(body, query):
         return 200, {"ok": True}
 
-    stub.register("POST", "/api/sdk/envs/my-mac/tool/call", exec_cmd)
-    stub.register("POST", "/api/sdk/processes/s-1/stdin", stdin)
-    stub.register("POST", "/api/sdk/processes/s-1/terminate", terminate)
+    stub.register("POST", "/api/connectors/envs/my-mac/tool/call", exec_cmd)
+    stub.register("POST", "/api/connectors/processes/s-1/stdin", stdin)
+    stub.register("POST", "/api/connectors/processes/s-1/terminate", terminate)
 
     env = make_env(client)
     async with env.spawn("./run.sh") as proc:
@@ -104,9 +104,9 @@ async def test_process_read_output(stub_client):
     async def terminate(body, query):
         return 200, {"ok": True}
 
-    stub.register("POST", "/api/sdk/envs/my-mac/tool/call", exec_cmd)
-    stub.register("GET", "/api/sdk/processes/s-1/output", output)
-    stub.register("POST", "/api/sdk/processes/s-1/terminate", terminate)
+    stub.register("POST", "/api/connectors/envs/my-mac/tool/call", exec_cmd)
+    stub.register("GET", "/api/connectors/processes/s-1/output", output)
+    stub.register("POST", "/api/connectors/processes/s-1/terminate", terminate)
 
     env = make_env(client)
     async with env.spawn("./run.sh") as proc:
@@ -129,8 +129,8 @@ async def test_process_terminate_runs_on_exception(stub_client):
         terminated.append(True)
         return 200, {"ok": True}
 
-    stub.register("POST", "/api/sdk/envs/my-mac/tool/call", exec_cmd)
-    stub.register("POST", "/api/sdk/processes/s/terminate", terminate)
+    stub.register("POST", "/api/connectors/envs/my-mac/tool/call", exec_cmd)
+    stub.register("POST", "/api/connectors/processes/s/terminate", terminate)
 
     env = make_env(client)
     with pytest.raises(RuntimeError):
@@ -171,10 +171,10 @@ async def test_process_lifecycle_full(stub_client):
         terminated.append(True)
         return 200, {"ok": True}
 
-    stub.register("POST", "/api/sdk/envs/my-mac/tool/call", exec_cmd)
-    stub.register("POST", "/api/sdk/processes/sid-1/stdin", stdin)
-    stub.register("GET", "/api/sdk/processes/sid-1/output", output)
-    stub.register("POST", "/api/sdk/processes/sid-1/terminate", terminate)
+    stub.register("POST", "/api/connectors/envs/my-mac/tool/call", exec_cmd)
+    stub.register("POST", "/api/connectors/processes/sid-1/stdin", stdin)
+    stub.register("GET", "/api/connectors/processes/sid-1/output", output)
+    stub.register("POST", "/api/connectors/processes/sid-1/terminate", terminate)
 
     env = make_env(client)
     async with env.spawn("some_cmd") as proc:

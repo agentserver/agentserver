@@ -162,16 +162,16 @@ func (s *Server) newWorkspaceResolver(workspaceID string) *nameresolver.Resolver
 	return nameresolver.NewResolverWithFetcher(fetch, logger)
 }
 
-// Mount registers every SDK route under /api/sdk/*. Each handler runs
+// Mount registers every SDK route under /api/connectors/*. Each handler runs
 // through authMiddleware which extracts and validates the Bearer token.
 func (s *Server) Mount(r chi.Router) {
 	r.Group(func(r chi.Router) {
 		r.Use(s.authMiddleware)
-		r.Post("/api/sdk/envs/list", s.handleEnvsList)
-		r.Post("/api/sdk/envs/{name}/tool/call", s.handleToolCall)
-		r.Post("/api/sdk/processes/{sid}/stdin", s.handleStdin)
-		r.Get("/api/sdk/processes/{sid}/output", s.handleOutput)
-		r.Post("/api/sdk/processes/{sid}/terminate", s.handleTerminate)
+		r.Post("/api/connectors/envs/list", s.handleEnvsList)
+		r.Post("/api/connectors/envs/{name}/tool/call", s.handleToolCall)
+		r.Post("/api/connectors/processes/{sid}/stdin", s.handleStdin)
+		r.Get("/api/connectors/processes/{sid}/output", s.handleOutput)
+		r.Post("/api/connectors/processes/{sid}/terminate", s.handleTerminate)
 	})
 }
 

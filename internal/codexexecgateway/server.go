@@ -215,7 +215,7 @@ func (s *Server) Routes() http.Handler {
 	// (same value, different header than RequireSharedSecret's Bearer check).
 	r.Get("/internal/sdk/connected", s.handleSDKConnectedLoopback)
 
-	// SDK REST surface (/api/sdk/*). Mounted last so SDK routes don't
+	// SDK REST surface (/api/connectors/*). Mounted last so SDK routes don't
 	// shadow any existing paths.
 	if s.sdkServer != nil {
 		s.sdkServer.Mount(r)

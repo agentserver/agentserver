@@ -1241,6 +1241,214 @@ paths:
       summary: Revoke a Codex token
       tags:
         - Codex Tokens
+  "/api/connectors/envs/{name}/tool/call":
+    post:
+      parameters:
+        - description: Connected environment name (from /envs/list)
+          in: path
+          name: name
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/sdk.ConnectorToolCallRequest"
+        description: Tool name and arguments. The gateway injects environment_id from
+          the path; callers can omit it.
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/tools.MCPCallToolResult"
+        "400":
+          description: bad_request | unknown_tool | bad_arguments
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/sdk.ConnectorErrorResponse"
+        "401":
+          description: missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/sdk.ConnectorErrorResponse"
+        "500":
+          description: workspace_init | tool_error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/sdk.ConnectorErrorResponse"
+      security:
+        - BearerAuth: []
+      summary: Call an MCP tool on a connected executor
+      tags:
+        - Connectors
+  /api/connectors/envs/list:
+    post:
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/sdk.ConnectorEnvsListResponse"
+        "401":
+          description: missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/sdk.ConnectorErrorResponse"
+        "500":
+          description: registry_error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/sdk.ConnectorErrorResponse"
+      security:
+        - BearerAuth: []
+      summary: List connected executors for the calling workspace
+      tags:
+        - Connectors
+  "/api/connectors/processes/{sid}/output":
+    get:
+      parameters:
+        - description: Session id returned by exec_command
+          in: path
+          name: sid
+          required: true
+          schema:
+            type: string
+        - description: Highest seq already seen; only newer chunks are returned
+          in: query
+          name: since
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/sdk.ConnectorOutputResponse"
+        "401":
+          description: missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/sdk.ConnectorErrorResponse"
+        "403":
+          description: session belongs to a different workspace
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/sdk.ConnectorErrorResponse"
+        "404":
+          description: session_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/sdk.ConnectorErrorResponse"
+      security:
+        - BearerAuth: []
+      summary: Poll a running process's stdout/stderr
+      tags:
+        - Connectors
+  "/api/connectors/processes/{sid}/stdin":
+    post:
+      parameters:
+        - description: Session id returned by exec_command
+          in: path
+          name: sid
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/sdk.ConnectorStdinRequest"
+        description: Base64-encoded stdin chunk
+        required: true
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/sdk.ConnectorOKResponse"
+        "400":
+          description: bad_request | bad_base64
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/sdk.ConnectorErrorResponse"
+        "401":
+          description: missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/sdk.ConnectorErrorResponse"
+        "403":
+          description: session belongs to a different workspace
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/sdk.ConnectorErrorResponse"
+        "404":
+          description: session_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/sdk.ConnectorErrorResponse"
+      security:
+        - BearerAuth: []
+      summary: Write to a running process's stdin
+      tags:
+        - Connectors
+  "/api/connectors/processes/{sid}/terminate":
+    post:
+      parameters:
+        - description: Session id returned by exec_command
+          in: path
+          name: sid
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/sdk.ConnectorOKResponse"
+        "401":
+          description: missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/sdk.ConnectorErrorResponse"
+        "403":
+          description: session belongs to a different workspace
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/sdk.ConnectorErrorResponse"
+        "404":
+          description: session_not_found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/sdk.ConnectorErrorResponse"
+      security:
+        - BearerAuth: []
+      summary: Terminate a running process
+      tags:
+        - Connectors
   "/api/sandboxes/{id}":
     delete:
       parameters:
@@ -3890,6 +4098,13 @@ components:
       description: Task details
       required: true
   securitySchemes:
+    BearerAuth:
+      description: "`Authorization: Bearer <token>` with an OAuth access token, a
+        `proxy_token` from POST /api/agent/register, or a workspace API key
+        (`wak_*`)."
+      in: header
+      name: Authorization
+      type: apiKey
     CookieAuth:
       description: Session cookie set by POST /api/auth/login. All non-auth endpoints
         assume this cookie.
@@ -5579,4 +5794,120 @@ components:
           type: string
       required:
         - name
+      type: object
+    sdk.ConnectorEnv:
+      properties:
+        is_default:
+          type: boolean
+        last_seen:
+          type: string
+        name:
+          type: string
+        tools:
+          items:
+            $ref: "#/components/schemas/sdk.ConnectorTool"
+          type: array
+        type:
+          example: executor
+          type: string
+      type: object
+    sdk.ConnectorEnvsListResponse:
+      properties:
+        envs:
+          items:
+            $ref: "#/components/schemas/sdk.ConnectorEnv"
+          type: array
+      type: object
+    sdk.ConnectorErrorBody:
+      properties:
+        code:
+          example: unknown_tool
+          type: string
+        message:
+          type: string
+      type: object
+    sdk.ConnectorErrorResponse:
+      properties:
+        error:
+          $ref: "#/components/schemas/sdk.ConnectorErrorBody"
+      type: object
+    sdk.ConnectorOKResponse:
+      properties:
+        ok:
+          example: true
+          type: boolean
+      type: object
+    sdk.ConnectorOutputChunk:
+      properties:
+        data_b64:
+          type: string
+        seq:
+          type: integer
+        stream:
+          enum:
+            - stdout
+            - stderr
+          type: string
+      type: object
+    sdk.ConnectorOutputResponse:
+      properties:
+        chunks:
+          items:
+            $ref: "#/components/schemas/sdk.ConnectorOutputChunk"
+          type: array
+        exit_code:
+          type: integer
+        lost_bytes:
+          type: integer
+        session_alive:
+          type: boolean
+        truncated:
+          type: boolean
+      type: object
+    sdk.ConnectorStdinRequest:
+      properties:
+        data_b64:
+          example: aGVsbG8=
+          type: string
+      type: object
+    sdk.ConnectorTool:
+      properties:
+        description:
+          type: string
+        kind:
+          enum:
+            - core
+            - custom
+          type: string
+        name:
+          type: string
+      type: object
+    sdk.ConnectorToolCallRequest:
+      properties:
+        arguments:
+          additionalProperties: {}
+          type: object
+        tool:
+          example: shell
+          type: string
+      type: object
+    tools.MCPCallToolResult:
+      properties:
+        content:
+          items:
+            $ref: "#/components/schemas/tools.MCPToolContent"
+          type: array
+        isError:
+          type: boolean
+        structuredContent:
+          items:
+            type: integer
+          type: array
+      type: object
+    tools.MCPToolContent:
+      properties:
+        text:
+          type: string
+        type:
+          type: string
       type: object

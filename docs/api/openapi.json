@@ -2067,6 +2067,355 @@
         }
       }
     },
+    "/api/connectors/envs/list": {
+      "post": {
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "tags": [
+          "Connectors"
+        ],
+        "summary": "List connected executors for the calling workspace",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/sdk.ConnectorEnvsListResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "missing or invalid bearer token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/sdk.ConnectorErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "registry_error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/sdk.ConnectorErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/connectors/envs/{name}/tool/call": {
+      "post": {
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "tags": [
+          "Connectors"
+        ],
+        "summary": "Call an MCP tool on a connected executor",
+        "parameters": [
+          {
+            "description": "Connected environment name (from /envs/list)",
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/sdk.ConnectorToolCallRequest"
+              }
+            }
+          },
+          "description": "Tool name and arguments. The gateway injects environment_id from the path; callers can omit it.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/tools.MCPCallToolResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "bad_request | unknown_tool | bad_arguments",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/sdk.ConnectorErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "missing or invalid bearer token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/sdk.ConnectorErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "workspace_init | tool_error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/sdk.ConnectorErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/connectors/processes/{sid}/output": {
+      "get": {
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "tags": [
+          "Connectors"
+        ],
+        "summary": "Poll a running process's stdout/stderr",
+        "parameters": [
+          {
+            "description": "Session id returned by exec_command",
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Highest seq already seen; only newer chunks are returned",
+            "name": "since",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/sdk.ConnectorOutputResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "missing or invalid bearer token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/sdk.ConnectorErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "session belongs to a different workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/sdk.ConnectorErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "session_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/sdk.ConnectorErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/connectors/processes/{sid}/stdin": {
+      "post": {
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "tags": [
+          "Connectors"
+        ],
+        "summary": "Write to a running process's stdin",
+        "parameters": [
+          {
+            "description": "Session id returned by exec_command",
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/sdk.ConnectorStdinRequest"
+              }
+            }
+          },
+          "description": "Base64-encoded stdin chunk",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/sdk.ConnectorOKResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "bad_request | bad_base64",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/sdk.ConnectorErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "missing or invalid bearer token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/sdk.ConnectorErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "session belongs to a different workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/sdk.ConnectorErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "session_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/sdk.ConnectorErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/connectors/processes/{sid}/terminate": {
+      "post": {
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "tags": [
+          "Connectors"
+        ],
+        "summary": "Terminate a running process",
+        "parameters": [
+          {
+            "description": "Session id returned by exec_command",
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/sdk.ConnectorOKResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "missing or invalid bearer token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/sdk.ConnectorErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "session belongs to a different workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/sdk.ConnectorErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "session_not_found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/sdk.ConnectorErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/sandboxes/{id}": {
       "get": {
         "security": [
@@ -6463,6 +6812,12 @@
       }
     },
     "securitySchemes": {
+      "BearerAuth": {
+        "description": "`Authorization: Bearer <token>` with an OAuth access token, a `proxy_token` from POST /api/agent/register, or a workspace API key (`wak_*`).",
+        "type": "apiKey",
+        "name": "Authorization",
+        "in": "header"
+      },
       "CookieAuth": {
         "description": "Session cookie set by POST /api/auth/login. All non-auth endpoints assume this cookie.",
         "type": "apiKey",
@@ -8880,6 +9235,182 @@
           "name": {
             "type": "string",
             "example": "Renamed Workspace"
+          }
+        }
+      },
+      "sdk.ConnectorEnv": {
+        "type": "object",
+        "properties": {
+          "is_default": {
+            "type": "boolean"
+          },
+          "last_seen": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/sdk.ConnectorTool"
+            }
+          },
+          "type": {
+            "type": "string",
+            "example": "executor"
+          }
+        }
+      },
+      "sdk.ConnectorEnvsListResponse": {
+        "type": "object",
+        "properties": {
+          "envs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/sdk.ConnectorEnv"
+            }
+          }
+        }
+      },
+      "sdk.ConnectorErrorBody": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "unknown_tool"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "sdk.ConnectorErrorResponse": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/sdk.ConnectorErrorBody"
+          }
+        }
+      },
+      "sdk.ConnectorOKResponse": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true
+          }
+        }
+      },
+      "sdk.ConnectorOutputChunk": {
+        "type": "object",
+        "properties": {
+          "data_b64": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer"
+          },
+          "stream": {
+            "type": "string",
+            "enum": [
+              "stdout",
+              "stderr"
+            ]
+          }
+        }
+      },
+      "sdk.ConnectorOutputResponse": {
+        "type": "object",
+        "properties": {
+          "chunks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/sdk.ConnectorOutputChunk"
+            }
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "lost_bytes": {
+            "type": "integer"
+          },
+          "session_alive": {
+            "type": "boolean"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        }
+      },
+      "sdk.ConnectorStdinRequest": {
+        "type": "object",
+        "properties": {
+          "data_b64": {
+            "type": "string",
+            "example": "aGVsbG8="
+          }
+        }
+      },
+      "sdk.ConnectorTool": {
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "core",
+              "custom"
+            ]
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "sdk.ConnectorToolCallRequest": {
+        "type": "object",
+        "properties": {
+          "arguments": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "tool": {
+            "type": "string",
+            "example": "shell"
+          }
+        }
+      },
+      "tools.MCPCallToolResult": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/tools.MCPToolContent"
+            }
+          },
+          "isError": {
+            "type": "boolean"
+          },
+          "structuredContent": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          }
+        }
+      },
+      "tools.MCPToolContent": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
           }
         }
       }

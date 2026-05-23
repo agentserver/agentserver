@@ -49,14 +49,14 @@ class Process:
 
     async def write_stdin(self, data: bytes) -> None:
         await self.env._client.post(
-            f"/api/sdk/processes/{self.session_id}/stdin",
+            f"/api/connectors/processes/{self.session_id}/stdin",
             {"data_b64": base64.b64encode(data).decode("ascii")},
         )
 
     async def read_output(self, since: int | None = None) -> dict:
         params = {"since": str(since if since is not None else self._read_seq)}
         resp = await self.env._client.get(
-            f"/api/sdk/processes/{self.session_id}/output",
+            f"/api/connectors/processes/{self.session_id}/output",
             params=params,
         )
         for c in resp.get("chunks", []):
@@ -68,7 +68,7 @@ class Process:
             return
         try:
             await self.env._client.post(
-                f"/api/sdk/processes/{self.session_id}/terminate",
+                f"/api/connectors/processes/{self.session_id}/terminate",
                 {},
             )
         finally:

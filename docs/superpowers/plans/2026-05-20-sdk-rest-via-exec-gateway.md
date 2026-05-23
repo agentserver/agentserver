@@ -4,7 +4,7 @@
 
 **Goal:** Replace the Python SDK's WS-through-codex transport with direct HTTP REST to codex-exec-gateway.
 
-**Architecture:** Extract env-mcp tool implementations from `internal/codexappgateway/envmcp/` into a shared `internal/envtools/` package; add SDK REST handlers under `/api/sdk/*` on codex-exec-gateway that authenticate sandbox proxyTokens via agentserver's `/internal/validate-proxy-token` and dispatch tool calls through the same BridgePool the env-mcp subprocess uses today. Rewrite the Python SDK to httpx. Delete the codex-app-gateway `/notebook/ws` path.
+**Architecture:** Extract env-mcp tool implementations from `internal/codexappgateway/envmcp/` into a shared `internal/envtools/` package; add SDK REST handlers under `/api/connectors/*` on codex-exec-gateway that authenticate sandbox proxyTokens via agentserver's `/internal/validate-proxy-token` and dispatch tool calls through the same BridgePool the env-mcp subprocess uses today. Rewrite the Python SDK to httpx. Delete the codex-app-gateway `/notebook/ws` path.
 
 **Tech Stack:** Go (chi, websocket, hashicorp/golang-lru), Python (httpx, pytest), Helm chart, Pulumi (TypeScript).
 
@@ -562,7 +562,7 @@ type Chunk struct {
 
 // Session is one long-running process spawned via tools.UnifiedExec /
 // exec_command. The SDK polls Output, writes stdin, and terminates via
-// the corresponding /api/sdk/processes/{sid}/* endpoints.
+// the corresponding /api/connectors/processes/{sid}/* endpoints.
 type Session struct {
     ID           string
     WorkspaceID  string
@@ -771,7 +771,7 @@ func TestEnvsList_HappyPath(t *testing.T) {
     }
     mux := http.NewServeMux()
     s.Mount(mux)
-    req := httptest.NewRequest(http.MethodPost, "/api/sdk/envs/list", bytes.NewReader([]byte("{}")))
+    req := httptest.NewRequest(http.MethodPost, "/api/connectors/envs/list", bytes.NewReader([]byte("{}")))
     req.Header.Set("Authorization", "Bearer tok-1")
     rec := httptest.NewRecorder()
     mux.ServeHTTP(rec, req)
@@ -791,7 +791,7 @@ func TestEnvsList_MissingBearer_401(t *testing.T) {
     s := &Server{Registry: connectedListerStub{}}
     mux := http.NewServeMux()
     s.Mount(mux)
-    req := httptest.NewRequest(http.MethodPost, "/api/sdk/envs/list", bytes.NewReader([]byte("{}")))
+    req := httptest.NewRequest(http.MethodPost, "/api/connectors/envs/list", bytes.NewReader([]byte("{}")))
     rec := httptest.NewRecorder()
     mux.ServeHTTP(rec, req)
     if rec.Code != http.StatusUnauthorized {
@@ -858,9 +858,9 @@ type Server struct {
 // Mount registers every SDK route. Each handler runs through
 // authMiddleware which extracts and validates the Bearer token.
 func (s *Server) Mount(r interface{ Handle(pattern string, h http.Handler) }) {
-    r.Handle("POST /api/sdk/envs/list", s.authMiddleware(http.HandlerFunc(s.handleEnvsList)))
-    // Subsequent tasks add: /api/sdk/envs/{name}/tool/call,
-    // /api/sdk/processes/{sid}/{stdin,output,terminate}.
+    r.Handle("POST /api/connectors/envs/list", s.authMiddleware(http.HandlerFunc(s.handleEnvsList)))
+    // Subsequent tasks add: /api/connectors/envs/{name}/tool/call,
+    // /api/connectors/processes/{sid}/{stdin,output,terminate}.
 }
 
 type ctxKey int
@@ -987,7 +987,7 @@ git commit -m "feat(exec-gateway/sdk): envs/list endpoint + auth middleware"
 
 ---
 
-### Task B4: Add `/api/sdk/envs/{name}/tool/call` handler
+### Task B4: Add `/api/connectors/envs/{name}/tool/call` handler
 
 **Files:**
 - Modify: `internal/codexexecgateway/sdk/server.go` (add route)
@@ -1011,7 +1011,7 @@ func TestToolCall_UnknownTool_400(t *testing.T) {
     mux := http.NewServeMux()
     s.Mount(mux)
     body := bytes.NewReader([]byte(`{"tool":"unknown","arguments":{}}`))
-    req := httptest.NewRequest(http.MethodPost, "/api/sdk/envs/my-mac/tool/call", body)
+    req := httptest.NewRequest(http.MethodPost, "/api/connectors/envs/my-mac/tool/call", body)
     req.Header.Set("Authorization", "Bearer tok-1")
     rec := httptest.NewRecorder()
     mux.ServeHTTP(rec, req)
@@ -1098,10 +1098,10 @@ Add imports at top of file: `"encoding/json"`, `"github.com/agentserver/agentser
 In `server.go` `Mount`, append:
 
 ```go
-r.Handle("POST /api/sdk/envs/{name}/tool/call", s.authMiddleware(http.HandlerFunc(s.handleToolCall)))
+r.Handle("POST /api/connectors/envs/{name}/tool/call", s.authMiddleware(http.HandlerFunc(s.handleToolCall)))
 ```
 
-Note: `r.Handle` here assumes Go 1.22+ servemux pattern syntax. If the gateway uses chi, swap for `r.Method(http.MethodPost, "/api/sdk/envs/{name}/tool/call", s.authMiddleware(...))`.
+Note: `r.Handle` here assumes Go 1.22+ servemux pattern syntax. If the gateway uses chi, swap for `r.Method(http.MethodPost, "/api/connectors/envs/{name}/tool/call", s.authMiddleware(...))`.
 
 If the gateway uses chi, also import `"github.com/go-chi/chi/v5"` and change `r.PathValue("name")` in the handler to `chi.URLParam(r, "name")`. Check whether `internal/codexexecgateway/server.go` uses chi (it does — see line 86 `r.Get("/codex-exec/{exe_id}", s.handleInbound)`). Adapt accordingly.
 
@@ -1146,7 +1146,7 @@ func TestProcessOutput_ForbiddenOtherWorkspace(t *testing.T) {
     s.Sessions.Register(&processes.Session{ID: "sid-1", WorkspaceID: "ws-1"})
     mux := http.NewServeMux()
     s.Mount(mux)
-    req := httptest.NewRequest(http.MethodGet, "/api/sdk/processes/sid-1/output", nil)
+    req := httptest.NewRequest(http.MethodGet, "/api/connectors/processes/sid-1/output", nil)
     req.Header.Set("Authorization", "Bearer tok-1")
     rec := httptest.NewRecorder()
     mux.ServeHTTP(rec, req)
@@ -1169,7 +1169,7 @@ func TestProcessOutput_HappyPath(t *testing.T) {
     s.Sessions.Register(sess)
     mux := http.NewServeMux()
     s.Mount(mux)
-    req := httptest.NewRequest(http.MethodGet, "/api/sdk/processes/sid-1/output?since=0", nil)
+    req := httptest.NewRequest(http.MethodGet, "/api/connectors/processes/sid-1/output?since=0", nil)
     req.Header.Set("Authorization", "Bearer tok-1")
     rec := httptest.NewRecorder()
     mux.ServeHTTP(rec, req)
@@ -1291,9 +1291,9 @@ func (s *Server) handleTerminate(w http.ResponseWriter, r *http.Request) {
 In `Mount`, append:
 
 ```go
-r.Handle("POST /api/sdk/processes/{sid}/stdin", s.authMiddleware(http.HandlerFunc(s.handleStdin)))
-r.Handle("GET /api/sdk/processes/{sid}/output", s.authMiddleware(http.HandlerFunc(s.handleOutput)))
-r.Handle("POST /api/sdk/processes/{sid}/terminate", s.authMiddleware(http.HandlerFunc(s.handleTerminate)))
+r.Handle("POST /api/connectors/processes/{sid}/stdin", s.authMiddleware(http.HandlerFunc(s.handleStdin)))
+r.Handle("GET /api/connectors/processes/{sid}/output", s.authMiddleware(http.HandlerFunc(s.handleOutput)))
+r.Handle("POST /api/connectors/processes/{sid}/terminate", s.authMiddleware(http.HandlerFunc(s.handleTerminate)))
 ```
 
 - [ ] **Step 5: Run tests**
@@ -1467,7 +1467,7 @@ EOF
 go run /tmp/stub-agentserver.go &
 ```
 
-In another terminal, run codex-exec-gateway pointed at it (`AGENTSERVER_INTERNAL_URL=http://localhost:18080`, etc. — see existing `cmd/codex-exec-gateway/main.go` env vars for the full set) and `curl -i -H 'Authorization: Bearer x' -d '{}' http://localhost:<gateway port>/api/sdk/envs/list`.
+In another terminal, run codex-exec-gateway pointed at it (`AGENTSERVER_INTERNAL_URL=http://localhost:18080`, etc. — see existing `cmd/codex-exec-gateway/main.go` env vars for the full set) and `curl -i -H 'Authorization: Bearer x' -d '{}' http://localhost:<gateway port>/api/connectors/envs/list`.
 
 Expected: HTTP 200 with `{"envs":[]}` (no executors registered yet) or whatever the stubbed registry returns.
 
@@ -1506,7 +1506,7 @@ Replace the entire file content with:
 ```python
 """HTTP client for agentserver SDK.
 
-Talks REST to codex-exec-gateway's /api/sdk/* endpoints. One HTTPClient
+Talks REST to codex-exec-gateway's /api/connectors/* endpoints. One HTTPClient
 per Ctx. Bearer-authenticated; user_id is server-side only (resolved
 from the token).
 """
@@ -1633,7 +1633,7 @@ class Ctx:
         return list(self._envs_cache)
 
     async def _fetch_envs(self) -> list[Env]:
-        listing = await self._client.post("/api/sdk/envs/list", {})
+        listing = await self._client.post("/api/connectors/envs/list", {})
         envs: list[Env] = []
         for e in listing.get("envs", []):
             tools = [ToolMetadata(**t) for t in e.get("tools", [])]
@@ -1663,7 +1663,7 @@ async def call(self, tool: str, arguments: dict | None = None) -> dict:
     args.setdefault("environment_id", self.name)
     from urllib.parse import quote
     raw = await self._client.post(
-        f"/api/sdk/envs/{quote(self.name)}/tool/call",
+        f"/api/connectors/envs/{quote(self.name)}/tool/call",
         {"tool": tool, "arguments": args},
     )
     if raw.get("isError"):
@@ -1708,14 +1708,14 @@ class Process:
 
     async def write_stdin(self, data: bytes) -> None:
         await self.env._client.post(
-            f"/api/sdk/processes/{self.session_id}/stdin",
+            f"/api/connectors/processes/{self.session_id}/stdin",
             {"data_b64": base64.b64encode(data).decode("ascii")},
         )
 
     async def read_output(self, since: int | None = None) -> dict:
         params = {"since": str(since if since is not None else self._read_seq)}
         resp = await self.env._client.get(
-            f"/api/sdk/processes/{self.session_id}/output", params=params,
+            f"/api/connectors/processes/{self.session_id}/output", params=params,
         )
         for c in resp.get("chunks", []):
             self._read_seq = max(self._read_seq, c["seq"])
@@ -1726,7 +1726,7 @@ class Process:
             return
         try:
             await self.env._client.post(
-                f"/api/sdk/processes/{self.session_id}/terminate", {},
+                f"/api/connectors/processes/{self.session_id}/terminate", {},
             )
         finally:
             self._terminated = True
@@ -1772,7 +1772,7 @@ Existing tests use a WS stub gateway. Pattern: fixture spawns an asyncio task th
 - [ ] **Step 2: Write `stub_rest.py`**
 
 ```python
-"""ASGI stub for the codex-exec-gateway /api/sdk/* surface.
+"""ASGI stub for the codex-exec-gateway /api/connectors/* surface.
 
 Each test passes a dict of `(method, path) -> handler` where handler
 receives the parsed JSON body / params and returns (status, json_dict).
@@ -1848,21 +1848,21 @@ Pattern (replicate per test):
 ```python
 async def test_envs_list(stub_client):
     client, stub = stub_client
-    stub.routes[("POST", "/api/sdk/envs/list")] = lambda body: (200, {
+    stub.routes[("POST", "/api/connectors/envs/list")] = lambda body: (200, {
         "envs": [{"name": "my-mac", "type": "executor", "is_default": True, "tools": []}],
     })
-    resp = await client.post("/api/sdk/envs/list", {})
+    resp = await client.post("/api/connectors/envs/list", {})
     assert resp["envs"][0]["name"] == "my-mac"
 ```
 
 For each existing test file, audit which RPC method it stubs and rewrite to the equivalent REST path:
-- `envs/list` → `POST /api/sdk/envs/list`
-- `mcpServer/tool/call` → `POST /api/sdk/envs/{name}/tool/call`
+- `envs/list` → `POST /api/connectors/envs/list`
+- `mcpServer/tool/call` → `POST /api/connectors/envs/{name}/tool/call`
 - `operations/list` (if exercised) → no REST equivalent yet; skip or move to integration-only
 
 Specifically:
-- `test_ctx.py`: rewrite `envs()` tests to stub `POST /api/sdk/envs/list`.
-- `test_env.py`: rewrite tool dispatch tests to stub `POST /api/sdk/envs/{name}/tool/call`.
+- `test_ctx.py`: rewrite `envs()` tests to stub `POST /api/connectors/envs/list`.
+- `test_env.py`: rewrite tool dispatch tests to stub `POST /api/connectors/envs/{name}/tool/call`.
 - `test_process.py`: stub the four routes (`tool/call` with `tool="exec_command"`, `processes/{sid}/stdin`, `processes/{sid}/output`, `processes/{sid}/terminate`).
 
 - [ ] **Step 5: Run the Python suite**
@@ -2208,9 +2208,9 @@ Expected: a list of `Env` objects (or empty if no executors are connected to the
 | Spec requirement | Implemented in |
 |---|---|
 | SDK transport switches from WS to HTTP REST | Task C1 |
-| `/api/sdk/envs/list` endpoint on codex-exec-gateway | Task B3 |
-| `/api/sdk/envs/{name}/tool/call` endpoint | Task B4 |
-| `/api/sdk/processes/{sid}/{stdin,output,terminate}` endpoints | Task B5 |
+| `/api/connectors/envs/list` endpoint on codex-exec-gateway | Task B3 |
+| `/api/connectors/envs/{name}/tool/call` endpoint | Task B4 |
+| `/api/connectors/processes/{sid}/{stdin,output,terminate}` endpoints | Task B5 |
 | `ProxyTokenAuth` with LRU cache against agentserver | Task B1 |
 | `internal/envtools/` package extraction (tools, bridge, nameresolver) | Task A1 |
 | `internal/envtools/processes/` session manager with ring buffer + idle GC | Task B2 |

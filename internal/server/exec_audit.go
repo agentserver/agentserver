@@ -3,17 +3,21 @@ package server
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/agentserver/agentserver/internal/db"
 	pb "github.com/agentserver/agentserver/internal/server/exec_audit_pb"
+	"github.com/go-chi/chi/v5"
 	"github.com/klauspost/compress/zstd"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -209,4 +213,376 @@ func tsToTime(ts *timestamppb.Timestamp) *time.Time {
 	}
 	t := ts.AsTime().UTC()
 	return &t
+}
+
+// ---------- internal mirrors (X-Internal-Secret) ----------
+
+func (s *Server) getInternalExecAuditSessions(w http.ResponseWriter, r *http.Request) {
+	f, err := parseSessionsFilter(r.URL.Query())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	rows, err := s.DB.ListAuditSessions(f)
+	if err != nil {
+		log.Printf("exec-audit: ListAuditSessions: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, ListAuditSessionsResponse{Sessions: sessionsToDTO(rows)})
+}
+
+func (s *Server) getInternalExecAuditSession(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "session_id")
+	sess, err := s.DB.GetAuditSession(id)
+	if err == sql.ErrNoRows {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		log.Printf("exec-audit: GetAuditSession: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	// Pull the first N calls.
+	calls, err := s.DB.ListAuditCalls(db.ListAuditCallsFilter{
+		WorkspaceID: sess.WorkspaceID, SessionID: id, Limit: 20,
+	})
+	if err != nil {
+		log.Printf("exec-audit: ListAuditCalls(session): %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, AuditSessionDetail{
+		Session:    sessionToDTO(*sess),
+		FirstCalls: callsToDTO(calls),
+	})
+}
+
+func (s *Server) getInternalExecAuditCalls(w http.ResponseWriter, r *http.Request) {
+	f, err := parseCallsFilter(r.URL.Query())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	rows, err := s.DB.ListAuditCalls(f)
+	if err != nil {
+		log.Printf("exec-audit: ListAuditCalls: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, ListAuditCallsResponse{Calls: callsToDTO(rows)})
+}
+
+func (s *Server) getInternalExecAuditCall(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "call_id")
+	call, err := s.DB.GetAuditCall(id)
+	if err == sql.ErrNoRows {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		log.Printf("exec-audit: GetAuditCall: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	detail := AuditCallDetail{AuditCallSummary: callToDTO(*call)}
+	if call.RequestPayloadID != nil {
+		detail.RequestPreview = previewPayload(s.DB, *call.RequestPayloadID)
+	}
+	if call.ResponsePayloadID != nil {
+		detail.ResponsePreview = previewPayload(s.DB, *call.ResponsePayloadID)
+	}
+	writeJSON(w, http.StatusOK, detail)
+}
+
+// ---------- workspace-scoped wrappers ----------
+
+func (s *Server) getWorkspaceExecAuditSessions(w http.ResponseWriter, r *http.Request) {
+	wsID := chi.URLParam(r, "id")
+	if wsID == "" {
+		http.Error(w, "workspace id required", http.StatusBadRequest)
+		return
+	}
+	if _, ok := s.requireWorkspaceMember(w, r, wsID); !ok {
+		return
+	}
+	q := r.URL.Query()
+	q.Set("workspace_id", wsID)
+	r.URL.RawQuery = q.Encode()
+	s.getInternalExecAuditSessions(w, r)
+}
+
+func (s *Server) getWorkspaceExecAuditSession(w http.ResponseWriter, r *http.Request) {
+	wsID := chi.URLParam(r, "id")
+	if _, ok := s.requireWorkspaceMember(w, r, wsID); !ok {
+		return
+	}
+	// Workspace membership confirmed; verify the session belongs to this workspace
+	// (else a member of ws A could fetch a session id from ws B).
+	id := chi.URLParam(r, "session_id")
+	sess, err := s.DB.GetAuditSession(id)
+	if err == sql.ErrNoRows || (err == nil && sess.WorkspaceID != wsID) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		log.Printf("exec-audit: GetAuditSession: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	s.getInternalExecAuditSession(w, r) // safe: chi URL param still set
+}
+
+func (s *Server) getWorkspaceExecAuditCalls(w http.ResponseWriter, r *http.Request) {
+	wsID := chi.URLParam(r, "id")
+	if _, ok := s.requireWorkspaceMember(w, r, wsID); !ok {
+		return
+	}
+	q := r.URL.Query()
+	q.Set("workspace_id", wsID)
+	r.URL.RawQuery = q.Encode()
+	s.getInternalExecAuditCalls(w, r)
+}
+
+func (s *Server) getWorkspaceExecAuditCall(w http.ResponseWriter, r *http.Request) {
+	wsID := chi.URLParam(r, "id")
+	if _, ok := s.requireWorkspaceMember(w, r, wsID); !ok {
+		return
+	}
+	id := chi.URLParam(r, "call_id")
+	call, err := s.DB.GetAuditCall(id)
+	if err == sql.ErrNoRows || (err == nil && call.WorkspaceID != wsID) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		log.Printf("exec-audit: GetAuditCall: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	s.getInternalExecAuditCall(w, r)
+}
+
+func (s *Server) getWorkspaceExecAuditCallPayload(w http.ResponseWriter, r *http.Request) {
+	wsID := chi.URLParam(r, "id")
+	if _, ok := s.requireWorkspaceMember(w, r, wsID); !ok {
+		return
+	}
+	callID := chi.URLParam(r, "call_id")
+	side := r.URL.Query().Get("side")
+	if side != "request" && side != "response" {
+		http.Error(w, "side=request|response required", http.StatusBadRequest)
+		return
+	}
+	call, err := s.DB.GetAuditCall(callID)
+	if err == sql.ErrNoRows {
+		http.Error(w, "call not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		log.Printf("exec-audit: GetAuditCall: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if call.WorkspaceID != wsID {
+		http.Error(w, "not found", http.StatusNotFound) // tenant isolation
+		return
+	}
+	var payloadID *string
+	if side == "request" {
+		payloadID = call.RequestPayloadID
+	} else {
+		payloadID = call.ResponsePayloadID
+	}
+	if payloadID == nil {
+		http.Error(w, "payload not stored (size exceeded cap)", http.StatusNotFound)
+		return
+	}
+	p, err := s.DB.GetAuditPayload(*payloadID)
+	if err != nil {
+		log.Printf("exec-audit: GetAuditPayload: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	raw, err := zstdDecompress(p.Compressed)
+	if err != nil {
+		log.Printf("exec-audit: decompress: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
+	_, _ = w.Write(raw)
+}
+
+// ---------- helpers ----------
+
+const auditPreviewBytes = 8 * 1024
+
+func previewPayload(d *db.DB, id string) string {
+	p, err := d.GetAuditPayload(id)
+	if err != nil {
+		return ""
+	}
+	raw, err := zstdDecompress(p.Compressed)
+	if err != nil {
+		return ""
+	}
+	if len(raw) > auditPreviewBytes {
+		raw = raw[:auditPreviewBytes]
+	}
+	return string(raw) // utf8 lossy if binary — acceptable for preview
+}
+
+func parseSessionsFilter(q url.Values) (db.ListAuditSessionsFilter, error) {
+	f := db.ListAuditSessionsFilter{
+		WorkspaceID: q.Get("workspace_id"),
+		ExeID:       q.Get("exe_id"),
+		UserID:      q.Get("user_id"),
+		TurnID:      q.Get("turn_id"),
+	}
+	if f.WorkspaceID == "" {
+		return f, errors.New("workspace_id required")
+	}
+	if s := q.Get("since"); s != "" {
+		t, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			return f, fmt.Errorf("since: %w", err)
+		}
+		f.Since = t
+	}
+	if s := q.Get("until"); s != "" {
+		t, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			return f, fmt.Errorf("until: %w", err)
+		}
+		f.Until = t
+	}
+	if s := q.Get("limit"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			return f, fmt.Errorf("limit: %w", err)
+		}
+		f.Limit = n
+	}
+	return f, nil
+}
+
+func parseCallsFilter(q url.Values) (db.ListAuditCallsFilter, error) {
+	f := db.ListAuditCallsFilter{
+		WorkspaceID: q.Get("workspace_id"),
+		SessionID:   q.Get("session_id"),
+		ExeID:       q.Get("exe_id"),
+		UserID:      q.Get("user_id"),
+		Source:      q.Get("source"),
+		RPCMethod:   q.Get("method"),
+	}
+	if f.WorkspaceID == "" {
+		return f, errors.New("workspace_id required")
+	}
+	if s := q.Get("is_error"); s != "" {
+		b, err := strconv.ParseBool(s)
+		if err != nil {
+			return f, fmt.Errorf("is_error: %w", err)
+		}
+		f.IsError = &b
+	}
+	if s := q.Get("since"); s != "" {
+		t, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			return f, fmt.Errorf("since: %w", err)
+		}
+		f.Since = t
+	}
+	if s := q.Get("until"); s != "" {
+		t, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			return f, fmt.Errorf("until: %w", err)
+		}
+		f.Until = t
+	}
+	if s := q.Get("limit"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			return f, fmt.Errorf("limit: %w", err)
+		}
+		f.Limit = n
+	}
+	return f, nil
+}
+
+func sessionToDTO(s db.AuditSession) AuditSessionSummary {
+	return AuditSessionSummary{
+		ID:              s.ID,
+		WorkspaceID:     s.WorkspaceID,
+		UserID:          ptrStr(s.UserID),
+		ExeID:           s.ExeID,
+		TurnID:          ptrStr(s.TurnID),
+		StreamID:        s.StreamID,
+		ClientIP:        ptrStr(s.ClientIP),
+		OpenedAt:        s.OpenedAt.Format(time.RFC3339),
+		ClosedAt:        ptrTimeRFC(s.ClosedAt),
+		CloseReason:     ptrStr(s.CloseReason),
+		FramesToBackend: s.FramesToBackend,
+		FramesToClient:  s.FramesToClient,
+		BytesToBackend:  s.BytesToBackend,
+		BytesToClient:   s.BytesToClient,
+	}
+}
+
+func sessionsToDTO(in []db.AuditSession) []AuditSessionSummary {
+	out := make([]AuditSessionSummary, 0, len(in))
+	for _, s := range in {
+		out = append(out, sessionToDTO(s))
+	}
+	return out
+}
+
+func callToDTO(c db.AuditCall) AuditCallSummary {
+	out := AuditCallSummary{
+		ID:             c.ID,
+		SessionID:      ptrStr(c.SessionID),
+		WorkspaceID:    c.WorkspaceID,
+		UserID:         ptrStr(c.UserID),
+		ExeID:          c.ExeID,
+		Source:         c.Source,
+		RPCID:          ptrStr(c.RPCID),
+		RPCMethod:      ptrStr(c.RPCMethod),
+		RPCKind:        ptrStr(c.RPCKind),
+		RequestSize:    c.RequestSize,
+		RequestSha256:  ptrStr(c.RequestSha256),
+		ResponseSize:   c.ResponseSize,
+		ResponseSha256: ptrStr(c.ResponseSha256),
+		IsError:        c.IsError,
+		ErrorSummary:   ptrStr(c.ErrorSummary),
+		StartedAt:      c.StartedAt.Format(time.RFC3339),
+		CompletedAt:    ptrTimeRFC(c.CompletedAt),
+	}
+	if c.DurationMs != nil {
+		out.DurationMs = *c.DurationMs
+	}
+	return out
+}
+
+func callsToDTO(in []db.AuditCall) []AuditCallSummary {
+	out := make([]AuditCallSummary, 0, len(in))
+	for _, c := range in {
+		out = append(out, callToDTO(c))
+	}
+	return out
+}
+
+func ptrStr(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+func ptrTimeRFC(p *time.Time) string {
+	if p == nil {
+		return ""
+	}
+	return p.Format(time.RFC3339)
 }

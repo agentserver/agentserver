@@ -225,6 +225,38 @@ func (s *Server) Router() http.Handler {
 		}
 		s.postInternalExecAuditBatch(w, r)
 	})
+	r.Get("/internal/exec-audit/sessions", func(w http.ResponseWriter, r *http.Request) {
+		secret := os.Getenv("INTERNAL_API_SECRET")
+		if secret != "" && r.Header.Get("X-Internal-Secret") != secret {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		s.getInternalExecAuditSessions(w, r)
+	})
+	r.Get("/internal/exec-audit/sessions/{session_id}", func(w http.ResponseWriter, r *http.Request) {
+		secret := os.Getenv("INTERNAL_API_SECRET")
+		if secret != "" && r.Header.Get("X-Internal-Secret") != secret {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		s.getInternalExecAuditSession(w, r)
+	})
+	r.Get("/internal/exec-audit/calls", func(w http.ResponseWriter, r *http.Request) {
+		secret := os.Getenv("INTERNAL_API_SECRET")
+		if secret != "" && r.Header.Get("X-Internal-Secret") != secret {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		s.getInternalExecAuditCalls(w, r)
+	})
+	r.Get("/internal/exec-audit/calls/{call_id}", func(w http.ResponseWriter, r *http.Request) {
+		secret := os.Getenv("INTERNAL_API_SECRET")
+		if secret != "" && r.Header.Get("X-Internal-Secret") != secret {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		s.getInternalExecAuditCall(w, r)
+	})
 
 	// Internal API for codex-app-gateway to verify a remote-access bearer.
 	// Auth: X-Internal-Secret matching INTERNAL_API_SECRET.
@@ -478,6 +510,13 @@ func (s *Server) Router() http.Handler {
 
 		// Workspace LLM quota (read-only for members)
 		r.Get("/api/workspaces/{id}/llm-quota", s.handleGetWorkspaceLLMQuota)
+
+		// Workspace exec-audit (read-only, member-gated)
+		r.Get("/api/workspaces/{id}/exec-audit/sessions", s.getWorkspaceExecAuditSessions)
+		r.Get("/api/workspaces/{id}/exec-audit/sessions/{session_id}", s.getWorkspaceExecAuditSession)
+		r.Get("/api/workspaces/{id}/exec-audit/calls", s.getWorkspaceExecAuditCalls)
+		r.Get("/api/workspaces/{id}/exec-audit/calls/{call_id}", s.getWorkspaceExecAuditCall)
+		r.Get("/api/workspaces/{id}/exec-audit/calls/{call_id}/payload", s.getWorkspaceExecAuditCallPayload)
 
 		// Workspace BYOK LLM config (owner/maintainer only)
 		r.Get("/api/workspaces/{id}/llm-config", s.handleGetWorkspaceLLMConfig)

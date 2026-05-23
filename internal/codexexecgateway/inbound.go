@@ -108,6 +108,11 @@ func (s *Server) runInboundReader(ctx context.Context, ic *inboundConn) {
 			ic.logger.Debug("inbound: no route for stream", "stream_id", frame.StreamId)
 			continue
 		}
+		// Audit hook fires before forwarding to the bridge so a write
+		// failure still records that the gateway received the frame.
+		s.recorder.OnFrameToClient(b.auditSessionID, &frame, data)
+		b.framesToClient.Add(1)
+		b.bytesToClient.Add(int64(len(data)))
 		if err := b.write(ctx, mt, data); err != nil {
 			ic.logger.Warn("inbound: bridge write failed; closing route", "stream_id", frame.StreamId, "error", err)
 			b.close(err)

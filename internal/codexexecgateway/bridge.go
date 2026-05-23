@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentserver/agentserver/internal/clientmeta"
+	"github.com/agentserver/agentserver/internal/codexexecgateway/audit"
 	"github.com/agentserver/agentserver/internal/relaypb"
 	"github.com/agentserver/agentserver/internal/wsbridge"
 	"github.com/go-chi/chi/v5"
@@ -139,9 +141,36 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 			"exe_id", exeID, "stream_id", streamID)
 		evicted.close(errors.New("evicted by stream_id collision"))
 	}
+
+	// Open the audit session AFTER route registration but BEFORE the
+	// pump starts. SessionOpen mints a UUID even when audit is disabled
+	// (noopRecorder), so session.auditSessionID is always non-empty for
+	// the pumps.
+	auditSessID := s.recorder.SessionOpen(audit.SessionMeta{
+		WorkspaceID: payload.WorkspaceID,
+		UserID:      payload.UserID,
+		ExeID:       exeID,
+		TurnID:      payload.TurnID,
+		StreamID:    streamID,
+		ClientIP:    clientmeta.ClientIP(r),
+		CapIAT:      time.Unix(payload.IAT, 0).UTC(),
+		CapEXP:      time.Unix(payload.EXP, 0).UTC(),
+		OpenedAt:    time.Now().UTC(),
+	})
+	session.auditSessionID = auditSessID
+
 	defer func() {
 		inbound.removeRoute(streamID, session)
 		session.close(nil)
+		// Counters are safe to read here: runBridgePump has returned
+		// (we exit handleBridge only after it does), and the inbound
+		// reader stops writing to this session once removeRoute lands.
+		s.recorder.SessionClose(auditSessID, "client_disconnect", audit.Counters{
+			FramesToBackend: int(session.framesToBackend.Load()),
+			FramesToClient:  int(session.framesToClient.Load()),
+			BytesToBackend:  session.bytesToBackend.Load(),
+			BytesToClient:   session.bytesToClient.Load(),
+		})
 	}()
 
 	s.logger.Info("bridge: paired", "exe_id", exeID, "stream_id", streamID, "turn_id", payload.TurnID)
@@ -192,11 +221,25 @@ func (s *Server) runBridgePump(ctx context.Context, session *bridgeSession) {
 		// Validate stream_id matches session's. If mismatched, drop —
 		// keeps the inbound's frame ordering coherent.
 		var f relaypb.RelayMessageFrame
-		if proto.Unmarshal(data, &f) == nil && f.StreamId != session.streamID {
+		parsed := proto.Unmarshal(data, &f) == nil
+		if parsed && f.StreamId != session.streamID {
 			s.logger.Warn("bridge: ignoring frame with wrong stream_id",
 				"want", session.streamID, "got", f.StreamId)
 			continue
 		}
+		// Audit hook fires before forward so a write failure still
+		// records the frame the gateway attempted to deliver. Pass the
+		// parsed frame when available so the recorder can skip a second
+		// Unmarshal; nil when parse failed so OnFrameToBackend can
+		// decide whether to fall back.
+		var framePtr *relaypb.RelayMessageFrame
+		if parsed {
+			framePtr = &f
+		}
+		s.recorder.OnFrameToBackend(session.auditSessionID, framePtr, data)
+		session.framesToBackend.Add(1)
+		session.bytesToBackend.Add(int64(len(data)))
+
 		if err := session.inbound.write(ctx, mt, data); err != nil {
 			s.logger.Warn("bridge: inbound write failed", "stream_id", session.streamID, "error", err)
 			return

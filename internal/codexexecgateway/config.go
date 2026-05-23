@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/agentserver/agentserver/internal/codexexecgateway/audit"
 )
 
 // WebSocket keepalive (ping interval + idle timeout) is phase-2; nhooyr's defaults govern for now.
@@ -46,6 +48,11 @@ type Config struct {
 	// Defaults to 16; protects gateway memory from runaway agents.
 	RelayMaxPerWorkspace int
 	LogLevel             slog.Level
+	// Audit holds the exec-audit subsystem config (WAL dir, uploader,
+	// payload caps). Zero value disables audit (Enabled=false →
+	// NewRecorder returns a noop). Populated from CXG_AUDIT_* env vars
+	// by LoadConfigFromEnv.
+	Audit audit.Config
 }
 
 // Validate checks that security-critical fields are populated. NewServer calls
@@ -74,6 +81,7 @@ func LoadConfigFromEnv() (Config, error) {
 		RelayDefaultTTL:           parseDurationOr("CXG_RELAY_DEFAULT_TTL", 5*time.Minute),
 		RelayMaxPerWorkspace:      parseIntOr("CXG_RELAY_MAX_PER_WORKSPACE", 16),
 		LogLevel:                  slog.LevelInfo,
+		Audit:                     audit.NewConfigFromEnv(),
 	}
 	if cfg.DatabaseURL == "" {
 		return cfg, fmt.Errorf("CXG_DATABASE_URL is required")

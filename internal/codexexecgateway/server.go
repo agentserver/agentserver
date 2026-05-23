@@ -1,6 +1,7 @@
 package codexexecgateway
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentserver/agentserver/internal/codexexecgateway/audit"
 	"github.com/agentserver/agentserver/internal/codexexecgateway/handlers"
 	"github.com/agentserver/agentserver/internal/codexexecgateway/relay"
 	sdkpkg "github.com/agentserver/agentserver/internal/codexexecgateway/sdk"
@@ -32,6 +34,11 @@ type Server struct {
 	sdkServer     *sdkpkg.Server  // nil if AgentserverInternalURL unset (dev/disabled)
 	sdkSessions   *processes.Manager
 	logger        *slog.Logger
+	// recorder is the audit Recorder shared by the bridge pumps, the SDK
+	// REST surface, and the relay endpoints. Always non-nil: NewServer
+	// assigns audit.NewNoopRecorder() when Config.Audit.Enabled is false,
+	// so callsites can call hook methods unconditionally.
+	recorder audit.Recorder
 }
 
 // NewServer is the production constructor. Refuses a nil store so a
@@ -104,6 +111,15 @@ func NewServer(cfg Config, store *Store) (*Server, error) {
 		logger.Warn("sdk REST surface disabled: CXG_AGENTSERVER_INTERNAL_URL not set")
 	}
 
+	// Audit recorder. NewRecorder returns a noop when cfg.Audit.Enabled
+	// is false, so production behavior is unchanged until the env var is
+	// flipped. Always non-nil so the hook callsites in bridge/inbound
+	// don't need a nil check.
+	rec, err := audit.NewRecorder(cfg.Audit)
+	if err != nil {
+		return nil, fmt.Errorf("audit recorder: %w", err)
+	}
+
 	return &Server{
 		config:        cfg,
 		store:         store,
@@ -113,14 +129,23 @@ func NewServer(cfg Config, store *Store) (*Server, error) {
 		sdkServer:     sdkSrv,
 		sdkSessions:   sdkSessions,
 		logger:        logger,
+		recorder:      rec,
 	}, nil
 }
 
-// Stop releases background goroutines (currently: the SDK session GC).
+// Stop releases background goroutines (SDK session GC, audit uploader).
 // Call from main's signal handler after http.Server.Shutdown returns.
+// Flushes the audit WAL with a 10s ceiling — uploader Run() exits when
+// its context is cancelled, so the bound is mostly on Sync() of the
+// open WAL segment.
 func (s *Server) Stop() {
 	if s.sdkSessions != nil {
 		s.sdkSessions.Stop()
+	}
+	if s.recorder != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = s.recorder.Close(ctx)
+		cancel()
 	}
 }
 
@@ -144,6 +169,7 @@ func newServerNoStoreForTesting(cfg Config) (*Server, error) {
 		revoked:       NewRevokedSet(10000),
 		relayRegistry: relayReg,
 		logger:        logger,
+		recorder:      audit.NewNoopRecorder(),
 	}, nil
 }
 

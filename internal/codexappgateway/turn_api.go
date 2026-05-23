@@ -175,11 +175,17 @@ func (r *poolRunner) Turn(ctx context.Context, workspaceID, threadID string, par
 // makeSupervisorResolver returns a broker.WSURLResolver that uses the
 // existing supervisor + buildConfig wiring. Returns the ws URL of the
 // loopback codex subprocess for the workspace.
-func makeSupervisorResolver(sup *supervisor.Supervisor, build func(context.Context, string, string) (supervisor.SpawnConfig, error)) broker.WSURLResolver {
+//
+// The resolver has no user context (broker/scheduler invokes it with
+// just a workspace), so user_id is passed as "" — the resulting cap
+// token's exec-audit attribution will have NULL user_id. The
+// /codex-app/ws path that does have user context goes through
+// s.buildConfig directly and threads id.UserID in.
+func makeSupervisorResolver(sup *supervisor.Supervisor, build func(context.Context, string, string, string) (supervisor.SpawnConfig, error)) broker.WSURLResolver {
 	return func(ctx context.Context, workspaceID string) (string, error) {
 		key := supervisor.Key{WorkspaceID: workspaceID}
 		handle, err := sup.EnsureSubprocess(ctx, key, func(loopbackToken string) (supervisor.SpawnConfig, error) {
-			return build(ctx, workspaceID, loopbackToken)
+			return build(ctx, workspaceID, "", loopbackToken)
 		})
 		if err != nil {
 			return "", err

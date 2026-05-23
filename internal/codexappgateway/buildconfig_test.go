@@ -54,7 +54,7 @@ func TestBuildConfig_EmitsAgentserverMCPAndMintsWorkspaceToken(t *testing.T) {
 	cfg := newTestCfg()
 	build := makeBuildConfig(cfg, &stubConnected{}, stubTokenFetcher{}, "/usr/local/bin/codex-app-gateway", newDiscardLogger())
 
-	got, err := build(context.Background(), "ws_a", "lb-token-xyz")
+	got, err := build(context.Background(), "ws_a", "u_test", "lb-token-xyz")
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestBuildConfig_NoExecGatewayFetchHappens(t *testing.T) {
 	stub := &stubConnected{gotW: ""}
 	cfg := newTestCfg()
 	build := makeBuildConfig(cfg, stub, stubTokenFetcher{}, "/x", newDiscardLogger())
-	if _, err := build(context.Background(), "ws_a", "lb"); err != nil {
+	if _, err := build(context.Background(), "ws_a", "", "lb"); err != nil {
 		t.Fatalf("build: %v", err)
 	}
 	if stub.gotW != "" {
@@ -104,7 +104,7 @@ func TestBuildConfig_RespectsConfiguredTrustedPaths(t *testing.T) {
 	cfg := newTestCfg()
 	cfg.ProjectTrustedPaths = []string{"/workspace", "/data"}
 	build := makeBuildConfig(cfg, &stubConnected{}, stubTokenFetcher{}, "/x", newDiscardLogger())
-	got, err := build(context.Background(), "ws_a", "lb")
+	got, err := build(context.Background(), "ws_a", "", "lb")
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}

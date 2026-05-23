@@ -148,7 +148,7 @@ func newTestServerWithFakeChild(t *testing.T, childHTTPURL string) *httptest.Ser
 		sup:     sup,
 		homeMgr: mgr,
 		logger:  logger,
-		buildConfig: func(_ context.Context, _, _ string) (supervisor.SpawnConfig, error) {
+		buildConfig: func(_ context.Context, _, _, _ string) (supervisor.SpawnConfig, error) {
 			return supervisor.SpawnConfig{Config: codexhome.ConfigInput{
 				ModelProvider:  "p",
 				Model:          "m",

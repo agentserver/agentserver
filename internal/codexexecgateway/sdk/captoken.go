@@ -25,9 +25,16 @@ const sdkCapTokenTTL = 24 * time.Hour
 // its execmodel types and *Config*; pulling codexappgateway in from
 // the sdk sub-package would close the loop at test time).
 //
-// turn_id is unused at verify time (the /bridge handler authorises
-// against workspace_executors, not turn_id) but the mint signature
-// requires it non-empty; we stuff a synthetic "sdk" marker.
+// turn_id is unused for authorization at verify time (the /bridge
+// handler authorises against workspace_executors, not turn_id) but the
+// marker IS load-bearing for the audit pipeline: codexexecgateway's
+// handleBridge inspects payload.TurnID to detect sdk-pool-managed
+// bridges and SKIPS audit.SessionOpen for them, because the SDK REST
+// handlers (sdk/handlers.go) already record each tool call at
+// CallStart/CallEnd granularity. Without this marker we'd double-record
+// every SDK call (once at the handler, once per WS frame). The
+// "sdk-pool:" prefix + workspace id makes the source unmistakable in
+// logs while keeping the prefix check trivial.
 func mintWorkspaceToken(secret []byte, workspaceID string) (string, error) {
 	if len(secret) == 0 {
 		return "", fmt.Errorf("captoken: empty secret")
@@ -42,7 +49,7 @@ func mintWorkspaceToken(secret []byte, workspaceID string) (string, error) {
 		IAT         int64  `json:"iat"`
 		EXP         int64  `json:"exp"`
 	}{
-		TurnID:      "sdk",
+		TurnID:      "sdk-pool:" + workspaceID,
 		WorkspaceID: workspaceID,
 		IAT:         now,
 		EXP:         now + int64(sdkCapTokenTTL.Seconds()),

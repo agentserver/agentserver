@@ -136,26 +136,41 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 	// happens — better than silently swapping who receives the next
 	// frame.
 	session := newBridgeSession(streamID, inbound, bridgeWS)
-	// Open the audit session BEFORE addRoute so the inbound reader can
-	// never observe session.auditSessionID being written concurrently
-	// with its own read of the field. In production the protocol
-	// guarantees no inbound frame for streamID arrives before our
-	// forwarded Resume, but ordering the assignment first removes a
-	// latent race a future refactor could trip. SessionOpen mints a
-	// UUID even when audit is disabled (noopRecorder), so
-	// session.auditSessionID is always non-empty for the pumps.
-	auditSessID := s.recorder.SessionOpen(audit.SessionMeta{
-		WorkspaceID: payload.WorkspaceID,
-		UserID:      payload.UserID,
-		ExeID:       exeID,
-		TurnID:      payload.TurnID,
-		StreamID:    streamID,
-		ClientIP:    clientmeta.ClientIP(r),
-		CapIAT:      time.Unix(payload.IAT, 0).UTC(),
-		CapEXP:      time.Unix(payload.EXP, 0).UTC(),
-		OpenedAt:    time.Now().UTC(),
-	})
-	session.auditSessionID = auditSessID
+	// SDK-pool-managed bridges (the in-process bridge.Pool dialed by
+	// sdk/handlers.go) are skipped at the session/frame level — the SDK
+	// REST handler does its own CallStart/CallEnd for each tool call as
+	// a whole. Recording the underlying WS frames here too would
+	// double-record every SDK call. Detection: sdk/captoken.go stamps
+	// the cap-token's turn_id with the "sdk-pool" prefix; that marker
+	// is the protocol between sdk minting and this handler. The frame
+	// pump hooks still fire below but become no-ops because
+	// realRecorder.session("") returns nil (and noopRecorder doesn't
+	// care either way), so auditSessionID stays empty for sdk-pool.
+	isPool := strings.HasPrefix(payload.TurnID, "sdk-pool")
+	var auditSessID string
+	if !isPool {
+		// Open the audit session BEFORE addRoute so the inbound reader
+		// can never observe session.auditSessionID being written
+		// concurrently with its own read of the field. In production
+		// the protocol guarantees no inbound frame for streamID arrives
+		// before our forwarded Resume, but ordering the assignment
+		// first removes a latent race a future refactor could trip.
+		// SessionOpen mints a UUID even when audit is disabled
+		// (noopRecorder), so session.auditSessionID is always non-empty
+		// for the pumps when audit is in play.
+		auditSessID = s.recorder.SessionOpen(audit.SessionMeta{
+			WorkspaceID: payload.WorkspaceID,
+			UserID:      payload.UserID,
+			ExeID:       exeID,
+			TurnID:      payload.TurnID,
+			StreamID:    streamID,
+			ClientIP:    clientmeta.ClientIP(r),
+			CapIAT:      time.Unix(payload.IAT, 0).UTC(),
+			CapEXP:      time.Unix(payload.EXP, 0).UTC(),
+			OpenedAt:    time.Now().UTC(),
+		})
+		session.auditSessionID = auditSessID
+	}
 	if evicted := inbound.addRoute(streamID, session); evicted != nil {
 		s.logger.Warn("bridge: stream_id collision; evicting prior session",
 			"exe_id", exeID, "stream_id", streamID)
@@ -165,6 +180,9 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		inbound.removeRoute(streamID, session)
 		session.close(nil)
+		if isPool {
+			return
+		}
 		// Counters are safe to read here: runBridgePump has returned
 		// (we exit handleBridge only after it does), and the inbound
 		// reader stops writing to this session once removeRoute lands.

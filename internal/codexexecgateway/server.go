@@ -119,6 +119,14 @@ func NewServer(cfg Config, store *Store) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("audit recorder: %w", err)
 	}
+	// Share the same Recorder with the SDK REST surface so handler-level
+	// CallStart/CallEnd records and envmcp bridge frame records land in
+	// the same WAL. handleBridge in bridge.go recognises the sdk-pool
+	// turn_id marker and suppresses the per-frame side to avoid double
+	// recording (see captoken.go).
+	if sdkSrv != nil {
+		sdkSrv.Recorder = rec
+	}
 
 	return &Server{
 		config:        cfg,

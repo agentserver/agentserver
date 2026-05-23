@@ -3,14 +3,56 @@ package sdk
 import (
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/agentserver/agentserver/internal/codexexecgateway/audit"
 	"github.com/agentserver/agentserver/internal/envtools/processes"
 	"github.com/agentserver/agentserver/internal/envtools/tools"
 )
+
+// recordCall wraps a handler body with a CallStart / CallEnd pair so
+// the SDK call is captured at handler-level granularity. The matching
+// per-WS-frame audit hooks are suppressed for sdk-pool-managed bridges
+// in codexexecgateway.handleBridge (see captoken.go's TurnID marker)
+// to avoid double-recording the same call.
+//
+// method is the RPC-equivalent name ("tool.call:shell",
+// "envs.list", "processes.stdin", etc.).
+// exeID is best-effort: empty when the handler cannot resolve it
+// pre-call (e.g. tool.Call's internal name → exe_id resolution).
+// requestJSON is captured as the CallStart Request bytes; pass nil
+// when there is nothing meaningful (e.g. an empty GET).
+// fn is invoked under the wrapper; it returns the response bytes for
+// CallEnd's Response field plus the error metadata.
+func recordCall(
+	rec audit.Recorder,
+	workspaceID, userID, exeID, method string,
+	requestJSON []byte,
+	fn func() (responseJSON []byte, isError bool, errorSummary string),
+) {
+	callID := rec.CallStart(audit.CallStartMeta{
+		WorkspaceID: workspaceID,
+		UserID:      userID,
+		ExeID:       exeID,
+		Source:      "rest",
+		RPCMethod:   method,
+		RPCKind:     "request",
+		Request:     requestJSON,
+		StartedAt:   time.Now().UTC(),
+	})
+	resp, isErr, errSum := fn()
+	rec.CallEnd(callID, audit.CallEndMeta{
+		CompletedAt:  time.Now().UTC(),
+		IsError:      isErr,
+		ErrorSummary: errSum,
+		Response:     resp,
+	})
+}
 
 // ConnectorTool is the per-tool entry in envs/list responses. The SDK
 // uses these to populate its client-side Env.tools. The server validates
@@ -86,14 +128,23 @@ type ConnectorErrorBody struct {
 //	@Router     /api/connectors/envs/{name}/tool/call [post]
 func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	wsID := workspaceFromCtx(r.Context())
+	userID := userIDFromCtx(r.Context())
 	wsCtx, err := s.wsCtxFor(wsID)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "workspace_init", err.Error())
 		return
 	}
 	_ = chi.URLParam(r, "name") // env name; tool args carry environment_id, resolver maps to exe
+	// Read the full body up front so the audit Request can capture the
+	// raw bytes (NOT the re-marshaled form, which drops the original
+	// field ordering and any unknown keys).
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
 	var req ConnectorToolCallRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
@@ -107,20 +158,28 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_arguments", err.Error())
 		return
 	}
-	result, err := tool.Call(r.Context(), argsJSON)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "tool_error", err.Error())
-		return
-	}
-	// exec_command encodes session_id as JSON text in Content[0].Text.
-	// Register a Session row so subsequent /processes/{sid}/* calls find it.
-	if sid := extractSessionID(result); sid != "" && s.Sessions != nil {
-		s.Sessions.Register(&processes.Session{
-			ID:          sid,
-			WorkspaceID: wsID,
-		})
-	}
-	writeJSON(w, result)
+	// exeID is not derivable pre-call here: the env-name → exe_id
+	// resolution lives inside tool.Call (via nameresolver.Resolver) and
+	// isn't exposed. Leave "" — the WAL still carries workspace_id +
+	// user_id + the tool method.
+	recordCall(s.Recorder, wsID, userID, "", "tool.call:"+req.Tool, bodyBytes, func() ([]byte, bool, string) {
+		result, callErr := tool.Call(r.Context(), argsJSON)
+		if callErr != nil {
+			writeErr(w, http.StatusInternalServerError, "tool_error", callErr.Error())
+			return nil, true, callErr.Error()
+		}
+		// exec_command encodes session_id as JSON text in Content[0].Text.
+		// Register a Session row so subsequent /processes/{sid}/* calls find it.
+		if sid := extractSessionID(result); sid != "" && s.Sessions != nil {
+			s.Sessions.Register(&processes.Session{
+				ID:          sid,
+				WorkspaceID: wsID,
+			})
+		}
+		respBytes, _ := json.Marshal(result)
+		writeJSON(w, result)
+		return respBytes, false, ""
+	})
 }
 
 // extractSessionID parses the session_id field from a tool result whose
@@ -151,22 +210,28 @@ func extractSessionID(result tools.MCPCallToolResult) string {
 //	@Router     /api/connectors/envs/list [post]
 func (s *Server) handleEnvsList(w http.ResponseWriter, r *http.Request) {
 	wsID := workspaceFromCtx(r.Context())
-	connected, err := s.Registry.Connected(r.Context(), wsID)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "registry_error", err.Error())
-		return
-	}
-	envs := make([]ConnectorEnv, 0, len(connected))
-	for _, c := range connected {
-		envs = append(envs, ConnectorEnv{
-			Name:      c.Name,
-			Type:      "executor",
-			IsDefault: c.IsDefault,
-			Tools:     coreTools(),
-			LastSeen:  c.LastSeenAt,
-		})
-	}
-	writeJSON(w, ConnectorEnvsListResponse{Envs: envs})
+	userID := userIDFromCtx(r.Context())
+	recordCall(s.Recorder, wsID, userID, "", "envs.list", nil, func() ([]byte, bool, string) {
+		connected, err := s.Registry.Connected(r.Context(), wsID)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "registry_error", err.Error())
+			return nil, true, err.Error()
+		}
+		envs := make([]ConnectorEnv, 0, len(connected))
+		for _, c := range connected {
+			envs = append(envs, ConnectorEnv{
+				Name:      c.Name,
+				Type:      "executor",
+				IsDefault: c.IsDefault,
+				Tools:     coreTools(),
+				LastSeen:  c.LastSeenAt,
+			})
+		}
+		resp := ConnectorEnvsListResponse{Envs: envs}
+		respBytes, _ := json.Marshal(resp)
+		writeJSON(w, resp)
+		return respBytes, false, ""
+	})
 }
 
 // ConnectorStdinRequest is the request body for
@@ -233,23 +298,36 @@ func (s *Server) sessionFromReq(w http.ResponseWriter, r *http.Request) (*proces
 //	@Security   BearerAuth
 //	@Router     /api/connectors/processes/{sid}/stdin [post]
 func (s *Server) handleStdin(w http.ResponseWriter, r *http.Request) {
-	_, ok := s.sessionFromReq(w, r)
+	sess, ok := s.sessionFromReq(w, r)
 	if !ok {
 		return
 	}
-	var req ConnectorStdinRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	wsID := workspaceFromCtx(r.Context())
+	userID := userIDFromCtx(r.Context())
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	if _, err := base64.StdEncoding.DecodeString(req.DataB64); err != nil {
-		writeErr(w, http.StatusBadRequest, "bad_base64", err.Error())
-		return
-	}
-	// TODO: wire bridge.WriteStdin(session.ExeID, session.ExeSessionID, data).
-	// For v0.61.0 the endpoint contract is testable; full bridge integration
-	// lands in a follow-up once Session has the exe-side fields wired.
-	writeJSON(w, ConnectorOKResponse{OK: true})
+	_ = sess // processes.Session has no ExeID yet (TODO above); pass "" for exe_id
+	recordCall(s.Recorder, wsID, userID, "", "processes.stdin", bodyBytes, func() ([]byte, bool, string) {
+		var req ConnectorStdinRequest
+		if err := json.Unmarshal(bodyBytes, &req); err != nil {
+			writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
+			return nil, true, err.Error()
+		}
+		if _, err := base64.StdEncoding.DecodeString(req.DataB64); err != nil {
+			writeErr(w, http.StatusBadRequest, "bad_base64", err.Error())
+			return nil, true, err.Error()
+		}
+		// TODO: wire bridge.WriteStdin(session.ExeID, session.ExeSessionID, data).
+		// For v0.61.0 the endpoint contract is testable; full bridge integration
+		// lands in a follow-up once Session has the exe-side fields wired.
+		resp := ConnectorOKResponse{OK: true}
+		respBytes, _ := json.Marshal(resp)
+		writeJSON(w, resp)
+		return respBytes, false, ""
+	})
 }
 
 // handleOutput returns every chunk with Seq > since, the current exit
@@ -272,23 +350,32 @@ func (s *Server) handleOutput(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	sinceStr := r.URL.Query().Get("since")
-	since, _ := strconv.Atoi(sinceStr)
-	chunks, exit, alive := sess.OutputSince(since)
-	out := make([]ConnectorOutputChunk, 0, len(chunks))
-	for _, c := range chunks {
-		out = append(out, ConnectorOutputChunk{
-			Stream: c.Stream,
-			Data:   base64.StdEncoding.EncodeToString(c.Data),
-			Seq:    c.Seq,
-		})
-	}
-	writeJSON(w, ConnectorOutputResponse{
-		Chunks:       out,
-		ExitCode:     exit,
-		SessionAlive: alive,
-		Truncated:    sess.LostBytes() > 0,
-		LostBytes:    sess.LostBytes(),
+	wsID := workspaceFromCtx(r.Context())
+	userID := userIDFromCtx(r.Context())
+	recordCall(s.Recorder, wsID, userID, "", "processes.output", nil, func() ([]byte, bool, string) {
+		sinceStr := r.URL.Query().Get("since")
+		since, _ := strconv.Atoi(sinceStr)
+		chunks, exit, alive := sess.OutputSince(since)
+		out := make([]ConnectorOutputChunk, 0, len(chunks))
+		for _, c := range chunks {
+			out = append(out, ConnectorOutputChunk{
+				Stream: c.Stream,
+				Data:   base64.StdEncoding.EncodeToString(c.Data),
+				Seq:    c.Seq,
+			})
+		}
+		resp := ConnectorOutputResponse{
+			Chunks:       out,
+			ExitCode:     exit,
+			SessionAlive: alive,
+			Truncated:    sess.LostBytes() > 0,
+			LostBytes:    sess.LostBytes(),
+		}
+		// Output chunks can be large; record size+hash via the Recorder
+		// (it truncates above PayloadMaxBytes). Pass marshaled bytes.
+		respBytes, _ := json.Marshal(resp)
+		writeJSON(w, resp)
+		return respBytes, false, ""
 	})
 }
 
@@ -309,10 +396,17 @@ func (s *Server) handleTerminate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// For v0.61.0 mark exit -1; bridge.Terminate(...) wiring lands in
-	// a follow-up. The endpoint contract works for the SDK's polling
-	// pattern (next GET output sees session_alive=false + exit_code=-1).
-	sess.SetExit(-1)
-	s.Sessions.Forget(sess.ID)
-	writeJSON(w, ConnectorOKResponse{OK: true})
+	wsID := workspaceFromCtx(r.Context())
+	userID := userIDFromCtx(r.Context())
+	recordCall(s.Recorder, wsID, userID, "", "processes.terminate", nil, func() ([]byte, bool, string) {
+		// For v0.61.0 mark exit -1; bridge.Terminate(...) wiring lands in
+		// a follow-up. The endpoint contract works for the SDK's polling
+		// pattern (next GET output sees session_alive=false + exit_code=-1).
+		sess.SetExit(-1)
+		s.Sessions.Forget(sess.ID)
+		resp := ConnectorOKResponse{OK: true}
+		respBytes, _ := json.Marshal(resp)
+		writeJSON(w, resp)
+		return respBytes, false, ""
+	})
 }

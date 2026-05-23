@@ -538,34 +538,6 @@ type CredentialBindingPatchRequest struct {
 	DisplayName *string `json:"display_name" extensions:"x-nullable=true" example:"Renamed Cluster"`
 } // @name CredentialBindingPatchRequest
 
-// WorkspaceOperationsResponse is returned by GET /api/workspaces/{id}/operations.
-type WorkspaceOperationsResponse struct {
-	Operations []OperationRecord `json:"operations" validate:"required"`
-} // @name WorkspaceOperationsResponse
-
-// OperationRecord is a single entry in the operations log.
-// arguments, arguments_meta and result_meta are arbitrary JSON objects.
-type OperationRecord struct {
-	ID            string      `json:"id" validate:"required"`
-	WorkspaceID   string      `json:"workspace_id" validate:"required"`
-	UserID        *string     `json:"user_id,omitempty" extensions:"x-nullable=true"`
-	Source        string      `json:"source" validate:"required" example:"codex"`
-	ThreadID      *string     `json:"thread_id,omitempty" extensions:"x-nullable=true"`
-	RequestID     *string     `json:"request_id,omitempty" extensions:"x-nullable=true"`
-	EnvID         string      `json:"env_id" validate:"required"`
-	Tool          string      `json:"tool" validate:"required" example:"shell"`
-	Arguments     interface{} `json:"arguments,omitempty"`
-	ArgumentsMeta interface{} `json:"arguments_meta,omitempty"`
-	IsError       bool        `json:"is_error"`
-	ResultSummary *string     `json:"result_summary,omitempty" extensions:"x-nullable=true"`
-	ResultMeta    interface{} `json:"result_meta,omitempty"`
-	StartedAt     string      `json:"started_at" validate:"required"`
-	CompletedAt   string      `json:"completed_at" validate:"required"`
-	DurationMs    int32       `json:"duration_ms" validate:"required"`
-	NotebookPath  *string     `json:"notebook_path,omitempty" extensions:"x-nullable=true"`
-	CellID        *string     `json:"cell_id,omitempty" extensions:"x-nullable=true"`
-} // @name OperationRecord
-
 // WorkspaceDefaultsResponse is returned by GET /api/workspaces/{wid}/defaults.
 // It provides the effective quota limits for the workspace and the current sandbox count.
 type WorkspaceDefaultsResponse struct {

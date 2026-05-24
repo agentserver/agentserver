@@ -482,7 +482,7 @@ func (s *Server) saveWeixinCredentials(ctx context.Context, sandboxID string, re
 		if baseURL == "" {
 			baseURL = wp.DefaultBaseURL()
 		}
-		channelID, err := s.db.CreateIMChannel(sbx.WorkspaceID, "weixin", accountID, result.UserID)
+		channelID, routingMode, err := s.db.CreateIMChannel(sbx.WorkspaceID, "weixin", accountID, result.UserID)
 		if err != nil {
 			return fmt.Errorf("create IM channel: %w", err)
 		}
@@ -503,6 +503,7 @@ func (s *Server) saveWeixinCredentials(ctx context.Context, sandboxID string, re
 			ChannelID:   channelID,
 			Cursor:      "",
 			WorkspaceID: sbx.WorkspaceID,
+			RoutingMode: routingMode,
 		})
 		return nil
 	}
@@ -590,7 +591,7 @@ func (s *Server) handleIMTelegramConfigure(w http.ResponseWriter, r *http.Reques
 		tgBaseURL = d.DefaultBaseURL()
 	}
 
-	channelID, err := s.db.CreateIMChannel(sbx.WorkspaceID, "telegram", botID, "")
+	channelID, routingMode, err := s.db.CreateIMChannel(sbx.WorkspaceID, "telegram", botID, "")
 	if err != nil {
 		log.Printf("telegram configure: create channel: %v", err)
 		http.Error(w, "failed to save channel", http.StatusInternalServerError)
@@ -618,6 +619,7 @@ func (s *Server) handleIMTelegramConfigure(w http.ResponseWriter, r *http.Reques
 		ChannelID:   channelID,
 		Cursor:      "",
 		WorkspaceID: sbx.WorkspaceID,
+		RoutingMode: routingMode,
 	})
 
 	w.Header().Set("Content-Type", "application/json")
@@ -707,7 +709,7 @@ func (s *Server) handleIMMatrixConfigure(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	channelID, err := s.db.CreateIMChannel(sbx.WorkspaceID, "matrix", botID, "")
+	channelID, routingMode, err := s.db.CreateIMChannel(sbx.WorkspaceID, "matrix", botID, "")
 	if err != nil {
 		log.Printf("matrix configure: create channel: %v", err)
 		http.Error(w, "failed to save channel", http.StatusInternalServerError)
@@ -745,6 +747,7 @@ func (s *Server) handleIMMatrixConfigure(w http.ResponseWriter, r *http.Request)
 		ChannelID:   channelID,
 		Cursor:      "",
 		WorkspaceID: sbx.WorkspaceID,
+		RoutingMode: routingMode,
 	})
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1049,7 +1052,7 @@ func (s *Server) handleWorkspaceWeixinQRWait(w http.ResponseWriter, r *http.Requ
 			baseURL = wp.DefaultBaseURL()
 		}
 
-		channelID, err := s.db.CreateIMChannel(wsID, "weixin", accountID, result.UserID)
+		channelID, routingMode, err := s.db.CreateIMChannel(wsID, "weixin", accountID, result.UserID)
 		if err != nil {
 			http.Error(w, "failed to save channel", http.StatusInternalServerError)
 			return
@@ -1065,6 +1068,7 @@ func (s *Server) handleWorkspaceWeixinQRWait(w http.ResponseWriter, r *http.Requ
 			Credentials: imbridge.Credentials{ChannelID: channelID, BotID: accountID, BotToken: result.Token, BaseURL: baseURL},
 			ChannelID:   channelID,
 			WorkspaceID: wsID,
+			RoutingMode: routingMode,
 		})
 
 		w.Header().Set("Content-Type", "application/json")
@@ -1168,7 +1172,7 @@ func (s *Server) handleWorkspaceTelegramConfigure(w http.ResponseWriter, r *http
 		baseURL = d.DefaultBaseURL()
 	}
 
-	channelID, err := s.db.CreateIMChannel(wsID, "telegram", botID, "")
+	channelID, routingMode, err := s.db.CreateIMChannel(wsID, "telegram", botID, "")
 	if err != nil {
 		http.Error(w, "failed to save channel", http.StatusInternalServerError)
 		return
@@ -1183,6 +1187,7 @@ func (s *Server) handleWorkspaceTelegramConfigure(w http.ResponseWriter, r *http
 		Credentials: imbridge.Credentials{ChannelID: channelID, BotID: botID, BotToken: req.BotToken, BaseURL: baseURL},
 		ChannelID:   channelID,
 		WorkspaceID: wsID,
+		RoutingMode: routingMode,
 	})
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1225,7 +1230,7 @@ func (s *Server) handleWorkspaceMatrixConfigure(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	channelID, err := s.db.CreateIMChannel(wsID, "matrix", botID, "")
+	channelID, routingMode, err := s.db.CreateIMChannel(wsID, "matrix", botID, "")
 	if err != nil {
 		http.Error(w, "failed to save channel", http.StatusInternalServerError)
 		return
@@ -1250,6 +1255,7 @@ func (s *Server) handleWorkspaceMatrixConfigure(w http.ResponseWriter, r *http.R
 		Credentials: imbridge.Credentials{ChannelID: channelID, BotID: botID, BotToken: req.AccessToken, BaseURL: req.HomeserverURL},
 		ChannelID:   channelID,
 		WorkspaceID: wsID,
+		RoutingMode: routingMode,
 	})
 
 	w.Header().Set("Content-Type", "application/json")

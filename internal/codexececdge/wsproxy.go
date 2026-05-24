@@ -2,6 +2,7 @@ package codexececdge
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"sync"
@@ -70,11 +71,19 @@ func (s *Server) handleWSProxy(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer wg.Done()
 		err := pump(pumpCtx, client, upstream)
+		pumpCancel()
+		if err != nil && !errors.Is(err, context.Canceled) {
+			s.logger.Warn("wsproxy: client→upstream pump error", "exe_id", exeID, "err", err)
+		}
 		closeOther(upstream, err)
 	}()
 	go func() {
 		defer wg.Done()
 		err := pump(pumpCtx, upstream, client)
+		pumpCancel()
+		if err != nil && !errors.Is(err, context.Canceled) {
+			s.logger.Warn("wsproxy: upstream→client pump error", "exe_id", exeID, "err", err)
+		}
 		closeOther(client, err)
 	}()
 	wg.Wait()
@@ -91,7 +100,7 @@ func (s *Server) buildUpstreamWSURL(exeID, token string) string {
 	case "https":
 		u.Scheme = "wss"
 	}
-	u.Path = "/codex-exec/" + exeID
+	u.Path = "/codex-exec/" + url.PathEscape(exeID)
 	q := url.Values{}
 	q.Set("token", token)
 	u.RawQuery = q.Encode()
@@ -114,6 +123,10 @@ func pump(ctx context.Context, src, dst *websocket.Conn) error {
 // closeOther forwards an appropriate close to the other side based on
 // the originating error's WS close status (defaulting to 1011).
 func closeOther(other *websocket.Conn, srcErr error) {
+	if errors.Is(srcErr, context.Canceled) {
+		_ = other.Close(websocket.StatusGoingAway, "")
+		return
+	}
 	status := websocket.CloseStatus(srcErr)
 	if status == -1 {
 		status = websocket.StatusInternalError

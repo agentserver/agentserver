@@ -20,6 +20,12 @@ import {
   Globe,
   Server,
   Brain,
+  ArrowRight,
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  Rocket,
+  ExternalLink,
 } from 'lucide-react'
 import {
   listMembers,
@@ -44,6 +50,8 @@ import {
   setDefaultCredentialBinding,
   pollDeviceCodeComplete,
   listSandboxes,
+  listCodexTokens,
+  listRemoteExecutors,
   type CredentialBinding,
   type DeviceCodeResponse,
   type Workspace,
@@ -57,6 +65,8 @@ import {
   type IMChannel,
   type Sandbox,
 } from '../lib/api'
+import { useT } from '../lib/i18n'
+import { homeStrings } from './Home/strings'
 import { ConfirmModal } from './Modals'
 import { WorkspaceAPIKeysTab } from './WorkspaceAPIKeysTab'
 import { TracesTab, TRACES_PER_PAGE } from './SandboxDetail'
@@ -245,7 +255,9 @@ export function WorkspaceDetail({ workspace, onRename, initialTab, sandboxOverri
               sbxQuota={sbxQuota}
               defaults={defaults}
               llmQuota={llmQuota}
+              memberCount={members.length}
               onRename={onRename}
+              onNavigate={selectTab}
             />
           )}
           {tab === 'browsers' && (
@@ -306,12 +318,14 @@ export function WorkspaceDetail({ workspace, onRename, initialTab, sandboxOverri
   )
 }
 
-function OverviewTab({ workspace, sbxQuota, defaults, llmQuota, onRename }: {
+function OverviewTab({ workspace, sbxQuota, defaults, llmQuota, memberCount, onRename, onNavigate }: {
   workspace: Workspace
   sbxQuota: { current: number; max: number } | null
   defaults: WorkspaceSandboxDefaults | null
   llmQuota: WorkspaceLLMQuota | null
+  memberCount: number
   onRename?: (id: string, name: string) => void
+  onNavigate: (tab: Tab) => void
 }) {
   const effectiveMaxRpd = llmQuota?.workspace_quota?.max_rpd ?? llmQuota?.default_max_rpd ?? null
   const [editing, setEditing] = useState(false)
@@ -349,6 +363,13 @@ function OverviewTab({ workspace, sbxQuota, defaults, llmQuota, onRename }: {
         )}
       </div>
 
+      {/* Getting Started — first-time user guide (README steps 2–7) */}
+      <GettingStartedCard
+        workspaceId={workspace.id}
+        memberCount={memberCount}
+        onNavigate={onNavigate}
+      />
+
       {/* Info cards */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
         <InfoCard icon={<Clock size={14} />} label="Created" value={new Date(workspace.created_at).toLocaleString()} />
@@ -381,6 +402,184 @@ function OverviewTab({ workspace, sbxQuota, defaults, llmQuota, onRename }: {
             <StatCell label="Max Sandboxes" value={defaults.max_sandboxes === 0 ? '∞' : String(defaults.max_sandboxes)} />
           </div>
         </div>
+      )}
+    </div>
+  )
+}
+
+type OnboardingStep = {
+  n: number
+  titleKey: string
+  bodyKey: string
+  tab: Tab
+  cta: string
+  done: boolean
+  optional?: boolean
+}
+
+function GettingStartedCard({ workspaceId, memberCount, onNavigate }: {
+  workspaceId: string
+  memberCount: number
+  onNavigate: (tab: Tab) => void
+}) {
+  const t = useT(homeStrings)
+  const dismissKey = `agentserver:onboarding-dismissed:${workspaceId}`
+  const collapseKey = `agentserver:onboarding-collapsed:${workspaceId}`
+
+  const [dismissed, setDismissed] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false
+    return window.localStorage.getItem(dismissKey) === '1'
+  })
+  // null until user has expressed a preference; falls back to "auto" (collapse when required-done)
+  const [userCollapsed, setUserCollapsed] = useState<boolean | null>(() => {
+    if (typeof window === 'undefined') return null
+    const v = window.localStorage.getItem(collapseKey)
+    return v === '1' ? true : v === '0' ? false : null
+  })
+
+  const [loaded, setLoaded] = useState(false)
+  const [llmConfigured, setLlmConfigured] = useState(false)
+  const [hasConnectors, setHasConnectors] = useState(false)
+  const [hasBrowsers, setHasBrowsers] = useState(false)
+  const [hasSandboxes, setHasSandboxes] = useState(false)
+  const [hasIM, setHasIM] = useState(false)
+
+  useEffect(() => {
+    if (dismissed) return
+    let cancelled = false
+    Promise.all([
+      getWorkspaceLLMConfig(workspaceId).catch(() => null),
+      getModelserverStatus(workspaceId).catch(() => null),
+      listRemoteExecutors(workspaceId).catch(() => []),
+      listCodexTokens(workspaceId).catch(() => []),
+      listSandboxes(workspaceId).catch(() => []),
+      listWorkspaceIMChannels(workspaceId).catch(() => ({ channels: [] } as any)),
+    ]).then(([llm, ms, connectors, browsers, sandboxes, im]) => {
+      if (cancelled) return
+      setLlmConfigured(!!(llm?.configured || ms?.connected))
+      setHasConnectors((connectors?.length ?? 0) > 0)
+      setHasBrowsers((browsers?.length ?? 0) > 0)
+      setHasSandboxes((sandboxes?.length ?? 0) > 0)
+      setHasIM(((im?.channels?.length) ?? 0) > 0)
+      setLoaded(true)
+    })
+    return () => { cancelled = true }
+  }, [workspaceId, dismissed])
+
+  const dismiss = () => {
+    window.localStorage.setItem(dismissKey, '1')
+    setDismissed(true)
+  }
+  const setCollapsed = (v: boolean) => {
+    window.localStorage.setItem(collapseKey, v ? '1' : '0')
+    setUserCollapsed(v)
+  }
+
+  if (dismissed) return null
+  if (!loaded) return null
+
+  const steps: OnboardingStep[] = [
+    { n: 2, titleKey: 'onb.s2.title', bodyKey: 'onb.s2.body', tab: 'llm', cta: 'Go to LLM', done: llmConfigured },
+    { n: 3, titleKey: 'onb.s3.title', bodyKey: 'onb.s3.body', tab: 'connectors', cta: 'Go to Connectors', done: hasConnectors },
+    { n: 4, titleKey: 'onb.s4.title', bodyKey: 'onb.s4.body', tab: 'browsers', cta: 'Go to Browsers', done: hasBrowsers, optional: true },
+    { n: 5, titleKey: 'onb.s5.title', bodyKey: 'onb.s5.body', tab: 'sandbox', cta: 'Go to Sandboxes', done: hasSandboxes, optional: true },
+    { n: 6, titleKey: 'onb.s6.title', bodyKey: 'onb.s6.body', tab: 'im', cta: 'Go to IM', done: hasIM },
+    { n: 7, titleKey: 'onb.s7.title', bodyKey: 'onb.s7.body', tab: 'members', cta: 'Go to Members', done: memberCount > 1 },
+  ]
+
+  const doneCount = steps.filter((s) => s.done).length
+  const requiredDone = steps.filter((s) => !s.optional).every((s) => s.done)
+  const collapsed = userCollapsed !== null ? userCollapsed : requiredDone
+
+  return (
+    <div className="rounded-lg border border-[var(--border)] bg-[var(--card)] overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center gap-3 px-5 py-3 border-b border-[var(--border)]">
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[var(--secondary)] text-[var(--foreground)]">
+          {requiredDone ? <CheckCircle2 size={15} className="text-emerald-400" /> : <Rocket size={14} />}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium text-[var(--foreground)]">
+            {requiredDone ? 'Setup complete' : 'Getting started'}
+          </div>
+          <div className="text-xs text-[var(--muted-foreground)] truncate">
+            {requiredDone
+              ? `${doneCount} of ${steps.length} steps done · your workspace is ready`
+              : `${doneCount} of ${steps.length} steps done · finish setup to command compute from anywhere`}
+          </div>
+        </div>
+        <button
+          onClick={() => setCollapsed(!collapsed)}
+          className="rounded p-1 text-[var(--muted-foreground)] hover:bg-[var(--secondary)] hover:text-[var(--foreground)] transition-colors"
+          title={collapsed ? 'Expand' : 'Collapse'}
+        >
+          {collapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
+        </button>
+        <button
+          onClick={dismiss}
+          className="rounded p-1 text-[var(--muted-foreground)] hover:bg-[var(--secondary)] hover:text-[var(--foreground)] transition-colors"
+          title="Dismiss"
+        >
+          <X size={15} />
+        </button>
+      </div>
+
+      {/* Steps */}
+      {!collapsed && (
+        <>
+          <ol className="divide-y divide-[var(--border)]">
+            {steps.map((s) => (
+              <li
+                key={s.n}
+                className="flex items-start gap-3 px-5 py-3 hover:bg-[var(--secondary)]/30 transition-colors"
+              >
+                <div className="mt-0.5 shrink-0">
+                  {s.done ? (
+                    <CheckCircle2 size={18} className="text-emerald-400" />
+                  ) : (
+                    <div className="flex h-[18px] w-[18px] items-center justify-center rounded-full border border-[var(--border)] bg-[var(--background)]">
+                      <span className="font-mono text-[10px] text-[var(--muted-foreground)]">{s.n}</span>
+                    </div>
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className={`text-sm font-medium ${s.done ? 'text-[var(--muted-foreground)] line-through' : 'text-[var(--foreground)]'}`}>
+                      {t(s.titleKey)}
+                    </span>
+                    {s.optional && (
+                      <span className="rounded-full border border-[var(--border)] bg-[var(--background)] px-1.5 py-0 text-[9px] uppercase tracking-wide text-[var(--muted-foreground)]">
+                        Optional
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-xs text-[var(--muted-foreground)] leading-relaxed">
+                    {t(s.bodyKey)}
+                  </div>
+                </div>
+                <button
+                  onClick={() => onNavigate(s.tab)}
+                  className="shrink-0 inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--background)] px-2.5 py-1 text-xs font-medium text-[var(--foreground)] hover:bg-[var(--secondary)] transition-colors"
+                  title={s.cta}
+                >
+                  {s.done ? 'Open' : 'Go'}
+                  <ArrowRight size={12} />
+                </button>
+              </li>
+            ))}
+          </ol>
+          <div className="border-t border-[var(--border)] px-5 py-2 flex justify-end">
+            <a
+              href="https://github.com/agentserver/agentserver#readme"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+            >
+              Full docs
+              <ExternalLink size={11} />
+            </a>
+          </div>
+        </>
       )}
     </div>
   )

@@ -2,6 +2,7 @@ package codexececdge
 
 import (
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -33,8 +34,11 @@ func NewServer(cfg Config) (*Server, error) {
 		httpClient: &http.Client{
 			Timeout: 0, // per-attempt timeout enforced via per-try context
 			Transport: &http.Transport{
-				Proxy:               nil,
-				DisableKeepAlives:   false,
+				Proxy:             nil,
+				DisableKeepAlives: false,
+				DialContext: (&net.Dialer{
+					Timeout: cfg.UpstreamDialTimeout,
+				}).DialContext,
 				IdleConnTimeout:     90 * time.Second,
 				MaxIdleConnsPerHost: 16,
 			},

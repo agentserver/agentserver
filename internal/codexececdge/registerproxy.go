@@ -32,8 +32,12 @@ func (s *Server) handleRegisterProxy(w http.ResponseWriter, r *http.Request) {
 	deadline := time.Now().Add(s.cfg.RegisterRetryTotalTimeout)
 	backoff := s.cfg.RegisterRetryInitialBackoff
 
-	var lastResp *http.Response
-	var lastErr error
+	var (
+		lastStatus int
+		lastHeader http.Header
+		lastBody   []byte
+		lastErr    error
+	)
 	for {
 		attemptCtx, attemptCancel := context.WithCancel(r.Context())
 		req, _ := http.NewRequestWithContext(attemptCtx, r.Method, upstreamURL, bytes.NewReader(body))
@@ -42,16 +46,24 @@ func (s *Server) handleRegisterProxy(w http.ResponseWriter, r *http.Request) {
 		req.Header.Set("X-Real-IP", clientIP)
 
 		resp, err := s.httpClient.Do(req)
-		lastResp, lastErr = resp, err
-		retryable := err != nil || isRetryableStatus(resp.StatusCode)
-		if !retryable {
+		if err == nil && !isRetryableStatus(resp.StatusCode) {
 			attemptCancel()
 			writeUpstreamResponse(w, resp)
 			return
 		}
+
+		// Retryable. Capture the response state (for possible exhaustion
+		// passthrough) and release the connection.
+		lastErr = err
 		if resp != nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
+			lastStatus = resp.StatusCode
+			lastHeader = resp.Header.Clone()
+			lastBody, _ = io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
+		} else {
+			lastStatus = 0
+			lastHeader = nil
+			lastBody = nil
 		}
 		attemptCancel()
 
@@ -74,13 +86,19 @@ func (s *Server) handleRegisterProxy(w http.ResponseWriter, r *http.Request) {
 
 	// Retry deadline exhausted. Surface the last upstream response if any,
 	// otherwise return 502 with the dial error.
-	if lastErr != nil {
+	if lastStatus == 0 {
 		s.logger.Warn("registerproxy: retries exhausted (network)", "err", lastErr)
 		http.Error(w, "upstream unreachable: "+lastErr.Error(), http.StatusBadGateway)
 		return
 	}
-	s.logger.Warn("registerproxy: retries exhausted (status)", "status", lastResp.StatusCode)
-	writeUpstreamResponse(w, lastResp)
+	s.logger.Warn("registerproxy: retries exhausted (status)", "status", lastStatus)
+	for k, vs := range lastHeader {
+		for _, v := range vs {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(lastStatus)
+	_, _ = w.Write(lastBody)
 }
 
 func isRetryableStatus(code int) bool {

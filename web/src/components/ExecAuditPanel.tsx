@@ -6,6 +6,7 @@ import {
   type AuditCallSummary,
   type ListAuditCallsFilters,
 } from '../lib/api'
+import ExecAuditCallDetail from './ExecAuditCallDetail'
 
 type Tab = 'calls' | 'sessions'
 
@@ -168,18 +169,12 @@ function CallRow({
       {expanded && (
         <tr className="bg-zinc-50 dark:bg-zinc-900">
           <td colSpan={8} className="px-3 py-3">
-            <ExecAuditCallDetailStub workspaceId={workspaceId} callId={call.id} />
+            <ExecAuditCallDetail workspaceId={workspaceId} callId={call.id} />
           </td>
         </tr>
       )}
     </>
   )
-}
-
-// Stub for the call-detail inline expansion. Replaced by the real
-// ExecAuditCallDetail component in T4.
-function ExecAuditCallDetailStub({ workspaceId, callId }: { workspaceId: string; callId: string }) {
-  return <div className="text-zinc-500 text-sm">Detail for {callId} in {workspaceId} (T4 wires the real component).</div>
 }
 
 function SourceBadge({ source }: { source: string }) {

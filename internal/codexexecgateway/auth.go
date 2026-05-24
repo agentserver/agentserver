@@ -20,8 +20,23 @@ import (
 type CapPayload struct {
 	TurnID      string `json:"turn_id"`
 	WorkspaceID string `json:"workspace_id"`
-	IAT         int64  `json:"iat"`
-	EXP         int64  `json:"exp"`
+	// UserID is the workspace member who triggered the cap-token mint.
+	// Optional for backward compatibility: tokens minted by older
+	// codex-app-gateway versions don't carry it, which Verify accepts
+	// (UserID is left as ""). The exec-audit subsystem stores it on
+	// the session row when present — see
+	// docs/superpowers/specs/2026-05-23-codex-exec-gateway-audit-design.md.
+	UserID string `json:"user_id,omitempty"`
+	IAT    int64  `json:"iat"`
+	EXP    int64  `json:"exp"`
+	// SkipAudit asks the bridge handler not to open a per-frame audit
+	// session for this bridge. Used by sdk/captoken.go for in-process
+	// bridge.Pool tokens — the SDK REST handler does its own
+	// CallStart/CallEnd for the logical call, so per-frame double-
+	// recording would be noise. Older tokens lack this field and
+	// default to false (audit applies normally). Replaces the prior
+	// magic-string `TurnID="sdk-pool:..."` marker (I10 followup).
+	SkipAudit bool `json:"skip_audit,omitempty"`
 }
 
 var (

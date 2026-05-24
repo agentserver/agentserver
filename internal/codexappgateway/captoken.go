@@ -18,7 +18,12 @@ import (
 // Per the 2026-05-16 fixed-tools redesign, one token covers any
 // executor in the workspace; /bridge enforces workspace ownership at
 // request time via the workspace_executors table.
-func MintCapToken(secret []byte, turnID, workspaceID string, ttl time.Duration) (string, error) {
+//
+// userID is the workspace member who triggered the mint, threaded into
+// the exec-audit subsystem (omitempty so older verifiers reading new
+// tokens, and new verifiers reading older tokens, both work). Pass ""
+// when no user context is available (e.g. scheduled-task spawns).
+func MintCapToken(secret []byte, turnID, workspaceID, userID string, ttl time.Duration) (string, error) {
 	if len(secret) == 0 {
 		return "", fmt.Errorf("captoken: empty secret")
 	}
@@ -29,11 +34,13 @@ func MintCapToken(secret []byte, turnID, workspaceID string, ttl time.Duration) 
 	payload := struct {
 		TurnID      string `json:"turn_id"`
 		WorkspaceID string `json:"workspace_id"`
+		UserID      string `json:"user_id,omitempty"`
 		IAT         int64  `json:"iat"`
 		EXP         int64  `json:"exp"`
 	}{
 		TurnID:      turnID,
 		WorkspaceID: workspaceID,
+		UserID:      userID,
 		IAT:         now,
 		EXP:         now + int64(ttl.Seconds()),
 	}

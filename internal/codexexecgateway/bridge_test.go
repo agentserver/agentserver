@@ -80,6 +80,17 @@ func newBridgeNoDBServer(t *testing.T) (*httptest.Server, *Server) {
 	return hs, srv
 }
 
+// TODO(test-analyzer-#4): wiring test that bridge handleBridge invokes
+// s.recorder.SessionOpen. Deferred from this PR because the test
+// requires the full DB-backed setup (newInboundTestServer needs
+// TEST_DATABASE_URL — see multiplex_e2e_test.go pattern). The audit
+// fail-closed path IS covered indirectly by TestRealRecorder_
+// SessionOpenErrorsOnFailModeFullDisk, which pins the contract the
+// bridge depends on. A future PR should add bridge_audit_test.go that
+// swaps in a capRelayRec via srv.recorder = ... and asserts SessionOpen
+// fires (mirroring TestHandleRelay_RecorderObservesPutGet in
+// handlers_relay_test.go).
+
 func TestBridge_Rejects401OnBadToken(t *testing.T) {
 	hs, _ := newBridgeNoDBServer(t)
 	_, resp, err := dialBridge(context.Background(), hs.URL, "exe_x", "garbage")

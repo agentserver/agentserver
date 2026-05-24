@@ -17,11 +17,22 @@ metadata:
     app: {{ .Release.Name }}-codex-exec-gateway
 spec:
   replicas: {{ .Values.codexExecGateway.replicaCount }}
+  {{- if and .Values.execAudit.enabled .Values.execAudit.pvc.enabled }}
+  # I12: Recreate strategy is required when the audit PVC is
+  # ReadWriteOnce — a RollingUpdate would try to start a second pod that
+  # then deadlocks waiting for the PVC to detach from the outgoing pod.
+  # The trade-off (brief downtime during deploy) is acceptable because
+  # the PVC guard above already pins replicaCount=1, so there's no HA
+  # being lost here.
+  strategy:
+    type: Recreate
+  {{- else }}
   strategy:
     type: RollingUpdate
     rollingUpdate:
       maxUnavailable: 0
       maxSurge: 1
+  {{- end }}
   selector:
     matchLabels:
       app: {{ .Release.Name }}-codex-exec-gateway
@@ -119,6 +130,47 @@ spec:
             - name: CXG_LOG_LEVEL
               value: {{ .Values.codexExecGateway.logLevel | quote }}
             {{- end }}
+            {{- if .Values.execAudit.enabled }}
+            # Plan 2b audit subsystem: WAL → uploader → agentserver
+            # /internal/exec-audit/batch. See internal/codexexecgateway/audit/.
+            - name: CXG_AUDIT_ENABLED
+              value: "true"
+            - name: CXG_AUDIT_WAL_DIR
+              value: "/var/cxg-audit"
+            - name: CXG_AUDIT_UPLOAD_URL
+              value: "http://{{ .Release.Name }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}/internal/exec-audit/batch"
+            - name: CXG_AUDIT_UPLOAD_SECRET
+              value: {{ required "internal.apiSecret is required when execAudit.enabled is true" .Values.internal.apiSecret | quote }}
+            - name: CXG_AUDIT_PAYLOAD_MAX_BYTES
+              # int64 cast: avoids Helm rendering large ints in scientific
+              # notation ("4.194304e+06"), which strconv.Atoi can't parse.
+              value: {{ int64 (default 4194304 .Values.execAudit.payloadMaxBytes) | quote }}
+            - name: CXG_AUDIT_WAL_OVERFLOW
+              value: {{ .Values.execAudit.walOverflow | default "fail" | quote }}
+            # Always emit the quota explicitly (10 GiB default) so
+            # operators reading the pod spec can see exactly what's
+            # active. Relying on the binary's internal default would
+            # silently kick in if the env var were dropped — code-
+            # reviewer #2 followup. We can't use `| default` here
+            # because the upstream values.yaml ships 0 as the sentinel
+            # for "use binary default"; `default` only fires on
+            # zero-value-AS-empty (which 0 isn't for ints).
+            - name: CXG_AUDIT_WAL_DISK_QUOTA_BYTES
+              {{- $quota := int64 .Values.execAudit.walDiskQuotaBytes }}
+              {{- if le $quota (int64 0) }}{{- $quota = int64 10737418240 }}{{- end }}
+              value: {{ $quota | quote }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: CXG_AUDIT_GATEWAY_ID
+              value: "{{ .Release.Name }}-cxg-$(POD_NAME)"
+            {{- end }}
+          {{- if .Values.execAudit.enabled }}
+          volumeMounts:
+            - name: audit
+              mountPath: /var/cxg-audit
+          {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz
@@ -138,6 +190,16 @@ spec:
           {{- with .Values.codexExecGateway.resources }}
           resources: {{- toYaml . | nindent 12 }}
           {{- end }}
+      {{- if .Values.execAudit.enabled }}
+      volumes:
+        - name: audit
+          {{- if .Values.execAudit.pvc.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-codex-exec-gateway-audit
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"nhooyr.io/websocket"
 )
@@ -123,6 +124,25 @@ type bridgeSession struct {
 	closeOnce sync.Once
 	closed    chan struct{}
 	closeErr  error
+
+	// auditSessionID is set by handleBridge after recorder.SessionOpen,
+	// and read by both pump goroutines. Empty when the recorder hasn't
+	// minted one yet (during the brief window between bridgeSession
+	// construction and SessionOpen) — frame hooks tolerate "" and
+	// the noopRecorder still mints non-empty IDs when audit is disabled.
+	auditSessionID string
+
+	// Per-direction frame/byte counters. runBridgePump writes the
+	// "ToBackend" pair; runInboundReader (running in the inbound
+	// handler's goroutine, separate from handleBridge) writes the
+	// "ToClient" pair. handleBridge's SessionClose defer reads all
+	// four — and may race the inbound reader, which can still be
+	// mid-write() after handleBridge removeRoute lands. Atomics keep
+	// the snapshot race-free.
+	framesToBackend atomic.Int64
+	framesToClient  atomic.Int64
+	bytesToBackend  atomic.Int64
+	bytesToClient   atomic.Int64
 }
 
 func newBridgeSession(streamID string, inbound *inboundConn, bridgeWS *websocket.Conn) *bridgeSession {

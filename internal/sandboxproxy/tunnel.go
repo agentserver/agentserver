@@ -180,6 +180,12 @@ func (s *Server) proxyViaTunnel(w http.ResponseWriter, r *http.Request, sbx *sbx
 	for k, v := range respMeta.Headers {
 		w.Header().Set(k, v)
 	}
+	// X-Content-Type-Options: nosniff is forced AFTER the upstream
+	// header copy so a malicious or misconfigured sandbox can't strip
+	// it. The proxy forwards arbitrary tenant content; nosniff prevents
+	// browsers from MIME-sniffing a text/plain response as HTML and
+	// executing scripts the upstream did not intend.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if respMeta.Status > 0 {
 		w.WriteHeader(respMeta.Status)
 	}

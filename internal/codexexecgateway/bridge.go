@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentserver/agentserver/internal/clientmeta"
+	"github.com/agentserver/agentserver/internal/codexexecgateway/audit"
 	"github.com/agentserver/agentserver/internal/relaypb"
 	"github.com/agentserver/agentserver/internal/wsbridge"
 	"github.com/go-chi/chi/v5"
@@ -134,14 +136,75 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 	// happens — better than silently swapping who receives the next
 	// frame.
 	session := newBridgeSession(streamID, inbound, bridgeWS)
+	// SDK-pool-managed bridges (the in-process bridge.Pool dialed by
+	// sdk/handlers.go) are skipped at the session/frame level — the SDK
+	// REST handler does its own CallStart/CallEnd for each tool call as
+	// a whole. Recording the underlying WS frames here too would
+	// double-record every SDK call. Detection: typed CapPayload.SkipAudit
+	// flag set by sdk/captoken.go (I10 followup; replaces the prior
+	// magic-string TurnID prefix). The frame pump hooks still fire below
+	// but become no-ops because realRecorder.session("") returns nil
+	// (and noopRecorder doesn't care either way), so auditSessionID
+	// stays empty for sdk-pool.
+	isPool := payload.SkipAudit
+	var auditSessID string
+	if !isPool {
+		// Open the audit session BEFORE addRoute so the inbound reader
+		// can never observe session.auditSessionID being written
+		// concurrently with its own read of the field. In production
+		// the protocol guarantees no inbound frame for streamID arrives
+		// before our forwarded Resume, but ordering the assignment
+		// first removes a latent race a future refactor could trip.
+		// SessionOpen mints a UUID even when audit is disabled
+		// (noopRecorder), so session.auditSessionID is always non-empty
+		// for the pumps when audit is in play.
+		//
+		// Fail-closed: when the WAL is in fail mode and the disk quota
+		// is hit, SessionOpen returns an error. We refuse the bridge in
+		// that case — that's the contract the spec promises. The WS is
+		// already accepted at this point so we close it with an
+		// internal-error code rather than HTTP-erroring.
+		var openErr error
+		auditSessID, openErr = s.recorder.SessionOpen(audit.SessionMeta{
+			WorkspaceID: payload.WorkspaceID,
+			UserID:      payload.UserID,
+			ExeID:       exeID,
+			TurnID:      payload.TurnID,
+			StreamID:    streamID,
+			ClientIP:    clientmeta.ClientIP(r),
+			CapIAT:      time.Unix(payload.IAT, 0).UTC(),
+			CapEXP:      time.Unix(payload.EXP, 0).UTC(),
+			OpenedAt:    time.Now().UTC(),
+		})
+		if openErr != nil {
+			s.logger.Error("bridge: audit SessionOpen failed (fail-closed) — refusing bridge",
+				"exe_id", exeID, "err", openErr)
+			_ = bridgeWS.Close(websocket.StatusInternalError, "audit unavailable")
+			return
+		}
+		session.auditSessionID = auditSessID
+	}
 	if evicted := inbound.addRoute(streamID, session); evicted != nil {
 		s.logger.Warn("bridge: stream_id collision; evicting prior session",
 			"exe_id", exeID, "stream_id", streamID)
 		evicted.close(errors.New("evicted by stream_id collision"))
 	}
+
 	defer func() {
 		inbound.removeRoute(streamID, session)
 		session.close(nil)
+		if isPool {
+			return
+		}
+		// Counters are safe to read here: runBridgePump has returned
+		// (we exit handleBridge only after it does), and the inbound
+		// reader stops writing to this session once removeRoute lands.
+		s.recorder.SessionClose(auditSessID, "client_disconnect", audit.Counters{
+			FramesToBackend: int(session.framesToBackend.Load()),
+			FramesToClient:  int(session.framesToClient.Load()),
+			BytesToBackend:  session.bytesToBackend.Load(),
+			BytesToClient:   session.bytesToClient.Load(),
+		})
 	}()
 
 	s.logger.Info("bridge: paired", "exe_id", exeID, "stream_id", streamID, "turn_id", payload.TurnID)
@@ -192,11 +255,25 @@ func (s *Server) runBridgePump(ctx context.Context, session *bridgeSession) {
 		// Validate stream_id matches session's. If mismatched, drop —
 		// keeps the inbound's frame ordering coherent.
 		var f relaypb.RelayMessageFrame
-		if proto.Unmarshal(data, &f) == nil && f.StreamId != session.streamID {
+		parsed := proto.Unmarshal(data, &f) == nil
+		if parsed && f.StreamId != session.streamID {
 			s.logger.Warn("bridge: ignoring frame with wrong stream_id",
 				"want", session.streamID, "got", f.StreamId)
 			continue
 		}
+		// Audit hook fires before forward so a write failure still
+		// records the frame the gateway attempted to deliver. Pass the
+		// parsed frame when available so the recorder can skip a second
+		// Unmarshal; nil when parse failed so OnFrameToBackend can
+		// decide whether to fall back.
+		var framePtr *relaypb.RelayMessageFrame
+		if parsed {
+			framePtr = &f
+		}
+		s.recorder.OnFrameToBackend(session.auditSessionID, framePtr, data)
+		session.framesToBackend.Add(1)
+		session.bytesToBackend.Add(int64(len(data)))
+
 		if err := session.inbound.write(ctx, mt, data); err != nil {
 			s.logger.Warn("bridge: inbound write failed", "stream_id", session.streamID, "error", err)
 			return

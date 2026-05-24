@@ -2,7 +2,9 @@ package codexexecgateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +12,39 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/agentserver/agentserver/internal/codexexecgateway/audit"
 )
+
+// capRelayRec captures CallStart/CallEnd for relay handler wiring
+// tests (test-analyzer #3 followup). Same pattern as the SDK's capRec
+// but inline here to avoid an import cycle.
+type capRelayRec struct {
+	mu     sync.Mutex
+	starts []audit.CallStartMeta
+	ends   map[string]audit.CallEndMeta
+}
+
+func (r *capRelayRec) SessionOpen(audit.SessionMeta) (string, error) { return "", nil }
+func (r *capRelayRec) SessionClose(string, string, audit.Counters)   {}
+func (r *capRelayRec) OnFrameToBackend(string, any, []byte)          {}
+func (r *capRelayRec) OnFrameToClient(string, any, []byte)           {}
+func (r *capRelayRec) CallStart(m audit.CallStartMeta) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	id := fmt.Sprintf("c%d", len(r.starts))
+	r.starts = append(r.starts, m)
+	return id, nil
+}
+func (r *capRelayRec) CallEnd(id string, m audit.CallEndMeta) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.ends == nil {
+		r.ends = map[string]audit.CallEndMeta{}
+	}
+	r.ends[id] = m
+}
+func (r *capRelayRec) Close(context.Context) error { return nil }
 
 // newRelayTestServer spins up an httptest.Server with the relay routes
 // wired and a non-empty PublicHTTPSBaseURL so the registry is enabled.
@@ -125,6 +159,74 @@ func TestHandleRelay_RoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(string(putBody), `"status":"ok"`) {
 		t.Errorf("put body lacks ok status: %s", putBody)
+	}
+}
+
+// TestHandleRelay_RecorderObservesPutGet pins that the relay PUT and
+// GET handlers actually invoke the audit recorder. Wiring test for
+// test-analyzer #3 — a refactor that drops the rec.CallStart/CallEnd
+// hooks would silently disable relay audit otherwise.
+func TestHandleRelay_RecorderObservesPutGet(t *testing.T) {
+	cfg := Config{
+		CapTokenHMACSecret:   []byte("test-hmac"),
+		InternalSharedSecret: "test-secret",
+		PublicHTTPSBaseURL:   "https://test.example/",
+		RelayDefaultTTL:      time.Second,
+		RelayMaxPerWorkspace: 4,
+	}
+	srv, err := newServerNoStoreForTesting(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &capRelayRec{}
+	srv.recorder = rec
+	ts := httptest.NewServer(srv.Routes())
+	defer ts.Close()
+
+	ticket := mintTestTicket(t, ts, cfg.InternalSharedSecret, "ws", "exe_src", "exe_dst")
+	url := ts.URL + "/relay/" + ticket
+	payload := []byte("hello relay audit")
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		req, _ := http.NewRequest("PUT", url, bytes.NewReader(payload))
+		req.Header.Set("Authorization", "Bearer "+ticket)
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		req, _ := http.NewRequest("GET", url, nil)
+		req.Header.Set("Authorization", "Bearer "+ticket)
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+	}()
+	wg.Wait()
+	// Both PUT and GET should have produced one CallStart each.
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.starts) != 2 {
+		t.Fatalf("want 2 relay CallStarts (PUT+GET), got %d", len(rec.starts))
+	}
+	methods := map[string]bool{}
+	for _, m := range rec.starts {
+		methods[m.RPCMethod] = true
+		if m.Source != "relay" {
+			t.Errorf("Source=%q want relay", m.Source)
+		}
+	}
+	if !methods["relay_put"] || !methods["relay_get"] {
+		t.Errorf("missing relay_put or relay_get; got methods=%v", methods)
+	}
+	if len(rec.ends) != 2 {
+		t.Errorf("want 2 CallEnds, got %d", len(rec.ends))
 	}
 }
 

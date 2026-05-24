@@ -65,7 +65,7 @@ type Server struct {
 	// workspace-scoped LLM API key). Receives the per-spawn loopback
 	// token so the agentserver MCP entry in config.toml can embed it.
 	// Allowed to hit the network. Errors abort the spawn.
-	buildConfig func(ctx context.Context, workspaceID, loopbackToken string) (supervisor.SpawnConfig, error)
+	buildConfig func(ctx context.Context, workspaceID, userID, loopbackToken string) (supervisor.SpawnConfig, error)
 
 	execClient connectedClient // exposed for the loopback /internal/connected handler
 
@@ -152,8 +152,8 @@ func loopbackInternalURL(listenAddr string) string {
 
 // makeBuildConfig returns the per-spawn SpawnConfig producer. Split out
 // so server_test.go can construct a Server with stub clients.
-func makeBuildConfig(cfg ServeConfig, _ connectedClient, wsTokenClient workspaceTokenFetcher, selfBin string, logger *slog.Logger) func(context.Context, string, string) (supervisor.SpawnConfig, error) {
-	return func(ctx context.Context, workspaceID, loopbackToken string) (supervisor.SpawnConfig, error) {
+func makeBuildConfig(cfg ServeConfig, _ connectedClient, wsTokenClient workspaceTokenFetcher, selfBin string, logger *slog.Logger) func(context.Context, string, string, string) (supervisor.SpawnConfig, error) {
+	return func(ctx context.Context, workspaceID, userID, loopbackToken string) (supervisor.SpawnConfig, error) {
 		// Per 2026-05-16 redesign, the executor list is no longer
 		// fixed at spawn time — env-mcp reads it live via
 		// /internal/connected. We still mint a per-spawn turn so
@@ -163,7 +163,7 @@ func makeBuildConfig(cfg ServeConfig, _ connectedClient, wsTokenClient workspace
 		if ttl <= 0 {
 			ttl = time.Hour
 		}
-		workspaceTok, err := MintCapToken(cfg.CapTokenHMACSecret, turnID, workspaceID, ttl)
+		workspaceTok, err := MintCapToken(cfg.CapTokenHMACSecret, turnID, workspaceID, userID, ttl)
 		if err != nil {
 			return supervisor.SpawnConfig{}, fmt.Errorf("mint workspace cap token: %w", err)
 		}
@@ -458,7 +458,7 @@ func (s *Server) handleCodexAppWS(w http.ResponseWriter, r *http.Request) {
 	key := supervisor.Key{WorkspaceID: id.WorkspaceID}
 	ctx := r.Context()
 	handle, err := s.sup.EnsureSubprocess(ctx, key, func(loopbackToken string) (supervisor.SpawnConfig, error) {
-		return s.buildConfig(ctx, id.WorkspaceID, loopbackToken)
+		return s.buildConfig(ctx, id.WorkspaceID, id.UserID, loopbackToken)
 	})
 	if err != nil {
 		s.logger.Error("ensure subprocess", "err", err, "key", key)

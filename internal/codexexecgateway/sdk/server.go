@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/agentserver/agentserver/internal/codexexecgateway/audit"
 	"github.com/agentserver/agentserver/internal/envtools/bridge"
 	"github.com/agentserver/agentserver/internal/envtools/nameresolver"
 	"github.com/agentserver/agentserver/internal/envtools/processes"
@@ -71,6 +72,14 @@ type Server struct {
 	// bridge.RelayClient used by copy_path. Optional — copy_path is
 	// only registered when this is set.
 	RelayFactory RelayClientFactory
+
+	// Recorder is the audit recorder used to capture handler-level
+	// CallStart/CallEnd for every /api/connectors/* tool call. The
+	// embedding codexexecgateway.Server wires its own audit.Recorder
+	// here at construction time so REST calls and envmcp bridge sessions
+	// share one Recorder. Mount() fills in a NewNoopRecorder if nil so
+	// handlers can call methods unconditionally.
+	Recorder audit.Recorder
 
 	Logger *slog.Logger
 
@@ -165,6 +174,9 @@ func (s *Server) newWorkspaceResolver(workspaceID string) *nameresolver.Resolver
 // Mount registers every SDK route under /api/connectors/*. Each handler runs
 // through authMiddleware which extracts and validates the Bearer token.
 func (s *Server) Mount(r chi.Router) {
+	if s.Recorder == nil {
+		s.Recorder = audit.NewNoopRecorder()
+	}
 	r.Group(func(r chi.Router) {
 		r.Use(s.authMiddleware)
 		r.Post("/api/connectors/envs/list", s.handleEnvsList)
@@ -203,6 +215,13 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 func workspaceFromCtx(ctx context.Context) string {
 	if v, ok := ctx.Value(ctxWorkspaceID).(string); ok {
+		return v
+	}
+	return ""
+}
+
+func userIDFromCtx(ctx context.Context) string {
+	if v, ok := ctx.Value(ctxUserID).(string); ok {
 		return v
 	}
 	return ""

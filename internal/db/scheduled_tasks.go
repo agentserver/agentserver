@@ -154,7 +154,7 @@ func (db *DB) ListScheduledTasksByWorkspace(wsID, statusFilter string) ([]Schedu
 func (db *DB) LeaseDueScheduledTasks(limit, leaseSeconds int, owner string) ([]ScheduledTask, error) {
 	rows, err := db.Query(
 		`WITH due AS (
-		   SELECT id FROM scheduled_tasks
+		   SELECT id AS due_id FROM scheduled_tasks
 		    WHERE status = 'pending'
 		      AND process_after <= NOW()
 		      AND (lease_until IS NULL OR lease_until < NOW())
@@ -168,7 +168,7 @@ func (db *DB) LeaseDueScheduledTasks(limit, leaseSeconds int, owner string) ([]S
 		        tries       = tries + 1,
 		        updated_at  = NOW()
 		   FROM due
-		  WHERE t.id = due.id
+		  WHERE t.id = due.due_id
 		  RETURNING `+scheduledTaskCols,
 		limit, leaseSeconds, owner,
 	)

@@ -22,16 +22,16 @@ func newCapRecorder() *capRecorder {
 	return &capRecorder{ends: map[string]audit.CallEndMeta{}}
 }
 
-func (r *capRecorder) SessionOpen(audit.SessionMeta) string        { return "" }
-func (r *capRecorder) SessionClose(string, string, audit.Counters) {}
-func (r *capRecorder) OnFrameToBackend(string, any, []byte)        {}
-func (r *capRecorder) OnFrameToClient(string, any, []byte)         {}
-func (r *capRecorder) CallStart(m audit.CallStartMeta) string {
+func (r *capRecorder) SessionOpen(audit.SessionMeta) (string, error) { return "", nil }
+func (r *capRecorder) SessionClose(string, string, audit.Counters)   {}
+func (r *capRecorder) OnFrameToBackend(string, any, []byte)          {}
+func (r *capRecorder) OnFrameToClient(string, any, []byte)           {}
+func (r *capRecorder) CallStart(m audit.CallStartMeta) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	id := "call-" + m.RPCID
 	r.starts = append(r.starts, m)
-	return id
+	return id, nil
 }
 func (r *capRecorder) CallEnd(id string, m audit.CallEndMeta) {
 	r.mu.Lock()

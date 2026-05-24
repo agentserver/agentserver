@@ -68,14 +68,21 @@ type CallEndMeta struct {
 
 // Recorder is the audit interface used by the gateway pumps and
 // handlers. Production wires this to a real Recorder backed by WAL +
-// Uploader (Plan 2b later tasks). Tests and audit-disabled deployments
-// use NewNoopRecorder.
+// Uploader. Tests and audit-disabled deployments use NewNoopRecorder.
+//
+// SessionOpen and CallStart return error: when the WAL is in
+// WALOverflow=fail mode and the disk quota has been hit, the realized
+// recorder refuses to record (and thus the caller refuses to admit the
+// session/call). This is the fail-closed contract the spec promises.
+// SessionClose, CallEnd, OnFrame*, and Close are best-effort — the
+// session/call is already in flight; refusing mid-flight wouldn't
+// improve the audit trail.
 type Recorder interface {
-	SessionOpen(SessionMeta) (sessionID string)
+	SessionOpen(SessionMeta) (sessionID string, err error)
 	SessionClose(sessionID, reason string, c Counters)
 	OnFrameToBackend(sessionID string, frame any, rawBytes []byte)
 	OnFrameToClient(sessionID string, frame any, rawBytes []byte)
-	CallStart(CallStartMeta) (callID string)
+	CallStart(CallStartMeta) (callID string, err error)
 	CallEnd(callID string, m CallEndMeta)
 	Close(ctx context.Context) error
 }
@@ -86,13 +93,13 @@ type noopRecorder struct{}
 // not persist anything. Use when CXG_AUDIT_ENABLED=false.
 func NewNoopRecorder() Recorder { return noopRecorder{} }
 
-func (noopRecorder) SessionOpen(SessionMeta) string        { return uuid.NewString() }
-func (noopRecorder) SessionClose(string, string, Counters) {}
-func (noopRecorder) OnFrameToBackend(string, any, []byte)  {}
-func (noopRecorder) OnFrameToClient(string, any, []byte)   {}
-func (noopRecorder) CallStart(CallStartMeta) string        { return uuid.NewString() }
-func (noopRecorder) CallEnd(string, CallEndMeta)           {}
-func (noopRecorder) Close(context.Context) error           { return nil }
+func (noopRecorder) SessionOpen(SessionMeta) (string, error)    { return uuid.NewString(), nil }
+func (noopRecorder) SessionClose(string, string, Counters)      {}
+func (noopRecorder) OnFrameToBackend(string, any, []byte)       {}
+func (noopRecorder) OnFrameToClient(string, any, []byte)        {}
+func (noopRecorder) CallStart(CallStartMeta) (string, error)    { return uuid.NewString(), nil }
+func (noopRecorder) CallEnd(string, CallEndMeta)                {}
+func (noopRecorder) Close(context.Context) error                { return nil }
 
 // ---------- real Recorder ----------
 
@@ -196,16 +203,8 @@ func (r *realRecorder) sweepLoop(ctx context.Context) {
 	}
 }
 
-func (r *realRecorder) SessionOpen(m SessionMeta) string {
+func (r *realRecorder) SessionOpen(m SessionMeta) (string, error) {
 	id := uuid.NewString()
-	r.mu.Lock()
-	r.sessions[id] = &sessionState{
-		id:          id,
-		workspaceID: m.WorkspaceID,
-		userID:      m.UserID,
-		exeID:       m.ExeID,
-	}
-	r.mu.Unlock()
 	rec := &pb.WALRecord{
 		Id: id,
 		Body: &pb.WALRecord_SessionOpen{SessionOpen: &pb.SessionOpen{
@@ -220,10 +219,21 @@ func (r *realRecorder) SessionOpen(m SessionMeta) string {
 			OpenedAt:    timestamppb.New(m.OpenedAt),
 		}},
 	}
+	// Append BEFORE registering in r.sessions so a failure leaves no
+	// orphan state behind (the bridge will refuse the session anyway).
 	if err := r.wal.Append(rec); err != nil {
-		slog.Error("exec-audit: SessionOpen append", "id", id, "err", err)
+		slog.Error("exec-audit: SessionOpen append (refusing)", "id", id, "err", err)
+		return "", err
 	}
-	return id
+	r.mu.Lock()
+	r.sessions[id] = &sessionState{
+		id:          id,
+		workspaceID: m.WorkspaceID,
+		userID:      m.UserID,
+		exeID:       m.ExeID,
+	}
+	r.mu.Unlock()
+	return id, nil
 }
 
 func (r *realRecorder) SessionClose(sessionID, reason string, c Counters) {
@@ -276,7 +286,7 @@ func (r *realRecorder) OnFrameToClient(sessionID string, frame any, raw []byte) 
 	}
 }
 
-func (r *realRecorder) CallStart(m CallStartMeta) string {
+func (r *realRecorder) CallStart(m CallStartMeta) (string, error) {
 	id := uuid.NewString()
 	cs := &pb.CallStart{
 		CallId:      id,
@@ -293,9 +303,10 @@ func (r *realRecorder) CallStart(m CallStartMeta) string {
 	r.populatePayload(&cs.RequestBytes, &cs.RequestSize, &cs.RequestSha256, m.Request)
 	rec := &pb.WALRecord{Id: id, Body: &pb.WALRecord_CallStart{CallStart: cs}}
 	if err := r.wal.Append(rec); err != nil {
-		slog.Error("exec-audit: CallStart append", "id", id, "err", err)
+		slog.Error("exec-audit: CallStart append (refusing)", "id", id, "err", err)
+		return "", err
 	}
-	return id
+	return id, nil
 }
 
 func (r *realRecorder) CallEnd(callID string, m CallEndMeta) {

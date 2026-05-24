@@ -3,7 +3,9 @@ package sdk
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -18,7 +20,7 @@ import (
 // recordCall wraps a handler body with a CallStart / CallEnd pair so
 // the SDK call is captured at handler-level granularity. The matching
 // per-WS-frame audit hooks are suppressed for sdk-pool-managed bridges
-// in codexexecgateway.handleBridge (see captoken.go's TurnID marker)
+// in codexexecgateway.handleBridge (see captoken.go's SkipAudit field)
 // to avoid double-recording the same call.
 //
 // method is the RPC-equivalent name ("tool.call:shell",
@@ -29,13 +31,20 @@ import (
 // when there is nothing meaningful (e.g. an empty GET).
 // fn is invoked under the wrapper; it returns the response bytes for
 // CallEnd's Response field plus the error metadata.
+//
+// Returns ok=true when fn was invoked, ok=false when CallStart failed
+// (handler should short-circuit; recordCall has already written a 503).
+// On panic inside fn, recordCall emits a CallEnd with IsError=true +
+// ErrorSummary="panic: ..." before re-raising — so a panic doesn't
+// leave a CallStart orphaned with no matching End.
 func recordCall(
 	rec audit.Recorder,
+	w http.ResponseWriter,
 	workspaceID, userID, exeID, method string,
 	requestJSON []byte,
 	fn func() (responseJSON []byte, isError bool, errorSummary string),
-) {
-	callID := rec.CallStart(audit.CallStartMeta{
+) (ok bool) {
+	callID, err := rec.CallStart(audit.CallStartMeta{
 		WorkspaceID: workspaceID,
 		UserID:      userID,
 		ExeID:       exeID,
@@ -45,13 +54,42 @@ func recordCall(
 		Request:     requestJSON,
 		StartedAt:   time.Now().UTC(),
 	})
+	if err != nil {
+		log.Printf("exec-audit: CallStart failed for %s: %v", method, err)
+		writeErr(w, http.StatusServiceUnavailable, "audit_unavailable", err.Error())
+		return false
+	}
+	completed := false
+	var endMeta audit.CallEndMeta
+	defer func() {
+		if !completed {
+			r := recover()
+			endMeta = audit.CallEndMeta{
+				CompletedAt: time.Now().UTC(),
+				IsError:     true,
+			}
+			if r != nil {
+				endMeta.ErrorSummary = fmt.Sprintf("panic: %v", r)
+			} else {
+				endMeta.ErrorSummary = "incomplete (early return without panic)"
+			}
+			rec.CallEnd(callID, endMeta)
+			if r != nil {
+				panic(r) // re-raise after audit
+			}
+			return
+		}
+		rec.CallEnd(callID, endMeta)
+	}()
 	resp, isErr, errSum := fn()
-	rec.CallEnd(callID, audit.CallEndMeta{
+	endMeta = audit.CallEndMeta{
 		CompletedAt:  time.Now().UTC(),
 		IsError:      isErr,
 		ErrorSummary: errSum,
 		Response:     resp,
-	})
+	}
+	completed = true
+	return true
 }
 
 // ConnectorTool is the per-tool entry in envs/list responses. The SDK
@@ -162,7 +200,7 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	// resolution lives inside tool.Call (via nameresolver.Resolver) and
 	// isn't exposed. Leave "" — the WAL still carries workspace_id +
 	// user_id + the tool method.
-	recordCall(s.Recorder, wsID, userID, "", "tool.call:"+req.Tool, bodyBytes, func() ([]byte, bool, string) {
+	recordCall(s.Recorder, w, wsID, userID, "", "tool.call:"+req.Tool, bodyBytes, func() ([]byte, bool, string) {
 		result, callErr := tool.Call(r.Context(), argsJSON)
 		if callErr != nil {
 			writeErr(w, http.StatusInternalServerError, "tool_error", callErr.Error())
@@ -211,7 +249,7 @@ func extractSessionID(result tools.MCPCallToolResult) string {
 func (s *Server) handleEnvsList(w http.ResponseWriter, r *http.Request) {
 	wsID := workspaceFromCtx(r.Context())
 	userID := userIDFromCtx(r.Context())
-	recordCall(s.Recorder, wsID, userID, "", "envs.list", nil, func() ([]byte, bool, string) {
+	recordCall(s.Recorder, w, wsID, userID, "", "envs.list", nil, func() ([]byte, bool, string) {
 		connected, err := s.Registry.Connected(r.Context(), wsID)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "registry_error", err.Error())
@@ -310,7 +348,7 @@ func (s *Server) handleStdin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = sess // processes.Session has no ExeID yet (TODO above); pass "" for exe_id
-	recordCall(s.Recorder, wsID, userID, "", "processes.stdin", bodyBytes, func() ([]byte, bool, string) {
+	recordCall(s.Recorder, w, wsID, userID, "", "processes.stdin", bodyBytes, func() ([]byte, bool, string) {
 		var req ConnectorStdinRequest
 		if err := json.Unmarshal(bodyBytes, &req); err != nil {
 			writeErr(w, http.StatusBadRequest, "bad_request", err.Error())
@@ -352,7 +390,7 @@ func (s *Server) handleOutput(w http.ResponseWriter, r *http.Request) {
 	}
 	wsID := workspaceFromCtx(r.Context())
 	userID := userIDFromCtx(r.Context())
-	recordCall(s.Recorder, wsID, userID, "", "processes.output", nil, func() ([]byte, bool, string) {
+	recordCall(s.Recorder, w, wsID, userID, "", "processes.output", nil, func() ([]byte, bool, string) {
 		sinceStr := r.URL.Query().Get("since")
 		since, _ := strconv.Atoi(sinceStr)
 		chunks, exit, alive := sess.OutputSince(since)
@@ -398,7 +436,7 @@ func (s *Server) handleTerminate(w http.ResponseWriter, r *http.Request) {
 	}
 	wsID := workspaceFromCtx(r.Context())
 	userID := userIDFromCtx(r.Context())
-	recordCall(s.Recorder, wsID, userID, "", "processes.terminate", nil, func() ([]byte, bool, string) {
+	recordCall(s.Recorder, w, wsID, userID, "", "processes.terminate", nil, func() ([]byte, bool, string) {
 		// For v0.61.0 mark exit -1; bridge.Terminate(...) wiring lands in
 		// a follow-up. The endpoint contract works for the SDK's polling
 		// pattern (next GET output sees session_alive=false + exit_code=-1).

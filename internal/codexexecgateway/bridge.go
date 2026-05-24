@@ -158,7 +158,14 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 		// SessionOpen mints a UUID even when audit is disabled
 		// (noopRecorder), so session.auditSessionID is always non-empty
 		// for the pumps when audit is in play.
-		auditSessID = s.recorder.SessionOpen(audit.SessionMeta{
+		//
+		// Fail-closed: when the WAL is in fail mode and the disk quota
+		// is hit, SessionOpen returns an error. We refuse the bridge in
+		// that case — that's the contract the spec promises. The WS is
+		// already accepted at this point so we close it with an
+		// internal-error code rather than HTTP-erroring.
+		var openErr error
+		auditSessID, openErr = s.recorder.SessionOpen(audit.SessionMeta{
 			WorkspaceID: payload.WorkspaceID,
 			UserID:      payload.UserID,
 			ExeID:       exeID,
@@ -169,6 +176,12 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 			CapEXP:      time.Unix(payload.EXP, 0).UTC(),
 			OpenedAt:    time.Now().UTC(),
 		})
+		if openErr != nil {
+			s.logger.Error("bridge: audit SessionOpen failed (fail-closed) — refusing bridge",
+				"exe_id", exeID, "err", openErr)
+			_ = bridgeWS.Close(websocket.StatusInternalError, "audit unavailable")
+			return
+		}
 		session.auditSessionID = auditSessID
 	}
 	if evicted := inbound.addRoute(streamID, session); evicted != nil {

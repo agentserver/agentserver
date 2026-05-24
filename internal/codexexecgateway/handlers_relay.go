@@ -96,13 +96,19 @@ func (s *Server) handleRelayPut(w http.ResponseWriter, r *http.Request) {
 	if rec == nil {
 		rec = audit.NewNoopRecorder()
 	}
-	callID := rec.CallStart(audit.CallStartMeta{
+	callID, callErr := rec.CallStart(audit.CallStartMeta{
 		WorkspaceID: rel.WorkspaceID,
 		ExeID:       rel.DestExeID,
 		Source:      "relay",
 		RPCMethod:   "relay_put",
 		StartedAt:   time.Now().UTC(),
 	})
+	if callErr != nil {
+		s.logger.Error("relay PUT: audit CallStart failed (fail-closed) — refusing",
+			"ticket", urlTicket, "err", callErr)
+		http.Error(w, "audit unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	counted := newRelayCountingReader(r.Body)
 	status, body := rel.AcceptPut(counted)
 	w.Header().Set("Content-Type", "application/json")
@@ -145,13 +151,19 @@ func (s *Server) handleRelayGet(w http.ResponseWriter, r *http.Request) {
 	if rec == nil {
 		rec = audit.NewNoopRecorder()
 	}
-	callID := rec.CallStart(audit.CallStartMeta{
+	callID, callErr := rec.CallStart(audit.CallStartMeta{
 		WorkspaceID: rel.WorkspaceID,
 		ExeID:       rel.SourceExeID,
 		Source:      "relay",
 		RPCMethod:   "relay_get",
 		StartedAt:   time.Now().UTC(),
 	})
+	if callErr != nil {
+		s.logger.Error("relay GET: audit CallStart failed (fail-closed) — refusing",
+			"ticket", urlTicket, "err", callErr)
+		http.Error(w, "audit unavailable", http.StatusServiceUnavailable)
+		return
+	}
 
 	// Set Content-Type before AcceptGet because the pairing goroutine's
 	// first Write implicitly calls WriteHeader(200) (success path) and

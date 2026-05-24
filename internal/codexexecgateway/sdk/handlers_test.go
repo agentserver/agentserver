@@ -4,15 +4,108 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/agentserver/agentserver/internal/codexexecgateway/audit"
 	"github.com/agentserver/agentserver/internal/envtools/processes"
 )
+
+// capRec captures CallStart/CallEnd for assertion in recordCall tests.
+type capRec struct {
+	mu          sync.Mutex
+	startErr    error
+	starts      []audit.CallStartMeta
+	ends        map[string]audit.CallEndMeta
+	endOrder    []string
+	startCount  int
+}
+
+func (r *capRec) SessionOpen(audit.SessionMeta) (string, error)    { return "", nil }
+func (r *capRec) SessionClose(string, string, audit.Counters)      {}
+func (r *capRec) OnFrameToBackend(string, any, []byte)             {}
+func (r *capRec) OnFrameToClient(string, any, []byte)              {}
+func (r *capRec) CallStart(m audit.CallStartMeta) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.startErr != nil {
+		return "", r.startErr
+	}
+	r.startCount++
+	id := fmt.Sprintf("call-%d", r.startCount)
+	r.starts = append(r.starts, m)
+	return id, nil
+}
+func (r *capRec) CallEnd(id string, m audit.CallEndMeta) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.ends == nil {
+		r.ends = map[string]audit.CallEndMeta{}
+	}
+	r.ends[id] = m
+	r.endOrder = append(r.endOrder, id)
+}
+func (r *capRec) Close(context.Context) error { return nil }
+
+// TestRecordCall_PanicProducesCallEnd: a panic inside fn() must still
+// emit a paired CallEnd with IsError=true + ErrorSummary so the audit
+// trail can't be left with an orphaned CallStart.
+func TestRecordCall_PanicProducesCallEnd(t *testing.T) {
+	rec := &capRec{}
+	w := httptest.NewRecorder()
+	defer func() {
+		// The panic must be re-raised. Recover here so the test passes.
+		if r := recover(); r == nil {
+			t.Fatal("expected recordCall to re-raise the panic from fn")
+		}
+		// Verify CallEnd was emitted before the re-raise.
+		if len(rec.ends) != 1 {
+			t.Fatalf("want 1 CallEnd, got %d", len(rec.ends))
+		}
+		var end audit.CallEndMeta
+		for _, v := range rec.ends {
+			end = v
+		}
+		if !end.IsError {
+			t.Errorf("CallEnd.IsError should be true on panic")
+		}
+		if !strings.HasPrefix(end.ErrorSummary, "panic:") {
+			t.Errorf("CallEnd.ErrorSummary should start with 'panic:', got %q", end.ErrorSummary)
+		}
+	}()
+	recordCall(rec, w, "ws", "u", "exe", "tool.call:shell", nil, func() ([]byte, bool, string) {
+		panic("boom")
+	})
+}
+
+// TestRecordCall_StartErrorWrites503: when CallStart returns an error,
+// recordCall must short-circuit, write 503, and never invoke fn.
+func TestRecordCall_StartErrorWrites503(t *testing.T) {
+	rec := &capRec{startErr: errors.New("audit disk full")}
+	w := httptest.NewRecorder()
+	invoked := false
+	ok := recordCall(rec, w, "ws", "u", "exe", "tool.call:shell", nil, func() ([]byte, bool, string) {
+		invoked = true
+		return nil, false, ""
+	})
+	if ok {
+		t.Fatal("recordCall should return ok=false when CallStart fails")
+	}
+	if invoked {
+		t.Fatal("fn must NOT be invoked when CallStart fails")
+	}
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", w.Code)
+	}
+}
 
 // connectedListerStub returns hard-coded envs for one workspace.
 type connectedListerStub struct{}

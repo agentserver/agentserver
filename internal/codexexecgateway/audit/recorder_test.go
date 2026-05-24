@@ -10,21 +10,27 @@ import (
 
 func TestNoopRecorder_AllMethodsAreSafe(t *testing.T) {
 	r := audit.NewNoopRecorder()
-	sid := r.SessionOpen(audit.SessionMeta{
+	sid, err := r.SessionOpen(audit.SessionMeta{
 		WorkspaceID: "ws", ExeID: "exe", StreamID: "s1",
 		OpenedAt: time.Now(),
 	})
+	if err != nil {
+		t.Fatalf("noop SessionOpen unexpectedly returned err: %v", err)
+	}
 	if sid == "" {
 		t.Fatal("expected non-empty session id even from noop")
 	}
 	r.OnFrameToBackend(sid, nil, nil)
 	r.OnFrameToClient(sid, nil, nil)
-	cid := r.CallStart(audit.CallStartMeta{
+	cid, err := r.CallStart(audit.CallStartMeta{
 		Source:      "rest",
 		WorkspaceID: "ws",
 		ExeID:       "exe",
 		StartedAt:   time.Now(),
 	})
+	if err != nil {
+		t.Fatalf("noop CallStart unexpectedly returned err: %v", err)
+	}
 	if cid == "" {
 		t.Fatal("expected non-empty call id even from noop")
 	}

@@ -62,7 +62,15 @@ func (p *RPCParser) OnFrameToBackend(sessionID, wsID, userID, exeID string, payl
 		Request:     payload,
 		StartedAt:   now,
 	}
-	callID := p.rec.CallStart(startMeta)
+	callID, err := p.rec.CallStart(startMeta)
+	if err != nil {
+		// Best-effort: a session-level frame's CallStart failing means
+		// the WAL is wedged. The bridge handler doesn't have a
+		// per-frame error path (audit must not block frame forwarding),
+		// so just drop the pair-tracking entry — the failure was logged
+		// inside realRecorder.
+		return
+	}
 	if kind != "request" {
 		return // notification: no pair expected
 	}

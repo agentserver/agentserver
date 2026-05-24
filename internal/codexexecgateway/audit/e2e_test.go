@@ -92,14 +92,17 @@ func TestExecAudit_EndToEnd(t *testing.T) {
 	})
 
 	// Emit one session + one paired call + a close.
-	sid := rec.SessionOpen(audit.SessionMeta{
+	sid, err := rec.SessionOpen(audit.SessionMeta{
 		WorkspaceID: wsID,
 		UserID:      "u_e2e",
 		ExeID:       "exe_e2e",
 		StreamID:    "s1",
 		OpenedAt:    time.Now().UTC(),
 	})
-	cid := rec.CallStart(audit.CallStartMeta{
+	if err != nil {
+		t.Fatalf("SessionOpen: %v", err)
+	}
+	cid, err := rec.CallStart(audit.CallStartMeta{
 		SessionID:   sid,
 		WorkspaceID: wsID,
 		UserID:      "u_e2e",
@@ -111,6 +114,9 @@ func TestExecAudit_EndToEnd(t *testing.T) {
 		Request:     []byte(`{"cmd":"ls"}`),
 		StartedAt:   time.Now().UTC(),
 	})
+	if err != nil {
+		t.Fatalf("CallStart: %v", err)
+	}
 	rec.CallEnd(cid, audit.CallEndMeta{
 		CompletedAt: time.Now().UTC(),
 		Response:    []byte(`{"stdout":"file1\nfile2\n"}`),

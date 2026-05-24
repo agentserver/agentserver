@@ -40,7 +40,16 @@ type Uploader struct {
 	hc  *http.Client
 }
 
-func NewUploader(cfg UploaderConfig) *Uploader {
+// NewUploader validates config and returns the uploader. Refuses when
+// UploadURL is set but UploadSecret is empty — the upload loop would
+// hit a 401/403 forever (errAuthFatal), the goroutine would die, and
+// audit records would silently accumulate on disk with no upload. The
+// silent-failure mode that bug produces is the worst kind of
+// operational disaster, so fail-fast at construction (I11 followup).
+func NewUploader(cfg UploaderConfig) (*Uploader, error) {
+	if cfg.UploadURL != "" && cfg.UploadSecret == "" {
+		return nil, errors.New("uploader: UploadURL set but UploadSecret empty (would 401 forever)")
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
@@ -62,7 +71,7 @@ func NewUploader(cfg UploaderConfig) *Uploader {
 	if cfg.FlushInterval <= 0 {
 		cfg.FlushInterval = time.Second
 	}
-	return &Uploader{cfg: cfg, log: cfg.Logger, hc: cfg.HTTPClient}
+	return &Uploader{cfg: cfg, log: cfg.Logger, hc: cfg.HTTPClient}, nil
 }
 
 // Run drives uploads until ctx is canceled. Blocks; intended for
@@ -128,6 +137,13 @@ var errAuthFatal = errors.New("auth failed")
 // BatchRecords / BatchBytes worth of records. Returns the batch + a
 // per-file byte tally so the caller can Advance the cursor symmetrically
 // on a successful POST.
+//
+// TODO(perf): reopening + re-seeking every iteration is O(uploaded
+// bytes) per call. For high-throughput deployments we should hold the
+// reader open across loop iterations and only reopen when the cursor
+// rotates onto a new file. Not done in this commit because the cursor/
+// rotation interplay is subtle and the WAL files are typically small
+// (10 MiB max-default).
 func (u *Uploader) readNextBatch() (*pb.BatchRecords, map[string]int64, int, error) {
 	r, err := OpenWALReader(u.cfg.WALDir)
 	if err != nil {

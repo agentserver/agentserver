@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"sync"
@@ -121,12 +122,17 @@ type realRecorder struct {
 	sweepCtxCancel  context.CancelFunc
 }
 
+// sessionState holds the immutable identity fields the per-frame
+// recorder hooks need to attribute frames. Counters intentionally are
+// NOT tracked here — they were dead writes (SessionClose uses the
+// caller-supplied bridgeSession atomic counters as the source of
+// truth). Removing them lets OnFrameTo* skip the global recorder mutex
+// on the hot per-frame path.
 type sessionState struct {
 	id          string
 	workspaceID string
 	userID      string
 	exeID       string
-	counters    Counters
 }
 
 // NewRecorder constructs the appropriate Recorder for cfg. If
@@ -163,7 +169,7 @@ func NewRecorder(cfg Config) (Recorder, error) {
 	r.parser = NewRPCParser(r, RPCParserConfig{PairTimeout: cfg.RPCPairTimeout})
 
 	if cfg.UploadURL != "" && cfg.UploadSecret != "" {
-		r.uploader = NewUploader(UploaderConfig{
+		u, uerr := NewUploader(UploaderConfig{
 			WALDir:        cfg.WALDir,
 			Cursor:        cur,
 			UploadURL:     cfg.UploadURL,
@@ -173,6 +179,11 @@ func NewRecorder(cfg Config) (Recorder, error) {
 			FlushInterval: cfg.UploadFlushInterval,
 			GatewayID:     cfg.GatewayID,
 		})
+		if uerr != nil {
+			_ = wal.Close()
+			return nil, fmt.Errorf("uploader init: %w", uerr)
+		}
+		r.uploader = u
 		ctx, cancel := context.WithCancel(context.Background())
 		r.uploadCtxCancel = cancel
 		go r.uploader.Run(ctx)
@@ -258,15 +269,18 @@ func (r *realRecorder) SessionClose(sessionID, reason string, c Counters) {
 	r.mu.Unlock()
 }
 
+// OnFrameToBackend looks up the (immutable) session identity and
+// delegates payload extraction + parser dispatch. The per-frame counter
+// bumps that used to live here were dead writes (SessionClose reads
+// the bridgeSession atomic counters, not this map) so removing them
+// also removes the global r.mu lock from the per-frame hot path.
+// r.session() still briefly acquires r.mu for the map lookup; that
+// can't be avoided without a more invasive sync.Map refactor.
 func (r *realRecorder) OnFrameToBackend(sessionID string, frame any, raw []byte) {
 	st := r.session(sessionID)
 	if st == nil {
 		return
 	}
-	r.mu.Lock()
-	st.counters.FramesToBackend++
-	st.counters.BytesToBackend += int64(len(raw))
-	r.mu.Unlock()
 	if payload := extractRelayDataPayload(frame, raw); len(payload) > 0 {
 		r.parser.OnFrameToBackend(sessionID, st.workspaceID, st.userID, st.exeID, payload)
 	}
@@ -277,10 +291,6 @@ func (r *realRecorder) OnFrameToClient(sessionID string, frame any, raw []byte) 
 	if st == nil {
 		return
 	}
-	r.mu.Lock()
-	st.counters.FramesToClient++
-	st.counters.BytesToClient += int64(len(raw))
-	r.mu.Unlock()
 	if payload := extractRelayDataPayload(frame, raw); len(payload) > 0 {
 		r.parser.OnFrameToClient(sessionID, payload)
 	}

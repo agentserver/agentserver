@@ -63,7 +63,7 @@ func TestUploader_SuccessfulBatchAdvancesCursor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	u := audit.NewUploader(audit.UploaderConfig{
+	u, err := audit.NewUploader(audit.UploaderConfig{
 		WALDir:        dir,
 		Cursor:        cur,
 		UploadURL:     srv.URL,
@@ -73,6 +73,9 @@ func TestUploader_SuccessfulBatchAdvancesCursor(t *testing.T) {
 		FlushInterval: 50 * time.Millisecond,
 		GatewayID:     "test",
 	})
+	if err != nil {
+		t.Fatalf("NewUploader: %v", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	go u.Run(ctx)
@@ -135,10 +138,11 @@ func TestUploader_RetriesOn5xx(t *testing.T) {
 	defer srv.Close()
 
 	cur, _ := audit.OpenCursor(filepath.Join(dir, "cursor.json"))
-	u := audit.NewUploader(audit.UploaderConfig{
+	u, err := audit.NewUploader(audit.UploaderConfig{
 		WALDir:        dir,
 		Cursor:        cur,
 		UploadURL:     srv.URL,
+		UploadSecret:  "test-secret",
 		BatchRecords:  10,
 		BatchBytes:    1 << 20,
 		FlushInterval: 20 * time.Millisecond,
@@ -146,6 +150,9 @@ func TestUploader_RetriesOn5xx(t *testing.T) {
 		BackoffStart:  5 * time.Millisecond,
 		BackoffMax:    50 * time.Millisecond,
 	})
+	if err != nil {
+		t.Fatalf("NewUploader: %v", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	go u.Run(ctx)
@@ -183,7 +190,8 @@ func TestUploader_NoReplayAfterRestart(t *testing.T) {
 	defer srv.Close()
 
 	cfg := audit.UploaderConfig{
-		WALDir: dir, UploadURL: srv.URL, GatewayID: "test",
+		WALDir: dir, UploadURL: srv.URL, UploadSecret: "test-secret",
+		GatewayID:    "test",
 		BatchRecords: 10, BatchBytes: 1 << 20,
 		FlushInterval: 30 * time.Millisecond,
 	}
@@ -192,7 +200,10 @@ func TestUploader_NoReplayAfterRestart(t *testing.T) {
 	{
 		cur, _ := audit.OpenCursor(filepath.Join(dir, "cursor.json"))
 		cfg.Cursor = cur
-		u := audit.NewUploader(cfg)
+		u, err := audit.NewUploader(cfg)
+		if err != nil {
+			t.Fatalf("NewUploader: %v", err)
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		go u.Run(ctx)
 		time.Sleep(300 * time.Millisecond)
@@ -208,7 +219,10 @@ func TestUploader_NoReplayAfterRestart(t *testing.T) {
 	{
 		cur, _ := audit.OpenCursor(filepath.Join(dir, "cursor.json"))
 		cfg.Cursor = cur
-		u := audit.NewUploader(cfg)
+		u, err := audit.NewUploader(cfg)
+		if err != nil {
+			t.Fatalf("NewUploader: %v", err)
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		go u.Run(ctx)
 		time.Sleep(300 * time.Millisecond)

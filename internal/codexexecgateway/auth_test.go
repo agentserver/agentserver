@@ -82,6 +82,24 @@ func TestVerifyCapabilityToken_OldTokenHasNoUserID(t *testing.T) {
 	}
 }
 
+// TestVerifyCapabilityToken_SkipAuditRoundTrips ensures the typed
+// CapPayload.SkipAudit field survives mint+verify so the bridge handler
+// can rely on it instead of the prior magic-string TurnID prefix (I10).
+func TestVerifyCapabilityToken_SkipAuditRoundTrips(t *testing.T) {
+	secret := []byte("k")
+	tok := mintToken(t, secret, CapPayload{
+		TurnID: "sdk", WorkspaceID: "w", SkipAudit: true,
+		EXP: time.Now().Unix() + 60,
+	})
+	got, err := VerifyCapabilityToken(tok, secret)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !got.SkipAudit {
+		t.Fatalf("SkipAudit: want true, got false")
+	}
+}
+
 func TestVerifyCapabilityToken_BadSig(t *testing.T) {
 	tok := mintToken(t, []byte("k1"), CapPayload{TurnID: "t", WorkspaceID: "w", EXP: time.Now().Unix() + 60})
 	if _, err := VerifyCapabilityToken(tok, []byte("k2")); err != ErrBadSignature {

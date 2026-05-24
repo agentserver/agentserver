@@ -214,7 +214,11 @@ func (s *Server) handleToolCall(w http.ResponseWriter, r *http.Request) {
 				WorkspaceID: wsID,
 			})
 		}
-		respBytes, _ := json.Marshal(result)
+		respBytes, mErr := json.Marshal(result)
+		if mErr != nil {
+			log.Printf("exec-audit: marshal tool result for %s: %v", req.Tool, mErr)
+			respBytes = []byte(fmt.Sprintf(`{"audit_marshal_failed":%q}`, mErr.Error()))
+		}
 		writeJSON(w, result)
 		return respBytes, false, ""
 	})
@@ -266,7 +270,11 @@ func (s *Server) handleEnvsList(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		resp := ConnectorEnvsListResponse{Envs: envs}
-		respBytes, _ := json.Marshal(resp)
+		respBytes, mErr := json.Marshal(resp)
+		if mErr != nil {
+			log.Printf("exec-audit: marshal envs/list: %v", mErr)
+			respBytes = []byte(fmt.Sprintf(`{"audit_marshal_failed":%q}`, mErr.Error()))
+		}
 		writeJSON(w, resp)
 		return respBytes, false, ""
 	})
@@ -362,7 +370,11 @@ func (s *Server) handleStdin(w http.ResponseWriter, r *http.Request) {
 		// For v0.61.0 the endpoint contract is testable; full bridge integration
 		// lands in a follow-up once Session has the exe-side fields wired.
 		resp := ConnectorOKResponse{OK: true}
-		respBytes, _ := json.Marshal(resp)
+		respBytes, mErr := json.Marshal(resp)
+		if mErr != nil {
+			log.Printf("exec-audit: marshal stdin OK: %v", mErr)
+			respBytes = []byte(fmt.Sprintf(`{"audit_marshal_failed":%q}`, mErr.Error()))
+		}
 		writeJSON(w, resp)
 		return respBytes, false, ""
 	})
@@ -411,7 +423,11 @@ func (s *Server) handleOutput(w http.ResponseWriter, r *http.Request) {
 		}
 		// Output chunks can be large; record size+hash via the Recorder
 		// (it truncates above PayloadMaxBytes). Pass marshaled bytes.
-		respBytes, _ := json.Marshal(resp)
+		respBytes, mErr := json.Marshal(resp)
+		if mErr != nil {
+			log.Printf("exec-audit: marshal processes/output: %v", mErr)
+			respBytes = []byte(fmt.Sprintf(`{"audit_marshal_failed":%q}`, mErr.Error()))
+		}
 		writeJSON(w, resp)
 		return respBytes, false, ""
 	})
@@ -443,7 +459,11 @@ func (s *Server) handleTerminate(w http.ResponseWriter, r *http.Request) {
 		sess.SetExit(-1)
 		s.Sessions.Forget(sess.ID)
 		resp := ConnectorOKResponse{OK: true}
-		respBytes, _ := json.Marshal(resp)
+		respBytes, mErr := json.Marshal(resp)
+		if mErr != nil {
+			log.Printf("exec-audit: marshal terminate OK: %v", mErr)
+			respBytes = []byte(fmt.Sprintf(`{"audit_marshal_failed":%q}`, mErr.Error()))
+		}
 		writeJSON(w, resp)
 		return respBytes, false, ""
 	})

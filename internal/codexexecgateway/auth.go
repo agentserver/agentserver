@@ -29,6 +29,14 @@ type CapPayload struct {
 	UserID string `json:"user_id,omitempty"`
 	IAT    int64  `json:"iat"`
 	EXP    int64  `json:"exp"`
+	// SkipAudit asks the bridge handler not to open a per-frame audit
+	// session for this bridge. Used by sdk/captoken.go for in-process
+	// bridge.Pool tokens — the SDK REST handler does its own
+	// CallStart/CallEnd for the logical call, so per-frame double-
+	// recording would be noise. Older tokens lack this field and
+	// default to false (audit applies normally). Replaces the prior
+	// magic-string `TurnID="sdk-pool:..."` marker (I10 followup).
+	SkipAudit bool `json:"skip_audit,omitempty"`
 }
 
 var (

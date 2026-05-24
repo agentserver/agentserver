@@ -206,14 +206,23 @@ func trimQuotes(s string) string {
 	return s
 }
 
+// extractErrorMessage pulls the JSON-RPC error.message field from a
+// response payload. Falls back to a truncated raw-payload string when
+// the payload doesn't match the standard shape — operators no longer
+// see IsError=true with an empty ErrorSummary in the audit DB (I9).
 func extractErrorMessage(payload []byte) string {
 	var m struct {
 		Error struct {
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(payload, &m); err != nil {
-		return ""
+	if err := json.Unmarshal(payload, &m); err == nil && m.Error.Message != "" {
+		return m.Error.Message
 	}
-	return m.Error.Message
+	// Fallback: truncate the raw payload so operators get SOMETHING.
+	const maxErrSummary = 256
+	if len(payload) > maxErrSummary {
+		return string(payload[:maxErrSummary]) + "...(truncated)"
+	}
+	return string(payload)
 }

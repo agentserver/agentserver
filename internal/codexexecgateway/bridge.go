@@ -140,13 +140,13 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 	// sdk/handlers.go) are skipped at the session/frame level — the SDK
 	// REST handler does its own CallStart/CallEnd for each tool call as
 	// a whole. Recording the underlying WS frames here too would
-	// double-record every SDK call. Detection: sdk/captoken.go stamps
-	// the cap-token's turn_id with the "sdk-pool" prefix; that marker
-	// is the protocol between sdk minting and this handler. The frame
-	// pump hooks still fire below but become no-ops because
-	// realRecorder.session("") returns nil (and noopRecorder doesn't
-	// care either way), so auditSessionID stays empty for sdk-pool.
-	isPool := strings.HasPrefix(payload.TurnID, "sdk-pool")
+	// double-record every SDK call. Detection: typed CapPayload.SkipAudit
+	// flag set by sdk/captoken.go (I10 followup; replaces the prior
+	// magic-string TurnID prefix). The frame pump hooks still fire below
+	// but become no-ops because realRecorder.session("") returns nil
+	// (and noopRecorder doesn't care either way), so auditSessionID
+	// stays empty for sdk-pool.
+	isPool := payload.SkipAudit
 	var auditSessID string
 	if !isPool {
 		// Open the audit session BEFORE addRoute so the inbound reader

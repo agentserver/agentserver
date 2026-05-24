@@ -26,15 +26,14 @@ const sdkCapTokenTTL = 24 * time.Hour
 // the sdk sub-package would close the loop at test time).
 //
 // turn_id is unused for authorization at verify time (the /bridge
-// handler authorises against workspace_executors, not turn_id) but the
-// marker IS load-bearing for the audit pipeline: codexexecgateway's
-// handleBridge inspects payload.TurnID to detect sdk-pool-managed
-// bridges and SKIPS audit.SessionOpen for them, because the SDK REST
-// handlers (sdk/handlers.go) already record each tool call at
-// CallStart/CallEnd granularity. Without this marker we'd double-record
-// every SDK call (once at the handler, once per WS frame). The
-// "sdk-pool:" prefix + workspace id makes the source unmistakable in
-// logs while keeping the prefix check trivial.
+// handler authorises against workspace_executors, not turn_id). To
+// signal "this is an SDK-Pool-managed bridge — skip the per-frame audit
+// session", we set the typed CapPayload.SkipAudit field (I10). The
+// previous magic-string `TurnID="sdk-pool:..."` was load-bearing but
+// silently mis-typed code could break it. The SDK REST handlers in
+// sdk/handlers.go already record each tool call at CallStart/CallEnd
+// granularity; without SkipAudit we'd double-record every SDK call
+// (once at the handler, once per WS frame).
 func mintWorkspaceToken(secret []byte, workspaceID string) (string, error) {
 	if len(secret) == 0 {
 		return "", fmt.Errorf("captoken: empty secret")
@@ -48,11 +47,13 @@ func mintWorkspaceToken(secret []byte, workspaceID string) (string, error) {
 		WorkspaceID string `json:"workspace_id"`
 		IAT         int64  `json:"iat"`
 		EXP         int64  `json:"exp"`
+		SkipAudit   bool   `json:"skip_audit,omitempty"`
 	}{
-		TurnID:      "sdk-pool:" + workspaceID,
+		TurnID:      "sdk",
 		WorkspaceID: workspaceID,
 		IAT:         now,
 		EXP:         now + int64(sdkCapTokenTTL.Seconds()),
+		SkipAudit:   true,
 	}
 	pj, err := json.Marshal(payload)
 	if err != nil {

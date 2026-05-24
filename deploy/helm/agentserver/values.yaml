@@ -340,6 +340,27 @@ codexExecGateway:
   relayMaxPerWorkspace: 0  # e.g. 16 — concurrent relays per workspace
   resources: {}
 
+# codex-exec-edge: thin WS auth/proxy + register-retry layer in front of
+# codex-exec-gateway. Decouples connector lifecycle from gateway upgrades —
+# gateway can Recreate freely without killing connector processes (which
+# would otherwise exit on register .await? failure during the restart window).
+# See docs/superpowers/specs/2026-05-24-codex-exec-edge-design.md.
+codexExecEdge:
+  enabled: true
+  image:
+    repository: ghcr.io/agentserver/codex-exec-edge
+    tag: ""               # defaults to Chart.AppVersion via template, override here for testing
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+  port: 6061
+  registerRetryTimeout: "30s"
+  registerRetryBase: "500ms"
+  upstreamDialTimeout: "5s"
+  logLevel: "info"
+  resources:
+    requests: { cpu: "50m",  memory: "64Mi" }
+    limits:   { cpu: "500m", memory: "256Mi" }
+
 # Exec-gateway audit (Plan 2b): records every JSON-RPC frame on envmcp WS
 # bridges, every SDK REST call (/api/connectors/*) and every relay PUT/GET.
 # WAL on the pod local disk → uploader batches to agentserver Postgres via

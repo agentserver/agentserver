@@ -2542,11 +2542,6 @@ paths:
           name: method
           schema:
             type: string
-        - description: Filter on error flag
-          in: query
-          name: is_error
-          schema:
-            type: boolean
         - description: RFC3339 lower bound (started_at)
           in: query
           name: since
@@ -2664,21 +2659,9 @@ paths:
           required: true
           schema:
             type: string
-        - description: request|response
-          in: query
-          name: side
-          required: true
-          schema:
-            type: string
       responses:
         "200":
           description: OK
-          content:
-            application/octet-stream:
-              schema:
-                type: string
-        "400":
-          description: Bad Request
           content:
             application/octet-stream:
               schema:
@@ -2709,7 +2692,7 @@ paths:
                 type: string
       security:
         - CookieAuth: []
-      summary: Get exec-audit call payload (workspace-scoped)
+      summary: Get exec-audit call request payload (workspace-scoped)
       tags:
         - Exec-Audit
   "/api/workspaces/{id}/exec-audit/sessions":
@@ -4411,11 +4394,6 @@ paths:
           name: method
           schema:
             type: string
-        - description: Filter on error flag
-          in: query
-          name: is_error
-          schema:
-            type: boolean
         - description: RFC3339 lower bound (started_at)
           in: query
           name: since
@@ -5295,30 +5273,15 @@ components:
       type: object
     AuditCallDetail:
       properties:
-        completed_at:
-          description: RFC3339
-          type: string
-        duration_ms:
-          type: integer
-        error_summary:
-          type: string
         exe_id:
           type: string
         id:
           type: string
-        is_error:
-          type: boolean
         request_preview:
           type: string
         request_sha256:
           type: string
         request_size:
-          type: integer
-        response_preview:
-          type: string
-        response_sha256:
-          type: string
-        response_size:
           type: integer
         rpc_id:
           type: string
@@ -5347,26 +5310,13 @@ components:
       type: object
     AuditCallSummary:
       properties:
-        completed_at:
-          description: RFC3339
-          type: string
-        duration_ms:
-          type: integer
-        error_summary:
-          type: string
         exe_id:
           type: string
         id:
           type: string
-        is_error:
-          type: boolean
         request_sha256:
           type: string
         request_size:
-          type: integer
-        response_sha256:
-          type: string
-        response_size:
           type: integer
         rpc_id:
           type: string

@@ -2,12 +2,8 @@ package codexexecgateway
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"hash"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -16,53 +12,6 @@ import (
 	"github.com/agentserver/agentserver/internal/codexexecgateway/relay"
 	"github.com/go-chi/chi/v5"
 )
-
-// relayCountingReader counts bytes read AND hashes them, so the relay
-// audit record can carry size + sha256 of the actual stream without
-// buffering the whole body (which could be GB).
-type relayCountingReader struct {
-	r io.Reader
-	h hash.Hash
-	n int64
-}
-
-func newRelayCountingReader(r io.Reader) *relayCountingReader {
-	return &relayCountingReader{r: r, h: sha256.New()}
-}
-
-func (c *relayCountingReader) Read(p []byte) (int, error) {
-	n, err := c.r.Read(p)
-	if n > 0 {
-		c.h.Write(p[:n])
-		c.n += int64(n)
-	}
-	return n, err
-}
-
-func (c *relayCountingReader) Sum() string { return hex.EncodeToString(c.h.Sum(nil)) }
-
-// relayCountingWriter is the symmetric counter for the GET path.
-type relayCountingWriter struct {
-	w http.ResponseWriter
-	h hash.Hash
-	n int64
-}
-
-func newRelayCountingWriter(w http.ResponseWriter) *relayCountingWriter {
-	return &relayCountingWriter{w: w, h: sha256.New()}
-}
-
-func (c *relayCountingWriter) Header() http.Header         { return c.w.Header() }
-func (c *relayCountingWriter) WriteHeader(statusCode int)  { c.w.WriteHeader(statusCode) }
-func (c *relayCountingWriter) Write(p []byte) (int, error) {
-	n, err := c.w.Write(p)
-	if n > 0 {
-		c.h.Write(p[:n])
-		c.n += int64(n)
-	}
-	return n, err
-}
-func (c *relayCountingWriter) Sum() string { return hex.EncodeToString(c.h.Sum(nil)) }
 
 // ────────────────────────────────────────────────────────────────────
 // Public PUT/GET endpoints (ticket Bearer auth)
@@ -90,42 +39,29 @@ func (s *Server) handleRelayPut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Audit: relay PUT is a logical "instruction to codex-exec" (DestExeID
-	// will write the bytes locally). We never inline the body — could be
-	// GB — only record size + sha256 in the CallEnd's Response summary.
+	// will write the bytes locally). Body is not inlined — could be GB —
+	// the Request just identifies the ticket and target exe.
 	rec := s.recorder
 	if rec == nil {
 		rec = audit.NewNoopRecorder()
 	}
-	callID, callErr := rec.CallStart(audit.CallStartMeta{
+	if _, callErr := rec.CallStart(audit.CallStartMeta{
 		WorkspaceID: rel.WorkspaceID,
 		ExeID:       rel.DestExeID,
 		Source:      "relay",
 		RPCMethod:   "relay_put",
+		Request:     []byte(fmt.Sprintf(`{"ticket":%q,"dest_exe_id":%q}`, urlTicket, rel.DestExeID)),
 		StartedAt:   time.Now().UTC(),
-	})
-	if callErr != nil {
+	}); callErr != nil {
 		s.logger.Error("relay PUT: audit CallStart failed (fail-closed) — refusing",
 			"ticket", urlTicket, "err", callErr)
 		http.Error(w, "audit unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	counted := newRelayCountingReader(r.Body)
-	status, body := rel.AcceptPut(counted)
+	status, body := rel.AcceptPut(r.Body)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
-
-	end := audit.CallEndMeta{
-		CompletedAt: time.Now().UTC(),
-		Response: []byte(fmt.Sprintf(
-			`{"relay_put_bytes":%d,"relay_put_sha256":"%s"}`,
-			counted.n, counted.Sum())),
-	}
-	if status >= 400 {
-		end.IsError = true
-		end.ErrorSummary = string(body)
-	}
-	rec.CallEnd(callID, end)
 }
 
 // handleRelayGet accepts the download half. Streams body chunked.
@@ -145,20 +81,19 @@ func (s *Server) handleRelayGet(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "ticket not found or expired", http.StatusGone)
 		return
 	}
-	// Audit: relay GET is reading bytes FROM SourceExeID. Same size+sha
-	// pattern as PUT — never inline the streamed body.
+	// Audit: relay GET is reading bytes FROM SourceExeID. Same shape as PUT.
 	rec := s.recorder
 	if rec == nil {
 		rec = audit.NewNoopRecorder()
 	}
-	callID, callErr := rec.CallStart(audit.CallStartMeta{
+	if _, callErr := rec.CallStart(audit.CallStartMeta{
 		WorkspaceID: rel.WorkspaceID,
 		ExeID:       rel.SourceExeID,
 		Source:      "relay",
 		RPCMethod:   "relay_get",
+		Request:     []byte(fmt.Sprintf(`{"ticket":%q,"source_exe_id":%q}`, urlTicket, rel.SourceExeID)),
 		StartedAt:   time.Now().UTC(),
-	})
-	if callErr != nil {
+	}); callErr != nil {
 		s.logger.Error("relay GET: audit CallStart failed (fail-closed) — refusing",
 			"ticket", urlTicket, "err", callErr)
 		http.Error(w, "audit unavailable", http.StatusServiceUnavailable)
@@ -182,8 +117,7 @@ func (s *Server) handleRelayGet(w http.ResponseWriter, r *http.Request) {
 	// application/octet-stream interpretation.
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	counted := newRelayCountingWriter(w)
-	status, body := rel.AcceptGet(counted)
+	status, body := rel.AcceptGet(w)
 	// status==0: streamed successfully; headers + 200 already flushed.
 	// status!=0: pairing failed before any byte was written, emit the
 	// status + JSON body. Override the Content-Type since the body is
@@ -193,18 +127,6 @@ func (s *Server) handleRelayGet(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(status)
 		_, _ = w.Write(body)
 	}
-
-	end := audit.CallEndMeta{
-		CompletedAt: time.Now().UTC(),
-		Response: []byte(fmt.Sprintf(
-			`{"relay_get_bytes":%d,"relay_get_sha256":"%s"}`,
-			counted.n, counted.Sum())),
-	}
-	if status >= 400 {
-		end.IsError = true
-		end.ErrorSummary = string(body)
-	}
-	rec.CallEnd(callID, end)
 }
 
 // ────────────────────────────────────────────────────────────────────

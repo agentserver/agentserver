@@ -87,12 +87,11 @@ func (db *DB) UpsertAuditSession(s AuditSession) error {
 	return err
 }
 
-// ErrAuditRowMissing is returned by UpdateAuditSessionClose /
-// UpdateAuditCallEnd when the target row does not exist. The ingest
-// handler treats this as "skip + log", so the next retry from the
-// gateway-side WAL (after the matching Open / Start record lands)
-// completes the row. Without surfacing this, an out-of-order batch
-// would silently drop the close.
+// ErrAuditRowMissing is returned by UpdateAuditSessionClose when the
+// target row does not exist. The ingest handler treats this as
+// "skip + log", so the next retry from the gateway-side WAL (after the
+// matching Open record lands) completes the row. Without surfacing
+// this, an out-of-order batch would silently drop the close.
 var ErrAuditRowMissing = errors.New("exec_audit: row not found")
 
 // UpdateAuditSessionClose stamps the close-time fields on an existing
@@ -120,35 +119,27 @@ func (db *DB) UpdateAuditSessionClose(id string, closedAt time.Time, reason stri
 }
 
 // AuditCall is one row in exec_audit_calls — a single logical call:
-// a JSON-RPC request/response pair, an SDK tool invocation, or a relay
-// PUT/GET. Source is the bridge type ("envmcp" | "rest" | "relay") and
-// matches the CHECK constraint on the table.
+// a JSON-RPC request, an SDK tool invocation, or a relay PUT/GET. Only
+// the request side is captured; responses are not paired or stored.
+// Source is the bridge type ("envmcp" | "rest" | "relay") and matches
+// the CHECK constraint on the table.
 type AuditCall struct {
-	ID                string
-	SessionID         *string
-	WorkspaceID       string
-	UserID            *string
-	ExeID             string
-	Source            string // "envmcp"|"rest"|"relay"
-	RPCID             *string
-	RPCMethod         *string
-	RPCKind           *string
-	RequestPayloadID  *string
-	RequestSize       int
-	RequestSha256     *string
-	ResponsePayloadID *string
-	ResponseSize      int
-	ResponseSha256    *string
-	IsError           bool
-	ErrorSummary      *string
-	StartedAt         time.Time
-	CompletedAt       *time.Time
-	DurationMs        *int
+	ID               string
+	SessionID        *string
+	WorkspaceID      string
+	UserID           *string
+	ExeID            string
+	Source           string // "envmcp"|"rest"|"relay"
+	RPCID            *string
+	RPCMethod        *string
+	RPCKind          *string
+	RequestPayloadID *string
+	RequestSize      int
+	RequestSha256    *string
+	StartedAt        time.Time
 }
 
-// UpsertAuditCall inserts a new call row with its start-time fields,
-// no-op on duplicate id. The matching UpdateAuditCallEnd fills in the
-// completion fields; this two-stage shape mirrors the session lifecycle.
+// UpsertAuditCall inserts a new call row, no-op on duplicate id.
 func (db *DB) UpsertAuditCall(c AuditCall) error {
 	if c.ID == "" {
 		return errors.New("exec_audit: call id required")
@@ -171,37 +162,6 @@ func (db *DB) UpsertAuditCall(c AuditCall) error {
 		c.StartedAt,
 	)
 	return err
-}
-
-// UpdateAuditCallEnd stamps the completion fields on an existing call
-// row and derives duration_ms from (completedAt - started_at) in SQL so
-// it stays consistent even if the caller's clock has drifted between
-// CallStart and CallEnd. Returns ErrAuditRowMissing if no row with the
-// given id exists.
-func (db *DB) UpdateAuditCallEnd(callID string,
-	completedAt time.Time, isError bool, errorSummary string,
-	responsePayloadID *string, responseSize int, responseSha256 *string,
-) error {
-	const q = `
-        UPDATE exec_audit_calls
-           SET completed_at = $2,
-               is_error = $3,
-               error_summary = $4,
-               response_payload_id = $5,
-               response_size = $6,
-               response_sha256 = $7,
-               duration_ms = CAST(EXTRACT(EPOCH FROM ($2 - started_at)) * 1000 AS INTEGER)
-         WHERE id = $1`
-	res, err := db.Exec(q, callID, completedAt, isError, errorSummary,
-		responsePayloadID, responseSize, responseSha256)
-	if err != nil {
-		return err
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return ErrAuditRowMissing
-	}
-	return nil
 }
 
 // ListAuditSessionsFilter is the search criteria for ListAuditSessions.
@@ -283,8 +243,7 @@ func (db *DB) ListAuditSessions(f ListAuditSessionsFilter) ([]AuditSession, erro
 }
 
 // ListAuditCallsFilter is the search criteria for ListAuditCalls.
-// WorkspaceID is required. IsError=nil means "both"; non-nil narrows to
-// only errors or only successes.
+// WorkspaceID is required.
 type ListAuditCallsFilter struct {
 	WorkspaceID string // required
 	SessionID   string
@@ -292,7 +251,6 @@ type ListAuditCallsFilter struct {
 	UserID      string
 	Source      string // "envmcp"|"rest"|"relay"
 	RPCMethod   string
-	IsError     *bool
 	Since       time.Time
 	Until       time.Time
 	Limit       int
@@ -315,9 +273,7 @@ func (db *DB) ListAuditCalls(f ListAuditCallsFilter) ([]AuditCall, error) {
 	q := `SELECT id, session_id, workspace_id, user_id, exe_id, source,
                  rpc_id, rpc_method, rpc_kind,
                  request_payload_id, request_size, request_sha256,
-                 response_payload_id, response_size, response_sha256,
-                 is_error, error_summary,
-                 started_at, completed_at, duration_ms
+                 started_at
             FROM exec_audit_calls
            WHERE workspace_id = $1`
 	args := []any{f.WorkspaceID}
@@ -339,13 +295,6 @@ func (db *DB) ListAuditCalls(f ListAuditCallsFilter) ([]AuditCall, error) {
 	}
 	if f.RPCMethod != "" {
 		add("rpc_method", f.RPCMethod)
-	}
-	if f.IsError != nil {
-		if *f.IsError {
-			q += " AND is_error = true"
-		} else {
-			q += " AND is_error = false"
-		}
 	}
 	if !f.Since.IsZero() {
 		q += " AND started_at >= $" + strconv.Itoa(len(args)+1)
@@ -371,9 +320,7 @@ func (db *DB) ListAuditCalls(f ListAuditCallsFilter) ([]AuditCall, error) {
 			&c.ID, &c.SessionID, &c.WorkspaceID, &c.UserID, &c.ExeID, &c.Source,
 			&c.RPCID, &c.RPCMethod, &c.RPCKind,
 			&c.RequestPayloadID, &c.RequestSize, &c.RequestSha256,
-			&c.ResponsePayloadID, &c.ResponseSize, &c.ResponseSha256,
-			&c.IsError, &c.ErrorSummary,
-			&c.StartedAt, &c.CompletedAt, &c.DurationMs,
+			&c.StartedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -409,18 +356,14 @@ func (db *DB) GetAuditCall(id string) (*AuditCall, error) {
 	const q = `SELECT id, session_id, workspace_id, user_id, exe_id, source,
                       rpc_id, rpc_method, rpc_kind,
                       request_payload_id, request_size, request_sha256,
-                      response_payload_id, response_size, response_sha256,
-                      is_error, error_summary,
-                      started_at, completed_at, duration_ms
+                      started_at
                  FROM exec_audit_calls WHERE id = $1`
 	var c AuditCall
 	err := db.QueryRow(q, id).Scan(
 		&c.ID, &c.SessionID, &c.WorkspaceID, &c.UserID, &c.ExeID, &c.Source,
 		&c.RPCID, &c.RPCMethod, &c.RPCKind,
 		&c.RequestPayloadID, &c.RequestSize, &c.RequestSha256,
-		&c.ResponsePayloadID, &c.ResponseSize, &c.ResponseSha256,
-		&c.IsError, &c.ErrorSummary,
-		&c.StartedAt, &c.CompletedAt, &c.DurationMs,
+		&c.StartedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -489,8 +432,6 @@ func (db *DB) PruneAuditOlderThan(cutoff time.Time) (sessions, calls, payloads i
          WHERE created_at < $1
            AND id NOT IN (
                SELECT request_payload_id FROM exec_audit_calls WHERE request_payload_id IS NOT NULL
-               UNION
-               SELECT response_payload_id FROM exec_audit_calls WHERE response_payload_id IS NOT NULL
            )`, payloadCutoff)
 	if err != nil {
 		return sessions, calls, 0, err

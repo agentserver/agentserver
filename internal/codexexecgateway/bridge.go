@@ -138,9 +138,9 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 	session := newBridgeSession(streamID, inbound, bridgeWS)
 	// SDK-pool-managed bridges (the in-process bridge.Pool dialed by
 	// sdk/handlers.go) are skipped at the session/frame level — the SDK
-	// REST handler does its own CallStart/CallEnd for each tool call as
-	// a whole. Recording the underlying WS frames here too would
-	// double-record every SDK call. Detection: typed CapPayload.SkipAudit
+	// REST handler does its own CallStart for each tool call as a whole.
+	// Recording the underlying WS frames here too would double-record
+	// every SDK call. Detection: typed CapPayload.SkipAudit
 	// flag set by sdk/captoken.go (I10 followup; replaces the prior
 	// magic-string TurnID prefix). The frame pump hooks still fire below
 	// but become no-ops because realRecorder.session("") returns nil

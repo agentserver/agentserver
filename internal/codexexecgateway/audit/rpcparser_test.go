@@ -4,51 +4,39 @@ import (
 	"context"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/agentserver/agentserver/internal/codexexecgateway/audit"
 )
 
-// capRecorder is a test Recorder that captures CallStart/CallEnd events
-// for assertion. SessionOpen/Close/OnFrame* are no-ops — the parser
+// capRecorder is a test Recorder that captures CallStart events for
+// assertion. SessionOpen/Close/OnFrame* are no-ops — the parser
 // doesn't invoke them.
 type capRecorder struct {
 	mu     sync.Mutex
 	starts []audit.CallStartMeta
-	ends   map[string]audit.CallEndMeta
 }
 
 func newCapRecorder() *capRecorder {
-	return &capRecorder{ends: map[string]audit.CallEndMeta{}}
+	return &capRecorder{}
 }
 
 func (r *capRecorder) SessionOpen(audit.SessionMeta) (string, error) { return "", nil }
 func (r *capRecorder) SessionClose(string, string, audit.Counters)   {}
 func (r *capRecorder) OnFrameToBackend(string, any, []byte)          {}
-func (r *capRecorder) OnFrameToClient(string, any, []byte)           {}
 func (r *capRecorder) CallStart(m audit.CallStartMeta) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	id := "call-" + m.RPCID
 	r.starts = append(r.starts, m)
-	return id, nil
-}
-func (r *capRecorder) CallEnd(id string, m audit.CallEndMeta) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.ends[id] = m
+	return "call-" + m.RPCID, nil
 }
 func (r *capRecorder) Close(context.Context) error { return nil }
 
-func TestRPCParser_RequestResponsePair(t *testing.T) {
+func TestRPCParser_RequestProducesCallStart(t *testing.T) {
 	cap := newCapRecorder()
-	p := audit.NewRPCParser(cap, audit.RPCParserConfig{PairTimeout: time.Minute})
+	p := audit.NewRPCParser(cap)
 
 	p.OnFrameToBackend("s1", "ws_x", "user_x", "exe_x", []byte(`
 		{"jsonrpc":"2.0","id":42,"method":"shell","params":{"cmd":"ls"}}
-	`))
-	p.OnFrameToClient("s1", []byte(`
-		{"jsonrpc":"2.0","id":42,"result":{"stdout":"foo"}}
 	`))
 
 	cap.mu.Lock()
@@ -69,21 +57,14 @@ func TestRPCParser_RequestResponsePair(t *testing.T) {
 	if s.Source != "envmcp" {
 		t.Errorf("source: %q (want envmcp)", s.Source)
 	}
-	end, ok := cap.ends["call-42"]
-	if !ok {
-		t.Fatal("expected CallEnd for id=42")
-	}
-	if end.IsError {
-		t.Error("expected IsError=false")
-	}
-	if len(end.Response) == 0 {
-		t.Error("expected Response bytes captured")
+	if len(s.Request) == 0 {
+		t.Error("expected Request bytes captured")
 	}
 }
 
-func TestRPCParser_NotificationProducesCallStartOnly(t *testing.T) {
+func TestRPCParser_NotificationProducesCallStart(t *testing.T) {
 	cap := newCapRecorder()
-	p := audit.NewRPCParser(cap, audit.RPCParserConfig{PairTimeout: time.Minute})
+	p := audit.NewRPCParser(cap)
 	p.OnFrameToBackend("s1", "ws", "user", "exe", []byte(`
 		{"jsonrpc":"2.0","method":"progress","params":{"n":1}}
 	`))
@@ -95,37 +76,11 @@ func TestRPCParser_NotificationProducesCallStartOnly(t *testing.T) {
 	if cap.starts[0].RPCKind != "notification" {
 		t.Errorf("kind: %q", cap.starts[0].RPCKind)
 	}
-	if len(cap.ends) != 0 {
-		t.Fatalf("notifications shouldn't produce CallEnd, got %d", len(cap.ends))
-	}
-}
-
-func TestRPCParser_ErrorResponsePairs(t *testing.T) {
-	cap := newCapRecorder()
-	p := audit.NewRPCParser(cap, audit.RPCParserConfig{PairTimeout: time.Minute})
-	p.OnFrameToBackend("s1", "ws", "user", "exe", []byte(`
-		{"jsonrpc":"2.0","id":7,"method":"die","params":{}}
-	`))
-	p.OnFrameToClient("s1", []byte(`
-		{"jsonrpc":"2.0","id":7,"error":{"code":-32603,"message":"boom"}}
-	`))
-	cap.mu.Lock()
-	defer cap.mu.Unlock()
-	end, ok := cap.ends["call-7"]
-	if !ok {
-		t.Fatal("expected CallEnd for id=7")
-	}
-	if !end.IsError {
-		t.Error("expected IsError=true on JSON-RPC error response")
-	}
-	if end.ErrorSummary != "boom" {
-		t.Errorf("expected ErrorSummary='boom', got %q", end.ErrorSummary)
-	}
 }
 
 func TestRPCParser_MalformedPayloadIgnored(t *testing.T) {
 	cap := newCapRecorder()
-	p := audit.NewRPCParser(cap, audit.RPCParserConfig{PairTimeout: time.Minute})
+	p := audit.NewRPCParser(cap)
 	p.OnFrameToBackend("s1", "ws", "user", "exe", []byte(`not json at all`))
 	p.OnFrameToBackend("s1", "ws", "user", "exe", []byte(`{"jsonrpc":"1.0","id":1,"method":"x"}`)) // wrong version
 	cap.mu.Lock()
@@ -135,59 +90,16 @@ func TestRPCParser_MalformedPayloadIgnored(t *testing.T) {
 	}
 }
 
-func TestRPCParser_TimeoutEmitsErrorCallEnd(t *testing.T) {
-	cap := newCapRecorder()
-	p := audit.NewRPCParser(cap, audit.RPCParserConfig{PairTimeout: 50 * time.Millisecond})
-	p.OnFrameToBackend("s1", "ws", "user", "exe", []byte(`
-		{"jsonrpc":"2.0","id":99,"method":"slow","params":{}}
-	`))
-	time.Sleep(200 * time.Millisecond)
-	p.SweepTimeouts(time.Now())
-	cap.mu.Lock()
-	defer cap.mu.Unlock()
-	end, ok := cap.ends["call-99"]
-	if !ok {
-		t.Fatal("expected timeout CallEnd for id=99")
-	}
-	if !end.IsError || end.ErrorSummary == "" {
-		t.Fatalf("expected is_error + summary, got %+v", end)
-	}
-}
-
-func TestRPCParser_SessionClosedFlushesPending(t *testing.T) {
-	cap := newCapRecorder()
-	p := audit.NewRPCParser(cap, audit.RPCParserConfig{PairTimeout: time.Minute})
-	p.OnFrameToBackend("s1", "ws", "user", "exe", []byte(`
-		{"jsonrpc":"2.0","id":11,"method":"x","params":{}}
-	`))
-	p.OnFrameToBackend("s1", "ws", "user", "exe", []byte(`
-		{"jsonrpc":"2.0","id":12,"method":"y","params":{}}
-	`))
-	p.SessionClosed("s1", time.Now())
-	cap.mu.Lock()
-	defer cap.mu.Unlock()
-	if len(cap.ends) != 2 {
-		t.Fatalf("expected 2 flushed CallEnds (for ids 11 and 12), got %d", len(cap.ends))
-	}
-	for id, end := range cap.ends {
-		if !end.IsError {
-			t.Errorf("%s: expected IsError=true on session-closed flush", id)
-		}
-	}
-}
-
 func TestRPCParser_StringIDsHandled(t *testing.T) {
 	cap := newCapRecorder()
-	p := audit.NewRPCParser(cap, audit.RPCParserConfig{PairTimeout: time.Minute})
+	p := audit.NewRPCParser(cap)
 	p.OnFrameToBackend("s1", "ws", "user", "exe", []byte(`
 		{"jsonrpc":"2.0","id":"abc-123","method":"shell"}
 	`))
-	p.OnFrameToClient("s1", []byte(`
-		{"jsonrpc":"2.0","id":"abc-123","result":{"stdout":""}}
-	`))
 	cap.mu.Lock()
 	defer cap.mu.Unlock()
-	if _, ok := cap.ends["call-abc-123"]; !ok {
-		t.Fatalf("expected pairing with string id; got ends=%v", cap.ends)
+	if len(cap.starts) != 1 || cap.starts[0].RPCID != "abc-123" {
+		t.Fatalf("expected string id captured; got starts=%+v", cap.starts)
 	}
 }
+

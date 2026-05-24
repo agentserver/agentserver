@@ -38,7 +38,7 @@ const (
 // payload: serialised BatchRecords.
 //
 // All record types are idempotent: CallStart/SessionOpen upsert-by-id,
-// CallEnd/SessionClose stamp completion fields on the existing row.
+// SessionClose stamps completion fields on the existing session row.
 // Returns 200 OK with {"processed":N,"skipped":M}. Malformed individual
 // records are skipped rather than failing the whole batch so one bad
 // row doesn't block the queue; the uploader still retries on 5xx.
@@ -142,25 +142,6 @@ func (s *Server) applyAuditRecord(_ context.Context, rec *pb.WALRecord) error {
 			RequestSha256:    strPtrOrNil(cs.GetRequestSha256()),
 			StartedAt:        cs.GetStartedAt().AsTime().UTC(),
 		})
-	case *pb.WALRecord_CallEnd:
-		ce := b.CallEnd
-		var respPayloadID *string
-		if raw := ce.GetResponseBytes(); len(raw) > 0 {
-			id, err := s.upsertPayload(raw)
-			if err != nil {
-				return fmt.Errorf("upsert response payload: %w", err)
-			}
-			respPayloadID = &id
-		}
-		return s.DB.UpdateAuditCallEnd(
-			ce.GetCallId(),
-			ce.GetCompletedAt().AsTime().UTC(),
-			ce.GetIsError(),
-			ce.GetErrorSummary(),
-			respPayloadID,
-			int(ce.GetResponseSize()),
-			strPtrOrNil(ce.GetResponseSha256()),
-		)
 	}
 	return errors.New("exec-audit: unknown WALRecord body")
 }
@@ -302,7 +283,6 @@ func (s *Server) getInternalExecAuditSession(w http.ResponseWriter, r *http.Requ
 //	@Param    user_id           query    string  false "User ID filter"
 //	@Param    source            query    string  false "Source filter (e.g. mcp_rpc, sse_event)"
 //	@Param    method            query    string  false "RPC method filter"
-//	@Param    is_error          query    bool    false "Filter on error flag"
 //	@Param    since             query    string  false "RFC3339 lower bound (started_at)"
 //	@Param    until             query    string  false "RFC3339 upper bound (started_at)"
 //	@Param    limit             query    int     false "Max rows (default 50)"
@@ -353,9 +333,6 @@ func (s *Server) getInternalExecAuditCall(w http.ResponseWriter, r *http.Request
 	detail := AuditCallDetail{AuditCallSummary: callToDTO(*call)}
 	if call.RequestPayloadID != nil {
 		detail.RequestPreview = previewPayload(s.DB, *call.RequestPayloadID)
-	}
-	if call.ResponsePayloadID != nil {
-		detail.ResponsePreview = previewPayload(s.DB, *call.ResponsePayloadID)
 	}
 	writeJSON(w, http.StatusOK, detail)
 }
@@ -442,7 +419,6 @@ func (s *Server) getWorkspaceExecAuditSession(w http.ResponseWriter, r *http.Req
 //	@Param     user_id     query  string  false "User ID filter"
 //	@Param     source      query  string  false "Source filter"
 //	@Param     method      query  string  false "RPC method filter"
-//	@Param     is_error    query  bool    false "Filter on error flag"
 //	@Param     since       query  string  false "RFC3339 lower bound (started_at)"
 //	@Param     until       query  string  false "RFC3339 upper bound (started_at)"
 //	@Param     limit       query  int     false "Max rows (default 50)"
@@ -497,17 +473,14 @@ func (s *Server) getWorkspaceExecAuditCall(w http.ResponseWriter, r *http.Reques
 	s.getInternalExecAuditCall(w, r)
 }
 
-// getWorkspaceExecAuditCallPayload streams the raw request/response payload
-// for a call. Use side=request or side=response.
+// getWorkspaceExecAuditCallPayload streams the raw request payload for a call.
 //
-//	@Summary   Get exec-audit call payload (workspace-scoped)
+//	@Summary   Get exec-audit call request payload (workspace-scoped)
 //	@Tags      Exec-Audit
 //	@Produce   application/octet-stream
 //	@Param     id       path   string  true   "Workspace ID"
 //	@Param     call_id  path   string  true   "Call ID"
-//	@Param     side     query  string  true   "request|response"
 //	@Success   200 {string} binary
-//	@Failure   400 {string} string
 //	@Failure   401 {string} string
 //	@Failure   403 {string} string
 //	@Failure   404 {string} string
@@ -520,11 +493,6 @@ func (s *Server) getWorkspaceExecAuditCallPayload(w http.ResponseWriter, r *http
 		return
 	}
 	callID := chi.URLParam(r, "call_id")
-	side := r.URL.Query().Get("side")
-	if side != "request" && side != "response" {
-		http.Error(w, "side=request|response required", http.StatusBadRequest)
-		return
-	}
 	call, err := s.DB.GetAuditCall(callID)
 	if err == sql.ErrNoRows {
 		http.Error(w, "call not found", http.StatusNotFound)
@@ -539,12 +507,7 @@ func (s *Server) getWorkspaceExecAuditCallPayload(w http.ResponseWriter, r *http
 		http.Error(w, "not found", http.StatusNotFound) // tenant isolation
 		return
 	}
-	var payloadID *string
-	if side == "request" {
-		payloadID = call.RequestPayloadID
-	} else {
-		payloadID = call.ResponsePayloadID
-	}
+	payloadID := call.RequestPayloadID
 	if payloadID == nil {
 		http.Error(w, "payload not stored (size exceeded cap)", http.StatusNotFound)
 		return
@@ -613,8 +576,6 @@ func recordTriageContext(rec *pb.WALRecord) string {
 		cs := b.CallStart
 		return fmt.Sprintf("kind=CallStart ws=%s exe=%s source=%s method=%s",
 			cs.GetWorkspaceId(), cs.GetExeId(), cs.GetSource(), cs.GetRpcMethod())
-	case *pb.WALRecord_CallEnd:
-		return fmt.Sprintf("kind=CallEnd call=%s", b.CallEnd.GetCallId())
 	default:
 		return "kind=unknown"
 	}
@@ -665,13 +626,6 @@ func parseCallsFilter(q url.Values) (db.ListAuditCallsFilter, error) {
 	}
 	if f.WorkspaceID == "" {
 		return f, errors.New("workspace_id required")
-	}
-	if s := q.Get("is_error"); s != "" {
-		b, err := strconv.ParseBool(s)
-		if err != nil {
-			return f, fmt.Errorf("is_error: %w", err)
-		}
-		f.IsError = &b
 	}
 	if s := q.Get("since"); s != "" {
 		t, err := time.Parse(time.RFC3339, s)
@@ -725,29 +679,20 @@ func sessionsToDTO(in []db.AuditSession) []AuditSessionSummary {
 }
 
 func callToDTO(c db.AuditCall) AuditCallSummary {
-	out := AuditCallSummary{
-		ID:             c.ID,
-		SessionID:      ptrStr(c.SessionID),
-		WorkspaceID:    c.WorkspaceID,
-		UserID:         ptrStr(c.UserID),
-		ExeID:          c.ExeID,
-		Source:         c.Source,
-		RPCID:          ptrStr(c.RPCID),
-		RPCMethod:      ptrStr(c.RPCMethod),
-		RPCKind:        ptrStr(c.RPCKind),
-		RequestSize:    c.RequestSize,
-		RequestSha256:  ptrStr(c.RequestSha256),
-		ResponseSize:   c.ResponseSize,
-		ResponseSha256: ptrStr(c.ResponseSha256),
-		IsError:        c.IsError,
-		ErrorSummary:   ptrStr(c.ErrorSummary),
-		StartedAt:      c.StartedAt.Format(time.RFC3339),
-		CompletedAt:    ptrTimeRFC(c.CompletedAt),
+	return AuditCallSummary{
+		ID:            c.ID,
+		SessionID:     ptrStr(c.SessionID),
+		WorkspaceID:   c.WorkspaceID,
+		UserID:        ptrStr(c.UserID),
+		ExeID:         c.ExeID,
+		Source:        c.Source,
+		RPCID:         ptrStr(c.RPCID),
+		RPCMethod:     ptrStr(c.RPCMethod),
+		RPCKind:       ptrStr(c.RPCKind),
+		RequestSize:   c.RequestSize,
+		RequestSha256: ptrStr(c.RequestSha256),
+		StartedAt:     c.StartedAt.Format(time.RFC3339),
 	}
-	if c.DurationMs != nil {
-		out.DurationMs = *c.DurationMs
-	}
-	return out
 }
 
 func callsToDTO(in []db.AuditCall) []AuditCallSummary {

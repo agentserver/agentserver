@@ -16,33 +16,23 @@ import (
 	"github.com/agentserver/agentserver/internal/codexexecgateway/audit"
 )
 
-// capRelayRec captures CallStart/CallEnd for relay handler wiring
-// tests (test-analyzer #3 followup). Same pattern as the SDK's capRec
-// but inline here to avoid an import cycle.
+// capRelayRec captures CallStart for relay handler wiring tests.
+// Same pattern as the SDK's capRec but inline here to avoid an import
+// cycle.
 type capRelayRec struct {
 	mu     sync.Mutex
 	starts []audit.CallStartMeta
-	ends   map[string]audit.CallEndMeta
 }
 
 func (r *capRelayRec) SessionOpen(audit.SessionMeta) (string, error) { return "", nil }
 func (r *capRelayRec) SessionClose(string, string, audit.Counters)   {}
 func (r *capRelayRec) OnFrameToBackend(string, any, []byte)          {}
-func (r *capRelayRec) OnFrameToClient(string, any, []byte)           {}
 func (r *capRelayRec) CallStart(m audit.CallStartMeta) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	id := fmt.Sprintf("c%d", len(r.starts))
 	r.starts = append(r.starts, m)
 	return id, nil
-}
-func (r *capRelayRec) CallEnd(id string, m audit.CallEndMeta) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.ends == nil {
-		r.ends = map[string]audit.CallEndMeta{}
-	}
-	r.ends[id] = m
 }
 func (r *capRelayRec) Close(context.Context) error { return nil }
 
@@ -163,9 +153,9 @@ func TestHandleRelay_RoundTrip(t *testing.T) {
 }
 
 // TestHandleRelay_RecorderObservesPutGet pins that the relay PUT and
-// GET handlers actually invoke the audit recorder. Wiring test for
-// test-analyzer #3 — a refactor that drops the rec.CallStart/CallEnd
-// hooks would silently disable relay audit otherwise.
+// GET handlers actually invoke the audit recorder. A refactor that
+// drops the rec.CallStart hooks would silently disable relay audit
+// otherwise.
 func TestHandleRelay_RecorderObservesPutGet(t *testing.T) {
 	cfg := Config{
 		CapTokenHMACSecret:   []byte("test-hmac"),
@@ -224,9 +214,6 @@ func TestHandleRelay_RecorderObservesPutGet(t *testing.T) {
 	}
 	if !methods["relay_put"] || !methods["relay_get"] {
 		t.Errorf("missing relay_put or relay_get; got methods=%v", methods)
-	}
-	if len(rec.ends) != 2 {
-		t.Errorf("want 2 CallEnds, got %d", len(rec.ends))
 	}
 }
 

@@ -23,7 +23,6 @@ type Config struct {
 	UploadBatchBytes    int
 	UploadBatchRecords  int
 	UploadFlushInterval time.Duration
-	RPCPairTimeout      time.Duration
 	GatewayID           string
 }
 
@@ -42,7 +41,6 @@ func NewConfigFromEnv() Config {
 		UploadBatchBytes:    envInt("CXG_AUDIT_UPLOAD_BATCH_BYTES", 1<<20), // 1 MiB
 		UploadBatchRecords:  envInt("CXG_AUDIT_UPLOAD_BATCH_RECORDS", 200),
 		UploadFlushInterval: envDur("CXG_AUDIT_UPLOAD_FLUSH_INTERVAL", time.Second),
-		RPCPairTimeout:      envDur("CXG_AUDIT_RPC_PAIR_TIMEOUT", 30*time.Second),
 		GatewayID:           envStr("CXG_AUDIT_GATEWAY_ID", "cxg"),
 	}
 }

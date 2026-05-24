@@ -14,13 +14,16 @@ message BatchRecords {
 
 // WALRecord is one entry in either the gateway's on-disk WAL or the
 // batched upload body. Exactly one body field is set.
+//
+// Field tag 5 is reserved (was CallEnd before request-only audit).
 message WALRecord {
   string id = 1;  // UUID of the underlying audit row (session or call)
+  reserved 5;
+  reserved "call_end";
   oneof body {
     SessionOpen  session_open  = 2;
     SessionClose session_close = 3;
     CallStart    call_start    = 4;
-    CallEnd      call_end      = 5;
   }
   google.protobuf.Timestamp written_at = 7;
 }
@@ -63,12 +66,3 @@ message CallStart {
   google.protobuf.Timestamp started_at = 13;
 }
 
-message CallEnd {
-  string call_id = 1;
-  google.protobuf.Timestamp completed_at = 2;
-  bool is_error = 3;
-  string error_summary = 4;
-  bytes response_bytes = 5;
-  int32 response_size  = 6;
-  string response_sha256 = 7;
-}

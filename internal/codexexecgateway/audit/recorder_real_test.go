@@ -23,7 +23,6 @@ func TestRealRecorder_SessionOpenLandsInWAL(t *testing.T) {
 		WALOverflow:       "fail",
 		PayloadMaxBytes:   4 << 20,
 		UploadURL:         "", // upload disabled
-		RPCPairTimeout:    time.Minute,
 		GatewayID:         "test",
 	}
 	r, err := audit.NewRecorder(cfg)
@@ -89,7 +88,6 @@ func TestRealRecorder_LargePayloadHashedNotInlined(t *testing.T) {
 		WALDiskQuotaBytes: 100 << 20,
 		WALOverflow:       "fail",
 		PayloadMaxBytes:   1024, // cap at 1 KiB
-		RPCPairTimeout:    time.Minute,
 		GatewayID:         "test",
 	}
 	r, err := audit.NewRecorder(cfg)
@@ -153,7 +151,6 @@ func TestRealRecorder_SessionOpenErrorsOnFailModeFullDisk(t *testing.T) {
 		WALDiskQuotaBytes: 100, // already blown by the pre-populated junk
 		WALOverflow:       "fail",
 		PayloadMaxBytes:   4 << 20,
-		RPCPairTimeout:    time.Minute,
 		GatewayID:         "test",
 	}
 	r, err := audit.NewRecorder(cfg)
@@ -187,7 +184,6 @@ func TestRealRecorder_CallStartErrorsOnFailModeFullDisk(t *testing.T) {
 		WALDiskQuotaBytes: 100,
 		WALOverflow:       "fail",
 		PayloadMaxBytes:   4 << 20,
-		RPCPairTimeout:    time.Minute,
 		GatewayID:         "test",
 	}
 	r, err := audit.NewRecorder(cfg)
@@ -221,7 +217,6 @@ func TestRealRecorder_SessionOpenSucceedsInDropMode(t *testing.T) {
 		WALDiskQuotaBytes: 100,
 		WALOverflow:       "drop",
 		PayloadMaxBytes:   4 << 20,
-		RPCPairTimeout:    time.Minute,
 		GatewayID:         "test",
 	}
 	r, err := audit.NewRecorder(cfg)

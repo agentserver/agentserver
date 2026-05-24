@@ -56,5 +56,3 @@ func (s *Server) Routes() http.Handler {
 	return r
 }
 
-// Placeholder — filled in by later tasks.
-func (s *Server) handleRegisterProxy(w http.ResponseWriter, r *http.Request) { http.Error(w, "not implemented", 501) }

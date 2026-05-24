@@ -2,6 +2,7 @@ package codexececdge
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -247,5 +248,58 @@ func TestRegisterProxy_BackoffCap(t *testing.T) {
 	}
 	if d != 8*time.Second {
 		t.Errorf("cap not enforced: %v", d)
+	}
+}
+
+func TestRegisterProxy_ClientCancelMidRetry(t *testing.T) {
+	// Upstream always returns 503 → register proxy enters retry loop.
+	// Client cancels mid-sleep; handler should return promptly without
+	// hanging or panicking.
+	up, fake := newFakeRegisterUpstream(t, func(_ int64, w http.ResponseWriter) {
+		w.WriteHeader(503)
+	})
+	defer up.Close()
+
+	srv := newTestServer(t, Config{
+		UpstreamBaseURL:             up.URL,
+		AgentserverInternalSecret:   "s",
+		RegisterRetryTotalTimeout:   5 * time.Second, // long enough that we'll cancel before deadline
+		RegisterRetryInitialBackoff: 200 * time.Millisecond,
+		UpstreamDialTimeout:         time.Second,
+	})
+	ts := httptest.NewServer(srv.Routes())
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req, _ := http.NewRequestWithContext(ctx, "POST", ts.URL+"/cloud/environment/exe/register", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+
+	doneCh := make(chan error, 1)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if resp != nil {
+			resp.Body.Close()
+		}
+		doneCh <- err
+	}()
+
+	// Let the first attempt land, then cancel during the backoff sleep.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-doneCh:
+		// Cancel propagates as a transport error from http.DefaultClient — that's fine,
+		// we just want to confirm the goroutine exits.
+		if err == nil {
+			// Acceptable: server returned a response before cancel arrived.
+			// Just confirm at least one upstream call happened.
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not exit promptly after client cancel")
+	}
+
+	if fake.calls.Load() < 1 {
+		t.Error("expected at least one upstream call before cancel")
 	}
 }

@@ -333,4 +333,4 @@ Pull requests welcome — the repo is dogfooded against itself.
 
 ## License
 
-[MIT](LICENSE)
+[Apache-2.0](LICENSE)

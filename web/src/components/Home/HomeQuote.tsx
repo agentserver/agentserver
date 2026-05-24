@@ -13,7 +13,14 @@ export function HomeQuote() {
         "Once you juggle 10+ agents across machines, you stop being a {accent('conductor')} and become an {accent('orchestrator')}."
       </blockquote>
       <p className="mt-3 text-sm text-[var(--muted-foreground)] font-mono">
-        {t('quote.attrib')}
+        <a
+          href="https://addyosmani.com/blog/future-agentic-coding/"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="hover:text-[var(--home-accent)] hover:underline"
+        >
+          {t('quote.attrib')} ↗
+        </a>
       </p>
       <p className="mt-2 text-sm text-[var(--muted-foreground)]">
         {t('quote.caption')}

@@ -1,8 +1,9 @@
-import { useT } from '../../lib/i18n'
+import { detectLocale, useT } from '../../lib/i18n'
 import { homeStrings } from './strings'
 
 export function HomeFooter() {
   const t = useT(homeStrings)
+  const lang = detectLocale()
   return (
     <footer className="border-t border-[var(--border)] py-10 mt-10">
       <div className="mx-auto max-w-6xl px-6">
@@ -36,6 +37,26 @@ export function HomeFooter() {
         <p className="mt-8 text-center font-mono text-[10px] text-[var(--muted-foreground)]">
           v{__APP_VERSION__} · {__BUILD_COMMIT__} · built {__BUILD_DATE__}
         </p>
+        {lang === 'zh' && (
+          <p className="mt-2 text-center font-mono text-[10px] text-[var(--muted-foreground)] space-x-3">
+            <a
+              className="hover:text-[var(--foreground)]"
+              href="https://beian.miit.gov.cn/"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              京ICP备2022017521号-2
+            </a>
+            <a
+              className="hover:text-[var(--foreground)]"
+              href="https://beian.mps.gov.cn/#/query/webSearch?code=11010502060080"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              京公网安备11010502060080号
+            </a>
+          </p>
+        )}
       </div>
     </footer>
   )

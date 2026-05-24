@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import { AlertCircle, CheckCircle2 } from 'lucide-react'
 import { getAuditSession, type AuditSessionDetail } from '../lib/api'
 
 interface Props {
@@ -61,24 +60,18 @@ export default function ExecAuditSessionDetail({ workspaceId, sessionId }: Props
               <tr>
                 <th className="text-left px-2 py-1">Time</th>
                 <th className="text-left px-2 py-1">Method</th>
-                <th className="text-left px-2 py-1">Status</th>
-                <th className="text-right px-2 py-1">Dur</th>
+                <th className="text-right px-2 py-1">Req size</th>
               </tr>
             </thead>
             <tbody>
               {calls.length === 0 && (
-                <tr><td colSpan={4} className="px-2 py-3 text-center text-zinc-500">No calls recorded.</td></tr>
+                <tr><td colSpan={3} className="px-2 py-3 text-center text-zinc-500">No calls recorded.</td></tr>
               )}
               {calls.map((c) => (
                 <tr key={c.id} className="border-t border-zinc-200 dark:border-zinc-800">
                   <td className="px-2 py-1 font-mono">{c.started_at?.slice(11, 19) ?? '—'}</td>
                   <td className="px-2 py-1">{c.rpc_method ?? <span className="text-zinc-400">—</span>}</td>
-                  <td className="px-2 py-1">
-                    {c.is_error
-                      ? <span className="flex items-center gap-1 text-red-600"><AlertCircle size={12} />error</span>
-                      : <span className="flex items-center gap-1 text-emerald-600"><CheckCircle2 size={12} />ok</span>}
-                  </td>
-                  <td className="px-2 py-1 text-right font-mono">{c.duration_ms != null ? `${c.duration_ms}ms` : '—'}</td>
+                  <td className="px-2 py-1 text-right font-mono">{c.request_size ?? 0}B</td>
                 </tr>
               ))}
             </tbody>

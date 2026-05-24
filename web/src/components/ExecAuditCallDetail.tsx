@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AlertCircle, Download } from 'lucide-react'
+import { Download } from 'lucide-react'
 import { downloadAuditCallPayload, getAuditCall, type AuditCallDetail } from '../lib/api'
 
 interface Props {
@@ -36,32 +36,16 @@ export default function ExecAuditCallDetail({ workspaceId, callId }: Props) {
         {call.rpc_id && <KV k="RPC ID" v={call.rpc_id} mono />}
         {call.rpc_kind && <KV k="Kind" v={call.rpc_kind} />}
         <KV k="Started" v={call.started_at ?? '—'} mono />
-        <KV k="Completed" v={call.completed_at ?? '—'} mono />
-        {call.error_summary && (
-          <div className="flex items-start gap-1 text-red-600 text-sm">
-            <AlertCircle size={14} className="mt-0.5" />
-            <span>{call.error_summary}</span>
-          </div>
-        )}
       </Section>
       <Section label="Sizes">
         <KV k="Request" v={fmtSize(call.request_size ?? 0)} />
         {call.request_sha256 && <KV k="Req SHA256" v={call.request_sha256.slice(0, 16) + '…'} mono />}
-        <KV k="Response" v={fmtSize(call.response_size ?? 0)} />
-        {call.response_sha256 && <KV k="Resp SHA256" v={call.response_sha256.slice(0, 16) + '…'} mono />}
       </Section>
       <Section label="Request preview" cols={2}>
         <Preview
           body={call.request_preview}
           fullSize={call.request_size ?? 0}
-          onDownload={() => downloadAndSave(workspaceId, callId, 'request', setError)}
-        />
-      </Section>
-      <Section label="Response preview" cols={2}>
-        <Preview
-          body={call.response_preview}
-          fullSize={call.response_size ?? 0}
-          onDownload={() => downloadAndSave(workspaceId, callId, 'response', setError)}
+          onDownload={() => downloadAndSave(workspaceId, callId, setError)}
         />
       </Section>
     </div>
@@ -129,11 +113,10 @@ function Preview({
 async function downloadAndSave(
   workspaceId: string,
   callId: string,
-  side: 'request' | 'response',
   setError: (s: string) => void,
 ) {
   try {
-    const { blob, filename } = await downloadAuditCallPayload(workspaceId, callId, side)
+    const { blob, filename } = await downloadAuditCallPayload(workspaceId, callId)
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url

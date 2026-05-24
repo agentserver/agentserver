@@ -58,15 +58,6 @@ type CallStartMeta struct {
 	StartedAt   time.Time
 }
 
-// CallEndMeta is the input to Recorder.CallEnd, paired with the callID
-// returned by the matching CallStart.
-type CallEndMeta struct {
-	CompletedAt  time.Time
-	IsError      bool
-	ErrorSummary string
-	Response     []byte
-}
-
 // Recorder is the audit interface used by the gateway pumps and
 // handlers. Production wires this to a real Recorder backed by WAL +
 // Uploader. Tests and audit-disabled deployments use NewNoopRecorder.
@@ -75,16 +66,14 @@ type CallEndMeta struct {
 // WALOverflow=fail mode and the disk quota has been hit, the realized
 // recorder refuses to record (and thus the caller refuses to admit the
 // session/call). This is the fail-closed contract the spec promises.
-// SessionClose, CallEnd, OnFrame*, and Close are best-effort — the
+// SessionClose, OnFrameToBackend, and Close are best-effort — the
 // session/call is already in flight; refusing mid-flight wouldn't
 // improve the audit trail.
 type Recorder interface {
 	SessionOpen(SessionMeta) (sessionID string, err error)
 	SessionClose(sessionID, reason string, c Counters)
 	OnFrameToBackend(sessionID string, frame any, rawBytes []byte)
-	OnFrameToClient(sessionID string, frame any, rawBytes []byte)
 	CallStart(CallStartMeta) (callID string, err error)
-	CallEnd(callID string, m CallEndMeta)
 	Close(ctx context.Context) error
 }
 
@@ -94,20 +83,18 @@ type noopRecorder struct{}
 // not persist anything. Use when CXG_AUDIT_ENABLED=false.
 func NewNoopRecorder() Recorder { return noopRecorder{} }
 
-func (noopRecorder) SessionOpen(SessionMeta) (string, error)    { return uuid.NewString(), nil }
-func (noopRecorder) SessionClose(string, string, Counters)      {}
-func (noopRecorder) OnFrameToBackend(string, any, []byte)       {}
-func (noopRecorder) OnFrameToClient(string, any, []byte)        {}
-func (noopRecorder) CallStart(CallStartMeta) (string, error)    { return uuid.NewString(), nil }
-func (noopRecorder) CallEnd(string, CallEndMeta)                {}
-func (noopRecorder) Close(context.Context) error                { return nil }
+func (noopRecorder) SessionOpen(SessionMeta) (string, error) { return uuid.NewString(), nil }
+func (noopRecorder) SessionClose(string, string, Counters)   {}
+func (noopRecorder) OnFrameToBackend(string, any, []byte)    {}
+func (noopRecorder) CallStart(CallStartMeta) (string, error) { return uuid.NewString(), nil }
+func (noopRecorder) Close(context.Context) error             { return nil }
 
 // ---------- real Recorder ----------
 
 // realRecorder backs the Recorder interface with WAL + Uploader +
 // RPCParser. Lifecycle: NewRecorder constructs all subsystems and
-// spawns the Uploader + RPCParser sweep goroutines; Close cancels them
-// and final-flushes the WAL.
+// spawns the Uploader goroutine; Close cancels it and final-flushes
+// the WAL.
 type realRecorder struct {
 	cfg       Config
 	wal       *WAL
@@ -119,15 +106,14 @@ type realRecorder struct {
 	mu              sync.Mutex
 	sessions        map[string]*sessionState
 	uploadCtxCancel context.CancelFunc
-	sweepCtxCancel  context.CancelFunc
 }
 
 // sessionState holds the immutable identity fields the per-frame
 // recorder hooks need to attribute frames. Counters intentionally are
 // NOT tracked here — they were dead writes (SessionClose uses the
 // caller-supplied bridgeSession atomic counters as the source of
-// truth). Removing them lets OnFrameTo* skip the global recorder mutex
-// on the hot per-frame path.
+// truth). Removing them lets OnFrameToBackend skip the global recorder
+// mutex on the hot per-frame path.
 type sessionState struct {
 	id          string
 	workspaceID string
@@ -137,8 +123,8 @@ type sessionState struct {
 
 // NewRecorder constructs the appropriate Recorder for cfg. If
 // cfg.Enabled is false (or cfg.WALDir is empty) returns a noopRecorder.
-// On success starts the upload and RPC-sweep goroutines and registers
-// a Close-to-stop them. Caller MUST Close on shutdown to flush the WAL.
+// On success starts the upload goroutine and registers a Close-to-stop
+// it. Caller MUST Close on shutdown to flush the WAL.
 func NewRecorder(cfg Config) (Recorder, error) {
 	if !cfg.Enabled {
 		return NewNoopRecorder(), nil
@@ -166,7 +152,7 @@ func NewRecorder(cfg Config) (Recorder, error) {
 		gatewayID: cfg.GatewayID,
 		sessions:  map[string]*sessionState{},
 	}
-	r.parser = NewRPCParser(r, RPCParserConfig{PairTimeout: cfg.RPCPairTimeout})
+	r.parser = NewRPCParser(r)
 
 	if cfg.UploadURL != "" && cfg.UploadSecret != "" {
 		u, uerr := NewUploader(UploaderConfig{
@@ -189,29 +175,7 @@ func NewRecorder(cfg Config) (Recorder, error) {
 		go r.uploader.Run(ctx)
 	}
 
-	// Periodic RPC pair-timeout sweep, half the pair timeout.
-	sweepCtx, sweepCancel := context.WithCancel(context.Background())
-	r.sweepCtxCancel = sweepCancel
-	go r.sweepLoop(sweepCtx)
-
 	return r, nil
-}
-
-func (r *realRecorder) sweepLoop(ctx context.Context) {
-	interval := r.cfg.RPCPairTimeout / 2
-	if interval <= 0 {
-		interval = 15 * time.Second
-	}
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case now := <-t.C:
-			r.parser.SweepTimeouts(now)
-		}
-	}
 }
 
 func (r *realRecorder) SessionOpen(m SessionMeta) (string, error) {
@@ -248,7 +212,6 @@ func (r *realRecorder) SessionOpen(m SessionMeta) (string, error) {
 }
 
 func (r *realRecorder) SessionClose(sessionID, reason string, c Counters) {
-	r.parser.SessionClosed(sessionID, time.Now().UTC())
 	rec := &pb.WALRecord{
 		Id: sessionID,
 		Body: &pb.WALRecord_SessionClose{SessionClose: &pb.SessionClose{
@@ -270,12 +233,7 @@ func (r *realRecorder) SessionClose(sessionID, reason string, c Counters) {
 }
 
 // OnFrameToBackend looks up the (immutable) session identity and
-// delegates payload extraction + parser dispatch. The per-frame counter
-// bumps that used to live here were dead writes (SessionClose reads
-// the bridgeSession atomic counters, not this map) so removing them
-// also removes the global r.mu lock from the per-frame hot path.
-// r.session() still briefly acquires r.mu for the map lookup; that
-// can't be avoided without a more invasive sync.Map refactor.
+// delegates payload extraction + parser dispatch.
 func (r *realRecorder) OnFrameToBackend(sessionID string, frame any, raw []byte) {
 	st := r.session(sessionID)
 	if st == nil {
@@ -283,16 +241,6 @@ func (r *realRecorder) OnFrameToBackend(sessionID string, frame any, raw []byte)
 	}
 	if payload := extractRelayDataPayload(frame, raw); len(payload) > 0 {
 		r.parser.OnFrameToBackend(sessionID, st.workspaceID, st.userID, st.exeID, payload)
-	}
-}
-
-func (r *realRecorder) OnFrameToClient(sessionID string, frame any, raw []byte) {
-	st := r.session(sessionID)
-	if st == nil {
-		return
-	}
-	if payload := extractRelayDataPayload(frame, raw); len(payload) > 0 {
-		r.parser.OnFrameToClient(sessionID, payload)
 	}
 }
 
@@ -319,26 +267,9 @@ func (r *realRecorder) CallStart(m CallStartMeta) (string, error) {
 	return id, nil
 }
 
-func (r *realRecorder) CallEnd(callID string, m CallEndMeta) {
-	ce := &pb.CallEnd{
-		CallId:       callID,
-		CompletedAt:  timestamppb.New(m.CompletedAt),
-		IsError:      m.IsError,
-		ErrorSummary: m.ErrorSummary,
-	}
-	r.populatePayload(&ce.ResponseBytes, &ce.ResponseSize, &ce.ResponseSha256, m.Response)
-	rec := &pb.WALRecord{Id: callID, Body: &pb.WALRecord_CallEnd{CallEnd: ce}}
-	if err := r.wal.Append(rec); err != nil {
-		slog.Error("exec-audit: CallEnd append", "id", callID, "err", err)
-	}
-}
-
 func (r *realRecorder) Close(ctx context.Context) error {
 	if r.uploadCtxCancel != nil {
 		r.uploadCtxCancel()
-	}
-	if r.sweepCtxCancel != nil {
-		r.sweepCtxCancel()
 	}
 	if err := r.wal.Sync(); err != nil {
 		slog.Warn("exec-audit: final sync", "err", err)

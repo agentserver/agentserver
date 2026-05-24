@@ -56,9 +56,9 @@ func uniqueSuffix(t *testing.T) string {
 //	real Recorder → WAL → Uploader → httptest agentserver
 //	  → real postInternalExecAuditBatch → DAL → Postgres
 //
-// Asserts that the session + paired call land in exec_audit_sessions /
-// exec_audit_calls with the expected fields and that both request and
-// response payloads are stored.
+// Asserts that the session + request-only call land in
+// exec_audit_sessions / exec_audit_calls with the expected fields and
+// that the request payload is stored.
 func TestExecAudit_EndToEnd(t *testing.T) {
 	srv, httpSrv, secret := newE2EAgentserver(t)
 
@@ -77,7 +77,6 @@ func TestExecAudit_EndToEnd(t *testing.T) {
 		UploadBatchRecords:  50,
 		UploadBatchBytes:    1 << 20,
 		UploadFlushInterval: 100 * time.Millisecond,
-		RPCPairTimeout:      time.Second,
 		GatewayID:           "e2e-test",
 	}
 	rec, err := audit.NewRecorder(cfg)
@@ -102,7 +101,7 @@ func TestExecAudit_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SessionOpen: %v", err)
 	}
-	cid, err := rec.CallStart(audit.CallStartMeta{
+	if _, err := rec.CallStart(audit.CallStartMeta{
 		SessionID:   sid,
 		WorkspaceID: wsID,
 		UserID:      "u_e2e",
@@ -113,14 +112,9 @@ func TestExecAudit_EndToEnd(t *testing.T) {
 		RPCKind:     "request",
 		Request:     []byte(`{"cmd":"ls"}`),
 		StartedAt:   time.Now().UTC(),
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("CallStart: %v", err)
 	}
-	rec.CallEnd(cid, audit.CallEndMeta{
-		CompletedAt: time.Now().UTC(),
-		Response:    []byte(`{"stdout":"file1\nfile2\n"}`),
-	})
 	rec.SessionClose(sid, "test_done", audit.Counters{
 		FramesToBackend: 1, FramesToClient: 1,
 	})
@@ -179,9 +173,6 @@ func TestExecAudit_EndToEnd(t *testing.T) {
 	}
 	if c.RequestPayloadID == nil {
 		t.Error("expected request_payload_id to be set")
-	}
-	if c.ResponsePayloadID == nil {
-		t.Error("expected response_payload_id to be set")
 	}
 	if c.UserID == nil || *c.UserID != "u_e2e" {
 		t.Errorf("call user_id mismatch: %v", c.UserID)

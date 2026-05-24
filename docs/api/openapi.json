@@ -4268,14 +4268,6 @@
             }
           },
           {
-            "description": "Filter on error flag",
-            "name": "is_error",
-            "in": "query",
-            "schema": {
-              "type": "boolean"
-            }
-          },
-          {
             "description": "RFC3339 lower bound (started_at)",
             "name": "since",
             "in": "query",
@@ -4449,7 +4441,7 @@
         "tags": [
           "Exec-Audit"
         ],
-        "summary": "Get exec-audit call payload (workspace-scoped)",
+        "summary": "Get exec-audit call request payload (workspace-scoped)",
         "parameters": [
           {
             "description": "Workspace ID",
@@ -4468,30 +4460,11 @@
             "schema": {
               "type": "string"
             }
-          },
-          {
-            "description": "request|response",
-            "name": "side",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
           }
         ],
         "responses": {
           "200": {
             "description": "OK",
-            "content": {
-              "application/octet-stream": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Bad Request",
             "content": {
               "application/octet-stream": {
                 "schema": {
@@ -7329,14 +7302,6 @@
             }
           },
           {
-            "description": "Filter on error flag",
-            "name": "is_error",
-            "in": "query",
-            "schema": {
-              "type": "boolean"
-            }
-          },
-          {
             "description": "RFC3339 lower bound (started_at)",
             "name": "since",
             "in": "query",
@@ -8636,24 +8601,11 @@
           "workspace_id"
         ],
         "properties": {
-          "completed_at": {
-            "description": "RFC3339",
-            "type": "string"
-          },
-          "duration_ms": {
-            "type": "integer"
-          },
-          "error_summary": {
-            "type": "string"
-          },
           "exe_id": {
             "type": "string"
           },
           "id": {
             "type": "string"
-          },
-          "is_error": {
-            "type": "boolean"
           },
           "request_preview": {
             "type": "string"
@@ -8662,15 +8614,6 @@
             "type": "string"
           },
           "request_size": {
-            "type": "integer"
-          },
-          "response_preview": {
-            "type": "string"
-          },
-          "response_sha256": {
-            "type": "string"
-          },
-          "response_size": {
             "type": "integer"
           },
           "rpc_id": {
@@ -8711,35 +8654,16 @@
           "workspace_id"
         ],
         "properties": {
-          "completed_at": {
-            "description": "RFC3339",
-            "type": "string"
-          },
-          "duration_ms": {
-            "type": "integer"
-          },
-          "error_summary": {
-            "type": "string"
-          },
           "exe_id": {
             "type": "string"
           },
           "id": {
             "type": "string"
           },
-          "is_error": {
-            "type": "boolean"
-          },
           "request_sha256": {
             "type": "string"
           },
           "request_size": {
-            "type": "integer"
-          },
-          "response_sha256": {
-            "type": "string"
-          },
-          "response_size": {
             "type": "integer"
           },
           "rpc_id": {

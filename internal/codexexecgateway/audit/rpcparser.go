@@ -2,43 +2,18 @@ package audit
 
 import (
 	"encoding/json"
-	"fmt"
-	"sync"
 	"time"
 )
 
-type RPCParserConfig struct {
-	PairTimeout time.Duration
-}
-
-type pendingCall struct {
-	callID    string
-	startedAt time.Time
-}
-
-// RPCParser parses RelayData payload as JSON-RPC, pairs requests with
-// responses by id within a session, and emits CallStart/CallEnd via the
-// Recorder. Notifications produce CallStart only. Unpaired requests
-// older than PairTimeout are swept by SweepTimeouts (caller invokes
-// periodically). Session-closed flushes remaining pending calls.
+// RPCParser parses RelayData payload as JSON-RPC and emits a CallStart
+// per request/notification via the Recorder. Responses are not paired
+// and not persisted — audit is request-only.
 type RPCParser struct {
 	rec Recorder
-	cfg RPCParserConfig
-
-	mu sync.Mutex
-	// pending: session_id → rpc_id → call info
-	pending map[string]map[string]pendingCall
 }
 
-func NewRPCParser(rec Recorder, cfg RPCParserConfig) *RPCParser {
-	if cfg.PairTimeout <= 0 {
-		cfg.PairTimeout = 30 * time.Second
-	}
-	return &RPCParser{
-		rec:     rec,
-		cfg:     cfg,
-		pending: map[string]map[string]pendingCall{},
-	}
+func NewRPCParser(rec Recorder) *RPCParser {
+	return &RPCParser{rec: rec}
 }
 
 // OnFrameToBackend processes a payload going from env-mcp to codex-exec.
@@ -49,8 +24,7 @@ func (p *RPCParser) OnFrameToBackend(sessionID, wsID, userID, exeID string, payl
 	if !ok {
 		return
 	}
-	now := time.Now().UTC()
-	startMeta := CallStartMeta{
+	p.rec.CallStart(CallStartMeta{
 		SessionID:   sessionID,
 		WorkspaceID: wsID,
 		UserID:      userID,
@@ -60,107 +34,8 @@ func (p *RPCParser) OnFrameToBackend(sessionID, wsID, userID, exeID string, payl
 		RPCMethod:   method,
 		RPCKind:     kind,
 		Request:     payload,
-		StartedAt:   now,
-	}
-	callID, err := p.rec.CallStart(startMeta)
-	if err != nil {
-		// Best-effort: a session-level frame's CallStart failing means
-		// the WAL is wedged. The bridge handler doesn't have a
-		// per-frame error path (audit must not block frame forwarding),
-		// so just drop the pair-tracking entry — the failure was logged
-		// inside realRecorder.
-		return
-	}
-	if kind != "request" {
-		return // notification: no pair expected
-	}
-	p.mu.Lock()
-	if p.pending[sessionID] == nil {
-		p.pending[sessionID] = map[string]pendingCall{}
-	}
-	p.pending[sessionID][id] = pendingCall{callID: callID, startedAt: now}
-	p.mu.Unlock()
-}
-
-// OnFrameToClient processes a payload going from codex-exec back to
-// env-mcp. If it matches a pending request (same session_id + rpc_id),
-// emits the matching CallEnd.
-func (p *RPCParser) OnFrameToClient(sessionID string, payload []byte) {
-	id, _, kind, ok := parseRPC(payload)
-	if !ok {
-		return
-	}
-	if kind != "response" && kind != "error" {
-		return // shouldn't happen for server→client, but be defensive
-	}
-	p.mu.Lock()
-	pc, found := p.pending[sessionID][id]
-	if found {
-		delete(p.pending[sessionID], id)
-	}
-	p.mu.Unlock()
-	if !found {
-		return
-	}
-
-	isErr := kind == "error"
-	var errSum string
-	if isErr {
-		errSum = extractErrorMessage(payload)
-	}
-	p.rec.CallEnd(pc.callID, CallEndMeta{
-		CompletedAt:  time.Now().UTC(),
-		IsError:      isErr,
-		ErrorSummary: errSum,
-		Response:     payload,
+		StartedAt:   time.Now().UTC(),
 	})
-}
-
-// SweepTimeouts walks the pending table and emits timeout CallEnds for
-// any request older than cfg.PairTimeout. Caller (typically the real
-// Recorder's background loop) invokes periodically.
-func (p *RPCParser) SweepTimeouts(now time.Time) {
-	p.mu.Lock()
-	type timed struct {
-		pc pendingCall
-	}
-	out := []timed{}
-	for sid, m := range p.pending {
-		for id, pc := range m {
-			if now.Sub(pc.startedAt) >= p.cfg.PairTimeout {
-				out = append(out, timed{pc: pc})
-				delete(m, id)
-			}
-		}
-		if len(m) == 0 {
-			delete(p.pending, sid)
-		}
-	}
-	p.mu.Unlock()
-	for _, t := range out {
-		p.rec.CallEnd(t.pc.callID, CallEndMeta{
-			CompletedAt:  now,
-			IsError:      true,
-			ErrorSummary: fmt.Sprintf("rpc pair timeout after %s", p.cfg.PairTimeout),
-		})
-	}
-}
-
-// SessionClosed drops any pending calls for sid as session-closed
-// errors. Called by the real Recorder when the bridge SessionClose
-// fires (any still-pending request will never get its response).
-func (p *RPCParser) SessionClosed(sid string, now time.Time) {
-	p.mu.Lock()
-	pending := p.pending[sid]
-	delete(p.pending, sid)
-	p.mu.Unlock()
-	for _, pc := range pending {
-		p.rec.CallEnd(pc.callID, CallEndMeta{
-			CompletedAt:  now,
-			IsError:      true,
-			ErrorSummary: "session closed before response",
-		})
-	}
 }
 
 // parseRPC returns (id, method, kind, ok). kind is "request" |
@@ -190,6 +65,8 @@ func parseRPC(b []byte) (string, string, string, bool) {
 		}
 		return idStr, m.Method, "request", true
 	}
+	// We intentionally don't bother distinguishing responses from errors
+	// here: responses are dropped by the caller (request-only audit).
 	if len(m.Error) > 0 {
 		return idStr, "", "error", true
 	}
@@ -204,25 +81,4 @@ func trimQuotes(s string) string {
 		return s[1 : len(s)-1]
 	}
 	return s
-}
-
-// extractErrorMessage pulls the JSON-RPC error.message field from a
-// response payload. Falls back to a truncated raw-payload string when
-// the payload doesn't match the standard shape — operators no longer
-// see IsError=true with an empty ErrorSummary in the audit DB (I9).
-func extractErrorMessage(payload []byte) string {
-	var m struct {
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(payload, &m); err == nil && m.Error.Message != "" {
-		return m.Error.Message
-	}
-	// Fallback: truncate the raw payload so operators get SOMETHING.
-	const maxErrSummary = 256
-	if len(payload) > maxErrSummary {
-		return string(payload[:maxErrSummary]) + "...(truncated)"
-	}
-	return string(payload)
 }

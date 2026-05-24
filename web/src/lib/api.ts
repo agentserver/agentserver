@@ -936,7 +936,6 @@ export interface ListAuditCallsFilters {
   user_id?: string
   source?: 'envmcp' | 'rest' | 'relay'
   method?: string
-  is_error?: boolean
   since?: string
   until?: string
   limit?: number
@@ -965,17 +964,16 @@ export async function getAuditCall(
 }
 
 /**
- * Returns the raw decompressed payload bytes plus a download filename.
- * The /payload endpoint returns 404 (not 200 with empty body) when the
- * payload was over the 4 MiB hard cap — caller should surface this as
- * "payload not stored" rather than a generic download failure.
+ * Returns the raw decompressed request payload bytes plus a download
+ * filename. The /payload endpoint returns 404 (not 200 with empty body)
+ * when the payload was over the 4 MiB hard cap — caller should surface
+ * this as "payload not stored" rather than a generic download failure.
  */
 export async function downloadAuditCallPayload(
   workspaceId: string,
   callId: string,
-  side: 'request' | 'response',
 ): Promise<{ blob: Blob; filename: string }> {
-  const path = `/api/workspaces/${encodeURIComponent(workspaceId)}/exec-audit/calls/${encodeURIComponent(callId)}/payload?side=${side}`
+  const path = `/api/workspaces/${encodeURIComponent(workspaceId)}/exec-audit/calls/${encodeURIComponent(callId)}/payload`
   const resp = await fetch(path, { credentials: 'include' })
   if (resp.status === 404) {
     throw new Error('payload not stored (size exceeded cap)')
@@ -984,6 +982,6 @@ export async function downloadAuditCallPayload(
     throw new Error(`download failed: HTTP ${resp.status}`)
   }
   const blob = await resp.blob()
-  const filename = `${callId}.${side}.bin`
+  const filename = `${callId}.request.bin`
   return { blob, filename }
 }

@@ -281,7 +281,7 @@ func TestGetWorkspaceExecAuditCallPayload_404OnTooLarge(t *testing.T) {
 	// has no preview when there's no payload.
 	var detail AuditCallDetail
 	_ = json.Unmarshal(rr.Body.Bytes(), &detail)
-	if detail.RequestPreview != "" || detail.ResponsePreview != "" {
+	if detail.RequestPreview != "" {
 		t.Fatalf("expected no preview for payload-less call, got %+v", detail)
 	}
 }

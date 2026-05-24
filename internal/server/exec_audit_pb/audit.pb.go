@@ -77,6 +77,8 @@ func (x *BatchRecords) GetRecords() []*WALRecord {
 
 // WALRecord is one entry in either the gateway's on-disk WAL or the
 // batched upload body. Exactly one body field is set.
+//
+// Field tag 5 is reserved (was CallEnd before request-only audit).
 type WALRecord struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"` // UUID of the underlying audit row (session or call)
@@ -85,7 +87,6 @@ type WALRecord struct {
 	//	*WALRecord_SessionOpen
 	//	*WALRecord_SessionClose
 	//	*WALRecord_CallStart
-	//	*WALRecord_CallEnd
 	Body          isWALRecord_Body       `protobuf_oneof:"body"`
 	WrittenAt     *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=written_at,json=writtenAt,proto3" json:"written_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -163,15 +164,6 @@ func (x *WALRecord) GetCallStart() *CallStart {
 	return nil
 }
 
-func (x *WALRecord) GetCallEnd() *CallEnd {
-	if x != nil {
-		if x, ok := x.Body.(*WALRecord_CallEnd); ok {
-			return x.CallEnd
-		}
-	}
-	return nil
-}
-
 func (x *WALRecord) GetWrittenAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.WrittenAt
@@ -195,17 +187,11 @@ type WALRecord_CallStart struct {
 	CallStart *CallStart `protobuf:"bytes,4,opt,name=call_start,json=callStart,proto3,oneof"`
 }
 
-type WALRecord_CallEnd struct {
-	CallEnd *CallEnd `protobuf:"bytes,5,opt,name=call_end,json=callEnd,proto3,oneof"`
-}
-
 func (*WALRecord_SessionOpen) isWALRecord_Body() {}
 
 func (*WALRecord_SessionClose) isWALRecord_Body() {}
 
 func (*WALRecord_CallStart) isWALRecord_Body() {}
-
-func (*WALRecord_CallEnd) isWALRecord_Body() {}
 
 type SessionOpen struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -547,98 +533,6 @@ func (x *CallStart) GetStartedAt() *timestamppb.Timestamp {
 	return nil
 }
 
-type CallEnd struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	CallId         string                 `protobuf:"bytes,1,opt,name=call_id,json=callId,proto3" json:"call_id,omitempty"`
-	CompletedAt    *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=completed_at,json=completedAt,proto3" json:"completed_at,omitempty"`
-	IsError        bool                   `protobuf:"varint,3,opt,name=is_error,json=isError,proto3" json:"is_error,omitempty"`
-	ErrorSummary   string                 `protobuf:"bytes,4,opt,name=error_summary,json=errorSummary,proto3" json:"error_summary,omitempty"`
-	ResponseBytes  []byte                 `protobuf:"bytes,5,opt,name=response_bytes,json=responseBytes,proto3" json:"response_bytes,omitempty"`
-	ResponseSize   int32                  `protobuf:"varint,6,opt,name=response_size,json=responseSize,proto3" json:"response_size,omitempty"`
-	ResponseSha256 string                 `protobuf:"bytes,7,opt,name=response_sha256,json=responseSha256,proto3" json:"response_sha256,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
-}
-
-func (x *CallEnd) Reset() {
-	*x = CallEnd{}
-	mi := &file_internal_server_exec_audit_pb_audit_proto_msgTypes[5]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CallEnd) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CallEnd) ProtoMessage() {}
-
-func (x *CallEnd) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_server_exec_audit_pb_audit_proto_msgTypes[5]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CallEnd.ProtoReflect.Descriptor instead.
-func (*CallEnd) Descriptor() ([]byte, []int) {
-	return file_internal_server_exec_audit_pb_audit_proto_rawDescGZIP(), []int{5}
-}
-
-func (x *CallEnd) GetCallId() string {
-	if x != nil {
-		return x.CallId
-	}
-	return ""
-}
-
-func (x *CallEnd) GetCompletedAt() *timestamppb.Timestamp {
-	if x != nil {
-		return x.CompletedAt
-	}
-	return nil
-}
-
-func (x *CallEnd) GetIsError() bool {
-	if x != nil {
-		return x.IsError
-	}
-	return false
-}
-
-func (x *CallEnd) GetErrorSummary() string {
-	if x != nil {
-		return x.ErrorSummary
-	}
-	return ""
-}
-
-func (x *CallEnd) GetResponseBytes() []byte {
-	if x != nil {
-		return x.ResponseBytes
-	}
-	return nil
-}
-
-func (x *CallEnd) GetResponseSize() int32 {
-	if x != nil {
-		return x.ResponseSize
-	}
-	return 0
-}
-
-func (x *CallEnd) GetResponseSha256() string {
-	if x != nil {
-		return x.ResponseSha256
-	}
-	return ""
-}
-
 var File_internal_server_exec_audit_pb_audit_proto protoreflect.FileDescriptor
 
 const file_internal_server_exec_audit_pb_audit_proto_rawDesc = "" +
@@ -647,17 +541,16 @@ const file_internal_server_exec_audit_pb_audit_proto_rawDesc = "" +
 	"\fBatchRecords\x12\x1d\n" +
 	"\n" +
 	"gateway_id\x18\x01 \x01(\tR\tgatewayId\x12.\n" +
-	"\arecords\x18\x02 \x03(\v2\x14.execaudit.WALRecordR\arecords\"\xc3\x02\n" +
+	"\arecords\x18\x02 \x03(\v2\x14.execaudit.WALRecordR\arecords\"\xa2\x02\n" +
 	"\tWALRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12;\n" +
 	"\fsession_open\x18\x02 \x01(\v2\x16.execaudit.SessionOpenH\x00R\vsessionOpen\x12>\n" +
 	"\rsession_close\x18\x03 \x01(\v2\x17.execaudit.SessionCloseH\x00R\fsessionClose\x125\n" +
 	"\n" +
-	"call_start\x18\x04 \x01(\v2\x14.execaudit.CallStartH\x00R\tcallStart\x12/\n" +
-	"\bcall_end\x18\x05 \x01(\v2\x12.execaudit.CallEndH\x00R\acallEnd\x129\n" +
+	"call_start\x18\x04 \x01(\v2\x14.execaudit.CallStartH\x00R\tcallStart\x129\n" +
 	"\n" +
 	"written_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\twrittenAtB\x06\n" +
-	"\x04body\"\xd6\x02\n" +
+	"\x04bodyJ\x04\b\x05\x10\x06R\bcall_end\"\xd6\x02\n" +
 	"\vSessionOpen\x12!\n" +
 	"\fworkspace_id\x18\x01 \x01(\tR\vworkspaceId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x15\n" +
@@ -694,15 +587,7 @@ const file_internal_server_exec_audit_pb_audit_proto_rawDesc = "" +
 	"\frequest_size\x18\v \x01(\x05R\vrequestSize\x12%\n" +
 	"\x0erequest_sha256\x18\f \x01(\tR\rrequestSha256\x129\n" +
 	"\n" +
-	"started_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\"\x96\x02\n" +
-	"\aCallEnd\x12\x17\n" +
-	"\acall_id\x18\x01 \x01(\tR\x06callId\x12=\n" +
-	"\fcompleted_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\vcompletedAt\x12\x19\n" +
-	"\bis_error\x18\x03 \x01(\bR\aisError\x12#\n" +
-	"\rerror_summary\x18\x04 \x01(\tR\ferrorSummary\x12%\n" +
-	"\x0eresponse_bytes\x18\x05 \x01(\fR\rresponseBytes\x12#\n" +
-	"\rresponse_size\x18\x06 \x01(\x05R\fresponseSize\x12'\n" +
-	"\x0fresponse_sha256\x18\a \x01(\tR\x0eresponseSha256BNZLgithub.com/agentserver/agentserver/internal/server/exec_audit_pb;execauditpbb\x06proto3"
+	"started_at\x18\r \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAtBNZLgithub.com/agentserver/agentserver/internal/server/exec_audit_pb;execauditpbb\x06proto3"
 
 var (
 	file_internal_server_exec_audit_pb_audit_proto_rawDescOnce sync.Once
@@ -716,34 +601,31 @@ func file_internal_server_exec_audit_pb_audit_proto_rawDescGZIP() []byte {
 	return file_internal_server_exec_audit_pb_audit_proto_rawDescData
 }
 
-var file_internal_server_exec_audit_pb_audit_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_internal_server_exec_audit_pb_audit_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_internal_server_exec_audit_pb_audit_proto_goTypes = []any{
 	(*BatchRecords)(nil),          // 0: execaudit.BatchRecords
 	(*WALRecord)(nil),             // 1: execaudit.WALRecord
 	(*SessionOpen)(nil),           // 2: execaudit.SessionOpen
 	(*SessionClose)(nil),          // 3: execaudit.SessionClose
 	(*CallStart)(nil),             // 4: execaudit.CallStart
-	(*CallEnd)(nil),               // 5: execaudit.CallEnd
-	(*timestamppb.Timestamp)(nil), // 6: google.protobuf.Timestamp
+	(*timestamppb.Timestamp)(nil), // 5: google.protobuf.Timestamp
 }
 var file_internal_server_exec_audit_pb_audit_proto_depIdxs = []int32{
 	1,  // 0: execaudit.BatchRecords.records:type_name -> execaudit.WALRecord
 	2,  // 1: execaudit.WALRecord.session_open:type_name -> execaudit.SessionOpen
 	3,  // 2: execaudit.WALRecord.session_close:type_name -> execaudit.SessionClose
 	4,  // 3: execaudit.WALRecord.call_start:type_name -> execaudit.CallStart
-	5,  // 4: execaudit.WALRecord.call_end:type_name -> execaudit.CallEnd
-	6,  // 5: execaudit.WALRecord.written_at:type_name -> google.protobuf.Timestamp
-	6,  // 6: execaudit.SessionOpen.cap_iat:type_name -> google.protobuf.Timestamp
-	6,  // 7: execaudit.SessionOpen.cap_exp:type_name -> google.protobuf.Timestamp
-	6,  // 8: execaudit.SessionOpen.opened_at:type_name -> google.protobuf.Timestamp
-	6,  // 9: execaudit.SessionClose.closed_at:type_name -> google.protobuf.Timestamp
-	6,  // 10: execaudit.CallStart.started_at:type_name -> google.protobuf.Timestamp
-	6,  // 11: execaudit.CallEnd.completed_at:type_name -> google.protobuf.Timestamp
-	12, // [12:12] is the sub-list for method output_type
-	12, // [12:12] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	5,  // 4: execaudit.WALRecord.written_at:type_name -> google.protobuf.Timestamp
+	5,  // 5: execaudit.SessionOpen.cap_iat:type_name -> google.protobuf.Timestamp
+	5,  // 6: execaudit.SessionOpen.cap_exp:type_name -> google.protobuf.Timestamp
+	5,  // 7: execaudit.SessionOpen.opened_at:type_name -> google.protobuf.Timestamp
+	5,  // 8: execaudit.SessionClose.closed_at:type_name -> google.protobuf.Timestamp
+	5,  // 9: execaudit.CallStart.started_at:type_name -> google.protobuf.Timestamp
+	10, // [10:10] is the sub-list for method output_type
+	10, // [10:10] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_internal_server_exec_audit_pb_audit_proto_init() }
@@ -755,7 +637,6 @@ func file_internal_server_exec_audit_pb_audit_proto_init() {
 		(*WALRecord_SessionOpen)(nil),
 		(*WALRecord_SessionClose)(nil),
 		(*WALRecord_CallStart)(nil),
-		(*WALRecord_CallEnd)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -763,7 +644,7 @@ func file_internal_server_exec_audit_pb_audit_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_server_exec_audit_pb_audit_proto_rawDesc), len(file_internal_server_exec_audit_pb_audit_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

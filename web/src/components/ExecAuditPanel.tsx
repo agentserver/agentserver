@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Activity, AlertCircle, CheckCircle2, ChevronDown, ChevronRight, MessageSquare } from 'lucide-react'
+import { Activity, ChevronDown, ChevronRight, MessageSquare } from 'lucide-react'
 import clsx from 'clsx'
 import {
   listAuditCalls,
@@ -112,13 +112,12 @@ function CallsTab({ workspaceId }: { workspaceId: string }) {
               <th className="text-left px-3 py-2">User</th>
               <th className="text-left px-3 py-2">Exe</th>
               <th className="text-left px-3 py-2">Method</th>
-              <th className="text-left px-3 py-2">Status</th>
-              <th className="text-right px-3 py-2">Dur</th>
+              <th className="text-right px-3 py-2">Req size</th>
             </tr>
           </thead>
           <tbody>
             {calls.length === 0 && !loading && (
-              <tr><td colSpan={8} className="px-3 py-8 text-center text-zinc-500">No calls.</td></tr>
+              <tr><td colSpan={7} className="px-3 py-8 text-center text-zinc-500">No calls.</td></tr>
             )}
             {calls.map((c) => (
               <CallRow
@@ -161,18 +160,11 @@ function CallRow({
         <td className="px-3 py-2 font-mono text-xs">{call.user_id ? short(call.user_id) : <span className="text-zinc-400">—</span>}</td>
         <td className="px-3 py-2 font-mono text-xs">{short(call.exe_id)}</td>
         <td className="px-3 py-2">{call.rpc_method ?? <span className="text-zinc-400">—</span>}</td>
-        <td className="px-3 py-2">
-          {call.is_error
-            ? <span className="flex items-center gap-1 text-red-600"><AlertCircle size={14} />error</span>
-            : <span className="flex items-center gap-1 text-emerald-600"><CheckCircle2 size={14} />ok</span>}
-        </td>
-        <td className="px-3 py-2 text-right font-mono text-xs">
-          {call.duration_ms != null ? `${call.duration_ms}ms` : '—'}
-        </td>
+        <td className="px-3 py-2 text-right font-mono text-xs">{fmtSizeShort(call.request_size ?? 0)}</td>
       </tr>
       {expanded && (
         <tr className="bg-zinc-50 dark:bg-zinc-900">
-          <td colSpan={8} className="px-3 py-3">
+          <td colSpan={7} className="px-3 py-3">
             <ExecAuditCallDetail workspaceId={workspaceId} callId={call.id} />
           </td>
         </tr>
@@ -240,15 +232,6 @@ function CallsFilterBar({
           className="rounded border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 py-1 text-sm"
           value={filters.exe_id ?? ''}
           onChange={(e) => onChange({ ...filters, exe_id: e.target.value || undefined })}
-        />
-      </label>
-      <label className="flex flex-col text-xs">
-        <span className="text-zinc-500 mb-0.5">Errors only</span>
-        <input
-          type="checkbox"
-          checked={filters.is_error === true}
-          onChange={(e) => onChange({ ...filters, is_error: e.target.checked ? true : undefined })}
-          className="mt-1.5"
         />
       </label>
       <button

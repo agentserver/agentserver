@@ -29,7 +29,8 @@ func (s *Server) handleRegisterProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	clientIP := clientmeta.ClientIP(r)
-	deadline := time.Now().Add(s.cfg.RegisterRetryTotalTimeout)
+	start := time.Now()
+	deadline := start.Add(s.cfg.RegisterRetryTotalTimeout)
 	backoff := s.cfg.RegisterRetryInitialBackoff
 
 	var (
@@ -37,8 +38,10 @@ func (s *Server) handleRegisterProxy(w http.ResponseWriter, r *http.Request) {
 		lastHeader http.Header
 		lastBody   []byte
 		lastErr    error
+		attempt    int
 	)
 	for {
+		attempt++
 		attemptCtx, attemptCancel := context.WithCancel(r.Context())
 		req, _ := http.NewRequestWithContext(attemptCtx, r.Method, upstreamURL, bytes.NewReader(body))
 		copyHeaders(req.Header, r.Header)
@@ -48,6 +51,17 @@ func (s *Server) handleRegisterProxy(w http.ResponseWriter, r *http.Request) {
 		resp, err := s.httpClient.Do(req)
 		if err == nil && !isRetryableStatus(resp.StatusCode) {
 			attemptCancel()
+			// Only log when the success required at least one retry — the
+			// first-attempt success path stays silent. This gives operators
+			// a direct signal of how often the gateway-restart-window
+			// buffering kicks in.
+			if attempt > 1 {
+				s.logger.Info("registerproxy: succeeded after retry",
+					"attempts", attempt,
+					"took_ms", time.Since(start).Milliseconds(),
+					"status", resp.StatusCode,
+					"path", r.URL.Path)
+			}
 			writeUpstreamResponse(w, resp)
 			return
 		}
@@ -86,12 +100,15 @@ func (s *Server) handleRegisterProxy(w http.ResponseWriter, r *http.Request) {
 
 	// Retry deadline exhausted. Surface the last upstream response if any,
 	// otherwise return 502 with the dial error.
+	tookMs := time.Since(start).Milliseconds()
 	if lastStatus == 0 {
-		s.logger.Warn("registerproxy: retries exhausted (network)", "err", lastErr)
+		s.logger.Warn("registerproxy: retries exhausted (network)",
+			"attempts", attempt, "took_ms", tookMs, "path", r.URL.Path, "err", lastErr)
 		http.Error(w, "upstream unreachable: "+lastErr.Error(), http.StatusBadGateway)
 		return
 	}
-	s.logger.Warn("registerproxy: retries exhausted (status)", "status", lastStatus)
+	s.logger.Warn("registerproxy: retries exhausted (status)",
+		"attempts", attempt, "took_ms", tookMs, "path", r.URL.Path, "status", lastStatus)
 	for k, vs := range lastHeader {
 		for _, v := range vs {
 			w.Header().Add(k, v)

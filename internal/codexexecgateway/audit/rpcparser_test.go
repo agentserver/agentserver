@@ -90,6 +90,27 @@ func TestRPCParser_MalformedPayloadIgnored(t *testing.T) {
 	}
 }
 
+func TestRPCParser_ProtocolNoiseSkipped(t *testing.T) {
+	cap := newCapRecorder()
+	p := audit.NewRPCParser(cap)
+	// MCP handshake — should be skipped
+	p.OnFrameToBackend("s1", "ws", "user", "exe", []byte(`{"jsonrpc":"2.0","id":0,"method":"initialize"}`))
+	p.OnFrameToBackend("s1", "ws", "user", "exe", []byte(`{"jsonrpc":"2.0","method":"initialized"}`))
+	// shell output poll — should be skipped
+	p.OnFrameToBackend("s1", "ws", "user", "exe", []byte(`{"jsonrpc":"2.0","id":5,"method":"process/read","params":{"process_id":"p1"}}`))
+	// real tool call — should be recorded
+	p.OnFrameToBackend("s1", "ws", "user", "exe", []byte(`{"jsonrpc":"2.0","id":6,"method":"process/start","params":{"cmd":"ls"}}`))
+
+	cap.mu.Lock()
+	defer cap.mu.Unlock()
+	if len(cap.starts) != 1 {
+		t.Fatalf("expected only process/start recorded, got %d starts: %+v", len(cap.starts), cap.starts)
+	}
+	if cap.starts[0].RPCMethod != "process/start" {
+		t.Errorf("recorded wrong method: %q", cap.starts[0].RPCMethod)
+	}
+}
+
 func TestRPCParser_StringIDsHandled(t *testing.T) {
 	cap := newCapRecorder()
 	p := audit.NewRPCParser(cap)

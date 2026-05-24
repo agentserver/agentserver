@@ -16,12 +16,27 @@ func NewRPCParser(rec Recorder) *RPCParser {
 	return &RPCParser{rec: rec}
 }
 
+// skippedMethods are bridge frames that aren't meaningful tool calls
+// and would just create noise in the audit timeline:
+//   - initialize / initialized: MCP handshake at session start
+//   - process/read: shell/exec_command output polling — one logical
+//     shell command produces dozens of these. The matching process/start
+//     IS recorded, which is the actual "user issued shell" event.
+var skippedMethods = map[string]bool{
+	"initialize":   true,
+	"initialized":  true,
+	"process/read": true,
+}
+
 // OnFrameToBackend processes a payload going from env-mcp to codex-exec.
 // Workspace/user/exe identify the session — caller has them in context
 // from the bridge handshake.
 func (p *RPCParser) OnFrameToBackend(sessionID, wsID, userID, exeID string, payload []byte) {
 	id, method, kind, ok := parseRPC(payload)
 	if !ok {
+		return
+	}
+	if skippedMethods[method] {
 		return
 	}
 	p.rec.CallStart(CallStartMeta{

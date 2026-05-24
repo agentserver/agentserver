@@ -22,18 +22,21 @@ type IMChannel struct {
 
 // CreateIMChannel inserts or updates a workspace IM channel record.
 // On conflict (same workspace+provider+bot), updates bound_at.
-// Returns the channel ID.
-func (db *DB) CreateIMChannel(workspaceID, provider, botID, userID string) (string, error) {
-	var id string
-	err := db.QueryRow(
+// Returns the channel ID and its routing_mode (column default 'codex' on
+// insert; existing value on conflict). Callers must seed BridgeBinding
+// with this routing_mode so the in-memory channelRouting map matches
+// the DB — otherwise forwardMessage falls through to the nanoclaw path
+// for any new channel created via configure handlers.
+func (db *DB) CreateIMChannel(workspaceID, provider, botID, userID string) (id, routingMode string, err error) {
+	err = db.QueryRow(
 		`INSERT INTO workspace_im_channels (workspace_id, provider, bot_id, user_id)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (workspace_id, provider, bot_id)
 		DO UPDATE SET bound_at = NOW()
-		RETURNING id`,
+		RETURNING id, routing_mode`,
 		workspaceID, provider, botID, userID,
-	).Scan(&id)
-	return id, err
+	).Scan(&id, &routingMode)
+	return id, routingMode, err
 }
 
 // SaveIMChannelCredentials stores bot credentials for a workspace IM channel.

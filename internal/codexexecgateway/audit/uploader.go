@@ -81,6 +81,17 @@ func (u *Uploader) Run(ctx context.Context) {
 			continue
 		}
 		if len(batch.Records) == 0 {
+			// W2: a batch with no records but non-empty perFile means
+			// only corrupt records were skipped. Persist the cursor
+			// advance so we don't re-scan the same poison bytes forever.
+			if len(perFile) > 0 {
+				for fname, n := range perFile {
+					u.cfg.Cursor.Advance(fname, n)
+				}
+				if err := u.cfg.Cursor.Save(); err != nil {
+					u.log.Warn("exec-audit uploader: cursor save after skip", "err", err)
+				}
+			}
 			u.sleep(ctx, u.cfg.FlushInterval)
 			continue
 		}
@@ -138,6 +149,15 @@ func (u *Uploader) readNextBatch() (*pb.BatchRecords, map[string]int64, int, err
 		}
 		if err != nil {
 			return nil, nil, 0, err
+		}
+		// W2 sentinel: rec=nil, n>0 means "corrupt record skipped".
+		// Advance the cursor counter so the uploader moves past the
+		// poison bytes on the next commit, but don't include in batch.
+		if rec == nil {
+			if n > 0 {
+				perFile[fname] += n
+			}
+			continue
 		}
 		batch.Records = append(batch.Records, rec)
 		perFile[fname] += n

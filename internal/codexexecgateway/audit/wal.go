@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	pb "github.com/agentserver/agentserver/internal/server/exec_audit_pb"
@@ -41,7 +43,8 @@ type WAL struct {
 	curSize       int64
 	recsSinceSync int
 
-	stopSync chan struct{}
+	stopSync  chan struct{}
+	closeOnce sync.Once
 }
 
 // OpenWAL creates Dir if needed and opens (or rotates to) a fresh file.
@@ -83,15 +86,18 @@ func (w *WAL) Append(rec *pb.WALRecord) error {
 	if err != nil {
 		return fmt.Errorf("wal: marshal: %w", err)
 	}
-	var lenBuf [4]byte
-	binary.BigEndian.PutUint32(lenBuf[:], uint32(len(body)))
-	if _, err := w.cur.Write(lenBuf[:]); err != nil {
-		return fmt.Errorf("wal: write len: %w", err)
+	// W1: Concatenate length-prefix + body into a single Write so a
+	// short-write between the two doesn't leave a 4-byte stub that
+	// desyncs the reader for the rest of the file. A failure of this
+	// single Write may still leave a partial record on disk; WALReader
+	// is hardened (W2) to skip records that fail to unmarshal.
+	frame := make([]byte, 4+len(body))
+	binary.BigEndian.PutUint32(frame[:4], uint32(len(body)))
+	copy(frame[4:], body)
+	if _, err := w.cur.Write(frame); err != nil {
+		return fmt.Errorf("wal: write: %w", err)
 	}
-	if _, err := w.cur.Write(body); err != nil {
-		return fmt.Errorf("wal: write body: %w", err)
-	}
-	w.curSize += int64(4 + len(body))
+	w.curSize += int64(len(frame))
 	w.recsSinceSync++
 
 	if w.recsSinceSync >= w.cfg.FsyncRecords {
@@ -120,18 +126,23 @@ func (w *WAL) Sync() error {
 	return w.cur.Sync()
 }
 
-// Close stops the fsync goroutine, flushes, and closes the current file.
+// Close stops the fsync goroutine, flushes, and closes the current
+// file. Safe to call multiple times — guarded by sync.Once so the
+// channel close doesn't panic on second invocation (T6 review followup).
 func (w *WAL) Close() error {
-	close(w.stopSync)
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if w.cur == nil {
-		return nil
-	}
-	_ = w.cur.Sync()
-	err := w.cur.Close()
-	w.cur = nil
-	return err
+	var closeErr error
+	w.closeOnce.Do(func() {
+		close(w.stopSync)
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		if w.cur == nil {
+			return
+		}
+		_ = w.cur.Sync()
+		closeErr = w.cur.Close()
+		w.cur = nil
+	})
+	return closeErr
 }
 
 func (w *WAL) fsyncLoop() {
@@ -188,10 +199,19 @@ func (w *WAL) enforceQuotaLocked() error {
 	if err != nil {
 		return fmt.Errorf("wal: readdir: %w", err)
 	}
+	// W4: Filter to wal-*.log only. Previously this counted every file
+	// in the directory (cursor.json, partial uploads, anything else) and
+	// under "drop" mode could even unlink cursor.json — silently
+	// resetting the uploader's progress. Now: count only wal files;
+	// drop only wal files.
 	var total int64
 	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), "wal-") {
+			continue
+		}
 		info, err := e.Info()
 		if err != nil {
+			w.logger.Warn("wal: stat in quota check", "name", e.Name(), "err", err)
 			continue
 		}
 		total += info.Size()
@@ -204,6 +224,9 @@ func (w *WAL) enforceQuotaLocked() error {
 		// naming convention is wal-YYYYMMDD-HHMMSS.log).
 		names := make([]string, 0, len(entries))
 		for _, e := range entries {
+			if !strings.HasPrefix(e.Name(), "wal-") {
+				continue
+			}
 			names = append(names, e.Name())
 		}
 		sort.Strings(names)
@@ -218,6 +241,7 @@ func (w *WAL) enforceQuotaLocked() error {
 			p := filepath.Join(w.cfg.Dir, n)
 			info, err := os.Stat(p)
 			if err != nil {
+				w.logger.Warn("wal: stat for drop", "path", p, "err", err)
 				continue
 			}
 			if err := os.Remove(p); err != nil {
@@ -245,6 +269,14 @@ type WALReader struct {
 	curIx     int
 	cursor    *Cursor // optional; if set, NextWithSize seeks past offset on first open
 	seekedCur bool    // whether we've seeked into the current file already
+	logger    *slog.Logger
+
+	// W2: corrupt-record telemetry. NextWithSize increments this every
+	// time a record fails to unmarshal and is skipped (rather than
+	// returning the error and stalling the Uploader forever on the same
+	// poison record). Exposed via CorruptRecordsSkipped() for tests +
+	// /metrics.
+	corruptRecordsSkipped atomic.Int64
 }
 
 func OpenWALReader(dir string) (*WALReader, error) {
@@ -253,11 +285,29 @@ func OpenWALReader(dir string) (*WALReader, error) {
 		return nil, err
 	}
 	sort.Strings(matches)
-	return &WALReader{dir: dir, files: matches}, nil
+	return &WALReader{dir: dir, files: matches, logger: slog.Default()}, nil
+}
+
+// CorruptRecordsSkipped returns the number of records this reader has
+// skipped due to proto.Unmarshal failure since it was opened.
+func (r *WALReader) CorruptRecordsSkipped() int64 {
+	return r.corruptRecordsSkipped.Load()
+}
+
+// SetLogger lets callers route W2 corrupt-record errors through their
+// own slog handler. Optional; defaults to slog.Default().
+func (r *WALReader) SetLogger(l *slog.Logger) {
+	if l != nil {
+		r.logger = l
+	}
 }
 
 // Next reads one WAL record. Returns (rec, fileName, nil) on success or
 // (nil, "", io.EOF) when all files are exhausted. Caller closes via Close.
+//
+// W2: records that fail proto.Unmarshal are skipped (counter
+// incremented, logged) so a single poison record can't stall the reader
+// for an entire file.
 func (r *WALReader) Next() (*pb.WALRecord, string, error) {
 	for {
 		if r.cur == nil {
@@ -272,10 +322,17 @@ func (r *WALReader) Next() (*pb.WALRecord, string, error) {
 		}
 		var lenBuf [4]byte
 		if _, err := io.ReadFull(r.cur, lenBuf[:]); err != nil {
+			// Partial length prefix at EOF — treat as truncated file end
+			// (W2 graceful recovery from torn writes).
+			if err == io.ErrUnexpectedEOF {
+				r.logger.Error("wal: truncated length prefix, skipping rest of file",
+					"file", filepath.Base(r.files[r.curIx]))
+				r.corruptRecordsSkipped.Add(1)
+			}
 			_ = r.cur.Close()
 			r.cur = nil
 			r.curIx++
-			if err == io.EOF {
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				continue
 			}
 			return nil, "", err
@@ -283,11 +340,21 @@ func (r *WALReader) Next() (*pb.WALRecord, string, error) {
 		length := binary.BigEndian.Uint32(lenBuf[:])
 		body := make([]byte, length)
 		if _, err := io.ReadFull(r.cur, body); err != nil {
-			return nil, "", err
+			// Torn write — file ended mid-body. Skip rest of file.
+			r.logger.Error("wal: truncated record body, skipping rest of file",
+				"file", filepath.Base(r.files[r.curIx]), "want", length, "err", err)
+			r.corruptRecordsSkipped.Add(1)
+			_ = r.cur.Close()
+			r.cur = nil
+			r.curIx++
+			continue
 		}
 		var rec pb.WALRecord
 		if err := proto.Unmarshal(body, &rec); err != nil {
-			return nil, "", err
+			r.logger.Error("wal: corrupt record, skipping",
+				"file", filepath.Base(r.files[r.curIx]), "err", err)
+			r.corruptRecordsSkipped.Add(1)
+			continue
 		}
 		return &rec, filepath.Base(r.files[r.curIx]), nil
 	}
@@ -331,6 +398,14 @@ func (r *WALReader) SeekPastCursor(c *Cursor) error {
 //
 // Requires SeekPastCursor to have been called first (it's how the
 // reader knows the per-file starting offset).
+//
+// W2 sentinel: when a record fails proto.Unmarshal, this returns
+// (nil, fname, 4+length, nil) — rec is nil but n > 0. The Uploader
+// interprets this as "advance cursor by n, do not include in batch" so
+// a poison record doesn't stall the uploader forever. A truncated
+// length-prefix or body at EOF returns (nil, fname, 0, io.EOF) for the
+// file slot (the rest of the file is unrecoverable; the bytes-past-
+// cursor remain on disk but will be skipped on the next reader open).
 func (r *WALReader) NextWithSize() (*pb.WALRecord, string, int64, error) {
 	for {
 		if r.cur == nil {
@@ -356,12 +431,19 @@ func (r *WALReader) NextWithSize() (*pb.WALRecord, string, int64, error) {
 			}
 			r.seekedCur = true
 		}
+		fname := filepath.Base(r.files[r.curIx])
 		var lenBuf [4]byte
 		if _, err := io.ReadFull(r.cur, lenBuf[:]); err != nil {
+			if err == io.ErrUnexpectedEOF {
+				// Partial length prefix — torn write at file tail.
+				r.logger.Error("wal: truncated length prefix, skipping rest of file",
+					"file", fname)
+				r.corruptRecordsSkipped.Add(1)
+			}
 			_ = r.cur.Close()
 			r.cur = nil
 			r.curIx++
-			if err == io.EOF {
+			if err == io.EOF || err == io.ErrUnexpectedEOF {
 				continue
 			}
 			return nil, "", 0, err
@@ -369,12 +451,30 @@ func (r *WALReader) NextWithSize() (*pb.WALRecord, string, int64, error) {
 		length := binary.BigEndian.Uint32(lenBuf[:])
 		body := make([]byte, length)
 		if _, err := io.ReadFull(r.cur, body); err != nil {
-			return nil, "", 0, err
+			// Torn write — body truncated. Skip rest of file. The 4 bytes
+			// of length prefix we already consumed can't be re-read; the
+			// uploader's cursor advances on the NEXT successful record,
+			// so leaving those 4 bytes unaccounted is harmless — they're
+			// past the cursor offset and the file will be retired once
+			// fully consumed (or never re-read once a newer wal file
+			// rotates in).
+			r.logger.Error("wal: truncated record body, skipping rest of file",
+				"file", fname, "want", length, "err", err)
+			r.corruptRecordsSkipped.Add(1)
+			_ = r.cur.Close()
+			r.cur = nil
+			r.curIx++
+			continue
 		}
 		var rec pb.WALRecord
 		if err := proto.Unmarshal(body, &rec); err != nil {
-			return nil, "", 0, err
+			r.logger.Error("wal: corrupt record, skipping",
+				"file", fname, "err", err)
+			r.corruptRecordsSkipped.Add(1)
+			// Sentinel: nil record, non-zero n — caller advances cursor
+			// but does not append to batch.
+			return nil, fname, int64(4 + length), nil
 		}
-		return &rec, filepath.Base(r.files[r.curIx]), int64(4 + length), nil
+		return &rec, fname, int64(4 + length), nil
 	}
 }

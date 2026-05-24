@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import {
+  Activity,
   Clock,
   Users,
   LayoutDashboard,
@@ -63,6 +64,7 @@ import { WeixinLoginModal } from './WeixinLoginModal'
 import { TelegramConfigModal } from './TelegramConfigModal'
 import { MatrixConfigModal } from './MatrixConfigModal'
 import CodexTokensPanel from './CodexTokensPanel'
+import ExecAuditPanel from './ExecAuditPanel'
 import RemoteExecutorsPanel from './RemoteExecutorsPanel'
 import { SandboxList } from './SandboxList'
 
@@ -74,6 +76,7 @@ export type Tab =
   | 'llm'
   | 'im'
   | 'traces'
+  | 'exec-audit'
   | 'credentials'
   | 'members'
   | 'api-keys'
@@ -104,6 +107,7 @@ const TAB_TO_SLUG: Record<Tab, string> = {
   llm: 'llm',
   im: 'im',
   traces: 'traces',
+  'exec-audit': 'exec-audit',
   credentials: 'credentials',
   members: 'members',
   'api-keys': 'api-keys',
@@ -193,6 +197,7 @@ export function WorkspaceDetail({ workspace, onRename, initialTab, sandboxOverri
     { key: 'llm', label: 'LLM', icon: <Brain size={16} /> },
     { key: 'im', label: 'IM', icon: <Bot size={16} /> },
     { key: 'traces', label: 'Traces', icon: <MessageSquare size={16} />, badge: tracesTotal > 0 ? tracesTotal : undefined },
+    { key: 'exec-audit', label: 'Exec Audit', icon: <Activity size={16} /> },
     { key: 'credentials', label: 'Credentials', icon: <Key size={16} /> },
     { key: 'members', label: 'Members', icon: <Users size={16} />, badge: members.length > 0 ? members.length : undefined },
     // Always visible — gate-by-role was causing this entry to pop in after
@@ -275,6 +280,9 @@ export function WorkspaceDetail({ workspace, onRename, initialTab, sandboxOverri
               fetchDetail={fetchDetail}
               showSandboxId
             />
+          )}
+          {tab === 'exec-audit' && (
+            <ExecAuditPanel workspaceId={workspace.id} />
           )}
           {tab === 'credentials' && (
             <CredentialsTab workspaceId={workspace.id} />

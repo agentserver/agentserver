@@ -46,6 +46,14 @@ export type ExecutorItem = components['schemas']['ExecutorItem']
 export type ExecutorRegisterResponse = components['schemas']['ExecutorRegisterResponse']
 export type AgentInteractionItem = components['schemas']['AgentInteractionItem']
 
+// Exec-Audit — generated from OpenAPI spec (PR #199)
+export type AuditSessionSummary = components['schemas']['AuditSessionSummary']
+export type AuditCallSummary = components['schemas']['AuditCallSummary']
+export type AuditCallDetail = components['schemas']['AuditCallDetail']
+export type AuditSessionDetail = components['schemas']['AuditSessionDetail']
+export type ListAuditSessionsResponse = components['schemas']['ListAuditSessionsResponse']
+export type ListAuditCallsResponse = components['schemas']['ListAuditCallsResponse']
+
 // Admin — generated types from OpenAPI spec
 export type AdminUser = components['schemas']['AdminUserItem']
 export type AdminWorkspaceOwner = components['schemas']['AdminOwnerInfo']
@@ -890,3 +898,92 @@ export async function revokeWorkspaceAPIKey(workspaceId: string, keyId: string):
   }
 }
 
+// === Exec-Audit (Plan 2/3) ===
+
+export interface ListAuditSessionsFilters {
+  exe_id?: string
+  user_id?: string
+  turn_id?: string
+  since?: string // RFC3339
+  until?: string // RFC3339
+  limit?: number
+}
+
+export async function listAuditSessions(
+  workspaceId: string,
+  filters: ListAuditSessionsFilters = {},
+): Promise<AuditSessionSummary[]> {
+  const qs = new URLSearchParams()
+  for (const [k, v] of Object.entries(filters)) {
+    if (v !== undefined && v !== null && v !== '') qs.set(k, String(v))
+  }
+  const q = qs.toString()
+  const path = `/api/workspaces/${encodeURIComponent(workspaceId)}/exec-audit/sessions${q ? `?${q}` : ''}`
+  const data = await apiFetch<ListAuditSessionsResponse>({ method: 'GET', path })
+  return data.sessions ?? []
+}
+
+export async function getAuditSession(
+  workspaceId: string,
+  sessionId: string,
+): Promise<AuditSessionDetail> {
+  const path = `/api/workspaces/${encodeURIComponent(workspaceId)}/exec-audit/sessions/${encodeURIComponent(sessionId)}`
+  return apiFetch<AuditSessionDetail>({ method: 'GET', path })
+}
+
+export interface ListAuditCallsFilters {
+  exe_id?: string
+  user_id?: string
+  source?: 'envmcp' | 'rest' | 'relay'
+  method?: string
+  is_error?: boolean
+  since?: string
+  until?: string
+  limit?: number
+}
+
+export async function listAuditCalls(
+  workspaceId: string,
+  filters: ListAuditCallsFilters = {},
+): Promise<AuditCallSummary[]> {
+  const qs = new URLSearchParams()
+  for (const [k, v] of Object.entries(filters)) {
+    if (v !== undefined && v !== null && v !== '') qs.set(k, String(v))
+  }
+  const q = qs.toString()
+  const path = `/api/workspaces/${encodeURIComponent(workspaceId)}/exec-audit/calls${q ? `?${q}` : ''}`
+  const data = await apiFetch<ListAuditCallsResponse>({ method: 'GET', path })
+  return data.calls ?? []
+}
+
+export async function getAuditCall(
+  workspaceId: string,
+  callId: string,
+): Promise<AuditCallDetail> {
+  const path = `/api/workspaces/${encodeURIComponent(workspaceId)}/exec-audit/calls/${encodeURIComponent(callId)}`
+  return apiFetch<AuditCallDetail>({ method: 'GET', path })
+}
+
+/**
+ * Returns the raw decompressed payload bytes plus a download filename.
+ * The /payload endpoint returns 404 (not 200 with empty body) when the
+ * payload was over the 4 MiB hard cap — caller should surface this as
+ * "payload not stored" rather than a generic download failure.
+ */
+export async function downloadAuditCallPayload(
+  workspaceId: string,
+  callId: string,
+  side: 'request' | 'response',
+): Promise<{ blob: Blob; filename: string }> {
+  const path = `/api/workspaces/${encodeURIComponent(workspaceId)}/exec-audit/calls/${encodeURIComponent(callId)}/payload?side=${side}`
+  const resp = await fetch(path, { credentials: 'include' })
+  if (resp.status === 404) {
+    throw new Error('payload not stored (size exceeded cap)')
+  }
+  if (!resp.ok) {
+    throw new Error(`download failed: HTTP ${resp.status}`)
+  }
+  const blob = await resp.blob()
+  const filename = `${callId}.${side}.bin`
+  return { blob, filename }
+}

@@ -35,15 +35,16 @@
 
 ### 它和现有工具有何不同
 
-| 工具 | 本地多智能体 | 云端沙箱 | 跨设备组网 | 聊天软件通道 |
-|------|:---:|:---:|:---:|:---:|
-| OpenClaw / Claude Code Remote | 单实例 | — | — | ✅ |
-| Claude Code on the web | — | ✅ | — | — |
-| Claude Code Agent Teams | — | ✅（子智能体） | — | — |
-| **agentserver** | **✅ 多实例** | **✅** | **✅** | **✅（微信 / Telegram / Matrix）** |
+| 工具 | 本地多智能体 | 云端沙箱 | 跨设备组网 | 会话跨终端 | 聊天软件通道 |
+|------|:---:|:---:|:---:|:---:|:---:|
+| OpenClaw / Claude Code Remote | 单实例 | — | — | — | ✅ |
+| Claude Code on the web | — | ✅ | — | — | — |
+| Claude Code Agent Teams | — | ✅（子智能体） | — | — | — |
+| **agentserver** | **✅ 多实例** | **✅** | **✅** | **✅（CLI / Web / IM / Jupyter）** | **✅（微信 / Telegram / Matrix）** |
 
 ## 为什么选择 agentserver？
 
+- **同一段会话，任意设备** —— codex 会话本身跑在服务端。早上在公司笔电上让 agent 改了一半的任务，地铁里用微信续上同一段对话继续推进；换设备的不是命令，而是 agent 的前端。
 - **口袋里就能指挥算力** —— 通过微信 / Weixin、Telegram 或 Matrix 聊天驱动你的智能体，离开桌面时也不必再打开终端。
 - **一个工作区，统管所有设备** —— 云端沙箱、本地笔记本/台式机、IM 接入的智能体共享同一个工作区，全部并排出现在 Web UI 中。
 - **原生面向 Codex** —— 围绕 [OpenAI codex](https://developers.openai.com/codex/cli) CLI 构建：设备用 `codex exec-server --remote` 接入，指挥机用 `codex --remote` 指挥；不需要在每台机器上额外装客户端。

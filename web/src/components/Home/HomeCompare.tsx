@@ -1,13 +1,13 @@
 import { useT } from '../../lib/i18n'
 import { homeStrings } from './strings'
 
-type Row = { tool: string; local: string; cloud: string; peer: string; chat: string; us?: boolean }
+type Row = { tool: string; local: string; cloud: string; peer: string; session: string; chat: string; us?: boolean }
 
 const rows: Row[] = [
-  { tool: 'OpenClaw / Claude Code Remote', local: '1',      cloud: '—',      peer: '—', chat: '✓' },
-  { tool: 'Claude Code on the web',        local: '—',      cloud: '✓',      peer: '—', chat: '—' },
-  { tool: 'CC Agent Teams',                local: '—',      cloud: '✓(sub)', peer: '—', chat: '—' },
-  { tool: 'agentserver',                   local: '✓ many', cloud: '✓',      peer: '✓', chat: '✓', us: true },
+  { tool: 'OpenClaw / Claude Code Remote', local: '1',      cloud: '—',      peer: '—', session: '—',         chat: '✓' },
+  { tool: 'Claude Code on the web',        local: '—',      cloud: '✓',      peer: '—', session: '—',         chat: '—' },
+  { tool: 'CC Agent Teams',                local: '—',      cloud: '✓(sub)', peer: '—', session: '—',         chat: '—' },
+  { tool: 'agentserver',                   local: '✓ many', cloud: '✓',      peer: '✓', session: '✓ any front-end', chat: '✓', us: true },
 ]
 
 export function HomeCompare() {
@@ -26,6 +26,7 @@ export function HomeCompare() {
               <th scope="col" className="text-center p-3 font-medium">{t('compare.col.local')}</th>
               <th scope="col" className="text-center p-3 font-medium">{t('compare.col.cloud')}</th>
               <th scope="col" className="text-center p-3 font-medium">{t('compare.col.peer')}</th>
+              <th scope="col" className="text-center p-3 font-medium">{t('compare.col.session')}</th>
               <th scope="col" className="text-center p-3 font-medium">{t('compare.col.chat')}</th>
             </tr>
           </thead>
@@ -44,6 +45,7 @@ export function HomeCompare() {
                 <td className="text-center p-3">{r.local}</td>
                 <td className="text-center p-3">{r.cloud}</td>
                 <td className="text-center p-3">{r.peer}</td>
+                <td className="text-center p-3">{r.session}</td>
                 <td className="text-center p-3">{r.chat}</td>
               </tr>
             ))}

@@ -8,6 +8,7 @@ type Pillar = {
 }
 
 const pillars: Pillar[] = [
+  { emoji: '🧵', titleKey: 'pillars.session.title',   bodyKey: 'pillars.session.body' },
   { emoji: '📱', titleKey: 'pillars.pocket.title',    bodyKey: 'pillars.pocket.body' },
   { emoji: '🌐', titleKey: 'pillars.workspace.title', bodyKey: 'pillars.workspace.body' },
   { emoji: '🔌', titleKey: 'pillars.tunnel.title',    bodyKey: 'pillars.tunnel.body' },
@@ -20,7 +21,7 @@ export function HomePillars() {
       <h2 className="font-mono text-xs tracking-[0.2em] text-[var(--muted-foreground)] uppercase mb-8">
         {t('pillars.heading')}
       </h2>
-      <div className="grid md:grid-cols-3 gap-4">
+      <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
         {pillars.map((p) => (
           <article
             key={p.titleKey}

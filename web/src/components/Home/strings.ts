@@ -15,13 +15,13 @@ export const homeStrings: Dicts = {
     'hero.sub': 'agentserver 把笔记本、云沙箱、家里的服务器编成一个工作区——从浏览器、命令行，或微信，一并指挥。',
     'hero.cta.primary': '▸ 登录',
     'hero.cta.secondary': '在 GitHub 上查看',
-    'hero.term.macbook': 'office-macbook · codex',
-    'hero.term.sandbox': 'cloud-sandbox-7 · codex',
-    'hero.chat.title': '我自己',
-    'hero.chat.user': '帮我看看 thesis.pdf 在哪些设备上，哪份最新？',
-    'hero.chat.bot1': '📂 office-macbook · home-server · cloud-sandbox-7 都有',
-    'hero.chat.bot2': '🔨 比对修改时间…',
-    'hero.chat.bot3': '✓ 最新版在 cloud-sandbox-7（今天 10:42）',
+    'hero.term.macbook': 'office-macbook · codex · 10:14',
+    'hero.term.sandbox': 'session#a3f · paused 12:30',
+    'hero.chat.title': '我自己 · 微信 18:42',
+    'hero.chat.user': '上午让你改的 loss 函数跑通了吗？',
+    'hero.chat.bot1': '📎 续上会话 session#a3f（office-macbook · 6h 前）',
+    'hero.chat.bot2': '🔨 跑 pytest tests/test_loss.py …',
+    'hero.chat.bot3': '✓ 17/17 通过 · diff 已推到 feature/weighted-loss',
     'hero.chip.online': '在线',
 
     // quote
@@ -31,6 +31,8 @@ export const homeStrings: Dicts = {
 
     // pillars
     'pillars.heading': '为什么用 agentserver',
+    'pillars.session.title': '同一段会话，任意设备',
+    'pillars.session.body': 'codex 会话本身跑在服务端。早上在笔电上没改完的任务，地铁里用微信续上同一段对话继续推进——换的不是命令的目的地，是 agent 的前端。',
     'pillars.pocket.title': '装在口袋里的指挥台',
     'pillars.pocket.body': '微信里一句中文，落到任意设备执行，结果推回同一个聊天框。Telegram 同样支持。',
     'pillars.workspace.title': '一个工作区，所有设备',
@@ -45,8 +47,9 @@ export const homeStrings: Dicts = {
     'compare.col.local': '本地代理',
     'compare.col.cloud': '云沙箱',
     'compare.col.peer': '跨设备组网',
+    'compare.col.session': '会话跨终端',
     'compare.col.chat': 'IM 通道',
-    'compare.caption': '唯一同时勾上四列的产品。',
+    'compare.caption': '唯一同时勾上五列的产品。',
 
     // onboarding
     'onb.heading': '7 步，把你的设备连上来',
@@ -96,13 +99,13 @@ export const homeStrings: Dicts = {
     'hero.sub': 'agentserver weaves laptops, cloud sandboxes, and home servers into one workspace — commanded from your browser, your CLI, or your WeChat chat.',
     'hero.cta.primary': '▸ Sign in',
     'hero.cta.secondary': 'View on GitHub',
-    'hero.term.macbook': 'office-macbook · codex',
-    'hero.term.sandbox': 'cloud-sandbox-7 · codex',
-    'hero.chat.title': 'me',
-    'hero.chat.user': 'Find thesis.pdf on my devices — which copy is newest?',
-    'hero.chat.bot1': '📂 office-macbook · home-server · cloud-sandbox-7 all have it',
-    'hero.chat.bot2': '🔨 comparing mtimes…',
-    'hero.chat.bot3': '✓ newest is on cloud-sandbox-7 (today 10:42)',
+    'hero.term.macbook': 'office-macbook · codex · 10:14',
+    'hero.term.sandbox': 'session#a3f · paused 12:30',
+    'hero.chat.title': 'me · WeChat 18:42',
+    'hero.chat.user': 'Did the loss-fn refactor we started this morning land?',
+    'hero.chat.bot1': '📎 resumed session#a3f (office-macbook · 6h ago)',
+    'hero.chat.bot2': '🔨 running pytest tests/test_loss.py …',
+    'hero.chat.bot3': '✓ 17/17 passed · pushed to feature/weighted-loss',
     'hero.chip.online': 'online',
 
     // quote
@@ -112,6 +115,8 @@ export const homeStrings: Dicts = {
 
     // pillars
     'pillars.heading': 'Why agentserver',
+    'pillars.session.title': 'One session, any device',
+    'pillars.session.body': 'codex sessions live on the server, not the laptop they started from. Pause a half-finished refactor at the office; pick up the same conversation from WeChat on the subway home. The front-end moves; the agent does not.',
     'pillars.pocket.title': 'Pocket-sized command line',
     'pillars.pocket.body': 'One sentence in WeChat lands on the right device. The result comes back to the same chat. Telegram supported too.',
     'pillars.workspace.title': 'One workspace, every device',
@@ -126,8 +131,9 @@ export const homeStrings: Dicts = {
     'compare.col.local': 'local',
     'compare.col.cloud': 'cloud',
     'compare.col.peer': 'peer',
+    'compare.col.session': 'session',
     'compare.col.chat': 'chat',
-    'compare.caption': 'The only one with all four checked.',
+    'compare.caption': 'The only one with all five checked.',
 
     // onboarding
     'onb.heading': '7 steps to wire it all up',

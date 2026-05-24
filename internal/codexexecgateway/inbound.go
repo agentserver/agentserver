@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/internal/clientmeta"
-	"github.com/agentserver/agentserver/internal/codexexecgateway/handlers"
+	"github.com/agentserver/agentserver/internal/codexexecgateway/wsticket"
 	"github.com/agentserver/agentserver/internal/relaypb"
 	"github.com/agentserver/agentserver/internal/wsbridge"
 	"github.com/go-chi/chi/v5"
@@ -28,7 +28,7 @@ func (s *Server) handleInbound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := handlers.VerifyWSTicket(token, exeID, s.config.AgentserverInternalSecret); err != nil {
+	if err := wsticket.Verify(token, exeID, s.config.AgentserverInternalSecret); err != nil {
 		slog.Warn("inbound: unauthorized", "exe_id", exeID, "reason", "bad_ticket", "remote", r.RemoteAddr, "error", err.Error())
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return

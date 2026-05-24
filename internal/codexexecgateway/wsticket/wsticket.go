@@ -1,4 +1,12 @@
-package handlers
+// Package wsticket mints and verifies the short-lived HMAC bearer that
+// authorises a `/codex-exec/{exe_id}?token=...` ws upgrade. Used by:
+//   - codex-exec-gateway's cloud_register handler (mint)
+//   - codex-exec-gateway's inbound handler (verify)
+//   - codex-exec-edge's wsproxy (verify before proxying upstream)
+//
+// Layout: <exe_id>.<expiry_unix>.<base64url(HMAC-SHA256(secret, "<exe_id>.<expiry>"))>
+// 5-minute TTL; codex re-registers on every reconnect so no need for longer.
+package wsticket
 
 import (
 	"crypto/hmac"
@@ -10,24 +18,16 @@ import (
 	"time"
 )
 
-// wsTicketTTL bounds the window between the cloud-register response and
-// the immediately-following ws upgrade. Codex re-registers on every
-// reconnect, so we don't need long-lived tickets.
-const wsTicketTTL = 5 * time.Minute
+const TTL = 5 * time.Minute
 
-// MintWSTicket returns a short-lived bearer that authorizes the
-// `/codex-exec/{exe_id}?token=...` ws upgrade. Format:
-//
-//	<exe_id>.<expiry_unix>.<base64url(HMAC-SHA256(secret, "<exe_id>.<expiry>"))>
-//
-// The inbound handler recomputes the HMAC with its own secret and
-// confirms the exe_id matches and the expiry is in the future. No DB
-// round-trip; no bcrypt; no JWT verification.
-func MintWSTicket(exeID, secret string) (string, error) {
+// Mint returns a short-lived bearer that authorises the
+// `/codex-exec/{exe_id}?token=...` ws upgrade. The ticket is valid for TTL
+// from the moment it is issued; callers should use it immediately.
+func Mint(exeID, secret string) (string, error) {
 	if secret == "" {
 		return "", fmt.Errorf("internal secret not configured")
 	}
-	expiry := time.Now().Add(wsTicketTTL).Unix()
+	expiry := time.Now().Add(TTL).Unix()
 	payload := exeID + "." + strconv.FormatInt(expiry, 10)
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(payload))
@@ -35,9 +35,9 @@ func MintWSTicket(exeID, secret string) (string, error) {
 	return payload + "." + sig, nil
 }
 
-// VerifyWSTicket returns nil iff the ticket is well-formed, signed with
-// `secret`, names the expected exe_id, and has not yet expired.
-func VerifyWSTicket(ticket, expectedExeID, secret string) error {
+// Verify returns nil iff the ticket is well-formed, signed with secret,
+// names the expected exe_id, and has not yet expired.
+func Verify(ticket, expectedExeID, secret string) error {
 	if secret == "" {
 		return fmt.Errorf("internal secret not configured")
 	}

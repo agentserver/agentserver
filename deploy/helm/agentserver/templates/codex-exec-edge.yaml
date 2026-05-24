@@ -1,0 +1,80 @@
+{{- if .Values.codexExecEdge.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-codex-exec-edge
+  labels:
+    app: {{ .Release.Name }}-codex-exec-edge
+spec:
+  replicas: {{ .Values.codexExecEdge.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-codex-exec-edge
+  template:
+    metadata:
+      annotations:
+        agentserver.x-k8s.io/chart-version: {{ .Chart.AppVersion | quote }}
+      labels:
+        app: {{ .Release.Name }}-codex-exec-edge
+    spec:
+      terminationGracePeriodSeconds: 40
+      containers:
+        - name: codex-exec-edge
+          image: "{{ .Values.codexExecEdge.image.repository }}:{{ .Values.codexExecEdge.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.codexExecEdge.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.codexExecEdge.port }}
+              name: http
+              protocol: TCP
+          env:
+            - name: CXE_PORT
+              value: {{ .Values.codexExecEdge.port | quote }}
+            - name: CXE_UPSTREAM_BASE_URL
+              value: "http://{{ .Release.Name }}-codex-exec-gateway.{{ .Release.Namespace }}.svc:{{ .Values.codexExecGateway.port }}"
+            - name: CXE_AGENTSERVER_INTERNAL_SECRET
+              value: {{ required "internal.apiSecret is required when codexExecEdge.enabled is true" .Values.internal.apiSecret | quote }}
+            - name: CXE_REGISTER_RETRY_TIMEOUT
+              value: {{ .Values.codexExecEdge.registerRetryTimeout | default "30s" | quote }}
+            - name: CXE_REGISTER_RETRY_BASE
+              value: {{ .Values.codexExecEdge.registerRetryBase | default "500ms" | quote }}
+            - name: CXE_UPSTREAM_DIAL_TIMEOUT
+              value: {{ .Values.codexExecEdge.upstreamDialTimeout | default "5s" | quote }}
+            {{- if .Values.codexExecEdge.logLevel }}
+            - name: CXE_LOG_LEVEL
+              value: {{ .Values.codexExecEdge.logLevel | quote }}
+            {{- end }}
+          livenessProbe:
+            httpGet: { path: /healthz, port: {{ .Values.codexExecEdge.port }} }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /healthz, port: {{ .Values.codexExecEdge.port }} }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]
+          {{- with .Values.codexExecEdge.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-codex-exec-edge
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.codexExecEdge.port }}
+      targetPort: {{ .Values.codexExecEdge.port }}
+      protocol: TCP
+      name: http
+  selector:
+    app: {{ .Release.Name }}-codex-exec-edge
+{{- end }}

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentserver/agentserver/internal/codexexecgateway/handlers"
+	"github.com/agentserver/agentserver/internal/codexexecgateway/wsticket"
 	"nhooyr.io/websocket"
 )
 
@@ -49,7 +49,7 @@ func TestInbound_AcceptsAndRegisters(t *testing.T) {
 	srv.store.CreateExecutor(ctx, Executor{
 		ExeID: "exe_inb2", UserID: "u", RegisteredAt: time.Now().UTC(),
 	})
-	ticket, err := handlers.MintWSTicket("exe_inb2", testInboundSecret)
+	ticket, err := wsticket.Mint("exe_inb2", testInboundSecret)
 	if err != nil {
 		t.Fatalf("mint ticket: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestInbound_EvictsOldConn(t *testing.T) {
 	srv.store.CreateExecutor(ctx, Executor{
 		ExeID: "exe_inb3", UserID: "u", RegisteredAt: time.Now().UTC(),
 	})
-	ticket, err := handlers.MintWSTicket("exe_inb3", testInboundSecret)
+	ticket, err := wsticket.Mint("exe_inb3", testInboundSecret)
 	if err != nil {
 		t.Fatalf("mint ticket: %v", err)
 	}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/internal/clientmeta"
+	"github.com/agentserver/agentserver/internal/codexexecgateway/wsticket"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -132,7 +133,7 @@ func CloudRegister(store CloudRegisterStore, publicWSBaseURL string, validator A
 			// missing metadata just keeps the UI columns at "—".
 			_ = meta.UpdateClientMetaFromRegister(r.Context(), exeID, ip, ua, version, osStr)
 		}
-		ticket, err := MintWSTicket(exeID, wsTicketSecret)
+		ticket, err := wsticket.Mint(exeID, wsTicketSecret)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "mint ws ticket: " + err.Error()})
 			return

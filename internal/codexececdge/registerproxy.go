@@ -58,7 +58,7 @@ func (s *Server) handleRegisterProxy(w http.ResponseWriter, r *http.Request) {
 		if resp != nil {
 			lastStatus = resp.StatusCode
 			lastHeader = resp.Header.Clone()
-			lastBody, _ = io.ReadAll(resp.Body)
+			lastBody, _ = io.ReadAll(io.LimitReader(resp.Body, registerBodyMax))
 			_ = resp.Body.Close()
 		} else {
 			lastStatus = 0

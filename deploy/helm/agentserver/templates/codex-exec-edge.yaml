@@ -22,7 +22,7 @@ spec:
       labels:
         app: {{ .Release.Name }}-codex-exec-edge
     spec:
-      terminationGracePeriodSeconds: 30
+      terminationGracePeriodSeconds: 40
       containers:
         - name: codex-exec-edge
           image: "{{ .Values.codexExecEdge.image.repository }}:{{ .Values.codexExecEdge.image.tag | default .Chart.AppVersion }}"

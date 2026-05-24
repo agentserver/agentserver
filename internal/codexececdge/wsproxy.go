@@ -70,18 +70,32 @@ func (s *Server) handleWSProxy(w http.ResponseWriter, r *http.Request) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
+		defer func() {
+			if rec := recover(); rec != nil {
+				s.logger.Error("wsproxy: pump panic (client→upstream)", "exe_id", exeID, "panic", rec)
+				pumpCancel()
+				_ = upstream.Close(websocket.StatusInternalError, "panic")
+			}
+		}()
 		err := pump(pumpCtx, client, upstream)
 		pumpCancel()
-		if err != nil && !errors.Is(err, context.Canceled) {
+		if err != nil && !isExpectedCloseErr(err) {
 			s.logger.Warn("wsproxy: client→upstream pump error", "exe_id", exeID, "err", err)
 		}
 		closeOther(upstream, err)
 	}()
 	go func() {
 		defer wg.Done()
+		defer func() {
+			if rec := recover(); rec != nil {
+				s.logger.Error("wsproxy: pump panic (upstream→client)", "exe_id", exeID, "panic", rec)
+				pumpCancel()
+				_ = client.Close(websocket.StatusInternalError, "panic")
+			}
+		}()
 		err := pump(pumpCtx, upstream, client)
 		pumpCancel()
-		if err != nil && !errors.Is(err, context.Canceled) {
+		if err != nil && !isExpectedCloseErr(err) {
 			s.logger.Warn("wsproxy: upstream→client pump error", "exe_id", exeID, "err", err)
 		}
 		closeOther(client, err)
@@ -132,4 +146,16 @@ func closeOther(other *websocket.Conn, srcErr error) {
 		status = websocket.StatusInternalError
 	}
 	_ = other.Close(status, "")
+}
+
+// isExpectedCloseErr is true for WS close reasons that aren't worth a Warn log.
+func isExpectedCloseErr(err error) bool {
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	switch websocket.CloseStatus(err) {
+	case websocket.StatusNormalClosure, websocket.StatusGoingAway:
+		return true
+	}
+	return false
 }

@@ -37,7 +37,7 @@
 
 | 工具 | 本地多智能体 | 云端沙箱 | 跨设备组网 | 聊天软件通道 |
 |------|:---:|:---:|:---:|:---:|
-| OpenClaw / Claude Code Remote | 单实例 | — | — | — |
+| OpenClaw / Claude Code Remote | 单实例 | — | — | ✅ |
 | Claude Code on the web | — | ✅ | — | — |
 | Claude Code Agent Teams | — | ✅（子智能体） | — | — |
 | **agentserver** | **✅ 多实例** | **✅** | **✅** | **✅（微信 / Telegram / Matrix）** |
@@ -51,6 +51,7 @@
 - **同时欢迎"古法编程"** —— 内置 Jupyter notebook，让偏好亲自写代码的用户也能接入同一个工作区，使用智能体所用的文件系统与凭证。
 - **多人协作** —— 邀请朋友或同事一起进入你的个人算力网；基于角色的访问控制（owner / maintainer / developer / guest）决定谁能做什么。
 - **凭证 & LLM 代理** —— Connector 永远不接触真实的厂商密钥；每工作区的 RPD 配额与用量统计在服务端强制执行。
+- **操作审计** —— codex 会话的输入输出统一落盘为审计日志（gateway 端 WAL + 服务端入库 + 保留策略），便于事后回查与合规审计。
 - **支持 SSO** —— GitHub OAuth 及通用 OIDC（Keycloak、Authentik 等）。
 
 ## 托管实例使用指南（共 7 步）
@@ -93,9 +94,9 @@ npm i -g @openai/codex
   <img src="assets/step-3-device-connected.png" alt="九台 Connector 在线，分布多地" width="780">
 </p>
 
-### 4. 选定"指挥机"（Browser）
+### 4.（可选）选定"指挥机"（Browser）
 
-*Browser* 是你实际去敲命令的 codex 客户端 —— 通常是你的主力笔记本。在 **Browsers** 页生成一个 Browser token，按提示运行 `codex --remote …`，这台机器就变成了一个指挥中心，可以把任务下发到任意 Connector：
+*Browser* 是你实际去敲命令的 codex 客户端 —— 通常是你的主力笔记本。在 **Browsers** 页生成一个 Browser token，按提示运行 `codex --remote …`，这台机器就变成了一个指挥中心，可以把任务下发到任意 Connector。**如果你只打算通过微信 / Telegram / Matrix 指挥，可以直接跳到第 6 步**：
 
 <p align="center">
   <img src="assets/step-4-command-machine.png" alt="Browsers 页 —— Token generated 对话框带有 codex --remote 命令" width="780">

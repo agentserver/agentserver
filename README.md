@@ -37,7 +37,7 @@ It is the answer to a question Addy Osmani frames as the path from L1 (no AI) to
 
 | Tool | Local agents | Cloud sandboxes | Cross-device peering | Chat-app channel |
 |------|:---:|:---:|:---:|:---:|
-| OpenClaw / Claude Code Remote | one at a time | — | — | — |
+| OpenClaw / Claude Code Remote | one at a time | — | — | ✅ |
 | Claude Code on the web | — | ✅ | — | — |
 | Claude Code Agent Teams | — | ✅ (subagents) | — | — |
 | **agentserver** | **✅ many** | **✅** | **✅** | **✅ (WeChat / Telegram / Matrix)** |
@@ -51,6 +51,7 @@ It is the answer to a question Addy Osmani frames as the path from L1 (no AI) to
 - **"Old-school" coding still welcome** — A built-in Jupyter notebook lets users who prefer hand-written code talk to the same workspace, the same files, and the same credentials the agents use.
 - **Multi-user collaboration** — Invite friends or teammates into your Personal Compute Network; role-based access (owner / maintainer / developer / guest) decides who can do what.
 - **Credential & LLM proxy** — Connectors never see real provider keys; per-workspace RPD quotas and usage tracking are enforced server-side.
+- **Audit log** — Every codex session's input and output is persisted to an audit log (gateway-side WAL + server-side ingestion + retention) for post-hoc review and compliance.
 - **SSO ready** — GitHub OAuth and generic OIDC (Keycloak, Authentik, …).
 
 ## Using the hosted instance (7 steps)
@@ -93,9 +94,9 @@ The device shows up as **Online** alongside everything else in your workspace:
   <img src="assets/step-3-device-connected.png" alt="Nine connectors online across cities" width="780">
 </p>
 
-### 4. Pick a "command machine" (Browser)
+### 4. (Optional) Pick a "command machine" (Browser)
 
-A *Browser* is a codex client you actually type into — usually your daily-driver laptop. Generate a Browser token from the **Browsers** tab and the printed `codex --remote …` command turns that machine into a command center that can dispatch work to any Connector:
+A *Browser* is a codex client you actually type into — usually your daily-driver laptop. Generate a Browser token from the **Browsers** tab and the printed `codex --remote …` command turns that machine into a command center that can dispatch work to any Connector. **If you plan to drive everything from WeChat / Telegram / Matrix, skip ahead to step 6**:
 
 <p align="center">
   <img src="assets/step-4-command-machine.png" alt="Browsers tab — Token generated dialog with codex --remote command" width="780">

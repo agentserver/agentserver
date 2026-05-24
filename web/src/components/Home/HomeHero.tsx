@@ -51,19 +51,19 @@ export function HomeHero() {
             <Term
               title={t('hero.term.macbook')}
               lines={[
-                { delay: 200,  text: '$ codex relay "把 experiment_0521.csv', kind: 'cmd' },
-                { delay: 400,  text: '   在沙箱里画成图发我"',                kind: 'cmd' },
-                { delay: 600,  text: '▸ found experiment_0521.csv (124MB)',  kind: 'dim' },
-                { delay: 800,  text: '▸ relaying to cloud-sandbox-7…',       kind: 'dim' },
+                { delay: 200,  text: '$ codex relay "在所有设备上找 thesis.pdf', kind: 'cmd' },
+                { delay: 400,  text: '   比一下哪份最新"',                       kind: 'cmd' },
+                { delay: 600,  text: '▸ 本机: ~/Documents/thesis.pdf',          kind: 'dim' },
+                { delay: 800,  text: '✓ 2.1MB · 05-22 14:30',                   kind: 'ok'  },
               ]}
             />
             <Term
               title={t('hero.term.sandbox')}
               lines={[
-                { delay: 1200, text: '▸ pandas: 5 conditions × 12 trials',  kind: 'dim' },
-                { delay: 1400, text: '▸ matplotlib: boxplot + error bars',  kind: 'dim' },
-                { delay: 1800, text: '✓ saved plot.png (412KB)',            kind: 'ok'  },
-                { delay: 2000, text: '▸ uploading via imbridge…',           kind: 'dim' },
+                { delay: 1200, text: '▸ 收到广播查找请求',              kind: 'dim' },
+                { delay: 1400, text: '▸ 本机: ~/work/thesis.pdf',       kind: 'dim' },
+                { delay: 1800, text: '✓ 2.4MB · 05-24 10:42',           kind: 'ok'  },
+                { delay: 2000, text: '▸ 已上报到 office-macbook',       kind: 'dim' },
               ]}
             />
           </div>
@@ -161,7 +161,7 @@ function ChatPane({ t }: { t: (k: string) => string }) {
               {b.text}
               {b.thumb && (
                 <div className="mt-1.5 h-12 w-full rounded bg-gradient-to-br from-[var(--home-accent)]/30 to-[var(--home-accent)]/10 border border-[var(--home-accent)]/40 flex items-center justify-center text-[10px] text-[var(--home-term-dim)]">
-                  plot.png · 412KB
+                  thesis.pdf · cloud-sandbox-7 · 05-24
                 </div>
               )}
             </div>

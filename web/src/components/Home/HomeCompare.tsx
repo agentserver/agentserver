@@ -4,7 +4,7 @@ import { homeStrings } from './strings'
 type Row = { tool: string; local: string; cloud: string; peer: string; chat: string; us?: boolean }
 
 const rows: Row[] = [
-  { tool: 'OpenClaw / Claude Code Remote', local: '1',      cloud: '—',      peer: '—', chat: '—' },
+  { tool: 'OpenClaw / Claude Code Remote', local: '1',      cloud: '—',      peer: '—', chat: '✓' },
   { tool: 'Claude Code on the web',        local: '—',      cloud: '✓',      peer: '—', chat: '—' },
   { tool: 'CC Agent Teams',                local: '—',      cloud: '✓(sub)', peer: '—', chat: '—' },
   { tool: 'agentserver',                   local: '✓ many', cloud: '✓',      peer: '✓', chat: '✓', us: true },

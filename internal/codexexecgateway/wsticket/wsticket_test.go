@@ -30,7 +30,7 @@ func TestVerifyRejectsWrongSecret(t *testing.T) {
 }
 
 func TestVerifyRejectsMalformed(t *testing.T) {
-	if err := Verify("not.a.token", "exe_x", "secret"); err == nil {
+	if err := Verify("onlyonepart", "exe_x", "secret"); err == nil {
 		t.Fatal("expected malformed error")
 	}
 	if err := Verify("a.b", "exe_x", "secret"); err == nil {

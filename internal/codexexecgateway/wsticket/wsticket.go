@@ -20,6 +20,9 @@ import (
 
 const TTL = 5 * time.Minute
 
+// Mint returns a short-lived bearer that authorises the
+// `/codex-exec/{exe_id}?token=...` ws upgrade. The ticket is valid for TTL
+// from the moment it is issued; callers should use it immediately.
 func Mint(exeID, secret string) (string, error) {
 	if secret == "" {
 		return "", fmt.Errorf("internal secret not configured")
@@ -32,6 +35,8 @@ func Mint(exeID, secret string) (string, error) {
 	return payload + "." + sig, nil
 }
 
+// Verify returns nil iff the ticket is well-formed, signed with secret,
+// names the expected exe_id, and has not yet expired.
 func Verify(ticket, expectedExeID, secret string) error {
 	if secret == "" {
 		return fmt.Errorf("internal secret not configured")

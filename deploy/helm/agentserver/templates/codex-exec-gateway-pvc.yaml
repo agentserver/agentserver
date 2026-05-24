@@ -1,4 +1,17 @@
 {{- if and .Values.codexExecGateway.enabled .Values.execAudit.enabled .Values.execAudit.pvc.enabled }}
+{{- /*
+  I12 guard: ReadWriteOnce can only mount on a single pod. If
+  replicaCount > 1, the second pod would silently sit in
+  ContainerCreating forever (Multi-Attach error). Fail-fast at template
+  time so operators can't accidentally schedule themselves into a
+  pager. Options when this fires: (a) keep replicaCount=1 (HA via the
+  PVC's underlying storage replication, not pod replication), or
+  (b) set execAudit.pvc.enabled=false to fall back to emptyDir + push
+  the WAL upload faster.
+*/}}
+{{- if gt (int (.Values.codexExecGateway.replicaCount | default 1)) 1 }}
+{{- fail (printf "execAudit.pvc.enabled with codexExecGateway.replicaCount=%d > 1: ReadWriteOnce PVC can only mount on one pod. Either set codexExecGateway.replicaCount: 1 or set execAudit.pvc.enabled: false." (int .Values.codexExecGateway.replicaCount)) }}
+{{- end }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

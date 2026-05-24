@@ -55,6 +55,45 @@ func (r *capRec) CallEnd(id string, m audit.CallEndMeta) {
 }
 func (r *capRec) Close(context.Context) error { return nil }
 
+// TestEnvsList_RecorderObservesCallPair: wiring test for test-analyzer
+// #2. Pins that handleEnvsList actually invokes the Recorder so a
+// future refactor that drops s.Recorder won't silently disable audit
+// for the entire SDK surface — at least one handler now fails fast.
+func TestEnvsList_RecorderObservesCallPair(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"workspace_id": "ws-1", "user_id": "u-1"})
+	}))
+	defer upstream.Close()
+	rec := &capRec{}
+	s := &Server{
+		Auth:     NewProxyTokenAuth(upstream.URL, "x", time.Minute, time.Second),
+		Registry: connectedListerStub{},
+		Recorder: rec,
+	}
+	r := chi.NewRouter()
+	s.Mount(r)
+	req := httptest.NewRequest(http.MethodPost, "/api/connectors/envs/list",
+		bytes.NewReader([]byte("{}")))
+	req.Header.Set("Authorization", "Bearer tok-1")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if len(rec.starts) != 1 {
+		t.Fatalf("want 1 CallStart, got %d", len(rec.starts))
+	}
+	if got := rec.starts[0].Source; got != "rest" {
+		t.Errorf("Source=%q want %q", got, "rest")
+	}
+	if got := rec.starts[0].RPCMethod; got != "envs.list" {
+		t.Errorf("RPCMethod=%q want envs.list", got)
+	}
+	if len(rec.ends) != 1 {
+		t.Fatalf("want 1 CallEnd, got %d", len(rec.ends))
+	}
+}
+
 // TestRecordCall_PanicProducesCallEnd: a panic inside fn() must still
 // emit a paired CallEnd with IsError=true + ErrorSummary so the audit
 // trail can't be left with an orphaned CallStart.

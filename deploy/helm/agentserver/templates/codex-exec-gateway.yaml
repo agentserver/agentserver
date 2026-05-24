@@ -17,11 +17,22 @@ metadata:
     app: {{ .Release.Name }}-codex-exec-gateway
 spec:
   replicas: {{ .Values.codexExecGateway.replicaCount }}
+  {{- if and .Values.execAudit.enabled .Values.execAudit.pvc.enabled }}
+  # I12: Recreate strategy is required when the audit PVC is
+  # ReadWriteOnce — a RollingUpdate would try to start a second pod that
+  # then deadlocks waiting for the PVC to detach from the outgoing pod.
+  # The trade-off (brief downtime during deploy) is acceptable because
+  # the PVC guard above already pins replicaCount=1, so there's no HA
+  # being lost here.
+  strategy:
+    type: Recreate
+  {{- else }}
   strategy:
     type: RollingUpdate
     rollingUpdate:
       maxUnavailable: 0
       maxSurge: 1
+  {{- end }}
   selector:
     matchLabels:
       app: {{ .Release.Name }}-codex-exec-gateway
@@ -136,10 +147,18 @@ spec:
               value: {{ int64 (default 4194304 .Values.execAudit.payloadMaxBytes) | quote }}
             - name: CXG_AUDIT_WAL_OVERFLOW
               value: {{ .Values.execAudit.walOverflow | default "fail" | quote }}
-            {{- if .Values.execAudit.walDiskQuotaBytes }}
+            # Always emit the quota explicitly (10 GiB default) so
+            # operators reading the pod spec can see exactly what's
+            # active. Relying on the binary's internal default would
+            # silently kick in if the env var were dropped — code-
+            # reviewer #2 followup. We can't use `| default` here
+            # because the upstream values.yaml ships 0 as the sentinel
+            # for "use binary default"; `default` only fires on
+            # zero-value-AS-empty (which 0 isn't for ints).
             - name: CXG_AUDIT_WAL_DISK_QUOTA_BYTES
-              value: {{ int64 .Values.execAudit.walDiskQuotaBytes | quote }}
-            {{- end }}
+              {{- $quota := int64 .Values.execAudit.walDiskQuotaBytes }}
+              {{- if le $quota (int64 0) }}{{- $quota = int64 10737418240 }}{{- end }}
+              value: {{ $quota | quote }}
             - name: POD_NAME
               valueFrom:
                 fieldRef:

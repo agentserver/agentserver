@@ -173,7 +173,15 @@ func (s *Server) handleRelayGet(w http.ResponseWriter, r *http.Request) {
 	// applies it automatically when there's no Content-Length, and
 	// setting it manually here would conflict with the framework's own
 	// framing on the error path (small JSON body).
+	//
+	// X-Content-Type-Options: nosniff defeats browser MIME-sniffing —
+	// the body is user-supplied (uploaded via PUT by one workspace
+	// member, downloaded via GET by another), so an attacker who
+	// controls the upload could otherwise smuggle an HTML/JS payload
+	// that a browser fetch would render. nosniff forces strict
+	// application/octet-stream interpretation.
 	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	counted := newRelayCountingWriter(w)
 	status, body := rel.AcceptGet(counted)
 	// status==0: streamed successfully; headers + 200 already flushed.

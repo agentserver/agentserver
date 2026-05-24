@@ -19,6 +19,13 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// maxWALFrameBytes caps the body of a single WAL record. Realistic body
+// size is bounded above by PayloadMaxBytes (4 MiB default) + protobuf
+// metadata overhead; 64 MiB leaves ample headroom while preventing
+// integer-overflow / runaway allocation if a future code path bypasses
+// the payload cap.
+const maxWALFrameBytes = 64 * 1024 * 1024
+
 // WALConfig configures an OpenWAL. All fields are required (zero values
 // are not sensible defaults — derive from Config.WAL* in production).
 type WALConfig struct {
@@ -85,6 +92,17 @@ func (w *WAL) Append(rec *pb.WALRecord) error {
 	body, err := proto.Marshal(rec)
 	if err != nil {
 		return fmt.Errorf("wal: marshal: %w", err)
+	}
+	// Defensive bounds check before allocation. Realistic body size is
+	// at most PayloadMaxBytes (4 MiB default) + protobuf overhead, well
+	// under maxWALFrameBytes. The check exists because the WALRecord
+	// payload bytes ultimately come from network input (SDK request
+	// body, env-mcp WS frame); guarding the allocation here means a
+	// future caller path that bypasses PayloadMaxBytes still can't
+	// trigger an integer-overflow in make() or a runaway allocation.
+	if len(body) > maxWALFrameBytes {
+		return fmt.Errorf("wal: record body %d bytes exceeds maxWALFrameBytes %d",
+			len(body), maxWALFrameBytes)
 	}
 	// W1: Concatenate length-prefix + body into a single Write so a
 	// short-write between the two doesn't leave a 4-byte stub that
@@ -338,6 +356,19 @@ func (r *WALReader) Next() (*pb.WALRecord, string, error) {
 			return nil, "", err
 		}
 		length := binary.BigEndian.Uint32(lenBuf[:])
+		// Bound the allocation: a corrupt length field on disk could
+		// otherwise request gigabytes (or worse, overflow int) before
+		// io.ReadFull discovers the truncation. Skip the rest of the
+		// file the same way a truncated body is handled.
+		if length > maxWALFrameBytes {
+			r.logger.Error("wal: implausible record length, skipping rest of file",
+				"file", filepath.Base(r.files[r.curIx]), "length", length, "cap", maxWALFrameBytes)
+			r.corruptRecordsSkipped.Add(1)
+			_ = r.cur.Close()
+			r.cur = nil
+			r.curIx++
+			continue
+		}
 		body := make([]byte, length)
 		if _, err := io.ReadFull(r.cur, body); err != nil {
 			// Torn write — file ended mid-body. Skip rest of file.
@@ -449,6 +480,19 @@ func (r *WALReader) NextWithSize() (*pb.WALRecord, string, int64, error) {
 			return nil, "", 0, err
 		}
 		length := binary.BigEndian.Uint32(lenBuf[:])
+		// Bound the allocation: a corrupt length field on disk could
+		// otherwise request gigabytes (or worse, overflow int) before
+		// io.ReadFull discovers the truncation. Skip the rest of the
+		// file the same way a truncated body is handled.
+		if length > maxWALFrameBytes {
+			r.logger.Error("wal: implausible record length, skipping rest of file",
+				"file", filepath.Base(r.files[r.curIx]), "length", length, "cap", maxWALFrameBytes)
+			r.corruptRecordsSkipped.Add(1)
+			_ = r.cur.Close()
+			r.cur = nil
+			r.curIx++
+			continue
+		}
 		body := make([]byte, length)
 		if _, err := io.ReadFull(r.cur, body); err != nil {
 			// Torn write — body truncated. Skip rest of file. The 4 bytes

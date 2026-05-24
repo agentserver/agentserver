@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentserver/agentserver/internal/codexexecgateway/handlers"
+	"github.com/agentserver/agentserver/internal/codexexecgateway/wsticket"
 	"github.com/agentserver/agentserver/internal/relaypb"
 	"google.golang.org/protobuf/proto"
 	"nhooyr.io/websocket"
@@ -94,7 +94,7 @@ func connectInboundRaw(t *testing.T, srv *Server, baseURL, exeID string) *websoc
 	if err := srv.store.BindWorkspaceExecutor(context.Background(), "ws_1", exeID, "test-"+exeID, "", false); err != nil {
 		t.Fatalf("BindWorkspaceExecutor: %v", err)
 	}
-	ticket, err := handlers.MintWSTicket(exeID, srv.config.AgentserverInternalSecret)
+	ticket, err := wsticket.Mint(exeID, srv.config.AgentserverInternalSecret)
 	if err != nil {
 		t.Fatalf("MintWSTicket: %v", err)
 	}

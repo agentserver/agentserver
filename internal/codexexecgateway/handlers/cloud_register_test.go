@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agentserver/agentserver/internal/codexexecgateway/wsticket"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -86,7 +87,7 @@ func TestCloudRegister_BearerScheme_DelegatesToAgentserver(t *testing.T) {
 	// Verify the ticket in the URL passes VerifyWSTicket with the same secret.
 	const prefix = "wss://test/codex-exec/exe_x?token="
 	ticket := strings.TrimPrefix(resp.URL, prefix)
-	if err := VerifyWSTicket(ticket, "exe_x", testTicketSecret); err != nil {
+	if err := wsticket.Verify(ticket, "exe_x", testTicketSecret); err != nil {
 		t.Fatalf("ticket should verify: %v", err)
 	}
 }

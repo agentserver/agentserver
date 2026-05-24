@@ -35,15 +35,16 @@ It is the answer to a question Addy Osmani frames as the path from L1 (no AI) to
 
 ### How it differs from what already exists
 
-| Tool | Local agents | Cloud sandboxes | Cross-device peering | Chat-app channel |
-|------|:---:|:---:|:---:|:---:|
-| OpenClaw / Claude Code Remote | one at a time | — | — | ✅ |
-| Claude Code on the web | — | ✅ | — | — |
-| Claude Code Agent Teams | — | ✅ (subagents) | — | — |
-| **agentserver** | **✅ many** | **✅** | **✅** | **✅ (WeChat / Telegram / Matrix)** |
+| Tool | Local agents | Cloud sandboxes | Cross-device peering | Cross-client session | Chat-app channel |
+|------|:---:|:---:|:---:|:---:|:---:|
+| OpenClaw / Claude Code Remote | one at a time | — | — | — | ✅ |
+| Claude Code on the web | — | ✅ | — | — | — |
+| Claude Code Agent Teams | — | ✅ (subagents) | — | — | — |
+| **agentserver** | **✅ many** | **✅** | **✅** | **✅ (CLI / Web / IM / Jupyter)** | **✅ (WeChat / Telegram / Matrix)** |
 
 ## Why agentserver?
 
+- **One session, any device** — Your codex session lives on the server, not on the laptop it started from. Pause a half-finished refactor at the office, then continue the same conversation from WeChat on the subway home. What changes between devices is the front-end, not the agent.
 - **Command from your pocket** — Drive your agents from a WeChat / Weixin, Telegram, or Matrix chat. No terminal required when you are away from the desk.
 - **One workspace, every device** — Cloud sandboxes, local laptops/desktops, and IM-bound agents all register into the *same* workspace and show up side-by-side in the Web UI.
 - **Codex-native** — Built around the [OpenAI codex](https://developers.openai.com/codex/cli) CLI: devices enroll with `codex exec-server --remote`, you drive them from `codex --remote`. No custom client to install on each machine.

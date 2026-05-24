@@ -51,19 +51,19 @@ export function HomeHero() {
             <Term
               title={t('hero.term.macbook')}
               lines={[
-                { delay: 200,  text: '$ codex relay "在所有设备上找 thesis.pdf', kind: 'cmd' },
-                { delay: 400,  text: '   比一下哪份最新"',                       kind: 'cmd' },
-                { delay: 600,  text: '▸ 本机: ~/Documents/thesis.pdf',          kind: 'dim' },
-                { delay: 800,  text: '✓ 2.1MB · 05-22 14:30',                   kind: 'ok'  },
+                { delay: 200,  text: '$ codex "重构 loss 让它支持',     kind: 'cmd' },
+                { delay: 400,  text: '   weighted sampling"',           kind: 'cmd' },
+                { delay: 600,  text: '▸ edit graph.py:42-78',           kind: 'dim' },
+                { delay: 800,  text: '⏸  session#a3f · 离开公司',       kind: 'ok'  },
               ]}
             />
             <Term
               title={t('hero.term.sandbox')}
               lines={[
-                { delay: 1200, text: '▸ 收到广播查找请求',              kind: 'dim' },
-                { delay: 1400, text: '▸ 本机: ~/work/thesis.pdf',       kind: 'dim' },
-                { delay: 1800, text: '✓ 2.4MB · 05-24 10:42',           kind: 'ok'  },
-                { delay: 2000, text: '▸ 已上报到 office-macbook',       kind: 'dim' },
+                { delay: 1200, text: '▸ codex-app-gateway · paused',    kind: 'dim' },
+                { delay: 1400, text: '▸ awaiting reattach …',           kind: 'dim' },
+                { delay: 1800, text: '▸ 18:42 attach: weixin/me',       kind: 'dim' },
+                { delay: 2000, text: '✓ resumed by WeChat',             kind: 'ok'  },
               ]}
             />
           </div>
@@ -161,7 +161,7 @@ function ChatPane({ t }: { t: (k: string) => string }) {
               {b.text}
               {b.thumb && (
                 <div className="mt-1.5 h-12 w-full rounded bg-gradient-to-br from-[var(--home-accent)]/30 to-[var(--home-accent)]/10 border border-[var(--home-accent)]/40 flex items-center justify-center text-[10px] text-[var(--home-term-dim)]">
-                  thesis.pdf · cloud-sandbox-7 · 05-24
+                  session#a3f · feature/weighted-loss · 17/17 ✓
                 </div>
               )}
             </div>

@@ -24,13 +24,18 @@ type Conn struct {
 	nextID  atomic.Int64
 
 	// lastActiveAt is the unix-nano timestamp of the most recent successful
-	// ws read or write. The pool reaper reads this directly to decide
-	// staleness — frames flowing in either direction (turn items, heartbeats,
-	// approval round-trips) keep the conn alive even when no outer Get()
-	// call has touched it. Previously the pool inferred idleness from
-	// caller-side Get/Touch timestamps, which killed long-running turns
-	// because Turn() didn't refresh that signal mid-flight.
-	lastActiveAt atomic.Int64
+	// ws read or write. Stored as a pointer so the supervisor's per-entry
+	// clock can be the same memory: every frame here also feeds the
+	// IdleReaper that supervises the subprocess. Pool callers fetch the
+	// pointer via supervisor.ChildHandle.LastActiveAt() and pass it to
+	// DialWithClock; tests that don't care use Dial() which allocates a
+	// fresh detached atomic.
+	//
+	// Previously this was a per-conn atomic; the pool's own reaper used it
+	// correctly, but the supervisor had its own clock that didn't see ws
+	// frames — so a long broker.Turn was reaped at the IdleShutdown mark
+	// even while items streamed. One atomic, two readers fixes that.
+	lastActiveAt *atomic.Int64
 
 	mu              sync.Mutex
 	pendingResp     map[int64]chan rpcResponse   // request id → 1-buffered chan
@@ -47,9 +52,20 @@ type Conn struct {
 // errHolder wraps an error so atomic.Value always sees the same concrete type.
 type errHolder struct{ err error }
 
-// Dial opens a fresh ws, performs the codex initialize / initialized
-// handshake, and starts the reader goroutine. Caller must Close().
+// Dial opens a fresh ws with a private activity clock; equivalent to
+// DialWithClock(ctx, wsURL, nil). Production code should call
+// DialWithClock with the supervisor entry's clock so the IdleReaper
+// observes broker frames.
 func Dial(ctx context.Context, wsURL string) (*Conn, error) {
+	return DialWithClock(ctx, wsURL, nil)
+}
+
+// DialWithClock opens a fresh ws, performs the codex initialize /
+// initialized handshake, and starts the reader goroutine. The clock,
+// if non-nil, is bumped on every successful ws read or write —
+// production wiring passes supervisor.ChildHandle.LastActiveAt() so
+// frame flow keeps the subprocess alive. Caller must Close().
+func DialWithClock(ctx context.Context, wsURL string, clock *atomic.Int64) (*Conn, error) {
 	ws, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 		CompressionMode: websocket.CompressionDisabled,
 	})
@@ -58,8 +74,12 @@ func Dial(ctx context.Context, wsURL string) (*Conn, error) {
 	}
 	ws.SetReadLimit(64 << 20)
 
+	if clock == nil {
+		clock = &atomic.Int64{}
+	}
 	c := &Conn{
 		ws:              ws,
+		lastActiveAt:    clock,
 		pendingResp:     make(map[int64]chan rpcResponse),
 		pendingTurns:    make(map[string]chan turnPayload),
 		itemsByTurn:     make(map[string][]json.RawMessage),

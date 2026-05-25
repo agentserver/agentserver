@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -22,10 +23,25 @@ type ChildHandle struct {
 	WSURL     string // ws://127.0.0.1:PORT
 	HTTPURL   string // http://127.0.0.1:PORT  (for /readyz, /healthz)
 	CodexHome string
-	done      chan struct{} // closed after cmd.Wait returns
-	waitErr   error        // set before done is closed
-	waitMu    sync.Mutex   // guards waitErr
+	// lastActiveAt is set by Supervisor.EnsureSubprocess at registration
+	// time; nil before then. broker.Conn writes through this pointer on
+	// every ws frame so the supervisor's clock (which the IdleReaper
+	// reads) sees broker traffic without going through Touch. See
+	// LastActiveAt accessor.
+	lastActiveAt *atomic.Int64
+	done         chan struct{} // closed after cmd.Wait returns
+	waitErr      error         // set before done is closed
+	waitMu       sync.Mutex    // guards waitErr
 }
+
+// LastActiveAt returns the shared activity clock for this subprocess.
+// Callers that observe traffic (e.g. broker.Conn on every ws frame)
+// should Store(time.Now().UnixNano()) into it; the supervisor's
+// IdleReaper reads from the same pointer when deciding whether the
+// subprocess is idle. Nil only for handles produced outside of
+// Supervisor.EnsureSubprocess (test fakes); callers should tolerate
+// nil with a no-op write.
+func (h *ChildHandle) LastActiveAt() *atomic.Int64 { return h.lastActiveAt }
 
 // IsAlive reports whether the subprocess is still running. Cheap;
 // suitable for calling on every EnsureSubprocess hit.

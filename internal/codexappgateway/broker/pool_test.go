@@ -71,8 +71,8 @@ func TestPoolReusesConnForSameWorkspace(t *testing.T) {
 	urlFn, dialCount, stop := countingCodexServer(t)
 	defer stop()
 
-	resolver := func(ctx context.Context, workspaceID string) (string, error) {
-		return urlFn(workspaceID), nil
+	resolver := func(ctx context.Context, workspaceID string) (string, *atomic.Int64, error) {
+		return urlFn(workspaceID), nil, nil
 	}
 	p := NewPool(resolver, 5*time.Minute)
 	defer p.Close()
@@ -95,8 +95,8 @@ func TestPoolReusesConnForSameWorkspace(t *testing.T) {
 }
 
 func TestPoolCloseIsIdempotent(t *testing.T) {
-	resolver := func(_ context.Context, _ string) (string, error) {
-		return "ws://nowhere.invalid", nil
+	resolver := func(_ context.Context, _ string) (string, *atomic.Int64, error) {
+		return "ws://nowhere.invalid", nil, nil
 	}
 	p := NewPool(resolver, time.Hour)
 	// Two consecutive closes must not panic.
@@ -108,7 +108,7 @@ func TestPoolReapsIdleConn(t *testing.T) {
 	urlFn, dialCount, stop := countingCodexServer(t)
 	defer stop()
 
-	resolver := func(ctx context.Context, _ string) (string, error) { return urlFn(""), nil }
+	resolver := func(ctx context.Context, _ string) (string, *atomic.Int64, error) { return urlFn(""), nil, nil }
 	p := NewPool(resolver, 100*time.Millisecond)
 	defer p.Close()
 

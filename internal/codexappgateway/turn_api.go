@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/agentserver/agentserver/internal/codexappgateway/broker"
@@ -182,14 +183,14 @@ func (r *poolRunner) Turn(ctx context.Context, workspaceID, threadID string, par
 // /codex-app/ws path that does have user context goes through
 // s.buildConfig directly and threads id.UserID in.
 func makeSupervisorResolver(sup *supervisor.Supervisor, build func(context.Context, string, string, string) (supervisor.SpawnConfig, error)) broker.WSURLResolver {
-	return func(ctx context.Context, workspaceID string) (string, error) {
+	return func(ctx context.Context, workspaceID string) (string, *atomic.Int64, error) {
 		key := supervisor.Key{WorkspaceID: workspaceID}
 		handle, err := sup.EnsureSubprocess(ctx, key, func(loopbackToken string) (supervisor.SpawnConfig, error) {
 			return build(ctx, workspaceID, "", loopbackToken)
 		})
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
-		return handle.WSURL, nil
+		return handle.WSURL, handle.LastActiveAt(), nil
 	}
 }

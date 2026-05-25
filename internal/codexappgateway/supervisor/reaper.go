@@ -7,7 +7,11 @@ import (
 )
 
 // IdleReaper periodically scans the Supervisor and shuts down entries
-// idle for longer than idleAfter.
+// idle for longer than idleAfter. "Idle" means snapshot()'s clock has
+// not advanced for at least idleAfter — and that clock is shared with
+// broker.Conn (via ChildHandle.LastActiveAt), so frame flow on either
+// the TUI proxy path or the broker.Turn path keeps the subprocess
+// alive without any per-path bookkeeping.
 type IdleReaper struct {
 	sup       *Supervisor
 	interval  time.Duration

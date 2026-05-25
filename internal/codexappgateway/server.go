@@ -190,8 +190,9 @@ func makeBuildConfig(cfg ServeConfig, _ connectedClient, wsTokenClient workspace
 
 		return supervisor.SpawnConfig{
 			Config: codexhome.ConfigInput{
-				ModelProvider: cfg.ModelProvider,
-				Model:         cfg.Model,
+				ModelProvider:   cfg.ModelProvider,
+				Model:           cfg.Model,
+				ReasoningEffort: cfg.ReasoningEffort,
 				ModelProviders: map[string]codexhome.ModelProvider{
 					cfg.ModelProvider: {
 						Name:    cfg.ModelProvider,

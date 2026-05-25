@@ -40,6 +40,7 @@ type AgentServerMCP struct {
 type ConfigInput struct {
 	ModelProvider       string
 	Model               string
+	ReasoningEffort     string // optional; emits `model_reasoning_effort = "..."` when non-empty
 	ModelProviders      map[string]ModelProvider
 	AgentServer         AgentServerMCP
 	ProjectTrustedPaths []string
@@ -100,7 +101,11 @@ func RenderConfigTOML(cfg ConfigInput) (string, error) {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "model_provider = %q\n", cfg.ModelProvider)
-	fmt.Fprintf(&b, "model = %q\n\n", cfg.Model)
+	fmt.Fprintf(&b, "model = %q\n", cfg.Model)
+	if cfg.ReasoningEffort != "" {
+		fmt.Fprintf(&b, "model_reasoning_effort = %q\n", cfg.ReasoningEffort)
+	}
+	b.WriteString("\n")
 
 	for name, p := range cfg.ModelProviders {
 		fmt.Fprintf(&b, "[model_providers.%s]\n", tomlKey(name))

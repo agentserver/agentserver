@@ -40,6 +40,7 @@ type ServeConfig struct {
 	// LLM gateway (typically llmproxy in-cluster).
 	ModelProvider        string
 	Model                string
+	ReasoningEffort      string // optional; writes `model_reasoning_effort` into per-thread config.toml
 	ModelProviderBaseURL string
 	ModelProviderEnvKey  string
 	ModelProviderWireAPI string
@@ -103,6 +104,7 @@ func LoadServeConfigFromEnv() (ServeConfig, error) {
 		CapTokenHMACSecret:        []byte(os.Getenv("CXG_CAPTOKEN_HMAC_SECRET")),
 		ModelProvider:             envOr("CXG_MODEL_PROVIDER", "modelserver"),
 		Model:                     envOr("CXG_MODEL", "gpt-5.5"),
+		ReasoningEffort:           os.Getenv("CXG_REASONING_EFFORT"),
 		ModelProviderBaseURL:      envOr("CXG_MODEL_PROVIDER_BASE_URL", "http://llmproxy:8085/v1"),
 		ModelProviderEnvKey:       envOr("CXG_MODEL_PROVIDER_ENV_KEY", "CODEX_API_KEY"),
 		ModelProviderWireAPI:      envOr("CXG_MODEL_PROVIDER_WIRE_API", "responses"),

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/agentserver/agentserver/internal/codexappgateway/codexhome"
@@ -40,9 +41,16 @@ type Supervisor struct {
 }
 
 type entry struct {
-	handle        *ChildHandle
-	codexHome     string
-	lastActive    time.Time
+	handle    *ChildHandle
+	codexHome string
+	// lastActiveAt is the single source of truth for "is this subprocess
+	// idle". Stored as a pointer so external clients (broker.Conn via
+	// ChildHandle.LastActiveAt) can bump it on every ws frame without
+	// going through Touch — making frame flow on either the TUI proxy
+	// path (which calls Touch) or the broker.Turn path (which writes
+	// directly through the pointer) feed into the same clock the
+	// IdleReaper reads.
+	lastActiveAt  *atomic.Int64
 	loopbackToken string // 32-byte hex; minted per spawn, scoped to one workspace
 }
 
@@ -112,7 +120,7 @@ func (s *Supervisor) EnsureSubprocess(ctx context.Context, key Key, build Config
 	s.mu.Lock()
 	if e, ok := s.children[key]; ok {
 		if e.handle.IsAlive() {
-			e.lastActive = time.Now()
+			e.lastActiveAt.Store(time.Now().UnixNano())
 			s.mu.Unlock()
 			return e.handle, nil
 		}
@@ -176,7 +184,7 @@ func (s *Supervisor) EnsureSubprocess(ctx context.Context, key Key, build Config
 	s.mu.Lock()
 	if e, ok := s.children[key]; ok {
 		// Lost the race; discard our spawn and return theirs.
-		e.lastActive = time.Now()
+		e.lastActiveAt.Store(time.Now().UnixNano())
 		winner := e.handle
 		s.mu.Unlock()
 		// Clean up our discarded spawn out-of-band so the lock isn't held
@@ -191,10 +199,13 @@ func (s *Supervisor) EnsureSubprocess(ctx context.Context, key Key, build Config
 		}()
 		return winner, nil
 	}
+	clock := &atomic.Int64{}
+	clock.Store(time.Now().UnixNano())
+	handle.lastActiveAt = clock
 	s.children[key] = &entry{
 		handle:        handle,
 		codexHome:     codexHome,
-		lastActive:    time.Now(),
+		lastActiveAt:  clock,
 		loopbackToken: loopbackToken,
 	}
 	s.mu.Unlock()
@@ -204,12 +215,20 @@ func (s *Supervisor) EnsureSubprocess(ctx context.Context, key Key, build Config
 // Touch bumps the last-active timestamp for a key. Callers must invoke
 // it on every proxied frame (see proxy.RunProxy's onFrame callback) so
 // the IdleReaper sees fresh activity for the duration of an active
-// session, not just at connect/disconnect.
+// session, not just at connect/disconnect. The broker.Conn path bumps
+// the same atomic directly via ChildHandle.LastActiveAt instead of
+// calling Touch, so frame flow on either path feeds one clock.
 func (s *Supervisor) Touch(key Key) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if e, ok := s.children[key]; ok {
-		e.lastActive = time.Now()
+	clock := func() *atomic.Int64 {
+		if e, ok := s.children[key]; ok {
+			return e.lastActiveAt
+		}
+		return nil
+	}()
+	s.mu.Unlock()
+	if clock != nil {
+		clock.Store(time.Now().UnixNano())
 	}
 }
 
@@ -265,7 +284,7 @@ func (s *Supervisor) snapshot() map[Key]time.Time {
 	defer s.mu.Unlock()
 	out := make(map[Key]time.Time, len(s.children))
 	for k, e := range s.children {
-		out[k] = e.lastActive
+		out[k] = time.Unix(0, e.lastActiveAt.Load())
 	}
 	return out
 }

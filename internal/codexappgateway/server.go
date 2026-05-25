@@ -222,18 +222,6 @@ func makeBuildConfig(cfg ServeConfig, _ connectedClient, wsTokenClient workspace
 func (s *Server) Run(ctx context.Context, listenAddr string) error {
 	httpSrv := &http.Server{Addr: listenAddr, Handler: s.Routes()}
 	reaper := supervisor.NewIdleReaper(s.sup, 1*time.Minute, s.cfg.IdleShutdown, s.logger)
-	if s.brokerPool != nil {
-		// Unify the two activity clocks: broker.Pool tracks per-frame
-		// freshness on the ws (bumped on every successful read/write),
-		// while supervisor.lastActive only moves on EnsureSubprocess /
-		// Touch — neither of which fires during an in-flight broker.Turn
-		// after the pool's first dial. Without this probe a long turn is
-		// silently reaped at the IdleShutdown mark.
-		pool := s.brokerPool
-		reaper.SetProbe(func(key supervisor.Key) time.Time {
-			return pool.LastActiveAt(key.WorkspaceID)
-		})
-	}
 	reaperCtx, reaperCancel := context.WithCancel(context.Background())
 	defer reaperCancel()
 	go reaper.Run(reaperCtx)

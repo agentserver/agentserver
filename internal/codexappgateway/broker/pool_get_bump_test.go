@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -15,7 +16,7 @@ func TestPoolGetReuseRefreshesActivity(t *testing.T) {
 	urlFn, _, stop := countingCodexServer(t)
 	defer stop()
 
-	resolver := func(_ context.Context, _ string) (string, error) { return urlFn(""), nil }
+	resolver := func(_ context.Context, _ string) (string, *atomic.Int64, error) { return urlFn(""), nil, nil }
 	// Big idleTTL so the background reaper can't interfere with the test.
 	p := NewPool(resolver, time.Hour)
 	defer p.Close()

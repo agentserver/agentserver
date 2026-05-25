@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -92,7 +93,7 @@ func TestPoolDoesNotReapConnWithActiveTraffic(t *testing.T) {
 	defer srv.Close()
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
 
-	resolver := func(_ context.Context, _ string) (string, error) { return wsURL, nil }
+	resolver := func(_ context.Context, _ string) (string, *atomic.Int64, error) { return wsURL, nil, nil }
 	p := NewPool(resolver, idleTTL)
 	defer p.Close()
 

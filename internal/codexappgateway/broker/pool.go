@@ -5,13 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // WSURLResolver is the per-workspace loopback ws URL provider. In
 // production this calls into supervisor.EnsureSubprocess to spawn /
-// reuse the codex subprocess; tests inject a fixed URL.
-type WSURLResolver func(ctx context.Context, workspaceID string) (wsURL string, err error)
+// reuse the codex subprocess and returns its handle.LastActiveAt() so
+// frames flowing through the Conn feed the supervisor's idle clock.
+// Tests may return a nil clock — the Conn will allocate a detached one.
+type WSURLResolver func(ctx context.Context, workspaceID string) (wsURL string, clock *atomic.Int64, err error)
 
 // Pool caches one *Conn per workspace id. Connections whose ws has been
 // silent (no frames in either direction) for longer than idleTTL are
@@ -76,11 +79,11 @@ func (p *Pool) Get(ctx context.Context, workspaceID string) (*Conn, error) {
 		return e.conn, nil
 	}
 	// (Re)dial.
-	wsURL, err := p.resolver(ctx, workspaceID)
+	wsURL, clock, err := p.resolver(ctx, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("resolve loopback url: %w", err)
 	}
-	conn, err := Dial(ctx, wsURL)
+	conn, err := DialWithClock(ctx, wsURL, clock)
 	if err != nil {
 		return nil, fmt.Errorf("dial: %w", err)
 	}
@@ -118,31 +121,6 @@ func (p *Pool) Close() {
 		}
 		p.entries = map[string]*poolEntry{}
 	})
-}
-
-// LastActiveAt returns the unix-time of the most recent ws frame on the
-// cached Conn for workspaceID, or the zero time if no entry is cached.
-// Bumped by Conn on every successful read/write (see conn.lastActiveAt).
-// Used by the supervisor's IdleReaper to keep a subprocess alive while
-// the broker conn is still streaming, even though broker.Turn does not
-// touch the supervisor on every frame.
-func (p *Pool) LastActiveAt(workspaceID string) time.Time {
-	p.mu.Lock()
-	e, ok := p.entries[workspaceID]
-	p.mu.Unlock()
-	if !ok {
-		return time.Time{}
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.conn == nil {
-		return time.Time{}
-	}
-	nanos := e.conn.lastActiveAt.Load()
-	if nanos == 0 {
-		return time.Time{}
-	}
-	return time.Unix(0, nanos)
 }
 
 func (p *Pool) reaper() {

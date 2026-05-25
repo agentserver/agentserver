@@ -120,6 +120,31 @@ func (p *Pool) Close() {
 	})
 }
 
+// LastActiveAt returns the unix-time of the most recent ws frame on the
+// cached Conn for workspaceID, or the zero time if no entry is cached.
+// Bumped by Conn on every successful read/write (see conn.lastActiveAt).
+// Used by the supervisor's IdleReaper to keep a subprocess alive while
+// the broker conn is still streaming, even though broker.Turn does not
+// touch the supervisor on every frame.
+func (p *Pool) LastActiveAt(workspaceID string) time.Time {
+	p.mu.Lock()
+	e, ok := p.entries[workspaceID]
+	p.mu.Unlock()
+	if !ok {
+		return time.Time{}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.conn == nil {
+		return time.Time{}
+	}
+	nanos := e.conn.lastActiveAt.Load()
+	if nanos == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, nanos)
+}
+
 func (p *Pool) reaper() {
 	interval := p.idleTTL / 4
 	if interval < 50*time.Millisecond {

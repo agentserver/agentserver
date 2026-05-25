@@ -209,6 +209,43 @@ func TestWriteConfigEmitsDefaultToolsApprovalMode(t *testing.T) {
 	}
 }
 
+func TestRenderConfigTOML_ReasoningEffort(t *testing.T) {
+	base := ConfigInput{
+		ModelProvider: "modelserver",
+		Model:         "gpt-5.5",
+		AgentServer: AgentServerMCP{
+			CodexBin:              "/usr/local/bin/codex-app-gateway",
+			WorkspaceID:           "ws_a",
+			ExecGatewayURL:        "wss://exec-gw.example/bridge",
+			AppGatewayInternalURL: "http://127.0.0.1:8086",
+			WorkspaceToken:        "wstok",
+			LoopbackToken:         "lbtok",
+		},
+	}
+
+	t.Run("set", func(t *testing.T) {
+		cfg := base
+		cfg.ReasoningEffort = "high"
+		out, err := RenderConfigTOML(cfg)
+		if err != nil {
+			t.Fatalf("Render: %v", err)
+		}
+		if !strings.Contains(out, `model_reasoning_effort = "high"`) {
+			t.Errorf("missing model_reasoning_effort line:\n%s", out)
+		}
+	})
+
+	t.Run("empty omits line", func(t *testing.T) {
+		out, err := RenderConfigTOML(base)
+		if err != nil {
+			t.Fatalf("Render: %v", err)
+		}
+		if strings.Contains(out, "model_reasoning_effort") {
+			t.Errorf("unexpected model_reasoning_effort when ReasoningEffort empty:\n%s", out)
+		}
+	})
+}
+
 func TestManager_WriteConfig_ProducesUsableTOML(t *testing.T) {
 	root := t.TempDir()
 	m := NewManager(root)

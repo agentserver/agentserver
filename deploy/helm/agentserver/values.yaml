@@ -284,6 +284,11 @@ codexAppGateway:
   modelProviderBaseUrl: ""        # default: http://{release}-llmproxy:{port}/v1
   modelProviderEnvKey: CODEX_API_KEY
   modelProviderWireApi: responses
+  # Optional. Writes `model_reasoning_effort = "<value>"` into each per-thread
+  # config.toml. Codex accepts minimal | low | medium | high. Empty = leave
+  # codex default (medium for gpt-5 family). Applies to every spawned codex
+  # app-server (workspace-wide), including WeChat inbound sessions.
+  reasoningEffort: high
   # API key the spawned codex uses to authenticate to the model provider.
   # Required for the subprocess to make any LLM call.
   codexApiKey: ""

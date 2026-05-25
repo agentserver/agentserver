@@ -102,6 +102,10 @@ spec:
                   key: secret_access_key
             - name: CXG_MODEL
               value: {{ .Values.codexAppGateway.model | quote }}
+            {{- if .Values.codexAppGateway.reasoningEffort }}
+            - name: CXG_REASONING_EFFORT
+              value: {{ .Values.codexAppGateway.reasoningEffort | quote }}
+            {{- end }}
             - name: CXG_MODEL_PROVIDER
               value: {{ .Values.codexAppGateway.modelProvider | quote }}
             - name: CXG_MODEL_PROVIDER_BASE_URL

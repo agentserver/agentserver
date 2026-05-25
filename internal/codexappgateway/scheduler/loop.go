@@ -66,6 +66,9 @@ func (l *Loop) Run(ctx context.Context) {
 		"lease_s", l.cfg.LeaseSeconds,
 		"concurrency", l.cfg.Concurrency,
 	)
+	if l.cfg.ImbridgeBase == "" {
+		l.logger.Warn("scheduler: ImbridgeBase is empty; IM broadcasts will fail silently (set CXG_IMBRIDGE_BASE_URL)")
+	}
 	t := time.NewTicker(l.cfg.TickInterval)
 	defer t.Stop()
 	for {

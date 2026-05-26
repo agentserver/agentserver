@@ -232,14 +232,12 @@ func (s *Server) Run(ctx context.Context, listenAddr string) error {
 			InternalSecret:  s.cfg.AgentserverInternalSecret,
 			ImbridgeBase:    s.cfg.ImbridgeBaseURL,
 			ImbridgeSecret:  s.cfg.ImbridgeInternalSecret,
-			CodexBin:        s.codexBin,
+			BrokerPool:      s.brokerPool,
 			PodID:           os.Getenv("POD_NAME"),
 			PID:             os.Getpid(),
 			TickInterval:    s.cfg.SchedulerTickInterval,
 			LeaseSeconds:    s.cfg.SchedulerLeaseSeconds,
 			Concurrency:     s.cfg.SchedulerConcurrency,
-			Tokens:          NewWorkspaceTokenClient(s.cfg.AgentserverInternalURL, s.cfg.AgentserverInternalSecret),
-			ModelEnvKey:     s.cfg.ModelProviderEnvKey,
 		}
 		sched := scheduler.New(schedCfg, s.logger)
 		schedCtx, schedCancel := context.WithCancel(context.Background())

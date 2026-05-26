@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"sync/atomic"
 	"time"
+
+	"github.com/agentserver/agentserver/internal/codexappgateway/broker"
 )
 
 // Config holds the runtime parameters for the scheduler Loop.
@@ -14,14 +16,12 @@ type Config struct {
 	InternalSecret  string
 	ImbridgeBase    string
 	ImbridgeSecret  string
-	CodexBin        string
+	BrokerPool      *broker.Pool // shared with the user-facing /api/turns path
 	PodID           string
 	PID             int
 	TickInterval    time.Duration
 	LeaseSeconds    int
 	Concurrency     int
-	Tokens          WorkspaceTokenFetcher // workspace Bearer fetcher; nil disables credential injection
-	ModelEnvKey     string               // env var name to set with the token (e.g. "CODEX_API_KEY")
 }
 
 // Loop polls agentserver-main for due tasks and dispatches them concurrently.
@@ -34,16 +34,14 @@ type Loop struct {
 	inflight   atomic.Int32
 }
 
-// New constructs a Loop, wiring together AgentserverClient, Spawner, and
-// Broadcaster from cfg. Defaults are applied for zero-valued numeric fields.
+// New constructs a Loop, wiring together AgentserverClient, BrokerSpawner,
+// and Broadcaster from cfg. Defaults are applied for zero-valued numeric fields.
 func New(cfg Config, logger *slog.Logger) *Loop {
 	agent := NewAgentserverClient(cfg.AgentserverBase, cfg.InternalSecret, cfg.PodID, cfg.PID)
 	disp := NewDispatcher(
 		agent,
-		NewSpawner(cfg.CodexBin, nil),
+		NewBrokerSpawner(cfg.BrokerPool),
 		NewBroadcaster(cfg.ImbridgeBase, cfg.ImbridgeSecret),
-		cfg.Tokens,
-		cfg.ModelEnvKey,
 	)
 	if cfg.TickInterval <= 0 {
 		cfg.TickInterval = 15 * time.Second

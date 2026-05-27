@@ -63,6 +63,8 @@ spec:
               value: {{ .Values.codexAppGateway.idleShutdown | quote }}
             - name: CXG_CAPTOKEN_TTL
               value: {{ .Values.codexAppGateway.capTokenTtl | quote }}
+            - name: CXG_BROKER_POOL_IDLE_TTL
+              value: {{ .Values.codexAppGateway.brokerPoolIdleTtl | quote }}
             - name: CXG_INBOUND_HMAC_SECRET
               valueFrom:
                 secretKeyRef:

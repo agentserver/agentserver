@@ -32,7 +32,17 @@ type ServeConfig struct {
 	ExecGatewayInternalSecret string
 	CapTokenHMACSecret        []byte
 	CapTokenTTL               time.Duration
-	LogLevel                  slog.Level
+	// BrokerPoolIdleTTL is how long a pooled per-workspace broker.Conn
+	// (WS to the codex app-server subprocess) may sit without any frame
+	// flowing in either direction before the pool reaps it. Must be
+	// long enough to cover the silent stretch of a single in-flight
+	// turn — e.g. a high-reasoning gpt-5 turn can produce no frames for
+	// many minutes between tool calls. Should be ≥ IdleShutdown so we
+	// never reap a pool conn while its underlying subprocess is still
+	// alive and serving the same workspace. Override via
+	// CXG_BROKER_POOL_IDLE_TTL.
+	BrokerPoolIdleTTL time.Duration
+	LogLevel          slog.Level
 
 	// Model provider config — written verbatim into each per-thread
 	// config.toml. The codex subprocess reads ModelProviderEnvKey from its
@@ -87,8 +97,9 @@ func LoadServeConfigFromEnv() (ServeConfig, error) {
 		// 24h is comfortably longer than any realistic session — keeps
 		// long-running codex --remote TUIs from hitting 401 mid-call
 		// without giving up the bound altogether.
-		CapTokenTTL: 24 * time.Hour,
-		LogLevel:    slog.LevelInfo,
+		CapTokenTTL:       24 * time.Hour,
+		BrokerPoolIdleTTL: 30 * time.Minute,
+		LogLevel:          slog.LevelInfo,
 		S3: S3Config{
 			Endpoint:        os.Getenv("CXG_S3_ENDPOINT"),
 			Region:          envOr("CXG_S3_REGION", "us-east-1"),
@@ -161,6 +172,13 @@ func LoadServeConfigFromEnv() (ServeConfig, error) {
 			return cfg, fmt.Errorf("parse CXG_CAPTOKEN_TTL: %w", err)
 		}
 		cfg.CapTokenTTL = d
+	}
+	if v := os.Getenv("CXG_BROKER_POOL_IDLE_TTL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return cfg, fmt.Errorf("parse CXG_BROKER_POOL_IDLE_TTL: %w", err)
+		}
+		cfg.BrokerPoolIdleTTL = d
 	}
 	if v := strings.ToLower(os.Getenv("CXG_LOG_LEVEL")); v != "" {
 		switch v {

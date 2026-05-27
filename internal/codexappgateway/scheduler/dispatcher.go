@@ -29,15 +29,10 @@ type Dispatcher struct {
 	agent       agentClient
 	spawner     spawner
 	broadcaster broadcaster
-	tokens      WorkspaceTokenFetcher
-	modelEnvKey string
 }
 
-// NewDispatcher constructs a Dispatcher from its collaborators. tokens and
-// modelEnvKey are optional: when tokens is nil, codexEnv skips credential
-// injection (useful in tests).
-func NewDispatcher(a agentClient, sp spawner, br broadcaster, tokens WorkspaceTokenFetcher, modelEnvKey string) *Dispatcher {
-	return &Dispatcher{agent: a, spawner: sp, broadcaster: br, tokens: tokens, modelEnvKey: modelEnvKey}
+func NewDispatcher(a agentClient, sp spawner, br broadcaster) *Dispatcher {
+	return &Dispatcher{agent: a, spawner: sp, broadcaster: br}
 }
 
 // Fire executes the full scheduled-task fire pipeline for a single Task.
@@ -79,20 +74,16 @@ func (d *Dispatcher) Fire(ctx context.Context, t Task) error {
 		}
 	}
 
-	// 2. Spawn codex
-	env, err := d.codexEnv(ctx, t)
-	if err != nil {
-		return d.report(ctx, t, ResultRequest{
-			TaskID:          t.ID,
-			RunID:           t.RunID,
-			Status:          "failed",
-			Summary:         truncErr(err),
-			DurationMS:      time.Since(start).Milliseconds(),
-			BroadcastErrors: json.RawMessage("{}"),
-		}, truncErr(err), true)
-	}
+	// 2. Submit codex turn via broker (per-fire new thread; reuses the
+	//    workspace's supervisor-managed app-server subprocess so model
+	//    provider config, agentserver MCP, and CODEX_HOME state are all
+	//    consistent with the WeChat / TUI paths).
 	timeout := time.Duration(t.TimeoutSeconds) * time.Second
-	res, err := d.spawner.Run(ctx, SpawnInput{Prompt: prompt, Env: env, Timeout: timeout})
+	res, err := d.spawner.Run(ctx, SpawnInput{
+		WorkspaceID: t.WorkspaceID,
+		Prompt:      prompt,
+		Timeout:     timeout,
+	})
 
 	status := "succeeded"
 	summary := res.Summary
@@ -103,12 +94,12 @@ func (d *Dispatcher) Fire(ctx context.Context, t Task) error {
 	case res.TimedOut:
 		status = "timeout"
 		if summary == "" {
-			summary = "(codex exec timed out)"
+			summary = "(codex turn timed out)"
 		}
 	case res.ExitCode != 0:
 		status = "failed"
 		if summary == "" {
-			summary = fmt.Sprintf("(codex exec exit %d)", res.ExitCode)
+			summary = fmt.Sprintf("(codex turn failed, code=%d)", res.ExitCode)
 		}
 	}
 
@@ -164,28 +155,6 @@ func renderIMText(t Task, r ResultRequest, body string) string {
 	}
 	sb.WriteString(body)
 	return sb.String()
-}
-
-// codexEnv builds the env for the spawned `codex exec` process.
-// Includes TZ, the workspace-scoped Bearer token (via modelEnvKey), and a
-// selective inheritance of PATH/HOME/CODEX_HOME from the dispatcher's process.
-// Returns an error if the token fetch fails; the caller must report this
-// as a 'failed' run rather than spawning a credential-less codex.
-func (d *Dispatcher) codexEnv(ctx context.Context, t Task) ([]string, error) {
-	env := []string{"TZ=" + t.Timezone}
-	for _, k := range []string{"PATH", "HOME", "CODEX_HOME"} {
-		if v := os.Getenv(k); v != "" {
-			env = append(env, k+"="+v)
-		}
-	}
-	if d.tokens != nil && d.modelEnvKey != "" {
-		tok, err := d.tokens.GetOrCreate(ctx, t.WorkspaceID)
-		if err != nil {
-			return nil, fmt.Errorf("fetch workspace token: %w", err)
-		}
-		env = append(env, d.modelEnvKey+"="+tok)
-	}
-	return env, nil
 }
 
 func scriptEnv(t Task) []string {

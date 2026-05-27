@@ -69,7 +69,8 @@ type Server struct {
 
 	execClient connectedClient // exposed for the loopback /internal/connected handler
 
-	// brokerPool caches per-workspace broker.Conn instances (max idle 5 min).
+	// brokerPool caches per-workspace broker.Conn instances. Idle TTL is
+	// cfg.BrokerPoolIdleTTL (default 30m, override via CXG_BROKER_POOL_IDLE_TTL).
 	// Initialized in NewServer; nil in lightweight test Server literals.
 	brokerPool *broker.Pool
 }
@@ -128,7 +129,7 @@ func NewServer(cfg ServeConfig, codexBin, selfBin string, logger *slog.Logger) (
 	s.buildConfig = makeBuildConfig(cfg, execClient, wsTokenClient, selfBin, logger)
 	s.brokerPool = broker.NewPool(
 		makeSupervisorResolver(s.sup, s.buildConfig),
-		5*time.Minute,
+		cfg.BrokerPoolIdleTTL,
 	)
 	return s, nil
 }
@@ -232,14 +233,12 @@ func (s *Server) Run(ctx context.Context, listenAddr string) error {
 			InternalSecret:  s.cfg.AgentserverInternalSecret,
 			ImbridgeBase:    s.cfg.ImbridgeBaseURL,
 			ImbridgeSecret:  s.cfg.ImbridgeInternalSecret,
-			CodexBin:        s.codexBin,
+			BrokerPool:      s.brokerPool,
 			PodID:           os.Getenv("POD_NAME"),
 			PID:             os.Getpid(),
 			TickInterval:    s.cfg.SchedulerTickInterval,
 			LeaseSeconds:    s.cfg.SchedulerLeaseSeconds,
 			Concurrency:     s.cfg.SchedulerConcurrency,
-			Tokens:          NewWorkspaceTokenClient(s.cfg.AgentserverInternalURL, s.cfg.AgentserverInternalSecret),
-			ModelEnvKey:     s.cfg.ModelProviderEnvKey,
 		}
 		sched := scheduler.New(schedCfg, s.logger)
 		schedCtx, schedCancel := context.WithCancel(context.Background())

@@ -36,6 +36,9 @@ func TestLoadServeConfig_Defaults(t *testing.T) {
 	if cfg.CapTokenTTL != 24*time.Hour {
 		t.Errorf("CapTokenTTL = %v", cfg.CapTokenTTL)
 	}
+	if cfg.BrokerPoolIdleTTL != 30*time.Minute {
+		t.Errorf("BrokerPoolIdleTTL = %v", cfg.BrokerPoolIdleTTL)
+	}
 	if cfg.ModelProvider != "modelserver" || cfg.Model != "gpt-5.5" {
 		t.Errorf("model defaults: provider=%q model=%q", cfg.ModelProvider, cfg.Model)
 	}
@@ -103,5 +106,17 @@ func TestLoadServeConfig_OverridesIdleShutdown(t *testing.T) {
 	}
 	if cfg.IdleShutdown != 5*time.Minute {
 		t.Errorf("IdleShutdown = %v", cfg.IdleShutdown)
+	}
+}
+
+func TestLoadServeConfig_OverridesBrokerPoolIdleTTL(t *testing.T) {
+	setRequired(t)
+	t.Setenv("CXG_BROKER_POOL_IDLE_TTL", "45m")
+	cfg, err := LoadServeConfigFromEnv()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.BrokerPoolIdleTTL != 45*time.Minute {
+		t.Errorf("BrokerPoolIdleTTL = %v", cfg.BrokerPoolIdleTTL)
 	}
 }

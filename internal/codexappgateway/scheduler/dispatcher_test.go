@@ -48,7 +48,7 @@ func TestDispatcher_Fire_HappyPath_PostsResultAndBroadcasts(t *testing.T) {
 	a := &fakeAgent{channels: []ChannelRef{{ID: "ch1", UserID: "u1"}}}
 	sp := &fakeSpawner{res: SpawnResult{ExitCode: 0, Summary: "ok", Transcript: "ok"}}
 	br := &fakeBroadcaster{}
-	d := NewDispatcher(a, sp, br, nil, "")
+	d := NewDispatcher(a, sp, br)
 	err := d.Fire(context.Background(), Task{ID: "sch_a", RunID: "run_1", WorkspaceID: "ws", Prompt: "hi", Timezone: "UTC"})
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +65,7 @@ func TestDispatcher_Fire_ScriptGated_Skips(t *testing.T) {
 	a := &fakeAgent{channels: []ChannelRef{{ID: "ch1", UserID: "u1"}}}
 	sp := &fakeSpawner{res: SpawnResult{ExitCode: 0, Summary: "should not appear"}}
 	br := &fakeBroadcaster{}
-	d := NewDispatcher(a, sp, br, nil, "")
+	d := NewDispatcher(a, sp, br)
 	skipScript := `echo '{"wakeAgent":false,"data":null}'`
 	t1 := Task{ID: "sch_a", RunID: "r1", WorkspaceID: "ws", Prompt: "hi", Timezone: "UTC", Script: &skipScript}
 	if err := d.Fire(context.Background(), t1); err != nil {
@@ -82,7 +82,7 @@ func TestDispatcher_Fire_ScriptGated_Skips(t *testing.T) {
 func TestDispatcher_Fire_SpawnError_ReportsFailed(t *testing.T) {
 	a := &fakeAgent{}
 	sp := &fakeSpawner{err: errors.New("boom")}
-	d := NewDispatcher(a, sp, &fakeBroadcaster{}, nil, "")
+	d := NewDispatcher(a, sp, &fakeBroadcaster{})
 	_ = d.Fire(context.Background(), Task{ID: "sch_x", RunID: "r", WorkspaceID: "w", Prompt: "p", Timezone: "UTC"})
 	if a.lastResult == nil || a.lastResult.Status != "failed" {
 		t.Fatalf("result=%+v", a.lastResult)

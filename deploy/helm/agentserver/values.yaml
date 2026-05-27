@@ -276,6 +276,13 @@ codexAppGateway:
   # this long so a long-idle session can resume without re-mint.
   idleShutdown: 30m
   capTokenTtl: 1h
+  # Pool-level WS idle TTL: how long a cached broker.Conn (WS to the
+  # codex app-server subprocess) may sit without any frame in either
+  # direction before the pool closes it. Must exceed the longest silent
+  # stretch of an in-flight turn (high-reasoning gpt-5 can emit zero
+  # frames between tool calls for many minutes). Should be ≥ idleShutdown
+  # so a pooled conn is never reaped while its subprocess is still alive.
+  brokerPoolIdleTtl: 30m
   # Model + provider info written verbatim into each per-thread
   # config.toml's [model_providers.X] block. Defaults assume llmproxy
   # in-cluster.

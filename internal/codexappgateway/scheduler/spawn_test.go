@@ -24,6 +24,7 @@ type fakeServer struct {
 	turnStatus    string // turn/completed status; defaults to "completed"
 	turnErrorMsg  string // when set, included in turn.error.message
 	turnRPCError  bool   // when true, reply turn/start with an RPC error
+	hangAfterAck  bool   // when true, ack turn/start but never send turn/completed (drives broker.TimeoutError)
 	url           string
 }
 
@@ -78,6 +79,9 @@ func newFakeCodexAppServer(t *testing.T, fs *fakeServer) {
 					"id":      f["id"],
 					"result":  map[string]any{"turn": map[string]any{"id": "trn-fake"}},
 				})
+				if fs.hangAfterAck {
+					continue // never emit turn/completed; drives the broker.Turn timeout path
+				}
 				if fs.assistantText != "" {
 					_ = writeJSON(ctx, c, map[string]any{
 						"jsonrpc": "2.0",
@@ -208,6 +212,27 @@ func TestBrokerSpawner_RPCError_ReportsFailure(t *testing.T) {
 	}
 	if !strings.Contains(res.Summary, "synthetic rpc error") {
 		t.Errorf("Summary=%q expected to surface RPC error message", res.Summary)
+	}
+}
+
+func TestBrokerSpawner_TurnTimeout_SetsTimedOut(t *testing.T) {
+	fs := &fakeServer{hangAfterAck: true}
+	newFakeCodexAppServer(t, fs)
+	s := NewBrokerSpawner(newTestPool(t, fs.url))
+
+	res, err := s.Run(context.Background(), SpawnInput{
+		WorkspaceID: "ws-a",
+		Prompt:      "hi",
+		Timeout:     150 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !res.TimedOut {
+		t.Errorf("TimedOut=false want true; summary=%q", res.Summary)
+	}
+	if res.ExitCode == 0 {
+		t.Errorf("ExitCode=0 want non-zero on timeout")
 	}
 }
 

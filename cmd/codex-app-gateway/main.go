@@ -65,7 +65,12 @@ func runEnvMcp(rawArgs []string) {
 		fmt.Fprintln(os.Stderr, "codex-app-gateway env-mcp:", err)
 		os.Exit(2)
 	}
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	sink, sinkErr := envmcp.OpenLogSink(os.Stderr, args.LogFile)
+	logger := slog.New(slog.NewTextHandler(sink, &slog.HandlerOptions{Level: slog.LevelInfo})).
+		With("pid", os.Getpid(), "workspace_id", args.WorkspaceID)
+	if sinkErr != nil {
+		logger.Warn("env-mcp: log file open failed; falling back to stderr only", "err", sinkErr)
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 	if err := envmcp.Run(ctx, args, os.Stdin, os.Stdout, os.Stderr, logger); err != nil {
@@ -131,6 +136,7 @@ func parseEnvMcpArgs(rawArgs []string) (envmcp.RunArgs, error) {
 	loopbackTokenEnv := fs.String("loopback-token-env", "", "env var name holding the loopback token (required)")
 	execGatewayInternalURL := fs.String("exec-gateway-internal-url", "", "http base URL for codex-exec-gateway internal API (optional; enables HTTP relay copy_path)")
 	execGatewayInternalSecretEnv := fs.String("exec-gateway-internal-secret-env", "", "env var name holding the exec-gateway internal shared secret (optional)")
+	logFile := fs.String("log-file", "", "if set, the env-mcp logger writes to this file (append) in addition to stderr — codex hides MCP-child stderr, so this is the only ops-visible log")
 	if err := fs.Parse(rawArgs); err != nil {
 		return envmcp.RunArgs{}, err
 	}
@@ -156,5 +162,6 @@ func parseEnvMcpArgs(rawArgs []string) (envmcp.RunArgs, error) {
 		LoopbackTokenEnv:          *loopbackTokenEnv,
 		ExecGatewayInternalURL:    *execGatewayInternalURL,
 		ExecGatewayInternalSecret: *execGatewayInternalSecretEnv,
+		LogFile:                   *logFile,
 	}, nil
 }

@@ -80,6 +80,23 @@ func TestParseEnvMcpArgs_RejectsTrailingPositional(t *testing.T) {
 	}
 }
 
+func TestParseEnvMcpArgs_LogFile(t *testing.T) {
+	args, err := parseEnvMcpArgs([]string{
+		"--workspace-id", "w",
+		"--exec-gateway-url", "wss://x/bridge",
+		"--app-gateway-internal", "http://127.0.0.1:8086",
+		"--workspace-token-env", "WT",
+		"--loopback-token-env", "LT",
+		"--log-file", "/tmp/env-mcp.log",
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if args.LogFile != "/tmp/env-mcp.log" {
+		t.Errorf("LogFile = %q", args.LogFile)
+	}
+}
+
 func TestParseEnvMcpArgs_UnknownFlag_NoStderrLeak(t *testing.T) {
 	_, err := parseEnvMcpArgs([]string{"--bogus", "x"})
 	if err == nil {

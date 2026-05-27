@@ -35,6 +35,10 @@ type AgentServerMCP struct {
 	// flag and secret; copy_path falls back to ws cat-pump.
 	ExecGatewayInternalURL    string
 	ExecGatewayInternalSecret string // written verbatim into env-mcp's env block
+	// LogFile, when non-empty, adds `--log-file <path>` to the env-mcp
+	// args. WriteConfig auto-injects this with `<codexHome>/env-mcp.log`
+	// when the caller leaves it empty, so callers normally don't set it.
+	LogFile string
 }
 
 type ConfigInput struct {
@@ -77,7 +81,16 @@ func (m *Manager) RemoveTmpDir(path string) error {
 }
 
 // WriteConfig renders `config.toml` into the given CODEX_HOME dir.
+// Side effect: if the caller didn't supply AgentServer.LogFile, it is
+// filled in with `<codexHome>/env-mcp.log` so env-mcp's logger fans
+// out to a file the operator can `kubectl exec ... cat`. Callers that
+// want a different path (or no file at all — set to "/dev/null") can
+// pre-populate the field. Mutation is on the local copy (ConfigInput
+// is passed by value), so the caller's struct is unaffected.
 func (m *Manager) WriteConfig(codexHome string, cfg ConfigInput) error {
+	if cfg.AgentServer.CodexBin != "" && cfg.AgentServer.LogFile == "" {
+		cfg.AgentServer.LogFile = filepath.Join(codexHome, "env-mcp.log")
+	}
 	out, err := RenderConfigTOML(cfg)
 	if err != nil {
 		return err
@@ -145,6 +158,9 @@ func RenderConfigTOML(cfg ConfigInput) (string, error) {
 				"--exec-gateway-internal-url", m.ExecGatewayInternalURL,
 				"--exec-gateway-internal-secret-env", "CXG_EXEC_GATEWAY_INTERNAL_SECRET",
 			)
+		}
+		if m.LogFile != "" {
+			args = append(args, "--log-file", m.LogFile)
 		}
 		b.WriteString("args = [")
 		for i, a := range args {

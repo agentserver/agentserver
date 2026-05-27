@@ -112,6 +112,93 @@ func TestRenderConfigTOML_DisablesBuiltinShellAndRegistersAgentserverMCP(t *test
 	}
 }
 
+func TestRenderConfigTOML_LogFileEmitsFlag(t *testing.T) {
+	cfg := ConfigInput{
+		ModelProvider: "modelserver",
+		Model:         "gpt-5.5",
+		AgentServer: AgentServerMCP{
+			CodexBin:              "/usr/local/bin/codex-app-gateway",
+			WorkspaceID:           "ws_a",
+			ExecGatewayURL:        "wss://exec-gw.example/bridge",
+			AppGatewayInternalURL: "http://127.0.0.1:8086",
+			WorkspaceToken:        "wstok",
+			LoopbackToken:         "lbtok",
+			LogFile:               "/tmp/codex-app-gateway/ws_a/env-mcp.log",
+		},
+	}
+	out, err := RenderConfigTOML(cfg)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	for _, want := range []string{
+		`"--log-file"`,
+		`"/tmp/codex-app-gateway/ws_a/env-mcp.log"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderConfigTOML_LogFileOmittedWhenEmpty(t *testing.T) {
+	cfg := ConfigInput{
+		ModelProvider: "modelserver",
+		Model:         "gpt-5.5",
+		AgentServer: AgentServerMCP{
+			CodexBin:              "/usr/local/bin/codex-app-gateway",
+			WorkspaceID:           "ws_a",
+			ExecGatewayURL:        "wss://exec-gw.example/bridge",
+			AppGatewayInternalURL: "http://127.0.0.1:8086",
+			WorkspaceToken:        "wstok",
+			LoopbackToken:         "lbtok",
+		},
+	}
+	out, err := RenderConfigTOML(cfg)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if strings.Contains(out, "--log-file") {
+		t.Errorf("unexpected --log-file in:\n%s", out)
+	}
+}
+
+func TestWriteConfig_AutoInjectsLogFileFromCodexHome(t *testing.T) {
+	root := t.TempDir()
+	m := NewManager(root)
+	codexHome, err := m.NewTmpDir("ws_a")
+	if err != nil {
+		t.Fatalf("NewTmpDir: %v", err)
+	}
+	cfg := ConfigInput{
+		ModelProvider: "modelserver",
+		Model:         "gpt-5.5",
+		AgentServer: AgentServerMCP{
+			CodexBin:              "/usr/local/bin/codex-app-gateway",
+			WorkspaceID:           "ws_a",
+			ExecGatewayURL:        "wss://exec-gw.example/bridge",
+			AppGatewayInternalURL: "http://127.0.0.1:8086",
+			WorkspaceToken:        "wstok",
+			LoopbackToken:         "lbtok",
+			// LogFile deliberately empty — WriteConfig should fill it
+			// in from codexHome.
+		},
+	}
+	if err := m.WriteConfig(codexHome, cfg); err != nil {
+		t.Fatalf("WriteConfig: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(codexHome, "config.toml"))
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	want := filepath.Join(codexHome, "env-mcp.log")
+	if !strings.Contains(string(body), `"--log-file"`) {
+		t.Errorf("missing --log-file flag in:\n%s", body)
+	}
+	if !strings.Contains(string(body), `"`+want+`"`) {
+		t.Errorf("missing log path %q in:\n%s", want, body)
+	}
+}
+
 func TestRenderConfigTOML_HTTPRelayEnabledEmitsFlagAndEnv(t *testing.T) {
 	cfg := ConfigInput{
 		ModelProvider: "modelserver",

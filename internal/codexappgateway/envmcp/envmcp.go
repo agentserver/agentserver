@@ -20,6 +20,23 @@ import (
 	"github.com/agentserver/agentserver/internal/envtools/tools"
 )
 
+// OpenLogSink returns a writer that fans out logger output to stderr
+// and, when path is non-empty, to the file at path (opened append).
+// On file-open failure it falls back to stderr-only and returns a
+// non-nil error so the caller can log the degradation. Exported so
+// `runEnvMcp` in cmd/codex-app-gateway can build the slog handler
+// before envmcp.Run takes over.
+func OpenLogSink(stderr io.Writer, path string) (io.Writer, error) {
+	if path == "" {
+		return stderr, nil
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return stderr, fmt.Errorf("open log file %q: %w", path, err)
+	}
+	return io.MultiWriter(stderr, f), nil
+}
+
 // RunArgs is the parsed CLI input for `codex-app-gateway env-mcp`.
 // Per the 2026-05-16 fixed-tools redesign, env-mcp is workspace-scoped
 // rather than per-executor; one child binary handles every executor in
@@ -30,6 +47,14 @@ type RunArgs struct {
 	AppGatewayInternal string // --app-gateway-internal; list_environments calls /internal/connected here
 	WorkspaceTokenEnv  string // --workspace-token-env (workspace-scoped cap token)
 	LoopbackTokenEnv   string // --loopback-token-env (for /internal/connected)
+	// LogFile, when non-empty, is opened in append mode and added to the
+	// logger's writer alongside stderr. Codex pipes MCP-child stderr into
+	// its own buffer where it is invisible from outside the codex process,
+	// so without this knob env-mcp is effectively logless from an ops
+	// standpoint. The file lives under the per-workspace CODEX_HOME so it
+	// is co-located with the rest of the subprocess state and reaped with
+	// the subprocess.
+	LogFile string // --log-file (optional)
 	// ExecGatewayInternalURL is the http(s):// base for codex-exec-gateway's
 	// internal API (NOT the ws /bridge URL). copy_path's HTTP relay path
 	// POSTs to <base>/api/exec-gateway/relay/create here. Empty disables

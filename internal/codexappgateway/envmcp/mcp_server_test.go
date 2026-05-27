@@ -2,16 +2,70 @@ package envmcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/agentserver/agentserver/internal/envtools/bridge"
 	"github.com/agentserver/agentserver/internal/envtools/tools"
 )
+
+func TestOpenLogSink_EmptyPathReturnsStderrOnly(t *testing.T) {
+	var stderr bytes.Buffer
+	w, err := OpenLogSink(&stderr, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := w.Write([]byte("hello")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if stderr.String() != "hello" {
+		t.Errorf("stderr = %q", stderr.String())
+	}
+}
+
+func TestOpenLogSink_PathTeesToFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "env-mcp.log")
+	var stderr bytes.Buffer
+	w, err := OpenLogSink(&stderr, path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := w.Write([]byte("line\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if stderr.String() != "line\n" {
+		t.Errorf("stderr = %q", stderr.String())
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read log file: %v", err)
+	}
+	if string(body) != "line\n" {
+		t.Errorf("file = %q", body)
+	}
+}
+
+func TestOpenLogSink_BadPathFallsBackToStderr(t *testing.T) {
+	var stderr bytes.Buffer
+	w, err := OpenLogSink(&stderr, "/nonexistent-dir-that-does-not-exist/log.txt")
+	if err == nil {
+		t.Fatal("expected error opening unwritable path")
+	}
+	if _, werr := w.Write([]byte("still works")); werr != nil {
+		t.Fatalf("write: %v", werr)
+	}
+	if stderr.String() != "still works" {
+		t.Errorf("stderr = %q", stderr.String())
+	}
+}
 
 // blockingTool blocks Call until release is signalled, then returns text.
 type blockingTool struct {

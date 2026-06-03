@@ -23,7 +23,7 @@ This reference covers the **external developer surface** of agentserver: the end
 | Workspaces | 14 | [`workspaces.md`](workspaces.md) |
 | Workspace API Keys | 4 | [`workspace-api-keys.md`](workspace-api-keys.md) |
 | Sandboxes | 8 | [`sandboxes.md`](sandboxes.md) |
-| Agent | 15 | [`agent.md`](agent.md) |
+| Agent | 16 | [`agent.md`](agent.md) |
 | Codex Tokens | 3 | [`codex-tokens.md`](codex-tokens.md) |
 | Codex Browser Sessions | 1 | [`codex-browser-sessions.md`](codex-browser-sessions.md) |
 | IM Channels | 9 | [`im-channels.md`](im-channels.md) |

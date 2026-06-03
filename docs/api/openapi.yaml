@@ -945,6 +945,36 @@ paths:
       summary: Poll for pending tasks (proxy_token auth)
       tags:
         - Agent
+  /api/agent/whoami:
+    get:
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentWhoamiResponse"
+        "401":
+          description: unauthorized
+          content:
+            application/json:
+              schema:
+                type: string
+        "403":
+          description: forbidden
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            application/json:
+              schema:
+                type: string
+      summary: Inspect the calling agent identity (proxy_token auth)
+      tags:
+        - Agent
   "/api/agents/{sandboxId}":
     get:
       parameters:
@@ -5270,6 +5300,38 @@ components:
           nullable: true
       required:
         - status
+      type: object
+    AgentWhoamiResponse:
+      properties:
+        display_name:
+          example: Alice Driver
+          type: string
+        role:
+          example: developer
+          type: string
+        sandbox_id:
+          example: sbx_456
+          type: string
+        short_id:
+          example: alice-driver-01
+          type: string
+        user_id:
+          example: u_abc123
+          type: string
+        workspace_id:
+          example: ws_xyz789
+          type: string
+        workspace_name:
+          example: Alice's Workspace
+          type: string
+      required:
+        - display_name
+        - role
+        - sandbox_id
+        - short_id
+        - user_id
+        - workspace_id
+        - workspace_name
       type: object
     AuditCallDetail:
       properties:

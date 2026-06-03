@@ -17,6 +17,7 @@ Endpoints under the `Agent` tag. Auto-generated from [`docs/api/openapi.yaml`](.
 | `GET` | [`/api/agent/tasks/poll`](#op-get-api-agent-tasks-poll) | Poll for pending tasks (proxy_token auth) |
 | `GET` | [`/api/agent/tasks/{id}`](#op-get-api-agent-tasks-id) | Get a task by ID (proxy_token auth) |
 | `PUT` | [`/api/agent/tasks/{id}/status`](#op-put-api-agent-tasks-id-status) | Update task status (proxy_token auth) |
+| `GET` | [`/api/agent/whoami`](#op-get-api-agent-whoami) | Inspect the calling agent identity (proxy_token auth) |
 | `GET` | [`/api/agents/{sandboxId}`](#op-get-api-agents-sandboxid) | Get a single agent card by sandbox ID |
 | `GET` | [`/api/tasks/{id}`](#op-get-api-tasks-id) | Get a task by ID |
 | `POST` | [`/api/tasks/{id}/cancel`](#op-post-api-tasks-id-cancel) | Cancel a task |
@@ -252,6 +253,19 @@ Schema: [`AgentTaskStatusRequest`](#schema-agenttaskstatusrequest)
 | `200` | OK | — |
 | `400` | bad request | `string` |
 | `401` | unauthorized | `string` |
+| `500` | internal error | `string` |
+
+
+### `GET /api/agent/whoami` {#op-get-api-agent-whoami}
+Inspect the calling agent identity (proxy_token auth)
+
+**Responses**
+
+| Status | Description | Schema |
+|--------|-------------|--------|
+| `200` | OK | [`AgentWhoamiResponse`](#schema-agentwhoamiresponse) |
+| `401` | unauthorized | `string` |
+| `403` | forbidden | `string` |
 | `500` | internal error | `string` |
 
 
@@ -605,5 +619,19 @@ Schema: [`AgentTaskCreateRequest`](#schema-agenttaskcreaterequest)
   result?: any
   status: string
   total_cost_usd?: number
+}
+```
+
+### `AgentWhoamiResponse` {#schema-agentwhoamiresponse}
+
+```yaml
+{
+  display_name: string
+  role: string
+  sandbox_id: string
+  short_id: string
+  user_id: string
+  workspace_id: string
+  workspace_name: string
 }
 ```

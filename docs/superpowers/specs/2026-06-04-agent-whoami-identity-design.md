@@ -15,6 +15,7 @@ agentserver-issued sandbox `proxy_token` to the identity tuple:
   "workspace_name": "Alice's Workspace",
   "sandbox_id": "sbx_456",
   "short_id": "alice-driver-01",
+  "display_name": "Alice Driver",
   "role": "developer"
 }
 ```
@@ -46,8 +47,9 @@ proxy token are created. Web-created sandboxes have the session user in request
 context, but that user is also not persisted into token lineage.
 
 This means agentserver can currently resolve `workspace_id`, `sandbox_id`,
-`short_id`, sandbox status, and workspace name from a proxy token, but cannot
-reliably resolve `user_id` or `workspace_members.role`.
+`short_id`, sandbox status, sandbox name, card display name, and workspace name
+from a proxy token, but cannot reliably resolve `user_id` or
+`workspace_members.role`.
 
 ## Goals
 
@@ -55,7 +57,7 @@ reliably resolve `user_id` or `workspace_members.role`.
   introspection.
 - Make agentserver the source of truth for observer's user / workspace /
   sandbox identity mapping.
-- Return exactly the six documented fields.
+- Return exactly the seven documented fields.
 - Do not return secrets or token expiry / TTL information.
 - Do not extend `/internal/validate-proxy-token`.
 - Avoid accepting `tunnel_token` or workspace-scoped tokens for this endpoint.
@@ -129,9 +131,10 @@ It should:
 2. Require `token_type = 'sandbox'`.
 3. Require a non-null `sandbox_id` and `user_id`.
 4. Join to `sandboxes`, `workspaces`, and `workspace_members`.
-5. Require `workspace_members.workspace_id = proxy_tokens.workspace_id`.
-6. Require `workspace_members.user_id = proxy_tokens.user_id`.
-7. Return the sandbox status for handler-side lifecycle gating.
+5. Left join `agent_cards` on `agent_cards.sandbox_id = sandboxes.id`.
+6. Require `workspace_members.workspace_id = proxy_tokens.workspace_id`.
+7. Require `workspace_members.user_id = proxy_tokens.user_id`.
+8. Return the sandbox status for handler-side lifecycle gating.
 
 Do not use `GetSandboxByAnyToken`, because that accepts `tunnel_token`.
 
@@ -151,12 +154,21 @@ Successful response:
   "workspace_name": "Alice's Workspace",
   "sandbox_id": "sbx_456",
   "short_id": "alice-driver-01",
+  "display_name": "Alice Driver",
   "role": "developer"
 }
 ```
 
-`workspace_name` and `short_id` should serialize as empty strings when the
-database value is empty or null.
+`workspace_name`, `short_id`, and `display_name` should serialize as empty
+strings when the database value is empty or null. `display_name` is the
+human-facing agent name and should be resolved as:
+
+```sql
+COALESCE(agent_cards.display_name, sandboxes.name, '')
+```
+
+This prefers the capability card's display name when present and falls back to
+the sandbox name for agents that have not registered a card.
 
 The response should set:
 
@@ -244,7 +256,7 @@ couple unrelated callers and risk breaking existing integrations.
 Add focused handler / DB integration tests:
 
 - Valid sandbox proxy token with recorded user lineage returns 200 and exactly
-  the six response fields.
+  the seven response fields.
 - Missing header returns `401 unauthorized`.
 - Malformed bearer returns `401 unauthorized`.
 - Unknown token returns `401 unauthorized`.

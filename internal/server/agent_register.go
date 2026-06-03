@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/google/uuid"
 	"github.com/agentserver/agentserver/internal/shortid"
+	"github.com/google/uuid"
 )
 
 // handleAgentRegister processes a CLI agent registration using an OAuth Bearer token.
@@ -120,7 +120,7 @@ func (s *Server) handleAgentRegister(w http.ResponseWriter, r *http.Request) {
 	sid := shortid.Generate()
 	var createErr error
 	for attempts := 0; attempts < 3; attempts++ {
-		createErr = s.DB.CreateLocalSandbox(sandboxID, workspaceID, req.Name, sandboxType, opencodePassword, proxyToken, tunnelToken, sid)
+		createErr = s.DB.CreateLocalSandbox(sandboxID, workspaceID, userID, req.Name, sandboxType, opencodePassword, proxyToken, tunnelToken, sid)
 		if createErr == nil {
 			break
 		}

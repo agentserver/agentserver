@@ -15,9 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
-	"github.com/google/uuid"
 	"github.com/agentserver/agentserver/internal/auth"
 	"github.com/agentserver/agentserver/internal/codexauth"
 	"github.com/agentserver/agentserver/internal/db"
@@ -28,25 +25,28 @@ import (
 	"github.com/agentserver/agentserver/internal/shortid"
 	"github.com/agentserver/agentserver/internal/storage"
 	"github.com/agentserver/agentserver/internal/tunnel"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/google/uuid"
 )
 
 type Server struct {
-	Auth             *auth.Auth
-	OIDC             *auth.OIDCManager
-	DB               *db.DB
-	Sandboxes        *sbxstore.Store
-	ProcessManager   process.Manager
-	DriveManager     storage.DriveManager
-	NamespaceManager *namespace.Manager
-	TunnelRegistry   *tunnel.Registry
-	StaticFS         fs.FS
-	BaseDomains              []string // e.g. ["agentserver.dev", "agent.cs.ac.cn"] (first is primary)
-	OpencodeSubdomainPrefix  string   // e.g. "code" — subdomain: code-{id}.{baseDomain}
-	OpenclawSubdomainPrefix    string // e.g. "claw" — subdomain: claw-{id}.{baseDomain}
-	ClaudeCodeSubdomainPrefix  string // e.g. "claude" — subdomain: claude-{id}.{baseDomain}
-	JupyterSubdomainPrefix     string // e.g. "jupyter" — subdomain: jupyter-{id}.{baseDomain}
-	PasswordAuthEnabled      bool   // when false, /api/auth/login and /api/auth/register are not registered
-	LLMProxyURL              string // base URL for the llmproxy service (e.g. "http://agentserver-llmproxy:8081")
+	Auth                      *auth.Auth
+	OIDC                      *auth.OIDCManager
+	DB                        *db.DB
+	Sandboxes                 *sbxstore.Store
+	ProcessManager            process.Manager
+	DriveManager              storage.DriveManager
+	NamespaceManager          *namespace.Manager
+	TunnelRegistry            *tunnel.Registry
+	StaticFS                  fs.FS
+	BaseDomains               []string // e.g. ["agentserver.dev", "agent.cs.ac.cn"] (first is primary)
+	OpencodeSubdomainPrefix   string   // e.g. "code" — subdomain: code-{id}.{baseDomain}
+	OpenclawSubdomainPrefix   string   // e.g. "claw" — subdomain: claw-{id}.{baseDomain}
+	ClaudeCodeSubdomainPrefix string   // e.g. "claude" — subdomain: claude-{id}.{baseDomain}
+	JupyterSubdomainPrefix    string   // e.g. "jupyter" — subdomain: jupyter-{id}.{baseDomain}
+	PasswordAuthEnabled       bool     // when false, /api/auth/login and /api/auth/register are not registered
+	LLMProxyURL               string   // base URL for the llmproxy service (e.g. "http://agentserver-llmproxy:8081")
 
 	// IMBridgeURL is the base URL of the standalone imbridge service
 	// (e.g. "http://agentserver-imbridge:8083"). When set, IM API routes
@@ -61,14 +61,14 @@ type Server struct {
 	ModelserverOAuthIntrospectURL string
 	ModelserverOAuthRedirectURI   string
 	ModelserverProxyURL           string
-	DatabaseURL                  string // PostgreSQL connection URL (needed for Matrix E2EE crypto DB)
+	DatabaseURL                   string // PostgreSQL connection URL (needed for Matrix E2EE crypto DB)
 
 	// Hydra OAuth2 (for agent Device Flow)
 	HydraClient    *auth.HydraClient
 	HydraPublicURL string // internal URL for reverse proxy (e.g. "http://hydra-public:4444")
 
 	// Credential proxy
-	EncryptionKey    []byte // AES-256 key for credential_bindings auth_blob
+	EncryptionKey      []byte // AES-256 key for credential_bindings auth_blob
 	CredproxyPublicURL string // URL sandboxes use to reach credentialproxy
 
 	// Codex exec gateway
@@ -397,6 +397,7 @@ func (s *Server) Router() http.Handler {
 
 	// Agent registration (auth via OAuth Bearer token).
 	r.Post("/api/agent/register", s.handleAgentRegister)
+	r.Get("/api/agent/whoami", s.handleAgentWhoami)
 
 	// Self-hosted codex 0.132+ auth shim under /codex-auth/*.
 	// All sub-routes are public — each handler resolves session itself
@@ -482,7 +483,7 @@ func (s *Server) Router() http.Handler {
 		r.Get("/api/auth/oidc/providers", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]interface{}{
-				"providers":      []string{},
+				"providers":     []string{},
 				"password_auth": s.PasswordAuthEnabled,
 			})
 		})
@@ -894,25 +895,25 @@ type imBindingResponse struct {
 } // @name IMBinding
 
 type sandboxResponse struct {
-	ID              string  `json:"id" validate:"required"`
-	ShortID         string  `json:"short_id,omitempty"`
-	WorkspaceID     string  `json:"workspace_id" validate:"required"`
-	Name            string  `json:"name" validate:"required"`
-	Type            string  `json:"type" validate:"required"`
-	Status          string  `json:"status" validate:"required"`
-	OpencodeURL     string  `json:"opencode_url,omitempty"`
-	OpenclawURL     string  `json:"openclaw_url,omitempty"`
-	ClaudeCodeURL   string  `json:"claudecode_url,omitempty"`
-	JupyterURL      string  `json:"jupyter_url,omitempty"`
-	CustomURL       string  `json:"custom_url,omitempty"`
-	CreatedAt       string  `json:"created_at" validate:"required"`
-	LastActivityAt  *string `json:"last_activity_at" extensions:"x-nullable=true"`
-	PausedAt        *string `json:"paused_at" extensions:"x-nullable=true"`
-	IsLocal         bool    `json:"is_local" validate:"required"`
-	LastHeartbeatAt *string `json:"last_heartbeat_at,omitempty"`
-	CPU             int     `json:"cpu,omitempty"`
-	Memory          int64   `json:"memory,omitempty"`
-	IdleTimeout     *int    `json:"idle_timeout,omitempty"`
+	ID              string                 `json:"id" validate:"required"`
+	ShortID         string                 `json:"short_id,omitempty"`
+	WorkspaceID     string                 `json:"workspace_id" validate:"required"`
+	Name            string                 `json:"name" validate:"required"`
+	Type            string                 `json:"type" validate:"required"`
+	Status          string                 `json:"status" validate:"required"`
+	OpencodeURL     string                 `json:"opencode_url,omitempty"`
+	OpenclawURL     string                 `json:"openclaw_url,omitempty"`
+	ClaudeCodeURL   string                 `json:"claudecode_url,omitempty"`
+	JupyterURL      string                 `json:"jupyter_url,omitempty"`
+	CustomURL       string                 `json:"custom_url,omitempty"`
+	CreatedAt       string                 `json:"created_at" validate:"required"`
+	LastActivityAt  *string                `json:"last_activity_at" extensions:"x-nullable=true"`
+	PausedAt        *string                `json:"paused_at" extensions:"x-nullable=true"`
+	IsLocal         bool                   `json:"is_local" validate:"required"`
+	LastHeartbeatAt *string                `json:"last_heartbeat_at,omitempty"`
+	CPU             int                    `json:"cpu,omitempty"`
+	Memory          int64                  `json:"memory,omitempty"`
+	IdleTimeout     *int                   `json:"idle_timeout,omitempty"`
 	AgentInfo       *agentInfoResponse     `json:"agent_info,omitempty"`
 	WeixinBindings  []imBindingResponse    `json:"weixin_bindings,omitempty"`
 	IMBindings      []imBindingResponse    `json:"im_bindings,omitempty"`
@@ -1084,13 +1085,13 @@ func (s *Server) requireWorkspaceRole(w http.ResponseWriter, r *http.Request, wo
 
 // --- Workspace handlers ---
 
-//	@Summary    Get per-user workspace quota
-//	@Tags       Workspaces
-//	@Produce    json
-//	@Success    200  {object}  WorkspaceQuotaResponse
-//	@Failure    500  {string}  string  "internal error"
-//	@Security   CookieAuth
-//	@Router     /api/workspaces/quota [get]
+// @Summary    Get per-user workspace quota
+// @Tags       Workspaces
+// @Produce    json
+// @Success    200  {object}  WorkspaceQuotaResponse
+// @Failure    500  {string}  string  "internal error"
+// @Security   CookieAuth
+// @Router     /api/workspaces/quota [get]
 func (s *Server) handleGetWorkspacesQuota(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromContext(r.Context())
 	maxWs, err := s.effectiveQuota(userID)
@@ -1109,13 +1110,13 @@ func (s *Server) handleGetWorkspacesQuota(w http.ResponseWriter, r *http.Request
 	json.NewEncoder(w).Encode(WorkspaceQuotaResponse{Current: current, Max: maxWs})
 }
 
-//	@Summary    List workspaces for the current user
-//	@Tags       Workspaces
-//	@Produce    json
-//	@Success    200  {array}   Workspace
-//	@Failure    500  {string}  string  "internal error"
-//	@Security   CookieAuth
-//	@Router     /api/workspaces [get]
+// @Summary    List workspaces for the current user
+// @Tags       Workspaces
+// @Produce    json
+// @Success    200  {array}   Workspace
+// @Failure    500  {string}  string  "internal error"
+// @Security   CookieAuth
+// @Router     /api/workspaces [get]
 func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromContext(r.Context())
 	workspaces, err := s.DB.ListWorkspacesByUser(userID)
@@ -1132,18 +1133,18 @@ func (s *Server) handleListWorkspaces(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-//	@Summary    Create a new workspace
-//	@Description Creator is auto-added as owner. May fail with 403 if the per-user workspace quota is exceeded.
-//	@Tags       Workspaces
-//	@Accept     json
-//	@Produce    json
-//	@Param      body  body      WorkspaceCreateRequest  true  "Workspace name"
-//	@Success    201   {object}  Workspace
-//	@Failure    400   {string}  string  "bad request / empty name"
-//	@Failure    403   {string}  string  "workspace quota exceeded"
-//	@Failure    500   {string}  string  "internal error"
-//	@Security   CookieAuth
-//	@Router     /api/workspaces [post]
+// @Summary    Create a new workspace
+// @Description Creator is auto-added as owner. May fail with 403 if the per-user workspace quota is exceeded.
+// @Tags       Workspaces
+// @Accept     json
+// @Produce    json
+// @Param      body  body      WorkspaceCreateRequest  true  "Workspace name"
+// @Success    201   {object}  Workspace
+// @Failure    400   {string}  string  "bad request / empty name"
+// @Failure    403   {string}  string  "workspace quota exceeded"
+// @Failure    500   {string}  string  "internal error"
+// @Security   CookieAuth
+// @Router     /api/workspaces [post]
 func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	userID := auth.UserIDFromContext(r.Context())
 
@@ -1217,16 +1218,16 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(s.toWorkspaceResponse(ws))
 }
 
-//	@Summary    Get a workspace by id
-//	@Tags       Workspaces
-//	@Produce    json
-//	@Param      id  path  string  true  "Workspace id"
-//	@Success    200  {object}  Workspace
-//	@Failure    403  {string}  string  "not a member"
-//	@Failure    404  {string}  string  "workspace not found"
-//	@Failure    500  {string}  string  "internal error"
-//	@Security   CookieAuth
-//	@Router     /api/workspaces/{id} [get]
+// @Summary    Get a workspace by id
+// @Tags       Workspaces
+// @Produce    json
+// @Param      id  path  string  true  "Workspace id"
+// @Success    200  {object}  Workspace
+// @Failure    403  {string}  string  "not a member"
+// @Failure    404  {string}  string  "workspace not found"
+// @Failure    500  {string}  string  "internal error"
+// @Security   CookieAuth
+// @Router     /api/workspaces/{id} [get]
 func (s *Server) handleGetWorkspace(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if _, ok := s.requireWorkspaceMember(w, r, id); !ok {
@@ -1243,18 +1244,18 @@ func (s *Server) handleGetWorkspace(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(s.toWorkspaceResponse(ws))
 }
 
-//	@Summary    Rename a workspace
-//	@Tags       Workspaces
-//	@Accept     json
-//	@Produce    json
-//	@Param      id    path      string                  true  "Workspace id"
-//	@Param      body  body      WorkspaceRenameRequest  true  "New name"
-//	@Success    200   {object}  Workspace
-//	@Failure    400   {string}  string  "empty name"
-//	@Failure    403   {string}  string  "owner or maintainer required"
-//	@Failure    500   {string}  string  "internal error"
-//	@Security   CookieAuth
-//	@Router     /api/workspaces/{id} [patch]
+// @Summary    Rename a workspace
+// @Tags       Workspaces
+// @Accept     json
+// @Produce    json
+// @Param      id    path      string                  true  "Workspace id"
+// @Param      body  body      WorkspaceRenameRequest  true  "New name"
+// @Success    200   {object}  Workspace
+// @Failure    400   {string}  string  "empty name"
+// @Failure    403   {string}  string  "owner or maintainer required"
+// @Failure    500   {string}  string  "internal error"
+// @Security   CookieAuth
+// @Router     /api/workspaces/{id} [patch]
 func (s *Server) handleRenameWorkspace(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if !s.requireWorkspaceRole(w, r, id, "owner", "maintainer") {
@@ -1279,14 +1280,14 @@ func (s *Server) handleRenameWorkspace(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(s.toWorkspaceResponse(ws))
 }
 
-//	@Summary    Delete a workspace (owner only; cascades to sandboxes + namespace)
-//	@Tags       Workspaces
-//	@Param      id   path  string  true  "Workspace id"
-//	@Success    204
-//	@Failure    403  {string}  string  "owner only"
-//	@Failure    500  {string}  string  "internal error"
-//	@Security   CookieAuth
-//	@Router     /api/workspaces/{id} [delete]
+// @Summary    Delete a workspace (owner only; cascades to sandboxes + namespace)
+// @Tags       Workspaces
+// @Param      id   path  string  true  "Workspace id"
+// @Success    204
+// @Failure    403  {string}  string  "owner only"
+// @Failure    500  {string}  string  "internal error"
+// @Security   CookieAuth
+// @Router     /api/workspaces/{id} [delete]
 func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if !s.requireWorkspaceRole(w, r, id, "owner") {
@@ -1350,15 +1351,15 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 
 // --- Member handlers ---
 
-//	@Summary    List members of a workspace
-//	@Tags       Workspaces
-//	@Produce    json
-//	@Param      id  path  string  true  "Workspace id"
-//	@Success    200  {array}   WorkspaceMember
-//	@Failure    403  {string}  string  "not a member"
-//	@Failure    500  {string}  string  "internal error"
-//	@Security   CookieAuth
-//	@Router     /api/workspaces/{id}/members [get]
+// @Summary    List members of a workspace
+// @Tags       Workspaces
+// @Produce    json
+// @Param      id  path  string  true  "Workspace id"
+// @Success    200  {array}   WorkspaceMember
+// @Failure    403  {string}  string  "not a member"
+// @Failure    500  {string}  string  "internal error"
+// @Security   CookieAuth
+// @Router     /api/workspaces/{id}/members [get]
 func (s *Server) handleListMembers(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "id")
 	if _, ok := s.requireWorkspaceMember(w, r, wsID); !ok {
@@ -1393,20 +1394,20 @@ func (s *Server) handleListMembers(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-//	@Summary    Add a member to a workspace
-//	@Description Looks up the user by email. Default role is "developer" if omitted.
-//	@Tags       Workspaces
-//	@Accept     json
-//	@Produce    json
-//	@Param      id    path      string            true  "Workspace id"
-//	@Param      body  body      MemberAddRequest  true  "Email and optional role"
-//	@Success    201   {object}  WorkspaceMember
-//	@Failure    400   {string}  string  "bad request"
-//	@Failure    403   {string}  string  "owner or maintainer required"
-//	@Failure    404   {string}  string  "user not found"
-//	@Failure    500   {string}  string  "internal error"
-//	@Security   CookieAuth
-//	@Router     /api/workspaces/{id}/members [post]
+// @Summary    Add a member to a workspace
+// @Description Looks up the user by email. Default role is "developer" if omitted.
+// @Tags       Workspaces
+// @Accept     json
+// @Produce    json
+// @Param      id    path      string            true  "Workspace id"
+// @Param      body  body      MemberAddRequest  true  "Email and optional role"
+// @Success    201   {object}  WorkspaceMember
+// @Failure    400   {string}  string  "bad request"
+// @Failure    403   {string}  string  "owner or maintainer required"
+// @Failure    404   {string}  string  "user not found"
+// @Failure    500   {string}  string  "internal error"
+// @Security   CookieAuth
+// @Router     /api/workspaces/{id}/members [post]
 func (s *Server) handleAddMember(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "id")
 	if !s.requireWorkspaceRole(w, r, wsID, "owner", "maintainer") {
@@ -1444,18 +1445,18 @@ func (s *Server) handleAddMember(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-//	@Summary    Change a member's role (owner only)
-//	@Tags       Workspaces
-//	@Accept     json
-//	@Param      id      path  string                   true  "Workspace id"
-//	@Param      userId  path  string                   true  "User id"
-//	@Param      body    body  MemberRoleUpdateRequest  true  "New role"
-//	@Success    204
-//	@Failure    400  {string}  string  "empty role"
-//	@Failure    403  {string}  string  "owner only"
-//	@Failure    500  {string}  string  "internal error"
-//	@Security   CookieAuth
-//	@Router     /api/workspaces/{id}/members/{userId} [put]
+// @Summary    Change a member's role (owner only)
+// @Tags       Workspaces
+// @Accept     json
+// @Param      id      path  string                   true  "Workspace id"
+// @Param      userId  path  string                   true  "User id"
+// @Param      body    body  MemberRoleUpdateRequest  true  "New role"
+// @Success    204
+// @Failure    400  {string}  string  "empty role"
+// @Failure    403  {string}  string  "owner only"
+// @Failure    500  {string}  string  "internal error"
+// @Security   CookieAuth
+// @Router     /api/workspaces/{id}/members/{userId} [put]
 func (s *Server) handleUpdateMemberRole(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "id")
 	if !s.requireWorkspaceRole(w, r, wsID, "owner") {
@@ -1478,15 +1479,15 @@ func (s *Server) handleUpdateMemberRole(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNoContent)
 }
 
-//	@Summary    Remove a member (owner only)
-//	@Tags       Workspaces
-//	@Param      id      path  string  true  "Workspace id"
-//	@Param      userId  path  string  true  "User id"
-//	@Success    204
-//	@Failure    403  {string}  string  "owner only"
-//	@Failure    500  {string}  string  "internal error"
-//	@Security   CookieAuth
-//	@Router     /api/workspaces/{id}/members/{userId} [delete]
+// @Summary    Remove a member (owner only)
+// @Tags       Workspaces
+// @Param      id      path  string  true  "Workspace id"
+// @Param      userId  path  string  true  "User id"
+// @Success    204
+// @Failure    403  {string}  string  "owner only"
+// @Failure    500  {string}  string  "internal error"
+// @Security   CookieAuth
+// @Router     /api/workspaces/{id}/members/{userId} [delete]
 func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "id")
 	if !s.requireWorkspaceRole(w, r, wsID, "owner") {
@@ -1512,6 +1513,7 @@ func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 //	@Failure    500  {string}  string  "internal error"
 //	@Security   CookieAuth
 //	@Router     /api/workspaces/{id}/llm-quota [get]
+//
 // handleGetWorkspaceLLMQuota returns the LLM RPD quota for a workspace (read-only for members).
 func (s *Server) handleGetWorkspaceLLMQuota(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "id")
@@ -1530,16 +1532,16 @@ func maskAPIKey(key string) string {
 	return key[:3] + "..." + key[len(key)-4:]
 }
 
-//	@Summary    Get workspace LLM config (owner/maintainer)
-//	@Description The returned api_key is masked (first 3 + "..." + last 4). updated_at is null when no config is set.
-//	@Tags       Workspaces
-//	@Produce    json
-//	@Param      id  path  string  true  "Workspace id"
-//	@Success    200  {object}  LLMConfigResponse
-//	@Failure    403  {string}  string  "insufficient role"
-//	@Failure    500  {string}  string  "internal error"
-//	@Security   CookieAuth
-//	@Router     /api/workspaces/{id}/llm-config [get]
+// @Summary    Get workspace LLM config (owner/maintainer)
+// @Description The returned api_key is masked (first 3 + "..." + last 4). updated_at is null when no config is set.
+// @Tags       Workspaces
+// @Produce    json
+// @Param      id  path  string  true  "Workspace id"
+// @Success    200  {object}  LLMConfigResponse
+// @Failure    403  {string}  string  "insufficient role"
+// @Failure    500  {string}  string  "internal error"
+// @Security   CookieAuth
+// @Router     /api/workspaces/{id}/llm-config [get]
 func (s *Server) handleGetWorkspaceLLMConfig(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "id")
 	if !s.requireWorkspaceRole(w, r, wsID, "owner", "maintainer") {
@@ -1571,19 +1573,19 @@ func (s *Server) handleGetWorkspaceLLMConfig(w http.ResponseWriter, r *http.Requ
 	})
 }
 
-//	@Summary    Upsert workspace LLM config (owner/maintainer)
-//	@Description On update, omitting api_key retains the existing key.
-//	@Tags       Workspaces
-//	@Accept     json
-//	@Produce    json
-//	@Param      id    path      string                  true  "Workspace id"
-//	@Param      body  body      LLMConfigUpsertRequest  true  "Config payload"
-//	@Success    200   {object}  LLMConfigUpsertResponse
-//	@Failure    400   {string}  string  "validation error (invalid URL / missing field / too many models)"
-//	@Failure    403   {string}  string  "insufficient role"
-//	@Failure    500   {string}  string  "internal error"
-//	@Security   CookieAuth
-//	@Router     /api/workspaces/{id}/llm-config [put]
+// @Summary    Upsert workspace LLM config (owner/maintainer)
+// @Description On update, omitting api_key retains the existing key.
+// @Tags       Workspaces
+// @Accept     json
+// @Produce    json
+// @Param      id    path      string                  true  "Workspace id"
+// @Param      body  body      LLMConfigUpsertRequest  true  "Config payload"
+// @Success    200   {object}  LLMConfigUpsertResponse
+// @Failure    400   {string}  string  "validation error (invalid URL / missing field / too many models)"
+// @Failure    403   {string}  string  "insufficient role"
+// @Failure    500   {string}  string  "internal error"
+// @Security   CookieAuth
+// @Router     /api/workspaces/{id}/llm-config [put]
 func (s *Server) handleSetWorkspaceLLMConfig(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "id")
 	if !s.requireWorkspaceRole(w, r, wsID, "owner", "maintainer") {
@@ -1640,14 +1642,14 @@ func (s *Server) handleSetWorkspaceLLMConfig(w http.ResponseWriter, r *http.Requ
 	json.NewEncoder(w).Encode(LLMConfigUpsertResponse{OK: true})
 }
 
-//	@Summary    Delete workspace LLM config (owner/maintainer)
-//	@Tags       Workspaces
-//	@Param      id  path  string  true  "Workspace id"
-//	@Success    204
-//	@Failure    403  {string}  string  "insufficient role"
-//	@Failure    500  {string}  string  "internal error"
-//	@Security   CookieAuth
-//	@Router     /api/workspaces/{id}/llm-config [delete]
+// @Summary    Delete workspace LLM config (owner/maintainer)
+// @Tags       Workspaces
+// @Param      id  path  string  true  "Workspace id"
+// @Success    204
+// @Failure    403  {string}  string  "insufficient role"
+// @Failure    500  {string}  string  "internal error"
+// @Security   CookieAuth
+// @Router     /api/workspaces/{id}/llm-config [delete]
 func (s *Server) handleDeleteWorkspaceLLMConfig(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "id")
 	if !s.requireWorkspaceRole(w, r, wsID, "owner", "maintainer") {
@@ -1663,16 +1665,16 @@ func (s *Server) handleDeleteWorkspaceLLMConfig(w http.ResponseWriter, r *http.R
 
 // --- Sandbox handlers ---
 
-//	@Summary   Get workspace quota defaults and current sandbox count
-//	@Tags      Misc
-//	@Produce   json
-//	@Param     wid  path  string  true  "Workspace ID"
-//	@Success   200  {object}  WorkspaceDefaultsResponse
-//	@Failure   401  {string}  string  "unauthorized"
-//	@Failure   403  {string}  string  "insufficient role"
-//	@Failure   500  {string}  string  "internal error"
-//	@Security  CookieAuth
-//	@Router    /api/workspaces/{wid}/defaults [get]
+// @Summary   Get workspace quota defaults and current sandbox count
+// @Tags      Misc
+// @Produce   json
+// @Param     wid  path  string  true  "Workspace ID"
+// @Success   200  {object}  WorkspaceDefaultsResponse
+// @Failure   401  {string}  string  "unauthorized"
+// @Failure   403  {string}  string  "insufficient role"
+// @Failure   500  {string}  string  "internal error"
+// @Security  CookieAuth
+// @Router    /api/workspaces/{wid}/defaults [get]
 func (s *Server) handleGetWorkspaceDefaults(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "wid")
 	if !s.requireWorkspaceRole(w, r, wsID, "owner", "maintainer", "developer") {
@@ -1703,15 +1705,15 @@ func (s *Server) handleGetWorkspaceDefaults(w http.ResponseWriter, r *http.Reque
 	})
 }
 
-//	@Summary   List sandboxes in a workspace
-//	@Tags      Sandboxes
-//	@Produce   json
-//	@Param     wid  path  string  true  "Workspace id"
-//	@Success   200  {array}   Sandbox
-//	@Failure   403  {string}  string  "not a member"
-//	@Failure   500  {string}  string  "internal error"
-//	@Security  CookieAuth
-//	@Router    /api/workspaces/{wid}/sandboxes [get]
+// @Summary   List sandboxes in a workspace
+// @Tags      Sandboxes
+// @Produce   json
+// @Param     wid  path  string  true  "Workspace id"
+// @Success   200  {array}   Sandbox
+// @Failure   403  {string}  string  "not a member"
+// @Failure   500  {string}  string  "internal error"
+// @Security  CookieAuth
+// @Router    /api/workspaces/{wid}/sandboxes [get]
 func (s *Server) handleListSandboxes(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "wid")
 	if _, ok := s.requireWorkspaceMember(w, r, wsID); !ok {
@@ -1729,21 +1731,22 @@ func (s *Server) handleListSandboxes(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-//	@Summary     Create a sandbox in a workspace
-//	@Description Validates type / CPU / memory / idle_timeout / quota / budget. Returns 201 immediately with status="provisioning"; container starts asynchronously.
-//	@Tags        Sandboxes
-//	@Accept      json
-//	@Produce     json
-//	@Param       wid   path      string                true  "Workspace id"
-//	@Param       body  body      SandboxCreateRequest  true  "Create payload"
-//	@Success     201   {object}  Sandbox
-//	@Failure     400   {string}  string  "validation error (type/cpu/memory/idle_timeout)"
-//	@Failure     403   {string}  string  "insufficient role / quota / budget"
-//	@Failure     500   {string}  string  "internal error"
-//	@Security    CookieAuth
-//	@Router      /api/workspaces/{wid}/sandboxes [post]
+// @Summary     Create a sandbox in a workspace
+// @Description Validates type / CPU / memory / idle_timeout / quota / budget. Returns 201 immediately with status="provisioning"; container starts asynchronously.
+// @Tags        Sandboxes
+// @Accept      json
+// @Produce     json
+// @Param       wid   path      string                true  "Workspace id"
+// @Param       body  body      SandboxCreateRequest  true  "Create payload"
+// @Success     201   {object}  Sandbox
+// @Failure     400   {string}  string  "validation error (type/cpu/memory/idle_timeout)"
+// @Failure     403   {string}  string  "insufficient role / quota / budget"
+// @Failure     500   {string}  string  "internal error"
+// @Security    CookieAuth
+// @Router      /api/workspaces/{wid}/sandboxes [post]
 func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 	wsID := chi.URLParam(r, "wid")
+	userID := auth.UserIDFromContext(r.Context())
 	if !s.requireWorkspaceRole(w, r, wsID, "owner", "maintainer", "developer") {
 		return
 	}
@@ -1905,7 +1908,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 	var sbx *sbxstore.Sandbox
 	var createErr error
 	for attempts := 0; attempts < 3; attempts++ {
-		sbx, createErr = s.Sandboxes.Create(id, wsID, req.Name, sandboxType, sandboxName, opencodeToken, proxyToken, openclawToken, sid, cpuMillis, memBytes, idleTimeout, req.Metadata)
+		sbx, createErr = s.Sandboxes.Create(id, wsID, userID, req.Name, sandboxType, sandboxName, opencodeToken, proxyToken, openclawToken, sid, cpuMillis, memBytes, idleTimeout, req.Metadata)
 		if createErr == nil {
 			break
 		}
@@ -2006,16 +2009,16 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(s.toSandboxResponse(r, sbx, authTokenFromRequest(r)))
 }
 
-//	@Summary   Get a sandbox by id
-//	@Tags      Sandboxes
-//	@Produce   json
-//	@Param     id  path  string  true  "Sandbox id"
-//	@Success   200  {object}  Sandbox
-//	@Failure   403  {string}  string  "not a member"
-//	@Failure   404  {string}  string  "sandbox not found"
-//	@Failure   500  {string}  string  "internal error"
-//	@Security  CookieAuth
-//	@Router    /api/sandboxes/{id} [get]
+// @Summary   Get a sandbox by id
+// @Tags      Sandboxes
+// @Produce   json
+// @Param     id  path  string  true  "Sandbox id"
+// @Success   200  {object}  Sandbox
+// @Failure   403  {string}  string  "not a member"
+// @Failure   404  {string}  string  "sandbox not found"
+// @Failure   500  {string}  string  "internal error"
+// @Security  CookieAuth
+// @Router    /api/sandboxes/{id} [get]
 func (s *Server) handleGetSandbox(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	sbx, ok := s.Sandboxes.Get(id)
@@ -2032,19 +2035,19 @@ func (s *Server) handleGetSandbox(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-//	@Summary   Rename a sandbox
-//	@Tags      Sandboxes
-//	@Accept    json
-//	@Produce   json
-//	@Param     id    path      string                true  "Sandbox id"
-//	@Param     body  body      SandboxRenameRequest  true  "New name"
-//	@Success   200   {object}  Sandbox
-//	@Failure   400   {string}  string  "name required"
-//	@Failure   403   {string}  string  "not a member"
-//	@Failure   404   {string}  string  "sandbox not found"
-//	@Failure   500   {string}  string  "internal error"
-//	@Security  CookieAuth
-//	@Router    /api/sandboxes/{id} [patch]
+// @Summary   Rename a sandbox
+// @Tags      Sandboxes
+// @Accept    json
+// @Produce   json
+// @Param     id    path      string                true  "Sandbox id"
+// @Param     body  body      SandboxRenameRequest  true  "New name"
+// @Success   200   {object}  Sandbox
+// @Failure   400   {string}  string  "name required"
+// @Failure   403   {string}  string  "not a member"
+// @Failure   404   {string}  string  "sandbox not found"
+// @Failure   500   {string}  string  "internal error"
+// @Security  CookieAuth
+// @Router    /api/sandboxes/{id} [patch]
 func (s *Server) handleRenameSandbox(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	sbx, ok := s.Sandboxes.Get(id)
@@ -2070,15 +2073,15 @@ func (s *Server) handleRenameSandbox(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(s.toSandboxResponse(r, sbx, authTokenFromRequest(r)))
 }
 
-//	@Summary   Delete a sandbox
-//	@Tags      Sandboxes
-//	@Param     id  path  string  true  "Sandbox id"
-//	@Success   204
-//	@Failure   403  {string}  string  "not a member"
-//	@Failure   404  {string}  string  "sandbox not found"
-//	@Failure   500  {string}  string  "internal error"
-//	@Security  CookieAuth
-//	@Router    /api/sandboxes/{id} [delete]
+// @Summary   Delete a sandbox
+// @Tags      Sandboxes
+// @Param     id  path  string  true  "Sandbox id"
+// @Success   204
+// @Failure   403  {string}  string  "not a member"
+// @Failure   404  {string}  string  "sandbox not found"
+// @Failure   500  {string}  string  "internal error"
+// @Security  CookieAuth
+// @Router    /api/sandboxes/{id} [delete]
 func (s *Server) handleDeleteSandbox(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	sbx, ok := s.Sandboxes.Get(id)
@@ -2133,19 +2136,19 @@ func (s *Server) handleDeleteSandbox(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-//	@Summary     Pause a sandbox (cloud sandboxes only)
-//	@Description Initiates pause transition; returns {"status":"pausing"}. Final state lands asynchronously.
-//	@Tags        Sandboxes
-//	@Produce     json
-//	@Param       id  path  string  true  "Sandbox id"
-//	@Success     200  {object}  SandboxLifecycleStatusResponse
-//	@Failure     400  {string}  string  "local sandbox cannot be paused"
-//	@Failure     403  {string}  string  "not a member"
-//	@Failure     404  {string}  string  "sandbox not found"
-//	@Failure     409  {string}  string  "invalid state for pause"
-//	@Failure     500  {string}  string  "internal error"
-//	@Security    CookieAuth
-//	@Router      /api/sandboxes/{id}/pause [post]
+// @Summary     Pause a sandbox (cloud sandboxes only)
+// @Description Initiates pause transition; returns {"status":"pausing"}. Final state lands asynchronously.
+// @Tags        Sandboxes
+// @Produce     json
+// @Param       id  path  string  true  "Sandbox id"
+// @Success     200  {object}  SandboxLifecycleStatusResponse
+// @Failure     400  {string}  string  "local sandbox cannot be paused"
+// @Failure     403  {string}  string  "not a member"
+// @Failure     404  {string}  string  "sandbox not found"
+// @Failure     409  {string}  string  "invalid state for pause"
+// @Failure     500  {string}  string  "internal error"
+// @Security    CookieAuth
+// @Router      /api/sandboxes/{id}/pause [post]
 func (s *Server) handlePauseSandbox(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	sbx, ok := s.Sandboxes.Get(id)
@@ -2195,19 +2198,19 @@ func (s *Server) handlePauseSandbox(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(SandboxLifecycleStatusResponse{Status: "pausing"})
 }
 
-//	@Summary     Resume a paused sandbox (cloud sandboxes only)
-//	@Description Initiates resume transition; returns {"status":"resuming"}. Final state lands asynchronously.
-//	@Tags        Sandboxes
-//	@Produce     json
-//	@Param       id  path  string  true  "Sandbox id"
-//	@Success     200  {object}  SandboxLifecycleStatusResponse
-//	@Failure     400  {string}  string  "local sandbox cannot be resumed"
-//	@Failure     403  {string}  string  "not a member"
-//	@Failure     404  {string}  string  "sandbox not found"
-//	@Failure     409  {string}  string  "invalid state for resume"
-//	@Failure     500  {string}  string  "internal error"
-//	@Security    CookieAuth
-//	@Router      /api/sandboxes/{id}/resume [post]
+// @Summary     Resume a paused sandbox (cloud sandboxes only)
+// @Description Initiates resume transition; returns {"status":"resuming"}. Final state lands asynchronously.
+// @Tags        Sandboxes
+// @Produce     json
+// @Param       id  path  string  true  "Sandbox id"
+// @Success     200  {object}  SandboxLifecycleStatusResponse
+// @Failure     400  {string}  string  "local sandbox cannot be resumed"
+// @Failure     403  {string}  string  "not a member"
+// @Failure     404  {string}  string  "sandbox not found"
+// @Failure     409  {string}  string  "invalid state for resume"
+// @Failure     500  {string}  string  "internal error"
+// @Security    CookieAuth
+// @Router      /api/sandboxes/{id}/resume [post]
 func (s *Server) handleResumeSandbox(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	sbx, ok := s.Sandboxes.Get(id)
@@ -2278,16 +2281,16 @@ func (s *Server) handleResumeSandbox(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(SandboxLifecycleStatusResponse{Status: "resuming"})
 }
 
-//	@Summary   Get sandbox usage stats
-//	@Tags      Sandboxes
-//	@Produce   json
-//	@Param     id  path  string  true  "Sandbox id"
-//	@Success   200  {object}  SandboxUsage
-//	@Failure   403  {string}  string  "not a member"
-//	@Failure   404  {string}  string  "sandbox not found"
-//	@Failure   500  {string}  string  "internal error"
-//	@Security  CookieAuth
-//	@Router    /api/sandboxes/{id}/usage [get]
+// @Summary   Get sandbox usage stats
+// @Tags      Sandboxes
+// @Produce   json
+// @Param     id  path  string  true  "Sandbox id"
+// @Success   200  {object}  SandboxUsage
+// @Failure   403  {string}  string  "not a member"
+// @Failure   404  {string}  string  "sandbox not found"
+// @Failure   500  {string}  string  "internal error"
+// @Security  CookieAuth
+// @Router    /api/sandboxes/{id}/usage [get]
 func (s *Server) handleSandboxUsage(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	sbx, ok := s.Sandboxes.Get(id)
@@ -2306,19 +2309,19 @@ func (s *Server) handleSandboxUsage(w http.ResponseWriter, r *http.Request) {
 	s.proxyLLMRequest(w, proxyURL)
 }
 
-//	@Summary   List LLM traces for a sandbox
-//	@Tags      Misc
-//	@Produce   json
-//	@Param     id      path   string  true   "Sandbox ID"
-//	@Param     limit   query  int     false  "Max entries to return"
-//	@Param     offset  query  int     false  "Pagination offset"
-//	@Success   200  {object}  TraceListResponse
-//	@Failure   401  {string}  string  "unauthorized"
-//	@Failure   403  {string}  string  "not a workspace member"
-//	@Failure   404  {string}  string  "sandbox not found"
-//	@Failure   503  {string}  string  "llmproxy not configured"
-//	@Security  CookieAuth
-//	@Router    /api/sandboxes/{id}/traces [get]
+// @Summary   List LLM traces for a sandbox
+// @Tags      Misc
+// @Produce   json
+// @Param     id      path   string  true   "Sandbox ID"
+// @Param     limit   query  int     false  "Max entries to return"
+// @Param     offset  query  int     false  "Pagination offset"
+// @Success   200  {object}  TraceListResponse
+// @Failure   401  {string}  string  "unauthorized"
+// @Failure   403  {string}  string  "not a workspace member"
+// @Failure   404  {string}  string  "sandbox not found"
+// @Failure   503  {string}  string  "llmproxy not configured"
+// @Security  CookieAuth
+// @Router    /api/sandboxes/{id}/traces [get]
 func (s *Server) handleSandboxTraces(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	sbx, ok := s.Sandboxes.Get(id)
@@ -2343,18 +2346,18 @@ func (s *Server) handleSandboxTraces(w http.ResponseWriter, r *http.Request) {
 	s.proxyLLMRequest(w, proxyURL)
 }
 
-//	@Summary   Get a single LLM trace for a sandbox
-//	@Tags      Misc
-//	@Produce   json
-//	@Param     id       path  string  true  "Sandbox ID"
-//	@Param     traceId  path  string  true  "Trace ID"
-//	@Success   200  {object}  TraceDetailResponse
-//	@Failure   401  {string}  string  "unauthorized"
-//	@Failure   403  {string}  string  "not a workspace member"
-//	@Failure   404  {string}  string  "sandbox not found"
-//	@Failure   503  {string}  string  "llmproxy not configured"
-//	@Security  CookieAuth
-//	@Router    /api/sandboxes/{id}/traces/{traceId} [get]
+// @Summary   Get a single LLM trace for a sandbox
+// @Tags      Misc
+// @Produce   json
+// @Param     id       path  string  true  "Sandbox ID"
+// @Param     traceId  path  string  true  "Trace ID"
+// @Success   200  {object}  TraceDetailResponse
+// @Failure   401  {string}  string  "unauthorized"
+// @Failure   403  {string}  string  "not a workspace member"
+// @Failure   404  {string}  string  "sandbox not found"
+// @Failure   503  {string}  string  "llmproxy not configured"
+// @Security  CookieAuth
+// @Router    /api/sandboxes/{id}/traces/{traceId} [get]
 func (s *Server) handleTraceDetail(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	sbx, ok := s.Sandboxes.Get(id)
@@ -2374,18 +2377,18 @@ func (s *Server) handleTraceDetail(w http.ResponseWriter, r *http.Request) {
 	s.proxyLLMRequest(w, proxyURL)
 }
 
-//	@Summary   List LLM traces for a workspace
-//	@Tags      Misc
-//	@Produce   json
-//	@Param     wid     path   string  true   "Workspace ID"
-//	@Param     limit   query  int     false  "Max entries to return"
-//	@Param     offset  query  int     false  "Pagination offset"
-//	@Success   200  {object}  TraceListResponse
-//	@Failure   401  {string}  string  "unauthorized"
-//	@Failure   403  {string}  string  "not a workspace member"
-//	@Failure   503  {string}  string  "llmproxy not configured"
-//	@Security  CookieAuth
-//	@Router    /api/workspaces/{wid}/traces [get]
+// @Summary   List LLM traces for a workspace
+// @Tags      Misc
+// @Produce   json
+// @Param     wid     path   string  true   "Workspace ID"
+// @Param     limit   query  int     false  "Max entries to return"
+// @Param     offset  query  int     false  "Pagination offset"
+// @Success   200  {object}  TraceListResponse
+// @Failure   401  {string}  string  "unauthorized"
+// @Failure   403  {string}  string  "not a workspace member"
+// @Failure   503  {string}  string  "llmproxy not configured"
+// @Security  CookieAuth
+// @Router    /api/workspaces/{wid}/traces [get]
 func (s *Server) handleWorkspaceTraces(w http.ResponseWriter, r *http.Request) {
 	wid := chi.URLParam(r, "wid")
 	if _, ok := s.requireWorkspaceMember(w, r, wid); !ok {
@@ -2405,17 +2408,17 @@ func (s *Server) handleWorkspaceTraces(w http.ResponseWriter, r *http.Request) {
 	s.proxyLLMRequest(w, proxyURL)
 }
 
-//	@Summary   Get a single LLM trace for a workspace
-//	@Tags      Misc
-//	@Produce   json
-//	@Param     wid      path  string  true  "Workspace ID"
-//	@Param     traceId  path  string  true  "Trace ID"
-//	@Success   200  {object}  TraceDetailResponse
-//	@Failure   401  {string}  string  "unauthorized"
-//	@Failure   403  {string}  string  "not a workspace member"
-//	@Failure   503  {string}  string  "llmproxy not configured"
-//	@Security  CookieAuth
-//	@Router    /api/workspaces/{wid}/traces/{traceId} [get]
+// @Summary   Get a single LLM trace for a workspace
+// @Tags      Misc
+// @Produce   json
+// @Param     wid      path  string  true  "Workspace ID"
+// @Param     traceId  path  string  true  "Trace ID"
+// @Success   200  {object}  TraceDetailResponse
+// @Failure   401  {string}  string  "unauthorized"
+// @Failure   403  {string}  string  "not a workspace member"
+// @Failure   503  {string}  string  "llmproxy not configured"
+// @Security  CookieAuth
+// @Router    /api/workspaces/{wid}/traces/{traceId} [get]
 func (s *Server) handleWorkspaceTraceDetail(w http.ResponseWriter, r *http.Request) {
 	wid := chi.URLParam(r, "wid")
 	if _, ok := s.requireWorkspaceMember(w, r, wid); !ok {

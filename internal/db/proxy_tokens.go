@@ -25,6 +25,7 @@ type ProxyToken struct {
 	TokenType   ProxyTokenType
 	SandboxID   sql.NullString
 	WorkspaceID string
+	UserID      sql.NullString
 }
 
 // GetProxyToken looks up a token in the unified proxy_tokens table. Returns
@@ -33,9 +34,9 @@ type ProxyToken struct {
 func (db *DB) GetProxyToken(token string) (*ProxyToken, error) {
 	pt := &ProxyToken{}
 	err := db.QueryRow(
-		`SELECT token, token_type, sandbox_id, workspace_id
+		`SELECT token, token_type, sandbox_id, workspace_id, user_id
 		   FROM proxy_tokens WHERE token = $1`, token,
-	).Scan(&pt.Token, &pt.TokenType, &pt.SandboxID, &pt.WorkspaceID)
+	).Scan(&pt.Token, &pt.TokenType, &pt.SandboxID, &pt.WorkspaceID, &pt.UserID)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -48,15 +49,15 @@ func (db *DB) GetProxyToken(token string) (*ProxyToken, error) {
 // CreateSandboxProxyToken inserts a sandbox-scoped row into proxy_tokens.
 // CreateSandbox / CreateLocalSandbox call this in the same DB session as the
 // sandbox INSERT so the two tables stay in lockstep.
-func (db *DB) CreateSandboxProxyToken(token, sandboxID, workspaceID string) error {
+func (db *DB) CreateSandboxProxyToken(token, sandboxID, workspaceID, userID string) error {
 	if token == "" {
 		return nil
 	}
 	_, err := db.Exec(
-		`INSERT INTO proxy_tokens (token, token_type, sandbox_id, workspace_id)
-		 VALUES ($1, 'sandbox', $2, $3)
+		`INSERT INTO proxy_tokens (token, token_type, sandbox_id, workspace_id, user_id)
+		 VALUES ($1, 'sandbox', $2, $3, NULLIF($4, ''))
 		 ON CONFLICT (token) DO NOTHING`,
-		token, sandboxID, workspaceID,
+		token, sandboxID, workspaceID, userID,
 	)
 	if err != nil {
 		return fmt.Errorf("create sandbox proxy token: %w", err)

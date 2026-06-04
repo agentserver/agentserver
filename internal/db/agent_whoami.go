@@ -25,16 +25,12 @@ type AgentWhoami struct {
 }
 
 func (db *DB) GetAgentWhoamiByProxyToken(token string) (*AgentWhoami, AgentWhoamiLookupState, error) {
-	pt := &ProxyToken{}
-	err := db.QueryRow(
-		`SELECT token, token_type, sandbox_id, workspace_id, user_id
-		   FROM proxy_tokens WHERE token = $1`, token,
-	).Scan(&pt.Token, &pt.TokenType, &pt.SandboxID, &pt.WorkspaceID, &pt.UserID)
-	if err == sql.ErrNoRows {
-		return nil, AgentWhoamiUnknown, nil
-	}
+	pt, err := db.GetProxyToken(token)
 	if err != nil {
 		return nil, "", fmt.Errorf("get whoami proxy token: %w", err)
+	}
+	if pt == nil {
+		return nil, AgentWhoamiUnknown, nil
 	}
 	if pt.TokenType != ProxyTokenSandbox || !pt.SandboxID.Valid {
 		return nil, AgentWhoamiUnknown, nil

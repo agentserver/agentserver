@@ -8,31 +8,31 @@ import (
 )
 
 type Sandbox struct {
-	ID              string
-	WorkspaceID     string
-	Name            string
-	Type            string
-	Status          string
-	IsLocal         bool
-	ShortID         sql.NullString
-	SandboxName     sql.NullString
-	PodIP           sql.NullString
-	ProxyToken      sql.NullString
-	OpencodeToken   sql.NullString
-	OpenclawToken   sql.NullString
-	TunnelToken              sql.NullString
-	NanoclawBridgeSecret     sql.NullString
-	LastActivityAt  sql.NullTime
-	CreatedAt       time.Time
-	PausedAt        sql.NullTime
-	LastHeartbeatAt sql.NullTime
-	CPU         *int
-	Memory      *int64
-	IdleTimeout *int
-	Metadata    json.RawMessage
+	ID                   string
+	WorkspaceID          string
+	Name                 string
+	Type                 string
+	Status               string
+	IsLocal              bool
+	ShortID              sql.NullString
+	SandboxName          sql.NullString
+	PodIP                sql.NullString
+	ProxyToken           sql.NullString
+	OpencodeToken        sql.NullString
+	OpenclawToken        sql.NullString
+	TunnelToken          sql.NullString
+	NanoclawBridgeSecret sql.NullString
+	LastActivityAt       sql.NullTime
+	CreatedAt            time.Time
+	PausedAt             sql.NullTime
+	LastHeartbeatAt      sql.NullTime
+	CPU                  *int
+	Memory               *int64
+	IdleTimeout          *int
+	Metadata             json.RawMessage
 }
 
-func (db *DB) CreateSandbox(id, workspaceID, name, sandboxType, sandboxName, opencodeToken, proxyToken, openclawToken, shortID string, cpu int, memory int64, idleTimeout *int, metadata json.RawMessage) error {
+func (db *DB) CreateSandbox(id, workspaceID, userID, name, sandboxType, sandboxName, opencodeToken, proxyToken, openclawToken, shortID string, cpu int, memory int64, idleTimeout *int, metadata json.RawMessage) error {
 	if len(metadata) == 0 {
 		metadata = json.RawMessage("{}")
 	}
@@ -51,9 +51,9 @@ func (db *DB) CreateSandbox(id, workspaceID, name, sandboxType, sandboxName, ope
 	}
 	if proxyToken != "" {
 		if _, err := tx.Exec(
-			`INSERT INTO proxy_tokens (token, token_type, sandbox_id, workspace_id)
-			 VALUES ($1, 'sandbox', $2, $3) ON CONFLICT (token) DO NOTHING`,
-			proxyToken, id, workspaceID,
+			`INSERT INTO proxy_tokens (token, token_type, sandbox_id, workspace_id, user_id)
+			 VALUES ($1, 'sandbox', $2, $3, NULLIF($4, '')) ON CONFLICT (token) DO NOTHING`,
+			proxyToken, id, workspaceID, userID,
 		); err != nil {
 			return fmt.Errorf("create sandbox proxy token: %w", err)
 		}
@@ -273,7 +273,7 @@ func nullIfEmpty(s string) interface{} {
 }
 
 // CreateLocalSandbox inserts a local agent sandbox with is_local=true.
-func (db *DB) CreateLocalSandbox(id, workspaceID, name, sandboxType, opencodeToken, proxyToken, tunnelToken, shortID string) error {
+func (db *DB) CreateLocalSandbox(id, workspaceID, userID, name, sandboxType, opencodeToken, proxyToken, tunnelToken, shortID string) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -289,9 +289,9 @@ func (db *DB) CreateLocalSandbox(id, workspaceID, name, sandboxType, opencodeTok
 	}
 	if proxyToken != "" {
 		if _, err := tx.Exec(
-			`INSERT INTO proxy_tokens (token, token_type, sandbox_id, workspace_id)
-			 VALUES ($1, 'sandbox', $2, $3) ON CONFLICT (token) DO NOTHING`,
-			proxyToken, id, workspaceID,
+			`INSERT INTO proxy_tokens (token, token_type, sandbox_id, workspace_id, user_id)
+			 VALUES ($1, 'sandbox', $2, $3, NULLIF($4, '')) ON CONFLICT (token) DO NOTHING`,
+			proxyToken, id, workspaceID, userID,
 		); err != nil {
 			return fmt.Errorf("create local sandbox proxy token: %w", err)
 		}

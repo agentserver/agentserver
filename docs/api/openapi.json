@@ -1573,6 +1573,56 @@
         }
       }
     },
+    "/api/agent/whoami": {
+      "get": {
+        "tags": [
+          "Agent"
+        ],
+        "summary": "Inspect the calling agent identity (proxy_token auth)",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentWhoamiResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/agents/{sandboxId}": {
       "get": {
         "security": [
@@ -8588,6 +8638,48 @@
           "total_cost_usd": {
             "type": "number",
             "nullable": true
+          }
+        }
+      },
+      "AgentWhoamiResponse": {
+        "type": "object",
+        "required": [
+          "display_name",
+          "role",
+          "sandbox_id",
+          "short_id",
+          "user_id",
+          "workspace_id",
+          "workspace_name"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string",
+            "example": "Alice Driver"
+          },
+          "role": {
+            "type": "string",
+            "example": "developer"
+          },
+          "sandbox_id": {
+            "type": "string",
+            "example": "sbx_456"
+          },
+          "short_id": {
+            "type": "string",
+            "example": "alice-driver-01"
+          },
+          "user_id": {
+            "type": "string",
+            "example": "u_abc123"
+          },
+          "workspace_id": {
+            "type": "string",
+            "example": "ws_xyz789"
+          },
+          "workspace_name": {
+            "type": "string",
+            "example": "Alice's Workspace"
           }
         }
       },

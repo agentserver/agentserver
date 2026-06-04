@@ -9,28 +9,28 @@ import (
 
 // Sandbox represents a sandbox with its current state.
 type Sandbox struct {
-	ID              string     `json:"id"`
-	ShortID         string     `json:"short_id,omitempty"`
-	WorkspaceID     string     `json:"workspace_id"`
-	Name            string     `json:"name"`
-	Type            string     `json:"type"`
-	Status          string     `json:"status"`
-	SandboxName     string     `json:"sandbox_name,omitempty"`
-	PodIP           string     `json:"pod_ip,omitempty"`
-	ProxyToken      string     `json:"-"`
-	OpencodeToken   string     `json:"-"`
-	OpenclawToken        string     `json:"-"`
-	NanoclawBridgeSecret string     `json:"-"`
-	TunnelToken          string     `json:"-"`
-	CreatedAt       time.Time  `json:"created_at"`
-	LastActivityAt  *time.Time `json:"last_activity_at,omitempty"`
-	PausedAt        *time.Time `json:"paused_at,omitempty"`
-	IsLocal         bool       `json:"is_local"`
-	LastHeartbeatAt *time.Time `json:"last_heartbeat_at,omitempty"`
-	CPU             int                    `json:"cpu,omitempty"`
-	Memory          int64                  `json:"memory,omitempty"`
-	IdleTimeout     *int                   `json:"idle_timeout,omitempty"`
-	Metadata        map[string]interface{} `json:"metadata,omitempty"`
+	ID                   string                 `json:"id"`
+	ShortID              string                 `json:"short_id,omitempty"`
+	WorkspaceID          string                 `json:"workspace_id"`
+	Name                 string                 `json:"name"`
+	Type                 string                 `json:"type"`
+	Status               string                 `json:"status"`
+	SandboxName          string                 `json:"sandbox_name,omitempty"`
+	PodIP                string                 `json:"pod_ip,omitempty"`
+	ProxyToken           string                 `json:"-"`
+	OpencodeToken        string                 `json:"-"`
+	OpenclawToken        string                 `json:"-"`
+	NanoclawBridgeSecret string                 `json:"-"`
+	TunnelToken          string                 `json:"-"`
+	CreatedAt            time.Time              `json:"created_at"`
+	LastActivityAt       *time.Time             `json:"last_activity_at,omitempty"`
+	PausedAt             *time.Time             `json:"paused_at,omitempty"`
+	IsLocal              bool                   `json:"is_local"`
+	LastHeartbeatAt      *time.Time             `json:"last_heartbeat_at,omitempty"`
+	CPU                  int                    `json:"cpu,omitempty"`
+	Memory               int64                  `json:"memory,omitempty"`
+	IdleTimeout          *int                   `json:"idle_timeout,omitempty"`
+	Metadata             map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // Store manages sandboxes via PostgreSQL.
@@ -43,33 +43,33 @@ func NewStore(database *db.DB) *Store {
 }
 
 // Create inserts a new sandbox into the DB with 'creating' status.
-func (s *Store) Create(id, workspaceID, name, sandboxType, sandboxName, opencodeToken, proxyToken, openclawToken, shortID string, cpu int, memory int64, idleTimeout *int, metadata map[string]interface{}) (*Sandbox, error) {
+func (s *Store) Create(id, workspaceID, userID, name, sandboxType, sandboxName, opencodeToken, proxyToken, openclawToken, shortID string, cpu int, memory int64, idleTimeout *int, metadata map[string]interface{}) (*Sandbox, error) {
 	var metaJSON json.RawMessage
 	if len(metadata) > 0 {
 		metaJSON, _ = json.Marshal(metadata)
 	}
-	if err := s.db.CreateSandbox(id, workspaceID, name, sandboxType, sandboxName, opencodeToken, proxyToken, openclawToken, shortID, cpu, memory, idleTimeout, metaJSON); err != nil {
+	if err := s.db.CreateSandbox(id, workspaceID, userID, name, sandboxType, sandboxName, opencodeToken, proxyToken, openclawToken, shortID, cpu, memory, idleTimeout, metaJSON); err != nil {
 		return nil, err
 	}
 
 	now := time.Now()
 	return &Sandbox{
-		ID:               id,
-		ShortID:          shortID,
-		WorkspaceID:      workspaceID,
-		Name:             name,
-		Type:             sandboxType,
-		Status:           StatusCreating,
-		SandboxName:      sandboxName,
-		OpencodeToken: opencodeToken,
-		ProxyToken:    proxyToken,
-		OpenclawToken: openclawToken,
-		CreatedAt:        now,
-		LastActivityAt:   &now,
-		CPU:              cpu,
-		Memory:           memory,
-		IdleTimeout:      idleTimeout,
-		Metadata:         metadata,
+		ID:             id,
+		ShortID:        shortID,
+		WorkspaceID:    workspaceID,
+		Name:           name,
+		Type:           sandboxType,
+		Status:         StatusCreating,
+		SandboxName:    sandboxName,
+		OpencodeToken:  opencodeToken,
+		ProxyToken:     proxyToken,
+		OpenclawToken:  openclawToken,
+		CreatedAt:      now,
+		LastActivityAt: &now,
+		CPU:            cpu,
+		Memory:         memory,
+		IdleTimeout:    idleTimeout,
+		Metadata:       metadata,
 	}, nil
 }
 

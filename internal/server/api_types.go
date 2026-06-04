@@ -82,9 +82,9 @@ type MemberRoleUpdateRequest struct {
 // LLMWorkspaceQuotaPart is the per-workspace quota override stored in the
 // LLM proxy DB. max_rpd is null when no custom limit is configured.
 type LLMWorkspaceQuotaPart struct {
-	WorkspaceID string  `json:"workspace_id" validate:"required"`
-	MaxRPD      *int    `json:"max_rpd" extensions:"x-nullable=true"`
-	UpdatedAt   string  `json:"updated_at" validate:"required"`
+	WorkspaceID string `json:"workspace_id" validate:"required"`
+	MaxRPD      *int   `json:"max_rpd" extensions:"x-nullable=true"`
+	UpdatedAt   string `json:"updated_at" validate:"required"`
 } // @name LLMWorkspaceQuotaPart
 
 // LLMQuotaResponse mirrors the body the LLM proxy returns from its
@@ -135,11 +135,11 @@ type LLMConfigUpsertResponse struct {
 // All fields except name are optional and fall back to workspace/server defaults.
 type SandboxCreateRequest struct {
 	Name        string                 `json:"name" validate:"required" example:"my-sandbox"`
-	Type        string                 `json:"type" example:"opencode"`    // optional; default "opencode"
-	CPU         *int                   `json:"cpu"`                        // optional; millicores, e.g. 500 or 2000
-	Memory      *int64                 `json:"memory"`                     // optional; bytes, e.g. 536870912 (512Mi)
-	IdleTimeout *int                   `json:"idle_timeout"`               // optional; seconds
-	Metadata    map[string]interface{} `json:"metadata"`                   // optional; arbitrary key-value metadata
+	Type        string                 `json:"type" example:"opencode"` // optional; default "opencode"
+	CPU         *int                   `json:"cpu"`                     // optional; millicores, e.g. 500 or 2000
+	Memory      *int64                 `json:"memory"`                  // optional; bytes, e.g. 536870912 (512Mi)
+	IdleTimeout *int                   `json:"idle_timeout"`            // optional; seconds
+	Metadata    map[string]interface{} `json:"metadata"`                // optional; arbitrary key-value metadata
 } // @name SandboxCreateRequest
 
 // SandboxRenameRequest is the body for PATCH /api/sandboxes/{id}.
@@ -223,12 +223,12 @@ type IMWeixinQRStartResponse struct {
 // qrcode_url is only present when status is "expired" (new QR code generated).
 // bot_id and user_id are only present when status is "confirmed".
 type IMWeixinQRWaitResponse struct {
-	Connected  bool    `json:"connected" validate:"required"`
-	Status     string  `json:"status" validate:"required" example:"wait"`
-	Message    *string `json:"message,omitempty" extensions:"x-nullable=true"`
-	QRCodeURL  *string `json:"qrcode_url,omitempty" extensions:"x-nullable=true"`
-	BotID      *string `json:"bot_id,omitempty" extensions:"x-nullable=true"`
-	UserID     *string `json:"user_id,omitempty" extensions:"x-nullable=true"`
+	Connected bool    `json:"connected" validate:"required"`
+	Status    string  `json:"status" validate:"required" example:"wait"`
+	Message   *string `json:"message,omitempty" extensions:"x-nullable=true"`
+	QRCodeURL *string `json:"qrcode_url,omitempty" extensions:"x-nullable=true"`
+	BotID     *string `json:"bot_id,omitempty" extensions:"x-nullable=true"`
+	UserID    *string `json:"user_id,omitempty" extensions:"x-nullable=true"`
 } // @name IMWeixinQRWaitResponse
 
 // IMTelegramConfigureRequest is the body for POST .../im/telegram/configure.
@@ -325,6 +325,18 @@ type AgentRegisterResponse struct {
 	WorkspaceID string `json:"workspace_id" validate:"required"`
 	ShortID     string `json:"short_id" validate:"required"`
 } // @name AgentRegisterResponse
+
+// AgentWhoamiResponse is returned by GET /api/agent/whoami.
+// It contains the full public identity contract for a sandbox proxy token.
+type AgentWhoamiResponse struct {
+	UserID        string `json:"user_id" validate:"required" example:"u_abc123"`
+	WorkspaceID   string `json:"workspace_id" validate:"required" example:"ws_xyz789"`
+	WorkspaceName string `json:"workspace_name" validate:"required" example:"Alice's Workspace"`
+	SandboxID     string `json:"sandbox_id" validate:"required" example:"sbx_456"`
+	ShortID       string `json:"short_id" validate:"required" example:"alice-driver-01"`
+	DisplayName   string `json:"display_name" validate:"required" example:"Alice Driver"`
+	Role          string `json:"role" validate:"required" example:"developer"`
+} // @name AgentWhoamiResponse
 
 // AgentCardRegisterRequest is the body for POST /api/agent/discovery/cards.
 // card is an arbitrary JSON capability descriptor; defaults to {} when omitted.
@@ -500,13 +512,13 @@ type CodexBrowserItem struct {
 // GET /api/workspaces/{id}/credentials/{kind}.
 // public_meta is an arbitrary JSON object whose shape depends on the provider kind.
 type CredentialBindingItem struct {
-	ID          string          `json:"id" validate:"required"`
-	DisplayName string          `json:"display_name" validate:"required"`
-	ServerURL   string          `json:"server_url"`
-	AuthType    string          `json:"auth_type" validate:"required" example:"static"`
-	PublicMeta  interface{}     `json:"public_meta"`
-	IsDefault   bool            `json:"is_default"`
-	CreatedAt   string          `json:"created_at" validate:"required"`
+	ID          string      `json:"id" validate:"required"`
+	DisplayName string      `json:"display_name" validate:"required"`
+	ServerURL   string      `json:"server_url"`
+	AuthType    string      `json:"auth_type" validate:"required" example:"static"`
+	PublicMeta  interface{} `json:"public_meta"`
+	IsDefault   bool        `json:"is_default"`
+	CreatedAt   string      `json:"created_at" validate:"required"`
 } // @name CredentialBindingItem
 
 // CredentialBindingCreateRequest is the body for POST /api/workspaces/{id}/credentials/{kind}.
@@ -637,7 +649,7 @@ type ExecutorRegisterResponse struct {
 	ExeID            string                  `json:"exe_id" validate:"required"`
 	ConnectCommand   string                  `json:"connect_command,omitempty"`
 	AgentIdentityJWT string                  `json:"agent_identity_jwt,omitempty"`
-	ConnectCommands  ExecutorConnectCommands  `json:"connect_commands,omitempty"`
+	ConnectCommands  ExecutorConnectCommands `json:"connect_commands,omitempty"`
 } // @name ExecutorRegisterResponse
 
 // ModelServerStatusResponse is returned by GET /api/workspaces/{id}/modelserver/status.

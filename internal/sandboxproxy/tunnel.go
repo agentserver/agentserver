@@ -10,10 +10,10 @@ import (
 
 	"encoding/base64"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/agentserver/agentserver/internal/db"
 	"github.com/agentserver/agentserver/internal/sbxstore"
 	"github.com/agentserver/agentserver/internal/tunnel"
+	"github.com/go-chi/chi/v5"
 	"nhooyr.io/websocket"
 )
 
@@ -125,6 +125,9 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 
 	if wasActive {
 		s.Sandboxes.UpdateStatus(sandboxID, sbxstore.StatusOffline)
+		if err := s.DB.UpdateAgentCardStatus(sandboxID, "offline"); err != nil {
+			log.Printf("tunnel %s: failed to mark agent card offline: %v", sandboxID, err)
+		}
 	}
 	log.Printf("tunnel disconnected: sandbox %s (was_active=%v)", sandboxID, wasActive)
 }

@@ -91,6 +91,7 @@ func (db *DB) UpsertAgentCardFromCapabilities(sandboxID, workspaceID, displayNam
 		 VALUES ($1, $2, 'claudecode', $3, $4, 'available', 1)
 		 ON CONFLICT (sandbox_id) DO UPDATE SET
 		   card_json = EXCLUDED.card_json,
+		   agent_status = 'available',
 		   version = agent_cards.version + 1,
 		   updated_at = NOW()`,
 		sandboxID, workspaceID, displayName, cardJSON,

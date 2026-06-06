@@ -10,6 +10,7 @@ import {
 } from '../lib/api'
 import { CreateSandboxModal } from './CreateSandboxModal'
 import { ConfirmModal } from './Modals'
+import { sandboxStatusPollIntervalMs } from '../lib/sandboxPolling'
 
 interface SandboxListProps {
   selectedWorkspaceId: string | null
@@ -59,14 +60,12 @@ export function SandboxList({
   const [showAgentConnect, setShowAgentConnect] = useState(false)
   const [quotaError, setQuotaError] = useState<string | null>(null)
 
-  // Poll when any sandbox is in a transitional state.
+  // Poll status-changing sandboxes when this list owns its refresh loop.
   useEffect(() => {
-    const hasTransitional = sandboxes.some(
-      (s) => s.status === 'pausing' || s.status === 'resuming' || s.status === 'creating'
-    )
-    if (hasTransitional) {
+    const intervalMs = sandboxStatusPollIntervalMs(sandboxes)
+    if (intervalMs != null) {
       if (!pollRef.current) {
-        pollRef.current = setInterval(onRefreshSandboxes, 2000)
+        pollRef.current = setInterval(onRefreshSandboxes, intervalMs)
       }
     } else {
       if (pollRef.current) {

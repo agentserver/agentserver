@@ -25,6 +25,7 @@ import { SandboxDetail } from './components/SandboxDetail'
 import { ManageWorkspaces } from './components/ManageWorkspaces'
 import { AdminPanel } from './components/AdminPanel'
 import { WorkspaceDetail, tabFromSlug, type Tab as WorkspaceTab } from './components/WorkspaceDetail'
+import { sandboxStatusPollIntervalMs } from './lib/sandboxPolling'
 
 export interface UserInfo {
   id: string
@@ -218,15 +219,12 @@ export default function App() {
     }
   }, [selectedWorkspaceId, refreshSandboxes])
 
-  // Poll while any sandbox is in a transitional state (creating, pausing,
-  // resuming). Lives at app level so it ticks regardless of which page is
-  // mounted — list, detail, or any other workspace tab.
+  // Poll status-changing sandboxes at app level so it ticks regardless of
+  // which page is mounted.
   useEffect(() => {
-    const hasTransitional = sandboxes.some(
-      (s) => s.status === 'creating' || s.status === 'pausing' || s.status === 'resuming',
-    )
-    if (!hasTransitional) return
-    const id = window.setInterval(refreshSandboxes, 2000)
+    const intervalMs = sandboxStatusPollIntervalMs(sandboxes)
+    if (intervalMs == null) return
+    const id = window.setInterval(refreshSandboxes, intervalMs)
     return () => window.clearInterval(id)
   }, [sandboxes, refreshSandboxes])
 

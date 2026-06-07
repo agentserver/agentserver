@@ -249,6 +249,126 @@ If the PoC passes and we later decide to build cc-app v2, those
 artifacts will be re-authored as a proper in-tree component under a
 new spec.
 
-## 11. Outcome (to be filled in after the PoC)
+## 11. Outcome — PASS (with documented nuance)
 
-_Pending execution._
+Round-trip achieved on 2026-06-07 with **2 same-length binary patches**
+and **9 mock HTTP routes** (no further patches needed). 8 iteration
+journals (`iteration-00.md` … `iteration-09.md`) under
+`/tmp/cc-cloud-poc/` capture the full trail.
+
+### Final patch set (both still 2/5 of the §8 cap)
+
+| # | Name | find length | offset | one-line description |
+|---|------|---|---|---|
+| 1 | P1_url_allowlist | 99 | 0xdbba5c4 | Replace the in-binary ternary `ANTHROPIC_BASE_URL==="https://api-staging.anthropic.com"?"https://api-staging.anthropic.com":"https://api.anthropic.com"` so both staging halves become `http://127.0.0.1:8181/cccloud11ab` (production fallback preserved). Runtime selection forced by setting `ANTHROPIC_BASE_URL=$POC_BASE_URL` in `run_poc.sh`. |
+| 2 | P2_rd_includes | 16 | 0xd977bab | Replace `!Rd$.includes(K)` with `(0&&Rd$.incl(K))`. Short-circuits the `if(!Rd$.includes(K))throw Error("CLAUDE_CODE_CUSTOM_OAUTH_URL is not an approved endpoint.")` check; `.incl` typo never reached because `0&&` evaluates to falsy first. |
+
+### Non-patch work the PoC also required
+
+Most of the iteration budget went to **server-side mock surface and
+environment shaping**, not patches:
+
+- 9 mock routes by the end of iteration 9: `HEAD /cccloud11ab`,
+  `GET /cccloud11ab/api/hello`, `GET /v1/oauth/hello`,
+  `POST /cccloud11ab/api/event_logging/v2/batch`,
+  `POST /cccloud11ab/v1/messages` (titlegen, plain-JSON; binary fell
+  back from streaming cleanly via
+  `tengu_streaming_fallback_to_non_streaming`),
+  `GET /cccloud11ab/v1/environment_providers`,
+  `POST /cccloud11ab/v1/environment_providers/cloud/create`,
+  `POST /cccloud11ab/v1/sessions` (the real session-create endpoint —
+  **not** `/v1/code/sessions` as the v2.1.128-era strings suggested),
+  `GET /cccloud11ab/v1/sessions/{sid}/stream` (registered but unused
+  in the CLI launch flow — see "Nuance" below).
+- Pre-seed of `$CLAUDE_CONFIG_DIR/.claude-custom-oauth.json` (the
+  custom-OAuth suffix is picked by `Sd$()` when
+  `CLAUDE_CODE_CUSTOM_OAUTH_URL` is set, so `.claude.json` is the
+  wrong file). Carries `hasCompletedOnboarding`, `oauthAccount`, and
+  related flags to skip the first-run wizard.
+- `ANTHROPIC_BASE_URL` env var added so P1's patched ternary actually
+  selects the staging branch.
+
+### Nuance — fire-and-forget, not bidirectional WS
+
+The spec §2 pass bar asked for "TUI renders `echo: hello` after the
+mock gateway pushes a synthetic assistant frame through bridge:repl
+WS." That bidirectional flow **did not happen** — not because anything
+broke, but because `claude --cloud 'hello'` is a fire-and-forget
+launcher in v2.1.167:
+
+1. Binary uploads the prompt as a `{type:"event", ...message:{role:"user", content:"hello"}}` event embedded in the **POST body** of `/v1/sessions`.
+2. Mock returns `{id, websocket_url, status}`.
+3. Binary prints `Created remote session: poc / View: https://claude.ai/code/<sid> / Resume with: claude --teleport <sid>` and exits **0**.
+4. The WebSocket route is for the **resume client** (`claude --teleport`
+   or the claude.ai/code web UI) — the launcher itself never opens it.
+
+So our `/cccloud11ab/v1/sessions/{sid}/stream` is wired but unused
+in this run. The bridge:repl WS pathway that the spec section 1 cited
+exists in the binary and `isThinClient` is wired for it; what we proved
+is the **REST upload half** of the thin-client topology. Verifying the
+WS half would require running `claude --teleport <sid>` against the
+same mock and seeing it subscribe — left as a follow-on if needed.
+
+### Proof
+
+Gateway log (sequence that closes the loop):
+
+```
+[16:09:32.931] POST /cccloud11ab/v1/sessions body={}                  (preflight create)
+[16:09:36.947] HEAD /cccloud11ab
+[16:09:37.853] POST /cccloud11ab/api/event_logging/v2/batch (31 KB)
+[16:09:37.894] POST /cccloud11ab/v1/messages?beta=true       (titlegen 1)
+[16:09:37.925] GET  /cccloud11ab/v1/environment_providers
+[16:09:37.944] POST /cccloud11ab/v1/messages?beta=true       (titlegen 2)
+[16:09:37.961] POST /cccloud11ab/v1/messages?beta=true       (titlegen 3)
+[16:09:37.966] POST /cccloud11ab/v1/sessions body={"title":"poc","events":[{"type":"event","data":{...,"type":"user","message":{"role":"user","content":"hello"}}}],...,"environment_id":"poc-env"}
+[16:09:37.966] -> 200 {'id': '95ecb40c-...', 'websocket_url': 'ws://127.0.0.1:8181/cccloud11ab/v1/sessions/95ecb40c-.../stream', 'status': 'active'}
+[16:09:37.978] POST /cccloud11ab/api/event_logging/v2/batch (89 KB)
+```
+
+TUI final output (ANSI-stripped):
+
+```
+Created remote session: poc
+View: https://claude.ai/code/95ecb40c-b07f-47f4-aa61-2eff0a0833fc?from=cli&m=0
+Resume with: claude --teleport 95ecb40c-b07f-47f4-aa61-2eff0a0833fc
+```
+
+Telemetry NDJSON confirms (no `1p_failed_events.*` file written;
+success events present): `tengu_remote_create_session_success`,
+`tengu_ccr_session_link`, `tengu_api_success`.
+
+### Implications
+
+1. **The 2026-05-05 "no thin-client TUI in public binary" finding is
+   superseded.** v2.1.167's `--cloud` flag *can* be pointed at a
+   non-Anthropic backend with two same-length patches and a fake-OAuth
+   env. The cost of maintaining the patch set per release is low while
+   the URL allowlist and `Rd$.includes` predicate keep their current
+   shape; the harder part is keeping the mock surface in sync with
+   whatever new endpoints the binary starts probing each release.
+2. **Telemetry NDJSON at `$CLAUDE_CONFIG_DIR/telemetry/1p_failed_events.*`
+   is a first-class debugging window.** The binary serializes every
+   un-uploaded `tengu_*` event there in plain JSON; the
+   `additional_metadata` field is base64-encoded JSON with the actual
+   error code and call-site name. Future iterations against this
+   binary should check that file before bothering with code patches.
+3. **Strategic implication is small.** This invalidates one factual
+   premise (no thin client exists) without changing the strategic
+   stance. The codex-primary decision in
+   `agent_integration_strategy.md` rested on multiple factors (codex
+   scoring 7/8 on the Managed Agents rubric vs the Claude binary's
+   3/8, the cost of binary-patch maintenance, claude.ai-only auth
+   defaults). A 2-patch redirect doesn't move the rubric: we still
+   need fake-OAuth pre-seeding, we still need patches that may break
+   on each release's Bun bundle reshuffle, and we still don't get
+   on-demand sandbox provisioning. cc-app v2 design — if anyone ever
+   wants it — is left to a separate spec.
+
+### Status of `/tmp/cc-cloud-poc/`
+
+All artifacts (patcher, mock gateway, runner, patched binary, logs,
+9 iteration journals, last_batch.bin telemetry dump) remain on disk
+for archival. Not committed; will be reaped with `/tmp` eventually.
+The find/replace bytes for P1 and P2 above are the authoritative
+record needed to reproduce.

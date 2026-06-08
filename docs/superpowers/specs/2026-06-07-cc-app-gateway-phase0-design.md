@@ -315,6 +315,146 @@ Out-of-repo (live in `/tmp/cc-cloud-poc/`):
 - New iteration journals `iteration-1{0..N}.md`.
 - Run logs.
 
-## 11. Outcome (to be filled in after PoC-2)
+## 11. Outcome — STUCK at A.1 (gate failed structurally, A.2/A.3 not attempted)
 
-_Pending execution._
+PoC-2 aborted on 2026-06-08 after 6 A.1 iterations
+(`iteration-11.md` … `iteration-16.md` under `/tmp/cc-cloud-poc/`).
+Per spec §4 A.1 is a hard gate; per spec §6 the binding stuck-point
+is "binary needs server-signed material we can't forge" generalised
+to "the data path A.1's PASS criterion requires is not opened by the
+binary at all in this mode."
+
+### Sub-phase status
+
+| Sub-phase | Status | Pass criterion |
+|---|---|---|
+| A.1 subscribe-half | **FAIL** | `claude --teleport <sid>` never opens any live transport against the mock; injected SSE frame has no consumer. |
+| A.2 backend A | **NOT ATTEMPTED** | Gated by A.1 per spec §4. |
+| A.3 backend B | **NOT ATTEMPTED** | Gated by A.1 per spec §4. |
+| A.4 decision matrix | **NOT ATTEMPTED** | No A.2/A.3 data to compare. |
+
+### What did work
+
+`--teleport` got farther than expected. With 4 new mock routes added
+(within §6's 5-route budget), the binary completed every documented
+teleport phase against the mock:
+
+- `GET /v1/code/sessions/{sid}` — session lookup (iter-11)
+- `GET /v1/code/sessions/{sid}/teleport-events` — bulk history (iter-13)
+- `GET /v1/session_ingress/session/{sid}` — log-line fallback (iter-13)
+- `GET /mcp-registry/v0/servers` — registry stub (iter-13)
+
+Binary printed "Session resumed" and rendered the chat TUI. PoC-1's
+2-patch redirect held across every probe. The `response_shape` and
+`loglines` payload schemas were reverse-engineered from binary
+v2.1.167 functions `rjH`, `ErK`, `Qn6`.
+
+### Why A.1 failed structurally
+
+After "Session resumed," the gateway request count stayed at 32 for
+the entire 30-second post-resume observation window (`iteration-16.md`):
+
+```
+T+3s : 29 requests
+T+6s : 29
+T+9s : 29
+T+12s: 32   (closing teleport telemetry — happens once)
+T+15s..T+30s: 32 (no further requests)
+```
+
+`--teleport` mode hydrates history then hands off to the **local**
+chat REPL. There is no live remote-subscription channel that an
+injected SSE frame could land on. Decompilation of the teleport
+React component `_89` confirms: fetch history via `Qn6` →
+`applyMessageOp({type:"replace-all"})` → hand off to local REPL.
+The bridge:repl gates (`Skipping: bridge not enabled`,
+`Skipping: allow_remote_sessions policy not allowed`) keep the live
+channel closed in this mode.
+
+Telemetry NDJSON corroborates: `tengu_teleport_resume_session` event
+present; **zero** `tengu_bridge_*` / `tengu_ccr_*` events. The
+bridge:repl code path is never entered during `--teleport`.
+
+What it would take to open a live channel from the public binary:
+
+1. A binary patch (or three) to enter the bridge:repl path that is
+   currently gated by org-policy flags and feature flags. The full
+   thin-client mode (`claude assistant`) that uses these flags is
+   KAIROS-stripped.
+2. A binary patch to rewrite the hardcoded
+   `wss://bridge.claudeusercontent.com` literal — separate host, not
+   redirected by `ANTHROPIC_BASE_URL`. Same-length substitution
+   should work; not attempted in this PoC.
+3. Mocking the `[bridge:repl]` envelope protocol
+   (`control_request`/`control_response`, ingress message types, JWT
+   semantics on the worker channel).
+
+Each of those individually fits the spec §6 "server-signed material
+we can't forge" criterion or the §3 in-scope boundary ("only patches
+required to redirect URL allowlist and bypass OAuth gate"). Together
+they would be a Phase 0.5 or PoC-3 of similar magnitude to all of
+PoC-1.
+
+### Wider observation — this is what memory already said
+
+`/root/.claude/projects/-root-agentserver/memory/cc_binary_internals.md`
+records, from PoC G (May 2026, v2.1.128):
+
+> Even with all 5 patches, the binary's `--teleport` mode does NOT
+> become a thin client. User input goes to local REPL → direct
+> `/v1/messages` → api.anthropic.com (NOT our gateway).
+> `--teleport` is **local-resume** … NOT a thin-client subscriber.
+> There is no "thin-client TUI subscriber" mode in the public binary.
+
+This Phase 0 spec was authored on the (incorrect) premise that
+v2.1.167's `--teleport` exercises the same bridge:repl channel that
+claude.ai/code web exercises. It does not. The bridge:repl symbols
+are present in the binary; the renderer code that consumes them
+exists; what is *missing* in any user-reachable CLI mode is the call
+site that opens the channel. `--cloud` is fire-and-forget (PoC-1's
+finding); `--teleport` is local-resume (this finding). The renderer
+is only entered from `claude assistant`, which remains stripped.
+
+### Implications for Phase 1 cc-app-gateway design
+
+Substantial. A codex-app-gateway-shape cc-app-gateway requires a
+public CLI mode that subscribes to a live channel — and the public
+binary has no such mode. Three forward options exist, none cheap:
+
+1. **Three-patch unlock (PoC-3 scope):** patch the entry condition to
+   the bridge:repl path so a standard CLI mode (or a new one we
+   define via patch) opens the channel; patch the
+   `bridge.claudeusercontent.com` literal to the mock; mock the
+   `[bridge:repl]` envelope. Same-length patching is the right tool;
+   cost is finding 3 anchors, not bytes per se. Maintenance risk per
+   release is meaningfully higher than PoC-1's 2 patches.
+2. **Reverse direction — agentserver-side wrapping:** treat the
+   existing `Dockerfile.claudecode` + ttyd + per-user-sandbox
+   topology as the long-form answer. cc-app-gateway becomes a thin
+   shim that routes per-workspace LLM credentials into the sandbox
+   (extending `internal/llmproxy/anthropic.go`), and the user keeps
+   running their own `claude` against api.anthropic.com (proxied).
+   Loses the "remote harness" property — agent loop runs in the
+   sandbox container, not in the gateway. But works today with zero
+   patches.
+3. **Defer indefinitely:** keep claude on the local-loop ttyd path,
+   focus cc-broker-replacement energy on the agent-loop side via the
+   already-headless `claude -p` path (which Backend B in this spec
+   was going to trial). No "thin client TUI" pretense.
+
+The codex-primary stance in
+`agent_integration_strategy.md` is **reinforced** by this finding —
+the patch-maintenance gap to a real Claude thin-client remains
+wide. No update to that file is warranted; the 2026-06-07 entry
+already records the right framing.
+
+### Artifacts archived
+
+PoC-2 files remain under `/tmp/cc-cloud-poc/`:
+- `mock_gateway.py` extended with v2 CCR endpoints + 4 A.1 teleport routes
+- `run_teleport.sh` runner
+- `iteration-10.md` … `iteration-16.md` journals
+- `teleport-tui.log`, `gateway.log` last-run captures
+
+Not committed; the value is the conclusion (this section) and the
+updated memory.

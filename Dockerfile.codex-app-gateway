@@ -11,7 +11,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' \
 # `codex app-server` per thread, so the runtime image must carry it.
 # Override at build time with --build-arg CODEX_VERSION=...
 FROM debian:trixie-slim AS codex
-ARG CODEX_VERSION=0.134.0
+ARG CODEX_VERSION=0.137.0
 ARG TARGETARCH
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \

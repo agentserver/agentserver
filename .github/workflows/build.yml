@@ -99,6 +99,11 @@ jobs:
           TEST_DATABASE_URL: postgres://test:test@localhost:5432/test?sslmode=disable
         run: go test ./internal/server -run '^TestAgentWhoami' -count=1 -timeout 2m -v
 
+      - name: MCP PAT integration tests
+        env:
+          TEST_DATABASE_URL: postgres://test:test@localhost:5432/test?sslmode=disable
+        run: go test ./internal/db/ -run '^TestMCPPAT' -count=1 -timeout 2m -v
+
   build-server:
     runs-on: ubuntu-latest
     needs: [test, db-integration]

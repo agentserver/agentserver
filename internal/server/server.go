@@ -620,6 +620,17 @@ func (s *Server) Router() http.Handler {
 		r.Post("/api/workspaces/{wid}/api-keys", s.handleMintWorkspaceAPIKey)
 		r.Delete("/api/workspaces/{wid}/api-keys/{id}", s.handleRevokeWorkspaceAPIKey)
 
+		// MCP Personal Access Tokens — workspace-scoped (one PAT = one
+		// workspace, see the 2026-06-15 spec amendment). Used by
+		// Claude/Codex Desktop clients to authenticate against the
+		// envmcp public gateway. The previous /api/me/mcp-pats path
+		// was multi-workspace; the move to workspace-scoped paths is
+		// what the amendment hinges on.
+		r.Get("/api/workspaces/{wid}/mcp/pats/scopes", s.handleListMCPPATScopes)
+		r.Get("/api/workspaces/{wid}/mcp/pats", s.handleListMCPPATs)
+		r.Post("/api/workspaces/{wid}/mcp/pats", s.handleMintMCPPAT)
+		r.Delete("/api/workspaces/{wid}/mcp/pats/{id}", s.handleRevokeMCPPAT)
+
 		// Admin routes
 		r.Route("/api/admin", func(r chi.Router) {
 			r.Use(s.requireAdmin)

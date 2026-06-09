@@ -18,6 +18,7 @@ import (
 	"github.com/agentserver/agentserver/internal/codexappgateway/codexhome"
 	"github.com/agentserver/agentserver/internal/codexappgateway/scheduler"
 	"github.com/agentserver/agentserver/internal/codexappgateway/supervisor"
+	"github.com/agentserver/agentserver/internal/captoken"
 	"github.com/agentserver/agentserver/internal/clientmeta"
 	"github.com/agentserver/agentserver/internal/shortid"
 	"github.com/agentserver/agentserver/internal/wsbridge"
@@ -138,7 +139,11 @@ func makeBuildConfig(cfg ServeConfig, wsTokenClient workspaceTokenFetcher, selfB
 		if ttl <= 0 {
 			ttl = time.Hour
 		}
-		workspaceTok, err := MintCapToken(cfg.CapTokenHMACSecret, turnID, workspaceID, userID, ttl)
+		workspaceTok, err := captoken.Mint(cfg.CapTokenHMACSecret, captoken.Payload{
+			TurnID:      turnID,
+			WorkspaceID: workspaceID,
+			UserID:      userID,
+		}, ttl)
 		if err != nil {
 			return supervisor.SpawnConfig{}, fmt.Errorf("mint workspace cap token: %w", err)
 		}

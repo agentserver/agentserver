@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/agentserver/agentserver/internal/captoken"
 	"github.com/agentserver/agentserver/internal/codexexecgateway/audit"
 	"github.com/agentserver/agentserver/internal/envtools/bridge"
 	"github.com/agentserver/agentserver/internal/envtools/nameresolver"
@@ -111,7 +112,11 @@ func (s *Server) wsCtxFor(workspaceID string) (*workspaceCtx, error) {
 	if c, ok := s.wsCache[workspaceID]; ok {
 		return c, nil
 	}
-	tok, err := mintWorkspaceToken(s.CapTokenSecret, workspaceID)
+	tok, err := captoken.Mint(s.CapTokenSecret, captoken.Payload{
+		TurnID:      "sdk",
+		WorkspaceID: workspaceID,
+		SkipAudit:   true,
+	}, sdkCapTokenTTL)
 	if err != nil {
 		return nil, fmt.Errorf("mint cap token: %w", err)
 	}

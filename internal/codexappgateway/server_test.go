@@ -56,9 +56,10 @@ func TestServer_WSEndpoint_HappyPath_ProxiesToFakeChild(t *testing.T) {
 }
 
 // /admin/sessions/restart was removed in the 2026-05-16 fixed-tools
-// redesign — env-mcp reads the executor list live via /internal/connected,
-// so per-workspace subprocess invalidation is no longer needed. Test
-// deleted.
+// redesign — env-mcp reads the executor list live (post the
+// 2026-06-14 loopback removal, directly from codex-exec-gateway with
+// the workspace cap-token), so per-workspace subprocess invalidation
+// is no longer needed. Test deleted.
 
 func makeTestServer(t *testing.T) *httptest.Server {
 	t.Helper()

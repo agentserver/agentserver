@@ -1,7 +1,8 @@
 // Package scheduling implements the 6 MCP scheduling tools that codex
 // uses to schedule, list, update, cancel, pause, and resume tasks.
-// The tools forward every call to a Transport (production: loopback HTTP
-// to the app-gateway; tests: transportFunc stub).
+// The tools forward every call to a Transport (production: HTTPTransport
+// → agentserver-main with the workspace cap-token; tests: transportFunc
+// stub).
 package scheduling
 
 import (
@@ -13,9 +14,10 @@ import (
 	"github.com/agentserver/agentserver/internal/envtools/tools"
 )
 
-// ScheduleTransport is the abstraction the scheduling tools use to forward
-// calls to the app-gateway loopback. In production it is a LoopbackTransport
-// (HTTP POST to /internal/scheduled-tasks/<action>). In tests it can be any
+// ScheduleTransport is the abstraction the scheduling tools use to
+// forward calls. In production it is an HTTPTransport (POST/GET/PATCH
+// to agentserver-main /api/internal/workspaces/<wid>/scheduled-tasks/*
+// with Authorization: Bearer <cap-token>). In tests it can be any
 // function via transportFunc.
 type ScheduleTransport interface {
 	Call(ctx context.Context, action string, body any) (json.RawMessage, error)

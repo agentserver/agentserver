@@ -21,20 +21,31 @@ type ModelProvider struct {
 // fixed `[mcp_servers.agentserver]` block per the 2026-05-16 redesign.
 // One env-mcp child per codex app-server handles every executor in
 // the workspace via env_id routing — no per-executor sections.
+//
+// Post the 2026-06-14 full loopback removal, env-mcp talks directly
+// to codex-exec-gateway (ExecGatewayInternalURL, for list_environments
+// + copy_path relay) and to agentserver-main (AgentserverInternalURL,
+// for scheduling). No more `AppGatewayInternalURL` / `LoopbackToken`
+// fields — env-mcp doesn't need to reach back into its parent gateway.
 type AgentServerMCP struct {
-	CodexBin              string // absolute path to codex-app-gateway binary
-	WorkspaceID           string
-	ExecGatewayURL        string // ws base URL; env-mcp appends /<exe_id>
-	AppGatewayInternalURL string // http base for /internal/connected loopback
-	WorkspaceToken        string // workspace-scoped cap token (env-injected)
-	LoopbackToken         string // per-spawn loopback token (env-injected)
+	CodexBin       string // absolute path to codex-app-gateway binary
+	WorkspaceID    string
+	ExecGatewayURL string // ws base URL; env-mcp appends /<exe_id>
+	WorkspaceToken string // workspace-scoped cap token (env-injected)
 	// ExecGatewayInternalURL is the http base for codex-exec-gateway's
-	// internal API (NOT the ws bridge URL). When non-empty (and
-	// ExecGatewayInternalSecret is set), env-mcp's copy_path tool can
-	// mint relay tickets and use the HTTP relay path. Empty → omit the
-	// flag and secret; copy_path falls back to ws cat-pump.
+	// internal API (NOT the ws bridge URL). Required: env-mcp's
+	// list_environments calls <base>/api/exec-gateway/connected with
+	// the workspace cap-token. When ExecGatewayInternalSecret is also
+	// set, env-mcp's copy_path tool can mint relay tickets and use
+	// the HTTPS relay path; otherwise copy_path falls back to the ws
+	// cat-pump.
 	ExecGatewayInternalURL    string
 	ExecGatewayInternalSecret string // written verbatim into env-mcp's env block
+	// AgentserverInternalURL is the http base for agentserver-main's
+	// internal API. Required: env-mcp's scheduling tools POST to
+	// <base>/api/internal/workspaces/<wid>/scheduled-tasks/... with
+	// the workspace cap-token.
+	AgentserverInternalURL string
 	// LogFile, when non-empty, adds `--log-file <path>` to the env-mcp
 	// args. WriteConfig auto-injects this with `<codexHome>/env-mcp.log`
 	// when the caller leaves it empty, so callers normally don't set it.
@@ -148,14 +159,13 @@ func RenderConfigTOML(cfg ConfigInput) (string, error) {
 			"env-mcp",
 			"--workspace-id", m.WorkspaceID,
 			"--exec-gateway-url", m.ExecGatewayURL,
-			"--app-gateway-internal", m.AppGatewayInternalURL,
+			"--exec-gateway-internal-url", m.ExecGatewayInternalURL,
+			"--agentserver-internal-url", m.AgentserverInternalURL,
 			"--workspace-token-env", "CXG_WORKSPACE_TOKEN",
-			"--loopback-token-env", "CXG_LOOPBACK_TOKEN",
 		}
-		httpRelayEnabled := m.ExecGatewayInternalURL != "" && m.ExecGatewayInternalSecret != ""
+		httpRelayEnabled := m.ExecGatewayInternalSecret != ""
 		if httpRelayEnabled {
 			args = append(args,
-				"--exec-gateway-internal-url", m.ExecGatewayInternalURL,
 				"--exec-gateway-internal-secret-env", "CXG_EXEC_GATEWAY_INTERNAL_SECRET",
 			)
 		}
@@ -170,8 +180,7 @@ func RenderConfigTOML(cfg ConfigInput) (string, error) {
 			fmt.Fprintf(&b, "%q", a)
 		}
 		b.WriteString("]\n")
-		fmt.Fprintf(&b, "env = { CXG_WORKSPACE_TOKEN = %q, CXG_LOOPBACK_TOKEN = %q",
-			m.WorkspaceToken, m.LoopbackToken)
+		fmt.Fprintf(&b, "env = { CXG_WORKSPACE_TOKEN = %q", m.WorkspaceToken)
 		if httpRelayEnabled {
 			fmt.Fprintf(&b, ", CXG_EXEC_GATEWAY_INTERNAL_SECRET = %q",
 				m.ExecGatewayInternalSecret)

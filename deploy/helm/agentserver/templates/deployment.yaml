@@ -227,6 +227,17 @@ spec:
             - name: INTERNAL_API_SECRET
               value: {{ .Values.internal.apiSecret | quote }}
             {{- end }}
+            # 2026-06-14: env-mcp scheduling now hits agentserver-main
+            # directly (no more app-gateway loopback proxy). Auth is
+            # the workspace cap-token; agentserver-main verifies the
+            # HMAC against the same secret app-gateway / exec-gateway
+            # use. Same K8s Secret + key (cap-token-hmac-secret) all
+            # three pods read so a rotation is a single edit.
+            - name: CXG_CAPTOKEN_HMAC_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-codex-gateway
+                  key: cap-token-hmac-secret
             {{- if .Values.secretsPepper }}
             - name: SECRETS_PEPPER
               valueFrom:

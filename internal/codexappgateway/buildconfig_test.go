@@ -22,15 +22,17 @@ func (stubTokenFetcher) GetOrCreate(_ context.Context, _ string) (string, error)
 
 func newTestCfg() ServeConfig {
 	return ServeConfig{
-		ExecGatewayWSURL:     "ws://exec-gw:6060",
-		CapTokenHMACSecret:   []byte("cap-secret"),
-		CapTokenTTL:          time.Minute,
-		ModelProvider:        "modelserver",
-		Model:                "gpt-5.5",
-		ModelProviderBaseURL: "http://llmproxy:8085/v1",
-		ModelProviderEnvKey:  "CODEX_API_KEY",
-		ModelProviderWireAPI: "responses",
-		ListenAddr:           ":8086",
+		ExecGatewayWSURL:       "ws://exec-gw:6060",
+		ExecGatewayInternalURL: "http://exec-gw:8087",
+		AgentserverInternalURL: "http://agentserver:8080",
+		CapTokenHMACSecret:     []byte("cap-secret"),
+		CapTokenTTL:            time.Minute,
+		ModelProvider:          "modelserver",
+		Model:                  "gpt-5.5",
+		ModelProviderBaseURL:   "http://llmproxy:8085/v1",
+		ModelProviderEnvKey:    "CODEX_API_KEY",
+		ModelProviderWireAPI:   "responses",
+		ListenAddr:             ":8086",
 	}
 }
 
@@ -42,7 +44,7 @@ func TestBuildConfig_EmitsAgentserverMCPAndMintsWorkspaceToken(t *testing.T) {
 	cfg := newTestCfg()
 	build := makeBuildConfig(cfg, stubTokenFetcher{}, "/usr/local/bin/codex-app-gateway", newDiscardLogger())
 
-	got, err := build(context.Background(), "ws_a", "u_test", "lb-token-xyz")
+	got, err := build(context.Background(), "ws_a", "u_test")
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -56,11 +58,11 @@ func TestBuildConfig_EmitsAgentserverMCPAndMintsWorkspaceToken(t *testing.T) {
 	if m.ExecGatewayURL != "ws://exec-gw:6060/bridge" {
 		t.Errorf("ExecGatewayURL = %q", m.ExecGatewayURL)
 	}
-	if m.AppGatewayInternalURL != "http://127.0.0.1:8086" {
-		t.Errorf("AppGatewayInternalURL = %q", m.AppGatewayInternalURL)
+	if m.ExecGatewayInternalURL != "http://exec-gw:8087" {
+		t.Errorf("ExecGatewayInternalURL = %q", m.ExecGatewayInternalURL)
 	}
-	if m.LoopbackToken != "lb-token-xyz" {
-		t.Errorf("LoopbackToken = %q", m.LoopbackToken)
+	if m.AgentserverInternalURL != "http://agentserver:8080" {
+		t.Errorf("AgentserverInternalURL = %q", m.AgentserverInternalURL)
 	}
 	p, err := codexexecgateway.VerifyCapabilityToken(m.WorkspaceToken, cfg.CapTokenHMACSecret)
 	if err != nil {
@@ -74,18 +76,11 @@ func TestBuildConfig_EmitsAgentserverMCPAndMintsWorkspaceToken(t *testing.T) {
 	}
 }
 
-// Note: the previous "TestBuildConfig_NoExecGatewayFetchHappens" test
-// guarded that build() didn't call the exec-gateway connected endpoint
-// at spawn time (the spec moved that to a live env-mcp lookup). After
-// the 2026-06-14 loopback removal the entire ExecGatewayClient is
-// deleted, so the test is redundant by construction — there's nothing
-// left to call.
-
 func TestBuildConfig_RespectsConfiguredTrustedPaths(t *testing.T) {
 	cfg := newTestCfg()
 	cfg.ProjectTrustedPaths = []string{"/workspace", "/data"}
 	build := makeBuildConfig(cfg, stubTokenFetcher{}, "/x", newDiscardLogger())
-	got, err := build(context.Background(), "ws_a", "", "lb")
+	got, err := build(context.Background(), "ws_a", "")
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -94,16 +89,8 @@ func TestBuildConfig_RespectsConfiguredTrustedPaths(t *testing.T) {
 	}
 }
 
-func TestLoopbackInternalURL(t *testing.T) {
-	cases := map[string]string{
-		":8086":         "http://127.0.0.1:8086",
-		"0.0.0.0:9000":  "http://127.0.0.1:9000",
-		"127.0.0.1:80":  "http://127.0.0.1:80",
-		"":              "",
-	}
-	for in, want := range cases {
-		if got := loopbackInternalURL(in); got != want {
-			t.Errorf("loopbackInternalURL(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
+// Note on deleted tests:
+//   - TestLoopbackInternalURL — loopbackInternalURL helper is gone
+//     with the loopback removal; no callers left.
+//   - TestBuildConfig_NoExecGatewayFetchHappens — predated #240; the
+//     ExecGatewayClient was deleted there.

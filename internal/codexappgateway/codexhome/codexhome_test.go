@@ -80,9 +80,7 @@ func TestRenderConfigTOML_DisablesBuiltinShellAndRegistersAgentserverMCP(t *test
 			CodexBin:              "/usr/local/bin/codex-app-gateway",
 			WorkspaceID:           "ws_a",
 			ExecGatewayURL:        "wss://exec-gw.example/bridge",
-			AppGatewayInternalURL: "http://127.0.0.1:8086",
 			WorkspaceToken:        "wstok",
-			LoopbackToken:         "lbtok",
 		},
 		ProjectTrustedPaths: []string{"/tmp"},
 	}
@@ -98,11 +96,8 @@ func TestRenderConfigTOML_DisablesBuiltinShellAndRegistersAgentserverMCP(t *test
 		`[mcp_servers.agentserver]`,
 		`"--workspace-id"`, `"ws_a"`,
 		`"--exec-gateway-url"`, `"wss://exec-gw.example/bridge"`,
-		`"--app-gateway-internal"`, `"http://127.0.0.1:8086"`,
 		`"--workspace-token-env"`, `"CXG_WORKSPACE_TOKEN"`,
-		`"--loopback-token-env"`, `"CXG_LOOPBACK_TOKEN"`,
 		`CXG_WORKSPACE_TOKEN = "wstok"`,
-		`CXG_LOOPBACK_TOKEN = "lbtok"`,
 		`[projects."/tmp"]`,
 		`trust_level = "trusted"`,
 	} {
@@ -120,9 +115,7 @@ func TestRenderConfigTOML_LogFileEmitsFlag(t *testing.T) {
 			CodexBin:              "/usr/local/bin/codex-app-gateway",
 			WorkspaceID:           "ws_a",
 			ExecGatewayURL:        "wss://exec-gw.example/bridge",
-			AppGatewayInternalURL: "http://127.0.0.1:8086",
 			WorkspaceToken:        "wstok",
-			LoopbackToken:         "lbtok",
 			LogFile:               "/tmp/codex-app-gateway/ws_a/env-mcp.log",
 		},
 	}
@@ -148,9 +141,7 @@ func TestRenderConfigTOML_LogFileOmittedWhenEmpty(t *testing.T) {
 			CodexBin:              "/usr/local/bin/codex-app-gateway",
 			WorkspaceID:           "ws_a",
 			ExecGatewayURL:        "wss://exec-gw.example/bridge",
-			AppGatewayInternalURL: "http://127.0.0.1:8086",
 			WorkspaceToken:        "wstok",
-			LoopbackToken:         "lbtok",
 		},
 	}
 	out, err := RenderConfigTOML(cfg)
@@ -176,9 +167,7 @@ func TestWriteConfig_AutoInjectsLogFileFromCodexHome(t *testing.T) {
 			CodexBin:              "/usr/local/bin/codex-app-gateway",
 			WorkspaceID:           "ws_a",
 			ExecGatewayURL:        "wss://exec-gw.example/bridge",
-			AppGatewayInternalURL: "http://127.0.0.1:8086",
 			WorkspaceToken:        "wstok",
-			LoopbackToken:         "lbtok",
 			// LogFile deliberately empty — WriteConfig should fill it
 			// in from codexHome.
 		},
@@ -207,9 +196,7 @@ func TestRenderConfigTOML_HTTPRelayEnabledEmitsFlagAndEnv(t *testing.T) {
 			CodexBin:                  "/usr/local/bin/codex-app-gateway",
 			WorkspaceID:               "ws_a",
 			ExecGatewayURL:            "wss://exec-gw.example/bridge",
-			AppGatewayInternalURL:     "http://127.0.0.1:8086",
 			WorkspaceToken:            "wstok",
-			LoopbackToken:             "lbtok",
 			ExecGatewayInternalURL:    "http://codex-exec-gateway:6060",
 			ExecGatewayInternalSecret: "shh-its-a-secret",
 		},
@@ -231,18 +218,23 @@ func TestRenderConfigTOML_HTTPRelayEnabledEmitsFlagAndEnv(t *testing.T) {
 	}
 }
 
-func TestRenderConfigTOML_HTTPRelayDisabledOmitsFlagAndEnv(t *testing.T) {
+func TestRenderConfigTOML_HTTPRelayDisabledOmitsSecretFlagAndEnv(t *testing.T) {
+	// Post the 2026-06-14 loopback removal, --exec-gateway-internal-url
+	// is always emitted (env-mcp needs it for list_environments). Only
+	// the --exec-gateway-internal-secret-env flag and the
+	// CXG_EXEC_GATEWAY_INTERNAL_SECRET env entry stay conditional on
+	// the secret being set — those are still copy_path-only.
 	cfg := ConfigInput{
 		ModelProvider: "modelserver",
 		Model:         "gpt-5.5",
 		AgentServer: AgentServerMCP{
-			CodexBin:              "/usr/local/bin/codex-app-gateway",
-			WorkspaceID:           "ws_a",
-			ExecGatewayURL:        "wss://exec-gw.example/bridge",
-			AppGatewayInternalURL: "http://127.0.0.1:8086",
-			WorkspaceToken:        "wstok",
-			LoopbackToken:         "lbtok",
-			// ExecGatewayInternalURL + Secret deliberately empty
+			CodexBin:               "/usr/local/bin/codex-app-gateway",
+			WorkspaceID:            "ws_a",
+			ExecGatewayURL:         "wss://exec-gw.example/bridge",
+			WorkspaceToken:         "wstok",
+			ExecGatewayInternalURL: "http://exec-gw:8087",
+			AgentserverInternalURL: "http://agentserver:8080",
+			// ExecGatewayInternalSecret deliberately empty
 		},
 	}
 	out, err := RenderConfigTOML(cfg)
@@ -250,13 +242,16 @@ func TestRenderConfigTOML_HTTPRelayDisabledOmitsFlagAndEnv(t *testing.T) {
 		t.Fatalf("Render: %v", err)
 	}
 	for _, banned := range []string{
-		`--exec-gateway-internal-url`,
 		`--exec-gateway-internal-secret-env`,
 		`CXG_EXEC_GATEWAY_INTERNAL_SECRET`,
 	} {
 		if strings.Contains(out, banned) {
 			t.Errorf("unexpected %q in disabled-relay config:\n%s", banned, out)
 		}
+	}
+	// The URL must STILL be present.
+	if !strings.Contains(out, `"--exec-gateway-internal-url"`) {
+		t.Errorf("missing --exec-gateway-internal-url; required for list_environments")
 	}
 }
 
@@ -282,9 +277,7 @@ func TestWriteConfigEmitsDefaultToolsApprovalMode(t *testing.T) {
 			CodexBin:              "/usr/local/bin/codex-app-gateway",
 			WorkspaceID:           "ws-test",
 			ExecGatewayURL:        "wss://exec-gw.example/bridge",
-			AppGatewayInternalURL: "http://127.0.0.1:8086",
 			WorkspaceToken:        "wstok",
-			LoopbackToken:         "lbtok",
 		},
 	}
 	out, err := RenderConfigTOML(input)
@@ -304,9 +297,7 @@ func TestRenderConfigTOML_ReasoningEffort(t *testing.T) {
 			CodexBin:              "/usr/local/bin/codex-app-gateway",
 			WorkspaceID:           "ws_a",
 			ExecGatewayURL:        "wss://exec-gw.example/bridge",
-			AppGatewayInternalURL: "http://127.0.0.1:8086",
 			WorkspaceToken:        "wstok",
-			LoopbackToken:         "lbtok",
 		},
 	}
 

@@ -64,7 +64,7 @@ func TestSupervisor_EnsureSubprocess_SpawnsOnce(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	build := func(_ string) (SpawnConfig, error) { return SpawnConfig{Config: defaultConfigInput()}, nil }
+	build := func() (SpawnConfig, error) { return SpawnConfig{Config: defaultConfigInput()}, nil }
 	key := Key{WorkspaceID: "ws_a"}
 	h1, err := sup.EnsureSubprocess(ctx, key, build)
 	if err != nil {
@@ -88,7 +88,7 @@ func TestSupervisor_Shutdown_UploadsToS3(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	build := func(_ string) (SpawnConfig, error) { return SpawnConfig{Config: defaultConfigInput()}, nil }
+	build := func() (SpawnConfig, error) { return SpawnConfig{Config: defaultConfigInput()}, nil }
 	key := Key{WorkspaceID: "ws_a"}
 	h, err := sup.EnsureSubprocess(ctx, key, build)
 	if err != nil {
@@ -119,7 +119,7 @@ func TestSupervisor_EnsureSubprocess_RestoresFromS3(t *testing.T) {
 		sup := NewSupervisor(SupervisorConfig{CodexBin: bin, HomeMgr: mgr, Store: store})
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		build := func(_ string) (SpawnConfig, error) { return SpawnConfig{Config: defaultConfigInput()}, nil }
+		build := func() (SpawnConfig, error) { return SpawnConfig{Config: defaultConfigInput()}, nil }
 		key := Key{WorkspaceID: "ws_a"}
 		h, err := sup.EnsureSubprocess(ctx, key, build)
 		if err != nil {
@@ -132,7 +132,7 @@ func TestSupervisor_EnsureSubprocess_RestoresFromS3(t *testing.T) {
 	sup2 := NewSupervisor(SupervisorConfig{CodexBin: bin, HomeMgr: codexhome.NewManager(t.TempDir()), Store: store})
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	build := func(_ string) (SpawnConfig, error) { return SpawnConfig{Config: defaultConfigInput()}, nil }
+	build := func() (SpawnConfig, error) { return SpawnConfig{Config: defaultConfigInput()}, nil }
 	h, err := sup2.EnsureSubprocess(ctx, Key{WorkspaceID: "ws_a"}, build)
 	if err != nil {
 		t.Fatalf("ensure: %v", err)
@@ -156,7 +156,7 @@ func TestSupervisor_Ensure_BuildError_PropagatesAndDoesNotSpawn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	wantErr := errors.New("nope")
-	_, err := sup.EnsureSubprocess(ctx, Key{WorkspaceID: "ws_a"}, func(_ string) (SpawnConfig, error) {
+	_, err := sup.EnsureSubprocess(ctx, Key{WorkspaceID: "ws_a"}, func() (SpawnConfig, error) {
 		return SpawnConfig{}, wantErr
 	})
 	if !errors.Is(err, wantErr) {
@@ -174,7 +174,7 @@ func TestSupervisor_EnsureSubprocess_RespawnsAfterCrash(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	build := func(_ string) (SpawnConfig, error) { return SpawnConfig{Config: defaultConfigInput()}, nil }
+	build := func() (SpawnConfig, error) { return SpawnConfig{Config: defaultConfigInput()}, nil }
 	key := Key{WorkspaceID: "ws_a"}
 
 	h1, err := sup.EnsureSubprocess(ctx, key, build)

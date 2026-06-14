@@ -141,7 +141,7 @@ func TestUpdateTask_RejectsEmptyUpdate(t *testing.T) {
 	}
 }
 
-func TestLoopbackTransport_InjectsTimezone(t *testing.T) {
+func TestHTTPTransport_InjectsTimezone(t *testing.T) {
 	t.Setenv("TZ", "Asia/Shanghai")
 	var got string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -152,7 +152,7 @@ func TestLoopbackTransport_InjectsTimezone(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tr := NewLoopbackTransport(srv.URL, "tok")
+	tr := NewHTTPTransport(srv.URL, "ws_a", "cap-tok", nil)
 	_, err := tr.Call(context.Background(), "schedule", json.RawMessage(`{"prompt":"x","processAfter":"2099-01-01T09:00:00"}`))
 	if err != nil {
 		t.Fatal(err)
@@ -162,7 +162,7 @@ func TestLoopbackTransport_InjectsTimezone(t *testing.T) {
 	}
 }
 
-func TestLoopbackTransport_RespectsExplicitTimezone(t *testing.T) {
+func TestHTTPTransport_RespectsExplicitTimezone(t *testing.T) {
 	t.Setenv("TZ", "Asia/Shanghai")
 	var got string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -172,13 +172,78 @@ func TestLoopbackTransport_RespectsExplicitTimezone(t *testing.T) {
 		w.Write([]byte("{}"))
 	}))
 	defer srv.Close()
-	tr := NewLoopbackTransport(srv.URL, "tok")
+	tr := NewHTTPTransport(srv.URL, "ws_a", "cap-tok", nil)
 	_, err := tr.Call(context.Background(), "schedule", json.RawMessage(`{"prompt":"x","processAfter":"...","timezone":"UTC"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(got, `"timezone":"UTC"`) || strings.Contains(got, "Asia/Shanghai") {
 		t.Fatalf("explicit tz must win; got: %s", got)
+	}
+}
+
+// TestHTTPTransport_RoutesPerAction pins the action→(method, path)
+// translation that used to live in app-gateway's loopback handler.
+// One row per supported action; verifies the right verb + URL +
+// Authorization: Bearer.
+func TestHTTPTransport_RoutesPerAction(t *testing.T) {
+	type seen struct {
+		method, path, authz string
+		body                string
+	}
+	var got seen
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = seen{r.Method, r.URL.Path + (func() string {
+			if r.URL.RawQuery != "" {
+				return "?" + r.URL.RawQuery
+			}
+			return ""
+		})(), r.Header.Get("Authorization"), string(b)}
+		w.WriteHeader(200)
+		w.Write([]byte("{}"))
+	}))
+	defer srv.Close()
+	tr := NewHTTPTransport(srv.URL, "ws_a", "cap-tok", nil)
+
+	cases := []struct {
+		action, body, method, path string
+	}{
+		{"schedule", `{"prompt":"p","processAfter":"...","timezone":"UTC"}`, "POST", "/api/internal/workspaces/ws_a/scheduled-tasks"},
+		{"list", `{"timezone":"UTC"}`, "GET", "/api/internal/workspaces/ws_a/scheduled-tasks"},
+		{"list", `{"status":"pending","timezone":"UTC"}`, "GET", "/api/internal/workspaces/ws_a/scheduled-tasks?status=pending"},
+		{"cancel", `{"taskId":"sch_x","timezone":"UTC"}`, "POST", "/api/internal/workspaces/ws_a/scheduled-tasks/sch_x/cancel"},
+		{"pause", `{"taskId":"sch_x","timezone":"UTC"}`, "POST", "/api/internal/workspaces/ws_a/scheduled-tasks/sch_x/pause"},
+		{"resume", `{"taskId":"sch_x","timezone":"UTC"}`, "POST", "/api/internal/workspaces/ws_a/scheduled-tasks/sch_x/resume"},
+		{"update", `{"taskId":"sch_x","prompt":"new","timezone":"UTC"}`, "PATCH", "/api/internal/workspaces/ws_a/scheduled-tasks/sch_x"},
+	}
+	for _, c := range cases {
+		_, err := tr.Call(context.Background(), c.action, json.RawMessage(c.body))
+		if err != nil {
+			t.Fatalf("%s: %v", c.action, err)
+		}
+		if got.method != c.method || got.path != c.path {
+			t.Errorf("%s: method=%q path=%q, want %q %q", c.action, got.method, got.path, c.method, c.path)
+		}
+		if got.authz != "Bearer cap-tok" {
+			t.Errorf("%s: Authorization = %q, want Bearer cap-tok", c.action, got.authz)
+		}
+	}
+}
+
+func TestHTTPTransport_CancelMissingTaskID(t *testing.T) {
+	tr := NewHTTPTransport("http://unused", "ws_a", "cap-tok", nil)
+	_, err := tr.Call(context.Background(), "cancel", json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("want error for missing taskId")
+	}
+}
+
+func TestHTTPTransport_UnknownAction(t *testing.T) {
+	tr := NewHTTPTransport("http://unused", "ws_a", "cap-tok", nil)
+	_, err := tr.Call(context.Background(), "bogus", json.RawMessage(`{}`))
+	if err == nil {
+		t.Fatal("want error for unknown action")
 	}
 }
 

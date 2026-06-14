@@ -58,7 +58,7 @@ type Server struct {
 	// workspace-scoped LLM API key). Receives the per-spawn loopback
 	// token so the agentserver MCP entry in config.toml can embed it.
 	// Allowed to hit the network. Errors abort the spawn.
-	buildConfig func(ctx context.Context, workspaceID, userID, loopbackToken string) (supervisor.SpawnConfig, error)
+	buildConfig func(ctx context.Context, workspaceID, userID string) (supervisor.SpawnConfig, error)
 
 	// brokerPool caches per-workspace broker.Conn instances. Idle TTL is
 	// cfg.BrokerPoolIdleTTL (default 30m, override via CXG_BROKER_POOL_IDLE_TTL).
@@ -123,27 +123,10 @@ func NewServer(cfg ServeConfig, codexBin, selfBin string, logger *slog.Logger) (
 	return s, nil
 }
 
-// loopbackInternalURL turns a listen address like ":8086" or
-// "0.0.0.0:8086" into the loopback URL env-mcp should call. Empty
-// listenAddr yields empty result (codexhome will omit the agentserver
-// MCP entry, useful for tests).
-func loopbackInternalURL(listenAddr string) string {
-	if listenAddr == "" {
-		return ""
-	}
-	addr := listenAddr
-	if strings.HasPrefix(addr, ":") {
-		addr = "127.0.0.1" + addr
-	} else if strings.HasPrefix(addr, "0.0.0.0:") {
-		addr = "127.0.0.1:" + strings.TrimPrefix(addr, "0.0.0.0:")
-	}
-	return "http://" + addr
-}
-
 // makeBuildConfig returns the per-spawn SpawnConfig producer. Split out
 // so server_test.go can construct a Server with stub clients.
-func makeBuildConfig(cfg ServeConfig, wsTokenClient workspaceTokenFetcher, selfBin string, logger *slog.Logger) func(context.Context, string, string, string) (supervisor.SpawnConfig, error) {
-	return func(ctx context.Context, workspaceID, userID, loopbackToken string) (supervisor.SpawnConfig, error) {
+func makeBuildConfig(cfg ServeConfig, wsTokenClient workspaceTokenFetcher, selfBin string, logger *slog.Logger) func(context.Context, string, string) (supervisor.SpawnConfig, error) {
+	return func(ctx context.Context, workspaceID, userID string) (supervisor.SpawnConfig, error) {
 		// Per 2026-05-16 redesign, the executor list is no longer
 		// fixed at spawn time — env-mcp reads it live (post the
 		// 2026-06-14 loopback removal, directly from exec-gateway
@@ -197,11 +180,10 @@ func makeBuildConfig(cfg ServeConfig, wsTokenClient workspaceTokenFetcher, selfB
 					CodexBin:                  selfBin,
 					WorkspaceID:               workspaceID,
 					ExecGatewayURL:            strings.TrimRight(cfg.ExecGatewayWSURL, "/") + "/bridge",
-					AppGatewayInternalURL:     loopbackInternalURL(cfg.ListenAddr),
 					WorkspaceToken:            workspaceTok,
-					LoopbackToken:             loopbackToken,
 					ExecGatewayInternalURL:    cfg.ExecGatewayInternalURL,
 					ExecGatewayInternalSecret: cfg.ExecGatewayInternalSecret,
+					AgentserverInternalURL:    cfg.AgentserverInternalURL,
 				},
 				ProjectTrustedPaths: trusted,
 			},
@@ -285,15 +267,9 @@ func (s *Server) Routes() http.Handler {
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
 	r.Get("/", s.handleCodexAppWS)
 	r.Get("/codex-app/ws", s.handleCodexAppWS)
-	// Loopback scheduled-task proxy — env-mcp POSTs all actions here;
-	// each handler resolves workspace from X-Loopback-Token and forwards
-	// to agentserver-main's /api/internal/workspaces/{wid}/scheduled-tasks/…
-	r.Post("/internal/scheduled-tasks/schedule", s.handleInternalScheduledTask("schedule"))
-	r.Post("/internal/scheduled-tasks/list", s.handleInternalScheduledTask("list"))
-	r.Post("/internal/scheduled-tasks/cancel", s.handleInternalScheduledTask("cancel"))
-	r.Post("/internal/scheduled-tasks/pause", s.handleInternalScheduledTask("pause"))
-	r.Post("/internal/scheduled-tasks/resume", s.handleInternalScheduledTask("resume"))
-	r.Post("/internal/scheduled-tasks/update", s.handleInternalScheduledTask("update"))
+	// /internal/* loopback handlers (connected, scheduled-tasks) were
+	// removed 2026-06-14. env-mcp now calls codex-exec-gateway and
+	// agentserver-main directly with its workspace cap-token.
 	turnHandler := &turnAPIHandler{
 		runner: newPoolRunner(s.brokerPool),
 	}
@@ -447,8 +423,8 @@ func (s *Server) handleCodexAppWS(w http.ResponseWriter, r *http.Request) {
 
 	key := supervisor.Key{WorkspaceID: id.WorkspaceID}
 	ctx := r.Context()
-	handle, err := s.sup.EnsureSubprocess(ctx, key, func(loopbackToken string) (supervisor.SpawnConfig, error) {
-		return s.buildConfig(ctx, id.WorkspaceID, id.UserID, loopbackToken)
+	handle, err := s.sup.EnsureSubprocess(ctx, key, func() (supervisor.SpawnConfig, error) {
+		return s.buildConfig(ctx, id.WorkspaceID, id.UserID)
 	})
 	if err != nil {
 		s.logger.Error("ensure subprocess", "err", err, "key", key)

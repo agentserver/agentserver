@@ -70,12 +70,8 @@ type ServeConfig struct {
 	// env. Sent in every verify request as X-Internal-Secret.
 	AgentserverInternalSecret string
 
-	// ListenAddr is the gateway's HTTP listen address (e.g. ":8086"). Used
-	// to derive the loopback URL env-mcp uses for /internal/connected.
-	// Set by main.go before NewServer; tests may leave it empty (codexhome
-	// then emits no AppGatewayInternalURL and env-mcp won't be able to
-	// list environments, which is fine for tests that don't exercise
-	// list_environments).
+	// ListenAddr is the gateway's HTTP listen address (e.g. ":8086").
+	// Tests may leave it empty (the HTTP server simply isn't started).
 	ListenAddr string
 
 	// Scheduler config — when AgentserverInternalURL is empty the scheduler is

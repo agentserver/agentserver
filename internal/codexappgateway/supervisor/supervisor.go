@@ -2,9 +2,6 @@ package supervisor
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/subtle"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -50,58 +47,29 @@ type entry struct {
 	// path (which calls Touch) or the broker.Turn path (which writes
 	// directly through the pointer) feed into the same clock the
 	// IdleReaper reads.
-	lastActiveAt  *atomic.Int64
-	loopbackToken string // 32-byte hex; minted per spawn, scoped to one workspace
+	lastActiveAt *atomic.Int64
 }
 
 // SpawnConfig is what a ConfigBuilder returns: the per-thread CODEX_HOME
 // config.toml input plus per-spawn process env vars (e.g. a workspace-
 // scoped LLM API key fetched from agentserver at spawn time). The env
 // list is concatenated with SupervisorConfig.ExtraEnv when launching.
-//
-// LoopbackToken (if set by Supervisor.EnsureSubprocess after the
-// builder runs) is the 32-byte hex token env-mcp uses to authenticate
-// against the app-gateway's loopback /internal/connected endpoint. The
-// builder cannot set it itself because it is allocated at spawn time
-// and stored in the entry; pass-through happens in EnsureSubprocess so
-// callers writing config.toml see it.
 type SpawnConfig struct {
 	Config codexhome.ConfigInput
 	Env    []string
 }
 
-// ConfigBuilder produces a fresh SpawnConfig at spawn time. Receives
-// the per-spawn loopback token so the builder can embed it in
-// config.toml's env block. Allowed to hit the network; errors propagate.
-type ConfigBuilder func(loopbackToken string) (SpawnConfig, error)
-
-// mintLoopbackToken returns 32 random hex chars (16 bytes of entropy).
-func mintLoopbackToken() (string, error) {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("loopback token: %w", err)
-	}
-	return hex.EncodeToString(b[:]), nil
-}
-
-// LookupWorkspaceForLoopbackToken constant-time-compares the supplied
-// token against every live child's loopback token and returns the
-// matching workspace_id. Linear scan is fine: # live subprocesses ≤
-// workspaces, typically <100.
-func (s *Supervisor) LookupWorkspaceForLoopbackToken(token string) (string, bool) {
-	if token == "" {
-		return "", false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	tokBytes := []byte(token)
-	for k, e := range s.children {
-		if subtle.ConstantTimeCompare([]byte(e.loopbackToken), tokBytes) == 1 {
-			return k.WorkspaceID, true
-		}
-	}
-	return "", false
-}
+// ConfigBuilder produces a fresh SpawnConfig at spawn time. Allowed
+// to hit the network; errors propagate.
+//
+// Pre the 2026-06-14 loopback removal this took a per-spawn loopback
+// token argument the builder embedded in config.toml's env block.
+// That token authorised env-mcp against the app-gateway's loopback
+// /internal/{connected,scheduled-tasks/*} handlers. With those
+// handlers gone, env-mcp authenticates downstream calls with its
+// workspace cap-token (set by the builder via CXG_WORKSPACE_TOKEN)
+// and the supervisor no longer needs to mint or track anything.
+type ConfigBuilder func() (SpawnConfig, error)
 
 func NewSupervisor(cfg SupervisorConfig) *Supervisor {
 	logger := cfg.Logger
@@ -145,11 +113,7 @@ func (s *Supervisor) EnsureSubprocess(ctx context.Context, key Key, build Config
 		s.mu.Unlock()
 	}
 
-	loopbackToken, err := mintLoopbackToken()
-	if err != nil {
-		return nil, err
-	}
-	spawnCfg, err := build(loopbackToken)
+	spawnCfg, err := build()
 	if err != nil {
 		return nil, fmt.Errorf("config builder: %w", err)
 	}
@@ -169,12 +133,8 @@ func (s *Supervisor) EnsureSubprocess(ctx context.Context, key Key, build Config
 
 	// Static SupervisorConfig.ExtraEnv first, per-spawn env last so the
 	// per-spawn values win on duplicate keys (e.g. a workspace-scoped
-	// CODEX_API_KEY overriding a static fallback). The loopback token
-	// is injected via CXG_LOOPBACK_TOKEN so the env-mcp child (spawned
-	// transitively by codex app-server) can authenticate to the
-	// gateway's /internal/connected endpoint.
+	// CODEX_API_KEY overriding a static fallback).
 	extraEnv := append(append([]string{}, s.cfg.ExtraEnv...), spawnCfg.Env...)
-	extraEnv = append(extraEnv, "CXG_LOOPBACK_TOKEN="+loopbackToken)
 	handle, err := spawnCodexAppServer(ctx, s.cfg.CodexBin, codexHome, extraEnv)
 	if err != nil {
 		_ = s.cfg.HomeMgr.RemoveTmpDir(codexHome)
@@ -203,10 +163,9 @@ func (s *Supervisor) EnsureSubprocess(ctx context.Context, key Key, build Config
 	clock.Store(time.Now().UnixNano())
 	handle.lastActiveAt = clock
 	s.children[key] = &entry{
-		handle:        handle,
-		codexHome:     codexHome,
-		lastActiveAt:  clock,
-		loopbackToken: loopbackToken,
+		handle:       handle,
+		codexHome:    codexHome,
+		lastActiveAt: clock,
 	}
 	s.mu.Unlock()
 	return handle, nil

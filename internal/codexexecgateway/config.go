@@ -23,10 +23,11 @@ type Config struct {
 	// POST /internal/validate-proxy-token. Example: "http://agentserver:8080".
 	// Required when the SDK routes are enabled.
 	AgentserverInternalURL string
-	// SelfHTTPBaseURL is the http(s):// loopback base for this gateway process
-	// (e.g. "http://localhost:6060"). The SDK name-resolver calls
-	// /internal/sdk/connected on this host. If empty, the SDK tool layer will
-	// fail to resolve environment names (envs/list still works).
+	// SelfHTTPBaseURL is the http(s):// base for this gateway process
+	// (e.g. "http://localhost:6060"). Used as a fallback for the bridge
+	// WebSocket URL when PublicWSBaseURL is unset (NewServer rewrites
+	// http(s):// → ws(s)://); the SDK in-process name-resolver uses
+	// NewResolverWithFetcher and never makes HTTP calls back to here.
 	SelfHTTPBaseURL string
 	// PublicWSBaseURL is the wss:// origin used in the response of the
 	// upstream-compat `POST /cloud/executor/{exe_id}/register` endpoint.

@@ -21,17 +21,32 @@ type Registry interface {
 }
 
 // Connected returns the intersection of (workspace's bound executors) ∩
-// (currently-connected exe_ids). Used by codex-app-gateway when composing
-// the per-turn manifest.
+// (currently-connected exe_ids). Called directly by env-mcp's in-pod
+// nameresolver — see internal/codexappgateway/envmcp/envmcp.go and
+// internal/envtools/nameresolver. Used to populate the LLM-facing
+// list_environments tool output.
+//
+// Workspace id comes from the cap-token claims (set by
+// handlers.RequireCapToken) — NOT from a query-string parameter. The
+// token is HMAC-signed, so the workspace_id is cryptographically bound
+// to a valid bearer. The pre-2026-06-14 design accepted ?workspace_id=
+// alongside a shared-secret bearer; that was forgeable by any holder
+// of the shared secret and required a loopback proxy hop just to
+// inject the workspace_id from an opaque per-spawn token. Both are now
+// gone — see the loopback-removal PR for the full rationale.
 func Connected(store InternalConnectedStore, reg Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		wid := r.URL.Query().Get("workspace_id")
-		if wid == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "workspace_id required"})
+		claims, ok := CapTokenClaimsFromContext(r.Context())
+		if !ok || claims.WorkspaceID == "" {
+			// Should be unreachable: RequireCapToken guarantees claims
+			// or rejects with 401 before reaching us. Defensive 500 so
+			// a future middleware-chain change can't silently let a
+			// no-workspace request through.
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "missing cap-token claims"})
 			return
 		}
 		ids := reg.ConnectedIDs()
-		rows, err := store.ConnectedExecutorsForWorkspace(r.Context(), wid, ids)
+		rows, err := store.ConnectedExecutorsForWorkspace(r.Context(), claims.WorkspaceID, ids)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "list"})
 			return

@@ -9,19 +9,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/internal/codexexecgateway"
-	"github.com/agentserver/agentserver/internal/codexexecgateway/execmodel"
 )
-
-type stubConnected struct {
-	rows []execmodel.ConnectedExecutor
-	err  error
-	gotW string
-}
-
-func (s *stubConnected) Connected(_ context.Context, w string) ([]execmodel.ConnectedExecutor, error) {
-	s.gotW = w
-	return s.rows, s.err
-}
 
 // stubTokenFetcher returns a fake workspace token; good enough for
 // tests that don't care about the env value, only about the
@@ -52,7 +40,7 @@ func newDiscardLogger() *slog.Logger {
 
 func TestBuildConfig_EmitsAgentserverMCPAndMintsWorkspaceToken(t *testing.T) {
 	cfg := newTestCfg()
-	build := makeBuildConfig(cfg, &stubConnected{}, stubTokenFetcher{}, "/usr/local/bin/codex-app-gateway", newDiscardLogger())
+	build := makeBuildConfig(cfg, stubTokenFetcher{}, "/usr/local/bin/codex-app-gateway", newDiscardLogger())
 
 	got, err := build(context.Background(), "ws_a", "u_test", "lb-token-xyz")
 	if err != nil {
@@ -86,24 +74,17 @@ func TestBuildConfig_EmitsAgentserverMCPAndMintsWorkspaceToken(t *testing.T) {
 	}
 }
 
-func TestBuildConfig_NoExecGatewayFetchHappens(t *testing.T) {
-	// Per redesign, build() no longer hits the exec-gateway at spawn time;
-	// the connected client should not be touched.
-	stub := &stubConnected{gotW: ""}
-	cfg := newTestCfg()
-	build := makeBuildConfig(cfg, stub, stubTokenFetcher{}, "/x", newDiscardLogger())
-	if _, err := build(context.Background(), "ws_a", "", "lb"); err != nil {
-		t.Fatalf("build: %v", err)
-	}
-	if stub.gotW != "" {
-		t.Errorf("connectedClient.Connected was called (gotW=%q); list_environments now reads it live", stub.gotW)
-	}
-}
+// Note: the previous "TestBuildConfig_NoExecGatewayFetchHappens" test
+// guarded that build() didn't call the exec-gateway connected endpoint
+// at spawn time (the spec moved that to a live env-mcp lookup). After
+// the 2026-06-14 loopback removal the entire ExecGatewayClient is
+// deleted, so the test is redundant by construction — there's nothing
+// left to call.
 
 func TestBuildConfig_RespectsConfiguredTrustedPaths(t *testing.T) {
 	cfg := newTestCfg()
 	cfg.ProjectTrustedPaths = []string{"/workspace", "/data"}
-	build := makeBuildConfig(cfg, &stubConnected{}, stubTokenFetcher{}, "/x", newDiscardLogger())
+	build := makeBuildConfig(cfg, stubTokenFetcher{}, "/x", newDiscardLogger())
 	got, err := build(context.Background(), "ws_a", "", "lb")
 	if err != nil {
 		t.Fatalf("build: %v", err)

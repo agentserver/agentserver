@@ -42,11 +42,17 @@ func OpenLogSink(stderr io.Writer, path string) (io.Writer, error) {
 // rather than per-executor; one child binary handles every executor in
 // the workspace via environment_id routing.
 type RunArgs struct {
-	WorkspaceID        string // --workspace-id
-	ExecGatewayURL     string // --exec-gateway-url; pool appends /<exe_id>
-	AppGatewayInternal string // --app-gateway-internal; list_environments calls /internal/connected here
+	WorkspaceID    string // --workspace-id
+	ExecGatewayURL string // --exec-gateway-url; pool appends /<exe_id> (ws://)
+	// AppGatewayInternal is the http://127.0.0.1:<port> loopback URL.
+	// Used by scheduling tools (which still go through the loopback
+	// proxy → agentserver-main's scheduled-tasks API). list_environments
+	// used to go through this too via /internal/connected; as of
+	// 2026-06-14 list_environments calls codex-exec-gateway directly
+	// with the workspace cap-token (see ExecGatewayInternalURL).
+	AppGatewayInternal string // --app-gateway-internal
 	WorkspaceTokenEnv  string // --workspace-token-env (workspace-scoped cap token)
-	LoopbackTokenEnv   string // --loopback-token-env (for /internal/connected)
+	LoopbackTokenEnv   string // --loopback-token-env (still used by scheduling)
 	// LogFile, when non-empty, is opened in append mode and added to the
 	// logger's writer alongside stderr. Codex pipes MCP-child stderr into
 	// its own buffer where it is invisible from outside the codex process,
@@ -56,9 +62,11 @@ type RunArgs struct {
 	// the subprocess.
 	LogFile string // --log-file (optional)
 	// ExecGatewayInternalURL is the http(s):// base for codex-exec-gateway's
-	// internal API (NOT the ws /bridge URL). copy_path's HTTP relay path
-	// POSTs to <base>/api/exec-gateway/relay/create here. Empty disables
-	// the HTTP relay path; copy_path falls back to the ws cat-pump.
+	// internal API. Required as of 2026-06-14: list_environments calls
+	// <base>/api/exec-gateway/connected with the workspace cap-token, and
+	// copy_path's HTTP relay path POSTs to <base>/api/exec-gateway/relay/create
+	// (still optional for relay — copy_path falls back to the ws cat-pump if
+	// ExecGatewayInternalSecret is empty; the connected call always uses it).
 	ExecGatewayInternalURL    string // --exec-gateway-internal-url
 	ExecGatewayInternalSecret string // --exec-gateway-internal-secret-env (env var name; value injected by gateway)
 }
@@ -81,8 +89,8 @@ func Run(ctx context.Context, args RunArgs, stdin io.Reader, stdout, stderr io.W
 	if lbToken == "" {
 		return fmt.Errorf("env var %s is empty; cannot authenticate to app-gateway loopback", args.LoopbackTokenEnv)
 	}
-	if args.WorkspaceID == "" || args.ExecGatewayURL == "" || args.AppGatewayInternal == "" {
-		return fmt.Errorf("env-mcp: workspace-id, exec-gateway-url, app-gateway-internal all required")
+	if args.WorkspaceID == "" || args.ExecGatewayURL == "" || args.AppGatewayInternal == "" || args.ExecGatewayInternalURL == "" {
+		return fmt.Errorf("env-mcp: workspace-id, exec-gateway-url, app-gateway-internal, exec-gateway-internal-url all required")
 	}
 	// ExecGatewayInternalSecret is optional — if its env var holds a value,
 	// copy_path can use the HTTPS relay path; otherwise it falls back to
@@ -104,8 +112,17 @@ func Run(ctx context.Context, args RunArgs, stdin io.Reader, stdout, stderr io.W
 	defer pool.Close()
 
 	sessions := tools.NewSessionStore()
-	connectedURL := strings.TrimRight(args.AppGatewayInternal, "/") + "/internal/connected"
-	resolver := nameresolver.NewResolver(connectedURL, lbToken, logger)
+	// Direct call to codex-exec-gateway with the workspace cap-token
+	// — workspace_id is encoded in the HMAC-signed token payload, so
+	// the endpoint authenticates and identifies the workspace in one
+	// step. The pre-2026-06-14 design routed this through the
+	// app-gateway loopback /internal/connected handler, which then
+	// reverse-looked-up workspace_id from a per-spawn loopback token
+	// and forwarded with the cluster-shared secret — that extra hop
+	// existed only because the exec-gateway endpoint hadn't yet been
+	// taught to accept cap-tokens.
+	connectedURL := strings.TrimRight(args.ExecGatewayInternalURL, "/") + "/api/exec-gateway/connected"
+	resolver := nameresolver.NewResolver(connectedURL, wsToken, logger)
 
 	relayClient := bridge.NewRelayClient(args.ExecGatewayInternalURL, execGwSecret, args.WorkspaceID, logger)
 	toolList := []tools.Tool{

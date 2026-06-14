@@ -181,6 +181,31 @@ func newServerNoStoreForTesting(cfg Config) (*Server, error) {
 	}, nil
 }
 
+// verifyCapToken is the CapTokenVerifier closure handlers.RequireCapToken
+// uses to authenticate /api/exec-gateway/connected (and any future
+// per-workspace endpoint moved off the shared-secret model). Closes
+// over the HMAC secret + the in-memory revoked set so the middleware
+// stays in the handlers package without taking on a parent-package
+// import.
+//
+// Revocation check matches /bridge's order (verify → check revoked) so
+// a revoke-turn call kills both new bridge dials and new list refreshes
+// from the same turn within the cap-token's TTL window.
+func (s *Server) verifyCapToken(token string) (handlers.CapTokenClaims, error) {
+	payload, err := VerifyCapabilityToken(token, s.config.CapTokenHMACSecret)
+	if err != nil {
+		return handlers.CapTokenClaims{}, err
+	}
+	if s.revoked.Contains(payload.TurnID) {
+		return handlers.CapTokenClaims{}, fmt.Errorf("turn revoked: %s", payload.TurnID)
+	}
+	return handlers.CapTokenClaims{
+		WorkspaceID: payload.WorkspaceID,
+		UserID:      payload.UserID,
+		TurnID:      payload.TurnID,
+	}, nil
+}
+
 func (s *Server) Routes() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
@@ -237,10 +262,23 @@ func (s *Server) Routes() http.Handler {
 	})
 
 	r.Route("/api/exec-gateway", func(r chi.Router) {
-		r.Use(handlers.RequireSharedSecret(s.config.InternalSharedSecret))
-		r.Get("/connected", handlers.Connected(s.store, s.registry))
-		r.Post("/revoke-turn", handlers.RevokeTurn(s.revoked))
-		r.Post("/relay/create", s.handleRelayCreate)
+		// /connected is called by env-mcp directly (post the
+		// 2026-06-14 loopback removal); authenticates via the
+		// workspace cap-token, which carries workspace_id in its
+		// HMAC-signed payload — no query-string forgery surface.
+		r.With(handlers.RequireCapToken(s.verifyCapToken, s.logger)).
+			Get("/connected", handlers.Connected(s.store, s.registry))
+
+		// Admin-style endpoints stay on the cluster-shared bearer:
+		// revoke-turn is called by codex-app-gateway when a turn is
+		// cancelled, relay/create is called by env-mcp's copy_path
+		// HTTPS relay (both legitimately need cluster-level auth, not
+		// a per-workspace token).
+		r.Group(func(r chi.Router) {
+			r.Use(handlers.RequireSharedSecret(s.config.InternalSharedSecret))
+			r.Post("/revoke-turn", handlers.RevokeTurn(s.revoked))
+			r.Post("/relay/create", s.handleRelayCreate)
+		})
 	})
 
 	// Loopback endpoint for the SDK name-resolver (nameresolver.Resolver).

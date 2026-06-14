@@ -18,7 +18,6 @@ import (
 	"github.com/agentserver/agentserver/internal/codexappgateway/codexhome"
 	"github.com/agentserver/agentserver/internal/codexappgateway/scheduler"
 	"github.com/agentserver/agentserver/internal/codexappgateway/supervisor"
-	"github.com/agentserver/agentserver/internal/codexexecgateway/execmodel"
 	"github.com/agentserver/agentserver/internal/clientmeta"
 	"github.com/agentserver/agentserver/internal/shortid"
 	"github.com/agentserver/agentserver/internal/wsbridge"
@@ -26,12 +25,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"nhooyr.io/websocket"
 )
-
-// connectedClient is the subset of *ExecGatewayClient buildConfig needs.
-// Defined here so tests can stub it without spinning up an HTTP server.
-type connectedClient interface {
-	Connected(ctx context.Context, workspaceID string) ([]execmodel.ConnectedExecutor, error)
-}
 
 // ctxKey is the unexported type for context values stashed by
 // requireInternalOrAPIKey so there are no collisions with other packages.
@@ -66,8 +59,6 @@ type Server struct {
 	// token so the agentserver MCP entry in config.toml can embed it.
 	// Allowed to hit the network. Errors abort the spawn.
 	buildConfig func(ctx context.Context, workspaceID, userID, loopbackToken string) (supervisor.SpawnConfig, error)
-
-	execClient connectedClient // exposed for the loopback /internal/connected handler
 
 	// brokerPool caches per-workspace broker.Conn instances. Idle TTL is
 	// cfg.BrokerPoolIdleTTL (default 30m, override via CXG_BROKER_POOL_IDLE_TTL).
@@ -110,7 +101,6 @@ func NewServer(cfg ServeConfig, codexBin, selfBin string, logger *slog.Logger) (
 		ExtraEnv: supEnv,
 		Logger:   logger,
 	})
-	execClient := NewExecGatewayClient(cfg.ExecGatewayInternalURL, cfg.ExecGatewayInternalSecret)
 	wsTokenClient := NewWorkspaceTokenClient(cfg.AgentserverInternalURL, cfg.AgentserverInternalSecret)
 	var apiKeyVal *auth.APIKeyValidator
 	if cfg.AgentserverInternalURL != "" && cfg.AgentserverInternalSecret != "" {
@@ -123,10 +113,9 @@ func NewServer(cfg ServeConfig, codexBin, selfBin string, logger *slog.Logger) (
 		sup:             sup,
 		homeMgr:         mgr,
 		logger:          logger,
-		execClient:      execClient,
 		apiKeyValidator: apiKeyVal,
 	}
-	s.buildConfig = makeBuildConfig(cfg, execClient, wsTokenClient, selfBin, logger)
+	s.buildConfig = makeBuildConfig(cfg, wsTokenClient, selfBin, logger)
 	s.brokerPool = broker.NewPool(
 		makeSupervisorResolver(s.sup, s.buildConfig),
 		cfg.BrokerPoolIdleTTL,
@@ -153,12 +142,14 @@ func loopbackInternalURL(listenAddr string) string {
 
 // makeBuildConfig returns the per-spawn SpawnConfig producer. Split out
 // so server_test.go can construct a Server with stub clients.
-func makeBuildConfig(cfg ServeConfig, _ connectedClient, wsTokenClient workspaceTokenFetcher, selfBin string, logger *slog.Logger) func(context.Context, string, string, string) (supervisor.SpawnConfig, error) {
+func makeBuildConfig(cfg ServeConfig, wsTokenClient workspaceTokenFetcher, selfBin string, logger *slog.Logger) func(context.Context, string, string, string) (supervisor.SpawnConfig, error) {
 	return func(ctx context.Context, workspaceID, userID, loopbackToken string) (supervisor.SpawnConfig, error) {
 		// Per 2026-05-16 redesign, the executor list is no longer
-		// fixed at spawn time — env-mcp reads it live via
-		// /internal/connected. We still mint a per-spawn turn so
-		// /api/exec-gateway/revoke-turn semantics survive.
+		// fixed at spawn time — env-mcp reads it live (post the
+		// 2026-06-14 loopback removal, directly from exec-gateway
+		// using the workspace cap-token we mint here). We still mint
+		// a per-spawn turn so /api/exec-gateway/revoke-turn semantics
+		// survive.
 		turnID := "trn_" + shortid.Generate()
 		ttl := cfg.CapTokenTTL
 		if ttl <= 0 {
@@ -294,7 +285,6 @@ func (s *Server) Routes() http.Handler {
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200) })
 	r.Get("/", s.handleCodexAppWS)
 	r.Get("/codex-app/ws", s.handleCodexAppWS)
-	r.Get("/internal/connected", s.handleInternalConnected)
 	// Loopback scheduled-task proxy — env-mcp POSTs all actions here;
 	// each handler resolves workspace from X-Loopback-Token and forwards
 	// to agentserver-main's /api/internal/workspaces/{wid}/scheduled-tasks/…

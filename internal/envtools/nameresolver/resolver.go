@@ -33,17 +33,29 @@ type ConnectedEntry struct {
 type Fetcher func(ctx context.Context) ([]ConnectedEntry, error)
 
 // Resolver maintains a workspace-scoped name → exe_id map by
-// periodically refreshing from app-gateway's /internal/connected. Tools
-// that take an environment_id (semantically a name) call Resolve to get the
-// underlying exe_id for bridge.Pool.Get.
+// periodically refreshing from codex-exec-gateway's
+// /api/exec-gateway/connected. Tools that take an environment_id
+// (semantically a name) call Resolve to get the underlying exe_id for
+// bridge.Pool.Get.
 //
 // Cache strategy:
 //   - First Resolve populates the cache.
 //   - Subsequent Resolves use the cache if its age is under cacheTTL.
 //   - A Resolve miss forces an immediate refresh before erroring.
 type Resolver struct {
-	url        string // loopback /internal/connected (HTTP-mode only)
-	token      string // X-Loopback-Token         (HTTP-mode only)
+	// url is the upstream HTTP endpoint that returns the connected-
+	// executor list for this caller's workspace. Per the 2026-06-14
+	// loopback removal, this is codex-exec-gateway's
+	// /api/exec-gateway/connected — formerly it was the app-gateway
+	// loopback /internal/connected, but the exec-gateway endpoint now
+	// accepts cap-tokens (workspace_id comes from the token payload,
+	// not a query string), so env-mcp can call it directly without
+	// the loopback hop.
+	url string
+	// bearer is the workspace cap-token sent as Authorization: Bearer.
+	// Same token env-mcp uses for the /bridge dial; one HMAC-signed
+	// claim authorises both surfaces.
+	bearer     string
 	httpClient *http.Client
 	fetcher    Fetcher // non-nil in in-process mode; takes precedence over url
 	logger     *slog.Logger
@@ -54,20 +66,28 @@ type Resolver struct {
 	cachedAt time.Time
 
 	// sf coalesces concurrent refresh() calls into one in-flight
-	// HTTP fetch — protects /internal/connected from N parallel tool
-	// calls that all miss cache at once.
+	// HTTP fetch — protects the upstream from N parallel tool calls
+	// that all miss cache at once.
 	sf singleflight.Group
 }
 
 const nameResolverCacheTTL = 10 * time.Second
 
-func NewResolver(loopbackURL, loopbackToken string, logger *slog.Logger) *Resolver {
+// NewResolver constructs an HTTP-backed name resolver. endpointURL is
+// the full URL the resolver GETs (e.g.
+// "http://codex-exec-gateway:8087/api/exec-gateway/connected");
+// bearer is the workspace cap-token presented as
+// Authorization: Bearer. The endpoint must derive workspace_id from
+// the bearer's payload — passing it as a query string is intentionally
+// unsupported, since the pre-2026-06-14 design that did so was
+// forgeable and required a loopback proxy hop.
+func NewResolver(endpointURL, bearer string, logger *slog.Logger) *Resolver {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Resolver{
-		url:        loopbackURL,
-		token:      loopbackToken,
+		url:        endpointURL,
+		bearer:     bearer,
 		httpClient: &http.Client{Timeout: 3 * time.Second},
 		logger:     logger,
 		cacheTTL:   nameResolverCacheTTL,
@@ -102,7 +122,7 @@ func (r *Resolver) fetch(ctx context.Context) ([]ConnectedEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("X-Loopback-Token", r.token)
+	req.Header.Set("Authorization", "Bearer "+r.bearer)
 	req.Header.Set("Accept", "application/json")
 	resp, err := r.httpClient.Do(req)
 	if err != nil {

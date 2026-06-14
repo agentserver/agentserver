@@ -163,8 +163,12 @@ func (s *Server) handleInternalScheduledTaskResult(w http.ResponseWriter, r *htt
 }
 
 // --------------------------------------------------------------------------
-// Internal workspace-scoped endpoints — no member check; auth is
-// X-Internal-Secret only. Called from codex-app-gateway's loopback proxy.
+// Internal workspace-scoped endpoints — no member check; auth is the
+// workspace cap-token (verified + wid-matched by
+// requireCapTokenWithMatchingWID in captoken_mw.go). Called by env-mcp
+// directly. Pre-2026-06-14 these were called by codex-app-gateway's
+// /internal/scheduled-tasks/* loopback proxy with X-Internal-Secret;
+// that chain is removed.
 // --------------------------------------------------------------------------
 
 // handleInternalCreateScheduledTask is POST /api/internal/workspaces/{wid}/scheduled-tasks.

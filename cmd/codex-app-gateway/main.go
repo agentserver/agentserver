@@ -131,11 +131,10 @@ func parseEnvMcpArgs(rawArgs []string) (envmcp.RunArgs, error) {
 	fs.SetOutput(io.Discard)
 	workspaceID := fs.String("workspace-id", "", "workspace id (required)")
 	execGatewayURL := fs.String("exec-gateway-url", "", "ws base URL for codex-exec-gateway /bridge (required)")
-	appGatewayInternal := fs.String("app-gateway-internal", "", "http base URL for codex-app-gateway loopback (required, typically http://127.0.0.1:8086)")
 	workspaceTokenEnv := fs.String("workspace-token-env", "", "env var name holding the workspace cap token (required)")
-	loopbackTokenEnv := fs.String("loopback-token-env", "", "env var name holding the loopback token (required)")
-	execGatewayInternalURL := fs.String("exec-gateway-internal-url", "", "http base URL for codex-exec-gateway internal API (optional; enables HTTP relay copy_path)")
+	execGatewayInternalURL := fs.String("exec-gateway-internal-url", "", "http base URL for codex-exec-gateway internal API (required: list_environments + copy_path HTTPS relay)")
 	execGatewayInternalSecretEnv := fs.String("exec-gateway-internal-secret-env", "", "env var name holding the exec-gateway internal shared secret (optional)")
+	agentserverInternalURL := fs.String("agentserver-internal-url", "", "http base URL for agentserver-main internal API (required: scheduling tools)")
 	logFile := fs.String("log-file", "", "if set, the env-mcp logger writes to this file (append) in addition to stderr — codex hides MCP-child stderr, so this is the only ops-visible log")
 	if err := fs.Parse(rawArgs); err != nil {
 		return envmcp.RunArgs{}, err
@@ -144,11 +143,11 @@ func parseEnvMcpArgs(rawArgs []string) (envmcp.RunArgs, error) {
 		return envmcp.RunArgs{}, fmt.Errorf("unexpected positional arguments: %v", fs.Args())
 	}
 	for name, val := range map[string]string{
-		"--workspace-id":         *workspaceID,
-		"--exec-gateway-url":     *execGatewayURL,
-		"--app-gateway-internal": *appGatewayInternal,
-		"--workspace-token-env":  *workspaceTokenEnv,
-		"--loopback-token-env":   *loopbackTokenEnv,
+		"--workspace-id":              *workspaceID,
+		"--exec-gateway-url":          *execGatewayURL,
+		"--workspace-token-env":       *workspaceTokenEnv,
+		"--exec-gateway-internal-url": *execGatewayInternalURL,
+		"--agentserver-internal-url":  *agentserverInternalURL,
 	} {
 		if val == "" {
 			return envmcp.RunArgs{}, fmt.Errorf("%s is required", name)
@@ -157,11 +156,10 @@ func parseEnvMcpArgs(rawArgs []string) (envmcp.RunArgs, error) {
 	return envmcp.RunArgs{
 		WorkspaceID:               *workspaceID,
 		ExecGatewayURL:            *execGatewayURL,
-		AppGatewayInternal:        *appGatewayInternal,
 		WorkspaceTokenEnv:         *workspaceTokenEnv,
-		LoopbackTokenEnv:          *loopbackTokenEnv,
 		ExecGatewayInternalURL:    *execGatewayInternalURL,
 		ExecGatewayInternalSecret: *execGatewayInternalSecretEnv,
+		AgentserverInternalURL:    *agentserverInternalURL,
 		LogFile:                   *logFile,
 	}, nil
 }

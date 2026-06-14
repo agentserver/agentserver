@@ -11,9 +11,9 @@ func TestParseEnvMcpArgs_HappyPath(t *testing.T) {
 	args, err := parseEnvMcpArgs([]string{
 		"--workspace-id", "ws_a",
 		"--exec-gateway-url", "wss://exec-gw/bridge",
-		"--app-gateway-internal", "http://127.0.0.1:8086",
 		"--workspace-token-env", "CXG_WORKSPACE_TOKEN",
-		"--loopback-token-env", "CXG_LOOPBACK_TOKEN",
+		"--exec-gateway-internal-url", "http://exec-gw:8087",
+		"--agentserver-internal-url", "http://agentserver:8080",
 	})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -24,25 +24,25 @@ func TestParseEnvMcpArgs_HappyPath(t *testing.T) {
 	if args.ExecGatewayURL != "wss://exec-gw/bridge" {
 		t.Errorf("ExecGatewayURL = %q", args.ExecGatewayURL)
 	}
-	if args.AppGatewayInternal != "http://127.0.0.1:8086" {
-		t.Errorf("AppGatewayInternal = %q", args.AppGatewayInternal)
-	}
 	if args.WorkspaceTokenEnv != "CXG_WORKSPACE_TOKEN" {
 		t.Errorf("WorkspaceTokenEnv = %q", args.WorkspaceTokenEnv)
 	}
-	if args.LoopbackTokenEnv != "CXG_LOOPBACK_TOKEN" {
-		t.Errorf("LoopbackTokenEnv = %q", args.LoopbackTokenEnv)
+	if args.ExecGatewayInternalURL != "http://exec-gw:8087" {
+		t.Errorf("ExecGatewayInternalURL = %q", args.ExecGatewayInternalURL)
+	}
+	if args.AgentserverInternalURL != "http://agentserver:8080" {
+		t.Errorf("AgentserverInternalURL = %q", args.AgentserverInternalURL)
 	}
 }
 
 // TestParseEnvMcpArgs_MissingRequired sweeps the required-flag check.
 func TestParseEnvMcpArgs_MissingRequired(t *testing.T) {
 	full := map[string]string{
-		"--workspace-id":         "w",
-		"--exec-gateway-url":     "wss://x/bridge",
-		"--app-gateway-internal": "http://127.0.0.1:8086",
-		"--workspace-token-env":  "WT",
-		"--loopback-token-env":   "LT",
+		"--workspace-id":              "w",
+		"--exec-gateway-url":          "wss://x/bridge",
+		"--workspace-token-env":       "WT",
+		"--exec-gateway-internal-url": "http://exec-gw:8087",
+		"--agentserver-internal-url":  "http://agentserver:8080",
 	}
 	for missing := range full {
 		argv := make([]string, 0, len(full)*2)
@@ -70,9 +70,9 @@ func TestParseEnvMcpArgs_RejectsTrailingPositional(t *testing.T) {
 	_, err := parseEnvMcpArgs([]string{
 		"--workspace-id", "w",
 		"--exec-gateway-url", "wss://x/bridge",
-		"--app-gateway-internal", "http://127.0.0.1:8086",
 		"--workspace-token-env", "WT",
-		"--loopback-token-env", "LT",
+		"--exec-gateway-internal-url", "http://exec-gw:8087",
+		"--agentserver-internal-url", "http://agentserver:8080",
 		"trailing",
 	})
 	if err == nil || !strings.Contains(err.Error(), "unexpected positional") {
@@ -84,9 +84,9 @@ func TestParseEnvMcpArgs_LogFile(t *testing.T) {
 	args, err := parseEnvMcpArgs([]string{
 		"--workspace-id", "w",
 		"--exec-gateway-url", "wss://x/bridge",
-		"--app-gateway-internal", "http://127.0.0.1:8086",
 		"--workspace-token-env", "WT",
-		"--loopback-token-env", "LT",
+		"--exec-gateway-internal-url", "http://exec-gw:8087",
+		"--agentserver-internal-url", "http://agentserver:8080",
 		"--log-file", "/tmp/env-mcp.log",
 	})
 	if err != nil {

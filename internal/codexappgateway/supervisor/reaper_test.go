@@ -17,7 +17,7 @@ func TestReaper_RetiresIdleSubprocess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	build := func(_ string) (SpawnConfig, error) { return SpawnConfig{Config: defaultConfigInput()}, nil }
+	build := func() (SpawnConfig, error) { return SpawnConfig{Config: defaultConfigInput()}, nil }
 	if _, err := sup.EnsureSubprocess(ctx, Key{WorkspaceID: "ws_a"}, build); err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestReaper_HandleClockWriteKeepsSubprocessAlive(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	build := func(_ string) (SpawnConfig, error) { return SpawnConfig{Config: defaultConfigInput()}, nil }
+	build := func() (SpawnConfig, error) { return SpawnConfig{Config: defaultConfigInput()}, nil }
 	key := Key{WorkspaceID: "ws_a"}
 	handle, err := sup.EnsureSubprocess(ctx, key, build)
 	if err != nil {
@@ -101,7 +101,7 @@ func TestReaper_KeepsActiveSubprocess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	build := func(_ string) (SpawnConfig, error) { return SpawnConfig{Config: defaultConfigInput()}, nil }
+	build := func() (SpawnConfig, error) { return SpawnConfig{Config: defaultConfigInput()}, nil }
 	key := Key{WorkspaceID: "ws_a"}
 	if _, err := sup.EnsureSubprocess(ctx, key, build); err != nil {
 		t.Fatal(err)

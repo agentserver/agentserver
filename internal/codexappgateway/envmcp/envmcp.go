@@ -41,18 +41,18 @@ func OpenLogSink(stderr io.Writer, path string) (io.Writer, error) {
 // Per the 2026-05-16 fixed-tools redesign, env-mcp is workspace-scoped
 // rather than per-executor; one child binary handles every executor in
 // the workspace via environment_id routing.
+//
+// Post the 2026-06-14 full loopback removal, the previous
+// AppGatewayInternal + LoopbackTokenEnv args are gone — env-mcp no
+// longer needs to talk to its parent app-gateway over loopback at all.
+// All workspace-scoped operations (list_environments, scheduling)
+// authenticate with the same workspace cap-token directly against
+// codex-exec-gateway (list_environments) or agentserver-main
+// (scheduling).
 type RunArgs struct {
-	WorkspaceID    string // --workspace-id
-	ExecGatewayURL string // --exec-gateway-url; pool appends /<exe_id> (ws://)
-	// AppGatewayInternal is the http://127.0.0.1:<port> loopback URL.
-	// Used by scheduling tools (which still go through the loopback
-	// proxy → agentserver-main's scheduled-tasks API). list_environments
-	// used to go through this too via /internal/connected; as of
-	// 2026-06-14 list_environments calls codex-exec-gateway directly
-	// with the workspace cap-token (see ExecGatewayInternalURL).
-	AppGatewayInternal string // --app-gateway-internal
-	WorkspaceTokenEnv  string // --workspace-token-env (workspace-scoped cap token)
-	LoopbackTokenEnv   string // --loopback-token-env (still used by scheduling)
+	WorkspaceID       string // --workspace-id
+	ExecGatewayURL    string // --exec-gateway-url; pool appends /<exe_id> (ws://)
+	WorkspaceTokenEnv string // --workspace-token-env (workspace-scoped cap token)
 	// LogFile, when non-empty, is opened in append mode and added to the
 	// logger's writer alongside stderr. Codex pipes MCP-child stderr into
 	// its own buffer where it is invisible from outside the codex process,
@@ -62,13 +62,18 @@ type RunArgs struct {
 	// the subprocess.
 	LogFile string // --log-file (optional)
 	// ExecGatewayInternalURL is the http(s):// base for codex-exec-gateway's
-	// internal API. Required as of 2026-06-14: list_environments calls
+	// internal API. Required: list_environments calls
 	// <base>/api/exec-gateway/connected with the workspace cap-token, and
 	// copy_path's HTTP relay path POSTs to <base>/api/exec-gateway/relay/create
 	// (still optional for relay — copy_path falls back to the ws cat-pump if
 	// ExecGatewayInternalSecret is empty; the connected call always uses it).
 	ExecGatewayInternalURL    string // --exec-gateway-internal-url
 	ExecGatewayInternalSecret string // --exec-gateway-internal-secret-env (env var name; value injected by gateway)
+	// AgentserverInternalURL is the http(s):// base for agentserver-main's
+	// internal API. Required: scheduling tools POST/GET/PATCH to
+	// <base>/api/internal/workspaces/<wid>/scheduled-tasks/... with the
+	// workspace cap-token as Authorization: Bearer.
+	AgentserverInternalURL string // --agentserver-internal-url
 }
 
 // Run constructs the bridge.Pool, builds the tool registry, and serves
@@ -85,12 +90,8 @@ func Run(ctx context.Context, args RunArgs, stdin io.Reader, stdout, stderr io.W
 	if wsToken == "" {
 		return fmt.Errorf("env var %s is empty; cannot authenticate to bridge", args.WorkspaceTokenEnv)
 	}
-	lbToken := os.Getenv(args.LoopbackTokenEnv)
-	if lbToken == "" {
-		return fmt.Errorf("env var %s is empty; cannot authenticate to app-gateway loopback", args.LoopbackTokenEnv)
-	}
-	if args.WorkspaceID == "" || args.ExecGatewayURL == "" || args.AppGatewayInternal == "" || args.ExecGatewayInternalURL == "" {
-		return fmt.Errorf("env-mcp: workspace-id, exec-gateway-url, app-gateway-internal, exec-gateway-internal-url all required")
+	if args.WorkspaceID == "" || args.ExecGatewayURL == "" || args.ExecGatewayInternalURL == "" || args.AgentserverInternalURL == "" {
+		return fmt.Errorf("env-mcp: workspace-id, exec-gateway-url, exec-gateway-internal-url, agentserver-internal-url all required")
 	}
 	// ExecGatewayInternalSecret is optional — if its env var holds a value,
 	// copy_path can use the HTTPS relay path; otherwise it falls back to
@@ -103,8 +104,8 @@ func Run(ctx context.Context, args RunArgs, stdin io.Reader, stdout, stderr io.W
 	logger.Info("env-mcp starting",
 		"workspace_id", args.WorkspaceID,
 		"exec_gateway_url", args.ExecGatewayURL,
-		"app_gateway_internal", args.AppGatewayInternal,
 		"exec_gateway_internal_url", args.ExecGatewayInternalURL,
+		"agentserver_internal_url", args.AgentserverInternalURL,
 		"http_relay_enabled", args.ExecGatewayInternalURL != "" && execGwSecret != "",
 	)
 
@@ -136,12 +137,15 @@ func Run(ctx context.Context, args RunArgs, stdin io.Reader, stdout, stderr io.W
 		tools.NewApplyPatchTool(pool, resolver),
 		tools.NewCopyPathTool(pool, resolver, relayClient),
 	}
-	// Register scheduling tools — forward via loopback to app-gateway which
-	// then proxies to agentserver-main's internal workspace-scoped endpoints.
-	schedTransport := scheduling.NewLoopbackTransport(
-		strings.TrimRight(args.AppGatewayInternal, "/")+"/internal/scheduled-tasks",
-		lbToken,
-	)
+	// Register scheduling tools — direct HTTP to agentserver-main with
+	// the workspace cap-token. Pre the 2026-06-14 loopback removal this
+	// went through codex-app-gateway's /internal/scheduled-tasks/*
+	// loopback proxy, which reverse-looked-up workspace_id from a
+	// per-spawn loopback token and forwarded with X-Internal-Secret.
+	// Now the cap-token does both the auth and the workspace-id binding
+	// in one HMAC-signed claim, and agentserver-main verifies it
+	// directly — no intermediary.
+	schedTransport := scheduling.NewHTTPTransport(args.AgentserverInternalURL, args.WorkspaceID, wsToken, nil)
 	toolList = append(toolList, scheduling.NewSchedulingTools(schedTransport)...)
 	srv := NewMCPServer("agentserver", toolList, logger)
 	if err := srv.Serve(ctx, stdin, stdout); err != nil {

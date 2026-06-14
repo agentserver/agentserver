@@ -2,8 +2,6 @@ package codexexecgateway
 
 import (
 	"context"
-	"crypto/subtle"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -281,12 +279,6 @@ func (s *Server) Routes() http.Handler {
 		})
 	})
 
-	// Loopback endpoint for the SDK name-resolver (nameresolver.Resolver).
-	// Called by the in-process bridge.Pool/tools when they need to map an
-	// environment name → exe_id.  Auth: X-Loopback-Token == InternalSharedSecret
-	// (same value, different header than RequireSharedSecret's Bearer check).
-	r.Get("/internal/sdk/connected", s.handleSDKConnectedLoopback)
-
 	// SDK REST surface (/api/connectors/*). Mounted last so SDK routes don't
 	// shadow any existing paths.
 	if s.sdkServer != nil {
@@ -294,34 +286,6 @@ func (s *Server) Routes() http.Handler {
 	}
 
 	return r
-}
-
-// handleSDKConnectedLoopback serves GET /internal/sdk/connected for the
-// SDK name-resolver. It verifies X-Loopback-Token == InternalSharedSecret,
-// reads workspace_id from the query string, and returns the connected
-// executor list in the same JSON shape as /api/exec-gateway/connected.
-func (s *Server) handleSDKConnectedLoopback(w http.ResponseWriter, r *http.Request) {
-	tok := r.Header.Get("X-Loopback-Token")
-	if tok == "" || subtle.ConstantTimeCompare([]byte(tok), []byte(s.config.InternalSharedSecret)) != 1 {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-	wid := r.URL.Query().Get("workspace_id")
-	if wid == "" {
-		http.Error(w, "workspace_id required", http.StatusBadRequest)
-		return
-	}
-	rows, err := s.store.ConnectedExecutorsForWorkspace(r.Context(), wid, s.registry.ConnectedIDs())
-	if err != nil {
-		s.logger.Warn("sdk loopback connected: store error", "workspace_id", wid, "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	if rows == nil {
-		rows = []ConnectedExecutor{}
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(rows)
 }
 
 // (real ConnRegistry lives in registry.go; real RevokedSet in revocation.go)

@@ -1,0 +1,170 @@
+{{- if .Values.envmcpPublicGateway.enabled }}
+{{- /*
+envmcp-public-gateway — public-internet MCP endpoint for Codex CLI /
+Claude Desktop (3P via mcp-remote, 1P via Custom Connectors in Phase 2).
+
+Spec: docs/superpowers/specs/2026-06-09-envmcp-public-gateway-design.md
+(plus the 2026-06-15 amendment that pins one PAT to one workspace).
+
+Required values:
+  envmcpPublicGateway.enabled            — bool
+  envmcpPublicGateway.image.repository
+  envmcpPublicGateway.image.tag
+  envmcpPublicGateway.port               — default 8090
+  envmcpPublicGateway.publicHost         — default mcp.<gateway.host>
+  internal.apiSecret                     — for DB validation flow (same
+                                            secret agentserver-main holds)
+*/ -}}
+{{- $publicHost := .Values.envmcpPublicGateway.publicHost }}
+{{- if not $publicHost }}{{- $publicHost = printf "mcp.%s" .Values.gateway.host }}{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-envmcp-public-gateway
+  labels:
+    app: {{ .Release.Name }}-envmcp-public-gateway
+spec:
+  replicas: {{ .Values.envmcpPublicGateway.replicaCount | default 1 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-envmcp-public-gateway
+  template:
+    metadata:
+      annotations:
+        agentserver.x-k8s.io/chart-version: {{ .Chart.AppVersion | quote }}
+      labels:
+        app: {{ .Release.Name }}-envmcp-public-gateway
+    spec:
+      serviceAccountName: {{ .Release.Name }}
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        {{- if .Values.postgresql.enabled }}
+        - name: wait-for-postgresql
+          image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h {{ .Release.Name }}-postgresql -p 5432 -U {{ .Values.postgresql.auth.username }}; do
+                echo "Waiting for PostgreSQL to be ready..."
+                sleep 2
+              done
+        {{- end }}
+      containers:
+        - name: envmcp-public-gateway
+          image: "{{ .Values.envmcpPublicGateway.image.repository }}:{{ .Values.envmcpPublicGateway.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.envmcpPublicGateway.image.pullPolicy | default "IfNotPresent" }}
+          ports:
+            - containerPort: {{ .Values.envmcpPublicGateway.port | default 8090 }}
+              name: http
+              protocol: TCP
+          env:
+            - name: CXG_LISTEN_ADDR
+              value: ":{{ .Values.envmcpPublicGateway.port | default 8090 }}"
+            # Postgres for PAT validation. Reuses agentserver-main's
+            # DSN (the mcp_pats table lives there); the public gateway
+            # does NOT need its own database since the schema +
+            # workspaces tables are shared.
+            - name: DATABASE_URL
+              value: {{ include "agentserver.databaseUrl" . | quote }}
+            # Cap-token HMAC secret — shared by app-gateway (signer)
+            # and exec-gateway + agentserver-main (verifiers). The
+            # public gateway is also a signer (mints cap-tokens for
+            # /bridge dials). Same K8s Secret key all four pods use.
+            - name: CXG_CAPTOKEN_HMAC_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-codex-gateway
+                  key: cap-token-hmac-secret
+            # Exec-gateway internal API URL — public gateway calls
+            # /api/codex-exec/workspaces/{wid}/executors for
+            # list_environments. In-cluster Service DNS.
+            - name: CXG_EXEC_GATEWAY_INTERNAL_URL
+              value: "http://{{ .Release.Name }}-codex-exec-gateway.{{ .Release.Namespace }}.svc:{{ .Values.codexExecGateway.port }}"
+            # ListBinding handler on exec-gateway expects
+            # X-Internal-Secret = .Values.internal.apiSecret (the
+            # same plain string codex-app-gateway and exec-gateway
+            # already wire as CXG_AGENTSERVER_INTERNAL_SECRET).
+            - name: CXG_EXEC_GATEWAY_INTERNAL_SECRET
+              value: {{ required "internal.apiSecret is required when envmcpPublicGateway.enabled is true" .Values.internal.apiSecret | quote }}
+            # Bridge WS base — public gateway's BridgeBackend dials
+            # /bridge/<exe_id> here per tools/call. Same hostport as
+            # codex-app-gateway uses for its in-pod env-mcp dials.
+            - name: CXG_BRIDGE_BASE_URL
+              value: "ws://{{ .Release.Name }}-codex-exec-gateway.{{ .Release.Namespace }}.svc:{{ .Values.codexExecGateway.port }}/bridge"
+            # Advertised in 401 WWW-Authenticate (so Claude Desktop 1P
+            # can OAuth-discover us once Phase 2 lands) + in the
+            # /v1/.well-known/oauth-protected-resource body.
+            - name: MCP_PUBLIC_RESOURCE_METADATA_URL
+              value: "https://{{ $publicHost }}/v1/.well-known/oauth-protected-resource"
+            # Issuer URL pointing back at agentserver web for PAT mint
+            # UX (the protected-resource doc's authorization_servers
+            # entry). Falls back to publicHost if no custom web URL.
+            - name: MCP_PUBLIC_ISSUER_URL
+              value: {{ default (printf "https://%s" .Values.gateway.host) .Values.envmcpPublicGateway.issuerURL | quote }}
+            {{- if .Values.envmcpPublicGateway.logLevel }}
+            - name: CXG_LOG_LEVEL
+              value: {{ .Values.envmcpPublicGateway.logLevel | quote }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.envmcpPublicGateway.port | default 8090 }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.envmcpPublicGateway.port | default 8090 }}
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          lifecycle:
+            # Graceful drain — give in-flight tools/call a moment to
+            # finish before SIGTERM. Matches the
+            # codex-exec-gateway lifecycle pattern.
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 10"]
+          {{- with .Values.envmcpPublicGateway.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-envmcp-public-gateway
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.envmcpPublicGateway.port | default 8090 }}
+      targetPort: {{ .Values.envmcpPublicGateway.port | default 8090 }}
+      protocol: TCP
+      name: http
+  selector:
+    app: {{ .Release.Name }}-envmcp-public-gateway
+{{- if .Values.gateway.enabled }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ .Release.Name }}-envmcp-public-gateway
+spec:
+  parentRefs:
+    {{- toYaml .Values.gateway.parentRefs | nindent 4 }}
+  hostnames:
+    - {{ $publicHost | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ .Release.Name }}-envmcp-public-gateway
+          port: {{ .Values.envmcpPublicGateway.port | default 8090 }}
+{{- end }}
+{{- end }}

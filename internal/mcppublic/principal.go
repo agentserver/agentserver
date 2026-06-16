@@ -90,8 +90,13 @@ var ToolsRead = map[string]struct{}{
 // Tool name source-of-truth note: the wire names below match what the
 // underlying envtools/tools.Tool.Name() actually returns. In particular
 // the long-form session tool is `exec_command`, not `unified_exec` —
-// the Go type is UnifiedExecTool but it has always returned the shorter
-// wire name (carried over from codex's pre-rename API).
+// the type is named UnifiedExecTool but it has always returned the
+// shorter wire name (carried over from codex's pre-rename API). The
+// public gateway's tools/list / tools/call surface follows what the
+// LLM client actually sees, so keep these strings aligned with the
+// Tool.Name() returns. copy_path was added 2026-05-18 (post the
+// 2026-06-09 spec draft's "8 tools" list); it's an exec-scope tool by
+// nature (writes files on user-registered executors).
 var ToolsExec = map[string]struct{}{
 	"shell":        {},
 	"exec_command": {},

@@ -27,8 +27,15 @@ func newModelserverTokenCache() *modelserverTokenCache {
 	}
 }
 
-// Get returns a cached token if it exists, was fetched less than 5 minutes ago,
-// and has at least 60 seconds before expiry.
+// Get returns a cached token if it exists, was fetched less than 10 seconds
+// ago, and has at least 60 seconds before expiry.
+//
+// 10s is short on purpose: agentserver's own /internal/.../modelserver-token
+// endpoint already caches in the DB (60s buffer + singleflight refresh), so
+// this layer is just here to coalesce bursts within a single codex turn —
+// not to hold tokens across modelserver-switch events. Anything longer
+// creates a death zone after the user reconnects to a different
+// modelserver, because cached tokens are bound to the old one.
 func (c *modelserverTokenCache) Get(workspaceID string) (string, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -40,8 +47,7 @@ func (c *modelserverTokenCache) Get(workspaceID string) (string, bool) {
 
 	now := time.Now()
 
-	// Stale if fetched more than 5 minutes ago.
-	if now.Sub(tok.fetchedAt) > 5*time.Minute {
+	if now.Sub(tok.fetchedAt) > 10*time.Second {
 		return "", false
 	}
 

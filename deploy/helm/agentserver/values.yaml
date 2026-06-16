@@ -352,6 +352,36 @@ codexExecGateway:
   relayMaxPerWorkspace: 0  # e.g. 16 — concurrent relays per workspace
   resources: {}
 
+# envmcp-public-gateway: public-internet MCP endpoint for external
+# clients (Codex CLI, Claude Desktop in 3P/dev-mode via mcp-remote,
+# Claude Desktop 1P via Custom Connectors once Phase 2 lands). Maps
+# inbound PAT bearers (`agpat_…`, one PAT = one workspace) to the
+# in-pod env-mcp tool surface (list_environments / shell / read_file /
+# write_stdin / read_output / terminate / exec_command / apply_patch /
+# copy_path). See docs/superpowers/specs/2026-06-09-envmcp-public-
+# gateway-design.md and docs/integrations/codex-cli.md.
+envmcpPublicGateway:
+  enabled: false
+  image:
+    repository: ghcr.io/agentserver/envmcp-public-gateway
+    tag: ""               # defaults to Chart.AppVersion via template, override here for testing
+    pullPolicy: IfNotPresent
+  replicaCount: 1
+  port: 8090
+  logLevel: info
+  # External hostname for Codex CLI / Claude Desktop / mcp-remote
+  # config. Empty defaults to "mcp.<gateway.host>" (so users see
+  # https://mcp.agent.cs.ac.cn/v1/mcp on the standard deployment).
+  publicHost: ""
+  # Optional override for the agentserver web URL surfaced in the
+  # 401 WWW-Authenticate's resource_metadata + the OAuth-protected-
+  # resource doc's authorization_servers. Empty defaults to
+  # "https://<gateway.host>".
+  issuerURL: ""
+  resources:
+    requests: { cpu: "50m",  memory: "64Mi" }
+    limits:   { cpu: "500m", memory: "256Mi" }
+
 # codex-exec-edge: thin WS auth/proxy + register-retry layer in front of
 # codex-exec-gateway. Decouples connector lifecycle from gateway upgrades —
 # gateway can Recreate freely without killing connector processes (which

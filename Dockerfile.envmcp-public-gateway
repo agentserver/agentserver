@@ -1,0 +1,16 @@
+# Build Go binary
+FROM golang:1.26-trixie AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' \
+    -o envmcp-public-gateway ./cmd/envmcp-public-gateway
+
+# Runtime image (minimal — Go binary + CA certs, nothing else)
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/envmcp-public-gateway /usr/local/bin/envmcp-public-gateway
+EXPOSE 8090
+ENTRYPOINT ["envmcp-public-gateway"]

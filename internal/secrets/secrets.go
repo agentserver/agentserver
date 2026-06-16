@@ -292,13 +292,21 @@ func crc32Base62(s string) string {
 // AGENTSERVER_TOKEN and pass to `codex --remote --remote-auth-token-env`.
 // Same algorithm, different prefix so leaked-token scanners can distinguish.
 //
-// Sizing rationale (shared by both):
+// MCPPATSpec is the format for user-scoped Personal Access Tokens used
+// against the envmcp public gateway (`agpat_` prefix — "Agentserver
+// Personal Access Token"). Spec'd in
+// docs/superpowers/specs/2026-06-09-envmcp-public-gateway-design.md § 4.3
+// as the fallback auth for CI/automation; OAuth is the preferred path.
+//
+// Sizing rationale (shared by all three):
 //   - IDLen=16 chars of base62 = ~95 bits. Globally collision-free for any
 //     plausible total key count (birthday bound ~ 2^47 keys for 50% odds).
 //   - SecretLen=48 chars of base62 = ~286 bits. Well past any cryptographic
 //     threshold; oversized vs strictly necessary to leave headroom.
-//   - Total wire length: 4 + 16 + 1 + 48 + 6 = 75 chars including CRC32.
+//   - Total wire length: 4 + 16 + 1 + 48 + 6 = 75 chars including CRC32
+//     (76 for the 6-char `agpat_` prefix).
 var (
-	APIKeySpec          = Spec{Prefix: "ask_", IDLen: 16, SecretLen: 48}
+	APIKeySpec           = Spec{Prefix: "ask_", IDLen: 16, SecretLen: 48}
 	AgentserverTokenSpec = Spec{Prefix: "ast_", IDLen: 16, SecretLen: 48}
+	MCPPATSpec           = Spec{Prefix: "agpat_", IDLen: 16, SecretLen: 48}
 )

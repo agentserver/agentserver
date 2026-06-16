@@ -6777,6 +6777,306 @@
         }
       }
     },
+    "/api/workspaces/{wid}/mcp/pats": {
+      "get": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "MCP PATs"
+        ],
+        "summary": "List MCP Personal Access Tokens for a workspace",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "wid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MCPPAT"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "not authenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found (or not a member)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "description": "Returns the secret ONCE in the response body. At least one scope must be provided. The PAT is bound to the URL's workspace; the body has no workspace field.",
+        "tags": [
+          "MCP PATs"
+        ],
+        "summary": "Mint an MCP Personal Access Token for a workspace",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "wid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MCPPATMintRequest"
+              }
+            }
+          },
+          "description": "PAT metadata",
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MCPPATMintResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "name required / scope not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "not authenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found (or not a member of the workspace)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "expires_at invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspaces/{wid}/mcp/pats/scopes": {
+      "get": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "description": "Static capability scopes (mcp:read, mcp:exec). No dynamic workspace scopes — workspace binding is implicit in the route's {wid}.",
+        "tags": [
+          "MCP PATs"
+        ],
+        "summary": "List MCP PAT scope catalog for a workspace",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "wid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MCPPATScopesResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "not authenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found (or not a member of the workspace)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspaces/{wid}/mcp/pats/{id}": {
+      "delete": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "tags": [
+          "MCP PATs"
+        ],
+        "summary": "Revoke an MCP Personal Access Token",
+        "parameters": [
+          {
+            "description": "Workspace ID",
+            "name": "wid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "PAT id (= prefix, e.g. agpat_a1b2...)",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "401": {
+            "description": "not authenticated",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found (or not a member of the workspace)",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/workspaces/{wid}/sandboxes": {
       "get": {
         "security": [
@@ -9671,6 +9971,159 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/AuditSessionSummary"
+            }
+          }
+        }
+      },
+      "MCPPAT": {
+        "type": "object",
+        "required": [
+          "created_at",
+          "expires_at",
+          "id",
+          "name",
+          "prefix",
+          "scopes",
+          "workspace_id"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "example": "agpat_a1b2c3d4e5f6g7h8"
+          },
+          "last_used_at": {
+            "type": "string",
+            "nullable": true
+          },
+          "name": {
+            "type": "string"
+          },
+          "prefix": {
+            "type": "string"
+          },
+          "revoked_at": {
+            "type": "string",
+            "nullable": true
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "MCPPATMintRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "scopes"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "string",
+            "example": "2026-09-09T08:30:00Z"
+          },
+          "name": {
+            "type": "string",
+            "example": "claude-desktop-laptop"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "[\"mcp:read\"",
+              "\"mcp:exec\"]"
+            ]
+          }
+        }
+      },
+      "MCPPATMintResponse": {
+        "type": "object",
+        "required": [
+          "created_at",
+          "expires_at",
+          "id",
+          "name",
+          "prefix",
+          "scopes",
+          "secret",
+          "workspace_id"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string",
+            "example": "2026-09-09T08:30:00Z"
+          },
+          "id": {
+            "type": "string",
+            "example": "agpat_a1b2c3d4e5f6g7h8"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prefix": {
+            "type": "string",
+            "example": "agpat_a1b2c3d4e5f6g7h8"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "secret": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "MCPPATScopeDescriptor": {
+        "type": "object",
+        "required": [
+          "available",
+          "description",
+          "name"
+        ],
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "description": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "example": "mcp:read"
+          }
+        }
+      },
+      "MCPPATScopesResponse": {
+        "type": "object",
+        "required": [
+          "scopes"
+        ],
+        "properties": {
+          "scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MCPPATScopeDescriptor"
             }
           }
         }

@@ -4057,6 +4057,189 @@ paths:
       summary: Remove a codex remote executor from a workspace
       tags:
         - Misc
+  "/api/workspaces/{wid}/mcp/pats":
+    get:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: wid
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: "#/components/schemas/MCPPAT"
+                type: array
+        "401":
+          description: not authenticated
+          content:
+            application/json:
+              schema:
+                type: string
+        "404":
+          description: not found (or not a member)
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: List MCP Personal Access Tokens for a workspace
+      tags:
+        - MCP PATs
+    post:
+      description: Returns the secret ONCE in the response body. At least one scope
+        must be provided. The PAT is bound to the URL's workspace; the body has
+        no workspace field.
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: wid
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MCPPATMintRequest"
+        description: PAT metadata
+        required: true
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MCPPATMintResponse"
+        "400":
+          description: name required / scope not available
+          content:
+            application/json:
+              schema:
+                type: string
+        "401":
+          description: not authenticated
+          content:
+            application/json:
+              schema:
+                type: string
+        "404":
+          description: not found (or not a member of the workspace)
+          content:
+            application/json:
+              schema:
+                type: string
+        "422":
+          description: expires_at invalid
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Mint an MCP Personal Access Token for a workspace
+      tags:
+        - MCP PATs
+  "/api/workspaces/{wid}/mcp/pats/{id}":
+    delete:
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: wid
+          required: true
+          schema:
+            type: string
+        - description: PAT id (= prefix, e.g. agpat_a1b2...)
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: No Content
+        "401":
+          description: not authenticated
+          content:
+            "*/*":
+              schema:
+                type: string
+        "404":
+          description: not found (or not a member of the workspace)
+          content:
+            "*/*":
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            "*/*":
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Revoke an MCP Personal Access Token
+      tags:
+        - MCP PATs
+  "/api/workspaces/{wid}/mcp/pats/scopes":
+    get:
+      description: Static capability scopes (mcp:read, mcp:exec). No dynamic workspace
+        scopes — workspace binding is implicit in the route's {wid}.
+      parameters:
+        - description: Workspace ID
+          in: path
+          name: wid
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MCPPATScopesResponse"
+        "401":
+          description: not authenticated
+          content:
+            application/json:
+              schema:
+                type: string
+        "404":
+          description: not found (or not a member of the workspace)
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: List MCP PAT scope catalog for a workspace
+      tags:
+        - MCP PATs
   "/api/workspaces/{wid}/sandboxes":
     get:
       parameters:
@@ -6013,6 +6196,115 @@ components:
           type: array
       required:
         - sessions
+      type: object
+    MCPPAT:
+      properties:
+        created_at:
+          type: string
+        expires_at:
+          type: string
+        id:
+          example: agpat_a1b2c3d4e5f6g7h8
+          type: string
+        last_used_at:
+          type: string
+          nullable: true
+        name:
+          type: string
+        prefix:
+          type: string
+        revoked_at:
+          type: string
+          nullable: true
+        scopes:
+          items:
+            type: string
+          type: array
+        workspace_id:
+          type: string
+      required:
+        - created_at
+        - expires_at
+        - id
+        - name
+        - prefix
+        - scopes
+        - workspace_id
+      type: object
+    MCPPATMintRequest:
+      properties:
+        expires_at:
+          example: 2026-09-09T08:30:00Z
+          type: string
+        name:
+          example: claude-desktop-laptop
+          type: string
+        scopes:
+          example:
+            - '["mcp:read"'
+            - '"mcp:exec"]'
+          items:
+            type: string
+          type: array
+      required:
+        - name
+        - scopes
+      type: object
+    MCPPATMintResponse:
+      properties:
+        created_at:
+          type: string
+        expires_at:
+          example: 2026-09-09T08:30:00Z
+          type: string
+        id:
+          example: agpat_a1b2c3d4e5f6g7h8
+          type: string
+        name:
+          type: string
+        prefix:
+          example: agpat_a1b2c3d4e5f6g7h8
+          type: string
+        scopes:
+          items:
+            type: string
+          type: array
+        secret:
+          type: string
+        workspace_id:
+          type: string
+      required:
+        - created_at
+        - expires_at
+        - id
+        - name
+        - prefix
+        - scopes
+        - secret
+        - workspace_id
+      type: object
+    MCPPATScopeDescriptor:
+      properties:
+        available:
+          type: boolean
+        description:
+          type: string
+        name:
+          example: mcp:read
+          type: string
+      required:
+        - available
+        - description
+        - name
+      type: object
+    MCPPATScopesResponse:
+      properties:
+        scopes:
+          items:
+            $ref: "#/components/schemas/MCPPATScopeDescriptor"
+          type: array
+      required:
+        - scopes
       type: object
     MemberAddRequest:
       properties:

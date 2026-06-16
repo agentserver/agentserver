@@ -864,6 +864,70 @@ type WorkspaceAPIKey struct {
 	RevokedAt  *string  `json:"revoked_at" extensions:"x-nullable=true"`
 } // @name WorkspaceAPIKey
 
+// --- MCP Personal Access Tokens (envmcp public gateway) ---
+//
+// 2026-06-15 design amendment: PATs are workspace-scoped (1 PAT = 1
+// workspace). The CRUD endpoints live under
+// /api/workspaces/{wid}/mcp/pats/... — the workspace_id never appears
+// in request/response bodies as a settable field; it's intrinsic to
+// the URL and echoed back on responses for client display.
+
+// MCPPATScopeDescriptor is one entry in the MCP PAT scope catalog.
+// Two static capability scopes only — the dynamic "workspace:<id>"
+// family from the pre-amendment design is gone.
+type MCPPATScopeDescriptor struct {
+	Name        string `json:"name" validate:"required" example:"mcp:read"`
+	Description string `json:"description" validate:"required"`
+	Available   bool   `json:"available" validate:"required"`
+} // @name MCPPATScopeDescriptor
+
+// MCPPATScopesResponse is what GET /api/workspaces/{wid}/mcp/pats/scopes
+// returns. Post-amendment, the response is just the static catalog
+// (no workspace picker — workspace binding is implicit in the URL).
+type MCPPATScopesResponse struct {
+	Scopes []MCPPATScopeDescriptor `json:"scopes" validate:"required"`
+} // @name MCPPATScopesResponse
+
+// MCPPATMintRequest is the body for POST /api/workspaces/{wid}/mcp/pats.
+// Scopes must be non-empty; every entry must be a static scope from
+// the catalog. No workspace field — the PAT is bound to the URL's
+// {wid}.
+type MCPPATMintRequest struct {
+	Name      string   `json:"name" validate:"required" example:"claude-desktop-laptop"`
+	Scopes    []string `json:"scopes" validate:"required" example:"[\"mcp:read\",\"mcp:exec\"]"`
+	ExpiresAt string   `json:"expires_at,omitempty" example:"2026-09-09T08:30:00Z"`
+} // @name MCPPATMintRequest
+
+// MCPPATMintResponse is the body returned by mint. Secret is returned
+// ONCE and never appears in any subsequent response. WorkspaceID is
+// echoed back so the SPA can render "this PAT is for workspace X" in
+// the success modal without re-reading the URL.
+type MCPPATMintResponse struct {
+	ID          string   `json:"id" validate:"required" example:"agpat_a1b2c3d4e5f6g7h8"`
+	Name        string   `json:"name" validate:"required"`
+	Prefix      string   `json:"prefix" validate:"required" example:"agpat_a1b2c3d4e5f6g7h8"`
+	WorkspaceID string   `json:"workspace_id" validate:"required"`
+	Secret      string   `json:"secret" validate:"required"`
+	Scopes      []string `json:"scopes" validate:"required"`
+	CreatedAt   string   `json:"created_at" validate:"required"`
+	ExpiresAt   string   `json:"expires_at" validate:"required" example:"2026-09-09T08:30:00Z"`
+} // @name MCPPATMintResponse
+
+// MCPPAT is one row in GET /api/workspaces/{wid}/mcp/pats. Secret is
+// never included. WorkspaceID echoes the URL — useful for clients
+// that fetch the same row via a cross-workspace audit view later.
+type MCPPAT struct {
+	ID          string   `json:"id" validate:"required" example:"agpat_a1b2c3d4e5f6g7h8"`
+	Name        string   `json:"name" validate:"required"`
+	Prefix      string   `json:"prefix" validate:"required"`
+	WorkspaceID string   `json:"workspace_id" validate:"required"`
+	Scopes      []string `json:"scopes" validate:"required"`
+	CreatedAt   string   `json:"created_at" validate:"required"`
+	ExpiresAt   string   `json:"expires_at" validate:"required"`
+	LastUsedAt  *string  `json:"last_used_at" extensions:"x-nullable=true"`
+	RevokedAt   *string  `json:"revoked_at" extensions:"x-nullable=true"`
+} // @name MCPPAT
+
 // AuditSessionSummary is the per-row shape in ListAuditSessionsResponse.
 type AuditSessionSummary struct {
 	ID              string `json:"id" validate:"required"`

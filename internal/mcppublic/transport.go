@@ -2,7 +2,6 @@ package mcppublic
 
 import (
 	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -284,7 +283,7 @@ func idOrNull(id json.RawMessage) json.RawMessage {
 // can mint a PAT manually.
 func (s *Server) handleOAuthProtectedResource(w http.ResponseWriter, r *http.Request) {
 	gatewayURL := "https://" + r.Host + "/v1/mcp"
-	if r.TLS == nil {
+	if !requestIsHTTPS(r) {
 		// Dev / port-forward case — keep things working over plain http.
 		gatewayURL = "http://" + r.Host + "/v1/mcp"
 	}
@@ -303,6 +302,32 @@ func (s *Server) handleOAuthProtectedResource(w http.ResponseWriter, r *http.Req
 	_ = json.NewEncoder(w).Encode(doc)
 }
 
+// requestIsHTTPS reports whether the original client request was over
+// TLS. The pod terminates TLS at the ingress layer (istio-ingress +
+// cert-manager) and arrives on the cleartext Service port, so
+// `r.TLS` is always nil in production — we have to trust the
+// `X-Forwarded-Proto` header the ingress sets. Trusting it is fine
+// here because the Service is only reachable through the ingress
+// (NetworkPolicy + HTTPRoute pin the path; no direct pod traffic
+// from outside the cluster).
+//
+// Order:
+//  1. X-Forwarded-Proto if set (production istio-ingress path)
+//  2. r.TLS != nil (httptest.NewTLSServer / standalone TLS)
+//  3. otherwise plain http (dev / port-forward / curl-against-Service)
+func requestIsHTTPS(r *http.Request) bool {
+	if xfp := r.Header.Get("X-Forwarded-Proto"); xfp != "" {
+		// Header may carry a comma-separated chain (RFC 7239-style);
+		// take the first entry which is the client-facing scheme.
+		first := xfp
+		if i := strings.IndexByte(xfp, ','); i >= 0 {
+			first = xfp[:i]
+		}
+		return strings.EqualFold(strings.TrimSpace(first), "https")
+	}
+	return r.TLS != nil
+}
+
 // AuthMiddleware constructs the auth.Middleware-equivalent http.Handler
 // wrapper. Exposed as a convenience so the cmd binary doesn't have to
 // know about the Middleware struct's fields directly — pass an empty
@@ -317,7 +342,3 @@ func AuthMiddleware(resolvers []PrincipalResolver, resourceMetadataURL string, l
 	return mw.Wrap
 }
 
-// ensure the errors package stays imported even if a future refactor
-// drops the only user — keeps `go vet` quiet without leaving an
-// unused-import landmine for the next editor.
-var _ = errors.New

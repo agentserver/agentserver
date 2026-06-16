@@ -169,15 +169,21 @@ type config struct {
 }
 
 func loadConfig() (config, error) {
+	return loadConfigFromEnv(os.Getenv)
+}
+
+// loadConfigFromEnv lets tests inject a fake env-lookup function.
+// Production wiring just passes os.Getenv.
+func loadConfigFromEnv(getenv func(string) string) (config, error) {
 	cfg := config{
-		DatabaseURL:               os.Getenv("DATABASE_URL"),
-		ListenAddr:                envOr("CXG_LISTEN_ADDR", ":8090"),
-		CapTokenHMACSecret:        []byte(os.Getenv("CXG_CAPTOKEN_HMAC_SECRET")),
-		ExecGatewayInternalURL:    os.Getenv("CXG_EXEC_GATEWAY_INTERNAL_URL"),
-		ExecGatewayInternalSecret: os.Getenv("CXG_EXEC_GATEWAY_INTERNAL_SECRET"),
-		BridgeBaseURL:             os.Getenv("CXG_BRIDGE_BASE_URL"),
-		ResourceMetadataURL:       os.Getenv("MCP_PUBLIC_RESOURCE_METADATA_URL"),
-		IssuerURL:                 os.Getenv("MCP_PUBLIC_ISSUER_URL"),
+		DatabaseURL:               getenv("DATABASE_URL"),
+		ListenAddr:                getenvOr(getenv, "CXG_LISTEN_ADDR", ":8090"),
+		CapTokenHMACSecret:        []byte(getenv("CXG_CAPTOKEN_HMAC_SECRET")),
+		ExecGatewayInternalURL:    getenv("CXG_EXEC_GATEWAY_INTERNAL_URL"),
+		ExecGatewayInternalSecret: getenv("CXG_EXEC_GATEWAY_INTERNAL_SECRET"),
+		BridgeBaseURL:             getenv("CXG_BRIDGE_BASE_URL"),
+		ResourceMetadataURL:       getenv("MCP_PUBLIC_RESOURCE_METADATA_URL"),
+		IssuerURL:                 getenv("MCP_PUBLIC_ISSUER_URL"),
 	}
 	missing := []string{}
 	if cfg.DatabaseURL == "" {
@@ -195,14 +201,29 @@ func loadConfig() (config, error) {
 	if cfg.BridgeBaseURL == "" {
 		missing = append(missing, "CXG_BRIDGE_BASE_URL")
 	}
+	// The two MCP_PUBLIC_* vars are documented as required because
+	// missing them silently degrades the 401 WWW-Authenticate header
+	// (no `resource_metadata=` parameter) and the OAuth-protected-
+	// resource doc (no `authorization_servers` entry). Codex CLI
+	// ignores both today, but enforce fail-closed so Phase 2 clients
+	// (Claude Desktop 1P Custom Connectors) discover us correctly.
+	if cfg.ResourceMetadataURL == "" {
+		missing = append(missing, "MCP_PUBLIC_RESOURCE_METADATA_URL")
+	}
+	if cfg.IssuerURL == "" {
+		missing = append(missing, "MCP_PUBLIC_ISSUER_URL")
+	}
 	if len(missing) > 0 {
 		return cfg, fmt.Errorf("missing required env vars: %v", missing)
 	}
 	return cfg, nil
 }
 
-func envOr(k, def string) string {
-	if v := os.Getenv(k); v != "" {
+// getenvOr returns the value of the named env var, or def if empty.
+// Lookup goes through the injected `getenv` so loadConfigFromEnv's
+// test path stays hermetic (no actual os.Getenv calls in tests).
+func getenvOr(getenv func(string) string, k, def string) string {
+	if v := getenv(k); v != "" {
 		return v
 	}
 	return def

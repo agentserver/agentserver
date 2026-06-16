@@ -221,13 +221,69 @@ func TestTransport_OAuthProtectedResource_Public(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: %d", resp.StatusCode)
 	}
-	var doc map[string]any
-	_ = json.NewDecoder(resp.Body).Decode(&doc)
-	if _, ok := doc["resource"]; !ok {
-		t.Errorf("missing resource field: %v", doc)
+	var doc struct {
+		Resource             string   `json:"resource"`
+		AuthorizationServers []string `json:"authorization_servers"`
 	}
-	if _, ok := doc["authorization_servers"]; !ok {
-		t.Errorf("missing authorization_servers field: %v", doc)
+	_ = json.NewDecoder(resp.Body).Decode(&doc)
+	// plain httptest server (no TLS, no X-Forwarded-Proto) → http://
+	if !strings.HasPrefix(doc.Resource, "http://") {
+		t.Errorf("plain-http resource: got %q, want http:// prefix", doc.Resource)
+	}
+	if !strings.HasSuffix(doc.Resource, "/v1/mcp") {
+		t.Errorf("resource missing /v1/mcp suffix: %q", doc.Resource)
+	}
+	if len(doc.AuthorizationServers) == 0 {
+		t.Errorf("no authorization_servers: %+v", doc)
+	}
+	if doc.AuthorizationServers[0] != "https://app.example.com" {
+		t.Errorf("authorization_servers[0]: got %q, want %q",
+			doc.AuthorizationServers[0], "https://app.example.com")
+	}
+}
+
+// TestTransport_OAuthProtectedResource_HonorsXForwardedProto pins the
+// production behavior behind istio-ingress (TLS terminated at ingress,
+// pod sees plain http but the X-Forwarded-Proto header tells us the
+// client connected over https). Without this honored, the protected-
+// resource doc would advertise http://mcp.agent.cs.ac.cn/v1/mcp and
+// OAuth clients would refuse to use it.
+func TestTransport_OAuthProtectedResource_HonorsXForwardedProto(t *testing.T) {
+	hs := newTestServer(t, nil, &stubBackend{}, principalReadOnly("ws_1"))
+	req, _ := http.NewRequest(http.MethodGet, hs.URL+"/v1/.well-known/oauth-protected-resource", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	var doc struct {
+		Resource string `json:"resource"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&doc)
+	if !strings.HasPrefix(doc.Resource, "https://") {
+		t.Errorf("resource: got %q, want https:// prefix (X-Forwarded-Proto: https)", doc.Resource)
+	}
+}
+
+// TestTransport_OAuthProtectedResource_XForwardedProtoChain verifies
+// the comma-separated form (RFC 7239-style: "https, http") picks the
+// first entry, since proxies may chain.
+func TestTransport_OAuthProtectedResource_XForwardedProtoChain(t *testing.T) {
+	hs := newTestServer(t, nil, &stubBackend{}, principalReadOnly("ws_1"))
+	req, _ := http.NewRequest(http.MethodGet, hs.URL+"/v1/.well-known/oauth-protected-resource", nil)
+	req.Header.Set("X-Forwarded-Proto", "https, http")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	var doc struct {
+		Resource string `json:"resource"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&doc)
+	if !strings.HasPrefix(doc.Resource, "https://") {
+		t.Errorf("chain header: got %q, want https:// prefix", doc.Resource)
 	}
 }
 

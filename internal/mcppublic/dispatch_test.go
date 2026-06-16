@@ -199,8 +199,13 @@ func TestDispatcher_ToolsCall_HappyPathInvokesBackendWithMintedToken(t *testing.
 	}
 }
 
-func TestDispatcher_ToolsCall_BackendFailureSurfacesAsExecError(t *testing.T) {
-	backend := &stubBackend{err: errors.New("bridge dial timed out")}
+func TestDispatcher_ToolsCall_BackendFailureRedactsInternalDetails(t *testing.T) {
+	// The backend errors with text that names internal pod IPs (the
+	// kind of message net.Dial returns when an in-cluster Service is
+	// unreachable). The dispatcher must log that server-side but
+	// return only an opaque message to the public client — leaking
+	// internal CIDRs is a security finding.
+	backend := &stubBackend{err: errors.New("dial tcp 10.0.5.7:6060: connection refused")}
 	d := newTestDispatcher(t, nil, backend)
 	p := principalReadExec("ws_1")
 
@@ -211,8 +216,34 @@ func TestDispatcher_ToolsCall_BackendFailureSurfacesAsExecError(t *testing.T) {
 	if errObj == nil || errObj.Code != codeToolExecutionFail {
 		t.Fatalf("want codeToolExecutionFail, got %+v", errObj)
 	}
-	if !strings.Contains(errObj.Message, "bridge dial timed out") {
-		t.Errorf("error message should include backend cause: %s", errObj.Message)
+	// Must name the tool (so the LLM knows which call failed)…
+	if !strings.Contains(errObj.Message, "shell") {
+		t.Errorf("error message should name the tool: %s", errObj.Message)
+	}
+	// …but must NOT leak the internal IP / port / dial-error detail.
+	for _, leak := range []string{"10.0.5.7", "dial tcp", "6060", "connection refused"} {
+		if strings.Contains(errObj.Message, leak) {
+			t.Errorf("error message leaks internal detail %q: %s", leak, errObj.Message)
+		}
+	}
+}
+
+func TestDispatcher_ToolsCall_ListEnvironmentsUpstreamErrorRedacts(t *testing.T) {
+	// Same redaction rationale for the list_environments path: an
+	// upstream HTTPExecutorsSource error can name internal hostnames
+	// (it hits a Service.svc URL). Only opaque message to the wire.
+	src := &fakeExecutorsSource{err: errors.New("Get \"http://release-codex-exec-gateway.default.svc:6060/api/codex-exec/workspaces/ws_1/executors\": connection refused")}
+	d := newTestDispatcher(t, src, &stubBackend{})
+
+	_, errObj := d.ToolsCall(context.Background(), principalReadOnly("ws_1"),
+		tools.MCPCallToolParams{Name: "list_environments", Arguments: json.RawMessage(`{}`)})
+	if errObj == nil || errObj.Code != codeUpstreamUnavail {
+		t.Fatalf("want codeUpstreamUnavail, got %+v", errObj)
+	}
+	for _, leak := range []string{"release-codex-exec-gateway", ".svc", "6060", "connection refused"} {
+		if strings.Contains(errObj.Message, leak) {
+			t.Errorf("error message leaks internal detail %q: %s", leak, errObj.Message)
+		}
 	}
 }
 
@@ -287,17 +318,6 @@ func TestDispatcher_ToolsCall_ListEnvironmentsScopedToPrincipalsWorkspace(t *tes
 				t.Errorf("workspace %s: leaked cross-workspace row: %s", ws, gotName)
 			}
 		})
-	}
-}
-
-func TestDispatcher_ToolsCall_ListEnvironmentsUpstreamErrorIsServiceUnavailable(t *testing.T) {
-	src := &fakeExecutorsSource{err: errors.New("upstream down")}
-	d := newTestDispatcher(t, src, &stubBackend{})
-
-	_, errObj := d.ToolsCall(context.Background(), principalReadOnly("ws_1"),
-		tools.MCPCallToolParams{Name: "list_environments", Arguments: json.RawMessage(`{}`)})
-	if errObj == nil || errObj.Code != codeUpstreamUnavail {
-		t.Fatalf("want codeUpstreamUnavail, got %+v", errObj)
 	}
 }
 

@@ -209,9 +209,19 @@ func (d *Dispatcher) ToolsCall(ctx context.Context, p *Principal, params tools.M
 		Principal: p,
 	})
 	if err != nil {
+		// Log the full underlying error server-side (includes the
+		// dialer's TCP error which may name internal pod IPs, the
+		// bridge URL, etc.) but return only an opaque message to the
+		// public client. Including err.Error() in the wire response
+		// would leak our cluster topology (e.g. "dial tcp
+		// 10.0.5.7:6060: connection refused" → internal CIDR
+		// disclosure) to anyone holding a valid PAT.
 		d.Logger.Warn("mcppublic: tool backend error",
 			"tool", params.Name, "workspace_id", p.WorkspaceID, "err", err)
-		return nil, &jsonrpcErr{Code: codeToolExecutionFail, Message: params.Name + ": " + err.Error()}
+		return nil, &jsonrpcErr{
+			Code:    codeToolExecutionFail,
+			Message: params.Name + ": tool execution failed",
+		}
 	}
 	return &res, nil
 }
@@ -228,7 +238,13 @@ func (d *Dispatcher) ToolsCall(ctx context.Context, p *Principal, params tools.M
 func (d *Dispatcher) handleListEnvironments(ctx context.Context, p *Principal) (*tools.MCPCallToolResult, *jsonrpcErr) {
 	rows, err := d.Executors.ListWorkspaceExecutors(ctx, p.WorkspaceID)
 	if err != nil {
-		return nil, &jsonrpcErr{Code: codeUpstreamUnavail, Message: "list_environments: " + err.Error()}
+		// Same redaction rationale as ToolsCall's backend-error path:
+		// upstream errors can name internal hostnames (HTTPExecutors
+		// hits an in-cluster Service). Log full server-side, return
+		// generic to the client.
+		d.Logger.Warn("mcppublic: list_environments upstream error",
+			"workspace_id", p.WorkspaceID, "err", err)
+		return nil, &jsonrpcErr{Code: codeUpstreamUnavail, Message: "list_environments: upstream unavailable"}
 	}
 	type llmEntry struct {
 		Name        string `json:"name"`
@@ -250,7 +266,9 @@ func (d *Dispatcher) handleListEnvironments(ctx context.Context, p *Principal) (
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	body, err := json.Marshal(out)
 	if err != nil {
-		return nil, &jsonrpcErr{Code: codeInternal, Message: "marshal list_environments: " + err.Error()}
+		d.Logger.Error("mcppublic: marshal list_environments failed",
+			"workspace_id", p.WorkspaceID, "err", err)
+		return nil, &jsonrpcErr{Code: codeInternal, Message: "internal error"}
 	}
 	return &tools.MCPCallToolResult{
 		Content: []tools.MCPToolContent{{Type: "text", Text: string(body)}},

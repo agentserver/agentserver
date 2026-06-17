@@ -36,3 +36,42 @@ DCR. Acceptable because:
 
 Frontend UI for /api/me/oauth-clients management lives in a follow-up
 PR; for v1 docs show the `curl` flow directly.
+
+---
+
+## Amendment 2026-06-17 (evening) — single shared client
+
+#256 (per-user clients via `/api/me/oauth-clients`) shipped and worked,
+but on reflection the per-user model was overengineered:
+
+- The `client_id` of a public OAuth client is not a secret (PKCE
+  carries that load). Same shape gh CLI / GitHub Desktop / VS Code
+  share globally.
+- Per-user clients added a curl step to every install. Friction with
+  no security benefit.
+- Audit / revocation can still happen at the user (token.sub) +
+  workspace-membership level — client-id-per-machine granularity
+  isn't actually useful for our deployment shape.
+
+So this amendment **deletes the per-user table + REST surface from
+#256** and replaces it with a single shared client provisioned by the
+existing `hydra-client-setup` Helm job:
+
+- `client_id = "agentserver-mcp-shared"`
+- `token_endpoint_auth_method = none` (public client, PKCE-protected)
+- `redirect_uris = [http://localhost/callback, http://127.0.0.1/callback]`
+  — host-only per RFC 8252 §7.3 so Hydra accepts any port the CLI
+  binds
+- `scope = "openid mcp:read mcp:exec"`
+- `audience = ["https://mcp.<domain>/v1/mcp"]` so issued tokens
+  carry the RFC 8707 `aud` claim our resolver enforces
+
+Docs (codex-cli.md, claude-code-cli.md) updated to point to the
+fixed client_id directly — no curl step. Users just paste the
+client_id into their CLI config.
+
+If a future need for per-user clients re-emerges (e.g. multi-org
+deployments where one user's client should be revocable without
+affecting others), revive the #256 table — the Hydra admin wrapper
+(internal/auth/hydra.go CreateOAuth2Client/DeleteOAuth2Client) and
+REST surface design can be cherry-picked back.

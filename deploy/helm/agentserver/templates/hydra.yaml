@@ -183,16 +183,56 @@ spec:
           command: ["sh", "-c"]
           args:
             - |
+              set -e
               ENDPOINT="http://{{ .Release.Name }}-hydra-admin:{{ .Values.hydra.adminPort }}"
-              CLIENT_FLAGS="--name Agentserver_Agent_CLI \
+
+              # 1. agentserver-agent-cli — used by `codex login` device
+              # flow against codex-auth.<domain>. Pre-existing client,
+              # untouched by the MCP rework.
+              CLI_FLAGS="--name Agentserver_Agent_CLI \
                 --grant-type urn:ietf:params:oauth:grant-type:device_code \
                 --grant-type refresh_token \
                 --response-type code \
                 --scope openid --scope profile --scope agent:register \
                 --token-endpoint-auth-method none \
                 --audience https://{{ .Values.platform.domain }}"
-              hydra update oauth2-client agentserver-agent-cli --endpoint "$ENDPOINT" $CLIENT_FLAGS 2>/dev/null || \
-              hydra create oauth2-client --endpoint "$ENDPOINT" --id agentserver-agent-cli $CLIENT_FLAGS
+              hydra update oauth2-client agentserver-agent-cli --endpoint "$ENDPOINT" $CLI_FLAGS 2>/dev/null || \
+              hydra create oauth2-client --endpoint "$ENDPOINT" --id agentserver-agent-cli $CLI_FLAGS
+
+              # 2. agentserver-mcp-shared — single shared public OAuth
+              # client all MCP clients (Codex CLI, Claude Code, Claude
+              # Desktop via mcp-remote) use against envmcp-public-
+              # gateway. client_id is published in the docs and pasted
+              # into ~/.codex/config.toml / `claude mcp add --client-id`.
+              #
+              # Security model:
+              #   - PKCE-protected (token_endpoint_auth_method=none, no
+              #     client_secret). The client_id alone gives no auth
+              #     power — the OAuth flow's user login + workspace
+              #     consent screen is what actually authorizes the
+              #     issued token. Same shape gh/git-credential-manager
+              #     use.
+              #   - Audience pinned to mcp.<domain>/v1/mcp so a token
+              #     issued for this client can't replay against any
+              #     other MCP server on the same Hydra (RFC 8707).
+              #   - Loopback redirect URIs only — host-only, RFC 8252
+              #     §7.3 lets Hydra accept any port the CLI binds.
+              #
+              # Idempotent: update first, fall back to create. Helm
+              # reruns the job on every chart upgrade so the flag set
+              # below is the source of truth (drift is silently
+              # corrected).
+              MCP_FLAGS="--name Agentserver_MCP_Shared_Client \
+                --grant-type authorization_code \
+                --grant-type refresh_token \
+                --response-type code \
+                --scope openid --scope mcp:read --scope mcp:exec \
+                --redirect-uri http://localhost/callback \
+                --redirect-uri http://127.0.0.1/callback \
+                --token-endpoint-auth-method none \
+                --audience https://mcp.{{ .Values.platform.domain }}/v1/mcp"
+              hydra update oauth2-client agentserver-mcp-shared --endpoint "$ENDPOINT" $MCP_FLAGS 2>/dev/null || \
+              hydra create oauth2-client --endpoint "$ENDPOINT" --id agentserver-mcp-shared $MCP_FLAGS
 ---
 # --- Hydra Public Service ---
 apiVersion: v1

@@ -8,34 +8,7 @@ Run your agentserver workspaces' tools (`shell`, `read_file`, `apply_patch`, …
 - Codex CLI ≥ 0.140 (`codex mcp login` support)
 - An agentserver login
 
-## Step 1 — Create a static OAuth client
-
-Codex needs a pre-registered `client_id` (we disabled Dynamic Client Registration to avoid open `/oauth2/register` flooding the auth-server's client table). Mint one via the agentserver REST API — it's a public OAuth client (PKCE-protected, no secret).
-
-```bash
-# Session cookie from your browser DevTools → agent.cs.ac.cn origin
-curl -s -X POST "https://agent.cs.ac.cn/api/me/oauth-clients" \
-  -H "Cookie: agentserver_session=..." \
-  -H "Content-Type: application/json" \
-  -d '{"name":"my-laptop-codex"}'
-```
-
-Response:
-
-```json
-{
-  "id": "mcpoc_a1b2c3d4e5f6g7h8",
-  "client_id": "df66ecfa-25ad-404c-b364-1d94ca7f986c",
-  "name": "my-laptop-codex",
-  "created_at": "2026-06-17T09:00:00Z"
-}
-```
-
-Copy the `client_id`. It's safe to commit (it's just an identifier — PKCE protects the actual auth exchange).
-
-## Step 2 — Configure Codex
-
-`~/.codex/config.toml`:
+## Step 1 — Add to `~/.codex/config.toml`
 
 ```toml
 [mcp_servers.agentserver]
@@ -43,12 +16,14 @@ url = "https://mcp.agent.cs.ac.cn/v1/mcp"
 oauth_resource = "https://mcp.agent.cs.ac.cn/v1/mcp"
 
 [mcp_servers.agentserver.oauth]
-client_id = "df66ecfa-25ad-404c-b364-1d94ca7f986c"
+client_id = "agentserver-mcp-shared"
 ```
 
-The `oauth_resource` (RFC 8707) binds the token to this gateway's URL — without it, the resolver rejects every request because the token's `aud` claim is empty.
+The `client_id` is a fixed, public value shared by all users (same shape as `gh` CLI's hard-coded GitHub OAuth client). It carries no auth power on its own — the OAuth flow's user login + workspace consent screen is what actually authorizes the issued token.
 
-## Step 3 — Login
+The `oauth_resource` (RFC 8707) binds the token to this gateway's URL — without it, the gateway's resolver rejects every request because the token's `aud` claim is empty.
+
+## Step 2 — Login
 
 ```
 codex mcp login agentserver
@@ -56,7 +31,7 @@ codex mcp login agentserver
 
 A browser opens to agentserver. Log in if needed, pick the workspace you want this Codex install to act on, click **Allow** (you'll see two scope rows: `mcp:read` "Read files and list environments", and ⚠️ `mcp:exec` "Run shell commands"). Browser jumps back to localhost; token is stored under `~/.codex/mcp_oauth/agentserver.json` and silently refreshes from there.
 
-## Step 4 — Verify
+## Step 3 — Verify
 
 In a Codex session:
 
@@ -87,13 +62,13 @@ Each `[mcp_servers.X]` entry corresponds to one workspace (workspace is selected
 url = "https://mcp.agent.cs.ac.cn/v1/mcp"
 oauth_resource = "https://mcp.agent.cs.ac.cn/v1/mcp"
 [mcp_servers.work.oauth]
-client_id = "df66ecfa-25ad-404c-b364-1d94ca7f986c"
+client_id = "agentserver-mcp-shared"
 
 [mcp_servers.personal]
 url = "https://mcp.agent.cs.ac.cn/v1/mcp"
 oauth_resource = "https://mcp.agent.cs.ac.cn/v1/mcp"
 [mcp_servers.personal.oauth]
-client_id = "df66ecfa-25ad-404c-b364-1d94ca7f986c"
+client_id = "agentserver-mcp-shared"
 ```
 
 ```bash
@@ -105,19 +80,9 @@ Codex auto-prefixes tool names by server (`work_shell`, `personal_shell`).
 
 ## Revoke
 
-Same REST surface:
+`codex mcp logout agentserver` clears the local token. The token continues to be valid against the gateway until it expires naturally (1h access token, 30d refresh), unless an admin revokes it via `hydra revoke access-token` from inside the cluster.
 
-```bash
-curl -s -X GET "https://agent.cs.ac.cn/api/me/oauth-clients" \
-  -H "Cookie: agentserver_session=..."         # list to find the id
-
-curl -s -X DELETE "https://agent.cs.ac.cn/api/me/oauth-clients/mcpoc_a1b2c3d4e5f6g7h8" \
-  -H "Cookie: agentserver_session=..."
-```
-
-Revocation propagates within ≤10s on the gateway side (no token cache; every request introspects against Hydra).
-
-On the codex side, `codex mcp logout agentserver` clears the local token copy.
+For workspace-membership-based revocation (most common case — "this user shouldn't access this workspace anymore"), just remove the user from the workspace; the gateway re-checks membership on every request and rejects within ≤10s.
 
 ## Service-account / CI alternative: Personal Access Tokens
 
@@ -147,9 +112,9 @@ export AGENTSERVER_PAT='agpat_...'
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `Incompatible auth server: does not support dynamic client registration` | You skipped Step 1 — Codex tried DCR, but we don't expose it | Create a static client via Step 1, configure `oauth.client_id` |
+| `Incompatible auth server: does not support dynamic client registration` | Forgot `oauth.client_id` in config | Add `[mcp_servers.agentserver.oauth] client_id = "agentserver-mcp-shared"` |
 | `audience mismatch` in gateway logs | Forgot `oauth_resource` in config | Add `oauth_resource = "https://mcp.agent.cs.ac.cn/v1/mcp"` |
-| Browser opens but never returns | Network blocks codex's callback port | Set `mcp_oauth_callback_port = 8765` (or similar reachable port) in config |
+| Browser opens but never returns | Network blocks codex's callback port | Set `mcp_oauth_callback_port = 8765` (or any reachable port) in config |
 | `401 unauthorized` after successful login | Token expired or workspace membership lost | Re-run `codex mcp login agentserver` |
 | `tools/call ... not granted to this principal` | Granted only `mcp:read` on consent | Re-login, grant both scopes |
 | `no environment named X` | Executor name not in `list_environments` | Run `list_environments` first; copy a `name` verbatim |

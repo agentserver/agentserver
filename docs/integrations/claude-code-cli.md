@@ -13,12 +13,12 @@ Run your agentserver workspaces' tools (`shell`, `read_file`, `apply_patch`, …
 ```bash
 claude mcp add --transport http agentserver \
   https://mcp.agent.cs.ac.cn/v1/mcp \
-  --client-id agentserver-mcp-shared \
+  --client-id agentserver-mcp \
   --callback-port 3000
 ```
 
 Notes:
-- `client_id = "agentserver-mcp-shared"` is a fixed, public value shared by all users (same shape as gh CLI's hard-coded GitHub OAuth client). It has no auth power on its own — the OAuth flow's user login + workspace consent screen is what authorizes.
+- `client_id = "agentserver-mcp"` is a fixed, public value shared by all users (same shape as gh CLI's hard-coded GitHub OAuth client). It has no auth power on its own — the OAuth flow's user login + workspace consent screen is what authorizes.
 - `--callback-port` is required: Claude Code binds the OAuth callback on this exact port. Any free port works (we register loopback host-only with Hydra, so any port is accepted per RFC 8252).
 - No `--client-secret`: the shared client is a **public** OAuth client (PKCE-protected).
 
@@ -43,7 +43,7 @@ The first time it talks to `agentserver`, a browser opens. Log in to agentserver
       "type": "http",
       "url": "https://mcp.agent.cs.ac.cn/v1/mcp",
       "oauth": {
-        "client_id": "agentserver-mcp-shared",
+        "client_id": "agentserver-mcp",
         "callback_port": 3000
       }
     }

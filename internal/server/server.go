@@ -457,7 +457,7 @@ func (s *Server) Router() http.Handler {
 		// NOTE: /oauth2/register is intentionally NOT reverse-proxied.
 		// DCR is off chart-wide (see hydra.yaml comment); the static-
 		// public-client replacement is a single shared OAuth client
-		// (`agentserver-mcp-shared`) provisioned by the
+		// (`agentserver-mcp`) provisioned by the
 		// hydra-client-setup helm job (see hydra.yaml). Users just
 		// paste that fixed client_id into their CLI config — no API
 		// call needed.
@@ -670,7 +670,7 @@ func (s *Server) Router() http.Handler {
 		r.Delete("/api/workspaces/{wid}/mcp/pats/{id}", s.handleRevokeMCPPAT)
 
 		// MCP OAuth client — the envmcp public gateway uses ONE shared
-		// public OAuth2 client (id `agentserver-mcp-shared`) baked into
+		// public OAuth2 client (id `agentserver-mcp`) baked into
 		// the chart's hydra-client-setup job. Same shape as GitHub
 		// Desktop / gh CLI: client_id is published in the docs, users
 		// just paste it into ~/.codex/config.toml or `claude mcp add

@@ -773,6 +773,27 @@ export async function submitOAuthLogin(loginChallenge: string): Promise<{ redire
   return res.json()
 }
 
+export interface OAuthConsentInfo {
+  requested_scope: string[]
+  client_id: string
+}
+
+// Fetches what the OAuth client asked for so the consent UI can show
+// scope-aware labels (e.g. mcp:read → "Read files", mcp:exec →
+// "Run shell — warning"). Hardcoded labels were fine when the only
+// consent flow was the codex device flow but break the moment any
+// other client (Claude Code, codex mcp login) walks in.
+export async function getOAuthConsentInfo(
+  consentChallenge: string,
+): Promise<OAuthConsentInfo> {
+  const res = await fetch(
+    `/api/oauth2/consent/info?consent_challenge=${encodeURIComponent(consentChallenge)}`,
+    { credentials: 'include' },
+  )
+  if (!res.ok) throw new Error('Failed to load consent info')
+  return res.json()
+}
+
 export async function submitOAuthConsent(
   consentChallenge: string,
   workspaceId: string,

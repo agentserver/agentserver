@@ -422,6 +422,7 @@ func (s *Server) Router() http.Handler {
 		r.Get("/api/oauth2/login", s.handleOAuthLogin)
 		r.Post("/api/oauth2/login", s.handleOAuthLoginSubmit)
 		r.Get("/api/oauth2/consent", s.handleOAuthConsent)
+		r.Get("/api/oauth2/consent/info", s.handleOAuthConsentInfo)
 		r.Post("/api/oauth2/consent", s.handleOAuthConsentSubmit)
 		r.Post("/api/oauth2/device/accept", s.handleOAuthDeviceAccept)
 	}
@@ -437,6 +438,44 @@ func (s *Server) Router() http.Handler {
 		hydraPassthrough := newReverseProxy(s.HydraPublicURL)
 		r.Get("/oauth2/device/verify", hydraPassthrough)
 		r.Post("/oauth2/device/verify", hydraPassthrough)
+
+		// MCP OAuth 2.1 flow surfaces (RFC 8414 + RFC 7591). Claude Code,
+		// Claude Desktop's Custom Connectors, and `codex mcp login` all
+		// discover the authorization server by GET'ing this path against
+		// the issuer URL they were handed by the protected-resource doc.
+		// Hydra owns the document; agentserver just front-proxies so
+		// clients only ever need the platform hostname.
+		r.Get("/.well-known/oauth-authorization-server", hydraPassthrough)
+		// /.well-known/openid-configuration is the same doc with a few
+		// extra OIDC-specific keys; some clients reach for it instead.
+		r.Get("/.well-known/openid-configuration", hydraPassthrough)
+		// JWKS endpoint — needed only if we ever flip Hydra's token
+		// strategy to JWT. Today access tokens are opaque (validated
+		// via /admin/oauth2/introspect from within the cluster), so
+		// this is harmless to expose but unused by our own gateways.
+		r.Get("/.well-known/jwks.json", hydraPassthrough)
+		// Dynamic Client Registration (RFC 7591). MCP clients POST here
+		// with their redirect URIs + requested scopes; Hydra mints a
+		// fresh client_id (+ optional client_secret) and returns it.
+		// Enabled in hydra.yaml via OIDC_DYNAMIC_CLIENT_REGISTRATION_ENABLED.
+		// Worth rate-limiting at the istio ingress level once this gets
+		// real traffic — registration is unauthenticated and writes to
+		// the hydra_client table.
+		r.Post("/oauth2/register", hydraPassthrough)
+
+		// Browser authorize endpoint — Hydra runs the full login + consent
+		// dance against our handleOAuthLogin / handleOAuthConsent providers,
+		// then 302s back to the client's registered redirect_uri.
+		r.Get("/oauth2/auth", hydraPassthrough)
+		// Public /oauth2/token (in addition to /api/oauth2/token above) —
+		// per RFC 8414 the token_endpoint in the AS metadata doc must be
+		// the one clients hit directly. Same handler, different mount
+		// point.
+		r.Post("/oauth2/token", hydraPassthrough)
+		// Revocation + userinfo round out the spec surface; tiny cost,
+		// strict compliance for any client that wants to use them.
+		r.Post("/oauth2/revoke", hydraPassthrough)
+		r.Get("/userinfo", hydraPassthrough)
 	}
 
 	// Agent card registration (auth via proxy_token).

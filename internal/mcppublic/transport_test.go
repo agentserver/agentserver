@@ -266,6 +266,55 @@ func TestTransport_OAuthProtectedResource_HonorsXForwardedProto(t *testing.T) {
 	}
 }
 
+// TestTransport_OAuthProtectedResource_AdvertisesScopesAndBearerMethods
+// pins the MCP-OAuth-discovery contract that the gateway makes to
+// `codex mcp login`, Claude Code, and Claude Desktop:
+//
+//   - `scopes_supported` must list the two scopes consent screens
+//     can grant. Codex CLI prefers these over `--scopes` config
+//     (openai/codex#20503 confirms it reads the doc).
+//   - `bearer_methods_supported` must include `header` since the
+//     resolver only accepts Authorization: Bearer ...
+//
+// Without these, clients fall back to guessing, which causes
+// scope-missing tokens (no mcp:exec → all shell calls 403) or
+// query-string-bearer attempts that the resolver doesn't honor.
+func TestTransport_OAuthProtectedResource_AdvertisesScopesAndBearerMethods(t *testing.T) {
+	hs := newTestServer(t, nil, &stubBackend{}, principalReadOnly("ws_1"))
+	resp, err := http.Get(hs.URL + "/v1/.well-known/oauth-protected-resource")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	var doc struct {
+		ScopesSupported        []string `json:"scopes_supported"`
+		BearerMethodsSupported []string `json:"bearer_methods_supported"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	wantScopes := map[string]bool{"mcp:read": false, "mcp:exec": false}
+	for _, s := range doc.ScopesSupported {
+		if _, ok := wantScopes[s]; ok {
+			wantScopes[s] = true
+		}
+	}
+	for s, seen := range wantScopes {
+		if !seen {
+			t.Errorf("scopes_supported missing %q: got %v", s, doc.ScopesSupported)
+		}
+	}
+	hasHeader := false
+	for _, m := range doc.BearerMethodsSupported {
+		if m == "header" {
+			hasHeader = true
+		}
+	}
+	if !hasHeader {
+		t.Errorf("bearer_methods_supported missing \"header\": got %v", doc.BearerMethodsSupported)
+	}
+}
+
 // TestTransport_OAuthProtectedResource_XForwardedProtoChain verifies
 // the comma-separated form (RFC 7239-style: "https, http") picks the
 // first entry, since proxies may chain.

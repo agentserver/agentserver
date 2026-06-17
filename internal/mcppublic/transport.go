@@ -267,36 +267,49 @@ func idOrNull(id json.RawMessage) json.RawMessage {
 
 // handleOAuthProtectedResource serves the small JSON document the MCP
 // spec's authorization profile (2025-06-18) points clients at via
-// WWW-Authenticate. Codex CLI ignores this (it short-circuits to
-// bearer_token_env_var); Claude Desktop 1P (Phase 2) will use it.
+// WWW-Authenticate.
 //
-// The minimal shape required by RFC 9728 / MCP's profile:
+// The shape required by RFC 9728 / MCP's profile (and consumed by
+// Claude Code, Claude Desktop, and `codex mcp login`):
 //
 //	{
 //	  "resource": "<this-gateway-url>",
-//	  "authorization_servers": ["<issuer>"]
+//	  "authorization_servers": ["<issuer>"],
+//	  "scopes_supported": ["mcp:read", "mcp:exec"],
+//	  "bearer_methods_supported": ["header"]
 //	}
 //
-// We don't run an OAuth server yet (Phase 2), so authorization_servers
-// points back at the agentserver web UI — clients that bother to
-// follow the link land on the workspace settings page where they
-// can mint a PAT manually.
+// `authorization_servers` MUST point at the issuer that hosts the
+// /.well-known/oauth-authorization-server doc — for us that's
+// agentserver (which front-proxies Hydra). Clients then GET
+// <issuer>/.well-known/oauth-authorization-server to discover
+// /oauth2/register (DCR), /oauth2/auth, /oauth2/token, etc.
+//
+// `scopes_supported` is read by Codex CLI (issue openai/codex#20503
+// confirms it now prefers server-advertised scopes during DCR), so
+// listing them here is what makes Codex request the right ones
+// without users having to remember to pass `--scopes`.
 func (s *Server) handleOAuthProtectedResource(w http.ResponseWriter, r *http.Request) {
 	gatewayURL := "https://" + r.Host + "/v1/mcp"
 	if !requestIsHTTPS(r) {
 		// Dev / port-forward case — keep things working over plain http.
 		gatewayURL = "http://" + r.Host + "/v1/mcp"
 	}
+	authServer := s.IssuerURL
+	if authServer == "" {
+		// Fallback: clients that ignore authorization_servers (some
+		// MCP clients today still hard-code their own discovery)
+		// shouldn't see an empty array — they'd then fall back to
+		// guessing, which is worse. Point at ourselves; the
+		// /.well-known under here won't resolve, which is at least
+		// an obvious failure rather than silent misrouting.
+		authServer = "https://" + r.Host
+	}
 	doc := map[string]any{
-		"resource": gatewayURL,
-		"authorization_servers": []string{
-			func() string {
-				if s.IssuerURL != "" {
-					return s.IssuerURL
-				}
-				return gatewayURL
-			}(),
-		},
+		"resource":                 gatewayURL,
+		"authorization_servers":    []string{authServer},
+		"scopes_supported":         []string{"mcp:read", "mcp:exec"},
+		"bearer_methods_supported": []string{"header"},
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(doc)

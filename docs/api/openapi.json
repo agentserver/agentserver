@@ -2466,6 +2466,200 @@
         }
       }
     },
+    "/api/me/oauth-clients": {
+      "get": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "description": "List the calling user's static OAuth clients (for Codex CLI / Claude Code MCP).",
+        "tags": [
+          "MCP OAuth Clients"
+        ],
+        "summary": "List MCP OAuth clients",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/server.MCPOAuthClientResponse"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "not authenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "description": "Mint a new static public OAuth2 client for use with MCP CLIs (Codex / Claude Code). PKCE-protected, no client_secret. The returned client_id is what users paste into ~/.codex/config.toml or `claude mcp add --client-id`.",
+        "tags": [
+          "MCP OAuth Clients"
+        ],
+        "summary": "Create MCP OAuth client",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/server.MCPOAuthClientCreateRequest"
+              }
+            }
+          },
+          "description": "Client name",
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/server.MCPOAuthClientResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "not authenticated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "hydra not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/me/oauth-clients/{id}": {
+      "delete": {
+        "security": [
+          {
+            "CookieAuth": []
+          }
+        ],
+        "description": "Delete a static MCP OAuth client. Existing tokens issued for this client become invalid within ~10s.",
+        "tags": [
+          "MCP OAuth Clients"
+        ],
+        "summary": "Revoke MCP OAuth client",
+        "parameters": [
+          {
+            "description": "Our opaque id (mcpoc_...)",
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "401": {
+            "description": "not authenticated",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "not found",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "internal error",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "hydra not configured",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/sandboxes/{id}": {
       "get": {
         "security": [
@@ -10911,6 +11105,35 @@
           "tool": {
             "type": "string",
             "example": "shell"
+          }
+        }
+      },
+      "server.MCPOAuthClientCreateRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "description": "Name is a user-supplied label (e.g. \"my-laptop-codex\").\nRequired; <= 255 chars.",
+            "type": "string"
+          }
+        }
+      },
+      "server.MCPOAuthClientResponse": {
+        "type": "object",
+        "properties": {
+          "client_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_used_at": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
           }
         }
       },

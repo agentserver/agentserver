@@ -221,3 +221,77 @@ func (h *HydraClient) putJSON(path, queryKey, queryVal string, body interface{})
 	}
 	return rr.RedirectTo, nil
 }
+
+// --- OAuth2 Client Admin (RFC 7591 admin-side, used for "static"
+// public clients minted via the agentserver UI / CLI) ---
+
+// HydraOAuth2Client mirrors Hydra's POST /admin/clients body +
+// response. We only set the fields agentserver actually cares about;
+// Hydra fills the rest with defaults (subject_type=public,
+// token_endpoint_auth_method we pin to "none" for public/PKCE).
+type HydraOAuth2Client struct {
+	ClientID                string   `json:"client_id,omitempty"`
+	ClientName              string   `json:"client_name,omitempty"`
+	RedirectURIs            []string `json:"redirect_uris,omitempty"`
+	GrantTypes              []string `json:"grant_types,omitempty"`
+	ResponseTypes           []string `json:"response_types,omitempty"`
+	Scope                   string   `json:"scope,omitempty"` // space-separated
+	Audience                []string `json:"audience,omitempty"`
+	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method,omitempty"`
+}
+
+// CreateOAuth2Client POSTs to /admin/clients and returns the
+// server-assigned client_id (along with the rest of the row). For
+// public clients we deliberately don't ask for a secret and set
+// token_endpoint_auth_method=none — the resolved token is bound to
+// the workspace via the consent screen + RFC 8707 audience, not via
+// client_secret.
+func (h *HydraClient) CreateOAuth2Client(c HydraOAuth2Client) (*HydraOAuth2Client, error) {
+	data, err := json.Marshal(c)
+	if err != nil {
+		return nil, fmt.Errorf("marshal client: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, h.AdminURL+"/admin/clients", bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("create client: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("create client: status %d: %s", resp.StatusCode, body)
+	}
+	var out HydraOAuth2Client
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode create client: %w", err)
+	}
+	return &out, nil
+}
+
+// DeleteOAuth2Client removes a client by Hydra-assigned id. Idempotent
+// on the agentserver side: 404 is collapsed to a nil error so a stale
+// row in mcp_oauth_clients (Hydra deleted out-of-band) still cleans up.
+func (h *HydraClient) DeleteOAuth2Client(clientID string) error {
+	req, err := http.NewRequest(http.MethodDelete,
+		h.AdminURL+"/admin/clients/"+url.PathEscape(clientID), nil)
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("delete client: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("delete client: status %d: %s", resp.StatusCode, body)
+	}
+	return nil
+}

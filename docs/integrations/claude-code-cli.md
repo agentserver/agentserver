@@ -5,28 +5,48 @@ Run your agentserver workspaces' tools (`shell`, `read_file`, `apply_patch`, …
 ## Prerequisites
 
 - A workspace + at least one registered executor in agentserver
-- Claude Code CLI (any recent version supports remote MCP via OAuth)
+- Claude Code CLI ≥ 2.1.30 (`--client-id` flag support)
+- An agentserver login
 
-## Recommended: OAuth (zero-config)
+## Step 1 — Create a static OAuth client
 
-```
-claude mcp add --transport http agentserver https://mcp.agent.cs.ac.cn/v1/mcp
-```
+Claude Code's MCP OAuth requires a pre-registered `client_id`. Mint one via the agentserver REST API:
 
-The first time you start a `claude` session, the CLI sees a 401 from the MCP endpoint, follows the OAuth discovery doc, and opens a browser. Log in, pick the workspace, click "Allow", and the token gets stored in your Claude Code config + silently refreshes.
-
-Inside a session, run `/mcp` to confirm `agentserver` is connected. Tools appear as `mcp__agentserver__shell`, `mcp__agentserver__read_file`, etc.
-
-To re-authorize against a different workspace, remove and re-add:
-
-```
-claude mcp remove agentserver
-claude mcp add --transport http agentserver https://mcp.agent.cs.ac.cn/v1/mcp
+```bash
+curl -s -X POST "https://agent.cs.ac.cn/api/me/oauth-clients" \
+  -H "Cookie: agentserver_session=..." \
+  -H "Content-Type: application/json" \
+  -d '{"name":"my-laptop-claude"}'
 ```
 
-Then start a fresh session — the consent screen pops up again.
+Returns `{"client_id": "df66ecfa-25ad-404c-b364-1d94ca7f986c", ...}`. Copy the `client_id`.
 
-## Manual config (if you prefer)
+## Step 2 — Add the MCP server
+
+```bash
+claude mcp add --transport http agentserver \
+  https://mcp.agent.cs.ac.cn/v1/mcp \
+  --client-id df66ecfa-25ad-404c-b364-1d94ca7f986c \
+  --callback-port 3000
+```
+
+Notes:
+- `--callback-port` is required — Claude Code binds the OAuth callback at that exact port. Any free port works (we register loopback host-only with Hydra, so any port is accepted per RFC 8252).
+- No `--client-secret`: every client minted from step 1 is a **public** OAuth client (PKCE-protected).
+
+## Step 3 — First connect triggers OAuth
+
+Start a `claude` session:
+
+```
+claude
+```
+
+The first time it tries to talk to `agentserver`, a browser opens to agentserver. Log in, pick a workspace, click **Allow**. Token is cached in Claude Code's config + silently refreshes.
+
+`/mcp` inside the session should show `agentserver: connected`. Tools appear as `mcp__agentserver__shell`, `mcp__agentserver__read_file`, etc.
+
+## Manual config (alternative to `claude mcp add`)
 
 `~/.claude/settings.json`:
 
@@ -35,17 +55,19 @@ Then start a fresh session — the consent screen pops up again.
   "mcpServers": {
     "agentserver": {
       "type": "http",
-      "url": "https://mcp.agent.cs.ac.cn/v1/mcp"
+      "url": "https://mcp.agent.cs.ac.cn/v1/mcp",
+      "oauth": {
+        "client_id": "df66ecfa-25ad-404c-b364-1d94ca7f986c",
+        "callback_port": 3000
+      }
     }
   }
 }
 ```
 
-OAuth flow triggers on first connect; no headers/tokens needed in the JSON.
-
 ## Service-account / static token alternative
 
-If you can't do an interactive browser flow (CI, headless containers, dev images shared between people), see the [Codex CLI doc's PAT section](./codex-cli.md#service-account--ci-alternative-personal-access-tokens) for how to mint a long-lived PAT, then wire it as a header:
+For CI / headless environments, use a PAT instead of OAuth (see [Codex CLI doc § Service-account](./codex-cli.md#service-account--ci-alternative-personal-access-tokens) for how to mint one). Then configure:
 
 ```json
 {
@@ -59,19 +81,19 @@ If you can't do an interactive browser flow (CI, headless containers, dev images
 }
 ```
 
-## Verify
+## Revoke
 
-```bash
-TOKEN=$(jq -r .access_token ~/.claude/mcp/agentserver.json 2>/dev/null) \
-  || TOKEN='agpat_...'
-curl -s -X POST https://mcp.agent.cs.ac.cn/v1/mcp \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | jq
-```
+Same DELETE endpoint as Codex CLI doc. Revocation takes effect within ≤10s.
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `Incompatible auth server: does not support dynamic client registration` | You forgot `--client-id`; re-add with the flag |
+| `invalid_redirect_uri` | `--callback-port` mismatched what Claude Code actually bound; pick any free port and retry |
+| Token works once then fails | Check gateway logs for `audience mismatch` — Claude Code currently doesn't pass `oauth_resource`. If hit, this is a known issue; tracked in our follow-up |
 
 ## Related
 
 - [Codex CLI](./codex-cli.md) — same gateway, different client
-- [Claude Desktop (3P / Developer Mode)](./claude-desktop-3p.md) — Claude Desktop via mcp-remote
-- Spec: `docs/superpowers/specs/2026-06-09-envmcp-public-gateway-design.md` + `2026-06-17-mcp-oauth-design.md`
+- [Claude Desktop (3P)](./claude-desktop-3p.md)

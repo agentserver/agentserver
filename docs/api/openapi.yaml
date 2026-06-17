@@ -1479,6 +1479,127 @@ paths:
       summary: Terminate a running process
       tags:
         - Connectors
+  /api/me/oauth-clients:
+    get:
+      description: List the calling user's static OAuth clients (for Codex CLI /
+        Claude Code MCP).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: "#/components/schemas/server.MCPOAuthClientResponse"
+                type: array
+        "401":
+          description: not authenticated
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: List MCP OAuth clients
+      tags:
+        - MCP OAuth Clients
+    post:
+      description: Mint a new static public OAuth2 client for use with MCP CLIs (Codex
+        / Claude Code). PKCE-protected, no client_secret. The returned client_id
+        is what users paste into ~/.codex/config.toml or `claude mcp add
+        --client-id`.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/server.MCPOAuthClientCreateRequest"
+        description: Client name
+        required: true
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/server.MCPOAuthClientResponse"
+        "400":
+          description: bad request
+          content:
+            application/json:
+              schema:
+                type: string
+        "401":
+          description: not authenticated
+          content:
+            application/json:
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            application/json:
+              schema:
+                type: string
+        "503":
+          description: hydra not configured
+          content:
+            application/json:
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Create MCP OAuth client
+      tags:
+        - MCP OAuth Clients
+  "/api/me/oauth-clients/{id}":
+    delete:
+      description: Delete a static MCP OAuth client. Existing tokens issued for this
+        client become invalid within ~10s.
+      parameters:
+        - description: Our opaque id (mcpoc_...)
+          in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: No Content
+        "401":
+          description: not authenticated
+          content:
+            "*/*":
+              schema:
+                type: string
+        "404":
+          description: not found
+          content:
+            "*/*":
+              schema:
+                type: string
+        "500":
+          description: internal error
+          content:
+            "*/*":
+              schema:
+                type: string
+        "503":
+          description: hydra not configured
+          content:
+            "*/*":
+              schema:
+                type: string
+      security:
+        - CookieAuth: []
+      summary: Revoke MCP OAuth client
+      tags:
+        - MCP OAuth Clients
   "/api/sandboxes/{id}":
     delete:
       parameters:
@@ -6851,6 +6972,27 @@ components:
           type: object
         tool:
           example: shell
+          type: string
+      type: object
+    server.MCPOAuthClientCreateRequest:
+      properties:
+        name:
+          description: |-
+            Name is a user-supplied label (e.g. "my-laptop-codex").
+            Required; <= 255 chars.
+          type: string
+      type: object
+    server.MCPOAuthClientResponse:
+      properties:
+        client_id:
+          type: string
+        created_at:
+          type: string
+        id:
+          type: string
+        last_used_at:
+          type: string
+        name:
           type: string
       type: object
     tools.MCPCallToolResult:

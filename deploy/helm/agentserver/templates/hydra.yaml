@@ -96,40 +96,31 @@ spec:
               value: {{ printf "https://%s/oauth2/device" .Values.platform.domain | quote }}
             - name: OAUTH2_DEVICE_AUTHORIZATION_TOKEN_POLLING_INTERVAL
               value: {{ .Values.hydra.deviceAuthTokenPollingInterval | quote }}
-            # Dynamic Client Registration (RFC 7591). Required by the MCP
-            # OAuth 2.1 flow used by Claude Code / Claude Desktop / Codex
-            # CLI's `codex mcp login` — each fresh client install POSTs
-            # /oauth2/register to mint its own client_id, then runs PKCE
-            # against the consent screen. Safe for our threat model:
-            # registration ≠ trust; the access token is still gated by
-            # user login + per-workspace consent. The /oauth2/register
-            # endpoint is exposed publicly via agentserver's reverse
-            # proxy (server.go) so clients only need the platform URL.
+            # Dynamic Client Registration (RFC 7591) is intentionally
+            # OFF. We had it on briefly (#249, #251), but:
             #
-            # Default off in Hydra; the OAUTH2_CLIENT_REGISTRATION env
-            # block is the standard way to flip it on. Per-IP rate
-            # limiting on /oauth2/register lives at the istio ingress
-            # layer (not in Hydra) — TODO once we see real traffic.
+            #   - Codex CLI doesn't implement CIMD (the spec-preferred
+            #     alternative to DCR) — it only does DCR or
+            #     pre-registered client_id.
+            #   - Claude Code's DCR works, but every fresh install
+            #     creates a new hydra_client row — open registration
+            #     means an unauthenticated POST flood can bloat the
+            #     table arbitrarily. RFC 7591 §5 calls this out.
+            #
+            # The replacement path is per-user pre-registered public
+            # clients minted via agentserver's /api/me/oauth-clients
+            # endpoint (which calls Hydra's admin POST /admin/clients
+            # behind the user's auth + ownership table). That gives
+            # both clients (Codex, Claude Code) a working OAuth flow
+            # without exposing /oauth2/register to the public internet.
+            #
+            # Leaving the env var pinned to "false" (Hydra's default)
+            # is documentation as much as it is config — if anyone
+            # flips it back on, they need to also re-add the
+            # WEBFINGER_OIDC_DISCOVERY_CLIENT_REGISTRATION_URL env
+            # var (otherwise endpoint works but isn't discoverable).
             - name: OIDC_DYNAMIC_CLIENT_REGISTRATION_ENABLED
-              value: "true"
-            # Advertise the registration endpoint in /.well-known/{openid-
-            # configuration, oauth-authorization-server}. Hydra has two
-            # independent knobs: the env above turns ON the /oauth2/
-            # register endpoint, but this one is what makes
-            # `registration_endpoint` actually appear in the discovery
-            # docs. Without it, MCP clients like Claude Code that follow
-            # the spec strictly ("no registration_endpoint advertised ⇒
-            # DCR not supported") refuse to even try the registration
-            # POST, even though it actually works (verified manually:
-            # curl POST to /oauth2/register returns 201 with a client_id).
-            #
-            # URL must be the public one clients can hit — that's the
-            # platform host (= URLS_SELF_ISSUER above) since
-            # /oauth2/register is reverse-proxied through agentserver;
-            # clients should never see the cluster-internal hydra-public
-            # service directly.
-            - name: WEBFINGER_OIDC_DISCOVERY_CLIENT_REGISTRATION_URL
-              value: {{ printf "https://%s/oauth2/register" .Values.platform.domain | quote }}
+              value: "false"
             - name: LOG_LEVEL
               value: "info"
           ports:

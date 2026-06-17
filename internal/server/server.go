@@ -454,14 +454,10 @@ func (s *Server) Router() http.Handler {
 		// via /admin/oauth2/introspect from within the cluster), so
 		// this is harmless to expose but unused by our own gateways.
 		r.Get("/.well-known/jwks.json", hydraPassthrough)
-		// Dynamic Client Registration (RFC 7591). MCP clients POST here
-		// with their redirect URIs + requested scopes; Hydra mints a
-		// fresh client_id (+ optional client_secret) and returns it.
-		// Enabled in hydra.yaml via OIDC_DYNAMIC_CLIENT_REGISTRATION_ENABLED.
-		// Worth rate-limiting at the istio ingress level once this gets
-		// real traffic — registration is unauthenticated and writes to
-		// the hydra_client table.
-		r.Post("/oauth2/register", hydraPassthrough)
+		// NOTE: /oauth2/register is intentionally NOT reverse-proxied.
+		// DCR is off chart-wide (see hydra.yaml comment); the static-
+		// public-client replacement lives at /api/me/oauth-clients
+		// (authenticated, see route below).
 
 		// Browser authorize endpoint — Hydra runs the full login + consent
 		// dance against our handleOAuthLogin / handleOAuthConsent providers,
@@ -669,6 +665,17 @@ func (s *Server) Router() http.Handler {
 		r.Get("/api/workspaces/{wid}/mcp/pats", s.handleListMCPPATs)
 		r.Post("/api/workspaces/{wid}/mcp/pats", s.handleMintMCPPAT)
 		r.Delete("/api/workspaces/{wid}/mcp/pats/{id}", s.handleRevokeMCPPAT)
+
+		// MCP OAuth Clients — per-user static public OAuth2 clients
+		// for the envmcp public gateway (Codex CLI's `oauth = {
+		// client_id }`, Claude Code's `claude mcp add --client-id`).
+		// User-owned (not workspace-owned) because the workspace is
+		// chosen on the consent screen at OAuth time, not at client-
+		// registration time — same client_id reused for any workspace
+		// the user has access to.
+		r.Get("/api/me/oauth-clients", s.handleListMyMCPOAuthClients)
+		r.Post("/api/me/oauth-clients", s.handleCreateMyMCPOAuthClient)
+		r.Delete("/api/me/oauth-clients/{id}", s.handleDeleteMyMCPOAuthClient)
 
 		// Admin routes
 		r.Route("/api/admin", func(r chi.Router) {

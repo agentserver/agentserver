@@ -112,6 +112,24 @@ spec:
             # layer (not in Hydra) — TODO once we see real traffic.
             - name: OIDC_DYNAMIC_CLIENT_REGISTRATION_ENABLED
               value: "true"
+            # Advertise the registration endpoint in /.well-known/{openid-
+            # configuration, oauth-authorization-server}. Hydra has two
+            # independent knobs: the env above turns ON the /oauth2/
+            # register endpoint, but this one is what makes
+            # `registration_endpoint` actually appear in the discovery
+            # docs. Without it, MCP clients like Claude Code that follow
+            # the spec strictly ("no registration_endpoint advertised ⇒
+            # DCR not supported") refuse to even try the registration
+            # POST, even though it actually works (verified manually:
+            # curl POST to /oauth2/register returns 201 with a client_id).
+            #
+            # URL must be the public one clients can hit — that's the
+            # platform host (= URLS_SELF_ISSUER above) since
+            # /oauth2/register is reverse-proxied through agentserver;
+            # clients should never see the cluster-internal hydra-public
+            # service directly.
+            - name: WEBFINGER_OIDC_DISCOVERY_CLIENT_REGISTRATION_URL
+              value: {{ printf "https://%s/oauth2/register" .Values.platform.domain | quote }}
             - name: LOG_LEVEL
               value: "info"
           ports:

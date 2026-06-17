@@ -8,45 +8,31 @@ Run your agentserver workspaces' tools (`shell`, `read_file`, `apply_patch`, …
 - Claude Code CLI ≥ 2.1.30 (`--client-id` flag support)
 - An agentserver login
 
-## Step 1 — Create a static OAuth client
-
-Claude Code's MCP OAuth requires a pre-registered `client_id`. Mint one via the agentserver REST API:
-
-```bash
-curl -s -X POST "https://agent.cs.ac.cn/api/me/oauth-clients" \
-  -H "Cookie: agentserver_session=..." \
-  -H "Content-Type: application/json" \
-  -d '{"name":"my-laptop-claude"}'
-```
-
-Returns `{"client_id": "df66ecfa-25ad-404c-b364-1d94ca7f986c", ...}`. Copy the `client_id`.
-
-## Step 2 — Add the MCP server
+## Add the MCP server
 
 ```bash
 claude mcp add --transport http agentserver \
   https://mcp.agent.cs.ac.cn/v1/mcp \
-  --client-id df66ecfa-25ad-404c-b364-1d94ca7f986c \
+  --client-id agentserver-mcp-shared \
   --callback-port 3000
 ```
 
 Notes:
-- `--callback-port` is required — Claude Code binds the OAuth callback at that exact port. Any free port works (we register loopback host-only with Hydra, so any port is accepted per RFC 8252).
-- No `--client-secret`: every client minted from step 1 is a **public** OAuth client (PKCE-protected).
+- `client_id = "agentserver-mcp-shared"` is a fixed, public value shared by all users (same shape as gh CLI's hard-coded GitHub OAuth client). It has no auth power on its own — the OAuth flow's user login + workspace consent screen is what authorizes.
+- `--callback-port` is required: Claude Code binds the OAuth callback on this exact port. Any free port works (we register loopback host-only with Hydra, so any port is accepted per RFC 8252).
+- No `--client-secret`: the shared client is a **public** OAuth client (PKCE-protected).
 
-## Step 3 — First connect triggers OAuth
-
-Start a `claude` session:
+## First connect triggers OAuth
 
 ```
 claude
 ```
 
-The first time it tries to talk to `agentserver`, a browser opens to agentserver. Log in, pick a workspace, click **Allow**. Token is cached in Claude Code's config + silently refreshes.
+The first time it talks to `agentserver`, a browser opens. Log in to agentserver, pick a workspace, click **Allow**. Token cached + silently refreshed.
 
 `/mcp` inside the session should show `agentserver: connected`. Tools appear as `mcp__agentserver__shell`, `mcp__agentserver__read_file`, etc.
 
-## Manual config (alternative to `claude mcp add`)
+## Manual config
 
 `~/.claude/settings.json`:
 
@@ -57,7 +43,7 @@ The first time it tries to talk to `agentserver`, a browser opens to agentserver
       "type": "http",
       "url": "https://mcp.agent.cs.ac.cn/v1/mcp",
       "oauth": {
-        "client_id": "df66ecfa-25ad-404c-b364-1d94ca7f986c",
+        "client_id": "agentserver-mcp-shared",
         "callback_port": 3000
       }
     }
@@ -83,15 +69,15 @@ For CI / headless environments, use a PAT instead of OAuth (see [Codex CLI doc �
 
 ## Revoke
 
-Same DELETE endpoint as Codex CLI doc. Revocation takes effect within ≤10s.
+Local clear: `claude mcp remove agentserver`. For workspace-membership-based revocation (most common), removing the user from the workspace causes the gateway to reject within ≤10s on every subsequent request.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| `Incompatible auth server: does not support dynamic client registration` | You forgot `--client-id`; re-add with the flag |
-| `invalid_redirect_uri` | `--callback-port` mismatched what Claude Code actually bound; pick any free port and retry |
-| Token works once then fails | Check gateway logs for `audience mismatch` — Claude Code currently doesn't pass `oauth_resource`. If hit, this is a known issue; tracked in our follow-up |
+| `Incompatible auth server: does not support dynamic client registration` | Forgot `--client-id`; re-add with the flag |
+| `invalid_redirect_uri` | `--callback-port` didn't match what Claude Code actually bound; pick any free port and retry |
+| Token works once then fails | Check gateway logs for `audience mismatch` — Claude Code currently doesn't pass `oauth_resource`. Tracked in follow-up. |
 
 ## Related
 

@@ -456,8 +456,11 @@ func (s *Server) Router() http.Handler {
 		r.Get("/.well-known/jwks.json", hydraPassthrough)
 		// NOTE: /oauth2/register is intentionally NOT reverse-proxied.
 		// DCR is off chart-wide (see hydra.yaml comment); the static-
-		// public-client replacement lives at /api/me/oauth-clients
-		// (authenticated, see route below).
+		// public-client replacement is a single shared OAuth client
+		// (`agentserver-mcp-shared`) provisioned by the
+		// hydra-client-setup helm job (see hydra.yaml). Users just
+		// paste that fixed client_id into their CLI config — no API
+		// call needed.
 
 		// Browser authorize endpoint — Hydra runs the full login + consent
 		// dance against our handleOAuthLogin / handleOAuthConsent providers,
@@ -666,16 +669,16 @@ func (s *Server) Router() http.Handler {
 		r.Post("/api/workspaces/{wid}/mcp/pats", s.handleMintMCPPAT)
 		r.Delete("/api/workspaces/{wid}/mcp/pats/{id}", s.handleRevokeMCPPAT)
 
-		// MCP OAuth Clients — per-user static public OAuth2 clients
-		// for the envmcp public gateway (Codex CLI's `oauth = {
-		// client_id }`, Claude Code's `claude mcp add --client-id`).
-		// User-owned (not workspace-owned) because the workspace is
-		// chosen on the consent screen at OAuth time, not at client-
-		// registration time — same client_id reused for any workspace
-		// the user has access to.
-		r.Get("/api/me/oauth-clients", s.handleListMyMCPOAuthClients)
-		r.Post("/api/me/oauth-clients", s.handleCreateMyMCPOAuthClient)
-		r.Delete("/api/me/oauth-clients/{id}", s.handleDeleteMyMCPOAuthClient)
+		// MCP OAuth client — the envmcp public gateway uses ONE shared
+		// public OAuth2 client (id `agentserver-mcp-shared`) baked into
+		// the chart's hydra-client-setup job. Same shape as GitHub
+		// Desktop / gh CLI: client_id is published in the docs, users
+		// just paste it into ~/.codex/config.toml or `claude mcp add
+		// --client-id`. The OAuth flow's user authentication +
+		// workspace consent screen is what actually authorizes; the
+		// client_id alone has no power. We tried per-user clients
+		// briefly (#256) but reverted because the extra curl step
+		// for every install was friction with no security benefit.
 
 		// Admin routes
 		r.Route("/api/admin", func(r chi.Router) {

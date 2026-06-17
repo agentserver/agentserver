@@ -49,7 +49,14 @@ type ConsentRequest struct {
 	Challenge      string   `json:"challenge"`
 	Subject        string   `json:"subject"`
 	RequestedScope []string `json:"requested_scope"`
-	Client         struct {
+	// RequestedAccessTokenAudience is the `resource` parameter the
+	// client sent on /oauth2/auth (RFC 8707). MCP clients set it to
+	// the canonical gateway URL (e.g. https://mcp.agent.cs.ac.cn/v1/mcp).
+	// We grant whatever the client requested unmodified — the gateway
+	// rejects mismatched audiences at resolve time, so there's no
+	// security benefit to filtering here.
+	RequestedAccessTokenAudience []string `json:"requested_access_token_audience,omitempty"`
+	Client                       struct {
 		ClientID string `json:"client_id"`
 	} `json:"client"`
 }
@@ -60,10 +67,17 @@ type ConsentSession struct {
 }
 
 type AcceptConsentBody struct {
-	GrantScope  []string       `json:"grant_scope"`
-	Session     ConsentSession `json:"session"`
-	Remember    bool           `json:"remember,omitempty"`
-	RememberFor int            `json:"remember_for,omitempty"`
+	GrantScope []string `json:"grant_scope"`
+	// GrantAccessTokenAudience tells Hydra which audiences to embed
+	// in the issued access token's `aud` claim. Echoes the client's
+	// requested audiences (from ConsentRequest.RequestedAccessTokenAudience);
+	// omitting it means the token has no audience binding and our
+	// resolver would refuse it — every MCP-flow consent submit must
+	// pass this through.
+	GrantAccessTokenAudience []string       `json:"grant_access_token_audience,omitempty"`
+	Session                  ConsentSession `json:"session"`
+	Remember                 bool           `json:"remember,omitempty"`
+	RememberFor              int            `json:"remember_for,omitempty"`
 }
 
 type RejectBody struct {

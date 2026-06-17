@@ -78,17 +78,43 @@ func run(logger *slog.Logger) error {
 	}
 	defer dbConn.Close()
 
-	// Auth layer: PATResolver hits ValidateMCPPATSecret +
-	// ListWorkspacesByUser on every request. The middleware emits
-	// `WWW-Authenticate: Bearer resource_metadata=…` on 401 so
-	// OAuth-capable clients (Claude Desktop 1P, Phase 2) can
-	// discover us.
+	// Auth layer: two resolvers tried in order.
+	//
+	//   1. OAuthResolver — Hydra-issued opaque access tokens
+	//      (`ory_at_…`). DCR + browser consent flow used by Claude
+	//      Code, Claude Desktop, and `codex mcp login`. Disabled
+	//      when HYDRA_ADMIN_URL is unset (the resolver returns
+	//      ErrUnknown on every call → middleware falls through to
+	//      PAT).
+	//   2. PATResolver — `agpat_…` workspace-scoped Personal Access
+	//      Tokens. Primary auth path for service accounts / CI /
+	//      legacy users; will outlive OAuth in those cases.
+	//
+	// Order is just a performance hint — each resolver short-circuits
+	// on its prefix gate (`ory_at_` vs `agpat_`) so a token from the
+	// wrong family never costs a DB/Hydra round trip on the other.
+	// The middleware emits `WWW-Authenticate: Bearer
+	// resource_metadata=…` on 401 so OAuth-capable clients can
+	// discover the AS via the protected-resource doc (PR 1's
+	// addition lists `authorization_servers` + scopes there).
+	resolvers := []mcppublic.PrincipalResolver{}
+	if cfg.HydraAdminURL != "" {
+		oauthResolver := &mcppublic.OAuthResolver{
+			DB:               dbConn,
+			Introspector:     mcppublic.NewHydraIntrospector(cfg.HydraAdminURL),
+			ExpectedAudience: cfg.OAuthExpectedAudience,
+			Logger:           logger,
+		}
+		resolvers = append(resolvers, oauthResolver)
+		logger.Info("envmcp-public-gateway: OAuth resolver enabled",
+			"hydra_admin_url", cfg.HydraAdminURL,
+			"expected_audience", cfg.OAuthExpectedAudience)
+	} else {
+		logger.Warn("envmcp-public-gateway: OAuth resolver disabled (HYDRA_ADMIN_URL unset); only PATs will authenticate")
+	}
 	patResolver := &mcppublic.PATResolver{DB: dbConn, Logger: logger}
-	authMW := mcppublic.AuthMiddleware(
-		[]mcppublic.PrincipalResolver{patResolver},
-		cfg.ResourceMetadataURL,
-		logger,
-	)
+	resolvers = append(resolvers, patResolver)
+	authMW := mcppublic.AuthMiddleware(resolvers, cfg.ResourceMetadataURL, logger)
 
 	// Dispatcher pipeline: CapMinter → BridgeBackend → Tool[].Call.
 	minter, err := mcppublic.NewCapMinter(cfg.CapTokenHMACSecret)
@@ -166,6 +192,21 @@ type config struct {
 	BridgeBaseURL             string
 	ResourceMetadataURL       string
 	IssuerURL                 string
+
+	// HydraAdminURL enables OAuth token validation. Cluster-internal
+	// URL of Hydra's admin API (e.g.
+	// http://agentserver-hydra-admin:4445). Empty disables OAuth and
+	// the gateway only accepts PATs. Optional — but every real
+	// deployment should set it; PR 1 also enabled DCR on Hydra so
+	// OAuth is available end-to-end with no further config.
+	HydraAdminURL string
+	// OAuthExpectedAudience is the canonical resource URL clients are
+	// expected to bind their tokens to via RFC 8707 (same URL the
+	// protected-resource doc returns as `resource` — typically
+	// https://mcp.<gateway.host>/v1/mcp). Tokens whose `aud` claim
+	// does not contain this URL are rejected. Empty disables the
+	// check — dev only; never leave unset in prod.
+	OAuthExpectedAudience string
 }
 
 func loadConfig() (config, error) {
@@ -184,6 +225,8 @@ func loadConfigFromEnv(getenv func(string) string) (config, error) {
 		BridgeBaseURL:             getenv("CXG_BRIDGE_BASE_URL"),
 		ResourceMetadataURL:       getenv("MCP_PUBLIC_RESOURCE_METADATA_URL"),
 		IssuerURL:                 getenv("MCP_PUBLIC_ISSUER_URL"),
+		HydraAdminURL:             getenv("HYDRA_ADMIN_URL"),
+		OAuthExpectedAudience:     getenv("OAUTH_EXPECTED_AUDIENCE"),
 	}
 	missing := []string{}
 	if cfg.DatabaseURL == "" {

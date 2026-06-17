@@ -102,11 +102,47 @@ spec:
             # /v1/.well-known/oauth-protected-resource body.
             - name: MCP_PUBLIC_RESOURCE_METADATA_URL
               value: "https://{{ $publicHost }}/v1/.well-known/oauth-protected-resource"
-            # Issuer URL pointing back at agentserver web for PAT mint
-            # UX (the protected-resource doc's authorization_servers
-            # entry). Falls back to publicHost if no custom web URL.
+            # Issuer URL — base URL of the agentserver web app. The
+            # protected-resource doc returns this in
+            # `authorization_servers`, so MCP clients hit
+            # <issuer>/.well-known/oauth-authorization-server to start
+            # the OAuth 2.1 DCR + PKCE flow.
+            #
+            # Resolution order (most → least specific):
+            #   1. envmcpPublicGateway.issuerURL (explicit override)
+            #   2. https://platform.domain         (Hydra's URLS_SELF_ISSUER
+            #                                       uses the same value, so
+            #                                       AS-metadata discovery
+            #                                       lines up by construction)
+            #   3. https://gateway.host            (legacy fallback for
+            #                                       deployments without
+            #                                       platform.domain set)
+            #
+            # The old default (gateway.host) was wrong for any deployment
+            # that wires HTTPRoute outside the chart (gateway.enabled=false)
+            # — it would render the chart-default "agentserver.example.com"
+            # and OAuth discovery would 404.
             - name: MCP_PUBLIC_ISSUER_URL
-              value: {{ default (printf "https://%s" .Values.gateway.host) .Values.envmcpPublicGateway.issuerURL | quote }}
+              value: {{ .Values.envmcpPublicGateway.issuerURL | default (ternary (printf "https://%s" .Values.platform.domain) (printf "https://%s" .Values.gateway.host) (ne .Values.platform.domain "")) | quote }}
+            {{- if .Values.hydra.enabled }}
+            # OAuth resolver wiring (PR 2). HYDRA_ADMIN_URL is
+            # cluster-internal — the admin service is ClusterIP-only
+            # and never exposed at the ingress (introspecting a
+            # token you don't hold should not be a public op).
+            # Empty disables OAuth and the gateway becomes PAT-only,
+            # which is the right fail-closed posture if hydra is
+            # disabled chart-wide.
+            - name: HYDRA_ADMIN_URL
+              value: "http://{{ .Release.Name }}-hydra-admin:{{ .Values.hydra.adminPort }}"
+            # RFC 8707 audience binding. Must match the `resource`
+            # field in /v1/.well-known/oauth-protected-resource (the
+            # canonical gateway URL the protected-resource doc emits).
+            # OAuth clients pass this as `resource=...` on
+            # /oauth2/auth, Hydra puts it in the token's `aud` claim,
+            # and the resolver checks them on every request.
+            - name: OAUTH_EXPECTED_AUDIENCE
+              value: "https://{{ $publicHost }}/v1/mcp"
+            {{- end }}
             {{- if .Values.envmcpPublicGateway.logLevel }}
             - name: CXG_LOG_LEVEL
               value: {{ .Values.envmcpPublicGateway.logLevel | quote }}

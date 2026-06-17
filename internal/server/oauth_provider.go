@@ -106,6 +106,37 @@ func (s *Server) handleOAuthConsent(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/oauth2/consent?consent_challenge="+challenge, http.StatusFound)
 }
 
+// handleOAuthConsentInfo returns the requested scopes + client name
+// for the consent challenge so the frontend can render scope-aware
+// labels (e.g. mcp:read → "Read files...", mcp:exec → warning). The
+// previous consent UI hardcoded "Register as local agent" — fine for
+// the device flow but wrong for any other OAuth client.
+//
+// GET /api/oauth2/consent/info?consent_challenge=...
+//
+// Returns: { "requested_scope": [...], "client_id": "..." }
+//
+// No auth required — same posture as handleOAuthConsent above; the
+// consent_challenge itself is unguessable + single-use.
+func (s *Server) handleOAuthConsentInfo(w http.ResponseWriter, r *http.Request) {
+	challenge := r.URL.Query().Get("consent_challenge")
+	if challenge == "" {
+		http.Error(w, "missing consent_challenge", http.StatusBadRequest)
+		return
+	}
+	req, err := s.HydraClient.GetConsentRequest(challenge)
+	if err != nil {
+		log.Printf("oauth consent info: %v", err)
+		http.Error(w, "failed to get consent request", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"requested_scope": req.RequestedScope,
+		"client_id":       req.Client.ClientID,
+	})
+}
+
 // handleOAuthConsentSubmit processes the consent form submission (workspace selection).
 func (s *Server) handleOAuthConsentSubmit(w http.ResponseWriter, r *http.Request) {
 	challenge := r.URL.Query().Get("consent_challenge")
@@ -173,6 +204,13 @@ func (s *Server) handleOAuthConsentSubmit(w http.ResponseWriter, r *http.Request
 
 	redirect, err := s.HydraClient.AcceptConsent(challenge, auth.AcceptConsentBody{
 		GrantScope: consentReq.RequestedScope,
+		// Echo the client's requested audience back so Hydra embeds
+		// it in `aud`. Without this, MCP-flow tokens land at
+		// envmcp-public-gateway with no audience claim and the
+		// OAuthResolver rejects them (RFC 8707 binding). For
+		// non-MCP consent flows (device flow, etc.) this is the empty
+		// slice the client sent — no-op.
+		GrantAccessTokenAudience: consentReq.RequestedAccessTokenAudience,
 		Session: auth.ConsentSession{
 			AccessToken: map[string]interface{}{
 				"workspace_id":   req.WorkspaceID,

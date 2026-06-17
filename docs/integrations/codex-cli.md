@@ -5,66 +5,30 @@ Run your agentserver workspaces' tools (`shell`, `read_file`, `apply_patch`, …
 ## Prerequisites
 
 - A workspace + at least one registered executor in agentserver (Settings → Executors)
-- Codex CLI ≥ 0.137 (any version with `bearer_token_env_var` support for `[mcp_servers]`)
+- Codex CLI ≥ 0.140 (any version with `codex mcp login` support)
 
-## Step 1 — Mint a Personal Access Token
+## Recommended: OAuth (zero-config)
 
-PATs are **workspace-scoped** — one PAT covers exactly one workspace. If you want Codex to reach several workspaces, mint one PAT per workspace (see "Multi-workspace setup" below).
-
-Today the only PAT management UI is the REST API. Mint via your session cookie or a long-lived workspace API key:
-
-```bash
-# Via session cookie (paste from browser DevTools → agentserver origin)
-WID=ws_yourworkspaceid
-curl -X POST "https://app.agent.cs.ac.cn/api/workspaces/${WID}/mcp/pats" \
-  -H "Cookie: agentserver_session=..." \
-  -H "Content-Type: application/json" \
-  -d '{"name":"my-laptop-codex","scopes":["mcp:read","mcp:exec"],"expires_at":"2026-09-09T00:00:00Z"}'
-```
-
-Response (the `secret` is shown **once** — store it now):
-
-```json
-{
-  "id": "agpat_a1b2c3d4e5f6g7h8",
-  "name": "my-laptop-codex",
-  "prefix": "agpat_a1b2c3d4e5f6g7h8",
-  "workspace_id": "ws_yourworkspaceid",
-  "secret": "agpat_a1b2c3d4e5f6g7h8_X9y8Z7w6V5u4T3s2R1q0P9o8N7m6L5k4J3i2H1g0F9e8...",
-  "scopes": ["mcp:read","mcp:exec"],
-  "created_at": "2026-06-15T08:30:00Z",
-  "expires_at": "2026-09-09T00:00:00Z"
-}
-```
-
-### Scopes
-
-| Scope | Tools granted | Notes |
-|---|---|---|
-| `mcp:read` | `list_environments`, `read_file` | Side-effect-free |
-| `mcp:exec` | `shell`, `exec_command`, `write_stdin`, `read_output`, `terminate`, `apply_patch`, `copy_path` | **Full shell access on registered executors** — opt in explicitly |
-
-Default to `mcp:read` and only add `mcp:exec` when the agent actually needs to mutate state.
-
-### Workspace-level role required to mint
-
-You need `owner` or `maintainer` on the workspace. `developer` / `viewer` get a 403 — minting a PAT with `mcp:exec` is equivalent to handing out shell, so it follows the same admin gate as workspace API keys.
-
-## Step 2 — Add to `~/.codex/config.toml`
+In `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.agentserver]
 url = "https://mcp.agent.cs.ac.cn/v1/mcp"
-bearer_token_env_var = "AGENTSERVER_PAT"
 ```
 
-```bash
-export AGENTSERVER_PAT='agpat_a1b2c3d4e5f6g7h8_X9y8Z7w6V5u4T3s2R1q0P9o8N7m6L5k4J3i2H1g0F9e8...'
+Then once per machine:
+
+```
+codex mcp login agentserver
 ```
 
-That's it. Next time you start Codex CLI, you'll see `agentserver_shell`, `agentserver_read_file`, `agentserver_list_environments`, etc. in the tool palette.
+A browser opens, you log into agentserver, pick the workspace you want this codex install to act on, click "Allow read + exec". The token gets stored in `~/.codex` and silently refreshes on every use. No environment variables, no curl, no manual token management.
 
-## Step 3 — Verify
+The browser shows a consent screen that names the two scopes — `mcp:read` (list executors, read files) and `mcp:exec` (shell access). `mcp:exec` is rendered as a warning row; only grant it to clients you trust.
+
+To re-authorize against a different workspace, run `codex mcp logout agentserver` then `codex mcp login agentserver` again — you'll get the workspace picker on the next consent screen.
+
+## Verify
 
 In a Codex session:
 
@@ -77,8 +41,10 @@ The LLM should call `agentserver_list_environments` and print your workspace's e
 Direct curl smoke test (skips the LLM):
 
 ```bash
+# Token is stored at ~/.codex/mcp_oauth/<server>.json
+TOKEN=$(jq -r .access_token ~/.codex/mcp_oauth/agentserver.json)
 curl -s -X POST https://mcp.agent.cs.ac.cn/v1/mcp \
-  -H "Authorization: Bearer $AGENTSERVER_PAT" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | jq
 ```
@@ -87,46 +53,74 @@ You should see your 9 tool definitions in the response.
 
 ## Multi-workspace setup
 
-For each workspace, mint a PAT (Step 1) and add a separate `[mcp_servers.X]` entry where `X` is a short name you choose:
+For each workspace you want to reach, add a separate `[mcp_servers.X]` entry with a unique server name:
 
 ```toml
 [mcp_servers.work]
 url = "https://mcp.agent.cs.ac.cn/v1/mcp"
-bearer_token_env_var = "AGENTSERVER_PAT_WORK"
 
 [mcp_servers.personal]
 url = "https://mcp.agent.cs.ac.cn/v1/mcp"
-bearer_token_env_var = "AGENTSERVER_PAT_PERSONAL"
 ```
 
 ```bash
-export AGENTSERVER_PAT_WORK=agpat_...
-export AGENTSERVER_PAT_PERSONAL=agpat_...
+codex mcp login work        # consent screen → pick "Work" workspace
+codex mcp login personal    # consent screen → pick "Personal" workspace
 ```
 
 Codex auto-prefixes tool names by server: the LLM sees `work_shell`, `personal_shell`, etc. — visually distinct, no ambiguity even if both workspaces happen to have an executor named `laptop`.
 
 ## Revoke
 
-Same workspace, same admin role:
+From any browser logged into agentserver:
 
-```bash
-curl -X DELETE "https://app.agent.cs.ac.cn/api/workspaces/${WID}/mcp/pats/agpat_a1b2c3d4e5f6g7h8" \
-  -H "Cookie: agentserver_session=..."
+```
+Settings → Authorized Apps → revoke the entry whose client_id matches your codex install
 ```
 
-A revoked PAT stops working within ~one cap-token TTL window (≤10 min) on the gateway side.
+The gateway stops accepting the token within ≤10s (Hydra revocation + envmcp-public-gateway introspects every request, no token cache).
+
+On the codex side: `codex mcp logout agentserver` clears the local copy.
+
+## Service-account / CI alternative: Personal Access Tokens
+
+For service accounts or CI environments where browser OAuth doesn't fit, mint a long-lived PAT via the REST API (workspace `owner` or `maintainer` role required):
+
+```bash
+WID=ws_yourworkspaceid
+curl -X POST "https://agent.cs.ac.cn/api/workspaces/${WID}/mcp/pats" \
+  -H "Cookie: agentserver_session=..." \
+  -H "Content-Type: application/json" \
+  -d '{"name":"ci-pipeline","scopes":["mcp:read","mcp:exec"],"expires_at":"2026-09-09T00:00:00Z"}'
+```
+
+The response includes a `secret` (shown once) — wire it into your CI as an env var and configure Codex with:
+
+```toml
+[mcp_servers.agentserver]
+url = "https://mcp.agent.cs.ac.cn/v1/mcp"
+bearer_token_env_var = "AGENTSERVER_PAT"
+```
+
+```bash
+export AGENTSERVER_PAT='agpat_...'
+```
+
+PATs are workspace-scoped (one PAT = one workspace) and revoked the same way as OAuth tokens.
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `401 unauthorized` on every request | Wrong PAT, expired, revoked, or you were removed from the workspace | Re-mint; verify with the curl smoke test above |
-| `tools/call ... not granted to this principal` | PAT lacks the `mcp:exec` scope | Re-mint with `["mcp:read","mcp:exec"]` |
-| `no environment named X` | The executor name isn't in `list_environments` output | Run `list_environments` first; copy a `name` value verbatim into your prompt |
+| `codex mcp login` opens browser, browser hangs | Network blocked between codex callback port and the browser | Configure `mcp_oauth_callback_port` to a port your browser can reach |
+| `Dynamic client registration not supported` | Hit a different MCP server, not ours — agentserver supports DCR | Confirm the URL is `mcp.agent.cs.ac.cn` |
+| `401 unauthorized` on every request | Token revoked, expired, or workspace membership lost | Re-run `codex mcp login agentserver` |
+| `tools/call ... not granted to this principal` | Token lacks the `mcp:exec` scope | Re-login and grant both scopes on the consent screen |
+| `no environment named X` | Executor name not in `list_environments` output | Run `list_environments` first; copy a `name` value verbatim |
 | `bridge dial timed out` | Executor offline or unreachable from the gateway | Check `Settings → Executors` — `last_seen` should be recent |
 
 ## Related
 
-- [Claude Desktop (3P / Developer Mode)](./claude-desktop-3p.md) — same gateway, different client
-- Spec: `docs/superpowers/specs/2026-06-09-envmcp-public-gateway-design.md` (with 2026-06-15 amendment)
+- [Claude Code CLI](./claude-code-cli.md) — same gateway, different client
+- [Claude Desktop (3P / Developer Mode)](./claude-desktop-3p.md) — Claude Desktop via mcp-remote
+- Spec: `docs/superpowers/specs/2026-06-09-envmcp-public-gateway-design.md` + `2026-06-17-mcp-oauth-design.md`

@@ -1,14 +1,29 @@
 # Claude Desktop (3P / Developer Mode) integration
 
-If you run Claude Desktop in "Cowork on 3P" / Developer Mode, the Custom Connectors UI is **disabled** (that's a 1P-only feature, requires OAuth which the gateway will support in Phase 2). The official workaround is to bridge a remote MCP endpoint into a local stdio MCP server via `mcp-remote`.
+If you run Claude Desktop in "Cowork on 3P" / Developer Mode, the Custom Connectors UI is **disabled** (1P-only feature). The supported path is to bridge a remote MCP endpoint into a local stdio MCP server via `mcp-remote`, which now also speaks OAuth — so no manual PAT minting required.
+
+## Recommended: mcp-remote with OAuth
+
+```json
+{
+  "mcpServers": {
+    "agentserver": {
+      "command": "npx",
+      "args": ["mcp-remote", "https://mcp.agent.cs.ac.cn/v1/mcp"]
+    }
+  }
+}
+```
+
+Restart Claude Desktop. On first connect, `mcp-remote` opens a browser, you log into agentserver, pick the workspace, click "Allow". Token is cached under `~/.mcp-auth/` and silently refreshed.
 
 ## Prerequisites
 
 - Claude Desktop in Developer / 3P mode
 - Node.js installed (for `npx`)
-- An agentserver PAT — see [the codex-cli guide](./codex-cli.md#step-1--mint-a-personal-access-token) for how to mint one
+- For the PAT fallback below: agentserver workspace `owner` or `maintainer` to mint, see [the codex-cli guide](./codex-cli.md#service-account--ci-alternative-personal-access-tokens)
 
-## Configure
+## PAT fallback (service accounts / no-browser environments)
 
 Edit `claude_desktop_config.json` (on macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`; on Windows: `%APPDATA%\Claude\claude_desktop_config.json`):
 
@@ -73,7 +88,7 @@ Claude Desktop prefixes tool names by server entry, same as Codex (`work_shell`,
 
 ## Why this isn't via Custom Connectors
 
-Custom Connectors is 1P-only and expects an OAuth 2.1 + DCR flow. The gateway will support it in Phase 2 (Hydra-backed `/oauth/authorize` + `/oauth/token` + `.well-known/oauth-authorization-server`). Until then, 3P + `mcp-remote` is the supported path.
+Custom Connectors is 1P-only — the path above (3P + `mcp-remote`) is for Developer Mode users. On 1P Claude Desktop, the Custom Connectors UI completes the same OAuth flow `mcp-remote` does, so you can paste the gateway URL directly there with no extra software.
 
 ## Related
 

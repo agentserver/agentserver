@@ -57,7 +57,7 @@ So this amendment **deletes the per-user table + REST surface from
 #256** and replaces it with a single shared client provisioned by the
 existing `hydra-client-setup` Helm job:
 
-- `client_id = "agentserver-mcp-shared"`
+- `client_id = "agentserver-mcp"`
 - `token_endpoint_auth_method = none` (public client, PKCE-protected)
 - `redirect_uris = [http://localhost/callback, http://127.0.0.1/callback]`
   — host-only per RFC 8252 §7.3 so Hydra accepts any port the CLI

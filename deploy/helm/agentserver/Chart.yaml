@@ -2,8 +2,13 @@ apiVersion: v2
 name: agentserver
 description: Run your coding agent in the browser — a self-hosted web interface for opencode
 type: application
+<<<<<<< HEAD
 version: 0.67.1
 appVersion: "0.67.1"
+=======
+version: 0.67.2
+appVersion: "0.67.2"
+>>>>>>> ac958dc (chore(chart): bump 0.67.0 → 0.67.2 (re-cut after misordered v0.67.1 tag))
 home: https://github.com/agentserver/agentserver
 sources:
   - https://github.com/agentserver/agentserver

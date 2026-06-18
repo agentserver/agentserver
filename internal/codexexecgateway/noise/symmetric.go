@@ -120,10 +120,12 @@ func (s *symmetricState) aead() (cipher.AEAD, error) {
 }
 
 // noiseNonce builds the 12-byte AES-GCM nonce per noise spec §5.1:
-// 4 zero bytes followed by the 64-bit counter in little-endian.
+// 4 zero bytes followed by the 64-bit counter in BIG-endian. (Noise
+// uses LE for ChaChaPoly but BE for AESGCM — getting this wrong makes
+// every encrypted token fail to decrypt on the peer.)
 func noiseNonce(n uint64) [AESGCMNonceLen]byte {
 	var nonce [AESGCMNonceLen]byte
-	binary.LittleEndian.PutUint64(nonce[4:], n)
+	binary.BigEndian.PutUint64(nonce[4:], n)
 	return nonce
 }
 

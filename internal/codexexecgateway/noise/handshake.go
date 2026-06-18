@@ -68,7 +68,7 @@ func newHybridState(initiator bool, id *Identity, rs *ecdh.PublicKey, rsKem *mlk
 		rs:        rs,
 		rsKem:     rsKem,
 	}
-	st.ss = initializeSymmetric(SuiteName)
+	st.ss = initializeSymmetric(NoiseProtocolName)
 	st.ss.mixHash(prologue)
 
 	// IK pre-message: responder's static keys are pinned by both peers

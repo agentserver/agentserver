@@ -212,7 +212,7 @@ spec:
               #     consent screen is what actually authorizes the
               #     issued token. Same shape gh/git-credential-manager
               #     use.
-              #   - Audience pinned to mcp.<domain>/v1/mcp so a token
+              #   - Audience pinned to mcp.<domain>/mcp so a token
               #     issued for this client can't replay against any
               #     other MCP server on the same Hydra (RFC 8707).
               #   - Loopback redirect URIs only — host-only, RFC 8252
@@ -230,7 +230,7 @@ spec:
                 --redirect-uri http://localhost/callback \
                 --redirect-uri http://127.0.0.1/callback \
                 --token-endpoint-auth-method none \
-                --audience https://mcp.{{ .Values.platform.domain }}/v1/mcp"
+                --audience https://mcp.{{ .Values.platform.domain }}/mcp"
               hydra update oauth2-client agentserver-mcp --endpoint "$ENDPOINT" $MCP_FLAGS 2>/dev/null || \
               hydra create oauth2-client --endpoint "$ENDPOINT" --id agentserver-mcp $MCP_FLAGS
 ---

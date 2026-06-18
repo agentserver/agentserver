@@ -63,7 +63,7 @@ existing `hydra-client-setup` Helm job:
   — host-only per RFC 8252 §7.3 so Hydra accepts any port the CLI
   binds
 - `scope = "openid mcp:read mcp:exec"`
-- `audience = ["https://mcp.<domain>/v1/mcp"]` so issued tokens
+- `audience = ["https://mcp.<domain>/mcp"]` so issued tokens
   carry the RFC 8707 `aud` claim our resolver enforces
 
 Docs (codex-cli.md, claude-code-cli.md) updated to point to the

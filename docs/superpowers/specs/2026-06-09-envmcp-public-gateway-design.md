@@ -87,9 +87,9 @@ Endpoints on `https://mcp.agent.cs.ac.cn`:
 
 | Path | Method | Purpose |
 |---|---|---|
-| `/v1/mcp` | POST | MCP JSON-RPC request → JSON-RPC response (single-shot) |
-| `/v1/mcp` | GET | SSE stream for server-initiated messages (mostly idle; reserved for future server→client notifications) |
-| `/v1/mcp` | DELETE | Session termination (per spec) |
+| `/mcp` | POST | MCP JSON-RPC request → JSON-RPC response (single-shot) |
+| `/mcp` | GET | SSE stream for server-initiated messages (mostly idle; reserved for future server→client notifications) |
+| `/mcp` | DELETE | Session termination (per spec) |
 | `/.well-known/oauth-authorization-server` | GET | OAuth 2.1 metadata (RFC 8414) |
 | `/.well-known/oauth-protected-resource` | GET | Resource metadata (RFC 9728) |
 | `/oauth/authorize` | GET | OAuth authorization code endpoint (delegates to Hydra) |
@@ -98,7 +98,7 @@ Endpoints on `https://mcp.agent.cs.ac.cn`:
 
 ## Authentication
 
-**Two paths accepted on `/v1/mcp`. Both produce the same internal principal (`user_id + workspace_ids + tool_allowlist`); rest of the gateway doesn't care which path you took.**
+**Two paths accepted on `/mcp`. Both produce the same internal principal (`user_id + workspace_ids + tool_allowlist`); rest of the gateway doesn't care which path you took.**
 
 ### Path A — OAuth 2.1 + DCR (primary, recommended for interactive clients)
 
@@ -106,13 +106,13 @@ For Claude Desktop UI Connectors and any client that wants zero-touch auth.
 
 Flow (standard MCP 2025-11-25 authorization):
 
-1. Client (Claude Desktop / mcp-remote / etc.) POSTs `/v1/mcp` with no auth → gateway returns `401 WWW-Authenticate: Bearer resource_metadata="https://mcp.agent.cs.ac.cn/.well-known/oauth-protected-resource"`
+1. Client (Claude Desktop / mcp-remote / etc.) POSTs `/mcp` with no auth → gateway returns `401 WWW-Authenticate: Bearer resource_metadata="https://mcp.agent.cs.ac.cn/.well-known/oauth-protected-resource"`
 2. Client fetches `/.well-known/oauth-protected-resource` → discovers our authorization server URL
 3. Client fetches `/.well-known/oauth-authorization-server` → discovers `/oauth/register`, `/oauth/authorize`, `/oauth/token`
 4. Client POSTs `/oauth/register` (DCR) → gateway forwards to Hydra → returns `client_id` (no client_secret; public client w/ PKCE)
-5. Client opens browser to `/oauth/authorize?...&resource=https://mcp.agent.cs.ac.cn/v1/mcp` (RFC 8707) → user logs in to agentserver (existing session reused if any) → consent screen → redirect to client callback with code
+5. Client opens browser to `/oauth/authorize?...&resource=https://mcp.agent.cs.ac.cn/mcp` (RFC 8707) → user logs in to agentserver (existing session reused if any) → consent screen → redirect to client callback with code
 6. Client exchanges code at `/oauth/token` → gets access_token + refresh_token
-7. Subsequent `/v1/mcp` calls send `Authorization: Bearer <access_token>`; gateway introspects via Hydra → resolves to user_id
+7. Subsequent `/mcp` calls send `Authorization: Bearer <access_token>`; gateway introspects via Hydra → resolves to user_id
 8. On 401 (expired), client uses refresh_token to get a new access_token automatically
 
 Scopes:
@@ -257,7 +257,7 @@ Unblocks Claude Desktop 1P "Add Custom Connector" UI path (zero JSON, browser-ba
 **Codex Desktop / CLI** (`~/.codex/config.toml`):
 ```toml
 [mcp_servers.agentserver]
-url = "https://mcp.agent.cs.ac.cn/v1/mcp"
+url = "https://mcp.agent.cs.ac.cn/mcp"
 bearer_token_env_var = "AGENTSERVER_PAT"
 ```
 Set `AGENTSERVER_PAT=agpat_xxx` in shell env or use `codex mcp login agentserver` once Phase 2 lands.
@@ -270,7 +270,7 @@ Set `AGENTSERVER_PAT=agpat_xxx` in shell env or use `codex mcp login agentserver
       "command": "npx",
       "args": [
         "mcp-remote",
-        "https://mcp.agent.cs.ac.cn/v1/mcp",
+        "https://mcp.agent.cs.ac.cn/mcp",
         "--header", "Authorization: Bearer ${AGENTSERVER_PAT}"
       ],
       "env": { "AGENTSERVER_PAT": "agpat_xxx" }
@@ -281,7 +281,7 @@ Set `AGENTSERVER_PAT=agpat_xxx` in shell env or use `codex mcp login agentserver
 
 **Claude Desktop 1P** (Phase 2, UI):
 1. Settings → Customize → Connectors → "+" → "Add custom connector"
-2. URL: `https://mcp.agent.cs.ac.cn/v1/mcp`
+2. URL: `https://mcp.agent.cs.ac.cn/mcp`
 3. Browser opens to agentserver login → consent → done
 
 ## Open questions
@@ -332,11 +332,11 @@ A user with N workspaces who wants Codex CLI access to all of them now needs N P
 
 ```toml
 [mcp_servers.work]
-url = "https://mcp.agent.cs.ac.cn/v1/mcp"
+url = "https://mcp.agent.cs.ac.cn/mcp"
 bearer_token_env_var = "AGENTSERVER_PAT_WORK"
 
 [mcp_servers.personal]
-url = "https://mcp.agent.cs.ac.cn/v1/mcp"
+url = "https://mcp.agent.cs.ac.cn/mcp"
 bearer_token_env_var = "AGENTSERVER_PAT_PERSONAL"
 ```
 

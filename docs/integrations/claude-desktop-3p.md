@@ -9,7 +9,7 @@ If you run Claude Desktop in "Cowork on 3P" / Developer Mode, the Custom Connect
   "mcpServers": {
     "agentserver": {
       "command": "npx",
-      "args": ["mcp-remote", "https://mcp.agent.cs.ac.cn/v1/mcp"]
+      "args": ["mcp-remote", "https://mcp.agent.cs.ac.cn/mcp"]
     }
   }
 }
@@ -34,7 +34,7 @@ Edit `claude_desktop_config.json` (on macOS: `~/Library/Application Support/Clau
       "command": "npx",
       "args": [
         "mcp-remote",
-        "https://mcp.agent.cs.ac.cn/v1/mcp",
+        "https://mcp.agent.cs.ac.cn/mcp",
         "--header",
         "Authorization:${AGENTSERVER_PAT}"
       ],
@@ -55,7 +55,7 @@ Restart Claude Desktop. The next time you start a conversation, the tools `agent
 Same direct-curl smoke test as the Codex guide:
 
 ```bash
-curl -s -X POST https://mcp.agent.cs.ac.cn/v1/mcp \
+curl -s -X POST https://mcp.agent.cs.ac.cn/mcp \
   -H "Authorization: Bearer $(echo "$AGENTSERVER_PAT" | sed 's/^Bearer //')" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | jq
@@ -72,12 +72,12 @@ One PAT per workspace, one entry per workspace:
   "mcpServers": {
     "work": {
       "command": "npx",
-      "args": ["mcp-remote", "https://mcp.agent.cs.ac.cn/v1/mcp", "--header", "Authorization:${AGENTSERVER_PAT_WORK}"],
+      "args": ["mcp-remote", "https://mcp.agent.cs.ac.cn/mcp", "--header", "Authorization:${AGENTSERVER_PAT_WORK}"],
       "env": { "AGENTSERVER_PAT_WORK": "Bearer agpat_work_…" }
     },
     "personal": {
       "command": "npx",
-      "args": ["mcp-remote", "https://mcp.agent.cs.ac.cn/v1/mcp", "--header", "Authorization:${AGENTSERVER_PAT_PERSONAL}"],
+      "args": ["mcp-remote", "https://mcp.agent.cs.ac.cn/mcp", "--header", "Authorization:${AGENTSERVER_PAT_PERSONAL}"],
       "env": { "AGENTSERVER_PAT_PERSONAL": "Bearer agpat_personal_…" }
     }
   }

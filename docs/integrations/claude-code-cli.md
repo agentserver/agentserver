@@ -12,7 +12,7 @@ Run your agentserver workspaces' tools (`shell`, `read_file`, `apply_patch`, â€¦
 
 ```bash
 claude mcp add --transport http agentserver \
-  https://mcp.agent.cs.ac.cn/v1/mcp \
+  https://mcp.agent.cs.ac.cn/mcp \
   --client-id agentserver-mcp \
   --callback-port 3000
 ```
@@ -41,7 +41,7 @@ The first time it talks to `agentserver`, a browser opens. Log in to agentserver
   "mcpServers": {
     "agentserver": {
       "type": "http",
-      "url": "https://mcp.agent.cs.ac.cn/v1/mcp",
+      "url": "https://mcp.agent.cs.ac.cn/mcp",
       "oauth": {
         "client_id": "agentserver-mcp",
         "callback_port": 3000
@@ -60,7 +60,7 @@ For CI / headless environments, use a PAT instead of OAuth (see [Codex CLI doc Â
   "mcpServers": {
     "agentserver": {
       "type": "http",
-      "url": "https://mcp.agent.cs.ac.cn/v1/mcp",
+      "url": "https://mcp.agent.cs.ac.cn/mcp",
       "headers": { "Authorization": "Bearer agpat_..." }
     }
   }

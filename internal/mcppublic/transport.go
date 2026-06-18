@@ -16,15 +16,15 @@ import (
 //
 // Endpoints on the gateway hostname (production: mcp.agent.cs.ac.cn):
 //
-//   POST /v1/mcp        — JSON-RPC request → JSON-RPC response.
+//   POST /mcp        — JSON-RPC request → JSON-RPC response.
 //                         Content-Type: application/json.
-//   GET  /v1/mcp        — 405. Stateless server, no SSE re-attach;
+//   GET  /mcp        — 405. Stateless server, no SSE re-attach;
 //                         the spec marks GET as MAY for stateless.
-//   DELETE /v1/mcp      — 405. No Mcp-Session-Id support in this
+//   DELETE /mcp      — 405. No Mcp-Session-Id support in this
 //                         transport; nothing to delete.
 //   GET  /healthz       — 200, plain text "ok". For K8s liveness +
 //                         istio readiness probes.
-//   GET  /v1/.well-known/oauth-protected-resource
+//   GET  /.well-known/oauth-protected-resource
 //                       — small JSON stub pointing at agentserver's
 //                         /api/workspaces/{wid}/mcp/pats minting UI.
 //                         Codex CLI ignores this and short-circuits
@@ -80,7 +80,7 @@ func NewServer(d *Dispatcher, issuerURL string, logger *slog.Logger) *Server {
 }
 
 // Mount returns an http.Handler with the gateway's routes. Mount
-// auth middleware around `/v1/mcp` separately so the well-known
+// auth middleware around `/mcp` separately so the well-known
 // metadata endpoint and /healthz stay public.
 func (s *Server) Mount(authMW func(http.Handler) http.Handler) http.Handler {
 	mux := http.NewServeMux()
@@ -88,35 +88,17 @@ func (s *Server) Mount(authMW func(http.Handler) http.Handler) http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "ok")
 	})
-	// Two paths serve the same Protected Resource Metadata doc:
-	//
-	//   /.well-known/oauth-protected-resource         — RFC 9728 §3.1
-	//                                                   spec-compliant location
-	//                                                   (resource root). Claude
-	//                                                   Code, ChatGPT MCP, and
-	//                                                   any client following
-	//                                                   2025-06-18 MCP authz
-	//                                                   spec read from here.
-	//   /v1/.well-known/oauth-protected-resource      — Earlier path we picked
-	//                                                   because /v1/mcp is the
-	//                                                   resource. Pre-existing
-	//                                                   deployments may have it
-	//                                                   wired into MCP_PUBLIC_
-	//                                                   RESOURCE_METADATA_URL,
-	//                                                   so we keep it as an
-	//                                                   alias rather than break
-	//                                                   the WWW-Authenticate
-	//                                                   contract those pods
-	//                                                   advertise.
-	//
-	// Without the root-path entry, Claude Code falls back to RFC 8414's
-	// "issuer = resource server URL" guess, then tries to wire OAuth at
-	// https://<resource>/authorize → 404 → user sees a broken page.
+	// RFC 9728 §3.1: the Protected Resource Metadata doc lives at
+	// /.well-known/oauth-protected-resource on the resource server
+	// root. MCP clients (Claude Code, ChatGPT MCP, anything following
+	// MCP 2025-06-18 authz) read it before starting OAuth — without
+	// this, they fall back to RFC 8414's "issuer = resource server
+	// URL" guess and wire OAuth at https://<resource>/authorize, which
+	// is a 404.
 	mux.HandleFunc("/.well-known/oauth-protected-resource", s.handleOAuthProtectedResource)
-	mux.HandleFunc("/v1/.well-known/oauth-protected-resource", s.handleOAuthProtectedResource)
 
 	mcp := http.HandlerFunc(s.handleMCP)
-	mux.Handle("/v1/mcp", authMW(mcp))
+	mux.Handle("/mcp", authMW(mcp))
 	return mux
 }
 
@@ -315,10 +297,10 @@ func idOrNull(id json.RawMessage) json.RawMessage {
 // listing them here is what makes Codex request the right ones
 // without users having to remember to pass `--scopes`.
 func (s *Server) handleOAuthProtectedResource(w http.ResponseWriter, r *http.Request) {
-	gatewayURL := "https://" + r.Host + "/v1/mcp"
+	gatewayURL := "https://" + r.Host + "/mcp"
 	if !requestIsHTTPS(r) {
 		// Dev / port-forward case — keep things working over plain http.
-		gatewayURL = "http://" + r.Host + "/v1/mcp"
+		gatewayURL = "http://" + r.Host + "/mcp"
 	}
 	authServer := s.IssuerURL
 	if authServer == "" {

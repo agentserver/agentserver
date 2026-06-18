@@ -51,7 +51,7 @@ type ConsentRequest struct {
 	RequestedScope []string `json:"requested_scope"`
 	// RequestedAccessTokenAudience is the `resource` parameter the
 	// client sent on /oauth2/auth (RFC 8707). MCP clients set it to
-	// the canonical gateway URL (e.g. https://mcp.agent.cs.ac.cn/v1/mcp).
+	// the canonical gateway URL (e.g. https://mcp.agent.cs.ac.cn/mcp).
 	// We grant whatever the client requested unmodified — the gateway
 	// rejects mismatched audiences at resolve time, so there's no
 	// security benefit to filtering here.

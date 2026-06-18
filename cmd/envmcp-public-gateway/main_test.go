@@ -15,7 +15,7 @@ func fullEnv() map[string]string {
 		"CXG_EXEC_GATEWAY_INTERNAL_URL":    "http://exec-gw:6060",
 		"CXG_EXEC_GATEWAY_INTERNAL_SECRET": "internal",
 		"CXG_BRIDGE_BASE_URL":              "ws://exec-gw:6060/bridge",
-		"MCP_PUBLIC_RESOURCE_METADATA_URL": "https://mcp.example.com/v1/.well-known/oauth-protected-resource",
+		"MCP_PUBLIC_RESOURCE_METADATA_URL": "https://mcp.example.com/.well-known/oauth-protected-resource",
 		"MCP_PUBLIC_ISSUER_URL":            "https://app.example.com",
 	}
 }

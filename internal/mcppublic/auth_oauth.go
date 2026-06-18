@@ -226,14 +226,25 @@ func (r *OAuthResolver) Resolve(ctx context.Context, raw string) (*Principal, er
 	//     See ory/fosite#879 (still in draft, CLA blocked, opened
 	//     2026-05-25) for the upstream fix.
 	//
-	// This is single-tenant safe: there's exactly one MCP gateway in
-	// our Hydra deployment, so a token issued through this consent
-	// flow can only have been meant for this gateway anyway. If we
-	// ever add a second MCP server on the same Hydra, this WILL be a
-	// real cross-resource replay risk — at that point, either fosite
-	// has merged RFC 8707 (delete the empty-aud branch) or we'll
-	// patch the consent handler to inject GrantAccessTokenAudience
-	// based on the requested scope set.
+	// !!! SECURITY: This empty-aud branch is a fail-open relaxation.
+	// It is only safe because:
+	//   1. Single-tenant: exactly one MCP gateway exists on this
+	//      Hydra (agentserver-mcp client → mcp.<host>/mcp). A token
+	//      from our consent flow can only have been meant for here.
+	//   2. DCR is OFF (#258, hydra.yaml comment): nobody can
+	//      register a malicious client to mint mcp:* tokens.
+	//   3. The agentserver-mcp client is provisioned by helm with a
+	//      fixed `audience` list, so even if a token DOES carry
+	//      `aud`, it can only carry our gateway URL.
+	//
+	// !!! BEFORE adding a second MCP server on the same Hydra,
+	// DELETE the empty-aud branch. Otherwise tokens issued for the
+	// new gateway will be accepted here (and vice-versa) since
+	// neither will carry `aud`. Upstream fix that lets us safely
+	// re-enable strict checking: ory/fosite#879 (RFC 8707), OR
+	// patch internal/server/oauth_provider.go's consent handler to
+	// hardcode GrantAccessTokenAudience: [r.ExpectedAudience] when
+	// scope contains mcp:*.
 	if r.ExpectedAudience != "" && len(intro.Audience) > 0 {
 		if !audienceContains(intro.Audience, r.ExpectedAudience) {
 			log.Info("mcppublic.OAuth: audience mismatch",

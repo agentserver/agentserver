@@ -18,7 +18,7 @@ url = "https://mcp.agent.cs.ac.cn/mcp"
 oauth_resource = "https://mcp.agent.cs.ac.cn/mcp"
 
 [mcp_servers.agentserver.oauth]
-client_id = "agentserver-mcp-codex"
+client_id = "mcp-codex"
 ```
 
 The `client_id` is a fixed, public value shared by all users (same shape as `gh` CLI's hard-coded GitHub OAuth client). It carries no auth power on its own — the OAuth flow's user login + workspace consent screen is what actually authorizes the issued token.
@@ -66,13 +66,13 @@ Each `[mcp_servers.X]` entry corresponds to one workspace (workspace is selected
 url = "https://mcp.agent.cs.ac.cn/mcp"
 oauth_resource = "https://mcp.agent.cs.ac.cn/mcp"
 [mcp_servers.work.oauth]
-client_id = "agentserver-mcp-codex"
+client_id = "mcp-codex"
 
 [mcp_servers.personal]
 url = "https://mcp.agent.cs.ac.cn/mcp"
 oauth_resource = "https://mcp.agent.cs.ac.cn/mcp"
 [mcp_servers.personal.oauth]
-client_id = "agentserver-mcp-codex"
+client_id = "mcp-codex"
 ```
 
 ```bash
@@ -116,7 +116,7 @@ export AGENTSERVER_PAT='agpat_...'
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `Incompatible auth server: does not support dynamic client registration` | Forgot `oauth.client_id` in config | Add `[mcp_servers.agentserver.oauth] client_id = "agentserver-mcp-codex"` |
+| `Incompatible auth server: does not support dynamic client registration` | Forgot `oauth.client_id` in config | Add `[mcp_servers.agentserver.oauth] client_id = "mcp-codex"` |
 | `audience mismatch` in gateway logs | Forgot `oauth_resource` in config | Add `oauth_resource = "https://mcp.agent.cs.ac.cn/mcp"` |
 | Browser opens, redirects to a Hydra error page about `redirect_uri` | Codex bound a different port than 20202 | Add `mcp_oauth_callback_port = 20202` to `~/.codex/config.toml` (Hydra registers exactly that one port — RFC 8252 §7.3 isn't implemented in Hydra v2). |
 | Browser opens but never returns | Network blocks codex's callback port 20202 | The port is fixed; ensure 20202 is reachable from your browser to Codex's local server (firewall / VPN config). |

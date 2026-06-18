@@ -201,9 +201,9 @@ spec:
 
               # MCP OAuth clients — one per (vendor × surface) combo:
               #
-              #   agentserver-mcp-claude-code     /callback        Claude Code CLI
-              #   agentserver-mcp-codex           /callback        Codex CLI + Codex Desktop
-              #   agentserver-mcp-claude-desktop  /oauth/callback  Claude Desktop via mcp-remote
+              #   mcp-claude-code     /callback        Claude Code CLI
+              #   mcp-codex           /callback        Codex CLI + Codex Desktop
+              #   mcp-claude-desktop  /oauth/callback  Claude Desktop via mcp-remote
               #
               # Why split this way:
               #   - Claude Code and Claude Desktop have separate configs
@@ -232,7 +232,7 @@ spec:
               # cleanup deletes obsolete client_ids from older chart
               # versions; best-effort, ignore not-found.
 
-              # ── agentserver-mcp-claude-code ─────────────────────────
+              # ── mcp-claude-code ─────────────────────────
               CLAUDE_CODE_FLAGS="--name Agentserver_MCP_Claude_Code \
                 --grant-type authorization_code \
                 --grant-type refresh_token \
@@ -242,10 +242,10 @@ spec:
                 --redirect-uri http://127.0.0.1:20202/callback \
                 --token-endpoint-auth-method none \
                 --audience https://mcp.{{ .Values.platform.domain }}/mcp"
-              hydra update oauth2-client agentserver-mcp-claude-code --endpoint "$ENDPOINT" $CLAUDE_CODE_FLAGS 2>/dev/null || \
-              hydra create oauth2-client --endpoint "$ENDPOINT" --id agentserver-mcp-claude-code $CLAUDE_CODE_FLAGS
+              hydra update oauth2-client mcp-claude-code --endpoint "$ENDPOINT" $CLAUDE_CODE_FLAGS 2>/dev/null || \
+              hydra create oauth2-client --endpoint "$ENDPOINT" --id mcp-claude-code $CLAUDE_CODE_FLAGS
 
-              # ── agentserver-mcp-codex (CLI + Desktop) ───────────────
+              # ── mcp-codex (CLI + Desktop) ───────────────
               CODEX_FLAGS="--name Agentserver_MCP_Codex \
                 --grant-type authorization_code \
                 --grant-type refresh_token \
@@ -255,10 +255,10 @@ spec:
                 --redirect-uri http://127.0.0.1:20202/callback \
                 --token-endpoint-auth-method none \
                 --audience https://mcp.{{ .Values.platform.domain }}/mcp"
-              hydra update oauth2-client agentserver-mcp-codex --endpoint "$ENDPOINT" $CODEX_FLAGS 2>/dev/null || \
-              hydra create oauth2-client --endpoint "$ENDPOINT" --id agentserver-mcp-codex $CODEX_FLAGS
+              hydra update oauth2-client mcp-codex --endpoint "$ENDPOINT" $CODEX_FLAGS 2>/dev/null || \
+              hydra create oauth2-client --endpoint "$ENDPOINT" --id mcp-codex $CODEX_FLAGS
 
-              # ── agentserver-mcp-claude-desktop (via mcp-remote) ─────
+              # ── mcp-claude-desktop (via mcp-remote) ─────
               CLAUDE_DESKTOP_FLAGS="--name Agentserver_MCP_Claude_Desktop \
                 --grant-type authorization_code \
                 --grant-type refresh_token \
@@ -268,12 +268,19 @@ spec:
                 --redirect-uri http://127.0.0.1:20202/oauth/callback \
                 --token-endpoint-auth-method none \
                 --audience https://mcp.{{ .Values.platform.domain }}/mcp"
-              hydra update oauth2-client agentserver-mcp-claude-desktop --endpoint "$ENDPOINT" $CLAUDE_DESKTOP_FLAGS 2>/dev/null || \
-              hydra create oauth2-client --endpoint "$ENDPOINT" --id agentserver-mcp-claude-desktop $CLAUDE_DESKTOP_FLAGS
+              hydra update oauth2-client mcp-claude-desktop --endpoint "$ENDPOINT" $CLAUDE_DESKTOP_FLAGS 2>/dev/null || \
+              hydra create oauth2-client --endpoint "$ENDPOINT" --id mcp-claude-desktop $CLAUDE_DESKTOP_FLAGS
 
               # Cleanup obsolete client_ids from earlier chart versions.
               # Best-effort; ignore not-found.
-              for old in agentserver-mcp agentserver-mcp-cli agentserver-mcp-desktop; do
+              for old in \
+                agentserver-mcp \
+                agentserver-mcp-cli \
+                agentserver-mcp-desktop \
+                agentserver-mcp-claude-code \
+                agentserver-mcp-codex \
+                agentserver-mcp-claude-desktop \
+              ; do
                 hydra delete oauth2-client "$old" --endpoint "$ENDPOINT" 2>/dev/null || true
               done
 ---

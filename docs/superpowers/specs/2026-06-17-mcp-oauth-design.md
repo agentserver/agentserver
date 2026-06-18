@@ -133,9 +133,9 @@ config-store boundaries each vendor draws:
 
 | client_id | callback path | surface |
 |---|---|---|
-| `agentserver-mcp-claude-code` | `/callback` | Claude Code CLI |
-| `agentserver-mcp-codex` | `/callback` | Codex CLI **and** Codex Desktop (shared config) |
-| `agentserver-mcp-claude-desktop` | `/oauth/callback` | Claude Desktop via `mcp-remote` |
+| `mcp-claude-code` | `/callback` | Claude Code CLI |
+| `mcp-codex` | `/callback` | Codex CLI **and** Codex Desktop (shared config) |
+| `mcp-claude-desktop` | `/oauth/callback` | Claude Desktop via `mcp-remote` |
 
 Why not split Codex into CLI + Desktop:
 - They share `~/.codex/config.toml` and the same OAuth callback code
@@ -149,9 +149,30 @@ Why split Claude Code vs Claude Desktop:
 - Claude Desktop's only working OAuth path today is mcp-remote
   bridge, which uses `/oauth/callback` path — naturally distinct.
 - Independent revocation (`hydra delete oauth2-client
-  agentserver-mcp-claude-desktop`) without affecting CLI.
+  mcp-claude-desktop`) without affecting CLI.
 
 The hydra-client-setup helm job creates all three, deletes
 obsolete `agentserver-mcp`, `agentserver-mcp-cli`,
 `agentserver-mcp-desktop` from the 2026-06-17 and 2026-06-18 first
 amendments (idempotent best-effort).
+
+---
+
+## Amendment 2026-06-18 (cosmetic) — drop `agentserver-` prefix
+
+All MCP OAuth clients live in agentserver's own Hydra instance —
+the `agentserver-` prefix is redundant. Rename:
+
+  agentserver-mcp-claude-code     → mcp-claude-code
+  agentserver-mcp-codex           → mcp-codex
+  agentserver-mcp-claude-desktop  → mcp-claude-desktop
+
+`agentserver-agent-cli` (device flow for `codex login`) keeps its
+name — separate concern, separate scope (`agent:register`), not part
+of the MCP set; renaming would break existing codex installs.
+
+The chart's cleanup loop now sweeps both the original prefixed names
+AND the older `-cli` / `-desktop` from the two-way split, so any
+order of upgrade path lands clean.
+
+Docs and code comments updated.

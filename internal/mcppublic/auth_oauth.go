@@ -229,8 +229,8 @@ func (r *OAuthResolver) Resolve(ctx context.Context, raw string) (*Principal, er
 	// !!! SECURITY: This empty-aud branch is a fail-open relaxation.
 	// It is only safe because:
 	//   1. Single-tenant: exactly one MCP gateway exists on this
-	//      Hydra (agentserver-mcp-claude-code,
-	//      agentserver-mcp-codex, agentserver-mcp-claude-desktop all
+	//      Hydra (mcp-claude-code,
+	//      mcp-codex, mcp-claude-desktop all
 	//      target mcp.<host>/mcp). A token from our consent flow can
 	//      only have been meant for here.
 	//   2. DCR is OFF (#258, hydra.yaml comment): nobody can

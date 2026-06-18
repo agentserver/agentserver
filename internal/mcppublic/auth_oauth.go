@@ -212,17 +212,37 @@ func (r *OAuthResolver) Resolve(ctx context.Context, raw string) (*Principal, er
 		return nil, ErrInvalid
 	}
 
-	// RFC 8707 resource-indicator binding. Without this, a user who
-	// holds a token issued for a different MCP server in the same
-	// Hydra deployment could replay it here. Hydra populates `aud`
-	// from the client's registered audiences + the `resource`
-	// parameter the client passed to /oauth2/auth.
-	if r.ExpectedAudience != "" {
+	// RFC 8707 resource-indicator binding. Defensive but lenient:
+	//
+	//   - If the token carries an `aud` claim, it MUST contain our
+	//     ExpectedAudience. Hard-fail on mismatch to keep replay
+	//     defense for any token that does properly identify a
+	//     resource.
+	//   - If `aud` is empty, allow through with a warn log. Hydra/
+	//     fosite v2.x does NOT implement RFC 8707 — the `resource`
+	//     query parameter every spec-compliant MCP client sends
+	//     (Claude Code, Codex CLI's `oauth_resource =`) is silently
+	//     dropped by Hydra and the issued token has no audience.
+	//     See ory/fosite#879 (still in draft, CLA blocked, opened
+	//     2026-05-25) for the upstream fix.
+	//
+	// This is single-tenant safe: there's exactly one MCP gateway in
+	// our Hydra deployment, so a token issued through this consent
+	// flow can only have been meant for this gateway anyway. If we
+	// ever add a second MCP server on the same Hydra, this WILL be a
+	// real cross-resource replay risk — at that point, either fosite
+	// has merged RFC 8707 (delete the empty-aud branch) or we'll
+	// patch the consent handler to inject GrantAccessTokenAudience
+	// based on the requested scope set.
+	if r.ExpectedAudience != "" && len(intro.Audience) > 0 {
 		if !audienceContains(intro.Audience, r.ExpectedAudience) {
 			log.Info("mcppublic.OAuth: audience mismatch",
 				"sub", intro.Subject, "want", r.ExpectedAudience, "got", []string(intro.Audience))
 			return nil, ErrInvalid
 		}
+	} else if r.ExpectedAudience != "" {
+		log.Warn("mcppublic.OAuth: token has no audience claim, accepting (Hydra lacks RFC 8707)",
+			"sub", intro.Subject, "want", r.ExpectedAudience, "client_id", intro.ClientID)
 	}
 
 	// Pull the consent-screen-selected workspace from ext claims. The

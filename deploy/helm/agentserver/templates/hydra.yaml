@@ -215,20 +215,31 @@ spec:
               #   - Audience pinned to mcp.<domain>/mcp so a token
               #     issued for this client can't replay against any
               #     other MCP server on the same Hydra (RFC 8707).
-              #   - Loopback redirect URIs only — host-only, RFC 8252
-              #     §7.3 lets Hydra accept any port the CLI binds.
+              #   - Pinned callback port 20202 — Hydra v2 does NOT
+              #     implement RFC 8252 §7.3 (loopback any-port — see
+              #     ory/hydra#1732), so we have to register the exact
+              #     redirect_uri the CLI binds. Docs tell users to
+              #     pass --callback-port 20202 / mcp_oauth_callback_
+              #     port = 20202. 20202 is rare enough to avoid
+              #     collisions with the usual dev-server ports
+              #     (3000/8080/5173/etc).
               #
               # Idempotent: update first, fall back to create. Helm
               # reruns the job on every chart upgrade so the flag set
               # below is the source of truth (drift is silently
               # corrected).
+              # offline_access is required for refresh_token issuance — Claude
+              # Code requests it unconditionally so it can silently refresh
+              # access tokens (1h TTL) without re-prompting the browser. Without
+              # it advertised on the client, Hydra returns invalid_scope and
+              # the entire OAuth flow fails at the authorize step.
               MCP_FLAGS="--name Agentserver_MCP \
                 --grant-type authorization_code \
                 --grant-type refresh_token \
                 --response-type code \
-                --scope openid --scope mcp:read --scope mcp:exec \
-                --redirect-uri http://localhost/callback \
-                --redirect-uri http://127.0.0.1/callback \
+                --scope openid --scope offline_access --scope mcp:read --scope mcp:exec \
+                --redirect-uri http://localhost:20202/callback \
+                --redirect-uri http://127.0.0.1:20202/callback \
                 --token-endpoint-auth-method none \
                 --audience https://mcp.{{ .Values.platform.domain }}/mcp"
               hydra update oauth2-client agentserver-mcp --endpoint "$ENDPOINT" $MCP_FLAGS 2>/dev/null || \

@@ -11,6 +11,8 @@ Run your agentserver workspaces' tools (`shell`, `read_file`, `apply_patch`, …
 ## Step 1 — Add to `~/.codex/config.toml`
 
 ```toml
+mcp_oauth_callback_port = 20202
+
 [mcp_servers.agentserver]
 url = "https://mcp.agent.cs.ac.cn/mcp"
 oauth_resource = "https://mcp.agent.cs.ac.cn/mcp"
@@ -20,6 +22,8 @@ client_id = "agentserver-mcp"
 ```
 
 The `client_id` is a fixed, public value shared by all users (same shape as `gh` CLI's hard-coded GitHub OAuth client). It carries no auth power on its own — the OAuth flow's user login + workspace consent screen is what actually authorizes the issued token.
+
+`mcp_oauth_callback_port = 20202` pins Codex's local OAuth callback to port 20202 (the only port our Hydra accepts — RFC 8252 §7.3 "any loopback port" is not implemented in Hydra v2, so the server has exactly one pre-registered redirect URI per host).
 
 The `oauth_resource` (RFC 8707) binds the token to this gateway's URL — without it, the gateway's resolver rejects every request because the token's `aud` claim is empty.
 
@@ -114,7 +118,8 @@ export AGENTSERVER_PAT='agpat_...'
 |---|---|---|
 | `Incompatible auth server: does not support dynamic client registration` | Forgot `oauth.client_id` in config | Add `[mcp_servers.agentserver.oauth] client_id = "agentserver-mcp"` |
 | `audience mismatch` in gateway logs | Forgot `oauth_resource` in config | Add `oauth_resource = "https://mcp.agent.cs.ac.cn/mcp"` |
-| Browser opens but never returns | Network blocks codex's callback port | Set `mcp_oauth_callback_port = 8765` (or any reachable port) in config |
+| Browser opens, redirects to a Hydra error page about `redirect_uri` | Codex bound a different port than 20202 | Add `mcp_oauth_callback_port = 20202` to `~/.codex/config.toml` (Hydra registers exactly that one port — RFC 8252 §7.3 isn't implemented in Hydra v2). |
+| Browser opens but never returns | Network blocks codex's callback port 20202 | The port is fixed; ensure 20202 is reachable from your browser to Codex's local server (firewall / VPN config). |
 | `401 unauthorized` after successful login | Token expired or workspace membership lost | Re-run `codex mcp login agentserver` |
 | `tools/call ... not granted to this principal` | Granted only `mcp:read` on consent | Re-login, grant both scopes |
 | `no environment named X` | Executor name not in `list_environments` | Run `list_environments` first; copy a `name` verbatim |

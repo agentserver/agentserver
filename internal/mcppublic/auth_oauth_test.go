@@ -145,6 +145,36 @@ func TestOAuthResolver_AudienceMismatchIsErrInvalid(t *testing.T) {
 	}
 }
 
+// TestOAuthResolver_EmptyAudienceAccepted — Hydra v2.x (via fosite)
+// doesn't implement RFC 8707 Resource Indicators yet, so the
+// `resource=...` parameter from spec-compliant MCP clients is
+// silently dropped and the issued token has no `aud` claim. We
+// accept these tokens with a warning (single-tenant Hydra: any
+// token through our consent flow can only have been meant for our
+// MCP gateway). If `aud` IS present, mismatch is still a hard fail
+// (other test pins that). Delete this branch when ory/fosite#879
+// merges and tokens reliably carry `aud`.
+func TestOAuthResolver_EmptyAudienceAccepted(t *testing.T) {
+	f := &fakeDB{workspaces: []*db.Workspace{{ID: "ws_42"}}}
+	s := &stubIntrospector{
+		res: &IntrospectionResult{
+			Active:   true,
+			Subject:  "user_abc",
+			Scope:    "mcp:read",
+			Audience: audience{}, // empty — Hydra didn't process `resource=`
+			Ext:      map[string]interface{}{"workspace_id": "ws_42", "workspace_role": "developer"},
+		},
+	}
+	r := newOAuthResolver(f, s)
+	p, err := r.Resolve(context.Background(), "ory_at_noaud")
+	if err != nil {
+		t.Fatalf("empty aud should be accepted (Hydra no RFC 8707): %v", err)
+	}
+	if p.WorkspaceID != "ws_42" {
+		t.Errorf("unexpected principal: %+v", p)
+	}
+}
+
 // TestOAuthResolver_AudienceArrayMatches — `aud` may be a JSON
 // array; the resolver must accept a match anywhere in the list, not
 // just the first entry. This is the common case for Hydra clients

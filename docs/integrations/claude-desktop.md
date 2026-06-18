@@ -13,12 +13,12 @@ Path A is officially supported by Anthropic since 2026; Path B is the community 
 
 ## Path A — Native Custom Connector
 
-**Status: not enabled on agentserver yet.** Path A requires us to register `https://claude.ai/api/mcp/auth_callback` (and `https://claude.com/api/mcp/auth_callback`) as redirect URIs on the `agentserver-mcp-desktop` Hydra client. That's a one-line helm change we haven't done because the security implications (Anthropic cloud holds your tokens + initiates all MCP traffic from cloud IPs) need an explicit go-ahead. If you want Path A enabled, ping the agentserver maintainer.
+**Status: not enabled on agentserver yet.** Path A requires us to register `https://claude.ai/api/mcp/auth_callback` (and `https://claude.com/api/mcp/auth_callback`) as redirect URIs on the `agentserver-mcp-claude-desktop` Hydra client. That's a one-line helm change we haven't done because the security implications (Anthropic cloud holds your tokens + initiates all MCP traffic from cloud IPs) need an explicit go-ahead. If you want Path A enabled, ping the agentserver maintainer.
 
 After enablement, the flow is:
 - Settings → Connectors → "Add custom connector"
 - URL: `https://mcp.agent.cs.ac.cn/mcp`
-- Advanced settings → OAuth Client ID: `agentserver-mcp-desktop`
+- Advanced settings → OAuth Client ID: `agentserver-mcp-claude-desktop`
 - OAuth Client Secret: **leave empty** (public client, PKCE)
 - Click "Connect" — browser does OAuth, picks workspace, grants scopes.
 
@@ -46,7 +46,7 @@ Edit `claude_desktop_config.json` (on macOS: `~/Library/Application Support/Clau
         "https://mcp.agent.cs.ac.cn/mcp",
         "20202",
         "--static-oauth-client-info",
-        "{\"client_id\":\"agentserver-mcp-desktop\"}",
+        "{\"client_id\":\"agentserver-mcp-claude-desktop\"}",
         "--transport",
         "http-only"
       ]
@@ -63,7 +63,7 @@ What each arg does:
 | `mcp-remote` | npm package name |
 | `https://mcp.agent.cs.ac.cn/mcp` | remote MCP server URL |
 | `20202` | **positional**: local OAuth callback port (mcp-remote default is 3334; we override because Hydra registers exactly 20202) |
-| `--static-oauth-client-info '{"client_id":"agentserver-mcp-desktop"}'` | use the pre-registered Hydra client; skip DCR |
+| `--static-oauth-client-info '{"client_id":"agentserver-mcp-claude-desktop"}'` | use the pre-registered Hydra client; skip DCR |
 | `--transport http-only` | server speaks Streamable HTTP, not SSE |
 
 **Completely quit Claude Desktop** (Cmd-Q on macOS, system-tray Quit on Windows — closing the window isn't enough) and reopen. On the next chat, mcp-remote starts up, gets a 401 from `mcp.agent.cs.ac.cn/mcp`, and opens a browser to `https://agent.cs.ac.cn/oauth2/auth?...`. Log in if needed, pick the workspace, click **Allow**. Browser jumps to `localhost:20202/oauth/callback`, mcp-remote stores the token under `~/.mcp-auth/<server-hash>/`, and Claude Desktop's tool palette gets `agentserver_shell`, `agentserver_read_file`, etc. populated.
@@ -99,14 +99,14 @@ Each `mcpServers` entry can target a different workspace by going through OAuth 
     "agentserver-work": {
       "command": "npx",
       "args": ["-y", "mcp-remote", "https://mcp.agent.cs.ac.cn/mcp", "20202",
-               "--static-oauth-client-info", "{\"client_id\":\"agentserver-mcp-desktop\"}",
+               "--static-oauth-client-info", "{\"client_id\":\"agentserver-mcp-claude-desktop\"}",
                "--transport", "http-only",
                "--resource", "work"]
     },
     "agentserver-personal": {
       "command": "npx",
       "args": ["-y", "mcp-remote", "https://mcp.agent.cs.ac.cn/mcp", "20202",
-               "--static-oauth-client-info", "{\"client_id\":\"agentserver-mcp-desktop\"}",
+               "--static-oauth-client-info", "{\"client_id\":\"agentserver-mcp-claude-desktop\"}",
                "--transport", "http-only",
                "--resource", "personal"]
     }
@@ -166,6 +166,6 @@ The colon-no-space `Authorization:${AGENTSERVER_PAT}` syntax dodges a Windows en
 
 ## Related
 
-- [Codex CLI](./codex-cli.md) — `agentserver-mcp-cli` client, callback at `/callback`
-- [Claude Code CLI](./claude-code-cli.md) — `agentserver-mcp-cli` client, same as Codex
+- [Codex CLI](./codex-cli.md) — `agentserver-mcp-codex` client, callback at `/callback`
+- [Claude Code CLI](./claude-code-cli.md) — `agentserver-mcp-claude-code` client, also `/callback` path
 - Spec: `docs/superpowers/specs/2026-06-17-mcp-oauth-design.md`

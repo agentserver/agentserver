@@ -118,3 +118,40 @@ not enabled yet) and the mcp-remote bridge path (Path B, default).
 OAuthResolver in mcppublic accepts both client_ids transparently —
 it never inspects `client_id`, only the introspected `sub` /
 `workspace_id` / `aud` / `scope` claims.
+
+---
+
+## Amendment 2026-06-18 (refined) — three-way split: claude-code, codex, claude-desktop
+
+The 2026-06-18 amendment above split `agentserver-mcp` into two
+clients (`-cli` + `-desktop`). After confirming Codex Desktop's MCP
+OAuth code path is identical to Codex CLI's (both use the same
+`~/.codex/config.toml` `mcp_oauth_callback_port` / `_url`; see
+`codex-rs/app-server/src/request_processors/mcp_processor.rs:172`),
+refined to a three-way split that respects the actual
+config-store boundaries each vendor draws:
+
+| client_id | callback path | surface |
+|---|---|---|
+| `agentserver-mcp-claude-code` | `/callback` | Claude Code CLI |
+| `agentserver-mcp-codex` | `/callback` | Codex CLI **and** Codex Desktop (shared config) |
+| `agentserver-mcp-claude-desktop` | `/oauth/callback` | Claude Desktop via `mcp-remote` |
+
+Why not split Codex into CLI + Desktop:
+- They share `~/.codex/config.toml` and the same OAuth callback code
+  (Desktop's `mcpServer/oauth/login` JSON-RPC delegates to the same
+  CLI path). Splitting would force users to maintain two configs
+  for no audit benefit (a single user's Codex install IS a single
+  user/machine).
+
+Why split Claude Code vs Claude Desktop:
+- Different config stores (`~/.claude/` vs OS-app-data dir).
+- Claude Desktop's only working OAuth path today is mcp-remote
+  bridge, which uses `/oauth/callback` path — naturally distinct.
+- Independent revocation (`hydra delete oauth2-client
+  agentserver-mcp-claude-desktop`) without affecting CLI.
+
+The hydra-client-setup helm job creates all three, deletes
+obsolete `agentserver-mcp`, `agentserver-mcp-cli`,
+`agentserver-mcp-desktop` from the 2026-06-17 and 2026-06-18 first
+amendments (idempotent best-effort).

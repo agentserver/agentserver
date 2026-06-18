@@ -21,7 +21,7 @@ import (
 	"nhooyr.io/websocket"
 
 	"github.com/agentserver/agentserver/internal/codexexecgateway/noise"
-	relayv1 "github.com/agentserver/agentserver/internal/codexexecgateway/noise/relayproto"
+	relayv1 "github.com/agentserver/agentserver/internal/relaypb"
 )
 
 // TestLiveCodexHandshake spawns an unmodified `codex exec-server --remote`

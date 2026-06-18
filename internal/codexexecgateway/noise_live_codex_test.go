@@ -34,6 +34,7 @@ func TestLiveCodexRegistersAgainstGateway(t *testing.T) {
 	}
 
 	store := newTestStore(t)
+	clearNoiseRegistrations(t, store)
 	handlers := NewNoiseHandlers(store, []byte("live-test-hmac-key-32-bytes-aaaa"), "")
 	r := chi.NewRouter()
 	handlers.Mount(r)
@@ -67,6 +68,8 @@ func TestLiveCodexRegistersAgainstGateway(t *testing.T) {
 		}
 		stdout.Close()
 		stderr.Close()
+		// Give codex time to flush before tearing down.
+		time.Sleep(150 * time.Millisecond)
 		if b, _ := os.ReadFile(stdoutPath); len(b) > 0 {
 			t.Logf("codex stdout:\n%s", b)
 		}

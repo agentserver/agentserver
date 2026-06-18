@@ -16,8 +16,19 @@ import (
 func newTestNoiseHandlers(t *testing.T) (*NoiseHandlers, *Store) {
 	t.Helper()
 	store := newTestStore(t)
+	// The shared truncateForTest no longer clears noise_executor_registrations,
+	// so wipe it explicitly to keep per-env LookupByEnv deterministic
+	// across re-runs.
+	_, _ = store.db.Exec(`DELETE FROM noise_executor_registrations`)
 	h := NewNoiseHandlers(store, []byte("test-hmac-key-32-bytes-aaaaaaaaaa"), "ws://test")
 	return h, store
+}
+
+// clearNoiseRegistrations is the same wipe but for tests that build the
+// handlers themselves rather than via newTestNoiseHandlers.
+func clearNoiseRegistrations(t *testing.T, s *Store) {
+	t.Helper()
+	_, _ = s.db.Exec(`DELETE FROM noise_executor_registrations`)
 }
 
 func mountedRouter(h *NoiseHandlers) http.Handler {

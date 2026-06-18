@@ -3,8 +3,6 @@ package codexexecgateway
 import (
 	"context"
 	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,13 +23,20 @@ import (
 const NoiseRelaySecurityProfile = "noise_hybrid_ik_v1"
 
 // NoiseHandlers bundles the noise relay endpoints and their shared
-// state (the gateway HMAC key, the in-memory relay WS registry). One
-// instance is built per Server and mounted under /cloud/...
+// state (the gateway HMAC key, the in-memory relay WS registry,
+// optionally the per-executor frame router). One instance per Server,
+// mounted under /cloud/...
+//
+// router is optional: when nil the WS handler still accepts and
+// parks the executor connection (Phase 2 stub behaviour). When set,
+// each accepted WS is handed off to router.ServeExecutorFrames so
+// noise streams can multiplex onto it.
 type NoiseHandlers struct {
 	store    *Store
 	hmacKey  []byte
 	wsHub    *noiseWSHub
 	wsPubURL string // public ws:// or wss:// base for relay URLs
+	router   *NoiseRouter
 }
 
 func NewNoiseHandlers(store *Store, hmacKey []byte, wsPublicBaseURL string) *NoiseHandlers {
@@ -42,6 +47,15 @@ func NewNoiseHandlers(store *Store, hmacKey []byte, wsPublicBaseURL string) *Noi
 		wsPubURL: wsPublicBaseURL,
 	}
 }
+
+// AttachRouter wires a NoiseRouter into the WS handler. After this,
+// any accepted executor WS is served by router.ServeExecutorFrames
+// instead of the stub discard loop.
+func (h *NoiseHandlers) AttachRouter(r *NoiseRouter) { h.router = r }
+
+// WSHub is exposed so the router (constructed externally) can call
+// ConnectionFor when opening a new stream.
+func (h *NoiseHandlers) WSHub() *noiseWSHub { return h.wsHub }
 
 // Mount wires the four noise endpoints onto a chi router. Caller is
 // responsible for applying any auth middleware on the outer route.
@@ -217,7 +231,13 @@ func (h *NoiseHandlers) handleRelayWS(w http.ResponseWriter, r *http.Request) {
 		writeJSONErr(w, http.StatusNotFound, "unknown registration_id")
 		return
 	}
-	if err := h.wsHub.accept(w, r, registrationID); err != nil {
+	var serveFrames func(ctx context.Context, conn *websocket.Conn) error
+	if h.router != nil {
+		serveFrames = func(ctx context.Context, conn *websocket.Conn) error {
+			return h.router.ServeExecutorFrames(ctx, registrationID, conn)
+		}
+	}
+	if err := h.wsHub.accept(w, r, registrationID, serveFrames); err != nil {
 		// accept() has already responded; just log via the writer.
 		return
 	}
@@ -225,26 +245,10 @@ func (h *NoiseHandlers) handleRelayWS(w http.ResponseWriter, r *http.Request) {
 
 // mintHarnessAuthorization derives a short opaque token that proves
 // the gateway issued this (registration_id, harness_pubkey) pairing.
-// The executor extracts it from the encrypted IK msg1 payload and POSTs
-// it back here for validation. HMAC-SHA256 over a length-prefixed
-// canonicalization so distinct tuples cannot collide.
+// Delegates to the package-level helper so the router (initiator
+// side) stays byte-identical with this validator side.
 func (h *NoiseHandlers) mintHarnessAuthorization(registrationID string, harnessPK noise.PublicKey) string {
-	mac := hmac.New(sha256.New, h.hmacKey)
-	for _, part := range []string{
-		"noise-relay-harness-auth/v1",
-		registrationID,
-		harnessPK.Suite,
-		harnessPK.X25519PublicKey,
-		harnessPK.MLKEM768PublicKey,
-	} {
-		var lenBuf [8]byte
-		for i := 7; i >= 0; i-- {
-			lenBuf[i] = byte(len(part) >> uint(8*(7-i)))
-		}
-		mac.Write(lenBuf[:])
-		mac.Write([]byte(part))
-	}
-	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return mintHarnessAuthorization(h.hmacKey, registrationID, harnessPK)
 }
 
 func (h *NoiseHandlers) relayWSURL(r *http.Request, registrationID string) string {
@@ -271,16 +275,15 @@ func newNoiseWSHub() *noiseWSHub {
 	return &noiseWSHub{connections: map[string]*websocket.Conn{}}
 }
 
-// accept upgrades the request to a WS, registers the connection under
-// the executor's registration_id, and parks it. Phase 2 only handles
-// the transport boundary — no frame parsing or noise routing yet
-// (Phase 3 layers that on top of the registered connection).
+// accept upgrades the request to a WS and registers the connection
+// under the executor's registration_id. If a NoiseRouter was attached,
+// frames are handed off to its demux loop; otherwise the connection
+// is parked (legacy Phase 2 behaviour).
 //
-// If a second executor connects with the same registration_id, the
-// previous connection is closed first so a reconnecting executor
-// always wins over a stale one (same semantics as bridge.go's
-// single-active-bridge invariant).
-func (h *noiseWSHub) accept(w http.ResponseWriter, r *http.Request, registrationID string) error {
+// Reconnect wins: if a second executor connects with the same
+// registration_id, the previous connection is closed (same semantics
+// as bridge.go's single-active-bridge invariant).
+func (h *noiseWSHub) accept(w http.ResponseWriter, r *http.Request, registrationID string, serveFrames func(ctx context.Context, conn *websocket.Conn) error) error {
 	conn, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return fmt.Errorf("ws accept: %w", err)
@@ -303,19 +306,18 @@ func (h *noiseWSHub) accept(w http.ResponseWriter, r *http.Request, registration
 		_ = conn.Close(websocket.StatusNormalClosure, "")
 	}()
 
-	// Phase 2.5 stub loop: read and discard any frames the executor
-	// sends so the WS stays open. nhooyr's Reader returns an error
-	// on disconnect, which is the loop exit.
 	ctx := r.Context()
+	if serveFrames != nil {
+		return serveFrames(ctx, conn)
+	}
+	// Fallback: read and discard until the executor closes. Keeps the
+	// WS open so any in-flight registration check in a test or staging
+	// env doesn't blow up.
 	for {
-		mt, payload, err := conn.Read(ctx)
+		_, _, err := conn.Read(ctx)
 		if err != nil {
 			return nil
 		}
-		// Drop everything; Phase 3 routes binary frames into the
-		// noise wrapper and ignores text.
-		_ = mt
-		_ = payload
 		if ctx.Err() != nil {
 			return nil
 		}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/agentserver/agentserver/internal/codexexecgateway/audit"
 	"github.com/agentserver/agentserver/internal/codexexecgateway/handlers"
+	"github.com/agentserver/agentserver/internal/codexexecgateway/noise"
 	"github.com/agentserver/agentserver/internal/codexexecgateway/relay"
 	sdkpkg "github.com/agentserver/agentserver/internal/codexexecgateway/sdk"
 	"github.com/agentserver/agentserver/internal/envtools/bridge"
@@ -37,6 +38,12 @@ type Server struct {
 	// assigns audit.NewNoopRecorder() when Config.Audit.Enabled is false,
 	// so callsites can call hook methods unconditionally.
 	recorder audit.Recorder
+	// noiseHandlers is non-nil iff CXG_NOISE_RELAY_HMAC_KEY was set —
+	// when populated, the gateway mounts /cloud/environment/{...} and
+	// /cloud/relay/{...} for noise rendezvous and runs a NoiseRouter
+	// that demultiplexes per-executor relay WS connections into per-
+	// stream noise sessions.
+	noiseHandlers *NoiseHandlers
 }
 
 // NewServer is the production constructor. Refuses a nil store so a
@@ -126,7 +133,7 @@ func NewServer(cfg Config, store *Store) (*Server, error) {
 		sdkSrv.Recorder = rec
 	}
 
-	return &Server{
+	srv := &Server{
 		config:        cfg,
 		store:         store,
 		registry:      registry,
@@ -136,7 +143,31 @@ func NewServer(cfg Config, store *Store) (*Server, error) {
 		sdkSessions:   sdkSessions,
 		logger:        logger,
 		recorder:      rec,
-	}, nil
+	}
+
+	// Noise relay endpoints — only mounted when the HMAC key is
+	// configured. Without it the gateway runs in legacy-bridge-only
+	// mode (the default during the §6 D-1 6-week transition window).
+	if len(cfg.NoiseRelayHMACKey) > 0 {
+		// Public ws/wss base for the relay URL embedded in the
+		// /cloud/environment/{env_id}/register response. Falls back to
+		// the request host when PublicWSBaseURL is unset.
+		nh := NewNoiseHandlers(store, cfg.NoiseRelayHMACKey, cfg.PublicWSBaseURL)
+		// Identity is per-process for now; a follow-up will load this
+		// from a mounted K8s secret per §6 D-2 so it survives pod
+		// restarts and supports the documented rotation procedure.
+		identity, err := noise.GenerateIdentity()
+		if err != nil {
+			return nil, fmt.Errorf("noise relay identity: %w", err)
+		}
+		router := NewNoiseRouter(store, nh.WSHub(), identity, cfg.NoiseRelayHMACKey)
+		nh.AttachRouter(router)
+		srv.noiseHandlers = nh
+		logger.Info("noise relay enabled", "suite", noise.SuiteName)
+	} else {
+		logger.Info("noise relay disabled (CXG_NOISE_RELAY_HMAC_KEY not set)")
+	}
+	return srv, nil
 }
 
 // Stop releases background goroutines (SDK session GC, audit uploader).
@@ -232,7 +263,16 @@ func (s *Server) Routes() http.Handler {
 		},
 		s.config.AgentserverInternalSecret)
 	r.Post("/cloud/executor/{exe_id}/register", cloudRegister)
-	r.Post("/cloud/environment/{env_id}/register", cloudRegister)
+	// Legacy (pre-noise) environment register. The noise handlers below
+	// own /cloud/environment/{env_id}/register when enabled; the chi
+	// router resolves by registration order, so this is overridden by
+	// Mount() below when the noise feature is on.
+	if s.noiseHandlers == nil {
+		r.Post("/cloud/environment/{env_id}/register", cloudRegister)
+	}
+	if s.noiseHandlers != nil {
+		s.noiseHandlers.Mount(r)
+	}
 
 	// *Store satisfies handlers.Store, handlers.BindingStore, and
 	// handlers.InternalConnectedStore directly — no adapter needed because

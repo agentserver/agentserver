@@ -456,13 +456,14 @@ func (s *Server) Router() http.Handler {
 		r.Get("/.well-known/jwks.json", hydraPassthrough)
 		// NOTE: /oauth2/register is intentionally NOT reverse-proxied.
 		// DCR is off chart-wide (see hydra.yaml comment); the static-
-		// public-client replacement is two shared OAuth clients
-		// (`agentserver-mcp-cli` for Claude Code / Codex,
-		// `agentserver-mcp-desktop` for Claude Desktop via
-		// mcp-remote) provisioned by the hydra-client-setup helm job
-		// (see hydra.yaml). Users just paste the right fixed
-		// client_id into their CLI config — no API
-		// call needed.
+		// public-client replacement is three shared OAuth clients:
+		//   - agentserver-mcp-claude-code (Claude Code CLI)
+		//   - agentserver-mcp-codex (Codex CLI + Desktop)
+		//   - agentserver-mcp-claude-desktop (Claude Desktop via
+		//     mcp-remote — uses /oauth/callback path)
+		// All provisioned by the hydra-client-setup helm job (see
+		// hydra.yaml). Users paste the right fixed client_id into
+		// their client config — no API call needed.
 
 		// Browser authorize endpoint — Hydra runs the full login + consent
 		// dance against our handleOAuthLogin / handleOAuthConsent providers,
@@ -671,10 +672,11 @@ func (s *Server) Router() http.Handler {
 		r.Post("/api/workspaces/{wid}/mcp/pats", s.handleMintMCPPAT)
 		r.Delete("/api/workspaces/{wid}/mcp/pats/{id}", s.handleRevokeMCPPAT)
 
-		// MCP OAuth clients — envmcp public gateway uses two shared
-		// public OAuth2 clients (`agentserver-mcp-cli` for Claude Code
-		// / Codex, `agentserver-mcp-desktop` for Claude Desktop via
-		// mcp-remote) baked into the chart's hydra-client-setup job.
+		// MCP OAuth clients — envmcp public gateway uses three shared
+		// public OAuth2 clients (`agentserver-mcp-claude-code` for
+		// Claude Code CLI, `agentserver-mcp-codex` for Codex CLI +
+		// Desktop, `agentserver-mcp-claude-desktop` for Claude Desktop
+		// via mcp-remote) baked into the chart's hydra-client-setup job.
 		// Same shape as gh CLI / GitHub Desktop: client_id is published
 		// in the docs, users paste it into their config. The OAuth
 		// flow's user login + workspace consent screen is what actually

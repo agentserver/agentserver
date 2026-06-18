@@ -13,12 +13,12 @@ Run your agentserver workspaces' tools (`shell`, `read_file`, `apply_patch`, …
 ```bash
 claude mcp add --transport http agentserver \
   https://mcp.agent.cs.ac.cn/mcp \
-  --client-id agentserver-mcp-cli \
+  --client-id agentserver-mcp-claude-code \
   --callback-port 20202
 ```
 
 Notes:
-- `client_id = "agentserver-mcp-cli"` is a fixed, public value shared by all users (same shape as gh CLI's hard-coded GitHub OAuth client). It has no auth power on its own — the OAuth flow's user login + workspace consent screen is what authorizes.
+- `client_id = "agentserver-mcp-claude-code"` is a fixed, public value shared by all users (same shape as gh CLI's hard-coded GitHub OAuth client). It has no auth power on its own — the OAuth flow's user login + workspace consent screen is what authorizes.
 - `--callback-port 20202` is required and the port number is **not arbitrary** — Hydra v2 doesn't implement RFC 8252 §7.3 (loopback-any-port), so the server only accepts callbacks on the exact port registered with the OAuth client. We registered port 20202 (rare enough to dodge dev-server collisions on 3000/8080/5173/etc.). If 20202 is taken on your machine, file an issue.
 - No `--client-secret`: the shared client is a **public** OAuth client (PKCE-protected).
 
@@ -43,7 +43,7 @@ The first time it talks to `agentserver`, a browser opens. Log in to agentserver
       "type": "http",
       "url": "https://mcp.agent.cs.ac.cn/mcp",
       "oauth": {
-        "client_id": "agentserver-mcp-cli",
+        "client_id": "agentserver-mcp-claude-code",
         "callback_port": 20202
       }
     }

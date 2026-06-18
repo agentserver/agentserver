@@ -199,53 +199,59 @@ spec:
               hydra update oauth2-client agentserver-agent-cli --endpoint "$ENDPOINT" $CLI_FLAGS 2>/dev/null || \
               hydra create oauth2-client --endpoint "$ENDPOINT" --id agentserver-agent-cli $CLI_FLAGS
 
-              # 2. agentserver-mcp — single shared public OAuth
-              # client all MCP clients (Codex CLI, Claude Code, Claude
-              # Desktop via mcp-remote) use against envmcp-public-
-              # gateway. client_id is published in the docs and pasted
-              # into ~/.codex/config.toml / `claude mcp add --client-id`.
+              # MCP OAuth clients — split by surface so each can be
+              # audited/revoked independently and the redirect_uris
+              # stay minimal-per-surface (Hydra string-matches the full
+              # URL including path, so unioning them on one client
+              # makes any one client's compromise a wider blast).
               #
-              # Security model:
-              #   - PKCE-protected (token_endpoint_auth_method=none, no
-              #     client_secret). The client_id alone gives no auth
-              #     power — the OAuth flow's user login + workspace
-              #     consent screen is what actually authorizes the
-              #     issued token. Same shape gh/git-credential-manager
-              #     use.
-              #   - Audience pinned to mcp.<domain>/mcp so a token
-              #     issued for this client can't replay against any
-              #     other MCP server on the same Hydra (RFC 8707).
-              #   - Pinned callback port 20202 — Hydra v2 does NOT
-              #     implement RFC 8252 §7.3 (loopback any-port — see
-              #     ory/hydra#1732), so we have to register the exact
-              #     redirect_uri the CLI binds. Docs tell users to
-              #     pass --callback-port 20202 / mcp_oauth_callback_
-              #     port = 20202. 20202 is rare enough to avoid
-              #     collisions with the usual dev-server ports
-              #     (3000/8080/5173/etc).
+              # Common to both:
+              #   - PKCE-protected (token_endpoint_auth_method=none).
+              #   - Audience pinned to mcp.<domain>/mcp (RFC 8707).
+              #   - Pinned port 20202 (ory/hydra#1732: no RFC 8252 §7.3
+              #     loopback-any-port support). 20202 dodges common
+              #     dev-server ports.
+              #   - scope: openid + offline_access (refresh tokens) +
+              #     mcp:read + mcp:exec.
               #
-              # Idempotent: update first, fall back to create. Helm
-              # reruns the job on every chart upgrade so the flag set
-              # below is the source of truth (drift is silently
-              # corrected).
-              # offline_access is required for refresh_token issuance — Claude
-              # Code requests it unconditionally so it can silently refresh
-              # access tokens (1h TTL) without re-prompting the browser. Without
-              # it advertised on the client, Hydra returns invalid_scope and
-              # the entire OAuth flow fails at the authorize step.
-              MCP_FLAGS="--name Agentserver_MCP \
+              # ── 2a. agentserver-mcp-cli ──────────────────────────────
+              # For Claude Code CLI + Codex CLI. They bind callback at
+              # /callback (Claude Code's literal --callback-port path,
+              # Codex uses the same convention).
+              MCP_CLI_FLAGS="--name Agentserver_MCP_CLI \
                 --grant-type authorization_code \
                 --grant-type refresh_token \
                 --response-type code \
                 --scope openid --scope offline_access --scope mcp:read --scope mcp:exec \
                 --redirect-uri http://localhost:20202/callback \
                 --redirect-uri http://127.0.0.1:20202/callback \
+                --token-endpoint-auth-method none \
+                --audience https://mcp.{{ .Values.platform.domain }}/mcp"
+              hydra update oauth2-client agentserver-mcp-cli --endpoint "$ENDPOINT" $MCP_CLI_FLAGS 2>/dev/null || \
+              hydra create oauth2-client --endpoint "$ENDPOINT" --id agentserver-mcp-cli $MCP_CLI_FLAGS
+
+              # ── 2b. agentserver-mcp-desktop ──────────────────────────
+              # For Claude Desktop via the `mcp-remote` stdio bridge.
+              # mcp-remote uses /oauth/callback (different path from
+              # Claude Code's /callback). Same port (20202), different
+              # path — keeps the two surfaces' OAuth tokens distinct,
+              # so a desktop logout doesn't invalidate the CLI session.
+              MCP_DESKTOP_FLAGS="--name Agentserver_MCP_Desktop \
+                --grant-type authorization_code \
+                --grant-type refresh_token \
+                --response-type code \
+                --scope openid --scope offline_access --scope mcp:read --scope mcp:exec \
                 --redirect-uri http://localhost:20202/oauth/callback \
                 --redirect-uri http://127.0.0.1:20202/oauth/callback \
                 --token-endpoint-auth-method none \
                 --audience https://mcp.{{ .Values.platform.domain }}/mcp"
-              hydra update oauth2-client agentserver-mcp --endpoint "$ENDPOINT" $MCP_FLAGS 2>/dev/null || \
-              hydra create oauth2-client --endpoint "$ENDPOINT" --id agentserver-mcp $MCP_FLAGS
+              hydra update oauth2-client agentserver-mcp-desktop --endpoint "$ENDPOINT" $MCP_DESKTOP_FLAGS 2>/dev/null || \
+              hydra create oauth2-client --endpoint "$ENDPOINT" --id agentserver-mcp-desktop $MCP_DESKTOP_FLAGS
+
+              # Cleanup: drop the old combined `agentserver-mcp` client
+              # if it still exists from earlier chart versions. Best-
+              # effort; ignore not-found.
+              hydra delete oauth2-client agentserver-mcp --endpoint "$ENDPOINT" 2>/dev/null || true
 ---
 # --- Hydra Public Service ---
 apiVersion: v1

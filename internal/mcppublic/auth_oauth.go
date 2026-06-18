@@ -229,13 +229,14 @@ func (r *OAuthResolver) Resolve(ctx context.Context, raw string) (*Principal, er
 	// !!! SECURITY: This empty-aud branch is a fail-open relaxation.
 	// It is only safe because:
 	//   1. Single-tenant: exactly one MCP gateway exists on this
-	//      Hydra (agentserver-mcp client → mcp.<host>/mcp). A token
-	//      from our consent flow can only have been meant for here.
+	//      Hydra (both agentserver-mcp-cli and agentserver-mcp-desktop
+	//      target mcp.<host>/mcp). A token from our consent flow can
+	//      only have been meant for here.
 	//   2. DCR is OFF (#258, hydra.yaml comment): nobody can
 	//      register a malicious client to mint mcp:* tokens.
-	//   3. The agentserver-mcp client is provisioned by helm with a
-	//      fixed `audience` list, so even if a token DOES carry
-	//      `aud`, it can only carry our gateway URL.
+	//   3. Both mcp clients are provisioned by helm with a fixed
+	//      `audience` list, so even if a token DOES carry `aud`, it
+	//      can only carry our gateway URL.
 	//
 	// !!! BEFORE adding a second MCP server on the same Hydra,
 	// DELETE the empty-aud branch. Otherwise tokens issued for the

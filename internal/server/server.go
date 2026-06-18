@@ -456,10 +456,12 @@ func (s *Server) Router() http.Handler {
 		r.Get("/.well-known/jwks.json", hydraPassthrough)
 		// NOTE: /oauth2/register is intentionally NOT reverse-proxied.
 		// DCR is off chart-wide (see hydra.yaml comment); the static-
-		// public-client replacement is a single shared OAuth client
-		// (`agentserver-mcp`) provisioned by the
-		// hydra-client-setup helm job (see hydra.yaml). Users just
-		// paste that fixed client_id into their CLI config — no API
+		// public-client replacement is two shared OAuth clients
+		// (`agentserver-mcp-cli` for Claude Code / Codex,
+		// `agentserver-mcp-desktop` for Claude Desktop via
+		// mcp-remote) provisioned by the hydra-client-setup helm job
+		// (see hydra.yaml). Users just paste the right fixed
+		// client_id into their CLI config — no API
 		// call needed.
 
 		// Browser authorize endpoint — Hydra runs the full login + consent
@@ -669,16 +671,19 @@ func (s *Server) Router() http.Handler {
 		r.Post("/api/workspaces/{wid}/mcp/pats", s.handleMintMCPPAT)
 		r.Delete("/api/workspaces/{wid}/mcp/pats/{id}", s.handleRevokeMCPPAT)
 
-		// MCP OAuth client — the envmcp public gateway uses ONE shared
-		// public OAuth2 client (id `agentserver-mcp`) baked into
-		// the chart's hydra-client-setup job. Same shape as GitHub
-		// Desktop / gh CLI: client_id is published in the docs, users
-		// just paste it into ~/.codex/config.toml or `claude mcp add
-		// --client-id`. The OAuth flow's user authentication +
-		// workspace consent screen is what actually authorizes; the
-		// client_id alone has no power. We tried per-user clients
-		// briefly (#256) but reverted because the extra curl step
-		// for every install was friction with no security benefit.
+		// MCP OAuth clients — envmcp public gateway uses two shared
+		// public OAuth2 clients (`agentserver-mcp-cli` for Claude Code
+		// / Codex, `agentserver-mcp-desktop` for Claude Desktop via
+		// mcp-remote) baked into the chart's hydra-client-setup job.
+		// Same shape as gh CLI / GitHub Desktop: client_id is published
+		// in the docs, users paste it into their config. The OAuth
+		// flow's user login + workspace consent screen is what actually
+		// authorizes; the client_id alone has no power. We tried per-
+		// user clients briefly (#256) but reverted because the extra
+		// curl step for every install was friction with no security
+		// benefit. Splitting cli vs desktop is purely so they can be
+		// audited / revoked independently and their redirect_uris
+		// stay minimal-per-surface (Hydra full-URL-matches).
 
 		// Admin routes
 		r.Route("/api/admin", func(r chi.Router) {

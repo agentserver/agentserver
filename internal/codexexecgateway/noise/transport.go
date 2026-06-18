@@ -3,24 +3,28 @@ package noise
 import "errors"
 
 // Transport carries application traffic after the handshake completes.
-// Each call to Encrypt or Decrypt advances the implicit nonce for that
-// direction. The caller is responsible for ordering ciphertexts before
-// passing them to Decrypt — gaps or reorders are detected as auth-tag
-// failures because the nonce will not match.
+// Each call to Encrypt or Decrypt advances the nonce for that
+// direction. Out-of-order or replayed frames fail the AEAD check
+// because the nonce will not match.
+//
+// Transport does not implement automatic rekey. Per noise §11.3,
+// rekeying is a higher-level concern; codex's relay assumes one
+// session per harness bridge (<<2^32 records).
 type Transport struct {
-	// send and recv hold AES-GCM AEADs derived from the handshake
-	// chaining key plus 64-bit little-endian counters.
 	send keyedCounter
 	recv keyedCounter
 }
 
-// Encrypt seals plaintext with the outbound key + next nonce. Output
-// is plaintext.len + AESGCMTagLen bytes.
-func (t *Transport) Encrypt(_ []byte) ([]byte, error) {
-	return nil, errors.New("noise: transport encrypt not yet implemented (Phase 1.4)")
+func (t *Transport) Encrypt(plaintext []byte) ([]byte, error) {
+	if len(plaintext)+AESGCMTagLen > MaxMessageLen {
+		return nil, errors.New("noise: transport plaintext too large")
+	}
+	return t.send.seal(plaintext)
 }
 
-// Decrypt opens ciphertext with the inbound key + next nonce.
-func (t *Transport) Decrypt(_ []byte) ([]byte, error) {
-	return nil, errors.New("noise: transport decrypt not yet implemented (Phase 1.4)")
+func (t *Transport) Decrypt(ciphertext []byte) ([]byte, error) {
+	if len(ciphertext) > MaxMessageLen {
+		return nil, errors.New("noise: transport ciphertext too large")
+	}
+	return t.recv.open(ciphertext)
 }

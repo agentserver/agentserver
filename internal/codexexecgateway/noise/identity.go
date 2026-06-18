@@ -65,6 +65,10 @@ func (k PublicKey) MarshalJSON() ([]byte, error) {
 	return json.Marshal(alias(k))
 }
 
+func stdBase64Encode(b []byte) string {
+	return base64.StdEncoding.EncodeToString(b)
+}
+
 // Decode parses a wire PublicKey into typed key material. Suite tag is
 // validated before any byte length check so a wrong-suite key fails
 // loud rather than passing a length check coincidentally.

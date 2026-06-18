@@ -99,9 +99,9 @@ spec:
               value: "ws://{{ .Release.Name }}-codex-exec-gateway.{{ .Release.Namespace }}.svc:{{ .Values.codexExecGateway.port }}/bridge"
             # Advertised in 401 WWW-Authenticate (so Claude Desktop 1P
             # can OAuth-discover us once Phase 2 lands) + in the
-            # /v1/.well-known/oauth-protected-resource body.
+            # /.well-known/oauth-protected-resource body.
             - name: MCP_PUBLIC_RESOURCE_METADATA_URL
-              value: "https://{{ $publicHost }}/v1/.well-known/oauth-protected-resource"
+              value: "https://{{ $publicHost }}/.well-known/oauth-protected-resource"
             # Issuer URL — base URL of the agentserver web app. The
             # protected-resource doc returns this in
             # `authorization_servers`, so MCP clients hit
@@ -135,13 +135,13 @@ spec:
             - name: HYDRA_ADMIN_URL
               value: "http://{{ .Release.Name }}-hydra-admin:{{ .Values.hydra.adminPort }}"
             # RFC 8707 audience binding. Must match the `resource`
-            # field in /v1/.well-known/oauth-protected-resource (the
+            # field in /.well-known/oauth-protected-resource (the
             # canonical gateway URL the protected-resource doc emits).
             # OAuth clients pass this as `resource=...` on
             # /oauth2/auth, Hydra puts it in the token's `aud` claim,
             # and the resolver checks them on every request.
             - name: OAUTH_EXPECTED_AUDIENCE
-              value: "https://{{ $publicHost }}/v1/mcp"
+              value: "https://{{ $publicHost }}/mcp"
             {{- end }}
             {{- if .Values.envmcpPublicGateway.logLevel }}
             - name: CXG_LOG_LEVEL

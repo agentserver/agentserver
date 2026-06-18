@@ -5,7 +5,7 @@
 // Architecture (spec: docs/superpowers/specs/2026-06-09-envmcp-public-
 // gateway-design.md, with the 2026-06-15 1-PAT-1-workspace amendment):
 //
-//	external client ─Bearer agpat_xxx─▶ /v1/mcp
+//	external client ─Bearer agpat_xxx─▶ /mcp
 //	   ▼
 //	mcppublic.Middleware  →  PATResolver  →  Principal{user, workspace}
 //	   ▼
@@ -31,7 +31,7 @@
 //	CXG_EXEC_GATEWAY_INTERNAL_URL      — http base for /api/codex-exec/*
 //	CXG_EXEC_GATEWAY_INTERNAL_SECRET   — X-Internal-Secret for the above
 //	CXG_BRIDGE_BASE_URL                — ws base for /bridge dials
-//	MCP_PUBLIC_RESOURCE_METADATA_URL   — full URL of /v1/.well-known/oauth-protected-resource
+//	MCP_PUBLIC_RESOURCE_METADATA_URL   — full URL of /.well-known/oauth-protected-resource
 //	                                     (advertised in 401 WWW-Authenticate)
 //	MCP_PUBLIC_ISSUER_URL              — agentserver web base (advertised in
 //	                                     the protected-resource doc)
@@ -203,7 +203,7 @@ type config struct {
 	// OAuthExpectedAudience is the canonical resource URL clients are
 	// expected to bind their tokens to via RFC 8707 (same URL the
 	// protected-resource doc returns as `resource` — typically
-	// https://mcp.<gateway.host>/v1/mcp). Tokens whose `aud` claim
+	// https://mcp.<gateway.host>/mcp). Tokens whose `aud` claim
 	// does not contain this URL are rejected. Empty disables the
 	// check — dev only; never leave unset in prod.
 	OAuthExpectedAudience string

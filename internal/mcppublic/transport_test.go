@@ -35,7 +35,7 @@ func newTestServer(t *testing.T, src *fakeExecutorsSource, backend ToolBackend, 
 // the parsed response.
 func post(t *testing.T, ts *httptest.Server, body string) (*http.Response, jsonrpcResp) {
 	t.Helper()
-	resp, err := http.Post(ts.URL+"/v1/mcp", "application/json", strings.NewReader(body))
+	resp, err := http.Post(ts.URL+"/mcp", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestTransport_UnknownMethod_ReturnsMethodNotFound(t *testing.T) {
 
 func TestTransport_NotificationsInitialized_NoResponseBody(t *testing.T) {
 	hs := newTestServer(t, nil, &stubBackend{}, principalReadOnly("ws_1"))
-	resp, err := http.Post(hs.URL+"/v1/mcp", "application/json",
+	resp, err := http.Post(hs.URL+"/mcp", "application/json",
 		strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`))
 	if err != nil {
 		t.Fatalf("POST: %v", err)
@@ -172,7 +172,7 @@ func TestTransport_BadJSONRPCVersion_Rejected(t *testing.T) {
 
 func TestTransport_GET_Returns405(t *testing.T) {
 	hs := newTestServer(t, nil, &stubBackend{}, principalReadOnly("ws_1"))
-	resp, err := http.Get(hs.URL + "/v1/mcp")
+	resp, err := http.Get(hs.URL + "/mcp")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestTransport_GET_Returns405(t *testing.T) {
 
 func TestTransport_DELETE_Returns405(t *testing.T) {
 	hs := newTestServer(t, nil, &stubBackend{}, principalReadOnly("ws_1"))
-	req, _ := http.NewRequest(http.MethodDelete, hs.URL+"/v1/mcp", nil)
+	req, _ := http.NewRequest(http.MethodDelete, hs.URL+"/mcp", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("DELETE: %v", err)
@@ -219,7 +219,7 @@ func TestTransport_Healthz_Public(t *testing.T) {
 // "guess the AS by stripping path" path, which lands them at
 // https://mcp.<host>/authorize — a 404 page, broken UX.
 //
-// We keep /v1/.well-known/oauth-protected-resource as an alias for
+// We keep /.well-known/oauth-protected-resource as an alias for
 // the WWW-Authenticate header that older deployments wired in via
 // the MCP_PUBLIC_RESOURCE_METADATA_URL env var. Both paths must
 // return the same doc.
@@ -240,8 +240,8 @@ func TestTransport_OAuthProtectedResource_RFC9728RootPath(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !strings.HasSuffix(doc.Resource, "/v1/mcp") {
-		t.Errorf("resource: %q must end in /v1/mcp", doc.Resource)
+	if !strings.HasSuffix(doc.Resource, "/mcp") {
+		t.Errorf("resource: %q must end in /mcp", doc.Resource)
 	}
 	if len(doc.AuthorizationServers) == 0 || doc.AuthorizationServers[0] != "https://app.example.com" {
 		t.Errorf("authorization_servers wrong: %+v", doc.AuthorizationServers)
@@ -250,7 +250,7 @@ func TestTransport_OAuthProtectedResource_RFC9728RootPath(t *testing.T) {
 
 func TestTransport_OAuthProtectedResource_Public(t *testing.T) {
 	hs := newTestServer(t, nil, &stubBackend{}, principalReadOnly("ws_1"))
-	resp, err := http.Get(hs.URL + "/v1/.well-known/oauth-protected-resource")
+	resp, err := http.Get(hs.URL + "/.well-known/oauth-protected-resource")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -267,8 +267,8 @@ func TestTransport_OAuthProtectedResource_Public(t *testing.T) {
 	if !strings.HasPrefix(doc.Resource, "http://") {
 		t.Errorf("plain-http resource: got %q, want http:// prefix", doc.Resource)
 	}
-	if !strings.HasSuffix(doc.Resource, "/v1/mcp") {
-		t.Errorf("resource missing /v1/mcp suffix: %q", doc.Resource)
+	if !strings.HasSuffix(doc.Resource, "/mcp") {
+		t.Errorf("resource missing /mcp suffix: %q", doc.Resource)
 	}
 	if len(doc.AuthorizationServers) == 0 {
 		t.Errorf("no authorization_servers: %+v", doc)
@@ -283,11 +283,11 @@ func TestTransport_OAuthProtectedResource_Public(t *testing.T) {
 // production behavior behind istio-ingress (TLS terminated at ingress,
 // pod sees plain http but the X-Forwarded-Proto header tells us the
 // client connected over https). Without this honored, the protected-
-// resource doc would advertise http://mcp.agent.cs.ac.cn/v1/mcp and
+// resource doc would advertise http://mcp.agent.cs.ac.cn/mcp and
 // OAuth clients would refuse to use it.
 func TestTransport_OAuthProtectedResource_HonorsXForwardedProto(t *testing.T) {
 	hs := newTestServer(t, nil, &stubBackend{}, principalReadOnly("ws_1"))
-	req, _ := http.NewRequest(http.MethodGet, hs.URL+"/v1/.well-known/oauth-protected-resource", nil)
+	req, _ := http.NewRequest(http.MethodGet, hs.URL+"/.well-known/oauth-protected-resource", nil)
 	req.Header.Set("X-Forwarded-Proto", "https")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -318,7 +318,7 @@ func TestTransport_OAuthProtectedResource_HonorsXForwardedProto(t *testing.T) {
 // query-string-bearer attempts that the resolver doesn't honor.
 func TestTransport_OAuthProtectedResource_AdvertisesScopesAndBearerMethods(t *testing.T) {
 	hs := newTestServer(t, nil, &stubBackend{}, principalReadOnly("ws_1"))
-	resp, err := http.Get(hs.URL + "/v1/.well-known/oauth-protected-resource")
+	resp, err := http.Get(hs.URL + "/.well-known/oauth-protected-resource")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
@@ -357,7 +357,7 @@ func TestTransport_OAuthProtectedResource_AdvertisesScopesAndBearerMethods(t *te
 // first entry, since proxies may chain.
 func TestTransport_OAuthProtectedResource_XForwardedProtoChain(t *testing.T) {
 	hs := newTestServer(t, nil, &stubBackend{}, principalReadOnly("ws_1"))
-	req, _ := http.NewRequest(http.MethodGet, hs.URL+"/v1/.well-known/oauth-protected-resource", nil)
+	req, _ := http.NewRequest(http.MethodGet, hs.URL+"/.well-known/oauth-protected-resource", nil)
 	req.Header.Set("X-Forwarded-Proto", "https, http")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -376,17 +376,17 @@ func TestTransport_OAuthProtectedResource_XForwardedProtoChain(t *testing.T) {
 func TestTransport_AuthMiddleware_401AdvertisesResourceMetadata(t *testing.T) {
 	// Verify the auth middleware emits WWW-Authenticate that points
 	// at our oauth-protected-resource doc. End-to-end-ish: mount the
-	// real Middleware + a resolver that always rejects, hit /v1/mcp,
+	// real Middleware + a resolver that always rejects, hit /mcp,
 	// inspect the 401's headers.
 	d := newTestDispatcher(t, nil, &stubBackend{})
 	srv := NewServer(d, "https://app.example.com", nil)
 	resolver := stubResolverErr{err: ErrInvalid}
 	mw := AuthMiddleware([]PrincipalResolver{resolver},
-		"https://mcp.example.com/v1/.well-known/oauth-protected-resource", nil)
+		"https://mcp.example.com/.well-known/oauth-protected-resource", nil)
 	hs := httptest.NewServer(srv.Mount(mw))
 	defer hs.Close()
 
-	req, _ := http.NewRequest(http.MethodPost, hs.URL+"/v1/mcp",
+	req, _ := http.NewRequest(http.MethodPost, hs.URL+"/mcp",
 		bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`)))
 	req.Header.Set("Authorization", "Bearer some-thing")
 	resp, err := http.DefaultClient.Do(req)

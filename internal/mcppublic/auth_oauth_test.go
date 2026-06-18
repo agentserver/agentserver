@@ -32,7 +32,7 @@ func newOAuthResolver(f *fakeDB, s *stubIntrospector) *OAuthResolver {
 	return &OAuthResolver{
 		DB:               f,
 		Introspector:     s,
-		ExpectedAudience: "https://mcp.example.com/v1/mcp",
+		ExpectedAudience: "https://mcp.example.com/mcp",
 	}
 }
 
@@ -41,7 +41,7 @@ func newOAuthResolver(f *fakeDB, s *stubIntrospector) *OAuthResolver {
 // without HYDRA_ADMIN_URL). Without this the middleware would 500
 // every request the moment OAuth is "disabled".
 func TestOAuthResolver_NilIntrospectorIsErrUnknown(t *testing.T) {
-	r := OAuthResolver{DB: &fakeDB{}, ExpectedAudience: "https://x/v1/mcp"}
+	r := OAuthResolver{DB: &fakeDB{}, ExpectedAudience: "https://x/mcp"}
 	_, err := r.Resolve(context.Background(), "ory_at_anything")
 	if !errors.Is(err, ErrUnknown) {
 		t.Fatalf("want ErrUnknown when introspector unset, got %v", err)
@@ -83,7 +83,7 @@ func TestOAuthResolver_HappyPath(t *testing.T) {
 			Subject:  "user_abc",
 			ClientID: "client_xyz",
 			Scope:    "mcp:read mcp:exec openid",
-			Audience: audience{"https://mcp.example.com/v1/mcp"},
+			Audience: audience{"https://mcp.example.com/mcp"},
 			Ext: map[string]interface{}{
 				"workspace_id":   "ws_42",
 				"workspace_role": "developer",
@@ -134,7 +134,7 @@ func TestOAuthResolver_AudienceMismatchIsErrInvalid(t *testing.T) {
 			Active:   true,
 			Subject:  "user_abc",
 			Scope:    "mcp:read",
-			Audience: audience{"https://other-mcp.example.com/v1/mcp"},
+			Audience: audience{"https://other-mcp.example.com/mcp"},
 			Ext:      map[string]interface{}{"workspace_id": "ws_42", "workspace_role": "developer"},
 		},
 	}
@@ -156,7 +156,7 @@ func TestOAuthResolver_AudienceArrayMatches(t *testing.T) {
 			Active:   true,
 			Subject:  "user_abc",
 			Scope:    "mcp:read",
-			Audience: audience{"https://something-else", "https://mcp.example.com/v1/mcp"},
+			Audience: audience{"https://something-else", "https://mcp.example.com/mcp"},
 			Ext:      map[string]interface{}{"workspace_id": "ws_42", "workspace_role": "developer"},
 		},
 	}
@@ -175,7 +175,7 @@ func TestOAuthResolver_MissingWorkspaceClaimIsErrInvalid(t *testing.T) {
 			Active:   true,
 			Subject:  "user_abc",
 			Scope:    "mcp:read",
-			Audience: audience{"https://mcp.example.com/v1/mcp"},
+			Audience: audience{"https://mcp.example.com/mcp"},
 			Ext:      map[string]interface{}{}, // no workspace_id
 		},
 	}
@@ -200,7 +200,7 @@ func TestOAuthResolver_KickedOutUserIsErrInvalid(t *testing.T) {
 			Active:   true,
 			Subject:  "user_abc",
 			Scope:    "mcp:read",
-			Audience: audience{"https://mcp.example.com/v1/mcp"},
+			Audience: audience{"https://mcp.example.com/mcp"},
 			Ext:      map[string]interface{}{"workspace_id": "ws_42", "workspace_role": "developer"},
 		},
 	}
@@ -237,7 +237,7 @@ func TestOAuthResolver_OnlyReadScopeWithdrawsExecTools(t *testing.T) {
 			Active:   true,
 			Subject:  "user_abc",
 			Scope:    "mcp:read", // no exec
-			Audience: audience{"https://mcp.example.com/v1/mcp"},
+			Audience: audience{"https://mcp.example.com/mcp"},
 			Ext:      map[string]interface{}{"workspace_id": "ws_42", "workspace_role": "developer"},
 		},
 	}

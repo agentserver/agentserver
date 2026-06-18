@@ -371,7 +371,7 @@ envmcpPublicGateway:
   logLevel: info
   # External hostname for Codex CLI / Claude Desktop / mcp-remote
   # config. Empty defaults to "mcp.<gateway.host>" (so users see
-  # https://mcp.agent.cs.ac.cn/v1/mcp on the standard deployment).
+  # https://mcp.agent.cs.ac.cn/mcp on the standard deployment).
   publicHost: ""
   # Optional override for the agentserver web URL surfaced in the
   # 401 WWW-Authenticate's resource_metadata + the OAuth-protected-

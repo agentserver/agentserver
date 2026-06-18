@@ -276,7 +276,7 @@ func TestMiddleware_NoAuthHeader(t *testing.T) {
 	h := &noopHandler{}
 	mw := &Middleware{Resolvers: []PrincipalResolver{stubResolver{p: &Principal{UserID: "u"}}}}
 	w := httptest.NewRecorder()
-	mw.Wrap(h).ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/mcp", nil))
+	mw.Wrap(h).ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/mcp", nil))
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("want 401, got %d", w.Code)
 	}
@@ -293,7 +293,7 @@ func TestMiddleware_MalformedScheme(t *testing.T) {
 		t.Run(h, func(t *testing.T) {
 			handler := &noopHandler{}
 			mw := &Middleware{Resolvers: []PrincipalResolver{stubResolver{p: &Principal{UserID: "u"}}}}
-			r := httptest.NewRequest(http.MethodPost, "/v1/mcp", nil)
+			r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 			r.Header.Set("Authorization", h)
 			w := httptest.NewRecorder()
 			mw.Wrap(handler).ServeHTTP(w, r)
@@ -313,7 +313,7 @@ func TestMiddleware_ResolverReturnsErrUnknown_FallsThrough(t *testing.T) {
 		stubResolver{p: wantP},
 	}}
 	h := &noopHandler{}
-	r := httptest.NewRequest(http.MethodPost, "/v1/mcp", nil)
+	r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	r.Header.Set("Authorization", "Bearer something")
 	w := httptest.NewRecorder()
 	mw.Wrap(h).ServeHTTP(w, r)
@@ -337,7 +337,7 @@ func TestMiddleware_ResolverReturnsErrInvalid_NoFallthrough(t *testing.T) {
 		}),
 	}}
 	h := &noopHandler{}
-	r := httptest.NewRequest(http.MethodPost, "/v1/mcp", nil)
+	r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	r.Header.Set("Authorization", "Bearer agpat_revoked")
 	w := httptest.NewRecorder()
 	mw.Wrap(h).ServeHTTP(w, r)
@@ -354,7 +354,7 @@ func TestMiddleware_AdvertisesResourceMetadata(t *testing.T) {
 		Resolvers:           []PrincipalResolver{stubResolver{err: ErrInvalid}},
 		ResourceMetadataURL: "https://mcp.example.com/.well-known/oauth-protected-resource",
 	}
-	r := httptest.NewRequest(http.MethodPost, "/v1/mcp", nil)
+	r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	r.Header.Set("Authorization", "Bearer x")
 	w := httptest.NewRecorder()
 	mw.Wrap(&noopHandler{}).ServeHTTP(w, r)

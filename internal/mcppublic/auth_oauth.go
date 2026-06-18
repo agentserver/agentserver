@@ -165,7 +165,7 @@ type OAuthResolver struct {
 
 	// ExpectedAudience is the canonical resource URL our gateway
 	// publishes in the `oauth-protected-resource` doc, e.g.
-	// "https://mcp.agent.cs.ac.cn/v1/mcp". Tokens whose `aud` claim
+	// "https://mcp.agent.cs.ac.cn/mcp". Tokens whose `aud` claim
 	// does not contain this string are rejected per RFC 8707. Empty
 	// disables the check (dev only; never leave unset in prod —
 	// without it a token issued for a different MCP server would

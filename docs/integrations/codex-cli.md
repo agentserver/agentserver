@@ -12,8 +12,8 @@ Run your agentserver workspaces' tools (`shell`, `read_file`, `apply_patch`, …
 
 ```toml
 [mcp_servers.agentserver]
-url = "https://mcp.agent.cs.ac.cn/v1/mcp"
-oauth_resource = "https://mcp.agent.cs.ac.cn/v1/mcp"
+url = "https://mcp.agent.cs.ac.cn/mcp"
+oauth_resource = "https://mcp.agent.cs.ac.cn/mcp"
 
 [mcp_servers.agentserver.oauth]
 client_id = "agentserver-mcp"
@@ -45,7 +45,7 @@ Direct curl smoke test (skips the LLM):
 
 ```bash
 TOKEN=$(jq -r .access_token ~/.codex/mcp_oauth/agentserver.json)
-curl -s -X POST https://mcp.agent.cs.ac.cn/v1/mcp \
+curl -s -X POST https://mcp.agent.cs.ac.cn/mcp \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | jq
@@ -59,14 +59,14 @@ Each `[mcp_servers.X]` entry corresponds to one workspace (workspace is selected
 
 ```toml
 [mcp_servers.work]
-url = "https://mcp.agent.cs.ac.cn/v1/mcp"
-oauth_resource = "https://mcp.agent.cs.ac.cn/v1/mcp"
+url = "https://mcp.agent.cs.ac.cn/mcp"
+oauth_resource = "https://mcp.agent.cs.ac.cn/mcp"
 [mcp_servers.work.oauth]
 client_id = "agentserver-mcp"
 
 [mcp_servers.personal]
-url = "https://mcp.agent.cs.ac.cn/v1/mcp"
-oauth_resource = "https://mcp.agent.cs.ac.cn/v1/mcp"
+url = "https://mcp.agent.cs.ac.cn/mcp"
+oauth_resource = "https://mcp.agent.cs.ac.cn/mcp"
 [mcp_servers.personal.oauth]
 client_id = "agentserver-mcp"
 ```
@@ -100,7 +100,7 @@ Then:
 
 ```toml
 [mcp_servers.agentserver]
-url = "https://mcp.agent.cs.ac.cn/v1/mcp"
+url = "https://mcp.agent.cs.ac.cn/mcp"
 bearer_token_env_var = "AGENTSERVER_PAT"
 ```
 
@@ -113,7 +113,7 @@ export AGENTSERVER_PAT='agpat_...'
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `Incompatible auth server: does not support dynamic client registration` | Forgot `oauth.client_id` in config | Add `[mcp_servers.agentserver.oauth] client_id = "agentserver-mcp"` |
-| `audience mismatch` in gateway logs | Forgot `oauth_resource` in config | Add `oauth_resource = "https://mcp.agent.cs.ac.cn/v1/mcp"` |
+| `audience mismatch` in gateway logs | Forgot `oauth_resource` in config | Add `oauth_resource = "https://mcp.agent.cs.ac.cn/mcp"` |
 | Browser opens but never returns | Network blocks codex's callback port | Set `mcp_oauth_callback_port = 8765` (or any reachable port) in config |
 | `401 unauthorized` after successful login | Token expired or workspace membership lost | Re-run `codex mcp login agentserver` |
 | `tools/call ... not granted to this principal` | Granted only `mcp:read` on consent | Re-login, grant both scopes |

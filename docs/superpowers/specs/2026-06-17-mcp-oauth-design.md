@@ -57,7 +57,7 @@ So this amendment **deletes the per-user table + REST surface from
 #256** and replaces it with a single shared client provisioned by the
 existing `hydra-client-setup` Helm job:
 
-- `client_id = "agentserver-mcp"`
+- `client_id = "agentserver-mcp"` (split into `-cli` + `-desktop` in 2026-06-18 amendment below)
 - `token_endpoint_auth_method = none` (public client, PKCE-protected)
 - `redirect_uris = [http://localhost/callback, http://127.0.0.1/callback]`
   — host-only per RFC 8252 §7.3 so Hydra accepts any port the CLI
@@ -75,3 +75,46 @@ deployments where one user's client should be revocable without
 affecting others), revive the #256 table — the Hydra admin wrapper
 (internal/auth/hydra.go CreateOAuth2Client/DeleteOAuth2Client) and
 REST surface design can be cherry-picked back.
+
+---
+
+## Amendment 2026-06-18 — split mcp client into cli + desktop
+
+End-to-end testing surfaced two issues that pushed us to split the
+single `agentserver-mcp` client into two:
+
+1. **Different callback paths per surface.** Claude Code / Codex use
+   `http://localhost:PORT/callback`; mcp-remote (Claude Desktop's
+   stdio bridge) uses `http://localhost:PORT/oauth/callback`. Hydra
+   string-matches the full URL including path, so we'd previously
+   stuffed all four URIs (2 hosts × 2 paths) onto one client. Means
+   a single client's compromise leaks across surfaces.
+
+2. **Independent audit / revocation.** With a single client_id, ops
+   can't tell from the Hydra side whether a token came from CLI vs
+   desktop, can't revoke desktop sessions without also nuking CLI.
+   Spliting gives per-surface granularity in `hydra delete
+   oauth2-client` and in introspect `client_id` field.
+
+Two clients now:
+
+| client_id | redirect_uris | surface |
+|---|---|---|
+| `agentserver-mcp-cli` | `http://{localhost,127.0.0.1}:20202/callback` | Claude Code CLI, Codex CLI |
+| `agentserver-mcp-desktop` | `http://{localhost,127.0.0.1}:20202/oauth/callback` | Claude Desktop via `mcp-remote` |
+
+Same port (20202), same audience, same scopes — only the redirect
+path differs. The hydra-client-setup helm job creates both and
+deletes the old combined `agentserver-mcp` row (idempotent on
+subsequent upgrades).
+
+Docs (codex-cli.md, claude-code-cli.md, claude-desktop.md — the
+last one replacing the older "claude-desktop-3p.md") updated. The
+"3P / Developer Mode" qualifier dropped because Custom Connectors
+are now available across all Claude Desktop plans (Free included),
+so the doc covers both the native Custom Connector path (Path A,
+not enabled yet) and the mcp-remote bridge path (Path B, default).
+
+OAuthResolver in mcppublic accepts both client_ids transparently —
+it never inspects `client_id`, only the introspected `sub` /
+`workspace_id` / `aud` / `scope` claims.

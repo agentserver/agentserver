@@ -240,6 +240,8 @@ spec:
                 --scope openid --scope offline_access --scope mcp:read --scope mcp:exec \
                 --redirect-uri http://localhost:20202/callback \
                 --redirect-uri http://127.0.0.1:20202/callback \
+                --redirect-uri http://localhost:20202/oauth/callback \
+                --redirect-uri http://127.0.0.1:20202/oauth/callback \
                 --token-endpoint-auth-method none \
                 --audience https://mcp.{{ .Values.platform.domain }}/mcp"
               hydra update oauth2-client agentserver-mcp --endpoint "$ENDPOINT" $MCP_FLAGS 2>/dev/null || \

@@ -14,12 +14,12 @@ Run your agentserver workspaces' tools (`shell`, `read_file`, `apply_patch`, …
 claude mcp add --transport http agentserver \
   https://mcp.agent.cs.ac.cn/mcp \
   --client-id agentserver-mcp \
-  --callback-port 3000
+  --callback-port 20202
 ```
 
 Notes:
 - `client_id = "agentserver-mcp"` is a fixed, public value shared by all users (same shape as gh CLI's hard-coded GitHub OAuth client). It has no auth power on its own — the OAuth flow's user login + workspace consent screen is what authorizes.
-- `--callback-port` is required: Claude Code binds the OAuth callback on this exact port. Any free port works (we register loopback host-only with Hydra, so any port is accepted per RFC 8252).
+- `--callback-port 20202` is required and the port number is **not arbitrary** — Hydra v2 doesn't implement RFC 8252 §7.3 (loopback-any-port), so the server only accepts callbacks on the exact port registered with the OAuth client. We registered port 20202 (rare enough to dodge dev-server collisions on 3000/8080/5173/etc.). If 20202 is taken on your machine, file an issue.
 - No `--client-secret`: the shared client is a **public** OAuth client (PKCE-protected).
 
 ## First connect triggers OAuth
@@ -44,7 +44,7 @@ The first time it talks to `agentserver`, a browser opens. Log in to agentserver
       "url": "https://mcp.agent.cs.ac.cn/mcp",
       "oauth": {
         "client_id": "agentserver-mcp",
-        "callback_port": 3000
+        "callback_port": 20202
       }
     }
   }
@@ -76,7 +76,7 @@ Local clear: `claude mcp remove agentserver`. For workspace-membership-based rev
 | Symptom | Fix |
 |---|---|
 | `Incompatible auth server: does not support dynamic client registration` | Forgot `--client-id`; re-add with the flag |
-| `invalid_redirect_uri` | `--callback-port` didn't match what Claude Code actually bound; pick any free port and retry |
+| `invalid_redirect_uri` | `--callback-port` must be exactly 20202 (Hydra registers that one port, not any-loopback). |
 | Token works once then fails | Check gateway logs for `audience mismatch` — Claude Code currently doesn't pass `oauth_resource`. Tracked in follow-up. |
 
 ## Related

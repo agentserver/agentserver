@@ -211,6 +211,43 @@ func TestTransport_Healthz_Public(t *testing.T) {
 	}
 }
 
+// TestTransport_OAuthProtectedResource_RFC9728RootPath pins the
+// RFC 9728 §3.1 spec-compliant location of the Protected Resource
+// Metadata doc — at the resource server ROOT, not nested under
+// /v1/. Claude Code (and other MCP 2025-06-18-compliant clients)
+// look here first; if it 404s they fall back to RFC 8414's
+// "guess the AS by stripping path" path, which lands them at
+// https://mcp.<host>/authorize — a 404 page, broken UX.
+//
+// We keep /v1/.well-known/oauth-protected-resource as an alias for
+// the WWW-Authenticate header that older deployments wired in via
+// the MCP_PUBLIC_RESOURCE_METADATA_URL env var. Both paths must
+// return the same doc.
+func TestTransport_OAuthProtectedResource_RFC9728RootPath(t *testing.T) {
+	hs := newTestServer(t, nil, &stubBackend{}, principalReadOnly("ws_1"))
+	resp, err := http.Get(hs.URL + "/.well-known/oauth-protected-resource")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("root-path PRM should be 200; got %d", resp.StatusCode)
+	}
+	var doc struct {
+		Resource             string   `json:"resource"`
+		AuthorizationServers []string `json:"authorization_servers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !strings.HasSuffix(doc.Resource, "/v1/mcp") {
+		t.Errorf("resource: %q must end in /v1/mcp", doc.Resource)
+	}
+	if len(doc.AuthorizationServers) == 0 || doc.AuthorizationServers[0] != "https://app.example.com" {
+		t.Errorf("authorization_servers wrong: %+v", doc.AuthorizationServers)
+	}
+}
+
 func TestTransport_OAuthProtectedResource_Public(t *testing.T) {
 	hs := newTestServer(t, nil, &stubBackend{}, principalReadOnly("ws_1"))
 	resp, err := http.Get(hs.URL + "/v1/.well-known/oauth-protected-resource")

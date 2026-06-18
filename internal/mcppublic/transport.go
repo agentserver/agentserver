@@ -88,6 +88,31 @@ func (s *Server) Mount(authMW func(http.Handler) http.Handler) http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "ok")
 	})
+	// Two paths serve the same Protected Resource Metadata doc:
+	//
+	//   /.well-known/oauth-protected-resource         — RFC 9728 §3.1
+	//                                                   spec-compliant location
+	//                                                   (resource root). Claude
+	//                                                   Code, ChatGPT MCP, and
+	//                                                   any client following
+	//                                                   2025-06-18 MCP authz
+	//                                                   spec read from here.
+	//   /v1/.well-known/oauth-protected-resource      — Earlier path we picked
+	//                                                   because /v1/mcp is the
+	//                                                   resource. Pre-existing
+	//                                                   deployments may have it
+	//                                                   wired into MCP_PUBLIC_
+	//                                                   RESOURCE_METADATA_URL,
+	//                                                   so we keep it as an
+	//                                                   alias rather than break
+	//                                                   the WWW-Authenticate
+	//                                                   contract those pods
+	//                                                   advertise.
+	//
+	// Without the root-path entry, Claude Code falls back to RFC 8414's
+	// "issuer = resource server URL" guess, then tries to wire OAuth at
+	// https://<resource>/authorize → 404 → user sees a broken page.
+	mux.HandleFunc("/.well-known/oauth-protected-resource", s.handleOAuthProtectedResource)
 	mux.HandleFunc("/v1/.well-known/oauth-protected-resource", s.handleOAuthProtectedResource)
 
 	mcp := http.HandlerFunc(s.handleMCP)

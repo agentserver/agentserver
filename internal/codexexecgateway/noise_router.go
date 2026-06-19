@@ -272,6 +272,211 @@ var noiseRouterDebug io.Writer = io.Discard
 // SetNoiseRouterDebug routes router internal debug lines to w. Test-only.
 func SetNoiseRouterDebug(w io.Writer) { noiseRouterDebug = w }
 
+// OpenStreamForBridge is the harness-bridge variant of OpenStream:
+// instead of raw bytes, each end of the harness side speaks complete
+// JSON-RPC messages (extracted from / wrapped into RelayMessageFrame
+// Data frames by the caller).
+//
+// The router owns the noise framing protocol entirely — outbound
+// messages get a 4-byte BE length prefix and chunk across 60 KiB
+// noise records, inbound records are reassembled into complete
+// messages. This keeps the env-mcp BridgeClient code path unchanged:
+// it speaks the same plaintext RelayMessageFrame protocol it always
+// has, and the gateway transparently adds/removes the encrypted leg.
+//
+// Channels:
+//   - harnessIn: each item is one complete JSON-RPC message body
+//     (without the noise length prefix) the bridge handler extracted
+//     from a harness-side RelayData frame. Close to signal harness
+//     disconnect.
+//   - harnessOut: each item is one complete JSON-RPC message body the
+//     router decrypted + reassembled from executor RelayData frames.
+//     Caller wraps it back into a RelayMessageFrame{Data{}} for the
+//     harness ws. Router closes this when teardown happens.
+//
+// streamID is the env-mcp-supplied stream_id from the Resume frame.
+// It MUST be the same value used by the harness side so codex's noise
+// channel prologue is consistent across both peers.
+func (r *NoiseRouter) OpenStreamForBridge(
+	ctx context.Context,
+	envID string,
+	streamID string,
+	harnessIn <-chan []byte,
+	harnessOut chan<- []byte,
+) error {
+	reg, err := r.store.LookupNoiseExecutorRegistrationByEnv(ctx, envID)
+	if err != nil {
+		return fmt.Errorf("noise router: no executor for env %q: %w", envID, err)
+	}
+	conn := r.hub.ConnectionFor(reg.RegistrationID)
+	if conn == nil {
+		return fmt.Errorf("noise router: executor %q not currently connected", reg.RegistrationID)
+	}
+
+	auth := mintHarnessAuthorization(r.hmacKey, reg.RegistrationID, r.identity.PublicKey())
+	prologue := noise.Prologue(envID, reg.RegistrationID, streamID)
+	hs, msg1, err := noise.StartInitiator(r.identity, reg.PublicKey, prologue, []byte(auth))
+	if err != nil {
+		return fmt.Errorf("noise router: start initiator: %w", err)
+	}
+
+	stream := &activeStream{
+		registrationID: reg.RegistrationID,
+		streamID:       streamID,
+		pendingHS:      hs,
+		handshakeCh:    make(chan []byte, 1),
+		dataCh:         make(chan []byte, 32),
+		closed:         make(chan struct{}),
+	}
+	key := streamKey{registrationID: reg.RegistrationID, streamID: streamID}
+	r.mu.Lock()
+	if existing := r.streams[key]; existing != nil {
+		r.mu.Unlock()
+		return fmt.Errorf("noise router: stream %q already active", streamID)
+	}
+	r.streams[key] = stream
+	r.mu.Unlock()
+	defer r.dropStream(key)
+	defer stream.shutdown()
+	defer close(harnessOut)
+
+	hsFrame := &relayv1.RelayMessageFrame{
+		Version:  1,
+		StreamId: streamID,
+		Body:     &relayv1.RelayMessageFrame_Handshake{Handshake: &relayv1.RelayHandshake{Payload: msg1}},
+	}
+	hsBytes, err := proto.Marshal(hsFrame)
+	if err != nil {
+		return fmt.Errorf("noise router: marshal msg1: %w", err)
+	}
+	if err := conn.Write(ctx, websocket.MessageBinary, hsBytes); err != nil {
+		return fmt.Errorf("noise router: write msg1: %w", err)
+	}
+
+	var msg2 []byte
+	select {
+	case msg2 = <-stream.handshakeCh:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-stream.closed:
+		return errors.New("noise router: stream closed before handshake completed")
+	}
+	transport, err := hs.Finish(msg2)
+	if err != nil {
+		return fmt.Errorf("noise router: finish handshake: %w", err)
+	}
+	stream.transport = transport
+	stream.pendingHS = nil
+
+	pumpErr := make(chan error, 2)
+	go func() {
+		err := r.pumpHarnessFramesToExecutor(ctx, stream, harnessIn, conn)
+		fmt.Fprintf(noiseRouterDebug, "noise router: bridge pump H→E stream=%s err=%v\n", streamID, err)
+		pumpErr <- err
+	}()
+	go func() {
+		err := r.pumpExecutorRecordsToHarness(ctx, stream, harnessOut)
+		fmt.Fprintf(noiseRouterDebug, "noise router: bridge pump E→H stream=%s err=%v\n", streamID, err)
+		pumpErr <- err
+	}()
+
+	err = <-pumpErr
+	stream.shutdown()
+	<-pumpErr
+	_ = r.sendReset(ctx, conn, streamID, "harness_disconnected")
+	return err
+}
+
+// pumpHarnessFramesToExecutor reads one complete JSON-RPC payload per
+// item from harnessIn, frames it with the noise length prefix +
+// 60 KiB chunking, encrypts each record, and ships as RelayData.
+func (r *NoiseRouter) pumpHarnessFramesToExecutor(
+	ctx context.Context,
+	stream *activeStream,
+	harnessIn <-chan []byte,
+	conn *websocket.Conn,
+) error {
+	for {
+		select {
+		case <-stream.closed:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		case payload, ok := <-harnessIn:
+			if !ok {
+				return nil
+			}
+			records, err := noise.FrameOutboundMessage(payload)
+			if err != nil {
+				return fmt.Errorf("frame outbound: %w", err)
+			}
+			for _, rec := range records {
+				ct, err := stream.transport.Encrypt(rec)
+				if err != nil {
+					return fmt.Errorf("encrypt: %w", err)
+				}
+				seq := stream.nextSendSeq
+				stream.nextSendSeq++
+				frame := &relayv1.RelayMessageFrame{
+					Version:  1,
+					StreamId: stream.streamID,
+					Body: &relayv1.RelayMessageFrame_Data{
+						Data: &relayv1.RelayData{
+							Seq:          seq,
+							SegmentIndex: 0,
+							SegmentCount: 1,
+							Payload:      ct,
+						},
+					},
+				}
+				out, mErr := proto.Marshal(frame)
+				if mErr != nil {
+					return fmt.Errorf("marshal data: %w", mErr)
+				}
+				if wErr := conn.Write(ctx, websocket.MessageBinary, out); wErr != nil {
+					return fmt.Errorf("write data: %w", wErr)
+				}
+			}
+		}
+	}
+}
+
+// pumpExecutorRecordsToHarness reads decrypted records off dataCh,
+// feeds them to a reassembler, and emits complete JSON-RPC messages
+// on harnessOut.
+func (r *NoiseRouter) pumpExecutorRecordsToHarness(
+	ctx context.Context,
+	stream *activeStream,
+	harnessOut chan<- []byte,
+) error {
+	var rs noise.InboundReassembler
+	for {
+		select {
+		case <-stream.closed:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		case record, ok := <-stream.dataCh:
+			if !ok {
+				return nil
+			}
+			messages, err := rs.Push(record)
+			if err != nil {
+				return fmt.Errorf("reassemble: %w", err)
+			}
+			for _, msg := range messages {
+				select {
+				case harnessOut <- msg:
+				case <-stream.closed:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+		}
+	}
+}
+
 func (r *NoiseRouter) pumpHarnessToExecutor(ctx context.Context, stream *activeStream, harness io.Reader, conn *websocket.Conn) error {
 	buf := make([]byte, 32*1024)
 	for {

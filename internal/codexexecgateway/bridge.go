@@ -82,9 +82,21 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 4. Look up inbound. 503 if none.
-	inbound, ok := s.registry.Lookup(exeID)
-	if !ok {
+	// 4. Look up the executor. Prefer the legacy plaintext inbound;
+	// fall back to a noise-mode registration if the gateway has the
+	// noise feature mounted and the env_id (== exe_id in v1) has a
+	// connected executor in the noise WS hub.
+	inbound, legacyOK := s.registry.Lookup(exeID)
+	useNoise := false
+	var noiseRegID string
+	if !legacyOK && s.noiseHandlers != nil {
+		reg, err := s.store.LookupNoiseExecutorRegistrationByEnv(r.Context(), exeID)
+		if err == nil && s.noiseHandlers.WSHub().ConnectionFor(reg.RegistrationID) != nil {
+			useNoise = true
+			noiseRegID = reg.RegistrationID
+		}
+	}
+	if !legacyOK && !useNoise {
 		s.logger.Warn("bridge: no inbound conn", "exe_id", exeID, "turn_id", payload.TurnID)
 		http.Error(w, "executor not connected", http.StatusServiceUnavailable)
 		return
@@ -128,6 +140,15 @@ func (s *Server) handleBridge(w http.ResponseWriter, r *http.Request) {
 	if streamID == "" {
 		s.logger.Warn("bridge: Resume missing stream_id", "exe_id", exeID)
 		_ = bridgeWS.Close(websocket.StatusProtocolError, "Resume missing stream_id")
+		return
+	}
+
+	// Noise-mode branch: skip the legacy session/inbound machinery
+	// entirely and route through the NoiseRouter for an encrypted leg
+	// to the executor. Audit recording for noise streams is plaintext-
+	// post-decrypt and is wired up in Phase 3.7 (TODO).
+	if useNoise {
+		s.serveBridgeViaNoise(r.Context(), bridgeWS, exeID, noiseRegID, streamID, payload)
 		return
 	}
 
@@ -279,4 +300,125 @@ func (s *Server) runBridgePump(ctx context.Context, session *bridgeSession) {
 			return
 		}
 	}
+}
+
+// serveBridgeViaNoise is the noise-mode counterpart to runBridgePump.
+// The harness ws still speaks the env-mcp RelayMessageFrame protocol;
+// this method unwraps each Data frame, hands the payload to the
+// NoiseRouter as one complete JSON-RPC message (the router handles
+// length prefix + 60 KiB record chunking + AES-GCM crypto), and
+// reverses the flow for executor responses.
+//
+// Lifecycle:
+//   - Spawn three goroutines: harness→channel reader, router driver,
+//     channel→harness writer.
+//   - First exit triggers shutdown of the others via shared ctx.
+//   - Returns after all three have stopped so the caller's defer can
+//     close the ws cleanly.
+//
+// Audit hooks are NOT fired in this slice (TODO Phase 3.7). The
+// noise router decrypts in-flight so the audit substrate exists; the
+// wiring just hasn't been done yet.
+func (s *Server) serveBridgeViaNoise(
+	parentCtx context.Context,
+	bridgeWS *websocket.Conn,
+	exeID, registrationID, streamID string,
+	payload CapPayload,
+) {
+	if s.noiseHandlers == nil || s.noiseHandlers.router == nil {
+		s.logger.Error("bridge: noise mode requested but router not attached",
+			"exe_id", exeID, "stream_id", streamID)
+		_ = bridgeWS.Close(websocket.StatusInternalError, "noise router unavailable")
+		return
+	}
+	ctx, cancel := context.WithCancel(parentCtx)
+	defer cancel()
+
+	harnessIn := make(chan []byte, 16)
+	harnessOut := make(chan []byte, 16)
+
+	// Pump 1: harness frames → strip protobuf → harnessIn channel.
+	go func() {
+		defer close(harnessIn)
+		for {
+			mt, data, err := bridgeWS.Read(ctx)
+			if err != nil {
+				return
+			}
+			if mt != websocket.MessageBinary {
+				continue
+			}
+			var f relaypb.RelayMessageFrame
+			if proto.Unmarshal(data, &f) != nil {
+				continue
+			}
+			if f.StreamId != streamID {
+				s.logger.Warn("bridge(noise): wrong stream_id",
+					"want", streamID, "got", f.StreamId)
+				continue
+			}
+			switch body := f.Body.(type) {
+			case *relaypb.RelayMessageFrame_Data:
+				select {
+				case harnessIn <- body.Data.Payload:
+				case <-ctx.Done():
+					return
+				}
+			case *relaypb.RelayMessageFrame_Reset_:
+				return
+			}
+		}
+	}()
+
+	// Pump 2: harnessOut channel → wrap in Data frame → harness ws.
+	wPumpDone := make(chan struct{})
+	go func() {
+		defer close(wPumpDone)
+		var nextSeq uint32
+		for {
+			select {
+			case msg, ok := <-harnessOut:
+				if !ok {
+					return
+				}
+				seq := nextSeq
+				nextSeq++
+				frame := &relaypb.RelayMessageFrame{
+					Version:  1,
+					StreamId: streamID,
+					Body: &relaypb.RelayMessageFrame_Data{
+						Data: &relaypb.RelayData{
+							Seq:          seq,
+							SegmentIndex: 0,
+							SegmentCount: 1,
+							Payload:      msg,
+						},
+					},
+				}
+				out, err := proto.Marshal(frame)
+				if err != nil {
+					s.logger.Warn("bridge(noise): marshal harness frame", "error", err)
+					return
+				}
+				if err := bridgeWS.Write(ctx, websocket.MessageBinary, out); err != nil {
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	s.logger.Info("bridge(noise): paired",
+		"exe_id", exeID, "registration_id", registrationID,
+		"stream_id", streamID, "turn_id", payload.TurnID)
+
+	// Drive the router. Blocks until the harness disconnects or the
+	// router observes an executor reset / decryption error.
+	err := s.noiseHandlers.router.OpenStreamForBridge(ctx, exeID, streamID, harnessIn, harnessOut)
+	if err != nil {
+		s.logger.Info("bridge(noise): stream ended", "stream_id", streamID, "error", err)
+	}
+	// Drain pump 2 (harnessOut was closed by OpenStreamForBridge's defer).
+	<-wPumpDone
 }

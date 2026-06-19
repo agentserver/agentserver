@@ -99,6 +99,19 @@ spec:
                 secretKeyRef:
                   name: {{ .Release.Name }}-codex-gateway
                   key: internal-shared-secret
+            {{- if .Values.codexExecGateway.noiseRelayEnabled }}
+            # Noise relay HMAC key — mints + validates harness_key_authorization
+            # tokens for the encrypted /cloud/environment/... rendezvous flow.
+            # Presence of this env var is what enables the noise feature in
+            # the gateway code (cfg.NoiseRelayHMACKey non-empty → mount).
+            # Gated on noiseRelayEnabled so flipping the toggle alone enables
+            # the feature without operator key rotation.
+            - name: CXG_NOISE_RELAY_HMAC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-codex-gateway
+                  key: noise-relay-hmac-key
+            {{- end }}
             - name: CXG_PING_INTERVAL
               value: {{ .Values.codexExecGateway.pingInterval | quote }}
             - name: CXG_IDLE_TIMEOUT

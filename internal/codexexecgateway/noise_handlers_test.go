@@ -113,6 +113,40 @@ func TestNoiseRegister_RejectsWrongProfile(t *testing.T) {
 	}
 }
 
+// TestNoiseRegister_FallsBackToLegacyForPreNoiseClients verifies the
+// compat dispatch: when an incoming /register body lacks
+// security_profile (pre-0.141 codex), the noise handler delegates to
+// the AttachLegacyRegister callback instead of 400-ing.
+func TestNoiseRegister_FallsBackToLegacyForPreNoiseClients(t *testing.T) {
+	h, _ := newTestNoiseHandlers(t)
+	var legacyCalled bool
+	var legacyBody []byte
+	h.AttachLegacyRegister(func(w http.ResponseWriter, r *http.Request) {
+		legacyCalled = true
+		legacyBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"exe-legacy","url":"wss://x/codex-exec/exe-legacy?token=t"}`))
+	})
+	srv := httptest.NewServer(mountedRouter(h))
+	defer srv.Close()
+
+	// Pre-noise body — id + public_key fields, no security_profile.
+	body := []byte(`{"id":"exe-legacy","public_key":"-----BEGIN PUBLIC KEY-----\nMFkwEwYH..."}`)
+	resp, err := http.Post(srv.URL+"/cloud/environment/exe-legacy/register", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("legacy fallback status = %d, want 200", resp.StatusCode)
+	}
+	if !legacyCalled {
+		t.Errorf("legacy handler not invoked")
+	}
+	if !bytes.Equal(legacyBody, body) {
+		t.Errorf("legacy handler received different body\n got: %s\nwant: %s", legacyBody, body)
+	}
+}
+
 func TestNoiseConnect_HappyPath(t *testing.T) {
 	h, _ := newTestNoiseHandlers(t)
 	srv := httptest.NewServer(mountedRouter(h))

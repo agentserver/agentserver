@@ -1,11 +1,13 @@
 package codexexecgateway
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -35,8 +37,9 @@ type NoiseHandlers struct {
 	store    *Store
 	hmacKey  []byte
 	wsHub    *noiseWSHub
-	wsPubURL string // public ws:// or wss:// base for relay URLs
-	router   *NoiseRouter
+	wsPubURL       string // public ws:// or wss:// base for relay URLs
+	router         *NoiseRouter
+	legacyRegister http.HandlerFunc
 }
 
 func NewNoiseHandlers(store *Store, hmacKey []byte, wsPublicBaseURL string) *NoiseHandlers {
@@ -52,6 +55,14 @@ func NewNoiseHandlers(store *Store, hmacKey []byte, wsPublicBaseURL string) *Noi
 // any accepted executor WS is served by router.ServeExecutorFrames
 // instead of the stub discard loop.
 func (h *NoiseHandlers) AttachRouter(r *NoiseRouter) { h.router = r }
+
+// AttachLegacyRegister teaches the noise /register handler to fall
+// through to the upstream-compat legacy CloudRegister when an incoming
+// POST lacks a noise security_profile field. This keeps pre-0.141
+// codex versions working unchanged when the noise feature is enabled —
+// without this, those clients would 400 because the noise handler's
+// body shape is a strict superset of the legacy shape.
+func (h *NoiseHandlers) AttachLegacyRegister(fn http.HandlerFunc) { h.legacyRegister = fn }
 
 // WSHub is exposed so the router (constructed externally) can call
 // ConnectionFor when opening a new stream.
@@ -112,8 +123,27 @@ func (h *NoiseHandlers) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSONErr(w, http.StatusBadRequest, "env_id required")
 		return
 	}
+	// Read the body once so we can dispatch on its shape without
+	// requiring the caller to advertise a content-type discriminator.
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSONErr(w, http.StatusBadRequest, fmt.Sprintf("read body: %s", err))
+		return
+	}
+	var probe struct {
+		SecurityProfile string `json:"security_profile"`
+	}
+	_ = json.Unmarshal(raw, &probe)
+	if probe.SecurityProfile == "" && h.legacyRegister != nil {
+		// Legacy codex (pre-0.141) POSTs a body without security_profile.
+		// Hand off to the upstream-compat CloudRegister so those clients
+		// keep working when the noise feature is enabled.
+		r.Body = io.NopCloser(bytes.NewReader(raw))
+		h.legacyRegister(w, r)
+		return
+	}
 	var req noiseRegisterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(raw, &req); err != nil {
 		writeJSONErr(w, http.StatusBadRequest, fmt.Sprintf("invalid register body: %s", err))
 		return
 	}

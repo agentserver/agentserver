@@ -263,15 +263,16 @@ func (s *Server) Routes() http.Handler {
 		},
 		s.config.AgentserverInternalSecret)
 	r.Post("/cloud/executor/{exe_id}/register", cloudRegister)
-	// Legacy (pre-noise) environment register. The noise handlers below
-	// own /cloud/environment/{env_id}/register when enabled; the chi
-	// router resolves by registration order, so this is overridden by
-	// Mount() below when the noise feature is on.
-	if s.noiseHandlers == nil {
-		r.Post("/cloud/environment/{env_id}/register", cloudRegister)
-	}
+	// /cloud/environment/{env_id}/register is owned by NoiseHandlers
+	// when the noise feature is on, and falls back to CloudRegister
+	// internally for legacy (pre-0.141) codex clients whose body lacks
+	// security_profile. When noise is off, mount the legacy handler
+	// directly so the path stays reachable for those clients.
 	if s.noiseHandlers != nil {
+		s.noiseHandlers.AttachLegacyRegister(cloudRegister)
 		s.noiseHandlers.Mount(r)
+	} else {
+		r.Post("/cloud/environment/{env_id}/register", cloudRegister)
 	}
 
 	// *Store satisfies handlers.Store, handlers.BindingStore, and

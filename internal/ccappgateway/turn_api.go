@@ -127,13 +127,14 @@ func (h *TurnHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set up ephemeral workspace.
-	ws, err := workspace.Setup(r.Context(), h.TmpRoot)
+	// TODO(Task 7): wire real S3 client here; for now use nil placeholder
+	ws, err := workspace.Setup(r.Context(), h.TmpRoot, req.WorkspaceID, req.SessionID, nil)
 	if err != nil {
 		log.Printf("[cc-app-gateway] workspace_setup_failed (session=%s): %v", req.SessionID, err)
 		writeError(w, http.StatusInternalServerError, "workspace_setup_failed", "workspace setup failed")
 		return
 	}
-	defer ws.Teardown() //nolint:errcheck
+	defer ws.Teardown(r.Context(), nil) //nolint:errcheck
 
 	// Run claude with per-turn timeout.
 	runCtx, rcancel := context.WithTimeout(r.Context(), turnTimeout)

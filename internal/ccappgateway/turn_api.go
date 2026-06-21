@@ -117,14 +117,20 @@ func (h *TurnHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	wsToken, err := h.WSToken.GetOrCreate(tokCtx, req.WorkspaceID)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "wstoken_failed", err.Error())
+		// Log full error server-side; return generic message to caller.
+		// Even though /api/turns is X-Internal-Secret-authenticated, internal
+		// errors (upstream HTTP status codes, agentserver URLs, etc.) shouldn't
+		// echo back to the HTTP body — caller has the `code` field for branching.
+		log.Printf("[cc-app-gateway] wstoken_failed (session=%s workspace=%s): %v", req.SessionID, req.WorkspaceID, err)
+		writeError(w, http.StatusBadGateway, "wstoken_failed", "upstream agentserver failure")
 		return
 	}
 
 	// Set up ephemeral workspace.
 	ws, err := workspace.Setup(r.Context(), h.TmpRoot)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "workspace_setup_failed", err.Error())
+		log.Printf("[cc-app-gateway] workspace_setup_failed (session=%s): %v", req.SessionID, err)
+		writeError(w, http.StatusInternalServerError, "workspace_setup_failed", "workspace setup failed")
 		return
 	}
 	defer ws.Teardown() //nolint:errcheck
@@ -146,10 +152,12 @@ func (h *TurnHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			writeError(w, http.StatusGatewayTimeout, "runner_timeout", err.Error())
+			log.Printf("[cc-app-gateway] runner_timeout (session=%s after=%v): %v", req.SessionID, turnTimeout, err)
+			writeError(w, http.StatusGatewayTimeout, "runner_timeout", "turn exceeded timeout")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "runner_failed", err.Error())
+		log.Printf("[cc-app-gateway] runner_failed (session=%s): %v", req.SessionID, err)
+		writeError(w, http.StatusInternalServerError, "runner_failed", "runner execution failed")
 		return
 	}
 

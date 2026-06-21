@@ -38,7 +38,11 @@ func Run(ctx context.Context, in RunInput) (*RunResult, error) {
 
 	cmd := exec.CommandContext(runCtx, in.ClaudeBin, BuildArgs(in)...)
 	cmd.Dir = in.ProjectDir
-	cmd.Env = BuildEnv(in, os.Environ())
+	parentEnv := in.ParentEnv
+	if parentEnv == nil {
+		parentEnv = os.Environ()
+	}
+	cmd.Env = BuildEnv(in, parentEnv)
 
 	// Use SIGTERM on context cancellation, then WaitDelay gives SIGKILL after 5s.
 	cmd.Cancel = func() error {

@@ -17,6 +17,19 @@ type RunInput struct {
 	WSToken     string        // per-workspace auth token → ANTHROPIC_AUTH_TOKEN
 	LLMProxyURL string        // e.g. "http://llmproxy:8081" → ANTHROPIC_BASE_URL
 	Timeout     time.Duration // wall-clock cap; runner SIGTERMs on hit
+
+	// ExtraAllowedEnv is an optional set of env-var keys that should pass
+	// through to the subprocess in addition to envAllowlist. Production
+	// callers leave this empty; tests use it to inject helper vars (e.g.
+	// GO_WANT_HELPER_PROCESS, FAKECLAUDE_*) needed by fake-claude binaries.
+	// Each entry must be an exact key name (no globs).
+	ExtraAllowedEnv []string
+
+	// ParentEnv is the parent environment to filter against envAllowlist.
+	// Production callers leave this nil → Run falls back to os.Environ().
+	// Tests set it explicitly to compose a minimal env without depending on
+	// the process's actual environment.
+	ParentEnv []string
 }
 
 // BuildArgs returns the exact CLI flag list for claude --print in Phase 1.
@@ -40,11 +53,39 @@ func BuildArgs(in RunInput) []string {
 	}
 }
 
+// envAllowlist is the set of parent env var keys that pass through to the
+// claude subprocess unchanged. Allowlist (vs denylist) means every NEW env
+// var the deployment adds is secure-by-default — secrets like
+// INTERNAL_API_SECRET, AGENTSERVER_INTERNAL_URL, CCAPPGW_LLMPROXY_URL,
+// CCAPPGW_*, or anything else the gateway happens to read at startup
+// cannot leak into the subprocess without being explicitly named here.
+//
+// Members are the minimum surface a typical Linux process needs to function:
+// PATH for binary lookups, HOME/USER for user-local config (claude reads
+// $HOME), LANG/LC_*/TZ for locale, SSL_CERT_DIR/SSL_CERT_FILE for HTTPS,
+// TMPDIR for scratch (claude may use it). Notably ABSENT: anything the
+// gateway might use (INTERNAL_API_SECRET, AGENTSERVER_*, CCAPPGW_*, CC_*),
+// anything matching ANTHROPIC_*/CLAUDE_* (those we set explicitly below),
+// and anything cluster-injected (KUBERNETES_*, POD_*).
+var envAllowlist = map[string]struct{}{
+	"PATH":          {},
+	"HOME":          {},
+	"USER":          {},
+	"LOGNAME":       {},
+	"LANG":          {},
+	"LC_ALL":        {},
+	"LC_CTYPE":      {},
+	"TZ":            {},
+	"SSL_CERT_DIR":  {},
+	"SSL_CERT_FILE": {},
+	"TMPDIR":        {},
+}
+
 // BuildEnv returns the env var list for the claude subprocess.
 //
-// Starts from parentEnv, strips any inherited ANTHROPIC_*, CLAUDE_CODE_*,
-// and CLAUDE_CONFIG_DIR keys (to prevent leakage of the gateway's own credentials/mode/state),
-// then sets:
+// Starts from an empty list, copies ONLY the keys in envAllowlist from
+// parentEnv (so deployment-added vars are secure-by-default — never leak
+// to subprocess unless explicitly allowed), then appends:
 //
 //	CLAUDE_CONFIG_DIR=<ClaudeDir>
 //	IS_SANDBOX=1
@@ -53,13 +94,22 @@ func BuildArgs(in RunInput) []string {
 //	ANTHROPIC_AUTH_TOKEN=<WSToken>
 //	ANTHROPIC_BASE_URL=<LLMProxyURL>
 //
-// PATH and other infra vars flow from parentEnv unchanged.
+// To add a new pass-through var, append it to envAllowlist above with a
+// one-line justification.
 func BuildEnv(in RunInput, parentEnv []string) []string {
-	// Filter out keys we override or that must not leak.
-	filtered := make([]string, 0, len(parentEnv)+6)
+	// Build the effective allowlist: static envAllowlist + per-call ExtraAllowedEnv.
+	allow := make(map[string]struct{}, len(envAllowlist)+len(in.ExtraAllowedEnv))
+	for k := range envAllowlist {
+		allow[k] = struct{}{}
+	}
+	for _, k := range in.ExtraAllowedEnv {
+		allow[k] = struct{}{}
+	}
+
+	filtered := make([]string, 0, len(allow)+6)
 	for _, kv := range parentEnv {
 		key, _, _ := strings.Cut(kv, "=")
-		if isStrippedKey(key) {
+		if _, ok := allow[key]; !ok {
 			continue
 		}
 		filtered = append(filtered, kv)
@@ -75,31 +125,4 @@ func BuildEnv(in RunInput, parentEnv []string) []string {
 		fmt.Sprintf("ANTHROPIC_BASE_URL=%s", in.LLMProxyURL),
 	)
 	return filtered
-}
-
-// isStrippedKey returns true if the env var key should be removed from
-// parentEnv before passing it to the claude subprocess.
-func isStrippedKey(key string) bool {
-	// Strip anything we're about to set ourselves, or that could leak
-	// gateway credentials/mode/state into the subprocess.
-	switch key {
-	case "IS_SANDBOX":
-		return true
-	}
-	// Strip all ANTHROPIC_* keys (credentials).
-	if strings.HasPrefix(key, "ANTHROPIC_") {
-		return true
-	}
-	// Strip all CLAUDE_CODE_* keys (runtime state vars like CLAUDE_CODE_SESSION_ID,
-	// CLAUDE_CODE_ENTRYPOINT, CLAUDE_CODE_SSE_PORT, etc. that leak parent shell context).
-	// This also covers CLAUDE_CODE_AUTO_COMPACT_WINDOW and CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING,
-	// which BuildEnv appends back with our values.
-	if strings.HasPrefix(key, "CLAUDE_CODE_") {
-		return true
-	}
-	// Strip CLAUDE_CONFIG_DIR (overridden by BuildEnv).
-	if key == "CLAUDE_CONFIG_DIR" {
-		return true
-	}
-	return false
 }

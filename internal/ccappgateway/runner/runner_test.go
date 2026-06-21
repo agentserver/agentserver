@@ -29,6 +29,14 @@ func makeRunInput(t *testing.T, scenario string, timeout time.Duration) RunInput
 		WSToken:     "fake-ws-token",
 		LLMProxyURL: "http://fake-llmproxy:8081",
 		Timeout:     timeout,
+		// Whitelist the helper vars (GO_WANT_HELPER_PROCESS, FAKECLAUDE_*)
+		// for the fake-claude binary; production callers leave this empty.
+		ExtraAllowedEnv: []string{
+			"GO_WANT_HELPER_PROCESS",
+			"FAKECLAUDE_SCENARIO",
+			"FAKECLAUDE_EXIT_CODE",
+			"FAKECLAUDE_STDIN_CLOSE_EARLY",
+		},
 	}
 }
 

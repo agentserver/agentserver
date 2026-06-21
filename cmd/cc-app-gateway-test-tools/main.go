@@ -141,11 +141,14 @@ func runFakeLLMProxy(args []string) {
 	mux.HandleFunc("POST /v1/messages", func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[fake-llmproxy] POST /v1/messages (query=%s)", r.URL.RawQuery)
 
-		// Verify bearer token.
+		// Verify bearer token. Don't log either side of the comparison —
+		// CodeQL flags any logging of header-derived data as clear-text
+		// secret logging, and even in a test fixture (Bearer is "deadbeef")
+		// the lesson generalizes: never log auth headers.
 		authHeader := r.Header.Get("Authorization")
 		want := "Bearer " + *acceptToken
 		if authHeader != want {
-			log.Printf("[fake-llmproxy] auth FAIL: got %q, want %q", authHeader, want)
+			log.Printf("[fake-llmproxy] auth FAIL: header mismatch (got %d bytes, want %d bytes)", len(authHeader), len(want))
 			http.Error(w, `{"error":{"type":"authentication_error","message":"unauthorized"}}`, http.StatusUnauthorized)
 			return
 		}

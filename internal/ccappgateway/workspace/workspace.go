@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Workspace is an ephemeral per-turn local view of a session's state.
@@ -50,6 +51,15 @@ func Setup(ctx context.Context, tmpRoot, workspaceID, sessionID string, store Ob
 	}
 
 	tempDir := filepath.Join(tmpRoot, workspaceID, sessionID)
+
+	// Defense in depth: verify the joined path didn't escape tmpRoot
+	// (catches any future caller forgetting to validate workspaceID/sessionID).
+	cleanTmp := filepath.Clean(tmpRoot)
+	cleanTemp := filepath.Clean(tempDir)
+	if !strings.HasPrefix(cleanTemp, cleanTmp+string(os.PathSeparator)) {
+		return nil, fmt.Errorf("workspace.Setup: tempDir %q escapes tmpRoot %q (possible path traversal in workspaceID/sessionID)", cleanTemp, cleanTmp)
+	}
+
 	claudeDir := filepath.Join(tempDir, "claude-home")
 	projectDir := filepath.Join(tempDir, "project")
 	for _, d := range []string{claudeDir, projectDir} {

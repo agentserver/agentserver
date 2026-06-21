@@ -158,3 +158,16 @@ type errorStore struct{ err error }
 func (e *errorStore) Get(_ context.Context, _ string) ([]byte, error) { return nil, e.err }
 func (e *errorStore) Put(_ context.Context, _ string, _ []byte) error { return e.err }
 func (e *errorStore) Delete(_ context.Context, _ string) error        { return e.err }
+
+func TestSetupRejectsPathTraversalDefenseInDepth(t *testing.T) {
+	// Even if the caller bypassed turn_api.go validation, Setup itself
+	// refuses to mkdir a path that escapes tmpRoot.
+	store := newFakeStore()
+	_, err := workspace.Setup(context.Background(), t.TempDir(), "../escape", "00000000-0000-4000-8000-000000000001", store)
+	if err == nil {
+		t.Fatal("Setup should reject workspaceID with path traversal")
+	}
+	if !strings.Contains(err.Error(), "escapes tmpRoot") {
+		t.Errorf("error should mention path traversal; got: %v", err)
+	}
+}

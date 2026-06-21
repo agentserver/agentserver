@@ -521,3 +521,58 @@ func TestServeHTTP_S3GetFailsNonNotFound_Returns500(t *testing.T) {
 		t.Errorf("expected code=workspace_setup_failed; got %q", resp.Code)
 	}
 }
+
+func TestServeHTTP_WorkspaceIDPathTraversalRejected(t *testing.T) {
+	cases := []struct {
+		name        string
+		workspaceID string
+	}{
+		{"dot-dot escape", "../other-tenant"},
+		{"slash injection", "ws/with/slash"},
+		{"backslash", "ws\\back"},
+		{"too long", strings.Repeat("a", 65)},
+		{"unicode whitespace", "ws   evil"},
+		{"newline", "ws\nevil"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newTestServerWithStoreAndRunner(t, newFakeStore(), nil)
+			body := fmt.Sprintf(`{"workspaceId":%q,"sessionId":"00000000-0000-4000-8000-000000000001","userMessage":"hi"}`, tc.workspaceID)
+			rr := postTurn(t, srv, body)
+			if rr.Code != http.StatusBadRequest {
+				t.Errorf("workspaceID %q should be rejected with 400; got %d body=%s", tc.workspaceID, rr.Code, rr.Body.String())
+			}
+			var resp struct {
+				Code string `json:"code"`
+			}
+			json.Unmarshal(rr.Body.Bytes(), &resp)
+			if resp.Code != "validation" {
+				t.Errorf("expected code=validation; got %q", resp.Code)
+			}
+		})
+	}
+}
+
+func TestServeHTTP_WorkspaceIDValidFormatAccepted(t *testing.T) {
+	// Sanity check: legitimate workspaceID formats still work.
+	cases := []string{
+		"ws_test",
+		"ws-prod-123",
+		"ABC_def_42",
+		"x",                       // 1 char
+		strings.Repeat("a", 64),   // max length
+	}
+	fakeRunner := func(_ context.Context, _ runner.RunInput) (*runner.RunResult, error) {
+		return &runner.RunResult{AssistantText: "ok", Meta: &runner.ResultMeta{Subtype: "success"}}, nil
+	}
+	for _, wid := range cases {
+		t.Run(wid, func(t *testing.T) {
+			srv := newTestServerWithStoreAndRunner(t, newFakeStore(), fakeRunner)
+			body := fmt.Sprintf(`{"workspaceId":%q,"sessionId":"00000000-0000-4000-8000-000000000001","userMessage":"hi"}`, wid)
+			rr := postTurn(t, srv, body)
+			if rr.Code != http.StatusOK {
+				t.Errorf("workspaceID %q should be accepted; got %d body=%s", wid, rr.Code, rr.Body.String())
+			}
+		})
+	}
+}

@@ -20,6 +20,11 @@ type RunnerFunc func(ctx context.Context, in runner.RunInput) (*runner.RunResult
 // uuidRe matches any UUID format (not enforcing v4 specifically).
 var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
+// workspaceIDRe matches valid workspaceID format: alphanumeric + underscore + dash, 1-64 chars.
+// Rejects "..", "/", "\", and other path-traversal characters that would escape S3 prefix
+// or filesystem tmpdir scoping in workspace.Setup.
+var workspaceIDRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+
 // TurnHandler handles POST /api/turns.
 type TurnHandler struct {
 	Cfg     ServeConfig
@@ -79,6 +84,10 @@ func (h *TurnHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Validate required fields.
 	if req.WorkspaceID == "" {
 		writeError(w, http.StatusBadRequest, "validation", "workspaceId required")
+		return
+	}
+	if !workspaceIDRe.MatchString(req.WorkspaceID) {
+		writeError(w, http.StatusBadRequest, "validation", "workspaceId must match ^[a-zA-Z0-9_-]{1,64}$")
 		return
 	}
 	if req.SessionID == "" {

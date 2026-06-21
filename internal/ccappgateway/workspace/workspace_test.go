@@ -1,203 +1,160 @@
-package workspace
+package workspace_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
-	"regexp"
-	"sync"
+	"strings"
 	"testing"
+
+	"github.com/agentserver/agentserver/internal/ccappgateway/workspace"
 )
 
-// TestSetupCreatesSubdirs tests that Setup creates both ClaudeDir and ProjectDir with 0700 perms.
-func TestSetupCreatesSubdirs(t *testing.T) {
+func TestSetupCreatesPerSessionSubdirs(t *testing.T) {
 	tmpRoot := t.TempDir()
-	ctx := context.Background()
-
-	ws, err := Setup(ctx, tmpRoot)
+	store := newFakeStore()
+	ws, err := workspace.Setup(context.Background(), tmpRoot, "ws_abc", "sid_123", store)
 	if err != nil {
-		t.Fatalf("Setup failed: %v", err)
+		t.Fatalf("Setup: %v", err)
 	}
-
-	// Check TempDir exists
-	if _, err := os.Stat(ws.TempDir); err != nil {
-		t.Errorf("TempDir does not exist: %v", err)
+	wantTemp := filepath.Join(tmpRoot, "ws_abc", "sid_123")
+	if ws.TempDir != wantTemp {
+		t.Errorf("TempDir: got %q, want %q", ws.TempDir, wantTemp)
 	}
-
-	// Check ClaudeDir exists and is a directory
-	clauseDirInfo, err := os.Stat(ws.ClaudeDir)
-	if err != nil {
-		t.Errorf("ClaudeDir does not exist: %v", err)
+	if ws.ClaudeDir != filepath.Join(wantTemp, "claude-home") {
+		t.Errorf("ClaudeDir wrong: %q", ws.ClaudeDir)
 	}
-	if !clauseDirInfo.IsDir() {
-		t.Errorf("ClaudeDir is not a directory")
+	if ws.ProjectDir != filepath.Join(wantTemp, "project") {
+		t.Errorf("ProjectDir wrong: %q", ws.ProjectDir)
 	}
-	if clauseDirInfo.Mode().Perm() != 0700 {
-		t.Errorf("ClaudeDir perms: want 0700, got %o", clauseDirInfo.Mode().Perm())
+	if ws.IsResume {
+		t.Error("IsResume should be false on first Setup (empty store)")
 	}
-
-	// Check ProjectDir exists and is a directory
-	projDirInfo, err := os.Stat(ws.ProjectDir)
-	if err != nil {
-		t.Errorf("ProjectDir does not exist: %v", err)
+	// Confirm directories actually exist.
+	for _, d := range []string{ws.ClaudeDir, ws.ProjectDir} {
+		info, err := os.Stat(d)
+		if err != nil {
+			t.Errorf("dir %q missing: %v", d, err)
+		} else if !info.IsDir() {
+			t.Errorf("%q is not a dir", d)
+		} else if perm := info.Mode().Perm(); perm != 0o700 {
+			t.Errorf("%q perm: got %#o, want 0700", d, perm)
+		}
 	}
-	if !projDirInfo.IsDir() {
-		t.Errorf("ProjectDir is not a directory")
-	}
-	if projDirInfo.Mode().Perm() != 0700 {
-		t.Errorf("ProjectDir perms: want 0700, got %o", projDirInfo.Mode().Perm())
-	}
-
-	// Cleanup
-	ws.Teardown()
 }
 
-// TestSetupCreatesTmpRootIfMissing tests that Setup creates tmpRoot if it doesn't exist.
-func TestSetupCreatesTmpRootIfMissing(t *testing.T) {
-	tmpRoot := filepath.Join(t.TempDir(), "subroot")
-	// Verify subroot doesn't exist yet
-	if _, err := os.Stat(tmpRoot); err == nil {
-		t.Fatalf("subroot should not exist before test")
-	}
-
-	ctx := context.Background()
-	ws, err := Setup(ctx, tmpRoot)
-	if err != nil {
-		t.Fatalf("Setup failed: %v", err)
-	}
-
-	// Check tmpRoot now exists
-	if _, err := os.Stat(tmpRoot); err != nil {
-		t.Errorf("tmpRoot was not created: %v", err)
-	}
-
-	// Check both subdirs exist
-	if _, err := os.Stat(ws.ClaudeDir); err != nil {
-		t.Errorf("ClaudeDir does not exist: %v", err)
-	}
-	if _, err := os.Stat(ws.ProjectDir); err != nil {
-		t.Errorf("ProjectDir does not exist: %v", err)
-	}
-
-	// Cleanup
-	ws.Teardown()
-}
-
-// TestTeardownRemovesDir tests that Teardown removes the TempDir.
-func TestTeardownRemovesDir(t *testing.T) {
+func TestSetupHitDownloadsTarball(t *testing.T) {
 	tmpRoot := t.TempDir()
-	ctx := context.Background()
+	store := newFakeStore()
+	// Seed store with a tarball containing one file under projects/.
+	// Use TarUpload from Task 1 to create the seed naturally.
+	seedDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(seedDir, "projects", "-tmp-x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(seedDir, "projects", "-tmp-x", "sid_123.jsonl"), []byte("seeded-jsonl-row\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	key := "cc-app-gateway/ws_abc/sid_123.tar.gz"
+	if err := workspace.TarUpload(context.Background(), store, key, seedDir); err != nil {
+		t.Fatalf("seed TarUpload: %v", err)
+	}
 
-	ws, err := Setup(ctx, tmpRoot)
+	ws, err := workspace.Setup(context.Background(), tmpRoot, "ws_abc", "sid_123", store)
 	if err != nil {
-		t.Fatalf("Setup failed: %v", err)
+		t.Fatalf("Setup: %v", err)
 	}
-
-	tempDir := ws.TempDir
-	if _, err := os.Stat(tempDir); err != nil {
-		t.Fatalf("TempDir should exist before Teardown: %v", err)
+	if !ws.IsResume {
+		t.Error("IsResume should be true on Setup hit")
 	}
-
-	if err := ws.Teardown(); err != nil {
-		t.Fatalf("Teardown failed: %v", err)
-	}
-
-	if _, err := os.Stat(tempDir); err == nil {
-		t.Errorf("TempDir was not removed")
-	} else if !os.IsNotExist(err) {
-		t.Errorf("Stat returned unexpected error: %v", err)
-	}
-}
-
-// TestDoubleTeardownIsNoop tests that calling Teardown twice is safe.
-func TestDoubleTeardownIsNoop(t *testing.T) {
-	tmpRoot := t.TempDir()
-	ctx := context.Background()
-
-	ws, err := Setup(ctx, tmpRoot)
+	// Confirm seeded file was untarred into ClaudeDir.
+	got, err := os.ReadFile(filepath.Join(ws.ClaudeDir, "projects", "-tmp-x", "sid_123.jsonl"))
 	if err != nil {
-		t.Fatalf("Setup failed: %v", err)
+		t.Fatalf("seeded jsonl missing: %v", err)
 	}
-
-	// First teardown should succeed
-	if err := ws.Teardown(); err != nil {
-		t.Fatalf("First Teardown failed: %v", err)
-	}
-
-	// Second teardown should also succeed (no-op)
-	if err := ws.Teardown(); err != nil {
-		t.Fatalf("Second Teardown should be a no-op and not error: %v", err)
+	if string(got) != "seeded-jsonl-row\n" {
+		t.Errorf("seeded content lost: %q", got)
 	}
 }
 
-// TestConcurrentSetupNoDuplicates tests that two concurrent Setup calls don't collide.
-func TestConcurrentSetupNoDuplicates(t *testing.T) {
-	tmpRoot := t.TempDir()
-	ctx := context.Background()
-
-	var wg sync.WaitGroup
-	var ws1, ws2 *Workspace
-	var err1, err2 error
-
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		ws1, err1 = Setup(ctx, tmpRoot)
-	}()
-
-	go func() {
-		defer wg.Done()
-		ws2, err2 = Setup(ctx, tmpRoot)
-	}()
-
-	wg.Wait()
-
-	if err1 != nil {
-		t.Fatalf("Setup 1 failed: %v", err1)
+func TestSetupNonNotFoundErrorReturned(t *testing.T) {
+	// Use an ObjectStore that returns a non-NotFound error on Get.
+	errStore := &errorStore{err: errors.New("network unreachable")}
+	_, err := workspace.Setup(context.Background(), t.TempDir(), "ws", "sid", errStore)
+	if err == nil {
+		t.Fatal("Setup should return error on non-NotFound S3 failure")
 	}
-	if err2 != nil {
-		t.Fatalf("Setup 2 failed: %v", err2)
+	if !strings.Contains(err.Error(), "network unreachable") {
+		t.Errorf("error should wrap S3 err, got: %v", err)
 	}
-
-	// TempDirs should be distinct
-	if ws1.TempDir == ws2.TempDir {
-		t.Errorf("TempDirs are identical: %s == %s", ws1.TempDir, ws2.TempDir)
-	}
-
-	// Both should exist
-	if _, err := os.Stat(ws1.TempDir); err != nil {
-		t.Errorf("Workspace 1 TempDir does not exist: %v", err)
-	}
-	if _, err := os.Stat(ws2.TempDir); err != nil {
-		t.Errorf("Workspace 2 TempDir does not exist: %v", err)
-	}
-
-	// Cleanup
-	ws1.Teardown()
-	ws2.Teardown()
 }
 
-// TestSetupUUIDIsCanonical tests that the UUID portion of TempDir matches RFC 4122 v4 format.
-func TestSetupUUIDIsCanonical(t *testing.T) {
+func TestTeardownPrunesBackupsBeforeUpload(t *testing.T) {
 	tmpRoot := t.TempDir()
-	ctx := context.Background()
-
-	ws, err := Setup(ctx, tmpRoot)
+	store := newFakeStore()
+	ws, err := workspace.Setup(context.Background(), tmpRoot, "ws_abc", "sid_123", store)
 	if err != nil {
-		t.Fatalf("Setup failed: %v", err)
+		t.Fatal(err)
+	}
+	// Simulate claude writing a backup file.
+	backupDir := filepath.Join(ws.ClaudeDir, "backups")
+	if err := os.MkdirAll(backupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backupDir, ".claude.json.backup.123"), []byte("backup"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Also put a real file in projects/ so the tarball has something.
+	pdir := filepath.Join(ws.ClaudeDir, "projects", "-tmp-x")
+	if err := os.MkdirAll(pdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pdir, "sid_123.jsonl"), []byte("line\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 
-	// Extract the UUID from TempDir (it's the final path segment)
-	uuid := filepath.Base(ws.TempDir)
-
-	// RFC 4122 v4 format: 8 hex digits, dash, 4 hex, dash, 4 hex (version 4),
-	// dash, 4 hex (variant 10), dash, 12 hex
-	canonicalRe := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
-	if !canonicalRe.MatchString(uuid) {
-		t.Errorf("UUID format is not canonical RFC 4122 v4: got %q", uuid)
+	if err := ws.Teardown(context.Background(), store); err != nil {
+		t.Fatalf("Teardown: %v", err)
 	}
 
-	// Cleanup
-	ws.Teardown()
+	// Untar the stored tarball into a verify dir, assert no backups/ entry.
+	verifyDir := t.TempDir()
+	key := "cc-app-gateway/ws_abc/sid_123.tar.gz"
+	if err := workspace.TarDownload(context.Background(), store, key, verifyDir); err != nil {
+		t.Fatalf("verify TarDownload: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(verifyDir, "backups")); !os.IsNotExist(err) {
+		t.Errorf("backups/ should be absent from tarball, got err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(verifyDir, "projects", "-tmp-x", "sid_123.jsonl")); err != nil {
+		t.Errorf("projects/ content lost: %v", err)
+	}
+	// Confirm TempDir was removed.
+	if _, err := os.Stat(ws.TempDir); !os.IsNotExist(err) {
+		t.Errorf("TempDir should be removed, stat err=%v", err)
+	}
 }
+
+func TestTeardownIdempotent(t *testing.T) {
+	tmpRoot := t.TempDir()
+	store := newFakeStore()
+	ws, err := workspace.Setup(context.Background(), tmpRoot, "ws_abc", "sid_123", store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Teardown(context.Background(), store); err != nil {
+		t.Fatal(err)
+	}
+	// Second Teardown should not error.
+	if err := ws.Teardown(context.Background(), store); err != nil {
+		t.Errorf("second Teardown should be no-op, got: %v", err)
+	}
+}
+
+// errorStore is an ObjectStore whose Get always fails with the wrapped error.
+type errorStore struct{ err error }
+
+func (e *errorStore) Get(_ context.Context, _ string) ([]byte, error) { return nil, e.err }
+func (e *errorStore) Put(_ context.Context, _ string, _ []byte) error { return e.err }
+func (e *errorStore) Delete(_ context.Context, _ string) error        { return e.err }

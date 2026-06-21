@@ -26,6 +26,11 @@ type TurnHandler struct {
 	WSToken *WSTokenClient
 	Runner  RunnerFunc
 	TmpRoot string // from cfg.TmpRoot; injected so tests can override
+
+	// Store and Server are wired by newServerInternal (Task 6) and used by
+	// Task 7 to implement per-session mutex + S3 persistence in ServeHTTP.
+	Store  workspace.ObjectStore
+	Server *Server
 }
 
 // CcTurnRequest is the JSON body for POST /api/turns.

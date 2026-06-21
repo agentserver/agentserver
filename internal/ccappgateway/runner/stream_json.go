@@ -33,7 +33,6 @@ func Decode(r io.Reader) (<-chan SDKMessage, <-chan error) {
 	errors := make(chan error, 1)
 
 	go func() {
-		defer close(messages)
 		defer close(errors)
 
 		scanner := bufio.NewScanner(r)
@@ -41,6 +40,7 @@ func Decode(r io.Reader) (<-chan SDKMessage, <-chan error) {
 		// with a full message_start can be larger than the default 64 KB.
 		scanner.Buffer(make([]byte, 1<<20), 1<<20)
 
+		var finalErr error
 		for scanner.Scan() {
 			line := scanner.Text()
 			if strings.TrimSpace(line) == "" {
@@ -54,19 +54,20 @@ func Decode(r io.Reader) (<-chan SDKMessage, <-chan error) {
 			copy(rawCopy, raw)
 
 			if err := json.Unmarshal(rawCopy, &msg); err != nil {
-				errors <- fmt.Errorf("json parse error: %w", err)
-				return
+				finalErr = fmt.Errorf("json parse error: %w", err)
+				break
 			}
 			msg.Raw = json.RawMessage(rawCopy)
 			messages <- msg
 		}
 
-		if err := scanner.Err(); err != nil {
-			errors <- err
-			return
+		if finalErr == nil {
+			if err := scanner.Err(); err != nil {
+				finalErr = err
+			}
 		}
-		// Clean EOF — send nil so callers know it was not an error.
-		errors <- nil
+		close(messages)
+		errors <- finalErr
 	}()
 
 	return messages, errors

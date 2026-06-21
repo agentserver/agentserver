@@ -468,7 +468,7 @@ func TestServeHTTP_FreshSessionMode(t *testing.T) {
 func TestServeHTTP_SameSessionSecondTurnBlocks(t *testing.T) {
 	store := newFakeStore()
 	// Slow runner so we can observe the second turn blocking on the mutex.
-	runnerEntered := make(chan struct{})
+	runnerEntered := make(chan struct{}, 2)
 	runnerRelease := make(chan struct{})
 	fakeRunner := func(_ context.Context, _ runner.RunInput) (*runner.RunResult, error) {
 		runnerEntered <- struct{}{}
@@ -496,8 +496,11 @@ func TestServeHTTP_SameSessionSecondTurnBlocks(t *testing.T) {
 
 	// Release first runner; first will complete, Teardown will run and release mutex.
 	close(runnerRelease)
-	// Now second call can proceed — give the test the same release signal next time.
-	// (For this test we let it complete naturally; the assertion is that it was blocked.)
+	// Wait for the second turn to complete so its goroutine doesn't leak.
+	// The second runner's fakeRunner will fire its runnerEntered send AND
+	// runnerRelease check; since runnerRelease is already closed, it returns
+	// immediately. secondReturned closes when the second postTurn returns.
+	<-secondReturned
 }
 
 // TestServeHTTP_S3GetFailsNonNotFound_Returns500 verifies that a non-ErrObjectNotFound

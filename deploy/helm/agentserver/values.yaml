@@ -245,6 +245,29 @@ internal:
 # all API key holders must re-mint after a pepper change.
 secretsPepper: ""
 
+# cc-app-gateway: per-thread Claude Code managed-harness manager. Spawns
+# `claude --dangerously-skip-permissions` as a subprocess per turn, proxies
+# the structured JSON stream, and enforces internal API auth.
+ccAppGateway:
+  enabled: false                       # Feature flag — off by default
+  image:
+    repository: ghcr.io/agentserver/cc-app-gateway
+    tag: latest
+    pullPolicy: Always
+  replicaCount: 1
+  port: 8087
+  logLevel: info
+  defaultModel: claude-haiku-4-5
+  turnTimeout: 10m
+  tmpRoot: /tmp/cc-app-gateway
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "500m"
+    limits:
+      memory: "2Gi"
+      cpu: "2000m"
+
 # codexGateway: shared secrets for the codex-app-gateway / codex-exec-gateway
 # pair. Both pods read from the same auto-generated k8s Secret so the cap
 # tokens app-gw mints are verifiable by exec-gw, and the internal API

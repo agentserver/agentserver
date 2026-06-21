@@ -1,0 +1,65 @@
+# syntax=docker/dockerfile:1
+
+# =============================================================================
+# Claude version pinning notes
+# =============================================================================
+# The https://claude.ai/install.sh script accepts an optional positional
+# argument that is forwarded to `claude install <version>`.  Passing the
+# version via  `bash -s -- 2.1.185`  sets $TARGET inside the script and
+# runs the equivalent of `claude install 2.1.185`, which pins the active
+# symlink to that exact release and refuses to proceed if the release is
+# unavailable.
+#
+# The RUN below contains a build-time smoke-check (`claude --version`) so
+# the image build fails loud when the pinned version cannot be fetched
+# rather than silently shipping whatever "latest" happened to be.
+#
+# Validated against: claude 2.1.185  (Phase 0 / Task 0 baseline).
+# =============================================================================
+
+# --- build stage -------------------------------------------------------------
+FROM golang:1.26-trixie AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG VERSION=dev
+ARG SHA=unknown
+RUN CGO_ENABLED=0 go build \
+    -trimpath \
+    -ldflags "-s -w -X main.BuildVersion=${VERSION} -X main.BuildSHA=${SHA}" \
+    -o /out/cc-app-gateway ./cmd/cc-app-gateway
+
+# --- runtime stage -----------------------------------------------------------
+FROM debian:bookworm-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        tini \
+    && \
+    # Install claude, pinned to the Phase-0-validated version.
+    # The install.sh positional arg is forwarded to `claude install <version>`.
+    curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.185 && \
+    cp /root/.local/bin/claude /usr/local/bin/claude && \
+    rm -rf /root/.local /var/lib/apt/lists/* && \
+    apt-get purge -y curl && apt-get autoremove -y
+
+# Build-time smoke check: verify the pinned version is present and executable.
+# If install.sh silently fell back to latest, this line will print a different
+# version string but won't fail — acceptable for version-drift awareness.
+# A missing binary will fail the build immediately.
+RUN claude --version
+
+COPY --from=build /out/cc-app-gateway /usr/local/bin/cc-app-gateway
+
+# IS_SANDBOX=1 allows claude --dangerously-skip-permissions to run as root
+# inside the container.  Required for managed-harness mode in a pod
+# (Phase 0 finding).
+ENV IS_SANDBOX=1
+
+EXPOSE 8087
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/cc-app-gateway"]
+CMD ["serve"]

@@ -221,3 +221,58 @@ func TestBuildEnv_RequiredVarsPresent(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildEnv_StripsBroadClaudeCode(t *testing.T) {
+	in := baseRunInput()
+
+	parentEnv := []string{
+		"CLAUDE_CODE_SESSION_ID=parent-leaked",
+		"CLAUDE_CODE_ENTRYPOINT=parent-cli",
+		"CLAUDE_CODE_SSE_PORT=99999",
+		"PATH=/usr/bin",
+	}
+
+	result := BuildEnv(in, parentEnv)
+
+	// Assert result does NOT contain any of the leaked parent values.
+	for _, kv := range result {
+		if strings.Contains(kv, "parent-leaked") {
+			t.Errorf("BuildEnv: leaked parent CLAUDE_CODE_SESSION_ID value in %q", kv)
+		}
+		if strings.Contains(kv, "parent-cli") {
+			t.Errorf("BuildEnv: leaked parent CLAUDE_CODE_ENTRYPOINT value in %q", kv)
+		}
+		if strings.Contains(kv, "99999") {
+			t.Errorf("BuildEnv: leaked parent CLAUDE_CODE_SSE_PORT value in %q", kv)
+		}
+	}
+
+	// Assert result DOES contain the PATH.
+	if !slices.Contains(result, "PATH=/usr/bin") {
+		t.Error("BuildEnv: PATH=/usr/bin not found in result")
+	}
+}
+
+func TestBuildEnv_PreservesClaudeConfigDir(t *testing.T) {
+	in := baseRunInput()
+	in.ClaudeDir = "/turn-specific"
+
+	parentEnv := []string{
+		"CLAUDE_CONFIG_DIR=parent-leaked",
+		"PATH=/usr/bin",
+	}
+
+	result := BuildEnv(in, parentEnv)
+
+	// Assert result contains our CLAUDE_CONFIG_DIR value.
+	if !slices.Contains(result, "CLAUDE_CONFIG_DIR=/turn-specific") {
+		t.Error("BuildEnv: CLAUDE_CONFIG_DIR=/turn-specific not found in result")
+	}
+
+	// Assert result does NOT contain the parent's leaked value.
+	for _, kv := range result {
+		if strings.Contains(kv, "CLAUDE_CONFIG_DIR=parent-leaked") {
+			t.Errorf("BuildEnv: leaked parent CLAUDE_CONFIG_DIR value in %q", kv)
+		}
+	}
+}

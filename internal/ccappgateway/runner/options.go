@@ -42,8 +42,9 @@ func BuildArgs(in RunInput) []string {
 
 // BuildEnv returns the env var list for the claude subprocess.
 //
-// Starts from parentEnv, strips any inherited ANTHROPIC_* and CLAUDE_CODE_REMOTE*
-// keys (to prevent leakage of the gateway's own credentials/mode), then sets:
+// Starts from parentEnv, strips any inherited ANTHROPIC_*, CLAUDE_CODE_*,
+// and CLAUDE_CONFIG_DIR keys (to prevent leakage of the gateway's own credentials/mode/state),
+// then sets:
 //
 //	CLAUDE_CONFIG_DIR=<ClaudeDir>
 //	IS_SANDBOX=1
@@ -80,21 +81,24 @@ func BuildEnv(in RunInput, parentEnv []string) []string {
 // parentEnv before passing it to the claude subprocess.
 func isStrippedKey(key string) bool {
 	// Strip anything we're about to set ourselves, or that could leak
-	// gateway credentials/mode into the subprocess.
+	// gateway credentials/mode/state into the subprocess.
 	switch key {
-	case "CLAUDE_CONFIG_DIR",
-		"IS_SANDBOX",
-		"CLAUDE_CODE_AUTO_COMPACT_WINDOW",
-		"CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING",
-		"ANTHROPIC_AUTH_TOKEN",
-		"ANTHROPIC_BASE_URL":
+	case "IS_SANDBOX":
 		return true
 	}
-	// Strip all remaining ANTHROPIC_* and CLAUDE_CODE_REMOTE* keys.
+	// Strip all ANTHROPIC_* keys (credentials).
 	if strings.HasPrefix(key, "ANTHROPIC_") {
 		return true
 	}
-	if strings.HasPrefix(key, "CLAUDE_CODE_REMOTE") {
+	// Strip all CLAUDE_CODE_* keys (runtime state vars like CLAUDE_CODE_SESSION_ID,
+	// CLAUDE_CODE_ENTRYPOINT, CLAUDE_CODE_SSE_PORT, etc. that leak parent shell context).
+	// This also covers CLAUDE_CODE_AUTO_COMPACT_WINDOW and CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING,
+	// which BuildEnv appends back with our values.
+	if strings.HasPrefix(key, "CLAUDE_CODE_") {
+		return true
+	}
+	// Strip CLAUDE_CONFIG_DIR (overridden by BuildEnv).
+	if key == "CLAUDE_CONFIG_DIR" {
 		return true
 	}
 	return false

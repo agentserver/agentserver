@@ -576,3 +576,34 @@ func TestServeHTTP_WorkspaceIDValidFormatAccepted(t *testing.T) {
 		})
 	}
 }
+
+func TestServeHTTP_IsErrorPopulatesErrorMessage(t *testing.T) {
+	fakeRunner := func(_ context.Context, _ runner.RunInput) (*runner.RunResult, error) {
+		return &runner.RunResult{
+			AssistantText: "",
+			Meta: &runner.ResultMeta{
+				Subtype:      "error",
+				IsError:      true,
+				ErrorMessage: "context window exceeded",
+			},
+		}, nil
+	}
+	srv := newTestServerWithStoreAndRunner(t, newFakeStore(), fakeRunner)
+	rr := postTurn(t, srv, `{"workspaceId":"ws_test","sessionId":"00000000-0000-4000-8000-000000000001","userMessage":"hi"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		IsError      bool   `json:"isError"`
+		ErrorMessage string `json:"errorMessage"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.IsError {
+		t.Error("isError should be true")
+	}
+	if resp.ErrorMessage != "context window exceeded" {
+		t.Errorf("errorMessage: got %q, want %q", resp.ErrorMessage, "context window exceeded")
+	}
+}

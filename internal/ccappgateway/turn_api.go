@@ -53,6 +53,7 @@ type CcTurnResponse struct {
 	SessionID     string                       `json:"sessionId"`
 	AssistantText string                       `json:"assistantText"`
 	IsError       bool                         `json:"isError"`
+	ErrorMessage  string                       `json:"errorMessage,omitempty"` // Phase 4 error matrix
 	DurationMs    int64                        `json:"durationMs"`
 	TotalCostUSD  float64                      `json:"totalCostUsd"`
 	ModelUsage    map[string]runner.ModelUsage `json:"modelUsage,omitempty"`
@@ -218,6 +219,7 @@ func (h *TurnHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if result.Meta != nil {
 		resp.IsError = result.Meta.IsError
+		resp.ErrorMessage = result.Meta.ErrorMessage // Phase 4 error matrix
 		resp.TotalCostUSD = result.Meta.TotalCostUSD
 		resp.ModelUsage = result.Meta.ModelUsage
 	} else {

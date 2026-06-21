@@ -1,8 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/agentserver/agentserver/internal/ccappgateway"
 )
@@ -50,9 +55,36 @@ func serveCmd(args []string) {
 		os.Exit(2)
 	}
 
-	// Task 1 scaffold: just print config and exit
-	fmt.Printf("phase1 scaffold OK; listen=%s claudeBin=%s\n", cfg.ListenAddr, cfg.ClaudeBin)
-	os.Exit(0)
+	srv, err := ccappgateway.NewServer(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "server init: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Listen for SIGTERM/SIGINT for graceful shutdown.
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- srv.Start(ctx)
+	}()
+
+	select {
+	case <-ctx.Done():
+		// Shutdown signal received; drain with 30s timeout.
+		shutdownCtx, scancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer scancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			fmt.Fprintf(os.Stderr, "shutdown: %v\n", err)
+			os.Exit(1)
+		}
+	case err := <-errCh:
+		if err != nil && err != http.ErrServerClosed {
+			fmt.Fprintf(os.Stderr, "server: %v\n", err)
+			os.Exit(1)
+		}
+	}
 }
 
 func envMcpCmd() {

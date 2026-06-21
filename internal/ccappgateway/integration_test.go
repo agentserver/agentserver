@@ -37,7 +37,7 @@ func TestIntegration_HappyPath(t *testing.T) {
 
 	// Bring up the stack.
 	runMake(t, abs, "up")
-	t.Cleanup(func() { runMake(t, abs, "down") })
+	t.Cleanup(func() { runMakeBestEffort(t, abs, "down") })
 
 	// Wait for cc-app-gateway readyz.
 	waitForReadyz(t, gatewayURL+"/readyz", 60*time.Second)
@@ -62,14 +62,14 @@ func TestIntegration_HappyPath(t *testing.T) {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		runMake(t, abs, "logs")
+		runMakeBestEffort(t, abs, "logs")
 		t.Fatalf("POST /api/turns: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
 		rawBody, _ := io.ReadAll(resp.Body)
-		runMake(t, abs, "logs")
+		runMakeBestEffort(t, abs, "logs")
 		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(rawBody))
 	}
 
@@ -86,7 +86,7 @@ func TestIntegration_HappyPath(t *testing.T) {
 	// The fake llmproxy returns "pong" as the assistant's text content.
 	// claude --print extracts and reports that text. Assert exact match.
 	if got.AssistantText != "pong" {
-		runMake(t, abs, "logs")
+		runMakeBestEffort(t, abs, "logs")
 		t.Errorf("assistantText: want %q, got %q", "pong", got.AssistantText)
 	}
 	if got.SessionID != "00000000-0000-4000-8000-000000000001" {
@@ -116,6 +116,25 @@ func runMake(t *testing.T, dir, target string) {
 	}
 	if err != nil {
 		t.Fatalf("make %s in %s: %v", target, dir, err)
+	}
+}
+
+// runMakeBestEffort runs make <target> but does NOT fail the test on error.
+// Use for diagnostic calls (e.g., "logs") and cleanup callbacks where
+// t.Fatal would panic or mask the original failure.
+func runMakeBestEffort(t *testing.T, dir, target string) {
+	t.Helper()
+	cmd := exec.Command("make", "-C", dir, target)
+	var buf strings.Builder
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	err := cmd.Run()
+	out := buf.String()
+	if out != "" {
+		t.Logf("make %s output:\n%s", target, out)
+	}
+	if err != nil {
+		t.Logf("make %s (best-effort): %v", target, err)
 	}
 }
 

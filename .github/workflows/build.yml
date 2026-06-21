@@ -481,10 +481,12 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Pull cc-app-gateway image
+      - name: Pull cc-app-gateway image (optimization)
         run: |
-          docker pull ghcr.io/agentserver/cc-app-gateway:${{ github.sha }}
-          docker tag ghcr.io/agentserver/cc-app-gateway:${{ github.sha }} cc-app-gateway:dev
+          SHORT_SHA=${GITHUB_SHA::7}
+          docker pull ghcr.io/agentserver/cc-app-gateway:${SHORT_SHA} && \
+            docker tag ghcr.io/agentserver/cc-app-gateway:${SHORT_SHA} cc-app-gateway:dev || \
+            echo "image not available; integration test will build locally via make"
 
       - name: Run integration test
         run: go test -tags integration -v -timeout 10m ./internal/ccappgateway/...

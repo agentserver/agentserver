@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 	"testing"
 )
@@ -175,4 +176,28 @@ func TestConcurrentSetupNoDuplicates(t *testing.T) {
 	// Cleanup
 	ws1.Teardown()
 	ws2.Teardown()
+}
+
+// TestSetupUUIDIsCanonical tests that the UUID portion of TempDir matches RFC 4122 v4 format.
+func TestSetupUUIDIsCanonical(t *testing.T) {
+	tmpRoot := t.TempDir()
+	ctx := context.Background()
+
+	ws, err := Setup(ctx, tmpRoot)
+	if err != nil {
+		t.Fatalf("Setup failed: %v", err)
+	}
+
+	// Extract the UUID from TempDir (it's the final path segment)
+	uuid := filepath.Base(ws.TempDir)
+
+	// RFC 4122 v4 format: 8 hex digits, dash, 4 hex, dash, 4 hex (version 4),
+	// dash, 4 hex (variant 10), dash, 12 hex
+	canonicalRe := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	if !canonicalRe.MatchString(uuid) {
+		t.Errorf("UUID format is not canonical RFC 4122 v4: got %q", uuid)
+	}
+
+	// Cleanup
+	ws.Teardown()
 }

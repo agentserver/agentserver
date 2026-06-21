@@ -66,19 +66,6 @@ func (w *Workspace) Teardown() error {
 	if w == nil || w.TempDir == "" {
 		return nil
 	}
-
-	// Check if it exists before attempting removal
-	_, err := os.Stat(w.TempDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// Already removed, so this is a no-op (no error)
-			return nil
-		}
-		// Some other error occurred
-		return err
-	}
-
-	// Remove the entire tree
 	return os.RemoveAll(w.TempDir)
 }
 
@@ -93,5 +80,5 @@ func newUUID() string {
 	// RFC 4122 v4
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }

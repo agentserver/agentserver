@@ -276,3 +276,57 @@ func TestBuildEnv_PreservesClaudeConfigDir(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildArgs_SessionMode_Fresh(t *testing.T) {
+	args := BuildArgs(RunInput{
+		Model:       "claude-haiku-4-5",
+		SessionID:   "00000000-0000-0000-0000-000000000001",
+		SessionMode: "fresh",
+	})
+	if !containsAdjacent(args, "--session-id", "00000000-0000-0000-0000-000000000001") {
+		t.Errorf("fresh mode: expected --session-id <UUID>; args=%v", args)
+	}
+	for _, a := range args {
+		if a == "--resume" {
+			t.Errorf("fresh mode should not include --resume; args=%v", args)
+		}
+	}
+}
+
+func TestBuildArgs_SessionMode_Resume(t *testing.T) {
+	args := BuildArgs(RunInput{
+		Model:       "claude-haiku-4-5",
+		SessionID:   "00000000-0000-0000-0000-000000000001",
+		SessionMode: "resume",
+	})
+	if !containsAdjacent(args, "--resume", "00000000-0000-0000-0000-000000000001") {
+		t.Errorf("resume mode: expected --resume <UUID>; args=%v", args)
+	}
+	for _, a := range args {
+		if a == "--session-id" {
+			t.Errorf("resume mode should not include --session-id; args=%v", args)
+		}
+	}
+}
+
+func TestBuildArgs_SessionMode_DefaultIsFresh(t *testing.T) {
+	args := BuildArgs(RunInput{
+		Model:     "claude-haiku-4-5",
+		SessionID: "00000000-0000-0000-0000-000000000001",
+		// SessionMode left empty
+	})
+	if !containsAdjacent(args, "--session-id", "00000000-0000-0000-0000-000000000001") {
+		t.Errorf("default mode should be --session-id; args=%v", args)
+	}
+}
+
+// containsAdjacent returns true if args contains a followed by b as
+// consecutive elements.
+func containsAdjacent(args []string, a, b string) bool {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == a && args[i+1] == b {
+			return true
+		}
+	}
+	return false
+}

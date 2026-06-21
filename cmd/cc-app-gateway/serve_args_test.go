@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -46,6 +47,11 @@ func TestParseServeArgs(t *testing.T) {
 			if tt.wantErr {
 				if err == nil {
 					t.Errorf("parseServeArgs() expected error, got nil")
+					return
+				}
+				// Verify that error message names the unknown flag
+				if !strings.Contains(err.Error(), "unknown-flag") {
+					t.Errorf("parseServeArgs() error message does not contain 'unknown-flag': %s", err.Error())
 				}
 				return
 			}

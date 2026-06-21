@@ -2,6 +2,7 @@ package ccappgateway
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -75,11 +76,10 @@ func TestLoadServeConfigFromEnv(t *testing.T) {
 			},
 		},
 		{
-			name: "missing required var",
+			name: "missing CCAPPGW_LLMPROXY_URL",
 			setup: func() {
 				os.Setenv("INTERNAL_API_SECRET", "secret123")
 				os.Setenv("AGENTSERVER_INTERNAL_URL", "http://agentserver:8080")
-				// CCAPPGW_LLMPROXY_URL is missing
 				os.Unsetenv("CCAPPGW_LLMPROXY_URL")
 			},
 			cleanup: func() {
@@ -96,6 +96,59 @@ func TestLoadServeConfigFromEnv(t *testing.T) {
 				ClaudeBin:  "/usr/local/bin/claude",
 			},
 			wantErr: true,
+			check: func(t *testing.T, cfg ServeConfig) {
+				// Not called on error case, but check function signature for consistency
+			},
+		},
+		{
+			name: "missing INTERNAL_API_SECRET",
+			setup: func() {
+				os.Unsetenv("INTERNAL_API_SECRET")
+				os.Setenv("AGENTSERVER_INTERNAL_URL", "http://agentserver:8080")
+				os.Setenv("CCAPPGW_LLMPROXY_URL", "http://llmproxy:8081")
+			},
+			cleanup: func() {
+				os.Unsetenv("INTERNAL_API_SECRET")
+				os.Unsetenv("AGENTSERVER_INTERNAL_URL")
+				os.Unsetenv("CCAPPGW_LLMPROXY_URL")
+				os.Unsetenv("CCAPPGW_DEFAULT_MODEL")
+				os.Unsetenv("CCAPPGW_TURN_TIMEOUT")
+				os.Unsetenv("CCAPPGW_TMP_ROOT")
+				os.Unsetenv("CCAPPGW_LOG_LEVEL")
+			},
+			flags: ServeFlags{
+				ListenAddr: ":8087",
+				ClaudeBin:  "/usr/local/bin/claude",
+			},
+			wantErr: true,
+			check: func(t *testing.T, cfg ServeConfig) {
+				// Not called on error case, but check function signature for consistency
+			},
+		},
+		{
+			name: "missing AGENTSERVER_INTERNAL_URL",
+			setup: func() {
+				os.Setenv("INTERNAL_API_SECRET", "secret123")
+				os.Unsetenv("AGENTSERVER_INTERNAL_URL")
+				os.Setenv("CCAPPGW_LLMPROXY_URL", "http://llmproxy:8081")
+			},
+			cleanup: func() {
+				os.Unsetenv("INTERNAL_API_SECRET")
+				os.Unsetenv("AGENTSERVER_INTERNAL_URL")
+				os.Unsetenv("CCAPPGW_LLMPROXY_URL")
+				os.Unsetenv("CCAPPGW_DEFAULT_MODEL")
+				os.Unsetenv("CCAPPGW_TURN_TIMEOUT")
+				os.Unsetenv("CCAPPGW_TMP_ROOT")
+				os.Unsetenv("CCAPPGW_LOG_LEVEL")
+			},
+			flags: ServeFlags{
+				ListenAddr: ":8087",
+				ClaudeBin:  "/usr/local/bin/claude",
+			},
+			wantErr: true,
+			check: func(t *testing.T, cfg ServeConfig) {
+				// Not called on error case, but check function signature for consistency
+			},
 		},
 		{
 			name: "invalid duration",
@@ -154,6 +207,23 @@ func TestLoadServeConfigFromEnv(t *testing.T) {
 			if tt.wantErr {
 				if err == nil {
 					t.Errorf("LoadServeConfigFromEnv() expected error, got nil")
+					return
+				}
+				// Verify that error message names the missing variable
+				errMsg := err.Error()
+				switch tt.name {
+				case "missing CCAPPGW_LLMPROXY_URL":
+					if !strings.Contains(errMsg, "CCAPPGW_LLMPROXY_URL") {
+						t.Errorf("LoadServeConfigFromEnv() error message does not contain 'CCAPPGW_LLMPROXY_URL': %s", errMsg)
+					}
+				case "missing INTERNAL_API_SECRET":
+					if !strings.Contains(errMsg, "INTERNAL_API_SECRET") {
+						t.Errorf("LoadServeConfigFromEnv() error message does not contain 'INTERNAL_API_SECRET': %s", errMsg)
+					}
+				case "missing AGENTSERVER_INTERNAL_URL":
+					if !strings.Contains(errMsg, "AGENTSERVER_INTERNAL_URL") {
+						t.Errorf("LoadServeConfigFromEnv() error message does not contain 'AGENTSERVER_INTERNAL_URL': %s", errMsg)
+					}
 				}
 				return
 			}

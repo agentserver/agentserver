@@ -70,18 +70,28 @@ func serveCmd(args []string) {
 		errCh <- srv.Start(ctx)
 	}()
 
+	// Wait for either signal or Start to fail.
+	var startErr error
 	select {
 	case <-ctx.Done():
-		// Shutdown signal received; drain with 30s timeout.
+		// Shutdown signal received; wait for Start to return.
+		startErr = <-errCh
+	case startErr = <-errCh:
+		// Start exited on its own (listener bind failed, etc.)
+	}
+
+	// Check for errors from Start (but ignore ErrServerClosed, which is expected).
+	if startErr != nil && startErr != http.ErrServerClosed {
+		fmt.Fprintf(os.Stderr, "server: %v\n", startErr)
+		os.Exit(1)
+	}
+
+	// Only drain if shutdown was initiated by signal (ctx is done).
+	if ctx.Err() != nil {
 		shutdownCtx, scancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer scancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			fmt.Fprintf(os.Stderr, "shutdown: %v\n", err)
-			os.Exit(1)
-		}
-	case err := <-errCh:
-		if err != nil && err != http.ErrServerClosed {
-			fmt.Fprintf(os.Stderr, "server: %v\n", err)
 			os.Exit(1)
 		}
 	}

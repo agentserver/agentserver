@@ -75,7 +75,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		return s.http.Shutdown(context.Background())
+		// Caller drives shutdown with its own deadline context.
+		// Return nil so the caller's shutdown logic can proceed.
+		return nil
 	case err := <-errCh:
 		return err
 	}

@@ -3,6 +3,7 @@ package ccappgateway
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -17,6 +18,10 @@ type ServeConfig struct {
 	TurnTimeout            time.Duration
 	TmpRoot                string
 	LogLevel               string
+	S3Endpoint             string
+	S3Region               string
+	S3Bucket               string
+	S3PathStyle            bool
 }
 
 // ServeFlags represents parsed command-line flags for the serve subcommand.
@@ -78,6 +83,24 @@ func LoadServeConfigFromEnv(flags ServeFlags) (ServeConfig, error) {
 	validLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
 	if !validLevels[cfg.LogLevel] {
 		return ServeConfig{}, fmt.Errorf("invalid CCAPPGW_LOG_LEVEL %q: must be one of debug, info, warn, error", cfg.LogLevel)
+	}
+
+	// Load S3 env vars
+	cfg.S3Endpoint = os.Getenv("CCAPPGW_S3_ENDPOINT") // optional
+	cfg.S3Region = os.Getenv("CCAPPGW_S3_REGION")
+	if cfg.S3Region == "" {
+		return ServeConfig{}, fmt.Errorf("CCAPPGW_S3_REGION required")
+	}
+	cfg.S3Bucket = os.Getenv("CCAPPGW_S3_BUCKET")
+	if cfg.S3Bucket == "" {
+		return ServeConfig{}, fmt.Errorf("CCAPPGW_S3_BUCKET required")
+	}
+	if v := os.Getenv("CCAPPGW_S3_PATH_STYLE"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return ServeConfig{}, fmt.Errorf("CCAPPGW_S3_PATH_STYLE: %w", err)
+		}
+		cfg.S3PathStyle = b
 	}
 
 	return cfg, nil

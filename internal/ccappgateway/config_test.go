@@ -28,6 +28,10 @@ func TestLoadServeConfigFromEnv(t *testing.T) {
 				os.Setenv("CCAPPGW_TURN_TIMEOUT", "10m")
 				os.Setenv("CCAPPGW_TMP_ROOT", "/tmp/cc-app-gateway")
 				os.Setenv("CCAPPGW_LOG_LEVEL", "info")
+				os.Setenv("CCAPPGW_S3_ENDPOINT", "http://s3:9000")
+				os.Setenv("CCAPPGW_S3_REGION", "us-east-1")
+				os.Setenv("CCAPPGW_S3_BUCKET", "my-bucket")
+				os.Setenv("CCAPPGW_S3_PATH_STYLE", "true")
 			},
 			cleanup: func() {
 				os.Unsetenv("CCAPPGW_LISTEN_ADDR")
@@ -39,6 +43,10 @@ func TestLoadServeConfigFromEnv(t *testing.T) {
 				os.Unsetenv("CCAPPGW_TURN_TIMEOUT")
 				os.Unsetenv("CCAPPGW_TMP_ROOT")
 				os.Unsetenv("CCAPPGW_LOG_LEVEL")
+				os.Unsetenv("CCAPPGW_S3_ENDPOINT")
+				os.Unsetenv("CCAPPGW_S3_REGION")
+				os.Unsetenv("CCAPPGW_S3_BUCKET")
+				os.Unsetenv("CCAPPGW_S3_PATH_STYLE")
 			},
 			flags: ServeFlags{
 				ListenAddr: ":8087",
@@ -72,6 +80,18 @@ func TestLoadServeConfigFromEnv(t *testing.T) {
 				}
 				if cfg.LogLevel != "info" {
 					t.Errorf("LogLevel = %s, want info", cfg.LogLevel)
+				}
+				if cfg.S3Endpoint != "http://s3:9000" {
+					t.Errorf("S3Endpoint = %s, want http://s3:9000", cfg.S3Endpoint)
+				}
+				if cfg.S3Region != "us-east-1" {
+					t.Errorf("S3Region = %s, want us-east-1", cfg.S3Region)
+				}
+				if cfg.S3Bucket != "my-bucket" {
+					t.Errorf("S3Bucket = %s, want my-bucket", cfg.S3Bucket)
+				}
+				if !cfg.S3PathStyle {
+					t.Errorf("S3PathStyle = %v, want true", cfg.S3PathStyle)
 				}
 			},
 		},
@@ -236,4 +256,72 @@ func TestLoadServeConfigFromEnv(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLoadServeConfigFromEnv_S3Vars(t *testing.T) {
+	// Set all required Phase 1 vars + S3 vars.
+	setBaseEnv := func(t *testing.T) {
+		t.Setenv("INTERNAL_API_SECRET", "secret")
+		t.Setenv("AGENTSERVER_INTERNAL_URL", "http://a:8080")
+		t.Setenv("CCAPPGW_LLMPROXY_URL", "http://l:8081")
+	}
+
+	t.Run("happy path with all S3 vars", func(t *testing.T) {
+		setBaseEnv(t)
+		t.Setenv("CCAPPGW_S3_ENDPOINT", "http://minio:9000")
+		t.Setenv("CCAPPGW_S3_REGION", "us-east-1")
+		t.Setenv("CCAPPGW_S3_BUCKET", "test-bucket")
+		t.Setenv("CCAPPGW_S3_PATH_STYLE", "true")
+
+		cfg, err := LoadServeConfigFromEnv(ServeFlags{})
+		if err != nil {
+			t.Fatalf("LoadServeConfigFromEnv: %v", err)
+		}
+		if cfg.S3Endpoint != "http://minio:9000" {
+			t.Errorf("S3Endpoint: %q", cfg.S3Endpoint)
+		}
+		if cfg.S3Region != "us-east-1" {
+			t.Errorf("S3Region: %q", cfg.S3Region)
+		}
+		if cfg.S3Bucket != "test-bucket" {
+			t.Errorf("S3Bucket: %q", cfg.S3Bucket)
+		}
+		if !cfg.S3PathStyle {
+			t.Errorf("S3PathStyle should be true")
+		}
+	})
+
+	t.Run("S3_REGION required", func(t *testing.T) {
+		setBaseEnv(t)
+		t.Setenv("CCAPPGW_S3_BUCKET", "b")
+		t.Setenv("CCAPPGW_S3_REGION", "")
+		_, err := LoadServeConfigFromEnv(ServeFlags{})
+		if err == nil || !strings.Contains(err.Error(), "CCAPPGW_S3_REGION") {
+			t.Errorf("missing S3_REGION should error mentioning the var; got: %v", err)
+		}
+	})
+
+	t.Run("S3_BUCKET required", func(t *testing.T) {
+		setBaseEnv(t)
+		t.Setenv("CCAPPGW_S3_REGION", "us-east-1")
+		t.Setenv("CCAPPGW_S3_BUCKET", "")
+		_, err := LoadServeConfigFromEnv(ServeFlags{})
+		if err == nil || !strings.Contains(err.Error(), "CCAPPGW_S3_BUCKET") {
+			t.Errorf("missing S3_BUCKET should error mentioning the var; got: %v", err)
+		}
+	})
+
+	t.Run("PATH_STYLE defaults false", func(t *testing.T) {
+		setBaseEnv(t)
+		t.Setenv("CCAPPGW_S3_REGION", "us-east-1")
+		t.Setenv("CCAPPGW_S3_BUCKET", "b")
+		t.Setenv("CCAPPGW_S3_PATH_STYLE", "")
+		cfg, err := LoadServeConfigFromEnv(ServeFlags{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.S3PathStyle {
+			t.Errorf("S3PathStyle should default false")
+		}
+	})
 }

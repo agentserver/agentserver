@@ -32,7 +32,9 @@ func KeepFrame(m SDKMessage) bool {
 	case "assistant", "user", "result":
 		return true
 	default:
-		// Unknown type: keep it (log a warning elsewhere if needed for observability).
+		// Unknown type: keep it and log a warning for observability (prefer over-logging
+		// new data rather than silently dropping it — new claude versions may add types).
+		log.Printf("[cc-app-gateway/runner] unknown SDKMessage type=%q subtype=%q — keeping for downstream; new claude version?", m.Type, m.Subtype)
 		return true
 	}
 }

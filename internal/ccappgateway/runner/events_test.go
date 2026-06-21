@@ -1,10 +1,13 @@
 package runner
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -102,10 +105,34 @@ func TestKeepFrameFromTranscript(t *testing.T) {
 	}
 }
 
-// TestKeepFrameUnknownType verifies that unknown types default to keep.
+// TestKeepFrameUnknownType verifies that unknown types default to keep and log a warning.
 func TestKeepFrameUnknownType(t *testing.T) {
-	if !KeepFrame(SDKMessage{Type: "newtype"}) {
+	// Save original logger output and redirect to buffer for capture.
+	origOut := log.Writer()
+	defer log.SetOutput(origOut)
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+
+	// Call KeepFrame with unknown type.
+	if !KeepFrame(SDKMessage{Type: "newtype", Subtype: "newsubtype"}) {
 		t.Error("KeepFrame(unknown type) should be true (keep unknown frames)")
+	}
+
+	// Verify that a warning was logged.
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "unknown SDKMessage type") {
+		t.Errorf("expected log message containing 'unknown SDKMessage type', got: %q", logOutput)
+	}
+	if !strings.Contains(logOutput, "newtype") {
+		t.Errorf("expected log message containing 'newtype', got: %q", logOutput)
+	}
+}
+
+// TestKeepFrameUserFrame verifies user frames are kept.
+func TestKeepFrameUserFrame(t *testing.T) {
+	if !KeepFrame(SDKMessage{Type: "user"}) {
+		t.Error("KeepFrame(user) should be true")
 	}
 }
 

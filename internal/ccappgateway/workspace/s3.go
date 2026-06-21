@@ -14,6 +14,17 @@ import (
 	"strings"
 )
 
+// Tarball bounds for defense-in-depth against decompression-bomb / runaway-claude
+// growth. Claude-home tarballs in normal use are << 10 MB. These ceilings give
+// us operational visibility (clean error vs OOM crash) if a session grows
+// pathologically. Spec § Open Risks #1 documents linear jsonl growth as a
+// known limitation; these constants are the hard backstop.
+const (
+	maxTarballBytes = 2 << 30   // 2 GiB compressed tarball ceiling
+	maxEntryBytes   = 256 << 20 // 256 MiB per file
+	maxEntryCount   = 10000     // ~100 turns × 100 backup files would still fit; far more than realistic
+)
+
 // ErrObjectNotFound is returned by ObjectStore.Get when a key is absent.
 // Implementations (s3client.go, test fakes) MUST translate their backend's
 // "missing key" error to this sentinel.
@@ -32,10 +43,14 @@ type ObjectStore interface {
 // Walks src with filepath.WalkDir; writes a tar header for every entry
 // (including empty dirs); only files (TypeReg) carry data. Symlinks/fifo/
 // devices are NOT written — claude-home contains none.
+// Enforces bounds: maxEntryCount entries, maxEntryBytes per file, maxTarballBytes total.
 func TarUpload(ctx context.Context, store ObjectStore, key, src string) error {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
+
+	var totalBytes int64
+	var entryCount int
 
 	err := filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -48,9 +63,16 @@ func TarUpload(ctx context.Context, store ObjectStore, key, src string) error {
 		if rel == "." {
 			return nil
 		}
+		entryCount++
+		if entryCount > maxEntryCount {
+			return fmt.Errorf("workspace: tarball entry count exceeds %d", maxEntryCount)
+		}
 		info, err := d.Info()
 		if err != nil {
 			return err
+		}
+		if d.Type().IsRegular() && info.Size() > maxEntryBytes {
+			return fmt.Errorf("workspace: entry %q exceeds %d bytes", rel, maxEntryBytes)
 		}
 		hdr, err := tar.FileInfoHeader(info, "")
 		if err != nil {
@@ -72,8 +94,12 @@ func TarUpload(ctx context.Context, store ObjectStore, key, src string) error {
 		if err != nil {
 			return err
 		}
-		_, copyErr := io.Copy(tw, f)
+		n, copyErr := io.Copy(tw, f)
 		_ = f.Close()
+		totalBytes += n
+		if totalBytes > maxTarballBytes {
+			return fmt.Errorf("workspace: tarball total exceeds %d bytes", maxTarballBytes)
+		}
 		return copyErr
 	})
 	if err != nil {
@@ -91,6 +117,7 @@ func TarUpload(ctx context.Context, store ObjectStore, key, src string) error {
 // TarDownload fetches key from store and untars into dst (which must exist
 // and be owned by the caller). Returns ErrObjectNotFound if the key is absent.
 // Rejects archives containing ".." path components for safety.
+// Enforces bounds: maxEntryCount entries, maxEntryBytes per file, maxTarballBytes total.
 func TarDownload(ctx context.Context, store ObjectStore, key, dst string) error {
 	data, err := store.Get(ctx, key)
 	if err != nil {
@@ -101,6 +128,8 @@ func TarDownload(ctx context.Context, store ObjectStore, key, dst string) error 
 		return fmt.Errorf("gzip reader: %w", err)
 	}
 	tr := tar.NewReader(gz)
+	var totalWritten int64
+	var entryCount int
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -109,8 +138,15 @@ func TarDownload(ctx context.Context, store ObjectStore, key, dst string) error 
 		if err != nil {
 			return fmt.Errorf("tar next: %w", err)
 		}
+		entryCount++
+		if entryCount > maxEntryCount {
+			return fmt.Errorf("workspace: tarball entry count exceeds %d", maxEntryCount)
+		}
 		if strings.Contains(hdr.Name, "..") {
 			return fmt.Errorf("untrusted path: %s", hdr.Name)
+		}
+		if hdr.Size > maxEntryBytes {
+			return fmt.Errorf("workspace: entry %q exceeds %d bytes", hdr.Name, maxEntryBytes)
 		}
 		target := filepath.Join(dst, hdr.Name)
 		switch hdr.Typeflag {
@@ -134,11 +170,16 @@ func TarDownload(ctx context.Context, store ObjectStore, key, dst string) error 
 			if err != nil {
 				return fmt.Errorf("open %s: %w", target, err)
 			}
-			if _, err := io.Copy(f, tr); err != nil {
-				_ = f.Close()
+			// Bounded copy — also enforces per-entry cap even if hdr.Size lied.
+			n, err := io.Copy(f, io.LimitReader(tr, maxEntryBytes))
+			_ = f.Close()
+			if err != nil {
 				return fmt.Errorf("copy %s: %w", target, err)
 			}
-			_ = f.Close()
+			totalWritten += n
+			if totalWritten > maxTarballBytes {
+				return fmt.Errorf("workspace: extracted size exceeds %d bytes", maxTarballBytes)
+			}
 		default:
 			// Skip symlinks / fifo / devices — claude doesn't write them.
 		}

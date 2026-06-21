@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,5 +115,51 @@ func TestTarPathTraversalRejected(t *testing.T) {
 	err := workspace.TarDownload(context.Background(), store, "evil-key", t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "untrusted path") {
 		t.Errorf("expected 'untrusted path' error, got %v", err)
+	}
+}
+
+func TestTarUploadRejectsTooManyEntries(t *testing.T) {
+	src := t.TempDir()
+	// Create maxEntryCount+1 tiny files. Since maxEntryCount is package-private,
+	// assume value 10000 from the implementation; test with 10001 entries.
+	for i := 0; i < 10001; i++ {
+		f := filepath.Join(src, fmt.Sprintf("f%05d.txt", i))
+		if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := newFakeStore()
+	err := workspace.TarUpload(context.Background(), store, "k", src)
+	if err == nil {
+		t.Error("expected error on too many entries, got nil")
+	} else if !strings.Contains(err.Error(), "entry count exceeds") {
+		t.Errorf("expected 'entry count exceeds' error, got: %v", err)
+	}
+}
+
+func TestTarDownloadRejectsTooManyEntries(t *testing.T) {
+	// Hand-craft a tarball with 10001 entries.
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for i := 0; i < 10001; i++ {
+		hdr := &tar.Header{Name: fmt.Sprintf("f%05d.txt", i), Mode: 0o600, Size: 1, Typeflag: tar.TypeReg}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tw.Close()
+	gz.Close()
+
+	store := newFakeStore()
+	store.data["k"] = buf.Bytes()
+	err := workspace.TarDownload(context.Background(), store, "k", t.TempDir())
+	if err == nil {
+		t.Error("expected error on too many entries, got nil")
+	} else if !strings.Contains(err.Error(), "entry count exceeds") {
+		t.Errorf("expected 'entry count exceeds' error, got: %v", err)
 	}
 }

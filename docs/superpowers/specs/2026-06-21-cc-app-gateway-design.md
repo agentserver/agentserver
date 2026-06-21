@@ -874,6 +874,8 @@ Optional but recommended: also run against the REAL pinned claude binary
 inside the gateway image (not a mock) — this is what catches CLI flag/schema
 regressions on version bump.
 
+**Phase 1 acceptance harness:** `internal/ccappgateway/testdata/integration/` carries a docker-compose harness (fake-agentserver + fake-llmproxy + cc-app-gateway:dev with real pinned claude 2.1.185) plus a build-tagged Go integration test (`go test -tags integration ./internal/ccappgateway/...`). The test brings the stack up, POSTs `/api/turns`, and asserts the canned `"pong"` is returned as `assistantText`. CI runs this as the `integration-cc-app-gateway` job on every commit that touches `internal/ccappgateway/`, `cmd/cc-app-gateway/`, `cmd/cc-app-gateway-test-tools/`, or `Dockerfile.cc-app-gateway`.
+
 ## Migration
 
 There is no prior `cc-app-gateway` to migrate from. PR #135 left

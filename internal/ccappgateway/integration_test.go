@@ -101,6 +101,92 @@ func TestIntegration_HappyPath(t *testing.T) {
 	t.Logf("PASS: assistantText=%q sessionId=%s durationMs=%d", got.AssistantText, got.SessionID, got.DurationMs)
 }
 
+func TestIntegration_ResumeAcrossTurns(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
+
+	abs, err := filepath.Abs(testdataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runMake(t, abs, "up")
+	t.Cleanup(func() { runMakeBestEffort(t, abs, "down") })
+	waitForReadyz(t, gatewayURL+"/readyz", 90*time.Second)
+
+	sessionID := "00000000-0000-4000-8000-00000000beef"
+
+	// Turn 1: tell claude a fact.
+	turn1Body := fmt.Sprintf(`{
+		"workspaceId": "ws_resume_test",
+		"sessionId":   %q,
+		"userMessage": "Remember this code: ALPHA-7."
+	}`, sessionID)
+	resp1 := doTurnRequest(t, turn1Body)
+	defer resp1.Body.Close()
+	if resp1.StatusCode != 200 {
+		rawBody, _ := io.ReadAll(resp1.Body)
+		runMakeBestEffort(t, abs, "logs")
+		t.Fatalf("turn 1 status: %d body: %s", resp1.StatusCode, rawBody)
+	}
+	// Drain body so the connection is reusable.
+	io.Copy(io.Discard, resp1.Body) //nolint:errcheck
+
+	// Turn 2: same sessionID — claude should send the conversation history including turn 1.
+	turn2Body := fmt.Sprintf(`{
+		"workspaceId": "ws_resume_test",
+		"sessionId":   %q,
+		"userMessage": "Recall the code."
+	}`, sessionID)
+	resp2 := doTurnRequest(t, turn2Body)
+	defer resp2.Body.Close()
+	if resp2.StatusCode != 200 {
+		rawBody, _ := io.ReadAll(resp2.Body)
+		runMakeBestEffort(t, abs, "logs")
+		t.Fatalf("turn 2 status: %d body: %s", resp2.StatusCode, rawBody)
+	}
+	io.Copy(io.Discard, resp2.Body) //nolint:errcheck
+
+	// Inspect fake-llmproxy's request log: turn 2's request body MUST include
+	// turn 1's user message text "ALPHA-7", proving claude resumed and sent
+	// the full conversation history (not that the LLM "remembers" — we use a
+	// fake LLM).
+	logContent := readFakeLLMProxyLog(t, abs)
+	t.Logf("fake-llmproxy log content:\n%s", logContent)
+	if !strings.Contains(logContent, "ALPHA-7") {
+		runMakeBestEffort(t, abs, "logs")
+		t.Errorf("fake-llmproxy log should contain 'ALPHA-7' from turn 1 history; log content:\n%s", logContent)
+	}
+}
+
+func doTurnRequest(t *testing.T, body string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest("POST", gatewayURL+"/api/turns", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Secret", "secret123")
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("turn request: %v", err)
+	}
+	return resp
+}
+
+func readFakeLLMProxyLog(t *testing.T, testdataAbs string) string {
+	t.Helper()
+	// Use `docker compose exec` to read the log file from inside the container.
+	cmd := exec.Command("docker", "compose", "-f", filepath.Join(testdataAbs, "docker-compose.yml"),
+		"exec", "-T", "fake-llmproxy", "cat", "/tmp/llmproxy-requests.log")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Logf("read log: %v (output: %s)", err, out)
+		return ""
+	}
+	return string(out)
+}
+
 // runMake calls `make <target>` in dir; fails the test on non-zero exit.
 // It streams stdout+stderr to the test log so failures are actionable.
 func runMake(t *testing.T, dir, target string) {

@@ -6,9 +6,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -102,6 +104,7 @@ func runFakeLLMProxy(args []string) {
 	listen := fs.String("listen", ":8081", "address to listen on")
 	acceptToken := fs.String("accept-token", "deadbeef", "bearer token to accept")
 	cannedReply := fs.String("canned-reply", "pong", "text to return in content[0].text")
+	logRequestsTo := fs.String("log-requests-to", "", "if set, append every inbound request body to this file as JSON lines")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
@@ -140,6 +143,21 @@ func runFakeLLMProxy(args []string) {
 	// claude sends Authorization: Bearer <token>; we verify it matches --accept-token.
 	mux.HandleFunc("POST /v1/messages", func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[fake-llmproxy] POST /v1/messages (query=%s)", r.URL.RawQuery)
+
+		// Read and optionally log the request body before consuming it.
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+
+		if *logRequestsTo != "" {
+			f, err := os.OpenFile(*logRequestsTo, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+			if err == nil {
+				f.Write(body)        //nolint:errcheck
+				f.Write([]byte("\n")) //nolint:errcheck
+				f.Close()            //nolint:errcheck
+			} else {
+				log.Printf("[fake-llmproxy] failed to open log file %s: %v", *logRequestsTo, err)
+			}
+		}
 
 		// Verify bearer token. Don't log either side of the comparison —
 		// CodeQL flags any logging of header-derived data as clear-text

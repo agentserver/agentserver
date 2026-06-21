@@ -51,6 +51,19 @@ spec:
               value: "http://{{ .Release.Name }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}"
             - name: CCAPPGW_LLMPROXY_URL
               value: {{ printf "http://%s-llmproxy.%s.svc:%v" .Release.Name .Release.Namespace (int .Values.llmproxy.port) | quote }}
+            - name: CCAPPGW_S3_ENDPOINT
+              value: {{ .Values.ccAppGateway.s3.endpoint | quote }}
+            - name: CCAPPGW_S3_REGION
+              value: {{ required "ccAppGateway.s3.region required when enabled=true" .Values.ccAppGateway.s3.region | quote }}
+            - name: CCAPPGW_S3_BUCKET
+              value: {{ required "ccAppGateway.s3.bucket required when enabled=true" .Values.ccAppGateway.s3.bucket | quote }}
+            - name: CCAPPGW_S3_PATH_STYLE
+              value: {{ .Values.ccAppGateway.s3.pathStyle | quote }}
+{{- if .Values.ccAppGateway.s3.existingSecret }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.ccAppGateway.s3.existingSecret }}
+{{- end }}
           volumeMounts:
             - name: cc-gateway-tmp
               mountPath: {{ .Values.ccAppGateway.tmpRoot }}

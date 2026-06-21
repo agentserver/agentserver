@@ -68,6 +68,14 @@ func Setup(ctx context.Context, tmpRoot, workspaceID, sessionID string, store Ob
 		sessionID:   sessionID,
 	}
 
+	// nil store means "no persistence configured" — behave as a fresh session
+	// (Phase 1 behavior). Used by the Task 2-6 bridge before Task 7 wires the
+	// real S3 client, and by tests that don't care about persistence.
+	if store == nil {
+		ws.IsResume = false
+		return ws, nil
+	}
+
 	// Try to download a prior tarball.
 	if err := TarDownload(ctx, store, ws.s3Key(), claudeDir); err != nil {
 		if errors.Is(err, ErrObjectNotFound) {
@@ -114,9 +122,13 @@ func (w *Workspace) Teardown(ctx context.Context, store ObjectStore) error {
 	}
 
 	// 2. Tar + gzip + upload (root = ClaudeDir to capture .claude.json + projects/ + sessions/).
-	if err := TarUpload(ctx, store, w.s3Key(), w.ClaudeDir); err != nil {
-		if firstErr == nil {
-			firstErr = fmt.Errorf("tar+upload: %w", err)
+	//    Skip upload when store is nil — same "no persistence configured" semantic
+	//    as Setup; only the local TempDir gets cleaned up (Phase 1 behavior).
+	if store != nil {
+		if err := TarUpload(ctx, store, w.s3Key(), w.ClaudeDir); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("tar+upload: %w", err)
+			}
 		}
 	}
 

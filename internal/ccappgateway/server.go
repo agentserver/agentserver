@@ -101,8 +101,8 @@ func newServerInternal(cfg ServeConfig, runFn RunnerFunc, store workspace.Object
 		WSToken: wstoken,
 		Runner:  runFn,
 		TmpRoot: cfg.TmpRoot,
-		Store:   store,  // Task 7 will USE this in ServeHTTP
-		Server:  s,      // Task 7 will USE this for AcquireSessionLock
+		Store:   store, // used by ServeHTTP for workspace.Setup/Teardown S3 round-trip
+		Server:  s,     // used by ServeHTTP for AcquireSessionLock + TeardownWG drain
 	}
 
 	s.router = s.buildRoutes()

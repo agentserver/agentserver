@@ -20,12 +20,22 @@ type RunnerFunc func(ctx context.Context, in runner.RunInput) (*runner.RunResult
 // uuidRe matches any UUID format (not enforcing v4 specifically).
 var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
+// workspaceIDRe matches valid workspaceID format: alphanumeric + underscore + dash, 1-64 chars.
+// Rejects "..", "/", "\", and other path-traversal characters that would escape S3 prefix
+// or filesystem tmpdir scoping in workspace.Setup.
+var workspaceIDRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+
 // TurnHandler handles POST /api/turns.
 type TurnHandler struct {
 	Cfg     ServeConfig
 	WSToken *WSTokenClient
 	Runner  RunnerFunc
 	TmpRoot string // from cfg.TmpRoot; injected so tests can override
+
+	// Store and Server are wired by newServerInternal (Task 6) and used by
+	// Task 7 to implement per-session mutex + S3 persistence in ServeHTTP.
+	Store  workspace.ObjectStore
+	Server *Server
 }
 
 // CcTurnRequest is the JSON body for POST /api/turns.
@@ -74,6 +84,10 @@ func (h *TurnHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Validate required fields.
 	if req.WorkspaceID == "" {
 		writeError(w, http.StatusBadRequest, "validation", "workspaceId required")
+		return
+	}
+	if !workspaceIDRe.MatchString(req.WorkspaceID) {
+		writeError(w, http.StatusBadRequest, "validation", "workspaceId must match ^[a-zA-Z0-9_-]{1,64}$")
 		return
 	}
 	if req.SessionID == "" {
@@ -126,14 +140,48 @@ func (h *TurnHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set up ephemeral workspace.
-	ws, err := workspace.Setup(r.Context(), h.TmpRoot)
+	// Acquire per-session mutex to serialize turns for the same (workspace, session)
+	// within this pod. Released by the Teardown goroutine after S3 Put completes
+	// (or after Teardown errors). See spec § Concurrency.
+	mu := h.Server.AcquireSessionLock(req.WorkspaceID, req.SessionID)
+	mutexReleased := false
+	defer func() {
+		if !mutexReleased {
+			// Only fires if Setup itself failed (Teardown never ran → goroutine never started).
+			mu.Unlock()
+		}
+	}()
+
+	// Set up ephemeral workspace: download prior tarball from S3 if one exists.
+	ws, err := workspace.Setup(r.Context(), h.TmpRoot, req.WorkspaceID, req.SessionID, h.Store)
 	if err != nil {
 		log.Printf("[cc-app-gateway] workspace_setup_failed (session=%s): %v", req.SessionID, err)
 		writeError(w, http.StatusInternalServerError, "workspace_setup_failed", "workspace setup failed")
 		return
 	}
-	defer ws.Teardown() //nolint:errcheck
+
+	// Background Teardown — uploads ClaudeDir to S3 and releases the mutex AFTER
+	// the upload completes. Uses context.Background() (not r.Context()) so the
+	// upload is not cancelled when the HTTP response is written.
+	defer func() {
+		h.Server.TeardownWG.Add(1)
+		mutexReleased = true // tell the outer defer not to unlock again
+		go func() {
+			defer h.Server.TeardownWG.Done()
+			defer mu.Unlock()
+			bctx, bcancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer bcancel()
+			if err := ws.Teardown(bctx, h.Store); err != nil {
+				log.Printf("[cc-app-gateway] workspace teardown failed (session=%s): %v", req.SessionID, err)
+			}
+		}()
+	}()
+
+	// Determine session mode based on whether a prior tarball was found.
+	sessionMode := "fresh"
+	if ws.IsResume {
+		sessionMode = "resume"
+	}
 
 	// Run claude with per-turn timeout.
 	runCtx, rcancel := context.WithTimeout(r.Context(), turnTimeout)
@@ -149,6 +197,7 @@ func (h *TurnHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		WSToken:     wsToken,
 		LLMProxyURL: h.Cfg.LLMProxyURL,
 		Timeout:     turnTimeout,
+		SessionMode: sessionMode,
 	})
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {

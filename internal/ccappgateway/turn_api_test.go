@@ -3,15 +3,93 @@ package ccappgateway_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/agentserver/agentserver/internal/ccappgateway"
 	"github.com/agentserver/agentserver/internal/ccappgateway/runner"
+	"github.com/agentserver/agentserver/internal/ccappgateway/workspace"
 )
+
+// --- Shared test helpers for Task 7 tests ---
+
+// fakeStore is a map-backed ObjectStore for tests.
+type fakeStore struct {
+	mu   sync.Mutex
+	data map[string][]byte
+}
+
+func newFakeStore() *fakeStore {
+	return &fakeStore{data: make(map[string][]byte)}
+}
+
+func (s *fakeStore) Get(_ context.Context, key string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.data[key]
+	if !ok {
+		return nil, workspace.ErrObjectNotFound
+	}
+	return v, nil
+}
+
+func (s *fakeStore) Put(_ context.Context, key string, data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data[key] = data
+	return nil
+}
+
+func (s *fakeStore) Delete(_ context.Context, key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.data, key)
+	return nil
+}
+
+// newTestServerWithStoreAndRunner creates a ccappgateway.Server backed by the given
+// store and runner, with a mock wstoken/agentserver endpoint.
+func newTestServerWithStoreAndRunner(t *testing.T, store workspace.ObjectStore, runFn ccappgateway.RunnerFunc) *ccappgateway.Server {
+	t.Helper()
+	wstokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"token":"deadbeef"}`)
+	}))
+	t.Cleanup(wstokenSrv.Close)
+
+	cfg := ccappgateway.ServeConfig{
+		DefaultModel:           "haiku",
+		TurnTimeout:            30 * time.Second,
+		TmpRoot:                t.TempDir(),
+		AgentserverInternalURL: wstokenSrv.URL,
+		InternalSecret:         "",
+	}
+	srv, err := ccappgateway.NewServerWithRunnerAndStore(cfg, runFn, store)
+	if err != nil {
+		t.Fatalf("NewServerWithRunnerAndStore: %v", err)
+	}
+	return srv
+}
+
+// postTurn fires a POST /api/turns request against the server's router and returns the recorder.
+func postTurn(t *testing.T, srv *ccappgateway.Server, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/turns", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	// InternalSecret is empty in test configs, so Either() passes with any value.
+	req.Header.Set("X-Internal-Secret", "test")
+	rr := httptest.NewRecorder()
+	srv.Routes().ServeHTTP(rr, req)
+	return rr
+}
 
 // happyRunner returns a successful RunResult with assistantText="pong".
 func happyRunner(ctx context.Context, in runner.RunInput) (*runner.RunResult, error) {
@@ -45,21 +123,24 @@ func newWstokenServer(statusCode int) *httptest.Server {
 	}))
 }
 
-// buildHandler creates a TurnHandler pointing at the given wstoken server URL with a fake runner.
-func buildHandler(t *testing.T, wstokenURL string, runFn ccappgateway.RunnerFunc) *ccappgateway.TurnHandler {
+// buildHandler creates a Server pointing at the given wstoken server URL with a fake runner.
+// Returns the server's Routes() as an http.Handler.
+// Uses a noopStore (Get→ErrObjectNotFound) so existing Phase 1 tests see a fresh session.
+// InternalSecret is empty → permissive; doPost sends "X-Internal-Secret: test" to satisfy Either().
+func buildHandler(t *testing.T, wstokenURL string, runFn ccappgateway.RunnerFunc) http.Handler {
 	t.Helper()
 	cfg := ccappgateway.ServeConfig{
-		DefaultModel: "haiku",
-		TurnTimeout:  30 * 1e9, // 30s
-		TmpRoot:      t.TempDir(),
+		DefaultModel:           "haiku",
+		TurnTimeout:            30 * time.Second,
+		TmpRoot:                t.TempDir(),
+		AgentserverInternalURL: wstokenURL,
+		InternalSecret:         "", // permissive — Either() accepts any X-Internal-Secret
 	}
-	wstoken := ccappgateway.NewWSTokenClient(wstokenURL, "test-secret")
-	return &ccappgateway.TurnHandler{
-		Cfg:     cfg,
-		WSToken: wstoken,
-		Runner:  runFn,
-		TmpRoot: cfg.TmpRoot,
+	srv, err := ccappgateway.NewServerWithRunner(cfg, runFn)
+	if err != nil {
+		t.Fatalf("buildHandler: NewServerWithRunner: %v", err)
 	}
+	return srv.Routes()
 }
 
 // validBody builds a valid JSON turn request body.
@@ -80,6 +161,9 @@ func doPost(t *testing.T, handler http.Handler, body string) *httptest.ResponseR
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/api/turns", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	// Send X-Internal-Secret so Either() dispatches to InternalSecretMiddleware;
+	// buildHandler uses InternalSecret="" (permissive), so any value passes.
+	req.Header.Set("X-Internal-Secret", "test")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 	return rr
@@ -331,5 +415,164 @@ func TestTurnHandler_LLMError_Returns200WithIsError(t *testing.T) {
 	json.NewDecoder(rr.Body).Decode(&resp)
 	if !resp.IsError {
 		t.Errorf("isError = false, want true")
+	}
+}
+
+// --- Task 7: S3 store + per-session mutex + SessionMode tests ---
+
+func TestServeHTTP_ResumeOnPriorTarball(t *testing.T) {
+	// Seed store with a prior tarball for this (workspace, session).
+	store := newFakeStore()
+	seedDir := t.TempDir()
+	os.MkdirAll(filepath.Join(seedDir, "projects", "-tmp-x"), 0o700)
+	os.WriteFile(filepath.Join(seedDir, "projects", "-tmp-x", "00000000-0000-0000-0000-000000000001.jsonl"), []byte("seed\n"), 0o600)
+	workspace.TarUpload(context.Background(), store, "cc-app-gateway/ws_test/00000000-0000-0000-0000-000000000001.tar.gz", seedDir)
+
+	// Fake runner captures the SessionMode it received.
+	var gotMode string
+	fakeRunner := func(_ context.Context, in runner.RunInput) (*runner.RunResult, error) {
+		gotMode = in.SessionMode
+		return &runner.RunResult{
+			AssistantText: "ok",
+			Meta:          &runner.ResultMeta{Subtype: "success"},
+		}, nil
+	}
+
+	srv := newTestServerWithStoreAndRunner(t, store, fakeRunner)
+	rr := postTurn(t, srv, `{"workspaceId":"ws_test","sessionId":"00000000-0000-0000-0000-000000000001","userMessage":"hi"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d, body: %s", rr.Code, rr.Body.String())
+	}
+	if gotMode != "resume" {
+		t.Errorf("expected SessionMode=resume on prior tarball; got %q", gotMode)
+	}
+}
+
+func TestServeHTTP_FreshSessionMode(t *testing.T) {
+	store := newFakeStore() // empty
+	var gotMode string
+	fakeRunner := func(_ context.Context, in runner.RunInput) (*runner.RunResult, error) {
+		gotMode = in.SessionMode
+		return &runner.RunResult{AssistantText: "ok", Meta: &runner.ResultMeta{Subtype: "success"}}, nil
+	}
+	srv := newTestServerWithStoreAndRunner(t, store, fakeRunner)
+	rr := postTurn(t, srv, `{"workspaceId":"ws_test","sessionId":"00000000-0000-0000-0000-000000000001","userMessage":"hi"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if gotMode != "fresh" {
+		t.Errorf("expected SessionMode=fresh on empty store; got %q", gotMode)
+	}
+}
+
+func TestServeHTTP_SameSessionSecondTurnBlocks(t *testing.T) {
+	store := newFakeStore()
+	// Slow runner so we can observe the second turn blocking on the mutex.
+	runnerEntered := make(chan struct{}, 2)
+	runnerRelease := make(chan struct{})
+	fakeRunner := func(_ context.Context, _ runner.RunInput) (*runner.RunResult, error) {
+		runnerEntered <- struct{}{}
+		<-runnerRelease
+		return &runner.RunResult{AssistantText: "ok", Meta: &runner.ResultMeta{Subtype: "success"}}, nil
+	}
+	srv := newTestServerWithStoreAndRunner(t, store, fakeRunner)
+
+	// First call (in goroutine — will block on runnerRelease)
+	body := `{"workspaceId":"ws_test","sessionId":"00000000-0000-0000-0000-000000000001","userMessage":"hi"}`
+	go postTurn(t, srv, body)
+	<-runnerEntered
+
+	// Second call (should block on AcquireSessionLock because Teardown still holds mutex)
+	secondReturned := make(chan struct{})
+	go func() {
+		postTurn(t, srv, body)
+		close(secondReturned)
+	}()
+	select {
+	case <-secondReturned:
+		t.Error("second turn should not return while first turn's mutex is held")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Release first runner; first will complete, Teardown will run and release mutex.
+	close(runnerRelease)
+	// Wait for the second turn to complete so its goroutine doesn't leak.
+	// The second runner's fakeRunner will fire its runnerEntered send AND
+	// runnerRelease check; since runnerRelease is already closed, it returns
+	// immediately. secondReturned closes when the second postTurn returns.
+	<-secondReturned
+}
+
+// TestServeHTTP_S3GetFailsNonNotFound_Returns500 verifies that a non-ErrObjectNotFound
+// error from S3 on Setup maps to 500 / workspace_setup_failed.
+// (The test function name says "502" in the brief but the spec and body both say 500.)
+func TestServeHTTP_S3GetFailsNonNotFound_Returns500(t *testing.T) {
+	store := &errorStore{err: errors.New("network unreachable")}
+	srv := newTestServerWithStoreAndRunner(t, store, nil) // runner won't be called
+	rr := postTurn(t, srv, `{"workspaceId":"ws","sessionId":"00000000-0000-0000-0000-000000000001","userMessage":"hi"}`)
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("S3 non-NotFound err should map to 500; got %d", rr.Code)
+	}
+	var resp struct {
+		Code string `json:"code"`
+	}
+	json.Unmarshal(rr.Body.Bytes(), &resp)
+	if resp.Code != "workspace_setup_failed" {
+		t.Errorf("expected code=workspace_setup_failed; got %q", resp.Code)
+	}
+}
+
+func TestServeHTTP_WorkspaceIDPathTraversalRejected(t *testing.T) {
+	cases := []struct {
+		name        string
+		workspaceID string
+	}{
+		{"dot-dot escape", "../other-tenant"},
+		{"slash injection", "ws/with/slash"},
+		{"backslash", "ws\\back"},
+		{"too long", strings.Repeat("a", 65)},
+		{"unicode whitespace", "ws   evil"},
+		{"newline", "ws\nevil"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newTestServerWithStoreAndRunner(t, newFakeStore(), nil)
+			body := fmt.Sprintf(`{"workspaceId":%q,"sessionId":"00000000-0000-4000-8000-000000000001","userMessage":"hi"}`, tc.workspaceID)
+			rr := postTurn(t, srv, body)
+			if rr.Code != http.StatusBadRequest {
+				t.Errorf("workspaceID %q should be rejected with 400; got %d body=%s", tc.workspaceID, rr.Code, rr.Body.String())
+			}
+			var resp struct {
+				Code string `json:"code"`
+			}
+			json.Unmarshal(rr.Body.Bytes(), &resp)
+			if resp.Code != "validation" {
+				t.Errorf("expected code=validation; got %q", resp.Code)
+			}
+		})
+	}
+}
+
+func TestServeHTTP_WorkspaceIDValidFormatAccepted(t *testing.T) {
+	// Sanity check: legitimate workspaceID formats still work.
+	cases := []string{
+		"ws_test",
+		"ws-prod-123",
+		"ABC_def_42",
+		"x",                       // 1 char
+		strings.Repeat("a", 64),   // max length
+	}
+	fakeRunner := func(_ context.Context, _ runner.RunInput) (*runner.RunResult, error) {
+		return &runner.RunResult{AssistantText: "ok", Meta: &runner.ResultMeta{Subtype: "success"}}, nil
+	}
+	for _, wid := range cases {
+		t.Run(wid, func(t *testing.T) {
+			srv := newTestServerWithStoreAndRunner(t, newFakeStore(), fakeRunner)
+			body := fmt.Sprintf(`{"workspaceId":%q,"sessionId":"00000000-0000-4000-8000-000000000001","userMessage":"hi"}`, wid)
+			rr := postTurn(t, srv, body)
+			if rr.Code != http.StatusOK {
+				t.Errorf("workspaceID %q should be accepted; got %d body=%s", wid, rr.Code, rr.Body.String())
+			}
+		})
 	}
 }

@@ -260,6 +260,12 @@ ccAppGateway:
   defaultModel: claude-haiku-4-5
   turnTimeout: 10m
   tmpRoot: /tmp/cc-app-gateway
+  s3:
+    endpoint: ""                       # MinIO endpoint URL; empty for real AWS
+    region: ""                         # REQUIRED when enabled=true
+    bucket: ""                         # REQUIRED when enabled=true
+    pathStyle: false                   # true for MinIO
+    existingSecret: ""                 # k8s secret with keys: access_key_id, secret_access_key
   resources:
     requests:
       memory: "512Mi"

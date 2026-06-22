@@ -10,7 +10,32 @@ services:
 
   fake-llmproxy:
     image: cc-app-gateway-test-tools:dev
-    command: fake-llmproxy --listen :8081 --accept-token deadbeef --canned-reply pong
+    command: fake-llmproxy --listen :8081 --accept-token deadbeef --canned-reply pong --log-requests-to /tmp/llmproxy-requests.log
+    volumes:
+      - llmproxy-logs:/tmp
+
+  minio:
+    image: minio/minio:latest
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 2s
+      timeout: 1s
+      retries: 10
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "
+        mc alias set local http://minio:9000 minioadmin minioadmin &&
+        mc mb -p local/cc-app-gateway-test
+      "
 
   cc-app-gateway:
     image: cc-app-gateway:dev
@@ -21,6 +46,12 @@ services:
       CCAPPGW_LLMPROXY_URL: http://fake-llmproxy:8081
       CCAPPGW_DEFAULT_MODEL: claude-haiku-4-5
       CCAPPGW_TURN_TIMEOUT: 30s
+      CCAPPGW_S3_ENDPOINT: http://minio:9000
+      CCAPPGW_S3_REGION: us-east-1
+      CCAPPGW_S3_BUCKET: cc-app-gateway-test
+      CCAPPGW_S3_PATH_STYLE: "true"
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
     ports:
       - "8087:8087"
     depends_on:
@@ -28,3 +59,8 @@ services:
         condition: service_healthy
       fake-llmproxy:
         condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+
+volumes:
+  llmproxy-logs:

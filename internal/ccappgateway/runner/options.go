@@ -11,12 +11,18 @@ type RunInput struct {
 	ClaudeBin   string        // path to the claude binary
 	ClaudeDir   string        // workspace ClaudeDir → CLAUDE_CONFIG_DIR
 	ProjectDir  string        // workspace ProjectDir → cmd.Dir
-	SessionID   string        // UUID used as --session-id (Phase 1: always new)
+	SessionID   string        // UUID used as --session-id or --resume (Phase 2+)
 	Model       string        // e.g. "haiku"
 	UserMessage string        // text for the single user turn
 	WSToken     string        // per-workspace auth token → ANTHROPIC_AUTH_TOKEN
 	LLMProxyURL string        // e.g. "http://llmproxy:8081" → ANTHROPIC_BASE_URL
 	Timeout     time.Duration // wall-clock cap; runner SIGTERMs on hit
+
+	// SessionMode controls which flag carries SessionID:
+	//   "fresh"  → --session-id <UUID> (first turn for this session)
+	//   "resume" → --resume     <UUID> (subsequent turn — S3 had a prior tarball)
+	// Default "" behaves as "fresh" (backward compat for Phase 1 callers).
+	SessionMode string
 
 	// ExtraAllowedEnv is an optional set of env-var keys that should pass
 	// through to the subprocess in addition to envAllowlist. Production
@@ -32,16 +38,17 @@ type RunInput struct {
 	ParentEnv []string
 }
 
-// BuildArgs returns the exact CLI flag list for claude --print in Phase 1.
+// BuildArgs returns the exact CLI flag list for claude --print in Phase 2+.
 //
 // Includes: --print, --input-format stream-json, --output-format stream-json,
 // --verbose, --permission-mode bypassPermissions, --dangerously-skip-permissions,
-// --model <Model>, --session-id <SessionID>.
+// --model <Model>, followed by either --session-id <SessionID> (fresh) or
+// --resume <SessionID> (resume), depending on RunInput.SessionMode.
 //
-// Phase 1 deliberately omits --mcp-config, --strict-mcp-config, --tools, --resume.
+// Phase 1 deliberately omits --mcp-config, --strict-mcp-config, --tools.
 // There is no --cwd flag on claude; use cmd.Dir instead.
 func BuildArgs(in RunInput) []string {
-	return []string{
+	args := []string{
 		"--print",
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
@@ -49,8 +56,14 @@ func BuildArgs(in RunInput) []string {
 		"--permission-mode", "bypassPermissions",
 		"--dangerously-skip-permissions",
 		"--model", in.Model,
-		"--session-id", in.SessionID,
 	}
+	switch in.SessionMode {
+	case "resume":
+		args = append(args, "--resume", in.SessionID)
+	default: // "fresh" or empty
+		args = append(args, "--session-id", in.SessionID)
+	}
+	return args
 }
 
 // envAllowlist is the set of parent env var keys that pass through to the

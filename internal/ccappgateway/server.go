@@ -57,9 +57,37 @@ func (s *Server) AcquireSessionLock(workspaceID, sessionID string) *sync.Mutex {
 	return mu
 }
 
+// validatePhase3Config checks that all required Phase 3 env-MCP fields are
+// present when EnvMcpBinary is set. Called by all public constructors so that
+// misconfiguration causes a fast crash at startup rather than a silent no-op.
+func validatePhase3Config(cfg ServeConfig) error {
+	if cfg.EnvMcpBinary == "" {
+		return nil // Phase 3 disabled; no validation needed.
+	}
+	if cfg.ExecGatewayWSURL == "" {
+		return fmt.Errorf("CCAPPGW_EXEC_GATEWAY_WS_URL required when CCAPPGW_ENV_MCP_BINARY set")
+	}
+	if cfg.ExecGatewayInternalURL == "" {
+		return fmt.Errorf("CCAPPGW_EXEC_GATEWAY_INTERNAL_URL required when CCAPPGW_ENV_MCP_BINARY set")
+	}
+	if cfg.AgentserverInternalURL == "" {
+		return fmt.Errorf("AGENTSERVER_INTERNAL_URL required when CCAPPGW_ENV_MCP_BINARY set")
+	}
+	if len(cfg.CapTokenHMACSecret) == 0 {
+		return fmt.Errorf("CCAPPGW_CAPTOKEN_HMAC_SECRET required when CCAPPGW_ENV_MCP_BINARY set")
+	}
+	if cfg.CapTokenTTL <= cfg.TurnTimeout {
+		return fmt.Errorf("CapTokenTTL (%v) must exceed TurnTimeout (%v)", cfg.CapTokenTTL, cfg.TurnTimeout)
+	}
+	return nil
+}
+
 // NewServer wires config, wstoken client, turn handler, chi router with the
 // real runner and a real S3 client. Fails fast if S3 client init fails.
 func NewServer(cfg ServeConfig) (*Server, error) {
+	if err := validatePhase3Config(cfg); err != nil {
+		return nil, err
+	}
 	ctx := context.Background()
 	store, err := NewS3Client(ctx, S3Config{
 		Endpoint:  cfg.S3Endpoint,
@@ -83,6 +111,9 @@ func NewServerWithRunner(cfg ServeConfig, runFn RunnerFunc) (*Server, error) {
 // custom ObjectStore. Used by tests that exercise S3-dependent logic (readyz,
 // Setup/Teardown).
 func NewServerWithRunnerAndStore(cfg ServeConfig, runFn RunnerFunc, store workspace.ObjectStore) (*Server, error) {
+	if err := validatePhase3Config(cfg); err != nil {
+		return nil, err
+	}
 	return newServerInternal(cfg, runFn, store), nil
 }
 

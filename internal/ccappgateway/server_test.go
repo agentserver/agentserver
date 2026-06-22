@@ -431,6 +431,66 @@ func TestShutdown_DrainsTeardownWG(t *testing.T) {
 	// would have returned via ctx-deadline exceeded — but here we expect clean drain.
 }
 
+// --- Phase 3 NewServer validation tests ---
+
+// buildPhase3Cfg returns a ServeConfig with all Phase 3 fields populated correctly.
+func buildPhase3Cfg(claudeBin, agentserverURL string) ccappgateway.ServeConfig {
+	cfg := buildTestCfg(claudeBin, agentserverURL, "")
+	cfg.EnvMcpBinary = "/usr/local/bin/codex-app-gateway"
+	cfg.ExecGatewayWSURL = "ws://exec-gw:8080"
+	cfg.ExecGatewayInternalURL = "http://exec-gw-internal:9090"
+	cfg.ExecGatewayInternalSecret = "secret"
+	cfg.CapTokenHMACSecret = []byte("hmac-secret-32-bytes-long-enough!")
+	cfg.CapTokenTTL = 2 * time.Hour // exceeds TurnTimeout=30s
+	return cfg
+}
+
+func TestNewServer_Phase3_RejectsIfWSURLMissing(t *testing.T) {
+	cfg := buildPhase3Cfg("/nonexistent/claude", "http://localhost:9999")
+	cfg.ExecGatewayWSURL = ""
+	_, err := ccappgateway.NewServerWithRunner(cfg, happyRunner)
+	if err == nil {
+		t.Fatal("expected error when ExecGatewayWSURL is empty, got nil")
+	}
+	if !strings.Contains(err.Error(), "CCAPPGW_EXEC_GATEWAY_WS_URL") {
+		t.Errorf("error should mention CCAPPGW_EXEC_GATEWAY_WS_URL; got: %v", err)
+	}
+}
+
+func TestNewServer_Phase3_RejectsIfHMACMissing(t *testing.T) {
+	cfg := buildPhase3Cfg("/nonexistent/claude", "http://localhost:9999")
+	cfg.CapTokenHMACSecret = nil
+	_, err := ccappgateway.NewServerWithRunner(cfg, happyRunner)
+	if err == nil {
+		t.Fatal("expected error when CapTokenHMACSecret is empty, got nil")
+	}
+	if !strings.Contains(err.Error(), "CCAPPGW_CAPTOKEN_HMAC_SECRET") {
+		t.Errorf("error should mention CCAPPGW_CAPTOKEN_HMAC_SECRET; got: %v", err)
+	}
+}
+
+func TestNewServer_Phase3_RejectsIfTTLTooShort(t *testing.T) {
+	cfg := buildPhase3Cfg("/nonexistent/claude", "http://localhost:9999")
+	cfg.CapTokenTTL = 5 * time.Second // less than TurnTimeout=30s
+	_, err := ccappgateway.NewServerWithRunner(cfg, happyRunner)
+	if err == nil {
+		t.Fatal("expected error when CapTokenTTL <= TurnTimeout, got nil")
+	}
+	if !strings.Contains(err.Error(), "CapTokenTTL") {
+		t.Errorf("error should mention CapTokenTTL; got: %v", err)
+	}
+}
+
+func TestNewServer_Phase3_Disabled_NoValidation(t *testing.T) {
+	// When EnvMcpBinary is empty, Phase 3 fields are ignored.
+	cfg := buildTestCfg("/nonexistent/claude", "http://localhost:9999", "")
+	// All Phase 3 fields empty — should succeed.
+	_, err := ccappgateway.NewServerWithRunner(cfg, happyRunner)
+	if err != nil {
+		t.Fatalf("expected no error when EnvMcpBinary is empty; got: %v", err)
+	}
+}
+
 func TestReadyz_S3Unreachable(t *testing.T) {
 	srv, cleanup := newTestServerWithStore(t, &errorStore{err: errors.New("s3 unreachable")})
 	defer cleanup()

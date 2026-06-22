@@ -325,3 +325,108 @@ func TestLoadServeConfigFromEnv_S3Vars(t *testing.T) {
 		}
 	})
 }
+
+// Phase 3 tests for env-MCP config fields
+func TestLoad_Phase3FieldsEmpty_BackwardCompat(t *testing.T) {
+	// Set only required Phase 1/2 vars, leave Phase 3 vars empty
+	t.Setenv("INTERNAL_API_SECRET", "secret")
+	t.Setenv("AGENTSERVER_INTERNAL_URL", "http://a:8080")
+	t.Setenv("CCAPPGW_LLMPROXY_URL", "http://l:8081")
+	t.Setenv("CCAPPGW_S3_REGION", "us-east-1")
+	t.Setenv("CCAPPGW_S3_BUCKET", "bucket")
+
+	// Explicitly clear Phase 3 env vars
+	t.Setenv("CCAPPGW_ENV_MCP_BINARY", "")
+	t.Setenv("CCAPPGW_EXEC_GATEWAY_WS_URL", "")
+	t.Setenv("CCAPPGW_EXEC_GATEWAY_INTERNAL_URL", "")
+	t.Setenv("CCAPPGW_EXEC_GATEWAY_INTERNAL_SECRET", "")
+	t.Setenv("CCAPPGW_CAPTOKEN_HMAC_SECRET", "")
+	t.Setenv("CCAPPGW_CAPTOKEN_TTL", "")
+
+	cfg, err := LoadServeConfigFromEnv(ServeFlags{})
+	if err != nil {
+		t.Fatalf("LoadServeConfigFromEnv: %v", err)
+	}
+
+	// All Phase 3 fields should be zero-valued
+	if cfg.EnvMcpBinary != "" {
+		t.Errorf("EnvMcpBinary should be empty, got %q", cfg.EnvMcpBinary)
+	}
+	if cfg.ExecGatewayWSURL != "" {
+		t.Errorf("ExecGatewayWSURL should be empty, got %q", cfg.ExecGatewayWSURL)
+	}
+	if cfg.ExecGatewayInternalURL != "" {
+		t.Errorf("ExecGatewayInternalURL should be empty, got %q", cfg.ExecGatewayInternalURL)
+	}
+	if cfg.ExecGatewayInternalSecret != "" {
+		t.Errorf("ExecGatewayInternalSecret should be empty, got %q", cfg.ExecGatewayInternalSecret)
+	}
+	if len(cfg.CapTokenHMACSecret) != 0 {
+		t.Errorf("CapTokenHMACSecret should be empty, got %d bytes", len(cfg.CapTokenHMACSecret))
+	}
+	if cfg.CapTokenTTL != time.Hour {
+		t.Errorf("CapTokenTTL should be time.Hour, got %v", cfg.CapTokenTTL)
+	}
+}
+
+func TestLoad_Phase3FieldsSet(t *testing.T) {
+	// Set all required Phase 1/2 vars
+	t.Setenv("INTERNAL_API_SECRET", "secret")
+	t.Setenv("AGENTSERVER_INTERNAL_URL", "http://a:8080")
+	t.Setenv("CCAPPGW_LLMPROXY_URL", "http://l:8081")
+	t.Setenv("CCAPPGW_S3_REGION", "us-east-1")
+	t.Setenv("CCAPPGW_S3_BUCKET", "bucket")
+
+	// Set all Phase 3 vars
+	t.Setenv("CCAPPGW_ENV_MCP_BINARY", "/usr/local/bin/codex-app-gateway")
+	t.Setenv("CCAPPGW_EXEC_GATEWAY_WS_URL", "ws://codex-exec-gateway:6060")
+	t.Setenv("CCAPPGW_EXEC_GATEWAY_INTERNAL_URL", "http://codex-exec-gateway:6060")
+	t.Setenv("CCAPPGW_EXEC_GATEWAY_INTERNAL_SECRET", "secret-internal")
+	t.Setenv("CCAPPGW_CAPTOKEN_HMAC_SECRET", "fake-secret-123")
+	t.Setenv("CCAPPGW_CAPTOKEN_TTL", "2h")
+
+	cfg, err := LoadServeConfigFromEnv(ServeFlags{})
+	if err != nil {
+		t.Fatalf("LoadServeConfigFromEnv: %v", err)
+	}
+
+	// Verify all Phase 3 fields are populated correctly
+	if cfg.EnvMcpBinary != "/usr/local/bin/codex-app-gateway" {
+		t.Errorf("EnvMcpBinary = %q, want /usr/local/bin/codex-app-gateway", cfg.EnvMcpBinary)
+	}
+	if cfg.ExecGatewayWSURL != "ws://codex-exec-gateway:6060" {
+		t.Errorf("ExecGatewayWSURL = %q, want ws://codex-exec-gateway:6060", cfg.ExecGatewayWSURL)
+	}
+	if cfg.ExecGatewayInternalURL != "http://codex-exec-gateway:6060" {
+		t.Errorf("ExecGatewayInternalURL = %q, want http://codex-exec-gateway:6060", cfg.ExecGatewayInternalURL)
+	}
+	if cfg.ExecGatewayInternalSecret != "secret-internal" {
+		t.Errorf("ExecGatewayInternalSecret = %q, want secret-internal", cfg.ExecGatewayInternalSecret)
+	}
+	if string(cfg.CapTokenHMACSecret) != "fake-secret-123" {
+		t.Errorf("CapTokenHMACSecret = %q, want fake-secret-123", string(cfg.CapTokenHMACSecret))
+	}
+	if cfg.CapTokenTTL != 2*time.Hour {
+		t.Errorf("CapTokenTTL = %v, want 2h", cfg.CapTokenTTL)
+	}
+}
+
+func TestLoad_CapTokenTTL_Invalid(t *testing.T) {
+	// Set all required Phase 1/2 vars
+	t.Setenv("INTERNAL_API_SECRET", "secret")
+	t.Setenv("AGENTSERVER_INTERNAL_URL", "http://a:8080")
+	t.Setenv("CCAPPGW_LLMPROXY_URL", "http://l:8081")
+	t.Setenv("CCAPPGW_S3_REGION", "us-east-1")
+	t.Setenv("CCAPPGW_S3_BUCKET", "bucket")
+
+	// Set invalid TTL
+	t.Setenv("CCAPPGW_CAPTOKEN_TTL", "not-a-duration")
+
+	_, err := LoadServeConfigFromEnv(ServeFlags{})
+	if err == nil {
+		t.Errorf("LoadServeConfigFromEnv should return error for invalid CCAPPGW_CAPTOKEN_TTL, got nil")
+	}
+	if !strings.Contains(err.Error(), "CCAPPGW_CAPTOKEN_TTL") {
+		t.Errorf("error should mention CCAPPGW_CAPTOKEN_TTL, got: %v", err)
+	}
+}

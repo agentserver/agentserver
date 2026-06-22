@@ -495,14 +495,20 @@ func (b *Bridge) forwardToManagedCC(ctx context.Context, binding BridgeBinding, 
 		"channel_id":         binding.ChannelID,
 		"workspace_id":       binding.WorkspaceID,
 		"wechat_user_id":     msg.FromUserID,
-		"wechat_sender":      msg.SenderName,
+		"wechat_sender_name": msg.SenderName,
 		"text":               msg.Text,
 		"quoted_text":        msg.QuotedText,
 		"quoted_sender":      msg.QuotedSender,
-		"media_type":         msg.MediaType,
-		"media_data":         msg.MediaData,
-		"quoted_media_type":  msg.QuotedMediaType,
-		"quoted_media_data":  msg.QuotedMediaData,
+	}
+	// Forward image bytes so cc-app-gateway turn input can carry them.
+	// Mirrors forwardToCodex's media payload shape (only include if present).
+	if len(msg.MediaData) > 0 {
+		payload["media_data"] = base64.StdEncoding.EncodeToString(msg.MediaData)
+		payload["media_type"] = msg.MediaType
+	}
+	if len(msg.QuotedMediaData) > 0 {
+		payload["quoted_media_data"] = base64.StdEncoding.EncodeToString(msg.QuotedMediaData)
+		payload["quoted_media_type"] = msg.QuotedMediaType
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

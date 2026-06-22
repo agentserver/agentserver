@@ -199,7 +199,7 @@ type IMChannelListResponse struct {
 
 // IMChannelPatchRequest is the body for PATCH /api/workspaces/{id}/im/channels/{channelId}.
 // Both fields are optional — only the supplied keys are applied.
-// routing_mode must be "nanoclaw" or "codex".
+// routing_mode must be "nanoclaw", "codex", or "managed_cc".
 type IMChannelPatchRequest struct {
 	RequireMention *bool   `json:"require_mention" extensions:"x-nullable=true"`
 	RoutingMode    *string `json:"routing_mode" extensions:"x-nullable=true" example:"codex"`

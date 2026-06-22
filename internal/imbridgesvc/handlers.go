@@ -971,11 +971,8 @@ func (s *Server) handleUpdateWorkspaceIMChannel(w http.ResponseWriter, r *http.R
 
 	if req.RoutingMode != nil {
 		mode := *req.RoutingMode
-		// stateless_cc is no longer accepted — the agentserver endpoint
-		// it pointed to (POST /api/workspaces/{id}/im/inbound) was
-		// removed in the #135 purge.
-		if mode != "nanoclaw" && mode != "codex" {
-			http.Error(w, "invalid routing_mode: must be nanoclaw or codex", http.StatusBadRequest)
+		if !isValidRoutingMode(mode) {
+			http.Error(w, "invalid routing_mode: must be nanoclaw, codex, or managed_cc", http.StatusBadRequest)
 			return
 		}
 		if err := s.db.UpdateIMChannelRoutingMode(channelID, mode); err != nil {
@@ -1260,4 +1257,10 @@ func (s *Server) handleWorkspaceMatrixConfigure(w http.ResponseWriter, r *http.R
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"connected": true, "bot_id": botID})
+}
+
+// isValidRoutingMode reports whether mode is an allowed IM channel routing
+// mode. stateless_cc was removed in the #135 purge.
+func isValidRoutingMode(mode string) bool {
+	return mode == "nanoclaw" || mode == "codex" || mode == "managed_cc"
 }

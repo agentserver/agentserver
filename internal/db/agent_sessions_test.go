@@ -182,3 +182,57 @@ func TestListSessionsByChannel(t *testing.T) {
 		t.Errorf("first of our sessions should be cse_lbc2 (most recent), got %q", ours[0].ID)
 	}
 }
+
+func TestSetSessionClaudeSessionID(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	// Set up a row.
+	sid := "cse_cc_" + t.Name()
+	err := db.CreateAgentSessionTUI(ctx, CreateTUISessionParams{
+		ID:              sid,
+		WorkspaceID:     "ws_test",
+		ExternalID:      "tui:exe:1",
+		Title:           "test",
+		CreatorUserID:   "u_test",
+		PermissionMode:  "ask",
+		PreferredModel:  "",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Exec(`DELETE FROM agent_sessions WHERE id = $1`, sid) })
+
+	// SetSessionClaudeSessionID populates the new column.
+	cid := "11111111-1111-4111-8111-111111111111"
+	if err := db.SetSessionClaudeSessionID(ctx, sid, cid); err != nil {
+		t.Fatalf("SetSessionClaudeSessionID: %v", err)
+	}
+
+	// Read it back via existing query path.
+	sess, err := db.GetAgentSession(sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess == nil {
+		t.Fatal("GetAgentSession returned nil")
+	}
+	if !sess.ClaudeSessionID.Valid || sess.ClaudeSessionID.String != cid {
+		t.Errorf("ClaudeSessionID: got %v, want %q", sess.ClaudeSessionID, cid)
+	}
+
+	// Updating an existing claude_session_id (e.g. drift) overwrites.
+	cid2 := "22222222-2222-4222-8222-222222222222"
+	if err := db.SetSessionClaudeSessionID(ctx, sid, cid2); err != nil {
+		t.Fatal(err)
+	}
+	sess, _ = db.GetAgentSession(sid)
+	if sess.ClaudeSessionID.String != cid2 {
+		t.Errorf("update didn't take: %q", sess.ClaudeSessionID.String)
+	}
+
+	// Setting on nonexistent session returns an error.
+	if err := db.SetSessionClaudeSessionID(ctx, "cse_does_not_exist", "33333333-3333-4333-8333-333333333333"); err == nil {
+		t.Error("SetSessionClaudeSessionID on missing row should error")
+	}
+}

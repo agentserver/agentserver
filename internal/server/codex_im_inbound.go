@@ -55,8 +55,9 @@ type sessionStore interface {
 // sessionView is the subset of agent_sessions fields the codex handler
 // needs. Decoupled from db.AgentSession to keep test fakes small.
 type sessionView struct {
-	ID            string
-	CodexThreadID *string
+	ID              string
+	CodexThreadID   *string
+	ClaudeSessionID string  // Phase 4: cc-app-gateway-compatible session ID; "" for non-managed_cc sessions
 }
 
 type codexInboundRequest struct {
@@ -594,7 +595,11 @@ func (s *dbSessionStore) GetSessionByExternalID(ctx context.Context, workspaceID
 		// Not found — return empty sessionView so caller can create.
 		return sessionView{}, nil
 	}
-	return sessionView{ID: sess.ID, CodexThreadID: sess.CodexThreadID}, nil
+	return sessionView{
+		ID:              sess.ID,
+		CodexThreadID:   sess.CodexThreadID,
+		ClaudeSessionID: sess.ClaudeSessionID.String,
+	}, nil
 }
 
 func (s *dbSessionStore) SetSessionCodexThreadID(ctx context.Context, sessionID string, threadID *string) error {
@@ -615,5 +620,9 @@ func (s *dbSessionStore) CreateSession(ctx context.Context, workspaceID, externa
 			log.Printf("codex_im: failed to set im_channel_id for session %s: %v", sessionID, err)
 		}
 	}
-	return sessionView{ID: sessionID, CodexThreadID: nil}, nil
+	return sessionView{
+		ID:              sessionID,
+		CodexThreadID:   nil,
+		ClaudeSessionID: "", // newly created session has no Claude session ID
+	}, nil
 }

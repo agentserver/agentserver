@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -48,7 +49,7 @@ type BridgeBinding struct {
 	ChannelID   string // workspace_im_channels.id
 	Cursor      string
 	WorkspaceID string // workspace that owns this channel
-	RoutingMode string // "nanoclaw" (default) or "codex"
+	RoutingMode string // "nanoclaw" (default), "codex", or "managed_cc" (Phase 4 cc-app-gateway)
 }
 
 // pollerEntry tracks an active poller so the bridge can both cancel it and
@@ -405,12 +406,12 @@ func (b *Bridge) pollLoop(ctx context.Context, binding BridgeBinding) {
 }
 
 // forwardMessage routes an inbound message based on the binding's RoutingMode.
-// "codex" forwards to agentserver's codex-app-gateway path; all other
-// values (including empty, for backward compatibility) forward to
-// NanoClaw. "stateless_cc" used to route to a since-removed agentserver
-// /api/workspaces/{id}/im/inbound handler (purged in #135); that route
-// is no longer accepted by the API and any DB row still carrying it
-// falls through to NanoClaw here.
+// "codex" forwards to agentserver's codex-app-gateway path; "managed_cc" (Phase 4)
+// forwards to the cc-app-gateway path; all other values (including empty, for
+// backward compatibility) forward to NanoClaw. "stateless_cc" used to route to
+// a since-removed agentserver /api/workspaces/{id}/im/inbound handler (purged
+// in #135); that route is no longer accepted by the API and any DB row still
+// carrying it falls through to NanoClaw here.
 func (b *Bridge) forwardMessage(ctx context.Context, binding BridgeBinding, msg InboundMessage) (bool, error) {
 	// In-memory routing mode (set via SetChannelRoutingMode) wins over
 	// the routing_mode captured at StartPoller time. Empty map value
@@ -422,6 +423,8 @@ func (b *Bridge) forwardMessage(ctx context.Context, binding BridgeBinding, msg 
 	switch mode {
 	case "codex":
 		return b.forwardToCodex(ctx, binding, msg)
+	case "managed_cc":
+		return b.forwardToManagedCC(ctx, binding, msg)
 	default: // "nanoclaw", "stateless_cc" (legacy), or empty
 		return b.forwardToNanoClaw(ctx, binding, msg)
 	}
@@ -479,6 +482,57 @@ func (b *Bridge) forwardToCodex(ctx context.Context, binding BridgeBinding, msg 
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusAccepted {
 		return false, fmt.Errorf("codex inbound: status %d", resp.StatusCode)
+	}
+	return true, nil
+}
+
+// forwardToManagedCC POSTs the inbound message to agentserver's
+// /api/internal/imbridge/cc/turn endpoint (Phase 4 cc-app-gateway).
+// Mirrors forwardToCodex's shape — HTTP-based, fire-and-forget
+// for the reply — that comes back via /api/internal/imbridge/send.
+func (b *Bridge) forwardToManagedCC(ctx context.Context, binding BridgeBinding, msg InboundMessage) (bool, error) {
+	payload := map[string]any{
+		"channel_id":         binding.ChannelID,
+		"workspace_id":       binding.WorkspaceID,
+		"wechat_user_id":     msg.FromUserID,
+		"wechat_sender_name": msg.SenderName,
+		"text":               msg.Text,
+		"quoted_text":        msg.QuotedText,
+		"quoted_sender":      msg.QuotedSender,
+	}
+	// Forward image bytes so cc-app-gateway turn input can carry them.
+	// Mirrors forwardToCodex's media payload shape (only include if present).
+	if len(msg.MediaData) > 0 {
+		payload["media_data"] = base64.StdEncoding.EncodeToString(msg.MediaData)
+		payload["media_type"] = msg.MediaType
+	}
+	if len(msg.QuotedMediaData) > 0 {
+		payload["quoted_media_data"] = base64.StdEncoding.EncodeToString(msg.QuotedMediaData)
+		payload["quoted_media_type"] = msg.QuotedMediaType
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return false, fmt.Errorf("marshal managed_cc inbound: %w", err)
+	}
+	url := b.agentserverURL + "/api/internal/imbridge/cc/turn"
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if secret := os.Getenv("INTERNAL_API_SECRET"); secret != "" {
+		req.Header.Set("X-Internal-Secret", secret)
+	}
+	hctx, cancel := context.WithTimeout(ctx, forwardTimeout)
+	defer cancel()
+	resp, err := http.DefaultClient.Do(req.WithContext(hctx))
+	if err != nil {
+		return false, fmt.Errorf("forward managed_cc: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return false, fmt.Errorf("managed_cc inbound: status=%d body=%q", resp.StatusCode, respBody)
 	}
 	return true, nil
 }

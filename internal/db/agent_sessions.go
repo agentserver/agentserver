@@ -34,6 +34,7 @@ type AgentSession struct {
 	ResponderAttachedAt *time.Time
 	ActiveTurnID        *string
 	CodexThreadID       *string `json:"codex_thread_id,omitempty"`
+	ClaudeSessionID     sql.NullString
 }
 
 // AgentSessionEvent is a single event in a session's event log.
@@ -82,12 +83,12 @@ func (db *DB) GetAgentSession(id string) (*AgentSession, error) {
 		`SELECT id, sandbox_id, workspace_id, title, status, epoch, tags, im_channel_id, created_at, updated_at, archived_at,
 		        channel_type, creator_user_id, preferred_model, permission_mode,
 		        preferred_executor_id, permission_responder, responder_attached_at, active_turn_id,
-		        codex_thread_id
+		        codex_thread_id, claude_session_id
 		 FROM agent_sessions WHERE id = $1`, id,
 	).Scan(&s.ID, &sandboxID, &s.WorkspaceID, &s.Title, &s.Status, &s.Epoch, &tags, &imChannelID, &s.CreatedAt, &s.UpdatedAt, &s.ArchivedAt,
 		&s.ChannelType, &creatorUserID, &preferredModel, &s.PermissionMode,
 		&preferredExecutorID, &permissionResponder, &responderAttachedAt, &activeTurnID,
-		&codexThreadID)
+		&codexThreadID, &s.ClaudeSessionID)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -397,13 +398,13 @@ func (db *DB) GetSessionByExternalID(ctx context.Context, workspaceID, externalI
 		`SELECT id, sandbox_id, workspace_id, title, status, epoch, tags, im_channel_id, created_at, updated_at, archived_at,
 		        channel_type, creator_user_id, preferred_model, permission_mode,
 		        preferred_executor_id, permission_responder, responder_attached_at, active_turn_id,
-		        codex_thread_id
+		        codex_thread_id, claude_session_id
 		 FROM agent_sessions WHERE workspace_id = $1 AND external_id = $2`,
 		workspaceID, externalID,
 	).Scan(&s.ID, &sandboxID, &s.WorkspaceID, &s.Title, &s.Status, &s.Epoch, &tags, &imChannelID, &s.CreatedAt, &s.UpdatedAt, &s.ArchivedAt,
 		&s.ChannelType, &creatorUserID, &preferredModel, &s.PermissionMode,
 		&preferredExecutorID, &permissionResponder, &responderAttachedAt, &activeTurnID,
-		&codexThreadID)
+		&codexThreadID, &s.ClaudeSessionID)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -688,6 +689,26 @@ func (db *DB) SetSessionCodexThreadID(ctx context.Context, sessionID string, thr
 	)
 	if err != nil {
 		return fmt.Errorf("update codex_thread_id: %w", err)
+	}
+	return nil
+}
+
+// SetSessionClaudeSessionID writes the cc-app-gateway-compatible session
+// identifier (pure UUID) for the given agent_sessions row. Used by the
+// managed_cc IM handler to record the session ID it minted, and to
+// upgrade existing codex/nanoclaw sessions when their channel migrates
+// to managed_cc (see spec § Audit Revision #2).
+func (db *DB) SetSessionClaudeSessionID(ctx context.Context, sessionID, claudeSessionID string) error {
+	res, err := db.ExecContext(ctx,
+		`UPDATE agent_sessions SET claude_session_id = $1, updated_at = NOW() WHERE id = $2`,
+		claudeSessionID, sessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("SetSessionClaudeSessionID: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("SetSessionClaudeSessionID: no row with id=%s", sessionID)
 	}
 	return nil
 }

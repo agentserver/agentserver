@@ -476,8 +476,8 @@ func TestNewServer_Phase3_RejectsIfTTLTooShort(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when CapTokenTTL <= TurnTimeout, got nil")
 	}
-	if !strings.Contains(err.Error(), "CapTokenTTL") {
-		t.Errorf("error should mention CapTokenTTL; got: %v", err)
+	if !strings.Contains(err.Error(), "CCAPPGW_CAPTOKEN_TTL") {
+		t.Errorf("error should mention CCAPPGW_CAPTOKEN_TTL; got: %v", err)
 	}
 }
 

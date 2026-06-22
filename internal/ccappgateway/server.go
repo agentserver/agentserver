@@ -77,7 +77,7 @@ func validatePhase3Config(cfg ServeConfig) error {
 		return fmt.Errorf("CCAPPGW_CAPTOKEN_HMAC_SECRET required when CCAPPGW_ENV_MCP_BINARY set")
 	}
 	if cfg.CapTokenTTL <= cfg.TurnTimeout {
-		return fmt.Errorf("CapTokenTTL (%v) must exceed TurnTimeout (%v)", cfg.CapTokenTTL, cfg.TurnTimeout)
+		return fmt.Errorf("CCAPPGW_CAPTOKEN_TTL (%v) must exceed CCAPPGW_TURN_TIMEOUT (%v); set CCAPPGW_CAPTOKEN_TTL to at least 2× turn timeout", cfg.CapTokenTTL, cfg.TurnTimeout)
 	}
 	return nil
 }

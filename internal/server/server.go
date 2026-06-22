@@ -95,6 +95,10 @@ type Server struct {
 	// configured. Kept here so Close() can stop its dispatcher.
 	codexHandler *codexInboundHandler
 
+	// ccHandler is set by Router() when CC_APP_GATEWAY_REST_URL is
+	// configured. Kept here so Close() can stop its dispatcher.
+	ccHandler *ccInboundHandler
+
 	// imBridgeProxy is set by Router() when IMBridgeURL is non-empty.
 	// Stored here so per-route wrapper methods (im_routes.go) can call it.
 	imBridgeProxy http.HandlerFunc
@@ -156,11 +160,14 @@ func New(a *auth.Auth, oidcMgr *auth.OIDCManager, database *db.DB, sandboxStore 
 }
 
 // Close releases resources owned by the Server. Safe to call after
-// Router() returns; a no-op if called before Router() or if the codex
-// routing path was not configured.
+// Router() returns; a no-op if called before Router() or if the routing
+// paths were not configured.
 func (s *Server) Close() {
 	if s.codexHandler != nil {
 		s.codexHandler.Close()
+	}
+	if s.ccHandler != nil {
+		s.ccHandler.Close()
 	}
 }
 
@@ -390,6 +397,40 @@ func (s *Server) Router() http.Handler {
 		})
 	} else {
 		log.Printf("server: codex routing endpoint disabled (set CODEX_APP_GATEWAY_REST_URL to enable)")
+	}
+
+	// CC routing path: WeChat (and other channels) with routing_mode="managed_cc"
+	// land here. Skipped when CC_APP_GATEWAY_REST_URL is unset, so dev envs
+	// without cc-app-gateway silently disable the endpoint.
+	ccURL := ResolveCCAppGatewayRESTURL()
+	if ccURL != "" {
+		log.Printf("server: cc routing endpoint enabled, cc=%s", ccURL)
+		ccClient := NewCcClient(ccURL, os.Getenv("INTERNAL_API_SECRET"))
+		imbridgeSendURL := s.IMBridgeURL
+		if imbridgeSendURL == "" {
+			imbridgeSendURL = "http://127.0.0.1:8080"
+		}
+		s.ccHandler = newCcInboundHandler(ccClient, &ccDbSessionStore{db: s.DB}, imbridgeSendURL, os.Getenv("INTERNAL_API_SECRET"))
+		ccHandler := s.ccHandler
+		r.Post("/api/internal/imbridge/cc/turn", func(w http.ResponseWriter, r *http.Request) {
+			secret := os.Getenv("INTERNAL_API_SECRET")
+			if secret != "" {
+				if r.Header.Get("X-Internal-Secret") != secret {
+					http.Error(w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
+			}
+			ccHandler.ServeHTTP(w, r)
+		})
+	} else {
+		log.Printf("server: cc routing endpoint disabled (set CC_APP_GATEWAY_REST_URL to enable)")
+		// Misconfiguration safeguard: warn if any channels are set to managed_cc
+		// but the gateway URL is not configured — those channels will fail.
+		if s.DB != nil {
+			if n, err := s.DB.CountIMChannelsByRoutingMode(context.Background(), "managed_cc"); err == nil && n > 0 {
+				log.Printf("[server] WARNING: %d IM channel(s) have routing_mode=managed_cc but CC_APP_GATEWAY_REST_URL is unset — those channels will fail until cc-app-gateway is enabled", n)
+			}
+		}
 	}
 
 	// Agent registration (auth via OAuth Bearer token).

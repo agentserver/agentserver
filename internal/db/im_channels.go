@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"encoding/json"
 	"time"
 )
@@ -284,6 +285,15 @@ func (db *DB) GetSandboxForChannel(channelID string) (sandboxID, podIP, bridgeSe
 		}
 	}
 	return
+}
+
+// CountIMChannelsByRoutingMode returns the number of workspace_im_channels
+// rows with the given routing_mode value. Used at startup to detect
+// misconfiguration (e.g. channels set to "managed_cc" but CC_APP_GATEWAY_REST_URL unset).
+func (db *DB) CountIMChannelsByRoutingMode(ctx context.Context, mode string) (int, error) {
+	var n int
+	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM workspace_im_channels WHERE routing_mode = $1`, mode).Scan(&n)
+	return n, err
 }
 
 // GetIMChannelForSandbox returns the IM channel bound to a sandbox, if any.

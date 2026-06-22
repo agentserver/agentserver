@@ -60,9 +60,16 @@ spec:
             - name: CCAPPGW_S3_PATH_STYLE
               value: {{ .Values.ccAppGateway.s3.pathStyle | quote }}
 {{- if .Values.ccAppGateway.s3.existingSecret }}
-          envFrom:
-            - secretRef:
-                name: {{ .Values.ccAppGateway.s3.existingSecret }}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.ccAppGateway.s3.existingSecret }}
+                  key: access_key_id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.ccAppGateway.s3.existingSecret }}
+                  key: secret_access_key
 {{- end }}
           volumeMounts:
             - name: cc-gateway-tmp

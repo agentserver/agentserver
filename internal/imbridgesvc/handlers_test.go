@@ -1,28 +1,23 @@
 package imbridgesvc
 
-import (
-	"bytes"
-	"encoding/json"
-	"testing"
-)
+import "testing"
 
-func TestPatchIMChannel_AcceptsManagedCCRoutingMode(t *testing.T) {
-	payload := map[string]interface{}{
-		"routing_mode": "managed_cc",
+func TestIsValidRoutingMode(t *testing.T) {
+	cases := []struct {
+		mode string
+		want bool
+	}{
+		{"nanoclaw", true},
+		{"codex", true},
+		{"managed_cc", true},
+		{"stateless_cc", false}, // removed in #135 purge
+		{"", false},
+		{"unknown", false},
+		{"MANAGED_CC", false}, // case-sensitive
 	}
-	body, _ := json.Marshal(payload)
-
-	// Verify the validator logic accepts "managed_cc"
-	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&payload); err != nil {
-		t.Fatalf("failed to decode payload: %v", err)
+	for _, tc := range cases {
+		if got := isValidRoutingMode(tc.mode); got != tc.want {
+			t.Errorf("isValidRoutingMode(%q) = %v, want %v", tc.mode, got, tc.want)
+		}
 	}
-
-	mode := payload["routing_mode"].(string)
-	// This is the same condition as in handlers.go:977
-	if mode != "nanoclaw" && mode != "codex" && mode != "managed_cc" {
-		t.Errorf("managed_cc should be accepted by validator, but validator rejected it")
-		return
-	}
-
-	t.Logf("managed_cc validator check passed")
 }

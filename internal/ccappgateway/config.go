@@ -22,6 +22,14 @@ type ServeConfig struct {
 	S3Region               string
 	S3Bucket               string
 	S3PathStyle            bool
+
+	// Phase 3: env-MCP wiring. All required when EnvMcpBinary != "".
+	EnvMcpBinary              string
+	ExecGatewayWSURL          string // ws://...; cc-app-gateway appends /bridge per-turn
+	ExecGatewayInternalURL    string
+	ExecGatewayInternalSecret string // optional
+	CapTokenHMACSecret        []byte
+	CapTokenTTL               time.Duration // default time.Hour
 }
 
 // ServeFlags represents parsed command-line flags for the serve subcommand.
@@ -101,6 +109,22 @@ func LoadServeConfigFromEnv(flags ServeFlags) (ServeConfig, error) {
 			return ServeConfig{}, fmt.Errorf("CCAPPGW_S3_PATH_STYLE: %w", err)
 		}
 		cfg.S3PathStyle = b
+	}
+
+	// Load Phase 3 env-MCP vars
+	cfg.EnvMcpBinary = os.Getenv("CCAPPGW_ENV_MCP_BINARY")
+	cfg.ExecGatewayWSURL = os.Getenv("CCAPPGW_EXEC_GATEWAY_WS_URL")
+	cfg.ExecGatewayInternalURL = os.Getenv("CCAPPGW_EXEC_GATEWAY_INTERNAL_URL")
+	cfg.ExecGatewayInternalSecret = os.Getenv("CCAPPGW_EXEC_GATEWAY_INTERNAL_SECRET")
+	cfg.CapTokenHMACSecret = []byte(os.Getenv("CCAPPGW_CAPTOKEN_HMAC_SECRET"))
+	if v := os.Getenv("CCAPPGW_CAPTOKEN_TTL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return ServeConfig{}, fmt.Errorf("CCAPPGW_CAPTOKEN_TTL: %w", err)
+		}
+		cfg.CapTokenTTL = d
+	} else {
+		cfg.CapTokenTTL = time.Hour
 	}
 
 	return cfg, nil

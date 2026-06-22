@@ -24,6 +24,11 @@ type RunInput struct {
 	// Default "" behaves as "fresh" (backward compat for Phase 1 callers).
 	SessionMode string
 
+	// MCPConfigPath is the path to the mcp.json config file (Phase 3+). When set,
+	// BuildArgs appends --mcp-config, --strict-mcp-config, and --tools flags.
+	// Empty string disables MCP (Phase 2 behavior).
+	MCPConfigPath string
+
 	// ExtraAllowedEnv is an optional set of env-var keys that should pass
 	// through to the subprocess in addition to envAllowlist. Production
 	// callers leave this empty; tests use it to inject helper vars (e.g.
@@ -42,10 +47,12 @@ type RunInput struct {
 //
 // Includes: --print, --input-format stream-json, --output-format stream-json,
 // --verbose, --permission-mode bypassPermissions, --dangerously-skip-permissions,
-// --model <Model>, followed by either --session-id <SessionID> (fresh) or
-// --resume <SessionID> (resume), depending on RunInput.SessionMode.
+// --model <Model>, followed by MCP flags (if MCPConfigPath != ""), followed by
+// either --session-id <SessionID> (fresh) or --resume <SessionID> (resume),
+// depending on RunInput.SessionMode.
 //
-// Phase 1 deliberately omits --mcp-config, --strict-mcp-config, --tools.
+// Phase 2 (MCPConfigPath empty) omits --mcp-config, --strict-mcp-config, --tools.
+// Phase 3+ (MCPConfigPath set) appends those flags in that order before session flags.
 // There is no --cwd flag on claude; use cmd.Dir instead.
 func BuildArgs(in RunInput) []string {
 	args := []string{
@@ -56,6 +63,9 @@ func BuildArgs(in RunInput) []string {
 		"--permission-mode", "bypassPermissions",
 		"--dangerously-skip-permissions",
 		"--model", in.Model,
+	}
+	if in.MCPConfigPath != "" {
+		args = append(args, "--mcp-config", in.MCPConfigPath, "--strict-mcp-config", "--tools", "mcp__agentserver__*")
 	}
 	switch in.SessionMode {
 	case "resume":

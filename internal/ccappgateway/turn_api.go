@@ -7,10 +7,14 @@ import (
 	"log"
 	"net/http"
 	"regexp"
+	"strings"
 	"time"
 
+	"github.com/agentserver/agentserver/internal/captoken"
+	"github.com/agentserver/agentserver/internal/ccappgateway/mcp"
 	"github.com/agentserver/agentserver/internal/ccappgateway/runner"
 	"github.com/agentserver/agentserver/internal/ccappgateway/workspace"
+	"github.com/agentserver/agentserver/internal/shortid"
 )
 
 // RunnerFunc abstracts runner.Run for testability. In production it's
@@ -184,21 +188,54 @@ func (h *TurnHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		sessionMode = "resume"
 	}
 
+	// Phase 3: mint cap-token and write mcp.json when env-MCP is configured.
+	var mcpConfigPath string
+	if h.Cfg.EnvMcpBinary != "" {
+		capTok, err := captoken.Mint(h.Cfg.CapTokenHMACSecret, captoken.Payload{
+			TurnID:      "trn_" + shortid.Generate(),
+			WorkspaceID: req.WorkspaceID,
+			UserID:      "", // cc-app-gateway is internal-secret authed; no enduser context
+		}, h.Cfg.CapTokenTTL)
+		if err != nil {
+			log.Printf("[cc-app-gateway] mint_captoken_failed (session=%s workspace=%s): %v", req.SessionID, req.WorkspaceID, err)
+			writeError(w, http.StatusInternalServerError, "captoken_failed", "internal authorization failure")
+			return
+		}
+		bridgeURL := strings.TrimRight(h.Cfg.ExecGatewayWSURL, "/") + "/bridge"
+		p, err := mcp.WriteConfig(ws.TempDir, mcp.ConfigInput{
+			EnvMcpBinary:              h.Cfg.EnvMcpBinary,
+			WorkspaceID:               req.WorkspaceID,
+			ExecGatewayBridgeURL:      bridgeURL,
+			ExecGatewayInternalURL:    h.Cfg.ExecGatewayInternalURL,
+			ExecGatewayInternalSecret: h.Cfg.ExecGatewayInternalSecret,
+			AgentserverInternalURL:    h.Cfg.AgentserverInternalURL,
+			WorkspaceCapToken:         capTok,
+			LogFile:                   "/dev/stderr",
+		})
+		if err != nil {
+			log.Printf("[cc-app-gateway] mcp_config_write_failed (session=%s): %v", req.SessionID, err)
+			writeError(w, http.StatusInternalServerError, "mcp_config_failed", "internal MCP config failure")
+			return
+		}
+		mcpConfigPath = p
+	}
+
 	// Run claude with per-turn timeout.
 	runCtx, rcancel := context.WithTimeout(r.Context(), turnTimeout)
 	defer rcancel()
 
 	result, err := h.Runner(runCtx, runner.RunInput{
-		ClaudeBin:   h.Cfg.ClaudeBin,
-		ClaudeDir:   ws.ClaudeDir,
-		ProjectDir:  ws.ProjectDir,
-		SessionID:   req.SessionID,
-		Model:       model,
-		UserMessage: req.UserMessage,
-		WSToken:     wsToken,
-		LLMProxyURL: h.Cfg.LLMProxyURL,
-		Timeout:     turnTimeout,
-		SessionMode: sessionMode,
+		ClaudeBin:     h.Cfg.ClaudeBin,
+		ClaudeDir:     ws.ClaudeDir,
+		ProjectDir:    ws.ProjectDir,
+		SessionID:     req.SessionID,
+		Model:         model,
+		UserMessage:   req.UserMessage,
+		WSToken:       wsToken,
+		LLMProxyURL:   h.Cfg.LLMProxyURL,
+		Timeout:       turnTimeout,
+		SessionMode:   sessionMode,
+		MCPConfigPath: mcpConfigPath,
 	})
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {

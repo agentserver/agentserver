@@ -559,8 +559,8 @@ func TestServeHTTP_WorkspaceIDValidFormatAccepted(t *testing.T) {
 		"ws_test",
 		"ws-prod-123",
 		"ABC_def_42",
-		"x",                       // 1 char
-		strings.Repeat("a", 64),   // max length
+		"x",                     // 1 char
+		strings.Repeat("a", 64), // max length
 	}
 	fakeRunner := func(_ context.Context, _ runner.RunInput) (*runner.RunResult, error) {
 		return &runner.RunResult{AssistantText: "ok", Meta: &runner.ResultMeta{Subtype: "success"}}, nil
@@ -605,5 +605,111 @@ func TestServeHTTP_IsErrorPopulatesErrorMessage(t *testing.T) {
 	}
 	if resp.ErrorMessage != "context window exceeded" {
 		t.Errorf("errorMessage: got %q, want %q", resp.ErrorMessage, "context window exceeded")
+	}
+}
+
+// --- Phase 3: cap-token + mcp.json per-turn tests ---
+
+// buildPhase3ServerCfg returns a ServeConfig with valid Phase 3 fields and
+// a real fake wstoken server. The caller must call cleanup() when done.
+func buildPhase3ServerCfg(t *testing.T) (ccappgateway.ServeConfig, func()) {
+	t.Helper()
+	wstokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"token":"deadbeef"}`)
+	}))
+	cfg := ccappgateway.ServeConfig{
+		DefaultModel:              "haiku",
+		TurnTimeout:               30 * time.Second,
+		TmpRoot:                   t.TempDir(),
+		AgentserverInternalURL:    wstokenSrv.URL,
+		InternalSecret:            "",
+		EnvMcpBinary:              "/usr/local/bin/codex-app-gateway",
+		ExecGatewayWSURL:          "ws://exec-gw:8080",
+		ExecGatewayInternalURL:    "http://exec-gw-internal:9090",
+		ExecGatewayInternalSecret: "exec-secret",
+		CapTokenHMACSecret:        []byte("hmac-secret-32-bytes-long-enough!"),
+		CapTokenTTL:               2 * time.Hour,
+	}
+	return cfg, wstokenSrv.Close
+}
+
+func TestServeHTTP_Phase3_WritesMCPConfigAndPassesPath(t *testing.T) {
+	cfg, cleanup := buildPhase3ServerCfg(t)
+	defer cleanup()
+
+	// Fake runner captures RunInput and reads the mcp.json while it still exists.
+	var capturedPath string
+	var capturedMCPContent []byte
+
+	fakeRunner := func(_ context.Context, in runner.RunInput) (*runner.RunResult, error) {
+		capturedPath = in.MCPConfigPath
+		if in.MCPConfigPath != "" {
+			var err error
+			capturedMCPContent, err = os.ReadFile(in.MCPConfigPath)
+			if err != nil {
+				return nil, fmt.Errorf("mcp file read in runner: %w", err)
+			}
+		}
+		return &runner.RunResult{
+			AssistantText: "ok",
+			Meta:          &runner.ResultMeta{Subtype: "success"},
+		}, nil
+	}
+
+	srv, err := ccappgateway.NewServerWithRunnerAndStore(cfg, fakeRunner, newFakeStore())
+	if err != nil {
+		t.Fatalf("NewServerWithRunnerAndStore: %v", err)
+	}
+
+	rr := postTurn(t, srv, `{"workspaceId":"ws_test","sessionId":"00000000-0000-0000-0000-000000000001","userMessage":"hi"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body: %s", rr.Code, rr.Body.String())
+	}
+
+	if capturedPath == "" {
+		t.Fatal("runner received empty MCPConfigPath; expected non-empty")
+	}
+
+	if len(capturedMCPContent) == 0 {
+		t.Fatal("mcp.json content was empty at runner call time")
+	}
+
+	// Parse the JSON and verify CXG_WORKSPACE_TOKEN is present.
+	var mcpJSON struct {
+		MCPServers map[string]struct {
+			Env map[string]string `json:"env"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(capturedMCPContent, &mcpJSON); err != nil {
+		t.Fatalf("mcp.json is not valid JSON: %v; content: %s", err, capturedMCPContent)
+	}
+	agentserver, ok := mcpJSON.MCPServers["agentserver"]
+	if !ok {
+		t.Fatalf("mcp.json missing mcpServers.agentserver key; got: %s", capturedMCPContent)
+	}
+	tok := agentserver.Env["CXG_WORKSPACE_TOKEN"]
+	if tok == "" {
+		t.Errorf("CXG_WORKSPACE_TOKEN is empty in mcp.json env; got env: %+v", agentserver.Env)
+	}
+}
+
+func TestServeHTTP_Phase3_Disabled_EmptyMCPConfigPath(t *testing.T) {
+	// Phase 2 behavior: EnvMcpBinary="" → MCPConfigPath must be "" in RunInput.
+	var capturedPath string
+	fakeRunner := func(_ context.Context, in runner.RunInput) (*runner.RunResult, error) {
+		capturedPath = in.MCPConfigPath
+		return &runner.RunResult{
+			AssistantText: "ok",
+			Meta:          &runner.ResultMeta{Subtype: "success"},
+		}, nil
+	}
+	srv := newTestServerWithStoreAndRunner(t, newFakeStore(), fakeRunner)
+	rr := postTurn(t, srv, `{"workspaceId":"ws_test","sessionId":"00000000-0000-0000-0000-000000000001","userMessage":"hi"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d body: %s", rr.Code, rr.Body.String())
+	}
+	if capturedPath != "" {
+		t.Errorf("expected MCPConfigPath=\"\" when EnvMcpBinary is empty; got %q", capturedPath)
 	}
 }

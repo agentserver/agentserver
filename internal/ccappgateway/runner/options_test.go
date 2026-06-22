@@ -99,13 +99,14 @@ func TestBuildArgs_RequiredFlags(t *testing.T) {
 
 func TestBuildArgs_ForbiddenFlags(t *testing.T) {
 	in := baseRunInput()
+	in.MCPConfigPath = "" // empty: Phase 2 behavior
 	args := BuildArgs(in)
 	joined := strings.Join(args, " ")
 
 	forbidden := []string{"--mcp-config", "--strict-mcp-config", "--tools", "--resume", "--cwd"}
 	for _, f := range forbidden {
 		if strings.Contains(joined, f) {
-			t.Errorf("BuildArgs: must not contain %q (Phase 1 restriction)", f)
+			t.Errorf("BuildArgs (empty MCPConfigPath): must not contain %q (Phase 2 restriction)", f)
 		}
 	}
 }
@@ -206,12 +207,12 @@ func TestBuildEnv_RequiredVarsPresent(t *testing.T) {
 	result := BuildEnv(in, nil)
 
 	required := map[string]string{
-		"CLAUDE_CONFIG_DIR":                  "/custom/claude/dir",
-		"IS_SANDBOX":                         "1",
-		"CLAUDE_CODE_AUTO_COMPACT_WINDOW":    "165000",
+		"CLAUDE_CONFIG_DIR":                      "/custom/claude/dir",
+		"IS_SANDBOX":                             "1",
+		"CLAUDE_CODE_AUTO_COMPACT_WINDOW":        "165000",
 		"CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING": "1",
-		"ANTHROPIC_AUTH_TOKEN":               "my-ws-token",
-		"ANTHROPIC_BASE_URL":                 "http://llmproxy:9999",
+		"ANTHROPIC_AUTH_TOKEN":                   "my-ws-token",
+		"ANTHROPIC_BASE_URL":                     "http://llmproxy:9999",
 	}
 
 	for key, wantVal := range required {
@@ -329,4 +330,123 @@ func containsAdjacent(args []string, a, b string) bool {
 		}
 	}
 	return false
+}
+
+func TestBuildArgs_NoMCPConfig_Phase2Compat(t *testing.T) {
+	in := baseRunInput()
+	in.MCPConfigPath = "" // empty: Phase 2 behavior
+	args := BuildArgs(in)
+	joined := strings.Join(args, " ")
+
+	// Verify MCP flags are NOT present.
+	mcpForbidden := []string{"--mcp-config", "--strict-mcp-config", "--tools"}
+	for _, flag := range mcpForbidden {
+		if strings.Contains(joined, flag) {
+			t.Errorf("BuildArgs with empty MCPConfigPath: must not contain %q; args=%v", flag, args)
+		}
+	}
+
+	// Verify Phase 2 args are still present.
+	if !containsAdjacent(args, "--model", in.Model) {
+		t.Errorf("BuildArgs: --model flag missing or misplaced")
+	}
+	if !containsAdjacent(args, "--session-id", in.SessionID) {
+		t.Errorf("BuildArgs: --session-id flag missing or misplaced")
+	}
+}
+
+func TestBuildArgs_WithMCPConfig(t *testing.T) {
+	in := baseRunInput()
+	in.MCPConfigPath = "/tmp/mcp.json"
+	args := BuildArgs(in)
+
+	// Verify the exact sub-sequence exists.
+	if !containsSubsequence(args, []string{"--mcp-config", "/tmp/mcp.json", "--strict-mcp-config", "--tools", "mcp__agentserver__*"}) {
+		t.Errorf("BuildArgs: expected sub-sequence [--mcp-config /tmp/mcp.json --strict-mcp-config --tools mcp__agentserver__*]; args=%v", args)
+	}
+
+	// Verify it appears BEFORE --session-id.
+	mcp := indexOfSubsequence(args, []string{"--mcp-config", "/tmp/mcp.json"})
+	sid := indexOf(args, "--session-id")
+	if mcp == -1 {
+		t.Errorf("BuildArgs: --mcp-config sub-sequence not found")
+	}
+	if sid == -1 {
+		t.Errorf("BuildArgs: --session-id not found")
+	}
+	if mcp != -1 && sid != -1 && mcp >= sid {
+		t.Errorf("BuildArgs: --mcp-config must appear BEFORE --session-id; mcp index=%d, session-id index=%d", mcp, sid)
+	}
+}
+
+func TestBuildArgs_WithMCPConfig_Resume(t *testing.T) {
+	in := baseRunInput()
+	in.MCPConfigPath = "/tmp/mcp.json"
+	in.SessionMode = "resume"
+	args := BuildArgs(in)
+
+	// Verify both MCP flags AND --resume are present.
+	if !containsSubsequence(args, []string{"--mcp-config", "/tmp/mcp.json", "--strict-mcp-config", "--tools", "mcp__agentserver__*"}) {
+		t.Errorf("BuildArgs: expected MCP sub-sequence; args=%v", args)
+	}
+	if !containsAdjacent(args, "--resume", in.SessionID) {
+		t.Errorf("BuildArgs: expected --resume <SessionID>; args=%v", args)
+	}
+
+	// Verify MCP flags appear BEFORE --resume.
+	mcp := indexOfSubsequence(args, []string{"--mcp-config", "/tmp/mcp.json"})
+	resume := indexOf(args, "--resume")
+	if mcp != -1 && resume != -1 && mcp >= resume {
+		t.Errorf("BuildArgs: --mcp-config must appear BEFORE --resume; mcp index=%d, resume index=%d", mcp, resume)
+	}
+}
+
+// indexOf returns the index of flag in args, or -1 if not found.
+func indexOf(args []string, flag string) int {
+	for i, a := range args {
+		if a == flag {
+			return i
+		}
+	}
+	return -1
+}
+
+// containsSubsequence returns true if args contains the exact subsequence.
+func containsSubsequence(args []string, subseq []string) bool {
+	if len(subseq) == 0 {
+		return true
+	}
+	for i := 0; i <= len(args)-len(subseq); i++ {
+		match := true
+		for j, v := range subseq {
+			if args[i+j] != v {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
+// indexOfSubsequence returns the starting index of subseq in args, or -1 if not found.
+func indexOfSubsequence(args []string, subseq []string) int {
+	if len(subseq) == 0 {
+		return 0
+	}
+	for i := 0; i <= len(args)-len(subseq); i++ {
+		match := true
+		for j, v := range subseq {
+			if args[i+j] != v {
+				match = false
+				break
+			}
+		}
+		if match {
+			return i
+		}
+	}
+	return -1
 }

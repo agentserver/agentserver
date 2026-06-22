@@ -28,7 +28,11 @@ ARG SHA=unknown
 RUN CGO_ENABLED=0 go build \
     -trimpath \
     -ldflags "-s -w -X main.BuildVersion=${VERSION} -X main.BuildSHA=${SHA}" \
-    -o /out/cc-app-gateway ./cmd/cc-app-gateway
+    -o /out/cc-app-gateway ./cmd/cc-app-gateway && \
+    CGO_ENABLED=0 go build \
+    -trimpath \
+    -ldflags "-s -w -X main.BuildVersion=${VERSION} -X main.BuildSHA=${SHA}" \
+    -o /out/codex-app-gateway ./cmd/codex-app-gateway
 
 # --- runtime stage -----------------------------------------------------------
 FROM debian:bookworm-slim
@@ -53,6 +57,7 @@ RUN apt-get update && \
 RUN claude --version
 
 COPY --from=build /out/cc-app-gateway /usr/local/bin/cc-app-gateway
+COPY --from=build /out/codex-app-gateway /usr/local/bin/codex-app-gateway
 
 # IS_SANDBOX=1 allows claude --dangerously-skip-permissions to run as root
 # inside the container.  Required for managed-harness mode in a pod

@@ -194,6 +194,10 @@ spec:
                   name: {{ .Release.Name }}-codex-gateway
                   key: inbound-hmac-secret
             {{- end }}
+            {{- if .Values.ccAppGateway.enabled }}
+            - name: CC_APP_GATEWAY_REST_URL
+              value: "http://{{ .Release.Name }}-cc-app-gateway.{{ .Release.Namespace }}.svc:{{ .Values.ccAppGateway.port }}"
+            {{- end }}
             {{- if .Values.sandbox.claudecode.image }}
             - name: AGENTSERVER_INTERNAL_URL
               value: {{ printf "http://%s.%s.svc:%v" .Release.Name .Release.Namespace (int .Values.service.port) | quote }}

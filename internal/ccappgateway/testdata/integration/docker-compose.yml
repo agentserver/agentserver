@@ -1,0 +1,30 @@
+services:
+  fake-agentserver:
+    image: cc-app-gateway-test-tools:dev
+    command: fake-agentserver --listen :8080 --workspace-token deadbeef
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 2s
+      timeout: 1s
+      retries: 10
+
+  fake-llmproxy:
+    image: cc-app-gateway-test-tools:dev
+    command: fake-llmproxy --listen :8081 --accept-token deadbeef --canned-reply pong
+
+  cc-app-gateway:
+    image: cc-app-gateway:dev
+    command: serve --listen-addr :8087
+    environment:
+      INTERNAL_API_SECRET: secret123
+      AGENTSERVER_INTERNAL_URL: http://fake-agentserver:8080
+      CCAPPGW_LLMPROXY_URL: http://fake-llmproxy:8081
+      CCAPPGW_DEFAULT_MODEL: claude-haiku-4-5
+      CCAPPGW_TURN_TIMEOUT: 30s
+    ports:
+      - "8087:8087"
+    depends_on:
+      fake-agentserver:
+        condition: service_healthy
+      fake-llmproxy:
+        condition: service_started

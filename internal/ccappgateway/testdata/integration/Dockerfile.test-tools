@@ -1,0 +1,14 @@
+# syntax=docker/dockerfile:1.7
+FROM golang:1.26-trixie AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/cc-app-gateway-test-tools ./cmd/cc-app-gateway-test-tools
+
+FROM debian:bookworm-slim
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends wget && \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=build /out/cc-app-gateway-test-tools /usr/local/bin/cc-app-gateway-test-tools
+ENTRYPOINT ["/usr/local/bin/cc-app-gateway-test-tools"]

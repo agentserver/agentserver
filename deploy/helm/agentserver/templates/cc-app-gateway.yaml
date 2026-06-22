@@ -1,0 +1,93 @@
+{{- if .Values.ccAppGateway.enabled }}
+{{- $_ := required "internal.apiSecret is required when ccAppGateway.enabled is true" .Values.internal.apiSecret }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-cc-app-gateway
+  labels:
+    app: {{ .Release.Name }}-cc-app-gateway
+spec:
+  replicas: {{ .Values.ccAppGateway.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-cc-app-gateway
+  template:
+    metadata:
+      annotations:
+        agentserver.x-k8s.io/chart-version: {{ .Chart.AppVersion | quote }}
+      labels:
+        app: {{ .Release.Name }}-cc-app-gateway
+    spec:
+      serviceAccountName: {{ .Release.Name }}
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: cc-app-gateway
+          image: "{{ .Values.ccAppGateway.image.repository }}:{{ .Values.ccAppGateway.image.tag }}"
+          imagePullPolicy: {{ .Values.ccAppGateway.image.pullPolicy }}
+          args: ["serve"]
+          ports:
+            - containerPort: {{ .Values.ccAppGateway.port }}
+              name: http
+              protocol: TCP
+          env:
+            - name: CCAPPGW_LISTEN_ADDR
+              value: ":{{ .Values.ccAppGateway.port }}"
+            - name: CCAPPGW_LOG_LEVEL
+              value: {{ .Values.ccAppGateway.logLevel | quote }}
+            - name: CCAPPGW_DEFAULT_MODEL
+              value: {{ .Values.ccAppGateway.defaultModel | quote }}
+            - name: CCAPPGW_TURN_TIMEOUT
+              value: {{ .Values.ccAppGateway.turnTimeout | quote }}
+            - name: CCAPPGW_TMP_ROOT
+              value: {{ .Values.ccAppGateway.tmpRoot | quote }}
+            - name: INTERNAL_API_SECRET
+              value: {{ required "internal.apiSecret is required when ccAppGateway.enabled is true" .Values.internal.apiSecret | quote }}
+            - name: AGENTSERVER_INTERNAL_URL
+              value: "http://{{ .Release.Name }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}"
+            - name: CCAPPGW_LLMPROXY_URL
+              value: {{ printf "http://%s-llmproxy.%s.svc:%v" .Release.Name .Release.Namespace (int .Values.llmproxy.port) | quote }}
+          volumeMounts:
+            - name: cc-gateway-tmp
+              mountPath: {{ .Values.ccAppGateway.tmpRoot }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.ccAppGateway.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: {{ .Values.ccAppGateway.port }}
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 10"]
+          {{- with .Values.ccAppGateway.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: cc-gateway-tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-cc-app-gateway
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.ccAppGateway.port }}
+      targetPort: {{ .Values.ccAppGateway.port }}
+      protocol: TCP
+      name: http
+  selector:
+    app: {{ .Release.Name }}-cc-app-gateway
+{{- end }}

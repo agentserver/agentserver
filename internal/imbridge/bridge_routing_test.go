@@ -1,6 +1,9 @@
 package imbridge
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 )
@@ -67,5 +70,46 @@ func TestSetChannelRoutingModeConcurrent(t *testing.T) {
 
 	if b.getChannelRoutingMode("ch1") != "codex" {
 		t.Fatalf("expected codex after concurrent writes")
+	}
+}
+
+// TestForwardMessage_RoutesManagedCC verifies that forwardMessage routes
+// "managed_cc" mode to the /api/internal/imbridge/cc/turn endpoint.
+func TestForwardMessage_RoutesManagedCC(t *testing.T) {
+	var called bool
+	var receivedPath string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		if r.URL.Path == "/api/internal/imbridge/cc/turn" {
+			called = true
+			w.WriteHeader(http.StatusAccepted)
+			w.Write([]byte(`{"queued":true}`))
+		} else {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer ts.Close()
+
+	b := &Bridge{
+		agentserverURL:   ts.URL,
+		providers:        map[string]Provider{},
+		pollers:          map[string]pollerEntry{},
+		registeredGroups: map[string]string{},
+		channelMention:   map[string]bool{},
+		channelRouting:   map[string]string{},
+		typingSessions:   map[string]func(){},
+	}
+	binding := BridgeBinding{RoutingMode: "managed_cc", WorkspaceID: "ws_test", ChannelID: "ch_test"}
+	msg := InboundMessage{FromUserID: "wxid_test", Text: "hi"}
+	success, err := b.forwardMessage(context.Background(), binding, msg)
+
+	if err != nil {
+		t.Fatalf("forwardMessage returned error: %v", err)
+	}
+	if !success {
+		t.Fatalf("forwardMessage returned false, expected true")
+	}
+	if !called {
+		t.Errorf("expected POST to /api/internal/imbridge/cc/turn, got %q", receivedPath)
 	}
 }

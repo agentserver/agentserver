@@ -273,6 +273,8 @@ ccAppGateway:
     limits:
       memory: "2Gi"
       cpu: "2000m"
+  envMcp:
+    enabled: false  # opt-in; requires codexExecGateway.enabled=true
 
 # codexGateway: shared secrets for the codex-app-gateway / codex-exec-gateway
 # pair. Both pods read from the same auto-generated k8s Secret so the cap

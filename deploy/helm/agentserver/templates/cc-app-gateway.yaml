@@ -71,6 +71,25 @@ spec:
                   name: {{ .Values.ccAppGateway.s3.existingSecret }}
                   key: secret_access_key
 {{- end }}
+{{- if .Values.ccAppGateway.envMcp.enabled }}
+{{- if not .Values.codexExecGateway.enabled }}{{- fail "ccAppGateway.envMcp.enabled=true requires codexExecGateway.enabled=true (env-mcp dials codex-exec-gateway)" }}{{- end }}
+            - name: CCAPPGW_ENV_MCP_BINARY
+              value: "/usr/local/bin/codex-app-gateway"
+            - name: CCAPPGW_EXEC_GATEWAY_WS_URL
+              value: "ws://{{ .Release.Name }}-codex-exec-gateway.{{ .Release.Namespace }}.svc:{{ .Values.codexExecGateway.port }}"
+            - name: CCAPPGW_EXEC_GATEWAY_INTERNAL_URL
+              value: "http://{{ .Release.Name }}-codex-exec-gateway.{{ .Release.Namespace }}.svc:{{ .Values.codexExecGateway.port }}"
+            - name: CCAPPGW_CAPTOKEN_HMAC_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-codex-gateway
+                  key: cap-token-hmac-secret
+            - name: CCAPPGW_EXEC_GATEWAY_INTERNAL_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Release.Name }}-codex-gateway
+                  key: internal-shared-secret
+{{- end }}
           volumeMounts:
             - name: cc-gateway-tmp
               mountPath: {{ .Values.ccAppGateway.tmpRoot }}

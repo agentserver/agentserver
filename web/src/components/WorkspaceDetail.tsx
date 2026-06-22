@@ -1165,16 +1165,17 @@ function IMTab({ workspaceId }: { workspaceId: string }) {
                             onChange={async (e) => {
                               try {
                                 await updateWorkspaceIMChannel(workspaceId, ch.id, {
-                                  routing_mode: e.target.value as 'nanoclaw' | 'codex',
+                                  routing_mode: e.target.value as 'nanoclaw' | 'codex' | 'managed_cc',
                                 })
                                 loadChannels()
                               } catch {}
                             }}
                             className="w-full rounded border border-[var(--border)] bg-[var(--background)] px-1.5 py-0.5 text-[11px] text-[var(--foreground)]"
-                            title="Routing mode: nanoclaw = legacy NanoClaw sandbox; codex = Codex via codex-app-gateway"
+                            title="Routing mode: nanoclaw = legacy NanoClaw sandbox; codex = Codex via codex-app-gateway; managed_cc = Claude Code via cc-app-gateway"
                           >
                             <option value="nanoclaw">nanoclaw</option>
                             <option value="codex">codex</option>
+                            <option value="managed_cc">claude code</option>
                           </select>
                         </td>
                         <td className="px-3 py-2">

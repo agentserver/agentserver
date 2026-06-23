@@ -1,10 +1,17 @@
 # agentx Extraction — Part 2: agentserver Single PR (Phase B)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **Rev 2 (2026-06-23 post-review)**: addressed 3 findings — chart version
+> baseline corrected throughout from 0.69.5 → **0.69.9** (the actual main
+> state); T8 step 3 CI workflow specified as `.github/workflows/build.yml`
+> (only workflow in this repo, not the guessed `test.yml`/`ci.yml`); T7
+> step 2 helper function location nailed down (`internal/server/codex_executors.go`,
+> same package).
 
 **Goal:** Single agentserver PR that deletes noise / Bedrock-era helm + `/cloud/*` paths,
 swaps to `/agentx/*` paths and host `x.agent.cs.ac.cn`, updates the ConnectCommands
-template to emit the agentx connect command, and bumps the helm chart 0.69.5 →
+template to emit the agentx connect command, and bumps the helm chart 0.69.9 →
 0.70.0. End state: PR merged to main; chart 0.70.0 image built and available in the
 container registry. **Production is NOT touched** until Part 3.
 
@@ -30,7 +37,7 @@ commit `1d1b98a` on branch `spec/agentx-extraction`. Sections §6 + §7 + §9.2.
   on merge or land as 12 commits — both work; spec accepts either.
 - **Hard cut**. No coexistence between `/cloud/*` and `/agentx/*` paths. Old
   paths gone in the same commit that adds new ones. No deprecation layer.
-- **Chart bumps 0.69.5 → 0.70.0** in the same PR (commit C9).
+- **Chart bumps 0.69.9 → 0.70.0** in the same PR (commit C9).
 - **Reality check** (discovered during plan writing, not in spec): Noise is more
   woven into `codexexecgateway` than the spec implied. **8 production .go files**
   reference noise/relaypb (not 2): `bridge.go` (39 refs), `inbound.go` (3),
@@ -46,7 +53,7 @@ commit `1d1b98a` on branch `spec/agentx-extraction`. Sections §6 + §7 + §9.2.
   into the feat branch — confirm with user.
 - **No production impact during Part 2**. Even after merge, chart 0.70.0
   just sits in the registry; Pulumi in `/root/k8s` hasn't been edited yet.
-  Cs.ac.cn keeps running 0.69.5 unchanged.
+  Cs.ac.cn keeps running 0.69.9 unchanged.
 
 ## File Structure
 
@@ -90,7 +97,7 @@ commit `1d1b98a` on branch `spec/agentx-extraction`. Sections §6 + §7 + §9.2.
 - `deploy/helm/agentserver/values.yaml` (delete `codexExecGateway.noiseRelayEnabled` line 395 + comment 388-394; delete `codexGateway.noiseRelayHmacKey` line 293 + comment 292; default `publicHost` for codexExecGateway → `x.<ingress.host>`)
 - `deploy/helm/agentserver/templates/codex-gateway-secret.yaml` (delete noise-relay-hmac-key field 44 + preservation logic lines 24, 28, 32 + header comment 10-14)
 - `deploy/helm/agentserver/templates/codex-exec-gateway.yaml` (delete entire `{{- if .Values.codexExecGateway.noiseRelayEnabled }}` block at lines 102-114; update comment at lines 124-125, 128)
-- `deploy/helm/agentserver/Chart.yaml` (version 0.69.5 → 0.70.0)
+- `deploy/helm/agentserver/Chart.yaml` (version 0.69.9 → 0.70.0)
 - `README.md` / `README.zh.md` (sections mentioning codex exec-server, connect command, codex-exec hostname)
 
 ### Files NOT modified (Pulumi)
@@ -717,10 +724,13 @@ to match the production file.)
 - [ ] **Step 2: Extract `buildConnectCommand` helper from inline template**
 
 In `internal/server/codex_executors.go`, the current code inlines the
-`fmt.Sprintf` at lines 173-176. Extract:
+`fmt.Sprintf` at lines 173-176. Add this helper as a **top-level
+function in the same file** (`internal/server/codex_executors.go`,
+`package server` — NOT in the test file):
 
 ```go
-// (Add this top-level helper somewhere in codex_executors.go; package server.)
+// buildConnectCommand returns the one-line shell command shown to users
+// in the "Add Executor" UI; the connect_command field of registerExecutorResp.
 func buildConnectCommand(s *Server, jwt, exeID, name string) string {
     gatewayURL := "https://" + s.CodexExecGatewayPublicHost
     issuer := s.CodexAuthIssuerURL
@@ -855,9 +865,14 @@ cmd.Env = append(os.Environ(),
 
 - [ ] **Step 3: Locate agentserver CI workflow**
 
+The single CI workflow in this repo is `.github/workflows/build.yml`.
+The `Test` job at ~line 34-35 runs `go test ./... -count=1 -timeout 5m`,
+which covers the codexauth integration test. There is no separate `test.yml`
+or `ci.yml`.
+
 ```bash
-ls .github/workflows/
-grep -l "codexauth/integration\|codex binary\|codex install\|LookPath" .github/workflows/*.yml 2>/dev/null
+# Sanity check before editing:
+sed -n '30,45p' .github/workflows/build.yml
 ```
 
 - [ ] **Step 4: Update CI to download agentx tarball**
@@ -1084,7 +1099,7 @@ comment that referenced /cloud/* paths to /agentx/*."
 
 ---
 
-### Task 12 (C9): Chart.yaml — bump 0.69.5 → 0.70.0
+### Task 12 (C9): Chart.yaml — bump 0.69.9 → 0.70.0
 
 **Files:**
 - Modify: `deploy/helm/agentserver/Chart.yaml`
@@ -1112,7 +1127,7 @@ Expected: both at 0.70.0.
 
 ```bash
 git add -A
-git commit -m "C9: Chart.yaml bump 0.69.5 → 0.70.0
+git commit -m "C9: Chart.yaml bump 0.69.9 → 0.70.0
 
 Breaking version bump: chart 0.70.0 contains hard-cut path swap
 (/cloud/* → /agentx/*), noise relay removal, and renamed register
@@ -1302,7 +1317,7 @@ supported client going forward.
 - C7:  codex-gateway-secret.yaml drops noise-relay-hmac-key field +
        preservation logic
 - C8:  codex-exec-gateway.yaml drops {{- if noiseRelayEnabled }} env block
-- C9:  Chart.yaml bump 0.69.5 → 0.70.0
+- C9:  Chart.yaml bump 0.69.9 → 0.70.0
 - C11: README updates with new connect command + host
 
 ## NOT in this PR

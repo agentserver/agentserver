@@ -1,6 +1,14 @@
 # agentx Extraction — Part 1: agentx Rust Repo (Phase A)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **Rev 2 (2026-06-23 post-review)**: addressed 7 findings — T4 hardcoded
+> file deletion list replaced with grep-driven approach; T4 flatten gotcha
+> for `MultitoolCli.remote` vs `ExecServerCommand.remote` collision; T10
+> sed pattern scope-limited to import statements to avoid string/comment
+> corruption; T13 test location corrected (`auth_tests.rs` not
+> `agent_identity.rs`); T15 caller-grep explicit; T17 whitelist dead
+> entries removed; T19 `gh repo create` agentic alternative added.
 
 **Goal:** Hard-fork codex `rust-v0.142.0` exec-server subset into a new
 self-owned project `agentserver/agentx`. End state: GitHub repo with multi-commit
@@ -448,21 +456,37 @@ directly, no subcommand. Edit `crates/cli/src/main.rs`:
 1. Delete the entire `enum Subcommand { ... }` block (all variants).
 2. Find the top-level `MultitoolCli` (or whatever the v0.142.0 parser struct
    is named — confirm with `grep -n '^struct.*Cli' crates/cli/src/main.rs`).
-3. Flatten the `ExecServerCommand` fields directly into it via `#[clap(flatten)]`:
+3. Flatten the `ExecServerCommand` fields directly into it via `#[clap(flatten)]`.
+
+   **WARNING (gotcha)**: v0.142.0's `MultitoolCli` already carries a
+   `remote: InteractiveRemoteOptions` field (used by the TUI subcommand).
+   `ExecServerCommand` also has a `remote` field (the URL). If both are
+   flattened, clap will collide on the `--remote` flag name. Resolution:
+   the entire `MultitoolCli` is being replaced — keep only the fields
+   you actually need, drop `interactive` / `remote: InteractiveRemoteOptions`
+   / `feature_toggles` / `subcommand` entirely. The resulting struct is
+   purely `ExecServerCommand` plus the workspace config overrides.
 
 ```rust
 #[derive(Debug, Parser)]
 #[clap(name = "agentx", about = "Remote process / fs executor (forked from codex exec-server)")]
 struct AgentxCli {
     #[clap(flatten)]
-    config: CommonConfigArgs,   // keep whatever shared config-overrides struct existed
+    config: CliConfigOverrides,   // workspace config -c key=val overrides; keep if present
 
     #[clap(flatten)]
     exec: ExecServerCommand,    // the existing struct from the ExecServer subcommand
 }
 ```
 
-   Adjust `CommonConfigArgs` import path; if there is none, drop the line.
+   `CliConfigOverrides` (or whatever the v0.142.0 workspace-config-override
+   struct is called — verify with `grep -n 'struct.*ConfigOverrides' crates/cli/src/`)
+   is needed because `agentx -c foo=bar --remote ...` is a useful pattern.
+   If it doesn't exist, drop the line.
+
+   Do NOT flatten `InteractiveRemoteOptions` (TUI's `--remote`), `TuiCli`
+   (the interactive TUI fields), or `FeatureToggles` (codex feature flags).
+   They have no use without the deleted subcommands and they collide.
 
 4. In `fn main()`, remove the entire `match cli.subcommand { ... }` block.
    Replace with a direct call to the exec-server dispatch (the body of the
@@ -483,26 +507,47 @@ struct AgentxCli {
    After: `--remote` becomes required. Update the clap attribute on the
    `remote` field to `required = true`.
 
-- [ ] **Step 3: Delete now-unreachable subcommand impl files**
+- [ ] **Step 3: Delete now-unreachable subcommand impl files (grep-driven, not hardcoded)**
+
+Most subcommand logic in v0.142.0's `cli/src/main.rs` is inline; only a
+handful live in standalone files. After Step 2 deleted the Subcommand
+enum + dispatch, `cargo check -p codex-cli` reports which `mod` declarations
+are unused. Drive deletions from that signal rather than a hardcoded
+filename list (which drifts across upstream versions).
 
 ```bash
 cd crates/cli/src
-# These exist in v0.142.0; verify before rm:
-ls login.rs cloud.rs mcp_cmd.rs plugin_cmd.rs app_cmd.rs debug_cmd.rs \
-   execpolicy_cmd.rs apply_cmd.rs resume_cmd.rs review_cmd.rs \
-   completion_cmd.rs update_cmd.rs doctor_cmd.rs sandbox_cmd.rs \
-   features_cmd.rs responses_api_proxy.rs stdio_to_uds.rs 2>/dev/null
+# List current source files for visibility:
+ls *.rs
+
+# Find mod declarations in main.rs and (if it exists) lib.rs:
+grep -nE '^mod [a-z_]+;' main.rs lib.rs 2>/dev/null
 ```
 
-For each file confirmed present, `git rm` it AND delete any matching
-`mod ...;` line from `crates/cli/src/lib.rs` (or `main.rs` if mods are
-declared there).
+For each `mod foo;` declaration: try removing it and re-run `cargo check
+-p codex-cli`. If the module's contents were only used by deleted
+subcommand dispatch, no new errors appear and you can also `git rm
+crates/cli/src/foo.rs` (or `foo/` dir). If errors appear, the module
+is still referenced — leave it.
+
+Concretely the typical pattern for one round of cleanup:
 
 ```bash
-# After confirming each exists, then for each:
-git rm crates/cli/src/<file>.rs
-sed -i '/^mod <stem>;/d' crates/cli/src/lib.rs   # or main.rs
+# 1. Remove a mod declaration:
+sed -i '/^mod login;$/d' crates/cli/src/main.rs
+
+# 2. Test build:
+cargo check -p codex-cli 2>&1 | tail
+# If clean → also remove the file:
+git rm crates/cli/src/login.rs
+
+# If errors → restore and skip:
+git checkout crates/cli/src/main.rs
 ```
+
+Iterate until `cargo check -p codex-cli` is clean AND no orphan `.rs`
+files remain (an orphan is a file with no `mod`/`pub mod` referencing
+it anywhere).
 
 - [ ] **Step 4: `cargo check -p codex-cli` — expect remaining noise/Bedrock/analytics errors only**
 
@@ -946,20 +991,30 @@ sed -i 's|path = "crates/codex-client"|path = "crates/agentx-client"|g' Cargo.to
 (Other crates' paths in `Cargo.toml` already point at non-`codex-` dirs
 like `crates/exec-server/`; they don't need rename, only the two above.)
 
-- [ ] **Step 5: sed-rename Rust import paths**
+- [ ] **Step 5: sed-rename Rust import paths (scope-limited to avoid string/comment corruption)**
 
 ```bash
-# Rust uses underscores in module paths. Replace 'use codex_foo' → 'use agentx_foo'
-# and 'extern crate codex_foo' → 'extern crate agentx_foo':
+# Use line-anchored patterns that target only import statements and
+# extern-crate declarations. Mid-expression codex_foo::bar references will
+# show up as compile errors in Step 6, which we then patch manually — safer
+# than blanket sed that would corrupt strings and comments.
 find crates utils -name '*.rs' -exec sed -i \
-  -e 's/use codex_/use agentx_/g' \
-  -e 's/extern crate codex_/extern crate agentx_/g' \
-  -e 's/codex_\([a-z0-9_]*\)::/agentx_\1::/g' {} +
+  -e 's/^use codex_/use agentx_/g' \
+  -e 's/^\(\s*\)use codex_/\1use agentx_/g' \
+  -e 's/^extern crate codex_/extern crate agentx_/g' \
+  -e 's/^\(\s*\)extern crate codex_/\1extern crate agentx_/g' {} +
 ```
 
-The third pattern catches `codex_foo::bar` mid-expression too. Risk: it
-also matches `codex_foo` substrings inside strings or comments — that's
-OK for non-string content; for strings we'll do a manual pass in Task 11.
+This patches **only** lines starting with `use codex_` or `extern crate
+codex_` (with any leading whitespace). It deliberately does NOT rewrite
+mid-expression `codex_foo::bar` paths in fully-qualified references —
+those are rare in idiomatic Rust (which prefers a top-of-file `use`),
+and `cargo check` in Step 6 will tell you the exact locations where they
+exist so you can patch by hand.
+
+It also deliberately does NOT touch string literals (`"codex_foo"`) or
+comments (`// see codex_foo`) — those are handled as needed in subsequent
+rename commits (Task 11 for env vars, Task 12 for path strings).
 
 - [ ] **Step 6: Build + test**
 
@@ -1150,8 +1205,12 @@ fn from_chatgpt_base_url_respects_env_allowlist() {
 }
 ```
 
-In `crates/agentx-login/src/auth/agent_identity.rs`, add a matching test
-for `agent_identity_authapi_base_url(Some(url))`.
+In `crates/agentx-login/src/auth/auth_tests.rs` (v0.142.0's existing test
+file — NOT `agent_identity.rs`, which has no inline tests module), add a
+matching test for `agent_identity_authapi_base_url(Some(url))`. If the
+function is `pub(super)`, use the existing test module's super-relative
+import path. If `auth_tests.rs` doesn't exist in your tree, create a new
+`#[cfg(test)]` block at the bottom of `agent_identity.rs`.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -1487,7 +1546,16 @@ pub async fn from_agent_identity_jwt(
 ```
 
 Update every existing caller of `from_agent_identity_jwt` to pass `None`
-as the new arg. `cargo build` will tell you which call sites need updating.
+as the new arg. Find them all upfront so you don't iterate:
+
+```bash
+grep -rn 'from_agent_identity_jwt\b' crates/ utils/
+```
+
+Expected non-zero hits across production code (the CLI dispatch) AND
+test code (e.g. `crates/agentx-login/src/auth/auth_tests.rs`). Update
+every one to pass `None` for the new fourth arg. Then `cargo build
+--workspace` to confirm.
 
 - [ ] **Step 5: Add CLI flag + env wiring in `crates/agentx-cli/src/main.rs`**
 
@@ -1758,16 +1826,16 @@ chmod +x scripts/verify-no-codex-refs.sh
 - [ ] **Step 3: Write `scripts/.codex-refs-allowed`**
 
 This file is a list of grep-output substrings that are allowed (exact-line
-match via `grep -F`). Seed it with the unavoidable URL refs and any prose
-in non-code files we end up keeping:
+match via `grep -F`). Seed it with the unavoidable URL refs. **Do NOT
+seed with `codex_protocol` / `codex-protocol`** — those were renamed to
+`agentx_protocol` / `agentx-protocol` in Task 10 and no longer exist in
+the post-fork tree:
 
 ```
 chatgpt.com
 openai.com
 openai.org
-codex_protocol
-codex-protocol
-codex-snapshot
+chat.openai.com
 ```
 
 (Tune after running the script locally. The script greps `crates/` and
@@ -2020,15 +2088,33 @@ installs to /usr/local/bin (or AGENTX_INSTALL_DIR). Documented in README."
 
 - [ ] **Step 1: Create the empty GitHub repo**
 
-In a browser (NOT `gh repo fork`): https://github.com/organizations/agentserver/repositories/new
+Two equivalent paths, pick whichever you can run:
+
+**Option A — `gh` CLI** (agent-friendly):
+
+```bash
+gh repo create agentserver/agentx \
+  --public \
+  --description "Single-binary remote process/fs executor (hard-fork of codex exec-server)"
+# Confirm:
+gh repo view agentserver/agentx --json url -q .url
+```
+
+This creates an empty repo with no README, no LICENSE, no initial commit
+— exactly what we want.
+
+**Option B — Browser** (when `gh` lacks org permission):
+
+Open https://github.com/organizations/agentserver/repositories/new
 - Owner: `agentserver`
 - Name: `agentx`
 - Visibility: public (or per org policy)
 - **Do NOT initialize with README / LICENSE / .gitignore** — repo will be
   populated from our local commits.
-- **Do NOT use the Fork button** anywhere.
+- **Do NOT use the Fork button** anywhere — we want no upstream linkage.
 
-Confirm at `https://github.com/agentserver/agentx`.
+Either path: confirm at `https://github.com/agentserver/agentx` that
+the repo exists, is empty, and has no upstream "forked from" badge.
 
 - [ ] **Step 2: Wire the remote and push main**
 

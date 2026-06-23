@@ -1,0 +1,978 @@
+# agentx Extraction — Part 3: Pulumi Hard-Cut + Cleanup (Phase C + D)
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Move cs.ac.cn from chart 0.69.5 (noise mode, `codex-exec.agent.cs.ac.cn`,
+`/cloud/*` paths) to chart 0.70.0 (plaintext, `x.agent.cs.ac.cn`, `/agentx/*` paths)
+in a single Pulumi update. Cutover is hard — no coexistence window. End state:
+agentx users register and bridge successfully against the new host; old codex
+exec-server clients see 404 / connection refusal and switch to agentx.
+
+**Architecture:** Single Pulumi commit edits `/root/k8s/stacks/agentserver.ts`
+to bump chart + image tags, swap hostname, drop noise references, simplify
+HTTPRoute rules (no more edge proxy for register). DNS A record manually
+created via DNSPod beforehand. cert-manager wildcard `*.agent.cs.ac.cn`
+covers the new host automatically.
+
+**Tech Stack:** Pulumi (TypeScript), Helm 3, Istio Gateway API, cert-manager,
+DNSPod (DNS), kubectl.
+
+**Spec:** `docs/superpowers/specs/2026-06-23-agentx-extraction-design.md` rev 2,
+sections §9.3 + §9.4 + §9.5 + risk register #8 (Recreate downtime) and #10
+(HTTPRoute swap mode).
+
+**Parts:** This is **Part 3 of 3**.
+- Part 1 (`...-part1-agentx-repo.md`): Phase A — agentx repo, v0.0.1 release. **MUST be done + signed off.**
+- Part 2 (`...-part2-agentserver-pr.md`): Phase B — single agentserver PR merged; chart 0.70.0 in registry. **MUST be done + signed off.**
+- Part 3 (this file): Phase C — pulumi hard-cut + Phase D cleanup.
+
+## Global Constraints
+
+- **Production-affecting.** Unlike Parts 1 + 2, Part 3 modifies what cs.ac.cn
+  serves. Any task at or after Task 5 (pulumi up) breaks active codex-exec-server
+  clients connected to the old host.
+- **Rollback window: ~1 hour after pulumi up.** Per spec §9.5. Once agentx
+  users start registering against 0.70.0, rollback to 0.69.5 breaks them
+  (their wire shape is incompatible with 0.69.5's noise expectations). After
+  the window closes, only fix-forward.
+- **Single Pulumi stack: nj-prod.** Other stacks (bj-prod, ictbj-prod,
+  ucas-prod) do NOT deploy agentserver and are NOT touched.
+- **DNSPod is the DNS provider.** Credentials live in
+  `/root/k8s/Pulumi.nj-prod.yaml:38-40` (used by cert-manager DNS-01 challenge).
+  DNS records themselves are NOT Pulumi-managed; operator creates the A record
+  manually via DNSPod console or API.
+- **Wildcard cert `*.agent.cs.ac.cn`** already exists from cert-manager.ts
+  (line ~229 `wildcardCertNJ`). `x.agent.cs.ac.cn` is covered automatically;
+  no per-host Certificate resource needed.
+- **Pre-cutover communication.** Spec risk #8: schedule pulumi up during
+  low-traffic window; pre-announce 1 h prior. This plan defers the
+  scheduling and announcement copy to operator (administrative); the plan
+  itself includes a "pause for announcement" gate at Task 4.
+- **HTTPRoute rules simplification.** Current routes (line 555-567 of
+  agentserver.ts) have TWO rules per route: `/codex-exec/ + /cloud/` →
+  codex-exec-edge:6061, everything-else → codex-exec-gateway:6060. Edge
+  no longer handles `/cloud/*` (deleted in Part 2 C2b), so we collapse
+  to a single rule pointing at the gateway for all paths, including the
+  new `/agentx/*`.
+- **Old hostname stays in DNS until Phase D.** During Phase C, only
+  the HTTPRoute mapping changes; A record stays so users who still resolve
+  the old hostname see a clean Istio 404 rather than NXDOMAIN. Phase D
+  deletes the A record once we're sure no one needs it.
+
+## File structure
+
+### Files modified (single Pulumi commit)
+
+- `/root/k8s/stacks/agentserver.ts`:
+  - chart version 0.69.5 → 0.70.0 (line ~89)
+  - image tags 0.69.5 → 0.70.0 (multiple `image: { ... tag: "0.69.5" }` lines)
+  - `publicHost: "codex-exec.agent.cs.ac.cn"` → `"x.agent.cs.ac.cn"` (line 316)
+  - `noiseRelayEnabled: true` (line 326) — **delete the field**
+  - `codexExecRouteRules` (lines 555-567) — simplify to single rule (no more `/codex-exec/` + `/cloud/` → edge split)
+  - HTTPRoute `${name}-codex-exec-cn` hostname (line 578) → `x.agent.cs.ac.cn`; resource name → `${name}-agentx-cn` for consistency
+  - HTTPRoute `${name}-codex-exec` hostname (line 643) → `x.agentserver.dev`; resource name → `${name}-agentx` for consistency
+
+- `/root/k8s/Pulumi.nj-prod.yaml`:
+  - delete `agentserver:codexGatewayNoiseRelayHmacKey` secret reference (if present — verify with `grep`)
+
+### Files NOT modified
+
+- DNS: managed manually via DNSPod, NOT Pulumi
+- cert-manager: wildcard already exists, NO new Certificate resource
+- agentserver Go code: locked from Part 2; do not touch
+- agentx repo: locked from Part 1; do not touch
+
+---
+
+### Task 1: Prerequisite check + announcement gate
+
+**Files:** none (operator gate)
+
+**Interfaces:**
+- Consumes: Part 1 sign-off + Part 2 sign-off.
+- Produces: GO/NO-GO decision documented before any production change.
+
+- [ ] **Step 1: Confirm agentx v0.0.1 release exists and is healthy**
+
+```bash
+curl -fsSI https://github.com/agentserver/agentx/releases/download/v0.0.1/agentx-x86_64-unknown-linux-musl.tar.gz | head -1
+```
+
+Expected: `HTTP/2 200`. Anything else → STOP, escalate to Part 1.
+
+- [ ] **Step 2: Confirm chart 0.70.0 is in the registry**
+
+```bash
+# Adjust to actual registry path; example for ghcr.io:
+crane manifest ghcr.io/agentserver/charts/agentserver:0.70.0 >/dev/null && echo OK || echo MISSING
+crane ls ghcr.io/agentserver/codex-exec-gateway | grep -q '^0\.70\.0$' && echo OK || echo MISSING
+```
+
+Expected: both `OK`. Anything `MISSING` → STOP, escalate to Part 2.
+
+- [ ] **Step 3: Confirm kube context + Pulumi stack**
+
+```bash
+kubectl config current-context
+cd /root/k8s
+pulumi stack ls
+```
+
+Confirm: kube context points at nj-prod cluster, NOT a dev/staging cluster.
+Confirm: there is an `agentserver-nj-prod` (or equivalently named) Pulumi
+stack available. If you see other stacks (bj-prod, ictbj-prod), that's
+expected — those don't run agentserver.
+
+- [ ] **Step 4: Confirm the wildcard cert is alive**
+
+```bash
+kubectl get certificate -n istio-ingress wildcard-nj-cs-ac-cn -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+echo
+```
+
+Expected: `True`. If `False` or empty, the wildcard `*.agent.cs.ac.cn`
+isn't covering x.agent.cs.ac.cn — STOP, escalate to cert-manager.
+
+- [ ] **Step 5: Confirm git state of /root/k8s**
+
+```bash
+cd /root/k8s
+git status --short
+git log --oneline -3
+```
+
+If there are uncommitted changes, decide whether to stash or commit first.
+The pulumi edit must land in a single commit; mixing with unrelated WIP
+makes rollback risky.
+
+- [ ] **Step 6: Pause for operator announcement window**
+
+This is the **last reversible point** before customers see anything.
+
+Per spec risk #8: schedule pulumi up during a low-traffic window;
+pre-announce to users at least 1 h prior. Announcement copy is
+operator's responsibility (not part of this plan). Confirm with the
+user that:
+
+- An announcement has been sent (UI banner / email / discord / whatever
+  channel users actually read).
+- The chosen time window is during low traffic for cs.ac.cn users
+  (mostly APAC — favour late evening local).
+- A rollback owner is on-call for the next ~2 hours.
+
+Get **explicit user GO** before Task 2.
+
+---
+
+### Task 2: Create DNS A record for x.agent.cs.ac.cn
+
+**Files:** none (DNSPod console / API)
+
+**Interfaces:**
+- Consumes: istio-ingress LoadBalancer IP.
+- Produces: `x.agent.cs.ac.cn` resolves to the same IP as `codex-exec.agent.cs.ac.cn`.
+
+- [ ] **Step 1: Get istio-ingress LoadBalancer IP**
+
+```bash
+kubectl get svc -n istio-ingress -o wide | grep LoadBalancer
+```
+
+Capture the EXTERNAL-IP column for the istio gateway service. Should
+match what `dig +short codex-exec.agent.cs.ac.cn` returns.
+
+```bash
+GW_IP=$(kubectl get svc -n istio-ingress istio-gateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+echo "Gateway IP: $GW_IP"
+dig +short codex-exec.agent.cs.ac.cn @1.1.1.1
+```
+
+Both should print the same IP.
+
+- [ ] **Step 2: Create the A record via DNSPod**
+
+Two options — pick whichever the operator prefers:
+
+**Option A (console):** Log into DNSPod console, navigate to
+`agent.cs.ac.cn` zone, add a new A record:
+- Subdomain: `x`
+- Record type: `A`
+- TTL: `60` (low TTL during cutover; raise after stabilization)
+- Value: `$GW_IP` from step 1
+
+**Option B (CLI via dnspod-cli or curl to the DNSPod API):**
+
+```bash
+# Using DNSPod API (token in Pulumi.nj-prod.yaml:38-40)
+curl -sS https://dnsapi.cn/Record.Create \
+  -d login_token=<DNSPOD_LOGIN_TOKEN> \
+  -d format=json \
+  -d domain=agent.cs.ac.cn \
+  -d sub_domain=x \
+  -d record_type=A \
+  -d record_line=默认 \
+  -d ttl=60 \
+  -d value=$GW_IP
+```
+
+Read the response; should show `code:1, message:"操作已经成功"`.
+
+- [ ] **Step 3: Verify DNS propagation**
+
+```bash
+for resolver in 1.1.1.1 8.8.8.8 119.29.29.29; do
+  echo "--- $resolver ---"
+  dig +short x.agent.cs.ac.cn @$resolver
+done
+```
+
+Expected: all three return `$GW_IP`. If only some return — DNS still
+propagating; wait 30-60 s and retry. With TTL=60 propagation is fast but
+not instant.
+
+- [ ] **Step 4: Verify TLS via wildcard cert**
+
+```bash
+echo | openssl s_client -connect x.agent.cs.ac.cn:443 -servername x.agent.cs.ac.cn 2>/dev/null | openssl x509 -noout -subject -ext subjectAltName | head
+```
+
+Expected: subjectAltName includes `*.agent.cs.ac.cn`. TLS works
+without any cert-manager Certificate change because the wildcard covers
+the new host.
+
+⚠️ At this point `https://x.agent.cs.ac.cn` returns Istio 404 (no
+HTTPRoute references it yet). That's expected — Task 5 fixes it.
+
+- [ ] **Step 5: Commit DNS record creation in operator log**
+
+(There's no code commit here. Log the timestamp + record ID for rollback.)
+
+---
+
+### Task 3: Edit /root/k8s/stacks/agentserver.ts
+
+**Files:**
+- Modify: `/root/k8s/stacks/agentserver.ts` (chart version, image tags, hostname, route rules, noise field)
+- Modify: `/root/k8s/Pulumi.nj-prod.yaml` (drop noise hmac secret if present)
+
+**Interfaces:**
+- Produces: ready-to-apply Pulumi diff; nothing actually changes in the cluster yet.
+
+- [ ] **Step 1: Branch for the cutover commit**
+
+```bash
+cd /root/k8s
+git checkout main
+git pull --ff-only
+git checkout -b cutover/agentserver-0.70.0-agentx
+```
+
+- [ ] **Step 2: Bump chart version + image tags**
+
+Open `/root/k8s/stacks/agentserver.ts` and search for `"0.69.5"`:
+
+```bash
+grep -n '"0\.69\.5"\|version: "0\.69\.5"' /root/k8s/stacks/agentserver.ts
+```
+
+Replace every occurrence with `"0.70.0"`. Expected hit count: ~6
+(chart version + 5 image tags for agentserver / codex-exec-gateway /
+codex-app-gateway / codex-exec-edge / envmcp-public-gateway).
+
+```bash
+sed -i 's/"0\.69\.5"/"0.70.0"/g' /root/k8s/stacks/agentserver.ts
+grep -n '"0\.70\.0"' /root/k8s/stacks/agentserver.ts
+```
+
+- [ ] **Step 3: Swap publicHost**
+
+Find line 316 (`publicHost: "codex-exec.agent.cs.ac.cn"`):
+
+```bash
+grep -n 'publicHost: "codex-exec.agent.cs.ac.cn"' /root/k8s/stacks/agentserver.ts
+```
+
+Replace with `publicHost: "x.agent.cs.ac.cn"`.
+
+Also check the `mcp.agent.cs.ac.cn` envmcp publicHost nearby (line ~335)
+— that one is NOT changing.
+
+- [ ] **Step 4: Delete `noiseRelayEnabled: true`**
+
+Find line ~326:
+
+```bash
+grep -n 'noiseRelayEnabled' /root/k8s/stacks/agentserver.ts
+```
+
+Delete the entire line. (Comment lines immediately above it explaining
+the noise toggle should also go — read context to confirm clean.)
+
+- [ ] **Step 5: Simplify codexExecRouteRules**
+
+Find the `codexExecRouteRules` array (lines ~555-567):
+
+```typescript
+const codexExecRouteRules = [
+    {
+        matches: [
+            { path: { type: "PathPrefix", value: "/codex-exec/" } },
+            { path: { type: "PathPrefix", value: "/cloud/" } },
+        ],
+        backendRefs: [{ name: `${name}-codex-exec-edge`, port: 6061 }],
+    },
+    {
+        matches: [{ path: { type: "PathPrefix", value: "/" } }],
+        backendRefs: [{ name: `${name}-codex-exec-gateway`, port: 6060 }],
+    },
+];
+```
+
+Replace with a single rule pointing all paths at the gateway:
+
+```typescript
+const codexExecRouteRules = [
+    {
+        matches: [{ path: { type: "PathPrefix", value: "/" } }],
+        backendRefs: [{ name: `${name}-codex-exec-gateway`, port: 6060 }],
+    },
+];
+```
+
+Update the comment block immediately above (lines ~549-553 referencing
+`codex-exec-edge`, `/codex-exec/*`, `/cloud/*`) to a 1-2 line note:
+
+```typescript
+// codex-exec subdomain serves the agentx executor protocol at /agentx/*
+// (and historically /cloud/* for noise mode, both removed in chart 0.70).
+// All paths route directly to codex-exec-gateway. codex-exec-edge no
+// longer fronts the register path; agentx clients have their own
+// 1→30s exponential backoff retry that absorbs Recreate-strategy
+// downtime windows during deploys.
+```
+
+- [ ] **Step 6: Swap HTTPRoute hostname for .cs.ac.cn**
+
+Find HTTPRoute `${name}-codex-exec-cn` (line ~568-583):
+
+```bash
+sed -n '568,585p' /root/k8s/stacks/agentserver.ts
+```
+
+Change:
+- `name: \`${name}-codex-exec-cn\`` → `\`${name}-agentx-cn\``
+- `metadata.name: \`${name}-codex-exec-cn\`` → `\`${name}-agentx-cn\``
+- `hostnames: [\`codex-exec.agent.cs.ac.cn\`]` → `[\`x.agent.cs.ac.cn\`]`
+
+Also change the const name at the top of the block: `const codexExecRouteCN` → `const agentxRouteCN`. Update any later references to `codexExecRouteCN` to the new name. Check with:
+
+```bash
+grep -n 'codexExecRouteCN' /root/k8s/stacks/agentserver.ts
+```
+
+(There's likely an `export` at the bottom of the function that re-exports
+the route objects — update there too.)
+
+- [ ] **Step 7: Swap HTTPRoute hostname for .agentserver.dev**
+
+Same shape for the .dev domain HTTPRoute at line ~635-649:
+
+- `name: \`${name}-codex-exec\`` → `\`${name}-agentx\``
+- `metadata.name: \`${name}-codex-exec\`` → `\`${name}-agentx\``
+- `hostnames: [\`codex-exec.agentserver.dev\`]` → `[\`x.agentserver.dev\`]`
+- `const codexExecRoute` → `const agentxRoute`
+
+(.dev hostname is internal/test; if your team only cares about .cs.ac.cn,
+make this change too for consistency but flag in the PR description that
+the .dev DNS record also needs adding — same DNSPod step but for the .dev
+zone, or external if .dev is hosted elsewhere.)
+
+- [ ] **Step 8: Drop noise hmac secret reference in Pulumi.nj-prod.yaml**
+
+```bash
+grep -n 'noiseRelayHmacKey\|noise.relay\|noise-relay' /root/k8s/Pulumi.nj-prod.yaml
+```
+
+If any line matches (likely `agentserver:codexGatewayNoiseRelayHmacKey:` or
+similar), delete it. Save.
+
+- [ ] **Step 9: Build + lint (TypeScript)**
+
+```bash
+cd /root/k8s
+npm run build 2>&1 | tail -20   # or however the project builds; check package.json
+# OR if it's a pure ts-node project:
+npx tsc --noEmit
+```
+
+Expected: no errors. (If the project doesn't have a build step and uses
+`ts-node` at runtime via Pulumi, skip — `pulumi preview` will catch
+TS errors.)
+
+- [ ] **Step 10: Sanity-grep**
+
+```bash
+grep -n 'codex-exec\.agent\.cs\.ac\.cn\|codex-exec\.agentserver\.dev\|noiseRelay\|0\.69\.5' /root/k8s/stacks/agentserver.ts
+```
+
+Expected: 0 hits. If any remain, locate and patch.
+
+- [ ] **Step 11: Commit**
+
+```bash
+git add stacks/agentserver.ts Pulumi.nj-prod.yaml
+git diff --cached | head -100   # eyeball
+git commit -m "cutover: agentserver 0.69.5 → 0.70.0 (agentx era)
+
+Bumps chart + 5 image tags to 0.70.0 (matches chart published by
+agentserver PR feat/agentx-cutover; see plans/2026-06-23-agentx-extraction).
+
+Hostname: codex-exec.agent.cs.ac.cn → x.agent.cs.ac.cn (and the .dev
+counterpart). HTTPRoute simplified to single rule (codex-exec-edge no
+longer fronts /cloud/* register because Part 2 deleted those proxy
+routes; agentx clients have their own register retry that absorbs
+gateway Recreate downtime).
+
+Drops noiseRelayEnabled config field and the matching HMAC secret
+reference (chart 0.70.0 no longer recognizes them).
+
+Wildcard cert *.agent.cs.ac.cn (from cert-manager.ts) covers the new
+host automatically; no Certificate resource added."
+```
+
+DO NOT push yet. Push happens after preview validation in Task 4.
+
+---
+
+### Task 4: pulumi preview + diff validation
+
+**Files:** none (preview, no apply)
+
+**Interfaces:**
+- Consumes: edited agentserver.ts from Task 3.
+- Produces: validated preview output that confirms HTTPRoute hostname swap is
+  an in-place update (`~`) and not delete-then-create (`-` then `+`).
+
+- [ ] **Step 1: Select the stack**
+
+```bash
+cd /root/k8s
+pulumi stack select <agentserver-nj-prod-stack-name>
+```
+
+Use the stack name from Task 1 step 3.
+
+- [ ] **Step 2: Run preview**
+
+```bash
+pulumi preview 2>&1 | tee /tmp/agentx-cutover-preview.txt | tail -100
+```
+
+Read the full preview output carefully.
+
+- [ ] **Step 3: Validate HTTPRoute hostname change semantics**
+
+In `/tmp/agentx-cutover-preview.txt`, find the diff for the HTTPRoute
+resources. **Critical check** — search for the codex-exec → agentx hostname
+swap. Expected pattern:
+
+**Good (in-place update)**:
+```
+  ~ kubernetes:gateway.networking.k8s.io/v1:HTTPRoute  agentserver-codex-exec-cn → agentserver-agentx-cn  update [diff: ~metadata.name,~spec.hostnames]
+        ~ metadata.name : "agentserver-codex-exec-cn" → "agentserver-agentx-cn"
+        ~ spec.hostnames: ["codex-exec.agent.cs.ac.cn"] → ["x.agent.cs.ac.cn"]
+```
+
+**Bad (delete-then-create)**:
+```
+  - kubernetes:gateway.networking.k8s.io/v1:HTTPRoute  agentserver-codex-exec-cn  delete
+  + kubernetes:gateway.networking.k8s.io/v1:HTTPRoute  agentserver-agentx-cn      create
+```
+
+If the preview shows the **bad** pattern, abort. Two-step migration is
+needed:
+
+1. First commit: extend `hostnames: ["codex-exec.agent.cs.ac.cn", "x.agent.cs.ac.cn"]`,
+   keep resource name unchanged. pulumi up. Confirm both hosts resolve.
+2. Second commit: shrink to `hostnames: ["x.agent.cs.ac.cn"]` and rename
+   resource. pulumi up.
+
+If you hit this branch, edit Task 3 to do the two-step path and re-run
+preview before continuing. Document in the operator log.
+
+If preview shows the **good** pattern, proceed.
+
+- [ ] **Step 4: Validate Helm Release update**
+
+In preview output, find the agentserver Helm Release diff:
+
+```
+~ kubernetes:helm.sh/v3:Release  agentserver  update [diff: ~values, ~version]
+    ~ version: "0.69.5" → "0.70.0"
+    ~ values  : ... (noiseRelayEnabled removed, publicHost changed, image tags bumped)
+```
+
+Verify the values diff contains:
+- `noiseRelayEnabled: true` → removed
+- `publicHost: "codex-exec..."` → `"x.agent.cs.ac.cn"`
+- image tags 0.69.5 → 0.70.0
+
+If values diff is missing or partial, recheck Task 3 edits.
+
+- [ ] **Step 5: Look for unexpected changes**
+
+Skim the rest of the preview. Anything that touches:
+- ConfigMaps, Secrets, ServiceAccounts → expected from chart upgrade
+- Deployments → expected (image tag bump triggers rollout)
+- HTTPRoute for `codex-auth.agent.cs.ac.cn` → should be unchanged
+- HTTPRoute for `codex-app.agent.cs.ac.cn` → should be unchanged
+- HTTPRoute for `mcp.agent.cs.ac.cn` → should be unchanged
+
+Any unrelated change (e.g. another service's Deployment being modified)
+→ STOP. Investigate. Pulumi may be picking up drift unrelated to this
+PR, which is dangerous to bundle.
+
+- [ ] **Step 6: GO/NO-GO checkpoint**
+
+Document in operator log: HTTPRoute swap mode (in-place vs two-step),
+chart upgrade scope, any drift observed. Get **explicit user GO** before
+Task 5.
+
+---
+
+### Task 5: pulumi up (the actual cutover)
+
+**Files:** none (cluster mutation)
+
+**Interfaces:**
+- Produces: chart 0.70.0 deployed in cluster; new HTTPRoute live; old hostname returns 404.
+
+**THIS IS THE POINT OF NO EASY RETURN.** After this step, active codex
+exec-server clients connected to `codex-exec.agent.cs.ac.cn` will see their
+connection drop. Rollback window starts now and lasts ~1 h.
+
+- [ ] **Step 1: Final sanity ping on old + new endpoints**
+
+```bash
+echo "--- old endpoint (should be 200/404, working) ---"
+curl -sS -o /dev/null -w "%{http_code}\n" https://codex-exec.agent.cs.ac.cn/healthz
+
+echo "--- new endpoint (should be 404 from Istio, no HTTPRoute yet) ---"
+curl -sS -o /dev/null -w "%{http_code}\n" https://x.agent.cs.ac.cn/healthz
+```
+
+Expected: old returns 200 or whatever the healthcheck normally returns;
+new returns 404 (NoRoute) — DNS resolves to istio-ingress IP, but no
+HTTPRoute references it yet.
+
+- [ ] **Step 2: pulumi up**
+
+```bash
+cd /root/k8s
+pulumi up --yes  # use --yes to skip the second confirmation; or omit for one more prompt
+```
+
+Watch the output. Helm Release update + HTTPRoute update should complete
+in 1-3 minutes. The agentserver Deployment rollout might take longer
+(40-70 s of Recreate-strategy 503 per spec risk #8).
+
+Record the timestamp.
+
+- [ ] **Step 3: Watch the agentserver pods cycle**
+
+In a separate terminal during pulumi up:
+
+```bash
+kubectl get pods -n <agentserver-ns> -w | grep -E "codex-exec|codex-app|agentserver"
+```
+
+Expected: codex-exec-gateway pod terminates (Recreate strategy due to RWO
+audit PVC), new pod schedules and reaches Ready. Other pods (codex-app-gateway,
+codex-exec-edge, agentserver) do rolling restart and stay available.
+
+Time the codex-exec-gateway downtime window — should be ~40-70 s per spec.
+
+- [ ] **Step 4: Wait for all pods Ready**
+
+```bash
+kubectl wait --for=condition=Ready --timeout=300s \
+  pod -l app=<release-name>-codex-exec-gateway \
+  -n <agentserver-ns>
+kubectl get pods -n <agentserver-ns> | grep -v Running
+```
+
+Expected: codex-exec-gateway Ready; no pods stuck in non-Running state.
+
+- [ ] **Step 5: Verify new endpoint serves traffic**
+
+```bash
+echo "--- new endpoint (should be 200 / healthcheck OK) ---"
+curl -sS https://x.agent.cs.ac.cn/healthz
+
+echo "--- old endpoint (should be 404 Istio NoRoute now) ---"
+curl -sS -o /dev/null -w "%{http_code}\n" https://codex-exec.agent.cs.ac.cn/
+```
+
+Expected:
+- new: 200 (or whatever the gateway's healthcheck returns)
+- old: 404 (the HTTPRoute that owned this hostname now points at x.agent.cs.ac.cn instead)
+
+- [ ] **Step 6: Push the Pulumi commit**
+
+```bash
+cd /root/k8s
+git push -u origin cutover/agentserver-0.70.0-agentx
+# Open PR via your normal workflow if /root/k8s requires PR-for-main:
+gh pr create --base main --head cutover/agentserver-0.70.0-agentx \
+  --title "cutover: agentserver 0.69.5 → 0.70.0 (agentx era)" \
+  --body "$(cat <<'EOF'
+Applies the agentx cutover per docs/superpowers/specs/2026-06-23-agentx-extraction-design.md
+and plans/2026-06-23-agentx-extraction-part3-pulumi-cutover.md.
+
+Pulumi up has already been applied at <TIMESTAMP> (see operator log).
+This PR captures the state that's already live in the cluster.
+
+Verification done:
+- chart 0.70.0 deployed
+- x.agent.cs.ac.cn returns 200 on /healthz
+- codex-exec.agent.cs.ac.cn returns 404 (HTTPRoute moved)
+- DNS A record for x.agent.cs.ac.cn created via DNSPod (TTL 60)
+- wildcard cert *.agent.cs.ac.cn covers x.agent.cs.ac.cn
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+EOF
+)"
+```
+
+(Adjust the apply-then-PR vs PR-then-apply ordering to your team's
+convention. Some teams require PR + review before pulumi up; this plan
+allows operator-applies-then-PR because the change is time-critical and
+the operator runs preview manually beforehand.)
+
+---
+
+### Task 6: End-to-end smoke test with agentx
+
+**Files:** none (verification)
+
+**Interfaces:**
+- Consumes: agentx binary v0.0.1 on a test machine; a real workspace +
+  Agent Identity JWT minted from codex-auth.agent.cs.ac.cn.
+
+- [ ] **Step 1: Install agentx on a test machine**
+
+On a Linux machine NOT in the cluster (your laptop or a fresh container):
+
+```bash
+curl -fsSL https://github.com/agentserver/agentx/releases/latest/download/install.sh | sh
+agentx --version
+```
+
+Expected: `agentx 0.0.1` (or similar — depending on what `--version` returns
+post-Part-1).
+
+- [ ] **Step 2: Mint a test Agent Identity JWT via agentserver UI / API**
+
+Use the existing "Add Executor" flow in the agentserver UI (or whatever
+API endpoint mints connect-command tokens). Capture:
+- the JWT
+- the `exe_xxx` id assigned
+- the connect command shown by the UI (this is the command emitted by C4
+  in Part 2)
+
+Confirm the displayed connect command begins with `agentx --remote 'https://x.agent.cs.ac.cn'`
+(not `codex ... exec-server ...`).
+
+- [ ] **Step 3: Run the connect command**
+
+Paste the connect command into the test machine's shell. It should expand
+to:
+
+```bash
+export AGENTX_ACCESS_TOKEN='<jwt>'
+export AGENTX_AGENT_IDENTITY_ALLOWED_BASE_URLS='https://codex-auth.agent.cs.ac.cn'
+agentx --remote 'https://x.agent.cs.ac.cn' \
+  --environment-id 'exe_xxx' --name 'smoke-test' \
+  --use-agent-identity-auth \
+  --agent-identity-authapi-base-url 'https://codex-auth.agent.cs.ac.cn'
+```
+
+Expected behaviour:
+1. agentx hits `POST https://x.agent.cs.ac.cn/agentx/environment/exe_xxx/register`
+   with `Authorization: AgentAssertion <jwt>`. Response: 200 + ws URL.
+2. agentx ws-dials the returned URL (`wss://x.agent.cs.ac.cn/agentx/exe_xxx?token=...`).
+3. agentx prints something like "registered as exe_xxx" / "connected".
+4. The agentserver UI shows the executor as "online" or "connected".
+
+The previous error `Agent Identity only supports production and staging
+ChatGPT environments` should NOT appear (this was the trigger for the
+entire project).
+
+- [ ] **Step 4: Smoke a process via the executor**
+
+From the agentserver UI or whichever harness drives executors, run a
+trivial shell command on this newly-connected executor:
+
+```bash
+echo hello from agentx
+```
+
+Expected: output appears in the harness UI. agentx's stdout shows
+process/start, process/output, process/exited events.
+
+- [ ] **Step 5: Tear down**
+
+Stop agentx (Ctrl-C). UI should show executor as disconnected within
+a few seconds.
+
+- [ ] **Step 6: Document the smoke test outcome in the operator log**
+
+If anything failed, classify:
+- **Registration failed (401/403/etc)**: check codexauth JWT validation logic
+  in agentserver; check JWT issuer / audience mismatch.
+- **Registration succeeded but WS dial failed**: check HTTPRoute path
+  matches `/agentx/{exe_id}`; check the HMAC ticket validation.
+- **WS connected but no process events**: check bridge code in
+  codex-exec-gateway hadn't lost plaintext path during Part 2.
+
+For each, fix forward (see Task 9 rollback section).
+
+---
+
+### Task 7: Monitor the first 60 minutes
+
+**Files:** none (observation)
+
+**Interfaces:**
+- Consumes: live cluster.
+- Produces: confidence that the cutover is stable; decision to enter Phase D.
+
+The 60-minute window is the rollback window per spec §9.5. Until users
+start successfully registering against 0.70.0 in production, rollback to
+0.69.5 is feasible (~5 min via `git revert` + pulumi up). After successful
+registrations, only fix-forward.
+
+- [ ] **Step 1: Watch gateway logs**
+
+```bash
+kubectl logs -n <agentserver-ns> -l app=<release>-codex-exec-gateway -f \
+  --max-log-requests=10 --tail=100
+```
+
+Look for:
+- Successful POST to `/agentx/environment/.../register` returning 200.
+- WS upgrade requests to `/agentx/{exe_id}`.
+- ERROR / 5xx → investigate immediately.
+
+- [ ] **Step 2: Check error rate metrics**
+
+If you have Prometheus / Grafana:
+
+```bash
+# Adjust to actual metric names; example PromQL:
+# sum(rate(http_requests_total{job="codex-exec-gateway",code=~"5.."}[1m]))
+```
+
+Expected: low / zero 5xx rate. A blip during the Recreate-strategy
+restart window is acceptable; sustained 5xx is not.
+
+- [ ] **Step 3: Watch user reports**
+
+Whatever support channel users complain in (discord, in-app feedback,
+email) — keep an eye on it. Most likely complaint shape: "I can't connect
+my executor" → likely they're running old codex against the old hostname.
+Direct them to the new connect command from the UI.
+
+- [ ] **Step 4: Hourly checkpoint**
+
+At T+60min after pulumi up:
+
+```bash
+# Count successful agentx registrations in the audit log (or wherever you
+# log them; example agentserver-side):
+kubectl logs -n <agentserver-ns> -l app=<release>-codex-exec-gateway --since=1h \
+  | grep -cE '"path":"/agentx/environment/.+/register".*"status":200'
+```
+
+Expected: non-zero. If zero, no one has migrated yet; consider
+extending the announcement push or escalating.
+
+If non-zero, the rollback window is effectively closed — those users
+will break on revert. Document this in operator log and move to Phase D.
+
+---
+
+### Task 8: Phase D — cleanup
+
+**Files:**
+- DNSPod (manual): delete A record for `codex-exec.agent.cs.ac.cn`
+- (Optional) `/root/k8s/stacks/agentserver.ts` follow-up: retire `codex-exec-edge` deployment if it's empty after Part 2 C2b
+
+**Interfaces:**
+- Consumes: stable cutover (Task 7 hourly checkpoint clean).
+- Produces: orphan resources removed.
+
+These tasks can be done **any time** after Task 7 stabilizes — minutes,
+hours, or days later. Spec §9.4 doesn't constrain the timeline. Defer to
+operator availability.
+
+- [ ] **Step 1: Delete old hostname A record**
+
+After confirming via web analytics / gateway logs that no one is hitting
+`codex-exec.agent.cs.ac.cn` anymore, delete the DNS record:
+
+- DNSPod console: navigate to `agent.cs.ac.cn`, find the `codex-exec`
+  A record, delete.
+- OR via API:
+
+```bash
+# List records to find the ID:
+curl -sS https://dnsapi.cn/Record.List \
+  -d login_token=<DNSPOD_LOGIN_TOKEN> \
+  -d format=json -d domain=agent.cs.ac.cn -d sub_domain=codex-exec
+# Then delete by ID:
+curl -sS https://dnsapi.cn/Record.Remove \
+  -d login_token=<DNSPOD_LOGIN_TOKEN> \
+  -d format=json -d domain=agent.cs.ac.cn -d record_id=<ID>
+```
+
+Verify:
+
+```bash
+dig +short codex-exec.agent.cs.ac.cn
+```
+
+Expected: empty (NXDOMAIN). Existing TCP connections continue working
+until they reconnect; from then on the hostname is dead.
+
+- [ ] **Step 2: (Optional) Retire codex-exec-edge if empty**
+
+Part 2 C2b deleted edge's `/cloud/*` and `/codex-exec/` proxy routes.
+If only healthcheck routes remain:
+
+```bash
+kubectl exec -n <agentserver-ns> deploy/<release>-codex-exec-edge -- \
+  wget -qO- http://localhost:6061/  # or whatever routes remain
+```
+
+If edge is functionally a no-op, retire the deployment:
+
+1. Open a separate Pulumi PR removing the `codex-exec-edge` deployment +
+   service + HTTPRoute references from agentserver.ts.
+2. helm chart side: open a follow-up agentserver PR removing the
+   `codexExecEdge` template and values.
+
+This is a separate change from the cutover, scope-creeps Part 3, and
+should be its own PR/plan. Just file an issue and move on.
+
+- [ ] **Step 3: Sign off Part 3 + the entire agentx project**
+
+Once Phase D is done, the agentx extraction project is complete. Report
+to user:
+
+- Cutover timestamp
+- Hourly checkpoint outcome at T+60min
+- Number of agentx clients connected
+- Any incidents during the window
+- Phase D cleanup status
+
+The migration is **closed**.
+
+---
+
+### Task 9: Rollback procedures
+
+**Files:** none (reference; only execute if Task 5 or Task 7 surfaces a serious problem)
+
+**Interfaces:**
+- Consumes: a clear escalation reason from operator.
+
+The rollback path depends on **when** the problem is discovered.
+
+#### Path A: Discovered during preview (Task 4 step 6) — easiest
+
+```bash
+cd /root/k8s
+git checkout -- stacks/agentserver.ts Pulumi.nj-prod.yaml
+git checkout main
+git branch -D cutover/agentserver-0.70.0-agentx
+# DNS A record for x.agent.cs.ac.cn can stay; it just resolves to istio with no route.
+```
+
+Cost: zero. No production change occurred.
+
+#### Path B: Discovered during pulumi up but no users registered yet (Task 5 step 5 returns wrong codes, or Task 6 smoke fails)
+
+```bash
+cd /root/k8s
+# Restore previous state via Pulumi:
+git revert HEAD --no-edit   # or git reset --hard if commit wasn't pushed
+pulumi up --yes
+```
+
+Then in the agentserver helm chart side:
+
+```bash
+# If chart 0.70.0 image is broken (unlikely — Part 2 CI gates this),
+# Pulumi rollback to chart 0.69.5 image tag will pull the old image back.
+# No agentserver code revert needed; the cluster just rolls back to 0.69.5.
+```
+
+Cost: ~5 minutes. Active codex exec-server clients that disconnected
+during the window will reconnect to the restored 0.69.5 noise-mode
+gateway and resume.
+
+DNS: leave x.agent.cs.ac.cn A record in place (harmless; nothing routes
+to it post-rollback).
+
+#### Path C: Discovered during Task 7 monitoring — users have already registered
+
+**Rollback is no longer clean.** agentx clients connected to 0.70.0
+expect plaintext bridge; 0.69.5 expects noise. Reverting kills them.
+
+Fix-forward:
+
+1. Identify the specific failure (gateway 5xx, integration bug, etc.).
+2. Open a hotfix PR on the agentserver repo targeting `main`.
+3. Bump chart to 0.70.1; image tags too.
+4. Merge, build, then update `/root/k8s/stacks/agentserver.ts` to pin
+   0.70.1 and `pulumi up`.
+5. agentx clients (Part 1) are unaffected — they use wire shapes that
+   are stable within 0.70.x.
+
+If the failure is so bad it warrants reverting agentx entirely (very
+unlikely):
+
+1. Accept that already-connected agentx clients will fail.
+2. Issue an announcement: "we're rolling back; please install legacy codex
+   v0.140 and connect to codex-exec.agent.cs.ac.cn".
+3. Revert Pulumi to 0.69.5 chart + restore old hostname.
+4. DNS: keep x.agent.cs.ac.cn A record for re-cutover later.
+
+This is the "single-PR design accepts the risk" outcome spec §10 #4
+documents. The plan does not prescribe further mitigation because the
+spec deliberately chose hard cut.
+
+---
+
+## End of Part 3
+
+Plan complete. Once Tasks 1-8 are done and signed off, the agentx
+extraction project (Parts 1 + 2 + 3) is fully delivered:
+
+- agentx repo exists, v0.0.1 released
+- agentserver chart 0.70.0 drops noise + adopts /agentx/* + new hostname
+- cs.ac.cn cluster runs 0.70.0; users connect via agentx binary against
+  x.agent.cs.ac.cn
+
+Next steps after delivery (out of scope for this plan):
+
+- Monitor agentx adoption in the user base. If many users stuck on old codex,
+  consider a second announcement.
+- File issues for follow-up cleanups noted in the plan:
+  - codex-exec-edge retirement (Task 8 step 2)
+  - frontend `RemoteExecutorsPanel.tsx` / OpenAPI docstrings still reference
+    `codex` — defer to a docs PR (per spec risk #11)
+  - cert-signing for agentx macOS binary (per spec risk #2)
+- Cherry-pick relevant upstream codex security fixes into agentx as they
+  appear (per spec risk #1).

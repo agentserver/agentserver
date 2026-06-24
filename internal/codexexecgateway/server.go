@@ -11,7 +11,6 @@ import (
 
 	"github.com/agentserver/agentserver/internal/codexexecgateway/audit"
 	"github.com/agentserver/agentserver/internal/codexexecgateway/handlers"
-	"github.com/agentserver/agentserver/internal/codexexecgateway/noise"
 	"github.com/agentserver/agentserver/internal/codexexecgateway/relay"
 	sdkpkg "github.com/agentserver/agentserver/internal/codexexecgateway/sdk"
 	"github.com/agentserver/agentserver/internal/envtools/bridge"
@@ -38,12 +37,6 @@ type Server struct {
 	// assigns audit.NewNoopRecorder() when Config.Audit.Enabled is false,
 	// so callsites can call hook methods unconditionally.
 	recorder audit.Recorder
-	// noiseHandlers is non-nil iff CXG_NOISE_RELAY_HMAC_KEY was set —
-	// when populated, the gateway mounts /cloud/environment/{...} and
-	// /cloud/relay/{...} for noise rendezvous and runs a NoiseRouter
-	// that demultiplexes per-executor relay WS connections into per-
-	// stream noise sessions.
-	noiseHandlers *NoiseHandlers
 }
 
 // NewServer is the production constructor. Refuses a nil store so a
@@ -144,29 +137,6 @@ func NewServer(cfg Config, store *Store) (*Server, error) {
 		logger:        logger,
 		recorder:      rec,
 	}
-
-	// Noise relay endpoints — only mounted when the HMAC key is
-	// configured. Without it the gateway runs in legacy-bridge-only
-	// mode (the default during the §6 D-1 6-week transition window).
-	if len(cfg.NoiseRelayHMACKey) > 0 {
-		// Public ws/wss base for the relay URL embedded in the
-		// /cloud/environment/{env_id}/register response. Falls back to
-		// the request host when PublicWSBaseURL is unset.
-		nh := NewNoiseHandlers(store, cfg.NoiseRelayHMACKey, cfg.PublicWSBaseURL)
-		// Identity is per-process for now; a follow-up will load this
-		// from a mounted K8s secret per §6 D-2 so it survives pod
-		// restarts and supports the documented rotation procedure.
-		identity, err := noise.GenerateIdentity()
-		if err != nil {
-			return nil, fmt.Errorf("noise relay identity: %w", err)
-		}
-		router := NewNoiseRouter(store, nh.WSHub(), identity, cfg.NoiseRelayHMACKey)
-		nh.AttachRouter(router)
-		srv.noiseHandlers = nh
-		logger.Info("noise relay enabled", "suite", noise.SuiteName)
-	} else {
-		logger.Info("noise relay disabled (CXG_NOISE_RELAY_HMAC_KEY not set)")
-	}
 	return srv, nil
 }
 
@@ -244,7 +214,7 @@ func (s *Server) Routes() http.Handler {
 		w.Write([]byte("ok"))
 	})
 
-	r.Get("/codex-exec/{exe_id}", s.handleInbound)
+	r.Get("/agentx/{exe_id}", s.handleInbound)
 	r.Get("/bridge/{exe_id}", s.handleBridge)
 
 	// HTTP relay public endpoints — ticket Bearer is auth; no other
@@ -253,27 +223,16 @@ func (s *Server) Routes() http.Handler {
 	r.Put("/relay/{ticket}", s.handleRelayPut)
 	r.Get("/relay/{ticket}", s.handleRelayGet)
 
-	// Upstream codex `exec-server --remote` compat. Two paths because
-	// codex renamed the endpoint in 0.133 (executor → environment); the
-	// handler treats them identically.
-	cloudRegister := handlers.CloudRegister(s.store, s.config.PublicWSBaseURL,
+	// agentx exec-server register endpoint. Single path (agentx uses
+	// environment/{env_id} exclusively; the legacy codex executor/{exe_id}
+	// path is gone — hard cut).
+	agentxRegister := handlers.AgentxRegister(s.store, s.config.PublicWSBaseURL,
 		handlers.AgentserverValidator{
 			BaseURL:        s.config.AgentserverInternalURL,
 			InternalSecret: s.config.AgentserverInternalSecret,
 		},
 		s.config.AgentserverInternalSecret)
-	r.Post("/cloud/executor/{exe_id}/register", cloudRegister)
-	// /cloud/environment/{env_id}/register is owned by NoiseHandlers
-	// when the noise feature is on, and falls back to CloudRegister
-	// internally for legacy (pre-0.141) codex clients whose body lacks
-	// security_profile. When noise is off, mount the legacy handler
-	// directly so the path stays reachable for those clients.
-	if s.noiseHandlers != nil {
-		s.noiseHandlers.AttachLegacyRegister(cloudRegister)
-		s.noiseHandlers.Mount(r)
-	} else {
-		r.Post("/cloud/environment/{env_id}/register", cloudRegister)
-	}
+	r.Post("/agentx/environment/{env_id}/register", agentxRegister)
 
 	// *Store satisfies handlers.Store, handlers.BindingStore, and
 	// handlers.InternalConnectedStore directly — no adapter needed because

@@ -28,6 +28,27 @@ jobs:
       - name: Install libolm
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libolm-dev
 
+      - name: Install agentx (for codexauth integration test)
+        env:
+          AGENTX_VERSION: v0.0.1
+          # SHA-256 of agentx-x86_64-unknown-linux-musl.tar.gz at v0.0.1.
+          # When bumping AGENTX_VERSION, update this from
+          # https://github.com/agentserver/agentx/releases/download/<ver>/agentx-x86_64-unknown-linux-musl.tar.gz.sha256
+          AGENTX_SHA256: 54d3ce874b30e52f78f8841f691c296bf0a7dcb8a5c14529cb4456ab9fad67de
+        run: |
+          set -euo pipefail
+          tarball="agentx-x86_64-unknown-linux-musl.tar.gz"
+          url="https://github.com/agentserver/agentx/releases/download/${AGENTX_VERSION}/${tarball}"
+          # Download the tarball directly (skipping install.sh) so we can
+          # checksum-verify against a pinned SHA-256 before extracting.
+          # Avoids `curl | sudo sh` of unpinned remote content in a CI
+          # job that holds a write-scoped GITHUB_TOKEN.
+          curl -fsSL "$url" -o "/tmp/$tarball"
+          echo "${AGENTX_SHA256}  /tmp/${tarball}" | sha256sum -c -
+          tar -xzf "/tmp/$tarball" -C /tmp
+          sudo install -m 0755 "/tmp/agentx-x86_64-unknown-linux-musl/agentx" /usr/local/bin/agentx
+          agentx --version 2>&1 | head
+
       - name: Vet
         run: go vet ./...
 

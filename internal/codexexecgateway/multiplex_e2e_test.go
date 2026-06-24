@@ -98,7 +98,7 @@ func connectInboundRaw(t *testing.T, srv *Server, baseURL, exeID string) *websoc
 	if err != nil {
 		t.Fatalf("MintWSTicket: %v", err)
 	}
-	url := "ws" + strings.TrimPrefix(baseURL, "http") + "/codex-exec/" + exeID + "?token=" + ticket
+	url := "ws" + strings.TrimPrefix(baseURL, "http") + "/agentx/" + exeID + "?token=" + ticket
 	c, _, err := websocket.Dial(context.Background(), url, nil)
 	if err != nil {
 		t.Fatalf("inbound dial: %v", err)

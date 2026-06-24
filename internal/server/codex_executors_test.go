@@ -6,11 +6,36 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/agentserver/agentserver/internal/auth"
 	"github.com/go-chi/chi/v5"
 )
+
+func TestConnectCommands_EmitsAgentxCommand(t *testing.T) {
+	s := &Server{
+		CodexExecGatewayPublicHost: "x.agent.cs.ac.cn",
+		CodexAuthIssuerURL:         "https://codex-auth.agent.cs.ac.cn",
+	}
+	cmd := buildConnectCommand(s, "fake-jwt", "exe_xxx", "my-laptop")
+
+	if !strings.HasPrefix(cmd, "export AGENTX_ACCESS_TOKEN='fake-jwt'") {
+		t.Errorf("missing AGENTX_ACCESS_TOKEN export; got: %s", cmd)
+	}
+	if !strings.Contains(cmd, "agentx --remote 'https://x.agent.cs.ac.cn'") {
+		t.Errorf("missing agentx --remote invocation; got: %s", cmd)
+	}
+	if !strings.Contains(cmd, "--agent-identity-authapi-base-url 'https://codex-auth.agent.cs.ac.cn'") {
+		t.Errorf("missing --agent-identity-authapi-base-url; got: %s", cmd)
+	}
+	if strings.Contains(cmd, "codex -c chatgpt_base_url") {
+		t.Errorf("still emitting legacy codex command; got: %s", cmd)
+	}
+	if strings.Contains(cmd, "CODEX_ACCESS_TOKEN") {
+		t.Errorf("still emitting legacy CODEX_ACCESS_TOKEN env; got: %s", cmd)
+	}
+}
 
 // withChiURLParam plumbs a chi URL parameter into the request context so
 // handlers can retrieve it via chi.URLParam without needing a full router.

@@ -33,11 +33,11 @@ type registerResponse struct {
 }
 
 // Register returns an http.HandlerFunc that creates a new executor row
-// and returns its id. The codex 0.132 bcrypt registration_token path
-// is gone — auth on /cloud/.../register now goes through Agent Identity
-// JWT or ChatGPT access_token validated by agentserver, and the inbound
-// ws verifies a short-lived HMAC ticket minted at register time. So
-// this endpoint no longer mints any per-executor bearer.
+// and returns its id. Auth on /agentx/environment/{env_id}/register goes
+// through Agent Identity JWT or ChatGPT access_token validated by
+// agentserver, and the inbound ws verifies a short-lived HMAC ticket
+// minted at register time. So this endpoint no longer mints any
+// per-executor bearer.
 func Register(store Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		userID := r.Header.Get("X-User-Id")

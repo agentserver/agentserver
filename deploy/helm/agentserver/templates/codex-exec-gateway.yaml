@@ -99,19 +99,6 @@ spec:
                 secretKeyRef:
                   name: {{ .Release.Name }}-codex-gateway
                   key: internal-shared-secret
-            {{- if .Values.codexExecGateway.noiseRelayEnabled }}
-            # Noise relay HMAC key — mints + validates harness_key_authorization
-            # tokens for the encrypted /cloud/environment/... rendezvous flow.
-            # Presence of this env var is what enables the noise feature in
-            # the gateway code (cfg.NoiseRelayHMACKey non-empty → mount).
-            # Gated on noiseRelayEnabled so flipping the toggle alone enables
-            # the feature without operator key rotation.
-            - name: CXG_NOISE_RELAY_HMAC_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Release.Name }}-codex-gateway
-                  key: noise-relay-hmac-key
-            {{- end }}
             - name: CXG_PING_INTERVAL
               value: {{ .Values.codexExecGateway.pingInterval | quote }}
             - name: CXG_IDLE_TIMEOUT
@@ -121,8 +108,8 @@ spec:
             - name: CXG_AGENTSERVER_INTERNAL_SECRET
               value: {{ required "internal.apiSecret is required when codexExecGateway.enabled is true" .Values.internal.apiSecret | quote }}
             {{- if .Values.codexExecGateway.publicHost }}
-            # Returned in POST /cloud/executor/{id}/register response (the
-            # upstream codex --remote compat endpoint). Format: wss://host:port
+            # Returned in POST /agentx/environment/{env_id}/register response.
+            # Format: wss://host:port
             - name: CXG_PUBLIC_WS_BASE_URL
               value: "wss://{{ .Values.codexExecGateway.publicHost }}:443"
             # HTTPS base for the v0.56.0 copy_path relay endpoint —

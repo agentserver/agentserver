@@ -47,7 +47,7 @@
 - **同一段会话，任意设备** —— codex 会话本身跑在服务端。早上在公司笔电上让 agent 改了一半的任务，地铁里用微信续上同一段对话继续推进；换设备的不是命令，而是 agent 的前端。
 - **口袋里就能指挥算力** —— 通过微信 / Weixin、Telegram 或 Matrix 聊天驱动你的智能体，离开桌面时也不必再打开终端。
 - **一个工作区，统管所有设备** —— 云端沙箱、本地笔记本/台式机、IM 接入的智能体共享同一个工作区，全部并排出现在 Web UI 中。
-- **原生面向 Codex** —— 围绕 [OpenAI codex](https://developers.openai.com/codex/cli) CLI 构建：设备用 `codex exec-server --remote` 接入，指挥机用 `codex --remote` 指挥；不需要在每台机器上额外装客户端。
+- **原生面向 agentx** —— 设备用 [`agentx --remote`](https://github.com/agentserver/agentx) 接入，指挥机用 `codex --remote` 指挥；不需要在每台机器上额外装客户端。
 - **沙箱可暂停、可恢复** —— 每任务一容器，空闲自动暂停；基于 Kubernetes + [Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox) + gVisor，提供真正的多租户隔离。
 - **同时欢迎"古法编程"** —— 内置 Jupyter notebook，让偏好亲自写代码的用户也能接入同一个工作区，使用智能体所用的文件系统与凭证。
 - **多人协作** —— 邀请朋友或同事一起进入你的个人算力网；基于角色的访问控制（owner / maintainer / developer / guest）决定谁能做什么。
@@ -73,20 +73,26 @@
 
 ### 3. 把设备接入算力网
 
-在每台希望加入的设备上安装 codex —— 笔记本、台式机、家庭服务器、云主机都可以：
+在每台希望加入的设备上安装 [agentx](https://github.com/agentserver/agentx) —— 笔记本、台式机、家庭服务器、云主机都可以：
 
 ```bash
-# macOS
-brew install codex
-
-# 其他操作系统
-npm i -g @openai/codex
+curl -fsSL https://github.com/agentserver/agentx/releases/latest/download/install.sh | sh
 ```
 
-在 Web UI 的 **Connectors** 页生成接入命令，复制到设备上、放进 `tmux`、`systemd` 等 detached 会话中运行，确保用户注销后 Connector 仍然在线：
+在 Web UI 的 **Connectors** 页生成接入命令，命令形如：
+
+```bash
+export AGENTX_ACCESS_TOKEN='<jwt>'
+export AGENTX_AGENT_IDENTITY_ALLOWED_BASE_URLS='https://codex-auth.agent.cs.ac.cn'
+agentx --remote 'https://x.agent.cs.ac.cn' \
+  --environment-id 'exe_xxx' --name 'my-laptop' --use-agent-identity-auth \
+  --agent-identity-authapi-base-url 'https://codex-auth.agent.cs.ac.cn'
+```
+
+复制到设备上、放进 `tmux`、`systemd` 等 detached 会话中运行，确保用户注销后 Connector 仍然在线：
 
 <p align="center">
-  <img src="assets/step-3-device-connect.png" alt="codex exec-server --remote 注册为一个 Connector" width="780">
+  <img src="assets/step-3-device-connect.png" alt="agentx --remote 注册为一个 Connector" width="780">
 </p>
 
 设备会以 **Online** 状态出现在工作区列表中，与其它设备并排：
@@ -152,7 +158,7 @@ Web 控制台    ──▶ agentserver  ──┤    ┌────────
                    • 注册表       │    └──────────────────┘
                           │      │
                           │      └──▶ 本地 Connector（笔记本、台式机、HPC …）
-                          │            └─ codex exec-server --remote
+                          │            └─ agentx --remote
                           ▼
                      PostgreSQL
                   (用户、工作区、
@@ -161,7 +167,7 @@ Web 控制台    ──▶ agentserver  ──┤    ┌────────
 
 Browser (codex)  ──▶ codex-app-gateway  (:8086) ─▶ 每工作区一个 codex app-server 子进程
 Jupyter notebook ──▶ codex-app-gateway  (:8086) ─▶ 同路径，共享 `ctx` 运行时
-Connector (codex)──▶ codex-exec-gateway (:6060) ─▶ `codex exec-server --remote` 的会合端点
+Connector (agentx)─▶ codex-exec-gateway (:6060) ─▶ `agentx --remote` 的会合端点
 沙箱 URL          ──▶ sandboxproxy       (:8082) ─▶ 按子域名路由到沙箱内服务
 ```
 
@@ -173,7 +179,7 @@ Connector (codex)──▶ codex-exec-gateway (:6060) ─▶ `codex exec-server 
 | **credentialproxy** | — | 服务端注入厂商凭证 |
 | **imbridge** | — | IM 通道桥（微信 / Weixin、Telegram、Matrix） |
 | **codex-app-gateway** | `:8086` | 每工作区一个 codex app-server 子进程 + ws 桥，服务 Browser 会话与 Jupyter 客户端 |
-| **codex-exec-gateway** | `:6060` | `codex exec-server --remote` Connector 的会合端点 |
+| **codex-exec-gateway** | `:6060` | `agentx --remote` Connector 的会合端点 |
 
 ### 后续方向
 

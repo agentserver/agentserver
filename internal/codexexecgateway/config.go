@@ -30,15 +30,15 @@ type Config struct {
 	// NewResolverWithFetcher and never makes HTTP calls back to here.
 	SelfHTTPBaseURL string
 	// PublicWSBaseURL is the wss:// origin used in the response of the
-	// upstream-compat `POST /cloud/executor/{exe_id}/register` endpoint.
-	// Example: "wss://codex-exec.agent.cs.ac.cn:443". When empty, the
+	// `POST /agentx/environment/{env_id}/register` endpoint.
+	// Example: "wss://x.agent.cs.ac.cn:443". When empty, the
 	// endpoint synthesises a URL from the incoming request's Host header
 	// (less reliable behind proxies but useful in dev).
 	PublicWSBaseURL string
 	// PublicHTTPSBaseURL is the https:// origin the relay endpoint is
 	// reachable at — embedded in CreateRelay responses so env-mcp can
 	// build curl PUT/GET commands. Example:
-	// "https://codex-exec.agent.cs.ac.cn". When empty, the relay
+	// "https://x.agent.cs.ac.cn". When empty, the relay
 	// /api/exec-gateway/relay/create endpoint refuses to mint tickets
 	// (env-mcp falls back to the ws cat-pump path).
 	PublicHTTPSBaseURL string
@@ -54,13 +54,6 @@ type Config struct {
 	// NewRecorder returns a noop). Populated from CXG_AUDIT_* env vars
 	// by LoadConfigFromEnv.
 	Audit audit.Config
-	// NoiseRelayHMACKey is the shared HMAC secret used to mint and
-	// validate harness_key_authorization tokens for the noise relay
-	// endpoints (POST /cloud/environment/{env_id}/connect and the
-	// corresponding /validate loopback). When empty, the noise endpoints
-	// are not mounted — the gateway runs in legacy-bridge-only mode.
-	// 32 bytes recommended. Sourced from CXG_NOISE_RELAY_HMAC_KEY.
-	NoiseRelayHMACKey []byte
 }
 
 // Validate checks that security-critical fields are populated. NewServer calls
@@ -90,7 +83,6 @@ func LoadConfigFromEnv() (Config, error) {
 		RelayMaxPerWorkspace:      parseIntOr("CXG_RELAY_MAX_PER_WORKSPACE", 16),
 		LogLevel:                  slog.LevelInfo,
 		Audit:                     audit.NewConfigFromEnv(),
-		NoiseRelayHMACKey:         []byte(os.Getenv("CXG_NOISE_RELAY_HMAC_KEY")),
 	}
 	if cfg.DatabaseURL == "" {
 		return cfg, fmt.Errorf("CXG_DATABASE_URL is required")

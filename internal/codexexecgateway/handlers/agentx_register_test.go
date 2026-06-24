@@ -13,30 +13,30 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// mockCloudRegisterStore implements CloudRegisterStore and exposes
+// mockAgentxRegisterStore implements AgentxRegisterStore and exposes
 // UserIDForExecutor (matched by assertExeOwnedByUser's ad-hoc interface
-// assertion). Lets us exercise CloudRegister without a real DB.
-type mockCloudRegisterStore struct {
+// assertion). Lets us exercise AgentxRegister without a real DB.
+type mockAgentxRegisterStore struct {
 	owner      string
 	ownerErr   error
 	registered bool // false → UserIDForExecutor returns "" (unknown executor)
 }
 
-func (m *mockCloudRegisterStore) UserIDForExecutor(ctx context.Context, exeID string) (string, error) {
+func (m *mockAgentxRegisterStore) UserIDForExecutor(ctx context.Context, exeID string) (string, error) {
 	if !m.registered {
 		return "", m.ownerErr
 	}
 	return m.owner, m.ownerErr
 }
 
-func newStoreWithExecutor(t *testing.T, exeID, userID string) *mockCloudRegisterStore {
+func newStoreWithExecutor(t *testing.T, exeID, userID string) *mockAgentxRegisterStore {
 	t.Helper()
-	return &mockCloudRegisterStore{owner: userID, registered: true}
+	return &mockAgentxRegisterStore{owner: userID, registered: true}
 }
 
 const testTicketSecret = "ticket-secret"
 
-func TestCloudRegister_BearerScheme_DelegatesToAgentserver(t *testing.T) {
+func TestAgentxRegister_BearerScheme_DelegatesToAgentserver(t *testing.T) {
 	agentSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/internal/codex-auth/validate" {
 			http.Error(w, "wrong path", 404)
@@ -58,11 +58,11 @@ func TestCloudRegister_BearerScheme_DelegatesToAgentserver(t *testing.T) {
 	defer agentSrv.Close()
 
 	store := newStoreWithExecutor(t, "exe_x", "u-1")
-	h := CloudRegister(store, "wss://test", AgentserverValidator{
+	h := AgentxRegister(store, "wss://test", AgentserverValidator{
 		BaseURL:        agentSrv.URL,
 		InternalSecret: "shh",
 	}, testTicketSecret)
-	req := httptest.NewRequest(http.MethodPost, "/cloud/executor/exe_x/register", nil)
+	req := httptest.NewRequest(http.MethodPost, "/agentx/environment/exe_x/register", nil)
 	req.Header.Set("Authorization", "Bearer valid-bearer")
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("exe_id", "exe_x")
@@ -80,12 +80,12 @@ func TestCloudRegister_BearerScheme_DelegatesToAgentserver(t *testing.T) {
 	if resp.ExecutorID != "exe_x" {
 		t.Fatalf("executor_id = %q", resp.ExecutorID)
 	}
-	if !strings.HasPrefix(resp.URL, "wss://test/codex-exec/exe_x?token=") {
+	if !strings.HasPrefix(resp.URL, "wss://test/agentx/exe_x?token=") {
 		t.Fatalf("url = %q", resp.URL)
 	}
 
 	// Verify the ticket in the URL passes VerifyWSTicket with the same secret.
-	const prefix = "wss://test/codex-exec/exe_x?token="
+	const prefix = "wss://test/agentx/exe_x?token="
 	ticket := strings.TrimPrefix(resp.URL, prefix)
 	if err := wsticket.Verify(ticket, "exe_x", testTicketSecret); err != nil {
 		t.Fatalf("ticket should verify: %v", err)
@@ -94,18 +94,18 @@ func TestCloudRegister_BearerScheme_DelegatesToAgentserver(t *testing.T) {
 
 // Wrong-owner: agentserver validates token (returns u-2) but executor
 // is owned by u-1 → 403.
-func TestCloudRegister_BearerScheme_WrongOwner(t *testing.T) {
+func TestAgentxRegister_BearerScheme_WrongOwner(t *testing.T) {
 	agentSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"user_id": "u-2"})
 	}))
 	defer agentSrv.Close()
 
 	store := newStoreWithExecutor(t, "exe_x", "u-1")
-	h := CloudRegister(store, "wss://test", AgentserverValidator{
+	h := AgentxRegister(store, "wss://test", AgentserverValidator{
 		BaseURL:        agentSrv.URL,
 		InternalSecret: "shh",
 	}, testTicketSecret)
-	req := httptest.NewRequest(http.MethodPost, "/cloud/executor/exe_x/register", nil)
+	req := httptest.NewRequest(http.MethodPost, "/agentx/environment/exe_x/register", nil)
 	req.Header.Set("Authorization", "Bearer some-token")
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("exe_id", "exe_x")
@@ -119,11 +119,11 @@ func TestCloudRegister_BearerScheme_WrongOwner(t *testing.T) {
 
 // Without validator configured (BaseURL empty), every register attempt
 // must be rejected — no legacy bcrypt fallback anymore.
-func TestCloudRegister_RejectsWithoutValidator(t *testing.T) {
+func TestAgentxRegister_RejectsWithoutValidator(t *testing.T) {
 	store := newStoreWithExecutor(t, "exe_x", "u-1")
-	h := CloudRegister(store, "wss://test", AgentserverValidator{}, testTicketSecret)
+	h := AgentxRegister(store, "wss://test", AgentserverValidator{}, testTicketSecret)
 
-	req := httptest.NewRequest(http.MethodPost, "/cloud/executor/exe_x/register", nil)
+	req := httptest.NewRequest(http.MethodPost, "/agentx/environment/exe_x/register", nil)
 	req.Header.Set("Authorization", "Bearer any-token")
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("exe_id", "exe_x")
@@ -135,24 +135,24 @@ func TestCloudRegister_RejectsWithoutValidator(t *testing.T) {
 	}
 }
 
-// Codex 0.133 renamed the URL param to `env_id` and the path to
-// /cloud/environment/{env_id}/register. The handler accepts either chi
-// param name so both the legacy and the new route resolve correctly.
-func TestCloudRegister_AcceptsEnvIDParam(t *testing.T) {
+// The agentx path uses env_id as the chi param. The handler accepts either
+// exe_id or env_id (exe_id takes precedence when both present) so that the
+// same handler can be tested with either param style.
+func TestAgentxRegister_AcceptsEnvIDParam(t *testing.T) {
 	agentSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"user_id": "u-1"})
 	}))
 	defer agentSrv.Close()
 
 	store := newStoreWithExecutor(t, "exe_x", "u-1")
-	h := CloudRegister(store, "wss://test", AgentserverValidator{
+	h := AgentxRegister(store, "wss://test", AgentserverValidator{
 		BaseURL: agentSrv.URL, InternalSecret: "shh",
 	}, testTicketSecret)
 
-	req := httptest.NewRequest(http.MethodPost, "/cloud/environment/exe_x/register", nil)
+	req := httptest.NewRequest(http.MethodPost, "/agentx/environment/exe_x/register", nil)
 	req.Header.Set("Authorization", "Bearer any-token")
 	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("env_id", "exe_x") // codex 0.133 path uses env_id
+	rctx.URLParams.Add("env_id", "exe_x") // agentx path uses env_id
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 	rr := httptest.NewRecorder()
 	h(rr, req)
@@ -168,33 +168,28 @@ func TestCloudRegister_AcceptsEnvIDParam(t *testing.T) {
 	}
 }
 
-// TestCloudRegister_ResponseDecodesAgainstCodexSchemas pins our response
-// shape against the literal upstream codex deserialization structs for
-// both the pre-0.133 (executor) and 0.133+ (environment) wire formats.
-// If codex renames a field again, this test fails before live testing.
+// TestAgentxRegister_ResponseDecodesAgainstCodexSchemas pins our response
+// shape against the agentx exec-server wire format. The response must
+// satisfy both executor_id (agentx ≤0.132 compat) and environment_id
+// (agentx 0.133+) fields simultaneously.
 //
-// Codex sources (verbatim — keep in sync when bumping):
-//   v0.132 codex-rs/exec-server/src/remote.rs:
-//     struct ExecutorRegistryExecutorRegistrationResponse {
-//         pub executor_id: String,
-//         pub url: String,
-//     }
-//   v0.133 codex-rs/exec-server/src/remote.rs:
+// Agentx exec-server sources (verbatim — keep in sync when bumping):
+//   exec-server/src/remote.rs:
 //     struct EnvironmentRegistryEnvironmentRegistrationResponse {
 //         pub environment_id: String,
 //         pub url: String,
 //     }
-func TestCloudRegister_ResponseDecodesAgainstCodexSchemas(t *testing.T) {
+func TestAgentxRegister_ResponseDecodesAgainstCodexSchemas(t *testing.T) {
 	agentSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"user_id": "u-1"})
 	}))
 	defer agentSrv.Close()
 
 	store := newStoreWithExecutor(t, "exe_x", "u-1")
-	h := CloudRegister(store, "wss://test", AgentserverValidator{
+	h := AgentxRegister(store, "wss://test", AgentserverValidator{
 		BaseURL: agentSrv.URL, InternalSecret: "shh",
 	}, testTicketSecret)
-	req := httptest.NewRequest(http.MethodPost, "/cloud/environment/exe_x/register", nil)
+	req := httptest.NewRequest(http.MethodPost, "/agentx/environment/exe_x/register", nil)
 	req.Header.Set("Authorization", "Bearer any-token")
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("env_id", "exe_x")
@@ -239,18 +234,18 @@ func TestCloudRegister_ResponseDecodesAgainstCodexSchemas(t *testing.T) {
 // Both legacy `exe_id` and new `env_id` chi params resolve to the same
 // id when both happen to be set (defensive — production routes never
 // set both, but document the precedence).
-func TestCloudRegister_ExeIDTakesPrecedenceOverEnvID(t *testing.T) {
+func TestAgentxRegister_ExeIDTakesPrecedenceOverEnvID(t *testing.T) {
 	agentSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"user_id": "u-1"})
 	}))
 	defer agentSrv.Close()
 
 	store := newStoreWithExecutor(t, "exe_legacy", "u-1")
-	h := CloudRegister(store, "wss://test", AgentserverValidator{
+	h := AgentxRegister(store, "wss://test", AgentserverValidator{
 		BaseURL: agentSrv.URL, InternalSecret: "shh",
 	}, testTicketSecret)
 
-	req := httptest.NewRequest(http.MethodPost, "/cloud/executor/exe_legacy/register", nil)
+	req := httptest.NewRequest(http.MethodPost, "/agentx/environment/exe_legacy/register", nil)
 	req.Header.Set("Authorization", "Bearer any-token")
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("exe_id", "exe_legacy")

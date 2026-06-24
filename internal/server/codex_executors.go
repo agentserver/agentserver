@@ -159,21 +159,18 @@ func (s *Server) handleRegisterExecutor(w http.ResponseWriter, r *http.Request) 
 		resp.AgentIdentityJWT = aiResult.JWT
 	}
 	if s.CodexExecGatewayPublicHost != "" && s.CodexAuthIssuerURL != "" && aiResult != nil {
-		// Upstream codex `exec-server --remote` contract:
-		//   1. POST <base_url>/cloud/executor/{id}/register with the
-		//      Agent Identity JWT (Authorization: AgentAssertion ...).
-		//   2. Server validates the JWT, returns {executor_id, url}
-		//      with a short-lived HMAC ticket in ?token=.
-		//   3. codex ws-dials url; inbound verifies the HMAC ticket.
-		// Note `-c chatgpt_base_url=` not `chatgpt.base_url=` —
-		// the codex config field is the snake_case top-level key, the
-		// dotted form silently no-ops.
-		gatewayURL := "https://" + s.CodexExecGatewayPublicHost
-		issuer := s.CodexAuthIssuerURL
+		// agentx connect command:
+		//   1. POST <base_url>/agentx/environment/{env_id}/register with
+		//      the Agent Identity JWT (Authorization: AgentAssertion ...).
+		//   2. Server validates the JWT, returns {executor_id, url} with a
+		//      short-lived HMAC ticket in ?token=.
+		//   3. agentx ws-dials url; inbound verifies the HMAC ticket.
+		//
+		// AGENTX_AGENT_IDENTITY_ALLOWED_BASE_URLS env unlocks the
+		// agent-identity auth flow against a non-chatgpt.com issuer (we use
+		// codex-auth.agent.cs.ac.cn).
 		resp.ConnectCommands = ConnectCommands{
-			AgentIdentity: fmt.Sprintf(
-				"export CODEX_ACCESS_TOKEN='%s'\nexport CODEX_AGENT_IDENTITY_AUTHAPI_BASE_URL='%s'\ncodex -c chatgpt_base_url='%s' exec-server --remote '%s' --environment-id '%s' --name '%s' --use-agent-identity-auth",
-				aiResult.JWT, issuer, issuer, gatewayURL, reg.ExeID, req.Name),
+			AgentIdentity: buildConnectCommand(s, aiResult.JWT, reg.ExeID, req.Name),
 		}
 		resp.ConnectCommand = resp.ConnectCommands.AgentIdentity
 	}
@@ -264,3 +261,12 @@ func (s *Server) handleUnbindExecutor(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// buildConnectCommand returns the shell snippet shown to users in the
+// "Add Executor" UI; the connect_command field of registerExecutorResp.
+func buildConnectCommand(s *Server, jwt, exeID, name string) string {
+	gatewayURL := "https://" + s.CodexExecGatewayPublicHost
+	issuer := s.CodexAuthIssuerURL
+	return fmt.Sprintf(
+		"export AGENTX_ACCESS_TOKEN='%s'\nexport AGENTX_AGENT_IDENTITY_ALLOWED_BASE_URLS='%s'\nagentx --remote '%s' --environment-id '%s' --name '%s' --use-agent-identity-auth --agent-identity-authapi-base-url '%s'",
+		jwt, issuer, gatewayURL, exeID, name, issuer)
+}

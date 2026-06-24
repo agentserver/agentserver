@@ -47,7 +47,7 @@ It is the answer to a question Addy Osmani frames as the path from L1 (no AI) to
 - **One session, any device** — Your codex session lives on the server, not on the laptop it started from. Pause a half-finished refactor at the office, then continue the same conversation from WeChat on the subway home. What changes between devices is the front-end, not the agent.
 - **Command from your pocket** — Drive your agents from a WeChat / Weixin, Telegram, or Matrix chat. No terminal required when you are away from the desk.
 - **One workspace, every device** — Cloud sandboxes, local laptops/desktops, and IM-bound agents all register into the *same* workspace and show up side-by-side in the Web UI.
-- **Codex-native** — Built around the [OpenAI codex](https://developers.openai.com/codex/cli) CLI: devices enroll with `codex exec-server --remote`, you drive them from `codex --remote`. No custom client to install on each machine.
+- **agentx-native** — Devices enroll with [`agentx --remote`](https://github.com/agentserver/agentx), you drive them from `codex --remote`. No custom client to install on each machine.
 - **Sandboxes that pause and resume** — Per-task containers with idle auto-pause, running under Kubernetes with [Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox) + gVisor for true multi-tenant isolation.
 - **"Old-school" coding still welcome** — A built-in Jupyter notebook lets users who prefer hand-written code talk to the same workspace, the same files, and the same credentials the agents use.
 - **Multi-user collaboration** — Invite friends or teammates into your Personal Compute Network; role-based access (owner / maintainer / developer / guest) decides who can do what.
@@ -73,20 +73,26 @@ Bring your own ChatGPT / Anthropic / API-key credential, or pick one of the mana
 
 ### 3. Plug devices into the network
 
-Install codex on every machine you want to enroll — laptop, desktop, home server, cloud VM:
+Install [agentx](https://github.com/agentserver/agentx) on every machine you want to enroll — laptop, desktop, home server, cloud VM:
 
 ```bash
-# macOS
-brew install codex
-
-# everywhere else
-npm i -g @openai/codex
+curl -fsSL https://github.com/agentserver/agentx/releases/latest/download/install.sh | sh
 ```
 
-In the Web UI, generate a registration command from the **Connectors** tab and run it on the device under `tmux`, `systemd`, or any detached supervisor so the connector survives logout:
+In the Web UI, generate a registration command from the **Connectors** tab. It will look like:
+
+```bash
+export AGENTX_ACCESS_TOKEN='<jwt>'
+export AGENTX_AGENT_IDENTITY_ALLOWED_BASE_URLS='https://codex-auth.agent.cs.ac.cn'
+agentx --remote 'https://x.agent.cs.ac.cn' \
+  --environment-id 'exe_xxx' --name 'my-laptop' --use-agent-identity-auth \
+  --agent-identity-authapi-base-url 'https://codex-auth.agent.cs.ac.cn'
+```
+
+Run it on the device under `tmux`, `systemd`, or any detached supervisor so the connector survives logout:
 
 <p align="center">
-  <img src="assets/step-3-device-connect.png" alt="codex exec-server --remote registering as a Connector" width="780">
+  <img src="assets/step-3-device-connect.png" alt="agentx --remote registering as a Connector" width="780">
 </p>
 
 The device shows up as **Online** alongside everything else in your workspace:
@@ -152,7 +158,7 @@ Web Console ──────▶ agentserver  ──┤    ┌─────�
                      • registry    │    └──────────────────┘
                           │        │
                           │        └──▶ local Connector (laptop, desktop, HPC, …)
-                          │              └─ codex exec-server --remote
+                          │              └─ agentx --remote
                           ▼
                      PostgreSQL
                   (users, workspaces,
@@ -161,7 +167,7 @@ Web Console ──────▶ agentserver  ──┤    ┌─────�
 
 Browser (codex)  ──▶ codex-app-gateway  (:8086) ─▶ per-workspace codex app-server subprocess
 Jupyter notebook ──▶ codex-app-gateway  (:8086) ─▶ same path, shared `ctx` runtime
-Connector (codex)──▶ codex-exec-gateway (:6060) ─▶ rendezvous for `codex exec --remote` executors
+Connector (agentx)─▶ codex-exec-gateway (:6060) ─▶ rendezvous for `agentx --remote` executors
 Sandbox URLs     ──▶ sandboxproxy       (:8082) ─▶ subdomain routing to sandbox services
 ```
 
@@ -173,7 +179,7 @@ Sandbox URLs     ──▶ sandboxproxy       (:8082) ─▶ subdomain routing t
 | **credentialproxy** | — | Server-side injection of provider credentials |
 | **imbridge** | — | IM channel bridge (WeChat / Weixin, Telegram, Matrix) |
 | **codex-app-gateway** | `:8086` | Per-workspace codex app-server subprocess + ws bridge for Browser sessions and Jupyter clients |
-| **codex-exec-gateway** | `:6060` | Rendezvous endpoint for `codex exec-server --remote` Connectors |
+| **codex-exec-gateway** | `:6060` | Rendezvous endpoint for `agentx --remote` Connectors |
 
 ### Where this is heading
 

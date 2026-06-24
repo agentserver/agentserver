@@ -15,14 +15,14 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// CloudRegisterStore is the subset of *codexexecgateway.Store the
-// upstream-compat /cloud/executor/{id}/register handler needs.
+// AgentxRegisterStore is the subset of *codexexecgateway.Store the
+// agentx register handler needs.
 // Ownership lookup is asserted via the ownerStore type-assertion in
 // assertExeOwnedByUser; the meta-update is optional and skipped if
 // the store doesn't implement clientMetaStore.
-type CloudRegisterStore interface{}
+type AgentxRegisterStore interface{}
 
-// clientMetaStore is optionally implemented by CloudRegisterStore values
+// clientMetaStore is optionally implemented by AgentxRegisterStore values
 // to receive codex client metadata captured at register time (UA, IP,
 // version, OS). The ws upgrade carries no UA, so this is the only place
 // to get it on the codex 0.132+ wire.
@@ -85,25 +85,25 @@ func (v *AgentserverValidator) Validate(ctx context.Context, req map[string]stri
 	return rb.UserID, nil
 }
 
-// CloudRegister handles POST /cloud/executor/{exe_id}/register.
+// AgentxRegister handles POST /agentx/environment/{env_id}/register.
 //
-// Auth: codex 0.132+ schemes only — Bearer (ChatGPT access_token) or
-// AgentAssertion (Agent Identity), validated via agentserver. The
-// pre-0.132 bcrypt registration_token bearer is gone (PR removing it).
+// Auth: Bearer (ChatGPT access_token) or AgentAssertion (Agent
+// Identity), validated via agentserver. The pre-0.132 bcrypt
+// registration_token bearer is gone.
 //
 // On success, mints a short-lived HMAC ws ticket and returns
-// `wss://.../codex-exec/{exe_id}?token=<ticket>`. The inbound ws
+// `wss://.../agentx/{exe_id}?token=<ticket>`. The inbound ws
 // handler verifies the ticket signature locally — no DB hop, no JWT
 // verify, no validator round-trip.
 //
 // publicWSBaseURL is the externally-visible wss:// origin (e.g.
-// "wss://codex-exec.agent.cs.ac.cn:443"). When empty, the response URL
+// "wss://x.agent.cs.ac.cn:443"). When empty, the response URL
 // is synthesised from r.Host with wss scheme — best-effort fallback for
 // dev / direct in-cluster use.
-func CloudRegister(store CloudRegisterStore, publicWSBaseURL string, validator AgentserverValidator, wsTicketSecret string) http.HandlerFunc {
+func AgentxRegister(store AgentxRegisterStore, publicWSBaseURL string, validator AgentserverValidator, wsTicketSecret string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// codex 0.132 path: /cloud/executor/{exe_id}/register
-		// codex 0.133+ path: /cloud/environment/{env_id}/register
+		// agentx path: /agentx/environment/{env_id}/register
+		// Legacy exe_id param also accepted for compat.
 		// Same handler, same id semantics — just two URL shapes.
 		exeID := chi.URLParam(r, "exe_id")
 		if exeID == "" {
@@ -175,7 +175,7 @@ func classifyAndValidate(ctx context.Context, v AgentserverValidator, authHeader
 	return "", false
 }
 
-func assertExeOwnedByUser(ctx context.Context, store CloudRegisterStore, exeID, userID string) error {
+func assertExeOwnedByUser(ctx context.Context, store AgentxRegisterStore, exeID, userID string) error {
 	type ownerStore interface {
 		UserIDForExecutor(ctx context.Context, exeID string) (string, error)
 	}

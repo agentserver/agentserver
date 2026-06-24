@@ -226,13 +226,13 @@ func (s *Server) Routes() http.Handler {
 	// agentx exec-server register endpoint. Single path (agentx uses
 	// environment/{env_id} exclusively; the legacy codex executor/{exe_id}
 	// path is gone — hard cut).
-	cloudRegister := handlers.CloudRegister(s.store, s.config.PublicWSBaseURL,
+	agentxRegister := handlers.AgentxRegister(s.store, s.config.PublicWSBaseURL,
 		handlers.AgentserverValidator{
 			BaseURL:        s.config.AgentserverInternalURL,
 			InternalSecret: s.config.AgentserverInternalSecret,
 		},
 		s.config.AgentserverInternalSecret)
-	r.Post("/agentx/environment/{env_id}/register", cloudRegister)
+	r.Post("/agentx/environment/{env_id}/register", agentxRegister)
 
 	// *Store satisfies handlers.Store, handlers.BindingStore, and
 	// handlers.InternalConnectedStore directly — no adapter needed because

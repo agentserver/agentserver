@@ -54,13 +54,6 @@ type Config struct {
 	// NewRecorder returns a noop). Populated from CXG_AUDIT_* env vars
 	// by LoadConfigFromEnv.
 	Audit audit.Config
-	// NoiseRelayHMACKey is the shared HMAC secret used to mint and
-	// validate harness_key_authorization tokens for the noise relay
-	// endpoints (POST /cloud/environment/{env_id}/connect and the
-	// corresponding /validate loopback). When empty, the noise endpoints
-	// are not mounted — the gateway runs in legacy-bridge-only mode.
-	// 32 bytes recommended. Sourced from CXG_NOISE_RELAY_HMAC_KEY.
-	NoiseRelayHMACKey []byte
 }
 
 // Validate checks that security-critical fields are populated. NewServer calls
@@ -90,7 +83,6 @@ func LoadConfigFromEnv() (Config, error) {
 		RelayMaxPerWorkspace:      parseIntOr("CXG_RELAY_MAX_PER_WORKSPACE", 16),
 		LogLevel:                  slog.LevelInfo,
 		Audit:                     audit.NewConfigFromEnv(),
-		NoiseRelayHMACKey:         []byte(os.Getenv("CXG_NOISE_RELAY_HMAC_KEY")),
 	}
 	if cfg.DatabaseURL == "" {
 		return cfg, fmt.Errorf("CXG_DATABASE_URL is required")

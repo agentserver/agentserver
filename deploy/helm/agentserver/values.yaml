@@ -287,10 +287,6 @@ codexGateway:
   inboundHmacSecret: ""
   capTokenHmacSecret: ""
   internalSharedSecret: ""
-  # 32 bytes base64 or alphanumeric. Empty = chart auto-generates and
-  # preserves on upgrade. Consumed by codex-exec-gateway only when
-  # codexExecGateway.noiseRelayEnabled is true.
-  noiseRelayHmacKey: ""
 
 # codex-app-gateway: per-thread codex app-server subprocess manager + ws
 # frame proxy. Spawns codex app-server children, fetches workspace executor
@@ -371,13 +367,13 @@ codexExecGateway:
   database:
     name: codexexecgateway
     externalUrl: ""
-  # External hostname for remote `codex exec-server --connect` workers
+  # External hostname for remote agentx --remote workers
   # and operators calling /api/codex-exec/*. Empty defaults to
-  # "codex-exec.<ingress.host>" (or .<gateway.host>). Only used when
+  # "x.<ingress.host>" (or .<gateway.host>). Only used when
   # ingress.enabled or gateway.enabled is true.
   externalHost: ""
-  # External hostname for `codex exec-server --connect ...` URLs shown
-  # in the workspace UI (e.g. "codex-exec.agent.cs.ac.cn"). Empty omits
+  # External hostname for agentx --remote URLs shown
+  # in the workspace UI (e.g. "x.agent.cs.ac.cn"). Empty omits
   # the convenience copy-command in the registration response — UI then
   # tells the user to ask their operator for the URL.
   publicHost: ""
@@ -385,14 +381,6 @@ codexExecGateway:
   # baked into the binary (5m / 16) apply when empty.
   relayDefaultTTL: ""      # e.g. "5m" — per-ticket pairing timeout
   relayMaxPerWorkspace: 0  # e.g. 16 — concurrent relays per workspace
-  # Noise relay (encrypted harness↔executor channel) per spec
-  # docs/superpowers/specs/2026-06-18-codex-exec-gateway-noise-relay-design.md.
-  # When true, exec-gw mounts /cloud/environment/{env_id}/{register,connect,validate}
-  # and /cloud/relay/{registration_id}, and bridge.go transparently flips
-  # noise-mode executors onto the encrypted leg. Legacy executors that
-  # never register via noise keep using the plaintext bridge unchanged.
-  # Single-replica only per §6 D-3 — verify replicaCount==1 before flipping.
-  noiseRelayEnabled: false
   resources: {}
 
 # envmcp-public-gateway: public-internet MCP endpoint for external

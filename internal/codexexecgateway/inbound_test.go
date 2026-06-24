@@ -33,7 +33,7 @@ func TestInbound_RejectsBadToken(t *testing.T) {
 		ExeID: "exe_inb1", UserID: "u", RegisteredAt: time.Now().UTC(),
 	})
 
-	wsURL := "ws" + hs.URL[len("http"):] + "/codex-exec/exe_inb1?token=wrong"
+	wsURL := "ws" + hs.URL[len("http"):] + "/agentx/exe_inb1?token=wrong"
 	_, resp, err := websocket.Dial(ctx, wsURL, nil)
 	if err == nil {
 		t.Fatal("expected dial to fail")
@@ -54,7 +54,7 @@ func TestInbound_AcceptsAndRegisters(t *testing.T) {
 		t.Fatalf("mint ticket: %v", err)
 	}
 
-	wsURL := "ws" + hs.URL[len("http"):] + "/codex-exec/exe_inb2?token=" + ticket
+	wsURL := "ws" + hs.URL[len("http"):] + "/agentx/exe_inb2?token=" + ticket
 	c, _, err := websocket.Dial(ctx, wsURL, nil)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -85,7 +85,7 @@ func TestInbound_EvictsOldConn(t *testing.T) {
 		t.Fatalf("mint ticket: %v", err)
 	}
 
-	wsURL := "ws" + hs.URL[len("http"):] + "/codex-exec/exe_inb3?token=" + ticket
+	wsURL := "ws" + hs.URL[len("http"):] + "/agentx/exe_inb3?token=" + ticket
 
 	// First connection.
 	c1, _, err := websocket.Dial(ctx, wsURL, nil)

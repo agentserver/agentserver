@@ -49,7 +49,7 @@ func connectInbound(t *testing.T, srv *Server, baseURL, exeID string) *websocket
 	if err != nil {
 		t.Fatalf("MintWSTicket: %v", err)
 	}
-	url := "ws" + baseURL[len("http"):] + "/codex-exec/" + exeID + "?token=" + ticket
+	url := "ws" + baseURL[len("http"):] + "/agentx/" + exeID + "?token=" + ticket
 	c, _, err := websocket.Dial(context.Background(), url, nil)
 	if err != nil {
 		t.Fatalf("inbound dial: %v", err)

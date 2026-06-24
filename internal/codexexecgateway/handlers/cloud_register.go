@@ -201,7 +201,7 @@ func respondWithWSURL(w http.ResponseWriter, r *http.Request, exeID, ticket, pub
 	if base == "" {
 		base = synthBaseURL(r)
 	}
-	wsURL := base + "/codex-exec/" + url.PathEscape(exeID) + "?token=" + url.QueryEscape(ticket)
+	wsURL := base + "/agentx/" + url.PathEscape(exeID) + "?token=" + url.QueryEscape(ticket)
 	writeJSON(w, http.StatusOK, cloudRegisterResponse{
 		ID:            exeID,
 		ExecutorID:    exeID,

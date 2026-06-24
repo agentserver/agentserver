@@ -18,17 +18,17 @@ import (
 
 // TestIntegration_AgentIdentityWithRealCodex spins up the codexauth
 // Server in-process behind httptest, mints an Agent Identity JWT, then
-// invokes the real `codex exec-server --remote --use-agent-identity-auth`
-// binary and confirms it gets past JWKS fetch + task/register (i.e.
-// reaches the /cloud/executor/.../register call, which isn't mounted
-// on our test server, so codex will see a 404 and bail — but that's
+// invokes the real `agentx --remote --use-agent-identity-auth` binary
+// and confirms it gets past JWKS fetch + task/register (i.e. reaches
+// the /agentx/environment/.../register call, which isn't mounted on
+// our test server, so agentx will see a 404 and bail — but that's
 // AFTER our auth checks have passed).
 //
-// Requires `codex` >= 0.132 on PATH and TEST_DATABASE_URL set. Skips
-// cleanly otherwise.
+// Requires `agentx` on PATH and TEST_DATABASE_URL set. Skips cleanly
+// otherwise.
 func TestIntegration_AgentIdentityWithRealCodex(t *testing.T) {
-	if _, err := exec.LookPath("codex"); err != nil {
-		t.Skip("codex binary not on PATH")
+	if _, err := exec.LookPath("agentx"); err != nil {
+		t.Skipf("agentx binary not on PATH: %v", err)
 	}
 	if os.Getenv("TEST_DATABASE_URL") == "" {
 		t.Skip("TEST_DATABASE_URL not set")
@@ -51,26 +51,28 @@ func TestIntegration_AgentIdentityWithRealCodex(t *testing.T) {
 		t.Fatalf("MintAgentIdentity: %v", err)
 	}
 
-	// codex exec-server --remote $URL --executor-id $EXE --use-agent-identity-auth
-	//   1. reads CODEX_ACCESS_TOKEN
-	//   2. fetches {chatgpt.base_url}/agent-identities/jwks → verifies JWT
-	//   3. POSTs {CODEX_AGENT_IDENTITY_AUTHAPI_BASE_URL}/v1/agent/{rid}/task/register
-	//   4. POSTs $URL/cloud/executor/{rid}/register   ← we don't mount this; codex hits 404 here
+	// agentx --remote $URL --environment-id $EXE --use-agent-identity-auth
+	//   1. reads AGENTX_ACCESS_TOKEN
+	//   2. fetches {agent-identity-authapi-base-url}/agent-identities/jwks → verifies JWT
+	//   3. POSTs {issuer}/v1/agent/{rid}/task/register
+	//   4. POSTs $URL/agentx/environment/{rid}/register  ← we don't mount this; agentx hits 404 here
 	//
 	// Reaching step 4 means our auth-side wiring (JWKS + task/register)
 	// worked end-to-end. The 404 at step 4 is expected.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "codex",
-		"-c", "chatgpt.base_url="+httpSrv.URL,
-		"exec-server", "--remote", httpSrv.URL,
-		"--executor-id", "exe_integration_real",
+	issuer := httpSrv.URL
+	url := httpSrv.URL
+	cmd := exec.CommandContext(ctx, "agentx",
+		"--remote", url,
+		"--environment-id", "exe_integration_real",
 		"--name", "test-agent",
 		"--use-agent-identity-auth",
+		"--agent-identity-authapi-base-url", issuer,
 	)
 	cmd.Env = append(os.Environ(),
-		"CODEX_ACCESS_TOKEN="+mint.JWT,
-		"CODEX_AGENT_IDENTITY_AUTHAPI_BASE_URL="+httpSrv.URL,
+		"AGENTX_ACCESS_TOKEN="+mint.JWT,
+		"AGENTX_AGENT_IDENTITY_ALLOWED_BASE_URLS="+issuer,
 	)
 	stderrPipe, _ := cmd.StderrPipe()
 	stdoutPipe, _ := cmd.StdoutPipe()
@@ -109,14 +111,14 @@ func TestIntegration_AgentIdentityWithRealCodex(t *testing.T) {
 		}
 	}
 
-	// Positive signal: the cloud-executor POST is the last step codex
+	// Positive signal: the agentx/environment POST is the last step agentx
 	// makes. If we see SOMETHING resembling a registration attempt or
 	// the 404 from our test server, JWKS+task/register made it through.
-	// (codex's exact log lines change between versions; permissive check.)
+	// (agentx's exact log lines may change between versions; permissive check.)
 	if !strings.Contains(out, "registered") && !strings.Contains(out, "404") &&
-		!strings.Contains(out, "cloud/executor") {
-		t.Logf("codex output (for diagnostic):\n%s", out)
-		// Don't t.Errorf here — codex versions differ in stderr format,
+		!strings.Contains(out, "agentx/environment") {
+		t.Logf("agentx output (for diagnostic):\n%s", out)
+		// Don't t.Errorf here — agentx versions differ in stderr format,
 		// and the negative checks above are the real assertion.
 	}
 }

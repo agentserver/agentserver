@@ -21,14 +21,14 @@ func newWhoamiTestServer(t *testing.T) *Server {
 	return &Server{DB: d}
 }
 
-func seedWhoamiSandbox(t *testing.T, srv *Server, token, tunnelToken, status, role, displayName string, withUser bool) {
+func seedWhoamiSandbox(t *testing.T, srv *Server, token, tunnelToken, status, role, displayName string, withUser, isLocal bool) {
 	t.Helper()
 	seedWorkspaceMember(t, srv.DB, "ws_whoami", "u_whoami", role)
 	if _, err := srv.DB.Exec(
-		`INSERT INTO sandboxes (id, workspace_id, name, type, status, proxy_token, tunnel_token, short_id)
-		 VALUES ('sbx_whoami', 'ws_whoami', 'Sandbox Name', 'custom', $1, $2, $3, 'short-whoami')
-		 ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, proxy_token = EXCLUDED.proxy_token, tunnel_token = EXCLUDED.tunnel_token`,
-		status, token, tunnelToken,
+		`INSERT INTO sandboxes (id, workspace_id, name, type, status, is_local, proxy_token, tunnel_token, short_id)
+		 VALUES ('sbx_whoami', 'ws_whoami', 'Sandbox Name', 'custom', $1, $2, $3, $4, 'short-whoami')
+		 ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, is_local = EXCLUDED.is_local, proxy_token = EXCLUDED.proxy_token, tunnel_token = EXCLUDED.tunnel_token`,
+		status, isLocal, token, tunnelToken,
 	); err != nil {
 		t.Fatalf("insert sandbox: %v", err)
 	}
@@ -94,22 +94,9 @@ func TestStrictBearerToken(t *testing.T) {
 	}
 }
 
-func TestActiveWhoamiSandboxStatus(t *testing.T) {
-	for _, status := range []string{"creating", "running"} {
-		if !activeWhoamiSandboxStatus(status) {
-			t.Fatalf("%q should be active", status)
-		}
-	}
-	for _, status := range []string{"paused", "offline", "deleting", "pausing", ""} {
-		if activeWhoamiSandboxStatus(status) {
-			t.Fatalf("%q should not be active", status)
-		}
-	}
-}
-
 func TestAgentWhoami_HappyPath(t *testing.T) {
 	srv := newWhoamiTestServer(t)
-	seedWhoamiSandbox(t, srv, "proxy-good", "tunnel-good", "running", "developer", "Display Agent", true)
+	seedWhoamiSandbox(t, srv, "proxy-good", "tunnel-good", "running", "developer", "Display Agent", true, false)
 
 	rr := callWhoami(t, srv, "Bearer proxy-good")
 	if rr.Code != http.StatusOK {
@@ -127,11 +114,14 @@ func TestAgentWhoami_HappyPath(t *testing.T) {
 		out.DisplayName != "Display Agent" || out.Role != "developer" {
 		t.Fatalf("unexpected response: %+v", out)
 	}
+	if out.SandboxStatus != "running" {
+		t.Fatalf("sandbox_status = %q, want %q", out.SandboxStatus, "running")
+	}
 }
 
 func TestAgentWhoami_UnauthorizedCases(t *testing.T) {
 	srv := newWhoamiTestServer(t)
-	seedWhoamiSandbox(t, srv, "proxy-good", "tunnel-good", "running", "developer", "", true)
+	seedWhoamiSandbox(t, srv, "proxy-good", "tunnel-good", "running", "developer", "", true, false)
 	if _, err := srv.DB.Exec(
 		`INSERT INTO proxy_tokens (token, token_type, workspace_id)
 		 VALUES ('workspace-token', 'workspace', 'ws_whoami')
@@ -164,30 +154,31 @@ func TestAgentWhoami_UnauthorizedCases(t *testing.T) {
 	}
 }
 
-func TestAgentWhoami_ForbiddenCases(t *testing.T) {
-	for _, status := range []string{"paused", "offline", "deleting", "pausing"} {
-		t.Run("status_"+status, func(t *testing.T) {
-			srv := newWhoamiTestServer(t)
-			seedWhoamiSandbox(t, srv, "proxy-forbidden", "tunnel-forbidden", status, "developer", "", true)
-			rr := callWhoami(t, srv, "Bearer proxy-forbidden")
-			if rr.Code != http.StatusForbidden {
-				t.Fatalf("want 403, got %d: %s", rr.Code, rr.Body.String())
-			}
-		})
-	}
-
+// TestAgentWhoami_ForbiddenIdentity covers the two cases that legitimately
+// fail identity verification and must continue to return 403:
+//
+//   - legacy_null_user: a proxy_tokens row whose user_id is NULL (predates
+//     migration 034). The handler short-circuits in
+//     internal/db/agent_whoami.go:38.
+//   - membership_removed: the user was removed from the workspace after the
+//     token was issued, so the JOIN against workspace_members returns no
+//     rows. The handler short-circuits in internal/db/agent_whoami.go:67.
+func TestAgentWhoami_ForbiddenIdentity(t *testing.T) {
 	t.Run("legacy_null_user", func(t *testing.T) {
 		srv := newWhoamiTestServer(t)
-		seedWhoamiSandbox(t, srv, "proxy-legacy", "tunnel-legacy", "running", "developer", "", false)
+		seedWhoamiSandbox(t, srv, "proxy-legacy", "tunnel-legacy", "running", "developer", "", false, false)
 		rr := callWhoami(t, srv, "Bearer proxy-legacy")
 		if rr.Code != http.StatusForbidden {
 			t.Fatalf("want 403, got %d: %s", rr.Code, rr.Body.String())
+		}
+		if rr.Body.String() != "forbidden\n" {
+			t.Fatalf("body = %q", rr.Body.String())
 		}
 	})
 
 	t.Run("membership_removed", func(t *testing.T) {
 		srv := newWhoamiTestServer(t)
-		seedWhoamiSandbox(t, srv, "proxy-removed", "tunnel-removed", "running", "developer", "", true)
+		seedWhoamiSandbox(t, srv, "proxy-removed", "tunnel-removed", "running", "developer", "", true, false)
 		if _, err := srv.DB.Exec(`DELETE FROM workspace_members WHERE workspace_id = 'ws_whoami' AND user_id = 'u_whoami'`); err != nil {
 			t.Fatalf("delete membership: %v", err)
 		}
@@ -195,12 +186,62 @@ func TestAgentWhoami_ForbiddenCases(t *testing.T) {
 		if rr.Code != http.StatusForbidden {
 			t.Fatalf("want 403, got %d: %s", rr.Code, rr.Body.String())
 		}
+		if rr.Body.String() != "forbidden\n" {
+			t.Fatalf("body = %q", rr.Body.String())
+		}
 	})
+}
+
+// TestAgentWhoami_RuntimeStatusReportedInBody asserts the post-#290 contract:
+// once identity verification passes, whoami returns 200 regardless of the
+// sandbox's current runtime status, and the status appears verbatim in the
+// response body so callers (observer-server etc.) can decide how to react.
+// Previously paused/pausing/resuming/offline/deleting all returned 403.
+func TestAgentWhoami_RuntimeStatusReportedInBody(t *testing.T) {
+	// Status values from internal/sbxstore/state.go:5-12, plus the empty
+	// string to pin behavior for legacy rows where status is unset.
+	statuses := []string{"creating", "running", "pausing", "paused", "resuming", "offline", "deleting", ""}
+	for _, status := range statuses {
+		for _, isLocal := range []bool{false, true} {
+			name := "status_" + status
+			if status == "" {
+				name = "status_empty"
+			}
+			if isLocal {
+				name += "_local"
+			} else {
+				name += "_cloud"
+			}
+			t.Run(name, func(t *testing.T) {
+				srv := newWhoamiTestServer(t)
+				seedWhoamiSandbox(t, srv, "proxy-rt", "tunnel-rt", status, "developer", "", true, isLocal)
+				rr := callWhoami(t, srv, "Bearer proxy-rt")
+				if rr.Code != http.StatusOK {
+					t.Fatalf("want 200, got %d: %s", rr.Code, rr.Body.String())
+				}
+				if rr.Header().Get("Cache-Control") != "no-store" {
+					t.Fatalf("Cache-Control = %q, want no-store", rr.Header().Get("Cache-Control"))
+				}
+				var out AgentWhoamiResponse
+				if err := json.NewDecoder(rr.Body).Decode(&out); err != nil {
+					t.Fatalf("decode: %v", err)
+				}
+				if out.SandboxStatus != status {
+					t.Fatalf("sandbox_status = %q, want %q", out.SandboxStatus, status)
+				}
+				// Identity fields must still be populated.
+				if out.UserID != "u_whoami" || out.WorkspaceID != "ws_whoami" ||
+					out.SandboxID != "sbx_whoami" || out.Role != "developer" {
+					t.Fatalf("identity fields missing in response: %+v", out)
+				}
+			})
+		}
+	}
 }
 
 func TestAgentWhoami_DisplayNameFallsBackToSandboxName(t *testing.T) {
 	srv := newWhoamiTestServer(t)
-	seedWhoamiSandbox(t, srv, "proxy-fallback", "tunnel-fallback", "running", "developer", "", true)
+	seedWhoamiSandbox(t, srv, "proxy-fallback", "tunnel-fallback", "running", "developer", "", true, false)
 	rr := callWhoami(t, srv, "Bearer proxy-fallback")
 	if rr.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", rr.Code, rr.Body.String())
@@ -211,5 +252,8 @@ func TestAgentWhoami_DisplayNameFallsBackToSandboxName(t *testing.T) {
 	}
 	if out.DisplayName != "Sandbox Name" {
 		t.Fatalf("display_name = %q, want Sandbox Name", out.DisplayName)
+	}
+	if out.SandboxStatus != "running" {
+		t.Fatalf("sandbox_status = %q, want %q", out.SandboxStatus, "running")
 	}
 }

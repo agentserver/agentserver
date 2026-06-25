@@ -265,7 +265,7 @@ Inspect the calling agent identity (proxy_token auth)
 |--------|-------------|--------|
 | `200` | OK | [`AgentWhoamiResponse`](#schema-agentwhoamiresponse) |
 | `401` | unauthorized | `string` |
-| `403` | forbidden | `string` |
+| `403` | identity not valid for this token (missing user binding or workspace membership) | `string` |
 | `500` | internal error | `string` |
 
 
@@ -629,6 +629,7 @@ Schema: [`AgentTaskCreateRequest`](#schema-agenttaskcreaterequest)
   display_name: string
   role: string
   sandbox_id: string
+  sandbox_status: string
   short_id: string
   user_id: string
   workspace_id: string

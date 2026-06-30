@@ -961,7 +961,8 @@ paths:
               schema:
                 type: string
         "403":
-          description: forbidden
+          description: identity not valid for this token (missing user binding or
+            workspace membership)
           content:
             application/json:
               schema:
@@ -5495,6 +5496,15 @@ components:
         sandbox_id:
           example: sbx_456
           type: string
+        sandbox_status:
+          description: |-
+            SandboxStatus is the current sandboxes.status column verbatim —
+            one of creating / running / pausing / paused / resuming / offline /
+            deleting (see internal/sbxstore/state.go), or "" for legacy rows
+            where the field was never set. The server always populates this
+            field on 200 responses.
+          example: running
+          type: string
         short_id:
           example: alice-driver-01
           type: string
@@ -5511,6 +5521,7 @@ components:
         - display_name
         - role
         - sandbox_id
+        - sandbox_status
         - short_id
         - user_id
         - workspace_id

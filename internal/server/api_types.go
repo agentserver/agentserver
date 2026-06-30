@@ -327,7 +327,13 @@ type AgentRegisterResponse struct {
 } // @name AgentRegisterResponse
 
 // AgentWhoamiResponse is returned by GET /api/agent/whoami.
-// It contains the full public identity contract for a sandbox proxy token.
+// It contains the full public identity contract for a sandbox proxy token,
+// plus the sandbox's current runtime status as advisory information.
+//
+// The endpoint does not gate on SandboxStatus — any valid identity returns
+// 200, regardless of whether the sandbox is creating / running / paused /
+// offline / etc. Callers that want to refuse offline sandboxes should
+// inspect this field themselves; see issue #290 for the rationale.
 type AgentWhoamiResponse struct {
 	UserID        string `json:"user_id" validate:"required" example:"u_abc123"`
 	WorkspaceID   string `json:"workspace_id" validate:"required" example:"ws_xyz789"`
@@ -336,6 +342,12 @@ type AgentWhoamiResponse struct {
 	ShortID       string `json:"short_id" validate:"required" example:"alice-driver-01"`
 	DisplayName   string `json:"display_name" validate:"required" example:"Alice Driver"`
 	Role          string `json:"role" validate:"required" example:"developer"`
+	// SandboxStatus is the current sandboxes.status column verbatim —
+	// one of creating / running / pausing / paused / resuming / offline /
+	// deleting (see internal/sbxstore/state.go), or "" for legacy rows
+	// where the field was never set. The server always populates this
+	// field on 200 responses.
+	SandboxStatus string `json:"sandbox_status" validate:"required" example:"running"`
 } // @name AgentWhoamiResponse
 
 // AgentCardRegisterRequest is the body for POST /api/agent/discovery/cards.

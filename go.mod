@@ -34,6 +34,7 @@ require (
 )
 
 require (
+	github.com/ag-ui-protocol/ag-ui/sdks/community/go v0.0.0-20260717195153-3a7433ef055a // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.10 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.29 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.29 // indirect

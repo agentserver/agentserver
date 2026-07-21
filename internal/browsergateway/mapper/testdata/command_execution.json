@@ -1,0 +1,1 @@
+{"method":"item/completed","params":{"item":{"type":"commandExecution","id":"cmd-1","command":"ls -la","cwd":"/w","processId":null,"source":"agent","status":"completed","commandActions":[],"aggregatedOutput":"total 0","exitCode":0,"durationMs":12},"threadId":"thr-1","turnId":"trn-1"}}

@@ -6,10 +6,12 @@ package mapper
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 
 	"github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/events"
+	"github.com/agentserver/agentserver/internal/browsergateway/a2ui"
 	"github.com/agentserver/agentserver/internal/browsergateway/codexclient"
 )
 
@@ -25,11 +27,15 @@ type itemParams struct {
 }
 
 type codexItem struct {
-	Type    string   `json:"type"`
-	ID      string   `json:"id"`
-	Text    string   `json:"text"`
-	Summary []string `json:"summary"`
-	Content []string `json:"content"`
+	Type             string   `json:"type"`
+	ID               string   `json:"id"`
+	Text             string   `json:"text"`
+	Summary          []string `json:"summary"`
+	Content          []string `json:"content"`
+	Command          string   `json:"command"`
+	AggregatedOutput string   `json:"aggregatedOutput"`
+	ExitCode         *int     `json:"exitCode"`
+	Status           string   `json:"status"`
 }
 
 type turnCompletedParams struct {
@@ -94,6 +100,19 @@ func mapItem(it codexItem) Result {
 		}}
 	case "userMessage":
 		return Result{} // client already has the user's own message
+	case "commandExecution":
+		statusLine := it.Status
+		if it.ExitCode != nil {
+			statusLine = fmt.Sprintf("%s (exit %d)", it.Status, *it.ExitCode)
+		}
+		card := a2ui.CommandCard(it.ID, it.Command, it.AggregatedOutput, statusLine)
+		return Result{Events: []events.Event{
+			events.NewToolCallStartEvent(it.ID, "shell"),
+			events.NewToolCallArgsEvent(it.ID, it.Command),
+			events.NewToolCallEndEvent(it.ID),
+			events.NewToolCallResultEvent(it.ID, it.ID, it.AggregatedOutput),
+			events.NewCustomEvent("a2ui.operations", events.WithValue(card)),
+		}}
 	default:
 		slog.Warn("browser-gateway/mapper: unmapped item type", "type", it.Type)
 		return Result{}

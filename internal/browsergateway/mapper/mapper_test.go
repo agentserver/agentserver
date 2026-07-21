@@ -88,3 +88,27 @@ func TestMap_UnknownFrameIsNoop(t *testing.T) {
 		t.Fatalf("unknown frame produced %+v, want empty Result", r)
 	}
 }
+
+func TestMap_CommandExecution(t *testing.T) {
+	r := Map(loadFrame(t, "command_execution.json"))
+	got := types(r.Events)
+	want := []events.EventType{
+		events.EventTypeToolCallStart,
+		events.EventTypeToolCallArgs,
+		events.EventTypeToolCallEnd,
+		events.EventTypeToolCallResult,
+		events.EventTypeCustom,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("event types = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("event[%d] = %v, want %v (full: %v)", i, got[i], want[i], got)
+		}
+	}
+	last, ok := r.Events[len(r.Events)-1].(*events.CustomEvent)
+	if !ok || last.Name != "a2ui.operations" {
+		t.Fatalf("last event not CUSTOM a2ui.operations: %+v", r.Events[len(r.Events)-1])
+	}
+}

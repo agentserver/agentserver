@@ -1,4 +1,4 @@
-.PHONY: dev build clean frontend backend agent agent-all llmproxy credentialproxy test docker docker-agent docker-llmproxy docker-credentialproxy docker-openclaw docker-all openapi openapi-check api-docs api-docs-check proto
+.PHONY: dev build clean frontend backend agent agent-all llmproxy credentialproxy browser-gateway test docker docker-agent docker-llmproxy docker-credentialproxy docker-openclaw docker-all openapi openapi-check api-docs api-docs-check proto
 
 # Development: run frontend dev server + Go backend
 dev:
@@ -25,6 +25,9 @@ credentialproxy:
 
 astool:
 	CGO_ENABLED=0 go build -o bin/astool ./cmd/astool
+
+browser-gateway:
+	CGO_ENABLED=0 go build -o bin/browser-gateway ./cmd/browser-gateway
 
 test:
 	go vet ./...

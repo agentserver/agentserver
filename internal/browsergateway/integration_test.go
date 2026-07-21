@@ -56,7 +56,9 @@ func fakeCXG(t *testing.T) *httptest.Server {
 				reply(*m.ID, `{"thread":{"id":"thr-1"}}`)
 			case "turn/start":
 				reply(*m.ID, `{"turn":{"id":"trn-1"}}`)
-				notify("item/completed", `{"item":{"type":"agentMessage","id":"msg-1","text":"Hello!"},"threadId":"thr-1","turnId":"trn-1"}`)
+				notify("item/started", `{"item":{"type":"agentMessage","id":"msg-1","text":"","phase":null},"threadId":"thr-1","turnId":"trn-1","startedAtMs":1}`)
+				notify("item/agentMessage/delta", `{"threadId":"thr-1","turnId":"trn-1","itemId":"msg-1","delta":"Hello!"}`)
+				notify("item/completed", `{"item":{"type":"agentMessage","id":"msg-1","text":"Hello!","phase":"final_answer"},"threadId":"thr-1","turnId":"trn-1","completedAtMs":2}`)
 				notify("turn/completed", `{"threadId":"thr-1","turn":{"id":"trn-1","status":"completed","items":[],"error":null}}`)
 			}
 		}

@@ -1,0 +1,1 @@
+{"method":"item/started","params":{"item":{"type":"agentMessage","id":"msg-1","text":"","phase":null},"threadId":"thr-1","turnId":"trn-1","startedAtMs":1}}

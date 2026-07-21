@@ -34,15 +34,31 @@ func types(evs []events.Event) []events.EventType {
 	return out
 }
 
-func TestMap_AgentMessage(t *testing.T) {
+func TestMap_AgentMessageStart(t *testing.T) {
+	r := Map(loadFrame(t, "agent_message_started.json"))
+	got := types(r.Events)
+	if len(got) != 1 || got[0] != events.EventTypeTextMessageStart {
+		t.Fatalf("start frame → %v, want [TEXT_MESSAGE_START]", got)
+	}
+}
+
+func TestMap_AgentMessageDelta(t *testing.T) {
+	r := Map(loadFrame(t, "agent_message_delta.json"))
+	got := types(r.Events)
+	if len(got) != 1 || got[0] != events.EventTypeTextMessageContent {
+		t.Fatalf("delta frame → %v, want [TEXT_MESSAGE_CONTENT]", got)
+	}
+	ce := r.Events[0].(*events.TextMessageContentEvent)
+	if ce.Delta != "Hello" {
+		t.Errorf("delta = %q, want Hello", ce.Delta)
+	}
+}
+
+func TestMap_AgentMessageCompleted(t *testing.T) {
 	r := Map(loadFrame(t, "agent_message.json"))
 	got := types(r.Events)
-	want := []events.EventType{events.EventTypeTextMessageStart, events.EventTypeTextMessageContent, events.EventTypeTextMessageEnd}
-	if len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
-		t.Fatalf("event types = %v, want %v", got, want)
-	}
-	if r.Done || r.Err != "" {
-		t.Errorf("Done=%v Err=%q, want false/empty", r.Done, r.Err)
+	if len(got) != 1 || got[0] != events.EventTypeTextMessageEnd {
+		t.Fatalf("completed frame → %v, want [TEXT_MESSAGE_END]", got)
 	}
 }
 

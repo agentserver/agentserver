@@ -1,0 +1,1 @@
+{"method":"item/agentMessage/delta","params":{"threadId":"thr-1","turnId":"trn-1","itemId":"msg-1","delta":"Hello"}}

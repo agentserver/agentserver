@@ -57,6 +57,22 @@ type turnCompletedParams struct {
 // Map translates one codex server notification into AG-UI content events.
 func Map(f codexclient.Frame) Result {
 	switch f.Method {
+	case "item/started":
+		var p itemParams
+		if err := json.Unmarshal(f.Params, &p); err != nil {
+			slog.Warn("browser-gateway/mapper: bad item/started params", "err", err)
+			return Result{}
+		}
+		return mapItemStarted(p.Item)
+	case "item/agentMessage/delta":
+		var d struct {
+			ItemID string `json:"itemId"`
+			Delta  string `json:"delta"`
+		}
+		if err := json.Unmarshal(f.Params, &d); err != nil || d.Delta == "" {
+			return Result{}
+		}
+		return Result{Events: []events.Event{events.NewTextMessageContentEvent(d.ItemID, d.Delta)}}
 	case "item/completed":
 		var p itemParams
 		if err := json.Unmarshal(f.Params, &p); err != nil {
@@ -79,9 +95,17 @@ func Map(f codexclient.Frame) Result {
 	case "error":
 		return Result{Err: string(f.Params)}
 	default:
-		// turn/started, item/started, thread/*, item/agentMessage/delta, ...
-		// Not surfaced in P1. Deltas become TEXT_MESSAGE_CONTENT once Phase 0
-		// pins their frame shape (see mapper/testdata/PROBE.md).
+		// turn/started, thread/*, ...
+		// Not surfaced in P1.
+		return Result{}
+	}
+}
+
+func mapItemStarted(it codexItem) Result {
+	switch it.Type {
+	case "agentMessage":
+		return Result{Events: []events.Event{events.NewTextMessageStartEvent(it.ID, events.WithRole("assistant"))}}
+	default:
 		return Result{}
 	}
 }
@@ -89,14 +113,7 @@ func Map(f codexclient.Frame) Result {
 func mapItem(it codexItem) Result {
 	switch it.Type {
 	case "agentMessage":
-		if it.Text == "" {
-			return Result{}
-		}
-		return Result{Events: []events.Event{
-			events.NewTextMessageStartEvent(it.ID, events.WithRole("assistant")),
-			events.NewTextMessageContentEvent(it.ID, it.Text),
-			events.NewTextMessageEndEvent(it.ID),
-		}}
+		return Result{Events: []events.Event{events.NewTextMessageEndEvent(it.ID)}}
 	case "reasoning":
 		text := strings.TrimSpace(strings.Join(append(append([]string{}, it.Summary...), it.Content...), "\n"))
 		if text == "" {

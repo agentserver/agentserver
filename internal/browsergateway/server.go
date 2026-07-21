@@ -77,12 +77,36 @@ func (s *Server) handleAGUI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) withCORS(next http.Handler) http.Handler {
-	origin := "*"
-	if len(s.cfg.AllowedOrigins) > 0 {
-		origin = strings.Join(s.cfg.AllowedOrigins, ", ")
+	// wildcard is true when any origin is allowed: no allowlist configured, or
+	// "*" explicitly listed. Otherwise a single, valid ACAO must be chosen per
+	// request (a comma-joined list is not a valid Access-Control-Allow-Origin).
+	wildcard := len(s.cfg.AllowedOrigins) == 0
+	for _, o := range s.cfg.AllowedOrigins {
+		if o == "*" {
+			wildcard = true
+		}
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", origin)
+		if wildcard {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		} else {
+			reqOrigin := r.Header.Get("Origin")
+			matched := false
+			for _, o := range s.cfg.AllowedOrigins {
+				if o == reqOrigin {
+					matched = true
+					break
+				}
+			}
+			if matched {
+				// Echo exactly the one allowed origin the client sent.
+				w.Header().Set("Access-Control-Allow-Origin", reqOrigin)
+				w.Header().Set("Vary", "Origin")
+			} else {
+				// Deterministic, still a single valid value.
+				w.Header().Set("Access-Control-Allow-Origin", s.cfg.AllowedOrigins[0])
+			}
+		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Cache-Control")
 		if r.Method == http.MethodOptions {

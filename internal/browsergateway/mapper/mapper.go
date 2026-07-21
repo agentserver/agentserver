@@ -29,6 +29,13 @@ type codexItem struct {
 	Text string `json:"text"`
 }
 
+type turnCompletedParams struct {
+	Turn struct {
+		Status string          `json:"status"`
+		Error  json.RawMessage `json:"error"`
+	} `json:"turn"`
+}
+
 // Map translates one codex server notification into AG-UI content events.
 func Map(f codexclient.Frame) Result {
 	switch f.Method {
@@ -40,6 +47,16 @@ func Map(f codexclient.Frame) Result {
 		}
 		return mapItem(p.Item)
 	case "turn/completed":
+		var p turnCompletedParams
+		if err := json.Unmarshal(f.Params, &p); err != nil {
+			// Can't tell success from failure — don't hang the run.
+			slog.Warn("browser-gateway/mapper: bad turn/completed params", "err", err)
+			return Result{Done: true}
+		}
+		hasErr := len(p.Turn.Error) > 0 && string(p.Turn.Error) != "null"
+		if hasErr || (p.Turn.Status != "" && p.Turn.Status != "completed") {
+			return Result{Err: "codex turn " + p.Turn.Status + ": " + string(p.Turn.Error)}
+		}
 		return Result{Done: true}
 	case "error":
 		return Result{Err: string(f.Params)}

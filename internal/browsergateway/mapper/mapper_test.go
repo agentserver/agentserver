@@ -56,6 +56,16 @@ func TestMap_TurnCompleted(t *testing.T) {
 	}
 }
 
+func TestMap_TurnFailed(t *testing.T) {
+	r := Map(loadFrame(t, "turn_failed.json"))
+	if r.Err == "" {
+		t.Fatal("Err = empty, want non-empty for a failed turn")
+	}
+	if r.Done {
+		t.Errorf("Done = true, want false for a failed turn")
+	}
+}
+
 func TestMap_Reasoning(t *testing.T) {
 	r := Map(loadFrame(t, "reasoning.json"))
 	got := types(r.Events)

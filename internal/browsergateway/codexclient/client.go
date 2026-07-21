@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"nhooyr.io/websocket"
 )
@@ -210,8 +211,12 @@ func (c *Client) StartTurn(ctx context.Context, threadID, userText string) (stri
 	return r.Turn.ID, nil
 }
 
-// Interrupt best-effort cancels an in-flight turn.
+// Interrupt best-effort cancels an in-flight turn. It bounds its own context so
+// that a codex that never replies cannot block the caller (and leak the
+// readLoop + request goroutine) indefinitely.
 func (c *Client) Interrupt(ctx context.Context, threadID, turnID string) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	p, _ := json.Marshal(map[string]string{"threadId": threadID, "turnId": turnID})
 	_, _ = c.call(ctx, "turn/interrupt", p)
 }

@@ -38,6 +38,25 @@ func TestServer_AGUI_RequiresBearer(t *testing.T) {
 	}
 }
 
+func TestServer_CORS_MultiOrigin(t *testing.T) {
+	s := NewServer(ServeConfig{
+		CodexAppGatewayWSURL: "ws://unused",
+		AllowedOrigins:       []string{"https://a.example", "https://b.example"},
+	}, slog.Default())
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodOptions, "/agui", nil)
+	req.Header.Set("Origin", "https://b.example")
+	s.Handler().ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://b.example" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, "https://b.example")
+	}
+	if got := rec.Header().Get("Vary"); got != "Origin" {
+		t.Errorf("Vary = %q, want %q", got, "Origin")
+	}
+}
+
 func TestServer_AGUI_StreamsRun(t *testing.T) {
 	fc := &fakeConn{frames: make(chan codexclient.Frame, 4)}
 	fc.frames <- codexclient.Frame{Method: "item/completed", Params: []byte(`{"item":{"type":"agentMessage","id":"m1","text":"hi"}}`)}

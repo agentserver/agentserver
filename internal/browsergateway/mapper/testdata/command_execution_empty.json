@@ -1,0 +1,1 @@
+{"method":"item/completed","params":{"item":{"type":"commandExecution","id":"cmd-2","command":"mkdir x","cwd":"/w","processId":null,"source":"agent","status":"completed","commandActions":[],"aggregatedOutput":null,"exitCode":0,"durationMs":3},"threadId":"thr-1","turnId":"trn-1"}}

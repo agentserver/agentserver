@@ -2,6 +2,7 @@ package browsergateway
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 
 	"github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/events"
@@ -103,6 +104,7 @@ func runAGUI(ctx context.Context, w http.ResponseWriter, sw *sse.SSEWriter, in *
 			res := mapper.Map(f)
 			for _, ev := range res.Events {
 				if err := sw.WriteEvent(ctx, w, ev); err != nil {
+					slog.Warn("browser-gateway: SSE write failed mid-run, aborting", "runId", runID, "err", err)
 					conn.Interrupt(context.Background(), threadID, turnID)
 					return
 				}

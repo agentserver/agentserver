@@ -132,11 +132,15 @@ func mapItem(it codexItem) Result {
 			statusLine = fmt.Sprintf("%s (exit %d)", it.Status, *it.ExitCode)
 		}
 		card := a2ui.CommandCard(it.ID, it.Command, it.AggregatedOutput, statusLine)
+		result := it.AggregatedOutput
+		if result == "" {
+			result = statusLine
+		}
 		return Result{Events: []events.Event{
 			events.NewToolCallStartEvent(it.ID, "shell"),
 			events.NewToolCallArgsEvent(it.ID, it.Command),
 			events.NewToolCallEndEvent(it.ID),
-			events.NewToolCallResultEvent(it.ID, it.ID, it.AggregatedOutput),
+			events.NewToolCallResultEvent(it.ID, it.ID, result),
 			events.NewCustomEvent("a2ui.operations", events.WithValue(card)),
 		}}
 	case "fileChange":
@@ -147,9 +151,13 @@ func mapItem(it codexItem) Result {
 			fmt.Fprintf(&argsB, "%s %s\n", c.Kind.Type, c.Path)
 		}
 		card := a2ui.FileDiffCard(it.ID, files)
+		args := strings.TrimSpace(argsB.String())
+		if args == "" {
+			args = "no changes"
+		}
 		return Result{Events: []events.Event{
 			events.NewToolCallStartEvent(it.ID, "apply_patch"),
-			events.NewToolCallArgsEvent(it.ID, strings.TrimSpace(argsB.String())),
+			events.NewToolCallArgsEvent(it.ID, args),
 			events.NewToolCallEndEvent(it.ID),
 			events.NewToolCallResultEvent(it.ID, it.ID, fmt.Sprintf("%d file(s) changed", len(it.Changes))),
 			events.NewCustomEvent("a2ui.operations", events.WithValue(card)),

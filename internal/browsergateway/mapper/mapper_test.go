@@ -127,6 +127,23 @@ func TestMap_CommandExecution(t *testing.T) {
 	if !ok || last.Name != "a2ui.operations" {
 		t.Fatalf("last event not CUSTOM a2ui.operations: %+v", r.Events[len(r.Events)-1])
 	}
+	for i, ev := range r.Events {
+		if err := ev.Validate(); err != nil {
+			t.Fatalf("event[%d] (%s) fails SDK Validate: %v", i, ev.Type(), err)
+		}
+	}
+}
+
+func TestMap_CommandExecutionEmptyOutput(t *testing.T) {
+	r := Map(loadFrame(t, "command_execution_empty.json"))
+	if len(r.Events) != 5 {
+		t.Fatalf("want 5 events, got %d", len(r.Events))
+	}
+	for i, ev := range r.Events {
+		if err := ev.Validate(); err != nil {
+			t.Fatalf("event[%d] (%s) fails SDK Validate: %v", i, ev.Type(), err)
+		}
+	}
 }
 
 func TestMap_FileChange(t *testing.T) {
@@ -150,5 +167,10 @@ func TestMap_FileChange(t *testing.T) {
 	start, ok := r.Events[0].(*events.ToolCallStartEvent)
 	if !ok || start.ToolCallName != "apply_patch" {
 		t.Fatalf("tool name = %v, want apply_patch", r.Events[0])
+	}
+	for i, ev := range r.Events {
+		if err := ev.Validate(); err != nil {
+			t.Fatalf("event[%d] (%s) fails SDK Validate: %v", i, ev.Type(), err)
+		}
 	}
 }

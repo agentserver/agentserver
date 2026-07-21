@@ -27,15 +27,24 @@ type itemParams struct {
 }
 
 type codexItem struct {
-	Type             string   `json:"type"`
-	ID               string   `json:"id"`
-	Text             string   `json:"text"`
-	Summary          []string `json:"summary"`
-	Content          []string `json:"content"`
-	Command          string   `json:"command"`
-	AggregatedOutput string   `json:"aggregatedOutput"`
-	ExitCode         *int     `json:"exitCode"`
-	Status           string   `json:"status"`
+	Type             string            `json:"type"`
+	ID               string            `json:"id"`
+	Text             string            `json:"text"`
+	Summary          []string          `json:"summary"`
+	Content          []string          `json:"content"`
+	Command          string            `json:"command"`
+	AggregatedOutput string            `json:"aggregatedOutput"`
+	ExitCode         *int              `json:"exitCode"`
+	Status           string            `json:"status"`
+	Changes          []codexFileChange `json:"changes"`
+}
+
+type codexFileChange struct {
+	Path string `json:"path"`
+	Kind struct {
+		Type string `json:"type"`
+	} `json:"kind"`
+	Diff string `json:"diff"`
 }
 
 type turnCompletedParams struct {
@@ -111,6 +120,21 @@ func mapItem(it codexItem) Result {
 			events.NewToolCallArgsEvent(it.ID, it.Command),
 			events.NewToolCallEndEvent(it.ID),
 			events.NewToolCallResultEvent(it.ID, it.ID, it.AggregatedOutput),
+			events.NewCustomEvent("a2ui.operations", events.WithValue(card)),
+		}}
+	case "fileChange":
+		files := make([]a2ui.FileChange, 0, len(it.Changes))
+		var argsB strings.Builder
+		for _, c := range it.Changes {
+			files = append(files, a2ui.FileChange{Path: c.Path, Kind: c.Kind.Type, Diff: c.Diff})
+			fmt.Fprintf(&argsB, "%s %s\n", c.Kind.Type, c.Path)
+		}
+		card := a2ui.FileDiffCard(it.ID, files)
+		return Result{Events: []events.Event{
+			events.NewToolCallStartEvent(it.ID, "apply_patch"),
+			events.NewToolCallArgsEvent(it.ID, strings.TrimSpace(argsB.String())),
+			events.NewToolCallEndEvent(it.ID),
+			events.NewToolCallResultEvent(it.ID, it.ID, fmt.Sprintf("%d file(s) changed", len(it.Changes))),
 			events.NewCustomEvent("a2ui.operations", events.WithValue(card)),
 		}}
 	default:

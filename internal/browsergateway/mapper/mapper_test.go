@@ -112,3 +112,27 @@ func TestMap_CommandExecution(t *testing.T) {
 		t.Fatalf("last event not CUSTOM a2ui.operations: %+v", r.Events[len(r.Events)-1])
 	}
 }
+
+func TestMap_FileChange(t *testing.T) {
+	r := Map(loadFrame(t, "file_change.json"))
+	got := types(r.Events)
+	want := []events.EventType{
+		events.EventTypeToolCallStart,
+		events.EventTypeToolCallArgs,
+		events.EventTypeToolCallEnd,
+		events.EventTypeToolCallResult,
+		events.EventTypeCustom,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("event types = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("event[%d] = %v, want %v", i, got[i], want[i])
+		}
+	}
+	start, ok := r.Events[0].(*events.ToolCallStartEvent)
+	if !ok || start.ToolCallName != "apply_patch" {
+		t.Fatalf("tool name = %v, want apply_patch", r.Events[0])
+	}
+}

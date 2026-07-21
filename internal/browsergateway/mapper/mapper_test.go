@@ -69,8 +69,16 @@ func TestMap_TurnFailed(t *testing.T) {
 func TestMap_Reasoning(t *testing.T) {
 	r := Map(loadFrame(t, "reasoning.json"))
 	got := types(r.Events)
-	if len(got) != 3 || got[0] != events.EventTypeReasoningMessageStart {
+	if len(got) != 3 || got[0] != events.EventTypeReasoningMessageStart || got[1] != events.EventTypeReasoningMessageContent || got[2] != events.EventTypeReasoningMessageEnd {
 		t.Fatalf("event types = %v, want reasoning start/content/end", got)
+	}
+	// The content event must carry joined summary+content, not empty.
+	ce, ok := r.Events[1].(*events.ReasoningMessageContentEvent)
+	if !ok {
+		t.Fatalf("event[1] is %T, want *ReasoningMessageContentEvent", r.Events[1])
+	}
+	if ce.Delta == "" {
+		t.Fatal("reasoning content delta is empty — summary/content not read")
 	}
 }
 

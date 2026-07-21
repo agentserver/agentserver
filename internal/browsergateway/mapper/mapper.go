@@ -7,6 +7,7 @@ package mapper
 import (
 	"encoding/json"
 	"log/slog"
+	"strings"
 
 	"github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/events"
 	"github.com/agentserver/agentserver/internal/browsergateway/codexclient"
@@ -24,9 +25,11 @@ type itemParams struct {
 }
 
 type codexItem struct {
-	Type string `json:"type"`
-	ID   string `json:"id"`
-	Text string `json:"text"`
+	Type    string   `json:"type"`
+	ID      string   `json:"id"`
+	Text    string   `json:"text"`
+	Summary []string `json:"summary"`
+	Content []string `json:"content"`
 }
 
 type turnCompletedParams struct {
@@ -80,12 +83,13 @@ func mapItem(it codexItem) Result {
 			events.NewTextMessageEndEvent(it.ID),
 		}}
 	case "reasoning":
-		if it.Text == "" {
+		text := strings.TrimSpace(strings.Join(append(append([]string{}, it.Summary...), it.Content...), "\n"))
+		if text == "" {
 			return Result{}
 		}
 		return Result{Events: []events.Event{
 			events.NewReasoningMessageStartEvent(it.ID, "assistant"),
-			events.NewReasoningMessageContentEvent(it.ID, it.Text),
+			events.NewReasoningMessageContentEvent(it.ID, text),
 			events.NewReasoningMessageEndEvent(it.ID),
 		}}
 	case "userMessage":

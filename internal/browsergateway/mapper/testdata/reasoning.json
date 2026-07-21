@@ -1,1 +1,1 @@
-{"method":"item/completed","params":{"item":{"type":"reasoning","id":"rsn-1","text":"thinking about it"},"threadId":"thr-1","turnId":"trn-1"}}
+{"method":"item/completed","params":{"item":{"type":"reasoning","id":"rsn-1","summary":["Considering options"],"content":["The user asked for X, so I will Y."]},"threadId":"thr-1","turnId":"trn-1"}}

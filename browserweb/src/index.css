@@ -1,0 +1,2 @@
+@import "tailwindcss";
+/* NOTE: @a2ui/react@0.10.2 declares ./styles/structural.css but ships no such file (upstream defect); A2uiSurface styles come from its bundled CSS Modules. */

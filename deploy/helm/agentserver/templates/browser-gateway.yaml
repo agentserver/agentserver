@@ -1,0 +1,54 @@
+{{- if .Values.browserGateway.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-browser-gateway
+  labels:
+    app: {{ .Release.Name }}-browser-gateway
+spec:
+  replicas: {{ .Values.browserGateway.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-browser-gateway
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-browser-gateway
+    spec:
+      serviceAccountName: {{ .Release.Name }}
+      containers:
+        - name: browser-gateway
+          image: "{{ .Values.browserGateway.image.repository }}:{{ .Values.browserGateway.image.tag }}"
+          imagePullPolicy: {{ .Values.browserGateway.image.pullPolicy }}
+          args: ["serve"]
+          ports:
+            - containerPort: {{ .Values.browserGateway.port }}
+          env:
+            - name: BRG_LISTEN_ADDR
+              value: ":{{ .Values.browserGateway.port }}"
+            - name: BRG_CODEX_APP_GATEWAY_WS_URL
+              value: "ws://{{ .Release.Name }}-codex-app-gateway.{{ .Release.Namespace }}.svc:{{ .Values.codexAppGateway.port }}"
+            - name: BRG_ALLOWED_ORIGINS
+              value: {{ .Values.browserGateway.allowedOrigins | quote }}
+            - name: BRG_LOG_LEVEL
+              value: {{ .Values.browserGateway.logLevel | quote }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.browserGateway.port }}
+            initialDelaySeconds: 3
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-browser-gateway
+  labels:
+    app: {{ .Release.Name }}-browser-gateway
+spec:
+  selector:
+    app: {{ .Release.Name }}-browser-gateway
+  ports:
+    - port: {{ .Values.browserGateway.port }}
+      targetPort: {{ .Values.browserGateway.port }}
+{{- end }}

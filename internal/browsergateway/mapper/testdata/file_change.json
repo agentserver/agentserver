@@ -1,0 +1,1 @@
+{"method":"item/completed","params":{"item":{"type":"fileChange","id":"fc-1","status":"completed","changes":[{"path":"main.go","kind":{"type":"update","movePath":null},"diff":"@@ -1 +1 @@\n-old\n+new"}]},"threadId":"thr-1","turnId":"trn-1"}}

@@ -35,7 +35,9 @@ func (f *fakeConn) Interrupt(context.Context, string, string) { f.interrupted = 
 func (f *fakeConn) Close() error                              { return nil }
 
 func TestRunAGUI_TextRun(t *testing.T) {
-	fc := &fakeConn{frames: make(chan codexclient.Frame, 4)}
+	fc := &fakeConn{frames: make(chan codexclient.Frame, 5)}
+	fc.frames <- codexclient.Frame{Method: "item/started", Params: []byte(`{"item":{"type":"agentMessage","id":"msg-1","text":"","phase":null}}`)}
+	fc.frames <- codexclient.Frame{Method: "item/agentMessage/delta", Params: []byte(`{"itemId":"msg-1","delta":"hi there"}`)}
 	fc.frames <- codexclient.Frame{Method: "item/completed", Params: []byte(`{"item":{"type":"agentMessage","id":"msg-1","text":"hi there"}}`)}
 	fc.frames <- codexclient.Frame{Method: "turn/completed", Params: []byte(`{"turn":{"id":"trn-1"}}`)}
 

@@ -34,15 +34,31 @@ func types(evs []events.Event) []events.EventType {
 	return out
 }
 
-func TestMap_AgentMessage(t *testing.T) {
+func TestMap_AgentMessageStart(t *testing.T) {
+	r := Map(loadFrame(t, "agent_message_started.json"))
+	got := types(r.Events)
+	if len(got) != 1 || got[0] != events.EventTypeTextMessageStart {
+		t.Fatalf("start frame → %v, want [TEXT_MESSAGE_START]", got)
+	}
+}
+
+func TestMap_AgentMessageDelta(t *testing.T) {
+	r := Map(loadFrame(t, "agent_message_delta.json"))
+	got := types(r.Events)
+	if len(got) != 1 || got[0] != events.EventTypeTextMessageContent {
+		t.Fatalf("delta frame → %v, want [TEXT_MESSAGE_CONTENT]", got)
+	}
+	ce := r.Events[0].(*events.TextMessageContentEvent)
+	if ce.Delta != "Hello" {
+		t.Errorf("delta = %q, want Hello", ce.Delta)
+	}
+}
+
+func TestMap_AgentMessageCompleted(t *testing.T) {
 	r := Map(loadFrame(t, "agent_message.json"))
 	got := types(r.Events)
-	want := []events.EventType{events.EventTypeTextMessageStart, events.EventTypeTextMessageContent, events.EventTypeTextMessageEnd}
-	if len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
-		t.Fatalf("event types = %v, want %v", got, want)
-	}
-	if r.Done || r.Err != "" {
-		t.Errorf("Done=%v Err=%q, want false/empty", r.Done, r.Err)
+	if len(got) != 1 || got[0] != events.EventTypeTextMessageEnd {
+		t.Fatalf("completed frame → %v, want [TEXT_MESSAGE_END]", got)
 	}
 }
 
@@ -69,8 +85,16 @@ func TestMap_TurnFailed(t *testing.T) {
 func TestMap_Reasoning(t *testing.T) {
 	r := Map(loadFrame(t, "reasoning.json"))
 	got := types(r.Events)
-	if len(got) != 3 || got[0] != events.EventTypeReasoningMessageStart {
+	if len(got) != 3 || got[0] != events.EventTypeReasoningMessageStart || got[1] != events.EventTypeReasoningMessageContent || got[2] != events.EventTypeReasoningMessageEnd {
 		t.Fatalf("event types = %v, want reasoning start/content/end", got)
+	}
+	// The content event must carry joined summary+content, not empty.
+	ce, ok := r.Events[1].(*events.ReasoningMessageContentEvent)
+	if !ok {
+		t.Fatalf("event[1] is %T, want *ReasoningMessageContentEvent", r.Events[1])
+	}
+	if ce.Delta == "" {
+		t.Fatal("reasoning content delta is empty — summary/content not read")
 	}
 }
 
@@ -78,5 +102,75 @@ func TestMap_UnknownFrameIsNoop(t *testing.T) {
 	r := Map(codexclient.Frame{Method: "turn/started", Params: []byte(`{}`)})
 	if len(r.Events) != 0 || r.Done || r.Err != "" {
 		t.Fatalf("unknown frame produced %+v, want empty Result", r)
+	}
+}
+
+func TestMap_CommandExecution(t *testing.T) {
+	r := Map(loadFrame(t, "command_execution.json"))
+	got := types(r.Events)
+	want := []events.EventType{
+		events.EventTypeToolCallStart,
+		events.EventTypeToolCallArgs,
+		events.EventTypeToolCallEnd,
+		events.EventTypeToolCallResult,
+		events.EventTypeCustom,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("event types = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("event[%d] = %v, want %v (full: %v)", i, got[i], want[i], got)
+		}
+	}
+	last, ok := r.Events[len(r.Events)-1].(*events.CustomEvent)
+	if !ok || last.Name != "a2ui.operations" {
+		t.Fatalf("last event not CUSTOM a2ui.operations: %+v", r.Events[len(r.Events)-1])
+	}
+	for i, ev := range r.Events {
+		if err := ev.Validate(); err != nil {
+			t.Fatalf("event[%d] (%s) fails SDK Validate: %v", i, ev.Type(), err)
+		}
+	}
+}
+
+func TestMap_CommandExecutionEmptyOutput(t *testing.T) {
+	r := Map(loadFrame(t, "command_execution_empty.json"))
+	if len(r.Events) != 5 {
+		t.Fatalf("want 5 events, got %d", len(r.Events))
+	}
+	for i, ev := range r.Events {
+		if err := ev.Validate(); err != nil {
+			t.Fatalf("event[%d] (%s) fails SDK Validate: %v", i, ev.Type(), err)
+		}
+	}
+}
+
+func TestMap_FileChange(t *testing.T) {
+	r := Map(loadFrame(t, "file_change.json"))
+	got := types(r.Events)
+	want := []events.EventType{
+		events.EventTypeToolCallStart,
+		events.EventTypeToolCallArgs,
+		events.EventTypeToolCallEnd,
+		events.EventTypeToolCallResult,
+		events.EventTypeCustom,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("event types = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("event[%d] = %v, want %v", i, got[i], want[i])
+		}
+	}
+	start, ok := r.Events[0].(*events.ToolCallStartEvent)
+	if !ok || start.ToolCallName != "apply_patch" {
+		t.Fatalf("tool name = %v, want apply_patch", r.Events[0])
+	}
+	for i, ev := range r.Events {
+		if err := ev.Validate(); err != nil {
+			t.Fatalf("event[%d] (%s) fails SDK Validate: %v", i, ev.Type(), err)
+		}
 	}
 }

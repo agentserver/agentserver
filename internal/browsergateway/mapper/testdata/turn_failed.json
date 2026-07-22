@@ -1,0 +1,1 @@
+{"method":"turn/completed","params":{"threadId":"thr-1","turn":{"id":"trn-1","status":"failed","items":[],"error":{"message":"boom"},"itemsView":"full"}}}

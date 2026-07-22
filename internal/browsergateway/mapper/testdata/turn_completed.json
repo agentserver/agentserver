@@ -1,0 +1,1 @@
+{"method":"turn/completed","params":{"threadId":"thr-1","turn":{"id":"trn-1","status":"completed","items":[{"type":"agentMessage","id":"msg-1","text":"Hello from codex"}],"itemsView":"full","error":null,"startedAt":1,"completedAt":2,"durationMs":1000}}}

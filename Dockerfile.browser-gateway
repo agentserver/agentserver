@@ -1,9 +1,20 @@
 # syntax=docker/dockerfile:1
+# Stage 1: build the browserweb SPA
+FROM node:25-slim AS frontend
+RUN npm install -g pnpm
+WORKDIR /app/browserweb
+COPY browserweb/package.json browserweb/pnpm-lock.yaml browserweb/pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY browserweb/ ./
+RUN pnpm build
+
+# Stage 2: build the Go binary (embeds browserweb/dist)
 FROM golang:1.26-trixie AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+COPY --from=frontend /app/browserweb/dist ./browserweb/dist
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' \
     -o /out/browser-gateway ./cmd/browser-gateway
 

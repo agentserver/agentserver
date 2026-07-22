@@ -293,6 +293,18 @@ codexGateway:
 # bindings from codex-exec-gateway, mints per-turn cap tokens, and writes
 # config.toml entries that route remote tool calls through the env-mcp
 # child binary.
+browserGateway:
+  enabled: false
+  image:
+    repository: ghcr.io/agentserver/browser-gateway
+    tag: latest
+    pullPolicy: Always
+  replicaCount: 1
+  port: 8088
+  logLevel: info
+  # CORS allowlist (comma-separated origins). Empty = same-origin only (no CORS). Set explicit origins for third-party AG-UI frontends; "*" is unsafe outside dev.
+  allowedOrigins: ""
+
 codexAppGateway:
   enabled: false
   image:

@@ -57,6 +57,22 @@ func TestServer_CORS_MultiOrigin(t *testing.T) {
 	}
 }
 
+func TestServer_CORS_DefaultSameOrigin(t *testing.T) {
+	s := NewServer(ServeConfig{CodexAppGatewayWSURL: "ws://unused"}, slog.Default())
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodOptions, "/agui", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("OPTIONS status = %d, want 204", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want none (same-origin default)", got)
+	}
+}
+
 func TestServer_AGUI_StreamsRun(t *testing.T) {
 	fc := &fakeConn{frames: make(chan codexclient.Frame, 4)}
 	fc.frames <- codexclient.Frame{Method: "item/completed", Params: []byte(`{"item":{"type":"agentMessage","id":"m1","text":"hi"}}`)}
@@ -73,5 +89,28 @@ func TestServer_AGUI_StreamsRun(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "RUN_FINISHED") {
 		t.Errorf("body missing RUN_FINISHED:\n%s", rec.Body.String())
+	}
+}
+
+func TestServer_ServesSPA(t *testing.T) {
+	s := NewServer(ServeConfig{CodexAppGatewayWSURL: "ws://unused", AllowedOrigins: []string{"*"}}, slog.Default())
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "<div id=\"root\">") {
+		t.Errorf("GET / did not serve the SPA index; body=%q", rec.Body.String())
+	}
+}
+
+func TestServer_SPAFallback(t *testing.T) {
+	s := NewServer(ServeConfig{CodexAppGatewayWSURL: "ws://unused", AllowedOrigins: []string{"*"}}, slog.Default())
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/some/client/route", nil)
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("client route = %d, want 200 (SPA fallback)", rec.Code)
 	}
 }

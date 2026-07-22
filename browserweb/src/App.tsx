@@ -2,12 +2,19 @@ import { useState } from 'react'
 import { A2uiSurface } from '@a2ui/react/v0_9'
 import { useAgent } from './useAgent'
 
-function tokenFromUrl(): string {
-  return new URLSearchParams(window.location.search).get('token') ?? ''
+function readAndScrubToken(): string {
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+  const query = new URLSearchParams(window.location.search)
+  const token = hash.get('token') ?? query.get('token') ?? ''
+  if (token) {
+    // Scrub the credential from the URL (history, address bar, Referer).
+    history.replaceState(null, '', window.location.pathname)
+  }
+  return token
 }
 
 export function App() {
-  const [token, setToken] = useState(tokenFromUrl)
+  const [token, setToken] = useState(readAndScrubToken)
   if (!token) return <TokenGate onSubmit={setToken} />
   return <Chat token={token} />
 }
@@ -18,8 +25,18 @@ function TokenGate({ onSubmit }: { onSubmit: (t: string) => void }) {
     <div className="mx-auto max-w-md p-8">
       <h1 className="mb-2 text-lg font-semibold">browser-gateway</h1>
       <p className="mb-4 text-sm text-gray-600">Paste a workspace codex token to connect.</p>
-      <input className="w-full rounded border p-2" value={v} onChange={(e) => setV(e.target.value)} placeholder="token" />
-      <button className="mt-3 rounded bg-black px-4 py-2 text-white" onClick={() => v.trim() && onSubmit(v.trim())}>Connect</button>
+      <input
+        className="w-full rounded border p-2"
+        type="password"
+        name="token"
+        autoComplete="off"
+        autoCapitalize="off"
+        spellCheck={false}
+        value={v}
+        onChange={(e) => setV(e.target.value)}
+        placeholder="token"
+      />
+      <button className="mt-3 rounded bg-black px-4 py-2 text-white" onClick={() => v.trim() && (onSubmit(v.trim()), setV(''))}>Connect</button>
     </div>
   )
 }

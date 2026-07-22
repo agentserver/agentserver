@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { HttpAgent } from '@ag-ui/client'
-import { MessageProcessor } from '@a2ui/web_core/v0_9'
+import { MessageProcessor, SurfaceModel } from '@a2ui/web_core/v0_9'
 import { basicCatalog } from '@a2ui/react/v0_9'
-import type { SurfaceModel, ReactComponentImplementation } from '@a2ui/react/v0_9'
+import type { ReactComponentImplementation } from '@a2ui/react/v0_9'
 import { reduceEvent, addUserMessage, emptyChatState, type ChatState } from './agentState'
 
 type Surface = SurfaceModel<ReactComponentImplementation>

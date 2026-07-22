@@ -15,7 +15,6 @@ spec:
       labels:
         app: {{ .Release.Name }}-browser-gateway
     spec:
-      serviceAccountName: {{ .Release.Name }}
       containers:
         - name: browser-gateway
           image: "{{ .Values.browserGateway.image.repository }}:{{ .Values.browserGateway.image.tag }}"

@@ -57,6 +57,22 @@ func TestServer_CORS_MultiOrigin(t *testing.T) {
 	}
 }
 
+func TestServer_CORS_DefaultSameOrigin(t *testing.T) {
+	s := NewServer(ServeConfig{CodexAppGatewayWSURL: "ws://unused"}, slog.Default())
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodOptions, "/agui", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("OPTIONS status = %d, want 204", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want none (same-origin default)", got)
+	}
+}
+
 func TestServer_AGUI_StreamsRun(t *testing.T) {
 	fc := &fakeConn{frames: make(chan codexclient.Frame, 4)}
 	fc.frames <- codexclient.Frame{Method: "item/completed", Params: []byte(`{"item":{"type":"agentMessage","id":"m1","text":"hi"}}`)}

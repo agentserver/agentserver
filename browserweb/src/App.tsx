@@ -3,9 +3,11 @@ import { A2uiSurface } from '@a2ui/react/v0_9'
 import { useAgent } from './useAgent'
 
 function readAndScrubToken(): string {
+  // Read the token ONLY from the URL fragment (#token=), which browsers never
+  // send to the server — so it cannot leak into the initial GET request line or
+  // access logs. (A ?query fallback would leak before the scrub runs.)
   const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''))
-  const query = new URLSearchParams(window.location.search)
-  const token = hash.get('token') ?? query.get('token') ?? ''
+  const token = hash.get('token') ?? ''
   if (token) {
     // Scrub the credential from the URL (history, address bar, Referer).
     history.replaceState(null, '', window.location.pathname)

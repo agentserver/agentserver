@@ -302,8 +302,8 @@ browserGateway:
   replicaCount: 1
   port: 8088
   logLevel: info
-  # Comma-separated CORS allowlist; "*" for dev.
-  allowedOrigins: "*"
+  # CORS allowlist (comma-separated origins). Empty = same-origin only (no CORS). Set explicit origins for third-party AG-UI frontends; "*" is unsafe outside dev.
+  allowedOrigins: ""
 
 codexAppGateway:
   enabled: false

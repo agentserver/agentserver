@@ -80,38 +80,45 @@ func (s *Server) handleAGUI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) withCORS(next http.Handler) http.Handler {
-	// wildcard is true when any origin is allowed: no allowlist configured, or
-	// "*" explicitly listed. Otherwise a single, valid ACAO must be chosen per
-	// request (a comma-joined list is not a valid Access-Control-Allow-Origin).
-	wildcard := len(s.cfg.AllowedOrigins) == 0
+	// An empty allowlist means same-origin only: emit no CORS headers at all.
+	// The bundled SPA is served same-origin and needs none; only cross-origin
+	// third-party frontends require an explicit allowlist.
+	//
+	// wildcard is true when "*" is explicitly listed. Otherwise a single, valid
+	// ACAO must be chosen per request (a comma-joined list is not a valid
+	// Access-Control-Allow-Origin).
+	sameOrigin := len(s.cfg.AllowedOrigins) == 0
+	wildcard := false
 	for _, o := range s.cfg.AllowedOrigins {
 		if o == "*" {
 			wildcard = true
 		}
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if wildcard {
-			w.Header().Set("Access-Control-Allow-Origin", "*")
-		} else {
-			reqOrigin := r.Header.Get("Origin")
-			matched := false
-			for _, o := range s.cfg.AllowedOrigins {
-				if o == reqOrigin {
-					matched = true
-					break
+		if !sameOrigin {
+			if wildcard {
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+			} else {
+				reqOrigin := r.Header.Get("Origin")
+				matched := false
+				for _, o := range s.cfg.AllowedOrigins {
+					if o == reqOrigin {
+						matched = true
+						break
+					}
+				}
+				if matched {
+					// Echo exactly the one allowed origin the client sent.
+					w.Header().Set("Access-Control-Allow-Origin", reqOrigin)
+					w.Header().Set("Vary", "Origin")
+				} else {
+					// Deterministic, still a single valid value.
+					w.Header().Set("Access-Control-Allow-Origin", s.cfg.AllowedOrigins[0])
 				}
 			}
-			if matched {
-				// Echo exactly the one allowed origin the client sent.
-				w.Header().Set("Access-Control-Allow-Origin", reqOrigin)
-				w.Header().Set("Vary", "Origin")
-			} else {
-				// Deterministic, still a single valid value.
-				w.Header().Set("Access-Control-Allow-Origin", s.cfg.AllowedOrigins[0])
-			}
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Cache-Control")
 		}
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Cache-Control")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

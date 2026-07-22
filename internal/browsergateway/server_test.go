@@ -75,3 +75,26 @@ func TestServer_AGUI_StreamsRun(t *testing.T) {
 		t.Errorf("body missing RUN_FINISHED:\n%s", rec.Body.String())
 	}
 }
+
+func TestServer_ServesSPA(t *testing.T) {
+	s := NewServer(ServeConfig{CodexAppGatewayWSURL: "ws://unused", AllowedOrigins: []string{"*"}}, slog.Default())
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET / = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "<div id=\"root\">") {
+		t.Errorf("GET / did not serve the SPA index; body=%q", rec.Body.String())
+	}
+}
+
+func TestServer_SPAFallback(t *testing.T) {
+	s := NewServer(ServeConfig{CodexAppGatewayWSURL: "ws://unused", AllowedOrigins: []string{"*"}}, slog.Default())
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/some/client/route", nil)
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("client route = %d, want 200 (SPA fallback)", rec.Code)
+	}
+}

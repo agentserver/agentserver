@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/types"
 	"github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/encoding/sse"
 
+	"github.com/agentserver/agentserver/browserweb"
 	"github.com/agentserver/agentserver/internal/browsergateway/codexclient"
 )
 
@@ -49,6 +51,7 @@ func (s *Server) Handler() http.Handler {
 		_, _ = w.Write([]byte("ok"))
 	})
 	mux.HandleFunc("POST /agui", s.handleAGUI)
+	mux.Handle("GET /", spaHandler())
 	return s.withCORS(mux)
 }
 
@@ -123,6 +126,23 @@ func extractBearer(r *http.Request) string {
 		return strings.TrimSpace(h[len("Bearer "):])
 	}
 	return ""
+}
+
+// spaHandler serves the embedded browserweb SPA, falling back to index.html
+// for client-side routes (any path that isn't a real embedded file).
+func spaHandler() http.Handler {
+	sub, err := fs.Sub(browserweb.StaticFS, "dist")
+	if err != nil {
+		panic("browserweb dist embed: " + err.Error())
+	}
+	fileServer := http.FileServer(http.FS(sub))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := fs.Stat(sub, strings.TrimPrefix(r.URL.Path, "/")); err != nil && r.URL.Path != "/" {
+			r = r.Clone(r.Context())
+			r.URL.Path = "/"
+		}
+		fileServer.ServeHTTP(w, r)
+	})
 }
 
 // Run starts the HTTP server and blocks until ctx is cancelled.

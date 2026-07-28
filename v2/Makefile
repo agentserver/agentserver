@@ -1,9 +1,9 @@
 GO ?= go
 GOFMT ?= gofmt
 
-.PHONY: check fmt fmt-check vet test import-boundary conformance conformance-live
+.PHONY: check fmt fmt-check vet test import-boundary contract-check conformance conformance-live
 
-check: fmt-check vet test import-boundary
+check: fmt-check vet test import-boundary contract-check
 
 fmt:
 	find . -name '*.go' -type f -exec $(GOFMT) -w {} +
@@ -23,6 +23,9 @@ test:
 
 import-boundary:
 	$(GO) test ./internal/buildguard -run '^TestRepositoryHasNoV1RuntimeImports$$' -count=1
+
+contract-check:
+	$(GO) test ./internal/runtimelock -run '^TestRuntimeManifestJSONSchemaContract$$' -count=1
 
 conformance:
 	$(GO) test ./conformance/codex/... -count=1

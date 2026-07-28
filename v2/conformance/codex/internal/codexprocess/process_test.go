@@ -130,6 +130,49 @@ func TestEnvironmentRejectsReservedOverride(t *testing.T) {
 	}
 }
 
+func TestRunCommandCapturesBoundedOutput(t *testing.T) {
+	root := t.TempDir()
+	for _, directory := range []string{"home", "codex", "tmp", "cwd"} {
+		if err := os.MkdirAll(filepath.Join(root, directory), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	environment, err := Environment(
+		filepath.Join(root, "home"),
+		filepath.Join(root, "codex"),
+		filepath.Join(root, "tmp"),
+		map[string]string{"AGENTSERVER_CODEXCOMMAND_HELPER": "1"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := RunCommand(context.Background(), CommandConfig{
+		Binary:      os.Args[0],
+		Args:        []string{"-test.run=^TestCodexCommandHelper$"},
+		Dir:         filepath.Join(root, "cwd"),
+		Env:         environment,
+		StdoutBytes: 6,
+		StderrBytes: 6,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(result.Stdout), "stdout"; got != want || !result.StdoutTruncated {
+		t.Fatalf("stdout = %q truncated=%t, want %q truncated", got, result.StdoutTruncated, want)
+	}
+	if got, want := string(result.Stderr), "stderr"; got != want || !result.StderrTruncated {
+		t.Fatalf("stderr = %q truncated=%t, want %q truncated", got, result.StderrTruncated, want)
+	}
+}
+
+func TestCodexCommandHelper(t *testing.T) {
+	if os.Getenv("AGENTSERVER_CODEXCOMMAND_HELPER") != "1" {
+		return
+	}
+	_, _ = fmt.Fprint(os.Stdout, "stdout-is-bounded")
+	_, _ = fmt.Fprint(os.Stderr, "stderr-is-bounded")
+}
+
 func TestCodexProcessHelper(t *testing.T) {
 	if os.Getenv("AGENTSERVER_CODEXPROCESS_HELPER") != "1" {
 		return

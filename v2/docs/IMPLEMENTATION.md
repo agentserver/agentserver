@@ -180,12 +180,26 @@ Phase 0 生成并提交 packaging/agentx/runtime-manifest.json，至少包含：
   "codexRelease": "待 Phase 0 固定",
   "codexCommit": "upstream commit",
   "appServerSchemaSha256": "...",
+  "appServerSchemaDigestAlgorithm": "canonical-json-tree-v1",
   "execProtocolSourceSha256": "...",
+  "checkpointAllowlistVersion": 1,
   "agentxProtocolVersion": "2.0",
   "artifacts": {
     "linux-amd64": {
-      "codexSha256": "...",
-      "sandboxHelperSha256": "..."
+      "codex": {
+        "path": "bin/codex",
+        "sourceUrl": "https://固定发布地址",
+        "sha256": "...",
+        "sizeBytes": 123
+      },
+      "helpers": {
+        "codex-linux-sandbox": {
+          "path": "bin/codex-linux-sandbox",
+          "sourceUrl": "https://固定发布地址",
+          "sha256": "...",
+          "sizeBytes": 123
+        }
+      }
     }
   }
 }
@@ -194,8 +208,8 @@ Phase 0 生成并提交 packaging/agentx/runtime-manifest.json，至少包含：
 锁定流程：
 
 1. 只接受可追溯到官方 stock release/tag 的构建；本地 Codex checkout 的自定义 commit 不能作为 release pin。
-2. 对每个平台记录下载来源、二进制 SHA-256、签名/SBOM 和所需 helper。
-3. 运行 codex app-server generate-json-schema，保存原始生成物和 digest。
+2. inner runtime manifest 对每个平台记录固定 HTTPS 下载来源、bundle 内相对路径、精确大小、二进制 SHA-256 和所需 helper；拒绝 symlink、路径逃逸、未知字段和临时 query URL。manifest 本身及外层 agentx/harness release bundle 使用 detached signature，外层 release metadata 记录签名、SBOM 与 manifest digest，避免在被签名文件内部产生自引用签名。
+3. 运行 codex app-server generate-json-schema，保存原始生成物；已验证 stock generator 的合并 schema 可能随机排列 JSON object keys，因此 manifest 使用显式版本化的 `canonical-json-tree-v1`：逐文件解析 JSON、保留数组顺序、按 key 重编码 object，再按相对路径树 hash。连续生成两次的 canonical digest 必须一致；不能 pin 不可复现的 raw tree digest。
 4. exec-server 没有等价的稳定 schema generator时，保存 protocol 源文件 digest、录制 fixture 和语义探针结果。
 5. harness image 与 agentx release bundle 必须引用同一个 manifest digest。
 6. 启动时发现 version、digest、helper 或 schema 不匹配，worker/agentx 均 fail closed。

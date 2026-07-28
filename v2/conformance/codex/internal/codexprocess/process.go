@@ -161,13 +161,23 @@ func (p *Process) Stderr() (contents []byte, truncated bool) {
 }
 
 func validateConfig(config Config) error {
-	if config.Binary == "" {
+	if err := validateCommandFields(config.Binary, config.Dir, config.Env); err != nil {
+		return err
+	}
+	if config.MaxFrameBytes < 0 || config.IncomingBuffer < 0 || config.StderrBytes < 0 {
+		return errors.New("Codex process bounds cannot be negative")
+	}
+	return nil
+}
+
+func validateCommandFields(binary, directory string, environment []string) error {
+	if binary == "" {
 		return errors.New("Codex binary path is required")
 	}
-	if !filepath.IsAbs(config.Binary) {
+	if !filepath.IsAbs(binary) {
 		return errors.New("Codex binary path must be absolute")
 	}
-	info, err := os.Stat(config.Binary)
+	info, err := os.Stat(binary)
 	if err != nil {
 		return fmt.Errorf("stat Codex binary: %w", err)
 	}
@@ -177,21 +187,18 @@ func validateConfig(config Config) error {
 	if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
 		return errors.New("Codex binary is not executable")
 	}
-	if config.Dir == "" || !filepath.IsAbs(config.Dir) {
+	if directory == "" || !filepath.IsAbs(directory) {
 		return errors.New("Codex working directory must be absolute")
 	}
-	if info, err := os.Stat(config.Dir); err != nil || !info.IsDir() {
+	if info, err := os.Stat(directory); err != nil || !info.IsDir() {
 		return errors.New("Codex working directory must exist and be a directory")
 	}
-	if config.Env == nil {
+	if environment == nil {
 		return errors.New("Codex environment must be explicit; nil would inherit the parent environment")
 	}
-	if config.MaxFrameBytes < 0 || config.IncomingBuffer < 0 || config.StderrBytes < 0 {
-		return errors.New("Codex process bounds cannot be negative")
-	}
 
-	seen := make(map[string]struct{}, len(config.Env))
-	for _, entry := range config.Env {
+	seen := make(map[string]struct{}, len(environment))
+	for _, entry := range environment {
 		name, value, found := strings.Cut(entry, "=")
 		if !found || name == "" || strings.ContainsRune(name, '\x00') || strings.ContainsRune(value, '\x00') {
 			return fmt.Errorf("invalid environment entry %q", entry)

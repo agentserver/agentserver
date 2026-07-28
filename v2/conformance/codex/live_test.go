@@ -5,15 +5,95 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/agentserver/agentserver/v2/conformance/codex/internal/codexprocess"
 	"github.com/agentserver/agentserver/v2/internal/codexwire"
+	"github.com/agentserver/agentserver/v2/internal/runtimelock"
 )
 
 const liveProbeTimeout = 15 * time.Second
+
+var candidateVersionPattern = regexp.MustCompile(`^codex-cli ([0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?)$`)
+
+func TestCandidateBinaryAndAppServerSchemaFingerprint(t *testing.T) {
+	binary, paths := prepareLiveCodex(t)
+	commandContext, cancelCommand := context.WithTimeout(context.Background(), liveProbeTimeout)
+	defer cancelCommand()
+	versionResult, err := codexprocess.RunCommand(commandContext, codexprocess.CommandConfig{
+		Binary: binary,
+		Args:   []string{"--version"},
+		Dir:    paths.cwd,
+		Env:    paths.environment,
+	})
+	if err != nil {
+		t.Fatalf("read Codex version: %v\nstderr: %s", err, versionResult.Stderr)
+	}
+	assertCaptureComplete(t, versionResult)
+	versionOutput := strings.TrimSpace(string(versionResult.Stdout))
+	match := candidateVersionPattern.FindStringSubmatch(versionOutput)
+	if match == nil {
+		t.Fatalf("unexpected Codex version output %q", versionOutput)
+	}
+
+	resolvedBinary, err := filepath.EvalSymlinks(binary)
+	if err != nil {
+		t.Fatalf("resolve Codex binary: %v", err)
+	}
+	binaryDigest, binarySize, err := runtimelock.HashFile(resolvedBinary)
+	if err != nil {
+		t.Fatalf("hash Codex binary: %v", err)
+	}
+
+	schemaDigest := generateAppServerSchemaDigest(t, binary, paths, "app-server-schema-a")
+	secondSchemaDigest := generateAppServerSchemaDigest(t, binary, paths, "app-server-schema-b")
+	if schemaDigest.canonical.SHA256 != secondSchemaDigest.canonical.SHA256 {
+		t.Fatalf("canonical app-server schema generation is not deterministic: %s != %s", schemaDigest.canonical.SHA256, secondSchemaDigest.canonical.SHA256)
+	}
+	if schemaDigest.raw.SHA256 != secondSchemaDigest.raw.SHA256 {
+		t.Logf("stock generator raw JSON ordering is nondeterministic: %s != %s", schemaDigest.raw.SHA256, secondSchemaDigest.raw.SHA256)
+	}
+	t.Logf(
+		"candidate only (not a runtime pin): release=%s binary_sha256=%s binary_size=%d app_server_schema_sha256=%s schema_files=%d",
+		match[1], binaryDigest, binarySize, schemaDigest.canonical.SHA256, len(schemaDigest.canonical.Files),
+	)
+}
+
+type schemaDigests struct {
+	raw       runtimelock.TreeDigest
+	canonical runtimelock.TreeDigest
+}
+
+func generateAppServerSchemaDigest(t *testing.T, binary string, paths livePaths, directoryName string) schemaDigests {
+	t.Helper()
+	schemaOutput := filepath.Join(paths.root, directoryName)
+	schemaContext, cancelSchema := context.WithTimeout(context.Background(), liveProbeTimeout)
+	defer cancelSchema()
+	schemaResult, err := codexprocess.RunCommand(schemaContext, codexprocess.CommandConfig{
+		Binary: binary,
+		Args: []string{
+			"app-server", "generate-json-schema", "--experimental", "--out", schemaOutput,
+		},
+		Dir: paths.cwd,
+		Env: paths.environment,
+	})
+	if err != nil {
+		t.Fatalf("generate app-server schema: %v\nstderr: %s", err, schemaResult.Stderr)
+	}
+	assertCaptureComplete(t, schemaResult)
+	rawDigest, err := runtimelock.HashTree(schemaOutput, runtimelock.DefaultTreeLimits())
+	if err != nil {
+		t.Fatalf("hash raw app-server schema bundle: %v", err)
+	}
+	canonicalDigest, err := runtimelock.HashCanonicalJSONTree(schemaOutput, runtimelock.DefaultTreeLimits())
+	if err != nil {
+		t.Fatalf("hash canonical app-server schema bundle: %v", err)
+	}
+	return schemaDigests{raw: rawDigest, canonical: canonicalDigest}
+}
 
 func TestAppServerInitializeLifecycle(t *testing.T) {
 	process, paths := startLiveCodex(t, "app-server", "--listen", "stdio://", "--strict-config")
@@ -173,11 +253,37 @@ func receiveResponse(t *testing.T, process *codexprocess.Process, id string) cod
 }
 
 type livePaths struct {
-	codexHome string
-	cwd       string
+	root        string
+	home        string
+	codexHome   string
+	temporary   string
+	cwd         string
+	environment []string
 }
 
 func startLiveCodex(t *testing.T, arguments ...string) (*codexprocess.Process, livePaths) {
+	t.Helper()
+	binary, paths := prepareLiveCodex(t)
+
+	processContext, cancelProcess := context.WithTimeout(context.Background(), liveProbeTimeout)
+	process, err := codexprocess.Start(processContext, codexprocess.Config{
+		Binary: binary,
+		Args:   arguments,
+		Dir:    paths.cwd,
+		Env:    paths.environment,
+	})
+	if err != nil {
+		cancelProcess()
+		t.Fatalf("start stock Codex: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = process.Kill()
+		cancelProcess()
+	})
+	return process, paths
+}
+
+func prepareLiveCodex(t *testing.T) (string, livePaths) {
 	t.Helper()
 	if os.Getenv("AGENTSERVER_RUN_LIVE_CODEX") != "1" {
 		t.Skip("set AGENTSERVER_RUN_LIVE_CODEX=1 and AGENTSERVER_CODEX_BIN to run stock Codex probes")
@@ -188,12 +294,8 @@ func startLiveCodex(t *testing.T, arguments ...string) (*codexprocess.Process, l
 	}
 
 	root := t.TempDir()
-	paths := struct {
-		home      string
-		codexHome string
-		temporary string
-		cwd       string
-	}{
+	paths := livePaths{
+		root:      root,
 		home:      filepath.Join(root, "home"),
 		codexHome: filepath.Join(root, "codex-home"),
 		temporary: filepath.Join(root, "tmp"),
@@ -208,23 +310,8 @@ func startLiveCodex(t *testing.T, arguments ...string) (*codexprocess.Process, l
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	processContext, cancelProcess := context.WithTimeout(context.Background(), liveProbeTimeout)
-	process, err := codexprocess.Start(processContext, codexprocess.Config{
-		Binary: binary,
-		Args:   arguments,
-		Dir:    paths.cwd,
-		Env:    environment,
-	})
-	if err != nil {
-		cancelProcess()
-		t.Fatalf("start stock Codex: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = process.Kill()
-		cancelProcess()
-	})
-	return process, livePaths{codexHome: paths.codexHome, cwd: paths.cwd}
+	paths.environment = environment
+	return binary, paths
 }
 
 func closeAndWait(t *testing.T, process *codexprocess.Process) {
@@ -274,4 +361,11 @@ func assertFileURIPath(t *testing.T, rawURI, want string) {
 		t.Fatalf("cwd = %q, want a local file URI", rawURI)
 	}
 	assertSamePath(t, parsed.Path, want)
+}
+
+func assertCaptureComplete(t *testing.T, result codexprocess.CommandResult) {
+	t.Helper()
+	if result.StdoutTruncated || result.StderrTruncated {
+		t.Fatalf("Codex command output exceeded capture bounds (stdout=%t stderr=%t)", result.StdoutTruncated, result.StderrTruncated)
+	}
 }

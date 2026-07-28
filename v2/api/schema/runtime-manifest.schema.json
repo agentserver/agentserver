@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentserver.dev/v2/schema/runtime-manifest.schema.json",
+  "title": "agentserver v2 stock Codex runtime manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifestVersion",
+    "codexRelease",
+    "codexCommit",
+    "appServerSchemaSha256",
+    "appServerSchemaDigestAlgorithm",
+    "execProtocolSourceSha256",
+    "checkpointAllowlistVersion",
+    "agentxProtocolVersion",
+    "artifacts"
+  ],
+  "properties": {
+    "manifestVersion": {
+      "const": 1
+    },
+    "codexRelease": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$"
+    },
+    "codexCommit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "appServerSchemaSha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "appServerSchemaDigestAlgorithm": {
+      "const": "canonical-json-tree-v1"
+    },
+    "execProtocolSourceSha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "checkpointAllowlistVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "agentxProtocolVersion": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+    "artifacts": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 6,
+      "propertyNames": {
+        "pattern": "^(linux|darwin|windows)-(amd64|arm64)$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/platformArtifacts"
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "fileArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sourceUrl",
+        "sha256",
+        "sizeBytes"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^[0-9A-Za-z][0-9A-Za-z._/-]*$"
+        },
+        "sourceUrl": {
+          "type": "string",
+          "maxLength": 2048,
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "sizeBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483648
+        }
+      }
+    },
+    "platformArtifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "codex",
+        "helpers"
+      ],
+      "properties": {
+        "codex": {
+          "$ref": "#/$defs/fileArtifact"
+        },
+        "helpers": {
+          "type": "object",
+          "maxProperties": 31,
+          "propertyNames": {
+            "pattern": "^[0-9A-Za-z][0-9A-Za-z._-]*$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/fileArtifact"
+          }
+        }
+      }
+    }
+  }
+}

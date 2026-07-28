@@ -97,7 +97,25 @@ func generateAppServerSchemaDigest(t *testing.T, binary string, paths livePaths,
 
 func TestAppServerInitializeLifecycle(t *testing.T) {
 	process, paths := startLiveCodex(t, "app-server", "--listen", "stdio://", "--strict-config")
+	initialize := initializeAppServer(t, process)
+	assertSamePath(t, initialize.CodexHome, paths.codexHome)
+	closeAndWait(t, process)
+}
 
+type appServerInitializeResult struct {
+	UserAgent      string `json:"userAgent"`
+	CodexHome      string `json:"codexHome"`
+	PlatformFamily string `json:"platformFamily"`
+	PlatformOS     string `json:"platformOs"`
+}
+
+func initializeAppServer(t *testing.T, process *codexprocess.Process) appServerInitializeResult {
+	t.Helper()
+	return initializeAppServerWithExperimental(t, process, true)
+}
+
+func initializeAppServerWithExperimental(t *testing.T, process *codexprocess.Process, experimentalAPI bool) appServerInitializeResult {
+	t.Helper()
 	request := map[string]any{
 		"id":     1,
 		"method": "initialize",
@@ -108,7 +126,7 @@ func TestAppServerInitializeLifecycle(t *testing.T) {
 				"version": "0.0.0",
 			},
 			"capabilities": map[string]any{
-				"experimentalApi": true,
+				"experimentalApi": experimentalAPI,
 			},
 		},
 	}
@@ -116,24 +134,17 @@ func TestAppServerInitializeLifecycle(t *testing.T) {
 		t.Fatalf("send app-server initialize: %v", err)
 	}
 	response := receiveResponse(t, process, "1")
-	var initialize struct {
-		UserAgent      string `json:"userAgent"`
-		CodexHome      string `json:"codexHome"`
-		PlatformFamily string `json:"platformFamily"`
-		PlatformOS     string `json:"platformOs"`
-	}
+	var initialize appServerInitializeResult
 	if err := response.DecodeResult(&initialize); err != nil {
 		t.Fatal(err)
 	}
 	if initialize.UserAgent == "" || initialize.PlatformFamily == "" || initialize.PlatformOS == "" {
 		t.Fatalf("incomplete app-server initialize response: %+v", initialize)
 	}
-	assertSamePath(t, initialize.CodexHome, paths.codexHome)
-
 	if err := process.Peer.Send(map[string]any{"method": "initialized"}); err != nil {
 		t.Fatalf("send app-server initialized: %v", err)
 	}
-	closeAndWait(t, process)
+	return initialize
 }
 
 func TestExecServerInitializeLifecycle(t *testing.T) {
@@ -264,7 +275,11 @@ type livePaths struct {
 func startLiveCodex(t *testing.T, arguments ...string) (*codexprocess.Process, livePaths) {
 	t.Helper()
 	binary, paths := prepareLiveCodex(t)
+	return startPreparedLiveCodex(t, binary, paths, arguments...), paths
+}
 
+func startPreparedLiveCodex(t *testing.T, binary string, paths livePaths, arguments ...string) *codexprocess.Process {
+	t.Helper()
 	processContext, cancelProcess := context.WithTimeout(context.Background(), liveProbeTimeout)
 	process, err := codexprocess.Start(processContext, codexprocess.Config{
 		Binary: binary,
@@ -280,7 +295,7 @@ func startLiveCodex(t *testing.T, arguments ...string) (*codexprocess.Process, l
 		_ = process.Kill()
 		cancelProcess()
 	})
-	return process, paths
+	return process
 }
 
 func prepareLiveCodex(t *testing.T) (string, livePaths) {

@@ -1,0 +1,5 @@
+{"id":1,"method":"initialize","params":{"clientInfo":{"name":"agentserver_v2_conformance","title":"agentserver v2 conformance","version":"0.0.0"},"capabilities":{"experimentalApi":false}}}
+{"id":1,"result":{"userAgent":"codex_cli_rs/<release>","codexHome":"/fixture/codex-home","platformFamily":"unix","platformOs":"linux"}}
+{"method":"initialized"}
+{"id":2,"method":"thread/start","params":{"model":"agentserver-v2-scripted-model","cwd":"/fixture/work","environments":[]}}
+{"id":2,"error":{"code":-32600,"message":"thread/start.environments requires experimentalApi capability"}}

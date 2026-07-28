@@ -251,6 +251,8 @@ conformance test 是 Go subprocess test，不依赖 v1 gateway：
 
 A03 不能通过“配置看起来正确”判断。测试必须检查实际发送给模型的 tool schema，并让 scripted model尝试调用一个禁止工具，确认 app-server不能执行。
 
+当前 0.145.0 candidate 的 bootstrap probe 进一步确认：assistant 内容在 `item/completed` 上到达，而 terminal `turn/completed` 是 `itemsView: notLoaded` 的空内容终态，harness-runner 必须持续归并 item 事件，不能只保存 terminal payload。`environments: []` 能去掉 shell/fs，但使用 fallback model metadata 的最小配置仍向模型暴露 web search、goal/plan、user-input、skills 和 multi-agent，因此 A01 通过不代表 A03 通过；必须固定 model metadata 后检查实际 Responses request，并为每类禁止工具增加反例调用。
+
 ### 4.3 checkpoint 探针算法
 
 1. 创建全新 CODEX_HOME-A。

@@ -2,7 +2,6 @@ package codex_test
 
 import (
 	"bytes"
-	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -397,82 +396,6 @@ func TestExecServerE06StdioEOFTerminatesManagedChild(t *testing.T) {
 	disableChildCleanup()
 }
 
-type rpcCollector struct {
-	process       *codexprocess.Process
-	responses     map[string]codexwire.Message
-	notifications []codexwire.Message
-}
-
-func newRPCCollector(process *codexprocess.Process) *rpcCollector {
-	return &rpcCollector{process: process, responses: make(map[string]codexwire.Message)}
-}
-
-func (c *rpcCollector) response(t *testing.T, id string) codexwire.Message {
-	t.Helper()
-	if response, exists := c.responses[id]; exists {
-		delete(c.responses, id)
-		return response
-	}
-	for {
-		message := c.receive(t)
-		switch message.Kind {
-		case codexwire.KindResponse, codexwire.KindError:
-			messageID := string(message.ID)
-			if messageID == id {
-				return message
-			}
-			if _, duplicate := c.responses[messageID]; duplicate {
-				t.Fatalf("duplicate response id %s", messageID)
-			}
-			c.responses[messageID] = message
-		case codexwire.KindNotification:
-			c.notifications = append(c.notifications, message)
-		case codexwire.KindRequest:
-			t.Fatalf("unexpected exec-server reverse request %q while waiting for response %s", message.Method, id)
-		default:
-			t.Fatalf("unexpected Codex wire message kind %s", message.Kind)
-		}
-	}
-}
-
-func (c *rpcCollector) nextNotification(t *testing.T) codexwire.Message {
-	t.Helper()
-	if len(c.notifications) != 0 {
-		message := c.notifications[0]
-		c.notifications = c.notifications[1:]
-		return message
-	}
-	for {
-		message := c.receive(t)
-		switch message.Kind {
-		case codexwire.KindNotification:
-			return message
-		case codexwire.KindResponse, codexwire.KindError:
-			messageID := string(message.ID)
-			if _, duplicate := c.responses[messageID]; duplicate {
-				t.Fatalf("duplicate response id %s", messageID)
-			}
-			c.responses[messageID] = message
-		case codexwire.KindRequest:
-			t.Fatalf("unexpected exec-server reverse request %q while waiting for notification", message.Method)
-		default:
-			t.Fatalf("unexpected Codex wire message kind %s", message.Kind)
-		}
-	}
-}
-
-func (c *rpcCollector) receive(t *testing.T) codexwire.Message {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), liveProbeTimeout)
-	defer cancel()
-	message, err := c.process.Peer.Receive(ctx)
-	if err != nil {
-		stderr, truncated := c.process.Stderr()
-		t.Fatalf("receive exec-server message: %v (stderr_truncated=%t)\nstderr: %s", err, truncated, stderr)
-	}
-	return message
-}
-
 type observedProcessEvent struct {
 	method        string
 	seq           uint64
@@ -701,30 +624,6 @@ func localFileURI(t *testing.T, path string) string {
 		t.Fatalf("file URI path must be absolute: %q", path)
 	}
 	return (&url.URL{Scheme: "file", Path: path}).String()
-}
-
-func sendRPC(t *testing.T, process *codexprocess.Process, request any) {
-	t.Helper()
-	if err := process.Peer.Send(request); err != nil {
-		t.Fatalf("send exec-server request: %v", err)
-	}
-}
-
-func mustDecodeResult(t *testing.T, message codexwire.Message, destination any) {
-	t.Helper()
-	if message.Kind == codexwire.KindError {
-		t.Fatalf("exec-server returned error %d: %s", message.Error.Code, message.Error.Message)
-	}
-	if err := message.DecodeResult(destination); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func mustRPCError(t *testing.T, message codexwire.Message) {
-	t.Helper()
-	if message.Kind != codexwire.KindError || message.Error == nil || message.Error.Message == "" {
-		t.Fatalf("message kind = %s, want non-empty RPC error", message.Kind)
-	}
 }
 
 func assertWriteStatus(t *testing.T, message codexwire.Message, want string) {

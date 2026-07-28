@@ -1,0 +1,11 @@
+{"id":1,"method":"initialize","params":{"clientInfo":{"name":"agentserver_v2_conformance","title":"agentserver v2 conformance","version":"0.0.0"},"capabilities":{"experimentalApi":true}}}
+{"id":1,"result":{"userAgent":"codex_cli_rs/<release>","codexHome":"/fixture/codex-home","platformFamily":"unix","platformOs":"linux"}}
+{"method":"initialized"}
+{"id":2,"method":"thread/start","params":{"model":"agentserver-v2-scripted-model","cwd":"/fixture/work","approvalPolicy":"never","sandbox":"read-only","ephemeral":false,"threadSource":"user","environments":[],"dynamicTools":[],"selectedCapabilityRoots":[]}}
+{"id":2,"result":{"thread":{"id":"<thread-id>","sessionId":"<session-id>","preview":"","ephemeral":false,"modelProvider":"scripted_provider","status":{"type":"idle"},"cwd":"/fixture/work","threadSource":"user"},"model":"agentserver-v2-scripted-model","modelProvider":"scripted_provider","cwd":"/fixture/work"}}
+{"method":"thread/started","params":{"thread":{"id":"<thread-id>","sessionId":"<session-id>","preview":"","ephemeral":false,"modelProvider":"scripted_provider","status":{"type":"idle"},"cwd":"/fixture/work","threadSource":"user"}}}
+{"id":3,"method":"turn/start","params":{"threadId":"<thread-id>","input":[{"type":"text","text":"complete the deterministic phase-zero lifecycle","textElements":[]}]}}
+{"id":3,"result":{"turn":{"id":"<turn-id>","items":[],"itemsView":"notLoaded","status":"inProgress","error":null}}}
+{"method":"turn/started","params":{"threadId":"<thread-id>","turn":{"id":"<turn-id>","items":[],"itemsView":"notLoaded","status":"inProgress","error":null}}}
+{"method":"item/completed","params":{"threadId":"<thread-id>","turnId":"<turn-id>","item":{"type":"agentMessage","id":"message-a01","text":"scripted lifecycle complete","phase":null,"memoryCitation":null}}}
+{"method":"turn/completed","params":{"threadId":"<thread-id>","turn":{"id":"<turn-id>","items":[],"itemsView":"notLoaded","status":"completed","error":null}}}

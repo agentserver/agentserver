@@ -9,13 +9,13 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/codexwire"
 )
 
-//go:embed fixtures/dialect/*.jsonl fixtures/execserver/*.jsonl
-var dialectFixtures embed.FS
+//go:embed fixtures/appserver/*.jsonl fixtures/dialect/*.jsonl fixtures/execserver/*.jsonl
+var wireFixtures embed.FS
 
 func TestCodexWireFixturesAreValid(t *testing.T) {
 	var paths []string
-	for _, pattern := range []string{"fixtures/dialect/*.jsonl", "fixtures/execserver/*.jsonl"} {
-		matches, err := fs.Glob(dialectFixtures, pattern)
+	for _, pattern := range []string{"fixtures/appserver/*.jsonl", "fixtures/dialect/*.jsonl", "fixtures/execserver/*.jsonl"} {
+		matches, err := fs.Glob(wireFixtures, pattern)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -26,7 +26,7 @@ func TestCodexWireFixturesAreValid(t *testing.T) {
 	}
 	for _, path := range paths {
 		t.Run(path, func(t *testing.T) {
-			file, err := dialectFixtures.Open(path)
+			file, err := wireFixtures.Open(path)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -2,7 +2,7 @@
 
 > 状态：设计基线（draft）
 >
-> v2 从零开始开发，不复用 v1 的运行时组件；代码位于本仓库 `v2/` 下。
+> v2 从零开始开发，不复用 v1 的运行时组件；集群侧代码位于本仓库 `v2/` 下。用户侧 agentx 继续在 `github.com/agentserver/agentx` 独立开发和发行，本仓库保存它所实现的 wire contract、兼容 fixture 与 runtime lock manifest。
 >
 > 本文中 stock Codex 有两个严格分离的运行角色：大脑由 per-run `harness-worker` 通过 stdio 驱动 stock app-server；双手由 agentx 监管本地 `codex exec-server --listen stdio`。app-server 子进程只运行模型循环并调用批准的 MCP；exec-server 只处理确定性的 process/fs JSON-RPC，不运行模型。两侧的宿主进程都不替模型推理。
 
@@ -222,7 +222,7 @@ stock Codex 访问 llmproxy/MCP 所需的短期 capability 优先通过 tmpfs/�
 6. harness-pool 创建隔离 workload。per-run harness-worker 接收不可变、签名的 run manifest，恢复最近一个已提交的 completed-turn checkpoint，创建清洗后的临时 `CODEX_HOME`，再以 stdio 启动并初始化 stock app-server。
 7. harness-worker 调用 `thread/resume` 或 `thread/start`，然后以原始用户输入调用 `turn/start`；它不改写 prompt。app-server 通过 llmproxy 调模型，需要工具时只调用 run manifest 中固定的远程 MCP。
 8. harness-worker 为原始 app-server 消息附加 `run_attempt_id/generation + producer_instance_id/producer_seq`，通过唯一 mTLS control stream 发给 harness-pool；harness-pool 完成规范事件映射并提交 core。core 拒收旧 generation，browser-gateway 从已提交事件映射 AG-UI/A2UI。
-9. 收到 `turn/completed` 后，worker 等待 rollout 落盘稳定并生成 checkpoint manifest。harness-pool 先上传加密对象，再由 core 以 CAS 在同一状态事务中提交 checkpoint 指针与 run terminal event；未提交的对象由后台清理。
+9. 收到 `turn/completed` 后，run 先进入 `finalizing`。worker 关闭 app-server stdin，等待其优雅退出并完成 thread、SQLite/WAL 与 rollout 刷盘；只有 child 在有界时间内正常退出后才能按 pinned allowlist 生成 checkpoint manifest。harness-pool 先上传加密对象，再由 core 以 CAS 在同一状态事务中提交 checkpoint 指针与 run terminal event；未提交的对象由后台清理。
 10. core 确认 terminal state 和 checkpoint 后，harness-pool 删除 workload 与临时目录。mid-turn crash 不生成可恢复 checkpoint，也不能继续原 turn。
 
 浏览器断开不自动取消 run。取消必须通过显式 API/action，并产生规范事件；重新连接使用 cursor 继续读取。
@@ -232,12 +232,12 @@ Phase 1 在一个 session 已有 active run 时不接受第二个新 run，返�
 ### 6.2 执行 MCP 工具
 
 1. Codex 发起带结构化参数的 executor MCP tool call。
-2. executor-gateway 校验 run capability、当前 run-attempt generation、workspace live RBAC、executor/env 归属和工具策略，并按 `(run_id, app_server_tool_call_id)` 向 core 调用 `PrepareExecution`。core 在发送任何副作用前持久化 `execution_id`、规范化参数 hash、tool/schema/policy version 和唯一 `mutation_key`；重复 tool call id 只有 hash 相同时才返回原 execution。
+2. executor-gateway 校验 run capability、当前 run-attempt generation、workspace live RBAC、executor/env 归属和工具策略，并按 `(run_id, app_server_tool_call_id)` 向 core 调用 `PrepareExecution`。core 持久化 `execution_id`、规范化参数 hash、tool/schema/policy/mapper version 与确定性 `operation_plan_hash`；重复 tool call id 只有完整 context hash 相同时才返回原 execution。approval hash 同样覆盖该 plan。一个工具若需要多个确定性步骤，gateway 还必须在各步骤发送前分别 `PrepareOperation`，为每个 operation 分配唯一 `mutation_key`。
 3. 若策略为 `deny`，execution 进入 `denied`；若为 `ask`，gateway 通过标准 MCP elicitation 暂停该工具调用，harness-worker 将 app-server 的 server request 转成规范 approval 事件。core 创建一次性 approval；拒绝、过期、取消或 control stream 断开时不得 dispatch。
-4. 批准后，gateway 重新校验 live RBAC、attempt generation 和批准 hash，以 CAS 将 execution 从 `approved` 置为 `dispatching`。该 durable transition 必须发生在网络发送前；从这一刻起，崩溃后的默认结果是 `unknown`，不能自动重放。
-5. gateway 将已批准 MCP 参数机械映射为一个或多个 exec-server JSON-RPC 请求并携带既有 `execution_id/mutation_key`。agentx 以本地 owner policy 校验 workdir、路径、用户、网络和 sandbox；远程策略只能收紧，不能放宽本地策略。
+4. 批准后，gateway 重新校验 live RBAC、attempt generation 和批准 hash，以 CAS 消耗 approval，并将 execution 置为 `dispatching`。每个有副作用的 operation 也必须在对应网络发送前以 CAS 从 `prepared` 置为 `dispatching`；从该 operation 跨过边界起，崩溃后的默认结果是 `unknown`，不能自动重放。
+5. gateway 将已批准 MCP 参数机械映射为一个或多个 exec-server JSON-RPC 请求；每个请求携带既有 `execution_id/operation_id/mutation_key`。agentx 以本地 owner policy 校验 workdir、路径、用户、网络和 sandbox；远程策略只能收紧，不能放宽本地策略。
 6. 对 upstream 标准方法，agentx 只做 request id/ownership 映射并转发给本地 stdio exec-server；exec-server 执行并返回带序号的输出/结果。agentx 自己只处理协商过的 agentserver 扩展。
-7. agentx 接收并去重 mutation 后返回 dispatch ACK；gateway 才可把 execution 置为 `running`。terminal result 必须先写 core，再作为 MCP progress/result 返回大脑。若原 MCP transport 已断开，结果仍保留在 execution 中，但当前 turn 进入 `interrupted`，不能伪造原调用已恢复。
+7. agentx 接收并去重 mutation 后返回 dispatch ACK；gateway 先把对应 operation 置为 `acknowledged`，再按聚合规则把 execution 置为 `running`。operation 与 execution 的 terminal result 必须先写 core，再作为 MCP progress/result 返回大脑。若原 MCP transport 已断开，结果仍保留在 execution 中，但当前 turn 进入 `interrupted`，不能伪造原调用已恢复。
 
 这条路径中不存在“把用户指示改写成 prompt”“executor 再思考一次”或“恢复 executor 模型会话”。
 
@@ -245,7 +245,7 @@ WSS/session 恢复只恢复 gateway ↔ agentx 通道，不能恢复已断开的
 
 ### 6.3 故障与恢复
 
-- harness-worker/app-server 在尚未进入任何 execution 的 `dispatching` 边界时失败，可以从最近 completed-turn checkpoint 创建新的 run attempt；旧 attempt 被 fence。
+- harness workload 在 app-server 接受 `turn/start` 之前失败，可以从最近 completed-turn checkpoint 创建新的 run attempt；旧 attempt 被 fence。`turn/start` 一旦被接受，任何 worker/app-server mid-turn crash 都使当前 run 进入 `interrupted`，即使尚未 dispatch executor 副作用也不能自动重跑该 turn；这避免重复模型调用和已流式输出分叉。
 - 一旦 execution 已进入 `dispatching`，harness/gateway 崩溃后不得自动重放；run 标记为 `interrupted`，无法从 agentx journal/core terminal record确认的 execution 标记为 `unknown`，由用户决定下一步。
 - harness-worker 与 harness-pool 的 control stream 短时断开时，worker 只做有界事件缓冲且不接受新的控制决策；approval 一律失败关闭。grace period 到期、缓冲溢出、ACK 出现不可恢复缺口或 lease 无法确认时，worker 调 `turn/interrupt` 并终止 app-server。重连必须携带 attempt generation 和 producer ACK，旧 generation 的消息全部丢弃。
 - agentx 与 gateway 短时断线时，agentx 保持本地 stdio pipe 和 exec-server 子进程存活，并用 `exec_session_id` 与 output sequence 恢复；Phase 1 默认 grace period 为 30 秒。
@@ -271,13 +271,23 @@ harness-pool controller ──mTLS control stream──► harness-worker ──
 harness-worker 只负责：
 
 - 校验不可变 run manifest 和 attempt generation，恢复已提交 checkpoint，创建清洗后的临时 `CODEX_HOME`；
-- 启动 pinned app-server，完成 `initialize → initialized → thread/start|resume → turn/start`；
+- 以绝对路径启动 pinned `codex app-server --listen stdio:// --strict-config`，完成 `initialize → initialized → thread/start|resume → turn/start`；`--strict-config` 只用于拒绝未知配置字段，能力隔离仍由下述组合与测试承担；
 - 按 pinned schema 语义无损转接允许的 app-server notification 和 server-initiated request：保留 method/params payload，在 control envelope 中关联 request id、producer sequence 和 ACK，并做有界缓冲；未列入 allowlist 的 server request 一律 fail closed；
 - 将 MCP elicitation/approval request 转给 harness-pool/core，收到明确决定后再答复 app-server；
 - 接收 cancel/fence，调用 `turn/interrupt`，监管 child/stderr/退出并清理临时目录；
 - 在 `turn/completed` 后生成 checkpoint manifest，交由 harness-pool 上传和提交。
 
 worker 不调用模型、不选择工具、不解释或改写 prompt、不执行 shell/fs、不直接访问 executor，也不拥有 session/run/event 的权威状态。控制流中断时它不得自行重试 turn 或 MCP 副作用。实现上可以复用 harness-pool 代码库的 worker subcommand；它不是新的常驻产品服务。
+
+MCP-only 不是 prompt 约定，而是 pinned Codex build 上必须同时成立的能力配置：
+
+- `initialize` 显式开启所需 experimental API；`thread/start|resume` 与每次 `turn/start` 都传 `environments: []`，使环境支持开启时也没有默认本地 environment；
+- 清洗后的 `config.toml` 禁用 `update_plan`、`request_user_input`、Web、apps、plugins、multi-agent、browser/computer use、hooks 和其他非 MCP tool source；不提供 dynamic tools 或 capability roots；
+- workload 只读挂载管理员控制的 `/etc/codex/requirements.toml`，精确 allowlist MCP server 名称与 HTTPS identity，并固定所有安全相关 feature；run config 只能进一步收紧；
+- executor-gateway MCP 配置 `default_tools_approval_mode = "approve"`，避免 app-server 再产生一层通用工具审批；thread 使用 granular approval、`approvals_reviewer = "user"`，仅允许 `mcp_elicitations`，其余内建 approval 类别关闭；managed requirements 也只允许 user reviewer。不能用 `approval_policy = "never"`，因为它会自动拒绝需要产品审批的 MCP elicitation；
+- conformance test 使用 fake model endpoint 捕获实际 Responses 请求，断言模型可见工具集合只包含 run manifest 批准的远程 MCP tools。只检查配置文件内容不构成隔离证明。
+
+以上字段包含 experimental contract，必须与 Codex binary、app-server schema 和测试 fixture 一起锁定。任一升级导致工具面扩大、elicitation 被自动处理或配置字段失效时，harness 镜像不得发布。
 
 ### 7.2 隔离与网络
 
@@ -301,7 +311,7 @@ worker 不调用模型、不选择工具、不解释或改写 prompt、不执行
 - **模型可见 checkpoint**：加密保存恢复 thread 所必需的完整、模型可见历史，包括后续 turn 需要的 MCP tool result、compaction/rollout 元数据；不能为了 UI 脱敏而从中任意删除模型已经看到的内容。
 - **规范/UI/审计事件**：按 secret/prompt policy 过滤，只用于展示、审计和事件恢复，不能反向拼成模型上下文。
 
-checkpoint 只能在 app-server 发出 terminal `turn/completed` 且 rollout 已稳定后生成。manifest 至少包含 `brain_thread_id`、terminal `turn_id`、`run_id`、`run_attempt_id/generation`、Codex commit/build、schema version、相对路径、大小和逐文件 hash。配置、token、环境变量、诊断日志和临时 transport 缓冲不得进入 manifest。harness-pool 先上传加密对象，core 再以 CAS 原子提交 checkpoint pointer 与 run terminal state；未引用对象可清理。
+checkpoint 只能在 app-server 发出 terminal `turn/completed`、worker 关闭 stdin、child 完成有界优雅退出且 rollout/SQLite/WAL 均已刷盘后生成。不能在仍运行的 `CODEX_HOME` 上打包，也不能用固定 sleep 猜测稳定。manifest 至少包含 `brain_thread_id`、terminal `turn_id`、`run_id`、`run_attempt_id/generation`、Codex commit/build、schema version、相对路径、大小和逐文件 hash。配置、token、环境变量、诊断日志和临时 transport 缓冲不得进入 manifest。恢复文件集合由 native `thread/resume` round-trip conformance 产生的 pinned allowlist 决定；禁止打包整个 `CODEX_HOME`。harness-pool 先上传加密对象，core 再以 CAS 原子提交 checkpoint pointer 与 run terminal state；未引用对象可清理。
 
 worker 不持有对象存储 credential。它通过与 harness-pool 的同一 mTLS 连接内、有界的 checkpoint data substream 分块发送 manifest 和 staging 内容；harness-pool 施加大小/速率限制、复算逐块与整对象 hash 后上传，再请求 core 提交。上传或提交失败时对象不得成为可恢复 checkpoint，未引用对象按 retention job 清理。
 
@@ -513,12 +523,14 @@ WSS lifecycle/routing envelope、JSON-RPC schema 和错误码必须在 `docs/pro
 
 WSS 是有状态连接，executor-gateway 不能只依赖普通 Service 负载均衡宣称高可用。
 
+Phase 1 明确把 executor-gateway 部署为单副本。它只承诺在同一 gateway 进程存活期间恢复短时网络断线；gateway 进程重启后拒绝旧 `resumeSessionId`，仍为 `prepared` 的 operation 保持未发送，已处于 `dispatching|acknowledged` 且尚未由 core 或 agentx journal 证明终态的 operation 标记 `unknown`，agentx 在 grace period 后回收旧 stdio child。数据库中的 connection generation 能 fence 旧写入，但不能替代丢失的双向 frame journal，因此 Phase 1 不宣称跨 pod 恢复。该故障域必须进入 SLO、告警和故障注入测试。
+
+Phase 2 若需要多副本和跨 pod resume，必须先实现以下 owner routing 与可恢复 frame/session journal：
+
 - owning pod 写入 `{executor_id, pod_id, generation, expires_at}` lease；
 - MCP 请求先解析 executor owner，再通过内部认证 RPC 路由到 owning pod；
 - heartbeat 续租；新连接以 CAS 增加 generation，旧 generation 的响应全部丢弃；
 - pod 失效后等待 agentx 重连并重新取得 owner，不能把旧 process 请求盲发到新连接。
-
-如果 Phase 1 尚未实现 owner routing，就把 executor-gateway 明确部署为单副本并记录故障域，不能用不完整的多副本方案代替。
 
 ## 10. 事件、前端与审批
 
@@ -596,7 +608,9 @@ users ──< workspace_members >── workspaces
                                    ├─ sessions ──< runs
                                    │      │         ├─ run_attempts / attempt_leases
                                    │      │         ├─ run_events
-                                   │      │         ├─ executions ──< approvals
+                                   │      │         ├─ executions
+                                   │      │         │   ├─ execution_operations
+                                   │      │         │   └─ approvals
                                    │      │         ├─ conversation_checkpoints
                                    │      │         └─ run_outbox
                                    │      └─ session_leases
@@ -611,9 +625,10 @@ users ──< workspace_members >── workspaces
 
 关键状态机：
 
-- run：`queued → starting|cancelled`；`starting → running|failed|cancelled|interrupted`；`running → completed|failed|cancelling|interrupted`；`cancelling → cancelled|completed|failed|interrupted`。cancel 与自然完成竞态时允许以已确认的真实 terminal result 收口，不能强行覆盖为 cancelled；
-- run attempt：`created → leased → starting → running → succeeded|failed|interrupted|fenced`。只有确认旧 attempt 尚未创建任何 `dispatching` execution 时才可自动创建新 attempt；否则 run 进入 `interrupted`；
+- run：`queued → starting|cancelled`；`starting → running|failed|cancelled|interrupted`；`running → finalizing|failed|cancelling|interrupted`；`cancelling → finalizing|cancelled|failed|interrupted`；`finalizing → completed|cancelled|failed|interrupted`。`finalizing` 覆盖 child 优雅退出、process 收口、checkpoint 上传和 CAS 提交；这些步骤完成前不能对外宣布 completed。cancel 与自然完成竞态时允许以已确认的真实 terminal result 收口，不能强行覆盖为 cancelled；
+- run attempt：`created → leased → starting → running → finalizing → succeeded|failed|interrupted|fenced`。只有旧 attempt 尚未让 app-server 接受 `turn/start` 时才可自动创建新 attempt；任何 mid-turn 失败都使 run 进入 `interrupted`；
 - execution：`created → pending_approval|approved|denied|cancelled`；`pending_approval → approved|denied|expired|cancelled`；`approved → dispatching|expired|cancelled`；`dispatching → running|failed|cancelling|unknown`；`running → succeeded|failed|cancelling|unknown`；`cancelling → cancelled|succeeded|failed|unknown`。跨过 `dispatching` 后，只有收到 agentx/child 的确定拒绝或退出确认才能记为 `failed|cancelled`，否则必须为 `unknown`；
+- execution operation：一次 execution 的每个确定性 RPC/副作用步骤各有一行，例如 process start、stdin write、timeout terminate 或条件写。状态为 `prepared → dispatching → acknowledged → succeeded|failed|cancelled|unknown`；每行拥有独立 `mutation_key`、参数 hash 和 effect class。execution 只是 MCP 工具级聚合，不能用一个 mutation key 覆盖多个可独立发生的副作用；
 - approval：`pending → approved|denied|expired|cancelled`；`approved → consumed|expired|cancelled`。只有未过期的 approved 可通过唯一 CAS 进入 `consumed`，消费时同时推进对应 execution；
 - executor：`enrolling → offline ↔ online`；任一非终态可进入 `revoked`。
 
@@ -628,15 +643,13 @@ v2/
 │  ├─ browser-gateway/
 │  ├─ harness-pool/
 │  ├─ harness-worker/            # per-run app-server stdio host；与 harness-pool 同属一个产品组件
-│  ├─ executor-gateway/
-│  └─ agentx/                    # 用户侧连接/策略/exec-server supervisor
+│  └─ executor-gateway/
 ├─ internal/
 │  ├─ core/
 │  ├─ browsergateway/
 │  ├─ harnesspool/
 │  ├─ harnessworker/
 │  ├─ executorgateway/
-│  ├─ agentx/                    # enrollment, WSS, policy, stdio proxy, child lifecycle
 │  └─ shared/
 │     ├─ auth/
 │     ├─ capability/
@@ -653,7 +666,8 @@ v2/
 ├─ deploy/helm/
 ├─ images/harness/               # harness-worker + pinned stock Codex app-server
 ├─ packaging/agentx/
-│  └─ runtime-manifest.json      # stock Codex、sandbox/fs helper 的版本、签名与 digest
+│  ├─ runtime-manifest.json      # agentx 独立发行包必须消费的 stock Codex/helper 版本、签名与 digest
+│  └─ compatibility-fixtures/    # server ↔ agentx 跨仓兼容 fixture
 └─ docs/
    ├─ ARCHITECTURE.md
    └─ protocols/
@@ -665,12 +679,14 @@ v2/
       └─ agentx-wss.asyncapi.yaml
 ```
 
+agentx 的实现不放入上述 Go module。`github.com/agentserver/agentx` v2 以独立仓库从零实现 connector、owner policy、stdio proxy 与 child supervisor；旧的“从 Codex hard-fork exec-server/remote”实现不复用。两仓以本仓库发布的 versioned schema、fixture 和 runtime manifest 对齐，并在 release CI 跑交叉版本兼容矩阵。
+
 ## 13. 工程与可观测性约定
 
 ### 13.1 API 契约
 
-- 控制面 REST 使用 OpenAPI 3.x，code-first 生成并在 CI 检查 drift。
-- AG-UI/SSE、规范事件、harness-worker control stream 和 agentx WSS 使用 AsyncAPI/JSON Schema。
+- 控制面 REST 采用 contract-first：提交的 OpenAPI 3.x 是 source of truth，生成 Go strict server/client 与前端类型，CI 重新生成并检查 drift；handler annotation 不能反向成为 v2 契约源。
+- AG-UI/SSE、规范事件、harness-worker control stream 和 agentx WSS 同样以提交的 AsyncAPI/JSON Schema 为 source of truth；手写语义校验补充 JSON Schema 无法表达的 generation、sequence 和状态约束。
 - protocol version、capability negotiation 和错误码必须显式版本化。
 - 实现前 pin 一个 Codex commit/version，并保存与 upstream exec-server 的 conformance fixtures；升级 Codex 时先跑协议差异检查。
 - 同一 pinned Codex build 还必须生成 app-server schema fixture，验证 initialize、thread start/resume、turn start/interrupt、MCP tool call、elicitation/server request、terminal event 与 rollout checkpoint 布局。
@@ -679,7 +695,7 @@ v2/
 
 后端与 agentx 使用结构化 JSON 日志。公共关联字段至少包括：
 
-`trace_id`、`workspace_id`、`session_id`、`run_id`、`run_attempt_id`、`run_attempt_generation`、`harness_worker_id`、`brain_thread_id`、`execution_id`、`executor_id`、`env_id`、`local_exec_instance_id`、`process_id`。
+`trace_id`、`workspace_id`、`session_id`、`run_id`、`run_attempt_id`、`run_attempt_generation`、`harness_worker_id`、`brain_thread_id`、`execution_id`、`operation_id`、`executor_id`、`env_id`、`local_exec_instance_id`、`process_id`。
 
 执行审计至少记录 actor、workspace、run、executor/env、tool、清洗后的参数摘要、参数 hash、approval、开始/结束时间、结果和错误分类。不得记录 token、credential、完整环境变量或未经过滤的用户内容。
 
@@ -688,7 +704,7 @@ v2/
 - run queue/start latency、harness cold start、worker/app-server child start/crash、control-stream reconnect/fence、active run 和 attempt 数；
 - completed-turn checkpoint upload/commit/restore latency、hash/schema failure 和 orphan object 数；
 - MCP latency、approval latency、execution success/failure/unknown；
-- pre-dispatch persistence latency、`dispatching` stranded/ambiguous 数、重复 tool-call/mutation 命中数；
+- pre-dispatch persistence latency、execution/operation `dispatching` stranded/ambiguous 数、重复 tool-call/mutation 命中数；
 - executor online、reconnect、generation fence、RPC inflight；
 - exec-server child start/crash/restart、process-tree cleanup、reverse network-policy decision/timeout；
 - output dropped bytes、buffer overflow、SSE lag、event persist latency；
@@ -712,6 +728,11 @@ v2/
 | D12 | Phase 1 只有 executor-gateway 暴露副作用 MCP；第三方直连工具仅允许验证后的只读集合 | 第三方 annotation 不是可信授权事实，直连无法强制 core approval |
 | D13 | executor-gateway/core 是唯一产品审批权威，使用 MCP elicitation 与 harness-worker 转接 | 避免 app-server 与 gateway 双重审批，并给 timeout/cancel/fence 明确语义 |
 | D14 | app-server 外部流量经过受控 egress proxy | NetworkPolicy 无法按域名、TLS 身份和 redirect 实施 run endpoint allowlist |
+| D15 | Phase 1 executor-gateway 单副本，resume 只覆盖同进程短时断线 | 跨 pod resume 需要 durable frame journal 与 owner routing，不能只凭 connection lease 声称恢复 |
+| D16 | agentx 保持独立仓库并从零改写为 stock exec-server supervisor | 现有 hard-fork 把执行引擎复制进 agentx，与 v2 的 stock stdio 边界冲突 |
+| D17 | MCP-only 使用 `environments: []`、managed requirements、显式工具禁用与模型请求捕获共同证明 | system prompt 和单一配置开关都不能构成能力隔离 |
+| D18 | execution 下增加 execution operation | 一个 MCP 工具可能触发多个独立副作用，每个步骤都需要自己的 mutation 与 unknown 边界 |
+| D19 | v2 API 采用 contract-first | core、gateway、worker、agentx 和 Web 多消费者需要在实现之前共享稳定、可生成的协议源 |
 
 ## 15. 设计审查结论与实现门槛
 
@@ -747,7 +768,7 @@ v2/
 - [ ] 完成路径逃逸、symlink/TOCTOU、环境变量泄漏和 sandbox policy 安全测试。
 - [ ] 完成 agentx 控制面与执行树的 uid/namespace、ptrace/`/proc`、继承 FD、signal 和 non-exportable key 隔离测试。
 - [ ] 完成 MCP elicitation → core approval 的参数/上下文冻结、TTL/tool-timeout、nonce 单次消费、cancel/断线 fail-closed 和审计闭环，证明不会出现 app-server/gateway 双重审批。
-- [ ] 在“多副本 owner routing”和“Phase 1 明确单副本”之间作出可验证选择。
+- [ ] 验证 Phase 1 executor-gateway 单副本部署、同进程 30 秒 resume，以及 gateway 重启后 fail-closed 拒绝 resume/operation 进入 unknown；Phase 2 owner routing 不进入首版。
 - [ ] 验证 harness-worker/app-server crash 后不会自动重放已发出的 MCP 副作用，原 MCP transport 丢失时 execution 可独立收口而 run 明确 interrupted。
 - [ ] 验证 `aud=agentserver-api`、fetch-streaming bearer、AG-UI cursor/rebase、显式 cancel、Hydra challenge 防重放和浏览器断线不取消 run。
 - [ ] 验证 capability TTL 覆盖并不超过强制 `max_run_duration + grace`，且 lease fence/RBAC 变更能在 llmproxy 和所有 MCP 入口即时拒绝后续请求。

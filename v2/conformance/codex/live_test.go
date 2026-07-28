@@ -19,25 +19,22 @@ const liveProbeTimeout = 15 * time.Second
 
 var candidateVersionPattern = regexp.MustCompile(`^codex-cli ([0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?)$`)
 
+var characterizedA03Releases = map[string]struct{}{
+	"0.145.0":          {},
+	"0.146.0-alpha.14": {},
+}
+
+func TestAppServerA03CandidateReleaseIsExplicitlyCharacterized(t *testing.T) {
+	binary, paths := prepareLiveCodex(t)
+	release := candidateRelease(t, binary, paths)
+	if _, characterized := characterizedA03Releases[release]; !characterized {
+		t.Fatalf("Codex %s has no explicit A03 characterization; add release-bound tool-surface probes before treating conformance-live as meaningful", release)
+	}
+}
+
 func TestCandidateBinaryAndAppServerSchemaFingerprint(t *testing.T) {
 	binary, paths := prepareLiveCodex(t)
-	commandContext, cancelCommand := context.WithTimeout(context.Background(), liveProbeTimeout)
-	defer cancelCommand()
-	versionResult, err := codexprocess.RunCommand(commandContext, codexprocess.CommandConfig{
-		Binary: binary,
-		Args:   []string{"--version"},
-		Dir:    paths.cwd,
-		Env:    paths.environment,
-	})
-	if err != nil {
-		t.Fatalf("read Codex version: %v\nstderr: %s", err, versionResult.Stderr)
-	}
-	assertCaptureComplete(t, versionResult)
-	versionOutput := strings.TrimSpace(string(versionResult.Stdout))
-	match := candidateVersionPattern.FindStringSubmatch(versionOutput)
-	if match == nil {
-		t.Fatalf("unexpected Codex version output %q", versionOutput)
-	}
+	release := candidateRelease(t, binary, paths)
 
 	resolvedBinary, err := filepath.EvalSymlinks(binary)
 	if err != nil {
@@ -58,8 +55,37 @@ func TestCandidateBinaryAndAppServerSchemaFingerprint(t *testing.T) {
 	}
 	t.Logf(
 		"candidate only (not a runtime pin): release=%s binary_sha256=%s binary_size=%d app_server_schema_sha256=%s schema_files=%d",
-		match[1], binaryDigest, binarySize, schemaDigest.canonical.SHA256, len(schemaDigest.canonical.Files),
+		release, binaryDigest, binarySize, schemaDigest.canonical.SHA256, len(schemaDigest.canonical.Files),
 	)
+}
+
+func candidateRelease(t *testing.T, binary string, paths livePaths) string {
+	t.Helper()
+	commandContext, cancelCommand := context.WithTimeout(context.Background(), liveProbeTimeout)
+	defer cancelCommand()
+	versionResult, err := codexprocess.RunCommand(commandContext, codexprocess.CommandConfig{
+		Binary: binary,
+		Args:   []string{"--version"},
+		Dir:    paths.cwd,
+		Env:    paths.environment,
+	})
+	if err != nil {
+		t.Fatalf("read Codex version: %v\nstderr: %s", err, versionResult.Stderr)
+	}
+	assertCaptureComplete(t, versionResult)
+	versionOutput := strings.TrimSpace(string(versionResult.Stdout))
+	match := candidateVersionPattern.FindStringSubmatch(versionOutput)
+	if match == nil {
+		t.Fatalf("unexpected Codex version output %q", versionOutput)
+	}
+	return match[1]
+}
+
+func requireCandidateRelease(t *testing.T, binary string, paths livePaths, want string) {
+	t.Helper()
+	if got := candidateRelease(t, binary, paths); got != want {
+		t.Skipf("probe characterizes Codex %s; candidate is %s", want, got)
+	}
 }
 
 type schemaDigests struct {

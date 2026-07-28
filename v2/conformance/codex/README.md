@@ -10,11 +10,16 @@ tests are opt-in and never discover Codex from `PATH`:
 make -C v2 conformance-live AGENTSERVER_CODEX_BIN=/absolute/path/to/codex
 ```
 
+A full live run fails closed when the binary release has no explicit A03
+characterization; version-specific negative probes skip only when another
+known characterized release is under test.
+
 The current live probes cover A01 through a bounded loopback scripted Responses
 server (`initialize → initialized → thread/start → turn/start → item/completed →
 turn/completed`), A02 experimental gating for `environments: []` in both
-directions, E01 stdio/EOF, exec-server environment metadata, and these slices
-of the executor matrix:
+directions, A03 tool-surface and dispatch characterization through a bounded
+sessionless Streamable HTTP MCP server, E01 stdio/EOF, exec-server environment
+metadata, and these slices of the executor matrix:
 
 - E02: deterministic non-TTY `process/start`, explicit non-inherited child
   environment, output/exit/close sequencing, and retained `process/read` replay;
@@ -36,9 +41,37 @@ On the observed 0.145.0 candidate, assistant content is authoritative on
 an empty `items` array. Consumers must reduce the item stream instead of
 treating the terminal notification as a content snapshot. A01 records the
 actual model request tool surface but intentionally does not declare A03
-complete: with empty environments/capability roots and fallback model metadata,
-stock Codex still exposed web search, goal/plan, user-input, skills, and
-multi-agent tools. Those must be removed before the MCP-only gate can pass.
+complete. A pinned local model catalog plus explicit feature, orchestrator,
+skills, Web, user-input, goals, and multi-agent disables reduce the observed
+0.145.0 surface to exactly `update_plan`. The A03 negative probe then scripts an
+`update_plan` call and observes both a successful `Plan updated` result and
+`turn/plan/updated`, proving the remaining tool is executable. Stock 0.145.0 is
+therefore an A03 rejection, not a runtime pin.
+
+Official tag `rust-v0.146.0-alpha.14` (commit
+`9d84cad281364eb7f6be75e23067b0adc5e26106`) adds a real
+`[tools.update_plan] enabled = false` switch. The no-MCP probe confirms that the
+switch reduces the captured model tool surface to empty. Its A01 terminal
+projection also changed to `itemsView: summary` with the completed agent item
+present; this is locked separately from the 0.145.0 `notLoaded` shape and does
+not change the requirement to reduce the streamed item events. The switch fixes
+the 0.145.0 A03 blocker, but not A03 as a whole. With one MCP server whose `tools/list`
+advertises both `approved_echo` and `blocked_echo`, and Codex configured with
+`enabled_tools = ["approved_echo"]`, the captured surface is exactly:
+
+- `mcp__executor.approved_echo`;
+- `list_mcp_resources`;
+- `list_mcp_resource_templates`;
+- `read_mcp_resource`.
+
+The approved tool reaches `tools/call`; the blocked MCP tool and an unregistered
+`exec_command` call both return `unsupported call` before reaching MCP. However,
+a scripted `list_mcp_resources` call is executable and sends `resources/list`
+to the MCP server despite the per-server `enabled_tools` allowlist. The alpha is
+therefore also an A03 rejection and, independently, is not a stable production
+release. Prompt instructions, event filtering, or making the executor return an
+error for `resources/list` do not satisfy the agreed exact model-tool-surface
+invariant.
 
 The probes also report candidate binary and canonical app-server schema
 fingerprints. Stock 0.145.0 was observed to randomize object-key order in one

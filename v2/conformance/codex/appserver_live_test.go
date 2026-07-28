@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
 
+	"github.com/agentserver/agentserver/v2/conformance/codex/internal/scriptedmcp"
 	"github.com/agentserver/agentserver/v2/conformance/codex/internal/scriptedmodel"
 	"github.com/agentserver/agentserver/v2/internal/codexwire"
 )
@@ -17,10 +19,14 @@ const (
 	conformanceModelName = "agentserver-v2-scripted-model"
 	conformanceUserText  = "complete the deterministic phase-zero lifecycle"
 	conformanceFinalText = "scripted lifecycle complete"
+	executorMCPNamespace = "mcp__executor"
+	approvedMCPToolName  = "approved_echo"
+	blockedMCPToolName   = "blocked_echo"
 )
 
 func TestAppServerA01ScriptedModelLifecycle(t *testing.T) {
 	binary, paths := prepareLiveCodex(t)
+	release := candidateRelease(t, binary, paths)
 	response, err := scriptedmodel.AssistantMessage("response-a01", "message-a01", conformanceFinalText)
 	if err != nil {
 		t.Fatal(err)
@@ -126,11 +132,31 @@ func TestAppServerA01ScriptedModelLifecycle(t *testing.T) {
 		t.Fatalf("turn/completed identity mismatch: %+v", turnCompleted)
 	}
 	assertScriptedModelRequest(t, modelServer)
-	if turnCompleted.Turn.Status != "completed" || turnCompleted.Turn.Error != nil || turnCompleted.Turn.ItemsView != "notLoaded" || len(turnCompleted.Turn.Items) != 0 {
-		t.Fatalf("unexpected terminal turn: %+v", turnCompleted.Turn)
-	}
+	assertReleaseBoundTerminalTurn(t, release, turnCompleted.Turn)
 
 	closeAndWait(t, process)
+}
+
+func assertReleaseBoundTerminalTurn(t *testing.T, release string, turn appServerTurn) {
+	t.Helper()
+	if turn.Status != "completed" || turn.Error != nil {
+		t.Fatalf("unexpected terminal turn status for Codex %s: %+v", release, turn)
+	}
+	switch release {
+	case "0.145.0":
+		if turn.ItemsView != "notLoaded" || len(turn.Items) != 0 {
+			t.Fatalf("Codex %s terminal projection changed: %+v", release, turn)
+		}
+	case "0.146.0-alpha.14":
+		if turn.ItemsView != "summary" || len(turn.Items) != 1 ||
+			turn.Items[0]["type"] != "agentMessage" ||
+			turn.Items[0]["text"] != conformanceFinalText ||
+			turn.Items[0]["id"] == "" {
+			t.Fatalf("Codex %s terminal projection changed: %+v", release, turn)
+		}
+	default:
+		t.Fatalf("Codex %s has no release-bound A01 terminal projection", release)
+	}
 }
 
 func TestAppServerA02EnvironmentsRequiresExperimentalAPI(t *testing.T) {
@@ -160,6 +186,587 @@ func TestAppServerA02EnvironmentsRequiresExperimentalAPI(t *testing.T) {
 	}
 
 	closeAndWait(t, process)
+}
+
+// TestAppServerA03Codex0145StillExecutesUpdatePlan is a negative
+// characterization probe, not an A03 pass. It proves that after every known
+// non-MCP switch is disabled, stock 0.145.0 still advertises and executes the
+// unconditional update_plan handler.
+func TestAppServerA03Codex0145StillExecutesUpdatePlan(t *testing.T) {
+	binary, paths := prepareLiveCodex(t)
+	requireCandidateRelease(t, binary, paths, "0.145.0")
+	planCall, err := scriptedmodel.FunctionCall(
+		"response-a03-plan",
+		"call-a03-plan",
+		"update_plan",
+		`{"explanation":"forbidden A03 probe","plan":[{"step":"must not execute","status":"in_progress"}]}`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalResponse, err := scriptedmodel.AssistantMessage(
+		"response-a03-final",
+		"message-a03-final",
+		conformanceFinalText,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelServer, err := scriptedmodel.Start(scriptedmodel.Config{
+		Responses: []scriptedmodel.Response{planCall, finalResponse},
+	})
+	if err != nil {
+		t.Fatalf("start loopback scripted model: %v", err)
+	}
+	t.Cleanup(modelServer.Close)
+
+	writeScriptedModelConfig(t, paths.codexHome, modelServer.URL())
+	process := startPreparedLiveCodex(t, binary, paths, "app-server", "--listen", "stdio://", "--strict-config")
+	initializeAppServer(t, process)
+	collector := newRPCCollector(process)
+
+	sendRPC(t, process, map[string]any{
+		"id":     2,
+		"method": "thread/start",
+		"params": map[string]any{
+			"model":                   conformanceModelName,
+			"cwd":                     paths.cwd,
+			"approvalPolicy":          "never",
+			"sandbox":                 "read-only",
+			"ephemeral":               false,
+			"threadSource":            "user",
+			"environments":            []any{},
+			"dynamicTools":            []any{},
+			"selectedCapabilityRoots": []any{},
+		},
+	})
+	thread := decodeThreadStart(t, collector.response(t, "2"))
+	collector.notification(t, "thread/started")
+
+	sendRPC(t, process, map[string]any{
+		"id":     3,
+		"method": "turn/start",
+		"params": map[string]any{
+			"threadId": thread.Thread.ID,
+			"input": []any{
+				map[string]any{
+					"type":         "text",
+					"text":         "attempt the forbidden update_plan tool",
+					"textElements": []any{},
+				},
+			},
+		},
+	})
+	turn := decodeTurnStart(t, collector.response(t, "3"))
+	collector.notification(t, "turn/started")
+
+	planUpdatedMessage := collector.notification(t, "turn/plan/updated")
+	var planUpdated struct {
+		ThreadID    string `json:"threadId"`
+		TurnID      string `json:"turnId"`
+		Explanation string `json:"explanation"`
+		Plan        []struct {
+			Step   string `json:"step"`
+			Status string `json:"status"`
+		} `json:"plan"`
+	}
+	if err := planUpdatedMessage.DecodeParams(&planUpdated); err != nil {
+		t.Fatal(err)
+	}
+	if planUpdated.ThreadID != thread.Thread.ID || planUpdated.TurnID != turn.ID ||
+		planUpdated.Explanation != "forbidden A03 probe" || len(planUpdated.Plan) != 1 ||
+		planUpdated.Plan[0].Step != "must not execute" || planUpdated.Plan[0].Status != "inProgress" {
+		t.Fatalf("unexpected executed update_plan notification: %+v", planUpdated)
+	}
+
+	assertAgentItemCompleted(t, collector, thread.Thread.ID, turn.ID, conformanceFinalText)
+	collector.notification(t, "turn/completed")
+	if failures := modelServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted model server failures: %v", failures)
+	}
+	requests := modelServer.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("scripted model received %d requests, want two", len(requests))
+	}
+	first := decodeCapturedModelRequest(t, requests[0])
+	toolNames := modelToolNames(t, first.Tools)
+	if len(toolNames) != 1 || toolNames[0] != "update_plan" {
+		t.Fatalf("hardened candidate tool surface = %v, want only the known A03 blocker update_plan", toolNames)
+	}
+	second := decodeCapturedModelRequest(t, requests[1])
+	if !modelInputContainsFunctionOutput(second.Input, "call-a03-plan", "Plan updated") {
+		t.Fatal("second model request omitted the successful update_plan result")
+	}
+	t.Log("A03 remains blocked: hardened stock candidate advertised and executed update_plan")
+
+	closeAndWait(t, process)
+}
+
+func TestAppServerA03Codex0146Alpha14HasNoBuiltinTools(t *testing.T) {
+	binary, paths := prepareLiveCodex(t)
+	requireCandidateRelease(t, binary, paths, "0.146.0-alpha.14")
+	response, err := scriptedmodel.AssistantMessage(
+		"response-a03-empty",
+		"message-a03-empty",
+		conformanceFinalText,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelServer, err := scriptedmodel.Start(scriptedmodel.Config{
+		Responses: []scriptedmodel.Response{response},
+	})
+	if err != nil {
+		t.Fatalf("start loopback scripted model: %v", err)
+	}
+	t.Cleanup(modelServer.Close)
+
+	writeScriptedModelConfigWithOptions(t, paths.codexHome, modelServer.URL(), scriptedModelConfigOptions{
+		disableUpdatePlan: true,
+	})
+	process := startPreparedLiveCodex(t, binary, paths, "app-server", "--listen", "stdio://", "--strict-config")
+	initializeAppServer(t, process)
+	collector := newRPCCollector(process)
+
+	sendRPC(t, process, map[string]any{
+		"id":     2,
+		"method": "thread/start",
+		"params": map[string]any{
+			"model":                   conformanceModelName,
+			"cwd":                     paths.cwd,
+			"approvalPolicy":          "never",
+			"sandbox":                 "read-only",
+			"ephemeral":               false,
+			"threadSource":            "user",
+			"environments":            []any{},
+			"dynamicTools":            []any{},
+			"selectedCapabilityRoots": []any{},
+		},
+	})
+	thread := decodeThreadStart(t, collector.response(t, "2"))
+	collector.notification(t, "thread/started")
+
+	sendRPC(t, process, map[string]any{
+		"id":     3,
+		"method": "turn/start",
+		"params": map[string]any{
+			"threadId": thread.Thread.ID,
+			"input": []any{
+				map[string]any{
+					"type":         "text",
+					"text":         "complete without tools",
+					"textElements": []any{},
+				},
+			},
+		},
+	})
+	turn := decodeTurnStart(t, collector.response(t, "3"))
+	collector.notification(t, "turn/started")
+	assertAgentItemCompleted(t, collector, thread.Thread.ID, turn.ID, conformanceFinalText)
+	collector.notification(t, "turn/completed")
+
+	if failures := modelServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted model server failures: %v", failures)
+	}
+	requests := modelServer.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("scripted model received %d requests, want one", len(requests))
+	}
+	request := decodeCapturedModelRequest(t, requests[0])
+	if toolNames := modelToolNames(t, request.Tools); len(toolNames) != 0 {
+		t.Fatalf("hardened candidate retained builtin tools: %v", toolNames)
+	}
+
+	closeAndWait(t, process)
+}
+
+// TestAppServerA03Codex0146Alpha14StillExposesMCPResourceTools is a negative
+// characterization probe. The alpha can remove all builtins when no MCP server
+// is present, but adding one allowlisted MCP server also registers three stock
+// MCP resource handlers outside that allowlist.
+func TestAppServerA03Codex0146Alpha14StillExposesMCPResourceTools(t *testing.T) {
+	binary, paths := prepareLiveCodex(t)
+	requireCandidateRelease(t, binary, paths, "0.146.0-alpha.14")
+	modelResponse, err := scriptedmodel.AssistantMessage(
+		"response-a03-mcp-surface",
+		"message-a03-mcp-surface",
+		conformanceFinalText,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelServer, err := scriptedmodel.Start(scriptedmodel.Config{
+		Responses: []scriptedmodel.Response{modelResponse},
+	})
+	if err != nil {
+		t.Fatalf("start loopback scripted model: %v", err)
+	}
+	t.Cleanup(modelServer.Close)
+	mcpServer := startExecutorMCPServer(t, nil)
+
+	writeScriptedModelConfigWithOptions(t, paths.codexHome, modelServer.URL(), scriptedModelConfigOptions{
+		disableUpdatePlan: true,
+		mcpServerURL:      mcpServer.URL(),
+		mcpEnabledTools:   []string{approvedMCPToolName},
+	})
+	process := startPreparedLiveCodex(t, binary, paths, "app-server", "--listen", "stdio://", "--strict-config")
+	initializeAppServer(t, process)
+	collector := newRPCCollector(process)
+	thread, turn := startMinimalAppServerTurn(t, collector, paths.cwd, "capture the exact MCP tool surface")
+	assertAgentItemCompleted(t, collector, thread.Thread.ID, turn.ID, conformanceFinalText)
+	collector.notification(t, "turn/completed")
+	closeAndWait(t, process)
+
+	if failures := modelServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted model server failures: %v", failures)
+	}
+	requests := modelServer.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("scripted model received %d requests, want one", len(requests))
+	}
+	surface := modelToolNames(t, decodeCapturedModelRequest(t, requests[0]).Tools)
+	wantSurface := []string{
+		"list_mcp_resource_templates",
+		"list_mcp_resources",
+		executorMCPNamespace + "." + approvedMCPToolName,
+		"read_mcp_resource",
+	}
+	sort.Strings(wantSurface)
+	if !reflect.DeepEqual(surface, wantSurface) {
+		t.Fatalf("MCP candidate tool surface = %v, want characterized blocker surface %v", surface, wantSurface)
+	}
+	if failures := mcpServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted MCP server failures: %v", failures)
+	}
+	assertMCPBootstrap(t, mcpServer)
+	t.Log("A03 remains blocked: configuring one MCP server also exposed three non-allowlisted stock resource tools")
+}
+
+func TestAppServerA03Codex0146Alpha14RoutesApprovedMCPTool(t *testing.T) {
+	binary, paths := prepareLiveCodex(t)
+	requireCandidateRelease(t, binary, paths, "0.146.0-alpha.14")
+	toolCall, err := scriptedmodel.NamespacedFunctionCall(
+		"response-a03-mcp-call",
+		"call-a03-mcp-call",
+		executorMCPNamespace,
+		approvedMCPToolName,
+		`{"message":"hello executor"}`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalResponse, err := scriptedmodel.AssistantMessage(
+		"response-a03-mcp-final",
+		"message-a03-mcp-final",
+		conformanceFinalText,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelServer, err := scriptedmodel.Start(scriptedmodel.Config{
+		Responses: []scriptedmodel.Response{toolCall, finalResponse},
+	})
+	if err != nil {
+		t.Fatalf("start loopback scripted model: %v", err)
+	}
+	t.Cleanup(modelServer.Close)
+	mcpServer := startExecutorMCPServer(t, []scriptedmcp.ExpectedCall{
+		{
+			Name:      approvedMCPToolName,
+			Arguments: json.RawMessage(`{"message":"hello executor"}`),
+			Result: json.RawMessage(
+				`{"content":[{"type":"text","text":"approved echo: hello executor"}],"structuredContent":{"echoed":"hello executor"},"isError":false}`,
+			),
+		},
+	})
+
+	writeScriptedModelConfigWithOptions(t, paths.codexHome, modelServer.URL(), scriptedModelConfigOptions{
+		disableUpdatePlan: true,
+		mcpServerURL:      mcpServer.URL(),
+		mcpEnabledTools:   []string{approvedMCPToolName},
+	})
+	process := startPreparedLiveCodex(t, binary, paths, "app-server", "--listen", "stdio://", "--strict-config")
+	initializeAppServer(t, process)
+	collector := newRPCCollector(process)
+	thread, turn := startMinimalAppServerTurn(t, collector, paths.cwd, "call the approved MCP tool")
+	assertAgentItemCompleted(t, collector, thread.Thread.ID, turn.ID, conformanceFinalText)
+	collector.notification(t, "turn/completed")
+	closeAndWait(t, process)
+
+	if failures := modelServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted model server failures: %v", failures)
+	}
+	modelRequests := modelServer.Requests()
+	if len(modelRequests) != 2 {
+		t.Fatalf("scripted model received %d requests, want two", len(modelRequests))
+	}
+	firstSurface := modelToolNames(t, decodeCapturedModelRequest(t, modelRequests[0]).Tools)
+	if !containsString(firstSurface, executorMCPNamespace+"."+approvedMCPToolName) ||
+		containsString(firstSurface, executorMCPNamespace+"."+blockedMCPToolName) {
+		t.Fatalf("unexpected filtered MCP surface: %v", firstSurface)
+	}
+	second := decodeCapturedModelRequest(t, modelRequests[1])
+	if !modelInputContainsFunctionOutput(second.Input, "call-a03-mcp-call", `"echoed":"hello executor"`) {
+		encodedInput, err := json.Marshal(second.Input)
+		if err != nil {
+			t.Fatalf("encode second model input after missing MCP result: %v", err)
+		}
+		t.Fatalf("second model request omitted the approved MCP result: input=%s", encodedInput)
+	}
+	if failures := mcpServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted MCP server failures: %v", failures)
+	}
+	calls := mcpServer.Calls()
+	if len(calls) != 1 || calls[0].Name != approvedMCPToolName {
+		t.Fatalf("scripted MCP calls = %+v, want one approved call", calls)
+	}
+}
+
+// TestAppServerA03Codex0146Alpha14ExecutesMCPResourceHandler proves the generic
+// resource surface is executable, rather than harmless schema residue. The
+// call reaches resources/list on the MCP server even though enabled_tools only
+// contains approved_echo.
+func TestAppServerA03Codex0146Alpha14ExecutesMCPResourceHandler(t *testing.T) {
+	binary, paths := prepareLiveCodex(t)
+	requireCandidateRelease(t, binary, paths, "0.146.0-alpha.14")
+	resourceCall, err := scriptedmodel.FunctionCall(
+		"response-a03-resource-call",
+		"call-a03-resource-call",
+		"list_mcp_resources",
+		`{"server":"executor"}`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalResponse, err := scriptedmodel.AssistantMessage(
+		"response-a03-resource-final",
+		"message-a03-resource-final",
+		conformanceFinalText,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelServer, err := scriptedmodel.Start(scriptedmodel.Config{
+		Responses: []scriptedmodel.Response{resourceCall, finalResponse},
+	})
+	if err != nil {
+		t.Fatalf("start loopback scripted model: %v", err)
+	}
+	t.Cleanup(modelServer.Close)
+	mcpServer := startExecutorMCPServer(t, nil)
+
+	writeScriptedModelConfigWithOptions(t, paths.codexHome, modelServer.URL(), scriptedModelConfigOptions{
+		disableUpdatePlan: true,
+		mcpServerURL:      mcpServer.URL(),
+		mcpEnabledTools:   []string{approvedMCPToolName},
+	})
+	process := startPreparedLiveCodex(t, binary, paths, "app-server", "--listen", "stdio://", "--strict-config")
+	initializeAppServer(t, process)
+	collector := newRPCCollector(process)
+	thread, turn := startMinimalAppServerTurn(t, collector, paths.cwd, "attempt the non-allowlisted MCP resource handler")
+	assertAgentItemCompleted(t, collector, thread.Thread.ID, turn.ID, conformanceFinalText)
+	collector.notification(t, "turn/completed")
+	closeAndWait(t, process)
+
+	if failures := modelServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted model server failures: %v", failures)
+	}
+	modelRequests := modelServer.Requests()
+	if len(modelRequests) != 2 {
+		t.Fatalf("scripted model received %d requests, want two", len(modelRequests))
+	}
+	second := decodeCapturedModelRequest(t, modelRequests[1])
+	if !modelInputContainsFunctionOutput(second.Input, "call-a03-resource-call", "resources/list failed") {
+		encodedInput, encodeErr := json.Marshal(second.Input)
+		if encodeErr != nil {
+			t.Fatalf("encode second model input after missing resource failure: %v", encodeErr)
+		}
+		t.Fatalf("resource handler result was not returned to the model: input=%s", encodedInput)
+	}
+	requests := mcpServer.Requests()
+	if len(requests) != 4 || requests[3].RPCMethod != "resources/list" {
+		t.Fatalf("scripted MCP request methods = %v, want bootstrap followed by resources/list", mcpRequestMethods(requests))
+	}
+	if calls := mcpServer.Calls(); len(calls) != 0 {
+		t.Fatalf("generic resource handler unexpectedly appeared as tools/call: %+v", calls)
+	}
+	failures := mcpServer.Failures()
+	if len(failures) != 1 || !strings.Contains(failures[0], "unsupported MCP method resources/list") {
+		t.Fatalf("scripted MCP failures = %v, want the fail-closed resources/list observation", failures)
+	}
+	t.Log("A03 blocker is executable: list_mcp_resources reached resources/list outside the MCP enabled_tools allowlist")
+}
+
+func TestAppServerA03Codex0146Alpha14RejectsUnregisteredCallsBeforeMCP(t *testing.T) {
+	binary, paths := prepareLiveCodex(t)
+	requireCandidateRelease(t, binary, paths, "0.146.0-alpha.14")
+	blockedMCPCall, err := scriptedmodel.NamespacedFunctionCall(
+		"response-a03-blocked-mcp",
+		"call-a03-blocked-mcp",
+		executorMCPNamespace,
+		blockedMCPToolName,
+		`{"message":"must not execute"}`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockedShellCall, err := scriptedmodel.FunctionCall(
+		"response-a03-blocked-shell",
+		"call-a03-blocked-shell",
+		"exec_command",
+		`{"cmd":"must-not-execute"}`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalResponse, err := scriptedmodel.AssistantMessage(
+		"response-a03-blocked-final",
+		"message-a03-blocked-final",
+		conformanceFinalText,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelServer, err := scriptedmodel.Start(scriptedmodel.Config{
+		Responses: []scriptedmodel.Response{blockedMCPCall, blockedShellCall, finalResponse},
+	})
+	if err != nil {
+		t.Fatalf("start loopback scripted model: %v", err)
+	}
+	t.Cleanup(modelServer.Close)
+	mcpServer := startExecutorMCPServer(t, nil)
+
+	writeScriptedModelConfigWithOptions(t, paths.codexHome, modelServer.URL(), scriptedModelConfigOptions{
+		disableUpdatePlan: true,
+		mcpServerURL:      mcpServer.URL(),
+		mcpEnabledTools:   []string{approvedMCPToolName},
+	})
+	process := startPreparedLiveCodex(t, binary, paths, "app-server", "--listen", "stdio://", "--strict-config")
+	initializeAppServer(t, process)
+	collector := newRPCCollector(process)
+	thread, turn := startMinimalAppServerTurn(t, collector, paths.cwd, "attempt calls omitted from the captured tool surface")
+	assertAgentItemCompleted(t, collector, thread.Thread.ID, turn.ID, conformanceFinalText)
+	collector.notification(t, "turn/completed")
+	closeAndWait(t, process)
+
+	if failures := modelServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted model server failures: %v", failures)
+	}
+	modelRequests := modelServer.Requests()
+	if len(modelRequests) != 3 {
+		t.Fatalf("scripted model received %d requests, want three", len(modelRequests))
+	}
+	second := decodeCapturedModelRequest(t, modelRequests[1])
+	if !modelInputContainsFunctionOutput(second.Input, "call-a03-blocked-mcp", "unsupported call") {
+		t.Fatalf("blocked MCP call did not receive an unsupported-call result: input=%s", encodeModelInput(t, second.Input))
+	}
+	third := decodeCapturedModelRequest(t, modelRequests[2])
+	if !modelInputContainsFunctionOutput(third.Input, "call-a03-blocked-shell", "unsupported call") {
+		t.Fatalf("blocked shell call did not receive an unsupported-call result: input=%s", encodeModelInput(t, third.Input))
+	}
+	if failures := mcpServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted MCP server failures: %v", failures)
+	}
+	if calls := mcpServer.Calls(); len(calls) != 0 {
+		t.Fatalf("unregistered calls reached tools/call: %+v", calls)
+	}
+	requests := mcpServer.Requests()
+	if len(requests) != 3 {
+		t.Fatalf("unregistered calls escaped to MCP: methods=%v", mcpRequestMethods(requests))
+	}
+	assertMCPBootstrap(t, mcpServer)
+}
+
+func startExecutorMCPServer(t *testing.T, expectedCalls []scriptedmcp.ExpectedCall) *scriptedmcp.Server {
+	t.Helper()
+	inputSchema := json.RawMessage(
+		`{"type":"object","properties":{"message":{"type":"string"}},"required":["message"],"additionalProperties":false}`,
+	)
+	server, err := scriptedmcp.Start(scriptedmcp.Config{
+		Tools: []scriptedmcp.Tool{
+			{
+				Name:        approvedMCPToolName,
+				Description: "Echo one approved deterministic executor instruction.",
+				InputSchema: inputSchema,
+			},
+			{
+				Name:        blockedMCPToolName,
+				Description: "A tool intentionally excluded by the Codex MCP allowlist.",
+				InputSchema: inputSchema,
+			},
+		},
+		ExpectedCalls: expectedCalls,
+	})
+	if err != nil {
+		t.Fatalf("start loopback scripted MCP: %v", err)
+	}
+	t.Cleanup(server.Close)
+	return server
+}
+
+func startMinimalAppServerTurn(
+	t *testing.T,
+	collector *rpcCollector,
+	cwd string,
+	userText string,
+) (threadStartResult, appServerTurn) {
+	t.Helper()
+	sendRPC(t, collector.process, map[string]any{
+		"id":     2,
+		"method": "thread/start",
+		"params": map[string]any{
+			"model":                   conformanceModelName,
+			"cwd":                     cwd,
+			"approvalPolicy":          "never",
+			"sandbox":                 "read-only",
+			"ephemeral":               false,
+			"threadSource":            "user",
+			"environments":            []any{},
+			"dynamicTools":            []any{},
+			"selectedCapabilityRoots": []any{},
+		},
+	})
+	thread := decodeThreadStart(t, collector.response(t, "2"))
+	collector.notification(t, "thread/started")
+	sendRPC(t, collector.process, map[string]any{
+		"id":     3,
+		"method": "turn/start",
+		"params": map[string]any{
+			"threadId": thread.Thread.ID,
+			"input": []any{
+				map[string]any{
+					"type":         "text",
+					"text":         userText,
+					"textElements": []any{},
+				},
+			},
+		},
+	})
+	turn := decodeTurnStart(t, collector.response(t, "3"))
+	collector.notification(t, "turn/started")
+	return thread, turn
+}
+
+func assertMCPBootstrap(t *testing.T, server *scriptedmcp.Server) {
+	t.Helper()
+	requests := server.Requests()
+	if len(requests) < 3 {
+		t.Fatalf("scripted MCP received %d requests, want at least bootstrap sequence", len(requests))
+	}
+	want := []string{"initialize", "notifications/initialized", "tools/list"}
+	for index, method := range want {
+		if requests[index].RPCMethod != method {
+			t.Fatalf("scripted MCP bootstrap request %d = %q, want %q", index, requests[index].RPCMethod, method)
+		}
+	}
+}
+
+func mcpRequestMethods(requests []scriptedmcp.Request) []string {
+	methods := make([]string, len(requests))
+	for index, request := range requests {
+		methods[index] = request.RPCMethod
+	}
+	return methods
 }
 
 type appServerThread struct {
@@ -206,12 +813,31 @@ func decodeTurnStart(t *testing.T, message codexwire.Message) appServerTurn {
 	return result.Turn
 }
 
+type scriptedModelConfigOptions struct {
+	disableUpdatePlan bool
+	mcpServerURL      string
+	mcpEnabledTools   []string
+}
+
 func writeScriptedModelConfig(t *testing.T, codexHome, serverURL string) {
 	t.Helper()
+	writeScriptedModelConfigWithOptions(t, codexHome, serverURL, scriptedModelConfigOptions{})
+}
+
+func writeScriptedModelConfigWithOptions(
+	t *testing.T,
+	codexHome string,
+	serverURL string,
+	options scriptedModelConfigOptions,
+) {
+	t.Helper()
+	modelCatalogPath := writeConformanceModelCatalog(t, codexHome)
 	config := fmt.Sprintf(`model = %q
 approval_policy = "never"
 sandbox_mode = "read-only"
 model_provider = "scripted_provider"
+model_catalog_json = %q
+web_search = "disabled"
 
 [model_providers.scripted_provider]
 name = "agentserver v2 scripted provider"
@@ -219,10 +845,132 @@ base_url = %q
 wire_api = "responses"
 request_max_retries = 0
 stream_max_retries = 0
-`, conformanceModelName, serverURL+"/v1")
+
+[tools.experimental_request_user_input]
+enabled = false
+
+[agents]
+enabled = false
+
+[orchestrator.skills]
+enabled = false
+
+[orchestrator.mcp]
+enabled = false
+
+[skills.bundled]
+enabled = false
+
+[features]
+apps = false
+browser_use = false
+browser_use_external = false
+browser_use_full_cdp_access = false
+code_mode = false
+code_mode_only = false
+computer_use = false
+default_mode_request_user_input = false
+goals = false
+hooks = false
+image_generation = false
+in_app_browser = false
+multi_agent = false
+multi_agent_v2 = false
+plugins = false
+request_permissions_tool = false
+shell_tool = false
+skill_mcp_dependency_install = false
+skill_search = false
+standalone_web_search = false
+tool_suggest = false
+unified_exec = false
+workspace_dependencies = false
+`, conformanceModelName, modelCatalogPath, serverURL+"/v1")
+	if options.disableUpdatePlan {
+		config += `
+[tools.update_plan]
+enabled = false
+`
+	}
+	if options.mcpServerURL != "" {
+		if len(options.mcpEnabledTools) == 0 {
+			t.Fatal("scripted MCP config requires at least one enabled tool")
+		}
+		enabledTools, err := json.Marshal(options.mcpEnabledTools)
+		if err != nil {
+			t.Fatalf("encode scripted MCP enabled tools: %v", err)
+		}
+		config += fmt.Sprintf(`
+[mcp_servers.executor]
+url = %q
+required = true
+startup_timeout_sec = 5.0
+tool_timeout_sec = 5.0
+default_tools_approval_mode = "approve"
+enabled_tools = %s
+`, options.mcpServerURL, enabledTools)
+	}
 	if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte(config), 0o600); err != nil {
 		t.Fatalf("write scripted model config: %v", err)
 	}
+}
+
+func writeConformanceModelCatalog(t *testing.T, codexHome string) string {
+	t.Helper()
+	catalog := map[string]any{
+		"models": []any{
+			map[string]any{
+				"slug":                              conformanceModelName,
+				"display_name":                      "agentserver v2 scripted model",
+				"description":                       nil,
+				"default_reasoning_level":           "medium",
+				"supported_reasoning_levels":        []any{},
+				"shell_type":                        "disabled",
+				"visibility":                        "none",
+				"supported_in_api":                  true,
+				"priority":                          0,
+				"upgrade":                           nil,
+				"base_instructions":                 "Return only the scripted model result.",
+				"model_messages":                    nil,
+				"include_skills_usage_instructions": false,
+				"default_reasoning_summary":         "none",
+				"support_verbosity":                 false,
+				"default_verbosity":                 nil,
+				"apply_patch_tool_type":             nil,
+				"web_search_tool_type":              "text",
+				"truncation_policy":                 map[string]any{"mode": "bytes", "limit": 10_000},
+				"supports_parallel_tool_calls":      false,
+				"supports_image_detail_original":    false,
+				"context_window":                    272_000,
+				"max_context_window":                272_000,
+				"auto_compact_token_limit":          nil,
+				"effective_context_window_percent":  95,
+				"experimental_supported_tools":      []any{},
+				"input_modalities":                  []string{"text"},
+				"supports_search_tool":              false,
+				"use_responses_lite":                false,
+				"auto_review_model_override":        nil,
+				"tool_mode":                         "direct",
+				"multi_agent_version":               "disabled",
+			},
+		},
+	}
+	contents, err := json.MarshalIndent(catalog, "", "  ")
+	if err != nil {
+		t.Fatalf("encode conformance model catalog: %v", err)
+	}
+	path := filepath.Join(codexHome, "model-catalog.json")
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatalf("write conformance model catalog: %v", err)
+	}
+	return path
+}
+
+type capturedModelRequest struct {
+	Model  string            `json:"model"`
+	Input  []json.RawMessage `json:"input"`
+	Tools  []json.RawMessage `json:"tools"`
+	Stream bool              `json:"stream"`
 }
 
 func assertScriptedModelRequest(t *testing.T, server *scriptedmodel.Server) {
@@ -245,15 +993,7 @@ func assertScriptedModelRequest(t *testing.T, server *scriptedmodel.Server) {
 		t.Fatalf("model request Content-Type = %q", request.Header.Get("Content-Type"))
 	}
 
-	var body struct {
-		Model  string            `json:"model"`
-		Input  []json.RawMessage `json:"input"`
-		Tools  []json.RawMessage `json:"tools"`
-		Stream bool              `json:"stream"`
-	}
-	if err := json.Unmarshal(request.Body, &body); err != nil {
-		t.Fatalf("decode captured model request: %v", err)
-	}
+	body := decodeCapturedModelRequest(t, request)
 	if body.Model != conformanceModelName || !body.Stream {
 		t.Fatalf("unexpected model request envelope: model=%q stream=%t", body.Model, body.Stream)
 	}
@@ -262,6 +1002,24 @@ func assertScriptedModelRequest(t *testing.T, server *scriptedmodel.Server) {
 	}
 	toolNames := modelToolNames(t, body.Tools)
 	t.Logf("candidate model tool surface (A03 not yet asserted): %v", toolNames)
+}
+
+func decodeCapturedModelRequest(t *testing.T, request scriptedmodel.Request) capturedModelRequest {
+	t.Helper()
+	var body capturedModelRequest
+	if err := json.Unmarshal(request.Body, &body); err != nil {
+		t.Fatalf("decode captured model request: %v", err)
+	}
+	return body
+}
+
+func encodeModelInput(t *testing.T, input []json.RawMessage) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("encode captured model input: %v", err)
+	}
+	return encoded
 }
 
 func assertAgentItemCompleted(t *testing.T, collector *rpcCollector, threadID, turnID, wantText string) {
@@ -318,18 +1076,55 @@ func modelInputContainsUserText(t *testing.T, input []json.RawMessage, want stri
 	return false
 }
 
+func modelInputContainsFunctionOutput(input []json.RawMessage, callID, wantText string) bool {
+	for _, raw := range input {
+		var item struct {
+			Type   string          `json:"type"`
+			CallID string          `json:"call_id"`
+			Output json.RawMessage `json:"output"`
+		}
+		if json.Unmarshal(raw, &item) != nil || item.Type != "function_call_output" || item.CallID != callID {
+			continue
+		}
+		var outputText string
+		if json.Unmarshal(item.Output, &outputText) == nil && strings.Contains(outputText, wantText) {
+			return true
+		}
+		if strings.Contains(string(item.Output), wantText) {
+			return true
+		}
+	}
+	return false
+}
+
 func modelToolNames(t *testing.T, tools []json.RawMessage) []string {
 	t.Helper()
 	names := make([]string, 0, len(tools))
 	for _, raw := range tools {
 		var tool struct {
-			Type string `json:"type"`
-			Name string `json:"name"`
+			Type  string `json:"type"`
+			Name  string `json:"name"`
+			Tools []struct {
+				Type string `json:"type"`
+				Name string `json:"name"`
+			} `json:"tools"`
 		}
 		if err := json.Unmarshal(raw, &tool); err != nil {
 			t.Fatalf("decode model tool: %v", err)
 		}
-		if tool.Name != "" {
+		if tool.Type == "namespace" {
+			if tool.Name == "" || len(tool.Tools) == 0 {
+				names = append(names, "<invalid-namespace>")
+				continue
+			}
+			for _, child := range tool.Tools {
+				if child.Name == "" {
+					names = append(names, tool.Name+".<"+child.Type+">")
+					continue
+				}
+				names = append(names, tool.Name+"."+child.Name)
+			}
+		} else if tool.Name != "" {
 			names = append(names, tool.Name)
 		} else {
 			names = append(names, "<"+tool.Type+">")
@@ -337,4 +1132,13 @@ func modelToolNames(t *testing.T, tools []json.RawMessage) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

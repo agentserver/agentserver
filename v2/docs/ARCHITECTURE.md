@@ -282,12 +282,17 @@ worker 不调用模型、不选择工具、不解释或改写 prompt、不执行
 MCP-only 不是 prompt 约定，而是 pinned Codex build 上必须同时成立的能力配置：
 
 - `initialize` 显式开启所需 experimental API；`thread/start|resume` 与每次 `turn/start` 都传 `environments: []`，使环境支持开启时也没有默认本地 environment；
-- 清洗后的 `config.toml` 禁用 `update_plan`、`request_user_input`、Web、apps、plugins、multi-agent、browser/computer use、hooks 和其他非 MCP tool source；不提供 dynamic tools 或 capability roots；
+- 清洗后的 `config.toml` 禁用所有目标 stock release 实际支持关闭的非 MCP tool source，包括 `request_user_input`、Web、apps、plugins、multi-agent、browser/computer use、hooks；不提供 dynamic tools 或 capability roots；对 `update_plan` 这类 stock 内建 utility，所 pin release 也必须提供经过 tool capture 验证的真实禁用机制，不能在文档中虚构配置键；
+- MCP server 的 `enabled_tools` 必须约束模型可见的完整 MCP 派生工具面，而不只是过滤该 server 的 `tools/list` 结果。stock 自动注册的 `list_mcp_resources`、`list_mcp_resource_templates`、`read_mcp_resource` 等通用 handler 也必须能被真实移除或纳入显式产品授权；仅让 executor-gateway 对 `resources/list`、`resources/templates/list`、`resources/read` 返回错误，不能满足“模型只看到 manifest 批准工具”的约束；
 - workload 只读挂载管理员控制的 `/etc/codex/requirements.toml`，精确 allowlist MCP server 名称与 HTTPS identity，并固定所有安全相关 feature；run config 只能进一步收紧；
 - executor-gateway MCP 配置 `default_tools_approval_mode = "approve"`，避免 app-server 再产生一层通用工具审批；thread 使用 granular approval、`approvals_reviewer = "user"`，仅允许 `mcp_elicitations`，其余内建 approval 类别关闭；managed requirements 也只允许 user reviewer。不能用 `approval_policy = "never"`，因为它会自动拒绝需要产品审批的 MCP elicitation；
 - conformance test 使用 fake model endpoint 捕获实际 Responses 请求，断言模型可见工具集合只包含 run manifest 批准的远程 MCP tools。只检查配置文件内容不构成隔离证明。
 
 以上字段包含 experimental contract，必须与 Codex binary、app-server schema 和测试 fixture 一起锁定。任一升级导致工具面扩大、elicitation 被自动处理或配置字段失效时，harness 镜像不得发布。
+
+已验证的 0.145.0 candidate 不满足该前提：固定 model catalog 并关闭全部已知非 MCP 开关后，`update_plan` 仍被无条件注册；scripted model 能成功执行它并触发 `turn/plan/updated`。因此该版本必须在 A03 被拒绝，不能作为 production runtime pin，也不能用 prompt、忽略 notification 或仅在 harness 侧过滤事件来冒充能力隔离。
+
+官方 `rust-v0.146.0-alpha.14` candidate（commit `9d84cad281364eb7f6be75e23067b0adc5e26106`）新增了真实的 `[tools.update_plan] enabled = false`，无 MCP server 时实际模型工具面可收敛为空；但只要配置一个 executor MCP，stock 又会在批准的 namespaced MCP tool 之外无条件注册三个通用 MCP resource handler。live probe 进一步证明 `list_mcp_resources` 会越过该 server 的 `enabled_tools`，真实发出 `resources/list`。因此这个 alpha 只修复了前一个 blocker，仍不通过 A03，也不能成为 production runtime pin。当前架构下必须等待 stock release 提供可验证的 resource-handler 禁用/精确暴露机制；如果产品要改为接受这些 handler，必须另行修改 A03、manifest 授权模型和 executor MCP 协议边界，不能把 fail-closed 响应静默当成原设计已经满足。
 
 ### 7.2 隔离与网络
 
@@ -299,6 +304,7 @@ MCP-only 不是 prompt 约定，而是 pinned Codex build 上必须同时成立�
 - worker 只允许建立到 harness-pool 的 mTLS control stream；app-server child 只允许访问 llmproxy 和本 run 批准的 MCP。两者使用不同 UID/权限域，worker credential、control socket 和 FD 必须 close-on-exec 且对子进程不可读。
 - Kubernetes NetworkPolicy 不能验证外部域名、TLS 身份或 redirect。app-server 的外部流量必须经过受控 egress proxy，由 proxy 校验 endpoint allowlist、DNS 结果、SNI/证书、端口、每次 redirect、响应大小与超时；NetworkPolicy 只允许 child 到该 proxy/内部 llmproxy，不能把域名策略仅写在配置中。
 - MCP endpoint 和 tool allowlist 由 core 生成后固定进 run manifest，模型输出、prompt 或 skill 不能动态增加 endpoint。每个 endpoint 必须校验 TLS 身份并使用独立 audience capability；缺少凭证时 endpoint 必须拒绝，不能回退为匿名调用。
+- Phase 1 executor MCP 不实现 resources/prompts 协议；任何 `resources/list`、`resources/templates/list`、`resources/read`、`prompts/*` 请求都必须 fail closed 并进入安全审计。但这是纵深防御，不替代 A03 对模型工具面的精确约束。
 - Phase 1 只有 executor-gateway 可以暴露副作用工具。第三方 MCP 只允许管理员固定 endpoint、tool/schema hash 并独立验证为只读的工具；不能把第三方自报的 `readOnly/destructive` annotation 当作安全事实。未来支持第三方副作用前，必须统一经过可执行 core policy/approval 的 MCP policy proxy。
 - skills/context 只能是只读的声明性提示与配置；引用本地脚本、stdio MCP 或其他可执行载荷的 skill 必须被拒绝。
 - 必须以 fail-closed 配置和集成测试证明内建 shell、fs、apply-patch、浏览器、Web、hooks、dynamic tools 和未列出的本地能力均不可调用；只在文档中声明禁用不算完成。

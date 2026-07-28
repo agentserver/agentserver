@@ -226,7 +226,7 @@ conformance test 是 Go subprocess test，不依赖 v1 gateway：
 - 通过 AGENTSERVER_CODEX_BIN 指向待验证的绝对路径；
 - 每个用例创建独立临时 CODEX_HOME、cwd 和环境变量 allowlist；
 - fake model server 捕获实际 Responses 请求并返回 scripted response/tool call；
-- fake MCP server 支持 tools/list、tools/call、progress 和 elicitation；
+- fake MCP server 分阶段实现并保持请求/响应上限；当前 A03 fixture 只支持 initialize、initialized、tools/list 和 tools/call，其他方法 fail closed，A06 再增加 progress 与 elicitation 脚本；
 - child stdout 只能解析 JSONL，stderr 单独采集并做 secret scan；
 - 所有 wire message 保存为 scrubbed golden fixture；
 - live binary tests 与 fixture-only tests分开，普通单元测试不依赖外网或真实模型；
@@ -238,7 +238,7 @@ conformance test 是 Go subprocess test，不依赖 v1 gateway：
 |---|---|---|
 | A01 | stdio lifecycle | initialize → initialized → thread/start → turn/start → turn/completed；wire 省略 jsonrpc |
 | A02 | experimental gating | initialize 开启 experimentalApi 后 environments: [] 被接受；未开启时明确失败 |
-| A03 | MCP-only tool surface | fake model 捕获的 tools 只有批准的远程 MCP tools；无 shell、exec、fs、apply_patch、view_image、Web、browser、computer、plan、user-input 或 multi-agent |
+| A03 | MCP-only tool surface | fake model 捕获的 tools 只有批准的远程 MCP tools；无 shell、exec、fs、apply_patch、view_image、Web、browser、computer、plan、user-input、multi-agent 或未授权的通用 MCP resource handler |
 | A04 | endpoint allowlist | requirements.toml 只允许 manifest 中 MCP name + exact HTTPS identity；新增用户/项目 MCP 被禁用 |
 | A05 | 无双重审批 | executor MCP tool 在 default_tools_approval_mode=approve 下不产生 app-server 通用 tool prompt |
 | A06 | elicitation | granular policy 只允许 mcp_elicitations；fake MCP elicitation 能到达 app-server client并由 client 决定，never policy 的自动拒绝作为反例固定 |
@@ -251,7 +251,11 @@ conformance test 是 Go subprocess test，不依赖 v1 gateway：
 
 A03 不能通过“配置看起来正确”判断。测试必须检查实际发送给模型的 tool schema，并让 scripted model尝试调用一个禁止工具，确认 app-server不能执行。
 
-当前 0.145.0 candidate 的 bootstrap probe 进一步确认：assistant 内容在 `item/completed` 上到达，而 terminal `turn/completed` 是 `itemsView: notLoaded` 的空内容终态，harness-runner 必须持续归并 item 事件，不能只保存 terminal payload。`environments: []` 能去掉 shell/fs，但使用 fallback model metadata 的最小配置仍向模型暴露 web search、goal/plan、user-input、skills 和 multi-agent，因此 A01 通过不代表 A03 通过；必须固定 model metadata 后检查实际 Responses request，并为每类禁止工具增加反例调用。
+当前 0.145.0 candidate 的 bootstrap probe 进一步确认：assistant 内容在 `item/completed` 上到达，而 terminal `turn/completed` 是 `itemsView: notLoaded` 的空内容终态，harness-worker 必须持续归并 item 事件，不能只保存 terminal payload。`environments: []` 能去掉 shell/fs；固定本地 model catalog，并显式关闭 Web、goals、multi-agent、orchestrator skills、user-input 及其他已知 feature 后，实际 Responses request 的工具面可收敛到仅剩 `update_plan`。但官方 `rust-v0.145.0` tag（peeled commit `25af12f7e61572b0bc18ddb1008be543b91519b0`）的 `add_core_utility_tools` 无条件注册 `PlanHandler`，该版本没有对应 config 或 requirements 开关；scripted model 调用后实际收到成功的 `Plan updated` result，client 同时收到 `turn/plan/updated`。因此 0.145.0 明确不通过 A03，不能成为 production runtime pin。
+
+官方 `rust-v0.146.0-alpha.14` tag（commit `9d84cad281364eb7f6be75e23067b0adc5e26106`）新增真实的 `[tools.update_plan] enabled = false`。它的 A01 terminal projection 也变为 `itemsView: summary` 并携带 completed agent item；测试按 release 分别锁定该形状与 0.145.0 的 `notLoaded` 空数组，但 harness-worker 仍以归并 item 事件为内容权威。对该官方 artifact 的 A03 live probe 验证：无 MCP server 时模型工具面为空；配置 fake executor MCP 且 `enabled_tools = ["approved_echo"]` 后，批准工具能到达 `tools/call`，fake server 同时公布但未批准的 `blocked_echo` 与模型伪造的 `exec_command` 都在 Codex 路由层收到 `unsupported call`，不会到达 MCP。可是同一模型请求仍额外包含 `list_mcp_resources`、`list_mcp_resource_templates`、`read_mcp_resource`，并且调用第一个 handler 会真实发出 `resources/list`，不受 `enabled_tools` 约束。因此该 alpha 仍明确不通过 A03；Phase 0 继续停止业务组件建设，直到 stock release 能从实际 Responses tool schema 中移除这些通用 handler，或产品显式批准一项经过重新评审的架构变更。
+
+本次 macOS arm64 candidate binary SHA-256 为 `e4ca03a3f3682647eb5aab2546647ed963354611b42a9daa332ae9d0366a1204`，官方 artifact archive SHA-256 为 `245d877dea7abc520487b5186f9e17d4fb10548f77da9ebf2b02cb3dee137d96`。这些 hash 只绑定本轮候选证据，不是 production runtime manifest；最新 stable 仍需独立通过完整门禁。
 
 ### 4.3 checkpoint 探针算法
 
@@ -616,6 +620,7 @@ Phase 0根据 pinned schema生成两份只读文件：
 approval_policy = { granular = { sandbox_approval = false, rules = false, skill_approval = false, request_permissions = false, mcp_elicitations = true } }
 approvals_reviewer = "user"
 
+# 仅在所 pin release 的 schema 与 tool capture 均证明该键真实生效时加入。
 [tools.update_plan]
 enabled = false
 
@@ -625,10 +630,12 @@ enabled = false
 [mcp_servers.executor]
 url = "https://executor-gateway.internal/v2/mcp"
 bearer_token_env_var = "AGENTSERVER_EXECUTOR_CAPABILITY"
+required = true
 default_tools_approval_mode = "approve"
+enabled_tools = ["process_start", "process_read", "process_write", "process_terminate"]
 ~~~
 
-这只是关键字段示意；完整 feature/requirements键必须由所 pin 版本的 config schema生成并通过 configRequirements/read与实际模型 tool capture验证，不能复制示例后假定生效。
+这只是关键字段示意；完整 feature/requirements键必须由所 pin 版本的 config schema生成并通过 configRequirements/read与实际模型 tool capture验证，不能复制示例后假定生效。0.145.0 不认识上述 `update_plan` 禁用机制，因此被 Phase 0 拒绝；0.146.0-alpha.14 虽证明该键真实生效，仍因通用 MCP resource handler 绕过 `enabled_tools` 而被拒绝。`required` 也只改变 MCP 初始化失败语义，不是能力 allowlist。
 
 worker先把 checkpoint allowlist恢复到全新 CODEX_HOME，再写入本 attempt的新 config；checkpoint无权覆盖配置。随后以 manifest中的绝对路径启动 codex app-server --listen stdio:// --strict-config。strict-config只拒绝未知字段，不能替代 MCP-only tool capture和 OS/网络隔离。
 

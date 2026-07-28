@@ -257,7 +257,7 @@ func AssistantMessage(responseID, itemID, message string) (Response, error) {
 	if responseID == "" || itemID == "" {
 		return Response{}, errors.New("response and item IDs must be non-empty")
 	}
-	events := []map[string]any{
+	return responseFromEvents([]map[string]any{
 		{
 			"type":     "response.created",
 			"response": map[string]any{"id": responseID},
@@ -284,7 +284,69 @@ func AssistantMessage(responseID, itemID, message string) (Response, error) {
 				},
 			},
 		},
+	})
+}
+
+// FunctionCall builds one completed Responses API turn that asks Codex to
+// execute a function tool. arguments must contain one valid JSON value encoded
+// as a string, matching the Responses API function_call wire shape.
+func FunctionCall(responseID, callID, name, arguments string) (Response, error) {
+	return functionCall(responseID, callID, "", name, arguments)
+}
+
+// NamespacedFunctionCall builds one completed Responses API turn that asks
+// Codex to execute a function within a Responses API namespace. Stock Codex
+// uses this shape for MCP tools, for example namespace mcp__executor and child
+// tool approved_echo.
+func NamespacedFunctionCall(responseID, callID, namespace, name, arguments string) (Response, error) {
+	if namespace == "" {
+		return Response{}, errors.New("function call namespace must be non-empty")
 	}
+	return functionCall(responseID, callID, namespace, name, arguments)
+}
+
+func functionCall(responseID, callID, namespace, name, arguments string) (Response, error) {
+	if responseID == "" || callID == "" || name == "" {
+		return Response{}, errors.New("response, call, and tool IDs must be non-empty")
+	}
+	if !json.Valid([]byte(arguments)) {
+		return Response{}, errors.New("function call arguments must be valid JSON")
+	}
+	item := map[string]any{
+		"type":      "function_call",
+		"call_id":   callID,
+		"name":      name,
+		"arguments": arguments,
+	}
+	if namespace != "" {
+		item["namespace"] = namespace
+	}
+	return responseFromEvents([]map[string]any{
+		{
+			"type":     "response.created",
+			"response": map[string]any{"id": responseID},
+		},
+		{
+			"type": "response.output_item.done",
+			"item": item,
+		},
+		{
+			"type": "response.completed",
+			"response": map[string]any{
+				"id": responseID,
+				"usage": map[string]any{
+					"input_tokens":          0,
+					"input_tokens_details":  nil,
+					"output_tokens":         0,
+					"output_tokens_details": nil,
+					"total_tokens":          0,
+				},
+			},
+		},
+	})
+}
+
+func responseFromEvents(events []map[string]any) (Response, error) {
 	var body bytes.Buffer
 	for _, event := range events {
 		encoded, err := json.Marshal(event)

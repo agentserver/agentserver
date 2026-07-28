@@ -87,6 +87,40 @@ func TestServerFailsClosedWhenScriptIsExhausted(t *testing.T) {
 	}
 }
 
+func TestFunctionCallRejectsMalformedArguments(t *testing.T) {
+	if _, err := FunctionCall("response-1", "call-1", "update_plan", `{`); err == nil {
+		t.Fatal("FunctionCall accepted malformed JSON arguments")
+	}
+	response, err := FunctionCall("response-1", "call-1", "update_plan", `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(response.Body, []byte(`"type":"function_call"`)) ||
+		!bytes.Contains(response.Body, []byte(`"name":"update_plan"`)) {
+		t.Fatalf("unexpected function call response: %q", response.Body)
+	}
+}
+
+func TestNamespacedFunctionCallIncludesNamespace(t *testing.T) {
+	response, err := NamespacedFunctionCall(
+		"response-1",
+		"call-1",
+		"mcp__executor",
+		"approved_echo",
+		`{"message":"hello"}`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(response.Body, []byte(`"namespace":"mcp__executor"`)) ||
+		!bytes.Contains(response.Body, []byte(`"name":"approved_echo"`)) {
+		t.Fatalf("unexpected namespaced function call response: %q", response.Body)
+	}
+	if _, err := NamespacedFunctionCall("response-1", "call-1", "", "approved_echo", `{}`); err == nil {
+		t.Fatal("NamespacedFunctionCall accepted an empty namespace")
+	}
+}
+
 func newJSONRequest(body string) *http.Request {
 	request := httptest.NewRequest(http.MethodPost, "http://scripted.invalid/v1/responses", bytes.NewBufferString(body))
 	request.Header.Set("Content-Type", "application/json")

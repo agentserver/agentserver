@@ -272,7 +272,7 @@ A03 不能通过“配置看起来正确”判断。测试必须检查实际发�
 |---|---|---|
 | E01 | stdio lifecycle | codex exec-server --listen stdio --strict-config；initialize → initialized；wire 省略 jsonrpc |
 | E02 | deterministic process | argv[]、cwd URI、env、PTY/pipe、output sequence、exit/close 与 fixture一致 |
-| E03 | stdin 与 terminate | write、signal、terminate 竞态有明确结果；未知 processId 被拒绝 |
+| E03 | stdin 与 terminate | write、signal、terminate 竞态有明确结果；未知 processId 返回显式非变更状态或 RPC error，不能伪装成功 |
 | E04 | filesystem | read/open/readBlock/close/canonicalize 等允许方法与 pinned schema一致 |
 | E05 | network reverse request | network/policyRequest 能被 agentx client allow/deny；未知 reverse method 默认拒绝 |
 | E06 | stdio EOF | stdin EOF 后 server shutdown并清理 managed process；新的 agentx 不能 attach旧 child |
@@ -282,6 +282,8 @@ A03 不能通过“配置看起来正确”判断。测试必须检查实际发�
 | E10 | bounds | 最大 frame、argv/env、output buffer、retained output 和 exited-process retention 被测量并写入 manifest |
 
 Phase 0 的 exit criterion 是 A01–A12、E01–E10 全部可重复通过。任何 MCP-only、elicitation、checkpoint 或 stdio 假设失败，都先修改架构，不能继续写业务服务。
+
+当前 bootstrap probe 已确认但尚未构成完整 Phase 0 放行的 exec-server 事实：`process/start` response 可与早期 `process/output` 竞态，agentx 必须单消费者收包并按 request id/一基 event seq 整理；带 `maxBytes` 的 `process/read.nextSeq` 只越过本次返回的最后一个 output chunk，不保证同时越过 terminal event，不带该限制的 terminal read 才能给出 `closed` 后游标；缺省 `envPolicy` 时 child env 恰好等于 request `env`；stdio EOF 会关闭唯一 connection、shutdown session 并回收 managed child，不能把它描述成可 detach/resume。E02/E03 的 PTY、signal/terminate 完整竞态以及 E07/E10 等仍必须继续探测。
 
 ## 5. Core 状态内核
 

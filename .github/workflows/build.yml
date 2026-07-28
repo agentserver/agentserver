@@ -14,7 +14,20 @@ permissions:
   packages: write
 
 jobs:
+  v2-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: v2/go.mod
+
+      - name: Verify v2 module boundary and unit tests
+        run: make -C v2 check
+
   test:
+    needs: [v2-unit]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

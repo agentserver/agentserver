@@ -1,4 +1,4 @@
-.PHONY: dev build clean frontend backend agent agent-all llmproxy credentialproxy browser-gateway test docker docker-agent docker-llmproxy docker-credentialproxy docker-openclaw docker-all openapi openapi-check api-docs api-docs-check proto
+.PHONY: dev build clean frontend backend agent agent-all llmproxy credentialproxy browser-gateway test v2-check v2-test v2-conformance docker docker-agent docker-llmproxy docker-credentialproxy docker-openclaw docker-all openapi openapi-check api-docs api-docs-check proto
 
 # Development: run frontend dev server + Go backend
 dev:
@@ -32,6 +32,15 @@ browser-gateway:
 test:
 	go vet ./...
 	go test ./... -count=1
+
+v2-check:
+	$(MAKE) -C v2 check
+
+v2-test:
+	$(MAKE) -C v2 test
+
+v2-conformance:
+	$(MAKE) -C v2 conformance-live AGENTSERVER_CODEX_BIN="$(AGENTSERVER_CODEX_BIN)"
 
 agent-all:
 	GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -o bin/agentserver-linux-amd64        ./cmd/agentserver-agent

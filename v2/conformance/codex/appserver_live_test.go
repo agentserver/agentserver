@@ -1644,11 +1644,12 @@ func decodeTurnStart(t *testing.T, message codexwire.Message) appServerTurn {
 }
 
 type scriptedModelConfigOptions struct {
-	disableUpdatePlan bool
-	mcpServerURL      string
-	mcpEnabledTools   []string
-	mcpApprovalMode   string
-	mcpToolTimeoutSec float64
+	disableUpdatePlan    bool
+	mcpServerURL         string
+	mcpEnabledTools      []string
+	mcpApprovalMode      string
+	mcpToolTimeoutSec    float64
+	mcpBearerTokenEnvVar string
 }
 
 func writeScriptedModelConfig(t *testing.T, codexHome, serverURL string) {
@@ -1725,6 +1726,9 @@ workspace_dependencies = false
 enabled = false
 `
 	}
+	if options.mcpServerURL == "" && options.mcpBearerTokenEnvVar != "" {
+		t.Fatal("scripted MCP bearer token environment variable requires an MCP server")
+	}
 	if options.mcpServerURL != "" {
 		if len(options.mcpEnabledTools) == 0 {
 			t.Fatal("scripted MCP config requires at least one enabled tool")
@@ -1758,6 +1762,12 @@ tool_timeout_sec = %g
 default_tools_approval_mode = %q
 enabled_tools = %s
 `, options.mcpServerURL, toolTimeoutSec, approvalMode, enabledTools)
+		if options.mcpBearerTokenEnvVar != "" {
+			if strings.ContainsAny(options.mcpBearerTokenEnvVar, "=\x00 \t\r\n") {
+				t.Fatalf("invalid scripted MCP bearer token environment variable %q", options.mcpBearerTokenEnvVar)
+			}
+			config += fmt.Sprintf("bearer_token_env_var = %q\n", options.mcpBearerTokenEnvVar)
+		}
 	}
 	if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte(config), 0o600); err != nil {
 		t.Fatalf("write scripted model config: %v", err)

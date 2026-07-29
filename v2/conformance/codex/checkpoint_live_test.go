@@ -40,12 +40,34 @@ const (
 	a10RecoveryUserText      = "start a new turn from the last completed checkpoint"
 	a10BaseAssistantText     = "durable pre-crash checkpoint complete"
 	a10RecoveryAssistantText = "new post-crash turn complete"
+
+	a11CapabilityEnvName     = "AGENTSERVER_A11_MCP_CAPABILITY"
+	a11SourceCapability      = "a11-source-capability-secret-7d30e7"
+	a11RestoredCapability    = "a11-restored-capability-secret-4b29c1"
+	a11ConfigSecret          = "a11-config-secret-c8e17f"
+	a11RequirementsSecret    = "a11-requirements-secret-e51729"
+	a11AuthSecret            = "a11-auth-secret-3ad66c"
+	a11TokenFileSecret       = "a11-token-file-secret-825fcb"
+	a11LogSecret             = "a11-log-secret-9c211a"
+	a11EnvironmentDumpSecret = "a11-env-dump-secret-28b7a4"
+	a11TransportSecret       = "a11-transport-secret-61f439"
+	a11FirstUserText         = "complete a turn while runtime-only secrets stay out of history"
+	a11SecondUserText        = "continue after restoring without the prior runtime secrets"
+	a11FirstAssistantText    = "secret-exclusion checkpoint complete"
+	a11SecondAssistantText   = "secret-free restored turn complete"
+	a11ToolCallID            = "call-a11-secret-exclusion"
+	a11ToolMarker            = "a11-model-visible-tool-result"
 )
 
 type stateFileSnapshot struct {
 	Mode   os.FileMode
 	Size   int64
 	SHA256 string
+}
+
+type secretSentinel struct {
+	Label string
+	Value string
 }
 
 // TestAppServerA08GracefulShutdownStabilizesState establishes stdin EOF plus
@@ -642,6 +664,312 @@ func TestAppServerA10MidTurnCrashRestoresLastCompletedCheckpoint(t *testing.T) {
 		t.Fatalf("A10 recovery context did not stop at the completed checkpoint: input=%s", encodeModelInput(t, recoveryRequest.Input))
 	}
 	t.Logf("A10 abandoned turn %s and created turn %s from sealed checkpoint %q", crashedTurn.ID, recoveryTurn.ID, rolloutRelative)
+}
+
+// TestAppServerA11CheckpointExcludesRuntimeSecrets proves that credentials and
+// runtime artifacts are neither required by native resume nor copied into the
+// rollout-only checkpoint. The MCP capability is actually used as an HTTP
+// bearer, then rotated for restore; the other sentinels challenge the exact
+// manifest allowlist from config/auth/requirements/log/diagnostic/transport
+// files. Model-visible user and MCP-result markers remain intact.
+func TestAppServerA11CheckpointExcludesRuntimeSecrets(t *testing.T) {
+	binary, sourcePaths := prepareLiveCodex(t)
+	requireCandidateReleaseOneOf(t, binary, sourcePaths, "0.146.0-alpha.14", "0.146.0")
+	secrets := a11SecretSentinels()
+	toolCall, err := scriptedmodel.NamespacedFunctionCall(
+		"response-a11-tool-call",
+		a11ToolCallID,
+		executorMCPNamespace,
+		approvedMCPToolName,
+		`{"message":"return a model-visible non-secret marker"}`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstFinal, err := scriptedmodel.AssistantMessage(
+		"response-a11-first-final",
+		"message-a11-first-final",
+		a11FirstAssistantText,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstModelServer, err := scriptedmodel.Start(scriptedmodel.Config{
+		Responses: []scriptedmodel.Response{toolCall, firstFinal},
+	})
+	if err != nil {
+		t.Fatalf("start A11 source model: %v", err)
+	}
+	t.Cleanup(firstModelServer.Close)
+	firstMCPServer := startDestructiveExecutorMCPServer(t, []scriptedmcp.ExpectedCall{{
+		Name:      approvedMCPToolName,
+		Arguments: json.RawMessage(`{"message":"return a model-visible non-secret marker"}`),
+		Result: json.RawMessage(
+			`{"content":[{"type":"text","text":"safe checkpoint result"}],"structuredContent":{"checkpointMarker":"a11-model-visible-tool-result"},"isError":false}`,
+		),
+	}})
+	sourcePaths.environment, err = codexprocess.Environment(
+		sourcePaths.home,
+		sourcePaths.codexHome,
+		sourcePaths.temporary,
+		map[string]string{a11CapabilityEnvName: a11SourceCapability},
+	)
+	if err != nil {
+		t.Fatalf("build A11 source environment: %v", err)
+	}
+	writeScriptedModelConfigWithOptions(t, sourcePaths.codexHome, firstModelServer.URL(), scriptedModelConfigOptions{
+		disableUpdatePlan:    true,
+		mcpServerURL:         firstMCPServer.URL(),
+		mcpEnabledTools:      []string{approvedMCPToolName},
+		mcpBearerTokenEnvVar: a11CapabilityEnvName,
+	})
+	writeA11RuntimeSecretFiles(t, sourcePaths.codexHome)
+	firstProcess := startPreparedLiveCodex(t, binary, sourcePaths, "app-server", "--listen", "stdio://", "--strict-config")
+	initializeAppServer(t, firstProcess)
+	firstCollector := newRPCCollector(firstProcess)
+	thread, firstTurn := startMinimalAppServerTurn(t, firstCollector, sourcePaths.cwd, a11FirstUserText)
+	assertAgentItemCompleted(t, firstCollector, thread.Thread.ID, firstTurn.ID, a11FirstAssistantText)
+	firstCollector.notification(t, "turn/completed")
+	closeAndWait(t, firstProcess)
+
+	if failures := firstModelServer.Failures(); len(failures) != 0 {
+		t.Fatalf("A11 source model failures: %v", failures)
+	}
+	firstModelRequests := firstModelServer.Requests()
+	if len(firstModelRequests) != 2 {
+		t.Fatalf("A11 source model received %d requests, want two", len(firstModelRequests))
+	}
+	for index, request := range firstModelRequests {
+		assertBytesExcludeSecrets(t, fmt.Sprintf("A11 source model request %d", index), request.Body, secrets)
+	}
+	if failures := firstMCPServer.Failures(); len(failures) != 0 {
+		t.Fatalf("A11 source MCP failures: %v", failures)
+	}
+	if calls := firstMCPServer.Calls(); len(calls) != 1 || calls[0].Name != approvedMCPToolName {
+		t.Fatalf("A11 source MCP calls = %+v, want one", calls)
+	}
+	assertMCPBearerToken(t, firstMCPServer, a11SourceCapability)
+	assertMCPBootstrap(t, firstMCPServer)
+	stderr, stderrTruncated := firstProcess.Stderr()
+	if stderrTruncated {
+		t.Fatal("A11 source app-server stderr exceeded the probe bound")
+	}
+	assertBytesExcludeSecrets(t, "A11 source app-server stderr", stderr, secrets)
+
+	sourceSnapshot := snapshotStateTree(t, sourcePaths.codexHome)
+	for relative, secret := range a11RuntimeSecretFileSentinels() {
+		if _, exists := sourceSnapshot[relative]; !exists {
+			t.Fatalf("A11 source runtime omitted sentinel file %q", relative)
+		}
+		contents, err := os.ReadFile(filepath.Join(sourcePaths.codexHome, filepath.FromSlash(relative)))
+		if err != nil {
+			t.Fatalf("read A11 source sentinel file %q: %v", relative, err)
+		}
+		if !bytes.Contains(contents, []byte(secret.Value)) {
+			t.Fatalf("A11 source sentinel file %q no longer contains its %s sentinel", relative, secret.Label)
+		}
+	}
+	rolloutRelative := stateRelativePath(t, sourcePaths.codexHome, thread.Thread.Path)
+	rolloutSnapshot, exists := sourceSnapshot[rolloutRelative]
+	if !exists || !strings.HasSuffix(rolloutRelative, ".jsonl") || rolloutSnapshot.Size == 0 {
+		t.Fatalf("A11 rollout snapshot = %+v at %q, want one non-empty JSONL", rolloutSnapshot, rolloutRelative)
+	}
+	rolloutContents, err := os.ReadFile(thread.Thread.Path)
+	if err != nil {
+		t.Fatalf("read A11 source rollout: %v", err)
+	}
+	assertBytesExcludeSecrets(t, "A11 source rollout", rolloutContents, secrets)
+	assertCompleteRolloutJSONL(
+		t,
+		thread.Thread.Path,
+		thread.Thread.ID,
+		a11FirstUserText,
+		a11FirstAssistantText,
+		a11ToolMarker,
+	)
+
+	restoredPaths := createRestoredLivePaths(t, t.TempDir(), "a11-restored-runtime")
+	copyCheckpointFile(t, sourcePaths.codexHome, restoredPaths.codexHome, rolloutRelative, rolloutSnapshot)
+	checkpointSnapshot := snapshotStateTree(t, restoredPaths.codexHome)
+	wantCheckpointSnapshot := map[string]stateFileSnapshot{rolloutRelative: rolloutSnapshot}
+	if !reflect.DeepEqual(checkpointSnapshot, wantCheckpointSnapshot) {
+		t.Fatalf("A11 checkpoint contains runtime-only files: got=%v want=%v", checkpointSnapshot, wantCheckpointSnapshot)
+	}
+	restoredRolloutPath := filepath.Join(restoredPaths.codexHome, filepath.FromSlash(rolloutRelative))
+	checkpointContents, err := os.ReadFile(restoredRolloutPath)
+	if err != nil {
+		t.Fatalf("read A11 checkpoint rollout: %v", err)
+	}
+	assertBytesExcludeSecrets(t, "A11 checkpoint", checkpointContents, secrets)
+	retiredSourceHome := filepath.Join(sourcePaths.root, "retired-a11-source-codex-home")
+	if err := os.Rename(sourcePaths.codexHome, retiredSourceHome); err != nil {
+		t.Fatalf("retire A11 source CODEX_HOME: %v", err)
+	}
+	if _, err := os.Stat(thread.Thread.Path); !os.IsNotExist(err) {
+		t.Fatalf("A11 source rollout path remained available after retirement: %v", err)
+	}
+
+	secondFinal, err := scriptedmodel.AssistantMessage(
+		"response-a11-second-final",
+		"message-a11-second-final",
+		a11SecondAssistantText,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondModelServer, err := scriptedmodel.Start(scriptedmodel.Config{
+		Responses: []scriptedmodel.Response{secondFinal},
+	})
+	if err != nil {
+		t.Fatalf("start A11 restored model: %v", err)
+	}
+	t.Cleanup(secondModelServer.Close)
+	restoredMCPServer := startDestructiveExecutorMCPServer(t, nil)
+	restoredPaths.environment, err = codexprocess.Environment(
+		restoredPaths.home,
+		restoredPaths.codexHome,
+		restoredPaths.temporary,
+		map[string]string{a11CapabilityEnvName: a11RestoredCapability},
+	)
+	if err != nil {
+		t.Fatalf("build A11 restored environment: %v", err)
+	}
+	writeScriptedModelConfigWithOptions(t, restoredPaths.codexHome, secondModelServer.URL(), scriptedModelConfigOptions{
+		disableUpdatePlan:    true,
+		mcpServerURL:         restoredMCPServer.URL(),
+		mcpEnabledTools:      []string{approvedMCPToolName},
+		mcpBearerTokenEnvVar: a11CapabilityEnvName,
+	})
+	secondProcess := startPreparedLiveCodex(t, binary, restoredPaths, "app-server", "--listen", "stdio://", "--strict-config")
+	initializeAppServer(t, secondProcess)
+	secondCollector := newRPCCollector(secondProcess)
+	resumed, secondTurn := resumeAppServerThreadAndStartTurn(
+		t,
+		secondCollector,
+		thread.Thread.ID,
+		restoredRolloutPath,
+		restoredPaths.cwd,
+		a11SecondUserText,
+	)
+	assertAgentItemCompleted(t, secondCollector, resumed.Thread.ID, secondTurn.ID, a11SecondAssistantText)
+	secondCollector.notification(t, "turn/completed")
+	closeAndWait(t, secondProcess)
+	restoredStderr, restoredStderrTruncated := secondProcess.Stderr()
+	if restoredStderrTruncated {
+		t.Fatal("A11 restored app-server stderr exceeded the probe bound")
+	}
+	assertBytesExcludeSecrets(t, "A11 restored app-server stderr", restoredStderr, secrets)
+	if failures := secondModelServer.Failures(); len(failures) != 0 {
+		t.Fatalf("A11 restored model failures: %v", failures)
+	}
+	secondModelRequests := secondModelServer.Requests()
+	if len(secondModelRequests) != 1 {
+		t.Fatalf("A11 restored model received %d requests, want one", len(secondModelRequests))
+	}
+	restoredModelRequest := decodeCapturedModelRequest(t, secondModelRequests[0])
+	if !modelInputContainsUserText(t, restoredModelRequest.Input, a11FirstUserText) ||
+		!modelInputContainsUserText(t, restoredModelRequest.Input, a11SecondUserText) ||
+		!modelInputContainsFunctionOutput(restoredModelRequest.Input, a11ToolCallID, a11ToolMarker) {
+		t.Fatalf("A11 restored context omitted model-visible history: input=%s", encodeModelInput(t, restoredModelRequest.Input))
+	}
+	assertBytesExcludeSecrets(t, "A11 restored model request", secondModelRequests[0].Body, secrets)
+	if failures := restoredMCPServer.Failures(); len(failures) != 0 {
+		t.Fatalf("A11 restored MCP failures: %v", failures)
+	}
+	if calls := restoredMCPServer.Calls(); len(calls) != 0 {
+		t.Fatalf("A11 restore unexpectedly repeated the MCP side effect: %+v", calls)
+	}
+	assertMCPBearerToken(t, restoredMCPServer, a11RestoredCapability)
+	assertMCPBootstrap(t, restoredMCPServer)
+	restoredRolloutContents, err := os.ReadFile(resumed.Thread.Path)
+	if err != nil {
+		t.Fatalf("read A11 restored rollout: %v", err)
+	}
+	assertBytesExcludeSecrets(t, "A11 restored rollout", restoredRolloutContents, secrets)
+	t.Logf("A11 restored %s after excluding %d runtime secret values from checkpoint %q", thread.Thread.ID, len(secrets), rolloutRelative)
+}
+
+func a11SecretSentinels() []secretSentinel {
+	return []secretSentinel{
+		{Label: "source MCP capability", Value: a11SourceCapability},
+		{Label: "restored MCP capability", Value: a11RestoredCapability},
+		{Label: "config", Value: a11ConfigSecret},
+		{Label: "requirements", Value: a11RequirementsSecret},
+		{Label: "auth", Value: a11AuthSecret},
+		{Label: "token file", Value: a11TokenFileSecret},
+		{Label: "log", Value: a11LogSecret},
+		{Label: "environment dump", Value: a11EnvironmentDumpSecret},
+		{Label: "transport buffer", Value: a11TransportSecret},
+	}
+}
+
+func a11RuntimeSecretFileSentinels() map[string]secretSentinel {
+	return map[string]secretSentinel{
+		"auth.json":                  {Label: "auth", Value: a11AuthSecret},
+		"config.toml":                {Label: "config", Value: a11ConfigSecret},
+		"diagnostics/a11.log":        {Label: "log", Value: a11LogSecret},
+		"diagnostics/env.dump":       {Label: "environment dump", Value: a11EnvironmentDumpSecret},
+		"requirements.toml":          {Label: "requirements", Value: a11RequirementsSecret},
+		"tokens/a11.token":           {Label: "token file", Value: a11TokenFileSecret},
+		"transport/a11-buffer.jsonl": {Label: "transport buffer", Value: a11TransportSecret},
+	}
+}
+
+func writeA11RuntimeSecretFiles(t *testing.T, codexHome string) {
+	t.Helper()
+	configPath := filepath.Join(codexHome, "config.toml")
+	config, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read A11 config for sentinel injection: %v", err)
+	}
+	config = append(config, []byte("\n# runtime-only sentinel: "+a11ConfigSecret+"\n")...)
+	if err := os.WriteFile(configPath, config, 0o600); err != nil {
+		t.Fatalf("write A11 config sentinel: %v", err)
+	}
+	files := map[string]string{
+		"auth.json":                  `{"OPENAI_API_KEY":"` + a11AuthSecret + `"}`,
+		"diagnostics/a11.log":        "runtime log " + a11LogSecret + "\n",
+		"diagnostics/env.dump":       a11CapabilityEnvName + "=" + a11EnvironmentDumpSecret + "\n",
+		"requirements.toml":          "# runtime requirements " + a11RequirementsSecret + "\n",
+		"tokens/a11.token":           a11TokenFileSecret + "\n",
+		"transport/a11-buffer.jsonl": `{"pending":"` + a11TransportSecret + `"}` + "\n",
+	}
+	for relative, contents := range files {
+		path := filepath.Join(codexHome, filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("create A11 runtime secret directory for %q: %v", relative, err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatalf("write A11 runtime secret file %q: %v", relative, err)
+		}
+	}
+}
+
+func assertBytesExcludeSecrets(t *testing.T, artifact string, contents []byte, secrets []secretSentinel) {
+	t.Helper()
+	for _, secret := range secrets {
+		if secret.Value == "" {
+			t.Fatalf("A11 %s sentinel is empty", secret.Label)
+		}
+		if bytes.Contains(contents, []byte(secret.Value)) {
+			t.Fatalf("%s contains the A11 %s sentinel", artifact, secret.Label)
+		}
+	}
+}
+
+func assertMCPBearerToken(t *testing.T, server *scriptedmcp.Server, token string) {
+	t.Helper()
+	requests := server.Requests()
+	if len(requests) == 0 {
+		t.Fatal("A11 MCP server received no authenticated requests")
+	}
+	want := "Bearer " + token
+	for index, request := range requests {
+		got := request.Header.Get("Authorization")
+		if got != want {
+			t.Fatalf("A11 MCP request %d bearer mismatch: present=%t length=%d", index, got != "", len(got))
+		}
+	}
 }
 
 func createRestoredLivePaths(t *testing.T, parentRoot, name string) livePaths {

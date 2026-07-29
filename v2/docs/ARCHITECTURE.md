@@ -329,6 +329,10 @@ A09 已在同两个 release 上把 allowlist 收敛为单个 rollout JSONL。pro
 
 A10 也已在同两个 release 上验证 mid-turn hard-crash边界。probe先把一个 completed turn的 rollout复制为独立、密封的 checkpoint，再从它启动第二个 app-server；scripted model在确认第二个 `turn/start` 已被接受、真实模型请求已包含本轮输入后保持 HTTP response未决，此时硬杀 child。该进程非正常退出，不重试模型请求，也无法改动独立 checkpoint。crash runtime随后被丢弃；第三个全新 `CODEX_HOME` 只恢复密封 rollout并显式创建新 turn。新 turn ID与被放弃 turn不同，模型上下文包含 crash前的 completed历史和新的继续指示，但不含被放弃输入。这证明的是系统允许的安全恢复路径，不是假设 stock Codex会拒绝调用方错误传入的未提交 crash rollout；core的 committed checkpoint pointer、attempt generation和 worker文件来源校验必须让该文件从一开始就不具备恢复资格。
 
+A11 已在同两个 release 上验证 runtime secret排除。source attempt在 config、auth、token、requirements decoy、log、env dump和 transport buffer文件中放入不同 sentinel，并通过 `bearer_token_env_var` 让一次性 MCP capability真实出现在每个 MCP bootstrap/tool HTTP request中。clean exit后这些源文件及 sentinel仍存在，但模型请求 body、stderr和 rollout均不含九个 runtime secret值；rollout仍完整保留用户、assistant、MCP call ID和安全 tool result。checkpoint staging严格只有该 rollout。恢复 attempt重新生成 config并换用新的 capability，native resume成功且不重放副作用，旧/新 capability都没有进入恢复模型上下文或新 rollout。这里的 requirements只是挑战 `CODEX_HOME` allowlist的 decoy；真实 system requirements仍由 A04 image-level gate负责。
+
+A11只检测非模型事实的意外渗漏。若 secret scan在 rollout中发现本不应进入模型历史的 runtime credential，必须拒绝/quarantine整个 checkpoint并把 run标为不可恢复，不能原位替换字节后继续声称 native resume。相反，用户输入或 MCP result中本来就模型可见的敏感内容不能由展示层过滤器擅自删除；应依靠输入/工具策略预防、加密存储、访问控制、retention和删除流程处理。
+
 worker 不持有对象存储 credential。它通过与 harness-pool 的同一 mTLS 连接内、有界的 checkpoint data substream 分块发送 manifest 和 staging 内容；harness-pool 施加大小/速率限制、复算逐块与整对象 hash 后上传，再请求 core 提交。上传或提交失败时对象不得成为可恢复 checkpoint，未引用对象按 retention job 清理。
 
 mid-turn crash 时只允许恢复上一个已由 core提交指针的 completed-turn checkpoint，当前 run 进入 `interrupted`；不能重放同一 `turn/start`，也不能扫描 crash runtime并把其中较新的 rollout冒充 checkpoint。后续用户明确继续时创建新 run/turn，并将已持久化的 execution terminal/unknown 结果作为显式上下文注入。
@@ -587,7 +591,7 @@ Phase 2 若需要多副本和跨 pod resume，必须先实现以下 owner routin
 - agentx 的 process output sequence 是每个 process 的传输/恢复游标，与本节的 run event `seq` 相互独立，不能直接复用。
 - ingestion 至少一次，`event_id` 和 producer key 双重去重；消费者不能依赖恰好一次投递。
 - 小 payload 存 Postgres；大 stdout/stderr、图片或制品先加密上传临时对象，事件事务只保存已验证的 hash、大小、media type 和内部对象 id。提交失败的 orphan 异步清理；不能持久化长期 presigned URL，读取仍需经过 core 授权与 retention policy。
-- 规范事件 payload 在持久化前做 secret/prompt policy 过滤。过滤后的事件不是模型恢复事实；完整、模型可见内容进入独立加密 checkpoint/conversation record，遵循 retention/删除策略。
+- 规范事件 payload 在持久化前做 secret/prompt policy 过滤。过滤后的事件不是模型恢复事实；完整、模型可见内容进入独立加密 checkpoint/conversation record，遵循 retention/删除策略。checkpoint secret scan只用于发现不应出现的 runtime credential并拒绝/quarantine对象，不能对模型可见 rollout做字节替换后冒充等价恢复。
 - 浏览器使用 `run_id + cursor` 重连；browser-gateway 因而可以无持久状态。cursor 已过 retention window 时返回明确 `cursor_expired` 和授权后的 run snapshot/rebase cursor，不能返回空流冒充无新事件。
 
 ### 10.2 两套上游协议不得混用

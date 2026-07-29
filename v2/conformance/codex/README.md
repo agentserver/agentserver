@@ -24,8 +24,8 @@ A06 client-controlled MCP form elicitation, its paused-tool-timeout behavior,
 and its never-policy negative control, A07 pending-elicitation interrupt cleanup,
 A08 graceful shutdown and stable state snapshots, A09 rollout-only completed-turn
 checkpoint recovery, A10 mid-turn hard-crash rollback to the last sealed
-checkpoint, E01 stdio/EOF, exec-server environment metadata, and these slices of
-the executor matrix:
+checkpoint, A11 runtime-secret exclusion and capability rotation, E01 stdio/EOF,
+exec-server environment metadata, and these slices of the executor matrix:
 
 - E02: deterministic argv/arg0, canonical cwd, exact non-inherited child
   environment, non-TTY and PTY streams, output/exit/close sequencing, and
@@ -203,6 +203,28 @@ not the abandoned input. This proves the safe recovery path and the need for an
 externally committed checkpoint pointer. It does not claim stock Codex will
 reject an uncommitted crash-runtime rollout if a caller incorrectly supplies
 one; harness/core fencing must make that file ineligible in the first place.
+
+A11 passes for both characterized 0.146.0 releases. The source attempt puts
+distinct sentinels in config, auth, token, requirements-decoy, log, environment
+dump, and transport-buffer files under `CODEX_HOME`. It also supplies an MCP
+capability through `bearer_token_env_var`; every observed MCP bootstrap and tool
+request carries that bearer, so the credential is exercised rather than inert.
+After clean exit the probe confirms every sentinel file still contains its
+marker, while model request bodies, stderr, and the app-server-reported rollout
+contain none of the nine runtime-secret values. The rollout still contains the
+user turns, assistant content, original MCP call ID, and safe tool result.
+
+Checkpoint staging is again exactly the one rollout JSONL. The source home is
+retired, a fresh attempt regenerates config, and MCP starts with a different
+rotated bearer. Native resume succeeds, does not replay the MCP side effect, and
+the next model request retains the model-visible history without either the old
+or new runtime credential. The requirements file in this probe is an adversarial
+`CODEX_HOME` decoy; A04 remains responsible for the real system requirements
+mount. A11 tests accidental runtime-secret ingress. It does not authorize
+byte-redacting content the user, model, or MCP deliberately put into model-visible
+history: an unexpected runtime secret must reject/quarantine the checkpoint,
+while model-visible content requires prevention, encryption, retention, and
+deletion policy rather than a lossy “native resume” rewrite.
 
 The probes also report candidate binary and canonical app-server schema
 fingerprints. Stock 0.145.0 was observed to randomize object-key order in one

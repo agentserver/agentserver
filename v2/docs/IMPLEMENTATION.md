@@ -246,7 +246,7 @@ conformance test 是 Go subprocess test，不依赖 v1 gateway：
 | A08 | graceful shutdown | turn terminal 与 outstanding reverse request清空后关闭 stdin，child 有界正常退出；rollout、SQLite/WAL 状态稳定，无固定 sleep |
 | A09 | checkpoint round-trip | 每个 brain thread只保存 app-server返回的单个 rollout JSONL；在全新目录 cold resume后，第二个 turn保留首 turn的模型可见 tool result且不重放 MCP副作用 |
 | A10 | mid-turn crash | 模型请求 in-flight时 hard-kill child；丢弃 crash runtime，只从上一个已提交 checkpoint创建不同的新 turn，且模型上下文不含被放弃 turn |
-| A11 | secret exclusion | config、requirements、token、auth、log、env dump 和临时 transport buffer 不进入 checkpoint |
+| A11 | secret exclusion | 实际使用并轮换 MCP bearer；config、requirements decoy、token、auth、log、env dump和 transport buffer sentinel不进入 rollout/checkpoint，模型可见历史仍完整 |
 | A12 | child isolation | app-server 看不到 worker mTLS credential/FD，cwd 无工作树，网络只能到 llmproxy/批准 MCP egress |
 
 A03 不能通过“配置看起来正确”判断。测试必须检查实际发送给模型的 tool schema，并让 scripted model尝试调用一个禁止工具，确认 app-server不能执行。
@@ -264,6 +264,10 @@ A08 已在 alpha.14 与 stable 0.146.0 上分别通过。probe完成一个非 ep
 A09 已在同两个 release 上通过。普通 completed turn可以跨 app-server进程 cold resume；包含真实 MCP tool result的 completed turn只需一个 app-server thread response返回的 rollout JSONL也可以恢复。probe在写新 config前断言新 `CODEX_HOME` 的 staging严格只有这个文件，并改名原 `CODEX_HOME` 使旧绝对路径不可用；新 attempt config单独生成。cold `thread/resume` 使用新 rollout path和 `excludeTurns: true`，其 RPC response就是恢复屏障，不等待不会出现的 `thread/started` notification。后续 `turn/start` 的模型请求包含两轮用户输入、原 MCP call ID和完整 tool result，且 MCP副作用没有重放。缺失 rollout时，`thread/resume` 在任何模型调用和 MCP初始化前以 `-32600` fail closed。因此当前 pinned allowlist是“每个 brain thread恰好一个 rollout JSONL”；`state_5.sqlite`、所有 SQLite WAL/SHM、goals/logs/memories DB以及 config都属于运行时派生或每 attempt重建状态，不进入 checkpoint。
 
 A10 已在同两个 release 上通过。probe先密封一个 completed-turn rollout，再从其副本启动第二个 app-server。scripted model的 hold-open response让测试无需 sleep就能精确停在“`turn/start` 已接受、模型请求已到达且包含本轮输入、模型尚未响应”的位置，然后 hard-kill child。进程非零退出，Responses request没有重试，独立密封 checkpoint的 mode/size/hash保持不变。测试不把 crash runtime交给 `thread/resume`，而是在第三个全新 `CODEX_HOME` 中只恢复密封 rollout并发起显式新 turn；新 turn ID不同，真实模型上下文包含 crash前 completed历史和新的继续输入，不含被放弃输入。该结论要求 core committed checkpoint pointer和 attempt fencing成为恢复文件来源的权威；不能推断 stock app-server会替系统识别并拒绝任意未提交 rollout。
+
+A11 已在同两个 release 上通过。source attempt把九个不同 sentinel分布在实际使用的 MCP bearer、config comment、auth、token、requirements decoy、log、env dump和 transport buffer中；每个 MCP bootstrap/tool HTTP request都携带环境变量提供的 bearer，排除“未使用 secret自然不泄漏”的伪通过。clean exit后逐个源文件复核 sentinel仍在，而 Responses request body、stderr和 rollout均不含任何 runtime secret；rollout仍保留用户/assistant内容、原 MCP call ID和安全 tool result。checkpoint staging严格只有 rollout。恢复时 source path失效，config重新生成，MCP bearer轮换为新值；native resume和第二 turn成功、不重放副作用，旧/新 bearer都不在模型上下文或新 rollout中。该 probe中的 requirements是 `CODEX_HOME` decoy，不替代 A04对真实 `/etc/codex/requirements.toml` 的 image-level测试。
+
+A11不允许对 rollout做 lossy脱敏。若 scan发现本不应模型可见的 runtime credential，checkpoint整体 fail closed/quarantine，run进入不可恢复状态；用户输入或 MCP result中已经模型可见的敏感内容则必须依靠前置策略、加密、访问控制、retention和删除处理，不能删除字节后仍称为 native resume。
 
 当前 0.145.0 candidate 的 bootstrap probe 进一步确认：assistant 内容在 `item/completed` 上到达，而 terminal `turn/completed` 是 `itemsView: notLoaded` 的空内容终态，harness-worker 必须持续归并 item 事件，不能只保存 terminal payload。`environments: []` 能去掉 shell/fs；固定本地 model catalog，并显式关闭 Web、goals、multi-agent、orchestrator skills、user-input 及其他已知 feature 后，实际 Responses request 的工具面可收敛到仅剩 `update_plan`。但官方 `rust-v0.145.0` tag（peeled commit `25af12f7e61572b0bc18ddb1008be543b91519b0`）的 `add_core_utility_tools` 无条件注册 `PlanHandler`，该版本没有对应 config 或 requirements 开关；scripted model 调用后实际收到成功的 `Plan updated` result，client 同时收到 `turn/plan/updated`。因此 0.145.0 明确不通过 A03，不能成为 production runtime pin。
 
@@ -287,6 +291,8 @@ A10 已在同两个 release 上通过。probe先密封一个 completed-turn roll
 10. 将该单 rollout集合固化为与 Codex build digest绑定的 checkpoint allowlist；升级 build必须重跑整套正反例，不能继承结论。
 
 A10 的 crash负向路径固定为：先把上一个 completed checkpoint复制到独立 staging并记录 hash；从副本启动一个新 attempt，在 hold-open model request已到达后 hard-kill app-server；确认 child非零退出、模型请求未重试且独立 staging未变化；删除整个 crash runtime。恢复时只能按 core已经提交的 checkpoint pointer重建第三个全新 `CODEX_HOME`，调用 `thread/resume`后创建不同的新 turn，并从下一次真实模型请求证明被放弃 turn不在历史中。禁止从 crash runtime扫描“看起来更新”的 rollout；A10不依赖 stock Codex替系统判断该文件是否已提交。
+
+A11 的 secret负向路径固定为：为每类 runtime-only来源生成不重叠 sentinel；对网络 credential必须从实际 MCP request header证明已使用；clean exit后先证明源文件/sentinel仍存在，再扫描模型 request body、stderr和 rollout。manifest/staging只能含单 rollout且复算 hash；恢复 attempt必须换用新 capability和重建 config，并再次扫描模型上下文与新 rollout。scan命中 runtime secret时拒绝整个 checkpoint，禁止原位改写 JSONL。
 
 如果只有打包整个 CODEX_HOME 才能 resume，Phase 0 失败；不能把敏感配置一并持久化来绕过。
 
@@ -781,7 +787,7 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 - capability只覆盖 max_run_duration + 短 grace。
 - child env中只允许目标 audience的短期 capability。
 - worker mTLS、对象存储和 Kubernetes credential不进入 child。
-- checkpoint/event/log统一 secret scan。
+- checkpoint/event/log统一执行 secret detection，但处置不同：event/log可按 policy过滤；checkpoint命中非模型 runtime credential时整体拒绝/quarantine，不能改写 rollout后冒充 native resume。
 - DB credential字段使用 KMS envelope encryption与 AAD。
 - presigned URL不持久化。
 

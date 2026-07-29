@@ -35,6 +35,19 @@ Digest rules:
   their raw tree digest is not a reproducible protocol identity.
 - `execProtocolSourceSha256` covers the explicitly pinned upstream protocol
   source allowlist. That allowlist will be committed with the production lock.
+- `execServerBounds` records release behavior established by E10. For the two
+  characterized 0.146 builds this is a 64 MiB stdio payload, 262,144 JSON
+  values, no dedicated argv/env limit beyond transport and the host process
+  API, 1 MiB/50,000-chunk retained output, 4,096 retained stdin write IDs, and
+  30,000 ms exited-process retention. A host `E2BIG` result is not a manifest
+  limit.
+- `agentxLimits` records the smaller product envelope that must be enforced
+  before writing to stock stdin: initially 8 MiB/65,536 JSON values, 256
+  argv-plus-arg0 elements and 16 KiB of their UTF-8 bytes, 256 final
+  non-inherited env variables and 16 KiB `name=value` bytes, 128-byte write IDs,
+  and an 8 MiB per-process raw-output buffer. Exact input byte accounting is
+  defined by the Go reference validator. A separately released agentx must run
+  the synced fixture against its own validator.
 
 `sourceUrl` must be a stable HTTPS release URL without credentials, query, or
 fragment. Release signing and SBOM verification belong to the outer agentx

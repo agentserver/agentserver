@@ -312,13 +312,26 @@ type livePaths struct {
 
 func startLiveCodex(t *testing.T, arguments ...string) (*codexprocess.Process, livePaths) {
 	t.Helper()
+	return startLiveCodexWithLifetime(t, liveProbeTimeout, arguments...)
+}
+
+func startLiveCodexWithLifetime(t *testing.T, lifetime time.Duration, arguments ...string) (*codexprocess.Process, livePaths) {
+	t.Helper()
 	binary, paths := prepareLiveCodex(t)
-	return startPreparedLiveCodex(t, binary, paths, arguments...), paths
+	return startPreparedLiveCodexWithLifetime(t, binary, paths, lifetime, arguments...), paths
 }
 
 func startPreparedLiveCodex(t *testing.T, binary string, paths livePaths, arguments ...string) *codexprocess.Process {
 	t.Helper()
-	processContext, cancelProcess := context.WithTimeout(context.Background(), liveProbeTimeout)
+	return startPreparedLiveCodexWithLifetime(t, binary, paths, liveProbeTimeout, arguments...)
+}
+
+func startPreparedLiveCodexWithLifetime(t *testing.T, binary string, paths livePaths, lifetime time.Duration, arguments ...string) *codexprocess.Process {
+	t.Helper()
+	if lifetime <= 0 {
+		t.Fatal("stock Codex process lifetime must be positive")
+	}
+	processContext, cancelProcess := context.WithTimeout(context.Background(), lifetime)
 	process, err := codexprocess.Start(processContext, codexprocess.Config{
 		Binary: binary,
 		Args:   arguments,
@@ -372,12 +385,17 @@ func closeAndWait(t *testing.T, process *codexprocess.Process) {
 	if err := process.CloseStdin(); err != nil {
 		t.Fatalf("close Codex stdin: %v", err)
 	}
+	waitForCleanCodexExit(t, process, "stdin EOF")
+}
+
+func waitForCleanCodexExit(t *testing.T, process *codexprocess.Process, cause string) {
+	t.Helper()
 	waitContext, cancelWait := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelWait()
 	if err := process.Wait(waitContext); err != nil {
 		_ = process.Kill()
 		stderr, truncated := process.Stderr()
-		t.Fatalf("Codex did not exit cleanly after stdin EOF: %v (stderr_truncated=%t)\nstderr: %s", err, truncated, stderr)
+		t.Fatalf("Codex did not exit cleanly after %s: %v (stderr_truncated=%t)\nstderr: %s", cause, err, truncated, stderr)
 	}
 	stderr, truncated := process.Stderr()
 	if truncated {

@@ -182,6 +182,25 @@ Phase 0 生成并提交 packaging/agentx/runtime-manifest.json，至少包含：
   "appServerSchemaSha256": "...",
   "appServerSchemaDigestAlgorithm": "canonical-json-tree-v1",
   "execProtocolSourceSha256": "...",
+  "execServerBounds": {
+    "maxStdioFrameBytes": 67108864,
+    "maxJsonValues": 262144,
+    "argvEnvLimit": "transport-and-platform-only",
+    "retainedOutputBytesPerProcess": 1048576,
+    "retainedOutputChunksPerProcess": 50000,
+    "retainedStdinWriteIdsPerProcess": 4096,
+    "exitedProcessRetentionMilliseconds": 30000
+  },
+  "agentxLimits": {
+    "maxFrameBytes": 8388608,
+    "maxJsonValues": 65536,
+    "maxArgvElements": 256,
+    "maxArgvBytes": 16384,
+    "maxEnvVariables": 256,
+    "maxEnvBytes": 16384,
+    "maxWriteIdBytes": 128,
+    "maxOutputBufferBytesPerProcess": 8388608
+  },
   "checkpointAllowlistVersion": 1,
   "agentxProtocolVersion": "2.0",
   "artifacts": {
@@ -323,9 +342,13 @@ Phase 0 的 exit criterion 是 A01–A12、E01–E10 全部可重复通过。任
 
 E05 用真实 child → executor-local HTTP proxy → bounded origin 链路固定了反向请求的 `{processId, request:{protocol,host,port}}` 形状：allow 恰好命中 origin 一次，deny/ask、RPC error、未知 decision、controller timeout 和 stdio EOF 均为零命中；reference agentx client 还对非法 known params 回复 `deny(not_allowed)`、对未知 reverse method 回复 `-32601`。stock 返回 `ask` 会立即得到 HTTP 403，不会暂停请求；`policyDecisionTimeoutMs` 之外还有固定 5 秒 transport margin，所以 agentx 必须在自己的 approval deadline 主动 allow/deny。
 
-E08 的当前 slice 证明隔离 `CODEX_HOME` 不读取毒化的用户 `~/.codex`，exec-server 自身持有的 sentinel credential 也不会进入缺省策略 child。E09 的 reference launch boundary 已经验证完整 artifact set 全部通过后才调用 starter、Codex 只使用绝对路径、ambient PATH 被替换、Codex/bwrap digest 或布局失败时零启动。上游实现同时确认 fs helper、arg0 exec helper 和 Linux sandbox alias 都重入当前 Codex；不能为它们虚构独立 digest。stock Linux launcher 却明确优先搜索 PATH 中的 system `bwrap`，再使用 bundled resource，因此 agentx profile 采用无 `codex-package.json` 的最小 bundle、不可存在的 PATH 目录和固定 `codex-resources/bwrap`，让 stock 只能落到已验证 bundled resource。该结论仍须在 production Linux image 中以 poisoned system PATH 和真实 sandbox 请求做正向 gate；Darwin host 测试不能把 E09 宣称为完整通过。E10 的当前 slice 实测 retained replay 只保留大输出最后约 1 MiB；frame、argv/env、write-id cache 和 exited-process retention 的完整 bound matrix 仍未完成。stdio EOF 会关闭唯一 connection、shutdown session 并回收 managed child，不能把它描述成可 detach/resume。
+E08 的当前 slice 证明隔离 `CODEX_HOME` 不读取毒化的用户 `~/.codex`，exec-server 自身持有的 sentinel credential 也不会进入缺省策略 child。E09 的 reference launch boundary 已经验证完整 artifact set 全部通过后才调用 starter、Codex 只使用绝对路径、ambient PATH 被替换、Codex/bwrap digest 或布局失败时零启动。上游实现同时确认 fs helper、arg0 exec helper 和 Linux sandbox alias 都重入当前 Codex；不能为它们虚构独立 digest。stock Linux launcher 却明确优先搜索 PATH 中的 system `bwrap`，再使用 bundled resource，因此 agentx profile 采用无 `codex-package.json` 的最小 bundle、不可存在的 PATH 目录和固定 `codex-resources/bwrap`，让 stock 只能落到已验证 bundled resource。该结论仍须在 production Linux image 中以 poisoned system PATH 和真实 sandbox 请求做正向 gate；Darwin host 测试不能把 E09 宣称为完整通过。stdio EOF 会关闭唯一 connection、shutdown session 并回收 managed child，不能把它描述成可 detach/resume。
 
-stable 0.146.0 同时新增两项明确拒绝证据。第一，`process/signal` 对 missing、delivered、already-exited 都返回不可区分的 `{}`，因此 E03 原验收失败。第二，根进程退出但后代继续持有 pipe 时，server 发出 `process/exited` 但不发 `process/closed`；随后 `process/terminate` 返回 `running: false` 且后代继续存活，直到整条 stdio connection 关闭才被回收，因此 E07 原验收失败。负向 conformance test 的 PASS 只表示稳定复现该缺口，不表示 E03/E07 放行。完整 Phase 0 当前明确被 A03、尚未实现 image 正向 job 的 A04/A12、E03、E07，以及尚缺 production Linux 正向 job 的 E09 阻断；E10 等未完成矩阵仍可能增加 blocker。E05 只是 stock 边界与 reference client contract 通过，真实 agentx 的 ownership 求交、approval channel 和审计仍须在 executor 纵向切片复用同一 fixture 验收。
+E10 已在 alpha.14 与 stable 0.146.0 上固定完整 stock bound matrix：stdio payload 恰好 64 MiB 可接受，增加一个 byte 会断开整条连接；JSON 恰好 262,144 个 value 可接受，第 262,145 个 value 只产生 message-scoped `-32600`，连接仍可继续；retained output 为每进程 1 MiB 并另有 50,000 chunk 上限；stdin dedupe 为每进程 4,096 个 write ID 的 FIFO；`process/closed` 后约 30 秒仍可 read，随后返回 unknown process 且同一 ID 可复用。`ExecParams`、`prepare_exec_request` 和 spawn 路径没有独立 argv/env count 或 byte guard，只有 transport 与宿主 process API 限制，因此本机 `E2BIG` 不是 wire bound。live negative control 也证明 stock 会接受超过产品上限但仍低于宿主上限的 argv/env。
+
+runtime manifest 因而分别保存 `execServerBounds` 与更小的 `agentxLimits`。首版 agentx 必须在转发前拒绝：inner frame 大于 8 MiB、JSON value 多于 65,536、argv 加可选 arg0 多于 256 项或 UTF-8 总计大于 16 KiB、最终物化且不继承的 env 多于 256 项或按 `name=value` 总计大于 16 KiB、write ID 大于 128 bytes；每进程 WSS delivery/resume raw-output buffer 为 8 MiB，溢出必须报告带 sequence range 的 `output_gap/buffer_overflow`。stock 约 1 MiB replay 不能替代该 buffer，也不能恢复已经溢出的外层序列。最坏响应无法装入较小 envelope 的 method，在具有请求级上限或分页协议前不得协商。reference input validator 已覆盖 argv/env/write ID 的每个恰好边界与第一个拒绝；真实 agentx 仍须在 Phase 2 compatibility suite 复用同一 fixture 证明 frame/JSON/input/output 限制执行在写入 child stdin 或耗尽 buffer 之前。
+
+stable 0.146.0 同时新增两项明确拒绝证据。第一，`process/signal` 对 missing、delivered、already-exited 都返回不可区分的 `{}`，因此 E03 原验收失败。第二，根进程退出但后代继续持有 pipe 时，server 发出 `process/exited` 但不发 `process/closed`；随后 `process/terminate` 返回 `running: false` 且后代继续存活，直到整条 stdio connection 关闭才被回收，因此 E07 原验收失败。负向 conformance test 的 PASS 只表示稳定复现该缺口，不表示 E03/E07 放行。完整 Phase 0 当前明确被 A03、尚未实现 image 正向 job 的 A04/A12、E03、E07，以及尚缺 production Linux 正向 job 的 E09 阻断。E10 的 stock/manifest/reference 边界已经关闭，但真实 agentx 的 bounds enforcement 与 E05 ownership 求交、approval channel、审计仍须在 executor 纵向切片复用同一 fixture 验收。
 
 ## 5. Core 状态内核
 

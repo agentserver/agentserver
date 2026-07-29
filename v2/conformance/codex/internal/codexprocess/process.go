@@ -128,6 +128,46 @@ func (p *Process) CloseStdin() error {
 	return p.stdinErr
 }
 
+// SendRawFrame writes one caller-constructed JSON-RPC frame without applying
+// codexwire's stock frame or JSON-complexity limits. It exists so negative live
+// probes can send the first byte beyond a stock boundary. Callers must not race
+// it with Peer.Send; CloseStdin is serialized with this method.
+func (p *Process) SendRawFrame(frame []byte) error {
+	if len(frame) == 0 {
+		return errors.New("raw Codex frame must not be empty")
+	}
+	if bytes.IndexByte(frame, '\n') >= 0 || bytes.IndexByte(frame, '\r') >= 0 {
+		return errors.New("raw Codex frame must not contain a line ending")
+	}
+
+	p.stdinMu.Lock()
+	defer p.stdinMu.Unlock()
+	if p.stdinEOF {
+		return io.ErrClosedPipe
+	}
+	if err := writeRawBytes(p.stdin, frame); err != nil {
+		return fmt.Errorf("write raw Codex frame: %w", err)
+	}
+	if err := writeRawBytes(p.stdin, []byte{'\n'}); err != nil {
+		return fmt.Errorf("terminate raw Codex frame: %w", err)
+	}
+	return nil
+}
+
+func writeRawBytes(writer io.Writer, data []byte) error {
+	for len(data) != 0 {
+		written, err := writer.Write(data)
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrShortWrite
+		}
+		data = data[written:]
+	}
+	return nil
+}
+
 func (p *Process) Kill() error {
 	if p.command.Process == nil {
 		return errors.New("Codex process was not started")

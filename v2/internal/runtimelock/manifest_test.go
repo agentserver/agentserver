@@ -64,6 +64,21 @@ func TestManifestSemanticValidation(t *testing.T) {
 		{name: "commit", mutate: func(m *Manifest) { m.CodexCommit = "HEAD" }, wantErr: "codexCommit"},
 		{name: "schema digest", mutate: func(m *Manifest) { m.AppServerSchemaSHA256 = strings.Repeat("A", 64) }, wantErr: "appServerSchemaSha256"},
 		{name: "schema digest algorithm", mutate: func(m *Manifest) { m.AppServerSchemaDigestAlgorithm = "raw-tree-v1" }, wantErr: "appServerSchemaDigestAlgorithm"},
+		{name: "stock frame bound", mutate: func(m *Manifest) { m.ExecServerBounds.MaxStdioFrameBytes = 0 }, wantErr: "maxStdioFrameBytes"},
+		{name: "stock JSON bound", mutate: func(m *Manifest) { m.ExecServerBounds.MaxJSONValues = 0 }, wantErr: "maxJsonValues"},
+		{name: "stock argv env bound kind", mutate: func(m *Manifest) { m.ExecServerBounds.ArgvEnvLimit = "host-arg-max" }, wantErr: "argvEnvLimit"},
+		{name: "stock retained output bytes", mutate: func(m *Manifest) { m.ExecServerBounds.RetainedOutputBytesPerProcess = 0 }, wantErr: "retainedOutputBytesPerProcess"},
+		{name: "stock retained output chunks", mutate: func(m *Manifest) { m.ExecServerBounds.RetainedOutputChunksPerProcess = 0 }, wantErr: "retainedOutputChunksPerProcess"},
+		{name: "stock retained write ids", mutate: func(m *Manifest) { m.ExecServerBounds.RetainedStdinWriteIDsPerProcess = 0 }, wantErr: "retainedStdinWriteIdsPerProcess"},
+		{name: "stock exited retention", mutate: func(m *Manifest) { m.ExecServerBounds.ExitedProcessRetentionMilliseconds = 0 }, wantErr: "exitedProcessRetentionMilliseconds"},
+		{name: "agentx frame above stock", mutate: func(m *Manifest) { m.AgentxLimits.MaxFrameBytes = m.ExecServerBounds.MaxStdioFrameBytes + 1 }, wantErr: "agentxLimits.maxFrameBytes"},
+		{name: "agentx JSON above stock", mutate: func(m *Manifest) { m.AgentxLimits.MaxJSONValues = m.ExecServerBounds.MaxJSONValues + 1 }, wantErr: "agentxLimits.maxJsonValues"},
+		{name: "agentx argv elements", mutate: func(m *Manifest) { m.AgentxLimits.MaxArgvElements = 0 }, wantErr: "agentxLimits.maxArgvElements"},
+		{name: "agentx argv bytes", mutate: func(m *Manifest) { m.AgentxLimits.MaxArgvBytes = 0 }, wantErr: "agentxLimits.maxArgvBytes"},
+		{name: "agentx env variables", mutate: func(m *Manifest) { m.AgentxLimits.MaxEnvVariables = 0 }, wantErr: "agentxLimits.maxEnvVariables"},
+		{name: "agentx env bytes", mutate: func(m *Manifest) { m.AgentxLimits.MaxEnvBytes = 0 }, wantErr: "agentxLimits.maxEnvBytes"},
+		{name: "agentx write id", mutate: func(m *Manifest) { m.AgentxLimits.MaxWriteIDBytes = 0 }, wantErr: "agentxLimits.maxWriteIdBytes"},
+		{name: "agentx output buffer", mutate: func(m *Manifest) { m.AgentxLimits.MaxOutputBufferBytesPerProcess = 0 }, wantErr: "agentxLimits.maxOutputBufferBytesPerProcess"},
 		{name: "checkpoint allowlist", mutate: func(m *Manifest) { m.CheckpointAllowlistVersion = 0 }, wantErr: "checkpointAllowlistVersion"},
 		{name: "protocol", mutate: func(m *Manifest) { m.AgentxProtocolVersion = "v2" }, wantErr: "agentxProtocolVersion"},
 		{name: "platform", mutate: func(m *Manifest) {
@@ -143,6 +158,7 @@ func TestRuntimeManifestJSONSchemaContract(t *testing.T) {
 		t.Fatal("runtime manifest schema must fail closed on unknown properties")
 	}
 	wantRequired := []string{
+		"agentxLimits",
 		"agentxProtocolVersion",
 		"appServerSchemaDigestAlgorithm",
 		"appServerSchemaSha256",
@@ -151,6 +167,7 @@ func TestRuntimeManifestJSONSchemaContract(t *testing.T) {
 		"codexCommit",
 		"codexRelease",
 		"execProtocolSourceSha256",
+		"execServerBounds",
 		"manifestVersion",
 	}
 	sort.Strings(schema.Required)
@@ -165,6 +182,54 @@ func TestRuntimeManifestJSONSchemaContract(t *testing.T) {
 	if strings.Join(propertyNames, "\n") != strings.Join(wantRequired, "\n") {
 		t.Fatalf("schema properties = %v, want exactly %v", propertyNames, wantRequired)
 	}
+
+	type objectDefinition struct {
+		AdditionalProperties *bool                      `json:"additionalProperties"`
+		Required             []string                   `json:"required"`
+		Properties           map[string]json.RawMessage `json:"properties"`
+	}
+	assertClosedDefinition := func(name string, wantFields []string) {
+		t.Helper()
+		var definition objectDefinition
+		if err := json.Unmarshal(schema.Definitions[name], &definition); err != nil {
+			t.Fatalf("decode %s schema: %v", name, err)
+		}
+		if definition.AdditionalProperties == nil || *definition.AdditionalProperties {
+			t.Fatalf("%s schema must fail closed on unknown properties", name)
+		}
+		sort.Strings(definition.Required)
+		sort.Strings(wantFields)
+		if strings.Join(definition.Required, "\n") != strings.Join(wantFields, "\n") {
+			t.Fatalf("%s required fields = %v, want %v", name, definition.Required, wantFields)
+		}
+		propertyNames := make([]string, 0, len(definition.Properties))
+		for propertyName := range definition.Properties {
+			propertyNames = append(propertyNames, propertyName)
+		}
+		sort.Strings(propertyNames)
+		if strings.Join(propertyNames, "\n") != strings.Join(wantFields, "\n") {
+			t.Fatalf("%s properties = %v, want exactly %v", name, propertyNames, wantFields)
+		}
+	}
+	assertClosedDefinition("execServerBounds", []string{
+		"argvEnvLimit",
+		"exitedProcessRetentionMilliseconds",
+		"maxJsonValues",
+		"maxStdioFrameBytes",
+		"retainedOutputBytesPerProcess",
+		"retainedOutputChunksPerProcess",
+		"retainedStdinWriteIdsPerProcess",
+	})
+	assertClosedDefinition("agentxLimits", []string{
+		"maxArgvBytes",
+		"maxArgvElements",
+		"maxEnvBytes",
+		"maxEnvVariables",
+		"maxFrameBytes",
+		"maxJsonValues",
+		"maxOutputBufferBytesPerProcess",
+		"maxWriteIdBytes",
+	})
 
 	var platformArtifacts struct {
 		AdditionalProperties *bool                      `json:"additionalProperties"`
@@ -200,8 +265,27 @@ func validManifest() Manifest {
 		AppServerSchemaSHA256:          strings.Repeat("b", 64),
 		AppServerSchemaDigestAlgorithm: AppServerSchemaDigestAlgorithmV1,
 		ExecProtocolSourceSHA256:       strings.Repeat("c", 64),
-		CheckpointAllowlistVersion:     1,
-		AgentxProtocolVersion:          "2.0",
+		ExecServerBounds: ExecServerBounds{
+			MaxStdioFrameBytes:                 64 * 1024 * 1024,
+			MaxJSONValues:                      256 * 1024,
+			ArgvEnvLimit:                       ArgvEnvLimitTransportAndPlatformOnly,
+			RetainedOutputBytesPerProcess:      1024 * 1024,
+			RetainedOutputChunksPerProcess:     50_000,
+			RetainedStdinWriteIDsPerProcess:    4096,
+			ExitedProcessRetentionMilliseconds: 30_000,
+		},
+		AgentxLimits: AgentxLimits{
+			MaxFrameBytes:                  8 * 1024 * 1024,
+			MaxJSONValues:                  64 * 1024,
+			MaxArgvElements:                256,
+			MaxArgvBytes:                   16 * 1024,
+			MaxEnvVariables:                256,
+			MaxEnvBytes:                    16 * 1024,
+			MaxWriteIDBytes:                128,
+			MaxOutputBufferBytesPerProcess: 8 * 1024 * 1024,
+		},
+		CheckpointAllowlistVersion: 1,
+		AgentxProtocolVersion:      "2.0",
 		Artifacts: map[string]PlatformArtifacts{
 			"linux-amd64": {
 				Codex: FileArtifact{

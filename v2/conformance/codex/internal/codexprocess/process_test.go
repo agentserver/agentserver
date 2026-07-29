@@ -95,6 +95,31 @@ func TestStartRejectsInheritedEnvironment(t *testing.T) {
 	}
 }
 
+func TestSendRawFrameWritesOneDelimitedFrameAndHonorsClose(t *testing.T) {
+	stdin := &recordingWriteCloser{}
+	process := &Process{stdin: stdin}
+	if err := process.SendRawFrame([]byte(`{"id":2,"method":"probe"}`)); err != nil {
+		t.Fatalf("SendRawFrame() error = %v", err)
+	}
+	if got, want := stdin.String(), "{\"id\":2,\"method\":\"probe\"}\n"; got != want {
+		t.Fatalf("raw stdin = %q, want %q", got, want)
+	}
+	for _, frame := range [][]byte{nil, []byte("{}\n"), []byte("{}\r")} {
+		if err := process.SendRawFrame(frame); err == nil {
+			t.Fatalf("SendRawFrame(%q) succeeded, want error", frame)
+		}
+	}
+	if err := process.CloseStdin(); err != nil {
+		t.Fatal(err)
+	}
+	if !stdin.closed {
+		t.Fatal("CloseStdin() did not close raw writer")
+	}
+	if err := process.SendRawFrame([]byte(`{}`)); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("SendRawFrame() after close error = %v, want io.ErrClosedPipe", err)
+	}
+}
+
 func TestEnvironmentIsSortedAndDoesNotInheritSecrets(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "must-not-be-inherited")
 	t.Setenv("CODEX_ACCESS_TOKEN", "must-not-be-inherited")
@@ -200,4 +225,14 @@ func TestCodexProcessHelper(t *testing.T) {
 	if _, err := decoder.Next(); !errors.Is(err, io.EOF) {
 		panic(fmt.Sprintf("expected stdin EOF, got %v", err))
 	}
+}
+
+type recordingWriteCloser struct {
+	strings.Builder
+	closed bool
+}
+
+func (w *recordingWriteCloser) Close() error {
+	w.closed = true
+	return nil
 }

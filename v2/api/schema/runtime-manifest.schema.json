@@ -11,6 +11,8 @@
     "appServerSchemaSha256",
     "appServerSchemaDigestAlgorithm",
     "execProtocolSourceSha256",
+    "execServerBounds",
+    "agentxLimits",
     "checkpointAllowlistVersion",
     "agentxProtocolVersion",
     "artifacts"
@@ -36,6 +38,12 @@
     "execProtocolSourceSha256": {
       "$ref": "#/$defs/sha256"
     },
+    "execServerBounds": {
+      "$ref": "#/$defs/execServerBounds"
+    },
+    "agentxLimits": {
+      "$ref": "#/$defs/agentxLimits"
+    },
     "checkpointAllowlistVersion": {
       "type": "integer",
       "minimum": 1
@@ -60,6 +68,112 @@
     "sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
+    },
+    "execServerBounds": {
+      "description": "Release-bound stock exec-server behavior. These values are not caller quotas.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxStdioFrameBytes",
+        "maxJsonValues",
+        "argvEnvLimit",
+        "retainedOutputBytesPerProcess",
+        "retainedOutputChunksPerProcess",
+        "retainedStdinWriteIdsPerProcess",
+        "exitedProcessRetentionMilliseconds"
+      ],
+      "properties": {
+        "maxStdioFrameBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1073741824
+        },
+        "maxJsonValues": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4194304
+        },
+        "argvEnvLimit": {
+          "const": "transport-and-platform-only"
+        },
+        "retainedOutputBytesPerProcess": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1073741824
+        },
+        "retainedOutputChunksPerProcess": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4194304
+        },
+        "retainedStdinWriteIdsPerProcess": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4194304
+        },
+        "exitedProcessRetentionMilliseconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600000
+        }
+      }
+    },
+    "agentxLimits": {
+      "description": "Smaller product limits enforced by agentx before forwarding to stock exec-server.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxFrameBytes",
+        "maxJsonValues",
+        "maxArgvElements",
+        "maxArgvBytes",
+        "maxEnvVariables",
+        "maxEnvBytes",
+        "maxWriteIdBytes",
+        "maxOutputBufferBytesPerProcess"
+      ],
+      "properties": {
+        "maxFrameBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1073741824
+        },
+        "maxJsonValues": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4194304
+        },
+        "maxArgvElements": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4194304
+        },
+        "maxArgvBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1073741824
+        },
+        "maxEnvVariables": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4194304
+        },
+        "maxEnvBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1073741824
+        },
+        "maxWriteIdBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1073741824
+        },
+        "maxOutputBufferBytesPerProcess": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967296
+        }
+      }
     },
     "fileArtifact": {
       "type": "object",

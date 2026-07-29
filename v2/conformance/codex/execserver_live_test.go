@@ -3,8 +3,10 @@ package codex_test
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -30,28 +32,76 @@ import (
 )
 
 const (
-	execChildModeEnvironment    = "AGENTSERVER_EXEC_CHILD_MODE"
-	execChildPIDFileEnvironment = "AGENTSERVER_EXEC_CHILD_PID_FILE"
-	execChildNetworkTargetEnv   = "AGENTSERVER_EXEC_CHILD_NETWORK_TARGET"
-	execChildOutputStdout       = "stdout:deterministic\n"
-	execChildOutputStderr       = "stderr:deterministic\n"
-	execChildEchoInput          = "deterministic-input\n"
-	execChildReadyOutput        = "ready\n"
-	execChildInterruptedOutput  = "interrupted\n"
-	execChildPTYOutput          = "tty:stdout|tty:stderr|"
-	execChildArgument           = "deterministic-argument"
-	execChildArg0               = "agentserver-deterministic-arg0"
-	execChildExpectedCWDEnv     = "AGENTSERVER_EXEC_CHILD_EXPECTED_CWD"
-	execChildInterruptExitCode  = 42
-	execChildRootCrashExitCode  = 43
-	execChildLargeOutputBytes   = (1 << 20) + (64 << 10)
-	execServerRetainedOutputMax = 1 << 20
-	execChildNetworkOriginBody  = "agentserver-e05-origin\n"
+	execChildModeEnvironment      = "AGENTSERVER_EXEC_CHILD_MODE"
+	execChildPIDFileEnvironment   = "AGENTSERVER_EXEC_CHILD_PID_FILE"
+	execChildNetworkTargetEnv     = "AGENTSERVER_EXEC_CHILD_NETWORK_TARGET"
+	execChildOutputStdout         = "stdout:deterministic\n"
+	execChildOutputStderr         = "stderr:deterministic\n"
+	execChildEchoInput            = "deterministic-input\n"
+	execChildReadyOutput          = "ready\n"
+	execChildInterruptedOutput    = "interrupted\n"
+	execChildPTYOutput            = "tty:stdout|tty:stderr|"
+	execChildArgument             = "deterministic-argument"
+	execChildArg0                 = "agentserver-deterministic-arg0"
+	execChildExpectedCWDEnv       = "AGENTSERVER_EXEC_CHILD_EXPECTED_CWD"
+	execChildInterruptExitCode    = 42
+	execChildRootCrashExitCode    = 43
+	execChildLargeOutputBytes     = (1 << 20) + (64 << 10)
+	execChildNetworkOriginBody    = "agentserver-e05-origin\n"
+	execChildWriteIDWindowOutput  = "write-id-window:4096\n"
+	execChildOversizedInputOutput = "stock-accepted-over-agentx-input-limits\n"
+	execChildTinyOutputByte       = byte('c')
+	execChildTinyOutputACK        = byte('a')
+
+	e10StockMaxStdioFrameBytes                 = codexwire.DefaultMaxFrameBytes
+	e10StockMaxJSONValues                      = codexwire.DefaultMaxJSONNodes
+	e10StockRetainedOutputBytesPerProcess      = 1024 * 1024
+	e10StockRetainedOutputChunksPerProcess     = 50_000
+	e10StockRetainedStdinWriteIDsPerProcess    = 4096
+	e10StockExitedProcessRetentionMilliseconds = 30_000
+	e10AgentxMaxFrameBytes                     = 8 * 1024 * 1024
+	e10AgentxMaxJSONValues                     = 64 * 1024
+	e10AgentxMaxArgvElements                   = 256
+	e10AgentxMaxArgvBytes                      = 16 * 1024
+	e10AgentxMaxEnvVariables                   = 256
+	e10AgentxMaxEnvBytes                       = 16 * 1024
+	e10AgentxMaxWriteIDBytes                   = 128
+	e10AgentxMaxOutputBufferBytesPerProcess    = 8 * 1024 * 1024
 )
 
 var e09CandidateCommits = map[string]string{
 	"0.146.0-alpha.14": "9d84cad281364eb7f6be75e23067b0adc5e26106",
 	"0.146.0":          "e363b08c9175ac1cbe5893615dd2cb9ddf95043b",
+}
+
+var e10CandidateBounds = map[string]runtimelock.ExecServerBounds{
+	"0.146.0-alpha.14": characterizedE10StockBounds(),
+	"0.146.0":          characterizedE10StockBounds(),
+}
+
+func characterizedE10StockBounds() runtimelock.ExecServerBounds {
+	return runtimelock.ExecServerBounds{
+		MaxStdioFrameBytes:                 e10StockMaxStdioFrameBytes,
+		MaxJSONValues:                      e10StockMaxJSONValues,
+		ArgvEnvLimit:                       runtimelock.ArgvEnvLimitTransportAndPlatformOnly,
+		RetainedOutputBytesPerProcess:      e10StockRetainedOutputBytesPerProcess,
+		RetainedOutputChunksPerProcess:     e10StockRetainedOutputChunksPerProcess,
+		RetainedStdinWriteIDsPerProcess:    e10StockRetainedStdinWriteIDsPerProcess,
+		ExitedProcessRetentionMilliseconds: e10StockExitedProcessRetentionMilliseconds,
+	}
+}
+
+func characterizedE10AgentxLimits() runtimelock.AgentxLimits {
+	return runtimelock.AgentxLimits{
+		MaxFrameBytes:                  e10AgentxMaxFrameBytes,
+		MaxJSONValues:                  e10AgentxMaxJSONValues,
+		MaxArgvElements:                e10AgentxMaxArgvElements,
+		MaxArgvBytes:                   e10AgentxMaxArgvBytes,
+		MaxEnvVariables:                e10AgentxMaxEnvVariables,
+		MaxEnvBytes:                    e10AgentxMaxEnvBytes,
+		MaxWriteIDBytes:                e10AgentxMaxWriteIDBytes,
+		MaxOutputBufferBytesPerProcess: e10AgentxMaxOutputBufferBytesPerProcess,
+	}
 }
 
 // TestMain lets a live exec-server launch the already-built Go test binary as
@@ -213,6 +263,47 @@ func runExecChild(mode string) int {
 			return reportExecChildError(fmt.Errorf("large output fixture has %d bytes", len(output)))
 		}
 		if _, err := os.Stdout.Write(output); err != nil {
+			return reportExecChildError(err)
+		}
+		return 0
+	case "write-id-window":
+		payload := make([]byte, e10StockRetainedStdinWriteIDsPerProcess+2)
+		if _, err := io.ReadFull(os.Stdin, payload); err != nil {
+			return reportExecChildError(err)
+		}
+		if !bytes.Equal(payload[:len(payload)-1], bytes.Repeat([]byte{'d'}, len(payload)-1)) || payload[len(payload)-1] != 'e' {
+			return reportExecChildError(fmt.Errorf("write-id payload = %q, want %d d bytes followed by e", payload, len(payload)-1))
+		}
+		if _, err := io.WriteString(os.Stdout, execChildWriteIDWindowOutput); err != nil {
+			return reportExecChildError(err)
+		}
+		return 0
+	case "tiny-output-chunks":
+		ack := []byte{0}
+		for index := 0; index < e10StockRetainedOutputChunksPerProcess+1; index++ {
+			if _, err := os.Stdout.Write([]byte{execChildTinyOutputByte}); err != nil {
+				return reportExecChildError(err)
+			}
+			if _, err := io.ReadFull(os.Stdin, ack); err != nil {
+				return reportExecChildError(err)
+			}
+			if ack[0] != execChildTinyOutputACK {
+				return reportExecChildError(fmt.Errorf("tiny-output ack = %q, want %q", ack[0], execChildTinyOutputACK))
+			}
+		}
+		return 0
+	case "oversized-input":
+		if len(os.Args) != e10AgentxMaxArgvElements+1 {
+			return reportExecChildError(fmt.Errorf("oversized argv count = %d, want %d", len(os.Args), e10AgentxMaxArgvElements+1))
+		}
+		if len(os.Args[1]) != e10AgentxMaxArgvBytes+1 || strings.Trim(os.Args[1], "a") != "" {
+			return reportExecChildError(fmt.Errorf("oversized argv payload has %d bytes", len(os.Args[1])))
+		}
+		oversizedEnvironment := os.Getenv("AGENTSERVER_E10_OVERSIZED_ENV")
+		if len(oversizedEnvironment) != e10AgentxMaxEnvBytes+1 || strings.Trim(oversizedEnvironment, "e") != "" {
+			return reportExecChildError(fmt.Errorf("oversized environment payload has %d bytes", len(oversizedEnvironment)))
+		}
+		if _, err := io.WriteString(os.Stdout, execChildOversizedInputOutput); err != nil {
 			return reportExecChildError(err)
 		}
 		return 0
@@ -1084,6 +1175,8 @@ func TestExecServerE09VerifiedLaunchExcludesAmbientPATH(t *testing.T) {
 		AppServerSchemaSHA256:          strings.Repeat("a", 64),
 		AppServerSchemaDigestAlgorithm: runtimelock.AppServerSchemaDigestAlgorithmV1,
 		ExecProtocolSourceSHA256:       strings.Repeat("b", 64),
+		ExecServerBounds:               e10CandidateBounds[release],
+		AgentxLimits:                   characterizedE10AgentxLimits(),
 		CheckpointAllowlistVersion:     1,
 		AgentxProtocolVersion:          "2.0",
 		Artifacts: map[string]runtimelock.PlatformArtifacts{
@@ -1154,6 +1247,14 @@ func TestExecServerE09VerifiedLaunchExcludesAmbientPATH(t *testing.T) {
 	}
 }
 
+func TestExecServerE10CandidateReleaseIsExplicitlyCharacterized(t *testing.T) {
+	binary, paths := prepareLiveCodex(t)
+	release := candidateRelease(t, binary, paths)
+	if _, characterized := e10CandidateBounds[release]; !characterized {
+		t.Fatalf("Codex %s has no explicit E10 bounds characterization", release)
+	}
+}
+
 func TestExecServerE10RetainedOutputReplayIsBounded(t *testing.T) {
 	process, paths := startLiveCodex(t, "exec-server", "--listen", "stdio", "--strict-config")
 	initializeExecServer(t, process)
@@ -1195,8 +1296,8 @@ func TestExecServerE10RetainedOutputReplayIsBounded(t *testing.T) {
 	if len(replayed.stderr) != 0 || len(replayed.pty) != 0 {
 		t.Fatalf("large output replay used unexpected streams: %+v", replayed)
 	}
-	if len(replayed.stdout) > execServerRetainedOutputMax || len(replayed.stdout) <= execServerRetainedOutputMax-8_192 {
-		t.Fatalf("retained output bytes = %d, want (%d, %d]", len(replayed.stdout), execServerRetainedOutputMax-8_192, execServerRetainedOutputMax)
+	if len(replayed.stdout) > e10StockRetainedOutputBytesPerProcess || len(replayed.stdout) <= e10StockRetainedOutputBytesPerProcess-8_192 {
+		t.Fatalf("retained output bytes = %d, want (%d, %d]", len(replayed.stdout), e10StockRetainedOutputBytesPerProcess-8_192, e10StockRetainedOutputBytesPerProcess)
 	}
 	wantSuffix := observed.stdout[len(observed.stdout)-len(replayed.stdout):]
 	if !bytes.Equal(replayed.stdout, wantSuffix) {
@@ -1204,6 +1305,390 @@ func TestExecServerE10RetainedOutputReplayIsBounded(t *testing.T) {
 	}
 
 	closeAndWait(t, process)
+}
+
+func TestExecServerE10RetainedOutputChunkLimitIs50000(t *testing.T) {
+	process, paths := startLiveCodexWithLifetime(t, 90*time.Second, "exec-server", "--listen", "stdio", "--strict-config")
+	initializeExecServer(t, process)
+	collector := newRPCCollector(process)
+	const processID = "tiny-output-chunks"
+	sendRPC(t, process, map[string]any{
+		"id":     2,
+		"method": "process/start",
+		"params": execStartParams(t, paths, processID, "tiny-output-chunks", true, nil),
+	})
+	mustDecodeResult(t, collector.response(t, "2"), &struct {
+		ProcessID string `json:"processId"`
+	}{})
+
+	for index := 0; index < e10StockRetainedOutputChunksPerProcess+1; index++ {
+		notification := collector.nextNotification(t)
+		if notification.Method != "process/output" {
+			t.Fatalf("tiny-output notification %d method = %q, want process/output", index, notification.Method)
+		}
+		var output struct {
+			ProcessID string `json:"processId"`
+			Seq       uint64 `json:"seq"`
+			Stream    string `json:"stream"`
+			Chunk     string `json:"chunk"`
+		}
+		if err := notification.DecodeParams(&output); err != nil {
+			t.Fatal(err)
+		}
+		chunk, err := base64.StdEncoding.DecodeString(output.Chunk)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if output.ProcessID != processID || output.Seq != uint64(index+1) || output.Stream != "stdout" || !bytes.Equal(chunk, []byte{execChildTinyOutputByte}) {
+			t.Fatalf("tiny-output notification %d = %+v chunk=%q", index, output, chunk)
+		}
+
+		requestID := index + 3
+		sendRPC(t, process, map[string]any{
+			"id":     requestID,
+			"method": "process/write",
+			"params": map[string]any{
+				"processId": processID,
+				"chunk":     base64.StdEncoding.EncodeToString([]byte{execChildTinyOutputACK}),
+				"writeId":   fmt.Sprintf("e10-chunk-ack-%05d", index),
+			},
+		})
+		assertWriteStatus(t, collector.response(t, strconv.Itoa(requestID)), "accepted")
+	}
+
+	var exitedSeq, closedSeq uint64
+	for terminalEvents := 0; terminalEvents < 2; terminalEvents++ {
+		notification := collector.nextNotification(t)
+		var terminal struct {
+			ProcessID string `json:"processId"`
+			Seq       uint64 `json:"seq"`
+			ExitCode  *int   `json:"exitCode"`
+		}
+		if err := notification.DecodeParams(&terminal); err != nil {
+			t.Fatal(err)
+		}
+		if terminal.ProcessID != processID {
+			t.Fatalf("tiny-output terminal processId = %q", terminal.ProcessID)
+		}
+		switch notification.Method {
+		case "process/exited":
+			if terminal.ExitCode == nil || *terminal.ExitCode != 0 {
+				t.Fatalf("tiny-output exit = %+v", terminal)
+			}
+			exitedSeq = terminal.Seq
+		case "process/closed":
+			closedSeq = terminal.Seq
+		default:
+			t.Fatalf("tiny-output terminal notification = %q", notification.Method)
+		}
+	}
+	wantExitedSeq := uint64(e10StockRetainedOutputChunksPerProcess + 2)
+	if exitedSeq != wantExitedSeq || closedSeq != wantExitedSeq+1 {
+		t.Fatalf("tiny-output terminal seqs: exited=%d closed=%d, want %d/%d", exitedSeq, closedSeq, wantExitedSeq, wantExitedSeq+1)
+	}
+
+	readRequestID := e10StockRetainedOutputChunksPerProcess + 4
+	sendRPC(t, process, map[string]any{
+		"id":     readRequestID,
+		"method": "process/read",
+		"params": map[string]any{"processId": processID, "afterSeq": 0, "waitMs": 0},
+	})
+	read := decodeProcessRead(t, collector.response(t, strconv.Itoa(readRequestID)))
+	if !read.Exited || !read.Closed || len(read.Chunks) != e10StockRetainedOutputChunksPerProcess {
+		t.Fatalf("tiny-output retained state: exited=%t closed=%t chunks=%d", read.Exited, read.Closed, len(read.Chunks))
+	}
+	if read.Chunks[0].Seq != 2 || read.Chunks[len(read.Chunks)-1].Seq != uint64(e10StockRetainedOutputChunksPerProcess+1) || read.NextSeq != closedSeq+1 {
+		t.Fatalf("tiny-output retained sequence: first=%d last=%d next=%d closed=%d", read.Chunks[0].Seq, read.Chunks[len(read.Chunks)-1].Seq, read.NextSeq, closedSeq)
+	}
+	for index, chunk := range read.Chunks {
+		decoded, err := base64.StdEncoding.DecodeString(chunk.Chunk)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if chunk.Stream != "stdout" || !bytes.Equal(decoded, []byte{execChildTinyOutputByte}) {
+			t.Fatalf("tiny-output retained chunk %d = stream %q bytes %q", index, chunk.Stream, decoded)
+		}
+	}
+	closeAndWait(t, process)
+}
+
+func TestExecServerE10StdioFrameBoundary(t *testing.T) {
+	t.Run("exact limit is accepted", func(t *testing.T) {
+		process, _ := startLiveCodexWithLifetime(t, 45*time.Second, "exec-server", "--listen", "stdio", "--strict-config")
+		initializeExecServer(t, process)
+		collector := newRPCCollector(process)
+		frame := e10PaddedUnknownRequest(t, 2, e10StockMaxStdioFrameBytes)
+		if err := process.SendRawFrame(frame); err != nil {
+			t.Fatalf("send exact-limit stdio frame: %v", err)
+		}
+		assertRPCErrorCode(t, collector.response(t, "2"), -32601, "does not implement")
+		closeAndWait(t, process)
+	})
+
+	t.Run("first byte over limit disconnects", func(t *testing.T) {
+		process, _ := startLiveCodexWithLifetime(t, 45*time.Second, "exec-server", "--listen", "stdio", "--strict-config")
+		initializeExecServer(t, process)
+		frame := e10PaddedUnknownRequest(t, 2, e10StockMaxStdioFrameBytes+1)
+		writeErr := process.SendRawFrame(frame)
+
+		receiveContext, cancelReceive := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancelReceive()
+		if message, err := process.Peer.Receive(receiveContext); err == nil {
+			t.Fatalf("over-limit stdio frame returned message %+v instead of disconnecting", message)
+		} else if !errors.Is(err, io.EOF) {
+			t.Fatalf("receive after over-limit stdio frame: %v (write_error=%v)", err, writeErr)
+		}
+		waitForCleanCodexExit(t, process, "over-limit stdio frame")
+		if err := process.CloseStdin(); err != nil && !errors.Is(err, os.ErrClosed) {
+			t.Fatalf("close local stdin after frame disconnect: %v", err)
+		}
+	})
+}
+
+func TestExecServerE10JSONComplexityBoundary(t *testing.T) {
+	process, _ := startLiveCodexWithLifetime(t, 30*time.Second, "exec-server", "--listen", "stdio", "--strict-config")
+	initializeExecServer(t, process)
+	collector := newRPCCollector(process)
+
+	exact := e10ComplexityRequest(t, 2, e10StockMaxJSONValues)
+	if err := process.SendRawFrame(exact); err != nil {
+		t.Fatalf("send exact JSON-value-limit frame: %v", err)
+	}
+	assertRPCErrorCode(t, collector.response(t, "2"), -32601, "does not implement")
+
+	over := e10ComplexityRequest(t, 3, e10StockMaxJSONValues+1)
+	if err := process.SendRawFrame(over); err != nil {
+		t.Fatalf("send over JSON-value-limit frame: %v", err)
+	}
+	assertRPCErrorCode(t, collector.response(t, "-1"), -32600, "exceeds the limit")
+
+	// Complexity rejection is message-scoped rather than a transport
+	// disconnect. A subsequent ordinary request must still succeed.
+	sendRPC(t, process, map[string]any{"id": 4, "method": "environment/status", "params": nil})
+	var status struct {
+		Status string `json:"status"`
+	}
+	mustDecodeResult(t, collector.response(t, "4"), &status)
+	if status.Status != "ready" {
+		t.Fatalf("environment/status after complexity rejection = %q, want ready", status.Status)
+	}
+	closeAndWait(t, process)
+}
+
+func TestExecServerE10StockDoesNotEnforceAgentxArgvEnvLimits(t *testing.T) {
+	process, paths := startLiveCodexWithLifetime(t, 30*time.Second, "exec-server", "--listen", "stdio", "--strict-config")
+	initializeExecServer(t, process)
+	collector := newRPCCollector(process)
+
+	params := execStartParams(t, paths, "over-agentx-input-limits", "oversized-input", false, map[string]string{
+		"AGENTSERVER_E10_OVERSIZED_ENV": strings.Repeat("e", e10AgentxMaxEnvBytes+1),
+	})
+	argv := make([]string, e10AgentxMaxArgvElements+1)
+	argv[0] = os.Args[0]
+	if !filepath.IsAbs(argv[0]) {
+		absolute, err := filepath.Abs(argv[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		argv[0] = absolute
+	}
+	argv[1] = strings.Repeat("a", e10AgentxMaxArgvBytes+1)
+	for index := 2; index < len(argv); index++ {
+		argv[index] = "x"
+	}
+	params["argv"] = argv
+	params["arg0"] = nil
+	environment := params["env"].(map[string]string)
+	if err := characterizedE10AgentxLimits().ValidateProcessStart(argv, nil, environment); err == nil {
+		t.Fatal("reference agentx limits accepted deliberately oversized argv/env")
+	}
+
+	sendRPC(t, process, map[string]any{"id": 2, "method": "process/start", "params": params})
+	mustDecodeResult(t, collector.response(t, "2"), &struct {
+		ProcessID string `json:"processId"`
+	}{})
+	events := collector.processEventsUntilClosed(t, "over-agentx-input-limits")
+	observed := assertCompletedProcessEvents(t, events, 0)
+	if !bytes.Equal(observed.stdout, []byte(execChildOversizedInputOutput)) || len(observed.stderr) != 0 || len(observed.pty) != 0 {
+		t.Fatalf("oversized-input child output = %+v", observed)
+	}
+	closeAndWait(t, process)
+}
+
+func TestExecServerE10WriteIDRetentionIs4096FIFO(t *testing.T) {
+	process, paths := startLiveCodexWithLifetime(t, 45*time.Second, "exec-server", "--listen", "stdio", "--strict-config")
+	initializeExecServer(t, process)
+	collector := newRPCCollector(process)
+	sendRPC(t, process, map[string]any{
+		"id":     2,
+		"method": "process/start",
+		"params": execStartParams(t, paths, "write-id-window", "write-id-window", true, nil),
+	})
+	mustDecodeResult(t, collector.response(t, "2"), &struct {
+		ProcessID string `json:"processId"`
+	}{})
+
+	nextRequestID := 3
+	sendWrite := func(writeID string, chunk byte) {
+		t.Helper()
+		requestID := nextRequestID
+		nextRequestID++
+		sendRPC(t, process, map[string]any{
+			"id":     requestID,
+			"method": "process/write",
+			"params": map[string]any{
+				"processId": "write-id-window",
+				"chunk":     base64.StdEncoding.EncodeToString([]byte{chunk}),
+				"writeId":   "e10-write-" + writeID,
+			},
+		})
+		assertWriteStatus(t, collector.response(t, strconv.Itoa(requestID)), "accepted")
+	}
+
+	for index := 0; index < e10StockRetainedStdinWriteIDsPerProcess+1; index++ {
+		sendWrite(strconv.Itoa(index), 'd')
+	}
+	// After 4097 distinct ids, id 1 is the oldest retained entry while id 0
+	// has been evicted. A retained retry must not write 'r'; the evicted retry
+	// must write the final 'e' byte that lets the child finish.
+	sendWrite("1", 'r')
+	sendWrite("0", 'e')
+
+	events := collector.processEventsUntilClosed(t, "write-id-window")
+	observed := assertCompletedProcessEvents(t, events, 0)
+	if !bytes.Equal(observed.stdout, []byte(execChildWriteIDWindowOutput)) || len(observed.stderr) != 0 || len(observed.pty) != 0 {
+		t.Fatalf("write-id-window child output = %+v", observed)
+	}
+	closeAndWait(t, process)
+}
+
+func TestExecServerE10ExitedProcessRetentionIs30Seconds(t *testing.T) {
+	process, paths := startLiveCodexWithLifetime(t, 55*time.Second, "exec-server", "--listen", "stdio", "--strict-config")
+	initializeExecServer(t, process)
+	collector := newRPCCollector(process)
+	const processID = "retained-exited-process"
+	sendRPC(t, process, map[string]any{
+		"id":     2,
+		"method": "process/start",
+		"params": execStartParams(t, paths, processID, "output", false, nil),
+	})
+	mustDecodeResult(t, collector.response(t, "2"), &struct {
+		ProcessID string `json:"processId"`
+	}{})
+	events := collector.processEventsUntilClosed(t, processID)
+	assertCompletedProcessEvents(t, events, 0)
+	closedObservedAt := time.Now()
+
+	sendRPC(t, process, map[string]any{
+		"id":     3,
+		"method": "process/read",
+		"params": map[string]any{"processId": processID, "afterSeq": 0, "waitMs": 0},
+	})
+	if immediate := decodeProcessRead(t, collector.response(t, "3")); !immediate.Exited || !immediate.Closed {
+		t.Fatalf("immediate retained process/read = %+v", immediate)
+	}
+
+	lowerBound := time.Duration(e10StockExitedProcessRetentionMilliseconds-2_000) * time.Millisecond
+	upperBound := time.Duration(e10StockExitedProcessRetentionMilliseconds+8_000) * time.Millisecond
+	timer := time.NewTimer(lowerBound)
+	defer timer.Stop()
+	<-timer.C
+	sendRPC(t, process, map[string]any{
+		"id":     4,
+		"method": "process/read",
+		"params": map[string]any{"processId": processID, "afterSeq": 0, "waitMs": 0},
+	})
+	if retained := collector.response(t, "4"); retained.Kind != codexwire.KindResponse {
+		t.Fatalf("closed process was evicted before %s: %+v", lowerBound, retained.Error)
+	}
+
+	requestID := 5
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	var evictedAfter time.Duration
+	for evictedAfter == 0 {
+		if elapsed := time.Since(closedObservedAt); elapsed > upperBound {
+			t.Fatalf("closed process remained readable after %s", elapsed)
+		}
+		<-ticker.C
+		sendRPC(t, process, map[string]any{
+			"id":     requestID,
+			"method": "process/read",
+			"params": map[string]any{"processId": processID, "afterSeq": 0, "waitMs": 0},
+		})
+		response := collector.response(t, strconv.Itoa(requestID))
+		requestID++
+		if response.Kind == codexwire.KindResponse {
+			continue
+		}
+		assertRPCErrorCode(t, response, -32600, "unknown process id")
+		evictedAfter = time.Since(closedObservedAt)
+	}
+	if evictedAfter < lowerBound || evictedAfter > upperBound {
+		t.Fatalf("closed process eviction observed after %s, want [%s, %s]", evictedAfter, lowerBound, upperBound)
+	}
+
+	// Eviction removes the process-map key, so the same logical id becomes
+	// reusable rather than referring to stale terminal state.
+	sendRPC(t, process, map[string]any{
+		"id":     requestID,
+		"method": "process/start",
+		"params": execStartParams(t, paths, processID, "output", false, nil),
+	})
+	mustDecodeResult(t, collector.response(t, strconv.Itoa(requestID)), &struct {
+		ProcessID string `json:"processId"`
+	}{})
+	assertCompletedProcessEvents(t, collector.processEventsUntilClosed(t, processID), 0)
+	closeAndWait(t, process)
+}
+
+func e10PaddedUnknownRequest(t *testing.T, requestID, frameBytes int) []byte {
+	t.Helper()
+	prefix := []byte(fmt.Sprintf(`{"id":%d,"method":"e10/padded","params":{"padding":"`, requestID))
+	suffix := []byte(`"}}`)
+	paddingBytes := frameBytes - len(prefix) - len(suffix)
+	if paddingBytes < 0 {
+		t.Fatalf("E10 frame bound %d is too small for fixture", frameBytes)
+	}
+	frame := make([]byte, 0, frameBytes)
+	frame = append(frame, prefix...)
+	paddingStart := len(frame)
+	frame = frame[:paddingStart+paddingBytes]
+	for index := paddingStart; index < len(frame); index++ {
+		frame[index] = 'p'
+	}
+	frame = append(frame, suffix...)
+	if len(frame) != frameBytes {
+		t.Fatalf("E10 padded frame bytes = %d, want %d", len(frame), frameBytes)
+	}
+	return frame
+}
+
+func e10ComplexityRequest(t *testing.T, requestID, valueNodes int) []byte {
+	t.Helper()
+	// Root object, id, method, and params array consume four values. Object
+	// keys do not consume the stock serde value-node budget.
+	arrayValues := valueNodes - 4
+	if arrayValues < 0 {
+		t.Fatalf("E10 JSON value bound %d is too small for fixture", valueNodes)
+	}
+	frame := make([]byte, 0, 64+arrayValues*5)
+	frame = append(frame, fmt.Sprintf(`{"id":%d,"method":"e10/complexity","params":[`, requestID)...)
+	for index := 0; index < arrayValues; index++ {
+		if index != 0 {
+			frame = append(frame, ',')
+		}
+		frame = append(frame, "null"...)
+	}
+	frame = append(frame, ']', '}')
+	return frame
+}
+
+func assertRPCErrorCode(t *testing.T, message codexwire.Message, code int64, contains string) {
+	t.Helper()
+	if message.Kind != codexwire.KindError || message.Error == nil || message.Error.Code != code || !strings.Contains(message.Error.Message, contains) {
+		t.Fatalf("RPC message = %+v, want error %d containing %q", message, code, contains)
+	}
 }
 
 func copyE09Executable(t *testing.T, sourcePath, bundleRoot, relativePath, release string) runtimelock.FileArtifact {

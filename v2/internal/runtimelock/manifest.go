@@ -42,6 +42,8 @@ type Manifest struct {
 	AppServerSchemaSHA256          string                       `json:"appServerSchemaSha256"`
 	AppServerSchemaDigestAlgorithm string                       `json:"appServerSchemaDigestAlgorithm"`
 	ExecProtocolSourceSHA256       string                       `json:"execProtocolSourceSha256"`
+	ExecServerBounds               ExecServerBounds             `json:"execServerBounds"`
+	AgentxLimits                   AgentxLimits                 `json:"agentxLimits"`
 	CheckpointAllowlistVersion     int                          `json:"checkpointAllowlistVersion"`
 	AgentxProtocolVersion          string                       `json:"agentxProtocolVersion"`
 	Artifacts                      map[string]PlatformArtifacts `json:"artifacts"`
@@ -101,6 +103,12 @@ func (m Manifest) Validate() error {
 		return fmt.Errorf("appServerSchemaDigestAlgorithm must be %q", AppServerSchemaDigestAlgorithmV1)
 	}
 	if err := validateDigest("execProtocolSourceSha256", m.ExecProtocolSourceSHA256); err != nil {
+		return err
+	}
+	if err := m.ExecServerBounds.validate(); err != nil {
+		return err
+	}
+	if err := m.AgentxLimits.validate(m.ExecServerBounds); err != nil {
 		return err
 	}
 	if m.CheckpointAllowlistVersion < 1 {

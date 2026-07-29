@@ -436,6 +436,8 @@ agentx 在请求进入 stdio exec-server 前执行第一层校验，exec-server 
 - agentx 的 credential、WSS、keychain 和内部 pipe/file descriptor 必须 close-on-exec 且对子进程不可访问；需测试 ptrace、`/proc`、signal、继承 FD 和本地 socket 攻击；
 - BYO 机器的 root/本机 owner 能控制 agentx，属于明确的信任边界；但工作树中的不可信代码不能因此获得 executor 机器身份。
 
+这些限制不能从 stock 的宿主失败反推。当前 pinned `ExecParams` 和 launch 路径没有独立 argv/env count/byte guard；64 MiB stdio frame、262,144 JSON value 与宿主 `exec`/`CreateProcess` 限制是三种不同边界，本机 `E2BIG` 不是可移植协议。runtime manifest 分开记录 stock `execServerBounds` 和 agentx `agentxLimits`。首版 agentx 在写 child stdin 前强制 inner frame ≤ 8 MiB、JSON value ≤ 65,536、argv 加可选 arg0 ≤ 256 项且 UTF-8 内容总计 ≤ 16 KiB、最终物化且不继承的 env ≤ 256 项并按 UTF-8 `name=value` 总计 ≤ 16 KiB、write ID ≤ 128 bytes。remote/gateway 还可施加更小 workspace policy，但不能放宽 manifest 上限。
+
 ## 9. agentx 接入与 exec-server 转接协议
 
 ### 9.1 Enrollment
@@ -552,6 +554,10 @@ JSON-RPC request id 只用于关联响应，不等于副作用幂等。协议还
 agentx 在一个 `exec_session_id` 的 grace period 内维护有界的 `mutationKey → pending/completed response` journal。重复 key 返回同一结果或 pending 状态，不再转发给 child；journal 丢失、child crash 或无法判断是否已执行时返回 `ambiguous`。该 journal 不是跨 agentx 重启的“恰好一次”承诺。
 
 外层 session sequence 覆盖 response、notification、reverse request 和 lifecycle，不只覆盖 process output。agentx 必须持续读取 child stdout，不能因为 WSS backpressure 停止排空 pipe；缓存超限时产生带丢失范围的 `output_gap/buffer_overflow`，不能静默截断。当前 pinned stock child 的 retained output 上限和 exited-process retention 必须写入 manifest/conformance fixture；不能把 upstream 的有限 `process/read` replay 当作无限恢复日志。
+
+当前两个 characterized release 的 stock retained replay 是每进程 1 MiB，并有 50,000 chunk 的次级上限；stdin dedupe cache 是每进程 4,096 个 write ID 的 FIFO；closed process 约保留 30 秒后删除并允许复用 process ID。agentx 的外层 per-process raw-output delivery/resume buffer 独立设为 8 MiB。超过它不允许退回 stock replay后假装 session sequence 连续：必须标出确切 lost sequence range，并让依赖完整输出的 operation 进入明确的 incomplete/overflow 终态。还必须设置每 connection/global output quota，避免多个 process 各自合法地耗尽节点内存。
+
+stock 能生成的响应不天然受 8 MiB/65,536-value 产品 envelope 约束。agentx capability negotiation 必须排除最坏响应可能超限且没有请求级 cap/分页的 method；不能先请求，再以关闭本地 stdio 作为正常的限流策略。
 
 stdio child 只服务一条本地连接，pipe EOF 后 processor shutdown，不能由新的 agentx 重新 attach。`resumeSessionId` 只属于 agentx 外层 WSS；agentx 或 child crash 后必须创建新的 `local_exec_instance_id`，旧 process/fs handle 全部失效。
 

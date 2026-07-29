@@ -58,9 +58,16 @@ environment metadata, and these slices of the executor matrix:
   layout failure. Both characterized Darwin releases start a real copied stock
   exec-server from the minimal verified layout while poison `codex`, `bwrap`,
   and `rg` sentinels on the supplied PATH remain untouched;
-- E10: a bounded slice proves that replay retains only the final approximately
-  1 MiB suffix of a larger streamed output. Frame, argv/env, write-id, and exited
-  process retention bounds remain open.
+- E10: both characterized releases accept a stdio JSON-RPC payload of exactly
+  64 MiB and disconnect on the first byte above it; they accept exactly 262,144
+  JSON values and reject the next value as one malformed message without
+  disconnecting. Stock has no dedicated argv/env count or byte guard and a
+  negative control proves that it accepts a request above the smaller agentx
+  limits. Replay retains the final approximately 1 MiB suffix and exactly
+  50,000 one-byte chunks in the handshake probe, stdin dedupe retains exactly
+  4,096 write IDs FIFO, and a closed process remains readable for approximately
+  30 seconds before its ID becomes reusable. These stock facts and the smaller
+  agentx product limits are required runtime-manifest fields.
 
 The process probe deliberately accepts a `process/start` response arriving
 after early output notifications and uses the one-based event sequence as the
@@ -89,6 +96,26 @@ bundled resource. A production Linux image must still run a real sandboxed fs
 or process request with a poisoned host PATH and prove which bwrap executes.
 The Darwin live result cannot supply that evidence or close the safe-open/exec
 TOCTOU requirement.
+
+E10 deliberately separates upstream facts from product admission. The stock
+`ExecParams` deserializer and launch path clone `argv` and `env` without a
+dedicated size/count check; only frame/JSON parsing and the eventual host spawn
+limit apply. A Darwin or Linux `E2BIG` result therefore cannot become a portable
+wire contract. The initial agentx envelope rejects inner frames above 8 MiB,
+messages above 65,536 JSON values, argv plus optional arg0 above 256 elements or
+16 KiB of UTF-8 content, env above 256 variables or 16 KiB of UTF-8
+`name=value` content, and
+write IDs above 128 bytes. The reference validator proves every exact boundary
+and first rejection. Stock itself accepts the deliberately oversized argv/env
+negative control, proving that forwarding without agentx validation is unsafe.
+
+The manifest also sets agentx's per-process raw-output delivery/resume buffer to
+8 MiB. That is distinct from stock's approximately 1 MiB `process/read` replay
+and is not an unlimited log. Agentx must keep draining child stdout; overflow
+produces an explicit `output_gap/buffer_overflow` with the lost sequence range.
+Methods whose maximum response cannot fit the smaller agentx frame/complexity
+envelope must not be negotiated until they have a request-specific cap or a
+paginated contract.
 
 On the observed 0.145.0 candidate, assistant content is authoritative on
 `item/completed`; the terminal `turn/completed` has `itemsView: notLoaded` and

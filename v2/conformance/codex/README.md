@@ -20,8 +20,9 @@ turn/completed`), A02 experimental gating for `environments: []` in both
 directions, A03 tool-surface and dispatch characterization through a bounded
 sessionless Streamable HTTP MCP server, the A04 managed-requirements injection
 boundary, A05 no-double-approval behavior and its prompt-mode positive control,
-E01 stdio/EOF, exec-server environment metadata, and these slices of the
-executor matrix:
+A06 client-controlled MCP form elicitation and its never-policy negative
+control, E01 stdio/EOF, exec-server environment metadata, and these slices of
+the executor matrix:
 
 - E02: deterministic argv/arg0, canonical cwd, exact non-inherited child
   environment, non-TTY and PTY streams, output/exit/close sequencing, and
@@ -121,8 +122,21 @@ app-server reverse request. Its positive control changes only the server default
 to `prompt`, captures `mcpServer/elicitation/request` with
 `codex_approval_kind = "mcp_tool_call"`, cancels it, and proves that
 `tools/call` is not sent. This establishes the Codex side of the single-approval
-design; A06 must still prove that an elicitation initiated by executor-gateway
-travels in the opposite direction and remains client-controlled.
+design. The separate A06 probe below establishes the reverse direction rather
+than treating A05 as evidence for both flows.
+
+A06 passes for the characterized 0.146.0 releases. During a real model-driven
+`tools/call`, the fake MCP server holds the Streamable HTTP response open,
+emits a standard `elicitation/create` request over SSE, receives Codex's
+separate JSON-RPC response POST, and only then completes the original tool
+call. Under the granular policy, app-server forwards the typed form schema,
+execution metadata, thread, turn, and server identity to its client. Separate
+live cases return `accept`, `decline`, and `cancel`; each action reaches MCP,
+`serverRequest/resolved` precedes turn completion, and the resulting tool
+output reaches the next model request. With the same non-empty form under
+`approval_policy = "never"`, Codex emits no reverse request and returns
+`decline` directly to MCP. A07 must still prove interrupt-time cleanup while
+that reverse request is pending.
 
 The probes also report candidate binary and canonical app-server schema
 fingerprints. Stock 0.145.0 was observed to randomize object-key order in one

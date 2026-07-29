@@ -1,11 +1,13 @@
 // Package scriptedmcp provides a bounded, sessionless Streamable HTTP MCP
 // server for stock Codex conformance probes. It implements only the MCP
 // initialize, initialized notification, tools/list, and tools/call flow needed
-// by the probes and fails closed on every other method.
+// by the probes, plus a bounded server-originated elicitation during a scripted
+// tool call. It fails closed on every other method.
 package scriptedmcp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +29,7 @@ const (
 	maxExpectedCalls        = 64
 	maxRecordedRequests     = 256
 	maxRecordedFailures     = 64
+	elicitationWaitTimeout  = 4 * time.Second
 )
 
 // Tool is one tool advertised by tools/list. InputSchema and, when present,
@@ -40,12 +43,23 @@ type Tool struct {
 	Annotations json.RawMessage
 }
 
+// ExpectedElicitation scripts one server-to-client elicitation/create request
+// made while a tools/call request is in flight. ID must be a non-empty JSON
+// string. Params and Response must be JSON objects.
+type ExpectedElicitation struct {
+	ID       json.RawMessage
+	Params   json.RawMessage
+	Response json.RawMessage
+}
+
 // ExpectedCall scripts one tools/call request and its deterministic result.
-// Arguments and Result must both be JSON objects.
+// Arguments and Result must both be JSON objects. When Elicitation is set, the
+// result is sent only after the expected client response arrives.
 type ExpectedCall struct {
-	Name      string
-	Arguments json.RawMessage
-	Result    json.RawMessage
+	Name        string
+	Arguments   json.RawMessage
+	Result      json.RawMessage
+	Elicitation *ExpectedElicitation
 }
 
 type Config struct {
@@ -60,6 +74,7 @@ type Request struct {
 	Path      string
 	Header    http.Header
 	Body      []byte
+	// RPCMethod is empty for a JSON-RPC response to a scripted elicitation.
 	RPCMethod string
 }
 
@@ -68,6 +83,18 @@ type Call struct {
 	Name      string
 	Arguments json.RawMessage
 	Meta      json.RawMessage
+}
+
+// ElicitationResponse is one client response to a scripted
+// elicitation/create request.
+type ElicitationResponse struct {
+	ID     json.RawMessage
+	Result json.RawMessage
+}
+
+type pendingElicitation struct {
+	expected json.RawMessage
+	result   chan json.RawMessage
 }
 
 type Server struct {
@@ -85,6 +112,8 @@ type Server struct {
 	nextExpectedCall int
 	requests         []Request
 	calls            []Call
+	elicitations     []ElicitationResponse
+	pending          map[string]*pendingElicitation
 	failures         []string
 }
 
@@ -155,6 +184,7 @@ func newServer(config Config) (*Server, error) {
 	}
 
 	expectedCalls := make([]ExpectedCall, len(config.ExpectedCalls))
+	elicitationIDs := make(map[string]struct{})
 	for index, call := range config.ExpectedCalls {
 		if _, exists := toolNames[call.Name]; !exists {
 			return nil, fmt.Errorf("scripted MCP expected call %d references unknown tool %q", index, call.Name)
@@ -168,6 +198,30 @@ func newServer(config Config) (*Server, error) {
 		if len(call.Result) > defaultMaxResponseBytes {
 			return nil, fmt.Errorf("scripted MCP expected call %d result exceeds %d bytes", index, defaultMaxResponseBytes)
 		}
+		if call.Elicitation != nil {
+			elicitation := *call.Elicitation
+			if !nonEmptyJSONString(elicitation.ID) {
+				return nil, fmt.Errorf("scripted MCP expected call %d elicitation id must be a non-empty JSON string", index)
+			}
+			elicitationID := string(bytes.TrimSpace(elicitation.ID))
+			if _, duplicate := elicitationIDs[elicitationID]; duplicate {
+				return nil, fmt.Errorf("duplicate scripted MCP elicitation id %s", elicitationID)
+			}
+			if !jsonObject(elicitation.Params) {
+				return nil, fmt.Errorf("scripted MCP expected call %d elicitation params must be a JSON object", index)
+			}
+			if !jsonObject(elicitation.Response) {
+				return nil, fmt.Errorf("scripted MCP expected call %d elicitation response must be a JSON object", index)
+			}
+			if len(elicitation.Params)+len(elicitation.Response) > defaultMaxResponseBytes {
+				return nil, fmt.Errorf("scripted MCP expected call %d elicitation exceeds %d bytes", index, defaultMaxResponseBytes)
+			}
+			elicitationIDs[elicitationID] = struct{}{}
+			elicitation.ID = append(json.RawMessage(nil), elicitation.ID...)
+			elicitation.Params = append(json.RawMessage(nil), elicitation.Params...)
+			elicitation.Response = append(json.RawMessage(nil), elicitation.Response...)
+			call.Elicitation = &elicitation
+		}
 		call.Arguments = append(json.RawMessage(nil), call.Arguments...)
 		call.Result = append(json.RawMessage(nil), call.Result...)
 		expectedCalls[index] = call
@@ -177,6 +231,7 @@ func newServer(config Config) (*Server, error) {
 		maxRequestBytes: config.MaxRequestBytes,
 		tools:           tools,
 		expectedCalls:   expectedCalls,
+		pending:         make(map[string]*pendingElicitation),
 	}
 	result.server = &http.Server{
 		Handler:           http.HandlerFunc(result.serveHTTP),
@@ -229,6 +284,18 @@ func (s *Server) Calls() []Call {
 	return calls
 }
 
+func (s *Server) ElicitationResponses() []ElicitationResponse {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	responses := make([]ElicitationResponse, len(s.elicitations))
+	for index, response := range s.elicitations {
+		response.ID = append(json.RawMessage(nil), response.ID...)
+		response.Result = append(json.RawMessage(nil), response.Result...)
+		responses[index] = response
+	}
+	return responses
+}
+
 func (s *Server) Failures() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -271,9 +338,23 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 		ID      json.RawMessage `json:"id"`
 		Method  string          `json:"method"`
 		Params  json.RawMessage `json:"params"`
+		Result  json.RawMessage `json:"result"`
+		Error   json.RawMessage `json:"error"`
 	}
-	if err := json.Unmarshal(body, &rpc); err != nil || rpc.JSONRPC != "2.0" || rpc.Method == "" {
-		s.failHTTP(writer, http.StatusBadRequest, "MCP body must be one JSON-RPC 2.0 request or notification")
+	if err := json.Unmarshal(body, &rpc); err != nil || rpc.JSONRPC != "2.0" {
+		s.failHTTP(writer, http.StatusBadRequest, "MCP body must be one JSON-RPC 2.0 message")
+		return
+	}
+	hasID := len(rpc.ID) != 0 && !bytes.Equal(bytes.TrimSpace(rpc.ID), []byte("null"))
+	hasResult := len(rpc.Result) != 0
+	hasError := len(rpc.Error) != 0
+	if rpc.Method == "" {
+		if !hasID || hasResult == hasError {
+			s.failHTTP(writer, http.StatusBadRequest, "MCP response must have an id and exactly one of result or error")
+			return
+		}
+	} else if hasResult || hasError {
+		s.failHTTP(writer, http.StatusBadRequest, "MCP request or notification cannot contain result or error")
 		return
 	}
 
@@ -293,10 +374,14 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 	})
 	s.mu.Unlock()
 
-	s.dispatch(writer, rpc.ID, rpc.Method, rpc.Params)
+	if rpc.Method == "" {
+		s.handleClientResponse(writer, rpc.ID, rpc.Result, rpc.Error)
+		return
+	}
+	s.dispatch(request.Context(), writer, rpc.ID, rpc.Method, rpc.Params)
 }
 
-func (s *Server) dispatch(writer http.ResponseWriter, id json.RawMessage, method string, params json.RawMessage) {
+func (s *Server) dispatch(ctx context.Context, writer http.ResponseWriter, id json.RawMessage, method string, params json.RawMessage) {
 	hasID := len(id) != 0 && !bytes.Equal(bytes.TrimSpace(id), []byte("null"))
 	switch method {
 	case "initialize":
@@ -377,13 +462,13 @@ func (s *Server) dispatch(writer http.ResponseWriter, id json.RawMessage, method
 			s.failRPC(writer, id, -32600, "tools/call received before initialization")
 			return
 		}
-		s.handleToolCall(writer, id, params)
+		s.handleToolCall(ctx, writer, id, params)
 	default:
 		s.failRPC(writer, id, -32601, "unsupported MCP method "+method)
 	}
 }
 
-func (s *Server) handleToolCall(writer http.ResponseWriter, id, params json.RawMessage) {
+func (s *Server) handleToolCall(ctx context.Context, writer http.ResponseWriter, id, params json.RawMessage) {
 	var request struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`
@@ -416,7 +501,117 @@ func (s *Server) handleToolCall(writer http.ResponseWriter, id, params json.RawM
 	}
 	s.nextExpectedCall++
 	s.mu.Unlock()
+	if expected.Elicitation != nil {
+		s.handleElicitingToolCall(ctx, writer, id, expected)
+		return
+	}
 	writeRPCResult(writer, id, expected.Result)
+}
+
+func (s *Server) handleElicitingToolCall(
+	ctx context.Context,
+	writer http.ResponseWriter,
+	toolCallID json.RawMessage,
+	expected ExpectedCall,
+) {
+	elicitation := expected.Elicitation
+	key := string(bytes.TrimSpace(elicitation.ID))
+	pending := &pendingElicitation{
+		expected: elicitation.Response,
+		result:   make(chan json.RawMessage, 1),
+	}
+	s.mu.Lock()
+	if _, exists := s.pending[key]; exists {
+		s.recordFailureLocked("elicitation already pending for id " + key)
+		s.mu.Unlock()
+		writeRPCError(writer, toolCallID, -32000, "scripted MCP elicitation id collision")
+		return
+	}
+	s.pending[key] = pending
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		if s.pending[key] == pending {
+			delete(s.pending, key)
+		}
+		s.mu.Unlock()
+	}()
+
+	writer.Header().Set("Content-Type", "text/event-stream")
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.WriteHeader(http.StatusOK)
+	if err := writeSSEMessage(writer, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      elicitation.ID,
+		"method":  "elicitation/create",
+		"params":  elicitation.Params,
+	}); err != nil {
+		s.recordFailure("write scripted MCP elicitation: " + err.Error())
+		return
+	}
+
+	timer := time.NewTimer(elicitationWaitTimeout)
+	defer timer.Stop()
+	select {
+	case <-pending.result:
+		if err := writeSSEMessage(writer, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      toolCallID,
+			"result":  expected.Result,
+		}); err != nil {
+			s.recordFailure("write scripted MCP tool result after elicitation: " + err.Error())
+		}
+	case <-ctx.Done():
+		s.recordFailure("scripted MCP elicitation request context ended: " + ctx.Err().Error())
+	case <-timer.C:
+		s.recordFailure(fmt.Sprintf("scripted MCP elicitation %s exceeded %s", key, elicitationWaitTimeout))
+		_ = writeSSEMessage(writer, map[string]any{
+			"jsonrpc": "2.0",
+			"id":      toolCallID,
+			"error": map[string]any{
+				"code":    -32000,
+				"message": "scripted MCP elicitation timed out",
+			},
+		})
+	}
+}
+
+func (s *Server) handleClientResponse(
+	writer http.ResponseWriter,
+	id json.RawMessage,
+	result json.RawMessage,
+	errorPayload json.RawMessage,
+) {
+	if len(errorPayload) != 0 {
+		s.failHTTP(writer, http.StatusBadRequest, "scripted MCP elicitation received an error response")
+		return
+	}
+	if !jsonObject(result) {
+		s.failHTTP(writer, http.StatusBadRequest, "scripted MCP elicitation result must be a JSON object")
+		return
+	}
+	key := string(bytes.TrimSpace(id))
+	s.mu.Lock()
+	pending, exists := s.pending[key]
+	if !exists {
+		s.recordFailureLocked("unexpected MCP client response id " + key)
+		s.mu.Unlock()
+		writer.Header().Set("Cache-Control", "no-store")
+		writer.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	delete(s.pending, key)
+	resultCopy := append(json.RawMessage(nil), result...)
+	s.elicitations = append(s.elicitations, ElicitationResponse{
+		ID:     append(json.RawMessage(nil), id...),
+		Result: resultCopy,
+	})
+	if !jsonSemanticEqual(pending.expected, result) {
+		s.recordFailureLocked(fmt.Sprintf("elicitation response %s = %s, want %s", key, result, pending.expected))
+	}
+	s.mu.Unlock()
+	pending.result <- resultCopy
+	writeAccepted(writer)
 }
 
 func (s *Server) ready() bool {
@@ -446,6 +641,12 @@ func (s *Server) recordFailureLocked(failure string) {
 	if len(s.failures) < maxRecordedFailures {
 		s.failures = append(s.failures, failure)
 	}
+}
+
+func (s *Server) recordFailure(failure string) {
+	s.mu.Lock()
+	s.recordFailureLocked(failure)
+	s.mu.Unlock()
 }
 
 func writeRPCResult(writer http.ResponseWriter, id json.RawMessage, result any) {
@@ -487,12 +688,36 @@ func writeJSON(writer http.ResponseWriter, status int, value any) {
 	_, _ = writer.Write(body)
 }
 
+func writeSSEMessage(writer http.ResponseWriter, value any) error {
+	body, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	if len(body) > defaultMaxResponseBytes {
+		return fmt.Errorf("SSE message exceeds %d bytes", defaultMaxResponseBytes)
+	}
+	if _, err := fmt.Fprintf(writer, "event: message\ndata: %s\n\n", body); err != nil {
+		return err
+	}
+	flusher, ok := writer.(http.Flusher)
+	if !ok {
+		return errors.New("HTTP response writer does not support flushing")
+	}
+	flusher.Flush()
+	return nil
+}
+
 func jsonObject(raw json.RawMessage) bool {
 	if !json.Valid(raw) {
 		return false
 	}
 	var object map[string]json.RawMessage
 	return json.Unmarshal(raw, &object) == nil && object != nil
+}
+
+func nonEmptyJSONString(raw json.RawMessage) bool {
+	var value string
+	return json.Unmarshal(raw, &value) == nil && value != ""
 }
 
 func jsonSemanticEqual(left, right json.RawMessage) bool {

@@ -1,6 +1,7 @@
 package scriptedmcp
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"io"
@@ -89,6 +90,95 @@ func TestServerFailsClosedOnUnsupportedMethod(t *testing.T) {
 	}
 }
 
+func TestServerRoundTripsElicitationWithinToolCall(t *testing.T) {
+	server, err := Start(Config{
+		Tools: []Tool{{
+			Name:        "approved_echo",
+			Description: "Echo after a client decision.",
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+		}},
+		ExpectedCalls: []ExpectedCall{{
+			Name:      "approved_echo",
+			Arguments: json.RawMessage(`{"message":"hello"}`),
+			Result:    json.RawMessage(`{"content":[{"type":"text","text":"accepted"}],"isError":false}`),
+			Elicitation: &ExpectedElicitation{
+				ID:       json.RawMessage(`"elicitation-1"`),
+				Params:   json.RawMessage(`{"message":"Allow?","requestedSchema":{"type":"object","properties":{"confirmed":{"type":"boolean"}},"required":["confirmed"]}}`),
+				Response: json.RawMessage(`{"action":"accept","content":{"confirmed":true}}`),
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(server.Close)
+
+	initialize := post(t, server.URL(), `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`)
+	assertResultID(t, initialize, "1")
+	initialized := post(t, server.URL(), `{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	_ = initialized.Body.Close()
+
+	callRequest, err := http.NewRequest(
+		http.MethodPost,
+		server.URL(),
+		bytes.NewBufferString(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"approved_echo","arguments":{"message":"hello"}}}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	callRequest.Header.Set("Content-Type", "application/json")
+	callRequest.Header.Set("Accept", "application/json, text/event-stream")
+	callResponse, err := http.DefaultClient.Do(callRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer callResponse.Body.Close()
+	if callResponse.StatusCode != http.StatusOK ||
+		callResponse.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("eliciting tools/call response = %d %q", callResponse.StatusCode, callResponse.Header.Get("Content-Type"))
+	}
+	reader := bufio.NewReader(callResponse.Body)
+	eventLine, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataLine, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	blankLine, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eventLine != "event: message\n" || blankLine != "\n" ||
+		!bytes.Contains([]byte(dataLine), []byte(`"method":"elicitation/create"`)) ||
+		!bytes.Contains([]byte(dataLine), []byte(`"id":"elicitation-1"`)) {
+		t.Fatalf("unexpected elicitation SSE event: %q%q%q", eventLine, dataLine, blankLine)
+	}
+
+	decision := post(t, server.URL(), `{"jsonrpc":"2.0","id":"elicitation-1","result":{"action":"accept","content":{"confirmed":true}}}`)
+	if decision.StatusCode != http.StatusAccepted {
+		t.Fatalf("elicitation response status = %d, want %d", decision.StatusCode, http.StatusAccepted)
+	}
+	_ = decision.Body.Close()
+	remaining, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(remaining, []byte(`"id":2`)) ||
+		!bytes.Contains(remaining, []byte(`"text":"accepted"`)) {
+		t.Fatalf("tools/call SSE result = %s", remaining)
+	}
+	if failures := server.Failures(); len(failures) != 0 {
+		t.Fatalf("server failures: %v", failures)
+	}
+	responses := server.ElicitationResponses()
+	if len(responses) != 1 || string(responses[0].ID) != `"elicitation-1"` ||
+		!bytes.Contains(responses[0].Result, []byte(`"action":"accept"`)) {
+		t.Fatalf("unexpected elicitation responses: %+v", responses)
+	}
+}
+
 func TestServerRejectsInvalidConfiguration(t *testing.T) {
 	if _, err := newServer(Config{}); err == nil {
 		t.Fatal("server accepted an empty tool set")
@@ -108,6 +198,21 @@ func TestServerRejectsInvalidConfiguration(t *testing.T) {
 		{Name: "bad", InputSchema: json.RawMessage(`{"type":"object"}`), Annotations: json.RawMessage(`[]`)},
 	}}); err == nil {
 		t.Fatal("server accepted non-object tool annotations")
+	}
+	if _, err := newServer(Config{
+		Tools: []Tool{{Name: "bad", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+		ExpectedCalls: []ExpectedCall{{
+			Name:      "bad",
+			Arguments: json.RawMessage(`{}`),
+			Result:    json.RawMessage(`{}`),
+			Elicitation: &ExpectedElicitation{
+				ID:       json.RawMessage(`null`),
+				Params:   json.RawMessage(`{}`),
+				Response: json.RawMessage(`{}`),
+			},
+		}},
+	}); err == nil {
+		t.Fatal("server accepted an invalid elicitation id")
 	}
 }
 

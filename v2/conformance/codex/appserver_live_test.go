@@ -737,6 +737,255 @@ func TestAppServerA05ProbeDetectsCodexGenericPrompt(t *testing.T) {
 	}
 }
 
+// TestAppServerA06Codex0146ForwardsMCPFormElicitation proves that an
+// executor-originated MCP elicitation remains under app-server client control.
+// Each action is returned to the MCP server, resolves the app-server reverse
+// request before turn completion, and becomes part of the tool result seen by
+// the next model request.
+func TestAppServerA06Codex0146ForwardsMCPFormElicitation(t *testing.T) {
+	decisions := []struct {
+		action  string
+		content any
+	}{
+		{action: "accept", content: map[string]any{"confirmed": true}},
+		{action: "decline"},
+		{action: "cancel"},
+	}
+	for _, decision := range decisions {
+		t.Run(decision.action, func(t *testing.T) {
+			runA06MCPFormElicitation(
+				t,
+				decision.action,
+				decision.action,
+				decision.content,
+				granularMCPApprovalPolicy(),
+				true,
+			)
+		})
+	}
+}
+
+// TestAppServerA06NeverPolicyAutoDeclinesMCPFormElicitation is the negative
+// control for the granular-policy probe. A non-empty form schema cannot be
+// auto-accepted under never: Codex must return decline to MCP without emitting
+// an app-server reverse request.
+func TestAppServerA06NeverPolicyAutoDeclinesMCPFormElicitation(t *testing.T) {
+	runA06MCPFormElicitation(
+		t,
+		"never",
+		"decline",
+		nil,
+		"never",
+		false,
+	)
+}
+
+func runA06MCPFormElicitation(
+	t *testing.T,
+	caseID string,
+	expectedAction string,
+	clientContent any,
+	approvalPolicy any,
+	expectClientRequest bool,
+) {
+	t.Helper()
+	binary, paths := prepareLiveCodex(t)
+	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0")
+	callID := "call-a06-" + caseID
+	toolArguments := fmt.Sprintf(`{"message":"request product approval: %s"}`, caseID)
+	toolCall, err := scriptedmodel.NamespacedFunctionCall(
+		"response-a06-call-"+caseID,
+		callID,
+		executorMCPNamespace,
+		approvedMCPToolName,
+		toolArguments,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalResponse, err := scriptedmodel.AssistantMessage(
+		"response-a06-final-"+caseID,
+		"message-a06-final-"+caseID,
+		conformanceFinalText,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelServer, err := scriptedmodel.Start(scriptedmodel.Config{
+		Responses: []scriptedmodel.Response{toolCall, finalResponse},
+	})
+	if err != nil {
+		t.Fatalf("start loopback scripted model: %v", err)
+	}
+	t.Cleanup(modelServer.Close)
+
+	executionID := "execution-a06-" + caseID
+	elicitationID := fmt.Sprintf(`"elicitation-a06-%s"`, caseID)
+	elicitationParams := json.RawMessage(fmt.Sprintf(
+		`{"_meta":{"agentserver_execution_id":%q},"message":"Approve this deterministic execution?","requestedSchema":{"type":"object","properties":{"confirmed":{"type":"boolean","title":"Confirm execution"}},"required":["confirmed"]}}`,
+		executionID,
+	))
+	expectedResponse := json.RawMessage(fmt.Sprintf(`{"action":%q}`, expectedAction))
+	if clientContent != nil {
+		expectedResponse = json.RawMessage(fmt.Sprintf(`{"action":%q,"content":{"confirmed":true}}`, expectedAction))
+	}
+	toolResult := json.RawMessage(fmt.Sprintf(
+		`{"content":[{"type":"text","text":"client action: %s"}],"structuredContent":{"clientAction":%q},"isError":false}`,
+		expectedAction,
+		expectedAction,
+	))
+	mcpServer := startDestructiveExecutorMCPServer(t, []scriptedmcp.ExpectedCall{{
+		Name:      approvedMCPToolName,
+		Arguments: json.RawMessage(toolArguments),
+		Result:    toolResult,
+		Elicitation: &scriptedmcp.ExpectedElicitation{
+			ID:       json.RawMessage(elicitationID),
+			Params:   elicitationParams,
+			Response: expectedResponse,
+		},
+	}})
+
+	writeScriptedModelConfigWithOptions(t, paths.codexHome, modelServer.URL(), scriptedModelConfigOptions{
+		disableUpdatePlan: true,
+		mcpServerURL:      mcpServer.URL(),
+		mcpEnabledTools:   []string{approvedMCPToolName},
+	})
+	process := startPreparedLiveCodex(t, binary, paths, "app-server", "--listen", "stdio://", "--strict-config")
+	initializeAppServer(t, process)
+	collector := newRPCCollector(process)
+	thread, turn := startMinimalAppServerTurnWithApprovalPolicy(
+		t,
+		collector,
+		paths.cwd,
+		"call the executor and preserve its product approval decision",
+		approvalPolicy,
+	)
+
+	if expectClientRequest {
+		reverseRequest := collector.request(t, "mcpServer/elicitation/request")
+		var requestParams struct {
+			ThreadID   string `json:"threadId"`
+			TurnID     string `json:"turnId"`
+			ServerName string `json:"serverName"`
+			Mode       string `json:"mode"`
+			Meta       struct {
+				ExecutionID string `json:"agentserver_execution_id"`
+			} `json:"_meta"`
+			Message         string `json:"message"`
+			RequestedSchema struct {
+				Type       string `json:"type"`
+				Properties map[string]struct {
+					Type  string `json:"type"`
+					Title string `json:"title"`
+				} `json:"properties"`
+				Required []string `json:"required"`
+			} `json:"requestedSchema"`
+		}
+		if err := reverseRequest.DecodeParams(&requestParams); err != nil {
+			t.Fatal(err)
+		}
+		confirmed := requestParams.RequestedSchema.Properties["confirmed"]
+		if requestParams.ThreadID != thread.Thread.ID || requestParams.TurnID != turn.ID ||
+			requestParams.ServerName != "executor" || requestParams.Mode != "form" ||
+			requestParams.Meta.ExecutionID != executionID ||
+			requestParams.Message != "Approve this deterministic execution?" ||
+			requestParams.RequestedSchema.Type != "object" ||
+			confirmed.Type != "boolean" || confirmed.Title != "Confirm execution" ||
+			!reflect.DeepEqual(requestParams.RequestedSchema.Required, []string{"confirmed"}) {
+			t.Fatalf("unexpected forwarded MCP elicitation: %+v", requestParams)
+		}
+		sendRPC(t, process, map[string]any{
+			"id": reverseRequest.ID,
+			"result": map[string]any{
+				"action":  expectedAction,
+				"content": clientContent,
+			},
+		})
+		assertServerRequestResolvedBeforeTurnCompleted(
+			t,
+			collector,
+			thread.Thread.ID,
+			reverseRequest.ID,
+		)
+	}
+
+	// The ordinary collector paths reject any reverse request. In the never
+	// control this is also the assertion that Codex declined internally rather
+	// than surfacing the elicitation to the app-server client.
+	assertAgentItemCompleted(t, collector, thread.Thread.ID, turn.ID, conformanceFinalText)
+	collector.notification(t, "turn/completed")
+	closeAndWait(t, process)
+
+	if failures := modelServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted model server failures: %v", failures)
+	}
+	modelRequests := modelServer.Requests()
+	if len(modelRequests) != 2 {
+		t.Fatalf("scripted model received %d requests, want two", len(modelRequests))
+	}
+	second := decodeCapturedModelRequest(t, modelRequests[1])
+	if !modelInputContainsFunctionOutput(second.Input, callID, `"clientAction":"`+expectedAction+`"`) {
+		encodedInput, encodeErr := json.Marshal(second.Input)
+		if encodeErr != nil {
+			t.Fatalf("encode second model input after missing elicitation result: %v", encodeErr)
+		}
+		t.Fatalf("second model request omitted elicitation-controlled tool result: input=%s", encodedInput)
+	}
+	if failures := mcpServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted MCP server failures: %v", failures)
+	}
+	if calls := mcpServer.Calls(); len(calls) != 1 || calls[0].Name != approvedMCPToolName {
+		t.Fatalf("scripted MCP calls = %+v, want one eliciting call", calls)
+	}
+	responses := mcpServer.ElicitationResponses()
+	if len(responses) != 1 {
+		t.Fatalf("scripted MCP elicitation responses = %+v, want one", responses)
+	}
+	var observed struct {
+		Action string `json:"action"`
+	}
+	if err := json.Unmarshal(responses[0].Result, &observed); err != nil {
+		t.Fatal(err)
+	}
+	if observed.Action != expectedAction {
+		t.Fatalf("MCP elicitation action = %q, want %q", observed.Action, expectedAction)
+	}
+	assertMCPBootstrap(t, mcpServer)
+}
+
+func assertServerRequestResolvedBeforeTurnCompleted(
+	t *testing.T,
+	collector *rpcCollector,
+	threadID string,
+	requestID json.RawMessage,
+) {
+	t.Helper()
+	for notificationIndex := 0; notificationIndex < 64; notificationIndex++ {
+		notification := collector.nextNotification(t)
+		switch notification.Method {
+		case "turn/completed":
+			t.Fatal("turn completed before serverRequest/resolved")
+		case "serverRequest/resolved":
+			var resolved struct {
+				ThreadID  string          `json:"threadId"`
+				RequestID json.RawMessage `json:"requestId"`
+			}
+			if err := notification.DecodeParams(&resolved); err != nil {
+				t.Fatal(err)
+			}
+			var gotID any
+			var wantID any
+			if json.Unmarshal(resolved.RequestID, &gotID) != nil ||
+				json.Unmarshal(requestID, &wantID) != nil ||
+				resolved.ThreadID != threadID || !reflect.DeepEqual(gotID, wantID) {
+				t.Fatalf("unexpected serverRequest/resolved: %+v, want thread=%q request=%s", resolved, threadID, requestID)
+			}
+			return
+		}
+	}
+	t.Fatal("serverRequest/resolved not found in the first 64 notifications")
+}
+
 func startDestructiveExecutorMCPServer(
 	t *testing.T,
 	expectedCalls []scriptedmcp.ExpectedCall,

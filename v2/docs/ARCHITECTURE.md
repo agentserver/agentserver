@@ -599,6 +599,8 @@ executor-gateway/core 是产品审批的唯一策略权威。app-server 针对 e
 
 对 official stable 0.146.0 的 A05 probe 已确认这一配置语义：同一个明确标注 `readOnlyHint=false`、`destructiveHint=true`、`openWorldHint=true` 的工具，在 granular policy 下使用 `approve` 会直接到达 MCP `tools/call`，全程没有 app-server reverse request；仅把默认值改为 `prompt` 时，会出现 `_meta.codex_approval_kind = "mcp_tool_call"` 的 `mcpServer/elicitation/request`，取消后不会 dispatch。该结论只消除了 Codex 自己的第二层通用审批，不能替代 A06 对 gateway 主动 elicitation、client 决策、超时和取消语义的验证。
 
+同一 stock 0.146.0 的 A06 probe 已验证相反方向的标准协议链路：executor fake MCP 在模型触发的原 `tools/call` Streamable HTTP SSE 中发出真正的 `elicitation/create`，app-server 将 form schema、execution `_meta`、thread/turn 和 server identity 原样关联给 client；client 的 `accept|decline|cancel` 分别回到 MCP，且 `serverRequest/resolved` 严格先于 turn terminal，tool result随后进入下一次模型请求。相同非空 form 在 `approval_policy = "never"` 下不会上浮 reverse request，而是直接向 MCP 返回 `decline`，因此生产 thread 不能误用 `never`。这仍不替代 A07 对 pending request 的 interrupt/timeout/断线清理，也不构成 core approval nonce、TTL 和 generation 校验。
+
 `ask` 流程必须：
 
 1. `PrepareExecution` 在 core 创建 execution，并冻结规范化参数、tool/schema version、workspace/run/attempt generation、executor/env、policy version 和目标资源；

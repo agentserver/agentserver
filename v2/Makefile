@@ -1,7 +1,7 @@
 GO ?= go
 GOFMT ?= gofmt
 
-.PHONY: check fmt fmt-check vet test import-boundary contract-check conformance conformance-live
+.PHONY: check fmt fmt-check vet test import-boundary contract-check conformance conformance-live conformance-image-a04
 
 check: fmt-check vet test import-boundary contract-check
 
@@ -35,3 +35,6 @@ conformance-live:
 		(printf '%s\n' 'AGENTSERVER_CODEX_BIN must be an absolute path to a pinned stock Codex binary'; exit 2)
 	AGENTSERVER_RUN_LIVE_CODEX=1 AGENTSERVER_CODEX_BIN="$(AGENTSERVER_CODEX_BIN)" \
 		$(GO) test ./conformance/codex/... -count=1 -v
+
+conformance-image-a04:
+	./conformance/image/a04/run.sh

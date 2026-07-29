@@ -3,6 +3,8 @@ package scriptedmcp
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -87,6 +89,39 @@ func TestServerFailsClosedOnUnsupportedMethod(t *testing.T) {
 	}
 	if failures := server.Failures(); len(failures) != 1 {
 		t.Fatalf("failures = %v, want one", failures)
+	}
+}
+
+func TestServerTLSUsesReturnedLoopbackCA(t *testing.T) {
+	server, caPEM, err := StartTLS(Config{
+		Tools: []Tool{{Name: "approved_echo", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(server.Close)
+
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(caPEM) {
+		t.Fatal("returned scripted MCP CA is not valid PEM")
+	}
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		RootCAs:    roots,
+	}}}
+	initialize := postWithClient(t, client, server.URL(), `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`)
+	assertResultID(t, initialize, "1")
+	initialized := postWithClient(t, client, server.URL(), `{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	if initialized.StatusCode != http.StatusAccepted {
+		t.Fatalf("TLS initialized status = %d", initialized.StatusCode)
+	}
+	_ = initialized.Body.Close()
+	listed := postWithClient(t, client, server.URL(), `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
+	if body := decodeBody(t, listed); !bytes.Contains(body, []byte(`"name":"approved_echo"`)) {
+		t.Fatalf("TLS tools/list response omitted approved tool: %s", body)
+	}
+	if failures := server.Failures(); len(failures) != 0 {
+		t.Fatalf("TLS server failures: %v", failures)
 	}
 }
 
@@ -218,13 +253,18 @@ func TestServerRejectsInvalidConfiguration(t *testing.T) {
 
 func post(t *testing.T, url, body string) *http.Response {
 	t.Helper()
+	return postWithClient(t, http.DefaultClient, url, body)
+}
+
+func postWithClient(t *testing.T, client *http.Client, url, body string) *http.Response {
+	t.Helper()
 	request, err := http.NewRequest(http.MethodPost, url, bytes.NewBufferString(body))
 	if err != nil {
 		t.Fatal(err)
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json, text/event-stream")
-	response, err := http.DefaultClient.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}

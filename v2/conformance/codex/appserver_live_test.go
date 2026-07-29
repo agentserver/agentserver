@@ -573,7 +573,66 @@ func TestAppServerA04ReleaseDebugRequirementsOverrideIsUnavailable(t *testing.T)
 		t.Fatal("official release unexpectedly honored the debug-only managed requirements override")
 	}
 	closeAndWait(t, process)
-	t.Log("A04 still requires an image-level probe with /etc/codex/requirements.toml mounted before process start")
+	t.Log("this host probe cannot substitute for the release-bound A04 image gate at /etc/codex/requirements.toml")
+}
+
+// TestAppServerA04HTTPSMCPFixtureSensitivityControl proves that the bounded
+// fixture and ephemeral CA used by the disposable-image gate form a real HTTPS
+// MCP transport. It deliberately runs without the system requirements file;
+// the image-only probe separately proves the managed name/identity filter.
+func TestAppServerA04HTTPSMCPFixtureSensitivityControl(t *testing.T) {
+	binary, paths := prepareLiveCodex(t)
+	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0")
+	modelResponse, err := scriptedmodel.AssistantMessage(
+		"response-a04-https-control",
+		"message-a04-https-control",
+		conformanceFinalText,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelServer, err := scriptedmodel.Start(scriptedmodel.Config{
+		Responses: []scriptedmodel.Response{modelResponse},
+	})
+	if err != nil {
+		t.Fatalf("start loopback scripted model: %v", err)
+	}
+	t.Cleanup(modelServer.Close)
+	mcpServer, caPEM := startExecutorTLSMCPServer(t, nil)
+	caPath := filepath.Join(paths.root, "a04-https-control-ca.pem")
+	if err := os.WriteFile(caPath, caPEM, 0o600); err != nil {
+		t.Fatalf("write scripted MCP CA: %v", err)
+	}
+	paths.environment = append(paths.environment, "CODEX_CA_CERTIFICATE="+caPath)
+
+	writeScriptedModelConfigWithOptions(t, paths.codexHome, modelServer.URL(), scriptedModelConfigOptions{
+		disableUpdatePlan: true,
+		mcpServerURL:      mcpServer.URL(),
+		mcpEnabledTools:   []string{approvedMCPToolName},
+	})
+	process := startPreparedLiveCodex(t, binary, paths, "app-server", "--listen", "stdio://", "--strict-config")
+	initializeAppServer(t, process)
+	collector := newRPCCollector(process)
+	thread, turn := startMinimalAppServerTurn(t, collector, paths.cwd, "verify the HTTPS MCP sensitivity control")
+	assertAgentItemCompleted(t, collector, thread.Thread.ID, turn.ID, conformanceFinalText)
+	collector.notification(t, "turn/completed")
+	closeAndWait(t, process)
+
+	if failures := modelServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted model server failures: %v", failures)
+	}
+	requests := modelServer.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("scripted model received %d requests, want one", len(requests))
+	}
+	surface := modelToolNames(t, decodeCapturedModelRequest(t, requests[0]).Tools)
+	if !containsString(surface, executorMCPNamespace+"."+approvedMCPToolName) {
+		t.Fatalf("HTTPS MCP sensitivity-control tool surface = %v", surface)
+	}
+	if failures := mcpServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted TLS MCP server failures: %v", failures)
+	}
+	assertMCPBootstrap(t, mcpServer)
 }
 
 // TestAppServerA05Codex0146ApproveModeDoesNotDoublePrompt verifies the
@@ -1495,10 +1554,29 @@ func TestAppServerA03Codex0146RejectsUnregisteredCallsBeforeMCP(t *testing.T) {
 
 func startExecutorMCPServer(t *testing.T, expectedCalls []scriptedmcp.ExpectedCall) *scriptedmcp.Server {
 	t.Helper()
+	server, err := scriptedmcp.Start(executorMCPServerConfig(expectedCalls))
+	if err != nil {
+		t.Fatalf("start loopback scripted MCP: %v", err)
+	}
+	t.Cleanup(server.Close)
+	return server
+}
+
+func startExecutorTLSMCPServer(t *testing.T, expectedCalls []scriptedmcp.ExpectedCall) (*scriptedmcp.Server, []byte) {
+	t.Helper()
+	server, caPEM, err := scriptedmcp.StartTLS(executorMCPServerConfig(expectedCalls))
+	if err != nil {
+		t.Fatalf("start loopback scripted TLS MCP: %v", err)
+	}
+	t.Cleanup(server.Close)
+	return server, caPEM
+}
+
+func executorMCPServerConfig(expectedCalls []scriptedmcp.ExpectedCall) scriptedmcp.Config {
 	inputSchema := json.RawMessage(
 		`{"type":"object","properties":{"message":{"type":"string"}},"required":["message"],"additionalProperties":false}`,
 	)
-	server, err := scriptedmcp.Start(scriptedmcp.Config{
+	return scriptedmcp.Config{
 		Tools: []scriptedmcp.Tool{
 			{
 				Name:        approvedMCPToolName,
@@ -1512,12 +1590,7 @@ func startExecutorMCPServer(t *testing.T, expectedCalls []scriptedmcp.ExpectedCa
 			},
 		},
 		ExpectedCalls: expectedCalls,
-	})
-	if err != nil {
-		t.Fatalf("start loopback scripted MCP: %v", err)
 	}
-	t.Cleanup(server.Close)
-	return server
 }
 
 func startMinimalAppServerTurn(

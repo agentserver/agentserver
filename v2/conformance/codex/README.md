@@ -167,7 +167,7 @@ the official platform package SHA-256 is
 Stable 0.146.0 is therefore also a characterized rejection, not a production
 runtime pin.
 
-A04 is still open as an image-level gate. The upstream managed allowlist
+A04 passes for the official stable 0.146.0 Linux amd64 artifact. The upstream managed allowlist
 disables a configured MCP server unless both its name and transport identity
 match, but official release binaries read the Unix system layer only from
 `/etc/codex/requirements.toml`. The upstream
@@ -179,6 +179,28 @@ exact-string HTTPS requirement installed before process start. It must observe
 that only the approved endpoint bootstraps and that wrong-name, wrong-URL,
 user, and project additions stay disabled. Pointing the release binary at a
 temporary file through that debug environment variable is not a valid shortcut.
+
+The positive job is implemented in `conformance/image/a04`. Its scratch
+image has no external network, uses a read-only root and an empty hardened
+`tmpfs` at `/etc/codex`, and refuses to start without independently supplied
+release/SHA/size pins. The bounded fixture also has an HTTPS mode with an
+ephemeral CA; its stock 0.146.0 host sensitivity control reaches real MCP
+bootstrap. The image test checks a projected managed sentinel, the exact allowed
+bootstrap, the captured model tool surface, and an enabled project layer while
+requiring no MCP request for wrong-name, wrong-URL, user, or project additions.
+It deliberately does not treat `mcpServerStatus/list` names as an allowlist
+oracle: stock 0.146.0 lists configured-but-disabled entries and opens a new
+connection to enabled entries while collecting status.
+
+The passing image run used the official
+`codex-x86_64-unknown-linux-musl.tar.gz` archive (SHA-256
+`5ba3b9405543953081f661d0854d266f76e2abbe51d41349355a36de7673776a`)
+and verified the unpacked binary as SHA-256
+`2e863156ed35ecc5253b1e2f907a9143077b9f7cb51942070c61996471ff6e04`,
+size `311001136`, release `0.146.0`. Both the direct image invocation and the
+reproducible Make target passed under Apple `container` 1.1.0. This closes A04
+only for that artifact; stable 0.146.0 remains rejected as a production runtime
+because A03 independently fails.
 
 A05 passes for the characterized 0.146.0 releases. The live probe advertises an
 explicitly destructive, open-world executor tool, starts a thread with granular

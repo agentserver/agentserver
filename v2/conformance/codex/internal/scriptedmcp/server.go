@@ -8,10 +8,17 @@ package scriptedmcp
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"mime"
 	"net"
 	"net/http"
@@ -126,8 +133,36 @@ func Start(config Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen for scripted MCP: %w", err)
 	}
+	startServer(result, listener, "http")
+	return result, nil
+}
+
+// StartTLS starts the same bounded fixture over HTTPS and returns the PEM CA
+// certificate needed to trust only this ephemeral loopback endpoint. The
+// server certificate is valid for 127.0.0.1 and localhost. Keeping TLS inside
+// the fixture lets image-level requirements probes exercise exact HTTPS MCP
+// identities without relying on a developer machine's trust store.
+func StartTLS(config Config) (*Server, []byte, error) {
+	result, err := newServer(config)
+	if err != nil {
+		return nil, nil, err
+	}
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		return nil, nil, fmt.Errorf("listen for scripted TLS MCP: %w", err)
+	}
+	tlsConfig, caPEM, err := newLoopbackTLSConfig(time.Now())
+	if err != nil {
+		_ = listener.Close()
+		return nil, nil, err
+	}
+	startServer(result, tls.NewListener(listener, tlsConfig), "https")
+	return result, caPEM, nil
+}
+
+func startServer(result *Server, listener net.Listener, scheme string) {
 	result.listener = listener
-	result.url = "http://" + listener.Addr().String() + "/mcp"
+	result.url = scheme + "://" + listener.Addr().String() + "/mcp"
 	result.done = make(chan struct{})
 	go func() {
 		defer close(result.done)
@@ -137,7 +172,67 @@ func Start(config Config) (*Server, error) {
 			result.mu.Unlock()
 		}
 	}()
-	return result, nil
+}
+
+func newLoopbackTLSConfig(now time.Time) (*tls.Config, []byte, error) {
+	serialLimit := new(big.Int).Lsh(big.NewInt(1), 128)
+	caSerial, err := rand.Int(rand.Reader, serialLimit)
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate scripted MCP CA serial: %w", err)
+	}
+	caPublic, caPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate scripted MCP CA key: %w", err)
+	}
+	caTemplate := &x509.Certificate{
+		SerialNumber:          caSerial,
+		Subject:               pkix.Name{CommonName: "agentserver-v2-scripted-mcp-ca"},
+		NotBefore:             now.Add(-time.Minute),
+		NotAfter:              now.Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		MaxPathLenZero:        true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, caPublic, caPrivate)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create scripted MCP CA certificate: %w", err)
+	}
+
+	leafSerial, err := rand.Int(rand.Reader, serialLimit)
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate scripted MCP server serial: %w", err)
+	}
+	leafPublic, leafPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, nil, fmt.Errorf("generate scripted MCP server key: %w", err)
+	}
+	leafTemplate := &x509.Certificate{
+		SerialNumber: leafSerial,
+		Subject:      pkix.Name{CommonName: "agentserver-v2-scripted-mcp"},
+		NotBefore:    now.Add(-time.Minute),
+		NotAfter:     now.Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{"localhost"},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	leafDER, err := x509.CreateCertificate(rand.Reader, leafTemplate, caTemplate, leafPublic, caPrivate)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create scripted MCP server certificate: %w", err)
+	}
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
+	if len(caPEM) == 0 {
+		return nil, nil, errors.New("encode scripted MCP CA certificate")
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{{
+			Certificate: [][]byte{leafDER, caDER},
+			PrivateKey:  leafPrivate,
+		}},
+		MinVersion: tls.VersionTLS12,
+		NextProtos: []string{"http/1.1"},
+	}, caPEM, nil
 }
 
 func newServer(config Config) (*Server, error) {

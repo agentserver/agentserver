@@ -290,6 +290,10 @@ MCP-only 不是 prompt 约定，而是 pinned Codex build 上必须同时成立�
 
 官方 release binary 没有可安全重定向 system `requirements.toml` 的 CLI：源码中的 `CODEX_APP_SERVER_MANAGED_CONFIG_PATH` 只在 `debug_assertions` build 生效，0.146.0 official artifact 的 live probe 也确认它被忽略。因此 A04 正向测试必须在一次性 image/mount namespace 内把文件预装到真实 system path，再启动未经修改的 stock artifact；不能改宿主 `/etc`、依赖 debug build 或把临时 user config 冒充 managed requirements。该测试还必须从 MCP bootstrap/tool surface 观察 wrong-name、wrong-URL、user/project additions 被禁用，因为 `configRequirements/read` 不投影 MCP allowlist 本身。
 
+reference A04 runner 固定为 networkless scratch image、只读 rootfs 和独立的 `/etc/codex` hardened tmpfs；没有这些 mount 事实时测试在写文件前失败。runner 要求 release、unpacked binary SHA-256 和 size 由外部 artifact intake 提供，不能在同一步现算现信；其临时 CA 只信任同一 image 内的 loopback HTTPS fixture。测试源码存在或能交叉编译都不是放行证据，必须保存 exact artifact 上的实际 image run 结果。
+
+A04 已在 official stable 0.146.0 Linux amd64 musl artifact 上通过：archive SHA-256 为 `5ba3b9405543953081f661d0854d266f76e2abbe51d41349355a36de7673776a`，解包 binary SHA-256 为 `2e863156ed35ecc5253b1e2f907a9143077b9f7cb51942070c61996471ff6e04`、size 为 `311001136`。gate 先用 `configRequirements/read` 的无害 sentinel 证明真实 system requirements 已加载，再以 allowed endpoint 唯一一次 bootstrap、所有 wrong-name/wrong-URL/user/project addition 零 MCP 请求以及模型工具面隔离证明 allowlist 生效。`mcpServerStatus/list` 不是此处的 enablement oracle：0.146.0 会保留 configured-but-disabled 名称，并在取 status 时重新连接 enabled server。这个 A04 结论不改变同一 artifact 因 A03 失败而不可作为 production runtime pin 的结论。
+
 以上字段包含 experimental contract，必须与 Codex binary、app-server schema 和测试 fixture 一起锁定。任一升级导致工具面扩大、elicitation 被自动处理或配置字段失效时，harness 镜像不得发布。
 
 已验证的 0.145.0 candidate 不满足该前提：固定 model catalog 并关闭全部已知非 MCP 开关后，`update_plan` 仍被无条件注册；scripted model 能成功执行它并触发 `turn/plan/updated`。因此该版本必须在 A03 被拒绝，不能作为 production runtime pin，也不能用 prompt、忽略 notification 或仅在 harness 侧过滤事件来冒充能力隔离。

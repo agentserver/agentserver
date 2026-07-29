@@ -595,11 +595,13 @@ Phase 2 若需要多副本和跨 pod resume，必须先实现以下 owner routin
 
 策略值为 `deny | ask | allow`，至少按 workspace、executor、env、tool、tool schema/version、path root、network、run actor 和 policy version 配置。Phase 1 的副作用入口只有 executor-gateway；第三方 MCP 只开放经管理员固定并验证的只读工具，未知、错误标注或无法验证的工具一律 `deny`。未来若增加第三方副作用，必须先让调用经过同一 MCP policy proxy/core approval，不能依赖 server 自报 annotation。
 
-executor-gateway/core 是产品审批的唯一策略权威。app-server 针对 executor MCP 配置为不再自行产生第二套通用 tool prompt；需要用户决定时，由受信任的 executor-gateway 发起标准 MCP elicitation，harness-worker 只负责把 app-server server request 与 core 的 approval record 双向关联。approval TTL 必须小于配置后的 MCP tool timeout；超时、turn interrupt、worker/control stream 断开或 elicitation 被清除都按拒绝处理。
+executor-gateway/core 是产品审批的唯一策略权威。app-server 针对 executor MCP 配置为不再自行产生第二套通用 tool prompt；需要用户决定时，由受信任的 executor-gateway 发起标准 MCP elicitation，harness-worker 只负责把 app-server server request 与 core 的 approval record 双向关联。approval record 必须持久化绝对 `expires_at`，core 用 CAS 决定 `approved|declined|expired|cancelled`，worker 依据同一 deadline 设置本地兜底 timer，不能让 reverse request 无限悬挂。
+
+approval TTL 与 MCP `tool_timeout_sec` 是两个独立时钟。已刻画的 stock 0.146.0 在 pending elicitation 期间暂停 tool active-time timeout，所以无论 TTL 是否小于 `tool_timeout_sec`，Codex 都不会替产品自动清理无人回答的审批。core 到期 CAS 成功后必须主动向 worker 下发 `expired`，worker 将该 canonical outcome 作为 `decline` 回复 app-server；若 control stream、app-server response path 或 core expiry确认不可用，则在有界 cleanup grace 内调用 `turn/interrupt`，等待 reverse request 清空后退出。显式 run cancel 同样使用 interrupt。`tool_timeout_sec` 只约束 elicitation 结束后恢复的 MCP active execution；任何超时、interrupt、断线或清理路径都不得 dispatch，并须保留彼此不同的审计原因。
 
 对 official stable 0.146.0 的 A05 probe 已确认这一配置语义：同一个明确标注 `readOnlyHint=false`、`destructiveHint=true`、`openWorldHint=true` 的工具，在 granular policy 下使用 `approve` 会直接到达 MCP `tools/call`，全程没有 app-server reverse request；仅把默认值改为 `prompt` 时，会出现 `_meta.codex_approval_kind = "mcp_tool_call"` 的 `mcpServer/elicitation/request`，取消后不会 dispatch。该结论只消除了 Codex 自己的第二层通用审批，不能替代 A06 对 gateway 主动 elicitation、client 决策、超时和取消语义的验证。
 
-同一 stock 0.146.0 的 A06 probe 已验证相反方向的标准协议链路：executor fake MCP 在模型触发的原 `tools/call` Streamable HTTP SSE 中发出真正的 `elicitation/create`，app-server 将 form schema、execution `_meta`、thread/turn 和 server identity 原样关联给 client；client 的 `accept|decline|cancel` 分别回到 MCP，且正常 client response路径中 `serverRequest/resolved` 先于 turn terminal，tool result随后进入下一次模型请求。相同非空 form 在 `approval_policy = "never"` 下不会上浮 reverse request，而是直接向 MCP 返回 `decline`，因此生产 thread 不能误用 `never`。这不构成 core approval nonce、TTL 和 generation 校验。
+同一 stock 0.146.0 的 A06 probe 已验证相反方向的标准协议链路：executor fake MCP 在模型触发的原 `tools/call` Streamable HTTP SSE 中发出真正的 `elicitation/create`，app-server 将 form schema、execution `_meta`、thread/turn 和 server identity 原样关联给 client；client 的 `accept|decline|cancel` 分别回到 MCP，且正常 client response路径中 `serverRequest/resolved` 先于 turn terminal，tool result随后进入下一次模型请求。相同非空 form 在 `approval_policy = "never"` 下不会上浮 reverse request，而是直接向 MCP 返回 `decline`，因此生产 thread 不能误用 `never`。追加的 timeout probe 把 `tool_timeout_sec` 设为 0.5 秒并让 client 持有 form 1.5 秒，期间没有 resolved、terminal 或第二次模型请求，显式 `cancel` 后才继续，证明该 timeout 在 elicitation 中暂停。这些 probe 仍不构成 core approval nonce、主动 TTL expiry 和 generation 校验。
 
 A07 在 alpha.14 与 stable 0.146.0 上还确认了 interrupt清理，但暴露了不能忽略的事件顺序：client尚未回答 form时调用 `turn/interrupt`，app-server会返回成功、以 `interrupted` 结束 turn、清除 pending reverse request并向 MCP回 `cancel`，也不会产生第二次模型请求或 MCP call；可是实际 wire 是 `turn/completed(interrupted)` 先于 `serverRequest/resolved`。因此 harness-worker 的 finalization barrier必须同时等待 terminal turn、所有已登记 reverse request ID resolved，以及 process收口；看到 terminal就关闭 stdin会丢失清理事件。timeout、control stream断线与 child crash仍分别 fail closed，不能从这个 interrupt probe外推为已验证。
 
@@ -790,7 +792,7 @@ agentx 的实现不放入上述 Go module。`github.com/agentserver/agentx` v2 �
 - [ ] 完成 child → agentx `network/policyRequest` 的 allow/deny/ask、断线超时 fail-closed 和审批审计测试。
 - [ ] 完成路径逃逸、symlink/TOCTOU、环境变量泄漏和 sandbox policy 安全测试。
 - [ ] 完成 agentx 控制面与执行树的 uid/namespace、ptrace/`/proc`、继承 FD、signal 和 non-exportable key 隔离测试。
-- [ ] 完成 MCP elicitation → core approval 的参数/上下文冻结、TTL/tool-timeout、nonce 单次消费、cancel/断线 fail-closed 和审计闭环，证明不会出现 app-server/gateway 双重审批。
+- [ ] 完成 MCP elicitation → core approval 的参数/上下文冻结、独立 approval expiry 主动清理、MCP active-time timeout、nonce 单次消费、cancel/断线 fail-closed 和审计闭环，证明不会出现 app-server/gateway 双重审批。
 - [ ] 验证 Phase 1 executor-gateway 单副本部署、同进程 30 秒 resume，以及 gateway 重启后 fail-closed 拒绝 resume/operation 进入 unknown；Phase 2 owner routing 不进入首版。
 - [ ] 验证 harness-worker/app-server crash 后不会自动重放已发出的 MCP 副作用，原 MCP transport 丢失时 execution 可独立收口而 run 明确 interrupted。
 - [ ] 验证 `aud=agentserver-api`、fetch-streaming bearer、AG-UI cursor/rebase、显式 cancel、Hydra challenge 防重放和浏览器断线不取消 run。

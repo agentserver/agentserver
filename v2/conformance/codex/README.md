@@ -20,8 +20,8 @@ turn/completed`), A02 experimental gating for `environments: []` in both
 directions, A03 tool-surface and dispatch characterization through a bounded
 sessionless Streamable HTTP MCP server, the A04 managed-requirements injection
 boundary, A05 no-double-approval behavior and its prompt-mode positive control,
-A06 client-controlled MCP form elicitation and its never-policy negative
-control, A07 pending-elicitation interrupt cleanup, E01 stdio/EOF, exec-server
+A06 client-controlled MCP form elicitation, its paused-tool-timeout behavior,
+and its never-policy negative control, A07 pending-elicitation interrupt cleanup, E01 stdio/EOF, exec-server
 environment metadata, and these slices of the executor matrix:
 
 - E02: deterministic argv/arg0, canonical cwd, exact non-inherited child
@@ -135,7 +135,11 @@ live cases return `accept`, `decline`, and `cancel`; each action reaches MCP,
 `serverRequest/resolved` precedes turn completion, and the resulting tool
 output reaches the next model request. With the same non-empty form under
 `approval_policy = "never"`, Codex emits no reverse request and returns
-`decline` directly to MCP.
+`decline` directly to MCP. A separate timed case configures
+`tool_timeout_sec = 0.5`, leaves the form unanswered for 1.5 seconds, and sees
+no resolution, terminal turn, or second model request until the client sends
+`cancel`. The MCP timeout is therefore paused during elicitation and cannot be
+used as the product approval TTL or its cleanup mechanism.
 
 A07 also passes for both characterized 0.146.0 releases, with one important
 ordering fact. When the client leaves the A06 form request unanswered and sends

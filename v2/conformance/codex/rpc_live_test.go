@@ -2,7 +2,9 @@ package codex_test
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/agentserver/agentserver/v2/conformance/codex/internal/codexprocess"
 	"github.com/agentserver/agentserver/v2/internal/codexwire"
@@ -132,6 +134,58 @@ func (c *rpcCollector) request(t *testing.T, method string) codexwire.Message {
 				t.Fatalf("duplicate response id %s", messageID)
 			}
 			c.responses[messageID] = message
+		default:
+			t.Fatalf("unexpected Codex wire message kind %s", message.Kind)
+		}
+	}
+}
+
+// assertNoNotificationMethodsFor performs a bounded negative observation while
+// preserving the collector's single-consumer invariant. Unrelated messages are
+// retained for later response/notification matching.
+func (c *rpcCollector) assertNoNotificationMethodsFor(
+	t *testing.T,
+	duration time.Duration,
+	methods ...string,
+) {
+	t.Helper()
+	forbidden := make(map[string]struct{}, len(methods))
+	for _, method := range methods {
+		forbidden[method] = struct{}{}
+	}
+	for _, notification := range c.notifications {
+		if _, exists := forbidden[notification.Method]; exists {
+			t.Fatalf("unexpected Codex notification %q before bounded negative observation", notification.Method)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), duration)
+	defer cancel()
+	for {
+		message, err := c.process.Peer.Receive(ctx)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		if err != nil {
+			stderr, truncated := c.process.Stderr()
+			t.Fatalf("receive Codex message during bounded negative observation: %v (stderr_truncated=%t)\nstderr: %s", err, truncated, stderr)
+		}
+		switch message.Kind {
+		case codexwire.KindNotification:
+			if _, exists := forbidden[message.Method]; exists {
+				t.Fatalf("unexpected Codex notification %q during %s negative observation", message.Method, duration)
+			}
+			if len(c.notifications) >= 1024 {
+				t.Fatalf("more than 1024 unmatched Codex notifications during bounded negative observation")
+			}
+			c.notifications = append(c.notifications, message)
+		case codexwire.KindResponse, codexwire.KindError:
+			messageID := string(message.ID)
+			if _, duplicate := c.responses[messageID]; duplicate {
+				t.Fatalf("duplicate response id %s", messageID)
+			}
+			c.responses[messageID] = message
+		case codexwire.KindRequest:
+			t.Fatalf("unexpected Codex reverse request %q during bounded negative observation", message.Method)
 		default:
 			t.Fatalf("unexpected Codex wire message kind %s", message.Kind)
 		}

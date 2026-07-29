@@ -241,7 +241,7 @@ conformance test 是 Go subprocess test，不依赖 v1 gateway：
 | A03 | MCP-only tool surface | fake model 捕获的 tools 只有批准的远程 MCP tools；无 shell、exec、fs、apply_patch、view_image、Web、browser、computer、plan、user-input、multi-agent 或未授权的通用 MCP resource handler |
 | A04 | endpoint allowlist | requirements.toml 只允许 manifest 中 MCP name + exact HTTPS identity；新增用户/项目 MCP 被禁用 |
 | A05 | 无双重审批 | executor MCP tool 在 default_tools_approval_mode=approve 下不产生 app-server 通用 tool prompt |
-| A06 | elicitation | granular policy 只允许 mcp_elicitations；fake MCP elicitation 能到达 app-server client并由 client 决定，never policy 的自动拒绝作为反例固定 |
+| A06 | elicitation | granular policy 只允许 mcp_elicitations；fake MCP elicitation 能到达 app-server client并由 client 决定；pending form 超过 tool_timeout 仍保持未决，never policy 的自动拒绝作为反例固定 |
 | A07 | interrupt | turn/interrupt 产生 terminal interrupted，清除 pending server request，不再发新 tool call |
 | A08 | graceful shutdown | turn terminal 与 outstanding reverse request清空后关闭 stdin，child 有界正常退出；rollout、SQLite/WAL 状态稳定，无固定 sleep |
 | A09 | checkpoint round-trip | 从 allowlist 文件生成 checkpoint，在全新目录恢复，thread/resume 后第二个 turn保留首 turn 的模型可见 tool result |
@@ -255,7 +255,7 @@ A04 的 managed layer 不能通过普通临时 `CODEX_HOME` 注入。official re
 
 A05 已在 0.146.0-alpha.14 与 stable 0.146.0 上通过。主用例把 fake executor tool 明确标为 destructive/open-world，在只允许 `mcp_elicitations` 的 granular thread 下，`default_tools_approval_mode = "approve"` 不产生任何 reverse request并直接到达 `tools/call`。正向控制只把 mode 改为 `prompt`，即可捕获 `_meta.codex_approval_kind = "mcp_tool_call"` 的 `mcpServer/elicitation/request`；回复 cancel 后 MCP server 不收到 `tools/call`。这证明测试确实能发现双重审批，也证明 `approve` 只关闭 Codex 通用 tool prompt；executor-gateway 主动发起的产品审批仍由 A06 单独验证。
 
-A06 已在 0.146.0-alpha.14 与 stable 0.146.0 上分别通过。fake MCP 在真实模型工具调用的 Streamable HTTP response中先发标准 `elicitation/create`，等待 Codex用独立 POST回 JSON-RPC response 后才返回原 `tools/call` result。granular policy 下 app-server reverse request精确携带 thread/turn/server、typed boolean form schema和 execution `_meta`；client 的 `accept`（带结构化 content）、`decline`、`cancel` 三种决定都到达 MCP，随后正常 response路径的 `serverRequest/resolved` 先于 turn terminal，action对应的工具结果进入下一次模型请求。反例使用相同的非空 form 和 `approval_policy = "never"`，普通 collector确认没有任何 reverse request，而 MCP收到 `decline`。
+A06 已在 0.146.0-alpha.14 与 stable 0.146.0 上分别通过。fake MCP 在真实模型工具调用的 Streamable HTTP response中先发标准 `elicitation/create`，等待 Codex用独立 POST回 JSON-RPC response 后才返回原 `tools/call` result。granular policy 下 app-server reverse request精确携带 thread/turn/server、typed boolean form schema和 execution `_meta`；client 的 `accept`（带结构化 content）、`decline`、`cancel` 三种决定都到达 MCP，随后正常 response路径的 `serverRequest/resolved` 先于 turn terminal，action对应的工具结果进入下一次模型请求。反例使用相同的非空 form 和 `approval_policy = "never"`，普通 collector确认没有任何 reverse request，而 MCP收到 `decline`。追加用例把 `tool_timeout_sec` 设为 0.5 秒，client 保持 form 未决 1.5 秒；两个 release 都没有自动 resolved、terminal 或第二次模型请求，直到 client 显式 `cancel` 才继续。这证明 MCP tool timeout 只累计 active time并在 elicitation期间暂停，产品 approval TTL 必须由 core/worker主动到期和清理，不能委托给 Codex timeout。
 
 A07 也已在 alpha.14 与 stable 0.146.0 分别通过。测试在 app-server client持有未决 `mcpServer/elicitation/request` 时调用 `turn/interrupt`：RPC返回成功，terminal status为 `interrupted`，pending request随后发出 `serverRequest/resolved`，fake MCP收到 `cancel`，Responses endpoint和 MCP都没有第二次调用。当前两个 release重复观察到的顺序都是 terminal在先、resolved在后，所以 worker不能在收到 `turn/completed` 时立即关闭 stdio；它要维护 outstanding server-request set，并在 terminal、set清空和 process收口三者都满足后才能结束 finalization。timeout、control-stream断线和 child crash仍是后续独立 fault probe，不能因 A07通过而视为覆盖。
 
@@ -612,7 +612,7 @@ manifest至少冻结：
 - model/llmproxy audience和 endpoint；
 - MCP endpoint、server name、tool/schema hash和 audience；
 - executor/env/tool policy；
-- max_run_duration、approval/tool timeout；
+- max_run_duration、approval `expires_at`、MCP active tool timeout、cleanup grace；
 - event/control buffer上限；
 - checkpoint allowlist version；
 - worker image digest和 expected service account。
@@ -643,6 +643,7 @@ enabled = false
 url = "https://executor-gateway.internal/v2/mcp"
 bearer_token_env_var = "AGENTSERVER_EXECUTOR_CAPABILITY"
 required = true
+tool_timeout_sec = 30.0 # active MCP time，不是 approval TTL
 default_tools_approval_mode = "approve"
 enabled_tools = ["process_start", "process_read", "process_write", "process_terminate"]
 ~~~
@@ -728,16 +729,18 @@ browser-gateway只做：
 审批链路：
 
 1. executor-gateway PrepareExecution冻结完整 context hash。
-2. policy=ask时创建 approval。
+2. policy=ask时创建带绝对 `expires_at` 和一次性 nonce 的 approval，worker 同步设置本地兜底 timer。
 3. MCP server在原 tool call中发起 elicitation。
 4. app-server向 worker发 server request。
 5. worker经 pool/core产生 canonical approval event。
 6. browser提交 decide API。
-7. core校验当前 RBAC、TTL、nonce、hash和 attempt generation。
+7. core校验当前 RBAC、`expires_at`、nonce、hash和 attempt generation，并以 CAS 固化唯一 outcome。
 8. gateway消费 approval并在 dispatch前再次校验。
-9. cancel、超时、worker control断线、elicitation清理全部 fail closed。
+9. core 到期 CAS 为 `expired` 后主动下发，worker 以 `decline` 回复 pending reverse request；若无法确认或送达，则在 cleanup grace 内 `turn/interrupt`。
+10. 显式 cancel、worker control断线和 elicitation异常清理同样主动 interrupt、等待 outstanding reverse request清空并 fail closed；浏览器断线本身不取消。
 
 app-server针对 executor MCP已设 approve，因此这里不会再出现第二张通用 Codex tool approval卡。
+MCP `tool_timeout_sec` 在 elicitation期间暂停，只能约束审批结束后的 active tool execution，不能充当上述 approval expiry timer。
 
 Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后实现，避免身份 UI掩盖运行状态机问题。
 

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/agentserver/agentserver/v2/conformance/codex/internal/scriptedmcp"
 	"github.com/agentserver/agentserver/v2/conformance/codex/internal/scriptedmodel"
@@ -780,6 +781,148 @@ func TestAppServerA06NeverPolicyAutoDeclinesMCPFormElicitation(t *testing.T) {
 	)
 }
 
+// TestAppServerA06MCPFormElicitationPausesToolTimeout verifies that
+// tool_timeout_sec measures active MCP time rather than wall-clock time while
+// the app-server client owns a pending elicitation. The product approval TTL
+// therefore cannot delegate expiry cleanup to Codex's MCP tool timeout.
+func TestAppServerA06MCPFormElicitationPausesToolTimeout(t *testing.T) {
+	binary, paths := prepareLiveCodex(t)
+	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0")
+	const (
+		toolTimeout       = 500 * time.Millisecond
+		observationWindow = 1500 * time.Millisecond
+		callID            = "call-a06-paused-tool-timeout"
+	)
+	toolArguments := `{"message":"wait beyond the configured MCP tool timeout"}`
+	toolCall, err := scriptedmodel.NamespacedFunctionCall(
+		"response-a06-paused-timeout-call",
+		callID,
+		executorMCPNamespace,
+		approvedMCPToolName,
+		toolArguments,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalResponse, err := scriptedmodel.AssistantMessage(
+		"response-a06-paused-timeout-final",
+		"message-a06-paused-timeout-final",
+		conformanceFinalText,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelServer, err := scriptedmodel.Start(scriptedmodel.Config{
+		Responses: []scriptedmodel.Response{toolCall, finalResponse},
+	})
+	if err != nil {
+		t.Fatalf("start loopback scripted model: %v", err)
+	}
+	t.Cleanup(modelServer.Close)
+	mcpServer := startDestructiveExecutorMCPServer(t, []scriptedmcp.ExpectedCall{{
+		Name:      approvedMCPToolName,
+		Arguments: json.RawMessage(toolArguments),
+		Result: json.RawMessage(
+			`{"content":[{"type":"text","text":"client cancelled after timeout observation"}],"structuredContent":{"clientAction":"cancel"},"isError":false}`,
+		),
+		Elicitation: &scriptedmcp.ExpectedElicitation{
+			ID: json.RawMessage(`"elicitation-a06-paused-tool-timeout"`),
+			Params: json.RawMessage(
+				`{"_meta":{"agentserver_execution_id":"execution-a06-paused-tool-timeout"},"message":"Wait for an explicit product decision","requestedSchema":{"type":"object","properties":{"confirmed":{"type":"boolean"}},"required":["confirmed"]}}`,
+			),
+			Response: json.RawMessage(`{"action":"cancel"}`),
+		},
+	}})
+
+	writeScriptedModelConfigWithOptions(t, paths.codexHome, modelServer.URL(), scriptedModelConfigOptions{
+		disableUpdatePlan: true,
+		mcpServerURL:      mcpServer.URL(),
+		mcpEnabledTools:   []string{approvedMCPToolName},
+		mcpToolTimeoutSec: toolTimeout.Seconds(),
+	})
+	process := startPreparedLiveCodex(t, binary, paths, "app-server", "--listen", "stdio://", "--strict-config")
+	initializeAppServer(t, process)
+	collector := newRPCCollector(process)
+	thread, turn := startMinimalAppServerTurnWithApprovalPolicy(
+		t,
+		collector,
+		paths.cwd,
+		"call the executor and wait for a product decision beyond its tool timeout",
+		granularMCPApprovalPolicy(),
+	)
+	reverseRequest := collector.request(t, "mcpServer/elicitation/request")
+	var requestParams struct {
+		ThreadID   string `json:"threadId"`
+		TurnID     string `json:"turnId"`
+		ServerName string `json:"serverName"`
+		Mode       string `json:"mode"`
+	}
+	if err := reverseRequest.DecodeParams(&requestParams); err != nil {
+		t.Fatal(err)
+	}
+	if requestParams.ThreadID != thread.Thread.ID || requestParams.TurnID != turn.ID ||
+		requestParams.ServerName != "executor" || requestParams.Mode != "form" {
+		t.Fatalf("unexpected pending MCP elicitation: %+v", requestParams)
+	}
+
+	collector.assertNoNotificationMethodsFor(
+		t,
+		observationWindow,
+		"serverRequest/resolved",
+		"turn/completed",
+	)
+	if requests := modelServer.Requests(); len(requests) != 1 {
+		t.Fatalf("pending elicitation sent %d model requests after %s with tool timeout %s, want one", len(requests), observationWindow, toolTimeout)
+	}
+	if responses := mcpServer.ElicitationResponses(); len(responses) != 0 {
+		t.Fatalf("pending elicitation received a decision before client response: %+v", responses)
+	}
+
+	sendRPC(t, process, map[string]any{
+		"id": reverseRequest.ID,
+		"result": map[string]any{
+			"action":  "cancel",
+			"content": nil,
+		},
+	})
+	assertServerRequestResolvedBeforeTurnCompleted(t, collector, thread.Thread.ID, reverseRequest.ID)
+	assertAgentItemCompleted(t, collector, thread.Thread.ID, turn.ID, conformanceFinalText)
+	collector.notification(t, "turn/completed")
+	closeAndWait(t, process)
+
+	if failures := modelServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted model server failures: %v", failures)
+	}
+	modelRequests := modelServer.Requests()
+	if len(modelRequests) != 2 {
+		t.Fatalf("scripted model received %d requests, want two", len(modelRequests))
+	}
+	second := decodeCapturedModelRequest(t, modelRequests[1])
+	if !modelInputContainsFunctionOutput(second.Input, callID, `"clientAction":"cancel"`) {
+		t.Fatalf("second model request omitted the post-wait tool result: input=%s", encodeModelInput(t, second.Input))
+	}
+	if failures := mcpServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted MCP server failures: %v", failures)
+	}
+	if calls := mcpServer.Calls(); len(calls) != 1 || calls[0].Name != approvedMCPToolName {
+		t.Fatalf("scripted MCP calls = %+v, want one eliciting call", calls)
+	}
+	responses := mcpServer.ElicitationResponses()
+	if len(responses) != 1 {
+		t.Fatalf("scripted MCP elicitation responses = %+v, want one", responses)
+	}
+	var observed struct {
+		Action string `json:"action"`
+	}
+	if err := json.Unmarshal(responses[0].Result, &observed); err != nil {
+		t.Fatal(err)
+	}
+	if observed.Action != "cancel" {
+		t.Fatalf("MCP elicitation action = %q, want cancel", observed.Action)
+	}
+	assertMCPBootstrap(t, mcpServer)
+}
+
 // TestAppServerA07InterruptClearsPendingMCPFormElicitation verifies the
 // cancellation boundary while the app-server client owns an unresolved MCP
 // reverse request. Interrupting the turn must resolve that request, send
@@ -1499,6 +1642,7 @@ type scriptedModelConfigOptions struct {
 	mcpServerURL      string
 	mcpEnabledTools   []string
 	mcpApprovalMode   string
+	mcpToolTimeoutSec float64
 }
 
 func writeScriptedModelConfig(t *testing.T, codexHome, serverURL string) {
@@ -1592,15 +1736,22 @@ enabled = false
 		default:
 			t.Fatalf("invalid scripted MCP approval mode %q", approvalMode)
 		}
+		toolTimeoutSec := options.mcpToolTimeoutSec
+		if toolTimeoutSec == 0 {
+			toolTimeoutSec = 5
+		}
+		if toolTimeoutSec <= 0 || toolTimeoutSec > 30 {
+			t.Fatalf("scripted MCP tool timeout %g is outside (0, 30] seconds", toolTimeoutSec)
+		}
 		config += fmt.Sprintf(`
 [mcp_servers.executor]
 url = %q
 required = true
 startup_timeout_sec = 5.0
-tool_timeout_sec = 5.0
+tool_timeout_sec = %g
 default_tools_approval_mode = %q
 enabled_tools = %s
-`, options.mcpServerURL, approvalMode, enabledTools)
+`, options.mcpServerURL, toolTimeoutSec, approvalMode, enabledTools)
 	}
 	if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte(config), 0o600); err != nil {
 		t.Fatalf("write scripted model config: %v", err)

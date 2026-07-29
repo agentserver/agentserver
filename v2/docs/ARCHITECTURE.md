@@ -303,10 +303,11 @@ MCP-only 不是 prompt 约定，而是 pinned Codex build 上必须同时成立�
 - harness-pool 是常驻 controller；“scale to zero”只表示删除或归零无 active run 的动态 workload 容量，不能把 controller 自身设为 `replicas: 0`。
 - 每个 active run 使用独立 workload；不在共享 pod 内以多个子进程承载不同租户。
 - workload 位于 workspace namespace，并使用 service account、seccomp、只读 rootfs、tmpfs、资源限额和 NetworkPolicy。
-- app-server child 没有 workspace worktree，不挂用户代码卷；worker 也只能访问该 attempt 的临时控制目录和 checkpoint staging volume。
+- app-server child 的整个 mount view 都没有 workspace worktree、用户代码卷或 Kubernetes service-account token，不能只把进程 `cwd` 指向空目录却仍让仓库在别处可读；worker 也只能访问该 attempt 的临时控制目录和 checkpoint staging volume。
 - app-server 使用新建且清洗过的临时 `CODEX_HOME`；auth、config、MCP secret 或整个目录均不能原样持久化。
-- worker 只允许建立到 harness-pool 的 mTLS control stream；app-server child 只允许访问 llmproxy 和本 run 批准的 MCP。两者使用不同 UID/权限域，worker credential、control socket 和 FD 必须 close-on-exec 且对子进程不可读。
-- Kubernetes NetworkPolicy 不能验证外部域名、TLS 身份或 redirect。app-server 的外部流量必须经过受控 egress proxy，由 proxy 校验 endpoint allowlist、DNS 结果、SNI/证书、端口、每次 redirect、响应大小与超时；NetworkPolicy 只允许 child 到该 proxy/内部 llmproxy，不能把域名策略仅写在配置中。
+- worker 只允许建立到 harness-pool 的 mTLS control stream；app-server child 只允许访问 llmproxy 和内部 egress proxy。两者使用不同 UID/权限域，worker credential/control文件对子进程 UID 不可读，控制 socket和所有非 stdio FD都以 `O_CLOEXEC` 打开。production launch trampoline在最终 exec前还必须从显式 allowlist执行 close-all（Linux优先 `close_range`），不能仅依赖 Go `exec.Cmd` 没有填写 `ExtraFiles`；A12负向 probe已经证明一个被清掉 `CLOEXEC` 的未列出 FD会进入 stock child。
+- Kubernetes NetworkPolicy 是 Pod粒度，不能单独实现同一 workload内“worker可到 harness-pool、child不可到 harness-pool”的进程级差异。Phase 1 的 Linux pod在 runtime container启动前，由唯一持有 `NET_ADMIN` 的 init container安装默认拒绝的 nftables OUTPUT规则：按固定 worker/app-server UID分别只允许 harness-pool和 `llmproxy + egress proxy`的已固定 ClusterIP/端口；runtime worker与 child均不持有 `NET_ADMIN/NET_RAW`。受支持内核若不能执行并验证 `meta skuid` owner规则，该 image直接不通过 A12，不能退化为只有 NetworkPolicy。Pod级 NetworkPolicy仍按两者 destination并集做第二层限制。
+- child不直接访问外部 MCP或通用 DNS。内部服务名在启动前被固定到只读 hosts视图，child UID禁止 DNS egress；外部 MCP的 DNS、目标连接和 redirect都由受控 egress proxy代办。proxy按 run manifest校验 endpoint allowlist、DNS结果、IP类别、SNI/证书、端口、每次 redirect、响应大小与超时；不能把域名策略只写在 Codex config或 requirements中。
 - MCP endpoint 和 tool allowlist 由 core 生成后固定进 run manifest，模型输出、prompt 或 skill 不能动态增加 endpoint。每个 endpoint 必须校验 TLS 身份并使用独立 audience capability；缺少凭证时 endpoint 必须拒绝，不能回退为匿名调用。
 - Phase 1 executor MCP 不实现 resources/prompts 协议；任何 `resources/list`、`resources/templates/list`、`resources/read`、`prompts/*` 请求都必须 fail closed 并进入安全审计。但这是纵深防御，不替代 A03 对模型工具面的精确约束。
 - Phase 1 只有 executor-gateway 可以暴露副作用工具。第三方 MCP 只允许管理员固定 endpoint、tool/schema hash 并独立验证为只读的工具；不能把第三方自报的 `readOnly/destructive` annotation 当作安全事实。未来支持第三方副作用前，必须统一经过可执行 core policy/approval 的 MCP policy proxy。
@@ -332,6 +333,10 @@ A10 也已在同两个 release 上验证 mid-turn hard-crash边界。probe先把
 A11 已在同两个 release 上验证 runtime secret排除。source attempt在 config、auth、token、requirements decoy、log、env dump和 transport buffer文件中放入不同 sentinel，并通过 `bearer_token_env_var` 让一次性 MCP capability真实出现在每个 MCP bootstrap/tool HTTP request中。clean exit后这些源文件及 sentinel仍存在，但模型请求 body、stderr和 rollout均不含九个 runtime secret值；rollout仍完整保留用户、assistant、MCP call ID和安全 tool result。checkpoint staging严格只有该 rollout。恢复 attempt重新生成 config并换用新的 capability，native resume成功且不重放副作用，旧/新 capability都没有进入恢复模型上下文或新 rollout。这里的 requirements只是挑战 `CODEX_HOME` allowlist的 decoy；真实 system requirements仍由 A04 image-level gate负责。
 
 A11只检测非模型事实的意外渗漏。若 secret scan在 rollout中发现本不应进入模型历史的 runtime credential，必须拒绝/quarantine整个 checkpoint并把 run标为不可恢复，不能原位替换字节后继续声称 native resume。相反，用户输入或 MCP result中本来就模型可见的敏感内容不能由展示层过滤器擅自删除；应依靠输入/工具策略预防、加密存储、访问控制、retention和删除流程处理。
+
+A12 的 Darwin host-level probe已在同两个 release上确认一项正向事实和两项负向边界。model provider被故意配置为“若 worker mTLS sentinel环境变量存在就发到 HTTP header”；sensitivity control把值显式注入 child并观察到 exact header，随后 parent-only case的显式 child env使真实模型请求、body和 stderr都看不到该值。app-server thread返回的 cwd也是 source tree之外始终为空的临时目录，但这不证明 mount namespace中别处没有工作树。FD反例清掉一个父 pipe的 `CLOEXEC`，即使 Go启动代码未配置 `ExtraFiles`，stock child仍持有该 writer，说明 runner必须实现上述 close-all trampoline，并在 production Linux image中重跑相同陷阱。网络反例让配置的 llmproxy返回跨 origin `307`，stock client会把同一模型 request送到第二个未配置 origin并从那里完成 turn，说明 base URL、managed requirements和 capability都不是网络可达性控制。
+
+A12 因而仍是 image-level open gate。正向 job必须在 production Linux image中同时验证：不同 UID下 worker credential/control path、`/proc`和 sentinel FD对子进程不可读/不可见；child mount view没有任何 workspace或 service-account token；允许 llmproxy和 approved MCP egress的请求成功；直接指向 forbidden sink、允许端点返回到 forbidden sink的 redirect以及非允许 DNS都失败且 sink计数保持零。只有 config级负向结果、401/403或 sink返回错误都不算网络隔离证明。
 
 worker 不持有对象存储 credential。它通过与 harness-pool 的同一 mTLS 连接内、有界的 checkpoint data substream 分块发送 manifest 和 staging 内容；harness-pool 施加大小/速率限制、复算逐块与整对象 hash 后上传，再请求 core 提交。上传或提交失败时对象不得成为可恢复 checkpoint，未引用对象按 retention job 清理。
 
@@ -762,7 +767,7 @@ agentx 的实现不放入上述 Go module。`github.com/agentserver/agentx` v2 �
 | D11 | native checkpoint 只在 completed turn 提交，UI/审计事件与模型可见历史分离 | 过滤展示内容不能破坏 app-server thread 恢复语义，mid-turn 不能伪恢复 |
 | D12 | Phase 1 只有 executor-gateway 暴露副作用 MCP；第三方直连工具仅允许验证后的只读集合 | 第三方 annotation 不是可信授权事实，直连无法强制 core approval |
 | D13 | executor-gateway/core 是唯一产品审批权威，使用 MCP elicitation 与 harness-worker 转接 | 避免 app-server 与 gateway 双重审批，并给 timeout/cancel/fence 明确语义 |
-| D14 | app-server 外部流量经过受控 egress proxy | NetworkPolicy 无法按域名、TLS 身份和 redirect 实施 run endpoint allowlist |
+| D14 | app-server 外部流量经过受控 egress proxy，Pod内再以 app-server UID默认拒绝 OUTPUT | NetworkPolicy 既无法区分同 Pod worker/child，也无法按域名、TLS 身份和 redirect实施 run endpoint allowlist |
 | D15 | Phase 1 executor-gateway 单副本，resume 只覆盖同进程短时断线 | 跨 pod resume 需要 durable frame journal 与 owner routing，不能只凭 connection lease 声称恢复 |
 | D16 | agentx 保持独立仓库并从零改写为 stock exec-server supervisor | 现有 hard-fork 把执行引擎复制进 agentx，与 v2 的 stock stdio 边界冲突 |
 | D17 | MCP-only 使用 `environments: []`、managed requirements、显式工具禁用与模型请求捕获共同证明 | system prompt 和单一配置开关都不能构成能力隔离 |
@@ -793,7 +798,7 @@ agentx 的实现不放入上述 Go module。`github.com/agentserver/agentx` v2 �
 
 - [ ] 固定 Codex 版本与 binary/helper digest，完成 stock exec-server stdio 启动、RPC fixture、正常关闭与崩溃时的 process-tree 回收、agentx 代理兼容测试。
 - [ ] 完成 harness-worker → stock app-server stdio conformance：initialize、thread start/resume、turn start/interrupt、notification/server request、MCP elicitation、terminal event、child crash 和 control-stream fence。
-- [ ] 验证 app-server child 无内建工具、无工作树；worker credential/FD 不可见；child 只经 egress proxy 访问 llmproxy + approved MCP，第三方副作用工具不可枚举/调用。
+- [ ] 验证 app-server child 无内建工具、整个 mount view无工作树；worker credential/FD不可见且 non-`CLOEXEC` sentinel也被 final-exec close-all；child UID只经 egress proxy访问 llmproxy + approved MCP，direct/redirect sink均为零请求，第三方副作用工具不可枚举/调用。
 - [ ] 完成 completed-turn checkpoint 原生 round-trip、hash/schema 校验、对象原子提交和 mid-turn crash 不恢复原 turn 测试；模型可见 tool result 与脱敏 UI 事件分别验证。
 - [ ] 完成 session lease、run-attempt lease/generation、producer idempotency、cursor-expired snapshot 和大 payload 临时对象/孤儿清理原型。
 - [ ] 完成 `PrepareExecution → approval → dispatching → ACK/running → terminal` 状态机，并在 DB commit、WSS send、agentx ACK、MCP response 各边界注入 crash，证明未知副作用不会自动重放。

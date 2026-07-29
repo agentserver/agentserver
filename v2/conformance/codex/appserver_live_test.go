@@ -1645,6 +1645,8 @@ func decodeTurnStart(t *testing.T, message codexwire.Message) appServerTurn {
 
 type scriptedModelConfigOptions struct {
 	disableUpdatePlan    bool
+	modelEnvHeaderName   string
+	modelEnvHeaderVar    string
 	mcpServerURL         string
 	mcpEnabledTools      []string
 	mcpApprovalMode      string
@@ -1665,6 +1667,19 @@ func writeScriptedModelConfigWithOptions(
 ) {
 	t.Helper()
 	modelCatalogPath := writeConformanceModelCatalog(t, codexHome)
+	if (options.modelEnvHeaderName == "") != (options.modelEnvHeaderVar == "") {
+		t.Fatal("scripted model environment header requires both a header name and environment variable")
+	}
+	if strings.ContainsAny(options.modelEnvHeaderName, "\x00\r\n") {
+		t.Fatalf("invalid scripted model environment header name %q", options.modelEnvHeaderName)
+	}
+	if strings.ContainsAny(options.modelEnvHeaderVar, "=\x00 \t\r\n") {
+		t.Fatalf("invalid scripted model environment header variable %q", options.modelEnvHeaderVar)
+	}
+	modelEnvHeaders := ""
+	if options.modelEnvHeaderName != "" {
+		modelEnvHeaders = fmt.Sprintf("env_http_headers = { %q = %q }\n", options.modelEnvHeaderName, options.modelEnvHeaderVar)
+	}
 	config := fmt.Sprintf(`model = %q
 approval_policy = "never"
 approvals_reviewer = "user"
@@ -1679,6 +1694,7 @@ base_url = %q
 wire_api = "responses"
 request_max_retries = 0
 stream_max_retries = 0
+%s
 
 [tools.experimental_request_user_input]
 enabled = false
@@ -1719,7 +1735,7 @@ standalone_web_search = false
 tool_suggest = false
 unified_exec = false
 workspace_dependencies = false
-`, conformanceModelName, modelCatalogPath, serverURL+"/v1")
+`, conformanceModelName, modelCatalogPath, serverURL+"/v1", modelEnvHeaders)
 	if options.disableUpdatePlan {
 		config += `
 [tools.update_plan]

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -96,6 +97,42 @@ func TestServerHoldsResponseUntilClientCancellation(t *testing.T) {
 	}
 	if failures := server.Failures(); len(failures) != 0 {
 		t.Fatalf("held response failures: %v", failures)
+	}
+}
+
+func TestServerReturnsScriptedRedirect(t *testing.T) {
+	const target = "http://127.0.0.1:43210/v1/responses"
+	server, err := newServer(Config{Responses: []Response{{
+		StatusCode:  http.StatusTemporaryRedirect,
+		RedirectURL: target,
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := newJSONRequest(`{"model":"mock"}`)
+	recorder := httptest.NewRecorder()
+	server.serveHTTP(recorder, request)
+	response := recorder.Result()
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusTemporaryRedirect || response.Header.Get("Location") != target {
+		t.Fatalf("redirect response: status=%d location=%q", response.StatusCode, response.Header.Get("Location"))
+	}
+	if body, err := io.ReadAll(response.Body); err != nil || len(body) != 0 {
+		t.Fatalf("redirect body = %q, err=%v; want empty", body, err)
+	}
+	if requests := server.Requests(); len(requests) != 1 {
+		t.Fatalf("redirect request count = %d, want one", len(requests))
+	}
+}
+
+func TestServerRejectsInvalidScriptedRedirect(t *testing.T) {
+	_, err := newServer(Config{Responses: []Response{{
+		StatusCode:  http.StatusOK,
+		RedirectURL: "http://127.0.0.1:43210/v1/responses",
+	}}})
+	if err == nil || !strings.Contains(err.Error(), "unsupported status") {
+		t.Fatalf("newServer() error = %v, want redirect status validation", err)
 	}
 }
 

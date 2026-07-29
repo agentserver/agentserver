@@ -247,7 +247,7 @@ conformance test 是 Go subprocess test，不依赖 v1 gateway：
 | A09 | checkpoint round-trip | 每个 brain thread只保存 app-server返回的单个 rollout JSONL；在全新目录 cold resume后，第二个 turn保留首 turn的模型可见 tool result且不重放 MCP副作用 |
 | A10 | mid-turn crash | 模型请求 in-flight时 hard-kill child；丢弃 crash runtime，只从上一个已提交 checkpoint创建不同的新 turn，且模型上下文不含被放弃 turn |
 | A11 | secret exclusion | 实际使用并轮换 MCP bearer；config、requirements decoy、token、auth、log、env dump和 transport buffer sentinel不进入 rollout/checkpoint，模型可见历史仍完整 |
-| A12 | child isolation | app-server 看不到 worker mTLS credential/FD，cwd 无工作树，网络只能到 llmproxy/批准 MCP egress |
+| A12 | child isolation | host probe验证显式 env与空 cwd并固定非 `CLOEXEC` FD、cross-origin redirect反例；production image中 child UID看不到 worker credential/任何 worker-owned继承 FD和工作树，只能到 llmproxy/批准 MCP egress |
 
 A03 不能通过“配置看起来正确”判断。测试必须检查实际发送给模型的 tool schema，并让 scripted model尝试调用一个禁止工具，确认 app-server不能执行。
 
@@ -268,6 +268,10 @@ A10 已在同两个 release 上通过。probe先密封一个 completed-turn roll
 A11 已在同两个 release 上通过。source attempt把九个不同 sentinel分布在实际使用的 MCP bearer、config comment、auth、token、requirements decoy、log、env dump和 transport buffer中；每个 MCP bootstrap/tool HTTP request都携带环境变量提供的 bearer，排除“未使用 secret自然不泄漏”的伪通过。clean exit后逐个源文件复核 sentinel仍在，而 Responses request body、stderr和 rollout均不含任何 runtime secret；rollout仍保留用户/assistant内容、原 MCP call ID和安全 tool result。checkpoint staging严格只有 rollout。恢复时 source path失效，config重新生成，MCP bearer轮换为新值；native resume和第二 turn成功、不重放副作用，旧/新 bearer都不在模型上下文或新 rollout中。该 probe中的 requirements是 `CODEX_HOME` decoy，不替代 A04对真实 `/etc/codex/requirements.toml` 的 image-level测试。
 
 A11不允许对 rollout做 lossy脱敏。若 scan发现本不应模型可见的 runtime credential，checkpoint整体 fail closed/quarantine，run进入不可恢复状态；用户输入或 MCP result中已经模型可见的敏感内容则必须依靠前置策略、加密、访问控制、retention和删除处理，不能删除字节后仍称为 native resume。
+
+A12 尚未通过，但 Darwin host-level边界已在 alpha.14和 stable 0.146.0上重复固定。model provider配置 `env_http_headers`主动尝试把 worker mTLS sentinel发往 Responses endpoint；sensitivity control显式注入 child env并观察到 exact header，随后 parent-only case的显式 child环境没有该变量，真实 request header/body与 stderr也没有该值。thread报告的 cwd是 source tree外的空临时目录，turn后仍为空。这个结果只证明 cwd/env启动参数，不证明同一 mount namespace其他路径不可读，production Linux image也必须重跑 FD陷阱。
+
+两个负向 probe证明 image gate不可省略。第一，父 pipe被故意清掉 `CLOEXEC` 后，即使 Go `exec.Cmd.ExtraFiles`为空，writer仍被 stock child继承；runner必须让控制/credential FD自身使用 `O_CLOEXEC`，并由 final-exec trampoline对 fd 3以上执行显式 close-all。第二，配置的 scripted llmproxy返回跨 origin `307` 时，stock Codex把同一 Responses POST发送到另一个未配置 origin并从那里正常完成 turn；`base_url`、requirements exact URL和 bearer audience都不是网络 sandbox。A12正向 job必须使用 production Linux image、不同 UID/mount权限和真实 per-UID egress规则，证明 allow路径成功且 direct/redirect forbidden sink均为零请求。该 job尚未实现，所以 A12仍为 open gate。
 
 当前 0.145.0 candidate 的 bootstrap probe 进一步确认：assistant 内容在 `item/completed` 上到达，而 terminal `turn/completed` 是 `itemsView: notLoaded` 的空内容终态，harness-worker 必须持续归并 item 事件，不能只保存 terminal payload。`environments: []` 能去掉 shell/fs；固定本地 model catalog，并显式关闭 Web、goals、multi-agent、orchestrator skills、user-input 及其他已知 feature 后，实际 Responses request 的工具面可收敛到仅剩 `update_plan`。但官方 `rust-v0.145.0` tag（peeled commit `25af12f7e61572b0bc18ddb1008be543b91519b0`）的 `add_core_utility_tools` 无条件注册 `PlanHandler`，该版本没有对应 config 或 requirements 开关；scripted model 调用后实际收到成功的 `Plan updated` result，client 同时收到 `turn/plan/updated`。因此 0.145.0 明确不通过 A03，不能成为 production runtime pin。
 
@@ -294,6 +298,8 @@ A10 的 crash负向路径固定为：先把上一个 completed checkpoint复制�
 
 A11 的 secret负向路径固定为：为每类 runtime-only来源生成不重叠 sentinel；对网络 credential必须从实际 MCP request header证明已使用；clean exit后先证明源文件/sentinel仍存在，再扫描模型 request body、stderr和 rollout。manifest/staging只能含单 rollout且复算 hash；恢复 attempt必须换用新 capability和重建 config，并再次扫描模型上下文与新 rollout。scan命中 runtime secret时拒绝整个 checkpoint，禁止原位改写 JSONL。
 
+A12 分两层验收。host probe用 `env_http_headers`把 worker sentinel变成可观察的 exfiltration trap，先显式注入 child证明 trap能命中，再要求 parent-only case的真实模型 header/body与 stderr均无 sentinel，且 thread cwd是 source tree外的空目录；随后保留非 `CLOEXEC` FD继承和跨 origin redirect两个负向 characterization。image job使用最终 runner：worker/app-server不同 UID，worker credential file、control socket和 staging path对子进程不可读，stdio映射完成后 final-exec trampoline以 close-all保证 sentinel FD不在 child；child mount view没有 workspace或 service-account token。网络正向先验证 llmproxy与 approved MCP egress成功，再让 direct URL和 allowed endpoint的 redirect分别指向计数 sink，要求连接失败且两个 sink计数都为零；HTTP 401/403不等于网络不可达。
+
 如果只有打包整个 CODEX_HOME 才能 resume，Phase 0 失败；不能把敏感配置一并持久化来绕过。
 
 ### 4.4 exec-server 必过探针
@@ -315,7 +321,7 @@ Phase 0 的 exit criterion 是 A01–A12、E01–E10 全部可重复通过。任
 
 当前 probe 已确认但尚未构成完整 Phase 0 放行的 exec-server 事实：`process/start` response 可与早期 `process/output` 竞态，agentx 必须单消费者收包并按 request id/一基 event seq 整理；带 `maxBytes` 的 `process/read.nextSeq` 只越过本次返回的最后一个 output chunk，不保证同时越过 terminal event，不带该限制的 terminal read 才能给出 `closed` 后游标。E02 已覆盖 argv/arg0、file-URI cwd 到 host canonical path、缺省 `envPolicy` 时 child env 精确等于 request `env`、pipe 与 PTY 合流输出。E08 的当前 slice 证明隔离 `CODEX_HOME` 不读取毒化的用户 `~/.codex`，exec-server 自身持有的 sentinel credential 也不会进入缺省策略 child。E10 的当前 slice 实测 retained replay 只保留大输出最后约 1 MiB；frame、argv/env、write-id cache 和 exited-process retention 的完整 bound matrix 仍未完成。stdio EOF 会关闭唯一 connection、shutdown session 并回收 managed child，不能把它描述成可 detach/resume。
 
-stable 0.146.0 同时新增两项明确拒绝证据。第一，`process/signal` 对 missing、delivered、already-exited 都返回不可区分的 `{}`，因此 E03 原验收失败。第二，根进程退出但后代继续持有 pipe 时，server 发出 `process/exited` 但不发 `process/closed`；随后 `process/terminate` 返回 `running: false` 且后代继续存活，直到整条 stdio connection 关闭才被回收，因此 E07 原验收失败。负向 conformance test 的 PASS 只表示稳定复现该缺口，不表示 E03/E07 放行。完整 Phase 0 目前至少被 A03、E03、E07 三项阻断。
+stable 0.146.0 同时新增两项明确拒绝证据。第一，`process/signal` 对 missing、delivered、already-exited 都返回不可区分的 `{}`，因此 E03 原验收失败。第二，根进程退出但后代继续持有 pipe 时，server 发出 `process/exited` 但不发 `process/closed`；随后 `process/terminate` 返回 `running: false` 且后代继续存活，直到整条 stdio connection 关闭才被回收，因此 E07 原验收失败。负向 conformance test 的 PASS 只表示稳定复现该缺口，不表示 E03/E07 放行。完整 Phase 0 当前明确被 A03、尚未实现 image正向 job的 A04/A12、E03和 E07阻断；E05/E09/E10等未完成矩阵仍可能增加 blocker。
 
 ## 5. Core 状态内核
 
@@ -767,15 +773,18 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 - harness-pool可多副本；每个 claim有 holder/generation lease。
 - executor-gateway Phase 1 replicas=1。
 - harness Job每 attempt一个，restartPolicy=Never、backoffLimit=0。
-- worker与 app-server使用不同 UID/文件权限域。
-- rootfs只读；CODEX_HOME与 staging位于有配额 tmpfs/emptyDir。
+- worker与 app-server使用固定的不同 UID/文件权限域；child禁止 ptrace/process-vm和读取 worker `/proc`状态。
+- rootfs只读；CODEX_HOME与 staging位于有配额 tmpfs/emptyDir；child mount view不含 workspace或 service-account token，worker-only staging依靠不同 UID和 `0700`目录不可读。
+- 只有 init-network-guard持有短期 `NET_ADMIN`并安装按 UID默认拒绝的 nftables OUTPUT规则；runtime worker/app-server都丢弃 `NET_ADMIN/NET_RAW`。
+- final-exec trampoline只保留 stdin/stdout/stderr，fd 3以上 close-all；worker control/credential FD同时必须为 `O_CLOEXEC`。
 - app-server没有 Kubernetes API token。
 - worker service account只能连接 harness-pool；不能访问对象存储。
 - harness-pool拥有创建/删除目标 Job和上传 checkpoint的最小权限。
 
 ### 10.2 网络
 
-- app-server只到 llmproxy和 egress proxy。
+- Pod NetworkPolicy只限制 worker+child destination并集，不能冒充进程隔离；按 UID的 OUTPUT规则分别允许 worker到 harness-pool、app-server到 llmproxy/egress proxy。
+- app-server禁止直接 DNS和外部连接；只读 hosts固定内部 proxy identity，外部 endpoint由 egress proxy解析和连接。
 - egress proxy按 run manifest验证 DNS、IP、SNI、证书、端口、redirect、响应大小和 timeout。
 - approved MCP使用不同 audience capability。
 - worker control网络与 app-server egress网络分开。
@@ -801,6 +810,7 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 | v2-contract | OpenAPI/AsyncAPI/schema生成与 drift；fixture validation |
 | v2-postgres | real PostgreSQL migration、CAS、lease、SKIP LOCKED、crash boundary |
 | v2-codex-appserver | manifest stock binary上的 A01–A12 |
+| v2-harness-image | 真实 system requirements、不同 UID/mount/FD、per-UID egress与 direct/redirect deny上的 A04/A12正向 gate |
 | v2-codex-execserver | manifest stock binary上的 E01–E10 |
 | v2-agentx-compat | 当前 server schema/fixture × pinned agentx release |
 | v2-e2e | fake model + fake IdP + real Postgres/MinIO + real Codex/agentx |

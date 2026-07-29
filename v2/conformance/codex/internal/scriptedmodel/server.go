@@ -27,14 +27,17 @@ const (
 )
 
 // Response is one scripted HTTP response. A zero StatusCode means 200 and an
-// empty ContentType means text/event-stream. HoldOpen records the request but
-// sends no response; the handler remains pending until the client cancels the
-// request or the server closes. A held response cannot set any other fields.
+// empty ContentType means text/event-stream. RedirectURL requires an explicit
+// 3xx StatusCode and returns only a Location header. HoldOpen records the
+// request but sends no response; the handler remains pending until the client
+// cancels the request or the server closes. Held and redirect responses cannot
+// set body fields.
 type Response struct {
 	StatusCode  int
 	ContentType string
 	Body        []byte
 	HoldOpen    bool
+	RedirectURL string
 }
 
 type Config struct {
@@ -104,11 +107,28 @@ func newServer(config Config) (*Server, error) {
 	}
 	responses := make([]Response, len(config.Responses))
 	for index, response := range config.Responses {
-		if response.HoldOpen && (response.StatusCode != 0 || response.ContentType != "" || len(response.Body) != 0) {
+		if response.HoldOpen && (response.StatusCode != 0 || response.ContentType != "" || len(response.Body) != 0 || response.RedirectURL != "") {
 			return nil, fmt.Errorf("held scripted response %d cannot set status, content type, or body", index)
 		}
 		if response.StatusCode != 0 && (response.StatusCode < 200 || response.StatusCode > 599) {
 			return nil, fmt.Errorf("scripted response %d has invalid status %d", index, response.StatusCode)
+		}
+		if response.RedirectURL != "" {
+			switch response.StatusCode {
+			case http.StatusMovedPermanently,
+				http.StatusFound,
+				http.StatusSeeOther,
+				http.StatusTemporaryRedirect,
+				http.StatusPermanentRedirect:
+			default:
+				return nil, fmt.Errorf("redirect scripted response %d has unsupported status %d", index, response.StatusCode)
+			}
+			if response.ContentType != "" || len(response.Body) != 0 {
+				return nil, fmt.Errorf("redirect scripted response %d cannot set content type or body", index)
+			}
+			if len(response.RedirectURL) > defaultMaxHeaderBytes || strings.ContainsAny(response.RedirectURL, "\r\n") {
+				return nil, fmt.Errorf("redirect scripted response %d has an invalid target", index)
+			}
 		}
 		if len(response.Body) > defaultMaxResponseBytes {
 			return nil, fmt.Errorf("scripted response %d exceeds %d bytes", index, defaultMaxResponseBytes)
@@ -256,6 +276,12 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 	s.mu.Unlock()
 	if response.HoldOpen {
 		<-request.Context().Done()
+		return
+	}
+	if response.RedirectURL != "" {
+		writer.Header().Set("Cache-Control", "no-store")
+		writer.Header().Set("Location", response.RedirectURL)
+		writer.WriteHeader(response.StatusCode)
 		return
 	}
 

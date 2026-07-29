@@ -1,6 +1,7 @@
 package runtimelock
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -29,21 +30,26 @@ func TestParseRejectsDuplicateAndUnknownFields(t *testing.T) {
 		t.Fatalf("duplicate-key Parse() error = %v", err)
 	}
 
-	encoded, err := json.Marshal(validManifest())
+	validEncoded, err := json.Marshal(validManifest())
 	if err != nil {
 		t.Fatal(err)
 	}
 	var object map[string]any
-	if err := json.Unmarshal(encoded, &object); err != nil {
+	if err := json.Unmarshal(validEncoded, &object); err != nil {
 		t.Fatal(err)
 	}
 	object["futureUnsafeDefault"] = true
-	encoded, err = json.Marshal(object)
+	encoded, err := json.Marshal(object)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Parse(encoded); err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("unknown-field Parse() error = %v", err)
+	}
+
+	legacy := bytes.Replace(validEncoded, []byte(`"externalExecutables"`), []byte(`"helpers"`), 1)
+	if _, err := Parse(legacy); err == nil || !strings.Contains(err.Error(), "unknown field \"helpers\"") {
+		t.Fatalf("legacy helpers Parse() error = %v", err)
 	}
 }
 
@@ -65,11 +71,11 @@ func TestManifestSemanticValidation(t *testing.T) {
 			delete(m.Artifacts, "linux-amd64")
 			m.Artifacts["plan9-amd64"] = artifact
 		}, wantErr: "not supported"},
-		{name: "helpers missing", mutate: func(m *Manifest) {
+		{name: "external executables missing", mutate: func(m *Manifest) {
 			artifact := m.Artifacts["linux-amd64"]
-			artifact.Helpers = nil
+			artifact.ExternalExecutables = nil
 			m.Artifacts["linux-amd64"] = artifact
-		}, wantErr: "helpers must be present"},
+		}, wantErr: "externalExecutables must be present"},
 		{name: "path escape", mutate: func(m *Manifest) {
 			artifact := m.Artifacts["linux-amd64"]
 			artifact.Codex.Path = "../codex"
@@ -82,9 +88,9 @@ func TestManifestSemanticValidation(t *testing.T) {
 		}, wantErr: "stable credential-free"},
 		{name: "duplicate path", mutate: func(m *Manifest) {
 			artifact := m.Artifacts["linux-amd64"]
-			helper := artifact.Helpers["codex-linux-sandbox"]
-			helper.Path = artifact.Codex.Path
-			artifact.Helpers["codex-linux-sandbox"] = helper
+			executable := artifact.ExternalExecutables["bwrap"]
+			executable.Path = artifact.Codex.Path
+			artifact.ExternalExecutables["bwrap"] = executable
 			m.Artifacts["linux-amd64"] = artifact
 		}, wantErr: "is shared"},
 		{name: "artifact size bound", mutate: func(m *Manifest) {
@@ -122,6 +128,7 @@ func TestRuntimeManifestJSONSchemaContract(t *testing.T) {
 		AdditionalProperties *bool                      `json:"additionalProperties"`
 		Required             []string                   `json:"required"`
 		Properties           map[string]json.RawMessage `json:"properties"`
+		Definitions          map[string]json.RawMessage `json:"$defs"`
 	}
 	if err := json.Unmarshal(encoded, &schema); err != nil {
 		t.Fatalf("schema is not valid JSON: %v", err)
@@ -158,6 +165,31 @@ func TestRuntimeManifestJSONSchemaContract(t *testing.T) {
 	if strings.Join(propertyNames, "\n") != strings.Join(wantRequired, "\n") {
 		t.Fatalf("schema properties = %v, want exactly %v", propertyNames, wantRequired)
 	}
+
+	var platformArtifacts struct {
+		AdditionalProperties *bool                      `json:"additionalProperties"`
+		Required             []string                   `json:"required"`
+		Properties           map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(schema.Definitions["platformArtifacts"], &platformArtifacts); err != nil {
+		t.Fatalf("decode platformArtifacts schema: %v", err)
+	}
+	if platformArtifacts.AdditionalProperties == nil || *platformArtifacts.AdditionalProperties {
+		t.Fatal("platformArtifacts schema must fail closed on unknown properties")
+	}
+	wantPlatformFields := []string{"codex", "externalExecutables"}
+	sort.Strings(platformArtifacts.Required)
+	if strings.Join(platformArtifacts.Required, "\n") != strings.Join(wantPlatformFields, "\n") {
+		t.Fatalf("platformArtifacts required fields = %v, want %v", platformArtifacts.Required, wantPlatformFields)
+	}
+	platformPropertyNames := make([]string, 0, len(platformArtifacts.Properties))
+	for name := range platformArtifacts.Properties {
+		platformPropertyNames = append(platformPropertyNames, name)
+	}
+	sort.Strings(platformPropertyNames)
+	if strings.Join(platformPropertyNames, "\n") != strings.Join(wantPlatformFields, "\n") {
+		t.Fatalf("platformArtifacts properties = %v, want exactly %v", platformPropertyNames, wantPlatformFields)
+	}
 }
 
 func validManifest() Manifest {
@@ -178,9 +210,9 @@ func validManifest() Manifest {
 					SHA256:    strings.Repeat("d", 64),
 					SizeBytes: 1024,
 				},
-				Helpers: map[string]FileArtifact{
-					"codex-linux-sandbox": {
-						Path:      "bin/codex-linux-sandbox",
+				ExternalExecutables: map[string]FileArtifact{
+					"bwrap": {
+						Path:      "codex-resources/bwrap",
 						SourceURL: "https://github.com/openai/codex/releases/download/rust-v0.145.0/codex-x86_64-unknown-linux-musl.tar.gz",
 						SHA256:    strings.Repeat("e", 64),
 						SizeBytes: 512,

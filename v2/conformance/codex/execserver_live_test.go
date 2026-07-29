@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/conformance/codex/internal/codexprocess"
 	"github.com/agentserver/agentserver/v2/internal/codexwire"
+	"github.com/agentserver/agentserver/v2/internal/runtimelock"
 )
 
 const (
@@ -46,6 +48,11 @@ const (
 	execServerRetainedOutputMax = 1 << 20
 	execChildNetworkOriginBody  = "agentserver-e05-origin\n"
 )
+
+var e09CandidateCommits = map[string]string{
+	"0.146.0-alpha.14": "9d84cad281364eb7f6be75e23067b0adc5e26106",
+	"0.146.0":          "e363b08c9175ac1cbe5893615dd2cb9ddf95043b",
+}
 
 // TestMain lets a live exec-server launch the already-built Go test binary as
 // a deterministic child. The helper path bypasses the testing harness so its
@@ -1046,6 +1053,107 @@ func TestExecServerE08IgnoresUserHomeAndDoesNotInheritServerSecrets(t *testing.T
 	closeAndWait(t, process)
 }
 
+func TestExecServerE09VerifiedLaunchExcludesAmbientPATH(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the Phase 1 exec-server launch profile is not characterized on Windows")
+	}
+	binary, paths := prepareLiveCodex(t)
+	release := candidateRelease(t, binary, paths)
+	commit, characterized := e09CandidateCommits[release]
+	if !characterized {
+		t.Skipf("E09 launch probe characterizes 0.146.0-alpha.14 and 0.146.0; candidate is %s", release)
+	}
+
+	bundleRoot := filepath.Join(paths.root, "e09-runtime")
+	codexArtifact := copyE09Executable(t, binary, bundleRoot, "bin/codex", release)
+	externalExecutables := map[string]runtimelock.FileArtifact{}
+	if runtime.GOOS == "linux" {
+		bwrapSource := findE09BundledBwrap(t, binary)
+		externalExecutables["bwrap"] = copyE09Executable(
+			t,
+			bwrapSource,
+			bundleRoot,
+			"codex-resources/bwrap",
+			release,
+		)
+	}
+	manifest := runtimelock.Manifest{
+		ManifestVersion:                runtimelock.CurrentManifestVersion,
+		CodexRelease:                   release,
+		CodexCommit:                    commit,
+		AppServerSchemaSHA256:          strings.Repeat("a", 64),
+		AppServerSchemaDigestAlgorithm: runtimelock.AppServerSchemaDigestAlgorithmV1,
+		ExecProtocolSourceSHA256:       strings.Repeat("b", 64),
+		CheckpointAllowlistVersion:     1,
+		AgentxProtocolVersion:          "2.0",
+		Artifacts: map[string]runtimelock.PlatformArtifacts{
+			runtimelock.CurrentPlatform(): {
+				Codex:               codexArtifact,
+				ExternalExecutables: externalExecutables,
+			},
+		},
+	}
+
+	poisonDirectory := filepath.Join(paths.root, "e09-poison-path")
+	if err := os.MkdirAll(poisonDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	poisonMarker := filepath.Join(paths.root, "e09-poison-executed")
+	for _, name := range []string{"codex", "bwrap", "rg"} {
+		poison := filepath.Join(poisonDirectory, name)
+		contents := []byte("#!/bin/sh\nprintf poison > \"$AGENTSERVER_E09_POISON_MARKER\"\nexit 97\n")
+		if err := os.WriteFile(poison, contents, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	poisonedBase := replaceEnvironmentValue(paths.environment, "PATH", poisonDirectory)
+	poisonedBase = append(poisonedBase, "AGENTSERVER_E09_POISON_MARKER="+poisonMarker)
+
+	var process *codexprocess.Process
+	err := manifest.VerifyAndStartExecServer(bundleRoot, runtimelock.CurrentPlatform(), func(plan runtimelock.ExecServerLaunchPlan) error {
+		environment, err := plan.Environment(poisonedBase)
+		if err != nil {
+			return err
+		}
+		launchPaths := paths
+		launchPaths.environment = environment
+		process = startPreparedLiveCodex(t, plan.Program(), launchPaths, plan.Arguments()...)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("verified exec-server launch: %v", err)
+	}
+	initializeExecServer(t, process)
+	closeAndWait(t, process)
+	if _, err := os.Stat(poisonMarker); !os.IsNotExist(err) {
+		t.Fatalf("ambient PATH executable was selected, marker stat error = %v", err)
+	}
+
+	badArtifacts := manifest.Artifacts[runtimelock.CurrentPlatform()]
+	badArtifacts.Codex.SHA256 = strings.Repeat("0", 64)
+	badManifest := manifest
+	badManifest.Artifacts = map[string]runtimelock.PlatformArtifacts{
+		runtimelock.CurrentPlatform(): badArtifacts,
+	}
+	starterCalled := false
+	err = badManifest.VerifyAndStartExecServer(bundleRoot, runtimelock.CurrentPlatform(), func(runtimelock.ExecServerLaunchPlan) error {
+		starterCalled = true
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "SHA-256") {
+		t.Fatalf("digest-mismatch launch error = %v", err)
+	}
+	if starterCalled {
+		t.Fatal("digest-mismatch launch invoked the process starter")
+	}
+
+	if runtime.GOOS == "linux" {
+		t.Log("Linux host launch excluded ambient bwrap; E09 still requires a production-image sandbox request proving bundled bwrap selection")
+	} else {
+		t.Log("Darwin host launch excluded ambient PATH; Linux bundled-bwrap selection remains an image-level E09 gate")
+	}
+}
+
 func TestExecServerE10RetainedOutputReplayIsBounded(t *testing.T) {
 	process, paths := startLiveCodex(t, "exec-server", "--listen", "stdio", "--strict-config")
 	initializeExecServer(t, process)
@@ -1096,6 +1204,104 @@ func TestExecServerE10RetainedOutputReplayIsBounded(t *testing.T) {
 	}
 
 	closeAndWait(t, process)
+}
+
+func copyE09Executable(t *testing.T, sourcePath, bundleRoot, relativePath, release string) runtimelock.FileArtifact {
+	t.Helper()
+	resolvedSource, err := filepath.EvalSymlinks(sourcePath)
+	if err != nil {
+		t.Fatalf("resolve E09 source executable: %v", err)
+	}
+	source, err := os.Open(resolvedSource)
+	if err != nil {
+		t.Fatalf("open E09 source executable: %v", err)
+	}
+	defer source.Close()
+
+	destinationPath := filepath.Join(bundleRoot, filepath.FromSlash(relativePath))
+	if err := os.MkdirAll(filepath.Dir(destinationPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	destination, err := os.OpenFile(destinationPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o700)
+	if err != nil {
+		t.Fatalf("create E09 bundle executable: %v", err)
+	}
+	_, copyErr := io.Copy(destination, source)
+	closeErr := destination.Close()
+	if copyErr != nil {
+		t.Fatalf("copy E09 bundle executable: %v", copyErr)
+	}
+	if closeErr != nil {
+		t.Fatalf("close E09 bundle executable: %v", closeErr)
+	}
+	if err := os.Chmod(destinationPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	digest, size, err := runtimelock.HashFile(destinationPath)
+	if err != nil {
+		t.Fatalf("hash E09 bundle executable: %v", err)
+	}
+	return runtimelock.FileArtifact{
+		Path:      relativePath,
+		SourceURL: e09NPMPlatformSourceURL(t, release),
+		SHA256:    digest,
+		SizeBytes: size,
+	}
+}
+
+func e09NPMPlatformSourceURL(t *testing.T, release string) string {
+	t.Helper()
+	osName := runtime.GOOS
+	if osName == "windows" {
+		osName = "win32"
+	}
+	archName := runtime.GOARCH
+	if archName == "amd64" {
+		archName = "x64"
+	}
+	if (osName != "darwin" && osName != "linux" && osName != "win32") ||
+		(archName != "arm64" && archName != "x64") {
+		t.Fatalf("no official npm platform package mapping for %s-%s", runtime.GOOS, runtime.GOARCH)
+	}
+	return fmt.Sprintf(
+		"https://registry.npmjs.org/@openai/codex/-/codex-%s-%s-%s.tgz",
+		release,
+		osName,
+		archName,
+	)
+}
+
+func findE09BundledBwrap(t *testing.T, binary string) string {
+	t.Helper()
+	resolvedBinary, err := filepath.EvalSymlinks(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Dir(resolvedBinary)
+	candidates := []string{
+		filepath.Join(directory, "codex-resources", "bwrap"),
+		filepath.Join(filepath.Dir(directory), "codex-resources", "bwrap"),
+	}
+	for _, candidate := range candidates {
+		info, err := os.Stat(candidate)
+		if err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+			return candidate
+		}
+	}
+	t.Fatalf("candidate Linux release has no bundled bwrap at %q", candidates)
+	return ""
+}
+
+func replaceEnvironmentValue(environment []string, name, value string) []string {
+	replaced := make([]string, 0, len(environment)+1)
+	for _, entry := range environment {
+		entryName, _, found := strings.Cut(entry, "=")
+		if found && strings.EqualFold(entryName, name) {
+			continue
+		}
+		replaced = append(replaced, entry)
+	}
+	return append(replaced, name+"="+value)
 }
 
 type observedProcessEvent struct {

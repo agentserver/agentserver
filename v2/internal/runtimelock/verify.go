@@ -17,9 +17,10 @@ type VerifiedFile struct {
 }
 
 type VerifiedRuntime struct {
-	Platform string
-	Codex    VerifiedFile
-	Helpers  map[string]VerifiedFile
+	Root                string
+	Platform            string
+	Codex               VerifiedFile
+	ExternalExecutables map[string]VerifiedFile
 }
 
 func CurrentPlatform() string {
@@ -30,9 +31,12 @@ func (m Manifest) VerifyCurrentPlatform(root string) (VerifiedRuntime, error) {
 	return m.VerifyPlatform(root, CurrentPlatform())
 }
 
-// VerifyPlatform checks a signed manifest's files beneath an immutable bundle
-// root. It rejects symlinks in every path component. Agentx still needs a
-// platform-specific atomic safe-open/execute boundary after this check.
+// VerifyPlatform checks a signed manifest's executable files beneath an
+// immutable bundle root. It rejects symlinks in every path component. Hidden
+// Codex helper modes that re-enter the Codex executable are covered by the
+// Codex digest; ExternalExecutables contains only distinct executable bytes.
+// Agentx still needs a platform-specific atomic safe-open/execute boundary
+// after this check.
 func (m Manifest) VerifyPlatform(root, platform string) (VerifiedRuntime, error) {
 	if err := m.Validate(); err != nil {
 		return VerifiedRuntime{}, err
@@ -61,21 +65,22 @@ func (m Manifest) VerifyPlatform(root, platform string) (VerifiedRuntime, error)
 		return VerifiedRuntime{}, fmt.Errorf("verify codex artifact: %w", err)
 	}
 	verified := VerifiedRuntime{
-		Platform: platform,
-		Codex:    codex,
-		Helpers:  make(map[string]VerifiedFile, len(artifacts.Helpers)),
+		Root:                root,
+		Platform:            platform,
+		Codex:               codex,
+		ExternalExecutables: make(map[string]VerifiedFile, len(artifacts.ExternalExecutables)),
 	}
-	helperNames := make([]string, 0, len(artifacts.Helpers))
-	for name := range artifacts.Helpers {
-		helperNames = append(helperNames, name)
+	executableNames := make([]string, 0, len(artifacts.ExternalExecutables))
+	for name := range artifacts.ExternalExecutables {
+		executableNames = append(executableNames, name)
 	}
-	sort.Strings(helperNames)
-	for _, name := range helperNames {
-		helper, err := verifyArtifact(root, artifacts.Helpers[name])
+	sort.Strings(executableNames)
+	for _, name := range executableNames {
+		executable, err := verifyArtifact(root, artifacts.ExternalExecutables[name])
 		if err != nil {
-			return VerifiedRuntime{}, fmt.Errorf("verify helper %q: %w", name, err)
+			return VerifiedRuntime{}, fmt.Errorf("verify external executable %q: %w", name, err)
 		}
-		verified.Helpers[name] = helper
+		verified.ExternalExecutables[name] = executable
 	}
 	return verified, nil
 }

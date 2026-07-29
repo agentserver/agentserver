@@ -31,7 +31,7 @@ var (
 	digestPattern       = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	protocolPattern     = regexp.MustCompile(`^[0-9]+\.[0-9]+$`)
 	platformPattern     = regexp.MustCompile(`^(linux|darwin|windows)-(amd64|arm64)$`)
-	helperPattern       = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._-]*$`)
+	executablePattern   = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._-]*$`)
 	artifactPathPattern = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._/-]*$`)
 )
 
@@ -48,8 +48,8 @@ type Manifest struct {
 }
 
 type PlatformArtifacts struct {
-	Codex   FileArtifact            `json:"codex"`
-	Helpers map[string]FileArtifact `json:"helpers"`
+	Codex               FileArtifact            `json:"codex"`
+	ExternalExecutables map[string]FileArtifact `json:"externalExecutables"`
 }
 
 type FileArtifact struct {
@@ -126,39 +126,39 @@ func (m Manifest) Validate() error {
 			return fmt.Errorf("artifacts platform %q is not supported", platform)
 		}
 		artifacts := m.Artifacts[platform]
-		if artifacts.Helpers == nil {
-			return fmt.Errorf("artifacts[%q].helpers must be present", platform)
+		if artifacts.ExternalExecutables == nil {
+			return fmt.Errorf("artifacts[%q].externalExecutables must be present", platform)
 		}
 		if err := artifacts.Codex.validate(fmt.Sprintf("artifacts[%q].codex", platform)); err != nil {
 			return err
 		}
-		if len(artifacts.Helpers) > maxRuntimeFilesPerPlatform-1 {
-			return fmt.Errorf("artifacts[%q] contains too many helpers", platform)
+		if len(artifacts.ExternalExecutables) > maxRuntimeFilesPerPlatform-1 {
+			return fmt.Errorf("artifacts[%q] contains too many external executables", platform)
 		}
 		totalBytes := artifacts.Codex.SizeBytes
 		paths := map[string]string{artifacts.Codex.Path: "codex"}
 
-		helperNames := make([]string, 0, len(artifacts.Helpers))
-		for name := range artifacts.Helpers {
-			helperNames = append(helperNames, name)
+		executableNames := make([]string, 0, len(artifacts.ExternalExecutables))
+		for name := range artifacts.ExternalExecutables {
+			executableNames = append(executableNames, name)
 		}
-		sort.Strings(helperNames)
-		for _, name := range helperNames {
-			if !helperPattern.MatchString(name) {
-				return fmt.Errorf("artifacts[%q].helpers name %q is invalid", platform, name)
+		sort.Strings(executableNames)
+		for _, name := range executableNames {
+			if !executablePattern.MatchString(name) {
+				return fmt.Errorf("artifacts[%q].externalExecutables name %q is invalid", platform, name)
 			}
-			helper := artifacts.Helpers[name]
-			if err := helper.validate(fmt.Sprintf("artifacts[%q].helpers[%q]", platform, name)); err != nil {
+			executable := artifacts.ExternalExecutables[name]
+			if err := executable.validate(fmt.Sprintf("artifacts[%q].externalExecutables[%q]", platform, name)); err != nil {
 				return err
 			}
-			if helper.SizeBytes > maxRuntimePlatformBytes-totalBytes {
+			if executable.SizeBytes > maxRuntimePlatformBytes-totalBytes {
 				return fmt.Errorf("artifacts[%q] exceeds %d total bytes", platform, maxRuntimePlatformBytes)
 			}
-			totalBytes += helper.SizeBytes
-			if owner, duplicate := paths[helper.Path]; duplicate {
-				return fmt.Errorf("artifacts[%q] path %q is shared by %s and helper %q", platform, helper.Path, owner, name)
+			totalBytes += executable.SizeBytes
+			if owner, duplicate := paths[executable.Path]; duplicate {
+				return fmt.Errorf("artifacts[%q] path %q is shared by %s and external executable %q", platform, executable.Path, owner, name)
 			}
-			paths[helper.Path] = "helper " + name
+			paths[executable.Path] = "external executable " + name
 		}
 	}
 	return nil

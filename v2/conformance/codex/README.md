@@ -52,6 +52,12 @@ environment metadata, and these slices of the executor matrix:
 - E08: a tainted server environment and poison user-home config are excluded by
   the isolated `CODEX_HOME`, and the child still receives exactly the requested
   environment;
+- E09: the runtime-lock launch boundary verifies the full platform executable
+  set before invoking a starter, launches only absolute `bin/codex`, replaces
+  ambient PATH, and never invokes the starter on a Codex/bwrap digest or bundle
+  layout failure. Both characterized Darwin releases start a real copied stock
+  exec-server from the minimal verified layout while poison `codex`, `bwrap`,
+  and `rg` sentinels on the supplied PATH remain untouched;
 - E10: a bounded slice proves that replay retains only the final approximately
   1 MiB suffix of a larger streamed output. Frame, argv/env, write-id, and exited
   process retention bounds remain open.
@@ -71,6 +77,18 @@ pause the proxied request: stock Codex immediately blocks it with HTTP 403.
 Agentx must hold the reverse RPC while an authorized approval is pending and
 eventually answer `allow` or `deny`; returning `ask` is only a terminal blocked
 result.
+
+E09 is not yet a full platform pass. Upstream source inspection establishes
+that the fs helper and arg0 exec helper re-enter the absolute current Codex,
+while the runtime-created Linux sandbox alias points to the same bytes; they do
+not have independent helper artifacts to hash. Linux `bwrap` does. Stock first
+probes a system bwrap from PATH and only then tries
+`codex-resources/bwrap`. The Phase 1 reference profile therefore removes
+`codex-package.json`, supplies a nonexistent bundle-local PATH, and pins the
+bundled resource. A production Linux image must still run a real sandboxed fs
+or process request with a poisoned host PATH and prove which bwrap executes.
+The Darwin live result cannot supply that evidence or close the safe-open/exec
+TOCTOU requirement.
 
 On the observed 0.145.0 candidate, assistant content is authoritative on
 `item/completed`; the terminal `turn/completed` has `itemsView: notLoaded` and

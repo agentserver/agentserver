@@ -192,9 +192,9 @@ Phase 0 生成并提交 packaging/agentx/runtime-manifest.json，至少包含：
         "sha256": "...",
         "sizeBytes": 123
       },
-      "helpers": {
-        "codex-linux-sandbox": {
-          "path": "bin/codex-linux-sandbox",
+      "externalExecutables": {
+        "bwrap": {
+          "path": "codex-resources/bwrap",
           "sourceUrl": "https://固定发布地址",
           "sha256": "...",
           "sizeBytes": 123
@@ -208,11 +208,11 @@ Phase 0 生成并提交 packaging/agentx/runtime-manifest.json，至少包含：
 锁定流程：
 
 1. 只接受可追溯到官方 stock release/tag 的构建；本地 Codex checkout 的自定义 commit 不能作为 release pin。
-2. inner runtime manifest 对每个平台记录固定 HTTPS 下载来源、bundle 内相对路径、精确大小、二进制 SHA-256 和所需 helper；拒绝 symlink、路径逃逸、未知字段和临时 query URL。manifest 本身及外层 agentx/harness release bundle 使用 detached signature，外层 release metadata 记录签名、SBOM 与 manifest digest，避免在被签名文件内部产生自引用签名。
+2. inner runtime manifest 对每个平台记录固定 HTTPS 下载来源、bundle 内相对路径、精确大小、Codex SHA-256 和所有独立外部 executable；拒绝 symlink、路径逃逸、未知字段和临时 query URL。`--codex-run-as-fs-helper`、arg0 exec helper 与 Linux `codex-linux-sandbox` alias 都重入当前 Codex executable，不是三份可独立校验的文件，其可信字节由 Codex digest 覆盖。Linux 真正独立的执行资源是 `codex-resources/bwrap`；Windows command runner/setup 等未来进入支持面时也必须逐文件列出。manifest 本身及外层 agentx/harness release bundle 使用 detached signature，外层 release metadata 记录签名、SBOM 与 manifest digest，避免在被签名文件内部产生自引用签名。
 3. 运行 codex app-server generate-json-schema，保存原始生成物；已验证 stock generator 的合并 schema 可能随机排列 JSON object keys，因此 manifest 使用显式版本化的 `canonical-json-tree-v1`：逐文件解析 JSON、保留数组顺序、按 key 重编码 object，再按相对路径树 hash。连续生成两次的 canonical digest 必须一致；不能 pin 不可复现的 raw tree digest。
 4. exec-server 没有等价的稳定 schema generator时，保存 protocol 源文件 digest、录制 fixture 和语义探针结果。
 5. harness image 与 agentx release bundle 必须引用同一个 manifest digest。
-6. 启动时发现 version、digest、helper 或 schema 不匹配，worker/agentx 均 fail closed。
+6. 启动时发现 version、digest、外部 executable 或 schema 不匹配，worker/agentx 均 fail closed。校验器必须先验证当前平台的完整 artifact set，再生成只含绝对 Codex 路径和受控 runtime PATH 的 launch plan；任一失败都不能调用 process starter。
 7. Codex 升级单独提交：先更新 lock，再更新 fixture，最后通过全部 conformance；不能顺手随业务版本升级。
 
 当前开发机显示的 Codex 版本或本地源码 HEAD 只能帮助调研，不能写成生产 lock。
@@ -314,7 +314,7 @@ A12 分两层验收。host probe用 `env_http_headers`把 worker sentinel变成�
 | E06 | stdio EOF | stdin EOF 后 server shutdown并清理 managed process；新的 agentx 不能 attach旧 child |
 | E07 | child crash | process group/cgroup 回收后代；无法确认退出时结果为 ambiguous/unknown |
 | E08 | environment isolation | 空 CODEX_HOME、固定 runtime cwd、清洗 env；不能读取用户 Codex auth/config或 agentx credential |
-| E09 | binary/helper lock | codex 和 sandbox/fs helper digest 不匹配时启动失败，不回退到 PATH |
+| E09 | executable/runtime lock | Codex 与所有独立外部 executable digest 不匹配时启动失败；隐藏 fs/arg0/sandbox 模式只重入已验证 Codex；ambient PATH 中的 codex/bwrap/rg 均不可被选择 |
 | E10 | bounds | 最大 frame、argv/env、output buffer、retained output 和 exited-process retention 被测量并写入 manifest |
 
 Phase 0 的 exit criterion 是 A01–A12、E01–E10 全部可重复通过。任何 MCP-only、elicitation、checkpoint 或 stdio 假设失败，都先修改架构，不能继续写业务服务。
@@ -323,9 +323,9 @@ Phase 0 的 exit criterion 是 A01–A12、E01–E10 全部可重复通过。任
 
 E05 用真实 child → executor-local HTTP proxy → bounded origin 链路固定了反向请求的 `{processId, request:{protocol,host,port}}` 形状：allow 恰好命中 origin 一次，deny/ask、RPC error、未知 decision、controller timeout 和 stdio EOF 均为零命中；reference agentx client 还对非法 known params 回复 `deny(not_allowed)`、对未知 reverse method 回复 `-32601`。stock 返回 `ask` 会立即得到 HTTP 403，不会暂停请求；`policyDecisionTimeoutMs` 之外还有固定 5 秒 transport margin，所以 agentx 必须在自己的 approval deadline 主动 allow/deny。
 
-E08 的当前 slice 证明隔离 `CODEX_HOME` 不读取毒化的用户 `~/.codex`，exec-server 自身持有的 sentinel credential 也不会进入缺省策略 child。E10 的当前 slice 实测 retained replay 只保留大输出最后约 1 MiB；frame、argv/env、write-id cache 和 exited-process retention 的完整 bound matrix 仍未完成。stdio EOF 会关闭唯一 connection、shutdown session 并回收 managed child，不能把它描述成可 detach/resume。
+E08 的当前 slice 证明隔离 `CODEX_HOME` 不读取毒化的用户 `~/.codex`，exec-server 自身持有的 sentinel credential 也不会进入缺省策略 child。E09 的 reference launch boundary 已经验证完整 artifact set 全部通过后才调用 starter、Codex 只使用绝对路径、ambient PATH 被替换、Codex/bwrap digest 或布局失败时零启动。上游实现同时确认 fs helper、arg0 exec helper 和 Linux sandbox alias 都重入当前 Codex；不能为它们虚构独立 digest。stock Linux launcher 却明确优先搜索 PATH 中的 system `bwrap`，再使用 bundled resource，因此 agentx profile 采用无 `codex-package.json` 的最小 bundle、不可存在的 PATH 目录和固定 `codex-resources/bwrap`，让 stock 只能落到已验证 bundled resource。该结论仍须在 production Linux image 中以 poisoned system PATH 和真实 sandbox 请求做正向 gate；Darwin host 测试不能把 E09 宣称为完整通过。E10 的当前 slice 实测 retained replay 只保留大输出最后约 1 MiB；frame、argv/env、write-id cache 和 exited-process retention 的完整 bound matrix 仍未完成。stdio EOF 会关闭唯一 connection、shutdown session 并回收 managed child，不能把它描述成可 detach/resume。
 
-stable 0.146.0 同时新增两项明确拒绝证据。第一，`process/signal` 对 missing、delivered、already-exited 都返回不可区分的 `{}`，因此 E03 原验收失败。第二，根进程退出但后代继续持有 pipe 时，server 发出 `process/exited` 但不发 `process/closed`；随后 `process/terminate` 返回 `running: false` 且后代继续存活，直到整条 stdio connection 关闭才被回收，因此 E07 原验收失败。负向 conformance test 的 PASS 只表示稳定复现该缺口，不表示 E03/E07 放行。完整 Phase 0 当前明确被 A03、尚未实现 image 正向 job 的 A04/A12、E03 和 E07 阻断；E09/E10 等未完成矩阵仍可能增加 blocker。E05 只是 stock 边界与 reference client contract 通过，真实 agentx 的 ownership 求交、approval channel 和审计仍须在 executor 纵向切片复用同一 fixture 验收。
+stable 0.146.0 同时新增两项明确拒绝证据。第一，`process/signal` 对 missing、delivered、already-exited 都返回不可区分的 `{}`，因此 E03 原验收失败。第二，根进程退出但后代继续持有 pipe 时，server 发出 `process/exited` 但不发 `process/closed`；随后 `process/terminate` 返回 `running: false` 且后代继续存活，直到整条 stdio connection 关闭才被回收，因此 E07 原验收失败。负向 conformance test 的 PASS 只表示稳定复现该缺口，不表示 E03/E07 放行。完整 Phase 0 当前明确被 A03、尚未实现 image 正向 job 的 A04/A12、E03、E07，以及尚缺 production Linux 正向 job 的 E09 阻断；E10 等未完成矩阵仍可能增加 blocker。E05 只是 stock 边界与 reference client contract 通过，真实 agentx 的 ownership 求交、approval channel 和审计仍须在 executor 纵向切片复用同一 fixture 验收。
 
 ## 5. Core 状态内核
 
@@ -566,13 +566,13 @@ timeout 不伪装成 process/start 参数。gateway 在启动进程时同时预�
 
 ### 7.4 agentx 启动顺序
 
-1. 读取签名 runtime manifest，解析当前平台允许的绝对 codex/helper路径。
-2. 校验 version、digest、文件权限和签名；失败即退出。
+1. 读取并先验证 detached signature，再解析 runtime manifest；解析当前平台允许的 Codex 和独立外部 executable。
+2. 校验完整 artifact set 的 version、digest、大小、可执行权限、regular-file 和无 symlink 路径；任何一个失败都在创建 child 前退出。隐藏 fs/arg0/sandbox 模式不作为伪造的独立文件处理，它们由 Codex digest 覆盖。
 3. 取得机器身份并建立出站 WSS，但尚不宣布 env online。
 4. 为 env 创建一次性 runtime dir和空 CODEX_HOME。
-5. 构造最小 config，固定 exec-server cwd，清洗所有 secret/model/proxy变量。
+5. 构造最小 config，固定 exec-server cwd，清洗所有 secret/model/proxy变量；用 runtime lock 生成的受控 PATH 替换 ambient PATH，而非追加。
 6. 创建平台 process containment。
-7. 启动绝对路径 codex exec-server --listen stdio --strict-config。
+7. 通过 verified launch boundary 启动绝对路径 `bin/codex exec-server --listen stdio --strict-config`。Phase 1 exec profile 不携带 `codex-package.json`，防止 stock 自动把未审计的 `codex-path` 插入 PATH；Linux 只在固定 `codex-resources/bwrap` 放置已验证资源。
 8. 本地完成 initialize → initialized → environment/info/status。
 9. 记录 local_exec_instance_id。
 10. 远端 hello/initialize成功后才宣布 online。

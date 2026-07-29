@@ -116,9 +116,9 @@ func TestHashTreeEnforcesBoundsAndRejectsSymlink(t *testing.T) {
 func TestVerifyPlatformChecksDigestSizeAndSymlink(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "bin/codex", "stock-codex")
-	writeFile(t, root, "bin/codex-linux-sandbox", "sandbox-helper")
-	for _, executable := range []string{"codex", "codex-linux-sandbox"} {
-		if err := os.Chmod(filepath.Join(root, "bin", executable), 0o700); err != nil {
+	writeFile(t, root, "codex-resources/bwrap", "bundled-bwrap")
+	for _, executable := range []string{"bin/codex", "codex-resources/bwrap"} {
+		if err := os.Chmod(filepath.Join(root, filepath.FromSlash(executable)), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -126,7 +126,7 @@ func TestVerifyPlatformChecksDigestSizeAndSymlink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	helperDigest, helperSize, err := HashFile(filepath.Join(root, "bin", "codex-linux-sandbox"))
+	executableDigest, executableSize, err := HashFile(filepath.Join(root, "codex-resources", "bwrap"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,17 +135,17 @@ func TestVerifyPlatformChecksDigestSizeAndSymlink(t *testing.T) {
 	artifacts := manifest.Artifacts["linux-amd64"]
 	artifacts.Codex.SHA256 = codexDigest
 	artifacts.Codex.SizeBytes = codexSize
-	helper := artifacts.Helpers["codex-linux-sandbox"]
-	helper.SHA256 = helperDigest
-	helper.SizeBytes = helperSize
-	artifacts.Helpers["codex-linux-sandbox"] = helper
+	bwrap := artifacts.ExternalExecutables["bwrap"]
+	bwrap.SHA256 = executableDigest
+	bwrap.SizeBytes = executableSize
+	artifacts.ExternalExecutables["bwrap"] = bwrap
 	manifest.Artifacts["linux-amd64"] = artifacts
 
 	verified, err := manifest.VerifyPlatform(root, "linux-amd64")
 	if err != nil {
 		t.Fatalf("VerifyPlatform() error = %v", err)
 	}
-	if verified.Codex.SHA256 != codexDigest || verified.Helpers["codex-linux-sandbox"].SHA256 != helperDigest {
+	if verified.Codex.SHA256 != codexDigest || verified.ExternalExecutables["bwrap"].SHA256 != executableDigest {
 		t.Fatalf("verified runtime = %+v", verified)
 	}
 

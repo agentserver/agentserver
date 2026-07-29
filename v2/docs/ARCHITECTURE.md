@@ -360,9 +360,9 @@ Phase 1 优先使用镜像预拉取、节点运行时缓存和预建只读层降
 
 agentx 是 Go 编写的连接与策略代理；标准执行引擎直接复用 stock exec-server。Phase 1 默认一个 executor 只暴露一个 env；若以后允许多个 env，不同 root、OS uid 或 owner policy 的 env 必须各自使用独立 exec-server child，不能共享执行状态。每个 env 的启动顺序钉死为：
 
-1. 从发行包 manifest 解析允许的 Codex version、平台二进制和 SHA-256/签名；禁止静默使用 `PATH` 中的任意 Codex。
+1. 从发行包 manifest 解析允许的 Codex version、平台 Codex 和所有独立外部 executable 的 SHA-256/签名；禁止静默使用 `PATH` 中的任意 Codex。
 2. 创建只属于该 env/child 的临时 runtime dir 和空 `CODEX_HOME`，写入最小配置并禁用 analytics；不读取用户已有的 Codex config/auth。
-3. 将 exec-server 自身的 cwd 固定到 runtime dir（不是用户 worktree），清洗父进程环境，再以该 env 配置的执行身份启动绝对路径的 `codex exec-server --listen stdio --strict-config`。防止读取用户/项目配置依赖空 `CODEX_HOME`、固定 cwd 与清洗环境；`--strict-config` 只负责对未知配置字段 fail closed，不能单独承担隔离。Linux 发行包同时提供该构建所需的匹配 sandbox helper。
+3. 将 exec-server 自身的 cwd 固定到 runtime dir（不是用户 worktree），清洗父进程环境，再以该 env 配置的执行身份启动绝对路径的 `codex exec-server --listen stdio --strict-config`。防止读取用户/项目配置依赖空 `CODEX_HOME`、固定 cwd 与清洗环境；`--strict-config` 只负责对未知配置字段 fail closed，不能单独承担隔离。Phase 1 agentx 使用无 `codex-package.json` 的最小 runtime bundle，并把 ambient PATH 替换为 bundle 内一个确认不存在的目录；Linux bundle 同时固定 `codex-resources/bwrap`。
 4. agentx 作为本地 client 向 stdio 子进程发送一次不带 `resumeSessionId` 的 `initialize → initialized`，再调用 `environment/info`、`environment/status`。完整方法集来自 pinned build 的 manifest/schema，不能假设 child 会动态枚举全部 capability；握手结果只用于确认当前实现实际公开的字段。agentx 记录新的 `local_exec_instance_id` 和仅供本地诊断的 child session id。
 5. 本地执行面就绪后，agentx 才向 executor-gateway 声明 online。
 
@@ -379,6 +379,8 @@ agentx 自己负责：
 - 对连接、策略决定和执行生成本地审计日志。
 
 process、PTY、stdin、signal、filesystem 和 upstream sandbox handler 由 stock exec-server 完成，不在 agentx 中复制。executor 侧不需要模型配置或模型 credential。agentx 的机器连接 credential 保存在 OS keychain/受限文件中，只由 agentx 使用，永远不注入 exec-server 或它启动的子进程。
+
+stock 0.146.0 的 helper 结构不是“Codex + 若干同名独立二进制”。fs helper 通过绝对 `codex_self_exe --codex-run-as-fs-helper` 重入，arg0 exec helper同样重入当前 executable；Linux `codex-linux-sandbox` 是运行时在受保护 `CODEX_HOME` 下创建、指向当前 Codex 的 alias，创建失败时回退到 `current_exe`。这些路径不应在 manifest 中伪造三份 digest。真正独立的 Linux资源是 `codex-resources/bwrap`，但 stock launcher会先搜索 PATH中的 system `bwrap`，只有未找到或 capability probe不通过才尝试 bundled resource。agentx因此必须同时满足：绝对路径启动已验证 Codex；空且受保护的 `CODEX_HOME`；无 package metadata的最小 bundle；用确认不存在的 bundle内目录完整替换 ambient PATH；校验 bundled bwrap后才启动。Codex随后只会把自己生成的 arg0 alias目录前置到这个受控 PATH。若部署决定使用 system bwrap，它就不再属于该最小 profile，必须把固定绝对文件、镜像 digest/SBOM和真实选择结果作为新的 image-level gate，不能仅写一行 manifest便宣称锁定。
 
 exec-server 可能依据 `envPolicy` 从自身环境继承变量，因此只过滤 `process/start.env` 不足以保护 credential。child 自身必须从一开始就运行在无 agentx secret 的环境中，agentx 还必须将远端 env policy 收紧到本地 allowlist；远端不能请求重新继承被剥离的宿主变量。
 
@@ -429,7 +431,7 @@ agentx 在请求进入 stdio exec-server 前执行第一层校验，exec-server 
 - 限制最大 argv/env/frame、输出 buffer、进程数、运行时间和并发数；
 - 默认禁用可选 `http/request`；开启时必须声明目标网络策略并经过审批。
 - exec-server 自身必须运行在清洗后的环境与隔离 Codex home 中；模型 key、用户 Codex 登录态、agentx OAuth material 和 llmproxy 地址一律不可见；
-- binary/helper 的版本、签名或 checksum 不匹配时 agentx 必须 fail closed，不能回退到系统中另一个 Codex。
+- Codex 或任一独立外部 executable 的版本、签名、大小或 checksum 不匹配时 agentx 必须在启动 child 前 fail closed。fs helper、arg0 exec helper 和 Linux sandbox alias 都重入当前 Codex，其字节由 Codex digest 覆盖；Linux `bwrap` 才是单独校验的外部资源。不得回退到系统中另一个 Codex 或 ambient PATH 中的 helper。
 - agentx 控制面与 exec-server/命令执行树应使用不同 OS uid、container/user namespace 或等价权限域；机器私钥优先使用 OS keychain/TPM 的 non-exportable key；
 - agentx 的 credential、WSS、keychain 和内部 pipe/file descriptor 必须 close-on-exec 且对子进程不可访问；需测试 ptrace、`/proc`、signal、继承 FD 和本地 socket 攻击；
 - BYO 机器的 root/本机 owner 能控制 agentx，属于明确的信任边界；但工作树中的不可信代码不能因此获得 executor 机器身份。
@@ -710,7 +712,7 @@ v2/
 ├─ deploy/helm/
 ├─ images/harness/               # harness-worker + pinned stock Codex app-server
 ├─ packaging/agentx/
-│  ├─ runtime-manifest.json      # agentx 独立发行包必须消费的 stock Codex/helper 版本、签名与 digest
+│  ├─ runtime-manifest.json      # agentx 独立发行包必须消费的 stock Codex/外部 executable 版本、签名与 digest
 │  └─ compatibility-fixtures/    # server ↔ agentx 跨仓兼容 fixture
 └─ docs/
    ├─ ARCHITECTURE.md
@@ -800,7 +802,7 @@ agentx 的实现不放入上述 Go module。`github.com/agentserver/agentx` v2 �
 
 进入实现前必须完成以下 Phase 0 gate：
 
-- [ ] 固定 Codex 版本与 binary/helper digest，完成 stock exec-server stdio 启动、RPC fixture、正常关闭与崩溃时的 process-tree 回收、agentx 代理兼容测试。
+- [ ] 固定 Codex 版本与 Codex/外部 executable digest，完成 stock exec-server stdio 启动、RPC fixture、正常关闭与崩溃时的 process-tree 回收、agentx 代理兼容测试。
 - [ ] 完成 harness-worker → stock app-server stdio conformance：initialize、thread start/resume、turn start/interrupt、notification/server request、MCP elicitation、terminal event、child crash 和 control-stream fence。
 - [ ] 验证 app-server child 无内建工具、整个 mount view无工作树；worker credential/FD不可见且 non-`CLOEXEC` sentinel也被 final-exec close-all；child UID只经 egress proxy访问 llmproxy + approved MCP，direct/redirect sink均为零请求，第三方副作用工具不可枚举/调用。
 - [ ] 完成 completed-turn checkpoint 原生 round-trip、hash/schema 校验、对象原子提交和 mid-turn crash 不恢复原 turn 测试；模型可见 tool result 与脱敏 UI 事件分别验证。

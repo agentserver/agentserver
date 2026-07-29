@@ -98,13 +98,14 @@
       "additionalProperties": false,
       "required": [
         "codex",
-        "helpers"
+        "externalExecutables"
       ],
       "properties": {
         "codex": {
           "$ref": "#/$defs/fileArtifact"
         },
-        "helpers": {
+        "externalExecutables": {
+          "description": "Distinct executable files used by the enabled runtime profile; Codex hidden self-reexec modes are not separate entries.",
           "type": "object",
           "maxProperties": 31,
           "propertyNames": {

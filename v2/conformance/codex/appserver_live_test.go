@@ -1599,6 +1599,7 @@ type appServerThread struct {
 	Preview       string `json:"preview"`
 	Ephemeral     bool   `json:"ephemeral"`
 	ModelProvider string `json:"modelProvider"`
+	Path          string `json:"path"`
 	Status        struct {
 		Type string `json:"type"`
 	} `json:"status"`

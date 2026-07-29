@@ -21,7 +21,8 @@ directions, A03 tool-surface and dispatch characterization through a bounded
 sessionless Streamable HTTP MCP server, the A04 managed-requirements injection
 boundary, A05 no-double-approval behavior and its prompt-mode positive control,
 A06 client-controlled MCP form elicitation, its paused-tool-timeout behavior,
-and its never-policy negative control, A07 pending-elicitation interrupt cleanup, E01 stdio/EOF, exec-server
+and its never-policy negative control, A07 pending-elicitation interrupt cleanup,
+A08 graceful shutdown and stable state snapshots, E01 stdio/EOF, exec-server
 environment metadata, and these slices of the executor matrix:
 
 - E02: deterministic argv/arg0, canonical cwd, exact non-inherited child
@@ -150,6 +151,17 @@ wire order is `turn/completed` first and `serverRequest/resolved` second. A
 harness must therefore keep draining stdio and track outstanding reverse
 request IDs during finalization; a terminal turn notification alone is not a
 cleanup barrier.
+
+A08 passes for both characterized 0.146.0 releases. After a completed,
+non-ephemeral turn with no outstanding reverse request, the probe closes stdin
+immediately and waits for a bounded clean exit without sleeping. Two bounded
+post-exit snapshots agree on every relative path, mode, size, and SHA-256; the
+reported rollout is complete JSONL containing the thread and turn content, and
+`state_5.sqlite` has a SQLite header. Clean exit still leaves stable
+`.sqlite-wal` and `.sqlite-shm` files for state, goals, logs, and memories.
+Therefore process exit is a byte-stability barrier, not evidence that WAL data
+was merged into the main databases or that sidecars may be omitted from the
+checkpoint. A09 must determine the minimal resumable file set.
 
 The probes also report candidate binary and canonical app-server schema
 fingerprints. Stock 0.145.0 was observed to randomize object-key order in one

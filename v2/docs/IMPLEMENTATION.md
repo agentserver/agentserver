@@ -259,6 +259,8 @@ A06 已在 0.146.0-alpha.14 与 stable 0.146.0 上分别通过。fake MCP 在真
 
 A07 也已在 alpha.14 与 stable 0.146.0 分别通过。测试在 app-server client持有未决 `mcpServer/elicitation/request` 时调用 `turn/interrupt`：RPC返回成功，terminal status为 `interrupted`，pending request随后发出 `serverRequest/resolved`，fake MCP收到 `cancel`，Responses endpoint和 MCP都没有第二次调用。当前两个 release重复观察到的顺序都是 terminal在先、resolved在后，所以 worker不能在收到 `turn/completed` 时立即关闭 stdio；它要维护 outstanding server-request set，并在 terminal、set清空和 process收口三者都满足后才能结束 finalization。timeout、control-stream断线和 child crash仍是后续独立 fault probe，不能因 A07通过而视为覆盖。
 
+A08 已在 alpha.14 与 stable 0.146.0 上分别通过。probe完成一个非 ephemeral turn，收到 completed terminal且确认没有 outstanding reverse request后立即关闭 stdin，不做固定 sleep；app-server在有界时间内零退出。退出后对整个 `CODEX_HOME` 连续做两次受文件数、单文件和总大小限制的遍历，相对路径、mode、大小和 SHA-256完全一致；thread返回的 path位于该目录内，rollout每行都是完整 JSON且包含 thread、用户输入和最终模型内容，`state_5.sqlite`具有 SQLite header。两个 release在 clean exit后都仍保留 state/goals/logs/memories的 `.sqlite-wal` 和 `.sqlite-shm`，所以 A08 只建立“进程退出后的稳定快照”边界，不证明 WAL已并回主库，也不提前宣称哪些 sidecar属于 checkpoint；这由 A09 native resume最小集合探针决定。
+
 当前 0.145.0 candidate 的 bootstrap probe 进一步确认：assistant 内容在 `item/completed` 上到达，而 terminal `turn/completed` 是 `itemsView: notLoaded` 的空内容终态，harness-worker 必须持续归并 item 事件，不能只保存 terminal payload。`environments: []` 能去掉 shell/fs；固定本地 model catalog，并显式关闭 Web、goals、multi-agent、orchestrator skills、user-input 及其他已知 feature 后，实际 Responses request 的工具面可收敛到仅剩 `update_plan`。但官方 `rust-v0.145.0` tag（peeled commit `25af12f7e61572b0bc18ddb1008be543b91519b0`）的 `add_core_utility_tools` 无条件注册 `PlanHandler`，该版本没有对应 config 或 requirements 开关；scripted model 调用后实际收到成功的 `Plan updated` result，client 同时收到 `turn/plan/updated`。因此 0.145.0 明确不通过 A03，不能成为 production runtime pin。
 
 官方 `rust-v0.146.0-alpha.14` tag（commit `9d84cad281364eb7f6be75e23067b0adc5e26106`）新增真实的 `[tools.update_plan] enabled = false`。它的 A01 terminal projection 也变为 `itemsView: summary` 并携带 completed agent item；测试按 release 分别锁定该形状与 0.145.0 的 `notLoaded` 空数组，但 harness-worker 仍以归并 item 事件为内容权威。对该官方 artifact 的 A03 live probe 验证：无 MCP server 时模型工具面为空；配置 fake executor MCP 且 `enabled_tools = ["approved_echo"]` 后，批准工具能到达 `tools/call`，fake server 同时公布但未批准的 `blocked_echo` 与模型伪造的 `exec_command` 都在 Codex 路由层收到 `unsupported call`，不会到达 MCP。可是同一模型请求仍额外包含 `list_mcp_resources`、`list_mcp_resource_templates`、`read_mcp_resource`，并且调用第一个 handler 会真实发出 `resources/list`，不受 `enabled_tools` 约束。因此该 alpha 仍明确不通过 A03；Phase 0 继续停止业务组件建设，直到 stock release 能从实际 Responses tool schema 中移除这些通用 handler，或产品显式批准一项经过重新评审的架构变更。
@@ -272,7 +274,7 @@ A07 也已在 alpha.14 与 stable 0.146.0 分别通过。测试在 app-server cl
 1. 创建全新 CODEX_HOME-A。
 2. 启动 app-server，完成包含一次 fake MCP result 的 turn。
 3. 收到 turn/completed 后继续排空 stdio，等待 outstanding reverse request全部 resolved，再关闭 stdin并等待 child正常退出。
-4. 枚举 CODEX_HOME-A 变化，拒绝 symlink、绝对路径和父目录跳转。
+4. 枚举 CODEX_HOME-A 的稳定状态，拒绝 symlink、绝对路径和父目录跳转；主 SQLite、WAL和SHM先分别作为候选，不能因 clean exit就假定 sidecar可删除。
 5. 从候选文件中排除 config、requirements、auth、token、log 和 cache。
 6. 复制候选到全新 CODEX_HOME-B，启动同一 build。
 7. 调用 thread/resume，再运行第二 turn。

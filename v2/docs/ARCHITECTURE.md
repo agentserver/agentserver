@@ -222,7 +222,7 @@ stock Codex 访问 llmproxy/MCP 所需的短期 capability 优先通过 tmpfs/�
 6. harness-pool 创建隔离 workload。per-run harness-worker 接收不可变、签名的 run manifest，恢复最近一个已提交的 completed-turn checkpoint，创建清洗后的临时 `CODEX_HOME`，再以 stdio 启动并初始化 stock app-server。
 7. harness-worker 调用 `thread/resume` 或 `thread/start`，然后以原始用户输入调用 `turn/start`；它不改写 prompt。app-server 通过 llmproxy 调模型，需要工具时只调用 run manifest 中固定的远程 MCP。
 8. harness-worker 为原始 app-server 消息附加 `run_attempt_id/generation + producer_instance_id/producer_seq`，通过唯一 mTLS control stream 发给 harness-pool；harness-pool 完成规范事件映射并提交 core。core 拒收旧 generation，browser-gateway 从已提交事件映射 AG-UI/A2UI。
-9. 收到 `turn/completed` 后，run 先进入 `finalizing`，但该 notification不是 transport cleanup barrier。worker继续排空 stdio，直到本 attempt已登记的 reverse request ID全部收到 `serverRequest/resolved`，并确认 execution/process收口；随后才关闭 app-server stdin，等待其优雅退出并完成 thread、SQLite/WAL 与 rollout 刷盘。只有 child 在有界时间内正常退出后才能按 pinned allowlist 生成 checkpoint manifest。harness-pool 先上传加密对象，再由 core 以 CAS 在同一状态事务中提交 checkpoint 指针与 run terminal event；未提交的对象由后台清理。
+9. 收到 `turn/completed` 后，run 先进入 `finalizing`，但该 notification不是 transport cleanup barrier。worker继续排空 stdio，直到本 attempt已登记的 reverse request ID全部收到 `serverRequest/resolved`，并确认 execution/process收口；随后才关闭 app-server stdin，等待其优雅退出，使 thread rollout 与 SQLite/WAL 文件达到可取快照的字节稳定状态。只有 child 在有界时间内正常退出后才能按 pinned allowlist 生成 checkpoint manifest。harness-pool 先上传加密对象，再由 core 以 CAS 在同一状态事务中提交 checkpoint 指针与 run terminal event；未提交的对象由后台清理。
 10. core 确认 terminal state 和 checkpoint 后，harness-pool 删除 workload 与临时目录。mid-turn crash 不生成可恢复 checkpoint，也不能继续原 turn。
 
 浏览器断开不自动取消 run。取消必须通过显式 API/action，并产生规范事件；重新连接使用 cursor 继续读取。
@@ -321,7 +321,9 @@ MCP-only 不是 prompt 约定，而是 pinned Codex build 上必须同时成立�
 - **模型可见 checkpoint**：加密保存恢复 thread 所必需的完整、模型可见历史，包括后续 turn 需要的 MCP tool result、compaction/rollout 元数据；不能为了 UI 脱敏而从中任意删除模型已经看到的内容。
 - **规范/UI/审计事件**：按 secret/prompt policy 过滤，只用于展示、审计和事件恢复，不能反向拼成模型上下文。
 
-checkpoint 只能在 app-server 发出 terminal `turn/completed`、所有已登记 reverse request随后 resolved、worker关闭 stdin、child完成有界优雅退出且 rollout/SQLite/WAL 均已刷盘后生成。不能在仍运行的 `CODEX_HOME` 上打包，也不能用固定 sleep猜测稳定。manifest 至少包含 `brain_thread_id`、terminal `turn_id`、`run_id`、`run_attempt_id/generation`、Codex commit/build、schema version、相对路径、大小和逐文件 hash。配置、token、环境变量、诊断日志和临时 transport缓冲不得进入 manifest。恢复文件集合由 native `thread/resume` round-trip conformance产生的 pinned allowlist决定；禁止打包整个 `CODEX_HOME`。harness-pool先上传加密对象，core再以 CAS原子提交 checkpoint pointer与 run terminal state；未引用对象可清理。
+checkpoint 只能在 app-server 发出 terminal `turn/completed`、所有已登记 reverse request随后 resolved、worker关闭 stdin、child完成有界优雅退出且 rollout/SQLite/WAL 文件达到字节稳定后生成。不能在仍运行的 `CODEX_HOME` 上打包，也不能用固定 sleep猜测稳定。manifest 至少包含 `brain_thread_id`、terminal `turn_id`、`run_id`、`run_attempt_id/generation`、Codex commit/build、schema version、相对路径、大小和逐文件 hash。配置、token、环境变量、诊断日志和临时 transport缓冲不得进入 manifest。恢复文件集合由 native `thread/resume` round-trip conformance产生的 pinned allowlist决定；禁止打包整个 `CODEX_HOME`。harness-pool先上传加密对象，core再以 CAS原子提交 checkpoint pointer与 run terminal state；未引用对象可清理。
+
+A08 已在 alpha.14 与 stable 0.146.0 上验证上述退出屏障：completed terminal 后立即关闭 stdin，stock app-server在有界时间内零退出；退出后两次有界遍历得到完全相同的相对路径、mode、大小和 SHA-256，thread报告的 rollout是完整 JSONL，`state_5.sqlite`具有合法 SQLite header。两个 release 都仍保留 `state_5.sqlite-wal/-shm`，以及 goals/logs/memories数据库的 WAL/SHM sidecar；因此“进程已优雅退出”只证明这些文件不再变化，不等于 WAL 已 checkpoint回主数据库，也不能据此丢弃 sidecar。A09 必须用最小文件集合做 native resume正反例，才能决定 pinned checkpoint allowlist。
 
 worker 不持有对象存储 credential。它通过与 harness-pool 的同一 mTLS 连接内、有界的 checkpoint data substream 分块发送 manifest 和 staging 内容；harness-pool 施加大小/速率限制、复算逐块与整对象 hash 后上传，再请求 core 提交。上传或提交失败时对象不得成为可恢复 checkpoint，未引用对象按 retention job 清理。
 

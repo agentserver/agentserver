@@ -1,5 +1,7 @@
 {"id":1,"method":"initialize","params":{"clientName":"agentserver-v2-conformance"}}
 {"id":1,"result":{"sessionId":"<session-id>"}}
 {"method":"initialized"}
-{"id":"reverse-1","method":"network/policyRequest","params":{"host":"example.invalid"}}
-{"id":"reverse-1","error":{"code":-32601,"message":"unsupported reverse method"}}
+{"id":"reverse-1","method":"network/policyRequest","params":{"processId":"proc-1","request":{"protocol":"http","host":"example.invalid","port":80}}}
+{"id":"reverse-1","result":{"decision":{"type":"deny","reason":"not_allowed"}}}
+{"id":"future-1","method":"network/futureRequest","params":{}}
+{"id":"future-1","error":{"code":-32601,"message":"unsupported exec-server reverse request"}}

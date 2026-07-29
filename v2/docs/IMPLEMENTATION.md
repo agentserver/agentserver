@@ -310,7 +310,7 @@ A12 分两层验收。host probe用 `env_http_headers`把 worker sentinel变成�
 | E02 | deterministic process | argv[]、cwd URI、env、PTY/pipe、output sequence、exit/close 与 fixture一致 |
 | E03 | stdin 与 terminate | write、signal、terminate 竞态有明确结果；未知 processId 返回显式非变更状态或 RPC error，不能伪装成功 |
 | E04 | filesystem | read/open/readBlock/close/canonicalize 等允许方法与 pinned schema一致 |
-| E05 | network reverse request | network/policyRequest 能被 agentx client allow/deny；未知 reverse method 默认拒绝 |
+| E05 | network reverse request | network/policyRequest 能被 agentx client allow/deny 并正确阻断 ask；非法参数、未知 reverse method、RPC error、未知 decision、超时和断线默认拒绝 |
 | E06 | stdio EOF | stdin EOF 后 server shutdown并清理 managed process；新的 agentx 不能 attach旧 child |
 | E07 | child crash | process group/cgroup 回收后代；无法确认退出时结果为 ambiguous/unknown |
 | E08 | environment isolation | 空 CODEX_HOME、固定 runtime cwd、清洗 env；不能读取用户 Codex auth/config或 agentx credential |
@@ -319,9 +319,13 @@ A12 分两层验收。host probe用 `env_http_headers`把 worker sentinel变成�
 
 Phase 0 的 exit criterion 是 A01–A12、E01–E10 全部可重复通过。任何 MCP-only、elicitation、checkpoint 或 stdio 假设失败，都先修改架构，不能继续写业务服务。
 
-当前 probe 已确认但尚未构成完整 Phase 0 放行的 exec-server 事实：`process/start` response 可与早期 `process/output` 竞态，agentx 必须单消费者收包并按 request id/一基 event seq 整理；带 `maxBytes` 的 `process/read.nextSeq` 只越过本次返回的最后一个 output chunk，不保证同时越过 terminal event，不带该限制的 terminal read 才能给出 `closed` 后游标。E02 已覆盖 argv/arg0、file-URI cwd 到 host canonical path、缺省 `envPolicy` 时 child env 精确等于 request `env`、pipe 与 PTY 合流输出。E08 的当前 slice 证明隔离 `CODEX_HOME` 不读取毒化的用户 `~/.codex`，exec-server 自身持有的 sentinel credential 也不会进入缺省策略 child。E10 的当前 slice 实测 retained replay 只保留大输出最后约 1 MiB；frame、argv/env、write-id cache 和 exited-process retention 的完整 bound matrix 仍未完成。stdio EOF 会关闭唯一 connection、shutdown session 并回收 managed child，不能把它描述成可 detach/resume。
+当前 probe 已确认但尚未构成完整 Phase 0 放行的 exec-server 事实：`process/start` response 可与早期 `process/output` 竞态，agentx 必须单消费者收包并按 request id/一基 event seq 整理；带 `maxBytes` 的 `process/read.nextSeq` 只越过本次返回的最后一个 output chunk，不保证同时越过 terminal event，不带该限制的 terminal read 才能给出 `closed` 后游标。E02 已覆盖 argv/arg0、file-URI cwd 到 host canonical path、缺省 `envPolicy` 时 child env 精确等于 request `env`、pipe 与 PTY 合流输出。
 
-stable 0.146.0 同时新增两项明确拒绝证据。第一，`process/signal` 对 missing、delivered、already-exited 都返回不可区分的 `{}`，因此 E03 原验收失败。第二，根进程退出但后代继续持有 pipe 时，server 发出 `process/exited` 但不发 `process/closed`；随后 `process/terminate` 返回 `running: false` 且后代继续存活，直到整条 stdio connection 关闭才被回收，因此 E07 原验收失败。负向 conformance test 的 PASS 只表示稳定复现该缺口，不表示 E03/E07 放行。完整 Phase 0 当前明确被 A03、尚未实现 image正向 job的 A04/A12、E03和 E07阻断；E05/E09/E10等未完成矩阵仍可能增加 blocker。
+E05 用真实 child → executor-local HTTP proxy → bounded origin 链路固定了反向请求的 `{processId, request:{protocol,host,port}}` 形状：allow 恰好命中 origin 一次，deny/ask、RPC error、未知 decision、controller timeout 和 stdio EOF 均为零命中；reference agentx client 还对非法 known params 回复 `deny(not_allowed)`、对未知 reverse method 回复 `-32601`。stock 返回 `ask` 会立即得到 HTTP 403，不会暂停请求；`policyDecisionTimeoutMs` 之外还有固定 5 秒 transport margin，所以 agentx 必须在自己的 approval deadline 主动 allow/deny。
+
+E08 的当前 slice 证明隔离 `CODEX_HOME` 不读取毒化的用户 `~/.codex`，exec-server 自身持有的 sentinel credential 也不会进入缺省策略 child。E10 的当前 slice 实测 retained replay 只保留大输出最后约 1 MiB；frame、argv/env、write-id cache 和 exited-process retention 的完整 bound matrix 仍未完成。stdio EOF 会关闭唯一 connection、shutdown session 并回收 managed child，不能把它描述成可 detach/resume。
+
+stable 0.146.0 同时新增两项明确拒绝证据。第一，`process/signal` 对 missing、delivered、already-exited 都返回不可区分的 `{}`，因此 E03 原验收失败。第二，根进程退出但后代继续持有 pipe 时，server 发出 `process/exited` 但不发 `process/closed`；随后 `process/terminate` 返回 `running: false` 且后代继续存活，直到整条 stdio connection 关闭才被回收，因此 E07 原验收失败。负向 conformance test 的 PASS 只表示稳定复现该缺口，不表示 E03/E07 放行。完整 Phase 0 当前明确被 A03、尚未实现 image 正向 job 的 A04/A12、E03 和 E07 阻断；E09/E10 等未完成矩阵仍可能增加 blocker。E05 只是 stock 边界与 reference client contract 通过，真实 agentx 的 ownership 求交、approval channel 和审计仍须在 executor 纵向切片复用同一 fixture 验收。
 
 ## 5. Core 状态内核
 

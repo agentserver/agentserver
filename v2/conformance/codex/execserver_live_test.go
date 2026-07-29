@@ -1,10 +1,15 @@
 package codex_test
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
@@ -12,8 +17,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/agentserver/agentserver/v2/conformance/codex/internal/codexprocess"
 	"github.com/agentserver/agentserver/v2/internal/codexwire"
@@ -22,6 +30,7 @@ import (
 const (
 	execChildModeEnvironment    = "AGENTSERVER_EXEC_CHILD_MODE"
 	execChildPIDFileEnvironment = "AGENTSERVER_EXEC_CHILD_PID_FILE"
+	execChildNetworkTargetEnv   = "AGENTSERVER_EXEC_CHILD_NETWORK_TARGET"
 	execChildOutputStdout       = "stdout:deterministic\n"
 	execChildOutputStderr       = "stderr:deterministic\n"
 	execChildEchoInput          = "deterministic-input\n"
@@ -35,6 +44,7 @@ const (
 	execChildRootCrashExitCode  = 43
 	execChildLargeOutputBytes   = (1 << 20) + (64 << 10)
 	execServerRetainedOutputMax = 1 << 20
+	execChildNetworkOriginBody  = "agentserver-e05-origin\n"
 )
 
 // TestMain lets a live exec-server launch the already-built Go test binary as
@@ -199,9 +209,60 @@ func runExecChild(mode string) int {
 			return reportExecChildError(err)
 		}
 		return 0
+	case "network-http":
+		return runExecChildNetworkHTTP()
 	default:
 		return reportExecChildError(fmt.Errorf("unknown helper mode %q", mode))
 	}
+}
+
+func runExecChildNetworkHTTP() int {
+	if pidFile := os.Getenv(execChildPIDFileEnvironment); pidFile != "" {
+		if err := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			return reportExecChildError(err)
+		}
+	}
+	target, err := url.Parse(os.Getenv(execChildNetworkTargetEnv))
+	if err != nil || target.Scheme != "http" || target.Host == "" {
+		return reportExecChildError(fmt.Errorf("invalid %s: %q", execChildNetworkTargetEnv, os.Getenv(execChildNetworkTargetEnv)))
+	}
+	proxy, err := url.Parse(os.Getenv("HTTP_PROXY"))
+	if err != nil || proxy.Scheme != "http" || proxy.Host == "" {
+		return reportExecChildError(fmt.Errorf("invalid injected HTTP_PROXY: %q", os.Getenv("HTTP_PROXY")))
+	}
+
+	// Go's HTTP transport bypasses loopback targets even when proxy variables
+	// are set. Dial the injected endpoint explicitly so this probe cannot pass
+	// without traversing the executor-local proxy and its policy callback.
+	connection, err := net.DialTimeout("tcp", proxy.Host, 3*time.Second)
+	if err != nil {
+		return reportExecChildError(fmt.Errorf("dial injected HTTP proxy: %w", err))
+	}
+	defer connection.Close()
+	if err := connection.SetDeadline(time.Now().Add(12 * time.Second)); err != nil {
+		return reportExecChildError(err)
+	}
+	if _, err := fmt.Fprintf(
+		connection,
+		"GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",
+		target.String(),
+		target.Host,
+	); err != nil {
+		return reportExecChildError(fmt.Errorf("write proxy request: %w", err))
+	}
+	response, err := http.ReadResponse(bufio.NewReader(connection), &http.Request{Method: http.MethodGet})
+	if err != nil {
+		return reportExecChildError(fmt.Errorf("read proxy response: %w", err))
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return reportExecChildError(fmt.Errorf("read proxy response body: %w", err))
+	}
+	if _, err := fmt.Fprintf(os.Stdout, "status=%d\n%s", response.StatusCode, body); err != nil {
+		return reportExecChildError(err)
+	}
+	return 0
 }
 
 func equalStrings(left, right []string) bool {
@@ -601,6 +662,240 @@ func TestExecServerE04FilesystemReadLifecycle(t *testing.T) {
 	assertFileURIPath(t, canonicalized.Path, filePath)
 
 	closeAndWait(t, process)
+}
+
+func TestExecServerE05NetworkPolicyReverseDecisions(t *testing.T) {
+	tests := []struct {
+		name             string
+		decisionType     string
+		reason           string
+		rpcError         bool
+		invalidResult    bool
+		wantStatus       int
+		wantBodyContains string
+		wantOriginHits   int64
+	}{
+		{
+			name:             "allow",
+			decisionType:     "allow",
+			wantStatus:       http.StatusOK,
+			wantBodyContains: execChildNetworkOriginBody,
+			wantOriginHits:   1,
+		},
+		{
+			name:             "deny",
+			decisionType:     "deny",
+			reason:           "e05_owner_denied",
+			wantStatus:       http.StatusForbidden,
+			wantBodyContains: "e05_owner_denied",
+		},
+		{
+			name:             "ask",
+			decisionType:     "ask",
+			reason:           "e05_owner_approval_required",
+			wantStatus:       http.StatusForbidden,
+			wantBodyContains: "e05_owner_approval_required",
+		},
+		{
+			name:             "rpc-error-fails-closed",
+			rpcError:         true,
+			wantStatus:       http.StatusForbidden,
+			wantBodyContains: "not_allowed",
+		},
+		{
+			name:             "unknown-decision-fails-closed",
+			invalidResult:    true,
+			wantStatus:       http.StatusForbidden,
+			wantBodyContains: "not_allowed",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			originURL, originHits := startE05Origin(t)
+			process, paths := startLiveCodex(t, "exec-server", "--listen", "stdio", "--strict-config")
+			initializeExecServer(t, process)
+			collector := newRPCCollector(process)
+			processID := "network-" + test.name
+
+			sendRPC(t, process, map[string]any{
+				"id":     2,
+				"method": "process/start",
+				"params": e05ExecStartParams(t, paths, processID, originURL, 1_000, nil),
+			})
+			reverse := collector.request(t, "network/policyRequest")
+			assertE05NetworkPolicyRequest(t, reverse, processID, originURL)
+			if test.rpcError {
+				sendRPC(t, process, e05ReverseRPCError(reverse, -32601, "unsupported exec-server reverse request"))
+			} else if test.invalidResult {
+				sendRPC(t, process, map[string]any{
+					"id": reverse.ID,
+					"result": map[string]any{
+						"decision": map[string]any{"type": "future_allow"},
+					},
+				})
+			} else {
+				sendRPC(t, process, e05ReferenceClientReply(reverse, test.decisionType, test.reason))
+			}
+
+			var started struct {
+				ProcessID string `json:"processId"`
+			}
+			mustDecodeResult(t, collector.response(t, "2"), &started)
+			if started.ProcessID != processID {
+				t.Fatalf("process/start processId = %q, want %q", started.ProcessID, processID)
+			}
+			body := assertE05NetworkProcessResult(t, collector, processID, test.wantStatus)
+			if !strings.Contains(body, test.wantBodyContains) {
+				t.Fatalf("network response body = %q, want substring %q", body, test.wantBodyContains)
+			}
+			if test.decisionType == "ask" && !strings.Contains(body, `"decision":"ask"`) {
+				t.Fatalf("ask network response body = %q, want explicit ask decision", body)
+			}
+			if got := originHits.Load(); got != test.wantOriginHits {
+				t.Fatalf("origin requests = %d, want %d", got, test.wantOriginHits)
+			}
+
+			closeAndWait(t, process)
+		})
+	}
+}
+
+func TestExecServerE05NetworkPolicyTimeoutFailsClosed(t *testing.T) {
+	originURL, originHits := startE05Origin(t)
+	process, paths := startLiveCodex(t, "exec-server", "--listen", "stdio", "--strict-config")
+	initializeExecServer(t, process)
+	collector := newRPCCollector(process)
+
+	sendRPC(t, process, map[string]any{
+		"id":     2,
+		"method": "process/start",
+		"params": e05ExecStartParams(t, paths, "network-timeout", originURL, 1, nil),
+	})
+	reverse := collector.request(t, "network/policyRequest")
+	assertE05NetworkPolicyRequest(t, reverse, "network-timeout", originURL)
+	// Intentionally leave the reverse request unresolved. Stock exec-server
+	// adds a five-second transport margin to the configured controller budget
+	// and must turn expiry into deny("not_allowed").
+	var started struct {
+		ProcessID string `json:"processId"`
+	}
+	mustDecodeResult(t, collector.response(t, "2"), &started)
+	if started.ProcessID != "network-timeout" {
+		t.Fatalf("process/start processId = %q, want network-timeout", started.ProcessID)
+	}
+	body := assertE05NetworkProcessResult(t, collector, "network-timeout", http.StatusForbidden)
+	if !strings.Contains(body, "not_allowed") {
+		t.Fatalf("timed-out network response body = %q, want not_allowed", body)
+	}
+	if got := originHits.Load(); got != 0 {
+		t.Fatalf("origin requests after policy timeout = %d, want 0", got)
+	}
+
+	closeAndWait(t, process)
+}
+
+func TestExecServerE05ConnectionEOFFailsClosed(t *testing.T) {
+	if !processLivenessProbeSupported {
+		t.Skip("OS process liveness probe is not supported on this platform")
+	}
+	originURL, originHits := startE05Origin(t)
+	process, paths := startLiveCodex(t, "exec-server", "--listen", "stdio", "--strict-config")
+	initializeExecServer(t, process)
+	collector := newRPCCollector(process)
+	pidFile := filepath.Join(paths.temporary, "network-disconnect-child.pid")
+
+	sendRPC(t, process, map[string]any{
+		"id":     2,
+		"method": "process/start",
+		"params": e05ExecStartParams(t, paths, "network-disconnect", originURL, 60_000, map[string]string{
+			execChildPIDFileEnvironment: pidFile,
+		}),
+	})
+	reverse := collector.request(t, "network/policyRequest")
+	assertE05NetworkPolicyRequest(t, reverse, "network-disconnect", originURL)
+	var started struct {
+		ProcessID string `json:"processId"`
+	}
+	mustDecodeResult(t, collector.response(t, "2"), &started)
+	if started.ProcessID != "network-disconnect" {
+		t.Fatalf("process/start processId = %q, want network-disconnect", started.ProcessID)
+	}
+	pid := waitForChildPID(t, pidFile)
+	disableChildCleanup := cleanupChildProcess(t, pid)
+
+	closeAndWait(t, process)
+	waitForProcessGone(t, pid)
+	disableChildCleanup()
+	if got := originHits.Load(); got != 0 {
+		t.Fatalf("origin requests after exec-server connection EOF = %d, want 0", got)
+	}
+}
+
+func TestE05ReferenceClientRejectsUnknownReverseMethod(t *testing.T) {
+	request, err := codexwire.Parse([]byte(`{"id":"future-1","method":"network/futureRequest","params":{}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply := e05ReferenceClientReply(request, "allow", "")
+	var encoded bytes.Buffer
+	encoder, err := codexwire.NewEncoder(&encoded, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := encoder.Write(reply); err != nil {
+		t.Fatal(err)
+	}
+	response, err := codexwire.Parse(bytes.TrimSpace(encoded.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Kind != codexwire.KindError || response.Error == nil || response.Error.Code != -32601 {
+		t.Fatalf("unknown reverse method response = %+v, want -32601 error", response)
+	}
+}
+
+func TestE05ReferenceClientDeniesInvalidNetworkPolicyParams(t *testing.T) {
+	tests := []string{
+		`{"id":"invalid-1","method":"network/policyRequest","params":{}}`,
+		`{"id":"invalid-2","method":"network/policyRequest","params":{"processId":"","request":{"protocol":"http","host":"example.com","port":80}}}`,
+		`{"id":"invalid-3","method":"network/policyRequest","params":{"processId":"process","request":{"protocol":"future_protocol","host":"example.com","port":80}}}`,
+		`{"id":"invalid-4","method":"network/policyRequest","params":{"processId":"process","request":{"protocol":"http","host":"host name","port":80}}}`,
+		`{"id":"invalid-5","method":"network/policyRequest","params":{"processId":"process","request":{"protocol":"http","host":"example.com","port":0}}}`,
+		`{"id":"invalid-6","method":"network/policyRequest","params":{"processId":"process","request":{"protocol":"http","host":"example.com","port":80,"future":true}}}`,
+		fmt.Sprintf(`{"id":"invalid-7","method":"network/policyRequest","params":{"processId":"%s","request":{"protocol":"http","host":"example.com","port":80}}}`, strings.Repeat("p", 257)),
+		fmt.Sprintf(`{"id":"invalid-8","method":"network/policyRequest","params":{"processId":"process","request":{"protocol":"http","host":"%s","port":80}}}`, strings.Repeat("h", 254)),
+	}
+	for _, frame := range tests {
+		request, err := codexwire.Parse([]byte(frame))
+		if err != nil {
+			t.Fatal(err)
+		}
+		reply := e05ReferenceClientReply(request, "allow", "")
+		result, ok := reply["result"].(map[string]any)
+		if !ok {
+			t.Fatalf("invalid network params reply = %+v, want decision result", reply)
+		}
+		decision, ok := result["decision"].(map[string]any)
+		if !ok || decision["type"] != "deny" || decision["reason"] != "not_allowed" {
+			t.Fatalf("invalid network params reply = %+v, want deny(not_allowed)", reply)
+		}
+	}
+}
+
+func TestE05ReferenceClientDeniesInvalidDecisionReasons(t *testing.T) {
+	request, err := codexwire.Parse([]byte(`{"id":"reason-1","method":"network/policyRequest","params":{"processId":"process","request":{"protocol":"http","host":"example.com","port":80}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, reason := range []string{"", "control\ncharacter", strings.Repeat("r", 1025)} {
+		reply := e05ReferenceClientReply(request, "deny", reason)
+		result := reply["result"].(map[string]any)
+		decision := result["decision"].(map[string]any)
+		if decision["type"] != "deny" || decision["reason"] != "not_allowed" {
+			t.Fatalf("invalid decision reason reply = %+v, want deny(not_allowed)", reply)
+		}
+	}
 }
 
 func TestExecServerE06StdioEOFTerminatesManagedChild(t *testing.T) {
@@ -1008,6 +1303,177 @@ func aggregateReadChunks(t *testing.T, chunks []struct {
 		}
 	}
 	return observed
+}
+
+func startE05Origin(t *testing.T) (string, *atomic.Int64) {
+	t.Helper()
+	hits := &atomic.Int64{}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		hits.Add(1)
+		if request.Method != http.MethodGet || request.URL.Path != "/e05" {
+			http.Error(writer, "unexpected E05 origin request", http.StatusBadRequest)
+			return
+		}
+		writer.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(writer, execChildNetworkOriginBody)
+	}))
+	t.Cleanup(server.Close)
+	return server.URL + "/e05", hits
+}
+
+func e05ExecStartParams(
+	t *testing.T,
+	paths livePaths,
+	processID string,
+	targetURL string,
+	policyDecisionTimeoutMS int,
+	extraEnvironment map[string]string,
+) map[string]any {
+	t.Helper()
+	environment := map[string]string{execChildNetworkTargetEnv: targetURL}
+	for name, value := range extraEnvironment {
+		environment[name] = value
+	}
+	params := execStartParams(t, paths, processID, "network-http", false, environment)
+	params["networkProxy"] = map[string]any{
+		"proxy": map[string]any{
+			"enabled":                        true,
+			"enableSocks5":                   false,
+			"enableSocks5Udp":                false,
+			"allowUpstreamProxy":             false,
+			"dangerouslyAllowAllUnixSockets": false,
+			"mode":                           "full",
+			"domains":                        nil,
+			"unixSockets":                    nil,
+			"allowLocalBinding":              true,
+		},
+		"environmentId":           "e05-environment",
+		"executionId":             "e05-execution",
+		"policyDecisionTimeoutMs": policyDecisionTimeoutMS,
+	}
+	return params
+}
+
+type e05NetworkPolicyRequestParams struct {
+	ProcessID string `json:"processId"`
+	Request   struct {
+		Protocol string `json:"protocol"`
+		Host     string `json:"host"`
+		Port     uint16 `json:"port"`
+	} `json:"request"`
+}
+
+func assertE05NetworkPolicyRequest(t *testing.T, message codexwire.Message, processID, targetURL string) {
+	t.Helper()
+	if len(message.ID) == 0 {
+		t.Fatal("network/policyRequest omitted its reverse request id")
+	}
+	var params e05NetworkPolicyRequestParams
+	if err := message.DecodeParams(&params); err != nil {
+		t.Fatal(err)
+	}
+	target, err := url.Parse(targetURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.ParseUint(target.Port(), 10, 16)
+	if err != nil {
+		t.Fatalf("parse E05 target port: %v", err)
+	}
+	if params.ProcessID != processID || params.Request.Protocol != "http" ||
+		params.Request.Host != target.Hostname() || params.Request.Port != uint16(port) {
+		t.Fatalf(
+			"network/policyRequest params = %+v, want process=%q http://%s:%d",
+			params,
+			processID,
+			target.Hostname(),
+			port,
+		)
+	}
+}
+
+func e05ReferenceClientReply(request codexwire.Message, decisionType, reason string) map[string]any {
+	if request.Method != "network/policyRequest" {
+		return e05ReverseRPCError(request, -32601, "unsupported exec-server reverse request")
+	}
+	if !validE05NetworkPolicyRequest(request.Params) {
+		return e05NetworkPolicyDecisionReply(request, "deny", "not_allowed")
+	}
+	if decisionType == "allow" && reason == "" {
+		return e05NetworkPolicyDecisionReply(request, decisionType, reason)
+	}
+	if (decisionType == "deny" || decisionType == "ask") && validE05PolicyReason(reason) {
+		return e05NetworkPolicyDecisionReply(request, decisionType, reason)
+	}
+	return e05NetworkPolicyDecisionReply(request, "deny", "not_allowed")
+}
+
+func validE05NetworkPolicyRequest(raw json.RawMessage) bool {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var params e05NetworkPolicyRequestParams
+	if err := decoder.Decode(&params); err != nil {
+		return false
+	}
+	if len(params.ProcessID) == 0 || len(params.ProcessID) > 256 ||
+		len(params.Request.Host) == 0 || len(params.Request.Host) > 253 ||
+		params.Request.Port == 0 {
+		return false
+	}
+	if strings.IndexFunc(params.Request.Host, func(character rune) bool {
+		return unicode.IsControl(character) || unicode.IsSpace(character)
+	}) != -1 {
+		return false
+	}
+	switch params.Request.Protocol {
+	case "http", "https_connect", "socks5_tcp", "socks5_udp":
+		return true
+	default:
+		return false
+	}
+}
+
+func validE05PolicyReason(reason string) bool {
+	return reason != "" && len(reason) <= 1024 && strings.IndexFunc(reason, unicode.IsControl) == -1
+}
+
+func e05NetworkPolicyDecisionReply(request codexwire.Message, decisionType, reason string) map[string]any {
+	decision := map[string]any{"type": decisionType}
+	switch decisionType {
+	case "allow":
+	case "deny", "ask":
+		decision["reason"] = reason
+	default:
+		decision = map[string]any{"type": "deny", "reason": "not_allowed"}
+	}
+	return map[string]any{
+		"id":     request.ID,
+		"result": map[string]any{"decision": decision},
+	}
+}
+
+func e05ReverseRPCError(request codexwire.Message, code int, message string) map[string]any {
+	return map[string]any{
+		"id": request.ID,
+		"error": map[string]any{
+			"code":    code,
+			"message": message,
+		},
+	}
+}
+
+func assertE05NetworkProcessResult(t *testing.T, collector *rpcCollector, processID string, wantStatus int) string {
+	t.Helper()
+	events := collector.processEventsUntilClosed(t, processID)
+	observed := assertCompletedProcessEvents(t, events, 0)
+	if len(observed.stderr) != 0 || len(observed.pty) != 0 {
+		t.Fatalf("network child emitted unexpected output: stderr=%q pty=%q", observed.stderr, observed.pty)
+	}
+	prefix := fmt.Sprintf("status=%d\n", wantStatus)
+	if !bytes.HasPrefix(observed.stdout, []byte(prefix)) {
+		t.Fatalf("network child stdout = %q, want prefix %q", observed.stdout, prefix)
+	}
+	return string(observed.stdout[len(prefix):])
 }
 
 func execStartParams(t *testing.T, paths livePaths, processID, mode string, pipeStdin bool, extraEnvironment map[string]string) map[string]any {

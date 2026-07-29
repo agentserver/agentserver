@@ -524,6 +524,10 @@ stock child 发出的 `network/policyRequest` 参数实际为 `{processId, reque
 - 只有本地与远程策略的交集允许时才返回 `allow`；
 - 未协商或未来新增的 child → client request method 默认拒绝，不能由 agentx 自动回答 allow。
 
+这里的 `ask` wire value 不是“让 stock proxy 继续等待审批”。实测 0.146.0-alpha.14 和 stable 0.146.0 都把 client 返回的 `ask` 立即落实为 HTTP 403；因此 agentx 在等待本地或远程审批期间必须保持原 reverse RPC 未决，在自己的 approval deadline 到期时主动回复 `deny`，批准后才回复 `allow`。`policyDecisionTimeoutMs` 只是 controller decision budget，stock 还会额外增加 5 秒 transport margin；它是最后一道断线保护，不是产品 approval TTL，也不能代替 agentx 的主动超时与审计。
+
+当前 pinned client contract 只接受 `http`、`https_connect`、`socks5_tcp`、`socks5_udp`，并限制 `processId` 1–256 bytes、host 1–253 bytes 且无 control/whitespace、port 非零、deny/ask reason 1–1024 bytes 且无 control character。已知 method 的非法参数回复 `deny(not_allowed)`；未知 method 回复 `-32601`。stock 对 RPC error、未知 decision variant、callback 超时、process shutdown 和 connection 关闭同样收敛为 `deny(not_allowed)`。这些只是 protocol fail-closed 规则；agentx 仍必须先校验可信 process ownership 和策略上下文，不能因参数合法就允许。
+
 agentserver 特有能力必须通过远程 initialize capability negotiation 显式协商，并使用独立命名空间。例如 `agentserver/fsWriteFileIfMatch` 由 agentx 本地实现，为 `apply_patch` 提供原子条件写；它不发送给 stock child。不支持扩展的 agentx 仍可转发本地 policy 允许的 upstream 基础方法。
 
 upstream `exec-server --remote` 使用 ChatGPT environment registry、rendezvous 和 Noise。v2 不进入该代码路径：exec-server 只连接本机 agentx 的 stdio；agentx 使用 TLS/WSS + OAuth key binding 连接可信 executor-gateway。gateway 是授权、审批、审计和协议翻译边界，必须读取 RPC。若未来把它降级为不可信 relay，必须重新设计端到端加密。

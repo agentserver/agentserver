@@ -37,6 +37,14 @@ environment metadata, and these slices of the executor matrix:
   and already-exited targets, so E03 is not accepted;
 - E04: `fs/readFile`, `fs/open`, `fs/readBlock`, `fs/close`, file-URI rejection,
   and `fs/canonicalize`;
+- E05: a deterministic child connects to the executor-local HTTP proxy injected
+  by `process/start.networkProxy` and makes a real request to a bounded loopback
+  origin. The emitted reverse request has the observed
+  `{processId, request: {protocol, host, port}}` shape. `allow` reaches the
+  origin exactly once; `deny`, `ask`, an RPC error, an unknown decision variant,
+  callback timeout, and stdio connection EOF all reach it zero times. The
+  reference client rejects unknown reverse methods with `-32601` and turns
+  malformed known params into `deny(not_allowed)`;
 - E06: stdio EOF shuts down exec-server and kills its managed child;
 - E07: a negative root-crash probe proves that a descendant can survive after
   `process/exited`, while `process/terminate` returns `running: false`; only
@@ -54,6 +62,15 @@ ordering authority. It also fixes a subtle cursor distinction in the observed
 stock protocol: a `process/read` with `maxBytes` advances `nextSeq` only beyond
 its last returned output chunk, while a terminal read without `maxBytes` can
 advance it beyond `exited` and `closed`.
+
+The E05 callback timeout is not an approval TTL. The observed builds add a
+five-second transport margin to `policyDecisionTimeoutMs`; agentx must enforce
+its own controller/approval deadline and answer deny at that deadline instead
+of waiting for the transport fallback. A returned `ask` decision also does not
+pause the proxied request: stock Codex immediately blocks it with HTTP 403.
+Agentx must hold the reverse RPC while an authorized approval is pending and
+eventually answer `allow` or `deny`; returning `ask` is only a terminal blocked
+result.
 
 On the observed 0.145.0 candidate, assistant content is authoritative on
 `item/completed`; the terminal `turn/completed` has `itemsView: notLoaded` and

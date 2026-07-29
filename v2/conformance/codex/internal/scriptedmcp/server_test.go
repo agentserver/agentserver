@@ -15,6 +15,7 @@ func TestServerImplementsBoundedToolLifecycle(t *testing.T) {
 				Name:        "approved_echo",
 				Description: "Echo an approved message.",
 				InputSchema: json.RawMessage(`{"type":"object","properties":{"message":{"type":"string"}},"required":["message"],"additionalProperties":false}`),
+				Annotations: json.RawMessage(`{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":true}`),
 			},
 		},
 		ExpectedCalls: []ExpectedCall{
@@ -40,7 +41,8 @@ func TestServerImplementsBoundedToolLifecycle(t *testing.T) {
 
 	listed := post(t, server.URL(), `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
 	listedBody := decodeBody(t, listed)
-	if !bytes.Contains(listedBody, []byte(`"name":"approved_echo"`)) {
+	if !bytes.Contains(listedBody, []byte(`"name":"approved_echo"`)) ||
+		!bytes.Contains(listedBody, []byte(`"destructiveHint":true`)) {
 		t.Fatalf("tools/list response omitted approved tool: %s", listedBody)
 	}
 
@@ -101,6 +103,11 @@ func TestServerRejectsInvalidConfiguration(t *testing.T) {
 		{Name: "bad", InputSchema: json.RawMessage(`[]`)},
 	}}); err == nil {
 		t.Fatal("server accepted a non-object input schema")
+	}
+	if _, err := newServer(Config{Tools: []Tool{
+		{Name: "bad", InputSchema: json.RawMessage(`{"type":"object"}`), Annotations: json.RawMessage(`[]`)},
+	}}); err == nil {
+		t.Fatal("server accepted non-object tool annotations")
 	}
 }
 

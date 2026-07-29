@@ -284,9 +284,11 @@ MCP-only 不是 prompt 约定，而是 pinned Codex build 上必须同时成立�
 - `initialize` 显式开启所需 experimental API；`thread/start|resume` 与每次 `turn/start` 都传 `environments: []`，使环境支持开启时也没有默认本地 environment；
 - 清洗后的 `config.toml` 禁用所有目标 stock release 实际支持关闭的非 MCP tool source，包括 `request_user_input`、Web、apps、plugins、multi-agent、browser/computer use、hooks；不提供 dynamic tools 或 capability roots；对 `update_plan` 这类 stock 内建 utility，所 pin release 也必须提供经过 tool capture 验证的真实禁用机制，不能在文档中虚构配置键；
 - MCP server 的 `enabled_tools` 必须约束模型可见的完整 MCP 派生工具面，而不只是过滤该 server 的 `tools/list` 结果。stock 自动注册的 `list_mcp_resources`、`list_mcp_resource_templates`、`read_mcp_resource` 等通用 handler 也必须能被真实移除或纳入显式产品授权；仅让 executor-gateway 对 `resources/list`、`resources/templates/list`、`resources/read` 返回错误，不能满足“模型只看到 manifest 批准工具”的约束；
-- workload 只读挂载管理员控制的 `/etc/codex/requirements.toml`，精确 allowlist MCP server 名称与 HTTPS identity，并固定所有安全相关 feature；run config 只能进一步收紧；
-- executor-gateway MCP 配置 `default_tools_approval_mode = "approve"`，避免 app-server 再产生一层通用工具审批；thread 使用 granular approval、`approvals_reviewer = "user"`，仅允许 `mcp_elicitations`，其余内建 approval 类别关闭；managed requirements 也只允许 user reviewer。不能用 `approval_policy = "never"`，因为它会自动拒绝需要产品审批的 MCP elicitation；
+- workload 在 child 启动前只读挂载管理员控制的 `/etc/codex/requirements.toml`，以 `mcp_servers.<name>.identity = { url = "https://..." }` 的字符串形式精确 allowlist MCP server 名称与 HTTPS URL，并固定所有安全相关 feature；模板生成器拒绝 `http`、stdio identity 以及 `prefix|regex` matcher，run config 只能进一步收紧；
+- executor-gateway MCP 配置 `default_tools_approval_mode = "approve"`，避免 app-server 再产生一层通用工具审批；thread 使用 granular approval、`approvals_reviewer = "user"`，仅允许 `mcp_elicitations`，其余内建 approval 类别关闭；managed requirements 也只允许 user reviewer。不能用 `approval_policy = "never"`，因为它会自动拒绝需要产品审批的 MCP elicitation；0.146.0 live probe 已用 destructive/open-world tool 和 `prompt` 正向控制证明 `approve` 确实不会产生 Codex 通用审批；
 - conformance test 使用 fake model endpoint 捕获实际 Responses 请求，断言模型可见工具集合只包含 run manifest 批准的远程 MCP tools。只检查配置文件内容不构成隔离证明。
+
+官方 release binary 没有可安全重定向 system `requirements.toml` 的 CLI：源码中的 `CODEX_APP_SERVER_MANAGED_CONFIG_PATH` 只在 `debug_assertions` build 生效，0.146.0 official artifact 的 live probe 也确认它被忽略。因此 A04 正向测试必须在一次性 image/mount namespace 内把文件预装到真实 system path，再启动未经修改的 stock artifact；不能改宿主 `/etc`、依赖 debug build 或把临时 user config 冒充 managed requirements。该测试还必须从 MCP bootstrap/tool surface 观察 wrong-name、wrong-URL、user/project additions 被禁用，因为 `configRequirements/read` 不投影 MCP allowlist 本身。
 
 以上字段包含 experimental contract，必须与 Codex binary、app-server schema 和测试 fixture 一起锁定。任一升级导致工具面扩大、elicitation 被自动处理或配置字段失效时，harness 镜像不得发布。
 
@@ -594,6 +596,8 @@ Phase 2 若需要多副本和跨 pod resume，必须先实现以下 owner routin
 策略值为 `deny | ask | allow`，至少按 workspace、executor、env、tool、tool schema/version、path root、network、run actor 和 policy version 配置。Phase 1 的副作用入口只有 executor-gateway；第三方 MCP 只开放经管理员固定并验证的只读工具，未知、错误标注或无法验证的工具一律 `deny`。未来若增加第三方副作用，必须先让调用经过同一 MCP policy proxy/core approval，不能依赖 server 自报 annotation。
 
 executor-gateway/core 是产品审批的唯一策略权威。app-server 针对 executor MCP 配置为不再自行产生第二套通用 tool prompt；需要用户决定时，由受信任的 executor-gateway 发起标准 MCP elicitation，harness-worker 只负责把 app-server server request 与 core 的 approval record 双向关联。approval TTL 必须小于配置后的 MCP tool timeout；超时、turn interrupt、worker/control stream 断开或 elicitation 被清除都按拒绝处理。
+
+对 official stable 0.146.0 的 A05 probe 已确认这一配置语义：同一个明确标注 `readOnlyHint=false`、`destructiveHint=true`、`openWorldHint=true` 的工具，在 granular policy 下使用 `approve` 会直接到达 MCP `tools/call`，全程没有 app-server reverse request；仅把默认值改为 `prompt` 时，会出现 `_meta.codex_approval_kind = "mcp_tool_call"` 的 `mcpServer/elicitation/request`，取消后不会 dispatch。该结论只消除了 Codex 自己的第二层通用审批，不能替代 A06 对 gateway 主动 elicitation、client 决策、超时和取消语义的验证。
 
 `ask` 流程必须：
 

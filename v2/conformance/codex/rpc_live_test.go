@@ -108,6 +108,36 @@ func (c *rpcCollector) notification(t *testing.T, method string) codexwire.Messa
 	}
 }
 
+// request is used only by probes whose purpose is to characterize an expected
+// reverse request. All ordinary response/notification waits still reject
+// reverse requests immediately, which is what no-prompt conformance tests need.
+func (c *rpcCollector) request(t *testing.T, method string) codexwire.Message {
+	t.Helper()
+	for {
+		message := c.receive(t)
+		switch message.Kind {
+		case codexwire.KindRequest:
+			if message.Method != method {
+				t.Fatalf("unexpected Codex reverse request %q while waiting for %q", message.Method, method)
+			}
+			return message
+		case codexwire.KindNotification:
+			if len(c.notifications) >= 1024 {
+				t.Fatalf("more than 1024 unmatched Codex notifications while waiting for reverse request %q", method)
+			}
+			c.notifications = append(c.notifications, message)
+		case codexwire.KindResponse, codexwire.KindError:
+			messageID := string(message.ID)
+			if _, duplicate := c.responses[messageID]; duplicate {
+				t.Fatalf("duplicate response id %s", messageID)
+			}
+			c.responses[messageID] = message
+		default:
+			t.Fatalf("unexpected Codex wire message kind %s", message.Kind)
+		}
+	}
+}
+
 func (c *rpcCollector) receive(t *testing.T) codexwire.Message {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), liveProbeTimeout)

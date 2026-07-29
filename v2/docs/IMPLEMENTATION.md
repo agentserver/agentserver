@@ -226,7 +226,7 @@ conformance test 是 Go subprocess test，不依赖 v1 gateway：
 - 通过 AGENTSERVER_CODEX_BIN 指向待验证的绝对路径；
 - 每个用例创建独立临时 CODEX_HOME、cwd 和环境变量 allowlist；
 - fake model server 捕获实际 Responses 请求并返回 scripted response/tool call；
-- fake MCP server 分阶段实现并保持请求/响应上限；当前 A03 fixture 只支持 initialize、initialized、tools/list 和 tools/call，其他方法 fail closed，A06 再增加 progress 与 elicitation 脚本；
+- fake MCP server 分阶段实现并保持请求/响应上限；当前 A03/A05 fixture 支持 initialize、initialized、带可配置 annotations 的 tools/list 和 tools/call，其他方法 fail closed，A06 再增加 progress 与由 MCP server 发起的 elicitation 脚本；
 - child stdout 只能解析 JSONL，stderr 单独采集并做 secret scan；
 - 所有 wire message 保存为 scrubbed golden fixture；
 - live binary tests 与 fixture-only tests分开，普通单元测试不依赖外网或真实模型；
@@ -250,6 +250,10 @@ conformance test 是 Go subprocess test，不依赖 v1 gateway：
 | A12 | child isolation | app-server 看不到 worker mTLS credential/FD，cwd 无工作树，网络只能到 llmproxy/批准 MCP egress |
 
 A03 不能通过“配置看起来正确”判断。测试必须检查实际发送给模型的 tool schema，并让 scripted model尝试调用一个禁止工具，确认 app-server不能执行。
+
+A04 的 managed layer 不能通过普通临时 `CODEX_HOME` 注入。official release 固定从 Unix `/etc/codex/requirements.toml` 读取 system requirements；源码中的 `CODEX_APP_SERVER_MANAGED_CONFIG_PATH` 是 `debug_assertions` 专用测试钩子，0.146.0 official artifact 的负向 live probe 确认 release build 会忽略它。因此 A04 正向 job 必须运行在一次性 image/mount namespace：预装 exact-string HTTPS identity，配置同 URL 错名称、同名称错 URL、额外 user MCP 和 trusted project MCP，最终从 MCP bootstrap、状态和模型 tool surface 证明只有 manifest entry 启用。不得改开发机 `/etc`，也不得用 debug build 代替 stock artifact。`configRequirements/read` 可验证其实际投影的 managed 字段，但当前 response 不包含 MCP allowlist，不能单独作为 A04 证据。这个 image-level 正向 job 尚未完成，所以 A04 仍为 open gate。
+
+A05 已在 0.146.0-alpha.14 与 stable 0.146.0 上通过。主用例把 fake executor tool 明确标为 destructive/open-world，在只允许 `mcp_elicitations` 的 granular thread 下，`default_tools_approval_mode = "approve"` 不产生任何 reverse request并直接到达 `tools/call`。正向控制只把 mode 改为 `prompt`，即可捕获 `_meta.codex_approval_kind = "mcp_tool_call"` 的 `mcpServer/elicitation/request`；回复 cancel 后 MCP server 不收到 `tools/call`。这证明测试确实能发现双重审批，也证明 `approve` 只关闭 Codex 通用 tool prompt；executor-gateway 主动发起的产品审批仍由 A06 单独验证。
 
 当前 0.145.0 candidate 的 bootstrap probe 进一步确认：assistant 内容在 `item/completed` 上到达，而 terminal `turn/completed` 是 `itemsView: notLoaded` 的空内容终态，harness-worker 必须持续归并 item 事件，不能只保存 terminal payload。`environments: []` 能去掉 shell/fs；固定本地 model catalog，并显式关闭 Web、goals、multi-agent、orchestrator skills、user-input 及其他已知 feature 后，实际 Responses request 的工具面可收敛到仅剩 `update_plan`。但官方 `rust-v0.145.0` tag（peeled commit `25af12f7e61572b0bc18ddb1008be543b91519b0`）的 `add_core_utility_tools` 无条件注册 `PlanHandler`，该版本没有对应 config 或 requirements 开关；scripted model 调用后实际收到成功的 `Plan updated` result，client 同时收到 `turn/plan/updated`。因此 0.145.0 明确不通过 A03，不能成为 production runtime pin。
 
@@ -639,7 +643,18 @@ default_tools_approval_mode = "approve"
 enabled_tools = ["process_start", "process_read", "process_write", "process_terminate"]
 ~~~
 
-这只是关键字段示意；完整 feature/requirements键必须由所 pin 版本的 config schema生成并通过 configRequirements/read与实际模型 tool capture验证，不能复制示例后假定生效。0.145.0 不认识上述 `update_plan` 禁用机制，因此被 Phase 0 拒绝；0.146.0-alpha.14 虽证明该键真实生效，仍因通用 MCP resource handler 绕过 `enabled_tools` 而被拒绝。`required` 也只改变 MCP 初始化失败语义，不是能力 allowlist。
+对应的 managed requirements 使用字符串 exact identity，不使用上游同样支持的 prefix/regex matcher：
+
+~~~toml
+allowed_approvals_reviewers = ["user"]
+
+[mcp_servers.executor]
+identity = { url = "https://executor-gateway.internal/v2/mcp" }
+~~~
+
+manifest/template validator 还必须独立要求 `https` scheme、规范 host/port/path，并拒绝 stdio identity、userinfo、fragment、prefix/regex matcher。Codex requirements 负责“名称 + 配置 URL 字符串”匹配，不负责 DNS、证书、redirect 或最终连接目标校验，后者仍由受控 egress proxy 执行。文件必须在 app-server 启动前位于真实 system path；release binary 不接受将 system requirements path 作为 `-c`/CLI 参数，debug-only 环境变量也不得进入生产环境。
+
+这只是关键字段示意；完整 feature/requirements键必须由所 pin 版本的 config schema、其可投影字段的 configRequirements/read、实际 MCP bootstrap 和模型 tool capture共同验证，不能复制示例后假定生效。0.145.0 不认识上述 `update_plan` 禁用机制，因此被 Phase 0 拒绝；0.146.0-alpha.14 与 stable 0.146.0 虽证明该键和 A05 `approve` 语义真实生效，仍因通用 MCP resource handler 绕过 `enabled_tools` 而被拒绝。`required` 也只改变 MCP 初始化失败语义，不是能力 allowlist。
 
 worker先把 checkpoint allowlist恢复到全新 CODEX_HOME，再写入本 attempt的新 config；checkpoint无权覆盖配置。随后以 manifest中的绝对路径启动 codex app-server --listen stdio:// --strict-config。strict-config只拒绝未知字段，不能替代 MCP-only tool capture和 OS/网络隔离。
 

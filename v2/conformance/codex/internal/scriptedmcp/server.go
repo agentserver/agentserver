@@ -29,12 +29,15 @@ const (
 	maxRecordedFailures     = 64
 )
 
-// Tool is one tool advertised by tools/list. InputSchema must be a JSON
-// object. An empty Description is allowed because MCP itself permits it.
+// Tool is one tool advertised by tools/list. InputSchema and, when present,
+// Annotations must be JSON objects. An empty Description is allowed because
+// MCP itself permits it. The default annotation marks the tool read-only so
+// existing probes remain side-effect free.
 type Tool struct {
 	Name        string
 	Description string
 	InputSchema json.RawMessage
+	Annotations json.RawMessage
 }
 
 // ExpectedCall scripts one tools/call request and its deterministic result.
@@ -138,12 +141,16 @@ func newServer(config Config) (*Server, error) {
 		if !jsonObject(tool.InputSchema) {
 			return nil, fmt.Errorf("scripted MCP tool %q input schema must be a JSON object", tool.Name)
 		}
-		toolListBytes += len(tool.Name) + len(tool.Description) + len(tool.InputSchema)
+		if len(tool.Annotations) != 0 && !jsonObject(tool.Annotations) {
+			return nil, fmt.Errorf("scripted MCP tool %q annotations must be a JSON object", tool.Name)
+		}
+		toolListBytes += len(tool.Name) + len(tool.Description) + len(tool.InputSchema) + len(tool.Annotations)
 		if toolListBytes > defaultMaxResponseBytes {
 			return nil, fmt.Errorf("scripted MCP tools/list response exceeds %d bytes", defaultMaxResponseBytes)
 		}
 		toolNames[tool.Name] = struct{}{}
 		tool.InputSchema = append(json.RawMessage(nil), tool.InputSchema...)
+		tool.Annotations = append(json.RawMessage(nil), tool.Annotations...)
 		tools[index] = tool
 	}
 
@@ -349,11 +356,15 @@ func (s *Server) dispatch(writer http.ResponseWriter, id json.RawMessage, method
 		}
 		tools := make([]map[string]any, 0, len(s.tools))
 		for _, tool := range s.tools {
+			annotations := tool.Annotations
+			if len(annotations) == 0 {
+				annotations = json.RawMessage(`{"readOnlyHint":true}`)
+			}
 			tools = append(tools, map[string]any{
 				"name":        tool.Name,
 				"description": tool.Description,
 				"inputSchema": tool.InputSchema,
-				"annotations": map[string]any{"readOnlyHint": true},
+				"annotations": annotations,
 			})
 		}
 		writeRPCResult(writer, id, map[string]any{"tools": tools})

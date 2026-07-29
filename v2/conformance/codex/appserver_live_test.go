@@ -522,6 +522,259 @@ func TestAppServerA03Codex0146RoutesApprovedMCPTool(t *testing.T) {
 	}
 }
 
+// TestAppServerA04ReleaseDebugRequirementsOverrideIsUnavailable records the
+// stock release boundary for endpoint-allowlist testing. Upstream has an
+// internal debug hook that redirects managed_config.toml and its sibling
+// requirements.toml, but official release binaries compile that hook out. A
+// real A04 probe must therefore run in a disposable image or mount namespace
+// with the managed file installed at the platform system path; setting this
+// environment variable is not an equivalent test or deployment mechanism.
+func TestAppServerA04ReleaseDebugRequirementsOverrideIsUnavailable(t *testing.T) {
+	binary, paths := prepareLiveCodex(t)
+	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0")
+	managedConfigPath := filepath.Join(paths.root, "managed_config.toml")
+	if err := os.WriteFile(managedConfigPath, []byte("\n"), 0o600); err != nil {
+		t.Fatalf("write managed config sentinel: %v", err)
+	}
+	sqliteHomeSentinel := filepath.Join(paths.root, "redirected-sqlite-home")
+	if err := os.MkdirAll(sqliteHomeSentinel, 0o700); err != nil {
+		t.Fatalf("create sqlite home sentinel: %v", err)
+	}
+	requirementsPath := filepath.Join(paths.root, "requirements.toml")
+	requirements := fmt.Sprintf("sqlite_home = %q\n", sqliteHomeSentinel)
+	if err := os.WriteFile(requirementsPath, []byte(requirements), 0o600); err != nil {
+		t.Fatalf("write requirements sentinel: %v", err)
+	}
+	paths.environment = append(
+		paths.environment,
+		"CODEX_APP_SERVER_MANAGED_CONFIG_PATH="+managedConfigPath,
+	)
+
+	process := startPreparedLiveCodex(t, binary, paths, "app-server", "--listen", "stdio://", "--strict-config")
+	initializeAppServer(t, process)
+	collector := newRPCCollector(process)
+	sendRPC(t, process, map[string]any{
+		"id":     2,
+		"method": "configRequirements/read",
+		"params": map[string]any{},
+	})
+	var result struct {
+		Requirements *struct {
+			SQLiteHome *string `json:"sqliteHome"`
+		} `json:"requirements"`
+	}
+	mustDecodeResult(t, collector.response(t, "2"), &result)
+	if result.Requirements != nil && result.Requirements.SQLiteHome != nil &&
+		*result.Requirements.SQLiteHome == sqliteHomeSentinel {
+		t.Fatal("official release unexpectedly honored the debug-only managed requirements override")
+	}
+	closeAndWait(t, process)
+	t.Log("A04 still requires an image-level probe with /etc/codex/requirements.toml mounted before process start")
+}
+
+// TestAppServerA05Codex0146ApproveModeDoesNotDoublePrompt verifies the
+// app-server side of the product's single-approval design. The advertised tool
+// is explicitly destructive and open-world, and the thread enables MCP
+// elicitations under granular approval. If default_tools_approval_mode is not
+// honored, Codex emits its own mcpServer/elicitation/request and rpcCollector
+// fails the probe before tools/call can complete.
+func TestAppServerA05Codex0146ApproveModeDoesNotDoublePrompt(t *testing.T) {
+	binary, paths := prepareLiveCodex(t)
+	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0")
+	toolCall, err := scriptedmodel.NamespacedFunctionCall(
+		"response-a05-mcp-call",
+		"call-a05-mcp-call",
+		executorMCPNamespace,
+		approvedMCPToolName,
+		`{"message":"execute after product policy"}`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalResponse, err := scriptedmodel.AssistantMessage(
+		"response-a05-final",
+		"message-a05-final",
+		conformanceFinalText,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelServer, err := scriptedmodel.Start(scriptedmodel.Config{
+		Responses: []scriptedmodel.Response{toolCall, finalResponse},
+	})
+	if err != nil {
+		t.Fatalf("start loopback scripted model: %v", err)
+	}
+	t.Cleanup(modelServer.Close)
+	mcpServer := startDestructiveExecutorMCPServer(t, []scriptedmcp.ExpectedCall{
+		{
+			Name:      approvedMCPToolName,
+			Arguments: json.RawMessage(`{"message":"execute after product policy"}`),
+			Result: json.RawMessage(
+				`{"content":[{"type":"text","text":"product policy already approved"}],"structuredContent":{"approved":true},"isError":false}`,
+			),
+		},
+	})
+
+	writeScriptedModelConfigWithOptions(t, paths.codexHome, modelServer.URL(), scriptedModelConfigOptions{
+		disableUpdatePlan: true,
+		mcpServerURL:      mcpServer.URL(),
+		mcpEnabledTools:   []string{approvedMCPToolName},
+	})
+	process := startPreparedLiveCodex(t, binary, paths, "app-server", "--listen", "stdio://", "--strict-config")
+	initializeAppServer(t, process)
+	collector := newRPCCollector(process)
+	thread, turn := startMinimalAppServerTurnWithApprovalPolicy(
+		t,
+		collector,
+		paths.cwd,
+		"call the destructive executor tool without a second Codex approval",
+		granularMCPApprovalPolicy(),
+	)
+	assertAgentItemCompleted(t, collector, thread.Thread.ID, turn.ID, conformanceFinalText)
+	collector.notification(t, "turn/completed")
+	closeAndWait(t, process)
+
+	if failures := modelServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted model server failures: %v", failures)
+	}
+	if failures := mcpServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted MCP server failures: %v", failures)
+	}
+	calls := mcpServer.Calls()
+	if len(calls) != 1 || calls[0].Name != approvedMCPToolName {
+		t.Fatalf("scripted MCP calls = %+v, want one direct approved call", calls)
+	}
+}
+
+// TestAppServerA05ProbeDetectsCodexGenericPrompt is the positive control for
+// the no-double-prompt probe. With the same destructive tool and granular
+// thread policy, changing only the server default to prompt must produce the
+// Codex-owned reverse request and must not reach tools/call after cancellation.
+func TestAppServerA05ProbeDetectsCodexGenericPrompt(t *testing.T) {
+	binary, paths := prepareLiveCodex(t)
+	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0")
+	toolCall, err := scriptedmodel.NamespacedFunctionCall(
+		"response-a05-control-call",
+		"call-a05-control-call",
+		executorMCPNamespace,
+		approvedMCPToolName,
+		`{"message":"must wait for Codex approval"}`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalResponse, err := scriptedmodel.AssistantMessage(
+		"response-a05-control-final",
+		"message-a05-control-final",
+		conformanceFinalText,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelServer, err := scriptedmodel.Start(scriptedmodel.Config{
+		Responses: []scriptedmodel.Response{toolCall, finalResponse},
+	})
+	if err != nil {
+		t.Fatalf("start loopback scripted model: %v", err)
+	}
+	t.Cleanup(modelServer.Close)
+	mcpServer := startDestructiveExecutorMCPServer(t, nil)
+
+	writeScriptedModelConfigWithOptions(t, paths.codexHome, modelServer.URL(), scriptedModelConfigOptions{
+		disableUpdatePlan: true,
+		mcpServerURL:      mcpServer.URL(),
+		mcpEnabledTools:   []string{approvedMCPToolName},
+		mcpApprovalMode:   "prompt",
+	})
+	process := startPreparedLiveCodex(t, binary, paths, "app-server", "--listen", "stdio://", "--strict-config")
+	initializeAppServer(t, process)
+	collector := newRPCCollector(process)
+	thread, turn := startMinimalAppServerTurnWithApprovalPolicy(
+		t,
+		collector,
+		paths.cwd,
+		"prove that the A05 probe detects a Codex-owned generic prompt",
+		granularMCPApprovalPolicy(),
+	)
+	reverseRequest := collector.request(t, "mcpServer/elicitation/request")
+	var requestParams struct {
+		ThreadID   string `json:"threadId"`
+		TurnID     string `json:"turnId"`
+		ServerName string `json:"serverName"`
+		Mode       string `json:"mode"`
+		Meta       struct {
+			ApprovalKind string `json:"codex_approval_kind"`
+		} `json:"_meta"`
+	}
+	if err := reverseRequest.DecodeParams(&requestParams); err != nil {
+		t.Fatal(err)
+	}
+	if requestParams.ThreadID != thread.Thread.ID || requestParams.TurnID != turn.ID ||
+		requestParams.ServerName != "executor" || requestParams.Mode != "form" ||
+		requestParams.Meta.ApprovalKind != "mcp_tool_call" {
+		t.Fatalf("unexpected Codex generic MCP approval request: %+v", requestParams)
+	}
+	sendRPC(t, process, map[string]any{
+		"id": reverseRequest.ID,
+		"result": map[string]any{
+			"action":  "cancel",
+			"content": nil,
+		},
+	})
+	assertAgentItemCompleted(t, collector, thread.Thread.ID, turn.ID, conformanceFinalText)
+	collector.notification(t, "turn/completed")
+	closeAndWait(t, process)
+
+	if failures := modelServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted model server failures: %v", failures)
+	}
+	if failures := mcpServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted MCP server failures: %v", failures)
+	}
+	if calls := mcpServer.Calls(); len(calls) != 0 {
+		t.Fatalf("cancelled Codex generic approval still reached tools/call: %+v", calls)
+	}
+}
+
+func startDestructiveExecutorMCPServer(
+	t *testing.T,
+	expectedCalls []scriptedmcp.ExpectedCall,
+) *scriptedmcp.Server {
+	t.Helper()
+	inputSchema := json.RawMessage(
+		`{"type":"object","properties":{"message":{"type":"string"}},"required":["message"],"additionalProperties":false}`,
+	)
+	server, err := scriptedmcp.Start(scriptedmcp.Config{
+		Tools: []scriptedmcp.Tool{
+			{
+				Name:        approvedMCPToolName,
+				Description: "Execute one policy-approved deterministic instruction.",
+				InputSchema: inputSchema,
+				Annotations: json.RawMessage(`{"readOnlyHint":false,"destructiveHint":true,"openWorldHint":true}`),
+			},
+		},
+		ExpectedCalls: expectedCalls,
+	})
+	if err != nil {
+		t.Fatalf("start destructive scripted MCP: %v", err)
+	}
+	t.Cleanup(server.Close)
+	return server
+}
+
+func granularMCPApprovalPolicy() map[string]any {
+	return map[string]any{
+		"granular": map[string]any{
+			"sandbox_approval":    false,
+			"rules":               false,
+			"skill_approval":      false,
+			"request_permissions": false,
+			"mcp_elicitations":    true,
+		},
+	}
+}
+
 // TestAppServerA03Codex0146ExecutesMCPResourceHandler proves the generic
 // resource surface is executable, rather than harmless schema residue. The
 // call reaches resources/list on the MCP server even though enabled_tools only
@@ -711,13 +964,24 @@ func startMinimalAppServerTurn(
 	userText string,
 ) (threadStartResult, appServerTurn) {
 	t.Helper()
+	return startMinimalAppServerTurnWithApprovalPolicy(t, collector, cwd, userText, "never")
+}
+
+func startMinimalAppServerTurnWithApprovalPolicy(
+	t *testing.T,
+	collector *rpcCollector,
+	cwd string,
+	userText string,
+	approvalPolicy any,
+) (threadStartResult, appServerTurn) {
+	t.Helper()
 	sendRPC(t, collector.process, map[string]any{
 		"id":     2,
 		"method": "thread/start",
 		"params": map[string]any{
 			"model":                   conformanceModelName,
 			"cwd":                     cwd,
-			"approvalPolicy":          "never",
+			"approvalPolicy":          approvalPolicy,
 			"sandbox":                 "read-only",
 			"ephemeral":               false,
 			"threadSource":            "user",
@@ -817,6 +1081,7 @@ type scriptedModelConfigOptions struct {
 	disableUpdatePlan bool
 	mcpServerURL      string
 	mcpEnabledTools   []string
+	mcpApprovalMode   string
 }
 
 func writeScriptedModelConfig(t *testing.T, codexHome, serverURL string) {
@@ -834,6 +1099,7 @@ func writeScriptedModelConfigWithOptions(
 	modelCatalogPath := writeConformanceModelCatalog(t, codexHome)
 	config := fmt.Sprintf(`model = %q
 approval_policy = "never"
+approvals_reviewer = "user"
 sandbox_mode = "read-only"
 model_provider = "scripted_provider"
 model_catalog_json = %q
@@ -900,15 +1166,24 @@ enabled = false
 		if err != nil {
 			t.Fatalf("encode scripted MCP enabled tools: %v", err)
 		}
+		approvalMode := options.mcpApprovalMode
+		if approvalMode == "" {
+			approvalMode = "approve"
+		}
+		switch approvalMode {
+		case "auto", "prompt", "writes", "approve":
+		default:
+			t.Fatalf("invalid scripted MCP approval mode %q", approvalMode)
+		}
 		config += fmt.Sprintf(`
 [mcp_servers.executor]
 url = %q
 required = true
 startup_timeout_sec = 5.0
 tool_timeout_sec = 5.0
-default_tools_approval_mode = "approve"
+default_tools_approval_mode = %q
 enabled_tools = %s
-`, options.mcpServerURL, enabledTools)
+`, options.mcpServerURL, approvalMode, enabledTools)
 	}
 	if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte(config), 0o600); err != nil {
 		t.Fatalf("write scripted model config: %v", err)

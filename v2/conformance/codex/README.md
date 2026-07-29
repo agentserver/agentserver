@@ -18,8 +18,10 @@ The current live probes cover A01 through a bounded loopback scripted Responses
 server (`initialize → initialized → thread/start → turn/start → item/completed →
 turn/completed`), A02 experimental gating for `environments: []` in both
 directions, A03 tool-surface and dispatch characterization through a bounded
-sessionless Streamable HTTP MCP server, E01 stdio/EOF, exec-server environment
-metadata, and these slices of the executor matrix:
+sessionless Streamable HTTP MCP server, the A04 managed-requirements injection
+boundary, A05 no-double-approval behavior and its prompt-mode positive control,
+E01 stdio/EOF, exec-server environment metadata, and these slices of the
+executor matrix:
 
 - E02: deterministic argv/arg0, canonical cwd, exact non-inherited child
   environment, non-TTY and PTY streams, output/exit/close sequencing, and
@@ -97,6 +99,30 @@ the official platform package SHA-256 is
 `279ec3460c5b8068daab2a4f5bcf057483303b3595f4a24ade6ceb4d02674935`.
 Stable 0.146.0 is therefore also a characterized rejection, not a production
 runtime pin.
+
+A04 is still open as an image-level gate. The upstream managed allowlist
+disables a configured MCP server unless both its name and transport identity
+match, but official release binaries read the Unix system layer only from
+`/etc/codex/requirements.toml`. The upstream
+`CODEX_APP_SERVER_MANAGED_CONFIG_PATH` redirect is compiled only with Rust
+`debug_assertions`; a release-bound negative probe confirms that the official
+0.146.0 artifact ignores it. Consequently, a trustworthy positive A04 probe
+must run the stock artifact in a disposable image or mount namespace with the
+exact-string HTTPS requirement installed before process start. It must observe
+that only the approved endpoint bootstraps and that wrong-name, wrong-URL,
+user, and project additions stay disabled. Pointing the release binary at a
+temporary file through that debug environment variable is not a valid shortcut.
+
+A05 passes for the characterized 0.146.0 releases. The live probe advertises an
+explicitly destructive, open-world executor tool, starts a thread with granular
+approval that allows only MCP elicitations, and verifies that
+`default_tools_approval_mode = "approve"` reaches `tools/call` without an
+app-server reverse request. Its positive control changes only the server default
+to `prompt`, captures `mcpServer/elicitation/request` with
+`codex_approval_kind = "mcp_tool_call"`, cancels it, and proves that
+`tools/call` is not sent. This establishes the Codex side of the single-approval
+design; A06 must still prove that an elicitation initiated by executor-gateway
+travels in the opposite direction and remains client-controlled.
 
 The probes also report candidate binary and canonical app-server schema
 fingerprints. Stock 0.145.0 was observed to randomize object-key order in one

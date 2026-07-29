@@ -386,6 +386,8 @@ process、PTY、stdin、signal、filesystem 和 upstream sandbox handler 由 sto
 
 stock 0.146.0 的 helper 结构不是“Codex + 若干同名独立二进制”。fs helper 通过绝对 `codex_self_exe --codex-run-as-fs-helper` 重入，arg0 exec helper同样重入当前 executable；Linux `codex-linux-sandbox` 是运行时在受保护 `CODEX_HOME` 下创建、指向当前 Codex 的 alias，创建失败时回退到 `current_exe`。这些路径不应在 manifest 中伪造三份 digest。真正独立的 Linux资源是 `codex-resources/bwrap`，但 stock launcher会先搜索 PATH中的 system `bwrap`，只有未找到或 capability probe不通过才尝试 bundled resource。agentx因此必须同时满足：绝对路径启动已验证 Codex；空且受保护的 `CODEX_HOME`；无 package metadata的最小 bundle；用确认不存在的 bundle内目录完整替换 ambient PATH；校验 bundled bwrap后才启动。Codex随后只会把自己生成的 arg0 alias目录前置到这个受控 PATH。若部署决定使用 system bwrap，它就不再属于该最小 profile，必须把固定绝对文件、镜像 digest/SBOM和真实选择结果作为新的 image-level gate，不能仅写一行 manifest便宣称锁定。
 
+这条选择链必须按 release 和 native platform 分别验收。当前 disposable production-profile image 已关闭 official stable 0.146.0 `linux-arm64` 的正向 gate：最小 bundle 中没有 package metadata/compatibility shim，进程在非 root、只读 root、零 capability、无网络条件下启动；真实 read-only 与 workspace-write sandbox 请求成功，workspace 外写入被拒绝，poisoned ambient bwrap 未被探测或执行，运行时 sandbox alias 解析回已验证 Codex。该证据不外推到 `linux-amd64`；后者必须在 native amd64 worker 跑同一门禁。跨架构仿真重写 bwrap inner argv0 且无法安装相同 seccomp filter，因此不得作为替代证据。manifest hash 校验与 image gate 也不解决 mutable install path 上校验后替换文件的 TOCTOU；agentx 仍须使用 immutable install 与平台 safe-open/execute。
+
 exec-server 可能依据 `envPolicy` 从自身环境继承变量，因此只过滤 `process/start.env` 不足以保护 credential。child 自身必须从一开始就运行在无 agentx secret 的环境中，agentx 还必须将远端 env policy 收紧到本地 allowlist；远端不能请求重新继承被剥离的宿主变量。
 
 stable 0.146.0 的 live probe 还暴露了两个不能由 JSON-RPC“成功响应”掩盖的执行语义缺口：

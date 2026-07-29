@@ -232,7 +232,8 @@ Phase 0 生成并提交 packaging/agentx/runtime-manifest.json，至少包含：
 4. exec-server 没有等价的稳定 schema generator时，保存 protocol 源文件 digest、录制 fixture 和语义探针结果。
 5. harness image 与 agentx release bundle 必须引用同一个 manifest digest。
 6. 启动时发现 version、digest、外部 executable 或 schema 不匹配，worker/agentx 均 fail closed。校验器必须先验证当前平台的完整 artifact set，再生成只含绝对 Codex 路径和受控 runtime PATH 的 launch plan；任一失败都不能调用 process starter。
-7. Codex 升级单独提交：先更新 lock，再更新 fixture，最后通过全部 conformance；不能顺手随业务版本升级。
+7. 每个 Linux release/architecture 组合还必须在 native disposable image 中，用只读 root、非 root 用户、零 capability、无网络和 poisoned ambient PATH 跑真实 sandbox 请求；跨架构仿真结果不能代替该平台证据。
+8. Codex 升级单独提交：先更新 lock，再更新 fixture，最后通过全部 conformance；不能顺手随业务版本升级。
 
 当前开发机显示的 Codex 版本或本地源码 HEAD 只能帮助调研，不能写成生产 lock。
 
@@ -337,7 +338,7 @@ A12 分两层验收。host probe用 `env_http_headers`把 worker sentinel变成�
 | E06 | stdio EOF | stdin EOF 后 server shutdown并清理 managed process；新的 agentx 不能 attach旧 child |
 | E07 | child crash | process group/cgroup 回收后代；无法确认退出时结果为 ambiguous/unknown |
 | E08 | environment isolation | 空 CODEX_HOME、固定 runtime cwd、清洗 env；不能读取用户 Codex auth/config或 agentx credential |
-| E09 | executable/runtime lock | Codex 与所有独立外部 executable digest 不匹配时启动失败；隐藏 fs/arg0/sandbox 模式只重入已验证 Codex；ambient PATH 中的 codex/bwrap/rg 均不可被选择 |
+| E09 | executable/runtime lock | Codex 与所有独立外部 executable digest 不匹配时启动失败；隐藏 fs/arg0/sandbox 模式只重入已验证 Codex；ambient PATH 中的 codex/bwrap/rg 均不可被选择；每个 Linux release/architecture 以 native image 的真实 sandbox 请求证明 bundled bwrap 选择与权限收敛 |
 | E10 | bounds | 最大 frame、argv/env、output buffer、retained output 和 exited-process retention 被测量并写入 manifest |
 
 Phase 0 的 exit criterion 是 A01–A12、E01–E10 全部可重复通过。任何 MCP-only、elicitation、checkpoint 或 stdio 假设失败，都先修改架构，不能继续写业务服务。
@@ -346,13 +347,15 @@ Phase 0 的 exit criterion 是 A01–A12、E01–E10 全部可重复通过。任
 
 E05 用真实 child → executor-local HTTP proxy → bounded origin 链路固定了反向请求的 `{processId, request:{protocol,host,port}}` 形状：allow 恰好命中 origin 一次，deny/ask、RPC error、未知 decision、controller timeout 和 stdio EOF 均为零命中；reference agentx client 还对非法 known params 回复 `deny(not_allowed)`、对未知 reverse method 回复 `-32601`。stock 返回 `ask` 会立即得到 HTTP 403，不会暂停请求；`policyDecisionTimeoutMs` 之外还有固定 5 秒 transport margin，所以 agentx 必须在自己的 approval deadline 主动 allow/deny。
 
-E08 的当前 slice 证明隔离 `CODEX_HOME` 不读取毒化的用户 `~/.codex`，exec-server 自身持有的 sentinel credential 也不会进入缺省策略 child。E09 的 reference launch boundary 已经验证完整 artifact set 全部通过后才调用 starter、Codex 只使用绝对路径、ambient PATH 被替换、Codex/bwrap digest 或布局失败时零启动。上游实现同时确认 fs helper、arg0 exec helper 和 Linux sandbox alias 都重入当前 Codex；不能为它们虚构独立 digest。stock Linux launcher 却明确优先搜索 PATH 中的 system `bwrap`，再使用 bundled resource，因此 agentx profile 采用无 `codex-package.json` 的最小 bundle、不可存在的 PATH 目录和固定 `codex-resources/bwrap`，让 stock 只能落到已验证 bundled resource。该结论仍须在 production Linux image 中以 poisoned system PATH 和真实 sandbox 请求做正向 gate；Darwin host 测试不能把 E09 宣称为完整通过。stdio EOF 会关闭唯一 connection、shutdown session 并回收 managed child，不能把它描述成可 detach/resume。
+E08 的当前 slice 证明隔离 `CODEX_HOME` 不读取毒化的用户 `~/.codex`，exec-server 自身持有的 sentinel credential 也不会进入缺省策略 child。E09 的 reference launch boundary 已经验证完整 artifact set 全部通过后才调用 starter、Codex 只使用绝对路径、ambient PATH 被替换、Codex/bwrap digest 或布局失败时零启动。上游实现同时确认 fs helper、arg0 exec helper 和 Linux sandbox alias 都重入当前 Codex；不能为它们虚构独立 digest。stock Linux launcher 却明确优先搜索 PATH 中的 system `bwrap`，再使用 bundled resource，因此 agentx profile 采用无 `codex-package.json` 的最小 bundle、不可存在的 PATH 目录和固定 `codex-resources/bwrap`，让 stock 只能落到已验证 bundled resource。
+
+stable 0.146.0 的 `linux-arm64` 正向 image gate 已在 native Apple `container` Linux VM 中通过：scratch image 以 uid/gid 65532、只读 root、零 capability、无网络运行，runtime bundle 只有锁定的 `bin/codex` 与 `codex-resources/bwrap`，不存在 package metadata 或 compatibility shim。门禁先确认 bundled bwrap 的 `--argv0` 语义，再通过 verified launch plan 发出真实 read-only 与 workspace-write `process/start`；前者可读 fixture，后者只可写声明的 workspace，同一 writable `/tmp` 上的 sibling path 被拒绝，ambient poison bwrap 未执行，运行时生成的 Linux sandbox alias 解析回同一份已验证 Codex。因此 E09 的这一精确 release/architecture/artifact set 已关闭；`linux-amd64` 仍须在 native amd64 worker 跑同一 target。Apple Silicon 的 amd64 仿真会重写 inner argv0 并拒绝 seccomp filter，不能作为门禁证据；最终 agentx 安装路径的 immutable safe-open/exec TOCTOU 仍是独立实施项。stdio EOF 会关闭唯一 connection、shutdown session 并回收 managed child，不能把它描述成可 detach/resume。
 
 E10 已在 alpha.14 与 stable 0.146.0 上固定完整 stock bound matrix：stdio payload 恰好 64 MiB 可接受，增加一个 byte 会断开整条连接；JSON 恰好 262,144 个 value 可接受，第 262,145 个 value 只产生 message-scoped `-32600`，连接仍可继续；retained output 为每进程 1 MiB 并另有 50,000 chunk 上限；stdin dedupe 为每进程 4,096 个 write ID 的 FIFO；`process/closed` 后约 30 秒仍可 read，随后返回 unknown process 且同一 ID 可复用。`ExecParams`、`prepare_exec_request` 和 spawn 路径没有独立 argv/env count 或 byte guard，只有 transport 与宿主 process API 限制，因此本机 `E2BIG` 不是 wire bound。live negative control 也证明 stock 会接受超过产品上限但仍低于宿主上限的 argv/env。
 
 runtime manifest 因而分别保存 `execServerBounds` 与更小的 `agentxLimits`。首版 agentx 必须在转发前拒绝：inner frame 大于 8 MiB、JSON value 多于 65,536、argv 加可选 arg0 多于 256 项或 UTF-8 总计大于 16 KiB、最终物化且不继承的 env 多于 256 项或按 `name=value` 总计大于 16 KiB、write ID 大于 128 bytes；每进程 WSS delivery/resume raw-output buffer 为 8 MiB，溢出必须报告带 sequence range 的 `output_gap/buffer_overflow`。stock 约 1 MiB replay 不能替代该 buffer，也不能恢复已经溢出的外层序列。最坏响应无法装入较小 envelope 的 method，在具有请求级上限或分页协议前不得协商。reference input validator 已覆盖 argv/env/write ID 的每个恰好边界与第一个拒绝；真实 agentx 仍须在 Phase 2 compatibility suite 复用同一 fixture 证明 frame/JSON/input/output 限制执行在写入 child stdin 或耗尽 buffer 之前。
 
-stable 0.146.0 同时新增两项明确拒绝证据。第一，`process/signal` 对 missing、delivered、already-exited 都返回不可区分的 `{}`，因此 E03 原验收失败。第二，根进程退出但后代继续持有 pipe 时，server 发出 `process/exited` 但不发 `process/closed`；随后 `process/terminate` 返回 `running: false` 且后代继续存活，直到整条 stdio connection 关闭才被回收，因此 E07 原验收失败。负向 conformance test 的 PASS 只表示稳定复现该缺口，不表示 E03/E07 放行。A04 已由 exact Linux artifact 的 image run 关闭；完整 Phase 0 当前仍明确被 A03、尚未实现 image 正向 job 的 A12、E03、E07，以及尚缺 production Linux 正向 job 的 E09 阻断。E10 的 stock/manifest/reference 边界已经关闭，但真实 agentx 的 bounds enforcement 与 E05 ownership 求交、approval channel、审计仍须在 executor 纵向切片复用同一 fixture 验收。
+stable 0.146.0 同时新增两项明确拒绝证据。第一，`process/signal` 对 missing、delivered、already-exited 都返回不可区分的 `{}`，因此 E03 原验收失败。第二，根进程退出但后代继续持有 pipe 时，server 发出 `process/exited` 但不发 `process/closed`；随后 `process/terminate` 返回 `running: false` 且后代继续存活，直到整条 stdio connection 关闭才被回收，因此 E07 原验收失败。负向 conformance test 的 PASS 只表示稳定复现该缺口，不表示 E03/E07 放行。A04 已由 exact Linux artifact 的 image run 关闭，E09 已关闭 stable 0.146.0 `linux-arm64` 的平台级正向 gate；完整 Phase 0 当前仍明确被 A03、尚未实现 image 正向 job 的 A12、E03、E07 阻断，多平台发行还被尚未在 native worker 运行的 `linux-amd64` E09 阻断。E10 的 stock/manifest/reference 边界已经关闭，但真实 agentx 的 bounds enforcement 与 E05 ownership 求交、approval channel、审计仍须在 executor 纵向切片复用同一 fixture 验收。
 
 ## 5. Core 状态内核
 

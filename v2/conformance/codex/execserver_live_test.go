@@ -52,6 +52,15 @@ const (
 	execChildOversizedInputOutput = "stock-accepted-over-agentx-input-limits\n"
 	execChildTinyOutputByte       = byte('c')
 	execChildTinyOutputACK        = byte('a')
+	execChildE09ReadPathEnv       = "AGENTSERVER_EXEC_CHILD_E09_READ_PATH"
+	execChildE09WorkspacePathEnv  = "AGENTSERVER_EXEC_CHILD_E09_WORKSPACE_PATH"
+	execChildE09OutsidePathEnv    = "AGENTSERVER_EXEC_CHILD_E09_OUTSIDE_PATH"
+	execChildE09ExpectedPathEnv   = "AGENTSERVER_EXEC_CHILD_E09_EXPECTED_PATH"
+	execChildE09ReadOutput        = "e09:read-only-ok\n"
+	execChildE09WorkspaceOutput   = "e09:workspace-write-ok;outside-denied\n"
+	e09PoisonMarkerEnvironment    = "AGENTSERVER_E09_POISON_MARKER"
+	e09BwrapArgv0Probe            = "agentserver-e09-bwrap-argv0"
+	e09BwrapArgv0ProbeOutput      = "e09:bwrap-argv0-ok\n"
 
 	e10StockMaxStdioFrameBytes                 = codexwire.DefaultMaxFrameBytes
 	e10StockMaxJSONValues                      = codexwire.DefaultMaxJSONNodes
@@ -108,10 +117,28 @@ func characterizedE10AgentxLimits() runtimelock.AgentxLimits {
 // a deterministic child. The helper path bypasses the testing harness so its
 // stdout and stderr contain only bytes intentionally emitted by the probe.
 func TestMain(m *testing.M) {
+	if os.Args[0] == e09BwrapArgv0Probe {
+		_, _ = io.WriteString(os.Stdout, e09BwrapArgv0ProbeOutput)
+		os.Exit(0)
+	}
+	if poisonMarker := os.Getenv(e09PoisonMarkerEnvironment); poisonMarker != "" && filepath.Base(os.Args[0]) == "bwrap" {
+		os.Exit(runE09PoisonBwrap(poisonMarker))
+	}
 	if mode, helper := os.LookupEnv(execChildModeEnvironment); helper {
 		os.Exit(runExecChild(mode))
 	}
 	os.Exit(m.Run())
+}
+
+func runE09PoisonBwrap(marker string) int {
+	if err := os.WriteFile(marker, []byte("ambient bwrap executed\n"), 0o600); err != nil {
+		return reportExecChildError(fmt.Errorf("write E09 poison marker: %w", err))
+	}
+	if len(os.Args) == 2 && os.Args[1] == "--help" {
+		_, _ = io.WriteString(os.Stdout, "--argv0\n--perms\n")
+		return 0
+	}
+	return 97
 }
 
 func runExecChild(mode string) int {
@@ -151,6 +178,38 @@ func runExecChild(mode string) int {
 			return reportExecChildError(err)
 		}
 		if _, err := io.WriteString(os.Stdout, "echo:"+string(input)); err != nil {
+			return reportExecChildError(err)
+		}
+		return 0
+	case "e09-read-only":
+		if err := validateE09ChildPATH(os.Getenv("PATH"), os.Getenv(execChildE09ExpectedPathEnv)); err != nil {
+			return reportExecChildError(err)
+		}
+		readPath := os.Getenv(execChildE09ReadPathEnv)
+		contents, err := os.ReadFile(readPath)
+		if err != nil {
+			return reportExecChildError(fmt.Errorf("read E09 fixture: %w", err))
+		}
+		if string(contents) != "e09-readable\n" {
+			return reportExecChildError(fmt.Errorf("E09 read fixture = %q", contents))
+		}
+		if _, err := io.WriteString(os.Stdout, execChildE09ReadOutput); err != nil {
+			return reportExecChildError(err)
+		}
+		return 0
+	case "e09-workspace-write":
+		if err := validateE09ChildPATH(os.Getenv("PATH"), os.Getenv(execChildE09ExpectedPathEnv)); err != nil {
+			return reportExecChildError(err)
+		}
+		workspacePath := os.Getenv(execChildE09WorkspacePathEnv)
+		outsidePath := os.Getenv(execChildE09OutsidePathEnv)
+		if err := os.WriteFile(workspacePath, []byte("workspace write allowed\n"), 0o600); err != nil {
+			return reportExecChildError(fmt.Errorf("write E09 workspace fixture: %w", err))
+		}
+		if err := os.WriteFile(outsidePath, []byte("sandbox escaped\n"), 0o600); err == nil {
+			return reportExecChildError(errors.New("E09 sandbox allowed an outside-workspace write"))
+		}
+		if _, err := io.WriteString(os.Stdout, execChildE09WorkspaceOutput); err != nil {
 			return reportExecChildError(err)
 		}
 		return 0
@@ -312,6 +371,22 @@ func runExecChild(mode string) int {
 	default:
 		return reportExecChildError(fmt.Errorf("unknown helper mode %q", mode))
 	}
+}
+
+func validateE09ChildPATH(got, controlledBase string) error {
+	entries := filepath.SplitList(got)
+	if len(entries) == 0 || entries[len(entries)-1] != controlledBase {
+		return fmt.Errorf("PATH = %q, want Codex aliases followed by %q", got, controlledBase)
+	}
+	for _, entry := range entries[:len(entries)-1] {
+		if entry == "" || !filepath.IsAbs(entry) {
+			return fmt.Errorf("PATH contains invalid Codex alias entry %q", entry)
+		}
+		if _, err := os.Lstat(filepath.Join(entry, "bwrap")); !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("PATH alias entry %q exposes bwrap or cannot be inspected: %w", entry, err)
+		}
+	}
+	return nil
 }
 
 func runExecChildNetworkHTTP() int {

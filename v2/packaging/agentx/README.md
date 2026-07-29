@@ -78,6 +78,10 @@ PATH is constrained separately by the env/owner policy.
 Hash verification alone does not make launch atomic on a hostile mutable
 filesystem. The agentx supervisor must additionally use platform-specific safe
 open/execute and immutable-install controls described in the architecture. The
-Linux production image must also prove with a real sandbox request and poisoned
-host PATH that the bundled bwrap is selected. A Darwin host probe cannot close
-that image-level gate.
+Linux production profile must also prove with real sandbox requests and a
+poisoned host PATH that the bundled bwrap is selected. The checked-in disposable
+image gate has done so natively for the exact official stable 0.146.0
+`linux-arm64` Codex/bwrap artifact set; it does not generalize to another
+release, digest, or architecture. In particular, `linux-amd64` remains open
+until the same target passes on a native amd64 worker. Cross-architecture
+emulation and a Darwin-only host probe cannot close that image-level gate.

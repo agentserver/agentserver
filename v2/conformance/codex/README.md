@@ -57,7 +57,9 @@ environment metadata, and these slices of the executor matrix:
   ambient PATH, and never invokes the starter on a Codex/bwrap digest or bundle
   layout failure. Both characterized Darwin releases start a real copied stock
   exec-server from the minimal verified layout while poison `codex`, `bwrap`,
-  and `rg` sentinels on the supplied PATH remain untouched;
+  and `rg` sentinels on the supplied PATH remain untouched. The disposable
+  native Linux gate additionally runs real read-only and workspace-write
+  requests through the manifest-pinned bundled bwrap;
 - E10: both characterized releases accept a stdio JSON-RPC payload of exactly
   64 MiB and disconnect on the first byte above it; they accept exactly 262,144
   JSON values and reject the next value as one malformed message without
@@ -85,17 +87,26 @@ Agentx must hold the reverse RPC while an authorized approval is pending and
 eventually answer `allow` or `deny`; returning `ask` is only a terminal blocked
 result.
 
-E09 is not yet a full platform pass. Upstream source inspection establishes
-that the fs helper and arg0 exec helper re-enter the absolute current Codex,
-while the runtime-created Linux sandbox alias points to the same bytes; they do
-not have independent helper artifacts to hash. Linux `bwrap` does. Stock first
-probes a system bwrap from PATH and only then tries
-`codex-resources/bwrap`. The Phase 1 reference profile therefore removes
-`codex-package.json`, supplies a nonexistent bundle-local PATH, and pins the
-bundled resource. A production Linux image must still run a real sandboxed fs
-or process request with a poisoned host PATH and prove which bwrap executes.
-The Darwin live result cannot supply that evidence or close the safe-open/exec
-TOCTOU requirement.
+E09 is platform-scoped. Upstream source inspection establishes that the fs
+helper and arg0 exec helper re-enter the absolute current Codex, while the
+runtime-created Linux sandbox alias points to the same bytes; they do not have
+independent helper artifacts to hash. Linux `bwrap` does. Stock first probes a
+system bwrap from PATH and only then tries `codex-resources/bwrap`. The Phase 1
+reference profile therefore removes `codex-package.json`, supplies a
+nonexistent bundle-local PATH, and pins the bundled resource.
+
+The disposable image gate passed natively for official stable 0.146.0
+`linux-arm64`: Codex SHA-256
+`cb5e8cb8a333a408ce6adbe0d4fad1845c69772c2216af7c1f88c98a11460dc6`
+(size `269098800`) and bwrap SHA-256
+`c547cbdc762a70ed216789ffaa4c6c0e7d2beabe32245a498f8e365a9fc8dab4`
+(size `529168`). The gate rechecks bwrap argv0 behavior, verifies the generated
+Linux sandbox alias, leaves a working ambient poison bwrap untouched, and
+proves read-only plus workspace-write enforcement. It refuses Apple
+Silicon-to-amd64 emulation because that path rewrites argv0 and rejects the
+seccomp filter; `linux-amd64` remains open until the same target runs on a
+native amd64 worker. Neither platform result closes the eventual agentx
+safe-open/exec TOCTOU requirement.
 
 E10 deliberately separates upstream facts from product admission. The stock
 `ExecParams` deserializer and launch path clone `argv` and `env` without a

@@ -780,6 +780,174 @@ func TestAppServerA06NeverPolicyAutoDeclinesMCPFormElicitation(t *testing.T) {
 	)
 }
 
+// TestAppServerA07InterruptClearsPendingMCPFormElicitation verifies the
+// cancellation boundary while the app-server client owns an unresolved MCP
+// reverse request. Interrupting the turn must resolve that request, send
+// cancel back to MCP, produce a terminal interrupted turn, and stop before a
+// second model request or tool call.
+func TestAppServerA07InterruptClearsPendingMCPFormElicitation(t *testing.T) {
+	binary, paths := prepareLiveCodex(t)
+	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0")
+	const callID = "call-a07-pending-elicitation"
+	toolCall, err := scriptedmodel.NamespacedFunctionCall(
+		"response-a07-call",
+		callID,
+		executorMCPNamespace,
+		approvedMCPToolName,
+		`{"message":"wait for a client decision"}`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelServer, err := scriptedmodel.Start(scriptedmodel.Config{
+		Responses: []scriptedmodel.Response{toolCall},
+	})
+	if err != nil {
+		t.Fatalf("start loopback scripted model: %v", err)
+	}
+	t.Cleanup(modelServer.Close)
+	mcpServer := startDestructiveExecutorMCPServer(t, []scriptedmcp.ExpectedCall{{
+		Name:      approvedMCPToolName,
+		Arguments: json.RawMessage(`{"message":"wait for a client decision"}`),
+		Result: json.RawMessage(
+			`{"content":[{"type":"text","text":"cancelled by turn interrupt"}],"structuredContent":{"clientAction":"cancel"},"isError":false}`,
+		),
+		Elicitation: &scriptedmcp.ExpectedElicitation{
+			ID: json.RawMessage(`"elicitation-a07-pending"`),
+			Params: json.RawMessage(
+				`{"_meta":{"agentserver_execution_id":"execution-a07-pending"},"message":"Approve before interrupt?","requestedSchema":{"type":"object","properties":{"confirmed":{"type":"boolean"}},"required":["confirmed"]}}`,
+			),
+			Response: json.RawMessage(`{"action":"cancel"}`),
+		},
+	}})
+
+	writeScriptedModelConfigWithOptions(t, paths.codexHome, modelServer.URL(), scriptedModelConfigOptions{
+		disableUpdatePlan: true,
+		mcpServerURL:      mcpServer.URL(),
+		mcpEnabledTools:   []string{approvedMCPToolName},
+	})
+	process := startPreparedLiveCodex(t, binary, paths, "app-server", "--listen", "stdio://", "--strict-config")
+	initializeAppServer(t, process)
+	collector := newRPCCollector(process)
+	thread, turn := startMinimalAppServerTurnWithApprovalPolicy(
+		t,
+		collector,
+		paths.cwd,
+		"interrupt while the executor is waiting for product approval",
+		granularMCPApprovalPolicy(),
+	)
+	reverseRequest := collector.request(t, "mcpServer/elicitation/request")
+	var requestParams struct {
+		ThreadID   string `json:"threadId"`
+		TurnID     string `json:"turnId"`
+		ServerName string `json:"serverName"`
+		Mode       string `json:"mode"`
+	}
+	if err := reverseRequest.DecodeParams(&requestParams); err != nil {
+		t.Fatal(err)
+	}
+	if requestParams.ThreadID != thread.Thread.ID || requestParams.TurnID != turn.ID ||
+		requestParams.ServerName != "executor" || requestParams.Mode != "form" {
+		t.Fatalf("unexpected pending MCP elicitation: %+v", requestParams)
+	}
+
+	sendRPC(t, process, map[string]any{
+		"id":     4,
+		"method": "turn/interrupt",
+		"params": map[string]any{
+			"threadId": thread.Thread.ID,
+			"turnId":   turn.ID,
+		},
+	})
+	var interruptResult struct{}
+	mustDecodeResult(t, collector.response(t, "4"), &interruptResult)
+	terminal, resolvedBeforeTerminal := collectInterruptedTurnAndResolvedRequest(
+		t, collector, thread.Thread.ID, reverseRequest.ID,
+	)
+	if terminal.ThreadID != thread.Thread.ID || terminal.Turn.ID != turn.ID ||
+		terminal.Turn.Status != "interrupted" {
+		t.Fatalf("unexpected interrupted terminal turn: %+v", terminal)
+	}
+	t.Logf("pending elicitation resolved before interrupted terminal: %t", resolvedBeforeTerminal)
+	closeAndWait(t, process)
+
+	if failures := modelServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted model server failures: %v", failures)
+	}
+	if requests := modelServer.Requests(); len(requests) != 1 {
+		t.Fatalf("interrupted turn sent %d model requests, want only the pre-interrupt call", len(requests))
+	}
+	if failures := mcpServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted MCP server failures: %v", failures)
+	}
+	if calls := mcpServer.Calls(); len(calls) != 1 || calls[0].Name != approvedMCPToolName {
+		t.Fatalf("scripted MCP calls after interrupt = %+v, want only the pending call", calls)
+	}
+	responses := mcpServer.ElicitationResponses()
+	if len(responses) != 1 {
+		t.Fatalf("scripted MCP elicitation responses = %+v, want one interrupt cancellation", responses)
+	}
+	var response struct {
+		Action string `json:"action"`
+	}
+	if err := json.Unmarshal(responses[0].Result, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Action != "cancel" {
+		t.Fatalf("interrupted MCP elicitation action = %q, want cancel", response.Action)
+	}
+}
+
+type interruptedTurnResolution struct {
+	ThreadID string        `json:"threadId"`
+	Turn     appServerTurn `json:"turn"`
+}
+
+func collectInterruptedTurnAndResolvedRequest(
+	t *testing.T,
+	collector *rpcCollector,
+	threadID string,
+	requestID json.RawMessage,
+) (interruptedTurnResolution, bool) {
+	t.Helper()
+	var terminal interruptedTurnResolution
+	terminalSeen := false
+	resolvedSeen := false
+	resolvedBeforeTerminal := false
+	for notificationIndex := 0; notificationIndex < 128; notificationIndex++ {
+		notification := collector.nextNotification(t)
+		switch notification.Method {
+		case "turn/completed":
+			if err := notification.DecodeParams(&terminal); err != nil {
+				t.Fatal(err)
+			}
+			terminalSeen = true
+		case "serverRequest/resolved":
+			var resolved struct {
+				ThreadID  string          `json:"threadId"`
+				RequestID json.RawMessage `json:"requestId"`
+			}
+			if err := notification.DecodeParams(&resolved); err != nil {
+				t.Fatal(err)
+			}
+			var gotID any
+			var wantID any
+			if json.Unmarshal(resolved.RequestID, &gotID) != nil ||
+				json.Unmarshal(requestID, &wantID) != nil ||
+				resolved.ThreadID != threadID || !reflect.DeepEqual(gotID, wantID) {
+				t.Fatalf("unexpected serverRequest/resolved after interrupt: %+v, want thread=%q request=%s", resolved, threadID, requestID)
+			}
+			resolvedBeforeTerminal = !terminalSeen
+			resolvedSeen = true
+		}
+		if terminalSeen && resolvedSeen {
+			return terminal, resolvedBeforeTerminal
+		}
+	}
+	t.Fatal("interrupted turn and serverRequest/resolved were not both found in 128 notifications")
+	return interruptedTurnResolution{}, false
+}
+
 func runA06MCPFormElicitation(
 	t *testing.T,
 	caseID string,

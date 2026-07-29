@@ -21,8 +21,8 @@ directions, A03 tool-surface and dispatch characterization through a bounded
 sessionless Streamable HTTP MCP server, the A04 managed-requirements injection
 boundary, A05 no-double-approval behavior and its prompt-mode positive control,
 A06 client-controlled MCP form elicitation and its never-policy negative
-control, E01 stdio/EOF, exec-server environment metadata, and these slices of
-the executor matrix:
+control, A07 pending-elicitation interrupt cleanup, E01 stdio/EOF, exec-server
+environment metadata, and these slices of the executor matrix:
 
 - E02: deterministic argv/arg0, canonical cwd, exact non-inherited child
   environment, non-TTY and PTY streams, output/exit/close sequencing, and
@@ -135,8 +135,17 @@ live cases return `accept`, `decline`, and `cancel`; each action reaches MCP,
 `serverRequest/resolved` precedes turn completion, and the resulting tool
 output reaches the next model request. With the same non-empty form under
 `approval_policy = "never"`, Codex emits no reverse request and returns
-`decline` directly to MCP. A07 must still prove interrupt-time cleanup while
-that reverse request is pending.
+`decline` directly to MCP.
+
+A07 also passes for both characterized 0.146.0 releases, with one important
+ordering fact. When the client leaves the A06 form request unanswered and sends
+`turn/interrupt`, app-server returns success, terminates the turn as
+`interrupted`, resolves the outstanding reverse request, and sends `cancel` to
+MCP. It performs no second model request or MCP tool call. However, the observed
+wire order is `turn/completed` first and `serverRequest/resolved` second. A
+harness must therefore keep draining stdio and track outstanding reverse
+request IDs during finalization; a terminal turn notification alone is not a
+cleanup barrier.
 
 The probes also report candidate binary and canonical app-server schema
 fingerprints. Stock 0.145.0 was observed to randomize object-key order in one

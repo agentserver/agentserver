@@ -243,7 +243,7 @@ conformance test 是 Go subprocess test，不依赖 v1 gateway：
 | A05 | 无双重审批 | executor MCP tool 在 default_tools_approval_mode=approve 下不产生 app-server 通用 tool prompt |
 | A06 | elicitation | granular policy 只允许 mcp_elicitations；fake MCP elicitation 能到达 app-server client并由 client 决定，never policy 的自动拒绝作为反例固定 |
 | A07 | interrupt | turn/interrupt 产生 terminal interrupted，清除 pending server request，不再发新 tool call |
-| A08 | graceful shutdown | turn terminal 后关闭 stdin，child 有界正常退出；rollout、SQLite/WAL 状态稳定，无固定 sleep |
+| A08 | graceful shutdown | turn terminal 与 outstanding reverse request清空后关闭 stdin，child 有界正常退出；rollout、SQLite/WAL 状态稳定，无固定 sleep |
 | A09 | checkpoint round-trip | 从 allowlist 文件生成 checkpoint，在全新目录恢复，thread/resume 后第二个 turn保留首 turn 的模型可见 tool result |
 | A10 | mid-turn crash | kill child 后不能 resume 原 turn；只能恢复上一个 terminal checkpoint |
 | A11 | secret exclusion | config、requirements、token、auth、log、env dump 和临时 transport buffer 不进入 checkpoint |
@@ -255,7 +255,9 @@ A04 的 managed layer 不能通过普通临时 `CODEX_HOME` 注入。official re
 
 A05 已在 0.146.0-alpha.14 与 stable 0.146.0 上通过。主用例把 fake executor tool 明确标为 destructive/open-world，在只允许 `mcp_elicitations` 的 granular thread 下，`default_tools_approval_mode = "approve"` 不产生任何 reverse request并直接到达 `tools/call`。正向控制只把 mode 改为 `prompt`，即可捕获 `_meta.codex_approval_kind = "mcp_tool_call"` 的 `mcpServer/elicitation/request`；回复 cancel 后 MCP server 不收到 `tools/call`。这证明测试确实能发现双重审批，也证明 `approve` 只关闭 Codex 通用 tool prompt；executor-gateway 主动发起的产品审批仍由 A06 单独验证。
 
-A06 已在 0.146.0-alpha.14 与 stable 0.146.0 上分别通过。fake MCP 在真实模型工具调用的 Streamable HTTP response中先发标准 `elicitation/create`，等待 Codex用独立 POST回 JSON-RPC response 后才返回原 `tools/call` result。granular policy 下 app-server reverse request精确携带 thread/turn/server、typed boolean form schema和 execution `_meta`；client 的 `accept`（带结构化 content）、`decline`、`cancel` 三种决定都到达 MCP，随后 `serverRequest/resolved` 先于 turn terminal，action对应的工具结果进入下一次模型请求。反例使用相同的非空 form 和 `approval_policy = "never"`，普通 collector确认没有任何 reverse request，而 MCP收到 `decline`。A07 仍需在 client尚未回复时 interrupt turn，验证 pending request清除、MCP cancel和 terminal interrupted；timeout/control-stream断线仍是后续 fault probe。
+A06 已在 0.146.0-alpha.14 与 stable 0.146.0 上分别通过。fake MCP 在真实模型工具调用的 Streamable HTTP response中先发标准 `elicitation/create`，等待 Codex用独立 POST回 JSON-RPC response 后才返回原 `tools/call` result。granular policy 下 app-server reverse request精确携带 thread/turn/server、typed boolean form schema和 execution `_meta`；client 的 `accept`（带结构化 content）、`decline`、`cancel` 三种决定都到达 MCP，随后正常 response路径的 `serverRequest/resolved` 先于 turn terminal，action对应的工具结果进入下一次模型请求。反例使用相同的非空 form 和 `approval_policy = "never"`，普通 collector确认没有任何 reverse request，而 MCP收到 `decline`。
+
+A07 也已在 alpha.14 与 stable 0.146.0 分别通过。测试在 app-server client持有未决 `mcpServer/elicitation/request` 时调用 `turn/interrupt`：RPC返回成功，terminal status为 `interrupted`，pending request随后发出 `serverRequest/resolved`，fake MCP收到 `cancel`，Responses endpoint和 MCP都没有第二次调用。当前两个 release重复观察到的顺序都是 terminal在先、resolved在后，所以 worker不能在收到 `turn/completed` 时立即关闭 stdio；它要维护 outstanding server-request set，并在 terminal、set清空和 process收口三者都满足后才能结束 finalization。timeout、control-stream断线和 child crash仍是后续独立 fault probe，不能因 A07通过而视为覆盖。
 
 当前 0.145.0 candidate 的 bootstrap probe 进一步确认：assistant 内容在 `item/completed` 上到达，而 terminal `turn/completed` 是 `itemsView: notLoaded` 的空内容终态，harness-worker 必须持续归并 item 事件，不能只保存 terminal payload。`environments: []` 能去掉 shell/fs；固定本地 model catalog，并显式关闭 Web、goals、multi-agent、orchestrator skills、user-input 及其他已知 feature 后，实际 Responses request 的工具面可收敛到仅剩 `update_plan`。但官方 `rust-v0.145.0` tag（peeled commit `25af12f7e61572b0bc18ddb1008be543b91519b0`）的 `add_core_utility_tools` 无条件注册 `PlanHandler`，该版本没有对应 config 或 requirements 开关；scripted model 调用后实际收到成功的 `Plan updated` result，client 同时收到 `turn/plan/updated`。因此 0.145.0 明确不通过 A03，不能成为 production runtime pin。
 
@@ -269,7 +271,7 @@ A06 已在 0.146.0-alpha.14 与 stable 0.146.0 上分别通过。fake MCP 在真
 
 1. 创建全新 CODEX_HOME-A。
 2. 启动 app-server，完成包含一次 fake MCP result 的 turn。
-3. 收到 turn/completed 后关闭 stdin并等待 child 正常退出。
+3. 收到 turn/completed 后继续排空 stdio，等待 outstanding reverse request全部 resolved，再关闭 stdin并等待 child正常退出。
 4. 枚举 CODEX_HOME-A 变化，拒绝 symlink、绝对路径和父目录跳转。
 5. 从候选文件中排除 config、requirements、auth、token、log 和 cache。
 6. 复制候选到全新 CODEX_HOME-B，启动同一 build。
@@ -692,20 +694,21 @@ worker不能调用 app-server的 command/exec、process/spawn、fs、marketplace
 
 ### 8.5 finalizing 与 checkpoint
 
-收到 terminal turn/completed 后：
+收到 terminal turn/completed 后进入 finalizing，但 terminal不是 transport cleanup barrier：
 
-1. 停止接受新 control decision和新 server request。
-2. 确认所有 execution/process已 terminal或明确 unknown。
-3. 向 core写 BeginRunFinalization。
-4. 关闭 app-server stdin。
-5. 等待 child在固定 grace内正常退出。
-6. timeout时先 TERM、再 KILL；该 attempt不得提交 checkpoint。
-7. child正常退出后按 pinned allowlist安全打开文件，拒绝 symlink和路径逃逸。
-8. 生成逐文件 hash和 manifest。
-9. 经 control channel分块发送给 pool。
-10. pool上传、复算整对象 hash。
-11. core以 expected run/attempt version提交 checkpoint pointer和 terminal event。
-12. 收到 commit ACK后 worker/pool才删除 staging。
+1. 停止接受新的 control decision；继续排空 app-server stdout。
+2. 等待本 attempt已登记的所有 server request ID收到 `serverRequest/resolved`；terminal后新出现未知 server request一律 fail closed。
+3. 确认所有 execution/process已 terminal或明确 unknown。
+4. 向 core写 BeginRunFinalization。
+5. 关闭 app-server stdin。
+6. 等待 child在固定 grace内正常退出。
+7. timeout时先 TERM、再 KILL；该 attempt不得提交 checkpoint。
+8. child正常退出后按 pinned allowlist安全打开文件，拒绝 symlink和路径逃逸。
+9. 生成逐文件 hash和 manifest。
+10. 经 control channel分块发送给 pool。
+11. pool上传、复算整对象 hash。
+12. core以 expected run/attempt version提交 checkpoint pointer和 terminal event。
+13. 收到 commit ACK后 worker/pool才删除 staging。
 
 如果用户已经看到完整模型输出但 checkpoint最终无法提交，run进入 interrupted(checkpoint_commit_failed)，不能标 completed。用户可看到输出，但系统必须明确该 session不能从该 turn原生恢复。
 

@@ -70,10 +70,10 @@ type Config struct {
 
 // Request is a bounded copy of one accepted HTTP request.
 type Request struct {
-	Method    string
-	Path      string
-	Header    http.Header
-	Body      []byte
+	Method string
+	Path   string
+	Header http.Header
+	Body   []byte
 	// RPCMethod is empty for a JSON-RPC response to a scripted elicitation.
 	RPCMethod string
 }

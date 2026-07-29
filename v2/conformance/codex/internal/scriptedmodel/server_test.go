@@ -2,10 +2,13 @@ package scriptedmodel
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestServerCapturesBoundedResponsesRequest(t *testing.T) {
@@ -36,6 +39,63 @@ func TestServerCapturesBoundedResponsesRequest(t *testing.T) {
 	}
 	if failures := server.Failures(); len(failures) != 0 {
 		t.Fatalf("unexpected server failures: %v", failures)
+	}
+}
+
+func TestServerHoldsResponseUntilClientCancellation(t *testing.T) {
+	server, err := Start(Config{Responses: []Response{{HoldOpen: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(server.Close)
+
+	requestContext, cancelRequest := context.WithCancel(context.Background())
+	defer cancelRequest()
+	request, err := http.NewRequestWithContext(
+		requestContext,
+		http.MethodPost,
+		server.URL()+"/v1/responses",
+		bytes.NewBufferString(`{"model":"mock"}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	result := make(chan error, 1)
+	go func() {
+		response, requestErr := http.DefaultClient.Do(request)
+		if response != nil {
+			_ = response.Body.Close()
+		}
+		result <- requestErr
+	}()
+
+	waitContext, cancelWait := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelWait()
+	if err := server.WaitForRequests(waitContext, 1); err != nil {
+		t.Fatalf("wait for held request: %v", err)
+	}
+	select {
+	case err := <-result:
+		t.Fatalf("held response completed before cancellation: %v", err)
+	default:
+	}
+	cancelRequest()
+	cancelContext, cancelCancellationWait := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelCancellationWait()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("held request cancellation error = %v, want context canceled", err)
+		}
+	case <-cancelContext.Done():
+		t.Fatalf("held request did not stop after cancellation: %v", cancelContext.Err())
+	}
+	if requests := server.Requests(); len(requests) != 1 {
+		t.Fatalf("held request count = %d, want one", len(requests))
+	}
+	if failures := server.Failures(); len(failures) != 0 {
+		t.Fatalf("held response failures: %v", failures)
 	}
 }
 

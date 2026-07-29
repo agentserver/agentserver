@@ -5,6 +5,7 @@ package scriptedmodel
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,11 +27,14 @@ const (
 )
 
 // Response is one scripted HTTP response. A zero StatusCode means 200 and an
-// empty ContentType means text/event-stream.
+// empty ContentType means text/event-stream. HoldOpen records the request but
+// sends no response; the handler remains pending until the client cancels the
+// request or the server closes. A held response cannot set any other fields.
 type Response struct {
 	StatusCode  int
 	ContentType string
 	Body        []byte
+	HoldOpen    bool
 }
 
 type Config struct {
@@ -59,6 +63,7 @@ type Server struct {
 	next      int
 	requests  []Request
 	failures  []string
+	requestCh chan struct{}
 }
 
 func Start(config Config) (*Server, error) {
@@ -99,6 +104,9 @@ func newServer(config Config) (*Server, error) {
 	}
 	responses := make([]Response, len(config.Responses))
 	for index, response := range config.Responses {
+		if response.HoldOpen && (response.StatusCode != 0 || response.ContentType != "" || len(response.Body) != 0) {
+			return nil, fmt.Errorf("held scripted response %d cannot set status, content type, or body", index)
+		}
 		if response.StatusCode != 0 && (response.StatusCode < 200 || response.StatusCode > 599) {
 			return nil, fmt.Errorf("scripted response %d has invalid status %d", index, response.StatusCode)
 		}
@@ -112,6 +120,7 @@ func newServer(config Config) (*Server, error) {
 	result := &Server{
 		maxRequestBytes: config.MaxRequestBytes,
 		responses:       responses,
+		requestCh:       make(chan struct{}, 1),
 	}
 	server := &http.Server{
 		Handler:           http.HandlerFunc(result.serveHTTP),
@@ -151,6 +160,31 @@ func (s *Server) Requests() []Request {
 		requests[index] = request
 	}
 	return requests
+}
+
+// WaitForRequests waits without polling until at least count bounded requests
+// have been captured. It is used by crash probes as a deterministic in-flight
+// model-call barrier.
+func (s *Server) WaitForRequests(ctx context.Context, count int) error {
+	if ctx == nil {
+		return errors.New("request wait context is required")
+	}
+	if count <= 0 {
+		return errors.New("request wait count must be positive")
+	}
+	for {
+		s.mu.Lock()
+		observed := len(s.requests)
+		s.mu.Unlock()
+		if observed >= count {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-s.requestCh:
+		}
+	}
 }
 
 // Failures returns protocol violations observed by the loopback server, such
@@ -206,6 +240,10 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 	s.mu.Lock()
 	if len(s.requests) < len(s.responses)+1 {
 		s.requests = append(s.requests, captured)
+		select {
+		case s.requestCh <- struct{}{}:
+		default:
+		}
 	}
 	if s.next >= len(s.responses) {
 		s.recordFailureLocked("scripted response sequence exhausted")
@@ -216,6 +254,10 @@ func (s *Server) serveHTTP(writer http.ResponseWriter, request *http.Request) {
 	response := s.responses[s.next]
 	s.next++
 	s.mu.Unlock()
+	if response.HoldOpen {
+		<-request.Context().Done()
+		return
+	}
 
 	status := response.StatusCode
 	if status == 0 {

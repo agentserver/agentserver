@@ -327,9 +327,11 @@ A08 已在 alpha.14 与 stable 0.146.0 上验证上述退出屏障：completed t
 
 A09 已在同两个 release 上把 allowlist 收敛为单个 rollout JSONL。probe只把该文件按 manifest相对路径复制到全新 `CODEX_HOME`，在写入新 attempt config前断言 staging没有额外文件，并把原 `CODEX_HOME` 改名使旧绝对路径失效。随后用 rollout绝对新路径和 `excludeTurns: true` cold resume；`thread/resume` 成功 response就是恢复屏障，它不会另发 `thread/started`。第二 turn的真实模型请求仍包含第一、第二轮用户输入、原 MCP call ID及完整 tool result，且没有重放 MCP副作用。缺失 rollout则在模型调用和 MCP初始化之前以 `-32600` fail closed。因此 SQLite主库/WAL/SHM以及 config都不属于恢复事实；config必须在恢复文件落盘后重新生成。
 
+A10 也已在同两个 release 上验证 mid-turn hard-crash边界。probe先把一个 completed turn的 rollout复制为独立、密封的 checkpoint，再从它启动第二个 app-server；scripted model在确认第二个 `turn/start` 已被接受、真实模型请求已包含本轮输入后保持 HTTP response未决，此时硬杀 child。该进程非正常退出，不重试模型请求，也无法改动独立 checkpoint。crash runtime随后被丢弃；第三个全新 `CODEX_HOME` 只恢复密封 rollout并显式创建新 turn。新 turn ID与被放弃 turn不同，模型上下文包含 crash前的 completed历史和新的继续指示，但不含被放弃输入。这证明的是系统允许的安全恢复路径，不是假设 stock Codex会拒绝调用方错误传入的未提交 crash rollout；core的 committed checkpoint pointer、attempt generation和 worker文件来源校验必须让该文件从一开始就不具备恢复资格。
+
 worker 不持有对象存储 credential。它通过与 harness-pool 的同一 mTLS 连接内、有界的 checkpoint data substream 分块发送 manifest 和 staging 内容；harness-pool 施加大小/速率限制、复算逐块与整对象 hash 后上传，再请求 core 提交。上传或提交失败时对象不得成为可恢复 checkpoint，未引用对象按 retention job 清理。
 
-mid-turn crash 时只允许恢复上一个 completed-turn checkpoint，当前 run 进入 `interrupted`；不能重放同一 `turn/start`。后续用户明确继续时创建新 run/turn，并将已持久化的 execution terminal/unknown 结果作为显式上下文注入。
+mid-turn crash 时只允许恢复上一个已由 core提交指针的 completed-turn checkpoint，当前 run 进入 `interrupted`；不能重放同一 `turn/start`，也不能扫描 crash runtime并把其中较新的 rollout冒充 checkpoint。后续用户明确继续时创建新 run/turn，并将已持久化的 execution terminal/unknown 结果作为显式上下文注入。
 
 `brain_thread_id` 是优化和追踪标识，不是 session 的权威主键。native `thread/resume` 只适用于相同 pinned schema 的完整 checkpoint；不兼容时可从受保护的模型可见 conversation record 创建新 thread，但这是语义降级，必须生成审计事件，不能声称与原生 resume 等价。
 

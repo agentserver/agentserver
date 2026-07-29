@@ -3,6 +3,7 @@ package codex_test
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/agentserver/agentserver/v2/conformance/codex/internal/codexprocess"
 	"github.com/agentserver/agentserver/v2/conformance/codex/internal/scriptedmcp"
@@ -32,6 +34,12 @@ const (
 	a09SecondAssistantText = "restored checkpoint turn complete"
 	a09ToolCallID          = "call-a09-checkpoint"
 	a09ToolMarker          = "a09-executor-result-preserved"
+
+	a10BaseUserText          = "complete the durable turn before the crash probe"
+	a10CrashUserText         = "this accepted turn must be abandoned after the hard crash"
+	a10RecoveryUserText      = "start a new turn from the last completed checkpoint"
+	a10BaseAssistantText     = "durable pre-crash checkpoint complete"
+	a10RecoveryAssistantText = "new post-crash turn complete"
 )
 
 type stateFileSnapshot struct {
@@ -432,6 +440,208 @@ func TestAppServerA09RolloutOnlyCheckpointRoundTrip(t *testing.T) {
 	}
 	assertMCPBootstrap(t, restoredMCPServer)
 	t.Logf("A09 restored %s from rollout-only checkpoint %q", thread.Thread.ID, rolloutRelative)
+}
+
+// TestAppServerA10MidTurnCrashRestoresLastCompletedCheckpoint hard-kills a
+// second app-server process after its turn and model request are both in flight.
+// The crashed runtime is never promoted to a checkpoint. A third process must
+// restore the separately sealed completed-turn rollout, create a different turn,
+// and omit the abandoned turn's input from the model-visible history.
+func TestAppServerA10MidTurnCrashRestoresLastCompletedCheckpoint(t *testing.T) {
+	binary, sourcePaths := prepareLiveCodex(t)
+	requireCandidateReleaseOneOf(t, binary, sourcePaths, "0.146.0-alpha.14", "0.146.0")
+	baseFinal, err := scriptedmodel.AssistantMessage(
+		"response-a10-base-final",
+		"message-a10-base-final",
+		a10BaseAssistantText,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseModelServer, err := scriptedmodel.Start(scriptedmodel.Config{
+		Responses: []scriptedmodel.Response{baseFinal},
+	})
+	if err != nil {
+		t.Fatalf("start A10 base model: %v", err)
+	}
+	t.Cleanup(baseModelServer.Close)
+	writeScriptedModelConfigWithOptions(t, sourcePaths.codexHome, baseModelServer.URL(), scriptedModelConfigOptions{
+		disableUpdatePlan: true,
+	})
+	baseProcess := startPreparedLiveCodex(t, binary, sourcePaths, "app-server", "--listen", "stdio://", "--strict-config")
+	initializeAppServer(t, baseProcess)
+	baseCollector := newRPCCollector(baseProcess)
+	thread, baseTurn := startMinimalAppServerTurn(t, baseCollector, sourcePaths.cwd, a10BaseUserText)
+	assertAgentItemCompleted(t, baseCollector, thread.Thread.ID, baseTurn.ID, a10BaseAssistantText)
+	baseCollector.notification(t, "turn/completed")
+	closeAndWait(t, baseProcess)
+	if failures := baseModelServer.Failures(); len(failures) != 0 {
+		t.Fatalf("A10 base model failures: %v", failures)
+	}
+	if requests := baseModelServer.Requests(); len(requests) != 1 {
+		t.Fatalf("A10 base model received %d requests, want one", len(requests))
+	}
+
+	sourceSnapshot := snapshotStateTree(t, sourcePaths.codexHome)
+	rolloutRelative := stateRelativePath(t, sourcePaths.codexHome, thread.Thread.Path)
+	rolloutSnapshot, exists := sourceSnapshot[rolloutRelative]
+	if !exists || !strings.HasSuffix(rolloutRelative, ".jsonl") || rolloutSnapshot.Size == 0 {
+		t.Fatalf("A10 base rollout snapshot = %+v at %q, want one non-empty JSONL", rolloutSnapshot, rolloutRelative)
+	}
+	assertCompleteRolloutJSONL(
+		t,
+		thread.Thread.Path,
+		thread.Thread.ID,
+		a10BaseUserText,
+		a10BaseAssistantText,
+	)
+	checkpointPaths := createRestoredLivePaths(t, t.TempDir(), "sealed-checkpoint")
+	copyCheckpointFile(t, sourcePaths.codexHome, checkpointPaths.codexHome, rolloutRelative, rolloutSnapshot)
+	wantCheckpointSnapshot := map[string]stateFileSnapshot{rolloutRelative: rolloutSnapshot}
+	if checkpointSnapshot := snapshotStateTree(t, checkpointPaths.codexHome); !reflect.DeepEqual(checkpointSnapshot, wantCheckpointSnapshot) {
+		t.Fatalf("A10 sealed checkpoint contains unexpected files: got=%v want=%v", checkpointSnapshot, wantCheckpointSnapshot)
+	}
+	retiredSourceHome := filepath.Join(sourcePaths.root, "retired-a10-source-codex-home")
+	if err := os.Rename(sourcePaths.codexHome, retiredSourceHome); err != nil {
+		t.Fatalf("retire A10 source CODEX_HOME: %v", err)
+	}
+	if _, err := os.Stat(thread.Thread.Path); !os.IsNotExist(err) {
+		t.Fatalf("A10 source rollout path remained available after retirement: %v", err)
+	}
+
+	crashPaths := createRestoredLivePaths(t, t.TempDir(), "crash-runtime")
+	copyCheckpointFile(t, checkpointPaths.codexHome, crashPaths.codexHome, rolloutRelative, rolloutSnapshot)
+	heldModelServer, err := scriptedmodel.Start(scriptedmodel.Config{
+		Responses: []scriptedmodel.Response{{HoldOpen: true}},
+	})
+	if err != nil {
+		t.Fatalf("start A10 held model: %v", err)
+	}
+	t.Cleanup(heldModelServer.Close)
+	writeScriptedModelConfigWithOptions(t, crashPaths.codexHome, heldModelServer.URL(), scriptedModelConfigOptions{
+		disableUpdatePlan: true,
+	})
+	crashProcess := startPreparedLiveCodex(t, binary, crashPaths, "app-server", "--listen", "stdio://", "--strict-config")
+	initializeAppServer(t, crashProcess)
+	crashCollector := newRPCCollector(crashProcess)
+	crashRolloutPath := filepath.Join(crashPaths.codexHome, filepath.FromSlash(rolloutRelative))
+	crashResume, crashedTurn := resumeAppServerThreadAndStartTurn(
+		t,
+		crashCollector,
+		thread.Thread.ID,
+		crashRolloutPath,
+		crashPaths.cwd,
+		a10CrashUserText,
+	)
+	if crashResume.Thread.ID != thread.Thread.ID || crashedTurn.ID == "" || crashedTurn.ID == baseTurn.ID {
+		t.Fatalf("A10 in-flight turn identity is invalid: base=%+v resumed=%+v crashed=%+v", baseTurn, crashResume.Thread, crashedTurn)
+	}
+	if resumedRelative := stateRelativePath(t, crashPaths.codexHome, crashResume.Thread.Path); resumedRelative != rolloutRelative {
+		t.Fatalf("A10 crash runtime resumed rollout %q, want %q", resumedRelative, rolloutRelative)
+	}
+	waitForModelContext, cancelWaitForModel := context.WithTimeout(context.Background(), liveProbeTimeout)
+	defer cancelWaitForModel()
+	if err := heldModelServer.WaitForRequests(waitForModelContext, 1); err != nil {
+		t.Fatalf("wait for A10 in-flight model request: %v", err)
+	}
+	heldRequests := heldModelServer.Requests()
+	if len(heldRequests) != 1 {
+		t.Fatalf("A10 held model received %d requests, want one", len(heldRequests))
+	}
+	heldRequest := decodeCapturedModelRequest(t, heldRequests[0])
+	if !modelInputContainsUserText(t, heldRequest.Input, a10BaseUserText) ||
+		!modelInputContainsUserText(t, heldRequest.Input, a10CrashUserText) {
+		t.Fatalf("A10 in-flight model request omitted durable or crashing turn: input=%s", encodeModelInput(t, heldRequest.Input))
+	}
+	for _, notification := range crashCollector.notifications {
+		if notification.Method == "turn/completed" {
+			t.Fatal("A10 crash turn reached terminal before the hard kill")
+		}
+	}
+	if err := crashProcess.Kill(); err != nil {
+		t.Fatalf("hard-kill A10 app-server: %v", err)
+	}
+	waitForCrash, cancelWaitForCrash := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelWaitForCrash()
+	crashErr := crashProcess.Wait(waitForCrash)
+	if waitForCrash.Err() != nil {
+		t.Fatalf("A10 app-server did not exit after hard kill: %v", waitForCrash.Err())
+	}
+	if crashErr == nil {
+		t.Fatal("A10 hard-killed app-server exited successfully")
+	}
+	if failures := heldModelServer.Failures(); len(failures) != 0 {
+		t.Fatalf("A10 held model failures: %v", failures)
+	}
+	if requests := heldModelServer.Requests(); len(requests) != 1 {
+		t.Fatalf("A10 hard crash retried the model request: got %d requests, want one", len(requests))
+	}
+	discardedCrashHome := filepath.Join(crashPaths.root, "discarded-crash-codex-home")
+	if err := os.Rename(crashPaths.codexHome, discardedCrashHome); err != nil {
+		t.Fatalf("discard A10 crash CODEX_HOME: %v", err)
+	}
+	if _, err := os.Stat(crashRolloutPath); !os.IsNotExist(err) {
+		t.Fatalf("A10 crash rollout path remained available after discard: %v", err)
+	}
+	if checkpointSnapshot := snapshotStateTree(t, checkpointPaths.codexHome); !reflect.DeepEqual(checkpointSnapshot, wantCheckpointSnapshot) {
+		t.Fatalf("A10 hard crash mutated the sealed checkpoint: got=%v want=%v", checkpointSnapshot, wantCheckpointSnapshot)
+	}
+
+	recoveryPaths := createRestoredLivePaths(t, t.TempDir(), "recovery-runtime")
+	copyCheckpointFile(t, checkpointPaths.codexHome, recoveryPaths.codexHome, rolloutRelative, rolloutSnapshot)
+	recoveryFinal, err := scriptedmodel.AssistantMessage(
+		"response-a10-recovery-final",
+		"message-a10-recovery-final",
+		a10RecoveryAssistantText,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveryModelServer, err := scriptedmodel.Start(scriptedmodel.Config{
+		Responses: []scriptedmodel.Response{recoveryFinal},
+	})
+	if err != nil {
+		t.Fatalf("start A10 recovery model: %v", err)
+	}
+	t.Cleanup(recoveryModelServer.Close)
+	writeScriptedModelConfigWithOptions(t, recoveryPaths.codexHome, recoveryModelServer.URL(), scriptedModelConfigOptions{
+		disableUpdatePlan: true,
+	})
+	recoveryProcess := startPreparedLiveCodex(t, binary, recoveryPaths, "app-server", "--listen", "stdio://", "--strict-config")
+	initializeAppServer(t, recoveryProcess)
+	recoveryCollector := newRPCCollector(recoveryProcess)
+	recoveryRolloutPath := filepath.Join(recoveryPaths.codexHome, filepath.FromSlash(rolloutRelative))
+	recovered, recoveryTurn := resumeAppServerThreadAndStartTurn(
+		t,
+		recoveryCollector,
+		thread.Thread.ID,
+		recoveryRolloutPath,
+		recoveryPaths.cwd,
+		a10RecoveryUserText,
+	)
+	if recovered.Thread.ID != thread.Thread.ID || recovered.Thread.SessionID != thread.Thread.SessionID {
+		t.Fatalf("A10 recovered thread identity changed: source=%+v recovered=%+v", thread.Thread, recovered.Thread)
+	}
+	if recoveryTurn.ID == "" || recoveryTurn.ID == crashedTurn.ID || recoveryTurn.ID == baseTurn.ID {
+		t.Fatalf("A10 recovery did not create a new turn: base=%q crashed=%q recovery=%q", baseTurn.ID, crashedTurn.ID, recoveryTurn.ID)
+	}
+	assertAgentItemCompleted(t, recoveryCollector, recovered.Thread.ID, recoveryTurn.ID, a10RecoveryAssistantText)
+	recoveryCollector.notification(t, "turn/completed")
+	closeAndWait(t, recoveryProcess)
+	if failures := recoveryModelServer.Failures(); len(failures) != 0 {
+		t.Fatalf("A10 recovery model failures: %v", failures)
+	}
+	recoveryRequests := recoveryModelServer.Requests()
+	if len(recoveryRequests) != 1 {
+		t.Fatalf("A10 recovery model received %d requests, want one", len(recoveryRequests))
+	}
+	recoveryRequest := decodeCapturedModelRequest(t, recoveryRequests[0])
+	if !modelInputContainsUserText(t, recoveryRequest.Input, a10BaseUserText) ||
+		!modelInputContainsUserText(t, recoveryRequest.Input, a10RecoveryUserText) ||
+		modelInputContainsUserText(t, recoveryRequest.Input, a10CrashUserText) {
+		t.Fatalf("A10 recovery context did not stop at the completed checkpoint: input=%s", encodeModelInput(t, recoveryRequest.Input))
+	}
+	t.Logf("A10 abandoned turn %s and created turn %s from sealed checkpoint %q", crashedTurn.ID, recoveryTurn.ID, rolloutRelative)
 }
 
 func createRestoredLivePaths(t *testing.T, parentRoot, name string) livePaths {

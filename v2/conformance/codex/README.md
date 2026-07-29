@@ -23,8 +23,9 @@ boundary, A05 no-double-approval behavior and its prompt-mode positive control,
 A06 client-controlled MCP form elicitation, its paused-tool-timeout behavior,
 and its never-policy negative control, A07 pending-elicitation interrupt cleanup,
 A08 graceful shutdown and stable state snapshots, A09 rollout-only completed-turn
-checkpoint recovery, E01 stdio/EOF, exec-server environment metadata, and these
-slices of the executor matrix:
+checkpoint recovery, A10 mid-turn hard-crash rollback to the last sealed
+checkpoint, E01 stdio/EOF, exec-server environment metadata, and these slices of
+the executor matrix:
 
 - E02: deterministic argv/arg0, canonical cwd, exact non-inherited child
   environment, non-TTY and PTY streams, output/exit/close sequencing, and
@@ -184,6 +185,24 @@ excluded and must be recreated for each attempt. As a negative control, a
 missing rollout makes `thread/resume` fail with `-32600` before any model request
 or MCP initialization. Every future Codex build must repeat this native
 round-trip before receiving the same allowlist.
+
+A10 passes for both characterized 0.146.0 releases. The probe first seals a
+completed-turn rollout in a separate rollout-only checkpoint, then restores a
+second app-server process from it. A hold-open scripted response provides a
+deterministic crash barrier: the second `turn/start` has been accepted and its
+model request contains both the sealed history and the new user input, but the
+model has sent no response. The probe hard-kills app-server at that point. The
+process exits unsuccessfully, does not retry the model call, and cannot mutate
+the separately sealed checkpoint.
+
+The crashed runtime is discarded rather than offered to native resume. A third
+fresh `CODEX_HOME` is rebuilt from the sealed rollout and receives an explicit
+new `turn/start`. Its turn ID differs from the abandoned turn, and the captured
+model context contains the completed history plus the new continuation input but
+not the abandoned input. This proves the safe recovery path and the need for an
+externally committed checkpoint pointer. It does not claim stock Codex will
+reject an uncommitted crash-runtime rollout if a caller incorrectly supplies
+one; harness/core fencing must make that file ineligible in the first place.
 
 The probes also report candidate binary and canonical app-server schema
 fingerprints. Stock 0.145.0 was observed to randomize object-key order in one

@@ -22,6 +22,7 @@ var candidateVersionPattern = regexp.MustCompile(`^codex-cli ([0-9]+\.[0-9]+\.[0
 var characterizedA03Releases = map[string]struct{}{
 	"0.145.0":          {},
 	"0.146.0-alpha.14": {},
+	"0.146.0":          {},
 }
 
 func TestAppServerA03CandidateReleaseIsExplicitlyCharacterized(t *testing.T) {
@@ -86,6 +87,17 @@ func requireCandidateRelease(t *testing.T, binary string, paths livePaths, want 
 	if got := candidateRelease(t, binary, paths); got != want {
 		t.Skipf("probe characterizes Codex %s; candidate is %s", want, got)
 	}
+}
+
+func requireCandidateReleaseOneOf(t *testing.T, binary string, paths livePaths, wants ...string) {
+	t.Helper()
+	got := candidateRelease(t, binary, paths)
+	for _, want := range wants {
+		if got == want {
+			return
+		}
+	}
+	t.Skipf("probe characterizes Codex releases %s; candidate is %s", strings.Join(wants, ", "), got)
 }
 
 type schemaDigests struct {

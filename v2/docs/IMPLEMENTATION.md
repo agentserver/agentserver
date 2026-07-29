@@ -255,7 +255,9 @@ A03 不能通过“配置看起来正确”判断。测试必须检查实际发�
 
 官方 `rust-v0.146.0-alpha.14` tag（commit `9d84cad281364eb7f6be75e23067b0adc5e26106`）新增真实的 `[tools.update_plan] enabled = false`。它的 A01 terminal projection 也变为 `itemsView: summary` 并携带 completed agent item；测试按 release 分别锁定该形状与 0.145.0 的 `notLoaded` 空数组，但 harness-worker 仍以归并 item 事件为内容权威。对该官方 artifact 的 A03 live probe 验证：无 MCP server 时模型工具面为空；配置 fake executor MCP 且 `enabled_tools = ["approved_echo"]` 后，批准工具能到达 `tools/call`，fake server 同时公布但未批准的 `blocked_echo` 与模型伪造的 `exec_command` 都在 Codex 路由层收到 `unsupported call`，不会到达 MCP。可是同一模型请求仍额外包含 `list_mcp_resources`、`list_mcp_resource_templates`、`read_mcp_resource`，并且调用第一个 handler 会真实发出 `resources/list`，不受 `enabled_tools` 约束。因此该 alpha 仍明确不通过 A03；Phase 0 继续停止业务组件建设，直到 stock release 能从实际 Responses tool schema 中移除这些通用 handler，或产品显式批准一项经过重新评审的架构变更。
 
-本次 macOS arm64 candidate binary SHA-256 为 `e4ca03a3f3682647eb5aab2546647ed963354611b42a9daa332ae9d0366a1204`，官方 artifact archive SHA-256 为 `245d877dea7abc520487b5186f9e17d4fb10548f77da9ebf2b02cb3dee137d96`。这些 hash 只绑定本轮候选证据，不是 production runtime manifest；最新 stable 仍需独立通过完整门禁。
+本次 macOS arm64 candidate binary SHA-256 为 `e4ca03a3f3682647eb5aab2546647ed963354611b42a9daa332ae9d0366a1204`，官方 artifact archive SHA-256 为 `245d877dea7abc520487b5186f9e17d4fb10548f77da9ebf2b02cb3dee137d96`。这些 hash 只绑定本轮 alpha candidate 证据，不是 production runtime manifest。
+
+随后发布的 official stable `rust-v0.146.0`（annotated tag object `be449751a978f02e5bbba886999662956c7f38f5`，peeled commit `e363b08c9175ac1cbe5893615dd2cb9ddf95043b`）已经独立跑完现有 live suite。其 A01 terminal projection 仍为 `summary`；A03 的精确 surface、批准/未批准 dispatch 和可执行 `resources/list` blocker 与 alpha.14 完全一致，因此 stable 也明确被拒绝。测试的 macOS arm64 binary SHA-256 为 `ae1d3ffe6d48aec6a4dc3f50e7eb8e0d11962485a6a9406c5a7012139383da02`，官方 npm platform archive SHA-256 为 `279ec3460c5b8068daab2a4f5bcf057483303b3595f4a24ade6ceb4d02674935`，canonical app-server schema tree SHA-256 为 `834975f055f4dc0bf25231ab23f446f4bfef63fd3f7832bc9b0c5fe8a32363bb`。它们同样只是 rejected candidate evidence，不生成 production runtime manifest。
 
 ### 4.3 checkpoint 探针算法
 
@@ -289,7 +291,9 @@ A03 不能通过“配置看起来正确”判断。测试必须检查实际发�
 
 Phase 0 的 exit criterion 是 A01–A12、E01–E10 全部可重复通过。任何 MCP-only、elicitation、checkpoint 或 stdio 假设失败，都先修改架构，不能继续写业务服务。
 
-当前 bootstrap probe 已确认但尚未构成完整 Phase 0 放行的 exec-server 事实：`process/start` response 可与早期 `process/output` 竞态，agentx 必须单消费者收包并按 request id/一基 event seq 整理；带 `maxBytes` 的 `process/read.nextSeq` 只越过本次返回的最后一个 output chunk，不保证同时越过 terminal event，不带该限制的 terminal read 才能给出 `closed` 后游标；缺省 `envPolicy` 时 child env 恰好等于 request `env`；stdio EOF 会关闭唯一 connection、shutdown session 并回收 managed child，不能把它描述成可 detach/resume。E02/E03 的 PTY、signal/terminate 完整竞态以及 E07/E10 等仍必须继续探测。
+当前 probe 已确认但尚未构成完整 Phase 0 放行的 exec-server 事实：`process/start` response 可与早期 `process/output` 竞态，agentx 必须单消费者收包并按 request id/一基 event seq 整理；带 `maxBytes` 的 `process/read.nextSeq` 只越过本次返回的最后一个 output chunk，不保证同时越过 terminal event，不带该限制的 terminal read 才能给出 `closed` 后游标。E02 已覆盖 argv/arg0、file-URI cwd 到 host canonical path、缺省 `envPolicy` 时 child env 精确等于 request `env`、pipe 与 PTY 合流输出。E08 的当前 slice 证明隔离 `CODEX_HOME` 不读取毒化的用户 `~/.codex`，exec-server 自身持有的 sentinel credential 也不会进入缺省策略 child。E10 的当前 slice 实测 retained replay 只保留大输出最后约 1 MiB；frame、argv/env、write-id cache 和 exited-process retention 的完整 bound matrix 仍未完成。stdio EOF 会关闭唯一 connection、shutdown session 并回收 managed child，不能把它描述成可 detach/resume。
+
+stable 0.146.0 同时新增两项明确拒绝证据。第一，`process/signal` 对 missing、delivered、already-exited 都返回不可区分的 `{}`，因此 E03 原验收失败。第二，根进程退出但后代继续持有 pipe 时，server 发出 `process/exited` 但不发 `process/closed`；随后 `process/terminate` 返回 `running: false` 且后代继续存活，直到整条 stdio connection 关闭才被回收，因此 E07 原验收失败。负向 conformance test 的 PASS 只表示稳定复现该缺口，不表示 E03/E07 放行。完整 Phase 0 目前至少被 A03、E03、E07 三项阻断。
 
 ## 5. Core 状态内核
 

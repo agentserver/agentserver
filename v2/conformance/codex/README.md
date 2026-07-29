@@ -21,13 +21,25 @@ directions, A03 tool-surface and dispatch characterization through a bounded
 sessionless Streamable HTTP MCP server, E01 stdio/EOF, exec-server environment
 metadata, and these slices of the executor matrix:
 
-- E02: deterministic non-TTY `process/start`, explicit non-inherited child
-  environment, output/exit/close sequencing, and retained `process/read` replay;
-- E03: piped stdin, idempotent `writeId`, `unknownProcess`, `stdinClosed`, and
-  terminate behavior (the signal/terminate race matrix remains open);
+- E02: deterministic argv/arg0, canonical cwd, exact non-inherited child
+  environment, non-TTY and PTY streams, output/exit/close sequencing, and
+  retained `process/read` replay;
+- E03: piped stdin, idempotent `writeId`, `unknownProcess`, `stdinClosed`,
+  interrupt delivery, and terminate behavior. A negative probe proves that
+  `process/signal` returns the same empty success object for missing, delivered,
+  and already-exited targets, so E03 is not accepted;
 - E04: `fs/readFile`, `fs/open`, `fs/readBlock`, `fs/close`, file-URI rejection,
   and `fs/canonicalize`;
-- E06: stdio EOF shuts down exec-server and kills its managed child.
+- E06: stdio EOF shuts down exec-server and kills its managed child;
+- E07: a negative root-crash probe proves that a descendant can survive after
+  `process/exited`, while `process/terminate` returns `running: false`; only
+  whole-connection shutdown then reaps the process group, so E07 is not accepted;
+- E08: a tainted server environment and poison user-home config are excluded by
+  the isolated `CODEX_HOME`, and the child still receives exactly the requested
+  environment;
+- E10: a bounded slice proves that replay retains only the final approximately
+  1 MiB suffix of a larger streamed output. Frame, argv/env, write-id, and exited
+  process retention bounds remain open.
 
 The process probe deliberately accepts a `process/start` response arriving
 after early output notifications and uses the one-based event sequence as the
@@ -72,6 +84,19 @@ therefore also an A03 rejection and, independently, is not a stable production
 release. Prompt instructions, event filtering, or making the executor return an
 error for `resources/list` do not satisfy the agreed exact model-tool-surface
 invariant.
+
+Official stable tag `rust-v0.146.0` (annotated tag object
+`be449751a978f02e5bbba886999662956c7f38f5`, peeled commit
+`e363b08c9175ac1cbe5893615dd2cb9ddf95043b`) was then published as npm `latest`.
+Release-bound live probes show the same A01 `summary` projection and the same
+A03 surface and dispatch behavior as alpha.14: the three generic MCP resource
+handlers remain visible, and `list_mcp_resources` still reaches
+`resources/list` outside `enabled_tools`. The tested macOS arm64 binary SHA-256
+is `ae1d3ffe6d48aec6a4dc3f50e7eb8e0d11962485a6a9406c5a7012139383da02`;
+the official platform package SHA-256 is
+`279ec3460c5b8068daab2a4f5bcf057483303b3595f4a24ade6ceb4d02674935`.
+Stable 0.146.0 is therefore also a characterized rejection, not a production
+runtime pin.
 
 The probes also report candidate binary and canonical app-server schema
 fingerprints. Stock 0.145.0 was observed to randomize object-key order in one

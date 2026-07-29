@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -24,6 +26,15 @@ const (
 	execChildOutputStderr       = "stderr:deterministic\n"
 	execChildEchoInput          = "deterministic-input\n"
 	execChildReadyOutput        = "ready\n"
+	execChildInterruptedOutput  = "interrupted\n"
+	execChildPTYOutput          = "tty:stdout|tty:stderr|"
+	execChildArgument           = "deterministic-argument"
+	execChildArg0               = "agentserver-deterministic-arg0"
+	execChildExpectedCWDEnv     = "AGENTSERVER_EXEC_CHILD_EXPECTED_CWD"
+	execChildInterruptExitCode  = 42
+	execChildRootCrashExitCode  = 43
+	execChildLargeOutputBytes   = (1 << 20) + (64 << 10)
+	execServerRetainedOutputMax = 1 << 20
 )
 
 // TestMain lets a live exec-server launch the already-built Go test binary as
@@ -39,9 +50,26 @@ func TestMain(m *testing.M) {
 func runExecChild(mode string) int {
 	switch mode {
 	case "output":
-		if _, inherited := os.LookupEnv("HOME"); inherited {
-			_, _ = io.WriteString(os.Stderr, "unexpected inherited HOME\n")
-			return 90
+		if len(os.Args) != 2 || os.Args[0] != execChildArg0 || os.Args[1] != execChildArgument {
+			return reportExecChildError(fmt.Errorf("argv = %q, want [%q %q]", os.Args, execChildArg0, execChildArgument))
+		}
+		expectedCWD := os.Getenv(execChildExpectedCWDEnv)
+		cwd, err := os.Getwd()
+		if err != nil {
+			return reportExecChildError(err)
+		}
+		if cwd != expectedCWD {
+			return reportExecChildError(fmt.Errorf("cwd = %q, want %q", cwd, expectedCWD))
+		}
+		gotEnvironment := os.Environ()
+		sort.Strings(gotEnvironment)
+		wantEnvironment := []string{
+			execChildModeEnvironment + "=output",
+			execChildExpectedCWDEnv + "=" + expectedCWD,
+		}
+		sort.Strings(wantEnvironment)
+		if !equalStrings(gotEnvironment, wantEnvironment) {
+			return reportExecChildError(fmt.Errorf("environment = %q, want %q", gotEnvironment, wantEnvironment))
 		}
 		if _, err := io.WriteString(os.Stdout, execChildOutputStdout); err != nil {
 			return reportExecChildError(err)
@@ -74,9 +102,118 @@ func runExecChild(mode string) int {
 		// permanent child behind. Successful terminate/EOF probes kill it first.
 		time.Sleep(30 * time.Second)
 		return 91
+	case "tty-output":
+		for name, file := range map[string]*os.File{"stdin": os.Stdin, "stdout": os.Stdout, "stderr": os.Stderr} {
+			info, err := file.Stat()
+			if err != nil {
+				return reportExecChildError(fmt.Errorf("stat %s: %w", name, err))
+			}
+			if info.Mode()&os.ModeCharDevice == 0 {
+				return reportExecChildError(fmt.Errorf("%s is not a character device: mode=%s", name, info.Mode()))
+			}
+		}
+		if _, err := io.WriteString(os.Stdout, "tty:stdout|"); err != nil {
+			return reportExecChildError(err)
+		}
+		if _, err := io.WriteString(os.Stderr, "tty:stderr|"); err != nil {
+			return reportExecChildError(err)
+		}
+		return 0
+	case "interrupt":
+		interrupts := make(chan os.Signal, 1)
+		signal.Notify(interrupts, os.Interrupt)
+		defer signal.Stop(interrupts)
+		pidFile := os.Getenv(execChildPIDFileEnvironment)
+		if pidFile == "" {
+			return reportExecChildError(fmt.Errorf("%s is required", execChildPIDFileEnvironment))
+		}
+		if err := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			return reportExecChildError(err)
+		}
+		if _, err := io.WriteString(os.Stdout, execChildReadyOutput); err != nil {
+			return reportExecChildError(err)
+		}
+		select {
+		case <-interrupts:
+			if _, err := io.WriteString(os.Stdout, execChildInterruptedOutput); err != nil {
+				return reportExecChildError(err)
+			}
+			return execChildInterruptExitCode
+		case <-time.After(10 * time.Second):
+			return reportExecChildError(fmt.Errorf("interrupt was not delivered"))
+		}
+	case "spawn-descendant":
+		pidFile := os.Getenv(execChildPIDFileEnvironment)
+		if pidFile == "" {
+			return reportExecChildError(fmt.Errorf("%s is required", execChildPIDFileEnvironment))
+		}
+		child := exec.Command(os.Args[0])
+		child.Env = []string{
+			execChildModeEnvironment + "=descendant",
+			execChildPIDFileEnvironment + "=" + pidFile,
+		}
+		child.Stdout = os.Stdout
+		child.Stderr = os.Stderr
+		if err := child.Start(); err != nil {
+			return reportExecChildError(err)
+		}
+		if err := child.Process.Release(); err != nil {
+			return reportExecChildError(err)
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if _, err := os.Stat(pidFile); err == nil {
+				break
+			} else if !os.IsNotExist(err) {
+				return reportExecChildError(err)
+			}
+			if time.Now().After(deadline) {
+				return reportExecChildError(fmt.Errorf("descendant did not become ready"))
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if _, err := io.WriteString(os.Stdout, "parent-exiting\n"); err != nil {
+			return reportExecChildError(err)
+		}
+		return execChildRootCrashExitCode
+	case "descendant":
+		pidFile := os.Getenv(execChildPIDFileEnvironment)
+		if pidFile == "" {
+			return reportExecChildError(fmt.Errorf("%s is required", execChildPIDFileEnvironment))
+		}
+		if _, err := io.WriteString(os.Stdout, "descendant-ready\n"); err != nil {
+			return reportExecChildError(err)
+		}
+		if err := os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			return reportExecChildError(err)
+		}
+		time.Sleep(30 * time.Second)
+		return 94
+	case "large-output":
+		pattern := []byte("0123456789abcdef")
+		output := bytes.Repeat(pattern, execChildLargeOutputBytes/len(pattern))
+		if len(output) != execChildLargeOutputBytes {
+			return reportExecChildError(fmt.Errorf("large output fixture has %d bytes", len(output)))
+		}
+		if _, err := os.Stdout.Write(output); err != nil {
+			return reportExecChildError(err)
+		}
+		return 0
 	default:
 		return reportExecChildError(fmt.Errorf("unknown helper mode %q", mode))
 	}
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func reportExecChildError(err error) int {
@@ -165,6 +302,54 @@ func TestExecServerE02ProcessOutputAndReplay(t *testing.T) {
 		},
 	})
 	assertWriteStatus(t, collector.response(t, "5"), "stdinClosed")
+
+	closeAndWait(t, process)
+}
+
+func TestExecServerE02PTYOutputAndReplay(t *testing.T) {
+	process, paths := startLiveCodex(t, "exec-server", "--listen", "stdio", "--strict-config")
+	initializeExecServer(t, process)
+	collector := newRPCCollector(process)
+	params := execStartParams(t, paths, "pty-process", "tty-output", false, nil)
+	params["tty"] = true
+
+	sendRPC(t, process, map[string]any{
+		"id":     2,
+		"method": "process/start",
+		"params": params,
+	})
+	var started struct {
+		ProcessID string `json:"processId"`
+	}
+	mustDecodeResult(t, collector.response(t, "2"), &started)
+	if started.ProcessID != "pty-process" {
+		t.Fatalf("process/start processId = %q, want pty-process", started.ProcessID)
+	}
+
+	events := collector.processEventsUntilClosed(t, "pty-process")
+	observed := assertCompletedProcessEvents(t, events, 0)
+	if len(observed.stdout) != 0 || len(observed.stderr) != 0 || !bytes.Equal(observed.pty, []byte(execChildPTYOutput)) {
+		t.Fatalf("PTY output = %+v, want one merged pty stream %q", observed, execChildPTYOutput)
+	}
+
+	sendRPC(t, process, map[string]any{
+		"id":     3,
+		"method": "process/read",
+		"params": map[string]any{
+			"processId": "pty-process",
+			"afterSeq":  0,
+			"maxBytes":  1024,
+			"waitMs":    0,
+		},
+	})
+	read := decodeProcessRead(t, collector.response(t, "3"))
+	if !read.Exited || !read.Closed || read.ExitCode == nil || *read.ExitCode != 0 {
+		t.Fatalf("unexpected terminal PTY process/read state: %+v", read)
+	}
+	replayed := aggregateReadChunks(t, read.Chunks)
+	if len(replayed.stdout) != 0 || len(replayed.stderr) != 0 || !bytes.Equal(replayed.pty, observed.pty) {
+		t.Fatalf("PTY process/read replay differs from notifications: replay=%+v notifications=%+v", replayed, observed)
+	}
 
 	closeAndWait(t, process)
 }
@@ -264,6 +449,62 @@ func TestExecServerE03ProcessTerminate(t *testing.T) {
 		"params": map[string]any{"processId": "block-process"},
 	})
 	assertTerminateRunning(t, collector.response(t, "5"), false)
+
+	closeAndWait(t, process)
+}
+
+// This is a negative E03 characterization. Stock Codex 0.146.0 delivers an
+// interrupt to a running process, but returns the same empty success object for
+// a missing process, a delivered signal, and an already-exited process. Agentx
+// therefore cannot infer signal delivery from the RPC response alone.
+func TestExecServerE03SignalDeliveryAndAmbiguousNoop(t *testing.T) {
+	process, paths := startLiveCodex(t, "exec-server", "--listen", "stdio", "--strict-config")
+	initializeExecServer(t, process)
+	collector := newRPCCollector(process)
+	pidFile := filepath.Join(paths.temporary, "interrupt-child.pid")
+
+	sendRPC(t, process, map[string]any{
+		"id":     2,
+		"method": "process/start",
+		"params": execStartParams(t, paths, "interrupt-process", "interrupt", false, map[string]string{
+			execChildPIDFileEnvironment: pidFile,
+		}),
+	})
+	mustDecodeResult(t, collector.response(t, "2"), &struct {
+		ProcessID string `json:"processId"`
+	}{})
+	pid := waitForChildPID(t, pidFile)
+	disableChildCleanup := cleanupChildProcess(t, pid)
+
+	sendRPC(t, process, map[string]any{
+		"id":     3,
+		"method": "process/signal",
+		"params": map[string]any{"processId": "missing-process", "signal": "interrupt"},
+	})
+	assertEmptyObjectResult(t, collector.response(t, "3"))
+
+	sendRPC(t, process, map[string]any{
+		"id":     4,
+		"method": "process/signal",
+		"params": map[string]any{"processId": "interrupt-process", "signal": "interrupt"},
+	})
+	assertEmptyObjectResult(t, collector.response(t, "4"))
+	events := collector.processEventsUntilClosed(t, "interrupt-process")
+	observed := assertCompletedProcessEvents(t, events, execChildInterruptExitCode)
+	wantOutput := []byte(execChildReadyOutput + execChildInterruptedOutput)
+	if !bytes.Equal(observed.stdout, wantOutput) || len(observed.stderr) != 0 || len(observed.pty) != 0 {
+		t.Fatalf("interrupted process output = %+v, want stdout %q", observed, wantOutput)
+	}
+	waitForProcessGone(t, pid)
+	disableChildCleanup()
+
+	sendRPC(t, process, map[string]any{
+		"id":     5,
+		"method": "process/signal",
+		"params": map[string]any{"processId": "interrupt-process", "signal": "interrupt"},
+	})
+	assertEmptyObjectResult(t, collector.response(t, "5"))
+	t.Log("E03 remains blocked: process/signal returns indistinguishable success for missing, delivered, and already-exited targets")
 
 	closeAndWait(t, process)
 }
@@ -396,6 +637,172 @@ func TestExecServerE06StdioEOFTerminatesManagedChild(t *testing.T) {
 	disableChildCleanup()
 }
 
+// This is a negative E07 characterization. If the root process exits while a
+// descendant keeps the inherited pipes open, process/terminate observes the
+// root as already exited and does not kill the remaining process group. Stdio
+// connection shutdown does eventually drop the session and kill the group,
+// but that is not operation-scoped crash recovery.
+func TestExecServerE07RootExitLeavesDescendantUntilConnectionShutdown(t *testing.T) {
+	if !processLivenessProbeSupported {
+		t.Skip("OS process liveness probe is not supported on this platform")
+	}
+	process, paths := startLiveCodex(t, "exec-server", "--listen", "stdio", "--strict-config")
+	initializeExecServer(t, process)
+	collector := newRPCCollector(process)
+	pidFile := filepath.Join(paths.temporary, "descendant.pid")
+
+	sendRPC(t, process, map[string]any{
+		"id":     2,
+		"method": "process/start",
+		"params": execStartParams(t, paths, "crashed-root-process", "spawn-descendant", false, map[string]string{
+			execChildPIDFileEnvironment: pidFile,
+		}),
+	})
+	mustDecodeResult(t, collector.response(t, "2"), &struct {
+		ProcessID string `json:"processId"`
+	}{})
+	descendantPID := waitForChildPID(t, pidFile)
+	disableDescendantCleanup := cleanupChildProcess(t, descendantPID)
+
+	exitedMessage := collector.notification(t, "process/exited")
+	var exited struct {
+		ProcessID     string `json:"processId"`
+		Seq           uint64 `json:"seq"`
+		ExitCode      int    `json:"exitCode"`
+		SandboxDenied *bool  `json:"sandboxDenied"`
+	}
+	if err := exitedMessage.DecodeParams(&exited); err != nil {
+		t.Fatal(err)
+	}
+	if exited.ProcessID != "crashed-root-process" || exited.Seq == 0 || exited.ExitCode != execChildRootCrashExitCode ||
+		exited.SandboxDenied == nil || *exited.SandboxDenied {
+		t.Fatalf("unexpected root process/exited notification: %+v", exited)
+	}
+	assertProcessAlive(t, descendantPID, "after root exit")
+
+	sendRPC(t, process, map[string]any{
+		"id":     3,
+		"method": "process/read",
+		"params": map[string]any{"processId": "crashed-root-process", "afterSeq": 0, "waitMs": 0},
+	})
+	read := decodeProcessRead(t, collector.response(t, "3"))
+	if !read.Exited || read.ExitCode == nil || *read.ExitCode != execChildRootCrashExitCode || read.Closed {
+		t.Fatalf("root crash process/read state = %+v, want exited but not closed", read)
+	}
+
+	sendRPC(t, process, map[string]any{
+		"id":     4,
+		"method": "process/terminate",
+		"params": map[string]any{"processId": "crashed-root-process"},
+	})
+	assertTerminateRunning(t, collector.response(t, "4"), false)
+	assertProcessAlive(t, descendantPID, "after process/terminate returned running=false")
+
+	closeAndWait(t, process)
+	waitForProcessGone(t, descendantPID)
+	disableDescendantCleanup()
+	t.Log("E07 remains blocked: root exit strands descendants until the entire stdio exec-server connection shuts down")
+}
+
+func TestExecServerE08IgnoresUserHomeAndDoesNotInheritServerSecrets(t *testing.T) {
+	binary, paths := prepareLiveCodex(t)
+	userCodexHome := filepath.Join(paths.home, ".codex")
+	if err := os.MkdirAll(userCodexHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(userCodexHome, "config.toml"),
+		[]byte("agentserver_unknown_poison_key = true\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(userCodexHome, "auth.json"),
+		[]byte(`{"poison":"must-not-be-read"}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	paths.environment = append(
+		paths.environment,
+		"CODEX_ACCESS_TOKEN=exec-server-only-sentinel",
+		"AGENTSERVER_EXECUTOR_CAPABILITY=exec-server-only-sentinel",
+	)
+
+	process := startPreparedLiveCodex(t, binary, paths, "exec-server", "--listen", "stdio", "--strict-config")
+	initializeExecServer(t, process)
+	collector := newRPCCollector(process)
+	sendRPC(t, process, map[string]any{
+		"id":     2,
+		"method": "process/start",
+		"params": execStartParams(t, paths, "isolated-environment-process", "output", false, nil),
+	})
+	mustDecodeResult(t, collector.response(t, "2"), &struct {
+		ProcessID string `json:"processId"`
+	}{})
+	events := collector.processEventsUntilClosed(t, "isolated-environment-process")
+	observed := assertCompletedProcessEvents(t, events, 0)
+	if !bytes.Equal(observed.stdout, []byte(execChildOutputStdout)) ||
+		!bytes.Equal(observed.stderr, []byte(execChildOutputStderr)) || len(observed.pty) != 0 {
+		t.Fatalf("isolated child output = %+v", observed)
+	}
+
+	closeAndWait(t, process)
+}
+
+func TestExecServerE10RetainedOutputReplayIsBounded(t *testing.T) {
+	process, paths := startLiveCodex(t, "exec-server", "--listen", "stdio", "--strict-config")
+	initializeExecServer(t, process)
+	collector := newRPCCollector(process)
+
+	sendRPC(t, process, map[string]any{
+		"id":     2,
+		"method": "process/start",
+		"params": execStartParams(t, paths, "large-output-process", "large-output", false, nil),
+	})
+	mustDecodeResult(t, collector.response(t, "2"), &struct {
+		ProcessID string `json:"processId"`
+	}{})
+	events := collector.processEventsUntilClosed(t, "large-output-process")
+	observed := assertCompletedProcessEvents(t, events, 0)
+	if len(observed.stdout) != execChildLargeOutputBytes || len(observed.stderr) != 0 || len(observed.pty) != 0 {
+		t.Fatalf("large output notification bytes: stdout=%d stderr=%d pty=%d", len(observed.stdout), len(observed.stderr), len(observed.pty))
+	}
+
+	sendRPC(t, process, map[string]any{
+		"id":     3,
+		"method": "process/read",
+		"params": map[string]any{"processId": "large-output-process", "afterSeq": 0, "waitMs": 0},
+	})
+	read := decodeProcessRead(t, collector.response(t, "3"))
+	if !read.Exited || !read.Closed || read.ExitCode == nil || *read.ExitCode != 0 {
+		t.Fatalf("large output process/read terminal state = %+v", read)
+	}
+	if len(read.Chunks) == 0 {
+		t.Fatal("large output replay returned no retained chunks")
+	}
+	if read.Chunks[0].Seq <= 1 {
+		t.Fatalf("large output replay did not expose prefix eviction: firstSeq=%d", read.Chunks[0].Seq)
+	}
+	if read.NextSeq != observed.closedSeq+1 {
+		t.Fatalf("large output process/read nextSeq = %d, want %d", read.NextSeq, observed.closedSeq+1)
+	}
+	replayed := aggregateReadChunks(t, read.Chunks)
+	if len(replayed.stderr) != 0 || len(replayed.pty) != 0 {
+		t.Fatalf("large output replay used unexpected streams: %+v", replayed)
+	}
+	if len(replayed.stdout) > execServerRetainedOutputMax || len(replayed.stdout) <= execServerRetainedOutputMax-8_192 {
+		t.Fatalf("retained output bytes = %d, want (%d, %d]", len(replayed.stdout), execServerRetainedOutputMax-8_192, execServerRetainedOutputMax)
+	}
+	wantSuffix := observed.stdout[len(observed.stdout)-len(replayed.stdout):]
+	if !bytes.Equal(replayed.stdout, wantSuffix) {
+		t.Fatal("retained process/read output is not the exact suffix of streamed output")
+	}
+
+	closeAndWait(t, process)
+}
+
 type observedProcessEvent struct {
 	method        string
 	seq           uint64
@@ -469,6 +876,7 @@ func (c *rpcCollector) processEventsUntilClosed(t *testing.T, processID string) 
 type observedProcessOutput struct {
 	stdout        []byte
 	stderr        []byte
+	pty           []byte
 	lastOutputSeq uint64
 	closedSeq     uint64
 }
@@ -477,7 +885,14 @@ func assertCompletedProcessEvents(t *testing.T, events []observedProcessEvent, w
 	t.Helper()
 	observed, exitCode := inspectTerminalProcessEvents(t, events)
 	if exitCode != wantExitCode {
-		t.Fatalf("process exit code = %d, want %d", exitCode, wantExitCode)
+		t.Fatalf(
+			"process exit code = %d, want %d; stdout=%q stderr=%q pty=%q",
+			exitCode,
+			wantExitCode,
+			observed.stdout,
+			observed.stderr,
+			observed.pty,
+		)
 	}
 	return observed
 }
@@ -512,8 +927,10 @@ func inspectTerminalProcessEvents(t *testing.T, events []observedProcessEvent) (
 				observed.stdout = append(observed.stdout, event.chunk...)
 			case "stderr":
 				observed.stderr = append(observed.stderr, event.chunk...)
+			case "pty":
+				observed.pty = append(observed.pty, event.chunk...)
 			default:
-				t.Fatalf("non-tty process/output stream = %q", event.stream)
+				t.Fatalf("process/output stream = %q", event.stream)
 			}
 		case "process/exited":
 			exitCount++
@@ -584,6 +1001,8 @@ func aggregateReadChunks(t *testing.T, chunks []struct {
 			observed.stdout = append(observed.stdout, decoded...)
 		case "stderr":
 			observed.stderr = append(observed.stderr, decoded...)
+		case "pty":
+			observed.pty = append(observed.pty, decoded...)
 		default:
 			t.Fatalf("process/read stream = %q", chunk.Stream)
 		}
@@ -605,14 +1024,25 @@ func execStartParams(t *testing.T, paths livePaths, processID, mode string, pipe
 	for name, value := range extraEnvironment {
 		environment[name] = value
 	}
+	argv := []string{binary}
+	var arg0 any
+	if mode == "output" {
+		argv = append(argv, execChildArgument)
+		arg0 = execChildArg0
+		canonicalCWD, err := filepath.EvalSymlinks(paths.cwd)
+		if err != nil {
+			t.Fatalf("canonicalize expected child cwd: %v", err)
+		}
+		environment[execChildExpectedCWDEnv] = canonicalCWD
+	}
 	return map[string]any{
 		"processId":             processID,
-		"argv":                  []string{binary},
+		"argv":                  argv,
 		"cwd":                   localFileURI(t, paths.cwd),
 		"env":                   environment,
 		"tty":                   false,
 		"pipeStdin":             pipeStdin,
-		"arg0":                  nil,
+		"arg0":                  arg0,
 		"sandbox":               nil,
 		"enforceManagedNetwork": false,
 	}
@@ -645,6 +1075,15 @@ func assertTerminateRunning(t *testing.T, message codexwire.Message, want bool) 
 	mustDecodeResult(t, message, &response)
 	if response.Running != want {
 		t.Fatalf("process/terminate running = %t, want %t", response.Running, want)
+	}
+}
+
+func assertEmptyObjectResult(t *testing.T, message codexwire.Message) {
+	t.Helper()
+	var response map[string]any
+	mustDecodeResult(t, message, &response)
+	if len(response) != 0 {
+		t.Fatalf("RPC result = %+v, want empty object", response)
 	}
 }
 
@@ -716,6 +1155,17 @@ func waitForProcessGone(t *testing.T, pid int) {
 			t.Fatalf("managed child %d survived its terminal lifecycle", pid)
 		}
 		<-ticker.C
+	}
+}
+
+func assertProcessAlive(t *testing.T, pid int, phase string) {
+	t.Helper()
+	alive, err := processIsAlive(pid)
+	if err != nil {
+		t.Fatalf("probe child %d %s: %v", pid, phase, err)
+	}
+	if !alive {
+		t.Fatalf("child %d is not alive %s", pid, phase)
 	}
 }
 

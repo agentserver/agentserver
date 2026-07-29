@@ -294,6 +294,8 @@ MCP-only 不是 prompt 约定，而是 pinned Codex build 上必须同时成立�
 
 官方 `rust-v0.146.0-alpha.14` candidate（commit `9d84cad281364eb7f6be75e23067b0adc5e26106`）新增了真实的 `[tools.update_plan] enabled = false`，无 MCP server 时实际模型工具面可收敛为空；但只要配置一个 executor MCP，stock 又会在批准的 namespaced MCP tool 之外无条件注册三个通用 MCP resource handler。live probe 进一步证明 `list_mcp_resources` 会越过该 server 的 `enabled_tools`，真实发出 `resources/list`。因此这个 alpha 只修复了前一个 blocker，仍不通过 A03，也不能成为 production runtime pin。当前架构下必须等待 stock release 提供可验证的 resource-handler 禁用/精确暴露机制；如果产品要改为接受这些 handler，必须另行修改 A03、manifest 授权模型和 executor MCP 协议边界，不能把 fail-closed 响应静默当成原设计已经满足。
 
+官方 stable `rust-v0.146.0`（annotated tag object `be449751a978f02e5bbba886999662956c7f38f5`，peeled commit `e363b08c9175ac1cbe5893615dd2cb9ddf95043b`）的 release-bound live probe 得到相同结论：无 MCP 时可见工具为空；加入只批准 `approved_echo` 的 executor MCP 后仍额外暴露三个通用 resource handler，且 `list_mcp_resources` 仍真实到达 `resources/list`。因此“alpha 可能尚未收敛”已经不是解释，当前正式版同样明确不通过 A03。
+
 ### 7.2 隔离与网络
 
 - harness-pool 是常驻 controller；“scale to zero”只表示删除或归零无 active run 的动态 workload 容量，不能把 controller 自身设为 `replicas: 0`。
@@ -362,6 +364,13 @@ agentx 自己负责：
 process、PTY、stdin、signal、filesystem 和 upstream sandbox handler 由 stock exec-server 完成，不在 agentx 中复制。executor 侧不需要模型配置或模型 credential。agentx 的机器连接 credential 保存在 OS keychain/受限文件中，只由 agentx 使用，永远不注入 exec-server 或它启动的子进程。
 
 exec-server 可能依据 `envPolicy` 从自身环境继承变量，因此只过滤 `process/start.env` 不足以保护 credential。child 自身必须从一开始就运行在无 agentx secret 的环境中，agentx 还必须将远端 env policy 收紧到本地 allowlist；远端不能请求重新继承被剥离的宿主变量。
+
+stable 0.146.0 的 live probe 还暴露了两个不能由 JSON-RPC“成功响应”掩盖的执行语义缺口：
+
+- `process/signal` 对不存在、信号已送达和根进程已退出三种状态都返回相同的空对象 `{}`。它最多表示 server 已处理请求，不能证明 signal 到达目标；execution 只能依据后续 terminal evidence 收口，缺少证据时必须是 `unknown`。
+- 根进程退出并发出 `process/exited` 后，只要后代继续持有 pipe，process 尚未 `closed`；此时 `process/terminate` 返回 `running: false` 且不会杀该后代。关闭整条 stdio connection 会通过 session drop 回收进程组，但这不是 operation-scoped recovery，并可能影响同一 local exec instance 中的其他操作。
+
+所以 `process/exited` 只能视为根进程退出证据，`process/closed` 才表示 output streams 已关闭；二者之间不能提前宣布 execution 成功。当前 E03/E07 验收不变时，stable 0.146.0 仍被这两项额外阻断。若未来产品明确批准 agentx adapter workaround，至少必须在每个 local exec instance 串行化 operation，并在 `exited` 后有界等待 `closed`；超时则回收整个 exec-server tree、将结果标记为 `unknown`，且不能把空 signal response 映射成“已送达”。这属于显式架构/验收变更，不能在实现中静默放宽。
 
 upstream 将 `codex exec-server` 标记为 experimental，因此不能假设 semver wire compatibility。agentx 发行包必须锁定精确 commit/build，升级走 schema diff、fixture、sandbox 与故障恢复回归，不允许自动跟随 latest。
 

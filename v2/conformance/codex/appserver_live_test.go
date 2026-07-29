@@ -92,7 +92,8 @@ func TestAppServerA01ScriptedModelLifecycle(t *testing.T) {
 		"id":     3,
 		"method": "turn/start",
 		"params": map[string]any{
-			"threadId": thread.Thread.ID,
+			"threadId":     thread.Thread.ID,
+			"environments": []any{},
 			"input": []any{
 				map[string]any{
 					"type":         "text",
@@ -248,7 +249,8 @@ func TestAppServerA03Codex0145StillExecutesUpdatePlan(t *testing.T) {
 		"id":     3,
 		"method": "turn/start",
 		"params": map[string]any{
-			"threadId": thread.Thread.ID,
+			"threadId":     thread.Thread.ID,
+			"environments": []any{},
 			"input": []any{
 				map[string]any{
 					"type":         "text",
@@ -351,7 +353,8 @@ func TestAppServerA03Codex0146HasNoBuiltinTools(t *testing.T) {
 		"id":     3,
 		"method": "turn/start",
 		"params": map[string]any{
-			"threadId": thread.Thread.ID,
+			"threadId":     thread.Thread.ID,
+			"environments": []any{},
 			"input": []any{
 				map[string]any{
 					"type":         "text",
@@ -1556,7 +1559,8 @@ func startMinimalAppServerTurnWithApprovalPolicy(
 		"id":     3,
 		"method": "turn/start",
 		"params": map[string]any{
-			"threadId": thread.Thread.ID,
+			"threadId":     thread.Thread.ID,
+			"environments": []any{},
 			"input": []any{
 				map[string]any{
 					"type":         "text",
@@ -1603,8 +1607,9 @@ type appServerThread struct {
 	Status        struct {
 		Type string `json:"type"`
 	} `json:"status"`
-	CWD          string `json:"cwd"`
-	ThreadSource string `json:"threadSource"`
+	CWD          string          `json:"cwd"`
+	ThreadSource string          `json:"threadSource"`
+	Turns        []appServerTurn `json:"turns"`
 }
 
 type appServerTurn struct {

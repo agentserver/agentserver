@@ -22,8 +22,9 @@ sessionless Streamable HTTP MCP server, the A04 managed-requirements injection
 boundary, A05 no-double-approval behavior and its prompt-mode positive control,
 A06 client-controlled MCP form elicitation, its paused-tool-timeout behavior,
 and its never-policy negative control, A07 pending-elicitation interrupt cleanup,
-A08 graceful shutdown and stable state snapshots, E01 stdio/EOF, exec-server
-environment metadata, and these slices of the executor matrix:
+A08 graceful shutdown and stable state snapshots, A09 rollout-only completed-turn
+checkpoint recovery, E01 stdio/EOF, exec-server environment metadata, and these
+slices of the executor matrix:
 
 - E02: deterministic argv/arg0, canonical cwd, exact non-inherited child
   environment, non-TTY and PTY streams, output/exit/close sequencing, and
@@ -160,8 +161,29 @@ reported rollout is complete JSONL containing the thread and turn content, and
 `state_5.sqlite` has a SQLite header. Clean exit still leaves stable
 `.sqlite-wal` and `.sqlite-shm` files for state, goals, logs, and memories.
 Therefore process exit is a byte-stability barrier, not evidence that WAL data
-was merged into the main databases or that sidecars may be omitted from the
-checkpoint. A09 must determine the minimal resumable file set.
+was merged into the main databases. A08 does not decide which stable files form
+a checkpoint.
+
+A09 passes for both `0.146.0-alpha.14` and stable `0.146.0`. For these builds,
+the pinned checkpoint allowlist is exactly one app-server-reported rollout JSONL
+per brain thread. The probe copies only that file, under its manifest-relative
+path, into a fresh `CODEX_HOME`, verifies the staging tree contains no other
+file, and then renames the source home so its old absolute paths cannot be used.
+It regenerates config rather than restoring it, starts the same stock build, and
+cold-resumes with the relocated rollout path and `excludeTurns: true`. A cold
+`thread/resume` emits no `thread/started` notification; its successful RPC
+response is the resume barrier, after which the next `turn/start` supplies
+`environments: []`.
+
+The restored model request contains both user turns, the original MCP call ID,
+and its exact tool result, while the MCP side effect is not executed again.
+`state_5.sqlite`, every SQLite WAL/SHM sidecar, and the goals/logs/memories
+databases are therefore runtime-derived state, not checkpoint payload. Config,
+requirements, credentials, logs, caches, and transport state are likewise
+excluded and must be recreated for each attempt. As a negative control, a
+missing rollout makes `thread/resume` fail with `-32600` before any model request
+or MCP initialization. Every future Codex build must repeat this native
+round-trip before receiving the same allowlist.
 
 The probes also report candidate binary and canonical app-server schema
 fingerprints. Stock 0.145.0 was observed to randomize object-key order in one

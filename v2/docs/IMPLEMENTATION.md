@@ -244,7 +244,7 @@ conformance test 是 Go subprocess test，不依赖 v1 gateway：
 | A06 | elicitation | granular policy 只允许 mcp_elicitations；fake MCP elicitation 能到达 app-server client并由 client 决定；pending form 超过 tool_timeout 仍保持未决，never policy 的自动拒绝作为反例固定 |
 | A07 | interrupt | turn/interrupt 产生 terminal interrupted，清除 pending server request，不再发新 tool call |
 | A08 | graceful shutdown | turn terminal 与 outstanding reverse request清空后关闭 stdin，child 有界正常退出；rollout、SQLite/WAL 状态稳定，无固定 sleep |
-| A09 | checkpoint round-trip | 从 allowlist 文件生成 checkpoint，在全新目录恢复，thread/resume 后第二个 turn保留首 turn 的模型可见 tool result |
+| A09 | checkpoint round-trip | 每个 brain thread只保存 app-server返回的单个 rollout JSONL；在全新目录 cold resume后，第二个 turn保留首 turn的模型可见 tool result且不重放 MCP副作用 |
 | A10 | mid-turn crash | kill child 后不能 resume 原 turn；只能恢复上一个 terminal checkpoint |
 | A11 | secret exclusion | config、requirements、token、auth、log、env dump 和临时 transport buffer 不进入 checkpoint |
 | A12 | child isolation | app-server 看不到 worker mTLS credential/FD，cwd 无工作树，网络只能到 llmproxy/批准 MCP egress |
@@ -259,7 +259,9 @@ A06 已在 0.146.0-alpha.14 与 stable 0.146.0 上分别通过。fake MCP 在真
 
 A07 也已在 alpha.14 与 stable 0.146.0 分别通过。测试在 app-server client持有未决 `mcpServer/elicitation/request` 时调用 `turn/interrupt`：RPC返回成功，terminal status为 `interrupted`，pending request随后发出 `serverRequest/resolved`，fake MCP收到 `cancel`，Responses endpoint和 MCP都没有第二次调用。当前两个 release重复观察到的顺序都是 terminal在先、resolved在后，所以 worker不能在收到 `turn/completed` 时立即关闭 stdio；它要维护 outstanding server-request set，并在 terminal、set清空和 process收口三者都满足后才能结束 finalization。timeout、control-stream断线和 child crash仍是后续独立 fault probe，不能因 A07通过而视为覆盖。
 
-A08 已在 alpha.14 与 stable 0.146.0 上分别通过。probe完成一个非 ephemeral turn，收到 completed terminal且确认没有 outstanding reverse request后立即关闭 stdin，不做固定 sleep；app-server在有界时间内零退出。退出后对整个 `CODEX_HOME` 连续做两次受文件数、单文件和总大小限制的遍历，相对路径、mode、大小和 SHA-256完全一致；thread返回的 path位于该目录内，rollout每行都是完整 JSON且包含 thread、用户输入和最终模型内容，`state_5.sqlite`具有 SQLite header。两个 release在 clean exit后都仍保留 state/goals/logs/memories的 `.sqlite-wal` 和 `.sqlite-shm`，所以 A08 只建立“进程退出后的稳定快照”边界，不证明 WAL已并回主库，也不提前宣称哪些 sidecar属于 checkpoint；这由 A09 native resume最小集合探针决定。
+A08 已在 alpha.14 与 stable 0.146.0 上分别通过。probe完成一个非 ephemeral turn，收到 completed terminal且确认没有 outstanding reverse request后立即关闭 stdin，不做固定 sleep；app-server在有界时间内零退出。退出后对整个 `CODEX_HOME` 连续做两次受文件数、单文件和总大小限制的遍历，相对路径、mode、大小和 SHA-256完全一致；thread返回的 path位于该目录内，rollout每行都是完整 JSON且包含 thread、用户输入和最终模型内容，`state_5.sqlite`具有 SQLite header。两个 release在 clean exit后都仍保留 state/goals/logs/memories的 `.sqlite-wal` 和 `.sqlite-shm`，所以 A08 只建立“进程退出后的稳定快照”边界，不证明 WAL已并回主库，也不负责判断 checkpoint 文件集合。
+
+A09 已在同两个 release 上通过。普通 completed turn可以跨 app-server进程 cold resume；包含真实 MCP tool result的 completed turn只需一个 app-server thread response返回的 rollout JSONL也可以恢复。probe在写新 config前断言新 `CODEX_HOME` 的 staging严格只有这个文件，并改名原 `CODEX_HOME` 使旧绝对路径不可用；新 attempt config单独生成。cold `thread/resume` 使用新 rollout path和 `excludeTurns: true`，其 RPC response就是恢复屏障，不等待不会出现的 `thread/started` notification。后续 `turn/start` 的模型请求包含两轮用户输入、原 MCP call ID和完整 tool result，且 MCP副作用没有重放。缺失 rollout时，`thread/resume` 在任何模型调用和 MCP初始化前以 `-32600` fail closed。因此当前 pinned allowlist是“每个 brain thread恰好一个 rollout JSONL”；`state_5.sqlite`、所有 SQLite WAL/SHM、goals/logs/memories DB以及 config都属于运行时派生或每 attempt重建状态，不进入 checkpoint。
 
 当前 0.145.0 candidate 的 bootstrap probe 进一步确认：assistant 内容在 `item/completed` 上到达，而 terminal `turn/completed` 是 `itemsView: notLoaded` 的空内容终态，harness-worker 必须持续归并 item 事件，不能只保存 terminal payload。`environments: []` 能去掉 shell/fs；固定本地 model catalog，并显式关闭 Web、goals、multi-agent、orchestrator skills、user-input 及其他已知 feature 后，实际 Responses request 的工具面可收敛到仅剩 `update_plan`。但官方 `rust-v0.145.0` tag（peeled commit `25af12f7e61572b0bc18ddb1008be543b91519b0`）的 `add_core_utility_tools` 无条件注册 `PlanHandler`，该版本没有对应 config 或 requirements 开关；scripted model 调用后实际收到成功的 `Plan updated` result，client 同时收到 `turn/plan/updated`。因此 0.145.0 明确不通过 A03，不能成为 production runtime pin。
 
@@ -271,16 +273,16 @@ A08 已在 alpha.14 与 stable 0.146.0 上分别通过。probe完成一个非 ep
 
 ### 4.3 checkpoint 探针算法
 
-1. 创建全新 CODEX_HOME-A。
-2. 启动 app-server，完成包含一次 fake MCP result 的 turn。
-3. 收到 turn/completed 后继续排空 stdio，等待 outstanding reverse request全部 resolved，再关闭 stdin并等待 child正常退出。
-4. 枚举 CODEX_HOME-A 的稳定状态，拒绝 symlink、绝对路径和父目录跳转；主 SQLite、WAL和SHM先分别作为候选，不能因 clean exit就假定 sidecar可删除。
-5. 从候选文件中排除 config、requirements、auth、token、log 和 cache。
-6. 复制候选到全新 CODEX_HOME-B，启动同一 build。
-7. 调用 thread/resume，再运行第二 turn。
-8. fake model 捕获第二 turn 上下文，确认第一 turn 及 MCP result 完整可见。
-9. 对逐文件 hash、缺文件、额外文件、损坏 SQLite/WAL 分别做负向测试。
-10. 将最小成功集合固化为与 Codex build digest绑定的 checkpoint allowlist。
+1. 创建全新 CODEX_HOME-A，以同一 stock build完成一个包含真实 fake MCP result的非 ephemeral turn。
+2. 收到 `turn/completed` 后继续排空 stdio，等待 outstanding reverse request全部 resolved，再关闭 stdin并等待 child有界正常退出。
+3. 读取 app-server thread response返回的绝对 rollout path，将它相对 CODEX_HOME-A规范化；拒绝 symlink、非普通文件、规范化后的绝对/父目录逃逸和不在 CODEX_HOME-A内的路径，并校验完整 JSONL。
+4. 为该 `brain_thread_id` 生成只有一个 rollout entry的 manifest，记录相对路径、mode、size、SHA-256、Codex build/schema与 allowlist version；manifest不纳入、checkpoint也不复制其他 `CODEX_HOME` 文件。
+5. 按 manifest把 rollout复制到全新 CODEX_HOME-B并复算 hash；在生成新 config前断言 staging严格只有该文件。SQLite主库/WAL/SHM、goals/logs/memories DB、config、requirements、auth、token、log和cache一律不恢复。
+6. 改名或移走 CODEX_HOME-A，证明旧 rollout绝对路径不可访问；然后在 B生成本 attempt的新 config并启动同一 build。
+7. 发送 `thread/resume { threadId, path: <B中的rollout>, excludeTurns: true }`。cold resume不发送 `thread/started`；成功 RPC response就是生命周期屏障。
+8. 发送带 `environments: []` 的第二个 `turn/start`。fake model捕获请求，确认第一、第二 turn及原 MCP call ID/result完整可见；fake MCP确认旧副作用没有重放。
+9. 缺失 rollout必须在模型调用和 MCP初始化前由 `thread/resume` fail closed。manifest loader另行覆盖 hash/size不符、额外文件、路径逃逸和 build/schema/allowlist不匹配。
+10. 将该单 rollout集合固化为与 Codex build digest绑定的 checkpoint allowlist；升级 build必须重跑整套正反例，不能继承结论。
 
 如果只有打包整个 CODEX_HOME 才能 resume，Phase 0 失败；不能把敏感配置一并持久化来绕过。
 
@@ -663,9 +665,9 @@ manifest/template validator 还必须独立要求 `https` scheme、规范 host/p
 
 这只是关键字段示意；完整 feature/requirements键必须由所 pin 版本的 config schema、其可投影字段的 configRequirements/read、实际 MCP bootstrap 和模型 tool capture共同验证，不能复制示例后假定生效。0.145.0 不认识上述 `update_plan` 禁用机制，因此被 Phase 0 拒绝；0.146.0-alpha.14 与 stable 0.146.0 虽证明该键和 A05 `approve` 语义真实生效，仍因通用 MCP resource handler 绕过 `enabled_tools` 而被拒绝。`required` 也只改变 MCP 初始化失败语义，不是能力 allowlist。
 
-worker先把 checkpoint allowlist恢复到全新 CODEX_HOME，再写入本 attempt的新 config；checkpoint无权覆盖配置。随后以 manifest中的绝对路径启动 codex app-server --listen stdio:// --strict-config。strict-config只拒绝未知字段，不能替代 MCP-only tool capture和 OS/网络隔离。
+worker先把 checkpoint allowlist恢复到全新 CODEX_HOME，断言 staging严格匹配 manifest，再写入本 attempt的新 config；checkpoint无权覆盖配置。对当前已验证 build，allowlist就是该 brain thread的单个 rollout JSONL，SQLite/WAL/SHM均不恢复。随后以 manifest中的绝对路径启动 codex app-server --listen stdio:// --strict-config。strict-config只拒绝未知字段，不能替代 MCP-only tool capture和 OS/网络隔离。
 
-thread/start、thread/resume和turn/start都显式发送 environments: []；不发送 dynamicTools和 selectedCapabilityRoots。cwd指向空、只读的非工作树目录。
+thread/start和每次turn/start都显式发送 environments: []；当前 `ThreadResumeParams` 没有 environments字段，cold resume固定发送 rollout path与 `excludeTurns: true`，收到 RPC response后直接进入turn/start，不等待 `thread/started` notification。不发送 dynamicTools和 selectedCapabilityRoots；cwd指向空、只读的非工作树目录。
 
 ### 8.4 worker 状态机
 
@@ -706,7 +708,7 @@ worker不能调用 app-server的 command/exec、process/spawn、fs、marketplace
 5. 关闭 app-server stdin。
 6. 等待 child在固定 grace内正常退出。
 7. timeout时先 TERM、再 KILL；该 attempt不得提交 checkpoint。
-8. child正常退出后按 pinned allowlist安全打开文件，拒绝 symlink和路径逃逸。
+8. child正常退出后按 pinned allowlist安全打开 app-server返回的 rollout文件，拒绝 symlink和路径逃逸；当前 build每个 brain thread只允许这一项，任何额外文件都拒绝。
 9. 生成逐文件 hash和 manifest。
 10. 经 control channel分块发送给 pool。
 11. pool上传、复算整对象 hash。

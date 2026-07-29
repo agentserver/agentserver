@@ -30,9 +30,23 @@ type Config struct {
 	Args           []string
 	Dir            string
 	Env            []string
+	Identity       *Identity
 	MaxFrameBytes  int
 	IncomingBuffer int
 	StderrBytes    int
+}
+
+// Identity requests an explicit unprivileged OS identity for the child. The
+// process starts with an empty supplementary-group set. Platform support is
+// checked before any stdio pipe is opened.
+type Identity struct {
+	UID uint32
+	GID uint32
+	// AllowSetID is a Linux-only conformance affordance for a trusted worker
+	// supervisor. It requests only CAP_SETUID and CAP_SETGID as ambient
+	// capabilities so that worker can create the fixed app identity; the app's
+	// first action must be the all-thread finalexec identity seal.
+	AllowSetID bool
 }
 
 type Process struct {
@@ -73,6 +87,9 @@ func Start(ctx context.Context, config Config) (*Process, error) {
 	command.Dir = config.Dir
 	command.Env = append([]string(nil), config.Env...)
 	command.WaitDelay = 2 * time.Second
+	if err := configureProcessIdentity(command, config.Identity); err != nil {
+		return nil, err
+	}
 
 	stdin, err := command.StdinPipe()
 	if err != nil {

@@ -25,8 +25,9 @@ and its never-policy negative control, A07 pending-elicitation interrupt cleanup
 A08 graceful shutdown and stable state snapshots, A09 rollout-only completed-turn
 checkpoint recovery, A10 mid-turn hard-crash rollback to the last sealed
 checkpoint, A11 runtime-secret exclusion and capability rotation, A12 host
-launch and stock-network negative characterization, E01 stdio/EOF, exec-server
-environment metadata, and these slices of the executor matrix:
+characterization plus the native Linux production-profile isolation image gate,
+E01 stdio/EOF, exec-server environment metadata, and these slices of the
+executor matrix:
 
 - E02: deterministic argv/arg0, canonical cwd, exact non-inherited child
   environment, non-TTY and PTY streams, output/exit/close sequencing, and
@@ -322,34 +323,50 @@ history: an unexpected runtime secret must reject/quarantine the checkpoint,
 while model-visible content requires prevention, encryption, retention, and
 deletion policy rather than a lossy “native resume” rewrite.
 
-A12 is not yet a pass. Its host-level positive probe configures the model
-provider to exfiltrate a worker-mTLS sentinel as an HTTP header if visible. A
-sensitivity control explicitly injects the variable into one child and observes
-the exact header. With the same value only in the parent, the isolated child
-receives an explicit environment, the turn succeeds without the header or
-sentinel in the request/stderr, and app-server reports an empty temporary cwd
-outside the source tree. Those are launch-contract facts, not a filesystem
-namespace: the eventual image must additionally prove that no workspace or
-service-account volume is mounted anywhere the child can read.
+A12 host characterization remains the reason the image boundary is mandatory.
+Its exfiltration sensitivity control proves that an inherited worker variable
+would become a model header, while an explicit child environment excludes it;
+the reported cwd is an empty directory outside the source tree. On Darwin, a
+parent pipe with `CLOEXEC` deliberately cleared survives a normal Go launch,
+and both characterized releases follow a cross-origin model `307` to an
+unconfigured sink. An explicit environment, omitted `ExtraFiles`, base URL,
+managed requirements, and bearer audience are therefore not filesystem, FD, or
+network isolation mechanisms.
 
-Two negative controls keep the remaining boundary honest. On the characterized
-Darwin host, clearing `CLOEXEC` on an otherwise unlisted parent pipe leaves that
-descriptor open in the stock child; omitting `ExtraFiles` alone is not a
-close-all policy, and the production Linux image must repeat the trap.
-The production runner therefore needs both worker-owned `CLOEXEC` descriptors
-and a final exec trampoline that closes/marks every descriptor above stderr from
-an explicit allowlist. Separately, a configured scripted llmproxy returns a
-cross-origin `307`; both characterized releases follow it, resend the model
-request to the other origin, and complete the turn from that sink. A model/MCP
-URL is routing configuration, not egress enforcement.
+The positive job is implemented in `conformance/image/a12` and passed natively
+for official stable 0.146.0 `linux-arm64`. Its scratch image starts a bounded
+root init fixture, then starts each scenario as a real worker UID process with
+only `CAP_SETUID` and `CAP_SETGID`; that worker is the direct parent and stdio
+supervisor of a fixed app UID final-exec child and waits for it. The child
+environment excludes the worker secret, and immediately after launch the
+one-child worker seals all of its own capabilities before supervising. Before
+any isolation probe, final-exec
+verifies real/effective/saved IDs, clears all
+ambient/inheritable/permitted/effective capabilities, and sets `no_new_privs`
+across every Go runtime OS thread. It disables dumpability, verifies the sealed
+identity, then proves the worker credential/staging/control paths and worker
+`/proc` state are
+inaccessible, the worker cannot be signalled, workspace/service-account paths
+are absent, and an intentionally inherited descriptor is closed by
+`close_range(3, UINT_MAX, 0)` before the absolute stock Codex exec.
 
-A trustworthy A12 positive gate must run the production Linux image with
-different worker/child UIDs, unreadable worker credential/control state, the
-real close-all trampoline, an empty non-workspace mount set, and per-process
-network enforcement. It must allow llmproxy and the approved MCP egress path
-while direct and redirected forbidden sinks receive zero requests. Kubernetes
-`NetworkPolicy` is only Pod-scoped, so it cannot by itself distinguish the
-worker control stream from child egress.
+Raw netfilter netlink rules use `meta skuid`: worker IPv4 egress is limited to
+the worker-only harness endpoint, app IPv4 egress to the exact llmproxy,
+approved MCP, and redirect-source tuples, all other IPv4 is rejected/dropped,
+and all IPv6 is dropped for both UIDs. A real allowed model turn plus approved
+MCP call succeeds. Direct and cross-origin-redirect forbidden sinks, a
+DNS-shaped UDP sink, the worker-only endpoint, and an IPv6 sensitivity sink all
+remain at zero app requests; root controls prove the UDP and IPv6 sinks are
+live. The verified Codex artifact is SHA-256
+`cb5e8cb8a333a408ce6adbe0d4fad1845c69772c2216af7c1f88c98a11460dc6`,
+size `269098800`.
+
+This closes A12 only for that production-profile image, release, and native
+platform. `linux-amd64` remains open until the same target passes on a native
+worker. The disposable in-image netfilter proof is not evidence that a real
+Kubernetes NetworkPolicy, service routing, or egress proxy deployment is
+correct; those remain deployment gates. Kubernetes `NetworkPolicy` is
+Pod-scoped and cannot replace the per-UID boundary.
 
 The probes also report candidate binary and canonical app-server schema
 fingerprints. Stock 0.145.0 was observed to randomize object-key order in one

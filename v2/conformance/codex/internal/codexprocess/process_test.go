@@ -95,6 +95,24 @@ func TestStartRejectsInheritedEnvironment(t *testing.T) {
 	}
 }
 
+func TestStartRejectsInvalidOrPrivilegedExplicitIdentity(t *testing.T) {
+	root := t.TempDir()
+	for _, identity := range []Identity{
+		{UID: 0, GID: 0},
+		{UID: ^uint32(0), GID: ^uint32(0)},
+	} {
+		_, err := Start(context.Background(), Config{
+			Binary:   os.Args[0],
+			Dir:      root,
+			Env:      []string{},
+			Identity: &identity,
+		})
+		if err == nil || !strings.Contains(err.Error(), "unprivileged") {
+			t.Fatalf("Start() identity %+v error = %v, want invalid/unprivileged rejection", identity, err)
+		}
+	}
+}
+
 func TestSendRawFrameWritesOneDelimitedFrameAndHonorsClose(t *testing.T) {
 	stdin := &recordingWriteCloser{}
 	process := &Process{stdin: stdin}

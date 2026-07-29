@@ -1,7 +1,7 @@
 GO ?= go
 GOFMT ?= gofmt
 
-.PHONY: check fmt fmt-check vet test import-boundary contract-check conformance conformance-live conformance-image-a04 conformance-image-e09
+.PHONY: check fmt fmt-check vet test import-boundary contract-check conformance conformance-live conformance-image-a04 conformance-image-a12 conformance-image-e09
 
 check: fmt-check vet test import-boundary contract-check
 
@@ -38,6 +38,9 @@ conformance-live:
 
 conformance-image-a04:
 	./conformance/image/a04/run.sh
+
+conformance-image-a12:
+	./conformance/image/a12/run.sh
 
 conformance-image-e09:
 	./conformance/image/e09/run.sh

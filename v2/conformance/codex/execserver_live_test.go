@@ -117,6 +117,9 @@ func characterizedE10AgentxLimits() runtimelock.AgentxLimits {
 // a deterministic child. The helper path bypasses the testing harness so its
 // stdout and stderr contain only bytes intentionally emitted by the probe.
 func TestMain(m *testing.M) {
+	if handled, exitCode := runA12ImageSubprocess(); handled {
+		os.Exit(exitCode)
+	}
 	if os.Args[0] == e09BwrapArgv0Probe {
 		_, _ = io.WriteString(os.Stdout, e09BwrapArgv0ProbeOutput)
 		os.Exit(0)

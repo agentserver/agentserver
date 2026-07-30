@@ -20,9 +20,12 @@ Codex-MCP path, and the revised A04 managed MCP deny-all image gate. Existing
 A05–A12 probes retain valuable stock/runtime facts. A07 now also has a
 worker-runner composition gate, but it still needs a pinned-artifact pass and
 the execution/control cases described below. A09's revised worker-runner gate
-is also implemented but still needs its pinned-artifact pass; A06/A11/A12
-still need their revised worker-owned compositions. No direct-Codex-MCP result
-is silently carried into the production profile. The lab also covers
+is also implemented but still needs its pinned-artifact pass. A11's revised
+worker-owned credential host gate now passes the exact stable 0.146.0 macOS
+artifact, while its remaining OS boundary evidence belongs to revised A12;
+A06/A12 still need the remaining product/image compositions. No
+direct-Codex-MCP result is silently carried into the
+production profile. The lab also covers
 E01 stdio/EOF, exec-server environment metadata, and these executor slices:
 
 - E02: deterministic argv/arg0, canonical cwd, exact non-inherited child
@@ -272,11 +275,22 @@ Codex wire loop with typed initialize/thread/turn/interrupt lifecycle, a bounded
 notification sink, strict matching terminal cleanup, and pre-I/O resume catalog
 checking. Its net.Pipe fixture and race suite cover normal response writes,
 cancel, terminal races, unknown reverse requests, write failure, event overflow,
-and native resume without a `dynamicTools` override. A live test using the same
-runner and a stock app-server is present but remains release evidence only when
-it is actually run against an exact pinned artifact; the current source-only
-compile/skip is not a pass record. Full A07 remains open for that artifact run,
-already-dispatched execution closure, and real control/MCP disconnects.
+and native resume without a `dynamicTools` override. A non-live composition
+gate now drives the complete runner → bridge → official-SDK MCP client →
+authenticated HTTP gateway path while rejecting the worker bearer on every
+app-server wire frame. Its real-disconnect case closes an in-flight MCP HTTP
+connection: the runner emits one interrupt, receives the matching terminal,
+and releases its callback. `MCPClient.Close` tracks all HTTP requests, first
+allows a configurable bounded graceful close, then aborts the private
+transport and returns a forced-close error instead of hanging in the SDK's
+session DELETE path. A broken transport cannot deliver cancellation to an
+already-dispatched remote handler, so gateway connection grace and execution
+deadlines remain mandatory. A live test using the same runner and a stock
+app-server is present but remains release evidence only when it is actually
+run against an exact pinned artifact; the current source-only compile/skip is
+not a pass record. Full A07 remains open for that artifact run,
+already-dispatched execution closure, real control disconnects, and the
+gateway-side disconnect deadline/unknown transition.
 
 A08's process-exit and byte-stability sub-gate passes for both characterized
 0.146.0 releases. After a completed non-ephemeral turn with no typed outstanding request, the probe closes stdin
@@ -363,9 +377,32 @@ mount. A11 tests accidental runtime-secret ingress. It does not authorize
 byte-redacting content the user, model, or MCP deliberately put into model-visible
 history: an unexpected runtime secret must reject/quarantine the checkpoint,
 while model-visible content requires prevention, encryption, retention, and
-deletion policy rather than a lossy “native resume” rewrite. Revised A11 must
-move the exercised MCP bearer into the worker-only credential domain and prove
-it is absent from child env/config/FDs as well as rollout.
+deletion policy rather than a lossy “native resume” rewrite.
+
+The revised A11 source gate now composes the stock app-server runner with the
+worker-owned official-SDK MCP client. Codex receives no MCP endpoint,
+`mcp_servers` entry, bearer environment variable, or bearer value: it receives
+only the frozen dynamic catalog. The source worker authenticates every MCP
+bootstrap/list/call request with one capability, executes exactly one dynamic
+side effect, and checkpoints only the app-server-reported rollout. After the
+source home is retired, a fresh worker authenticates with a rotated capability,
+verifies the same catalog, and resumes without a `dynamicTools` override. The
+gate scans the explicit child environment, config, every bounded `CODEX_HOME`
+file, stderr, model request headers/bodies, rollout, and one-file checkpoint for
+both executor bearer values. The separate model/llmproxy auth sentinel is
+allowed only as the exact `Authorization` value on the scripted model transport
+and is still forbidden from every model body, rollout, and checkpoint. The gate
+requires the original call/result and complete tool schema in the restored
+model request while the total side-effect count remains one.
+
+The custom stateful gateway fixture and worker MCP composition run in ordinary
+CI. The stock round-trip also passes on the documented stable `0.146.0` macOS
+arm64 binary (SHA-256
+`ae1d3ffe6d48aec6a4dc3f50e7eb8e0d11962485a6a9406c5a7012139383da02`,
+size `271056976`). This host pass does not supersede close-all/UID/mount
+isolation: inherited-FD exclusion and the worker/app network split remain
+revised A12 image evidence. A11 therefore remains open only on that revised
+image boundary; a host artifact pass is not an image pass.
 
 A12 host characterization remains the reason the image boundary is mandatory.
 Its exfiltration sensitivity control proves that an inherited worker variable

@@ -474,6 +474,7 @@ func testMCPClientConfig(endpoint string, expected *Catalog, limits Limits, hand
 		ExpectedCatalog:       expected.CanonicalBytes(),
 		Limits:                limits,
 		ElicitationHandler:    handler,
+		CloseGrace:            250 * time.Millisecond,
 	}
 }
 
@@ -509,6 +510,21 @@ func TestValidateMCPEndpointAndBearer(t *testing.T) {
 	for _, bearer := range []string{"", "has space", "has\nnewline"} {
 		if err := validateBearer(bearer); err == nil {
 			t.Errorf("validateBearer(%q) succeeded", bearer)
+		}
+	}
+	catalog := mustCatalog(t, nil, DefaultLimits())
+	for _, closeGrace := range []time.Duration{-time.Second, maxMCPShutdownGrace + time.Nanosecond} {
+		config := testMCPClientConfig(
+			"http://127.0.0.1:1/mcp",
+			catalog,
+			DefaultLimits(),
+			func(context.Context, ElicitationRequest) (ElicitationDecision, error) {
+				return ElicitationDecision{Action: ApprovalCancel}, nil
+			},
+		)
+		config.CloseGrace = closeGrace
+		if _, err := ConnectMCP(t.Context(), config); err == nil || !strings.Contains(err.Error(), "close grace") {
+			t.Errorf("ConnectMCP close grace %s error = %v", closeGrace, err)
 		}
 	}
 }
@@ -586,6 +602,75 @@ func TestBoundedReadCloserExactBoundaryAndFirstExcessByte(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestExactMCPTransportTracksAndAbortsConcurrentRequests(t *testing.T) {
+	started := make(chan struct{}, 2)
+	abortCause := errors.New("test transport abort")
+	transport := &exactMCPTransport{
+		base: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			started <- struct{}{}
+			<-request.Context().Done()
+			return nil, context.Cause(request.Context())
+		}),
+		endpoint: "https://executor.example.test/mcp",
+		bearer:   testMCPBearer,
+		maxBytes: 1024,
+		active:   make(map[*exactMCPRequest]context.CancelCauseFunc),
+	}
+	results := make(chan error, 2)
+	for range 2 {
+		go func() {
+			request, err := http.NewRequest(http.MethodPost, transport.endpoint, strings.NewReader(`{}`))
+			if err == nil {
+				_, err = transport.RoundTrip(request)
+			}
+			results <- err
+		}()
+	}
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("concurrent MCP request did not reach the base transport")
+		}
+	}
+	transport.mu.Lock()
+	active := len(transport.active)
+	transport.mu.Unlock()
+	if active != 2 {
+		t.Fatalf("tracked MCP requests = %d, want two distinct entries", active)
+	}
+	transport.abort(abortCause)
+	for range 2 {
+		select {
+		case err := <-results:
+			if !errors.Is(err, abortCause) {
+				t.Fatalf("aborted MCP request error = %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("aborted MCP request did not return")
+		}
+	}
+	transport.mu.Lock()
+	active = len(transport.active)
+	transport.mu.Unlock()
+	if active != 0 {
+		t.Fatalf("aborted MCP transport retained %d requests", active)
+	}
+	request, err := http.NewRequest(http.MethodPost, transport.endpoint, strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := transport.RoundTrip(request); !errors.Is(err, errExecutorMCPTransportClosed) {
+		t.Fatalf("post-abort MCP request error = %v", err)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
 }
 
 func TestTransportMessageLimitAddsOverheadWithoutIntOverflow(t *testing.T) {

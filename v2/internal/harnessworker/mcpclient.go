@@ -43,7 +43,13 @@ const (
 	maxIdentityBytes  = 256
 	maxBearerBytes    = 16 * 1024
 	transportOverhead = 64 * 1024
+
+	defaultMCPShutdownGrace = 2 * time.Second
+	maxMCPShutdownGrace     = 30 * time.Second
+	mcpAbortCompletionGrace = time.Second
 )
+
+var errExecutorMCPTransportClosed = errors.New("executor MCP transport is closed")
 
 type ApprovalAction string
 
@@ -127,6 +133,9 @@ type MCPClientConfig struct {
 	ElicitationHandler    ElicitationHandler
 	ProgressHandler       ProgressHandler
 	Logger                *slog.Logger
+	// CloseGrace bounds the SDK's graceful session close before the private
+	// HTTP transport is aborted. Zero selects the bounded reference default.
+	CloseGrace time.Duration
 }
 
 type pendingMCPCall struct {
@@ -140,8 +149,10 @@ type pendingMCPCall struct {
 // bearer and HTTP transport never enter app-server configuration or stdio.
 type MCPClient struct {
 	session      *mcp.ClientSession
+	transport    *exactMCPTransport
 	catalog      *Catalog
 	limits       Limits
+	closeGrace   time.Duration
 	elicitation  ElicitationHandler
 	progress     ProgressHandler
 	now          func() time.Time
@@ -187,10 +198,22 @@ func ConnectMCP(ctx context.Context, config MCPClientConfig) (*MCPClient, error)
 	if len(config.ExpectedCatalog) > config.Limits.MaxCatalogBytes {
 		return nil, fmt.Errorf("expected MCP canonical catalog is %d bytes, limit is %d", len(config.ExpectedCatalog), config.Limits.MaxCatalogBytes)
 	}
+	closeGrace := config.CloseGrace
+	if closeGrace == 0 {
+		closeGrace = defaultMCPShutdownGrace
+	}
+	if closeGrace < 0 {
+		return nil, errors.New("executor MCP close grace must be positive")
+	}
+	if closeGrace > maxMCPShutdownGrace {
+		return nil, fmt.Errorf("executor MCP close grace exceeds hard maximum %s", maxMCPShutdownGrace)
+	}
 
-	httpClient := boundedMCPHTTPClient(config.HTTPClient, endpoint, config.BearerToken, transportMessageLimit(config.Limits))
+	httpClient, transport := boundedMCPHTTPClient(config.HTTPClient, endpoint, config.BearerToken, transportMessageLimit(config.Limits))
 	result := &MCPClient{
 		limits:       config.Limits,
+		closeGrace:   closeGrace,
+		transport:    transport,
 		elicitation:  config.ElicitationHandler,
 		progress:     config.ProgressHandler,
 		now:          time.Now,
@@ -217,32 +240,32 @@ func ConnectMCP(ctx context.Context, config MCPClientConfig) (*MCPClient, error)
 		DisableStandaloneSSE: true,
 	}, nil)
 	if err != nil {
+		transport.abort(err)
 		return nil, fmt.Errorf("connect executor MCP: %w", err)
 	}
 	result.session = session
+	failAfterConnect := func(primary error) (*MCPClient, error) {
+		return nil, errors.Join(primary, result.closeSession(primary))
+	}
 	initializeResult := session.InitializeResult()
 	if initializeResult == nil || initializeResult.ProtocolVersion != SupportedMCPProtocolVersion {
-		_ = session.Close()
 		negotiated := "<missing>"
 		if initializeResult != nil {
 			negotiated = initializeResult.ProtocolVersion
 		}
-		return nil, fmt.Errorf("executor MCP negotiated protocol %q, require %q for stateful elicitation", negotiated, SupportedMCPProtocolVersion)
+		return failAfterConnect(fmt.Errorf("executor MCP negotiated protocol %q, require %q for stateful elicitation", negotiated, SupportedMCPProtocolVersion))
 	}
 
 	descriptors, err := collectToolCatalog(ctx, session, capture, config.Limits)
 	if err != nil {
-		_ = session.Close()
-		return nil, err
+		return failAfterConnect(err)
 	}
 	catalog, err := BuildCatalog(config.Namespace, config.NamespaceDescription, descriptors, config.Limits)
 	if err != nil {
-		_ = session.Close()
-		return nil, fmt.Errorf("verify executor MCP catalog: %w", err)
+		return failAfterConnect(fmt.Errorf("verify executor MCP catalog: %w", err))
 	}
 	if err := catalog.VerifyFrozen(config.ExpectedCatalogDigest, config.ExpectedCatalog); err != nil {
-		_ = session.Close()
-		return nil, err
+		return failAfterConnect(err)
 	}
 	result.catalog = catalog
 	return result, nil
@@ -263,11 +286,37 @@ func (c *MCPClient) Close() error {
 		for _, call := range pending {
 			call.cancel(cause)
 		}
-		if c.session != nil {
-			c.closeErr = c.session.Close()
-		}
+		c.closeErr = c.closeSession(cause)
 	})
 	return c.closeErr
+}
+
+func (c *MCPClient) closeSession(cause error) error {
+	if c.session == nil {
+		c.transport.abort(cause)
+		return nil
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- c.session.Close() }()
+	timer := time.NewTimer(c.closeGrace)
+	defer timer.Stop()
+	select {
+	case err := <-closed:
+		c.transport.abort(cause)
+		return err
+	case <-timer.C:
+	}
+
+	graceErr := fmt.Errorf("executor MCP graceful close exceeded %s", c.closeGrace)
+	c.transport.abort(graceErr)
+	hardTimer := time.NewTimer(mcpAbortCompletionGrace)
+	defer hardTimer.Stop()
+	select {
+	case err := <-closed:
+		return errors.Join(graceErr, err)
+	case <-hardTimer.C:
+		return errors.Join(graceErr, errors.New("executor MCP session did not stop after transport abort"))
+	}
 }
 
 // CallDynamicTool validates the callback against the frozen catalog, adds only
@@ -845,7 +894,7 @@ func transportMessageLimit(limits Limits) int64 {
 	return int64(maximum) + int64(transportOverhead)
 }
 
-func boundedMCPHTTPClient(base *http.Client, endpoint *url.URL, bearer string, maxBytes int64) *http.Client {
+func boundedMCPHTTPClient(base *http.Client, endpoint *url.URL, bearer string, maxBytes int64) (*http.Client, *exactMCPTransport) {
 	var client http.Client
 	if base != nil {
 		client = *base
@@ -854,28 +903,55 @@ func boundedMCPHTTPClient(base *http.Client, endpoint *url.URL, bearer string, m
 	if transport == nil {
 		transport = http.DefaultTransport
 	}
-	client.Transport = &exactMCPTransport{base: transport, endpoint: endpoint.String(), bearer: bearer, maxBytes: maxBytes}
+	var closeIdle func()
+	if cloneable, ok := transport.(*http.Transport); ok {
+		cloned := cloneable.Clone()
+		transport = cloned
+		closeIdle = cloned.CloseIdleConnections
+	}
+	exact := &exactMCPTransport{
+		base:      transport,
+		endpoint:  endpoint.String(),
+		bearer:    bearer,
+		maxBytes:  maxBytes,
+		active:    make(map[*exactMCPRequest]context.CancelCauseFunc),
+		closeIdle: closeIdle,
+	}
+	client.Transport = exact
 	client.Timeout = 0
 	client.Jar = nil
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &client
+	return &client, exact
 }
+
+// The byte makes request identities non-zero-sized; Go permits pointers to
+// distinct zero-sized values to compare equal, which would collapse tracking.
+type exactMCPRequest struct{ _ byte }
 
 type exactMCPTransport struct {
 	base     http.RoundTripper
 	endpoint string
 	bearer   string
 	maxBytes int64
+
+	mu        sync.Mutex
+	closed    bool
+	active    map[*exactMCPRequest]context.CancelCauseFunc
+	closeIdle func()
 }
 
 func (t *exactMCPTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	if request.URL.String() != t.endpoint {
 		return nil, fmt.Errorf("executor MCP transport refused target %q", request.URL.String())
 	}
-	request = request.Clone(request.Context())
+	request, complete, err := t.track(request)
+	if err != nil {
+		return nil, err
+	}
 	request.Header = request.Header.Clone()
 	request.Header.Set("Authorization", "Bearer "+t.bearer)
 	if request.ContentLength > t.maxBytes {
+		complete()
 		return nil, fmt.Errorf("executor MCP request is %d bytes, limit is %d", request.ContentLength, t.maxBytes)
 	}
 	if request.Body != nil {
@@ -883,18 +959,91 @@ func (t *exactMCPTransport) RoundTrip(request *http.Request) (*http.Response, er
 	}
 	response, err := t.base.RoundTrip(request)
 	if err != nil {
+		complete()
 		return nil, err
 	}
 	if response.StatusCode >= 300 && response.StatusCode < 400 {
 		_ = response.Body.Close()
+		complete()
 		return nil, fmt.Errorf("executor MCP endpoint returned forbidden redirect status %d", response.StatusCode)
 	}
 	if response.ContentLength > t.maxBytes {
 		_ = response.Body.Close()
+		complete()
 		return nil, fmt.Errorf("executor MCP response is %d bytes, limit is %d", response.ContentLength, t.maxBytes)
 	}
-	response.Body = newBoundedReadCloser(response.Body, t.maxBytes)
+	response.Body = &trackedMCPResponseBody{
+		body:     newBoundedReadCloser(response.Body, t.maxBytes),
+		complete: complete,
+	}
 	return response, nil
+}
+
+func (t *exactMCPTransport) track(request *http.Request) (*http.Request, func(), error) {
+	ctx, cancel := context.WithCancelCause(request.Context())
+	tracked := &exactMCPRequest{}
+	t.mu.Lock()
+	if t.closed {
+		t.mu.Unlock()
+		cancel(errExecutorMCPTransportClosed)
+		return nil, nil, errExecutorMCPTransportClosed
+	}
+	t.active[tracked] = cancel
+	t.mu.Unlock()
+	var once sync.Once
+	complete := func() {
+		once.Do(func() {
+			t.mu.Lock()
+			delete(t.active, tracked)
+			t.mu.Unlock()
+			cancel(nil)
+		})
+	}
+	return request.Clone(ctx), complete, nil
+}
+
+func (t *exactMCPTransport) abort(cause error) {
+	if cause == nil {
+		cause = errExecutorMCPTransportClosed
+	}
+	t.mu.Lock()
+	t.closed = true
+	cancellations := make([]context.CancelCauseFunc, 0, len(t.active))
+	for _, cancel := range t.active {
+		cancellations = append(cancellations, cancel)
+	}
+	t.active = make(map[*exactMCPRequest]context.CancelCauseFunc)
+	t.mu.Unlock()
+	for _, cancel := range cancellations {
+		cancel(cause)
+	}
+	if t.closeIdle != nil {
+		t.closeIdle()
+	}
+}
+
+type trackedMCPResponseBody struct {
+	body     io.ReadCloser
+	complete func()
+	once     sync.Once
+}
+
+func (b *trackedMCPResponseBody) Read(buffer []byte) (int, error) {
+	read, err := b.body.Read(buffer)
+	if err != nil {
+		b.finish()
+	}
+	return read, err
+}
+
+func (b *trackedMCPResponseBody) Close() error {
+	err := b.body.Close()
+	b.finish()
+	return err
+}
+
+func (b *trackedMCPResponseBody) finish() {
+	b.once.Do(b.complete)
 }
 
 type boundedReadCloser struct {

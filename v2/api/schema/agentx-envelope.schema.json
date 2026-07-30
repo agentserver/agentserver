@@ -280,7 +280,7 @@
               "type": "object",
               "additionalProperties": false,
               "required": ["kind"],
-              "properties": {"kind": {"const": "root"}}
+              "properties": {"kind": {"const": "minimal"}}
             }
           }
         },
@@ -302,7 +302,21 @@
       "properties": {
         "path": {"$ref": "#/$defs/sandboxPath"},
         "access": {"enum": ["read", "write"]}
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "path": {
+                "type": "object",
+                "required": ["type"],
+                "properties": {"type": {"const": "special"}}
+              }
+            }
+          },
+          "then": {"properties": {"access": {"const": "read"}}}
+        }
+      ]
     },
     "sandboxContext": {
       "type": "object",

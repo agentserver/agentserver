@@ -6,8 +6,9 @@ package mcpcontract
 import "encoding/json"
 
 const (
-	Version   = "executor-mcp/1.0"
-	Namespace = "executor"
+	Version              = "executor-mcp/1.0"
+	Namespace            = "executor"
+	NamespaceDescription = "Deterministic executor tools."
 )
 
 const (

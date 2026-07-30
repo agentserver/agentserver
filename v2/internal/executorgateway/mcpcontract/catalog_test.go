@@ -37,7 +37,7 @@ func TestCatalogIsTheMinimalShellSlice(t *testing.T) {
 			InputSchema: tool.InputSchema,
 		})
 	}
-	if _, err := harnessworker.BuildCatalog(Namespace, "Deterministic executor tools.", descriptors, harnessworker.DefaultLimits()); err != nil {
+	if _, err := harnessworker.BuildCatalog(Namespace, NamespaceDescription, descriptors, harnessworker.DefaultLimits()); err != nil {
 		t.Fatalf("BuildCatalog() rejected executor MCP contract: %v", err)
 	}
 }

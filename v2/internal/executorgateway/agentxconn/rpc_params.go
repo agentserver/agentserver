@@ -388,6 +388,9 @@ func (sandbox sandboxContext) validate() error {
 		if err := entry.Path.validate(); err != nil {
 			return fmt.Errorf("sandbox entry %d: %w", index, err)
 		}
+		if entry.Path.Type == "special" && entry.Access != "read" {
+			return fmt.Errorf("sandbox entry %d: special minimal path must be read-only", index)
+		}
 	}
 	if err := validateFileURI("sandbox cwd", sandbox.CWD); err != nil {
 		return err
@@ -425,13 +428,13 @@ func (path sandboxPath) validate() error {
 		return validateFileURI("sandbox path", uri)
 	case "special":
 		if len(path.Path) != 0 || len(path.Value) == 0 {
-			return fmt.Errorf("special sandbox entry must be exactly root")
+			return fmt.Errorf("special sandbox entry must be exactly minimal")
 		}
 		var value struct {
 			Kind string `json:"kind"`
 		}
-		if err := decodeRequiredObject(path.Value, &value, "kind"); err != nil || value.Kind != "root" {
-			return fmt.Errorf("special sandbox entry must be exactly root")
+		if err := decodeRequiredObject(path.Value, &value, "kind"); err != nil || value.Kind != "minimal" {
+			return fmt.Errorf("special sandbox entry must be exactly minimal")
 		}
 		return nil
 	default:

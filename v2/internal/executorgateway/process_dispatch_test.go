@@ -284,6 +284,25 @@ func TestProcessCallTableRequiresPreallocatedTimeoutRouting(t *testing.T) {
 	table.failHolder(holder, ErrConnectionFenced)
 }
 
+func TestProcessExchangeAwaitResponseDoesNotHangAfterTerminal(t *testing.T) {
+	exchange := &ProcessExchange{
+		response: make(chan json.RawMessage, 1), failure: make(chan error, 1), done: make(chan struct{}),
+	}
+	close(exchange.done)
+	if _, err := exchange.AwaitResponse(t.Context()); !errors.Is(err, io.EOF) {
+		t.Fatalf("terminal exchange response error = %v, want EOF", err)
+	}
+	exchange = &ProcessExchange{
+		response: make(chan json.RawMessage, 1), failure: make(chan error, 1), done: make(chan struct{}),
+	}
+	exchange.response <- json.RawMessage(`{"id":1,"result":{}}`)
+	close(exchange.done)
+	response, err := exchange.AwaitResponse(t.Context())
+	if err != nil || string(response) != `{"id":1,"result":{}}` {
+		t.Fatalf("queued terminal response = %s, %v", response, err)
+	}
+}
+
 func sendAgentBusinessRPC(t *testing.T, connection *websocket.Conn, limits agentxconn.Limits, session *agentxconn.Session, routing agentxconn.RoutingContext, rpc json.RawMessage) {
 	t.Helper()
 	frame, err := session.Send(agentxconn.Payload{Type: agentxconn.MessageTypeRPC, Context: &routing, RPC: rpc})
@@ -305,7 +324,7 @@ func readAgentAck(t *testing.T, connection *websocket.Conn, limits agentxconn.Li
 }
 
 func testProcessStartRPC() json.RawMessage {
-	return json.RawMessage(`{"id":"start-1","method":"process/start","params":{"processId":"80000000-0000-4000-8000-000000000008","argv":["/usr/bin/printf","ok"],"cwd":"file:///workspace","env":{},"envPolicy":{"inherit":"none","ignoreDefaultExcludes":false,"exclude":[],"set":{},"includeOnly":[]},"tty":false,"pipeStdin":false,"arg0":null,"sandbox":{"permissions":{"type":"managed","file_system":{"type":"restricted","entries":[{"path":{"type":"special","value":{"kind":"root"}},"access":"read"},{"path":{"type":"path","path":"file:///workspace"},"access":"write"}]},"network":"restricted"},"cwd":"file:///workspace","workspaceRoots":["file:///workspace"],"windowsSandboxLevel":"restricted-token","windowsSandboxPrivateDesktop":false,"useLegacyLandlock":false},"enforceManagedNetwork":true}}`)
+	return json.RawMessage(`{"id":"start-1","method":"process/start","params":{"processId":"80000000-0000-4000-8000-000000000008","argv":["/usr/bin/printf","ok"],"cwd":"file:///workspace","env":{},"envPolicy":{"inherit":"none","ignoreDefaultExcludes":false,"exclude":[],"set":{},"includeOnly":[]},"tty":false,"pipeStdin":false,"arg0":null,"sandbox":{"permissions":{"type":"managed","file_system":{"type":"restricted","entries":[{"path":{"type":"special","value":{"kind":"minimal"}},"access":"read"},{"path":{"type":"path","path":"file:///workspace"},"access":"write"}]},"network":"restricted"},"cwd":"file:///workspace","workspaceRoots":["file:///workspace"],"windowsSandboxLevel":"restricted-token","windowsSandboxPrivateDesktop":false,"useLegacyLandlock":false},"enforceManagedNetwork":true}}`)
 }
 
 func testProcessTerminateRPC() json.RawMessage {

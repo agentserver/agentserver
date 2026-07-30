@@ -162,7 +162,7 @@ func TestBusinessRPCMethodParamsAreFailClosed(t *testing.T) {
 		{
 			name:     "managed process start",
 			receiver: RoleAgentx,
-			rpc:      `{"id":"start-1","method":"process/start","params":{"processId":"70000000-0000-0000-0000-000000000007","argv":["/bin/echo","ok"],"cwd":"file:///workspace","env":{},"envPolicy":{"inherit":"none","ignoreDefaultExcludes":false,"exclude":[],"set":{},"includeOnly":[]},"tty":false,"pipeStdin":false,"arg0":null,"sandbox":{"permissions":{"type":"managed","file_system":{"type":"restricted","entries":[{"path":{"type":"special","value":{"kind":"root"}},"access":"read"},{"path":{"type":"path","path":"file:///workspace"},"access":"write"}]},"network":"restricted"},"cwd":"file:///workspace","workspaceRoots":["file:///workspace"],"windowsSandboxLevel":"restricted-token","windowsSandboxPrivateDesktop":false,"useLegacyLandlock":false},"enforceManagedNetwork":true}}`,
+			rpc:      `{"id":"start-1","method":"process/start","params":{"processId":"70000000-0000-0000-0000-000000000007","argv":["/bin/echo","ok"],"cwd":"file:///workspace","env":{},"envPolicy":{"inherit":"none","ignoreDefaultExcludes":false,"exclude":[],"set":{},"includeOnly":[]},"tty":false,"pipeStdin":false,"arg0":null,"sandbox":{"permissions":{"type":"managed","file_system":{"type":"restricted","entries":[{"path":{"type":"special","value":{"kind":"minimal"}},"access":"read"},{"path":{"type":"path","path":"file:///workspace"},"access":"write"}]},"network":"restricted"},"cwd":"file:///workspace","workspaceRoots":["file:///workspace"],"windowsSandboxLevel":"restricted-token","windowsSandboxPrivateDesktop":false,"useLegacyLandlock":false},"enforceManagedNetwork":true}}`,
 		},
 		{
 			name:     "process write",
@@ -198,17 +198,27 @@ func TestBusinessRPCMethodParamsAreFailClosed(t *testing.T) {
 		{
 			name:     "start inherits ambient env",
 			receiver: RoleAgentx,
-			rpc:      `{"id":"start-1","method":"process/start","params":{"processId":"70000000-0000-0000-0000-000000000007","argv":["/bin/echo"],"cwd":"file:///workspace","env":{},"envPolicy":{"inherit":"all","ignoreDefaultExcludes":false,"exclude":[],"set":{},"includeOnly":[]},"tty":false,"pipeStdin":false,"arg0":null,"sandbox":{"permissions":{"type":"managed","file_system":{"type":"restricted","entries":[{"path":{"type":"special","value":{"kind":"root"}},"access":"read"}]},"network":"restricted"},"cwd":"file:///workspace","workspaceRoots":["file:///workspace"],"windowsSandboxLevel":"disabled","windowsSandboxPrivateDesktop":false,"useLegacyLandlock":false},"enforceManagedNetwork":true}}`,
+			rpc:      `{"id":"start-1","method":"process/start","params":{"processId":"70000000-0000-0000-0000-000000000007","argv":["/bin/echo"],"cwd":"file:///workspace","env":{},"envPolicy":{"inherit":"all","ignoreDefaultExcludes":false,"exclude":[],"set":{},"includeOnly":[]},"tty":false,"pipeStdin":false,"arg0":null,"sandbox":{"permissions":{"type":"managed","file_system":{"type":"restricted","entries":[{"path":{"type":"special","value":{"kind":"minimal"}},"access":"read"}]},"network":"restricted"},"cwd":"file:///workspace","workspaceRoots":["file:///workspace"],"windowsSandboxLevel":"disabled","windowsSandboxPrivateDesktop":false,"useLegacyLandlock":false},"enforceManagedNetwork":true}}`,
 		},
 		{
 			name:     "old windows enum",
 			receiver: RoleAgentx,
-			rpc:      `{"id":"start-1","method":"process/start","params":{"processId":"70000000-0000-0000-0000-000000000007","argv":["/bin/echo"],"cwd":"file:///workspace","env":{},"envPolicy":{"inherit":"none","ignoreDefaultExcludes":false,"exclude":[],"set":{},"includeOnly":[]},"tty":false,"pipeStdin":false,"arg0":null,"sandbox":{"permissions":{"type":"managed","file_system":{"type":"restricted","entries":[{"path":{"type":"special","value":{"kind":"root"}},"access":"read"}]},"network":"restricted"},"cwd":"file:///workspace","workspaceRoots":["file:///workspace"],"windowsSandboxLevel":"standard","windowsSandboxPrivateDesktop":false,"useLegacyLandlock":false},"enforceManagedNetwork":true}}`,
+			rpc:      `{"id":"start-1","method":"process/start","params":{"processId":"70000000-0000-0000-0000-000000000007","argv":["/bin/echo"],"cwd":"file:///workspace","env":{},"envPolicy":{"inherit":"none","ignoreDefaultExcludes":false,"exclude":[],"set":{},"includeOnly":[]},"tty":false,"pipeStdin":false,"arg0":null,"sandbox":{"permissions":{"type":"managed","file_system":{"type":"restricted","entries":[{"path":{"type":"special","value":{"kind":"minimal"}},"access":"read"}]},"network":"restricted"},"cwd":"file:///workspace","workspaceRoots":["file:///workspace"],"windowsSandboxLevel":"standard","windowsSandboxPrivateDesktop":false,"useLegacyLandlock":false},"enforceManagedNetwork":true}}`,
 		},
 		{
 			name:     "tagged sandbox union carries forbidden field",
 			receiver: RoleAgentx,
-			rpc:      `{"id":"start-1","method":"process/start","params":{"processId":"70000000-0000-0000-0000-000000000007","argv":["/bin/echo"],"cwd":"file:///workspace","env":{},"envPolicy":{"inherit":"none","ignoreDefaultExcludes":false,"exclude":[],"set":{},"includeOnly":[]},"tty":false,"pipeStdin":false,"arg0":null,"sandbox":{"permissions":{"type":"managed","file_system":{"type":"restricted","entries":[{"path":{"type":"special","path":"","value":{"kind":"root"}},"access":"read"}]},"network":"restricted"},"cwd":"file:///workspace","workspaceRoots":["file:///workspace"],"windowsSandboxLevel":"disabled","windowsSandboxPrivateDesktop":false,"useLegacyLandlock":false},"enforceManagedNetwork":true}}`,
+			rpc:      `{"id":"start-1","method":"process/start","params":{"processId":"70000000-0000-0000-0000-000000000007","argv":["/bin/echo"],"cwd":"file:///workspace","env":{},"envPolicy":{"inherit":"none","ignoreDefaultExcludes":false,"exclude":[],"set":{},"includeOnly":[]},"tty":false,"pipeStdin":false,"arg0":null,"sandbox":{"permissions":{"type":"managed","file_system":{"type":"restricted","entries":[{"path":{"type":"special","path":"","value":{"kind":"minimal"}},"access":"read"}]},"network":"restricted"},"cwd":"file:///workspace","workspaceRoots":["file:///workspace"],"windowsSandboxLevel":"disabled","windowsSandboxPrivateDesktop":false,"useLegacyLandlock":false},"enforceManagedNetwork":true}}`,
+		},
+		{
+			name:     "special root read",
+			receiver: RoleAgentx,
+			rpc:      `{"id":"start-1","method":"process/start","params":{"processId":"70000000-0000-0000-0000-000000000007","argv":["/bin/echo"],"cwd":"file:///workspace","env":{},"envPolicy":{"inherit":"none","ignoreDefaultExcludes":false,"exclude":[],"set":{},"includeOnly":[]},"tty":false,"pipeStdin":false,"arg0":null,"sandbox":{"permissions":{"type":"managed","file_system":{"type":"restricted","entries":[{"path":{"type":"special","value":{"kind":"root"}},"access":"read"}]},"network":"restricted"},"cwd":"file:///workspace","workspaceRoots":["file:///workspace"],"windowsSandboxLevel":"disabled","windowsSandboxPrivateDesktop":false,"useLegacyLandlock":false},"enforceManagedNetwork":true}}`,
+		},
+		{
+			name:     "special minimal write",
+			receiver: RoleAgentx,
+			rpc:      `{"id":"start-1","method":"process/start","params":{"processId":"70000000-0000-0000-0000-000000000007","argv":["/bin/echo"],"cwd":"file:///workspace","env":{},"envPolicy":{"inherit":"none","ignoreDefaultExcludes":false,"exclude":[],"set":{},"includeOnly":[]},"tty":false,"pipeStdin":false,"arg0":null,"sandbox":{"permissions":{"type":"managed","file_system":{"type":"restricted","entries":[{"path":{"type":"special","value":{"kind":"minimal"}},"access":"write"}]},"network":"restricted"},"cwd":"file:///workspace","workspaceRoots":["file:///workspace"],"windowsSandboxLevel":"disabled","windowsSandboxPrivateDesktop":false,"useLegacyLandlock":false},"enforceManagedNetwork":true}}`,
 		},
 		{
 			name:     "read missing field",

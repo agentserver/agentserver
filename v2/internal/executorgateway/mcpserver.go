@@ -32,6 +32,14 @@ const (
 	maximumExecutorMCPSessionIDTries   = 8
 
 	mcpSessionIDHeader = "Mcp-Session-Id"
+
+	executorMCPMetaRunID                = "io.agentserver/runId"
+	executorMCPMetaThreadID             = "io.agentserver/threadId"
+	executorMCPMetaTurnID               = "io.agentserver/turnId"
+	executorMCPMetaCallID               = "io.agentserver/callId"
+	executorMCPMetaRunAttemptGeneration = "io.agentserver/runAttemptGeneration"
+	executorMCPMetaToolCatalogDigest    = "io.agentserver/toolCatalogDigest"
+	executorMCPMetaProgressToken        = "progressToken"
 )
 
 var errExecutorMCPShuttingDown = errors.New("executor MCP server is shutting down")
@@ -42,9 +50,10 @@ var errExecutorMCPShuttingDown = errors.New("executor MCP server is shutting dow
 // AuthenticateExecutorMCP is still invoked for every HTTP request and must
 // perform live expiry, generation, and authorization checks.
 type ExecutorMCPPrincipal struct {
-	CapabilityID string
-	WorkspaceID  string
-	Run          ExecutorMCPRunContext
+	CapabilityID      string
+	WorkspaceID       string
+	ToolCatalogDigest string
+	Run               ExecutorMCPRunContext
 	// ExecutorID optionally narrows list_environments to one executor. The
 	// empty value grants the workspace-wide registry projection.
 	ExecutorID string
@@ -72,6 +81,7 @@ type ExecutorMCPConfig struct {
 	MaxRequestBodyBytes int64
 	IDGenerator         IDGenerator
 	Logger              *slog.Logger
+	ShellExecutor       *ShellExecutor
 }
 
 func DefaultExecutorMCPConfig() ExecutorMCPConfig {
@@ -99,6 +109,7 @@ type executorMCPSession struct {
 type ExecutorMCPHandler struct {
 	authenticator ExecutorMCPAuthenticator
 	resolver      *EnvironmentResolver
+	shell         *ShellExecutor
 	config        ExecutorMCPConfig
 	streamable    *mcp.StreamableHTTPHandler
 
@@ -130,6 +141,7 @@ func NewExecutorMCPHandler(authenticator ExecutorMCPAuthenticator, resolver *Env
 	handler := &ExecutorMCPHandler{
 		authenticator: authenticator,
 		resolver:      resolver,
+		shell:         config.ShellExecutor,
 		config:        config,
 		sessions:      make(map[string]*executorMCPSession),
 	}
@@ -327,11 +339,129 @@ func (handler *ExecutorMCPHandler) newScopedServer(session *executorMCPSession) 
 		// validated structured value exactly once.
 		return &mcp.CallToolResult{Content: []mcp.Content{}}, result, nil
 	})
+	if handler.shell != nil {
+		shellTool, found := mcpcontract.Lookup(mcpcontract.ToolShell)
+		if !found {
+			panic("shell is missing from executor MCP contract")
+		}
+		mcp.AddTool(server, &mcp.Tool{
+			Name:         shellTool.Name,
+			Description:  shellTool.Description,
+			InputSchema:  shellTool.InputSchema,
+			OutputSchema: shellTool.OutputSchema,
+		}, func(ctx context.Context, request *mcp.CallToolRequest, _ ShellV1Arguments) (*mcp.CallToolResult, ShellV1Result, error) {
+			if request == nil || request.Session == nil || request.Session.ID() != session.id || request.Params == nil {
+				return nil, ShellV1Result{}, errors.New("shell arrived without its authenticated MCP session")
+			}
+			if len(request.Params.InputResponses) != 0 || request.Params.RequestState != "" {
+				return nil, ShellV1Result{}, errors.New("shell does not support multi-round-trip input")
+			}
+			call, err := parseExecutorMCPCallContext(request.Params.Meta, session.principal)
+			if err != nil {
+				return nil, ShellV1Result{}, err
+			}
+			result, err := handler.shell.Execute(ctx, ShellExecuteRequest{
+				Principal: session.principal, ToolCallID: call.CallID,
+				Arguments: append(json.RawMessage(nil), request.Params.Arguments...),
+			})
+			if err != nil {
+				if handler.config.Logger != nil {
+					handler.config.Logger.ErrorContext(ctx, "execute shell MCP call",
+						"run_id", session.principal.Run.RunID,
+						"call_id", call.CallID,
+						"error", err,
+					)
+				}
+				return nil, ShellV1Result{}, errors.New("shell execution is temporarily unavailable")
+			}
+			return &mcp.CallToolResult{Content: []mcp.Content{}}, result, nil
+		})
+	}
 	return server
 }
 
 type listEnvironmentsInput struct {
 	ExecutorID string `json:"executor_id,omitempty"`
+}
+
+type executorMCPCallContext struct {
+	RunID                string
+	ThreadID             string
+	TurnID               string
+	CallID               string
+	RunAttemptGeneration int64
+	ToolCatalogDigest    string
+}
+
+func parseExecutorMCPCallContext(meta mcp.Meta, principal ExecutorMCPPrincipal) (executorMCPCallContext, error) {
+	allowed := map[string]struct{}{
+		executorMCPMetaRunID: {}, executorMCPMetaThreadID: {}, executorMCPMetaTurnID: {}, executorMCPMetaCallID: {},
+		executorMCPMetaRunAttemptGeneration: {}, executorMCPMetaToolCatalogDigest: {}, executorMCPMetaProgressToken: {},
+	}
+	if len(meta) != len(allowed) {
+		return executorMCPCallContext{}, errors.New("shell requires the exact trusted MCP call metadata")
+	}
+	for key := range meta {
+		if _, ok := allowed[key]; !ok {
+			return executorMCPCallContext{}, fmt.Errorf("shell MCP metadata contains unsupported key %q", key)
+		}
+	}
+	getString := func(key string) (string, error) {
+		value, ok := meta[key].(string)
+		if !ok || value == "" || len(value) > 256 || !utf8.ValidString(value) || strings.ContainsRune(value, 0) {
+			return "", fmt.Errorf("shell MCP metadata %s is missing or invalid", key)
+		}
+		return value, nil
+	}
+	var result executorMCPCallContext
+	var err error
+	if result.RunID, err = getString(executorMCPMetaRunID); err != nil {
+		return executorMCPCallContext{}, err
+	}
+	if result.ThreadID, err = getString(executorMCPMetaThreadID); err != nil {
+		return executorMCPCallContext{}, err
+	}
+	if result.TurnID, err = getString(executorMCPMetaTurnID); err != nil {
+		return executorMCPCallContext{}, err
+	}
+	if result.CallID, err = getString(executorMCPMetaCallID); err != nil {
+		return executorMCPCallContext{}, err
+	}
+	if result.ToolCatalogDigest, err = getString(executorMCPMetaToolCatalogDigest); err != nil {
+		return executorMCPCallContext{}, err
+	}
+	progressToken, err := getString(executorMCPMetaProgressToken)
+	if err != nil {
+		return executorMCPCallContext{}, err
+	}
+	result.RunAttemptGeneration, err = executorMCPMetadataInt64(meta[executorMCPMetaRunAttemptGeneration])
+	if err != nil || result.RunAttemptGeneration < 1 {
+		return executorMCPCallContext{}, errors.New("shell MCP run attempt generation is invalid")
+	}
+	if result.RunID != principal.Run.RunID || result.RunAttemptGeneration != principal.Run.RunAttemptGeneration ||
+		result.ToolCatalogDigest != principal.ToolCatalogDigest || progressToken != result.CallID {
+		return executorMCPCallContext{}, errors.New("shell MCP call metadata is outside the authenticated run capability")
+	}
+	return result, nil
+}
+
+func executorMCPMetadataInt64(value any) (int64, error) {
+	switch value := value.(type) {
+	case int64:
+		return value, nil
+	case int:
+		return int64(value), nil
+	case float64:
+		converted := int64(value)
+		if float64(converted) != value {
+			return 0, errors.New("metadata number is not an integer")
+		}
+		return converted, nil
+	case json.Number:
+		return value.Int64()
+	default:
+		return 0, errors.New("metadata value is not an integer")
+	}
 }
 
 func requireExecutorMCPProtocol(next mcp.MethodHandler) mcp.MethodHandler {
@@ -498,6 +628,14 @@ func validateExecutorMCPPrincipal(principal ExecutorMCPPrincipal) error {
 	if principal.ExecutorID != "" {
 		if err := validateRegistryIdentity("executor ID", principal.ExecutorID); err != nil {
 			return err
+		}
+	}
+	if len(principal.ToolCatalogDigest) != 64 || strings.ToLower(principal.ToolCatalogDigest) != principal.ToolCatalogDigest {
+		return errors.New("MCP tool catalog digest must be 64 lowercase hexadecimal characters")
+	}
+	for _, character := range []byte(principal.ToolCatalogDigest) {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return errors.New("MCP tool catalog digest must be 64 lowercase hexadecimal characters")
 		}
 	}
 	if principal.CapabilityID == "" || len(principal.CapabilityID) > maximumExecutorMCPCapabilityIDSize || !utf8.ValidString(principal.CapabilityID) {

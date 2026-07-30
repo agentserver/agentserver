@@ -39,6 +39,7 @@ const (
 	gatewayDevRunHolderIDEnvironment          = "AGENTSERVER_V2_DEV_RUN_HOLDER_ID"
 	gatewayDevRunVersionEnvironment           = "AGENTSERVER_V2_DEV_RUN_VERSION"
 	gatewayDevRunAttemptVersionEnvironment    = "AGENTSERVER_V2_DEV_RUN_ATTEMPT_VERSION"
+	gatewayDevToolCatalogDigestEnvironment    = "AGENTSERVER_V2_DEV_TOOL_CATALOG_DIGEST"
 	gatewayDevMCPBearerEnvironment            = "AGENTSERVER_V2_DEV_MCP_BEARER_TOKEN"
 	gatewayDevExecutorHeader                  = "X-Agentserver-Dev-Executor-Id"
 	maximumDevMCPBearerBytes                  = 16 * 1024
@@ -129,11 +130,23 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	if err != nil {
 		return err
 	}
+	devToolCatalogDigest, err := requiredGatewayConfiguration(getenv, gatewayDevToolCatalogDigestEnvironment)
+	if err != nil {
+		return err
+	}
+	if len(devToolCatalogDigest) != 64 {
+		return errors.New("AGENTSERVER_V2_DEV_TOOL_CATALOG_DIGEST must be 64 lowercase hexadecimal characters")
+	}
+	for _, character := range []byte(devToolCatalogDigest) {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return errors.New("AGENTSERVER_V2_DEV_TOOL_CATALOG_DIGEST must be 64 lowercase hexadecimal characters")
+		}
+	}
 	devMCPBearer, err := requiredGatewayConfiguration(getenv, gatewayDevMCPBearerEnvironment)
 	if err != nil {
 		return err
 	}
-	mcpAuthenticator, err := newDevMCPAuthenticator(devMCPBearer, devWorkspaceID, devExecutorID, executorgateway.ExecutorMCPRunContext{
+	mcpAuthenticator, err := newDevMCPAuthenticator(devMCPBearer, devWorkspaceID, devExecutorID, devToolCatalogDigest, executorgateway.ExecutorMCPRunContext{
 		RunID:                     devRunID,
 		RunAttemptID:              devRunAttemptID,
 		RunAttemptGeneration:      devRunAttemptGeneration,
@@ -174,10 +187,31 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	if err != nil {
 		return err
 	}
+	shellIdentities, err := executorgateway.NewDefaultShellV1IdentityAllocator()
+	if err != nil {
+		return err
+	}
+	executionTransitions, err := executorgateway.NewDefaultExecutionTransitionAllocator(gatewayInstanceID)
+	if err != nil {
+		return err
+	}
+	shellExecutor, err := executorgateway.NewShellExecutor(
+		environmentResolver,
+		coreClient,
+		agentxHandler,
+		shellIdentities,
+		executionTransitions,
+		executorgateway.DefaultShellExecutorConfig(ctx),
+	)
+	if err != nil {
+		return err
+	}
+	mcpConfig := executorgateway.DefaultExecutorMCPConfig()
+	mcpConfig.ShellExecutor = shellExecutor
 	mcpHandler, err := executorgateway.NewExecutorMCPHandler(
 		mcpAuthenticator,
 		environmentResolver,
-		executorgateway.DefaultExecutorMCPConfig(),
+		mcpConfig,
 	)
 	if err != nil {
 		return err
@@ -248,7 +282,7 @@ type devMCPAuthenticator struct {
 	principal     executorgateway.ExecutorMCPPrincipal
 }
 
-func newDevMCPAuthenticator(bearer, workspaceID, executorID string, run executorgateway.ExecutorMCPRunContext) (devMCPAuthenticator, error) {
+func newDevMCPAuthenticator(bearer, workspaceID, executorID, toolCatalogDigest string, run executorgateway.ExecutorMCPRunContext) (devMCPAuthenticator, error) {
 	if len(bearer) < 32 || len(bearer) > maximumDevMCPBearerBytes {
 		return devMCPAuthenticator{}, fmt.Errorf("%s must contain between 32 and %d bytes", gatewayDevMCPBearerEnvironment, maximumDevMCPBearerBytes)
 	}
@@ -261,10 +295,11 @@ func newDevMCPAuthenticator(bearer, workspaceID, executorID string, run executor
 	return devMCPAuthenticator{
 		authorization: []byte("Bearer " + bearer),
 		principal: executorgateway.ExecutorMCPPrincipal{
-			CapabilityID: "insecure-dev:" + hex.EncodeToString(digest[:]),
-			WorkspaceID:  workspaceID,
-			ExecutorID:   executorID,
-			Run:          run,
+			CapabilityID:      "insecure-dev:" + hex.EncodeToString(digest[:]),
+			WorkspaceID:       workspaceID,
+			ExecutorID:        executorID,
+			ToolCatalogDigest: toolCatalogDigest,
+			Run:               run,
 		},
 	}, nil
 }

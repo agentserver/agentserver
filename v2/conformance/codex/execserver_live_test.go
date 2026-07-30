@@ -544,6 +544,109 @@ func TestExecServerE02ProcessOutputAndReplay(t *testing.T) {
 	closeAndWait(t, process)
 }
 
+func TestExecServerE09ShellV1MinimalSandboxRunsSystemBinary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the shell-v1 Windows executable and sandbox profile require a native fixture")
+	}
+	process, paths := startLiveCodex(t, "exec-server", "--listen", "stdio", "--strict-config")
+	initializeExecServer(t, process)
+	collector := newRPCCollector(process)
+	workspaceURI := localFileURI(t, paths.cwd)
+	requestID := 2
+
+	if runtime.GOOS == "darwin" {
+		pathOnlyEntries := []any{
+			map[string]any{
+				"path":   map[string]any{"type": "path", "path": workspaceURI},
+				"access": "read",
+			},
+			map[string]any{
+				"path":   map[string]any{"type": "path", "path": workspaceURI},
+				"access": "write",
+			},
+		}
+		sendRPC(t, process, map[string]any{
+			"id":     requestID,
+			"method": "process/start",
+			"params": shellV1LiveStartParams(workspaceURI, "shell-v1-path-only", pathOnlyEntries),
+		})
+		var pathOnlyStarted struct {
+			ProcessID string `json:"processId"`
+		}
+		mustDecodeResult(t, collector.response(t, strconv.Itoa(requestID)), &pathOnlyStarted)
+		_, exitCode := inspectTerminalProcessEvents(t, collector.processEventsUntilClosed(t, pathOnlyStarted.ProcessID))
+		if exitCode == 0 {
+			t.Fatal("workspace-only shell-v1 sandbox unexpectedly supplied the macOS platform runtime")
+		}
+		requestID++
+	}
+
+	minimalEntries := []any{
+		map[string]any{
+			"path":   map[string]any{"type": "special", "value": map[string]any{"kind": "minimal"}},
+			"access": "read",
+		},
+		map[string]any{
+			"path":   map[string]any{"type": "path", "path": workspaceURI},
+			"access": "write",
+		},
+	}
+	sendRPC(t, process, map[string]any{
+		"id":     requestID,
+		"method": "process/start",
+		"params": shellV1LiveStartParams(workspaceURI, "shell-v1-minimal", minimalEntries),
+	})
+	var started struct {
+		ProcessID string `json:"processId"`
+	}
+	mustDecodeResult(t, collector.response(t, strconv.Itoa(requestID)), &started)
+	if started.ProcessID != "shell-v1-minimal" {
+		t.Fatalf("process/start processId = %q, want shell-v1-minimal", started.ProcessID)
+	}
+
+	events := collector.processEventsUntilClosed(t, started.ProcessID)
+	observed := assertCompletedProcessEvents(t, events, 0)
+	if string(observed.stdout) != "agentserver-shell-v1\n" || len(observed.stderr) != 0 || len(observed.pty) != 0 {
+		t.Fatalf("shell-v1 system executable output: stdout=%q stderr=%q pty=%q", observed.stdout, observed.stderr, observed.pty)
+	}
+	closeAndWait(t, process)
+}
+
+func shellV1LiveStartParams(workspaceURI, processID string, entries []any) map[string]any {
+	return map[string]any{
+		"processId": processID,
+		"argv":      []string{"/bin/echo", "agentserver-shell-v1"},
+		"cwd":       workspaceURI,
+		"env":       map[string]string{},
+		"envPolicy": map[string]any{
+			"inherit":               "none",
+			"ignoreDefaultExcludes": false,
+			"exclude":               []string{},
+			"set":                   map[string]string{},
+			"includeOnly":           []string{},
+		},
+		"tty":       false,
+		"pipeStdin": false,
+		"arg0":      nil,
+		"sandbox": map[string]any{
+			"permissions": map[string]any{
+				"type": "managed",
+				"file_system": map[string]any{
+					"type":    "restricted",
+					"entries": entries,
+				},
+				"network": "restricted",
+			},
+			"cwd":                          workspaceURI,
+			"workspaceRoots":               []string{workspaceURI},
+			"windowsSandboxLevel":          "disabled",
+			"windowsSandboxPrivateDesktop": false,
+			"useLegacyLandlock":            false,
+		},
+		"enforceManagedNetwork": true,
+	}
+}
+
 func TestExecServerE02PTYOutputAndReplay(t *testing.T) {
 	process, paths := startLiveCodex(t, "exec-server", "--listen", "stdio", "--strict-config")
 	initializeExecServer(t, process)

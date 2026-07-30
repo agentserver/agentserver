@@ -59,6 +59,10 @@ func NewShellV1IdentityAllocator(idGenerator IDGenerator) (*ShellV1IdentityAlloc
 	return &ShellV1IdentityAllocator{idGenerator: idGenerator}, nil
 }
 
+func NewDefaultShellV1IdentityAllocator() (*ShellV1IdentityAllocator, error) {
+	return NewShellV1IdentityAllocator(newRandomUUID)
+}
+
 func (allocator *ShellV1IdentityAllocator) Allocate() (ShellV1Identities, error) {
 	if allocator == nil {
 		return ShellV1Identities{}, errors.New("shell identity allocator is required")
@@ -197,7 +201,13 @@ func MapShellV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal, to
 				FileSystem: shellSandboxFileSystem{
 					Type: "restricted",
 					Entries: []shellSandboxEntry{
-						{Path: shellSandboxPath{Type: "path", Path: rootURI}, Access: "read"},
+						{
+							Path: shellSandboxPath{
+								Type:  "special",
+								Value: &shellSandboxSpecialPath{Kind: "minimal"},
+							},
+							Access: "read",
+						},
 						{Path: shellSandboxPath{Type: "path", Path: rootURI}, Access: "write"},
 					},
 				},
@@ -483,8 +493,13 @@ type shellSandboxEntry struct {
 }
 
 type shellSandboxPath struct {
-	Type string `json:"type"`
-	Path string `json:"path"`
+	Type  string                   `json:"type"`
+	Path  string                   `json:"path,omitempty"`
+	Value *shellSandboxSpecialPath `json:"value,omitempty"`
+}
+
+type shellSandboxSpecialPath struct {
+	Kind string `json:"kind"`
 }
 
 type shellOperationPlan struct {

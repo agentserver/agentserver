@@ -56,6 +56,7 @@ func TestDevMCPAuthenticatorRequiresExactBearer(t *testing.T) {
 		bearer,
 		"40000000-0000-4000-8000-000000000004",
 		"20000000-0000-4000-8000-000000000002",
+		strings.Repeat("a", 64),
 		executorgateway.ExecutorMCPRunContext{
 			RunID:                     "41000000-0000-4000-8000-000000000004",
 			RunAttemptID:              "42000000-0000-4000-8000-000000000004",
@@ -76,6 +77,7 @@ func TestDevMCPAuthenticatorRequiresExactBearer(t *testing.T) {
 	}
 	if principal.WorkspaceID != "40000000-0000-4000-8000-000000000004" ||
 		principal.ExecutorID != "20000000-0000-4000-8000-000000000002" ||
+		principal.ToolCatalogDigest != strings.Repeat("a", 64) ||
 		!strings.HasPrefix(principal.CapabilityID, "insecure-dev:") || strings.Contains(principal.CapabilityID, bearer) {
 		t.Fatalf("development MCP principal = %+v", principal)
 	}
@@ -86,7 +88,7 @@ func TestDevMCPAuthenticatorRequiresExactBearer(t *testing.T) {
 	if principal.Run.RunID != "41000000-0000-4000-8000-000000000004" || principal.Run.ExpectedRunAttemptVersion != 5 {
 		t.Fatalf("development MCP run context = %+v", principal.Run)
 	}
-	if _, err := newDevMCPAuthenticator("short", principal.WorkspaceID, principal.ExecutorID, principal.Run); err == nil {
+	if _, err := newDevMCPAuthenticator("short", principal.WorkspaceID, principal.ExecutorID, principal.ToolCatalogDigest, principal.Run); err == nil {
 		t.Fatal("short development MCP bearer was accepted")
 	}
 }

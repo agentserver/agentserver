@@ -66,7 +66,10 @@ E01 stdio/EOF, exec-server environment metadata, and these executor slices:
   exec-server from the minimal verified layout while poison `codex`, `bwrap`,
   and `rg` sentinels on the supplied PATH remain untouched. The disposable
   native Linux gate additionally runs real read-only and workspace-write
-  requests through the manifest-pinned bundled bwrap;
+  requests through the manifest-pinned bundled bwrap. The exact stable macOS
+  gate also proves that `special:minimal(read) + workspace(write)` runs an
+  absolute system executable with a clean environment; a workspace-path-only
+  policy is retained as a negative fact because it lacks the platform runtime;
 - E10: both characterized releases accept a stdio JSON-RPC payload of exactly
   64 MiB and disconnect on the first byte above it; they accept exactly 262,144
   JSON values and reject the next value as one malformed message without

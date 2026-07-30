@@ -43,7 +43,7 @@ func TestExecutorMCPListEnvironmentsUsesFrozenContractAndAuthenticatedScope(t *t
 	}
 	catalog, err := harnessworker.BuildCatalog(
 		mcpcontract.Namespace,
-		"Deterministic executor tools.",
+		mcpcontract.NamespaceDescription,
 		[]harnessworker.ToolDescriptor{{
 			Name:        contractTool.Name,
 			Description: contractTool.Description,
@@ -100,6 +100,115 @@ func TestExecutorMCPListEnvironmentsUsesFrozenContractAndAuthenticatedScope(t *t
 	workspaceID, executorID, calls := registry.snapshot()
 	if calls != 1 || workspaceID != testMCPWorkspaceID || executorID != testExecutorID {
 		t.Fatalf("registry call = workspace %q executor %q calls %d", workspaceID, executorID, calls)
+	}
+}
+
+func TestExecutorMCPShellUsesAuthenticatedCallContextAndTerminalOrchestrator(t *testing.T) {
+	registered := testRegisteredEnvironment(testEnvironmentID, `{"kind":"local","root":"/workspace","displayName":"primary","defaultCwd":"."}`)
+	registry := &recordingMCPEnvironmentRegistry{environments: []RegisteredEnvironment{registered}}
+	resolver, err := NewEnvironmentResolver(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := newFakeShellAuthority()
+	dispatcher := &fakeShellDispatcher{start: func(request ProcessDispatchRequest) (*ProcessExchange, error) {
+		exchange := testShellStartExchange(request, 4)
+		exchange.response <- shellStartResponse(request.RPC, testProcessID)
+		exchange.events <- json.RawMessage(`{"method":"process/exited","params":{"processId":"80000000-0000-4000-8000-000000000008","seq":1,"exitCode":0,"sandboxDenied":false}}`)
+		exchange.events <- json.RawMessage(`{"method":"process/closed","params":{"processId":"80000000-0000-4000-8000-000000000008","seq":2}}`)
+		closeShellStartExchange(exchange)
+		return exchange, nil
+	}}
+	shell := newTestShellExecutor(t, authority, dispatcher)
+
+	contractTools := mcpcontract.Tools()
+	descriptors := make([]harnessworker.ToolDescriptor, len(contractTools))
+	for index, tool := range contractTools {
+		descriptors[index] = harnessworker.ToolDescriptor{Name: tool.Name, Description: tool.Description, InputSchema: tool.InputSchema}
+	}
+	catalog, err := harnessworker.BuildCatalog(
+		mcpcontract.Namespace, mcpcontract.NamespaceDescription, descriptors, harnessworker.DefaultLimits(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := testExecutorMCPPrincipal("capability-shell-mcp")
+	principal.ToolCatalogDigest = catalog.Digest()
+	config := DefaultExecutorMCPConfig()
+	config.ShellExecutor = shell
+	sequence := 0
+	config.IDGenerator = func() (string, error) {
+		sequence++
+		return fmtMCPTestSessionID(sequence), nil
+	}
+	handler, err := NewExecutorMCPHandler(testExecutorMCPAuthenticator{principals: map[string]ExecutorMCPPrincipal{
+		testMCPBearerA: principal,
+	}}, resolver, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = handler.Shutdown(context.Background()) })
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	client, err := harnessworker.ConnectMCP(t.Context(), harnessworker.MCPClientConfig{
+		Endpoint: server.URL + ExecutorMCPPath, BearerToken: testMCPBearerA, HTTPClient: server.Client(), AllowInsecureLoopback: true,
+		Namespace: catalog.Namespace(), NamespaceDescription: catalog.NamespaceDescription(),
+		ExpectedCatalogDigest: catalog.Digest(), ExpectedCatalog: catalog.CanonicalBytes(), Limits: harnessworker.DefaultLimits(),
+		CloseGrace: time.Second,
+		ElicitationHandler: func(context.Context, harnessworker.ElicitationRequest) (harnessworker.ElicitationDecision, error) {
+			return harnessworker.ElicitationDecision{Action: harnessworker.ApprovalCancel}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	result, err := client.CallDynamicTool(t.Context(), harnessworker.DynamicCall{
+		RunID: testMCPRunID, ThreadID: "thread-shell", TurnID: "turn-shell", CallID: "call-shell-mcp",
+		RunAttemptGeneration: 3, Namespace: mcpcontract.Namespace, Tool: mcpcontract.ToolShell,
+		Arguments: json.RawMessage(fmt.Sprintf(`{"environment_id":"%s","argv":["/bin/true"],"timeout_ms":10000}`, testEnvironmentID)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Success || len(result.ContentItems) != 1 {
+		t.Fatalf("MCP shell result = %+v", result)
+	}
+	var shellResult ShellV1Result
+	if err := json.Unmarshal([]byte(result.ContentItems[0].Text), &shellResult); err != nil {
+		t.Fatal(err)
+	}
+	if shellResult.Status != "succeeded" || !shellResult.OutputComplete || dispatcher.count() != 1 || authority.executionStatus() != "succeeded" {
+		t.Fatalf("terminal MCP shell result=%+v dispatches=%d core=%q", shellResult, dispatcher.count(), authority.executionStatus())
+	}
+}
+
+func TestParseExecutorMCPCallContextRejectsCapabilityMismatch(t *testing.T) {
+	principal := testExecutorMCPPrincipal("capability-meta")
+	valid := mcp.Meta{
+		executorMCPMetaRunID: principal.Run.RunID, executorMCPMetaThreadID: "thread", executorMCPMetaTurnID: "turn",
+		executorMCPMetaCallID: "call", executorMCPMetaRunAttemptGeneration: float64(principal.Run.RunAttemptGeneration),
+		executorMCPMetaToolCatalogDigest: principal.ToolCatalogDigest, executorMCPMetaProgressToken: "call",
+	}
+	if _, err := parseExecutorMCPCallContext(valid, principal); err != nil {
+		t.Fatal(err)
+	}
+	mutations := []func(mcp.Meta){
+		func(meta mcp.Meta) { meta[executorMCPMetaRunID] = "41000000-0000-4000-8000-000000000099" },
+		func(meta mcp.Meta) { meta[executorMCPMetaRunAttemptGeneration] = float64(4) },
+		func(meta mcp.Meta) { meta[executorMCPMetaToolCatalogDigest] = strings.Repeat("b", 64) },
+		func(meta mcp.Meta) { meta[executorMCPMetaProgressToken] = "other" },
+		func(meta mcp.Meta) { meta["future"] = true },
+	}
+	for index, mutate := range mutations {
+		copyMeta := make(mcp.Meta, len(valid))
+		for key, value := range valid {
+			copyMeta[key] = value
+		}
+		mutate(copyMeta)
+		if _, err := parseExecutorMCPCallContext(copyMeta, principal); err == nil {
+			t.Errorf("invalid metadata mutation %d was accepted", index)
+		}
 	}
 }
 
@@ -283,9 +392,10 @@ func newTestExecutorMCPHandler(t *testing.T, registry EnvironmentRegistry, princ
 
 func testExecutorMCPPrincipal(capabilityID string) ExecutorMCPPrincipal {
 	return ExecutorMCPPrincipal{
-		CapabilityID: capabilityID,
-		WorkspaceID:  testMCPWorkspaceID,
-		ExecutorID:   testExecutorID,
+		CapabilityID:      capabilityID,
+		WorkspaceID:       testMCPWorkspaceID,
+		ExecutorID:        testExecutorID,
+		ToolCatalogDigest: strings.Repeat("a", 64),
 		Run: ExecutorMCPRunContext{
 			RunID:                     testMCPRunID,
 			RunAttemptID:              testMCPAttemptID,

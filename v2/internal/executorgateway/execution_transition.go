@@ -30,6 +30,10 @@ func NewExecutionTransitionAllocator(producerInstanceID string, idGenerator IDGe
 	}, nil
 }
 
+func NewDefaultExecutionTransitionAllocator(producerInstanceID string) (*ExecutionTransitionAllocator, error) {
+	return NewExecutionTransitionAllocator(producerInstanceID, newRandomUUID)
+}
+
 // Allocate returns a process-wide strictly increasing producer sequence and
 // two fresh UUID identities. Allocation is serialized so concurrent shell
 // calls cannot reuse or reorder the local producer cursor. Failed ID

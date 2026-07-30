@@ -81,18 +81,33 @@ func (coordinator *ProcessTimeoutCoordinator) Run(ctx context.Context, start *Pr
 	case <-ctx.Done():
 		return result, ctx.Err()
 	case <-start.done:
-		if cause := processExchangeTerminal(start); cause != nil {
+		cause, terminalAt := processExchangeTerminal(start)
+		if cause != nil {
 			return result, cause
 		}
-		result.ProcessTerminalBeforeDeadline = true
-		return result, nil
-	case due, ok := <-start.timeoutDue:
-		if !ok {
-			if cause := processExchangeTerminal(start); cause != nil {
-				return result, cause
-			}
+		if terminalAt.IsZero() {
+			terminalAt = time.Now()
+		}
+		if terminalAt.Before(request.Deadline) {
 			result.ProcessTerminalBeforeDeadline = true
 			return result, nil
+		}
+		result.Source = ProcessTimeoutSourceGatewayTimer
+	case due, ok := <-start.timeoutDue:
+		if !ok {
+			cause, terminalAt := processExchangeTerminal(start)
+			if cause != nil {
+				return result, cause
+			}
+			if terminalAt.IsZero() {
+				terminalAt = time.Now()
+			}
+			if terminalAt.Before(request.Deadline) {
+				result.ProcessTerminalBeforeDeadline = true
+				return result, nil
+			}
+			result.Source = ProcessTimeoutSourceGatewayTimer
+			break
 		}
 		if due.ProcessID != processID || due.Context != request.Context {
 			return result, errors.New("retained agentx timeout signal differs from the frozen timeout operation")
@@ -100,6 +115,16 @@ func (coordinator *ProcessTimeoutCoordinator) Run(ctx context.Context, start *Pr
 		result.Source = ProcessTimeoutSourceAgentx
 	case <-timer.C:
 		result.Source = ProcessTimeoutSourceGatewayTimer
+	}
+	// done and a timeout source can become ready before the select is
+	// scheduled. The selected case is not ordering evidence; the recorded
+	// gateway arrival time is authoritative before crossing core Begin.
+	if cause, terminalAt := processExchangeTerminal(start); cause != nil {
+		return result, cause
+	} else if !terminalAt.IsZero() && terminalAt.Before(request.Deadline) {
+		result.Source = ""
+		result.ProcessTerminalBeforeDeadline = true
+		return result, nil
 	}
 
 	begin, err := coordinator.authority.BeginOperationDispatch(ctx, request.Begin)
@@ -193,8 +218,8 @@ func validateTimeoutBeginResult(request ProcessTimeoutDispatchRequest, result Be
 	return nil
 }
 
-func processExchangeTerminal(exchange *ProcessExchange) error {
+func processExchangeTerminal(exchange *ProcessExchange) (error, time.Time) {
 	exchange.mu.Lock()
 	defer exchange.mu.Unlock()
-	return exchange.terminal
+	return exchange.terminal, exchange.terminalAt
 }

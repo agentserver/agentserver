@@ -65,15 +65,19 @@ func TestMapShellV1BuildsDeterministicRestrictedProcessPlan(t *testing.T) {
 	if len(entries) != 2 {
 		t.Fatalf("sandbox entries = %+v", entries)
 	}
-	for _, rawEntry := range entries {
-		entry := rawEntry.(map[string]any)
-		entryPath := entry["path"].(map[string]any)
-		if entryPath["type"] != "path" || entryPath["path"] != plan.RootURI {
-			t.Fatalf("sandbox path escaped registered root: %+v", entryPath)
-		}
-		if _, special := entryPath["value"]; special {
-			t.Fatalf("special root leaked into shell-v1: %+v", entryPath)
-		}
+	minimal := entries[0].(map[string]any)
+	minimalPath := minimal["path"].(map[string]any)
+	minimalValue := minimalPath["value"].(map[string]any)
+	if minimal["access"] != "read" || minimalPath["type"] != "special" || minimalValue["kind"] != "minimal" {
+		t.Fatalf("sandbox minimal runtime entry = %+v", minimal)
+	}
+	workspace := entries[1].(map[string]any)
+	workspacePath := workspace["path"].(map[string]any)
+	if workspace["access"] != "write" || workspacePath["type"] != "path" || workspacePath["path"] != plan.RootURI {
+		t.Fatalf("sandbox workspace entry escaped registered root: %+v", workspace)
+	}
+	if _, special := workspacePath["value"]; special {
+		t.Fatalf("special root leaked into shell-v1 workspace entry: %+v", workspacePath)
 	}
 
 	limits := agentxconn.Limits{MaxFrameBytes: 8 * 1024 * 1024, MaxJSONValues: 65_536, MaxJSONDepth: 256}

@@ -95,6 +95,40 @@ func TestProcessTimeoutCoordinatorStopsForTerminalProcess(t *testing.T) {
 	}
 }
 
+func TestProcessTimeoutCoordinatorDoesNotCallLateTerminalPreDeadline(t *testing.T) {
+	authority := &recordingTimeoutAuthority{result: testTimeoutBeginResult(true)}
+	dispatcher := &recordingProcessDispatcher{}
+	coordinator, err := NewProcessTimeoutCoordinator(authority, dispatcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := testTimeoutStartExchange()
+	close(start.timeoutDue)
+	close(start.done)
+	result, err := coordinator.Run(t.Context(), start, testTimeoutDispatchRequest(time.Now().Add(-time.Millisecond)))
+	if err != nil || result.ProcessTerminalBeforeDeadline || result.Source != ProcessTimeoutSourceGatewayTimer || authority.calls() != 1 || dispatcher.calls() != 1 {
+		t.Fatalf("late terminal timeout result = %+v, %v; begin=%d dispatch=%d", result, err, authority.calls(), dispatcher.calls())
+	}
+}
+
+func TestProcessTimeoutCoordinatorUsesRecordedTerminalArrivalBeforeDeadline(t *testing.T) {
+	authority := &recordingTimeoutAuthority{result: testTimeoutBeginResult(true)}
+	dispatcher := &recordingProcessDispatcher{}
+	coordinator, err := NewProcessTimeoutCoordinator(authority, dispatcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := testTimeoutStartExchange()
+	deadline := time.Now().Add(-time.Second)
+	start.terminalAt = deadline.Add(-time.Second)
+	close(start.timeoutDue)
+	close(start.done)
+	result, err := coordinator.Run(t.Context(), start, testTimeoutDispatchRequest(deadline))
+	if err != nil || !result.ProcessTerminalBeforeDeadline || result.Source != "" || authority.calls() != 0 || dispatcher.calls() != 0 {
+		t.Fatalf("recorded pre-deadline terminal result = %+v, %v; begin=%d dispatch=%d", result, err, authority.calls(), dispatcher.calls())
+	}
+}
+
 func testTimeoutStartExchange() *ProcessExchange {
 	return &ProcessExchange{
 		holder:   ConnectionHolder{ExecutorID: testExecutorID, Generation: 7},

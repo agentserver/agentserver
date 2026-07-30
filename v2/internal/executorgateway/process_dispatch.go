@@ -9,6 +9,7 @@ import (
 	"io"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/codexwire"
 	"github.com/agentserver/agentserver/v2/internal/execprofile"
@@ -114,8 +115,9 @@ type ProcessExchange struct {
 	failure    chan error
 	done       chan struct{}
 
-	mu       sync.Mutex
-	terminal error
+	mu         sync.Mutex
+	terminal   error
+	terminalAt time.Time
 }
 
 func (exchange *ProcessExchange) Holder() ConnectionHolder { return exchange.holder }
@@ -134,6 +136,27 @@ func (exchange *ProcessExchange) AwaitResponse(ctx context.Context) (json.RawMes
 		return append(json.RawMessage(nil), response...), nil
 	case err := <-exchange.failure:
 		return nil, err
+	case <-exchange.done:
+		// A response or failure is queued before the call table closes done.
+		// Recheck both channels because select is allowed to choose done when
+		// more than one case is ready.
+		select {
+		case response := <-exchange.response:
+			return append(json.RawMessage(nil), response...), nil
+		default:
+		}
+		select {
+		case err := <-exchange.failure:
+			return nil, err
+		default:
+		}
+		exchange.mu.Lock()
+		err := exchange.terminal
+		exchange.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		return nil, io.EOF
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -523,6 +546,11 @@ func (table *processCallTable) completeLocked(call *processCall) {
 		return
 	}
 	call.closed = true
+	call.exchange.mu.Lock()
+	if call.exchange.terminalAt.IsZero() {
+		call.exchange.terminalAt = time.Now()
+	}
+	call.exchange.mu.Unlock()
 	delete(table.byResponse, call.responseKey)
 	delete(table.byProcess, call.processKey)
 	for _, command := range table.byCommandResponse {
@@ -556,6 +584,11 @@ func (table *processCallTable) completeCommandLocked(call *processCommandCall) {
 		return
 	}
 	call.closed = true
+	call.exchange.mu.Lock()
+	if call.exchange.terminalAt.IsZero() {
+		call.exchange.terminalAt = time.Now()
+	}
+	call.exchange.mu.Unlock()
 	delete(table.byCommandResponse, call.responseKey)
 	close(call.exchange.events)
 	close(call.exchange.done)

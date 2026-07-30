@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -43,5 +45,35 @@ func TestRequireLoopbackAddress(t *testing.T) {
 	}
 	if err := requireLoopbackAddress(":8443"); err == nil {
 		t.Fatal("wildcard insecure-dev listen address was accepted")
+	}
+}
+
+func TestDevMCPAuthenticatorRequiresExactBearer(t *testing.T) {
+	const bearer = "0123456789abcdef0123456789abcdef"
+	authenticator, err := newDevMCPAuthenticator(
+		bearer,
+		"40000000-0000-4000-8000-000000000004",
+		"20000000-0000-4000-8000-000000000002",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "https://gateway.test/mcp", nil)
+	request.Header.Set("Authorization", "Bearer "+bearer)
+	principal, err := authenticator.AuthenticateExecutorMCP(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if principal.WorkspaceID != "40000000-0000-4000-8000-000000000004" ||
+		principal.ExecutorID != "20000000-0000-4000-8000-000000000002" ||
+		!strings.HasPrefix(principal.CapabilityID, "insecure-dev:") || strings.Contains(principal.CapabilityID, bearer) {
+		t.Fatalf("development MCP principal = %+v", principal)
+	}
+	request.Header.Add("Authorization", "Bearer "+bearer)
+	if _, err := authenticator.AuthenticateExecutorMCP(request); err == nil {
+		t.Fatal("duplicate Authorization headers were accepted")
+	}
+	if _, err := newDevMCPAuthenticator("short", principal.WorkspaceID, principal.ExecutorID); err == nil {
+		t.Fatal("short development MCP bearer was accepted")
 	}
 }

@@ -3,7 +3,7 @@
   "info": {
     "title": "agentserver v2 internal command API",
     "version": "0.1.0",
-    "description": "Initial executor-connection command slice. All endpoints require an authenticated executor-gateway workload identity."
+    "description": "Executor connection commands and online environment registry queries. All endpoints require an authenticated executor-gateway workload identity."
   },
   "servers": [{"url": "https://agentserver-core"}],
   "security": [{"workloadMTLS": []}],
@@ -21,6 +21,19 @@
           "200": {"description": "Fresh generation acquired or exact current attempt returned", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExecutorConnectionResponse"}}}},
           "400": {"$ref": "#/components/responses/CommandError"},
           "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/executor-environments:list": {
+      "post": {
+        "operationId": "listExecutorEnvironments",
+        "description": "Returns only online environments backed by a live database-clock connection lease.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ListExecutorEnvironmentsRequest"}}}},
+        "responses": {
+          "200": {"description": "Bounded online environment registry", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ListExecutorEnvironmentsResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
           "409": {"$ref": "#/components/responses/CommandError"}
         }
       }
@@ -162,6 +175,37 @@
         "additionalProperties": false,
         "required": ["holder"],
         "properties": {"holder": {"$ref": "#/components/schemas/ConnectionHolder"}}
+      },
+      "ListExecutorEnvironmentsRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["workspaceId"],
+        "properties": {
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "executorId": {"$ref": "#/components/schemas/UUID"}
+        }
+      },
+      "ExecutorEnvironment": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["environmentId", "executorId", "rootDescriptor", "platform", "insecureDev", "environmentVersion", "connectionGeneration"],
+        "properties": {
+          "environmentId": {"$ref": "#/components/schemas/UUID"},
+          "executorId": {"$ref": "#/components/schemas/UUID"},
+          "rootDescriptor": {"type": "object"},
+          "platform": {"enum": ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64", "windows-arm64"]},
+          "insecureDev": {"type": "boolean"},
+          "environmentVersion": {"type": "integer", "minimum": 1},
+          "connectionGeneration": {"type": "integer", "minimum": 1}
+        }
+      },
+      "ListExecutorEnvironmentsResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["environments"],
+        "properties": {
+          "environments": {"type": "array", "maxItems": 256, "items": {"$ref": "#/components/schemas/ExecutorEnvironment"}}
+        }
       },
       "ErrorResponse": {
         "type": "object",

@@ -2,11 +2,15 @@
 // database dependency so non-core components cannot reach coredb through it.
 package corecontract
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 const (
 	AcquireExecutorConnectionPath = "/internal/v2/executor-connections:acquire"
 	ExecutorConnectionPathPrefix  = "/internal/v2/executor-connections/"
+	ListExecutorEnvironmentsPath  = "/internal/v2/executor-environments:list"
 )
 
 type EnvironmentDeclaration struct {
@@ -58,6 +62,25 @@ type FenceExecutorConnectionRequest struct {
 
 type ExecutorConnectionResponse struct {
 	Holder ConnectionHolder `json:"holder"`
+}
+
+type ListExecutorEnvironmentsRequest struct {
+	WorkspaceID string `json:"workspaceId"`
+	ExecutorID  string `json:"executorId,omitempty"`
+}
+
+type ExecutorEnvironment struct {
+	EnvironmentID        string          `json:"environmentId"`
+	ExecutorID           string          `json:"executorId"`
+	RootDescriptor       json.RawMessage `json:"rootDescriptor"`
+	Platform             string          `json:"platform"`
+	InsecureDev          bool            `json:"insecureDev"`
+	EnvironmentVersion   int64           `json:"environmentVersion"`
+	ConnectionGeneration int64           `json:"connectionGeneration"`
+}
+
+type ListExecutorEnvironmentsResponse struct {
+	Environments []ExecutorEnvironment `json:"environments"`
 }
 
 type ErrorResponse struct {

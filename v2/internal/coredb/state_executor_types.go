@@ -1,6 +1,9 @@
 package coredb
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 const (
 	ExecutorStatusEnrolling = "enrolling"
@@ -16,8 +19,24 @@ const (
 	ExecutorConnectionStatusOnline     = "online"
 	ExecutorConnectionStatusFenced     = "fenced"
 
-	MaxExecutorConnectionTTL = 5 * time.Minute
+	MaxExecutorConnectionTTL      = 5 * time.Minute
+	MaxListedExecutorEnvironments = 256
 )
+
+type ListOnlineExecutorEnvironmentsQuery struct {
+	WorkspaceID string
+	ExecutorID  string
+}
+
+type OnlineExecutorEnvironment struct {
+	EnvironmentID        string
+	ExecutorID           string
+	RootDescriptor       json.RawMessage
+	Platform             string
+	InsecureDev          bool
+	EnvironmentVersion   int64
+	ConnectionGeneration int64
+}
 
 // ExecutorEnvironmentDeclaration is the build and profile identity asserted
 // by an authenticated agentx hello. AcquireExecutorConnection compares every

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/coredb"
 	"github.com/agentserver/agentserver/v2/internal/coreserver"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -70,12 +71,20 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	if err != nil {
 		return err
 	}
-	handler, err := coreserver.NewExecutorConnectionHandler(authorizer, coreserver.StateStoreExecutorConnectionCommands{
-		Store: coredb.NewStateStore(pool),
+	store := coredb.NewStateStore(pool)
+	connectionHandler, err := coreserver.NewExecutorConnectionHandler(authorizer, coreserver.StateStoreExecutorConnectionCommands{
+		Store: store,
 	})
 	if err != nil {
 		return err
 	}
+	environmentHandler, err := coreserver.NewExecutorEnvironmentHandler(authorizer, coreserver.StateStoreExecutorEnvironmentQueries{Store: store})
+	if err != nil {
+		return err
+	}
+	handler := http.NewServeMux()
+	handler.Handle(corecontract.ListExecutorEnvironmentsPath, environmentHandler)
+	handler.Handle("/", connectionHandler)
 	tlsConfig, err := coreTLSConfig(certificateFile, keyFile, clientCAFile)
 	if err != nil {
 		return err

@@ -44,6 +44,7 @@ func TestInternalOpenAPIExecutorConnectionPathsMatchClientContract(t *testing.T)
 	}
 	want := map[string]string{
 		AcquireExecutorConnectionPath:                  "acquireExecutorConnection",
+		ListExecutorEnvironmentsPath:                   "listExecutorEnvironments",
 		RenewExecutorConnectionPath("{executorId}"):    "renewExecutorConnection",
 		ActivateExecutorConnectionPath("{executorId}"): "activateExecutorConnection",
 		FenceExecutorConnectionPath("{executorId}"):    "fenceExecutorConnection",
@@ -65,6 +66,9 @@ func TestInternalOpenAPIExecutorConnectionPathsMatchClientContract(t *testing.T)
 	assertSchemaFields(t, document.Components.Schemas, "ActivateExecutorConnectionRequest", reflect.TypeFor[ActivateExecutorConnectionRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "FenceExecutorConnectionRequest", reflect.TypeFor[FenceExecutorConnectionRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "ExecutorConnectionResponse", reflect.TypeFor[ExecutorConnectionResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "ListExecutorEnvironmentsRequest", reflect.TypeFor[ListExecutorEnvironmentsRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "ExecutorEnvironment", reflect.TypeFor[ExecutorEnvironment]())
+	assertSchemaFields(t, document.Components.Schemas, "ListExecutorEnvironmentsResponse", reflect.TypeFor[ListExecutorEnvironmentsResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "ErrorResponse", reflect.TypeFor[ErrorResponse]())
 }
 

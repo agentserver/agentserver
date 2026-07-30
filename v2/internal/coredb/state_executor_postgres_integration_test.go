@@ -3,6 +3,7 @@ package coredb
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -53,6 +54,20 @@ func TestPostgreSQLExecutorConnectionCAS(t *testing.T) {
 		t.Fatalf("exact ActivateExecutorConnection() retry = %+v, %v", activationRetry, err)
 	}
 	assertExecutorRuntimeStatus(t, pool, schema, command.ExecutorID, command.Environments[0].ID, ExecutorStatusOnline, ExecutorEnvironmentStatusOnline)
+	online, err := store.ListOnlineExecutorEnvironments(t.Context(), ListOnlineExecutorEnvironmentsQuery{
+		WorkspaceID: stateTestUUID(805),
+		ExecutorID:  command.ExecutorID,
+	})
+	if err != nil || len(online) != 1 {
+		t.Fatalf("ListOnlineExecutorEnvironments() = %+v, %v", online, err)
+	}
+	var rootDescriptor map[string]any
+	if err := json.Unmarshal(online[0].RootDescriptor, &rootDescriptor); err != nil || rootDescriptor["root"] != "/workspace" {
+		t.Fatalf("online root descriptor = %s, %v", online[0].RootDescriptor, err)
+	}
+	if online[0].ConnectionGeneration != first.Connection.Generation || online[0].EnvironmentVersion < 1 {
+		t.Fatalf("online environment generation/version = %+v", online[0])
+	}
 
 	wrongHolder := RenewExecutorConnectionCommand{
 		ExecutorID:        command.ExecutorID,
@@ -93,6 +108,10 @@ func TestPostgreSQLExecutorConnectionCAS(t *testing.T) {
 		t.Fatalf("replacement connection status = %q, want connecting", second.Connection.Status)
 	}
 	assertExecutorRuntimeStatus(t, pool, schema, command.ExecutorID, command.Environments[0].ID, ExecutorStatusOffline, ExecutorEnvironmentStatusOffline)
+	online, err = store.ListOnlineExecutorEnvironments(t.Context(), ListOnlineExecutorEnvironmentsQuery{WorkspaceID: stateTestUUID(805)})
+	if err != nil || len(online) != 0 {
+		t.Fatalf("online environments after fresh connecting generation = %+v, %v", online, err)
+	}
 	if _, err := store.AcquireExecutorConnection(t.Context(), command); !HasStateErrorCode(err, ErrorConnectionFenced) {
 		t.Fatalf("superseded exact acquire retry error = %v, want connection_fenced", err)
 	}
@@ -203,9 +222,22 @@ func TestPostgreSQLExpiredExecutorConnectionCannotBeRevived(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.ActivateExecutorConnection(t.Context(), ActivateExecutorConnectionCommand{
+		ExecutorID:        command.ExecutorID,
+		SessionID:         command.SessionID,
+		GatewayInstanceID: command.GatewayInstanceID,
+		Generation:        first.Connection.Generation,
+		Environments:      command.Environments,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	query := fmt.Sprintf("UPDATE %s.executor_connections SET expires_at = pg_catalog.clock_timestamp() - interval '1 second' WHERE executor_id = $1", quoteIdentifier(schema))
 	if _, err := pool.Exec(t.Context(), query, command.ExecutorID); err != nil {
 		t.Fatal(err)
+	}
+	online, err := store.ListOnlineExecutorEnvironments(t.Context(), ListOnlineExecutorEnvironmentsQuery{WorkspaceID: stateTestUUID(1005)})
+	if err != nil || len(online) != 0 {
+		t.Fatalf("online environments after database-clock lease expiry = %+v, %v", online, err)
 	}
 	if _, err := store.AcquireExecutorConnection(t.Context(), command); !HasStateErrorCode(err, ErrorConnectionFenced) {
 		t.Fatalf("expired exact acquire retry error = %v, want connection_fenced", err)

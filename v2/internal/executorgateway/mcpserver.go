@@ -1,0 +1,487 @@
+package executorgateway
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
+
+	"github.com/agentserver/agentserver/v2/internal/executorgateway/mcpcontract"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+const (
+	ExecutorMCPPath            = "/mcp"
+	ExecutorMCPProtocolVersion = "2025-11-25"
+
+	defaultExecutorMCPMaxSessions      = 256
+	defaultExecutorMCPSessionTimeout   = 30 * time.Minute
+	defaultExecutorMCPMaxRequestBytes  = 2 * 1024 * 1024
+	maximumExecutorMCPMaxSessions      = 4096
+	maximumExecutorMCPSessionTimeout   = 24 * time.Hour
+	maximumExecutorMCPMaxRequestBytes  = 8 * 1024 * 1024
+	maximumExecutorMCPCapabilityIDSize = 256
+	maximumExecutorMCPSessionIDTries   = 8
+
+	mcpSessionIDHeader = "Mcp-Session-Id"
+)
+
+var errExecutorMCPShuttingDown = errors.New("executor MCP server is shutting down")
+
+// ExecutorMCPPrincipal is the immutable authorization projection for one MCP
+// session. CapabilityID must identify one concrete credential (normally its
+// jti), so a different run capability cannot reuse a known MCP session ID.
+// AuthenticateExecutorMCP is still invoked for every HTTP request and must
+// perform live expiry, generation, and authorization checks.
+type ExecutorMCPPrincipal struct {
+	CapabilityID string
+	WorkspaceID  string
+	// ExecutorID optionally narrows list_environments to one executor. The
+	// empty value grants the workspace-wide registry projection.
+	ExecutorID string
+}
+
+type ExecutorMCPAuthenticator interface {
+	AuthenticateExecutorMCP(*http.Request) (ExecutorMCPPrincipal, error)
+}
+
+type ExecutorMCPConfig struct {
+	MaxSessions         int
+	SessionTimeout      time.Duration
+	MaxRequestBodyBytes int64
+	IDGenerator         IDGenerator
+	Logger              *slog.Logger
+}
+
+func DefaultExecutorMCPConfig() ExecutorMCPConfig {
+	return ExecutorMCPConfig{
+		MaxSessions:         defaultExecutorMCPMaxSessions,
+		SessionTimeout:      defaultExecutorMCPSessionTimeout,
+		MaxRequestBodyBytes: defaultExecutorMCPMaxRequestBytes,
+		IDGenerator:         newRandomUUID,
+	}
+}
+
+type executorMCPServerContextKey struct{}
+
+type executorMCPSession struct {
+	id        string
+	principal ExecutorMCPPrincipal
+	server    *mcp.Server
+	pending   bool
+}
+
+// ExecutorMCPHandler exposes the implemented executor tools over one bounded,
+// stateful Streamable HTTP endpoint. The official SDK owns protocol framing;
+// this wrapper owns authentication, exact protocol selection, session
+// authorization binding, and shutdown.
+type ExecutorMCPHandler struct {
+	authenticator ExecutorMCPAuthenticator
+	resolver      *EnvironmentResolver
+	config        ExecutorMCPConfig
+	streamable    *mcp.StreamableHTTPHandler
+
+	mu           sync.Mutex
+	shuttingDown bool
+	sessions     map[string]*executorMCPSession
+}
+
+func NewExecutorMCPHandler(authenticator ExecutorMCPAuthenticator, resolver *EnvironmentResolver, config ExecutorMCPConfig) (*ExecutorMCPHandler, error) {
+	if authenticator == nil {
+		return nil, errors.New("executor MCP authenticator is required")
+	}
+	if resolver == nil {
+		return nil, errors.New("environment resolver is required")
+	}
+	if config.MaxSessions < 1 || config.MaxSessions > maximumExecutorMCPMaxSessions {
+		return nil, fmt.Errorf("executor MCP max sessions must be between 1 and %d", maximumExecutorMCPMaxSessions)
+	}
+	if config.SessionTimeout <= 0 || config.SessionTimeout > maximumExecutorMCPSessionTimeout {
+		return nil, fmt.Errorf("executor MCP session timeout must be positive and at most %s", maximumExecutorMCPSessionTimeout)
+	}
+	if config.MaxRequestBodyBytes < 1 || config.MaxRequestBodyBytes > maximumExecutorMCPMaxRequestBytes {
+		return nil, fmt.Errorf("executor MCP request body limit must be between 1 and %d bytes", maximumExecutorMCPMaxRequestBytes)
+	}
+	if config.IDGenerator == nil {
+		return nil, errors.New("executor MCP session ID generator is required")
+	}
+
+	handler := &ExecutorMCPHandler{
+		authenticator: authenticator,
+		resolver:      resolver,
+		config:        config,
+		sessions:      make(map[string]*executorMCPSession),
+	}
+	handler.streamable = mcp.NewStreamableHTTPHandler(
+		func(request *http.Request) *mcp.Server {
+			server, _ := request.Context().Value(executorMCPServerContextKey{}).(*mcp.Server)
+			return server
+		},
+		&mcp.StreamableHTTPOptions{
+			Stateless:           false,
+			SessionTimeout:      config.SessionTimeout,
+			MaxRequestBodyBytes: config.MaxRequestBodyBytes,
+			Logger:              config.Logger,
+		},
+	)
+	return handler, nil
+}
+
+func (handler *ExecutorMCPHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
+	if request.URL.Path != ExecutorMCPPath || request.URL.RawQuery != "" {
+		http.NotFound(response, request)
+		return
+	}
+	response = &executorMCPResponseWriter{ResponseWriter: response}
+	response.Header().Set("Cache-Control", "no-store, no-transform")
+	response.Header().Set("X-Content-Type-Options", "nosniff")
+	if request.Method != http.MethodPost && request.Method != http.MethodGet && request.Method != http.MethodDelete {
+		response.Header().Set("Allow", "GET, POST, DELETE")
+		http.Error(response, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// A browser origin is never a valid harness-worker. Reject it before
+	// bearer authentication so this endpoint cannot become a CSRF oracle.
+	if request.Header.Get("Origin") != "" {
+		http.Error(response, "browser origins are forbidden", http.StatusForbidden)
+		return
+	}
+
+	principal, err := handler.authenticator.AuthenticateExecutorMCP(request)
+	if err != nil {
+		response.Header().Set("WWW-Authenticate", `Bearer realm="executor-gateway"`)
+		http.Error(response, "executor MCP authentication failed", http.StatusUnauthorized)
+		return
+	}
+	if err := validateExecutorMCPPrincipal(principal); err != nil {
+		http.Error(response, "executor MCP authentication produced an invalid principal", http.StatusInternalServerError)
+		return
+	}
+
+	sessionID, err := requestSessionID(request)
+	if err != nil {
+		http.Error(response, "invalid MCP session header", http.StatusBadRequest)
+		return
+	}
+	var session *executorMCPSession
+	if sessionID == "" {
+		if request.Method == http.MethodPost {
+			session, err = handler.prepareSession(principal)
+			if err != nil {
+				status := http.StatusServiceUnavailable
+				if !errors.Is(err, errExecutorMCPShuttingDown) {
+					status = http.StatusInternalServerError
+					if errors.Is(err, errExecutorMCPSessionLimit) {
+						status = http.StatusServiceUnavailable
+					}
+				}
+				http.Error(response, "executor MCP session is unavailable", status)
+				return
+			}
+			defer handler.finishPreparedSession(session)
+		}
+	} else {
+		session, err = handler.authorizeSession(sessionID, principal)
+		if err != nil {
+			if errors.Is(err, errExecutorMCPShuttingDown) {
+				http.Error(response, "executor MCP server is shutting down", http.StatusServiceUnavailable)
+				return
+			}
+			http.Error(response, "MCP session is not authorized by this capability", http.StatusForbidden)
+			return
+		}
+		if request.Method == http.MethodDelete {
+			defer handler.finishExistingSession(sessionID, session)
+		}
+	}
+
+	if session != nil {
+		request = request.WithContext(context.WithValue(request.Context(), executorMCPServerContextKey{}, session.server))
+	}
+	handler.streamable.ServeHTTP(response, request)
+}
+
+type executorMCPResponseWriter struct {
+	http.ResponseWriter
+}
+
+func (writer *executorMCPResponseWriter) WriteHeader(status int) {
+	writer.Header().Set("Cache-Control", "no-store, no-transform")
+	writer.Header().Set("X-Content-Type-Options", "nosniff")
+	writer.ResponseWriter.WriteHeader(status)
+}
+
+func (writer *executorMCPResponseWriter) Write(body []byte) (int, error) {
+	writer.Header().Set("Cache-Control", "no-store, no-transform")
+	writer.Header().Set("X-Content-Type-Options", "nosniff")
+	return writer.ResponseWriter.Write(body)
+}
+
+func (writer *executorMCPResponseWriter) Unwrap() http.ResponseWriter {
+	return writer.ResponseWriter
+}
+
+var errExecutorMCPSessionLimit = errors.New("executor MCP session limit reached")
+
+func (handler *ExecutorMCPHandler) prepareSession(principal ExecutorMCPPrincipal) (*executorMCPSession, error) {
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	if handler.shuttingDown {
+		return nil, errExecutorMCPShuttingDown
+	}
+	handler.sweepClosedSessionsLocked()
+	if len(handler.sessions) >= handler.config.MaxSessions {
+		return nil, errExecutorMCPSessionLimit
+	}
+	var sessionID string
+	for range maximumExecutorMCPSessionIDTries {
+		candidate, err := handler.config.IDGenerator()
+		if err != nil {
+			return nil, fmt.Errorf("generate executor MCP session ID: %w", err)
+		}
+		if err := validateExecutorMCPSessionID(candidate); err != nil {
+			return nil, err
+		}
+		if _, duplicate := handler.sessions[candidate]; !duplicate {
+			sessionID = candidate
+			break
+		}
+	}
+	if sessionID == "" {
+		return nil, errors.New("executor MCP session ID generator repeatedly collided")
+	}
+	session := &executorMCPSession{id: sessionID, principal: principal, pending: true}
+	session.server = handler.newScopedServer(session)
+	handler.sessions[sessionID] = session
+	return session, nil
+}
+
+func (handler *ExecutorMCPHandler) newScopedServer(session *executorMCPSession) *mcp.Server {
+	server := mcp.NewServer(
+		&mcp.Implementation{Name: "agentserver-executor-gateway", Version: mcpcontract.Version},
+		&mcp.ServerOptions{
+			Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
+			PageSize:     16,
+			GetSessionID: func() string { return session.id },
+			Logger:       handler.config.Logger,
+		},
+	)
+	server.AddReceivingMiddleware(requireExecutorMCPProtocol)
+	tool, found := mcpcontract.Lookup(mcpcontract.ToolListEnvironments)
+	if !found {
+		panic("list_environments is missing from executor MCP contract")
+	}
+	mcp.AddTool(server, &mcp.Tool{
+		Name:         tool.Name,
+		Description:  tool.Description,
+		InputSchema:  tool.InputSchema,
+		OutputSchema: tool.OutputSchema,
+	}, func(ctx context.Context, request *mcp.CallToolRequest, input listEnvironmentsInput) (*mcp.CallToolResult, ListEnvironmentsResult, error) {
+		if request == nil || request.Session == nil || request.Session.ID() != session.id {
+			return nil, ListEnvironmentsResult{}, errors.New("list_environments arrived without its authenticated MCP session")
+		}
+		if request.Params == nil || len(request.Params.InputResponses) != 0 || request.Params.RequestState != "" {
+			return nil, ListEnvironmentsResult{}, errors.New("list_environments does not support multi-round-trip input")
+		}
+		executorID := input.ExecutorID
+		if session.principal.ExecutorID != "" {
+			if executorID != "" && executorID != session.principal.ExecutorID {
+				return nil, ListEnvironmentsResult{}, errors.New("executor_id is outside the authenticated run capability")
+			}
+			executorID = session.principal.ExecutorID
+		}
+		result, err := handler.resolver.List(ctx, session.principal.WorkspaceID, executorID)
+		if err != nil {
+			if handler.config.Logger != nil {
+				handler.config.Logger.ErrorContext(ctx, "list executor MCP environments",
+					"workspace_id", session.principal.WorkspaceID,
+					"executor_id", executorID,
+					"error", err,
+				)
+			}
+			return nil, ListEnvironmentsResult{}, errors.New("list_environments is temporarily unavailable")
+		}
+		// A non-nil empty Content slice prevents the SDK from duplicating the
+		// structured JSON as a second text result. harness-worker projects the
+		// validated structured value exactly once.
+		return &mcp.CallToolResult{Content: []mcp.Content{}}, result, nil
+	})
+	return server
+}
+
+type listEnvironmentsInput struct {
+	ExecutorID string `json:"executor_id,omitempty"`
+}
+
+func requireExecutorMCPProtocol(next mcp.MethodHandler) mcp.MethodHandler {
+	return func(ctx context.Context, method string, request mcp.Request) (mcp.Result, error) {
+		if method == "initialize" {
+			params, ok := request.GetParams().(*mcp.InitializeParams)
+			if !ok || params == nil || params.ProtocolVersion != ExecutorMCPProtocolVersion {
+				requested := ""
+				if ok && params != nil {
+					requested = params.ProtocolVersion
+				}
+				data, _ := json.Marshal(mcp.UnsupportedProtocolVersionData{
+					Supported: []string{ExecutorMCPProtocolVersion},
+					Requested: requested,
+				})
+				return nil, &jsonrpc.Error{
+					Code:    mcp.CodeUnsupportedProtocolVersion,
+					Message: fmt.Sprintf("executor MCP requires protocol %s", ExecutorMCPProtocolVersion),
+					Data:    data,
+				}
+			}
+		}
+		result, err := next(ctx, method, request)
+		if err == nil && method == "tools/list" {
+			if listed, ok := result.(*mcp.ListToolsResult); ok && listed != nil {
+				listed.CacheScope = "private"
+				listed.TTLMs = 0
+			}
+		}
+		return result, err
+	}
+}
+
+func (handler *ExecutorMCPHandler) finishPreparedSession(session *executorMCPSession) {
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	current := handler.sessions[session.id]
+	if current != session {
+		return
+	}
+	session.pending = false
+	if !mcpServerHasSessions(session.server) {
+		delete(handler.sessions, session.id)
+	}
+}
+
+func (handler *ExecutorMCPHandler) authorizeSession(sessionID string, principal ExecutorMCPPrincipal) (*executorMCPSession, error) {
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	if handler.shuttingDown {
+		return nil, errExecutorMCPShuttingDown
+	}
+	handler.sweepClosedSessionsLocked()
+	session := handler.sessions[sessionID]
+	if session == nil || session.principal != principal {
+		return nil, errors.New("MCP session principal mismatch")
+	}
+	return session, nil
+}
+
+func (handler *ExecutorMCPHandler) finishExistingSession(sessionID string, session *executorMCPSession) {
+	handler.mu.Lock()
+	defer handler.mu.Unlock()
+	// Only forget a DELETE after the SDK actually removed its session. A
+	// malformed DELETE must not detach our authorization record from a still
+	// live SDK session and thereby bypass MaxSessions accounting.
+	if handler.sessions[sessionID] == session && !mcpServerHasSessions(session.server) {
+		delete(handler.sessions, sessionID)
+	}
+}
+
+func (handler *ExecutorMCPHandler) sweepClosedSessionsLocked() {
+	for sessionID, session := range handler.sessions {
+		if !session.pending && !mcpServerHasSessions(session.server) {
+			delete(handler.sessions, sessionID)
+		}
+	}
+}
+
+func mcpServerHasSessions(server *mcp.Server) bool {
+	for range server.Sessions() {
+		return true
+	}
+	return false
+}
+
+// Shutdown rejects new requests and gracefully closes every official-SDK
+// session. The caller-supplied context bounds waiting for in-flight tool calls.
+func (handler *ExecutorMCPHandler) Shutdown(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("executor MCP shutdown context is required")
+	}
+	handler.mu.Lock()
+	handler.shuttingDown = true
+	servers := make([]*mcp.Server, 0, len(handler.sessions))
+	for _, session := range handler.sessions {
+		servers = append(servers, session.server)
+	}
+	handler.mu.Unlock()
+
+	closed := make(chan error, 1)
+	go func() {
+		var closeErrors []error
+		for _, server := range servers {
+			for session := range server.Sessions() {
+				closeErrors = append(closeErrors, session.Close())
+			}
+		}
+		closed <- errors.Join(closeErrors...)
+	}()
+	select {
+	case err := <-closed:
+		handler.mu.Lock()
+		clear(handler.sessions)
+		handler.mu.Unlock()
+		return err
+	case <-ctx.Done():
+		return fmt.Errorf("shutdown executor MCP sessions: %w", ctx.Err())
+	}
+}
+
+func requestSessionID(request *http.Request) (string, error) {
+	values := request.Header.Values(mcpSessionIDHeader)
+	if len(values) == 0 {
+		return "", nil
+	}
+	if len(values) != 1 {
+		return "", errors.New("multiple MCP session headers")
+	}
+	if err := validateExecutorMCPSessionID(values[0]); err != nil {
+		return "", err
+	}
+	return values[0], nil
+}
+
+func validateExecutorMCPSessionID(value string) error {
+	if len(value) < 1 || len(value) > 128 || !utf8.ValidString(value) {
+		return errors.New("MCP session ID is empty, invalid, or too long")
+	}
+	for _, character := range []byte(value) {
+		if character <= ' ' || character >= 0x7f {
+			return errors.New("MCP session ID contains an invalid byte")
+		}
+	}
+	return nil
+}
+
+func validateExecutorMCPPrincipal(principal ExecutorMCPPrincipal) error {
+	if err := validateRegistryIdentity("workspace ID", principal.WorkspaceID); err != nil {
+		return err
+	}
+	if principal.ExecutorID != "" {
+		if err := validateRegistryIdentity("executor ID", principal.ExecutorID); err != nil {
+			return err
+		}
+	}
+	if principal.CapabilityID == "" || len(principal.CapabilityID) > maximumExecutorMCPCapabilityIDSize || !utf8.ValidString(principal.CapabilityID) {
+		return errors.New("MCP capability ID is empty, invalid, or too long")
+	}
+	if strings.TrimSpace(principal.CapabilityID) != principal.CapabilityID || slices.ContainsFunc([]byte(principal.CapabilityID), func(value byte) bool {
+		return value < 0x21 || value > 0x7e
+	}) {
+		return errors.New("MCP capability ID contains an invalid byte")
+	}
+	return nil
+}

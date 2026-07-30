@@ -24,6 +24,16 @@ type CoreConnectionClient struct {
 	httpClient *http.Client
 }
 
+type RegisteredEnvironment struct {
+	EnvironmentID        string
+	ExecutorID           string
+	RootDescriptor       json.RawMessage
+	Platform             string
+	InsecureDev          bool
+	EnvironmentVersion   int64
+	ConnectionGeneration int64
+}
+
 func NewCoreConnectionClient(baseURL string, httpClient *http.Client) (*CoreConnectionClient, error) {
 	if httpClient == nil {
 		return nil, errors.New("core HTTP client is required")
@@ -101,6 +111,30 @@ func (client *CoreConnectionClient) ActivateConnection(ctx context.Context, requ
 func (client *CoreConnectionClient) FenceConnection(ctx context.Context, holder ConnectionHolder) error {
 	request := corecontract.FenceExecutorConnectionRequest{Holder: contractHolder(holder)}
 	return client.post(ctx, corecontract.FenceExecutorConnectionPath(holder.ExecutorID), request, nil, http.StatusNoContent)
+}
+
+func (client *CoreConnectionClient) ListEnvironments(ctx context.Context, workspaceID, executorID string) ([]RegisteredEnvironment, error) {
+	request := corecontract.ListExecutorEnvironmentsRequest{WorkspaceID: workspaceID, ExecutorID: executorID}
+	var response corecontract.ListExecutorEnvironmentsResponse
+	if err := client.post(ctx, corecontract.ListExecutorEnvironmentsPath, request, &response, http.StatusOK); err != nil {
+		return nil, err
+	}
+	if len(response.Environments) > 256 {
+		return nil, errors.New("core returned more than 256 executor environments")
+	}
+	result := make([]RegisteredEnvironment, len(response.Environments))
+	for index, environment := range response.Environments {
+		result[index] = RegisteredEnvironment{
+			EnvironmentID:        environment.EnvironmentID,
+			ExecutorID:           environment.ExecutorID,
+			RootDescriptor:       append(json.RawMessage(nil), environment.RootDescriptor...),
+			Platform:             environment.Platform,
+			InsecureDev:          environment.InsecureDev,
+			EnvironmentVersion:   environment.EnvironmentVersion,
+			ConnectionGeneration: environment.ConnectionGeneration,
+		}
+	}
+	return result, nil
 }
 
 func (client *CoreConnectionClient) post(ctx context.Context, path string, command, destination any, wantStatus int) error {

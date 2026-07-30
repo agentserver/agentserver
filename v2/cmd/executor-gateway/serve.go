@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -28,7 +31,10 @@ const (
 	gatewayCoreClientKeyEnvironment         = "AGENTSERVER_V2_CORE_CLIENT_KEY_FILE"
 	gatewayCoreServerNameEnvironment        = "AGENTSERVER_V2_CORE_SERVER_NAME"
 	gatewayDevExecutorIDEnvironment         = "AGENTSERVER_V2_DEV_EXECUTOR_ID"
+	gatewayDevWorkspaceIDEnvironment        = "AGENTSERVER_V2_DEV_WORKSPACE_ID"
+	gatewayDevMCPBearerEnvironment          = "AGENTSERVER_V2_DEV_MCP_BEARER_TOKEN"
 	gatewayDevExecutorHeader                = "X-Agentserver-Dev-Executor-Id"
+	maximumDevMCPBearerBytes                = 16 * 1024
 )
 
 var canonicalUUIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -76,6 +82,21 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	if devExecutorID == "00000000-0000-0000-0000-000000000000" || !canonicalUUIDPattern.MatchString(devExecutorID) {
 		return errors.New("AGENTSERVER_V2_DEV_EXECUTOR_ID must be a non-zero canonical lowercase UUID")
 	}
+	devWorkspaceID, err := requiredGatewayConfiguration(getenv, gatewayDevWorkspaceIDEnvironment)
+	if err != nil {
+		return err
+	}
+	if devWorkspaceID == "00000000-0000-0000-0000-000000000000" || !canonicalUUIDPattern.MatchString(devWorkspaceID) {
+		return errors.New("AGENTSERVER_V2_DEV_WORKSPACE_ID must be a non-zero canonical lowercase UUID")
+	}
+	devMCPBearer, err := requiredGatewayConfiguration(getenv, gatewayDevMCPBearerEnvironment)
+	if err != nil {
+		return err
+	}
+	mcpAuthenticator, err := newDevMCPAuthenticator(devMCPBearer, devWorkspaceID, devExecutorID)
+	if err != nil {
+		return err
+	}
 
 	coreHTTPClient, err := newCoreHTTPClient(
 		coreCAFile,
@@ -94,7 +115,7 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	if err != nil {
 		return err
 	}
-	handler, err := executorgateway.NewServer(
+	agentxHandler, err := executorgateway.NewServer(
 		devExecutorAuthenticator{executorID: devExecutorID},
 		coreClient,
 		executorgateway.DefaultServerConfig(gatewayInstanceID),
@@ -102,6 +123,21 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	if err != nil {
 		return err
 	}
+	environmentResolver, err := executorgateway.NewEnvironmentResolver(coreClient)
+	if err != nil {
+		return err
+	}
+	mcpHandler, err := executorgateway.NewExecutorMCPHandler(
+		mcpAuthenticator,
+		environmentResolver,
+		executorgateway.DefaultExecutorMCPConfig(),
+	)
+	if err != nil {
+		return err
+	}
+	handler := http.NewServeMux()
+	handler.Handle(executorgateway.ExecutorMCPPath, mcpHandler)
+	handler.Handle("/", agentxHandler)
 	tlsConfig, err := gatewayTLSConfig(certificateFile, keyFile)
 	if err != nil {
 		return err
@@ -126,16 +162,29 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 		case <-ctx.Done():
 			shutdownContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			httpShutdown := make(chan error, 1)
-			go func() {
-				httpShutdown <- server.Shutdown(shutdownContext)
-			}()
-			_ = handler.Shutdown(shutdownContext)
-			<-httpShutdown
+			shutdowns := []func(context.Context) error{
+				server.Shutdown,
+				agentxHandler.Shutdown,
+				mcpHandler.Shutdown,
+			}
+			completed := make(chan struct{}, len(shutdowns))
+			for _, shutdown := range shutdowns {
+				go func() {
+					_ = shutdown(shutdownContext)
+					completed <- struct{}{}
+				}()
+			}
+			for range shutdowns {
+				select {
+				case <-completed:
+				case <-shutdownContext.Done():
+					return
+				}
+			}
 		case <-serveContext.Done():
 		}
 	}()
-	fmt.Fprintf(stdout, "executor-gateway serve: INSECURE DEV authentication; listening on %s; gateway instance %s\n", listener.Addr(), gatewayInstanceID)
+	fmt.Fprintf(stdout, "executor-gateway serve: INSECURE DEV authentication; listening on %s; MCP endpoint %s; gateway instance %s\n", listener.Addr(), executorgateway.ExecutorMCPPath, gatewayInstanceID)
 	err = server.Serve(tls.NewListener(listener, tlsConfig))
 	if errors.Is(err, http.ErrServerClosed) && ctx.Err() != nil {
 		return nil
@@ -145,6 +194,39 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 
 type devExecutorAuthenticator struct {
 	executorID string
+}
+
+type devMCPAuthenticator struct {
+	authorization []byte
+	principal     executorgateway.ExecutorMCPPrincipal
+}
+
+func newDevMCPAuthenticator(bearer, workspaceID, executorID string) (devMCPAuthenticator, error) {
+	if len(bearer) < 32 || len(bearer) > maximumDevMCPBearerBytes {
+		return devMCPAuthenticator{}, fmt.Errorf("%s must contain between 32 and %d bytes", gatewayDevMCPBearerEnvironment, maximumDevMCPBearerBytes)
+	}
+	for _, character := range []byte(bearer) {
+		if character <= ' ' || character >= 0x7f {
+			return devMCPAuthenticator{}, fmt.Errorf("%s contains an invalid byte", gatewayDevMCPBearerEnvironment)
+		}
+	}
+	digest := sha256.Sum256([]byte(bearer))
+	return devMCPAuthenticator{
+		authorization: []byte("Bearer " + bearer),
+		principal: executorgateway.ExecutorMCPPrincipal{
+			CapabilityID: "insecure-dev:" + hex.EncodeToString(digest[:]),
+			WorkspaceID:  workspaceID,
+			ExecutorID:   executorID,
+		},
+	}, nil
+}
+
+func (authenticator devMCPAuthenticator) AuthenticateExecutorMCP(request *http.Request) (executorgateway.ExecutorMCPPrincipal, error) {
+	values := request.Header.Values("Authorization")
+	if len(values) != 1 || subtle.ConstantTimeCompare([]byte(values[0]), authenticator.authorization) != 1 {
+		return executorgateway.ExecutorMCPPrincipal{}, errors.New("development MCP bearer is missing or different")
+	}
+	return authenticator.principal, nil
 }
 
 func (authenticator devExecutorAuthenticator) AuthenticateExecutor(request *http.Request) (executorgateway.ExecutorIdentity, error) {

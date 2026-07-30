@@ -623,7 +623,9 @@ registry 只保存活连接。权威 executor/env/generation 在 core。gateway�
 
 第二段已经加入有界的process request table和gateway-originated `process/start` dispatch入口：发送前按session generation、完整routing context、canonical request id与process id登记；匹配RPC response与严格连续的`process/output → process/exited → process/closed`证据分别进入有界通道；同进程transport resume保留原call，fresh generation、resume expiry、terminal protocol failure和gateway shutdown则统一失败。WSS累计ACK仍只释放frame journal，不能被当成operation ACK；`DispatchProcess`在frame进入session journal后发生write错误会明确返回ambiguous，调用方无权重发。
 
-这仍不是可生产部署的executor：agentx enrollment/OAuth key binding尚未实现，`executor-gateway`命令因此只暴露显式loopback `serve --insecure-dev`，生产serve模式不存在；MCP HTTP/auth handler、core execution command transport、agentx本地registered-root复核、timeout terminate与operation unknown收口仍待下一段。当前process dispatch入口只供后续受控handler组合，尚未对外暴露shell，不能把“业务RPC已可关联”描述成executor MCP已经可用。
+第三段已经接通只读environment registry和首个MCP handler。core新增`executor-environments:list`内部查询，只返回workspace匹配、executor/environment/connection均为online且按数据库时钟lease仍有效的最多256项；gateway再严格解析versioned local root descriptor，只向模型投影environment-relative `default_cwd`，不暴露host root，并拒绝超过512 KiB的聚合投影而不静默截断。`/mcp`使用official Go SDK的stateful Streamable HTTP，显式拒绝除`2025-11-25`以外的initialize，只广告已实现的`list_environments`；input/output schema直接取自`mcpcontract`。每次HTTP请求都重新鉴权，MCP session还绑定不可变capability identity，另一枚bearer即使知道session id也不能接管。当前loopback insecure-dev入口用`AGENTSERVER_V2_DEV_WORKSPACE_ID`、`AGENTSERVER_V2_DEV_EXECUTOR_ID`和至少32字节的`AGENTSERVER_V2_DEV_MCP_BEARER_TOKEN`提供静态开发scope；它不是生产run capability。
+
+这仍不是可生产部署的executor：agentx enrollment/OAuth key binding和core签发的短期run capability尚未实现，`executor-gateway`命令因此仍只暴露显式loopback `serve --insecure-dev`，生产serve模式不存在；core execution command transport、agentx本地registered-root复核、timeout terminate与operation unknown收口仍待下一段。当前MCP只能列环境，尚未对外暴露shell，不能把“`list_environments`可调用”描述成executor执行链已经完成。
 
 ### 7.2 第一批工具
 
@@ -635,6 +637,8 @@ registry 只保存活连接。权威 executor/env/generation 在 core。gateway�
 4. apply_patch：只有 fsWriteFileIfMatch 扩展和跨平台 CAS 测试通过后才暴露。
 
 unified_exec、跨 run detached process、任意 http/request 和 capabilityRoots不进入第一个shell slice；其中unified_exec未来也只允许run-scoped process，不因此开放跨run detached语义。
+
+实现期间`tools/list`遵循“只广告已有handler”：当前开发endpoint返回由`executor-mcp/1.0`合同裁出的`list_environments`单工具catalog；在shell及其operation terminal链完成前，core不得为该endpoint冻结包含shell的thread catalog。完整两工具catalog仍是首个shell垂直切片的目标，不得用空壳shell凑齐。
 
 ### 7.3 shell 映射
 
@@ -1057,7 +1061,7 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 第11项已经完成：`process-v1`精确冻结`process/start|read|write|terminate`并排除`process/signal`；`executor-mcp/1.0`只广告`list_environments|shell`；agentx WSS拥有JSON Schema/AsyncAPI机器契约。Go reference kernel实现双向独立sequence、非sequenced ACK、generation fencing、同gateway进程30秒resume、bounded frame/receive journal和`mutationKey + request hash`的pending/completed/ambiguous门禁；运行时validator还逐method严格校验process request/notification与`network/policyRequest`参数。stable 0.146.0源码复核确认clean-env wire、managed sandbox字段和`windowsSandboxLevel=restricted-token`枚举，contract/race门禁将继续防止schema与实现漂移。
 
-第12项第一段现已完成本仓部分：forward-only `0004`、connection attempt/current CAS、`connecting → online`远端lifecycle门槛、mTLS core command API、真实WSS fresh/ACK/replay/resume/generation fence，以及gateway重启无journal时拒绝resume。下一段不再补空壳，而是bootstrap独立agentx仓库，先实现connector/runner IPC和远端lifecycle，再监管每process独占的stock `codex exec-server --listen stdio`；随后才接`list_environments → shell → operation terminal → MCP result`。approval command、真实enrollment/key binding、平台containment和部署manifest仍未实现；当前开发入口明确标为loopback insecure-dev，不能作为Phase 2交付或生产部署证据。
+第12项目前已完成connection kernel、真实WSS路由，以及独立agentx仓库中的connector/runner IPC、远端lifecycle和每process独占的stock `codex exec-server --listen stdio --strict-config`监管；真实stock纵向门禁已通过。本仓又完成online environment registry与`list_environments`的stateful MCP链。下一段是把现有coredb execution/operation状态机暴露成mTLS internal command API，再实现`PrepareExecution → operation dispatch/ACK/terminal → MCP result`的shell-v1。approval command、真实enrollment/key binding、agentx本地registered-root复核、平台containment和部署manifest仍未实现；当前开发入口明确标为loopback insecure-dev，不能作为Phase 2交付或生产部署证据。
 
 ## 14. 尚未锁定但有明确决策点的事项
 

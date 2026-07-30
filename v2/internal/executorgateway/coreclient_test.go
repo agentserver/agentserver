@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -121,6 +122,43 @@ func TestCoreConnectionClientMapsFencedAndRejectsRedirect(t *testing.T) {
 	}
 }
 
+func TestCoreConnectionClientListsBoundedOnlineEnvironments(t *testing.T) {
+	queries := &recordingEnvironmentQueries{environments: []corecontract.ExecutorEnvironment{{
+		EnvironmentID:        testEnvironmentID,
+		ExecutorID:           testExecutorID,
+		RootDescriptor:       json.RawMessage(`{"kind":"local","root":"/workspace"}`),
+		Platform:             "linux-arm64",
+		InsecureDev:          true,
+		EnvironmentVersion:   3,
+		ConnectionGeneration: 7,
+	}}}
+	handler, err := coreserver.NewExecutorEnvironmentHandler(allowCoreWorkload{}, queries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	client, err := NewCoreConnectionClient(server.URL, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceID := "40000000-0000-4000-8000-000000000004"
+	environments, err := client.ListEnvironments(t.Context(), workspaceID, testExecutorID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(environments) != 1 || environments[0].EnvironmentID != testEnvironmentID || environments[0].ConnectionGeneration != 7 {
+		t.Fatalf("listed environments = %+v", environments)
+	}
+	if queries.last.WorkspaceID != workspaceID || queries.last.ExecutorID != testExecutorID {
+		t.Fatalf("environment query = %+v", queries.last)
+	}
+	environments[0].RootDescriptor[0] = '['
+	if queries.environments[0].RootDescriptor[0] != '{' {
+		t.Fatal("core environment root descriptor was not defensively copied")
+	}
+}
+
 func TestCoreConnectionClientRejectsCleartextNonLoopback(t *testing.T) {
 	if _, err := NewCoreConnectionClient("http://core.internal:8080", http.DefaultClient); err == nil || !strings.Contains(err.Error(), "loopback") {
 		t.Fatalf("cleartext non-loopback error = %v", err)
@@ -137,6 +175,21 @@ type recordingCoreCommands struct {
 	holder      corecontract.ConnectionHolder
 	renewError  error
 	fenced      bool
+}
+
+type recordingEnvironmentQueries struct {
+	last         corecontract.ListExecutorEnvironmentsRequest
+	environments []corecontract.ExecutorEnvironment
+}
+
+func (queries *recordingEnvironmentQueries) ListExecutorEnvironments(_ context.Context, request corecontract.ListExecutorEnvironmentsRequest) ([]corecontract.ExecutorEnvironment, error) {
+	queries.last = request
+	result := make([]corecontract.ExecutorEnvironment, len(queries.environments))
+	copy(result, queries.environments)
+	for index := range result {
+		result[index].RootDescriptor = append(json.RawMessage(nil), result[index].RootDescriptor...)
+	}
+	return result, nil
 }
 
 func (commands *recordingCoreCommands) AcquireExecutorConnection(_ context.Context, request corecontract.AcquireExecutorConnectionRequest) (corecontract.ConnectionHolder, error) {

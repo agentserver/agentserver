@@ -112,7 +112,7 @@ if [ "$a04_runtime_name" = "container" ]; then
         --env "AGENTSERVER_EXPECTED_CODEX_SHA256=$a04_digest" \
         --env "AGENTSERVER_EXPECTED_CODEX_SIZE_BYTES=$a04_size" \
         "$a04_tag" \
-        -test.run '^TestAppServerA04SystemRequirementsEndpointAllowlist$' \
+        -test.run '^TestAppServerA04SystemRequirementsDenyAllMCP$' \
         -test.count 1 \
         -test.timeout 90s \
         -test.v
@@ -137,7 +137,7 @@ else
         --env "AGENTSERVER_EXPECTED_CODEX_SHA256=$a04_digest" \
         --env "AGENTSERVER_EXPECTED_CODEX_SIZE_BYTES=$a04_size" \
         "$a04_tag" \
-        -test.run '^TestAppServerA04SystemRequirementsEndpointAllowlist$' \
+        -test.run '^TestAppServerA04SystemRequirementsDenyAllMCP$' \
         -test.count 1 \
         -test.timeout 90s \
         -test.v

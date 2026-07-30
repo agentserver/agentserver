@@ -30,23 +30,26 @@ model/MCP fixtures on loopback, trusts only their ephemeral CAs, and proves:
 
 - `configRequirements/read` observes a harmless managed sentinel, proving that
   the real system requirements file was loaded;
-- the exact `executor` name plus exact HTTPS URL bootstraps and appears in the
-  model's namespaced tool surface;
-- the same URL under another name is not initialized;
-- another URL under the allowed name is not initialized;
+- an explicit empty managed `mcp_servers` allowlist blocks the configured
+  direct executor endpoint;
 - an extra user MCP and an extra MCP from a demonstrably enabled trusted project
-  layer receive zero MCP requests and remain absent from model tool exposure.
+  layer receive zero MCP requests and remain absent from model tool exposure;
+- the client-supplied `executor.approved_echo` dynamic tool remains the exact
+  model-visible surface, proving deny-all MCP does not remove the harness-owned
+  bridge.
 
 The gate does not infer enablement from `mcpServerStatus/list` names. Stock
 0.146.0 reports configured-but-disabled names there and creates another
 connection to enabled servers while taking the snapshot, so that RPC is a
 status view rather than an allowlist oracle.
 
-The recorded stable result used release `0.146.0`, unpacked binary SHA-256
-`2e863156ed35ecc5253b1e2f907a9143077b9f7cb51942070c61996471ff6e04`,
-and size `311001136`; the official archive SHA-256 was
+The recorded deny-all gate result used stable release `0.146.0`, unpacked
+binary SHA-256
+`2e863156ed35ecc5253b1e2f907a9143077b9f7cb51942070c61996471ff6e04`, and
+size `311001136`; the official archive SHA-256 was
 `5ba3b9405543953081f661d0854d266f76e2abbe51d41349355a36de7673776a`.
-The Make target passed under Apple `container` 1.1.0.
+The Make target passed under Apple `container` 1.2.0.
 
-A passing run closes A04 only for the exact release/SHA/size in its log. It does
-not close A03, A12, or the Linux sandbox selection portion of E09.
+A passing run closes A04 only for the exact release/SHA/size in its log and the
+deny-all-Codex-MCP architecture. It does not by itself close the dynamic bridge
+parts of A03, A12, or the Linux sandbox selection portion of E09.

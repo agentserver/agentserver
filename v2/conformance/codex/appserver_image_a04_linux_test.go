@@ -28,73 +28,48 @@ const (
 	a04HardenTmpfsEnvironment     = "AGENTSERVER_HARDEN_A04_TMPFS"
 	a04SystemDirectory            = "/etc/codex"
 	a04SystemRequirementsPath     = "/etc/codex/requirements.toml"
-	a04SameURLWrongName           = "same_url_wrong_name"
 	a04UserExtraName              = "user_extra"
 	a04ProjectExtraName           = "project_extra"
 )
 
 var a04SHA256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// TestAppServerA04SystemRequirementsEndpointAllowlist is intentionally gated
+// TestAppServerA04SystemRequirementsDenyAllMCP is intentionally gated
 // behind the disposable-image runner. It writes the real Linux system path and
 // therefore refuses to run unless /etc/codex is a separate hardened tmpfs and
-// the container root is read-only. The positive case proves that one exact
-// name+HTTPS identity bootstraps. The negative cases prove that the same URL
-// under another name, another URL under the allowed name, a user injection,
-// and an enabled trusted-project injection never reach MCP bootstrap or the
-// model tool surface. mcpServerStatus/list is deliberately not used as an
-// allowlist oracle: stock 0.146.0 reports configured-but-disabled names there
-// and opens a fresh connection to enabled servers while collecting status.
-func TestAppServerA04SystemRequirementsEndpointAllowlist(t *testing.T) {
+// the container root is read-only. An explicit empty managed MCP allowlist
+// must block the production-shaped direct executor config, a user injection,
+// and an enabled trusted-project injection before bootstrap, while the client-
+// supplied dynamic executor tool remains the exact model-visible surface.
+// mcpServerStatus/list is deliberately not used as an allowlist oracle: stock
+// 0.146.0 reports configured-but-disabled names there.
+func TestAppServerA04SystemRequirementsDenyAllMCP(t *testing.T) {
 	requireA04DisposableImage(t)
 
-	allowedServer, allowedCA := startExecutorTLSMCPServer(t, nil)
+	directExecutorServer, directExecutorCA := startExecutorTLSMCPServer(t, nil)
 	userExtraServer, userExtraCA := startExecutorTLSMCPServer(t, nil)
 	projectExtraServer, projectExtraCA := startExecutorTLSMCPServer(t, nil)
-	wrongIdentityServer, wrongIdentityCA := startExecutorTLSMCPServer(t, nil)
-	caBundle := bytes.Join([][]byte{allowedCA, userExtraCA, projectExtraCA, wrongIdentityCA}, nil)
+	caBundle := bytes.Join([][]byte{directExecutorCA, userExtraCA, projectExtraCA}, nil)
 	caPath := filepath.Join(t.TempDir(), "a04-loopback-cas.pem")
 	if err := os.WriteFile(caPath, caBundle, 0o600); err != nil {
 		t.Fatalf("write A04 loopback CA bundle: %v", err)
 	}
 
-	installA04SystemRequirements(t, allowedServer.URL())
-	binary, allowedPaths := prepareLiveCodex(t)
-	assertA04CandidateArtifact(t, binary, allowedPaths)
+	installA04SystemRequirements(t)
+	binary, paths := prepareLiveCodex(t)
+	assertA04CandidateArtifact(t, binary, paths)
+	paths.environment = append(paths.environment, "CODEX_CA_CERTIFICATE="+caPath)
+	modelServer := writeA04ScenarioConfig(
+		t,
+		paths,
+		directExecutorServer.URL(),
+		userExtraServer.URL(),
+		projectExtraServer.URL(),
+	)
+	surface := runA04Turn(t, binary, paths, modelServer, "a04 managed deny-all MCP")
+	assertA04DynamicExecutorToolSurface(t, surface)
 
-	t.Run("exact identity only", func(t *testing.T) {
-		allowedPaths.environment = append(allowedPaths.environment, "CODEX_CA_CERTIFICATE="+caPath)
-		modelServer := writeA04ScenarioConfig(
-			t,
-			allowedPaths,
-			allowedServer.URL(),
-			allowedServer.URL(),
-			userExtraServer.URL(),
-			projectExtraServer.URL(),
-		)
-		surface := runA04Turn(t, binary, allowedPaths, modelServer, "a04 exact managed identity")
-		assertA04NamespacedToolSurface(t, surface)
-	})
-
-	t.Run("same name wrong identity", func(t *testing.T) {
-		binary, paths := prepareLiveCodex(t)
-		paths.environment = append(paths.environment, "CODEX_CA_CERTIFICATE="+caPath)
-		modelServer := writeA04ScenarioConfig(
-			t,
-			paths,
-			wrongIdentityServer.URL(),
-			"",
-			userExtraServer.URL(),
-			projectExtraServer.URL(),
-		)
-		surface := runA04Turn(t, binary, paths, modelServer, "a04 mismatched managed identity")
-		if len(surface) != 0 {
-			t.Fatalf("A04 wrong-identity tool surface = %v, want empty", surface)
-		}
-	})
-
-	assertA04AllowedBootstrap(t, allowedServer)
-	assertA04EndpointUntouched(t, "same-name wrong-URL", wrongIdentityServer)
+	assertA04EndpointUntouched(t, "direct executor config", directExecutorServer)
 	assertA04EndpointUntouched(t, "user injection", userExtraServer)
 	assertA04EndpointUntouched(t, "trusted-project injection", projectExtraServer)
 }
@@ -204,15 +179,9 @@ func directoryEntryNames(entries []os.DirEntry) []string {
 	return names
 }
 
-func installA04SystemRequirements(t *testing.T, allowedURL string) {
+func installA04SystemRequirements(t *testing.T) {
 	t.Helper()
-	if !strings.HasPrefix(allowedURL, "https://127.0.0.1:") || !strings.HasSuffix(allowedURL, "/mcp") {
-		t.Fatalf("A04 allowed MCP identity is not bounded loopback HTTPS: %q", allowedURL)
-	}
-	contents := fmt.Sprintf(
-		"check_for_update_on_startup = false\n\n[mcp_servers.executor.identity]\nurl = %s\n",
-		strconv.Quote(allowedURL),
-	)
+	contents := "check_for_update_on_startup = false\nmcp_servers = {}\n"
 	if err := writeExclusiveFile(a04SystemRequirementsPath, []byte(contents), 0o444); err != nil {
 		t.Fatalf("install A04 system requirements: %v", err)
 	}
@@ -281,7 +250,6 @@ func writeA04ScenarioConfig(
 	t *testing.T,
 	paths livePaths,
 	executorURL string,
-	sameURLWrongName string,
 	userExtraURL string,
 	projectExtraURL string,
 ) *scriptedmodel.Server {
@@ -308,9 +276,6 @@ func writeA04ScenarioConfig(
 	})
 
 	userConfig := fmt.Sprintf("\n[projects.%s]\ntrust_level = \"trusted\"\n", strconv.Quote(paths.cwd))
-	if sameURLWrongName != "" {
-		userConfig += a04MCPConfig(a04SameURLWrongName, sameURLWrongName)
-	}
 	userConfig += a04MCPConfig(a04UserExtraName, userExtraURL)
 	if err := appendFile(filepath.Join(paths.codexHome, "config.toml"), []byte(userConfig)); err != nil {
 		t.Fatalf("append A04 user injections: %v", err)
@@ -373,7 +338,14 @@ func runA04Turn(
 	collector := newRPCCollector(process)
 	assertA04SystemRequirementsLoaded(t, collector)
 	assertA04TrustedProjectLayer(t, collector, paths.cwd)
-	thread, turn := startMinimalAppServerTurn(t, collector, paths.cwd, prompt)
+	thread, turn := startMinimalAppServerTurnWithDynamicTools(
+		t,
+		collector,
+		paths.cwd,
+		prompt,
+		"never",
+		approvedDynamicExecutorTools(),
+	)
 	assertAgentItemCompleted(t, collector, thread.Thread.ID, turn.ID, conformanceFinalText)
 	collector.notification(t, "turn/completed")
 	closeAndWait(t, process)
@@ -462,29 +434,11 @@ func assertA04TrustedProjectLayer(t *testing.T, collector *rpcCollector, cwd str
 	t.Fatalf("A04 config/read did not expose an enabled project layer containing %q: layers=%s", a04ProjectExtraName, encodedLayers)
 }
 
-func assertA04AllowedBootstrap(t *testing.T, server *scriptedmcp.Server) {
+func assertA04DynamicExecutorToolSurface(t *testing.T, surface []string) {
 	t.Helper()
-	if failures := server.Failures(); len(failures) != 0 {
-		t.Fatalf("A04 allowed MCP failures: %v", failures)
-	}
-	methods := mcpRequestMethods(server.Requests())
-	want := []string{"initialize", "notifications/initialized", "tools/list"}
-	if !equalStrings(methods, want) {
-		t.Fatalf("A04 allowed MCP requests = %v, want %v", methods, want)
-	}
-}
-
-func assertA04NamespacedToolSurface(t *testing.T, surface []string) {
-	t.Helper()
-	want := executorMCPNamespace + "." + approvedMCPToolName
-	var namespaced []string
-	for _, name := range surface {
-		if strings.HasPrefix(name, "mcp__") {
-			namespaced = append(namespaced, name)
-		}
-	}
-	if !equalStrings(namespaced, []string{want}) {
-		t.Fatalf("A04 namespaced model tool surface = %v, want [%s] (full surface %v)", namespaced, want, surface)
+	want := []string{executorDynamicNamespace + "." + approvedMCPToolName}
+	if !equalStrings(surface, want) {
+		t.Fatalf("A04 model tool surface = %v, want %v", surface, want)
 	}
 }
 

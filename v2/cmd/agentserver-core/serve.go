@@ -82,8 +82,14 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	if err != nil {
 		return err
 	}
+	executionHandler, err := coreserver.NewExecutionHandler(authorizer, coreserver.StateStoreExecutionCommands{Store: store})
+	if err != nil {
+		return err
+	}
 	handler := http.NewServeMux()
 	handler.Handle(corecontract.ListExecutorEnvironmentsPath, environmentHandler)
+	handler.Handle(corecontract.PrepareExecutionPath, executionHandler)
+	handler.Handle(corecontract.ExecutionPathPrefix, executionHandler)
 	handler.Handle("/", connectionHandler)
 	tlsConfig, err := coreTLSConfig(certificateFile, keyFile, clientCAFile)
 	if err != nil {

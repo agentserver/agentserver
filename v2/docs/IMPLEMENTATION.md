@@ -625,7 +625,9 @@ registry 只保存活连接。权威 executor/env/generation 在 core。gateway�
 
 第三段已经接通只读environment registry和首个MCP handler。core新增`executor-environments:list`内部查询，只返回workspace匹配、executor/environment/connection均为online且按数据库时钟lease仍有效的最多256项；gateway再严格解析versioned local root descriptor，只向模型投影environment-relative `default_cwd`，不暴露host root，并拒绝超过512 KiB的聚合投影而不静默截断。`/mcp`使用official Go SDK的stateful Streamable HTTP，显式拒绝除`2025-11-25`以外的initialize，只广告已实现的`list_environments`；input/output schema直接取自`mcpcontract`。每次HTTP请求都重新鉴权，MCP session还绑定不可变capability identity，另一枚bearer即使知道session id也不能接管。当前loopback insecure-dev入口用`AGENTSERVER_V2_DEV_WORKSPACE_ID`、`AGENTSERVER_V2_DEV_EXECUTOR_ID`和至少32字节的`AGENTSERVER_V2_DEV_MCP_BEARER_TOKEN`提供静态开发scope；它不是生产run capability。
 
-这仍不是可生产部署的executor：agentx enrollment/OAuth key binding和core签发的短期run capability尚未实现，`executor-gateway`命令因此仍只暴露显式loopback `serve --insecure-dev`，生产serve模式不存在；core execution command transport、agentx本地registered-root复核、timeout terminate与operation unknown收口仍待下一段。当前MCP只能列环境，尚未对外暴露shell，不能把“`list_environments`可调用”描述成executor执行链已经完成。
+第四段已经把PR 10的execution/operation kernel暴露为六个mTLS internal command：`PrepareExecution`、`PrepareOperation`、`BeginOperationDispatch`、`AcknowledgeOperation`、`CompleteOperation`和`CompleteExecution`。请求必须携带原始JSON value，不能提交裸digest；core会拒绝重复key/超限输入，解析受支持的tool input schema并用它重新验证arguments，再按固定domain + RFC 8785计算所有hash。operation plan、policy context、params、ACK和result当前至少受canonical JSON object边界约束，shell mapper仍须按其versioned contract生成具体结构。path/body execution与operation identity必须一致；gateway client还会核对返回digest domain/canonicalizer，并且只有`Began=true`同时返回同一connection generation的`dispatching` operation时才接受一次性发送许可。stable冲突响应保留`code/currentVersion/currentGeneration`，不靠错误字符串做恢复决策。
+
+这仍不是可生产部署的executor：agentx enrollment/OAuth key binding和core签发的短期run capability尚未实现，`executor-gateway`命令因此仍只暴露显式loopback `serve --insecure-dev`，生产serve模式不存在；agentx本地registered-root复核、MCP shell orchestration、timeout terminate与dispatch后operation unknown收口仍待下一段。当前MCP只能列环境，尚未对外暴露shell，不能把“`list_environments`可调用”描述成executor执行链已经完成。
 
 ### 7.2 第一批工具
 
@@ -1061,7 +1063,7 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 第11项已经完成：`process-v1`精确冻结`process/start|read|write|terminate`并排除`process/signal`；`executor-mcp/1.0`只广告`list_environments|shell`；agentx WSS拥有JSON Schema/AsyncAPI机器契约。Go reference kernel实现双向独立sequence、非sequenced ACK、generation fencing、同gateway进程30秒resume、bounded frame/receive journal和`mutationKey + request hash`的pending/completed/ambiguous门禁；运行时validator还逐method严格校验process request/notification与`network/policyRequest`参数。stable 0.146.0源码复核确认clean-env wire、managed sandbox字段和`windowsSandboxLevel=restricted-token`枚举，contract/race门禁将继续防止schema与实现漂移。
 
-第12项目前已完成connection kernel、真实WSS路由，以及独立agentx仓库中的connector/runner IPC、远端lifecycle和每process独占的stock `codex exec-server --listen stdio --strict-config`监管；真实stock纵向门禁已通过。本仓又完成online environment registry与`list_environments`的stateful MCP链。下一段是把现有coredb execution/operation状态机暴露成mTLS internal command API，再实现`PrepareExecution → operation dispatch/ACK/terminal → MCP result`的shell-v1。approval command、真实enrollment/key binding、agentx本地registered-root复核、平台containment和部署manifest仍未实现；当前开发入口明确标为loopback insecure-dev，不能作为Phase 2交付或生产部署证据。
+第12项目前已完成connection kernel、真实WSS路由，以及独立agentx仓库中的connector/runner IPC、远端lifecycle和每process独占的stock `codex exec-server --listen stdio --strict-config`监管；真实stock纵向门禁已通过。本仓又完成online environment registry、`list_environments`的stateful MCP链，以及六个execution/operation mTLS internal command与gateway client。下一段是实现`PrepareExecution → operation dispatch/ACK/terminal → MCP result`的shell-v1，并补agentx本地registered-root/cwd复核和预分配timeout terminate。approval command、真实enrollment/key binding、dispatch后unknown恢复收口、平台containment和部署manifest仍未实现；当前开发入口明确标为loopback insecure-dev，不能作为Phase 2交付或生产部署证据。
 
 ## 14. 尚未锁定但有明确决策点的事项
 

@@ -24,6 +24,35 @@ type CoreConnectionClient struct {
 	httpClient *http.Client
 }
 
+// CoreCommandError preserves the stable core rejection code and retry hints.
+// Callers must branch on Code, not on the human-readable Message.
+type CoreCommandError struct {
+	HTTPStatus        int
+	Code              string
+	Message           string
+	CurrentVersion    int64
+	CurrentGeneration int64
+	cause             error
+}
+
+func (err *CoreCommandError) Error() string {
+	if err == nil {
+		return "<nil>"
+	}
+	message := strings.TrimSpace(err.Message)
+	if message == "" {
+		message = err.Code
+	}
+	return fmt.Sprintf("core command %s: %s", err.Code, message)
+}
+
+func (err *CoreCommandError) Unwrap() error {
+	if err == nil {
+		return nil
+	}
+	return err.cause
+}
+
 type RegisteredEnvironment struct {
 	EnvironmentID        string
 	ExecutorID           string
@@ -190,14 +219,17 @@ func decodeCoreCommandError(status int, body []byte) error {
 	if err := decoder.Decode(&response); err != nil || finishCoreJSON(decoder) != nil || response.Code == "" {
 		return fmt.Errorf("core command returned HTTP %d with an invalid error envelope", status)
 	}
-	message := strings.TrimSpace(response.Message)
-	if message == "" {
-		message = response.Code
+	commandError := &CoreCommandError{
+		HTTPStatus:        status,
+		Code:              response.Code,
+		Message:           strings.TrimSpace(response.Message),
+		CurrentVersion:    response.CurrentVersion,
+		CurrentGeneration: response.CurrentGeneration,
 	}
 	if response.Code == "connection_fenced" {
-		return fmt.Errorf("%w: %s (current generation %d)", ErrConnectionFenced, message, response.CurrentGeneration)
+		commandError.cause = ErrConnectionFenced
 	}
-	return fmt.Errorf("core command %s: %s", response.Code, message)
+	return commandError
 }
 
 func finishCoreJSON(decoder *json.Decoder) error {

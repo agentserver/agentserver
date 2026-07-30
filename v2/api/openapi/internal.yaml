@@ -3,7 +3,7 @@
   "info": {
     "title": "agentserver v2 internal command API",
     "version": "0.1.0",
-    "description": "Executor connection commands and online environment registry queries. All endpoints require an authenticated executor-gateway workload identity."
+    "description": "Executor connection, environment registry, and execution state commands. All endpoints require an authenticated executor-gateway workload identity."
   },
   "servers": [{"url": "https://agentserver-core"}],
   "security": [{"workloadMTLS": []}],
@@ -34,6 +34,95 @@
           "200": {"description": "Bounded online environment registry", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ListExecutorEnvironmentsResponse"}}}},
           "400": {"$ref": "#/components/responses/CommandError"},
           "403": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/executions:prepare": {
+      "post": {
+        "operationId": "prepareExecution",
+        "description": "Freezes one model tool call and its validated canonical execution context. Core computes all digests from the supplied JSON values.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PrepareExecutionRequest"}}}},
+        "responses": {
+          "200": {"description": "Execution created or exact tool-call retry returned", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PrepareExecutionResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/executions/{executionId}/operations:prepare": {
+      "parameters": [{"$ref": "#/components/parameters/ExecutionId"}],
+      "post": {
+        "operationId": "prepareOperation",
+        "description": "Persists one member of the frozen deterministic operation plan before dispatch.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PrepareOperationRequest"}}}},
+        "responses": {
+          "200": {"description": "Operation prepared or exact ordinal retry returned", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PrepareOperationResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/executions/{executionId}/operations/{operationId}:begin-dispatch": {
+      "parameters": [{"$ref": "#/components/parameters/ExecutionId"}, {"$ref": "#/components/parameters/OperationId"}],
+      "post": {
+        "operationId": "beginOperationDispatch",
+        "description": "Crosses the one-shot external-send boundary. Only a response with began=true permits the caller to send the operation.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BeginOperationDispatchRequest"}}}},
+        "responses": {
+          "200": {"description": "Dispatch boundary result; exact retry always has began=false", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BeginOperationDispatchResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/executions/{executionId}/operations/{operationId}:acknowledge": {
+      "parameters": [{"$ref": "#/components/parameters/ExecutionId"}, {"$ref": "#/components/parameters/OperationId"}],
+      "post": {
+        "operationId": "acknowledgeOperation",
+        "description": "Commits agentx mutation acceptance or equivalent trusted acknowledgement evidence. A WSS frame ACK is not sufficient.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AcknowledgeOperationRequest"}}}},
+        "responses": {
+          "200": {"description": "Acknowledgement committed or exact evidence retry returned", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AcknowledgeOperationResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/executions/{executionId}/operations/{operationId}:complete": {
+      "parameters": [{"$ref": "#/components/parameters/ExecutionId"}, {"$ref": "#/components/parameters/OperationId"}],
+      "post": {
+        "operationId": "completeOperation",
+        "description": "Commits terminal operation evidence. An unacknowledged dispatch may close only as unknown.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CompleteOperationRequest"}}}},
+        "responses": {
+          "200": {"description": "Operation terminal state committed or exact retry returned", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CompleteOperationResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/executions/{executionId}:complete": {
+      "parameters": [{"$ref": "#/components/parameters/ExecutionId"}],
+      "post": {
+        "operationId": "completeExecution",
+        "description": "Commits the terminal execution state after core verifies the aggregate of every frozen operation.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CompleteExecutionRequest"}}}},
+        "responses": {
+          "200": {"description": "Execution terminal state committed or exact retry returned", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CompleteExecutionResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
           "409": {"$ref": "#/components/responses/CommandError"}
         }
       }
@@ -84,7 +173,9 @@
       "workloadMTLS": {"type": "mutualTLS", "description": "Verified executor-gateway workload SPIFFE identity"}
     },
     "parameters": {
-      "ExecutorId": {"name": "executorId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}}
+      "ExecutorId": {"name": "executorId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
+      "ExecutionId": {"name": "executionId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
+      "OperationId": {"name": "operationId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}}
     },
     "responses": {
       "CommandError": {
@@ -205,6 +296,262 @@
         "required": ["environments"],
         "properties": {
           "environments": {"type": "array", "maxItems": 256, "items": {"$ref": "#/components/schemas/ExecutorEnvironment"}}
+        }
+      },
+      "CanonicalJSONObject": {
+        "type": "object",
+        "description": "A bounded JSON object. Core rejects duplicate keys, validates the domain schema, applies RFC 8785 JCS, and computes the digest."
+      },
+      "TransitionRecord": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["eventId", "producerInstanceId", "producerSeq", "outboxId"],
+        "properties": {
+          "eventId": {"$ref": "#/components/schemas/UUID"},
+          "producerInstanceId": {"$ref": "#/components/schemas/UUID"},
+          "producerSeq": {"type": "integer", "minimum": 1},
+          "outboxId": {"$ref": "#/components/schemas/UUID"}
+        }
+      },
+      "CanonicalJSONDigest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["domain", "canonicalizerVersion", "sha256"],
+        "properties": {
+          "domain": {"enum": ["execution-arguments", "tool-schema", "operation-plan", "policy-context", "operation-params", "operation-ack", "operation-result", "execution-result"]},
+          "canonicalizerVersion": {"const": "rfc8785-v1"},
+          "sha256": {"$ref": "#/components/schemas/SHA256"}
+        }
+      },
+      "ExecutionState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["executionId", "runId", "runAttemptId", "runAttemptGeneration", "appServerToolCallId", "executorId", "environmentId", "toolName", "toolVersion", "mapperVersion", "policyVersion", "policyDecision", "operationCount", "argumentsDigest", "toolSchemaDigest", "operationPlanDigest", "policyContextDigest", "status", "version", "createdAt", "updatedAt"],
+        "properties": {
+          "executionId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1},
+          "appServerToolCallId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "executorId": {"$ref": "#/components/schemas/UUID"},
+          "environmentId": {"$ref": "#/components/schemas/UUID"},
+          "toolName": {"type": "string", "minLength": 1, "maxLength": 128},
+          "toolVersion": {"type": "string", "minLength": 1, "maxLength": 128},
+          "mapperVersion": {"type": "string", "minLength": 1, "maxLength": 128},
+          "policyVersion": {"type": "string", "minLength": 1, "maxLength": 128},
+          "policyDecision": {"enum": ["allow", "ask", "deny"]},
+          "operationCount": {"type": "integer", "minimum": 1, "maximum": 256},
+          "argumentsDigest": {"$ref": "#/components/schemas/CanonicalJSONDigest"},
+          "toolSchemaDigest": {"$ref": "#/components/schemas/CanonicalJSONDigest"},
+          "operationPlanDigest": {"$ref": "#/components/schemas/CanonicalJSONDigest"},
+          "policyContextDigest": {"$ref": "#/components/schemas/CanonicalJSONDigest"},
+          "status": {"enum": ["created", "pending_approval", "approved", "denied", "expired", "dispatching", "running", "cancelling", "succeeded", "failed", "cancelled", "unknown"]},
+          "dispatchedAt": {"type": "string", "format": "date-time"},
+          "terminalResultDigest": {"$ref": "#/components/schemas/CanonicalJSONDigest"},
+          "terminalAt": {"type": "string", "format": "date-time"},
+          "version": {"type": "integer", "minimum": 1},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "ExecutionOperationState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operationId", "executionId", "ordinal", "kind", "effectClass", "mutationKey", "paramsDigest", "status", "version", "createdAt", "updatedAt"],
+        "properties": {
+          "operationId": {"$ref": "#/components/schemas/UUID"},
+          "executionId": {"$ref": "#/components/schemas/UUID"},
+          "ordinal": {"type": "integer", "minimum": 1, "maximum": 256},
+          "kind": {"type": "string", "minLength": 1, "maxLength": 128},
+          "effectClass": {"enum": ["read", "mutation"]},
+          "mutationKey": {"$ref": "#/components/schemas/UUID"},
+          "paramsDigest": {"$ref": "#/components/schemas/CanonicalJSONDigest"},
+          "status": {"enum": ["prepared", "dispatching", "acknowledged", "succeeded", "failed", "cancelled", "unknown"]},
+          "connectionGeneration": {"type": "integer", "minimum": 1},
+          "acknowledgementDigest": {"$ref": "#/components/schemas/CanonicalJSONDigest"},
+          "terminalResultDigest": {"$ref": "#/components/schemas/CanonicalJSONDigest"},
+          "dispatchedAt": {"type": "string", "format": "date-time"},
+          "acknowledgedAt": {"type": "string", "format": "date-time"},
+          "terminalAt": {"type": "string", "format": "date-time"},
+          "version": {"type": "integer", "minimum": 1},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "PrepareExecutionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["executionId", "runId", "runAttemptId", "holderId", "runAttemptGeneration", "expectedRunVersion", "expectedRunAttemptVersion", "appServerToolCallId", "executorId", "environmentId", "toolName", "toolVersion", "mapperVersion", "policyVersion", "operationCount", "arguments", "toolSchema", "operationPlan", "policyContext", "policyDecision", "record"],
+        "properties": {
+          "executionId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1},
+          "expectedRunVersion": {"type": "integer", "minimum": 1},
+          "expectedRunAttemptVersion": {"type": "integer", "minimum": 1},
+          "appServerToolCallId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "executorId": {"$ref": "#/components/schemas/UUID"},
+          "environmentId": {"$ref": "#/components/schemas/UUID"},
+          "toolName": {"type": "string", "minLength": 1, "maxLength": 128},
+          "toolVersion": {"type": "string", "minLength": 1, "maxLength": 128},
+          "mapperVersion": {"type": "string", "minLength": 1, "maxLength": 128},
+          "policyVersion": {"type": "string", "minLength": 1, "maxLength": 128},
+          "operationCount": {"type": "integer", "minimum": 1, "maximum": 256},
+          "arguments": {"$ref": "#/components/schemas/CanonicalJSONObject"},
+          "toolSchema": {"$ref": "#/components/schemas/CanonicalJSONObject"},
+          "operationPlan": {"$ref": "#/components/schemas/CanonicalJSONObject"},
+          "policyContext": {"$ref": "#/components/schemas/CanonicalJSONObject"},
+          "policyDecision": {"enum": ["allow", "ask", "deny"]},
+          "record": {"$ref": "#/components/schemas/TransitionRecord"}
+        }
+      },
+      "PrepareExecutionResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["execution", "created"],
+        "properties": {
+          "execution": {"$ref": "#/components/schemas/ExecutionState"},
+          "created": {"type": "boolean"}
+        }
+      },
+      "PrepareOperationRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operationId", "executionId", "runId", "runAttemptId", "holderId", "runAttemptGeneration", "expectedExecutionVersion", "ordinal", "kind", "effectClass", "mutationKey", "params", "record"],
+        "properties": {
+          "operationId": {"$ref": "#/components/schemas/UUID"},
+          "executionId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1},
+          "expectedExecutionVersion": {"type": "integer", "minimum": 1},
+          "ordinal": {"type": "integer", "minimum": 1, "maximum": 256},
+          "kind": {"type": "string", "minLength": 1, "maxLength": 128},
+          "effectClass": {"enum": ["read", "mutation"]},
+          "mutationKey": {"$ref": "#/components/schemas/UUID"},
+          "params": {"$ref": "#/components/schemas/CanonicalJSONObject"},
+          "record": {"$ref": "#/components/schemas/TransitionRecord"}
+        }
+      },
+      "PrepareOperationResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["execution", "operation", "created"],
+        "properties": {
+          "execution": {"$ref": "#/components/schemas/ExecutionState"},
+          "operation": {"$ref": "#/components/schemas/ExecutionOperationState"},
+          "created": {"type": "boolean"}
+        }
+      },
+      "BeginOperationDispatchRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operationId", "executionId", "runId", "runAttemptId", "holderId", "runAttemptGeneration", "connectionGeneration", "expectedExecutionVersion", "expectedOperationVersion", "policyContext", "operationPlan", "params", "record"],
+        "properties": {
+          "operationId": {"$ref": "#/components/schemas/UUID"},
+          "executionId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1},
+          "connectionGeneration": {"type": "integer", "minimum": 1},
+          "expectedExecutionVersion": {"type": "integer", "minimum": 1},
+          "expectedOperationVersion": {"type": "integer", "minimum": 1},
+          "policyContext": {"$ref": "#/components/schemas/CanonicalJSONObject"},
+          "operationPlan": {"$ref": "#/components/schemas/CanonicalJSONObject"},
+          "params": {"$ref": "#/components/schemas/CanonicalJSONObject"},
+          "record": {"$ref": "#/components/schemas/TransitionRecord"}
+        }
+      },
+      "BeginOperationDispatchResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["execution", "operation", "began"],
+        "properties": {
+          "execution": {"$ref": "#/components/schemas/ExecutionState"},
+          "operation": {"$ref": "#/components/schemas/ExecutionOperationState"},
+          "began": {"type": "boolean", "description": "One-shot permission to perform the external send; false on every exact retry."}
+        }
+      },
+      "AcknowledgeOperationRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operationId", "executionId", "runId", "runAttemptId", "runAttemptGeneration", "connectionGeneration", "expectedExecutionVersion", "expectedOperationVersion", "acknowledgement", "record"],
+        "properties": {
+          "operationId": {"$ref": "#/components/schemas/UUID"},
+          "executionId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1},
+          "connectionGeneration": {"type": "integer", "minimum": 1},
+          "expectedExecutionVersion": {"type": "integer", "minimum": 1},
+          "expectedOperationVersion": {"type": "integer", "minimum": 1},
+          "acknowledgement": {"$ref": "#/components/schemas/CanonicalJSONObject"},
+          "record": {"$ref": "#/components/schemas/TransitionRecord"}
+        }
+      },
+      "AcknowledgeOperationResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["execution", "operation", "changed"],
+        "properties": {
+          "execution": {"$ref": "#/components/schemas/ExecutionState"},
+          "operation": {"$ref": "#/components/schemas/ExecutionOperationState"},
+          "changed": {"type": "boolean"}
+        }
+      },
+      "CompleteOperationRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operationId", "executionId", "runId", "runAttemptId", "runAttemptGeneration", "connectionGeneration", "expectedExecutionVersion", "expectedOperationVersion", "terminalStatus", "result", "record"],
+        "properties": {
+          "operationId": {"$ref": "#/components/schemas/UUID"},
+          "executionId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1},
+          "connectionGeneration": {"type": "integer", "minimum": 1},
+          "expectedExecutionVersion": {"type": "integer", "minimum": 1},
+          "expectedOperationVersion": {"type": "integer", "minimum": 1},
+          "terminalStatus": {"enum": ["succeeded", "failed", "cancelled", "unknown"]},
+          "result": {"$ref": "#/components/schemas/CanonicalJSONObject"},
+          "record": {"$ref": "#/components/schemas/TransitionRecord"}
+        }
+      },
+      "CompleteOperationResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["execution", "operation", "changed"],
+        "properties": {
+          "execution": {"$ref": "#/components/schemas/ExecutionState"},
+          "operation": {"$ref": "#/components/schemas/ExecutionOperationState"},
+          "changed": {"type": "boolean"}
+        }
+      },
+      "CompleteExecutionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["executionId", "runId", "runAttemptId", "runAttemptGeneration", "expectedExecutionVersion", "terminalStatus", "result", "record"],
+        "properties": {
+          "executionId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1},
+          "expectedExecutionVersion": {"type": "integer", "minimum": 1},
+          "terminalStatus": {"enum": ["succeeded", "failed", "cancelled", "unknown"]},
+          "result": {"$ref": "#/components/schemas/CanonicalJSONObject"},
+          "record": {"$ref": "#/components/schemas/TransitionRecord"}
+        }
+      },
+      "CompleteExecutionResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["execution", "changed"],
+        "properties": {
+          "execution": {"$ref": "#/components/schemas/ExecutionState"},
+          "changed": {"type": "boolean"}
         }
       },
       "ErrorResponse": {

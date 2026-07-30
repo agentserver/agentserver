@@ -167,12 +167,16 @@ func parseExecutorConnectionAction(path string) (string, string, bool) {
 }
 
 func decodeCommand(response http.ResponseWriter, request *http.Request, destination any) bool {
+	return decodeCommandWithLimit(response, request, destination, maxInternalCommandBytes)
+}
+
+func decodeCommandWithLimit(response http.ResponseWriter, request *http.Request, destination any, maximumBytes int64) bool {
 	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" {
 		writeError(response, http.StatusUnsupportedMediaType, corecontract.ErrorResponse{Code: "invalid_argument", Message: "Content-Type must be application/json"})
 		return false
 	}
-	request.Body = http.MaxBytesReader(response, request.Body, maxInternalCommandBytes)
+	request.Body = http.MaxBytesReader(response, request.Body, maximumBytes)
 	decoder := json.NewDecoder(request.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {

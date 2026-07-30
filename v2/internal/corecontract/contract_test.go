@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-func TestInternalOpenAPIExecutorConnectionPathsMatchClientContract(t *testing.T) {
+func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 	_, sourceFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("resolve contract test source path")
@@ -43,11 +43,17 @@ func TestInternalOpenAPIExecutorConnectionPathsMatchClientContract(t *testing.T)
 		t.Fatalf("internal OpenAPI identity/security = %q / %+v", document.OpenAPI, document.Security)
 	}
 	want := map[string]string{
-		AcquireExecutorConnectionPath:                  "acquireExecutorConnection",
-		ListExecutorEnvironmentsPath:                   "listExecutorEnvironments",
-		RenewExecutorConnectionPath("{executorId}"):    "renewExecutorConnection",
-		ActivateExecutorConnectionPath("{executorId}"): "activateExecutorConnection",
-		FenceExecutorConnectionPath("{executorId}"):    "fenceExecutorConnection",
+		AcquireExecutorConnectionPath:                                "acquireExecutorConnection",
+		ListExecutorEnvironmentsPath:                                 "listExecutorEnvironments",
+		RenewExecutorConnectionPath("{executorId}"):                  "renewExecutorConnection",
+		ActivateExecutorConnectionPath("{executorId}"):               "activateExecutorConnection",
+		FenceExecutorConnectionPath("{executorId}"):                  "fenceExecutorConnection",
+		PrepareExecutionPath:                                         "prepareExecution",
+		PrepareOperationPath("{executionId}"):                        "prepareOperation",
+		BeginOperationDispatchPath("{executionId}", "{operationId}"): "beginOperationDispatch",
+		AcknowledgeOperationPath("{executionId}", "{operationId}"):   "acknowledgeOperation",
+		CompleteOperationPath("{executionId}", "{operationId}"):      "completeOperation",
+		CompleteExecutionPath("{executionId}"):                       "completeExecution",
 	}
 	for path, operationID := range want {
 		operation, found := document.Paths[path]
@@ -69,6 +75,22 @@ func TestInternalOpenAPIExecutorConnectionPathsMatchClientContract(t *testing.T)
 	assertSchemaFields(t, document.Components.Schemas, "ListExecutorEnvironmentsRequest", reflect.TypeFor[ListExecutorEnvironmentsRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "ExecutorEnvironment", reflect.TypeFor[ExecutorEnvironment]())
 	assertSchemaFields(t, document.Components.Schemas, "ListExecutorEnvironmentsResponse", reflect.TypeFor[ListExecutorEnvironmentsResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "TransitionRecord", reflect.TypeFor[TransitionRecord]())
+	assertSchemaFields(t, document.Components.Schemas, "CanonicalJSONDigest", reflect.TypeFor[CanonicalJSONDigest]())
+	assertSchemaFields(t, document.Components.Schemas, "ExecutionState", reflect.TypeFor[ExecutionState]())
+	assertSchemaFields(t, document.Components.Schemas, "ExecutionOperationState", reflect.TypeFor[ExecutionOperationState]())
+	assertSchemaFields(t, document.Components.Schemas, "PrepareExecutionRequest", reflect.TypeFor[PrepareExecutionRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "PrepareExecutionResponse", reflect.TypeFor[PrepareExecutionResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "PrepareOperationRequest", reflect.TypeFor[PrepareOperationRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "PrepareOperationResponse", reflect.TypeFor[PrepareOperationResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "BeginOperationDispatchRequest", reflect.TypeFor[BeginOperationDispatchRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "BeginOperationDispatchResponse", reflect.TypeFor[BeginOperationDispatchResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "AcknowledgeOperationRequest", reflect.TypeFor[AcknowledgeOperationRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "AcknowledgeOperationResponse", reflect.TypeFor[AcknowledgeOperationResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "CompleteOperationRequest", reflect.TypeFor[CompleteOperationRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "CompleteOperationResponse", reflect.TypeFor[CompleteOperationResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "CompleteExecutionRequest", reflect.TypeFor[CompleteExecutionRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "CompleteExecutionResponse", reflect.TypeFor[CompleteExecutionResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "ErrorResponse", reflect.TypeFor[ErrorResponse]())
 }
 

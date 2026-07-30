@@ -23,6 +23,13 @@ var characterizedA03Releases = map[string]struct{}{
 	"0.145.0":          {},
 	"0.146.0-alpha.14": {},
 	"0.146.0":          {},
+	"0.147.0-alpha.2":  {},
+}
+
+var a03FilteredMCPCandidates = []string{
+	"0.146.0-alpha.14",
+	"0.146.0",
+	"0.147.0-alpha.2",
 }
 
 func TestAppServerA03CandidateReleaseIsExplicitlyCharacterized(t *testing.T) {

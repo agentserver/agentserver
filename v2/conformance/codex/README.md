@@ -179,6 +179,21 @@ the official platform package SHA-256 is
 Stable 0.146.0 is therefore also a characterized rejection, not a production
 runtime pin.
 
+Official alpha tag `rust-v0.147.0-alpha.2` (annotated tag object
+`cff73291c5dd427cb305c8791c89ece30a11c61e`, peeled commit
+`1d12a16dd9bcbd37bda22a71a1ae8ac2a49f0aba`) was tested as a rejection
+candidate, not as an extension of the full release matrix. Its A03 probes
+observe the same empty no-MCP builtin surface, the same filtered approved tool,
+the same three extra generic resource handlers, and the same executable
+`resources/list` bypass. E03 and E07 also reproduce their 0.146.0 failures
+unchanged. The tested macOS arm64 binary SHA-256 is
+`8e9f6e95320ea2360a07e7716cccea1292d67a2ba47d93bc81d601814abe7135`
+(size `276983200`), the official platform archive SHA-256 is
+`dfe3db5f1f32b19cf1b2875fe9347f970e3750b764a0dba483ee3b43375da4f7`,
+and the canonical app-server schema tree SHA-256 is
+`4393de9e38501330e39c433b43af7a58d3e0008e159f464845472ab66a6e7561`.
+These facts reject this alpha without claiming A01-A12/E01-E10 conformance.
+
 A04 passes for the official stable 0.146.0 Linux amd64 artifact. The upstream managed allowlist
 disables a configured MCP server unless both its name and transport identity
 match, but official release binaries read the Unix system layer only from

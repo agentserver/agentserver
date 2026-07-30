@@ -305,9 +305,9 @@ func TestAppServerA03Codex0145StillExecutesUpdatePlan(t *testing.T) {
 	closeAndWait(t, process)
 }
 
-func TestAppServerA03Codex0146HasNoBuiltinTools(t *testing.T) {
+func TestAppServerA03FilteredCandidatesHaveNoBuiltinTools(t *testing.T) {
 	binary, paths := prepareLiveCodex(t)
-	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0")
+	requireCandidateReleaseOneOf(t, binary, paths, a03FilteredMCPCandidates...)
 	response, err := scriptedmodel.AssistantMessage(
 		"response-a03-empty",
 		"message-a03-empty",
@@ -384,13 +384,13 @@ func TestAppServerA03Codex0146HasNoBuiltinTools(t *testing.T) {
 	closeAndWait(t, process)
 }
 
-// TestAppServerA03Codex0146StillExposesMCPResourceTools is a negative
+// TestAppServerA03FilteredCandidatesStillExposeMCPResourceTools is a negative
 // characterization probe. These releases can remove all builtins when no MCP
 // server is present, but adding one allowlisted MCP server also registers three
 // stock MCP resource handlers outside that allowlist.
-func TestAppServerA03Codex0146StillExposesMCPResourceTools(t *testing.T) {
+func TestAppServerA03FilteredCandidatesStillExposeMCPResourceTools(t *testing.T) {
 	binary, paths := prepareLiveCodex(t)
-	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0")
+	requireCandidateReleaseOneOf(t, binary, paths, a03FilteredMCPCandidates...)
 	modelResponse, err := scriptedmodel.AssistantMessage(
 		"response-a03-mcp-surface",
 		"message-a03-mcp-surface",
@@ -446,9 +446,9 @@ func TestAppServerA03Codex0146StillExposesMCPResourceTools(t *testing.T) {
 	t.Log("A03 remains blocked: configuring one MCP server also exposed three non-allowlisted stock resource tools")
 }
 
-func TestAppServerA03Codex0146RoutesApprovedMCPTool(t *testing.T) {
+func TestAppServerA03FilteredCandidatesRouteApprovedMCPTool(t *testing.T) {
 	binary, paths := prepareLiveCodex(t)
-	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0")
+	requireCandidateReleaseOneOf(t, binary, paths, a03FilteredMCPCandidates...)
 	toolCall, err := scriptedmodel.NamespacedFunctionCall(
 		"response-a03-mcp-call",
 		"call-a03-mcp-call",
@@ -1397,13 +1397,13 @@ func granularMCPApprovalPolicy() map[string]any {
 	}
 }
 
-// TestAppServerA03Codex0146ExecutesMCPResourceHandler proves the generic
+// TestAppServerA03FilteredCandidatesExecuteMCPResourceHandler proves the generic
 // resource surface is executable, rather than harmless schema residue. The
 // call reaches resources/list on the MCP server even though enabled_tools only
 // contains approved_echo.
-func TestAppServerA03Codex0146ExecutesMCPResourceHandler(t *testing.T) {
+func TestAppServerA03FilteredCandidatesExecuteMCPResourceHandler(t *testing.T) {
 	binary, paths := prepareLiveCodex(t)
-	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0")
+	requireCandidateReleaseOneOf(t, binary, paths, a03FilteredMCPCandidates...)
 	resourceCall, err := scriptedmodel.FunctionCall(
 		"response-a03-resource-call",
 		"call-a03-resource-call",
@@ -1472,9 +1472,9 @@ func TestAppServerA03Codex0146ExecutesMCPResourceHandler(t *testing.T) {
 	t.Log("A03 blocker is executable: list_mcp_resources reached resources/list outside the MCP enabled_tools allowlist")
 }
 
-func TestAppServerA03Codex0146RejectsUnregisteredCallsBeforeMCP(t *testing.T) {
+func TestAppServerA03FilteredCandidatesRejectUnregisteredCallsBeforeMCP(t *testing.T) {
 	binary, paths := prepareLiveCodex(t)
-	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0-alpha.14", "0.146.0")
+	requireCandidateReleaseOneOf(t, binary, paths, a03FilteredMCPCandidates...)
 	blockedMCPCall, err := scriptedmodel.NamespacedFunctionCall(
 		"response-a03-blocked-mcp",
 		"call-a03-blocked-mcp",

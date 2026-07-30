@@ -194,6 +194,20 @@ and the canonical app-server schema tree SHA-256 is
 `4393de9e38501330e39c433b43af7a58d3e0008e159f464845472ab66a6e7561`.
 These facts reject this alpha without claiming A01-A12/E01-E10 conformance.
 
+A separate production-shape candidate probe now exercises the stock
+`thread/start.dynamicTools` client bridge without configuring any Codex MCP
+server. On stable 0.146.0 and 0.147.0-alpha.2, the captured model surface is
+exactly `executor.approved_echo`; a real namespaced function call becomes an
+`item/tool/call` reverse request with the original thread, turn, call id, tool,
+and structured arguments, and the client result returns to the next model
+request. Calls to an omitted executor tool and `exec_command` both fail as
+`unsupported call` without producing a reverse request. A pending dynamic call
+can be interrupted, but unlike approval and MCP-elicitation requests it never
+emits `serverRequest/resolved`: normal client response and interrupted terminal
+are the two release-bound cleanup signals the harness must track. This evidence
+supports moving executor MCP client ownership into the stateless harness; it
+does not silently make the old direct-Codex-MCP architecture pass A03.
+
 A04 passes for the official stable 0.146.0 Linux amd64 artifact. The upstream managed allowlist
 disables a configured MCP server unless both its name and transport identity
 match, but official release binaries read the Unix system layer only from

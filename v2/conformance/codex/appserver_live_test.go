@@ -17,12 +17,13 @@ import (
 )
 
 const (
-	conformanceModelName = "agentserver-v2-scripted-model"
-	conformanceUserText  = "complete the deterministic phase-zero lifecycle"
-	conformanceFinalText = "scripted lifecycle complete"
-	executorMCPNamespace = "mcp__executor"
-	approvedMCPToolName  = "approved_echo"
-	blockedMCPToolName   = "blocked_echo"
+	conformanceModelName     = "agentserver-v2-scripted-model"
+	conformanceUserText      = "complete the deterministic phase-zero lifecycle"
+	conformanceFinalText     = "scripted lifecycle complete"
+	executorMCPNamespace     = "mcp__executor"
+	executorDynamicNamespace = "executor"
+	approvedMCPToolName      = "approved_echo"
+	blockedMCPToolName       = "blocked_echo"
 )
 
 func TestAppServerA01ScriptedModelLifecycle(t *testing.T) {
@@ -382,6 +383,235 @@ func TestAppServerA03FilteredCandidatesHaveNoBuiltinTools(t *testing.T) {
 	}
 
 	closeAndWait(t, process)
+}
+
+// TestAppServerA03DynamicExecutorBridgeHasExactToolSurface characterizes the
+// stock app-server client-tool bridge as an alternative to configuring the
+// executor as a Codex MCP server. The client remains responsible for mapping
+// this reverse request to the executor-gateway MCP transport.
+func TestAppServerA03DynamicExecutorBridgeHasExactToolSurface(t *testing.T) {
+	binary, paths := prepareLiveCodex(t)
+	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0", "0.147.0-alpha.2")
+
+	const callID = "call-a03-dynamic-executor"
+	toolCall, err := scriptedmodel.NamespacedFunctionCall(
+		"response-a03-dynamic-call",
+		callID,
+		executorDynamicNamespace,
+		approvedMCPToolName,
+		`{"message":"hello executor"}`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalResponse, err := scriptedmodel.AssistantMessage(
+		"response-a03-dynamic-final",
+		"message-a03-dynamic-final",
+		conformanceFinalText,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelServer, err := scriptedmodel.Start(scriptedmodel.Config{
+		Responses: []scriptedmodel.Response{toolCall, finalResponse},
+	})
+	if err != nil {
+		t.Fatalf("start loopback scripted model: %v", err)
+	}
+	t.Cleanup(modelServer.Close)
+
+	writeScriptedModelConfigWithOptions(t, paths.codexHome, modelServer.URL(), scriptedModelConfigOptions{
+		disableUpdatePlan: true,
+	})
+	process := startPreparedLiveCodex(t, binary, paths, "app-server", "--listen", "stdio://", "--strict-config")
+	initializeAppServer(t, process)
+	collector := newRPCCollector(process)
+	thread, turn := startMinimalAppServerTurnWithDynamicTools(
+		t,
+		collector,
+		paths.cwd,
+		"call the approved deterministic executor tool",
+		"never",
+		approvedDynamicExecutorTools(),
+	)
+
+	reverseRequest := collector.request(t, "item/tool/call")
+	var reverseParams struct {
+		ThreadID  string         `json:"threadId"`
+		TurnID    string         `json:"turnId"`
+		CallID    string         `json:"callId"`
+		Namespace string         `json:"namespace"`
+		Tool      string         `json:"tool"`
+		Arguments map[string]any `json:"arguments"`
+	}
+	if err := reverseRequest.DecodeParams(&reverseParams); err != nil {
+		t.Fatal(err)
+	}
+	if reverseParams.ThreadID != thread.Thread.ID || reverseParams.TurnID != turn.ID ||
+		reverseParams.CallID != callID || reverseParams.Namespace != executorDynamicNamespace ||
+		reverseParams.Tool != approvedMCPToolName || reverseParams.Arguments["message"] != "hello executor" {
+		t.Fatalf("unexpected dynamic executor request: %+v", reverseParams)
+	}
+
+	type dynamicItemEvent struct {
+		ThreadID string         `json:"threadId"`
+		TurnID   string         `json:"turnId"`
+		Item     map[string]any `json:"item"`
+	}
+	var started dynamicItemEvent
+	for itemIndex := 0; itemIndex < 32; itemIndex++ {
+		startedMessage := collector.notification(t, "item/started")
+		if err := startedMessage.DecodeParams(&started); err != nil {
+			t.Fatal(err)
+		}
+		if started.ThreadID != thread.Thread.ID || started.TurnID != turn.ID {
+			t.Fatalf("dynamic executor item/started identity mismatch: %+v", started)
+		}
+		if started.Item["type"] == "dynamicToolCall" {
+			break
+		}
+		started = dynamicItemEvent{}
+	}
+	if started.Item == nil || started.Item["id"] != callID ||
+		started.Item["namespace"] != executorDynamicNamespace || started.Item["tool"] != approvedMCPToolName ||
+		started.Item["status"] != "inProgress" {
+		t.Fatalf("unexpected dynamic executor item/started: %+v", started)
+	}
+
+	sendRPC(t, process, map[string]any{
+		"id": reverseRequest.ID,
+		"result": map[string]any{
+			"contentItems": []any{
+				map[string]any{"type": "inputText", "text": "approved echo: hello executor"},
+			},
+			"success": true,
+		},
+	})
+
+	var completed dynamicItemEvent
+	for itemIndex := 0; itemIndex < 32; itemIndex++ {
+		completedMessage := collector.notification(t, "item/completed")
+		if err := completedMessage.DecodeParams(&completed); err != nil {
+			t.Fatal(err)
+		}
+		if completed.ThreadID != thread.Thread.ID || completed.TurnID != turn.ID {
+			t.Fatalf("dynamic executor item/completed identity mismatch: %+v", completed)
+		}
+		if completed.Item["type"] == "dynamicToolCall" {
+			break
+		}
+		completed = dynamicItemEvent{}
+	}
+	if completed.Item == nil || completed.Item["id"] != callID ||
+		completed.Item["status"] != "completed" || completed.Item["success"] != true {
+		t.Fatalf("unexpected dynamic executor item/completed: %+v", completed)
+	}
+	assertAgentItemCompleted(t, collector, thread.Thread.ID, turn.ID, conformanceFinalText)
+	collector.notification(t, "turn/completed")
+	collector.assertNoNotificationMethodsFor(t, 100*time.Millisecond, "serverRequest/resolved")
+	closeAndWait(t, process)
+
+	if failures := modelServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted model server failures: %v", failures)
+	}
+	requests := modelServer.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("scripted model received %d requests, want two", len(requests))
+	}
+	for index, request := range requests {
+		if surface := modelToolNames(t, decodeCapturedModelRequest(t, request).Tools); !reflect.DeepEqual(
+			surface,
+			[]string{executorDynamicNamespace + "." + approvedMCPToolName},
+		) {
+			t.Fatalf("dynamic executor model tool surface %d = %v", index, surface)
+		}
+	}
+	second := decodeCapturedModelRequest(t, requests[1])
+	if !modelInputContainsFunctionOutput(second.Input, callID, "approved echo: hello executor") {
+		t.Fatalf("second model request omitted dynamic executor result: input=%s", encodeModelInput(t, second.Input))
+	}
+}
+
+func TestAppServerA03DynamicExecutorBridgeRejectsUnregisteredCalls(t *testing.T) {
+	binary, paths := prepareLiveCodex(t)
+	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0", "0.147.0-alpha.2")
+
+	blockedExecutorCall, err := scriptedmodel.NamespacedFunctionCall(
+		"response-a03-dynamic-blocked-executor",
+		"call-a03-dynamic-blocked-executor",
+		executorDynamicNamespace,
+		blockedMCPToolName,
+		`{"message":"must not execute"}`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockedShellCall, err := scriptedmodel.FunctionCall(
+		"response-a03-dynamic-blocked-shell",
+		"call-a03-dynamic-blocked-shell",
+		"exec_command",
+		`{"cmd":"must-not-execute"}`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalResponse, err := scriptedmodel.AssistantMessage(
+		"response-a03-dynamic-blocked-final",
+		"message-a03-dynamic-blocked-final",
+		conformanceFinalText,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelServer, err := scriptedmodel.Start(scriptedmodel.Config{
+		Responses: []scriptedmodel.Response{blockedExecutorCall, blockedShellCall, finalResponse},
+	})
+	if err != nil {
+		t.Fatalf("start loopback scripted model: %v", err)
+	}
+	t.Cleanup(modelServer.Close)
+
+	writeScriptedModelConfigWithOptions(t, paths.codexHome, modelServer.URL(), scriptedModelConfigOptions{
+		disableUpdatePlan: true,
+	})
+	process := startPreparedLiveCodex(t, binary, paths, "app-server", "--listen", "stdio://", "--strict-config")
+	initializeAppServer(t, process)
+	collector := newRPCCollector(process)
+	thread, turn := startMinimalAppServerTurnWithDynamicTools(
+		t,
+		collector,
+		paths.cwd,
+		"attempt calls omitted from the dynamic executor tool surface",
+		"never",
+		approvedDynamicExecutorTools(),
+	)
+	// The ordinary collector fails immediately if either unregistered call
+	// escapes as an item/tool/call reverse request.
+	assertAgentItemCompleted(t, collector, thread.Thread.ID, turn.ID, conformanceFinalText)
+	collector.notification(t, "turn/completed")
+	closeAndWait(t, process)
+
+	if failures := modelServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted model server failures: %v", failures)
+	}
+	requests := modelServer.Requests()
+	if len(requests) != 3 {
+		t.Fatalf("scripted model received %d requests, want three", len(requests))
+	}
+	wantSurface := []string{executorDynamicNamespace + "." + approvedMCPToolName}
+	for index, request := range requests {
+		if surface := modelToolNames(t, decodeCapturedModelRequest(t, request).Tools); !reflect.DeepEqual(surface, wantSurface) {
+			t.Fatalf("dynamic executor model tool surface %d = %v, want %v", index, surface, wantSurface)
+		}
+	}
+	second := decodeCapturedModelRequest(t, requests[1])
+	if !modelInputContainsFunctionOutput(second.Input, "call-a03-dynamic-blocked-executor", "unsupported call") {
+		t.Fatalf("blocked dynamic executor call did not receive an unsupported-call result: input=%s", encodeModelInput(t, second.Input))
+	}
+	third := decodeCapturedModelRequest(t, requests[2])
+	if !modelInputContainsFunctionOutput(third.Input, "call-a03-dynamic-blocked-shell", "unsupported call") {
+		t.Fatalf("blocked shell call did not receive an unsupported-call result: input=%s", encodeModelInput(t, third.Input))
+	}
 }
 
 // TestAppServerA03FilteredCandidatesStillExposeMCPResourceTools is a negative
@@ -1103,6 +1333,102 @@ func TestAppServerA07InterruptClearsPendingMCPFormElicitation(t *testing.T) {
 	}
 }
 
+func TestAppServerA07InterruptClearsPendingDynamicExecutorCall(t *testing.T) {
+	binary, paths := prepareLiveCodex(t)
+	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0", "0.147.0-alpha.2")
+	const callID = "call-a07-pending-dynamic-executor"
+	toolCall, err := scriptedmodel.NamespacedFunctionCall(
+		"response-a07-dynamic-call",
+		callID,
+		executorDynamicNamespace,
+		approvedMCPToolName,
+		`{"message":"wait for the harness MCP bridge"}`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelServer, err := scriptedmodel.Start(scriptedmodel.Config{
+		Responses: []scriptedmodel.Response{toolCall},
+	})
+	if err != nil {
+		t.Fatalf("start loopback scripted model: %v", err)
+	}
+	t.Cleanup(modelServer.Close)
+
+	writeScriptedModelConfigWithOptions(t, paths.codexHome, modelServer.URL(), scriptedModelConfigOptions{
+		disableUpdatePlan: true,
+	})
+	process := startPreparedLiveCodex(t, binary, paths, "app-server", "--listen", "stdio://", "--strict-config")
+	initializeAppServer(t, process)
+	collector := newRPCCollector(process)
+	thread, turn := startMinimalAppServerTurnWithDynamicTools(
+		t,
+		collector,
+		paths.cwd,
+		"interrupt while the harness MCP bridge is pending",
+		"never",
+		approvedDynamicExecutorTools(),
+	)
+	reverseRequest := collector.request(t, "item/tool/call")
+	var requestParams struct {
+		ThreadID  string `json:"threadId"`
+		TurnID    string `json:"turnId"`
+		CallID    string `json:"callId"`
+		Namespace string `json:"namespace"`
+		Tool      string `json:"tool"`
+	}
+	if err := reverseRequest.DecodeParams(&requestParams); err != nil {
+		t.Fatal(err)
+	}
+	if requestParams.ThreadID != thread.Thread.ID || requestParams.TurnID != turn.ID ||
+		requestParams.CallID != callID || requestParams.Namespace != executorDynamicNamespace ||
+		requestParams.Tool != approvedMCPToolName {
+		t.Fatalf("unexpected pending dynamic executor request: %+v", requestParams)
+	}
+
+	sendRPC(t, process, map[string]any{
+		"id":     4,
+		"method": "turn/interrupt",
+		"params": map[string]any{
+			"threadId": thread.Thread.ID,
+			"turnId":   turn.ID,
+		},
+	})
+	var interruptResult struct{}
+	mustDecodeResult(t, collector.response(t, "4"), &interruptResult)
+	terminalMessage := collector.notification(t, "turn/completed")
+	var terminal interruptedTurnResolution
+	if err := terminalMessage.DecodeParams(&terminal); err != nil {
+		t.Fatal(err)
+	}
+	if terminal.ThreadID != thread.Thread.ID || terminal.Turn.ID != turn.ID || terminal.Turn.Status != "interrupted" {
+		t.Fatalf("unexpected dynamic executor interrupted terminal: %+v", terminal)
+	}
+	// Unlike approval and MCP-elicitation requests, item/tool/call has no
+	// serverRequest/resolved notification. A terminal turn is the release-bound
+	// cleanup signal for a dynamic callback that the client has not answered.
+	collector.assertNoNotificationMethodsFor(
+		t,
+		100*time.Millisecond,
+		"serverRequest/resolved",
+	)
+	closeAndWait(t, process)
+
+	if failures := modelServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted model server failures: %v", failures)
+	}
+	requests := modelServer.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("interrupted dynamic executor turn sent %d model requests, want one", len(requests))
+	}
+	if surface := modelToolNames(t, decodeCapturedModelRequest(t, requests[0]).Tools); !reflect.DeepEqual(
+		surface,
+		[]string{executorDynamicNamespace + "." + approvedMCPToolName},
+	) {
+		t.Fatalf("interrupted dynamic executor tool surface = %v", surface)
+	}
+}
+
 type interruptedTurnResolution struct {
 	ThreadID string        `json:"threadId"`
 	Turn     appServerTurn `json:"turn"`
@@ -1593,6 +1919,32 @@ func executorMCPServerConfig(expectedCalls []scriptedmcp.ExpectedCall) scriptedm
 	}
 }
 
+func approvedDynamicExecutorTools() []any {
+	return []any{
+		map[string]any{
+			"type":        "namespace",
+			"name":        executorDynamicNamespace,
+			"description": "Policy-approved deterministic executor tools.",
+			"tools": []any{
+				map[string]any{
+					"type":         "function",
+					"name":         approvedMCPToolName,
+					"description":  "Execute one approved deterministic instruction.",
+					"deferLoading": false,
+					"inputSchema": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"message": map[string]any{"type": "string"},
+						},
+						"required":             []string{"message"},
+						"additionalProperties": false,
+					},
+				},
+			},
+		},
+	}
+}
+
 func startMinimalAppServerTurn(
 	t *testing.T,
 	collector *rpcCollector,
@@ -1611,6 +1963,25 @@ func startMinimalAppServerTurnWithApprovalPolicy(
 	approvalPolicy any,
 ) (threadStartResult, appServerTurn) {
 	t.Helper()
+	return startMinimalAppServerTurnWithDynamicTools(
+		t,
+		collector,
+		cwd,
+		userText,
+		approvalPolicy,
+		[]any{},
+	)
+}
+
+func startMinimalAppServerTurnWithDynamicTools(
+	t *testing.T,
+	collector *rpcCollector,
+	cwd string,
+	userText string,
+	approvalPolicy any,
+	dynamicTools []any,
+) (threadStartResult, appServerTurn) {
+	t.Helper()
 	sendRPC(t, collector.process, map[string]any{
 		"id":     2,
 		"method": "thread/start",
@@ -1622,7 +1993,7 @@ func startMinimalAppServerTurnWithApprovalPolicy(
 			"ephemeral":               false,
 			"threadSource":            "user",
 			"environments":            []any{},
-			"dynamicTools":            []any{},
+			"dynamicTools":            dynamicTools,
 			"selectedCapabilityRoots": []any{},
 		},
 	})

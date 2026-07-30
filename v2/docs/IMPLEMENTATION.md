@@ -309,6 +309,8 @@ A12 的 Darwin host-level边界已在 alpha.14和 stable 0.146.0上重复固定�
 
 official `rust-v0.147.0-alpha.2`（annotated tag object `cff73291c5dd427cb305c8791c89ece30a11c61e`，peeled commit `1d12a16dd9bcbd37bda22a71a1ae8ac2a49f0aba`）随后作为拒绝候选接受了定向复验，而不是被加入完整 release matrix。A03 仍得到完全相同的结果：无 MCP 时 builtin surface为空，批准工具能分发，但三个通用 resource handler仍额外可见，`list_mcp_resources`仍能绕过 `enabled_tools`发出 `resources/list`。E03与 E07也原样复现 0.146.0缺口。测试的 macOS arm64 binary SHA-256为 `8e9f6e95320ea2360a07e7716cccea1292d67a2ba47d93bc81d601814abe7135`、size为 `276983200`，官方 npm platform archive SHA-256为 `dfe3db5f1f32b19cf1b2875fe9347f970e3750b764a0dba483ee3b43375da4f7`，canonical app-server schema tree SHA-256为 `4393de9e38501330e39c433b43af7a58d3e0008e159f464845472ab66a6e7561`。这些证据只用于拒绝该 alpha，不宣称它通过 A01-A12/E01-E10。
 
+另一个 production-shape candidate probe 已验证 stock `thread/start.dynamicTools` client bridge。stable 0.146.0 与 0.147.0-alpha.2 在完全不配置 Codex MCP server时，实际模型工具面都精确只有 `executor.approved_echo`；真实 namespaced function call会变成带原 thread/turn/call id、tool和结构化参数的 `item/tool/call` reverse request，client回包结果进入下一次模型请求。模型伪造未公布的 executor tool或 `exec_command`都只得到 `unsupported call`，不会产生 reverse request。pending dynamic call可由 `turn/interrupt`结束，但它与 approval/MCP elicitation不同：正常 client回包和 interrupted terminal都不产生 `serverRequest/resolved`，harness必须按 request类型分别用“response写入完成”或“所属 turn terminal”清理本地 outstanding set。该证据为“由无状态 harness调用 executor MCP、app-server只使用 dynamic tool bridge”的架构修正提供了可执行基础；在 A04/A06/A09/A11/A12及部署边界同步调整前，不能把旧的 direct-Codex-MCP路径静默宣称通过。
+
 ### 4.3 checkpoint 探针算法
 
 1. 创建全新 CODEX_HOME-A，以同一 stock build完成一个包含真实 fake MCP result的非 ephemeral turn。

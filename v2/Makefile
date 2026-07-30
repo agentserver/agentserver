@@ -1,7 +1,7 @@
 GO ?= go
 GOFMT ?= gofmt
 
-.PHONY: check fmt fmt-check vet test import-boundary contract-check conformance conformance-live conformance-image-a04 conformance-image-a12 conformance-image-e09
+.PHONY: check fmt fmt-check vet test postgres-test import-boundary contract-check conformance conformance-live conformance-image-a04 conformance-image-a12 conformance-image-e09
 
 check: fmt-check vet test import-boundary contract-check
 
@@ -20,6 +20,11 @@ vet:
 
 test:
 	$(GO) test ./... -count=1
+
+postgres-test:
+	@test -n "$$AGENTSERVER_V2_TEST_DATABASE_URL" || \
+		(printf '%s\n' 'AGENTSERVER_V2_TEST_DATABASE_URL is required'; exit 2)
+	@AGENTSERVER_RUN_POSTGRES_TESTS=1 $(GO) test ./internal/coredb -run '^TestPostgreSQL' -count=1 -v
 
 import-boundary:
 	$(GO) test ./internal/buildguard -run '^TestRepositoryHasNoV1RuntimeImports$$' -count=1

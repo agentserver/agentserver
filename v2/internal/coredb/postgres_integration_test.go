@@ -1,0 +1,403 @@
+package coredb
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+)
+
+const postgresTestRunEnvironment = "AGENTSERVER_RUN_POSTGRES_TESTS"
+
+func TestPostgreSQLMigrationKernel(t *testing.T) {
+	connectionConfig := postgresIntegrationConfig(t)
+	catalog, err := EmbeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := newPostgresTestSchema(t, connectionConfig)
+	runner := runnerConfig{schema: schema, lockKey: migrationAdvisoryLockKey, catalog: catalog}
+
+	result, err := migrateConfig(t.Context(), connectionConfig, runner)
+	if err != nil {
+		t.Fatalf("first migrateConfig() error = %v", err)
+	}
+	if result.Applied != 1 || result.CurrentVersion != 1 {
+		t.Fatalf("first migration result = %+v, want one applied migration at version 1", result)
+	}
+	result, err = migrateConfig(t.Context(), connectionConfig, runner)
+	if err != nil {
+		t.Fatalf("repeat migrateConfig() error = %v", err)
+	}
+	if result.Applied != 0 || result.CurrentVersion != 1 {
+		t.Fatalf("repeat migration result = %+v, want no-op at version 1", result)
+	}
+
+	connection := openPostgresTestConnection(t, connectionConfig)
+	defer connection.Close(context.Background())
+	assertDatabaseObjects(t, connection, schema)
+	assertKernelConstraints(t, connection, schema)
+}
+
+func TestPostgreSQLConcurrentMigrationRunsOnce(t *testing.T) {
+	connectionConfig := postgresIntegrationConfig(t)
+	schema := newPostgresTestSchema(t, connectionConfig)
+	catalog := []Migration{migrationForTest(1, "concurrent_once", `
+CREATE TABLE migration_marker (
+    id integer PRIMARY KEY
+);
+INSERT INTO migration_marker (id) VALUES (1);
+SELECT pg_catalog.pg_sleep(0.2);
+`)}
+	runner := runnerConfig{schema: schema, lockKey: migrationAdvisoryLockKey, catalog: catalog}
+
+	start := make(chan struct{})
+	results := make(chan MigrationResult, 2)
+	errorsChannel := make(chan error, 2)
+	var waitGroup sync.WaitGroup
+	for range 2 {
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+			<-start
+			result, err := migrateConfig(t.Context(), connectionConfig, runner)
+			results <- result
+			errorsChannel <- err
+		}()
+	}
+	close(start)
+	waitGroup.Wait()
+	close(results)
+	close(errorsChannel)
+
+	for err := range errorsChannel {
+		if err != nil {
+			t.Fatalf("concurrent migrateConfig() error = %v", err)
+		}
+	}
+	totalApplied := 0
+	for result := range results {
+		if result.CurrentVersion != 1 {
+			t.Fatalf("concurrent migration result = %+v, want current version 1", result)
+		}
+		totalApplied += result.Applied
+	}
+	if totalApplied != 1 {
+		t.Fatalf("concurrent runners applied %d migrations in total, want exactly 1", totalApplied)
+	}
+
+	connection := openPostgresTestConnection(t, connectionConfig)
+	defer connection.Close(context.Background())
+	var historyCount int
+	if err := connection.QueryRow(t.Context(), fmt.Sprintf("SELECT pg_catalog.count(*) FROM %s.schema_migrations", quoteIdentifier(schema))).Scan(&historyCount); err != nil {
+		t.Fatal(err)
+	}
+	var markerCount int
+	if err := connection.QueryRow(t.Context(), fmt.Sprintf("SELECT pg_catalog.count(*) FROM %s.migration_marker", quoteIdentifier(schema))).Scan(&markerCount); err != nil {
+		t.Fatal(err)
+	}
+	if historyCount != 1 || markerCount != 1 {
+		t.Fatalf("history rows = %d, marker rows = %d; want exactly one of each", historyCount, markerCount)
+	}
+}
+
+func TestPostgreSQLRejectsTamperedChecksum(t *testing.T) {
+	connectionConfig := postgresIntegrationConfig(t)
+	schema := newPostgresTestSchema(t, connectionConfig)
+	catalog := []Migration{migrationForTest(1, "checksum", "CREATE TABLE checksum_marker (id integer PRIMARY KEY);\n")}
+	runner := runnerConfig{schema: schema, lockKey: migrationAdvisoryLockKey, catalog: catalog}
+	if _, err := migrateConfig(t.Context(), connectionConfig, runner); err != nil {
+		t.Fatalf("initial migrateConfig() error = %v", err)
+	}
+
+	connection := openPostgresTestConnection(t, connectionConfig)
+	update := fmt.Sprintf("UPDATE %s.schema_migrations SET sha256 = pg_catalog.decode(pg_catalog.repeat('00', 32), 'hex') WHERE version = 1", quoteIdentifier(schema))
+	if _, err := connection.Exec(t.Context(), update); err != nil {
+		connection.Close(context.Background())
+		t.Fatal(err)
+	}
+	connection.Close(context.Background())
+
+	_, err := migrateConfig(t.Context(), connectionConfig, runner)
+	if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("migrateConfig() error = %v, want checksum mismatch", err)
+	}
+}
+
+func TestPostgreSQLFailedMigrationRollsBack(t *testing.T) {
+	connectionConfig := postgresIntegrationConfig(t)
+	schema := newPostgresTestSchema(t, connectionConfig)
+	catalog := []Migration{
+		migrationForTest(1, "durable_first", "CREATE TABLE durable_marker (id integer PRIMARY KEY);\n"),
+		migrationForTest(2, "rollback_second", "CREATE TABLE rolled_back_marker (id integer PRIMARY KEY);\nSELECT 1 / 0;\n"),
+	}
+	runner := runnerConfig{schema: schema, lockKey: migrationAdvisoryLockKey, catalog: catalog}
+
+	result, err := migrateConfig(t.Context(), connectionConfig, runner)
+	if err == nil || !strings.Contains(err.Error(), "execute migration 0002_rollback_second") {
+		t.Fatalf("migrateConfig() result = %+v, error = %v; want second migration failure", result, err)
+	}
+	if result.Applied != 1 || result.CurrentVersion != 1 {
+		t.Fatalf("migration result after failure = %+v, want first migration committed", result)
+	}
+
+	connection := openPostgresTestConnection(t, connectionConfig)
+	defer connection.Close(context.Background())
+	var appliedCount int
+	if err := connection.QueryRow(t.Context(), fmt.Sprintf("SELECT pg_catalog.count(*) FROM %s.schema_migrations", quoteIdentifier(schema))).Scan(&appliedCount); err != nil {
+		t.Fatal(err)
+	}
+	if appliedCount != 1 {
+		t.Fatalf("applied migration count = %d, want 1", appliedCount)
+	}
+	var rolledBackTable *string
+	qualifiedTable := schema + ".rolled_back_marker"
+	if err := connection.QueryRow(t.Context(), "SELECT pg_catalog.to_regclass($1)::text", qualifiedTable).Scan(&rolledBackTable); err != nil {
+		t.Fatal(err)
+	}
+	if rolledBackTable != nil {
+		t.Fatalf("failed migration left table %q behind", *rolledBackTable)
+	}
+
+	retryContext, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if _, err := migrateConfig(retryContext, connectionConfig, runner); err == nil || !strings.Contains(err.Error(), "execute migration 0002_rollback_second") {
+		t.Fatalf("retry migrateConfig() error = %v, want the same migration failure after lock release", err)
+	}
+}
+
+func postgresIntegrationConfig(t *testing.T) *pgx.ConnConfig {
+	t.Helper()
+	if os.Getenv(postgresTestRunEnvironment) != "1" {
+		t.Skipf("set %s=1 to run real PostgreSQL tests", postgresTestRunEnvironment)
+	}
+	databaseURL := os.Getenv("AGENTSERVER_V2_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Fatalf("AGENTSERVER_V2_TEST_DATABASE_URL is required when %s=1", postgresTestRunEnvironment)
+	}
+	config, err := pgx.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatal("AGENTSERVER_V2_TEST_DATABASE_URL is not a valid PostgreSQL connection string")
+	}
+	connection := openPostgresTestConnection(t, config)
+	if err := connection.Ping(t.Context()); err != nil {
+		connection.Close(context.Background())
+		t.Fatalf("ping PostgreSQL test database: %v", safeConnectError(config, err))
+	}
+	connection.Close(context.Background())
+	return config
+}
+
+func newPostgresTestSchema(t *testing.T, connectionConfig *pgx.ConnConfig) string {
+	t.Helper()
+	schema := fmt.Sprintf("agentserver_v2_it_%x_%x", os.Getpid(), time.Now().UnixNano())
+	if !schemaNamePattern.MatchString(schema) || !strings.HasPrefix(schema, "agentserver_v2_it_") {
+		t.Fatalf("generated unsafe PostgreSQL test schema %q", schema)
+	}
+	t.Cleanup(func() {
+		cleanupContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		connection, err := pgx.ConnectConfig(cleanupContext, connectionConfig.Copy())
+		if err != nil {
+			t.Errorf("connect to clean test schema %q: %v", schema, safeConnectError(connectionConfig, err))
+			return
+		}
+		defer connection.Close(context.Background())
+		if _, err := connection.Exec(cleanupContext, "DROP SCHEMA IF EXISTS "+quoteIdentifier(schema)+" CASCADE"); err != nil {
+			t.Errorf("drop isolated test schema %q: %v", schema, err)
+		}
+	})
+	return schema
+}
+
+func openPostgresTestConnection(t *testing.T, connectionConfig *pgx.ConnConfig) *pgx.Conn {
+	t.Helper()
+	connection, err := pgx.ConnectConfig(t.Context(), connectionConfig.Copy())
+	if err != nil {
+		t.Fatalf("connect to PostgreSQL test database: %v", safeConnectError(connectionConfig, err))
+	}
+	return connection
+}
+
+func assertDatabaseObjects(t *testing.T, connection *pgx.Conn, schema string) {
+	t.Helper()
+	wantTables := map[string]bool{
+		"attempt_leases":    false,
+		"outbox":            false,
+		"run_attempts":      false,
+		"run_events":        false,
+		"runs":              false,
+		"schema_migrations": false,
+		"session_leases":    false,
+		"sessions":          false,
+		"workspaces":        false,
+	}
+	rows, err := connection.Query(t.Context(), `
+SELECT table_name
+FROM information_schema.tables
+WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		if _, expected := wantTables[name]; expected {
+			wantTables[name] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		t.Fatal(err)
+	}
+	rows.Close()
+	for name, found := range wantTables {
+		if !found {
+			t.Errorf("expected table %s.%s was not created", schema, name)
+		}
+	}
+
+	wantConstraints := map[string]bool{
+		"runs_session_workspace_fk":              false,
+		"sessions_active_run_same_session_fk":    false,
+		"runs_idempotency_unique":                false,
+		"run_events_attempt_fk":                  false,
+		"run_events_payload_or_object":           false,
+		"outbox_lock_pair":                       false,
+		"schema_migrations_sha256_exact":         false,
+		"attempt_leases_attempt_generation_fk":   false,
+		"session_leases_run_session_fk":          false,
+		"run_attempts_run_generation_unique":     false,
+		"run_events_producer_key_unique":         false,
+		"sessions_identity_workspace_unique":     false,
+		"runs_identity_workspace_session_unique": false,
+	}
+	rows, err = connection.Query(t.Context(), `
+SELECT constraint_name
+FROM information_schema.table_constraints
+WHERE constraint_schema = $1`, schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		if _, expected := wantConstraints[name]; expected {
+			wantConstraints[name] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		t.Fatal(err)
+	}
+	rows.Close()
+	for name, found := range wantConstraints {
+		if !found {
+			t.Errorf("expected constraint %s was not created", name)
+		}
+	}
+
+	wantIndexes := map[string]bool{
+		"runs_session_status_created_idx": false,
+		"run_attempts_run_created_idx":    false,
+		"run_events_run_created_idx":      false,
+		"outbox_claim_idx":                false,
+	}
+	rows, err = connection.Query(t.Context(), "SELECT indexname FROM pg_catalog.pg_indexes WHERE schemaname = $1", schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			t.Fatal(err)
+		}
+		if _, expected := wantIndexes[name]; expected {
+			wantIndexes[name] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		t.Fatal(err)
+	}
+	rows.Close()
+	for name, found := range wantIndexes {
+		if !found {
+			t.Errorf("expected index %s was not created", name)
+		}
+	}
+}
+
+func assertKernelConstraints(t *testing.T, connection *pgx.Conn, schema string) {
+	t.Helper()
+	quotedSchema := quoteIdentifier(schema)
+	workspaceID := "10000000-0000-0000-0000-000000000001"
+	secondWorkspaceID := "10000000-0000-0000-0000-000000000002"
+	sessionID := "20000000-0000-0000-0000-000000000001"
+	secondSessionID := "20000000-0000-0000-0000-000000000002"
+	runID := "30000000-0000-0000-0000-000000000001"
+	actorID := "40000000-0000-0000-0000-000000000001"
+
+	if _, err := connection.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.workspaces (id, status) VALUES ($1, 'active'), ($2, 'active')", quotedSchema), workspaceID, secondWorkspaceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connection.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.sessions (id, workspace_id) VALUES ($1, $2), ($3, $2)", quotedSchema), sessionID, workspaceID, secondSessionID); err != nil {
+		t.Fatal(err)
+	}
+	insertRun := fmt.Sprintf(`
+INSERT INTO %s.runs
+    (id, workspace_id, session_id, actor_id, status, request_hash, idempotency_key)
+VALUES ($1, $2, $3, $4, 'queued', $5, $6)`, quotedSchema)
+	if _, err := connection.Exec(t.Context(), insertRun, runID, workspaceID, sessionID, actorID, make([]byte, 32), "create-run-key"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := connection.Exec(t.Context(), insertRun,
+		"30000000-0000-0000-0000-000000000002", workspaceID, sessionID, actorID, make([]byte, 32), "create-run-key")
+	assertPostgreSQLState(t, err, "23505")
+
+	_, err = connection.Exec(t.Context(), insertRun,
+		"30000000-0000-0000-0000-000000000003", workspaceID, sessionID,
+		"40000000-0000-0000-0000-000000000002", make([]byte, 31), "invalid-hash")
+	assertPostgreSQLState(t, err, "23514")
+
+	_, err = connection.Exec(t.Context(), fmt.Sprintf("UPDATE %s.sessions SET active_run_id = $1 WHERE id = $2", quotedSchema), runID, secondSessionID)
+	assertPostgreSQLState(t, err, "23503")
+
+	insertInvalidEvent := fmt.Sprintf(`
+INSERT INTO %s.run_events
+    (run_id, seq, event_id, producer_instance_id, producer_seq, kind, schema_version)
+VALUES ($1, 1, $2, $3, 1, 'run.created', 1)`, quotedSchema)
+	_, err = connection.Exec(t.Context(), insertInvalidEvent, runID,
+		"50000000-0000-0000-0000-000000000001",
+		"60000000-0000-0000-0000-000000000001")
+	assertPostgreSQLState(t, err, "23514")
+}
+
+func assertPostgreSQLState(t *testing.T, err error, wantState string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("PostgreSQL operation succeeded, want SQLSTATE %s", wantState)
+	}
+	var postgresError *pgconn.PgError
+	if !errors.As(err, &postgresError) {
+		t.Fatalf("PostgreSQL error = %T %v, want SQLSTATE %s", err, err, wantState)
+	}
+	if postgresError.Code != wantState {
+		t.Fatalf("PostgreSQL SQLSTATE = %s, want %s (error: %v)", postgresError.Code, wantState, postgresError)
+	}
+}

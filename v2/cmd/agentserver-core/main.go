@@ -1,0 +1,43 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+
+	"github.com/agentserver/agentserver/v2/internal/coredb"
+)
+
+const databaseURLEnvironment = "AGENTSERVER_V2_DATABASE_URL"
+
+type migrateFunc func(context.Context, string) (coredb.MigrationResult, error)
+
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	os.Exit(run(ctx, os.Args[1:], os.Getenv, os.Stdout, os.Stderr, coredb.Migrate))
+}
+
+func run(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer, migrate migrateFunc) int {
+	if len(args) != 1 || args[0] != "migrate" {
+		fmt.Fprintln(stderr, "usage: agentserver-core migrate")
+		return 2
+	}
+	databaseURL := getenv(databaseURLEnvironment)
+	if strings.TrimSpace(databaseURL) == "" {
+		fmt.Fprintf(stderr, "agentserver-core migrate: %s is required\n", databaseURLEnvironment)
+		return 2
+	}
+
+	result, err := migrate(ctx, databaseURL)
+	if err != nil {
+		fmt.Fprintf(stderr, "agentserver-core migrate: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "agentserver-core migrate: schema %s is at version %04d; applied %d migration(s)\n", coredb.SchemaName, result.CurrentVersion, result.Applied)
+	return 0
+}

@@ -493,6 +493,10 @@ AppendAttemptEvents：
 
 outbox claim 使用 SKIP LOCKED 与 lock_until。consumer crash 后可以再次 claim outbox，但消费动作仍必须依赖 aggregate CAS 保证幂等。PostgreSQL NOTIFY 只提示“可能有工作”，丢通知后 poll 仍能继续。
 
+这里的core所有权只覆盖canonical run event ledger：harness、executor-gateway和用户命令产生候选事件，core负责校验lease/generation、去重、分配权威run seq，并在需要时与aggregate状态和outbox原子提交。debug log、metric、trace和不参与恢复的内部notification不进入run_events。大stdout、长模型内容或大MCP结果先写对象存储，core只提交已验证hash的pointer；高频canonical event必须批量append，瞬时progress可以合并或限频。
+
+事件投递不是core的权威写职责。browser-gateway或可独立扩缩容的relay负责缓存、SSE fan-out和下游投影；它们只能消费已经提交的event/outbox，不能自行签发run seq或修正历史。Phase 1先保留清晰的event domain/API边界，不新增第二个权威event service，避免为state + event引入分布式事务。
+
 ### 5.6 migration
 
 v2/cmd/agentserver-core migrate：
@@ -505,6 +509,8 @@ v2/cmd/agentserver-core migrate：
 6. 失败即停止，不执行 down migration。
 
 Helm 先运行 migration Job，成功后再 rollout服务。core runtime identity没有 DDL 权限时更佳。
+
+当前PR 8 reference slice已实现独立`agentserver_v2` schema、内嵌连续catalog、已应用name/SHA-256校验、未知新版本降级拒绝、固定advisory lock、每文件独立transaction以及`agentserver-core migrate`。首个migration创建workspaces、sessions、runs、run_attempts、session_leases、attempt_leases、run_events和outbox；真实PostgreSQL 17.6 Linux arm64门禁已覆盖重复运行、两个并发runner只应用一次、checksum篡改拒绝、失败文件完整rollback及关键FK/unique/check/index。普通单测不静默依赖本机数据库；CI以`AGENTSERVER_V2_TEST_DATABASE_URL`显式执行`make postgres-test`。
 
 ## 6. 契约与 API
 
@@ -1006,6 +1012,8 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 12. agentx v2独立仓库bootstrap + shell executor vertical slice。
 
 前 6 个 PR只建立事实和门槛，不写五个服务的空壳。第 7 个 PR后才开始业务 runtime。
+
+当前第8项已经通过真实PostgreSQL门禁；下一实现切片是第9项。该结论只表示migration/schema底座可以进入状态机开发，不表示Phase 1整体完成或服务已经可部署运行。
 
 ## 14. 尚未锁定但有明确决策点的事项
 

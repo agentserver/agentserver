@@ -864,6 +864,7 @@ func TestExecServerE04FilesystemReadLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	pathURI := localFileURI(t, filePath)
+	workspaceURI := localFileURI(t, paths.cwd)
 
 	sendRPC(t, process, map[string]any{
 		"id":     2,
@@ -882,66 +883,108 @@ func TestExecServerE04FilesystemReadLifecycle(t *testing.T) {
 		t.Fatalf("fs/readFile = %v, want %v", decoded, contents)
 	}
 
+	// Stock 0.146.0 deliberately rejects platform-sandboxed streaming reads.
+	// read_file therefore cannot forward a restricted context to fs/open and
+	// must instead use an agentx-authorized, OS-contained fs-only lane.
 	sendRPC(t, process, map[string]any{
 		"id":     3,
-		"method": "fs/readFile",
-		"params": map[string]any{"path": filePath, "sandbox": nil},
+		"method": "fs/open",
+		"params": map[string]any{
+			"handleId": "sandboxed-handle",
+			"path":     pathURI,
+			"sandbox":  fsReadRestrictedSandbox(workspaceURI),
+		},
 	})
 	mustRPCError(t, collector.response(t, "3"))
 
 	sendRPC(t, process, map[string]any{
 		"id":     4,
+		"method": "fs/readFile",
+		"params": map[string]any{"path": filePath, "sandbox": nil},
+	})
+	mustRPCError(t, collector.response(t, "4"))
+
+	sendRPC(t, process, map[string]any{
+		"id":     5,
 		"method": "fs/open",
 		"params": map[string]any{"handleId": "handle-1", "path": pathURI, "sandbox": nil},
 	})
 	var opened struct {
 		HandleID string `json:"handleId"`
 	}
-	mustDecodeResult(t, collector.response(t, "4"), &opened)
+	mustDecodeResult(t, collector.response(t, "5"), &opened)
 	if opened.HandleID != "handle-1" {
 		t.Fatalf("fs/open handleId = %q, want handle-1", opened.HandleID)
 	}
 
-	first := readFileBlock(t, process, collector, 5, "handle-1", 0, 3)
+	first := readFileBlock(t, process, collector, 6, "handle-1", 0, 3)
 	if !bytes.Equal(first.chunk, contents[:3]) || first.eof {
 		t.Fatalf("first fs/readBlock = %+v, want first three bytes and eof=false", first)
 	}
-	second := readFileBlock(t, process, collector, 6, "handle-1", 3, 64)
+	second := readFileBlock(t, process, collector, 7, "handle-1", 3, 64)
 	if !bytes.Equal(second.chunk, contents[3:]) || !second.eof {
 		t.Fatalf("second fs/readBlock = %+v, want remaining bytes and eof=true", second)
 	}
 
 	sendRPC(t, process, map[string]any{
-		"id":     7,
+		"id":     8,
 		"method": "fs/close",
 		"params": map[string]any{"handleId": "handle-1"},
 	})
 	var closed map[string]any
-	mustDecodeResult(t, collector.response(t, "7"), &closed)
+	mustDecodeResult(t, collector.response(t, "8"), &closed)
 	if len(closed) != 0 {
 		t.Fatalf("fs/close result = %+v, want empty object", closed)
 	}
 
 	sendRPC(t, process, map[string]any{
-		"id":     8,
+		"id":     9,
 		"method": "fs/readBlock",
 		"params": map[string]any{"handleId": "handle-1", "offset": 0, "len": 1},
 	})
-	mustRPCError(t, collector.response(t, "8"))
+	mustRPCError(t, collector.response(t, "9"))
 
 	uncanonicalPath := paths.cwd + string(os.PathSeparator) + "nested" + string(os.PathSeparator) + ".." + string(os.PathSeparator) + "data.bin"
 	sendRPC(t, process, map[string]any{
-		"id":     9,
+		"id":     10,
 		"method": "fs/canonicalize",
 		"params": map[string]any{"path": localFileURI(t, uncanonicalPath), "sandbox": nil},
 	})
 	var canonicalized struct {
 		Path string `json:"path"`
 	}
-	mustDecodeResult(t, collector.response(t, "9"), &canonicalized)
+	mustDecodeResult(t, collector.response(t, "10"), &canonicalized)
 	assertFileURIPath(t, canonicalized.Path, filePath)
+	t.Log("E04 stock fact: fs/open is bounded by fs/readBlock but rejects platform-sandboxed streaming reads")
 
 	closeAndWait(t, process)
+}
+
+func fsReadRestrictedSandbox(workspaceURI string) map[string]any {
+	return map[string]any{
+		"permissions": map[string]any{
+			"type": "managed",
+			"file_system": map[string]any{
+				"type": "restricted",
+				"entries": []any{
+					map[string]any{
+						"path":   map[string]any{"type": "special", "value": map[string]any{"kind": "minimal"}},
+						"access": "read",
+					},
+					map[string]any{
+						"path":   map[string]any{"type": "path", "path": workspaceURI},
+						"access": "read",
+					},
+				},
+			},
+			"network": "restricted",
+		},
+		"cwd":                          workspaceURI,
+		"workspaceRoots":               []string{workspaceURI},
+		"windowsSandboxLevel":          "disabled",
+		"windowsSandboxPrivateDesktop": false,
+		"useLegacyLandlock":            false,
+	}
 }
 
 func TestExecServerE05NetworkPolicyReverseDecisions(t *testing.T) {

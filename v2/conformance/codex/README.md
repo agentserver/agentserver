@@ -18,9 +18,9 @@ The current live probes cover A01 lifecycle, A02 experimental gating, the
 revised A03 exact `dynamicTools` surface/callback path plus the rejected direct
 Codex-MCP path, and the revised A04 managed MCP deny-all image gate. Existing
 A05–A12 probes retain valuable stock/runtime facts. A07 now also has a
-worker-runner composition gate, but it still needs a pinned-artifact pass and
-the execution/control cases described below. A09's revised worker-runner gate
-is also implemented but still needs its pinned-artifact pass. A11's revised
+worker-runner composition gate and exact stable artifact pass, but it still
+needs the execution/control cases described below. A09's revised worker-runner
+gate now passes the same exact stable artifact. A11's revised
 worker-owned credential host gate now passes the exact stable 0.146.0 macOS
 artifact, while its remaining OS boundary evidence belongs to revised A12;
 A06/A12 still need the remaining product/image compositions. No
@@ -285,12 +285,13 @@ allows a configurable bounded graceful close, then aborts the private
 transport and returns a forced-close error instead of hanging in the SDK's
 session DELETE path. A broken transport cannot deliver cancellation to an
 already-dispatched remote handler, so gateway connection grace and execution
-deadlines remain mandatory. A live test using the same runner and a stock
-app-server is present but remains release evidence only when it is actually
-run against an exact pinned artifact; the current source-only compile/skip is
-not a pass record. Full A07 remains open for that artifact run,
-already-dispatched execution closure, real control disconnects, and the
-gateway-side disconnect deadline/unknown transition.
+deadlines remain mandatory. The live test using the same runner and a stock
+app-server passes on the documented stable `0.146.0` macOS arm64 binary
+(SHA-256
+`ae1d3ffe6d48aec6a4dc3f50e7eb8e0d11962485a6a9406c5a7012139383da02`,
+size `271056976`). Full A07 remains open for already-dispatched execution
+closure, real control disconnects, and the gateway-side disconnect
+deadline/unknown transition.
 
 A08's process-exit and byte-stability sub-gate passes for both characterized
 0.146.0 releases. After a completed non-ephemeral turn with no typed outstanding request, the probe closes stdin
@@ -335,9 +336,11 @@ shared counter requires exactly one total executor-side effect across both
 attempts. The runner unit suite separately proves that a checkpoint catalog
 digest mismatch fails before the first stdio byte; a changed catalog must
 therefore create a new thread rather than alter the resumed one. This live gate
-has only compiled/skipped in the current checkout: it still needs an actual run
-against the exact pinned stable `0.146.0` artifact, so revised A09 remains open
-and this paragraph is not a pass record.
+passes on the documented stable `0.146.0` macOS arm64 binary (SHA-256
+`ae1d3ffe6d48aec6a4dc3f50e7eb8e0d11962485a6a9406c5a7012139383da02`,
+size `271056976`). Revised A09 is therefore closed for this exact artifact;
+every future Codex build must repeat the gate before receiving the same
+checkpoint allowlist.
 
 A10 passes for both characterized 0.146.0 releases. The probe first seals a
 completed-turn rollout in a separate rollout-only checkpoint, then restores a

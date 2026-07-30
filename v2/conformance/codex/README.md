@@ -17,9 +17,11 @@ known characterized release is under test.
 The current live probes cover A01 lifecycle, A02 experimental gating, the
 revised A03 exact `dynamicTools` surface/callback path plus the rejected direct
 Codex-MCP path, and the revised A04 managed MCP deny-all image gate. Existing
-A05–A12 probes retain valuable stock/runtime facts, but A06/A07/A09/A11/A12
-must still be recomposed around the worker-owned MCP bridge described below;
-they are not silently carried over from direct Codex MCP. The lab also covers
+A05–A12 probes retain valuable stock/runtime facts. A07 now also has a
+worker-runner composition gate, but it still needs a pinned-artifact pass and
+the execution/control cases described below; A06/A09/A11/A12 likewise still
+need their revised worker-owned compositions. No direct-Codex-MCP result is
+silently carried into the production profile. The lab also covers
 E01 stdio/EOF, exec-server environment metadata, and these executor slices:
 
 - E02: deterministic argv/arg0, canonical cwd, exact non-inherited child
@@ -263,10 +265,17 @@ cancelled by their owning terminal, and result/terminal races have one winner.
 Its real-SDK cancellation sub-gate also proves cancellation reaches the fake
 gateway and exits the worker's nested elicitation handler before approval
 expiry, with zero dispatch. This avoids waiting for an SDK nested cancellation
-notification that is carried on an already-abandoned SSE response. Full A07
-remains open until this bridge is wired into the real app-server stdio event
-loop and composed with terminal handling, the serialized writer barrier,
-already-dispatched execution closure, and control/MCP disconnects.
+notification that is carried on an already-abandoned SSE response. The
+reference `AppServerRunner` now wires this bridge into a one-reader, one-writer
+Codex wire loop with typed initialize/thread/turn/interrupt lifecycle, a bounded
+notification sink, strict matching terminal cleanup, and pre-I/O resume catalog
+checking. Its net.Pipe fixture and race suite cover normal response writes,
+cancel, terminal races, unknown reverse requests, write failure, event overflow,
+and native resume without a `dynamicTools` override. A live test using the same
+runner and a stock app-server is present but remains release evidence only when
+it is actually run against an exact pinned artifact; the current source-only
+compile/skip is not a pass record. Full A07 remains open for that artifact run,
+already-dispatched execution closure, and real control/MCP disconnects.
 
 A08's process-exit and byte-stability sub-gate passes for both characterized
 0.146.0 releases. After a completed non-ephemeral turn with no typed outstanding request, the probe closes stdin

@@ -246,18 +246,36 @@ func (b *DynamicBridge) ResponseWriteFailed(callID string, cause error) error {
 	return nil
 }
 
+// CancelTurn cancels every callback owned by one turn before app-server has
+// necessarily emitted its terminal notification. The worker uses this for a
+// control-plane cancel, fence, bridge failure, or another fail-closed abort
+// before it writes turn/interrupt. A response already claimed by the single
+// writer remains owned by that writer until its write outcome is recorded.
+func (b *DynamicBridge) CancelTurn(turnID string, cause error) []string {
+	if cause == nil {
+		cause = errors.New("owning turn was cancelled")
+	}
+	return b.cancelTurn(turnID, cause, false)
+}
+
 // TurnTerminal applies typed cleanup to callbacks owned by one turn. Pending,
 // failed, and unclaimed-ready callbacks are cancelled and removed. A response
 // already claimed by the serialized writer wins the race and remains until its
 // write outcome is recorded.
 func (b *DynamicBridge) TurnTerminal(turnID string) []string {
+	return b.cancelTurn(turnID, errors.New("owning turn reached terminal state"), true)
+}
+
+func (b *DynamicBridge) cancelTurn(turnID string, cause error, terminal bool) []string {
 	b.mu.Lock()
 	var cancelled []*trackedCallback
 	for _, tracked := range b.callbacks {
 		if tracked.call.TurnID != turnID {
 			continue
 		}
-		tracked.terminalSeen = true
+		if terminal {
+			tracked.terminalSeen = true
+		}
 		if tracked.state == callbackWriting {
 			continue
 		}
@@ -268,7 +286,7 @@ func (b *DynamicBridge) TurnTerminal(turnID string) []string {
 	callIDs := make([]string, len(cancelled))
 	for index, tracked := range cancelled {
 		callIDs[index] = tracked.call.CallID
-		tracked.cancel(errors.New("owning turn reached terminal state"))
+		tracked.cancel(cause)
 	}
 	sort.Strings(callIDs)
 	return callIDs

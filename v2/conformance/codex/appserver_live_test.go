@@ -1,6 +1,7 @@
 package codex_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/agentserver/agentserver/v2/conformance/codex/internal/scriptedmcp"
 	"github.com/agentserver/agentserver/v2/conformance/codex/internal/scriptedmodel"
 	"github.com/agentserver/agentserver/v2/internal/codexwire"
+	"github.com/agentserver/agentserver/v2/internal/harnessworker"
 )
 
 const (
@@ -1427,6 +1429,177 @@ func TestAppServerA07InterruptClearsPendingDynamicExecutorCall(t *testing.T) {
 	) {
 		t.Fatalf("interrupted dynamic executor tool surface = %v", surface)
 	}
+}
+
+// TestAppServerA07HarnessWorkerRunnerUsesRealStdioWriterBarrier composes the
+// reference worker event loop with a real pinned stock app-server. The older
+// A07 probes characterize each wire half independently; this gate verifies the
+// actual runner owns the reverse request, writes its result once, observes the
+// matching terminal, and leaves no callback awaiting serverRequest/resolved.
+func TestAppServerA07HarnessWorkerRunnerUsesRealStdioWriterBarrier(t *testing.T) {
+	binary, paths := prepareLiveCodex(t)
+	requireCandidateReleaseOneOf(t, binary, paths, "0.146.0", "0.147.0-alpha.2")
+
+	const callID = "call-a07-worker-runner"
+	toolCall, err := scriptedmodel.NamespacedFunctionCall(
+		"response-a07-worker-runner-call",
+		callID,
+		executorDynamicNamespace,
+		approvedMCPToolName,
+		`{"message":"through the worker runner"}`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalResponse, err := scriptedmodel.AssistantMessage(
+		"response-a07-worker-runner-final",
+		"message-a07-worker-runner-final",
+		conformanceFinalText,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modelServer, err := scriptedmodel.Start(scriptedmodel.Config{
+		Responses: []scriptedmodel.Response{toolCall, finalResponse},
+	})
+	if err != nil {
+		t.Fatalf("start loopback scripted model: %v", err)
+	}
+	t.Cleanup(modelServer.Close)
+	writeScriptedModelConfigWithOptions(t, paths.codexHome, modelServer.URL(), scriptedModelConfigOptions{
+		disableUpdatePlan: true,
+	})
+
+	limits := harnessworker.DefaultLimits()
+	catalog, err := harnessworker.BuildCatalog(
+		executorDynamicNamespace,
+		"Policy-approved deterministic executor tools.",
+		[]harnessworker.ToolDescriptor{{
+			Name:        approvedMCPToolName,
+			Description: "Execute one approved deterministic instruction.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"message": map[string]any{"type": "string"},
+				},
+				"required":             []string{"message"},
+				"additionalProperties": false,
+			},
+		}},
+		limits,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := make(chan harnessworker.DynamicCall, 1)
+	caller := &appServerRunnerDynamicCaller{catalog: catalog, calls: calls}
+	bridge, err := harnessworker.NewDynamicBridge(caller, 8, limits.MaxArgumentBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	process := startPreparedLiveCodex(t, binary, paths, "app-server", "--listen", "stdio://", "--strict-config")
+	runner, err := harnessworker.NewAppServerRunner(
+		process.Peer,
+		bridge,
+		harnessworker.DefaultAppServerRunnerOptions(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventsDrained := make(chan struct{})
+	go func() {
+		for range runner.Events() {
+		}
+		close(eventsDrained)
+	}()
+	result, err := runner.Run(t.Context(), harnessworker.AppServerRunRequest{
+		RunID:                "run-a07-worker-runner",
+		RunAttemptGeneration: 1,
+		ClientInfo: harnessworker.AppServerClientInfo{
+			Name:    "agentserver_v2_conformance",
+			Title:   "agentserver v2 conformance",
+			Version: "0.0.0",
+		},
+		Catalog: catalog,
+		Start: &harnessworker.AppServerThreadStart{
+			Model:                 conformanceModelName,
+			CWD:                   paths.cwd,
+			BaseInstructions:      "Return only the scripted model result.",
+			DeveloperInstructions: "This is a deterministic worker runner conformance turn.",
+		},
+		UserText: "call the approved deterministic executor tool through the worker runner",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-eventsDrained
+	if result.Thread.Thread.ID == "" || result.Turn.ID == "" ||
+		result.Terminal.ThreadID != result.Thread.Thread.ID || result.Terminal.Turn.ID != result.Turn.ID ||
+		result.Terminal.Turn.Status != "completed" {
+		t.Fatalf("unexpected worker runner lifecycle: %+v", result)
+	}
+	if bridge.Outstanding() != 0 {
+		t.Fatalf("worker runner retained %d dynamic callbacks after terminal", bridge.Outstanding())
+	}
+	call := <-calls
+	if call.RunID != "run-a07-worker-runner" || call.RunAttemptGeneration != 1 ||
+		call.ThreadID != result.Thread.Thread.ID || call.TurnID != result.Turn.ID || call.CallID != callID ||
+		call.Namespace != executorDynamicNamespace || call.Tool != approvedMCPToolName ||
+		string(call.Arguments) != `{"message":"through the worker runner"}` {
+		t.Fatalf("worker runner dynamic call = %+v", call)
+	}
+	closeAndWait(t, process)
+
+	if failures := modelServer.Failures(); len(failures) != 0 {
+		t.Fatalf("scripted model failures: %v", failures)
+	}
+	requests := modelServer.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("worker runner model requests = %d, want two", len(requests))
+	}
+	for index, request := range requests {
+		if surface := modelToolNames(t, decodeCapturedModelRequest(t, request).Tools); !reflect.DeepEqual(
+			surface,
+			[]string{executorDynamicNamespace + "." + approvedMCPToolName},
+		) {
+			t.Fatalf("worker runner dynamic tool surface %d = %v", index, surface)
+		}
+	}
+	second := decodeCapturedModelRequest(t, requests[1])
+	if !modelInputContainsFunctionOutput(second.Input, callID, "runner result: through the worker runner") {
+		t.Fatalf("worker runner result missing from second model request: input=%s", encodeModelInput(t, second.Input))
+	}
+}
+
+type appServerRunnerDynamicCaller struct {
+	catalog *harnessworker.Catalog
+	calls   chan<- harnessworker.DynamicCall
+}
+
+func (c *appServerRunnerDynamicCaller) CallDynamicTool(
+	_ context.Context,
+	call harnessworker.DynamicCall,
+) (harnessworker.DynamicToolResult, error) {
+	arguments, err := c.catalog.ValidateCall(call.Namespace, call.Tool, call.Arguments)
+	if err != nil {
+		return harnessworker.DynamicToolResult{}, err
+	}
+	call.Arguments = arguments
+	c.calls <- call
+	var payload struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(arguments, &payload); err != nil {
+		return harnessworker.DynamicToolResult{}, err
+	}
+	return harnessworker.DynamicToolResult{
+		ContentItems: []harnessworker.InputTextContent{{
+			Type: "inputText",
+			Text: "runner result: " + payload.Message,
+		}},
+		Success: true,
+	}, nil
 }
 
 type interruptedTurnResolution struct {

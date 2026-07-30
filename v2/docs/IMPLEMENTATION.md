@@ -265,7 +265,7 @@ conformance test 是 Go subprocess test，不依赖 v1 gateway：
 | A04 | Codex MCP deny-all | system requirements固定`mcp_servers = {}`；direct executor、user和trusted-project MCP均零请求，dynamic tool surface不受影响 |
 | A05 | 无双重审批 | production thread使用`approvalPolicy=never`仍产生批准dynamic callback，且不产生Codex通用approval request；产品审批只在worker MCP client侧 |
 | A06 | worker MCP elicitation | reference/real worker调用fake gateway MCP；`elicitation/create`经pool/core决定并回到gateway，覆盖accept/decline/cancel、主动TTL、nonce/generation和断线，不经过app-server |
-| A07 | typed interrupt cleanup | `turn/interrupt`产生terminal interrupted；未回复dynamic call以所属turn terminal清理并取消MCP，正常call以response写入清理；两者都不等待`serverRequest/resolved` |
+| A07 | typed interrupt cleanup | 单reader/writer loop中`turn/interrupt`产生terminal interrupted；未回复dynamic call以所属turn terminal清理并取消MCP，正常call以response写入清理；有界event overflow fail closed，两者都不等待`serverRequest/resolved` |
 | A08 | graceful shutdown | turn terminal、typed callback cleanup及execution/process收口后关闭stdin，child有界正常退出；rollout、SQLite/WAL状态稳定，无固定sleep |
 | A09 | dynamic checkpoint round-trip | 每个brain thread只保存单个rollout JSONL并绑定tool catalog digest；cold resume保留dynamic call/result和原schema，不重放executor MCP副作用；schema变化创建新thread |
 | A10 | mid-turn crash | 模型请求 in-flight时 hard-kill child；丢弃 crash runtime，只从上一个已提交 checkpoint创建不同的新 turn，且模型上下文不含被放弃 turn |
@@ -286,7 +286,7 @@ A06旧probe证明标准MCP elicitation协议本身可工作，但它由stock app
 
 reference client显式锁定MCP `2025-11-25` stateful Streamable HTTP profile。当前official Go SDK v1.7.0的新`2026-07-28` stateless profile不能在`tools/call`内承载本设计使用的server-originated `elicitation/create`，所以连接若协商到其他版本会在`tools/list`前fail closed；其他版本的标准`_meta`也不能被静默忽略。未来升级必须先更换approval transport设计并增加独立conformance，不能随SDK latest漂移。
 
-A07的dynamic probe已在stable 0.146.0和0.147.0-alpha.2上固定关键wire事实：pending `item/tool/call`时`turn/interrupt`成功并产生`interrupted` terminal，不发第二次模型请求，也没有`serverRequest/resolved`；正常dynamic response同样没有resolved。reference `DynamicBridge`现按request type维护有界outstanding set：正常call只在JSON-RPC response写成功后删除，未回复call由所属turn terminal取消并删除；result/terminal竞态只有一个赢家，request id按JSON值而非原始转义拼写去重。bridge-side A07还用真实SDK server证明外层取消在approval expiry前抵达gateway、同步取消worker内嵌套elicitation handler且pending approval零dispatch；这修复了仅依赖Streamable HTTP嵌套cancel会让`ClientSession.Close`等到expiry的问题。A07仍未完全关闭：还需接入真实app-server stdio event loop，组合`turn/interrupt` terminal、response writer barrier、已dispatch execution独立收口，以及control/MCP断线fail closed。
+A07的dynamic probe已在stable 0.146.0和0.147.0-alpha.2上固定关键wire事实：pending `item/tool/call`时`turn/interrupt`成功并产生`interrupted` terminal，不发第二次模型请求，也没有`serverRequest/resolved`；正常dynamic response同样没有resolved。reference `DynamicBridge`按request type维护有界outstanding set，`AppServerRunner`则已把它接入一条one-shot Codex wire事件循环：唯一reader pump只向主循环交付消息，生命周期request、interrupt和dynamic response全部由主循环这个唯一writer串行写入；callback request id按JSON值去重，result必须claim后写入，只有write成功才`ResponseWritten`，partial/unknown write直接终止attempt且不得重调MCP。runner对notification使用非阻塞有界sink，缓冲满、未知server request、MCP失败或caller cancel都会cancel turn callbacks、发唯一`turn/interrupt`并在固定grace内等待匹配terminal；`thread/resume`在第一字节stdio I/O前核对checkpoint catalog digest且绝不发送`dynamicTools` override。net.Pipe wire fixture与race测试已覆盖上述路径，stock app-server live gate源码也已加入，但当前仍需用exact pinned artifact实跑并保存结果。bridge-side真实SDK测试继续证明外层取消在approval expiry前抵达gateway、同步退出worker嵌套elicitation handler且pending approval零dispatch。A07仍未完全关闭：已dispatch execution独立收口、真实control/MCP断线及live artifact证据仍待完成。
 
 A08 已在 alpha.14 与 stable 0.146.0 上证明“typed outstanding set 已为空后立即关闭 stdin”能让 app-server 有界零退出且文件树字节稳定，不需要固定 sleep。旧用例没有正在转接的dynamic/MCP call，所以只关闭进程退出与稳定快照子结论；修订后的A08还要组合A07 typed cleanup与execution/process收口。两个release在clean exit后仍保留state/goals/logs/memories的`.sqlite-wal/.sqlite-shm`，因此A08不判断checkpoint文件集合。
 
@@ -768,6 +768,15 @@ worker只允许调用以下 app-server client methods：
 - 对allowlist server request（Phase 1主要是`item/tool/call`）返回明确response。
 
 worker不能调用 app-server的 command/exec、process/spawn、fs、marketplace、plugin、skills或其他宿主 API。未知 server request fail closed并中断 run。
+
+reference runner按以下不变量实现这一状态机：
+
+- 每个runner只服务一个run attempt，内部只启动一个持续reader pump；除该pump外没有第二个`Receive`调用者，所有`Send`只发生在主事件循环。
+- client request id由worker生成并按JSON值匹配response；app-server反向request id拥有独立方向的相关空间。生命周期response、notification和reverse request不得由不同collector竞争读取。
+- 新thread只从已验证catalog机械生成`dynamicTools`；resume要求checkpoint digest与当前verified catalog相同，并固定`excludeTurns=true`，在任何stdio写入前不一致即失败。
+- `thread/started`（仅新thread）、`turn/started`和`turn/completed`必须与response中的thread/session/turn identity一致；terminal status只接受`completed|interrupted|failed`。
+- notification sink同时有条目数、单条retained bytes与总retained bytes硬上限且不阻塞reader；任一overflow是run故障，不是丢事件继续。进入interrupting后停止新MCP dispatch并停止扩张错误/事件缓存，但继续排空到terminal或cleanup timeout。
+- writer对dynamic response的成功返回是normal cleanup barrier。write失败可能已经产生partial bytes，所以attempt立即失败，bridge清理本地lease，且任何层都不得重试同一MCP副作用。
 
 ### 8.6 finalizing 与 checkpoint
 

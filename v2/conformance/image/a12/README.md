@@ -1,27 +1,26 @@
 # A12 disposable Linux isolation characterization
 
-This checked-in target records the pre-dynamic-bridge isolation profile around
-stock app-server for one exact native Linux artifact. Its UID, capability,
-mount, procfs, signal, and close-all evidence remains valid, but its network
-profile lets app-server call an approved MCP endpoint. The revised architecture
-forbids that path, so this target no longer closes A12 until it is changed as
-described below. The scratch image contains only the Go
+This checked-in target records the worker-owned dynamic-bridge isolation
+profile around stock app-server for one exact native Linux artifact. The
+scratch image contains only the Go
 conformance/init fixture, the pinned Codex executable, and empty mount anchors;
 it contains no source tree, workspace, service-account token, shell, package
 manager, firewall binary, compatibility wrapper, or model credential.
 
 The container starts as a bounded init fixture with `NET_ADMIN`, `CHOWN`,
-`SETUID`, and `SETGID`: it installs the owner rules and creates fixed-UID tmpfs
-state before any child starts. Apple `container` additionally supplies
+`DAC_READ_SEARCH`, `SETUID`, and `SETGID`: it installs the owner rules and
+creates fixed-UID tmpfs state before any child starts. `DAC_READ_SEARCH` is used
+only after each child exits to inspect the app-owned rollout for the worker MCP
+capability; neither runtime UID inherits it. Apple `container` additionally supplies
 `SYS_ADMIN` only so this fixture can remount its otherwise optionless `/tmp`
 and `/run/agentserver`
 tmpfs mounts as `nosuid,nodev,noexec`, then verify the resulting mount table.
 It uses Go's netfilter netlink protocol implementation to install an IPv4
 nftables output chain plus an IPv6 deny chain with `meta skuid` rules:
 
-- the legacy worker UID can reach only its harness-control fixture;
-- the legacy app-server UID can reach only the exact llmproxy, approved-MCP,
-  and redirect-source address/port tuples;
+- the worker UID can reach only its harness-control fixture and exact executor
+  MCP gateway tuple;
+- the app-server UID can reach only one exact llmproxy address/port tuple;
 - every other TCP destination is rejected and all remaining traffic, including
   DNS-shaped UDP, is dropped for those UIDs;
 - all IPv6 traffic is dropped for both managed UIDs, so an IPv4-only endpoint
@@ -31,14 +30,18 @@ nftables output chain plus an IPv6 deny chain with `meta skuid` rules:
 
 Each scenario starts a real worker as UID/GID 65531 with empty supplementary
 groups and exactly `CAP_SETUID` plus `CAP_SETGID`; that process is the direct
-supervisor and parent of the app-server launcher. The worker proves that its
+supervisor, stdio owner, and parent of the app-server launcher. The worker proves that its
 `0700` credential/staging tree, Unix control socket, `O_CLOEXEC` file/socket
 descriptors, private environment sentinel, and worker-only HTTP endpoint are
-live. It then removes the worker secret from the child environment, maps stdio,
-creates an intentionally non-`CLOEXEC` trap, and starts fixed app UID/GID 65532
-with empty supplementary groups and a parent-death signal. Immediately after
-the child starts, the one-child worker applies the same all-thread identity
-seal to itself and supervises with no remaining capabilities.
+live. It reads the executor capability, establishes and verifies the official
+SDK MCP session, and rejects all app-only or unlisted network targets before it
+forks. It then removes the worker secret from the child environment, creates an
+intentionally non-`CLOEXEC` trap, and starts fixed app UID/GID 65532 with empty
+supplementary groups and a parent-death signal. Immediately after the child
+starts, the one-child worker applies the same all-thread identity seal to
+itself. It drives the stock child through `AppServerRunner → DynamicBridge →
+MCPClient`, drains events, closes stdin, waits for clean exit, and writes only a
+bounded non-secret result into worker-owned state.
 
 Before any filesystem, procfs, socket, or network preflight, the final-exec
 trampoline verifies real/effective/saved IDs, then clears ambient, inheritable,
@@ -51,28 +54,25 @@ workspace/service-account paths are absent. Finally it calls Linux
 absolute stock Codex path with an explicit environment. The worker waits for
 that child; it is not a sidecar sentinel.
 
-The current legacy application-level scenarios prove:
+The application-level scenarios prove:
 
-- a real model turn plus approved MCP tool call succeeds through the allowlist;
+- a real model turn plus approved dynamic tool call succeeds; the authenticated
+  MCP bootstrap/list/call originates from worker UID and the safe result enters
+  the next model request and rollout;
+- stock app-server config has no MCP endpoint, `mcp_servers` entry, bearer
+  reference, or bearer value; the capability is absent from child environment,
+  stderr, model headers/body, and every scenario rollout;
 - a direct model URL at a live forbidden sink fails and the sink sees zero
   requests;
-- an allowed model endpoint can return a cross-origin 307, but the redirected
+- the one allowed llmproxy can return a cross-origin 307, but the redirected
   live sink still sees zero requests and the turn fails;
-- app-server cannot reach the worker-only HTTP endpoint, while the worker can;
+- app-server cannot reach executor MCP or the worker-only HTTP endpoint, while
+  worker can reach both; worker cannot reach llmproxy, direct, or redirect
+  targets;
 - a root sensitivity packet reaches the DNS-shaped UDP fixture before policy,
-  while all app-UID probes leave its post-reset count at zero;
+  while all worker/app probes leave its post-reset count at zero;
 - a root sensitivity request reaches an IPv6 loopback sink, while all app-UID
-  probes leave its post-reset count at zero.
-
-The revised A12 gate must instead prove:
-
-- worker UID can reach only harness-pool and executor-gateway MCP;
-- app-server UID can reach only the exact llmproxy tuple and cannot reach MCP;
-- the real approved MCP call and bearer are owned by the worker, while the
-  bearer is absent from child env/config/FDs and rollout;
-- app-server leaves executor-MCP, worker-only, direct, redirect, DNS-shaped,
-  and IPv6 sink counters at zero;
-- both UIDs are denied every destination not listed for their own role.
+  and worker-UID probes leave its post-reset count at zero.
 
 Run it with independently trusted release pins and a native architecture:
 
@@ -92,8 +92,7 @@ Apple `container` uses a workspace-backed build context and requires
 accepted as platform evidence. The command above passed natively for stable
 0.146.0 `linux-arm64`, SHA-256
 `cb5e8cb8a333a408ce6adbe0d4fad1845c69772c2216af7c1f88c98a11460dc6`,
-size `269098800`. That run closes only the reusable OS-isolation subclaims for
-this exact artifact and platform; revised A12 is open because the network and
-MCP ownership profile must be rerun. `linux-amd64` still requires a native
-worker, and real Kubernetes NetworkPolicy/service routing remains a separate
-deployment gate.
+size `269098800`. The revised worker-owned MCP run closes A12, including A11's
+image-level credential boundary, for this exact artifact and platform.
+`linux-amd64` still requires a native worker, and real Kubernetes
+NetworkPolicy/service routing remains a separate deployment gate.

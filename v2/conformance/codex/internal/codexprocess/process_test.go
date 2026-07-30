@@ -113,6 +113,18 @@ func TestStartRejectsInvalidOrPrivilegedExplicitIdentity(t *testing.T) {
 	}
 }
 
+func TestStartRejectsNilExtraFile(t *testing.T) {
+	_, err := Start(context.Background(), Config{
+		Binary:     os.Args[0],
+		Dir:        t.TempDir(),
+		Env:        []string{},
+		ExtraFiles: []*os.File{nil},
+	})
+	if err == nil || !strings.Contains(err.Error(), "extra file 0 is nil") {
+		t.Fatalf("Start() nil extra file error = %v", err)
+	}
+}
+
 func TestSendRawFrameWritesOneDelimitedFrameAndHonorsClose(t *testing.T) {
 	stdin := &recordingWriteCloser{}
 	process := &Process{stdin: stdin}

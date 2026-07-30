@@ -4,6 +4,7 @@ package codex_test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,8 +15,8 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -26,11 +27,12 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/conformance/codex/internal/codexprocess"
-	"github.com/agentserver/agentserver/v2/conformance/codex/internal/scriptedmcp"
 	"github.com/agentserver/agentserver/v2/conformance/codex/internal/scriptedmodel"
 	"github.com/agentserver/agentserver/v2/internal/finalexec"
+	"github.com/agentserver/agentserver/v2/internal/harnessworker"
 	"github.com/agentserver/agentserver/v2/internal/networkguard"
 	"github.com/agentserver/agentserver/v2/internal/runtimelock"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/sys/unix"
 )
 
@@ -51,8 +53,14 @@ const (
 	a12WorkerFDEnvironment          = "AGENTSERVER_A12_WORKER_FD"
 	a12WorkerCredentialEnvironment  = "AGENTSERVER_A12_WORKER_CREDENTIAL_PATH"
 	a12WorkerStagingEnvironment     = "AGENTSERVER_A12_WORKER_STAGING_PATH"
+	a12WorkerResultEnvironment      = "AGENTSERVER_A12_WORKER_RESULT_PATH"
 	a12WorkerControlEnvironment     = "AGENTSERVER_A12_WORKER_CONTROL_PATH"
 	a12WorkerHarnessEnvironment     = "AGENTSERVER_A12_WORKER_HARNESS_URL"
+	a12ExecutorMCPEnvironment       = "AGENTSERVER_A12_EXECUTOR_MCP_URL"
+	a12LLMProxyEnvironment          = "AGENTSERVER_A12_LLM_PROXY_URL"
+	a12DirectProbeEnvironment       = "AGENTSERVER_A12_DIRECT_PROBE_URL"
+	a12RedirectProbeEnvironment     = "AGENTSERVER_A12_REDIRECT_PROBE_URL"
+	a12ScenarioEnvironment          = "AGENTSERVER_A12_SCENARIO"
 	a12DNSProbeEnvironment          = "AGENTSERVER_A12_DNS_PROBE_ADDRESS"
 	a12IPv6ProbeEnvironment         = "AGENTSERVER_A12_IPV6_PROBE_URL"
 	a12WorkerSecretEnvironment      = "AGENTSERVER_A12_WORKER_SECRET"
@@ -61,14 +69,18 @@ const (
 	a12AppUID                       = uint32(65532)
 	a12AppGID                       = uint32(65532)
 	a12RuntimeDirectory             = "/run/agentserver"
-	a12ImageWorkerCredentialSecret  = "a12-worker-credential-2f0865"
+	a12ExecutorCapability           = "a12-executor-capability-2f0865"
 	a12ImageWorkerStagingSecret     = "a12-worker-staging-9334c1"
 	a12ImageWorkerEnvironmentSecret = "a12-worker-environment-f7d83a"
 	a12ControlRequest               = "a12-control-sensitivity\n"
 	a12ControlResponse              = "a12-control-accepted\n"
 	a12HarnessMarker                = "a12-worker-harness-only"
-	a12AllowedAssistantText         = "a12 allowed model and MCP egress complete"
+	a12AllowedAssistantText         = "a12 allowed model and worker MCP egress complete"
 	a12AllowedToolCallID            = "call-a12-allowed-mcp"
+	a12AllowedToolResultMarker      = "a12-worker-approved-mcp-egress"
+	a12AllowedScenario              = "allowed"
+	a12DirectScenario               = "direct-forbidden"
+	a12RedirectScenario             = "redirect-forbidden"
 	a12ScenarioCount                = 3
 )
 
@@ -120,8 +132,16 @@ func runA12FinalExecSubprocess() error {
 	if err != nil {
 		return err
 	}
+	if err := requireA12OnlyDeliberateInheritedFD(trapFD, []string{
+		os.Getenv(a12WorkerCredentialEnvironment),
+		os.Getenv(a12WorkerResultEnvironment),
+		os.Getenv(a12WorkerStagingEnvironment),
+	}); err != nil {
+		return err
+	}
 	for label, path := range map[string]string{
 		"worker credential": os.Getenv(a12WorkerCredentialEnvironment),
+		"worker result":     os.Getenv(a12WorkerResultEnvironment),
 		"worker staging":    os.Getenv(a12WorkerStagingEnvironment),
 	} {
 		if path == "" || !filepath.IsAbs(path) {
@@ -168,8 +188,11 @@ func runA12FinalExecSubprocess() error {
 		Timeout:   250 * time.Millisecond,
 	}
 	for label, target := range map[string]string{
-		"worker-only harness": os.Getenv(a12WorkerHarnessEnvironment),
-		"forbidden IPv6 sink": os.Getenv(a12IPv6ProbeEnvironment),
+		"direct forbidden sink": os.Getenv(a12DirectProbeEnvironment),
+		"executor MCP":          os.Getenv(a12ExecutorMCPEnvironment),
+		"forbidden IPv6 sink":   os.Getenv(a12IPv6ProbeEnvironment),
+		"redirect sink":         os.Getenv(a12RedirectProbeEnvironment),
+		"worker-only harness":   os.Getenv(a12WorkerHarnessEnvironment),
 	} {
 		if target == "" {
 			return fmt.Errorf("%s URL is empty", label)
@@ -196,6 +219,19 @@ func runA12FinalExecSubprocess() error {
 			continue
 		}
 		targetEnvironment = append(targetEnvironment, entry)
+	}
+	targetEnvironmentBytes := []byte(strings.Join(targetEnvironment, "\x00"))
+	for label, forbidden := range map[string]string{
+		"executor MCP endpoint":  os.Getenv(a12ExecutorMCPEnvironment),
+		"worker credential path": os.Getenv(a12WorkerCredentialEnvironment),
+		"worker result path":     os.Getenv(a12WorkerResultEnvironment),
+	} {
+		if forbidden == "" {
+			return fmt.Errorf("%s is empty before final exec", label)
+		}
+		if bytes.Contains(targetEnvironmentBytes, []byte(forbidden)) {
+			return fmt.Errorf("stock app-server environment retained %s", label)
+		}
 	}
 	return finalexec.Execute(finalexec.Config{
 		Program:         program,
@@ -227,6 +263,10 @@ func runA12WorkerSubprocess() error {
 	if os.Getenv(a12WorkerSecretEnvironment) != a12ImageWorkerEnvironmentSecret {
 		return errors.New("worker environment sensitivity sentinel is missing")
 	}
+	scenario, err := a12WorkerScenarioFromEnvironment()
+	if err != nil {
+		return err
+	}
 	credential, err := os.Open(os.Getenv(a12WorkerCredentialEnvironment))
 	if err != nil {
 		return fmt.Errorf("worker read credential: %w", err)
@@ -236,9 +276,10 @@ func runA12WorkerSubprocess() error {
 	if err != nil {
 		return fmt.Errorf("read worker credential contents: %w", err)
 	}
-	if string(contents) != a12ImageWorkerCredentialSecret {
-		return errors.New("worker credential contents do not match the sensitivity sentinel")
+	if string(contents) != a12ExecutorCapability {
+		return errors.New("worker executor credential contents do not match the sensitivity sentinel")
 	}
+	executorCapability := string(contents)
 	credentialFD := int(credential.Fd())
 	if err := requireA12CloseOnExec(credentialFD); err != nil {
 		return fmt.Errorf("worker credential descriptor: %w", err)
@@ -278,6 +319,58 @@ func runA12WorkerSubprocess() error {
 	_ = response.Body.Close()
 	if response.StatusCode != http.StatusNoContent || response.Header.Get("X-Agentserver-A12") != a12HarnessMarker {
 		return fmt.Errorf("worker harness response = %d/%q", response.StatusCode, response.Header.Get("X-Agentserver-A12"))
+	}
+
+	catalog, err := buildA12DynamicCatalog()
+	if err != nil {
+		return err
+	}
+	runContext, cancelRun := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancelRun()
+	mcpClient, err := harnessworker.ConnectMCP(runContext, harnessworker.MCPClientConfig{
+		Endpoint:              os.Getenv(a12ExecutorMCPEnvironment),
+		BearerToken:           executorCapability,
+		AllowInsecureLoopback: true,
+		Namespace:             catalog.Namespace(),
+		NamespaceDescription:  catalog.NamespaceDescription(),
+		ExpectedCatalogDigest: catalog.Digest(),
+		ExpectedCatalog:       catalog.CanonicalBytes(),
+		Limits:                harnessworker.DefaultLimits(),
+		CloseGrace:            2 * time.Second,
+		ElicitationHandler: func(context.Context, harnessworker.ElicitationRequest) (harnessworker.ElicitationDecision, error) {
+			return harnessworker.ElicitationDecision{Action: harnessworker.ApprovalCancel}, nil
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("connect worker executor MCP: %w", err)
+	}
+	mcpClosed := false
+	defer func() {
+		if !mcpClosed {
+			_ = mcpClient.Close()
+		}
+	}()
+	bridge, err := harnessworker.NewDynamicBridge(mcpClient, 8, harnessworker.DefaultLimits().MaxArgumentBytes)
+	if err != nil {
+		return err
+	}
+
+	for label, target := range map[string]string{
+		"app-only llmproxy": os.Getenv(a12LLMProxyEnvironment),
+		"direct sink":       os.Getenv(a12DirectProbeEnvironment),
+		"IPv6 sink":         os.Getenv(a12IPv6ProbeEnvironment),
+		"redirect sink":     os.Getenv(a12RedirectProbeEnvironment),
+	} {
+		if err := requireA12WorkerHTTPDenied(client, label, target); err != nil {
+			return err
+		}
+	}
+	if address := os.Getenv(a12DNSProbeEnvironment); address != "" {
+		connection, dialErr := net.DialTimeout("udp4", address, time.Second)
+		if dialErr == nil {
+			_, _ = connection.Write([]byte{0x12, 0x34, 0x01, 0x00, 0x00, 0x01})
+			_ = connection.Close()
+		}
 	}
 
 	trapReader, trapWriter, err := os.Pipe()
@@ -322,22 +415,24 @@ func runA12WorkerSubprocess() error {
 		a12WorkerPIDEnvironment+"="+strconv.Itoa(os.Getpid()),
 		a12WorkerFDEnvironment+"="+strconv.Itoa(credentialFD),
 	)
-	command := exec.Command(os.Args[0], os.Args[1:]...)
-	command.Dir = "/"
-	command.Env = childEnvironment
-	command.Stdin = os.Stdin
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
-	command.ExtraFiles = []*os.File{trapWriter}
-	command.SysProcAttr = &syscall.SysProcAttr{
-		Credential: &syscall.Credential{
-			Uid:    a12AppUID,
-			Gid:    a12AppGID,
-			Groups: []uint32{},
-		},
-		Pdeathsig: syscall.SIGKILL,
+	childEnvironmentBytes := []byte(strings.Join(childEnvironment, "\x00"))
+	for label, forbidden := range map[string]string{
+		"executor capability": executorCapability,
+		"worker environment":  a12ImageWorkerEnvironmentSecret,
+	} {
+		if bytes.Contains(childEnvironmentBytes, []byte(forbidden)) {
+			return fmt.Errorf("app-server launcher environment contains %s", label)
+		}
 	}
-	if err := command.Start(); err != nil {
+	child, err := codexprocess.Start(runContext, codexprocess.Config{
+		Binary:     os.Args[0],
+		Args:       append([]string(nil), os.Args[1:]...),
+		Dir:        "/",
+		Env:        childEnvironment,
+		Identity:   &codexprocess.Identity{UID: a12AppUID, GID: a12AppGID},
+		ExtraFiles: []*os.File{trapWriter},
+	})
+	if err != nil {
 		return fmt.Errorf("start app-server child through final exec: %w", err)
 	}
 	// One worker supervises exactly one app-server child. Once fork/exec has
@@ -361,10 +456,144 @@ func runA12WorkerSubprocess() error {
 	if !errors.Is(err, io.EOF) || bytesRead != 0 {
 		return fmt.Errorf("final-exec trap remained open or emitted data: bytes=%d data=%q error=%v", bytesRead, buffer[:bytesRead], err)
 	}
-	if err := command.Wait(); err != nil {
-		return fmt.Errorf("wait for app-server child: %w", err)
+	runner, err := harnessworker.NewAppServerRunner(child.Peer, bridge, harnessworker.DefaultAppServerRunnerOptions())
+	if err != nil {
+		return err
+	}
+	eventsDone := make(chan struct{})
+	go func() {
+		for range runner.Events() {
+		}
+		close(eventsDone)
+	}()
+	runResult, runErr := runner.Run(runContext, harnessworker.AppServerRunRequest{
+		RunID:                "run-a12-image-" + scenario.name,
+		RunAttemptGeneration: scenario.generation,
+		ClientInfo: harnessworker.AppServerClientInfo{
+			Name:    "agentserver_v2_a12_image",
+			Title:   "agentserver v2 A12 image gate",
+			Version: "0.0.0",
+		},
+		Catalog: catalog,
+		Start: &harnessworker.AppServerThreadStart{
+			Model:                 conformanceModelName,
+			CWD:                   os.Getenv(a12FinalDirectoryEnvironment),
+			BaseInstructions:      "Return only the scripted model result.",
+			DeveloperInstructions: "Use only the frozen worker-owned executor callback.",
+		},
+		UserText: scenario.prompt,
+	})
+	<-eventsDone
+	closeStdinErr := child.CloseStdin()
+	waitErr := child.Wait(runContext)
+	stderr, stderrTruncated := child.Stderr()
+	closeMCPErr := mcpClient.Close()
+	mcpClosed = true
+	if stderrTruncated {
+		return errors.New("app-server stderr exceeded the A12 bound")
+	}
+	for label, forbidden := range map[string]string{
+		"executor capability":   executorCapability,
+		"executor MCP endpoint": os.Getenv(a12ExecutorMCPEnvironment),
+	} {
+		if bytes.Contains(stderr, []byte(forbidden)) {
+			return fmt.Errorf("app-server stderr contains %s", label)
+		}
+	}
+	if runErr != nil {
+		return fmt.Errorf("run app-server scenario %q: %w (child_stderr=%q)", scenario.name, runErr, stderr)
+	}
+	if closeStdinErr != nil {
+		return fmt.Errorf("close app-server stdin: %w", closeStdinErr)
+	}
+	if waitErr != nil {
+		return fmt.Errorf("wait for app-server child: %w (child_stderr=%q)", waitErr, stderr)
+	}
+	if closeMCPErr != nil {
+		return fmt.Errorf("close worker executor MCP: %w", closeMCPErr)
+	}
+	if runResult.Terminal.Turn.Status != scenario.terminalStatus {
+		return fmt.Errorf("scenario %q terminal = %q, want %q", scenario.name, runResult.Terminal.Turn.Status, scenario.terminalStatus)
+	}
+	if bridge.Outstanding() != 0 {
+		return fmt.Errorf("scenario %q retained %d dynamic callbacks", scenario.name, bridge.Outstanding())
+	}
+	resultPath := os.Getenv(a12WorkerResultEnvironment)
+	if resultPath == "" || !filepath.IsAbs(resultPath) {
+		return errors.New("worker result path must be absolute")
+	}
+	encoded, err := json.Marshal(a12WorkerRunResult{
+		Scenario:       scenario.name,
+		TerminalStatus: runResult.Terminal.Turn.Status,
+		ThreadID:       runResult.Thread.Thread.ID,
+		RolloutPath:    runResult.Thread.Thread.Path,
+	})
+	if err != nil {
+		return fmt.Errorf("encode worker result: %w", err)
+	}
+	if err := os.WriteFile(resultPath, encoded, 0o600); err != nil {
+		return fmt.Errorf("write worker result: %w", err)
 	}
 	return nil
+}
+
+type a12WorkerScenario struct {
+	name           string
+	prompt         string
+	terminalStatus string
+	generation     int64
+}
+
+func a12WorkerScenarioFromEnvironment() (a12WorkerScenario, error) {
+	switch value := os.Getenv(a12ScenarioEnvironment); value {
+	case a12AllowedScenario:
+		return a12WorkerScenario{name: value, prompt: "verify A12 allowed egress", terminalStatus: "completed", generation: 1}, nil
+	case a12DirectScenario:
+		return a12WorkerScenario{name: value, prompt: "attempt direct forbidden egress", terminalStatus: "failed", generation: 2}, nil
+	case a12RedirectScenario:
+		return a12WorkerScenario{name: value, prompt: "attempt cross-origin redirect egress", terminalStatus: "failed", generation: 3}, nil
+	default:
+		return a12WorkerScenario{}, fmt.Errorf("unknown A12 worker scenario %q", value)
+	}
+}
+
+type a12WorkerRunResult struct {
+	Scenario       string `json:"scenario"`
+	TerminalStatus string `json:"terminalStatus"`
+	ThreadID       string `json:"threadId"`
+	RolloutPath    string `json:"rolloutPath"`
+}
+
+func buildA12DynamicCatalog() (*harnessworker.Catalog, error) {
+	return harnessworker.BuildCatalog(
+		executorDynamicNamespace,
+		"Policy-approved deterministic executor tools.",
+		[]harnessworker.ToolDescriptor{{
+			Name:        approvedMCPToolName,
+			Description: "Execute one approved deterministic instruction.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"message": map[string]any{"type": "string"},
+				},
+				"required":             []string{"message"},
+				"additionalProperties": false,
+			},
+		}},
+		harnessworker.DefaultLimits(),
+	)
+}
+
+func requireA12WorkerHTTPDenied(client *http.Client, label, target string) error {
+	if target == "" {
+		return fmt.Errorf("worker %s URL is empty", label)
+	}
+	response, err := client.Get(target)
+	if err != nil {
+		return nil
+	}
+	_ = response.Body.Close()
+	return fmt.Errorf("worker reached forbidden %s with status %d", label, response.StatusCode)
 }
 
 func requireA12WorkerCapabilities() error {
@@ -416,11 +645,15 @@ func TestAppServerA12ProductionIsolationImageGate(t *testing.T) {
 	platform := requireA12DisposableImage(t)
 	binary, artifactPaths := prepareLiveCodex(t)
 	assertA12CandidateArtifact(t, platform, binary, artifactPaths)
+	catalog, err := buildA12DynamicCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	allowedToolCall, err := scriptedmodel.NamespacedFunctionCall(
 		"response-a12-allowed-tool",
 		a12AllowedToolCallID,
-		executorMCPNamespace,
+		executorDynamicNamespace,
 		approvedMCPToolName,
 		`{"message":"verify approved MCP egress"}`,
 	)
@@ -435,19 +668,6 @@ func TestAppServerA12ProductionIsolationImageGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	allowedModel, err := scriptedmodel.Start(scriptedmodel.Config{Responses: []scriptedmodel.Response{allowedToolCall, allowedFinal}})
-	if err != nil {
-		t.Fatalf("start A12 allowed llmproxy fixture: %v", err)
-	}
-	t.Cleanup(allowedModel.Close)
-	approvedMCP := startExecutorMCPServer(t, []scriptedmcp.ExpectedCall{{
-		Name:      approvedMCPToolName,
-		Arguments: json.RawMessage(`{"message":"verify approved MCP egress"}`),
-		Result: json.RawMessage(
-			`{"content":[{"type":"text","text":"approved MCP reached"}],"structuredContent":{"marker":"a12-approved-mcp-egress"},"isError":false}`,
-		),
-	}})
-
 	directForbiddenResponse, err := scriptedmodel.AssistantMessage(
 		"response-a12-direct-forbidden",
 		"message-a12-direct-forbidden",
@@ -474,18 +694,34 @@ func TestAppServerA12ProductionIsolationImageGate(t *testing.T) {
 		t.Fatalf("start A12 redirect forbidden sink: %v", err)
 	}
 	t.Cleanup(redirectForbidden.Close)
-	redirectResponses := make([]scriptedmodel.Response, 8)
-	for index := range redirectResponses {
-		redirectResponses[index] = scriptedmodel.Response{
+	llmproxyResponses := []scriptedmodel.Response{allowedToolCall, allowedFinal}
+	for range 8 {
+		llmproxyResponses = append(llmproxyResponses, scriptedmodel.Response{
 			StatusCode:  http.StatusTemporaryRedirect,
 			RedirectURL: redirectForbidden.URL() + "/v1/responses",
-		}
+		})
 	}
-	redirectAllowed, err := scriptedmodel.Start(scriptedmodel.Config{Responses: redirectResponses})
+	llmproxy, err := scriptedmodel.Start(scriptedmodel.Config{Responses: llmproxyResponses})
 	if err != nil {
-		t.Fatalf("start A12 allowed redirect source: %v", err)
+		t.Fatalf("start A12 exact llmproxy fixture: %v", err)
 	}
-	t.Cleanup(redirectAllowed.Close)
+	t.Cleanup(llmproxy.Close)
+
+	executorGateway := startWorkerMCPGateway(t, workerMCPGatewayConfig{
+		BearerToken: a12ExecutorCapability,
+		Catalog:     catalog,
+		CallTool: func(_ context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			if err := validateA12WorkerMCPCall(request, catalog); err != nil {
+				return nil, err
+			}
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: "approved worker MCP reached"}},
+				StructuredContent: map[string]any{
+					"marker": a12AllowedToolResultMarker,
+				},
+			}, nil
+		},
+	})
 
 	harness := startA12WorkerHarness(t)
 	dnsProbe := startA12DNSProbe(t)
@@ -496,55 +732,64 @@ func TestAppServerA12ProductionIsolationImageGate(t *testing.T) {
 			UID: a12WorkerUID,
 			AllowedEndpoints: []networkguard.Endpoint{
 				endpointFromURL(t, harness.URL()),
+				endpointFromURL(t, executorGateway.Endpoint()),
 			},
 		},
 		{
 			UID: a12AppUID,
 			AllowedEndpoints: []networkguard.Endpoint{
-				endpointFromURL(t, allowedModel.URL()),
-				endpointFromURL(t, approvedMCP.URL()),
-				endpointFromURL(t, redirectAllowed.URL()),
+				endpointFromURL(t, llmproxy.URL()),
 			},
 		},
 	}
 	if err := networkguard.Install("agentserver_a12", policies); err != nil {
 		t.Fatalf("install A12 per-UID nftables policy: %v", err)
 	}
-	t.Run("allowed llmproxy and approved MCP", func(t *testing.T) {
-		paths := prepareA12AppPaths(t)
-		writeScriptedModelConfigWithOptions(t, paths.codexHome, allowedModel.URL(), scriptedModelConfigOptions{
-			disableUpdatePlan: true,
-			mcpServerURL:      approvedMCP.URL(),
-			mcpEnabledTools:   []string{approvedMCPToolName},
+	for _, scenario := range []struct {
+		name     string
+		modelURL string
+	}{
+		{name: a12AllowedScenario, modelURL: llmproxy.URL()},
+		{name: a12DirectScenario, modelURL: directForbidden.URL()},
+		{name: a12RedirectScenario, modelURL: llmproxy.URL()},
+	} {
+		scenario := scenario
+		t.Run(scenario.name, func(t *testing.T) {
+			paths := prepareA12AppPaths(t)
+			writeScriptedModelConfigWithOptions(t, paths.codexHome, scenario.modelURL, scriptedModelConfigOptions{disableUpdatePlan: true})
+			assertA12AppCredentialBoundary(t, paths, executorGateway.Endpoint())
+			chownA12AppTree(t, paths.root)
+			result := runA12WorkerScenario(
+				t,
+				binary,
+				paths,
+				workerState,
+				scenario.name,
+				harness.URL(),
+				executorGateway.Endpoint(),
+				llmproxy.URL(),
+				directForbidden.URL(),
+				redirectForbidden.URL(),
+				dnsProbe.Address(),
+				ipv6Probe.URL(),
+			)
+			rollout := readA12Rollout(t, paths.codexHome, result.RolloutPath)
+			if bytes.Contains(rollout, []byte(a12ExecutorCapability)) || bytes.Contains(rollout, []byte(executorGateway.Endpoint())) {
+				t.Fatalf("A12 %s rollout contains worker executor credential material", scenario.name)
+			}
+			if scenario.name == a12AllowedScenario {
+				assertCompleteRolloutJSONL(
+					t,
+					result.RolloutPath,
+					result.ThreadID,
+					"verify A12 allowed egress",
+					a12AllowedAssistantText,
+					a12AllowedToolCallID,
+					a12AllowedToolResultMarker,
+				)
+			}
 		})
-		chownA12AppTree(t, paths.root)
-		process := startA12AppServer(t, binary, paths, workerState, harness.URL(), dnsProbe.Address(), ipv6Probe.URL())
-		initializeAppServer(t, process)
-		collector := newRPCCollector(process)
-		thread, turn := startMinimalAppServerTurn(t, collector, paths.cwd, "verify A12 allowed egress")
-		assertAgentItemCompleted(t, collector, thread.Thread.ID, turn.ID, a12AllowedAssistantText)
-		completed := decodeA12TerminalTurn(t, collector.notification(t, "turn/completed"))
-		if completed.Status != "completed" || completed.Error != nil {
-			t.Fatalf("A12 allowed turn terminal = %+v", completed)
-		}
-		closeAndWait(t, process)
-	})
-
-	t.Run("direct forbidden sink", func(t *testing.T) {
-		paths := prepareA12AppPaths(t)
-		writeScriptedModelConfigWithOptions(t, paths.codexHome, directForbidden.URL(), scriptedModelConfigOptions{disableUpdatePlan: true})
-		chownA12AppTree(t, paths.root)
-		process := startA12AppServer(t, binary, paths, workerState, harness.URL(), dnsProbe.Address(), ipv6Probe.URL())
-		runA12FailedModelTurn(t, process, paths.cwd, "attempt direct forbidden egress")
-	})
-
-	t.Run("redirect forbidden sink", func(t *testing.T) {
-		paths := prepareA12AppPaths(t)
-		writeScriptedModelConfigWithOptions(t, paths.codexHome, redirectAllowed.URL(), scriptedModelConfigOptions{disableUpdatePlan: true})
-		chownA12AppTree(t, paths.root)
-		process := startA12AppServer(t, binary, paths, workerState, harness.URL(), dnsProbe.Address(), ipv6Probe.URL())
-		runA12FailedModelTurn(t, process, paths.cwd, "attempt cross-origin redirect egress")
-	})
+	}
 
 	workerState.assertControlCount(t, a12ScenarioCount)
 	if got := harness.RequestCount(); got != a12ScenarioCount {
@@ -557,28 +802,37 @@ func TestAppServerA12ProductionIsolationImageGate(t *testing.T) {
 	if got := ipv6Probe.RequestCount(); got != 0 {
 		t.Fatalf("A12 forbidden IPv6 sink received %d app requests", got)
 	}
-	if failures := allowedModel.Failures(); len(failures) != 0 {
-		t.Fatalf("A12 allowed llmproxy failures: %v", failures)
+	if failures := llmproxy.Failures(); len(failures) != 0 {
+		t.Fatalf("A12 exact llmproxy failures: %v", failures)
 	}
-	if got := len(allowedModel.Requests()); got != 2 {
-		t.Fatalf("A12 allowed llmproxy requests = %d, want tool-call plus final response", got)
+	modelRequests := llmproxy.Requests()
+	if got := len(modelRequests); got < 3 || got > len(llmproxyResponses) {
+		t.Fatalf("A12 exact llmproxy requests = %d, want two allowed responses plus at least one bounded redirect source request", got)
 	}
-	if failures := approvedMCP.Failures(); len(failures) != 0 {
-		t.Fatalf("A12 approved MCP failures: %v", failures)
+	for index, request := range modelRequests {
+		headers, err := json.Marshal(request.Header)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(headers, []byte(a12ExecutorCapability)) || bytes.Contains(request.Body, []byte(a12ExecutorCapability)) {
+			t.Fatalf("A12 model request %d contains the worker executor capability", index)
+		}
 	}
-	assertMCPBootstrap(t, approvedMCP)
-	if calls := approvedMCP.Calls(); len(calls) != 1 || calls[0].Name != approvedMCPToolName {
-		t.Fatalf("A12 approved MCP calls = %+v", calls)
+	initialRequest := decodeCapturedModelRequest(t, modelRequests[0])
+	if got, want := modelToolNames(t, initialRequest.Tools), []string{executorDynamicNamespace + "." + approvedMCPToolName}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("A12 model tool surface = %v, want %v", got, want)
+	}
+	followupRequest := decodeCapturedModelRequest(t, modelRequests[1])
+	if !modelInputContainsFunctionOutput(followupRequest.Input, a12AllowedToolCallID, a12AllowedToolResultMarker) {
+		t.Fatalf("A12 model followup omitted worker MCP result: input=%s", encodeModelInput(t, followupRequest.Input))
+	}
+	executorGateway.AssertAuthenticated(t)
+	if calls := executorGateway.ToolCalls(); calls != 1 {
+		t.Fatalf("A12 worker executor MCP calls = %d, want one", calls)
 	}
 	assertA12ForbiddenModelSinkUntouched(t, "direct", directForbidden)
 	assertA12ForbiddenModelSinkUntouched(t, "redirect", redirectForbidden)
-	if failures := redirectAllowed.Failures(); len(failures) != 0 {
-		t.Fatalf("A12 allowed redirect source failures: %v", failures)
-	}
-	if got := len(redirectAllowed.Requests()); got == 0 {
-		t.Fatal("A12 allowed redirect source received no request")
-	}
-	t.Logf("A12 image isolation passed: platform=%s release=%s app_uid=%d worker_uid=%d", platform, os.Getenv(a12ExpectedReleaseEnvironment), a12AppUID, a12WorkerUID)
+	t.Logf("A12 worker-owned MCP image isolation passed: platform=%s release=%s app_uid=%d worker_uid=%d", platform, os.Getenv(a12ExpectedReleaseEnvironment), a12AppUID, a12WorkerUID)
 }
 
 func requireA12DisposableImage(t *testing.T) string {
@@ -589,6 +843,7 @@ func requireA12DisposableImage(t *testing.T) string {
 	if os.Geteuid() != 0 {
 		t.Fatal("A12 image init fixture must start as container root")
 	}
+	requireA12InitCapability(t, unix.CAP_DAC_READ_SEARCH)
 	platform := os.Getenv(a12ExpectedPlatformEnvironment)
 	if platform != "linux-amd64" && platform != "linux-arm64" {
 		t.Fatalf("invalid A12 expected platform %q", platform)
@@ -624,6 +879,29 @@ func requireA12DisposableImage(t *testing.T) string {
 	return platform
 }
 
+func requireA12InitCapability(t *testing.T, capability int) {
+	t.Helper()
+	contents, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		t.Fatalf("read A12 init process status: %v", err)
+	}
+	for _, line := range strings.Split(string(contents), "\n") {
+		name, value, found := strings.Cut(line, ":")
+		if !found || name != "CapEff" {
+			continue
+		}
+		parsed, err := strconv.ParseUint(strings.TrimSpace(value), 16, 64)
+		if err != nil {
+			t.Fatalf("parse A12 init CapEff: %v", err)
+		}
+		if parsed&(uint64(1)<<uint(capability)) == 0 {
+			t.Fatalf("A12 init CapEff = %x, missing capability %d required for post-exit read-only rollout inspection", parsed, capability)
+		}
+		return
+	}
+	t.Fatal("A12 init process status omits CapEff")
+}
+
 func assertA12CandidateArtifact(t *testing.T, platform, binary string, paths livePaths) {
 	t.Helper()
 	release := os.Getenv(a12ExpectedReleaseEnvironment)
@@ -655,6 +933,7 @@ func assertA12CandidateArtifact(t *testing.T, platform, binary string, paths liv
 type a12WorkerState struct {
 	root             string
 	credentialPath   string
+	resultPath       string
 	stagingPath      string
 	controlPath      string
 	listener         *net.UnixListener
@@ -670,8 +949,12 @@ func createA12WorkerState(t *testing.T) *a12WorkerState {
 		t.Fatalf("create A12 worker state: %v", err)
 	}
 	credentialPath := filepath.Join(root, "credential")
-	if err := os.WriteFile(credentialPath, []byte(a12ImageWorkerCredentialSecret), 0o600); err != nil {
+	if err := os.WriteFile(credentialPath, []byte(a12ExecutorCapability), 0o600); err != nil {
 		t.Fatalf("write A12 worker credential: %v", err)
+	}
+	resultPath := filepath.Join(root, "result.json")
+	if err := os.WriteFile(resultPath, []byte(`{}`), 0o600); err != nil {
+		t.Fatalf("write A12 worker result placeholder: %v", err)
 	}
 	stagingDirectory := filepath.Join(root, "staging")
 	if err := os.Mkdir(stagingDirectory, 0o700); err != nil {
@@ -681,7 +964,7 @@ func createA12WorkerState(t *testing.T) *a12WorkerState {
 	if err := os.WriteFile(stagingPath, []byte(a12ImageWorkerStagingSecret), 0o600); err != nil {
 		t.Fatalf("write A12 worker staging sentinel: %v", err)
 	}
-	for _, path := range []string{credentialPath, stagingPath, stagingDirectory} {
+	for _, path := range []string{credentialPath, resultPath, stagingPath, stagingDirectory} {
 		if err := os.Chown(path, int(a12WorkerUID), int(a12WorkerGID)); err != nil {
 			t.Fatalf("own A12 worker path %s: %v", path, err)
 		}
@@ -706,6 +989,7 @@ func createA12WorkerState(t *testing.T) *a12WorkerState {
 	state := &a12WorkerState{
 		root:           root,
 		credentialPath: credentialPath,
+		resultPath:     resultPath,
 		stagingPath:    stagingPath,
 		controlPath:    controlPath,
 		listener:       listener,
@@ -760,15 +1044,20 @@ func (state *a12WorkerState) assertControlCount(t *testing.T, want int64) {
 	}
 }
 
-func startA12AppServer(
+func runA12WorkerScenario(
 	t *testing.T,
 	binary string,
 	paths livePaths,
 	state *a12WorkerState,
+	scenario string,
 	harnessURL string,
+	executorMCPURL string,
+	llmproxyURL string,
+	directProbeURL string,
+	redirectProbeURL string,
 	dnsAddress string,
 	ipv6URL string,
-) *codexprocess.Process {
+) a12WorkerRunResult {
 	t.Helper()
 	launcherEnvironment := append([]string(nil), paths.environment...)
 	launcherEnvironment = append(launcherEnvironment,
@@ -776,9 +1065,15 @@ func startA12AppServer(
 		a12FinalProgramEnvironment+"="+binary,
 		a12FinalDirectoryEnvironment+"="+paths.cwd,
 		a12WorkerCredentialEnvironment+"="+state.credentialPath,
+		a12WorkerResultEnvironment+"="+state.resultPath,
 		a12WorkerStagingEnvironment+"="+state.stagingPath,
 		a12WorkerControlEnvironment+"="+state.controlPath,
 		a12WorkerHarnessEnvironment+"="+harnessURL,
+		a12ExecutorMCPEnvironment+"="+executorMCPURL,
+		a12LLMProxyEnvironment+"="+llmproxyURL,
+		a12DirectProbeEnvironment+"="+directProbeURL,
+		a12RedirectProbeEnvironment+"="+redirectProbeURL,
+		a12ScenarioEnvironment+"="+scenario,
 		a12DNSProbeEnvironment+"="+dnsAddress,
 		a12IPv6ProbeEnvironment+"="+ipv6URL,
 		a12WorkerSecretEnvironment+"="+a12ImageWorkerEnvironmentSecret,
@@ -795,34 +1090,129 @@ func startA12AppServer(
 		cancelProcess()
 		t.Fatalf("start A12 worker-supervised app-server: %v", err)
 	}
-	t.Cleanup(func() {
+	defer cancelProcess()
+	if err := process.CloseStdin(); err != nil {
 		_ = process.Kill()
-		cancelProcess()
-	})
-	return process
+		t.Fatalf("close A12 worker stdin: %v", err)
+	}
+	waitErr := process.Wait(processContext)
+	stderr, truncated := process.Stderr()
+	if truncated {
+		t.Fatal("A12 worker stderr exceeded the probe bound")
+	}
+	if bytes.Contains(stderr, []byte(a12ExecutorCapability)) {
+		t.Fatal("A12 worker stderr contains the executor capability")
+	}
+	if waitErr != nil {
+		t.Fatalf("A12 worker scenario %q failed: %v\nstderr: %s", scenario, waitErr, stderr)
+	}
+	contents, err := os.ReadFile(state.resultPath)
+	if err != nil {
+		t.Fatalf("read A12 worker scenario result: %v", err)
+	}
+	if len(contents) == 0 || len(contents) > 64*1024 {
+		t.Fatalf("A12 worker result size = %d", len(contents))
+	}
+	var result a12WorkerRunResult
+	if err := json.Unmarshal(contents, &result); err != nil {
+		t.Fatalf("decode A12 worker result: %v", err)
+	}
+	if result.Scenario != scenario || result.TerminalStatus == "" || result.ThreadID == "" || !filepath.IsAbs(result.RolloutPath) {
+		t.Fatalf("A12 worker result = %+v", result)
+	}
+	wantStatus := "failed"
+	if scenario == a12AllowedScenario {
+		wantStatus = "completed"
+	}
+	if result.TerminalStatus != wantStatus {
+		t.Fatalf("A12 worker scenario %q terminal = %q, want %q", scenario, result.TerminalStatus, wantStatus)
+	}
+	return result
 }
 
-func runA12FailedModelTurn(t *testing.T, process *codexprocess.Process, cwd, prompt string) {
-	t.Helper()
-	initializeAppServer(t, process)
-	collector := newRPCCollector(process)
-	_, _ = startMinimalAppServerTurn(t, collector, cwd, prompt)
-	terminal := decodeA12TerminalTurn(t, collector.notification(t, "turn/completed"))
-	if terminal.Status == "completed" || terminal.Error == nil {
-		t.Fatalf("A12 forbidden egress turn terminal = %+v, want explicit failure", terminal)
+func validateA12WorkerMCPCall(request *mcp.CallToolRequest, catalog *harnessworker.Catalog) error {
+	if request == nil || request.Params == nil {
+		return errors.New("A12 worker MCP call has no params")
 	}
-	closeAndWait(t, process)
+	if request.Params.Name != approvedMCPToolName {
+		return fmt.Errorf("A12 worker MCP tool = %q", request.Params.Name)
+	}
+	var arguments struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(request.Params.Arguments, &arguments); err != nil {
+		return fmt.Errorf("decode A12 worker MCP arguments: %w", err)
+	}
+	if arguments.Message != "verify approved MCP egress" {
+		return fmt.Errorf("A12 worker MCP message = %q", arguments.Message)
+	}
+	metadataBytes, err := json.Marshal(request.Params.Meta)
+	if err != nil {
+		return fmt.Errorf("encode A12 worker MCP metadata: %w", err)
+	}
+	var metadata struct {
+		RunID                string `json:"io.agentserver/runId"`
+		ThreadID             string `json:"io.agentserver/threadId"`
+		TurnID               string `json:"io.agentserver/turnId"`
+		CallID               string `json:"io.agentserver/callId"`
+		RunAttemptGeneration int64  `json:"io.agentserver/runAttemptGeneration"`
+		ToolCatalogDigest    string `json:"io.agentserver/toolCatalogDigest"`
+	}
+	if err := json.Unmarshal(metadataBytes, &metadata); err != nil {
+		return fmt.Errorf("decode A12 worker MCP metadata: %w", err)
+	}
+	if metadata.RunID != "run-a12-image-"+a12AllowedScenario || metadata.ThreadID == "" || metadata.TurnID == "" ||
+		metadata.CallID != a12AllowedToolCallID || metadata.RunAttemptGeneration != 1 ||
+		metadata.ToolCatalogDigest != catalog.Digest() {
+		return fmt.Errorf("A12 worker MCP metadata = %+v", metadata)
+	}
+	return nil
 }
 
-func decodeA12TerminalTurn(t *testing.T, message interface{ DecodeParams(any) error }) appServerTurn {
+func assertA12AppCredentialBoundary(t *testing.T, paths livePaths, executorEndpoint string) {
 	t.Helper()
-	var params struct {
-		Turn appServerTurn `json:"turn"`
+	environment := []byte(strings.Join(paths.environment, "\x00"))
+	for label, forbidden := range map[string]string{
+		"executor capability":   a12ExecutorCapability,
+		"executor MCP endpoint": executorEndpoint,
+	} {
+		if bytes.Contains(environment, []byte(forbidden)) {
+			t.Fatalf("A12 stock child environment contains %s", label)
+		}
 	}
-	if err := message.DecodeParams(&params); err != nil {
-		t.Fatal(err)
+	config, err := os.ReadFile(filepath.Join(paths.codexHome, "config.toml"))
+	if err != nil {
+		t.Fatalf("read A12 stock app-server config: %v", err)
 	}
-	return params.Turn
+	for label, forbidden := range map[string]string{
+		"executor capability":   a12ExecutorCapability,
+		"executor MCP endpoint": executorEndpoint,
+		"Codex MCP server":      "[mcp_servers.",
+	} {
+		if bytes.Contains(config, []byte(forbidden)) {
+			t.Fatalf("A12 stock app-server config contains %s", label)
+		}
+	}
+}
+
+func readA12Rollout(t *testing.T, codexHome, path string) []byte {
+	t.Helper()
+	relative := stateRelativePath(t, codexHome, path)
+	if !strings.HasSuffix(relative, ".jsonl") {
+		t.Fatalf("A12 rollout path = %q", relative)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("stat A12 rollout: %v", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxA08StateFileBytes {
+		t.Fatalf("A12 rollout mode/size = %s/%d", info.Mode(), info.Size())
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read A12 rollout: %v", err)
+	}
+	return contents
 }
 
 func chownA12AppTree(t *testing.T, root string) {
@@ -1075,6 +1465,78 @@ func requireA12CloseOnExec(descriptor int) error {
 		return errors.New("descriptor omits FD_CLOEXEC")
 	}
 	return nil
+}
+
+func requireA12OnlyDeliberateInheritedFD(trapFD int, forbiddenPaths []string) error {
+	trapFlags, err := unix.FcntlInt(uintptr(trapFD), unix.F_GETFD, 0)
+	if err != nil {
+		return fmt.Errorf("inspect inherited trap descriptor: %w", err)
+	}
+	if trapFlags&unix.FD_CLOEXEC != 0 {
+		return errors.New("inherited trap unexpectedly has FD_CLOEXEC")
+	}
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		return fmt.Errorf("enumerate final-exec descriptors: %w", err)
+	}
+	if len(entries) > 256 {
+		return fmt.Errorf("final-exec descriptor count = %d, exceeds 256", len(entries))
+	}
+	for _, entry := range entries {
+		descriptor, err := strconv.Atoi(entry.Name())
+		if err != nil || descriptor <= 2 || descriptor == trapFD {
+			continue
+		}
+		flags, err := unix.FcntlInt(uintptr(descriptor), unix.F_GETFD, 0)
+		if errors.Is(err, unix.EBADF) {
+			// os.ReadDir's own descriptor may be present in the snapshot but is
+			// closed before the returned entries are inspected.
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("inspect final-exec descriptor %d: %w", descriptor, err)
+		}
+		target, err := os.Readlink(filepath.Join("/proc/self/fd", entry.Name()))
+		if err != nil {
+			return fmt.Errorf("resolve final-exec descriptor %d: %w", descriptor, err)
+		}
+		for _, forbidden := range forbiddenPaths {
+			if forbidden != "" && (target == forbidden || target == forbidden+" (deleted)") {
+				return fmt.Errorf("worker-only path reached final-exec descriptor %d", descriptor)
+			}
+		}
+		if flags&unix.FD_CLOEXEC == 0 {
+			matchesStdio, err := a12DescriptorMatchesAny(descriptor, []int{0, 1, 2, trapFD})
+			if err != nil {
+				return err
+			}
+			if strings.HasPrefix(target, "pipe:[") && matchesStdio {
+				// os/exec may retain a duplicate of a mapped stdio/trap pipe in
+				// the intermediate Go trampoline. It carries no additional
+				// object and is still removed by the mandatory close_range.
+				continue
+			}
+			return fmt.Errorf("unexpected non-CLOEXEC descriptor %d reached final-exec: target=%q", descriptor, target)
+		}
+	}
+	return nil
+}
+
+func a12DescriptorMatchesAny(descriptor int, allowed []int) (bool, error) {
+	var candidate unix.Stat_t
+	if err := unix.Fstat(descriptor, &candidate); err != nil {
+		return false, fmt.Errorf("stat final-exec descriptor %d: %w", descriptor, err)
+	}
+	for _, allowedDescriptor := range allowed {
+		var expected unix.Stat_t
+		if err := unix.Fstat(allowedDescriptor, &expected); err != nil {
+			return false, fmt.Errorf("stat allowed final-exec descriptor %d: %w", allowedDescriptor, err)
+		}
+		if candidate.Dev == expected.Dev && candidate.Ino == expected.Ino {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func requireA12NetworkFDIsCloseOnExec(connection net.Conn) error {

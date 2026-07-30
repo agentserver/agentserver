@@ -131,6 +131,7 @@ if [ "$a12_runtime_name" = "container" ]; then
         --cap-drop ALL \
         --cap-add NET_ADMIN \
         --cap-add CHOWN \
+        --cap-add DAC_READ_SEARCH \
         --cap-add SETUID \
         --cap-add SETGID \
         --cap-add SYS_ADMIN \
@@ -160,6 +161,7 @@ else
         --cap-drop ALL \
         --cap-add NET_ADMIN \
         --cap-add CHOWN \
+        --cap-add DAC_READ_SEARCH \
         --cap-add SETUID \
         --cap-add SETGID \
         --security-opt no-new-privileges \

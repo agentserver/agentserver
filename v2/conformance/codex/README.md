@@ -21,9 +21,10 @@ A05–A12 probes retain valuable stock/runtime facts. A07 now also has a
 worker-runner composition gate and exact stable artifact pass, but it still
 needs the execution/control cases described below. A09's revised worker-runner
 gate now passes the same exact stable artifact. A11's revised
-worker-owned credential host gate now passes the exact stable 0.146.0 macOS
-artifact, while its remaining OS boundary evidence belongs to revised A12;
-A06/A12 still need the remaining product/image compositions. No
+worker-owned credential host gate passes exact stable 0.146.0 on macOS, and the
+revised A12 worker/app isolation gate passes the exact Linux arm64 artifact;
+A11/A12 are closed for that tested artifact set. A06 still needs its product
+composition. No
 direct-Codex-MCP result is silently carried into the
 production profile. The lab also covers
 E01 stdio/EOF, exec-server environment metadata, and these executor slices:
@@ -402,10 +403,11 @@ The custom stateful gateway fixture and worker MCP composition run in ordinary
 CI. The stock round-trip also passes on the documented stable `0.146.0` macOS
 arm64 binary (SHA-256
 `ae1d3ffe6d48aec6a4dc3f50e7eb8e0d11962485a6a9406c5a7012139383da02`,
-size `271056976`). This host pass does not supersede close-all/UID/mount
-isolation: inherited-FD exclusion and the worker/app network split remain
-revised A12 image evidence. A11 therefore remains open only on that revised
-image boundary; a host artifact pass is not an image pass.
+size `271056976`). The revised A12 image gate below supplies the independent
+close-all/UID/mount/network evidence and proves the same worker-only executor
+capability is absent from child config/environment/stderr/model traffic and
+rollout. A11 is therefore closed for the tested stable artifact set; the host
+pass alone would not have been an image pass.
 
 A12 host characterization remains the reason the image boundary is mandatory.
 Its exfiltration sensitivity control proves that an inherited worker variable
@@ -434,24 +436,30 @@ inaccessible, the worker cannot be signalled, workspace/service-account paths
 are absent, and an intentionally inherited descriptor is closed by
 `close_range(3, UINT_MAX, 0)` before the absolute stock Codex exec.
 
-The old raw-netfilter profile used `meta skuid`: worker IPv4 egress was limited
-to the worker-only harness endpoint, while app IPv4 could reach llmproxy and an
-approved MCP. A real allowed model turn plus app-owned MCP call succeeded.
-Direct and cross-origin-redirect forbidden sinks, a
-DNS-shaped UDP sink, the worker-only endpoint, and an IPv6 sensitivity sink all
-remain at zero app requests; root controls prove the UDP and IPv6 sinks are
-live. The verified Codex artifact is SHA-256
+The revised raw-netfilter profile uses `meta skuid`: worker IPv4 egress is
+limited to the worker-only harness and exact executor-gateway MCP tuples, while
+app IPv4 can reach only one exact llmproxy tuple. Each real worker reads its
+`0700` bearer file, establishes the official-SDK MCP session before forking,
+then owns `AppServerRunner → DynamicBridge → MCPClient` around the stock app
+child. A real namespaced callback reaches the authenticated gateway exactly
+once and its safe result enters the next model request and rollout. Stock Codex
+receives no MCP endpoint, `mcp_servers` config, bearer reference, or bearer
+value; post-exit scans find the capability in no child environment, stderr,
+model header/body, or rollout.
+
+The same gate proves worker cannot reach llmproxy/direct/redirect targets and
+app cannot reach executor MCP or the worker-only harness. Direct and
+cross-origin-redirect sinks, a DNS-shaped UDP sink, and an IPv6 sensitivity
+sink remain at zero requests from both managed UIDs; root controls prove the
+UDP and IPv6 sinks are live. The verified Codex artifact is SHA-256
 `cb5e8cb8a333a408ce6adbe0d4fad1845c69772c2216af7c1f88c98a11460dc6`,
 size `269098800`.
 
-Those OS UID/capability/mount/FD facts remain valid, but the app-owned MCP
-network profile conflicts with the revised architecture and no longer closes
-A12. The new target must allow worker → harness/executor MCP and app → llmproxy
-only, perform the real MCP call in the worker, and prove the app cannot reach
-MCP. `linux-amd64` also remains open. The disposable in-image netfilter proof is not evidence that a real
-Kubernetes NetworkPolicy, service routing, or egress proxy deployment is
-correct; those remain deployment gates. Kubernetes `NetworkPolicy` is
-Pod-scoped and cannot replace the per-UID boundary.
+This closes revised A12 for exact stable 0.146.0 `linux-arm64`.
+`linux-amd64` remains open. The disposable in-image netfilter proof is not
+evidence that a real Kubernetes NetworkPolicy, service routing, or egress proxy
+deployment is correct; those remain deployment gates. Kubernetes
+`NetworkPolicy` is Pod-scoped and cannot replace the per-UID boundary.
 
 The probes also report candidate binary and canonical app-server schema
 fingerprints. Stock 0.145.0 was observed to randomize object-key order in one

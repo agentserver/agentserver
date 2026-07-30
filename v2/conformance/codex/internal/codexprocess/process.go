@@ -26,11 +26,15 @@ const (
 )
 
 type Config struct {
-	Binary         string
-	Args           []string
-	Dir            string
-	Env            []string
-	Identity       *Identity
+	Binary   string
+	Args     []string
+	Dir      string
+	Env      []string
+	Identity *Identity
+	// ExtraFiles is a conformance-only inheritance surface. Production-shape
+	// callers leave it empty; the A12 final-exec gate uses one deliberate trap
+	// to prove close-all removes even explicitly inherited descriptors.
+	ExtraFiles     []*os.File
 	MaxFrameBytes  int
 	IncomingBuffer int
 	StderrBytes    int
@@ -86,6 +90,7 @@ func Start(ctx context.Context, config Config) (*Process, error) {
 	command := exec.CommandContext(ctx, config.Binary, config.Args...)
 	command.Dir = config.Dir
 	command.Env = append([]string(nil), config.Env...)
+	command.ExtraFiles = append([]*os.File(nil), config.ExtraFiles...)
 	command.WaitDelay = 2 * time.Second
 	if err := configureProcessIdentity(command, config.Identity); err != nil {
 		return nil, err
@@ -220,6 +225,11 @@ func (p *Process) Stderr() (contents []byte, truncated bool) {
 func validateConfig(config Config) error {
 	if err := validateCommandFields(config.Binary, config.Dir, config.Env); err != nil {
 		return err
+	}
+	for index, file := range config.ExtraFiles {
+		if file == nil {
+			return fmt.Errorf("Codex extra file %d is nil", index)
+		}
 	}
 	if config.MaxFrameBytes < 0 || config.IncomingBuffer < 0 || config.StderrBytes < 0 {
 		return errors.New("Codex process bounds cannot be negative")

@@ -210,7 +210,7 @@ func (s *Session) Receive(frame Frame) (ReceiveResult, error) {
 		return ReceiveResult{Duplicate: true, ReceivedThrough: s.receivedThrough}, nil
 	}
 	if frame.SessionSeq != s.receivedThrough+1 {
-		err := protocolError(ErrorResumeGap, true, "received sequence %d after %d", frame.SessionSeq, s.receivedThrough)
+		err := gapProtocolError(ErrorResumeGap, true, s.receivedThrough+1, frame.SessionSeq-1, "received sequence %d after %d", frame.SessionSeq, s.receivedThrough)
 		s.closeLocked(err, SessionClosed)
 		return ReceiveResult{}, err
 	}
@@ -297,12 +297,12 @@ func (s *Session) Resume(request ResumeRequest, now time.Time) (ResumeResult, er
 		return ResumeResult{}, err
 	}
 	if request.PeerSentThrough < s.receivedThrough {
-		err := protocolError(ErrorResumeGap, true, "peer retained sends through %d but local endpoint processed through %d", request.PeerSentThrough, s.receivedThrough)
+		err := gapProtocolError(ErrorResumeGap, true, request.PeerSentThrough+1, s.receivedThrough, "peer retained sends through %d but local endpoint processed through %d", request.PeerSentThrough, s.receivedThrough)
 		s.closeLocked(err, SessionClosed)
 		return ResumeResult{}, err
 	}
 	if request.PeerReceivedThrough > s.sentThrough {
-		err := protocolError(ErrorResumeGap, true, "peer claims receipt through %d but local endpoint sent through %d", request.PeerReceivedThrough, s.sentThrough)
+		err := gapProtocolError(ErrorResumeGap, true, s.sentThrough+1, request.PeerReceivedThrough, "peer claims receipt through %d but local endpoint sent through %d", request.PeerReceivedThrough, s.sentThrough)
 		s.closeLocked(err, SessionClosed)
 		return ResumeResult{}, err
 	}
@@ -311,7 +311,7 @@ func (s *Session) Resume(request ResumeRequest, now time.Time) (ResumeResult, er
 		for sequence := request.PeerReceivedThrough + 1; sequence <= s.sentThrough; sequence++ {
 			frame, retained := s.journal[sequence]
 			if !retained {
-				err := protocolError(ErrorResumeGap, true, "frame %d required by peer is no longer retained", sequence)
+				err := gapProtocolError(ErrorResumeGap, true, sequence, s.sentThrough, "frame %d required by peer is no longer retained", sequence)
 				s.closeLocked(err, SessionClosed)
 				return ResumeResult{}, err
 			}
@@ -322,7 +322,7 @@ func (s *Session) Resume(request ResumeRequest, now time.Time) (ResumeResult, er
 		}
 	}
 	if request.PeerReceivedThrough < s.peerAck {
-		err := protocolError(ErrorResumeGap, true, "peer receipt cursor %d regressed below committed ack %d", request.PeerReceivedThrough, s.peerAck)
+		err := gapProtocolError(ErrorResumeGap, true, request.PeerReceivedThrough+1, s.peerAck, "peer receipt cursor %d regressed below committed ack %d", request.PeerReceivedThrough, s.peerAck)
 		s.closeLocked(err, SessionClosed)
 		return ResumeResult{}, err
 	}

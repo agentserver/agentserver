@@ -29,15 +29,15 @@ func TestPostgreSQLMigrationKernel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first migrateConfig() error = %v", err)
 	}
-	if result.Applied != 3 || result.CurrentVersion != 3 {
-		t.Fatalf("first migration result = %+v, want three applied migrations at version 3", result)
+	if result.Applied != 4 || result.CurrentVersion != 4 {
+		t.Fatalf("first migration result = %+v, want four applied migrations at version 4", result)
 	}
 	result, err = migrateConfig(t.Context(), connectionConfig, runner)
 	if err != nil {
 		t.Fatalf("repeat migrateConfig() error = %v", err)
 	}
-	if result.Applied != 0 || result.CurrentVersion != 3 {
-		t.Fatalf("repeat migration result = %+v, want no-op at version 3", result)
+	if result.Applied != 0 || result.CurrentVersion != 4 {
+		t.Fatalf("repeat migration result = %+v, want no-op at version 4", result)
 	}
 
 	connection := openPostgresTestConnection(t, connectionConfig)
@@ -251,6 +251,35 @@ WHERE table_schema = $1 AND table_name = 'run_events' AND column_name = 'source'
 	}
 }
 
+func TestPostgreSQLMigration0004UpgradesPublishedVersion0003(t *testing.T) {
+	connectionConfig := postgresIntegrationConfig(t)
+	schema := newPostgresTestSchema(t, connectionConfig)
+	catalog, err := EmbeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) < 4 {
+		t.Fatal("embedded catalog does not contain migration 0004")
+	}
+	runner := runnerConfig{schema: schema, lockKey: migrationAdvisoryLockKey, catalog: catalog[:3]}
+	result, err := migrateConfig(t.Context(), connectionConfig, runner)
+	if err != nil {
+		t.Fatalf("apply published migrations through 0003: %v", err)
+	}
+	if result.Applied != 3 || result.CurrentVersion != 3 {
+		t.Fatalf("published migration result = %+v, want version 3", result)
+	}
+
+	runner.catalog = catalog
+	result, err = migrateConfig(t.Context(), connectionConfig, runner)
+	if err != nil {
+		t.Fatalf("upgrade to migration 0004: %v", err)
+	}
+	if result.Applied != 1 || result.CurrentVersion != 4 {
+		t.Fatalf("0004 upgrade result = %+v, want one applied migration at version 4", result)
+	}
+}
+
 func TestPostgreSQLMigration0003UpgradesPublishedVersion0002(t *testing.T) {
 	connectionConfig := postgresIntegrationConfig(t)
 	schema := newPostgresTestSchema(t, connectionConfig)
@@ -270,7 +299,7 @@ func TestPostgreSQLMigration0003UpgradesPublishedVersion0002(t *testing.T) {
 		t.Fatalf("published migration result = %+v, want version 2", result)
 	}
 
-	runner.catalog = catalog
+	runner.catalog = catalog[:3]
 	result, err = migrateConfig(t.Context(), connectionConfig, runner)
 	if err != nil {
 		t.Fatalf("upgrade to migration 0003: %v", err)
@@ -343,17 +372,21 @@ func openPostgresTestConnection(t *testing.T, connectionConfig *pgx.ConnConfig) 
 func assertDatabaseObjects(t *testing.T, connection *pgx.Conn, schema string) {
 	t.Helper()
 	wantTables := map[string]bool{
-		"attempt_leases":       false,
-		"execution_operations": false,
-		"executions":           false,
-		"outbox":               false,
-		"run_attempts":         false,
-		"run_events":           false,
-		"runs":                 false,
-		"schema_migrations":    false,
-		"session_leases":       false,
-		"sessions":             false,
-		"workspaces":           false,
+		"attempt_leases":               false,
+		"executor_connection_attempts": false,
+		"executor_connections":         false,
+		"executor_environments":        false,
+		"executors":                    false,
+		"execution_operations":         false,
+		"executions":                   false,
+		"outbox":                       false,
+		"run_attempts":                 false,
+		"run_events":                   false,
+		"runs":                         false,
+		"schema_migrations":            false,
+		"session_leases":               false,
+		"sessions":                     false,
+		"workspaces":                   false,
 	}
 	rows, err := connection.Query(t.Context(), `
 SELECT table_name
@@ -384,28 +417,36 @@ WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, schema)
 	}
 
 	wantConstraints := map[string]bool{
-		"runs_session_workspace_fk":                     false,
-		"sessions_active_run_same_session_fk":           false,
-		"runs_idempotency_unique":                       false,
-		"run_events_attempt_fk":                         false,
-		"run_events_source_valid":                       false,
-		"run_events_payload_or_object":                  false,
-		"run_events_object_size_positive":               false,
-		"run_events_object_media_type_bounded":          false,
-		"outbox_lock_pair":                              false,
-		"schema_migrations_sha256_exact":                false,
-		"attempt_leases_attempt_generation_fk":          false,
-		"session_leases_run_session_fk":                 false,
-		"run_attempts_run_generation_unique":            false,
-		"run_events_producer_key_unique":                false,
-		"sessions_identity_workspace_unique":            false,
-		"runs_identity_workspace_session_unique":        false,
-		"executions_run_tool_call_unique":               false,
-		"executions_attempt_fk":                         false,
-		"executions_hashes_sha256":                      false,
-		"execution_operations_execution_ordinal_unique": false,
-		"execution_operations_mutation_key_unique":      false,
-		"execution_operations_terminal_matches_status":  false,
+		"runs_session_workspace_fk":                               false,
+		"sessions_active_run_same_session_fk":                     false,
+		"runs_idempotency_unique":                                 false,
+		"run_events_attempt_fk":                                   false,
+		"run_events_source_valid":                                 false,
+		"run_events_payload_or_object":                            false,
+		"run_events_object_size_positive":                         false,
+		"run_events_object_media_type_bounded":                    false,
+		"outbox_lock_pair":                                        false,
+		"schema_migrations_sha256_exact":                          false,
+		"attempt_leases_attempt_generation_fk":                    false,
+		"session_leases_run_session_fk":                           false,
+		"run_attempts_run_generation_unique":                      false,
+		"run_events_producer_key_unique":                          false,
+		"sessions_identity_workspace_unique":                      false,
+		"runs_identity_workspace_session_unique":                  false,
+		"executions_run_tool_call_unique":                         false,
+		"executions_attempt_fk":                                   false,
+		"executions_hashes_sha256":                                false,
+		"execution_operations_execution_ordinal_unique":           false,
+		"execution_operations_mutation_key_unique":                false,
+		"execution_operations_terminal_matches_status":            false,
+		"executors_enrollment_metadata_complete":                  false,
+		"executor_environments_process_profile_valid":             false,
+		"executor_connections_session_id_unique":                  false,
+		"executor_connections_build_hashes_sha256":                false,
+		"executor_connections_status_valid":                       false,
+		"executor_connection_attempts_executor_generation_unique": false,
+		"executor_connection_attempts_end_pair":                   false,
+		"executor_connections_attempt_fk":                         false,
 	}
 	rows, err = connection.Query(t.Context(), `
 SELECT constraint_name
@@ -436,12 +477,16 @@ WHERE constraint_schema = $1`, schema)
 	}
 
 	wantIndexes := map[string]bool{
-		"runs_session_status_created_idx":                   false,
-		"run_attempts_run_created_idx":                      false,
-		"run_events_run_created_idx":                        false,
-		"outbox_claim_idx":                                  false,
-		"executions_run_status_created_idx":                 false,
-		"execution_operations_execution_status_ordinal_idx": false,
+		"runs_session_status_created_idx":                    false,
+		"run_attempts_run_created_idx":                       false,
+		"run_events_run_created_idx":                         false,
+		"outbox_claim_idx":                                   false,
+		"executions_run_status_created_idx":                  false,
+		"execution_operations_execution_status_ordinal_idx":  false,
+		"executors_workspace_status_created_idx":             false,
+		"executor_environments_executor_status_created_idx":  false,
+		"executor_connections_expiry_idx":                    false,
+		"executor_connection_attempts_executor_acquired_idx": false,
 	}
 	rows, err = connection.Query(t.Context(), "SELECT indexname FROM pg_catalog.pg_indexes WHERE schemaname = $1", schema)
 	if err != nil {

@@ -1,0 +1,179 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "agentserver v2 internal command API",
+    "version": "0.1.0",
+    "description": "Initial executor-connection command slice. All endpoints require an authenticated executor-gateway workload identity."
+  },
+  "servers": [{"url": "https://agentserver-core"}],
+  "security": [{"workloadMTLS": []}],
+  "paths": {
+    "/internal/v2/executor-connections:acquire": {
+      "post": {
+        "operationId": "acquireExecutorConnection",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {"schema": {"$ref": "#/components/schemas/AcquireExecutorConnectionRequest"}}
+          }
+        },
+        "responses": {
+          "200": {"description": "Fresh generation acquired or exact current attempt returned", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExecutorConnectionResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/executor-connections/{executorId}:renew": {
+      "parameters": [{"$ref": "#/components/parameters/ExecutorId"}],
+      "post": {
+        "operationId": "renewExecutorConnection",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RenewExecutorConnectionRequest"}}}},
+        "responses": {
+          "200": {"description": "Exact live holder renewed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExecutorConnectionResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/executor-connections/{executorId}:activate": {
+      "parameters": [{"$ref": "#/components/parameters/ExecutorId"}],
+      "post": {
+        "operationId": "activateExecutorConnection",
+        "description": "Publishes environments online only after gateway completed remote initialize/initialized.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ActivateExecutorConnectionRequest"}}}},
+        "responses": {
+          "200": {"description": "Connection activated or exact activation retry returned", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExecutorConnectionResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/executor-connections/{executorId}:fence": {
+      "parameters": [{"$ref": "#/components/parameters/ExecutorId"}],
+      "post": {
+        "operationId": "fenceExecutorConnection",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FenceExecutorConnectionRequest"}}}},
+        "responses": {
+          "204": {"description": "Exact holder fenced or already terminal"},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "workloadMTLS": {"type": "mutualTLS", "description": "Verified executor-gateway workload SPIFFE identity"}
+    },
+    "parameters": {
+      "ExecutorId": {"name": "executorId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}}
+    },
+    "responses": {
+      "CommandError": {
+        "description": "Stable command rejection",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+      }
+    },
+    "schemas": {
+      "UUID": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "not": {"const": "00000000-0000-0000-0000-000000000000"}},
+      "SHA256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+      "ProcessMethods": {
+        "type": "array",
+        "prefixItems": [{"const": "process/start"}, {"const": "process/read"}, {"const": "process/write"}, {"const": "process/terminate"}],
+        "minItems": 4,
+        "maxItems": 4
+      },
+      "EnvironmentDeclaration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["envId", "platform", "codexRelease", "codexCommit", "codexSha256", "outerProfileVersion", "processMethods", "insecureDev"],
+        "properties": {
+          "envId": {"$ref": "#/components/schemas/UUID"},
+          "platform": {"enum": ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64", "windows-arm64"]},
+          "codexRelease": {"type": "string", "minLength": 1, "maxLength": 128},
+          "codexCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "codexSha256": {"$ref": "#/components/schemas/SHA256"},
+          "outerProfileVersion": {"const": "process-v1"},
+          "processMethods": {"$ref": "#/components/schemas/ProcessMethods"},
+          "insecureDev": {"type": "boolean"}
+        }
+      },
+      "ConnectionHolder": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["executorId", "connectionId", "sessionId", "gatewayInstanceId", "generation", "status", "expiresAt"],
+        "properties": {
+          "executorId": {"$ref": "#/components/schemas/UUID"},
+          "connectionId": {"$ref": "#/components/schemas/UUID"},
+          "sessionId": {"$ref": "#/components/schemas/UUID"},
+          "gatewayInstanceId": {"$ref": "#/components/schemas/UUID"},
+          "generation": {"type": "integer", "minimum": 1},
+          "status": {"enum": ["connecting", "online", "fenced"]},
+          "expiresAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "AcquireExecutorConnectionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["executorId", "connectionId", "sessionId", "gatewayInstanceId", "agentxVersion", "runtimeManifestSha256", "execProtocolSourceSha256", "environments", "connectionLeaseTtlMs"],
+        "properties": {
+          "executorId": {"$ref": "#/components/schemas/UUID"},
+          "connectionId": {"$ref": "#/components/schemas/UUID"},
+          "sessionId": {"$ref": "#/components/schemas/UUID"},
+          "gatewayInstanceId": {"$ref": "#/components/schemas/UUID"},
+          "agentxVersion": {"type": "string", "minLength": 1, "maxLength": 256},
+          "runtimeManifestSha256": {"$ref": "#/components/schemas/SHA256"},
+          "execProtocolSourceSha256": {"$ref": "#/components/schemas/SHA256"},
+          "environments": {"type": "array", "minItems": 1, "maxItems": 256, "items": {"$ref": "#/components/schemas/EnvironmentDeclaration"}},
+          "connectionLeaseTtlMs": {"type": "integer", "minimum": 1, "maximum": 300000}
+        }
+      },
+      "RenewExecutorConnectionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["holder", "connectionLeaseTtlMs"],
+        "properties": {
+          "holder": {"$ref": "#/components/schemas/ConnectionHolder"},
+          "connectionLeaseTtlMs": {"type": "integer", "minimum": 1, "maximum": 300000}
+        }
+      },
+      "ActivateExecutorConnectionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["holder", "environments"],
+        "properties": {
+          "holder": {"$ref": "#/components/schemas/ConnectionHolder"},
+          "environments": {"type": "array", "minItems": 1, "maxItems": 256, "items": {"$ref": "#/components/schemas/EnvironmentDeclaration"}}
+        }
+      },
+      "FenceExecutorConnectionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["holder"],
+        "properties": {"holder": {"$ref": "#/components/schemas/ConnectionHolder"}}
+      },
+      "ExecutorConnectionResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["holder"],
+        "properties": {"holder": {"$ref": "#/components/schemas/ConnectionHolder"}}
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "message"],
+        "properties": {
+          "code": {"type": "string", "minLength": 1, "maxLength": 128},
+          "message": {"type": "string", "minLength": 1, "maxLength": 4096},
+          "currentVersion": {"type": "integer", "minimum": 1},
+          "currentGeneration": {"type": "integer", "minimum": 1}
+        }
+      }
+    }
+  }
+}

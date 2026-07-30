@@ -5,6 +5,7 @@ package agentxconn
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/agentserver/agentserver/v2/internal/codexwire"
@@ -65,6 +66,8 @@ type ProtocolError struct {
 	Code     ErrorCode
 	Message  string
 	Terminal bool
+	LostFrom *uint64
+	LostTo   *uint64
 }
 
 func (e *ProtocolError) Error() string {
@@ -73,6 +76,46 @@ func (e *ProtocolError) Error() string {
 
 func protocolError(code ErrorCode, terminal bool, format string, arguments ...any) error {
 	return &ProtocolError{Code: code, Message: fmt.Sprintf(format, arguments...), Terminal: terminal}
+}
+
+func gapProtocolError(code ErrorCode, terminal bool, lostFrom, lostTo uint64, format string, arguments ...any) error {
+	return &ProtocolError{
+		Code:     code,
+		Message:  fmt.Sprintf(format, arguments...),
+		Terminal: terminal,
+		LostFrom: &lostFrom,
+		LostTo:   &lostTo,
+	}
+}
+
+// SessionErrorFrom converts an implementation error into the bounded public
+// control frame. Unknown internal errors are not reflected to the peer.
+func SessionErrorFrom(err error) SessionError {
+	var protocol *ProtocolError
+	if errors.As(err, &protocol) {
+		return SessionError{
+			Type:     MessageTypeSessionError,
+			Code:     protocol.Code,
+			Message:  protocol.Message,
+			Terminal: protocol.Terminal,
+			LostFrom: cloneUint64(protocol.LostFrom),
+			LostTo:   cloneUint64(protocol.LostTo),
+		}
+	}
+	return SessionError{
+		Type:     MessageTypeSessionError,
+		Code:     ErrorSessionClosed,
+		Message:  "internal session failure",
+		Terminal: true,
+	}
+}
+
+func cloneUint64(value *uint64) *uint64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 // Limits apply to the complete outer WSS message, including routing metadata

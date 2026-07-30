@@ -145,3 +145,23 @@ func (r *Registry) Current(executorID string) (*Session, bool) {
 	session, found := r.byExecutor[executorID]
 	return session, found
 }
+
+// Forget removes only a terminal session. Active or resumable sessions remain
+// owned by the registry so a cleanup race cannot erase a live generation.
+func (r *Registry) Forget(sessionID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	session := r.bySession[sessionID]
+	if session == nil {
+		return false
+	}
+	state := session.Snapshot().State
+	if state != SessionClosed && state != SessionFenced {
+		return false
+	}
+	delete(r.bySession, sessionID)
+	if r.byExecutor[session.config.ExecutorID] == session {
+		delete(r.byExecutor, session.config.ExecutorID)
+	}
+	return true
+}

@@ -404,7 +404,8 @@ harness-pool、browser-gateway 与 executor-gateway 使用内部 workload identi
 | approvals | id、execution_id、context hash、nonce unique、status、expires_at、requester、approver、version |
 | executors | id、workspace_id、status、machine key、protocol/build metadata、version |
 | executor_environments | id、executor_id、root descriptor、owner policy digest、status、version |
-| executor_connections | executor_id PK、generation、session_id、gateway_instance_id、expires_at、build/schema digest |
+| executor_connection_attempts | connection_id PK、executor_id + generation unique、session_id、gateway_instance_id、build/schema/environment-set digest、不可改写的结束原因；防止旧 connectionId 在更新 generation 后重新取得连接 |
+| executor_connections | executor_id PK、generation、connection_id、session_id、gateway_instance_id、`connecting|online|fenced`、expires_at、build/schema/environment-set digest；FK 到对应 attempt |
 
 sessions.active_run_id 通过行锁/CAS实现“一个 session 只有一个 active run”。不要仅依赖一个包含状态字符串的应用侧查询。run idempotency 建唯一约束：
 
@@ -451,9 +452,14 @@ execution 的唯一调用身份为：
 - CommitCheckpointAndTerminalRun
 - InterruptAttempt
 - CancelRun
+- AcquireExecutorConnection
+- RenewExecutorConnection
+- ActivateExecutorConnection
 - FenceExecutorConnection
 
-每个命令以单个 PostgreSQL transaction完成全部状态、事件与 outbox 写入。禁止 handler 先写状态、提交后再“顺便”写事件。
+每个命令以单个 PostgreSQL transaction完成其全部权威写入。run aggregate命令必须在同一事务完成状态、规范事件与outbox，禁止handler先写状态、提交后再“顺便”写事件。
+
+executor connection lifecycle不是run aggregate，不能为心跳伪造run event。它的原子边界是`executor_connection_attempts + executor_connections + executor/environment在线投影`：fresh acquire只进入`connecting`并让旧generation离线，完成远端`initialize → initialized`后`ActivateExecutorConnection`才进入`online`；renew只能延长exact live holder，fence同时关闭attempt并离线投影。connection attempt本身是不可复用的连接审计事实，后续结构化安全审计可以消费它，但不能拆成另一个先后提交的写入。
 
 PR 9 reference command store固定以下首批语义：
 
@@ -589,6 +595,8 @@ POST /internal/v2/capabilities:issue
 POST /internal/v2/capabilities:introspect
 POST /internal/v2/executor-connections:acquire
 POST /internal/v2/executor-connections/{executorId}:renew
+POST /internal/v2/executor-connections/{executorId}:activate
+POST /internal/v2/executor-connections/{executorId}:fence
 ~~~
 
 所有 attempt-scoped 请求携带 run_attempt_id、generation 和 expected_version。stale_generation、lease_expired、version_conflict、idempotency_conflict、dispatch_ambiguous 是稳定错误码，不能压成 500。
@@ -610,6 +618,10 @@ executor-gateway Phase 1 一个进程包含：
 - structured audit emitter。
 
 registry 只保存活连接。权威 executor/env/generation 在 core。gateway重启后旧session的完整resume cursor一律拒绝，不能仅凭DB session id伪造frame journal仍存在；prepared operation保持未发送，dispatching/acknowledged且无可信终态的operation才进入unknown。
+
+当前PR 12第一段已经实现这个边界：`0004_executor_connection_kernel.sql`保存enrollment/build、environment、不可复用connection attempt和当前holder；core internal OpenAPI + mTLS handler提供acquire/renew/activate/fence；gateway把reference registry接入真实WebSocket，执行`hello → welcome → initialize → initialized → activate`，并以ping + core renew维持lease。同进程断线会按双向cursor重放；新fresh generation会关闭旧socket；新gateway进程即使看见DB holder也没有journal，必须拒绝resume。真实socket和PostgreSQL 17.6并发门禁已经覆盖这些语义。
+
+这仍不是可生产部署的executor：agentx enrollment/OAuth key binding尚未实现，`executor-gateway`命令因此只暴露显式loopback `serve --insecure-dev`，生产serve模式不存在；active process ownership、agentx connector/runner、stock stdio supervisor、MCP handler与operation unknown收口仍待下一段。没有inbound business handler时gateway对业务frame fail closed，不能把“WSS已连通”描述成shell已经可用。
 
 ### 7.2 第一批工具
 
@@ -1043,7 +1055,7 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 第11项已经完成：`process-v1`精确冻结`process/start|read|write|terminate`并排除`process/signal`；`executor-mcp/1.0`只广告`list_environments|shell`；agentx WSS拥有JSON Schema/AsyncAPI机器契约。Go reference kernel实现双向独立sequence、非sequenced ACK、generation fencing、同gateway进程30秒resume、bounded frame/receive journal和`mutationKey + request hash`的pending/completed/ambiguous门禁；运行时validator还逐method严格校验process request/notification与`network/policyRequest`参数。stable 0.146.0源码复核确认clean-env wire、managed sandbox字段和`windowsSandboxLevel=restricted-token`枚举，contract/race门禁将继续防止schema与实现漂移。
 
-下一实现切片是第12项`agentx v2独立仓库bootstrap + shell executor vertical slice`。实施顺序应先在本仓库建立可运行的executor-gateway骨架、core executor connection acquire/renew CAS和WSS accept/handshake，把reference session接到真实socket；再建立agentx connector/runner IPC、stock stdio supervisor与单process ownership，最后贯通`list_environments → shell → operation terminal → MCP result`。approval command、真实enrollment/key binding、平台containment和部署manifest仍未实现，因此PR 11不表示Phase 1整体完成或当前已经可部署运行。
+第12项第一段现已完成本仓部分：forward-only `0004`、connection attempt/current CAS、`connecting → online`远端lifecycle门槛、mTLS core command API、真实WSS fresh/ACK/replay/resume/generation fence，以及gateway重启无journal时拒绝resume。下一段不再补空壳，而是bootstrap独立agentx仓库，先实现connector/runner IPC和远端lifecycle，再监管每process独占的stock `codex exec-server --listen stdio`；随后才接`list_environments → shell → operation terminal → MCP result`。approval command、真实enrollment/key binding、平台containment和部署manifest仍未实现；当前开发入口明确标为loopback insecure-dev，不能作为Phase 2交付或生产部署证据。
 
 ## 14. 尚未锁定但有明确决策点的事项
 

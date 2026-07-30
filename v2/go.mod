@@ -8,6 +8,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/ucarion/jcs v0.1.2
 	golang.org/x/sys v0.41.0
+	nhooyr.io/websocket v1.8.17
 )
 
 require (

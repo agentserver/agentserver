@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
 
@@ -25,7 +27,7 @@ func TestRunMigrate(t *testing.T) {
 			t.Fatalf("environment lookup = %q", name)
 		}
 		return "postgres://configured"
-	}, &stdout, &stderr, migrate)
+	}, &stdout, &stderr, commandFunctions{migrate: migrate})
 	if exitCode != 0 {
 		t.Fatalf("run() exit code = %d, stderr = %q", exitCode, stderr.String())
 	}
@@ -40,10 +42,10 @@ func TestRunMigrate(t *testing.T) {
 func TestRunRejectsMissingConfiguration(t *testing.T) {
 	var stderr bytes.Buffer
 	exitCode := run(t.Context(), []string{"migrate"}, func(string) string { return "" }, &bytes.Buffer{}, &stderr,
-		func(context.Context, string) (coredb.MigrationResult, error) {
+		commandFunctions{migrate: func(context.Context, string) (coredb.MigrationResult, error) {
 			t.Fatal("migration function must not be called")
 			return coredb.MigrationResult{}, nil
-		})
+		}})
 	if exitCode != 2 || !strings.Contains(stderr.String(), databaseURLEnvironment+" is required") {
 		t.Fatalf("run() exit code = %d, stderr = %q", exitCode, stderr.String())
 	}
@@ -51,8 +53,8 @@ func TestRunRejectsMissingConfiguration(t *testing.T) {
 
 func TestRunRejectsUnknownCommand(t *testing.T) {
 	var stderr bytes.Buffer
-	exitCode := run(t.Context(), []string{"serve"}, func(string) string { return "" }, &bytes.Buffer{}, &stderr, nil)
-	if exitCode != 2 || !strings.Contains(stderr.String(), "usage: agentserver-core migrate") {
+	exitCode := run(t.Context(), []string{"unknown"}, func(string) string { return "" }, &bytes.Buffer{}, &stderr, commandFunctions{})
+	if exitCode != 2 || !strings.Contains(stderr.String(), "usage: agentserver-core <migrate|serve>") {
 		t.Fatalf("run() exit code = %d, stderr = %q", exitCode, stderr.String())
 	}
 }
@@ -60,10 +62,29 @@ func TestRunRejectsUnknownCommand(t *testing.T) {
 func TestRunReportsMigrationFailure(t *testing.T) {
 	var stderr bytes.Buffer
 	exitCode := run(t.Context(), []string{"migrate"}, func(string) string { return "postgres://configured" }, &bytes.Buffer{}, &stderr,
-		func(context.Context, string) (coredb.MigrationResult, error) {
+		commandFunctions{migrate: func(context.Context, string) (coredb.MigrationResult, error) {
 			return coredb.MigrationResult{}, errors.New("checksum mismatch")
-		})
+		}})
 	if exitCode != 1 || !strings.Contains(stderr.String(), "checksum mismatch") {
 		t.Fatalf("run() exit code = %d, stderr = %q", exitCode, stderr.String())
+	}
+}
+
+func TestRunServe(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	called := false
+	exitCode := run(t.Context(), []string{"serve"}, func(string) string { return "configured" }, &stdout, &stderr, commandFunctions{
+		serve: func(_ context.Context, getenv func(string) string, output io.Writer) error {
+			called = true
+			if getenv("anything") != "configured" {
+				t.Fatal("serve getenv was not forwarded")
+			}
+			fmt.Fprintln(output, "serving")
+			return nil
+		},
+	})
+	if exitCode != 0 || !called || stdout.String() != "serving\n" || stderr.Len() != 0 {
+		t.Fatalf("serve result = exit %d, called %v, stdout %q, stderr %q", exitCode, called, stdout.String(), stderr.String())
 	}
 }

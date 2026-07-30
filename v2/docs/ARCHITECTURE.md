@@ -698,7 +698,8 @@ users ──< workspace_members >── workspaces
                                    │      │         └─ run_outbox
                                    │      └─ session_leases
                                    ├─ executors ──< executor_environments
-                                   │             └─ executor_connections / audit
+                                   │             ├─ executor_connection_attempts
+                                   │             └─ executor_connections
                                    ├─ llm_authorizations
                                    ├─ credentials
                                    └─ quotas
@@ -842,7 +843,11 @@ agentx 的实现不放入上述 Go module。`github.com/agentserver/agentx` v2 �
 - warm pool 的 controller、pod、process 和租户隔离层次冲突；
 - app-server、executor RPC 和 AG-UI 之间缺少规范事件层。
 
-PR 11已把executor contract部分落成机器事实源：`agentx-envelope.schema.json`、`agentx-wss.yaml`、`executor-mcp.schema.json`、稳定`process-v1` profile，以及补充JSON Schema无法表达之方向、sequence/ACK、generation/resume、bounded journal和mutation幂等语义的Go reference kernel。该状态只关闭“协议可以被实现和自动校验”的门槛；真实WSS server/client、agentx supervisor、core connection CAS、process ownership与部署验证仍属于下一垂直切片，不能把reference kernel描述为已可部署的gateway。
+PR 11已把executor contract部分落成机器事实源：`agentx-envelope.schema.json`、`agentx-wss.yaml`、`executor-mcp.schema.json`、稳定`process-v1` profile，以及补充JSON Schema无法表达之方向、sequence/ACK、generation/resume、bounded journal和mutation幂等语义的Go reference kernel。
+
+PR 12第一段已把其中的gateway/core连接子切片变成可运行代码：forward-only `0004`保存executor/environment、不可复用connection attempt和当前generation holder；mTLS internal command API原子执行acquire/renew/activate/fence；真实WebSocket server完成`hello/welcome`、远端`initialize/initialized`、ACK、bounded replay、同进程30秒resume和fresh generation fence。fresh acquire只得到`connecting`，远端lifecycle成功后才把env发布为`online`；旧connectionId留在attempt表中，更新generation后重试只能被fence，不能反向夺回owner。PostgreSQL 17.6并发测试与真实socket测试已经覆盖这部分。
+
+该状态仍不能称为可部署shell executor：生产agentx OAuth/机器key proof、enrollment、active process ownership、独立agentx connector/runner、stock stdio supervisor、MCP shell handler和dispatch后unknown收口均未实现。当前gateway命令只提供显式loopback `--insecure-dev`；生产serve模式刻意不存在，且没有business handler时任何RPC frame都会fail closed。
 
 进入实现前必须完成以下 Phase 0 gate：
 

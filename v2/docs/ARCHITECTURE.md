@@ -406,6 +406,8 @@ stable 0.146.0 的 live probe 暴露了两个必须由产品 profile 显式收�
 
 所以 `process/exited` 只能视为根进程退出证据，`process/closed` 才表示 output streams 已关闭；二者之间不能提前宣布 execution 成功。agentx 在 `exited` 后有界等待 `closed`，超时就关闭该 process 专属 stdio instance，并用 cgroup/process group/job object 验证执行树清空；该路径返回 `unknown` 或明确的 `cleanup_forced` 失败，不能返回成功。修订后的 E03 验证 outer profile 不暴露 signal，E07 验证 dedicated-instance cleanup；stock负向probe仍保留，防止以后误改回共享instance。
 
+reference adapter已把这两项约束变成正向门禁：outer method集合精确为`process/start|read|write|terminate`，signal、foreign ownership、第二次start和超限writeId均在写stock stdio前拒绝；每个adapter只有一个reader并重分配local request id。fake-wire/race用例证明normal closed、forced cleanup、tree verifier失败转unknown和双instance无连带；exact stable 0.146.0 macOS arm64 live gate同时启动两个stock exec-server，第一条root退出但descendant持pipe时只关闭第一条connection并确认descendant消失，第二条保持存活且随后独立terminate/closed。该证据关闭E03/E07的reference composition，不替代真实agentx WSS adapter和Linux cgroup/macOS job/process-group containment gate。
+
 upstream 将 `codex exec-server` 标记为 experimental，因此不能假设 semver wire compatibility。agentx 发行包必须锁定精确 commit/build，升级走 schema diff、fixture、sandbox 与故障恢复回归，不允许自动跟随 latest。
 
 ### 8.2 MCP 工具面
@@ -828,7 +830,7 @@ agentx 的实现不放入上述 Go module。`github.com/agentserver/agentx` v2 �
 
 进入实现前必须完成以下 Phase 0 gate：
 
-- [ ] 固定Codex版本与Codex/外部executable digest，完成stock exec-server stdio启动/RPC fixture、outer capability排除`process/signal`、每process独占instance、正常关闭与root/descendant异常时无旁路process-tree回收、agentx代理兼容测试。
+- [ ] 固定Codex版本与Codex/外部executable digest，完成stock exec-server stdio启动/RPC fixture、outer capability排除`process/signal`、每process独占instance、正常关闭与root/descendant异常时无旁路process-tree回收、agentx代理兼容测试（reference adapter已在exact stable macOS arm64通过；真实agentx兼容和目标平台containment仍待完成）。
 - [ ] 完成harness-worker → stock app-server stdio conformance：initialize、thread start/resume、冻结`dynamicTools`、`item/tool/call` response/interrupt cleanup、terminal event、child crash和control-stream fence。
 - [x] 验证app-server child无内建工具/Codex MCP、整个mount view无工作树；worker credential/MCP bearer/FD不可见且non-`CLOEXEC` sentinel也被final-exec close-all；worker UID只访问pool+executor MCP，child UID只访问llmproxy，direct/redirect/MCP sink均为零child请求（exact stable 0.146.0 `linux-arm64`；其他平台与真实Kubernetes部署另验）。
 - [ ] 完成 completed-turn checkpoint 原生 round-trip、hash/schema 校验、对象原子提交和 mid-turn crash 不恢复原 turn 测试；模型可见 tool result 与脱敏 UI 事件分别验证。

@@ -36,7 +36,9 @@ E01 stdio/EOF, exec-server environment metadata, and these executor slices:
   terminate behavior. A negative probe proves that `process/signal` returns the
   same empty success object for missing, delivered, and already-exited targets;
   the revised Phase 1 outer profile therefore does not negotiate or expose
-  `process/signal`. An outer-contract gate is still required;
+  `process/signal`. The reference outer-contract gate now proves that signal,
+  foreign ownership, a second start, and oversized write IDs reach stock zero
+  times;
 - E04: `fs/readFile`, `fs/open`, `fs/readBlock`, `fs/close`, file-URI rejection,
   and `fs/canonicalize`;
 - E05: a deterministic child connects to the executor-local HTTP proxy injected
@@ -52,7 +54,8 @@ E01 stdio/EOF, exec-server environment metadata, and these executor slices:
   `process/exited`, while `process/terminate` returns `running: false`; only
   whole-connection shutdown reaps the process group. The revised Phase 1
   adapter gives every managed process a dedicated stdio exec-server instance;
-  its no-collateral cleanup gate is still required;
+  its positive two-instance gate proves forced cleanup of one process does not
+  disturb the other;
 - E08: a tainted server environment and poison user-home config are excluded by
   the isolated `CODEX_HOME`, and the child still receives exactly the requested
   environment;
@@ -74,6 +77,18 @@ E01 stdio/EOF, exec-server environment metadata, and these executor slices:
   4,096 write IDs FIFO, and a closed process remains readable for approximately
   30 seconds before its ID becomes reusable. These stock facts and the smaller
   agentx product limits are required runtime-manifest fields.
+
+The E03/E07 reference adapter has one reader, assigns local request IDs, binds
+one process ID to one stdio instance, and turns a missing `process/closed` into
+connection shutdown plus an explicit tree-empty verifier. Fake-wire and race
+tests cover normal close, forced cleanup, verifier failure to `unknown`, and two
+independent instances. The positive stock gate passes on stable 0.146.0 macOS
+arm64 (SHA-256
+`ae1d3ffe6d48aec6a4dc3f50e7eb8e0d11962485a6a9406c5a7012139383da02`,
+size `271056976`): closing the crashed-root instance reaps its pipe-holding
+descendant while the second instance remains alive and can terminate normally.
+This is reference composition evidence; the real agentx WSS adapter and target
+platform containment remain Phase 2 gates.
 
 The process probe deliberately accepts a `process/start` response arriving
 after early output notifications and uses the one-based event sequence as the

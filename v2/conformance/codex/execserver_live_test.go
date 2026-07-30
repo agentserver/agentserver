@@ -27,6 +27,7 @@ import (
 	"unicode"
 
 	"github.com/agentserver/agentserver/v2/conformance/codex/internal/codexprocess"
+	"github.com/agentserver/agentserver/v2/conformance/codex/internal/execadapter"
 	"github.com/agentserver/agentserver/v2/internal/codexwire"
 	"github.com/agentserver/agentserver/v2/internal/runtimelock"
 )
@@ -741,7 +742,7 @@ func TestExecServerE03SignalDeliveryAndAmbiguousNoop(t *testing.T) {
 		"params": map[string]any{"processId": "interrupt-process", "signal": "interrupt"},
 	})
 	assertEmptyObjectResult(t, collector.response(t, "5"))
-	t.Log("E03 remains blocked: process/signal returns indistinguishable success for missing, delivered, and already-exited targets")
+	t.Log("E03 stock negative fact retained: process/signal returns indistinguishable success, so the outer profile must exclude it")
 
 	closeAndWait(t, process)
 }
@@ -1172,7 +1173,88 @@ func TestExecServerE07RootExitLeavesDescendantUntilConnectionShutdown(t *testing
 	closeAndWait(t, process)
 	waitForProcessGone(t, descendantPID)
 	disableDescendantCleanup()
-	t.Log("E07 remains blocked: root exit strands descendants until the entire stdio exec-server connection shuts down")
+	t.Log("E07 stock negative fact retained: root exit strands descendants, so cleanup must shut down a dedicated instance")
+}
+
+// This is the positive E03/E07 reference adapter gate. Each outer process owns
+// a different stock exec-server stdio instance. The adapter never negotiates
+// process/signal; when the first root exits without process/closed, it shuts
+// down only that connection and verifies the descendant is gone. The second
+// process must remain alive and independently terminable throughout.
+func TestExecServerE03E07DedicatedInstanceAdapterProfile(t *testing.T) {
+	if !processLivenessProbeSupported {
+		t.Skip("OS process liveness probe is not supported on this platform")
+	}
+	if execadapter.AllowsOuterProcessMethod("process/signal") {
+		t.Fatal("reference agentx outer profile exposes process/signal")
+	}
+
+	firstProcess, firstPaths := startLiveCodex(t, "exec-server", "--listen", "stdio", "--strict-config")
+	secondProcess, secondPaths := startLiveCodex(t, "exec-server", "--listen", "stdio", "--strict-config")
+	var descendantPID atomic.Int64
+	var secondPID atomic.Int64
+	first := newLiveExecAdapter(t, firstProcess, "e07-instance-first", &descendantPID)
+	second := newLiveExecAdapter(t, secondProcess, "e07-instance-second", &secondPID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), liveProbeTimeout)
+	defer cancel()
+	secondPIDFile := filepath.Join(secondPaths.temporary, "dedicated-second.pid")
+	if err := second.Start(ctx, execStartParams(t, secondPaths, "dedicated-second", "block", false, map[string]string{
+		execChildPIDFileEnvironment: secondPIDFile,
+	})); err != nil {
+		t.Fatalf("start second dedicated process: %v", err)
+	}
+	secondPIDValue := waitForChildPID(t, secondPIDFile)
+	secondPID.Store(int64(secondPIDValue))
+	disableSecondCleanup := cleanupChildProcess(t, secondPIDValue)
+
+	descendantPIDFile := filepath.Join(firstPaths.temporary, "dedicated-descendant.pid")
+	if err := first.Start(ctx, execStartParams(t, firstPaths, "dedicated-first", "spawn-descendant", false, map[string]string{
+		execChildPIDFileEnvironment: descendantPIDFile,
+	})); err != nil {
+		t.Fatalf("start first dedicated process: %v", err)
+	}
+	descendantPIDValue := waitForChildPID(t, descendantPIDFile)
+	descendantPID.Store(int64(descendantPIDValue))
+	disableDescendantCleanup := cleanupChildProcess(t, descendantPIDValue)
+
+	firstResult, err := first.Wait(ctx)
+	if err != nil {
+		t.Fatalf("wait for forced first cleanup: %v", err)
+	}
+	if firstResult.InstanceID != "e07-instance-first" || firstResult.ProcessID != "dedicated-first" ||
+		firstResult.State != execadapter.TerminalCleanupForced || firstResult.ProtocolClosed ||
+		firstResult.ExitCode == nil || *firstResult.ExitCode != execChildRootCrashExitCode ||
+		!errors.Is(firstResult.Cause, execadapter.ErrProcessDidNotClose) {
+		t.Fatalf("first dedicated terminal = %+v", firstResult)
+	}
+	waitForProcessGone(t, descendantPIDValue)
+	disableDescendantCleanup()
+	assertProcessAlive(t, secondPIDValue, "after unrelated dedicated instance shutdown")
+
+	if _, err := second.Forward(ctx, "process/signal", json.RawMessage(`{"processId":"dedicated-second","signal":"interrupt"}`)); !errors.Is(err, execadapter.ErrMethodNotNegotiated) {
+		t.Fatalf("outer process/signal error = %v", err)
+	}
+	terminateRaw, err := second.Forward(ctx, "process/terminate", json.RawMessage(`{"processId":"dedicated-second"}`))
+	if err != nil {
+		t.Fatalf("terminate second dedicated process: %v", err)
+	}
+	var terminate struct {
+		Running bool `json:"running"`
+	}
+	if err := json.Unmarshal(terminateRaw, &terminate); err != nil || !terminate.Running {
+		t.Fatalf("second process/terminate = %s, error %v", terminateRaw, err)
+	}
+	secondResult, err := second.Wait(ctx)
+	if err != nil {
+		t.Fatalf("wait for second dedicated process: %v", err)
+	}
+	if secondResult.InstanceID != "e07-instance-second" || secondResult.ProcessID != "dedicated-second" ||
+		secondResult.State != execadapter.TerminalClosed || !secondResult.ProtocolClosed {
+		t.Fatalf("second dedicated terminal = %+v", secondResult)
+	}
+	waitForProcessGone(t, secondPIDValue)
+	disableSecondCleanup()
 }
 
 func TestExecServerE08IgnoresUserHomeAndDoesNotInheritServerSecrets(t *testing.T) {
@@ -2344,6 +2426,77 @@ func readFileBlock(t *testing.T, process *codexprocess.Process, collector *rpcCo
 		t.Fatalf("decode fs/readBlock chunk: %v", err)
 	}
 	return fileBlock{chunk: chunk, eof: response.EOF}
+}
+
+type liveExecAdapterTransport struct {
+	process *codexprocess.Process
+}
+
+func (transport *liveExecAdapterTransport) Send(value any) error {
+	return transport.process.Peer.Send(value)
+}
+
+func (transport *liveExecAdapterTransport) Receive(ctx context.Context) (codexwire.Message, error) {
+	return transport.process.Peer.Receive(ctx)
+}
+
+func (transport *liveExecAdapterTransport) CloseStdin() error {
+	return transport.process.CloseStdin()
+}
+
+func (transport *liveExecAdapterTransport) Wait(ctx context.Context) error {
+	return transport.process.Wait(ctx)
+}
+
+func (transport *liveExecAdapterTransport) Kill() error {
+	return transport.process.Kill()
+}
+
+func newLiveExecAdapter(
+	t *testing.T,
+	process *codexprocess.Process,
+	instanceID string,
+	managedPID *atomic.Int64,
+) *execadapter.Instance {
+	t.Helper()
+	instance, err := execadapter.New(
+		&liveExecAdapterTransport{process: process},
+		instanceID,
+		execadapter.Options{
+			ClientName:    "agentserver-v2-dedicated-instance-gate",
+			CleanupGrace:  500 * time.Millisecond,
+			ShutdownGrace: 5 * time.Second,
+			EventBuffer:   64,
+			MaxEventBytes: 128 * 1024,
+			Limits:        characterizedE10AgentxLimits(),
+			VerifyTreeEmpty: func(ctx context.Context, _ string) error {
+				ticker := time.NewTicker(10 * time.Millisecond)
+				defer ticker.Stop()
+				for {
+					pid := managedPID.Load()
+					if pid > 0 {
+						alive, err := processIsAlive(int(pid))
+						if err != nil {
+							return fmt.Errorf("probe managed process %d: %w", pid, err)
+						}
+						if !alive {
+							return nil
+						}
+					}
+					select {
+					case <-ctx.Done():
+						return fmt.Errorf("managed process tree was not confirmed empty: %w", ctx.Err())
+					case <-ticker.C:
+					}
+				}
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { instance.Abort(errors.New("dedicated adapter test cleanup")) })
+	return instance
 }
 
 func waitForChildPID(t *testing.T, path string) int {

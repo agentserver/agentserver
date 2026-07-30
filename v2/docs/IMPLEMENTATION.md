@@ -310,7 +310,7 @@ A12 的 Darwin host-level边界已在 alpha.14和 stable 0.146.0上重复固定�
 
 本次 macOS arm64 candidate binary SHA-256 为 `e4ca03a3f3682647eb5aab2546647ed963354611b42a9daa332ae9d0366a1204`，官方 artifact archive SHA-256 为 `245d877dea7abc520487b5186f9e17d4fb10548f77da9ebf2b02cb3dee137d96`。这些 hash 只绑定本轮 alpha candidate 证据，不是 production runtime manifest。
 
-随后发布的official stable `rust-v0.146.0`（annotated tag object `be449751a978f02e5bbba886999662956c7f38f5`，peeled commit `e363b08c9175ac1cbe5893615dd2cb9ddf95043b`）在direct-MCP路径复现同一失败，但dynamic bridge通过修订A03。测试的macOS arm64 binary SHA-256为`ae1d3ffe6d48aec6a4dc3f50e7eb8e0d11962485a6a9406c5a7012139383da02`，官方npm platform archive SHA-256为`279ec3460c5b8068daab2a4f5bcf057483303b3595f4a24ade6ceb4d02674935`，canonical app-server schema tree SHA-256为`834975f055f4dc0bf25231ab23f446f4bfef63fd3f7832bc9b0c5fe8a32363bb`。它现在是修订门禁的stable candidate，但A06/A07/A08与dedicated-instance E07完成前仍不生成production runtime manifest。
+随后发布的official stable `rust-v0.146.0`（annotated tag object `be449751a978f02e5bbba886999662956c7f38f5`，peeled commit `e363b08c9175ac1cbe5893615dd2cb9ddf95043b`）在direct-MCP路径复现同一失败，但dynamic bridge通过修订A03。测试的macOS arm64 binary SHA-256为`ae1d3ffe6d48aec6a4dc3f50e7eb8e0d11962485a6a9406c5a7012139383da02`，官方npm platform archive SHA-256为`279ec3460c5b8068daab2a4f5bcf057483303b3595f4a24ade6ceb4d02674935`，canonical app-server schema tree SHA-256为`834975f055f4dc0bf25231ab23f446f4bfef63fd3f7832bc9b0c5fe8a32363bb`。它现在是修订门禁的stable candidate，但A06/A07/A08完成前仍不生成production runtime manifest。
 
 official `rust-v0.147.0-alpha.2`（annotated tag object `cff73291c5dd427cb305c8791c89ece30a11c61e`，peeled commit `1d12a16dd9bcbd37bda22a71a1ae8ac2a49f0aba`）接受了定向复验。direct-MCP resource bypass以及stock signal/descendant负向事实都未变化，dynamic bridge则与stable 0.146.0相同通过。测试的macOS arm64 binary SHA-256为`8e9f6e95320ea2360a07e7716cccea1292d67a2ba47d93bc81d601814abe7135`、size为`276983200`，官方npm platform archive SHA-256为`dfe3db5f1f32b19cf1b2875fe9347f970e3750b764a0dba483ee3b43375da4f7`，canonical app-server schema tree SHA-256为`4393de9e38501330e39c433b43af7a58d3e0008e159f464845472ab66a6e7561`。它仍是alpha研究证据，不是production pin。
 
@@ -366,7 +366,7 @@ E10 已在 alpha.14 与 stable 0.146.0 上固定完整 stock bound matrix：stdi
 
 runtime manifest 因而分别保存 `execServerBounds` 与更小的 `agentxLimits`。首版 agentx 必须在转发前拒绝：inner frame 大于 8 MiB、JSON value 多于 65,536、argv 加可选 arg0 多于 256 项或 UTF-8 总计大于 16 KiB、最终物化且不继承的 env 多于 256 项或按 `name=value` 总计大于 16 KiB、write ID 大于 128 bytes；每进程 WSS delivery/resume raw-output buffer 为 8 MiB，溢出必须报告带 sequence range 的 `output_gap/buffer_overflow`。stock 约 1 MiB replay 不能替代该 buffer，也不能恢复已经溢出的外层序列。最坏响应无法装入较小 envelope 的 method，在具有请求级上限或分页协议前不得协商。reference input validator 已覆盖 argv/env/write ID 的每个恰好边界与第一个拒绝；真实 agentx 仍须在 Phase 2 compatibility suite 复用同一 fixture 证明 frame/JSON/input/output 限制执行在写入 child stdin 或耗尽 buffer 之前。
 
-stable 0.146.0固定了两项产品profile输入。第一，`process/signal`对missing、delivered、already-exited都返回不可区分的`{}`，所以修订E03在outer schema中排除该方法，只验已证明的stdin/terminate。第二，root退出但descendant持有pipe时不会`closed`，`process/terminate`也不会杀该descendant，直到整条stdio connection关闭；因此修订E07要求每process独占instance并以connection shutdown做无旁路cleanup。现有负向probe必须长期保留，reference/real agentx adapter gate尚需实现。当前A03/A04/A05/A09/A11/A12已按dynamic架构关闭；A06–A08和E07 adapter仍开放，E03需补outer-profile contract测试。E09 `linux-amd64` native gate、真实agentx bounds enforcement、E05 ownership/approval与审计也仍未完成。
+stable 0.146.0固定了两项产品profile输入。第一，`process/signal`对missing、delivered、already-exited都返回不可区分的`{}`，所以修订E03在outer schema中排除该方法，只验已证明的stdin/terminate。第二，root退出但descendant持有pipe时不会`closed`，`process/terminate`也不会杀该descendant，直到整条stdio connection关闭；因此修订E07要求每process独占instance并以connection shutdown做无旁路cleanup。现有负向probe长期保留；新增的reference adapter只有一个reader、重分配local request id、逐process核对ownership，单instance拒绝第二次start，并在转发前拒绝signal、foreign process和超限writeId。fake-wire/race gate覆盖正常closed、forced cleanup、核验失败转unknown及双instance无连带；stock live gate又在exact stable 0.146.0 macOS arm64 binary（SHA-256 `ae1d3ffe6d48aec6a4dc3f50e7eb8e0d11962485a6a9406c5a7012139383da02`、size `271056976`）上同时运行两个真实stdio instance：第一条root crash后只关闭自己的connection并确认descendant消失，第二条仍存活且可独立terminate/closed。E03 outer-profile与E07 reference composition因而对该artifact关闭；真实agentx的WSS兼容、平台containment和全量bounds仍属于Phase 2。当前A03/A04/A05/A09/A11/A12已按dynamic架构关闭；A06–A08仍开放。E09 `linux-amd64` native gate、真实agentx bounds enforcement、E05 ownership/approval与审计也仍未完成。
 
 ## 5. Core 状态内核
 
@@ -1011,7 +1011,7 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 以下事项不能在实现中静默默认：
 
-1. 具体stock Codex release/tag：stable 0.146.0是当前修订门禁candidate，只有A06–A08、E03/E07 adapter及目标平台E09全部通过后才写production manifest。
+1. 具体stock Codex release/tag：stable 0.146.0是当前修订门禁candidate，只有A06–A08及目标平台E09全部通过后才写production manifest；E03/E07 reference adapter已对上述macOS artifact通过，真实agentx兼容仍在Phase 2验收。
 2. macOS production agentx隔离方式：必须通过 signed launchd/Keychain/ptrace/FD gate；否则只标 dev。
 3. KMS与对象存储供应商：接口固定为 envelope encryption + S3-compatible，部署实现需单独 ADR。
 4. 外部 OIDC IdP claim mapping：Hydra bridge实现前需确定 issuer/sub、组织和 workspace映射规则。

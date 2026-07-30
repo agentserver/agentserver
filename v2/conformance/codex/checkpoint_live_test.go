@@ -7,12 +7,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 	"github.com/agentserver/agentserver/v2/conformance/codex/internal/scriptedmcp"
 	"github.com/agentserver/agentserver/v2/conformance/codex/internal/scriptedmodel"
 	"github.com/agentserver/agentserver/v2/internal/codexwire"
+	"github.com/agentserver/agentserver/v2/internal/harnessworker"
 )
 
 const (
@@ -462,6 +465,294 @@ func TestAppServerA09RolloutOnlyCheckpointRoundTrip(t *testing.T) {
 	}
 	assertMCPBootstrap(t, restoredMCPServer)
 	t.Logf("A09 restored %s from rollout-only checkpoint %q", thread.Thread.ID, rolloutRelative)
+}
+
+// TestAppServerA09DynamicRunnerCheckpointRoundTrip recomposes A09 around the
+// production worker-owned bridge. The first app-server sees only a frozen
+// dynamic catalog and persists the client callback result. A fresh app-server
+// then resumes from the rollout alone without a dynamicTools override, exposes
+// the exact same model tool schema, retains the call/result in model context,
+// and never invokes the executor side effect again.
+func TestAppServerA09DynamicRunnerCheckpointRoundTrip(t *testing.T) {
+	binary, sourcePaths := prepareLiveCodex(t)
+	// Stable 0.146.0 is currently the intersection of the release-bound
+	// dynamic bridge and rollout-only checkpoint evidence.
+	requireCandidateRelease(t, binary, sourcePaths, "0.146.0")
+	catalog := approvedDynamicExecutorCatalog(t)
+
+	toolCall, err := scriptedmodel.NamespacedFunctionCall(
+		"response-a09-dynamic-runner-call",
+		a09ToolCallID,
+		executorDynamicNamespace,
+		approvedMCPToolName,
+		`{"message":"persist this dynamic executor result"}`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstFinal, err := scriptedmodel.AssistantMessage(
+		"response-a09-dynamic-runner-final",
+		"message-a09-dynamic-runner-final",
+		a09FirstAssistantText,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstModelServer, err := scriptedmodel.Start(scriptedmodel.Config{
+		Responses: []scriptedmodel.Response{toolCall, firstFinal},
+	})
+	if err != nil {
+		t.Fatalf("start first dynamic checkpoint model: %v", err)
+	}
+	t.Cleanup(firstModelServer.Close)
+	writeScriptedModelConfigWithOptions(t, sourcePaths.codexHome, firstModelServer.URL(), scriptedModelConfigOptions{
+		disableUpdatePlan: true,
+	})
+
+	var sideEffects atomic.Int64
+	firstCaller := &a09RunnerDynamicCaller{
+		catalog:         catalog,
+		sideEffects:     &sideEffects,
+		allow:           true,
+		expectedMessage: "persist this dynamic executor result",
+	}
+	firstBridge, err := harnessworker.NewDynamicBridge(firstCaller, 8, harnessworker.DefaultLimits().MaxArgumentBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstProcess := startPreparedLiveCodex(t, binary, sourcePaths, "app-server", "--listen", "stdio://", "--strict-config")
+	firstRunner, err := harnessworker.NewAppServerRunner(
+		firstProcess.Peer,
+		firstBridge,
+		harnessworker.DefaultAppServerRunnerOptions(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstEventsDrained := drainAppServerRunnerEvents(firstRunner)
+	firstResult, err := firstRunner.Run(t.Context(), harnessworker.AppServerRunRequest{
+		RunID:                "run-a09-dynamic-source",
+		RunAttemptGeneration: 1,
+		ClientInfo: harnessworker.AppServerClientInfo{
+			Name:    "agentserver_v2_conformance",
+			Title:   "agentserver v2 conformance",
+			Version: "0.0.0",
+		},
+		Catalog: catalog,
+		Start: &harnessworker.AppServerThreadStart{
+			Model:                 conformanceModelName,
+			CWD:                   sourcePaths.cwd,
+			BaseInstructions:      "Return only the scripted model result.",
+			DeveloperInstructions: "Persist the frozen dynamic callback without local tools.",
+		},
+		UserText: a09FirstUserText,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-firstEventsDrained
+	if firstResult.Terminal.Turn.Status != "completed" || firstBridge.Outstanding() != 0 {
+		t.Fatalf("first dynamic checkpoint lifecycle/outstanding = %+v/%d", firstResult.Terminal, firstBridge.Outstanding())
+	}
+	closeAndWait(t, firstProcess)
+	if got := sideEffects.Load(); got != 1 {
+		t.Fatalf("source dynamic executor side effects = %d, want one", got)
+	}
+	if failures := firstModelServer.Failures(); len(failures) != 0 {
+		t.Fatalf("source dynamic checkpoint model failures: %v", failures)
+	}
+	firstRequests := firstModelServer.Requests()
+	if len(firstRequests) != 2 {
+		t.Fatalf("source dynamic checkpoint model requests = %d, want two", len(firstRequests))
+	}
+	firstInitial := decodeCapturedModelRequest(t, firstRequests[0])
+	firstFollowup := decodeCapturedModelRequest(t, firstRequests[1])
+	wantSurface := []string{executorDynamicNamespace + "." + approvedMCPToolName}
+	if got := modelToolNames(t, firstInitial.Tools); !reflect.DeepEqual(got, wantSurface) {
+		t.Fatalf("source dynamic checkpoint tool surface = %v, want %v", got, wantSurface)
+	}
+	if !modelInputContainsFunctionOutput(firstFollowup.Input, a09ToolCallID, a09ToolMarker) {
+		t.Fatalf("source dynamic checkpoint omitted callback result: input=%s", encodeModelInput(t, firstFollowup.Input))
+	}
+
+	sourceSnapshot := snapshotStateTree(t, sourcePaths.codexHome)
+	rolloutRelative := stateRelativePath(t, sourcePaths.codexHome, firstResult.Thread.Thread.Path)
+	rolloutSnapshot, exists := sourceSnapshot[rolloutRelative]
+	if !exists || !strings.HasSuffix(rolloutRelative, ".jsonl") || rolloutSnapshot.Size == 0 {
+		t.Fatalf("dynamic checkpoint rollout = %+v at %q", rolloutSnapshot, rolloutRelative)
+	}
+	assertCompleteRolloutJSONL(
+		t,
+		firstResult.Thread.Thread.Path,
+		firstResult.Thread.Thread.ID,
+		a09FirstUserText,
+		a09FirstAssistantText,
+		a09ToolMarker,
+	)
+
+	restoredPaths := createRestoredLivePaths(t, t.TempDir(), "dynamic-runner-runtime")
+	copyCheckpointFile(
+		t,
+		sourcePaths.codexHome,
+		restoredPaths.codexHome,
+		rolloutRelative,
+		rolloutSnapshot,
+	)
+	wantCheckpointSnapshot := map[string]stateFileSnapshot{rolloutRelative: rolloutSnapshot}
+	if got := snapshotStateTree(t, restoredPaths.codexHome); !reflect.DeepEqual(got, wantCheckpointSnapshot) {
+		t.Fatalf("dynamic rollout-only checkpoint contains unexpected files: got=%v want=%v", got, wantCheckpointSnapshot)
+	}
+	restoredRolloutPath := filepath.Join(restoredPaths.codexHome, filepath.FromSlash(rolloutRelative))
+	retiredSourceHome := filepath.Join(sourcePaths.root, "retired-dynamic-source-codex-home")
+	if err := os.Rename(sourcePaths.codexHome, retiredSourceHome); err != nil {
+		t.Fatalf("retire dynamic source CODEX_HOME: %v", err)
+	}
+	if _, err := os.Stat(firstResult.Thread.Thread.Path); !os.IsNotExist(err) {
+		t.Fatalf("dynamic source rollout remained available after retirement: %v", err)
+	}
+
+	secondFinal, err := scriptedmodel.AssistantMessage(
+		"response-a09-dynamic-runner-restored",
+		"message-a09-dynamic-runner-restored",
+		a09SecondAssistantText,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondModelServer, err := scriptedmodel.Start(scriptedmodel.Config{
+		Responses: []scriptedmodel.Response{secondFinal},
+	})
+	if err != nil {
+		t.Fatalf("start restored dynamic checkpoint model: %v", err)
+	}
+	t.Cleanup(secondModelServer.Close)
+	writeScriptedModelConfigWithOptions(t, restoredPaths.codexHome, secondModelServer.URL(), scriptedModelConfigOptions{
+		disableUpdatePlan: true,
+	})
+	secondCaller := &a09RunnerDynamicCaller{
+		catalog:     catalog,
+		sideEffects: &sideEffects,
+		allow:       false,
+	}
+	secondBridge, err := harnessworker.NewDynamicBridge(secondCaller, 8, harnessworker.DefaultLimits().MaxArgumentBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondProcess := startPreparedLiveCodex(t, binary, restoredPaths, "app-server", "--listen", "stdio://", "--strict-config")
+	secondRunner, err := harnessworker.NewAppServerRunner(
+		secondProcess.Peer,
+		secondBridge,
+		harnessworker.DefaultAppServerRunnerOptions(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondEventsDrained := drainAppServerRunnerEvents(secondRunner)
+	secondResult, err := secondRunner.Run(t.Context(), harnessworker.AppServerRunRequest{
+		RunID:                "run-a09-dynamic-restored",
+		RunAttemptGeneration: 2,
+		ClientInfo: harnessworker.AppServerClientInfo{
+			Name:    "agentserver_v2_conformance",
+			Title:   "agentserver v2 conformance",
+			Version: "0.0.0",
+		},
+		Catalog: catalog,
+		Resume: &harnessworker.AppServerThreadResume{
+			ThreadID:                firstResult.Thread.Thread.ID,
+			RolloutPath:             restoredRolloutPath,
+			CWD:                     restoredPaths.cwd,
+			CheckpointCatalogDigest: catalog.Digest(),
+		},
+		UserText: a09SecondUserText,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-secondEventsDrained
+	if !secondResult.Resumed || secondResult.Terminal.Turn.Status != "completed" || secondBridge.Outstanding() != 0 {
+		t.Fatalf("restored dynamic checkpoint lifecycle/outstanding = %+v/%d", secondResult, secondBridge.Outstanding())
+	}
+	if secondResult.Thread.Thread.ID != firstResult.Thread.Thread.ID ||
+		secondResult.Thread.Thread.SessionID != firstResult.Thread.Thread.SessionID {
+		t.Fatalf("restored dynamic thread identity changed: source=%+v restored=%+v", firstResult.Thread.Thread, secondResult.Thread.Thread)
+	}
+	if got := stateRelativePath(t, restoredPaths.codexHome, secondResult.Thread.Thread.Path); got != rolloutRelative {
+		t.Fatalf("restored dynamic rollout path = %q, want %q", got, rolloutRelative)
+	}
+	closeAndWait(t, secondProcess)
+	if got := sideEffects.Load(); got != 1 {
+		t.Fatalf("restored dynamic executor side effects = %d, want no replay after source call", got)
+	}
+	if failures := secondModelServer.Failures(); len(failures) != 0 {
+		t.Fatalf("restored dynamic checkpoint model failures: %v", failures)
+	}
+	secondRequests := secondModelServer.Requests()
+	if len(secondRequests) != 1 {
+		t.Fatalf("restored dynamic checkpoint model requests = %d, want one", len(secondRequests))
+	}
+	restoredRequest := decodeCapturedModelRequest(t, secondRequests[0])
+	if !modelInputContainsUserText(t, restoredRequest.Input, a09FirstUserText) ||
+		!modelInputContainsUserText(t, restoredRequest.Input, a09SecondUserText) ||
+		!modelInputContainsFunctionOutput(restoredRequest.Input, a09ToolCallID, a09ToolMarker) {
+		t.Fatalf("restored dynamic context omitted call history: input=%s", encodeModelInput(t, restoredRequest.Input))
+	}
+	if got := modelToolNames(t, restoredRequest.Tools); !reflect.DeepEqual(got, wantSurface) {
+		t.Fatalf("restored dynamic checkpoint tool surface = %v, want %v", got, wantSurface)
+	}
+	if !reflect.DeepEqual(modelToolValues(t, restoredRequest.Tools), modelToolValues(t, firstInitial.Tools)) {
+		t.Fatal("restored dynamic checkpoint changed the frozen model tool schema")
+	}
+	t.Logf(
+		"A09 dynamic runner restored %s from rollout-only checkpoint %q with catalog %s and one total side effect",
+		firstResult.Thread.Thread.ID,
+		rolloutRelative,
+		catalog.Digest(),
+	)
+}
+
+type a09RunnerDynamicCaller struct {
+	catalog         *harnessworker.Catalog
+	sideEffects     *atomic.Int64
+	allow           bool
+	expectedMessage string
+}
+
+func (c *a09RunnerDynamicCaller) CallDynamicTool(
+	_ context.Context,
+	call harnessworker.DynamicCall,
+) (harnessworker.DynamicToolResult, error) {
+	arguments, err := c.catalog.ValidateCall(call.Namespace, call.Tool, call.Arguments)
+	if err != nil {
+		return harnessworker.DynamicToolResult{}, err
+	}
+	c.sideEffects.Add(1)
+	if !c.allow {
+		return harnessworker.DynamicToolResult{}, errors.New("restored checkpoint replayed a dynamic executor side effect")
+	}
+	var payload struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(arguments, &payload); err != nil {
+		return harnessworker.DynamicToolResult{}, err
+	}
+	if payload.Message != c.expectedMessage {
+		return harnessworker.DynamicToolResult{}, fmt.Errorf("dynamic checkpoint message = %q, want %q", payload.Message, c.expectedMessage)
+	}
+	return harnessworker.DynamicToolResult{
+		ContentItems: []harnessworker.InputTextContent{{Type: "inputText", Text: a09ToolMarker}},
+		Success:      true,
+	}, nil
+}
+
+func modelToolValues(t *testing.T, tools []json.RawMessage) []any {
+	t.Helper()
+	values := make([]any, len(tools))
+	for index, tool := range tools {
+		if err := json.Unmarshal(tool, &values[index]); err != nil {
+			t.Fatalf("decode model tool %d: %v", index, err)
+		}
+	}
+	return values
 }
 
 // TestAppServerA10MidTurnCrashRestoresLastCompletedCheckpoint hard-kills a

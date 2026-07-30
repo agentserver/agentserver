@@ -1471,26 +1471,7 @@ func TestAppServerA07HarnessWorkerRunnerUsesRealStdioWriterBarrier(t *testing.T)
 	})
 
 	limits := harnessworker.DefaultLimits()
-	catalog, err := harnessworker.BuildCatalog(
-		executorDynamicNamespace,
-		"Policy-approved deterministic executor tools.",
-		[]harnessworker.ToolDescriptor{{
-			Name:        approvedMCPToolName,
-			Description: "Execute one approved deterministic instruction.",
-			InputSchema: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"message": map[string]any{"type": "string"},
-				},
-				"required":             []string{"message"},
-				"additionalProperties": false,
-			},
-		}},
-		limits,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	catalog := approvedDynamicExecutorCatalog(t)
 	calls := make(chan harnessworker.DynamicCall, 1)
 	caller := &appServerRunnerDynamicCaller{catalog: catalog, calls: calls}
 	bridge, err := harnessworker.NewDynamicBridge(caller, 8, limits.MaxArgumentBytes)
@@ -1507,12 +1488,7 @@ func TestAppServerA07HarnessWorkerRunnerUsesRealStdioWriterBarrier(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	eventsDrained := make(chan struct{})
-	go func() {
-		for range runner.Events() {
-		}
-		close(eventsDrained)
-	}()
+	eventsDrained := drainAppServerRunnerEvents(runner)
 	result, err := runner.Run(t.Context(), harnessworker.AppServerRunRequest{
 		RunID:                "run-a07-worker-runner",
 		RunAttemptGeneration: 1,
@@ -1575,6 +1551,16 @@ func TestAppServerA07HarnessWorkerRunnerUsesRealStdioWriterBarrier(t *testing.T)
 type appServerRunnerDynamicCaller struct {
 	catalog *harnessworker.Catalog
 	calls   chan<- harnessworker.DynamicCall
+}
+
+func drainAppServerRunnerEvents(runner *harnessworker.AppServerRunner) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		for range runner.Events() {
+		}
+		close(done)
+	}()
+	return done
 }
 
 func (c *appServerRunnerDynamicCaller) CallDynamicTool(
@@ -2116,6 +2102,31 @@ func approvedDynamicExecutorTools() []any {
 			},
 		},
 	}
+}
+
+func approvedDynamicExecutorCatalog(t *testing.T) *harnessworker.Catalog {
+	t.Helper()
+	catalog, err := harnessworker.BuildCatalog(
+		executorDynamicNamespace,
+		"Policy-approved deterministic executor tools.",
+		[]harnessworker.ToolDescriptor{{
+			Name:        approvedMCPToolName,
+			Description: "Execute one approved deterministic instruction.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"message": map[string]any{"type": "string"},
+				},
+				"required":             []string{"message"},
+				"additionalProperties": false,
+			},
+		}},
+		harnessworker.DefaultLimits(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return catalog
 }
 
 func startMinimalAppServerTurn(

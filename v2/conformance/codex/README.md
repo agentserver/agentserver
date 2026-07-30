@@ -19,9 +19,10 @@ revised A03 exact `dynamicTools` surface/callback path plus the rejected direct
 Codex-MCP path, and the revised A04 managed MCP deny-all image gate. Existing
 A05–A12 probes retain valuable stock/runtime facts. A07 now also has a
 worker-runner composition gate, but it still needs a pinned-artifact pass and
-the execution/control cases described below; A06/A09/A11/A12 likewise still
-need their revised worker-owned compositions. No direct-Codex-MCP result is
-silently carried into the production profile. The lab also covers
+the execution/control cases described below. A09's revised worker-runner gate
+is also implemented but still needs its pinned-artifact pass; A06/A11/A12
+still need their revised worker-owned compositions. No direct-Codex-MCP result
+is silently carried into the production profile. The lab also covers
 E01 stdio/EOF, exec-server environment metadata, and these executor slices:
 
 - E02: deterministic argv/arg0, canonical cwd, exact non-inherited child
@@ -307,10 +308,22 @@ requirements, credentials, logs, caches, and transport state are likewise
 excluded and must be recreated for each attempt. As a negative control, a
 missing rollout makes `thread/resume` fail with `-32600` before any model request
 or MCP initialization. Every future Codex build must repeat this native
-round-trip before receiving the same allowlist. Revised A09 must repeat the
-round-trip with a dynamic callback, bind the catalog digest, prove resume
-restores the original tool schema without an override, and reject/schema-split
-a changed catalog.
+round-trip before receiving the same allowlist.
+
+The revised A09 worker-runner gate is now implemented and pinned in source to
+stable `0.146.0`, the intersection of the existing dynamic-bridge and
+rollout-only evidence. Its first attempt executes one worker-owned dynamic
+callback and checkpoints only the reported rollout. It retires the source
+`CODEX_HOME`, cold-resumes the rollout in a fresh home without a `dynamicTools`
+override, and checks that the next real model request retains both user turns,
+the original call ID/result, and the complete original model tool schema. A
+shared counter requires exactly one total executor-side effect across both
+attempts. The runner unit suite separately proves that a checkpoint catalog
+digest mismatch fails before the first stdio byte; a changed catalog must
+therefore create a new thread rather than alter the resumed one. This live gate
+has only compiled/skipped in the current checkout: it still needs an actual run
+against the exact pinned stable `0.146.0` artifact, so revised A09 remains open
+and this paragraph is not a pass record.
 
 A10 passes for both characterized 0.146.0 releases. The probe first seals a
 completed-turn rollout in a separate rollout-only checkpoint, then restores a

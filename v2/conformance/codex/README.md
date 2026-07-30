@@ -242,20 +242,31 @@ Codex generic approval request. Product approval is outside app-server, on the
 worker-owned MCP connection. The older direct-MCP `approve` versus `prompt`
 probe remains a useful characterization but is no longer production config.
 
-A06 is reopened for the revised architecture. The existing probe proves that
-the standard MCP elicitation exchange works when Codex is the MCP client, but
-production deliberately does not use that path. The new gate must exercise a
-reference/real harness worker as MCP client, route `elicitation/create` through
-pool/core, cover accept/decline/cancel plus active expiry and disconnects, and
-prove app-server sees only its pending `item/tool/call`.
+A06 is reopened for the revised architecture. The existing Codex-side probe
+only proves elicitation when Codex is the MCP client, which production does not
+use. A reference bridge-side sub-gate now uses the official Go MCP SDK to page
+and verify the frozen catalog, issue `tools/call`, validate trusted
+execution/run/call/generation metadata, and return each of
+accept/decline/cancel to a fake gateway with zero dispatch on non-accept paths.
+It pins the stateful MCP `2025-11-25` profile and rejects the newer stateless
+profile before `tools/list`, because that profile cannot carry the nested
+server-originated `elicitation/create` used by this design. Full A06 remains
+open until the same path uses real pool/core approval CAS and covers active
+expiry, nonce consumption, stale generation, and control/MCP disconnects.
 
 A07's stock dynamic probe fixes a different rule: pending `item/tool/call`
 interruption yields `turn/completed(interrupted)` and never emits
 `serverRequest/resolved`; normal dynamic responses emit no resolved event
-either. Normal callbacks are removed after their JSON-RPC response is written;
-unanswered callbacks are removed after their owning turn is terminal and the
-worker cancels MCP. The revised bridge-side cancel/no-dispatch gate remains
-open.
+either. The reference `DynamicBridge` now proves that normal callbacks remain
+owned until their JSON-RPC response write succeeds, unanswered callbacks are
+cancelled by their owning terminal, and result/terminal races have one winner.
+Its real-SDK cancellation sub-gate also proves cancellation reaches the fake
+gateway and exits the worker's nested elicitation handler before approval
+expiry, with zero dispatch. This avoids waiting for an SDK nested cancellation
+notification that is carried on an already-abandoned SSE response. Full A07
+remains open until this bridge is wired into the real app-server stdio event
+loop and composed with terminal handling, the serialized writer barrier,
+already-dispatched execution closure, and control/MCP disconnects.
 
 A08's process-exit and byte-stability sub-gate passes for both characterized
 0.146.0 releases. After a completed non-ephemeral turn with no typed outstanding request, the probe closes stdin

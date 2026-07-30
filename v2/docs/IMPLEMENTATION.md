@@ -282,9 +282,11 @@ official stable 0.146.0 Linux amd64 musl的正式deny-all Make target已在Apple
 
 A05旧direct-MCP probe已在0.146.0-alpha.14与stable 0.146.0上固定`approve|prompt`差异，继续作为回归characterization，但不再代表生产配置。修订后的production probe在stable 0.146.0与0.147.0-alpha.2上使用`approvalPolicy=never`和唯一`executor.approved_echo` dynamic tool：真实调用直接产生`item/tool/call`，没有Codex通用approval request；未发布tool也不会产生callback。因产品approval发生在worker MCP client侧，`never`不会自动拒绝它。A05据此关闭app-server这一半；gateway主动elicitation仍由A06单独验证。
 
-A06旧probe证明标准MCP elicitation协议本身可工作，但它由stock app-server充当MCP client，新架构不依赖该路径。修订后的A06尚需在reference/real harness-worker中实现：worker初始化gateway MCP并声明elicitation capability；收到`item/tool/call`后发`tools/call`，gateway返回`elicitation/create`；worker把typed form、execution `_meta`和可信run/call映射经pool/core取得`accept|decline|cancel`，再把MCP response回给gateway。测试还必须覆盖core主动TTL expiry、nonce单次消费、stale generation、MCP cancel与control/MCP断线。pending期间app-server只持有原dynamic callback，看不到elicitation；gateway的active execution deadline由自身状态机暂停，不能依赖Codex `tool_timeout_sec`。
+A06旧probe证明标准MCP elicitation协议本身可工作，但它由stock app-server充当MCP client，新架构不依赖该路径。`internal/harnessworker`现已实现reference bridge-side子门禁：worker使用official Go MCP SDK建立有界连接、分页读取并逐字节核对冻结catalog，收到dynamic call后发唯一一次`tools/call`；fake gateway在该调用内发`elicitation/create`，worker校验execution `_meta`与可信run/call/generation/catalog关联，并把`accept|decline|cancel`原样回给gateway。该测试不经过app-server，也验证未批准分支零dispatch。它尚未接入真实pool/core，因此A06仍未关闭：还必须覆盖core主动TTL expiry、nonce单次消费、stale generation、真实control/MCP断线和持久化approval CAS。pending期间app-server只持有原dynamic callback，看不到elicitation；gateway的active execution deadline由自身状态机暂停，不能依赖Codex `tool_timeout_sec`。
 
-A07的dynamic probe已在stable 0.146.0和0.147.0-alpha.2上固定关键wire事实：pending `item/tool/call`时`turn/interrupt`成功并产生`interrupted` terminal，不发第二次模型请求，也没有`serverRequest/resolved`；正常dynamic response同样没有resolved。worker必须按request type维护outstanding set：正常call在JSON-RPC response写入完成后删除；未回复call在所属turn terminal后删除并取消MCP。A07还未完全关闭，下一步要在bridge测试中证明MCP cancel到达gateway、pending approval不dispatch、已dispatch execution独立收口，以及control/MCP断线fail closed。
+reference client显式锁定MCP `2025-11-25` stateful Streamable HTTP profile。当前official Go SDK v1.7.0的新`2026-07-28` stateless profile不能在`tools/call`内承载本设计使用的server-originated `elicitation/create`，所以连接若协商到其他版本会在`tools/list`前fail closed；其他版本的标准`_meta`也不能被静默忽略。未来升级必须先更换approval transport设计并增加独立conformance，不能随SDK latest漂移。
+
+A07的dynamic probe已在stable 0.146.0和0.147.0-alpha.2上固定关键wire事实：pending `item/tool/call`时`turn/interrupt`成功并产生`interrupted` terminal，不发第二次模型请求，也没有`serverRequest/resolved`；正常dynamic response同样没有resolved。reference `DynamicBridge`现按request type维护有界outstanding set：正常call只在JSON-RPC response写成功后删除，未回复call由所属turn terminal取消并删除；result/terminal竞态只有一个赢家，request id按JSON值而非原始转义拼写去重。bridge-side A07还用真实SDK server证明外层取消在approval expiry前抵达gateway、同步取消worker内嵌套elicitation handler且pending approval零dispatch；这修复了仅依赖Streamable HTTP嵌套cancel会让`ClientSession.Close`等到expiry的问题。A07仍未完全关闭：还需接入真实app-server stdio event loop，组合`turn/interrupt` terminal、response writer barrier、已dispatch execution独立收口，以及control/MCP断线fail closed。
 
 A08 已在 alpha.14 与 stable 0.146.0 上证明“typed outstanding set 已为空后立即关闭 stdin”能让 app-server 有界零退出且文件树字节稳定，不需要固定 sleep。旧用例没有正在转接的dynamic/MCP call，所以只关闭进程退出与稳定快照子结论；修订后的A08还要组合A07 typed cleanup与execution/process收口。两个release在clean exit后仍保留state/goals/logs/memories的`.sqlite-wal/.sqlite-shm`，因此A08不判断checkpoint文件集合。
 
@@ -679,7 +681,7 @@ manifest至少冻结：
 - previous checkpoint id/hash；
 - Codex runtime manifest digest；
 - model/llmproxy audience和 endpoint；
-- executor MCP endpoint/TLS identity/audience，以及冻结的namespace/description、tool name/description/input schema、固定`deferLoading=false`、逐tool hash与catalog digest；
+- executor MCP endpoint/TLS identity/audience与显式protocol profile，以及冻结的namespace/description、tool name/description/input schema、固定`deferLoading=false`、逐tool hash与catalog digest；
 - executor/env/tool policy；
 - max_run_duration、max_approval_ttl、gateway active execution timeout、MCP transport/cleanup grace；
 - event/control buffer上限；
@@ -727,7 +729,7 @@ worker先把checkpoint allowlist恢复到全新`CODEX_HOME`，断言staging严�
 
 worker不做tool选择。它只实现以下确定性映射：
 
-1. 使用绑定`run_attempt_generation + tool_catalog_digest`的worker-only capability建立一个有界Streamable HTTP MCP session，声明`elicitation`与所需progress能力；只允许manifest中的exact endpoint/TLS identity。
+1. 使用绑定`run_attempt_generation + tool_catalog_digest`的worker-only capability建立一个有界Streamable HTTP MCP session，声明`elicitation`与所需progress能力；只允许manifest中的exact endpoint/TLS identity和显式protocol profile。reference profile固定为`2025-11-25` stateful；当前SDK协商到`2026-07-28` stateless或其他版本时，在读取catalog前fail closed。
 2. 调用`tools/list`直至分页完成；拒绝重复名称、未知schema关键字段、过大的description/schema、非JSON Schema object或catalog上限溢出。
 3. 按版本化canonicalizer规范化`{name, description, inputSchema}`并计算逐tool/catalog digest，要求与签名run manifest及checkpoint（resume时）完全一致。
 4. 将每个 MCP tool 机械映射为固定 namespace 下、`deferLoading=false` 的 dynamic function；namespace/name 映射必须可逆，并拒绝非法 dynamic name、归一化后重名或 namespace 碰撞，映射表随 catalog 一起冻结。description 和 inputSchema 不由 worker 改写，MCP annotation 不投影也不作为授权事实。

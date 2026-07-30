@@ -222,7 +222,7 @@ stock app-server 访问 llmproxy 所需的短期 capability 优先通过 tmpfs/�
 3. browser-gateway 将用户 token、目标 action、幂等键和规范化请求 hash 交给 core；core 完成鉴权，并在同一事务中写入 `run_id`、第一条规范事件和 durable outbox。同一 user/workspace/session 下重复的幂等键只有在请求 hash 相同时才返回原 `run_id`，不同 payload 必须报冲突。
 4. browser-gateway 将第一条事件立即映射为 `RUN_STARTED`，之后按 event cursor 订阅该 run。
 5. harness-pool领取queued run，并以CAS获取`session_lease`，同时创建新的`run_attempt_id/run_attempt_generation`与对应lease。core为将创建的新brain thread从版本化executor MCP contract与当前policy计算允许子集，先保存未绑定thread id的canonical catalog/digest；`thread/start`成功后再以CAS绑定返回的`brain_thread_id`。已有checkpoint必须沿用原digest。catalog决定模型可见schema，但不是永久授权：gateway每次调用仍检查live RBAC/capability。session lease保证任何时刻一个session最多一个active run，attempt lease fence旧worker。
-6. harness-pool 创建隔离 workload。per-run harness-worker 接收不可变、签名的 run manifest，恢复最近一个已提交的 completed-turn checkpoint，创建清洗后的临时 `CODEX_HOME`。worker 以 MCP client 初始化 executor-gateway、读取 `tools/list`，并要求规范化后的名称、description、input schema 与签名 manifest 中冻结的 catalog/hash 完全一致；不一致时在启动 turn 前 fail closed。
+6. harness-pool 创建隔离 workload。per-run harness-worker 接收不可变、签名的 run manifest，恢复最近一个已提交的 completed-turn checkpoint，创建清洗后的临时 `CODEX_HOME`。worker 以 MCP client 初始化 executor-gateway，并要求协商到manifest固定的protocol profile；reference profile是可承载嵌套server-originated elicitation的`2025-11-25` stateful Streamable HTTP，其他版本在`tools/list`前fail closed。随后worker读取`tools/list`，并要求规范化后的名称、description、input schema 与签名 manifest 中冻结的 catalog/hash 完全一致；不一致时在启动 turn 前 fail closed。
 7. harness-worker 以 stdio 启动并初始化 stock app-server。新 thread 的 `thread/start.dynamicTools` 由冻结 catalog 机械生成；native resume 没有 dynamicTools override，所以只允许恢复 catalog digest 相同的 thread，catalog 变化必须创建新 thread。worker 随后以原始用户输入调用 `turn/start`，不改写 prompt。app-server 只通过 llmproxy 调模型；需要工具时发出 `item/tool/call`，worker 校验 thread/turn/call/tool/arguments 后转成 executor MCP `tools/call`。
 8. harness-worker 为原始 app-server 消息附加 `run_attempt_id/generation + producer_instance_id/producer_seq`，通过唯一 mTLS control stream 发给 harness-pool；harness-pool 完成规范事件映射并提交 core。core 拒收旧 generation，browser-gateway 从已提交事件映射 AG-UI/A2UI。
 9. 收到 `turn/completed` 后，run 先进入 `finalizing`，但该 notification不是统一的 transport cleanup barrier。worker按 request 类型清理：已回复的 `item/tool/call` 以对应 JSON-RPC response 写入完成为准；未回复的 dynamic call 以所属 turn terminal 为准，并同时取消 worker→MCP 请求；只有 app-server 明确定义会发 resolved 的其他 server request 才等待 `serverRequest/resolved`。worker还要确认 execution/process收口，随后才关闭 app-server stdin并等待优雅退出。只有 child 在有界时间内正常退出后才能按 pinned allowlist 生成 checkpoint manifest；SQLite 主库及其 WAL/SHM 等运行时派生文件不进入 checkpoint。harness-pool 先上传加密对象，再由 core 以 CAS 在同一状态事务中提交 checkpoint 指针与 run terminal event；未提交的对象由后台清理。
@@ -290,7 +290,7 @@ dynamic-tool-only不是prompt约定，而是pinned Codex build上必须同时成
 - `initialize` 显式开启所需 experimental API；`thread/start` 与每次 `turn/start` 都传 `environments: []`，使环境支持开启时也没有默认本地 environment；当前 schema 的 `thread/resume` 没有该字段，cold resume 固定传 app-server 返回的 rollout path 和 `excludeTurns: true`，以成功 RPC response 而不是并不存在的 `thread/started` notification 作为恢复屏障，随后由 `turn/start` 再固定空 environments；
 - 清洗后的 `config.toml` 禁用所有目标 stock release实际支持关闭的builtin tool source，包括 `request_user_input`、Web、apps、plugins、multi-agent、browser/computer use、hooks；不提供 capability roots；对 `update_plan`这类stock内建utility，所pin release也必须提供经过tool capture验证的真实禁用机制，不能在文档中虚构配置键；
 - stock app-server不配置任何MCP server。workload在child启动前只读挂载管理员控制的`/etc/codex/requirements.toml`，至少固定`mcp_servers = {}`，使user/project配置也不能注入MCP；A04必须从零MCP bootstrap请求与精确dynamic tool surface证明deny-all真实生效；
-- run manifest冻结namespace及其description、tool name/description/input schema、固定`deferLoading=false`、逐tool schema hash和catalog digest。MCP annotation不作为授权事实也不投影给模型。worker从executor-gateway `tools/list`得到的catalog必须与其完全一致，再机械生成`dynamicTools`；模型伪造未发布tool、builtin或另一个namespace时必须在stock路由层得到`unsupported call`，不能到达worker/MCP；
+- run manifest冻结MCP protocol profile、namespace及其description、tool name/description/input schema、固定`deferLoading=false`、逐tool schema hash和catalog digest。MCP annotation不作为授权事实也不投影给模型。worker从executor-gateway `tools/list`得到的catalog必须与其完全一致，再机械生成`dynamicTools`；模型伪造未发布tool、builtin或另一个namespace时必须在stock路由层得到`unsupported call`，不能到达worker/MCP；
 - production thread使用`approvalPolicy = "never"`。这只关闭stock app-server自身的通用审批；executor产品审批发生在worker作为MCP client收到的`elicitation/create`上，不经过app-server，所以不会被`never`自动拒绝；
 - `thread/resume`没有`dynamicTools` override，native rollout会恢复原tool schema。checkpoint必须绑定catalog digest；同一brain thread的schema不可变，catalog变化时创建新thread。gateway仍在每次`tools/call`实时校验RBAC、capability和policy，目录冻结不等于永久授权；
 - conformance test使用fake model endpoint捕获实际Responses请求，断言模型可见工具集合精确等于冻结dynamic catalog。只检查配置文件内容不构成隔离证明。
@@ -643,9 +643,9 @@ approval TTL、gateway active-execution deadline和run hard deadline是独立时
 
 修订后的A05由production-shape dynamic probe支撑：stable 0.146.0和0.147.0-alpha.2在`approvalPolicy=never`下仍会把已发布工具精确变成`item/tool/call`，没有Codex通用approval request；未发布工具不会产生callback。旧的direct-MCP `approve|prompt` probe保留为历史characterization，但不再是生产配置。A05只证明没有第二层Codex审批，不能替代A06对worker MCP client elicitation的验证。
 
-A06旧probe证明stock app-server direct-MCP client能转接标准`elicitation/create`，但新架构刻意不走该路径。修订后的A06必须由harness-worker MCP client验证：gateway在原`tools/call`上发送form与execution `_meta`，worker经pool/core取得`accept|decline|cancel`并回给gateway；pending期间app-server只保留原`item/tool/call`，看不到elicitation。还要覆盖主动TTL expiry、nonce/generation、MCP cancel和transport断线；这些通过前A06仍未关闭。
+A06旧probe证明stock app-server direct-MCP client能转接标准`elicitation/create`，但新架构刻意不走该路径。reference harness-worker MCP client子门禁已经验证：gateway在原`tools/call`上发送form与execution `_meta`，worker校验可信run/call/generation/catalog关联并回传`accept|decline|cancel`，非accept分支零dispatch；pending期间app-server不参与。该子门禁仍用fake gateway/approval handler，完整A06还必须接入pool/core并覆盖主动TTL expiry、nonce单次消费、stale generation、MCP cancel和transport断线。
 
-A07 dynamic probe已经确认：pending `item/tool/call`时调用`turn/interrupt`会以`interrupted`结束turn，不发第二次模型请求，也永远不发`serverRequest/resolved`。正常dynamic response同样没有resolved。因此worker必须按类型清理：已回复call以JSON-RPC response写入完成为准，未回复call以所属turn terminal为准，并取消对应MCP request。修订后的A07还需证明gateway pending approval不会dispatch、已跨`dispatching`的execution独立收口，以及control/MCP断线均fail closed；不能等待一个不会出现的resolved事件。
+A07 dynamic probe已经确认：pending `item/tool/call`时调用`turn/interrupt`会以`interrupted`结束turn，不发第二次模型请求，也永远不发`serverRequest/resolved`。正常dynamic response同样没有resolved。因此worker必须按类型清理：已回复call以JSON-RPC response写入完成为准，未回复call以所属turn terminal为准，并取消对应MCP request。reference bridge已证明result/terminal单赢家、写成功与terminal两类清理，以及真实SDK外层取消在approval expiry前抵达fake gateway并同步退出worker内嵌套elicitation handler；不能只依赖会落到已放弃SSE上的嵌套cancel通知。完整A07还需接入真实stdio event loop，并证明已跨`dispatching`的execution独立收口及control/MCP断线fail closed。
 
 `ask` 流程必须：
 
@@ -802,6 +802,7 @@ agentx 的实现不放入上述 Go module。`github.com/agentserver/agentx` v2 �
 | D18 | execution 下增加 execution operation | 一个 MCP 工具可能触发多个独立副作用，每个步骤都需要自己的 mutation 与 unknown 边界 |
 | D19 | v2 API 采用 contract-first | core、gateway、worker、agentx 和 Web 多消费者需要在实现之前共享稳定、可生成的协议源 |
 | D20 | Phase 1每个受管process独占一个stock exec-server stdio instance；outer profile不暴露`process/signal` | connection shutdown可无旁路地回收该process后代；stock空signal响应不具备可审计语义 |
+| D21 | worker MCP reference profile固定`2025-11-25` stateful；其他协商版本在catalog读取前拒绝 | 当前approval依赖`tools/call`内的server-originated `elicitation/create`，official SDK的新stateless profile不能承载该反向请求；协议升级必须连同approval transport重新设计和门禁 |
 
 ## 15. 设计审查结论与实现门槛
 

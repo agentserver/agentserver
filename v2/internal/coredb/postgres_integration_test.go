@@ -29,15 +29,15 @@ func TestPostgreSQLMigrationKernel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first migrateConfig() error = %v", err)
 	}
-	if result.Applied != 1 || result.CurrentVersion != 1 {
-		t.Fatalf("first migration result = %+v, want one applied migration at version 1", result)
+	if result.Applied != 2 || result.CurrentVersion != 2 {
+		t.Fatalf("first migration result = %+v, want two applied migrations at version 2", result)
 	}
 	result, err = migrateConfig(t.Context(), connectionConfig, runner)
 	if err != nil {
 		t.Fatalf("repeat migrateConfig() error = %v", err)
 	}
-	if result.Applied != 0 || result.CurrentVersion != 1 {
-		t.Fatalf("repeat migration result = %+v, want no-op at version 1", result)
+	if result.Applied != 0 || result.CurrentVersion != 2 {
+		t.Fatalf("repeat migration result = %+v, want no-op at version 2", result)
 	}
 
 	connection := openPostgresTestConnection(t, connectionConfig)
@@ -173,6 +173,84 @@ func TestPostgreSQLFailedMigrationRollsBack(t *testing.T) {
 	}
 }
 
+func TestPostgreSQLMigration0002RejectsAmbiguousDevelopmentEvents(t *testing.T) {
+	connectionConfig := postgresIntegrationConfig(t)
+	schema := newPostgresTestSchema(t, connectionConfig)
+	catalog, err := EmbeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) < 2 {
+		t.Fatal("embedded catalog does not contain migration 0002")
+	}
+	runner := runnerConfig{schema: schema, lockKey: migrationAdvisoryLockKey, catalog: catalog[:1]}
+	if _, err := migrateConfig(t.Context(), connectionConfig, runner); err != nil {
+		t.Fatalf("apply migration 0001: %v", err)
+	}
+
+	connection := openPostgresTestConnection(t, connectionConfig)
+	quotedSchema := quoteIdentifier(schema)
+	workspaceID := "71000000-0000-0000-0000-000000000001"
+	sessionID := "72000000-0000-0000-0000-000000000001"
+	runID := "73000000-0000-0000-0000-000000000001"
+	if _, err := connection.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.workspaces (id, status) VALUES ($1, 'active')", quotedSchema), workspaceID); err != nil {
+		connection.Close(context.Background())
+		t.Fatal(err)
+	}
+	if _, err := connection.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.sessions (id, workspace_id) VALUES ($1, $2)", quotedSchema), sessionID, workspaceID); err != nil {
+		connection.Close(context.Background())
+		t.Fatal(err)
+	}
+	if _, err := connection.Exec(t.Context(), fmt.Sprintf(`
+INSERT INTO %s.runs
+    (id, workspace_id, session_id, actor_id, status, request_hash, idempotency_key)
+VALUES ($1, $2, $3, $4, 'queued', $5, 'manual-development-row')`, quotedSchema),
+		runID, workspaceID, sessionID, "74000000-0000-0000-0000-000000000001", make([]byte, 32)); err != nil {
+		connection.Close(context.Background())
+		t.Fatal(err)
+	}
+	if _, err := connection.Exec(t.Context(), fmt.Sprintf(`
+INSERT INTO %s.run_events
+    (run_id, seq, event_id, producer_instance_id, producer_seq, kind, schema_version, payload)
+VALUES ($1, 1, $2, $3, 1, 'manual.event', 1, '{}'::jsonb)`, quotedSchema),
+		runID,
+		"75000000-0000-0000-0000-000000000001",
+		"76000000-0000-0000-0000-000000000001"); err != nil {
+		connection.Close(context.Background())
+		t.Fatal(err)
+	}
+	connection.Close(context.Background())
+
+	runner.catalog = catalog
+	result, err := migrateConfig(t.Context(), connectionConfig, runner)
+	if err == nil || !strings.Contains(err.Error(), "empty pre-runtime run_events table") {
+		t.Fatalf("migration 0002 result = %+v, error = %v; want explicit development-row refusal", result, err)
+	}
+	if result.Applied != 0 || result.CurrentVersion != 1 {
+		t.Fatalf("migration result after 0002 failure = %+v, want version 1 unchanged", result)
+	}
+
+	connection = openPostgresTestConnection(t, connectionConfig)
+	defer connection.Close(context.Background())
+	var historyCount int
+	if err := connection.QueryRow(t.Context(), fmt.Sprintf("SELECT pg_catalog.count(*) FROM %s.schema_migrations", quotedSchema)).Scan(&historyCount); err != nil {
+		t.Fatal(err)
+	}
+	if historyCount != 1 {
+		t.Fatalf("migration history count = %d, want 1", historyCount)
+	}
+	var sourceColumnCount int
+	if err := connection.QueryRow(t.Context(), `
+SELECT pg_catalog.count(*)
+FROM information_schema.columns
+WHERE table_schema = $1 AND table_name = 'run_events' AND column_name = 'source'`, schema).Scan(&sourceColumnCount); err != nil {
+		t.Fatal(err)
+	}
+	if sourceColumnCount != 0 {
+		t.Fatalf("failed migration 0002 left source column count = %d", sourceColumnCount)
+	}
+}
+
 func postgresIntegrationConfig(t *testing.T) *pgx.ConnConfig {
 	t.Helper()
 	if os.Getenv(postgresTestRunEnvironment) != "1" {
@@ -272,7 +350,10 @@ WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, schema)
 		"sessions_active_run_same_session_fk":    false,
 		"runs_idempotency_unique":                false,
 		"run_events_attempt_fk":                  false,
+		"run_events_source_valid":                false,
 		"run_events_payload_or_object":           false,
+		"run_events_object_size_positive":        false,
+		"run_events_object_media_type_bounded":   false,
 		"outbox_lock_pair":                       false,
 		"schema_migrations_sha256_exact":         false,
 		"attempt_leases_attempt_generation_fk":   false,
@@ -380,8 +461,8 @@ VALUES ($1, $2, $3, $4, 'queued', $5, $6)`, quotedSchema)
 
 	insertInvalidEvent := fmt.Sprintf(`
 INSERT INTO %s.run_events
-    (run_id, seq, event_id, producer_instance_id, producer_seq, kind, schema_version)
-VALUES ($1, 1, $2, $3, 1, 'run.created', 1)`, quotedSchema)
+    (run_id, seq, event_id, producer_instance_id, producer_seq, source, kind, schema_version)
+VALUES ($1, 1, $2, $3, 1, 'system', 'run.created', 1)`, quotedSchema)
 	_, err = connection.Exec(t.Context(), insertInvalidEvent, runID,
 		"50000000-0000-0000-0000-000000000001",
 		"60000000-0000-0000-0000-000000000001")

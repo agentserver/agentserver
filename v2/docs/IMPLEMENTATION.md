@@ -88,6 +88,9 @@ v2/
 │  └─ contracts/
 ├─ internal/
 │  ├─ bootstrap/                 # config、lifecycle、health、graceful shutdown
+│  ├─ coredb/                    # migration与显式PostgreSQL domain command边界
+│  │  ├─ migrations/
+│  │  └─ query/                  # 稳定后由sqlc生成的查询片段
 │  ├─ core/
 │  │  ├─ workspace/
 │  │  ├─ session/
@@ -97,10 +100,6 @@ v2/
 │  │  ├─ approval/
 │  │  ├─ executor/
 │  │  └─ capability/
-│  ├─ store/
-│  │  ├─ migrations/
-│  │  ├─ query/
-│  │  └─ sqlc.yaml
 │  ├─ browsergateway/
 │  ├─ harnesspool/
 │  ├─ harnessworker/
@@ -396,8 +395,8 @@ harness-pool、browser-gateway 与 executor-gateway 使用内部 workload identi
 | run_attempts | id、run_id、generation、status、turn_started_at、holder_id、version；unique(run_id,generation) |
 | session_leases | session_id PK、run_id、holder_id、generation、expires_at |
 | attempt_leases | run_attempt_id PK、holder_id、generation、expires_at |
-| run_events | run_id + seq PK、event_id unique、producer key unique、schema_version、payload/object pointer |
-| outbox | id、kind、aggregate_id、payload、available_at、lock_owner、lock_until、attempts、completed_at |
+| run_events | run_id + seq PK、event_id unique、producer key unique、source、schema_version、inline payload或完整object pointer metadata |
+| outbox | id、kind、aggregate_id、payload、available_at、lock_owner、lock_until、attempts（claim generation）、completed_at |
 | checkpoints | id、session_id、run_id、attempt_generation、thread_id、turn_id、manifest hash、object_id、Codex build |
 | brain_tool_catalogs | id、session_id、thread_id nullable unique、contract version、canonical catalog bytes/object id、catalog digest、created policy context；新thread启动前冻结，成功后CAS绑定thread_id，同一thread不可更新schema |
 | executions | id、run_id、tool_call_id、tool/schema/policy/mapper version、arguments hash/ciphertext、operation_plan_hash、status、version |
@@ -456,6 +455,17 @@ execution 的唯一调用身份为：
 
 每个命令以单个 PostgreSQL transaction完成全部状态、事件与 outbox 写入。禁止 handler 先写状态、提交后再“顺便”写事件。
 
+PR 9 reference command store固定以下首批语义：
+
+- `CreateRun`先锁session，按`(workspace_id, actor_id, session_id, idempotency_key)`查重；相同request hash返回原run，不同hash返回`idempotency_conflict`。只有没有active run且expected session version匹配时，才原子写run、`run.queued` event/outbox并设置`active_run_id`。
+- `ClaimQueuedRun`把`queued`推进为`starting`并创建attempt、session lease和attempt lease。两条lease都使用数据库时钟；任一仍存活时不能换holder。只有尚未接受turn、attempt仍为`leased|starting`且两条lease都过期时，才可fence旧attempt并以更高generation重领；mid-turn禁止自动重领。
+- `RenewSessionLease`与`RenewAttemptLease`都要求另一条同holder/generation lease仍存活，避免只续住半条lease后无限阻塞reclaim。
+- `MarkTurnAccepted`是不可逆的mid-turn边界：原子推进run/attempt为`running`、记录`turn_started_at`并写event/outbox。提交后的同holder重试返回原结果；不同holder或旧generation失败。
+- `AppendAttemptEvents`一次最多256项、inline JSON object最多64 KiB；同一batch只允许一个producer且producer seq严格递增。新事件要求live双lease和当前generation；exact producer-key重试即使随后被fence也只返回原run seq，不写新行，而同key不同内容返回`event_conflict`。
+- outbox一次最多claim 100项，使用`FOR UPDATE SKIP LOCKED`。每次claim增加`attempts`，consumer必须携带`owner + attempts`完成或释放；旧claim即使owner字符串复用也不能完成新generation的工作。
+
+0001已经发布到migration catalog，不能为状态命名修订其checksum。0002因而以前向migration把临时的run状态`claimed`改为架构定义的`starting`，并加入event source与object size/media type。PR 8期间尚无产品runtime可合法写event；如果数据库里存在手工插入的旧run_events，0002明确失败并保持version 1，不猜测其source或伪造object metadata。
+
 ### 5.4 operation 是真实副作用边界
 
 一次 MCP execution 可能包含多个 operation：
@@ -492,6 +502,8 @@ AppendAttemptEvents：
 - 返回每个 producer key 对应的权威 run seq。
 
 outbox claim 使用 SKIP LOCKED 与 lock_until。consumer crash 后可以再次 claim outbox，但消费动作仍必须依赖 aggregate CAS 保证幂等。PostgreSQL NOTIFY 只提示“可能有工作”，丢通知后 poll 仍能继续。
+
+`attempts`同时是outbox claim generation。claim、complete与release都以数据库时钟判断`lock_until`；complete/release要求exact owner和generation，过期claim在另一consumer重领后只能得到`outbox_claim_lost`。已经完成的row再次complete是无副作用成功，不重新投递。
 
 这里的core所有权只覆盖canonical run event ledger：harness、executor-gateway和用户命令产生候选事件，core负责校验lease/generation、去重、分配权威run seq，并在需要时与aggregate状态和outbox原子提交。debug log、metric、trace和不参与恢复的内部notification不进入run_events。大stdout、长模型内容或大MCP结果先写对象存储，core只提交已验证hash的pointer；高频canonical event必须批量append，瞬时progress可以合并或限频。
 
@@ -1013,7 +1025,7 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 前 6 个 PR只建立事实和门槛，不写五个服务的空壳。第 7 个 PR后才开始业务 runtime。
 
-当前第8项已经通过真实PostgreSQL门禁；下一实现切片是第9项。该结论只表示migration/schema底座可以进入状态机开发，不表示Phase 1整体完成或服务已经可部署运行。
+当前第9项已经通过真实PostgreSQL并发与race门禁；下一实现切片是第10项`execution_operations + crash-injection store tests`。这只表示run/lease/event/outbox状态内核可继续承载execution状态机，不表示Phase 1整体完成或服务已经可部署运行。
 
 ## 14. 尚未锁定但有明确决策点的事项
 

@@ -72,13 +72,24 @@ stock launcher's system-bwrap-first lookup from selecting a host `bwrap`, so it
 falls through to the verified `codex-resources/bwrap` resource.
 
 Phase 1 launches this bundle as one stdio exec-server instance per managed
-process; an instance accepts at most one `process/start`. Filesystem operations
-use a separate lane that cannot start processes. The outer agentx capability
-set exposes `process/write` and `process/terminate`, but deliberately omits
-stock `process/signal`, whose `{}` response cannot distinguish missing,
-delivered, and already-exited targets. If a root process exits without
-`process/closed`, agentx closes only that process's dedicated stdio instance and
-verifies containment cleanup, so other managed processes are unaffected.
+process; an instance accepts at most one `process/start`. Environments that
+pass the additional filesystem gate advertise
+`process-v1+filesystem-read-v1`; process-only environments remain valid as
+`process-v1`. The filesystem profile exposes only the bounded outer
+`agentx/fs/readFileBlock` method. Each call starts a disposable fs-only instance
+that cannot start processes, performs exactly
+`fs/open(sandbox=null) -> fs/readBlock -> fs/close`, and then shuts the instance
+down and verifies cleanup. Stock 0.146.0 rejects platform-sandboxed streaming
+reads, so authorization comes from agentx's before/after registered-root checks
+and runner OS containment, not from the inner `sandbox=null`. Remote callers
+never receive a stock handle and never invoke unbounded `fs/readFile`.
+
+The outer agentx capability set exposes `process/write` and
+`process/terminate`, but deliberately omits stock `process/signal`, whose `{}`
+response cannot distinguish missing, delivered, and already-exited targets. If
+a root process exits without `process/closed`, agentx closes only that process's
+dedicated stdio instance and verifies containment cleanup, so other managed
+processes are unaffected.
 
 This PATH rule covers runtime discovery, not workload commands. Product tools
 must send deterministic argv and an explicit child environment; any workload
@@ -87,6 +98,9 @@ PATH is constrained separately by the env/owner policy.
 Hash verification alone does not make launch atomic on a hostile mutable
 filesystem. The agentx supervisor must additionally use platform-specific safe
 open/execute and immutable-install controls described in the architecture. The
+same restriction applies to filesystem reads: same-UID insecure development
+mode cannot close a symlink swap between canonical-path validation and stock
+open, and therefore is not a production filesystem containment claim. The
 Linux production profile must also prove with real sandbox requests and a
 poisoned host PATH that the bundled bwrap is selected. The checked-in disposable
 image gate has done so natively for the exact official stable 0.146.0

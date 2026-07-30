@@ -30,6 +30,7 @@ func (queries StateStoreExecutorEnvironmentQueries) ListExecutorEnvironments(ctx
 			ExecutorID:           environment.ExecutorID,
 			RootDescriptor:       append([]byte(nil), environment.RootDescriptor...),
 			Platform:             environment.Platform,
+			OuterProfileVersion:  environment.OuterProfileVersion,
 			InsecureDev:          environment.InsecureDev,
 			EnvironmentVersion:   environment.EnvironmentVersion,
 			ConnectionGeneration: environment.ConnectionGeneration,

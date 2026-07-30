@@ -541,7 +541,9 @@ agentx 校验 envelope 的 session sequence、generation、workspace/env 绑定�
 - `environment/info`、`environment/status`只用于agentx本地probe并投影到hello，不进入Phase 1远程业务profile；
 - `process-v1`精确只有`process/start`、`process/read`、`process/write`、`process/terminate`，以及反向的`process/output|exited|closed`和`network/policyRequest`；明确排除`process/signal`；
 - `capabilityRoots/discoverV1`和`http/request`不协商；
-- fs方法在read_file垂直切片以新的显式profile加入，不能因为stock registry存在就穿过当前schema。优先使用`fs/open/readBlock/close`形成请求级上限；无界`fs/readFile`只有在文件metadata与outer response上限均已先验验证时才可使用。
+- filesystem read以组合环境profile `process-v1+filesystem-read-v1`加入；旧环境继续合法地只声明`process-v1`。组合profile只增加一个outer方法`agentx/fs/readFileBlock(path, offset, len)`：`1 <= len <= 1 MiB`，`offset <= 2^53-1`，一个outer RPC只对应一个core `fs_read` operation/mutation。远端永不协商stock无界`fs/readFile`，也不允许gateway把`fs/open/readBlock/close` handle暴露成可跨请求复用的能力。
+
+stable 0.146.0已实测拒绝携带platform sandbox的流式读取，错误为`streaming file reads do not support platform sandboxing`。因此agentx为每个outer block read启动不允许`process/start`的一次性fs-only stock instance，在本地授权后执行恰好一次`fs/open(sandbox=null) → fs/readBlock → fs/close`，随后关闭该instance并验证containment cleanup；任一步失败都不得遗留可复用handle。`sandbox=null`只是已验证stock限制下的内部调用形状，不是授权依据。agentx必须在调用前、返回后都按registered root重新canonicalize并复核路径，生产安全边界还必须包含runner OS containment、immutable install和platform safe-open。当前同UID `insecure_dev`无法消除symlink TOCTOU，不能据此声明filesystem profile可生产部署。
 
 `process/start` 必须携带调用方生成的稳定 `processId`、`argv`、`cwd`、env policy、TTY、sandbox 和 network policy。agentx 为它创建一个最多容纳该 process 的 local exec instance；输出使用单调 sequence，stdin 写入使用 `writeId`。
 
@@ -820,6 +822,7 @@ agentx 的实现不放入上述 Go module。`github.com/agentserver/agentx` v2 �
 | D20 | Phase 1每个受管process独占一个stock exec-server stdio instance；outer profile不暴露`process/signal` | connection shutdown可无旁路地回收该process后代；stock空signal响应不具备可审计语义 |
 | D21 | worker MCP reference profile固定`2025-11-25` stateful；其他协商版本在catalog读取前拒绝 | 当前approval依赖`tools/call`内的server-originated `elicitation/create`，official SDK的新stateless profile不能承载该反向请求；协议升级必须连同approval transport重新设计和门禁 |
 | D22 | `process-v1/shell-v1`固定clean-env与managed/restricted sandbox，stock可选proxy启动字段由agentx本地受信策略生成 | 双手只执行确定性任务；远端不能恢复ambient env、选择任意proxy或借upstream新增字段扩大能力 |
+| D23 | filesystem read使用组合profile和一次性fs-only `open(null) → readBlock → close`，远端不开放stock handle或`fs/readFile` | stock流式读取不支持platform sandbox；有界outer请求、agentx双重root复核与runner containment共同形成可审计边界 |
 
 ## 15. 设计审查结论与实现门槛
 

@@ -33,6 +33,7 @@ type OnlineExecutorEnvironment struct {
 	ExecutorID           string
 	RootDescriptor       json.RawMessage
 	Platform             string
+	OuterProfileVersion  string
 	InsecureDev          bool
 	EnvironmentVersion   int64
 	ConnectionGeneration int64

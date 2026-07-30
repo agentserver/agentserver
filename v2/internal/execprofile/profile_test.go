@@ -46,3 +46,24 @@ func TestPhase1NotificationsAreAgentxToGatewayOnly(t *testing.T) {
 		t.Fatal("remote lifecycle leaked into stock process notifications")
 	}
 }
+
+func TestFilesystemReadProfileIsAdditiveAndExact(t *testing.T) {
+	if !AllowsEnvironmentProfile(Version) || SupportsFilesystemRead(Version) {
+		t.Fatal("process-only profile capability classification is wrong")
+	}
+	if !AllowsEnvironmentProfile(FilesystemReadVersion) || !SupportsFilesystemRead(FilesystemReadVersion) {
+		t.Fatal("filesystem-read profile capability classification is wrong")
+	}
+	if AllowsEnvironmentProfile("filesystem-read-v1") || AllowsEnvironmentProfile("") {
+		t.Fatal("partial or empty environment profile was accepted")
+	}
+	want := []string{"agentx/fs/readFileBlock"}
+	got := FilesystemReadMethods()
+	if !slices.Equal(got, want) || !AllowsFilesystemReadMethod(want[0]) {
+		t.Fatalf("filesystem read methods = %q, want %q", got, want)
+	}
+	got[0] = "fs/readFile"
+	if !slices.Equal(FilesystemReadMethods(), want) || AllowsFilesystemReadMethod("fs/readFile") {
+		t.Fatal("filesystem read profile is mutable or admits unbounded stock read")
+	}
+}

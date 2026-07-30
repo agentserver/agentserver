@@ -128,6 +128,7 @@ func TestCoreConnectionClientListsBoundedOnlineEnvironments(t *testing.T) {
 		ExecutorID:           testExecutorID,
 		RootDescriptor:       json.RawMessage(`{"kind":"local","root":"/workspace"}`),
 		Platform:             "linux-arm64",
+		OuterProfileVersion:  "process-v1+filesystem-read-v1",
 		InsecureDev:          true,
 		EnvironmentVersion:   3,
 		ConnectionGeneration: 7,
@@ -147,7 +148,7 @@ func TestCoreConnectionClientListsBoundedOnlineEnvironments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(environments) != 1 || environments[0].EnvironmentID != testEnvironmentID || environments[0].ConnectionGeneration != 7 {
+	if len(environments) != 1 || environments[0].EnvironmentID != testEnvironmentID || environments[0].ConnectionGeneration != 7 || environments[0].OuterProfileVersion != "process-v1+filesystem-read-v1" {
 		t.Fatalf("listed environments = %+v", environments)
 	}
 	if queries.last.WorkspaceID != workspaceID || queries.last.ExecutorID != testExecutorID {

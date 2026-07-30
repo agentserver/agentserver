@@ -343,7 +343,7 @@ A12分两层验收且均已对上述artifact set实跑。host probe用`env_http_
 | E01 | stdio lifecycle | codex exec-server --listen stdio --strict-config；initialize → initialized；wire 省略 jsonrpc |
 | E02 | deterministic process | argv[]、cwd URI、env、PTY/pipe、output sequence、exit/close 与 fixture一致 |
 | E03 | outer stdin/terminate profile | `process/write`的writeId去重、stdinClosed/unknownProcess与`process/terminate`结果明确；agentx outer schema/capability不公布也不转发`process/signal` |
-| E04 | filesystem | read/open/readBlock/close/canonicalize 等允许方法与 pinned schema一致 |
+| E04 | bounded filesystem read | 固定stock `fs/open(sandbox=null) → fs/readBlock → fs/close`形状、block边界与cleanup；证明platform-sandboxed `fs/open`被stock拒绝，远端排除无界`fs/readFile` |
 | E05 | network reverse request | network/policyRequest 能被 agentx client allow/deny 并正确阻断 ask；非法参数、未知 reverse method、RPC error、未知 decision、超时和断线默认拒绝 |
 | E06 | stdio EOF | stdin EOF 后 server shutdown并清理 managed process；新的 agentx 不能 attach旧 child |
 | E07 | dedicated-instance cleanup | 每个受管process独占stdio exec-server instance；`exited`后迟迟不`closed`则关闭该instance并验证process tree回收，不影响其他process；无法确认时为unknown |
@@ -358,6 +358,8 @@ Phase 0的exit criterion是修订后的A01–A12、E01–E10全部可重复通�
 E05 用真实 child → executor-local HTTP proxy → bounded origin 链路固定了反向请求的 `{processId, request:{protocol,host,port}}` 形状：allow 恰好命中 origin 一次，deny/ask、RPC error、未知 decision、controller timeout 和 stdio EOF 均为零命中；reference agentx client 还对非法 known params 回复 `deny(not_allowed)`、对未知 reverse method 回复 `-32601`。stock 返回 `ask` 会立即得到 HTTP 403，不会暂停请求；`policyDecisionTimeoutMs` 之外还有固定 5 秒 transport margin，所以 agentx 必须在自己的 approval deadline 主动 allow/deny。
 
 E08 的当前 slice 证明隔离 `CODEX_HOME` 不读取毒化的用户 `~/.codex`，exec-server 自身持有的 sentinel credential 也不会进入缺省策略 child。E09 的 reference launch boundary 已经验证完整 artifact set 全部通过后才调用 starter、Codex 只使用绝对路径、ambient PATH 被替换、Codex/bwrap digest 或布局失败时零启动。上游实现同时确认 fs helper、arg0 exec helper 和 Linux sandbox alias 都重入当前 Codex；不能为它们虚构独立 digest。stock Linux launcher 却明确优先搜索 PATH 中的 system `bwrap`，再使用 bundled resource，因此 agentx profile 采用无 `codex-package.json` 的最小 bundle、不可存在的 PATH 目录和固定 `codex-resources/bwrap`，让 stock 只能落到已验证 bundled resource。
+
+E04在exact stable 0.146.0上进一步固定了filesystem事实：无界`fs/readFile`可返回整个文件，但不能进入远程profile；`fs/open`只有`sandbox=null`时可配合`fs/readBlock`形成请求级上限，携带managed/restricted platform sandbox会明确失败并报告`streaming file reads do not support platform sandboxing`。因此`read_file`不能把远端sandbox直接转发给stock。实现采用组合环境profile `process-v1+filesystem-read-v1`和唯一outer方法`agentx/fs/readFileBlock`，每次请求在一次性fs-only instance内完成`open(null) → 一次readBlock → close → instance cleanup`；`len`最大1 MiB，`offset`最大`2^53-1`，并在stock调用前后复核registered-root canonical path。生产仍依赖runner OS containment与platform safe-open；同UID insecure-dev不声称解决symlink TOCTOU。
 
 stable 0.146.0 的 `linux-arm64` 正向 image gate 已在 native Apple `container` Linux VM 中通过：scratch image 以 uid/gid 65532、只读 root、零 capability、无网络运行，runtime bundle 只有锁定的 `bin/codex` 与 `codex-resources/bwrap`，不存在 package metadata 或 compatibility shim。门禁先确认 bundled bwrap 的 `--argv0` 语义，再通过 verified launch plan 发出真实 read-only 与 workspace-write `process/start`；前者可读 fixture，后者只可写声明的 workspace，同一 writable `/tmp` 上的 sibling path 被拒绝，ambient poison bwrap 未执行，运行时生成的 Linux sandbox alias 解析回同一份已验证 Codex。因此 E09 的这一精确 release/architecture/artifact set 已关闭；`linux-amd64` 仍须在 native amd64 worker 跑同一 target。Apple Silicon 的 amd64 仿真会重写 inner argv0 并拒绝 seccomp filter，不能作为门禁证据；最终 agentx 安装路径的 immutable safe-open/exec TOCTOU 仍是独立实施项。stdio EOF 会关闭唯一 connection、shutdown session 并回收 managed child，不能把它描述成可 detach/resume。
 
@@ -635,6 +637,8 @@ registry 只保存活连接。权威 executor/env/generation 在 core。gateway�
 
 第六段已经闭合开发模式的terminal-only shell垂直切片。MCP principal绑定不可变run/attempt/generation/holder/expected version/catalog digest，`tools/call`还必须逐字段匹配worker提供的run/call/generation/progress token；进程级并发安全allocator为每个core transition生成单调producer sequence及独立event/outbox ID。`shell-v1`从原始arguments确定性生成clean env、environment-relative file URI、`special:minimal(read) + registered-root(write)`的managed/restricted sandbox、两项冻结operation plan与outer timeout directive；`special:root`及其他special path在gateway outer contract和agentx本地policy两层均被拒绝。exact stock 0.146.0 macOS live gate证明minimal profile可在clean env下执行绝对系统命令，workspace-only path负向探测则证明它缺少必需的platform runtime。orchestrator先持久化execution和全部operation，再按core返回version推进start/timeout各自的Begin、RPC ACK、terminal或Skip；start/terminate发送歧义只收口为unknown且不重发，terminate response本身不冒充进程终态，只有真实`exited → closed`才令output complete。MCP handler完成后，实际`serve --insecure-dev` endpoint才同时广告`list_environments|shell`。
 
+第七段先冻结read-file的跨组件contract。core和内部environment projection接受`process-v1`或`process-v1+filesystem-read-v1`，旧process-only enrollment不被破坏；hello按environment声明组合profile，而远端session lifecycle仍只协商基础`process-v1`。agentx WSS schema只新增有界的`agentx/fs/readFileBlock(path, offset, len)`，静态wire validator继续拒绝stock `fs/readFile`。实际dispatch还必须用目标environment的profile做第二次gate，不能因为连接上另一个environment支持filesystem就越权发送。
+
 这仍不是可生产部署的executor：agentx enrollment/OAuth机器key binding、core签发和在线撤销的短期run capability、ask/approval命令链、gateway崩溃后的dispatching/acknowledged恢复审计、目标平台containment和部署manifest尚未实现，`executor-gateway`命令因此仍只暴露显式loopback `serve --insecure-dev`，生产serve模式刻意不存在。当前shell链可用于同进程开发验证，不能据此声称Phase 2生产交付完成。
 
 ### 7.2 第一批工具
@@ -642,7 +646,7 @@ registry 只保存活连接。权威 executor/env/generation 在 core。gateway�
 按以下顺序实现并逐 catalog version 广告：
 
 1. `executor-mcp/1.0`：list_environments只读 core registry，不连接 agentx；shell使用固定 argv[]、env-relative cwd、固定clean-env mapper、timeout和tty，并在返回前取得terminal evidence。
-2. read_file：验证 path/root 后优先映射有请求级上限的stock block read，不允许无界`fs/readFile`响应突破outer envelope。
+2. `executor-mcp/1.1` read_file：只在注入完整handler且目标environment声明`process-v1+filesystem-read-v1`时广告/执行；验证path/root后映射为单个`fs_read(effect_class=read)` operation，再发送`agentx/fs/readFileBlock`。每次最多读取1 MiB，远端永不使用无界`fs/readFile`，也不暴露stock handle。
 3. 后续版本才把unified_exec与read_output、write_stdin、terminate作为同一handle/ownership切片加入；不能先暴露三个没有handle来源的控制工具。
 4. apply_patch：只有 fsWriteFileIfMatch 扩展和跨平台 CAS 测试通过后才暴露。
 
@@ -684,7 +688,9 @@ timeout 不伪装成 process/start 参数。gateway 在启动进程前同时预�
 7. 通过 verified launch boundary 启动绝对路径 `bin/codex exec-server --listen stdio --strict-config`。Phase 1 exec profile 不携带 `codex-package.json`，防止 stock 自动把未审计的 `codex-path` 插入 PATH；Linux 只在固定 `codex-resources/bwrap` 放置已验证资源。
 8. 本地完成 initialize → initialized → environment/info/status。
 9. 记录probe结果并正常关闭该instance，确认EOF cleanup；probe的`local_exec_instance_id`不用于业务。
-10. 远端hello/initialize成功后才宣布env online。每个业务`process/start`随后重复步骤4–8，分配新的`local_exec_instance_id`，并在该instance拒绝第二个`process/start`；fs请求使用独立lane。
+10. 远端hello/initialize成功后才宣布env online。每个业务`process/start`随后重复步骤4–8，分配新的`local_exec_instance_id`，并在该instance拒绝第二个`process/start`；filesystem-read环境另用串行的一次性fs-only lane，每个outer请求启动新instance并且绝不接受`process/start`。
+
+fs-only lane先在agentx本地把file URI解析到registered root，canonicalize并复核owner policy，再向stock发送`fs/open(handleId=<local>, path=<canonical URI>, sandbox=null)`、恰好一个有界`fs/readBlock`和`fs/close`。响应返回前再次canonicalize/复核原路径，随后关闭stdio instance并验证cleanup；open、read、close、复核或cleanup任一失败都关闭整条lane且不缓存handle。生产runner还必须提供OS级root containment和safe-open来关闭检查与打开之间的symlink竞态。
 
 远端lifecycle由agentx处理，不转发给任何业务stdio child。`process/start`创建专属instance，后续process RPC按ownership路由；业务RPC重新分配local request id，method/params按pinned dialect转发，context只进入agentx ownership/audit。outer capability不包含`process/signal`。
 

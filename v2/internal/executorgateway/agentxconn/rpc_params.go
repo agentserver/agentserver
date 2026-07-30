@@ -26,6 +26,8 @@ const (
 	maxWorkspaceRoots      = 32
 	maxNetworkHostRunes    = 253
 	maxProcessTimeoutMS    = 3_600_000
+	maxFilesystemReadLen   = 1024 * 1024
+	maxFilesystemOffset    = 9_007_199_254_740_991
 )
 
 var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -97,6 +99,12 @@ type processWriteParams struct {
 
 type processTerminateParams struct {
 	ProcessID string `json:"processId"`
+}
+
+type filesystemReadFileBlockParams struct {
+	Path   string `json:"path"`
+	Offset uint64 `json:"offset"`
+	Length uint64 `json:"len"`
 }
 
 type processOutputParams struct {
@@ -230,6 +238,26 @@ func validateProcessRequestParams(rpc codexwire.Message) error {
 	default:
 		return protocolError(ErrorMethodNotNegotiated, true, "process request method %q is outside %s", rpc.Method, execprofile.Version)
 	}
+}
+
+func validateFilesystemReadRequestParams(rpc codexwire.Message) error {
+	if rpc.Method != execprofile.MethodFilesystemReadFileBlock {
+		return protocolError(ErrorMethodNotNegotiated, true, "filesystem request method %q is outside %s", rpc.Method, execprofile.FilesystemReadVersion)
+	}
+	var params filesystemReadFileBlockParams
+	if err := decodeRequiredObject(rpc.Params, &params, "path", "offset", "len"); err != nil {
+		return malformedMethodParams(rpc.Method, err)
+	}
+	if err := validateFileURI("filesystem read path", params.Path); err != nil {
+		return malformedMethodParams(rpc.Method, err)
+	}
+	if params.Offset > maxFilesystemOffset {
+		return malformedMethodParams(rpc.Method, fmt.Errorf("offset exceeds %d", uint64(maxFilesystemOffset)))
+	}
+	if params.Length < 1 || params.Length > maxFilesystemReadLen {
+		return malformedMethodParams(rpc.Method, fmt.Errorf("len must be between 1 and %d", maxFilesystemReadLen))
+	}
+	return nil
 }
 
 func validateProcessNotificationParams(rpc codexwire.Message) error {

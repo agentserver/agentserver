@@ -46,7 +46,7 @@
     "sendToAgentx": {
       "action": "send",
       "channel": {"$ref": "#/channels/agentxSession"},
-      "summary": "Send welcome, remote lifecycle requests, deterministic process RPCs, reverse-request responses, ACKs, and terminal session errors.",
+      "summary": "Send welcome, remote lifecycle requests, deterministic process RPCs, bounded agentx-composed filesystem reads, reverse-request responses, ACKs, and terminal session errors.",
       "messages": [
         {"$ref": "#/channels/agentxSession/messages/welcome"},
         {"$ref": "#/channels/agentxSession/messages/lifecycle"},
@@ -75,7 +75,7 @@
       },
       "RPC": {
         "name": "rpc",
-        "title": "Sequenced deterministic stock exec-server RPC plus bounded agentx timeout control",
+        "title": "Sequenced deterministic stock exec-server RPC plus bounded agentx timeout/filesystem composition",
         "payload": {"$ref": "../schema/agentx-envelope.schema.json#/$defs/businessFrame"}
       },
       "Ack": {

@@ -19,6 +19,7 @@ func TestExecutorEnvironmentHandlerReturnsBoundedProjection(t *testing.T) {
 		ExecutorID:           "20000000-0000-4000-8000-000000000002",
 		RootDescriptor:       json.RawMessage(`{"kind":"local","root":"/workspace"}`),
 		Platform:             "linux-arm64",
+		OuterProfileVersion:  "process-v1+filesystem-read-v1",
 		InsecureDev:          true,
 		EnvironmentVersion:   3,
 		ConnectionGeneration: 7,
@@ -45,7 +46,7 @@ func TestExecutorEnvironmentHandlerReturnsBoundedProjection(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Environments) != 1 || result.Environments[0].ConnectionGeneration != 7 || string(result.Environments[0].RootDescriptor) != `{"kind":"local","root":"/workspace"}` {
+	if len(result.Environments) != 1 || result.Environments[0].ConnectionGeneration != 7 || result.Environments[0].OuterProfileVersion != "process-v1+filesystem-read-v1" || string(result.Environments[0].RootDescriptor) != `{"kind":"local","root":"/workspace"}` {
 		t.Fatalf("environment response = %+v", result)
 	}
 }

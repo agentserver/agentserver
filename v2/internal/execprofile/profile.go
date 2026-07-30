@@ -5,6 +5,11 @@ package execprofile
 
 const Version = "process-v1"
 
+// FilesystemReadVersion is an additive environment capability. A process-only
+// environment continues to advertise Version; an environment that has also
+// passed the bounded, fs-only lane gate advertises FilesystemReadVersion.
+const FilesystemReadVersion = "process-v1+filesystem-read-v1"
+
 const (
 	MethodProcessStart     = "process/start"
 	MethodProcessRead      = "process/read"
@@ -16,6 +21,11 @@ const (
 	NotificationProcessClosed = "process/closed"
 
 	ReverseMethodNetworkPolicyRequest = "network/policyRequest"
+
+	// MethodFilesystemReadFileBlock is an agentx composition, not a stock
+	// exec-server method. One outer mutation maps to fs/open, one bounded
+	// fs/readBlock, and fs/close on a disposable fs-only stock instance.
+	MethodFilesystemReadFileBlock = "agentx/fs/readFileBlock"
 )
 
 var processMethods = [...]string{
@@ -29,6 +39,10 @@ var processNotifications = [...]string{
 	NotificationProcessOutput,
 	NotificationProcessExited,
 	NotificationProcessClosed,
+}
+
+var filesystemReadMethods = [...]string{
+	MethodFilesystemReadFileBlock,
 }
 
 // ProcessMethods returns the exact Phase 1 gateway-to-agentx process
@@ -53,6 +67,29 @@ func ProcessNotifications() []string {
 
 func AllowsProcessNotification(method string) bool {
 	for _, allowed := range processNotifications {
+		if method == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+// AllowsEnvironmentProfile keeps process-only enrollment valid while making
+// bounded filesystem support an explicit, independently gated capability.
+func AllowsEnvironmentProfile(version string) bool {
+	return version == Version || version == FilesystemReadVersion
+}
+
+func SupportsFilesystemRead(version string) bool {
+	return version == FilesystemReadVersion
+}
+
+func FilesystemReadMethods() []string {
+	return append([]string(nil), filesystemReadMethods[:]...)
+}
+
+func AllowsFilesystemReadMethod(method string) bool {
+	for _, allowed := range filesystemReadMethods {
 		if method == allowed {
 			return true
 		}

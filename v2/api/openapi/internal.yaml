@@ -217,7 +217,7 @@
           "codexRelease": {"type": "string", "minLength": 1, "maxLength": 128},
           "codexCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
           "codexSha256": {"$ref": "#/components/schemas/SHA256"},
-          "outerProfileVersion": {"const": "process-v1"},
+          "outerProfileVersion": {"enum": ["process-v1", "process-v1+filesystem-read-v1"]},
           "processMethods": {"$ref": "#/components/schemas/ProcessMethods"},
           "insecureDev": {"type": "boolean"}
         }
@@ -294,12 +294,13 @@
       "ExecutorEnvironment": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["environmentId", "executorId", "rootDescriptor", "platform", "insecureDev", "environmentVersion", "connectionGeneration"],
+        "required": ["environmentId", "executorId", "rootDescriptor", "platform", "outerProfileVersion", "insecureDev", "environmentVersion", "connectionGeneration"],
         "properties": {
           "environmentId": {"$ref": "#/components/schemas/UUID"},
           "executorId": {"$ref": "#/components/schemas/UUID"},
           "rootDescriptor": {"type": "object"},
           "platform": {"enum": ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64", "windows-arm64"]},
+          "outerProfileVersion": {"enum": ["process-v1", "process-v1+filesystem-read-v1"]},
           "insecureDev": {"type": "boolean"},
           "environmentVersion": {"type": "integer", "minimum": 1},
           "connectionGeneration": {"type": "integer", "minimum": 1}

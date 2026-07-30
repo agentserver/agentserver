@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentserver.dev/v2/schema/agentx-envelope.schema.json",
   "title": "agentserver v2 agentx WSS messages",
-  "description": "Connection prefaces and bounded Phase 1 session messages. hello/welcome/ack/session_error are unsequenced control messages; lifecycle/rpc are independently sequenced in each direction.",
+  "description": "Connection prefaces and bounded Phase 1 session messages. hello/welcome/ack/session_error are unsequenced control messages; lifecycle/rpc are independently sequenced in each direction. Filesystem reads use one agentx-composed bounded block request, never the unbounded stock fs/readFile method.",
   "oneOf": [
     {"$ref": "#/$defs/hello"},
     {"$ref": "#/$defs/welcome"},
@@ -57,7 +57,7 @@
         "codexRelease": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$"},
         "codexCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
         "codexSha256": {"$ref": "#/$defs/sha256"},
-        "outerProfileVersion": {"const": "process-v1"},
+        "outerProfileVersion": {"enum": ["process-v1", "process-v1+filesystem-read-v1"]},
         "processMethods": {"$ref": "#/$defs/processMethods"},
         "activeProcesses": {
           "type": "array",
@@ -433,6 +433,25 @@
         }
       }
     },
+    "filesystemReadFileBlockRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "method", "params"],
+      "properties": {
+        "id": {"$ref": "#/$defs/rpcId"},
+        "method": {"const": "agentx/fs/readFileBlock"},
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "offset", "len"],
+          "properties": {
+            "path": {"type": "string", "pattern": "^file:[^\u0000]*$", "maxLength": 4096},
+            "offset": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+            "len": {"type": "integer", "minimum": 1, "maximum": 1048576}
+          }
+        }
+      }
+    },
     "processOutputNotification": {
       "type": "object",
       "additionalProperties": false,
@@ -551,6 +570,7 @@
         {"$ref": "#/$defs/processReadRequest"},
         {"$ref": "#/$defs/processWriteRequest"},
         {"$ref": "#/$defs/processTerminateRequest"},
+        {"$ref": "#/$defs/filesystemReadFileBlockRequest"},
         {"$ref": "#/$defs/processOutputNotification"},
         {"$ref": "#/$defs/processExitedNotification"},
         {"$ref": "#/$defs/processClosedNotification"},

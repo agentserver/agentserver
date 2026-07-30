@@ -40,7 +40,12 @@ E01 stdio/EOF, exec-server environment metadata, and these executor slices:
   foreign ownership, a second start, and oversized write IDs reach stock zero
   times;
 - E04: `fs/readFile`, `fs/open`, `fs/readBlock`, `fs/close`, file-URI rejection,
-  and `fs/canonicalize`;
+  and `fs/canonicalize`. The stable 0.146.0 gate also proves that streaming
+  `fs/open` rejects a platform sandbox (`streaming file reads do not support
+  platform sandboxing`), while `sandbox=null` supports bounded block reads and
+  a closed handle cannot be reused. Consequently the remote profile excludes
+  unbounded `fs/readFile` and composes each bounded outer read inside a
+  disposable, OS-contained fs-only instance;
 - E05: a deterministic child connects to the executor-local HTTP proxy injected
   by `process/start.networkProxy` and makes a real request to a bounded loopback
   origin. The emitted reverse request has the observed
@@ -92,6 +97,13 @@ size `271056976`): closing the crashed-root instance reaps its pipe-holding
 descendant while the second instance remains alive and can terminate normally.
 This is reference composition evidence; the real agentx WSS adapter and target
 platform containment remain Phase 2 gates.
+
+The E04 result is likewise a stock-protocol fact, not a containment proof.
+Agentx must expose only `agentx/fs/readFileBlock`, cap one block at 1 MiB, check
+the registered canonical root before and after the stock call, and close the
+fs-only stdio instance after `open(null) -> readBlock -> close`. A production
+runner still needs platform safe-open/immutable-root controls; the current
+same-UID development shape cannot rule out symlink TOCTOU.
 
 The process probe deliberately accepts a `process/start` response arriving
 after early output notifications and uses the one-based event sequence as the

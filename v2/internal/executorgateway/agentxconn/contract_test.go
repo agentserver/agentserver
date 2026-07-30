@@ -28,8 +28,11 @@ func TestAgentxEnvelopeSchemaValidatesGoWireExamples(t *testing.T) {
 	timeoutContext := context
 	timeoutContext.OperationID = "52000000-0000-0000-0000-000000000005"
 	timeoutContext.MutationKey = "62000000-0000-0000-0000-000000000006"
+	filesystemHello := validHello()
+	filesystemHello.Environments[0].OuterProfileVersion = execprofile.FilesystemReadVersion
 	valid := []any{
 		validHello(),
+		filesystemHello,
 		Welcome{
 			Type:                   MessageTypeWelcome,
 			ProtocolVersion:        CurrentProtocolVersion,
@@ -93,6 +96,15 @@ func TestAgentxEnvelopeSchemaValidatesGoWireExamples(t *testing.T) {
 			Context:    &timeoutContext,
 			RPC:        json.RawMessage(`{"method":"agentx/timeoutDue","params":{"processId":"70000000-0000-0000-0000-000000000007"}}`),
 		},
+		Frame{
+			Type:       MessageTypeRPC,
+			SessionID:  testSessionID,
+			SessionSeq: 5,
+			Ack:        2,
+			Generation: 7,
+			Context:    &context,
+			RPC:        json.RawMessage(`{"id":"fs-read-1","method":"agentx/fs/readFileBlock","params":{"path":"file:///workspace/data.bin","offset":0,"len":1048576}}`),
+		},
 	}
 	for _, example := range valid {
 		raw, err := Encode(example, testWireLimits())
@@ -112,6 +124,7 @@ func TestAgentxEnvelopeSchemaValidatesGoWireExamples(t *testing.T) {
 		`{"type":"ack","sessionId":"30000000-0000-0000-0000-000000000003","generation":7,"ack":0,"sessionSeq":1}`,
 		`{"type":"rpc","sessionId":"30000000-0000-0000-0000-000000000003","sessionSeq":1,"ack":0,"generation":7,"context":{"workspaceId":"40000000-0000-0000-0000-000000000004","runId":"41000000-0000-0000-0000-000000000004","runAttemptId":"42000000-0000-0000-0000-000000000004","runAttemptGeneration":3,"executionId":"50000000-0000-0000-0000-000000000005","operationId":"51000000-0000-0000-0000-000000000005","envId":"60000000-0000-0000-0000-000000000006","mutationKey":"61000000-0000-0000-0000-000000000006"},"rpc":{"id":"signal-1","method":"process/signal","params":{"processId":"70000000-0000-0000-0000-000000000007","signal":"interrupt"}}}`,
 		`{"type":"rpc","sessionId":"30000000-0000-0000-0000-000000000003","sessionSeq":1,"ack":0,"generation":7,"context":{"workspaceId":"40000000-0000-0000-0000-000000000004","runId":"41000000-0000-0000-0000-000000000004","runAttemptId":"42000000-0000-0000-0000-000000000004","runAttemptGeneration":3,"executionId":"50000000-0000-0000-0000-000000000005","operationId":"51000000-0000-0000-0000-000000000005","envId":"60000000-0000-0000-0000-000000000006","mutationKey":"61000000-0000-0000-0000-000000000006"},"rpc":{"jsonrpc":"2.0","id":"read-1","method":"process/read","params":{}}}`,
+		`{"type":"rpc","sessionId":"30000000-0000-0000-0000-000000000003","sessionSeq":1,"ack":0,"generation":7,"context":{"workspaceId":"40000000-0000-0000-0000-000000000004","runId":"41000000-0000-0000-0000-000000000004","runAttemptId":"42000000-0000-0000-0000-000000000004","runAttemptGeneration":3,"executionId":"50000000-0000-0000-0000-000000000005","operationId":"51000000-0000-0000-0000-000000000005","envId":"60000000-0000-0000-0000-000000000006","mutationKey":"61000000-0000-0000-0000-000000000006"},"rpc":{"id":"fs-read-1","method":"fs/readFile","params":{"path":"file:///workspace/data.bin","sandbox":null}}}`,
 	}
 	for _, raw := range invalid {
 		var value any
@@ -151,6 +164,48 @@ func TestAgentxSchemaProfileAndErrorCodesMatchGo(t *testing.T) {
 	}
 	if !slices.Equal(methods, execprofile.ProcessMethods()) {
 		t.Fatalf("schema process methods = %q, Go profile = %q", methods, execprofile.ProcessMethods())
+	}
+	var helloEnvironment struct {
+		Properties map[string]struct {
+			Enum []string `json:"enum"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(document.Definitions["helloEnvironment"], &helloEnvironment); err != nil {
+		t.Fatal(err)
+	}
+	wantEnvironmentProfiles := []string{execprofile.Version, execprofile.FilesystemReadVersion}
+	if profiles := helloEnvironment.Properties["outerProfileVersion"].Enum; !slices.Equal(profiles, wantEnvironmentProfiles) {
+		t.Fatalf("schema environment profiles = %q, Go profiles = %q", profiles, wantEnvironmentProfiles)
+	}
+	var filesystemReadRequest struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(document.Definitions["filesystemReadFileBlockRequest"], &filesystemReadRequest); err != nil {
+		t.Fatal(err)
+	}
+	var methodProperty struct {
+		Const string `json:"const"`
+	}
+	if err := json.Unmarshal(filesystemReadRequest.Properties["method"], &methodProperty); err != nil {
+		t.Fatal(err)
+	}
+	if method := methodProperty.Const; !execprofile.AllowsFilesystemReadMethod(method) {
+		t.Fatalf("schema filesystem read method = %q, outside Go profile", method)
+	}
+	var paramsProperty struct {
+		Properties map[string]struct {
+			Minimum uint64 `json:"minimum"`
+			Maximum uint64 `json:"maximum"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(filesystemReadRequest.Properties["params"], &paramsProperty); err != nil {
+		t.Fatal(err)
+	}
+	if offset := paramsProperty.Properties["offset"]; offset.Minimum != 0 || offset.Maximum != maxFilesystemOffset {
+		t.Fatalf("schema filesystem offset bounds = %+v", offset)
+	}
+	if length := paramsProperty.Properties["len"]; length.Minimum != 1 || length.Maximum != maxFilesystemReadLen {
+		t.Fatalf("schema filesystem length bounds = %+v", length)
 	}
 	var cleanEnvPolicy struct {
 		Properties map[string]struct {

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/agentserver/agentserver/v2/internal/execprofile"
 )
 
 func TestEnvironmentResolverListsFrozenOnlineProjection(t *testing.T) {
@@ -93,6 +95,31 @@ func TestEnvironmentResolverRejectsRegistryResponseOutsideExecutorFilter(t *test
 	}
 }
 
+func TestEnvironmentResolverPreservesCompositeProfileAndRejectsUnknownProfile(t *testing.T) {
+	environment := testRegisteredEnvironment(testEnvironmentID, `{"kind":"local","root":"/workspace"}`)
+	environment.OuterProfileVersion = execprofile.FilesystemReadVersion
+	resolver, err := NewEnvironmentResolver(&fakeEnvironmentRegistry{environments: []RegisteredEnvironment{environment}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolver.Resolve(t.Context(), "40000000-0000-4000-8000-000000000004", testEnvironmentID)
+	if err != nil {
+		t.Fatalf("resolve composite profile: %v", err)
+	}
+	if !execprofile.SupportsFilesystemRead(resolved.OuterProfileVersion) {
+		t.Fatalf("resolved profile = %q, want filesystem read", resolved.OuterProfileVersion)
+	}
+
+	environment.OuterProfileVersion = "filesystem-read-v1"
+	resolver, err = NewEnvironmentResolver(&fakeEnvironmentRegistry{environments: []RegisteredEnvironment{environment}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolver.Resolve(t.Context(), "40000000-0000-4000-8000-000000000004", testEnvironmentID); err == nil || !strings.Contains(err.Error(), "outer profile") {
+		t.Fatalf("unknown environment profile error = %v", err)
+	}
+}
+
 func TestEnvironmentResolverBoundsAggregateProjection(t *testing.T) {
 	environments := make([]RegisteredEnvironment, 256)
 	for index := range environments {
@@ -138,6 +165,7 @@ func testRegisteredEnvironment(environmentID, descriptor string) RegisteredEnvir
 		ExecutorID:           testExecutorID,
 		RootDescriptor:       json.RawMessage(descriptor),
 		Platform:             "linux-arm64",
+		OuterProfileVersion:  execprofile.Version,
 		InsecureDev:          true,
 		EnvironmentVersion:   1,
 		ConnectionGeneration: 1,

@@ -65,7 +65,8 @@ func TestPostgreSQLExecutorConnectionCAS(t *testing.T) {
 	if err := json.Unmarshal(online[0].RootDescriptor, &rootDescriptor); err != nil || rootDescriptor["root"] != "/workspace" {
 		t.Fatalf("online root descriptor = %s, %v", online[0].RootDescriptor, err)
 	}
-	if online[0].ConnectionGeneration != first.Connection.Generation || online[0].EnvironmentVersion < 1 {
+	if online[0].ConnectionGeneration != first.Connection.Generation || online[0].EnvironmentVersion < 1 ||
+		online[0].OuterProfileVersion != command.Environments[0].OuterProfileVersion {
 		t.Fatalf("online environment generation/version = %+v", online[0])
 	}
 
@@ -264,6 +265,7 @@ func insertExecutorConnectionFixture(t *testing.T, pool *pgxpool.Pool, schema st
 	command.GatewayInstanceID = stateTestUUID(seed + 3)
 	command.Environments = cloneExecutorDeclarations(command.Environments)
 	command.Environments[0].ID = stateTestUUID(seed + 4)
+	command.Environments[0].OuterProfileVersion = executorFilesystemReadProfileVersion
 	workspaceID := stateTestUUID(seed + 5)
 
 	quotedSchema := quoteIdentifier(schema)

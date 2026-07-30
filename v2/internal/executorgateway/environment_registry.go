@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/agentserver/agentserver/v2/internal/execprofile"
 )
 
 var registryUUIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -157,6 +159,9 @@ func resolveRegisteredEnvironment(environment RegisteredEnvironment) (ResolvedEn
 	}
 	if !supportedExecutorPlatform(environment.Platform) {
 		return ResolvedEnvironment{}, fmt.Errorf("unsupported executor platform %q", environment.Platform)
+	}
+	if !execprofile.AllowsEnvironmentProfile(environment.OuterProfileVersion) {
+		return ResolvedEnvironment{}, fmt.Errorf("unsupported executor outer profile %q", environment.OuterProfileVersion)
 	}
 	var descriptor localRootDescriptor
 	if err := decodeRootDescriptor(environment.RootDescriptor, &descriptor); err != nil {

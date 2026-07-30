@@ -895,7 +895,11 @@ func TestExecServerE04FilesystemReadLifecycle(t *testing.T) {
 			"sandbox":  fsReadRestrictedSandbox(workspaceURI),
 		},
 	})
-	mustRPCError(t, collector.response(t, "3"))
+	sandboxedOpen := collector.response(t, "3")
+	mustRPCError(t, sandboxedOpen)
+	if !strings.Contains(sandboxedOpen.Error.Message, "streaming file reads do not support platform sandboxing") {
+		t.Fatalf("sandboxed fs/open error = %q, want streaming sandbox limitation", sandboxedOpen.Error.Message)
+	}
 
 	sendRPC(t, process, map[string]any{
 		"id":     4,

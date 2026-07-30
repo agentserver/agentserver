@@ -22,7 +22,16 @@ func TestDecodeHelloFreezesOuterProfileAndResumeIdentity(t *testing.T) {
 	if decoded.Hello == nil || decoded.Hello.Environments[0].ProcessMethods[0] != "process/start" {
 		t.Fatalf("decoded hello = %+v", decoded.Hello)
 	}
+	hello.Environments[0].OuterProfileVersion = execprofile.FilesystemReadVersion
+	if _, err := Encode(hello, testWireLimits()); err != nil {
+		t.Fatalf("filesystem-read environment profile rejected: %v", err)
+	}
+	hello.Environments[0].OuterProfileVersion = "filesystem-read-v1"
+	if _, err := Encode(hello, testWireLimits()); codeOf(err) != ErrorMalformedFrame {
+		t.Fatalf("partial filesystem environment profile error = %v", err)
+	}
 
+	hello = validHello()
 	hello.Environments[0].ProcessMethods = append(hello.Environments[0].ProcessMethods, "process/signal")
 	if _, err := Encode(hello, testWireLimits()); codeOf(err) != ErrorMalformedFrame {
 		t.Fatalf("hello with process/signal error = %v", err)
@@ -112,6 +121,11 @@ func TestBusinessRPCDirectionAndStockDialectAreFailClosed(t *testing.T) {
 	if err := valid.ValidateForReceiver(RoleAgentx); err != nil {
 		t.Fatalf("valid gateway process request rejected: %v", err)
 	}
+	filesystemRead := cloneFrame(valid)
+	filesystemRead.RPC = json.RawMessage(`{"id":"fs-read-1","method":"agentx/fs/readFileBlock","params":{"path":"file:///workspace/data.bin","offset":0,"len":1048576}}`)
+	if err := filesystemRead.ValidateForReceiver(RoleAgentx); err != nil {
+		t.Fatalf("valid gateway filesystem read rejected: %v", err)
+	}
 
 	withJSONRPC := cloneFrame(valid)
 	withJSONRPC.RPC = json.RawMessage(`{"jsonrpc":"2.0","id":"request-1","method":"process/read","params":{}}`)
@@ -170,6 +184,11 @@ func TestBusinessRPCMethodParamsAreFailClosed(t *testing.T) {
 			rpc:      `{"id":"write-1","method":"process/write","params":{"processId":"70000000-0000-0000-0000-000000000007","chunk":"YQ==","writeId":"write-1"}}`,
 		},
 		{
+			name:     "bounded filesystem read",
+			receiver: RoleAgentx,
+			rpc:      `{"id":"fs-read-1","method":"agentx/fs/readFileBlock","params":{"path":"file:///workspace/data.bin","offset":9007199254740991,"len":1048576}}`,
+		},
+		{
 			name:     "process output",
 			receiver: RoleGateway,
 			rpc:      `{"method":"process/output","params":{"processId":"70000000-0000-0000-0000-000000000007","seq":1,"stream":"stdout","chunk":"YQ=="}}`,
@@ -194,6 +213,7 @@ func TestBusinessRPCMethodParamsAreFailClosed(t *testing.T) {
 		name     string
 		receiver Role
 		rpc      string
+		wantCode ErrorCode
 	}{
 		{
 			name:     "start inherits ambient env",
@@ -231,6 +251,22 @@ func TestBusinessRPCMethodParamsAreFailClosed(t *testing.T) {
 			rpc:      `{"id":"write-1","method":"process/write","params":{"processId":"70000000-0000-0000-0000-000000000007","chunk":"not-base64","writeId":"write-1"}}`,
 		},
 		{
+			name:     "unbounded stock filesystem read",
+			receiver: RoleAgentx,
+			rpc:      `{"id":"fs-read-1","method":"fs/readFile","params":{"path":"file:///workspace/data.bin","sandbox":null}}`,
+			wantCode: ErrorMethodNotNegotiated,
+		},
+		{
+			name:     "filesystem read zero length",
+			receiver: RoleAgentx,
+			rpc:      `{"id":"fs-read-1","method":"agentx/fs/readFileBlock","params":{"path":"file:///workspace/data.bin","offset":0,"len":0}}`,
+		},
+		{
+			name:     "filesystem read unsafe offset",
+			receiver: RoleAgentx,
+			rpc:      `{"id":"fs-read-1","method":"agentx/fs/readFileBlock","params":{"path":"file:///workspace/data.bin","offset":9007199254740992,"len":1}}`,
+		},
+		{
 			name:     "notification zero sequence",
 			receiver: RoleGateway,
 			rpc:      `{"method":"process/closed","params":{"processId":"70000000-0000-0000-0000-000000000007","seq":0}}`,
@@ -250,7 +286,11 @@ func TestBusinessRPCMethodParamsAreFailClosed(t *testing.T) {
 		t.Run("invalid "+test.name, func(t *testing.T) {
 			candidate := cloneFrame(frame)
 			candidate.RPC = json.RawMessage(test.rpc)
-			if err := candidate.ValidateForReceiver(test.receiver); codeOf(err) != ErrorMalformedFrame {
+			wantCode := test.wantCode
+			if wantCode == "" {
+				wantCode = ErrorMalformedFrame
+			}
+			if err := candidate.ValidateForReceiver(test.receiver); codeOf(err) != wantCode {
 				t.Fatalf("invalid RPC error = %v", err)
 			}
 		})

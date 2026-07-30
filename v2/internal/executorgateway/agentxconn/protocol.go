@@ -264,8 +264,8 @@ func (environment HelloEnvironment) validate() error {
 	if !digestPattern.MatchString(environment.CodexSHA256) {
 		return fmt.Errorf("codexSha256 is not lowercase SHA-256 hex")
 	}
-	if environment.OuterProfileVersion != execprofile.Version {
-		return fmt.Errorf("outerProfileVersion = %q, want %q", environment.OuterProfileVersion, execprofile.Version)
+	if !execprofile.AllowsEnvironmentProfile(environment.OuterProfileVersion) {
+		return fmt.Errorf("outerProfileVersion = %q is unsupported", environment.OuterProfileVersion)
 	}
 	if !slices.Equal(environment.ProcessMethods, execprofile.ProcessMethods()) {
 		return fmt.Errorf("processMethods = %q, want exact %q", environment.ProcessMethods, execprofile.ProcessMethods())
@@ -410,11 +410,17 @@ func (frame Frame) ValidateForReceiver(receiver Role) error {
 	case RoleGateway:
 		switch rpc.Kind {
 		case codexwire.KindRequest:
-			if !execprofile.AllowsProcessMethod(rpc.Method) {
+			switch {
+			case execprofile.AllowsProcessMethod(rpc.Method):
+				if err := validateProcessRequestParams(rpc); err != nil {
+					return err
+				}
+			case execprofile.AllowsFilesystemReadMethod(rpc.Method):
+				if err := validateFilesystemReadRequestParams(rpc); err != nil {
+					return err
+				}
+			default:
 				return protocolError(ErrorMethodNotNegotiated, true, "gateway method %q is outside %s", rpc.Method, execprofile.Version)
-			}
-			if err := validateProcessRequestParams(rpc); err != nil {
-				return err
 			}
 			if err := validateDispatchDirectives(*frame.Context, frame.Directives, rpc.Method); err != nil {
 				return err

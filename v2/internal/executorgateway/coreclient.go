@@ -58,6 +58,7 @@ type RegisteredEnvironment struct {
 	ExecutorID           string
 	RootDescriptor       json.RawMessage
 	Platform             string
+	OuterProfileVersion  string
 	InsecureDev          bool
 	EnvironmentVersion   int64
 	ConnectionGeneration int64
@@ -158,6 +159,7 @@ func (client *CoreConnectionClient) ListEnvironments(ctx context.Context, worksp
 			ExecutorID:           environment.ExecutorID,
 			RootDescriptor:       append(json.RawMessage(nil), environment.RootDescriptor...),
 			Platform:             environment.Platform,
+			OuterProfileVersion:  environment.OuterProfileVersion,
 			InsecureDev:          environment.InsecureDev,
 			EnvironmentVersion:   environment.EnvironmentVersion,
 			ConnectionGeneration: environment.ConnectionGeneration,

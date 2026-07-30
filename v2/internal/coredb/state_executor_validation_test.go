@@ -12,6 +12,11 @@ func TestValidateAcquireExecutorConnection(t *testing.T) {
 	if milliseconds, err := validateAcquireExecutorConnection(valid); err != nil || milliseconds != 45_000 {
 		t.Fatalf("validateAcquireExecutorConnection() = %d, %v", milliseconds, err)
 	}
+	filesystemRead := validAcquireExecutorConnectionCommand()
+	filesystemRead.Environments[0].OuterProfileVersion = executorFilesystemReadProfileVersion
+	if _, err := validateAcquireExecutorConnection(filesystemRead); err != nil {
+		t.Fatalf("filesystem-read environment profile rejected: %v", err)
+	}
 
 	tests := []struct {
 		name      string
@@ -27,6 +32,9 @@ func TestValidateAcquireExecutorConnection(t *testing.T) {
 		{name: "wrong method order", mutate: func(command *AcquireExecutorConnectionCommand) {
 			command.Environments[0].ProcessMethods[0], command.Environments[0].ProcessMethods[1] = command.Environments[0].ProcessMethods[1], command.Environments[0].ProcessMethods[0]
 		}, wantError: "process_methods"},
+		{name: "partial filesystem profile", mutate: func(command *AcquireExecutorConnectionCommand) {
+			command.Environments[0].OuterProfileVersion = "filesystem-read-v1"
+		}, wantError: "outer_profile_version"},
 		{name: "oversize lease", mutate: func(command *AcquireExecutorConnectionCommand) {
 			command.LeaseTTL = MaxExecutorConnectionTTL + time.Millisecond
 		}, wantError: "lease_ttl"},
@@ -74,6 +82,11 @@ func TestEnvironmentDeclarationHashIsSetOrderedAndFieldSensitive(t *testing.T) {
 	changed[0].InsecureDev = true
 	if hashExecutorEnvironmentDeclarations(changed) == forward {
 		t.Fatal("environment set hash ignored insecure_dev")
+	}
+	changed = cloneExecutorDeclarations(command.Environments)
+	changed[0].OuterProfileVersion = executorFilesystemReadProfileVersion
+	if hashExecutorEnvironmentDeclarations(changed) == forward {
+		t.Fatal("environment set hash ignored outer_profile_version")
 	}
 }
 

@@ -74,6 +74,7 @@ type ExecutorEnvironment struct {
 	ExecutorID           string          `json:"executorId"`
 	RootDescriptor       json.RawMessage `json:"rootDescriptor"`
 	Platform             string          `json:"platform"`
+	OuterProfileVersion  string          `json:"outerProfileVersion"`
 	InsecureDev          bool            `json:"insecureDev"`
 	EnvironmentVersion   int64           `json:"environmentVersion"`
 	ConnectionGeneration int64           `json:"connectionGeneration"`

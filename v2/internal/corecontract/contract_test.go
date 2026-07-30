@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/agentserver/agentserver/v2/internal/execprofile"
 )
 
 func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
@@ -95,6 +97,19 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "CompleteExecutionRequest", reflect.TypeFor[CompleteExecutionRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "CompleteExecutionResponse", reflect.TypeFor[CompleteExecutionResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "ErrorResponse", reflect.TypeFor[ErrorResponse]())
+
+	wantProfiles := []string{execprofile.Version, execprofile.FilesystemReadVersion}
+	for _, schemaName := range []string{"EnvironmentDeclaration", "ExecutorEnvironment"} {
+		var property struct {
+			Enum []string `json:"enum"`
+		}
+		if err := json.Unmarshal(document.Components.Schemas[schemaName].Properties["outerProfileVersion"], &property); err != nil {
+			t.Fatalf("decode %s outer profile: %v", schemaName, err)
+		}
+		if !slices.Equal(property.Enum, wantProfiles) {
+			t.Errorf("OpenAPI %s outer profiles = %q, Go profiles = %q", schemaName, property.Enum, wantProfiles)
+		}
+	}
 }
 
 func assertSchemaFields(t *testing.T, schemas map[string]struct {

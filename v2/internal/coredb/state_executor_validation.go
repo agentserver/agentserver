@@ -7,14 +7,16 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+
+	"github.com/agentserver/agentserver/v2/internal/execprofile"
 )
 
-var executorProcessMethods = []string{
-	"process/start",
-	"process/read",
-	"process/write",
-	"process/terminate",
-}
+var executorProcessMethods = execprofile.ProcessMethods()
+
+const (
+	executorProcessProfileVersion        = execprofile.Version
+	executorFilesystemReadProfileVersion = execprofile.FilesystemReadVersion
+)
 
 func validateAcquireExecutorConnection(command AcquireExecutorConnectionCommand) (int64, error) {
 	for _, identifier := range []struct {
@@ -92,8 +94,9 @@ func validateExecutorEnvironmentDeclaration(environment ExecutorEnvironmentDecla
 	if isZeroDigest(environment.CodexSHA256) {
 		return errors.New("codex_sha256 must not be all zeroes")
 	}
-	if environment.OuterProfileVersion != "process-v1" {
-		return fmt.Errorf("outer_profile_version = %q, want process-v1", environment.OuterProfileVersion)
+	if environment.OuterProfileVersion != executorProcessProfileVersion &&
+		environment.OuterProfileVersion != executorFilesystemReadProfileVersion {
+		return fmt.Errorf("outer_profile_version = %q is unsupported", environment.OuterProfileVersion)
 	}
 	if !slices.Equal(environment.ProcessMethods, executorProcessMethods) {
 		return fmt.Errorf("process_methods = %q, want exact %q", environment.ProcessMethods, executorProcessMethods)

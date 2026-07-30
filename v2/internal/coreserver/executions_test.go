@@ -79,6 +79,15 @@ func TestExecutionHandlerRoutesAllCommands(t *testing.T) {
 			wantAction: "execution-operations.complete", wantCall: "complete-operation",
 		},
 		{
+			name: "skip operation", path: corecontract.SkipOperationPath(testExecutionID, testOperationID),
+			command: corecontract.SkipOperationRequest{
+				OperationID: testOperationID, ExecutionID: testExecutionID, RunID: commonOperation.RunID, RunAttemptID: commonOperation.RunAttemptID,
+				HolderID: "holder", RunAttemptGeneration: 3, ExpectedExecutionVersion: 4, ExpectedOperationVersion: 1,
+				Result: json.RawMessage(`{"reason":"process_terminal_before_deadline"}`), Record: record,
+			},
+			wantAction: "execution-operations.skip", wantCall: "skip-operation",
+		},
+		{
 			name: "complete execution", path: corecontract.CompleteExecutionPath(testExecutionID),
 			command: corecontract.CompleteExecutionRequest{
 				ExecutionID: testExecutionID, RunID: commonOperation.RunID, RunAttemptID: commonOperation.RunAttemptID,
@@ -206,6 +215,11 @@ func (commands *recordingExecutionCommands) AcknowledgeOperation(context.Context
 func (commands *recordingExecutionCommands) CompleteOperation(context.Context, corecontract.CompleteOperationRequest) (corecontract.CompleteOperationResponse, error) {
 	commands.call = "complete-operation"
 	return corecontract.CompleteOperationResponse{}, nil
+}
+
+func (commands *recordingExecutionCommands) SkipOperation(context.Context, corecontract.SkipOperationRequest) (corecontract.SkipOperationResponse, error) {
+	commands.call = "skip-operation"
+	return corecontract.SkipOperationResponse{}, nil
 }
 
 func (commands *recordingExecutionCommands) CompleteExecution(context.Context, corecontract.CompleteExecutionRequest) (corecontract.CompleteExecutionResponse, error) {

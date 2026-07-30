@@ -186,6 +186,25 @@ type CompleteOperationResult struct {
 	Changed   bool
 }
 
+type SkipOperationRequest struct {
+	OperationID              string
+	ExecutionID              string
+	RunID                    string
+	RunAttemptID             string
+	HolderID                 string
+	RunAttemptGeneration     int64
+	ExpectedExecutionVersion int64
+	ExpectedOperationVersion int64
+	Result                   json.RawMessage
+	Record                   ExecutionTransitionRecord
+}
+
+type SkipOperationResult struct {
+	Execution ExecutionState
+	Operation ExecutionOperationState
+	Changed   bool
+}
+
 type CompleteExecutionRequest struct {
 	ExecutionID              string
 	RunID                    string
@@ -208,6 +227,7 @@ type ExecutionAuthority interface {
 	BeginOperationDispatch(context.Context, BeginOperationDispatchRequest) (BeginOperationDispatchResult, error)
 	AcknowledgeOperation(context.Context, AcknowledgeOperationRequest) (AcknowledgeOperationResult, error)
 	CompleteOperation(context.Context, CompleteOperationRequest) (CompleteOperationResult, error)
+	SkipOperation(context.Context, SkipOperationRequest) (SkipOperationResult, error)
 	CompleteExecution(context.Context, CompleteExecutionRequest) (CompleteExecutionResult, error)
 }
 
@@ -372,6 +392,38 @@ func (client *CoreConnectionClient) CompleteOperation(ctx context.Context, reque
 	return CompleteOperationResult{Execution: execution, Operation: operation, Changed: response.Changed}, nil
 }
 
+func (client *CoreConnectionClient) SkipOperation(ctx context.Context, request SkipOperationRequest) (SkipOperationResult, error) {
+	contractRequest := corecontract.SkipOperationRequest{
+		OperationID:              request.OperationID,
+		ExecutionID:              request.ExecutionID,
+		RunID:                    request.RunID,
+		RunAttemptID:             request.RunAttemptID,
+		HolderID:                 request.HolderID,
+		RunAttemptGeneration:     request.RunAttemptGeneration,
+		ExpectedExecutionVersion: request.ExpectedExecutionVersion,
+		ExpectedOperationVersion: request.ExpectedOperationVersion,
+		Result:                   copyCoreJSON(request.Result),
+		Record:                   contractExecutionTransitionRecord(request.Record),
+	}
+	var response corecontract.SkipOperationResponse
+	path := corecontract.SkipOperationPath(request.ExecutionID, request.OperationID)
+	if err := client.post(ctx, path, contractRequest, &response, http.StatusOK); err != nil {
+		return SkipOperationResult{}, err
+	}
+	execution, operation, err := gatewayExecutionAndOperation(response.Execution, response.Operation)
+	if err != nil {
+		return SkipOperationResult{}, fmt.Errorf("validate core SkipOperation response: %w", err)
+	}
+	if operation.OperationID != request.OperationID || operation.ExecutionID != request.ExecutionID {
+		return SkipOperationResult{}, errors.New("core SkipOperation response does not match the requested operation identity")
+	}
+	if operation.Status != "skipped" || operation.ConnectionGeneration != 0 || operation.DispatchedAt != nil ||
+		operation.AcknowledgementDigest != nil || operation.AcknowledgedAt != nil || operation.TerminalResultDigest == nil || operation.TerminalAt == nil {
+		return SkipOperationResult{}, errors.New("core SkipOperation response is not a non-dispatched terminal operation")
+	}
+	return SkipOperationResult{Execution: execution, Operation: operation, Changed: response.Changed}, nil
+}
+
 func (client *CoreConnectionClient) CompleteExecution(ctx context.Context, request CompleteExecutionRequest) (CompleteExecutionResult, error) {
 	contractRequest := corecontract.CompleteExecutionRequest{
 		ExecutionID:              request.ExecutionID,
@@ -505,6 +557,10 @@ func gatewayExecutionOperationState(source corecontract.ExecutionOperationState)
 	if !validCoreOperationStatus(source.Status) {
 		return ExecutionOperationState{}, fmt.Errorf("unsupported operation status %q", source.Status)
 	}
+	if source.Status == "skipped" && (source.ConnectionGeneration != 0 || source.DispatchedAt != nil ||
+		source.AcknowledgementDigest != nil || source.AcknowledgedAt != nil || source.TerminalResultDigest == nil || source.TerminalAt == nil) {
+		return ExecutionOperationState{}, errors.New("skipped operation crossed the dispatch boundary or lacks terminal evidence")
+	}
 	return ExecutionOperationState{
 		OperationID:           source.OperationID,
 		ExecutionID:           source.ExecutionID,
@@ -567,7 +623,7 @@ func validCoreExecutionStatus(status string) bool {
 
 func validCoreOperationStatus(status string) bool {
 	switch status {
-	case "prepared", "dispatching", "acknowledged", "succeeded", "failed", "cancelled", "unknown":
+	case "prepared", "dispatching", "acknowledged", "succeeded", "failed", "cancelled", "unknown", "skipped":
 		return true
 	default:
 		return false

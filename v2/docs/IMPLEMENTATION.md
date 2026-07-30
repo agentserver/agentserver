@@ -447,6 +447,7 @@ execution 的唯一调用身份为：
 - BeginOperationDispatch
 - AcknowledgeOperation
 - CompleteOperation
+- SkipOperation
 - CompleteExecution
 - BeginRunFinalization
 - CommitCheckpointAndTerminalRun
@@ -476,7 +477,8 @@ PR 10 reference command store继续固定以下执行语义：
 - execution预先冻结`operation_count`。`PrepareOperation`只允许在execution尚未dispatch时写入，ordinal必须落在`1..operation_count`，`(execution_id, ordinal)`与全局`mutation_key`分别唯一；第一个operation跨dispatch边界前，数据库中必须已经存在完整的冻结operation集合。
 - `BeginOperationDispatch`首次以CAS把operation推进到`dispatching`并提交event/outbox后，只有该次调用返回`Began=true`，它是唯一一次外部发送许可。transaction wrapper在`Commit`返回任何错误时强制丢弃已计算结果并返回零值，不能把内存中的`Began=true`泄露给调用方；commit后响应丢失时，exact retry只返回既有状态和`Began=false`。调用方必须查询可信journal或收口为`unknown`，不得重发。
 - `AcknowledgeOperation`冻结agentx ACK evidence hash并把execution推进到`running`。未ACK的`dispatching` operation只能通过`CompleteOperation(... unknown)`收口；ACK后才允许`succeeded|failed|cancelled|unknown`。connection generation不同的迟到证据被fence。
-- `CompleteExecution`按全部operation状态聚合：任一`unknown`优先得到execution `unknown`，其次为`failed`、`cancelled`，只有全部operation成功才能`succeeded`；仍在`dispatching|acknowledged`或只有未发送的prepared步骤时拒绝伪造terminal。
+- `SkipOperation`不伪装成dispatch后的完成证据。它只允许live run holder把仍为`prepared`、位于冻结计划末尾的`timeout_terminate`推进到`skipped`，且execution必须已跨dispatch边界、所有前序operation均已terminal。该转换保持`connection_generation/dispatched_at/ACK`为空，冻结独立result hash并写`operation.skipped` event/outbox；exact retry只接受相同result hash。deadline timer与skip竞态时，若skip先提交，迟到的`BeginOperationDispatch`只能观察`skipped + Began=false`，不能取得发送许可。
+- `CompleteExecution`要求冻结计划中的每个operation都已terminal，再按状态聚合：任一`unknown`优先得到execution `unknown`，其次为`failed`、`cancelled`；`skipped`是中性结果，至少一个已dispatch operation成功且其余均为`succeeded|skipped`时才能得到`succeeded`。任何残留`prepared|dispatching|acknowledged`都拒绝terminal，不能用前序失败或取消隐式吞掉未发送步骤。
 - 每个命令与对应canonical run event、outbox在同一transaction内提交。outbox唯一键等事务尾部故障会回滚operation、execution version和run event sequence；terminal exact retry只接受相同status与evidence hash。
 
 所有execution hash均通过`ValidateAndHashCanonicalJSON`这一构造边界：拒绝重复JSON key与超限输入，先调用版本化schema validator，再做RFC 8785 JCS，最后以`agentserver-v2/<domain>/rfc8785-v1\0`作为domain separator计算SHA-256。Go command类型不接受裸`[32]byte`替代这些typed hash，数据库同时记录并约束canonicalizer version。
@@ -504,6 +506,8 @@ PR 10 reference command store继续固定以下执行语义：
 5. 才能向 agentx 发送。
 6. agentx mutation journal 返回 accepted/pending/completed。
 7. core 写 acknowledged/terminal。
+
+预分配但条件未发生的可选步骤不走上述发送链。当前只允许尾部`timeout_terminate`在前序process operation取得terminal后通过`SkipOperation`从`prepared`直接进入`skipped`；它从未获得外部发送许可，也不能带connection generation或伪造ACK。
 
 gateway 在步骤 4 后、步骤 6 前崩溃时，operation 默认 unknown。只有 agentx journal 或 stock child 的可信 terminal event 能把它收口；不能因为“没看到 ACK”就重发。
 
@@ -625,9 +629,9 @@ registry 只保存活连接。权威 executor/env/generation 在 core。gateway�
 
 第三段已经接通只读environment registry和首个MCP handler。core新增`executor-environments:list`内部查询，只返回workspace匹配、executor/environment/connection均为online且按数据库时钟lease仍有效的最多256项；gateway再严格解析versioned local root descriptor，只向模型投影environment-relative `default_cwd`，不暴露host root，并拒绝超过512 KiB的聚合投影而不静默截断。`/mcp`使用official Go SDK的stateful Streamable HTTP，显式拒绝除`2025-11-25`以外的initialize，只广告已实现的`list_environments`；input/output schema直接取自`mcpcontract`。每次HTTP请求都重新鉴权，MCP session还绑定不可变capability identity，另一枚bearer即使知道session id也不能接管。当前loopback insecure-dev入口用`AGENTSERVER_V2_DEV_WORKSPACE_ID`、`AGENTSERVER_V2_DEV_EXECUTOR_ID`和至少32字节的`AGENTSERVER_V2_DEV_MCP_BEARER_TOKEN`提供静态开发scope；它不是生产run capability。
 
-第四段已经把PR 10的execution/operation kernel暴露为六个mTLS internal command：`PrepareExecution`、`PrepareOperation`、`BeginOperationDispatch`、`AcknowledgeOperation`、`CompleteOperation`和`CompleteExecution`。请求必须携带原始JSON value，不能提交裸digest；core会拒绝重复key/超限输入，解析受支持的tool input schema并用它重新验证arguments，再按固定domain + RFC 8785计算所有hash。operation plan、policy context、params、ACK和result当前至少受canonical JSON object边界约束，shell mapper仍须按其versioned contract生成具体结构。path/body execution与operation identity必须一致；gateway client还会核对返回digest domain/canonicalizer，并且只有`Began=true`同时返回同一connection generation的`dispatching` operation时才接受一次性发送许可。stable冲突响应保留`code/currentVersion/currentGeneration`，不靠错误字符串做恢复决策。
+第四段已经把PR 10的execution/operation kernel暴露为七个mTLS internal command：`PrepareExecution`、`PrepareOperation`、`BeginOperationDispatch`、`AcknowledgeOperation`、`CompleteOperation`、`SkipOperation`和`CompleteExecution`。请求必须携带原始JSON value，不能提交裸digest；core会拒绝重复key/超限输入，解析受支持的tool input schema并用它重新验证arguments，再按固定domain + RFC 8785计算所有hash。operation plan、policy context、params、ACK和result当前至少受canonical JSON object边界约束，shell mapper仍须按其versioned contract生成具体结构。path/body execution与operation identity必须一致；gateway client还会核对返回digest domain/canonicalizer，并且只有`Began=true`同时返回同一connection generation的`dispatching` operation时才接受一次性发送许可。`0005_optional_operation_skip.sql`为未触发的尾部timeout增加非dispatch终态，数据库约束禁止其他operation kind伪装为`skipped`；stable冲突响应保留`code/currentVersion/currentGeneration`，不靠错误字符串做恢复决策。
 
-这仍不是可生产部署的executor：agentx enrollment/OAuth key binding和core签发的短期run capability尚未实现，`executor-gateway`命令因此仍只暴露显式loopback `serve --insecure-dev`，生产serve模式不存在；agentx本地registered-root复核、MCP shell orchestration、timeout terminate与dispatch后operation unknown收口仍待下一段。当前MCP只能列环境，尚未对外暴露shell，不能把“`list_environments`可调用”描述成executor执行链已经完成。
+这仍不是可生产部署的executor：agentx enrollment/OAuth key binding和core签发的短期run capability尚未实现，`executor-gateway`命令因此仍只暴露显式loopback `serve --insecure-dev`，生产serve模式不存在；agentx本地registered-root复核、MCP shell orchestration、timeout metadata与terminate dispatch、dispatch后operation unknown收口仍待下一段。当前MCP只能列环境，尚未对外暴露shell，不能把“`list_environments`可调用”描述成executor执行链已经完成。
 
 ### 7.2 第一批工具
 
@@ -649,17 +653,19 @@ MCP shell
   → PrepareExecution
   → policy allow/ask/deny
   → PrepareOperation(process_start)
+  → PrepareOperation(timeout_terminate)
   → BeginOperationDispatch
   → WSS rpc process/start
   → agentx mutation journal accepted / matching RPC evidence
   → operation acknowledged
   → process/output / process/exited / process/closed
   → operation terminal
+  → SkipOperation(timeout_terminate, process_terminal_before_deadline)
   → execution terminal
   → MCP result
 ~~~
 
-timeout 不伪装成 process/start 参数。gateway 在启动进程时同时预分配 timeout_terminate operation/mutation key，并把计时策略交给 agentx；gateway timer 与 agentx 本地 monotonic timer触发的是同一个预分配 terminate语义，任何一侧都必须等待真实 process terminal。
+timeout 不伪装成 process/start 参数。gateway 在启动进程前同时预分配 timeout_terminate operation/mutation key，并把计时策略交给 agentx；gateway timer 与 agentx 本地 monotonic timer触发的是同一个预分配 terminate语义，任何一侧都必须等待真实 process terminal。若process在deadline前取得terminal，gateway必须以`SkipOperation`明确关闭尚未dispatch的timeout operation；不能让它停留在`prepared`，也不能把它伪装成`succeeded|cancelled`。
 
 这里的agentx ACK不是WSS累计`ack`字段。WSS ACK只证明某个传输frame已连续处理并允许释放内存journal；core `AcknowledgeOperation`需要相同mutation key、operation id和connection generation下的agentx journal接受证据、匹配RPC response或可信terminal evidence。
 
@@ -1063,7 +1069,7 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 第11项已经完成：`process-v1`精确冻结`process/start|read|write|terminate`并排除`process/signal`；`executor-mcp/1.0`只广告`list_environments|shell`；agentx WSS拥有JSON Schema/AsyncAPI机器契约。Go reference kernel实现双向独立sequence、非sequenced ACK、generation fencing、同gateway进程30秒resume、bounded frame/receive journal和`mutationKey + request hash`的pending/completed/ambiguous门禁；运行时validator还逐method严格校验process request/notification与`network/policyRequest`参数。stable 0.146.0源码复核确认clean-env wire、managed sandbox字段和`windowsSandboxLevel=restricted-token`枚举，contract/race门禁将继续防止schema与实现漂移。
 
-第12项目前已完成connection kernel、真实WSS路由，以及独立agentx仓库中的connector/runner IPC、远端lifecycle和每process独占的stock `codex exec-server --listen stdio --strict-config`监管；真实stock纵向门禁已通过。本仓又完成online environment registry、`list_environments`的stateful MCP链，以及六个execution/operation mTLS internal command与gateway client。下一段是实现`PrepareExecution → operation dispatch/ACK/terminal → MCP result`的shell-v1，并补agentx本地registered-root/cwd复核和预分配timeout terminate。approval command、真实enrollment/key binding、dispatch后unknown恢复收口、平台containment和部署manifest仍未实现；当前开发入口明确标为loopback insecure-dev，不能作为Phase 2交付或生产部署证据。
+第12项目前已完成connection kernel、真实WSS路由，以及独立agentx仓库中的connector/runner IPC、远端lifecycle和每process独占的stock `codex exec-server --listen stdio --strict-config`监管；真实stock纵向门禁已通过。本仓又完成online environment registry、`list_environments`的stateful MCP链，以及七个execution/operation mTLS internal command与gateway client，其中`SkipOperation`已能原子收口未触发的预分配timeout。下一段是实现`PrepareExecution → operation dispatch/ACK/terminal → MCP result`的shell-v1，并补agentx本地registered-root/cwd复核、timeout outer metadata和terminate exchange。approval command、真实enrollment/key binding、dispatch后unknown恢复收口、平台containment和部署manifest仍未实现；当前开发入口明确标为loopback insecure-dev，不能作为Phase 2交付或生产部署证据。
 
 ## 14. 尚未锁定但有明确决策点的事项
 

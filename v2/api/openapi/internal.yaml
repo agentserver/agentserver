@@ -112,6 +112,21 @@
         }
       }
     },
+    "/internal/v2/executions/{executionId}/operations/{operationId}:skip": {
+      "parameters": [{"$ref": "#/components/parameters/ExecutionId"}, {"$ref": "#/components/parameters/OperationId"}],
+      "post": {
+        "operationId": "skipOperation",
+        "description": "Closes a trailing optional timeout operation without crossing the dispatch boundary, after every preceding operation is terminal.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SkipOperationRequest"}}}},
+        "responses": {
+          "200": {"description": "Optional operation skipped or exact skip retry returned", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SkipOperationResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
     "/internal/v2/executions/{executionId}:complete": {
       "parameters": [{"$ref": "#/components/parameters/ExecutionId"}],
       "post": {
@@ -366,7 +381,7 @@
           "effectClass": {"enum": ["read", "mutation"]},
           "mutationKey": {"$ref": "#/components/schemas/UUID"},
           "paramsDigest": {"$ref": "#/components/schemas/CanonicalJSONDigest"},
-          "status": {"enum": ["prepared", "dispatching", "acknowledged", "succeeded", "failed", "cancelled", "unknown"]},
+          "status": {"enum": ["prepared", "dispatching", "acknowledged", "succeeded", "failed", "cancelled", "unknown", "skipped"]},
           "connectionGeneration": {"type": "integer", "minimum": 1},
           "acknowledgementDigest": {"$ref": "#/components/schemas/CanonicalJSONDigest"},
           "terminalResultDigest": {"$ref": "#/components/schemas/CanonicalJSONDigest"},
@@ -521,6 +536,33 @@
         }
       },
       "CompleteOperationResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["execution", "operation", "changed"],
+        "properties": {
+          "execution": {"$ref": "#/components/schemas/ExecutionState"},
+          "operation": {"$ref": "#/components/schemas/ExecutionOperationState"},
+          "changed": {"type": "boolean"}
+        }
+      },
+      "SkipOperationRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operationId", "executionId", "runId", "runAttemptId", "holderId", "runAttemptGeneration", "expectedExecutionVersion", "expectedOperationVersion", "result", "record"],
+        "properties": {
+          "operationId": {"$ref": "#/components/schemas/UUID"},
+          "executionId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1},
+          "expectedExecutionVersion": {"type": "integer", "minimum": 1},
+          "expectedOperationVersion": {"type": "integer", "minimum": 1},
+          "result": {"$ref": "#/components/schemas/CanonicalJSONObject"},
+          "record": {"$ref": "#/components/schemas/TransitionRecord"}
+        }
+      },
+      "SkipOperationResponse": {
         "type": "object",
         "additionalProperties": false,
         "required": ["execution", "operation", "changed"],

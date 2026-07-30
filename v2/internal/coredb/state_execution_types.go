@@ -25,6 +25,9 @@ const (
 	OperationStatusFailed       = "failed"
 	OperationStatusCancelled    = "cancelled"
 	OperationStatusUnknown      = "unknown"
+	OperationStatusSkipped      = "skipped"
+
+	OperationKindTimeoutTerminate = "timeout_terminate"
 
 	PolicyDecisionAllow = "allow"
 	PolicyDecisionAsk   = "ask"
@@ -191,6 +194,25 @@ type CompleteOperationCommand struct {
 }
 
 type CompleteOperationResult struct {
+	Execution Execution
+	Operation ExecutionOperation
+	Changed   bool
+}
+
+type SkipOperationCommand struct {
+	OperationID              string
+	ExecutionID              string
+	RunID                    string
+	AttemptID                string
+	HolderID                 string
+	Generation               int64
+	ExpectedExecutionVersion int64
+	ExpectedOperationVersion int64
+	ResultHash               CanonicalJSONHash
+	Record                   TransitionRecord
+}
+
+type SkipOperationResult struct {
 	Execution Execution
 	Operation ExecutionOperation
 	Changed   bool

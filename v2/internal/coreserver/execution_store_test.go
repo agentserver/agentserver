@@ -128,6 +128,37 @@ func TestStateStoreExecutionCommandsRejectsInvalidCanonicalEvidenceBeforeStore(t
 	}
 }
 
+func TestStateStoreExecutionCommandsHashesSkipResult(t *testing.T) {
+	store := &recordingExecutionStateStore{}
+	commands := StateStoreExecutionCommands{Store: store}
+	request := testPrepareExecutionContractRequest()
+	prepared, err := commands.PrepareExecution(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation, err := commands.PrepareOperation(t.Context(), corecontract.PrepareOperationRequest{
+		OperationID: testOperationID, ExecutionID: testExecutionID, RunID: request.RunID, RunAttemptID: request.RunAttemptID,
+		HolderID: request.HolderID, RunAttemptGeneration: request.RunAttemptGeneration, ExpectedExecutionVersion: prepared.Execution.Version,
+		Ordinal: 1, Kind: coredb.OperationKindTimeoutTerminate, EffectClass: "mutation", MutationKey: "61000000-0000-4000-8000-000000000006",
+		Params: json.RawMessage(`{"deadlineMs":60000}`), Record: request.Record,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	skipped, err := commands.SkipOperation(t.Context(), corecontract.SkipOperationRequest{
+		OperationID: testOperationID, ExecutionID: testExecutionID, RunID: request.RunID, RunAttemptID: request.RunAttemptID,
+		HolderID: request.HolderID, RunAttemptGeneration: request.RunAttemptGeneration,
+		ExpectedExecutionVersion: operation.Execution.Version, ExpectedOperationVersion: operation.Operation.Version,
+		Result: json.RawMessage(`{"reason":"process_terminal_before_deadline"}`), Record: request.Record,
+	})
+	if err != nil || !skipped.Changed || skipped.Operation.Status != coredb.OperationStatusSkipped {
+		t.Fatalf("SkipOperation() = %+v, %v", skipped, err)
+	}
+	if store.skipOperationCalls != 1 || store.operation.TerminalResultHash == nil || store.operation.TerminalResultHash.Domain() != coredb.HashDomainOperationResult {
+		t.Fatalf("skip calls/hash = %d/%+v", store.skipOperationCalls, store.operation.TerminalResultHash)
+	}
+}
+
 func testPrepareExecutionContractRequest() corecontract.PrepareExecutionRequest {
 	return corecontract.PrepareExecutionRequest{
 		ExecutionID: testExecutionID,
@@ -154,6 +185,7 @@ func testPrepareExecutionContractRequest() corecontract.PrepareExecutionRequest 
 
 type recordingExecutionStateStore struct {
 	prepareExecutionCalls int
+	skipOperationCalls    int
 	execution             coredb.Execution
 	operation             coredb.ExecutionOperation
 }
@@ -214,6 +246,17 @@ func (store *recordingExecutionStateStore) CompleteOperation(_ context.Context, 
 	now := time.Now().UTC()
 	store.operation.TerminalAt = &now
 	return coredb.CompleteOperationResult{Execution: store.execution, Operation: store.operation, Changed: true}, nil
+}
+
+func (store *recordingExecutionStateStore) SkipOperation(_ context.Context, command coredb.SkipOperationCommand) (coredb.SkipOperationResult, error) {
+	store.skipOperationCalls++
+	store.execution.Version++
+	store.operation.Version++
+	store.operation.Status = coredb.OperationStatusSkipped
+	store.operation.TerminalResultHash = &command.ResultHash
+	now := time.Now().UTC()
+	store.operation.TerminalAt = &now
+	return coredb.SkipOperationResult{Execution: store.execution, Operation: store.operation, Changed: true}, nil
 }
 
 func (store *recordingExecutionStateStore) CompleteExecution(_ context.Context, command coredb.CompleteExecutionCommand) (coredb.CompleteExecutionResult, error) {

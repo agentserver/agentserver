@@ -199,6 +199,118 @@ func TestPostgreSQLExecutionAcknowledgedTerminalStateMachine(t *testing.T) {
 	}
 }
 
+func TestPostgreSQLExecutionSkipsTrailingTimeoutAfterProcessTerminal(t *testing.T) {
+	store, pool, schema := newPostgresStateStore(t)
+	running := startExecutionTestRun(t, store, pool, schema, 25_000)
+	preparedExecution, err := store.PrepareExecution(t.Context(), executionTestPrepareCommand(t, 25_100, running, "tool-call-timeout-skip", 2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	process, err := store.PrepareOperation(t.Context(), executionTestPrepareOperationCommand(t, 25_200, running, preparedExecution.Execution, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	timeoutCommand := executionTestPrepareOperationCommand(t, 25_300, running, process.Execution, 2)
+	timeoutCommand.Kind = OperationKindTimeoutTerminate
+	timeout, err := store.PrepareOperation(t.Context(), timeoutCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	beginCommand := executionTestBeginCommand(t, 25_400, running, process, 12)
+	beginCommand.ExpectedExecutionVersion = timeout.Execution.Version
+	dispatching, err := store.BeginOperationDispatch(t.Context(), beginCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prematureSkip := SkipOperationCommand{
+		OperationID:              timeout.Operation.ID,
+		ExecutionID:              timeout.Execution.ID,
+		RunID:                    running.Run.ID,
+		AttemptID:                running.Attempt.ID,
+		HolderID:                 running.Attempt.HolderID,
+		Generation:               running.Attempt.Generation,
+		ExpectedExecutionVersion: dispatching.Execution.Version,
+		ExpectedOperationVersion: timeout.Operation.Version,
+		ResultHash:               executionTestHash(t, HashDomainOperationResult, 25_410),
+		Record:                   stateTransitionRecord(25_420),
+	}
+	if _, err := store.SkipOperation(t.Context(), prematureSkip); !HasStateErrorCode(err, ErrorInvalidState) {
+		t.Fatalf("pre-terminal SkipOperation() error = %v, want invalid_state", err)
+	}
+
+	acknowledged, err := store.AcknowledgeOperation(t.Context(), AcknowledgeOperationCommand{
+		OperationID:              dispatching.Operation.ID,
+		ExecutionID:              dispatching.Execution.ID,
+		RunID:                    running.Run.ID,
+		AttemptID:                running.Attempt.ID,
+		Generation:               running.Attempt.Generation,
+		ConnectionGeneration:     12,
+		ExpectedExecutionVersion: dispatching.Execution.Version,
+		ExpectedOperationVersion: dispatching.Operation.Version,
+		AcknowledgementHash:      executionTestHash(t, HashDomainOperationAck, 25_500),
+		Record:                   stateTransitionRecord(25_510),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	completedProcess, err := store.CompleteOperation(t.Context(), CompleteOperationCommand{
+		OperationID:              acknowledged.Operation.ID,
+		ExecutionID:              acknowledged.Execution.ID,
+		RunID:                    running.Run.ID,
+		AttemptID:                running.Attempt.ID,
+		Generation:               running.Attempt.Generation,
+		ConnectionGeneration:     12,
+		ExpectedExecutionVersion: acknowledged.Execution.Version,
+		ExpectedOperationVersion: acknowledged.Operation.Version,
+		TerminalStatus:           OperationStatusSucceeded,
+		ResultHash:               executionTestHash(t, HashDomainOperationResult, 25_600),
+		Record:                   stateTransitionRecord(25_610),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	skip := prematureSkip
+	skip.ExpectedExecutionVersion = completedProcess.Execution.Version
+	skip.Record = stateTransitionRecord(25_700)
+	preinsertOutbox(t, pool, schema, skip.Record.OutboxID, running.Run.ID)
+	if _, err := store.SkipOperation(t.Context(), skip); !HasStateErrorCode(err, ErrorConflict) {
+		t.Fatalf("SkipOperation() with outbox conflict error = %v, want conflict", err)
+	}
+	skip.Record = stateTransitionRecord(25_750)
+	skipped, err := store.SkipOperation(t.Context(), skip)
+	if err != nil || !skipped.Changed || skipped.Operation.Status != OperationStatusSkipped || skipped.Operation.ConnectionGeneration != 0 ||
+		skipped.Operation.DispatchedAt != nil || skipped.Operation.AcknowledgementHash != nil || skipped.Operation.TerminalResultHash == nil || skipped.Operation.TerminalAt == nil {
+		t.Fatalf("SkipOperation() = %+v, error = %v", skipped, err)
+	}
+	retry, err := store.SkipOperation(t.Context(), skip)
+	if err != nil || retry.Changed {
+		t.Fatalf("retry SkipOperation() = %+v, error = %v", retry, err)
+	}
+	lateTimeoutBegin := executionTestBeginCommand(t, 25_775, running, timeout, 12)
+	lateTimeoutBegin.ExpectedExecutionVersion = skipped.Execution.Version
+	lateTimeoutBegin.ExpectedOperationVersion = skipped.Operation.Version
+	lateBeginResult, err := store.BeginOperationDispatch(t.Context(), lateTimeoutBegin)
+	if err != nil || lateBeginResult.Began || lateBeginResult.Operation.Status != OperationStatusSkipped {
+		t.Fatalf("BeginOperationDispatch() after skip = %+v, error = %v", lateBeginResult, err)
+	}
+
+	completedExecution, err := store.CompleteExecution(t.Context(), CompleteExecutionCommand{
+		ExecutionID:              skipped.Execution.ID,
+		RunID:                    running.Run.ID,
+		AttemptID:                running.Attempt.ID,
+		Generation:               running.Attempt.Generation,
+		ExpectedExecutionVersion: skipped.Execution.Version,
+		TerminalStatus:           ExecutionStatusSucceeded,
+		ResultHash:               executionTestHash(t, HashDomainExecutionResult, 25_800),
+		Record:                   stateTransitionRecord(25_810),
+	})
+	if err != nil || completedExecution.Execution.Status != ExecutionStatusSucceeded {
+		t.Fatalf("CompleteExecution() = %+v, error = %v", completedExecution, err)
+	}
+}
+
 func TestPostgreSQLExecutionFingerprintLeaseAndGenerationFencing(t *testing.T) {
 	store, pool, schema := newPostgresStateStore(t)
 	running := startExecutionTestRun(t, store, pool, schema, 30_000)

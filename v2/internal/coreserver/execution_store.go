@@ -18,6 +18,7 @@ type ExecutionStateStore interface {
 	BeginOperationDispatch(context.Context, coredb.BeginOperationDispatchCommand) (coredb.BeginOperationDispatchResult, error)
 	AcknowledgeOperation(context.Context, coredb.AcknowledgeOperationCommand) (coredb.AcknowledgeOperationResult, error)
 	CompleteOperation(context.Context, coredb.CompleteOperationCommand) (coredb.CompleteOperationResult, error)
+	SkipOperation(context.Context, coredb.SkipOperationCommand) (coredb.SkipOperationResult, error)
 	CompleteExecution(context.Context, coredb.CompleteExecutionCommand) (coredb.CompleteExecutionResult, error)
 }
 
@@ -193,6 +194,36 @@ func (commands StateStoreExecutionCommands) CompleteOperation(ctx context.Contex
 		return corecontract.CompleteOperationResponse{}, err
 	}
 	return corecontract.CompleteOperationResponse{
+		Execution: contractExecution(result.Execution),
+		Operation: contractExecutionOperation(result.Operation),
+		Changed:   result.Changed,
+	}, nil
+}
+
+func (commands StateStoreExecutionCommands) SkipOperation(ctx context.Context, request corecontract.SkipOperationRequest) (corecontract.SkipOperationResponse, error) {
+	if commands.Store == nil {
+		return corecontract.SkipOperationResponse{}, errors.New("nil core state store")
+	}
+	resultHash, err := hashCanonicalJSONObject(coredb.HashDomainOperationResult, request.Result)
+	if err != nil {
+		return corecontract.SkipOperationResponse{}, executionCommandConversionError("SkipOperation", "operation", request.OperationID, fmt.Errorf("result: %w", err))
+	}
+	result, err := commands.Store.SkipOperation(ctx, coredb.SkipOperationCommand{
+		OperationID:              request.OperationID,
+		ExecutionID:              request.ExecutionID,
+		RunID:                    request.RunID,
+		AttemptID:                request.RunAttemptID,
+		HolderID:                 request.HolderID,
+		Generation:               request.RunAttemptGeneration,
+		ExpectedExecutionVersion: request.ExpectedExecutionVersion,
+		ExpectedOperationVersion: request.ExpectedOperationVersion,
+		ResultHash:               resultHash,
+		Record:                   databaseTransitionRecord(request.Record),
+	})
+	if err != nil {
+		return corecontract.SkipOperationResponse{}, err
+	}
+	return corecontract.SkipOperationResponse{
 		Execution: contractExecution(result.Execution),
 		Operation: contractExecutionOperation(result.Operation),
 		Changed:   result.Changed,

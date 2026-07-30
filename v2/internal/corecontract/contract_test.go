@@ -53,6 +53,7 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 		BeginOperationDispatchPath("{executionId}", "{operationId}"): "beginOperationDispatch",
 		AcknowledgeOperationPath("{executionId}", "{operationId}"):   "acknowledgeOperation",
 		CompleteOperationPath("{executionId}", "{operationId}"):      "completeOperation",
+		SkipOperationPath("{executionId}", "{operationId}"):          "skipOperation",
 		CompleteExecutionPath("{executionId}"):                       "completeExecution",
 	}
 	for path, operationID := range want {
@@ -89,6 +90,8 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "AcknowledgeOperationResponse", reflect.TypeFor[AcknowledgeOperationResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "CompleteOperationRequest", reflect.TypeFor[CompleteOperationRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "CompleteOperationResponse", reflect.TypeFor[CompleteOperationResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "SkipOperationRequest", reflect.TypeFor[SkipOperationRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "SkipOperationResponse", reflect.TypeFor[SkipOperationResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "CompleteExecutionRequest", reflect.TypeFor[CompleteExecutionRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "CompleteExecutionResponse", reflect.TypeFor[CompleteExecutionResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "ErrorResponse", reflect.TypeFor[ErrorResponse]())

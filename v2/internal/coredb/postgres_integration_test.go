@@ -29,15 +29,15 @@ func TestPostgreSQLMigrationKernel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first migrateConfig() error = %v", err)
 	}
-	if result.Applied != 4 || result.CurrentVersion != 4 {
-		t.Fatalf("first migration result = %+v, want four applied migrations at version 4", result)
+	if result.Applied != 5 || result.CurrentVersion != 5 {
+		t.Fatalf("first migration result = %+v, want five applied migrations at version 5", result)
 	}
 	result, err = migrateConfig(t.Context(), connectionConfig, runner)
 	if err != nil {
 		t.Fatalf("repeat migrateConfig() error = %v", err)
 	}
-	if result.Applied != 0 || result.CurrentVersion != 4 {
-		t.Fatalf("repeat migration result = %+v, want no-op at version 4", result)
+	if result.Applied != 0 || result.CurrentVersion != 5 {
+		t.Fatalf("repeat migration result = %+v, want no-op at version 5", result)
 	}
 
 	connection := openPostgresTestConnection(t, connectionConfig)
@@ -270,13 +270,42 @@ func TestPostgreSQLMigration0004UpgradesPublishedVersion0003(t *testing.T) {
 		t.Fatalf("published migration result = %+v, want version 3", result)
 	}
 
-	runner.catalog = catalog
+	runner.catalog = catalog[:4]
 	result, err = migrateConfig(t.Context(), connectionConfig, runner)
 	if err != nil {
 		t.Fatalf("upgrade to migration 0004: %v", err)
 	}
 	if result.Applied != 1 || result.CurrentVersion != 4 {
 		t.Fatalf("0004 upgrade result = %+v, want one applied migration at version 4", result)
+	}
+}
+
+func TestPostgreSQLMigration0005UpgradesPublishedVersion0004(t *testing.T) {
+	connectionConfig := postgresIntegrationConfig(t)
+	schema := newPostgresTestSchema(t, connectionConfig)
+	catalog, err := EmbeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) < 5 {
+		t.Fatal("embedded catalog does not contain migration 0005")
+	}
+	runner := runnerConfig{schema: schema, lockKey: migrationAdvisoryLockKey, catalog: catalog[:4]}
+	result, err := migrateConfig(t.Context(), connectionConfig, runner)
+	if err != nil {
+		t.Fatalf("apply published migrations through 0004: %v", err)
+	}
+	if result.Applied != 4 || result.CurrentVersion != 4 {
+		t.Fatalf("published migration result = %+v, want version 4", result)
+	}
+
+	runner.catalog = catalog
+	result, err = migrateConfig(t.Context(), connectionConfig, runner)
+	if err != nil {
+		t.Fatalf("upgrade to migration 0005: %v", err)
+	}
+	if result.Applied != 1 || result.CurrentVersion != 5 {
+		t.Fatalf("0005 upgrade result = %+v, want one applied migration at version 5", result)
 	}
 }
 
@@ -439,6 +468,7 @@ WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, schema)
 		"execution_operations_execution_ordinal_unique":           false,
 		"execution_operations_mutation_key_unique":                false,
 		"execution_operations_terminal_matches_status":            false,
+		"execution_operations_skipped_kind_valid":                 false,
 		"executors_enrollment_metadata_complete":                  false,
 		"executor_environments_process_profile_valid":             false,
 		"executor_connections_session_id_unique":                  false,

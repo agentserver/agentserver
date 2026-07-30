@@ -186,6 +186,25 @@ type CompleteOperationResponse struct {
 	Changed   bool                    `json:"changed"`
 }
 
+type SkipOperationRequest struct {
+	OperationID              string           `json:"operationId"`
+	ExecutionID              string           `json:"executionId"`
+	RunID                    string           `json:"runId"`
+	RunAttemptID             string           `json:"runAttemptId"`
+	HolderID                 string           `json:"holderId"`
+	RunAttemptGeneration     int64            `json:"runAttemptGeneration"`
+	ExpectedExecutionVersion int64            `json:"expectedExecutionVersion"`
+	ExpectedOperationVersion int64            `json:"expectedOperationVersion"`
+	Result                   json.RawMessage  `json:"result"`
+	Record                   TransitionRecord `json:"record"`
+}
+
+type SkipOperationResponse struct {
+	Execution ExecutionState          `json:"execution"`
+	Operation ExecutionOperationState `json:"operation"`
+	Changed   bool                    `json:"changed"`
+}
+
 type CompleteExecutionRequest struct {
 	ExecutionID              string           `json:"executionId"`
 	RunID                    string           `json:"runId"`
@@ -216,6 +235,10 @@ func AcknowledgeOperationPath(executionID, operationID string) string {
 
 func CompleteOperationPath(executionID, operationID string) string {
 	return executionOperationActionPath(executionID, operationID, "complete")
+}
+
+func SkipOperationPath(executionID, operationID string) string {
+	return executionOperationActionPath(executionID, operationID, "skip")
 }
 
 func CompleteExecutionPath(executionID string) string {

@@ -141,6 +141,37 @@ func TestCoreExecutionClientRejectsInvalidOneShotPermission(t *testing.T) {
 	}
 }
 
+func TestCoreExecutionClientAcceptsNonDispatchedSkip(t *testing.T) {
+	commands := &recordingExecutionContractCommands{}
+	handler, err := coreserver.NewExecutionHandler(allowCoreWorkload{}, commands)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	client, err := NewCoreConnectionClient(server.URL, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	skipped, err := client.SkipOperation(t.Context(), SkipOperationRequest{
+		OperationID: testCoreOperationID, ExecutionID: testCoreExecutionID, RunID: testCoreRunID, RunAttemptID: testCoreAttemptID,
+		HolderID: "holder", RunAttemptGeneration: 3, ExpectedExecutionVersion: 5, ExpectedOperationVersion: 1,
+		Result: json.RawMessage(`{"reason":"process_terminal_before_deadline"}`), Record: testGatewayTransitionRecord(7),
+	})
+	if err != nil || !skipped.Changed || skipped.Operation.Status != "skipped" || skipped.Operation.TerminalResultDigest == nil || skipped.Operation.ConnectionGeneration != 0 {
+		t.Fatalf("SkipOperation() = %+v, %v", skipped, err)
+	}
+}
+
+func TestGatewayOperationStateRejectsDispatchedSkip(t *testing.T) {
+	terminal := testContractDigest("operation-result", "skip-result")
+	state := testContractOperationState("skipped", 2, 7, nil, &terminal)
+	if _, err := gatewayExecutionOperationState(state); err == nil || !strings.Contains(err.Error(), "skipped operation crossed") {
+		t.Fatalf("gatewayExecutionOperationState() error = %v", err)
+	}
+}
+
 func testGatewayPrepareExecutionRequest() PrepareExecutionRequest {
 	return PrepareExecutionRequest{
 		ExecutionID: testCoreExecutionID, RunID: testCoreRunID, RunAttemptID: testCoreAttemptID,
@@ -224,6 +255,16 @@ func (commands *recordingExecutionContractCommands) CompleteOperation(_ context.
 	commands.execution = testContractExecutionState("running", 5, nil)
 	commands.operation = testContractOperationState(request.TerminalStatus, 4, request.ConnectionGeneration, &ack, &terminal)
 	return corecontract.CompleteOperationResponse{Execution: commands.execution, Operation: commands.operation, Changed: true}, nil
+}
+
+func (commands *recordingExecutionContractCommands) SkipOperation(_ context.Context, _ corecontract.SkipOperationRequest) (corecontract.SkipOperationResponse, error) {
+	terminal := testContractDigest("operation-result", "skip-result")
+	commands.execution = testContractExecutionState("running", 6, nil)
+	commands.execution.OperationCount = 2
+	commands.operation = testContractOperationState("skipped", 2, 0, nil, &terminal)
+	commands.operation.Ordinal = 2
+	commands.operation.Kind = coredb.OperationKindTimeoutTerminate
+	return corecontract.SkipOperationResponse{Execution: commands.execution, Operation: commands.operation, Changed: true}, nil
 }
 
 func (commands *recordingExecutionContractCommands) CompleteExecution(_ context.Context, request corecontract.CompleteExecutionRequest) (corecontract.CompleteExecutionResponse, error) {

@@ -17,6 +17,7 @@ type ExecutionCommands interface {
 	BeginOperationDispatch(context.Context, corecontract.BeginOperationDispatchRequest) (corecontract.BeginOperationDispatchResponse, error)
 	AcknowledgeOperation(context.Context, corecontract.AcknowledgeOperationRequest) (corecontract.AcknowledgeOperationResponse, error)
 	CompleteOperation(context.Context, corecontract.CompleteOperationRequest) (corecontract.CompleteOperationResponse, error)
+	SkipOperation(context.Context, corecontract.SkipOperationRequest) (corecontract.SkipOperationResponse, error)
 	CompleteExecution(context.Context, corecontract.CompleteExecutionRequest) (corecontract.CompleteExecutionResponse, error)
 }
 
@@ -58,6 +59,8 @@ func (handler *ExecutionHandler) ServeHTTP(response http.ResponseWriter, request
 		handler.acknowledgeOperation(response, request, executionID, operationID)
 	case "complete-operation":
 		handler.completeOperation(response, request, executionID, operationID)
+	case "skip-operation":
+		handler.skipOperation(response, request, executionID, operationID)
 	case "complete-execution":
 		handler.completeExecution(response, request, executionID)
 	default:
@@ -158,6 +161,25 @@ func (handler *ExecutionHandler) completeOperation(response http.ResponseWriter,
 	writeJSON(response, http.StatusOK, result)
 }
 
+func (handler *ExecutionHandler) skipOperation(response http.ResponseWriter, request *http.Request, executionID, operationID string) {
+	if !handler.authorize(response, request, "execution-operations.skip") {
+		return
+	}
+	var command corecontract.SkipOperationRequest
+	if !decodeCommandWithLimit(response, request, &command, maxExecutionCommandBytes) {
+		return
+	}
+	if !executionOperationPathMatches(response, executionID, operationID, command.ExecutionID, command.OperationID) {
+		return
+	}
+	result, err := handler.commands.SkipOperation(request.Context(), command)
+	if err != nil {
+		writeCommandError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
 func (handler *ExecutionHandler) completeExecution(response http.ResponseWriter, request *http.Request, executionID string) {
 	if !handler.authorize(response, request, "executions.complete") {
 		return
@@ -220,6 +242,8 @@ func parseExecutionAction(path string) (executionID, operationID, action string,
 		action = "acknowledge"
 	case "complete":
 		action = "complete-operation"
+	case "skip":
+		action = "skip-operation"
 	default:
 		return "", "", "", false
 	}

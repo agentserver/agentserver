@@ -95,6 +95,17 @@ func Decode(raw []byte, limits Limits) (Message, error) {
 			if _, present := fields["context"]; present {
 				return Message{}, protocolError(ErrorMalformedFrame, true, "lifecycle frame cannot contain context")
 			}
+			if _, present := fields["directives"]; present {
+				return Message{}, protocolError(ErrorMalformedFrame, true, "lifecycle frame cannot contain directives")
+			}
+		} else {
+			fields, err := requiredObjectFields(raw)
+			if err != nil {
+				return Message{}, protocolError(ErrorMalformedFrame, true, "decode business frame: %v", err)
+			}
+			if _, present := fields["directives"]; present && value.Directives == nil {
+				return Message{}, protocolError(ErrorMalformedFrame, true, "business frame directives cannot be null")
+			}
 		}
 		if err := value.validateStructure(); err != nil {
 			return Message{}, err
@@ -341,8 +352,8 @@ func (frame Frame) validateStructure() error {
 		return protocolError(ErrorMalformedFrame, true, "rpc is required")
 	}
 	if frame.Type == MessageTypeLifecycle {
-		if frame.Context != nil {
-			return protocolError(ErrorMalformedFrame, true, "lifecycle frame cannot carry routing context")
+		if frame.Context != nil || frame.Directives != nil {
+			return protocolError(ErrorMalformedFrame, true, "lifecycle frame cannot carry routing context or dispatch directives")
 		}
 		if _, err := parseStandardRPC(frame.RPC); err != nil {
 			return err
@@ -355,8 +366,17 @@ func (frame Frame) validateStructure() error {
 	if err := frame.Context.Validate(); err != nil {
 		return err
 	}
-	if _, err := codexwire.Parse(frame.RPC); err != nil {
-		return protocolError(ErrorMalformedFrame, true, "invalid inner stock RPC: %v", err)
+	rpc, err := codexwire.Parse(frame.RPC)
+	if err != nil {
+		return protocolError(ErrorMalformedFrame, true, "invalid inner business RPC: %v", err)
+	}
+	if frame.Directives != nil {
+		if rpc.Kind != codexwire.KindRequest {
+			return protocolError(ErrorMalformedFrame, true, "dispatch directives require a process/start request")
+		}
+		if err := validateDispatchDirectives(*frame.Context, frame.Directives, rpc.Method); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -381,7 +401,7 @@ func (frame Frame) ValidateForReceiver(receiver Role) error {
 	}
 	rpc, err := codexwire.Parse(frame.RPC)
 	if err != nil {
-		return protocolError(ErrorMalformedFrame, true, "invalid inner stock RPC: %v", err)
+		return protocolError(ErrorMalformedFrame, true, "invalid inner business RPC: %v", err)
 	}
 	if err := validateStockRPCEnvelope(rpc); err != nil {
 		return err
@@ -396,13 +416,22 @@ func (frame Frame) ValidateForReceiver(receiver Role) error {
 			if err := validateProcessRequestParams(rpc); err != nil {
 				return err
 			}
+			if err := validateDispatchDirectives(*frame.Context, frame.Directives, rpc.Method); err != nil {
+				return err
+			}
 		case codexwire.KindResponse, codexwire.KindError:
+			if frame.Directives != nil {
+				return protocolError(ErrorMalformedFrame, true, "gateway response cannot carry dispatch directives")
+			}
 			// Responses to an agentx-originated network/policyRequest are
 			// correlated and type-checked by the request table.
 		default:
 			return protocolError(ErrorMethodNotNegotiated, true, "gateway cannot send business %s", rpc.Kind)
 		}
 	case RoleAgentx:
+		if frame.Directives != nil {
+			return protocolError(ErrorMalformedFrame, true, "agentx frame cannot carry gateway dispatch directives")
+		}
 		switch rpc.Kind {
 		case codexwire.KindRequest:
 			if rpc.Method != execprofile.ReverseMethodNetworkPolicyRequest {
@@ -412,6 +441,12 @@ func (frame Frame) ValidateForReceiver(receiver Role) error {
 				return err
 			}
 		case codexwire.KindNotification:
+			if rpc.Method == NotificationAgentxTimeoutDue {
+				if err := validateTimeoutDueNotificationParams(rpc); err != nil {
+					return err
+				}
+				break
+			}
 			if !execprofile.AllowsProcessNotification(rpc.Method) {
 				return protocolError(ErrorMethodNotNegotiated, true, "agentx notification %q is not negotiated", rpc.Method)
 			}
@@ -422,6 +457,32 @@ func (frame Frame) ValidateForReceiver(receiver Role) error {
 		default:
 			return protocolError(ErrorMethodNotNegotiated, true, "agentx business RPC kind %s is not negotiated", rpc.Kind)
 		}
+	}
+	return nil
+}
+
+func validateDispatchDirectives(context RoutingContext, directives *DispatchDirectives, method string) error {
+	if directives == nil {
+		return nil
+	}
+	if method != execprofile.MethodProcessStart {
+		return protocolError(ErrorMalformedFrame, true, "dispatch directives are valid only for process/start")
+	}
+	if directives.ProcessTimeout == nil {
+		return protocolError(ErrorMalformedFrame, true, "process/start directives require processTimeout")
+	}
+	timeout := directives.ProcessTimeout
+	if timeout.AfterMillis < 1 || timeout.AfterMillis > maxProcessTimeoutMS {
+		return protocolError(ErrorMalformedFrame, true, "processTimeout.afterMs must be between 1 and %d", maxProcessTimeoutMS)
+	}
+	if err := validateUUID("processTimeout.operationId", timeout.OperationID); err != nil {
+		return err
+	}
+	if err := validateUUID("processTimeout.mutationKey", timeout.MutationKey); err != nil {
+		return err
+	}
+	if timeout.OperationID == context.OperationID || timeout.MutationKey == context.MutationKey {
+		return protocolError(ErrorMalformedFrame, true, "processTimeout must use a distinct preallocated operation and mutation key")
 	}
 	return nil
 }

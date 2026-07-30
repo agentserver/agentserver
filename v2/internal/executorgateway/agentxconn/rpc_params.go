@@ -25,6 +25,7 @@ const (
 	maxSandboxEntries      = 64
 	maxWorkspaceRoots      = 32
 	maxNetworkHostRunes    = 253
+	maxProcessTimeoutMS    = 3_600_000
 )
 
 var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -115,6 +116,10 @@ type processExitedParams struct {
 type processClosedParams struct {
 	ProcessID string `json:"processId"`
 	Sequence  uint64 `json:"seq"`
+}
+
+type timeoutDueParams struct {
+	ProcessID string `json:"processId"`
 }
 
 type networkPolicyRequestParams struct {
@@ -274,6 +279,14 @@ func validateProcessNotificationParams(rpc codexwire.Message) error {
 	default:
 		return protocolError(ErrorMethodNotNegotiated, true, "process notification method %q is outside %s", rpc.Method, execprofile.Version)
 	}
+}
+
+func validateTimeoutDueNotificationParams(rpc codexwire.Message) error {
+	var params timeoutDueParams
+	if err := decodeRequiredObject(rpc.Params, &params, "processId"); err != nil {
+		return malformedMethodParams(rpc.Method, err)
+	}
+	return validateUUID("processId", params.ProcessID)
 }
 
 func validateNetworkPolicyRequestParams(rpc codexwire.Message) error {

@@ -247,6 +247,67 @@ func TestBusinessRPCMethodParamsAreFailClosed(t *testing.T) {
 	}
 }
 
+func TestProcessTimeoutDirectiveAndDueNotificationAreOuterOnly(t *testing.T) {
+	startContext := testRoutingContext()
+	timeoutOperationID := "52000000-0000-0000-0000-000000000005"
+	timeoutMutationKey := "62000000-0000-0000-0000-000000000006"
+	start := Frame{
+		Type:       MessageTypeRPC,
+		SessionID:  testSessionID,
+		SessionSeq: 1,
+		Generation: 7,
+		Context:    &startContext,
+		Directives: &DispatchDirectives{ProcessTimeout: &ProcessTimeoutDirective{
+			AfterMillis: 60_000,
+			OperationID: timeoutOperationID,
+			MutationKey: timeoutMutationKey,
+		}},
+		RPC: testProcessStartRPC(),
+	}
+	if err := start.ValidateForReceiver(RoleAgentx); err != nil {
+		t.Fatalf("process/start timeout directive rejected: %v", err)
+	}
+
+	timeoutContext := startContext
+	timeoutContext.OperationID = timeoutOperationID
+	timeoutContext.MutationKey = timeoutMutationKey
+	due := Frame{
+		Type:       MessageTypeRPC,
+		SessionID:  testSessionID,
+		SessionSeq: 2,
+		Generation: 7,
+		Context:    &timeoutContext,
+		RPC:        json.RawMessage(`{"method":"agentx/timeoutDue","params":{"processId":"70000000-0000-0000-0000-000000000007"}}`),
+	}
+	if err := due.ValidateForReceiver(RoleGateway); err != nil {
+		t.Fatalf("agentx timeout-due notification rejected: %v", err)
+	}
+	if err := due.ValidateForReceiver(RoleAgentx); codeOf(err) != ErrorMethodNotNegotiated {
+		t.Fatalf("gateway was allowed to send timeout-due notification: %v", err)
+	}
+
+	read := cloneFrame(start)
+	read.RPC = json.RawMessage(`{"id":"read-1","method":"process/read","params":{"processId":"70000000-0000-0000-0000-000000000007","afterSeq":0,"maxBytes":1024,"waitMs":0}}`)
+	if err := read.ValidateForReceiver(RoleAgentx); codeOf(err) != ErrorMalformedFrame {
+		t.Fatalf("non-start directive error = %v", err)
+	}
+	sameOperation := cloneFrame(start)
+	sameOperation.Directives.ProcessTimeout.OperationID = startContext.OperationID
+	if err := sameOperation.ValidateForReceiver(RoleAgentx); codeOf(err) != ErrorMalformedFrame {
+		t.Fatalf("reused timeout operation error = %v", err)
+	}
+	tooLong := cloneFrame(start)
+	tooLong.Directives.ProcessTimeout.AfterMillis = maxProcessTimeoutMS + 1
+	if err := tooLong.ValidateForReceiver(RoleAgentx); codeOf(err) != ErrorMalformedFrame {
+		t.Fatalf("unbounded timeout directive error = %v", err)
+	}
+	missingTimeout := cloneFrame(start)
+	missingTimeout.Directives.ProcessTimeout = nil
+	if err := missingTimeout.ValidateForReceiver(RoleAgentx); codeOf(err) != ErrorMalformedFrame {
+		t.Fatalf("empty timeout directives error = %v", err)
+	}
+}
+
 func TestRemoteLifecycleIsSeparateFromStockChildDialect(t *testing.T) {
 	initialize := Frame{
 		Type:       MessageTypeLifecycle,
@@ -356,6 +417,10 @@ func validHello() Hello {
 
 func testWireLimits() Limits {
 	return Limits{MaxFrameBytes: 64 * 1024, MaxJSONValues: 4096, MaxJSONDepth: 64}
+}
+
+func testProcessStartRPC() json.RawMessage {
+	return json.RawMessage(`{"id":"start-1","method":"process/start","params":{"processId":"70000000-0000-0000-0000-000000000007","argv":["/bin/echo","ok"],"cwd":"file:///workspace","env":{},"envPolicy":{"inherit":"none","ignoreDefaultExcludes":false,"exclude":[],"set":{},"includeOnly":[]},"tty":false,"pipeStdin":false,"arg0":null,"sandbox":{"permissions":{"type":"managed","file_system":{"type":"restricted","entries":[{"path":{"type":"path","path":"file:///workspace"},"access":"write"}]},"network":"restricted"},"cwd":"file:///workspace","workspaceRoots":["file:///workspace"],"windowsSandboxLevel":"restricted-token","windowsSandboxPrivateDesktop":false,"useLegacyLandlock":false},"enforceManagedNetwork":true}}`)
 }
 
 func codeOf(err error) ErrorCode {

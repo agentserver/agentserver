@@ -431,7 +431,7 @@ upstream 将 `codex exec-server` 标记为 experimental，因此不能假设 sem
 
 `argv` 是字符串数组，不是自然语言。若调用者确实需要 shell 语法，必须显式传入例如 `["/bin/zsh", "-lc", "..."]`，并受独立策略控制。`shell-v1` 不允许调用方选择 ambient inheritance；未提供的 env 为空，提供的 env 只是显式条目，gateway 与 agentx 的变量都不得继承。
 
-`timeout` 不是当前 stock `process/start` 的字段；gateway/agentx 必须用受 fencing 约束的本地计时器实现，并在到期后发送 `process/terminate`、等待真实终态。不能把 timeout 悄悄塞入 upstream params，也不能在未确认进程退出时只返回“超时成功终止”。
+`timeout` 不是当前 stock `process/start` 的字段。gateway把`afterMs + 预分配timeout operation_id/mutation_key`放在agentx outer frame的`directives.processTimeout`，该字段由agentx消费且绝不复制进stock params。agentx本地monotonic timer到期时只在同一有序journal上发送`agentx/timeoutDue(processId)`，其routing context使用预分配timeout operation；gateway本地timer也进入同一处理路径。`timeoutDue`只是“期限已到”的可信信号，不是外部发送许可：gateway仍须先以core `BeginOperationDispatch`跨过唯一CAS边界，只有`Began=true`才能发送stock `process/terminate`，随后等待真实终态。这样agentx不需要core凭证，也不会绕过pre-dispatch持久化；Phase 1 gateway不可恢复时，signal保留在同进程resume journal内，fresh gateway不能据此虚构恢复，相关operation最终按unknown/runner cleanup收口。不能把 timeout 悄悄塞入 upstream params，也不能在未确认进程退出时只返回“超时成功终止”。
 
 MCP 的 `cwd/path` 使用 env-relative 表示。gateway 根据已登记 root 做语法映射并编码为 upstream 要求的 `file:` URI，但 agentx 的本地 root 才是授权事实：它必须按 URI 语义重新解码、canonicalize 并校验。禁止只用字符串拼接检查路径，`..`、percent encoding、Windows drive/UNC 和 symlink 都必须进入跨平台逃逸测试。
 

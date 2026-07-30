@@ -21,6 +21,8 @@ const (
 	MessageTypeRPC          = "rpc"
 	MessageTypeAck          = "ack"
 	MessageTypeSessionError = "session_error"
+
+	NotificationAgentxTimeoutDue = "agentx/timeoutDue"
 )
 
 type Role string
@@ -181,13 +183,30 @@ type Welcome struct {
 // cumulative piggyback acknowledgement for the peer's sequenced frames. A
 // replay must preserve the complete Frame, including its original Ack.
 type Frame struct {
-	Type       string          `json:"type"`
-	SessionID  string          `json:"sessionId"`
-	SessionSeq uint64          `json:"sessionSeq"`
-	Ack        uint64          `json:"ack"`
-	Generation int64           `json:"generation"`
-	Context    *RoutingContext `json:"context,omitempty"`
-	RPC        json.RawMessage `json:"rpc"`
+	Type       string              `json:"type"`
+	SessionID  string              `json:"sessionId"`
+	SessionSeq uint64              `json:"sessionSeq"`
+	Ack        uint64              `json:"ack"`
+	Generation int64               `json:"generation"`
+	Context    *RoutingContext     `json:"context,omitempty"`
+	Directives *DispatchDirectives `json:"directives,omitempty"`
+	RPC        json.RawMessage     `json:"rpc"`
+}
+
+// DispatchDirectives are trusted outer instructions consumed only by agentx.
+// They are never copied into stock exec-server request params.
+type DispatchDirectives struct {
+	ProcessTimeout *ProcessTimeoutDirective `json:"processTimeout"`
+}
+
+// ProcessTimeoutDirective arms an agentx monotonic timer for process/start.
+// Expiry emits agentx/timeoutDue under the preallocated timeout operation;
+// only executor-gateway may then cross core's dispatch boundary and send the
+// actual stock process/terminate request.
+type ProcessTimeoutDirective struct {
+	AfterMillis int64  `json:"afterMs"`
+	OperationID string `json:"operationId"`
+	MutationKey string `json:"mutationKey"`
 }
 
 type RoutingContext struct {

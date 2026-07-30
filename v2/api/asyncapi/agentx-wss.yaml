@@ -34,7 +34,7 @@
     "receiveFromAgentx": {
       "action": "receive",
       "channel": {"$ref": "#/channels/agentxSession"},
-      "summary": "Receive hello, agentx lifecycle responses, stock responses/notifications/reverse requests, ACKs, and terminal session errors.",
+      "summary": "Receive hello, agentx lifecycle responses, stock responses/notifications/reverse requests, the agentx timeout-due control notification, ACKs, and terminal session errors.",
       "messages": [
         {"$ref": "#/channels/agentxSession/messages/hello"},
         {"$ref": "#/channels/agentxSession/messages/lifecycle"},
@@ -75,7 +75,7 @@
       },
       "RPC": {
         "name": "rpc",
-        "title": "Sequenced deterministic stock exec-server dialect RPC",
+        "title": "Sequenced deterministic stock exec-server RPC plus bounded agentx timeout control",
         "payload": {"$ref": "../schema/agentx-envelope.schema.json#/$defs/businessFrame"}
       },
       "Ack": {

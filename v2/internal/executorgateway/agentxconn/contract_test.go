@@ -25,6 +25,9 @@ func TestAgentxEnvelopeSchemaValidatesGoWireExamples(t *testing.T) {
 	}
 
 	context := testRoutingContext()
+	timeoutContext := context
+	timeoutContext.OperationID = "52000000-0000-0000-0000-000000000005"
+	timeoutContext.MutationKey = "62000000-0000-0000-0000-000000000006"
 	valid := []any{
 		validHello(),
 		Welcome{
@@ -66,6 +69,29 @@ func TestAgentxEnvelopeSchemaValidatesGoWireExamples(t *testing.T) {
 			Generation: 7,
 			Context:    &context,
 			RPC:        json.RawMessage(`{"id":"read-1","method":"process/read","params":{"processId":"70000000-0000-0000-0000-000000000007","afterSeq":0,"maxBytes":1024,"waitMs":0}}`),
+		},
+		Frame{
+			Type:       MessageTypeRPC,
+			SessionID:  testSessionID,
+			SessionSeq: 3,
+			Ack:        1,
+			Generation: 7,
+			Context:    &context,
+			Directives: &DispatchDirectives{ProcessTimeout: &ProcessTimeoutDirective{
+				AfterMillis: 60_000,
+				OperationID: timeoutContext.OperationID,
+				MutationKey: timeoutContext.MutationKey,
+			}},
+			RPC: testProcessStartRPC(),
+		},
+		Frame{
+			Type:       MessageTypeRPC,
+			SessionID:  testSessionID,
+			SessionSeq: 4,
+			Ack:        2,
+			Generation: 7,
+			Context:    &timeoutContext,
+			RPC:        json.RawMessage(`{"method":"agentx/timeoutDue","params":{"processId":"70000000-0000-0000-0000-000000000007"}}`),
 		},
 	}
 	for _, example := range valid {

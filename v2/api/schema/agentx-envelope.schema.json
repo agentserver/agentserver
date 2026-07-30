@@ -136,6 +136,24 @@
         "mutationKey": {"$ref": "#/$defs/uuid"}
       }
     },
+    "processTimeoutDirective": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["afterMs", "operationId", "mutationKey"],
+      "properties": {
+        "afterMs": {"type": "integer", "minimum": 1, "maximum": 3600000},
+        "operationId": {"$ref": "#/$defs/uuid"},
+        "mutationKey": {"$ref": "#/$defs/uuid"}
+      }
+    },
+    "dispatchDirectives": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["processTimeout"],
+      "properties": {
+        "processTimeout": {"$ref": "#/$defs/processTimeoutDirective"}
+      }
+    },
     "sequencedBase": {
       "type": "object",
       "properties": {
@@ -456,6 +474,20 @@
         }
       }
     },
+    "timeoutDueNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "params"],
+      "properties": {
+        "method": {"const": "agentx/timeoutDue"},
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["processId"],
+          "properties": {"processId": {"$ref": "#/$defs/uuid"}}
+        }
+      }
+    },
     "networkPolicyRequest": {
       "type": "object",
       "additionalProperties": false,
@@ -499,7 +531,7 @@
         }
       ]
     },
-    "stockRPC": {
+    "businessRPC": {
       "oneOf": [
         {"$ref": "#/$defs/processStartRequest"},
         {"$ref": "#/$defs/processReadRequest"},
@@ -508,6 +540,7 @@
         {"$ref": "#/$defs/processOutputNotification"},
         {"$ref": "#/$defs/processExitedNotification"},
         {"$ref": "#/$defs/processClosedNotification"},
+        {"$ref": "#/$defs/timeoutDueNotification"},
         {"$ref": "#/$defs/networkPolicyRequest"},
         {"$ref": "#/$defs/stockResponse"}
       ]
@@ -523,8 +556,15 @@
         "ack": {"type": "integer", "minimum": 0},
         "generation": {"type": "integer", "minimum": 1},
         "context": {"$ref": "#/$defs/routingContext"},
-        "rpc": {"$ref": "#/$defs/stockRPC"}
-      }
+        "directives": {"$ref": "#/$defs/dispatchDirectives"},
+        "rpc": {"$ref": "#/$defs/businessRPC"}
+      },
+      "allOf": [
+        {
+          "if": {"required": ["directives"]},
+          "then": {"properties": {"rpc": {"$ref": "#/$defs/processStartRequest"}}}
+        }
+      ]
     },
     "ack": {
       "type": "object",

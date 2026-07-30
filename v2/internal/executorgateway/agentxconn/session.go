@@ -33,9 +33,10 @@ type SessionConfig struct {
 }
 
 type Payload struct {
-	Type    string
-	Context *RoutingContext
-	RPC     json.RawMessage
+	Type       string
+	Context    *RoutingContext
+	Directives *DispatchDirectives
+	RPC        json.RawMessage
 }
 
 type ReceiveResult struct {
@@ -153,6 +154,7 @@ func (s *Session) Send(payload Payload) (Frame, error) {
 		Ack:        s.receivedThrough,
 		Generation: s.config.Generation,
 		Context:    cloneContext(payload.Context),
+		Directives: cloneDirectives(payload.Directives),
 		RPC:        append(json.RawMessage(nil), payload.RPC...),
 	}
 	if err := frame.ValidateForReceiver(s.config.Role.peer()); err != nil {
@@ -439,8 +441,21 @@ func (s *Session) closeLocked(cause error, state SessionState) {
 
 func cloneFrame(frame Frame) Frame {
 	frame.Context = cloneContext(frame.Context)
+	frame.Directives = cloneDirectives(frame.Directives)
 	frame.RPC = append(json.RawMessage(nil), frame.RPC...)
 	return frame
+}
+
+func cloneDirectives(directives *DispatchDirectives) *DispatchDirectives {
+	if directives == nil {
+		return nil
+	}
+	copy := *directives
+	if directives.ProcessTimeout != nil {
+		timeout := *directives.ProcessTimeout
+		copy.ProcessTimeout = &timeout
+	}
+	return &copy
 }
 
 func cloneContext(context *RoutingContext) *RoutingContext {

@@ -70,6 +70,26 @@ func TestSessionSequenceAckAndDuplicateDelivery(t *testing.T) {
 	}
 }
 
+func TestSessionJournalsImmutableDispatchDirectives(t *testing.T) {
+	gateway := newTestSession(t, RoleGateway, 8)
+	context := testRoutingContext()
+	directives := &DispatchDirectives{ProcessTimeout: &ProcessTimeoutDirective{
+		AfterMillis: 60_000,
+		OperationID: "52000000-0000-0000-0000-000000000005",
+		MutationKey: "62000000-0000-0000-0000-000000000006",
+	}}
+	frame, err := gateway.Send(Payload{Type: MessageTypeRPC, Context: &context, Directives: directives, RPC: testProcessStartRPC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	directives.ProcessTimeout.AfterMillis = 1
+	directives.ProcessTimeout.OperationID = context.OperationID
+	if frame.Directives == nil || frame.Directives.ProcessTimeout == nil || frame.Directives.ProcessTimeout.AfterMillis != 60_000 ||
+		frame.Directives.ProcessTimeout.OperationID != "52000000-0000-0000-0000-000000000005" {
+		t.Fatalf("journaled directives were aliased: %+v", frame.Directives)
+	}
+}
+
 func TestSessionRejectsGapConflictingReplayAndAckRegression(t *testing.T) {
 	t.Run("gap", func(t *testing.T) {
 		gateway := newTestSession(t, RoleGateway, 8)

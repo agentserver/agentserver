@@ -665,7 +665,7 @@ MCP shell
   → MCP result
 ~~~
 
-timeout 不伪装成 process/start 参数。gateway 在启动进程前同时预分配 timeout_terminate operation/mutation key，并把计时策略交给 agentx；gateway timer 与 agentx 本地 monotonic timer触发的是同一个预分配 terminate语义，任何一侧都必须等待真实 process terminal。若process在deadline前取得terminal，gateway必须以`SkipOperation`明确关闭尚未dispatch的timeout operation；不能让它停留在`prepared`，也不能把它伪装成`succeeded|cancelled`。
+timeout 不伪装成 process/start 参数。gateway 在启动进程前同时预分配 timeout_terminate operation/mutation key，通过outer `directives.processTimeout={afterMs,operationId,mutationKey}`把计时策略交给 agentx；agentx不得把directive复制进stock params。本地monotonic timer到期后，agentx以timeout operation的routing context发送有序`agentx/timeoutDue(processId)`，它与gateway timer汇入同一orchestrator路径，但本身不授权副作用。gateway仍须先调用core `BeginOperationDispatch`，只有首次提交返回`Began=true`才能发送stock `process/terminate`；连接或core不可用时agentx不能持凭证越权直发，只能依赖同gateway进程resume journal，最终按unknown与runner cleanup收口。任何一侧都必须等待真实 process terminal。若process在deadline前取得terminal，gateway必须以`SkipOperation`明确关闭尚未dispatch的timeout operation；不能让它停留在`prepared`，也不能把它伪装成`succeeded|cancelled`。
 
 这里的agentx ACK不是WSS累计`ack`字段。WSS ACK只证明某个传输frame已连续处理并允许释放内存journal；core `AcknowledgeOperation`需要相同mutation key、operation id和connection generation下的agentx journal接受证据、匹配RPC response或可信terminal evidence。
 

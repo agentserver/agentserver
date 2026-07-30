@@ -1,7 +1,11 @@
-# A12 disposable Linux isolation gate
+# A12 disposable Linux isolation characterization
 
-This target exercises the production-profile boundary around stock app-server
-for one exact native Linux artifact. The scratch image contains only the Go
+This checked-in target records the pre-dynamic-bridge isolation profile around
+stock app-server for one exact native Linux artifact. Its UID, capability,
+mount, procfs, signal, and close-all evidence remains valid, but its network
+profile lets app-server call an approved MCP endpoint. The revised architecture
+forbids that path, so this target no longer closes A12 until it is changed as
+described below. The scratch image contains only the Go
 conformance/init fixture, the pinned Codex executable, and empty mount anchors;
 it contains no source tree, workspace, service-account token, shell, package
 manager, firewall binary, compatibility wrapper, or model credential.
@@ -15,9 +19,9 @@ tmpfs mounts as `nosuid,nodev,noexec`, then verify the resulting mount table.
 It uses Go's netfilter netlink protocol implementation to install an IPv4
 nftables output chain plus an IPv6 deny chain with `meta skuid` rules:
 
-- the worker UID can reach only its harness-control fixture;
-- the app-server UID can reach only the exact llmproxy, approved-MCP, and
-  redirect-source address/port tuples;
+- the legacy worker UID can reach only its harness-control fixture;
+- the legacy app-server UID can reach only the exact llmproxy, approved-MCP,
+  and redirect-source address/port tuples;
 - every other TCP destination is rejected and all remaining traffic, including
   DNS-shaped UDP, is dropped for those UIDs;
 - all IPv6 traffic is dropped for both managed UIDs, so an IPv4-only endpoint
@@ -47,7 +51,7 @@ workspace/service-account paths are absent. Finally it calls Linux
 absolute stock Codex path with an explicit environment. The worker waits for
 that child; it is not a sidecar sentinel.
 
-The application-level scenarios prove:
+The current legacy application-level scenarios prove:
 
 - a real model turn plus approved MCP tool call succeeds through the allowlist;
 - a direct model URL at a live forbidden sink fails and the sink sees zero
@@ -59,6 +63,16 @@ The application-level scenarios prove:
   while all app-UID probes leave its post-reset count at zero;
 - a root sensitivity request reaches an IPv6 loopback sink, while all app-UID
   probes leave its post-reset count at zero.
+
+The revised A12 gate must instead prove:
+
+- worker UID can reach only harness-pool and executor-gateway MCP;
+- app-server UID can reach only the exact llmproxy tuple and cannot reach MCP;
+- the real approved MCP call and bearer are owned by the worker, while the
+  bearer is absent from child env/config/FDs and rollout;
+- app-server leaves executor-MCP, worker-only, direct, redirect, DNS-shaped,
+  and IPv6 sink counters at zero;
+- both UIDs are denied every destination not listed for their own role.
 
 Run it with independently trusted release pins and a native architecture:
 
@@ -78,7 +92,8 @@ Apple `container` uses a workspace-backed build context and requires
 accepted as platform evidence. The command above passed natively for stable
 0.146.0 `linux-arm64`, SHA-256
 `cb5e8cb8a333a408ce6adbe0d4fad1845c69772c2216af7c1f88c98a11460dc6`,
-size `269098800`. That closes only the A12 production-profile image gate for
-this exact artifact and platform. `linux-amd64` still requires a native worker;
-the result does not itself close A03, E03, E07, any E09 platform gate, or real
-Kubernetes NetworkPolicy/egress-proxy deployment tests.
+size `269098800`. That run closes only the reusable OS-isolation subclaims for
+this exact artifact and platform; revised A12 is open because the network and
+MCP ownership profile must be rerun. `linux-amd64` still requires a native
+worker, and real Kubernetes NetworkPolicy/service routing remains a separate
+deployment gate.

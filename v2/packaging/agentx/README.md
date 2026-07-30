@@ -71,6 +71,15 @@ those aliases all target the already verified Codex. On Linux this prevents the
 stock launcher's system-bwrap-first lookup from selecting a host `bwrap`, so it
 falls through to the verified `codex-resources/bwrap` resource.
 
+Phase 1 launches this bundle as one stdio exec-server instance per managed
+process; an instance accepts at most one `process/start`. Filesystem operations
+use a separate lane that cannot start processes. The outer agentx capability
+set exposes `process/write` and `process/terminate`, but deliberately omits
+stock `process/signal`, whose `{}` response cannot distinguish missing,
+delivered, and already-exited targets. If a root process exits without
+`process/closed`, agentx closes only that process's dedicated stdio instance and
+verifies containment cleanup, so other managed processes are unaffected.
+
 This PATH rule covers runtime discovery, not workload commands. Product tools
 must send deterministic argv and an explicit child environment; any workload
 PATH is constrained separately by the env/owner policy.

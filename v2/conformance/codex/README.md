@@ -14,28 +14,22 @@ A full live run fails closed when the binary release has no explicit A03
 characterization; version-specific negative probes skip only when another
 known characterized release is under test.
 
-The current live probes cover A01 through a bounded loopback scripted Responses
-server (`initialize → initialized → thread/start → turn/start → item/completed →
-turn/completed`), A02 experimental gating for `environments: []` in both
-directions, A03 tool-surface and dispatch characterization through a bounded
-sessionless Streamable HTTP MCP server, the A04 managed-requirements injection
-boundary, A05 no-double-approval behavior and its prompt-mode positive control,
-A06 client-controlled MCP form elicitation, its paused-tool-timeout behavior,
-and its never-policy negative control, A07 pending-elicitation interrupt cleanup,
-A08 graceful shutdown and stable state snapshots, A09 rollout-only completed-turn
-checkpoint recovery, A10 mid-turn hard-crash rollback to the last sealed
-checkpoint, A11 runtime-secret exclusion and capability rotation, A12 host
-characterization plus the native Linux production-profile isolation image gate,
-E01 stdio/EOF, exec-server environment metadata, and these slices of the
-executor matrix:
+The current live probes cover A01 lifecycle, A02 experimental gating, the
+revised A03 exact `dynamicTools` surface/callback path plus the rejected direct
+Codex-MCP path, and the revised A04 managed MCP deny-all image gate. Existing
+A05–A12 probes retain valuable stock/runtime facts, but A06/A07/A09/A11/A12
+must still be recomposed around the worker-owned MCP bridge described below;
+they are not silently carried over from direct Codex MCP. The lab also covers
+E01 stdio/EOF, exec-server environment metadata, and these executor slices:
 
 - E02: deterministic argv/arg0, canonical cwd, exact non-inherited child
   environment, non-TTY and PTY streams, output/exit/close sequencing, and
   retained `process/read` replay;
-- E03: piped stdin, idempotent `writeId`, `unknownProcess`, `stdinClosed`,
-  interrupt delivery, and terminate behavior. A negative probe proves that
-  `process/signal` returns the same empty success object for missing, delivered,
-  and already-exited targets, so E03 is not accepted;
+- E03: piped stdin, idempotent `writeId`, `unknownProcess`, `stdinClosed`, and
+  terminate behavior. A negative probe proves that `process/signal` returns the
+  same empty success object for missing, delivered, and already-exited targets;
+  the revised Phase 1 outer profile therefore does not negotiate or expose
+  `process/signal`. An outer-contract gate is still required;
 - E04: `fs/readFile`, `fs/open`, `fs/readBlock`, `fs/close`, file-URI rejection,
   and `fs/canonicalize`;
 - E05: a deterministic child connects to the executor-local HTTP proxy injected
@@ -49,7 +43,9 @@ executor matrix:
 - E06: stdio EOF shuts down exec-server and kills its managed child;
 - E07: a negative root-crash probe proves that a descendant can survive after
   `process/exited`, while `process/terminate` returns `running: false`; only
-  whole-connection shutdown then reaps the process group, so E07 is not accepted;
+  whole-connection shutdown reaps the process group. The revised Phase 1
+  adapter gives every managed process a dedicated stdio exec-server instance;
+  its no-collateral cleanup gate is still required;
 - E08: a tainted server environment and poison user-home config are excluded by
   the isolated `CODEX_HOME`, and the child still receives exactly the requested
   environment;
@@ -148,7 +144,8 @@ switch reduces the captured model tool surface to empty. Its A01 terminal
 projection also changed to `itemsView: summary` with the completed agent item
 present; this is locked separately from the 0.145.0 `notLoaded` shape and does
 not change the requirement to reduce the streamed item events. The switch fixes
-the 0.145.0 A03 blocker, but not A03 as a whole. With one MCP server whose `tools/list`
+the 0.145.0 builtin blocker, but the old direct-Codex-MCP design still fails.
+With one MCP server whose `tools/list`
 advertises both `approved_echo` and `blocked_echo`, and Codex configured with
 `enabled_tools = ["approved_echo"]`, the captured surface is exactly:
 
@@ -160,9 +157,9 @@ advertises both `approved_echo` and `blocked_echo`, and Codex configured with
 The approved tool reaches `tools/call`; the blocked MCP tool and an unregistered
 `exec_command` call both return `unsupported call` before reaching MCP. However,
 a scripted `list_mcp_resources` call is executable and sends `resources/list`
-to the MCP server despite the per-server `enabled_tools` allowlist. The alpha is
-therefore also an A03 rejection and, independently, is not a stable production
-release. Prompt instructions, event filtering, or making the executor return an
+to the MCP server despite the per-server `enabled_tools` allowlist. The alpha
+therefore rejects the direct-MCP architecture and, independently, is not a
+stable production release. Prompt instructions, event filtering, or making the executor return an
 error for `resources/list` do not satisfy the agreed exact model-tool-surface
 invariant.
 
@@ -176,23 +173,27 @@ handlers remain visible, and `list_mcp_resources` still reaches
 is `ae1d3ffe6d48aec6a4dc3f50e7eb8e0d11962485a6a9406c5a7012139383da02`;
 the official platform package SHA-256 is
 `279ec3460c5b8068daab2a4f5bcf057483303b3595f4a24ade6ceb4d02674935`.
-Stable 0.146.0 is therefore also a characterized rejection, not a production
+Stable 0.146.0 therefore also rejects direct Codex MCP. The dynamic bridge
+described below changes the architecture instead of weakening this invariant;
+stable 0.146.0 is now a candidate for the revised matrix, not yet a production
 runtime pin.
 
 Official alpha tag `rust-v0.147.0-alpha.2` (annotated tag object
 `cff73291c5dd427cb305c8791c89ece30a11c61e`, peeled commit
-`1d12a16dd9bcbd37bda22a71a1ae8ac2a49f0aba`) was tested as a rejection
-candidate, not as an extension of the full release matrix. Its A03 probes
+`1d12a16dd9bcbd37bda22a71a1ae8ac2a49f0aba`) was tested as a targeted
+candidate, not as an extension of the full release matrix. Its direct-MCP probes
 observe the same empty no-MCP builtin surface, the same filtered approved tool,
 the same three extra generic resource handlers, and the same executable
-`resources/list` bypass. E03 and E07 also reproduce their 0.146.0 failures
-unchanged. The tested macOS arm64 binary SHA-256 is
+`resources/list` bypass. The stock signal and descendant-cleanup negative facts
+also remain unchanged; the revised outer/dedicated-instance adapters are not
+part of this alpha probe. The tested macOS arm64 binary SHA-256 is
 `8e9f6e95320ea2360a07e7716cccea1292d67a2ba47d93bc81d601814abe7135`
 (size `276983200`), the official platform archive SHA-256 is
 `dfe3db5f1f32b19cf1b2875fe9347f970e3750b764a0dba483ee3b43375da4f7`,
 and the canonical app-server schema tree SHA-256 is
 `4393de9e38501330e39c433b43af7a58d3e0008e159f464845472ab66a6e7561`.
-These facts reject this alpha without claiming A01-A12/E01-E10 conformance.
+These facts reject its direct-MCP path without claiming A01-A12/E01-E10
+conformance; as an alpha it is not a production pin.
 
 A separate production-shape candidate probe now exercises the stock
 `thread/start.dynamicTools` client bridge without configuring any Codex MCP
@@ -205,83 +206,59 @@ request. Calls to an omitted executor tool and `exec_command` both fail as
 can be interrupted, but unlike approval and MCP-elicitation requests it never
 emits `serverRequest/resolved`: normal client response and interrupted terminal
 are the two release-bound cleanup signals the harness must track. This evidence
-supports moving executor MCP client ownership into the stateless harness; it
-does not silently make the old direct-Codex-MCP architecture pass A03.
+closes the revised stock side of A03/A05 and supports moving executor MCP client
+ownership into the stateless worker. The old direct-MCP tests remain negative
+regression guards; worker MCP transport, elicitation, resume, secret, and image
+boundaries still require their revised gates.
 
-A04 passes for the official stable 0.146.0 Linux amd64 artifact. The upstream managed allowlist
-disables a configured MCP server unless both its name and transport identity
-match, but official release binaries read the Unix system layer only from
-`/etc/codex/requirements.toml`. The upstream
-`CODEX_APP_SERVER_MANAGED_CONFIG_PATH` redirect is compiled only with Rust
-`debug_assertions`; a release-bound negative probe confirms that the official
-0.146.0 artifact ignores it. Consequently, a trustworthy positive A04 probe
-must run the stock artifact in a disposable image or mount namespace with the
-exact-string HTTPS requirement installed before process start. It must observe
-that only the approved endpoint bootstraps and that wrong-name, wrong-URL,
-user, and project additions stay disabled. Pointing the release binary at a
-temporary file through that debug environment variable is not a valid shortcut.
+A04 deny-all passes for the official stable 0.146.0 Linux amd64 artifact.
+Official release binaries read the Unix system layer only from
+`/etc/codex/requirements.toml`; the debug-only path redirect is ignored. The
+disposable gate therefore installs `mcp_servers = {}` at the real system path
+before process start. A production-shaped direct executor config, a user MCP,
+and an enabled trusted-project MCP must all receive zero requests, while the
+client-supplied dynamic executor tool remains visible.
 
-The positive job is implemented in `conformance/image/a04`. Its scratch
-image has no external network, uses a read-only root and an empty hardened
-`tmpfs` at `/etc/codex`, and refuses to start without independently supplied
-release/SHA/size pins. The bounded fixture also has an HTTPS mode with an
-ephemeral CA; its stock 0.146.0 host sensitivity control reaches real MCP
-bootstrap. The image test checks a projected managed sentinel, the exact allowed
-bootstrap, the captured model tool surface, and an enabled project layer while
-requiring no MCP request for wrong-name, wrong-URL, user, or project additions.
-It deliberately does not treat `mcpServerStatus/list` names as an allowlist
-oracle: stock 0.146.0 lists configured-but-disabled entries and opens a new
-connection to enabled entries while collecting status.
+The job is implemented in `conformance/image/a04`. Its scratch image has no
+external network, uses a read-only root and an empty hardened `tmpfs` at
+`/etc/codex`, and refuses to start without independently supplied
+release/SHA/size pins. HTTPS loopback fixtures use ephemeral CAs. The test
+checks a projected managed sentinel, all three endpoint request counters, the
+enabled project layer, and an exact model surface of
+`executor.approved_echo`. It does not use `mcpServerStatus/list` as an oracle.
 
 The passing image run used the official
 `codex-x86_64-unknown-linux-musl.tar.gz` archive (SHA-256
 `5ba3b9405543953081f661d0854d266f76e2abbe51d41349355a36de7673776a`)
 and verified the unpacked binary as SHA-256
 `2e863156ed35ecc5253b1e2f907a9143077b9f7cb51942070c61996471ff6e04`,
-size `311001136`, release `0.146.0`. Both the direct image invocation and the
-reproducible Make target passed under Apple `container` 1.1.0. This closes A04
-only for that artifact; stable 0.146.0 remains rejected as a production runtime
-because A03 independently fails.
+size `311001136`, release `0.146.0`. The reproducible deny-all Make target
+passed under Apple `container` 1.2.0. This closes revised A04 only for that
+artifact; the remaining revised gates still prevent a production pin.
 
-A05 passes for the characterized 0.146.0 releases. The live probe advertises an
-explicitly destructive, open-world executor tool, starts a thread with granular
-approval that allows only MCP elicitations, and verifies that
-`default_tools_approval_mode = "approve"` reaches `tools/call` without an
-app-server reverse request. Its positive control changes only the server default
-to `prompt`, captures `mcpServer/elicitation/request` with
-`codex_approval_kind = "mcp_tool_call"`, cancels it, and proves that
-`tools/call` is not sent. This establishes the Codex side of the single-approval
-design. The separate A06 probe below establishes the reverse direction rather
-than treating A05 as evidence for both flows.
+A05's revised stock side passes on stable 0.146.0 and 0.147.0-alpha.2: a thread
+using `approvalPolicy=never` still emits the approved dynamic callback and no
+Codex generic approval request. Product approval is outside app-server, on the
+worker-owned MCP connection. The older direct-MCP `approve` versus `prompt`
+probe remains a useful characterization but is no longer production config.
 
-A06 passes for the characterized 0.146.0 releases. During a real model-driven
-`tools/call`, the fake MCP server holds the Streamable HTTP response open,
-emits a standard `elicitation/create` request over SSE, receives Codex's
-separate JSON-RPC response POST, and only then completes the original tool
-call. Under the granular policy, app-server forwards the typed form schema,
-execution metadata, thread, turn, and server identity to its client. Separate
-live cases return `accept`, `decline`, and `cancel`; each action reaches MCP,
-`serverRequest/resolved` precedes turn completion, and the resulting tool
-output reaches the next model request. With the same non-empty form under
-`approval_policy = "never"`, Codex emits no reverse request and returns
-`decline` directly to MCP. A separate timed case configures
-`tool_timeout_sec = 0.5`, leaves the form unanswered for 1.5 seconds, and sees
-no resolution, terminal turn, or second model request until the client sends
-`cancel`. The MCP timeout is therefore paused during elicitation and cannot be
-used as the product approval TTL or its cleanup mechanism.
+A06 is reopened for the revised architecture. The existing probe proves that
+the standard MCP elicitation exchange works when Codex is the MCP client, but
+production deliberately does not use that path. The new gate must exercise a
+reference/real harness worker as MCP client, route `elicitation/create` through
+pool/core, cover accept/decline/cancel plus active expiry and disconnects, and
+prove app-server sees only its pending `item/tool/call`.
 
-A07 also passes for both characterized 0.146.0 releases, with one important
-ordering fact. When the client leaves the A06 form request unanswered and sends
-`turn/interrupt`, app-server returns success, terminates the turn as
-`interrupted`, resolves the outstanding reverse request, and sends `cancel` to
-MCP. It performs no second model request or MCP tool call. However, the observed
-wire order is `turn/completed` first and `serverRequest/resolved` second. A
-harness must therefore keep draining stdio and track outstanding reverse
-request IDs during finalization; a terminal turn notification alone is not a
-cleanup barrier.
+A07's stock dynamic probe fixes a different rule: pending `item/tool/call`
+interruption yields `turn/completed(interrupted)` and never emits
+`serverRequest/resolved`; normal dynamic responses emit no resolved event
+either. Normal callbacks are removed after their JSON-RPC response is written;
+unanswered callbacks are removed after their owning turn is terminal and the
+worker cancels MCP. The revised bridge-side cancel/no-dispatch gate remains
+open.
 
-A08 passes for both characterized 0.146.0 releases. After a completed,
-non-ephemeral turn with no outstanding reverse request, the probe closes stdin
+A08's process-exit and byte-stability sub-gate passes for both characterized
+0.146.0 releases. After a completed non-ephemeral turn with no typed outstanding request, the probe closes stdin
 immediately and waits for a bounded clean exit without sleeping. Two bounded
 post-exit snapshots agree on every relative path, mode, size, and SHA-256; the
 reported rollout is complete JSONL containing the thread and turn content, and
@@ -289,9 +266,9 @@ reported rollout is complete JSONL containing the thread and turn content, and
 `.sqlite-wal` and `.sqlite-shm` files for state, goals, logs, and memories.
 Therefore process exit is a byte-stability barrier, not evidence that WAL data
 was merged into the main databases. A08 does not decide which stable files form
-a checkpoint.
+a checkpoint; it still needs composition with revised dynamic/MCP cleanup.
 
-A09 passes for both `0.146.0-alpha.14` and stable `0.146.0`. For these builds,
+A09's rollout-only/direct-MCP sub-gate passes for both `0.146.0-alpha.14` and stable `0.146.0`. For these builds,
 the pinned checkpoint allowlist is exactly one app-server-reported rollout JSONL
 per brain thread. The probe copies only that file, under its manifest-relative
 path, into a fresh `CODEX_HOME`, verifies the staging tree contains no other
@@ -302,7 +279,7 @@ cold-resumes with the relocated rollout path and `excludeTurns: true`. A cold
 response is the resume barrier, after which the next `turn/start` supplies
 `environments: []`.
 
-The restored model request contains both user turns, the original MCP call ID,
+The restored model request contains both user turns, the original direct-MCP call ID,
 and its exact tool result, while the MCP side effect is not executed again.
 `state_5.sqlite`, every SQLite WAL/SHM sidecar, and the goals/logs/memories
 databases are therefore runtime-derived state, not checkpoint payload. Config,
@@ -310,7 +287,10 @@ requirements, credentials, logs, caches, and transport state are likewise
 excluded and must be recreated for each attempt. As a negative control, a
 missing rollout makes `thread/resume` fail with `-32600` before any model request
 or MCP initialization. Every future Codex build must repeat this native
-round-trip before receiving the same allowlist.
+round-trip before receiving the same allowlist. Revised A09 must repeat the
+round-trip with a dynamic callback, bind the catalog digest, prove resume
+restores the original tool schema without an override, and reject/schema-split
+a changed catalog.
 
 A10 passes for both characterized 0.146.0 releases. The probe first seals a
 completed-turn rollout in a separate rollout-only checkpoint, then restores a
@@ -330,7 +310,7 @@ externally committed checkpoint pointer. It does not claim stock Codex will
 reject an uncommitted crash-runtime rollout if a caller incorrectly supplies
 one; harness/core fencing must make that file ineligible in the first place.
 
-A11 passes for both characterized 0.146.0 releases. The source attempt puts
+A11's old direct-MCP secret sub-gate passes for both characterized 0.146.0 releases. The source attempt puts
 distinct sentinels in config, auth, token, requirements-decoy, log, environment
 dump, and transport-buffer files under `CODEX_HOME`. It also supplies an MCP
 capability through `bearer_token_env_var`; every observed MCP bootstrap and tool
@@ -350,7 +330,9 @@ mount. A11 tests accidental runtime-secret ingress. It does not authorize
 byte-redacting content the user, model, or MCP deliberately put into model-visible
 history: an unexpected runtime secret must reject/quarantine the checkpoint,
 while model-visible content requires prevention, encryption, retention, and
-deletion policy rather than a lossy “native resume” rewrite.
+deletion policy rather than a lossy “native resume” rewrite. Revised A11 must
+move the exercised MCP bearer into the worker-only credential domain and prove
+it is absent from child env/config/FDs as well as rollout.
 
 A12 host characterization remains the reason the image boundary is mandatory.
 Its exfiltration sensitivity control proves that an inherited worker variable
@@ -379,20 +361,21 @@ inaccessible, the worker cannot be signalled, workspace/service-account paths
 are absent, and an intentionally inherited descriptor is closed by
 `close_range(3, UINT_MAX, 0)` before the absolute stock Codex exec.
 
-Raw netfilter netlink rules use `meta skuid`: worker IPv4 egress is limited to
-the worker-only harness endpoint, app IPv4 egress to the exact llmproxy,
-approved MCP, and redirect-source tuples, all other IPv4 is rejected/dropped,
-and all IPv6 is dropped for both UIDs. A real allowed model turn plus approved
-MCP call succeeds. Direct and cross-origin-redirect forbidden sinks, a
+The old raw-netfilter profile used `meta skuid`: worker IPv4 egress was limited
+to the worker-only harness endpoint, while app IPv4 could reach llmproxy and an
+approved MCP. A real allowed model turn plus app-owned MCP call succeeded.
+Direct and cross-origin-redirect forbidden sinks, a
 DNS-shaped UDP sink, the worker-only endpoint, and an IPv6 sensitivity sink all
 remain at zero app requests; root controls prove the UDP and IPv6 sinks are
 live. The verified Codex artifact is SHA-256
 `cb5e8cb8a333a408ce6adbe0d4fad1845c69772c2216af7c1f88c98a11460dc6`,
 size `269098800`.
 
-This closes A12 only for that production-profile image, release, and native
-platform. `linux-amd64` remains open until the same target passes on a native
-worker. The disposable in-image netfilter proof is not evidence that a real
+Those OS UID/capability/mount/FD facts remain valid, but the app-owned MCP
+network profile conflicts with the revised architecture and no longer closes
+A12. The new target must allow worker → harness/executor MCP and app → llmproxy
+only, perform the real MCP call in the worker, and prove the app cannot reach
+MCP. `linux-amd64` also remains open. The disposable in-image netfilter proof is not evidence that a real
 Kubernetes NetworkPolicy, service routing, or egress proxy deployment is
 correct; those remain deployment gates. Kubernetes `NetworkPolicy` is
 Pod-scoped and cannot replace the per-UID boundary.

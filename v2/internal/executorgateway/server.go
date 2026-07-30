@@ -28,6 +28,9 @@ type ServerConfig struct {
 	MaxUnackedFrames        int
 	MaxJournalBytes         int
 	MaxReceiveHistoryFrames int
+	MaxPendingProcesses     int
+	MaxProcessEvents        int
+	MaxProcessEventBytes    int
 	HandshakeTimeout        time.Duration
 	WriteTimeout            time.Duration
 	ConnectionLeaseTTL      time.Duration
@@ -48,6 +51,9 @@ func DefaultServerConfig(gatewayInstanceID string) ServerConfig {
 		MaxUnackedFrames:        1024,
 		MaxJournalBytes:         64 * 1024 * 1024,
 		MaxReceiveHistoryFrames: 4096,
+		MaxPendingProcesses:     256,
+		MaxProcessEvents:        4096,
+		MaxProcessEventBytes:    8 * 1024 * 1024,
 		HandshakeTimeout:        10 * time.Second,
 		WriteTimeout:            10 * time.Second,
 		ConnectionLeaseTTL:      45 * time.Second,
@@ -84,6 +90,7 @@ type Server struct {
 	authority     ConnectionAuthority
 	config        ServerConfig
 	registry      *agentxconn.Registry
+	processCalls  *processCallTable
 
 	mu           sync.Mutex
 	shuttingDown bool
@@ -121,11 +128,16 @@ func NewServer(authenticator ExecutorAuthenticator, authority ConnectionAuthorit
 	if err != nil {
 		return nil, err
 	}
+	processCalls, err := newProcessCallTable(config.MaxPendingProcesses, config.MaxProcessEvents, config.MaxProcessEventBytes)
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
 		authenticator: authenticator,
 		authority:     authority,
 		config:        config,
 		registry:      registry,
+		processCalls:  processCalls,
 		byExecutor:    make(map[string]*sessionRuntime),
 		bySession:     make(map[string]*sessionRuntime),
 	}, nil
@@ -225,6 +237,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		runtime.cancelResumeExpiry()
 		runtime.session.Close(errServerShuttingDown)
 		runtime.closeTransport()
+		s.processCalls.failHolder(runtime.currentHolder(), errServerShuttingDown)
 	}
 
 	var shutdownErrors []error
@@ -353,6 +366,7 @@ func (s *Server) handshake(ctx context.Context, connection *websocket.Conn, exec
 		return nil, true, resumeReplay{}, err
 	}
 	if prior != nil {
+		s.processCalls.failHolder(prior.currentHolder(), ErrConnectionFenced)
 		prior.closeTransport()
 	}
 	return runtime, true, resumeReplay{}, nil
@@ -499,11 +513,17 @@ func (s *Server) handleMessage(ctx context.Context, runtime *sessionRuntime, con
 		if message.Frame.Type == agentxconn.MessageTypeLifecycle {
 			return &agentxconn.ProtocolError{Code: agentxconn.ErrorMethodNotNegotiated, Message: "lifecycle is already complete", Terminal: true}
 		}
-		if s.config.InboundHandler == nil {
-			return &agentxconn.ProtocolError{Code: agentxconn.ErrorMethodNotNegotiated, Message: "business frame handler is not installed", Terminal: true}
-		}
-		if err := s.config.InboundHandler.HandleAgentxFrame(ctx, runtime.currentHolder(), *message.Frame); err != nil {
+		handled, err := s.processCalls.handle(runtime.currentHolder(), *message.Frame)
+		if err != nil {
 			return err
+		}
+		if !handled {
+			if s.config.InboundHandler == nil {
+				return &agentxconn.ProtocolError{Code: agentxconn.ErrorMethodNotNegotiated, Message: "business frame is not correlated to a pending gateway request", Terminal: true}
+			}
+			if err := s.config.InboundHandler.HandleAgentxFrame(ctx, runtime.currentHolder(), *message.Frame); err != nil {
+				return err
+			}
 		}
 		return s.writeAck(ctx, runtime, connection)
 	case message.SessionError != nil:
@@ -644,6 +664,7 @@ func (s *Server) disconnectRuntime(runtime *sessionRuntime) {
 	}
 	runtime.scheduleResumeExpiry(time.Duration(agentxconn.ResumeWindowMillis)*time.Millisecond, func() {
 		runtime.session.Close(&agentxconn.ProtocolError{Code: agentxconn.ErrorResumeExpired, Message: "resume window expired", Terminal: true})
+		s.processCalls.failHolder(runtime.currentHolder(), ErrConnectionFenced)
 		s.fenceRuntime(runtime)
 		s.removeRuntime(runtime)
 		s.registry.Forget(runtime.currentHolder().SessionID)
@@ -652,6 +673,7 @@ func (s *Server) disconnectRuntime(runtime *sessionRuntime) {
 
 func (s *Server) terminateRuntime(runtime *sessionRuntime) {
 	runtime.session.Close(errors.New("terminal agentx connection failure"))
+	s.processCalls.failHolder(runtime.currentHolder(), ErrConnectionFenced)
 	runtime.closeTransport()
 	s.fenceRuntime(runtime)
 	s.removeRuntime(runtime)

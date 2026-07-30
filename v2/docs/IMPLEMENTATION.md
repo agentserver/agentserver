@@ -621,7 +621,9 @@ registry 只保存活连接。权威 executor/env/generation 在 core。gateway�
 
 当前PR 12第一段已经实现这个边界：`0004_executor_connection_kernel.sql`保存enrollment/build、environment、不可复用connection attempt和当前holder；core internal OpenAPI + mTLS handler提供acquire/renew/activate/fence；gateway把reference registry接入真实WebSocket，执行`hello → welcome → initialize → initialized → activate`，并以ping + core renew维持lease。同进程断线会按双向cursor重放；新fresh generation会关闭旧socket；新gateway进程即使看见DB holder也没有journal，必须拒绝resume。真实socket和PostgreSQL 17.6并发门禁已经覆盖这些语义。
 
-这仍不是可生产部署的executor：agentx enrollment/OAuth key binding尚未实现，`executor-gateway`命令因此只暴露显式loopback `serve --insecure-dev`，生产serve模式不存在；active process ownership、agentx connector/runner、stock stdio supervisor、MCP handler与operation unknown收口仍待下一段。没有inbound business handler时gateway对业务frame fail closed，不能把“WSS已连通”描述成shell已经可用。
+第二段已经加入有界的process request table和gateway-originated `process/start` dispatch入口：发送前按session generation、完整routing context、canonical request id与process id登记；匹配RPC response与严格连续的`process/output → process/exited → process/closed`证据分别进入有界通道；同进程transport resume保留原call，fresh generation、resume expiry、terminal protocol failure和gateway shutdown则统一失败。WSS累计ACK仍只释放frame journal，不能被当成operation ACK；`DispatchProcess`在frame进入session journal后发生write错误会明确返回ambiguous，调用方无权重发。
+
+这仍不是可生产部署的executor：agentx enrollment/OAuth key binding尚未实现，`executor-gateway`命令因此只暴露显式loopback `serve --insecure-dev`，生产serve模式不存在；MCP HTTP/auth handler、core execution command transport、agentx本地registered-root复核、timeout terminate与operation unknown收口仍待下一段。当前process dispatch入口只供后续受控handler组合，尚未对外暴露shell，不能把“业务RPC已可关联”描述成executor MCP已经可用。
 
 ### 7.2 第一批工具
 

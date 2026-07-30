@@ -17,6 +17,7 @@ const (
 	ErrorInvalidState        StateErrorCode = "invalid_state"
 	ErrorLeaseHeld           StateErrorCode = "lease_held"
 	ErrorLeaseLost           StateErrorCode = "lease_lost"
+	ErrorConnectionFenced    StateErrorCode = "connection_fenced"
 	ErrorEventConflict       StateErrorCode = "event_conflict"
 	ErrorOutboxClaimLost     StateErrorCode = "outbox_claim_lost"
 	ErrorConflict            StateErrorCode = "conflict"

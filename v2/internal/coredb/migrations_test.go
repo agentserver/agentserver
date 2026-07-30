@@ -11,8 +11,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 2 {
-		t.Fatalf("migration count = %d, want 2", len(migrations))
+	if len(migrations) != 3 {
+		t.Fatalf("migration count = %d, want 3", len(migrations))
 	}
 	migration := migrations[0]
 	if migration.Version != 1 || migration.Name != "session_run_kernel" {
@@ -23,6 +23,9 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	if migrations[1].Version != 2 || migrations[1].Name != "state_kernel_commands" {
 		t.Fatalf("second migration identity = %04d_%s, want 0002_state_kernel_commands", migrations[1].Version, migrations[1].Name)
+	}
+	if migrations[2].Version != 3 || migrations[2].Name != "execution_operation_kernel" {
+		t.Fatalf("third migration identity = %04d_%s, want 0003_execution_operation_kernel", migrations[2].Version, migrations[2].Name)
 	}
 }
 

@@ -399,8 +399,8 @@ harness-pool、browser-gateway 与 executor-gateway 使用内部 workload identi
 | outbox | id、kind、aggregate_id、payload、available_at、lock_owner、lock_until、attempts（claim generation）、completed_at |
 | checkpoints | id、session_id、run_id、attempt_generation、thread_id、turn_id、manifest hash、object_id、Codex build |
 | brain_tool_catalogs | id、session_id、thread_id nullable unique、contract version、canonical catalog bytes/object id、catalog digest、created policy context；新thread启动前冻结，成功后CAS绑定thread_id，同一thread不可更新schema |
-| executions | id、run_id、tool_call_id、tool/schema/policy/mapper version、arguments hash/ciphertext、operation_plan_hash、status、version |
-| execution_operations | id、execution_id、ordinal、kind、effect_class、mutation_key unique、params hash、status、connection generation、timestamps、version |
+| executions | id、run/attempt/generation、tool_call_id、executor/env、tool/schema/policy/mapper version、policy decision、operation_count、arguments/tool schema/operation plan/policy context hash、canonicalizer version、status/terminal result hash、version |
+| execution_operations | id、execution_id、ordinal、kind、effect_class、mutation_key unique、params hash、canonicalizer version、status、connection generation、ACK/terminal evidence hash、timestamps、version |
 | approvals | id、execution_id、context hash、nonce unique、status、expires_at、requester、approver、version |
 | executors | id、workspace_id、status、machine key、protocol/build metadata、version |
 | executor_environments | id、executor_id、root descriptor、owner policy digest、status、version |
@@ -464,6 +464,17 @@ PR 9 reference command store固定以下首批语义：
 - `AppendAttemptEvents`一次最多256项、inline JSON object最多64 KiB；同一batch只允许一个producer且producer seq严格递增。新事件要求live双lease和当前generation；exact producer-key重试即使随后被fence也只返回原run seq，不写新行，而同key不同内容返回`event_conflict`。
 - outbox一次最多claim 100项，使用`FOR UPDATE SKIP LOCKED`。每次claim增加`attempts`，consumer必须携带`owner + attempts`完成或释放；旧claim即使owner字符串复用也不能完成新generation的工作。
 
+PR 10 reference command store继续固定以下执行语义：
+
+- `PrepareExecution`先锁run/attempt，以`(run_id, app_server_tool_call_id)`查重；相同调用只有attempt generation、executor/env、tool/schema/mapper/policy version、policy decision、operation count及四类domain-separated hash全部一致才返回原execution。`execution_id`不是第二个幂等键，同一tool call并发提交不同候选ID时只保留一个权威execution。
+- execution预先冻结`operation_count`。`PrepareOperation`只允许在execution尚未dispatch时写入，ordinal必须落在`1..operation_count`，`(execution_id, ordinal)`与全局`mutation_key`分别唯一；第一个operation跨dispatch边界前，数据库中必须已经存在完整的冻结operation集合。
+- `BeginOperationDispatch`首次以CAS把operation推进到`dispatching`并提交event/outbox后，只有该次调用返回`Began=true`，它是唯一一次外部发送许可。transaction wrapper在`Commit`返回任何错误时强制丢弃已计算结果并返回零值，不能把内存中的`Began=true`泄露给调用方；commit后响应丢失时，exact retry只返回既有状态和`Began=false`。调用方必须查询可信journal或收口为`unknown`，不得重发。
+- `AcknowledgeOperation`冻结agentx ACK evidence hash并把execution推进到`running`。未ACK的`dispatching` operation只能通过`CompleteOperation(... unknown)`收口；ACK后才允许`succeeded|failed|cancelled|unknown`。connection generation不同的迟到证据被fence。
+- `CompleteExecution`按全部operation状态聚合：任一`unknown`优先得到execution `unknown`，其次为`failed`、`cancelled`，只有全部operation成功才能`succeeded`；仍在`dispatching|acknowledged`或只有未发送的prepared步骤时拒绝伪造terminal。
+- 每个命令与对应canonical run event、outbox在同一transaction内提交。outbox唯一键等事务尾部故障会回滚operation、execution version和run event sequence；terminal exact retry只接受相同status与evidence hash。
+
+所有execution hash均通过`ValidateAndHashCanonicalJSON`这一构造边界：拒绝重复JSON key与超限输入，先调用版本化schema validator，再做RFC 8785 JCS，最后以`agentserver-v2/<domain>/rfc8785-v1\0`作为domain separator计算SHA-256。Go command类型不接受裸`[32]byte`替代这些typed hash，数据库同时记录并约束canonicalizer version。
+
 0001已经发布到migration catalog，不能为状态命名修订其checksum。0002因而以前向migration把临时的run状态`claimed`改为架构定义的`starting`，并加入event source与object size/media type。PR 8期间尚无产品runtime可合法写event；如果数据库里存在手工插入的旧run_events，0002明确失败并保持version 1，不猜测其source或伪造object metadata。
 
 ### 5.4 operation 是真实副作用边界
@@ -489,6 +500,8 @@ PR 9 reference command store固定以下首批语义：
 7. core 写 acknowledged/terminal。
 
 gateway 在步骤 4 后、步骤 6 前崩溃时，operation 默认 unknown。只有 agentx journal 或 stock child 的可信 terminal event 能把它收口；不能因为“没看到 ACK”就重发。
+
+`BeginOperationDispatch`返回的`Began`不是“当前状态是否为dispatching”，而是“本次transaction是否首次跨过边界”。只有`Began=true`的正常返回允许步骤5；commit结果不明或任何`Began=false`都不允许发送。read operation也使用同一边界，`effect_class=read`只为未来显式安全重试策略分类，Phase 1不据此偷偷重放。
 
 ### 5.5 event 与 outbox
 
@@ -1025,7 +1038,7 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 前 6 个 PR只建立事实和门槛，不写五个服务的空壳。第 7 个 PR后才开始业务 runtime。
 
-当前第9项已经通过真实PostgreSQL并发与race门禁；下一实现切片是第10项`execution_operations + crash-injection store tests`。这只表示run/lease/event/outbox状态内核可继续承载execution状态机，不表示Phase 1整体完成或服务已经可部署运行。
+当前第10项已经通过真实PostgreSQL幂等、并发、事务尾部回滚、dispatch commit后丢响应和terminal evidence门禁；下一实现切片是第11项`agentx-wss、outer profile与executor MCP contract`。approval command、真实executor connection权威登记和gateway runtime仍未实现，因此这只表示core已具备不重放的execution/operation持久化内核，不表示Phase 1整体完成或服务已经可部署运行。
 
 ## 14. 尚未锁定但有明确决策点的事项
 

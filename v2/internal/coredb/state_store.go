@@ -13,7 +13,8 @@ type TransactionDatabase interface {
 	BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error)
 }
 
-// StateStore is the only PostgreSQL write boundary for Phase 1 run state.
+// StateStore is the only PostgreSQL write boundary for Phase 1 run and
+// execution state.
 type StateStore struct {
 	database TransactionDatabase
 	schema   string
@@ -53,10 +54,12 @@ func withStateTransaction[T any](ctx context.Context, store *StateStore, operati
 
 	result, err = command(transaction)
 	if err != nil {
-		return result, err
+		var zero T
+		return zero, err
 	}
 	if err := transaction.Commit(ctx); err != nil {
-		return result, databaseError(operation+" commit", err)
+		var zero T
+		return zero, databaseError(operation+" commit", err)
 	}
 	return result, nil
 }

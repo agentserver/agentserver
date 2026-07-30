@@ -412,12 +412,12 @@ upstream 将 `codex exec-server` 标记为 experimental，因此不能假设 sem
 
 ### 8.2 MCP 工具面
 
-初始工具面保持小而确定：
+规划工具面保持小而确定，但不能在 handler 尚未实现时一次性全部广告。首个冻结 catalog 是 `executor-mcp/1.0`，只包含 `list_environments` 与同步、terminal-only 的 `shell`；`tools/list` 不得提前暴露下表其余工具。后续 catalog version 再按实现和 conformance 证据扩展：
 
 | MCP tool | 必需的确定性输入 | RPC 映射 |
 |---|---|---|
 | `list_environments` | 可选 executor filter | core/gateway registry；不触发远端执行 |
-| `shell` | `env_id`、`argv[]`、`cwd`、timeout、tty、显式 env policy；`lifecycle=run` | `process/start` + `process/read`/通知 |
+| `shell` | `env_id`、`argv[]`、env-relative cwd、timeout、tty、显式 env；固定 `shell-v1` clean-env policy，`lifecycle=run` | `process/start` + `process/read`/通知 |
 | `unified_exec` | 同上，另含调用方提供的 `process_id` 和输出模式 | run 内长生命周期 `process/start` |
 | `write_stdin` | `env_id`、`process_id`、`write_id`、bytes | `process/write` |
 | `read_output` | `env_id`、`process_id`、from sequence | `process/read` |
@@ -427,7 +427,9 @@ upstream 将 `codex exec-server` 标记为 experimental，因此不能假设 sem
 
 除 `list_environments` 外，每个工具都必须携带或由 run capability 无歧义地解析出 `env_id`。不得依赖“当前 executor”这种隐式全局状态。
 
-`argv` 是字符串数组，不是自然语言。若调用者确实需要 shell 语法，必须显式传入例如 `["/bin/zsh", "-lc", "..."]`，并受独立策略控制。
+`read_output`、`write_stdin` 和 `terminate` 不能在没有 handle-producing tool 时作为孤立工具加入 catalog。`shell-v1` 在返回 MCP result 前等待 process terminal，超时也执行预分配 terminate 并等待真实终态，因此不会留下可供下一次工具调用使用的 process handle。只有后续 `unified_exec`（或另一份明确版本化的 start contract）与 ownership、run-finalization 门禁一起实现后，三项 process-control 工具才可同版本开放。首个垂直切片明确不包含它们。
+
+`argv` 是字符串数组，不是自然语言。若调用者确实需要 shell 语法，必须显式传入例如 `["/bin/zsh", "-lc", "..."]`，并受独立策略控制。`shell-v1` 不允许调用方选择 ambient inheritance；未提供的 env 为空，提供的 env 只是显式条目，gateway 与 agentx 的变量都不得继承。
 
 `timeout` 不是当前 stock `process/start` 的字段；gateway/agentx 必须用受 fencing 约束的本地计时器实现，并在到期后发送 `process/terminate`、等待真实终态。不能把 timeout 悄悄塞入 upstream params，也不能在未确认进程退出时只返回“超时成功终止”。
 
@@ -473,27 +475,35 @@ workspace 共享的永久 service token 不得用于 executor enrollment 或连�
 1. agentx 主动拨出 WSS，不要求用户环境开放入站端口。
 2. executor-gateway 校验 audience/scope、executor 状态、公钥绑定和实时 workspace 归属。`executor_id` 从已验证 token subject 取得，不能信任客户端声明。
 3. agentx 使用登记私钥完成 DPoP/`cnf` proof；若 Hydra 无法签发 key-bound token，则在 WSS 建连后完成 gateway nonce 签名挑战。只有 bearer token 而没有私钥证明不能建立执行通道。
-4. agentx 先发送签名的 lifecycle hello，声明 agentx protocol、各 env 的 pinned exec-server build/schema、capability probe 得到的 `environment/info` 摘要，以及恢复窗口内仍活跃的 `{processId, localExecInstanceId}` 集合，并携带可选的上一个 `resumeSessionId`。这是恢复提示，不是可信身份；gateway 必须用注册 manifest 和既有 ownership 核对，不能接受客户端凭空声明 process。
-5. gateway 在已建立的双向通道上发送：
+4. 完成第3步的key proof后，agentx先发送不占`sessionSeq`的`hello`连接前导，声明agentx protocol、各env的pinned exec-server build/schema、capability probe摘要，以及恢复窗口内仍活跃的`{processId, localExecInstanceId}`集合。可选resume cursor精确为`{gatewayInstanceId, sessionId, generation, agentxSentThrough, agentxReceivedThrough}`。hello由已认证WSS与第3步proof绑定；它仍只是恢复提示，不是可信身份，gateway必须用注册manifest和既有ownership核对，不能接受客户端凭空声明process。
+5. fresh连接必须先由core CAS取得新的connection generation，再创建进程内session journal；resume则必须命中同一个`gatewayInstanceId/sessionId/generation`和仍完整的journal，不能增加generation或创建空journal冒充旧session。gateway随后发送不占sequence的`welcome`，明确`fresh|resumed`、双向cursor和固定30秒窗口。resume不满足任一条件时返回terminal `resume_rejected|resume_gap|resume_expired`，agentx先清理旧instance，不能在同一连接静默降级为fresh。
+6. fresh session由gateway发送第一条有序`type=lifecycle` frame；其`rpc`使用标准JSON-RPC 2.0：
 
    ```json
    {
-     "jsonrpc": "2.0",
-     "id": "init-...",
-     "method": "initialize",
-     "params": {
-       "protocolVersion": "...",
-       "clientName": "agentserver-executor-gateway",
-       "resumeSessionId": "optional"
+     "type": "lifecycle",
+     "sessionId": "...",
+     "sessionSeq": 1,
+     "ack": 0,
+     "generation": 7,
+     "rpc": {
+       "jsonrpc": "2.0",
+       "id": "init-...",
+       "method": "initialize",
+       "params": {
+         "protocolVersion": "2.0",
+         "clientName": "agentserver-executor-gateway",
+         "outerProfileVersion": "process-v1",
+         "processMethods": ["process/start", "process/read", "process/write", "process/terminate"]
+       }
      }
    }
    ```
 
-6. agentx 在远程层处理 `initialize`，返回 `sessionId`、协商后的 protocol version 和“pinned schema allowlist ∩ capability probe 已确认字段 ∩ 本地 owner policy”后的 capabilities，随后接收 `initialized`。这组 lifecycle 消息不会转发给任何业务 stdio instance，远程 `resumeSessionId` 也不能传给 stock child。
-7. 每个 executor 同时只有一个有效 connection generation。新连接用 CAS 增加 generation，并 fence/关闭旧连接；connection lease 同时记录最近的 `exec_session_id`。
-8. 完成远程 `initialized` 后，`process/start` 由 agentx 创建并初始化一个专属 stdio instance再转发；后续 process请求按ownership路由到同一instance。fs请求进入不允许`process/start`的独立lane。method/params按pinned schema做语义等价转发，不能声称整个envelope或request id原样不变；child notification/response反向映射回gateway。
-9. 断线按1、2、4、8……30秒指数退避重连；在30秒grace period内携带`resumeSessionId`，且不关闭活跃stdio instances。access token到期前必须重新认证或重连；executor被吊销后，gateway主动fence连接，agentx结束全部本地exec instances。
-10. resume失败、grace period到期或gateway要求全新session时，agentx逐个关闭旧stdio、等待/验证各instance清理其唯一managed process；旧`process_id`不得迁移。后续请求按需创建新instance，而不是复用旧child。
+7. agentx在远程层处理`initialize`，返回相同`sessionId`、协商版本和“pinned schema allowlist ∩ capability probe证据 ∩ 本地owner policy”的结果，随后接收有序`initialized`。resume恢复既有远程lifecycle，不重复initialize。这组消息绝不转发给业务stdio child；stock child仍由agentx本地独立完成自己的`initialize → initialized → environment/info/status`。
+8. 每个executor同时只有一个有效connection generation。fresh CAS成功后立即fence/关闭旧连接；connection lease记录最近`exec_session_id`。gateway进程内registry只是第二道fence，不能自行发明权威generation。
+9. 完成远程`initialized`后，`process/start`由agentx创建并初始化一个专属stdio instance再转发；后续process请求按ownership路由到同一instance。fs请求进入不允许`process/start`的独立lane。method/params按pinned schema做语义等价转发，不能声称整个envelope或request id原样不变；child notification/response反向映射回gateway。
+10. 断线按1、2、4、8……30秒指数退避重连；在30秒grace period内携带完整resume cursor，且不关闭活跃stdio instances。access token到期前必须重新认证或重连；executor被吊销后，gateway主动fence连接，agentx结束全部本地exec instances。resume失败、grace到期或gateway要求fresh session时，agentx逐个关闭旧stdio并验证各instance清理其唯一managed process；旧`process_id`不得迁移。
 
 WSS 上的每个业务 RPC 使用 agentserver routing envelope 包住 Codex exec-server dialect。`sessionSeq` 在每个发送方向独立单调递增，`ack` 是对端已连续处理的最大 sequence；stock 内层省略 `"jsonrpc":"2.0"`：
 
@@ -507,7 +517,10 @@ WSS 上的每个业务 RPC 使用 agentserver routing envelope 包住 Codex exec
   "context": {
     "workspaceId": "...",
     "runId": "...",
+    "runAttemptId": "...",
+    "runAttemptGeneration": 3,
     "executionId": "...",
+    "operationId": "...",
     "envId": "...",
     "mutationKey": "..."
   },
@@ -519,20 +532,20 @@ WSS 上的每个业务 RPC 使用 agentserver routing envelope 包住 Codex exec
 }
 ```
 
+wire message分为两层：`hello/welcome/ack/session_error`是连接/会话控制，不占`sessionSeq`；只有`lifecycle/rpc`是有序frame并进入双向journal。独立`ack`没有`sessionSeq`，否则空闲连接会形成无限ack-of-ack；它只释放对端已连续处理frame的内存journal，绝不是core的operation ACK，也不授权`AcknowledgeOperation`。operation ACK必须来自agentx mutation journal接受记录、匹配RPC response或可信terminal evidence并绑定相同connection generation。
+
 agentx 校验 envelope 的 session sequence、generation、workspace/env 绑定和本地 policy。`process/start`先创建专属local exec instance并原子登记ownership；后续process方法按`process_id`选择既有instance，fs方法进入独立lane。agentx将context记入ownership/audit，分配新的本地request id，再编码为stock dialect写入child。child返回的notification根据`process_id`由agentx补回可信context；不能信任远端为已有process任意声明另一个run/execution。
 
-远端基础 RPC 的 method/params/result/notification schema 必须与 pinned exec-server 对齐：
+所有转发RPC的method/params/result/notification schema必须与pinned exec-server对齐，但“child实现了”不等于“outer已协商”：
 
-- `environment/info`、`environment/status`；
-- `capabilityRoots/discoverV1`（Phase 1 默认不向远端公布）；
-- `process/start`、`process/read`、`process/write`、`process/terminate`；Phase 1 outer profile 明确排除 `process/signal`；
-- `process/output`、`process/exited`、`process/closed` 通知；
-- child → client 反向请求 `network/policyRequest`；
-- `fs/readFile`、`fs/open`、`fs/readBlock`、`fs/close`、`fs/writeFile`；
-- `fs/createDirectory`、`fs/getMetadata`、`fs/canonicalize`、`fs/readDirectory`、`fs/walk`、`fs/remove`、`fs/copy`；
-- 可选 `http/request`，v2 默认不协商该 capability。
+- `environment/info`、`environment/status`只用于agentx本地probe并投影到hello，不进入Phase 1远程业务profile；
+- `process-v1`精确只有`process/start`、`process/read`、`process/write`、`process/terminate`，以及反向的`process/output|exited|closed`和`network/policyRequest`；明确排除`process/signal`；
+- `capabilityRoots/discoverV1`和`http/request`不协商；
+- fs方法在read_file垂直切片以新的显式profile加入，不能因为stock registry存在就穿过当前schema。优先使用`fs/open/readBlock/close`形成请求级上限；无界`fs/readFile`只有在文件metadata与outer response上限均已先验验证时才可使用。
 
 `process/start` 必须携带调用方生成的稳定 `processId`、`argv`、`cwd`、env policy、TTY、sandbox 和 network policy。agentx 为它创建一个最多容纳该 process 的 local exec instance；输出使用单调 sequence，stdin 写入使用 `writeId`。
+
+首个`process-v1/shell-v1` outer contract故意比stock 0.146.0更窄：`envPolicy`固定为`inherit=none`且其余filter为空，最终child环境只由显式`env`组成；sandbox固定为managed + restricted filesystem/network，远端只可声明`root|path`的`read|write`条目，并要求`enforceManagedNetwork=true`。stock可选的`managedNetwork`、`networkProxy`和`windowsSandboxProxySettingsMode`不是远端可控字段；需要的本地proxy启动信息只能由agentx根据受信enrollment/runtime policy注入。对stable 0.146.0源码的逐字段核对确认Windows枚举是`disabled|restricted-token|elevated`，不是`standard`。未来Codex字段或枚举变化必须提升outer profile/manifest并重跑contract gate，不能由宽松反序列化静默穿透。
 
 `capabilityRoots/discoverV1` 可枚举本地 skill/plugin manifest，不是双手执行任务的必要能力，Phase 1 必须在 agentx 层拒绝；未来只有在 owner 显式授权具体 root 与文件类型后才能开放。`http/request` 同样不能仅因 child 支持就出现在远程 capability 中。
 
@@ -566,9 +579,9 @@ JSON-RPC request id 只用于关联响应，不等于副作用幂等。协议还
 - 外层双向 `sessionSeq/ack`、连接 generation/lease 和 resume 窗口；
 - 对结果不明的副作用返回 `ambiguous`，禁止 gateway 自动重试。
 
-在恢复窗口内，两个方向的发送方都必须保留未 ACK 的外层 frame；恢复时只以相同 `sessionSeq` 重传，接收方对重复 sequence 重新 ACK 而不重复投递。副作用 request 还必须复用原 `mutationKey`。若任一方已丢失对端所需的 sequence 范围，则返回 `resume_gap` 并终止该 exec session，不能从当前最新帧继续冒充完整恢复。
+在恢复窗口内，两个方向的发送方都必须保留未ACK的有序frame；恢复时只重传保存的完整frame，保持相同`sessionSeq`、原始piggyback `ack`和payload。接收方对相同sequence重新发送当前独立ACK而不重复投递；若保留窗口内发现相同sequence字节不同，立即以`sequence_conflict`终止。超出bounded receive-digest history的旧duplicate已经无法验证原字节，也必须fail closed，不能仅因sequence较旧就当作安全重复。重复旧frame携带的旧ack不能让本地ACK状态回退，也不能借重复frame推进新的ACK；新的累计进度使用独立`ack`控制帧或后续新sequence承载。副作用request还必须复用原`mutationKey`。若任一方已丢失对端所需范围、peer cursor倒退到已释放journal之前或出现sequence缺口，则返回`resume_gap`并终止该exec session，不能从当前最新帧继续冒充完整恢复。
 
-agentx 在一个 `exec_session_id` 的 grace period 内维护有界的 `mutationKey → pending/completed response` journal。重复 key 返回同一结果或 pending 状态，不再转发给 child；journal 丢失、child crash 或无法判断是否已执行时返回 `ambiguous`。该 journal 不是跨 agentx 重启的“恰好一次”承诺。
+agentx在一个`exec_session_id`的grace period内维护有界的`mutationKey → request hash → pending|completed|ambiguous response` journal。首个相同key只有一次返回外部执行许可；重复key+相同hash返回同一结果或pending，不再转发child；相同key+不同hash为`mutation_conflict`。journal达到上限时必须在接收新副作用前拒绝，不能驱逐旧key后把重试当新请求。journal丢失意味着旧session只能`resume_rejected`；child crash或无法判断是否执行时记录/返回`ambiguous`。该journal不是跨agentx重启的“恰好一次”承诺。
 
 外层 session sequence 覆盖 response、notification、reverse request 和 lifecycle，不只覆盖 process output。agentx 必须持续读取 child stdout，不能因为 WSS backpressure 停止排空 pipe；缓存超限时产生带丢失范围的 `output_gap/buffer_overflow`，不能静默截断。当前 pinned stock child 的 retained output 上限和 exited-process retention 必须写入 manifest/conformance fixture；不能把 upstream 的有限 `process/read` replay 当作无限恢复日志。
 
@@ -576,15 +589,15 @@ agentx 在一个 `exec_session_id` 的 grace period 内维护有界的 `mutation
 
 stock 能生成的响应不天然受 8 MiB/65,536-value 产品 envelope 约束。agentx capability negotiation 必须排除最坏响应可能超限且没有请求级 cap/分页的 method；不能先请求，再以关闭本地 stdio 作为正常的限流策略。
 
-每个 stdio child 只服务一条本地连接，pipe EOF 后 processor shutdown，不能由新的 agentx 重新 attach。`resumeSessionId` 只属于 agentx 外层 WSS；agentx 或某个 child crash 后必须为受影响的 lane 创建新的 `local_exec_instance_id`，该 lane 的旧 process/fs handle 全部失效，其他独立 instance 不受牵连。
+每个 stdio child 只服务一条本地连接，pipe EOF 后 processor shutdown，不能由新的 agentx 重新 attach。resume cursor只属于agentx外层WSS session；agentx或某个child crash后必须为受影响的lane创建新的`local_exec_instance_id`，该lane的旧process/fs handle全部失效，其他独立instance不受牵连。
 
-WSS lifecycle/routing envelope、JSON-RPC schema 和错误码必须在 `docs/protocols/` 下提供机器可读 JSON Schema/AsyncAPI，并用录制 fixture 做 gateway ↔ agentx ↔ stock child 双向兼容测试。envelope 只承载连接、路由、审计和幂等元数据；确定性 process/fs 指令仍位于未经语义改写的内层 JSON-RPC。
+WSS lifecycle/routing envelope、JSON-RPC schema 和错误码以`api/schema/agentx-envelope.schema.json`与`api/asyncapi/agentx-wss.yaml`为机器事实源，并用录制fixture做gateway ↔ agentx ↔ stock child双向兼容测试。envelope只承载连接、路由、审计和幂等元数据；确定性process/fs指令仍位于未经语义改写的内层JSON-RPC。JSON Schema不能表达的方向所有权、双向cursor、generation、重复投递和journal覆盖由reference `internal/executorgateway/agentxconn`语义门禁补充。
 
 ### 9.4 多副本路由
 
 WSS 是有状态连接，executor-gateway 不能只依赖普通 Service 负载均衡宣称高可用。
 
-Phase 1 明确把 executor-gateway 部署为单副本。它只承诺在同一 gateway 进程存活期间恢复短时网络断线；gateway 进程重启后拒绝旧 `resumeSessionId`，仍为 `prepared` 的 operation 保持未发送，已处于 `dispatching|acknowledged` 且尚未由 core 或 agentx journal 证明终态的 operation 标记 `unknown`，agentx 在 grace period 后回收旧 stdio child。数据库中的 connection generation 能 fence 旧写入，但不能替代丢失的双向 frame journal，因此 Phase 1 不宣称跨 pod 恢复。该故障域必须进入 SLO、告警和故障注入测试。
+Phase 1 明确把 executor-gateway 部署为单副本。它只承诺在同一 gateway 进程存活期间恢复短时网络断线；gateway 进程重启后拒绝旧session的完整resume cursor，仍为 `prepared` 的 operation 保持未发送，已处于 `dispatching|acknowledged` 且尚未由 core 或 agentx journal 证明终态的 operation 标记 `unknown`，agentx 在 grace period 后回收旧 stdio child。数据库中的 connection generation 能 fence 旧写入，但不能替代丢失的双向 frame journal，因此 Phase 1 不宣称跨 pod 恢复。该故障域必须进入 SLO、告警和故障注入测试。
 
 Phase 2 若需要多副本和跨 pod resume，必须先实现以下 owner routing 与可恢复 frame/session journal：
 
@@ -805,6 +818,7 @@ agentx 的实现不放入上述 Go module。`github.com/agentserver/agentx` v2 �
 | D19 | v2 API 采用 contract-first | core、gateway、worker、agentx 和 Web 多消费者需要在实现之前共享稳定、可生成的协议源 |
 | D20 | Phase 1每个受管process独占一个stock exec-server stdio instance；outer profile不暴露`process/signal` | connection shutdown可无旁路地回收该process后代；stock空signal响应不具备可审计语义 |
 | D21 | worker MCP reference profile固定`2025-11-25` stateful；其他协商版本在catalog读取前拒绝 | 当前approval依赖`tools/call`内的server-originated `elicitation/create`，official SDK的新stateless profile不能承载该反向请求；协议升级必须连同approval transport重新设计和门禁 |
+| D22 | `process-v1/shell-v1`固定clean-env与managed/restricted sandbox，stock可选proxy启动字段由agentx本地受信策略生成 | 双手只执行确定性任务；远端不能恢复ambient env、选择任意proxy或借upstream新增字段扩大能力 |
 
 ## 15. 设计审查结论与实现门槛
 
@@ -827,6 +841,8 @@ agentx 的实现不放入上述 Go module。`github.com/agentserver/agentx` v2 �
 - capability 续期、外部 endpoint egress 和浏览器 SSE bearer 传输缺少可执行机制；
 - warm pool 的 controller、pod、process 和租户隔离层次冲突；
 - app-server、executor RPC 和 AG-UI 之间缺少规范事件层。
+
+PR 11已把executor contract部分落成机器事实源：`agentx-envelope.schema.json`、`agentx-wss.yaml`、`executor-mcp.schema.json`、稳定`process-v1` profile，以及补充JSON Schema无法表达之方向、sequence/ACK、generation/resume、bounded journal和mutation幂等语义的Go reference kernel。该状态只关闭“协议可以被实现和自动校验”的门槛；真实WSS server/client、agentx supervisor、core connection CAS、process ownership与部署验证仍属于下一垂直切片，不能把reference kernel描述为已可部署的gateway。
 
 进入实现前必须完成以下 Phase 0 gate：
 

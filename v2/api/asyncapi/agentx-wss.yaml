@@ -1,0 +1,113 @@
+{
+  "asyncapi": "3.0.0",
+  "id": "urn:agentserver:v2:agentx-wss",
+  "info": {
+    "title": "agentserver v2 agentx connection",
+    "version": "2.0.0",
+    "description": "Outbound agentx WebSocket. Phase 1 has one executor-gateway process and only resumes sessions whose process-local frame journal still exists."
+  },
+  "defaultContentType": "application/json",
+  "servers": {
+    "executorGateway": {
+      "host": "executor-gateway",
+      "pathname": "/internal/v2/agentx/connect",
+      "protocol": "wss",
+      "description": "Authenticated executor-gateway endpoint. executor_id is derived from the key-bound access token, never from a message field.",
+      "security": [{"$ref": "#/components/securitySchemes/executorOAuth"}]
+    }
+  },
+  "channels": {
+    "agentxSession": {
+      "address": "/internal/v2/agentx/connect",
+      "messages": {
+        "hello": {"$ref": "#/components/messages/Hello"},
+        "welcome": {"$ref": "#/components/messages/Welcome"},
+        "lifecycle": {"$ref": "#/components/messages/Lifecycle"},
+        "rpc": {"$ref": "#/components/messages/RPC"},
+        "ack": {"$ref": "#/components/messages/Ack"},
+        "sessionError": {"$ref": "#/components/messages/SessionError"}
+      },
+      "bindings": {"ws": {"method": "GET"}}
+    }
+  },
+  "operations": {
+    "receiveFromAgentx": {
+      "action": "receive",
+      "channel": {"$ref": "#/channels/agentxSession"},
+      "summary": "Receive hello, agentx lifecycle responses, stock responses/notifications/reverse requests, ACKs, and terminal session errors.",
+      "messages": [
+        {"$ref": "#/channels/agentxSession/messages/hello"},
+        {"$ref": "#/channels/agentxSession/messages/lifecycle"},
+        {"$ref": "#/channels/agentxSession/messages/rpc"},
+        {"$ref": "#/channels/agentxSession/messages/ack"},
+        {"$ref": "#/channels/agentxSession/messages/sessionError"}
+      ]
+    },
+    "sendToAgentx": {
+      "action": "send",
+      "channel": {"$ref": "#/channels/agentxSession"},
+      "summary": "Send welcome, remote lifecycle requests, deterministic process RPCs, reverse-request responses, ACKs, and terminal session errors.",
+      "messages": [
+        {"$ref": "#/channels/agentxSession/messages/welcome"},
+        {"$ref": "#/channels/agentxSession/messages/lifecycle"},
+        {"$ref": "#/channels/agentxSession/messages/rpc"},
+        {"$ref": "#/channels/agentxSession/messages/ack"},
+        {"$ref": "#/channels/agentxSession/messages/sessionError"}
+      ]
+    }
+  },
+  "components": {
+    "messages": {
+      "Hello": {
+        "name": "hello",
+        "title": "Authenticated connection preface",
+        "payload": {"$ref": "../schema/agentx-envelope.schema.json#/$defs/hello"}
+      },
+      "Welcome": {
+        "name": "welcome",
+        "title": "Fresh or resumed session selection",
+        "payload": {"$ref": "../schema/agentx-envelope.schema.json#/$defs/welcome"}
+      },
+      "Lifecycle": {
+        "name": "lifecycle",
+        "title": "Sequenced remote initialize/initialized lifecycle",
+        "payload": {"$ref": "../schema/agentx-envelope.schema.json#/$defs/lifecycleFrame"}
+      },
+      "RPC": {
+        "name": "rpc",
+        "title": "Sequenced deterministic stock exec-server dialect RPC",
+        "payload": {"$ref": "../schema/agentx-envelope.schema.json#/$defs/businessFrame"}
+      },
+      "Ack": {
+        "name": "ack",
+        "title": "Unsequenced cumulative ACK control",
+        "payload": {"$ref": "../schema/agentx-envelope.schema.json#/$defs/ack"}
+      },
+      "SessionError": {
+        "name": "session_error",
+        "title": "Stable protocol failure",
+        "payload": {"$ref": "../schema/agentx-envelope.schema.json#/$defs/sessionError"}
+      }
+    },
+    "securitySchemes": {
+      "executorOAuth": {
+        "type": "oauth2",
+        "description": "Short-lived aud=executor-gateway, scope=executor:connect token bound to the enrolled machine key. The WSS upgrade must prove possession (DPoP/cnf or nonce challenge).",
+        "flows": {
+          "clientCredentials": {
+            "tokenUrl": "/oauth2/token",
+            "availableScopes": {"executor:connect": "Open the enrolled executor connection"}
+          }
+        }
+      }
+    }
+  },
+  "x-agentserver-phase1": {
+    "gatewayReplicas": 1,
+    "resumeWindowMs": 30000,
+    "crossProcessResume": false,
+    "sequenceDirections": "independent",
+    "standaloneAckSequenced": false,
+    "transportAckIsOperationAck": false
+  }
+}

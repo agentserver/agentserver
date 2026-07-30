@@ -1,0 +1,180 @@
+// Package mcpcontract defines the model-visible executor MCP catalog. The
+// catalog is intentionally independent from the MCP transport implementation
+// so the harness can freeze it before executor-gateway handlers exist.
+package mcpcontract
+
+import "encoding/json"
+
+const (
+	Version   = "executor-mcp/1.0"
+	Namespace = "executor"
+)
+
+const (
+	ToolListEnvironments = "list_environments"
+	ToolShell            = "shell"
+)
+
+const (
+	listEnvironmentsDescription = "List execution environments available to this run capability. Use the returned environment_id as the target of executor tools."
+	shellDescription            = "Execute one deterministic argv vector in an environment. argv is never interpreted as a natural-language command or an implicit shell string."
+)
+
+// Tool is one frozen catalog entry. OutputSchema is a gateway/client contract;
+// only Name, Description, and InputSchema are projected into Codex
+// dynamicTools by harness-worker.
+type Tool struct {
+	Name          string
+	Description   string
+	InputSchema   json.RawMessage
+	OutputSchema  json.RawMessage
+	MapperVersion string
+}
+
+var tools = [...]Tool{
+	{
+		Name:          ToolListEnvironments,
+		Description:   listEnvironmentsDescription,
+		InputSchema:   json.RawMessage(listEnvironmentsInputSchema),
+		OutputSchema:  json.RawMessage(listEnvironmentsOutputSchema),
+		MapperVersion: "list-environments-v1",
+	},
+	{
+		Name:          ToolShell,
+		Description:   shellDescription,
+		InputSchema:   json.RawMessage(shellInputSchema),
+		OutputSchema:  json.RawMessage(shellOutputSchema),
+		MapperVersion: "shell-v1",
+	},
+}
+
+func Tools() []Tool {
+	result := make([]Tool, len(tools))
+	copy(result, tools[:])
+	for index := range result {
+		result[index].InputSchema = append(json.RawMessage(nil), result[index].InputSchema...)
+		result[index].OutputSchema = append(json.RawMessage(nil), result[index].OutputSchema...)
+	}
+	return result
+}
+
+func Lookup(name string) (Tool, bool) {
+	for _, tool := range tools {
+		if tool.Name == name {
+			copy := tool
+			copy.InputSchema = append(json.RawMessage(nil), tool.InputSchema...)
+			copy.OutputSchema = append(json.RawMessage(nil), tool.OutputSchema...)
+			return copy, true
+		}
+	}
+	return Tool{}, false
+}
+
+const listEnvironmentsInputSchema = `{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "executor_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "Optional canonical executor UUID filter."
+    }
+  }
+}`
+
+const listEnvironmentsOutputSchema = `{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["environments"],
+  "properties": {
+    "environments": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["environment_id", "executor_id", "display_name", "platform", "default_cwd"],
+        "properties": {
+          "environment_id": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+          "executor_id": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+          "display_name": {"type": "string", "minLength": 1, "maxLength": 256},
+          "description": {"type": "string", "maxLength": 2048},
+          "platform": {"enum": ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64", "windows-arm64"]},
+          "default_cwd": {"type": "string", "minLength": 1, "maxLength": 4096}
+        }
+      }
+    }
+  }
+}`
+
+const shellInputSchema = `{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["environment_id", "argv"],
+  "properties": {
+    "environment_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "Canonical environment UUID returned by list_environments."
+    },
+    "argv": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": {"type": "string", "maxLength": 16384},
+      "description": "Exact argv vector. Shell syntax requires an explicit shell executable in argv."
+    },
+    "cwd": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "description": "Environment-relative working directory. The versioned mapper uses the environment default when omitted."
+    },
+    "env": {
+      "type": "object",
+      "maxProperties": 256,
+      "propertyNames": {"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+      "additionalProperties": {"type": "string", "maxLength": 16384},
+      "description": "Explicit environment entries. The shell-v1 mapper never inherits gateway or agentx ambient variables."
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3600000,
+      "description": "Hard execution deadline. The shell-v1 mapper uses 60000 when omitted."
+    },
+    "tty": {
+      "type": "boolean",
+      "description": "Allocate a PTY. The shell-v1 mapper uses false when omitted."
+    }
+  }
+}`
+
+const shellOutputSchema = `{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["process_id", "status", "chunks", "next_sequence", "sandbox_denied", "timed_out", "output_complete"],
+  "properties": {
+    "process_id": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+    "status": {"enum": ["succeeded", "failed", "unknown"]},
+    "chunks": {
+      "type": "array",
+      "maxItems": 50000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sequence", "stream", "chunk_base64"],
+        "properties": {
+          "sequence": {"type": "integer", "minimum": 1},
+          "stream": {"enum": ["stdout", "stderr", "pty"]},
+          "chunk_base64": {"type": "string", "contentEncoding": "base64"}
+        }
+      }
+    },
+    "next_sequence": {"type": "integer", "minimum": 1},
+    "exit_code": {"type": ["integer", "null"]},
+    "sandbox_denied": {"type": "boolean"},
+    "timed_out": {"type": "boolean"},
+    "output_complete": {"type": "boolean"}
+  }
+}`

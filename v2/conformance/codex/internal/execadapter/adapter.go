@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/codexwire"
+	"github.com/agentserver/agentserver/v2/internal/execprofile"
 	"github.com/agentserver/agentserver/v2/internal/runtimelock"
 )
 
@@ -36,27 +37,15 @@ var (
 	ErrTerminalReplyMissing = errors.New("process closed before an outstanding exec-server reply arrived")
 )
 
-var outerProcessMethods = [...]string{
-	"process/start",
-	"process/read",
-	"process/write",
-	"process/terminate",
-}
-
 // OuterProcessMethods returns the exact Phase 1 process capability. In
 // particular, process/signal is absent because stock success does not prove
 // whether a signal was delivered.
 func OuterProcessMethods() []string {
-	return append([]string(nil), outerProcessMethods[:]...)
+	return execprofile.ProcessMethods()
 }
 
 func AllowsOuterProcessMethod(method string) bool {
-	for _, allowed := range outerProcessMethods {
-		if method == allowed {
-			return true
-		}
-	}
-	return false
+	return execprofile.AllowsProcessMethod(method)
 }
 
 // Transport is one freshly started, not-yet-initialized stock exec-server
@@ -294,7 +283,7 @@ func (i *Instance) Forward(ctx context.Context, method string, params json.RawMe
 	if method == "process/start" {
 		return nil, ErrInstanceAlreadyUsed
 	}
-	if method != "process/read" && method != "process/write" && method != "process/terminate" {
+	if !execprofile.AllowsProcessMethod(method) {
 		return nil, fmt.Errorf("%w: %s", ErrMethodNotNegotiated, method)
 	}
 	if err := i.validateOwnedParams(method, params); err != nil {

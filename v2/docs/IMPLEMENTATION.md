@@ -609,19 +609,18 @@ executor-gateway Phase 1 一个进程包含：
 - approval/elicitation coordinator；
 - structured audit emitter。
 
-registry 只保存活连接。权威 executor/env/generation 在 core。gateway 重启后旧 resumeSessionId 一律拒绝，不能仅凭 DB session id伪造 frame journal仍存在；prepared operation保持未发送，dispatching/acknowledged且无可信终态的 operation才进入 unknown。
+registry 只保存活连接。权威 executor/env/generation 在 core。gateway重启后旧session的完整resume cursor一律拒绝，不能仅凭DB session id伪造frame journal仍存在；prepared operation保持未发送，dispatching/acknowledged且无可信终态的operation才进入unknown。
 
 ### 7.2 第一批工具
 
-按以下顺序实现：
+按以下顺序实现并逐 catalog version 广告：
 
-1. list_environments：只读 core registry，不连接 agentx。
-2. shell：固定 argv[]、cwd、env policy、timeout、tty。
-3. read_file：验证 path/root 后映射 stock fs read。
-4. read_output、write_stdin、terminate：绑定已有 process ownership。
-5. apply_patch：只有 fsWriteFileIfMatch 扩展和跨平台 CAS 测试通过后才暴露。
+1. `executor-mcp/1.0`：list_environments只读 core registry，不连接 agentx；shell使用固定 argv[]、env-relative cwd、固定clean-env mapper、timeout和tty，并在返回前取得terminal evidence。
+2. read_file：验证 path/root 后优先映射有请求级上限的stock block read，不允许无界`fs/readFile`响应突破outer envelope。
+3. 后续版本才把unified_exec与read_output、write_stdin、terminate作为同一handle/ownership切片加入；不能先暴露三个没有handle来源的控制工具。
+4. apply_patch：只有 fsWriteFileIfMatch 扩展和跨平台 CAS 测试通过后才暴露。
 
-unified_exec、跨 run detached process、任意 http/request 和 capabilityRoots不进入第一个 slice。
+unified_exec、跨 run detached process、任意 http/request 和 capabilityRoots不进入第一个shell slice；其中unified_exec未来也只允许run-scoped process，不因此开放跨run detached语义。
 
 ### 7.3 shell 映射
 
@@ -632,7 +631,7 @@ MCP shell
   → PrepareOperation(process_start)
   → BeginOperationDispatch
   → WSS rpc process/start
-  → agentx ACK
+  → agentx mutation journal accepted / matching RPC evidence
   → operation acknowledged
   → process/output / process/exited / process/closed
   → operation terminal
@@ -641,6 +640,8 @@ MCP shell
 ~~~
 
 timeout 不伪装成 process/start 参数。gateway 在启动进程时同时预分配 timeout_terminate operation/mutation key，并把计时策略交给 agentx；gateway timer 与 agentx 本地 monotonic timer触发的是同一个预分配 terminate语义，任何一侧都必须等待真实 process terminal。
+
+这里的agentx ACK不是WSS累计`ack`字段。WSS ACK只证明某个传输frame已连续处理并允许释放内存journal；core `AcknowledgeOperation`需要相同mutation key、operation id和connection generation下的agentx journal接受证据、匹配RPC response或可信terminal evidence。
 
 ### 7.4 agentx 启动顺序
 
@@ -677,9 +678,11 @@ Linux使用 system service身份 + 独立 runner uid/cgroup/user namespace完成
 
 Phase 1：
 
-- 短时网络断开且原gateway进程仍存活：相同exec_session_id、generation、sessionSeq/ACK恢复，agentx保留全部活跃stdio instances。
+- 短时网络断开且原gateway进程仍存活：hello携带相同gateway_instance_id、exec_session_id、generation和双方cursor；双方journal覆盖所有缺口时才按原sessionSeq恢复，agentx保留全部活跃stdio instances。
 - gateway进程重启：resume_rejected；prepared operation保持未发送，core中未证实终态的dispatching/acknowledged operation转unknown；agentx在grace后逐个关闭stdin并回收各instance。
 - agentx进程重启时全部旧process handle失效；单个stdio child重启只使对应`local_exec_instance_id/process_id`失效，其他instance继续。
+
+`hello/welcome/ack/session_error`是无sequence控制帧；只有`lifecycle/rpc`占双向独立sequence。独立ACK不占sequence，避免ack-of-ack循环。fresh连接先通过core CAS取得generation；resume复用原generation且必须命中同一gateway进程内registry，进程内registry本身不是generation权威。
 
 跨 pod resume、durable frame journal和 owner routing属于 Phase 2。
 
@@ -1038,7 +1041,9 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 前 6 个 PR只建立事实和门槛，不写五个服务的空壳。第 7 个 PR后才开始业务 runtime。
 
-当前第10项已经通过真实PostgreSQL幂等、并发、事务尾部回滚、dispatch commit后丢响应和terminal evidence门禁；下一实现切片是第11项`agentx-wss、outer profile与executor MCP contract`。approval command、真实executor connection权威登记和gateway runtime仍未实现，因此这只表示core已具备不重放的execution/operation持久化内核，不表示Phase 1整体完成或服务已经可部署运行。
+第11项已经完成：`process-v1`精确冻结`process/start|read|write|terminate`并排除`process/signal`；`executor-mcp/1.0`只广告`list_environments|shell`；agentx WSS拥有JSON Schema/AsyncAPI机器契约。Go reference kernel实现双向独立sequence、非sequenced ACK、generation fencing、同gateway进程30秒resume、bounded frame/receive journal和`mutationKey + request hash`的pending/completed/ambiguous门禁；运行时validator还逐method严格校验process request/notification与`network/policyRequest`参数。stable 0.146.0源码复核确认clean-env wire、managed sandbox字段和`windowsSandboxLevel=restricted-token`枚举，contract/race门禁将继续防止schema与实现漂移。
+
+下一实现切片是第12项`agentx v2独立仓库bootstrap + shell executor vertical slice`。实施顺序应先在本仓库建立可运行的executor-gateway骨架、core executor connection acquire/renew CAS和WSS accept/handshake，把reference session接到真实socket；再建立agentx connector/runner IPC、stock stdio supervisor与单process ownership，最后贯通`list_environments → shell → operation terminal → MCP result`。approval command、真实enrollment/key binding、平台containment和部署manifest仍未实现，因此PR 11不表示Phase 1整体完成或当前已经可部署运行。
 
 ## 14. 尚未锁定但有明确决策点的事项
 

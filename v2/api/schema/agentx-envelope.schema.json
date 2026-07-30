@@ -1,0 +1,575 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentserver.dev/v2/schema/agentx-envelope.schema.json",
+  "title": "agentserver v2 agentx WSS messages",
+  "description": "Connection prefaces and bounded Phase 1 session messages. hello/welcome/ack/session_error are unsequenced control messages; lifecycle/rpc are independently sequenced in each direction.",
+  "oneOf": [
+    {"$ref": "#/$defs/hello"},
+    {"$ref": "#/$defs/welcome"},
+    {"$ref": "#/$defs/lifecycleFrame"},
+    {"$ref": "#/$defs/businessFrame"},
+    {"$ref": "#/$defs/ack"},
+    {"$ref": "#/$defs/sessionError"}
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": {"const": "00000000-0000-0000-0000-000000000000"}
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "rpcId": {
+      "oneOf": [
+        {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\u0000]*$"},
+        {"type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807}
+      ]
+    },
+    "processMethods": {
+      "type": "array",
+      "prefixItems": [
+        {"const": "process/start"},
+        {"const": "process/read"},
+        {"const": "process/write"},
+        {"const": "process/terminate"}
+      ],
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "activeProcess": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["processId", "localExecInstanceId"],
+      "properties": {
+        "processId": {"$ref": "#/$defs/uuid"},
+        "localExecInstanceId": {"$ref": "#/$defs/uuid"}
+      }
+    },
+    "helloEnvironment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["envId", "platform", "codexRelease", "codexCommit", "codexSha256", "outerProfileVersion", "processMethods", "activeProcesses", "insecureDev"],
+      "properties": {
+        "envId": {"$ref": "#/$defs/uuid"},
+        "platform": {"enum": ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64", "windows-arm64"]},
+        "codexRelease": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$"},
+        "codexCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "codexSha256": {"$ref": "#/$defs/sha256"},
+        "outerProfileVersion": {"const": "process-v1"},
+        "processMethods": {"$ref": "#/$defs/processMethods"},
+        "activeProcesses": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {"$ref": "#/$defs/activeProcess"}
+        },
+        "insecureDev": {"type": "boolean"}
+      }
+    },
+    "resumeCursor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gatewayInstanceId", "sessionId", "generation", "agentxSentThrough", "agentxReceivedThrough"],
+      "properties": {
+        "gatewayInstanceId": {"$ref": "#/$defs/uuid"},
+        "sessionId": {"$ref": "#/$defs/uuid"},
+        "generation": {"type": "integer", "minimum": 1},
+        "agentxSentThrough": {"type": "integer", "minimum": 0},
+        "agentxReceivedThrough": {"type": "integer", "minimum": 0}
+      }
+    },
+    "hello": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "connectionId", "protocolVersions", "agentxVersion", "runtimeManifestSha256", "execProtocolSourceSha256", "environments"],
+      "properties": {
+        "type": {"const": "hello"},
+        "connectionId": {"$ref": "#/$defs/uuid"},
+        "protocolVersions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"}
+        },
+        "agentxVersion": {"type": "string", "minLength": 1, "maxLength": 256},
+        "runtimeManifestSha256": {"$ref": "#/$defs/sha256"},
+        "execProtocolSourceSha256": {"$ref": "#/$defs/sha256"},
+        "environments": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": {"$ref": "#/$defs/helloEnvironment"}
+        },
+        "resume": {"$ref": "#/$defs/resumeCursor"}
+      }
+    },
+    "welcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "protocolVersion", "gatewayInstanceId", "sessionId", "generation", "resumeStatus", "resumeWindowMs", "gatewaySentThrough", "gatewayReceivedThrough"],
+      "properties": {
+        "type": {"const": "welcome"},
+        "protocolVersion": {"const": "2.0"},
+        "gatewayInstanceId": {"$ref": "#/$defs/uuid"},
+        "sessionId": {"$ref": "#/$defs/uuid"},
+        "generation": {"type": "integer", "minimum": 1},
+        "resumeStatus": {"enum": ["fresh", "resumed"]},
+        "resumeWindowMs": {"const": 30000},
+        "gatewaySentThrough": {"type": "integer", "minimum": 0},
+        "gatewayReceivedThrough": {"type": "integer", "minimum": 0}
+      }
+    },
+    "routingContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workspaceId", "runId", "runAttemptId", "runAttemptGeneration", "executionId", "operationId", "envId", "mutationKey"],
+      "properties": {
+        "workspaceId": {"$ref": "#/$defs/uuid"},
+        "runId": {"$ref": "#/$defs/uuid"},
+        "runAttemptId": {"$ref": "#/$defs/uuid"},
+        "runAttemptGeneration": {"type": "integer", "minimum": 1},
+        "executionId": {"$ref": "#/$defs/uuid"},
+        "operationId": {"$ref": "#/$defs/uuid"},
+        "envId": {"$ref": "#/$defs/uuid"},
+        "mutationKey": {"$ref": "#/$defs/uuid"}
+      }
+    },
+    "sequencedBase": {
+      "type": "object",
+      "properties": {
+        "sessionId": {"$ref": "#/$defs/uuid"},
+        "sessionSeq": {"type": "integer", "minimum": 1},
+        "ack": {"type": "integer", "minimum": 0},
+        "generation": {"type": "integer", "minimum": 1}
+      }
+    },
+    "initializeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "id", "method", "params"],
+      "properties": {
+        "jsonrpc": {"const": "2.0"},
+        "id": {"$ref": "#/$defs/rpcId"},
+        "method": {"const": "initialize"},
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["protocolVersion", "clientName", "outerProfileVersion", "processMethods"],
+          "properties": {
+            "protocolVersion": {"const": "2.0"},
+            "clientName": {"const": "agentserver-executor-gateway"},
+            "outerProfileVersion": {"const": "process-v1"},
+            "processMethods": {"$ref": "#/$defs/processMethods"}
+          }
+        }
+      }
+    },
+    "initializedNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "method", "params"],
+      "properties": {
+        "jsonrpc": {"const": "2.0"},
+        "method": {"const": "initialized"},
+        "params": {"type": "object", "additionalProperties": false, "maxProperties": 0}
+      }
+    },
+    "initializeResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "id", "result"],
+      "properties": {
+        "jsonrpc": {"const": "2.0"},
+        "id": {"$ref": "#/$defs/rpcId"},
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sessionId", "protocolVersion", "serverName", "outerProfileVersion", "processMethods"],
+          "properties": {
+            "sessionId": {"$ref": "#/$defs/uuid"},
+            "protocolVersion": {"const": "2.0"},
+            "serverName": {"const": "agentx"},
+            "outerProfileVersion": {"const": "process-v1"},
+            "processMethods": {"$ref": "#/$defs/processMethods"}
+          }
+        }
+      }
+    },
+    "rpcError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": {"type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807},
+        "message": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "data": true
+      }
+    },
+    "lifecycleErrorResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jsonrpc", "id", "error"],
+      "properties": {
+        "jsonrpc": {"const": "2.0"},
+        "id": {"$ref": "#/$defs/rpcId"},
+        "error": {"$ref": "#/$defs/rpcError"}
+      }
+    },
+    "lifecycleRPC": {
+      "oneOf": [
+        {"$ref": "#/$defs/initializeRequest"},
+        {"$ref": "#/$defs/initializedNotification"},
+        {"$ref": "#/$defs/initializeResponse"},
+        {"$ref": "#/$defs/lifecycleErrorResponse"}
+      ]
+    },
+    "lifecycleFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "sessionSeq", "ack", "generation", "rpc"],
+      "properties": {
+        "type": {"const": "lifecycle"},
+        "sessionId": {"$ref": "#/$defs/uuid"},
+        "sessionSeq": {"type": "integer", "minimum": 1},
+        "ack": {"type": "integer", "minimum": 0},
+        "generation": {"type": "integer", "minimum": 1},
+        "rpc": {"$ref": "#/$defs/lifecycleRPC"}
+      }
+    },
+    "cleanEnvPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inherit", "ignoreDefaultExcludes", "exclude", "set", "includeOnly"],
+      "properties": {
+        "inherit": {"const": "none"},
+        "ignoreDefaultExcludes": {"const": false},
+        "exclude": {"type": "array", "maxItems": 0},
+        "set": {"type": "object", "maxProperties": 0},
+        "includeOnly": {"type": "array", "maxItems": 0}
+      }
+    },
+    "sandboxPath": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "value"],
+          "properties": {
+            "type": {"const": "special"},
+            "value": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind"],
+              "properties": {"kind": {"const": "root"}}
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "path"],
+          "properties": {
+            "type": {"const": "path"},
+            "path": {"type": "string", "pattern": "^file:[^\u0000]*$", "maxLength": 4096}
+          }
+        }
+      ]
+    },
+    "sandboxEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "access"],
+      "properties": {
+        "path": {"$ref": "#/$defs/sandboxPath"},
+        "access": {"enum": ["read", "write"]}
+      }
+    },
+    "sandboxContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["permissions", "cwd", "workspaceRoots", "windowsSandboxLevel", "windowsSandboxPrivateDesktop", "useLegacyLandlock"],
+      "properties": {
+        "permissions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "file_system", "network"],
+          "properties": {
+            "type": {"const": "managed"},
+            "file_system": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "entries"],
+              "properties": {
+                "type": {"const": "restricted"},
+                "entries": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"$ref": "#/$defs/sandboxEntry"}}
+              }
+            },
+            "network": {"const": "restricted"}
+          }
+        },
+        "cwd": {"type": "string", "pattern": "^file:[^\u0000]*$", "maxLength": 4096},
+        "workspaceRoots": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"type": "string", "pattern": "^file:[^\u0000]*$", "maxLength": 4096}},
+        "windowsSandboxLevel": {"enum": ["disabled", "restricted-token", "elevated"]},
+        "windowsSandboxPrivateDesktop": {"type": "boolean"},
+        "useLegacyLandlock": {"type": "boolean"}
+      }
+    },
+    "processStartRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "method", "params"],
+      "properties": {
+        "id": {"$ref": "#/$defs/rpcId"},
+        "method": {"const": "process/start"},
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["processId", "argv", "cwd", "env", "envPolicy", "tty", "pipeStdin", "arg0", "sandbox", "enforceManagedNetwork"],
+          "properties": {
+            "processId": {"$ref": "#/$defs/uuid"},
+            "argv": {"type": "array", "minItems": 1, "maxItems": 256, "items": {"type": "string", "maxLength": 16384, "pattern": "^[^\u0000]*$"}},
+            "cwd": {"type": "string", "pattern": "^file:[^\u0000]*$", "maxLength": 4096},
+            "env": {
+              "type": "object",
+              "maxProperties": 256,
+              "propertyNames": {"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+              "additionalProperties": {"type": "string", "maxLength": 16384, "pattern": "^[^\u0000]*$"}
+            },
+            "envPolicy": {"$ref": "#/$defs/cleanEnvPolicy"},
+            "tty": {"type": "boolean"},
+            "pipeStdin": {"type": "boolean"},
+            "arg0": {"type": ["string", "null"], "maxLength": 16384, "pattern": "^[^\u0000]*$"},
+            "sandbox": {"$ref": "#/$defs/sandboxContext"},
+            "enforceManagedNetwork": {"const": true}
+          }
+        }
+      }
+    },
+    "processReadRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "method", "params"],
+      "properties": {
+        "id": {"$ref": "#/$defs/rpcId"},
+        "method": {"const": "process/read"},
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["processId", "afterSeq", "maxBytes", "waitMs"],
+          "properties": {
+            "processId": {"$ref": "#/$defs/uuid"},
+            "afterSeq": {"type": "integer", "minimum": 0},
+            "maxBytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
+            "waitMs": {"type": "integer", "minimum": 0, "maximum": 30000}
+          }
+        }
+      }
+    },
+    "processWriteRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "method", "params"],
+      "properties": {
+        "id": {"$ref": "#/$defs/rpcId"},
+        "method": {"const": "process/write"},
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["processId", "chunk", "writeId"],
+          "properties": {
+            "processId": {"$ref": "#/$defs/uuid"},
+            "chunk": {"type": "string", "maxLength": 1398104, "contentEncoding": "base64"},
+            "writeId": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[^\u0000]*$"}
+          }
+        }
+      }
+    },
+    "processTerminateRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "method", "params"],
+      "properties": {
+        "id": {"$ref": "#/$defs/rpcId"},
+        "method": {"const": "process/terminate"},
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["processId"],
+          "properties": {"processId": {"$ref": "#/$defs/uuid"}}
+        }
+      }
+    },
+    "processOutputNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "params"],
+      "properties": {
+        "method": {"const": "process/output"},
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["processId", "seq", "stream", "chunk"],
+          "properties": {
+            "processId": {"$ref": "#/$defs/uuid"},
+            "seq": {"type": "integer", "minimum": 1},
+            "stream": {"enum": ["stdout", "stderr", "pty"]},
+            "chunk": {"type": "string", "contentEncoding": "base64"}
+          }
+        }
+      }
+    },
+    "processExitedNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "params"],
+      "properties": {
+        "method": {"const": "process/exited"},
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["processId", "seq", "exitCode", "sandboxDenied"],
+          "properties": {
+            "processId": {"$ref": "#/$defs/uuid"},
+            "seq": {"type": "integer", "minimum": 1},
+            "exitCode": {"type": "integer", "minimum": -2147483648, "maximum": 2147483647},
+            "sandboxDenied": {"type": "boolean"}
+          }
+        }
+      }
+    },
+    "processClosedNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "params"],
+      "properties": {
+        "method": {"const": "process/closed"},
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["processId", "seq"],
+          "properties": {
+            "processId": {"$ref": "#/$defs/uuid"},
+            "seq": {"type": "integer", "minimum": 1}
+          }
+        }
+      }
+    },
+    "networkPolicyRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "method", "params"],
+      "properties": {
+        "id": {"$ref": "#/$defs/rpcId"},
+        "method": {"const": "network/policyRequest"},
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["processId", "request"],
+          "properties": {
+            "processId": {"$ref": "#/$defs/uuid"},
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["protocol", "host", "port"],
+              "properties": {
+                "protocol": {"enum": ["http", "https_connect", "socks5_tcp", "socks5_udp"]},
+                "host": {"type": "string", "minLength": 1, "maxLength": 253, "pattern": "^[^\\x00-\\x20\\x7f]+$"},
+                "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+              }
+            }
+          }
+        }
+      }
+    },
+    "stockResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "result"],
+          "properties": {"id": {"$ref": "#/$defs/rpcId"}, "result": true}
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "error"],
+          "properties": {"id": {"$ref": "#/$defs/rpcId"}, "error": {"$ref": "#/$defs/rpcError"}}
+        }
+      ]
+    },
+    "stockRPC": {
+      "oneOf": [
+        {"$ref": "#/$defs/processStartRequest"},
+        {"$ref": "#/$defs/processReadRequest"},
+        {"$ref": "#/$defs/processWriteRequest"},
+        {"$ref": "#/$defs/processTerminateRequest"},
+        {"$ref": "#/$defs/processOutputNotification"},
+        {"$ref": "#/$defs/processExitedNotification"},
+        {"$ref": "#/$defs/processClosedNotification"},
+        {"$ref": "#/$defs/networkPolicyRequest"},
+        {"$ref": "#/$defs/stockResponse"}
+      ]
+    },
+    "businessFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "sessionSeq", "ack", "generation", "context", "rpc"],
+      "properties": {
+        "type": {"const": "rpc"},
+        "sessionId": {"$ref": "#/$defs/uuid"},
+        "sessionSeq": {"type": "integer", "minimum": 1},
+        "ack": {"type": "integer", "minimum": 0},
+        "generation": {"type": "integer", "minimum": 1},
+        "context": {"$ref": "#/$defs/routingContext"},
+        "rpc": {"$ref": "#/$defs/stockRPC"}
+      }
+    },
+    "ack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "sessionId", "generation", "ack"],
+      "properties": {
+        "type": {"const": "ack"},
+        "sessionId": {"$ref": "#/$defs/uuid"},
+        "generation": {"type": "integer", "minimum": 1},
+        "ack": {"type": "integer", "minimum": 0}
+      }
+    },
+    "sessionError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "code", "message", "terminal"],
+      "properties": {
+        "type": {"const": "session_error"},
+        "code": {
+          "enum": [
+            "malformed_frame",
+            "protocol_version_unsupported",
+            "method_not_negotiated",
+            "session_mismatch",
+            "stale_generation",
+            "ack_out_of_range",
+            "ack_regression",
+            "sequence_conflict",
+            "resume_gap",
+            "output_gap",
+            "buffer_overflow",
+            "resume_rejected",
+            "resume_expired",
+            "journal_full",
+            "mutation_conflict",
+            "session_closed",
+            "ambiguous"
+          ]
+        },
+        "message": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "terminal": {"type": "boolean"},
+        "lostFrom": {"type": "integer", "minimum": 1},
+        "lostTo": {"type": "integer", "minimum": 1}
+      },
+      "dependentRequired": {"lostFrom": ["lostTo"], "lostTo": ["lostFrom"]}
+    }
+  }
+}

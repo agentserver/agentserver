@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/agentserver/agentserver/v2/internal/executorgateway"
 )
 
 func TestRunRequiresExplicitInsecureDevMode(t *testing.T) {
@@ -54,6 +56,14 @@ func TestDevMCPAuthenticatorRequiresExactBearer(t *testing.T) {
 		bearer,
 		"40000000-0000-4000-8000-000000000004",
 		"20000000-0000-4000-8000-000000000002",
+		executorgateway.ExecutorMCPRunContext{
+			RunID:                     "41000000-0000-4000-8000-000000000004",
+			RunAttemptID:              "42000000-0000-4000-8000-000000000004",
+			RunAttemptGeneration:      3,
+			HolderID:                  "dev-holder",
+			ExpectedRunVersion:        4,
+			ExpectedRunAttemptVersion: 5,
+		},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -73,7 +83,22 @@ func TestDevMCPAuthenticatorRequiresExactBearer(t *testing.T) {
 	if _, err := authenticator.AuthenticateExecutorMCP(request); err == nil {
 		t.Fatal("duplicate Authorization headers were accepted")
 	}
-	if _, err := newDevMCPAuthenticator("short", principal.WorkspaceID, principal.ExecutorID); err == nil {
+	if principal.Run.RunID != "41000000-0000-4000-8000-000000000004" || principal.Run.ExpectedRunAttemptVersion != 5 {
+		t.Fatalf("development MCP run context = %+v", principal.Run)
+	}
+	if _, err := newDevMCPAuthenticator("short", principal.WorkspaceID, principal.ExecutorID, principal.Run); err == nil {
 		t.Fatal("short development MCP bearer was accepted")
+	}
+}
+
+func TestRequiredPositiveGatewayInt64(t *testing.T) {
+	for _, value := range []string{"", "0", "-1", "1.5", "9223372036854775808"} {
+		if _, err := requiredPositiveGatewayInt64(func(string) string { return value }, "TEST_VALUE"); err == nil {
+			t.Errorf("invalid positive integer %q was accepted", value)
+		}
+	}
+	value, err := requiredPositiveGatewayInt64(func(string) string { return "17" }, "TEST_VALUE")
+	if err != nil || value != 17 {
+		t.Fatalf("requiredPositiveGatewayInt64() = %d, %v", value, err)
 	}
 }

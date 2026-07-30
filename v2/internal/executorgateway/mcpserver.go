@@ -44,9 +44,22 @@ var errExecutorMCPShuttingDown = errors.New("executor MCP server is shutting dow
 type ExecutorMCPPrincipal struct {
 	CapabilityID string
 	WorkspaceID  string
+	Run          ExecutorMCPRunContext
 	// ExecutorID optionally narrows list_environments to one executor. The
 	// empty value grants the workspace-wide registry projection.
 	ExecutorID string
+}
+
+// ExecutorMCPRunContext is the immutable, capability-derived core command
+// context for one worker attempt. Tool arguments and MCP metadata may only
+// correlate a call with this context; they never supply or override it.
+type ExecutorMCPRunContext struct {
+	RunID                     string
+	RunAttemptID              string
+	RunAttemptGeneration      int64
+	HolderID                  string
+	ExpectedRunVersion        int64
+	ExpectedRunAttemptVersion int64
 }
 
 type ExecutorMCPAuthenticator interface {
@@ -469,6 +482,18 @@ func validateExecutorMCPSessionID(value string) error {
 func validateExecutorMCPPrincipal(principal ExecutorMCPPrincipal) error {
 	if err := validateRegistryIdentity("workspace ID", principal.WorkspaceID); err != nil {
 		return err
+	}
+	if err := validateRegistryIdentity("run ID", principal.Run.RunID); err != nil {
+		return err
+	}
+	if err := validateRegistryIdentity("run attempt ID", principal.Run.RunAttemptID); err != nil {
+		return err
+	}
+	if principal.Run.RunAttemptGeneration < 1 || principal.Run.ExpectedRunVersion < 1 || principal.Run.ExpectedRunAttemptVersion < 1 {
+		return errors.New("MCP run generation and expected versions must be positive")
+	}
+	if principal.Run.HolderID == "" || len(principal.Run.HolderID) > 256 || !utf8.ValidString(principal.Run.HolderID) || strings.ContainsRune(principal.Run.HolderID, 0) {
+		return errors.New("MCP run holder ID must contain between 1 and 256 valid UTF-8 bytes without NUL")
 	}
 	if principal.ExecutorID != "" {
 		if err := validateRegistryIdentity("executor ID", principal.ExecutorID); err != nil {

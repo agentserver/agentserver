@@ -21,6 +21,8 @@ import (
 
 const (
 	testMCPWorkspaceID = "40000000-0000-4000-8000-000000000004"
+	testMCPRunID       = "41000000-0000-4000-8000-000000000004"
+	testMCPAttemptID   = "42000000-0000-4000-8000-000000000004"
 	testMCPBearerA     = "executor-worker-test-bearer-a"
 	testMCPBearerB     = "executor-worker-test-bearer-b"
 )
@@ -30,11 +32,7 @@ func TestExecutorMCPListEnvironmentsUsesFrozenContractAndAuthenticatedScope(t *t
 		testRegisteredEnvironment(testEnvironmentID, `{"kind":"local","root":"/workspace","displayName":"primary","defaultCwd":"src"}`),
 	}}
 	handler := newTestExecutorMCPHandler(t, registry, map[string]ExecutorMCPPrincipal{
-		testMCPBearerA: {
-			CapabilityID: "capability-a",
-			WorkspaceID:  testMCPWorkspaceID,
-			ExecutorID:   testExecutorID,
-		},
+		testMCPBearerA: testExecutorMCPPrincipal("capability-a"),
 	})
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
@@ -108,7 +106,7 @@ func TestExecutorMCPListEnvironmentsUsesFrozenContractAndAuthenticatedScope(t *t
 func TestExecutorMCPRejectsInvalidArgumentsBeforeRegistry(t *testing.T) {
 	registry := &recordingMCPEnvironmentRegistry{}
 	handler := newTestExecutorMCPHandler(t, registry, map[string]ExecutorMCPPrincipal{
-		testMCPBearerA: {CapabilityID: "capability-a", WorkspaceID: testMCPWorkspaceID, ExecutorID: testExecutorID},
+		testMCPBearerA: testExecutorMCPPrincipal("capability-a"),
 	})
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
@@ -160,8 +158,8 @@ func TestExecutorMCPRejectsInvalidArgumentsBeforeRegistry(t *testing.T) {
 func TestExecutorMCPSessionCannotBeReusedByAnotherCapability(t *testing.T) {
 	registry := &recordingMCPEnvironmentRegistry{}
 	handler := newTestExecutorMCPHandler(t, registry, map[string]ExecutorMCPPrincipal{
-		testMCPBearerA: {CapabilityID: "capability-a", WorkspaceID: testMCPWorkspaceID, ExecutorID: testExecutorID},
-		testMCPBearerB: {CapabilityID: "capability-b", WorkspaceID: testMCPWorkspaceID, ExecutorID: testExecutorID},
+		testMCPBearerA: testExecutorMCPPrincipal("capability-a"),
+		testMCPBearerB: testExecutorMCPPrincipal("capability-b"),
 	})
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
@@ -198,7 +196,7 @@ func TestExecutorMCPSessionCannotBeReusedByAnotherCapability(t *testing.T) {
 
 func TestExecutorMCPRejectsOtherProtocolProfilesAndBrowserOrigins(t *testing.T) {
 	handler := newTestExecutorMCPHandler(t, &recordingMCPEnvironmentRegistry{}, map[string]ExecutorMCPPrincipal{
-		testMCPBearerA: {CapabilityID: "capability-a", WorkspaceID: testMCPWorkspaceID, ExecutorID: testExecutorID},
+		testMCPBearerA: testExecutorMCPPrincipal("capability-a"),
 	})
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
@@ -245,7 +243,7 @@ func TestExecutorMCPRejectsOtherProtocolProfilesAndBrowserOrigins(t *testing.T) 
 
 func TestExecutorMCPShutdownRejectsNewSessions(t *testing.T) {
 	handler := newTestExecutorMCPHandler(t, &recordingMCPEnvironmentRegistry{}, map[string]ExecutorMCPPrincipal{
-		testMCPBearerA: {CapabilityID: "capability-a", WorkspaceID: testMCPWorkspaceID, ExecutorID: testExecutorID},
+		testMCPBearerA: testExecutorMCPPrincipal("capability-a"),
 	})
 	if err := handler.Shutdown(t.Context()); err != nil {
 		t.Fatal(err)
@@ -281,6 +279,22 @@ func newTestExecutorMCPHandler(t *testing.T, registry EnvironmentRegistry, princ
 		_ = handler.Shutdown(ctx)
 	})
 	return handler
+}
+
+func testExecutorMCPPrincipal(capabilityID string) ExecutorMCPPrincipal {
+	return ExecutorMCPPrincipal{
+		CapabilityID: capabilityID,
+		WorkspaceID:  testMCPWorkspaceID,
+		ExecutorID:   testExecutorID,
+		Run: ExecutorMCPRunContext{
+			RunID:                     testMCPRunID,
+			RunAttemptID:              testMCPAttemptID,
+			RunAttemptGeneration:      3,
+			HolderID:                  "test-mcp-holder",
+			ExpectedRunVersion:        4,
+			ExpectedRunAttemptVersion: 5,
+		},
+	}
 }
 
 func fmtMCPTestSessionID(sequence int) string {

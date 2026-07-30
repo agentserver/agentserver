@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,19 +23,25 @@ import (
 )
 
 const (
-	gatewayListenAddressEnvironment         = "AGENTSERVER_V2_EXECUTOR_GATEWAY_LISTEN_ADDR"
-	gatewayTLSCertificateEnvironment        = "AGENTSERVER_V2_EXECUTOR_GATEWAY_TLS_CERT_FILE"
-	gatewayTLSKeyEnvironment                = "AGENTSERVER_V2_EXECUTOR_GATEWAY_TLS_KEY_FILE"
-	gatewayCoreURLEnvironment               = "AGENTSERVER_V2_CORE_URL"
-	gatewayCoreCAEnvironment                = "AGENTSERVER_V2_CORE_CA_FILE"
-	gatewayCoreClientCertificateEnvironment = "AGENTSERVER_V2_CORE_CLIENT_CERT_FILE"
-	gatewayCoreClientKeyEnvironment         = "AGENTSERVER_V2_CORE_CLIENT_KEY_FILE"
-	gatewayCoreServerNameEnvironment        = "AGENTSERVER_V2_CORE_SERVER_NAME"
-	gatewayDevExecutorIDEnvironment         = "AGENTSERVER_V2_DEV_EXECUTOR_ID"
-	gatewayDevWorkspaceIDEnvironment        = "AGENTSERVER_V2_DEV_WORKSPACE_ID"
-	gatewayDevMCPBearerEnvironment          = "AGENTSERVER_V2_DEV_MCP_BEARER_TOKEN"
-	gatewayDevExecutorHeader                = "X-Agentserver-Dev-Executor-Id"
-	maximumDevMCPBearerBytes                = 16 * 1024
+	gatewayListenAddressEnvironment           = "AGENTSERVER_V2_EXECUTOR_GATEWAY_LISTEN_ADDR"
+	gatewayTLSCertificateEnvironment          = "AGENTSERVER_V2_EXECUTOR_GATEWAY_TLS_CERT_FILE"
+	gatewayTLSKeyEnvironment                  = "AGENTSERVER_V2_EXECUTOR_GATEWAY_TLS_KEY_FILE"
+	gatewayCoreURLEnvironment                 = "AGENTSERVER_V2_CORE_URL"
+	gatewayCoreCAEnvironment                  = "AGENTSERVER_V2_CORE_CA_FILE"
+	gatewayCoreClientCertificateEnvironment   = "AGENTSERVER_V2_CORE_CLIENT_CERT_FILE"
+	gatewayCoreClientKeyEnvironment           = "AGENTSERVER_V2_CORE_CLIENT_KEY_FILE"
+	gatewayCoreServerNameEnvironment          = "AGENTSERVER_V2_CORE_SERVER_NAME"
+	gatewayDevExecutorIDEnvironment           = "AGENTSERVER_V2_DEV_EXECUTOR_ID"
+	gatewayDevWorkspaceIDEnvironment          = "AGENTSERVER_V2_DEV_WORKSPACE_ID"
+	gatewayDevRunIDEnvironment                = "AGENTSERVER_V2_DEV_RUN_ID"
+	gatewayDevRunAttemptIDEnvironment         = "AGENTSERVER_V2_DEV_RUN_ATTEMPT_ID"
+	gatewayDevRunAttemptGenerationEnvironment = "AGENTSERVER_V2_DEV_RUN_ATTEMPT_GENERATION"
+	gatewayDevRunHolderIDEnvironment          = "AGENTSERVER_V2_DEV_RUN_HOLDER_ID"
+	gatewayDevRunVersionEnvironment           = "AGENTSERVER_V2_DEV_RUN_VERSION"
+	gatewayDevRunAttemptVersionEnvironment    = "AGENTSERVER_V2_DEV_RUN_ATTEMPT_VERSION"
+	gatewayDevMCPBearerEnvironment            = "AGENTSERVER_V2_DEV_MCP_BEARER_TOKEN"
+	gatewayDevExecutorHeader                  = "X-Agentserver-Dev-Executor-Id"
+	maximumDevMCPBearerBytes                  = 16 * 1024
 )
 
 var canonicalUUIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -89,11 +96,51 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	if devWorkspaceID == "00000000-0000-0000-0000-000000000000" || !canonicalUUIDPattern.MatchString(devWorkspaceID) {
 		return errors.New("AGENTSERVER_V2_DEV_WORKSPACE_ID must be a non-zero canonical lowercase UUID")
 	}
+	devRunID, err := requiredGatewayConfiguration(getenv, gatewayDevRunIDEnvironment)
+	if err != nil {
+		return err
+	}
+	if devRunID == "00000000-0000-0000-0000-000000000000" || !canonicalUUIDPattern.MatchString(devRunID) {
+		return errors.New("AGENTSERVER_V2_DEV_RUN_ID must be a non-zero canonical lowercase UUID")
+	}
+	devRunAttemptID, err := requiredGatewayConfiguration(getenv, gatewayDevRunAttemptIDEnvironment)
+	if err != nil {
+		return err
+	}
+	if devRunAttemptID == "00000000-0000-0000-0000-000000000000" || !canonicalUUIDPattern.MatchString(devRunAttemptID) {
+		return errors.New("AGENTSERVER_V2_DEV_RUN_ATTEMPT_ID must be a non-zero canonical lowercase UUID")
+	}
+	devRunAttemptGeneration, err := requiredPositiveGatewayInt64(getenv, gatewayDevRunAttemptGenerationEnvironment)
+	if err != nil {
+		return err
+	}
+	devRunHolderID, err := requiredGatewayConfiguration(getenv, gatewayDevRunHolderIDEnvironment)
+	if err != nil {
+		return err
+	}
+	if len(devRunHolderID) > 256 {
+		return errors.New("AGENTSERVER_V2_DEV_RUN_HOLDER_ID must contain at most 256 bytes")
+	}
+	devRunVersion, err := requiredPositiveGatewayInt64(getenv, gatewayDevRunVersionEnvironment)
+	if err != nil {
+		return err
+	}
+	devRunAttemptVersion, err := requiredPositiveGatewayInt64(getenv, gatewayDevRunAttemptVersionEnvironment)
+	if err != nil {
+		return err
+	}
 	devMCPBearer, err := requiredGatewayConfiguration(getenv, gatewayDevMCPBearerEnvironment)
 	if err != nil {
 		return err
 	}
-	mcpAuthenticator, err := newDevMCPAuthenticator(devMCPBearer, devWorkspaceID, devExecutorID)
+	mcpAuthenticator, err := newDevMCPAuthenticator(devMCPBearer, devWorkspaceID, devExecutorID, executorgateway.ExecutorMCPRunContext{
+		RunID:                     devRunID,
+		RunAttemptID:              devRunAttemptID,
+		RunAttemptGeneration:      devRunAttemptGeneration,
+		HolderID:                  devRunHolderID,
+		ExpectedRunVersion:        devRunVersion,
+		ExpectedRunAttemptVersion: devRunAttemptVersion,
+	})
 	if err != nil {
 		return err
 	}
@@ -201,7 +248,7 @@ type devMCPAuthenticator struct {
 	principal     executorgateway.ExecutorMCPPrincipal
 }
 
-func newDevMCPAuthenticator(bearer, workspaceID, executorID string) (devMCPAuthenticator, error) {
+func newDevMCPAuthenticator(bearer, workspaceID, executorID string, run executorgateway.ExecutorMCPRunContext) (devMCPAuthenticator, error) {
 	if len(bearer) < 32 || len(bearer) > maximumDevMCPBearerBytes {
 		return devMCPAuthenticator{}, fmt.Errorf("%s must contain between 32 and %d bytes", gatewayDevMCPBearerEnvironment, maximumDevMCPBearerBytes)
 	}
@@ -217,6 +264,7 @@ func newDevMCPAuthenticator(bearer, workspaceID, executorID string) (devMCPAuthe
 			CapabilityID: "insecure-dev:" + hex.EncodeToString(digest[:]),
 			WorkspaceID:  workspaceID,
 			ExecutorID:   executorID,
+			Run:          run,
 		},
 	}, nil
 }
@@ -299,4 +347,16 @@ func requiredGatewayConfiguration(getenv func(string) string, name string) (stri
 		return "", fmt.Errorf("%s is required", name)
 	}
 	return value, nil
+}
+
+func requiredPositiveGatewayInt64(getenv func(string) string, name string) (int64, error) {
+	value, err := requiredGatewayConfiguration(getenv, name)
+	if err != nil {
+		return 0, err
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed < 1 {
+		return 0, fmt.Errorf("%s must be a positive base-10 integer", name)
+	}
+	return parsed, nil
 }

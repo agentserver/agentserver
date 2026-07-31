@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agentserver/agentserver/v2/internal/devruntime"
 	"github.com/agentserver/agentserver/v2/internal/devstack"
 )
 
@@ -115,5 +116,49 @@ func TestRunFixturesReportsFailure(t *testing.T) {
 	})
 	if exitCode != 1 || !strings.Contains(stderr.String(), "listener occupied") {
 		t.Fatalf("fixtures failure = exit %d stderr=%q", exitCode, stderr.String())
+	}
+}
+
+func TestRunRuntimeRequiresExactDevelopmentMode(t *testing.T) {
+	for _, arguments := range [][]string{
+		{"runtime"},
+		{"runtime", "--platform=linux-arm64", "--insecure-dev", "--codex=/tmp/codex", "--bwrap=/tmp/bwrap", "--output-dir=/tmp/runtime"},
+		{"runtime", "--insecure-dev", "--platform=", "--codex=/tmp/codex", "--bwrap=/tmp/bwrap", "--output-dir=/tmp/runtime"},
+		{"runtime", "--insecure-dev", "--platform=linux-arm64", "--codex=/tmp/codex", "--bwrap=", "--output-dir=/tmp/runtime"},
+	} {
+		var stderr bytes.Buffer
+		called := false
+		exitCode := run(context.Background(), arguments, &bytes.Buffer{}, &stderr, commandFunctions{
+			runtime: func(devruntime.PrepareConfig) (devruntime.Result, error) {
+				called = true
+				return devruntime.Result{}, nil
+			},
+		})
+		if exitCode != 2 || called || !strings.Contains(stderr.String(), "runtime --insecure-dev") {
+			t.Fatalf("run(%v) = %d, called=%v, stderr=%q", arguments, exitCode, called, stderr.String())
+		}
+	}
+}
+
+func TestRunRuntimeCreatesPinnedPackage(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	exitCode := run(
+		context.Background(),
+		[]string{"runtime", "--insecure-dev", "--platform=linux-arm64", "--codex=/tmp/codex", "--bwrap=/tmp/bwrap", "--output-dir=/tmp/runtime"},
+		&stdout, &stderr,
+		commandFunctions{runtime: func(config devruntime.PrepareConfig) (devruntime.Result, error) {
+			if config.Platform != devruntime.PlatformLinuxARM64 || config.CodexExecutable != "/tmp/codex" ||
+				config.BwrapExecutable != "/tmp/bwrap" || config.OutputDirectory != "/tmp/runtime" {
+				t.Fatalf("runtime config = %+v", config)
+			}
+			return devruntime.Result{
+				OutputDirectory: "/tmp/runtime", ManifestFile: "/tmp/runtime/runtime-manifest.json",
+				BundleRoot: "/tmp/runtime/bundle", Platform: devruntime.PlatformLinuxARM64,
+			}, nil
+		}},
+	)
+	if exitCode != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), "INSECURE DEV linux-arm64") ||
+		!strings.Contains(stdout.String(), "/tmp/runtime/runtime-manifest.json") {
+		t.Fatalf("runtime result = exit %d stdout=%q stderr=%q", exitCode, stdout.String(), stderr.String())
 	}
 }

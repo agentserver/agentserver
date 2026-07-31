@@ -34,6 +34,18 @@ prepare 输入 schema 位于 `api/schema/insecure-dev-stack.schema.json`，生�
 4. 一个已经存在、无 symlink component 的本地 workspace；
 5. PostgreSQL URL，以及尚未被其他进程占用的 loopback 端口。
 
+对已经通过本仓 native image gate 的官方 stable `0.146.0` Linux arm64 artifact，可以从解包后的 executable 生成仅限开发使用的 runtime package：
+
+```bash
+go run ./cmd/agentserver-dev runtime --insecure-dev \
+  --platform=linux-arm64 \
+  --codex=/absolute/codex-aarch64-unknown-linux-musl \
+  --bwrap=/absolute/bwrap-aarch64-unknown-linux-musl \
+  --output-dir=/absolute/new-stock-runtime
+```
+
+命令不下载文件，只接受仓库已经记录的 exact SHA-256/size，输出 `runtime-manifest.json` 与最小 `bundle/bin/codex + bundle/codex-resources/bwrap`。manifest中的 app-server schema digest、exec-server protocol source digest、release commit和行为 bounds 都来自同一 `rust-v0.146.0` 证据；protocol digest覆盖官方 peeled commit中明确列出的五个 production source文件，使用排序的 repo-relative tree record。该命令不会生成 detached signature、SBOM或 production runtime lock，输出必须继续以 `INSECURE DEV` 对待。
+
 本仓二进制可以从 `v2/` 目录构建，例如：
 
 ```bash
@@ -101,7 +113,7 @@ agentx 仍从独立的 `github.com/agentserver/agentx` 仓库构建。它只监�
 
 `platform`、Codex release/commit/digest、exec protocol digest 和 checkpoint allowlist不能在这里另填一份；命令从 runtime manifest 的原始字节派生它们。当前 harness config profile只接受 stock `0.146.0`。四个服务和两个 fixture 监听地址必须全部不同、端口非零且显式指向规范的 loopback host。Hydra 开发 endpoint 固定为 cleartext loopback HTTP；llmproxy endpoint 固定为 loopback HTTPS。当前确定性模型脚本会调用 `executor.list_environments`，因此 `policy.allowedTools` 必须包含 `list_environments`。
 
-`workerUid/workerGid` 是运行 harness-worker 的 Linux identity，`appUid/appGid` 是 stock app-server 的固定 Linux identity；UID 和 GID都必须分别不同。开发 attempt anchor现在使用 `0701`，只给 app identity execute-only traversal，不允许列目录或读文件。
+`workerUid/workerGid` 是运行 harness-worker 的 Linux identity，`appUid/appGid` 是 stock app-server 的固定 Linux identity；UID 和 GID都必须分别不同。生成的 harness-pool 环境显式启用 privileged-fork backend：常驻 pool保留 `CHOWN/DAC_OVERRIDE/SETUID/SETGID`，每个 attempt直接 fork固定worker identity，worker再 fork固定app identity并在启动后封死自身 capability；热路径不创建容器、Job或Pod。开发 attempt anchor使用execute-only traversal，不允许app列目录或读pool/worker文件。
 
 ## 4. 生成
 
@@ -208,14 +220,36 @@ https://127.0.0.1:17444/v2/workspaces/{workspaceId}/sessions/{sessionId}/agui
 
 开发前端从 `secrets/browser-bearer.token` 读取 bearer 并只发送给 browser-gateway；该值不会出现在 metadata 或任何服务 env 中。harness-pool 为每个 attempt 动态签发 `aud=executor-mcp` 与 `aud=llmproxy` 两枚不同 capability；前端不接触它们，app-server 也永远拿不到 executor capability。
 
-## 6. 尚未形成一键可用闭环的部分
+## 6. 单容器可运行开发栈
 
-prepare 和 fixtures 现在已经解决“所有已实现组件使用同一份开发 authority 和密钥材料”、浏览器 token introspection 以及可验证的确定性 Responses 依赖。目前仍有以下硬前置：
+`deploy/insecure-dev` 已经把当前组件接成一套可启动的 Linux arm64 开发环境。它在一个容器中启动 PostgreSQL、fixtures、Core、browser-gateway、executor-gateway、harness-pool 和独立 agentx；attempt 热路径使用普通 `fork/exec`。stock `codex app-server` 仍由 harness-worker 按 attempt 通过 stdio 启动，是短命的模型 harness 进程，不是给前端连接的常驻产品服务。前端只连接 browser-gateway 的 AG-UI endpoint，A2UI payload 通过 AG-UI custom event 承载。
 
-- 真实 PostgreSQL；
-- Linux privileged harness runtime，包括固定 UID/GID切换、process-group cleanup和 app-server egress policy；
-- 把生成的开发 CA加入 stock app-server 可见的系统 trust store。app-server child 的 closed-world环境故意不接受 ambient `SSL_CERT_FILE`/代理变量；
-- 当前平台精确匹配、已经通过门禁的 stock Codex artifact；
-- 在线 agentx/executor environment。
+镜像构建不联网下载 artifact，只接受 `internal/devruntime` 固定的官方 stable `0.146.0` Linux arm64 Codex 和 bwrap。agentx 继续来自独立仓库。以本仓库根目录作为 executor workspace 时，从 `v2/` 执行：
 
-因此 macOS 上现在可以验证生成、配置、PKI、Hydra/Responses fixture、agentx/exec-server 和控制面前置边界，但不能把一次真实模型 turn 当作已经部署成功。下一实施段是在 PostgreSQL + Linux privileged runtime 中安装开发 CA 并执行真实 AG-UI → dynamic executor call → checkpoint smoke；通过后再整理一键启动和 reference web 体验。
+```bash
+./deploy/insecure-dev/build.sh \
+  --codex=/absolute/codex-aarch64-unknown-linux-musl \
+  --bwrap=/absolute/bwrap-aarch64-unknown-linux-musl \
+  --agentx-source=/absolute/agentx-v2
+
+./deploy/insecure-dev/run.sh
+./deploy/insecure-dev/smoke.sh
+```
+
+状态使用 Apple `container` 的 VM-backed named volume，默认名为 `agentserver-v2-dev-state`。这是因为宿主 bind mount 不能可靠地把私有 harness 输入改属固定 worker UID/GID；executor workspace 仍是普通的宿主 bind mount，不与 authority 状态混放。Apple `container` 的端口发布转发到容器 NIC，因此部署入口只把 browser-gateway 覆盖为监听 `0.0.0.0:17444`，宿主仍只发布 `127.0.0.1:17444`；Core、executor-gateway、harness-pool 和 fixtures 保持容器 loopback 监听。
+
+真实 smoke 已验证以下闭环：
+
+```text
+AG-UI → Core → harness-worker → stock app-server
+      → executor MCP → agentx → stock exec-server
+      → RUN_FINISHED → durable checkpoint
+```
+
+正常停止应给 supervisor 足够时间让 PostgreSQL fast shutdown 并回收子进程：
+
+```bash
+container stop --time 15 agentserver-v2-dev
+```
+
+这仍是明确的 `insecure-dev` 部署：数据库口令、browser bearer、开发 CA 和 fixture 模型响应都只适用于本地开发；所有控制面服务与 PostgreSQL 仍同容器、executor-gateway 仍是单副本，也没有生产级 secret 分发、网络策略、升级迁移、监控告警或高可用保证。它的用途是验证协议和真实执行闭环，并作为后续 reference web 体验的后端，不应直接作为生产拓扑。

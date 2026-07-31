@@ -40,6 +40,9 @@ const (
 	poolRuntimeManifestDigestEnvironment = "AGENTSERVER_V2_CODEX_RUNTIME_MANIFEST_SHA256"
 	poolCheckpointAllowlistEnvironment   = "AGENTSERVER_V2_CHECKPOINT_ALLOWLIST_VERSION"
 	poolWorkerServiceAccountEnvironment  = "AGENTSERVER_V2_HARNESS_WORKER_SERVICE_ACCOUNT"
+	poolPrivilegedForkEnvironment        = "AGENTSERVER_V2_HARNESS_PRIVILEGED_FORK"
+	poolWorkerUIDEnvironment             = "AGENTSERVER_V2_HARNESS_WORKER_UID"
+	poolWorkerGIDEnvironment             = "AGENTSERVER_V2_HARNESS_WORKER_GID"
 	poolAppUIDEnvironment                = "AGENTSERVER_V2_HARNESS_APP_UID"
 	poolAppGIDEnvironment                = "AGENTSERVER_V2_HARNESS_APP_GID"
 	poolExecutorMCPEndpointEnvironment   = "AGENTSERVER_V2_EXECUTOR_MCP_ENDPOINT"
@@ -90,6 +93,7 @@ type harnessPoolDevelopmentConfig struct {
 	runtimeDigest    string
 	allowlistVersion int
 	serviceAccount   string
+	workerCredential *harnesspool.LocalProcessCredential
 	appCredential    harnesspool.LocalProcessCredential
 
 	executorMCPEndpoint string
@@ -182,6 +186,25 @@ func loadHarnessPoolDevelopmentConfig(getenv func(string) string) (harnessPoolDe
 		return harnessPoolDevelopmentConfig{}, err
 	}
 	config.appCredential = harnesspool.LocalProcessCredential{UID: appUID, GID: appGID}
+	privilegedFork := strings.TrimSpace(getenv(poolPrivilegedForkEnvironment))
+	switch privilegedFork {
+	case "":
+	case "true":
+		workerUID, err := requiredCredentialID(getenv, poolWorkerUIDEnvironment)
+		if err != nil {
+			return harnessPoolDevelopmentConfig{}, err
+		}
+		workerGID, err := requiredCredentialID(getenv, poolWorkerGIDEnvironment)
+		if err != nil {
+			return harnessPoolDevelopmentConfig{}, err
+		}
+		if workerUID == appUID || workerGID == appGID {
+			return harnessPoolDevelopmentConfig{}, errors.New("privileged-fork worker and app identities must be distinct")
+		}
+		config.workerCredential = &harnesspool.LocalProcessCredential{UID: workerUID, GID: workerGID}
+	default:
+		return harnessPoolDevelopmentConfig{}, fmt.Errorf("%s must be exactly true when present", poolPrivilegedForkEnvironment)
+	}
 	config.maxConcurrent, err = optionalBoundedInt(getenv(poolMaxConcurrentEnvironment), defaultPoolMaxConcurrent, 1, maximumCommandConcurrency, poolMaxConcurrentEnvironment)
 	if err != nil {
 		return harnessPoolDevelopmentConfig{}, err

@@ -1,0 +1,62 @@
+FROM postgres:17.6-alpine AS runtime-builder
+
+COPY bin/agentserver-dev /usr/local/bin/agentserver-dev
+COPY stock/codex /opt/agentserver/input/codex
+COPY stock/bwrap /opt/agentserver/input/bwrap
+
+RUN chmod 0555 \
+        /usr/local/bin/agentserver-dev \
+        /opt/agentserver/input/codex \
+        /opt/agentserver/input/bwrap \
+    && /usr/local/bin/agentserver-dev runtime --insecure-dev \
+        --platform=linux-arm64 \
+        --codex=/opt/agentserver/input/codex \
+        --bwrap=/opt/agentserver/input/bwrap \
+        --output-dir=/opt/agentserver/stock-runtime
+
+FROM postgres:17.6-alpine
+
+LABEL org.opencontainers.image.title="agentserver v2 insecure development stack"
+LABEL org.opencontainers.image.description="Single-container PostgreSQL and fork-based agentserver v2 development stack"
+
+ENV POSTGRES_USER=agentserver \
+    POSTGRES_PASSWORD=development \
+    POSTGRES_DB=agentserver \
+    PGDATA=/var/lib/agentserver/postgres
+
+COPY --from=runtime-builder /opt/agentserver/stock-runtime /opt/agentserver/stock-runtime
+COPY bin/agentserver-core /usr/local/bin/agentserver-core
+COPY bin/agentserver-dev /usr/local/bin/agentserver-dev
+COPY bin/agentx /usr/local/bin/agentx
+COPY bin/browser-gateway /usr/local/bin/browser-gateway
+COPY bin/executor-gateway /usr/local/bin/executor-gateway
+COPY bin/harness-final-exec /usr/local/bin/harness-final-exec
+COPY bin/harness-pool /usr/local/bin/harness-pool
+COPY bin/harness-worker /usr/local/bin/harness-worker
+COPY entrypoint.sh /usr/local/bin/agentserver-v2-insecure-dev
+COPY requirements.toml /etc/codex/requirements.toml
+
+RUN chmod 0555 \
+        /usr/local/bin/agentserver-core \
+        /usr/local/bin/agentserver-dev \
+        /usr/local/bin/agentx \
+        /usr/local/bin/browser-gateway \
+        /usr/local/bin/executor-gateway \
+        /usr/local/bin/harness-final-exec \
+        /usr/local/bin/harness-pool \
+        /usr/local/bin/harness-worker \
+        /usr/local/bin/agentserver-v2-insecure-dev \
+    && chmod 0555 /etc/codex \
+    && chmod 0444 /etc/codex/requirements.toml \
+    && chmod 0555 \
+        /opt/agentserver/stock-runtime/bundle/bin/codex \
+        /opt/agentserver/stock-runtime/bundle/codex-resources/bwrap \
+    && chmod 0444 /opt/agentserver/stock-runtime/runtime-manifest.json \
+    && mkdir -p /var/lib/agentserver \
+    && chmod 0711 /var/lib/agentserver
+
+EXPOSE 17444
+STOPSIGNAL SIGTERM
+
+ENTRYPOINT ["/usr/local/bin/agentserver-v2-insecure-dev"]
+CMD []

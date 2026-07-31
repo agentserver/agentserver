@@ -34,7 +34,16 @@ Digest rules:
 - Original generated files are retained as conformance evidence even though
   their raw tree digest is not a reproducible protocol identity.
 - `execProtocolSourceSha256` covers the explicitly pinned upstream protocol
-  source allowlist. That allowlist will be committed with the production lock.
+  source allowlist. The insecure-development stable 0.146.0 profile currently
+  records the five production Rust modules under
+  `codex-rs/exec-server-protocol/src` (`lib.rs`, `network_policy.rs`,
+  `process_id.rs`, `protocol.rs`, and `rpc.rs`) at peeled commit
+  `e363b08c9175ac1cbe5893615dd2cb9ddf95043b`. It hashes sorted
+  `<file-sha256><two spaces><repo-relative-path><LF>` records to
+  `7917ed958875dc94258d04e088f349fc6d7fbab41ccf133226767af326d22a1f`.
+  Tests and build metadata are excluded. A future signed production lock must
+  commit and review its own allowlist rather than silently inheriting this
+  development profile.
 - `execServerBounds` records release behavior established by E10. For the two
   characterized 0.146 builds this is a 64 MiB stdio payload, 262,144 JSON
   values, no dedicated argv/env limit beyond transport and the host process

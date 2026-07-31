@@ -78,10 +78,10 @@ WITH candidates AS (
         attempts = attempts + 1
     FROM candidates AS c
     WHERE o.id = c.id
-    RETURNING o.id::text, o.aggregate_id::text, o.payload,
+    RETURNING o.id::text, o.aggregate_id, o.payload,
               o.available_at, o.lock_owner, o.lock_until, o.attempts, o.created_at
 )
-SELECT c.id, c.aggregate_id, c.payload, c.available_at, c.lock_owner,
+SELECT c.id, c.aggregate_id::text, c.payload, c.available_at, c.lock_owner,
        c.lock_until, c.attempts, c.created_at,
        r.workspace_id::text, r.session_id::text, r.status, r.version
 FROM claimed AS c

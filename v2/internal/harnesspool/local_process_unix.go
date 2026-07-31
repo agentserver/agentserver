@@ -11,7 +11,7 @@ import (
 )
 
 func configureLocalAttemptCommand(command *exec.Cmd, credential *LocalProcessCredential) error {
-	attributes := localAttemptSysProcAttributes()
+	attributes := localAttemptSysProcAttributes(credential != nil)
 	if credential != nil {
 		attributes.Credential = &syscall.Credential{
 			Uid: credential.UID, Gid: credential.GID, Groups: []uint32{},

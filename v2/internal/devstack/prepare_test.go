@@ -63,7 +63,10 @@ func TestPrepareBuildsClosedDevelopmentStackWithoutWorkerSecrets(t *testing.T) {
 	if coreEnvironment["AGENTSERVER_V2_DATABASE_URL"] != fixture.document.DatabaseURL ||
 		coreEnvironment["AGENTSERVER_V2_RUN_ALLOWED_TOOLS"] != "list_environments,read_file,shell" ||
 		executorEnvironment["AGENTSERVER_V2_DEV_EXECUTOR_ID"] != fixture.document.Authority.ExecutorID ||
-		poolEnvironment["AGENTSERVER_V2_CODEX_RUNTIME_MANIFEST_SHA256"] != loaded.ManifestSHA256 {
+		poolEnvironment["AGENTSERVER_V2_CODEX_RUNTIME_MANIFEST_SHA256"] != loaded.ManifestSHA256 ||
+		poolEnvironment["AGENTSERVER_V2_HARNESS_PRIVILEGED_FORK"] != "true" ||
+		poolEnvironment["AGENTSERVER_V2_HARNESS_WORKER_UID"] != "65531" ||
+		poolEnvironment["AGENTSERVER_V2_HARNESS_WORKER_GID"] != "65531" {
 		t.Fatalf("generated service environments do not preserve config: core=%v executor=%v pool=%v", coreEnvironment, executorEnvironment, poolEnvironment)
 	}
 	capabilityKey := executorEnvironment["AGENTSERVER_V2_DEV_RUN_CAPABILITY_KEY"]

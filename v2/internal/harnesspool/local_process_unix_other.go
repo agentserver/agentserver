@@ -4,6 +4,6 @@ package harnesspool
 
 import "syscall"
 
-func localAttemptSysProcAttributes() *syscall.SysProcAttr {
+func localAttemptSysProcAttributes(bool) *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Setpgid: true}
 }

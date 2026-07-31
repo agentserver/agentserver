@@ -129,14 +129,23 @@ func serveHarnessPool(ctx context.Context, getenv func(string) string, stdout, s
 	if err != nil {
 		return err
 	}
+	var runtimeCleaner harnesspool.LocalAttemptRuntimeCleaner
+	if config.workerCredential != nil {
+		runtimeCleaner, err = harnesspool.NewDACOverrideLocalAttemptRuntimeCleaner(config.runtimeRoot)
+		if err != nil {
+			return fmt.Errorf("configure privileged local attempt runtime cleaner: %w", err)
+		}
+	}
 	launcher, err := harnesspool.NewLocalProcessLauncher(harnesspool.LocalProcessLauncherConfig{
 		WorkerExecutable: config.workerExecutable,
 		WorkerArguments:  []string{developmentWorkerArguments, "--config=" + config.workerConfig},
 		RuntimeRoot:      config.runtimeRoot,
+		RuntimeCleaner:   runtimeCleaner,
 		Environment: []string{
 			"LANG=C", "LC_ALL=C", "NO_COLOR=1", "PATH=/usr/bin:/bin", "TMPDIR=/tmp",
 		},
 		ObjectSource:               objects,
+		Credential:                 config.workerCredential,
 		ExpectedAppCredential:      &config.appCredential,
 		ExpectedWorkerImageDigest:  config.workerDigest,
 		ExpectedServiceAccount:     config.serviceAccount,

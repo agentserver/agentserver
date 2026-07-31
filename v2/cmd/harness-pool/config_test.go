@@ -19,8 +19,23 @@ func TestLoadHarnessPoolDevelopmentConfig(t *testing.T) {
 	if config.listenAddress != "127.0.0.1:0" || config.executorID != configuration[poolDevExecutorIDEnvironment] ||
 		config.workerDigest == "" || config.maxConcurrent != defaultPoolMaxConcurrent ||
 		config.maxRunDuration != defaultMaxRunDuration || config.allowlistVersion != 1 ||
-		config.appCredential.UID != 65532 || config.appCredential.GID != 65532 || config.capabilityCodec == nil {
+		config.appCredential.UID != 65532 || config.appCredential.GID != 65532 ||
+		config.workerCredential != nil || config.capabilityCodec == nil {
 		t.Fatalf("loaded development config = %+v", config)
+	}
+}
+
+func TestLoadHarnessPoolDevelopmentConfigSelectsPrivilegedFork(t *testing.T) {
+	configuration := validHarnessPoolConfiguration(t)
+	configuration[poolPrivilegedForkEnvironment] = "true"
+	configuration[poolWorkerUIDEnvironment] = "65531"
+	configuration[poolWorkerGIDEnvironment] = "65531"
+	config, err := loadHarnessPoolDevelopmentConfig(func(name string) string { return configuration[name] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.workerCredential == nil || config.workerCredential.UID != 65531 || config.workerCredential.GID != 65531 {
+		t.Fatalf("privileged worker credential = %+v", config.workerCredential)
 	}
 }
 
@@ -33,9 +48,20 @@ func TestLoadHarnessPoolDevelopmentConfigRejectsUnsafeValues(t *testing.T) {
 		"runtime-digest":    func(config map[string]string) { config[poolRuntimeManifestDigestEnvironment] = strings.Repeat("A", 64) },
 		"allowlist":         func(config map[string]string) { config[poolCheckpointAllowlistEnvironment] = "0" },
 		"app-uid":           func(config map[string]string) { config[poolAppUIDEnvironment] = "0" },
-		"concurrency":       func(config map[string]string) { config[poolMaxConcurrentEnvironment] = "65" },
-		"duration":          func(config map[string]string) { config[poolMaxRunDurationEnvironment] = "25h" },
-		"worker-config":     func(config map[string]string) { config[poolWorkerConfigEnvironment] = "relative.json" },
+		"fork-mode":         func(config map[string]string) { config[poolPrivilegedForkEnvironment] = "yes" },
+		"fork-worker-uid": func(config map[string]string) {
+			config[poolPrivilegedForkEnvironment] = "true"
+			config[poolWorkerUIDEnvironment] = "0"
+			config[poolWorkerGIDEnvironment] = "65531"
+		},
+		"fork-shared-gid": func(config map[string]string) {
+			config[poolPrivilegedForkEnvironment] = "true"
+			config[poolWorkerUIDEnvironment] = "65531"
+			config[poolWorkerGIDEnvironment] = "65532"
+		},
+		"concurrency":   func(config map[string]string) { config[poolMaxConcurrentEnvironment] = "65" },
+		"duration":      func(config map[string]string) { config[poolMaxRunDurationEnvironment] = "25h" },
+		"worker-config": func(config map[string]string) { config[poolWorkerConfigEnvironment] = "relative.json" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			configuration := validHarnessPoolConfiguration(t)

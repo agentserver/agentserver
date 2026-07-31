@@ -2,6 +2,7 @@ package coredb
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -39,6 +40,41 @@ func TestPostgreSQLCreateRunIdempotencyAndAtomicity(t *testing.T) {
 	assertStateTableCount(t, pool, schema, "runs", 1)
 	assertStateTableCount(t, pool, schema, "run_events", 1)
 	assertStateTableCount(t, pool, schema, "outbox", 1)
+
+	var eventPayloadText string
+	var outboxPayloadText string
+	payloadQuery := fmt.Sprintf(`
+SELECT e.payload::text, o.payload::text
+FROM %s.run_events AS e
+JOIN %s.outbox AS o ON o.id = $2
+WHERE e.run_id = $1
+  AND e.kind = 'run.queued'
+  AND o.kind = 'run.queued'
+  AND o.aggregate_id = e.run_id`, quoteIdentifier(schema), quoteIdentifier(schema))
+	if err := pool.QueryRow(t.Context(), payloadQuery, command.RunID, command.Record.OutboxID).Scan(&eventPayloadText, &outboxPayloadText); err != nil {
+		t.Fatal(err)
+	}
+	type queuedPayload struct {
+		WorkspaceID string `json:"workspaceId"`
+		SessionID   string `json:"sessionId"`
+		RunID       string `json:"runId"`
+		RunVersion  int64  `json:"runVersion"`
+	}
+	wantPayload := queuedPayload{
+		WorkspaceID: workspaceID,
+		SessionID:   sessionID,
+		RunID:       command.RunID,
+		RunVersion:  result.Run.Version,
+	}
+	for source, payloadText := range map[string]string{"event": eventPayloadText, "outbox": outboxPayloadText} {
+		var payload queuedPayload
+		if err := json.Unmarshal([]byte(payloadText), &payload); err != nil {
+			t.Fatalf("decode %s run.queued payload: %v", source, err)
+		}
+		if payload != wantPayload {
+			t.Fatalf("%s run.queued payload = %+v, want %+v", source, payload, wantPayload)
+		}
+	}
 
 	conflicting := command
 	conflicting.RequestHash = sha256.Sum256([]byte("different request"))
@@ -166,6 +202,31 @@ func TestPostgreSQLAttemptLeaseGenerationFencing(t *testing.T) {
 		RunID: created.Run.ID, AttemptID: firstClaim.Attempt.ID, HolderID: "holder-a", Generation: 1, LeaseTTL: time.Minute,
 	}); err != nil {
 		t.Fatalf("RenewAttemptLease() error = %v", err)
+	}
+	pairedRenewal, err := store.RenewRunAttemptLeases(t.Context(), RenewRunAttemptLeasesCommand{
+		SessionID: sessionID, RunID: created.Run.ID, AttemptID: firstClaim.Attempt.ID,
+		HolderID: "holder-a", Generation: 1, LeaseTTL: 2 * time.Minute,
+	})
+	if err != nil || pairedRenewal.SessionLease.Generation != 1 || pairedRenewal.AttemptLease.Generation != 1 {
+		t.Fatalf("RenewRunAttemptLeases() = %+v, %v", pairedRenewal, err)
+	}
+	var sessionRenewedBefore time.Time
+	renewedQuery := fmt.Sprintf("SELECT renewed_at FROM %s.session_leases WHERE session_id = $1", quoteIdentifier(schema))
+	if err := pool.QueryRow(t.Context(), renewedQuery, sessionID).Scan(&sessionRenewedBefore); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RenewRunAttemptLeases(t.Context(), RenewRunAttemptLeasesCommand{
+		SessionID: sessionID, RunID: created.Run.ID, AttemptID: stateTestUUID(229),
+		HolderID: "holder-a", Generation: 1, LeaseTTL: 3 * time.Minute,
+	}); !HasStateErrorCode(err, ErrorLeaseLost) {
+		t.Fatalf("mismatched RenewRunAttemptLeases() error = %v, want lease_lost", err)
+	}
+	var sessionRenewedAfter time.Time
+	if err := pool.QueryRow(t.Context(), renewedQuery, sessionID).Scan(&sessionRenewedAfter); err != nil {
+		t.Fatal(err)
+	}
+	if !sessionRenewedAfter.Equal(sessionRenewedBefore) {
+		t.Fatalf("failed pair renewal partially committed session lease: before=%s after=%s", sessionRenewedBefore, sessionRenewedAfter)
 	}
 	if _, err := store.RenewAttemptLease(t.Context(), RenewAttemptLeaseCommand{
 		RunID: created.Run.ID, AttemptID: firstClaim.Attempt.ID, HolderID: "holder-b", Generation: 1, LeaseTTL: time.Minute,

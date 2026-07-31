@@ -3,11 +3,70 @@
   "info": {
     "title": "agentserver v2 internal command API",
     "version": "0.1.0",
-    "description": "Executor connection, environment registry, and execution state commands. All endpoints require an authenticated executor-gateway workload identity."
+    "description": "Run-attempt, executor connection, environment registry, and execution state commands. Every endpoint requires the explicitly authorized component workload identity."
   },
   "servers": [{"url": "https://agentserver-core"}],
   "security": [{"workloadMTLS": []}],
   "paths": {
+    "/internal/v2/run-attempts:claim": {
+      "post": {
+        "operationId": "claimRunAttempt",
+        "description": "Claims one known queued run and atomically creates its generation-scoped session and attempt leases.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ClaimRunAttemptRequest"}}}},
+        "responses": {
+          "200": {"description": "Fresh claim, exact retry, or eligible pre-turn reclaim", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ClaimRunAttemptResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/run-attempts/{runAttemptId}:renew": {
+      "parameters": [{"$ref": "#/components/parameters/RunAttemptId"}],
+      "post": {
+        "operationId": "renewRunAttempt",
+        "description": "Renews the exact session and attempt lease tuple in one database transaction.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RenewRunAttemptRequest"}}}},
+        "responses": {
+          "200": {"description": "Both holder leases renewed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RenewRunAttemptResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/run-attempts/{runAttemptId}:turnAccepted": {
+      "parameters": [{"$ref": "#/components/parameters/RunAttemptId"}],
+      "post": {
+        "operationId": "markTurnAccepted",
+        "description": "Crosses the no-automatic-retry boundary after stock app-server accepted the turn.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MarkTurnAcceptedRequest"}}}},
+        "responses": {
+          "200": {"description": "Turn acceptance committed or exact terminal retry returned", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MarkTurnAcceptedResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/run-attempts/{runAttemptId}/events:append": {
+      "parameters": [{"$ref": "#/components/parameters/RunAttemptId"}],
+      "post": {
+        "operationId": "appendAttemptEvents",
+        "description": "Appends a bounded same-producer batch and allocates authoritative run sequence numbers.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AppendAttemptEventsRequest"}}}},
+        "responses": {
+          "200": {"description": "Per-producer identities mapped to authoritative run sequence numbers", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AppendAttemptEventsResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
     "/internal/v2/executor-connections:acquire": {
       "post": {
         "operationId": "acquireExecutorConnection",
@@ -185,12 +244,13 @@
   },
   "components": {
     "securitySchemes": {
-      "workloadMTLS": {"type": "mutualTLS", "description": "Verified executor-gateway workload SPIFFE identity"}
+      "workloadMTLS": {"type": "mutualTLS", "description": "Verified component-specific workload SPIFFE identity; handlers authorize each action separately"}
     },
     "parameters": {
       "ExecutorId": {"name": "executorId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "ExecutionId": {"name": "executionId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
-      "OperationId": {"name": "operationId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}}
+      "OperationId": {"name": "operationId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
+      "RunAttemptId": {"name": "runAttemptId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}}
     },
     "responses": {
       "CommandError": {
@@ -201,6 +261,187 @@
     "schemas": {
       "UUID": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "not": {"const": "00000000-0000-0000-0000-000000000000"}},
       "SHA256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+      "RunState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["runId", "workspaceId", "sessionId", "actorId", "status", "currentAttemptGeneration", "nextEventSeq", "version", "createdAt", "updatedAt"],
+        "properties": {
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "sessionId": {"$ref": "#/components/schemas/UUID"},
+          "actorId": {"$ref": "#/components/schemas/UUID"},
+          "status": {"enum": ["queued", "starting", "running", "finalizing", "completed", "failed", "interrupted", "cancelling", "cancelled"]},
+          "currentAttemptGeneration": {"type": "integer", "minimum": 0},
+          "nextEventSeq": {"type": "integer", "minimum": 1},
+          "version": {"type": "integer", "minimum": 1},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "RunAttemptState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["runAttemptId", "runId", "generation", "status", "holderId", "version", "createdAt", "updatedAt"],
+        "properties": {
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "generation": {"type": "integer", "minimum": 1},
+          "status": {"enum": ["created", "leased", "starting", "running", "finalizing", "succeeded", "failed", "interrupted", "fenced"]},
+          "turnStartedAt": {"type": "string", "format": "date-time"},
+          "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "version": {"type": "integer", "minimum": 1},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "LeaseState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["holderId", "generation", "expiresAt", "acquiredAt", "renewedAt"],
+        "properties": {
+          "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "generation": {"type": "integer", "minimum": 1},
+          "expiresAt": {"type": "string", "format": "date-time"},
+          "acquiredAt": {"type": "string", "format": "date-time"},
+          "renewedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "ClaimRunAttemptRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["runId", "runAttemptId", "holderId", "expectedRunVersion", "leaseTtlMs", "record"],
+        "properties": {
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "expectedRunVersion": {"type": "integer", "minimum": 1},
+          "leaseTtlMs": {"type": "integer", "minimum": 1, "maximum": 3600000},
+          "record": {"$ref": "#/components/schemas/TransitionRecord"}
+        }
+      },
+      "ClaimRunAttemptResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["run", "runAttempt", "sessionLease", "attemptLease", "created", "reclaimed"],
+        "properties": {
+          "run": {"$ref": "#/components/schemas/RunState"},
+          "runAttempt": {"$ref": "#/components/schemas/RunAttemptState"},
+          "sessionLease": {"$ref": "#/components/schemas/LeaseState"},
+          "attemptLease": {"$ref": "#/components/schemas/LeaseState"},
+          "created": {"type": "boolean"},
+          "reclaimed": {"type": "boolean"}
+        }
+      },
+      "RenewRunAttemptRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sessionId", "runId", "runAttemptId", "holderId", "runAttemptGeneration", "leaseTtlMs"],
+        "properties": {
+          "sessionId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1},
+          "leaseTtlMs": {"type": "integer", "minimum": 1, "maximum": 3600000}
+        }
+      },
+      "RenewRunAttemptResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sessionLease", "attemptLease"],
+        "properties": {
+          "sessionLease": {"$ref": "#/components/schemas/LeaseState"},
+          "attemptLease": {"$ref": "#/components/schemas/LeaseState"}
+        }
+      },
+      "MarkTurnAcceptedRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["runId", "runAttemptId", "holderId", "runAttemptGeneration", "expectedRunVersion", "expectedRunAttemptVersion", "record"],
+        "properties": {
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1},
+          "expectedRunVersion": {"type": "integer", "minimum": 1},
+          "expectedRunAttemptVersion": {"type": "integer", "minimum": 1},
+          "record": {"$ref": "#/components/schemas/TransitionRecord"}
+        }
+      },
+      "MarkTurnAcceptedResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["run", "runAttempt", "changed"],
+        "properties": {
+          "run": {"$ref": "#/components/schemas/RunState"},
+          "runAttempt": {"$ref": "#/components/schemas/RunAttemptState"},
+          "changed": {"type": "boolean"}
+        }
+      },
+      "EventObjectPointer": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["objectId", "sha256", "size", "mediaType"],
+        "properties": {
+          "objectId": {"$ref": "#/components/schemas/UUID"},
+          "sha256": {"$ref": "#/components/schemas/SHA256"},
+          "size": {"type": "integer", "minimum": 1},
+          "mediaType": {"type": "string", "minLength": 1, "maxLength": 255}
+        }
+      },
+      "AttemptEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["eventId", "producerInstanceId", "producerSeq", "source", "kind", "schemaVersion"],
+        "properties": {
+          "eventId": {"$ref": "#/components/schemas/UUID"},
+          "producerInstanceId": {"$ref": "#/components/schemas/UUID"},
+          "producerSeq": {"type": "integer", "minimum": 1},
+          "source": {"enum": ["brain", "executor", "system", "approval"]},
+          "kind": {"type": "string", "minLength": 1, "maxLength": 128},
+          "schemaVersion": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+          "payload": {"type": "object"},
+          "object": {"$ref": "#/components/schemas/EventObjectPointer"}
+        },
+        "oneOf": [
+          {"required": ["payload"], "not": {"required": ["object"]}},
+          {"required": ["object"], "not": {"required": ["payload"]}}
+        ]
+      },
+      "AppendAttemptEventsRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["runId", "runAttemptId", "holderId", "runAttemptGeneration", "outboxId", "events"],
+        "properties": {
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1},
+          "outboxId": {"$ref": "#/components/schemas/UUID"},
+          "events": {"type": "array", "minItems": 1, "maxItems": 256, "items": {"$ref": "#/components/schemas/AttemptEvent"}}
+        }
+      },
+      "AppendedAttemptEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["eventId", "producerInstanceId", "producerSeq", "runSeq", "duplicate"],
+        "properties": {
+          "eventId": {"$ref": "#/components/schemas/UUID"},
+          "producerInstanceId": {"$ref": "#/components/schemas/UUID"},
+          "producerSeq": {"type": "integer", "minimum": 1},
+          "runSeq": {"type": "integer", "minimum": 1},
+          "duplicate": {"type": "boolean"}
+        }
+      },
+      "AppendAttemptEventsResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["events", "newCount"],
+        "properties": {
+          "events": {"type": "array", "maxItems": 256, "items": {"$ref": "#/components/schemas/AppendedAttemptEvent"}},
+          "newCount": {"type": "integer", "minimum": 0, "maximum": 256}
+        }
+      },
       "ProcessMethods": {
         "type": "array",
         "prefixItems": [{"const": "process/start"}, {"const": "process/read"}, {"const": "process/write"}, {"const": "process/terminate"}],

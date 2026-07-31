@@ -23,10 +23,8 @@ func (authorizer *SPIFFEWorkloadAuthorizer) AuthorizeWorkload(request *http.Requ
 		return errors.New("verified workload client certificate is required")
 	}
 	leaf := request.TLS.VerifiedChains[0][0]
-	for _, identity := range leaf.URIs {
-		if identity.String() == authorizer.allowedURI {
-			return nil
-		}
+	if len(leaf.URIs) != 1 || leaf.URIs[0].String() != authorizer.allowedURI {
+		return errors.New("verified workload certificate must contain exactly the authorized SPIFFE identity")
 	}
-	return errors.New("workload SPIFFE identity is not authorized")
+	return nil
 }

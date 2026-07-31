@@ -125,7 +125,8 @@ RETURNING %s`, s.table("runs"), runColumns(""))
 			WorkspaceID string `json:"workspaceId"`
 			SessionID   string `json:"sessionId"`
 			RunID       string `json:"runId"`
-		}{command.WorkspaceID, command.SessionID, command.RunID})
+			RunVersion  int64  `json:"runVersion"`
+		}{command.WorkspaceID, command.SessionID, command.RunID, run.Version})
 		if err != nil {
 			return CreateRunResult{}, commandError(ErrorInvalidArgument, operation, "run", command.RunID, err.Error())
 		}
@@ -684,37 +685,7 @@ func (s *StateStore) RenewSessionLease(ctx context.Context, command RenewSession
 		return Lease{}, commandError(ErrorInvalidArgument, operation, "session", command.SessionID, err.Error())
 	}
 	return withStateTransaction(ctx, s, operation, func(transaction pgx.Tx) (Lease, error) {
-		query := fmt.Sprintf(`
-UPDATE %s AS l
-SET expires_at = pg_catalog.clock_timestamp() + ($1::bigint * interval '1 millisecond'),
-    renewed_at = pg_catalog.clock_timestamp()
-FROM %s AS r, %s AS s, %s AS a, %s AS al
-WHERE l.session_id = $2
-  AND l.run_id = $3
-  AND l.holder_id = $4
-  AND l.generation = $5
-  AND l.expires_at > pg_catalog.clock_timestamp()
-  AND r.id = l.run_id
-  AND r.current_attempt_generation = l.generation
-  AND r.status IN ('starting', 'running', 'finalizing', 'cancelling')
-  AND s.id = l.session_id
-  AND s.active_run_id = l.run_id
-  AND a.run_id = r.id
-  AND a.generation = l.generation
-  AND a.status IN ('leased', 'starting', 'running', 'finalizing')
-  AND al.run_attempt_id = a.id
-  AND al.holder_id = l.holder_id
-  AND al.generation = l.generation
-  AND al.expires_at > pg_catalog.clock_timestamp()
-RETURNING l.holder_id, l.generation, l.expires_at, l.acquired_at, l.renewed_at`, s.table("session_leases"), s.table("runs"), s.table("sessions"), s.table("run_attempts"), s.table("attempt_leases"))
-		lease, err := scanLease(transaction.QueryRow(ctx, query, leaseMilliseconds, command.SessionID, command.RunID, command.HolderID, command.Generation))
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return Lease{}, commandError(ErrorLeaseLost, operation, "session", command.SessionID, "lease expired, was fenced, or no longer owns the active run")
-			}
-			return Lease{}, databaseError(operation, err)
-		}
-		return lease, nil
+		return s.renewSessionLease(ctx, transaction, operation, command.SessionID, command.RunID, command.HolderID, command.Generation, leaseMilliseconds)
 	})
 }
 
@@ -741,7 +712,103 @@ func (s *StateStore) RenewAttemptLease(ctx context.Context, command RenewAttempt
 		return Lease{}, commandError(ErrorInvalidArgument, operation, "attempt", command.AttemptID, err.Error())
 	}
 	return withStateTransaction(ctx, s, operation, func(transaction pgx.Tx) (Lease, error) {
-		query := fmt.Sprintf(`
+		return s.renewAttemptLease(ctx, transaction, operation, command.RunID, command.AttemptID, command.HolderID, command.Generation, leaseMilliseconds)
+	})
+}
+
+func validateRenewAttemptLease(command RenewAttemptLeaseCommand) (int64, error) {
+	if err := validateUUID("run_id", command.RunID); err != nil {
+		return 0, err
+	}
+	if err := validateUUID("attempt_id", command.AttemptID); err != nil {
+		return 0, err
+	}
+	if err := validateBoundedText("holder_id", command.HolderID, 256); err != nil {
+		return 0, err
+	}
+	if command.Generation < 1 {
+		return 0, errors.New("generation must be positive")
+	}
+	return durationMilliseconds("lease_ttl", command.LeaseTTL, MaxLeaseTTL)
+}
+
+// RenewRunAttemptLeases extends both leases in one transaction. Each UPDATE
+// checks the other lease and the live run/attempt ownership tuple; if either
+// check fails, the transaction rolls back the other renewal.
+func (s *StateStore) RenewRunAttemptLeases(ctx context.Context, command RenewRunAttemptLeasesCommand) (RenewRunAttemptLeasesResult, error) {
+	const operation = "RenewRunAttemptLeases"
+	leaseMilliseconds, err := validateRenewRunAttemptLeases(command)
+	if err != nil {
+		return RenewRunAttemptLeasesResult{}, commandError(ErrorInvalidArgument, operation, "attempt", command.AttemptID, err.Error())
+	}
+	return withStateTransaction(ctx, s, operation, func(transaction pgx.Tx) (RenewRunAttemptLeasesResult, error) {
+		sessionLease, err := s.renewSessionLease(ctx, transaction, operation, command.SessionID, command.RunID, command.HolderID, command.Generation, leaseMilliseconds)
+		if err != nil {
+			return RenewRunAttemptLeasesResult{}, err
+		}
+		attemptLease, err := s.renewAttemptLease(ctx, transaction, operation, command.RunID, command.AttemptID, command.HolderID, command.Generation, leaseMilliseconds)
+		if err != nil {
+			return RenewRunAttemptLeasesResult{}, err
+		}
+		return RenewRunAttemptLeasesResult{SessionLease: sessionLease, AttemptLease: attemptLease}, nil
+	})
+}
+
+func validateRenewRunAttemptLeases(command RenewRunAttemptLeasesCommand) (int64, error) {
+	if err := validateUUID("session_id", command.SessionID); err != nil {
+		return 0, err
+	}
+	if err := validateUUID("run_id", command.RunID); err != nil {
+		return 0, err
+	}
+	if err := validateUUID("attempt_id", command.AttemptID); err != nil {
+		return 0, err
+	}
+	if err := validateBoundedText("holder_id", command.HolderID, 256); err != nil {
+		return 0, err
+	}
+	if command.Generation < 1 {
+		return 0, errors.New("generation must be positive")
+	}
+	return durationMilliseconds("lease_ttl", command.LeaseTTL, MaxLeaseTTL)
+}
+
+func (s *StateStore) renewSessionLease(ctx context.Context, transaction pgx.Tx, operation, sessionID, runID, holderID string, generation, leaseMilliseconds int64) (Lease, error) {
+	query := fmt.Sprintf(`
+UPDATE %s AS l
+SET expires_at = pg_catalog.clock_timestamp() + ($1::bigint * interval '1 millisecond'),
+    renewed_at = pg_catalog.clock_timestamp()
+FROM %s AS r, %s AS s, %s AS a, %s AS al
+WHERE l.session_id = $2
+  AND l.run_id = $3
+  AND l.holder_id = $4
+  AND l.generation = $5
+  AND l.expires_at > pg_catalog.clock_timestamp()
+  AND r.id = l.run_id
+  AND r.current_attempt_generation = l.generation
+  AND r.status IN ('starting', 'running', 'finalizing', 'cancelling')
+  AND s.id = l.session_id
+  AND s.active_run_id = l.run_id
+  AND a.run_id = r.id
+  AND a.generation = l.generation
+  AND a.status IN ('leased', 'starting', 'running', 'finalizing')
+  AND al.run_attempt_id = a.id
+  AND al.holder_id = l.holder_id
+  AND al.generation = l.generation
+  AND al.expires_at > pg_catalog.clock_timestamp()
+RETURNING l.holder_id, l.generation, l.expires_at, l.acquired_at, l.renewed_at`, s.table("session_leases"), s.table("runs"), s.table("sessions"), s.table("run_attempts"), s.table("attempt_leases"))
+	lease, err := scanLease(transaction.QueryRow(ctx, query, leaseMilliseconds, sessionID, runID, holderID, generation))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Lease{}, commandError(ErrorLeaseLost, operation, "session", sessionID, "lease expired, was fenced, or no longer owns the active run")
+		}
+		return Lease{}, databaseError(operation+" renew session lease", err)
+	}
+	return lease, nil
+}
+
+func (s *StateStore) renewAttemptLease(ctx context.Context, transaction pgx.Tx, operation, runID, attemptID, holderID string, generation, leaseMilliseconds int64) (Lease, error) {
+	query := fmt.Sprintf(`
 UPDATE %s AS l
 SET expires_at = pg_catalog.clock_timestamp() + ($1::bigint * interval '1 millisecond'),
     renewed_at = pg_catalog.clock_timestamp()
@@ -765,29 +832,12 @@ WHERE l.run_attempt_id = $2
   AND s.id = r.session_id
   AND s.active_run_id = r.id
 RETURNING l.holder_id, l.generation, l.expires_at, l.acquired_at, l.renewed_at`, s.table("attempt_leases"), s.table("run_attempts"), s.table("runs"), s.table("session_leases"), s.table("sessions"))
-		lease, err := scanLease(transaction.QueryRow(ctx, query, leaseMilliseconds, command.AttemptID, command.HolderID, command.Generation, command.RunID))
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return Lease{}, commandError(ErrorLeaseLost, operation, "attempt", command.AttemptID, "lease expired, was fenced, or attempt is no longer live")
-			}
-			return Lease{}, databaseError(operation, err)
+	lease, err := scanLease(transaction.QueryRow(ctx, query, leaseMilliseconds, attemptID, holderID, generation, runID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Lease{}, commandError(ErrorLeaseLost, operation, "attempt", attemptID, "lease expired, was fenced, or attempt is no longer live")
 		}
-		return lease, nil
-	})
-}
-
-func validateRenewAttemptLease(command RenewAttemptLeaseCommand) (int64, error) {
-	if err := validateUUID("run_id", command.RunID); err != nil {
-		return 0, err
+		return Lease{}, databaseError(operation+" renew attempt lease", err)
 	}
-	if err := validateUUID("attempt_id", command.AttemptID); err != nil {
-		return 0, err
-	}
-	if err := validateBoundedText("holder_id", command.HolderID, 256); err != nil {
-		return 0, err
-	}
-	if command.Generation < 1 {
-		return 0, errors.New("generation must be positive")
-	}
-	return durationMilliseconds("lease_ttl", command.LeaseTTL, MaxLeaseTTL)
+	return lease, nil
 }

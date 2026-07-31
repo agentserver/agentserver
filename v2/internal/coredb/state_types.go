@@ -143,6 +143,22 @@ type RenewAttemptLeaseCommand struct {
 	LeaseTTL   time.Duration
 }
 
+// RenewRunAttemptLeasesCommand renews the session and attempt lease as one
+// transaction. A harness holder must never observe only one half as renewed.
+type RenewRunAttemptLeasesCommand struct {
+	SessionID  string
+	RunID      string
+	AttemptID  string
+	HolderID   string
+	Generation int64
+	LeaseTTL   time.Duration
+}
+
+type RenewRunAttemptLeasesResult struct {
+	SessionLease Lease
+	AttemptLease Lease
+}
+
 type ObjectPointer struct {
 	ObjectID  string
 	SHA256    [32]byte

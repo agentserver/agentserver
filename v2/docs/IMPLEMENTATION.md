@@ -768,6 +768,10 @@ Job backoffLimit=0。worker容器崩溃后 Kubernetes不自动重启相同 attem
 
 Phase 1 的 worker control resume也只覆盖原 harness-pool holder进程仍存活的短时断线。worker直连 manifest中的 holder实例，不经普通 Service随机换 pod；holder崩溃、callback不可达或 lease过期后，worker在 grace内 interrupt并退出。若 turn尚未被 app-server接受，core可创建新 attempt；否则 run进入 interrupted。跨 controller接管现有 worker需要独立 owner-routing设计，不在首版承诺。
 
+Phase 3第一段先建立了pool不能绕过的core command边界：内部OpenAPI和typed client/handler提供`run-attempts:claim`、成对续租、`turnAccepted`与有界事件批量append。claim当前接收一个由已提交`run.queued` outbox事实定位的明确run ID与权威run version；该outbox payload同时携带`workspaceId`、`sessionId`、`runId`和`runVersion`，controller不能自行猜测版本。“查找下一个queued run”的调度/long-poll尚未实现，不能靠扫描后无条件抢占。session lease与attempt lease在同一数据库transaction续期，任一holder/generation/expiry检查失败会回滚另一半，避免半续租。每批事件只由core分配权威run seq，inline payload保持64 KiB单项和256项批量上限，大对象仍只传已hash的pointer。
+
+该入口使用独立harness-pool SPIFFE identity；executor-gateway identity不能调用这些命令，core配置相同identity会拒绝启动，携带多个URI workload identity的证书也会fail closed。当前仍没有pool controller循环、签名run manifest、Job/worker control stream或checkpoint commit，所以这只是Phase 3控制面的第一条可调用边界，不代表harness vertical slice已经交付。
+
 ### 8.2 run manifest
 
 manifest至少冻结：
@@ -1106,6 +1110,8 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 第11项已经完成：`process-v1`精确冻结`process/start|read|write|terminate`并排除`process/signal`，组合profile另只增加`agentx/fs/readFileBlock`；`executor-mcp/1.0`最初只广告`list_environments|shell`，当前`executor-mcp/1.1`在完整handler装配后加入`read_file`；agentx WSS拥有JSON Schema/AsyncAPI机器契约。Go reference kernel实现双向独立sequence、非sequenced ACK、generation fencing、同gateway进程30秒resume、bounded frame/receive journal和`mutationKey + request hash`的pending/completed/ambiguous门禁；运行时validator还逐method严格校验process request/notification、bounded filesystem request与`network/policyRequest`参数。stable 0.146.0源码复核确认clean-env wire、managed sandbox字段和`windowsSandboxLevel=restricted-token`枚举，contract/race门禁将继续防止schema与实现漂移。
 
 第12项目前已完成connection kernel、真实WSS路由，以及独立agentx仓库中的connector/runner IPC、远端lifecycle、registered-root/cwd本地复核、monotonic timeout signal、每process独占的stock `codex exec-server --listen stdio --strict-config`监管和一次性fs-only bounded-read lane；真实stock纵向门禁已通过。本仓已完成online environment registry、三工具stateful MCP链、七个execution/operation mTLS command/client，以及shell-v1和read-file-v1两条`Prepare → Begin → dispatch → ACK/unknown → operation/execution terminal → MCP result`链。approval command、真实enrollment/key binding、gateway进程丢失后的unknown恢复审计、平台containment和部署manifest仍未实现；当前入口明确标为loopback insecure-dev，不能作为Phase 2交付或生产部署证据。
+
+Phase 3当前从第13项开始：先暴露已有run/attempt/event状态内核的component API，并用独立harness-pool workload identity、原子双lease续期和typed client锁住边界。后续仍须实现outbox驱动的claim/controller、冻结并签名run manifest、per-attempt Job/control stream、finalization与checkpoint CAS；这些不能由当前command API的存在替代。
 
 ## 14. 尚未锁定但有明确决策点的事项
 

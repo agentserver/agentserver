@@ -117,6 +117,17 @@ func TestLeaseAndOutboxBounds(t *testing.T) {
 	if _, err := validateClaimOutbox(ClaimOutboxCommand{Owner: "relay", Limit: MaxOutboxClaimBatch + 1, LockTTL: time.Minute}); err == nil {
 		t.Fatal("oversized outbox claim accepted")
 	}
+	validRenewal := RenewRunAttemptLeasesCommand{
+		SessionID: stateTestUUID(1200), RunID: stateTestUUID(1201), AttemptID: stateTestUUID(1202),
+		HolderID: "holder", Generation: 1, LeaseTTL: time.Minute,
+	}
+	if _, err := validateRenewRunAttemptLeases(validRenewal); err != nil {
+		t.Fatalf("valid atomic lease renewal error = %v", err)
+	}
+	validRenewal.SessionID = ""
+	if _, err := validateRenewRunAttemptLeases(validRenewal); err == nil {
+		t.Fatal("atomic lease renewal accepted an empty session identity")
+	}
 }
 
 func TestHasStateErrorCode(t *testing.T) {

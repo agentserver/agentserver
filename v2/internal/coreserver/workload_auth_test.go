@@ -22,4 +22,9 @@ func TestSPIFFEWorkloadAuthorizerRequiresVerifiedExactIdentity(t *testing.T) {
 	if err := authorizer.AuthorizeWorkload(request, "executor-connections.acquire"); err == nil {
 		t.Fatal("unverified certificate was authorized")
 	}
+	other, _ := url.Parse("spiffe://agentserver.local/ns/agentserver/sa/harness-pool")
+	request.TLS.VerifiedChains = [][]*x509.Certificate{{{URIs: []*url.URL{identity, other}}}}
+	if err := authorizer.AuthorizeWorkload(request, "executor-connections.acquire"); err == nil {
+		t.Fatal("certificate carrying multiple workload identities was authorized")
+	}
 }

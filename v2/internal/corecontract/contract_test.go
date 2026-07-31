@@ -45,6 +45,10 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 		t.Fatalf("internal OpenAPI identity/security = %q / %+v", document.OpenAPI, document.Security)
 	}
 	want := map[string]string{
+		ClaimRunAttemptPath:                                          "claimRunAttempt",
+		RenewRunAttemptPath("{runAttemptId}"):                        "renewRunAttempt",
+		MarkTurnAcceptedPath("{runAttemptId}"):                       "markTurnAccepted",
+		AppendAttemptEventsPath("{runAttemptId}"):                    "appendAttemptEvents",
 		AcquireExecutorConnectionPath:                                "acquireExecutorConnection",
 		ListExecutorEnvironmentsPath:                                 "listExecutorEnvironments",
 		RenewExecutorConnectionPath("{executorId}"):                  "renewExecutorConnection",
@@ -78,6 +82,20 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "ListExecutorEnvironmentsRequest", reflect.TypeFor[ListExecutorEnvironmentsRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "ExecutorEnvironment", reflect.TypeFor[ExecutorEnvironment]())
 	assertSchemaFields(t, document.Components.Schemas, "ListExecutorEnvironmentsResponse", reflect.TypeFor[ListExecutorEnvironmentsResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "RunState", reflect.TypeFor[RunState]())
+	assertSchemaFields(t, document.Components.Schemas, "RunAttemptState", reflect.TypeFor[RunAttemptState]())
+	assertSchemaFields(t, document.Components.Schemas, "LeaseState", reflect.TypeFor[LeaseState]())
+	assertSchemaFields(t, document.Components.Schemas, "ClaimRunAttemptRequest", reflect.TypeFor[ClaimRunAttemptRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "ClaimRunAttemptResponse", reflect.TypeFor[ClaimRunAttemptResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "RenewRunAttemptRequest", reflect.TypeFor[RenewRunAttemptRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "RenewRunAttemptResponse", reflect.TypeFor[RenewRunAttemptResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "MarkTurnAcceptedRequest", reflect.TypeFor[MarkTurnAcceptedRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "MarkTurnAcceptedResponse", reflect.TypeFor[MarkTurnAcceptedResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "EventObjectPointer", reflect.TypeFor[EventObjectPointer]())
+	assertSchemaFields(t, document.Components.Schemas, "AttemptEvent", reflect.TypeFor[AttemptEvent]())
+	assertSchemaFields(t, document.Components.Schemas, "AppendAttemptEventsRequest", reflect.TypeFor[AppendAttemptEventsRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "AppendedAttemptEvent", reflect.TypeFor[AppendedAttemptEvent]())
+	assertSchemaFields(t, document.Components.Schemas, "AppendAttemptEventsResponse", reflect.TypeFor[AppendAttemptEventsResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "TransitionRecord", reflect.TypeFor[TransitionRecord]())
 	assertSchemaFields(t, document.Components.Schemas, "CanonicalJSONDigest", reflect.TypeFor[CanonicalJSONDigest]())
 	assertSchemaFields(t, document.Components.Schemas, "ExecutionState", reflect.TypeFor[ExecutionState]())

@@ -11,7 +11,7 @@ const (
 )
 
 // TransitionRecord supplies the immutable event and outbox identities that
-// core commits atomically with one execution state transition.
+// core commits atomically with one domain state transition.
 type TransitionRecord struct {
 	EventID            string `json:"eventId"`
 	ProducerInstanceID string `json:"producerInstanceId"`

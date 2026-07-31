@@ -20,11 +20,12 @@ import (
 )
 
 const (
-	coreListenAddressEnvironment   = "AGENTSERVER_V2_CORE_LISTEN_ADDR"
-	coreTLSCertificateEnvironment  = "AGENTSERVER_V2_CORE_TLS_CERT_FILE"
-	coreTLSKeyEnvironment          = "AGENTSERVER_V2_CORE_TLS_KEY_FILE"
-	coreClientCAEnvironment        = "AGENTSERVER_V2_CORE_CLIENT_CA_FILE"
-	coreGatewayIdentityEnvironment = "AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID"
+	coreListenAddressEnvironment       = "AGENTSERVER_V2_CORE_LISTEN_ADDR"
+	coreTLSCertificateEnvironment      = "AGENTSERVER_V2_CORE_TLS_CERT_FILE"
+	coreTLSKeyEnvironment              = "AGENTSERVER_V2_CORE_TLS_KEY_FILE"
+	coreClientCAEnvironment            = "AGENTSERVER_V2_CORE_CLIENT_CA_FILE"
+	coreGatewayIdentityEnvironment     = "AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID"
+	coreHarnessPoolIdentityEnvironment = "AGENTSERVER_V2_HARNESS_POOL_SPIFFE_ID"
 )
 
 func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer) error {
@@ -52,6 +53,13 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	if err != nil {
 		return err
 	}
+	harnessPoolIdentity, err := requiredConfiguration(getenv, coreHarnessPoolIdentityEnvironment)
+	if err != nil {
+		return err
+	}
+	if harnessPoolIdentity == gatewayIdentity {
+		return errors.New("executor-gateway and harness-pool SPIFFE identities must be distinct")
+	}
 
 	poolConfig, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
@@ -71,6 +79,10 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	if err != nil {
 		return err
 	}
+	harnessPoolAuthorizer, err := coreserver.NewSPIFFEWorkloadAuthorizer(harnessPoolIdentity)
+	if err != nil {
+		return err
+	}
 	store := coredb.NewStateStore(pool)
 	connectionHandler, err := coreserver.NewExecutorConnectionHandler(authorizer, coreserver.StateStoreExecutorConnectionCommands{
 		Store: store,
@@ -86,7 +98,13 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	if err != nil {
 		return err
 	}
+	runAttemptHandler, err := coreserver.NewRunAttemptHandler(harnessPoolAuthorizer, coreserver.StateStoreRunAttemptCommands{Store: store})
+	if err != nil {
+		return err
+	}
 	handler := http.NewServeMux()
+	handler.Handle(corecontract.ClaimRunAttemptPath, runAttemptHandler)
+	handler.Handle(corecontract.RunAttemptPathPrefix, runAttemptHandler)
 	handler.Handle(corecontract.ListExecutorEnvironmentsPath, environmentHandler)
 	handler.Handle(corecontract.PrepareExecutionPath, executionHandler)
 	handler.Handle(corecontract.ExecutionPathPrefix, executionHandler)

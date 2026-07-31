@@ -103,6 +103,34 @@ func TestDecodeSemanticPayloadFailsClosedForKnownKinds(t *testing.T) {
 	}
 }
 
+func TestDecodeToolCallProgressPayload(t *testing.T) {
+	event, err := Decode(mustTestEventJSON(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	event.Kind = KindToolCallProgress
+	event.Payload = json.RawMessage(`{"toolCallId":"call-1","progress":2,"total":5,"message":"running"}`)
+	payload, err := DecodeSemanticPayload(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	progress := payload.(ToolCallProgressPayload)
+	if progress.ToolCallID != "call-1" || progress.Progress != 2 || progress.Total != 5 || progress.Message != "running" {
+		t.Fatalf("progress payload = %+v", progress)
+	}
+	for _, raw := range []string{
+		`{"toolCallId":"bad call","progress":1,"total":2}`,
+		`{"toolCallId":"call-1","progress":3,"total":2}`,
+		`{"toolCallId":"call-1","progress":-1,"total":2}`,
+		`{"toolCallId":"call-1","progress":1,"total":2,"future":true}`,
+	} {
+		event.Payload = json.RawMessage(raw)
+		if _, err := DecodeSemanticPayload(event); err == nil {
+			t.Fatalf("invalid progress payload was accepted: %s", raw)
+		}
+	}
+}
+
 func TestUnknownFutureKindCanRemainInCanonicalLedger(t *testing.T) {
 	event, err := Decode(mustTestEventJSON(t))
 	if err != nil {

@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	CurrentProtocolVersion = "1.0"
+	CurrentProtocolVersion = "1.1"
 	ResumeWindowMillis     = 30_000
 
 	MessageTypeHello        = "hello"
@@ -19,9 +19,11 @@ const (
 	MessageTypeAck          = "ack"
 	MessageTypeSessionError = "session_error"
 
-	EventKindThreadReady  = "thread_ready"
-	EventKindTurnAccepted = "turn_accepted"
-	EventKindTurnTerminal = "turn_terminal"
+	EventKindThreadReady           = "thread_ready"
+	EventKindTurnAccepted          = "turn_accepted"
+	EventKindTurnTerminal          = "turn_terminal"
+	EventKindAppServerNotification = "app_server_notification"
+	EventKindExecutorMCPProgress   = "executor_mcp_progress"
 
 	CommandKindInterrupt = "interrupt"
 )
@@ -174,6 +176,28 @@ type TurnTerminalEvent struct {
 	ErrorMessage string `json:"errorMessage,omitempty"`
 }
 
+// AppServerNotificationEvent preserves one already-validated stock
+// app-server notification without importing the Codex wire contract into the
+// control protocol. Params must be a bounded JSON object. The pool is the
+// only component that gives the notification canonical run-event meaning.
+type AppServerNotificationEvent struct {
+	Kind   string          `json:"kind"`
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
+}
+
+// ExecutorMCPProgressEvent is the trusted projection produced by the
+// worker's MCP client after it has correlated the progress token with an
+// outstanding dynamic call. Thread and turn identity stay implicit in the
+// already-accepted control session.
+type ExecutorMCPProgressEvent struct {
+	Kind     string  `json:"kind"`
+	CallID   string  `json:"callId"`
+	Progress float64 `json:"progress"`
+	Total    float64 `json:"total"`
+	Message  string  `json:"message,omitempty"`
+}
+
 type InterruptCommand struct {
 	Kind        string `json:"kind"`
 	Reason      string `json:"reason"`
@@ -182,10 +206,12 @@ type InterruptCommand struct {
 }
 
 type Event struct {
-	Kind         string
-	ThreadReady  *ThreadReadyEvent
-	TurnAccepted *TurnAcceptedEvent
-	TurnTerminal *TurnTerminalEvent
+	Kind                  string
+	ThreadReady           *ThreadReadyEvent
+	TurnAccepted          *TurnAcceptedEvent
+	TurnTerminal          *TurnTerminalEvent
+	AppServerNotification *AppServerNotificationEvent
+	ExecutorMCPProgress   *ExecutorMCPProgressEvent
 }
 
 type Command struct {

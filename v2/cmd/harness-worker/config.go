@@ -112,15 +112,15 @@ func executeWorker(ctx context.Context, configPath string, bootstrap, prompt, ch
 		VerificationKeyring: deployment.keyring, RuntimePreparer: deployment.preparer,
 		ControlHTTPClient: deployment.controlClient, ExecutorHTTPClient: deployment.executorClient,
 		ElicitationHandler: func(context.Context, harnessworker.ElicitationRequest) (harnessworker.ElicitationDecision, error) {
-			// Approval transport is not part of harness-control v1 yet. Decline
+			// Approval transport is not part of harness-control 1.1 yet. Decline
 			// deterministically; never infer approval in the worker.
 			return harnessworker.ElicitationDecision{Action: harnessworker.ApprovalDecline}, nil
 		},
 		ProgressHandler: func(context.Context, harnessworker.ProgressEvent) error { return nil },
 		NotificationHandler: func(context.Context, codexwire.Message) error {
-			// The current control profile carries lifecycle authority only. Keep
-			// the runner drained until the raw-notification event extension is
-			// connected to the pool/core canonical event mapper.
+			// Runtime notifications and progress are forwarded to control by the
+			// worker before these optional observers run. The production command
+			// needs no second local consumer, but the runner must remain drained.
 			return nil
 		},
 		ClientInfo: harnessworker.AppServerClientInfo{

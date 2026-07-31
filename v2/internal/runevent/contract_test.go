@@ -25,6 +25,7 @@ func TestCanonicalRunEventJSONSchemaAcceptsGoContractAndRejectsUnsafeKnownPayloa
 
 	valid := []Event{
 		contractEvent(KindAssistantMessageStarted, json.RawMessage(`{"messageId":"message-1","role":"assistant"}`)),
+		contractEvent(KindToolCallProgress, json.RawMessage(`{"toolCallId":"call-1","progress":1,"total":2,"message":"running"}`)),
 		contractEvent(KindToolCallResult, json.RawMessage(`{
             "messageId":"tool-message-1",
             "toolCallId":"call-1",
@@ -56,7 +57,7 @@ func TestCanonicalRunEventJSONSchemaAcceptsGoContractAndRejectsUnsafeKnownPayloa
 		}
 	}
 
-	base, err := json.Marshal(valid[1])
+	base, err := json.Marshal(valid[2])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,6 +105,7 @@ func TestCanonicalEventsAsyncAPIDocumentsProjectionBoundaries(t *testing.T) {
 			CursorPublication              string `json:"cursorPublication"`
 			CursorCarrier                  string `json:"cursorCarrier"`
 			ReconnectInput                 string `json:"reconnectInput"`
+			ToolProgressCarrier            string `json:"toolProgressCarrier"`
 			A2UIVersion                    string `json:"a2uiVersion"`
 			A2UICarrier                    string `json:"a2uiCarrier"`
 		} `json:"x-agentserver-projection"`
@@ -111,7 +113,7 @@ func TestCanonicalEventsAsyncAPIDocumentsProjectionBoundaries(t *testing.T) {
 	if err := json.Unmarshal(raw, &document); err != nil {
 		t.Fatalf("canonical-events.yaml must remain valid JSON (and therefore YAML): %v", err)
 	}
-	if document.AsyncAPI != "3.0.0" || document.Info.Version != "1.0.0" {
+	if document.AsyncAPI != "3.0.0" || document.Info.Version != "1.1.0" {
 		t.Fatalf("AsyncAPI identity = %q/%q", document.AsyncAPI, document.Info.Version)
 	}
 	if got := document.Components.Messages["CanonicalRunEvent"].Payload.Reference; got != "../schema/canonical-run-event.schema.json" {
@@ -125,6 +127,7 @@ func TestCanonicalEventsAsyncAPIDocumentsProjectionBoundaries(t *testing.T) {
 		projection.CursorPublication != "initial run.queued, authorized snapshot rebase, and committed lifecycle-safe boundaries only" ||
 		projection.CursorCarrier != "CUSTOM{name:agentserver.event_cursor,value:{version,runId,cursor,lastEventSequence}}" ||
 		projection.ReconnectInput != "forwardedProps.agentserver.eventCursor" ||
+		projection.ToolProgressCarrier != "CUSTOM{name:agentserver.tool_progress,value:{toolCallId,progress,total,message}}" ||
 		projection.A2UIVersion != "v0.9" || projection.A2UICarrier != "CUSTOM{name:a2ui.operations,value:[operations]}" {
 		t.Fatalf("AsyncAPI projection boundaries = %+v", projection)
 	}

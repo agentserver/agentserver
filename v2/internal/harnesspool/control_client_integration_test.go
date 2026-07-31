@@ -13,13 +13,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/codexwire"
 	"github.com/agentserver/agentserver/v2/internal/harnesscontrol"
 	"github.com/agentserver/agentserver/v2/internal/harnessworker"
+	"github.com/agentserver/agentserver/v2/internal/runevent"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
 
@@ -118,6 +121,88 @@ func TestWorkerControlClientResumesAckLostAfterLifecycleAuthorityOnce(t *testing
 	}
 	if err := client.Wait(ctx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWorkerControlClientPipelinesRuntimeEventsThroughPoolAndCoreBeforeTerminal(t *testing.T) {
+	fixture := newWorkerControlIntegrationFixture(t, &recordingAttemptLifecycle{})
+	core := newRuntimeAppendCore(fixture.prepared)
+	authority := &attemptLifecycleAuthority{
+		ctx: t.Context(), scheduler: &poolTestScheduler{}, core: core,
+		identities: &runtimeSequenceIdentityAllocator{}, prepared: fixture.prepared,
+	}
+	fixture.control.runtime.lifecycle = authority
+	client := fixture.newClient(t, fixture.control.Capability(), fixture.prepared.Manifest, fixture.prepared.SignedManifest)
+	startWorkerControlClient(t, client)
+
+	ctx := testContext(t)
+	threadID, turnID, callID := "thread-runtime-1", "turn-runtime-1", "call-runtime-1"
+	if err := client.SendThreadReady(ctx, threadID, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SendTurnAccepted(ctx, threadID, turnID); err != nil {
+		t.Fatal(err)
+	}
+	start := codexwire.Message{
+		Kind: codexwire.KindNotification, Method: "item/started",
+		Params: []byte(`{
+			"threadId":"thread-runtime-1","turnId":"turn-runtime-1","startedAtMs":1,
+			"item":{"type":"dynamicToolCall","id":"call-runtime-1","namespace":"executor","tool":"read_file","arguments":{"environment_id":"91000000-0000-4000-8000-000000000091","path":"README.md"},"status":"inProgress","contentItems":null,"success":null}
+		}`),
+	}
+	if err := client.SendAppServerNotification(ctx, start); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SendExecutorMCPProgress(ctx, harnessworker.ProgressEvent{
+		RunID: fixture.prepared.Manifest.RunID, CallID: callID,
+		RunAttemptGeneration: fixture.prepared.Manifest.RunAttemptGeneration,
+		Progress:             1, Total: 2, Message: "reading",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	completed := codexwire.Message{
+		Kind: codexwire.KindNotification, Method: "item/completed",
+		Params: []byte(`{
+			"threadId":"thread-runtime-1","turnId":"turn-runtime-1","completedAtMs":2,
+			"item":{"type":"dynamicToolCall","id":"call-runtime-1","namespace":"executor","tool":"read_file","arguments":{"environment_id":"91000000-0000-4000-8000-000000000091","path":"README.md"},"status":"completed","contentItems":[{"type":"inputText","text":"file contents"}],"success":true}
+		}`),
+	}
+	if err := client.SendAppServerNotification(ctx, completed); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SendAppServerNotification(ctx, codexwire.Message{
+		Kind: codexwire.KindNotification, Method: "turn/completed",
+		Params: []byte(`{"threadId":"thread-runtime-1","turn":{"id":"turn-runtime-1","status":"completed"}}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	terminal := harnesscontrol.TurnTerminalEvent{
+		Kind: harnesscontrol.EventKindTurnTerminal, ThreadID: threadID, TurnID: turnID, Status: "completed",
+	}
+	if err := client.SendTurnTerminal(ctx, terminal); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Wait(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	requests := core.appendSnapshot()
+	var kinds []string
+	for _, request := range requests {
+		for _, event := range request.Events {
+			kinds = append(kinds, event.Kind)
+		}
+	}
+	want := []string{
+		runevent.KindToolCallStarted, runevent.KindToolCallArguments,
+		runevent.KindToolCallProgress,
+		runevent.KindToolCallCompleted, runevent.KindToolCallResult,
+	}
+	if !reflect.DeepEqual(kinds, want) {
+		t.Fatalf("worker→pool→core canonical event kinds = %v, want %v", kinds, want)
+	}
+	if snapshot, found := fixture.control.Snapshot(); !found || snapshot.ReceivedThrough != 7 {
+		t.Fatalf("terminal cumulative receive cursor = found %v snapshot %+v", found, snapshot)
 	}
 }
 

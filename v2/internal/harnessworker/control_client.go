@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/codexwire"
 	"github.com/agentserver/agentserver/v2/internal/harnessbootstrap"
 	"github.com/agentserver/agentserver/v2/internal/harnesscontrol"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
@@ -54,10 +55,11 @@ func DefaultWorkerControlClientConfig(
 	}
 }
 
-// WorkerControlClient is one worker process's bounded control endpoint. Event
-// methods return only after the holder has cumulatively ACKed the frame, which
-// means its synchronous core authority boundary completed. Transport ACKs do
-// not themselves create that authority.
+// WorkerControlClient is one worker process's bounded control endpoint.
+// Lifecycle methods wait for the holder's cumulative ACK. Runtime methods
+// pipeline frames through the bounded in-memory journal, and the terminal
+// lifecycle method waits for a cumulative ACK that covers every earlier
+// runtime fact. Transport ACKs do not themselves create core authority.
 type WorkerControlClient struct {
 	config     WorkerControlClientConfig
 	httpClient *http.Client
@@ -161,7 +163,7 @@ func (client *WorkerControlClient) SendThreadReady(ctx context.Context, threadID
 	event := harnesscontrol.ThreadReadyEvent{
 		Kind: harnesscontrol.EventKindThreadReady, ThreadID: threadID, Resumed: resumed,
 	}
-	if err := client.sendLifecycleEvent(ctx, event, false); err != nil {
+	if err := client.sendControlEvent(ctx, event, false, true); err != nil {
 		return err
 	}
 	client.threadID = threadID
@@ -183,7 +185,7 @@ func (client *WorkerControlClient) SendTurnAccepted(ctx context.Context, threadI
 	event := harnesscontrol.TurnAcceptedEvent{
 		Kind: harnesscontrol.EventKindTurnAccepted, ThreadID: threadID, TurnID: turnID,
 	}
-	if err := client.sendLifecycleEvent(ctx, event, false); err != nil {
+	if err := client.sendControlEvent(ctx, event, false, true); err != nil {
 		return err
 	}
 	client.turnID = turnID
@@ -206,11 +208,63 @@ func (client *WorkerControlClient) SendTurnTerminal(ctx context.Context, event h
 	if event.Kind == "" {
 		event.Kind = harnesscontrol.EventKindTurnTerminal
 	}
-	if err := client.sendLifecycleEvent(ctx, event, true); err != nil {
+	if err := client.sendControlEvent(ctx, event, true, true); err != nil {
 		return err
 	}
 	client.terminalSent = true
 	return nil
+}
+
+// SendAppServerNotification journals one bounded stock app-server
+// notification after turn acceptance. Runtime facts are pipelined: this
+// method returns after the frame crosses the bounded control write boundary;
+// the later terminal frame waits for a cumulative ACK covering every prior
+// runtime frame.
+func (client *WorkerControlClient) SendAppServerNotification(ctx context.Context, message codexwire.Message) error {
+	if client == nil {
+		return errors.New("worker control client is required")
+	}
+	if ctx == nil {
+		return errors.New("worker control event context is required")
+	}
+	if message.Kind != codexwire.KindNotification || message.Method == "" || len(message.Params) == 0 {
+		return errors.New("app-server runtime event must be a notification with params")
+	}
+	client.eventMu.Lock()
+	defer client.eventMu.Unlock()
+	if client.threadID == "" || client.turnID == "" || client.terminalSent {
+		return errors.New("app-server notification is outside an accepted turn")
+	}
+	event := harnesscontrol.AppServerNotificationEvent{
+		Kind: harnesscontrol.EventKindAppServerNotification, Method: message.Method,
+		Params: append(json.RawMessage(nil), message.Params...),
+	}
+	return client.sendControlEvent(ctx, event, false, false)
+}
+
+// SendExecutorMCPProgress journals progress already correlated by MCPClient
+// with the current run, generation, and dynamic call.
+func (client *WorkerControlClient) SendExecutorMCPProgress(ctx context.Context, progress ProgressEvent) error {
+	if client == nil {
+		return errors.New("worker control client is required")
+	}
+	if ctx == nil {
+		return errors.New("worker control event context is required")
+	}
+	if progress.RunID != client.config.Manifest.RunID ||
+		progress.RunAttemptGeneration != client.config.Manifest.RunAttemptGeneration {
+		return errors.New("executor MCP progress escaped the signed run attempt")
+	}
+	client.eventMu.Lock()
+	defer client.eventMu.Unlock()
+	if client.threadID == "" || client.turnID == "" || client.terminalSent {
+		return errors.New("executor MCP progress is outside an accepted turn")
+	}
+	event := harnesscontrol.ExecutorMCPProgressEvent{
+		Kind: harnesscontrol.EventKindExecutorMCPProgress, CallID: progress.CallID,
+		Progress: progress.Progress, Total: progress.Total, Message: progress.Message,
+	}
+	return client.sendControlEvent(ctx, event, false, false)
 }
 
 func (client *WorkerControlClient) Wait(ctx context.Context) error {
@@ -592,7 +646,7 @@ func (client *WorkerControlClient) readOne(
 	}
 }
 
-func (client *WorkerControlClient) sendLifecycleEvent(ctx context.Context, event any, terminal bool) error {
+func (client *WorkerControlClient) sendControlEvent(ctx context.Context, event any, terminal, waitForAuthority bool) error {
 	if client == nil {
 		return errors.New("worker control client is required")
 	}
@@ -647,6 +701,12 @@ func (client *WorkerControlClient) sendLifecycleEvent(ctx context.Context, event
 	}
 	if err := connection.write(ctx, client.config.WriteTimeout, client.config.WireLimits, frame); err != nil {
 		connection.closeNow()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
+	if !waitForAuthority {
+		return nil
 	}
 	return client.waitForAck(ctx, frame.SessionSeq)
 }

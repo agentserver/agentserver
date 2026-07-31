@@ -108,6 +108,17 @@ type ReceiveResult struct {
 	ReceivedThrough uint64
 }
 
+// PreparedReceive is an opaque validation result that lets an authority
+// consumer delay advancing the cumulative receive cursor until its
+// synchronous side effect has committed. It is bound to one Session and one
+// immutable frame digest and cannot be committed to another session.
+type PreparedReceive struct {
+	session   *Session
+	frame     Frame
+	digest    [sha256.Size]byte
+	duplicate bool
+}
+
 type ResumeRequest struct {
 	PoolInstanceID       string
 	ControlSessionID     string
@@ -232,26 +243,29 @@ func (session *Session) Send(payload Payload) (Frame, error) {
 	return cloneFrame(frame), nil
 }
 
-// Receive accepts only the next peer sequence or an exact retained replay.
-// Ordered WebSocket delivery turns a future sequence into a terminal gap.
-func (session *Session) Receive(frame Frame) (ReceiveResult, error) {
+// PrepareReceive validates only the next peer sequence or an exact retained
+// replay without advancing ReceivedThrough. Pool-side users call this before
+// crossing a durable core boundary and CommitReceive only after that boundary
+// succeeds. Ordered WebSocket delivery turns a future sequence into a
+// terminal gap.
+func (session *Session) PrepareReceive(frame Frame) (PreparedReceive, ReceiveResult, error) {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	if err := session.requireActiveLocked(); err != nil {
-		return ReceiveResult{}, err
+		return PreparedReceive{}, ReceiveResult{}, err
 	}
 	if err := session.validateIdentityLocked(frame.ControlSessionID, frame.RunAttemptGeneration); err != nil {
 		session.closeLocked(err, SessionClosed)
-		return ReceiveResult{}, err
+		return PreparedReceive{}, ReceiveResult{}, err
 	}
 	if err := frame.ValidateForReceiver(session.config.Role, session.config.WireLimits); err != nil {
 		session.closeLocked(err, SessionClosed)
-		return ReceiveResult{}, err
+		return PreparedReceive{}, ReceiveResult{}, err
 	}
 	raw, err := Encode(frame, session.config.WireLimits)
 	if err != nil {
 		session.closeLocked(err, SessionClosed)
-		return ReceiveResult{}, err
+		return PreparedReceive{}, ReceiveResult{}, err
 	}
 	digest := sha256.Sum256(raw)
 	if frame.SessionSeq <= session.receivedThrough {
@@ -262,20 +276,59 @@ func (session *Session) Receive(frame Frame) (ReceiveResult, error) {
 				"sequence %d is older than retained receive history and cannot be verified", frame.SessionSeq,
 			)
 			session.closeLocked(err, SessionClosed)
-			return ReceiveResult{}, err
+			return PreparedReceive{}, ReceiveResult{}, err
 		}
 		if prior != digest {
 			err := protocolError(ErrorSequenceConflict, true, "sequence %d was replayed with different bytes", frame.SessionSeq)
 			session.closeLocked(err, SessionClosed)
-			return ReceiveResult{}, err
+			return PreparedReceive{}, ReceiveResult{}, err
 		}
-		return ReceiveResult{Duplicate: true, ReceivedThrough: session.receivedThrough}, nil
+		prepared := PreparedReceive{session: session, frame: cloneFrame(frame), digest: digest, duplicate: true}
+		return prepared, ReceiveResult{Duplicate: true, ReceivedThrough: session.receivedThrough}, nil
 	}
 	if frame.SessionSeq != session.receivedThrough+1 {
 		err := gapProtocolError(
 			ErrorSequenceGap, true, session.receivedThrough+1, frame.SessionSeq-1,
 			"received sequence %d after %d", frame.SessionSeq, session.receivedThrough,
 		)
+		session.closeLocked(err, SessionClosed)
+		return PreparedReceive{}, ReceiveResult{}, err
+	}
+	if err := session.validateAckLocked(frame.Ack); err != nil {
+		session.closeLocked(err, SessionClosed)
+		return PreparedReceive{}, ReceiveResult{}, err
+	}
+	prepared := PreparedReceive{session: session, frame: cloneFrame(frame), digest: digest}
+	return prepared, ReceiveResult{Deliver: true, ReceivedThrough: session.receivedThrough}, nil
+}
+
+// CommitReceive advances the cumulative receive and piggyback-ACK cursors for
+// a previously prepared frame. A duplicate commit is a verified no-op.
+func (session *Session) CommitReceive(prepared PreparedReceive) (ReceiveResult, error) {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if prepared.session != session {
+		return ReceiveResult{}, errors.New("prepared control receive belongs to another session")
+	}
+	if err := session.requireActiveLocked(); err != nil {
+		return ReceiveResult{}, err
+	}
+	frame := prepared.frame
+	if prepared.duplicate {
+		prior, retained := session.receiveDigests[frame.SessionSeq]
+		if frame.SessionSeq > session.receivedThrough || !retained || prior != prepared.digest {
+			err := protocolError(ErrorSequenceConflict, true, "prepared duplicate sequence %d no longer matches receive history", frame.SessionSeq)
+			session.closeLocked(err, SessionClosed)
+			return ReceiveResult{}, err
+		}
+		return ReceiveResult{Duplicate: true, ReceivedThrough: session.receivedThrough}, nil
+	}
+	if err := session.validateIdentityLocked(frame.ControlSessionID, frame.RunAttemptGeneration); err != nil {
+		session.closeLocked(err, SessionClosed)
+		return ReceiveResult{}, err
+	}
+	if frame.SessionSeq != session.receivedThrough+1 {
+		err := protocolError(ErrorSequenceConflict, true, "prepared sequence %d cannot commit after receive cursor %d", frame.SessionSeq, session.receivedThrough)
 		session.closeLocked(err, SessionClosed)
 		return ReceiveResult{}, err
 	}
@@ -285,8 +338,18 @@ func (session *Session) Receive(frame Frame) (ReceiveResult, error) {
 	}
 	session.applyAckLocked(frame.Ack)
 	session.receivedThrough = frame.SessionSeq
-	session.recordReceiveDigestLocked(frame.SessionSeq, digest)
+	session.recordReceiveDigestLocked(frame.SessionSeq, prepared.digest)
 	return ReceiveResult{Deliver: true, ReceivedThrough: session.receivedThrough}, nil
+}
+
+// Receive preserves the original immediate-commit behavior for endpoints
+// whose frame handler has no external authority side effect.
+func (session *Session) Receive(frame Frame) (ReceiveResult, error) {
+	prepared, _, err := session.PrepareReceive(frame)
+	if err != nil {
+		return ReceiveResult{}, err
+	}
+	return session.CommitReceive(prepared)
 }
 
 func (session *Session) AckFrame() (Ack, error) {

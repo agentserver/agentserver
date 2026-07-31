@@ -3,7 +3,7 @@
   "id": "urn:agentserver:v2:harness-worker-control",
   "info": {
     "title": "agentserver v2 harness worker control stream",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "description": "Holder-routed WebSocket between one harness-pool attempt supervisor and its stateless harness-worker. Phase 1 resume requires the original holder process and its in-memory journals."
   },
   "defaultContentType": "application/json",
@@ -37,7 +37,7 @@
     "receiveFromWorker": {
       "action": "receive",
       "channel": {"$ref": "#/channels/attemptControl"},
-      "summary": "Receive the authenticated hello, worker lifecycle events, cumulative ACKs, and terminal session errors.",
+      "summary": "Receive the authenticated hello, worker lifecycle/runtime events, cumulative ACKs, and terminal session errors.",
       "messages": [
         {"$ref": "#/channels/attemptControl/messages/hello"},
         {"$ref": "#/channels/attemptControl/messages/event"},
@@ -71,7 +71,7 @@
       },
       "Event": {
         "name": "event",
-        "title": "Sequenced worker lifecycle fact",
+        "title": "Sequenced worker lifecycle or bounded runtime fact",
         "payload": {"$ref": "../schema/harness-control.schema.json#/$defs/eventFrame"}
       },
       "Command": {
@@ -110,6 +110,8 @@
     "sequenceDirections": "independent",
     "standaloneAckSequenced": false,
     "transportAckAuthorizesCoreTransition": false,
+    "runtimeEventAckAfterCoreCommit": true,
+    "terminalAckCoversPriorRuntime": true,
     "authentication": "worker mTLS AND per-attempt bearer",
     "workerHasDurableState": false
   }

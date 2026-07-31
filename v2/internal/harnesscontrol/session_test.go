@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -85,6 +86,52 @@ func TestControlSessionJournalsImmutableFrameBeforeTransport(t *testing.T) {
 	}
 	if len(resumed.Replay) != 1 || len(resumed.Replay[0].Payload) == 0 || resumed.Replay[0].Payload[0] != '{' {
 		t.Fatalf("journal aliases caller bytes: %+v", resumed.Replay)
+	}
+}
+
+func TestControlSessionPreparedReceiveDoesNotAdvanceAuthorityCursorsBeforeCommit(t *testing.T) {
+	pool := newTestControlSession(t, RolePool, 8)
+	worker := newTestControlSession(t, RoleWorker, 8)
+
+	command, err := pool.Send(poolInterruptPayload(t, "interrupt before runtime event"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := worker.Receive(command); err != nil {
+		t.Fatal(err)
+	}
+	event, err := worker.Send(workerThreadReadyPayload(t, "thread-prepared"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Ack != command.SessionSeq {
+		t.Fatalf("worker event ack = %d, want %d", event.Ack, command.SessionSeq)
+	}
+
+	prepared, received, err := pool.PrepareReceive(event)
+	if err != nil || !received.Deliver || received.ReceivedThrough != 0 {
+		t.Fatalf("PrepareReceive() = %+v, %v", received, err)
+	}
+	if snapshot := pool.Snapshot(); snapshot.ReceivedThrough != 0 || snapshot.PeerAck != 0 || snapshot.JournalFrames != 1 {
+		t.Fatalf("prepare advanced authority cursors: %+v", snapshot)
+	}
+	ack, err := pool.AckFrame()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack.Ack != 0 {
+		t.Fatalf("pre-commit cumulative ACK = %d, want 0", ack.Ack)
+	}
+
+	committed, err := pool.CommitReceive(prepared)
+	if err != nil || !committed.Deliver || committed.ReceivedThrough != 1 {
+		t.Fatalf("CommitReceive() = %+v, %v", committed, err)
+	}
+	if snapshot := pool.Snapshot(); snapshot.ReceivedThrough != 1 || snapshot.PeerAck != 1 || snapshot.JournalFrames != 0 {
+		t.Fatalf("commit did not advance both authority cursors: %+v", snapshot)
+	}
+	if _, err := worker.CommitReceive(prepared); err == nil || !strings.Contains(err.Error(), "another session") {
+		t.Fatalf("cross-session CommitReceive() error = %v", err)
 	}
 }
 

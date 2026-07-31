@@ -390,6 +390,14 @@ func (control *fakeOneShotWorkerControl) SendTurnAccepted(_ context.Context, thr
 	return nil
 }
 
+func (*fakeOneShotWorkerControl) SendAppServerNotification(context.Context, codexwire.Message) error {
+	return nil
+}
+
+func (*fakeOneShotWorkerControl) SendExecutorMCPProgress(context.Context, ProgressEvent) error {
+	return nil
+}
+
 func (control *fakeOneShotWorkerControl) SendTurnTerminal(_ context.Context, event harnesscontrol.TurnTerminalEvent) error {
 	control.mu.Lock()
 	if event.ThreadID != control.threadID || event.TurnID != control.turnID {

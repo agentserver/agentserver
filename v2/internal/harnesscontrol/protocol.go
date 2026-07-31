@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"regexp"
 	"slices"
 	"strings"
@@ -184,6 +185,28 @@ func DecodeEventPayload(raw []byte, limits Limits) (Event, error) {
 			return Event{}, err
 		}
 		event.TurnTerminal = &value
+	case EventKindAppServerNotification:
+		var value AppServerNotificationEvent
+		if err := decodeRequiredObject(raw, &value, "kind", "method", "params"); err != nil {
+			return Event{}, malformed("decode app_server_notification: %v", err)
+		}
+		if err := value.Validate(limits); err != nil {
+			return Event{}, err
+		}
+		event.AppServerNotification = &value
+	case EventKindExecutorMCPProgress:
+		var value ExecutorMCPProgressEvent
+		if err := decodeRequiredObject(raw, &value, "kind", "callId", "progress", "total"); err != nil {
+			return Event{}, malformed("decode executor_mcp_progress: %v", err)
+		}
+		fields, _ := objectFields(raw)
+		if field, present := fields["message"]; present && isJSONNull(field) {
+			return Event{}, malformed("decode executor_mcp_progress: message cannot be null")
+		}
+		if err := value.Validate(); err != nil {
+			return Event{}, err
+		}
+		event.ExecutorMCPProgress = &value
 	default:
 		return Event{}, protocolError(ErrorMalformedFrame, true, "unknown worker event kind %q", discriminator.Kind)
 	}
@@ -434,6 +457,43 @@ func (event TurnTerminalEvent) Validate() error {
 		return err
 	}
 	return validateText("errorMessage", event.ErrorMessage, maxProtocolTextBytes)
+}
+
+func (event AppServerNotificationEvent) Validate(limits Limits) error {
+	if event.Kind != EventKindAppServerNotification {
+		return malformed("app_server_notification kind = %q", event.Kind)
+	}
+	if err := validateText("method", event.Method, 256); err != nil {
+		return err
+	}
+	if strings.ContainsAny(event.Method, "\r\n\t ") {
+		return malformed("app-server notification method must not contain whitespace")
+	}
+	if err := validateEmbeddedPayload(event.Params, limits); err != nil {
+		return malformed("app-server notification params: %v", err)
+	}
+	return nil
+}
+
+func (event ExecutorMCPProgressEvent) Validate() error {
+	if event.Kind != EventKindExecutorMCPProgress {
+		return malformed("executor_mcp_progress kind = %q", event.Kind)
+	}
+	if err := validateText("callId", event.CallID, 256); err != nil {
+		return err
+	}
+	if strings.ContainsAny(event.CallID, "\r\n\t ") {
+		return malformed("callId must not contain whitespace")
+	}
+	if math.IsNaN(event.Progress) || math.IsInf(event.Progress, 0) || event.Progress < 0 ||
+		math.IsNaN(event.Total) || math.IsInf(event.Total, 0) || event.Total < 0 ||
+		event.Total > 0 && event.Progress > event.Total {
+		return malformed("executor MCP progress and total must be finite non-negative values with progress <= total when total is positive")
+	}
+	if event.Message != "" {
+		return validateText("message", event.Message, maxProtocolTextBytes)
+	}
+	return nil
 }
 
 func (command InterruptCommand) Validate() error {

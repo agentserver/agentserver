@@ -104,9 +104,9 @@ func TestHarnessControlRejectsUnknownMissingNullDuplicateAndOversized(t *testing
 	}{
 		{name: "unknown", raw: strings.TrimSuffix(string(validRaw), "}") + `,"future":true}`, want: "unknown field"},
 		{name: "missing", raw: `{"type":"ack","controlSessionId":"20000000-0000-4000-8000-000000000002","runAttemptGeneration":3}`, want: "required field"},
-		{name: "null", raw: `{"type":"hello","protocolVersions":["1.0"],"workerInstanceId":"30000000-0000-4000-8000-000000000003","workspaceId":"40000000-0000-4000-8000-000000000004","sessionId":"41000000-0000-4000-8000-000000000004","runId":"42000000-0000-4000-8000-000000000004","runAttemptId":"43000000-0000-4000-8000-000000000004","runAttemptGeneration":3,"holderId":"pool-holder","manifestDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resume":null}`, want: "cannot be null"},
-		{name: "nested unknown", raw: `{"type":"hello","protocolVersions":["1.0"],"workerInstanceId":"30000000-0000-4000-8000-000000000003","workspaceId":"40000000-0000-4000-8000-000000000004","sessionId":"41000000-0000-4000-8000-000000000004","runId":"42000000-0000-4000-8000-000000000004","runAttemptId":"43000000-0000-4000-8000-000000000004","runAttemptGeneration":3,"holderId":"pool-holder","manifestDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resume":{"poolInstanceId":"10000000-0000-4000-8000-000000000001","controlSessionId":"20000000-0000-4000-8000-000000000002","runAttemptGeneration":3,"workerSentThrough":1,"workerReceivedThrough":0,"future":true}}`, want: "unknown field"},
-		{name: "nested missing", raw: `{"type":"hello","protocolVersions":["1.0"],"workerInstanceId":"30000000-0000-4000-8000-000000000003","workspaceId":"40000000-0000-4000-8000-000000000004","sessionId":"41000000-0000-4000-8000-000000000004","runId":"42000000-0000-4000-8000-000000000004","runAttemptId":"43000000-0000-4000-8000-000000000004","runAttemptGeneration":3,"holderId":"pool-holder","manifestDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resume":{"poolInstanceId":"10000000-0000-4000-8000-000000000001","controlSessionId":"20000000-0000-4000-8000-000000000002","runAttemptGeneration":3,"workerSentThrough":1}}`, want: "required field"},
+		{name: "null", raw: `{"type":"hello","protocolVersions":["1.1"],"workerInstanceId":"30000000-0000-4000-8000-000000000003","workspaceId":"40000000-0000-4000-8000-000000000004","sessionId":"41000000-0000-4000-8000-000000000004","runId":"42000000-0000-4000-8000-000000000004","runAttemptId":"43000000-0000-4000-8000-000000000004","runAttemptGeneration":3,"holderId":"pool-holder","manifestDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resume":null}`, want: "cannot be null"},
+		{name: "nested unknown", raw: `{"type":"hello","protocolVersions":["1.1"],"workerInstanceId":"30000000-0000-4000-8000-000000000003","workspaceId":"40000000-0000-4000-8000-000000000004","sessionId":"41000000-0000-4000-8000-000000000004","runId":"42000000-0000-4000-8000-000000000004","runAttemptId":"43000000-0000-4000-8000-000000000004","runAttemptGeneration":3,"holderId":"pool-holder","manifestDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resume":{"poolInstanceId":"10000000-0000-4000-8000-000000000001","controlSessionId":"20000000-0000-4000-8000-000000000002","runAttemptGeneration":3,"workerSentThrough":1,"workerReceivedThrough":0,"future":true}}`, want: "unknown field"},
+		{name: "nested missing", raw: `{"type":"hello","protocolVersions":["1.1"],"workerInstanceId":"30000000-0000-4000-8000-000000000003","workspaceId":"40000000-0000-4000-8000-000000000004","sessionId":"41000000-0000-4000-8000-000000000004","runId":"42000000-0000-4000-8000-000000000004","runAttemptId":"43000000-0000-4000-8000-000000000004","runAttemptGeneration":3,"holderId":"pool-holder","manifestDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resume":{"poolInstanceId":"10000000-0000-4000-8000-000000000001","controlSessionId":"20000000-0000-4000-8000-000000000002","runAttemptGeneration":3,"workerSentThrough":1}}`, want: "required field"},
 		{name: "duplicate", raw: `{"type":"ack","type":"ack","controlSessionId":"20000000-0000-4000-8000-000000000002","runAttemptGeneration":3,"ack":0}`, want: "duplicate"},
 		{name: "payload array", raw: `{"type":"event","controlSessionId":"20000000-0000-4000-8000-000000000002","sessionSeq":1,"ack":0,"runAttemptGeneration":3,"payload":[]}`, want: "must be an object"},
 	}
@@ -130,6 +130,13 @@ func TestHarnessControlEventAndInterruptSemanticsFailClosed(t *testing.T) {
 	validEvents := []any{
 		ThreadReadyEvent{Kind: EventKindThreadReady, ThreadID: "thread-1", Resumed: true},
 		TurnAcceptedEvent{Kind: EventKindTurnAccepted, ThreadID: "thread-1", TurnID: "turn-1"},
+		AppServerNotificationEvent{
+			Kind: EventKindAppServerNotification, Method: "item/agentMessage/delta",
+			Params: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","itemId":"message-1","delta":"hello"}`),
+		},
+		ExecutorMCPProgressEvent{
+			Kind: EventKindExecutorMCPProgress, CallID: "call-1", Progress: 3, Total: 10, Message: "running",
+		},
 		TurnTerminalEvent{Kind: EventKindTurnTerminal, ThreadID: "thread-1", TurnID: "turn-1", Status: "completed"},
 		TurnTerminalEvent{
 			Kind: EventKindTurnTerminal, ThreadID: "thread-1", TurnID: "turn-1", Status: "failed",
@@ -148,6 +155,19 @@ func TestHarnessControlEventAndInterruptSemanticsFailClosed(t *testing.T) {
 	for _, value := range invalidEvents {
 		if _, err := DecodeEventPayload(mustPayload(t, value), limits); err == nil {
 			t.Fatalf("invalid event %T was accepted: %+v", value, value)
+		}
+	}
+	invalidRuntimeEvents := []string{
+		`{"kind":"app_server_notification","method":"item/started now","params":{}}`,
+		`{"kind":"app_server_notification","method":"item/started","params":[]}`,
+		`{"kind":"executor_mcp_progress","callId":"bad call","progress":1,"total":2}`,
+		`{"kind":"executor_mcp_progress","callId":"call-1","progress":3,"total":2}`,
+		`{"kind":"executor_mcp_progress","callId":"call-1","progress":-1,"total":2}`,
+		`{"kind":"executor_mcp_progress","callId":"call-1","progress":1,"total":2,"message":null}`,
+	}
+	for _, raw := range invalidRuntimeEvents {
+		if _, err := DecodeEventPayload([]byte(raw), limits); err == nil {
+			t.Fatalf("invalid runtime event was accepted: %s", raw)
 		}
 	}
 	if _, err := DecodeCommandPayload(mustPayload(t, InterruptCommand{

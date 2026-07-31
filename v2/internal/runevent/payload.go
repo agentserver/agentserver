@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"unicode/utf8"
 )
@@ -19,6 +20,7 @@ const (
 	KindAssistantReasoningDone    = "assistant.reasoning.completed"
 	KindToolCallStarted           = "tool.call.started"
 	KindToolCallArguments         = "tool.call.arguments"
+	KindToolCallProgress          = "tool.call.progress"
 	KindToolCallCompleted         = "tool.call.completed"
 	KindToolCallResult            = "tool.call.result"
 	KindRunCompleted              = "run.completed"
@@ -36,6 +38,7 @@ var knownKinds = map[string]struct{}{
 	KindAssistantReasoningDone:    {},
 	KindToolCallStarted:           {},
 	KindToolCallArguments:         {},
+	KindToolCallProgress:          {},
 	KindToolCallCompleted:         {},
 	KindToolCallResult:            {},
 	KindRunCompleted:              {},
@@ -75,6 +78,13 @@ type ToolCallStartedPayload struct {
 type ToolCallArgumentsPayload struct {
 	ToolCallID string `json:"toolCallId"`
 	Delta      string `json:"delta"`
+}
+
+type ToolCallProgressPayload struct {
+	ToolCallID string  `json:"toolCallId"`
+	Progress   float64 `json:"progress"`
+	Total      float64 `json:"total"`
+	Message    string  `json:"message,omitempty"`
 }
 
 type ToolCallCompletedPayload struct {
@@ -158,6 +168,12 @@ func DecodeSemanticPayload(event Event) (any, error) {
 		return payload, wrapPayloadError(event.Kind, err)
 	case KindToolCallArguments:
 		payload, err := decodePayload[ToolCallArgumentsPayload](event.Payload)
+		if err == nil {
+			err = payload.validate()
+		}
+		return payload, wrapPayloadError(event.Kind, err)
+	case KindToolCallProgress:
+		payload, err := decodePayload[ToolCallProgressPayload](event.Payload)
 		if err == nil {
 			err = payload.validate()
 		}
@@ -247,6 +263,18 @@ func (payload ToolCallArgumentsPayload) validate() error {
 		return err
 	}
 	return validateText("delta", payload.Delta, 1, MaxInlinePayloadBytes)
+}
+
+func (payload ToolCallProgressPayload) validate() error {
+	if err := validateIdentifier("toolCallId", payload.ToolCallID); err != nil {
+		return err
+	}
+	if math.IsNaN(payload.Progress) || math.IsInf(payload.Progress, 0) || payload.Progress < 0 ||
+		math.IsNaN(payload.Total) || math.IsInf(payload.Total, 0) || payload.Total < 0 ||
+		payload.Total > 0 && payload.Progress > payload.Total {
+		return errors.New("progress and total must be finite non-negative values with progress <= total when total is positive")
+	}
+	return validateText("message", payload.Message, 0, 4096)
 }
 
 func (payload ToolCallResultPayload) validate() error {

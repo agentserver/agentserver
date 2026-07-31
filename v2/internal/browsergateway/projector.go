@@ -189,6 +189,19 @@ func (projector *Projector) projectKnown(event runevent.Event, payload any) (Pro
 		return Projection{Events: []events.Event{
 			events.NewToolCallArgsEvent(tool.ToolCallID, tool.Delta),
 		}}, nil
+	case runevent.KindToolCallProgress:
+		tool := payload.(runevent.ToolCallProgressPayload)
+		if _, exists := projector.activeToolCalls[tool.ToolCallID]; !exists {
+			return Projection{}, fmt.Errorf("tool call %q progress arrived before start", tool.ToolCallID)
+		}
+		return Projection{Events: []events.Event{
+			events.NewCustomEvent("agentserver.tool_progress", events.WithValue(map[string]any{
+				"toolCallId": tool.ToolCallID,
+				"progress":   tool.Progress,
+				"total":      tool.Total,
+				"message":    tool.Message,
+			})),
+		}}, nil
 	case runevent.KindToolCallCompleted:
 		tool := payload.(runevent.ToolCallCompletedPayload)
 		if _, exists := projector.activeToolCalls[tool.ToolCallID]; !exists {

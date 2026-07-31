@@ -478,7 +478,7 @@ func (runtime *attemptControlRuntime) handshake(ctx context.Context, connection 
 	hello := *message.Hello
 	if !slices.Contains(hello.ProtocolVersions, harnesscontrol.CurrentProtocolVersion) {
 		return false, controlResumeReplay{}, 0, controlProtocolError(
-			harnesscontrol.ErrorProtocolVersionUnsupported, "worker does not offer harness control protocol 1.0",
+			harnesscontrol.ErrorProtocolVersionUnsupported, "worker does not offer harness control protocol "+harnesscontrol.CurrentProtocolVersion,
 		)
 	}
 
@@ -598,7 +598,7 @@ func (server *ControlServer) handleMessage(ctx context.Context, runtime *attempt
 	case message.Frame != nil:
 		runtime.ackBarrier.Lock()
 		defer runtime.ackBarrier.Unlock()
-		received, err := runtime.session.Receive(*message.Frame)
+		prepared, received, err := runtime.session.PrepareReceive(*message.Frame)
 		if err != nil {
 			return true, err
 		}
@@ -607,9 +607,12 @@ func (server *ControlServer) handleMessage(ctx context.Context, runtime *attempt
 			if err != nil {
 				return true, err
 			}
-			if err := runtime.processEvent(event); err != nil {
-				return true, err
+			if err := runtime.processSequencedEvent(ctx, message.Frame.SessionSeq, event); err != nil {
+				return !isRetryableRuntimeEventError(err), err
 			}
+		}
+		if _, err := runtime.session.CommitReceive(prepared); err != nil {
+			return true, err
 		}
 		ack, err := runtime.session.AckFrame()
 		if err != nil {
@@ -633,6 +636,10 @@ func (server *ControlServer) handleMessage(ctx context.Context, runtime *attempt
 }
 
 func (runtime *attemptControlRuntime) processEvent(event harnesscontrol.Event) error {
+	return runtime.processSequencedEvent(context.Background(), 0, event)
+}
+
+func (runtime *attemptControlRuntime) processSequencedEvent(ctx context.Context, controlSequence uint64, event harnesscontrol.Event) error {
 	runtime.eventMu.Lock()
 	defer runtime.eventMu.Unlock()
 	switch event.Kind {
@@ -670,6 +677,20 @@ func (runtime *attemptControlRuntime) processEvent(event harnesscontrol.Event) e
 		runtime.mu.Lock()
 		runtime.finishLocked(controlOutcome{terminal: &copy})
 		runtime.mu.Unlock()
+		return nil
+	case harnesscontrol.EventKindAppServerNotification, harnesscontrol.EventKindExecutorMCPProgress:
+		if !runtime.turnAccepted || runtime.terminalSeen {
+			return controlProtocolError(harnesscontrol.ErrorAttemptMismatch, "runtime event is outside the accepted turn")
+		}
+		runtimeLifecycle, ok := runtime.lifecycle.(AttemptRuntimeLifecycle)
+		if !ok {
+			return errors.New("attempt lifecycle does not implement runtime event authority")
+		}
+		if err := runtimeLifecycle.RuntimeEvent(ctx, AttemptRuntimeEvent{
+			ControlSequence: controlSequence, Event: event,
+		}); err != nil {
+			return fmt.Errorf("apply worker runtime event: %w", err)
+		}
 		return nil
 	default:
 		return controlProtocolError(harnesscontrol.ErrorMalformedFrame, "unknown worker lifecycle event")

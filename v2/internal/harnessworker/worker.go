@@ -2,6 +2,7 @@ package harnessworker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -76,9 +77,16 @@ type oneShotWorkerControl interface {
 	AppServerLifecycleSink
 	Start(context.Context) error
 	Interrupts() <-chan harnesscontrol.InterruptCommand
+	SendAppServerNotification(context.Context, codexwire.Message) error
+	SendExecutorMCPProgress(context.Context, ProgressEvent) error
 	SendTurnTerminal(context.Context, harnesscontrol.TurnTerminalEvent) error
 	Wait(context.Context) error
 	Close(error)
+}
+
+type workerRuntimeEventSink interface {
+	SendAppServerNotification(context.Context, codexwire.Message) error
+	SendExecutorMCPProgress(context.Context, ProgressEvent) error
 }
 
 type oneShotWorkerMCP interface {
@@ -210,6 +218,7 @@ func runOneShotWorker(ctx context.Context, config OneShotWorkerConfig, dependenc
 	if err := control.Start(runCtx); err != nil {
 		return fmt.Errorf("start worker control client: %w", err)
 	}
+	runtimeEvents := newWorkerRuntimeEventForwarder(control, config.NotificationHandler, config.ProgressHandler)
 
 	watchCtx, stopWatchers := context.WithCancel(context.Background())
 	defer stopWatchers()
@@ -228,7 +237,7 @@ func runOneShotWorker(ctx context.Context, config OneShotWorkerConfig, dependenc
 		ExpectedCatalog:       bootstrap.Manifest.ExecutorMCP.CanonicalCatalog,
 		Limits:                limits,
 		ElicitationHandler:    config.ElicitationHandler,
-		ProgressHandler:       config.ProgressHandler,
+		ProgressHandler:       runtimeEvents.HandleProgress,
 		CloseGrace:            time.Duration(bootstrap.Manifest.Limits.MCPTransportGraceMS) * time.Millisecond,
 	})
 	if err != nil {
@@ -277,7 +286,7 @@ func runOneShotWorker(ctx context.Context, config OneShotWorkerConfig, dependenc
 	}
 
 	eventErr := make(chan error, 1)
-	go consumeAppServerNotifications(runCtx, runner.Events(), config.NotificationHandler, cancelRun, eventErr)
+	go consumeAppServerNotifications(runCtx, runner.Events(), runtimeEvents.HandleNotification, cancelRun, eventErr)
 	request := appServerRequest(bootstrap.Manifest, prompt, mcp.Catalog(), appRuntime, restored, config.ClientInfo)
 	result, runnerErr := runner.Run(runCtx, request)
 	notificationErr := <-eventErr
@@ -506,6 +515,114 @@ func consumeAppServerNotifications(
 		}
 	}
 	result <- first
+}
+
+// workerRuntimeEventForwarder preserves the causal edge between a dynamic
+// tool's item/started notification and MCP progress. Runner notifications and
+// MCP callbacks are delivered by different goroutines, so progress waits
+// until the matching start frame has been journaled on control.
+type workerRuntimeEventForwarder struct {
+	control      workerRuntimeEventSink
+	notification AppServerNotificationHandler
+	progress     ProgressHandler
+
+	mu      sync.Mutex
+	started map[string]chan struct{}
+}
+
+func newWorkerRuntimeEventForwarder(
+	control workerRuntimeEventSink,
+	notification AppServerNotificationHandler,
+	progress ProgressHandler,
+) *workerRuntimeEventForwarder {
+	return &workerRuntimeEventForwarder{
+		control: control, notification: notification, progress: progress,
+		started: make(map[string]chan struct{}),
+	}
+}
+
+func (forwarder *workerRuntimeEventForwarder) HandleNotification(ctx context.Context, message codexwire.Message) error {
+	if shouldForwardAppServerNotification(message.Method) {
+		if err := forwarder.control.SendAppServerNotification(ctx, message); err != nil {
+			return err
+		}
+		if callID := dynamicToolStartCallID(message); callID != "" {
+			forwarder.markDynamicToolStarted(callID)
+		}
+	}
+	if forwarder.notification != nil {
+		return forwarder.notification(ctx, message)
+	}
+	return nil
+}
+
+func (forwarder *workerRuntimeEventForwarder) HandleProgress(ctx context.Context, event ProgressEvent) error {
+	started := forwarder.dynamicToolStarted(event.CallID)
+	select {
+	case <-started:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if err := forwarder.control.SendExecutorMCPProgress(ctx, event); err != nil {
+		return err
+	}
+	if forwarder.progress != nil {
+		return forwarder.progress(ctx, event)
+	}
+	return nil
+}
+
+func (forwarder *workerRuntimeEventForwarder) dynamicToolStarted(callID string) <-chan struct{} {
+	forwarder.mu.Lock()
+	defer forwarder.mu.Unlock()
+	if started := forwarder.started[callID]; started != nil {
+		return started
+	}
+	started := make(chan struct{})
+	forwarder.started[callID] = started
+	return started
+}
+
+func (forwarder *workerRuntimeEventForwarder) markDynamicToolStarted(callID string) {
+	forwarder.mu.Lock()
+	defer forwarder.mu.Unlock()
+	started := forwarder.started[callID]
+	if started == nil {
+		started = make(chan struct{})
+		forwarder.started[callID] = started
+	}
+	select {
+	case <-started:
+	default:
+		close(started)
+	}
+}
+
+func shouldForwardAppServerNotification(method string) bool {
+	switch method {
+	case "item/started", "item/completed", "item/agentMessage/delta",
+		"item/reasoning/summaryTextDelta", "item/reasoning/summaryPartAdded",
+		"item/reasoning/textDelta", "turn/completed":
+		return true
+	default:
+		return false
+	}
+}
+
+func dynamicToolStartCallID(message codexwire.Message) string {
+	if message.Kind != codexwire.KindNotification || message.Method != "item/started" {
+		return ""
+	}
+	var params struct {
+		Item struct {
+			Type string `json:"type"`
+			ID   string `json:"id"`
+		} `json:"item"`
+	}
+	if err := json.Unmarshal(message.Params, &params); err != nil || params.Item.Type != "dynamicToolCall" {
+		return ""
+	}
+	return params.Item.ID
 }
 
 func classifyWorkerTerminal(

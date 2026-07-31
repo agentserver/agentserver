@@ -220,6 +220,93 @@ func TestControlServerDoesNotPiggybackAckBeforeLifecycleAuthorityCommits(t *test
 	}
 }
 
+func TestControlServerDoesNotAckRuntimeFrameBeforeCoreAppendCommits(t *testing.T) {
+	fixture := newControlServerFixture(t, &recordingAttemptLifecycle{})
+	core := newRuntimeAppendCore(fixture.prepared)
+	core.appendStarted = make(chan struct{})
+	core.appendRelease = make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(core.appendRelease) }) }
+	t.Cleanup(release)
+	authority := &attemptLifecycleAuthority{
+		ctx: t.Context(), scheduler: &poolTestScheduler{}, core: core,
+		identities: &runtimeSequenceIdentityAllocator{}, prepared: fixture.prepared,
+	}
+	fixture.control.runtime.lifecycle = authority
+
+	connection := fixture.dial(t, fixture.control.Capability())
+	hello := fixture.hello(nil)
+	writeControlValue(t, connection, fixture.config.WireLimits, hello)
+	welcome := readControlMessage(t, connection, fixture.config.WireLimits)
+	if welcome.Welcome == nil {
+		t.Fatalf("welcome = %+v", welcome)
+	}
+	worker := fixture.workerSession(t, hello, *welcome.Welcome)
+	sendWorkerEvent(t, connection, worker, harnesscontrol.ThreadReadyEvent{
+		Kind: harnesscontrol.EventKindThreadReady, ThreadID: "thread-runtime-1", Resumed: false,
+	})
+	sendWorkerEvent(t, connection, worker, harnesscontrol.TurnAcceptedEvent{
+		Kind: harnesscontrol.EventKindTurnAccepted, ThreadID: "thread-runtime-1", TurnID: "turn-runtime-1",
+	})
+
+	params := mustControlPayload(t, map[string]any{
+		"threadId": "thread-runtime-1", "turnId": "turn-runtime-1",
+		"item": map[string]any{"type": "agentMessage", "id": "message-1", "text": ""},
+	})
+	frame, err := worker.Send(harnesscontrol.Payload{
+		Type: harnesscontrol.MessageTypeEvent,
+		Payload: mustControlPayload(t, harnesscontrol.AppServerNotificationEvent{
+			Kind: harnesscontrol.EventKindAppServerNotification, Method: "item/started", Params: params,
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeControlValue(t, connection, fixture.config.WireLimits, frame)
+	select {
+	case <-core.appendStarted:
+	case <-time.After(time.Second):
+		t.Fatal("runtime event did not reach the core append boundary")
+	}
+	if snapshot, found := fixture.control.Snapshot(); !found || snapshot.ReceivedThrough != 2 {
+		t.Fatalf("pending core append advanced control receive cursor: found=%v snapshot=%+v", found, snapshot)
+	}
+
+	interruptResult := make(chan error, 1)
+	go func() {
+		interruptResult <- fixture.control.SendInterrupt(context.Background(), harnesscontrol.InterruptCommand{
+			Kind: harnesscontrol.CommandKindInterrupt, Reason: "cancelled", GraceMillis: 1_000,
+			Message: "cancel after runtime append",
+		})
+	}()
+	select {
+	case err := <-interruptResult:
+		t.Fatalf("interrupt bypassed pending core append: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	release()
+	ack := readControlMessage(t, connection, fixture.config.WireLimits)
+	if ack.Ack == nil || ack.Ack.Ack != frame.SessionSeq {
+		t.Fatalf("post-core runtime ACK = %+v", ack)
+	}
+	if err := worker.ReceiveAck(*ack.Ack); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-interruptResult:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("interrupt did not proceed after runtime append committed")
+	}
+	command := readControlMessage(t, connection, fixture.config.WireLimits)
+	if command.Frame == nil || command.Frame.Ack != frame.SessionSeq {
+		t.Fatalf("post-runtime command = %+v", command)
+	}
+}
+
 func TestControlServerRequiresAttemptProfileAndOneRegistration(t *testing.T) {
 	prepared := poolTestPreparedLaunch(t)
 	config := testControlServerConfig(prepared)

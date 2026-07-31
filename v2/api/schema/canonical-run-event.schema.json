@@ -135,6 +135,17 @@
       }
     },
     {
+      "if": {"properties": {"kind": {"const": "tool.call.progress"}}, "required": ["kind"]},
+      "then": {
+        "properties": {
+          "schemaVersion": {"const": 1},
+          "payload": {"$ref": "#/$defs/toolCallProgressPayload"}
+        },
+        "required": ["payload"],
+        "not": {"required": ["object"]}
+      }
+    },
+    {
       "if": {"properties": {"kind": {"const": "tool.call.completed"}}, "required": ["kind"]},
       "then": {
         "properties": {
@@ -265,6 +276,17 @@
       "properties": {
         "toolCallId": {"$ref": "#/$defs/boundedIdentifier"},
         "delta": {"$ref": "#/$defs/boundedText"}
+      }
+    },
+    "toolCallProgressPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["toolCallId", "progress", "total"],
+      "properties": {
+        "toolCallId": {"$ref": "#/$defs/boundedIdentifier"},
+        "progress": {"type": "number", "minimum": 0},
+        "total": {"type": "number", "minimum": 0},
+        "message": {"type": "string", "maxLength": 4096}
       }
     },
     "toolCallCompletedPayload": {

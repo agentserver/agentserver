@@ -56,6 +56,21 @@ func TestHarnessControlJSONSchemaAcceptsGoContractAndRejectsUnsafeShapes(t *test
 		Frame{
 			Type: MessageTypeEvent, ControlSessionID: testControlSessionID, SessionSeq: 3, Ack: 1,
 			RunAttemptGeneration: 3,
+			Payload: mustPayload(t, AppServerNotificationEvent{
+				Kind: EventKindAppServerNotification, Method: "item/agentMessage/delta",
+				Params: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","itemId":"message-1","delta":"hello"}`),
+			}),
+		},
+		Frame{
+			Type: MessageTypeEvent, ControlSessionID: testControlSessionID, SessionSeq: 4, Ack: 1,
+			RunAttemptGeneration: 3,
+			Payload: mustPayload(t, ExecutorMCPProgressEvent{
+				Kind: EventKindExecutorMCPProgress, CallID: "call-1", Progress: 1, Total: 2,
+			}),
+		},
+		Frame{
+			Type: MessageTypeEvent, ControlSessionID: testControlSessionID, SessionSeq: 5, Ack: 1,
+			RunAttemptGeneration: 3,
 			Payload: mustPayload(t, TurnTerminalEvent{
 				Kind: EventKindTurnTerminal, ThreadID: "thread-1", TurnID: "turn-1", Status: "failed",
 				ErrorCode: "model_error", ErrorMessage: "model request failed",
@@ -90,10 +105,12 @@ func TestHarnessControlJSONSchemaAcceptsGoContractAndRejectsUnsafeShapes(t *test
 	}
 
 	invalid := []string{
-		`{"type":"welcome","protocolVersion":"1.0","poolInstanceId":"10000000-0000-4000-8000-000000000001","controlSessionId":"20000000-0000-4000-8000-000000000002","runAttemptGeneration":3,"resumeStatus":"fresh","resumeWindowMs":30000,"poolSentThrough":1,"poolReceivedThrough":0}`,
+		`{"type":"welcome","protocolVersion":"1.1","poolInstanceId":"10000000-0000-4000-8000-000000000001","controlSessionId":"20000000-0000-4000-8000-000000000002","runAttemptGeneration":3,"resumeStatus":"fresh","resumeWindowMs":30000,"poolSentThrough":1,"poolReceivedThrough":0}`,
 		`{"type":"event","controlSessionId":"20000000-0000-4000-8000-000000000002","sessionSeq":1,"ack":0,"runAttemptGeneration":3,"payload":{"kind":"interrupt","reason":"fenced","graceMs":1000,"message":"fenced"}}`,
 		`{"type":"event","controlSessionId":"20000000-0000-4000-8000-000000000002","sessionSeq":1,"ack":0,"runAttemptGeneration":3,"payload":{"kind":"turn_terminal","threadId":"thread-1","turnId":"turn-1","status":"failed"}}`,
 		`{"type":"event","controlSessionId":"20000000-0000-4000-8000-000000000002","sessionSeq":1,"ack":0,"runAttemptGeneration":3,"payload":{"kind":"turn_terminal","threadId":"thread-1","turnId":"turn-1","status":"completed","errorCode":"bad","errorMessage":"bad"}}`,
+		`{"type":"event","controlSessionId":"20000000-0000-4000-8000-000000000002","sessionSeq":1,"ack":0,"runAttemptGeneration":3,"payload":{"kind":"app_server_notification","method":"item/started now","params":{}}}`,
+		`{"type":"event","controlSessionId":"20000000-0000-4000-8000-000000000002","sessionSeq":1,"ack":0,"runAttemptGeneration":3,"payload":{"kind":"executor_mcp_progress","callId":"bad call","progress":1,"total":2}}`,
 		`{"type":"ack","controlSessionId":"20000000-0000-4000-8000-000000000002","runAttemptGeneration":3,"ack":0,"sessionSeq":1}`,
 		`{"type":"session_error","code":"sequence_gap","message":"gap","terminal":true}`,
 		`{"type":"session_error","code":"session_closed","message":"closed","terminal":true,"lostFrom":1,"lostTo":2}`,
@@ -179,6 +196,8 @@ func TestHarnessControlAsyncAPIReferencesSingleSchemaAndPhaseOneSemantics(t *tes
 			HolderRoutedEndpoint             bool   `json:"holderRoutedEndpoint"`
 			StandaloneAckSequenced           bool   `json:"standaloneAckSequenced"`
 			TransportAckAuthorizesTransition bool   `json:"transportAckAuthorizesCoreTransition"`
+			RuntimeEventAckAfterCoreCommit   bool   `json:"runtimeEventAckAfterCoreCommit"`
+			TerminalAckCoversPriorRuntime    bool   `json:"terminalAckCoversPriorRuntime"`
 			Authentication                   string `json:"authentication"`
 			WorkerHasDurableState            bool   `json:"workerHasDurableState"`
 		} `json:"x-agentserver-phase1"`
@@ -186,7 +205,7 @@ func TestHarnessControlAsyncAPIReferencesSingleSchemaAndPhaseOneSemantics(t *tes
 	if err := json.Unmarshal(raw, &document); err != nil {
 		t.Fatalf("harness-control.yaml must remain valid JSON (and therefore YAML): %v", err)
 	}
-	if document.AsyncAPI != "3.0.0" || document.Info.Version != "1.0.0" {
+	if document.AsyncAPI != "3.0.0" || document.Info.Version != "1.1.0" {
 		t.Fatalf("AsyncAPI identity = %q/%q", document.AsyncAPI, document.Info.Version)
 	}
 	wantReferences := map[string]string{
@@ -204,7 +223,8 @@ func TestHarnessControlAsyncAPIReferencesSingleSchemaAndPhaseOneSemantics(t *tes
 	}
 	phase := document.Phase
 	if phase.ResumeWindowMillis != ResumeWindowMillis || phase.CrossProcessResume || !phase.HolderRoutedEndpoint ||
-		phase.StandaloneAckSequenced || phase.TransportAckAuthorizesTransition || phase.Authentication != "worker mTLS AND per-attempt bearer" || phase.WorkerHasDurableState {
+		phase.StandaloneAckSequenced || phase.TransportAckAuthorizesTransition || !phase.RuntimeEventAckAfterCoreCommit ||
+		!phase.TerminalAckCoversPriorRuntime || phase.Authentication != "worker mTLS AND per-attempt bearer" || phase.WorkerHasDurableState {
 		t.Fatalf("AsyncAPI Phase 1 semantics = %+v", phase)
 	}
 }

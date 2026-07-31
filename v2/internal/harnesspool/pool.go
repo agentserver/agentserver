@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/harnesscontrol"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
 
@@ -32,6 +33,10 @@ type AttemptSupervisionCore interface {
 	MarkTurnAccepted(context.Context, MarkTurnAcceptedRequest) (MarkTurnAcceptedResult, error)
 }
 
+type AttemptEventCore interface {
+	AppendAttemptEvents(context.Context, AppendAttemptEventsRequest) (AppendAttemptEventsResult, error)
+}
+
 type TransitionIdentityAllocator interface {
 	AllocateTransitionRecord() (TransitionRecord, error)
 }
@@ -43,6 +48,19 @@ type TransitionIdentityAllocator interface {
 type AttemptLifecycle interface {
 	ThreadStarted(threadID string) error
 	TurnAccepted(threadID, turnID string) error
+}
+
+type AttemptRuntimeLifecycle interface {
+	RuntimeEvent(context.Context, AttemptRuntimeEvent) error
+}
+
+// AttemptRuntimeEvent binds one decoded runtime payload to its immutable
+// worker->pool control sequence. The sequence is used only to retain an exact
+// pending core append across same-process transport resume; canonical producer
+// identities are allocated by the pool.
+type AttemptRuntimeEvent struct {
+	ControlSequence uint64
+	Event           harnesscontrol.Event
 }
 
 // AttemptSupervisor owns the local worker-process/control-stream
@@ -384,6 +402,11 @@ type attemptLifecycleAuthority struct {
 	turnWasAccepted   bool
 	dispatchCompleted bool
 	dispatchErr       error
+
+	runtimeMu      sync.Mutex
+	runtimeCursor  uint64
+	runtimeMapper  *runtimeEventMapper
+	pendingRuntime *pendingRuntimeAppend
 }
 
 func (authority *attemptLifecycleAuthority) ThreadStarted(threadID string) error {

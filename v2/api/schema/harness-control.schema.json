@@ -112,7 +112,7 @@
       ],
       "properties": {
         "type": {"const": "welcome"},
-        "protocolVersion": {"const": "1.0"},
+        "protocolVersion": {"const": "1.1"},
         "poolInstanceId": {"$ref": "#/$defs/canonicalUUID"},
         "controlSessionId": {"$ref": "#/$defs/canonicalUUID"},
         "runAttemptGeneration": {"$ref": "#/$defs/positiveSafeInteger"},
@@ -185,6 +185,41 @@
         }
       ]
     },
+    "appServerNotificationEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "method", "params"],
+      "properties": {
+        "kind": {"const": "app_server_notification"},
+        "method": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\x00\\r\\n\\t ]+$"
+        },
+        "params": {
+          "type": "object",
+          "maxProperties": 65536
+        }
+      }
+    },
+    "executorMCPProgressEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "callId", "progress", "total"],
+      "properties": {
+        "kind": {"const": "executor_mcp_progress"},
+        "callId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\x00\\r\\n\\t ]+$"
+        },
+        "progress": {"type": "number", "minimum": 0},
+        "total": {"type": "number", "minimum": 0},
+        "message": {"type": "string", "maxLength": 4096, "pattern": "^[^\\x00]*$"}
+      }
+    },
     "interruptCommand": {
       "type": "object",
       "additionalProperties": false,
@@ -210,7 +245,9 @@
           "oneOf": [
             {"$ref": "#/$defs/threadReadyEvent"},
             {"$ref": "#/$defs/turnAcceptedEvent"},
-            {"$ref": "#/$defs/turnTerminalEvent"}
+            {"$ref": "#/$defs/turnTerminalEvent"},
+            {"$ref": "#/$defs/appServerNotificationEvent"},
+            {"$ref": "#/$defs/executorMCPProgressEvent"}
           ]
         }
       }

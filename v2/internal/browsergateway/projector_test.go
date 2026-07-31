@@ -26,8 +26,11 @@ func TestProjectorMapsCanonicalMessageToolA2UIAndCompletion(t *testing.T) {
 		projectorEvent(t, 4, runevent.KindAssistantMessageCompleted, runevent.MessageCompletedPayload{MessageID: "message-1"}),
 		projectorEvent(t, 5, runevent.KindToolCallStarted, runevent.ToolCallStartedPayload{ToolCallID: "call-1", ToolCallName: "executor.shell", ParentMessageID: "message-1"}),
 		projectorEvent(t, 6, runevent.KindToolCallArguments, runevent.ToolCallArgumentsPayload{ToolCallID: "call-1", Delta: `{"command":"pwd"}`}),
-		projectorEvent(t, 7, runevent.KindToolCallCompleted, runevent.ToolCallCompletedPayload{ToolCallID: "call-1"}),
-		projectorEvent(t, 8, runevent.KindToolCallResult, runevent.ToolCallResultPayload{
+		projectorEvent(t, 7, runevent.KindToolCallProgress, runevent.ToolCallProgressPayload{
+			ToolCallID: "call-1", Progress: 1, Total: 2, Message: "running",
+		}),
+		projectorEvent(t, 8, runevent.KindToolCallCompleted, runevent.ToolCallCompletedPayload{ToolCallID: "call-1"}),
+		projectorEvent(t, 9, runevent.KindToolCallResult, runevent.ToolCallResultPayload{
 			MessageID: "tool-message-1", ToolCallID: "call-1", Content: "/workspace",
 			Presentation: &runevent.ToolPresentation{
 				Kind: "command",
@@ -36,7 +39,7 @@ func TestProjectorMapsCanonicalMessageToolA2UIAndCompletion(t *testing.T) {
 				},
 			},
 		}),
-		projectorEvent(t, 9, runevent.KindRunCompleted, runevent.RunTerminalPayload{Result: json.RawMessage(`{"answer":42}`)}),
+		projectorEvent(t, 10, runevent.KindRunCompleted, runevent.RunTerminalPayload{Result: json.RawMessage(`{"answer":42}`)}),
 	}
 
 	projected := []events.Event{events.NewRunStartedEvent(projectorSessionID, projectorRunID)}
@@ -57,6 +60,7 @@ func TestProjectorMapsCanonicalMessageToolA2UIAndCompletion(t *testing.T) {
 		events.EventTypeTextMessageEnd,
 		events.EventTypeToolCallStart,
 		events.EventTypeToolCallArgs,
+		events.EventTypeCustom,
 		events.EventTypeToolCallEnd,
 		events.EventTypeToolCallResult,
 		events.EventTypeCustom,
@@ -73,7 +77,16 @@ func TestProjectorMapsCanonicalMessageToolA2UIAndCompletion(t *testing.T) {
 	if err := events.ValidateSequence(projected); err != nil {
 		t.Fatalf("AG-UI sequence is invalid: %v", err)
 	}
-	custom := projected[8].(*events.CustomEvent)
+	progress := projected[6].(*events.CustomEvent)
+	if progress.Name != "agentserver.tool_progress" {
+		t.Fatalf("progress CUSTOM name = %q", progress.Name)
+	}
+	progressValue, ok := progress.Value.(map[string]any)
+	if !ok || progressValue["toolCallId"] != "call-1" || progressValue["progress"] != float64(1) ||
+		progressValue["total"] != float64(2) || progressValue["message"] != "running" {
+		t.Fatalf("progress CUSTOM value = %#v", progress.Value)
+	}
+	custom := projected[9].(*events.CustomEvent)
 	if custom.Name != "a2ui.operations" {
 		t.Fatalf("CUSTOM name = %q", custom.Name)
 	}
@@ -84,13 +97,23 @@ func TestProjectorMapsCanonicalMessageToolA2UIAndCompletion(t *testing.T) {
 	if err := a2ui.ValidateOperations(operations); err != nil {
 		t.Fatalf("projected A2UI operations invalid: %v", err)
 	}
-	wantTimestamp := canonical[6].CreatedAt.UnixMilli()
-	if projected[7].Timestamp() == nil || *projected[7].Timestamp() != wantTimestamp || projected[8].Timestamp() == nil || *projected[8].Timestamp() != wantTimestamp {
+	wantTimestamp := canonical[7].CreatedAt.UnixMilli()
+	if projected[8].Timestamp() == nil || *projected[8].Timestamp() != wantTimestamp || projected[9].Timestamp() == nil || *projected[9].Timestamp() != wantTimestamp {
 		t.Fatalf("tool result/A2UI timestamps did not preserve canonical createdAt")
 	}
 	finished := projected[len(projected)-1].(*events.RunFinishedEvent)
 	if finished.Outcome == nil || finished.Outcome.Type != events.RunFinishedOutcomeTypeSuccess {
 		t.Fatalf("RUN_FINISHED outcome = %+v", finished.Outcome)
+	}
+}
+
+func TestProjectorRejectsToolProgressOutsideToolLifecycle(t *testing.T) {
+	projector := newTestProjector(t, 0)
+	progress := projectorEvent(t, 1, runevent.KindToolCallProgress, runevent.ToolCallProgressPayload{
+		ToolCallID: "call-1", Progress: 1, Total: 2,
+	})
+	if _, err := projector.Project(progress); err == nil || !strings.Contains(err.Error(), "before start") {
+		t.Fatalf("progress-before-start error = %v", err)
 	}
 }
 

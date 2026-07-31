@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
@@ -209,13 +211,14 @@ type Ed25519ManifestSigner struct {
 }
 
 func NewEd25519ManifestSigner(keyID string, privateKey ed25519.PrivateKey) (*Ed25519ManifestSigner, error) {
-	if keyID == "" || len(keyID) > 256 {
-		return nil, errors.New("run manifest signing key ID must contain between 1 and 256 bytes")
+	if keyID == "" || len(keyID) > 256 || !utf8.ValidString(keyID) || strings.ContainsRune(keyID, 0) {
+		return nil, errors.New("run manifest signing key ID must contain between 1 and 256 valid UTF-8 bytes without NUL")
 	}
-	if len(privateKey) != ed25519.PrivateKeySize {
-		return nil, errors.New("run manifest Ed25519 private key has invalid length")
+	canonical, err := validateCanonicalEd25519PrivateKey(privateKey)
+	if err != nil {
+		return nil, err
 	}
-	return &Ed25519ManifestSigner{keyID: keyID, privateKey: append(ed25519.PrivateKey(nil), privateKey...)}, nil
+	return &Ed25519ManifestSigner{keyID: keyID, privateKey: canonical}, nil
 }
 
 func (signer *Ed25519ManifestSigner) SignRunManifest(manifest runmanifest.Manifest) (runmanifest.SignedManifest, error) {

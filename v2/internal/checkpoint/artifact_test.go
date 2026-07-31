@@ -86,3 +86,27 @@ func TestCheckpointArtifactRejectsDriftMalformedJSONLAndTrailingBytes(t *testing
 		t.Fatalf("trailing-byte error = %v", err)
 	}
 }
+
+func TestStageRolloutValidatesAndHashesWhileCopying(t *testing.T) {
+	rollout := []byte("{\"type\":\"session_meta\"}\n{\"type\":\"response_item\"}\n")
+	var staged bytes.Buffer
+	descriptor, err := StageRollout(&staged, bytes.NewReader(rollout), int64(len(rollout)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(rollout)
+	if descriptor.SizeBytes != int64(len(rollout)) || descriptor.SHA256 != hex.EncodeToString(digest[:]) || !bytes.Equal(staged.Bytes(), rollout) {
+		t.Fatalf("staged rollout descriptor/bytes = %+v / %q", descriptor, staged.Bytes())
+	}
+	for name, source := range map[string][]byte{
+		"invalid JSONL": []byte("not-json\n"),
+		"size drift":    append(append([]byte(nil), rollout...), 'x'),
+	} {
+		t.Run(name, func(t *testing.T) {
+			var destination bytes.Buffer
+			if _, err := StageRollout(&destination, bytes.NewReader(source), int64(len(rollout))); err == nil {
+				t.Fatal("StageRollout() unexpectedly succeeded")
+			}
+		})
+	}
+}

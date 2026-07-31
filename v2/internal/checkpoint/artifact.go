@@ -28,6 +28,36 @@ type ArtifactDescriptor struct {
 	MediaType      string
 }
 
+type RolloutDescriptor struct {
+	SHA256    string
+	SizeBytes int64
+}
+
+// StageRollout copies the already-open app-server rollout into pool-owned
+// staging while validating the bounded JSONL profile and the size captured
+// from the trusted source descriptor. The returned digest is used to build
+// the manifest before the deterministic artifact can be emitted in a second
+// pass over staging.
+func StageRollout(destination io.Writer, source io.Reader, expectedSize int64) (RolloutDescriptor, error) {
+	if destination == nil || source == nil {
+		return RolloutDescriptor{}, errors.New("checkpoint rollout staging destination and source are required")
+	}
+	if expectedSize < 1 || expectedSize > MaximumRolloutBytes {
+		return RolloutDescriptor{}, fmt.Errorf("checkpoint rollout size must be between 1 and %d bytes", MaximumRolloutBytes)
+	}
+	hasher := sha256.New()
+	counter := &countingWriter{}
+	limited := io.LimitReader(source, expectedSize+1)
+	tee := io.TeeReader(limited, io.MultiWriter(destination, hasher, counter))
+	if err := validateRolloutJSONL(tee); err != nil {
+		return RolloutDescriptor{}, err
+	}
+	if counter.written != expectedSize {
+		return RolloutDescriptor{}, errors.New("checkpoint rollout changed size while entering pool staging")
+	}
+	return RolloutDescriptor{SHA256: hex.EncodeToString(hasher.Sum(nil)), SizeBytes: counter.written}, nil
+}
+
 // WriteArtifact emits the exact v1 framing:
 //
 //	16-byte magic | uint32 big-endian manifest length | canonical manifest | rollout bytes

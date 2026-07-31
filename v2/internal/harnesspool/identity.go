@@ -18,6 +18,11 @@ type RunAttemptClaimIdentity struct {
 	Record       TransitionRecord
 }
 
+type CheckpointIdentity struct {
+	CheckpointID string
+	ObjectID     string
+}
+
 // ControlIdentityAllocator owns the monotonic producer cursor and immutable
 // transition IDs emitted by one harness-pool process. A restart must use a
 // fresh producer instance ID.
@@ -81,6 +86,23 @@ func (allocator *ControlIdentityAllocator) AllocateBrainToolCatalogID() (string,
 	allocator.mu.Lock()
 	defer allocator.mu.Unlock()
 	return allocator.generateDistinct("brain tool catalog ID", allocator.producerInstanceID)
+}
+
+func (allocator *ControlIdentityAllocator) AllocateCheckpointIdentity() (CheckpointIdentity, error) {
+	if allocator == nil {
+		return CheckpointIdentity{}, errors.New("control identity allocator is required")
+	}
+	allocator.mu.Lock()
+	defer allocator.mu.Unlock()
+	checkpointID, err := allocator.generateDistinct("checkpoint ID", allocator.producerInstanceID)
+	if err != nil {
+		return CheckpointIdentity{}, err
+	}
+	objectID, err := allocator.generateDistinct("checkpoint object ID", allocator.producerInstanceID, checkpointID)
+	if err != nil {
+		return CheckpointIdentity{}, err
+	}
+	return CheckpointIdentity{CheckpointID: checkpointID, ObjectID: objectID}, nil
 }
 
 func (allocator *ControlIdentityAllocator) allocateTransitionRecordLocked(excluded ...string) (TransitionRecord, error) {

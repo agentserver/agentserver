@@ -425,6 +425,58 @@ WHERE run_id = $1`, quoteIdentifier(schema))
 	if finalizingEvents != 1 || completedEvents != 1 {
 		t.Fatalf("terminal event counts = finalizing %d, completed %d", finalizingEvents, completedEvents)
 	}
+
+	// A native-resume attempt reuses the catalog bound to the previous stock
+	// thread. Finalization must authorize that catalog through the session's
+	// latest committed checkpoint instead of requiring a new per-attempt row.
+	resumeCreateCommand := stateCreateRunCommand(160_080, workspaceID, sessionID, "finalization-resume")
+	resumeCreateCommand.ExpectedSessionVersion = committed.SessionVersion
+	resumeCreated := mustCreateStateRun(t, store, resumeCreateCommand)
+	resumeClaimed := mustClaimStateRun(t, store, stateClaimRunCommand(160_090, resumeCreated.Run.ID, resumeCreated.Run.Version, "resume-finalization-holder"))
+	resumeAccepted, err := store.MarkTurnAccepted(t.Context(), MarkTurnAcceptedCommand{
+		RunID: resumeCreated.Run.ID, AttemptID: resumeClaimed.Attempt.ID, HolderID: resumeClaimed.Attempt.HolderID,
+		Generation: resumeClaimed.Attempt.Generation, ExpectedRunVersion: resumeClaimed.Run.Version,
+		ExpectedAttemptVersion: resumeClaimed.Attempt.Version, Record: stateTransitionRecord(160_100),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const resumeTurnID = "turn-finalization-2"
+	resumeFinalizing, err := store.BeginRunFinalization(t.Context(), BeginRunFinalizationCommand{
+		RunID: resumeAccepted.Run.ID, AttemptID: resumeAccepted.Attempt.ID, HolderID: resumeAccepted.Attempt.HolderID,
+		Generation: resumeAccepted.Attempt.Generation, ExpectedRunVersion: resumeAccepted.Run.Version,
+		ExpectedAttemptVersion: resumeAccepted.Attempt.Version, ThreadID: threadID, TurnID: resumeTurnID,
+		Record: stateTransitionRecord(160_110),
+	})
+	if err != nil {
+		t.Fatalf("resume BeginRunFinalization() error = %v", err)
+	}
+	resumeCommit := CommitCheckpointAndTerminalRunCommand{
+		RunID: resumeFinalizing.Run.ID, AttemptID: resumeFinalizing.Attempt.ID,
+		HolderID: resumeFinalizing.Attempt.HolderID, Generation: resumeFinalizing.Attempt.Generation,
+		ExpectedRunVersion: resumeFinalizing.Run.Version, ExpectedAttemptVersion: resumeFinalizing.Attempt.Version,
+		CheckpointID: stateTestUUID(160_120), BrainToolCatalogID: bound.Catalog.ID,
+		ThreadID: threadID, TurnID: resumeTurnID,
+		ManifestDigest: sha256.Sum256([]byte("resume-finalization-manifest")), CatalogDigest: bound.Catalog.CatalogDigest,
+		Object: ObjectPointer{
+			ObjectID: stateTestUUID(160_121), SHA256: sha256.Sum256([]byte("resume-finalization-object")),
+			Size: 3072, MediaType: "application/vnd.agentserver.codex-checkpoint.v1",
+		},
+		CodexRuntimeManifestDigest: sha256.Sum256([]byte("finalization-runtime")),
+		CheckpointAllowlistVersion: 1, Record: stateTransitionRecord(160_130),
+	}
+	resumeCommitted, err := store.CommitCheckpointAndTerminalRun(t.Context(), resumeCommit)
+	if err != nil || !resumeCommitted.Created || resumeCommitted.Run.Status != RunStatusCompleted {
+		t.Fatalf("resume CommitCheckpointAndTerminalRun() = %+v, %v", resumeCommitted, err)
+	}
+	query = fmt.Sprintf("SELECT latest_checkpoint_id::text FROM %s.sessions WHERE id = $1", quoteIdentifier(schema))
+	latestCheckpointID = nil
+	if err := pool.QueryRow(t.Context(), query, sessionID).Scan(&latestCheckpointID); err != nil {
+		t.Fatal(err)
+	}
+	if latestCheckpointID == nil || *latestCheckpointID != resumeCommit.CheckpointID {
+		t.Fatalf("resume latest checkpoint = %v, want %s", latestCheckpointID, resumeCommit.CheckpointID)
+	}
 }
 
 func TestPostgreSQLResolveRunLaunchStateLoadsCommittedCheckpointCatalog(t *testing.T) {

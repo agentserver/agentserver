@@ -45,6 +45,13 @@ type AttemptWorkloadLauncher interface {
 	Launch(context.Context, AttemptWorkloadLaunch) (AttemptWorkload, error)
 }
 
+// AttemptCheckpointFinalizer owns the pool-side completed-turn durability
+// boundary. It is called only after the entire attempt process tree has
+// stopped cleanly and before the retained runtime is deleted.
+type AttemptCheckpointFinalizer interface {
+	FinalizeCompletedAttempt(context.Context, PreparedRunLaunch, AttemptWorkload, harnesscontrol.TurnTerminalEvent) (CommitCheckpointResult, error)
+}
+
 // AttemptRuntimeCapabilitySource mints two audience-separated, per-attempt
 // capabilities after the exact attempt has been registered and before a local
 // worker is forked. Implementations must bind both tokens to the manifest's
@@ -86,12 +93,13 @@ func (err *AttemptTerminalError) Error() string {
 }
 
 // ControlAttemptSupervisor composes one registered control capability with
-// one launched workload. It deliberately does not implement checkpoint/core
-// finalization; a completed terminal only means this runtime stopped cleanly.
+// one launched workload and hands a clean completed turn to the checkpoint
+// finalizer before deleting the retained attempt runtime.
 type ControlAttemptSupervisor struct {
 	controls     *ControlServer
 	launcher     AttemptWorkloadLauncher
 	capabilities AttemptRuntimeCapabilitySource
+	finalizer    AttemptCheckpointFinalizer
 	config       ControlAttemptSupervisorConfig
 }
 
@@ -99,6 +107,7 @@ func NewControlAttemptSupervisor(
 	controls *ControlServer,
 	launcher AttemptWorkloadLauncher,
 	capabilities AttemptRuntimeCapabilitySource,
+	finalizer AttemptCheckpointFinalizer,
 	config ControlAttemptSupervisorConfig,
 ) (*ControlAttemptSupervisor, error) {
 	if controls == nil {
@@ -110,6 +119,9 @@ func NewControlAttemptSupervisor(
 	if capabilities == nil {
 		return nil, errors.New("attempt runtime capability source is required")
 	}
+	if finalizer == nil {
+		return nil, errors.New("attempt checkpoint finalizer is required")
+	}
 	if config.StartupTimeout < time.Millisecond || config.StartupTimeout > time.Hour {
 		return nil, errors.New("attempt startup timeout must be between 1ms and 1h")
 	}
@@ -119,7 +131,9 @@ func NewControlAttemptSupervisor(
 	if config.InterruptGrace < time.Millisecond || config.InterruptGrace > 5*time.Minute {
 		return nil, errors.New("attempt interrupt grace must be between 1ms and 5m")
 	}
-	return &ControlAttemptSupervisor{controls: controls, launcher: launcher, capabilities: capabilities, config: config}, nil
+	return &ControlAttemptSupervisor{
+		controls: controls, launcher: launcher, capabilities: capabilities, finalizer: finalizer, config: config,
+	}, nil
 }
 
 func (supervisor *ControlAttemptSupervisor) Supervise(
@@ -156,6 +170,9 @@ func (supervisor *ControlAttemptSupervisor) Supervise(
 		return errors.New("attempt workload launcher returned a nil workload")
 	}
 	defer func() {
+		if RequiresAttemptRuntimeRetention(returnErr) {
+			return
+		}
 		cleanupContext, cancelCleanup := context.WithTimeout(context.Background(), supervisor.config.StopTimeout)
 		defer cancelCleanup()
 		if err := workload.Cleanup(cleanupContext); err != nil {
@@ -184,8 +201,8 @@ func (supervisor *ControlAttemptSupervisor) Supervise(
 			return supervisor.stopAttempt(control, workload, workloadDone, false, fmt.Errorf("establish worker control: %w", err))
 		}
 	case err := <-workloadDone:
-		if terminalErr, finished := terminalAfterWorkloadExit(control, err); finished {
-			return terminalErr
+		if stopped, finished := terminalAfterWorkloadExit(control, err); finished {
+			return supervisor.finishStoppedControl(ctx, prepared, workload, stopped)
 		}
 		return errors.Join(ErrAttemptStoppedBeforeTerminal, err)
 	case <-startupTimer.C:
@@ -202,10 +219,10 @@ func (supervisor *ControlAttemptSupervisor) Supervise(
 		if result.err != nil {
 			return supervisor.stopAttempt(control, workload, workloadDone, false, fmt.Errorf("worker control failed: %w", result.err))
 		}
-		return supervisor.finishTerminal(ctx, control, workload, workloadDone, result.event)
+		return supervisor.finishTerminal(ctx, prepared, control, workload, workloadDone, result.event)
 	case err := <-workloadDone:
-		if terminalErr, finished := terminalAfterWorkloadExit(control, err); finished {
-			return terminalErr
+		if stopped, finished := terminalAfterWorkloadExit(control, err); finished {
+			return supervisor.finishStoppedControl(ctx, prepared, workload, stopped)
 		}
 		return errors.Join(ErrAttemptStoppedBeforeTerminal, err)
 	}
@@ -218,6 +235,7 @@ type terminalWaitResult struct {
 
 func (supervisor *ControlAttemptSupervisor) finishTerminal(
 	ctx context.Context,
+	prepared PreparedRunLaunch,
 	control *AttemptControl,
 	workload AttemptWorkload,
 	workloadDone <-chan error,
@@ -227,13 +245,41 @@ func (supervisor *ControlAttemptSupervisor) finishTerminal(
 	defer timer.Stop()
 	select {
 	case err := <-workloadDone:
-		return terminalResultError(terminal, err)
+		return supervisor.finishStoppedTerminal(ctx, prepared, workload, terminal, err)
 	case <-ctx.Done():
 		return supervisor.stopAttempt(control, workload, workloadDone, false, context.Cause(ctx))
 	case <-timer.C:
 		cause := fmt.Errorf("attempt workload did not stop within %s after turn terminal", supervisor.config.StopTimeout)
 		return supervisor.stopAttempt(control, workload, workloadDone, false, errors.Join(terminalResultError(terminal, nil), cause))
 	}
+}
+
+func (supervisor *ControlAttemptSupervisor) finishStoppedControl(
+	ctx context.Context,
+	prepared PreparedRunLaunch,
+	workload AttemptWorkload,
+	stopped stoppedControlResult,
+) error {
+	if stopped.terminal == nil {
+		return stopped.err
+	}
+	return supervisor.finishStoppedTerminal(ctx, prepared, workload, *stopped.terminal, stopped.err)
+}
+
+func (supervisor *ControlAttemptSupervisor) finishStoppedTerminal(
+	ctx context.Context,
+	prepared PreparedRunLaunch,
+	workload AttemptWorkload,
+	terminal harnesscontrol.TurnTerminalEvent,
+	workloadErr error,
+) error {
+	if err := terminalResultError(terminal, workloadErr); err != nil {
+		return err
+	}
+	if _, err := supervisor.finalizer.FinalizeCompletedAttempt(ctx, prepared, workload, terminal); err != nil {
+		return fmt.Errorf("finalize completed attempt checkpoint: %w", err)
+	}
+	return nil
 }
 
 func (supervisor *ControlAttemptSupervisor) stopAttempt(
@@ -310,17 +356,23 @@ func terminalResultError(terminal harnesscontrol.TurnTerminalEvent, workloadErr 
 	}, workloadErr)
 }
 
-func terminalAfterWorkloadExit(control *AttemptControl, workloadErr error) (error, bool) {
+type stoppedControlResult struct {
+	terminal *harnesscontrol.TurnTerminalEvent
+	err      error
+}
+
+func terminalAfterWorkloadExit(control *AttemptControl, workloadErr error) (stoppedControlResult, bool) {
 	select {
 	case <-control.runtime.done:
 		control.runtime.mu.Lock()
 		outcome := control.runtime.outcome
 		control.runtime.mu.Unlock()
 		if outcome.terminal != nil {
-			return terminalResultError(*outcome.terminal, workloadErr), true
+			terminal := *outcome.terminal
+			return stoppedControlResult{terminal: &terminal, err: errors.Join(workloadErr, outcome.err)}, true
 		}
-		return errors.Join(ErrAttemptStoppedBeforeTerminal, workloadErr, outcome.err), true
+		return stoppedControlResult{err: errors.Join(ErrAttemptStoppedBeforeTerminal, workloadErr, outcome.err)}, true
 	default:
-		return nil, false
+		return stoppedControlResult{}, false
 	}
 }

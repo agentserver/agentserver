@@ -20,6 +20,8 @@ func TestControlAttemptSupervisorWaitsForCompletedTerminalAndStoppedWorkload(t *
 	server := newSupervisorTestControlServer(t, prepared)
 	lifecycle := &recordingAttemptLifecycle{}
 	workload := newSupervisorTestWorkload()
+	finalizeCalls := 0
+	var finalizedTerminal harnesscontrol.TurnTerminalEvent
 	launcher := attemptWorkloadLauncherFunc(func(_ context.Context, launch AttemptWorkloadLaunch) (AttemptWorkload, error) {
 		if launch.Prepared.Manifest.RunAttemptID != prepared.Manifest.RunAttemptID || validateControlCapability(launch.ControlCapability) != nil ||
 			launch.RuntimeCapabilities != supervisorTestRuntimeCapabilities() {
@@ -55,7 +57,16 @@ func TestControlAttemptSupervisorWaitsForCompletedTerminalAndStoppedWorkload(t *
 		time.AfterFunc(10*time.Millisecond, func() { workload.finish(nil) })
 		return workload, nil
 	})
-	supervisor := newSupervisorForTest(t, server, launcher)
+	supervisor := newSupervisorWithFinalizerForTest(t, server, launcher, attemptCheckpointFinalizerFunc(
+		func(_ context.Context, gotPrepared PreparedRunLaunch, gotWorkload AttemptWorkload, terminal harnesscontrol.TurnTerminalEvent) (CommitCheckpointResult, error) {
+			finalizeCalls++
+			finalizedTerminal = terminal
+			if gotPrepared.Manifest.RunAttemptID != prepared.Manifest.RunAttemptID || gotWorkload != workload {
+				return CommitCheckpointResult{}, errors.New("finalizer received changed attempt authority")
+			}
+			return CommitCheckpointResult{}, nil
+		},
+	))
 	if err := supervisor.Supervise(t.Context(), prepared, lifecycle); err != nil {
 		t.Fatal(err)
 	}
@@ -64,6 +75,9 @@ func TestControlAttemptSupervisorWaitsForCompletedTerminalAndStoppedWorkload(t *
 	}
 	if workload.cleanupCount() != 1 {
 		t.Fatalf("completed workload cleanup calls = %d, want 1", workload.cleanupCount())
+	}
+	if finalizeCalls != 1 || finalizedTerminal.Status != "completed" || finalizedTerminal.RolloutLocator != testCompletedRolloutLocator {
+		t.Fatalf("completed finalization calls/terminal = %d / %+v", finalizeCalls, finalizedTerminal)
 	}
 	threads, turns := lifecycle.snapshot()
 	if !reflect.DeepEqual(threads, []string{"thread-supervisor"}) ||
@@ -113,7 +127,13 @@ func TestControlAttemptSupervisorPreservesFailedTerminalClassification(t *testin
 		time.AfterFunc(10*time.Millisecond, func() { workload.finish(nil) })
 		return workload, nil
 	})
-	supervisor := newSupervisorForTest(t, server, launcher)
+	finalizeCalls := 0
+	supervisor := newSupervisorWithFinalizerForTest(t, server, launcher, attemptCheckpointFinalizerFunc(
+		func(context.Context, PreparedRunLaunch, AttemptWorkload, harnesscontrol.TurnTerminalEvent) (CommitCheckpointResult, error) {
+			finalizeCalls++
+			return CommitCheckpointResult{}, nil
+		},
+	))
 	err := supervisor.Supervise(t.Context(), prepared, &recordingAttemptLifecycle{})
 	var terminal *AttemptTerminalError
 	if !errors.As(err, &terminal) || terminal.Status != "failed" || terminal.Code != "model_error" {
@@ -121,6 +141,112 @@ func TestControlAttemptSupervisorPreservesFailedTerminalClassification(t *testin
 	}
 	if workload.cleanupCount() != 1 {
 		t.Fatalf("failed workload cleanup calls = %d, want 1", workload.cleanupCount())
+	}
+	if finalizeCalls != 0 {
+		t.Fatalf("failed terminal finalized a checkpoint %d time(s)", finalizeCalls)
+	}
+}
+
+func TestControlAttemptSupervisorRetainsRuntimeAfterAmbiguousFinalization(t *testing.T) {
+	prepared := poolTestPreparedLaunch(t)
+	server := newSupervisorTestControlServer(t, prepared)
+	workload := newSupervisorTestWorkload()
+	launcher := attemptWorkloadLauncherFunc(func(_ context.Context, _ AttemptWorkloadLaunch) (AttemptWorkload, error) {
+		runtime := currentAttemptRuntime(t, server, prepared.Manifest.RunAttemptID)
+		runtime.markReady()
+		if err := runtime.processEvent(harnesscontrol.Event{
+			Kind: harnesscontrol.EventKindThreadReady,
+			ThreadReady: &harnesscontrol.ThreadReadyEvent{
+				Kind: harnesscontrol.EventKindThreadReady, ThreadID: "thread-retained", Resumed: false,
+			},
+		}); err != nil {
+			return nil, err
+		}
+		if err := runtime.processEvent(harnesscontrol.Event{
+			Kind: harnesscontrol.EventKindTurnAccepted,
+			TurnAccepted: &harnesscontrol.TurnAcceptedEvent{
+				Kind: harnesscontrol.EventKindTurnAccepted, ThreadID: "thread-retained", TurnID: "turn-retained",
+			},
+		}); err != nil {
+			return nil, err
+		}
+		if err := runtime.processEvent(harnesscontrol.Event{
+			Kind: harnesscontrol.EventKindTurnTerminal,
+			TurnTerminal: &harnesscontrol.TurnTerminalEvent{
+				Kind: harnesscontrol.EventKindTurnTerminal, ThreadID: "thread-retained", TurnID: "turn-retained",
+				Status: "completed", RolloutLocator: testCompletedRolloutLocator,
+			},
+		}); err != nil {
+			return nil, err
+		}
+		workload.finish(nil)
+		return workload, nil
+	})
+	finalizeCalls := 0
+	ambiguous := &AttemptRuntimeRetentionError{Operation: "checkpoint commit", Err: errors.New("response lost twice")}
+	supervisor := newSupervisorWithFinalizerForTest(t, server, launcher, attemptCheckpointFinalizerFunc(
+		func(context.Context, PreparedRunLaunch, AttemptWorkload, harnesscontrol.TurnTerminalEvent) (CommitCheckpointResult, error) {
+			finalizeCalls++
+			return CommitCheckpointResult{}, ambiguous
+		},
+	))
+
+	err := supervisor.Supervise(t.Context(), prepared, &recordingAttemptLifecycle{})
+	if !errors.Is(err, ambiguous) || !RequiresAttemptRuntimeRetention(err) {
+		t.Fatalf("ambiguous finalization error = %v", err)
+	}
+	if finalizeCalls != 1 || workload.cleanupCount() != 0 {
+		t.Fatalf("ambiguous finalization calls/cleanup = %d/%d", finalizeCalls, workload.cleanupCount())
+	}
+}
+
+func TestControlAttemptSupervisorDoesNotFinalizeCompletedTerminalAfterUncleanWait(t *testing.T) {
+	prepared := poolTestPreparedLaunch(t)
+	server := newSupervisorTestControlServer(t, prepared)
+	workload := newSupervisorTestWorkload()
+	waitErr := errors.New("process group wait failed")
+	launcher := attemptWorkloadLauncherFunc(func(_ context.Context, _ AttemptWorkloadLaunch) (AttemptWorkload, error) {
+		runtime := currentAttemptRuntime(t, server, prepared.Manifest.RunAttemptID)
+		runtime.markReady()
+		if err := runtime.processEvent(harnesscontrol.Event{
+			Kind: harnesscontrol.EventKindThreadReady,
+			ThreadReady: &harnesscontrol.ThreadReadyEvent{
+				Kind: harnesscontrol.EventKindThreadReady, ThreadID: "thread-unclean", Resumed: false,
+			},
+		}); err != nil {
+			return nil, err
+		}
+		if err := runtime.processEvent(harnesscontrol.Event{
+			Kind: harnesscontrol.EventKindTurnAccepted,
+			TurnAccepted: &harnesscontrol.TurnAcceptedEvent{
+				Kind: harnesscontrol.EventKindTurnAccepted, ThreadID: "thread-unclean", TurnID: "turn-unclean",
+			},
+		}); err != nil {
+			return nil, err
+		}
+		if err := runtime.processEvent(harnesscontrol.Event{
+			Kind: harnesscontrol.EventKindTurnTerminal,
+			TurnTerminal: &harnesscontrol.TurnTerminalEvent{
+				Kind: harnesscontrol.EventKindTurnTerminal, ThreadID: "thread-unclean", TurnID: "turn-unclean",
+				Status: "completed", RolloutLocator: testCompletedRolloutLocator,
+			},
+		}); err != nil {
+			return nil, err
+		}
+		workload.finish(waitErr)
+		return workload, nil
+	})
+	finalizeCalls := 0
+	supervisor := newSupervisorWithFinalizerForTest(t, server, launcher, attemptCheckpointFinalizerFunc(
+		func(context.Context, PreparedRunLaunch, AttemptWorkload, harnesscontrol.TurnTerminalEvent) (CommitCheckpointResult, error) {
+			finalizeCalls++
+			return CommitCheckpointResult{}, nil
+		},
+	))
+
+	err := supervisor.Supervise(t.Context(), prepared, &recordingAttemptLifecycle{})
+	if !errors.Is(err, waitErr) || finalizeCalls != 0 || workload.cleanupCount() != 1 {
+		t.Fatalf("unclean wait error/finalize/cleanup = %v/%d/%d", err, finalizeCalls, workload.cleanupCount())
 	}
 }
 
@@ -202,6 +328,9 @@ func TestControlAttemptSupervisorFailsBeforeForkWhenCapabilityIssuanceFails(t *t
 		attemptRuntimeCapabilitySourceFunc(func(context.Context, PreparedRunLaunch) (harnessbootstrap.RuntimeCapabilities, error) {
 			return harnessbootstrap.RuntimeCapabilities{}, capabilityErr
 		}),
+		attemptCheckpointFinalizerFunc(func(context.Context, PreparedRunLaunch, AttemptWorkload, harnesscontrol.TurnTerminalEvent) (CommitCheckpointResult, error) {
+			return CommitCheckpointResult{}, nil
+		}),
 		ControlAttemptSupervisorConfig{StartupTimeout: time.Second, StopTimeout: time.Second, InterruptGrace: time.Second},
 	)
 	if err != nil {
@@ -230,7 +359,17 @@ func newSupervisorTestControlServer(t *testing.T, prepared PreparedRunLaunch) *C
 
 func newSupervisorForTest(t *testing.T, server *ControlServer, launcher AttemptWorkloadLauncher) *ControlAttemptSupervisor {
 	t.Helper()
-	supervisor, err := NewControlAttemptSupervisor(server, launcher, staticSupervisorCapabilities{}, ControlAttemptSupervisorConfig{
+	return newSupervisorWithFinalizerForTest(t, server, launcher, staticSupervisorFinalizer{})
+}
+
+func newSupervisorWithFinalizerForTest(
+	t *testing.T,
+	server *ControlServer,
+	launcher AttemptWorkloadLauncher,
+	finalizer AttemptCheckpointFinalizer,
+) *ControlAttemptSupervisor {
+	t.Helper()
+	supervisor, err := NewControlAttemptSupervisor(server, launcher, staticSupervisorCapabilities{}, finalizer, ControlAttemptSupervisorConfig{
 		StartupTimeout: time.Second, StopTimeout: time.Second, InterruptGrace: time.Second,
 	})
 	if err != nil {
@@ -243,6 +382,17 @@ type staticSupervisorCapabilities struct{}
 
 func (staticSupervisorCapabilities) IssueAttemptRuntimeCapabilities(context.Context, PreparedRunLaunch) (harnessbootstrap.RuntimeCapabilities, error) {
 	return supervisorTestRuntimeCapabilities(), nil
+}
+
+type staticSupervisorFinalizer struct{}
+
+func (staticSupervisorFinalizer) FinalizeCompletedAttempt(
+	context.Context,
+	PreparedRunLaunch,
+	AttemptWorkload,
+	harnesscontrol.TurnTerminalEvent,
+) (CommitCheckpointResult, error) {
+	return CommitCheckpointResult{}, nil
 }
 
 func supervisorTestRuntimeCapabilities() harnessbootstrap.RuntimeCapabilities {
@@ -273,6 +423,17 @@ type attemptRuntimeCapabilitySourceFunc func(context.Context, PreparedRunLaunch)
 
 func (source attemptRuntimeCapabilitySourceFunc) IssueAttemptRuntimeCapabilities(ctx context.Context, prepared PreparedRunLaunch) (harnessbootstrap.RuntimeCapabilities, error) {
 	return source(ctx, prepared)
+}
+
+type attemptCheckpointFinalizerFunc func(context.Context, PreparedRunLaunch, AttemptWorkload, harnesscontrol.TurnTerminalEvent) (CommitCheckpointResult, error)
+
+func (finalizer attemptCheckpointFinalizerFunc) FinalizeCompletedAttempt(
+	ctx context.Context,
+	prepared PreparedRunLaunch,
+	workload AttemptWorkload,
+	terminal harnesscontrol.TurnTerminalEvent,
+) (CommitCheckpointResult, error) {
+	return finalizer(ctx, prepared, workload, terminal)
 }
 
 type supervisorTestWorkload struct {

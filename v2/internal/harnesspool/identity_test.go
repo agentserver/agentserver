@@ -116,3 +116,25 @@ func TestControlIdentityAllocatorSharesCursorWithStandaloneTransitions(t *testin
 		seen[identity] = true
 	}
 }
+
+func TestControlIdentityAllocatorAllocatesDistinctCheckpointAndObjectIDs(t *testing.T) {
+	values := []string{
+		"71000000-0000-4000-8000-000000000001",
+		"72000000-0000-4000-8000-000000000001",
+	}
+	allocator, err := NewControlIdentityAllocator("70000000-0000-4000-8000-000000000001", func() (string, error) {
+		value := values[0]
+		values = values[1:]
+		return value, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := allocator.AllocateCheckpointIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.CheckpointID == identity.ObjectID || identity.CheckpointID == "" || identity.ObjectID == "" {
+		t.Fatalf("checkpoint identity = %+v", identity)
+	}
+}

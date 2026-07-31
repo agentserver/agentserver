@@ -171,10 +171,11 @@ func (s *StateStore) CommitCheckpointAndTerminalRun(ctx context.Context, command
 			return CommitCheckpointAndTerminalRunResult{}, err
 		}
 		if catalog.WorkspaceID != run.WorkspaceID || catalog.SessionID != run.SessionID ||
-			catalog.CreatedRunID != run.ID || catalog.CreatedRunAttemptID != attempt.ID ||
-			catalog.CreatedAttemptGeneration != attempt.Generation || catalog.CreatedHolderID != attempt.HolderID ||
 			catalog.ThreadID != command.ThreadID || catalog.CatalogDigest != command.CatalogDigest {
 			return CommitCheckpointAndTerminalRunResult{}, commandError(ErrorConflict, operation, "brain_tool_catalog", catalog.ID, "catalog does not match the finalizing attempt, thread, and digest")
+		}
+		if err := s.requireAttemptCatalogAuthority(ctx, transaction, operation, run, attempt, catalog); err != nil {
+			return CommitCheckpointAndTerminalRunResult{}, err
 		}
 
 		checkpoint, err := s.insertCommittedCheckpoint(ctx, transaction, operation, run, attempt, catalog, command)
@@ -333,25 +334,46 @@ FOR UPDATE`, s.table("sessions"))
 
 func (s *StateStore) requireTerminalCatalogThread(ctx context.Context, transaction pgx.Tx, operation string, run Run, attempt RunAttempt, threadID string) error {
 	query := fmt.Sprintf(`
-SELECT workspace_id::text, session_id::text, created_run_id::text,
-       created_attempt_generation, created_holder_id, thread_id
-FROM %s
-WHERE created_run_attempt_id = $1
-FOR SHARE`, s.table("brain_tool_catalogs"))
-	var workspaceID, sessionID, createdRunID, createdHolderID string
-	var generation int64
-	var catalogThreadID *string
-	if err := transaction.QueryRow(ctx, query, attempt.ID).Scan(
-		&workspaceID, &sessionID, &createdRunID, &generation, &createdHolderID, &catalogThreadID,
-	); err != nil {
+SELECT %s
+FROM %s AS c
+WHERE c.session_id = $1 AND c.thread_id = $2
+FOR SHARE`, brainToolCatalogColumns("c"), s.table("brain_tool_catalogs"))
+	catalog, err := scanBrainToolCatalog(transaction.QueryRow(ctx, query, run.SessionID, threadID))
+	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return commandError(ErrorNotFound, operation, "brain_tool_catalog", attempt.ID, "attempt has no frozen brain tool catalog")
+			return commandError(ErrorNotFound, operation, "brain_tool_catalog", attempt.ID, "terminal thread has no frozen brain tool catalog in the session")
 		}
 		return databaseError(operation+" lock terminal catalog", err)
 	}
-	if workspaceID != run.WorkspaceID || sessionID != run.SessionID || createdRunID != run.ID ||
-		generation != attempt.Generation || createdHolderID != attempt.HolderID || catalogThreadID == nil || *catalogThreadID != threadID {
+	if catalog.WorkspaceID != run.WorkspaceID || catalog.SessionID != run.SessionID || catalog.ThreadID != threadID {
 		return commandError(ErrorConflict, operation, "brain_tool_catalog", attempt.ID, "frozen catalog is not bound to the terminal attempt thread")
+	}
+	return s.requireAttemptCatalogAuthority(ctx, transaction, operation, run, attempt, catalog)
+}
+
+// A fresh thread uses the catalog frozen by this attempt. A resumed thread
+// intentionally reuses the catalog referenced by the session's latest
+// committed checkpoint; creating a second catalog for the same stock thread
+// would violate the immutable thread/catalog binding.
+func (s *StateStore) requireAttemptCatalogAuthority(ctx context.Context, transaction pgx.Tx, operation string, run Run, attempt RunAttempt, catalog BrainToolCatalog) error {
+	if catalog.CreatedRunID == run.ID && catalog.CreatedRunAttemptID == attempt.ID &&
+		catalog.CreatedAttemptGeneration == attempt.Generation && catalog.CreatedHolderID == attempt.HolderID {
+		return nil
+	}
+	query := fmt.Sprintf(`
+SELECT c.brain_tool_catalog_id::text, c.thread_id
+FROM %s AS s
+JOIN %s AS c ON c.id = s.latest_checkpoint_id
+WHERE s.id = $1`, s.table("sessions"), s.table("checkpoints"))
+	var catalogID, threadID string
+	if err := transaction.QueryRow(ctx, query, run.SessionID).Scan(&catalogID, &threadID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return commandError(ErrorConflict, operation, "brain_tool_catalog", catalog.ID, "catalog was neither frozen by this attempt nor selected by the session checkpoint")
+		}
+		return databaseError(operation+" read resume catalog authority", err)
+	}
+	if catalogID != catalog.ID || threadID != catalog.ThreadID {
+		return commandError(ErrorConflict, operation, "brain_tool_catalog", catalog.ID, "catalog does not match the session checkpoint selected for resume")
 	}
 	return nil
 }

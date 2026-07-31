@@ -2,12 +2,15 @@ package harnessworker
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -471,6 +474,73 @@ func TestMCPClientRejectsRedirectBeforeBearerCanReachAnotherOrigin(t *testing.T)
 	}
 	if targetHits.Load() != 0 {
 		t.Fatalf("redirect target received %d requests", targetHits.Load())
+	}
+}
+
+func TestSecureMCPHTTPClientPinsOneExactSPIFFEIdentity(t *testing.T) {
+	const identity = "spiffe://agentserver.test/ns/agentserver/sa/executor-gateway"
+	wanted, err := url.Parse(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceTransport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
+	source := &http.Client{Transport: sourceTransport}
+	client, err := secureMCPHTTPClient(source, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok || transport == sourceTransport || transport.TLSClientConfig == sourceTransport.TLSClientConfig {
+		t.Fatal("secure MCP client did not clone the caller's transport and TLS config")
+	}
+	if transport.TLSClientConfig.MinVersion != tls.VersionTLS13 || sourceTransport.TLSClientConfig.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("TLS minimum versions = cloned %x source %x", transport.TLSClientConfig.MinVersion, sourceTransport.TLSClientConfig.MinVersion)
+	}
+	verify := transport.TLSClientConfig.VerifyConnection
+	if verify == nil {
+		t.Fatal("secure MCP client omitted its SPIFFE verifier")
+	}
+	if err := verify(tls.ConnectionState{PeerCertificates: []*x509.Certificate{{URIs: []*url.URL{wanted}}}}); err != nil {
+		t.Fatalf("exact SPIFFE identity was rejected: %v", err)
+	}
+	wrong, _ := url.Parse("spiffe://agentserver.test/ns/agentserver/sa/not-executor-gateway")
+	for name, certificates := range map[string][]*x509.Certificate{
+		"missing":  nil,
+		"wrong":    {{URIs: []*url.URL{wrong}}},
+		"multiple": {{URIs: []*url.URL{wanted, wrong}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := verify(tls.ConnectionState{PeerCertificates: certificates}); err == nil || !strings.Contains(err.Error(), "wrong SPIFFE") {
+				t.Fatalf("SPIFFE verification error = %v", err)
+			}
+		})
+	}
+	if err := client.CheckRedirect(&http.Request{}, nil); err == nil || !strings.Contains(err.Error(), "redirects are forbidden") {
+		t.Fatalf("redirect policy error = %v", err)
+	}
+}
+
+func TestSecureMCPHTTPClientRejectsUnpinnedOrUnsafeTLS(t *testing.T) {
+	const identity = "spiffe://agentserver.test/ns/agentserver/sa/executor-gateway"
+	for name, test := range map[string]struct {
+		source   *http.Client
+		identity string
+	}{
+		"missing identity": {source: &http.Client{Transport: &http.Transport{}}, identity: ""},
+		"non SPIFFE":       {source: &http.Client{Transport: &http.Transport{}}, identity: "https://executor.test"},
+		"implicit client":  {source: nil, identity: identity},
+		"implicit transport": {
+			source: &http.Client{}, identity: identity,
+		},
+		"skip verify": {
+			source: &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}, identity: identity, //nolint:gosec -- rejection fixture
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := secureMCPHTTPClient(test.source, test.identity); err == nil {
+				t.Fatal("unsafe MCP TLS client succeeded")
+			}
+		})
 	}
 }
 

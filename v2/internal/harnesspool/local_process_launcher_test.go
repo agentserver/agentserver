@@ -224,6 +224,15 @@ func TestLocalProcessLauncherConfigRejectsAmbientOrUnsafeInputs(t *testing.T) {
 			}
 		})
 	}
+	production := valid
+	production.RuntimeRoot = t.TempDir()
+	if err := os.Chmod(production.RuntimeRoot, 0o711); err != nil {
+		t.Fatal(err)
+	}
+	production.Credential = &LocalProcessCredential{UID: 65531, GID: 65531}
+	if _, err := NewLocalProcessLauncher(production); err == nil || !strings.Contains(err.Error(), "verified privileged runtime cleaner") {
+		t.Fatalf("production launcher without privileged cleaner error = %v", err)
+	}
 	if _, err := NewLocalProcessLauncher(valid); err != nil {
 		t.Fatalf("valid local launcher config: %v", err)
 	}

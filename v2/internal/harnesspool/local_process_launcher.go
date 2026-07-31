@@ -46,6 +46,7 @@ type LocalProcessLauncherConfig struct {
 	WorkerExecutable           string
 	WorkerArguments            []string
 	RuntimeRoot                string
+	RuntimeCleaner             LocalAttemptRuntimeCleaner
 	Environment                []string
 	ObjectSource               AttemptObjectSource
 	Credential                 *LocalProcessCredential
@@ -75,6 +76,9 @@ type LocalProcessLauncher struct {
 func NewLocalProcessLauncher(config LocalProcessLauncherConfig) (*LocalProcessLauncher, error) {
 	if err := validateLocalProcessLauncherConfig(config); err != nil {
 		return nil, err
+	}
+	if config.RuntimeCleaner == nil {
+		config.RuntimeCleaner = &localFilesystemAttemptRuntimeCleaner{runtimeRoot: config.RuntimeRoot}
 	}
 	config.WorkerArguments = append([]string(nil), config.WorkerArguments...)
 	config.Environment = append([]string(nil), config.Environment...)
@@ -144,7 +148,7 @@ func (launcher *LocalProcessLauncher) Launch(ctx context.Context, launch Attempt
 	removeRuntime := true
 	defer func() {
 		if removeRuntime {
-			_ = os.RemoveAll(runtimeDirectory)
+			_ = launcher.config.RuntimeCleaner.CleanLocalAttemptRuntime(runtimeDirectory)
 		}
 	}()
 	if launcher.config.Credential != nil {
@@ -155,7 +159,11 @@ func (launcher *LocalProcessLauncher) Launch(ctx context.Context, launch Attempt
 		if err := os.Chown(runtimeDirectory, -1, int(launcher.config.Credential.GID)); err != nil {
 			return nil, fmt.Errorf("assign local attempt runtime group: %w", err)
 		}
-		if err := os.Chmod(runtimeDirectory, 0o770); err != nil {
+		// The fixed app UID needs execute-only traversal to reach its 0700
+		// attempt subdirectories after the worker creates them. No app-owned
+		// file is readable at this anchor and arbitrary local code is outside
+		// this backend's threat model.
+		if err := os.Chmod(runtimeDirectory, 0o771); err != nil {
 			return nil, fmt.Errorf("grant local worker runtime access: %w", err)
 		}
 	}
@@ -280,6 +288,7 @@ func (launcher *LocalProcessLauncher) Launch(ctx context.Context, launch Attempt
 type localProcessWorkload struct {
 	command                    *exec.Cmd
 	runtimeDirectory           string
+	runtimeCleaner             LocalAttemptRuntimeCleaner
 	terminateGrace             time.Duration
 	processGroupCleanupTimeout time.Duration
 	done                       chan struct{}
@@ -289,7 +298,7 @@ type localProcessWorkload struct {
 
 func newLocalProcessWorkload(command *exec.Cmd, runtimeDirectory string, config LocalProcessLauncherConfig) *localProcessWorkload {
 	workload := &localProcessWorkload{
-		command: command, runtimeDirectory: runtimeDirectory,
+		command: command, runtimeDirectory: runtimeDirectory, runtimeCleaner: config.RuntimeCleaner,
 		terminateGrace:             config.TerminateGrace,
 		processGroupCleanupTimeout: config.ProcessGroupCleanupTimeout,
 		done:                       make(chan struct{}),
@@ -304,7 +313,7 @@ func (workload *localProcessWorkload) reap() {
 		workload.command.Process.Pid,
 		workload.processGroupCleanupTimeout,
 	)
-	cleanupErr := os.RemoveAll(workload.runtimeDirectory)
+	cleanupErr := workload.runtimeCleaner.CleanLocalAttemptRuntime(workload.runtimeDirectory)
 	workload.mu.Lock()
 	workload.result = errors.Join(waitErr, groupErr, cleanupErr)
 	workload.mu.Unlock()
@@ -377,6 +386,10 @@ func validateLocalProcessLauncherConfig(config LocalProcessLauncherConfig) error
 	if config.RuntimeRoot == "" || !filepath.IsAbs(config.RuntimeRoot) {
 		return errors.New("local attempt runtime root must be an absolute path")
 	}
+	if config.Credential != nil && (config.Credential.UID == 0 || config.Credential.GID == 0 ||
+		config.Credential.UID == ^uint32(0) || config.Credential.GID == ^uint32(0)) {
+		return errors.New("local worker credential must be a valid unprivileged identity")
+	}
 	runtimeRoot, err := os.Lstat(config.RuntimeRoot)
 	if err != nil {
 		return fmt.Errorf("inspect local attempt runtime root: %w", err)
@@ -384,8 +397,12 @@ func validateLocalProcessLauncherConfig(config LocalProcessLauncherConfig) error
 	if !runtimeRoot.IsDir() || runtimeRoot.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("local attempt runtime root is not a real directory: mode=%s", runtimeRoot.Mode())
 	}
-	if runtimeRoot.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("local attempt runtime root permissions are too broad: mode=%s", runtimeRoot.Mode())
+	if config.Credential == nil {
+		if runtimeRoot.Mode().Perm()&0o077 != 0 {
+			return fmt.Errorf("local attempt runtime root permissions are too broad for developer mode: mode=%s", runtimeRoot.Mode())
+		}
+	} else if runtimeRoot.Mode().Perm() != 0o711 {
+		return fmt.Errorf("production local attempt runtime root must be mode 0711 for execute-only app traversal: mode=%s", runtimeRoot.Mode())
 	}
 	if config.Environment == nil {
 		return errors.New("local worker environment must be explicit")
@@ -413,9 +430,13 @@ func validateLocalProcessLauncherConfig(config LocalProcessLauncherConfig) error
 			return errors.New("local worker arguments must not override inherited input descriptors")
 		}
 	}
-	if config.Credential != nil && (config.Credential.UID == 0 || config.Credential.GID == 0 ||
-		config.Credential.UID == ^uint32(0) || config.Credential.GID == ^uint32(0)) {
-		return errors.New("local worker credential must be a valid unprivileged identity")
+	if config.Credential != nil && (config.RuntimeCleaner == nil || !config.RuntimeCleaner.productionSafeLocalAttemptCleaner()) {
+		return errors.New("production local process launcher requires a verified privileged runtime cleaner")
+	}
+	if config.Credential != nil {
+		if err := requireLocalProcessProductionCapabilities(); err != nil {
+			return err
+		}
 	}
 	if !lowercaseSHA256Pattern.MatchString(config.ExpectedWorkerImageDigest) {
 		return errors.New("expected local worker image digest must be lowercase SHA-256")

@@ -2,6 +2,7 @@ package harnessworker
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -122,6 +123,7 @@ type DynamicToolResult struct {
 
 type MCPClientConfig struct {
 	Endpoint              string
+	TLSIdentity           string
 	BearerToken           string
 	HTTPClient            *http.Client
 	AllowInsecureLoopback bool
@@ -183,6 +185,15 @@ func ConnectMCP(ctx context.Context, config MCPClientConfig) (*MCPClient, error)
 	if err != nil {
 		return nil, err
 	}
+	httpClient := config.HTTPClient
+	if endpoint.Scheme == "https" {
+		httpClient, err = secureMCPHTTPClient(config.HTTPClient, config.TLSIdentity)
+		if err != nil {
+			return nil, err
+		}
+	} else if config.TLSIdentity != "" {
+		return nil, errors.New("plain HTTP executor MCP test endpoint cannot declare a TLS identity")
+	}
 	if err := validateBearer(config.BearerToken); err != nil {
 		return nil, err
 	}
@@ -209,7 +220,7 @@ func ConnectMCP(ctx context.Context, config MCPClientConfig) (*MCPClient, error)
 		return nil, fmt.Errorf("executor MCP close grace exceeds hard maximum %s", maxMCPShutdownGrace)
 	}
 
-	httpClient, transport := boundedMCPHTTPClient(config.HTTPClient, endpoint, config.BearerToken, transportMessageLimit(config.Limits))
+	httpClient, transport := boundedMCPHTTPClient(httpClient, endpoint, config.BearerToken, transportMessageLimit(config.Limits))
 	result := &MCPClient{
 		limits:       config.Limits,
 		closeGrace:   closeGrace,
@@ -867,6 +878,55 @@ func validateMCPEndpoint(raw string, allowInsecureLoopback bool) (*url.URL, erro
 		return nil, errors.New("executor MCP endpoint scheme must be https")
 	}
 	return endpoint, nil
+}
+
+func secureMCPHTTPClient(source *http.Client, expectedIdentity string) (*http.Client, error) {
+	parsedIdentity, err := url.Parse(expectedIdentity)
+	if err != nil || parsedIdentity.Scheme != "spiffe" || parsedIdentity.Host == "" || parsedIdentity.Path == "" ||
+		parsedIdentity.User != nil || parsedIdentity.RawQuery != "" || parsedIdentity.Fragment != "" ||
+		parsedIdentity.String() != expectedIdentity {
+		return nil, errors.New("executor MCP server TLS identity must be a canonical SPIFFE URI")
+	}
+	if source == nil {
+		return nil, errors.New("executor MCP HTTPS client is required")
+	}
+	transport, ok := source.Transport.(*http.Transport)
+	if !ok || transport == nil {
+		return nil, errors.New("executor MCP HTTP client must use an explicit *http.Transport")
+	}
+	transport = transport.Clone()
+	tlsConfig := transport.TLSClientConfig
+	if tlsConfig == nil {
+		tlsConfig = &tls.Config{}
+	} else {
+		tlsConfig = tlsConfig.Clone()
+	}
+	if tlsConfig.InsecureSkipVerify {
+		return nil, errors.New("executor MCP TLS verification cannot be disabled")
+	}
+	if tlsConfig.MinVersion < tls.VersionTLS13 {
+		tlsConfig.MinVersion = tls.VersionTLS13
+	}
+	priorVerify := tlsConfig.VerifyConnection
+	tlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
+		if priorVerify != nil {
+			if err := priorVerify(state); err != nil {
+				return err
+			}
+		}
+		if len(state.PeerCertificates) == 0 || len(state.PeerCertificates[0].URIs) != 1 ||
+			state.PeerCertificates[0].URIs[0].String() != expectedIdentity {
+			return errors.New("executor MCP server certificate has the wrong SPIFFE URI SAN")
+		}
+		return nil
+	}
+	transport.TLSClientConfig = tlsConfig
+	client := *source
+	client.Transport = transport
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return errors.New("executor MCP redirects are forbidden")
+	}
+	return &client, nil
 }
 
 func validateBearer(token string) error {

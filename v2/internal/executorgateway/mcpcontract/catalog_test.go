@@ -14,12 +14,12 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
-func TestCatalogIsTheMinimalShellSlice(t *testing.T) {
+func TestCatalogIsTheBoundedExecutorSlice(t *testing.T) {
 	got := Tools()
-	if len(got) != 2 {
-		t.Fatalf("tool count = %d, want 2", len(got))
+	if len(got) != 3 {
+		t.Fatalf("tool count = %d, want 3", len(got))
 	}
-	if names := []string{got[0].Name, got[1].Name}; !slices.Equal(names, []string{"list_environments", "shell"}) {
+	if names := []string{got[0].Name, got[1].Name, got[2].Name}; !slices.Equal(names, []string{"list_environments", "shell", "read_file"}) {
 		t.Fatalf("tool names = %q", names)
 	}
 	if _, found := Lookup("unified_exec"); found {
@@ -91,6 +91,8 @@ func TestExecutorMCPSchemaMatchesGoCatalogAndValidatesCalls(t *testing.T) {
 		`{"name":"list_environments","arguments":{}}`,
 		`{"name":"list_environments","arguments":{"executor_id":"10000000-0000-0000-0000-000000000001"}}`,
 		`{"name":"shell","arguments":{"environment_id":"20000000-0000-0000-0000-000000000002","argv":["/bin/sh","-lc","pwd"],"cwd":".","env":{"LANG":"C"},"timeout_ms":1000,"tty":false}}`,
+		`{"name":"read_file","arguments":{"environment_id":"20000000-0000-0000-0000-000000000002","path":"src/data.bin"}}`,
+		`{"name":"read_file","arguments":{"environment_id":"20000000-0000-0000-0000-000000000002","path":"README.md","offset":9007199254740991,"limit":1048576}}`,
 	}
 	for _, raw := range valid {
 		var value any
@@ -105,6 +107,10 @@ func TestExecutorMCPSchemaMatchesGoCatalogAndValidatesCalls(t *testing.T) {
 		`{"name":"shell","arguments":{"environment_id":"not-a-uuid","argv":["pwd"]}}`,
 		`{"name":"shell","arguments":{"environment_id":"20000000-0000-0000-0000-000000000002","command":"pwd"}}`,
 		`{"name":"shell","arguments":{"environment_id":"20000000-0000-0000-0000-000000000002","argv":[],"future":true}}`,
+		`{"name":"read_file","arguments":{"environment_id":"20000000-0000-0000-0000-000000000002","path":""}}`,
+		`{"name":"read_file","arguments":{"environment_id":"20000000-0000-0000-0000-000000000002","path":"data.bin","limit":1048577}}`,
+		`{"name":"read_file","arguments":{"environment_id":"20000000-0000-0000-0000-000000000002","path":"data.bin","offset":9007199254740992}}`,
+		`{"name":"read_file","arguments":{"environment_id":"20000000-0000-0000-0000-000000000002","path":"data.bin","future":true}}`,
 		`{"name":"unified_exec","arguments":{}}`,
 	}
 	for _, raw := range invalid {

@@ -11,6 +11,11 @@ const Version = "process-v1"
 const FilesystemReadVersion = "process-v1+filesystem-read-v1"
 
 const (
+	MaxFilesystemReadLength uint64 = 1024 * 1024
+	MaxFilesystemReadOffset uint64 = 9_007_199_254_740_991
+)
+
+const (
 	MethodProcessStart     = "process/start"
 	MethodProcessRead      = "process/read"
 	MethodProcessWrite     = "process/write"

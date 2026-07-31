@@ -17,7 +17,7 @@ import (
 	"nhooyr.io/websocket"
 )
 
-var ErrDispatchAmbiguous = errors.New("agentx process dispatch is ambiguous")
+var ErrDispatchAmbiguous = errors.New("agentx dispatch is ambiguous")
 
 var ErrExecutorUnavailable = errors.New("executor environment is not connected and ready")
 

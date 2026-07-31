@@ -191,6 +191,10 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	if err != nil {
 		return err
 	}
+	readFileIdentities, err := executorgateway.NewDefaultReadFileV1IdentityAllocator()
+	if err != nil {
+		return err
+	}
 	executionTransitions, err := executorgateway.NewDefaultExecutionTransitionAllocator(gatewayInstanceID)
 	if err != nil {
 		return err
@@ -206,8 +210,20 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	if err != nil {
 		return err
 	}
+	readFileExecutor, err := executorgateway.NewReadFileExecutor(
+		environmentResolver,
+		coreClient,
+		agentxHandler,
+		readFileIdentities,
+		executionTransitions,
+		executorgateway.DefaultReadFileExecutorConfig(ctx),
+	)
+	if err != nil {
+		return err
+	}
 	mcpConfig := executorgateway.DefaultExecutorMCPConfig()
 	mcpConfig.ShellExecutor = shellExecutor
+	mcpConfig.ReadFileExecutor = readFileExecutor
 	mcpHandler, err := executorgateway.NewExecutorMCPHandler(
 		mcpAuthenticator,
 		environmentResolver,

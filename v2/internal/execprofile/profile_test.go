@@ -66,4 +66,7 @@ func TestFilesystemReadProfileIsAdditiveAndExact(t *testing.T) {
 	if !slices.Equal(FilesystemReadMethods(), want) || AllowsFilesystemReadMethod("fs/readFile") {
 		t.Fatal("filesystem read profile is mutable or admits unbounded stock read")
 	}
+	if MaxFilesystemReadLength != 1024*1024 || MaxFilesystemReadOffset != 9_007_199_254_740_991 {
+		t.Fatal("filesystem read product bounds changed")
+	}
 }

@@ -23,21 +23,22 @@ type InboundFrameHandler interface {
 }
 
 type ServerConfig struct {
-	GatewayInstanceID       string
-	WireLimits              agentxconn.Limits
-	MaxUnackedFrames        int
-	MaxJournalBytes         int
-	MaxReceiveHistoryFrames int
-	MaxPendingProcesses     int
-	MaxProcessEvents        int
-	MaxProcessEventBytes    int
-	HandshakeTimeout        time.Duration
-	WriteTimeout            time.Duration
-	ConnectionLeaseTTL      time.Duration
-	RenewInterval           time.Duration
-	IDGenerator             IDGenerator
-	InboundHandler          InboundFrameHandler
-	Now                     func() time.Time
+	GatewayInstanceID         string
+	WireLimits                agentxconn.Limits
+	MaxUnackedFrames          int
+	MaxJournalBytes           int
+	MaxReceiveHistoryFrames   int
+	MaxPendingProcesses       int
+	MaxPendingFilesystemReads int
+	MaxProcessEvents          int
+	MaxProcessEventBytes      int
+	HandshakeTimeout          time.Duration
+	WriteTimeout              time.Duration
+	ConnectionLeaseTTL        time.Duration
+	RenewInterval             time.Duration
+	IDGenerator               IDGenerator
+	InboundHandler            InboundFrameHandler
+	Now                       func() time.Time
 }
 
 func DefaultServerConfig(gatewayInstanceID string) ServerConfig {
@@ -48,18 +49,19 @@ func DefaultServerConfig(gatewayInstanceID string) ServerConfig {
 			MaxJSONValues: 65_536,
 			MaxJSONDepth:  256,
 		},
-		MaxUnackedFrames:        1024,
-		MaxJournalBytes:         64 * 1024 * 1024,
-		MaxReceiveHistoryFrames: 4096,
-		MaxPendingProcesses:     256,
-		MaxProcessEvents:        4096,
-		MaxProcessEventBytes:    8 * 1024 * 1024,
-		HandshakeTimeout:        10 * time.Second,
-		WriteTimeout:            10 * time.Second,
-		ConnectionLeaseTTL:      45 * time.Second,
-		RenewInterval:           10 * time.Second,
-		IDGenerator:             newRandomUUID,
-		Now:                     time.Now,
+		MaxUnackedFrames:          1024,
+		MaxJournalBytes:           64 * 1024 * 1024,
+		MaxReceiveHistoryFrames:   4096,
+		MaxPendingProcesses:       256,
+		MaxPendingFilesystemReads: 256,
+		MaxProcessEvents:          4096,
+		MaxProcessEventBytes:      8 * 1024 * 1024,
+		HandshakeTimeout:          10 * time.Second,
+		WriteTimeout:              10 * time.Second,
+		ConnectionLeaseTTL:        45 * time.Second,
+		RenewInterval:             10 * time.Second,
+		IDGenerator:               newRandomUUID,
+		Now:                       time.Now,
 	}
 }
 
@@ -86,11 +88,12 @@ type sessionRuntime struct {
 }
 
 type Server struct {
-	authenticator ExecutorAuthenticator
-	authority     ConnectionAuthority
-	config        ServerConfig
-	registry      *agentxconn.Registry
-	processCalls  *processCallTable
+	authenticator   ExecutorAuthenticator
+	authority       ConnectionAuthority
+	config          ServerConfig
+	registry        *agentxconn.Registry
+	processCalls    *processCallTable
+	filesystemCalls *filesystemCallTable
 
 	mu           sync.Mutex
 	shuttingDown bool
@@ -132,14 +135,19 @@ func NewServer(authenticator ExecutorAuthenticator, authority ConnectionAuthorit
 	if err != nil {
 		return nil, err
 	}
+	filesystemCalls, err := newFilesystemCallTable(config.MaxPendingFilesystemReads)
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
-		authenticator: authenticator,
-		authority:     authority,
-		config:        config,
-		registry:      registry,
-		processCalls:  processCalls,
-		byExecutor:    make(map[string]*sessionRuntime),
-		bySession:     make(map[string]*sessionRuntime),
+		authenticator:   authenticator,
+		authority:       authority,
+		config:          config,
+		registry:        registry,
+		processCalls:    processCalls,
+		filesystemCalls: filesystemCalls,
+		byExecutor:      make(map[string]*sessionRuntime),
+		bySession:       make(map[string]*sessionRuntime),
 	}, nil
 }
 
@@ -238,6 +246,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		runtime.session.Close(errServerShuttingDown)
 		runtime.closeTransport()
 		s.processCalls.failHolder(runtime.currentHolder(), errServerShuttingDown)
+		s.filesystemCalls.failHolder(runtime.currentHolder(), errServerShuttingDown)
 	}
 
 	var shutdownErrors []error
@@ -367,6 +376,7 @@ func (s *Server) handshake(ctx context.Context, connection *websocket.Conn, exec
 	}
 	if prior != nil {
 		s.processCalls.failHolder(prior.currentHolder(), ErrConnectionFenced)
+		s.filesystemCalls.failHolder(prior.currentHolder(), ErrConnectionFenced)
 		prior.closeTransport()
 	}
 	return runtime, true, resumeReplay{}, nil
@@ -513,7 +523,13 @@ func (s *Server) handleMessage(ctx context.Context, runtime *sessionRuntime, con
 		if message.Frame.Type == agentxconn.MessageTypeLifecycle {
 			return &agentxconn.ProtocolError{Code: agentxconn.ErrorMethodNotNegotiated, Message: "lifecycle is already complete", Terminal: true}
 		}
-		handled, err := s.processCalls.handle(runtime.currentHolder(), *message.Frame)
+		handled, err := s.filesystemCalls.handle(runtime.currentHolder(), *message.Frame)
+		if err != nil {
+			return err
+		}
+		if !handled {
+			handled, err = s.processCalls.handle(runtime.currentHolder(), *message.Frame)
+		}
 		if err != nil {
 			return err
 		}
@@ -650,6 +666,7 @@ func (s *Server) removeRuntime(runtime *sessionRuntime) {
 }
 
 func (s *Server) disconnectRuntime(runtime *sessionRuntime) {
+	s.filesystemCalls.abandonHolder(runtime.currentHolder(), ErrConnectionFenced)
 	snapshot := runtime.session.Snapshot()
 	if snapshot.State != agentxconn.SessionActive {
 		s.removeRuntime(runtime)
@@ -665,6 +682,7 @@ func (s *Server) disconnectRuntime(runtime *sessionRuntime) {
 	runtime.scheduleResumeExpiry(time.Duration(agentxconn.ResumeWindowMillis)*time.Millisecond, func() {
 		runtime.session.Close(&agentxconn.ProtocolError{Code: agentxconn.ErrorResumeExpired, Message: "resume window expired", Terminal: true})
 		s.processCalls.failHolder(runtime.currentHolder(), ErrConnectionFenced)
+		s.filesystemCalls.failHolder(runtime.currentHolder(), ErrConnectionFenced)
 		s.fenceRuntime(runtime)
 		s.removeRuntime(runtime)
 		s.registry.Forget(runtime.currentHolder().SessionID)
@@ -674,6 +692,7 @@ func (s *Server) disconnectRuntime(runtime *sessionRuntime) {
 func (s *Server) terminateRuntime(runtime *sessionRuntime) {
 	runtime.session.Close(errors.New("terminal agentx connection failure"))
 	s.processCalls.failHolder(runtime.currentHolder(), ErrConnectionFenced)
+	s.filesystemCalls.failHolder(runtime.currentHolder(), ErrConnectionFenced)
 	runtime.closeTransport()
 	s.fenceRuntime(runtime)
 	s.removeRuntime(runtime)

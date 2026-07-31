@@ -59,9 +59,9 @@ func DefaultLimits() Limits {
 		MaxSchemaBytes:      256 * 1024,
 		MaxCatalogBytes:     1024 * 1024,
 		MaxArgumentBytes:    1024 * 1024,
-		MaxResultBytes:      1024 * 1024,
+		MaxResultBytes:      2 * 1024 * 1024,
 		MaxResultItems:      64,
-		MaxResultTextBytes:  1024 * 1024,
+		MaxResultTextBytes:  2 * 1024 * 1024,
 		MaxJSONValues:       65_536,
 		MaxJSONDepth:        64,
 	}

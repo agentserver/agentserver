@@ -82,6 +82,7 @@ type ExecutorMCPConfig struct {
 	IDGenerator         IDGenerator
 	Logger              *slog.Logger
 	ShellExecutor       *ShellExecutor
+	ReadFileExecutor    *ReadFileExecutor
 }
 
 func DefaultExecutorMCPConfig() ExecutorMCPConfig {
@@ -110,6 +111,7 @@ type ExecutorMCPHandler struct {
 	authenticator ExecutorMCPAuthenticator
 	resolver      *EnvironmentResolver
 	shell         *ShellExecutor
+	readFile      *ReadFileExecutor
 	config        ExecutorMCPConfig
 	streamable    *mcp.StreamableHTTPHandler
 
@@ -142,6 +144,7 @@ func NewExecutorMCPHandler(authenticator ExecutorMCPAuthenticator, resolver *Env
 		authenticator: authenticator,
 		resolver:      resolver,
 		shell:         config.ShellExecutor,
+		readFile:      config.ReadFileExecutor,
 		config:        config,
 		sessions:      make(map[string]*executorMCPSession),
 	}
@@ -377,6 +380,44 @@ func (handler *ExecutorMCPHandler) newScopedServer(session *executorMCPSession) 
 			return &mcp.CallToolResult{Content: []mcp.Content{}}, result, nil
 		})
 	}
+	if handler.readFile != nil {
+		readFileTool, found := mcpcontract.Lookup(mcpcontract.ToolReadFile)
+		if !found {
+			panic("read_file is missing from executor MCP contract")
+		}
+		mcp.AddTool(server, &mcp.Tool{
+			Name:         readFileTool.Name,
+			Description:  readFileTool.Description,
+			InputSchema:  readFileTool.InputSchema,
+			OutputSchema: readFileTool.OutputSchema,
+		}, func(ctx context.Context, request *mcp.CallToolRequest, _ ReadFileV1Arguments) (*mcp.CallToolResult, ReadFileV1Result, error) {
+			if request == nil || request.Session == nil || request.Session.ID() != session.id || request.Params == nil {
+				return nil, ReadFileV1Result{}, errors.New("read_file arrived without its authenticated MCP session")
+			}
+			if len(request.Params.InputResponses) != 0 || request.Params.RequestState != "" {
+				return nil, ReadFileV1Result{}, errors.New("read_file does not support multi-round-trip input")
+			}
+			call, err := parseExecutorMCPCallContext(request.Params.Meta, session.principal)
+			if err != nil {
+				return nil, ReadFileV1Result{}, err
+			}
+			result, err := handler.readFile.Execute(ctx, ReadFileExecuteRequest{
+				Principal: session.principal, ToolCallID: call.CallID,
+				Arguments: append(json.RawMessage(nil), request.Params.Arguments...),
+			})
+			if err != nil {
+				if handler.config.Logger != nil {
+					handler.config.Logger.ErrorContext(ctx, "execute read_file MCP call",
+						"run_id", session.principal.Run.RunID,
+						"call_id", call.CallID,
+						"error", err,
+					)
+				}
+				return nil, ReadFileV1Result{}, errors.New("read_file execution is temporarily unavailable")
+			}
+			return &mcp.CallToolResult{Content: []mcp.Content{}}, result, nil
+		})
+	}
 	return server
 }
 
@@ -399,17 +440,17 @@ func parseExecutorMCPCallContext(meta mcp.Meta, principal ExecutorMCPPrincipal) 
 		executorMCPMetaRunAttemptGeneration: {}, executorMCPMetaToolCatalogDigest: {}, executorMCPMetaProgressToken: {},
 	}
 	if len(meta) != len(allowed) {
-		return executorMCPCallContext{}, errors.New("shell requires the exact trusted MCP call metadata")
+		return executorMCPCallContext{}, errors.New("executor tool requires the exact trusted MCP call metadata")
 	}
 	for key := range meta {
 		if _, ok := allowed[key]; !ok {
-			return executorMCPCallContext{}, fmt.Errorf("shell MCP metadata contains unsupported key %q", key)
+			return executorMCPCallContext{}, fmt.Errorf("executor tool MCP metadata contains unsupported key %q", key)
 		}
 	}
 	getString := func(key string) (string, error) {
 		value, ok := meta[key].(string)
 		if !ok || value == "" || len(value) > 256 || !utf8.ValidString(value) || strings.ContainsRune(value, 0) {
-			return "", fmt.Errorf("shell MCP metadata %s is missing or invalid", key)
+			return "", fmt.Errorf("executor tool MCP metadata %s is missing or invalid", key)
 		}
 		return value, nil
 	}
@@ -436,11 +477,11 @@ func parseExecutorMCPCallContext(meta mcp.Meta, principal ExecutorMCPPrincipal) 
 	}
 	result.RunAttemptGeneration, err = executorMCPMetadataInt64(meta[executorMCPMetaRunAttemptGeneration])
 	if err != nil || result.RunAttemptGeneration < 1 {
-		return executorMCPCallContext{}, errors.New("shell MCP run attempt generation is invalid")
+		return executorMCPCallContext{}, errors.New("executor tool MCP run attempt generation is invalid")
 	}
 	if result.RunID != principal.Run.RunID || result.RunAttemptGeneration != principal.Run.RunAttemptGeneration ||
 		result.ToolCatalogDigest != principal.ToolCatalogDigest || progressToken != result.CallID {
-		return executorMCPCallContext{}, errors.New("shell MCP call metadata is outside the authenticated run capability")
+		return executorMCPCallContext{}, errors.New("executor tool MCP call metadata is outside the authenticated run capability")
 	}
 	return result, nil
 }

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentserver.dev/v2/schema/executor-mcp.schema.json",
-  "title": "agentserver v2 executor MCP shell profile",
+  "title": "agentserver v2 executor MCP profile",
   "description": "Validates the name and arguments portion of one executor MCP tools/call request. The x-agentserver-tools annotation is the frozen tools/list source.",
   "oneOf": [
     {
@@ -21,9 +21,18 @@
         "name": {"const": "shell"},
         "arguments": {"$ref": "#/$defs/shellInput"}
       }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "arguments"],
+      "properties": {
+        "name": {"const": "read_file"},
+        "arguments": {"$ref": "#/$defs/readFileInput"}
+      }
     }
   ],
-  "x-agentserver-contract-version": "executor-mcp/1.0",
+  "x-agentserver-contract-version": "executor-mcp/1.1",
   "x-agentserver-namespace": "executor",
   "x-agentserver-tools": [
     {
@@ -39,6 +48,13 @@
       "mapperVersion": "shell-v1",
       "inputSchema": {"$ref": "#/$defs/shellInput"},
       "outputSchema": {"$ref": "#/$defs/shellOutput"}
+    },
+    {
+      "name": "read_file",
+      "description": "Read one bounded block from a file relative to an environment root. Text is returned as UTF-8 when compact and otherwise as canonical base64.",
+      "mapperVersion": "read-file-v1",
+      "inputSchema": {"$ref": "#/$defs/readFileInput"},
+      "outputSchema": {"$ref": "#/$defs/readFileOutput"}
     }
   ],
   "$defs": {
@@ -147,6 +163,50 @@
         "sandbox_denied": {"type": "boolean"},
         "timed_out": {"type": "boolean"},
         "output_complete": {"type": "boolean"}
+      }
+    },
+    "readFileInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["environment_id", "path"],
+      "properties": {
+        "environment_id": {
+          "$ref": "#/$defs/uuid",
+          "description": "Canonical environment UUID returned by list_environments."
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "Clean slash-separated path relative to the registered environment root. Absolute paths and parent traversal are rejected."
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "description": "Zero-based byte offset. The read-file-v1 mapper uses 0 when omitted."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576,
+          "description": "Maximum bytes in this block. The read-file-v1 mapper uses 1048576 when omitted."
+        }
+      }
+    },
+    "readFileOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "path", "offset", "requested_bytes", "bytes_read", "eof", "encoding", "content"],
+      "properties": {
+        "status": {"enum": ["succeeded", "failed", "unknown"]},
+        "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "offset": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "requested_bytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
+        "bytes_read": {"type": "integer", "minimum": 0, "maximum": 1048576},
+        "eof": {"type": "boolean"},
+        "encoding": {"enum": ["utf-8", "base64"]},
+        "content": {"type": "string", "maxLength": 1398104}
       }
     }
   }

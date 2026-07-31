@@ -6,7 +6,7 @@ package mcpcontract
 import "encoding/json"
 
 const (
-	Version              = "executor-mcp/1.0"
+	Version              = "executor-mcp/1.1"
 	Namespace            = "executor"
 	NamespaceDescription = "Deterministic executor tools."
 )
@@ -14,11 +14,13 @@ const (
 const (
 	ToolListEnvironments = "list_environments"
 	ToolShell            = "shell"
+	ToolReadFile         = "read_file"
 )
 
 const (
 	listEnvironmentsDescription = "List execution environments available to this run capability. Use the returned environment_id as the target of executor tools."
 	shellDescription            = "Execute one deterministic argv vector in an environment. argv is never interpreted as a natural-language command or an implicit shell string."
+	readFileDescription         = "Read one bounded block from a file relative to an environment root. Text is returned as UTF-8 when compact and otherwise as canonical base64."
 )
 
 // Tool is one frozen catalog entry. OutputSchema is a gateway/client contract;
@@ -46,6 +48,13 @@ var tools = [...]Tool{
 		InputSchema:   json.RawMessage(shellInputSchema),
 		OutputSchema:  json.RawMessage(shellOutputSchema),
 		MapperVersion: "shell-v1",
+	},
+	{
+		Name:          ToolReadFile,
+		Description:   readFileDescription,
+		InputSchema:   json.RawMessage(readFileInputSchema),
+		OutputSchema:  json.RawMessage(readFileOutputSchema),
+		MapperVersion: "read-file-v1",
 	},
 }
 
@@ -177,5 +186,52 @@ const shellOutputSchema = `{
     "sandbox_denied": {"type": "boolean"},
     "timed_out": {"type": "boolean"},
     "output_complete": {"type": "boolean"}
+  }
+}`
+
+const readFileInputSchema = `{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["environment_id", "path"],
+  "properties": {
+    "environment_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "Canonical environment UUID returned by list_environments."
+    },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "description": "Clean slash-separated path relative to the registered environment root. Absolute paths and parent traversal are rejected."
+    },
+    "offset": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "Zero-based byte offset. The read-file-v1 mapper uses 0 when omitted."
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1048576,
+      "description": "Maximum bytes in this block. The read-file-v1 mapper uses 1048576 when omitted."
+    }
+  }
+}`
+
+const readFileOutputSchema = `{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "path", "offset", "requested_bytes", "bytes_read", "eof", "encoding", "content"],
+  "properties": {
+    "status": {"enum": ["succeeded", "failed", "unknown"]},
+    "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "offset": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "requested_bytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
+    "bytes_read": {"type": "integer", "minimum": 0, "maximum": 1048576},
+    "eof": {"type": "boolean"},
+    "encoding": {"enum": ["utf-8", "base64"]},
+    "content": {"type": "string", "maxLength": 1398104}
   }
 }`

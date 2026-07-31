@@ -412,7 +412,7 @@ upstream 将 `codex exec-server` 标记为 experimental，因此不能假设 sem
 
 ### 8.2 MCP 工具面
 
-规划工具面保持小而确定，但不能在 handler 尚未实现时一次性全部广告。首个冻结 catalog 是 `executor-mcp/1.0`，只包含 `list_environments` 与同步、terminal-only 的 `shell`；`tools/list` 不得提前暴露下表其余工具。后续 catalog version 再按实现和 conformance 证据扩展：
+规划工具面保持小而确定，但不能在 handler 尚未实现时一次性全部广告。首个冻结 catalog `executor-mcp/1.0` 只包含 `list_environments` 与同步、terminal-only 的 `shell`；`executor-mcp/1.1` 在完整 bounded-read handler 装配后加入 `read_file`。`tools/list` 必须按实际注入的 handler 收缩，不能提前暴露下表其余工具。后续 catalog version 再按实现和 conformance 证据扩展：
 
 | MCP tool | 必需的确定性输入 | RPC 映射 |
 |---|---|---|
@@ -422,7 +422,7 @@ upstream 将 `codex exec-server` 标记为 experimental，因此不能假设 sem
 | `write_stdin` | `env_id`、`process_id`、`write_id`、bytes | `process/write` |
 | `read_output` | `env_id`、`process_id`、from sequence | `process/read` |
 | `terminate` | `env_id`、`process_id`、reason | `process/terminate` |
-| `read_file` | `env_id`、path、offset/limit | `fs/readFile` 或 block API |
+| `read_file` | `env_id`、registered-root-relative path、offset/limit | 单个 `agentx/fs/readFileBlock` outer RPC |
 | `apply_patch` | `env_id`、单文件 unified diff、目标文件 precondition hash | gateway 读取并确定性应用；agentx 以条件写扩展原子提交 |
 
 除 `list_environments` 外，每个工具都必须携带或由 run capability 无歧义地解析出 `env_id`。不得依赖“当前 executor”这种隐式全局状态。
@@ -434,6 +434,10 @@ upstream 将 `codex exec-server` 标记为 experimental，因此不能假设 sem
 `timeout` 不是当前 stock `process/start` 的字段。gateway把`afterMs + 预分配timeout operation_id/mutation_key`放在agentx outer frame的`directives.processTimeout`，该字段由agentx消费且绝不复制进stock params。agentx本地monotonic timer到期时只在同一有序journal上发送`agentx/timeoutDue(processId)`，其routing context使用预分配timeout operation；gateway本地timer也进入同一处理路径。`timeoutDue`只是“期限已到”的可信信号，不是外部发送许可：gateway仍须先以core `BeginOperationDispatch`跨过唯一CAS边界，只有`Began=true`才能发送stock `process/terminate`，随后等待真实终态。这样agentx不需要core凭证，也不会绕过pre-dispatch持久化；Phase 1 gateway不可恢复时，signal保留在同进程resume journal内，fresh gateway不能据此虚构恢复，相关operation最终按unknown/runner cleanup收口。不能把 timeout 悄悄塞入 upstream params，也不能在未确认进程退出时只返回“超时成功终止”。
 
 MCP 的 `cwd/path` 使用 env-relative 表示。gateway 根据已登记 root 做语法映射并编码为 upstream 要求的 `file:` URI，但 agentx 的本地 root 才是授权事实：它必须按 URI 语义重新解码、canonicalize 并校验。禁止只用字符串拼接检查路径，`..`、percent encoding、Windows drive/UNC 和 symlink 都必须进入跨平台逃逸测试。
+
+`read_file-v1`把一次MCP调用冻结为恰好一个`fs_read(effect_class=read)` operation/mutation。gateway先用core environment projection检查组合profile，跨过`BeginOperationDispatch`后还必须以当前WSS hello中目标environment的profile再检查一次，再把根目录相对路径编码为平台正确的`file:` URI。unary response table按holder/session、canonical request id和完整routing context关联唯一响应；transport disconnect、fresh generation、resume expiry和shutdown都会把pending read收口为`unknown`。`effect_class=read`只是审计分类，Phase 1即使发生pre-send或ambiguous write也不自动重发。
+
+成功response必须精确为`{chunk,eof}`，其中chunk是canonical base64且decoded bytes不超过调用方limit。core operation ACK只保存response kind、request id、完整response SHA-256和字节数；operation/execution terminal result只保存content hash、bytesRead与eof等紧凑证据，文件内容仅返回当前MCP调用。有效且最终JSON不超过2 MiB时返回`encoding=utf-8`，否则返回canonical `encoding=base64`；1 MiB block的base64上界为1,398,104字节，harness result/text默认上限因此是2 MiB而不是1 MiB。
 
 `apply_patch` 不是 exec-server 的原生方法。Phase 1 每次调用只允许修改一个文件：gateway 先读取、验证 precondition hash 并确定性应用 patch，再调用协商后的 agentserver 条件写扩展，由 agentx 在本地原子验证 hash 后提交。该提交必须降权到目标 env 的执行身份，或调用随发行包签名的固定 fs helper；持机器凭证的控制面不能以自身高权限任意写工作树。未协商条件写 capability 时不暴露该工具；不能用普通“read 后 write”、生成自然语言或启动模型冒充 CAS。多文件 patch 必须拆成多个 execution，并明确不具备跨文件原子性。
 

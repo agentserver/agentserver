@@ -429,6 +429,26 @@ func TestMCPClientFailsClosedOnCatalogMismatchAndForbiddenResult(t *testing.T) {
 	}
 }
 
+func TestDefaultMCPResultLimitsHoldMaximumBoundedReadFileBlock(t *testing.T) {
+	const maximumBase64Bytes = 1_398_104
+	result := &mcp.CallToolResult{
+		Content: []mcp.Content{},
+		StructuredContent: map[string]any{
+			"status": "succeeded", "path": "data.bin", "offset": float64(0),
+			"requested_bytes": float64(1_048_576), "bytes_read": float64(1_048_576),
+			"eof": true, "encoding": "base64", "content": strings.Repeat("A", maximumBase64Bytes),
+		},
+	}
+	converted, err := convertToolResult(result, DefaultLimits())
+	if err != nil {
+		t.Fatalf("maximum bounded read_file result was rejected: %v", err)
+	}
+	if len(converted.ContentItems) != 1 || len(converted.ContentItems[0].Text) <= 1024*1024 ||
+		len(converted.ContentItems[0].Text) > DefaultLimits().MaxResultTextBytes {
+		t.Fatalf("maximum read_file projection bytes = %d", len(converted.ContentItems[0].Text))
+	}
+}
+
 func TestMCPClientRejectsRedirectBeforeBearerCanReachAnotherOrigin(t *testing.T) {
 	var targetHits atomic.Int64
 	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { targetHits.Add(1) }))

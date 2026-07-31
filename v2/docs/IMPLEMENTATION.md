@@ -496,7 +496,7 @@ PR 10 reference command store继续固定以下执行语义：
 | shell | process_start；必要时 timeout_terminate |
 | write_stdin | process_write |
 | terminate | process_terminate |
-| read_file | fs_read（effect_class=read，可按策略安全重试） |
+| read_file | fs_read（effect_class=read；Phase 1仍禁止自动重发） |
 | apply_patch | fs_read；fs_write_if_match |
 
 每个 operation 都有独立 mutation_key。发送前顺序固定：
@@ -639,7 +639,9 @@ registry 只保存活连接。权威 executor/env/generation 在 core。gateway�
 
 第七段先冻结read-file的跨组件contract。core和内部environment projection接受`process-v1`或`process-v1+filesystem-read-v1`，旧process-only enrollment不被破坏；hello按environment声明组合profile，而远端session lifecycle仍只协商基础`process-v1`。agentx WSS schema只新增有界的`agentx/fs/readFileBlock(path, offset, len)`，静态wire validator继续拒绝stock `fs/readFile`。实际dispatch还必须用目标environment的profile做第二次gate，不能因为连接上另一个environment支持filesystem就越权发送。
 
-这仍不是可生产部署的executor：agentx enrollment/OAuth机器key binding、core签发和在线撤销的短期run capability、ask/approval命令链、gateway崩溃后的dispatching/acknowledged恢复审计、目标平台containment和部署manifest尚未实现，`executor-gateway`命令因此仍只暴露显式loopback `serve --insecure-dev`，生产serve模式刻意不存在。当前shell链可用于同进程开发验证，不能据此声称Phase 2生产交付完成。
+第八段已经闭合开发模式的read-file垂直切片。`executor-mcp/1.1`新增严格schema和确定性mapper：caller path必须是无dot segment、无反斜杠和父目录逃逸的registered-root-relative path，offset上限为`2^53-1`，limit默认为且最大为1 MiB；每次分配execution/operation/mutation/RPC四个独立identity，并冻结单一`fs_read/read`计划。orchestrator依次执行`PrepareExecution → PrepareOperation → BeginOperationDispatch`，随后由独立filesystem unary table按holder/session、request id和完整routing关联response；发送前同时检查core environment projection和当前hello中目标environment的组合profile。matching RPC error在紧凑ACK后确定为failed；pre-send、ambiguous write、malformed response、断线或fence不重发并收口为unknown。成功response必须精确为`{chunk,eof}`与canonical base64，core只保留response/content hash、字节数和eof，实际内容只走MCP result。有效UTF-8在最终JSON不超过2 MiB时按文本返回，否则使用canonical base64；harness result/text默认上限同步提升到2 MiB并覆盖1,398,104字节最大base64 block。实际`serve --insecure-dev`只有在完整shell与read-file executor都构造成功后才广告`list_environments|shell|read_file`。
+
+这仍不是可生产部署的executor：agentx enrollment/OAuth机器key binding、core签发和在线撤销的短期run capability、ask/approval命令链、gateway崩溃后的dispatching/acknowledged恢复审计、目标平台containment和部署manifest尚未实现，`executor-gateway`命令因此仍只暴露显式loopback `serve --insecure-dev`，生产serve模式刻意不存在。当前shell/read-file链可用于同进程开发验证，不能据此声称Phase 2生产交付完成。
 
 ### 7.2 第一批工具
 
@@ -652,9 +654,11 @@ registry 只保存活连接。权威 executor/env/generation 在 core。gateway�
 
 unified_exec、跨 run detached process、任意 http/request 和 capabilityRoots不进入第一个shell slice；其中unified_exec未来也只允许run-scoped process，不因此开放跨run detached语义。
 
-实现期间`tools/list`遵循“只广告已有handler”：构造时未注入shell executor的测试/只读endpoint仍只返回`list_environments`；实际`serve --insecure-dev`现在仅在完整shell handler和terminal链同时装配成功后返回`executor-mcp/1.0`的两工具catalog。core冻结的catalog digest必须与run capability及worker每次调用的metadata一致，不能因gateway升级静默改变已有thread。
+实现期间`tools/list`遵循“只广告已有handler”：未注入shell/read-file executor的测试或只读endpoint只返回`list_environments`，只注入其中一个时也不得广告另一个；实际`serve --insecure-dev`在完整shell与bounded read链同时装配成功后返回`executor-mcp/1.1`的三工具catalog。core冻结的catalog digest必须与run capability及worker每次调用的metadata一致，不能因gateway升级静默改变已有thread。
 
-### 7.3 shell 映射
+### 7.3 MCP 工具映射
+
+#### 7.3.1 shell
 
 ~~~text
 MCP shell
@@ -676,6 +680,28 @@ MCP shell
 timeout 不伪装成 process/start 参数。gateway 在启动进程前同时预分配 timeout_terminate operation/mutation key，通过outer `directives.processTimeout={afterMs,operationId,mutationKey}`把计时策略交给 agentx；agentx不得把directive复制进stock params。本地monotonic timer到期后，agentx以timeout operation的routing context发送有序`agentx/timeoutDue(processId)`，它与gateway timer汇入同一orchestrator路径，但本身不授权副作用。gateway仍须先调用core `BeginOperationDispatch`，只有首次提交返回`Began=true`才能发送stock `process/terminate`；连接或core不可用时agentx不能持凭证越权直发，只能依赖同gateway进程resume journal，最终按unknown与runner cleanup收口。任何一侧都必须等待真实 process terminal。若process在deadline前取得terminal，gateway必须以`SkipOperation`明确关闭尚未dispatch的timeout operation；不能让它停留在`prepared`，也不能把它伪装成`succeeded|cancelled`。
 
 这里的agentx ACK不是WSS累计`ack`字段。WSS ACK只证明某个传输frame已连续处理并允许释放内存journal；core `AcknowledgeOperation`需要相同mutation key、operation id和connection generation下的agentx journal接受证据、匹配RPC response或可信terminal evidence。
+
+#### 7.3.2 read_file
+
+~~~text
+MCP read_file
+  → Resolve environment + core profile gate
+  → PrepareExecution
+  → PrepareOperation(fs_read, effect_class=read)
+  → BeginOperationDispatch
+  → current WSS hello profile gate
+  → WSS rpc agentx/fs/readFileBlock
+  → matching unary RPC response/error
+  → compact response-hash AcknowledgeOperation
+  → compact operation/execution terminal evidence
+  → UTF-8 or canonical-base64 MCP result
+~~~
+
+一个调用只有一个operation和一个mutation key。gateway绝不把agentx内部的`fs/open/readBlock/close`拆成三个core operation，也不把stock handle暴露给MCP；组合细节完全留在一次性fs-only lane内。caller path只以根目录相对形式进入MCP，gateway生成`file:` URI，agentx仍按本地registered root重新授权并在stock close后复核file identity。
+
+filesystem call table不复用process event assembler：它只接受一个与holder/session、canonical request id和完整routing context同时匹配的response或error。RPC error是确定响应，可以ACK后把operation/execution置为failed；畸形result、连接丢失、fresh generation、shutdown和frame入journal后的ambiguous write都置为unknown。虽然effect class是read，当前版本没有任何自动retry；未来要启用也必须先有明确的reconciliation与版本化策略。
+
+1 MiB原始内容的canonical base64最多1,398,104字节，不能原样写入core的1 MiB canonical JSON边界。core ACK只包含response kind/request id/response SHA-256/response byte count；terminal evidence只包含content SHA-256、bytesRead、eof和状态。MCP result才携带内容：有效UTF-8且marshal后不超过2 MiB时返回文本，否则返回canonical base64；harness worker用2 MiB result和result-text边界接收，仍保留单次read的1 MiB decoded上限。
 
 ### 7.4 agentx 启动顺序
 
@@ -1077,9 +1103,9 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 前 6 个 PR只建立事实和门槛，不写五个服务的空壳。第 7 个 PR后才开始业务 runtime。
 
-第11项已经完成：`process-v1`精确冻结`process/start|read|write|terminate`并排除`process/signal`；`executor-mcp/1.0`只广告`list_environments|shell`；agentx WSS拥有JSON Schema/AsyncAPI机器契约。Go reference kernel实现双向独立sequence、非sequenced ACK、generation fencing、同gateway进程30秒resume、bounded frame/receive journal和`mutationKey + request hash`的pending/completed/ambiguous门禁；运行时validator还逐method严格校验process request/notification与`network/policyRequest`参数。stable 0.146.0源码复核确认clean-env wire、managed sandbox字段和`windowsSandboxLevel=restricted-token`枚举，contract/race门禁将继续防止schema与实现漂移。
+第11项已经完成：`process-v1`精确冻结`process/start|read|write|terminate`并排除`process/signal`，组合profile另只增加`agentx/fs/readFileBlock`；`executor-mcp/1.0`最初只广告`list_environments|shell`，当前`executor-mcp/1.1`在完整handler装配后加入`read_file`；agentx WSS拥有JSON Schema/AsyncAPI机器契约。Go reference kernel实现双向独立sequence、非sequenced ACK、generation fencing、同gateway进程30秒resume、bounded frame/receive journal和`mutationKey + request hash`的pending/completed/ambiguous门禁；运行时validator还逐method严格校验process request/notification、bounded filesystem request与`network/policyRequest`参数。stable 0.146.0源码复核确认clean-env wire、managed sandbox字段和`windowsSandboxLevel=restricted-token`枚举，contract/race门禁将继续防止schema与实现漂移。
 
-第12项目前已完成connection kernel、真实WSS路由，以及独立agentx仓库中的connector/runner IPC、远端lifecycle、registered-root/cwd本地复核、monotonic timeout signal和每process独占的stock `codex exec-server --listen stdio --strict-config`监管；真实stock纵向门禁已通过。本仓已完成online environment registry、两工具stateful MCP链、七个execution/operation mTLS command/client，以及`PrepareExecution → 全计划prepare → Begin/start → 独立ACK → output/exited/closed → timeout Begin/terminate或Skip → operation/execution terminal → MCP result`的shell-v1。approval command、真实enrollment/key binding、gateway进程丢失后的unknown恢复审计、平台containment和部署manifest仍未实现；当前入口明确标为loopback insecure-dev，不能作为Phase 2交付或生产部署证据。
+第12项目前已完成connection kernel、真实WSS路由，以及独立agentx仓库中的connector/runner IPC、远端lifecycle、registered-root/cwd本地复核、monotonic timeout signal、每process独占的stock `codex exec-server --listen stdio --strict-config`监管和一次性fs-only bounded-read lane；真实stock纵向门禁已通过。本仓已完成online environment registry、三工具stateful MCP链、七个execution/operation mTLS command/client，以及shell-v1和read-file-v1两条`Prepare → Begin → dispatch → ACK/unknown → operation/execution terminal → MCP result`链。approval command、真实enrollment/key binding、gateway进程丢失后的unknown恢复审计、平台containment和部署manifest仍未实现；当前入口明确标为loopback insecure-dev，不能作为Phase 2交付或生产部署证据。
 
 ## 14. 尚未锁定但有明确决策点的事项
 

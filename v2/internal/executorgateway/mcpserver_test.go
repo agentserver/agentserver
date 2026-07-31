@@ -3,6 +3,7 @@ package executorgateway
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/execprofile"
 	"github.com/agentserver/agentserver/v2/internal/executorgateway/mcpcontract"
 	"github.com/agentserver/agentserver/v2/internal/harnessworker"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -121,7 +123,14 @@ func TestExecutorMCPShellUsesAuthenticatedCallContextAndTerminalOrchestrator(t *
 	}}
 	shell := newTestShellExecutor(t, authority, dispatcher)
 
-	contractTools := mcpcontract.Tools()
+	contractTools := make([]mcpcontract.Tool, 0, 2)
+	for _, name := range []string{mcpcontract.ToolListEnvironments, mcpcontract.ToolShell} {
+		tool, found := mcpcontract.Lookup(name)
+		if !found {
+			t.Fatalf("contract tool %q is missing", name)
+		}
+		contractTools = append(contractTools, tool)
+	}
 	descriptors := make([]harnessworker.ToolDescriptor, len(contractTools))
 	for index, tool := range contractTools {
 		descriptors[index] = harnessworker.ToolDescriptor{Name: tool.Name, Description: tool.Description, InputSchema: tool.InputSchema}
@@ -180,6 +189,100 @@ func TestExecutorMCPShellUsesAuthenticatedCallContextAndTerminalOrchestrator(t *
 	}
 	if shellResult.Status != "succeeded" || !shellResult.OutputComplete || dispatcher.count() != 1 || authority.executionStatus() != "succeeded" {
 		t.Fatalf("terminal MCP shell result=%+v dispatches=%d core=%q", shellResult, dispatcher.count(), authority.executionStatus())
+	}
+}
+
+func TestExecutorMCPReadFileUsesFullCatalogAndBoundedExecutor(t *testing.T) {
+	registered := testRegisteredEnvironment(testEnvironmentID, `{"kind":"local","root":"/workspace","displayName":"primary","defaultCwd":"."}`)
+	registered.OuterProfileVersion = execprofile.FilesystemReadVersion
+	registry := &recordingMCPEnvironmentRegistry{environments: []RegisteredEnvironment{registered}}
+	resolver, err := NewEnvironmentResolver(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := newFakeReadFileAuthority()
+	maximumBlock := bytes.Repeat([]byte{0}, int(execprofile.MaxFilesystemReadLength))
+	maximumChunk := base64.StdEncoding.EncodeToString(maximumBlock)
+	dispatcher := &fakeFilesystemDispatcher{respond: responseForFilesystemRequest(func(id json.RawMessage) string {
+		return fmt.Sprintf(`{"id":%s,"result":{"chunk":%q,"eof":true}}`, id, maximumChunk)
+	})}
+	identities, err := NewReadFileV1IdentityAllocator(deterministicIDGenerator())
+	if err != nil {
+		t.Fatal(err)
+	}
+	transitions, err := NewExecutionTransitionAllocator("91000000-0000-4000-8000-000000000009", deterministicIDGenerator())
+	if err != nil {
+		t.Fatal(err)
+	}
+	readFile, err := NewReadFileExecutor(
+		resolver, authority, dispatcher, identities, transitions,
+		DefaultReadFileExecutorConfig(t.Context()),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	contractTools := mcpcontract.Tools()
+	descriptors := make([]harnessworker.ToolDescriptor, len(contractTools))
+	for index, tool := range contractTools {
+		descriptors[index] = harnessworker.ToolDescriptor{Name: tool.Name, Description: tool.Description, InputSchema: tool.InputSchema}
+	}
+	catalog, err := harnessworker.BuildCatalog(
+		mcpcontract.Namespace, mcpcontract.NamespaceDescription, descriptors, harnessworker.DefaultLimits(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := testExecutorMCPPrincipal("capability-read-file-mcp")
+	principal.ToolCatalogDigest = catalog.Digest()
+	config := DefaultExecutorMCPConfig()
+	config.ShellExecutor = &ShellExecutor{}
+	config.ReadFileExecutor = readFile
+	sequence := 0
+	config.IDGenerator = func() (string, error) {
+		sequence++
+		return fmtMCPTestSessionID(sequence), nil
+	}
+	handler, err := NewExecutorMCPHandler(testExecutorMCPAuthenticator{principals: map[string]ExecutorMCPPrincipal{
+		testMCPBearerA: principal,
+	}}, resolver, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = handler.Shutdown(context.Background()) })
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	client, err := harnessworker.ConnectMCP(t.Context(), harnessworker.MCPClientConfig{
+		Endpoint: server.URL + ExecutorMCPPath, BearerToken: testMCPBearerA, HTTPClient: server.Client(), AllowInsecureLoopback: true,
+		Namespace: catalog.Namespace(), NamespaceDescription: catalog.NamespaceDescription(),
+		ExpectedCatalogDigest: catalog.Digest(), ExpectedCatalog: catalog.CanonicalBytes(), Limits: harnessworker.DefaultLimits(),
+		CloseGrace: time.Second,
+		ElicitationHandler: func(context.Context, harnessworker.ElicitationRequest) (harnessworker.ElicitationDecision, error) {
+			return harnessworker.ElicitationDecision{Action: harnessworker.ApprovalCancel}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	result, err := client.CallDynamicTool(t.Context(), harnessworker.DynamicCall{
+		RunID: testMCPRunID, ThreadID: "thread-read-file", TurnID: "turn-read-file", CallID: "call-read-file-mcp",
+		RunAttemptGeneration: 3, Namespace: mcpcontract.Namespace, Tool: mcpcontract.ToolReadFile,
+		Arguments: json.RawMessage(fmt.Sprintf(`{"environment_id":"%s","path":"data.bin","limit":1048576}`, testEnvironmentID)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Success || len(result.ContentItems) != 1 {
+		t.Fatalf("MCP read_file result = %+v", result)
+	}
+	var readResult ReadFileV1Result
+	if err := json.Unmarshal([]byte(result.ContentItems[0].Text), &readResult); err != nil {
+		t.Fatal(err)
+	}
+	if readResult.Status != "succeeded" || readResult.Encoding != "base64" || len(readResult.Content) != 1_398_104 ||
+		readResult.BytesRead != execprofile.MaxFilesystemReadLength || authority.execution.Status != "succeeded" {
+		t.Fatalf("terminal MCP read_file result=%+v core=%q", readResult, authority.execution.Status)
 	}
 }
 

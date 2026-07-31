@@ -162,7 +162,7 @@ func testRunLaunchInputs() RunLaunchInputs {
 		},
 		CheckpointAllowlistVersion: 1, WorkerImageDigest: strings.Repeat("c", 64),
 		ExpectedServiceAccount:     "harness-worker",
-		ControllerCallbackEndpoint: "https://pool-instance.agentserver.svc/control",
+		ControllerCallbackEndpoint: "https://pool-instance.agentserver.svc/internal/v2/harness/control",
 		ControllerCallbackIdentity: "spiffe://agentserver.local/ns/agentserver/sa/harness-pool",
 		ControllerCallbackAudience: "harness-pool-control",
 	}

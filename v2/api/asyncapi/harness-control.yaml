@@ -1,0 +1,116 @@
+{
+  "asyncapi": "3.0.0",
+  "id": "urn:agentserver:v2:harness-worker-control",
+  "info": {
+    "title": "agentserver v2 harness worker control stream",
+    "version": "1.0.0",
+    "description": "Holder-routed WebSocket between one harness-pool attempt supervisor and its stateless harness-worker. Phase 1 resume requires the original holder process and its in-memory journals."
+  },
+  "defaultContentType": "application/json",
+  "servers": {
+    "attemptHolder": {
+      "host": "holder-specific endpoint from the signed run manifest",
+      "pathname": "/internal/v2/harness/control",
+      "protocol": "wss",
+      "description": "The exact holder endpoint frozen into the run manifest; this is not a load-balanced Service route. Both worker mTLS identity and a per-attempt bearer capability are mandatory.",
+      "security": [
+        {"$ref": "#/components/securitySchemes/workerMTLS"},
+        {"$ref": "#/components/securitySchemes/attemptBearer"}
+      ]
+    }
+  },
+  "channels": {
+    "attemptControl": {
+      "address": "/internal/v2/harness/control",
+      "messages": {
+        "hello": {"$ref": "#/components/messages/Hello"},
+        "welcome": {"$ref": "#/components/messages/Welcome"},
+        "event": {"$ref": "#/components/messages/Event"},
+        "command": {"$ref": "#/components/messages/Command"},
+        "ack": {"$ref": "#/components/messages/Ack"},
+        "sessionError": {"$ref": "#/components/messages/SessionError"}
+      },
+      "bindings": {"ws": {"method": "GET"}}
+    }
+  },
+  "operations": {
+    "receiveFromWorker": {
+      "action": "receive",
+      "channel": {"$ref": "#/channels/attemptControl"},
+      "summary": "Receive the authenticated hello, worker lifecycle events, cumulative ACKs, and terminal session errors.",
+      "messages": [
+        {"$ref": "#/channels/attemptControl/messages/hello"},
+        {"$ref": "#/channels/attemptControl/messages/event"},
+        {"$ref": "#/channels/attemptControl/messages/ack"},
+        {"$ref": "#/channels/attemptControl/messages/sessionError"}
+      ]
+    },
+    "sendToWorker": {
+      "action": "send",
+      "channel": {"$ref": "#/channels/attemptControl"},
+      "summary": "Send fresh/resumed session selection, interrupt commands, cumulative ACKs, and bounded protocol errors.",
+      "messages": [
+        {"$ref": "#/channels/attemptControl/messages/welcome"},
+        {"$ref": "#/channels/attemptControl/messages/command"},
+        {"$ref": "#/channels/attemptControl/messages/ack"},
+        {"$ref": "#/channels/attemptControl/messages/sessionError"}
+      ]
+    }
+  },
+  "components": {
+    "messages": {
+      "Hello": {
+        "name": "hello",
+        "title": "Authenticated worker and attempt preface",
+        "payload": {"$ref": "../schema/harness-control.schema.json#/$defs/hello"}
+      },
+      "Welcome": {
+        "name": "welcome",
+        "title": "Fresh or same-holder-process resumed session",
+        "payload": {"$ref": "../schema/harness-control.schema.json#/$defs/welcome"}
+      },
+      "Event": {
+        "name": "event",
+        "title": "Sequenced worker lifecycle fact",
+        "payload": {"$ref": "../schema/harness-control.schema.json#/$defs/eventFrame"}
+      },
+      "Command": {
+        "name": "command",
+        "title": "Sequenced pool interrupt command",
+        "payload": {"$ref": "../schema/harness-control.schema.json#/$defs/commandFrame"}
+      },
+      "Ack": {
+        "name": "ack",
+        "title": "Unsequenced cumulative transport ACK",
+        "payload": {"$ref": "../schema/harness-control.schema.json#/$defs/ack"}
+      },
+      "SessionError": {
+        "name": "session_error",
+        "title": "Stable bounded control protocol failure",
+        "payload": {"$ref": "../schema/harness-control.schema.json#/$defs/sessionError"}
+      }
+    },
+    "securitySchemes": {
+      "workerMTLS": {
+        "type": "X509",
+        "description": "A workload certificate whose exact harness-worker SPIFFE identity is checked during the TLS handshake."
+      },
+      "attemptBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "opaque per-attempt capability",
+        "description": "A short-lived capability bound to the exact attempt tuple, holder, worker instance, audience, and manifest digest; never exposed to app-server."
+      }
+    }
+  },
+  "x-agentserver-phase1": {
+    "resumeWindowMs": 30000,
+    "crossProcessResume": false,
+    "holderRoutedEndpoint": true,
+    "sequenceDirections": "independent",
+    "standaloneAckSequenced": false,
+    "transportAckAuthorizesCoreTransition": false,
+    "authentication": "worker mTLS AND per-attempt bearer",
+    "workerHasDurableState": false
+  }
+}

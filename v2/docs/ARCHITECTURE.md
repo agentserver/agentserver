@@ -751,7 +751,8 @@ v2/
 │     └─ obs/
 ├─ api/
 │  ├─ openapi/                   # REST
-│  └─ asyncapi/                  # SSE/WSS
+│  ├─ asyncapi/                  # SSE/WSS；含 harness-control.yaml 与 agentx-wss.yaml
+│  └─ schema/                    # closed-world JSON Schema；含 harness-control.schema.json
 ├─ a2ui-web/
 ├─ deploy/helm/
 ├─ images/harness/               # harness-worker + pinned stock Codex app-server
@@ -760,13 +761,7 @@ v2/
 │  └─ compatibility-fixtures/    # server ↔ agentx 跨仓兼容 fixture
 └─ docs/
    ├─ ARCHITECTURE.md
-   └─ protocols/
-      ├─ canonical-events.md
-      ├─ harness-worker-control.asyncapi.yaml
-      ├─ conversation-checkpoint.md
-      ├─ executor-mcp.md
-      ├─ exec-server.schema.json
-      └─ agentx-wss.asyncapi.yaml
+   └─ IMPLEMENTATION.md
 ```
 
 agentx 的实现不放入上述 Go module。`github.com/agentserver/agentx` v2 以独立仓库从零实现 connector、owner policy、stdio proxy 与 child supervisor；旧的“从 Codex hard-fork exec-server/remote”实现不复用。两仓以本仓库发布的 versioned schema、fixture 和 runtime manifest 对齐，并在 release CI 跑交叉版本兼容矩阵。

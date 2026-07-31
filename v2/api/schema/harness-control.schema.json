@@ -1,0 +1,289 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentserver.dev/v2/schema/harness-control.schema.json",
+  "title": "agentserver v2 harness worker control stream",
+  "description": "Closed-world messages exchanged between one harness-pool holder process and one per-attempt harness-worker. Sequence journals and resume authority are process-local in Phase 1.",
+  "oneOf": [
+    {"$ref": "#/$defs/hello"},
+    {"$ref": "#/$defs/welcome"},
+    {"$ref": "#/$defs/eventFrame"},
+    {"$ref": "#/$defs/commandFrame"},
+    {"$ref": "#/$defs/ack"},
+    {"$ref": "#/$defs/sessionError"}
+  ],
+  "$defs": {
+    "canonicalUUID": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": {"const": "00000000-0000-0000-0000-000000000000"}
+    },
+    "positiveSafeInteger": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "safeCursor": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "boundedText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^[^\\x00]+$"
+    },
+    "boundedIdentity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\x00]+$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "resumeCursor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "poolInstanceId",
+        "controlSessionId",
+        "runAttemptGeneration",
+        "workerSentThrough",
+        "workerReceivedThrough"
+      ],
+      "properties": {
+        "poolInstanceId": {"$ref": "#/$defs/canonicalUUID"},
+        "controlSessionId": {"$ref": "#/$defs/canonicalUUID"},
+        "runAttemptGeneration": {"$ref": "#/$defs/positiveSafeInteger"},
+        "workerSentThrough": {"$ref": "#/$defs/safeCursor"},
+        "workerReceivedThrough": {"$ref": "#/$defs/safeCursor"}
+      }
+    },
+    "hello": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "protocolVersions",
+        "workerInstanceId",
+        "workspaceId",
+        "sessionId",
+        "runId",
+        "runAttemptId",
+        "runAttemptGeneration",
+        "holderId",
+        "manifestDigest"
+      ],
+      "properties": {
+        "type": {"const": "hello"},
+        "protocolVersions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"}
+        },
+        "workerInstanceId": {"$ref": "#/$defs/canonicalUUID"},
+        "workspaceId": {"$ref": "#/$defs/canonicalUUID"},
+        "sessionId": {"$ref": "#/$defs/canonicalUUID"},
+        "runId": {"$ref": "#/$defs/canonicalUUID"},
+        "runAttemptId": {"$ref": "#/$defs/canonicalUUID"},
+        "runAttemptGeneration": {"$ref": "#/$defs/positiveSafeInteger"},
+        "holderId": {"$ref": "#/$defs/boundedIdentity"},
+        "manifestDigest": {"$ref": "#/$defs/digest"},
+        "resume": {"$ref": "#/$defs/resumeCursor"}
+      }
+    },
+    "welcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "protocolVersion",
+        "poolInstanceId",
+        "controlSessionId",
+        "runAttemptGeneration",
+        "resumeStatus",
+        "resumeWindowMs",
+        "poolSentThrough",
+        "poolReceivedThrough"
+      ],
+      "properties": {
+        "type": {"const": "welcome"},
+        "protocolVersion": {"const": "1.0"},
+        "poolInstanceId": {"$ref": "#/$defs/canonicalUUID"},
+        "controlSessionId": {"$ref": "#/$defs/canonicalUUID"},
+        "runAttemptGeneration": {"$ref": "#/$defs/positiveSafeInteger"},
+        "resumeStatus": {"enum": ["fresh", "resumed"]},
+        "resumeWindowMs": {"const": 30000},
+        "poolSentThrough": {"$ref": "#/$defs/safeCursor"},
+        "poolReceivedThrough": {"$ref": "#/$defs/safeCursor"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"resumeStatus": {"const": "fresh"}}, "required": ["resumeStatus"]},
+          "then": {
+            "properties": {
+              "poolSentThrough": {"const": 0},
+              "poolReceivedThrough": {"const": 0}
+            }
+          }
+        }
+      ]
+    },
+    "threadReadyEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "threadId", "resumed"],
+      "properties": {
+        "kind": {"const": "thread_ready"},
+        "threadId": {"$ref": "#/$defs/boundedIdentity"},
+        "resumed": {"type": "boolean"}
+      }
+    },
+    "turnAcceptedEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "threadId", "turnId"],
+      "properties": {
+        "kind": {"const": "turn_accepted"},
+        "threadId": {"$ref": "#/$defs/boundedIdentity"},
+        "turnId": {"$ref": "#/$defs/boundedIdentity"}
+      }
+    },
+    "turnTerminalEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "threadId", "turnId", "status"],
+      "properties": {
+        "kind": {"const": "turn_terminal"},
+        "threadId": {"$ref": "#/$defs/boundedIdentity"},
+        "turnId": {"$ref": "#/$defs/boundedIdentity"},
+        "status": {"enum": ["completed", "interrupted", "failed"]},
+        "errorCode": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[^\\x00]+$"
+        },
+        "errorMessage": {"$ref": "#/$defs/boundedText"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "completed"}}, "required": ["status"]},
+          "then": {
+            "not": {
+              "anyOf": [
+                {"required": ["errorCode"]},
+                {"required": ["errorMessage"]}
+              ]
+            }
+          },
+          "else": {"required": ["errorCode", "errorMessage"]}
+        }
+      ]
+    },
+    "interruptCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "reason", "graceMs", "message"],
+      "properties": {
+        "kind": {"const": "interrupt"},
+        "reason": {"enum": ["lease_lost", "cancelled", "fenced", "shutdown", "protocol_error"]},
+        "graceMs": {"type": "integer", "minimum": 1, "maximum": 300000},
+        "message": {"$ref": "#/$defs/boundedText"}
+      }
+    },
+    "eventFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "controlSessionId", "sessionSeq", "ack", "runAttemptGeneration", "payload"],
+      "properties": {
+        "type": {"const": "event"},
+        "controlSessionId": {"$ref": "#/$defs/canonicalUUID"},
+        "sessionSeq": {"$ref": "#/$defs/positiveSafeInteger"},
+        "ack": {"$ref": "#/$defs/safeCursor"},
+        "runAttemptGeneration": {"$ref": "#/$defs/positiveSafeInteger"},
+        "payload": {
+          "oneOf": [
+            {"$ref": "#/$defs/threadReadyEvent"},
+            {"$ref": "#/$defs/turnAcceptedEvent"},
+            {"$ref": "#/$defs/turnTerminalEvent"}
+          ]
+        }
+      }
+    },
+    "commandFrame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "controlSessionId", "sessionSeq", "ack", "runAttemptGeneration", "payload"],
+      "properties": {
+        "type": {"const": "command"},
+        "controlSessionId": {"$ref": "#/$defs/canonicalUUID"},
+        "sessionSeq": {"$ref": "#/$defs/positiveSafeInteger"},
+        "ack": {"$ref": "#/$defs/safeCursor"},
+        "runAttemptGeneration": {"$ref": "#/$defs/positiveSafeInteger"},
+        "payload": {"$ref": "#/$defs/interruptCommand"}
+      }
+    },
+    "ack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "controlSessionId", "runAttemptGeneration", "ack"],
+      "properties": {
+        "type": {"const": "ack"},
+        "controlSessionId": {"$ref": "#/$defs/canonicalUUID"},
+        "runAttemptGeneration": {"$ref": "#/$defs/positiveSafeInteger"},
+        "ack": {"$ref": "#/$defs/safeCursor"}
+      }
+    },
+    "sessionError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "code", "message", "terminal"],
+      "properties": {
+        "type": {"const": "session_error"},
+        "code": {
+          "enum": [
+            "malformed_frame",
+            "protocol_version_unsupported",
+            "attempt_mismatch",
+            "stale_generation",
+            "sequence_conflict",
+            "sequence_gap",
+            "ack_out_of_range",
+            "ack_regression",
+            "resume_rejected",
+            "resume_expired",
+            "journal_full",
+            "buffer_overflow",
+            "session_closed"
+          ]
+        },
+        "message": {"$ref": "#/$defs/boundedText"},
+        "terminal": {"type": "boolean"},
+        "lostFrom": {"$ref": "#/$defs/positiveSafeInteger"},
+        "lostTo": {"$ref": "#/$defs/positiveSafeInteger"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"code": {"enum": ["sequence_gap", "buffer_overflow"]}},
+            "required": ["code"]
+          },
+          "then": {"required": ["lostFrom", "lostTo"]},
+          "else": {
+            "not": {
+              "anyOf": [
+                {"required": ["lostFrom"]},
+                {"required": ["lostTo"]}
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

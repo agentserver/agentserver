@@ -201,11 +201,20 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 		seenAddresses[canonicalAddress] = struct{}{}
 		origins[index] = origin
 	}
-	if err := validateHydraURL(document.Network.HydraIntrospectionURL); err != nil {
+	hydraAddress, err := validateHydraURL(document.Network.HydraIntrospectionURL)
+	if err != nil {
 		return LoadedConfig{}, err
 	}
-	if err := validateLLMProxyURL(document.Network.LLMProxyEndpoint); err != nil {
+	if _, duplicate := seenAddresses[hydraAddress]; duplicate {
+		return LoadedConfig{}, errors.New("development Hydra fixture listener conflicts with a service listen address")
+	}
+	seenAddresses[hydraAddress] = struct{}{}
+	llmproxyAddress, err := validateLLMProxyURL(document.Network.LLMProxyEndpoint)
+	if err != nil {
 		return LoadedConfig{}, err
+	}
+	if _, duplicate := seenAddresses[llmproxyAddress]; duplicate {
+		return LoadedConfig{}, errors.New("development llmproxy fixture listener conflicts with another development listener")
 	}
 
 	manifestBytes, err := readImmutableFile("runtime manifest", document.Runtime.ManifestFile, 1024*1024, false)
@@ -328,6 +337,9 @@ func validatePolicy(document *PolicyDocument) error {
 			return fmt.Errorf("policy.allowedTools repeats %q", tool)
 		}
 	}
+	if _, found := slices.BinarySearch(tools, "list_environments"); !found {
+		return errors.New("policy.allowedTools must include list_environments for the scripted development fixture")
+	}
 	document.AllowedTools = tools
 	return nil
 }
@@ -361,7 +373,7 @@ func validateLoopbackListenAddress(name, value string) (origin, canonical string
 	if parseErr != nil || port == 0 || strconv.FormatUint(port, 10) != portText {
 		return "", "", fmt.Errorf("%s must use a non-zero canonical decimal port", name)
 	}
-	if !isLoopbackHost(host) {
+	if !isCanonicalLoopbackHost(host) {
 		return "", "", fmt.Errorf("%s must use an explicit loopback host", name)
 	}
 	canonical = net.JoinHostPort(host, portText)
@@ -371,30 +383,43 @@ func validateLoopbackListenAddress(name, value string) (origin, canonical string
 	return "https://" + canonical, canonical, nil
 }
 
-func validateHydraURL(raw string) error {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "http" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
-		parsed.Path == "" || parsed.Path == "/" || strings.HasSuffix(parsed.Path, "/") || !isLoopbackHost(parsed.Hostname()) {
-		return errors.New("network.hydraIntrospectionUrl must be an exact cleartext loopback HTTP endpoint without credentials, query, fragment, or trailing slash")
-	}
-	return nil
+func validateHydraURL(raw string) (string, error) {
+	return validateLoopbackEndpointURL(
+		raw, "http",
+		"network.hydraIntrospectionUrl must be an exact cleartext loopback HTTP endpoint with an explicit non-zero port and without credentials, query, fragment, or trailing slash",
+	)
 }
 
-func validateLLMProxyURL(raw string) error {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
-		parsed.Path == "" || parsed.Path == "/" || strings.HasSuffix(parsed.Path, "/") || !isLoopbackHost(parsed.Hostname()) {
-		return errors.New("network.llmproxyEndpoint must be an exact loopback HTTPS endpoint without credentials, query, fragment, or trailing slash")
-	}
-	return nil
+func validateLLMProxyURL(raw string) (string, error) {
+	return validateLoopbackEndpointURL(
+		raw, "https",
+		"network.llmproxyEndpoint must be an exact loopback HTTPS endpoint with an explicit non-zero port and without credentials, query, fragment, or trailing slash",
+	)
 }
 
-func isLoopbackHost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
+func validateLoopbackEndpointURL(raw, scheme, message string) (string, error) {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != scheme || parsed.Opaque != "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
+		parsed.RawPath != "" || parsed.ForceQuery || parsed.Path == "" || parsed.Path == "/" || strings.HasSuffix(parsed.Path, "/") || strings.Contains(parsed.Path, "%") {
+		return "", errors.New(message)
+	}
+	host, portText, err := net.SplitHostPort(parsed.Host)
+	if err != nil || host == "" {
+		return "", errors.New(message)
+	}
+	port, err := strconv.ParseUint(portText, 10, 16)
+	if err != nil || port == 0 || strconv.FormatUint(port, 10) != portText || net.JoinHostPort(host, portText) != parsed.Host || !isCanonicalLoopbackHost(host) || parsed.String() != raw {
+		return "", errors.New(message)
+	}
+	return parsed.Host, nil
+}
+
+func isCanonicalLoopbackHost(host string) bool {
+	if host == "localhost" {
 		return true
 	}
 	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return ip != nil && ip.IsLoopback() && ip.String() == host
 }
 
 func validateExistingCanonicalDirectory(name, value string) error {

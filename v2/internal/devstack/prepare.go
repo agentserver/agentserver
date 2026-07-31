@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/devfixtures"
 	"github.com/agentserver/agentserver/v2/internal/harnessworker"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 	"github.com/agentserver/agentserver/v2/internal/runtimelock"
@@ -32,6 +33,7 @@ const (
 	bootstrapConfigFile             = "config/core-bootstrap.json"
 	workerDeploymentConfigFile      = "config/harness-worker.json"
 	manifestVerificationKeyringFile = "config/run-manifest-keyring.json"
+	developmentFixturesConfigFile   = devfixtures.RelativeConfigPath
 	agentxLaunchFile                = "agentx/launch.json"
 	metadataFile                    = "metadata.json"
 
@@ -39,6 +41,7 @@ const (
 	capabilityKeyFile        = "secrets/run-capability.key"
 	cursorKeyFile            = "secrets/run-cursor.key"
 	manifestSeedFile         = "secrets/run-manifest.seed"
+	browserBearerTokenFile   = devfixtures.RelativeBrowserBearerTokenPath
 
 	objectDirectory            = "state/objects"
 	harnessRuntimeDirectory    = "state/harness-runtime"
@@ -57,6 +60,8 @@ type Result struct {
 	BootstrapConfigFile  string
 	WorkerDeploymentFile string
 	AgentxLaunchFile     string
+	FixturesConfigFile   string
+	BrowserBearerFile    string
 	EnvironmentFiles     map[string]string
 }
 
@@ -161,6 +166,8 @@ type metadataFilesDocument struct {
 	LLMProxyCertificate  string            `json:"llmproxyCertificate"`
 	LLMProxyPrivateKey   string            `json:"llmproxyPrivateKey"`
 	RunCapabilityKey     string            `json:"runCapabilityKey"`
+	DevelopmentFixtures  string            `json:"developmentFixtures"`
+	BrowserBearerToken   string            `json:"browserBearerToken"`
 }
 
 func PrepareFromFile(configPath, outputDirectory string) (Result, error) {
@@ -196,6 +203,11 @@ func Prepare(config LoadedConfig, outputDirectory string, random io.Reader, now 
 		return Result{}, err
 	}
 	defer clear(capabilityKey)
+	browserBearerEntropy, err := randomSecret(random, 32, "browser bearer")
+	if err != nil {
+		return Result{}, err
+	}
+	defer clear(browserBearerEntropy)
 	cursorKey, err := randomSecret(random, 32, "run cursor HMAC")
 	if err != nil {
 		return Result{}, err
@@ -217,7 +229,10 @@ func Prepare(config LoadedConfig, outputDirectory string, random io.Reader, now 
 		return Result{}, fmt.Errorf("hash harness-final-exec binary: %w", err)
 	}
 	paths := newOutputPaths(outputDirectory)
-	files, err := renderOutputFiles(config, paths, pki, capabilityKey, cursorKey, manifestSeed, manifestPublic, finalExecDigest, finalExecSize, now.UTC())
+	files, err := renderOutputFiles(
+		config, paths, pki, capabilityKey, browserBearerEntropy, cursorKey, manifestSeed,
+		manifestPublic, finalExecDigest, finalExecSize, now.UTC(),
+	)
 	if err != nil {
 		return Result{}, err
 	}
@@ -260,6 +275,8 @@ func Prepare(config LoadedConfig, outputDirectory string, random io.Reader, now 
 		BootstrapConfigFile:  paths.bootstrap,
 		WorkerDeploymentFile: paths.workerDeployment,
 		AgentxLaunchFile:     paths.agentxLaunch,
+		FixturesConfigFile:   paths.fixturesConfig,
+		BrowserBearerFile:    paths.browserBearer,
 		EnvironmentFiles: map[string]string{
 			"agentserver-core": paths.coreEnvironment,
 			"browser-gateway":  paths.browserEnvironment,
@@ -276,10 +293,12 @@ type outputPaths struct {
 	workerDeployment       string
 	keyring                string
 	agentxLaunch           string
+	fixturesConfig         string
 	ca                     string
 	capabilityKey          string
 	cursorKey              string
 	manifestSeed           string
+	browserBearer          string
 	objects                string
 	harnessRuntime         string
 	checkpointStaging      string
@@ -297,9 +316,10 @@ func newOutputPaths(root string) outputPaths {
 	paths := outputPaths{
 		root: root, metadata: absolute(metadataFile), bootstrap: absolute(bootstrapConfigFile),
 		workerDeployment: absolute(workerDeploymentConfigFile), keyring: absolute(manifestVerificationKeyringFile),
-		agentxLaunch: absolute(agentxLaunchFile), ca: absolute(certificateAuthorityFile),
+		agentxLaunch: absolute(agentxLaunchFile), fixturesConfig: absolute(developmentFixturesConfigFile), ca: absolute(certificateAuthorityFile),
 		capabilityKey: absolute(capabilityKeyFile), cursorKey: absolute(cursorKeyFile), manifestSeed: absolute(manifestSeedFile),
-		objects: absolute(objectDirectory), harnessRuntime: absolute(harnessRuntimeDirectory),
+		browserBearer: absolute(browserBearerTokenFile),
+		objects:       absolute(objectDirectory), harnessRuntime: absolute(harnessRuntimeDirectory),
 		checkpointStaging: absolute(checkpointStagingDirectory), agentxRuntime: absolute(agentxRuntimeDirectory),
 		coreEnvironment: absolute(coreEnvironmentFile), browserEnvironment: absolute(browserEnvironmentFile),
 		executorEnvironment: absolute(executorEnvironmentFile), harnessPoolEnvironment: absolute(harnessPoolEnvironmentFile),
@@ -316,7 +336,7 @@ func renderOutputFiles(
 	config LoadedConfig,
 	paths outputPaths,
 	pki developmentPKI,
-	capabilityKey, cursorKey, manifestSeed []byte,
+	capabilityKey, browserBearerEntropy, cursorKey, manifestSeed []byte,
 	manifestPublic ed25519.PublicKey,
 	finalExecDigest string,
 	finalExecSize int64,
@@ -334,8 +354,10 @@ func renderOutputFiles(
 		put("pki/"+service+".key", identity.privateKeyPEM)
 	}
 	capabilityEncoded := base64.RawURLEncoding.EncodeToString(capabilityKey)
+	browserBearer := "asv2dev-browser-" + base64.RawURLEncoding.EncodeToString(browserBearerEntropy)
 	cursorEncoded := base64.RawURLEncoding.EncodeToString(cursorKey)
 	put(capabilityKeyFile, []byte(capabilityEncoded+"\n"))
+	put(browserBearerTokenFile, []byte(browserBearer+"\n"))
 	put(cursorKeyFile, []byte(cursorEncoded+"\n"))
 	put(manifestSeedFile, manifestSeed)
 
@@ -405,6 +427,31 @@ func renderOutputFiles(
 	}
 	put(agentxLaunchFile, agentxBytes)
 
+	fixtures := devfixtures.ConfigDocument{
+		Version: devfixtures.CurrentConfigVersion,
+		Authority: devfixtures.AuthorityDocument{
+			WorkspaceID: authority.WorkspaceID, SessionID: authority.SessionID, ActorID: authority.ActorID,
+		},
+		Hydra: devfixtures.HydraDocument{
+			IntrospectionEndpoint:  config.Document.Network.HydraIntrospectionURL,
+			BrowserBearerTokenFile: paths.browserBearer,
+			Audience:               devfixtures.BrowserTokenAudience, Scope: devfixtures.BrowserTokenScope, ResponseTTL: "15m",
+		},
+		LLMProxy: devfixtures.LLMProxyDocument{
+			Endpoint:        config.Document.Network.LLMProxyEndpoint,
+			CertificateFile: paths.certificates["llmproxy"], PrivateKeyFile: paths.privateKeys["llmproxy"],
+			RunCapabilityKeyFile: paths.capabilityKey,
+			Model:                config.Document.Model.Name, Provider: config.Document.Model.Provider,
+			ToolNamespace: devfixtures.ToolNamespace, ScriptedTool: devfixtures.ScriptedToolName,
+			FinalMessage: "Agentserver v2 scripted development turn completed.",
+		},
+	}
+	fixturesBytes, err := marshalJSON(fixtures)
+	if err != nil {
+		return nil, err
+	}
+	put(developmentFixturesConfigFile, fixturesBytes)
+
 	environments, err := renderServiceEnvironments(config, paths, pki, capabilityEncoded, cursorEncoded)
 	if err != nil {
 		return nil, err
@@ -448,7 +495,8 @@ func renderOutputFiles(
 				"executor-gateway": paths.executorEnvironment, "harness-pool": paths.harnessPoolEnvironment,
 			},
 			LLMProxyCertificate: paths.certificates["llmproxy"], LLMProxyPrivateKey: paths.privateKeys["llmproxy"],
-			RunCapabilityKey: paths.capabilityKey,
+			RunCapabilityKey: paths.capabilityKey, DevelopmentFixtures: paths.fixturesConfig,
+			BrowserBearerToken: paths.browserBearer,
 		},
 		TLSIdentities: tlsIdentities,
 		Warnings: []string{

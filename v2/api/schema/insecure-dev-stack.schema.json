@@ -105,7 +105,10 @@
           "minItems": 1,
           "maxItems": 3,
           "uniqueItems": true,
-          "items": {"enum": ["list_environments", "read_file", "shell"]}
+          "items": {"enum": ["list_environments", "read_file", "shell"]},
+          "contains": {"const": "list_environments"},
+          "minContains": 1,
+          "maxContains": 1
         }
       }
     },

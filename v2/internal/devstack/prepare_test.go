@@ -2,6 +2,7 @@ package devstack
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -12,13 +13,20 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/coreserver"
+	"github.com/agentserver/agentserver/v2/internal/devfixtures"
 	"github.com/agentserver/agentserver/v2/internal/harnesspool"
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
 	"github.com/agentserver/agentserver/v2/internal/runcursor"
@@ -41,7 +49,9 @@ func TestPrepareBuildsClosedDevelopmentStackWithoutWorkerSecrets(t *testing.T) {
 	}
 	if result.OutputDirectory != output || result.MetadataFile != filepath.Join(output, metadataFile) ||
 		result.BootstrapConfigFile != filepath.Join(output, bootstrapConfigFile) ||
-		result.WorkerDeploymentFile != filepath.Join(output, workerDeploymentConfigFile) {
+		result.WorkerDeploymentFile != filepath.Join(output, workerDeploymentConfigFile) ||
+		result.FixturesConfigFile != filepath.Join(output, developmentFixturesConfigFile) ||
+		result.BrowserBearerFile != filepath.Join(output, browserBearerTokenFile) {
 		t.Fatalf("prepare result = %+v", result)
 	}
 	assertGeneratedModes(t, output)
@@ -63,6 +73,11 @@ func TestPrepareBuildsClosedDevelopmentStackWithoutWorkerSecrets(t *testing.T) {
 	if _, err := runcapability.NewDevelopmentCodecFromBase64Key(capabilityKey); err != nil {
 		t.Fatalf("generated run capability key: %v", err)
 	}
+	fixtures, err := devfixtures.LoadBundle(output)
+	if err != nil {
+		t.Fatalf("load generated development fixtures: %v", err)
+	}
+	fixtures.Close()
 	cursorBytes, err := base64.RawURLEncoding.DecodeString(coreEnvironment["AGENTSERVER_V2_RUN_CURSOR_KEY"])
 	if err != nil {
 		t.Fatal(err)
@@ -94,16 +109,26 @@ func TestPrepareBuildsClosedDevelopmentStackWithoutWorkerSecrets(t *testing.T) {
 	if len(keyring.Keys) != 1 || keyring.Keys[0].PublicKey != base64.RawURLEncoding.EncodeToString(wantPublic) {
 		t.Fatal("generated manifest keyring does not match the private seed")
 	}
+	browserBearer := mustReadFile(t, result.BrowserBearerFile)
+	browserBearer = bytes.TrimSuffix(browserBearer, []byte("\n"))
+	if len(browserBearer) == 0 {
+		t.Fatal("generated browser bearer is empty")
+	}
 
 	workerBytes := mustReadFile(t, result.WorkerDeploymentFile)
 	agentxBytes := mustReadFile(t, result.AgentxLaunchFile)
+	fixturesBytes := mustReadFile(t, result.FixturesConfigFile)
 	metadataBytes := mustReadFile(t, result.MetadataFile)
 	for name, secret := range map[string][]byte{
 		"capability HMAC": []byte(capabilityKey),
 		"cursor HMAC":     []byte(coreEnvironment["AGENTSERVER_V2_RUN_CURSOR_KEY"]),
 		"manifest seed":   seed,
+		"browser bearer":  browserBearer,
 	} {
-		for target, contents := range map[string][]byte{"worker deployment": workerBytes, "agentx launch": agentxBytes, "metadata": metadataBytes} {
+		for target, contents := range map[string][]byte{
+			"worker deployment": workerBytes, "agentx launch": agentxBytes,
+			"fixture config": fixturesBytes, "metadata": metadataBytes,
+		} {
 			if bytes.Contains(contents, secret) {
 				t.Fatalf("%s leaked into %s", name, target)
 			}
@@ -124,6 +149,149 @@ func TestPrepareBuildsClosedDevelopmentStackWithoutWorkerSecrets(t *testing.T) {
 	if before != after {
 		t.Fatal("failed overwrite attempt changed existing generated material")
 	}
+}
+
+func TestPreparedDevelopmentFixturesServeCoreIntrospectionAndTLSResponses(t *testing.T) {
+	fixture := newConfigFixture(t)
+	hydraAddress := unusedLoopbackAddress(t)
+	llmproxyAddress := unusedLoopbackAddress(t)
+	for llmproxyAddress == hydraAddress {
+		llmproxyAddress = unusedLoopbackAddress(t)
+	}
+	fixture.document.Network.HydraIntrospectionURL = "http://" + hydraAddress + "/oauth2/introspect"
+	fixture.document.Network.LLMProxyEndpoint = "https://" + llmproxyAddress + "/v1"
+	loaded, err := ValidateConfig(fixture.document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createdAt := time.Now().UTC()
+	output := filepath.Join(fixture.root, "served-stack")
+	prepared, err := Prepare(loaded, output, rand.Reader, createdAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := devfixtures.LoadBundle(prepared.OutputDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bundle.Close()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	ready := &fixtureReadyWriter{ready: make(chan struct{})}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- bundle.Serve(ctx, ready) }()
+	select {
+	case <-ready.ready:
+	case <-time.After(3 * time.Second):
+		t.Fatal("development fixtures did not report readiness")
+	}
+
+	browserBearer := strings.TrimSuffix(string(mustReadFile(t, prepared.BrowserBearerFile)), "\n")
+	introspector, err := coreserver.NewHydraUserIntrospector(
+		fixture.document.Network.HydraIntrospectionURL,
+		&http.Client{Timeout: 2 * time.Second},
+		true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	introspection, err := introspector.IntrospectUserToken(t.Context(), browserBearer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !introspection.Active || introspection.Subject != fixture.document.Authority.ActorID ||
+		len(introspection.Audience) != 1 || introspection.Audience[0] != devfixtures.BrowserTokenAudience ||
+		introspection.Scope != devfixtures.BrowserTokenScope || introspection.ExpiresAt <= time.Now().Unix() {
+		t.Fatalf("served development introspection = %+v", introspection)
+	}
+
+	poolEnvironment := readGeneratedEnvironment(t, prepared.EnvironmentFiles["harness-pool"])
+	codec, err := runcapability.NewDevelopmentCodecFromBase64Key(poolEnvironment["AGENTSERVER_V2_DEV_RUN_CAPABILITY_KEY"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	modelCapability, err := codec.Sign(runcapability.Claims{
+		Version: runcapability.DevelopmentVersion, CapabilityID: "70000000-0000-4000-8000-000000000007",
+		Audience: runcapability.AudienceLLMProxy, WorkspaceID: fixture.document.Authority.WorkspaceID,
+		SessionID: fixture.document.Authority.SessionID, RunID: "80000000-0000-4000-8000-000000000008",
+		RunAttemptID: "90000000-0000-4000-8000-000000000009", RunAttemptGeneration: 1,
+		ActorID: fixture.document.Authority.ActorID, HolderID: "fixture-holder",
+		IssuedAtUnixMS: now.Add(-time.Minute).UnixMilli(), ExpiresAtUnixMS: now.Add(time.Hour).UnixMilli(),
+		Model: fixture.document.Model.Name, Provider: fixture.document.Model.Provider,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(mustReadFile(t, filepath.Join(output, certificateAuthorityFile))) {
+		t.Fatal("generated development CA could not be loaded")
+	}
+	transport := &http.Transport{TLSClientConfig: &tls.Config{
+		MinVersion: tls.VersionTLS13, RootCAs: roots, ServerName: "127.0.0.1",
+		Time: func() time.Time { return createdAt },
+	}}
+	defer transport.CloseIdleConnections()
+	modelClient := &http.Client{Transport: transport, Timeout: 2 * time.Second}
+	body := `{"model":"gpt-5","stream":true,"input":[],"tools":[{"type":"namespace","name":"executor","tools":[{"type":"function","name":"list_environments"}]}]}`
+	request, err := http.NewRequestWithContext(
+		t.Context(), http.MethodPost, fixture.document.Network.LLMProxyEndpoint+"/responses", strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+modelCapability)
+	response, err := modelClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseBody, readErr := io.ReadAll(response.Body)
+	closeErr := response.Body.Close()
+	if readErr != nil || closeErr != nil {
+		t.Fatal(errors.Join(readErr, closeErr))
+	}
+	if response.StatusCode != http.StatusOK || !bytes.Contains(responseBody, []byte(`"namespace":"executor"`)) ||
+		!bytes.Contains(responseBody, []byte(`"name":"list_environments"`)) {
+		t.Fatalf("served TLS Responses result = %d %s", response.StatusCode, responseBody)
+	}
+
+	cancel()
+	select {
+	case err := <-serveDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("development fixtures did not stop after cancellation")
+	}
+}
+
+type fixtureReadyWriter struct {
+	once  sync.Once
+	ready chan struct{}
+}
+
+func (writer *fixtureReadyWriter) Write(value []byte) (int, error) {
+	writer.once.Do(func() { close(writer.ready) })
+	return len(value), nil
+}
+
+func unusedLoopbackAddress(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
+			t.Skipf("loopback listeners are unavailable in this test environment: %v", err)
+		}
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return address
 }
 
 func TestLoadConfigRejectsUnknownDuplicateAndBroadSecretFile(t *testing.T) {
@@ -196,6 +364,53 @@ func TestEnvironmentFormatRoundTripsShellMetacharacters(t *testing.T) {
 	}
 	if len(got) != len(want) || got["A"] != want["A"] || got["B"] != want["B"] {
 		t.Fatalf("environment round trip = %#v, want %#v\n%s", got, want, raw)
+	}
+}
+
+func TestValidateConfigRejectsUnlaunchableDevelopmentFixtures(t *testing.T) {
+	fixture := newConfigFixture(t)
+	tests := []struct {
+		name   string
+		mutate func(*ConfigDocument)
+		want   string
+	}{
+		{
+			name: "Hydra conflicts with Core",
+			mutate: func(document *ConfigDocument) {
+				document.Network.HydraIntrospectionURL = "http://" + document.Network.CoreListenAddress + "/oauth2/introspect"
+			},
+			want: "conflicts",
+		},
+		{
+			name: "llmproxy conflicts with Hydra",
+			mutate: func(document *ConfigDocument) {
+				document.Network.LLMProxyEndpoint = "https://127.0.0.1:17447/v1"
+			},
+			want: "conflicts",
+		},
+		{
+			name: "llmproxy omits port",
+			mutate: func(document *ConfigDocument) {
+				document.Network.LLMProxyEndpoint = "https://127.0.0.1/v1"
+			},
+			want: "explicit non-zero port",
+		},
+		{
+			name: "script omits list environments",
+			mutate: func(document *ConfigDocument) {
+				document.Policy.AllowedTools = []string{"read_file"}
+			},
+			want: "must include list_environments",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			document := fixture.document
+			test.mutate(&document)
+			if _, err := ValidateConfig(document); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validation error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 

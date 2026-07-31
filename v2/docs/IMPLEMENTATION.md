@@ -790,7 +790,7 @@ pool侧reference controller每次只领一项，以一次分配的attempt/event/
 
 #### 8.1.1 当前开发启动入口
 
-开发authority、PKI、共享开发key、worker deployment、四份服务环境和agentx argv现在由单一入口生成：
+开发authority、PKI、共享开发key、worker deployment、四份服务环境、agentx argv、browser bearer和fixture launch config现在由单一入口生成：
 
 ```bash
 go run ./cmd/agentserver-dev prepare --insecure-dev \
@@ -798,7 +798,16 @@ go run ./cmd/agentserver-dev prepare --insecure-dev \
   --output-dir=/absolute/new-agentserver-v2-dev
 ```
 
-输入是closed-world `api/schema/insecure-dev-stack.schema.json`；输出目录必须事先不存在，命令绝不merge或覆盖。它从runtime manifest原始字节派生platform、Codex/runtime digest和checkpoint allowlist，生成独立服务SPIFFE证书、run capability/cursor key、Ed25519 signing seed及public worker keyring。目录固定`0700`、文件固定`0600`；worker deployment和agentx launch均不含run HMAC、cursor key或manifest私钥。生成物由Core bootstrap/TLS、browser、executor、pool和完整worker现有loader交叉加载测试。完整输入、输出树、source方式、启动顺序和剩余依赖见[`DEVELOPMENT.md`](DEVELOPMENT.md)。
+输入是closed-world `api/schema/insecure-dev-stack.schema.json`；输出目录必须事先不存在，命令绝不merge或覆盖。它从runtime manifest原始字节派生platform、Codex/runtime digest和checkpoint allowlist，生成独立服务SPIFFE证书、run capability/cursor key、browser bearer、Ed25519 signing seed及public worker keyring。目录固定`0700`、文件固定`0600`；worker deployment、agentx launch、fixture config和metadata均不含secret值。生成物由Core bootstrap/TLS、browser、executor、pool、完整worker和fixture bundle现有loader交叉加载测试。完整输入、输出树、source方式、启动顺序和剩余依赖见[`DEVELOPMENT.md`](DEVELOPMENT.md)。
+
+开发外部依赖入口固定为：
+
+```bash
+go run ./cmd/agentserver-dev fixtures --insecure-dev \
+  --bundle=/absolute/new-agentserver-v2-dev
+```
+
+单进程只绑定生成配置中的cleartext loopback Hydra introspection和TLS loopback Responses端点。Hydra将唯一opaque browser bearer映射为bootstrap actor、单一`agentserver-api` audience和`runs:write` scope。Responses端逐请求验证动态HMAC capability的`aud=llmproxy`、时间、authority和model/provider route，明确拒绝executor token；脚本状态按capability/run/attempt/generation隔离，先调用`executor.list_environments {}`，再要求对应`function_call_output`后返回terminal assistant message。该fixture是可复现联调依赖，不是生产Hydra/llmproxy实现。
 
 harness-pool运行入口固定为：
 
@@ -1232,7 +1241,7 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 Phase 3当前从第13项开始：已有run/attempt/event component API、独立harness-pool workload identity、原子双lease续期、`run.queued`专用long-poll delivery、pool侧单项claim controller内核、brain catalog冻结/线程绑定core API、签名manifest launch-preparer、受限私钥装载/公钥轮换keyring、deployment profile resolver、由`CreateRun`原子持久化并由live attempt fence保护的core-backed launch-state source，以及带有界并发、lease心跳、thread/turn顺序门和dispatch清理语义的常驻监督骨架；checkpoint恢复会复用原thread绑定catalog。per-attempt control 1.2机器合同、同holder进程resume journal、双向control server/client、mTLS+bearer入口、具体`ControlAttemptSupervisor`、本地process launcher、v2 closed-world bootstrap/runtime-capability合同、prompt object双端流式校验、checkpoint v1确定性artifact、FD 5双端对象校验及worker安全恢复入口也已完成。真实app-server child/final-exec、fresh runtime、exact-SPIFFE executor MCP以及notification/progress→canonical event链现已装配进可运行的one-shot `cmd/harness-worker`，production本地清理权限也改为启动前fail-closed。completed terminal现在携带经过`CODEX_HOME`词法包含校验的rollout locator；本地workload又把“进程组已停止”和“runtime已删除”拆成两个边界，并从启动前固定的attempt目录FD以Linux `openat2(BENEATH|NO_SYMLINKS)`及expected app UID/GID安全暴露唯一rollout。pool finalizer现已流式生成并验证artifact、以同一identity精确重试上传/commit、完整核对Core结果，并在连续歧义时保留attempt runtime；fresh/resume catalog authority均有PostgreSQL路径覆盖。常驻`cmd/harness-pool serve --insecure-dev`现已把这些边界、开发动态capability和本地对象存储装配起来，并由真实dispatch集成测试覆盖到worker bootstrap与有界release。`cmd/agentserver-dev prepare --insecure-dev`又把同一runtime authority派生为不可覆盖的开发PKI、secrets、Core bootstrap、worker deployment、分服务env和无secret agentx argv，并通过所有现有配置loader；开发attempt anchor的app traversal mode矛盾也已修正。后续仍须扩展approval通道并实现生产capability/object-store adapter；开发命令和library测试都不能替代这些生产边界。
 
-Phase 4的协议前置子阶段已完成下一段接线：canonical run-event schema/AsyncAPI、AG-UI SDK pin、A2UI v0.9 display builders、严格projector、public CreateRun/event cursor、Hydra token introspection、HMAC cursor、真实core backend及browser-gateway command/health/config均已有实现和门禁；worker↔pool control中的app-server notification/MCP progress也已成为core committed canonical event并接入AG-UI投影。可重复开发启动材料已经生成，下一步补固定opaque bearer的loopback Hydra introspection fixture和校验动态`aud=llmproxy` capability的scripted Responses fixture，再在PostgreSQL + Linux privileged runtime上执行真实AG-UI → checkpoint smoke；之后补Hydra login/consent bridge、approval/cancel和reference web。生产对象存储/capability adapter及部署门禁仍是生产化必做项。当前plaintext对象目录、共享开发HMAC和queued SSE只提供联调能力，仍不等于完整产品run可用。
+Phase 4的协议前置子阶段已完成下一段接线：canonical run-event schema/AsyncAPI、AG-UI SDK pin、A2UI v0.9 display builders、严格projector、public CreateRun/event cursor、Hydra token introspection、HMAC cursor、真实core backend及browser-gateway command/health/config均已有实现和门禁；worker↔pool control中的app-server notification/MCP progress也已成为core committed canonical event并接入AG-UI投影。可重复开发启动材料、固定opaque bearer的loopback Hydra introspection fixture和校验动态`aud=llmproxy` capability的scripted Responses fixture均已完成。下一步在PostgreSQL + Linux privileged runtime中安装开发CA并执行真实AG-UI → dynamic executor call → checkpoint smoke；之后补一键启动、Hydra login/consent bridge、approval/cancel和reference web。生产对象存储/capability adapter及部署门禁仍是生产化必做项。当前plaintext对象目录、共享开发HMAC和queued SSE只提供联调能力，仍不等于完整产品run可用。
 
 ## 14. 尚未锁定但有明确决策点的事项
 

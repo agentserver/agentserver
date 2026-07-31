@@ -535,6 +535,8 @@ WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, schema)
 		"checkpoints_attempt_scope_fk":                            false,
 		"checkpoints_catalog_scope_thread_fk":                     false,
 		"checkpoints_digests_sha256":                              false,
+		"checkpoints_object_media_type_bounded":                   false,
+		"checkpoints_object_size_bounded":                         false,
 		"checkpoints_run_scope_fk":                                false,
 		"run_launch_allowed_tools_name_unique":                    false,
 		"run_launch_states_run_scope_fk":                          false,

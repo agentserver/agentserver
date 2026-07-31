@@ -29,6 +29,9 @@ func TestStateStoreRunLaunchStateQueriesMapAuthorityProjection(t *testing.T) {
 		response.PreviousCheckpoint == nil ||
 		response.PreviousCheckpoint.CatalogDigest != hex.EncodeToString(store.catalogDigest[:]) ||
 		response.PreviousCheckpoint.Catalog.CatalogID != "49000000-0000-4000-8000-000000000004" ||
+		response.PreviousCheckpoint.RunID != "4a000000-0000-4000-8000-000000000004" ||
+		response.PreviousCheckpoint.RunAttemptID != "4b000000-0000-4000-8000-000000000004" ||
+		response.PreviousCheckpoint.RunAttemptGeneration != 2 || response.PreviousCheckpoint.TurnID != "turn-previous" ||
 		response.PreviousCheckpoint.CheckpointAllowlistVersion != 7 {
 		t.Fatalf("store command/response = %+v / %+v", store.command, response)
 	}
@@ -64,11 +67,13 @@ func (store *recordingRunLaunchStateStore) ResolveRunLaunchState(_ context.Conte
 			Size: 128, MediaType: "application/json",
 		},
 		PreviousCheckpoint: &coredb.Checkpoint{
-			ID: "47000000-0000-4000-8000-000000000004", ThreadID: "thread-previous",
+			ID:    "47000000-0000-4000-8000-000000000004",
+			RunID: "4a000000-0000-4000-8000-000000000004", AttemptID: "4b000000-0000-4000-8000-000000000004",
+			AttemptGeneration: 2, ThreadID: "thread-previous", TurnID: "turn-previous",
 			ManifestDigest: manifestDigest, CatalogDigest: store.catalogDigest,
 			Object: coredb.ObjectPointer{
 				ObjectID: "48000000-0000-4000-8000-000000000004", SHA256: objectDigest,
-				Size: 1024, MediaType: "application/octet-stream",
+				Size: 1024, MediaType: "application/vnd.agentserver.codex-checkpoint.v1",
 			},
 			CodexRuntimeManifestDigest: runtimeDigest, CheckpointAllowlistVersion: 7,
 			Catalog: coredb.BrainToolCatalog{

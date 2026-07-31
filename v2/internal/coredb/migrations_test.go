@@ -11,8 +11,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 9 {
-		t.Fatalf("migration count = %d, want 9", len(migrations))
+	if len(migrations) != 10 {
+		t.Fatalf("migration count = %d, want 10", len(migrations))
 	}
 	migration := migrations[0]
 	if migration.Version != 1 || migration.Name != "session_run_kernel" {
@@ -44,6 +44,9 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	if migrations[8].Version != 9 || migrations[8].Name != "browser_run_projection" {
 		t.Fatalf("ninth migration identity = %04d_%s, want 0009_browser_run_projection", migrations[8].Version, migrations[8].Name)
+	}
+	if migrations[9].Version != 10 || migrations[9].Name != "checkpoint_artifact_profile" {
+		t.Fatalf("tenth migration identity = %04d_%s, want 0010_checkpoint_artifact_profile", migrations[9].Version, migrations[9].Name)
 	}
 }
 

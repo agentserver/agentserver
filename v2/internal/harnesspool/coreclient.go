@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/braincatalog"
+	checkpointartifact "github.com/agentserver/agentserver/v2/internal/checkpoint"
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
@@ -337,8 +338,20 @@ func (client *CoreClient) ResolveRunLaunchState(ctx context.Context, scheduled S
 	if err := validateUUIDIdentity("checkpoint ID", checkpoint.CheckpointID); err != nil {
 		return RunLaunchState{}, fmt.Errorf("validate core launch-state response: %w", err)
 	}
+	if err := validateUUIDIdentity("checkpoint run ID", checkpoint.RunID); err != nil {
+		return RunLaunchState{}, fmt.Errorf("validate core launch-state response: %w", err)
+	}
+	if err := validateUUIDIdentity("checkpoint run attempt ID", checkpoint.RunAttemptID); err != nil {
+		return RunLaunchState{}, fmt.Errorf("validate core launch-state response: %w", err)
+	}
+	if checkpoint.RunAttemptGeneration < 1 || checkpoint.RunAttemptGeneration > 1<<53-1 {
+		return RunLaunchState{}, errors.New("validate core launch-state response: checkpoint attempt generation is not a positive safe integer")
+	}
 	if !validClientProtocolText(checkpoint.ThreadID, 256) {
 		return RunLaunchState{}, errors.New("validate core launch-state response: checkpoint thread ID is invalid")
+	}
+	if !validClientProtocolText(checkpoint.TurnID, 256) {
+		return RunLaunchState{}, errors.New("validate core launch-state response: checkpoint turn ID is invalid")
 	}
 	manifestDigest, err := decodeClientSHA256(checkpoint.ManifestDigest)
 	if err != nil {
@@ -364,18 +377,23 @@ func (client *CoreClient) ResolveRunLaunchState(ctx context.Context, scheduled S
 	if err != nil {
 		return RunLaunchState{}, fmt.Errorf("validate core launch-state response: %w", err)
 	}
+	if object.MediaType != checkpointartifact.ArtifactMediaType || object.SizeBytes > checkpointartifact.MaximumArtifactBytes {
+		return RunLaunchState{}, errors.New("validate core launch-state response: checkpoint object does not use artifact v1")
+	}
 	if checkpoint.CheckpointAllowlistVersion < 1 || checkpoint.CheckpointAllowlistVersion > 1<<53-1 {
 		return RunLaunchState{}, errors.New("validate core launch-state response: checkpoint allowlist version is not a positive safe integer")
 	}
 	state.PreviousCheckpoint = &RunLaunchCheckpoint{
 		Checkpoint: runmanifest.PreviousCheckpoint{
-			CheckpointID: checkpoint.CheckpointID, ThreadID: checkpoint.ThreadID,
+			CheckpointID: checkpoint.CheckpointID, RunID: checkpoint.RunID,
+			RunAttemptID: checkpoint.RunAttemptID, RunAttemptGeneration: checkpoint.RunAttemptGeneration,
+			ThreadID: checkpoint.ThreadID, TurnID: checkpoint.TurnID,
 			ManifestDigest: hex.EncodeToString(manifestDigest[:]), CatalogDigest: hex.EncodeToString(catalogDigest[:]),
-			Object: object,
+			CodexRuntimeManifestDigest: hex.EncodeToString(runtimeDigest[:]),
+			CheckpointAllowlistVersion: checkpoint.CheckpointAllowlistVersion,
+			Object:                     object,
 		},
-		Catalog:                    catalog,
-		CodexRuntimeManifestDigest: hex.EncodeToString(runtimeDigest[:]),
-		CheckpointAllowlistVersion: checkpoint.CheckpointAllowlistVersion,
+		Catalog: catalog,
 	}
 	return state, nil
 }

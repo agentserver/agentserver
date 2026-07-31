@@ -22,7 +22,11 @@ type RunLaunchObjectPointer struct {
 
 type RunLaunchCheckpointState struct {
 	CheckpointID               string                 `json:"checkpointId"`
+	RunID                      string                 `json:"runId"`
+	RunAttemptID               string                 `json:"runAttemptId"`
+	RunAttemptGeneration       int64                  `json:"runAttemptGeneration"`
 	ThreadID                   string                 `json:"threadId"`
+	TurnID                     string                 `json:"turnId"`
 	ManifestDigest             string                 `json:"manifestDigest"`
 	CatalogDigest              string                 `json:"catalogDigest"`
 	Catalog                    BrainToolCatalogState  `json:"catalog"`

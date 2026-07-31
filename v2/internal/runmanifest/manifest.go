@@ -19,11 +19,12 @@ import (
 	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/braincatalog"
+	checkpointartifact "github.com/agentserver/agentserver/v2/internal/checkpoint"
 	"github.com/ucarion/jcs"
 )
 
 const (
-	CurrentVersion     = 1
+	CurrentVersion     = 2
 	Canonicalizer      = "rfc8785-v1"
 	SignatureAlgorithm = "ed25519-v1"
 	MCPProtocolProfile = "2025-11-25"
@@ -51,11 +52,17 @@ type ObjectPointer struct {
 }
 
 type PreviousCheckpoint struct {
-	CheckpointID   string        `json:"checkpointId"`
-	ThreadID       string        `json:"threadId"`
-	ManifestDigest string        `json:"manifestDigest"`
-	CatalogDigest  string        `json:"catalogDigest"`
-	Object         ObjectPointer `json:"object"`
+	CheckpointID               string        `json:"checkpointId"`
+	RunID                      string        `json:"runId"`
+	RunAttemptID               string        `json:"runAttemptId"`
+	RunAttemptGeneration       int64         `json:"runAttemptGeneration"`
+	ThreadID                   string        `json:"threadId"`
+	TurnID                     string        `json:"turnId"`
+	ManifestDigest             string        `json:"manifestDigest"`
+	CatalogDigest              string        `json:"catalogDigest"`
+	CodexRuntimeManifestDigest string        `json:"codexRuntimeManifestDigest"`
+	CheckpointAllowlistVersion int64         `json:"checkpointAllowlistVersion"`
+	Object                     ObjectPointer `json:"object"`
 }
 
 type ModelRoute struct {
@@ -201,6 +208,11 @@ func (manifest Manifest) Validate() error {
 	}
 	if manifest.PreviousCheckpoint != nil && !equalDigest(manifest.PreviousCheckpoint.CatalogDigest, manifest.ExecutorMCP.CatalogDigest) {
 		return errors.New("previousCheckpoint.catalogDigest must match executorMcp.catalogDigest")
+	}
+	if manifest.PreviousCheckpoint != nil &&
+		(!equalDigest(manifest.PreviousCheckpoint.CodexRuntimeManifestDigest, manifest.CodexRuntimeManifestDigest) ||
+			manifest.PreviousCheckpoint.CheckpointAllowlistVersion != int64(manifest.CheckpointAllowlistVersion)) {
+		return errors.New("previousCheckpoint runtime manifest and allowlist version must match the current run manifest")
 	}
 	if err := validateText("executorPolicy.version", manifest.ExecutorPolicy.Version, 128, true); err != nil {
 		return err
@@ -440,7 +452,19 @@ func (checkpoint PreviousCheckpoint) validate() error {
 	if err := validateUUID("previousCheckpoint.checkpointId", checkpoint.CheckpointID); err != nil {
 		return err
 	}
+	if err := validateUUID("previousCheckpoint.runId", checkpoint.RunID); err != nil {
+		return err
+	}
+	if err := validateUUID("previousCheckpoint.runAttemptId", checkpoint.RunAttemptID); err != nil {
+		return err
+	}
+	if checkpoint.RunAttemptGeneration < 1 || checkpoint.RunAttemptGeneration > maxJSONInteger {
+		return fmt.Errorf("previousCheckpoint.runAttemptGeneration must be between 1 and %d", maxJSONInteger)
+	}
 	if err := validateText("previousCheckpoint.threadId", checkpoint.ThreadID, 256, true); err != nil {
+		return err
+	}
+	if err := validateText("previousCheckpoint.turnId", checkpoint.TurnID, 256, true); err != nil {
 		return err
 	}
 	if err := validateDigest("previousCheckpoint.manifestDigest", checkpoint.ManifestDigest); err != nil {
@@ -449,7 +473,20 @@ func (checkpoint PreviousCheckpoint) validate() error {
 	if err := validateDigest("previousCheckpoint.catalogDigest", checkpoint.CatalogDigest); err != nil {
 		return err
 	}
-	return checkpoint.Object.validate("previousCheckpoint.object")
+	if err := validateDigest("previousCheckpoint.codexRuntimeManifestDigest", checkpoint.CodexRuntimeManifestDigest); err != nil {
+		return err
+	}
+	if checkpoint.CheckpointAllowlistVersion < 1 || checkpoint.CheckpointAllowlistVersion > maxJSONInteger {
+		return fmt.Errorf("previousCheckpoint.checkpointAllowlistVersion must be between 1 and %d", maxJSONInteger)
+	}
+	if err := checkpoint.Object.validate("previousCheckpoint.object"); err != nil {
+		return err
+	}
+	if checkpoint.Object.MediaType != checkpointartifact.ArtifactMediaType ||
+		checkpoint.Object.SizeBytes > checkpointartifact.MaximumArtifactBytes {
+		return errors.New("previousCheckpoint.object must use the bounded checkpoint artifact v1 media profile")
+	}
+	return nil
 }
 
 func (route ModelRoute) validate() error {

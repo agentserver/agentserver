@@ -5,9 +5,12 @@ package harnesspool
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -17,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/checkpoint"
 	"github.com/agentserver/agentserver/v2/internal/harnessbootstrap"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 	"github.com/ucarion/jcs"
@@ -135,6 +139,54 @@ func TestLocalProcessLauncherRejectsPromptObjectDigestDrift(t *testing.T) {
 	}
 }
 
+func TestLocalProcessLauncherStreamsCommittedCheckpointOnDedicatedPipe(t *testing.T) {
+	prepared, checkpointObject := localCheckpointPreparedLaunch(t)
+	source := localObjectMapSource{
+		prepared.Manifest.Prompt.ObjectID:                    testRunPromptContents(),
+		prepared.Manifest.PreviousCheckpoint.Object.ObjectID: checkpointObject,
+	}
+	launcher, runtimeRoot := newLocalProcessLauncherWithSourceForTest(t, prepared, "exit", source)
+	workload, err := launcher.Launch(t.Context(), AttemptWorkloadLaunch{
+		Prepared: prepared, ControlCapability: testLocalControlCapability(), RuntimeCapabilities: testLocalRuntimeCapabilities(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workload.Wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(runtimeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("checkpoint launch retained %d runtime entries", len(entries))
+	}
+}
+
+func TestLocalProcessLauncherRejectsCheckpointObjectDigestDrift(t *testing.T) {
+	prepared, checkpointObject := localCheckpointPreparedLaunch(t)
+	checkpointObject[len(checkpointObject)-1] ^= 1
+	source := localObjectMapSource{
+		prepared.Manifest.Prompt.ObjectID:                    testRunPromptContents(),
+		prepared.Manifest.PreviousCheckpoint.Object.ObjectID: checkpointObject,
+	}
+	launcher, runtimeRoot := newLocalProcessLauncherWithSourceForTest(t, prepared, "exit", source)
+	_, err := launcher.Launch(t.Context(), AttemptWorkloadLaunch{
+		Prepared: prepared, ControlCapability: testLocalControlCapability(), RuntimeCapabilities: testLocalRuntimeCapabilities(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "checkpoint") || !strings.Contains(err.Error(), "signed digest") {
+		t.Fatalf("checkpoint digest drift error = %v", err)
+	}
+	entries, readErr := os.ReadDir(runtimeRoot)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("checkpoint digest drift retained %d runtime entries", len(entries))
+	}
+}
+
 func TestLocalProcessLauncherConfigRejectsAmbientOrUnsafeInputs(t *testing.T) {
 	executable, err := os.Executable()
 	if err != nil {
@@ -144,7 +196,7 @@ func TestLocalProcessLauncherConfigRejectsAmbientOrUnsafeInputs(t *testing.T) {
 		WorkerExecutable: executable, WorkerArguments: []string{"-test.run=none", "--"},
 		RuntimeRoot: secureLocalRuntimeRoot(t), Environment: []string{}, ObjectSource: localTestObjectSource{},
 		ExpectedWorkerImageDigest: strings.Repeat("c", 64), ExpectedServiceAccount: "harness-worker",
-		BootstrapWriteTimeout: time.Second, TerminateGrace: 10 * time.Millisecond,
+		InputWriteTimeout: time.Second, TerminateGrace: 10 * time.Millisecond,
 		ProcessGroupCleanupTimeout: time.Second,
 	}
 	tests := []struct {
@@ -158,6 +210,7 @@ func TestLocalProcessLauncherConfigRejectsAmbientOrUnsafeInputs(t *testing.T) {
 		{name: "duplicate environment", mutate: func(c *LocalProcessLauncherConfig) { c.Environment = []string{"A=1", "A=2"} }, want: "duplicate"},
 		{name: "bootstrap override", mutate: func(c *LocalProcessLauncherConfig) { c.WorkerArguments = []string{"--bootstrap-fd=9"} }, want: "must not override"},
 		{name: "prompt override", mutate: func(c *LocalProcessLauncherConfig) { c.WorkerArguments = []string{"--prompt-fd=9"} }, want: "must not override"},
+		{name: "checkpoint override", mutate: func(c *LocalProcessLauncherConfig) { c.WorkerArguments = []string{"--checkpoint-fd=9"} }, want: "must not override"},
 		{name: "invalid image digest", mutate: func(c *LocalProcessLauncherConfig) { c.ExpectedWorkerImageDigest = "ABC" }, want: "SHA-256"},
 		{name: "invalid service account", mutate: func(c *LocalProcessLauncherConfig) { c.ExpectedServiceAccount = "Harness_Worker" }, want: "service account"},
 		{name: "root credential", mutate: func(c *LocalProcessLauncherConfig) { c.Credential = &LocalProcessCredential{UID: 0, GID: 1} }, want: "unprivileged"},
@@ -251,6 +304,34 @@ func TestLocalProcessWorkerHelper(t *testing.T) {
 	if !bytes.Equal(prompt, testRunPromptContents()) {
 		t.Fatalf("prompt bytes = %d unexpected bytes", len(prompt))
 	}
+	checkpointArgument := false
+	for _, argument := range os.Args {
+		if argument == fmt.Sprintf("--checkpoint-fd=%d", localWorkerCheckpointDescriptor) {
+			checkpointArgument = true
+		}
+	}
+	if manifest.PreviousCheckpoint == nil && checkpointArgument {
+		t.Fatal("new-thread worker unexpectedly received a checkpoint descriptor argument")
+	}
+	if manifest.PreviousCheckpoint != nil {
+		if !checkpointArgument {
+			t.Fatal("resume worker omitted its checkpoint descriptor argument")
+		}
+		checkpointFile := os.NewFile(localWorkerCheckpointDescriptor, "harness-checkpoint")
+		if checkpointFile == nil {
+			t.Fatal("checkpoint descriptor was not inherited")
+		}
+		contents, readErr := io.ReadAll(io.LimitReader(checkpointFile, manifest.PreviousCheckpoint.Object.SizeBytes+1))
+		closeErr := checkpointFile.Close()
+		if readErr != nil || closeErr != nil {
+			t.Fatalf("read checkpoint: %v", errors.Join(readErr, closeErr))
+		}
+		digest := sha256.Sum256(contents)
+		if int64(len(contents)) != manifest.PreviousCheckpoint.Object.SizeBytes ||
+			hex.EncodeToString(digest[:]) != manifest.PreviousCheckpoint.Object.SHA256 {
+			t.Fatal("checkpoint descriptor did not carry the signed object bytes")
+		}
+	}
 	for _, argument := range os.Args {
 		if strings.Contains(argument, envelope.ControlCapability) ||
 			strings.Contains(argument, envelope.RuntimeCapabilities.ExecutorMCP) ||
@@ -284,6 +365,10 @@ func TestLocalProcessWorkerHelper(t *testing.T) {
 }
 
 func newLocalProcessLauncherForTest(t *testing.T, prepared PreparedRunLaunch, mode string) (*LocalProcessLauncher, string) {
+	return newLocalProcessLauncherWithSourceForTest(t, prepared, mode, localTestObjectSource{})
+}
+
+func newLocalProcessLauncherWithSourceForTest(t *testing.T, prepared PreparedRunLaunch, mode string, source AttemptObjectSource) (*LocalProcessLauncher, string) {
 	t.Helper()
 	executable, err := os.Executable()
 	if err != nil {
@@ -299,10 +384,10 @@ func newLocalProcessLauncherForTest(t *testing.T, prepared PreparedRunLaunch, mo
 			localWorkerHelperMode + "=" + mode,
 			localWorkerExpectedAttempt + "=" + prepared.Manifest.RunAttemptID,
 		},
-		ObjectSource:               localTestObjectSource{},
+		ObjectSource:               source,
 		ExpectedWorkerImageDigest:  prepared.Manifest.WorkerImageDigest,
 		ExpectedServiceAccount:     prepared.Manifest.ExpectedServiceAccount,
-		BootstrapWriteTimeout:      time.Second,
+		InputWriteTimeout:          time.Second,
 		TerminateGrace:             20 * time.Millisecond,
 		ProcessGroupCleanupTimeout: time.Second,
 	})
@@ -310,6 +395,61 @@ func newLocalProcessLauncherForTest(t *testing.T, prepared PreparedRunLaunch, mo
 		t.Fatal(err)
 	}
 	return launcher, runtimeRoot
+}
+
+func localCheckpointPreparedLaunch(t *testing.T) (PreparedRunLaunch, []byte) {
+	t.Helper()
+	inputs := testRunLaunchInputs()
+	proposal, err := BuildExecutorCatalog(inputs.ExecutorCatalogPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := resolverCheckpointCatalog(proposal, "thread-local-checkpoint")
+	rollout := []byte("{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-local-checkpoint\"}}\n{\"type\":\"turn_context\"}\n")
+	rolloutDigest := sha256.Sum256(rollout)
+	checkpointManifest := checkpoint.Manifest{
+		ManifestVersion: checkpoint.CurrentManifestVersion, CanonicalizerVersion: checkpoint.Canonicalizer,
+		CheckpointID: "4c000000-0000-4000-8000-000000000004",
+		WorkspaceID:  "40000000-0000-4000-8000-000000000004", SessionID: testSessionID,
+		RunID: "4d000000-0000-4000-8000-000000000004", RunAttemptID: "4e000000-0000-4000-8000-000000000004",
+		RunAttemptGeneration: 2, BrainThreadID: catalog.ThreadID, TerminalTurnID: "turn-local-checkpoint",
+		CodexRuntimeManifestDigest: inputs.CodexRuntimeManifestDigest,
+		CheckpointAllowlistVersion: int64(inputs.CheckpointAllowlistVersion), CatalogDigest: proposal.Catalog.Digest(),
+		Files: []checkpoint.File{{
+			Purpose: checkpoint.RolloutPurpose, FileType: checkpoint.RegularFileType,
+			Path: "sessions/2026/07/31/rollout-local-checkpoint.jsonl", Mode: checkpoint.RolloutMode,
+			SizeBytes: int64(len(rollout)), SHA256: hex.EncodeToString(rolloutDigest[:]),
+		}},
+	}
+	var artifact bytes.Buffer
+	descriptor, err := checkpoint.WriteArtifact(&artifact, checkpointManifest, bytes.NewReader(rollout))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs.PreviousCheckpoint = &runmanifest.PreviousCheckpoint{
+		CheckpointID: checkpointManifest.CheckpointID, RunID: checkpointManifest.RunID,
+		RunAttemptID: checkpointManifest.RunAttemptID, RunAttemptGeneration: checkpointManifest.RunAttemptGeneration,
+		ThreadID: checkpointManifest.BrainThreadID, TurnID: checkpointManifest.TerminalTurnID,
+		ManifestDigest: descriptor.ManifestDigest, CatalogDigest: checkpointManifest.CatalogDigest,
+		CodexRuntimeManifestDigest: checkpointManifest.CodexRuntimeManifestDigest,
+		CheckpointAllowlistVersion: checkpointManifest.CheckpointAllowlistVersion,
+		Object: runmanifest.ObjectPointer{
+			ObjectID: "4f000000-0000-4000-8000-000000000004", SHA256: descriptor.SHA256,
+			SizeBytes: descriptor.SizeBytes, MediaType: descriptor.MediaType,
+		},
+	}
+	inputs.PreviousBrainToolCatalog = &catalog
+	preparer := newTestLaunchPreparer(
+		t, &recordingLaunchCore{}, &fixedCatalogAllocator{id: "50000000-0000-4000-8000-000000000004"},
+		&fixedLaunchResolver{inputs: inputs},
+	)
+	prepared, err := preparer.Prepare(t.Context(), ScheduledRunAttempt{
+		Dispatch: testControllerDispatch("starting"), Claim: testControllerClaim(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return prepared, artifact.Bytes()
 }
 
 type localTestObjectSource struct{}
@@ -325,6 +465,16 @@ type localBytesObjectSource struct{ contents []byte }
 
 func (source localBytesObjectSource) OpenRunObject(context.Context, runmanifest.ObjectPointer) (io.ReadCloser, error) {
 	return io.NopCloser(bytes.NewReader(source.contents)), nil
+}
+
+type localObjectMapSource map[string][]byte
+
+func (source localObjectMapSource) OpenRunObject(_ context.Context, pointer runmanifest.ObjectPointer) (io.ReadCloser, error) {
+	contents, exists := source[pointer.ObjectID]
+	if !exists {
+		return nil, errors.New("unexpected local mapped object pointer")
+	}
+	return io.NopCloser(bytes.NewReader(contents)), nil
 }
 
 func testLocalControlCapability() string {

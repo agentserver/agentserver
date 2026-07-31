@@ -23,8 +23,9 @@ import (
 )
 
 const (
-	localWorkerBootstrapDescriptor = 3
-	localWorkerPromptDescriptor    = 4
+	localWorkerBootstrapDescriptor  = 3
+	localWorkerPromptDescriptor     = 4
+	localWorkerCheckpointDescriptor = 5
 )
 
 var (
@@ -50,7 +51,7 @@ type LocalProcessLauncherConfig struct {
 	Credential                 *LocalProcessCredential
 	ExpectedWorkerImageDigest  string
 	ExpectedServiceAccount     string
-	BootstrapWriteTimeout      time.Duration
+	InputWriteTimeout          time.Duration
 	TerminateGrace             time.Duration
 	ProcessGroupCleanupTimeout time.Duration
 }
@@ -65,7 +66,8 @@ type AttemptObjectSource interface {
 // LocalProcessLauncher starts a fresh worker process for every attempt. It
 // never writes capabilities, signed manifests, or prompt bytes to argv, env,
 // or a persisted file. Authority is sent once through descriptor 3 and the
-// independently hashed prompt object through descriptor 4.
+// independently hashed prompt object through descriptor 4. A committed
+// checkpoint, when present, is independently streamed through descriptor 5.
 type LocalProcessLauncher struct {
 	config LocalProcessLauncherConfig
 }
@@ -118,6 +120,18 @@ func (launcher *LocalProcessLauncher) Launch(ctx context.Context, launch Attempt
 	}
 	promptObject = &onceReadCloser{ReadCloser: promptObject}
 	defer promptObject.Close()
+	var checkpointObject io.ReadCloser
+	if manifest.PreviousCheckpoint != nil {
+		checkpointObject, err = launcher.config.ObjectSource.OpenRunObject(ctx, manifest.PreviousCheckpoint.Object)
+		if err != nil {
+			return nil, fmt.Errorf("open local worker checkpoint object: %w", err)
+		}
+		if checkpointObject == nil {
+			return nil, errors.New("local worker checkpoint object source returned a nil reader")
+		}
+		checkpointObject = &onceReadCloser{ReadCloser: checkpointObject}
+		defer checkpointObject.Close()
+	}
 
 	runtimeName, err := allocateAttemptRuntimeName()
 	if err != nil {
@@ -158,15 +172,30 @@ func (launcher *LocalProcessLauncher) Launch(ctx context.Context, launch Attempt
 	}
 	defer promptReader.Close()
 	defer promptWriter.Close()
+	var checkpointReader, checkpointWriter *os.File
+	if manifest.PreviousCheckpoint != nil {
+		checkpointReader, checkpointWriter, err = os.Pipe()
+		if err != nil {
+			return nil, fmt.Errorf("create local worker checkpoint pipe: %w", err)
+		}
+		defer checkpointReader.Close()
+		defer checkpointWriter.Close()
+	}
 
-	arguments := make([]string, 0, len(launcher.config.WorkerArguments)+2)
+	arguments := make([]string, 0, len(launcher.config.WorkerArguments)+3)
 	arguments = append(arguments, launcher.config.WorkerArguments...)
 	arguments = append(arguments, fmt.Sprintf("--bootstrap-fd=%d", localWorkerBootstrapDescriptor))
 	arguments = append(arguments, fmt.Sprintf("--prompt-fd=%d", localWorkerPromptDescriptor))
+	if checkpointReader != nil {
+		arguments = append(arguments, fmt.Sprintf("--checkpoint-fd=%d", localWorkerCheckpointDescriptor))
+	}
 	command := exec.Command(launcher.config.WorkerExecutable, arguments...)
 	command.Dir = runtimeDirectory
 	command.Env = append([]string(nil), launcher.config.Environment...)
 	command.ExtraFiles = []*os.File{bootstrapReader, promptReader}
+	if checkpointReader != nil {
+		command.ExtraFiles = append(command.ExtraFiles, checkpointReader)
+	}
 	if err := configureLocalAttemptCommand(command, launcher.config.Credential); err != nil {
 		return nil, err
 	}
@@ -175,13 +204,20 @@ func (launcher *LocalProcessLauncher) Launch(ctx context.Context, launch Attempt
 	}
 	_ = bootstrapReader.Close()
 	_ = promptReader.Close()
+	if checkpointReader != nil {
+		_ = checkpointReader.Close()
+	}
 
 	workload := newLocalProcessWorkload(command, runtimeDirectory, launcher.config)
 	type inputWriteResult struct {
 		name string
 		err  error
 	}
-	writeDone := make(chan inputWriteResult, 2)
+	inputCount := 2
+	if checkpointWriter != nil {
+		inputCount++
+	}
+	writeDone := make(chan inputWriteResult, inputCount)
 	go func() {
 		_, writeErr := bootstrapWriter.ReadFrom(bytes.NewReader(bootstrap))
 		closeErr := bootstrapWriter.Close()
@@ -192,32 +228,43 @@ func (launcher *LocalProcessLauncher) Launch(ctx context.Context, launch Attempt
 			name: "prompt", err: copyLocalRunObject(promptWriter, promptObject, manifest.Prompt),
 		}
 	}()
-	writeTimer := time.NewTimer(launcher.config.BootstrapWriteTimeout)
+	if checkpointWriter != nil {
+		go func() {
+			writeDone <- inputWriteResult{
+				name: "checkpoint",
+				err:  copyLocalRunObject(checkpointWriter, checkpointObject, manifest.PreviousCheckpoint.Object),
+			}
+		}()
+	}
+	closeInputs := func() {
+		_ = bootstrapWriter.Close()
+		_ = promptWriter.Close()
+		_ = promptObject.Close()
+		if checkpointWriter != nil {
+			_ = checkpointWriter.Close()
+			_ = checkpointObject.Close()
+		}
+	}
+	writeTimer := time.NewTimer(launcher.config.InputWriteTimeout)
 	defer writeTimer.Stop()
-	for pending := 2; pending > 0; pending-- {
+	for pending := inputCount; pending > 0; pending-- {
 		select {
 		case result := <-writeDone:
 			if result.err == nil {
 				continue
 			}
-			_ = bootstrapWriter.Close()
-			_ = promptWriter.Close()
-			_ = promptObject.Close()
+			closeInputs()
 			abortErr := workload.abortLaunch()
 			return nil, errors.Join(fmt.Errorf("write local worker %s input: %w", result.name, result.err), abortErr)
 		case <-ctx.Done():
-			_ = bootstrapWriter.Close()
-			_ = promptWriter.Close()
-			_ = promptObject.Close()
+			closeInputs()
 			abortErr := workload.abortLaunch()
 			return nil, errors.Join(ctx.Err(), abortErr)
 		case <-writeTimer.C:
-			_ = bootstrapWriter.Close()
-			_ = promptWriter.Close()
-			_ = promptObject.Close()
+			closeInputs()
 			abortErr := workload.abortLaunch()
 			return nil, errors.Join(
-				fmt.Errorf("write local worker one-shot inputs: timeout after %s", launcher.config.BootstrapWriteTimeout),
+				fmt.Errorf("write local worker one-shot inputs: timeout after %s", launcher.config.InputWriteTimeout),
 				abortErr,
 			)
 		}
@@ -361,7 +408,8 @@ func validateLocalProcessLauncherConfig(config LocalProcessLauncherConfig) error
 		if strings.ContainsRune(argument, '\x00') {
 			return fmt.Errorf("local worker argument %d contains NUL", index)
 		}
-		if strings.HasPrefix(argument, "--bootstrap-fd") || strings.HasPrefix(argument, "--prompt-fd") {
+		if strings.HasPrefix(argument, "--bootstrap-fd") || strings.HasPrefix(argument, "--prompt-fd") ||
+			strings.HasPrefix(argument, "--checkpoint-fd") {
 			return errors.New("local worker arguments must not override inherited input descriptors")
 		}
 	}
@@ -376,7 +424,7 @@ func validateLocalProcessLauncherConfig(config LocalProcessLauncherConfig) error
 		return errors.New("expected local worker service account is invalid")
 	}
 	for field, duration := range map[string]time.Duration{
-		"bootstrap write timeout":       config.BootstrapWriteTimeout,
+		"one-shot input write timeout":  config.InputWriteTimeout,
 		"terminate grace":               config.TerminateGrace,
 		"process-group cleanup timeout": config.ProcessGroupCleanupTimeout,
 	} {

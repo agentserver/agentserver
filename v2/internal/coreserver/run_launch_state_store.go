@@ -45,7 +45,9 @@ func (queries StateStoreRunLaunchStateQueries) ResolveRunLaunchState(ctx context
 	if resolved.PreviousCheckpoint != nil {
 		checkpoint := resolved.PreviousCheckpoint
 		response.PreviousCheckpoint = &corecontract.RunLaunchCheckpointState{
-			CheckpointID: checkpoint.ID, ThreadID: checkpoint.ThreadID,
+			CheckpointID: checkpoint.ID, RunID: checkpoint.RunID,
+			RunAttemptID: checkpoint.AttemptID, RunAttemptGeneration: checkpoint.AttemptGeneration,
+			ThreadID: checkpoint.ThreadID, TurnID: checkpoint.TurnID,
 			ManifestDigest:             hex.EncodeToString(checkpoint.ManifestDigest[:]),
 			CatalogDigest:              hex.EncodeToString(checkpoint.CatalogDigest[:]),
 			Catalog:                    contractBrainToolCatalog(checkpoint.Catalog),

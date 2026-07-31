@@ -34,13 +34,29 @@
     "previousCheckpoint": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["checkpointId", "threadId", "manifestDigest", "catalogDigest", "object"],
+      "required": ["checkpointId", "runId", "runAttemptId", "runAttemptGeneration", "threadId", "turnId", "manifestDigest", "catalogDigest", "codexRuntimeManifestDigest", "checkpointAllowlistVersion", "object"],
       "properties": {
         "checkpointId": {"$ref": "#/$defs/uuid"},
+        "runId": {"$ref": "#/$defs/uuid"},
+        "runAttemptId": {"$ref": "#/$defs/uuid"},
+        "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
         "threadId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "turnId": {"type": "string", "minLength": 1, "maxLength": 256},
         "manifestDigest": {"$ref": "#/$defs/sha256"},
         "catalogDigest": {"$ref": "#/$defs/sha256"},
-        "object": {"$ref": "#/$defs/objectPointer"}
+        "codexRuntimeManifestDigest": {"$ref": "#/$defs/sha256"},
+        "checkpointAllowlistVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "object": {
+          "allOf": [
+            {"$ref": "#/$defs/objectPointer"},
+            {
+              "properties": {
+                "sizeBytes": {"type": "integer", "minimum": 1, "maximum": 67174420},
+                "mediaType": {"const": "application/vnd.agentserver.codex-checkpoint.v1"}
+              }
+            }
+          ]
+        }
       }
     },
     "modelRoute": {
@@ -146,7 +162,7 @@
       "additionalProperties": false,
       "required": ["manifestVersion", "canonicalizerVersion", "workspaceId", "sessionId", "runId", "runAttemptId", "runAttemptGeneration", "holderId", "prompt", "codexRuntimeManifestDigest", "model", "executorMcp", "executorPolicy", "limits", "checkpointAllowlistVersion", "workerImageDigest", "expectedServiceAccount", "controllerCallback"],
       "properties": {
-        "manifestVersion": {"const": 1},
+        "manifestVersion": {"const": 2},
         "canonicalizerVersion": {"const": "rfc8785-v1"},
         "workspaceId": {"$ref": "#/$defs/uuid"},
         "sessionId": {"$ref": "#/$defs/uuid"},

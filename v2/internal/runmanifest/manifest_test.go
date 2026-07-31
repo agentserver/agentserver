@@ -125,6 +125,24 @@ func TestRunManifestValidatesCatalogProjectionAndEndpoints(t *testing.T) {
 	}
 }
 
+func TestRunManifestV2BindsCompleteCheckpointSourceAndArtifactProfile(t *testing.T) {
+	manifest := validManifest(t)
+	manifest.PreviousCheckpoint.RunAttemptID = ""
+	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "runAttemptId") {
+		t.Fatalf("missing checkpoint source attempt error = %v", err)
+	}
+	manifest = validManifest(t)
+	manifest.PreviousCheckpoint.CodexRuntimeManifestDigest = strings.Repeat("0", 64)
+	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "runtime manifest") {
+		t.Fatalf("checkpoint runtime drift error = %v", err)
+	}
+	manifest = validManifest(t)
+	manifest.PreviousCheckpoint.Object.MediaType = "application/octet-stream"
+	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "artifact v1") {
+		t.Fatalf("checkpoint artifact profile error = %v", err)
+	}
+}
+
 func TestRunManifestJSONSchemaAcceptsSignedEnvelope(t *testing.T) {
 	_, currentFile, _, ok := runtime.Caller(0)
 	if !ok {
@@ -192,9 +210,12 @@ func validManifest(t *testing.T) Manifest {
 			SizeBytes: 128, MediaType: "application/json",
 		},
 		PreviousCheckpoint: &PreviousCheckpoint{
-			CheckpointID: "46000000-0000-4000-8000-000000000004", ThreadID: "thread-previous",
+			CheckpointID: "46000000-0000-4000-8000-000000000004",
+			RunID:        "48000000-0000-4000-8000-000000000004", RunAttemptID: "49000000-0000-4000-8000-000000000004",
+			RunAttemptGeneration: 2, ThreadID: "thread-previous", TurnID: "turn-previous",
 			ManifestDigest: strings.Repeat("b", 64), CatalogDigest: catalog.Digest(),
-			Object: ObjectPointer{ObjectID: "47000000-0000-4000-8000-000000000004", SHA256: strings.Repeat("c", 64), SizeBytes: 1024, MediaType: "application/octet-stream"},
+			CodexRuntimeManifestDigest: strings.Repeat("d", 64), CheckpointAllowlistVersion: 1,
+			Object: ObjectPointer{ObjectID: "47000000-0000-4000-8000-000000000004", SHA256: strings.Repeat("c", 64), SizeBytes: 1024, MediaType: "application/vnd.agentserver.codex-checkpoint.v1"},
 		},
 		CodexRuntimeManifestDigest: strings.Repeat("d", 64),
 		Model: ModelRoute{

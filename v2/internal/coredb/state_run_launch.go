@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	checkpointartifact "github.com/agentserver/agentserver/v2/internal/checkpoint"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -340,6 +341,10 @@ func validateStoredCheckpoint(checkpoint Checkpoint) error {
 	}
 	if err := validateRunObjectPointer("checkpoint.object", checkpoint.Object); err != nil {
 		return err
+	}
+	if checkpoint.Object.Size > checkpointartifact.MaximumArtifactBytes ||
+		checkpoint.Object.MediaType != checkpointartifact.ArtifactMediaType {
+		return errors.New("checkpoint.object does not use the bounded checkpoint artifact v1 profile")
 	}
 	if checkpoint.CheckpointAllowlistVersion < 1 || checkpoint.CheckpointAllowlistVersion > maxSafeJSONInteger {
 		return errors.New("checkpoint.checkpoint_allowlist_version must be a positive safe integer")

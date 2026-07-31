@@ -767,7 +767,7 @@ controller 循环：
 1. 通过 core long-poll claim queued run。
 2. 获取 session lease与 attempt lease。
 3. 从core读取已冻结的brain tool catalog/canonical digest（新thread先执行`FreezeBrainToolCatalog`），生成不可变、签名run manifest；`controller_callback`绑定当前holder instance直连地址。
-4. 在当前 holder 副本内创建 pool-owned、worker-group-writable 的 attempt 临时根和独立进程组；control server生成control capability，capability issuer再按manifest audience为该generation签发executor-MCP/llmproxy两枚分离token。签名manifest与三枚token写入只继承给worker的bootstrap pipe，pool从对象存储读取prompt并按完整pointer复算size/hash后写入另一条pipe，本地 `fork/exec harness-worker`。run 热路径不调用 Kubernetes API。
+4. 在当前 holder 副本内创建 pool-owned、worker-group-writable 的 attempt 临时根和独立进程组；control server生成control capability，capability issuer再按manifest audience为该generation签发executor-MCP/llmproxy两枚分离token。签名manifest与三枚token写入只继承给worker的bootstrap pipe，pool从对象存储读取prompt并按完整pointer复算size/hash后写入FD 4；仅当签名manifest存在previous checkpoint时，再以同样的发送侧校验将对象写入FD 5，然后本地 `fork/exec harness-worker`。run 热路径不调用 Kubernetes API。
 5. 接受 worker mTLS control stream并核对 attempt/generation。
 6. 续租、提交事件、转发 cancel/fence/approval。
 7. 接收 checkpoint chunks、复算 hash并上传对象存储。
@@ -808,7 +808,9 @@ worker侧现在会从 inherited pipe 一次读完closed-world bootstrap、立即
 
 app-server真实child/final-exec的独立进程层现已实现：`AppServerProcess`是stdio唯一owner，使用封闭且排序的child环境（只含固定运行环境和app-only llmproxy capability）、有界frame/stderr、幂等stdin EOF与Wait屏障；Linux生产路径先把trampoline切到固定app UID，worker随即all-thread seal自身身份，`harness-final-exec`再清child capability、设置`no_new_privs`/non-dumpable、close-all并固定exec `codex app-server --listen stdio:// --strict-config`。argv不承载秘密，executor MCP/control/bootstrap credential在child环境类型中没有表示。该层已有确定性helper进程测试，但尚未接入可运行worker主状态机。
 
-prompt读取/双端hash校验与runtime秘密bootstrap合同已经实现；仍未实现的是checkpoint对象恢复、checkpoint chunks、生产capability/object-store adapter和core finalization，也尚未装配可运行的`cmd/harness-worker`与`cmd/harness-pool`。当前`completed` terminal只证明该次worker runtime干净停止，绝不等于run已在core持久化为completed，因此仍不能把控制流或child进程测试当成可部署或可恢复证据。
+prompt读取/双端hash校验、runtime秘密bootstrap与previous-checkpoint对象恢复合同已经实现；仍未实现的是completed-turn checkpoint生成/chunks上传、生产capability/object-store adapter和core finalization，也尚未装配可运行的`cmd/harness-worker`与`cmd/harness-pool`。当前`completed` terminal只证明该次worker runtime干净停止，绝不等于run已在core持久化为completed，因此仍不能把控制流或child进程测试当成可部署或可恢复证据。
+
+checkpoint v1现有独立`checkpoint-manifest.schema.json`和确定性framing：16-byte magic/version、big-endian manifest长度、RFC 8785 manifest与唯一rollout JSONL，不引入tar/zip的链接、目录与额外entry语义。run manifest升为v2并冻结源run/attempt/generation/turn、runtime与allowlist；pool仅在previous checkpoint存在时继承FD 5，pool/worker双端均校验外层object pointer，worker还在创建rollout前校验manifest digest、所有authority字段、单普通文件、路径包含、size/hash和JSONL。负向测试覆盖错误外层hash、source generation、runtime digest、symlink路径、多entry、错误file type、尾随字节及整个进程组回收。
 
 ### 8.2 run manifest
 
@@ -816,7 +818,7 @@ manifest至少冻结：
 
 - workspace/session/run/attempt/generation；
 - prompt object id/hash；
-- previous checkpoint id/hash；
+- previous checkpoint id/object pointer/manifest digest、源run/attempt/generation、terminal turn、runtime digest与allowlist version；
 - Codex runtime manifest digest；
 - model/llmproxy audience和 endpoint；
 - executor MCP endpoint/TLS identity/audience与显式protocol profile，以及冻结的namespace/description、tool name/description/input schema、固定`deferLoading=false`、逐tool hash与catalog digest；
@@ -1163,9 +1165,9 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 第12项目前已完成connection kernel、真实WSS路由，以及独立agentx仓库中的connector/runner IPC、远端lifecycle、registered-root/cwd本地复核、monotonic timeout signal、每process独占的stock `codex exec-server --listen stdio --strict-config`监管和一次性fs-only bounded-read lane；真实stock纵向门禁已通过。本仓已完成online environment registry、三工具stateful MCP链、七个execution/operation mTLS command/client，以及shell-v1和read-file-v1两条`Prepare → Begin → dispatch → ACK/unknown → operation/execution terminal → MCP result`链。approval command、真实enrollment/key binding、gateway进程丢失后的unknown恢复审计、平台containment和部署manifest仍未实现；当前入口明确标为loopback insecure-dev，不能作为Phase 2交付或生产部署证据。
 
-Phase 3当前从第13项开始：已有run/attempt/event component API、独立harness-pool workload identity、原子双lease续期、`run.queued`专用long-poll delivery、pool侧单项claim controller内核、brain catalog冻结/线程绑定core API、签名manifest launch-preparer、受限私钥装载/公钥轮换keyring、deployment profile resolver、由`CreateRun`原子持久化并由live attempt fence保护的core-backed launch-state source，以及带有界并发、lease心跳、thread/turn顺序门和dispatch清理语义的常驻监督骨架；checkpoint恢复会复用原thread绑定catalog。per-attempt control机器合同、同holder进程resume journal、双向control server/client、mTLS+bearer入口、具体`ControlAttemptSupervisor`、本地process launcher、v2 closed-world bootstrap/runtime-capability合同、prompt object双端流式校验及worker验签入口也已完成。真实app-server child/final-exec进程层也已完成独立装配和测试，但还没有接入worker主状态机。后续仍须实现checkpoint对象恢复、生产capability/object-store adapter、可运行的harness-pool/worker命令装配、finalization与checkpoint CAS写路径；这些不能由当前control terminal或抽象workload接口替代。
+Phase 3当前从第13项开始：已有run/attempt/event component API、独立harness-pool workload identity、原子双lease续期、`run.queued`专用long-poll delivery、pool侧单项claim controller内核、brain catalog冻结/线程绑定core API、签名manifest launch-preparer、受限私钥装载/公钥轮换keyring、deployment profile resolver、由`CreateRun`原子持久化并由live attempt fence保护的core-backed launch-state source，以及带有界并发、lease心跳、thread/turn顺序门和dispatch清理语义的常驻监督骨架；checkpoint恢复会复用原thread绑定catalog。per-attempt control机器合同、同holder进程resume journal、双向control server/client、mTLS+bearer入口、具体`ControlAttemptSupervisor`、本地process launcher、v2 closed-world bootstrap/runtime-capability合同、prompt object双端流式校验、checkpoint v1确定性artifact、FD 5双端对象校验及worker安全恢复入口也已完成。真实app-server child/final-exec进程层也已完成独立装配和测试，但还没有接入worker主状态机。后续仍须实现completed-turn checkpoint生成/chunks上传、生产capability/object-store adapter、可运行的harness-pool/worker命令装配、finalization与checkpoint CAS写路径；这些不能由当前control terminal或抽象workload接口替代。
 
-Phase 4的协议前置子阶段已完成下一段接线：canonical run-event schema/AsyncAPI、AG-UI SDK pin、A2UI v0.9 display builders、严格projector、public CreateRun/event cursor、Hydra token introspection、HMAC cursor、真实core backend及browser-gateway command/health/config均已有实现和门禁。下一步回到Phase 3主链，把已完成的app-server child/final-exec、prompt与runtime-capability输入层接入checkpoint恢复和可运行harness-pool/worker命令，再完成finalization/checkpoint CAS；随后再补Hydra login/consent bridge、approval/cancel和reference web。当前开发plaintext prompt store与queued SSE没有改变真实模型链和生产对象存储尚未完成的事实。
+Phase 4的协议前置子阶段已完成下一段接线：canonical run-event schema/AsyncAPI、AG-UI SDK pin、A2UI v0.9 display builders、严格projector、public CreateRun/event cursor、Hydra token introspection、HMAC cursor、真实core backend及browser-gateway command/health/config均已有实现和门禁。下一步回到Phase 3主链，把已完成的app-server child/final-exec、prompt、runtime-capability与checkpoint restore输入层装配为可运行harness-worker，再装配harness-pool并完成checkpoint生成/chunks、finalization/checkpoint CAS；随后再补Hydra login/consent bridge、approval/cancel和reference web。当前开发plaintext prompt store与queued SSE没有改变真实模型链和生产对象存储尚未完成的事实。
 
 ## 14. 尚未锁定但有明确决策点的事项
 

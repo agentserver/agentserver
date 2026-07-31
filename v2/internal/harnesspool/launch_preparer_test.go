@@ -63,11 +63,15 @@ func TestLaunchPreparerReusesCheckpointCatalogWithoutAllocatingOrFreezing(t *tes
 	}
 	catalog := resolverCheckpointCatalog(proposal, "thread-previous")
 	inputs.PreviousCheckpoint = &runmanifest.PreviousCheckpoint{
-		CheckpointID: "47000000-0000-4000-8000-000000000004", ThreadID: catalog.ThreadID,
+		CheckpointID: "47000000-0000-4000-8000-000000000004",
+		RunID:        "4c000000-0000-4000-8000-000000000004", RunAttemptID: "4d000000-0000-4000-8000-000000000004",
+		RunAttemptGeneration: 2, ThreadID: catalog.ThreadID, TurnID: "turn-previous",
 		ManifestDigest: strings.Repeat("d", 64), CatalogDigest: proposal.Catalog.Digest(),
+		CodexRuntimeManifestDigest: inputs.CodexRuntimeManifestDigest,
+		CheckpointAllowlistVersion: int64(inputs.CheckpointAllowlistVersion),
 		Object: runmanifest.ObjectPointer{
 			ObjectID: "48000000-0000-4000-8000-000000000004", SHA256: strings.Repeat("e", 64),
-			SizeBytes: 1024, MediaType: "application/octet-stream",
+			SizeBytes: 1024, MediaType: "application/vnd.agentserver.codex-checkpoint.v1",
 		},
 	}
 	inputs.PreviousBrainToolCatalog = &catalog

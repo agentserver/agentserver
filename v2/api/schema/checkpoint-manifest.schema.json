@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentserver.dev/v2/schema/checkpoint-manifest.schema.json",
+  "title": "agentserver v2 rollout-only Codex checkpoint manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifestVersion",
+    "canonicalizerVersion",
+    "checkpointId",
+    "workspaceId",
+    "sessionId",
+    "runId",
+    "runAttemptId",
+    "runAttemptGeneration",
+    "brainThreadId",
+    "terminalTurnId",
+    "codexRuntimeManifestDigest",
+    "checkpointAllowlistVersion",
+    "catalogDigest",
+    "files"
+  ],
+  "properties": {
+    "manifestVersion": {"const": 1},
+    "canonicalizerVersion": {"const": "rfc8785-v1"},
+    "checkpointId": {"$ref": "#/$defs/uuid"},
+    "workspaceId": {"$ref": "#/$defs/uuid"},
+    "sessionId": {"$ref": "#/$defs/uuid"},
+    "runId": {"$ref": "#/$defs/uuid"},
+    "runAttemptId": {"$ref": "#/$defs/uuid"},
+    "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "brainThreadId": {"type": "string", "minLength": 1, "maxLength": 256},
+    "terminalTurnId": {"type": "string", "minLength": 1, "maxLength": 256},
+    "codexRuntimeManifestDigest": {"$ref": "#/$defs/sha256"},
+    "checkpointAllowlistVersion": {"const": 1},
+    "catalogDigest": {"$ref": "#/$defs/sha256"},
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {"$ref": "#/$defs/rollout"}
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": {"const": "00000000-0000-0000-0000-000000000000"}
+    },
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "rollout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["purpose", "fileType", "path", "mode", "sizeBytes", "sha256"],
+      "properties": {
+        "purpose": {"const": "codex-rollout"},
+        "fileType": {"const": "regular"},
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^sessions/[0-9A-Za-z._/-]+\\.jsonl$",
+          "not": {"pattern": "(^|/)(\\.|\\.\\.)(/|$)|//"}
+        },
+        "mode": {"const": 384},
+        "sizeBytes": {"type": "integer", "minimum": 1, "maximum": 67108864},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

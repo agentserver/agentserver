@@ -109,12 +109,14 @@ func TestCoreClientResolvesFencedRunLaunchState(t *testing.T) {
 			SizeBytes: base.Prompt.SizeBytes, MediaType: base.Prompt.MediaType,
 		},
 		PreviousCheckpoint: &corecontract.RunLaunchCheckpointState{
-			CheckpointID: "47000000-0000-4000-8000-000000000004", ThreadID: "thread-previous",
+			CheckpointID: "47000000-0000-4000-8000-000000000004",
+			RunID:        "4c000000-0000-4000-8000-000000000004", RunAttemptID: "4d000000-0000-4000-8000-000000000004",
+			RunAttemptGeneration: 2, ThreadID: "thread-previous", TurnID: "turn-previous",
 			ManifestDigest: strings.Repeat("d", 64), CatalogDigest: proposal.Catalog.Digest(),
 			Catalog: contractRunLaunchCheckpointCatalog(proposal),
 			Object: corecontract.RunLaunchObjectPointer{
 				ObjectID: "48000000-0000-4000-8000-000000000004", SHA256: strings.Repeat("e", 64),
-				SizeBytes: 1024, MediaType: "application/octet-stream",
+				SizeBytes: 1024, MediaType: "application/vnd.agentserver.codex-checkpoint.v1",
 			},
 			CodexRuntimeManifestDigest: base.CodexRuntimeManifestDigest,
 			CheckpointAllowlistVersion: int64(base.CheckpointAllowlistVersion),
@@ -145,7 +147,7 @@ func TestCoreClientResolvesFencedRunLaunchState(t *testing.T) {
 		commands.request.ExpectedRunAttemptVersion != scheduled.Claim.RunAttempt.Version ||
 		state.Prompt != base.Prompt || state.PreviousCheckpoint == nil ||
 		state.PreviousCheckpoint.Checkpoint.CatalogDigest != proposal.Catalog.Digest() ||
-		state.PreviousCheckpoint.CodexRuntimeManifestDigest != base.CodexRuntimeManifestDigest ||
+		state.PreviousCheckpoint.Checkpoint.CodexRuntimeManifestDigest != base.CodexRuntimeManifestDigest ||
 		len(state.ExecutorPolicy.AllowedTools) != len(base.ExecutorCatalogPolicy.AllowedTools) {
 		t.Fatalf("wire request/state = %+v / %+v", commands.request, state)
 	}
@@ -156,6 +158,11 @@ func TestCoreClientResolvesFencedRunLaunchState(t *testing.T) {
 	commands.response.RunVersion++
 	if _, err := client.ResolveRunLaunchState(t.Context(), scheduled); err == nil || !strings.Contains(err.Error(), "authority tuple") {
 		t.Fatalf("mismatched launch authority response error = %v", err)
+	}
+	commands.response.RunVersion--
+	commands.response.PreviousCheckpoint.RunID = ""
+	if _, err := client.ResolveRunLaunchState(t.Context(), scheduled); err == nil || !strings.Contains(err.Error(), "checkpoint run ID") {
+		t.Fatalf("missing checkpoint source authority error = %v", err)
 	}
 }
 

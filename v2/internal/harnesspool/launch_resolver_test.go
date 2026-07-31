@@ -19,19 +19,22 @@ func TestConfiguredRunLaunchInputResolverCombinesAndCopiesAuthorityState(t *test
 		t.Fatal(err)
 	}
 	checkpoint := &runmanifest.PreviousCheckpoint{
-		CheckpointID: "47000000-0000-4000-8000-000000000004", ThreadID: "thread-previous",
+		CheckpointID: "47000000-0000-4000-8000-000000000004",
+		RunID:        "4c000000-0000-4000-8000-000000000004", RunAttemptID: "4d000000-0000-4000-8000-000000000004",
+		RunAttemptGeneration: 2, ThreadID: "thread-previous", TurnID: "turn-previous",
 		ManifestDigest: strings.Repeat("d", 64), CatalogDigest: proposal.Catalog.Digest(),
+		CodexRuntimeManifestDigest: base.CodexRuntimeManifestDigest,
+		CheckpointAllowlistVersion: int64(base.CheckpointAllowlistVersion),
 		Object: runmanifest.ObjectPointer{
 			ObjectID: "48000000-0000-4000-8000-000000000004", SHA256: strings.Repeat("e", 64),
-			SizeBytes: 1024, MediaType: "application/octet-stream",
+			SizeBytes: 1024, MediaType: "application/vnd.agentserver.codex-checkpoint.v1",
 		},
 	}
 	source := &recordingRunLaunchStateSource{state: RunLaunchState{
 		Prompt: base.Prompt,
 		PreviousCheckpoint: &RunLaunchCheckpoint{
-			Checkpoint: *checkpoint, CodexRuntimeManifestDigest: base.CodexRuntimeManifestDigest,
-			CheckpointAllowlistVersion: int64(base.CheckpointAllowlistVersion),
-			Catalog:                    resolverCheckpointCatalog(proposal, checkpoint.ThreadID),
+			Checkpoint: *checkpoint,
+			Catalog:    resolverCheckpointCatalog(proposal, checkpoint.ThreadID),
 		},
 		ExecutorPolicy: base.ExecutorCatalogPolicy,
 	}}
@@ -77,16 +80,18 @@ func TestConfiguredRunLaunchInputResolverRejectsProfileAndDynamicDrift(t *testin
 		Prompt: base.Prompt,
 		PreviousCheckpoint: &RunLaunchCheckpoint{
 			Checkpoint: runmanifest.PreviousCheckpoint{
-				CheckpointID: "47000000-0000-4000-8000-000000000004", ThreadID: "thread-previous",
+				CheckpointID: "47000000-0000-4000-8000-000000000004",
+				RunID:        "4c000000-0000-4000-8000-000000000004", RunAttemptID: "4d000000-0000-4000-8000-000000000004",
+				RunAttemptGeneration: 2, ThreadID: "thread-previous", TurnID: "turn-previous",
 				ManifestDigest: strings.Repeat("d", 64), CatalogDigest: proposal.Catalog.Digest(),
+				CodexRuntimeManifestDigest: base.CodexRuntimeManifestDigest,
+				CheckpointAllowlistVersion: int64(base.CheckpointAllowlistVersion),
 				Object: runmanifest.ObjectPointer{
 					ObjectID: "48000000-0000-4000-8000-000000000004", SHA256: strings.Repeat("e", 64),
-					SizeBytes: 1024, MediaType: "application/octet-stream",
+					SizeBytes: 1024, MediaType: "application/vnd.agentserver.codex-checkpoint.v1",
 				},
 			},
-			CodexRuntimeManifestDigest: base.CodexRuntimeManifestDigest,
-			CheckpointAllowlistVersion: int64(base.CheckpointAllowlistVersion),
-			Catalog:                    resolverCheckpointCatalog(proposal, "thread-previous"),
+			Catalog: resolverCheckpointCatalog(proposal, "thread-previous"),
 		},
 		ExecutorPolicy: ExecutorCatalogPolicy{
 			Version: "changed-policy", ContextDigest: sha256.Sum256([]byte("changed")),
@@ -103,7 +108,7 @@ func TestConfiguredRunLaunchInputResolverRejectsProfileAndDynamicDrift(t *testin
 	}
 
 	source.state.ExecutorPolicy = base.ExecutorCatalogPolicy
-	source.state.PreviousCheckpoint.CodexRuntimeManifestDigest = strings.Repeat("f", 64)
+	source.state.PreviousCheckpoint.Checkpoint.CodexRuntimeManifestDigest = strings.Repeat("f", 64)
 	_, err = resolver.ResolveRunLaunch(t.Context(), ScheduledRunAttempt{Dispatch: testControllerDispatch("starting"), Claim: testControllerClaim()})
 	if err == nil || !strings.Contains(err.Error(), "runtime manifest or allowlist") {
 		t.Fatalf("checkpoint/runtime drift error = %v", err)

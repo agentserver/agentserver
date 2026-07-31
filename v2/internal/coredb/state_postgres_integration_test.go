@@ -366,7 +366,7 @@ INSERT INTO %s.checkpoints
      codex_runtime_manifest_digest, checkpoint_allowlist_version)
 VALUES
     ($1, $2, $3, $4, $5, $6, $7, $8, 'turn-checkpoint-1', $9,
-     $10, $11, 2048, 'application/octet-stream', $12, 1)`, quoteIdentifier(schema))
+     $10, $11, 2048, 'application/vnd.agentserver.codex-checkpoint.v1', $12, 1)`, quoteIdentifier(schema))
 	_, err = pool.Exec(t.Context(), insertCheckpoint,
 		stateTestUUID(197), workspaceID, sessionID, first.Run.ID, firstClaim.Attempt.ID,
 		firstClaim.Attempt.Generation, bound.Catalog.ID, "thread-from-another-catalog",

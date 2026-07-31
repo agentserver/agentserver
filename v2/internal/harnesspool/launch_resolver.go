@@ -15,10 +15,8 @@ import (
 // RunLaunchCheckpoint carries both the signed-manifest projection and the
 // compatibility facts that must match the selected deployment profile.
 type RunLaunchCheckpoint struct {
-	Checkpoint                 runmanifest.PreviousCheckpoint
-	Catalog                    BrainToolCatalog
-	CodexRuntimeManifestDigest string
-	CheckpointAllowlistVersion int64
+	Checkpoint runmanifest.PreviousCheckpoint
+	Catalog    BrainToolCatalog
 }
 
 // RunLaunchState is the per-run, authority-derived portion of a launch. A
@@ -101,8 +99,8 @@ func (profile RunLaunchProfile) inputs(state RunLaunchState) (RunLaunchInputs, e
 	var previousCheckpoint *runmanifest.PreviousCheckpoint
 	var previousCatalog *BrainToolCatalog
 	if state.PreviousCheckpoint != nil {
-		if state.PreviousCheckpoint.CodexRuntimeManifestDigest != profile.CodexRuntimeManifestDigest ||
-			state.PreviousCheckpoint.CheckpointAllowlistVersion != int64(profile.CheckpointAllowlistVersion) {
+		if state.PreviousCheckpoint.Checkpoint.CodexRuntimeManifestDigest != profile.CodexRuntimeManifestDigest ||
+			state.PreviousCheckpoint.Checkpoint.CheckpointAllowlistVersion != int64(profile.CheckpointAllowlistVersion) {
 			return RunLaunchInputs{}, errors.New("previous checkpoint runtime manifest or allowlist version does not match the deployment profile")
 		}
 		proposal, err := BuildExecutorCatalog(policy)

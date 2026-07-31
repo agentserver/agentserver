@@ -630,14 +630,28 @@
       "RunLaunchCheckpointState": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["checkpointId", "threadId", "manifestDigest", "catalogDigest", "catalog", "object", "codexRuntimeManifestDigest", "checkpointAllowlistVersion"],
+        "required": ["checkpointId", "runId", "runAttemptId", "runAttemptGeneration", "threadId", "turnId", "manifestDigest", "catalogDigest", "catalog", "object", "codexRuntimeManifestDigest", "checkpointAllowlistVersion"],
         "properties": {
           "checkpointId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
           "threadId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "turnId": {"type": "string", "minLength": 1, "maxLength": 256},
           "manifestDigest": {"$ref": "#/components/schemas/SHA256"},
           "catalogDigest": {"$ref": "#/components/schemas/SHA256"},
           "catalog": {"$ref": "#/components/schemas/BrainToolCatalogState"},
-          "object": {"$ref": "#/components/schemas/RunLaunchObjectPointer"},
+          "object": {
+            "allOf": [
+              {"$ref": "#/components/schemas/RunLaunchObjectPointer"},
+              {
+                "properties": {
+                  "sizeBytes": {"type": "integer", "minimum": 1, "maximum": 67174420},
+                  "mediaType": {"const": "application/vnd.agentserver.codex-checkpoint.v1"}
+                }
+              }
+            ]
+          },
           "codexRuntimeManifestDigest": {"$ref": "#/components/schemas/SHA256"},
           "checkpointAllowlistVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
         }

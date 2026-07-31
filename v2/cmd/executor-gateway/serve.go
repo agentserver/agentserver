@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/executorgateway"
+	"github.com/agentserver/agentserver/v2/internal/runcapability"
 )
 
 const (
@@ -41,6 +42,7 @@ const (
 	gatewayDevRunAttemptVersionEnvironment    = "AGENTSERVER_V2_DEV_RUN_ATTEMPT_VERSION"
 	gatewayDevToolCatalogDigestEnvironment    = "AGENTSERVER_V2_DEV_TOOL_CATALOG_DIGEST"
 	gatewayDevMCPBearerEnvironment            = "AGENTSERVER_V2_DEV_MCP_BEARER_TOKEN"
+	gatewayDevRunCapabilityKeyEnvironment     = "AGENTSERVER_V2_DEV_RUN_CAPABILITY_KEY"
 	gatewayDevExecutorHeader                  = "X-Agentserver-Dev-Executor-Id"
 	maximumDevMCPBearerBytes                  = 16 * 1024
 )
@@ -90,70 +92,7 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	if devExecutorID == "00000000-0000-0000-0000-000000000000" || !canonicalUUIDPattern.MatchString(devExecutorID) {
 		return errors.New("AGENTSERVER_V2_DEV_EXECUTOR_ID must be a non-zero canonical lowercase UUID")
 	}
-	devWorkspaceID, err := requiredGatewayConfiguration(getenv, gatewayDevWorkspaceIDEnvironment)
-	if err != nil {
-		return err
-	}
-	if devWorkspaceID == "00000000-0000-0000-0000-000000000000" || !canonicalUUIDPattern.MatchString(devWorkspaceID) {
-		return errors.New("AGENTSERVER_V2_DEV_WORKSPACE_ID must be a non-zero canonical lowercase UUID")
-	}
-	devRunID, err := requiredGatewayConfiguration(getenv, gatewayDevRunIDEnvironment)
-	if err != nil {
-		return err
-	}
-	if devRunID == "00000000-0000-0000-0000-000000000000" || !canonicalUUIDPattern.MatchString(devRunID) {
-		return errors.New("AGENTSERVER_V2_DEV_RUN_ID must be a non-zero canonical lowercase UUID")
-	}
-	devRunAttemptID, err := requiredGatewayConfiguration(getenv, gatewayDevRunAttemptIDEnvironment)
-	if err != nil {
-		return err
-	}
-	if devRunAttemptID == "00000000-0000-0000-0000-000000000000" || !canonicalUUIDPattern.MatchString(devRunAttemptID) {
-		return errors.New("AGENTSERVER_V2_DEV_RUN_ATTEMPT_ID must be a non-zero canonical lowercase UUID")
-	}
-	devRunAttemptGeneration, err := requiredPositiveGatewayInt64(getenv, gatewayDevRunAttemptGenerationEnvironment)
-	if err != nil {
-		return err
-	}
-	devRunHolderID, err := requiredGatewayConfiguration(getenv, gatewayDevRunHolderIDEnvironment)
-	if err != nil {
-		return err
-	}
-	if len(devRunHolderID) > 256 {
-		return errors.New("AGENTSERVER_V2_DEV_RUN_HOLDER_ID must contain at most 256 bytes")
-	}
-	devRunVersion, err := requiredPositiveGatewayInt64(getenv, gatewayDevRunVersionEnvironment)
-	if err != nil {
-		return err
-	}
-	devRunAttemptVersion, err := requiredPositiveGatewayInt64(getenv, gatewayDevRunAttemptVersionEnvironment)
-	if err != nil {
-		return err
-	}
-	devToolCatalogDigest, err := requiredGatewayConfiguration(getenv, gatewayDevToolCatalogDigestEnvironment)
-	if err != nil {
-		return err
-	}
-	if len(devToolCatalogDigest) != 64 {
-		return errors.New("AGENTSERVER_V2_DEV_TOOL_CATALOG_DIGEST must be 64 lowercase hexadecimal characters")
-	}
-	for _, character := range []byte(devToolCatalogDigest) {
-		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
-			return errors.New("AGENTSERVER_V2_DEV_TOOL_CATALOG_DIGEST must be 64 lowercase hexadecimal characters")
-		}
-	}
-	devMCPBearer, err := requiredGatewayConfiguration(getenv, gatewayDevMCPBearerEnvironment)
-	if err != nil {
-		return err
-	}
-	mcpAuthenticator, err := newDevMCPAuthenticator(devMCPBearer, devWorkspaceID, devExecutorID, devToolCatalogDigest, executorgateway.ExecutorMCPRunContext{
-		RunID:                     devRunID,
-		RunAttemptID:              devRunAttemptID,
-		RunAttemptGeneration:      devRunAttemptGeneration,
-		HolderID:                  devRunHolderID,
-		ExpectedRunVersion:        devRunVersion,
-		ExpectedRunAttemptVersion: devRunAttemptVersion,
-	})
+	mcpAuthenticator, err := configuredDevMCPAuthenticator(getenv, devExecutorID)
 	if err != nil {
 		return err
 	}
@@ -298,6 +237,101 @@ type devMCPAuthenticator struct {
 	principal     executorgateway.ExecutorMCPPrincipal
 }
 
+type devRunCapabilityAuthenticator struct {
+	codec      *runcapability.DevelopmentCodec
+	executorID string
+	now        func() time.Time
+}
+
+func configuredDevMCPAuthenticator(getenv func(string) string, executorID string) (executorgateway.ExecutorMCPAuthenticator, error) {
+	encodedKey := strings.TrimSpace(getenv(gatewayDevRunCapabilityKeyEnvironment))
+	if encodedKey != "" {
+		codec, err := runcapability.NewDevelopmentCodecFromBase64Key(encodedKey)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", gatewayDevRunCapabilityKeyEnvironment, err)
+		}
+		return newDevRunCapabilityAuthenticator(codec, executorID, time.Now)
+	}
+
+	workspaceID, err := requiredGatewayConfiguration(getenv, gatewayDevWorkspaceIDEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	if workspaceID == "00000000-0000-0000-0000-000000000000" || !canonicalUUIDPattern.MatchString(workspaceID) {
+		return nil, errors.New("AGENTSERVER_V2_DEV_WORKSPACE_ID must be a non-zero canonical lowercase UUID")
+	}
+	runID, err := requiredGatewayConfiguration(getenv, gatewayDevRunIDEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	if runID == "00000000-0000-0000-0000-000000000000" || !canonicalUUIDPattern.MatchString(runID) {
+		return nil, errors.New("AGENTSERVER_V2_DEV_RUN_ID must be a non-zero canonical lowercase UUID")
+	}
+	runAttemptID, err := requiredGatewayConfiguration(getenv, gatewayDevRunAttemptIDEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	if runAttemptID == "00000000-0000-0000-0000-000000000000" || !canonicalUUIDPattern.MatchString(runAttemptID) {
+		return nil, errors.New("AGENTSERVER_V2_DEV_RUN_ATTEMPT_ID must be a non-zero canonical lowercase UUID")
+	}
+	runAttemptGeneration, err := requiredPositiveGatewayInt64(getenv, gatewayDevRunAttemptGenerationEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	holderID, err := requiredGatewayConfiguration(getenv, gatewayDevRunHolderIDEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	if len(holderID) > 256 {
+		return nil, errors.New("AGENTSERVER_V2_DEV_RUN_HOLDER_ID must contain at most 256 bytes")
+	}
+	runVersion, err := requiredPositiveGatewayInt64(getenv, gatewayDevRunVersionEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	runAttemptVersion, err := requiredPositiveGatewayInt64(getenv, gatewayDevRunAttemptVersionEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	toolCatalogDigest, err := requiredGatewayConfiguration(getenv, gatewayDevToolCatalogDigestEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	if len(toolCatalogDigest) != 64 {
+		return nil, errors.New("AGENTSERVER_V2_DEV_TOOL_CATALOG_DIGEST must be 64 lowercase hexadecimal characters")
+	}
+	for _, character := range []byte(toolCatalogDigest) {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return nil, errors.New("AGENTSERVER_V2_DEV_TOOL_CATALOG_DIGEST must be 64 lowercase hexadecimal characters")
+		}
+	}
+	bearer, err := requiredGatewayConfiguration(getenv, gatewayDevMCPBearerEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	return newDevMCPAuthenticator(bearer, workspaceID, executorID, toolCatalogDigest, executorgateway.ExecutorMCPRunContext{
+		RunID: runID, RunAttemptID: runAttemptID, RunAttemptGeneration: runAttemptGeneration,
+		HolderID: holderID, ExpectedRunVersion: runVersion, ExpectedRunAttemptVersion: runAttemptVersion,
+	})
+}
+
+func newDevRunCapabilityAuthenticator(
+	codec *runcapability.DevelopmentCodec,
+	executorID string,
+	now func() time.Time,
+) (devRunCapabilityAuthenticator, error) {
+	if codec == nil {
+		return devRunCapabilityAuthenticator{}, errors.New("development run capability codec is required")
+	}
+	if executorID == "00000000-0000-0000-0000-000000000000" || !canonicalUUIDPattern.MatchString(executorID) {
+		return devRunCapabilityAuthenticator{}, errors.New("development run capability executor ID must be a non-zero canonical lowercase UUID")
+	}
+	if now == nil {
+		return devRunCapabilityAuthenticator{}, errors.New("development run capability clock is required")
+	}
+	return devRunCapabilityAuthenticator{codec: codec, executorID: executorID, now: now}, nil
+}
+
 func newDevMCPAuthenticator(bearer, workspaceID, executorID, toolCatalogDigest string, run executorgateway.ExecutorMCPRunContext) (devMCPAuthenticator, error) {
 	if len(bearer) < 32 || len(bearer) > maximumDevMCPBearerBytes {
 		return devMCPAuthenticator{}, fmt.Errorf("%s must contain between 32 and %d bytes", gatewayDevMCPBearerEnvironment, maximumDevMCPBearerBytes)
@@ -326,6 +360,38 @@ func (authenticator devMCPAuthenticator) AuthenticateExecutorMCP(request *http.R
 		return executorgateway.ExecutorMCPPrincipal{}, errors.New("development MCP bearer is missing or different")
 	}
 	return authenticator.principal, nil
+}
+
+func (authenticator devRunCapabilityAuthenticator) AuthenticateExecutorMCP(request *http.Request) (executorgateway.ExecutorMCPPrincipal, error) {
+	if request == nil || authenticator.codec == nil || authenticator.now == nil {
+		return executorgateway.ExecutorMCPPrincipal{}, errors.New("development MCP run capability authenticator is unavailable")
+	}
+	values := request.Header.Values("Authorization")
+	if len(values) != 1 || strings.Contains(values[0], ",") || !strings.HasPrefix(values[0], "Bearer ") {
+		return executorgateway.ExecutorMCPPrincipal{}, errors.New("development MCP run capability is missing")
+	}
+	token := strings.TrimPrefix(values[0], "Bearer ")
+	if token == "" || strings.TrimSpace(token) != token {
+		return executorgateway.ExecutorMCPPrincipal{}, errors.New("development MCP run capability framing is invalid")
+	}
+	claims, err := authenticator.codec.Verify(token, runcapability.AudienceExecutorMCP, authenticator.now())
+	if err != nil {
+		return executorgateway.ExecutorMCPPrincipal{}, fmt.Errorf("verify development MCP run capability: %w", err)
+	}
+	if claims.ExecutorID != authenticator.executorID {
+		return executorgateway.ExecutorMCPPrincipal{}, errors.New("development MCP run capability belongs to another executor")
+	}
+	return executorgateway.ExecutorMCPPrincipal{
+		CapabilityID: "insecure-dev:" + claims.CapabilityID,
+		WorkspaceID:  claims.WorkspaceID, ExecutorID: claims.ExecutorID,
+		ToolCatalogDigest: claims.ToolCatalogDigest,
+		Run: executorgateway.ExecutorMCPRunContext{
+			RunID: claims.RunID, RunAttemptID: claims.RunAttemptID,
+			RunAttemptGeneration: claims.RunAttemptGeneration, HolderID: claims.HolderID,
+			ExpectedRunVersion:        claims.ExpectedRunVersion,
+			ExpectedRunAttemptVersion: claims.ExpectedRunAttemptVersion,
+		},
+	}, nil
 }
 
 func (authenticator devExecutorAuthenticator) AuthenticateExecutor(request *http.Request) (executorgateway.ExecutorIdentity, error) {

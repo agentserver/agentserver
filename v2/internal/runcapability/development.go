@@ -80,6 +80,15 @@ func NewDevelopmentCodec(key []byte) (*DevelopmentCodec, error) {
 	return codec, nil
 }
 
+func NewDevelopmentCodecFromBase64Key(encoded string) (*DevelopmentCodec, error) {
+	key, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil || len(key) != sha256.Size || base64.RawURLEncoding.EncodeToString(key) != encoded {
+		return nil, errors.New("development run capability key must be canonical 256-bit base64url")
+	}
+	defer clear(key)
+	return NewDevelopmentCodec(key)
+}
+
 func (codec *DevelopmentCodec) Sign(claims Claims) (string, error) {
 	if codec == nil {
 		return "", errors.New("development run capability codec is required")

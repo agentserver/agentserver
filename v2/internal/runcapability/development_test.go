@@ -201,6 +201,22 @@ func TestNewDevelopmentCodecRequiresExactKeySize(t *testing.T) {
 	}
 }
 
+func TestNewDevelopmentCodecFromBase64KeyRequiresCanonicalEncoding(t *testing.T) {
+	encoded := base64.RawURLEncoding.EncodeToString(bytesOf(0x72, 32))
+	codec, err := NewDevelopmentCodecFromBase64Key(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := codec.Sign(developmentTestClaims(AudienceExecutorMCP)); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []string{"", encoded + "=", base64.RawURLEncoding.EncodeToString(bytesOf(0x72, 31))} {
+		if _, err := NewDevelopmentCodecFromBase64Key(invalid); err == nil {
+			t.Fatalf("invalid encoded development key %q was accepted", invalid)
+		}
+	}
+}
+
 func developmentTestClaims(audience string) Claims {
 	claims := Claims{
 		Version: DevelopmentVersion, CapabilityID: "71000000-0000-4000-8000-000000000001",

@@ -15,6 +15,8 @@ type RunAttemptStateStore interface {
 	ClaimQueuedRun(context.Context, coredb.ClaimQueuedRunCommand) (coredb.ClaimQueuedRunResult, error)
 	RenewRunAttemptLeases(context.Context, coredb.RenewRunAttemptLeasesCommand) (coredb.RenewRunAttemptLeasesResult, error)
 	MarkTurnAccepted(context.Context, coredb.MarkTurnAcceptedCommand) (coredb.MarkTurnAcceptedResult, error)
+	BeginRunFinalization(context.Context, coredb.BeginRunFinalizationCommand) (coredb.BeginRunFinalizationResult, error)
+	CommitCheckpointAndTerminalRun(context.Context, coredb.CommitCheckpointAndTerminalRunCommand) (coredb.CommitCheckpointAndTerminalRunResult, error)
 	AppendAttemptEvents(context.Context, coredb.AppendAttemptEventsCommand) (coredb.AppendAttemptEventsResult, error)
 }
 
@@ -98,6 +100,68 @@ func (commands StateStoreRunAttemptCommands) MarkTurnAccepted(ctx context.Contex
 		Run:        contractRun(result.Run),
 		RunAttempt: contractRunAttempt(result.Attempt),
 		Changed:    result.Changed,
+	}, nil
+}
+
+func (commands StateStoreRunAttemptCommands) BeginRunFinalization(ctx context.Context, request corecontract.BeginRunFinalizationRequest) (corecontract.BeginRunFinalizationResponse, error) {
+	if commands.Store == nil {
+		return corecontract.BeginRunFinalizationResponse{}, errors.New("nil core state store")
+	}
+	result, err := commands.Store.BeginRunFinalization(ctx, coredb.BeginRunFinalizationCommand{
+		RunID: request.RunID, AttemptID: request.RunAttemptID, HolderID: request.HolderID,
+		Generation: request.RunAttemptGeneration, ExpectedRunVersion: request.ExpectedRunVersion,
+		ExpectedAttemptVersion: request.ExpectedRunAttemptVersion, ThreadID: request.ThreadID,
+		TurnID: request.TurnID, Record: databaseTransitionRecord(request.Record),
+	})
+	if err != nil {
+		return corecontract.BeginRunFinalizationResponse{}, err
+	}
+	return corecontract.BeginRunFinalizationResponse{
+		Run: contractRun(result.Run), RunAttempt: contractRunAttempt(result.Attempt), Changed: result.Changed,
+	}, nil
+}
+
+func (commands StateStoreRunAttemptCommands) CommitCheckpoint(ctx context.Context, request corecontract.CommitCheckpointRequest) (corecontract.CommitCheckpointResponse, error) {
+	if commands.Store == nil {
+		return corecontract.CommitCheckpointResponse{}, errors.New("nil core state store")
+	}
+	manifestDigest, err := decodeCanonicalSHA256(request.Checkpoint.ManifestDigest)
+	if err != nil {
+		return corecontract.CommitCheckpointResponse{}, runAttemptConversionError("CommitCheckpointAndTerminalRun", "checkpoint", request.Checkpoint.CheckpointID, fmt.Errorf("manifest digest: %w", err))
+	}
+	catalogDigest, err := decodeCanonicalSHA256(request.Checkpoint.CatalogDigest)
+	if err != nil {
+		return corecontract.CommitCheckpointResponse{}, runAttemptConversionError("CommitCheckpointAndTerminalRun", "checkpoint", request.Checkpoint.CheckpointID, fmt.Errorf("catalog digest: %w", err))
+	}
+	objectDigest, err := decodeCanonicalSHA256(request.Checkpoint.Object.SHA256)
+	if err != nil {
+		return corecontract.CommitCheckpointResponse{}, runAttemptConversionError("CommitCheckpointAndTerminalRun", "checkpoint", request.Checkpoint.CheckpointID, fmt.Errorf("object digest: %w", err))
+	}
+	runtimeDigest, err := decodeCanonicalSHA256(request.Checkpoint.CodexRuntimeManifestDigest)
+	if err != nil {
+		return corecontract.CommitCheckpointResponse{}, runAttemptConversionError("CommitCheckpointAndTerminalRun", "checkpoint", request.Checkpoint.CheckpointID, fmt.Errorf("runtime manifest digest: %w", err))
+	}
+	result, err := commands.Store.CommitCheckpointAndTerminalRun(ctx, coredb.CommitCheckpointAndTerminalRunCommand{
+		RunID: request.RunID, AttemptID: request.RunAttemptID, HolderID: request.HolderID,
+		Generation: request.RunAttemptGeneration, ExpectedRunVersion: request.ExpectedRunVersion,
+		ExpectedAttemptVersion: request.ExpectedRunAttemptVersion,
+		CheckpointID:           request.Checkpoint.CheckpointID, BrainToolCatalogID: request.Checkpoint.BrainToolCatalogID,
+		ThreadID: request.Checkpoint.ThreadID, TurnID: request.Checkpoint.TurnID,
+		ManifestDigest: manifestDigest, CatalogDigest: catalogDigest,
+		Object: coredb.ObjectPointer{
+			ObjectID: request.Checkpoint.Object.ObjectID, SHA256: objectDigest,
+			Size: request.Checkpoint.Object.Size, MediaType: request.Checkpoint.Object.MediaType,
+		},
+		CodexRuntimeManifestDigest: runtimeDigest,
+		CheckpointAllowlistVersion: request.Checkpoint.CheckpointAllowlistVersion,
+		Record:                     databaseTransitionRecord(request.Record),
+	})
+	if err != nil {
+		return corecontract.CommitCheckpointResponse{}, err
+	}
+	return corecontract.CommitCheckpointResponse{
+		Run: contractRun(result.Run), RunAttempt: contractRunAttempt(result.Attempt),
+		Checkpoint: contractCheckpoint(result.Checkpoint), SessionVersion: result.SessionVersion, Created: result.Created,
 	}, nil
 }
 
@@ -200,15 +264,28 @@ func contractRun(run coredb.Run) corecontract.RunState {
 
 func contractRunAttempt(attempt coredb.RunAttempt) corecontract.RunAttemptState {
 	return corecontract.RunAttemptState{
-		RunAttemptID:  attempt.ID,
-		RunID:         attempt.RunID,
-		Generation:    attempt.Generation,
-		Status:        attempt.Status,
-		TurnStartedAt: attempt.TurnStartedAt,
-		HolderID:      attempt.HolderID,
-		Version:       attempt.Version,
-		CreatedAt:     attempt.CreatedAt,
-		UpdatedAt:     attempt.UpdatedAt,
+		RunAttemptID: attempt.ID, RunID: attempt.RunID, Generation: attempt.Generation,
+		Status: attempt.Status, TurnStartedAt: attempt.TurnStartedAt,
+		TerminalThreadID: attempt.TerminalThreadID, TerminalTurnID: attempt.TerminalTurnID,
+		HolderID: attempt.HolderID, Version: attempt.Version,
+		CreatedAt: attempt.CreatedAt, UpdatedAt: attempt.UpdatedAt,
+	}
+}
+
+func contractCheckpoint(checkpoint coredb.Checkpoint) corecontract.CheckpointState {
+	return corecontract.CheckpointState{
+		CheckpointID: checkpoint.ID, WorkspaceID: checkpoint.WorkspaceID, SessionID: checkpoint.SessionID,
+		RunID: checkpoint.RunID, RunAttemptID: checkpoint.AttemptID,
+		RunAttemptGeneration: checkpoint.AttemptGeneration, BrainToolCatalogID: checkpoint.BrainToolCatalogID,
+		ThreadID: checkpoint.ThreadID, TurnID: checkpoint.TurnID,
+		ManifestDigest: hex.EncodeToString(checkpoint.ManifestDigest[:]),
+		CatalogDigest:  hex.EncodeToString(checkpoint.CatalogDigest[:]),
+		Object: corecontract.EventObjectPointer{
+			ObjectID: checkpoint.Object.ObjectID, SHA256: hex.EncodeToString(checkpoint.Object.SHA256[:]),
+			Size: checkpoint.Object.Size, MediaType: checkpoint.Object.MediaType,
+		},
+		CodexRuntimeManifestDigest: hex.EncodeToString(checkpoint.CodexRuntimeManifestDigest[:]),
+		CheckpointAllowlistVersion: checkpoint.CheckpointAllowlistVersion, CreatedAt: checkpoint.CreatedAt,
 	}
 }
 

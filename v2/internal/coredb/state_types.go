@@ -57,15 +57,17 @@ type Run struct {
 }
 
 type RunAttempt struct {
-	ID            string
-	RunID         string
-	Generation    int64
-	Status        string
-	TurnStartedAt *time.Time
-	HolderID      string
-	Version       int64
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID               string
+	RunID            string
+	Generation       int64
+	Status           string
+	TurnStartedAt    *time.Time
+	TerminalThreadID string
+	TerminalTurnID   string
+	HolderID         string
+	Version          int64
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 type Lease struct {
@@ -179,6 +181,51 @@ type MarkTurnAcceptedResult struct {
 	Run     Run
 	Attempt RunAttempt
 	Changed bool
+}
+
+type BeginRunFinalizationCommand struct {
+	RunID                  string
+	AttemptID              string
+	HolderID               string
+	Generation             int64
+	ExpectedRunVersion     int64
+	ExpectedAttemptVersion int64
+	ThreadID               string
+	TurnID                 string
+	Record                 TransitionRecord
+}
+
+type BeginRunFinalizationResult struct {
+	Run     Run
+	Attempt RunAttempt
+	Changed bool
+}
+
+type CommitCheckpointAndTerminalRunCommand struct {
+	RunID                      string
+	AttemptID                  string
+	HolderID                   string
+	Generation                 int64
+	ExpectedRunVersion         int64
+	ExpectedAttemptVersion     int64
+	CheckpointID               string
+	BrainToolCatalogID         string
+	ThreadID                   string
+	TurnID                     string
+	ManifestDigest             [32]byte
+	CatalogDigest              [32]byte
+	Object                     ObjectPointer
+	CodexRuntimeManifestDigest [32]byte
+	CheckpointAllowlistVersion int64
+	Record                     TransitionRecord
+}
+
+type CommitCheckpointAndTerminalRunResult struct {
+	Run            Run
+	Attempt        RunAttempt
+	Checkpoint     Checkpoint
+	SessionVersion int64
+	Created        bool
 }
 
 type RenewSessionLeaseCommand struct {

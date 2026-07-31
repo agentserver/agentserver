@@ -77,15 +77,17 @@ type Run struct {
 }
 
 type RunAttempt struct {
-	RunAttemptID  string
-	RunID         string
-	Generation    int64
-	Status        string
-	TurnStartedAt *time.Time
-	HolderID      string
-	Version       int64
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	RunAttemptID     string
+	RunID            string
+	Generation       int64
+	Status           string
+	TurnStartedAt    *time.Time
+	TerminalThreadID string
+	TerminalTurnID   string
+	HolderID         string
+	Version          int64
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 type Lease struct {
@@ -142,6 +144,73 @@ type MarkTurnAcceptedResult struct {
 	Run        Run
 	RunAttempt RunAttempt
 	Changed    bool
+}
+
+type BeginRunFinalizationRequest struct {
+	RunID                     string
+	RunAttemptID              string
+	HolderID                  string
+	RunAttemptGeneration      int64
+	ExpectedRunVersion        int64
+	ExpectedRunAttemptVersion int64
+	ThreadID                  string
+	TurnID                    string
+	Record                    TransitionRecord
+}
+
+type BeginRunFinalizationResult struct {
+	Run        Run
+	RunAttempt RunAttempt
+	Changed    bool
+}
+
+type CheckpointCommit struct {
+	CheckpointID               string
+	BrainToolCatalogID         string
+	ThreadID                   string
+	TurnID                     string
+	ManifestDigest             [32]byte
+	CatalogDigest              [32]byte
+	Object                     EventObjectPointer
+	CodexRuntimeManifestDigest [32]byte
+	CheckpointAllowlistVersion int64
+}
+
+type CommitCheckpointRequest struct {
+	RunID                     string
+	RunAttemptID              string
+	HolderID                  string
+	RunAttemptGeneration      int64
+	ExpectedRunVersion        int64
+	ExpectedRunAttemptVersion int64
+	Checkpoint                CheckpointCommit
+	Record                    TransitionRecord
+}
+
+type CommittedCheckpoint struct {
+	CheckpointID               string
+	WorkspaceID                string
+	SessionID                  string
+	RunID                      string
+	RunAttemptID               string
+	RunAttemptGeneration       int64
+	BrainToolCatalogID         string
+	ThreadID                   string
+	TurnID                     string
+	ManifestDigest             [32]byte
+	CatalogDigest              [32]byte
+	Object                     EventObjectPointer
+	CodexRuntimeManifestDigest [32]byte
+	CheckpointAllowlistVersion int64
+	CreatedAt                  time.Time
+}
+
+type CommitCheckpointResult struct {
+	Run            Run
+	RunAttempt     RunAttempt
+	Checkpoint     CommittedCheckpoint
+	SessionVersion int64
+	Created        bool
 }
 
 type EventObjectPointer struct {
@@ -432,6 +501,80 @@ func (client *CoreClient) MarkTurnAccepted(ctx context.Context, request MarkTurn
 	return result, nil
 }
 
+func (client *CoreClient) BeginRunFinalization(ctx context.Context, request BeginRunFinalizationRequest) (BeginRunFinalizationResult, error) {
+	contractRequest := corecontract.BeginRunFinalizationRequest{
+		RunID: request.RunID, RunAttemptID: request.RunAttemptID, HolderID: request.HolderID,
+		RunAttemptGeneration: request.RunAttemptGeneration, ExpectedRunVersion: request.ExpectedRunVersion,
+		ExpectedRunAttemptVersion: request.ExpectedRunAttemptVersion, ThreadID: request.ThreadID,
+		TurnID: request.TurnID, Record: contractTransitionRecord(request.Record),
+	}
+	var response corecontract.BeginRunFinalizationResponse
+	if err := client.post(ctx, corecontract.BeginRunFinalizationPath(request.RunAttemptID), contractRequest, &response); err != nil {
+		return BeginRunFinalizationResult{}, err
+	}
+	result := BeginRunFinalizationResult{
+		Run: contractRun(response.Run), RunAttempt: contractRunAttempt(response.RunAttempt), Changed: response.Changed,
+	}
+	if result.Run.RunID != request.RunID || result.RunAttempt.RunID != request.RunID ||
+		result.RunAttempt.RunAttemptID != request.RunAttemptID ||
+		result.Run.CurrentAttemptGeneration != request.RunAttemptGeneration ||
+		result.RunAttempt.Generation != request.RunAttemptGeneration || result.RunAttempt.HolderID != request.HolderID ||
+		result.RunAttempt.TerminalThreadID != request.ThreadID || result.RunAttempt.TerminalTurnID != request.TurnID ||
+		!((result.Run.Status == "finalizing" && result.RunAttempt.Status == "finalizing") ||
+			(result.Run.Status == "completed" && result.RunAttempt.Status == "succeeded")) {
+		return BeginRunFinalizationResult{}, errors.New("core begin-finalization response does not match the requested terminal attempt identity")
+	}
+	if result.Changed && (result.Run.Status != "finalizing" || result.RunAttempt.Status != "finalizing") {
+		return BeginRunFinalizationResult{}, errors.New("core begin-finalization changed response is not finalizing")
+	}
+	return result, nil
+}
+
+func (client *CoreClient) CommitCheckpoint(ctx context.Context, request CommitCheckpointRequest) (CommitCheckpointResult, error) {
+	checkpoint := request.Checkpoint
+	contractRequest := corecontract.CommitCheckpointRequest{
+		RunID: request.RunID, RunAttemptID: request.RunAttemptID, HolderID: request.HolderID,
+		RunAttemptGeneration: request.RunAttemptGeneration, ExpectedRunVersion: request.ExpectedRunVersion,
+		ExpectedRunAttemptVersion: request.ExpectedRunAttemptVersion,
+		Checkpoint: corecontract.CheckpointCommit{
+			CheckpointID: checkpoint.CheckpointID, BrainToolCatalogID: checkpoint.BrainToolCatalogID,
+			ThreadID: checkpoint.ThreadID, TurnID: checkpoint.TurnID,
+			ManifestDigest: hex.EncodeToString(checkpoint.ManifestDigest[:]),
+			CatalogDigest:  hex.EncodeToString(checkpoint.CatalogDigest[:]),
+			Object: corecontract.EventObjectPointer{
+				ObjectID: checkpoint.Object.ObjectID, SHA256: hex.EncodeToString(checkpoint.Object.SHA256[:]),
+				Size: checkpoint.Object.Size, MediaType: checkpoint.Object.MediaType,
+			},
+			CodexRuntimeManifestDigest: hex.EncodeToString(checkpoint.CodexRuntimeManifestDigest[:]),
+			CheckpointAllowlistVersion: checkpoint.CheckpointAllowlistVersion,
+		},
+		Record: contractTransitionRecord(request.Record),
+	}
+	var response corecontract.CommitCheckpointResponse
+	if err := client.post(ctx, corecontract.CommitCheckpointPath(request.RunAttemptID), contractRequest, &response); err != nil {
+		return CommitCheckpointResult{}, err
+	}
+	committed, err := clientCommittedCheckpoint(response.Checkpoint)
+	if err != nil {
+		return CommitCheckpointResult{}, fmt.Errorf("validate core commit-checkpoint response: %w", err)
+	}
+	result := CommitCheckpointResult{
+		Run: contractRun(response.Run), RunAttempt: contractRunAttempt(response.RunAttempt),
+		Checkpoint: committed, SessionVersion: response.SessionVersion, Created: response.Created,
+	}
+	if result.Run.RunID != request.RunID || result.Run.Status != "completed" ||
+		result.Run.CurrentAttemptGeneration != request.RunAttemptGeneration ||
+		result.RunAttempt.RunAttemptID != request.RunAttemptID || result.RunAttempt.RunID != request.RunID ||
+		result.RunAttempt.Generation != request.RunAttemptGeneration || result.RunAttempt.HolderID != request.HolderID ||
+		result.RunAttempt.Status != "succeeded" || result.RunAttempt.TerminalThreadID != checkpoint.ThreadID ||
+		result.RunAttempt.TerminalTurnID != checkpoint.TurnID || committed.WorkspaceID != result.Run.WorkspaceID ||
+		committed.SessionID != result.Run.SessionID || result.SessionVersion < 1 ||
+		!committedCheckpointMatchesRequest(committed, request) {
+		return CommitCheckpointResult{}, errors.New("core commit-checkpoint response does not match the requested checkpoint and terminal attempt identity")
+	}
+	return result, nil
+}
+
 func (client *CoreClient) AppendAttemptEvents(ctx context.Context, request AppendAttemptEventsRequest) (AppendAttemptEventsResult, error) {
 	contractEvents := make([]corecontract.AttemptEvent, len(request.Events))
 	for index, event := range request.Events {
@@ -640,9 +783,68 @@ func contractRun(source corecontract.RunState) Run {
 func contractRunAttempt(source corecontract.RunAttemptState) RunAttempt {
 	return RunAttempt{
 		RunAttemptID: source.RunAttemptID, RunID: source.RunID, Generation: source.Generation, Status: source.Status,
-		TurnStartedAt: source.TurnStartedAt, HolderID: source.HolderID, Version: source.Version,
+		TurnStartedAt: source.TurnStartedAt, TerminalThreadID: source.TerminalThreadID, TerminalTurnID: source.TerminalTurnID,
+		HolderID: source.HolderID, Version: source.Version,
 		CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt,
 	}
+}
+
+func clientCommittedCheckpoint(source corecontract.CheckpointState) (CommittedCheckpoint, error) {
+	manifestDigest, err := decodeClientSHA256(source.ManifestDigest)
+	if err != nil {
+		return CommittedCheckpoint{}, fmt.Errorf("manifest digest: %w", err)
+	}
+	catalogDigest, err := decodeClientSHA256(source.CatalogDigest)
+	if err != nil {
+		return CommittedCheckpoint{}, fmt.Errorf("catalog digest: %w", err)
+	}
+	objectDigest, err := decodeClientSHA256(source.Object.SHA256)
+	if err != nil {
+		return CommittedCheckpoint{}, fmt.Errorf("object digest: %w", err)
+	}
+	runtimeDigest, err := decodeClientSHA256(source.CodexRuntimeManifestDigest)
+	if err != nil {
+		return CommittedCheckpoint{}, fmt.Errorf("runtime manifest digest: %w", err)
+	}
+	for field, value := range map[string]string{
+		"checkpoint ID": source.CheckpointID, "workspace ID": source.WorkspaceID,
+		"session ID": source.SessionID, "run ID": source.RunID,
+		"run attempt ID": source.RunAttemptID, "brain tool catalog ID": source.BrainToolCatalogID,
+		"checkpoint object ID": source.Object.ObjectID,
+	} {
+		if err := validateUUIDIdentity(field, value); err != nil {
+			return CommittedCheckpoint{}, err
+		}
+	}
+	if source.RunAttemptGeneration < 1 || source.RunAttemptGeneration > 1<<53-1 ||
+		!validClientProtocolText(source.ThreadID, 256) || !validClientProtocolText(source.TurnID, 256) ||
+		source.Object.Size < 1 || source.Object.Size > checkpointartifact.MaximumArtifactBytes ||
+		source.Object.MediaType != checkpointartifact.ArtifactMediaType ||
+		source.CheckpointAllowlistVersion < 1 || source.CheckpointAllowlistVersion > 1<<53-1 || source.CreatedAt.IsZero() {
+		return CommittedCheckpoint{}, errors.New("committed checkpoint response contains an invalid bounded authority field")
+	}
+	return CommittedCheckpoint{
+		CheckpointID: source.CheckpointID, WorkspaceID: source.WorkspaceID, SessionID: source.SessionID,
+		RunID: source.RunID, RunAttemptID: source.RunAttemptID, RunAttemptGeneration: source.RunAttemptGeneration,
+		BrainToolCatalogID: source.BrainToolCatalogID, ThreadID: source.ThreadID, TurnID: source.TurnID,
+		ManifestDigest: manifestDigest, CatalogDigest: catalogDigest,
+		Object: EventObjectPointer{
+			ObjectID: source.Object.ObjectID, SHA256: objectDigest,
+			Size: source.Object.Size, MediaType: source.Object.MediaType,
+		},
+		CodexRuntimeManifestDigest: runtimeDigest,
+		CheckpointAllowlistVersion: source.CheckpointAllowlistVersion, CreatedAt: source.CreatedAt,
+	}, nil
+}
+
+func committedCheckpointMatchesRequest(checkpoint CommittedCheckpoint, request CommitCheckpointRequest) bool {
+	want := request.Checkpoint
+	return checkpoint.CheckpointID == want.CheckpointID && checkpoint.RunID == request.RunID && checkpoint.RunAttemptID == request.RunAttemptID &&
+		checkpoint.RunAttemptGeneration == request.RunAttemptGeneration && checkpoint.BrainToolCatalogID == want.BrainToolCatalogID &&
+		checkpoint.ThreadID == want.ThreadID && checkpoint.TurnID == want.TurnID &&
+		checkpoint.ManifestDigest == want.ManifestDigest && checkpoint.CatalogDigest == want.CatalogDigest &&
+		checkpoint.Object == want.Object && checkpoint.CodexRuntimeManifestDigest == want.CodexRuntimeManifestDigest &&
+		checkpoint.CheckpointAllowlistVersion == want.CheckpointAllowlistVersion
 }
 
 func contractLease(source corecontract.LeaseState) Lease {

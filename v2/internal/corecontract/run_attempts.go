@@ -27,15 +27,17 @@ type RunState struct {
 }
 
 type RunAttemptState struct {
-	RunAttemptID  string     `json:"runAttemptId"`
-	RunID         string     `json:"runId"`
-	Generation    int64      `json:"generation"`
-	Status        string     `json:"status"`
-	TurnStartedAt *time.Time `json:"turnStartedAt,omitempty"`
-	HolderID      string     `json:"holderId"`
-	Version       int64      `json:"version"`
-	CreatedAt     time.Time  `json:"createdAt"`
-	UpdatedAt     time.Time  `json:"updatedAt"`
+	RunAttemptID     string     `json:"runAttemptId"`
+	RunID            string     `json:"runId"`
+	Generation       int64      `json:"generation"`
+	Status           string     `json:"status"`
+	TurnStartedAt    *time.Time `json:"turnStartedAt,omitempty"`
+	TerminalThreadID string     `json:"terminalThreadId,omitempty"`
+	TerminalTurnID   string     `json:"terminalTurnId,omitempty"`
+	HolderID         string     `json:"holderId"`
+	Version          int64      `json:"version"`
+	CreatedAt        time.Time  `json:"createdAt"`
+	UpdatedAt        time.Time  `json:"updatedAt"`
 }
 
 type LeaseState struct {
@@ -94,6 +96,73 @@ type MarkTurnAcceptedResponse struct {
 	Changed    bool            `json:"changed"`
 }
 
+type BeginRunFinalizationRequest struct {
+	RunID                     string           `json:"runId"`
+	RunAttemptID              string           `json:"runAttemptId"`
+	HolderID                  string           `json:"holderId"`
+	RunAttemptGeneration      int64            `json:"runAttemptGeneration"`
+	ExpectedRunVersion        int64            `json:"expectedRunVersion"`
+	ExpectedRunAttemptVersion int64            `json:"expectedRunAttemptVersion"`
+	ThreadID                  string           `json:"threadId"`
+	TurnID                    string           `json:"turnId"`
+	Record                    TransitionRecord `json:"record"`
+}
+
+type BeginRunFinalizationResponse struct {
+	Run        RunState        `json:"run"`
+	RunAttempt RunAttemptState `json:"runAttempt"`
+	Changed    bool            `json:"changed"`
+}
+
+type CheckpointCommit struct {
+	CheckpointID               string             `json:"checkpointId"`
+	BrainToolCatalogID         string             `json:"brainToolCatalogId"`
+	ThreadID                   string             `json:"threadId"`
+	TurnID                     string             `json:"turnId"`
+	ManifestDigest             string             `json:"manifestDigest"`
+	CatalogDigest              string             `json:"catalogDigest"`
+	Object                     EventObjectPointer `json:"object"`
+	CodexRuntimeManifestDigest string             `json:"codexRuntimeManifestDigest"`
+	CheckpointAllowlistVersion int64              `json:"checkpointAllowlistVersion"`
+}
+
+type CommitCheckpointRequest struct {
+	RunID                     string           `json:"runId"`
+	RunAttemptID              string           `json:"runAttemptId"`
+	HolderID                  string           `json:"holderId"`
+	RunAttemptGeneration      int64            `json:"runAttemptGeneration"`
+	ExpectedRunVersion        int64            `json:"expectedRunVersion"`
+	ExpectedRunAttemptVersion int64            `json:"expectedRunAttemptVersion"`
+	Checkpoint                CheckpointCommit `json:"checkpoint"`
+	Record                    TransitionRecord `json:"record"`
+}
+
+type CheckpointState struct {
+	CheckpointID               string             `json:"checkpointId"`
+	WorkspaceID                string             `json:"workspaceId"`
+	SessionID                  string             `json:"sessionId"`
+	RunID                      string             `json:"runId"`
+	RunAttemptID               string             `json:"runAttemptId"`
+	RunAttemptGeneration       int64              `json:"runAttemptGeneration"`
+	BrainToolCatalogID         string             `json:"brainToolCatalogId"`
+	ThreadID                   string             `json:"threadId"`
+	TurnID                     string             `json:"turnId"`
+	ManifestDigest             string             `json:"manifestDigest"`
+	CatalogDigest              string             `json:"catalogDigest"`
+	Object                     EventObjectPointer `json:"object"`
+	CodexRuntimeManifestDigest string             `json:"codexRuntimeManifestDigest"`
+	CheckpointAllowlistVersion int64              `json:"checkpointAllowlistVersion"`
+	CreatedAt                  time.Time          `json:"createdAt"`
+}
+
+type CommitCheckpointResponse struct {
+	Run            RunState        `json:"run"`
+	RunAttempt     RunAttemptState `json:"runAttempt"`
+	Checkpoint     CheckpointState `json:"checkpoint"`
+	SessionVersion int64           `json:"sessionVersion"`
+	Created        bool            `json:"created"`
+}
+
 type EventObjectPointer struct {
 	ObjectID  string `json:"objectId"`
 	SHA256    string `json:"sha256"`
@@ -140,6 +209,14 @@ func RenewRunAttemptPath(runAttemptID string) string {
 
 func MarkTurnAcceptedPath(runAttemptID string) string {
 	return RunAttemptPathPrefix + runAttemptID + ":turnAccepted"
+}
+
+func BeginRunFinalizationPath(runAttemptID string) string {
+	return RunAttemptPathPrefix + runAttemptID + ":beginFinalization"
+}
+
+func CommitCheckpointPath(runAttemptID string) string {
+	return RunAttemptPathPrefix + runAttemptID + ":commitCheckpoint"
 }
 
 func AppendAttemptEventsPath(runAttemptID string) string {

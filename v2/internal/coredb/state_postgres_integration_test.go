@@ -303,6 +303,130 @@ func TestPostgreSQLResolveRunLaunchStateRequiresLiveAttemptAuthority(t *testing.
 	}
 }
 
+func TestPostgreSQLRunFinalizationCommitsCheckpointAndTerminalStateAtomically(t *testing.T) {
+	store, pool, schema := newPostgresStateStore(t)
+	workspaceID := stateTestUUID(160_000)
+	sessionID := stateTestUUID(160_001)
+	insertStateTestSession(t, pool, schema, workspaceID, sessionID)
+	createCommand := stateCreateRunCommand(160_010, workspaceID, sessionID, "finalization-source")
+	created := mustCreateStateRun(t, store, createCommand)
+	claimed := mustClaimStateRun(t, store, stateClaimRunCommand(160_020, created.Run.ID, created.Run.Version, "finalization-holder"))
+
+	catalogDefinition, err := braincatalog.BuildCatalog("executor", "Deterministic executor tools.", []braincatalog.ToolDescriptor{{
+		Name: "read_file", Description: "Read one file.", InputSchema: json.RawMessage(`{"type":"object"}`),
+	}}, braincatalog.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	freeze := FreezeBrainToolCatalogCommand{
+		CatalogID: stateTestUUID(160_030), WorkspaceID: workspaceID, SessionID: sessionID,
+		RunID: created.Run.ID, AttemptID: claimed.Attempt.ID, HolderID: claimed.Attempt.HolderID,
+		Generation: claimed.Attempt.Generation, ExpectedRunVersion: claimed.Run.Version,
+		ExpectedAttemptVersion: claimed.Attempt.Version, ContractVersion: "executor-mcp/1.1",
+		CanonicalizerVersion: braincatalog.CatalogCanonicalizer,
+		CanonicalCatalog:     catalogDefinition.CanonicalBytes(), CatalogDigest: catalogDefinition.DigestSHA256(),
+		PolicyVersion: createCommand.ExecutorPolicy.Version, PolicyContextDigest: createCommand.ExecutorPolicy.ContextDigest,
+	}
+	frozen, err := store.FreezeBrainToolCatalog(t.Context(), freeze)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const threadID = "thread-finalization-1"
+	const turnID = "turn-finalization-1"
+	bound, err := store.BindBrainThreadCatalog(t.Context(), BindBrainThreadCatalogCommand{
+		CatalogID: freeze.CatalogID, RunID: freeze.RunID, AttemptID: freeze.AttemptID,
+		HolderID: freeze.HolderID, Generation: freeze.Generation,
+		ExpectedRunVersion: freeze.ExpectedRunVersion, ExpectedAttemptVersion: freeze.ExpectedAttemptVersion,
+		ExpectedCatalogVersion: frozen.Catalog.Version, ThreadID: threadID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := store.MarkTurnAccepted(t.Context(), MarkTurnAcceptedCommand{
+		RunID: created.Run.ID, AttemptID: claimed.Attempt.ID, HolderID: claimed.Attempt.HolderID,
+		Generation: claimed.Attempt.Generation, ExpectedRunVersion: claimed.Run.Version,
+		ExpectedAttemptVersion: claimed.Attempt.Version, Record: stateTransitionRecord(160_040),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	beginCommand := BeginRunFinalizationCommand{
+		RunID: accepted.Run.ID, AttemptID: accepted.Attempt.ID, HolderID: accepted.Attempt.HolderID,
+		Generation: accepted.Attempt.Generation, ExpectedRunVersion: accepted.Run.Version,
+		ExpectedAttemptVersion: accepted.Attempt.Version, ThreadID: threadID, TurnID: turnID,
+		Record: stateTransitionRecord(160_050),
+	}
+	finalizing, err := store.BeginRunFinalization(t.Context(), beginCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !finalizing.Changed || finalizing.Run.Status != RunStatusFinalizing || finalizing.Attempt.Status != AttemptStatusFinalizing ||
+		finalizing.Attempt.TerminalThreadID != threadID || finalizing.Attempt.TerminalTurnID != turnID {
+		t.Fatalf("BeginRunFinalization() = %+v", finalizing)
+	}
+
+	commitCommand := CommitCheckpointAndTerminalRunCommand{
+		RunID: finalizing.Run.ID, AttemptID: finalizing.Attempt.ID, HolderID: finalizing.Attempt.HolderID,
+		Generation: finalizing.Attempt.Generation, ExpectedRunVersion: finalizing.Run.Version,
+		ExpectedAttemptVersion: finalizing.Attempt.Version,
+		CheckpointID:           stateTestUUID(160_060), BrainToolCatalogID: bound.Catalog.ID,
+		ThreadID: threadID, TurnID: turnID,
+		ManifestDigest: sha256.Sum256([]byte("finalization-manifest")), CatalogDigest: bound.Catalog.CatalogDigest,
+		Object: ObjectPointer{
+			ObjectID: stateTestUUID(160_061), SHA256: sha256.Sum256([]byte("finalization-object")),
+			Size: 2048, MediaType: "application/vnd.agentserver.codex-checkpoint.v1",
+		},
+		CodexRuntimeManifestDigest: sha256.Sum256([]byte("finalization-runtime")),
+		CheckpointAllowlistVersion: 1, Record: stateTransitionRecord(160_070),
+	}
+	committed, err := store.CommitCheckpointAndTerminalRun(t.Context(), commitCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !committed.Created || committed.Run.Status != RunStatusCompleted || committed.Attempt.Status != AttemptStatusSucceeded ||
+		committed.Checkpoint.ID != commitCommand.CheckpointID || committed.SessionVersion != 3 {
+		t.Fatalf("CommitCheckpointAndTerminalRun() = %+v", committed)
+	}
+
+	beginRetry, err := store.BeginRunFinalization(t.Context(), beginCommand)
+	if err != nil || beginRetry.Changed || beginRetry.Run.Status != RunStatusCompleted {
+		t.Fatalf("finalization retry = %+v, %v", beginRetry, err)
+	}
+	commitRetry, err := store.CommitCheckpointAndTerminalRun(t.Context(), commitCommand)
+	if err != nil || commitRetry.Created || commitRetry.Checkpoint.ID != committed.Checkpoint.ID || commitRetry.SessionVersion != committed.SessionVersion {
+		t.Fatalf("checkpoint commit retry = %+v, %v", commitRetry, err)
+	}
+	conflictingRetry := commitCommand
+	conflictingRetry.Object.ObjectID = stateTestUUID(160_062)
+	if _, err := store.CommitCheckpointAndTerminalRun(t.Context(), conflictingRetry); !HasStateErrorCode(err, ErrorIdempotencyConflict) {
+		t.Fatalf("conflicting checkpoint retry error = %v, want idempotency_conflict", err)
+	}
+
+	query := fmt.Sprintf("SELECT active_run_id::text, latest_checkpoint_id::text FROM %s.sessions WHERE id = $1", quoteIdentifier(schema))
+	var activeRunID, latestCheckpointID *string
+	if err := pool.QueryRow(t.Context(), query, sessionID).Scan(&activeRunID, &latestCheckpointID); err != nil {
+		t.Fatal(err)
+	}
+	if activeRunID != nil || latestCheckpointID == nil || *latestCheckpointID != commitCommand.CheckpointID {
+		t.Fatalf("terminal session pointers = active %v, checkpoint %v", activeRunID, latestCheckpointID)
+	}
+	for _, table := range []string{"session_leases", "attempt_leases"} {
+		assertStateTableCount(t, pool, schema, table, 0)
+	}
+	var finalizingEvents, completedEvents int
+	query = fmt.Sprintf(`
+SELECT pg_catalog.count(*) FILTER (WHERE kind = 'run.finalizing'),
+       pg_catalog.count(*) FILTER (WHERE kind = 'run.completed')
+FROM %s.run_events
+WHERE run_id = $1`, quoteIdentifier(schema))
+	if err := pool.QueryRow(t.Context(), query, created.Run.ID).Scan(&finalizingEvents, &completedEvents); err != nil {
+		t.Fatal(err)
+	}
+	if finalizingEvents != 1 || completedEvents != 1 {
+		t.Fatalf("terminal event counts = finalizing %d, completed %d", finalizingEvents, completedEvents)
+	}
+}
+
 func TestPostgreSQLResolveRunLaunchStateLoadsCommittedCheckpointCatalog(t *testing.T) {
 	store, pool, schema := newPostgresStateStore(t)
 	workspaceID := stateTestUUID(180)

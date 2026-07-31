@@ -41,12 +41,16 @@ func scanAttempt(scanner rowScanner) (RunAttempt, error) {
 	var attempt RunAttempt
 	var holderID *string
 	var turnStartedAt *time.Time
+	var terminalThreadID *string
+	var terminalTurnID *string
 	err := scanner.Scan(
 		&attempt.ID,
 		&attempt.RunID,
 		&attempt.Generation,
 		&attempt.Status,
 		&turnStartedAt,
+		&terminalThreadID,
+		&terminalTurnID,
 		&holderID,
 		&attempt.Version,
 		&attempt.CreatedAt,
@@ -56,6 +60,12 @@ func scanAttempt(scanner rowScanner) (RunAttempt, error) {
 		return RunAttempt{}, err
 	}
 	attempt.TurnStartedAt = turnStartedAt
+	if terminalThreadID != nil {
+		attempt.TerminalThreadID = *terminalThreadID
+	}
+	if terminalTurnID != nil {
+		attempt.TerminalTurnID = *terminalTurnID
+	}
 	if holderID != nil {
 		attempt.HolderID = *holderID
 	}
@@ -101,6 +111,8 @@ func attemptColumns(alias string) string {
 		alias + "generation, " +
 		alias + "status, " +
 		alias + "turn_started_at, " +
+		alias + "terminal_thread_id, " +
+		alias + "terminal_turn_id, " +
 		alias + "holder_id, " +
 		alias + "version, " +
 		alias + "created_at, " +

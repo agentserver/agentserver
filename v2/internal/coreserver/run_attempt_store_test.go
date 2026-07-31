@@ -55,6 +55,42 @@ func TestStateStoreRunAttemptCommandsMapCompleteControlBoundary(t *testing.T) {
 		t.Fatalf("turn accepted store/response = %+v / %+v", store.accept, accepted)
 	}
 
+	finalizing, err := commands.BeginRunFinalization(t.Context(), corecontract.BeginRunFinalizationRequest{
+		RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
+		ExpectedRunVersion: 3, ExpectedRunAttemptVersion: 2, ThreadID: "thread-1", TurnID: "turn-1", Record: record,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.begin.ThreadID != "thread-1" || !finalizing.Changed || finalizing.Run.Status != coredb.RunStatusFinalizing ||
+		finalizing.RunAttempt.TerminalThreadID != "thread-1" || finalizing.RunAttempt.TerminalTurnID != "turn-1" {
+		t.Fatalf("begin finalization store/response = %+v / %+v", store.begin, finalizing)
+	}
+
+	checkpointID := "74000000-0000-4000-8000-000000000001"
+	committed, err := commands.CommitCheckpoint(t.Context(), corecontract.CommitCheckpointRequest{
+		RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
+		ExpectedRunVersion: 4, ExpectedRunAttemptVersion: 3,
+		Checkpoint: corecontract.CheckpointCommit{
+			CheckpointID: checkpointID, BrainToolCatalogID: "75000000-0000-4000-8000-000000000001",
+			ThreadID: "thread-1", TurnID: "turn-1", ManifestDigest: strings.Repeat("ab", 32), CatalogDigest: strings.Repeat("cd", 32),
+			Object: corecontract.EventObjectPointer{
+				ObjectID: "76000000-0000-4000-8000-000000000001", SHA256: strings.Repeat("ef", 32),
+				Size: 1024, MediaType: "application/vnd.agentserver.codex-checkpoint.v1",
+			},
+			CodexRuntimeManifestDigest: strings.Repeat("12", 32), CheckpointAllowlistVersion: 1,
+		},
+		Record: record,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.commit.ManifestDigest[0] != 0xab || store.commit.CatalogDigest[0] != 0xcd || store.commit.Object.SHA256[0] != 0xef ||
+		store.commit.CodexRuntimeManifestDigest[0] != 0x12 || committed.Checkpoint.CheckpointID != checkpointID ||
+		committed.Checkpoint.ManifestDigest != strings.Repeat("ab", 32) || !committed.Created || committed.SessionVersion != 9 {
+		t.Fatalf("commit checkpoint store/response = %+v / %+v", store.commit, committed)
+	}
+
 	digestText := strings.Repeat("ab", 32)
 	appended, err := commands.AppendAttemptEvents(t.Context(), corecontract.AppendAttemptEventsRequest{
 		RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
@@ -106,6 +142,8 @@ type recordingRunAttemptStore struct {
 	claim       coredb.ClaimQueuedRunCommand
 	renew       coredb.RenewRunAttemptLeasesCommand
 	accept      coredb.MarkTurnAcceptedCommand
+	begin       coredb.BeginRunFinalizationCommand
+	commit      coredb.CommitCheckpointAndTerminalRunCommand
 	append      coredb.AppendAttemptEventsCommand
 	claimCalls  int
 	appendCalls int
@@ -150,6 +188,50 @@ func (store *recordingRunAttemptStore) MarkTurnAccepted(_ context.Context, comma
 			TurnStartedAt: &turnStarted, HolderID: command.HolderID, Version: 2, CreatedAt: store.now, UpdatedAt: store.now,
 		},
 		Changed: true,
+	}, nil
+}
+
+func (store *recordingRunAttemptStore) BeginRunFinalization(_ context.Context, command coredb.BeginRunFinalizationCommand) (coredb.BeginRunFinalizationResult, error) {
+	store.begin = command
+	turnStarted := store.now
+	return coredb.BeginRunFinalizationResult{
+		Run: coredb.Run{
+			ID: command.RunID, WorkspaceID: "40000000-0000-4000-8000-000000000004", SessionID: "40000000-0000-4000-8000-000000000005",
+			ActorID: "40000000-0000-4000-8000-000000000006", Status: coredb.RunStatusFinalizing, CurrentAttemptGeneration: command.Generation,
+			NextEventSeq: 5, Version: command.ExpectedRunVersion + 1, CreatedAt: store.now, UpdatedAt: store.now,
+		},
+		Attempt: coredb.RunAttempt{
+			ID: command.AttemptID, RunID: command.RunID, Generation: command.Generation, Status: coredb.AttemptStatusFinalizing,
+			TurnStartedAt: &turnStarted, TerminalThreadID: command.ThreadID, TerminalTurnID: command.TurnID,
+			HolderID: command.HolderID, Version: command.ExpectedAttemptVersion + 1, CreatedAt: store.now, UpdatedAt: store.now,
+		},
+		Changed: true,
+	}, nil
+}
+
+func (store *recordingRunAttemptStore) CommitCheckpointAndTerminalRun(_ context.Context, command coredb.CommitCheckpointAndTerminalRunCommand) (coredb.CommitCheckpointAndTerminalRunResult, error) {
+	store.commit = command
+	turnStarted := store.now
+	checkpoint := coredb.Checkpoint{
+		ID: command.CheckpointID, WorkspaceID: "40000000-0000-4000-8000-000000000004", SessionID: "40000000-0000-4000-8000-000000000005",
+		RunID: command.RunID, AttemptID: command.AttemptID, AttemptGeneration: command.Generation,
+		BrainToolCatalogID: command.BrainToolCatalogID, ThreadID: command.ThreadID, TurnID: command.TurnID,
+		ManifestDigest: command.ManifestDigest, CatalogDigest: command.CatalogDigest, Object: command.Object,
+		CodexRuntimeManifestDigest: command.CodexRuntimeManifestDigest,
+		CheckpointAllowlistVersion: command.CheckpointAllowlistVersion, CreatedAt: store.now,
+	}
+	return coredb.CommitCheckpointAndTerminalRunResult{
+		Run: coredb.Run{
+			ID: command.RunID, WorkspaceID: checkpoint.WorkspaceID, SessionID: checkpoint.SessionID,
+			ActorID: "40000000-0000-4000-8000-000000000006", Status: coredb.RunStatusCompleted, CurrentAttemptGeneration: command.Generation,
+			NextEventSeq: 6, Version: command.ExpectedRunVersion + 1, CreatedAt: store.now, UpdatedAt: store.now,
+		},
+		Attempt: coredb.RunAttempt{
+			ID: command.AttemptID, RunID: command.RunID, Generation: command.Generation, Status: coredb.AttemptStatusSucceeded,
+			TurnStartedAt: &turnStarted, TerminalThreadID: command.ThreadID, TerminalTurnID: command.TurnID,
+			HolderID: command.HolderID, Version: command.ExpectedAttemptVersion + 1, CreatedAt: store.now, UpdatedAt: store.now,
+		},
+		Checkpoint: checkpoint, SessionVersion: 9, Created: true,
 	}, nil
 }
 

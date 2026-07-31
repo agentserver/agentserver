@@ -15,6 +15,8 @@ type RunAttemptCommands interface {
 	ClaimRunAttempt(context.Context, corecontract.ClaimRunAttemptRequest) (corecontract.ClaimRunAttemptResponse, error)
 	RenewRunAttempt(context.Context, corecontract.RenewRunAttemptRequest) (corecontract.RenewRunAttemptResponse, error)
 	MarkTurnAccepted(context.Context, corecontract.MarkTurnAcceptedRequest) (corecontract.MarkTurnAcceptedResponse, error)
+	BeginRunFinalization(context.Context, corecontract.BeginRunFinalizationRequest) (corecontract.BeginRunFinalizationResponse, error)
+	CommitCheckpoint(context.Context, corecontract.CommitCheckpointRequest) (corecontract.CommitCheckpointResponse, error)
 	AppendAttemptEvents(context.Context, corecontract.AppendAttemptEventsRequest) (corecontract.AppendAttemptEventsResponse, error)
 }
 
@@ -52,6 +54,10 @@ func (handler *RunAttemptHandler) ServeHTTP(response http.ResponseWriter, reques
 		handler.renew(response, request, attemptID)
 	case "turn-accepted":
 		handler.turnAccepted(response, request, attemptID)
+	case "begin-finalization":
+		handler.beginFinalization(response, request, attemptID)
+	case "commit-checkpoint":
+		handler.commitCheckpoint(response, request, attemptID)
 	case "append-events":
 		handler.appendEvents(response, request, attemptID)
 	default:
@@ -135,6 +141,46 @@ func (handler *RunAttemptHandler) appendEvents(response http.ResponseWriter, req
 	writeJSON(response, http.StatusOK, result)
 }
 
+func (handler *RunAttemptHandler) beginFinalization(response http.ResponseWriter, request *http.Request, attemptID string) {
+	if !handler.authorize(response, request, "run-attempts.begin-finalization") {
+		return
+	}
+	var command corecontract.BeginRunFinalizationRequest
+	if !decodeCommand(response, request, &command) {
+		return
+	}
+	if command.RunAttemptID != attemptID {
+		writePathIdentityError(response, "runAttemptId")
+		return
+	}
+	result, err := handler.commands.BeginRunFinalization(request.Context(), command)
+	if err != nil {
+		writeCommandError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (handler *RunAttemptHandler) commitCheckpoint(response http.ResponseWriter, request *http.Request, attemptID string) {
+	if !handler.authorize(response, request, "run-attempts.commit-checkpoint") {
+		return
+	}
+	var command corecontract.CommitCheckpointRequest
+	if !decodeCommand(response, request, &command) {
+		return
+	}
+	if command.RunAttemptID != attemptID {
+		writePathIdentityError(response, "runAttemptId")
+		return
+	}
+	result, err := handler.commands.CommitCheckpoint(request.Context(), command)
+	if err != nil {
+		writeCommandError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
 func (handler *RunAttemptHandler) authorize(response http.ResponseWriter, request *http.Request, action string) bool {
 	if err := handler.authorizer.AuthorizeWorkload(request, action); err != nil {
 		writeError(response, http.StatusForbidden, corecontract.ErrorResponse{Code: "forbidden", Message: "workload is not authorized for this command"})
@@ -159,6 +205,14 @@ func parseRunAttemptAction(path string) (attemptID, action string, ok bool) {
 		const turnAcceptedSuffix = ":turnAccepted"
 		if strings.HasSuffix(remainder, turnAcceptedSuffix) && len(remainder) > len(turnAcceptedSuffix) {
 			return strings.TrimSuffix(remainder, turnAcceptedSuffix), "turn-accepted", true
+		}
+		const beginFinalizationSuffix = ":beginFinalization"
+		if strings.HasSuffix(remainder, beginFinalizationSuffix) && len(remainder) > len(beginFinalizationSuffix) {
+			return strings.TrimSuffix(remainder, beginFinalizationSuffix), "begin-finalization", true
+		}
+		const commitCheckpointSuffix = ":commitCheckpoint"
+		if strings.HasSuffix(remainder, commitCheckpointSuffix) && len(remainder) > len(commitCheckpointSuffix) {
+			return strings.TrimSuffix(remainder, commitCheckpointSuffix), "commit-checkpoint", true
 		}
 		return "", "", false
 	}

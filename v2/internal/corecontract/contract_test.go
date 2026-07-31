@@ -51,6 +51,8 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 		ClaimRunAttemptPath:                                          "claimRunAttempt",
 		RenewRunAttemptPath("{runAttemptId}"):                        "renewRunAttempt",
 		MarkTurnAcceptedPath("{runAttemptId}"):                       "markTurnAccepted",
+		BeginRunFinalizationPath("{runAttemptId}"):                   "beginRunFinalization",
+		CommitCheckpointPath("{runAttemptId}"):                       "commitCheckpointAndTerminalRun",
 		AppendAttemptEventsPath("{runAttemptId}"):                    "appendAttemptEvents",
 		ResolveRunLaunchStatePath:                                    "resolveRunLaunchState",
 		FreezeBrainToolCatalogPath:                                   "freezeBrainToolCatalog",
@@ -104,6 +106,12 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "RenewRunAttemptResponse", reflect.TypeFor[RenewRunAttemptResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "MarkTurnAcceptedRequest", reflect.TypeFor[MarkTurnAcceptedRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "MarkTurnAcceptedResponse", reflect.TypeFor[MarkTurnAcceptedResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "BeginRunFinalizationRequest", reflect.TypeFor[BeginRunFinalizationRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "BeginRunFinalizationResponse", reflect.TypeFor[BeginRunFinalizationResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "CheckpointCommit", reflect.TypeFor[CheckpointCommit]())
+	assertSchemaFields(t, document.Components.Schemas, "CommitCheckpointRequest", reflect.TypeFor[CommitCheckpointRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "CheckpointState", reflect.TypeFor[CheckpointState]())
+	assertSchemaFields(t, document.Components.Schemas, "CommitCheckpointResponse", reflect.TypeFor[CommitCheckpointResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "EventObjectPointer", reflect.TypeFor[EventObjectPointer]())
 	assertSchemaFields(t, document.Components.Schemas, "AttemptEvent", reflect.TypeFor[AttemptEvent]())
 	assertSchemaFields(t, document.Components.Schemas, "AppendAttemptEventsRequest", reflect.TypeFor[AppendAttemptEventsRequest]())

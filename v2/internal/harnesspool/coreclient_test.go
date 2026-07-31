@@ -69,6 +69,38 @@ func TestCoreClientRunAttemptRoundTrip(t *testing.T) {
 		t.Fatalf("MarkTurnAccepted() = %+v, %v", accepted, err)
 	}
 
+	finalizing, err := client.BeginRunFinalization(t.Context(), BeginRunFinalizationRequest{
+		RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
+		ExpectedRunVersion: accepted.Run.Version, ExpectedRunAttemptVersion: accepted.RunAttempt.Version,
+		ThreadID: "thread-1", TurnID: "turn-1", Record: testTransitionRecord(3),
+	})
+	if err != nil || !finalizing.Changed || finalizing.RunAttempt.TerminalThreadID != "thread-1" || finalizing.RunAttempt.TerminalTurnID != "turn-1" {
+		t.Fatalf("BeginRunFinalization() = %+v, %v", finalizing, err)
+	}
+	checkpointRequest := CommitCheckpointRequest{
+		RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
+		ExpectedRunVersion: finalizing.Run.Version, ExpectedRunAttemptVersion: finalizing.RunAttempt.Version,
+		Checkpoint: CheckpointCommit{
+			CheckpointID: "74000000-0000-4000-8000-000000000001", BrainToolCatalogID: "75000000-0000-4000-8000-000000000001",
+			ThreadID: "thread-1", TurnID: "turn-1", ManifestDigest: sha256.Sum256([]byte("manifest")),
+			CatalogDigest: sha256.Sum256([]byte("catalog")),
+			Object: EventObjectPointer{
+				ObjectID: "76000000-0000-4000-8000-000000000001", SHA256: sha256.Sum256([]byte("checkpoint")),
+				Size: 1024, MediaType: "application/vnd.agentserver.codex-checkpoint.v1",
+			},
+			CodexRuntimeManifestDigest: sha256.Sum256([]byte("runtime")), CheckpointAllowlistVersion: 1,
+		},
+		Record: testTransitionRecord(4),
+	}
+	committed, err := client.CommitCheckpoint(t.Context(), checkpointRequest)
+	if err != nil || !committed.Created || committed.Run.Status != "completed" || committed.Checkpoint.CheckpointID != checkpointRequest.Checkpoint.CheckpointID {
+		t.Fatalf("CommitCheckpoint() = %+v, %v", committed, err)
+	}
+	if commands.commit.Checkpoint.ManifestDigest != hex.EncodeToString(checkpointRequest.Checkpoint.ManifestDigest[:]) ||
+		commands.commit.Checkpoint.Object.SHA256 != hex.EncodeToString(checkpointRequest.Checkpoint.Object.SHA256[:]) {
+		t.Fatalf("commit checkpoint wire request = %+v", commands.commit)
+	}
+
 	objectDigest := sha256.Sum256([]byte("object"))
 	appendRequest := AppendAttemptEventsRequest{
 		RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
@@ -298,6 +330,8 @@ type recordingContractCommands struct {
 	now                time.Time
 	claim              corecontract.ClaimRunAttemptRequest
 	renew              corecontract.RenewRunAttemptRequest
+	begin              corecontract.BeginRunFinalizationRequest
+	commit             corecontract.CommitCheckpointRequest
 	append             corecontract.AppendAttemptEventsRequest
 	commandError       error
 	badClaimGeneration bool
@@ -398,6 +432,56 @@ func (commands *recordingContractCommands) MarkTurnAccepted(_ context.Context, r
 			CreatedAt: commands.now, UpdatedAt: commands.now,
 		},
 		Changed: true,
+	}, nil
+}
+
+func (commands *recordingContractCommands) BeginRunFinalization(_ context.Context, request corecontract.BeginRunFinalizationRequest) (corecontract.BeginRunFinalizationResponse, error) {
+	if commands.commandError != nil {
+		return corecontract.BeginRunFinalizationResponse{}, commands.commandError
+	}
+	commands.begin = request
+	turnStarted := commands.now
+	return corecontract.BeginRunFinalizationResponse{
+		Run: corecontract.RunState{
+			RunID: request.RunID, WorkspaceID: "40000000-0000-4000-8000-000000000004", SessionID: testSessionID,
+			ActorID: "44000000-0000-4000-8000-000000000004", Status: "finalizing", CurrentAttemptGeneration: request.RunAttemptGeneration,
+			NextEventSeq: 5, Version: request.ExpectedRunVersion + 1, CreatedAt: commands.now, UpdatedAt: commands.now,
+		},
+		RunAttempt: corecontract.RunAttemptState{
+			RunAttemptID: request.RunAttemptID, RunID: request.RunID, Generation: request.RunAttemptGeneration, Status: "finalizing",
+			TurnStartedAt: &turnStarted, TerminalThreadID: request.ThreadID, TerminalTurnID: request.TurnID,
+			HolderID: request.HolderID, Version: request.ExpectedRunAttemptVersion + 1, CreatedAt: commands.now, UpdatedAt: commands.now,
+		},
+		Changed: true,
+	}, nil
+}
+
+func (commands *recordingContractCommands) CommitCheckpoint(_ context.Context, request corecontract.CommitCheckpointRequest) (corecontract.CommitCheckpointResponse, error) {
+	if commands.commandError != nil {
+		return corecontract.CommitCheckpointResponse{}, commands.commandError
+	}
+	commands.commit = request
+	turnStarted := commands.now
+	return corecontract.CommitCheckpointResponse{
+		Run: corecontract.RunState{
+			RunID: request.RunID, WorkspaceID: "40000000-0000-4000-8000-000000000004", SessionID: testSessionID,
+			ActorID: "44000000-0000-4000-8000-000000000004", Status: "completed", CurrentAttemptGeneration: request.RunAttemptGeneration,
+			NextEventSeq: 6, Version: request.ExpectedRunVersion + 1, CreatedAt: commands.now, UpdatedAt: commands.now,
+		},
+		RunAttempt: corecontract.RunAttemptState{
+			RunAttemptID: request.RunAttemptID, RunID: request.RunID, Generation: request.RunAttemptGeneration, Status: "succeeded",
+			TurnStartedAt: &turnStarted, TerminalThreadID: request.Checkpoint.ThreadID, TerminalTurnID: request.Checkpoint.TurnID,
+			HolderID: request.HolderID, Version: request.ExpectedRunAttemptVersion + 1, CreatedAt: commands.now, UpdatedAt: commands.now,
+		},
+		Checkpoint: corecontract.CheckpointState{
+			CheckpointID: request.Checkpoint.CheckpointID, WorkspaceID: "40000000-0000-4000-8000-000000000004", SessionID: testSessionID,
+			RunID: request.RunID, RunAttemptID: request.RunAttemptID, RunAttemptGeneration: request.RunAttemptGeneration,
+			BrainToolCatalogID: request.Checkpoint.BrainToolCatalogID, ThreadID: request.Checkpoint.ThreadID, TurnID: request.Checkpoint.TurnID,
+			ManifestDigest: request.Checkpoint.ManifestDigest, CatalogDigest: request.Checkpoint.CatalogDigest,
+			Object: request.Checkpoint.Object, CodexRuntimeManifestDigest: request.Checkpoint.CodexRuntimeManifestDigest,
+			CheckpointAllowlistVersion: request.Checkpoint.CheckpointAllowlistVersion, CreatedAt: commands.now,
+		},
+		SessionVersion: 3, Created: true,
 	}, nil
 }
 

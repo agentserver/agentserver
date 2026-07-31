@@ -57,6 +57,29 @@ func TestRunAttemptHandlerRoutesAllCommands(t *testing.T) {
 			wantAction: "run-attempts.turn-accepted", wantCall: "turn-accepted",
 		},
 		{
+			name: "begin finalization", path: corecontract.BeginRunFinalizationPath(testRunAttemptID),
+			command: corecontract.BeginRunFinalizationRequest{
+				RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
+				ExpectedRunVersion: 3, ExpectedRunAttemptVersion: 2, ThreadID: "thread-1", TurnID: "turn-1", Record: record,
+			},
+			wantAction: "run-attempts.begin-finalization", wantCall: "begin-finalization",
+		},
+		{
+			name: "commit checkpoint", path: corecontract.CommitCheckpointPath(testRunAttemptID),
+			command: corecontract.CommitCheckpointRequest{
+				RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
+				ExpectedRunVersion: 4, ExpectedRunAttemptVersion: 3,
+				Checkpoint: corecontract.CheckpointCommit{
+					CheckpointID: "74000000-0000-4000-8000-000000000001", BrainToolCatalogID: "75000000-0000-4000-8000-000000000001",
+					ThreadID: "thread-1", TurnID: "turn-1", ManifestDigest: strings.Repeat("ab", 32), CatalogDigest: strings.Repeat("cd", 32),
+					Object:                     corecontract.EventObjectPointer{ObjectID: "76000000-0000-4000-8000-000000000001", SHA256: strings.Repeat("ef", 32), Size: 1024, MediaType: "application/vnd.agentserver.codex-checkpoint.v1"},
+					CodexRuntimeManifestDigest: strings.Repeat("12", 32), CheckpointAllowlistVersion: 1,
+				},
+				Record: record,
+			},
+			wantAction: "run-attempts.commit-checkpoint", wantCall: "commit-checkpoint",
+		},
+		{
 			name: "append events", path: corecontract.AppendAttemptEventsPath(testRunAttemptID),
 			command: corecontract.AppendAttemptEventsRequest{
 				RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
@@ -191,6 +214,16 @@ func (commands *recordingRunAttemptCommands) RenewRunAttempt(context.Context, co
 func (commands *recordingRunAttemptCommands) MarkTurnAccepted(context.Context, corecontract.MarkTurnAcceptedRequest) (corecontract.MarkTurnAcceptedResponse, error) {
 	commands.call = "turn-accepted"
 	return corecontract.MarkTurnAcceptedResponse{}, nil
+}
+
+func (commands *recordingRunAttemptCommands) BeginRunFinalization(context.Context, corecontract.BeginRunFinalizationRequest) (corecontract.BeginRunFinalizationResponse, error) {
+	commands.call = "begin-finalization"
+	return corecontract.BeginRunFinalizationResponse{}, nil
+}
+
+func (commands *recordingRunAttemptCommands) CommitCheckpoint(context.Context, corecontract.CommitCheckpointRequest) (corecontract.CommitCheckpointResponse, error) {
+	commands.call = "commit-checkpoint"
+	return corecontract.CommitCheckpointResponse{}, nil
 }
 
 func (commands *recordingRunAttemptCommands) AppendAttemptEvents(context.Context, corecontract.AppendAttemptEventsRequest) (corecontract.AppendAttemptEventsResponse, error) {

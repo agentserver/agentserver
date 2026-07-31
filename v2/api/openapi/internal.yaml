@@ -95,6 +95,36 @@
         }
       }
     },
+    "/internal/v2/run-attempts/{runAttemptId}:beginFinalization": {
+      "parameters": [{"$ref": "#/components/parameters/RunAttemptId"}],
+      "post": {
+        "operationId": "beginRunFinalization",
+        "description": "Freezes the completed terminal thread and turn under the live holder lease after the complete attempt process group has stopped.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BeginRunFinalizationRequest"}}}},
+        "responses": {
+          "200": {"description": "Finalization boundary committed or exact terminal retry returned", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BeginRunFinalizationResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/run-attempts/{runAttemptId}:commitCheckpoint": {
+      "parameters": [{"$ref": "#/components/parameters/RunAttemptId"}],
+      "post": {
+        "operationId": "commitCheckpointAndTerminalRun",
+        "description": "Atomically makes an already uploaded checkpoint reachable, completes the run, updates the session resume pointer, emits run.completed, and removes both holder leases.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CommitCheckpointRequest"}}}},
+        "responses": {
+          "200": {"description": "Checkpoint and terminal run committed or exact checkpoint retry returned", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CommitCheckpointResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
     "/internal/v2/run-attempts/{runAttemptId}/events:append": {
       "parameters": [{"$ref": "#/components/parameters/RunAttemptId"}],
       "post": {
@@ -447,6 +477,8 @@
           "generation": {"type": "integer", "minimum": 1},
           "status": {"enum": ["created", "leased", "starting", "running", "finalizing", "succeeded", "failed", "interrupted", "fenced"]},
           "turnStartedAt": {"type": "string", "format": "date-time"},
+          "terminalThreadId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "terminalTurnId": {"type": "string", "minLength": 1, "maxLength": 256},
           "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
           "version": {"type": "integer", "minimum": 1},
           "createdAt": {"type": "string", "format": "date-time"},
@@ -535,6 +567,107 @@
           "run": {"$ref": "#/components/schemas/RunState"},
           "runAttempt": {"$ref": "#/components/schemas/RunAttemptState"},
           "changed": {"type": "boolean"}
+        }
+      },
+      "BeginRunFinalizationRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["runId", "runAttemptId", "holderId", "runAttemptGeneration", "expectedRunVersion", "expectedRunAttemptVersion", "threadId", "turnId", "record"],
+        "properties": {
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "expectedRunVersion": {"type": "integer", "minimum": 1},
+          "expectedRunAttemptVersion": {"type": "integer", "minimum": 1},
+          "threadId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "turnId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "record": {"$ref": "#/components/schemas/TransitionRecord"}
+        }
+      },
+      "BeginRunFinalizationResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["run", "runAttempt", "changed"],
+        "properties": {
+          "run": {"$ref": "#/components/schemas/RunState"},
+          "runAttempt": {"$ref": "#/components/schemas/RunAttemptState"},
+          "changed": {"type": "boolean"}
+        }
+      },
+      "CheckpointCommit": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["checkpointId", "brainToolCatalogId", "threadId", "turnId", "manifestDigest", "catalogDigest", "object", "codexRuntimeManifestDigest", "checkpointAllowlistVersion"],
+        "properties": {
+          "checkpointId": {"$ref": "#/components/schemas/UUID"},
+          "brainToolCatalogId": {"$ref": "#/components/schemas/UUID"},
+          "threadId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "turnId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "manifestDigest": {"$ref": "#/components/schemas/SHA256"},
+          "catalogDigest": {"$ref": "#/components/schemas/SHA256"},
+          "object": {
+            "allOf": [
+              {"$ref": "#/components/schemas/EventObjectPointer"},
+              {"properties": {"size": {"type": "integer", "minimum": 1, "maximum": 67174420}, "mediaType": {"const": "application/vnd.agentserver.codex-checkpoint.v1"}}}
+            ]
+          },
+          "codexRuntimeManifestDigest": {"$ref": "#/components/schemas/SHA256"},
+          "checkpointAllowlistVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+        }
+      },
+      "CommitCheckpointRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["runId", "runAttemptId", "holderId", "runAttemptGeneration", "expectedRunVersion", "expectedRunAttemptVersion", "checkpoint", "record"],
+        "properties": {
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "expectedRunVersion": {"type": "integer", "minimum": 1},
+          "expectedRunAttemptVersion": {"type": "integer", "minimum": 1},
+          "checkpoint": {"$ref": "#/components/schemas/CheckpointCommit"},
+          "record": {"$ref": "#/components/schemas/TransitionRecord"}
+        }
+      },
+      "CheckpointState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["checkpointId", "workspaceId", "sessionId", "runId", "runAttemptId", "runAttemptGeneration", "brainToolCatalogId", "threadId", "turnId", "manifestDigest", "catalogDigest", "object", "codexRuntimeManifestDigest", "checkpointAllowlistVersion", "createdAt"],
+        "properties": {
+          "checkpointId": {"$ref": "#/components/schemas/UUID"},
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "sessionId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "brainToolCatalogId": {"$ref": "#/components/schemas/UUID"},
+          "threadId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "turnId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "manifestDigest": {"$ref": "#/components/schemas/SHA256"},
+          "catalogDigest": {"$ref": "#/components/schemas/SHA256"},
+          "object": {
+            "allOf": [
+              {"$ref": "#/components/schemas/EventObjectPointer"},
+              {"properties": {"size": {"type": "integer", "minimum": 1, "maximum": 67174420}, "mediaType": {"const": "application/vnd.agentserver.codex-checkpoint.v1"}}}
+            ]
+          },
+          "codexRuntimeManifestDigest": {"$ref": "#/components/schemas/SHA256"},
+          "checkpointAllowlistVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "createdAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "CommitCheckpointResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["run", "runAttempt", "checkpoint", "sessionVersion", "created"],
+        "properties": {
+          "run": {"$ref": "#/components/schemas/RunState"},
+          "runAttempt": {"$ref": "#/components/schemas/RunAttemptState"},
+          "checkpoint": {"$ref": "#/components/schemas/CheckpointState"},
+          "sessionVersion": {"type": "integer", "minimum": 1},
+          "created": {"type": "boolean"}
         }
       },
       "EventObjectPointer": {

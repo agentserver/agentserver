@@ -179,6 +179,91 @@ func TestPostgreSQLConcurrentCreateRunSerializesSession(t *testing.T) {
 	assertStateTableCount(t, pool, schema, "outbox", 1)
 }
 
+func TestPostgreSQLAuthorizedCreateRunAndCommittedEventReadRecheckMembership(t *testing.T) {
+	store, pool, schema := newPostgresStateStore(t)
+	workspaceID := stateTestUUID(140_000)
+	sessionID := stateTestUUID(140_001)
+	viewerSessionID := stateTestUUID(140_002)
+	actorID := stateTestUUID(140_003)
+	insertStateTestSession(t, pool, schema, workspaceID, sessionID)
+	insertStateTestSessionOnly(t, pool, schema, workspaceID, viewerSessionID)
+	membershipQuery := fmt.Sprintf("INSERT INTO %s.workspace_members (workspace_id, user_id, role) VALUES ($1, $2, $3)", quoteIdentifier(schema))
+	if _, err := pool.Exec(t.Context(), membershipQuery, workspaceID, actorID, "developer"); err != nil {
+		t.Fatal(err)
+	}
+	authorized, err := store.AuthorizeRunSession(t.Context(), workspaceID, sessionID, actorID)
+	if err != nil || authorized.Role != "developer" || authorized.SessionVersion != 1 {
+		t.Fatalf("AuthorizeRunSession() = %+v, %v", authorized, err)
+	}
+	command := stateCreateRunCommand(140_010, workspaceID, sessionID, "authorized-create")
+	command.ActorID = actorID
+	command.ExpectedSessionVersion = 0
+	created, err := store.CreateAuthorizedRun(t.Context(), command)
+	if err != nil || !created.Created {
+		t.Fatalf("CreateAuthorizedRun() = %+v, %v", created, err)
+	}
+	retry := command
+	retry.RunID = stateTestUUID(140_011)
+	retry.ExecutorPolicy.Version = "policy/changed-after-commit"
+	retried, err := store.CreateAuthorizedRun(t.Context(), retry)
+	if err != nil || retried.Created || retried.Run.ID != created.Run.ID {
+		t.Fatalf("policy-independent user idempotency retry = %+v, %v", retried, err)
+	}
+	page, err := store.ReadAuthorizedRunEvents(t.Context(), ReadAuthorizedRunEventsCommand{
+		WorkspaceID: workspaceID, ActorID: actorID, RunID: created.Run.ID, AfterSeq: 0, Limit: 10,
+	})
+	if err != nil || len(page.Events) != 1 || page.Events[0].Seq != 1 || page.Events[0].Kind != "run.queued" || page.LastSequence != 1 {
+		t.Fatalf("ReadAuthorizedRunEvents() = %+v, %v", page, err)
+	}
+	updateRole := fmt.Sprintf("UPDATE %s.workspace_members SET role = 'viewer' WHERE workspace_id = $1 AND user_id = $2", quoteIdentifier(schema))
+	if _, err := pool.Exec(t.Context(), updateRole, workspaceID, actorID); err != nil {
+		t.Fatal(err)
+	}
+	viewerCommand := stateCreateRunCommand(140_020, workspaceID, viewerSessionID, "viewer-create")
+	viewerCommand.ActorID = actorID
+	viewerCommand.ExpectedSessionVersion = 0
+	if _, err := store.CreateAuthorizedRun(t.Context(), viewerCommand); !HasStateErrorCode(err, ErrorForbidden) {
+		t.Fatalf("viewer CreateAuthorizedRun() error = %v", err)
+	}
+	if _, err := store.ReadAuthorizedRunEvents(t.Context(), ReadAuthorizedRunEventsCommand{
+		WorkspaceID: workspaceID, ActorID: actorID, RunID: created.Run.ID, AfterSeq: 1, Limit: 10,
+	}); err != nil {
+		t.Fatalf("viewer event read error = %v", err)
+	}
+	deleteMember := fmt.Sprintf("DELETE FROM %s.workspace_members WHERE workspace_id = $1 AND user_id = $2", quoteIdentifier(schema))
+	if _, err := pool.Exec(t.Context(), deleteMember, workspaceID, actorID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReadAuthorizedRunEvents(t.Context(), ReadAuthorizedRunEventsCommand{
+		WorkspaceID: workspaceID, ActorID: actorID, RunID: created.Run.ID, AfterSeq: 1, Limit: 10,
+	}); !HasStateErrorCode(err, ErrorNotFound) {
+		t.Fatalf("removed member event read error = %v", err)
+	}
+
+	if _, err := pool.Exec(t.Context(), membershipQuery, workspaceID, actorID, "developer"); err != nil {
+		t.Fatal(err)
+	}
+	rebaseQuery := fmt.Sprintf(`
+INSERT INTO %s.run_event_rebases
+    (run_id, after_seq, run_status, run_version, run_updated_at, snapshot)
+SELECT id, 1, status, version, updated_at, '{"messages":[]}'::jsonb
+FROM %s.runs
+WHERE id = $1`, quoteIdentifier(schema), quoteIdentifier(schema))
+	if _, err := pool.Exec(t.Context(), rebaseQuery, created.Run.ID); err != nil {
+		t.Fatal(err)
+	}
+	deleteEvent := fmt.Sprintf("DELETE FROM %s.run_events WHERE run_id = $1 AND seq = 1", quoteIdentifier(schema))
+	if _, err := pool.Exec(t.Context(), deleteEvent, created.Run.ID); err != nil {
+		t.Fatal(err)
+	}
+	expired, err := store.ReadAuthorizedRunEvents(t.Context(), ReadAuthorizedRunEventsCommand{
+		WorkspaceID: workspaceID, ActorID: actorID, RunID: created.Run.ID, AfterSeq: 0, Limit: 10,
+	})
+	if err != nil || expired.EarliestSequence != 2 || expired.Rebase == nil || expired.Rebase.AfterSequence != 1 || string(expired.Rebase.Snapshot) != `{"messages": []}` {
+		t.Fatalf("retained rebase page = %+v, %v", expired, err)
+	}
+}
+
 func TestPostgreSQLResolveRunLaunchStateRequiresLiveAttemptAuthority(t *testing.T) {
 	store, pool, schema := newPostgresStateStore(t)
 	workspaceID := stateTestUUID(150)

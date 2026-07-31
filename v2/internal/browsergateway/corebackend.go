@@ -1,0 +1,300 @@
+package browsergateway
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"mime"
+	"net"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
+)
+
+const maxCoreRunResponseBytes = int64(18 * 1024 * 1024)
+
+type CoreRunBackend struct {
+	baseURL    *url.URL
+	httpClient *http.Client
+}
+
+func NewCoreRunBackend(baseURL string, httpClient *http.Client) (*CoreRunBackend, error) {
+	if httpClient == nil {
+		return nil, errors.New("core run HTTP client is required")
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, errors.New("core run base URL must be an absolute HTTP(S) origin without credentials, query, or fragment")
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		return nil, errors.New("core run base URL must not contain a path")
+	}
+	if parsed.Scheme == "http" && !coreRunLoopbackHost(parsed.Hostname()) {
+		return nil, errors.New("cleartext core run base URL is allowed only on loopback")
+	}
+	parsed.Path = ""
+	clientCopy := *httpClient
+	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &CoreRunBackend{baseURL: parsed, httpClient: &clientCopy}, nil
+}
+
+func (backend *CoreRunBackend) StartRun(ctx context.Context, request StartRunRequest) (StartRunResult, error) {
+	body, err := json.Marshal(corecontract.CreateUserRunRequest{ClientRunID: request.ClientRunID, Prompt: request.Prompt})
+	if err != nil {
+		return StartRunResult{}, fmt.Errorf("encode core CreateRun request: %w", err)
+	}
+	endpoint := backend.endpoint(corecontract.CreateUserRunPath(request.WorkspaceID, request.SessionID))
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
+	if err != nil {
+		return StartRunResult{}, fmt.Errorf("construct core CreateRun request: %w", err)
+	}
+	httpRequest.Header.Set("Authorization", "Bearer "+request.BearerToken)
+	httpRequest.Header.Set("Idempotency-Key", request.IdempotencyKey)
+	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set("Accept", "application/json")
+
+	response, raw, err := backend.do(httpRequest)
+	if err != nil {
+		return StartRunResult{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusCreated {
+		return StartRunResult{}, decodePublicCoreError(response.StatusCode, raw)
+	}
+	var result corecontract.CreateUserRunResponse
+	if err := decodeStrictCoreJSON(raw, &result); err != nil {
+		return StartRunResult{}, fmt.Errorf("decode core CreateRun response: %w", err)
+	}
+	if (response.StatusCode == http.StatusCreated) != result.Created {
+		return StartRunResult{}, errors.New("core CreateRun status and created flag disagree")
+	}
+	started := StartRunResult{
+		WorkspaceID: result.WorkspaceID, SessionID: result.SessionID, RunID: result.RunID,
+		CreatedAt: result.CreatedAt, Cursor: result.Cursor, LastEventSequence: result.LastEventSequence,
+	}
+	if err := validateStartResult(started, request.WorkspaceID, request.SessionID); err != nil {
+		return StartRunResult{}, fmt.Errorf("validate core CreateRun response: %w", err)
+	}
+	if request.ResumeCursor != "" {
+		resolved, expired, err := backend.resolveRunCursor(
+			ctx,
+			request.BearerToken,
+			result.WorkspaceID,
+			result.SessionID,
+			result.RunID,
+			request.ResumeCursor,
+		)
+		if err != nil {
+			return StartRunResult{}, err
+		}
+		if expired != nil {
+			started.Cursor = expired.RebaseCursor
+			started.LastEventSequence = expired.LastEventSequence
+			started.RebaseSnapshot = expired.Snapshot
+		} else {
+			started.Cursor = resolved.NextCursor
+			started.LastEventSequence = resolved.LastEventSequence
+		}
+	}
+	return started, nil
+}
+
+func (backend *CoreRunBackend) ReadRunEvents(ctx context.Context, request ReadRunEventsRequest) (ReadRunEventsResult, error) {
+	endpoint := backend.endpoint(corecontract.ReadUserRunEventsPath(request.WorkspaceID, request.RunID))
+	query := endpoint.Query()
+	query.Set("after", request.After)
+	query.Set("limit", strconv.Itoa(request.Limit))
+	query.Set("waitMs", strconv.FormatInt(request.Wait.Milliseconds(), 10))
+	endpoint.RawQuery = query.Encode()
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return ReadRunEventsResult{}, fmt.Errorf("construct core event cursor request: %w", err)
+	}
+	httpRequest.Header.Set("Authorization", "Bearer "+request.BearerToken)
+	httpRequest.Header.Set("Accept", "application/json")
+
+	response, raw, err := backend.do(httpRequest)
+	if err != nil {
+		return ReadRunEventsResult{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusGone {
+		expired, err := decodeCoreCursorExpired(raw, ProjectionScope{
+			WorkspaceID: request.WorkspaceID, SessionID: request.SessionID, RunID: request.RunID,
+		})
+		if err != nil {
+			return ReadRunEventsResult{}, err
+		}
+		return ReadRunEventsResult{}, expired
+	}
+	if response.StatusCode != http.StatusOK {
+		return ReadRunEventsResult{}, decodePublicCoreError(response.StatusCode, raw)
+	}
+	var result corecontract.ReadUserRunEventsResponse
+	if err := decodeStrictCoreJSON(raw, &result); err != nil {
+		return ReadRunEventsResult{}, fmt.Errorf("decode core event cursor response: %w", err)
+	}
+	if result.Events == nil || result.EventCursors == nil || len(result.EventCursors) != len(result.Events) {
+		return ReadRunEventsResult{}, errors.New("core event cursor count does not match the event page")
+	}
+	for index := range result.Events {
+		if err := result.Events[index].Validate(); err != nil {
+			return ReadRunEventsResult{}, fmt.Errorf("validate core event %d: %w", index, err)
+		}
+		if result.Events[index].WorkspaceID != request.WorkspaceID || result.Events[index].SessionID != request.SessionID || result.Events[index].RunID != request.RunID {
+			return ReadRunEventsResult{}, errors.New("core event escaped the requested browser projection scope")
+		}
+	}
+	if len(result.Events) != 0 && result.LastEventSequence != result.Events[len(result.Events)-1].Seq {
+		return ReadRunEventsResult{}, errors.New("core event page sequence does not match its final event")
+	}
+	return ReadRunEventsResult{Events: result.Events, EventCursors: result.EventCursors, NextCursor: result.NextCursor}, nil
+}
+
+func (backend *CoreRunBackend) resolveRunCursor(ctx context.Context, bearer, workspaceID, sessionID, runID, after string) (corecontract.ReadUserRunEventsResponse, *CursorExpiredError, error) {
+	endpoint := backend.endpoint(corecontract.ReadUserRunEventsPath(workspaceID, runID))
+	query := endpoint.Query()
+	query.Set("after", after)
+	query.Set("limit", "0")
+	query.Set("waitMs", "0")
+	endpoint.RawQuery = query.Encode()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return corecontract.ReadUserRunEventsResponse{}, nil, fmt.Errorf("construct core cursor resolution request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+bearer)
+	request.Header.Set("Accept", "application/json")
+	response, raw, err := backend.do(request)
+	if err != nil {
+		return corecontract.ReadUserRunEventsResponse{}, nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusGone {
+		expired, err := decodeCoreCursorExpired(raw, ProjectionScope{
+			WorkspaceID: workspaceID, SessionID: sessionID, RunID: runID,
+		})
+		return corecontract.ReadUserRunEventsResponse{}, expired, err
+	}
+	if response.StatusCode != http.StatusOK {
+		return corecontract.ReadUserRunEventsResponse{}, nil, decodePublicCoreError(response.StatusCode, raw)
+	}
+	var resolved corecontract.ReadUserRunEventsResponse
+	if err := decodeStrictCoreJSON(raw, &resolved); err != nil {
+		return corecontract.ReadUserRunEventsResponse{}, nil, fmt.Errorf("decode core cursor resolution response: %w", err)
+	}
+	if resolved.Events == nil || resolved.EventCursors == nil || len(resolved.Events) != 0 || len(resolved.EventCursors) != 0 ||
+		resolved.NextCursor == "" || resolved.LastEventSequence < 1 {
+		return corecontract.ReadUserRunEventsResponse{}, nil, errors.New("core returned an invalid cursor resolution response")
+	}
+	return resolved, nil, nil
+}
+
+func decodeCoreCursorExpired(raw []byte, expected ProjectionScope) (*CursorExpiredError, error) {
+	var expired corecontract.UserRunCursorExpiredResponse
+	if err := decodeStrictCoreJSON(raw, &expired); err != nil || expired.Code != "cursor_expired" || expired.Message == "" {
+		return nil, errors.New("core returned an invalid cursor-expired response")
+	}
+	if expired.Snapshot.WorkspaceID != expected.WorkspaceID || expired.Snapshot.SessionID != expected.SessionID ||
+		expired.Snapshot.RunID != expected.RunID || expired.Snapshot.Status == "" || expired.Snapshot.RunVersion < 1 ||
+		expired.Snapshot.LastEventSequence != expired.LastEventSequence || expired.LastEventSequence < 1 ||
+		expired.Snapshot.UpdatedAt.IsZero() {
+		return nil, errors.New("core cursor-expired snapshot escaped or contradicted the requested projection scope")
+	}
+	if err := validateCursor("core rebase cursor", expired.RebaseCursor); err != nil {
+		return nil, err
+	}
+	var snapshot any
+	if err := decodeStrictCoreJSON(expired.Snapshot.State, &snapshot); err != nil {
+		return nil, fmt.Errorf("decode authorized cursor snapshot: %w", err)
+	}
+	if _, ok := snapshot.(map[string]any); !ok {
+		return nil, errors.New("authorized cursor snapshot state is not an object")
+	}
+	return &CursorExpiredError{
+		Snapshot: snapshot, RebaseCursor: expired.RebaseCursor, LastEventSequence: expired.LastEventSequence,
+	}, nil
+}
+
+func (backend *CoreRunBackend) do(request *http.Request) (*http.Response, []byte, error) {
+	response, err := backend.httpClient.Do(request)
+	if err != nil {
+		return nil, nil, fmt.Errorf("execute core run request: %w", err)
+	}
+	mediaType, _, mediaErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if mediaErr != nil || mediaType != "application/json" {
+		response.Body.Close()
+		return nil, nil, errors.New("core run response is not application/json")
+	}
+	raw, err := io.ReadAll(io.LimitReader(response.Body, maxCoreRunResponseBytes+1))
+	if err != nil {
+		response.Body.Close()
+		return nil, nil, fmt.Errorf("read core run response: %w", err)
+	}
+	if len(raw) > int(maxCoreRunResponseBytes) {
+		response.Body.Close()
+		return nil, nil, errors.New("core run response exceeds size limit")
+	}
+	return response, raw, nil
+}
+
+func (backend *CoreRunBackend) endpoint(path string) url.URL {
+	endpoint := *backend.baseURL
+	endpoint.Path = path
+	return endpoint
+}
+
+func decodePublicCoreError(status int, raw []byte) error {
+	var response corecontract.PublicErrorResponse
+	if err := decodeStrictCoreJSON(raw, &response); err != nil || !validCorePublicError(response) {
+		return fmt.Errorf("core run API returned HTTP %d with an invalid error envelope", status)
+	}
+	return &BackendHTTPError{
+		Status: status, Code: response.Code, Message: response.Message, CurrentRunID: response.CurrentRunID,
+	}
+}
+
+func validCorePublicError(response corecontract.PublicErrorResponse) bool {
+	if len(response.Code) < 1 || len(response.Code) > 128 || len(response.Message) < 1 || len(response.Message) > 1024 ||
+		!utf8.ValidString(response.Message) || strings.ContainsAny(response.Message, "\x00\r\n") {
+		return false
+	}
+	for _, character := range []byte(response.Code) {
+		if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '_' {
+			return false
+		}
+	}
+	return response.CurrentRunID == "" || validateCanonicalUUID("currentRunId", response.CurrentRunID) == nil
+}
+
+func decodeStrictCoreJSON(raw []byte, destination any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("additional JSON value")
+		}
+		return err
+	}
+	return nil
+}
+
+func coreRunLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	address := net.ParseIP(host)
+	return address != nil && address.IsLoopback()
+}
+
+var _ RunBackend = (*CoreRunBackend)(nil)

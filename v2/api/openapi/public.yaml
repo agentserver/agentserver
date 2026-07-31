@@ -1,0 +1,152 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "agentserver v2 browser resource API",
+    "version": "0.1.0",
+    "description": "Browser-delegated CreateRun and authorized canonical event cursor. The current core endpoint requires both the browser-gateway workload identity and the original aud=agentserver-api user bearer."
+  },
+  "servers": [{"url": "https://agentserver-core"}],
+  "security": [{"browserGatewayMTLS": [], "userOAuth": ["runs:write"]}],
+  "paths": {
+    "/v2/workspaces/{workspaceId}/sessions/{sessionId}/runs": {
+      "parameters": [
+        {"$ref": "#/components/parameters/WorkspaceId"},
+        {"$ref": "#/components/parameters/SessionId"}
+      ],
+      "post": {
+        "operationId": "createUserRun",
+        "description": "Authenticates current workspace membership and atomically creates or recovers the run, immutable launch authority, run.queued event, and scheduler outbox row.",
+        "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateUserRunRequest"}}}},
+        "responses": {
+          "200": {"description": "Exact idempotent retry", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateUserRunResponse"}}}},
+          "201": {"description": "Run created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateUserRunResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
+    "/v2/workspaces/{workspaceId}/runs/{runId}/events": {
+      "parameters": [
+        {"$ref": "#/components/parameters/WorkspaceId"},
+        {"$ref": "#/components/parameters/RunId"}
+      ],
+      "get": {
+        "operationId": "readUserRunEvents",
+        "description": "Long-polls committed canonical events after an authenticated opaque cursor. limit=0 validates and resolves a reconnect cursor without consuming events.",
+        "parameters": [
+          {"name": "after", "in": "query", "required": true, "schema": {"type": "string", "minLength": 1, "maxLength": 4096}},
+          {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 0, "maximum": 1024, "default": 128}},
+          {"name": "waitMs", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 0, "maximum": 30000, "default": 15000}}
+        ],
+        "responses": {
+          "200": {"description": "Committed event page and one authenticated cursor per event", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReadUserRunEventsResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "410": {"description": "Cursor is before retention; snapshot and rebase cursor were committed at one lifecycle boundary", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UserRunCursorExpiredResponse"}}}}
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "browserGatewayMTLS": {"type": "mutualTLS", "description": "Exact configured browser-gateway SPIFFE workload identity."},
+      "userOAuth": {
+        "type": "oauth2",
+        "description": "Original user access token; core introspects active, unexpired, single aud=agentserver-api tokens and rechecks current workspace membership.",
+        "flows": {"authorizationCode": {"authorizationUrl": "/oauth2/auth", "tokenUrl": "/oauth2/token", "scopes": {"runs:write": "Create runs and read their committed event projection"}}}
+      }
+    },
+    "parameters": {
+      "WorkspaceId": {"name": "workspaceId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
+      "SessionId": {"name": "sessionId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
+      "RunId": {"name": "runId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
+      "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[!-~]+$"}}
+    },
+    "responses": {
+      "PublicError": {"description": "Bounded public error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PublicErrorResponse"}}}}
+    },
+    "schemas": {
+      "UUID": {"type": "string", "format": "uuid", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "not": {"const": "00000000-0000-0000-0000-000000000000"}},
+      "CreateUserRunRequest": {
+        "type": "object", "additionalProperties": false, "required": ["prompt"],
+        "properties": {
+          "clientRunId": {"type": "string", "maxLength": 256, "description": "Untrusted AG-UI correlation value; it is not the server run identity or part of the idempotency request hash."},
+          "prompt": {"type": "string", "minLength": 1, "maxLength": 262144, "x-agentserver-maxBytes": 262144}
+        }
+      },
+      "CreateUserRunResponse": {
+        "type": "object", "additionalProperties": false,
+        "required": ["workspaceId", "sessionId", "runId", "createdAt", "cursor", "lastEventSequence", "created"],
+        "properties": {
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "sessionId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "cursor": {"type": "string", "minLength": 1, "maxLength": 4096},
+          "lastEventSequence": {"type": "integer", "minimum": 1, "maximum": 9007199254740990},
+          "created": {"type": "boolean"}
+        }
+      },
+      "ReadUserRunEventsResponse": {
+        "type": "object", "additionalProperties": false,
+        "required": ["events", "eventCursors", "nextCursor", "lastEventSequence"],
+        "properties": {
+          "events": {"type": "array", "maxItems": 1024, "items": {"$ref": "../schema/canonical-run-event.schema.json"}},
+          "eventCursors": {"type": "array", "maxItems": 1024, "items": {"type": "string", "minLength": 1, "maxLength": 4096}},
+          "nextCursor": {"type": "string", "minLength": 1, "maxLength": 4096},
+          "lastEventSequence": {"type": "integer", "minimum": 0, "maximum": 9007199254740990}
+        },
+        "x-agentserver-invariant": "eventCursors has exactly one scope-bound cursor for each same-index events entry"
+      },
+      "UserRunSnapshot": {
+        "type": "object", "additionalProperties": false,
+        "description": "Projection snapshot and run metadata materialized at exactly lastEventSequence; none of these fields are taken from a later current run state.",
+        "required": ["workspaceId", "sessionId", "runId", "status", "runVersion", "lastEventSequence", "state", "updatedAt"],
+        "properties": {
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "sessionId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "status": {"type": "string", "enum": ["queued", "starting", "running", "finalizing", "completed", "failed", "interrupted", "cancelling", "cancelled"]},
+          "runVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740990},
+          "lastEventSequence": {"type": "integer", "minimum": 1, "maximum": 9007199254740990},
+          "state": {"type": "object"},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "UserRunCursorExpiredResponse": {
+        "type": "object", "additionalProperties": false,
+        "required": ["code", "message", "snapshot", "rebaseCursor", "lastEventSequence"],
+        "properties": {
+          "code": {"const": "cursor_expired"},
+          "message": {"type": "string"},
+          "snapshot": {"$ref": "#/components/schemas/UserRunSnapshot"},
+          "rebaseCursor": {"type": "string", "minLength": 1, "maxLength": 4096},
+          "lastEventSequence": {"type": "integer", "minimum": 1, "maximum": 9007199254740990}
+        },
+        "x-agentserver-invariant": "snapshot.lastEventSequence equals lastEventSequence and the rebaseCursor position"
+      },
+      "PublicErrorResponse": {
+        "type": "object", "additionalProperties": false, "required": ["code", "message"],
+        "properties": {
+          "code": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9_]+$"},
+          "message": {"type": "string", "minLength": 1, "maxLength": 1024},
+          "currentRunId": {"$ref": "#/components/schemas/UUID"}
+        }
+      }
+    }
+  },
+  "x-agentserver-security": {
+    "browserGatewayReadsPostgreSQL": false,
+    "cursorIsAuthorization": false,
+    "cursorScope": ["workspaceId", "sessionId", "runId", "afterSequence"],
+    "mixedAudienceAccepted": false,
+    "membershipRecheckedPerPoll": true,
+    "retentionRequiresLifecycleSnapshot": true
+  }
+}

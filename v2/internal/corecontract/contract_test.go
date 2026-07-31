@@ -153,6 +153,63 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 	}
 }
 
+func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve contract test source path")
+	}
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(sourceFile), "..", "..", "api", "openapi", "public.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		OpenAPI  string                `json:"openapi"`
+		Security []map[string][]string `json:"security"`
+		Paths    map[string]struct {
+			Post struct {
+				OperationID string `json:"operationId"`
+			} `json:"post"`
+			Get struct {
+				OperationID string `json:"operationId"`
+			} `json:"get"`
+		} `json:"paths"`
+		Components struct {
+			Schemas map[string]struct {
+				Required   []string                   `json:"required"`
+				Properties map[string]json.RawMessage `json:"properties"`
+			} `json:"schemas"`
+		} `json:"components"`
+		SecurityFacts struct {
+			GatewayReadsPostgreSQL     bool `json:"browserGatewayReadsPostgreSQL"`
+			CursorIsAuthorization      bool `json:"cursorIsAuthorization"`
+			MembershipRecheckedPerPoll bool `json:"membershipRecheckedPerPoll"`
+			RetentionRequiresSnapshot  bool `json:"retentionRequiresLifecycleSnapshot"`
+		} `json:"x-agentserver-security"`
+	}
+	if err := json.Unmarshal(raw, &document); err != nil {
+		t.Fatalf("decode public OpenAPI contract: %v", err)
+	}
+	if document.OpenAPI != "3.1.0" || len(document.Security) != 1 || len(document.Security[0]) != 2 ||
+		document.Security[0]["browserGatewayMTLS"] == nil || !slices.Equal(document.Security[0]["userOAuth"], []string{"runs:write"}) {
+		t.Fatalf("public OpenAPI identity/security = %q / %+v", document.OpenAPI, document.Security)
+	}
+	createPath := CreateUserRunPath("{workspaceId}", "{sessionId}")
+	readPath := ReadUserRunEventsPath("{workspaceId}", "{runId}")
+	if len(document.Paths) != 2 || document.Paths[createPath].Post.OperationID != "createUserRun" || document.Paths[readPath].Get.OperationID != "readUserRunEvents" {
+		t.Fatalf("public OpenAPI paths = %+v", document.Paths)
+	}
+	assertSchemaFields(t, document.Components.Schemas, "CreateUserRunRequest", reflect.TypeFor[CreateUserRunRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "CreateUserRunResponse", reflect.TypeFor[CreateUserRunResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "ReadUserRunEventsResponse", reflect.TypeFor[ReadUserRunEventsResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "UserRunSnapshot", reflect.TypeFor[UserRunSnapshot]())
+	assertSchemaFields(t, document.Components.Schemas, "UserRunCursorExpiredResponse", reflect.TypeFor[UserRunCursorExpiredResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "PublicErrorResponse", reflect.TypeFor[PublicErrorResponse]())
+	if document.SecurityFacts.GatewayReadsPostgreSQL || document.SecurityFacts.CursorIsAuthorization ||
+		!document.SecurityFacts.MembershipRecheckedPerPoll || !document.SecurityFacts.RetentionRequiresSnapshot {
+		t.Fatalf("public OpenAPI security facts = %+v", document.SecurityFacts)
+	}
+}
+
 func assertSchemaFields(t *testing.T, schemas map[string]struct {
 	Required   []string                   `json:"required"`
 	Properties map[string]json.RawMessage `json:"properties"`

@@ -15,6 +15,7 @@ type StartRunRequest struct {
 	IdempotencyKey string
 	ClientRunID    string
 	Prompt         string
+	ResumeCursor   string
 }
 
 type StartRunResult struct {
@@ -24,6 +25,7 @@ type StartRunResult struct {
 	CreatedAt         time.Time
 	Cursor            string
 	LastEventSequence int64
+	RebaseSnapshot    any
 }
 
 type ReadRunEventsRequest struct {
@@ -37,8 +39,9 @@ type ReadRunEventsRequest struct {
 }
 
 type ReadRunEventsResult struct {
-	Events     []runevent.Event
-	NextCursor string
+	Events       []runevent.Event
+	EventCursors []string
+	NextCursor   string
 }
 
 // RunBackend is the only authority-facing surface used by browser-gateway.
@@ -67,10 +70,11 @@ func (err *CursorExpiredError) Error() string {
 // starts, for example 409 active_run. Internal error details must stay in the
 // wrapped/logged error rather than Message.
 type BackendHTTPError struct {
-	Status  int
-	Code    string
-	Message string
-	Err     error
+	Status       int
+	Code         string
+	Message      string
+	CurrentRunID string
+	Err          error
 }
 
 func (err *BackendHTTPError) Error() string {

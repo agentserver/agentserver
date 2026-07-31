@@ -97,6 +97,13 @@ func TestCanonicalEventsAsyncAPIDocumentsProjectionBoundaries(t *testing.T) {
 			GatewayReadsPostgreSQL         bool   `json:"gatewayReadsPostgreSQL"`
 			BrowserDisconnectCancelsRun    bool   `json:"browserDisconnectCancelsRun"`
 			OnlyRunCompletedMapsToFinished bool   `json:"onlyRunCompletedMapsToRunFinished"`
+			CursorIsAuthorization          bool   `json:"cursorIsAuthorization"`
+			MembershipRecheckedPerPoll     bool   `json:"membershipRecheckedPerPoll"`
+			PerEventCursors                bool   `json:"perEventCursors"`
+			CursorResolution               string `json:"cursorResolution"`
+			CursorPublication              string `json:"cursorPublication"`
+			CursorCarrier                  string `json:"cursorCarrier"`
+			ReconnectInput                 string `json:"reconnectInput"`
 			A2UIVersion                    string `json:"a2uiVersion"`
 			A2UICarrier                    string `json:"a2uiCarrier"`
 		} `json:"x-agentserver-projection"`
@@ -113,6 +120,11 @@ func TestCanonicalEventsAsyncAPIDocumentsProjectionBoundaries(t *testing.T) {
 	projection := document.Projection
 	if projection.CanonicalAuthority != "agentserver-core" || projection.GatewayOwnsRunState || projection.GatewayReadsPostgreSQL ||
 		projection.BrowserDisconnectCancelsRun || !projection.OnlyRunCompletedMapsToFinished ||
+		projection.CursorIsAuthorization || !projection.MembershipRecheckedPerPoll || !projection.PerEventCursors ||
+		projection.CursorResolution != "GET event cursor with limit=0 and waitMs=0" ||
+		projection.CursorPublication != "initial run.queued, authorized snapshot rebase, and committed lifecycle-safe boundaries only" ||
+		projection.CursorCarrier != "CUSTOM{name:agentserver.event_cursor,value:{version,runId,cursor,lastEventSequence}}" ||
+		projection.ReconnectInput != "forwardedProps.agentserver.eventCursor" ||
 		projection.A2UIVersion != "v0.9" || projection.A2UICarrier != "CUSTOM{name:a2ui.operations,value:[operations]}" {
 		t.Fatalf("AsyncAPI projection boundaries = %+v", projection)
 	}

@@ -10,6 +10,7 @@ type StateErrorCode string
 
 const (
 	ErrorInvalidArgument     StateErrorCode = "invalid_argument"
+	ErrorForbidden           StateErrorCode = "forbidden"
 	ErrorNotFound            StateErrorCode = "not_found"
 	ErrorVersionConflict     StateErrorCode = "version_conflict"
 	ErrorIdempotencyConflict StateErrorCode = "idempotency_conflict"

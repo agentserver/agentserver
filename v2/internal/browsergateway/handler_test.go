@@ -50,7 +50,8 @@ func TestAGUIHandlerStreamsCommittedCanonicalEventsAndA2UI(t *testing.T) {
 	backend := &fakeRunBackend{
 		startResult: validStartRunResult(),
 		reads: []fakeReadResult{{result: ReadRunEventsResult{
-			NextCursor: "cursor-9",
+			NextCursor:   "cursor-9",
+			EventCursors: []string{"cursor-2", "cursor-3", "cursor-4", "cursor-5", "cursor-6", "cursor-7", "cursor-8", "cursor-9"},
 			Events: []runevent.Event{
 				projectorEvent(t, 2, runevent.KindAssistantMessageStarted, runevent.MessageStartedPayload{MessageID: "message-1", Role: "assistant"}),
 				projectorEvent(t, 3, runevent.KindAssistantMessageDelta, runevent.MessageDeltaPayload{MessageID: "message-1", Delta: "hello"}),
@@ -102,13 +103,16 @@ func TestAGUIHandlerStreamsCommittedCanonicalEventsAndA2UI(t *testing.T) {
 	frames := decodeSSEData(t, response.Body.String())
 	wantTypes := []events.EventType{
 		events.EventTypeRunStarted,
+		events.EventTypeCustom,
 		events.EventTypeTextMessageStart,
 		events.EventTypeTextMessageContent,
 		events.EventTypeTextMessageEnd,
+		events.EventTypeCustom,
 		events.EventTypeToolCallStart,
 		events.EventTypeToolCallArgs,
 		events.EventTypeToolCallEnd,
 		events.EventTypeToolCallResult,
+		events.EventTypeCustom,
 		events.EventTypeCustom,
 		events.EventTypeRunFinished,
 	}
@@ -120,12 +124,15 @@ func TestAGUIHandlerStreamsCommittedCanonicalEventsAndA2UI(t *testing.T) {
 			t.Fatalf("frame %d type = %v, want %s", index, got, eventType)
 		}
 	}
-	if frames[8]["name"] != "a2ui.operations" {
-		t.Fatalf("CUSTOM frame = %+v", frames[8])
+	if frames[1]["name"] != EventCursorCustomName || frames[5]["name"] != EventCursorCustomName || frames[11]["name"] != EventCursorCustomName {
+		t.Fatalf("cursor frames = %#v / %#v / %#v", frames[1], frames[5], frames[11])
 	}
-	operations, ok := frames[8]["value"].([]any)
+	if frames[10]["name"] != "a2ui.operations" {
+		t.Fatalf("CUSTOM frame = %+v", frames[10])
+	}
+	operations, ok := frames[10]["value"].([]any)
 	if !ok || len(operations) != 3 {
-		t.Fatalf("A2UI operations = %#v", frames[8]["value"])
+		t.Fatalf("A2UI operations = %#v", frames[10]["value"])
 	}
 	first := operations[0].(map[string]any)
 	if first["version"] != "v0.9" || first["createSurface"] == nil {
@@ -142,8 +149,8 @@ func TestAGUIHandlerRebasesExpiredCursorWithStateSnapshot(t *testing.T) {
 				RebaseCursor: "cursor-5", LastEventSequence: 5,
 			}},
 			{result: ReadRunEventsResult{
-				NextCursor: "cursor-6",
-				Events:     []runevent.Event{projectorEvent(t, 6, runevent.KindRunCompleted, runevent.RunTerminalPayload{})},
+				NextCursor: "cursor-6", EventCursors: []string{"cursor-6"},
+				Events: []runevent.Event{projectorEvent(t, 6, runevent.KindRunCompleted, runevent.RunTerminalPayload{})},
 			}},
 		},
 	}
@@ -154,7 +161,10 @@ func TestAGUIHandlerRebasesExpiredCursorWithStateSnapshot(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
 	frames := decodeSSEData(t, response.Body.String())
-	want := []events.EventType{events.EventTypeRunStarted, events.EventTypeStateSnapshot, events.EventTypeRunFinished}
+	want := []events.EventType{
+		events.EventTypeRunStarted, events.EventTypeCustom, events.EventTypeStateSnapshot,
+		events.EventTypeCustom, events.EventTypeRunFinished,
+	}
 	if len(frames) != len(want) {
 		t.Fatalf("frames = %#v", frames)
 	}
@@ -172,19 +182,39 @@ func TestAGUIHandlerTurnsSequenceGapIntoRunError(t *testing.T) {
 	backend := &fakeRunBackend{
 		startResult: validStartRunResult(),
 		reads: []fakeReadResult{{result: ReadRunEventsResult{
-			NextCursor: "cursor-3",
-			Events:     []runevent.Event{projectorEvent(t, 3, runevent.KindRunCompleted, runevent.RunTerminalPayload{})},
+			NextCursor: "cursor-3", EventCursors: []string{"cursor-3"},
+			Events: []runevent.Event{projectorEvent(t, 3, runevent.KindRunCompleted, runevent.RunTerminalPayload{})},
 		}}},
 	}
 	handler := newTestHandler(t, backend)
 	response := httptest.NewRecorder()
 	handler.Routes().ServeHTTP(response, validAGUIRequest(t, validAGUIBody()))
 	frames := decodeSSEData(t, response.Body.String())
-	if len(frames) != 2 || frames[0]["type"] != string(events.EventTypeRunStarted) || frames[1]["type"] != string(events.EventTypeRunError) {
+	if len(frames) != 3 || frames[0]["type"] != string(events.EventTypeRunStarted) || frames[1]["name"] != EventCursorCustomName || frames[2]["type"] != string(events.EventTypeRunError) {
 		t.Fatalf("gap frames = %#v", frames)
 	}
-	if frames[1]["code"] != "invalid_run_event_stream" {
-		t.Fatalf("gap error = %#v", frames[1])
+	if frames[2]["code"] != "invalid_run_event_stream" {
+		t.Fatalf("gap error = %#v", frames[2])
+	}
+}
+
+func TestAGUIHandlerValidatesAndForwardsExplicitReconnectCursor(t *testing.T) {
+	started := validStartRunResult()
+	started.Cursor = "cursor-5"
+	started.LastEventSequence = 5
+	backend := &fakeRunBackend{
+		startResult: started,
+		reads: []fakeReadResult{{result: ReadRunEventsResult{
+			NextCursor: "cursor-6", EventCursors: []string{"cursor-6"},
+			Events: []runevent.Event{projectorEvent(t, 6, runevent.KindRunCompleted, runevent.RunTerminalPayload{})},
+		}}},
+	}
+	body := strings.Replace(validAGUIBody(), `"tools":[]`, `"forwardedProps":{"agentserver":{"eventCursor":"cursor-5"}},"tools":[]`, 1)
+	handler := newTestHandler(t, backend)
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, validAGUIRequest(t, body))
+	if response.Code != http.StatusOK || len(backend.startRequests) != 1 || backend.startRequests[0].ResumeCursor != "cursor-5" {
+		t.Fatalf("response = %d %s; StartRun = %+v", response.Code, response.Body.String(), backend.startRequests)
 	}
 }
 
@@ -207,6 +237,11 @@ func TestAGUIHandlerRejectsAuthenticationIdempotencyAndClientAuthority(t *testin
 			wantStatus: http.StatusBadRequest, wantCode: "invalid_idempotency_key",
 		},
 		{
+			name: "wrong content type", body: validAGUIBody(),
+			mutate:     func(request *http.Request) { request.Header.Set("Content-Type", "text/plain") },
+			wantStatus: http.StatusUnsupportedMediaType, wantCode: "unsupported_media_type",
+		},
+		{
 			name: "wrong thread", body: strings.Replace(validAGUIBody(), projectorSessionID, "90000000-0000-4000-8000-000000000009", 1),
 			mutate: func(*http.Request) {}, wantStatus: http.StatusBadRequest, wantCode: "invalid_agui_input",
 		},
@@ -216,6 +251,18 @@ func TestAGUIHandlerRejectsAuthenticationIdempotencyAndClientAuthority(t *testin
 		},
 		{
 			name: "duplicate field", body: strings.Replace(validAGUIBody(), `"messages":`, `"threadId":"`+projectorSessionID+`","messages":`, 1),
+			mutate: func(*http.Request) {}, wantStatus: http.StatusBadRequest, wantCode: "invalid_agui_input",
+		},
+		{
+			name: "client state", body: strings.Replace(validAGUIBody(), `"messages":`, `"state":{"forged":true},"messages":`, 1),
+			mutate: func(*http.Request) {}, wantStatus: http.StatusBadRequest, wantCode: "invalid_agui_input",
+		},
+		{
+			name: "message history", body: strings.Replace(validAGUIBody(), `"messages":[`, `"messages":[{"id":"old","role":"assistant","content":"old"},`, 1),
+			mutate: func(*http.Request) {}, wantStatus: http.StatusBadRequest, wantCode: "invalid_agui_input",
+		},
+		{
+			name: "unknown forwarded authority", body: strings.Replace(validAGUIBody(), `"tools":[]`, `"forwardedProps":{"endpoint":"https://evil"},"tools":[]`, 1),
 			mutate: func(*http.Request) {}, wantStatus: http.StatusBadRequest, wantCode: "invalid_agui_input",
 		},
 	}
@@ -245,13 +292,55 @@ func TestAGUIHandlerRejectsAuthenticationIdempotencyAndClientAuthority(t *testin
 
 func TestAGUIHandlerMapsPublicBackendConflictBeforeSSE(t *testing.T) {
 	backend := &fakeRunBackend{startErr: &BackendHTTPError{
-		Status: http.StatusConflict, Code: "active_run", Message: "session already has an active run", Err: errors.New("internal detail"),
+		Status: http.StatusConflict, Code: "active_run", Message: "session already has an active run",
+		CurrentRunID: projectorRunID, Err: errors.New("internal detail"),
 	}}
 	handler := newTestHandler(t, backend)
 	response := httptest.NewRecorder()
 	handler.Routes().ServeHTTP(response, validAGUIRequest(t, validAGUIBody()))
-	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"code":"active_run"`) || strings.Contains(response.Body.String(), "internal detail") {
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"code":"active_run"`) ||
+		!strings.Contains(response.Body.String(), `"currentRunId":"`+projectorRunID+`"`) || strings.Contains(response.Body.String(), "internal detail") {
 		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestAGUIHandlerPreservesBearerChallengeFromCore(t *testing.T) {
+	backend := &fakeRunBackend{startErr: &BackendHTTPError{
+		Status: http.StatusUnauthorized, Code: "unauthorized", Message: "access token expired",
+	}}
+	handler := newTestHandler(t, backend)
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, validAGUIRequest(t, validAGUIBody()))
+	if response.Code != http.StatusUnauthorized || response.Header().Get("WWW-Authenticate") != `Bearer realm="agentserver-api"` {
+		t.Fatalf("response = %d, challenge = %q", response.Code, response.Header().Get("WWW-Authenticate"))
+	}
+}
+
+func TestEventBatchCursorChainCannotSkipCommittedEvents(t *testing.T) {
+	tests := []struct {
+		name  string
+		batch ReadRunEventsResult
+		valid bool
+	}{
+		{name: "empty stable", batch: ReadRunEventsResult{NextCursor: "cursor-1"}, valid: true},
+		{name: "empty advanced", batch: ReadRunEventsResult{NextCursor: "cursor-2"}},
+		{name: "one event", batch: ReadRunEventsResult{
+			Events: []runevent.Event{{}}, EventCursors: []string{"cursor-2"}, NextCursor: "cursor-2",
+		}, valid: true},
+		{name: "duplicate position", batch: ReadRunEventsResult{
+			Events: []runevent.Event{{}, {}}, EventCursors: []string{"cursor-2", "cursor-2"}, NextCursor: "cursor-2",
+		}},
+		{name: "next skips final event", batch: ReadRunEventsResult{
+			Events: []runevent.Event{{}}, EventCursors: []string{"cursor-2"}, NextCursor: "cursor-3",
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateEventBatch(test.batch, "cursor-1", 10)
+			if (err == nil) != test.valid {
+				t.Fatalf("validateEventBatch() error = %v, valid = %v", err, test.valid)
+			}
+		})
 	}
 }
 

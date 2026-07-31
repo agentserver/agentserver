@@ -950,9 +950,15 @@ browser-gateway只做：
 
 它不保存 session、run或 approval事实。浏览器断开只停止投影，不调用 cancel。
 
-当前把 Phase 4 中不依赖真实模型运行时的协议子阶段前置：`internal/runevent`与`api/schema/canonical-run-event.schema.json`冻结canonical envelope及首批message/reasoning/tool/run terminal schema-v1 payload；未来未知kind可在完成envelope/sequence校验后跳过，已知kind的未知schema version必须fail closed。`internal/browsergateway`已经以抽象`RunBackend`实现`POST /v2/workspaces/{workspaceId}/sessions/{sessionId}/agui`，要求用户bearer和`Idempotency-Key`，拒绝客户端tools/context，发出CreateRun响应对应的`RUN_STARTED`后只按cursor long-poll已提交事件。投影覆盖AG-UI message/reasoning/tool lifecycle、仅`run.completed → RUN_FINISHED`、其他terminal → `RUN_ERROR`，以及`CUSTOM{name:"a2ui.operations"}`承载的display-only A2UI v0.9 command/file-change卡；cursor过期走`STATE_SNAPSHOT`与lifecycle-boundary rebase。handler、sequence gap、scope、cursor rebase和完整A2UI链已有fake backend集成测试。
+当前把 Phase 4 中不依赖真实模型运行时的协议子阶段前置：`internal/runevent`与`api/schema/canonical-run-event.schema.json`冻结canonical envelope及首批message/reasoning/tool/run terminal schema-v1 payload；未来未知kind可在完成envelope/sequence校验后跳过，已知kind的未知schema version必须fail closed。`internal/browsergateway`实现`POST /v2/workspaces/{workspaceId}/sessions/{sessionId}/agui`，要求用户bearer和`Idempotency-Key`，只接受一条新的user message，拒绝客户端历史messages/state/tools/context。投影覆盖AG-UI message/reasoning/tool lifecycle、仅`run.completed → RUN_FINISHED`、其他terminal → `RUN_ERROR`，以及`CUSTOM{name:"a2ui.operations"}`承载的display-only A2UI v0.9 command/file-change卡。
 
-这一前置切片不需要启动codex app-server，因为输入是确定的canonical fixture；真实运行时最终仍需要stock app-server负责模型循环并由harness产出候选事件。当前core还没有public CreateRun/event-read实现，browser-gateway也没有可运行command/deployment，因此这里明确只是可接线、可测试的协议层，不能宣称已经能部署看到真实模型效果。
+core现已实现真实`CreateRun`与授权event-read API：browser-gateway的mTLS SPIFFE identity和原始用户bearer必须同时成立；Hydra introspection强制`active`、未过期、canonical UUID subject、单一`aud=agentserver-api`与`runs:write`，CreateRun写事务和每次long-poll都重新检查当前membership。HMAC opaque cursor绑定workspace/session/run/sequence，事件页返回per-event cursors，`limit=0`只解析重连位置。浏览器通过`forwardedProps.agentserver.eventCursor`续接；gateway只在初始queued位置、完整AG-UI lifecycle boundary或snapshot rebase后发布`CUSTOM{name:"agentserver.event_cursor"}`。retention gap没有已物化的完整lifecycle snapshot时不能虚构rebase。
+
+`cmd/browser-gateway`现已提供真实HTTPS入口、到core的mTLS client、`/healthz`、`/readyz`、header/read timeout和SSE有界优雅关闭；用户bearer禁止跟随redirect，也不会进入harness/executor/agentx。core的`AGENTSERVER_V2_DEV_PROMPT_OBJECT_DIR`后端只为本地联调提供`0600` plaintext immutable object与稳定幂等pointer，它不是加密、共享或多副本安全的生产对象存储。生产部署必须替换为前文定义的加密S3-compatible实现，不能把该目录挂载后冒充生产闭环。
+
+这一前置切片仍不需要启动codex app-server，因为协议测试输入是确定的canonical fixture；真实运行时最终仍需要stock app-server负责模型循环并由harness产出候选事件。当前可以启动core/browser边缘验证鉴权、CreateRun与queued SSE，但run不会产生真实模型输出，也不能据此宣称完整产品链已经可部署。
+
+browser-gateway运行配置为：public listener使用`AGENTSERVER_V2_BROWSER_GATEWAY_LISTEN_ADDR`、`AGENTSERVER_V2_BROWSER_GATEWAY_TLS_CERT_FILE`、`AGENTSERVER_V2_BROWSER_GATEWAY_TLS_KEY_FILE`；core origin与mTLS使用`AGENTSERVER_V2_CORE_URL`、`AGENTSERVER_V2_CORE_CA_FILE`、`AGENTSERVER_V2_CORE_CLIENT_CERT_FILE`、`AGENTSERVER_V2_CORE_CLIENT_KEY_FILE`，可选`AGENTSERVER_V2_CORE_SERVER_NAME`覆盖证书名。core URL必须是无credential/path/query/fragment的HTTPS origin。
 
 审批链路：
 
@@ -1119,7 +1125,7 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 退出条件：浏览器断线/重连不取消 run，approval TTL/cancel/断线全部 fail closed。
 
-其中canonical event → AG-UI/A2UI、SSE handler和backend abstraction已作为Phase 3期间的前置协议子阶段实现；Phase 4仍需补core public API真实接线、browser-gateway command/配置、Hydra、approval和前端部署，不能把fake backend测试计作Phase 4退出。
+其中canonical event → AG-UI/A2UI、SSE handler、core public CreateRun/event cursor、真实backend以及browser-gateway command/config已作为Phase 3期间的前置协议子阶段实现；Phase 4仍需补生产加密对象存储、Hydra login/consent bridge、approval/显式cancel、reference Web与部署，不能把queued SSE或fixture投影测试计作Phase 4退出。
 
 ### Phase 5 — Hardening 与生产门槛
 
@@ -1157,7 +1163,7 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 Phase 3当前从第13项开始：已有run/attempt/event component API、独立harness-pool workload identity、原子双lease续期、`run.queued`专用long-poll delivery、pool侧单项claim controller内核、brain catalog冻结/线程绑定core API、签名manifest launch-preparer、受限私钥装载/公钥轮换keyring、deployment profile resolver、由`CreateRun`原子持久化并由live attempt fence保护的core-backed launch-state source，以及带有界并发、lease心跳、thread/turn顺序门和dispatch清理语义的常驻监督骨架；checkpoint恢复会复用原thread绑定catalog。per-attempt control机器合同、同holder进程resume journal、双向control server/client、mTLS+bearer入口、具体`ControlAttemptSupervisor`、本地process launcher、closed-world bootstrap pipe及worker验签入口也已完成。后续仍须实现app-server真实child/final-exec、prompt/checkpoint对象读取、可运行的harness-pool/worker命令装配、finalization与checkpoint CAS写路径；这些不能由当前control terminal或抽象workload接口替代。
 
-Phase 4的协议前置子阶段也已开始：canonical run-event schema/AsyncAPI、AG-UI SDK pin、A2UI v0.9 display builders、严格projector和抽象SSE handler已完成。下一步必须先补core public CreateRun与event cursor读接口并接入真实browser-gateway backend，再做command/health/config与reference web；这项前置工作没有改变上述harness/app-server未完成事实。
+Phase 4的协议前置子阶段已完成下一段接线：canonical run-event schema/AsyncAPI、AG-UI SDK pin、A2UI v0.9 display builders、严格projector、public CreateRun/event cursor、Hydra token introspection、HMAC cursor、真实core backend及browser-gateway command/health/config均已有实现和门禁。下一步回到Phase 3主链，完成app-server真实child/final-exec、prompt/checkpoint对象读取、可运行harness-pool/worker命令及finalization/checkpoint CAS；随后再补Hydra login/consent bridge、approval/cancel和reference web。当前开发plaintext prompt store与queued SSE没有改变真实模型链和生产对象存储尚未完成的事实。
 
 ## 14. 尚未锁定但有明确决策点的事项
 

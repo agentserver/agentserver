@@ -471,12 +471,14 @@ func assertDatabaseObjects(t *testing.T, connection *pgx.Conn, schema string) {
 		"outbox":                       false,
 		"run_attempts":                 false,
 		"run_events":                   false,
+		"run_event_rebases":            false,
 		"run_launch_allowed_tools":     false,
 		"run_launch_states":            false,
 		"runs":                         false,
 		"schema_migrations":            false,
 		"session_leases":               false,
 		"sessions":                     false,
+		"workspace_members":            false,
 		"workspaces":                   false,
 	}
 	rows, err := connection.Query(t.Context(), `
@@ -513,6 +515,11 @@ WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, schema)
 		"runs_idempotency_unique":                                 false,
 		"run_events_attempt_fk":                                   false,
 		"run_events_source_valid":                                 false,
+		"run_event_rebases_after_seq_json_safe":                   false,
+		"run_event_rebases_materialization_time_order":            false,
+		"run_event_rebases_snapshot_object_bounded":               false,
+		"run_event_rebases_status_valid":                          false,
+		"run_event_rebases_version_json_safe":                     false,
 		"run_events_payload_or_object":                            false,
 		"run_events_object_size_positive":                         false,
 		"run_events_object_media_type_bounded":                    false,
@@ -545,6 +552,7 @@ WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, schema)
 		"execution_operations_terminal_matches_status":            false,
 		"execution_operations_skipped_kind_valid":                 false,
 		"executors_enrollment_metadata_complete":                  false,
+		"workspace_members_role_valid":                            false,
 		"executor_environments_process_profile_valid":             false,
 		"executor_connections_session_id_unique":                  false,
 		"executor_connections_build_hashes_sha256":                false,
@@ -594,6 +602,7 @@ WHERE constraint_schema = $1`, schema)
 		"executor_environments_executor_status_created_idx":  false,
 		"executor_connections_expiry_idx":                    false,
 		"executor_connection_attempts_executor_acquired_idx": false,
+		"workspace_members_user_workspace_idx":               false,
 	}
 	rows, err = connection.Query(t.Context(), "SELECT indexname FROM pg_catalog.pg_indexes WHERE schemaname = $1", schema)
 	if err != nil {

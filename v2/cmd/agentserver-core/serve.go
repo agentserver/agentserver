@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/coredb"
 	"github.com/agentserver/agentserver/v2/internal/coreserver"
+	"github.com/agentserver/agentserver/v2/internal/runcursor"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -26,6 +28,13 @@ const (
 	coreClientCAEnvironment            = "AGENTSERVER_V2_CORE_CLIENT_CA_FILE"
 	coreGatewayIdentityEnvironment     = "AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID"
 	coreHarnessPoolIdentityEnvironment = "AGENTSERVER_V2_HARNESS_POOL_SPIFFE_ID"
+	coreBrowserIdentityEnvironment     = "AGENTSERVER_V2_BROWSER_GATEWAY_SPIFFE_ID"
+	coreHydraIntrospectionEnvironment  = "AGENTSERVER_V2_HYDRA_INTROSPECTION_URL"
+	coreHydraInsecureHTTPEnvironment   = "AGENTSERVER_V2_HYDRA_ALLOW_INSECURE_HTTP"
+	coreRunCursorKeyEnvironment        = "AGENTSERVER_V2_RUN_CURSOR_KEY"
+	coreDevPromptObjectRootEnvironment = "AGENTSERVER_V2_DEV_PROMPT_OBJECT_DIR"
+	coreRunPolicyVersionEnvironment    = "AGENTSERVER_V2_RUN_POLICY_VERSION"
+	coreRunAllowedToolsEnvironment     = "AGENTSERVER_V2_RUN_ALLOWED_TOOLS"
 )
 
 func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer) error {
@@ -60,6 +69,49 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	if harnessPoolIdentity == gatewayIdentity {
 		return errors.New("executor-gateway and harness-pool SPIFFE identities must be distinct")
 	}
+	browserIdentity, err := requiredConfiguration(getenv, coreBrowserIdentityEnvironment)
+	if err != nil {
+		return err
+	}
+	if browserIdentity == gatewayIdentity || browserIdentity == harnessPoolIdentity {
+		return errors.New("browser-gateway, executor-gateway, and harness-pool SPIFFE identities must be distinct")
+	}
+	hydraEndpoint, err := requiredConfiguration(getenv, coreHydraIntrospectionEnvironment)
+	if err != nil {
+		return err
+	}
+	allowInsecureHydra, err := strictOptionalBoolean(getenv(coreHydraInsecureHTTPEnvironment), coreHydraInsecureHTTPEnvironment)
+	if err != nil {
+		return err
+	}
+	cursorKeyEncoded, err := requiredConfiguration(getenv, coreRunCursorKeyEnvironment)
+	if err != nil {
+		return err
+	}
+	cursorKey, err := decodeRunCursorKey(cursorKeyEncoded)
+	if err != nil {
+		return err
+	}
+	promptObjectRoot, err := requiredConfiguration(getenv, coreDevPromptObjectRootEnvironment)
+	if err != nil {
+		return err
+	}
+	promptStore, err := coreserver.NewLocalUserPromptStore(promptObjectRoot)
+	if err != nil {
+		return fmt.Errorf("configure developer prompt object store: %w", err)
+	}
+	policyVersion, err := requiredConfiguration(getenv, coreRunPolicyVersionEnvironment)
+	if err != nil {
+		return err
+	}
+	policyResolver, err := coreserver.NewStaticUserRunPolicyResolver(policyVersion, commaSeparatedTools(getenv(coreRunAllowedToolsEnvironment)))
+	if err != nil {
+		return fmt.Errorf("configure user run policy: %w", err)
+	}
+	cursorCodec, err := runcursor.NewCodec(cursorKey)
+	if err != nil {
+		return err
+	}
 
 	poolConfig, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
@@ -83,7 +135,32 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	if err != nil {
 		return err
 	}
+	browserAuthorizer, err := coreserver.NewSPIFFEWorkloadAuthorizer(browserIdentity)
+	if err != nil {
+		return err
+	}
+	hydraIntrospector, err := coreserver.NewHydraUserIntrospector(hydraEndpoint, &http.Client{Timeout: 5 * time.Second}, allowInsecureHydra)
+	if err != nil {
+		return err
+	}
+	userAuthorizer, err := coreserver.NewIntrospectedUserAuthorizer(coreserver.IntrospectedUserAuthorizerConfig{
+		Introspector: hydraIntrospector, ExpectedAudience: "agentserver-api",
+		ActionScopes: map[string]string{"runs.create": "runs:write", "runs.events.read": "runs:write"},
+	})
+	if err != nil {
+		return err
+	}
 	store := coredb.NewStateStore(pool)
+	userRunService, err := coreserver.NewUserRunService(coreserver.UserRunServiceConfig{
+		Store: store, Prompts: promptStore, Policies: policyResolver, CursorCodec: cursorCodec,
+	})
+	if err != nil {
+		return err
+	}
+	userRunHandler, err := coreserver.NewUserRunHandler(browserAuthorizer, userAuthorizer, userRunService)
+	if err != nil {
+		return err
+	}
 	connectionHandler, err := coreserver.NewExecutorConnectionHandler(authorizer, coreserver.StateStoreExecutorConnectionCommands{
 		Store: store,
 	})
@@ -115,6 +192,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 		return err
 	}
 	handler := http.NewServeMux()
+	handler.Handle("/v2/", userRunHandler.Routes())
 	handler.Handle(corecontract.FreezeBrainToolCatalogPath, brainToolCatalogHandler)
 	handler.Handle(corecontract.BrainToolCatalogPathPrefix, brainToolCatalogHandler)
 	handler.Handle(corecontract.ClaimRunDispatchesPath, runDispatchHandler)
@@ -140,7 +218,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
+		WriteTimeout:      40 * time.Second,
 		IdleTimeout:       30 * time.Second,
 		MaxHeaderBytes:    32 * 1024,
 		TLSConfig:         tlsConfig,
@@ -162,6 +240,32 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 		return nil
 	}
 	return err
+}
+
+func decodeRunCursorKey(encoded string) ([]byte, error) {
+	decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil || len(decoded) != 32 || base64.RawURLEncoding.EncodeToString(decoded) != encoded {
+		return nil, fmt.Errorf("%s must be a canonical unpadded base64url 256-bit key", coreRunCursorKeyEnvironment)
+	}
+	return decoded, nil
+}
+
+func strictOptionalBoolean(value, name string) (bool, error) {
+	switch strings.TrimSpace(value) {
+	case "", "false":
+		return false, nil
+	case "true":
+		return true, nil
+	default:
+		return false, fmt.Errorf("%s must be true or false", name)
+	}
+}
+
+func commaSeparatedTools(value string) []string {
+	if value == "" {
+		return nil
+	}
+	return strings.Split(value, ",")
 }
 
 func coreTLSConfig(certificateFile, keyFile, clientCAFile string) (*tls.Config, error) {

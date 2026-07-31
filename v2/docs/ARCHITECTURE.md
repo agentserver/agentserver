@@ -218,9 +218,9 @@ stock app-server 访问 llmproxy 所需的短期 capability 优先通过 tmpfs/�
 ### 6.1 创建并运行对话
 
 1. a2ui-web 调 core 创建或选择 `session_id`。
-2. 用户向 `POST /v2/workspaces/{workspaceId}/sessions/{sessionId}/agui` 提交 AG-UI `RunAgentInput` 和客户端生成的 `Idempotency-Key`；`threadId`必须为空或等于path中的`sessionId`，客户端不得声明tools。
-3. browser-gateway 将用户 token、目标 action、幂等键和规范化请求 hash 交给 core；core 完成鉴权，并在同一事务中写入 `run_id`、第一条规范事件和 durable outbox。同一 user/workspace/session 下重复的幂等键只有在请求 hash 相同时才返回原 `run_id`，不同 payload 必须报冲突。
-4. browser-gateway 将第一条事件立即映射为 `RUN_STARTED`，之后按 event cursor 订阅该 run。
+2. 用户向 `POST /v2/workspaces/{workspaceId}/sessions/{sessionId}/agui` 提交 AG-UI `RunAgentInput` 和客户端生成的 `Idempotency-Key`；`threadId`必须为空或等于path中的`sessionId`，请求必须且只能包含一条新的user message，客户端不得提交历史messages、state、tools或context。重连游标只允许放在`forwardedProps.agentserver.eventCursor`，其他客户端权威字段一律拒绝。
+3. browser-gateway 以自己的mTLS workload identity调用core的`POST /v2/workspaces/{workspaceId}/sessions/{sessionId}/runs`，原样转交用户bearer与幂等键；core introspect得到actor、检查`active/exp/aud/scope`，并在写事务中再次检查当前workspace membership。core在同一事务中写入`run_id`、第一条规范事件和durable outbox。同一user/workspace/session下重复的幂等键只有在请求hash相同时才返回原`run_id`，不同payload必须报冲突。
+4. browser-gateway 将CreateRun结果映射为`RUN_STARTED`，并立即发布第一条`CUSTOM{name:"agentserver.event_cursor"}`。之后它通过core的`GET /v2/workspaces/{workspaceId}/runs/{runId}/events`只读取已提交事件；每次long-poll都重新验证用户token与当前membership，browser-gateway不读取PostgreSQL。
 5. harness-pool领取queued run，并以CAS获取`session_lease`，同时创建新的`run_attempt_id/run_attempt_generation`与对应lease。core为将创建的新brain thread从版本化executor MCP contract与当前policy计算允许子集，先保存未绑定thread id的canonical catalog/digest；`thread/start`成功后再以CAS绑定返回的`brain_thread_id`。已有checkpoint必须沿用原digest。catalog决定模型可见schema，但不是永久授权：gateway每次调用仍检查live RBAC/capability。session lease保证任何时刻一个session最多一个active run，attempt lease fence旧worker。
 6. harness-pool 在当前 holder 进程内为该 attempt 创建新的临时目录和进程组，以本地 `fork/exec` 启动一个全新 harness-worker，不调用 Kubernetes API。worker 通过仅本次启动继承的受限 pipe 接收不可变、签名的 run manifest 和 attempt control capability，恢复最近一个已提交的 completed-turn checkpoint，创建清洗后的临时 `CODEX_HOME`。worker 以 MCP client 初始化 executor-gateway，并要求协商到manifest固定的protocol profile；reference profile是可承载嵌套server-originated elicitation的`2025-11-25` stateful Streamable HTTP，其他版本在`tools/list`前fail closed。随后worker读取`tools/list`，并要求规范化后的名称、description、input schema 与签名 manifest 中冻结的 catalog/hash 完全一致；不一致时在启动 turn 前 fail closed。
 7. harness-worker 以 stdio 启动并初始化 stock app-server。新 thread 的 `thread/start.dynamicTools` 由冻结 catalog 机械生成；native resume 没有 dynamicTools override，所以只允许恢复 catalog digest 相同的 thread，catalog 变化必须创建新 thread。worker 随后以原始用户输入调用 `turn/start`，不改写 prompt。app-server 只通过 llmproxy 调模型；需要工具时发出 `item/tool/call`，worker 校验 thread/turn/call/tool/arguments 后转成 executor MCP `tools/call`。
@@ -646,7 +646,9 @@ Phase 2 若需要多副本和跨 pod resume，必须先实现以下 owner routin
 - ingestion 至少一次，`event_id` 和 producer key 双重去重；消费者不能依赖恰好一次投递。
 - 小 payload 存 Postgres；大 stdout/stderr、图片或制品先加密上传临时对象，事件事务只保存已验证的 hash、大小、media type 和内部对象 id。提交失败的 orphan 异步清理；不能持久化长期 presigned URL，读取仍需经过 core 授权与 retention policy。
 - 规范事件 payload 在持久化前做 secret/prompt policy 过滤。过滤后的事件不是模型恢复事实；完整、模型可见内容进入独立加密 checkpoint/conversation record，遵循 retention/删除策略。checkpoint secret scan只用于发现不应出现的 runtime credential并拒绝/quarantine对象，不能对模型可见 rollout做字节替换后冒充等价恢复。
-- 浏览器使用 `run_id + cursor` 重连；browser-gateway 因而可以无持久状态。cursor 已过 retention window 时返回明确 `cursor_expired` 和授权后的 run snapshot/rebase cursor，不能返回空流冒充无新事件。
+- 浏览器使用`run_id + cursor`重连；browser-gateway因而可以无持久状态。cursor是core以HMAC签发、同时绑定`workspace_id/session_id/run_id/after_seq`的opaque position，不是授权凭证；每次读取仍重新检查bearer和当前workspace membership，不能跨scope复用。
+- core的事件页为每条event返回同位置cursor；`limit=0,waitMs=0`只验证并解析一个重连cursor，不消费事件。browser-gateway不会在message/reasoning/tool lifecycle中间向浏览器发布进度cursor，只在初始`run.queued`、已提交的lifecycle-safe boundary或授权snapshot rebase后发布`CUSTOM{name:"agentserver.event_cursor",value:{version,runId,cursor,lastEventSequence}}`。这样断线后最多重放一个未完成生命周期，不会从缺少`*_START`的delta中间恢复。
+- cursor已过retention window时，只有core事先在同一个lifecycle boundary物化完整snapshot、该边界对应的run status/version/timestamp与rebase position，才可返回明确`cursor_expired`；不能把读取时更晚的current run元数据拼到旧snapshot上。browser-gateway依次发`STATE_SNAPSHOT`和新的cursor。没有已提交snapshot时必须报内部一致性错误，不能返回空流或任意剩余事件冒充安全恢复。
 
 ### 10.2 两套上游协议不得混用
 
@@ -683,7 +685,7 @@ A07 dynamic probe已经确认：pending `item/tool/call`时调用`turn/interrupt
 ### 10.4 Web 安全
 
 - a2ui-web 只在内存中持 `aud=agentserver-api` token；刷新使用 Authorization Code + PKCE/refresh-token rotation 或重新授权，不使用 localStorage。若未来让 core 与 browser-gateway 使用不同 audience，必须显式取得两个 token 或做标准 token exchange，不能把一枚 token 跨 audience 接受。
-- AG-UI/SSE 使用支持 `Authorization` header 的 `fetch` streaming，并显式携带 event cursor；不能依赖无法设置 bearer header 的原生 `EventSource`。如果改用 HttpOnly BFF cookie，则必须把该 cookie session、CSRF 和注销语义建模，不能同时宣称不存在浏览器会话。
+- AG-UI/SSE 使用支持`Authorization` header的`fetch` streaming，并在`forwardedProps.agentserver.eventCursor`显式携带最近一条`agentserver.event_cursor`；不能依赖无法设置bearer header的原生`EventSource`，也不能把SSE `Last-Event-ID`误当core cursor。如果改用HttpOnly BFF cookie，则必须把该cookie session、CSRF和注销语义建模，不能同时宣称不存在浏览器会话。
 - Hydra login/consent bridge 为每次 challenge 保存短期、单次使用且绑定 state/nonce/PKCE 的登录事务；回调、重放、账户映射和 logout/revocation 都必须有明确状态机，不能把 SPA 的“token 只在内存”误当成 bridge 无需会话保护。
 - 配置严格 CSP、可信回调 URL、SameSite/CSRF 防护和最小 CORS。
 - 前端日志走 RUM/telemetry，并做隐私过滤；浏览器没有“输出 JSON 到 stdout”的保证。

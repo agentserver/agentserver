@@ -4,7 +4,7 @@
   "info": {
     "title": "agentserver v2 canonical run event cursor and browser projection",
     "version": "1.0.0",
-    "description": "Core owns the append-only canonical ledger and run sequence. browser-gateway long-polls committed facts and projects them to AG-UI SSE with display-only A2UI v0.9 operations."
+    "description": "Core owns the append-only canonical ledger and run sequence. Each committed event has a scope-bound opaque cursor. browser-gateway long-polls committed facts and projects them to AG-UI SSE with display-only A2UI v0.9 operations and lifecycle-safe reconnect cursors."
   },
   "defaultContentType": "application/json",
   "servers": {
@@ -45,13 +45,13 @@
     "readCommittedCanonicalEvents": {
       "action": "receive",
       "channel": {"$ref": "#/channels/canonicalRunCursor"},
-      "summary": "Read committed events after an opaque cursor; cursor expiry returns an authorized snapshot and lifecycle-boundary rebase cursor.",
+      "summary": "Read committed events after an opaque cursor. Each event has a same-index cursor; limit=0 only validates and resolves a reconnect cursor. Cursor expiry returns an authorized snapshot and lifecycle-boundary rebase cursor.",
       "messages": [{"$ref": "#/channels/canonicalRunCursor/messages/canonicalRunEvent"}]
     },
     "streamProjectedAGUIEvents": {
       "action": "send",
       "channel": {"$ref": "#/channels/aguiRun"},
-      "summary": "Stream RUN_STARTED followed by committed canonical projections. A browser transport disconnect does not cancel the run.",
+      "summary": "Stream RUN_STARTED followed by committed canonical projections. CUSTOM agentserver.event_cursor is published only at safe lifecycle boundaries and is supplied on reconnect through forwardedProps.agentserver.eventCursor. A browser transport disconnect does not cancel the run.",
       "messages": [{"$ref": "#/channels/aguiRun/messages/projectedAGUIEvent"}]
     }
   },
@@ -67,7 +67,7 @@
         "title": "AG-UI SDK event serialized in one SSE data frame",
         "payload": {
           "type": "object",
-          "description": "Validated against the pinned AG-UI community Go SDK. CUSTOM name a2ui.operations carries an ordered A2UI v0.9 operation array."
+          "description": "Validated against the pinned AG-UI community Go SDK. CUSTOM name a2ui.operations carries an ordered A2UI v0.9 operation array. CUSTOM name agentserver.event_cursor carries a server-issued scope-bound reconnect cursor and its lastEventSequence."
         }
       }
     },
@@ -95,6 +95,13 @@
     "unknownFutureKinds": "skip after envelope and sequence validation",
     "knownKindUnknownVersion": "fail closed",
     "cursorExpired": "STATE_SNAPSHOT then lifecycle-boundary rebase",
+    "cursorIsAuthorization": false,
+    "membershipRecheckedPerPoll": true,
+    "perEventCursors": true,
+    "cursorResolution": "GET event cursor with limit=0 and waitMs=0",
+    "cursorPublication": "initial run.queued, authorized snapshot rebase, and committed lifecycle-safe boundaries only",
+    "cursorCarrier": "CUSTOM{name:agentserver.event_cursor,value:{version,runId,cursor,lastEventSequence}}",
+    "reconnectInput": "forwardedProps.agentserver.eventCursor",
     "a2uiVersion": "v0.9",
     "a2uiCarrier": "CUSTOM{name:a2ui.operations,value:[operations]}"
   }

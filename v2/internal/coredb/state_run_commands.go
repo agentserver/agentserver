@@ -20,14 +20,39 @@ func (s *StateStore) CreateRun(ctx context.Context, command CreateRunCommand) (C
 	if err := validateCreateRun(command); err != nil {
 		return CreateRunResult{}, commandError(ErrorInvalidArgument, operation, "run", command.RunID, err.Error())
 	}
+	return s.createRun(ctx, command, false)
+}
 
+// CreateAuthorizedRun is the user-facing CreateRun boundary. Unlike the
+// component-level command it obtains the session version while holding the
+// session lock and rechecks current workspace membership in the same
+// transaction that writes the run, event, outbox, and launch authority.
+func (s *StateStore) CreateAuthorizedRun(ctx context.Context, command CreateRunCommand) (CreateRunResult, error) {
+	const operation = "CreateAuthorizedRun"
+	normalizedPolicy, err := normalizeRunExecutorPolicy(command.ExecutorPolicy)
+	if err != nil {
+		return CreateRunResult{}, commandError(ErrorInvalidArgument, operation, "run", command.RunID, err.Error())
+	}
+	command.ExecutorPolicy = normalizedPolicy
+	if err := validateCreateRunBase(command); err != nil {
+		return CreateRunResult{}, commandError(ErrorInvalidArgument, operation, "run", command.RunID, err.Error())
+	}
+	return s.createRun(ctx, command, true)
+}
+
+func (s *StateStore) createRun(ctx context.Context, command CreateRunCommand, requireUserMembership bool) (CreateRunResult, error) {
+	operation := "CreateRun"
+	if requireUserMembership {
+		operation = "CreateAuthorizedRun"
+	}
 	return withStateTransaction(ctx, s, operation, func(transaction pgx.Tx) (CreateRunResult, error) {
 		sessionQuery := fmt.Sprintf(`
 SELECT s.workspace_id::text, s.active_run_id::text, s.version, w.status
 FROM %s AS s
 JOIN %s AS w ON w.id = s.workspace_id
 WHERE s.id = $1
-FOR UPDATE OF s`, s.table("sessions"), s.table("workspaces"))
+FOR UPDATE OF s
+FOR SHARE OF w`, s.table("sessions"), s.table("workspaces"))
 		var sessionWorkspaceID string
 		var activeRunID *string
 		var sessionVersion int64
@@ -45,6 +70,16 @@ FOR UPDATE OF s`, s.table("sessions"), s.table("workspaces"))
 		}
 		if sessionWorkspaceID != command.WorkspaceID {
 			return CreateRunResult{}, commandError(ErrorNotFound, operation, "session", command.SessionID, "session is not in the requested workspace")
+		}
+		if requireUserMembership {
+			role, err := s.readWorkspaceMemberRole(ctx, transaction, command.WorkspaceID, command.ActorID)
+			if err != nil {
+				return CreateRunResult{}, err
+			}
+			if role == "viewer" {
+				return CreateRunResult{}, commandError(ErrorForbidden, operation, "workspace", command.WorkspaceID, "workspace role cannot create runs")
+			}
+			command.ExpectedSessionVersion = sessionVersion
 		}
 
 		existingQuery := fmt.Sprintf(`
@@ -71,18 +106,25 @@ WHERE r.workspace_id = $1
 					Message:      "idempotency key was already used with a different request hash",
 				}
 			}
-			prompt, policy, launchErr := s.readRunLaunchInput(ctx, transaction, operation, existing.ID)
-			if launchErr != nil {
-				return CreateRunResult{}, launchErr
-			}
-			if !runLaunchInputMatches(prompt, policy, command) {
-				return CreateRunResult{}, &StateError{
-					Code:         ErrorIdempotencyConflict,
-					Operation:    operation,
-					Resource:     "run",
-					ResourceID:   existing.ID,
-					CurrentRunID: existing.ID,
-					Message:      "idempotency key was already used with different launch authority",
+			// Component callers retry an already frozen command and retain the
+			// stronger launch-authority equality check. A user retry is defined
+			// solely by its canonical request hash: current server policy may have
+			// changed after the original run was committed, but that must not make
+			// recovery of the original run conflict.
+			if !requireUserMembership {
+				prompt, policy, launchErr := s.readRunLaunchInput(ctx, transaction, operation, existing.ID)
+				if launchErr != nil {
+					return CreateRunResult{}, launchErr
+				}
+				if !runLaunchInputMatches(prompt, policy, command) {
+					return CreateRunResult{}, &StateError{
+						Code:         ErrorIdempotencyConflict,
+						Operation:    operation,
+						Resource:     "run",
+						ResourceID:   existing.ID,
+						CurrentRunID: existing.ID,
+						Message:      "idempotency key was already used with different launch authority",
+					}
 				}
 			}
 			return CreateRunResult{Run: existing, SessionVersion: sessionVersion, Created: false}, nil
@@ -183,6 +225,16 @@ RETURNING version`, s.table("sessions"))
 }
 
 func validateCreateRun(command CreateRunCommand) error {
+	if err := validateCreateRunBase(command); err != nil {
+		return err
+	}
+	if command.ExpectedSessionVersion < 1 {
+		return errors.New("expected_session_version must be positive")
+	}
+	return nil
+}
+
+func validateCreateRunBase(command CreateRunCommand) error {
 	identifiers := []struct {
 		field string
 		value string
@@ -205,9 +257,6 @@ func validateCreateRun(command CreateRunCommand) error {
 	}
 	if err := validateRunExecutorPolicy(command.ExecutorPolicy); err != nil {
 		return err
-	}
-	if command.ExpectedSessionVersion < 1 {
-		return errors.New("expected_session_version must be positive")
 	}
 	return validateTransitionRecord(command.Record)
 }

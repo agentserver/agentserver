@@ -95,6 +95,58 @@ type CreateRunResult struct {
 	Created        bool
 }
 
+// AuthorizedSession is the minimum user-facing scope projection needed before
+// preparing immutable run inputs. CreateAuthorizedRun rechecks this membership
+// in the write transaction; callers must not treat this preliminary read as
+// lasting authorization.
+type AuthorizedSession struct {
+	WorkspaceID    string
+	SessionID      string
+	ActorID        string
+	Role           string
+	SessionVersion int64
+}
+
+type RunEvent struct {
+	EventID              string
+	Seq                  int64
+	RunAttemptID         *string
+	RunAttemptGeneration *int64
+	ProducerInstanceID   string
+	ProducerSeq          int64
+	Source               string
+	Kind                 string
+	SchemaVersion        int
+	Payload              json.RawMessage
+	Object               *ObjectPointer
+	CreatedAt            time.Time
+}
+
+type ReadAuthorizedRunEventsCommand struct {
+	WorkspaceID string
+	ActorID     string
+	RunID       string
+	AfterSeq    int64
+	Limit       int
+}
+
+type ReadAuthorizedRunEventsResult struct {
+	Run              Run
+	Events           []RunEvent
+	EarliestSequence int64
+	LastSequence     int64
+	Rebase           *RunEventRebase
+}
+
+type RunEventRebase struct {
+	AfterSequence int64
+	RunStatus     string
+	RunVersion    int64
+	RunUpdatedAt  time.Time
+	Snapshot      json.RawMessage
+	CreatedAt     time.Time
+}
+
 type ClaimQueuedRunCommand struct {
 	RunID              string
 	AttemptID          string

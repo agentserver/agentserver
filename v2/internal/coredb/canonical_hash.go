@@ -32,6 +32,7 @@ const (
 	HashDomainOperationAck       CanonicalHashDomain = "operation-ack"
 	HashDomainOperationResult    CanonicalHashDomain = "operation-result"
 	HashDomainExecutionResult    CanonicalHashDomain = "execution-result"
+	HashDomainCreateRunRequest   CanonicalHashDomain = "create-run-request"
 )
 
 // CanonicalJSONHash can only be constructed by ValidateAndHashCanonicalJSON
@@ -187,7 +188,8 @@ func validCanonicalHashDomain(domain CanonicalHashDomain) bool {
 		HashDomainOperationParams,
 		HashDomainOperationAck,
 		HashDomainOperationResult,
-		HashDomainExecutionResult:
+		HashDomainExecutionResult,
+		HashDomainCreateRunRequest:
 		return true
 	default:
 		return false

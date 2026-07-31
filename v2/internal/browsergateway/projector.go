@@ -35,6 +35,15 @@ type Projector struct {
 	completedToolCall map[string]struct{}
 }
 
+// AtLifecycleBoundary reports whether replay can safely resume after the last
+// projected canonical event without a state snapshot. browser-gateway only
+// publishes durable client cursors at these points.
+func (projector *Projector) AtLifecycleBoundary() bool {
+	return projector != nil && !projector.terminal &&
+		len(projector.activeMessages) == 0 && len(projector.activeReasoning) == 0 &&
+		len(projector.activeToolCalls) == 0 && len(projector.completedToolCall) == 0
+}
+
 func NewProjector(scope ProjectionScope, afterSequence int64) (*Projector, error) {
 	if scope.WorkspaceID == "" || scope.SessionID == "" || scope.RunID == "" {
 		return nil, errors.New("projection workspace, session, and run scope are required")

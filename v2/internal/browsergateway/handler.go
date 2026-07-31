@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"regexp"
 	"strings"
@@ -21,6 +22,7 @@ import (
 
 const (
 	AGUIRoutePattern       = "POST /v2/workspaces/{workspaceId}/sessions/{sessionId}/agui"
+	EventCursorCustomName  = "agentserver.event_cursor"
 	defaultMaxRequestBytes = int64(1024 * 1024)
 	defaultPollLimit       = 128
 	defaultLongPollWait    = 15 * time.Second
@@ -111,12 +113,17 @@ func (handler *AGUIHandler) ServeHTTP(response http.ResponseWriter, request *htt
 		writeHTTPError(response, http.StatusBadRequest, "invalid_idempotency_key", err.Error())
 		return
 	}
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeHTTPError(response, http.StatusUnsupportedMediaType, "unsupported_media_type", "Content-Type must be application/json")
+		return
+	}
 	input, err := decodeRunAgentInput(response, request, handler.config.MaxRequestBytes)
 	if err != nil {
 		writeHTTPError(response, http.StatusBadRequest, "invalid_agui_input", err.Error())
 		return
 	}
-	prompt, err := validateRunAgentInput(input, sessionID)
+	prompt, resumeCursor, err := validateRunAgentInput(input, sessionID)
 	if err != nil {
 		writeHTTPError(response, http.StatusBadRequest, "invalid_agui_input", err.Error())
 		return
@@ -129,6 +136,7 @@ func (handler *AGUIHandler) ServeHTTP(response http.ResponseWriter, request *htt
 		IdempotencyKey: idempotencyKey,
 		ClientRunID:    input.RunID,
 		Prompt:         prompt,
+		ResumeCursor:   resumeCursor,
 	})
 	if err != nil {
 		handler.writeStartError(response, err)
@@ -158,6 +166,16 @@ func (handler *AGUIHandler) ServeHTTP(response http.ResponseWriter, request *htt
 	runStarted := events.NewRunStartedEvent(sessionID, started.RunID)
 	runStarted.SetTimestamp(started.CreatedAt.UnixMilli())
 	if err := handler.writer.WriteEvent(request.Context(), response, runStarted); err != nil {
+		return
+	}
+	if started.RebaseSnapshot != nil {
+		snapshot := events.NewStateSnapshotEvent(started.RebaseSnapshot)
+		snapshot.SetTimestamp(handler.config.Now().UnixMilli())
+		if err := handler.writer.WriteEvent(request.Context(), response, snapshot); err != nil {
+			return
+		}
+	}
+	if err := handler.writeCursorEvent(request.Context(), response, started.RunID, started.Cursor, started.LastEventSequence, started.CreatedAt); err != nil {
 		return
 	}
 	handler.streamCommittedEvents(request.Context(), response, bearer, started, projector)
@@ -203,7 +221,7 @@ func (handler *AGUIHandler) streamCommittedEvents(ctx context.Context, response 
 			handler.writeStreamError(ctx, response, started.RunID, "invalid_event_batch", err)
 			return
 		}
-		for _, canonical := range batch.Events {
+		for index, canonical := range batch.Events {
 			projection, err := projector.Project(canonical)
 			if err != nil {
 				handler.writeStreamError(ctx, response, started.RunID, "invalid_run_event_stream", err)
@@ -216,6 +234,11 @@ func (handler *AGUIHandler) streamCommittedEvents(ctx context.Context, response 
 			}
 			if projection.Terminal {
 				return
+			}
+			if projector.AtLifecycleBoundary() {
+				if err := handler.writeCursorEvent(ctx, response, started.RunID, batch.EventCursors[index], canonical.Seq, canonical.CreatedAt); err != nil {
+					return
+				}
 			}
 		}
 		cursor = batch.NextCursor
@@ -244,17 +267,51 @@ func (handler *AGUIHandler) rebase(ctx context.Context, response http.ResponseWr
 	}
 	snapshot := events.NewStateSnapshotEvent(expired.Snapshot)
 	snapshot.SetTimestamp(handler.config.Now().UnixMilli())
-	return handler.writer.WriteEvent(ctx, response, snapshot)
+	if err := handler.writer.WriteEvent(ctx, response, snapshot); err != nil {
+		return err
+	}
+	return handler.writeCursorEvent(ctx, response, projector.scope.RunID, expired.RebaseCursor, expired.LastEventSequence, handler.config.Now())
+}
+
+func (handler *AGUIHandler) writeCursorEvent(ctx context.Context, response http.ResponseWriter, runID, cursor string, sequence int64, timestamp time.Time) error {
+	if err := validateCursor("projected event cursor", cursor); err != nil {
+		return err
+	}
+	if sequence < 0 || sequence >= 1<<53-1 {
+		return errors.New("projected event cursor sequence is outside the JSON-safe range")
+	}
+	event := events.NewCustomEvent(EventCursorCustomName, events.WithValue(map[string]any{
+		"version": 1, "runId": runID, "cursor": cursor, "lastEventSequence": sequence,
+	}))
+	event.SetTimestamp(timestamp.UnixMilli())
+	return handler.writer.WriteEvent(ctx, response, event)
 }
 
 func (handler *AGUIHandler) writeStartError(response http.ResponseWriter, err error) {
 	var public *BackendHTTPError
-	if errors.As(err, &public) && public.Status >= 400 && public.Status <= 599 && public.Code != "" && public.Message != "" {
-		writeHTTPError(response, public.Status, public.Code, public.Message)
+	if errors.As(err, &public) && validBackendHTTPError(public) {
+		if public.Status == http.StatusUnauthorized {
+			response.Header().Set("WWW-Authenticate", `Bearer realm="agentserver-api"`)
+		}
+		writeHTTPError(response, public.Status, public.Code, public.Message, public.CurrentRunID)
 		return
 	}
 	handler.config.Logger.Error("browser-gateway StartRun failed", "error", err)
 	writeHTTPError(response, http.StatusBadGateway, "run_backend_unavailable", "run backend is unavailable")
+}
+
+func validBackendHTTPError(public *BackendHTTPError) bool {
+	if public == nil || public.Status < 400 || public.Status > 599 || len(public.Code) < 1 || len(public.Code) > 128 ||
+		len(public.Message) < 1 || len(public.Message) > 1024 || !utf8.ValidString(public.Message) ||
+		strings.ContainsAny(public.Message, "\x00\r\n") {
+		return false
+	}
+	for _, character := range []byte(public.Code) {
+		if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '_' {
+			return false
+		}
+	}
+	return public.CurrentRunID == "" || validateCanonicalUUID("currentRunId", public.CurrentRunID) == nil
 }
 
 func (handler *AGUIHandler) writeStreamError(ctx context.Context, response http.ResponseWriter, runID, code string, cause error) {
@@ -321,40 +378,75 @@ func validateRunAgentInputKeys(object map[string]any) error {
 	return nil
 }
 
-func validateRunAgentInput(input aguitypes.RunAgentInput, sessionID string) (string, error) {
+func validateRunAgentInput(input aguitypes.RunAgentInput, sessionID string) (string, string, error) {
 	if input.ThreadID != "" && input.ThreadID != sessionID {
-		return "", errors.New("threadId must be empty or match the sessionId path")
+		return "", "", errors.New("threadId must be empty or match the sessionId path")
 	}
 	if input.ParentRunID != nil {
-		return "", errors.New("parentRunId is not supported by this endpoint")
+		return "", "", errors.New("parentRunId is not supported by this endpoint")
 	}
 	if len(input.Tools) != 0 {
-		return "", errors.New("client-declared tools are forbidden; the server freezes the tool catalog")
+		return "", "", errors.New("client-declared tools are forbidden; the server freezes the tool catalog")
 	}
 	if len(input.Context) != 0 {
-		return "", errors.New("client-declared agent context is not supported")
+		return "", "", errors.New("client-declared agent context is not supported")
 	}
 	if len(input.Resume) != 0 {
-		return "", errors.New("AG-UI interrupt resume is not implemented in this phase")
+		return "", "", errors.New("AG-UI interrupt resume is not implemented in this phase")
 	}
-	if len(input.Messages) == 0 {
-		return "", errors.New("messages must contain a final user message")
+	if input.State != nil {
+		return "", "", errors.New("client-declared state is not supported")
+	}
+	if len(input.Messages) != 1 {
+		return "", "", errors.New("messages must contain exactly one new user message")
 	}
 	message := input.Messages[len(input.Messages)-1]
 	if message.Role != aguitypes.RoleUser {
-		return "", errors.New("the final message must have role user")
+		return "", "", errors.New("the message must have role user")
 	}
 	prompt, ok := message.ContentString()
 	if !ok {
-		return "", errors.New("the final user message must contain text in this phase")
+		return "", "", errors.New("the user message must contain text in this phase")
 	}
 	if !utf8.ValidString(prompt) || strings.ContainsRune(prompt, '\x00') || prompt == "" || len(prompt) > maxPromptBytes {
-		return "", fmt.Errorf("user prompt must contain between 1 and %d bytes of UTF-8 text without NUL", maxPromptBytes)
+		return "", "", fmt.Errorf("user prompt must contain between 1 and %d bytes of UTF-8 text without NUL", maxPromptBytes)
 	}
 	if input.RunID != "" && (len(input.RunID) > 256 || strings.ContainsAny(input.RunID, "\x00\r\n")) {
-		return "", errors.New("client runId must be bounded text without NUL or line breaks")
+		return "", "", errors.New("client runId must be bounded text without NUL or line breaks")
 	}
-	return prompt, nil
+	resumeCursor, err := eventCursorFromForwardedProps(input.ForwardedProps)
+	if err != nil {
+		return "", "", err
+	}
+	return prompt, resumeCursor, nil
+}
+
+func eventCursorFromForwardedProps(value any) (string, error) {
+	if value == nil {
+		return "", nil
+	}
+	root, ok := value.(map[string]any)
+	if !ok {
+		return "", errors.New("forwardedProps must be an object")
+	}
+	if len(root) == 0 {
+		return "", nil
+	}
+	if len(root) != 1 {
+		return "", errors.New("forwardedProps may contain only the agentserver extension")
+	}
+	extension, ok := root["agentserver"].(map[string]any)
+	if !ok || len(extension) != 1 {
+		return "", errors.New("forwardedProps.agentserver must contain exactly eventCursor")
+	}
+	cursor, ok := extension["eventCursor"].(string)
+	if !ok {
+		return "", errors.New("forwardedProps.agentserver.eventCursor must be a string")
+	}
+	if err := validateCursor("forwarded event cursor", cursor); err != nil {
+		return "", err
+	}
+	return cursor, nil
 }
 
 func extractBearer(header http.Header) (string, error) {
@@ -396,7 +488,7 @@ func validateStartResult(result StartRunResult, workspaceID, sessionID string) e
 	if result.CreatedAt.IsZero() {
 		return errors.New("StartRun createdAt is required")
 	}
-	if result.LastEventSequence < 0 || result.LastEventSequence >= 1<<53-1 {
+	if result.LastEventSequence < 1 || result.LastEventSequence >= 1<<53-1 {
 		return errors.New("StartRun last event sequence is outside the JSON-safe range")
 	}
 	return validateCursor("StartRun cursor", result.Cursor)
@@ -406,11 +498,30 @@ func validateEventBatch(batch ReadRunEventsResult, previousCursor string, maximu
 	if len(batch.Events) > maximumEvents {
 		return fmt.Errorf("event backend returned %d events, limit is %d", len(batch.Events), maximumEvents)
 	}
+	if len(batch.EventCursors) != len(batch.Events) {
+		return errors.New("event cursor count does not match the canonical event batch")
+	}
+	seen := map[string]struct{}{previousCursor: {}}
+	for index, cursor := range batch.EventCursors {
+		if err := validateCursor(fmt.Sprintf("event cursor %d", index), cursor); err != nil {
+			return err
+		}
+		if _, duplicate := seen[cursor]; duplicate {
+			return fmt.Errorf("event cursor %d did not advance exactly once", index)
+		}
+		seen[cursor] = struct{}{}
+	}
 	if err := validateCursor("next cursor", batch.NextCursor); err != nil {
 		return err
 	}
-	if len(batch.Events) != 0 && batch.NextCursor == previousCursor {
-		return errors.New("event cursor did not advance with a non-empty batch")
+	if len(batch.Events) == 0 {
+		if batch.NextCursor != previousCursor {
+			return errors.New("empty event batch advanced the cursor")
+		}
+		return nil
+	}
+	if batch.NextCursor != batch.EventCursors[len(batch.EventCursors)-1] {
+		return errors.New("next cursor does not match the final event cursor")
 	}
 	return nil
 }
@@ -439,12 +550,17 @@ func writeHeartbeat(response http.ResponseWriter) error {
 	return nil
 }
 
-func writeHTTPError(response http.ResponseWriter, status int, code, message string) {
+func writeHTTPError(response http.ResponseWriter, status int, code, message string, currentRunID ...string) {
+	var runID string
+	if len(currentRunID) != 0 {
+		runID = currentRunID[0]
+	}
 	response.Header().Set("Content-Type", "application/json")
 	response.Header().Set("Cache-Control", "no-store")
 	response.WriteHeader(status)
 	_ = json.NewEncoder(response).Encode(struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
-	}{Code: code, Message: message})
+		Code         string `json:"code"`
+		Message      string `json:"message"`
+		CurrentRunID string `json:"currentRunId,omitempty"`
+	}{Code: code, Message: message, CurrentRunID: runID})
 }

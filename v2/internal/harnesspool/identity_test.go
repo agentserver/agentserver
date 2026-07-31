@@ -138,3 +138,23 @@ func TestControlIdentityAllocatorAllocatesDistinctCheckpointAndObjectIDs(t *test
 		t.Fatalf("checkpoint identity = %+v", identity)
 	}
 }
+
+func TestNewPoolInstanceIDReturnsCanonicalDistinctUUIDs(t *testing.T) {
+	first, err := NewPoolInstanceID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewPoolInstanceID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("fresh pool instance identities are equal")
+	}
+	if err := validateUUIDIdentity("pool instance ID", first); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateUUIDIdentity("pool instance ID", second); err != nil {
+		t.Fatal(err)
+	}
+}

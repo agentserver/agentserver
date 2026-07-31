@@ -23,6 +23,13 @@ type CheckpointIdentity struct {
 	ObjectID     string
 }
 
+// NewPoolInstanceID returns the fresh process identity shared by one
+// controller holder, its control server, and its producer cursor. A restarted
+// pool process must call this again rather than reuse a deployment name.
+func NewPoolInstanceID() (string, error) {
+	return newRandomUUID()
+}
+
 // ControlIdentityAllocator owns the monotonic producer cursor and immutable
 // transition IDs emitted by one harness-pool process. A restart must use a
 // fresh producer instance ID.

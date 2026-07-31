@@ -112,7 +112,7 @@ func executeWorker(ctx context.Context, configPath string, bootstrap, prompt, ch
 		VerificationKeyring: deployment.keyring, RuntimePreparer: deployment.preparer,
 		ControlHTTPClient: deployment.controlClient, ExecutorHTTPClient: deployment.executorClient,
 		ElicitationHandler: func(context.Context, harnessworker.ElicitationRequest) (harnessworker.ElicitationDecision, error) {
-			// Approval transport is not part of harness-control 1.1 yet. Decline
+			// Approval transport is not part of harness-control 1.2 yet. Decline
 			// deterministically; never infer approval in the worker.
 			return harnessworker.ElicitationDecision{Action: harnessworker.ApprovalDecline}, nil
 		},

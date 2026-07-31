@@ -33,7 +33,7 @@ const (
 	localWorkerDescendant        = "AGENTSERVER_V2_LOCAL_WORKER_DESCENDANT"
 )
 
-func TestLocalProcessLauncherPassesOneShotBootstrapAndCleansRuntime(t *testing.T) {
+func TestLocalProcessLauncherRetainsStoppedRuntimeUntilExplicitCleanup(t *testing.T) {
 	prepared := poolTestPreparedLaunch(t)
 	capability := testLocalControlCapability()
 	launcher, runtimeRoot := newLocalProcessLauncherForTest(t, prepared, "exit")
@@ -53,8 +53,20 @@ func TestLocalProcessLauncherPassesOneShotBootstrapAndCleansRuntime(t *testing.T
 	if err := workload.Wait(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Stat(local.runtimeDirectory); err != nil {
+		t.Fatalf("retained stopped runtime stat error = %v", err)
+	}
+	if err := workload.Cleanup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := workload.Cleanup(t.Context()); err != nil {
+		t.Fatalf("idempotent workload cleanup: %v", err)
+	}
+	if _, err := workload.OpenCheckpointRollout(t.Context(), "sessions/2026/07/31/rollout-cleaned.jsonl"); err == nil || !strings.Contains(err.Error(), "cleanup") {
+		t.Fatalf("checkpoint open after cleanup error = %v", err)
+	}
 	if _, err := os.Stat(local.runtimeDirectory); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("cleaned runtime stat error = %v", err)
+		t.Fatalf("explicitly cleaned runtime stat error = %v", err)
 	}
 	entries, err := os.ReadDir(runtimeRoot)
 	if err != nil {
@@ -77,6 +89,12 @@ func TestLocalProcessLauncherStopsWholeAttemptProcessGroup(t *testing.T) {
 	local := workload.(*localProcessWorkload)
 	readyPath := filepath.Join(local.runtimeDirectory, "ready")
 	waitForLocalWorkerMarker(t, readyPath)
+	openContext, cancelOpen := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	_, openErr := workload.OpenCheckpointRollout(openContext, "sessions/2026/07/31/rollout-live.jsonl")
+	cancelOpen()
+	if !errors.Is(openErr, context.DeadlineExceeded) {
+		t.Fatalf("live runtime checkpoint open error = %v", openErr)
+	}
 	info, err := os.Stat(local.runtimeDirectory)
 	if err != nil {
 		t.Fatal(err)
@@ -96,8 +114,14 @@ func TestLocalProcessLauncherStopsWholeAttemptProcessGroup(t *testing.T) {
 	if strings.Contains(waitErr.Error(), "process group remained alive") {
 		t.Fatalf("descendant escaped process-group cleanup: %v", waitErr)
 	}
+	if _, err := os.Stat(local.runtimeDirectory); err != nil {
+		t.Fatalf("stopped runtime was removed before explicit cleanup: %v", err)
+	}
+	if err := workload.Cleanup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(local.runtimeDirectory); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("stopped runtime stat error = %v", err)
+		t.Fatalf("stopped runtime cleanup stat error = %v", err)
 	}
 }
 
@@ -155,6 +179,9 @@ func TestLocalProcessLauncherStreamsCommittedCheckpointOnDedicatedPipe(t *testin
 	if err := workload.Wait(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	if err := workload.Cleanup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	entries, err := os.ReadDir(runtimeRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -195,6 +222,7 @@ func TestLocalProcessLauncherConfigRejectsAmbientOrUnsafeInputs(t *testing.T) {
 	valid := LocalProcessLauncherConfig{
 		WorkerExecutable: executable, WorkerArguments: []string{"-test.run=none", "--"},
 		RuntimeRoot: secureLocalRuntimeRoot(t), Environment: []string{}, ObjectSource: localTestObjectSource{},
+		ExpectedAppCredential:     &LocalProcessCredential{UID: 65532, GID: 65532},
 		ExpectedWorkerImageDigest: strings.Repeat("c", 64), ExpectedServiceAccount: "harness-worker",
 		InputWriteTimeout: time.Second, TerminateGrace: 10 * time.Millisecond,
 		ProcessGroupCleanupTimeout: time.Second,
@@ -214,6 +242,10 @@ func TestLocalProcessLauncherConfigRejectsAmbientOrUnsafeInputs(t *testing.T) {
 		{name: "invalid image digest", mutate: func(c *LocalProcessLauncherConfig) { c.ExpectedWorkerImageDigest = "ABC" }, want: "SHA-256"},
 		{name: "invalid service account", mutate: func(c *LocalProcessLauncherConfig) { c.ExpectedServiceAccount = "Harness_Worker" }, want: "service account"},
 		{name: "root credential", mutate: func(c *LocalProcessLauncherConfig) { c.Credential = &LocalProcessCredential{UID: 0, GID: 1} }, want: "unprivileged"},
+		{name: "missing app credential", mutate: func(c *LocalProcessLauncherConfig) { c.ExpectedAppCredential = nil }, want: "app credential"},
+		{name: "root app credential", mutate: func(c *LocalProcessLauncherConfig) {
+			c.ExpectedAppCredential = &LocalProcessCredential{UID: 0, GID: 1}
+		}, want: "app credential"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -394,6 +426,7 @@ func newLocalProcessLauncherWithSourceForTest(t *testing.T, prepared PreparedRun
 			localWorkerExpectedAttempt + "=" + prepared.Manifest.RunAttemptID,
 		},
 		ObjectSource:               source,
+		ExpectedAppCredential:      &LocalProcessCredential{UID: 65532, GID: 65532},
 		ExpectedWorkerImageDigest:  prepared.Manifest.WorkerImageDigest,
 		ExpectedServiceAccount:     prepared.Manifest.ExpectedServiceAccount,
 		InputWriteTimeout:          time.Second,

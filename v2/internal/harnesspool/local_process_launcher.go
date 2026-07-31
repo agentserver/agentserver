@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/checkpoint"
 	"github.com/agentserver/agentserver/v2/internal/harnessbootstrap"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
@@ -50,6 +51,7 @@ type LocalProcessLauncherConfig struct {
 	Environment                []string
 	ObjectSource               AttemptObjectSource
 	Credential                 *LocalProcessCredential
+	ExpectedAppCredential      *LocalProcessCredential
 	ExpectedWorkerImageDigest  string
 	ExpectedServiceAccount     string
 	InputWriteTimeout          time.Duration
@@ -86,6 +88,8 @@ func NewLocalProcessLauncher(config LocalProcessLauncherConfig) (*LocalProcessLa
 		credential := *config.Credential
 		config.Credential = &credential
 	}
+	appCredential := *config.ExpectedAppCredential
+	config.ExpectedAppCredential = &appCredential
 	return &LocalProcessLauncher{config: config}, nil
 }
 
@@ -167,6 +171,16 @@ func (launcher *LocalProcessLauncher) Launch(ctx context.Context, launch Attempt
 			return nil, fmt.Errorf("grant local worker runtime access: %w", err)
 		}
 	}
+	runtimeAnchor, err := openLocalAttemptRuntimeAnchor(runtimeDirectory)
+	if err != nil {
+		return nil, err
+	}
+	anchorOwned := true
+	defer func() {
+		if anchorOwned {
+			_ = runtimeAnchor.Close()
+		}
+	}()
 
 	bootstrapReader, bootstrapWriter, err := os.Pipe()
 	if err != nil {
@@ -216,7 +230,9 @@ func (launcher *LocalProcessLauncher) Launch(ctx context.Context, launch Attempt
 		_ = checkpointReader.Close()
 	}
 
-	workload := newLocalProcessWorkload(command, runtimeDirectory, launcher.config)
+	workload := newLocalProcessWorkload(command, runtimeDirectory, runtimeAnchor, launcher.config)
+	anchorOwned = false
+	removeRuntime = false
 	type inputWriteResult struct {
 		name string
 		err  error
@@ -281,27 +297,39 @@ func (launcher *LocalProcessLauncher) Launch(ctx context.Context, launch Attempt
 		abortErr := workload.abortLaunch()
 		return nil, errors.Join(err, abortErr)
 	}
-	removeRuntime = false
 	return workload, nil
 }
 
 type localProcessWorkload struct {
 	command                    *exec.Cmd
 	runtimeDirectory           string
+	runtimeAnchor              *os.File
 	runtimeCleaner             LocalAttemptRuntimeCleaner
+	expectedAppCredential      LocalProcessCredential
 	terminateGrace             time.Duration
 	processGroupCleanupTimeout time.Duration
-	done                       chan struct{}
+	stopped                    chan struct{}
+	cleanupDone                chan struct{}
+	cleanupOnce                sync.Once
 	mu                         sync.Mutex
 	result                     error
+	cleanupStarted             bool
+	cleanupErr                 error
 }
 
-func newLocalProcessWorkload(command *exec.Cmd, runtimeDirectory string, config LocalProcessLauncherConfig) *localProcessWorkload {
+func newLocalProcessWorkload(
+	command *exec.Cmd,
+	runtimeDirectory string,
+	runtimeAnchor *os.File,
+	config LocalProcessLauncherConfig,
+) *localProcessWorkload {
 	workload := &localProcessWorkload{
-		command: command, runtimeDirectory: runtimeDirectory, runtimeCleaner: config.RuntimeCleaner,
+		command: command, runtimeDirectory: runtimeDirectory, runtimeAnchor: runtimeAnchor,
+		runtimeCleaner: config.RuntimeCleaner, expectedAppCredential: *config.ExpectedAppCredential,
 		terminateGrace:             config.TerminateGrace,
 		processGroupCleanupTimeout: config.ProcessGroupCleanupTimeout,
-		done:                       make(chan struct{}),
+		stopped:                    make(chan struct{}),
+		cleanupDone:                make(chan struct{}),
 	}
 	go workload.reap()
 	return workload
@@ -313,11 +341,10 @@ func (workload *localProcessWorkload) reap() {
 		workload.command.Process.Pid,
 		workload.processGroupCleanupTimeout,
 	)
-	cleanupErr := workload.runtimeCleaner.CleanLocalAttemptRuntime(workload.runtimeDirectory)
 	workload.mu.Lock()
-	workload.result = errors.Join(waitErr, groupErr, cleanupErr)
+	workload.result = errors.Join(waitErr, groupErr)
 	workload.mu.Unlock()
-	close(workload.done)
+	close(workload.stopped)
 }
 
 func (workload *localProcessWorkload) Wait(ctx context.Context) error {
@@ -325,7 +352,7 @@ func (workload *localProcessWorkload) Wait(ctx context.Context) error {
 		return errors.New("local process wait context is required")
 	}
 	select {
-	case <-workload.done:
+	case <-workload.stopped:
 		workload.mu.Lock()
 		defer workload.mu.Unlock()
 		return workload.result
@@ -339,7 +366,7 @@ func (workload *localProcessWorkload) Stop(ctx context.Context) error {
 		return errors.New("local process stop context is required")
 	}
 	select {
-	case <-workload.done:
+	case <-workload.stopped:
 		return nil
 	default:
 	}
@@ -347,7 +374,7 @@ func (workload *localProcessWorkload) Stop(ctx context.Context) error {
 	timer := time.NewTimer(workload.terminateGrace)
 	defer timer.Stop()
 	select {
-	case <-workload.done:
+	case <-workload.stopped:
 		return termErr
 	case <-ctx.Done():
 		killErr := signalLocalAttemptGroup(workload.command.Process.Pid, true)
@@ -356,10 +383,83 @@ func (workload *localProcessWorkload) Stop(ctx context.Context) error {
 	}
 	killErr := signalLocalAttemptGroup(workload.command.Process.Pid, true)
 	select {
-	case <-workload.done:
+	case <-workload.stopped:
 		return errors.Join(termErr, killErr)
 	case <-ctx.Done():
 		return errors.Join(termErr, killErr, ctx.Err())
+	}
+}
+
+func (workload *localProcessWorkload) OpenCheckpointRollout(
+	ctx context.Context,
+	locator string,
+) (AttemptCheckpointRollout, error) {
+	if ctx == nil {
+		return AttemptCheckpointRollout{}, errors.New("local checkpoint rollout context is required")
+	}
+	if err := checkpoint.ValidateRolloutLocator(locator); err != nil {
+		return AttemptCheckpointRollout{}, err
+	}
+	select {
+	case <-workload.stopped:
+	case <-ctx.Done():
+		return AttemptCheckpointRollout{}, ctx.Err()
+	}
+	workload.mu.Lock()
+	defer workload.mu.Unlock()
+	if workload.result != nil {
+		return AttemptCheckpointRollout{}, errors.New("local attempt did not stop cleanly enough for checkpoint finalization")
+	}
+	if workload.cleanupStarted {
+		return AttemptCheckpointRollout{}, errors.New("local attempt runtime cleanup has already started")
+	}
+	if err := ctx.Err(); err != nil {
+		return AttemptCheckpointRollout{}, err
+	}
+	rollout, err := openLocalCheckpointRollout(
+		workload.runtimeAnchor,
+		locator,
+		workload.expectedAppCredential,
+	)
+	if err != nil {
+		return AttemptCheckpointRollout{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		_ = rollout.Reader.Close()
+		return AttemptCheckpointRollout{}, err
+	}
+	return rollout, nil
+}
+
+func (workload *localProcessWorkload) Cleanup(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("local process cleanup context is required")
+	}
+	select {
+	case <-workload.stopped:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	workload.cleanupOnce.Do(func() {
+		workload.mu.Lock()
+		workload.cleanupStarted = true
+		workload.mu.Unlock()
+		go func() {
+			cleanupErr := workload.runtimeCleaner.CleanLocalAttemptRuntime(workload.runtimeDirectory)
+			closeErr := workload.runtimeAnchor.Close()
+			workload.mu.Lock()
+			workload.cleanupErr = errors.Join(cleanupErr, closeErr)
+			workload.mu.Unlock()
+			close(workload.cleanupDone)
+		}()
+	})
+	select {
+	case <-workload.cleanupDone:
+		workload.mu.Lock()
+		defer workload.mu.Unlock()
+		return workload.cleanupErr
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -368,8 +468,36 @@ func (workload *localProcessWorkload) abortLaunch() error {
 	waitContext, cancel := context.WithTimeout(
 		context.Background(), workload.processGroupCleanupTimeout+time.Second,
 	)
-	defer cancel()
-	return errors.Join(killErr, workload.Wait(waitContext))
+	waitErr := workload.Wait(waitContext)
+	cancel()
+	cleanupContext, cancelCleanup := context.WithTimeout(
+		context.Background(), workload.processGroupCleanupTimeout+time.Second,
+	)
+	defer cancelCleanup()
+	cleanupErr := workload.Cleanup(cleanupContext)
+	return errors.Join(killErr, waitErr, cleanupErr)
+}
+
+func openLocalAttemptRuntimeAnchor(path string) (*os.File, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("inspect local attempt runtime anchor: %w", err)
+	}
+	if !before.IsDir() || before.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("local attempt runtime anchor is not a direct directory: mode=%s", before.Mode())
+	}
+	anchor, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open local attempt runtime anchor: %w", err)
+	}
+	opened, openedErr := anchor.Stat()
+	after, afterErr := os.Lstat(path)
+	if openedErr != nil || afterErr != nil || !opened.IsDir() || !after.IsDir() ||
+		after.Mode()&os.ModeSymlink != 0 || !os.SameFile(before, opened) || !os.SameFile(opened, after) {
+		_ = anchor.Close()
+		return nil, errors.New("local attempt runtime anchor identity changed while opening")
+	}
+	return anchor, nil
 }
 
 func validateLocalProcessLauncherConfig(config LocalProcessLauncherConfig) error {
@@ -389,6 +517,15 @@ func validateLocalProcessLauncherConfig(config LocalProcessLauncherConfig) error
 	if config.Credential != nil && (config.Credential.UID == 0 || config.Credential.GID == 0 ||
 		config.Credential.UID == ^uint32(0) || config.Credential.GID == ^uint32(0)) {
 		return errors.New("local worker credential must be a valid unprivileged identity")
+	}
+	if config.ExpectedAppCredential == nil || config.ExpectedAppCredential.UID == 0 ||
+		config.ExpectedAppCredential.GID == 0 || config.ExpectedAppCredential.UID == ^uint32(0) ||
+		config.ExpectedAppCredential.GID == ^uint32(0) {
+		return errors.New("expected local app credential must be a valid unprivileged identity")
+	}
+	if config.Credential != nil && (config.Credential.UID == config.ExpectedAppCredential.UID ||
+		config.Credential.GID == config.ExpectedAppCredential.GID) {
+		return errors.New("local worker and app credentials must be distinct")
 	}
 	runtimeRoot, err := os.Lstat(config.RuntimeRoot)
 	if err != nil {

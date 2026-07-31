@@ -62,6 +62,9 @@ func TestControlAttemptSupervisorWaitsForCompletedTerminalAndStoppedWorkload(t *
 	if workload.stopCount() != 0 {
 		t.Fatalf("clean completed workload was forcibly stopped %d times", workload.stopCount())
 	}
+	if workload.cleanupCount() != 1 {
+		t.Fatalf("completed workload cleanup calls = %d, want 1", workload.cleanupCount())
+	}
 	threads, turns := lifecycle.snapshot()
 	if !reflect.DeepEqual(threads, []string{"thread-supervisor"}) ||
 		!reflect.DeepEqual(turns, [][2]string{{"thread-supervisor", "turn-supervisor"}}) {
@@ -116,6 +119,9 @@ func TestControlAttemptSupervisorPreservesFailedTerminalClassification(t *testin
 	if !errors.As(err, &terminal) || terminal.Status != "failed" || terminal.Code != "model_error" {
 		t.Fatalf("failed terminal error = %#v (%v)", terminal, err)
 	}
+	if workload.cleanupCount() != 1 {
+		t.Fatalf("failed workload cleanup calls = %d, want 1", workload.cleanupCount())
+	}
 }
 
 func TestControlAttemptSupervisorStopsWorkloadWhenAuthorityContextIsCancelled(t *testing.T) {
@@ -153,6 +159,9 @@ func TestControlAttemptSupervisorStopsWorkloadWhenAuthorityContextIsCancelled(t 
 	if workload.stopCount() != 1 {
 		t.Fatalf("cancelled workload stop calls = %d", workload.stopCount())
 	}
+	if workload.cleanupCount() != 1 {
+		t.Fatalf("cancelled workload cleanup calls = %d, want 1", workload.cleanupCount())
+	}
 	command := supervisor.interruptCommand(cause)
 	if command.Reason != "lease_lost" || command.GraceMillis != 1_000 {
 		t.Fatalf("lease-loss interrupt = %+v", command)
@@ -164,12 +173,17 @@ func TestControlAttemptSupervisorRejectsWorkloadExitBeforeControl(t *testing.T) 
 	server := newSupervisorTestControlServer(t, prepared)
 	workload := newSupervisorTestWorkload()
 	workload.finish(errors.New("container exited 1"))
+	workload.cleanupErr = errors.New("synthetic runtime cleanup failure")
 	supervisor := newSupervisorForTest(t, server, attemptWorkloadLauncherFunc(
 		func(context.Context, AttemptWorkloadLaunch) (AttemptWorkload, error) { return workload, nil },
 	))
 	err := supervisor.Supervise(t.Context(), prepared, &recordingAttemptLifecycle{})
-	if !errors.Is(err, ErrAttemptStoppedBeforeTerminal) || !strings.Contains(err.Error(), "container exited 1") {
+	if !errors.Is(err, ErrAttemptStoppedBeforeTerminal) || !strings.Contains(err.Error(), "container exited 1") ||
+		!strings.Contains(err.Error(), "synthetic runtime cleanup failure") {
 		t.Fatalf("pre-control workload exit error = %v", err)
+	}
+	if workload.cleanupCount() != 1 {
+		t.Fatalf("pre-control workload cleanup calls = %d, want 1", workload.cleanupCount())
 	}
 }
 
@@ -262,10 +276,12 @@ func (source attemptRuntimeCapabilitySourceFunc) IssueAttemptRuntimeCapabilities
 }
 
 type supervisorTestWorkload struct {
-	done     chan error
-	finishMu sync.Once
-	stopMu   sync.Mutex
-	stops    int
+	done       chan error
+	finishMu   sync.Once
+	stateMu    sync.Mutex
+	stops      int
+	cleanups   int
+	cleanupErr error
 }
 
 func newSupervisorTestWorkload() *supervisorTestWorkload {
@@ -282,11 +298,22 @@ func (workload *supervisorTestWorkload) Wait(ctx context.Context) error {
 }
 
 func (workload *supervisorTestWorkload) Stop(context.Context) error {
-	workload.stopMu.Lock()
+	workload.stateMu.Lock()
 	workload.stops++
-	workload.stopMu.Unlock()
+	workload.stateMu.Unlock()
 	workload.finish(nil)
 	return nil
+}
+
+func (*supervisorTestWorkload) OpenCheckpointRollout(context.Context, string) (AttemptCheckpointRollout, error) {
+	return AttemptCheckpointRollout{}, errors.New("test workload has no checkpoint rollout")
+}
+
+func (workload *supervisorTestWorkload) Cleanup(context.Context) error {
+	workload.stateMu.Lock()
+	defer workload.stateMu.Unlock()
+	workload.cleanups++
+	return workload.cleanupErr
 }
 
 func (workload *supervisorTestWorkload) finish(err error) {
@@ -294,7 +321,13 @@ func (workload *supervisorTestWorkload) finish(err error) {
 }
 
 func (workload *supervisorTestWorkload) stopCount() int {
-	workload.stopMu.Lock()
-	defer workload.stopMu.Unlock()
+	workload.stateMu.Lock()
+	defer workload.stateMu.Unlock()
 	return workload.stops
+}
+
+func (workload *supervisorTestWorkload) cleanupCount() int {
+	workload.stateMu.Lock()
+	defer workload.stateMu.Unlock()
+	return workload.cleanups
 }

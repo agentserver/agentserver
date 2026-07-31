@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -19,12 +20,25 @@ type AttemptWorkloadLaunch struct {
 	RuntimeCapabilities harnessbootstrap.RuntimeCapabilities
 }
 
+// AttemptCheckpointRollout is one already-open, immutable view of the sole
+// app-server rollout authorized for a completed attempt. The trusted workload
+// implementation verifies path containment, file identity, owner, type, mode,
+// and size before returning it.
+type AttemptCheckpointRollout struct {
+	Reader    io.ReadCloser
+	SizeBytes int64
+}
+
 // AttemptWorkload is one already-created per-attempt process boundary. Wait
-// returns only after the full process tree is stopped. Both methods must honor
-// ctx so holder shutdown cannot block forever on a broken runtime.
+// returns only after the full process tree is stopped, but deliberately retains
+// the attempt runtime for checkpoint finalization. OpenCheckpointRollout is
+// valid only after a clean Wait. Cleanup is the explicit, one-shot deletion
+// boundary and must never remove a live runtime.
 type AttemptWorkload interface {
 	Wait(context.Context) error
 	Stop(context.Context) error
+	OpenCheckpointRollout(context.Context, string) (AttemptCheckpointRollout, error)
+	Cleanup(context.Context) error
 }
 
 type AttemptWorkloadLauncher interface {
@@ -112,7 +126,7 @@ func (supervisor *ControlAttemptSupervisor) Supervise(
 	ctx context.Context,
 	prepared PreparedRunLaunch,
 	lifecycle AttemptLifecycle,
-) error {
+) (returnErr error) {
 	if ctx == nil {
 		return errors.New("attempt supervision context is required")
 	}
@@ -141,6 +155,13 @@ func (supervisor *ControlAttemptSupervisor) Supervise(
 	if workload == nil {
 		return errors.New("attempt workload launcher returned a nil workload")
 	}
+	defer func() {
+		cleanupContext, cancelCleanup := context.WithTimeout(context.Background(), supervisor.config.StopTimeout)
+		defer cancelCleanup()
+		if err := workload.Cleanup(cleanupContext); err != nil {
+			returnErr = errors.Join(returnErr, fmt.Errorf("clean attempt workload runtime: %w", err))
+		}
+	}()
 	waitContext, cancelWait := context.WithCancel(context.Background())
 	defer cancelWait()
 	workloadDone := make(chan error, 1)

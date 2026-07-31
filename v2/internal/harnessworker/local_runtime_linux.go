@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/agentserver/agentserver/v2/internal/harnesslayout"
 	"golang.org/x/sys/unix"
 )
 
@@ -54,7 +55,7 @@ func installLocalAppRuntime(
 		return localAppRuntimePaths{}, "", errors.New("local app runtime anchor must be empty")
 	}
 	paths = localAppRuntimePaths{
-		Home: filepath.Join(root, "home"), CodexHome: filepath.Join(root, "codex-home"),
+		Home: filepath.Join(root, "home"), CodexHome: filepath.Join(root, harnesslayout.CodexHomeDirectory),
 		Temporary: filepath.Join(root, "tmp"), CWD: filepath.Join(root, "cwd"),
 	}
 	var rolloutSource *os.File

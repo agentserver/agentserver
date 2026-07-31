@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/agentserver/agentserver/v2/internal/harnesslayout"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 	"github.com/agentserver/agentserver/v2/internal/runtimelock"
 )
@@ -17,8 +18,6 @@ import (
 const (
 	CodexConfigProfileStable0146 = "stable-0.146.0-dynamic-only-v1"
 
-	localWorkerStagingName  = ".worker-runtime"
-	localAppRuntimeName     = ".app-runtime"
 	maximumCodexConfigBytes = 64 * 1024
 )
 
@@ -93,8 +92,8 @@ func (preparer *LocalWorkerRuntimePreparer) Prepare(ctx context.Context, manifes
 	if len(entries) != 0 {
 		return nil, errors.New("local attempt root must be empty before worker runtime preparation")
 	}
-	workerRoot := filepath.Join(preparer.config.AttemptRoot, localWorkerStagingName)
-	appRoot := filepath.Join(preparer.config.AttemptRoot, localAppRuntimeName)
+	workerRoot := filepath.Join(preparer.config.AttemptRoot, harnesslayout.WorkerRuntimeDirectory)
+	appRoot := filepath.Join(preparer.config.AttemptRoot, harnesslayout.AppRuntimeDirectory)
 	if err := os.Mkdir(workerRoot, 0o700); err != nil {
 		return nil, fmt.Errorf("create local worker staging root: %w", err)
 	}

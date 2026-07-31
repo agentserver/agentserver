@@ -31,7 +31,7 @@ scripted model
   → completed-turn checkpoint
 ~~~
 
-在这条链路通过前，不并行建设完整前端、managed executor、warm process pool 或多副本 executor owner routing。
+在这条链路通过前，不并行建设完整前端、managed executor、可复用 Codex 进程池或多副本 executor owner routing。harness-pool 的本地 process launcher 不是“复用 Codex 进程”；worker 和 app-server 仍每 attempt 新建并销毁。
 
 ## 1. 已固定的工程决策
 
@@ -47,7 +47,7 @@ scripted model
 | agentx transport | 出站 WSS + versioned JSON envelope | 内层 stock exec-server dialect省略 jsonrpc 字段 |
 | harness control | mTLS WebSocket control stream | JSON control frame + 有界 binary checkpoint chunk；独立于 app-server stdio |
 | 对象存储 | S3-compatible API | 数据加密、hash 校验和 DB pointer CAS 必须由应用协议保证 |
-| workload | Kubernetes Job，backoffLimit=0、restartPolicy=Never | 是否创建新 attempt 只能由 core/harness-pool 决定，不能交给 Job 自动重跑 |
+| harness runtime | 常驻 harness-pool + per-attempt 本地 `fork/exec` | run 热路径不创建 Job/Pod；每次启动全新 worker/app-server 进程组和临时目录，是否创建新 attempt 仍只能由 core/harness-pool 决定 |
 | executor-gateway | 单副本 | 只承诺同一 gateway 进程内的 30 秒 WSS resume |
 | API 方法 | contract-first | OpenAPI、AsyncAPI、JSON Schema 先于 handler；CI 检查生成物 drift |
 
@@ -80,6 +80,7 @@ v2/
 │  └─ schema/
 │     ├─ canonical-event.schema.json
 │     ├─ harness-control.schema.json
+│     ├─ harness-bootstrap.schema.json
 │     ├─ agentx-envelope.schema.json
 │     └─ executor-mcp.schema.json
 ├─ gen/
@@ -765,22 +766,24 @@ controller 循环：
 1. 通过 core long-poll claim queued run。
 2. 获取 session lease与 attempt lease。
 3. 从core读取已冻结的brain tool catalog/canonical digest（新thread先执行`FreezeBrainToolCatalog`），生成不可变、签名run manifest；`controller_callback`绑定当前holder instance直连地址。
-4. 创建 per-attempt ConfigMap/Secret、NetworkPolicy和 Job。
+4. 在当前 holder 副本内创建 pool-owned、worker-group-writable 的 attempt 临时根和独立进程组，通过只继承给 worker 的一次性 pipe 写入签名 manifest/control capability，本地 `fork/exec harness-worker`。run 热路径不调用 Kubernetes API。
 5. 接受 worker mTLS control stream并核对 attempt/generation。
 6. 续租、提交事件、转发 cancel/fence/approval。
 7. 接收 checkpoint chunks、复算 hash并上传对象存储。
 8. 请求 core原子提交 checkpoint + terminal。
-9. 删除 Job和临时对象。
+9. 确认 worker/app-server 整个进程组已退出，删除本次 attempt 的临时目录。
 
-Job backoffLimit=0。worker容器崩溃后 Kubernetes不自动重启相同 attempt。
+worker 进程退出后 launcher 不自动重启相同 attempt。只有 core/harness-pool 在 pre-turn 权威边界内显式创建新 generation 时才能再启动；`turn/start` 已接受后不重放。
+
+Phase 1 明确接受共享 pool Pod 的故障域：一个 Pod 崩溃/OOM 可同时中断该副本上的多个 attempt。因此每副本并发必须有小而硬的上限，pool 只在本地槽位可用时 claim 新 dispatch；超出容量的 run 留在 durable queue。这是基于“harness 不执行本地任意用户代码”的有意取舍，不冒充 per-run Pod 隔离。
 
 Phase 1 的 worker control resume也只覆盖原 harness-pool holder进程仍存活的短时断线。worker直连 manifest中的 holder实例，不经普通 Service随机换 pod；holder崩溃、callback不可达或 lease过期后，worker在 grace内 interrupt并退出。若 turn尚未被 app-server接受，core可创建新 attempt；否则 run进入 interrupted。跨 controller接管现有 worker需要独立 owner-routing设计，不在首版承诺。
 
 Phase 3第一段先建立了pool不能绕过的core command边界：内部OpenAPI和typed client/handler提供`run-attempts:claim`、成对续租、`turnAccepted`与有界事件批量append。claim接收一个由已提交`run.queued`事实定位的明确run ID与权威run version；该outbox payload同时携带`workspaceId`、`sessionId`、`runId`和初始`runVersion`，controller不能自行猜测版本。session lease与attempt lease在同一数据库transaction续期，任一holder/generation/expiry检查失败会回滚另一半，避免半续租。每批事件只由core分配权威run seq，inline payload保持64 KiB单项和256项批量上限，大对象仍只传已hash的pointer。
 
-第二段已经加入scheduler-only的`run-dispatches:claim|complete|release`边界。claim只对`run.queued`做`FOR UPDATE SKIP LOCKED`，同时返回入队版本以及同一transaction读取的当前run status/version；最多30秒的有界long-poll以数据库poll为事实源，未来LISTEN/NOTIFY只能优化唤醒。dispatch的`owner + claim generation`使用数据库时钟fence，pool无权领取或释放其他outbox kind。dispatch在run仍为`queued|starting`时不能complete：pool/Job在turn接受前崩溃后，lock与attempt lease过期会让同一事实再次可见；一旦run进入`running`或terminal，迟到consumer可安全清理残留delivery。
+第二段已经加入scheduler-only的`run-dispatches:claim|complete|release`边界。claim只对`run.queued`做`FOR UPDATE SKIP LOCKED`，同时返回入队版本以及同一transaction读取的当前run status/version；最多30秒的有界long-poll以数据库poll为事实源，未来LISTEN/NOTIFY只能优化唤醒。dispatch的`owner + claim generation`使用数据库时钟fence，pool无权领取或释放其他outbox kind。dispatch在run仍为`queued|starting`时不能complete：pool/worker process在turn接受前崩溃后，lock与attempt lease过期会让同一事实再次可见；一旦run进入`running`或terminal，迟到consumer可安全清理残留delivery。
 
-pool侧reference controller每次只领一项，以一次分配的attempt/event/outbox身份执行exact claim；普通transport错误只用同一组身份立即重试一次，不能分配第二组身份猜测第一次是否提交。`lease_held|version_conflict`会generation-fenced release并等待新投影，`running|terminal`残留项只调用由core状态守卫的complete。该controller当前只返回已取得双lease的`ScheduledRunAttempt`给下一层，尚未创建Kubernetes Job，也没有宣称已经在运行常驻controller进程。
+pool侧reference controller每次只领一项，以一次分配的attempt/event/outbox身份执行exact claim；普通transport歧义只用同一组身份立即重试一次，不能分配第二组身份猜测第一次是否提交。`lease_held|version_conflict`会generation-fenced release并等待新投影，`running|terminal`残留项只调用由core状态守卫的complete。controller、control supervisor与本地process launcher的库边界已经接通，但尚未装配成可运行的常驻`cmd/harness-pool`，不能据此宣称controller已经部署。
 
 这些入口使用独立harness-pool SPIFFE identity；executor-gateway identity不能调用这些命令，core配置相同identity会拒绝启动，携带多个URI workload identity的证书也会fail closed。
 
@@ -798,7 +801,11 @@ pool侧随后加入常驻监督骨架：只在有并发槽位时long-poll下一�
 
 pool `ControlServer`在WebSocket升级前同时要求TLS栈已验证且只有一个精确worker SPIFFE URI SAN，以及canonical 256-bit per-attempt bearer；registry只保存bearer SHA-256，不保存明文。注册时再次核对签名manifest与本holder的callback/TLS audience/service-account profile；首个hello才绑定worker instance，后续fresh连接不能替换原journal。worker事件按序同步调用既有`AttemptLifecycle`，因此catalog bind和turn accepted的core边界完成前不会发transport ACK；ACK本身仍不授权core transition。`ControlAttemptSupervisor`再把该注册、workload启动/完全停止、startup timeout、lease/cancel interrupt和terminal分类组合到原`AttemptSupervisor`接口。普通、mTLS WebSocket和race测试已覆盖完整生命周期、乱序拒绝与断线后的原帧重放。
 
-这一层仍未实现Kubernetes Job/Secret/NetworkPolicy launcher、worker侧control client、checkpoint chunks和core finalization，也尚未装配可运行的`cmd/harness-pool`。当前`completed` terminal只证明该次worker runtime干净停止，绝不等于run已在core持久化为completed，因此仍不能把控制流测试当成可部署或可恢复证据。
+根据修订后的威胁模型，pool侧已加入本地 process launcher 和 `api/schema/harness-bootstrap.schema.json`：launcher使用绝对路径、显式空环境、独立进程组与 Linux parent-death signal，签名 manifest/control capability 只经 inherited FD 3 传递。单测已覆盖非规范/unknown bootstrap、profile drift 在 fork 前拒绝、capability 不进入 argv/env、正常清理和强制回收带孙进程的整个 process group。production 装配仍必须强制不同pool/worker UID/GID并在真实 Linux Pod 复测；库边界的 nil credential 只服务于明确开发模式和非特权单测。
+
+worker侧现在会从 inherited pipe 一次读完closed-world bootstrap、立即关闭FD、按overlap keyring验签并生成新的worker instance UUID；control client完成fresh握手、mTLS与精确pool SPIFFE校验、bearer不跨redirect、interrupt有界投递、累计ACK及原holder 30秒精确resume。pool在生命周期core authority完成后才ACK；ACK字节丢失时resume cursor确认已提交事件，不重复调用authority。真实mTLS WebSocket与race测试覆盖完整生命周期、错误SPIFFE/bearer/redirect以及提交后ACK丢失。app-server runner也已在thread ready与turn accepted处同步跨越该control边界，turn acceptance失败会走`turn/interrupt`收口。
+
+这一层仍未实现app-server真实child/final-exec装配、prompt/checkpoint对象读取、checkpoint chunks和core finalization，也尚未装配可运行的`cmd/harness-worker`与`cmd/harness-pool`。当前`completed` terminal只证明该次worker runtime干净停止，绝不等于run已在core持久化为completed，因此仍不能把控制流测试当成可部署或可恢复证据。
 
 ### 8.2 run manifest
 
@@ -814,7 +821,7 @@ manifest至少冻结：
 - max_run_duration、max_approval_ttl、gateway active execution timeout、MCP transport/cleanup grace；
 - event/control buffer上限；
 - checkpoint allowlist version；
-- worker image digest和 expected service account。
+- 常驻 pool/worker runtime image digest 和 pool Pod 的 expected service account；这两项用于 launcher 核对当前部署 profile，不表示每 attempt 创建新 Pod。
 
 reference `runmanifest`实现把上述字段编码为closed-world JSON：未知字段、独立manifest的非canonical bytes、非canonical base64url签名、非HTTPS endpoint、非SPIFFE TLS identity、catalog projection漂移或callback holder漂移都会fail closed。签名算法固定`ed25519-v1`，签名输入为`agentserver-v2/run-manifest/ed25519-v1\0 || canonical_manifest`；manifest digest另用`agentserver-v2/run-manifest/rfc8785-v1\0`域隔离。manifest嵌入签名envelope后，验签方会从其JSON值重建RFC 8785 bytes再验签，避免普通serializer对`<|>|&|U+2028|U+2029`的等价转义破坏签名；core catalog command的双方encoder同样关闭HTML转义以原样传输canonical catalog。签名envelope只携带key ID，不携带私钥或capability secret。
 
@@ -963,20 +970,20 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 - core可多副本；所有写入经 PostgreSQL CAS。
 - browser-gateway可多副本且无状态。
-- harness-pool可多副本；每个 claim有 holder/generation lease。
+- harness-pool可多副本；每个 claim有 holder/generation lease，每个副本有小而硬的本地 attempt 并发上限，`minReplicas >= 1`。
 - executor-gateway Phase 1 replicas=1。
-- harness Job每 attempt一个，restartPolicy=Never、backoffLimit=0。
-- worker与 app-server使用固定的不同 UID/文件权限域；child禁止 ptrace/process-vm和读取 worker `/proc`状态。
+- run 热路径不创建 Kubernetes Job/Pod/Secret/ConfigMap/NetworkPolicy；pool 在本地为每 attempt 新建 worker/app-server 进程组，退出后不自动重启同 generation。
+- pool、worker与 app-server使用固定的不同 UID/文件权限域；child禁止 ptrace/process-vm和读取 worker/pool `/proc`状态。固定 worker 代码可以共享 Pod，但不把这种边界宣称为对任意代码安全。
 - rootfs只读；CODEX_HOME与 staging位于有配额 tmpfs/emptyDir；child mount view不含 workspace或 service-account token，worker-only staging依靠不同 UID和 `0700`目录不可读。
-- 只有 init-network-guard持有短期 `NET_ADMIN`并安装按 UID默认拒绝的 nftables OUTPUT规则；runtime worker/app-server都丢弃 `NET_ADMIN/NET_RAW`。
+- 只有 init-network-guard持有短期 `NET_ADMIN`并安装按 UID默认拒绝的 nftables OUTPUT规则；runtime pool/worker/app-server都丢弃 `NET_ADMIN/NET_RAW`。
 - final-exec trampoline只保留 stdin/stdout/stderr，fd 3以上 close-all；worker control/credential FD同时必须为 `O_CLOEXEC`。
 - app-server没有 Kubernetes API token。
-- worker service account/workload identity只能连接harness-pool并换取受众绑定的executor MCP capability；不能访问对象存储或其他内部服务。
-- harness-pool拥有创建/删除目标 Job和上传 checkpoint的最小权限。
+- worker 只使用 pool 签发的 per-attempt control/MCP capability；不可读 pool service account、对象存储或签名凭证。
+- harness-pool拥有上传 checkpoint 和调用 core 的最小权限，不需要动态创建/删除 Kubernetes workload 的 RBAC。
 
 ### 10.2 网络
 
-- Pod NetworkPolicy只限制worker+child destination并集，不能冒充进程隔离；按UID的OUTPUT规则允许worker到harness-pool+executor-gateway，app-server只到llmproxy。
+- Pod NetworkPolicy只限制pool+worker+child destination并集，不能冒充进程隔离；按UID的OUTPUT规则允许pool到core/对象存储等固定内部端点、worker到pod-local control+executor-gateway，app-server只到llmproxy。
 - app-server禁止MCP、直接DNS、外部连接和cross-origin redirect目标；只读hosts固定llmproxy identity。
 - worker禁止通用DNS，只能连接run manifest固定、TLS校验的executor-gateway；Phase 1不直连第三方MCP。未来外部MCP必须先经内部policy/egress proxy。
 - llmproxy与executor MCP使用不同audience capability，后者只在worker域。
@@ -1018,7 +1025,7 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 - CreateRun DB commit前/后；
 - outbox claim前/后；
-- Job create前/后；
+- local worker fork 前/后、bootstrap pipe 写入中、worker exec 成功但 control fresh hello 前；
 - turn/start发送前、response后、首事件后；
 - PrepareExecution commit后；
 - BeginOperationDispatch commit前/后；
@@ -1086,7 +1093,7 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 交付：
 
 - harness-pool claim/controller；
-- per-run Job与 worker；
+- per-attempt local process launcher、bootstrap pipe、进程组回收与 worker；
 - stock app-server stdio；
 - Codex MCP deny-all、冻结dynamicTools和worker MCP bridge；
 - canonical model/MCP events；
@@ -1141,7 +1148,7 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 第12项目前已完成connection kernel、真实WSS路由，以及独立agentx仓库中的connector/runner IPC、远端lifecycle、registered-root/cwd本地复核、monotonic timeout signal、每process独占的stock `codex exec-server --listen stdio --strict-config`监管和一次性fs-only bounded-read lane；真实stock纵向门禁已通过。本仓已完成online environment registry、三工具stateful MCP链、七个execution/operation mTLS command/client，以及shell-v1和read-file-v1两条`Prepare → Begin → dispatch → ACK/unknown → operation/execution terminal → MCP result`链。approval command、真实enrollment/key binding、gateway进程丢失后的unknown恢复审计、平台containment和部署manifest仍未实现；当前入口明确标为loopback insecure-dev，不能作为Phase 2交付或生产部署证据。
 
-Phase 3当前从第13项开始：已有run/attempt/event component API、独立harness-pool workload identity、原子双lease续期、`run.queued`专用long-poll delivery、pool侧单项claim controller内核、brain catalog冻结/线程绑定core API、签名manifest launch-preparer、受限私钥装载/公钥轮换keyring、deployment profile resolver、由`CreateRun`原子持久化并由live attempt fence保护的core-backed launch-state source，以及带有界并发、lease心跳、thread/turn顺序门和dispatch清理语义的常驻监督骨架；checkpoint恢复会复用原thread绑定catalog。per-attempt control的机器合同、同holder进程resume journal、mTLS+bearer入口和具体`ControlAttemptSupervisor`也已完成。后续仍须实现可运行的harness-pool命令装配、Kubernetes Job/Secret/NetworkPolicy launcher、worker control client、finalization与checkpoint CAS写路径；这些不能由当前control terminal或抽象workload接口替代。
+Phase 3当前从第13项开始：已有run/attempt/event component API、独立harness-pool workload identity、原子双lease续期、`run.queued`专用long-poll delivery、pool侧单项claim controller内核、brain catalog冻结/线程绑定core API、签名manifest launch-preparer、受限私钥装载/公钥轮换keyring、deployment profile resolver、由`CreateRun`原子持久化并由live attempt fence保护的core-backed launch-state source，以及带有界并发、lease心跳、thread/turn顺序门和dispatch清理语义的常驻监督骨架；checkpoint恢复会复用原thread绑定catalog。per-attempt control机器合同、同holder进程resume journal、双向control server/client、mTLS+bearer入口、具体`ControlAttemptSupervisor`、本地process launcher、closed-world bootstrap pipe及worker验签入口也已完成。后续仍须实现app-server真实child/final-exec、prompt/checkpoint对象读取、可运行的harness-pool/worker命令装配、finalization与checkpoint CAS写路径；这些不能由当前control terminal或抽象workload接口替代。
 
 ## 14. 尚未锁定但有明确决策点的事项
 

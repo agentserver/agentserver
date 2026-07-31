@@ -17,8 +17,8 @@ type AttemptWorkloadLaunch struct {
 	ControlCapability string
 }
 
-// AttemptWorkload is one already-created per-attempt isolation boundary. Wait
-// returns only after the workload is fully stopped. Both methods must honor
+// AttemptWorkload is one already-created per-attempt process boundary. Wait
+// returns only after the full process tree is stopped. Both methods must honor
 // ctx so holder shutdown cannot block forever on a broken runtime.
 type AttemptWorkload interface {
 	Wait(context.Context) error

@@ -8,6 +8,7 @@ import (
 	"net"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -33,7 +34,10 @@ func TestAppServerRunnerDrivesDynamicToolLifecycleAndWriteBarrier(t *testing.T) 
 			Success:      true,
 		}, nil
 	}}
-	runner, bridge, server := newRunnerFixture(t, caller, catalog, DefaultAppServerRunnerOptions())
+	lifecycle := &recordingAppServerLifecycleSink{}
+	options := DefaultAppServerRunnerOptions()
+	options.LifecycleSink = lifecycle
+	runner, bridge, server := newRunnerFixture(t, caller, catalog, options)
 
 	serverDone := make(chan error, 1)
 	go func() {
@@ -101,10 +105,74 @@ func TestAppServerRunnerDrivesDynamicToolLifecycleAndWriteBarrier(t *testing.T) 
 	if bridge.Outstanding() != 0 {
 		t.Fatalf("bridge retained %d callbacks after response write", bridge.Outstanding())
 	}
+	if got, want := lifecycle.snapshot(), []string{
+		"thread:" + runnerTestThreadID + ":false",
+		"turn:" + runnerTestThreadID + ":" + runnerTestTurnID,
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("lifecycle calls = %v, want %v", got, want)
+	}
 	if got, want := collectRunnerEventMethods(runner.Events()), []string{
 		"thread/started", "turn/started", "item/completed", "turn/completed",
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("event methods = %v, want %v", got, want)
+	}
+}
+
+func TestAppServerRunnerInterruptsWhenTurnAcceptanceAuthorityFails(t *testing.T) {
+	catalog := runnerTestCatalog(t)
+	var calls atomic.Int64
+	caller := &fakeDynamicCaller{call: func(context.Context, DynamicCall) (DynamicToolResult, error) {
+		calls.Add(1)
+		return DynamicToolResult{}, nil
+	}}
+	lifecycleErr := errors.New("synthetic core turn acceptance failure")
+	lifecycle := &recordingAppServerLifecycleSink{turnErr: lifecycleErr}
+	options := DefaultAppServerRunnerOptions()
+	options.InterruptGrace = time.Second
+	options.LifecycleSink = lifecycle
+	runner, bridge, server := newRunnerFixture(t, caller, catalog, options)
+
+	serverDone := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := serveRunnerStartLifecycle(ctx, server, catalog); err != nil {
+			serverDone <- err
+			return
+		}
+		interrupt, err := receiveRunnerMessage(ctx, server, codexwire.KindRequest, "turn/interrupt", "4")
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		var params appServerTurnInterruptParams
+		if err := interrupt.DecodeParams(&params); err != nil {
+			serverDone <- err
+			return
+		}
+		if params.ThreadID != runnerTestThreadID || params.TurnID != runnerTestTurnID {
+			serverDone <- fmt.Errorf("interrupt params = %+v", params)
+			return
+		}
+		if err := server.Send(map[string]any{"id": 4, "result": map[string]any{}}); err != nil {
+			serverDone <- err
+			return
+		}
+		serverDone <- sendRunnerTerminal(server, "interrupted")
+	}()
+
+	result, err := runner.Run(t.Context(), runnerStartRequest(catalog))
+	if !errors.Is(err, lifecycleErr) {
+		t.Fatalf("runner error = %v, want lifecycle failure", err)
+	}
+	if result.Terminal.Turn.Status != "interrupted" {
+		t.Fatalf("runner terminal = %+v", result.Terminal)
+	}
+	if serverErr := <-serverDone; serverErr != nil {
+		t.Fatal(serverErr)
+	}
+	if calls.Load() != 0 || bridge.Outstanding() != 0 {
+		t.Fatalf("failed turn acceptance dispatched %d calls and retained %d", calls.Load(), bridge.Outstanding())
 	}
 }
 
@@ -571,6 +639,33 @@ func TestAppServerRunnerRejectsUnboundedOptions(t *testing.T) {
 
 type countingAppServerTransport struct {
 	sends atomic.Int64
+}
+
+type recordingAppServerLifecycleSink struct {
+	mu        sync.Mutex
+	calls     []string
+	threadErr error
+	turnErr   error
+}
+
+func (sink *recordingAppServerLifecycleSink) SendThreadReady(_ context.Context, threadID string, resumed bool) error {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	sink.calls = append(sink.calls, fmt.Sprintf("thread:%s:%t", threadID, resumed))
+	return sink.threadErr
+}
+
+func (sink *recordingAppServerLifecycleSink) SendTurnAccepted(_ context.Context, threadID, turnID string) error {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	sink.calls = append(sink.calls, "turn:"+threadID+":"+turnID)
+	return sink.turnErr
+}
+
+func (sink *recordingAppServerLifecycleSink) snapshot() []string {
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	return append([]string(nil), sink.calls...)
 }
 
 func (t *countingAppServerTransport) Send(any) error {

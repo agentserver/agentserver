@@ -45,9 +45,10 @@ type AttemptLifecycle interface {
 	TurnAccepted(threadID, turnID string) error
 }
 
-// AttemptSupervisor owns the future Job/control-stream implementation. It
-// blocks for the lifetime of exactly one attempt, returns when that runtime is
-// fully stopped, and must return promptly when ctx is cancelled.
+// AttemptSupervisor owns the local worker-process/control-stream
+// implementation. It blocks for the lifetime of exactly one attempt, returns
+// when that process tree is fully stopped, and must return promptly when ctx
+// is cancelled.
 type AttemptSupervisor interface {
 	Supervise(context.Context, PreparedRunLaunch, AttemptLifecycle) error
 }

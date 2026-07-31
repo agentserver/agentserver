@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentserver.dev/v2/schema/harness-bootstrap.schema.json",
+  "title": "agentserver v2 local harness worker bootstrap",
+  "description": "One-shot closed-world bootstrap written by a harness-pool holder to an inherited worker-only pipe. It is never carried in argv, environment variables, or a persisted file.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "signedManifest", "controlCapability"],
+  "properties": {
+    "version": {"const": 1},
+    "signedManifest": {
+      "$ref": "run-manifest.schema.json"
+    },
+    "controlCapability": {
+      "type": "string",
+      "description": "Canonical base64url encoding of exactly 256 random bits.",
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    }
+  }
+}

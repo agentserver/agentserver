@@ -35,9 +35,10 @@ type ScheduledRunAttempt struct {
 	Claim    ClaimRunAttemptResult
 }
 
-// Controller implements the durable scheduling edge only. Job creation and
-// worker supervision consume ScheduledRunAttempt in the next layer; this type
-// never completes a dispatch merely because the database claim succeeded.
+// Controller implements the durable scheduling edge only. Local worker
+// process launch and supervision consume ScheduledRunAttempt in the next
+// layer; this type never completes a dispatch merely because the database
+// claim succeeded.
 type Controller struct {
 	core       ControllerCore
 	identities RunAttemptClaimIdentityAllocator

@@ -40,7 +40,7 @@
 - 保留“托管大脑 + 用户环境双手”的产品形态，同时把协议和安全边界钉死。
 - 将集群内产品组件收敛为 5 个：`agentserver-core`、`browser-gateway`、`harness-pool`、`executor-gateway`、`a2ui-web`。
 - 使用 stock Codex，不维护 Codex fork：harness 使用 app-server；executor 使用本地 stdio exec-server。
-- harness workload 使用无状态 `harness-worker` 驱动 app-server stdio；worker 属于 harness-pool 的 per-run 数据面，不增加常驻产品组件。
+- harness-pool 以本地 `fork/exec` 启动无状态的 per-attempt `harness-worker`，由 worker 驱动 app-server stdio；worker 是短命数据面进程，不增加常驻产品组件。
 - executor-gateway 向 harness-worker 提供 MCP 工具；worker 把冻结目录投影成 app-server `dynamicTools`，gateway 再把调用参数确定性地映射为 exec-server JSON-RPC。
 - 支持 BYO executor：用户只启动 agentx；agentx 校验/监管随发行包提供或显式安装的 pinned stock Codex，连接方向始终由 agentx 向集群拨出。
 - 给会话、运行、执行、事件、审批和凭证各自明确的状态所有者与恢复语义。
@@ -78,13 +78,13 @@
                                                               ▼
                                                     ┌─────────────────────┐
                                                     │ harness-pool        │
-                                                    │ controller          │
+                                                    │ controller/launcher │
                                                     └──────────┬──────────┘
-                                                               │ 创建隔离 workload
+                                                               │ fork/exec per-attempt process
                                                                ▼
                                                     ┌─────────────────────┐
-                                                    │ harness workload    │
                                                     │ harness-worker      │
+                                                    │ attempt process     │
                                                     │ MCP client/bridge   │
                                                     │   └─stdio app-server│
                                                     │ Codex：模型+dynamic │
@@ -110,7 +110,7 @@
                                                                  用户本地工作环境
 ```
 
-除了 5 个产品组件，部署还依赖 Hydra、Postgres、对象存储、llmproxy，以及按 run 动态创建的 harness workload。`harness-worker` 是 harness-pool 的 per-run 数据面进程，不是第六个常驻服务。外部 OIDC IdP 和用户侧 agentx 不计入集群组件数。a2ui-web 的 workspace/resource REST 直连 core；图中经过 browser-gateway 的业务链路仅指 AG-UI run/事件接口。
+除了 5 个产品组件，部署还依赖 Hydra、Postgres、对象存储和 llmproxy。`harness-worker` 是 harness-pool 在本地按 attempt 启动的短命数据面进程，不是第六个常驻服务，也不会为每个 run 创建 Kubernetes Job/Pod。外部 OIDC IdP 和用户侧 agentx 不计入集群组件数。a2ui-web 的 workspace/resource REST 直连 core；图中经过 browser-gateway 的业务链路仅指 AG-UI run/事件接口。
 
 ## 3. 组件职责
 
@@ -119,7 +119,7 @@
 | **a2ui-web** | 静态 SPA；OIDC Authorization Code + PKCE；AG-UI client；A2UI 渲染 | 不保存服务端会话状态，不持久化 access token |
 | **agentserver-core** | workspace/RBAC；session/run；事件；审批；executor/credential/LLM authorization 控制面；Hydra login/consent bridge | 不运行 Codex，不代理模型，不托管 SPA |
 | **browser-gateway** | workspace 显式的 AG-UI/SSE 边缘；鉴权委托；规范事件到 AG-UI/A2UI 的映射 | 不创建权威 session，不持久化浏览器会话，不拥有运行状态 |
-| **harness-pool controller** | 从 core 的`run.queued`专用durable delivery lane领取任务；持有 session/run-attempt lease；调度和回收隔离 workload；汇聚并向 core 提交事件与 checkpoint | 不消费其他event outbox kind，不承载多租户 Codex 子进程池，不拥有 session/run/event 事实 |
+| **harness-pool controller** | 从 core 的`run.queued`专用durable delivery lane领取任务；持有 session/run-attempt lease；有界地 fork/exec 并回收 per-attempt worker 进程；汇聚并向 core 提交事件与 checkpoint | 不消费其他event outbox kind，不复用已运行过 turn 的 worker/app-server 进程，不拥有 session/run/event 事实 |
 | **harness-worker**（per-run） | 作为 app-server stdio client 驱动 thread/turn；校验冻结的 executor tool catalog并生成 `dynamicTools`；把 `item/tool/call` 转成 MCP `tools/call`；转接 MCP elicitation；执行 cancel/fence、child 监管和 checkpoint manifest 生成 | 不推理、不选工具、不改写 prompt、不在本地执行工具、不拥有持久状态 |
 | **stock app-server**（worker 子进程） | 运行模型循环；调用 llmproxy；对 client-hosted `dynamicTools` 发出结构化 callback | 不访问 MCP、工作树、core、对象存储或 harness-pool 控制接口，不执行本地工具 |
 | **executor-gateway** | 向 harness-worker 暴露 executor MCP；鉴权/策略/审批；MCP 到 exec-server RPC 的确定性翻译；连接路由 | 不推理，不改写自然语言，不直接执行 OS 操作 |
@@ -194,7 +194,7 @@ Hydra token 只证明用户身份和授权受众。workspace 角色必须在每�
 
 每枚 run capability 的公共 claim 至少绑定 `workspace_id`、`session_id`、`run_id`、`run_attempt_id`、`run_attempt_generation`、`user_id`、`aud`、过期时间和 `jti`。`aud=llmproxy` 只增加允许的 model/provider route；`aud=executor-gateway` 才增加允许的 executor/env/tool 和 `tool_catalog_digest`，不能把执行权限塞进模型 token，也不能把一枚 token 同时用于模型与执行。共享的 `agentserver-api` audience 只覆盖两个浏览器入口，不得被任何内部服务或 executor 接受。executor-gateway 的 `tools/list` 按 capability 中的 catalog digest 返回 core 已冻结的精确 catalog；未知或不匹配 digest 直接拒绝。
 
-用户 bearer 不进入 harness、executor-gateway 或 agentx。browser-gateway 使用内部身份调用 core 的 authorize API，并将目标 workspace/action 一并提交；core 只向 browser-gateway 返回 actor context 与 run handle。run capability 在 harness-pool 持有效 session lease 和 run-attempt lease 后签发给目标 workload，不能经浏览器链路转交。
+用户 bearer 不进入 harness、executor-gateway 或 agentx。browser-gateway 使用内部身份调用 core 的 authorize API，并将目标 workspace/action 一并提交；core 只向 browser-gateway 返回 actor context 与 run handle。run capability 在 harness-pool 持有效 session lease 和 run-attempt lease 后签发给目标 worker 进程，不能经浏览器链路转交。
 
 Phase 1 不尝试修改已启动 app-server 的环境变量来轮换 llmproxy capability。系统必须定义并强制 `max_run_duration`；每个 capability 的 TTL 覆盖该上限与很短的收尾 grace，但 llmproxy 和 executor-gateway 在每次请求时仍校验 live run-attempt lease/generation，因此取消、fence 或成员移除可以立即生效。executor MCP capability 只由 worker 持有，可以在不触碰 app-server 环境的情况下轮换。超过硬上限的 attempt 必须被中断，不能带过期 token 继续运行。
 
@@ -222,11 +222,11 @@ stock app-server 访问 llmproxy 所需的短期 capability 优先通过 tmpfs/�
 3. browser-gateway 将用户 token、目标 action、幂等键和规范化请求 hash 交给 core；core 完成鉴权，并在同一事务中写入 `run_id`、第一条规范事件和 durable outbox。同一 user/workspace/session 下重复的幂等键只有在请求 hash 相同时才返回原 `run_id`，不同 payload 必须报冲突。
 4. browser-gateway 将第一条事件立即映射为 `RUN_STARTED`，之后按 event cursor 订阅该 run。
 5. harness-pool领取queued run，并以CAS获取`session_lease`，同时创建新的`run_attempt_id/run_attempt_generation`与对应lease。core为将创建的新brain thread从版本化executor MCP contract与当前policy计算允许子集，先保存未绑定thread id的canonical catalog/digest；`thread/start`成功后再以CAS绑定返回的`brain_thread_id`。已有checkpoint必须沿用原digest。catalog决定模型可见schema，但不是永久授权：gateway每次调用仍检查live RBAC/capability。session lease保证任何时刻一个session最多一个active run，attempt lease fence旧worker。
-6. harness-pool 创建隔离 workload。per-run harness-worker 接收不可变、签名的 run manifest，恢复最近一个已提交的 completed-turn checkpoint，创建清洗后的临时 `CODEX_HOME`。worker 以 MCP client 初始化 executor-gateway，并要求协商到manifest固定的protocol profile；reference profile是可承载嵌套server-originated elicitation的`2025-11-25` stateful Streamable HTTP，其他版本在`tools/list`前fail closed。随后worker读取`tools/list`，并要求规范化后的名称、description、input schema 与签名 manifest 中冻结的 catalog/hash 完全一致；不一致时在启动 turn 前 fail closed。
+6. harness-pool 在当前 holder 进程内为该 attempt 创建新的临时目录和进程组，以本地 `fork/exec` 启动一个全新 harness-worker，不调用 Kubernetes API。worker 通过仅本次启动继承的受限 pipe 接收不可变、签名的 run manifest 和 attempt control capability，恢复最近一个已提交的 completed-turn checkpoint，创建清洗后的临时 `CODEX_HOME`。worker 以 MCP client 初始化 executor-gateway，并要求协商到manifest固定的protocol profile；reference profile是可承载嵌套server-originated elicitation的`2025-11-25` stateful Streamable HTTP，其他版本在`tools/list`前fail closed。随后worker读取`tools/list`，并要求规范化后的名称、description、input schema 与签名 manifest 中冻结的 catalog/hash 完全一致；不一致时在启动 turn 前 fail closed。
 7. harness-worker 以 stdio 启动并初始化 stock app-server。新 thread 的 `thread/start.dynamicTools` 由冻结 catalog 机械生成；native resume 没有 dynamicTools override，所以只允许恢复 catalog digest 相同的 thread，catalog 变化必须创建新 thread。worker 随后以原始用户输入调用 `turn/start`，不改写 prompt。app-server 只通过 llmproxy 调模型；需要工具时发出 `item/tool/call`，worker 校验 thread/turn/call/tool/arguments 后转成 executor MCP `tools/call`。
 8. harness-worker 为原始 app-server 消息附加 `run_attempt_id/generation + producer_instance_id/producer_seq`，通过唯一 mTLS control stream 发给 harness-pool；harness-pool 完成规范事件映射并提交 core。core 拒收旧 generation，browser-gateway 从已提交事件映射 AG-UI/A2UI。
 9. 收到 `turn/completed` 后，run 先进入 `finalizing`，但该 notification不是统一的 transport cleanup barrier。worker按 request 类型清理：已回复的 `item/tool/call` 以对应 JSON-RPC response 写入完成为准；未回复的 dynamic call 以所属 turn terminal 为准，并同时取消 worker→MCP 请求；只有 app-server 明确定义会发 resolved 的其他 server request 才等待 `serverRequest/resolved`。worker还要确认 execution/process收口，随后才关闭 app-server stdin并等待优雅退出。只有 child 在有界时间内正常退出后才能按 pinned allowlist 生成 checkpoint manifest；SQLite 主库及其 WAL/SHM 等运行时派生文件不进入 checkpoint。harness-pool 先上传加密对象，再由 core 以 CAS 在同一状态事务中提交 checkpoint 指针与 run terminal event；未提交的对象由后台清理。
-10. core 确认 terminal state 和 checkpoint 后，harness-pool 删除 workload 与临时目录。mid-turn crash 不生成可恢复 checkpoint，也不能继续原 turn。
+10. core 确认 terminal state 和 checkpoint 后，harness-pool 确认 worker/app-server 进程组已退出并删除本次 attempt 的临时目录。mid-turn crash 不生成可恢复 checkpoint，也不能继续原 turn。
 
 浏览器断开不自动取消 run。取消必须通过显式 API/action，并产生规范事件；重新连接使用 cursor 继续读取。
 
@@ -249,7 +249,7 @@ WSS/session 恢复只恢复 gateway ↔ agentx 通道，不能恢复已断开的
 
 ### 6.3 故障与恢复
 
-- harness workload 在 app-server 接受 `turn/start` 之前失败，可以从最近 completed-turn checkpoint 创建新的 run attempt；旧 attempt 被 fence。`turn/start` 一旦被接受，任何 worker/app-server mid-turn crash 都使当前 run 进入 `interrupted`，即使尚未 dispatch executor 副作用也不能自动重跑该 turn；这避免重复模型调用和已流式输出分叉。
+- harness attempt 进程在 app-server 接受 `turn/start` 之前失败，可以从最近 completed-turn checkpoint 创建新的 run attempt；旧 attempt 被 fence。`turn/start` 一旦被接受，任何 worker/app-server mid-turn crash 都使当前 run 进入 `interrupted`，即使尚未 dispatch executor 副作用也不能自动重跑该 turn；这避免重复模型调用和已流式输出分叉。
 - 一旦 execution 已进入 `dispatching`，harness/gateway 崩溃后不得自动重放；run 标记为 `interrupted`，无法从 agentx journal/core terminal record确认的 execution 标记为 `unknown`，由用户决定下一步。
 - harness-worker 与 harness-pool 的 control stream 短时断开时，worker 只做有界事件缓冲且不接受新的控制决策；approval 一律失败关闭。grace period 到期、缓冲溢出、ACK 出现不可恢复缺口或 lease 无法确认时，worker 调 `turn/interrupt` 并终止 app-server。重连必须携带 attempt generation 和 producer ACK，旧 generation 的消息全部丢弃。
 - agentx 与 gateway 短时断线时，agentx 保持所有活跃 stdio pipes/exec-server instances 存活，并用 `exec_session_id` 与外层 sequence/ACK 恢复；Phase 1 默认 grace period 为 30 秒。
@@ -263,7 +263,7 @@ WSS/session 恢复只恢复 gateway ↔ agentx 通道，不能恢复已断开的
 
 ### 7.1 harness-worker / appserver-host
 
-stock app-server 是双向 JSON-RPC server，不会从环境变量自动取得 prompt 并独立完成一次 run。每个动态 workload 因而包含一个无状态 `harness-worker`，它作为 PID 1/可信宿主，通过本地 stdio 驱动一个 stock app-server child：
+stock app-server 是双向 JSON-RPC server，不会从环境变量自动取得 prompt 并独立完成一次 run。每个 attempt 因而由常驻 harness-pool 以本地 `fork/exec` 启动一个全新的无状态 `harness-worker`，worker 作为 app-server 的真实父进程和 stdio supervisor：
 
 ```text
 harness-pool controller ──mTLS control stream──► harness-worker ──stdio──► stock app-server
@@ -289,7 +289,7 @@ dynamic-tool-only不是prompt约定，而是pinned Codex build上必须同时成
 
 - `initialize` 显式开启所需 experimental API；`thread/start` 与每次 `turn/start` 都传 `environments: []`，使环境支持开启时也没有默认本地 environment；当前 schema 的 `thread/resume` 没有该字段，cold resume 固定传 app-server 返回的 rollout path 和 `excludeTurns: true`，以成功 RPC response 而不是并不存在的 `thread/started` notification 作为恢复屏障，随后由 `turn/start` 再固定空 environments；
 - 清洗后的 `config.toml` 禁用所有目标 stock release实际支持关闭的builtin tool source，包括 `request_user_input`、Web、apps、plugins、multi-agent、browser/computer use、hooks；不提供 capability roots；对 `update_plan`这类stock内建utility，所pin release也必须提供经过tool capture验证的真实禁用机制，不能在文档中虚构配置键；
-- stock app-server不配置任何MCP server。workload在child启动前只读挂载管理员控制的`/etc/codex/requirements.toml`，至少固定`mcp_servers = {}`，使user/project配置也不能注入MCP；A04必须从零MCP bootstrap请求与精确dynamic tool surface证明deny-all真实生效；
+- stock app-server不配置任何MCP server。pool 镜像在任何 child启动前已把管理员控制的`/etc/codex/requirements.toml`以只读 mount 固定为至少`mcp_servers = {}`，使user/project配置也不能注入MCP；A04必须从零MCP bootstrap请求与精确dynamic tool surface证明deny-all真实生效；
 - run manifest冻结MCP protocol profile、namespace及其description、tool name/description/input schema、固定`deferLoading=false`、逐tool schema hash和catalog digest。MCP annotation不作为授权事实也不投影给模型。worker从executor-gateway `tools/list`得到的catalog必须与其完全一致，再机械生成`dynamicTools`；模型伪造未发布tool、builtin或另一个namespace时必须在stock路由层得到`unsupported call`，不能到达worker/MCP；
 - production thread使用`approvalPolicy = "never"`。这只关闭stock app-server自身的通用审批；executor产品审批发生在worker作为MCP client收到的`elicitation/create`上，不经过app-server，所以不会被`never`自动拒绝；
 - `thread/resume`没有`dynamicTools` override，native rollout会恢复原tool schema。checkpoint必须绑定catalog digest；同一brain thread的schema不可变，catalog变化时创建新thread。gateway仍在每次`tools/call`实时校验RBAC、capability和policy，目录冻结不等于永久授权；
@@ -309,15 +309,18 @@ A04 deny-all gate 已在 official stable 0.146.0 Linux amd64 musl artifact 上�
 
 官方 stable `rust-v0.146.0`（annotated tag object `be449751a978f02e5bbba886999662956c7f38f5`，peeled commit `e363b08c9175ac1cbe5893615dd2cb9ddf95043b`）在 direct MCP probe 上得到相同失败；但 production-shape dynamic bridge probe 在完全不配置 Codex MCP 时把模型工具面精确收敛为 `executor.approved_echo`。真实 namespaced function call 会成为带原 thread/turn/call id 与结构化 arguments 的 `item/tool/call`，client result 进入下一次模型请求；未发布 executor tool 和 `exec_command` 均为 `unsupported call` 且不产生 callback。0.147.0-alpha.2 重复了同一正向 dynamic 结果。因此修订后的 A03 对 stable 0.146.0 通过；是否形成 production runtime pin 仍取决于其余修订门禁，不能沿用旧 A03 结论直接放行。
 
-### 7.2 隔离与网络
+### 7.2 进程边界与网络
 
-- harness-pool 是常驻 controller；“scale to zero”只表示删除或归零无 active run 的动态 workload 容量，不能把 controller 自身设为 `replicas: 0`。
-- 每个 active run 使用独立 workload；不在共享 pod 内以多个子进程承载不同租户。
-- workload 位于 workspace namespace，并使用 service account、seccomp、只读 rootfs、tmpfs、资源限额和 NetworkPolicy。
-- app-server child 的整个 mount view 都没有 workspace worktree、用户代码卷或 Kubernetes service-account token，不能只把进程 `cwd` 指向空目录却仍让仓库在别处可读；worker 也只能访问该 attempt 的临时控制目录和 checkpoint staging volume。
-- app-server 使用新建且清洗过的临时 `CODEX_HOME`；auth、config、MCP secret 或整个目录均不能原样持久化。MCP bearer 从不进入该目录或 child 环境。
-- worker 只允许建立到 harness-pool 的 mTLS control stream 和 executor-gateway MCP；app-server child 只允许访问 exact llmproxy tuple。两者使用不同 UID/权限域，worker credential/control/MCP capability 对子进程 UID 不可读，控制 socket 和所有非 stdio FD 都以 `O_CLOEXEC` 打开。worker 必须是 app-server 的真实父进程和 stdio supervisor，以空 supplementary groups 运行，并且只在创建固定 app UID child 所需的窗口持有 `SETUID/SETGID`；child final-exec 在任何 preflight 前清除全部 capability、设置 `no_new_privs` 和 non-dumpable，再验证身份。production launch trampoline 在最终 exec 前还必须执行 close-all（Linux 优先 `close_range(3, UINT_MAX, 0)`），不能仅依赖 Go `exec.Cmd` 没有填写 `ExtraFiles`；A12 负向 probe 已经证明一个被清掉 `CLOEXEC` 的未列出 FD 会进入 stock child。
-- Kubernetes NetworkPolicy 是 Pod 粒度，不能单独实现同一 workload 内“worker 可到 harness-pool/executor-gateway、child 只能到 llmproxy”的进程级差异。Phase 1 Linux pod 在 runtime container 启动前，由唯一持有 `NET_ADMIN` 的 init container 安装默认拒绝的 nftables OUTPUT 规则：worker UID 只允许两个固定内部 tuple，app UID 只允许 llmproxy 固定 ClusterIP/端口；runtime worker 与 child 均不持有 `NET_ADMIN/NET_RAW`。当前 reference profile 只接受 IPv4 并对两个受管 UID 的 IPv6 全部 drop。Pod 级 NetworkPolicy 仍按三类 destination 并集做第二层限制。
+- Phase 1 的明确威胁模型是：harness-worker 和 pinned stock app-server 都是管理员提供的固定代码；模型只能调用 worker 投影的 dynamic tools，harness 本地不执行用户 shell/fs/任意代码。在这个前提下，per-attempt Kubernetes Job/Pod 的启动成本大于它提供的边际收益，默认 backend 固定为本地 `fork/exec`。一旦未来开放本地任意代码、用户脚本、stdio MCP 或未信任 plugin，该 backend 必须 fail closed，改用经过独立安全评审的 sandbox backend。
+- harness-pool Pod 是常驻容量单元，以有界并发在同一 Pod 中承载多个 attempt 进程组；每个 attempt 都创建全新 worker、app-server、临时目录和 `CODEX_HOME`，绝不复用已处理过另一 attempt 的进程或可变目录。这是进程清理边界，不冒充 per-run Pod 级安全隔离。
+- 放宽隔离的真实代价是：一个 pool Pod 崩溃或 OOM 可以中断该副本上的所有 attempt。每副本必须设置较小的有界并发上限、Pod 级资源 limit 和 attempt 级 deadline/rlimit；可用时再为进程树分配 cgroup v2。任何副本故障仍按现有 generation/lease 语义中断 run，不在另一 Pod 自动重放已接受的 turn。
+- pool launcher 为每个 attempt 创建 pool 拥有、只向固定 worker group 开放的临时根和独立进程组，使用绝对路径启动 pinned worker，不继承 ambient env；worker 在其中再创建只对 app UID 开放的 `CODEX_HOME`。签名 manifest 和 control capability 只通过一次性 inherited pipe 传递，不进入 argv、环境或磁盘配置。正常、cancel、lease loss 和 holder shutdown 都必须有界地回收整个进程组后再删除目录。
+- harness-pool、worker 和 app-server 使用不同 UID/权限域；pool 的 core/对象存储/签名凭证对 worker/app UID 不可读，worker credential/control/MCP capability 对 app UID 不可读。worker 必须是 app-server 的真实父进程，以空 supplementary groups 运行，并且只在创建固定 app UID child 所需的窗口持有 `SETUID/SETGID`。child final-exec 在任何 preflight 前清除全部 capability、设置 `no_new_privs` 和 non-dumpable，再验证身份。
+- app-server child 的 mount view 没有 workspace worktree、用户代码卷、pool secret 或 Kubernetes service-account token；pool Pod 只读 rootfs 也不挂载用户工作区。worker 只能访问本次 attempt 的临时控制目录和 checkpoint staging，app-server 只能访问它的新建 `CODEX_HOME`。auth、config、MCP secret 或整个 runtime 目录均不能原样持久化。
+- 控制 socket 和所有非 stdio FD 都以 `O_CLOEXEC` 打开；production launch trampoline 在最终 exec app-server 前必须执行 close-all（Linux 优先 `close_range(3, UINT_MAX, 0)`），不能仅依赖 Go `exec.Cmd` 没有填写 `ExtraFiles`。A12 负向 probe 已经证明一个被清掉 `CLOEXEC` 的未列出 FD 会进入 stock child。
+- Kubernetes NetworkPolicy 只能对整个 pool Pod 限制 destination 并集。Phase 1 Linux Pod 在 runtime 启动前，由唯一持有 `NET_ADMIN` 的 init container 安装按 UID 默认拒绝的 nftables OUTPUT 规则：pool UID 可访问 core/对象存储等必需内部 endpoint，worker UID 只可访问本 Pod control endpoint 与 executor-gateway MCP，app UID 只可访问 exact llmproxy tuple。runtime 进程均不持有 `NET_ADMIN/NET_RAW`，两个受管数据面 UID 的 IPv6 全部 drop。
+- DinD 不是 production 默认 backend：它需要高权限 daemon/套接字、额外镜像和容器生命周期，却不消除 holder/lease 问题。它可作为本地开发的可选 launcher，不能让主路径依赖 privileged Docker socket。
+- 固定 worker/app UID 和共享 Pod 不防御“某个 worker 或 stock app-server 二进制已被攻陷后读取同副本兄弟 attempt”。这是本进程 backend 在当前固定代码威胁模型下接受的边界，不能被宣称为强多租户 sandbox；需要防御该类 compromise 的 deployment 必须选用 per-attempt sandbox backend。
 - app-server child 不访问 MCP、外部网络或通用 DNS。内部 llmproxy identity 在启动前固定到只读 hosts 视图，child UID 禁止 DNS egress 和 cross-origin redirect 目标。worker 同样禁止通用 DNS，只连接 manifest 固定并经 TLS 校验的 executor-gateway；未来外部 MCP 必须先经过受控内部 policy proxy，不能给 app UID 新增直连能力。
 - MCP endpoint 和 tool allowlist 由 core 生成后固定进 run manifest，模型输出、prompt 或 skill 不能动态增加 endpoint。每个 endpoint 必须校验 TLS 身份并使用独立 audience capability；缺少凭证时 endpoint 必须拒绝，不能回退为匿名调用。
 - Phase 1 executor MCP 不实现 resources/prompts 协议；任何 `resources/list`、`resources/templates/list`、`resources/read`、`prompts/*` 请求都必须 fail closed 并进入安全审计。但这是纵深防御，不替代 A03 对模型工具面的精确约束。
@@ -349,7 +352,7 @@ A12 的 Darwin host-level probe已在同两个 release上确认一项正向事�
 
 A12 production-profile image gate 已在 official stable 0.146.0 `linux-arm64` exact artifact 上按修订架构原生通过。真实worker UID在fork前读取`0700` capability、用official SDK认证executor-gateway MCP并冻结catalog，随后作为stdio supervisor运行`AppServerRunner → DynamicBridge → MCPClient`；app UID只收到dynamic catalog且只能访问单一exact llmproxy tuple。worker IPv4只可达harness-pool fixture与executor MCP，app对MCP/worker endpoint/direct/redirect全部零命中；两个UID对DNS-shaped UDP和IPv6也零命中，root sensitivity control证明sink存活。不同UID、空supplementary groups、capability seal、`/proc`/signal、只读root/tmpfs、mount缺失、non-`CLOEXEC` trap与`close_range`证据仍同时成立。受信init仅在child退出后用不下放的`DAC_READ_SEARCH`扫描app-owned rollout；child env/config/FD、stderr、model request和全部scenario rollout均无executor bearer。锁定Codex SHA-256为`cb5e8cb8a333a408ce6adbe0d4fad1845c69772c2216af7c1f88c98a11460dc6`、size为`269098800`。因此修订A12对该exact artifact/platform关闭；`linux-amd64`与真实Kubernetes网络部署仍是独立门禁。
 
-该结果同时关闭修订后的network/secret profile与原OS隔离子结论，但只绑定上述exact `linux-arm64` artifact；`linux-amd64`仍需在native worker运行同一target。in-image nftables证明不外推为真实Kubernetes NetworkPolicy、Service/ClusterIP固定或部署权限已经正确。只有config级负向结果、401/403或sink返回错误都不算部署网络隔离证明。
+该结果关闭的是 worker→app-server 的network/secret/FD 子边界，只绑定上述exact `linux-arm64` artifact；`linux-amd64`仍需在native worker运行同一target。它没有覆盖新的 pool→worker 本地 bootstrap pipe、pool credential 权限、多 attempt 并发或整个进程组回收，这些必须在 pool 部署镜像上追加独立 gate。in-image nftables证明也不外推为真实Kubernetes NetworkPolicy、Service/ClusterIP固定或部署权限已经正确。只有config级负向结果、401/403或sink返回错误都不算部署网络隔离证明。
 
 worker 不持有对象存储 credential。它通过与 harness-pool 的同一 mTLS 连接内、有界的 checkpoint data substream 分块发送 manifest 和 staging 内容；harness-pool 施加大小/速率限制、复算逐块与整对象 hash 后上传，再请求 core 提交。上传或提交失败时对象不得成为可恢复 checkpoint，未引用对象按 retention job 清理。
 
@@ -357,15 +360,13 @@ mid-turn crash 时只允许恢复上一个已由 core提交指针的 completed-t
 
 `brain_thread_id` 是优化和追踪标识，不是 session 的权威主键。native `thread/resume` 只适用于相同 pinned schema 的完整 checkpoint；不兼容时可从受保护的模型可见 conversation record 创建新 thread，但这是语义降级，必须生成审计事件，不能声称与原生 resume 等价。
 
-### 7.4 Warm pool
+### 7.4 启动延迟与容量
 
-Phase 1 优先使用镜像预拉取、节点运行时缓存和预建只读层降低冷启动，不做跨租户 Codex 进程池。
+Phase 1 不在 run 热路径创建 Kubernetes Job、Pod、Secret 或 NetworkPolicy。harness-pool 保持至少一个常驻副本，接到已 claim 的 attempt 后只执行本地目录初始化、`fork/exec harness-worker` 和 `fork/exec stock app-server`。启动 SLO 分开记录 `claim→worker exec`、`worker exec→control ready`、`control ready→turn accepted` 三段，不用首个模型 token 掩盖 launcher 延迟。
 
-若后续引入 warm workload：
+harness-pool 可根据 queued attempts、活跃进程数和 CPU/内存扩容，但 `minReplicas` 不为 0。常态容量内的 run 不等待 HPA；突发超过本地并发槽位时留在 durable queue，不在已 claim 后无界等待子进程容量。
 
-- 只能是在目标 workspace namespace 内创建、干净、未分配且未启动 Codex thread 的 sandbox；不能跨 workspace 转手；
-- 分配后绑定一个 workspace/run，回收前彻底销毁；
-- 不能复用前一租户的进程、临时目录、网络身份或 capability。
+常驻的是 pool/launcher，不是 Codex thread。worker 和 app-server 仍然每 attempt 新建并在结束后销毁；禁止把已运行过 turn 的 worker、app-server、`CODEX_HOME`、网络 capability 或可变配置放回池中复用。
 
 ## 8. Executor 设计
 
@@ -752,7 +753,7 @@ v2/
 ├─ api/
 │  ├─ openapi/                   # REST
 │  ├─ asyncapi/                  # SSE/WSS；含 harness-control.yaml 与 agentx-wss.yaml
-│  └─ schema/                    # closed-world JSON Schema；含 harness-control.schema.json
+│  └─ schema/                    # closed-world JSON Schema；含 harness-control/bootstrap schema
 ├─ a2ui-web/
 ├─ deploy/helm/
 ├─ images/harness/               # harness-worker + pinned stock Codex app-server
@@ -807,7 +808,7 @@ agentx 的实现不放入上述 Go module。`github.com/agentserver/agentx` v2 �
 | D6 | Phase 1 只做 remote/BYO executor | managed sandbox 生命周期和存储尚未完整设计 |
 | D7 | 用户 token 不沿内部链透传 | 降低 bearer 泄漏与 confused-deputy 风险 |
 | D8 | 不自动重放结果不明的副作用 | 网络重试不能保证进程/fs 操作恰好一次 |
-| D9 | Phase 1 warmup 采用镜像/运行时缓存 | 避免跨租户复用 Codex 进程和临时状态 |
+| D9 | Phase 1 harness 采用常驻 pool + per-attempt 本地 fork/exec，run 热路径不创建 Kubernetes workload | harness 本地不执行任意用户代码；以小的共享 Pod 故障域换取稳定的毫秒级 launcher 延迟，同时仍不复用 Codex 进程和临时状态 |
 | D10 | execution 在副作用 dispatch 前持久化，`dispatching` 是不可回退边界 | gateway/transport crash 后才能诚实区分未发送、已确认与 unknown，兑现不重放承诺 |
 | D11 | native checkpoint 只在 completed turn 提交，UI/审计事件与模型可见历史分离 | 过滤展示内容不能破坏 app-server thread 恢复语义，mid-turn 不能伪恢复 |
 | D12 | Phase 1只有executor-gateway向worker暴露工具，不允许app-server或worker直连第三方MCP | 第三方annotation不是可信授权事实；未来必须先进入内部policy proxy再走同一dynamic bridge |
@@ -842,7 +843,7 @@ agentx 的实现不放入上述 Go module。`github.com/agentserver/agentx` v2 �
 - 允许直连第三方 MCP，同时又宣称所有副作用都经过统一审批；
 - 把已脱敏 UI 事件、选择性 rollout 和原生 thread resume 混为一谈；
 - capability 续期、外部 endpoint egress 和浏览器 SSE bearer 传输缺少可执行机制；
-- warm pool 的 controller、pod、process 和租户隔离层次冲突；
+- harness 以 per-run Job 获得了不符合当前威胁模型的高启动成本；现改为诚实的共享 pool Pod + per-attempt 进程边界，不再声称 per-run Pod 隔离；
 - app-server、executor RPC 和 AG-UI 之间缺少规范事件层。
 
 PR 11已把executor contract部分落成机器事实源：`agentx-envelope.schema.json`、`agentx-wss.yaml`、`executor-mcp.schema.json`、稳定`process-v1` profile，以及补充JSON Schema无法表达之方向、sequence/ACK、generation/resume、bounded journal和mutation幂等语义的Go reference kernel。
@@ -855,6 +856,7 @@ PR 12已把gateway/core连接和首个executor shell纵向切片变成可运行�
 
 - [ ] 固定Codex版本与Codex/外部executable digest，完成stock exec-server stdio启动/RPC fixture、outer capability排除`process/signal`、每process独占instance、正常关闭与root/descendant异常时无旁路process-tree回收、agentx代理兼容测试（reference adapter已在exact stable macOS arm64通过；真实agentx兼容和目标平台containment仍待完成）。
 - [ ] 完成harness-worker → stock app-server stdio conformance：initialize、thread start/resume、冻结`dynamicTools`、`item/tool/call` response/interrupt cleanup、terminal event、child crash和control-stream fence。
+- [ ] 验证本地 process launcher：签名 manifest/control capability 只经 inherited pipe 传递且不进入 argv/env/临时磁盘；worker/app UID 不可读 pool credential；正常退出、startup failure、cancel、lease loss、holder crash 都回收完整进程组；并发 attempt 的目录、FD、capability 不串扰，并量化共享 Pod OOM/崩溃的故障域。
 - [x] 验证app-server child无内建工具/Codex MCP、整个mount view无工作树；worker credential/MCP bearer/FD不可见且non-`CLOEXEC` sentinel也被final-exec close-all；worker UID只访问pool+executor MCP，child UID只访问llmproxy，direct/redirect/MCP sink均为零child请求（exact stable 0.146.0 `linux-arm64`；其他平台与真实Kubernetes部署另验）。
 - [ ] 完成 completed-turn checkpoint 原生 round-trip、hash/schema 校验、对象原子提交和 mid-turn crash 不恢复原 turn 测试；模型可见 tool result 与脱敏 UI 事件分别验证。
 - [ ] 完成 session lease、run-attempt lease/generation、producer idempotency、cursor-expired snapshot 和大 payload 临时对象/孤儿清理原型。

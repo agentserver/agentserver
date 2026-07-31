@@ -34,6 +34,15 @@ type AppServerRunnerOptions struct {
 	MaxEventBytes      int
 	InterruptGrace     time.Duration
 	MaxPromptTextBytes int
+	LifecycleSink      AppServerLifecycleSink
+}
+
+// AppServerLifecycleSink synchronously crosses the holder/core authority
+// boundaries after stock app-server establishes a thread and accepts a turn.
+// WorkerControlClient implements this interface.
+type AppServerLifecycleSink interface {
+	SendThreadReady(context.Context, string, bool) error
+	SendTurnAccepted(context.Context, string, string) error
 }
 
 func DefaultAppServerRunnerOptions() AppServerRunnerOptions {
@@ -390,6 +399,11 @@ func (r *AppServerRunner) Run(ctx context.Context, request AppServerRunRequest) 
 			return AppServerRunResult{}, err
 		}
 	}
+	if r.options.LifecycleSink != nil {
+		if err := r.options.LifecycleSink.SendThreadReady(ctx, state.threadID, state.resumed); err != nil {
+			return AppServerRunResult{}, fmt.Errorf("commit app-server thread lifecycle: %w", err)
+		}
+	}
 
 	turnParams := appServerTurnStartParams{
 		ThreadID:     state.threadID,
@@ -423,6 +437,14 @@ func (r *AppServerRunner) Run(ctx context.Context, request AppServerRunRequest) 
 	}
 	result.Turn = turnResult.Turn
 	state.turnID = turnResult.Turn.ID
+	if r.options.LifecycleSink != nil {
+		if lifecycleErr := r.options.LifecycleSink.SendTurnAccepted(ctx, state.threadID, state.turnID); lifecycleErr != nil {
+			cancellation = errors.Join(
+				cancellation,
+				fmt.Errorf("commit app-server turn acceptance: %w", lifecycleErr),
+			)
+		}
+	}
 
 	terminal, runErr := state.runTurn(ctx, cancellation)
 	result.Terminal = terminal

@@ -488,7 +488,14 @@ func (runtime *attemptControlRuntime) handshake(ctx context.Context, connection 
 		return false, controlResumeReplay{}, 0, controlProtocolError(harnesscontrol.ErrorSessionClosed, "attempt control registration is closed")
 	}
 	if runtime.connection != nil {
-		return false, controlResumeReplay{}, 0, controlProtocolError(harnesscontrol.ErrorResumeRejected, "attempt already has an active control connection")
+		// The peer can observe socket failure just before this handler's old
+		// ServeHTTP goroutine runs its detach. Reject that overlap as retryable
+		// within the original resume deadline; it is not an authority failure.
+		return false, controlResumeReplay{}, 0, &harnesscontrol.ProtocolError{
+			Code:     harnesscontrol.ErrorResumeRejected,
+			Message:  "attempt still has the previous control connection attached",
+			Terminal: false,
+		}
 	}
 	if err := runtime.matchExpectedHello(hello); err != nil {
 		return false, controlResumeReplay{}, 0, err
@@ -572,7 +579,7 @@ func (server *ControlServer) runConnection(ctx context.Context, runtime *attempt
 		}
 		terminal, err := server.handleMessage(ctx, runtime, connection, raw)
 		if err != nil || terminal {
-			return true, err
+			return terminal, err
 		}
 	}
 }
@@ -580,42 +587,48 @@ func (server *ControlServer) runConnection(ctx context.Context, runtime *attempt
 func (server *ControlServer) handleMessage(ctx context.Context, runtime *attemptControlRuntime, connection *controlConnection, raw []byte) (bool, error) {
 	message, err := harnesscontrol.Decode(raw, server.config.WireLimits)
 	if err != nil {
-		return false, err
+		return true, err
 	}
 	switch {
 	case message.Ack != nil:
-		return false, runtime.session.ReceiveAck(*message.Ack)
+		if err := runtime.session.ReceiveAck(*message.Ack); err != nil {
+			return true, err
+		}
+		return false, nil
 	case message.Frame != nil:
 		runtime.ackBarrier.Lock()
 		defer runtime.ackBarrier.Unlock()
 		received, err := runtime.session.Receive(*message.Frame)
 		if err != nil {
-			return false, err
+			return true, err
 		}
 		if received.Deliver {
 			event, err := harnesscontrol.DecodeEventPayload(message.Frame.Payload, server.config.WireLimits)
 			if err != nil {
-				return false, err
+				return true, err
 			}
 			if err := runtime.processEvent(event); err != nil {
-				return false, err
+				return true, err
 			}
 		}
 		ack, err := runtime.session.AckFrame()
 		if err != nil {
-			return false, err
+			return true, err
 		}
 		if err := connection.write(ctx, server.config.WriteTimeout, server.config.WireLimits, ack); err != nil {
+			// The event and its synchronous authority boundary may already be
+			// committed. Treat only the ACK write as ambiguous transport loss;
+			// the peer will reconcile the cumulative cursor on resume.
 			return false, err
 		}
 		return runtime.terminalReceived(), nil
 	case message.SessionError != nil:
-		return false, &harnesscontrol.ProtocolError{
+		return true, &harnesscontrol.ProtocolError{
 			Code: message.SessionError.Code, Message: "harness worker terminated the control session",
 			Terminal: true, LostFrom: message.SessionError.LostFrom, LostTo: message.SessionError.LostTo,
 		}
 	default:
-		return false, controlProtocolError(harnesscontrol.ErrorMalformedFrame, "hello or welcome is invalid after handshake")
+		return true, controlProtocolError(harnesscontrol.ErrorMalformedFrame, "hello or welcome is invalid after handshake")
 	}
 }
 
@@ -722,7 +735,7 @@ func (runtime *attemptControlRuntime) detach(epoch uint64, now time.Time) {
 	}
 	runtime.connection = nil
 	runtime.connectionReady = false
-	if runtime.closed || runtime.session == nil || runtime.outcome.terminal != nil {
+	if runtime.closed || runtime.session == nil {
 		runtime.mu.Unlock()
 		return
 	}

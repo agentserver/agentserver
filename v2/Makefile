@@ -37,6 +37,7 @@ contract-check:
 	$(GO) test ./internal/execprofile ./internal/executorgateway/... -run 'Contract|Schema|Profile' -count=1
 	$(GO) test ./internal/harnesscontrol -run 'Contract|Schema|AsyncAPI' -count=1
 	$(GO) test ./internal/harnessbootstrap -run 'Contract|Schema|Protocol' -count=1
+	$(GO) test ./internal/runevent -run 'Contract|Schema|AsyncAPI' -count=1
 
 conformance:
 	$(GO) test ./conformance/codex/... -count=1

@@ -218,7 +218,7 @@ stock app-server 访问 llmproxy 所需的短期 capability 优先通过 tmpfs/�
 ### 6.1 创建并运行对话
 
 1. a2ui-web 调 core 创建或选择 `session_id`。
-2. 用户向 `POST /api/workspaces/{workspace_id}/agui` 提交 prompt，可带已有 `session_id` 和客户端生成的 `Idempotency-Key`。
+2. 用户向 `POST /v2/workspaces/{workspaceId}/sessions/{sessionId}/agui` 提交 AG-UI `RunAgentInput` 和客户端生成的 `Idempotency-Key`；`threadId`必须为空或等于path中的`sessionId`，客户端不得声明tools。
 3. browser-gateway 将用户 token、目标 action、幂等键和规范化请求 hash 交给 core；core 完成鉴权，并在同一事务中写入 `run_id`、第一条规范事件和 durable outbox。同一 user/workspace/session 下重复的幂等键只有在请求 hash 相同时才返回原 `run_id`，不同 payload 必须报冲突。
 4. browser-gateway 将第一条事件立即映射为 `RUN_STARTED`，之后按 event cursor 订阅该 run。
 5. harness-pool领取queued run，并以CAS获取`session_lease`，同时创建新的`run_attempt_id/run_attempt_generation`与对应lease。core为将创建的新brain thread从版本化executor MCP contract与当前policy计算允许子集，先保存未绑定thread id的canonical catalog/digest；`thread/start`成功后再以CAS绑定返回的`brain_thread_id`。已有checkpoint必须沿用原digest。catalog决定模型可见schema，但不是永久授权：gateway每次调用仍检查live RBAC/capability。session lease保证任何时刻一个session最多一个active run，attempt lease fence旧worker。

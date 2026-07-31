@@ -1,0 +1,101 @@
+{
+  "asyncapi": "3.0.0",
+  "id": "urn:agentserver:v2:canonical-run-events",
+  "info": {
+    "title": "agentserver v2 canonical run event cursor and browser projection",
+    "version": "1.0.0",
+    "description": "Core owns the append-only canonical ledger and run sequence. browser-gateway long-polls committed facts and projects them to AG-UI SSE with display-only A2UI v0.9 operations."
+  },
+  "defaultContentType": "application/json",
+  "servers": {
+    "coreCursor": {
+      "host": "agentserver-core",
+      "pathname": "/v2/workspaces/{workspaceId}/runs/{runId}/events",
+      "protocol": "https",
+      "description": "Authorized, cursor-based read of already committed canonical events. browser-gateway uses workload identity plus the user actor context; it never reads PostgreSQL directly."
+    },
+    "browserGateway": {
+      "host": "browser-gateway",
+      "pathname": "/v2/workspaces/{workspaceId}/sessions/{sessionId}/agui",
+      "protocol": "https",
+      "description": "User-facing AG-UI POST returning text/event-stream. Authorization bearer and Idempotency-Key are mandatory."
+    }
+  },
+  "channels": {
+    "canonicalRunCursor": {
+      "address": "/v2/workspaces/{workspaceId}/runs/{runId}/events",
+      "messages": {
+        "canonicalRunEvent": {"$ref": "#/components/messages/CanonicalRunEvent"}
+      },
+      "bindings": {
+        "http": {"method": "GET"}
+      }
+    },
+    "aguiRun": {
+      "address": "/v2/workspaces/{workspaceId}/sessions/{sessionId}/agui",
+      "messages": {
+        "projectedAGUIEvent": {"$ref": "#/components/messages/ProjectedAGUIEvent"}
+      },
+      "bindings": {
+        "http": {"method": "POST"}
+      }
+    }
+  },
+  "operations": {
+    "readCommittedCanonicalEvents": {
+      "action": "receive",
+      "channel": {"$ref": "#/channels/canonicalRunCursor"},
+      "summary": "Read committed events after an opaque cursor; cursor expiry returns an authorized snapshot and lifecycle-boundary rebase cursor.",
+      "messages": [{"$ref": "#/channels/canonicalRunCursor/messages/canonicalRunEvent"}]
+    },
+    "streamProjectedAGUIEvents": {
+      "action": "send",
+      "channel": {"$ref": "#/channels/aguiRun"},
+      "summary": "Stream RUN_STARTED followed by committed canonical projections. A browser transport disconnect does not cancel the run.",
+      "messages": [{"$ref": "#/channels/aguiRun/messages/projectedAGUIEvent"}]
+    }
+  },
+  "components": {
+    "messages": {
+      "CanonicalRunEvent": {
+        "name": "canonical_run_event",
+        "title": "One core-committed canonical run fact",
+        "payload": {"$ref": "../schema/canonical-run-event.schema.json"}
+      },
+      "ProjectedAGUIEvent": {
+        "name": "projected_agui_event",
+        "title": "AG-UI SDK event serialized in one SSE data frame",
+        "payload": {
+          "type": "object",
+          "description": "Validated against the pinned AG-UI community Go SDK. CUSTOM name a2ui.operations carries an ordered A2UI v0.9 operation array."
+        }
+      }
+    },
+    "securitySchemes": {
+      "userOAuth": {
+        "type": "oauth2",
+        "description": "Hydra access token with aud=agentserver-api; current workspace membership is rechecked by core.",
+        "flows": {
+          "authorizationCode": {
+            "authorizationUrl": "/oauth2/auth",
+            "tokenUrl": "/oauth2/token",
+            "availableScopes": {"runs:write": "Create runs and read their authorized event projections"}
+          }
+        }
+      }
+    }
+  },
+  "x-agentserver-projection": {
+    "canonicalAuthority": "agentserver-core",
+    "gatewayOwnsRunState": false,
+    "gatewayReadsPostgreSQL": false,
+    "browserDisconnectCancelsRun": false,
+    "runStartedSource": "CreateRun response",
+    "onlyRunCompletedMapsToRunFinished": true,
+    "unknownFutureKinds": "skip after envelope and sequence validation",
+    "knownKindUnknownVersion": "fail closed",
+    "cursorExpired": "STATE_SNAPSHOT then lifecycle-boundary rebase",
+    "a2uiVersion": "v0.9",
+    "a2uiCarrier": "CUSTOM{name:a2ui.operations,value:[operations]}"
+  }
+}

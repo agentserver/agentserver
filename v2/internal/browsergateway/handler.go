@@ -1,0 +1,450 @@
+package browsergateway
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"regexp"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/events"
+	aguitypes "github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/types"
+	"github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/encoding/sse"
+	"github.com/agentserver/agentserver/v2/internal/braincatalog"
+)
+
+const (
+	AGUIRoutePattern       = "POST /v2/workspaces/{workspaceId}/sessions/{sessionId}/agui"
+	defaultMaxRequestBytes = int64(1024 * 1024)
+	defaultPollLimit       = 128
+	defaultLongPollWait    = 15 * time.Second
+	maxPromptBytes         = 256 * 1024
+)
+
+var canonicalUUIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+type HandlerConfig struct {
+	MaxRequestBytes int64
+	PollLimit       int
+	LongPollWait    time.Duration
+	Now             func() time.Time
+	Logger          *slog.Logger
+}
+
+func DefaultHandlerConfig() HandlerConfig {
+	return HandlerConfig{
+		MaxRequestBytes: defaultMaxRequestBytes,
+		PollLimit:       defaultPollLimit,
+		LongPollWait:    defaultLongPollWait,
+		Now:             time.Now,
+		Logger:          slog.Default(),
+	}
+}
+
+type AGUIHandler struct {
+	backend RunBackend
+	config  HandlerConfig
+	writer  *sse.SSEWriter
+}
+
+func NewAGUIHandler(backend RunBackend, config HandlerConfig) (*AGUIHandler, error) {
+	if backend == nil {
+		return nil, errors.New("run backend is required")
+	}
+	if config.MaxRequestBytes <= 0 || config.MaxRequestBytes > 16*1024*1024 {
+		return nil, errors.New("maximum AG-UI request bytes must be positive and at most 16 MiB")
+	}
+	if config.PollLimit < 1 || config.PollLimit > 1024 {
+		return nil, errors.New("event poll limit must be between 1 and 1024")
+	}
+	if config.LongPollWait <= 0 || config.LongPollWait > time.Minute {
+		return nil, errors.New("long-poll wait must be positive and at most one minute")
+	}
+	if config.Now == nil {
+		return nil, errors.New("clock is required")
+	}
+	if config.Logger == nil {
+		return nil, errors.New("logger is required")
+	}
+	return &AGUIHandler{
+		backend: backend,
+		config:  config,
+		writer:  sse.NewSSEWriter().WithLogger(config.Logger),
+	}, nil
+}
+
+func (handler *AGUIHandler) Routes() http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle(AGUIRoutePattern, handler)
+	return mux
+}
+
+func (handler *AGUIHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
+	if _, ok := response.(http.Flusher); !ok {
+		writeHTTPError(response, http.StatusInternalServerError, "streaming_unsupported", "HTTP response does not support streaming")
+		return
+	}
+	workspaceID := request.PathValue("workspaceId")
+	sessionID := request.PathValue("sessionId")
+	if err := validateCanonicalUUID("workspaceId", workspaceID); err != nil {
+		writeHTTPError(response, http.StatusBadRequest, "invalid_scope", err.Error())
+		return
+	}
+	if err := validateCanonicalUUID("sessionId", sessionID); err != nil {
+		writeHTTPError(response, http.StatusBadRequest, "invalid_scope", err.Error())
+		return
+	}
+	bearer, err := extractBearer(request.Header)
+	if err != nil {
+		response.Header().Set("WWW-Authenticate", `Bearer realm="agentserver-api"`)
+		writeHTTPError(response, http.StatusUnauthorized, "unauthorized", "a single bearer token is required")
+		return
+	}
+	idempotencyKey, err := extractIdempotencyKey(request.Header)
+	if err != nil {
+		writeHTTPError(response, http.StatusBadRequest, "invalid_idempotency_key", err.Error())
+		return
+	}
+	input, err := decodeRunAgentInput(response, request, handler.config.MaxRequestBytes)
+	if err != nil {
+		writeHTTPError(response, http.StatusBadRequest, "invalid_agui_input", err.Error())
+		return
+	}
+	prompt, err := validateRunAgentInput(input, sessionID)
+	if err != nil {
+		writeHTTPError(response, http.StatusBadRequest, "invalid_agui_input", err.Error())
+		return
+	}
+
+	started, err := handler.backend.StartRun(request.Context(), StartRunRequest{
+		BearerToken:    bearer,
+		WorkspaceID:    workspaceID,
+		SessionID:      sessionID,
+		IdempotencyKey: idempotencyKey,
+		ClientRunID:    input.RunID,
+		Prompt:         prompt,
+	})
+	if err != nil {
+		handler.writeStartError(response, err)
+		return
+	}
+	if err := validateStartResult(started, workspaceID, sessionID); err != nil {
+		handler.config.Logger.ErrorContext(request.Context(), "browser-gateway received invalid StartRun result", "error", err)
+		writeHTTPError(response, http.StatusBadGateway, "backend_contract_error", "run backend returned an invalid result")
+		return
+	}
+	projector, err := NewProjector(ProjectionScope{
+		WorkspaceID: workspaceID,
+		SessionID:   sessionID,
+		RunID:       started.RunID,
+	}, started.LastEventSequence)
+	if err != nil {
+		handler.config.Logger.ErrorContext(request.Context(), "browser-gateway could not initialize projector", "error", err)
+		writeHTTPError(response, http.StatusBadGateway, "backend_contract_error", "run backend returned an invalid projection cursor")
+		return
+	}
+
+	response.Header().Set("Content-Type", "text/event-stream")
+	response.Header().Set("Cache-Control", "no-cache, no-transform")
+	response.Header().Set("X-Accel-Buffering", "no")
+	response.WriteHeader(http.StatusOK)
+
+	runStarted := events.NewRunStartedEvent(sessionID, started.RunID)
+	runStarted.SetTimestamp(started.CreatedAt.UnixMilli())
+	if err := handler.writer.WriteEvent(request.Context(), response, runStarted); err != nil {
+		return
+	}
+	handler.streamCommittedEvents(request.Context(), response, bearer, started, projector)
+}
+
+func (handler *AGUIHandler) streamCommittedEvents(ctx context.Context, response http.ResponseWriter, bearer string, started StartRunResult, projector *Projector) {
+	cursor := started.Cursor
+	for {
+		pollContext, cancel := context.WithTimeout(ctx, handler.config.LongPollWait)
+		batch, err := handler.backend.ReadRunEvents(pollContext, ReadRunEventsRequest{
+			BearerToken: bearer,
+			WorkspaceID: started.WorkspaceID,
+			SessionID:   started.SessionID,
+			RunID:       started.RunID,
+			After:       cursor,
+			Limit:       handler.config.PollLimit,
+			Wait:        handler.config.LongPollWait,
+		})
+		cancel()
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				if writeHeartbeat(response) != nil {
+					return
+				}
+				continue
+			}
+			var expired *CursorExpiredError
+			if errors.As(err, &expired) {
+				if err := handler.rebase(ctx, response, projector, expired); err != nil {
+					handler.writeStreamError(ctx, response, started.RunID, "invalid_cursor_rebase", err)
+					return
+				}
+				cursor = expired.RebaseCursor
+				continue
+			}
+			handler.writeStreamError(ctx, response, started.RunID, "event_stream_unavailable", err)
+			return
+		}
+		if err := validateEventBatch(batch, cursor, handler.config.PollLimit); err != nil {
+			handler.writeStreamError(ctx, response, started.RunID, "invalid_event_batch", err)
+			return
+		}
+		for _, canonical := range batch.Events {
+			projection, err := projector.Project(canonical)
+			if err != nil {
+				handler.writeStreamError(ctx, response, started.RunID, "invalid_run_event_stream", err)
+				return
+			}
+			for _, projected := range projection.Events {
+				if err := handler.writer.WriteEvent(ctx, response, projected); err != nil {
+					return
+				}
+			}
+			if projection.Terminal {
+				return
+			}
+		}
+		cursor = batch.NextCursor
+		if len(batch.Events) == 0 {
+			if writeHeartbeat(response) != nil {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(25 * time.Millisecond):
+			}
+		}
+	}
+}
+
+func (handler *AGUIHandler) rebase(ctx context.Context, response http.ResponseWriter, projector *Projector, expired *CursorExpiredError) error {
+	if expired == nil || expired.Snapshot == nil {
+		return errors.New("cursor rebase snapshot is required")
+	}
+	if err := validateCursor("rebase cursor", expired.RebaseCursor); err != nil {
+		return err
+	}
+	if err := projector.Rebase(expired.LastEventSequence); err != nil {
+		return err
+	}
+	snapshot := events.NewStateSnapshotEvent(expired.Snapshot)
+	snapshot.SetTimestamp(handler.config.Now().UnixMilli())
+	return handler.writer.WriteEvent(ctx, response, snapshot)
+}
+
+func (handler *AGUIHandler) writeStartError(response http.ResponseWriter, err error) {
+	var public *BackendHTTPError
+	if errors.As(err, &public) && public.Status >= 400 && public.Status <= 599 && public.Code != "" && public.Message != "" {
+		writeHTTPError(response, public.Status, public.Code, public.Message)
+		return
+	}
+	handler.config.Logger.Error("browser-gateway StartRun failed", "error", err)
+	writeHTTPError(response, http.StatusBadGateway, "run_backend_unavailable", "run backend is unavailable")
+}
+
+func (handler *AGUIHandler) writeStreamError(ctx context.Context, response http.ResponseWriter, runID, code string, cause error) {
+	handler.config.Logger.ErrorContext(ctx, "browser-gateway stopped an AG-UI projection", "code", code, "run_id", runID, "error", cause)
+	event := events.NewRunErrorEvent("run event projection stopped", events.WithErrorCode(code), events.WithRunID(runID))
+	event.SetTimestamp(handler.config.Now().UnixMilli())
+	_ = handler.writer.WriteEvent(ctx, response, event)
+}
+
+func decodeRunAgentInput(response http.ResponseWriter, request *http.Request, maximumBytes int64) (aguitypes.RunAgentInput, error) {
+	request.Body = http.MaxBytesReader(response, request.Body, maximumBytes)
+	raw, err := io.ReadAll(request.Body)
+	if err != nil {
+		return aguitypes.RunAgentInput{}, fmt.Errorf("read AG-UI input: %w", err)
+	}
+	limits := braincatalog.DefaultLimits()
+	limits.MaxJSONValues = 32 * 1024
+	limits.MaxJSONDepth = 64
+	value, _, err := braincatalog.DecodeCanonicalJSON(raw, int(maximumBytes), limits)
+	if err != nil {
+		return aguitypes.RunAgentInput{}, err
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return aguitypes.RunAgentInput{}, errors.New("AG-UI input must be a JSON object")
+	}
+	if err := validateRunAgentInputKeys(object); err != nil {
+		return aguitypes.RunAgentInput{}, err
+	}
+	var input aguitypes.RunAgentInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return aguitypes.RunAgentInput{}, fmt.Errorf("decode RunAgentInput: %w", err)
+	}
+	return input, nil
+}
+
+func validateRunAgentInputKeys(object map[string]any) error {
+	aliases := [][]string{
+		{"threadId", "thread_id"},
+		{"runId", "run_id"},
+		{"parentRunId", "parent_run_id"},
+		{"state"}, {"messages"}, {"tools"}, {"context"},
+		{"forwardedProps", "forwarded_props"},
+		{"resume"},
+	}
+	allowed := make(map[string]struct{})
+	for _, group := range aliases {
+		present := 0
+		for _, key := range group {
+			allowed[key] = struct{}{}
+			if _, exists := object[key]; exists {
+				present++
+			}
+		}
+		if present > 1 {
+			return fmt.Errorf("AG-UI aliases %q must not be supplied together", group)
+		}
+	}
+	for key := range object {
+		if _, exists := allowed[key]; !exists {
+			return fmt.Errorf("unknown RunAgentInput field %q", key)
+		}
+	}
+	return nil
+}
+
+func validateRunAgentInput(input aguitypes.RunAgentInput, sessionID string) (string, error) {
+	if input.ThreadID != "" && input.ThreadID != sessionID {
+		return "", errors.New("threadId must be empty or match the sessionId path")
+	}
+	if input.ParentRunID != nil {
+		return "", errors.New("parentRunId is not supported by this endpoint")
+	}
+	if len(input.Tools) != 0 {
+		return "", errors.New("client-declared tools are forbidden; the server freezes the tool catalog")
+	}
+	if len(input.Context) != 0 {
+		return "", errors.New("client-declared agent context is not supported")
+	}
+	if len(input.Resume) != 0 {
+		return "", errors.New("AG-UI interrupt resume is not implemented in this phase")
+	}
+	if len(input.Messages) == 0 {
+		return "", errors.New("messages must contain a final user message")
+	}
+	message := input.Messages[len(input.Messages)-1]
+	if message.Role != aguitypes.RoleUser {
+		return "", errors.New("the final message must have role user")
+	}
+	prompt, ok := message.ContentString()
+	if !ok {
+		return "", errors.New("the final user message must contain text in this phase")
+	}
+	if !utf8.ValidString(prompt) || strings.ContainsRune(prompt, '\x00') || prompt == "" || len(prompt) > maxPromptBytes {
+		return "", fmt.Errorf("user prompt must contain between 1 and %d bytes of UTF-8 text without NUL", maxPromptBytes)
+	}
+	if input.RunID != "" && (len(input.RunID) > 256 || strings.ContainsAny(input.RunID, "\x00\r\n")) {
+		return "", errors.New("client runId must be bounded text without NUL or line breaks")
+	}
+	return prompt, nil
+}
+
+func extractBearer(header http.Header) (string, error) {
+	values := header.Values("Authorization")
+	if len(values) != 1 || strings.Contains(values[0], ",") || !strings.HasPrefix(values[0], "Bearer ") {
+		return "", errors.New("invalid authorization header")
+	}
+	token := strings.TrimPrefix(values[0], "Bearer ")
+	if token == "" || len(token) > 8192 || strings.ContainsAny(token, " \t\r\n\x00") {
+		return "", errors.New("invalid bearer token")
+	}
+	return token, nil
+}
+
+func extractIdempotencyKey(header http.Header) (string, error) {
+	values := header.Values("Idempotency-Key")
+	if len(values) != 1 {
+		return "", errors.New("a single Idempotency-Key header is required")
+	}
+	value := values[0]
+	if len(value) == 0 || len(value) > 256 {
+		return "", errors.New("Idempotency-Key must contain between 1 and 256 bytes")
+	}
+	for _, character := range []byte(value) {
+		if character < 0x21 || character > 0x7e {
+			return "", errors.New("Idempotency-Key must contain visible ASCII without spaces")
+		}
+	}
+	return value, nil
+}
+
+func validateStartResult(result StartRunResult, workspaceID, sessionID string) error {
+	if result.WorkspaceID != workspaceID || result.SessionID != sessionID {
+		return errors.New("StartRun result escaped request scope")
+	}
+	if err := validateCanonicalUUID("runId", result.RunID); err != nil {
+		return err
+	}
+	if result.CreatedAt.IsZero() {
+		return errors.New("StartRun createdAt is required")
+	}
+	if result.LastEventSequence < 0 || result.LastEventSequence >= 1<<53-1 {
+		return errors.New("StartRun last event sequence is outside the JSON-safe range")
+	}
+	return validateCursor("StartRun cursor", result.Cursor)
+}
+
+func validateEventBatch(batch ReadRunEventsResult, previousCursor string, maximumEvents int) error {
+	if len(batch.Events) > maximumEvents {
+		return fmt.Errorf("event backend returned %d events, limit is %d", len(batch.Events), maximumEvents)
+	}
+	if err := validateCursor("next cursor", batch.NextCursor); err != nil {
+		return err
+	}
+	if len(batch.Events) != 0 && batch.NextCursor == previousCursor {
+		return errors.New("event cursor did not advance with a non-empty batch")
+	}
+	return nil
+}
+
+func validateCursor(label, cursor string) error {
+	if cursor == "" || len(cursor) > 4096 || strings.ContainsAny(cursor, "\x00\r\n") {
+		return fmt.Errorf("%s must be bounded opaque text without NUL or line breaks", label)
+	}
+	return nil
+}
+
+func validateCanonicalUUID(label, value string) error {
+	if value == "00000000-0000-0000-0000-000000000000" || !canonicalUUIDPattern.MatchString(value) {
+		return fmt.Errorf("%s must be a non-zero canonical lowercase UUID", label)
+	}
+	return nil
+}
+
+func writeHeartbeat(response http.ResponseWriter) error {
+	if _, err := io.WriteString(response, ": heartbeat\n\n"); err != nil {
+		return err
+	}
+	if flusher, ok := response.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	return nil
+}
+
+func writeHTTPError(response http.ResponseWriter, status int, code, message string) {
+	response.Header().Set("Content-Type", "application/json")
+	response.Header().Set("Cache-Control", "no-store")
+	response.WriteHeader(status)
+	_ = json.NewEncoder(response).Encode(struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}{Code: code, Message: message})
+}

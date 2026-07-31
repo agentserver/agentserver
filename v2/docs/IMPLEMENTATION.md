@@ -13,9 +13,10 @@ v2 不适合按组件横向铺开后再联调。正确顺序是先验证最可�
 1. 建立 Codex conformance lab，锁定 stock release、wire schema、dynamic-tool-only、typed callback cleanup 和 checkpoint。
 2. 实现 core 的 run、attempt、lease、event、execution operation 和 outbox 状态内核。
 3. 先打通无模型的 executor 垂直切片：executor MCP → gateway → WSS → agentx → stock exec-server stdio。
-4. 再打通 harness 垂直切片：harness-pool → per-run worker（dynamicTools/MCP bridge）→ stock app-server stdio，并由worker调用executor MCP。
-5. 最后接 browser-gateway、AG-UI/A2UI、Hydra 与完整审批。
-6. 用故障注入、安全隔离测试和 Kubernetes 部署门槛完成收口。
+4. 建立 harness 垂直切片的权威控制边界：harness-pool → per-run worker（dynamicTools/MCP bridge）→ stock app-server stdio，并由worker调用executor MCP。
+5. 在 app-server production child装配完成前，先前置 browser-gateway 的协议切片：canonical event合同、AG-UI/A2UI投影、SSE/cursor/rebase和可替换core backend；它不伪装真实模型链已经可部署。
+6. 再完成 app-server child、checkpoint/finalization、Hydra、完整审批与 Web UI部署。
+7. 用故障注入、安全隔离测试和 Kubernetes 部署门槛完成收口。
 
 首个端到端目标不是完整 Web 产品，而是一条可证明不会隐式重放副作用的命令链路：
 
@@ -31,7 +32,7 @@ scripted model
   → completed-turn checkpoint
 ~~~
 
-在这条链路通过前，不并行建设完整前端、managed executor、可复用 Codex 进程池或多副本 executor owner routing。harness-pool 的本地 process launcher 不是“复用 Codex 进程”；worker 和 app-server 仍每 attempt 新建并销毁。
+在这条链路通过前，不并行建设完整产品前端、managed executor、可复用 Codex 进程池或多副本 executor owner routing；但可以先完成不依赖真实模型链的 browser协议合同和纯投影器，以尽早固定前后端边界。harness-pool 的本地 process launcher 不是“复用 Codex 进程”；worker 和 app-server 仍每 attempt 新建并销毁。
 
 ## 1. 已固定的工程决策
 
@@ -78,7 +79,7 @@ v2/
 │  │  ├─ harness-control.yaml
 │  │  └─ agentx-wss.yaml
 │  └─ schema/
-│     ├─ canonical-event.schema.json
+│     ├─ canonical-run-event.schema.json
 │     ├─ harness-control.schema.json
 │     ├─ harness-bootstrap.schema.json
 │     ├─ agentx-envelope.schema.json
@@ -949,6 +950,10 @@ browser-gateway只做：
 
 它不保存 session、run或 approval事实。浏览器断开只停止投影，不调用 cancel。
 
+当前把 Phase 4 中不依赖真实模型运行时的协议子阶段前置：`internal/runevent`与`api/schema/canonical-run-event.schema.json`冻结canonical envelope及首批message/reasoning/tool/run terminal schema-v1 payload；未来未知kind可在完成envelope/sequence校验后跳过，已知kind的未知schema version必须fail closed。`internal/browsergateway`已经以抽象`RunBackend`实现`POST /v2/workspaces/{workspaceId}/sessions/{sessionId}/agui`，要求用户bearer和`Idempotency-Key`，拒绝客户端tools/context，发出CreateRun响应对应的`RUN_STARTED`后只按cursor long-poll已提交事件。投影覆盖AG-UI message/reasoning/tool lifecycle、仅`run.completed → RUN_FINISHED`、其他terminal → `RUN_ERROR`，以及`CUSTOM{name:"a2ui.operations"}`承载的display-only A2UI v0.9 command/file-change卡；cursor过期走`STATE_SNAPSHOT`与lifecycle-boundary rebase。handler、sequence gap、scope、cursor rebase和完整A2UI链已有fake backend集成测试。
+
+这一前置切片不需要启动codex app-server，因为输入是确定的canonical fixture；真实运行时最终仍需要stock app-server负责模型循环并由harness产出候选事件。当前core还没有public CreateRun/event-read实现，browser-gateway也没有可运行command/deployment，因此这里明确只是可接线、可测试的协议层，不能宣称已经能部署看到真实模型效果。
+
 审批链路：
 
 1. app-server发`item/tool/call`，worker调用executor-gateway MCP；gateway `PrepareExecution`冻结完整context hash。
@@ -1114,6 +1119,8 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 退出条件：浏览器断线/重连不取消 run，approval TTL/cancel/断线全部 fail closed。
 
+其中canonical event → AG-UI/A2UI、SSE handler和backend abstraction已作为Phase 3期间的前置协议子阶段实现；Phase 4仍需补core public API真实接线、browser-gateway command/配置、Hydra、approval和前端部署，不能把fake backend测试计作Phase 4退出。
+
 ### Phase 5 — Hardening 与生产门槛
 
 交付：
@@ -1149,6 +1156,8 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 第12项目前已完成connection kernel、真实WSS路由，以及独立agentx仓库中的connector/runner IPC、远端lifecycle、registered-root/cwd本地复核、monotonic timeout signal、每process独占的stock `codex exec-server --listen stdio --strict-config`监管和一次性fs-only bounded-read lane；真实stock纵向门禁已通过。本仓已完成online environment registry、三工具stateful MCP链、七个execution/operation mTLS command/client，以及shell-v1和read-file-v1两条`Prepare → Begin → dispatch → ACK/unknown → operation/execution terminal → MCP result`链。approval command、真实enrollment/key binding、gateway进程丢失后的unknown恢复审计、平台containment和部署manifest仍未实现；当前入口明确标为loopback insecure-dev，不能作为Phase 2交付或生产部署证据。
 
 Phase 3当前从第13项开始：已有run/attempt/event component API、独立harness-pool workload identity、原子双lease续期、`run.queued`专用long-poll delivery、pool侧单项claim controller内核、brain catalog冻结/线程绑定core API、签名manifest launch-preparer、受限私钥装载/公钥轮换keyring、deployment profile resolver、由`CreateRun`原子持久化并由live attempt fence保护的core-backed launch-state source，以及带有界并发、lease心跳、thread/turn顺序门和dispatch清理语义的常驻监督骨架；checkpoint恢复会复用原thread绑定catalog。per-attempt control机器合同、同holder进程resume journal、双向control server/client、mTLS+bearer入口、具体`ControlAttemptSupervisor`、本地process launcher、closed-world bootstrap pipe及worker验签入口也已完成。后续仍须实现app-server真实child/final-exec、prompt/checkpoint对象读取、可运行的harness-pool/worker命令装配、finalization与checkpoint CAS写路径；这些不能由当前control terminal或抽象workload接口替代。
+
+Phase 4的协议前置子阶段也已开始：canonical run-event schema/AsyncAPI、AG-UI SDK pin、A2UI v0.9 display builders、严格projector和抽象SSE handler已完成。下一步必须先补core public CreateRun与event cursor读接口并接入真实browser-gateway backend，再做command/health/config与reference web；这项前置工作没有改变上述harness/app-server未完成事实。
 
 ## 14. 尚未锁定但有明确决策点的事项
 

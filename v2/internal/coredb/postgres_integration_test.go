@@ -29,15 +29,15 @@ func TestPostgreSQLMigrationKernel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first migrateConfig() error = %v", err)
 	}
-	if result.Applied != 5 || result.CurrentVersion != 5 {
-		t.Fatalf("first migration result = %+v, want five applied migrations at version 5", result)
+	if result.Applied != 7 || result.CurrentVersion != 7 {
+		t.Fatalf("first migration result = %+v, want seven applied migrations at version 7", result)
 	}
 	result, err = migrateConfig(t.Context(), connectionConfig, runner)
 	if err != nil {
 		t.Fatalf("repeat migrateConfig() error = %v", err)
 	}
-	if result.Applied != 0 || result.CurrentVersion != 5 {
-		t.Fatalf("repeat migration result = %+v, want no-op at version 5", result)
+	if result.Applied != 0 || result.CurrentVersion != 7 {
+		t.Fatalf("repeat migration result = %+v, want no-op at version 7", result)
 	}
 
 	connection := openPostgresTestConnection(t, connectionConfig)
@@ -251,6 +251,35 @@ WHERE table_schema = $1 AND table_name = 'run_events' AND column_name = 'source'
 	}
 }
 
+func TestPostgreSQLMigration0007UpgradesPublishedVersion0006(t *testing.T) {
+	connectionConfig := postgresIntegrationConfig(t)
+	schema := newPostgresTestSchema(t, connectionConfig)
+	catalog, err := EmbeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) < 7 {
+		t.Fatal("embedded catalog does not contain migration 0007")
+	}
+	runner := runnerConfig{schema: schema, lockKey: migrationAdvisoryLockKey, catalog: catalog[:6]}
+	result, err := migrateConfig(t.Context(), connectionConfig, runner)
+	if err != nil {
+		t.Fatalf("apply published migrations through 0006: %v", err)
+	}
+	if result.Applied != 6 || result.CurrentVersion != 6 {
+		t.Fatalf("published migration result = %+v, want version 6", result)
+	}
+
+	runner.catalog = catalog
+	result, err = migrateConfig(t.Context(), connectionConfig, runner)
+	if err != nil {
+		t.Fatalf("upgrade to migration 0007: %v", err)
+	}
+	if result.Applied != 1 || result.CurrentVersion != 7 {
+		t.Fatalf("0007 upgrade result = %+v, want one applied migration at version 7", result)
+	}
+}
+
 func TestPostgreSQLMigration0004UpgradesPublishedVersion0003(t *testing.T) {
 	connectionConfig := postgresIntegrationConfig(t)
 	schema := newPostgresTestSchema(t, connectionConfig)
@@ -299,7 +328,7 @@ func TestPostgreSQLMigration0005UpgradesPublishedVersion0004(t *testing.T) {
 		t.Fatalf("published migration result = %+v, want version 4", result)
 	}
 
-	runner.catalog = catalog
+	runner.catalog = catalog[:5]
 	result, err = migrateConfig(t.Context(), connectionConfig, runner)
 	if err != nil {
 		t.Fatalf("upgrade to migration 0005: %v", err)
@@ -402,6 +431,7 @@ func assertDatabaseObjects(t *testing.T, connection *pgx.Conn, schema string) {
 	t.Helper()
 	wantTables := map[string]bool{
 		"attempt_leases":               false,
+		"brain_tool_catalogs":          false,
 		"executor_connection_attempts": false,
 		"executor_connections":         false,
 		"executor_environments":        false,
@@ -457,6 +487,11 @@ WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, schema)
 		"outbox_lock_pair":                                        false,
 		"schema_migrations_sha256_exact":                          false,
 		"attempt_leases_attempt_generation_fk":                    false,
+		"brain_tool_catalogs_attempt_scope_fk":                    false,
+		"brain_tool_catalogs_attempt_unique":                      false,
+		"brain_tool_catalogs_digests_sha256":                      false,
+		"brain_tool_catalogs_run_scope_fk":                        false,
+		"brain_tool_catalogs_thread_unique":                       false,
 		"session_leases_run_session_fk":                           false,
 		"run_attempts_run_generation_unique":                      false,
 		"run_events_producer_key_unique":                          false,
@@ -507,6 +542,7 @@ WHERE constraint_schema = $1`, schema)
 	}
 
 	wantIndexes := map[string]bool{
+		"brain_tool_catalogs_session_created_idx":            false,
 		"runs_session_status_created_idx":                    false,
 		"run_attempts_run_created_idx":                       false,
 		"run_events_run_created_idx":                         false,

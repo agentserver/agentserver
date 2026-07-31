@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/braincatalog"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -402,6 +403,83 @@ func TestPostgreSQLAppendAttemptEventsDeduplicatesAndOrders(t *testing.T) {
 	if fmt.Sprint(gotSequences) != fmt.Sprint(wantSequences) {
 		t.Fatalf("concurrent run sequences = %v, want %v", gotSequences, wantSequences)
 	}
+}
+
+func TestPostgreSQLBrainToolCatalogFreezeAndBind(t *testing.T) {
+	store, pool, schema := newPostgresStateStore(t)
+	workspaceID := stateTestUUID(370)
+	sessionID := stateTestUUID(371)
+	insertStateTestSession(t, pool, schema, workspaceID, sessionID)
+	created := mustCreateStateRun(t, store, stateCreateRunCommand(372, workspaceID, sessionID, "catalog-key"))
+	claim := mustClaimStateRun(t, store, stateClaimRunCommand(376, created.Run.ID, created.Run.Version, "catalog-holder"))
+
+	catalog, err := braincatalog.BuildCatalog("executor", "Deterministic executor tools.", []braincatalog.ToolDescriptor{{
+		Name: "read_file", Description: "Read one file.", InputSchema: json.RawMessage(`{"type":"object"}`),
+	}}, braincatalog.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	freeze := FreezeBrainToolCatalogCommand{
+		CatalogID: stateTestUUID(380), WorkspaceID: workspaceID, SessionID: sessionID,
+		RunID: created.Run.ID, AttemptID: claim.Attempt.ID, HolderID: "catalog-holder",
+		Generation: claim.Attempt.Generation, ExpectedRunVersion: claim.Run.Version,
+		ExpectedAttemptVersion: claim.Attempt.Version, ContractVersion: "executor-mcp/1.1",
+		CanonicalizerVersion: braincatalog.CatalogCanonicalizer, CanonicalCatalog: catalog.CanonicalBytes(),
+		CatalogDigest: catalog.DigestSHA256(), PolicyVersion: "executor-policy/1",
+		PolicyContextDigest: sha256.Sum256([]byte("workspace-policy-context")),
+	}
+	frozen, err := store.FreezeBrainToolCatalog(t.Context(), freeze)
+	if err != nil {
+		t.Fatalf("FreezeBrainToolCatalog() error = %v", err)
+	}
+	if !frozen.Created || frozen.Catalog.ThreadID != "" || frozen.Catalog.Version != 1 ||
+		frozen.Catalog.CatalogDigest != freeze.CatalogDigest || string(frozen.Catalog.CanonicalCatalog) != string(freeze.CanonicalCatalog) {
+		t.Fatalf("frozen catalog = %+v", frozen)
+	}
+	retry, err := store.FreezeBrainToolCatalog(t.Context(), freeze)
+	if err != nil || retry.Created || retry.Catalog.ID != frozen.Catalog.ID {
+		t.Fatalf("exact freeze retry = %+v, error = %v", retry, err)
+	}
+	changed := freeze
+	changed.PolicyVersion = "executor-policy/2"
+	if _, err := store.FreezeBrainToolCatalog(t.Context(), changed); !HasStateErrorCode(err, ErrorIdempotencyConflict) {
+		t.Fatalf("changed freeze error = %v, want idempotency_conflict", err)
+	}
+	differentIdentity := freeze
+	differentIdentity.CatalogID = stateTestUUID(381)
+	if _, err := store.FreezeBrainToolCatalog(t.Context(), differentIdentity); !HasStateErrorCode(err, ErrorIdempotencyConflict) {
+		t.Fatalf("second attempt catalog error = %v, want idempotency_conflict", err)
+	}
+
+	bind := BindBrainThreadCatalogCommand{
+		CatalogID: freeze.CatalogID, RunID: freeze.RunID, AttemptID: freeze.AttemptID,
+		HolderID: freeze.HolderID, Generation: freeze.Generation,
+		ExpectedRunVersion: freeze.ExpectedRunVersion, ExpectedAttemptVersion: freeze.ExpectedAttemptVersion,
+		ExpectedCatalogVersion: frozen.Catalog.Version, ThreadID: "thread-catalog-1",
+	}
+	bound, err := store.BindBrainThreadCatalog(t.Context(), bind)
+	if err != nil {
+		t.Fatalf("BindBrainThreadCatalog() error = %v", err)
+	}
+	if !bound.Changed || bound.Catalog.ThreadID != bind.ThreadID || bound.Catalog.Version != 2 {
+		t.Fatalf("bound catalog = %+v", bound)
+	}
+	bindRetry, err := store.BindBrainThreadCatalog(t.Context(), bind)
+	if err != nil || bindRetry.Changed || bindRetry.Catalog.ThreadID != bind.ThreadID {
+		t.Fatalf("exact bind retry = %+v, error = %v", bindRetry, err)
+	}
+	otherThread := bind
+	otherThread.ThreadID = "thread-catalog-2"
+	if _, err := store.BindBrainThreadCatalog(t.Context(), otherThread); !HasStateErrorCode(err, ErrorIdempotencyConflict) {
+		t.Fatalf("changed bind error = %v, want idempotency_conflict", err)
+	}
+
+	expireStateLeases(t, pool, schema, sessionID, claim.Attempt.ID)
+	retryAfterExpiry, err := store.FreezeBrainToolCatalog(t.Context(), freeze)
+	if err != nil || retryAfterExpiry.Created {
+		t.Fatalf("committed freeze retry after lease expiry = %+v, error = %v", retryAfterExpiry, err)
+	}
+	assertStateTableCount(t, pool, schema, "brain_tool_catalogs", 1)
 }
 
 func TestPostgreSQLOutboxSkipLockedAndClaimFencing(t *testing.T) {

@@ -512,7 +512,7 @@ func TestAppServerRunnerRejectsResumeCatalogMismatchBeforeStdio(t *testing.T) {
 	caller := &fakeDynamicCaller{call: func(context.Context, DynamicCall) (DynamicToolResult, error) {
 		return DynamicToolResult{}, errors.New("catalog mismatch must not call MCP")
 	}}
-	bridge, err := NewDynamicBridge(caller, 1, catalog.limits.MaxArgumentBytes)
+	bridge, err := NewDynamicBridge(caller, 1, catalog.Limits().MaxArgumentBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -611,7 +611,7 @@ func newRunnerFixture(
 	t.Helper()
 	worker, server, closePair := newRunnerPeerPair(t)
 	t.Cleanup(closePair)
-	bridge, err := NewDynamicBridge(caller, 4, catalog.limits.MaxArgumentBytes)
+	bridge, err := NewDynamicBridge(caller, 4, catalog.Limits().MaxArgumentBytes)
 	if err != nil {
 		t.Fatal(err)
 	}

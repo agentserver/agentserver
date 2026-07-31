@@ -3,7 +3,7 @@
   "info": {
     "title": "agentserver v2 internal command API",
     "version": "0.1.0",
-    "description": "Run-dispatch, run-attempt, executor connection, environment registry, and execution state commands. Every endpoint requires the explicitly authorized component workload identity."
+    "description": "Run-dispatch, run-attempt, brain tool catalog, executor connection, environment registry, and execution state commands. Every endpoint requires the explicitly authorized component workload identity."
   },
   "servers": [{"url": "https://agentserver-core"}],
   "security": [{"workloadMTLS": []}],
@@ -103,6 +103,35 @@
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AppendAttemptEventsRequest"}}}},
         "responses": {
           "200": {"description": "Per-producer identities mapped to authoritative run sequence numbers", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AppendAttemptEventsResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/brain-tool-catalogs:freeze": {
+      "post": {
+        "operationId": "freezeBrainToolCatalog",
+        "description": "Freezes the exact model-visible executor tool catalog under the live pre-turn run-attempt authority tuple.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FreezeBrainToolCatalogRequest"}}}},
+        "responses": {
+          "200": {"description": "Catalog created or exact immutable retry returned", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FreezeBrainToolCatalogResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/brain-tool-catalogs/{catalogId}:bindThread": {
+      "parameters": [{"$ref": "#/components/parameters/CatalogId"}],
+      "post": {
+        "operationId": "bindBrainThreadCatalog",
+        "description": "CAS-binds the frozen catalog to the exact thread returned by stock app-server; an existing thread binding is immutable.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BindBrainThreadCatalogRequest"}}}},
+        "responses": {
+          "200": {"description": "Thread binding committed or exact retry returned", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BindBrainThreadCatalogResponse"}}}},
           "400": {"$ref": "#/components/responses/CommandError"},
           "403": {"$ref": "#/components/responses/CommandError"},
           "404": {"$ref": "#/components/responses/CommandError"},
@@ -290,6 +319,7 @@
       "workloadMTLS": {"type": "mutualTLS", "description": "Verified component-specific workload SPIFFE identity; handlers authorize each action separately"}
     },
     "parameters": {
+      "CatalogId": {"name": "catalogId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "ExecutorId": {"name": "executorId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "ExecutionId": {"name": "executionId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "OperationId": {"name": "operationId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
@@ -555,6 +585,109 @@
         "properties": {
           "events": {"type": "array", "maxItems": 256, "items": {"$ref": "#/components/schemas/AppendedAttemptEvent"}},
           "newCount": {"type": "integer", "minimum": 0, "maximum": 256}
+        }
+      },
+      "BrainToolDescriptor": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "description", "inputSchema"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 128},
+          "description": {"type": "string", "maxLength": 16384},
+          "inputSchema": {"type": "object"}
+        }
+      },
+      "BrainToolCatalogDocument": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["canonicalizer", "namespace", "namespaceDescription", "tools"],
+        "properties": {
+          "canonicalizer": {"const": "rfc8785-v1"},
+          "namespace": {"type": "string", "minLength": 1, "maxLength": 128},
+          "namespaceDescription": {"type": "string", "maxLength": 16384},
+          "tools": {"type": "array", "maxItems": 64, "items": {"$ref": "#/components/schemas/BrainToolDescriptor"}}
+        }
+      },
+      "BrainToolCatalogState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["catalogId", "workspaceId", "sessionId", "createdRunId", "createdRunAttemptId", "createdAttemptGeneration", "createdHolderId", "createdRunVersion", "createdAttemptVersion", "contractVersion", "canonicalizerVersion", "canonicalCatalog", "catalogDigest", "policyVersion", "policyContextDigest", "version", "createdAt", "updatedAt"],
+        "properties": {
+          "catalogId": {"$ref": "#/components/schemas/UUID"},
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "sessionId": {"$ref": "#/components/schemas/UUID"},
+          "createdRunId": {"$ref": "#/components/schemas/UUID"},
+          "createdRunAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "createdAttemptGeneration": {"type": "integer", "minimum": 1},
+          "createdHolderId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "createdRunVersion": {"type": "integer", "minimum": 1},
+          "createdAttemptVersion": {"type": "integer", "minimum": 1},
+          "threadId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "contractVersion": {"type": "string", "minLength": 1, "maxLength": 128},
+          "canonicalizerVersion": {"const": "rfc8785-v1"},
+          "canonicalCatalog": {"$ref": "#/components/schemas/BrainToolCatalogDocument"},
+          "catalogDigest": {"$ref": "#/components/schemas/SHA256"},
+          "policyVersion": {"type": "string", "minLength": 1, "maxLength": 128},
+          "policyContextDigest": {"$ref": "#/components/schemas/SHA256"},
+          "version": {"type": "integer", "minimum": 1},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "FreezeBrainToolCatalogRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["catalogId", "workspaceId", "sessionId", "runId", "runAttemptId", "holderId", "runAttemptGeneration", "expectedRunVersion", "expectedRunAttemptVersion", "contractVersion", "canonicalizerVersion", "canonicalCatalog", "catalogDigest", "policyVersion", "policyContextDigest"],
+        "properties": {
+          "catalogId": {"$ref": "#/components/schemas/UUID"},
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "sessionId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1},
+          "expectedRunVersion": {"type": "integer", "minimum": 1},
+          "expectedRunAttemptVersion": {"type": "integer", "minimum": 1},
+          "contractVersion": {"type": "string", "minLength": 1, "maxLength": 128},
+          "canonicalizerVersion": {"const": "rfc8785-v1"},
+          "canonicalCatalog": {"$ref": "#/components/schemas/BrainToolCatalogDocument"},
+          "catalogDigest": {"$ref": "#/components/schemas/SHA256"},
+          "policyVersion": {"type": "string", "minLength": 1, "maxLength": 128},
+          "policyContextDigest": {"$ref": "#/components/schemas/SHA256"}
+        }
+      },
+      "FreezeBrainToolCatalogResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["catalog", "created"],
+        "properties": {
+          "catalog": {"$ref": "#/components/schemas/BrainToolCatalogState"},
+          "created": {"type": "boolean"}
+        }
+      },
+      "BindBrainThreadCatalogRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["catalogId", "runId", "runAttemptId", "holderId", "runAttemptGeneration", "expectedRunVersion", "expectedRunAttemptVersion", "expectedCatalogVersion", "threadId"],
+        "properties": {
+          "catalogId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1},
+          "expectedRunVersion": {"type": "integer", "minimum": 1},
+          "expectedRunAttemptVersion": {"type": "integer", "minimum": 1},
+          "expectedCatalogVersion": {"type": "integer", "minimum": 1},
+          "threadId": {"type": "string", "minLength": 1, "maxLength": 256}
+        }
+      },
+      "BindBrainThreadCatalogResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["catalog", "changed"],
+        "properties": {
+          "catalog": {"$ref": "#/components/schemas/BrainToolCatalogState"},
+          "changed": {"type": "boolean"}
         }
       },
       "ProcessMethods": {

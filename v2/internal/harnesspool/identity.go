@@ -73,6 +73,15 @@ func (allocator *ControlIdentityAllocator) AllocateRunAttemptClaim() (RunAttempt
 	}, nil
 }
 
+func (allocator *ControlIdentityAllocator) AllocateBrainToolCatalogID() (string, error) {
+	if allocator == nil {
+		return "", errors.New("control identity allocator is required")
+	}
+	allocator.mu.Lock()
+	defer allocator.mu.Unlock()
+	return allocator.generateDistinct("brain tool catalog ID", allocator.producerInstanceID)
+}
+
 func (allocator *ControlIdentityAllocator) generateDistinct(field string, excluded ...string) (string, error) {
 	value, err := allocator.idGenerator()
 	if err != nil {

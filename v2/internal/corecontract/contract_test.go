@@ -52,6 +52,8 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 		RenewRunAttemptPath("{runAttemptId}"):                        "renewRunAttempt",
 		MarkTurnAcceptedPath("{runAttemptId}"):                       "markTurnAccepted",
 		AppendAttemptEventsPath("{runAttemptId}"):                    "appendAttemptEvents",
+		FreezeBrainToolCatalogPath:                                   "freezeBrainToolCatalog",
+		BindBrainThreadCatalogPath("{catalogId}"):                    "bindBrainThreadCatalog",
 		AcquireExecutorConnectionPath:                                "acquireExecutorConnection",
 		ListExecutorEnvironmentsPath:                                 "listExecutorEnvironments",
 		RenewExecutorConnectionPath("{executorId}"):                  "renewExecutorConnection",
@@ -106,6 +108,11 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "AppendAttemptEventsRequest", reflect.TypeFor[AppendAttemptEventsRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "AppendedAttemptEvent", reflect.TypeFor[AppendedAttemptEvent]())
 	assertSchemaFields(t, document.Components.Schemas, "AppendAttemptEventsResponse", reflect.TypeFor[AppendAttemptEventsResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "BrainToolCatalogState", reflect.TypeFor[BrainToolCatalogState]())
+	assertSchemaFields(t, document.Components.Schemas, "FreezeBrainToolCatalogRequest", reflect.TypeFor[FreezeBrainToolCatalogRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "FreezeBrainToolCatalogResponse", reflect.TypeFor[FreezeBrainToolCatalogResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "BindBrainThreadCatalogRequest", reflect.TypeFor[BindBrainThreadCatalogRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "BindBrainThreadCatalogResponse", reflect.TypeFor[BindBrainThreadCatalogResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "TransitionRecord", reflect.TypeFor[TransitionRecord]())
 	assertSchemaFields(t, document.Components.Schemas, "CanonicalJSONDigest", reflect.TypeFor[CanonicalJSONDigest]())
 	assertSchemaFields(t, document.Components.Schemas, "ExecutionState", reflect.TypeFor[ExecutionState]())

@@ -31,6 +31,7 @@ import-boundary:
 
 contract-check:
 	$(GO) test ./internal/runtimelock -run '^TestRuntimeManifestJSONSchemaContract$$' -count=1
+	$(GO) test ./internal/runmanifest -run '^TestRunManifestJSONSchemaAcceptsSignedEnvelope$$' -count=1
 	$(GO) test ./internal/execprofile ./internal/executorgateway/... -run 'Contract|Schema|Profile' -count=1
 
 conformance:

@@ -127,9 +127,15 @@ func testControllerIdentity() RunAttemptClaimIdentity {
 
 func testControllerClaim() ClaimRunAttemptResult {
 	return ClaimRunAttemptResult{
-		Run:        Run{RunID: testRunID, SessionID: testSessionID, Status: "starting", CurrentAttemptGeneration: 1, Version: 3},
-		RunAttempt: RunAttempt{RunAttemptID: testRunAttemptID, RunID: testRunID, Generation: 1, HolderID: "pool-instance", Version: 1},
-		Created:    true,
+		Run: Run{
+			RunID: testRunID, WorkspaceID: "40000000-0000-4000-8000-000000000004", SessionID: testSessionID,
+			Status: "starting", CurrentAttemptGeneration: 1, Version: 3,
+		},
+		RunAttempt: RunAttempt{
+			RunAttemptID: testRunAttemptID, RunID: testRunID, Generation: 1, Status: "leased",
+			HolderID: "pool-instance", Version: 1,
+		},
+		Created: true,
 	}
 }
 

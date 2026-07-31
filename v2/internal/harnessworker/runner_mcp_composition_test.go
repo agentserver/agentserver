@@ -61,7 +61,7 @@ func TestAppServerRunnerComposesWorkerOwnedMCPWithoutCredentialOnWire(t *testing
 		AppServerTransport: workerPeer,
 		secret:             []byte(testMCPBearer),
 	}
-	bridge, err := NewDynamicBridge(client, 4, catalog.limits.MaxArgumentBytes)
+	bridge, err := NewDynamicBridge(client, 4, catalog.Limits().MaxArgumentBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestAppServerRunnerInterruptsAndCleansUpOnRealMCPDisconnect(t *testing.T) {
 
 	workerPeer, appServerPeer, closePair := newRunnerPeerPair(t)
 	t.Cleanup(closePair)
-	bridge, err := NewDynamicBridge(client, 4, catalog.limits.MaxArgumentBytes)
+	bridge, err := NewDynamicBridge(client, 4, catalog.Limits().MaxArgumentBytes)
 	if err != nil {
 		t.Fatal(err)
 	}

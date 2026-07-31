@@ -1,6 +1,7 @@
 package harnesspool
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/braincatalog"
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/coredb"
 	"github.com/agentserver/agentserver/v2/internal/coreserver"
@@ -91,6 +93,72 @@ func TestCoreClientRunAttemptRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCoreClientBrainToolCatalogRoundTrip(t *testing.T) {
+	commands := &recordingBrainContractCommands{now: time.Date(2026, 7, 31, 15, 0, 0, 0, time.UTC)}
+	handler, err := coreserver.NewBrainToolCatalogHandler(allowWorkload{}, commands)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	client, err := NewCoreClient(server.URL, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyDigest := sha256.Sum256([]byte("policy"))
+	proposal, err := BuildExecutorCatalog(ExecutorCatalogPolicy{
+		Version: "executor-policy/1", ContextDigest: policyDigest, AllowedTools: []string{"read_file"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transportCatalog, err := braincatalog.BuildCatalog(
+		"executor",
+		"Canonical <catalog> & \u2028 transport.",
+		[]braincatalog.ToolDescriptor{{
+			Name: "read_file", Description: "Read <one> & preserve bytes.",
+			InputSchema: json.RawMessage(`{"type":"object","description":"<path> & value"}`),
+		}},
+		braincatalog.DefaultLimits(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal.CanonicalCatalog = transportCatalog.CanonicalBytes()
+	proposal.CatalogDigest = transportCatalog.DigestSHA256()
+	if !bytes.Contains(proposal.CanonicalCatalog, []byte("<catalog>")) {
+		t.Fatalf("test catalog did not exercise JSON HTML escaping: %s", proposal.CanonicalCatalog)
+	}
+	catalogDigest := proposal.CatalogDigest
+	freeze := FreezeBrainToolCatalogRequest{
+		CatalogID:   "45000000-0000-4000-8000-000000000004",
+		WorkspaceID: "40000000-0000-4000-8000-000000000004", SessionID: testSessionID,
+		RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder",
+		RunAttemptGeneration: 3, ExpectedRunVersion: 2, ExpectedRunAttemptVersion: 1,
+		ContractVersion: proposal.ContractVersion, CanonicalizerVersion: proposal.CanonicalizerVersion,
+		CanonicalCatalog: proposal.CanonicalCatalog, CatalogDigest: catalogDigest,
+		PolicyVersion: "executor-policy/1", PolicyContextDigest: policyDigest,
+	}
+	frozen, err := client.FreezeBrainToolCatalog(t.Context(), freeze)
+	if err != nil || !frozen.Created || frozen.Catalog.CatalogDigest != catalogDigest {
+		t.Fatalf("FreezeBrainToolCatalog() = %+v, %v", frozen, err)
+	}
+	if commands.freeze.CatalogDigest != hex.EncodeToString(catalogDigest[:]) || string(commands.freeze.CanonicalCatalog) != string(freeze.CanonicalCatalog) {
+		t.Fatalf("freeze wire request = %+v", commands.freeze)
+	}
+
+	bind := BindBrainThreadCatalogRequest{
+		CatalogID: freeze.CatalogID, RunID: freeze.RunID, RunAttemptID: freeze.RunAttemptID,
+		HolderID: freeze.HolderID, RunAttemptGeneration: freeze.RunAttemptGeneration,
+		ExpectedRunVersion: freeze.ExpectedRunVersion, ExpectedRunAttemptVersion: freeze.ExpectedRunAttemptVersion,
+		ExpectedCatalogVersion: 1, ThreadID: "thread-1",
+	}
+	bound, err := client.BindBrainThreadCatalog(t.Context(), bind)
+	if err != nil || !bound.Changed || bound.Catalog.ThreadID != bind.ThreadID || commands.bind.ThreadID != bind.ThreadID {
+		t.Fatalf("BindBrainThreadCatalog() = %+v, %v; wire = %+v", bound, err, commands.bind)
+	}
+}
+
 func TestCoreClientPreservesStableConflict(t *testing.T) {
 	commands := &recordingContractCommands{commandError: &coredb.StateError{
 		Code: coredb.ErrorLeaseLost, Message: "attempt lease expired", CurrentGeneration: 4,
@@ -144,6 +212,39 @@ type recordingContractCommands struct {
 	append             corecontract.AppendAttemptEventsRequest
 	commandError       error
 	badClaimGeneration bool
+}
+
+type recordingBrainContractCommands struct {
+	now    time.Time
+	freeze corecontract.FreezeBrainToolCatalogRequest
+	bind   corecontract.BindBrainThreadCatalogRequest
+}
+
+func (commands *recordingBrainContractCommands) FreezeBrainToolCatalog(_ context.Context, request corecontract.FreezeBrainToolCatalogRequest) (corecontract.FreezeBrainToolCatalogResponse, error) {
+	commands.freeze = request
+	return corecontract.FreezeBrainToolCatalogResponse{
+		Catalog: contractTestBrainCatalog(request, commands.now, "", 1), Created: true,
+	}, nil
+}
+
+func (commands *recordingBrainContractCommands) BindBrainThreadCatalog(_ context.Context, request corecontract.BindBrainThreadCatalogRequest) (corecontract.BindBrainThreadCatalogResponse, error) {
+	commands.bind = request
+	return corecontract.BindBrainThreadCatalogResponse{
+		Catalog: contractTestBrainCatalog(commands.freeze, commands.now, request.ThreadID, 2), Changed: true,
+	}, nil
+}
+
+func contractTestBrainCatalog(request corecontract.FreezeBrainToolCatalogRequest, now time.Time, threadID string, version int64) corecontract.BrainToolCatalogState {
+	return corecontract.BrainToolCatalogState{
+		CatalogID: request.CatalogID, WorkspaceID: request.WorkspaceID, SessionID: request.SessionID,
+		CreatedRunID: request.RunID, CreatedRunAttemptID: request.RunAttemptID,
+		CreatedAttemptGeneration: request.RunAttemptGeneration, CreatedHolderID: request.HolderID,
+		CreatedRunVersion: request.ExpectedRunVersion, CreatedAttemptVersion: request.ExpectedRunAttemptVersion,
+		ThreadID: threadID, ContractVersion: request.ContractVersion, CanonicalizerVersion: request.CanonicalizerVersion,
+		CanonicalCatalog: append(json.RawMessage(nil), request.CanonicalCatalog...), CatalogDigest: request.CatalogDigest,
+		PolicyVersion: request.PolicyVersion, PolicyContextDigest: request.PolicyContextDigest,
+		Version: version, CreatedAt: now, UpdatedAt: now,
+	}
 }
 
 func (commands *recordingContractCommands) ClaimRunAttempt(_ context.Context, request corecontract.ClaimRunAttemptRequest) (corecontract.ClaimRunAttemptResponse, error) {

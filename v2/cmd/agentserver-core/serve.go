@@ -106,7 +106,13 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	if err != nil {
 		return err
 	}
+	brainToolCatalogHandler, err := coreserver.NewBrainToolCatalogHandler(harnessPoolAuthorizer, coreserver.StateStoreBrainToolCatalogCommands{Store: store})
+	if err != nil {
+		return err
+	}
 	handler := http.NewServeMux()
+	handler.Handle(corecontract.FreezeBrainToolCatalogPath, brainToolCatalogHandler)
+	handler.Handle(corecontract.BrainToolCatalogPathPrefix, brainToolCatalogHandler)
 	handler.Handle(corecontract.ClaimRunDispatchesPath, runDispatchHandler)
 	handler.Handle(corecontract.RunDispatchPathPrefix, runDispatchHandler)
 	handler.Handle(corecontract.ClaimRunAttemptPath, runAttemptHandler)

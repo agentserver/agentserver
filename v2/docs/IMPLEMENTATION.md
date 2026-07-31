@@ -400,7 +400,7 @@ harness-pool、browser-gateway 与 executor-gateway 使用内部 workload identi
 | run_events | run_id + seq PK、event_id unique、producer key unique、source、schema_version、inline payload或完整object pointer metadata |
 | outbox | id、kind、aggregate_id、payload、available_at、lock_owner、lock_until、attempts（claim generation）、completed_at |
 | checkpoints | id、session_id、run_id、attempt_generation、thread_id、turn_id、manifest hash、object_id、Codex build |
-| brain_tool_catalogs | id、session_id、thread_id nullable unique、contract version、canonical catalog bytes/object id、catalog digest、created policy context；新thread启动前冻结，成功后CAS绑定thread_id，同一thread不可更新schema |
+| brain_tool_catalogs | id、workspace/session、创建它的run/attempt/generation/holder与版本、thread_id nullable unique、contract/canonicalizer version、exact canonical catalog bytes、catalog digest、policy version/context digest、version；每attempt最多冻结一份，新thread启动前冻结，成功后CAS绑定thread_id，同一thread不可更新schema |
 | executions | id、run/attempt/generation、tool_call_id、executor/env、tool/schema/policy/mapper version、policy decision、operation_count、arguments/tool schema/operation plan/policy context hash、canonicalizer version、status/terminal result hash、version |
 | execution_operations | id、execution_id、ordinal、kind、effect_class、mutation_key unique、params hash、canonicalizer version、status、connection generation、ACK/terminal evidence hash、timestamps、version |
 | approvals | id、execution_id、context hash、nonce unique、status、expires_at、requester、approver、version |
@@ -780,7 +780,11 @@ Phase 3第一段先建立了pool不能绕过的core command边界：内部OpenAP
 
 pool侧reference controller每次只领一项，以一次分配的attempt/event/outbox身份执行exact claim；普通transport错误只用同一组身份立即重试一次，不能分配第二组身份猜测第一次是否提交。`lease_held|version_conflict`会generation-fenced release并等待新投影，`running|terminal`残留项只调用由core状态守卫的complete。该controller当前只返回已取得双lease的`ScheduledRunAttempt`给下一层，尚未创建Kubernetes Job，也没有宣称已经在运行常驻controller进程。
 
-这些入口使用独立harness-pool SPIFFE identity；executor-gateway identity不能调用这些命令，core配置相同identity会拒绝启动，携带多个URI workload identity的证书也会fail closed。当前仍没有harness-pool命令入口/常驻循环、签名run manifest、Job/worker control stream或checkpoint commit，所以这只是可测试的调度与attempt控制内核，不代表harness vertical slice已经交付。
+这些入口使用独立harness-pool SPIFFE identity；executor-gateway identity不能调用这些命令，core配置相同identity会拒绝启动，携带多个URI workload identity的证书也会fail closed。
+
+第三段已经加入`brain_tool_catalogs:freeze`与`{catalogId}:bindThread`边界。catalog canonicalizer已从worker抽到中立的`braincatalog`包，core与worker共同使用同一份RFC 8785校验、schema约束和domain-separated digest实现。freeze只允许live、pre-turn的`starting + leased|starting` attempt，核对workspace/session、holder、generation、双lease和run/attempt expected version；同一catalog ID的exact retry可在lease失效后读回，不同fingerprint报`idempotency_conflict`，同一attempt不能冻结第二份catalog。bind只允许未绑定记录以expected catalog version做一次CAS；同thread retry成功，换thread失败，已绑定记录没有任何schema更新命令。
+
+pool侧新增launch-preparer边界：先从版本化executor MCP contract按显式policy allowlist构建catalog、解析prompt/checkpoint/runtime/model/endpoint等launch输入并生成完整manifest，随后以cluster Ed25519 key对RFC 8785 canonical bytes做domain-separated签名，最后才用同一catalog ID调用core freeze；只有freeze成功才返回`PreparedRunLaunch`。普通transport歧义只用完全相同请求重试一次。签名envelope和manifest均有严格类型、unknown-field拒绝、HTTPS/SPIFFE检查、固定`2025-11-25` MCP profile、`deferLoading=false`、逐tool/catalog一致性校验与`api/schema/run-manifest.schema.json`。这仍只是可测试的launch准备边界：当前没有生产launch-input resolver、签名key装载/轮换配置、harness-pool命令入口/常驻循环、Job/worker control stream或checkpoint commit，不能据此宣称harness vertical slice已经可部署。
 
 ### 8.2 run manifest
 
@@ -797,6 +801,8 @@ manifest至少冻结：
 - event/control buffer上限；
 - checkpoint allowlist version；
 - worker image digest和 expected service account。
+
+reference `runmanifest`实现把上述字段编码为closed-world JSON：未知字段、独立manifest的非canonical bytes、非canonical base64url签名、非HTTPS endpoint、非SPIFFE TLS identity、catalog projection漂移或callback holder漂移都会fail closed。签名算法固定`ed25519-v1`，签名输入为`agentserver-v2/run-manifest/ed25519-v1\0 || canonical_manifest`；manifest digest另用`agentserver-v2/run-manifest/rfc8785-v1\0`域隔离。manifest嵌入签名envelope后，验签方会从其JSON值重建RFC 8785 bytes再验签，避免普通serializer对`<|>|&|U+2028|U+2029`的等价转义破坏签名；core catalog command的双方encoder同样关闭HTML转义以原样传输canonical catalog。签名envelope只携带key ID，不携带私钥或capability secret。
 
 worker验证签名后不能从 prompt、模型输出或 MCP响应修改 manifest。
 
@@ -1121,7 +1127,7 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 第12项目前已完成connection kernel、真实WSS路由，以及独立agentx仓库中的connector/runner IPC、远端lifecycle、registered-root/cwd本地复核、monotonic timeout signal、每process独占的stock `codex exec-server --listen stdio --strict-config`监管和一次性fs-only bounded-read lane；真实stock纵向门禁已通过。本仓已完成online environment registry、三工具stateful MCP链、七个execution/operation mTLS command/client，以及shell-v1和read-file-v1两条`Prepare → Begin → dispatch → ACK/unknown → operation/execution terminal → MCP result`链。approval command、真实enrollment/key binding、gateway进程丢失后的unknown恢复审计、平台containment和部署manifest仍未实现；当前入口明确标为loopback insecure-dev，不能作为Phase 2交付或生产部署证据。
 
-Phase 3当前从第13项开始：已有run/attempt/event component API、独立harness-pool workload identity、原子双lease续期、`run.queued`专用long-poll delivery和pool侧单项claim controller内核。后续仍须实现harness-pool命令入口与监督循环、冻结并签名run manifest、per-attempt Job/control stream、finalization与checkpoint CAS；这些不能由当前command API和内存controller类型的存在替代。
+Phase 3当前从第13项开始：已有run/attempt/event component API、独立harness-pool workload identity、原子双lease续期、`run.queued`专用long-poll delivery、pool侧单项claim controller内核、brain catalog冻结/线程绑定core API，以及签名manifest launch-preparer。后续仍须实现生产launch-input resolver与签名key配置、harness-pool命令入口和监督循环、per-attempt Job/control stream、finalization与checkpoint CAS；这些不能由当前command API、签名类型和内存controller/preparer类型的存在替代。
 
 ## 14. 尚未锁定但有明确决策点的事项
 

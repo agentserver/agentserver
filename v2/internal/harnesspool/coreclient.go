@@ -10,18 +10,20 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/braincatalog"
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 )
 
 const (
 	maxCoreCommandRequestBytes  = 18 * 1024 * 1024
-	maxCoreCommandResponseBytes = 512 * 1024
+	maxCoreCommandResponseBytes = 2 * 1024 * 1024
 )
 
 type CoreClient struct {
@@ -176,6 +178,68 @@ type AppendAttemptEventsResult struct {
 	NewCount int
 }
 
+type BrainToolCatalog struct {
+	CatalogID                string
+	WorkspaceID              string
+	SessionID                string
+	CreatedRunID             string
+	CreatedRunAttemptID      string
+	CreatedAttemptGeneration int64
+	CreatedHolderID          string
+	CreatedRunVersion        int64
+	CreatedAttemptVersion    int64
+	ThreadID                 string
+	ContractVersion          string
+	CanonicalizerVersion     string
+	CanonicalCatalog         json.RawMessage
+	CatalogDigest            [32]byte
+	PolicyVersion            string
+	PolicyContextDigest      [32]byte
+	Version                  int64
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
+}
+
+type FreezeBrainToolCatalogRequest struct {
+	CatalogID                 string
+	WorkspaceID               string
+	SessionID                 string
+	RunID                     string
+	RunAttemptID              string
+	HolderID                  string
+	RunAttemptGeneration      int64
+	ExpectedRunVersion        int64
+	ExpectedRunAttemptVersion int64
+	ContractVersion           string
+	CanonicalizerVersion      string
+	CanonicalCatalog          json.RawMessage
+	CatalogDigest             [32]byte
+	PolicyVersion             string
+	PolicyContextDigest       [32]byte
+}
+
+type FreezeBrainToolCatalogResult struct {
+	Catalog BrainToolCatalog
+	Created bool
+}
+
+type BindBrainThreadCatalogRequest struct {
+	CatalogID                 string
+	RunID                     string
+	RunAttemptID              string
+	HolderID                  string
+	RunAttemptGeneration      int64
+	ExpectedRunVersion        int64
+	ExpectedRunAttemptVersion int64
+	ExpectedCatalogVersion    int64
+	ThreadID                  string
+}
+
+type BindBrainThreadCatalogResult struct {
+	Catalog BrainToolCatalog
+	Changed bool
+}
+
 func NewCoreClient(baseURL string, httpClient *http.Client) (*CoreClient, error) {
 	if httpClient == nil {
 		return nil, errors.New("core HTTP client is required")
@@ -301,20 +365,74 @@ func (client *CoreClient) AppendAttemptEvents(ctx context.Context, request Appen
 	return result, nil
 }
 
+func (client *CoreClient) FreezeBrainToolCatalog(ctx context.Context, request FreezeBrainToolCatalogRequest) (FreezeBrainToolCatalogResult, error) {
+	contractRequest := corecontract.FreezeBrainToolCatalogRequest{
+		CatalogID: request.CatalogID, WorkspaceID: request.WorkspaceID, SessionID: request.SessionID,
+		RunID: request.RunID, RunAttemptID: request.RunAttemptID, HolderID: request.HolderID,
+		RunAttemptGeneration: request.RunAttemptGeneration, ExpectedRunVersion: request.ExpectedRunVersion,
+		ExpectedRunAttemptVersion: request.ExpectedRunAttemptVersion, ContractVersion: request.ContractVersion,
+		CanonicalizerVersion: request.CanonicalizerVersion, CanonicalCatalog: append(json.RawMessage(nil), request.CanonicalCatalog...),
+		CatalogDigest: hex.EncodeToString(request.CatalogDigest[:]), PolicyVersion: request.PolicyVersion,
+		PolicyContextDigest: hex.EncodeToString(request.PolicyContextDigest[:]),
+	}
+	var response corecontract.FreezeBrainToolCatalogResponse
+	if err := client.post(ctx, corecontract.FreezeBrainToolCatalogPath, contractRequest, &response); err != nil {
+		return FreezeBrainToolCatalogResult{}, err
+	}
+	catalog, err := clientBrainToolCatalog(response.Catalog)
+	if err != nil {
+		return FreezeBrainToolCatalogResult{}, fmt.Errorf("validate core freeze-catalog response: %w", err)
+	}
+	if err := validateFrozenCatalogResponse(request, catalog); err != nil {
+		return FreezeBrainToolCatalogResult{}, fmt.Errorf("validate core freeze-catalog response: %w", err)
+	}
+	return FreezeBrainToolCatalogResult{Catalog: catalog, Created: response.Created}, nil
+}
+
+func (client *CoreClient) BindBrainThreadCatalog(ctx context.Context, request BindBrainThreadCatalogRequest) (BindBrainThreadCatalogResult, error) {
+	contractRequest := corecontract.BindBrainThreadCatalogRequest{
+		CatalogID: request.CatalogID, RunID: request.RunID, RunAttemptID: request.RunAttemptID,
+		HolderID: request.HolderID, RunAttemptGeneration: request.RunAttemptGeneration,
+		ExpectedRunVersion: request.ExpectedRunVersion, ExpectedRunAttemptVersion: request.ExpectedRunAttemptVersion,
+		ExpectedCatalogVersion: request.ExpectedCatalogVersion, ThreadID: request.ThreadID,
+	}
+	var response corecontract.BindBrainThreadCatalogResponse
+	if err := client.post(ctx, corecontract.BindBrainThreadCatalogPath(request.CatalogID), contractRequest, &response); err != nil {
+		return BindBrainThreadCatalogResult{}, err
+	}
+	catalog, err := clientBrainToolCatalog(response.Catalog)
+	if err != nil {
+		return BindBrainThreadCatalogResult{}, fmt.Errorf("validate core bind-catalog response: %w", err)
+	}
+	if catalog.CatalogID != request.CatalogID || catalog.CreatedRunID != request.RunID ||
+		catalog.CreatedRunAttemptID != request.RunAttemptID || catalog.CreatedAttemptGeneration != request.RunAttemptGeneration ||
+		catalog.CreatedHolderID != request.HolderID || catalog.CreatedRunVersion != request.ExpectedRunVersion ||
+		catalog.CreatedAttemptVersion != request.ExpectedRunAttemptVersion || catalog.ThreadID != request.ThreadID || catalog.Version < 1 ||
+		(response.Changed && (request.ExpectedCatalogVersion == math.MaxInt64 || catalog.Version != request.ExpectedCatalogVersion+1)) {
+		return BindBrainThreadCatalogResult{}, errors.New("core bind-catalog response does not match the requested catalog and attempt identity")
+	}
+	return BindBrainThreadCatalogResult{Catalog: catalog, Changed: response.Changed}, nil
+}
+
 func (client *CoreClient) post(ctx context.Context, path string, command, destination any) error {
 	if ctx == nil {
 		return errors.New("core command context is required")
 	}
-	raw, err := json.Marshal(command)
-	if err != nil {
+	var raw bytes.Buffer
+	encoder := json.NewEncoder(&raw)
+	// Preserve RFC 8785 documents embedded as json.RawMessage. The core
+	// command transport is JSON, not HTML, so HTML-safe rewriting would only
+	// corrupt the authority bytes that core is expected to freeze exactly.
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(command); err != nil {
 		return fmt.Errorf("encode core command: %w", err)
 	}
-	if len(raw) > maxCoreCommandRequestBytes {
+	if raw.Len() > maxCoreCommandRequestBytes {
 		return errors.New("core command request exceeds size limit")
 	}
 	endpoint := *client.baseURL
 	endpoint.Path = path
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(raw))
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(raw.Bytes()))
 	if err != nil {
 		return fmt.Errorf("construct core command: %w", err)
 	}
@@ -418,6 +536,73 @@ func contractLease(source corecontract.LeaseState) Lease {
 		HolderID: source.HolderID, Generation: source.Generation, ExpiresAt: source.ExpiresAt,
 		AcquiredAt: source.AcquiredAt, RenewedAt: source.RenewedAt,
 	}
+}
+
+func clientBrainToolCatalog(source corecontract.BrainToolCatalogState) (BrainToolCatalog, error) {
+	catalogDigest, err := decodeClientSHA256(source.CatalogDigest)
+	if err != nil {
+		return BrainToolCatalog{}, fmt.Errorf("catalog digest: %w", err)
+	}
+	policyContextDigest, err := decodeClientSHA256(source.PolicyContextDigest)
+	if err != nil {
+		return BrainToolCatalog{}, fmt.Errorf("policy context digest: %w", err)
+	}
+	parsed, err := braincatalog.ParseCanonical(source.CanonicalCatalog, braincatalog.DefaultLimits())
+	if err != nil {
+		return BrainToolCatalog{}, fmt.Errorf("canonical catalog: %w", err)
+	}
+	if source.CanonicalizerVersion != braincatalog.CatalogCanonicalizer || parsed.DigestSHA256() != catalogDigest {
+		return BrainToolCatalog{}, errors.New("canonical catalog does not match its canonicalizer and digest")
+	}
+	for field, value := range map[string]string{
+		"catalog ID": source.CatalogID, "workspace ID": source.WorkspaceID, "session ID": source.SessionID,
+		"created run ID": source.CreatedRunID, "created run attempt ID": source.CreatedRunAttemptID,
+	} {
+		if err := validateUUIDIdentity(field, value); err != nil {
+			return BrainToolCatalog{}, err
+		}
+	}
+	if source.CreatedAttemptGeneration < 1 || source.CreatedRunVersion < 1 || source.CreatedAttemptVersion < 1 ||
+		source.Version < 1 || source.CreatedHolderID == "" || source.ContractVersion == "" || source.PolicyVersion == "" ||
+		source.CreatedAt.IsZero() || source.UpdatedAt.IsZero() || policyContextDigest == ([32]byte{}) {
+		return BrainToolCatalog{}, errors.New("brain tool catalog response contains an incomplete authority fingerprint")
+	}
+	return BrainToolCatalog{
+		CatalogID: source.CatalogID, WorkspaceID: source.WorkspaceID, SessionID: source.SessionID,
+		CreatedRunID: source.CreatedRunID, CreatedRunAttemptID: source.CreatedRunAttemptID,
+		CreatedAttemptGeneration: source.CreatedAttemptGeneration, CreatedHolderID: source.CreatedHolderID,
+		CreatedRunVersion: source.CreatedRunVersion, CreatedAttemptVersion: source.CreatedAttemptVersion,
+		ThreadID: source.ThreadID, ContractVersion: source.ContractVersion,
+		CanonicalizerVersion: source.CanonicalizerVersion, CanonicalCatalog: append(json.RawMessage(nil), source.CanonicalCatalog...),
+		CatalogDigest: catalogDigest, PolicyVersion: source.PolicyVersion, PolicyContextDigest: policyContextDigest,
+		Version: source.Version, CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt,
+	}, nil
+}
+
+func validateFrozenCatalogResponse(request FreezeBrainToolCatalogRequest, catalog BrainToolCatalog) error {
+	if catalog.CatalogID != request.CatalogID || catalog.WorkspaceID != request.WorkspaceID || catalog.SessionID != request.SessionID ||
+		catalog.CreatedRunID != request.RunID || catalog.CreatedRunAttemptID != request.RunAttemptID ||
+		catalog.CreatedAttemptGeneration != request.RunAttemptGeneration || catalog.CreatedHolderID != request.HolderID ||
+		catalog.CreatedRunVersion != request.ExpectedRunVersion || catalog.CreatedAttemptVersion != request.ExpectedRunAttemptVersion ||
+		catalog.ContractVersion != request.ContractVersion || catalog.CanonicalizerVersion != request.CanonicalizerVersion ||
+		!bytes.Equal(catalog.CanonicalCatalog, request.CanonicalCatalog) || catalog.CatalogDigest != request.CatalogDigest ||
+		catalog.PolicyVersion != request.PolicyVersion || catalog.PolicyContextDigest != request.PolicyContextDigest || catalog.Version < 1 {
+		return errors.New("catalog fingerprint or attempt identity differs from request")
+	}
+	return nil
+}
+
+func decodeClientSHA256(value string) ([32]byte, error) {
+	var digest [32]byte
+	if len(value) != hex.EncodedLen(len(digest)) {
+		return digest, errors.New("must contain 64 lowercase hexadecimal characters")
+	}
+	decoded, err := hex.DecodeString(value)
+	if err != nil || hex.EncodeToString(decoded) != value {
+		return digest, errors.New("must contain 64 lowercase hexadecimal characters")
+	}
+	copy(digest[:], decoded)
+	return digest, nil
 }
 
 func isLoopbackHost(host string) bool {

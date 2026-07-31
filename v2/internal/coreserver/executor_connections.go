@@ -233,7 +233,13 @@ func writeError(response http.ResponseWriter, status int, value corecontract.Err
 func writeJSON(response http.ResponseWriter, status int, value any) {
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(status)
-	if err := json.NewEncoder(response).Encode(value); err != nil {
+	encoder := json.NewEncoder(response)
+	// Canonical JSON documents are carried as json.RawMessage in a few
+	// internal commands. The default encoder rewrites <, >, &, U+2028, and
+	// U+2029 inside RawMessage values, which would change their signed or
+	// persisted byte representation. Internal JSON is never embedded in HTML.
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
 		return
 	}
 }

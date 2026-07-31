@@ -11,8 +11,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 6 {
-		t.Fatalf("migration count = %d, want 6", len(migrations))
+	if len(migrations) != 7 {
+		t.Fatalf("migration count = %d, want 7", len(migrations))
 	}
 	migration := migrations[0]
 	if migration.Version != 1 || migration.Name != "session_run_kernel" {
@@ -35,6 +35,9 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	if migrations[5].Version != 6 || migrations[5].Name != "filesystem_read_profile" {
 		t.Fatalf("sixth migration identity = %04d_%s, want 0006_filesystem_read_profile", migrations[5].Version, migrations[5].Name)
+	}
+	if migrations[6].Version != 7 || migrations[6].Name != "brain_tool_catalog_kernel" {
+		t.Fatalf("seventh migration identity = %04d_%s, want 0007_brain_tool_catalog_kernel", migrations[6].Version, migrations[6].Name)
 	}
 }
 

@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentserver.dev/v2/schema/run-manifest.schema.json",
+  "title": "agentserver v2 signed per-attempt run manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["keyId", "algorithm", "manifest", "signature"],
+  "properties": {
+    "keyId": {"type": "string", "minLength": 1, "maxLength": 256},
+    "algorithm": {"const": "ed25519-v1"},
+    "manifest": {"$ref": "#/$defs/manifest"},
+    "signature": {"type": "string", "pattern": "^[A-Za-z0-9_-]{86}$"}
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": {"const": "00000000-0000-0000-0000-000000000000"}
+    },
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "spiffe": {"type": "string", "pattern": "^spiffe://[^/?#]+/[^?#]+$"},
+    "httpsEndpoint": {"type": "string", "format": "uri", "pattern": "^https://[^/?#]+(?:/[^?#]*)?$"},
+    "objectPointer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["objectId", "sha256", "sizeBytes", "mediaType"],
+      "properties": {
+        "objectId": {"$ref": "#/$defs/uuid"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "sizeBytes": {"type": "integer", "minimum": 1, "maximum": 1099511627776},
+        "mediaType": {"type": "string", "minLength": 1, "maxLength": 255}
+      }
+    },
+    "previousCheckpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["checkpointId", "threadId", "manifestDigest", "catalogDigest", "object"],
+      "properties": {
+        "checkpointId": {"$ref": "#/$defs/uuid"},
+        "threadId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "manifestDigest": {"$ref": "#/$defs/sha256"},
+        "catalogDigest": {"$ref": "#/$defs/sha256"},
+        "object": {"$ref": "#/$defs/objectPointer"}
+      }
+    },
+    "modelRoute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "provider", "endpoint", "tlsIdentity", "audience"],
+      "properties": {
+        "model": {"type": "string", "minLength": 1, "maxLength": 256},
+        "provider": {"type": "string", "minLength": 1, "maxLength": 256},
+        "endpoint": {"$ref": "#/$defs/httpsEndpoint"},
+        "tlsIdentity": {"$ref": "#/$defs/spiffe"},
+        "audience": {"type": "string", "minLength": 1, "maxLength": 256}
+      }
+    },
+    "catalogTool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "description", "inputSchema"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 128},
+        "description": {"type": "string", "maxLength": 16384},
+        "inputSchema": {"type": "object"}
+      }
+    },
+    "canonicalCatalog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["canonicalizer", "namespace", "namespaceDescription", "tools"],
+      "properties": {
+        "canonicalizer": {"const": "rfc8785-v1"},
+        "namespace": {"type": "string", "minLength": 1, "maxLength": 128},
+        "namespaceDescription": {"type": "string", "maxLength": 16384},
+        "tools": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/catalogTool"}}
+      }
+    },
+    "mcpTool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "description", "inputSchema", "digest"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 128},
+        "description": {"type": "string", "maxLength": 16384},
+        "inputSchema": {"type": "object"},
+        "digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "executorMcp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["endpoint", "tlsIdentity", "audience", "protocolProfile", "contractVersion", "catalogId", "canonicalizerVersion", "catalogDigest", "canonicalCatalog", "namespace", "namespaceDescription", "deferLoading", "tools"],
+      "properties": {
+        "endpoint": {"$ref": "#/$defs/httpsEndpoint"},
+        "tlsIdentity": {"$ref": "#/$defs/spiffe"},
+        "audience": {"type": "string", "minLength": 1, "maxLength": 256},
+        "protocolProfile": {"const": "2025-11-25"},
+        "contractVersion": {"type": "string", "minLength": 1, "maxLength": 128},
+        "catalogId": {"$ref": "#/$defs/uuid"},
+        "canonicalizerVersion": {"const": "rfc8785-v1"},
+        "catalogDigest": {"$ref": "#/$defs/sha256"},
+        "canonicalCatalog": {"$ref": "#/$defs/canonicalCatalog"},
+        "namespace": {"type": "string", "minLength": 1, "maxLength": 128},
+        "namespaceDescription": {"type": "string", "maxLength": 16384},
+        "deferLoading": {"const": false},
+        "tools": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/mcpTool"}}
+      }
+    },
+    "executorPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "contextDigest"],
+      "properties": {
+        "version": {"type": "string", "minLength": 1, "maxLength": 128},
+        "contextDigest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "runLimits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxRunDurationMs", "maxApprovalTtlMs", "gatewayActiveExecutionTimeoutMs", "mcpTransportGraceMs", "workerCallbackGraceMs", "maxEventBufferBytes", "maxControlBufferBytes"],
+      "properties": {
+        "maxRunDurationMs": {"type": "integer", "minimum": 1, "maximum": 86400000},
+        "maxApprovalTtlMs": {"type": "integer", "minimum": 1, "maximum": 86400000},
+        "gatewayActiveExecutionTimeoutMs": {"type": "integer", "minimum": 1, "maximum": 86400000},
+        "mcpTransportGraceMs": {"type": "integer", "minimum": 1, "maximum": 86400000},
+        "workerCallbackGraceMs": {"type": "integer", "minimum": 1, "maximum": 86400000},
+        "maxEventBufferBytes": {"type": "integer", "minimum": 1, "maximum": 67108864},
+        "maxControlBufferBytes": {"type": "integer", "minimum": 1, "maximum": 67108864}
+      }
+    },
+    "controllerCallback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["endpoint", "tlsIdentity", "audience", "holderId"],
+      "properties": {
+        "endpoint": {"$ref": "#/$defs/httpsEndpoint"},
+        "tlsIdentity": {"$ref": "#/$defs/spiffe"},
+        "audience": {"type": "string", "minLength": 1, "maxLength": 256},
+        "holderId": {"type": "string", "minLength": 1, "maxLength": 256}
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifestVersion", "canonicalizerVersion", "workspaceId", "sessionId", "runId", "runAttemptId", "runAttemptGeneration", "holderId", "prompt", "codexRuntimeManifestDigest", "model", "executorMcp", "executorPolicy", "limits", "checkpointAllowlistVersion", "workerImageDigest", "expectedServiceAccount", "controllerCallback"],
+      "properties": {
+        "manifestVersion": {"const": 1},
+        "canonicalizerVersion": {"const": "rfc8785-v1"},
+        "workspaceId": {"$ref": "#/$defs/uuid"},
+        "sessionId": {"$ref": "#/$defs/uuid"},
+        "runId": {"$ref": "#/$defs/uuid"},
+        "runAttemptId": {"$ref": "#/$defs/uuid"},
+        "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "prompt": {"$ref": "#/$defs/objectPointer"},
+        "previousCheckpoint": {"$ref": "#/$defs/previousCheckpoint"},
+        "codexRuntimeManifestDigest": {"$ref": "#/$defs/sha256"},
+        "model": {"$ref": "#/$defs/modelRoute"},
+        "executorMcp": {"$ref": "#/$defs/executorMcp"},
+        "executorPolicy": {"$ref": "#/$defs/executorPolicy"},
+        "limits": {"$ref": "#/$defs/runLimits"},
+        "checkpointAllowlistVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "workerImageDigest": {"$ref": "#/$defs/sha256"},
+        "expectedServiceAccount": {"type": "string", "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$"},
+        "controllerCallback": {"$ref": "#/$defs/controllerCallback"}
+      }
+    }
+  }
+}

@@ -99,7 +99,7 @@ func TestLocalProcessLauncherStopsWholeAttemptProcessGroup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o700 {
+	if info.Mode().Perm() != 0o701 {
 		t.Fatalf("attempt runtime permissions = %o", info.Mode().Perm())
 	}
 	stopContext, cancel := context.WithTimeout(context.Background(), 3*time.Second)

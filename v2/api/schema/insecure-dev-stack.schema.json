@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentserver.dev/v2/schema/insecure-dev-stack.schema.json",
+  "title": "Agentserver v2 insecure development stack input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "databaseUrl",
+    "authority",
+    "runtime",
+    "network",
+    "model",
+    "policy",
+    "harness",
+    "identities"
+  ],
+  "properties": {
+    "version": {"const": 1},
+    "databaseUrl": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^postgres(?:ql)?://"},
+    "authority": {"$ref": "#/$defs/authority"},
+    "runtime": {"$ref": "#/$defs/runtime"},
+    "network": {"$ref": "#/$defs/network"},
+    "model": {"$ref": "#/$defs/model"},
+    "policy": {"$ref": "#/$defs/policy"},
+    "harness": {"$ref": "#/$defs/harness"},
+    "identities": {"$ref": "#/$defs/identities"}
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": {"const": "00000000-0000-0000-0000-000000000000"}
+    },
+    "absolutePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^/"
+    },
+    "listenAddress": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 512
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workspaceId", "sessionId", "actorId", "executorId", "environmentId", "agentxVersion", "workspaceRoot"],
+      "properties": {
+        "workspaceId": {"$ref": "#/$defs/uuid"},
+        "sessionId": {"$ref": "#/$defs/uuid"},
+        "actorId": {"$ref": "#/$defs/uuid"},
+        "executorId": {"$ref": "#/$defs/uuid"},
+        "environmentId": {"$ref": "#/$defs/uuid"},
+        "agentxVersion": {"const": "0.1.0-dev"},
+        "workspaceRoot": {"$ref": "#/$defs/absolutePath"},
+        "displayName": {"type": "string", "maxLength": 256},
+        "description": {"type": "string", "maxLength": 2048},
+        "defaultCwd": {"type": "string", "minLength": 1, "maxLength": 4096}
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifestFile", "bundleRoot", "agentxBinary", "harnessWorkerBinary", "harnessFinalExecBinary"],
+      "properties": {
+        "manifestFile": {"$ref": "#/$defs/absolutePath"},
+        "bundleRoot": {"$ref": "#/$defs/absolutePath"},
+        "agentxBinary": {"$ref": "#/$defs/absolutePath"},
+        "harnessWorkerBinary": {"$ref": "#/$defs/absolutePath"},
+        "harnessFinalExecBinary": {"$ref": "#/$defs/absolutePath"}
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["coreListenAddress", "browserGatewayListenAddress", "executorGatewayListenAddress", "harnessPoolListenAddress", "hydraIntrospectionUrl", "llmproxyEndpoint"],
+      "properties": {
+        "coreListenAddress": {"$ref": "#/$defs/listenAddress"},
+        "browserGatewayListenAddress": {"$ref": "#/$defs/listenAddress"},
+        "executorGatewayListenAddress": {"$ref": "#/$defs/listenAddress"},
+        "harnessPoolListenAddress": {"$ref": "#/$defs/listenAddress"},
+        "hydraIntrospectionUrl": {"type": "string", "format": "uri", "pattern": "^http://"},
+        "llmproxyEndpoint": {"type": "string", "format": "uri", "pattern": "^https://"}
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "provider"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 256},
+        "provider": {"type": "string", "minLength": 1, "maxLength": 256}
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "allowedTools"],
+      "properties": {
+        "version": {"type": "string", "pattern": "^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$"},
+        "allowedTools": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {"enum": ["list_environments", "read_file", "shell"]}
+        }
+      }
+    },
+    "harness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxConcurrentAttempts", "maxRunDuration"],
+      "properties": {
+        "maxConcurrentAttempts": {"type": "integer", "minimum": 1, "maximum": 64},
+        "maxRunDuration": {"type": "string", "minLength": 2, "maxLength": 64}
+      }
+    },
+    "identities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workerUid", "workerGid", "appUid", "appGid"],
+      "properties": {
+        "workerUid": {"type": "integer", "minimum": 1, "maximum": 4294967294},
+        "workerGid": {"type": "integer", "minimum": 1, "maximum": 4294967294},
+        "appUid": {"type": "integer", "minimum": 1, "maximum": 4294967294},
+        "appGid": {"type": "integer", "minimum": 1, "maximum": 4294967294}
+      }
+    }
+  }
+}

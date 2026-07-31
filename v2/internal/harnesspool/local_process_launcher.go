@@ -155,7 +155,15 @@ func (launcher *LocalProcessLauncher) Launch(ctx context.Context, launch Attempt
 			_ = launcher.config.RuntimeCleaner.CleanLocalAttemptRuntime(runtimeDirectory)
 		}
 	}()
-	if launcher.config.Credential != nil {
+	if launcher.config.Credential == nil {
+		// The worker and pool share an identity in explicit developer mode,
+		// but the fixed app UID still needs execute-only traversal to reach
+		// its private runtime below this anchor. 0701 reveals no directory
+		// entries or file contents to that identity.
+		if err := os.Chmod(runtimeDirectory, 0o701); err != nil {
+			return nil, fmt.Errorf("grant local development app runtime traversal: %w", err)
+		}
+	} else {
 		// Keep pool ownership so the holder can always remove the tree, while
 		// granting the fixed worker primary group access to create its runtime.
 		// Production's fixed-code threat model permits workers to share this

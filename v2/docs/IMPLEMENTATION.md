@@ -790,7 +790,17 @@ pool侧reference controller每次只领一项，以一次分配的attempt/event/
 
 #### 8.1.1 当前开发启动入口
 
-开发入口固定为：
+开发authority、PKI、共享开发key、worker deployment、四份服务环境和agentx argv现在由单一入口生成：
+
+```bash
+go run ./cmd/agentserver-dev prepare --insecure-dev \
+  --config=/absolute/dev-stack.json \
+  --output-dir=/absolute/new-agentserver-v2-dev
+```
+
+输入是closed-world `api/schema/insecure-dev-stack.schema.json`；输出目录必须事先不存在，命令绝不merge或覆盖。它从runtime manifest原始字节派生platform、Codex/runtime digest和checkpoint allowlist，生成独立服务SPIFFE证书、run capability/cursor key、Ed25519 signing seed及public worker keyring。目录固定`0700`、文件固定`0600`；worker deployment和agentx launch均不含run HMAC、cursor key或manifest私钥。生成物由Core bootstrap/TLS、browser、executor、pool和完整worker现有loader交叉加载测试。完整输入、输出树、source方式、启动顺序和剩余依赖见[`DEVELOPMENT.md`](DEVELOPMENT.md)。
+
+harness-pool运行入口固定为：
 
 ```bash
 go run ./cmd/harness-pool serve --insecure-dev
@@ -828,7 +838,7 @@ bootstrap配置是closed-world JSON：
 
 命令先验证配置和runtime manifest，再执行schema migration，最后在一个事务中插入active workspace、session、owner membership、offline executor和offline environment五条基础记录。完全相同的重试是零写入；任何既有identity、membership、runtime digest、root descriptor或profile不同都会回滚整个事务，绝不覆盖已有authority。`actorId`必须与开发Hydra introspection返回的canonical UUID subject一致；executor/environment ID还必须原样传给executor-gateway与agentx。这个命令会写入明确标记为`insecure_dev`的占位machine-key fingerprint，不执行真实enrollment，也不能用于生产数据初始化。
 
-它不读取隐式默认credential，启动前必须显式提供以下配置：
+它不读取隐式默认credential。通常由`agentserver-dev prepare`生成以下配置；手工部署仍必须逐项显式提供：
 
 - control与身份：`AGENTSERVER_V2_HARNESS_POOL_LISTEN_ADDR`（必须是显式loopback地址）、`AGENTSERVER_V2_HARNESS_POOL_TLS_CERT_FILE`、`AGENTSERVER_V2_HARNESS_POOL_TLS_KEY_FILE`、`AGENTSERVER_V2_HARNESS_POOL_WORKER_CA_FILE`、`AGENTSERVER_V2_HARNESS_POOL_SPIFFE_ID`、`AGENTSERVER_V2_HARNESS_WORKER_SPIFFE_ID`；
 - Core：`AGENTSERVER_V2_CORE_URL`、`AGENTSERVER_V2_CORE_CA_FILE`，以及证书需要显式hostname时的可选`AGENTSERVER_V2_CORE_SERVER_NAME`；
@@ -837,7 +847,7 @@ bootstrap配置是closed-world JSON：
 - executor与模型路由：`AGENTSERVER_V2_EXECUTOR_MCP_ENDPOINT`、`AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID`、`AGENTSERVER_V2_MODEL`、`AGENTSERVER_V2_MODEL_PROVIDER`、`AGENTSERVER_V2_LLMPROXY_ENDPOINT`、`AGENTSERVER_V2_LLMPROXY_SPIFFE_ID`；
 - 可选容量边界：`AGENTSERVER_V2_HARNESS_MAX_CONCURRENT_ATTEMPTS`（默认2，最大64）和`AGENTSERVER_V2_MAX_RUN_DURATION`（默认30分钟）。
 
-进程每次启动都会生成新的pool instance/holder/producer UUID；control只监听loopback TLS，健康检查允许没有客户端证书，但attempt control handler仍要求精确worker mTLS SPIFFE身份和本attempt bearer。pool从Core long-poll dispatch，为每个attempt冻结并签名manifest、分别签发executor-MCP与llmproxy capability，通过FD 3/4/5启动全新本地worker进程组，并在退出时先取消和等待attempt，再关闭control registry与HTTP server。
+进程每次启动都会生成新的pool instance/holder/producer UUID；control只监听loopback TLS，健康检查允许没有客户端证书，但attempt control handler仍要求精确worker mTLS SPIFFE身份和本attempt bearer。pool从Core long-poll dispatch，为每个attempt冻结并签名manifest、分别签发executor-MCP与llmproxy capability，通过FD 3/4/5启动全新本地worker进程组，并在退出时先取消和等待attempt，再关闭control registry与HTTP server。开发launcher创建的attempt anchor为`0701`：pool/worker owner可读写，固定app UID只有execute-only traversal；此前`0700`与worker deployment的app traversal gate矛盾，会使真实worker在读取bootstrap前失败，现已由launcher与交叉loader门禁修正。
 
 该模式刻意使用共享HMAC和`0600` plaintext本地对象，不提供生产加密、撤销或多Pod安全语义。Core/browser-gateway与harness-pool必须指向同一个开发对象目录，executor-gateway必须使用同一开发HMAC key；完成真实模型turn还依赖Linux worker runtime、已锁定的stock Codex artifact、能验证llmproxy capability的代理、在线executor/agentx以及PostgreSQL/Core。缺少任一依赖时该命令只能验证到相应的前置边界。
 
@@ -1220,9 +1230,9 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 第12项目前已完成connection kernel、真实WSS路由，以及独立agentx仓库中的connector/runner IPC、远端lifecycle、registered-root/cwd本地复核、monotonic timeout signal、每process独占的stock `codex exec-server --listen stdio --strict-config`监管和一次性fs-only bounded-read lane；真实stock纵向门禁已通过。本仓已完成online environment registry、三工具stateful MCP链、七个execution/operation mTLS command/client，以及shell-v1和read-file-v1两条`Prepare → Begin → dispatch → ACK/unknown → operation/execution terminal → MCP result`链。approval command、真实enrollment/key binding、gateway进程丢失后的unknown恢复审计、平台containment和部署manifest仍未实现；当前入口明确标为loopback insecure-dev，不能作为Phase 2交付或生产部署证据。
 
-Phase 3当前从第13项开始：已有run/attempt/event component API、独立harness-pool workload identity、原子双lease续期、`run.queued`专用long-poll delivery、pool侧单项claim controller内核、brain catalog冻结/线程绑定core API、签名manifest launch-preparer、受限私钥装载/公钥轮换keyring、deployment profile resolver、由`CreateRun`原子持久化并由live attempt fence保护的core-backed launch-state source，以及带有界并发、lease心跳、thread/turn顺序门和dispatch清理语义的常驻监督骨架；checkpoint恢复会复用原thread绑定catalog。per-attempt control 1.2机器合同、同holder进程resume journal、双向control server/client、mTLS+bearer入口、具体`ControlAttemptSupervisor`、本地process launcher、v2 closed-world bootstrap/runtime-capability合同、prompt object双端流式校验、checkpoint v1确定性artifact、FD 5双端对象校验及worker安全恢复入口也已完成。真实app-server child/final-exec、fresh runtime、exact-SPIFFE executor MCP以及notification/progress→canonical event链现已装配进可运行的one-shot `cmd/harness-worker`，production本地清理权限也改为启动前fail-closed。completed terminal现在携带经过`CODEX_HOME`词法包含校验的rollout locator；本地workload又把“进程组已停止”和“runtime已删除”拆成两个边界，并从启动前固定的attempt目录FD以Linux `openat2(BENEATH|NO_SYMLINKS)`及expected app UID/GID安全暴露唯一rollout。pool finalizer现已流式生成并验证artifact、以同一identity精确重试上传/commit、完整核对Core结果，并在连续歧义时保留attempt runtime；fresh/resume catalog authority均有PostgreSQL路径覆盖。常驻`cmd/harness-pool serve --insecure-dev`现已把这些边界、开发动态capability和本地对象存储装配起来，并由真实dispatch集成测试覆盖到worker bootstrap与有界release。后续仍须扩展approval通道并实现生产capability/object-store adapter；开发命令和library测试都不能替代这些生产边界。
+Phase 3当前从第13项开始：已有run/attempt/event component API、独立harness-pool workload identity、原子双lease续期、`run.queued`专用long-poll delivery、pool侧单项claim controller内核、brain catalog冻结/线程绑定core API、签名manifest launch-preparer、受限私钥装载/公钥轮换keyring、deployment profile resolver、由`CreateRun`原子持久化并由live attempt fence保护的core-backed launch-state source，以及带有界并发、lease心跳、thread/turn顺序门和dispatch清理语义的常驻监督骨架；checkpoint恢复会复用原thread绑定catalog。per-attempt control 1.2机器合同、同holder进程resume journal、双向control server/client、mTLS+bearer入口、具体`ControlAttemptSupervisor`、本地process launcher、v2 closed-world bootstrap/runtime-capability合同、prompt object双端流式校验、checkpoint v1确定性artifact、FD 5双端对象校验及worker安全恢复入口也已完成。真实app-server child/final-exec、fresh runtime、exact-SPIFFE executor MCP以及notification/progress→canonical event链现已装配进可运行的one-shot `cmd/harness-worker`，production本地清理权限也改为启动前fail-closed。completed terminal现在携带经过`CODEX_HOME`词法包含校验的rollout locator；本地workload又把“进程组已停止”和“runtime已删除”拆成两个边界，并从启动前固定的attempt目录FD以Linux `openat2(BENEATH|NO_SYMLINKS)`及expected app UID/GID安全暴露唯一rollout。pool finalizer现已流式生成并验证artifact、以同一identity精确重试上传/commit、完整核对Core结果，并在连续歧义时保留attempt runtime；fresh/resume catalog authority均有PostgreSQL路径覆盖。常驻`cmd/harness-pool serve --insecure-dev`现已把这些边界、开发动态capability和本地对象存储装配起来，并由真实dispatch集成测试覆盖到worker bootstrap与有界release。`cmd/agentserver-dev prepare --insecure-dev`又把同一runtime authority派生为不可覆盖的开发PKI、secrets、Core bootstrap、worker deployment、分服务env和无secret agentx argv，并通过所有现有配置loader；开发attempt anchor的app traversal mode矛盾也已修正。后续仍须扩展approval通道并实现生产capability/object-store adapter；开发命令和library测试都不能替代这些生产边界。
 
-Phase 4的协议前置子阶段已完成下一段接线：canonical run-event schema/AsyncAPI、AG-UI SDK pin、A2UI v0.9 display builders、严格projector、public CreateRun/event cursor、Hydra token introspection、HMAC cursor、真实core backend及browser-gateway command/health/config均已有实现和门禁；worker↔pool control中的app-server notification/MCP progress也已成为core committed canonical event并接入AG-UI投影。下一步先用新装配的常驻开发harness-pool补齐可重复启动的本地端到端环境和真实turn smoke test，再补Hydra login/consent bridge、approval/cancel和reference web；生产对象存储/capability adapter及部署门禁仍是生产化必做项。当前plaintext对象目录、共享开发HMAC和queued SSE只提供联调能力，仍不等于完整产品run可用。
+Phase 4的协议前置子阶段已完成下一段接线：canonical run-event schema/AsyncAPI、AG-UI SDK pin、A2UI v0.9 display builders、严格projector、public CreateRun/event cursor、Hydra token introspection、HMAC cursor、真实core backend及browser-gateway command/health/config均已有实现和门禁；worker↔pool control中的app-server notification/MCP progress也已成为core committed canonical event并接入AG-UI投影。可重复开发启动材料已经生成，下一步补固定opaque bearer的loopback Hydra introspection fixture和校验动态`aud=llmproxy` capability的scripted Responses fixture，再在PostgreSQL + Linux privileged runtime上执行真实AG-UI → checkpoint smoke；之后补Hydra login/consent bridge、approval/cancel和reference web。生产对象存储/capability adapter及部署门禁仍是生产化必做项。当前plaintext对象目录、共享开发HMAC和queued SSE只提供联调能力，仍不等于完整产品run可用。
 
 ## 14. 尚未锁定但有明确决策点的事项
 

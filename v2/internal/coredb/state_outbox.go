@@ -22,6 +22,7 @@ WITH candidates AS (
     SELECT id
     FROM %s
     WHERE completed_at IS NULL
+      AND kind <> '%s'
       AND available_at <= pg_catalog.clock_timestamp()
       AND (lock_until IS NULL OR lock_until <= pg_catalog.clock_timestamp())
     ORDER BY available_at, id
@@ -40,7 +41,7 @@ WITH candidates AS (
 SELECT id, kind, aggregate_id, payload, available_at, lock_owner,
        lock_until, attempts, created_at
 FROM claimed
-ORDER BY available_at, id`, s.table("outbox"), s.table("outbox"))
+ORDER BY available_at, id`, s.table("outbox"), runQueuedOutboxKind, s.table("outbox"))
 		rows, err := transaction.Query(ctx, query, command.Limit, command.Owner, lockMilliseconds)
 		if err != nil {
 			return nil, databaseError(operation, err)
@@ -167,7 +168,8 @@ SELECT COALESCE(lock_owner, ''::text), attempts,
        completed_at IS NOT NULL
 FROM %s
 WHERE id = $1
-FOR UPDATE`, s.table("outbox"))
+  AND kind <> '%s'
+FOR UPDATE`, s.table("outbox"), runQueuedOutboxKind)
 	var claim lockedOutboxClaim
 	if err := transaction.QueryRow(ctx, query, id).Scan(&claim.owner, &claim.generation, &claim.live, &claim.completed); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

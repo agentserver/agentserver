@@ -3,11 +3,54 @@
   "info": {
     "title": "agentserver v2 internal command API",
     "version": "0.1.0",
-    "description": "Run-attempt, executor connection, environment registry, and execution state commands. Every endpoint requires the explicitly authorized component workload identity."
+    "description": "Run-dispatch, run-attempt, executor connection, environment registry, and execution state commands. Every endpoint requires the explicitly authorized component workload identity."
   },
   "servers": [{"url": "https://agentserver-core"}],
   "security": [{"workloadMTLS": []}],
   "paths": {
+    "/internal/v2/run-dispatches:claim": {
+      "post": {
+        "operationId": "claimRunDispatches",
+        "description": "Long-polls and generation-fences the scheduler-only run.queued outbox lane.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ClaimRunDispatchesRequest"}}}},
+        "responses": {
+          "200": {"description": "Zero or more claimed queued-run facts", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ClaimRunDispatchesResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/run-dispatches/{runDispatchId}:complete": {
+      "parameters": [{"$ref": "#/components/parameters/RunDispatchId"}],
+      "post": {
+        "operationId": "completeRunDispatch",
+        "description": "Completes a claimed dispatch only after its run crossed turn acceptance or became terminal.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CompleteRunDispatchRequest"}}}},
+        "responses": {
+          "200": {"description": "Dispatch completed or already completed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CompleteRunDispatchResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/run-dispatches/{runDispatchId}:release": {
+      "parameters": [{"$ref": "#/components/parameters/RunDispatchId"}],
+      "post": {
+        "operationId": "releaseRunDispatch",
+        "description": "Releases the exact live dispatch claim with a bounded database-clock retry delay.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReleaseRunDispatchRequest"}}}},
+        "responses": {
+          "200": {"description": "Dispatch released or already completed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReleaseRunDispatchResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
     "/internal/v2/run-attempts:claim": {
       "post": {
         "operationId": "claimRunAttempt",
@@ -250,7 +293,8 @@
       "ExecutorId": {"name": "executorId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "ExecutionId": {"name": "executionId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "OperationId": {"name": "operationId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
-      "RunAttemptId": {"name": "runAttemptId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}}
+      "RunAttemptId": {"name": "runAttemptId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
+      "RunDispatchId": {"name": "runDispatchId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}}
     },
     "responses": {
       "CommandError": {
@@ -261,6 +305,77 @@
     "schemas": {
       "UUID": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "not": {"const": "00000000-0000-0000-0000-000000000000"}},
       "SHA256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+      "ClaimRunDispatchesRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ownerId", "limit", "lockTtlMs", "waitTimeoutMs"],
+        "properties": {
+          "ownerId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+          "lockTtlMs": {"type": "integer", "minimum": 1, "maximum": 3600000},
+          "waitTimeoutMs": {"type": "integer", "minimum": 0, "maximum": 30000}
+        }
+      },
+      "RunDispatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["runDispatchId", "workspaceId", "sessionId", "runId", "enqueuedRunVersion", "currentRunVersion", "currentRunStatus", "claimOwnerId", "claimGeneration", "availableAt", "lockExpiresAt", "createdAt"],
+        "properties": {
+          "runDispatchId": {"$ref": "#/components/schemas/UUID"},
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "sessionId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "enqueuedRunVersion": {"type": "integer", "minimum": 1},
+          "currentRunVersion": {"type": "integer", "minimum": 1},
+          "currentRunStatus": {"enum": ["queued", "starting", "running", "finalizing", "completed", "failed", "interrupted", "cancelling", "cancelled"]},
+          "claimOwnerId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "claimGeneration": {"type": "integer", "minimum": 1},
+          "availableAt": {"type": "string", "format": "date-time"},
+          "lockExpiresAt": {"type": "string", "format": "date-time"},
+          "createdAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "ClaimRunDispatchesResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["runDispatches"],
+        "properties": {
+          "runDispatches": {"type": "array", "maxItems": 100, "items": {"$ref": "#/components/schemas/RunDispatch"}}
+        }
+      },
+      "CompleteRunDispatchRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["runId", "ownerId", "claimGeneration"],
+        "properties": {
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "ownerId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "claimGeneration": {"type": "integer", "minimum": 1}
+        }
+      },
+      "CompleteRunDispatchResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["completed"],
+        "properties": {"completed": {"type": "boolean"}}
+      },
+      "ReleaseRunDispatchRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["runId", "ownerId", "claimGeneration", "retryAfterMs"],
+        "properties": {
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "ownerId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "claimGeneration": {"type": "integer", "minimum": 1},
+          "retryAfterMs": {"type": "integer", "minimum": 0, "maximum": 86400000}
+        }
+      },
+      "ReleaseRunDispatchResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["released"],
+        "properties": {"released": {"type": "boolean"}}
+      },
       "RunState": {
         "type": "object",
         "additionalProperties": false,

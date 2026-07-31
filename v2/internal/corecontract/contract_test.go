@@ -45,6 +45,9 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 		t.Fatalf("internal OpenAPI identity/security = %q / %+v", document.OpenAPI, document.Security)
 	}
 	want := map[string]string{
+		ClaimRunDispatchesPath:                                       "claimRunDispatches",
+		CompleteRunDispatchPath("{runDispatchId}"):                   "completeRunDispatch",
+		ReleaseRunDispatchPath("{runDispatchId}"):                    "releaseRunDispatch",
 		ClaimRunAttemptPath:                                          "claimRunAttempt",
 		RenewRunAttemptPath("{runAttemptId}"):                        "renewRunAttempt",
 		MarkTurnAcceptedPath("{runAttemptId}"):                       "markTurnAccepted",
@@ -82,6 +85,13 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "ListExecutorEnvironmentsRequest", reflect.TypeFor[ListExecutorEnvironmentsRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "ExecutorEnvironment", reflect.TypeFor[ExecutorEnvironment]())
 	assertSchemaFields(t, document.Components.Schemas, "ListExecutorEnvironmentsResponse", reflect.TypeFor[ListExecutorEnvironmentsResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "ClaimRunDispatchesRequest", reflect.TypeFor[ClaimRunDispatchesRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "RunDispatch", reflect.TypeFor[RunDispatch]())
+	assertSchemaFields(t, document.Components.Schemas, "ClaimRunDispatchesResponse", reflect.TypeFor[ClaimRunDispatchesResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "CompleteRunDispatchRequest", reflect.TypeFor[CompleteRunDispatchRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "CompleteRunDispatchResponse", reflect.TypeFor[CompleteRunDispatchResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "ReleaseRunDispatchRequest", reflect.TypeFor[ReleaseRunDispatchRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "ReleaseRunDispatchResponse", reflect.TypeFor[ReleaseRunDispatchResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "RunState", reflect.TypeFor[RunState]())
 	assertSchemaFields(t, document.Components.Schemas, "RunAttemptState", reflect.TypeFor[RunAttemptState]())
 	assertSchemaFields(t, document.Components.Schemas, "LeaseState", reflect.TypeFor[LeaseState]())

@@ -530,6 +530,8 @@ outbox claim 使用 SKIP LOCKED 与 lock_until。consumer crash 后可以再次 
 
 `attempts`同时是outbox claim generation。claim、complete与release都以数据库时钟判断`lock_until`；complete/release要求exact owner和generation，过期claim在另一consumer重领后只能得到`outbox_claim_lost`。已经完成的row再次complete是无副作用成功，不重新投递。
 
+outbox row是单消费者delivery，不是广播订阅。每类产品consumer必须通过core暴露的kind-scoped领域接口领取，不能直接使用无过滤claim：`run.queued`专属于harness scheduler lane，其他canonical event notification保留给event relay。浏览器的首个`RUN_STARTED`来自CreateRun响应，重连事实来自run event cursor；不能为了广播同一outbox row让pool与relay竞态消费。未来若同一事实确实需要多个异步subscriber，必须显式写多条destination delivery或引入subscription表，不能让多个consumer共享一个`completed_at`。
+
 这里的core所有权只覆盖canonical run event ledger：harness、executor-gateway和用户命令产生候选事件，core负责校验lease/generation、去重、分配权威run seq，并在需要时与aggregate状态和outbox原子提交。debug log、metric、trace和不参与恢复的内部notification不进入run_events。大stdout、长模型内容或大MCP结果先写对象存储，core只提交已验证hash的pointer；高频canonical event必须批量append，瞬时progress可以合并或限频。
 
 事件投递不是core的权威写职责。browser-gateway或可独立扩缩容的relay负责缓存、SSE fan-out和下游投影；它们只能消费已经提交的event/outbox，不能自行签发run seq或修正历史。Phase 1先保留清晰的event domain/API边界，不新增第二个权威event service，避免为state + event引入分布式事务。
@@ -590,6 +592,10 @@ POST /internal/v2/run-attempts/{attemptId}:beginFinalization
 POST /internal/v2/run-attempts/{attemptId}:commitCheckpoint
 POST /internal/v2/run-attempts/{attemptId}:interrupt
 GET  /internal/v2/run-attempts/{attemptId}/toolCatalog
+
+POST /internal/v2/run-dispatches:claim
+POST /internal/v2/run-dispatches/{dispatchId}:complete
+POST /internal/v2/run-dispatches/{dispatchId}:release
 
 POST /internal/v2/executions:prepare
 POST /internal/v2/executions/{executionId}/operations:prepare
@@ -768,9 +774,13 @@ Job backoffLimit=0。worker容器崩溃后 Kubernetes不自动重启相同 attem
 
 Phase 1 的 worker control resume也只覆盖原 harness-pool holder进程仍存活的短时断线。worker直连 manifest中的 holder实例，不经普通 Service随机换 pod；holder崩溃、callback不可达或 lease过期后，worker在 grace内 interrupt并退出。若 turn尚未被 app-server接受，core可创建新 attempt；否则 run进入 interrupted。跨 controller接管现有 worker需要独立 owner-routing设计，不在首版承诺。
 
-Phase 3第一段先建立了pool不能绕过的core command边界：内部OpenAPI和typed client/handler提供`run-attempts:claim`、成对续租、`turnAccepted`与有界事件批量append。claim当前接收一个由已提交`run.queued` outbox事实定位的明确run ID与权威run version；该outbox payload同时携带`workspaceId`、`sessionId`、`runId`和`runVersion`，controller不能自行猜测版本。“查找下一个queued run”的调度/long-poll尚未实现，不能靠扫描后无条件抢占。session lease与attempt lease在同一数据库transaction续期，任一holder/generation/expiry检查失败会回滚另一半，避免半续租。每批事件只由core分配权威run seq，inline payload保持64 KiB单项和256项批量上限，大对象仍只传已hash的pointer。
+Phase 3第一段先建立了pool不能绕过的core command边界：内部OpenAPI和typed client/handler提供`run-attempts:claim`、成对续租、`turnAccepted`与有界事件批量append。claim接收一个由已提交`run.queued`事实定位的明确run ID与权威run version；该outbox payload同时携带`workspaceId`、`sessionId`、`runId`和初始`runVersion`，controller不能自行猜测版本。session lease与attempt lease在同一数据库transaction续期，任一holder/generation/expiry检查失败会回滚另一半，避免半续租。每批事件只由core分配权威run seq，inline payload保持64 KiB单项和256项批量上限，大对象仍只传已hash的pointer。
 
-该入口使用独立harness-pool SPIFFE identity；executor-gateway identity不能调用这些命令，core配置相同identity会拒绝启动，携带多个URI workload identity的证书也会fail closed。当前仍没有pool controller循环、签名run manifest、Job/worker control stream或checkpoint commit，所以这只是Phase 3控制面的第一条可调用边界，不代表harness vertical slice已经交付。
+第二段已经加入scheduler-only的`run-dispatches:claim|complete|release`边界。claim只对`run.queued`做`FOR UPDATE SKIP LOCKED`，同时返回入队版本以及同一transaction读取的当前run status/version；最多30秒的有界long-poll以数据库poll为事实源，未来LISTEN/NOTIFY只能优化唤醒。dispatch的`owner + claim generation`使用数据库时钟fence，pool无权领取或释放其他outbox kind。dispatch在run仍为`queued|starting`时不能complete：pool/Job在turn接受前崩溃后，lock与attempt lease过期会让同一事实再次可见；一旦run进入`running`或terminal，迟到consumer可安全清理残留delivery。
+
+pool侧reference controller每次只领一项，以一次分配的attempt/event/outbox身份执行exact claim；普通transport错误只用同一组身份立即重试一次，不能分配第二组身份猜测第一次是否提交。`lease_held|version_conflict`会generation-fenced release并等待新投影，`running|terminal`残留项只调用由core状态守卫的complete。该controller当前只返回已取得双lease的`ScheduledRunAttempt`给下一层，尚未创建Kubernetes Job，也没有宣称已经在运行常驻controller进程。
+
+这些入口使用独立harness-pool SPIFFE identity；executor-gateway identity不能调用这些命令，core配置相同identity会拒绝启动，携带多个URI workload identity的证书也会fail closed。当前仍没有harness-pool命令入口/常驻循环、签名run manifest、Job/worker control stream或checkpoint commit，所以这只是可测试的调度与attempt控制内核，不代表harness vertical slice已经交付。
 
 ### 8.2 run manifest
 
@@ -1111,7 +1121,7 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 第12项目前已完成connection kernel、真实WSS路由，以及独立agentx仓库中的connector/runner IPC、远端lifecycle、registered-root/cwd本地复核、monotonic timeout signal、每process独占的stock `codex exec-server --listen stdio --strict-config`监管和一次性fs-only bounded-read lane；真实stock纵向门禁已通过。本仓已完成online environment registry、三工具stateful MCP链、七个execution/operation mTLS command/client，以及shell-v1和read-file-v1两条`Prepare → Begin → dispatch → ACK/unknown → operation/execution terminal → MCP result`链。approval command、真实enrollment/key binding、gateway进程丢失后的unknown恢复审计、平台containment和部署manifest仍未实现；当前入口明确标为loopback insecure-dev，不能作为Phase 2交付或生产部署证据。
 
-Phase 3当前从第13项开始：先暴露已有run/attempt/event状态内核的component API，并用独立harness-pool workload identity、原子双lease续期和typed client锁住边界。后续仍须实现outbox驱动的claim/controller、冻结并签名run manifest、per-attempt Job/control stream、finalization与checkpoint CAS；这些不能由当前command API的存在替代。
+Phase 3当前从第13项开始：已有run/attempt/event component API、独立harness-pool workload identity、原子双lease续期、`run.queued`专用long-poll delivery和pool侧单项claim controller内核。后续仍须实现harness-pool命令入口与监督循环、冻结并签名run manifest、per-attempt Job/control stream、finalization与checkpoint CAS；这些不能由当前command API和内存controller类型的存在替代。
 
 ## 14. 尚未锁定但有明确决策点的事项
 

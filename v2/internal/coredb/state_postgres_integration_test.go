@@ -420,11 +420,11 @@ func TestPostgreSQLOutboxSkipLockedAndClaimFencing(t *testing.T) {
 	}
 
 	first, err := store.ClaimOutbox(t.Context(), ClaimOutboxCommand{Owner: "relay-a", Limit: 1, LockTTL: time.Minute})
-	if err != nil || len(first) != 1 || first[0].ClaimGeneration != 1 {
+	if err != nil || len(first) != 1 || first[0].ClaimGeneration != 1 || first[0].Kind == runQueuedOutboxKind {
 		t.Fatalf("first ClaimOutbox() = %+v, error = %v", first, err)
 	}
 	second, err := store.ClaimOutbox(t.Context(), ClaimOutboxCommand{Owner: "relay-b", Limit: 10, LockTTL: time.Minute})
-	if err != nil || len(second) != 2 {
+	if err != nil || len(second) != 1 || second[0].Kind == runQueuedOutboxKind {
 		t.Fatalf("second ClaimOutbox() = %+v, error = %v", second, err)
 	}
 	for _, message := range second {
@@ -467,6 +467,81 @@ func TestPostgreSQLOutboxSkipLockedAndClaimFencing(t *testing.T) {
 	})
 	if err != nil || completed {
 		t.Fatalf("idempotent CompleteOutbox() completed = %v, error = %v", completed, err)
+	}
+}
+
+func TestPostgreSQLRunDispatchIsKindIsolatedAndRecoverableUntilTurnAcceptance(t *testing.T) {
+	store, pool, schema := newPostgresStateStore(t)
+	workspaceID := stateTestUUID(450)
+	sessionID := stateTestUUID(451)
+	insertStateTestSession(t, pool, schema, workspaceID, sessionID)
+	created := mustCreateStateRun(t, store, stateCreateRunCommand(460, workspaceID, sessionID, "dispatch-key"))
+
+	first, err := store.ClaimRunDispatches(t.Context(), ClaimRunDispatchesCommand{Owner: "pool-a", Limit: 1, LockTTL: time.Minute})
+	if err != nil || len(first) != 1 {
+		t.Fatalf("first ClaimRunDispatches() = %+v, error = %v", first, err)
+	}
+	dispatch := first[0]
+	if dispatch.ID != stateCreateRunCommand(460, workspaceID, sessionID, "dispatch-key").Record.OutboxID ||
+		dispatch.RunID != created.Run.ID || dispatch.WorkspaceID != workspaceID || dispatch.SessionID != sessionID ||
+		dispatch.EnqueuedRunVersion != 1 || dispatch.CurrentRunVersion != 1 || dispatch.CurrentRunStatus != RunStatusQueued ||
+		dispatch.ClaimOwner != "pool-a" || dispatch.ClaimGeneration != 1 {
+		t.Fatalf("first run dispatch = %+v", dispatch)
+	}
+	if _, err := store.CompleteOutbox(t.Context(), CompleteOutboxCommand{
+		ID: dispatch.ID, Owner: dispatch.ClaimOwner, ClaimGeneration: dispatch.ClaimGeneration,
+	}); !HasStateErrorCode(err, ErrorNotFound) {
+		t.Fatalf("generic CompleteOutbox(run.queued) error = %v, want not_found", err)
+	}
+	released, err := store.ReleaseRunDispatch(t.Context(), ReleaseRunDispatchCommand{
+		ID: dispatch.ID, RunID: dispatch.RunID, Owner: dispatch.ClaimOwner, ClaimGeneration: dispatch.ClaimGeneration,
+	})
+	if err != nil || !released {
+		t.Fatalf("ReleaseRunDispatch() released = %v, error = %v", released, err)
+	}
+
+	reclaimed, err := store.ClaimRunDispatches(t.Context(), ClaimRunDispatchesCommand{Owner: "pool-b", Limit: 1, LockTTL: time.Minute})
+	if err != nil || len(reclaimed) != 1 || reclaimed[0].ID != dispatch.ID || reclaimed[0].ClaimGeneration != 2 {
+		t.Fatalf("reclaimed ClaimRunDispatches() = %+v, error = %v", reclaimed, err)
+	}
+	dispatch = reclaimed[0]
+	if _, err := store.ReleaseRunDispatch(t.Context(), ReleaseRunDispatchCommand{
+		ID: dispatch.ID, RunID: dispatch.RunID, Owner: "pool-a", ClaimGeneration: 1,
+	}); !HasStateErrorCode(err, ErrorOutboxClaimLost) {
+		t.Fatalf("stale ReleaseRunDispatch() error = %v, want outbox_claim_lost", err)
+	}
+
+	attempt := mustClaimStateRun(t, store, stateClaimRunCommand(470, created.Run.ID, dispatch.CurrentRunVersion, "attempt-holder"))
+	if _, err := store.CompleteRunDispatch(t.Context(), CompleteRunDispatchCommand{
+		ID: dispatch.ID, RunID: dispatch.RunID, Owner: dispatch.ClaimOwner, ClaimGeneration: dispatch.ClaimGeneration,
+	}); !HasStateErrorCode(err, ErrorInvalidState) {
+		t.Fatalf("pre-turn CompleteRunDispatch() error = %v, want invalid_state", err)
+	}
+	if _, err := store.MarkTurnAccepted(t.Context(), MarkTurnAcceptedCommand{
+		RunID: created.Run.ID, AttemptID: attempt.Attempt.ID, HolderID: "attempt-holder", Generation: attempt.Attempt.Generation,
+		ExpectedRunVersion: attempt.Run.Version, ExpectedAttemptVersion: attempt.Attempt.Version,
+		Record: stateTransitionRecord(480),
+	}); err != nil {
+		t.Fatalf("MarkTurnAccepted() error = %v", err)
+	}
+	completed, err := store.CompleteRunDispatch(t.Context(), CompleteRunDispatchCommand{
+		ID: dispatch.ID, RunID: dispatch.RunID, Owner: dispatch.ClaimOwner, ClaimGeneration: dispatch.ClaimGeneration,
+	})
+	if err != nil || !completed {
+		t.Fatalf("CompleteRunDispatch() completed = %v, error = %v", completed, err)
+	}
+	completed, err = store.CompleteRunDispatch(t.Context(), CompleteRunDispatchCommand{
+		ID: dispatch.ID, RunID: dispatch.RunID, Owner: dispatch.ClaimOwner, ClaimGeneration: dispatch.ClaimGeneration,
+	})
+	if err != nil || completed {
+		t.Fatalf("idempotent CompleteRunDispatch() completed = %v, error = %v", completed, err)
+	}
+
+	// attempt.leased and turn.accepted outbox rows remain available for their
+	// own consumer; the scheduler lane must not claim them.
+	none, err := store.ClaimRunDispatches(t.Context(), ClaimRunDispatchesCommand{Owner: "pool-c", Limit: 10, LockTTL: time.Minute})
+	if err != nil || len(none) != 0 {
+		t.Fatalf("kind-isolated ClaimRunDispatches() = %+v, error = %v", none, err)
 	}
 }
 

@@ -102,7 +102,13 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	if err != nil {
 		return err
 	}
+	runDispatchHandler, err := coreserver.NewRunDispatchHandler(harnessPoolAuthorizer, coreserver.StateStoreRunDispatchCommands{Store: store})
+	if err != nil {
+		return err
+	}
 	handler := http.NewServeMux()
+	handler.Handle(corecontract.ClaimRunDispatchesPath, runDispatchHandler)
+	handler.Handle(corecontract.RunDispatchPathPrefix, runDispatchHandler)
 	handler.Handle(corecontract.ClaimRunAttemptPath, runAttemptHandler)
 	handler.Handle(corecontract.RunAttemptPathPrefix, runAttemptHandler)
 	handler.Handle(corecontract.ListExecutorEnvironmentsPath, environmentHandler)

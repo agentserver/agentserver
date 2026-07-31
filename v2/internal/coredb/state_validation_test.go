@@ -2,6 +2,7 @@ package coredb
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -117,6 +118,12 @@ func TestLeaseAndOutboxBounds(t *testing.T) {
 	if _, err := validateClaimOutbox(ClaimOutboxCommand{Owner: "relay", Limit: MaxOutboxClaimBatch + 1, LockTTL: time.Minute}); err == nil {
 		t.Fatal("oversized outbox claim accepted")
 	}
+	if _, err := validateClaimRunDispatches(ClaimRunDispatchesCommand{Owner: "pool", Limit: MaxOutboxClaimBatch, LockTTL: time.Minute}); err != nil {
+		t.Fatalf("maximum run dispatch claim error = %v", err)
+	}
+	if _, err := validateClaimRunDispatches(ClaimRunDispatchesCommand{Owner: "pool", Limit: 0, LockTTL: time.Minute}); err == nil {
+		t.Fatal("empty run dispatch claim accepted")
+	}
 	validRenewal := RenewRunAttemptLeasesCommand{
 		SessionID: stateTestUUID(1200), RunID: stateTestUUID(1201), AttemptID: stateTestUUID(1202),
 		HolderID: "holder", Generation: 1, LeaseTTL: time.Minute,
@@ -127,6 +134,34 @@ func TestLeaseAndOutboxBounds(t *testing.T) {
 	validRenewal.SessionID = ""
 	if _, err := validateRenewRunAttemptLeases(validRenewal); err == nil {
 		t.Fatal("atomic lease renewal accepted an empty session identity")
+	}
+}
+
+func TestDecodeQueuedRunDispatchPayloadIsStrict(t *testing.T) {
+	payload := fmt.Sprintf(`{"workspaceId":%q,"sessionId":%q,"runId":%q,"runVersion":1}`,
+		stateTestUUID(1300), stateTestUUID(1301), stateTestUUID(1302))
+	decoded, err := decodeQueuedRunDispatchPayload([]byte(payload))
+	if err != nil || decoded.RunVersion != 1 {
+		t.Fatalf("decodeQueuedRunDispatchPayload() = %+v, %v", decoded, err)
+	}
+	if _, err := decodeQueuedRunDispatchPayload([]byte(payload[:len(payload)-1] + `,"unexpected":true}`)); err == nil {
+		t.Fatal("run dispatch payload with an unknown field was accepted")
+	}
+}
+
+func TestRunDispatchCompletionStatesFailClosed(t *testing.T) {
+	for _, status := range []string{RunStatusQueued, RunStatusStarting, "future_state", ""} {
+		if runDispatchCanComplete(status) {
+			t.Errorf("runDispatchCanComplete(%q) = true", status)
+		}
+	}
+	for _, status := range []string{
+		RunStatusRunning, RunStatusFinalizing, RunStatusCompleted, RunStatusFailed,
+		RunStatusInterrupted, RunStatusCancelling, RunStatusCancelled,
+	} {
+		if !runDispatchCanComplete(status) {
+			t.Errorf("runDispatchCanComplete(%q) = false", status)
+		}
 	}
 }
 

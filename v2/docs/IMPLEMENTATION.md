@@ -806,7 +806,9 @@ pool `ControlServer`在WebSocket升级前同时要求TLS栈已验证且只有一
 
 worker侧现在会从 inherited pipe 一次读完closed-world bootstrap、立即关闭FD、按overlap keyring验签并生成新的worker instance UUID；control client完成fresh握手、mTLS与精确pool SPIFFE校验、bearer不跨redirect、interrupt有界投递、累计ACK及原holder 30秒精确resume。pool在生命周期core authority完成后才ACK；ACK字节丢失时resume cursor确认已提交事件，不重复调用authority。真实mTLS WebSocket与race测试覆盖完整生命周期、错误SPIFFE/bearer/redirect以及提交后ACK丢失。app-server runner也已在thread ready与turn accepted处同步跨越该control边界，turn acceptance失败会走`turn/interrupt`收口。
 
-这一层仍未实现app-server真实child/final-exec装配、prompt/checkpoint对象读取、checkpoint chunks和core finalization，也尚未装配可运行的`cmd/harness-worker`与`cmd/harness-pool`。当前`completed` terminal只证明该次worker runtime干净停止，绝不等于run已在core持久化为completed，因此仍不能把控制流测试当成可部署或可恢复证据。
+app-server真实child/final-exec的独立进程层现已实现：`AppServerProcess`是stdio唯一owner，使用封闭且排序的child环境（只含固定运行环境和app-only llmproxy capability）、有界frame/stderr、幂等stdin EOF与Wait屏障；Linux生产路径先把trampoline切到固定app UID，worker随即all-thread seal自身身份，`harness-final-exec`再清child capability、设置`no_new_privs`/non-dumpable、close-all并固定exec `codex app-server --listen stdio:// --strict-config`。argv不承载秘密，executor MCP/control/bootstrap credential在child环境类型中没有表示。该层已有确定性helper进程测试，但尚未接入可运行worker主状态机。
+
+仍未实现的是prompt/checkpoint对象读取、worker runtime秘密bootstrap、checkpoint chunks和core finalization，也尚未装配可运行的`cmd/harness-worker`与`cmd/harness-pool`。当前`completed` terminal只证明该次worker runtime干净停止，绝不等于run已在core持久化为completed，因此仍不能把控制流或child进程测试当成可部署或可恢复证据。
 
 ### 8.2 run manifest
 
@@ -859,7 +861,7 @@ worker的run-manifest validator对executor MCP独立要求`https` scheme、规�
 
 这只是关键字段示意；完整feature/requirements键必须由所pin版本的config schema、`configRequirements/read`、零MCP bootstrap和实际model tool capture共同验证，不能复制示例后假定生效。0.145.0不认识`update_plan`禁用机制，因此仍被A03拒绝；stable 0.146.0已经通过dynamic-tool-only与deny-all gate。direct-MCP resource handler bypass继续作为负向回归，不能把executor重新配置进Codex。
 
-worker先把checkpoint allowlist恢复到全新`CODEX_HOME`，断言staging严格匹配manifest，再写入本attempt新config；checkpoint无权覆盖配置。对当前已验证build，allowlist就是该brain thread的单个rollout JSONL，SQLite/WAL/SHM均不恢复。worker随后用自身credential初始化executor MCP，规范化`tools/list`并与manifest/catalog digest逐字节比较；不一致则在启动turn前失败。最后以manifest中的绝对路径启动`codex app-server --listen stdio:// --strict-config`。strict-config只拒绝未知字段，不能替代tool capture和OS/网络隔离。
+worker先把checkpoint allowlist恢复到全新`CODEX_HOME`，断言staging严格匹配manifest，再写入本attempt新config；checkpoint无权覆盖配置。对当前已验证build，allowlist就是该brain thread的单个rollout JSONL，SQLite/WAL/SHM均不恢复。worker随后用自身credential初始化executor MCP，规范化`tools/list`并与manifest/catalog digest逐字节比较；不一致则在启动turn前失败。最后以manifest中的绝对路径启动`harness-final-exec`，由它固定exec `codex app-server --listen stdio:// --strict-config`。strict-config只拒绝未知字段，不能替代tool capture、final-exec和OS/网络隔离。
 
 新thread的`thread/start`显式发送`environments: []`、`approvalPolicy: "never"`、从冻结catalog机械生成的`dynamicTools`和空`selectedCapabilityRoots`；每次`turn/start`也发送空environments。当前`ThreadResumeParams`没有environments或dynamicTools字段，cold resume固定发送rollout path与`excludeTurns: true`，收到RPC response后直接进入turn/start，不等待`thread/started` notification。resume前必须确认catalog digest与checkpoint相同；变化时创建新thread。cwd指向空、只读的非工作树目录。
 
@@ -1161,9 +1163,9 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 第12项目前已完成connection kernel、真实WSS路由，以及独立agentx仓库中的connector/runner IPC、远端lifecycle、registered-root/cwd本地复核、monotonic timeout signal、每process独占的stock `codex exec-server --listen stdio --strict-config`监管和一次性fs-only bounded-read lane；真实stock纵向门禁已通过。本仓已完成online environment registry、三工具stateful MCP链、七个execution/operation mTLS command/client，以及shell-v1和read-file-v1两条`Prepare → Begin → dispatch → ACK/unknown → operation/execution terminal → MCP result`链。approval command、真实enrollment/key binding、gateway进程丢失后的unknown恢复审计、平台containment和部署manifest仍未实现；当前入口明确标为loopback insecure-dev，不能作为Phase 2交付或生产部署证据。
 
-Phase 3当前从第13项开始：已有run/attempt/event component API、独立harness-pool workload identity、原子双lease续期、`run.queued`专用long-poll delivery、pool侧单项claim controller内核、brain catalog冻结/线程绑定core API、签名manifest launch-preparer、受限私钥装载/公钥轮换keyring、deployment profile resolver、由`CreateRun`原子持久化并由live attempt fence保护的core-backed launch-state source，以及带有界并发、lease心跳、thread/turn顺序门和dispatch清理语义的常驻监督骨架；checkpoint恢复会复用原thread绑定catalog。per-attempt control机器合同、同holder进程resume journal、双向control server/client、mTLS+bearer入口、具体`ControlAttemptSupervisor`、本地process launcher、closed-world bootstrap pipe及worker验签入口也已完成。后续仍须实现app-server真实child/final-exec、prompt/checkpoint对象读取、可运行的harness-pool/worker命令装配、finalization与checkpoint CAS写路径；这些不能由当前control terminal或抽象workload接口替代。
+Phase 3当前从第13项开始：已有run/attempt/event component API、独立harness-pool workload identity、原子双lease续期、`run.queued`专用long-poll delivery、pool侧单项claim controller内核、brain catalog冻结/线程绑定core API、签名manifest launch-preparer、受限私钥装载/公钥轮换keyring、deployment profile resolver、由`CreateRun`原子持久化并由live attempt fence保护的core-backed launch-state source，以及带有界并发、lease心跳、thread/turn顺序门和dispatch清理语义的常驻监督骨架；checkpoint恢复会复用原thread绑定catalog。per-attempt control机器合同、同holder进程resume journal、双向control server/client、mTLS+bearer入口、具体`ControlAttemptSupervisor`、本地process launcher、closed-world bootstrap pipe及worker验签入口也已完成。真实app-server child/final-exec进程层也已完成独立装配和测试，但还没有接入worker主状态机。后续仍须实现prompt/checkpoint对象读取与runtime秘密bootstrap、可运行的harness-pool/worker命令装配、finalization与checkpoint CAS写路径；这些不能由当前control terminal或抽象workload接口替代。
 
-Phase 4的协议前置子阶段已完成下一段接线：canonical run-event schema/AsyncAPI、AG-UI SDK pin、A2UI v0.9 display builders、严格projector、public CreateRun/event cursor、Hydra token introspection、HMAC cursor、真实core backend及browser-gateway command/health/config均已有实现和门禁。下一步回到Phase 3主链，完成app-server真实child/final-exec、prompt/checkpoint对象读取、可运行harness-pool/worker命令及finalization/checkpoint CAS；随后再补Hydra login/consent bridge、approval/cancel和reference web。当前开发plaintext prompt store与queued SSE没有改变真实模型链和生产对象存储尚未完成的事实。
+Phase 4的协议前置子阶段已完成下一段接线：canonical run-event schema/AsyncAPI、AG-UI SDK pin、A2UI v0.9 display builders、严格projector、public CreateRun/event cursor、Hydra token introspection、HMAC cursor、真实core backend及browser-gateway command/health/config均已有实现和门禁。下一步回到Phase 3主链，把已完成的app-server child/final-exec层接入prompt/checkpoint对象读取、runtime秘密bootstrap和可运行harness-pool/worker命令，再完成finalization/checkpoint CAS；随后再补Hydra login/consent bridge、approval/cancel和reference web。当前开发plaintext prompt store与queued SSE没有改变真实模型链和生产对象存储尚未完成的事实。
 
 ## 14. 尚未锁定但有明确决策点的事项
 

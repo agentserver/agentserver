@@ -276,7 +276,7 @@ harness-worker 只负责：
 
 - 校验不可变 run manifest 和 attempt generation，恢复已提交 checkpoint，创建清洗后的临时 `CODEX_HOME`；
 - 作为受限 MCP client连接 executor-gateway，校验 `tools/list` 与冻结 catalog/hash，机械生成 `thread/start.dynamicTools`；
-- 以绝对路径启动 pinned `codex app-server --listen stdio:// --strict-config`，完成 `initialize → initialized → thread/start|resume → turn/start`；`--strict-config` 只用于拒绝未知配置字段，能力隔离仍由下述组合与测试承担；
+- 以绝对路径启动 pinned 的小型 `harness-final-exec` trampoline；trampoline在固定 app UID 下清 capability、设置`no_new_privs`/non-dumpable、关闭fd 3以上，再原子替换为固定的`codex app-server --listen stdio:// --strict-config`。worker随后完成 `initialize → initialized → thread/start|resume → turn/start`；`--strict-config` 只用于拒绝未知配置字段，能力隔离仍由下述组合与测试承担；
 - 按 pinned schema 语义无损转接允许的 app-server notification 和 server-initiated request：保留 method/params payload，在 control envelope 中关联 request id、producer sequence 和 ACK，并做有界缓冲；未列入 allowlist 的 server request 一律 fail closed；
 - 将 `item/tool/call` 按冻结映射转成 MCP `tools/call`，把有界 MCP result写回原 app-server JSON-RPC request；
 - 将 executor-gateway 发给 MCP client的 elicitation/approval request转给 harness-pool/core，收到明确决定后再答复 gateway；

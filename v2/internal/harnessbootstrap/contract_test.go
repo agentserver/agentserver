@@ -63,6 +63,18 @@ func TestControlCapabilityValidationIsCanonicalAndRedacted(t *testing.T) {
 	}
 }
 
+func TestRuntimeCapabilityValidationIsBoundedAndRedacted(t *testing.T) {
+	valid := RuntimeCapabilities{ExecutorMCP: "executor-capability", LLMProxy: "llmproxy-capability"}
+	if err := ValidateRuntimeCapabilities(valid); err != nil {
+		t.Fatal(err)
+	}
+	secret := "this-runtime-secret-must-never-appear\n"
+	valid.ExecutorMCP = secret
+	if err := ValidateRuntimeCapabilities(valid); err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("invalid runtime capability error = %v", err)
+	}
+}
+
 func bootstrapSchemaDirectory(t *testing.T) string {
 	t.Helper()
 	_, currentFile, _, ok := runtime.Caller(0)

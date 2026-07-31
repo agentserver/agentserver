@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/harnessbootstrap"
 	"github.com/agentserver/agentserver/v2/internal/harnesscontrol"
 )
 
@@ -18,7 +19,8 @@ func TestControlAttemptSupervisorWaitsForCompletedTerminalAndStoppedWorkload(t *
 	lifecycle := &recordingAttemptLifecycle{}
 	workload := newSupervisorTestWorkload()
 	launcher := attemptWorkloadLauncherFunc(func(_ context.Context, launch AttemptWorkloadLaunch) (AttemptWorkload, error) {
-		if launch.Prepared.Manifest.RunAttemptID != prepared.Manifest.RunAttemptID || validateControlCapability(launch.ControlCapability) != nil {
+		if launch.Prepared.Manifest.RunAttemptID != prepared.Manifest.RunAttemptID || validateControlCapability(launch.ControlCapability) != nil ||
+			launch.RuntimeCapabilities != supervisorTestRuntimeCapabilities() {
 			return nil, errors.New("launcher received invalid attempt authority")
 		}
 		runtime := currentAttemptRuntime(t, server, prepared.Manifest.RunAttemptID)
@@ -169,6 +171,38 @@ func TestControlAttemptSupervisorRejectsWorkloadExitBeforeControl(t *testing.T) 
 	}
 }
 
+func TestControlAttemptSupervisorFailsBeforeForkWhenCapabilityIssuanceFails(t *testing.T) {
+	prepared := poolTestPreparedLaunch(t)
+	server := newSupervisorTestControlServer(t, prepared)
+	launches := 0
+	launcher := attemptWorkloadLauncherFunc(func(context.Context, AttemptWorkloadLaunch) (AttemptWorkload, error) {
+		launches++
+		return nil, errors.New("must not launch")
+	})
+	capabilityErr := errors.New("synthetic capability issuer unavailable")
+	supervisor, err := NewControlAttemptSupervisor(
+		server,
+		launcher,
+		attemptRuntimeCapabilitySourceFunc(func(context.Context, PreparedRunLaunch) (harnessbootstrap.RuntimeCapabilities, error) {
+			return harnessbootstrap.RuntimeCapabilities{}, capabilityErr
+		}),
+		ControlAttemptSupervisorConfig{StartupTimeout: time.Second, StopTimeout: time.Second, InterruptGrace: time.Second},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = supervisor.Supervise(t.Context(), prepared, &recordingAttemptLifecycle{})
+	if !errors.Is(err, capabilityErr) || launches != 0 {
+		t.Fatalf("capability failure = %v, launches=%d", err, launches)
+	}
+	server.mu.Lock()
+	registrations := len(server.byAttempt)
+	server.mu.Unlock()
+	if registrations != 0 {
+		t.Fatalf("capability failure leaked %d control registrations", registrations)
+	}
+}
+
 func newSupervisorTestControlServer(t *testing.T, prepared PreparedRunLaunch) *ControlServer {
 	t.Helper()
 	server, err := NewControlServer(testControlServerConfig(prepared))
@@ -180,13 +214,26 @@ func newSupervisorTestControlServer(t *testing.T, prepared PreparedRunLaunch) *C
 
 func newSupervisorForTest(t *testing.T, server *ControlServer, launcher AttemptWorkloadLauncher) *ControlAttemptSupervisor {
 	t.Helper()
-	supervisor, err := NewControlAttemptSupervisor(server, launcher, ControlAttemptSupervisorConfig{
+	supervisor, err := NewControlAttemptSupervisor(server, launcher, staticSupervisorCapabilities{}, ControlAttemptSupervisorConfig{
 		StartupTimeout: time.Second, StopTimeout: time.Second, InterruptGrace: time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return supervisor
+}
+
+type staticSupervisorCapabilities struct{}
+
+func (staticSupervisorCapabilities) IssueAttemptRuntimeCapabilities(context.Context, PreparedRunLaunch) (harnessbootstrap.RuntimeCapabilities, error) {
+	return supervisorTestRuntimeCapabilities(), nil
+}
+
+func supervisorTestRuntimeCapabilities() harnessbootstrap.RuntimeCapabilities {
+	return harnessbootstrap.RuntimeCapabilities{
+		ExecutorMCP: "supervisor-executor-capability",
+		LLMProxy:    "supervisor-llmproxy-capability",
+	}
 }
 
 func currentAttemptRuntime(t *testing.T, server *ControlServer, attemptID string) *attemptControlRuntime {
@@ -204,6 +251,12 @@ type attemptWorkloadLauncherFunc func(context.Context, AttemptWorkloadLaunch) (A
 
 func (launcher attemptWorkloadLauncherFunc) Launch(ctx context.Context, launch AttemptWorkloadLaunch) (AttemptWorkload, error) {
 	return launcher(ctx, launch)
+}
+
+type attemptRuntimeCapabilitySourceFunc func(context.Context, PreparedRunLaunch) (harnessbootstrap.RuntimeCapabilities, error)
+
+func (source attemptRuntimeCapabilitySourceFunc) IssueAttemptRuntimeCapabilities(ctx context.Context, prepared PreparedRunLaunch) (harnessbootstrap.RuntimeCapabilities, error) {
+	return source(ctx, prepared)
 }
 
 type supervisorTestWorkload struct {

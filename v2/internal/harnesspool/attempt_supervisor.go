@@ -7,14 +7,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/harnessbootstrap"
 	"github.com/agentserver/agentserver/v2/internal/harnesscontrol"
 )
 
 var ErrAttemptStoppedBeforeTerminal = errors.New("attempt workload stopped before a turn terminal event")
 
 type AttemptWorkloadLaunch struct {
-	Prepared          PreparedRunLaunch
-	ControlCapability string
+	Prepared            PreparedRunLaunch
+	ControlCapability   string
+	RuntimeCapabilities harnessbootstrap.RuntimeCapabilities
 }
 
 // AttemptWorkload is one already-created per-attempt process boundary. Wait
@@ -27,6 +29,14 @@ type AttemptWorkload interface {
 
 type AttemptWorkloadLauncher interface {
 	Launch(context.Context, AttemptWorkloadLaunch) (AttemptWorkload, error)
+}
+
+// AttemptRuntimeCapabilitySource mints two audience-separated, per-attempt
+// capabilities after the exact attempt has been registered and before a local
+// worker is forked. Implementations must bind both tokens to the manifest's
+// run ID, generation, catalog digest, audience, and hard duration.
+type AttemptRuntimeCapabilitySource interface {
+	IssueAttemptRuntimeCapabilities(context.Context, PreparedRunLaunch) (harnessbootstrap.RuntimeCapabilities, error)
 }
 
 type ControlAttemptSupervisorConfig struct {
@@ -65,14 +75,16 @@ func (err *AttemptTerminalError) Error() string {
 // one launched workload. It deliberately does not implement checkpoint/core
 // finalization; a completed terminal only means this runtime stopped cleanly.
 type ControlAttemptSupervisor struct {
-	controls *ControlServer
-	launcher AttemptWorkloadLauncher
-	config   ControlAttemptSupervisorConfig
+	controls     *ControlServer
+	launcher     AttemptWorkloadLauncher
+	capabilities AttemptRuntimeCapabilitySource
+	config       ControlAttemptSupervisorConfig
 }
 
 func NewControlAttemptSupervisor(
 	controls *ControlServer,
 	launcher AttemptWorkloadLauncher,
+	capabilities AttemptRuntimeCapabilitySource,
 	config ControlAttemptSupervisorConfig,
 ) (*ControlAttemptSupervisor, error) {
 	if controls == nil {
@@ -80,6 +92,9 @@ func NewControlAttemptSupervisor(
 	}
 	if launcher == nil {
 		return nil, errors.New("attempt workload launcher is required")
+	}
+	if capabilities == nil {
+		return nil, errors.New("attempt runtime capability source is required")
 	}
 	if config.StartupTimeout < time.Millisecond || config.StartupTimeout > time.Hour {
 		return nil, errors.New("attempt startup timeout must be between 1ms and 1h")
@@ -90,7 +105,7 @@ func NewControlAttemptSupervisor(
 	if config.InterruptGrace < time.Millisecond || config.InterruptGrace > 5*time.Minute {
 		return nil, errors.New("attempt interrupt grace must be between 1ms and 5m")
 	}
-	return &ControlAttemptSupervisor{controls: controls, launcher: launcher, config: config}, nil
+	return &ControlAttemptSupervisor{controls: controls, launcher: launcher, capabilities: capabilities, config: config}, nil
 }
 
 func (supervisor *ControlAttemptSupervisor) Supervise(
@@ -109,9 +124,16 @@ func (supervisor *ControlAttemptSupervisor) Supervise(
 		return fmt.Errorf("register attempt control: %w", err)
 	}
 	defer control.Close(errors.New("attempt supervision ended"))
+	runtimeCapabilities, err := supervisor.capabilities.IssueAttemptRuntimeCapabilities(ctx, prepared)
+	if err != nil {
+		return fmt.Errorf("issue attempt runtime capabilities: %w", err)
+	}
+	if err := harnessbootstrap.ValidateRuntimeCapabilities(runtimeCapabilities); err != nil {
+		return fmt.Errorf("validate attempt runtime capabilities: %w", err)
+	}
 
 	workload, err := supervisor.launcher.Launch(ctx, AttemptWorkloadLaunch{
-		Prepared: prepared, ControlCapability: control.Capability(),
+		Prepared: prepared, ControlCapability: control.Capability(), RuntimeCapabilities: runtimeCapabilities,
 	})
 	if err != nil {
 		return fmt.Errorf("launch attempt workload: %w", err)

@@ -16,20 +16,29 @@ import (
 )
 
 const (
-	CurrentVersion = 1
-	MaximumBytes   = 2 << 20
+	CurrentVersion         = 2
+	MaximumBytes           = 3 << 20
+	MaximumCapabilityBytes = 16 * 1024
 )
 
+type RuntimeCapabilities struct {
+	ExecutorMCP string
+	LLMProxy    string
+}
+
 type Envelope struct {
-	Version           int
-	SignedManifest    runmanifest.SignedManifest
-	ControlCapability string
+	Version             int
+	SignedManifest      runmanifest.SignedManifest
+	ControlCapability   string
+	RuntimeCapabilities RuntimeCapabilities
 }
 
 type wireEnvelope struct {
-	Version           int             `json:"version"`
-	SignedManifest    json.RawMessage `json:"signedManifest"`
-	ControlCapability string          `json:"controlCapability"`
+	Version               int             `json:"version"`
+	SignedManifest        json.RawMessage `json:"signedManifest"`
+	ControlCapability     string          `json:"controlCapability"`
+	ExecutorMCPCapability string          `json:"executorMcpCapability"`
+	LLMProxyCapability    string          `json:"llmproxyCapability"`
 }
 
 // Encode returns canonical JSON suitable for a single inherited pipe. The
@@ -41,6 +50,9 @@ func Encode(envelope Envelope) ([]byte, error) {
 	if err := ValidateControlCapability(envelope.ControlCapability); err != nil {
 		return nil, err
 	}
+	if err := ValidateRuntimeCapabilities(envelope.RuntimeCapabilities); err != nil {
+		return nil, err
+	}
 	signed, err := json.Marshal(envelope.SignedManifest)
 	if err != nil {
 		return nil, errors.New("encode signed run manifest")
@@ -50,7 +62,9 @@ func Encode(envelope Envelope) ([]byte, error) {
 	}
 	raw, err := json.Marshal(wireEnvelope{
 		Version: envelope.Version, SignedManifest: signed,
-		ControlCapability: envelope.ControlCapability,
+		ControlCapability:     envelope.ControlCapability,
+		ExecutorMCPCapability: envelope.RuntimeCapabilities.ExecutorMCP,
+		LLMProxyCapability:    envelope.RuntimeCapabilities.LLMProxy,
 	})
 	if err != nil {
 		return nil, errors.New("encode harness bootstrap")
@@ -108,9 +122,16 @@ func Decode(raw []byte) (Envelope, error) {
 	if err := ValidateControlCapability(wire.ControlCapability); err != nil {
 		return Envelope{}, err
 	}
+	capabilities := RuntimeCapabilities{
+		ExecutorMCP: wire.ExecutorMCPCapability,
+		LLMProxy:    wire.LLMProxyCapability,
+	}
+	if err := ValidateRuntimeCapabilities(capabilities); err != nil {
+		return Envelope{}, err
+	}
 	return Envelope{
 		Version: wire.Version, SignedManifest: signed,
-		ControlCapability: wire.ControlCapability,
+		ControlCapability: wire.ControlCapability, RuntimeCapabilities: capabilities,
 	}, nil
 }
 
@@ -130,6 +151,25 @@ func ValidateControlCapability(value string) error {
 	decoded, err := base64.RawURLEncoding.DecodeString(value)
 	if err != nil || len(decoded) != 32 || base64.RawURLEncoding.EncodeToString(decoded) != value {
 		return errors.New("harness bootstrap control capability must be canonical 256-bit base64url")
+	}
+	return nil
+}
+
+func ValidateRuntimeCapabilities(capabilities RuntimeCapabilities) error {
+	if err := validateRuntimeCapability("executor MCP", capabilities.ExecutorMCP); err != nil {
+		return err
+	}
+	return validateRuntimeCapability("llmproxy", capabilities.LLMProxy)
+}
+
+func validateRuntimeCapability(label, value string) error {
+	if len(value) < 1 || len(value) > MaximumCapabilityBytes {
+		return fmt.Errorf("harness bootstrap %s capability size is invalid", label)
+	}
+	for _, character := range []byte(value) {
+		if character <= ' ' || character >= 0x7f {
+			return fmt.Errorf("harness bootstrap %s capability contains an invalid byte", label)
+		}
 	}
 	return nil
 }

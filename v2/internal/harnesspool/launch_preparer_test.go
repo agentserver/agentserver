@@ -1,11 +1,13 @@
 package harnesspool
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -137,10 +139,12 @@ func newTestLaunchPreparer(t *testing.T, core LaunchPreparationCore, allocator B
 }
 
 func testRunLaunchInputs() RunLaunchInputs {
+	prompt := testRunPromptContents()
+	promptDigest := sha256.Sum256(prompt)
 	return RunLaunchInputs{
 		Prompt: runmanifest.ObjectPointer{
-			ObjectID: "46000000-0000-4000-8000-000000000004", SHA256: strings.Repeat("a", 64),
-			SizeBytes: 128, MediaType: "application/json",
+			ObjectID: "46000000-0000-4000-8000-000000000004", SHA256: fmt.Sprintf("%x", promptDigest),
+			SizeBytes: int64(len(prompt)), MediaType: "text/plain; charset=utf-8",
 		},
 		CodexRuntimeManifestDigest: strings.Repeat("b", 64),
 		Model: runmanifest.ModelRoute{
@@ -166,6 +170,10 @@ func testRunLaunchInputs() RunLaunchInputs {
 		ControllerCallbackIdentity: "spiffe://agentserver.local/ns/agentserver/sa/harness-pool",
 		ControllerCallbackAudience: "harness-pool-control",
 	}
+}
+
+func testRunPromptContents() []byte {
+	return bytes.Repeat([]byte("p"), 128)
 }
 
 type fixedCatalogAllocator struct {

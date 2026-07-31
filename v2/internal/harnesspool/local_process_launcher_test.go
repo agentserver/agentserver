@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,7 +34,7 @@ func TestLocalProcessLauncherPassesOneShotBootstrapAndCleansRuntime(t *testing.T
 	capability := testLocalControlCapability()
 	launcher, runtimeRoot := newLocalProcessLauncherForTest(t, prepared, "exit")
 	workload, err := launcher.Launch(t.Context(), AttemptWorkloadLaunch{
-		Prepared: prepared, ControlCapability: capability,
+		Prepared: prepared, ControlCapability: capability, RuntimeCapabilities: testLocalRuntimeCapabilities(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +65,7 @@ func TestLocalProcessLauncherStopsWholeAttemptProcessGroup(t *testing.T) {
 	prepared := poolTestPreparedLaunch(t)
 	launcher, _ := newLocalProcessLauncherForTest(t, prepared, "block-with-descendant")
 	workload, err := launcher.Launch(t.Context(), AttemptWorkloadLaunch{
-		Prepared: prepared, ControlCapability: testLocalControlCapability(),
+		Prepared: prepared, ControlCapability: testLocalControlCapability(), RuntimeCapabilities: testLocalRuntimeCapabilities(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +102,7 @@ func TestLocalProcessLauncherRejectsProfileDriftBeforeFork(t *testing.T) {
 	launcher, runtimeRoot := newLocalProcessLauncherForTest(t, prepared, "exit")
 	prepared.Manifest.WorkerImageDigest = strings.Repeat("d", 64)
 	_, err := launcher.Launch(t.Context(), AttemptWorkloadLaunch{
-		Prepared: prepared, ControlCapability: testLocalControlCapability(),
+		Prepared: prepared, ControlCapability: testLocalControlCapability(), RuntimeCapabilities: testLocalRuntimeCapabilities(),
 	})
 	if err == nil || !strings.Contains(err.Error(), "prepared manifest") {
 		t.Fatalf("profile drift error = %v", err)
@@ -115,6 +116,25 @@ func TestLocalProcessLauncherRejectsProfileDriftBeforeFork(t *testing.T) {
 	}
 }
 
+func TestLocalProcessLauncherRejectsPromptObjectDigestDrift(t *testing.T) {
+	prepared := poolTestPreparedLaunch(t)
+	launcher, runtimeRoot := newLocalProcessLauncherForTest(t, prepared, "exit")
+	launcher.config.ObjectSource = localBytesObjectSource{contents: bytes.Repeat([]byte("q"), len(testRunPromptContents()))}
+	_, err := launcher.Launch(t.Context(), AttemptWorkloadLaunch{
+		Prepared: prepared, ControlCapability: testLocalControlCapability(), RuntimeCapabilities: testLocalRuntimeCapabilities(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "signed digest") {
+		t.Fatalf("prompt digest drift error = %v", err)
+	}
+	entries, readErr := os.ReadDir(runtimeRoot)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("prompt digest drift retained %d runtime entries", len(entries))
+	}
+}
+
 func TestLocalProcessLauncherConfigRejectsAmbientOrUnsafeInputs(t *testing.T) {
 	executable, err := os.Executable()
 	if err != nil {
@@ -122,7 +142,7 @@ func TestLocalProcessLauncherConfigRejectsAmbientOrUnsafeInputs(t *testing.T) {
 	}
 	valid := LocalProcessLauncherConfig{
 		WorkerExecutable: executable, WorkerArguments: []string{"-test.run=none", "--"},
-		RuntimeRoot: secureLocalRuntimeRoot(t), Environment: []string{},
+		RuntimeRoot: secureLocalRuntimeRoot(t), Environment: []string{}, ObjectSource: localTestObjectSource{},
 		ExpectedWorkerImageDigest: strings.Repeat("c", 64), ExpectedServiceAccount: "harness-worker",
 		BootstrapWriteTimeout: time.Second, TerminateGrace: 10 * time.Millisecond,
 		ProcessGroupCleanupTimeout: time.Second,
@@ -134,8 +154,10 @@ func TestLocalProcessLauncherConfigRejectsAmbientOrUnsafeInputs(t *testing.T) {
 	}{
 		{name: "relative executable", mutate: func(c *LocalProcessLauncherConfig) { c.WorkerExecutable = "worker" }, want: "absolute"},
 		{name: "implicit environment", mutate: func(c *LocalProcessLauncherConfig) { c.Environment = nil }, want: "explicit"},
+		{name: "missing object source", mutate: func(c *LocalProcessLauncherConfig) { c.ObjectSource = nil }, want: "object source"},
 		{name: "duplicate environment", mutate: func(c *LocalProcessLauncherConfig) { c.Environment = []string{"A=1", "A=2"} }, want: "duplicate"},
 		{name: "bootstrap override", mutate: func(c *LocalProcessLauncherConfig) { c.WorkerArguments = []string{"--bootstrap-fd=9"} }, want: "must not override"},
+		{name: "prompt override", mutate: func(c *LocalProcessLauncherConfig) { c.WorkerArguments = []string{"--prompt-fd=9"} }, want: "must not override"},
 		{name: "invalid image digest", mutate: func(c *LocalProcessLauncherConfig) { c.ExpectedWorkerImageDigest = "ABC" }, want: "SHA-256"},
 		{name: "invalid service account", mutate: func(c *LocalProcessLauncherConfig) { c.ExpectedServiceAccount = "Harness_Worker" }, want: "service account"},
 		{name: "root credential", mutate: func(c *LocalProcessLauncherConfig) { c.Credential = &LocalProcessCredential{UID: 0, GID: 1} }, want: "unprivileged"},
@@ -159,7 +181,7 @@ func TestLocalWorkerBootstrapIsCanonicalAndClosedWorld(t *testing.T) {
 	capability := testLocalControlCapability()
 	raw, err := harnessbootstrap.Encode(harnessbootstrap.Envelope{
 		Version: harnessbootstrap.CurrentVersion, SignedManifest: prepared.SignedManifest,
-		ControlCapability: capability,
+		ControlCapability: capability, RuntimeCapabilities: testLocalRuntimeCapabilities(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -168,7 +190,8 @@ func TestLocalWorkerBootstrapIsCanonicalAndClosedWorld(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decoded.ControlCapability != capability || !bytes.Equal(decoded.SignedManifest.Manifest, prepared.SignedManifest.Manifest) {
+	if decoded.ControlCapability != capability || decoded.RuntimeCapabilities != testLocalRuntimeCapabilities() ||
+		!bytes.Equal(decoded.SignedManifest.Manifest, prepared.SignedManifest.Manifest) {
 		t.Fatal("decoded bootstrap changed attempt authority")
 	}
 	if _, err := harnessbootstrap.Decode(append(append([]byte(nil), raw...), '\n')); err == nil || !strings.Contains(err.Error(), "canonical") {
@@ -216,14 +239,30 @@ func TestLocalProcessWorkerHelper(t *testing.T) {
 	if manifest.RunAttemptID != os.Getenv(localWorkerExpectedAttempt) {
 		t.Fatalf("bootstrap attempt = %q", manifest.RunAttemptID)
 	}
+	promptFile := os.NewFile(localWorkerPromptDescriptor, "harness-prompt")
+	if promptFile == nil {
+		t.Fatal("prompt descriptor was not inherited")
+	}
+	prompt, promptReadErr := io.ReadAll(io.LimitReader(promptFile, 1024))
+	promptCloseErr := promptFile.Close()
+	if promptReadErr != nil || promptCloseErr != nil {
+		t.Fatalf("read prompt: %v", errors.Join(promptReadErr, promptCloseErr))
+	}
+	if !bytes.Equal(prompt, testRunPromptContents()) {
+		t.Fatalf("prompt bytes = %d unexpected bytes", len(prompt))
+	}
 	for _, argument := range os.Args {
-		if strings.Contains(argument, envelope.ControlCapability) {
-			t.Fatal("control capability leaked into argv")
+		if strings.Contains(argument, envelope.ControlCapability) ||
+			strings.Contains(argument, envelope.RuntimeCapabilities.ExecutorMCP) ||
+			strings.Contains(argument, envelope.RuntimeCapabilities.LLMProxy) {
+			t.Fatal("runtime capability leaked into argv")
 		}
 	}
 	for _, environment := range os.Environ() {
-		if strings.Contains(environment, envelope.ControlCapability) {
-			t.Fatal("control capability leaked into environment")
+		if strings.Contains(environment, envelope.ControlCapability) ||
+			strings.Contains(environment, envelope.RuntimeCapabilities.ExecutorMCP) ||
+			strings.Contains(environment, envelope.RuntimeCapabilities.LLMProxy) {
+			t.Fatal("runtime capability leaked into environment")
 		}
 	}
 	if os.Getenv(localWorkerHelperMode) == "exit" {
@@ -260,6 +299,7 @@ func newLocalProcessLauncherForTest(t *testing.T, prepared PreparedRunLaunch, mo
 			localWorkerHelperMode + "=" + mode,
 			localWorkerExpectedAttempt + "=" + prepared.Manifest.RunAttemptID,
 		},
+		ObjectSource:               localTestObjectSource{},
 		ExpectedWorkerImageDigest:  prepared.Manifest.WorkerImageDigest,
 		ExpectedServiceAccount:     prepared.Manifest.ExpectedServiceAccount,
 		BootstrapWriteTimeout:      time.Second,
@@ -272,8 +312,30 @@ func newLocalProcessLauncherForTest(t *testing.T, prepared PreparedRunLaunch, mo
 	return launcher, runtimeRoot
 }
 
+type localTestObjectSource struct{}
+
+func (localTestObjectSource) OpenRunObject(_ context.Context, pointer runmanifest.ObjectPointer) (io.ReadCloser, error) {
+	if pointer.ObjectID != "46000000-0000-4000-8000-000000000004" {
+		return nil, errors.New("unexpected local test object pointer")
+	}
+	return io.NopCloser(bytes.NewReader(testRunPromptContents())), nil
+}
+
+type localBytesObjectSource struct{ contents []byte }
+
+func (source localBytesObjectSource) OpenRunObject(context.Context, runmanifest.ObjectPointer) (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader(source.contents)), nil
+}
+
 func testLocalControlCapability() string {
 	return base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x5a}, 32))
+}
+
+func testLocalRuntimeCapabilities() harnessbootstrap.RuntimeCapabilities {
+	return harnessbootstrap.RuntimeCapabilities{
+		ExecutorMCP: "local-executor-mcp-capability",
+		LLMProxy:    "local-llmproxy-capability",
+	}
 }
 
 func waitForLocalWorkerMarker(t *testing.T, path string) {

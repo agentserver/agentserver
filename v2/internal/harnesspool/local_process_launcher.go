@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,9 +19,13 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/harnessbootstrap"
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
 
-const localWorkerBootstrapDescriptor = 3
+const (
+	localWorkerBootstrapDescriptor = 3
+	localWorkerPromptDescriptor    = 4
+)
 
 var (
 	lowercaseSHA256Pattern    = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -39,6 +46,7 @@ type LocalProcessLauncherConfig struct {
 	WorkerArguments            []string
 	RuntimeRoot                string
 	Environment                []string
+	ObjectSource               AttemptObjectSource
 	Credential                 *LocalProcessCredential
 	ExpectedWorkerImageDigest  string
 	ExpectedServiceAccount     string
@@ -47,9 +55,17 @@ type LocalProcessLauncherConfig struct {
 	ProcessGroupCleanupTimeout time.Duration
 }
 
+// AttemptObjectSource is implemented by the pool's encrypted object-store
+// client. The launcher streams exact objects into one-shot worker pipes and
+// never delegates object-store credentials to the worker.
+type AttemptObjectSource interface {
+	OpenRunObject(context.Context, runmanifest.ObjectPointer) (io.ReadCloser, error)
+}
+
 // LocalProcessLauncher starts a fresh worker process for every attempt. It
-// never writes the control capability or signed manifest to argv, env, or a
-// persisted file; both are sent once through inherited descriptor 3.
+// never writes capabilities, signed manifests, or prompt bytes to argv, env,
+// or a persisted file. Authority is sent once through descriptor 3 and the
+// independently hashed prompt object through descriptor 4.
 type LocalProcessLauncher struct {
 	config LocalProcessLauncherConfig
 }
@@ -87,12 +103,21 @@ func (launcher *LocalProcessLauncher) Launch(ctx context.Context, launch Attempt
 	}
 	bootstrap, err := harnessbootstrap.Encode(harnessbootstrap.Envelope{
 		Version: harnessbootstrap.CurrentVersion, SignedManifest: launch.Prepared.SignedManifest,
-		ControlCapability: launch.ControlCapability,
+		ControlCapability: launch.ControlCapability, RuntimeCapabilities: launch.RuntimeCapabilities,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode local worker bootstrap: %w", err)
 	}
 	defer clear(bootstrap)
+	promptObject, err := launcher.config.ObjectSource.OpenRunObject(ctx, manifest.Prompt)
+	if err != nil {
+		return nil, fmt.Errorf("open local worker prompt object: %w", err)
+	}
+	if promptObject == nil {
+		return nil, errors.New("local worker prompt object source returned a nil reader")
+	}
+	promptObject = &onceReadCloser{ReadCloser: promptObject}
+	defer promptObject.Close()
 
 	runtimeName, err := allocateAttemptRuntimeName()
 	if err != nil {
@@ -127,14 +152,21 @@ func (launcher *LocalProcessLauncher) Launch(ctx context.Context, launch Attempt
 	}
 	defer bootstrapReader.Close()
 	defer bootstrapWriter.Close()
+	promptReader, promptWriter, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("create local worker prompt pipe: %w", err)
+	}
+	defer promptReader.Close()
+	defer promptWriter.Close()
 
-	arguments := make([]string, 0, len(launcher.config.WorkerArguments)+1)
+	arguments := make([]string, 0, len(launcher.config.WorkerArguments)+2)
 	arguments = append(arguments, launcher.config.WorkerArguments...)
 	arguments = append(arguments, fmt.Sprintf("--bootstrap-fd=%d", localWorkerBootstrapDescriptor))
+	arguments = append(arguments, fmt.Sprintf("--prompt-fd=%d", localWorkerPromptDescriptor))
 	command := exec.Command(launcher.config.WorkerExecutable, arguments...)
 	command.Dir = runtimeDirectory
 	command.Env = append([]string(nil), launcher.config.Environment...)
-	command.ExtraFiles = []*os.File{bootstrapReader}
+	command.ExtraFiles = []*os.File{bootstrapReader, promptReader}
 	if err := configureLocalAttemptCommand(command, launcher.config.Credential); err != nil {
 		return nil, err
 	}
@@ -142,37 +174,57 @@ func (launcher *LocalProcessLauncher) Launch(ctx context.Context, launch Attempt
 		return nil, fmt.Errorf("start local harness worker: %w", err)
 	}
 	_ = bootstrapReader.Close()
+	_ = promptReader.Close()
 
 	workload := newLocalProcessWorkload(command, runtimeDirectory, launcher.config)
-	writeDone := make(chan error, 1)
+	type inputWriteResult struct {
+		name string
+		err  error
+	}
+	writeDone := make(chan inputWriteResult, 2)
 	go func() {
 		_, writeErr := bootstrapWriter.ReadFrom(bytes.NewReader(bootstrap))
 		closeErr := bootstrapWriter.Close()
-		writeDone <- errors.Join(writeErr, closeErr)
+		writeDone <- inputWriteResult{name: "bootstrap", err: errors.Join(writeErr, closeErr)}
+	}()
+	go func() {
+		writeDone <- inputWriteResult{
+			name: "prompt", err: copyLocalRunObject(promptWriter, promptObject, manifest.Prompt),
+		}
 	}()
 	writeTimer := time.NewTimer(launcher.config.BootstrapWriteTimeout)
 	defer writeTimer.Stop()
-	select {
-	case writeErr := <-writeDone:
-		if writeErr != nil {
+	for pending := 2; pending > 0; pending-- {
+		select {
+		case result := <-writeDone:
+			if result.err == nil {
+				continue
+			}
+			_ = bootstrapWriter.Close()
+			_ = promptWriter.Close()
+			_ = promptObject.Close()
 			abortErr := workload.abortLaunch()
-			return nil, errors.Join(fmt.Errorf("write local worker bootstrap: %w", writeErr), abortErr)
-		}
-		if err := ctx.Err(); err != nil {
+			return nil, errors.Join(fmt.Errorf("write local worker %s input: %w", result.name, result.err), abortErr)
+		case <-ctx.Done():
+			_ = bootstrapWriter.Close()
+			_ = promptWriter.Close()
+			_ = promptObject.Close()
 			abortErr := workload.abortLaunch()
-			return nil, errors.Join(err, abortErr)
+			return nil, errors.Join(ctx.Err(), abortErr)
+		case <-writeTimer.C:
+			_ = bootstrapWriter.Close()
+			_ = promptWriter.Close()
+			_ = promptObject.Close()
+			abortErr := workload.abortLaunch()
+			return nil, errors.Join(
+				fmt.Errorf("write local worker one-shot inputs: timeout after %s", launcher.config.BootstrapWriteTimeout),
+				abortErr,
+			)
 		}
-	case <-ctx.Done():
-		_ = bootstrapWriter.Close()
+	}
+	if err := ctx.Err(); err != nil {
 		abortErr := workload.abortLaunch()
-		return nil, errors.Join(ctx.Err(), abortErr)
-	case <-writeTimer.C:
-		_ = bootstrapWriter.Close()
-		abortErr := workload.abortLaunch()
-		return nil, errors.Join(
-			fmt.Errorf("write local worker bootstrap: timeout after %s", launcher.config.BootstrapWriteTimeout),
-			abortErr,
-		)
+		return nil, errors.Join(err, abortErr)
 	}
 	removeRuntime = false
 	return workload, nil
@@ -291,6 +343,9 @@ func validateLocalProcessLauncherConfig(config LocalProcessLauncherConfig) error
 	if config.Environment == nil {
 		return errors.New("local worker environment must be explicit")
 	}
+	if config.ObjectSource == nil {
+		return errors.New("local worker object source is required")
+	}
 	seenEnvironment := make(map[string]struct{}, len(config.Environment))
 	for index, entry := range config.Environment {
 		name, value, found := strings.Cut(entry, "=")
@@ -306,8 +361,8 @@ func validateLocalProcessLauncherConfig(config LocalProcessLauncherConfig) error
 		if strings.ContainsRune(argument, '\x00') {
 			return fmt.Errorf("local worker argument %d contains NUL", index)
 		}
-		if strings.HasPrefix(argument, "--bootstrap-fd") {
-			return errors.New("local worker arguments must not override the bootstrap descriptor")
+		if strings.HasPrefix(argument, "--bootstrap-fd") || strings.HasPrefix(argument, "--prompt-fd") {
+			return errors.New("local worker arguments must not override inherited input descriptors")
 		}
 	}
 	if config.Credential != nil && (config.Credential.UID == 0 || config.Credential.GID == 0 ||
@@ -330,6 +385,43 @@ func validateLocalProcessLauncherConfig(config LocalProcessLauncherConfig) error
 		}
 	}
 	return nil
+}
+
+type onceReadCloser struct {
+	io.ReadCloser
+	once sync.Once
+	err  error
+}
+
+func (reader *onceReadCloser) Close() error {
+	reader.once.Do(func() { reader.err = reader.ReadCloser.Close() })
+	return reader.err
+}
+
+func copyLocalRunObject(writer *os.File, source io.ReadCloser, pointer runmanifest.ObjectPointer) error {
+	if writer == nil || source == nil {
+		return errors.New("local worker object transfer requires a pipe and source")
+	}
+	hash := sha256.New()
+	written, copyErr := io.CopyN(io.MultiWriter(writer, hash), source, pointer.SizeBytes)
+	var extra [1]byte
+	extraBytes, extraErr := source.Read(extra[:])
+	sourceCloseErr := source.Close()
+	writerCloseErr := writer.Close()
+	if copyErr != nil || written != pointer.SizeBytes {
+		return errors.Join(errors.New("local worker object source ended before its signed size"), copyErr, sourceCloseErr, writerCloseErr)
+	}
+	if extraBytes != 0 || !errors.Is(extraErr, io.EOF) {
+		return errors.Join(errors.New("local worker object source exceeded its signed size"), extraErr, sourceCloseErr, writerCloseErr)
+	}
+	want, err := hex.DecodeString(pointer.SHA256)
+	if err != nil || len(want) != sha256.Size || hex.EncodeToString(want) != pointer.SHA256 {
+		return errors.Join(errors.New("local worker object pointer digest is invalid"), sourceCloseErr, writerCloseErr)
+	}
+	if subtle.ConstantTimeCompare(hash.Sum(nil), want) != 1 {
+		return errors.Join(errors.New("local worker object source does not match its signed digest"), sourceCloseErr, writerCloseErr)
+	}
+	return errors.Join(sourceCloseErr, writerCloseErr)
 }
 
 func allocateAttemptRuntimeName() (string, error) {

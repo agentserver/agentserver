@@ -23,7 +23,7 @@ func TestHarnessWorkerLoadsVerifiedBootstrapAndClosesPipe(t *testing.T) {
 	capability := fixedControlCapability(7)
 	raw, err := harnessbootstrap.Encode(harnessbootstrap.Envelope{
 		Version: harnessbootstrap.CurrentVersion, SignedManifest: prepared.SignedManifest,
-		ControlCapability: capability,
+		ControlCapability: capability, RuntimeCapabilities: testLocalRuntimeCapabilities(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +50,8 @@ func TestHarnessWorkerLoadsVerifiedBootstrapAndClosesPipe(t *testing.T) {
 	}
 	if !reflect.DeepEqual(loaded.Manifest, prepared.Manifest) ||
 		!bytes.Equal(loaded.SignedManifest.Manifest, prepared.SignedManifest.Manifest) ||
-		loaded.ControlCapability != capability || loaded.WorkerInstanceID != workerID {
+		loaded.ControlCapability != capability || loaded.ExecutorMCPCapability != testLocalRuntimeCapabilities().ExecutorMCP ||
+		loaded.LLMProxyCapability != testLocalRuntimeCapabilities().LLMProxy || loaded.WorkerInstanceID != workerID {
 		t.Fatalf("loaded bootstrap = %+v", loaded)
 	}
 	if _, err := reader.Stat(); err == nil {
@@ -76,7 +77,7 @@ func TestHarnessWorkerBootstrapRejectsNonPipeAndUntrustedManifest(t *testing.T) 
 		prepared := poolTestPreparedLaunch(t)
 		raw, err := harnessbootstrap.Encode(harnessbootstrap.Envelope{
 			Version: harnessbootstrap.CurrentVersion, SignedManifest: prepared.SignedManifest,
-			ControlCapability: fixedControlCapability(7),
+			ControlCapability: fixedControlCapability(7), RuntimeCapabilities: testLocalRuntimeCapabilities(),
 		})
 		if err != nil {
 			t.Fatal(err)

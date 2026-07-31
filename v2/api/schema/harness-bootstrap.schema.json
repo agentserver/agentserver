@@ -5,9 +5,9 @@
   "description": "One-shot closed-world bootstrap written by a harness-pool holder to an inherited worker-only pipe. It is never carried in argv, environment variables, or a persisted file.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "signedManifest", "controlCapability"],
+  "required": ["version", "signedManifest", "controlCapability", "executorMcpCapability", "llmproxyCapability"],
   "properties": {
-    "version": {"const": 1},
+    "version": {"const": 2},
     "signedManifest": {
       "$ref": "run-manifest.schema.json"
     },
@@ -15,6 +15,20 @@
       "type": "string",
       "description": "Canonical base64url encoding of exactly 256 random bits.",
       "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "executorMcpCapability": {
+      "type": "string",
+      "description": "Per-attempt worker-only bearer for the manifest-pinned executor MCP audience. Never passed to app-server.",
+      "minLength": 1,
+      "maxLength": 16384,
+      "pattern": "^[!-~]+$"
+    },
+    "llmproxyCapability": {
+      "type": "string",
+      "description": "Per-attempt app-only bearer for the manifest-pinned llmproxy audience. Never persisted in Codex configuration.",
+      "minLength": 1,
+      "maxLength": 16384,
+      "pattern": "^[!-~]+$"
     }
   }
 }

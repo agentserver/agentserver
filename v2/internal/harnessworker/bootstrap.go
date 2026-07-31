@@ -19,12 +19,16 @@ type WorkerInstanceIDGenerator func() (string, error)
 
 // VerifiedBootstrap is the complete immutable authority available to one
 // short-lived worker after its inherited bootstrap pipe has been consumed and
-// closed. ControlCapability must never be logged or passed to a child.
+// closed. ControlCapability and ExecutorMCPCapability must never be logged or
+// passed to a child. LLMProxyCapability may enter only the closed-world
+// app-server environment and must never enter config or checkpoint bytes.
 type VerifiedBootstrap struct {
-	Manifest          runmanifest.Manifest
-	SignedManifest    runmanifest.SignedManifest
-	ControlCapability string
-	WorkerInstanceID  string
+	Manifest              runmanifest.Manifest
+	SignedManifest        runmanifest.SignedManifest
+	ControlCapability     string
+	ExecutorMCPCapability string
+	LLMProxyCapability    string
+	WorkerInstanceID      string
 }
 
 // LoadBootstrap consumes exactly one inherited pipe through EOF, closes it
@@ -54,6 +58,9 @@ func LoadBootstrap(
 	if readErr != nil || closeErr != nil {
 		return VerifiedBootstrap{}, errors.Join(readErr, closeErr)
 	}
+	if keyring == nil {
+		return VerifiedBootstrap{}, errors.New("worker run-manifest verification keyring is required")
+	}
 	manifest, err := keyring.Verify(envelope.SignedManifest)
 	if err != nil {
 		return VerifiedBootstrap{}, fmt.Errorf("verify worker run manifest: %w", err)
@@ -72,8 +79,10 @@ func LoadBootstrap(
 	signed.Manifest = append(json.RawMessage(nil), signed.Manifest...)
 	return VerifiedBootstrap{
 		Manifest: manifest, SignedManifest: signed,
-		ControlCapability: envelope.ControlCapability,
-		WorkerInstanceID:  workerInstanceID,
+		ControlCapability:     envelope.ControlCapability,
+		ExecutorMCPCapability: envelope.RuntimeCapabilities.ExecutorMCP,
+		LLMProxyCapability:    envelope.RuntimeCapabilities.LLMProxy,
+		WorkerInstanceID:      workerInstanceID,
 	}, nil
 }
 

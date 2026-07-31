@@ -1,0 +1,84 @@
+package coreserver
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"testing"
+	"time"
+
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
+	"github.com/agentserver/agentserver/v2/internal/coredb"
+)
+
+func TestStateStoreRunLaunchStateQueriesMapAuthorityProjection(t *testing.T) {
+	store := &recordingRunLaunchStateStore{}
+	queries := StateStoreRunLaunchStateQueries{Store: store}
+	request := corecontract.ResolveRunLaunchStateRequest{
+		WorkspaceID: "40000000-0000-4000-8000-000000000004", SessionID: "43000000-0000-4000-8000-000000000004",
+		RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
+		ExpectedRunVersion: 2, ExpectedRunAttemptVersion: 1,
+	}
+	response, err := queries.ResolveRunLaunchState(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.command.AttemptID != request.RunAttemptID || store.command.ExpectedAttemptVersion != 1 ||
+		response.Prompt.SHA256 != hex.EncodeToString(store.promptDigest[:]) ||
+		response.ExecutorPolicy.ContextDigest != hex.EncodeToString(store.policyDigest[:]) ||
+		response.PreviousCheckpoint == nil ||
+		response.PreviousCheckpoint.CatalogDigest != hex.EncodeToString(store.catalogDigest[:]) ||
+		response.PreviousCheckpoint.Catalog.CatalogID != "49000000-0000-4000-8000-000000000004" ||
+		response.PreviousCheckpoint.CheckpointAllowlistVersion != 7 {
+		t.Fatalf("store command/response = %+v / %+v", store.command, response)
+	}
+	response.ExecutorPolicy.AllowedTools[0] = "mutated"
+	if store.allowedTools[0] != "read_file" {
+		t.Fatal("transport response aliases store policy")
+	}
+}
+
+type recordingRunLaunchStateStore struct {
+	command       coredb.ResolveRunLaunchStateCommand
+	promptDigest  [32]byte
+	policyDigest  [32]byte
+	catalogDigest [32]byte
+	allowedTools  []string
+}
+
+func (store *recordingRunLaunchStateStore) ResolveRunLaunchState(_ context.Context, command coredb.ResolveRunLaunchStateCommand) (coredb.ResolvedRunLaunchState, error) {
+	store.command = command
+	store.promptDigest = sha256.Sum256([]byte("prompt"))
+	store.policyDigest = sha256.Sum256([]byte("policy"))
+	store.catalogDigest = sha256.Sum256([]byte("catalog"))
+	store.allowedTools = []string{"read_file", "shell"}
+	manifestDigest := sha256.Sum256([]byte("manifest"))
+	objectDigest := sha256.Sum256([]byte("checkpoint-object"))
+	runtimeDigest := sha256.Sum256([]byte("runtime"))
+	return coredb.ResolvedRunLaunchState{
+		WorkspaceID: command.WorkspaceID, SessionID: command.SessionID, RunID: command.RunID,
+		AttemptID: command.AttemptID, HolderID: command.HolderID, Generation: command.Generation,
+		RunVersion: command.ExpectedRunVersion, AttemptVersion: command.ExpectedAttemptVersion,
+		Prompt: coredb.ObjectPointer{
+			ObjectID: "46000000-0000-4000-8000-000000000004", SHA256: store.promptDigest,
+			Size: 128, MediaType: "application/json",
+		},
+		PreviousCheckpoint: &coredb.Checkpoint{
+			ID: "47000000-0000-4000-8000-000000000004", ThreadID: "thread-previous",
+			ManifestDigest: manifestDigest, CatalogDigest: store.catalogDigest,
+			Object: coredb.ObjectPointer{
+				ObjectID: "48000000-0000-4000-8000-000000000004", SHA256: objectDigest,
+				Size: 1024, MediaType: "application/octet-stream",
+			},
+			CodexRuntimeManifestDigest: runtimeDigest, CheckpointAllowlistVersion: 7,
+			Catalog: coredb.BrainToolCatalog{
+				ID: "49000000-0000-4000-8000-000000000004", CatalogDigest: store.catalogDigest,
+			},
+			CreatedAt: time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC),
+		},
+		ExecutorPolicy: coredb.RunExecutorPolicy{
+			Version: "executor-policy/1", ContextDigest: store.policyDigest,
+			AllowedTools: store.allowedTools,
+		},
+	}, nil
+}

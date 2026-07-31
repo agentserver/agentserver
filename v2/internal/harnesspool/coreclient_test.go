@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,6 +91,87 @@ func TestCoreClientRunAttemptRoundTrip(t *testing.T) {
 	}
 	if commands.append.Events[1].Object == nil || commands.append.Events[1].Object.SHA256 != hex.EncodeToString(objectDigest[:]) {
 		t.Fatalf("append wire object = %+v", commands.append.Events[1].Object)
+	}
+}
+
+func TestCoreClientResolvesFencedRunLaunchState(t *testing.T) {
+	base := testRunLaunchInputs()
+	proposal, err := BuildExecutorCatalog(base.ExecutorCatalogPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands := &recordingRunLaunchStateContractQueries{response: corecontract.ResolveRunLaunchStateResponse{
+		WorkspaceID: "40000000-0000-4000-8000-000000000004", SessionID: testSessionID,
+		RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-instance",
+		RunAttemptGeneration: 1, RunVersion: 3, RunAttemptVersion: 1,
+		Prompt: corecontract.RunLaunchObjectPointer{
+			ObjectID: base.Prompt.ObjectID, SHA256: base.Prompt.SHA256,
+			SizeBytes: base.Prompt.SizeBytes, MediaType: base.Prompt.MediaType,
+		},
+		PreviousCheckpoint: &corecontract.RunLaunchCheckpointState{
+			CheckpointID: "47000000-0000-4000-8000-000000000004", ThreadID: "thread-previous",
+			ManifestDigest: strings.Repeat("d", 64), CatalogDigest: proposal.Catalog.Digest(),
+			Catalog: contractRunLaunchCheckpointCatalog(proposal),
+			Object: corecontract.RunLaunchObjectPointer{
+				ObjectID: "48000000-0000-4000-8000-000000000004", SHA256: strings.Repeat("e", 64),
+				SizeBytes: 1024, MediaType: "application/octet-stream",
+			},
+			CodexRuntimeManifestDigest: base.CodexRuntimeManifestDigest,
+			CheckpointAllowlistVersion: int64(base.CheckpointAllowlistVersion),
+		},
+		ExecutorPolicy: corecontract.RunLaunchExecutorPolicyState{
+			Version:       base.ExecutorCatalogPolicy.Version,
+			ContextDigest: hex.EncodeToString(base.ExecutorCatalogPolicy.ContextDigest[:]),
+			AllowedTools:  append([]string(nil), base.ExecutorCatalogPolicy.AllowedTools...),
+		},
+	}}
+	handler, err := coreserver.NewRunLaunchStateHandler(allowWorkload{}, commands)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	client, err := NewCoreClient(server.URL, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduled := ScheduledRunAttempt{Dispatch: testControllerDispatch("starting"), Claim: testControllerClaim()}
+	state, err := client.ResolveRunLaunchState(t.Context(), scheduled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if commands.request.RunID != scheduled.Claim.Run.RunID ||
+		commands.request.ExpectedRunVersion != scheduled.Claim.Run.Version ||
+		commands.request.ExpectedRunAttemptVersion != scheduled.Claim.RunAttempt.Version ||
+		state.Prompt != base.Prompt || state.PreviousCheckpoint == nil ||
+		state.PreviousCheckpoint.Checkpoint.CatalogDigest != proposal.Catalog.Digest() ||
+		state.PreviousCheckpoint.CodexRuntimeManifestDigest != base.CodexRuntimeManifestDigest ||
+		len(state.ExecutorPolicy.AllowedTools) != len(base.ExecutorCatalogPolicy.AllowedTools) {
+		t.Fatalf("wire request/state = %+v / %+v", commands.request, state)
+	}
+	state.ExecutorPolicy.AllowedTools[0] = "mutated"
+	if commands.response.ExecutorPolicy.AllowedTools[0] != base.ExecutorCatalogPolicy.AllowedTools[0] {
+		t.Fatal("core launch state aliases transport response")
+	}
+	commands.response.RunVersion++
+	if _, err := client.ResolveRunLaunchState(t.Context(), scheduled); err == nil || !strings.Contains(err.Error(), "authority tuple") {
+		t.Fatalf("mismatched launch authority response error = %v", err)
+	}
+}
+
+func contractRunLaunchCheckpointCatalog(proposal ExecutorCatalogProposal) corecontract.BrainToolCatalogState {
+	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	return corecontract.BrainToolCatalogState{
+		CatalogID:   "49000000-0000-4000-8000-000000000004",
+		WorkspaceID: "40000000-0000-4000-8000-000000000004", SessionID: testSessionID,
+		CreatedRunID: testRunID, CreatedRunAttemptID: testRunAttemptID,
+		CreatedAttemptGeneration: 1, CreatedHolderID: "previous-pool-holder",
+		CreatedRunVersion: 3, CreatedAttemptVersion: 1, ThreadID: "thread-previous",
+		ContractVersion: proposal.ContractVersion, CanonicalizerVersion: proposal.CanonicalizerVersion,
+		CanonicalCatalog: append(json.RawMessage(nil), proposal.CanonicalCatalog...),
+		CatalogDigest:    hex.EncodeToString(proposal.CatalogDigest[:]), PolicyVersion: proposal.PolicyVersion,
+		PolicyContextDigest: hex.EncodeToString(proposal.PolicyContextDigest[:]),
+		Version:             2, CreatedAt: now, UpdatedAt: now,
 	}
 }
 
@@ -218,6 +300,16 @@ type recordingBrainContractCommands struct {
 	now    time.Time
 	freeze corecontract.FreezeBrainToolCatalogRequest
 	bind   corecontract.BindBrainThreadCatalogRequest
+}
+
+type recordingRunLaunchStateContractQueries struct {
+	request  corecontract.ResolveRunLaunchStateRequest
+	response corecontract.ResolveRunLaunchStateResponse
+}
+
+func (queries *recordingRunLaunchStateContractQueries) ResolveRunLaunchState(_ context.Context, request corecontract.ResolveRunLaunchStateRequest) (corecontract.ResolveRunLaunchStateResponse, error) {
+	queries.request = request
+	return queries.response, nil
 }
 
 func (commands *recordingBrainContractCommands) FreezeBrainToolCatalog(_ context.Context, request corecontract.FreezeBrainToolCatalogRequest) (corecontract.FreezeBrainToolCatalogResponse, error) {

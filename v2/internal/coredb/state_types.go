@@ -83,6 +83,8 @@ type CreateRunCommand struct {
 	ActorID                string
 	RequestHash            [32]byte
 	IdempotencyKey         string
+	Prompt                 ObjectPointer
+	ExecutorPolicy         RunExecutorPolicy
 	ExpectedSessionVersion int64
 	Record                 TransitionRecord
 }
@@ -164,6 +166,62 @@ type ObjectPointer struct {
 	SHA256    [32]byte
 	Size      int64
 	MediaType string
+}
+
+// RunExecutorPolicy is the trusted, immutable model-visible tool projection
+// captured atomically with CreateRun. Runtime authorization still rechecks
+// live RBAC for every tool call.
+type RunExecutorPolicy struct {
+	Version       string
+	ContextDigest [32]byte
+	AllowedTools  []string
+}
+
+type ResolveRunLaunchStateCommand struct {
+	WorkspaceID            string
+	SessionID              string
+	RunID                  string
+	AttemptID              string
+	HolderID               string
+	Generation             int64
+	ExpectedRunVersion     int64
+	ExpectedAttemptVersion int64
+}
+
+// Checkpoint is an immutable committed native-resume pointer. Object content
+// and the checkpoint manifest remain outside PostgreSQL; core stores all
+// hashes and compatibility metadata needed to authorize their use.
+type Checkpoint struct {
+	ID                         string
+	WorkspaceID                string
+	SessionID                  string
+	RunID                      string
+	AttemptID                  string
+	AttemptGeneration          int64
+	BrainToolCatalogID         string
+	ThreadID                   string
+	TurnID                     string
+	ManifestDigest             [32]byte
+	CatalogDigest              [32]byte
+	Object                     ObjectPointer
+	CodexRuntimeManifestDigest [32]byte
+	CheckpointAllowlistVersion int64
+	Catalog                    BrainToolCatalog
+	CreatedAt                  time.Time
+}
+
+type ResolvedRunLaunchState struct {
+	WorkspaceID        string
+	SessionID          string
+	RunID              string
+	AttemptID          string
+	HolderID           string
+	Generation         int64
+	RunVersion         int64
+	AttemptVersion     int64
+	Prompt             ObjectPointer
+	PreviousCheckpoint *Checkpoint
+	ExecutorPolicy     RunExecutorPolicy
 }
 
 type AttemptEvent struct {

@@ -1,6 +1,7 @@
 package harnesspool
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,13 +12,22 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
 
+// RunLaunchCheckpoint carries both the signed-manifest projection and the
+// compatibility facts that must match the selected deployment profile.
+type RunLaunchCheckpoint struct {
+	Checkpoint                 runmanifest.PreviousCheckpoint
+	Catalog                    BrainToolCatalog
+	CodexRuntimeManifestDigest string
+	CheckpointAllowlistVersion int64
+}
+
 // RunLaunchState is the per-run, authority-derived portion of a launch. A
 // production source obtains this projection from core/policy services after
 // the exact attempt has been claimed; it must not read model-controlled
 // endpoint, image, callback, or runtime configuration.
 type RunLaunchState struct {
 	Prompt             runmanifest.ObjectPointer
-	PreviousCheckpoint *runmanifest.PreviousCheckpoint
+	PreviousCheckpoint *RunLaunchCheckpoint
 	ExecutorPolicy     ExecutorCatalogPolicy
 }
 
@@ -75,18 +85,47 @@ func (resolver *ConfiguredRunLaunchInputResolver) ResolveRunLaunch(ctx context.C
 	if err != nil {
 		return RunLaunchInputs{}, fmt.Errorf("resolve authority-derived run launch state: %w", err)
 	}
-	inputs := resolver.profile.inputs(state)
+	inputs, err := resolver.profile.inputs(state)
+	if err != nil {
+		return RunLaunchInputs{}, fmt.Errorf("validate checkpoint compatibility: %w", err)
+	}
 	if err := validateResolvedRunLaunchInputs(scheduled, inputs); err != nil {
 		return RunLaunchInputs{}, fmt.Errorf("validate resolved run launch inputs: %w", err)
 	}
 	return inputs, nil
 }
 
-func (profile RunLaunchProfile) inputs(state RunLaunchState) RunLaunchInputs {
+func (profile RunLaunchProfile) inputs(state RunLaunchState) (RunLaunchInputs, error) {
 	policy := state.ExecutorPolicy
 	policy.AllowedTools = append([]string(nil), state.ExecutorPolicy.AllowedTools...)
+	var previousCheckpoint *runmanifest.PreviousCheckpoint
+	var previousCatalog *BrainToolCatalog
+	if state.PreviousCheckpoint != nil {
+		if state.PreviousCheckpoint.CodexRuntimeManifestDigest != profile.CodexRuntimeManifestDigest ||
+			state.PreviousCheckpoint.CheckpointAllowlistVersion != int64(profile.CheckpointAllowlistVersion) {
+			return RunLaunchInputs{}, errors.New("previous checkpoint runtime manifest or allowlist version does not match the deployment profile")
+		}
+		proposal, err := BuildExecutorCatalog(policy)
+		if err != nil {
+			return RunLaunchInputs{}, err
+		}
+		catalog := state.PreviousCheckpoint.Catalog
+		if err := validateUUIDIdentity("previous checkpoint catalog ID", catalog.CatalogID); err != nil {
+			return RunLaunchInputs{}, err
+		}
+		if catalog.ThreadID != state.PreviousCheckpoint.Checkpoint.ThreadID ||
+			catalog.ContractVersion != proposal.ContractVersion || catalog.CanonicalizerVersion != proposal.CanonicalizerVersion ||
+			!bytes.Equal(catalog.CanonicalCatalog, proposal.CanonicalCatalog) || catalog.CatalogDigest != proposal.CatalogDigest ||
+			catalog.PolicyVersion != proposal.PolicyVersion || catalog.PolicyContextDigest != proposal.PolicyContextDigest ||
+			state.PreviousCheckpoint.Checkpoint.CatalogDigest != hex.EncodeToString(catalog.CatalogDigest[:]) {
+			return RunLaunchInputs{}, errors.New("previous checkpoint catalog authority does not match its checkpoint and executor policy")
+		}
+		previousCheckpoint = clonePreviousCheckpoint(&state.PreviousCheckpoint.Checkpoint)
+		catalogCopy := cloneBrainToolCatalog(catalog)
+		previousCatalog = &catalogCopy
+	}
 	return RunLaunchInputs{
-		Prompt: state.Prompt, PreviousCheckpoint: clonePreviousCheckpoint(state.PreviousCheckpoint),
+		Prompt: state.Prompt, PreviousCheckpoint: previousCheckpoint, PreviousBrainToolCatalog: previousCatalog,
 		CodexRuntimeManifestDigest: profile.CodexRuntimeManifestDigest, Model: profile.Model,
 		ExecutorCatalogPolicy: policy, ExecutorMCPEndpoint: profile.ExecutorMCPEndpoint,
 		ExecutorMCPTLSIdentity: profile.ExecutorMCPTLSIdentity, ExecutorMCPAudience: profile.ExecutorMCPAudience,
@@ -95,7 +134,7 @@ func (profile RunLaunchProfile) inputs(state RunLaunchState) RunLaunchInputs {
 		ControllerCallbackEndpoint: profile.ControllerCallbackEndpoint,
 		ControllerCallbackIdentity: profile.ControllerCallbackIdentity,
 		ControllerCallbackAudience: profile.ControllerCallbackAudience,
-	}
+	}, nil
 }
 
 func validateRunLaunchProfile(profile RunLaunchProfile) error {
@@ -128,10 +167,17 @@ func validateRunLaunchProfile(profile RunLaunchProfile) error {
 		},
 		ExecutorPolicy: ExecutorCatalogPolicy{Version: "profile-validation-policy", ContextDigest: policyDigest},
 	}
-	return validateResolvedRunLaunchInputs(scheduled, profile.inputs(state))
+	inputs, err := profile.inputs(state)
+	if err != nil {
+		return err
+	}
+	return validateResolvedRunLaunchInputs(scheduled, inputs)
 }
 
 func validateResolvedRunLaunchInputs(scheduled ScheduledRunAttempt, inputs RunLaunchInputs) error {
+	if (inputs.PreviousCheckpoint == nil) != (inputs.PreviousBrainToolCatalog == nil) {
+		return errors.New("previous checkpoint and brain tool catalog authority must be supplied together")
+	}
 	proposal, err := BuildExecutorCatalog(inputs.ExecutorCatalogPolicy)
 	if err != nil {
 		return err

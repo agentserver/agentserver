@@ -29,15 +29,15 @@ func TestPostgreSQLMigrationKernel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first migrateConfig() error = %v", err)
 	}
-	if result.Applied != 7 || result.CurrentVersion != 7 {
-		t.Fatalf("first migration result = %+v, want seven applied migrations at version 7", result)
+	if result.Applied != 8 || result.CurrentVersion != 8 {
+		t.Fatalf("first migration result = %+v, want eight applied migrations at version 8", result)
 	}
 	result, err = migrateConfig(t.Context(), connectionConfig, runner)
 	if err != nil {
 		t.Fatalf("repeat migrateConfig() error = %v", err)
 	}
-	if result.Applied != 0 || result.CurrentVersion != 7 {
-		t.Fatalf("repeat migration result = %+v, want no-op at version 7", result)
+	if result.Applied != 0 || result.CurrentVersion != 8 {
+		t.Fatalf("repeat migration result = %+v, want no-op at version 8", result)
 	}
 
 	connection := openPostgresTestConnection(t, connectionConfig)
@@ -221,7 +221,7 @@ VALUES ($1, 1, $2, $3, 1, 'manual.event', 1, '{}'::jsonb)`, quotedSchema),
 	}
 	connection.Close(context.Background())
 
-	runner.catalog = catalog
+	runner.catalog = catalog[:7]
 	result, err := migrateConfig(t.Context(), connectionConfig, runner)
 	if err == nil || !strings.Contains(err.Error(), "empty pre-runtime run_events table") {
 		t.Fatalf("migration 0002 result = %+v, error = %v; want explicit development-row refusal", result, err)
@@ -251,6 +251,35 @@ WHERE table_schema = $1 AND table_name = 'run_events' AND column_name = 'source'
 	}
 }
 
+func TestPostgreSQLMigration0008UpgradesPublishedVersion0007(t *testing.T) {
+	connectionConfig := postgresIntegrationConfig(t)
+	schema := newPostgresTestSchema(t, connectionConfig)
+	catalog, err := EmbeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) < 8 {
+		t.Fatal("embedded catalog does not contain migration 0008")
+	}
+	runner := runnerConfig{schema: schema, lockKey: migrationAdvisoryLockKey, catalog: catalog[:7]}
+	result, err := migrateConfig(t.Context(), connectionConfig, runner)
+	if err != nil {
+		t.Fatalf("apply published migrations through 0007: %v", err)
+	}
+	if result.Applied != 7 || result.CurrentVersion != 7 {
+		t.Fatalf("published migration result = %+v, want version 7", result)
+	}
+
+	runner.catalog = catalog
+	result, err = migrateConfig(t.Context(), connectionConfig, runner)
+	if err != nil {
+		t.Fatalf("upgrade to migration 0008: %v", err)
+	}
+	if result.Applied != 1 || result.CurrentVersion != 8 {
+		t.Fatalf("0008 upgrade result = %+v, want one applied migration at version 8", result)
+	}
+}
+
 func TestPostgreSQLMigration0007UpgradesPublishedVersion0006(t *testing.T) {
 	connectionConfig := postgresIntegrationConfig(t)
 	schema := newPostgresTestSchema(t, connectionConfig)
@@ -270,7 +299,7 @@ func TestPostgreSQLMigration0007UpgradesPublishedVersion0006(t *testing.T) {
 		t.Fatalf("published migration result = %+v, want version 6", result)
 	}
 
-	runner.catalog = catalog
+	runner.catalog = catalog[:7]
 	result, err = migrateConfig(t.Context(), connectionConfig, runner)
 	if err != nil {
 		t.Fatalf("upgrade to migration 0007: %v", err)
@@ -432,6 +461,7 @@ func assertDatabaseObjects(t *testing.T, connection *pgx.Conn, schema string) {
 	wantTables := map[string]bool{
 		"attempt_leases":               false,
 		"brain_tool_catalogs":          false,
+		"checkpoints":                  false,
 		"executor_connection_attempts": false,
 		"executor_connections":         false,
 		"executor_environments":        false,
@@ -441,6 +471,8 @@ func assertDatabaseObjects(t *testing.T, connection *pgx.Conn, schema string) {
 		"outbox":                       false,
 		"run_attempts":                 false,
 		"run_events":                   false,
+		"run_launch_allowed_tools":     false,
+		"run_launch_states":            false,
 		"runs":                         false,
 		"schema_migrations":            false,
 		"session_leases":               false,
@@ -490,8 +522,16 @@ WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, schema)
 		"brain_tool_catalogs_attempt_scope_fk":                    false,
 		"brain_tool_catalogs_attempt_unique":                      false,
 		"brain_tool_catalogs_digests_sha256":                      false,
+		"brain_tool_catalogs_identity_scope_thread_unique":        false,
 		"brain_tool_catalogs_run_scope_fk":                        false,
 		"brain_tool_catalogs_thread_unique":                       false,
+		"checkpoints_attempt_scope_fk":                            false,
+		"checkpoints_catalog_scope_thread_fk":                     false,
+		"checkpoints_digests_sha256":                              false,
+		"checkpoints_run_scope_fk":                                false,
+		"run_launch_allowed_tools_name_unique":                    false,
+		"run_launch_states_run_scope_fk":                          false,
+		"sessions_latest_checkpoint_same_session_fk":              false,
 		"session_leases_run_session_fk":                           false,
 		"run_attempts_run_generation_unique":                      false,
 		"run_events_producer_key_unique":                          false,
@@ -543,6 +583,7 @@ WHERE constraint_schema = $1`, schema)
 
 	wantIndexes := map[string]bool{
 		"brain_tool_catalogs_session_created_idx":            false,
+		"checkpoints_session_created_idx":                    false,
 		"runs_session_status_created_idx":                    false,
 		"run_attempts_run_created_idx":                       false,
 		"run_events_run_created_idx":                         false,

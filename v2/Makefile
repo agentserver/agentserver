@@ -30,6 +30,7 @@ import-boundary:
 	$(GO) test ./internal/buildguard -run '^TestRepositoryHasNoV1RuntimeImports$$' -count=1
 
 contract-check:
+	$(GO) test ./internal/corecontract -run '^TestInternalOpenAPIPathsMatchClientContract$$' -count=1
 	$(GO) test ./internal/runtimelock -run '^TestRuntimeManifestJSONSchemaContract$$' -count=1
 	$(GO) test ./internal/runmanifest -run '^TestRunManifestJSONSchemaAcceptsSignedEnvelope$$' -count=1
 	$(GO) test ./internal/runmanifest -run '^TestRunManifestVerificationKeyringJSONSchema$$' -count=1

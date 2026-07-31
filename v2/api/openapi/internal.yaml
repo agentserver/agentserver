@@ -3,7 +3,7 @@
   "info": {
     "title": "agentserver v2 internal command API",
     "version": "0.1.0",
-    "description": "Run-dispatch, run-attempt, brain tool catalog, executor connection, environment registry, and execution state commands. Every endpoint requires the explicitly authorized component workload identity."
+    "description": "Run-dispatch, run-attempt, fenced run-launch state, brain tool catalog, executor connection, environment registry, and execution state commands/queries. Every endpoint requires the explicitly authorized component workload identity."
   },
   "servers": [{"url": "https://agentserver-core"}],
   "security": [{"workloadMTLS": []}],
@@ -103,6 +103,20 @@
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AppendAttemptEventsRequest"}}}},
         "responses": {
           "200": {"description": "Per-producer identities mapped to authoritative run sequence numbers", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AppendAttemptEventsResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/run-launch-states:resolve": {
+      "post": {
+        "operationId": "resolveRunLaunchState",
+        "description": "Returns the immutable prompt, compatible committed checkpoint, and executor tool-policy projection only for the exact live pre-turn attempt authority tuple.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ResolveRunLaunchStateRequest"}}}},
+        "responses": {
+          "200": {"description": "Fenced launch authority projection", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ResolveRunLaunchStateResponse"}}}},
           "400": {"$ref": "#/components/responses/CommandError"},
           "403": {"$ref": "#/components/responses/CommandError"},
           "404": {"$ref": "#/components/responses/CommandError"},
@@ -585,6 +599,75 @@
         "properties": {
           "events": {"type": "array", "maxItems": 256, "items": {"$ref": "#/components/schemas/AppendedAttemptEvent"}},
           "newCount": {"type": "integer", "minimum": 0, "maximum": 256}
+        }
+      },
+      "ResolveRunLaunchStateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["workspaceId", "sessionId", "runId", "runAttemptId", "holderId", "runAttemptGeneration", "expectedRunVersion", "expectedRunAttemptVersion"],
+        "properties": {
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "sessionId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "expectedRunVersion": {"type": "integer", "minimum": 1},
+          "expectedRunAttemptVersion": {"type": "integer", "minimum": 1}
+        }
+      },
+      "RunLaunchObjectPointer": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["objectId", "sha256", "sizeBytes", "mediaType"],
+        "properties": {
+          "objectId": {"$ref": "#/components/schemas/UUID"},
+          "sha256": {"$ref": "#/components/schemas/SHA256"},
+          "sizeBytes": {"type": "integer", "minimum": 1, "maximum": 1099511627776},
+          "mediaType": {"type": "string", "minLength": 1, "maxLength": 255}
+        }
+      },
+      "RunLaunchCheckpointState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["checkpointId", "threadId", "manifestDigest", "catalogDigest", "catalog", "object", "codexRuntimeManifestDigest", "checkpointAllowlistVersion"],
+        "properties": {
+          "checkpointId": {"$ref": "#/components/schemas/UUID"},
+          "threadId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "manifestDigest": {"$ref": "#/components/schemas/SHA256"},
+          "catalogDigest": {"$ref": "#/components/schemas/SHA256"},
+          "catalog": {"$ref": "#/components/schemas/BrainToolCatalogState"},
+          "object": {"$ref": "#/components/schemas/RunLaunchObjectPointer"},
+          "codexRuntimeManifestDigest": {"$ref": "#/components/schemas/SHA256"},
+          "checkpointAllowlistVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+        }
+      },
+      "RunLaunchExecutorPolicyState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version", "contextDigest", "allowedTools"],
+        "properties": {
+          "version": {"type": "string", "minLength": 1, "maxLength": 128},
+          "contextDigest": {"$ref": "#/components/schemas/SHA256"},
+          "allowedTools": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 128}}
+        }
+      },
+      "ResolveRunLaunchStateResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["workspaceId", "sessionId", "runId", "runAttemptId", "holderId", "runAttemptGeneration", "runVersion", "runAttemptVersion", "prompt", "executorPolicy"],
+        "properties": {
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "sessionId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "runVersion": {"type": "integer", "minimum": 1},
+          "runAttemptVersion": {"type": "integer", "minimum": 1},
+          "prompt": {"$ref": "#/components/schemas/RunLaunchObjectPointer"},
+          "previousCheckpoint": {"$ref": "#/components/schemas/RunLaunchCheckpointState"},
+          "executorPolicy": {"$ref": "#/components/schemas/RunLaunchExecutorPolicyState"}
         }
       },
       "BrainToolDescriptor": {

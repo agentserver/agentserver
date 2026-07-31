@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/executorgateway/mcpcontract"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
@@ -26,7 +27,13 @@ func TestConfiguredRunLaunchInputResolverCombinesAndCopiesAuthorityState(t *test
 		},
 	}
 	source := &recordingRunLaunchStateSource{state: RunLaunchState{
-		Prompt: base.Prompt, PreviousCheckpoint: checkpoint, ExecutorPolicy: base.ExecutorCatalogPolicy,
+		Prompt: base.Prompt,
+		PreviousCheckpoint: &RunLaunchCheckpoint{
+			Checkpoint: *checkpoint, CodexRuntimeManifestDigest: base.CodexRuntimeManifestDigest,
+			CheckpointAllowlistVersion: int64(base.CheckpointAllowlistVersion),
+			Catalog:                    resolverCheckpointCatalog(proposal, checkpoint.ThreadID),
+		},
+		ExecutorPolicy: base.ExecutorCatalogPolicy,
 	}}
 	resolver, err := NewConfiguredRunLaunchInputResolver(source, launchProfileFromInputs(base))
 	if err != nil {
@@ -39,13 +46,17 @@ func TestConfiguredRunLaunchInputResolverCombinesAndCopiesAuthorityState(t *test
 	}
 	if source.calls != 1 || source.scheduled.Claim.RunAttempt.RunAttemptID != testRunAttemptID ||
 		inputs.PreviousCheckpoint == checkpoint || inputs.PreviousCheckpoint.ThreadID != checkpoint.ThreadID ||
+		inputs.PreviousBrainToolCatalog == nil ||
 		inputs.ExecutorMCPEndpoint != base.ExecutorMCPEndpoint ||
 		len(inputs.ExecutorCatalogPolicy.AllowedTools) != len(base.ExecutorCatalogPolicy.AllowedTools) {
 		t.Fatalf("resolved inputs/source = %+v / %+v", inputs, source)
 	}
 	inputs.PreviousCheckpoint.ThreadID = "mutated"
+	inputs.PreviousBrainToolCatalog.CanonicalCatalog[0] = '!'
 	inputs.ExecutorCatalogPolicy.AllowedTools[0] = mcpcontract.ToolShell
-	if checkpoint.ThreadID != "thread-previous" || source.state.ExecutorPolicy.AllowedTools[0] != base.ExecutorCatalogPolicy.AllowedTools[0] {
+	if checkpoint.ThreadID != "thread-previous" || source.state.PreviousCheckpoint.Checkpoint.ThreadID != "thread-previous" ||
+		source.state.PreviousCheckpoint.Catalog.CanonicalCatalog[0] == '!' ||
+		source.state.ExecutorPolicy.AllowedTools[0] != base.ExecutorCatalogPolicy.AllowedTools[0] {
 		t.Fatal("resolved launch inputs alias authority state")
 	}
 }
@@ -64,13 +75,18 @@ func TestConfiguredRunLaunchInputResolverRejectsProfileAndDynamicDrift(t *testin
 	}
 	source := &recordingRunLaunchStateSource{state: RunLaunchState{
 		Prompt: base.Prompt,
-		PreviousCheckpoint: &runmanifest.PreviousCheckpoint{
-			CheckpointID: "47000000-0000-4000-8000-000000000004", ThreadID: "thread-previous",
-			ManifestDigest: strings.Repeat("d", 64), CatalogDigest: proposal.Catalog.Digest(),
-			Object: runmanifest.ObjectPointer{
-				ObjectID: "48000000-0000-4000-8000-000000000004", SHA256: strings.Repeat("e", 64),
-				SizeBytes: 1024, MediaType: "application/octet-stream",
+		PreviousCheckpoint: &RunLaunchCheckpoint{
+			Checkpoint: runmanifest.PreviousCheckpoint{
+				CheckpointID: "47000000-0000-4000-8000-000000000004", ThreadID: "thread-previous",
+				ManifestDigest: strings.Repeat("d", 64), CatalogDigest: proposal.Catalog.Digest(),
+				Object: runmanifest.ObjectPointer{
+					ObjectID: "48000000-0000-4000-8000-000000000004", SHA256: strings.Repeat("e", 64),
+					SizeBytes: 1024, MediaType: "application/octet-stream",
+				},
 			},
+			CodexRuntimeManifestDigest: base.CodexRuntimeManifestDigest,
+			CheckpointAllowlistVersion: int64(base.CheckpointAllowlistVersion),
+			Catalog:                    resolverCheckpointCatalog(proposal, "thread-previous"),
 		},
 		ExecutorPolicy: ExecutorCatalogPolicy{
 			Version: "changed-policy", ContextDigest: sha256.Sum256([]byte("changed")),
@@ -82,8 +98,15 @@ func TestConfiguredRunLaunchInputResolverRejectsProfileAndDynamicDrift(t *testin
 		t.Fatal(err)
 	}
 	_, err = resolver.ResolveRunLaunch(t.Context(), ScheduledRunAttempt{Dispatch: testControllerDispatch("starting"), Claim: testControllerClaim()})
-	if err == nil || !strings.Contains(err.Error(), "catalogDigest must match") {
+	if err == nil || !strings.Contains(err.Error(), "catalog authority") {
 		t.Fatalf("checkpoint/catalog drift error = %v", err)
+	}
+
+	source.state.ExecutorPolicy = base.ExecutorCatalogPolicy
+	source.state.PreviousCheckpoint.CodexRuntimeManifestDigest = strings.Repeat("f", 64)
+	_, err = resolver.ResolveRunLaunch(t.Context(), ScheduledRunAttempt{Dispatch: testControllerDispatch("starting"), Claim: testControllerClaim()})
+	if err == nil || !strings.Contains(err.Error(), "runtime manifest or allowlist") {
+		t.Fatalf("checkpoint/runtime drift error = %v", err)
 	}
 
 	source.err = errors.New("core launch state unavailable")
@@ -92,6 +115,22 @@ func TestConfiguredRunLaunchInputResolverRejectsProfileAndDynamicDrift(t *testin
 	}
 	if _, err := resolver.ResolveRunLaunch(nil, ScheduledRunAttempt{}); err == nil || !strings.Contains(err.Error(), "context") {
 		t.Fatalf("nil context error = %v", err)
+	}
+}
+
+func resolverCheckpointCatalog(proposal ExecutorCatalogProposal, threadID string) BrainToolCatalog {
+	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	return BrainToolCatalog{
+		CatalogID:   "49000000-0000-4000-8000-000000000004",
+		WorkspaceID: "40000000-0000-4000-8000-000000000004", SessionID: testSessionID,
+		CreatedRunID:             "4a000000-0000-4000-8000-000000000004",
+		CreatedRunAttemptID:      "4b000000-0000-4000-8000-000000000004",
+		CreatedAttemptGeneration: 1, CreatedHolderID: "previous-pool-holder",
+		CreatedRunVersion: 3, CreatedAttemptVersion: 1, ThreadID: threadID,
+		ContractVersion: proposal.ContractVersion, CanonicalizerVersion: proposal.CanonicalizerVersion,
+		CanonicalCatalog: append([]byte(nil), proposal.CanonicalCatalog...), CatalogDigest: proposal.CatalogDigest,
+		PolicyVersion: proposal.PolicyVersion, PolicyContextDigest: proposal.PolicyContextDigest,
+		Version: 2, CreatedAt: now, UpdatedAt: now,
 	}
 }
 

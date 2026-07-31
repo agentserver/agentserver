@@ -12,6 +12,11 @@ import (
 
 func (s *StateStore) CreateRun(ctx context.Context, command CreateRunCommand) (CreateRunResult, error) {
 	const operation = "CreateRun"
+	normalizedPolicy, err := normalizeRunExecutorPolicy(command.ExecutorPolicy)
+	if err != nil {
+		return CreateRunResult{}, commandError(ErrorInvalidArgument, operation, "run", command.RunID, err.Error())
+	}
+	command.ExecutorPolicy = normalizedPolicy
 	if err := validateCreateRun(command); err != nil {
 		return CreateRunResult{}, commandError(ErrorInvalidArgument, operation, "run", command.RunID, err.Error())
 	}
@@ -64,6 +69,20 @@ WHERE r.workspace_id = $1
 					ResourceID:   existing.ID,
 					CurrentRunID: existing.ID,
 					Message:      "idempotency key was already used with a different request hash",
+				}
+			}
+			prompt, policy, launchErr := s.readRunLaunchInput(ctx, transaction, operation, existing.ID)
+			if launchErr != nil {
+				return CreateRunResult{}, launchErr
+			}
+			if !runLaunchInputMatches(prompt, policy, command) {
+				return CreateRunResult{}, &StateError{
+					Code:         ErrorIdempotencyConflict,
+					Operation:    operation,
+					Resource:     "run",
+					ResourceID:   existing.ID,
+					CurrentRunID: existing.ID,
+					Message:      "idempotency key was already used with different launch authority",
 				}
 			}
 			return CreateRunResult{Run: existing, SessionVersion: sessionVersion, Created: false}, nil
@@ -119,6 +138,9 @@ RETURNING %s`, s.table("runs"), runColumns(""))
 				return CreateRunResult{}, commandError(ErrorConflict, operation, "run", command.RunID, "run identity is already in use")
 			}
 			return CreateRunResult{}, databaseError(operation+" insert run", err)
+		}
+		if err := s.insertRunLaunchInput(ctx, transaction, command); err != nil {
+			return CreateRunResult{}, err
 		}
 
 		payload, err := marshalTransitionPayload(struct {
@@ -176,6 +198,12 @@ func validateCreateRun(command CreateRunCommand) error {
 		}
 	}
 	if err := validateBoundedText("idempotency_key", command.IdempotencyKey, 256); err != nil {
+		return err
+	}
+	if err := validateRunObjectPointer("prompt", command.Prompt); err != nil {
+		return err
+	}
+	if err := validateRunExecutorPolicy(command.ExecutorPolicy); err != nil {
 		return err
 	}
 	if command.ExpectedSessionVersion < 1 {

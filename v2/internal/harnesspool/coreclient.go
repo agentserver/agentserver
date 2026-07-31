@@ -14,11 +14,14 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/braincatalog"
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
 
 const (
@@ -30,6 +33,8 @@ type CoreClient struct {
 	baseURL    *url.URL
 	httpClient *http.Client
 }
+
+var _ RunLaunchStateSource = (*CoreClient)(nil)
 
 type CoreCommandError struct {
 	HTTPStatus        int
@@ -282,6 +287,97 @@ func (client *CoreClient) ClaimRunAttempt(ctx context.Context, request ClaimRunA
 		return ClaimRunAttemptResult{}, fmt.Errorf("validate core claim response: %w", err)
 	}
 	return result, nil
+}
+
+func (client *CoreClient) ResolveRunLaunchState(ctx context.Context, scheduled ScheduledRunAttempt) (RunLaunchState, error) {
+	if err := validateScheduledLaunchAuthority(scheduled); err != nil {
+		return RunLaunchState{}, err
+	}
+	claim := scheduled.Claim
+	request := corecontract.ResolveRunLaunchStateRequest{
+		WorkspaceID: claim.Run.WorkspaceID, SessionID: claim.Run.SessionID, RunID: claim.Run.RunID,
+		RunAttemptID: claim.RunAttempt.RunAttemptID, HolderID: claim.RunAttempt.HolderID,
+		RunAttemptGeneration: claim.RunAttempt.Generation, ExpectedRunVersion: claim.Run.Version,
+		ExpectedRunAttemptVersion: claim.RunAttempt.Version,
+	}
+	var response corecontract.ResolveRunLaunchStateResponse
+	if err := client.post(ctx, corecontract.ResolveRunLaunchStatePath, request, &response); err != nil {
+		return RunLaunchState{}, err
+	}
+	if response.WorkspaceID != request.WorkspaceID || response.SessionID != request.SessionID || response.RunID != request.RunID ||
+		response.RunAttemptID != request.RunAttemptID || response.HolderID != request.HolderID ||
+		response.RunAttemptGeneration != request.RunAttemptGeneration || response.RunVersion != request.ExpectedRunVersion ||
+		response.RunAttemptVersion != request.ExpectedRunAttemptVersion {
+		return RunLaunchState{}, errors.New("core launch-state response does not match the requested attempt authority tuple")
+	}
+	prompt, err := clientRunLaunchObjectPointer("prompt", response.Prompt)
+	if err != nil {
+		return RunLaunchState{}, fmt.Errorf("validate core launch-state response: %w", err)
+	}
+	policyDigest, err := decodeClientSHA256(response.ExecutorPolicy.ContextDigest)
+	if err != nil {
+		return RunLaunchState{}, fmt.Errorf("validate core launch-state response policy digest: %w", err)
+	}
+	policy := ExecutorCatalogPolicy{
+		Version: response.ExecutorPolicy.Version, ContextDigest: policyDigest,
+		AllowedTools: append([]string(nil), response.ExecutorPolicy.AllowedTools...),
+	}
+	if !slices.IsSorted(policy.AllowedTools) {
+		return RunLaunchState{}, errors.New("validate core launch-state response: allowed tools are not sorted")
+	}
+	if _, err := BuildExecutorCatalog(policy); err != nil {
+		return RunLaunchState{}, fmt.Errorf("validate core launch-state response policy: %w", err)
+	}
+
+	state := RunLaunchState{Prompt: prompt, ExecutorPolicy: policy}
+	if response.PreviousCheckpoint == nil {
+		return state, nil
+	}
+	checkpoint := response.PreviousCheckpoint
+	if err := validateUUIDIdentity("checkpoint ID", checkpoint.CheckpointID); err != nil {
+		return RunLaunchState{}, fmt.Errorf("validate core launch-state response: %w", err)
+	}
+	if !validClientProtocolText(checkpoint.ThreadID, 256) {
+		return RunLaunchState{}, errors.New("validate core launch-state response: checkpoint thread ID is invalid")
+	}
+	manifestDigest, err := decodeClientSHA256(checkpoint.ManifestDigest)
+	if err != nil {
+		return RunLaunchState{}, fmt.Errorf("validate core launch-state response manifest digest: %w", err)
+	}
+	catalogDigest, err := decodeClientSHA256(checkpoint.CatalogDigest)
+	if err != nil {
+		return RunLaunchState{}, fmt.Errorf("validate core launch-state response catalog digest: %w", err)
+	}
+	catalog, err := clientBrainToolCatalog(checkpoint.Catalog)
+	if err != nil {
+		return RunLaunchState{}, fmt.Errorf("validate core launch-state response checkpoint catalog: %w", err)
+	}
+	if catalog.CatalogDigest != catalogDigest || catalog.WorkspaceID != claim.Run.WorkspaceID ||
+		catalog.SessionID != claim.Run.SessionID || catalog.ThreadID != checkpoint.ThreadID {
+		return RunLaunchState{}, errors.New("validate core launch-state response: checkpoint catalog authority is inconsistent")
+	}
+	runtimeDigest, err := decodeClientSHA256(checkpoint.CodexRuntimeManifestDigest)
+	if err != nil {
+		return RunLaunchState{}, fmt.Errorf("validate core launch-state response runtime digest: %w", err)
+	}
+	object, err := clientRunLaunchObjectPointer("previous checkpoint object", checkpoint.Object)
+	if err != nil {
+		return RunLaunchState{}, fmt.Errorf("validate core launch-state response: %w", err)
+	}
+	if checkpoint.CheckpointAllowlistVersion < 1 || checkpoint.CheckpointAllowlistVersion > 1<<53-1 {
+		return RunLaunchState{}, errors.New("validate core launch-state response: checkpoint allowlist version is not a positive safe integer")
+	}
+	state.PreviousCheckpoint = &RunLaunchCheckpoint{
+		Checkpoint: runmanifest.PreviousCheckpoint{
+			CheckpointID: checkpoint.CheckpointID, ThreadID: checkpoint.ThreadID,
+			ManifestDigest: hex.EncodeToString(manifestDigest[:]), CatalogDigest: hex.EncodeToString(catalogDigest[:]),
+			Object: object,
+		},
+		Catalog:                    catalog,
+		CodexRuntimeManifestDigest: hex.EncodeToString(runtimeDigest[:]),
+		CheckpointAllowlistVersion: checkpoint.CheckpointAllowlistVersion,
+	}
+	return state, nil
 }
 
 func (client *CoreClient) RenewRunAttempt(ctx context.Context, request RenewRunAttemptRequest) (RenewRunAttemptResult, error) {
@@ -603,6 +699,30 @@ func decodeClientSHA256(value string) ([32]byte, error) {
 	}
 	copy(digest[:], decoded)
 	return digest, nil
+}
+
+func clientRunLaunchObjectPointer(field string, source corecontract.RunLaunchObjectPointer) (runmanifest.ObjectPointer, error) {
+	if err := validateUUIDIdentity(field+" object ID", source.ObjectID); err != nil {
+		return runmanifest.ObjectPointer{}, err
+	}
+	digest, err := decodeClientSHA256(source.SHA256)
+	if err != nil {
+		return runmanifest.ObjectPointer{}, fmt.Errorf("%s SHA-256: %w", field, err)
+	}
+	if source.SizeBytes < 1 || source.SizeBytes > 1<<40 {
+		return runmanifest.ObjectPointer{}, fmt.Errorf("%s size is outside the run-manifest bound", field)
+	}
+	if !validClientProtocolText(source.MediaType, 255) || strings.ContainsAny(source.MediaType, "\r\n") {
+		return runmanifest.ObjectPointer{}, fmt.Errorf("%s media type is invalid", field)
+	}
+	return runmanifest.ObjectPointer{
+		ObjectID: source.ObjectID, SHA256: hex.EncodeToString(digest[:]),
+		SizeBytes: source.SizeBytes, MediaType: source.MediaType,
+	}, nil
+}
+
+func validClientProtocolText(value string, maximum int) bool {
+	return value != "" && len(value) <= maximum && utf8.ValidString(value) && !strings.ContainsRune(value, 0)
 }
 
 func isLoopbackHost(host string) bool {

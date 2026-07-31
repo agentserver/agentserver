@@ -2,7 +2,9 @@ package coredb
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -162,6 +164,39 @@ func TestRunDispatchCompletionStatesFailClosed(t *testing.T) {
 		if !runDispatchCanComplete(status) {
 			t.Errorf("runDispatchCanComplete(%q) = false", status)
 		}
+	}
+}
+
+func TestRunLaunchAuthorityValidationAndPolicyNormalization(t *testing.T) {
+	policyDigest := sha256.Sum256([]byte("run-launch-policy"))
+	policy, err := normalizeRunExecutorPolicy(RunExecutorPolicy{
+		Version: "executor-policy/1", ContextDigest: policyDigest,
+		AllowedTools: []string{"shell", "read_file", "list_environments"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(policy.AllowedTools, []string{"list_environments", "read_file", "shell"}) {
+		t.Fatalf("normalized allowed tools = %v", policy.AllowedTools)
+	}
+	if _, err := normalizeRunExecutorPolicy(RunExecutorPolicy{
+		Version: "executor-policy/1", ContextDigest: policyDigest,
+		AllowedTools: []string{"shell", "shell"},
+	}); err == nil || !strings.Contains(err.Error(), "sorted and unique") {
+		t.Fatalf("duplicate allowed tool error = %v", err)
+	}
+
+	command := ResolveRunLaunchStateCommand{
+		WorkspaceID: stateTestUUID(1400), SessionID: stateTestUUID(1401), RunID: stateTestUUID(1402),
+		AttemptID: stateTestUUID(1403), HolderID: "pool-holder", Generation: 2,
+		ExpectedRunVersion: 3, ExpectedAttemptVersion: 1,
+	}
+	if err := validateResolveRunLaunchState(command); err != nil {
+		t.Fatalf("valid resolve launch state command: %v", err)
+	}
+	command.Generation = 1 << 53
+	if err := validateResolveRunLaunchState(command); err == nil || !strings.Contains(err.Error(), "safe integer") {
+		t.Fatalf("unsafe generation error = %v", err)
 	}
 }
 

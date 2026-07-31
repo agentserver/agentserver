@@ -53,6 +53,40 @@ func TestLaunchPreparerSignsBeforeFreezingCatalog(t *testing.T) {
 	}
 }
 
+func TestLaunchPreparerReusesCheckpointCatalogWithoutAllocatingOrFreezing(t *testing.T) {
+	inputs := testRunLaunchInputs()
+	proposal, err := BuildExecutorCatalog(inputs.ExecutorCatalogPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := resolverCheckpointCatalog(proposal, "thread-previous")
+	inputs.PreviousCheckpoint = &runmanifest.PreviousCheckpoint{
+		CheckpointID: "47000000-0000-4000-8000-000000000004", ThreadID: catalog.ThreadID,
+		ManifestDigest: strings.Repeat("d", 64), CatalogDigest: proposal.Catalog.Digest(),
+		Object: runmanifest.ObjectPointer{
+			ObjectID: "48000000-0000-4000-8000-000000000004", SHA256: strings.Repeat("e", 64),
+			SizeBytes: 1024, MediaType: "application/octet-stream",
+		},
+	}
+	inputs.PreviousBrainToolCatalog = &catalog
+	core := &recordingLaunchCore{}
+	allocator := &fixedCatalogAllocator{id: "45000000-0000-4000-8000-000000000099"}
+	preparer := newTestLaunchPreparer(t, core, allocator, &fixedLaunchResolver{inputs: inputs})
+	prepared, err := preparer.Prepare(t.Context(), ScheduledRunAttempt{Dispatch: testControllerDispatch("starting"), Claim: testControllerClaim()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allocator.calls != 0 || len(core.requests) != 0 || prepared.FrozenCatalog.CatalogID != catalog.CatalogID ||
+		prepared.Manifest.ExecutorMCP.CatalogID != catalog.CatalogID || prepared.Manifest.PreviousCheckpoint == nil ||
+		prepared.Manifest.PreviousCheckpoint.ThreadID != catalog.ThreadID {
+		t.Fatalf("resume prepared/allocator/core = %+v / %+v / %+v", prepared, allocator, core)
+	}
+	inputs.PreviousBrainToolCatalog.CanonicalCatalog[0] = '!'
+	if prepared.FrozenCatalog.CanonicalCatalog[0] == '!' {
+		t.Fatal("prepared resume catalog aliases resolver input")
+	}
+}
+
 func TestLaunchPreparerRetriesAmbiguousFreezeWithExactIdentity(t *testing.T) {
 	core := &recordingLaunchCore{errors: []error{errors.New("response lost")}}
 	allocator := &fixedCatalogAllocator{id: "45000000-0000-4000-8000-000000000004"}

@@ -40,6 +40,8 @@ func TestPostgreSQLCreateRunIdempotencyAndAtomicity(t *testing.T) {
 	}
 	assertStateTableCount(t, pool, schema, "runs", 1)
 	assertStateTableCount(t, pool, schema, "run_events", 1)
+	assertStateTableCount(t, pool, schema, "run_launch_states", 1)
+	assertStateTableCount(t, pool, schema, "run_launch_allowed_tools", 1)
 	assertStateTableCount(t, pool, schema, "outbox", 1)
 
 	var eventPayloadText string
@@ -81,6 +83,11 @@ WHERE e.run_id = $1
 	conflicting.RequestHash = sha256.Sum256([]byte("different request"))
 	if _, err := store.CreateRun(t.Context(), conflicting); !HasStateErrorCode(err, ErrorIdempotencyConflict) {
 		t.Fatalf("conflicting CreateRun() error = %v, want idempotency_conflict", err)
+	}
+	conflictingLaunch := command
+	conflictingLaunch.Prompt.SHA256 = sha256.Sum256([]byte("different prompt authority"))
+	if _, err := store.CreateRun(t.Context(), conflictingLaunch); !HasStateErrorCode(err, ErrorIdempotencyConflict) {
+		t.Fatalf("launch-conflicting CreateRun() error = %v, want idempotency_conflict", err)
 	}
 
 	active := stateCreateRunCommand(20, workspaceID, sessionID, "another-key")
@@ -129,6 +136,8 @@ func TestPostgreSQLConcurrentCreateRunSerializesSession(t *testing.T) {
 	}
 	commands[1].RequestHash = commands[0].RequestHash
 	commands[1].ActorID = commands[0].ActorID
+	commands[1].Prompt = commands[0].Prompt
+	commands[1].ExecutorPolicy = commands[0].ExecutorPolicy
 	results := make(chan CreateRunResult, 2)
 	errorsChannel := make(chan error, 2)
 	start := make(chan struct{})
@@ -166,7 +175,168 @@ func TestPostgreSQLConcurrentCreateRunSerializesSession(t *testing.T) {
 	}
 	assertStateTableCount(t, pool, schema, "runs", 1)
 	assertStateTableCount(t, pool, schema, "run_events", 1)
+	assertStateTableCount(t, pool, schema, "run_launch_states", 1)
 	assertStateTableCount(t, pool, schema, "outbox", 1)
+}
+
+func TestPostgreSQLResolveRunLaunchStateRequiresLiveAttemptAuthority(t *testing.T) {
+	store, pool, schema := newPostgresStateStore(t)
+	workspaceID := stateTestUUID(150)
+	sessionID := stateTestUUID(151)
+	insertStateTestSession(t, pool, schema, workspaceID, sessionID)
+	createCommand := stateCreateRunCommand(160, workspaceID, sessionID, "launch-state-key")
+	created := mustCreateStateRun(t, store, createCommand)
+	claimed := mustClaimStateRun(t, store, stateClaimRunCommand(170, created.Run.ID, created.Run.Version, "launch-holder"))
+
+	query := ResolveRunLaunchStateCommand{
+		WorkspaceID: workspaceID, SessionID: sessionID, RunID: claimed.Run.ID,
+		AttemptID: claimed.Attempt.ID, HolderID: claimed.Attempt.HolderID,
+		Generation: claimed.Attempt.Generation, ExpectedRunVersion: claimed.Run.Version,
+		ExpectedAttemptVersion: claimed.Attempt.Version,
+	}
+	resolved, err := store.ResolveRunLaunchState(t.Context(), query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.WorkspaceID != workspaceID || resolved.SessionID != sessionID || resolved.RunID != claimed.Run.ID ||
+		resolved.AttemptID != claimed.Attempt.ID || resolved.HolderID != claimed.Attempt.HolderID ||
+		resolved.Generation != claimed.Attempt.Generation || resolved.RunVersion != claimed.Run.Version ||
+		resolved.AttemptVersion != claimed.Attempt.Version || resolved.Prompt != createCommand.Prompt || resolved.PreviousCheckpoint != nil ||
+		resolved.ExecutorPolicy.Version != createCommand.ExecutorPolicy.Version ||
+		len(resolved.ExecutorPolicy.AllowedTools) != 1 || resolved.ExecutorPolicy.AllowedTools[0] != "read_file" {
+		t.Fatalf("resolved launch state = %+v", resolved)
+	}
+
+	staleVersion := query
+	staleVersion.ExpectedRunVersion--
+	if _, err := store.ResolveRunLaunchState(t.Context(), staleVersion); !HasStateErrorCode(err, ErrorVersionConflict) {
+		t.Fatalf("stale launch-state query error = %v, want version_conflict", err)
+	}
+	expireStateLeases(t, pool, schema, sessionID, claimed.Attempt.ID)
+	if _, err := store.ResolveRunLaunchState(t.Context(), query); !HasStateErrorCode(err, ErrorLeaseLost) {
+		t.Fatalf("expired launch-state query error = %v, want lease_lost", err)
+	}
+}
+
+func TestPostgreSQLResolveRunLaunchStateLoadsCommittedCheckpointCatalog(t *testing.T) {
+	store, pool, schema := newPostgresStateStore(t)
+	workspaceID := stateTestUUID(180)
+	sessionID := stateTestUUID(181)
+	insertStateTestSession(t, pool, schema, workspaceID, sessionID)
+	firstCommand := stateCreateRunCommand(182, workspaceID, sessionID, "checkpoint-source")
+	first := mustCreateStateRun(t, store, firstCommand)
+	firstClaim := mustClaimStateRun(t, store, stateClaimRunCommand(186, first.Run.ID, first.Run.Version, "checkpoint-holder"))
+
+	catalogDefinition, err := braincatalog.BuildCatalog("executor", "Deterministic executor tools.", []braincatalog.ToolDescriptor{{
+		Name: "read_file", Description: "Read one file.", InputSchema: json.RawMessage(`{"type":"object"}`),
+	}}, braincatalog.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	freeze := FreezeBrainToolCatalogCommand{
+		CatalogID: stateTestUUID(190), WorkspaceID: workspaceID, SessionID: sessionID,
+		RunID: first.Run.ID, AttemptID: firstClaim.Attempt.ID, HolderID: firstClaim.Attempt.HolderID,
+		Generation: firstClaim.Attempt.Generation, ExpectedRunVersion: firstClaim.Run.Version,
+		ExpectedAttemptVersion: firstClaim.Attempt.Version, ContractVersion: "executor-mcp/1.1",
+		CanonicalizerVersion: braincatalog.CatalogCanonicalizer,
+		CanonicalCatalog:     catalogDefinition.CanonicalBytes(), CatalogDigest: catalogDefinition.DigestSHA256(),
+		PolicyVersion: firstCommand.ExecutorPolicy.Version, PolicyContextDigest: firstCommand.ExecutorPolicy.ContextDigest,
+	}
+	frozen, err := store.FreezeBrainToolCatalog(t.Context(), freeze)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const threadID = "thread-checkpoint-resume"
+	bound, err := store.BindBrainThreadCatalog(t.Context(), BindBrainThreadCatalogCommand{
+		CatalogID: freeze.CatalogID, RunID: freeze.RunID, AttemptID: freeze.AttemptID,
+		HolderID: freeze.HolderID, Generation: freeze.Generation,
+		ExpectedRunVersion: freeze.ExpectedRunVersion, ExpectedAttemptVersion: freeze.ExpectedAttemptVersion,
+		ExpectedCatalogVersion: frozen.Catalog.Version, ThreadID: threadID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := store.MarkTurnAccepted(t.Context(), MarkTurnAcceptedCommand{
+		RunID: first.Run.ID, AttemptID: firstClaim.Attempt.ID, HolderID: firstClaim.Attempt.HolderID,
+		Generation: firstClaim.Attempt.Generation, ExpectedRunVersion: firstClaim.Run.Version,
+		ExpectedAttemptVersion: firstClaim.Attempt.Version, Record: stateTransitionRecord(194),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted.Run.Status != RunStatusRunning || accepted.Attempt.Status != AttemptStatusRunning {
+		t.Fatalf("accepted checkpoint source run = %+v / %+v", accepted.Run, accepted.Attempt)
+	}
+
+	checkpointID := stateTestUUID(198)
+	manifestDigest := sha256.Sum256([]byte("checkpoint manifest"))
+	objectID := stateTestUUID(199)
+	objectDigest := sha256.Sum256([]byte("checkpoint object"))
+	runtimeDigest := sha256.Sum256([]byte("codex runtime manifest"))
+	insertCheckpoint := fmt.Sprintf(`
+INSERT INTO %s.checkpoints
+    (id, workspace_id, session_id, run_id, run_attempt_id, attempt_generation,
+     brain_tool_catalog_id, thread_id, turn_id, manifest_digest,
+     object_id, object_sha256, object_size, object_media_type,
+     codex_runtime_manifest_digest, checkpoint_allowlist_version)
+VALUES
+    ($1, $2, $3, $4, $5, $6, $7, $8, 'turn-checkpoint-1', $9,
+     $10, $11, 2048, 'application/octet-stream', $12, 1)`, quoteIdentifier(schema))
+	_, err = pool.Exec(t.Context(), insertCheckpoint,
+		stateTestUUID(197), workspaceID, sessionID, first.Run.ID, firstClaim.Attempt.ID,
+		firstClaim.Attempt.Generation, bound.Catalog.ID, "thread-from-another-catalog",
+		manifestDigest[:], objectID, objectDigest[:], runtimeDigest[:],
+	)
+	assertPostgreSQLState(t, err, "23503")
+	if _, err := pool.Exec(t.Context(), insertCheckpoint,
+		checkpointID, workspaceID, sessionID, first.Run.ID, firstClaim.Attempt.ID,
+		firstClaim.Attempt.Generation, bound.Catalog.ID, threadID,
+		manifestDigest[:], objectID, objectDigest[:], runtimeDigest[:],
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	quotedSchema := quoteIdentifier(schema)
+	if _, err := pool.Exec(t.Context(), fmt.Sprintf("UPDATE %s.run_attempts SET status = 'succeeded' WHERE id = $1", quotedSchema), firstClaim.Attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), fmt.Sprintf("UPDATE %s.runs SET status = 'completed' WHERE id = $1", quotedSchema), first.Run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), fmt.Sprintf(`
+UPDATE %s.sessions
+SET active_run_id = NULL, latest_checkpoint_id = $1, version = version + 1
+WHERE id = $2`, quotedSchema), checkpointID, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	expireStateLeases(t, pool, schema, sessionID, firstClaim.Attempt.ID)
+
+	secondCommand := stateCreateRunCommand(200, workspaceID, sessionID, "checkpoint-resume")
+	secondCommand.ExpectedSessionVersion = 3
+	secondCommand.ExecutorPolicy = firstCommand.ExecutorPolicy
+	second := mustCreateStateRun(t, store, secondCommand)
+	secondClaim := mustClaimStateRun(t, store, stateClaimRunCommand(204, second.Run.ID, second.Run.Version, "resume-holder"))
+	resolved, err := store.ResolveRunLaunchState(t.Context(), ResolveRunLaunchStateCommand{
+		WorkspaceID: workspaceID, SessionID: sessionID, RunID: second.Run.ID,
+		AttemptID: secondClaim.Attempt.ID, HolderID: secondClaim.Attempt.HolderID,
+		Generation: secondClaim.Attempt.Generation, ExpectedRunVersion: secondClaim.Run.Version,
+		ExpectedAttemptVersion: secondClaim.Attempt.Version,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := resolved.PreviousCheckpoint
+	if checkpoint == nil || checkpoint.ID != checkpointID || checkpoint.WorkspaceID != workspaceID ||
+		checkpoint.SessionID != sessionID || checkpoint.RunID != first.Run.ID || checkpoint.AttemptID != firstClaim.Attempt.ID ||
+		checkpoint.AttemptGeneration != firstClaim.Attempt.Generation || checkpoint.ThreadID != threadID ||
+		checkpoint.ManifestDigest != manifestDigest || checkpoint.Object.ObjectID != objectID ||
+		checkpoint.Object.SHA256 != objectDigest || checkpoint.CodexRuntimeManifestDigest != runtimeDigest ||
+		checkpoint.CheckpointAllowlistVersion != 1 || checkpoint.Catalog.ID != bound.Catalog.ID ||
+		checkpoint.Catalog.ThreadID != threadID || checkpoint.Catalog.CatalogDigest != bound.Catalog.CatalogDigest ||
+		string(checkpoint.Catalog.CanonicalCatalog) != string(bound.Catalog.CanonicalCatalog) ||
+		checkpoint.CatalogDigest != bound.Catalog.CatalogDigest || checkpoint.CreatedAt.IsZero() {
+		t.Fatalf("resolved checkpoint/catalog = %+v", checkpoint)
+	}
 }
 
 func TestPostgreSQLAttemptLeaseGenerationFencing(t *testing.T) {
@@ -671,12 +841,20 @@ func insertStateTestSessionOnly(t *testing.T, pool *pgxpool.Pool, schema, worksp
 
 func stateCreateRunCommand(seed int, workspaceID, sessionID, idempotencyKey string) CreateRunCommand {
 	return CreateRunCommand{
-		RunID:                  stateTestUUID(seed),
-		WorkspaceID:            workspaceID,
-		SessionID:              sessionID,
-		ActorID:                stateTestUUID(seed + 1),
-		RequestHash:            sha256.Sum256([]byte(fmt.Sprintf("request-%d", seed))),
-		IdempotencyKey:         idempotencyKey,
+		RunID:          stateTestUUID(seed),
+		WorkspaceID:    workspaceID,
+		SessionID:      sessionID,
+		ActorID:        stateTestUUID(seed + 1),
+		RequestHash:    sha256.Sum256([]byte(fmt.Sprintf("request-%d", seed))),
+		IdempotencyKey: idempotencyKey,
+		Prompt: ObjectPointer{
+			ObjectID: stateTestUUID(seed + 100_000), SHA256: sha256.Sum256([]byte(fmt.Sprintf("prompt-%d", seed))),
+			Size: 128, MediaType: "application/json",
+		},
+		ExecutorPolicy: RunExecutorPolicy{
+			Version: "executor-policy/1", ContextDigest: sha256.Sum256([]byte(fmt.Sprintf("policy-%d", seed))),
+			AllowedTools: []string{"read_file"},
+		},
 		ExpectedSessionVersion: 1,
 		Record:                 stateTransitionRecord(seed + 2),
 	}

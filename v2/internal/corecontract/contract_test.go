@@ -52,6 +52,7 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 		RenewRunAttemptPath("{runAttemptId}"):                        "renewRunAttempt",
 		MarkTurnAcceptedPath("{runAttemptId}"):                       "markTurnAccepted",
 		AppendAttemptEventsPath("{runAttemptId}"):                    "appendAttemptEvents",
+		ResolveRunLaunchStatePath:                                    "resolveRunLaunchState",
 		FreezeBrainToolCatalogPath:                                   "freezeBrainToolCatalog",
 		BindBrainThreadCatalogPath("{catalogId}"):                    "bindBrainThreadCatalog",
 		AcquireExecutorConnectionPath:                                "acquireExecutorConnection",
@@ -108,6 +109,11 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "AppendAttemptEventsRequest", reflect.TypeFor[AppendAttemptEventsRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "AppendedAttemptEvent", reflect.TypeFor[AppendedAttemptEvent]())
 	assertSchemaFields(t, document.Components.Schemas, "AppendAttemptEventsResponse", reflect.TypeFor[AppendAttemptEventsResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "ResolveRunLaunchStateRequest", reflect.TypeFor[ResolveRunLaunchStateRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "RunLaunchObjectPointer", reflect.TypeFor[RunLaunchObjectPointer]())
+	assertSchemaFields(t, document.Components.Schemas, "RunLaunchCheckpointState", reflect.TypeFor[RunLaunchCheckpointState]())
+	assertSchemaFields(t, document.Components.Schemas, "RunLaunchExecutorPolicyState", reflect.TypeFor[RunLaunchExecutorPolicyState]())
+	assertSchemaFields(t, document.Components.Schemas, "ResolveRunLaunchStateResponse", reflect.TypeFor[ResolveRunLaunchStateResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "BrainToolCatalogState", reflect.TypeFor[BrainToolCatalogState]())
 	assertSchemaFields(t, document.Components.Schemas, "FreezeBrainToolCatalogRequest", reflect.TypeFor[FreezeBrainToolCatalogRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "FreezeBrainToolCatalogResponse", reflect.TypeFor[FreezeBrainToolCatalogResponse]())

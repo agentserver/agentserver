@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -32,6 +33,7 @@ type RunManifestSigner interface {
 type RunLaunchInputs struct {
 	Prompt                     runmanifest.ObjectPointer
 	PreviousCheckpoint         *runmanifest.PreviousCheckpoint
+	PreviousBrainToolCatalog   *BrainToolCatalog
 	CodexRuntimeManifestDigest string
 	Model                      runmanifest.ModelRoute
 	ExecutorCatalogPolicy      ExecutorCatalogPolicy
@@ -92,12 +94,29 @@ func (preparer *LaunchPreparer) Prepare(ctx context.Context, scheduled Scheduled
 	if err != nil {
 		return PreparedRunLaunch{}, err
 	}
-	catalogID, err := preparer.identities.AllocateBrainToolCatalogID()
-	if err != nil {
-		return PreparedRunLaunch{}, fmt.Errorf("allocate brain tool catalog identity: %w", err)
-	}
-	if err := validateUUIDIdentity("brain tool catalog ID", catalogID); err != nil {
-		return PreparedRunLaunch{}, err
+	var catalogID string
+	var resumedCatalog *BrainToolCatalog
+	if inputs.PreviousCheckpoint != nil {
+		if inputs.PreviousBrainToolCatalog == nil {
+			return PreparedRunLaunch{}, errors.New("previous checkpoint requires its bound brain tool catalog authority")
+		}
+		if err := validateResumeBrainToolCatalog(scheduled, inputs.PreviousCheckpoint, *inputs.PreviousBrainToolCatalog, proposal); err != nil {
+			return PreparedRunLaunch{}, err
+		}
+		catalog := cloneBrainToolCatalog(*inputs.PreviousBrainToolCatalog)
+		resumedCatalog = &catalog
+		catalogID = catalog.CatalogID
+	} else {
+		if inputs.PreviousBrainToolCatalog != nil {
+			return PreparedRunLaunch{}, errors.New("brain tool catalog authority cannot be supplied without a previous checkpoint")
+		}
+		catalogID, err = preparer.identities.AllocateBrainToolCatalogID()
+		if err != nil {
+			return PreparedRunLaunch{}, fmt.Errorf("allocate brain tool catalog identity: %w", err)
+		}
+		if err := validateUUIDIdentity("brain tool catalog ID", catalogID); err != nil {
+			return PreparedRunLaunch{}, err
+		}
 	}
 	executorMCP, err := runmanifest.ExecutorMCPFromCatalog(
 		inputs.ExecutorMCPEndpoint,
@@ -133,6 +152,11 @@ func (preparer *LaunchPreparer) Prepare(ctx context.Context, scheduled Scheduled
 	if err != nil {
 		return PreparedRunLaunch{}, fmt.Errorf("sign run manifest: %w", err)
 	}
+	if resumedCatalog != nil {
+		return PreparedRunLaunch{
+			Scheduled: scheduled, FrozenCatalog: *resumedCatalog, Manifest: manifest, SignedManifest: signed,
+		}, nil
+	}
 	freezeRequest := FreezeBrainToolCatalogRequest{
 		CatalogID: catalogID, WorkspaceID: claim.Run.WorkspaceID, SessionID: claim.Run.SessionID,
 		RunID: claim.Run.RunID, RunAttemptID: claim.RunAttempt.RunAttemptID,
@@ -152,6 +176,39 @@ func (preparer *LaunchPreparer) Prepare(ctx context.Context, scheduled Scheduled
 	return PreparedRunLaunch{
 		Scheduled: scheduled, FrozenCatalog: frozen.Catalog, Manifest: manifest, SignedManifest: signed,
 	}, nil
+}
+
+func validateResumeBrainToolCatalog(scheduled ScheduledRunAttempt, checkpoint *runmanifest.PreviousCheckpoint, catalog BrainToolCatalog, proposal ExecutorCatalogProposal) error {
+	if checkpoint == nil {
+		return errors.New("previous checkpoint is required for a resume catalog")
+	}
+	for field, value := range map[string]string{
+		"brain tool catalog ID": catalog.CatalogID, "catalog workspace ID": catalog.WorkspaceID,
+		"catalog session ID": catalog.SessionID, "catalog created run ID": catalog.CreatedRunID,
+		"catalog created attempt ID": catalog.CreatedRunAttemptID,
+	} {
+		if err := validateUUIDIdentity(field, value); err != nil {
+			return err
+		}
+	}
+	claim := scheduled.Claim
+	if catalog.WorkspaceID != claim.Run.WorkspaceID || catalog.SessionID != claim.Run.SessionID ||
+		catalog.ThreadID != checkpoint.ThreadID || catalog.ThreadID == "" ||
+		catalog.ContractVersion != proposal.ContractVersion || catalog.CanonicalizerVersion != proposal.CanonicalizerVersion ||
+		!bytes.Equal(catalog.CanonicalCatalog, proposal.CanonicalCatalog) || catalog.CatalogDigest != proposal.CatalogDigest ||
+		catalog.PolicyVersion != proposal.PolicyVersion || catalog.PolicyContextDigest != proposal.PolicyContextDigest ||
+		checkpoint.CatalogDigest != hex.EncodeToString(catalog.CatalogDigest[:]) ||
+		catalog.CreatedAttemptGeneration < 1 || catalog.CreatedHolderID == "" || catalog.CreatedRunVersion < 1 ||
+		catalog.CreatedAttemptVersion < 1 || catalog.Version < 1 || catalog.CreatedAt.IsZero() || catalog.UpdatedAt.IsZero() {
+		return errors.New("previous checkpoint brain tool catalog is not the exact frozen authority for this session and policy")
+	}
+	return nil
+}
+
+func cloneBrainToolCatalog(source BrainToolCatalog) BrainToolCatalog {
+	copy := source
+	copy.CanonicalCatalog = append(json.RawMessage(nil), source.CanonicalCatalog...)
+	return copy
 }
 
 func validatePreparedFrozenCatalog(catalog BrainToolCatalog, request FreezeBrainToolCatalogRequest) error {

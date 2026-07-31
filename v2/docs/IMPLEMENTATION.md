@@ -394,12 +394,14 @@ harness-pool、browser-gateway 与 executor-gateway 使用内部 workload identi
 | workspace_members | workspace_id + user_id PK、role、version |
 | sessions | id、workspace_id、active_run_id、latest_checkpoint_id、version |
 | runs | id、session_id、actor_id、status、request_hash、idempotency_key、current_attempt_generation、next_event_seq、version |
+| run_launch_states | run_id PK、workspace/session、不可变prompt完整object pointer、executor policy version/context digest；与CreateRun同事务写入 |
+| run_launch_allowed_tools | run_id + ordinal PK、tool name；每run最多64项，name在run内唯一，按ordinal保存规范化排序 |
 | run_attempts | id、run_id、generation、status、turn_started_at、holder_id、version；unique(run_id,generation) |
 | session_leases | session_id PK、run_id、holder_id、generation、expires_at |
 | attempt_leases | run_attempt_id PK、holder_id、generation、expires_at |
 | run_events | run_id + seq PK、event_id unique、producer key unique、source、schema_version、inline payload或完整object pointer metadata |
 | outbox | id、kind、aggregate_id、payload、available_at、lock_owner、lock_until、attempts（claim generation）、completed_at |
-| checkpoints | id、session_id、run_id、attempt_generation、thread_id、turn_id、manifest hash、object_id、Codex build |
+| checkpoints | id、workspace/session/run/attempt/generation、brain_tool_catalog_id、thread_id、turn_id、manifest hash、完整object pointer、Codex runtime manifest digest、checkpoint allowlist version；每run至多一项，session.latest_checkpoint_id只能指向同session记录 |
 | brain_tool_catalogs | id、workspace/session、创建它的run/attempt/generation/holder与版本、thread_id nullable unique、contract/canonicalizer version、exact canonical catalog bytes、catalog digest、policy version/context digest、version；每attempt最多冻结一份，新thread启动前冻结，成功后CAS绑定thread_id，同一thread不可更新schema |
 | executions | id、run/attempt/generation、tool_call_id、executor/env、tool/schema/policy/mapper version、policy decision、operation_count、arguments/tool schema/operation plan/policy context hash、canonicalizer version、status/terminal result hash、version |
 | execution_operations | id、execution_id、ordinal、kind、effect_class、mutation_key unique、params hash、canonicalizer version、status、connection generation、ACK/terminal evidence hash、timestamps、version |
@@ -466,7 +468,7 @@ executor connection lifecycle不是run aggregate，不能为心跳伪造run even
 
 PR 9 reference command store固定以下首批语义：
 
-- `CreateRun`先锁session，按`(workspace_id, actor_id, session_id, idempotency_key)`查重；相同request hash返回原run，不同hash返回`idempotency_conflict`。只有没有active run且expected session version匹配时，才原子写run、`run.queued` event/outbox并设置`active_run_id`。
+- `CreateRun`先锁session，按`(workspace_id, actor_id, session_id, idempotency_key)`查重；相同request hash还必须逐字段匹配prompt object pointer及规范化后的executor policy/allowlist才能返回原run，任一不同均返回`idempotency_conflict`。只有没有active run且expected session version匹配时，才在同一事务写run、不可变launch authority、`run.queued` event/outbox并设置`active_run_id`，不能先入队再补prompt或policy。
 - `ClaimQueuedRun`把`queued`推进为`starting`并创建attempt、session lease和attempt lease。两条lease都使用数据库时钟；任一仍存活时不能换holder。只有尚未接受turn、attempt仍为`leased|starting`且两条lease都过期时，才可fence旧attempt并以更高generation重领；mid-turn禁止自动重领。
 - `RenewSessionLease`与`RenewAttemptLease`都要求另一条同holder/generation lease仍存活，避免只续住半条lease后无限阻塞reclaim。
 - `MarkTurnAccepted`是不可逆的mid-turn边界：原子推进run/attempt为`running`、记录`turn_started_at`并写event/outbox。提交后的同holder重试返回原结果；不同holder或旧generation失败。
@@ -786,7 +788,9 @@ pool侧reference controller每次只领一项，以一次分配的attempt/event/
 
 pool侧新增launch-preparer边界：先从版本化executor MCP contract按显式policy allowlist构建catalog、解析prompt/checkpoint/runtime/model/endpoint等launch输入并生成完整manifest，随后以cluster Ed25519 key对RFC 8785 canonical bytes做domain-separated签名，最后才用同一catalog ID调用core freeze；只有freeze成功才返回`PreparedRunLaunch`。普通transport歧义只用完全相同请求重试一次。签名envelope和manifest均有严格类型、unknown-field拒绝、HTTPS/SPIFFE检查、固定`2025-11-25` MCP profile、`deferLoading=false`、逐tool/catalog一致性校验与`api/schema/run-manifest.schema.json`。该类型本身仍只是可测试的launch准备边界，不能据此宣称harness vertical slice已经可部署。
 
-下一段补上了部署配置与动态authority state的组合resolver，以及manifest key的装载/轮换边界。`RunLaunchProfile`只持有deployment-owned runtime/model/MCP endpoint/limits/image/service-account/callback配置；`RunLaunchStateSource`只返回core/policy派生的prompt、checkpoint和tool allowlist，组合结果在进入sign/freeze前按完整manifest重新校验并复制所有slice/pointer。active Ed25519私钥只能从绝对路径、group/other零权限的regular Secret文件读取，支持raw seed、canonical private key或单个unencrypted PKCS#8块，并拒绝零seed、非canonical private key和读取中替换。worker侧`run-manifest-keyring.schema.json`与`VerificationKeyring`支持最多32枚旧/新公钥的显式overlap，按`keyId`精确选择且未知key不fallback。当前仍缺core-backed `RunLaunchStateSource`、harness-pool命令入口/监督循环、Job/control stream和checkpoint commit，所以还不能部署worker。
+下一段补上了部署配置与动态authority state的组合resolver，以及manifest key的装载/轮换边界。`RunLaunchProfile`只持有deployment-owned runtime/model/MCP endpoint/limits/image/service-account/callback配置；`RunLaunchStateSource`只返回core/policy派生的prompt、checkpoint和tool allowlist，组合结果在进入sign/freeze前按完整manifest重新校验并复制所有slice/pointer。active Ed25519私钥只能从绝对路径、group/other零权限的regular Secret文件读取，支持raw seed、canonical private key或单个unencrypted PKCS#8块，并拒绝零seed、非canonical private key和读取中替换。worker侧`run-manifest-keyring.schema.json`与`VerificationKeyring`支持最多32枚旧/新公钥的显式overlap，按`keyId`精确选择且未知key不fallback。
+
+随后加入的`0008_run_launch_authority`把prompt完整object pointer与规范化executor policy/allowlist作为不可变run authority，要求与`CreateRun + run.queued`同事务提交；同request hash的重试若launch authority不同仍报`idempotency_conflict`。该migration同时建立不可变checkpoint读模型及`sessions.latest_checkpoint_id`同session外键。harness-pool通过独立mTLS `run-launch-states:resolve`查询，core在同一事务锁定run/attempt，逐项核对workspace/session、expected versions、`starting + leased|starting + pre-turn`、active run及两条数据库时钟live lease后，才返回prompt、latest checkpoint、其绑定的完整frozen catalog和policy。`CoreClient`对所有UUID/digest/size/text/catalog canonical bytes重新验真；deployment resolver还要求checkpoint的Codex runtime manifest digest、allowlist version及catalog/policy全部与当前profile一致。新thread才分配catalog ID并freeze；已有thread恢复严格复用checkpoint绑定的catalog，allocator与freeze命令均为零调用，避免给同一thread制造第二份catalog authority。当前仍缺harness-pool命令入口/监督循环、Job/worker control stream和checkpoint commit写命令，所以还不能部署worker。
 
 ### 8.2 run manifest
 
@@ -1129,7 +1133,7 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 第12项目前已完成connection kernel、真实WSS路由，以及独立agentx仓库中的connector/runner IPC、远端lifecycle、registered-root/cwd本地复核、monotonic timeout signal、每process独占的stock `codex exec-server --listen stdio --strict-config`监管和一次性fs-only bounded-read lane；真实stock纵向门禁已通过。本仓已完成online environment registry、三工具stateful MCP链、七个execution/operation mTLS command/client，以及shell-v1和read-file-v1两条`Prepare → Begin → dispatch → ACK/unknown → operation/execution terminal → MCP result`链。approval command、真实enrollment/key binding、gateway进程丢失后的unknown恢复审计、平台containment和部署manifest仍未实现；当前入口明确标为loopback insecure-dev，不能作为Phase 2交付或生产部署证据。
 
-Phase 3当前从第13项开始：已有run/attempt/event component API、独立harness-pool workload identity、原子双lease续期、`run.queued`专用long-poll delivery、pool侧单项claim controller内核、brain catalog冻结/线程绑定core API、签名manifest launch-preparer、受限私钥装载/公钥轮换keyring，以及deployment profile与authority state组合resolver。后续仍须实现core-backed launch-state source、harness-pool命令入口和监督循环、per-attempt Job/control stream、finalization与checkpoint CAS；这些不能由当前command API、签名类型和内存controller/preparer类型的存在替代。
+Phase 3当前从第13项开始：已有run/attempt/event component API、独立harness-pool workload identity、原子双lease续期、`run.queued`专用long-poll delivery、pool侧单项claim controller内核、brain catalog冻结/线程绑定core API、签名manifest launch-preparer、受限私钥装载/公钥轮换keyring、deployment profile resolver，以及由`CreateRun`原子持久化并由live attempt fence保护的core-backed launch-state source；checkpoint恢复会复用原thread绑定catalog。后续仍须实现harness-pool命令入口和监督循环、per-attempt Job/control stream、finalization与checkpoint CAS写路径；这些不能由当前command/query API和preparer类型的存在替代。
 
 ## 14. 尚未锁定但有明确决策点的事项
 

@@ -102,6 +102,10 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	if err != nil {
 		return err
 	}
+	runLaunchStateHandler, err := coreserver.NewRunLaunchStateHandler(harnessPoolAuthorizer, coreserver.StateStoreRunLaunchStateQueries{Store: store})
+	if err != nil {
+		return err
+	}
 	runDispatchHandler, err := coreserver.NewRunDispatchHandler(harnessPoolAuthorizer, coreserver.StateStoreRunDispatchCommands{Store: store})
 	if err != nil {
 		return err
@@ -117,6 +121,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	handler.Handle(corecontract.RunDispatchPathPrefix, runDispatchHandler)
 	handler.Handle(corecontract.ClaimRunAttemptPath, runAttemptHandler)
 	handler.Handle(corecontract.RunAttemptPathPrefix, runAttemptHandler)
+	handler.Handle(corecontract.ResolveRunLaunchStatePath, runLaunchStateHandler)
 	handler.Handle(corecontract.ListExecutorEnvironmentsPath, environmentHandler)
 	handler.Handle(corecontract.PrepareExecutionPath, executionHandler)
 	handler.Handle(corecontract.ExecutionPathPrefix, executionHandler)

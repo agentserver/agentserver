@@ -48,29 +48,30 @@ func (allocator *ControlIdentityAllocator) AllocateRunAttemptClaim() (RunAttempt
 	}
 	allocator.mu.Lock()
 	defer allocator.mu.Unlock()
-	if allocator.producerSeq == math.MaxInt64 {
-		return RunAttemptClaimIdentity{}, errors.New("control producer sequence exhausted")
-	}
 	runAttemptID, err := allocator.generateDistinct("run attempt ID", allocator.producerInstanceID)
 	if err != nil {
 		return RunAttemptClaimIdentity{}, err
 	}
-	eventID, err := allocator.generateDistinct("transition event ID", allocator.producerInstanceID, runAttemptID)
+	record, err := allocator.allocateTransitionRecordLocked(runAttemptID)
 	if err != nil {
 		return RunAttemptClaimIdentity{}, err
 	}
-	outboxID, err := allocator.generateDistinct("transition outbox ID", allocator.producerInstanceID, runAttemptID, eventID)
-	if err != nil {
-		return RunAttemptClaimIdentity{}, err
-	}
-	allocator.producerSeq++
 	return RunAttemptClaimIdentity{
 		RunAttemptID: runAttemptID,
-		Record: TransitionRecord{
-			EventID: eventID, ProducerInstanceID: allocator.producerInstanceID,
-			ProducerSeq: allocator.producerSeq, OutboxID: outboxID,
-		},
+		Record:       record,
 	}, nil
+}
+
+// AllocateTransitionRecord reserves one immutable event/outbox identity pair
+// on this process's monotonic producer cursor. Ambiguous command retries must
+// reuse the returned record rather than allocate another one.
+func (allocator *ControlIdentityAllocator) AllocateTransitionRecord() (TransitionRecord, error) {
+	if allocator == nil {
+		return TransitionRecord{}, errors.New("control identity allocator is required")
+	}
+	allocator.mu.Lock()
+	defer allocator.mu.Unlock()
+	return allocator.allocateTransitionRecordLocked()
 }
 
 func (allocator *ControlIdentityAllocator) AllocateBrainToolCatalogID() (string, error) {
@@ -80,6 +81,27 @@ func (allocator *ControlIdentityAllocator) AllocateBrainToolCatalogID() (string,
 	allocator.mu.Lock()
 	defer allocator.mu.Unlock()
 	return allocator.generateDistinct("brain tool catalog ID", allocator.producerInstanceID)
+}
+
+func (allocator *ControlIdentityAllocator) allocateTransitionRecordLocked(excluded ...string) (TransitionRecord, error) {
+	if allocator.producerSeq == math.MaxInt64 {
+		return TransitionRecord{}, errors.New("control producer sequence exhausted")
+	}
+	eventExcluded := append([]string{allocator.producerInstanceID}, excluded...)
+	eventID, err := allocator.generateDistinct("transition event ID", eventExcluded...)
+	if err != nil {
+		return TransitionRecord{}, err
+	}
+	outboxExcluded := append(eventExcluded, eventID)
+	outboxID, err := allocator.generateDistinct("transition outbox ID", outboxExcluded...)
+	if err != nil {
+		return TransitionRecord{}, err
+	}
+	allocator.producerSeq++
+	return TransitionRecord{
+		EventID: eventID, ProducerInstanceID: allocator.producerInstanceID,
+		ProducerSeq: allocator.producerSeq, OutboxID: outboxID,
+	}, nil
 }
 
 func (allocator *ControlIdentityAllocator) generateDistinct(field string, excluded ...string) (string, error) {

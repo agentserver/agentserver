@@ -44,6 +44,13 @@ type Controller struct {
 	config     ControllerConfig
 }
 
+func (controller *Controller) AttemptLeaseTTL() time.Duration {
+	if controller == nil {
+		return 0
+	}
+	return controller.config.AttemptLeaseTTL
+}
+
 func NewController(core ControllerCore, identities RunAttemptClaimIdentityAllocator, config ControllerConfig) (*Controller, error) {
 	if core == nil {
 		return nil, errors.New("controller core client is required")

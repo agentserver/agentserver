@@ -80,3 +80,39 @@ func TestControlIdentityAllocatorDoesNotConsumeSequenceOnGenerationFailure(t *te
 		t.Fatalf("producer sequence after failed allocation = %d, want 1", identity.Record.ProducerSeq)
 	}
 }
+
+func TestControlIdentityAllocatorSharesCursorWithStandaloneTransitions(t *testing.T) {
+	next := 500
+	allocator, err := NewControlIdentityAllocator("70000000-0000-4000-8000-000000000001", func() (string, error) {
+		next++
+		return fmt.Sprintf("70000000-0000-4000-8000-%012x", next), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := allocator.AllocateTransitionRecord()
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := allocator.AllocateRunAttemptClaim()
+	if err != nil {
+		t.Fatal(err)
+	}
+	last, err := allocator.AllocateTransitionRecord()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ProducerSeq != 1 || claim.Record.ProducerSeq != 2 || last.ProducerSeq != 3 {
+		t.Fatalf("shared producer cursor = %d, %d, %d", first.ProducerSeq, claim.Record.ProducerSeq, last.ProducerSeq)
+	}
+	seen := map[string]bool{}
+	for _, identity := range []string{
+		first.EventID, first.OutboxID, claim.RunAttemptID, claim.Record.EventID,
+		claim.Record.OutboxID, last.EventID, last.OutboxID,
+	} {
+		if seen[identity] {
+			t.Fatalf("control identity %s was reused", identity)
+		}
+		seen[identity] = true
+	}
+}

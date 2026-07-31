@@ -16,27 +16,32 @@ const databaseURLEnvironment = "AGENTSERVER_V2_DATABASE_URL"
 
 type migrateFunc func(context.Context, string) (coredb.MigrationResult, error)
 type serveFunc func(context.Context, func(string) string, io.Writer) error
+type bootstrapFunc func(context.Context, string, string) (developmentBootstrapResult, error)
 
 type commandFunctions struct {
-	migrate migrateFunc
-	serve   serveFunc
+	migrate   migrateFunc
+	serve     serveFunc
+	bootstrap bootstrapFunc
 }
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	os.Exit(run(ctx, os.Args[1:], os.Getenv, os.Stdout, os.Stderr, commandFunctions{
-		migrate: coredb.Migrate,
-		serve:   serveCore,
+		migrate: coredb.Migrate, serve: serveCore, bootstrap: bootstrapDevelopment,
 	}))
 }
 
 func run(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer, commands commandFunctions) int {
-	if len(args) != 1 || (args[0] != "migrate" && args[0] != "serve") {
-		fmt.Fprintln(stderr, "usage: agentserver-core <migrate|serve>")
+	if len(args) == 0 {
+		writeCoreUsage(stderr)
 		return 2
 	}
 	if args[0] == "serve" {
+		if len(args) != 1 {
+			writeCoreUsage(stderr)
+			return 2
+		}
 		if commands.serve == nil {
 			fmt.Fprintln(stderr, "agentserver-core serve: command is unavailable")
 			return 1
@@ -46,6 +51,37 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 			return 1
 		}
 		return 0
+	}
+	if args[0] == "bootstrap" {
+		if len(args) != 3 || args[1] != "--insecure-dev" || !strings.HasPrefix(args[2], "--config=") || strings.TrimPrefix(args[2], "--config=") == "" {
+			writeCoreUsage(stderr)
+			return 2
+		}
+		databaseURL := getenv(databaseURLEnvironment)
+		if strings.TrimSpace(databaseURL) == "" {
+			fmt.Fprintf(stderr, "agentserver-core bootstrap: %s is required\n", databaseURLEnvironment)
+			return 2
+		}
+		if commands.bootstrap == nil {
+			fmt.Fprintln(stderr, "agentserver-core bootstrap: command is unavailable")
+			return 1
+		}
+		result, err := commands.bootstrap(ctx, databaseURL, strings.TrimPrefix(args[2], "--config="))
+		if err != nil {
+			fmt.Fprintf(stderr, "agentserver-core bootstrap: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(
+			stdout,
+			"agentserver-core bootstrap: INSECURE DEV workspace %s session %s actor %s executor %s environment %s; schema %04d; created %d row(s)\n",
+			result.WorkspaceID, result.SessionID, result.ActorID, result.ExecutorID, result.EnvironmentID,
+			result.Migration.CurrentVersion, result.Bootstrap.CreatedRows,
+		)
+		return 0
+	}
+	if args[0] != "migrate" || len(args) != 1 {
+		writeCoreUsage(stderr)
+		return 2
 	}
 	databaseURL := getenv(databaseURLEnvironment)
 	if strings.TrimSpace(databaseURL) == "" {
@@ -64,4 +100,9 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 	}
 	fmt.Fprintf(stdout, "agentserver-core migrate: schema %s is at version %04d; applied %d migration(s)\n", coredb.SchemaName, result.CurrentVersion, result.Applied)
 	return 0
+}
+
+func writeCoreUsage(writer io.Writer) {
+	fmt.Fprintln(writer, "usage: agentserver-core <migrate|serve>")
+	fmt.Fprintln(writer, "       agentserver-core bootstrap --insecure-dev --config=/absolute/path")
 }

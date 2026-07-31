@@ -29,15 +29,16 @@ func TestPostgreSQLMigrationKernel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first migrateConfig() error = %v", err)
 	}
-	if result.Applied != 8 || result.CurrentVersion != 8 {
-		t.Fatalf("first migration result = %+v, want eight applied migrations at version 8", result)
+	wantVersion := catalog[len(catalog)-1].Version
+	if result.Applied != len(catalog) || result.CurrentVersion != wantVersion {
+		t.Fatalf("first migration result = %+v, want %d applied migrations at version %d", result, len(catalog), wantVersion)
 	}
 	result, err = migrateConfig(t.Context(), connectionConfig, runner)
 	if err != nil {
 		t.Fatalf("repeat migrateConfig() error = %v", err)
 	}
-	if result.Applied != 0 || result.CurrentVersion != 8 {
-		t.Fatalf("repeat migration result = %+v, want no-op at version 8", result)
+	if result.Applied != 0 || result.CurrentVersion != wantVersion {
+		t.Fatalf("repeat migration result = %+v, want no-op at version %d", result, wantVersion)
 	}
 
 	connection := openPostgresTestConnection(t, connectionConfig)
@@ -270,7 +271,7 @@ func TestPostgreSQLMigration0008UpgradesPublishedVersion0007(t *testing.T) {
 		t.Fatalf("published migration result = %+v, want version 7", result)
 	}
 
-	runner.catalog = catalog
+	runner.catalog = catalog[:8]
 	result, err = migrateConfig(t.Context(), connectionConfig, runner)
 	if err != nil {
 		t.Fatalf("upgrade to migration 0008: %v", err)

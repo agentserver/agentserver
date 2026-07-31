@@ -796,6 +796,38 @@ pool侧reference controller每次只领一项，以一次分配的attempt/event/
 go run ./cmd/harness-pool serve --insecure-dev
 ```
 
+在首次启动Core前，先以同一份agentx runtime manifest建立本地开发authority：
+
+```bash
+AGENTSERVER_V2_DATABASE_URL='postgres://...' \
+  go run ./cmd/agentserver-core bootstrap --insecure-dev \
+  --config=/absolute/path/to/bootstrap.json
+```
+
+bootstrap配置是closed-world JSON：
+
+```json
+{
+  "version": 1,
+  "workspaceId": "40000000-0000-4000-8000-000000000004",
+  "sessionId": "50000000-0000-4000-8000-000000000005",
+  "actorId": "10000000-0000-4000-8000-000000000001",
+  "executor": {
+    "executorId": "20000000-0000-4000-8000-000000000002",
+    "environmentId": "60000000-0000-4000-8000-000000000006",
+    "agentxVersion": "0.1.0-dev",
+    "platform": "darwin-arm64",
+    "runtimeManifestFile": "/absolute/path/to/runtime-manifest.json",
+    "workspaceRoot": "/absolute/path/to/workspace",
+    "displayName": "Local workspace",
+    "description": "insecure development executor",
+    "defaultCwd": "."
+  }
+}
+```
+
+命令先验证配置和runtime manifest，再执行schema migration，最后在一个事务中插入active workspace、session、owner membership、offline executor和offline environment五条基础记录。完全相同的重试是零写入；任何既有identity、membership、runtime digest、root descriptor或profile不同都会回滚整个事务，绝不覆盖已有authority。`actorId`必须与开发Hydra introspection返回的canonical UUID subject一致；executor/environment ID还必须原样传给executor-gateway与agentx。这个命令会写入明确标记为`insecure_dev`的占位machine-key fingerprint，不执行真实enrollment，也不能用于生产数据初始化。
+
 它不读取隐式默认credential，启动前必须显式提供以下配置：
 
 - control与身份：`AGENTSERVER_V2_HARNESS_POOL_LISTEN_ADDR`（必须是显式loopback地址）、`AGENTSERVER_V2_HARNESS_POOL_TLS_CERT_FILE`、`AGENTSERVER_V2_HARNESS_POOL_TLS_KEY_FILE`、`AGENTSERVER_V2_HARNESS_POOL_WORKER_CA_FILE`、`AGENTSERVER_V2_HARNESS_POOL_SPIFFE_ID`、`AGENTSERVER_V2_HARNESS_WORKER_SPIFFE_ID`；

@@ -88,3 +88,50 @@ func TestRunServe(t *testing.T) {
 		t.Fatalf("serve result = exit %d, called %v, stdout %q, stderr %q", exitCode, called, stdout.String(), stderr.String())
 	}
 }
+
+func TestRunInsecureDevelopmentBootstrap(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	called := false
+	exitCode := run(
+		t.Context(), []string{"bootstrap", "--insecure-dev", "--config=/absolute/bootstrap.json"},
+		func(name string) string {
+			if name != databaseURLEnvironment {
+				t.Fatalf("environment lookup = %q", name)
+			}
+			return "postgres://configured"
+		},
+		&stdout, &stderr,
+		commandFunctions{bootstrap: func(_ context.Context, databaseURL, configPath string) (developmentBootstrapResult, error) {
+			called = true
+			if databaseURL != "postgres://configured" || configPath != "/absolute/bootstrap.json" {
+				t.Fatalf("bootstrap inputs = %q, %q", databaseURL, configPath)
+			}
+			return developmentBootstrapResult{
+				Migration:   coredb.MigrationResult{CurrentVersion: 11},
+				Bootstrap:   coredb.InsecureDevelopmentBootstrapResult{CreatedRows: 5},
+				WorkspaceID: "workspace", SessionID: "session", ActorID: "actor",
+				ExecutorID: "executor", EnvironmentID: "environment",
+			}, nil
+		}},
+	)
+	if exitCode != 0 || !called || stderr.Len() != 0 ||
+		!strings.Contains(stdout.String(), "INSECURE DEV workspace workspace") ||
+		!strings.Contains(stdout.String(), "schema 0011; created 5 row(s)") {
+		t.Fatalf("bootstrap result = exit %d, called %v, stdout %q, stderr %q", exitCode, called, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunInsecureDevelopmentBootstrapRequiresExactMode(t *testing.T) {
+	for _, args := range [][]string{
+		{"bootstrap"},
+		{"bootstrap", "--config=/absolute/bootstrap.json", "--insecure-dev"},
+		{"bootstrap", "--insecure-dev", "--config="},
+	} {
+		var stderr bytes.Buffer
+		exitCode := run(t.Context(), args, func(string) string { return "postgres://configured" }, io.Discard, &stderr, commandFunctions{})
+		if exitCode != 2 || !strings.Contains(stderr.String(), "bootstrap --insecure-dev") {
+			t.Fatalf("run(%v) = %d, stderr %q", args, exitCode, stderr.String())
+		}
+	}
+}

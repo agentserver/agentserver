@@ -58,7 +58,7 @@ func TestWorkerControlClientRunsAuthenticatedLifecycleAndInterrupt(t *testing.T)
 
 	wantTerminal := harnesscontrol.TurnTerminalEvent{
 		Kind: harnesscontrol.EventKindTurnTerminal, ThreadID: "thread-worker-control",
-		TurnID: "turn-worker-control", Status: "completed",
+		TurnID: "turn-worker-control", Status: "completed", RolloutLocator: testCompletedRolloutLocator,
 	}
 	if err := client.SendTurnTerminal(ctx, wantTerminal); err != nil {
 		t.Fatal(err)
@@ -115,7 +115,7 @@ func TestWorkerControlClientResumesAckLostAfterLifecycleAuthorityOnce(t *testing
 	}
 	if err := client.SendTurnTerminal(ctx, harnesscontrol.TurnTerminalEvent{
 		Kind: harnesscontrol.EventKindTurnTerminal, ThreadID: "thread-resumed-control",
-		TurnID: "turn-resumed-control", Status: "completed",
+		TurnID: "turn-resumed-control", Status: "completed", RolloutLocator: testCompletedRolloutLocator,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -178,6 +178,7 @@ func TestWorkerControlClientPipelinesRuntimeEventsThroughPoolAndCoreBeforeTermin
 	}
 	terminal := harnesscontrol.TurnTerminalEvent{
 		Kind: harnesscontrol.EventKindTurnTerminal, ThreadID: threadID, TurnID: turnID, Status: "completed",
+		RolloutLocator: testCompletedRolloutLocator,
 	}
 	if err := client.SendTurnTerminal(ctx, terminal); err != nil {
 		t.Fatal(err)

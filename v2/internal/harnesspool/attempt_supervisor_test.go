@@ -13,6 +13,8 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/harnesscontrol"
 )
 
+const testCompletedRolloutLocator = "sessions/2026/07/31/rollout-pool-test.jsonl"
+
 func TestControlAttemptSupervisorWaitsForCompletedTerminalAndStoppedWorkload(t *testing.T) {
 	prepared := poolTestPreparedLaunch(t)
 	server := newSupervisorTestControlServer(t, prepared)
@@ -45,7 +47,7 @@ func TestControlAttemptSupervisorWaitsForCompletedTerminalAndStoppedWorkload(t *
 			Kind: harnesscontrol.EventKindTurnTerminal,
 			TurnTerminal: &harnesscontrol.TurnTerminalEvent{
 				Kind: harnesscontrol.EventKindTurnTerminal, ThreadID: "thread-supervisor",
-				TurnID: "turn-supervisor", Status: "completed",
+				TurnID: "turn-supervisor", Status: "completed", RolloutLocator: testCompletedRolloutLocator,
 			},
 		}); err != nil {
 			return nil, err

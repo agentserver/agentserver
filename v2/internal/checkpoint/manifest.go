@@ -143,15 +143,27 @@ func (file File) Validate(allowlistVersion int64) error {
 	if file.Mode != RolloutMode {
 		return fmt.Errorf("checkpoint rollout mode must be %d", RolloutMode)
 	}
-	if len(file.Path) == 0 || len(file.Path) > 512 || !fs.ValidPath(file.Path) ||
-		strings.ContainsRune(file.Path, '\\') || !strings.HasPrefix(file.Path, "sessions/") ||
-		!strings.HasSuffix(file.Path, ".jsonl") {
-		return errors.New("checkpoint rollout path must be a normalized sessions-relative JSONL path")
+	if err := ValidateRolloutLocator(file.Path); err != nil {
+		return err
 	}
 	if file.SizeBytes < 1 || file.SizeBytes > MaximumRolloutBytes {
 		return fmt.Errorf("checkpoint rollout size must be between 1 and %d bytes", MaximumRolloutBytes)
 	}
 	return validateDigest("checkpoint rollout sha256", file.SHA256)
+}
+
+// ValidateRolloutLocator applies the pinned v1 path allowlist before either
+// the worker reports a locator or the pool opens the app-owned rollout. It is
+// deliberately lexical: the worker proves only containment beneath its
+// configured CODEX_HOME, while the trusted pool finalizer separately enforces
+// the filesystem boundary and file identity.
+func ValidateRolloutLocator(locator string) error {
+	if len(locator) == 0 || len(locator) > 512 || !fs.ValidPath(locator) ||
+		strings.ContainsRune(locator, '\\') || !strings.HasPrefix(locator, "sessions/") ||
+		!strings.HasSuffix(locator, ".jsonl") {
+		return errors.New("checkpoint rollout path must be a normalized sessions-relative JSONL path")
+	}
+	return nil
 }
 
 func CanonicalBytes(manifest Manifest) ([]byte, error) {

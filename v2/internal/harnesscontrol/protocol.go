@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/braincatalog"
+	"github.com/agentserver/agentserver/v2/internal/checkpoint"
 )
 
 const (
@@ -176,7 +177,7 @@ func DecodeEventPayload(raw []byte, limits Limits) (Event, error) {
 			return Event{}, malformed("decode turn_terminal: %v", err)
 		}
 		fields, _ := objectFields(raw)
-		for _, optional := range []string{"errorCode", "errorMessage"} {
+		for _, optional := range []string{"rolloutLocator", "errorCode", "errorMessage"} {
 			if field, present := fields[optional]; present && isJSONNull(field) {
 				return Event{}, malformed("decode turn_terminal: %s cannot be null", optional)
 			}
@@ -451,7 +452,13 @@ func (event TurnTerminalEvent) Validate() error {
 		if event.ErrorCode != "" || event.ErrorMessage != "" {
 			return malformed("completed turn terminal cannot contain an error")
 		}
+		if err := checkpoint.ValidateRolloutLocator(event.RolloutLocator); err != nil {
+			return malformed("completed turn terminal rolloutLocator: %v", err)
+		}
 		return nil
+	}
+	if event.RolloutLocator != "" {
+		return malformed("non-completed turn terminal cannot contain rolloutLocator")
 	}
 	if err := validateText("errorCode", event.ErrorCode, 128); err != nil {
 		return err

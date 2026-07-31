@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/checkpoint"
 	"github.com/agentserver/agentserver/v2/internal/codexwire"
 	"github.com/agentserver/agentserver/v2/internal/harnesscontrol"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
@@ -321,6 +323,16 @@ func runOneShotWorker(ctx context.Context, config OneShotWorkerConfig, dependenc
 		return cleanupErr
 	}
 	terminal := classifyWorkerTerminal(threadID, turnID, result, cleanupErr, context.Cause(runCtx))
+	if terminal.Status == "completed" {
+		locator, err := completedRolloutLocator(appRuntime, result)
+		if err != nil {
+			terminal.Status = "interrupted"
+			terminal.ErrorCode = "checkpoint_locator_invalid"
+			terminal.ErrorMessage = "the completed turn did not yield an authorized rollout locator"
+		} else {
+			terminal.RolloutLocator = locator
+		}
+	}
 	terminalCtx, cancelTerminal := context.WithTimeout(
 		context.Background(),
 		time.Duration(bootstrap.Manifest.Limits.WorkerCallbackGraceMS)*time.Millisecond,
@@ -337,6 +349,38 @@ func runOneShotWorker(ctx context.Context, config OneShotWorkerConfig, dependenc
 	stopWatchers()
 	controlClosed = true
 	return nil
+}
+
+func completedRolloutLocator(runtime PreparedAppServerRuntime, result AppServerRunResult) (string, error) {
+	codexHome := runtime.ProcessConfig.Environment.CodexHome
+	rolloutPath := result.Thread.Thread.Path
+	if err := validateAbsolutePath("configured app-server Codex home", codexHome); err != nil {
+		return "", err
+	}
+	if filepath.Clean(codexHome) != codexHome {
+		return "", errors.New("configured app-server Codex home is not clean")
+	}
+	if result.Initialize.CodexHome != codexHome {
+		return "", errors.New("app-server initialize Codex home changed the prepared runtime boundary")
+	}
+	if err := validateAbsolutePath("completed thread rollout path", rolloutPath); err != nil {
+		return "", err
+	}
+	if filepath.Clean(rolloutPath) != rolloutPath {
+		return "", errors.New("completed thread rollout path is not clean")
+	}
+	relative, err := filepath.Rel(codexHome, rolloutPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve completed rollout locator: %w", err)
+	}
+	locator := filepath.ToSlash(relative)
+	if err := checkpoint.ValidateRolloutLocator(locator); err != nil {
+		return "", err
+	}
+	if filepath.Clean(filepath.Join(codexHome, filepath.FromSlash(locator))) != rolloutPath {
+		return "", errors.New("completed rollout locator does not round-trip beneath Codex home")
+	}
+	return locator, nil
 }
 
 func validateOneShotWorkerConfig(ctx context.Context, config OneShotWorkerConfig, dependencies oneShotWorkerDependencies) error {

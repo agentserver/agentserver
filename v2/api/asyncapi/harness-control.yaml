@@ -3,7 +3,7 @@
   "id": "urn:agentserver:v2:harness-worker-control",
   "info": {
     "title": "agentserver v2 harness worker control stream",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "description": "Holder-routed WebSocket between one harness-pool attempt supervisor and its stateless harness-worker. Phase 1 resume requires the original holder process and its in-memory journals."
   },
   "defaultContentType": "application/json",
@@ -112,6 +112,7 @@
     "transportAckAuthorizesCoreTransition": false,
     "runtimeEventAckAfterCoreCommit": true,
     "terminalAckCoversPriorRuntime": true,
+    "completedTerminalCarriesRolloutLocator": true,
     "authentication": "worker mTLS AND per-attempt bearer",
     "workerHasDurableState": false
   }

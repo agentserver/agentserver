@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	CurrentProtocolVersion = "1.1"
+	CurrentProtocolVersion = "1.2"
 	ResumeWindowMillis     = 30_000
 
 	MessageTypeHello        = "hello"
@@ -168,12 +168,13 @@ type TurnAcceptedEvent struct {
 }
 
 type TurnTerminalEvent struct {
-	Kind         string `json:"kind"`
-	ThreadID     string `json:"threadId"`
-	TurnID       string `json:"turnId"`
-	Status       string `json:"status"`
-	ErrorCode    string `json:"errorCode,omitempty"`
-	ErrorMessage string `json:"errorMessage,omitempty"`
+	Kind           string `json:"kind"`
+	ThreadID       string `json:"threadId"`
+	TurnID         string `json:"turnId"`
+	Status         string `json:"status"`
+	RolloutLocator string `json:"rolloutLocator,omitempty"`
+	ErrorCode      string `json:"errorCode,omitempty"`
+	ErrorMessage   string `json:"errorMessage,omitempty"`
 }
 
 // AppServerNotificationEvent preserves one already-validated stock

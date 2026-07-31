@@ -72,6 +72,14 @@ func TestHarnessControlJSONSchemaAcceptsGoContractAndRejectsUnsafeShapes(t *test
 			Type: MessageTypeEvent, ControlSessionID: testControlSessionID, SessionSeq: 5, Ack: 1,
 			RunAttemptGeneration: 3,
 			Payload: mustPayload(t, TurnTerminalEvent{
+				Kind: EventKindTurnTerminal, ThreadID: "thread-1", TurnID: "turn-1", Status: "completed",
+				RolloutLocator: testRolloutLocator,
+			}),
+		},
+		Frame{
+			Type: MessageTypeEvent, ControlSessionID: testControlSessionID, SessionSeq: 6, Ack: 1,
+			RunAttemptGeneration: 3,
+			Payload: mustPayload(t, TurnTerminalEvent{
 				Kind: EventKindTurnTerminal, ThreadID: "thread-1", TurnID: "turn-1", Status: "failed",
 				ErrorCode: "model_error", ErrorMessage: "model request failed",
 			}),
@@ -108,7 +116,9 @@ func TestHarnessControlJSONSchemaAcceptsGoContractAndRejectsUnsafeShapes(t *test
 		`{"type":"welcome","protocolVersion":"1.1","poolInstanceId":"10000000-0000-4000-8000-000000000001","controlSessionId":"20000000-0000-4000-8000-000000000002","runAttemptGeneration":3,"resumeStatus":"fresh","resumeWindowMs":30000,"poolSentThrough":1,"poolReceivedThrough":0}`,
 		`{"type":"event","controlSessionId":"20000000-0000-4000-8000-000000000002","sessionSeq":1,"ack":0,"runAttemptGeneration":3,"payload":{"kind":"interrupt","reason":"fenced","graceMs":1000,"message":"fenced"}}`,
 		`{"type":"event","controlSessionId":"20000000-0000-4000-8000-000000000002","sessionSeq":1,"ack":0,"runAttemptGeneration":3,"payload":{"kind":"turn_terminal","threadId":"thread-1","turnId":"turn-1","status":"failed"}}`,
+		`{"type":"event","controlSessionId":"20000000-0000-4000-8000-000000000002","sessionSeq":1,"ack":0,"runAttemptGeneration":3,"payload":{"kind":"turn_terminal","threadId":"thread-1","turnId":"turn-1","status":"completed"}}`,
 		`{"type":"event","controlSessionId":"20000000-0000-4000-8000-000000000002","sessionSeq":1,"ack":0,"runAttemptGeneration":3,"payload":{"kind":"turn_terminal","threadId":"thread-1","turnId":"turn-1","status":"completed","errorCode":"bad","errorMessage":"bad"}}`,
+		`{"type":"event","controlSessionId":"20000000-0000-4000-8000-000000000002","sessionSeq":1,"ack":0,"runAttemptGeneration":3,"payload":{"kind":"turn_terminal","threadId":"thread-1","turnId":"turn-1","status":"failed","rolloutLocator":"sessions/rollout.jsonl","errorCode":"bad","errorMessage":"bad"}}`,
 		`{"type":"event","controlSessionId":"20000000-0000-4000-8000-000000000002","sessionSeq":1,"ack":0,"runAttemptGeneration":3,"payload":{"kind":"app_server_notification","method":"item/started now","params":{}}}`,
 		`{"type":"event","controlSessionId":"20000000-0000-4000-8000-000000000002","sessionSeq":1,"ack":0,"runAttemptGeneration":3,"payload":{"kind":"executor_mcp_progress","callId":"bad call","progress":1,"total":2}}`,
 		`{"type":"ack","controlSessionId":"20000000-0000-4000-8000-000000000002","runAttemptGeneration":3,"ack":0,"sessionSeq":1}`,
@@ -198,6 +208,7 @@ func TestHarnessControlAsyncAPIReferencesSingleSchemaAndPhaseOneSemantics(t *tes
 			TransportAckAuthorizesTransition bool   `json:"transportAckAuthorizesCoreTransition"`
 			RuntimeEventAckAfterCoreCommit   bool   `json:"runtimeEventAckAfterCoreCommit"`
 			TerminalAckCoversPriorRuntime    bool   `json:"terminalAckCoversPriorRuntime"`
+			CompletedTerminalCarriesLocator  bool   `json:"completedTerminalCarriesRolloutLocator"`
 			Authentication                   string `json:"authentication"`
 			WorkerHasDurableState            bool   `json:"workerHasDurableState"`
 		} `json:"x-agentserver-phase1"`
@@ -205,7 +216,7 @@ func TestHarnessControlAsyncAPIReferencesSingleSchemaAndPhaseOneSemantics(t *tes
 	if err := json.Unmarshal(raw, &document); err != nil {
 		t.Fatalf("harness-control.yaml must remain valid JSON (and therefore YAML): %v", err)
 	}
-	if document.AsyncAPI != "3.0.0" || document.Info.Version != "1.1.0" {
+	if document.AsyncAPI != "3.0.0" || document.Info.Version != "1.2.0" {
 		t.Fatalf("AsyncAPI identity = %q/%q", document.AsyncAPI, document.Info.Version)
 	}
 	wantReferences := map[string]string{
@@ -224,7 +235,8 @@ func TestHarnessControlAsyncAPIReferencesSingleSchemaAndPhaseOneSemantics(t *tes
 	phase := document.Phase
 	if phase.ResumeWindowMillis != ResumeWindowMillis || phase.CrossProcessResume || !phase.HolderRoutedEndpoint ||
 		phase.StandaloneAckSequenced || phase.TransportAckAuthorizesTransition || !phase.RuntimeEventAckAfterCoreCommit ||
-		!phase.TerminalAckCoversPriorRuntime || phase.Authentication != "worker mTLS AND per-attempt bearer" || phase.WorkerHasDurableState {
+		!phase.TerminalAckCoversPriorRuntime || !phase.CompletedTerminalCarriesLocator ||
+		phase.Authentication != "worker mTLS AND per-attempt bearer" || phase.WorkerHasDurableState {
 		t.Fatalf("AsyncAPI Phase 1 semantics = %+v", phase)
 	}
 }

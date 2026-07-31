@@ -53,7 +53,8 @@ func TestOneShotWorkerAssemblesVerifiedRuntimeAndReportsAfterCleanup(t *testing.
 		t.Fatal("executor capability crossed into app-server environment")
 	}
 	terminal := fixture.control.terminalSnapshot()
-	if terminal.Status != "completed" || terminal.ThreadID != oneShotThreadID || terminal.TurnID != oneShotTurnID {
+	if terminal.Status != "completed" || terminal.ThreadID != oneShotThreadID || terminal.TurnID != oneShotTurnID ||
+		terminal.RolloutLocator != oneShotRolloutLocator {
 		t.Fatalf("terminal = %+v", terminal)
 	}
 	fixture.order.requireBefore(t, "process_close_stdin", "process_wait", "mcp_close", "runtime_close", "control_terminal")
@@ -63,6 +64,20 @@ func TestOneShotWorkerAssemblesVerifiedRuntimeAndReportsAfterCleanup(t *testing.
 	if fixture.runner.request.Start == nil || fixture.runner.request.Start.Model != fixture.manifest.Model.Model ||
 		fixture.runner.request.Start.CWD != fixture.runtime.threadCWD {
 		t.Fatalf("runner request = %+v", fixture.runner.request)
+	}
+}
+
+func TestOneShotWorkerRejectsCompletedRolloutOutsidePreparedCodexHome(t *testing.T) {
+	fixture := newOneShotWorkerFixture(t)
+	fixture.runner.rolloutPath = filepath.Join(filepath.Dir(fixture.runtime.codexHome), "outside", "sessions", "rollout.jsonl")
+
+	if err := runOneShotWorker(t.Context(), fixture.config, fixture.dependencies()); err != nil {
+		t.Fatal(err)
+	}
+	terminal := fixture.control.terminalSnapshot()
+	if terminal.Status != "interrupted" || terminal.ErrorCode != "checkpoint_locator_invalid" ||
+		terminal.RolloutLocator != "" {
+		t.Fatalf("invalid rollout terminal = %+v", terminal)
 	}
 }
 
@@ -122,6 +137,7 @@ const (
 	oneShotLLMCapability      = "llmproxy-capability-one-shot"
 	oneShotThreadID           = "thread-one-shot"
 	oneShotTurnID             = "turn-one-shot"
+	oneShotRolloutLocator     = "sessions/2026/07/31/rollout-one-shot.jsonl"
 )
 
 type oneShotWorkerFixture struct {
@@ -157,7 +173,7 @@ func newOneShotWorkerFixture(t *testing.T) *oneShotWorkerFixture {
 	control := newFakeOneShotWorkerControl(order)
 	mcp := &fakeOneShotWorkerMCP{catalog: catalog, order: order}
 	process := &fakeOneShotWorkerProcess{order: order}
-	runner := newFakeOneShotWorkerRunner(order)
+	runner := newFakeOneShotWorkerRunner(order, runtime.codexHome)
 	fixture := &oneShotWorkerFixture{
 		manifest: manifest, catalog: catalog, runtime: runtime, control: control,
 		mcp: mcp, process: process, runner: runner, order: order,
@@ -308,6 +324,7 @@ type fakePreparedWorkerRuntime struct {
 	restoreHome string
 	stagingRoot string
 	threadCWD   string
+	codexHome   string
 	order       *workerOrder
 	mu          sync.Mutex
 	closed      bool
@@ -319,12 +336,16 @@ func newFakePreparedWorkerRuntime(t *testing.T, order *workerOrder) *fakePrepare
 	restoreHome := filepath.Join(root, "restore-home")
 	stagingRoot := filepath.Join(root, "staging")
 	threadCWD := filepath.Join(root, "cwd")
-	for _, directory := range []string{restoreHome, stagingRoot, threadCWD} {
+	codexHome := filepath.Join(root, "codex-home")
+	for _, directory := range []string{restoreHome, stagingRoot, threadCWD, codexHome} {
 		if err := os.Mkdir(directory, 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return &fakePreparedWorkerRuntime{restoreHome: restoreHome, stagingRoot: stagingRoot, threadCWD: threadCWD, order: order}
+	return &fakePreparedWorkerRuntime{
+		restoreHome: restoreHome, stagingRoot: stagingRoot, threadCWD: threadCWD,
+		codexHome: codexHome, order: order,
+	}
 }
 
 func (runtime *fakePreparedWorkerRuntime) CheckpointRoots() (string, string) {
@@ -334,7 +355,7 @@ func (runtime *fakePreparedWorkerRuntime) CheckpointRoots() (string, string) {
 func (runtime *fakePreparedWorkerRuntime) Finalize(context.Context, runmanifest.Manifest, *RestoredCheckpoint) (PreparedAppServerRuntime, error) {
 	runtime.order.add("runtime_finalize")
 	return PreparedAppServerRuntime{
-		ProcessConfig: AppServerProcessConfig{Environment: AppServerRuntimeEnvironment{}},
+		ProcessConfig: AppServerProcessConfig{Environment: AppServerRuntimeEnvironment{CodexHome: runtime.codexHome}},
 		ThreadCWD:     runtime.threadCWD,
 	}, nil
 }
@@ -480,10 +501,15 @@ type fakeOneShotWorkerRunner struct {
 	failBeforeAcceptance error
 	request              AppServerRunRequest
 	cancellationCount    int
+	codexHome            string
+	rolloutPath          string
 }
 
-func newFakeOneShotWorkerRunner(order *workerOrder) *fakeOneShotWorkerRunner {
-	return &fakeOneShotWorkerRunner{order: order, events: make(chan codexwire.Message, 8)}
+func newFakeOneShotWorkerRunner(order *workerOrder, codexHome string) *fakeOneShotWorkerRunner {
+	return &fakeOneShotWorkerRunner{
+		order: order, events: make(chan codexwire.Message, 8), codexHome: codexHome,
+		rolloutPath: filepath.Join(codexHome, filepath.FromSlash(oneShotRolloutLocator)),
+	}
 }
 
 func (runner *fakeOneShotWorkerRunner) Events() <-chan codexwire.Message { return runner.events }
@@ -516,7 +542,10 @@ func (runner *fakeOneShotWorkerRunner) Run(ctx context.Context, request AppServe
 		runErr = context.Cause(ctx)
 	}
 	return AppServerRunResult{
-		Thread:   AppServerThreadResult{Thread: AppServerThread{ID: oneShotThreadID}},
+		Initialize: AppServerInitializeResult{CodexHome: runner.codexHome},
+		Thread: AppServerThreadResult{Thread: AppServerThread{
+			ID: oneShotThreadID, Path: runner.rolloutPath,
+		}},
 		Turn:     AppServerTurn{ID: oneShotTurnID, Status: "inProgress"},
 		Terminal: AppServerTerminal{ThreadID: oneShotThreadID, Turn: AppServerTurn{ID: oneShotTurnID, Status: terminalStatus}},
 	}, runErr

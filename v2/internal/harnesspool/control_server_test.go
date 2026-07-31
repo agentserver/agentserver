@@ -54,7 +54,7 @@ func TestControlServerMapsAuthenticatedWorkerLifecycleInOrder(t *testing.T) {
 	})
 	sendWorkerEvent(t, connection, worker, harnesscontrol.TurnTerminalEvent{
 		Kind: harnesscontrol.EventKindTurnTerminal, ThreadID: "thread-control-1", TurnID: "turn-control-1",
-		Status: "completed",
+		Status: "completed", RolloutLocator: testCompletedRolloutLocator,
 	})
 	terminal, err := fixture.control.WaitTerminal(testContext(t))
 	if err != nil || terminal.Status != "completed" || terminal.ThreadID != "thread-control-1" {

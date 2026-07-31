@@ -15,6 +15,7 @@ const (
 	testSessionID        = "41000000-0000-4000-8000-000000000004"
 	testRunID            = "42000000-0000-4000-8000-000000000004"
 	testRunAttemptID     = "43000000-0000-4000-8000-000000000004"
+	testRolloutLocator   = "sessions/2026/07/31/rollout-test.jsonl"
 )
 
 func TestHarnessControlCodecAcceptsExactDirectionBoundMessages(t *testing.T) {
@@ -104,9 +105,9 @@ func TestHarnessControlRejectsUnknownMissingNullDuplicateAndOversized(t *testing
 	}{
 		{name: "unknown", raw: strings.TrimSuffix(string(validRaw), "}") + `,"future":true}`, want: "unknown field"},
 		{name: "missing", raw: `{"type":"ack","controlSessionId":"20000000-0000-4000-8000-000000000002","runAttemptGeneration":3}`, want: "required field"},
-		{name: "null", raw: `{"type":"hello","protocolVersions":["1.1"],"workerInstanceId":"30000000-0000-4000-8000-000000000003","workspaceId":"40000000-0000-4000-8000-000000000004","sessionId":"41000000-0000-4000-8000-000000000004","runId":"42000000-0000-4000-8000-000000000004","runAttemptId":"43000000-0000-4000-8000-000000000004","runAttemptGeneration":3,"holderId":"pool-holder","manifestDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resume":null}`, want: "cannot be null"},
-		{name: "nested unknown", raw: `{"type":"hello","protocolVersions":["1.1"],"workerInstanceId":"30000000-0000-4000-8000-000000000003","workspaceId":"40000000-0000-4000-8000-000000000004","sessionId":"41000000-0000-4000-8000-000000000004","runId":"42000000-0000-4000-8000-000000000004","runAttemptId":"43000000-0000-4000-8000-000000000004","runAttemptGeneration":3,"holderId":"pool-holder","manifestDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resume":{"poolInstanceId":"10000000-0000-4000-8000-000000000001","controlSessionId":"20000000-0000-4000-8000-000000000002","runAttemptGeneration":3,"workerSentThrough":1,"workerReceivedThrough":0,"future":true}}`, want: "unknown field"},
-		{name: "nested missing", raw: `{"type":"hello","protocolVersions":["1.1"],"workerInstanceId":"30000000-0000-4000-8000-000000000003","workspaceId":"40000000-0000-4000-8000-000000000004","sessionId":"41000000-0000-4000-8000-000000000004","runId":"42000000-0000-4000-8000-000000000004","runAttemptId":"43000000-0000-4000-8000-000000000004","runAttemptGeneration":3,"holderId":"pool-holder","manifestDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resume":{"poolInstanceId":"10000000-0000-4000-8000-000000000001","controlSessionId":"20000000-0000-4000-8000-000000000002","runAttemptGeneration":3,"workerSentThrough":1}}`, want: "required field"},
+		{name: "null", raw: `{"type":"hello","protocolVersions":["1.2"],"workerInstanceId":"30000000-0000-4000-8000-000000000003","workspaceId":"40000000-0000-4000-8000-000000000004","sessionId":"41000000-0000-4000-8000-000000000004","runId":"42000000-0000-4000-8000-000000000004","runAttemptId":"43000000-0000-4000-8000-000000000004","runAttemptGeneration":3,"holderId":"pool-holder","manifestDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resume":null}`, want: "cannot be null"},
+		{name: "nested unknown", raw: `{"type":"hello","protocolVersions":["1.2"],"workerInstanceId":"30000000-0000-4000-8000-000000000003","workspaceId":"40000000-0000-4000-8000-000000000004","sessionId":"41000000-0000-4000-8000-000000000004","runId":"42000000-0000-4000-8000-000000000004","runAttemptId":"43000000-0000-4000-8000-000000000004","runAttemptGeneration":3,"holderId":"pool-holder","manifestDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resume":{"poolInstanceId":"10000000-0000-4000-8000-000000000001","controlSessionId":"20000000-0000-4000-8000-000000000002","runAttemptGeneration":3,"workerSentThrough":1,"workerReceivedThrough":0,"future":true}}`, want: "unknown field"},
+		{name: "nested missing", raw: `{"type":"hello","protocolVersions":["1.2"],"workerInstanceId":"30000000-0000-4000-8000-000000000003","workspaceId":"40000000-0000-4000-8000-000000000004","sessionId":"41000000-0000-4000-8000-000000000004","runId":"42000000-0000-4000-8000-000000000004","runAttemptId":"43000000-0000-4000-8000-000000000004","runAttemptGeneration":3,"holderId":"pool-holder","manifestDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resume":{"poolInstanceId":"10000000-0000-4000-8000-000000000001","controlSessionId":"20000000-0000-4000-8000-000000000002","runAttemptGeneration":3,"workerSentThrough":1}}`, want: "required field"},
 		{name: "duplicate", raw: `{"type":"ack","type":"ack","controlSessionId":"20000000-0000-4000-8000-000000000002","runAttemptGeneration":3,"ack":0}`, want: "duplicate"},
 		{name: "payload array", raw: `{"type":"event","controlSessionId":"20000000-0000-4000-8000-000000000002","sessionSeq":1,"ack":0,"runAttemptGeneration":3,"payload":[]}`, want: "must be an object"},
 	}
@@ -137,7 +138,10 @@ func TestHarnessControlEventAndInterruptSemanticsFailClosed(t *testing.T) {
 		ExecutorMCPProgressEvent{
 			Kind: EventKindExecutorMCPProgress, CallID: "call-1", Progress: 3, Total: 10, Message: "running",
 		},
-		TurnTerminalEvent{Kind: EventKindTurnTerminal, ThreadID: "thread-1", TurnID: "turn-1", Status: "completed"},
+		TurnTerminalEvent{
+			Kind: EventKindTurnTerminal, ThreadID: "thread-1", TurnID: "turn-1", Status: "completed",
+			RolloutLocator: testRolloutLocator,
+		},
 		TurnTerminalEvent{
 			Kind: EventKindTurnTerminal, ThreadID: "thread-1", TurnID: "turn-1", Status: "failed",
 			ErrorCode: "model_error", ErrorMessage: "model request failed",
@@ -149,7 +153,15 @@ func TestHarnessControlEventAndInterruptSemanticsFailClosed(t *testing.T) {
 		}
 	}
 	invalidEvents := []any{
-		TurnTerminalEvent{Kind: EventKindTurnTerminal, ThreadID: "thread-1", TurnID: "turn-1", Status: "completed", ErrorCode: "unexpected", ErrorMessage: "bad"},
+		TurnTerminalEvent{Kind: EventKindTurnTerminal, ThreadID: "thread-1", TurnID: "turn-1", Status: "completed"},
+		TurnTerminalEvent{
+			Kind: EventKindTurnTerminal, ThreadID: "thread-1", TurnID: "turn-1", Status: "completed",
+			RolloutLocator: testRolloutLocator, ErrorCode: "unexpected", ErrorMessage: "bad",
+		},
+		TurnTerminalEvent{
+			Kind: EventKindTurnTerminal, ThreadID: "thread-1", TurnID: "turn-1", Status: "failed",
+			RolloutLocator: testRolloutLocator, ErrorCode: "failed", ErrorMessage: "failed",
+		},
 		TurnTerminalEvent{Kind: EventKindTurnTerminal, ThreadID: "thread-1", TurnID: "turn-1", Status: "failed"},
 	}
 	for _, value := range invalidEvents {
@@ -158,6 +170,7 @@ func TestHarnessControlEventAndInterruptSemanticsFailClosed(t *testing.T) {
 		}
 	}
 	invalidRuntimeEvents := []string{
+		`{"kind":"turn_terminal","threadId":"thread-1","turnId":"turn-1","status":"completed","rolloutLocator":null}`,
 		`{"kind":"app_server_notification","method":"item/started now","params":{}}`,
 		`{"kind":"app_server_notification","method":"item/started","params":[]}`,
 		`{"kind":"executor_mcp_progress","callId":"bad call","progress":1,"total":2}`,

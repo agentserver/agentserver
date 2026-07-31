@@ -112,7 +112,7 @@
       ],
       "properties": {
         "type": {"const": "welcome"},
-        "protocolVersion": {"const": "1.1"},
+        "protocolVersion": {"const": "1.2"},
         "poolInstanceId": {"$ref": "#/$defs/canonicalUUID"},
         "controlSessionId": {"$ref": "#/$defs/canonicalUUID"},
         "runAttemptGeneration": {"$ref": "#/$defs/positiveSafeInteger"},
@@ -162,6 +162,13 @@
         "threadId": {"$ref": "#/$defs/boundedIdentity"},
         "turnId": {"$ref": "#/$defs/boundedIdentity"},
         "status": {"enum": ["completed", "interrupted", "failed"]},
+        "rolloutLocator": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^sessions/[0-9A-Za-z._/-]+\\.jsonl$",
+          "not": {"pattern": "(^|/)(\\.|\\.\\.)(/|$)|//"}
+        },
         "errorCode": {
           "type": "string",
           "minLength": 1,
@@ -174,6 +181,7 @@
         {
           "if": {"properties": {"status": {"const": "completed"}}, "required": ["status"]},
           "then": {
+            "required": ["rolloutLocator"],
             "not": {
               "anyOf": [
                 {"required": ["errorCode"]},
@@ -181,7 +189,10 @@
               ]
             }
           },
-          "else": {"required": ["errorCode", "errorMessage"]}
+          "else": {
+            "required": ["errorCode", "errorMessage"],
+            "not": {"required": ["rolloutLocator"]}
+          }
         }
       ]
     },

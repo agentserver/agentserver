@@ -38,6 +38,7 @@ const (
 	MCPMetaExecutionID          = "io.agentserver/executionId"
 	MCPMetaApprovalID           = "io.agentserver/approvalId"
 	MCPMetaApprovalNonce        = "io.agentserver/approvalNonce"
+	MCPMetaApprovalVersion      = "io.agentserver/approvalVersion"
 	MCPMetaContextHash          = "io.agentserver/contextHash"
 	MCPMetaExpiresAt            = "io.agentserver/expiresAt"
 
@@ -71,6 +72,7 @@ type ElicitationRequest struct {
 	ExecutionID          string
 	ApprovalID           string
 	Nonce                string
+	ApprovalVersion      int64
 	ContextHash          string
 	ExpiresAt            time.Time
 	Message              string
@@ -468,6 +470,7 @@ func (c *MCPClient) handleElicitation(ctx context.Context, request *mcp.ElicitRe
 		ExecutionID:          metadata.ExecutionID,
 		ApprovalID:           metadata.ApprovalID,
 		Nonce:                metadata.Nonce,
+		ApprovalVersion:      metadata.ApprovalVersion,
 		ContextHash:          metadata.ContextHash,
 		ExpiresAt:            metadata.ExpiresAt,
 		Message:              params.Message,
@@ -626,6 +629,7 @@ type approvalMetadata struct {
 	ExecutionID          string
 	ApprovalID           string
 	Nonce                string
+	ApprovalVersion      int64
 	ContextHash          string
 	ExpiresAt            time.Time
 }
@@ -633,7 +637,7 @@ type approvalMetadata struct {
 func parseApprovalMetadata(meta mcp.Meta) (approvalMetadata, error) {
 	allowed := map[string]struct{}{
 		MCPMetaRunID: {}, MCPMetaCallID: {}, MCPMetaRunAttemptGeneration: {}, MCPMetaToolCatalogDigest: {},
-		MCPMetaExecutionID: {}, MCPMetaApprovalID: {}, MCPMetaApprovalNonce: {}, MCPMetaContextHash: {}, MCPMetaExpiresAt: {},
+		MCPMetaExecutionID: {}, MCPMetaApprovalID: {}, MCPMetaApprovalNonce: {}, MCPMetaApprovalVersion: {}, MCPMetaContextHash: {}, MCPMetaExpiresAt: {},
 		"progressToken": {},
 	}
 	for key := range meta {
@@ -675,6 +679,10 @@ func parseApprovalMetadata(meta mcp.Meta) (approvalMetadata, error) {
 	}
 	if result.Nonce, err = getString(MCPMetaApprovalNonce); err != nil {
 		return approvalMetadata{}, err
+	}
+	result.ApprovalVersion, err = metadataInt64(meta[MCPMetaApprovalVersion])
+	if err != nil || result.ApprovalVersion < 1 {
+		return approvalMetadata{}, errors.New("executor MCP elicitation approvalVersion must be a positive integer")
 	}
 	if result.ContextHash, err = getString(MCPMetaContextHash); err != nil {
 		return approvalMetadata{}, err

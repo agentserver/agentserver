@@ -583,6 +583,9 @@ func renderServiceEnvironments(
 			"AGENTSERVER_V2_CORE_CLIENT_KEY_FILE":           paths.privateKeys["executor-gateway"],
 			"AGENTSERVER_V2_DEV_EXECUTOR_ID":                document.Authority.ExecutorID,
 			"AGENTSERVER_V2_DEV_RUN_CAPABILITY_KEY":         capabilityKey,
+			"AGENTSERVER_V2_EXECUTION_POLICY_VERSION":       document.Policy.Version,
+			"AGENTSERVER_V2_SHELL_POLICY_DECISION":          "ask",
+			"AGENTSERVER_V2_READ_FILE_POLICY_DECISION":      "allow",
 		},
 		harnessPoolEnvironmentFile: {
 			"AGENTSERVER_V2_HARNESS_POOL_LISTEN_ADDR":        document.Network.HarnessPoolListenAddress,

@@ -188,6 +188,7 @@ func newTestShellExecutor(t *testing.T, authority *fakeShellAuthority, dispatche
 	}
 	config := DefaultShellExecutorConfig(t.Context())
 	config.TerminalGrace = 50 * time.Millisecond
+	configureTestShellPolicy(t, &config)
 	executor, err := NewShellExecutor(resolver, authority, dispatcher, identityAllocator, transitionAllocator, config)
 	if err != nil {
 		t.Fatal(err)
@@ -310,13 +311,19 @@ func (authority *fakeShellAuthority) PrepareExecution(_ context.Context, request
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
 	authority.record(request.Record)
+	status := "approved"
+	if request.PolicyDecision == PolicyDecisionAsk {
+		status = "pending_approval"
+	} else if request.PolicyDecision == PolicyDecisionDeny {
+		status = "denied"
+	}
 	authority.execution = ExecutionState{
 		ExecutionID: request.ExecutionID, RunID: request.RunID, RunAttemptID: request.RunAttemptID,
 		RunAttemptGeneration: request.RunAttemptGeneration, AppServerToolCallID: request.AppServerToolCallID,
 		ExecutorID: request.ExecutorID, EnvironmentID: request.EnvironmentID,
 		ToolName: request.ToolName, ToolVersion: request.ToolVersion, MapperVersion: request.MapperVersion,
 		PolicyVersion: request.PolicyVersion, PolicyDecision: request.PolicyDecision, OperationCount: request.OperationCount,
-		Status: "approved", Version: 1,
+		Status: status, Version: 1,
 	}
 	return PrepareExecutionResult{Execution: authority.execution, Created: true}, nil
 }

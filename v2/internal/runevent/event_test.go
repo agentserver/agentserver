@@ -146,6 +146,54 @@ func TestUnknownFutureKindCanRemainInCanonicalLedger(t *testing.T) {
 	}
 }
 
+func TestDecodeApprovalPayloadBindsAuthorityToEventScope(t *testing.T) {
+	event, err := Decode(mustTestEventJSON(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	event.Kind = KindApprovalRequested
+	event.Source = "approval"
+	event.Payload = json.RawMessage(`{
+        "runId":"40000000-0000-4000-8000-000000000004",
+        "runAttemptId":"50000000-0000-4000-8000-000000000005",
+        "runAttemptGeneration":1,
+        "executionId":"70000000-0000-4000-8000-000000000007",
+        "approvalId":"80000000-0000-4000-8000-000000000008",
+        "toolName":"shell",
+        "status":"pending",
+        "nonce":"90000000-0000-4000-8000-000000000009",
+        "contextSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "expiresAt":"2026-07-31T12:10:00Z",
+        "version":1
+    }`)
+	payload, err := DecodeSemanticPayload(event)
+	if err != nil || payload.(ApprovalPayload).ApprovalID != "80000000-0000-4000-8000-000000000008" {
+		t.Fatalf("DecodeSemanticPayload(approval) = %+v, %v", payload, err)
+	}
+
+	for _, mutate := range []func(*Event){
+		func(candidate *Event) { candidate.Source = "executor" },
+		func(candidate *Event) {
+			candidate.Payload = json.RawMessage(strings.Replace(string(candidate.Payload), `"status":"pending"`, `"status":"approved"`, 1))
+		},
+		func(candidate *Event) {
+			candidate.Payload = json.RawMessage(strings.Replace(string(candidate.Payload), `"runAttemptGeneration":1`, `"runAttemptGeneration":2`, 1))
+		},
+	} {
+		candidate := event
+		mutate(&candidate)
+		if candidate.Source != "approval" {
+			if err := candidate.Validate(); err == nil {
+				t.Fatal("approval event with executor source was accepted")
+			}
+			continue
+		}
+		if _, err := DecodeSemanticPayload(candidate); err == nil {
+			t.Fatalf("invalid approval payload accepted: %s", candidate.Payload)
+		}
+	}
+}
+
 func mustTestEventJSON(t *testing.T) []byte {
 	t.Helper()
 	generation := int64(1)

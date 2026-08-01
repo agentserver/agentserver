@@ -22,7 +22,7 @@ func TestMapReadFileV1BuildsOneBoundedReadOperation(t *testing.T) {
 	}
 	raw := json.RawMessage(`{ "environment_id":"60000000-0000-4000-8000-000000000006", "path":"src/data #1.bin", "offset":17, "limit":4096 }`)
 	identities := testReadFileV1Identities()
-	plan, err := MapReadFileV1(raw, testExecutorMCPPrincipal("capability-read-file"), "call-read-file-1", environment, identities)
+	plan, err := MapReadFileV1(raw, testExecutorMCPPrincipal("capability-read-file"), "call-read-file-1", environment, testReadFilePolicy(), identities)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestMapReadFileV1DefaultsAndWindowsFileURI(t *testing.T) {
 	}
 	plan, err := MapReadFileV1(
 		json.RawMessage(`{"environment_id":"60000000-0000-4000-8000-000000000006","path":"src/data file.txt"}`),
-		testExecutorMCPPrincipal("capability-read-file"), "call-read-file-windows", environment, testReadFileV1Identities(),
+		testExecutorMCPPrincipal("capability-read-file"), "call-read-file-windows", environment, testReadFilePolicy(), testReadFileV1Identities(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -109,7 +109,7 @@ func TestMapReadFileV1RejectsUnsupportedProfileAndUnsafeInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	validRaw := json.RawMessage(`{"environment_id":"60000000-0000-4000-8000-000000000006","path":"data.bin"}`)
-	if _, err := MapReadFileV1(validRaw, testExecutorMCPPrincipal("capability-read-file"), "call-read-file-invalid", processOnly, testReadFileV1Identities()); err == nil {
+	if _, err := MapReadFileV1(validRaw, testExecutorMCPPrincipal("capability-read-file"), "call-read-file-invalid", processOnly, testReadFilePolicy(), testReadFileV1Identities()); err == nil {
 		t.Fatal("process-only environment admitted a filesystem read")
 	}
 
@@ -131,14 +131,18 @@ func TestMapReadFileV1RejectsUnsupportedProfileAndUnsafeInputs(t *testing.T) {
 		`{"environment_id":"60000000-0000-4000-8000-000000000006","path":"data.bin","future":true}`,
 	}
 	for _, raw := range tests {
-		if _, err := MapReadFileV1(json.RawMessage(raw), testExecutorMCPPrincipal("capability-read-file"), "call-read-file-invalid", environment, testReadFileV1Identities()); err == nil {
+		if _, err := MapReadFileV1(json.RawMessage(raw), testExecutorMCPPrincipal("capability-read-file"), "call-read-file-invalid", environment, testReadFilePolicy(), testReadFileV1Identities()); err == nil {
 			t.Errorf("invalid read_file input was accepted: %s", raw)
 		}
 	}
 	wrongEnvironment := fmt.Sprintf(`{"environment_id":"%s","path":"data.bin"}`, "30000000-0000-4000-8000-000000000099")
-	if _, err := MapReadFileV1(json.RawMessage(wrongEnvironment), testExecutorMCPPrincipal("capability-read-file"), "call-read-file-invalid", environment, testReadFileV1Identities()); err == nil {
+	if _, err := MapReadFileV1(json.RawMessage(wrongEnvironment), testExecutorMCPPrincipal("capability-read-file"), "call-read-file-invalid", environment, testReadFilePolicy(), testReadFileV1Identities()); err == nil {
 		t.Fatal("mismatched read_file environment identity was accepted")
 	}
+}
+
+func testReadFilePolicy() ExecutionPolicyResolution {
+	return ExecutionPolicyResolution{Version: ReadFileV1PolicyVersion, Decision: PolicyDecisionAllow}
 }
 
 func TestReadFileV1IdentityAllocatorRejectsDuplicateGeneratorValues(t *testing.T) {

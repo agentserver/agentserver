@@ -227,6 +227,30 @@ func (projector *Projector) projectKnown(event runevent.Event, payload any) (Pro
 			projected = append(projected, events.NewCustomEvent("a2ui.operations", events.WithValue(operations)))
 		}
 		return Projection{Events: projected}, nil
+	case runevent.KindApprovalRequested, runevent.KindApprovalApproved, runevent.KindApprovalDenied,
+		runevent.KindApprovalExpired, runevent.KindApprovalCancelled, runevent.KindApprovalConsumed:
+		approval := payload.(runevent.ApprovalPayload)
+		operations := a2ui.ApprovalCard(event.EventID, a2ui.ApprovalView{
+			ApprovalID: approval.ApprovalID, ToolName: approval.ToolName, Status: approval.Status,
+			ExpiresAt: approval.ExpiresAt.UTC().Format("2006-01-02T15:04:05.000000000Z07:00"),
+		})
+		if err := a2ui.ValidateOperations(operations); err != nil {
+			return Projection{}, fmt.Errorf("validate generated approval A2UI operations: %w", err)
+		}
+		return Projection{Events: []events.Event{
+			events.NewCustomEvent("agentserver.approval", events.WithValue(map[string]any{
+				"approvalId": approval.ApprovalID, "executionId": approval.ExecutionID,
+				"runId": approval.RunID, "runAttemptId": approval.RunAttemptID,
+				"runAttemptGeneration": approval.RunAttemptGeneration,
+				"status":               approval.Status, "decision": approval.Decision, "toolName": approval.ToolName,
+				"nonce": approval.Nonce,
+				"contextDigest": map[string]any{
+					"domain": "approval-context", "canonicalizerVersion": "rfc8785-v1", "sha256": approval.ContextSHA256,
+				},
+				"expiresAt": approval.ExpiresAt, "approverId": approval.ApproverID, "version": approval.Version,
+			})),
+			events.NewCustomEvent("a2ui.operations", events.WithValue(operations)),
+		}}, nil
 	case runevent.KindRunCancelling:
 		status := payload.(runevent.RunTerminalPayload)
 		return Projection{Events: []events.Event{

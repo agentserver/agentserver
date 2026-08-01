@@ -34,6 +34,21 @@ func TestCanonicalRunEventJSONSchemaAcceptsGoContractAndRejectsUnsafeKnownPayloa
         }`)),
 		contractEvent(KindRunCompleted, json.RawMessage(`{"result":{"answer":42}}`)),
 	}
+	approval := contractEvent(KindApprovalRequested, json.RawMessage(`{
+        "runId":"40000000-0000-4000-8000-000000000004",
+        "runAttemptId":"50000000-0000-4000-8000-000000000005",
+        "runAttemptGeneration":1,
+        "executionId":"70000000-0000-4000-8000-000000000007",
+        "approvalId":"80000000-0000-4000-8000-000000000008",
+        "toolName":"shell",
+        "status":"pending",
+        "nonce":"90000000-0000-4000-8000-000000000009",
+        "contextSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "expiresAt":"2026-07-31T12:10:00Z",
+        "version":1
+    }`))
+	approval.Source = "approval"
+	valid = append(valid, approval)
 	unknown := contractEvent("artifact.available", nil)
 	unknown.SchemaVersion = 42
 	unknown.Object = &ObjectPointer{
@@ -106,6 +121,9 @@ func TestCanonicalEventsAsyncAPIDocumentsProjectionBoundaries(t *testing.T) {
 			CursorCarrier                  string `json:"cursorCarrier"`
 			ReconnectInput                 string `json:"reconnectInput"`
 			ToolProgressCarrier            string `json:"toolProgressCarrier"`
+			ApprovalCarrier                string `json:"approvalCarrier"`
+			ApprovalDecisionCommand        string `json:"approvalDecisionCommand"`
+			A2UICarriesApprovalAuthority   bool   `json:"a2uiCarriesApprovalAuthority"`
 			A2UIVersion                    string `json:"a2uiVersion"`
 			A2UICarrier                    string `json:"a2uiCarrier"`
 		} `json:"x-agentserver-projection"`
@@ -128,6 +146,8 @@ func TestCanonicalEventsAsyncAPIDocumentsProjectionBoundaries(t *testing.T) {
 		projection.CursorCarrier != "CUSTOM{name:agentserver.event_cursor,value:{version,runId,cursor,lastEventSequence}}" ||
 		projection.ReconnectInput != "forwardedProps.agentserver.eventCursor" ||
 		projection.ToolProgressCarrier != "CUSTOM{name:agentserver.tool_progress,value:{toolCallId,progress,total,message}}" ||
+		projection.ApprovalCarrier != "CUSTOM{name:agentserver.approval,value:{approvalId,executionId,runId,runAttemptId,runAttemptGeneration,toolName,status,decision,nonce,contextDigest,expiresAt,approverId,version}}" ||
+		projection.ApprovalDecisionCommand != "POST /v2/workspaces/{workspaceId}/approvals/{approvalId}:decide" || projection.A2UICarriesApprovalAuthority ||
 		projection.A2UIVersion != "v0.9" || projection.A2UICarrier != "CUSTOM{name:a2ui.operations,value:[operations]}" {
 		t.Fatalf("AsyncAPI projection boundaries = %+v", projection)
 	}

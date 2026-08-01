@@ -115,6 +115,46 @@ func TestReadFileExecutorClosesDeterministicAndUncertainOutcomes(t *testing.T) {
 	}
 }
 
+func TestReadFileExecutorDoesNotPrepareOrDispatchWithoutPolicyAuthorization(t *testing.T) {
+	for _, decision := range []string{PolicyDecisionDeny, PolicyDecisionAsk} {
+		t.Run(decision, func(t *testing.T) {
+			dispatcher := &fakeFilesystemDispatcher{}
+			executor, authority := newReadFileExecutorFixture(t, dispatcher)
+			resolver, err := NewStaticExecutionPolicyResolver("policy-test", map[string]string{"read_file": decision})
+			if err != nil {
+				t.Fatal(err)
+			}
+			executor.config.PolicyResolver = resolver
+			gate := &recordingTestApprovalGate{err: ErrApprovalNotGranted}
+			executor.config.ApprovalGate = gate
+			_, err = executor.Execute(t.Context(), ReadFileExecuteRequest{
+				Principal: testExecutorMCPPrincipal("capability-read-file-policy"), ToolCallID: "call-read-file-policy",
+				Arguments: json.RawMessage(`{"environment_id":"60000000-0000-4000-8000-000000000006","path":"data.txt","limit":1}`),
+			})
+			if decision == PolicyDecisionDeny && !errors.Is(err, ErrExecutionPolicyDenied) {
+				t.Fatalf("deny error = %v", err)
+			}
+			if decision == PolicyDecisionAsk && !errors.Is(err, ErrApprovalNotGranted) {
+				t.Fatalf("ask error = %v", err)
+			}
+			authority.mu.Lock()
+			records := len(authority.records)
+			operationID := authority.operation.OperationID
+			authority.mu.Unlock()
+			if records != 1 || operationID != "" || len(dispatcher.requests) != 0 {
+				t.Fatalf("decision=%s records=%d operation=%q dispatches=%d", decision, records, operationID, len(dispatcher.requests))
+			}
+			wantGateCalls := 0
+			if decision == PolicyDecisionAsk {
+				wantGateCalls = 1
+			}
+			if gate.calls != wantGateCalls {
+				t.Fatalf("decision=%s approval gate calls=%d, want %d", decision, gate.calls, wantGateCalls)
+			}
+		})
+	}
+}
+
 func TestReadFileProjectionUsesBase64WhenTextWouldExceedBound(t *testing.T) {
 	content := bytes.Repeat([]byte{0}, int(execprofile.MaxFilesystemReadLength))
 	canonical := base64.StdEncoding.EncodeToString(content)
@@ -186,9 +226,11 @@ func newReadFileExecutorFixture(t *testing.T, dispatcher *fakeFilesystemDispatch
 		t.Fatal(err)
 	}
 	authority := newFakeReadFileAuthority()
+	config := DefaultReadFileExecutorConfig(t.Context())
+	configureTestReadFilePolicy(t, &config)
 	executor, err := NewReadFileExecutor(
 		resolver, authority, dispatcher, identities, transitions,
-		DefaultReadFileExecutorConfig(t.Context()),
+		config,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -242,13 +284,19 @@ func (authority *fakeReadFileAuthority) PrepareExecution(_ context.Context, requ
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
 	authority.record(request.Record)
+	status := "approved"
+	if request.PolicyDecision == PolicyDecisionAsk {
+		status = "pending_approval"
+	} else if request.PolicyDecision == PolicyDecisionDeny {
+		status = "denied"
+	}
 	authority.execution = ExecutionState{
 		ExecutionID: request.ExecutionID, RunID: request.RunID, RunAttemptID: request.RunAttemptID,
 		RunAttemptGeneration: request.RunAttemptGeneration, AppServerToolCallID: request.AppServerToolCallID,
 		ExecutorID: request.ExecutorID, EnvironmentID: request.EnvironmentID,
 		ToolName: request.ToolName, ToolVersion: request.ToolVersion, MapperVersion: request.MapperVersion,
 		PolicyVersion: request.PolicyVersion, PolicyDecision: request.PolicyDecision, OperationCount: request.OperationCount,
-		Status: "approved", Version: 1,
+		Status: status, Version: 1,
 	}
 	return PrepareExecutionResult{Execution: authority.execution, Created: true}, nil
 }

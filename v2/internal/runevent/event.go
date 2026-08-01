@@ -145,6 +145,9 @@ func (event Event) Validate() error {
 	default:
 		return fmt.Errorf("source %q is not supported", event.Source)
 	}
+	if strings.HasPrefix(event.Kind, "approval.") && event.Source != "approval" {
+		return errors.New("approval event kinds require source approval")
+	}
 	if len(event.Kind) > 128 || !kindPattern.MatchString(event.Kind) {
 		return errors.New("kind must be a lowercase dotted canonical name of at most 128 bytes")
 	}

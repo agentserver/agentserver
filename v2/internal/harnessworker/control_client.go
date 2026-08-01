@@ -19,7 +19,11 @@ import (
 	"nhooyr.io/websocket"
 )
 
-const workerControlCommandBuffer = 8
+const (
+	workerControlCommandBuffer        = 8
+	maximumWorkerPendingApprovals     = 256
+	defaultWorkerPendingApprovalLimit = 64
+)
 
 type WorkerControlClientConfig struct {
 	Manifest                runmanifest.Manifest
@@ -30,6 +34,7 @@ type WorkerControlClientConfig struct {
 	WireLimits              harnesscontrol.Limits
 	MaxUnackedFrames        int
 	MaxReceiveHistoryFrames int
+	MaxPendingApprovals     int
 	HandshakeTimeout        time.Duration
 	WriteTimeout            time.Duration
 	ReconnectBackoff        time.Duration
@@ -50,7 +55,8 @@ func DefaultWorkerControlClientConfig(
 			MaxFrameBytes: 1024 * 1024, MaxJSONValues: 65_536, MaxJSONDepth: 128,
 		},
 		MaxUnackedFrames: 1024, MaxReceiveHistoryFrames: 4096,
-		HandshakeTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second,
+		MaxPendingApprovals: defaultWorkerPendingApprovalLimit,
+		HandshakeTimeout:    10 * time.Second, WriteTimeout: 10 * time.Second,
 		ReconnectBackoff: 100 * time.Millisecond, Now: time.Now,
 	}
 }
@@ -88,6 +94,14 @@ type WorkerControlClient struct {
 	done             chan struct{}
 	doneOnce         sync.Once
 	commands         chan harnesscontrol.InterruptCommand
+
+	approvalMu sync.Mutex
+	approvals  map[string]*workerPendingApproval
+}
+
+type workerPendingApproval struct {
+	request ElicitationRequest
+	result  chan harnesscontrol.ApprovalOutcomeCommand
 }
 
 type workerControlConnection struct {
@@ -104,7 +118,8 @@ func NewWorkerControlClient(config WorkerControlClientConfig) (*WorkerControlCli
 	return &WorkerControlClient{
 		config: config, httpClient: httpClient, helloBase: hello,
 		stateChanged: make(chan struct{}), done: make(chan struct{}),
-		commands: make(chan harnesscontrol.InterruptCommand, workerControlCommandBuffer),
+		commands:  make(chan harnesscontrol.InterruptCommand, workerControlCommandBuffer),
+		approvals: make(map[string]*workerPendingApproval),
 	}, nil
 }
 
@@ -265,6 +280,174 @@ func (client *WorkerControlClient) SendExecutorMCPProgress(ctx context.Context, 
 		Progress: progress.Progress, Total: progress.Total, Message: progress.Message,
 	}
 	return client.sendControlEvent(ctx, event, false, false)
+}
+
+// AwaitApproval projects gateway-owned elicitation metadata onto the control
+// stream and waits only for the holder's canonical Core observation. The
+// worker never decides an approval and never forwards model-authored schema or
+// message content to the approval authority.
+func (client *WorkerControlClient) AwaitApproval(
+	ctx context.Context,
+	request ElicitationRequest,
+) (ElicitationDecision, error) {
+	if client == nil {
+		return ElicitationDecision{Action: ApprovalCancel}, nil
+	}
+	if ctx == nil {
+		return ElicitationDecision{}, errors.New("worker approval context is required")
+	}
+	event := harnesscontrol.ApprovalRequestEvent{
+		Kind:  harnesscontrol.EventKindApprovalRequest,
+		RunID: request.RunID, CallID: request.CallID,
+		RunAttemptGeneration: request.RunAttemptGeneration,
+		ToolCatalogDigest:    request.ToolCatalogDigest,
+		ExecutionID:          request.ExecutionID, ApprovalID: request.ApprovalID,
+		Nonce: request.Nonce, ApprovalVersion: request.ApprovalVersion,
+		ContextHash: request.ContextHash, ExpiresAt: request.ExpiresAt,
+	}
+	if err := event.Validate(); err != nil {
+		return ElicitationDecision{}, err
+	}
+	if request.RunID != client.config.Manifest.RunID ||
+		request.RunAttemptGeneration != client.config.Manifest.RunAttemptGeneration ||
+		request.ToolCatalogDigest != client.config.Manifest.ExecutorMCP.CatalogDigest {
+		return ElicitationDecision{}, errors.New("worker approval request escaped the signed run attempt")
+	}
+	now := client.config.Now()
+	if !now.Before(request.ExpiresAt) {
+		return ElicitationDecision{Action: ApprovalDecline}, nil
+	}
+	if request.ExpiresAt.After(now.Add(time.Duration(client.config.Manifest.Limits.MaxApprovalTTLMS) * time.Millisecond)) {
+		return ElicitationDecision{}, errors.New("worker approval expiry exceeds the signed attempt limit")
+	}
+
+	waiter := &workerPendingApproval{
+		request: request,
+		result:  make(chan harnesscontrol.ApprovalOutcomeCommand, 1),
+	}
+	client.approvalMu.Lock()
+	if len(client.approvals) >= client.config.MaxPendingApprovals {
+		client.approvalMu.Unlock()
+		return ElicitationDecision{}, errors.New("worker pending approval limit reached")
+	}
+	for _, pending := range client.approvals {
+		if pending.request.ApprovalID == request.ApprovalID || pending.request.CallID == request.CallID {
+			client.approvalMu.Unlock()
+			return ElicitationDecision{}, errors.New("worker approval or call ID is already pending")
+		}
+	}
+	client.approvals[request.ApprovalID] = waiter
+	client.approvalMu.Unlock()
+
+	client.eventMu.Lock()
+	if client.threadID == "" || client.turnID == "" || client.terminalSent {
+		client.eventMu.Unlock()
+		client.removePendingApproval(waiter)
+		return ElicitationDecision{}, errors.New("worker approval request is outside an accepted turn")
+	}
+	err := client.sendControlEvent(ctx, event, false, true)
+	client.eventMu.Unlock()
+	if err != nil {
+		// Keep a possibly-journaled request correlated until either its outcome
+		// arrives or the one-shot control session ends. This prevents a late,
+		// canonical outcome from becoming an unknown command after caller expiry.
+		return client.approvalCancellationDecision(ctx, request), nil
+	}
+
+	select {
+	case outcome := <-waiter.result:
+		return client.decisionFromApprovalOutcome(request, outcome)
+	case <-client.done:
+		return ElicitationDecision{Action: ApprovalCancel}, nil
+	case <-ctx.Done():
+		return client.approvalCancellationDecision(ctx, request), nil
+	}
+}
+
+func (client *WorkerControlClient) deliverApprovalOutcome(outcome harnesscontrol.ApprovalOutcomeCommand) error {
+	client.approvalMu.Lock()
+	waiter := client.approvals[outcome.ApprovalID]
+	if waiter == nil {
+		client.approvalMu.Unlock()
+		return &harnesscontrol.ProtocolError{
+			Code: harnesscontrol.ErrorAttemptMismatch, Message: "approval outcome has no pending worker request", Terminal: true,
+		}
+	}
+	if err := validateWorkerApprovalOutcome(waiter.request, client.config.Manifest, outcome); err != nil {
+		client.approvalMu.Unlock()
+		return err
+	}
+	delete(client.approvals, outcome.ApprovalID)
+	client.approvalMu.Unlock()
+	waiter.result <- outcome
+	return nil
+}
+
+func validateWorkerApprovalOutcome(
+	request ElicitationRequest,
+	manifest runmanifest.Manifest,
+	outcome harnesscontrol.ApprovalOutcomeCommand,
+) error {
+	if err := outcome.Validate(); err != nil {
+		return err
+	}
+	if outcome.RunID != request.RunID || outcome.CallID != request.CallID ||
+		outcome.RunAttemptGeneration != request.RunAttemptGeneration ||
+		outcome.ToolCatalogDigest != request.ToolCatalogDigest ||
+		outcome.ExecutionID != request.ExecutionID || outcome.ApprovalID != request.ApprovalID ||
+		outcome.Nonce != request.Nonce || outcome.ContextHash != request.ContextHash ||
+		outcome.ApprovalVersion <= request.ApprovalVersion ||
+		outcome.RunID != manifest.RunID || outcome.RunAttemptGeneration != manifest.RunAttemptGeneration {
+		return &harnesscontrol.ProtocolError{
+			Code: harnesscontrol.ErrorAttemptMismatch, Message: "approval outcome does not match the pending worker request", Terminal: true,
+		}
+	}
+	return nil
+}
+
+func (client *WorkerControlClient) decisionFromApprovalOutcome(
+	request ElicitationRequest,
+	outcome harnesscontrol.ApprovalOutcomeCommand,
+) (ElicitationDecision, error) {
+	switch outcome.Status {
+	case "approved":
+		return ElicitationDecision{
+			Action: ApprovalAccept,
+			Content: map[string]any{
+				"approvalId": request.ApprovalID, "executionId": request.ExecutionID,
+				"runId": request.RunID, "runAttemptId": client.config.Manifest.RunAttemptID,
+				"runAttemptGeneration": request.RunAttemptGeneration,
+				"nonce":                request.Nonce, "contextHash": request.ContextHash,
+				"status": "approved", "approvalVersion": outcome.ApprovalVersion,
+			},
+		}, nil
+	case "denied", "expired":
+		return ElicitationDecision{Action: ApprovalDecline}, nil
+	case "cancelled", "consumed":
+		// consumed cannot authorize this still-pending elicitation; another
+		// consumer already crossed Core's one-shot consume boundary.
+		return ElicitationDecision{Action: ApprovalCancel}, nil
+	default:
+		return ElicitationDecision{}, fmt.Errorf("unsupported canonical approval outcome %q", outcome.Status)
+	}
+}
+
+func (client *WorkerControlClient) approvalCancellationDecision(
+	ctx context.Context,
+	request ElicitationRequest,
+) ElicitationDecision {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || !client.config.Now().Before(request.ExpiresAt) {
+		return ElicitationDecision{Action: ApprovalDecline}
+	}
+	return ElicitationDecision{Action: ApprovalCancel}
+}
+
+func (client *WorkerControlClient) removePendingApproval(waiter *workerPendingApproval) {
+	client.approvalMu.Lock()
+	defer client.approvalMu.Unlock()
+	if client.approvals[waiter.request.ApprovalID] == waiter {
+		delete(client.approvals, waiter.request.ApprovalID)
+	}
 }
 
 func (client *WorkerControlClient) Wait(ctx context.Context) error {
@@ -614,16 +797,22 @@ func (client *WorkerControlClient) readOne(
 			if err != nil {
 				return err
 			}
-			if command.Interrupt == nil {
-				return errors.New("worker control command omitted interrupt payload")
-			}
-			select {
-			case client.commands <- *command.Interrupt:
-			default:
-				return &harnesscontrol.ProtocolError{
-					Code:    harnesscontrol.ErrorBufferOverflow,
-					Message: "worker interrupt command buffer is full", Terminal: true,
+			switch {
+			case command.Interrupt != nil:
+				select {
+				case client.commands <- *command.Interrupt:
+				default:
+					return &harnesscontrol.ProtocolError{
+						Code:    harnesscontrol.ErrorBufferOverflow,
+						Message: "worker interrupt command buffer is full", Terminal: true,
+					}
 				}
+			case command.ApprovalOutcome != nil:
+				if err := client.deliverApprovalOutcome(*command.ApprovalOutcome); err != nil {
+					return err
+				}
+			default:
+				return errors.New("worker control command omitted its payload")
 			}
 		}
 		if writeAck {
@@ -893,6 +1082,11 @@ func validateWorkerControlClientConfig(
 	}
 	if config.MaxUnackedFrames < 1 || config.MaxReceiveHistoryFrames < 1 {
 		return nil, harnesscontrol.Hello{}, errors.New("worker control journal limits must be positive")
+	}
+	if config.MaxPendingApprovals < 1 || config.MaxPendingApprovals > maximumWorkerPendingApprovals {
+		return nil, harnesscontrol.Hello{}, fmt.Errorf(
+			"worker pending approval limit must be between 1 and %d", maximumWorkerPendingApprovals,
+		)
 	}
 	for field, duration := range map[string]time.Duration{
 		"handshake timeout": config.HandshakeTimeout, "write timeout": config.WriteTimeout,

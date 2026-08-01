@@ -208,6 +208,18 @@ func DecodeEventPayload(raw []byte, limits Limits) (Event, error) {
 			return Event{}, err
 		}
 		event.ExecutorMCPProgress = &value
+	case EventKindApprovalRequest:
+		var value ApprovalRequestEvent
+		if err := decodeRequiredObject(raw, &value,
+			"kind", "runId", "callId", "runAttemptGeneration", "toolCatalogDigest",
+			"executionId", "approvalId", "nonce", "approvalVersion", "contextHash", "expiresAt",
+		); err != nil {
+			return Event{}, malformed("decode approval_request: %v", err)
+		}
+		if err := value.Validate(); err != nil {
+			return Event{}, err
+		}
+		event.ApprovalRequest = &value
 	default:
 		return Event{}, protocolError(ErrorMalformedFrame, true, "unknown worker event kind %q", discriminator.Kind)
 	}
@@ -235,6 +247,18 @@ func DecodeCommandPayload(raw []byte, limits Limits) (Command, error) {
 			return Command{}, err
 		}
 		command.Interrupt = &value
+	case CommandKindApprovalOutcome:
+		var value ApprovalOutcomeCommand
+		if err := decodeRequiredObject(raw, &value,
+			"kind", "runId", "callId", "runAttemptGeneration", "toolCatalogDigest",
+			"executionId", "approvalId", "nonce", "contextHash", "status", "approvalVersion",
+		); err != nil {
+			return Command{}, malformed("decode approval_outcome: %v", err)
+		}
+		if err := value.Validate(); err != nil {
+			return Command{}, err
+		}
+		command.ApprovalOutcome = &value
 	default:
 		return Command{}, protocolError(ErrorMalformedFrame, true, "unknown pool command kind %q", discriminator.Kind)
 	}
@@ -503,6 +527,39 @@ func (event ExecutorMCPProgressEvent) Validate() error {
 	return nil
 }
 
+func (event ApprovalRequestEvent) Validate() error {
+	if event.Kind != EventKindApprovalRequest {
+		return malformed("approval_request kind = %q", event.Kind)
+	}
+	for field, value := range map[string]string{
+		"runId": event.RunID, "executionId": event.ExecutionID,
+		"approvalId": event.ApprovalID, "nonce": event.Nonce,
+	} {
+		if err := validateUUID(field, value); err != nil {
+			return err
+		}
+	}
+	if err := validateCallID(event.CallID); err != nil {
+		return err
+	}
+	if err := validateGeneration("runAttemptGeneration", event.RunAttemptGeneration); err != nil {
+		return err
+	}
+	if err := validateGeneration("approvalVersion", event.ApprovalVersion); err != nil {
+		return err
+	}
+	if err := validateDigest("toolCatalogDigest", event.ToolCatalogDigest); err != nil {
+		return err
+	}
+	if err := validateDigest("contextHash", event.ContextHash); err != nil {
+		return err
+	}
+	if event.ExpiresAt.IsZero() || event.ExpiresAt.Year() < 2000 || event.ExpiresAt.Year() > 9999 {
+		return malformed("approval expiresAt must be a bounded timestamp")
+	}
+	return nil
+}
+
 func (command InterruptCommand) Validate() error {
 	if command.Kind != CommandKindInterrupt {
 		return malformed("interrupt kind = %q", command.Kind)
@@ -514,6 +571,49 @@ func (command InterruptCommand) Validate() error {
 		return malformed("interrupt graceMs must be between 1 and %d", maxInterruptGraceMS)
 	}
 	return validateText("message", command.Message, maxProtocolTextBytes)
+}
+
+func (command ApprovalOutcomeCommand) Validate() error {
+	if command.Kind != CommandKindApprovalOutcome {
+		return malformed("approval_outcome kind = %q", command.Kind)
+	}
+	for field, value := range map[string]string{
+		"runId": command.RunID, "executionId": command.ExecutionID,
+		"approvalId": command.ApprovalID, "nonce": command.Nonce,
+	} {
+		if err := validateUUID(field, value); err != nil {
+			return err
+		}
+	}
+	if err := validateCallID(command.CallID); err != nil {
+		return err
+	}
+	if err := validateGeneration("runAttemptGeneration", command.RunAttemptGeneration); err != nil {
+		return err
+	}
+	if err := validateGeneration("approvalVersion", command.ApprovalVersion); err != nil {
+		return err
+	}
+	if err := validateDigest("toolCatalogDigest", command.ToolCatalogDigest); err != nil {
+		return err
+	}
+	if err := validateDigest("contextHash", command.ContextHash); err != nil {
+		return err
+	}
+	if !slices.Contains([]string{"approved", "denied", "expired", "cancelled", "consumed"}, command.Status) {
+		return malformed("approval outcome status %q is not canonical", command.Status)
+	}
+	return nil
+}
+
+func validateCallID(value string) error {
+	if err := validateText("callId", value, 256); err != nil {
+		return err
+	}
+	if strings.ContainsAny(value, "\r\n\t ") {
+		return malformed("callId must not contain whitespace")
+	}
+	return nil
 }
 
 func validateEmbeddedPayload(raw []byte, limits Limits) error {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -28,6 +29,12 @@ const (
 	KindRunInterrupted            = "run.interrupted"
 	KindRunCancelling             = "run.cancelling"
 	KindRunCancelled              = "run.cancelled"
+	KindApprovalRequested         = "approval.requested"
+	KindApprovalApproved          = "approval.approved"
+	KindApprovalDenied            = "approval.denied"
+	KindApprovalExpired           = "approval.expired"
+	KindApprovalCancelled         = "approval.cancelled"
+	KindApprovalConsumed          = "approval.consumed"
 )
 
 var knownKinds = map[string]struct{}{
@@ -47,6 +54,12 @@ var knownKinds = map[string]struct{}{
 	KindRunInterrupted:            {},
 	KindRunCancelling:             {},
 	KindRunCancelled:              {},
+	KindApprovalRequested:         {},
+	KindApprovalApproved:          {},
+	KindApprovalDenied:            {},
+	KindApprovalExpired:           {},
+	KindApprovalCancelled:         {},
+	KindApprovalConsumed:          {},
 }
 
 // IsKnownKind reports whether browser-gateway has a closed-world semantic
@@ -128,6 +141,22 @@ type RunTerminalPayload struct {
 	Result  json.RawMessage `json:"result,omitempty"`
 }
 
+type ApprovalPayload struct {
+	RunID                string    `json:"runId"`
+	RunAttemptID         string    `json:"runAttemptId"`
+	RunAttemptGeneration int64     `json:"runAttemptGeneration"`
+	ExecutionID          string    `json:"executionId"`
+	ApprovalID           string    `json:"approvalId"`
+	ToolName             string    `json:"toolName"`
+	Status               string    `json:"status"`
+	Decision             string    `json:"decision,omitempty"`
+	Nonce                string    `json:"nonce"`
+	ContextSHA256        string    `json:"contextSha256"`
+	ExpiresAt            time.Time `json:"expiresAt"`
+	ApproverID           string    `json:"approverId,omitempty"`
+	Version              int64     `json:"version"`
+}
+
 // DecodeSemanticPayload decodes the payload for a known schema-v1 event. It
 // rejects object-backed known events until an authorized object materializer
 // is added to the browser-gateway backend, and fails closed on a schema version
@@ -196,6 +225,12 @@ func DecodeSemanticPayload(event Event) (any, error) {
 		payload, err := decodePayload[RunTerminalPayload](event.Payload)
 		if err == nil {
 			err = payload.validate(event.Kind)
+		}
+		return payload, wrapPayloadError(event.Kind, err)
+	case KindApprovalRequested, KindApprovalApproved, KindApprovalDenied, KindApprovalExpired, KindApprovalCancelled, KindApprovalConsumed:
+		payload, err := decodePayload[ApprovalPayload](event.Payload)
+		if err == nil {
+			err = payload.validate(event)
 		}
 		return payload, wrapPayloadError(event.Kind, err)
 	default:
@@ -355,6 +390,74 @@ func (payload RunTerminalPayload) validate(kind string) error {
 		return errors.New("message is required for non-completed terminal events")
 	}
 	return nil
+}
+
+func (payload ApprovalPayload) validate(event Event) error {
+	for field, value := range map[string]string{
+		"runId": payload.RunID, "runAttemptId": payload.RunAttemptID,
+		"executionId": payload.ExecutionID, "approvalId": payload.ApprovalID, "nonce": payload.Nonce,
+	} {
+		if !uuidPattern.MatchString(value) || value == "00000000-0000-0000-0000-000000000000" {
+			return fmt.Errorf("%s must be a non-zero canonical lowercase UUID", field)
+		}
+	}
+	if payload.RunID != event.RunID || event.RunAttemptID == nil || event.RunAttemptGeneration == nil ||
+		payload.RunAttemptID != *event.RunAttemptID || payload.RunAttemptGeneration != *event.RunAttemptGeneration {
+		return errors.New("approval payload scope must match the attempt-scoped event envelope")
+	}
+	if payload.RunAttemptGeneration < 1 || payload.RunAttemptGeneration > maxSafeJSONInteger {
+		return fmt.Errorf("runAttemptGeneration must be between 1 and %d", maxSafeJSONInteger)
+	}
+	if payload.Version < 1 || payload.Version > maxSafeJSONInteger {
+		return fmt.Errorf("version must be between 1 and %d", maxSafeJSONInteger)
+	}
+	if err := validateText("toolName", payload.ToolName, 1, 128); err != nil {
+		return err
+	}
+	if strings.ContainsAny(payload.ToolName, "\x00\r\n") {
+		return errors.New("toolName must not contain NUL or line breaks")
+	}
+	if !digestPattern.MatchString(payload.ContextSHA256) {
+		return errors.New("contextSha256 must be lowercase 64-character SHA-256 hex")
+	}
+	if payload.ExpiresAt.IsZero() {
+		return errors.New("expiresAt is required")
+	}
+	wantStatus := strings.TrimPrefix(event.Kind, "approval.")
+	if event.Kind == KindApprovalRequested {
+		wantStatus = "pending"
+	}
+	if payload.Status != wantStatus {
+		return fmt.Errorf("approval status %q does not match event kind %q", payload.Status, event.Kind)
+	}
+	switch payload.Status {
+	case "pending":
+		if payload.Decision != "" || payload.ApproverID != "" {
+			return errors.New("pending approval must not contain a decision or approver")
+		}
+	case "approved", "consumed":
+		if payload.Decision != "approve" || !validApprovalActor(payload.ApproverID) {
+			return errors.New("approved or consumed approval must contain approve and a canonical approverId")
+		}
+	case "denied":
+		if payload.Decision != "deny" || !validApprovalActor(payload.ApproverID) {
+			return errors.New("denied approval must contain deny and a canonical approverId")
+		}
+	case "expired", "cancelled":
+		if (payload.Decision == "") != (payload.ApproverID == "") {
+			return errors.New("terminal approval decision and approverId must be present together")
+		}
+		if payload.Decision != "" && (payload.Decision != "approve" || !validApprovalActor(payload.ApproverID)) {
+			return errors.New("expired or cancelled approval can preserve only a prior approve decision")
+		}
+	default:
+		return errors.New("approval status is not supported")
+	}
+	return nil
+}
+
+func validApprovalActor(value string) bool {
+	return uuidPattern.MatchString(value) && value != "00000000-0000-0000-0000-000000000000"
 }
 
 func validateIdentifier(field, value string) error {

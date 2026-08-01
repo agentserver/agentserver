@@ -69,7 +69,6 @@ type OneShotWorkerConfig struct {
 	ExecutorHTTPClient  *http.Client
 
 	WorkerInstanceIDGenerator WorkerInstanceIDGenerator
-	ElicitationHandler        ElicitationHandler
 	ProgressHandler           ProgressHandler
 	NotificationHandler       AppServerNotificationHandler
 	ClientInfo                AppServerClientInfo
@@ -79,6 +78,7 @@ type oneShotWorkerControl interface {
 	AppServerLifecycleSink
 	Start(context.Context) error
 	Interrupts() <-chan harnesscontrol.InterruptCommand
+	AwaitApproval(context.Context, ElicitationRequest) (ElicitationDecision, error)
 	SendAppServerNotification(context.Context, codexwire.Message) error
 	SendExecutorMCPProgress(context.Context, ProgressEvent) error
 	SendTurnTerminal(context.Context, harnesscontrol.TurnTerminalEvent) error
@@ -248,7 +248,7 @@ func runOneShotWorker(ctx context.Context, config OneShotWorkerConfig, dependenc
 		ExpectedCatalogDigest: bootstrap.Manifest.ExecutorMCP.CatalogDigest,
 		ExpectedCatalog:       bootstrap.Manifest.ExecutorMCP.CanonicalCatalog,
 		Limits:                limits,
-		ElicitationHandler:    config.ElicitationHandler,
+		ElicitationHandler:    control.AwaitApproval,
 		ProgressHandler:       runtimeEvents.HandleProgress,
 		CloseGrace:            time.Duration(bootstrap.Manifest.Limits.MCPTransportGraceMS) * time.Millisecond,
 	})
@@ -412,9 +412,6 @@ func validateOneShotWorkerConfig(ctx context.Context, config OneShotWorkerConfig
 	}
 	if config.ControlHTTPClient == nil || config.ExecutorHTTPClient == nil {
 		return errors.New("one-shot worker control and executor HTTP clients are required")
-	}
-	if config.ElicitationHandler == nil {
-		return errors.New("one-shot worker elicitation handler is required")
 	}
 	if config.NotificationHandler == nil {
 		return errors.New("one-shot worker notification handler is required")

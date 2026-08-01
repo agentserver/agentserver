@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -34,15 +35,20 @@ const (
 	gatewayCoreServerNameEnvironment          = "AGENTSERVER_V2_CORE_SERVER_NAME"
 	gatewayDevExecutorIDEnvironment           = "AGENTSERVER_V2_DEV_EXECUTOR_ID"
 	gatewayDevWorkspaceIDEnvironment          = "AGENTSERVER_V2_DEV_WORKSPACE_ID"
+	gatewayDevActorIDEnvironment              = "AGENTSERVER_V2_DEV_ACTOR_ID"
 	gatewayDevRunIDEnvironment                = "AGENTSERVER_V2_DEV_RUN_ID"
 	gatewayDevRunAttemptIDEnvironment         = "AGENTSERVER_V2_DEV_RUN_ATTEMPT_ID"
 	gatewayDevRunAttemptGenerationEnvironment = "AGENTSERVER_V2_DEV_RUN_ATTEMPT_GENERATION"
 	gatewayDevRunHolderIDEnvironment          = "AGENTSERVER_V2_DEV_RUN_HOLDER_ID"
 	gatewayDevRunVersionEnvironment           = "AGENTSERVER_V2_DEV_RUN_VERSION"
 	gatewayDevRunAttemptVersionEnvironment    = "AGENTSERVER_V2_DEV_RUN_ATTEMPT_VERSION"
+	gatewayDevMaxApprovalTTLEnvironment       = "AGENTSERVER_V2_DEV_MAX_APPROVAL_TTL_MS"
 	gatewayDevToolCatalogDigestEnvironment    = "AGENTSERVER_V2_DEV_TOOL_CATALOG_DIGEST"
 	gatewayDevMCPBearerEnvironment            = "AGENTSERVER_V2_DEV_MCP_BEARER_TOKEN"
 	gatewayDevRunCapabilityKeyEnvironment     = "AGENTSERVER_V2_DEV_RUN_CAPABILITY_KEY"
+	gatewayExecutionPolicyVersionEnvironment  = "AGENTSERVER_V2_EXECUTION_POLICY_VERSION"
+	gatewayShellPolicyDecisionEnvironment     = "AGENTSERVER_V2_SHELL_POLICY_DECISION"
+	gatewayReadPolicyDecisionEnvironment      = "AGENTSERVER_V2_READ_FILE_POLICY_DECISION"
 	gatewayDevExecutorHeader                  = "X-Agentserver-Dev-Executor-Id"
 	maximumDevMCPBearerBytes                  = 16 * 1024
 )
@@ -138,29 +144,58 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	if err != nil {
 		return err
 	}
+	policyVersion, err := requiredGatewayConfiguration(getenv, gatewayExecutionPolicyVersionEnvironment)
+	if err != nil {
+		return err
+	}
+	shellPolicyDecision, err := requiredGatewayConfiguration(getenv, gatewayShellPolicyDecisionEnvironment)
+	if err != nil {
+		return err
+	}
+	readPolicyDecision, err := requiredGatewayConfiguration(getenv, gatewayReadPolicyDecisionEnvironment)
+	if err != nil {
+		return err
+	}
+	policyResolver, err := executorgateway.NewStaticExecutionPolicyResolver(policyVersion, map[string]string{
+		"shell": shellPolicyDecision, "read_file": readPolicyDecision,
+	})
+	if err != nil {
+		return err
+	}
+	approvalGate, err := executorgateway.NewDefaultCoreApprovalGate(coreClient, executionTransitions)
+	if err != nil {
+		return err
+	}
+	shellConfig := executorgateway.DefaultShellExecutorConfig(ctx)
+	shellConfig.PolicyResolver = policyResolver
+	shellConfig.ApprovalGate = approvalGate
 	shellExecutor, err := executorgateway.NewShellExecutor(
 		environmentResolver,
 		coreClient,
 		agentxHandler,
 		shellIdentities,
 		executionTransitions,
-		executorgateway.DefaultShellExecutorConfig(ctx),
+		shellConfig,
 	)
 	if err != nil {
 		return err
 	}
+	readFileConfig := executorgateway.DefaultReadFileExecutorConfig(ctx)
+	readFileConfig.PolicyResolver = policyResolver
+	readFileConfig.ApprovalGate = approvalGate
 	readFileExecutor, err := executorgateway.NewReadFileExecutor(
 		environmentResolver,
 		coreClient,
 		agentxHandler,
 		readFileIdentities,
 		executionTransitions,
-		executorgateway.DefaultReadFileExecutorConfig(ctx),
+		readFileConfig,
 	)
 	if err != nil {
 		return err
 	}
 	mcpConfig := executorgateway.DefaultExecutorMCPConfig()
+	mcpConfig.Logger = slog.Default()
 	mcpConfig.ShellExecutor = shellExecutor
 	mcpConfig.ReadFileExecutor = readFileExecutor
 	mcpHandler, err := executorgateway.NewExecutorMCPHandler(
@@ -260,6 +295,13 @@ func configuredDevMCPAuthenticator(getenv func(string) string, executorID string
 	if workspaceID == "00000000-0000-0000-0000-000000000000" || !canonicalUUIDPattern.MatchString(workspaceID) {
 		return nil, errors.New("AGENTSERVER_V2_DEV_WORKSPACE_ID must be a non-zero canonical lowercase UUID")
 	}
+	actorID, err := requiredGatewayConfiguration(getenv, gatewayDevActorIDEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	if actorID == "00000000-0000-0000-0000-000000000000" || !canonicalUUIDPattern.MatchString(actorID) {
+		return nil, errors.New("AGENTSERVER_V2_DEV_ACTOR_ID must be a non-zero canonical lowercase UUID")
+	}
 	runID, err := requiredGatewayConfiguration(getenv, gatewayDevRunIDEnvironment)
 	if err != nil {
 		return nil, err
@@ -293,6 +335,13 @@ func configuredDevMCPAuthenticator(getenv func(string) string, executorID string
 	if err != nil {
 		return nil, err
 	}
+	maxApprovalTTLMillis, err := requiredPositiveGatewayInt64(getenv, gatewayDevMaxApprovalTTLEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	if maxApprovalTTLMillis > int64(24*time.Hour/time.Millisecond) {
+		return nil, fmt.Errorf("%s must be at most 86400000", gatewayDevMaxApprovalTTLEnvironment)
+	}
 	toolCatalogDigest, err := requiredGatewayConfiguration(getenv, gatewayDevToolCatalogDigestEnvironment)
 	if err != nil {
 		return nil, err
@@ -309,7 +358,7 @@ func configuredDevMCPAuthenticator(getenv func(string) string, executorID string
 	if err != nil {
 		return nil, err
 	}
-	return newDevMCPAuthenticator(bearer, workspaceID, executorID, toolCatalogDigest, executorgateway.ExecutorMCPRunContext{
+	return newDevMCPAuthenticator(bearer, workspaceID, actorID, executorID, toolCatalogDigest, time.Duration(maxApprovalTTLMillis)*time.Millisecond, executorgateway.ExecutorMCPRunContext{
 		RunID: runID, RunAttemptID: runAttemptID, RunAttemptGeneration: runAttemptGeneration,
 		HolderID: holderID, ExpectedRunVersion: runVersion, ExpectedRunAttemptVersion: runAttemptVersion,
 	})
@@ -332,7 +381,7 @@ func newDevRunCapabilityAuthenticator(
 	return devRunCapabilityAuthenticator{codec: codec, executorID: executorID, now: now}, nil
 }
 
-func newDevMCPAuthenticator(bearer, workspaceID, executorID, toolCatalogDigest string, run executorgateway.ExecutorMCPRunContext) (devMCPAuthenticator, error) {
+func newDevMCPAuthenticator(bearer, workspaceID, actorID, executorID, toolCatalogDigest string, maxApprovalTTL time.Duration, run executorgateway.ExecutorMCPRunContext) (devMCPAuthenticator, error) {
 	if len(bearer) < 32 || len(bearer) > maximumDevMCPBearerBytes {
 		return devMCPAuthenticator{}, fmt.Errorf("%s must contain between 32 and %d bytes", gatewayDevMCPBearerEnvironment, maximumDevMCPBearerBytes)
 	}
@@ -341,15 +390,28 @@ func newDevMCPAuthenticator(bearer, workspaceID, executorID, toolCatalogDigest s
 			return devMCPAuthenticator{}, fmt.Errorf("%s contains an invalid byte", gatewayDevMCPBearerEnvironment)
 		}
 	}
+	if actorID == "00000000-0000-0000-0000-000000000000" || !canonicalUUIDPattern.MatchString(actorID) {
+		return devMCPAuthenticator{}, errors.New("development MCP actor ID must be a non-zero canonical lowercase UUID")
+	}
+	if maxApprovalTTL <= 0 || maxApprovalTTL > 24*time.Hour {
+		return devMCPAuthenticator{}, errors.New("development MCP maximum approval TTL must be positive and at most 24 hours")
+	}
 	digest := sha256.Sum256([]byte(bearer))
+	// The static bearer exists only for the explicit insecure-development
+	// fallback. Keep it bounded even though it is not minted per attempt.
+	runDeadline := time.Now().UTC().Add(24 * time.Hour)
 	return devMCPAuthenticator{
 		authorization: []byte("Bearer " + bearer),
 		principal: executorgateway.ExecutorMCPPrincipal{
-			CapabilityID:      "insecure-dev:" + hex.EncodeToString(digest[:]),
-			WorkspaceID:       workspaceID,
-			ExecutorID:        executorID,
-			ToolCatalogDigest: toolCatalogDigest,
-			Run:               run,
+			CapabilityID:        "insecure-dev:" + hex.EncodeToString(digest[:]),
+			WorkspaceID:         workspaceID,
+			ActorID:             actorID,
+			ExecutorID:          executorID,
+			ToolCatalogDigest:   toolCatalogDigest,
+			MaxApprovalTTL:      maxApprovalTTL,
+			RunDeadline:         runDeadline,
+			CapabilityExpiresAt: runDeadline,
+			Run:                 run,
 		},
 	}, nil
 }
@@ -383,8 +445,11 @@ func (authenticator devRunCapabilityAuthenticator) AuthenticateExecutorMCP(reque
 	}
 	return executorgateway.ExecutorMCPPrincipal{
 		CapabilityID: "insecure-dev:" + claims.CapabilityID,
-		WorkspaceID:  claims.WorkspaceID, ExecutorID: claims.ExecutorID,
-		ToolCatalogDigest: claims.ToolCatalogDigest,
+		WorkspaceID:  claims.WorkspaceID, ActorID: claims.ActorID, ExecutorID: claims.ExecutorID,
+		ToolCatalogDigest:   claims.ToolCatalogDigest,
+		MaxApprovalTTL:      time.Duration(claims.MaxApprovalTTLMillis) * time.Millisecond,
+		RunDeadline:         time.UnixMilli(claims.RunDeadlineUnixMS).UTC(),
+		CapabilityExpiresAt: time.UnixMilli(claims.ExpiresAtUnixMS).UTC(),
 		Run: executorgateway.ExecutorMCPRunContext{
 			RunID: claims.RunID, RunAttemptID: claims.RunAttemptID,
 			RunAttemptGeneration: claims.RunAttemptGeneration, HolderID: claims.HolderID,

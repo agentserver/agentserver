@@ -68,10 +68,15 @@ bearer to terminal history, so it is strictly an `INSECURE DEV` convenience.
 The page uses same-origin `fetch` streaming rather than `EventSource`, renders
 AG-UI message/tool lifecycles, and accepts only the display-only A2UI v0.9
 Card/Column/Text subset emitted by browser-gateway. It never connects to stock
-app-server or exec-server directly. The deterministic development turn first
-discovers its single environment, then executes exact argv `["/bin/pwd"]` so
-the page receives a real command-result A2UI surface from stock exec-server.
-Its Cancel button calls the separate same-origin
+app-server or exec-server directly. Approval controls read nonce, context
+digest, and version only from the canonical `agentserver.approval` custom
+event, then call the separate same-origin
+`POST /v2/workspaces/{workspaceId}/approvals/{approvalId}:decide` command;
+the A2UI approval card remains display-only. The deterministic development
+turn first discovers its single environment. Its shell policy is `ask`, so it
+waits for that canonical decision and a successful Core consume before it
+executes exact argv `["/bin/pwd"]` and emits a real command-result A2UI surface
+from stock exec-server. Its Cancel button calls the separate same-origin
 `POST /v2/workspaces/{workspaceId}/runs/{runId}:cancel` command. Disconnecting
 the event stream does not cancel a run. A held attempt first reports
 `cancelling`; harness-pool keeps both leases alive while interrupting the stock
@@ -80,15 +85,17 @@ the worker control stream remains alive through the interrupted-terminal ACK
 and the pool lifecycle-command context remains alive through workload cleanup.
 Only the exact holder can then commit terminal `cancelled/interrupted`.
 
-The smoke first checks the reference-web marker and CSP. It then sends one
-HTTPS AG-UI request through the published browser-gateway, waits for
-`RUN_FINISHED`, checks the scripted assistant message, and commits one durable
-checkpoint. A second deterministic request pauses after a real executor
-command, sends the explicit cancel command, observes `run.cancelling` followed
-by `RUN_ERROR` with `code=user_cancelled`, and must commit no checkpoint. The
-PostgreSQL checkpoint count must therefore increase by exactly one and the
-latest run must be `cancelled` with zero checkpoints. Inspect and stop the
-stack with:
+The smoke first checks the reference-web marker and CSP. For each run it reads
+the canonical approval custom event, calls the independent decision endpoint,
+and verifies the tool proceeds only after Core consumes that approval; it
+never treats an A2UI action as authority. It then waits for `RUN_FINISHED`,
+checks the scripted assistant message, and commits one durable checkpoint. A
+second deterministic request approves the same real executor command, pauses
+after it, sends the explicit cancel command, observes `run.cancelling`
+followed by `RUN_ERROR` with `code=user_cancelled`, and must commit no
+checkpoint. The PostgreSQL checkpoint count must therefore increase by
+exactly one and the latest run must be `cancelled` with zero checkpoints.
+Inspect and stop the stack with:
 
 ```sh
 container logs agentserver-v2-dev

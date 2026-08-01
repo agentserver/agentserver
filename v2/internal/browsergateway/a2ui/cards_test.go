@@ -60,3 +60,17 @@ func TestValidateOperationsRejectsUnsafeShapes(t *testing.T) {
 		t.Fatalf("unknown child validation error = %v", err)
 	}
 }
+
+func TestApprovalCardIsDisplayOnlyAndBounded(t *testing.T) {
+	operations := ApprovalCard("event-1", ApprovalView{
+		ApprovalID: "80000000-0000-4000-8000-000000000008", ToolName: "shell",
+		Status: "pending", ExpiresAt: "2026-07-31T12:10:00Z",
+	})
+	if err := ValidateOperations(operations); err != nil {
+		t.Fatal(err)
+	}
+	if operations[0].CreateSurface == nil || operations[0].CreateSurface.SurfaceID != "approval-event-1" ||
+		operations[2].UpdateDataModel == nil {
+		t.Fatalf("approval operations = %+v", operations)
+	}
+}

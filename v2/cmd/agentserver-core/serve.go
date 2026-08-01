@@ -147,6 +147,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 		Introspector: hydraIntrospector, ExpectedAudience: "agentserver-api",
 		ActionScopes: map[string]string{
 			"runs.create": "runs:write", "runs.cancel": "runs:write", "runs.events.read": "runs:write",
+			"approvals.decide": "runs:write",
 		},
 	})
 	if err != nil {
@@ -163,6 +164,14 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	if err != nil {
 		return err
 	}
+	userApprovalService, err := coreserver.NewUserApprovalService(coreserver.UserApprovalServiceConfig{Store: store})
+	if err != nil {
+		return err
+	}
+	userApprovalHandler, err := coreserver.NewUserApprovalHandler(browserAuthorizer, userAuthorizer, userApprovalService)
+	if err != nil {
+		return err
+	}
 	connectionHandler, err := coreserver.NewExecutorConnectionHandler(authorizer, coreserver.StateStoreExecutorConnectionCommands{
 		Store: store,
 	})
@@ -174,6 +183,21 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 		return err
 	}
 	executionHandler, err := coreserver.NewExecutionHandler(authorizer, coreserver.StateStoreExecutionCommands{Store: store})
+	if err != nil {
+		return err
+	}
+	approvalHandler, err := coreserver.NewApprovalHandler(authorizer, coreserver.StateStoreApprovalCommands{Store: store})
+	if err != nil {
+		return err
+	}
+	approvalObservationHandler, err := coreserver.NewApprovalObservationHandler(
+		harnessPoolAuthorizer,
+		coreserver.StateStoreApprovalCommands{Store: store},
+	)
+	if err != nil {
+		return err
+	}
+	approvalActionHandler, err := coreserver.NewInternalApprovalActionHandler(approvalHandler, approvalObservationHandler)
 	if err != nil {
 		return err
 	}
@@ -195,6 +219,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	}
 	handler := http.NewServeMux()
 	handler.Handle("/v2/", userRunHandler.Routes())
+	handler.Handle(corecontract.DecideUserApprovalRoutePattern, userApprovalHandler)
 	handler.Handle(corecontract.FreezeBrainToolCatalogPath, brainToolCatalogHandler)
 	handler.Handle(corecontract.BrainToolCatalogPathPrefix, brainToolCatalogHandler)
 	handler.Handle(corecontract.ClaimRunDispatchesPath, runDispatchHandler)
@@ -205,6 +230,9 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	handler.Handle(corecontract.ListExecutorEnvironmentsPath, environmentHandler)
 	handler.Handle(corecontract.PrepareExecutionPath, executionHandler)
 	handler.Handle(corecontract.ExecutionPathPrefix, executionHandler)
+	handler.Handle(corecontract.CreateApprovalPath, approvalHandler)
+	handler.Handle(corecontract.ApprovalActionRoutePattern, approvalActionHandler)
+	handler.Handle(corecontract.ApprovalPathPrefix, approvalHandler)
 	handler.Handle("/", connectionHandler)
 	tlsConfig, err := coreTLSConfig(certificateFile, keyFile, clientCAFile)
 	if err != nil {

@@ -44,11 +44,22 @@ func newShellExecutionState(authority ExecutionAuthority, transitions *Execution
 }
 
 func (state *shellExecutionState) Prepare(ctx context.Context) error {
+	execution, err := state.PrepareExecution(ctx)
+	if err != nil {
+		return err
+	}
+	if execution.Status != "approved" {
+		return fmt.Errorf("shell execution policy status is %q, want approved", execution.Status)
+	}
+	return state.PrepareOperations(ctx)
+}
+
+func (state *shellExecutionState) PrepareExecution(ctx context.Context) (ExecutionState, error) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	record, err := state.allocateRecordLocked("prepare execution")
 	if err != nil {
-		return err
+		return ExecutionState{}, err
 	}
 	prepared, err := state.authority.PrepareExecution(ctx, PrepareExecutionRequest{
 		ExecutionID:               state.plan.Start.Routing.ExecutionID,
@@ -74,13 +85,31 @@ func (state *shellExecutionState) Prepare(ctx context.Context) error {
 		Record:                    record,
 	})
 	if err != nil {
-		return fmt.Errorf("prepare shell execution: %w", err)
+		return ExecutionState{}, fmt.Errorf("prepare shell execution: %w", err)
 	}
 	if err := state.acceptExecutionLocked(prepared.Execution); err != nil {
-		return fmt.Errorf("prepare shell execution response: %w", err)
+		return ExecutionState{}, fmt.Errorf("prepare shell execution response: %w", err)
+	}
+	return state.execution, nil
+}
+
+func (state *shellExecutionState) AcceptAuthorizedExecution(execution ExecutionState) error {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if err := state.acceptExecutionLocked(execution); err != nil {
+		return fmt.Errorf("accept authorized shell execution: %w", err)
 	}
 	if state.execution.Status != "approved" {
-		return fmt.Errorf("shell execution policy status is %q, want approved", state.execution.Status)
+		return fmt.Errorf("authorized shell execution status is %q, want approved", state.execution.Status)
+	}
+	return nil
+}
+
+func (state *shellExecutionState) PrepareOperations(ctx context.Context) error {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.execution.Status != "approved" {
+		return fmt.Errorf("shell operations require approved execution, got %q", state.execution.Status)
 	}
 	for _, operation := range []ShellV1Operation{state.plan.Start, state.plan.Timeout} {
 		if err := state.prepareOperationLocked(ctx, operation); err != nil {

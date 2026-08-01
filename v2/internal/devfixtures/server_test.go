@@ -346,7 +346,8 @@ func signTestCapability(
 		SessionID:   "50000000-0000-4000-8000-000000000005", RunID: runID,
 		RunAttemptID: "90000000-0000-4000-8000-000000000009", RunAttemptGeneration: 1,
 		ActorID: "10000000-0000-4000-8000-000000000001", HolderID: "holder-test",
-		IssuedAtUnixMS: fixtureTestNow.Add(-time.Minute).UnixMilli(), ExpiresAtUnixMS: expires.UnixMilli(),
+		IssuedAtUnixMS:    fixtureTestNow.Add(-time.Minute).UnixMilli(),
+		RunDeadlineUnixMS: expires.UnixMilli(), ExpiresAtUnixMS: expires.UnixMilli(),
 	}
 	if audience == runcapability.AudienceLLMProxy {
 		claims.Model, claims.Provider = model, provider
@@ -354,6 +355,7 @@ func signTestCapability(
 		claims.ExecutorID = "20000000-0000-4000-8000-000000000002"
 		claims.ToolCatalogDigest = strings.Repeat("a", 64)
 		claims.ExpectedRunVersion, claims.ExpectedRunAttemptVersion = 1, 1
+		claims.MaxApprovalTTLMillis = 60_000
 	}
 	token, err := codec.Sign(claims)
 	if err != nil {

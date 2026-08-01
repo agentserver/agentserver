@@ -1,4 +1,5 @@
 import {
+  APPROVAL_NAME,
   EVENT_CURSOR_NAME,
   MAXIMUM_EVENT_STREAM_BYTES,
   SSEDecoder,
@@ -44,6 +45,8 @@ const elements = {
   runFact: requiredElement('run-fact'),
   cursorFact: requiredElement('cursor-fact'),
   eventCount: requiredElement('event-count'),
+  approvalsEmpty: requiredElement('approvals-empty'),
+  approvalList: requiredElement('approval-list'),
   toolsEmpty: requiredElement('tools-empty'),
   toolList: requiredElement('tool-list'),
   surfacesEmpty: requiredElement('surfaces-empty'),
@@ -57,6 +60,7 @@ let connection = null
 let viewState = createViewState()
 let activeRun = null
 let cancellationPending = false
+const approvalCommands = new Map()
 
 initialize()
 
@@ -107,6 +111,7 @@ function connectFromValues() {
     viewState = createViewState()
     activeRun = null
     cancellationPending = false
+    approvalCommands.clear()
     renderAll()
     elements.prompt.focus()
     return true
@@ -128,6 +133,7 @@ function toggleConnection() {
   const previous = activeRun
   activeRun = null
   cancellationPending = false
+  approvalCommands.clear()
   if (previous?.controller) previous.controller.abort()
   connection.token = ''
   connection = null
@@ -170,6 +176,7 @@ function sendPrompt(event) {
     controller: null,
     reconnects: 0,
   }
+  approvalCommands.clear()
   elements.prompt.value = ''
   renderAll()
   streamRun(false)
@@ -305,9 +312,85 @@ async function cancelActiveRun() {
   }
 }
 
+async function decideApproval(approval, decision) {
+  if (!connection || approval.status !== 'pending' || approvalCommands.get(approval.approvalId)?.phase === 'sending' ||
+      approvalCommands.get(approval.approvalId)?.phase === 'committed') return
+  const currentConnection = connection
+  approvalCommands.set(approval.approvalId, { phase: 'sending', decision, message: '' })
+  renderAll()
+  try {
+    const response = await fetch(`/v2/workspaces/${encodeURIComponent(currentConnection.workspaceID)}/approvals/${encodeURIComponent(approval.approvalId)}:decide`, {
+      method: 'POST',
+      mode: 'same-origin',
+      cache: 'no-store',
+      credentials: 'omit',
+      redirect: 'error',
+      referrerPolicy: 'no-referrer',
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${currentConnection.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        decision,
+        nonce: approval.nonce,
+        contextDigest: approval.contextDigest,
+        expectedApprovalVersion: approval.version,
+      }),
+    })
+    if (!response.ok) throw await responseError(response)
+    const result = await boundedJSONResponse(response, 128 * 1024)
+    validateApprovalDecisionResponse(result, approval, decision, currentConnection.workspaceID)
+    if (connection !== currentConnection) return
+    const canonical = viewState.approvals[approval.approvalId]
+    if (canonical?.status === 'pending') {
+      const label = result.approval.status === 'expired'
+        ? 'Core committed expiry; awaiting canonical event.'
+        : `Core committed ${result.approval.status}; awaiting canonical event.`
+      approvalCommands.set(approval.approvalId, { phase: 'committed', decision, message: label })
+    } else {
+      approvalCommands.delete(approval.approvalId)
+    }
+  } catch (error) {
+    if (connection !== currentConnection) return
+    approvalCommands.set(approval.approvalId, { phase: 'error', decision, message: safeErrorMessage(error) })
+  } finally {
+    if (connection === currentConnection) renderAll()
+  }
+}
+
+function validateApprovalDecisionResponse(result, expected, decision, workspaceID) {
+  const approval = result?.approval
+  const statuses = new Set(['approved', 'denied', 'expired', 'consumed'])
+  const executionStatuses = new Set(['pending_approval', 'approved', 'denied', 'expired'])
+  if (!result || typeof result !== 'object' || result.workspaceId !== workspaceID ||
+      result.executionId !== expected.executionId || !executionStatuses.has(result.executionStatus) ||
+      !Number.isSafeInteger(result.executionVersion) || result.executionVersion < 1 || typeof result.changed !== 'boolean' ||
+      !approval || typeof approval !== 'object' || approval.approvalId !== expected.approvalId ||
+      approval.executionId !== expected.executionId || approval.runId !== expected.runId ||
+      approval.runAttemptId !== expected.runAttemptId || approval.runAttemptGeneration !== expected.runAttemptGeneration ||
+      approval.nonce !== expected.nonce || approval.expiresAt !== expected.expiresAt ||
+      !sameApprovalDigest(approval.contextDigest, expected.contextDigest) ||
+      !statuses.has(approval.status) || !Number.isSafeInteger(approval.version) || approval.version < expected.version) {
+    throw new Error('browser-gateway returned an invalid approval decision result')
+  }
+  const expectedOutcome = (decision === 'approve' && ['approved', 'consumed'].includes(approval.status) && approval.decision === 'approve') ||
+    (decision === 'deny' && approval.status === 'denied' && approval.decision === 'deny') ||
+    (approval.status === 'expired' && !approval.decision)
+  if (!expectedOutcome) throw new Error('approval decision result contradicted the requested decision')
+}
+
+function sameApprovalDigest(left, right) {
+  return left && right && left.domain === right.domain &&
+    left.canonicalizerVersion === right.canonicalizerVersion && left.sha256 === right.sha256
+}
+
 function applyServerEvent(run, event) {
   if (activeRun !== run) return
   viewState = reduceAGUIEvent(viewState, event)
+  if (event.type === 'CUSTOM' && event.name === APPROVAL_NAME && event.value?.status !== 'pending') {
+    approvalCommands.delete(event.value.approvalId)
+  }
   if (event.type === 'CUSTOM' && event.name === EVENT_CURSOR_NAME) {
     run.cursor = viewState.cursor
     run.checkpoint = cloneViewState(viewState)
@@ -363,6 +446,7 @@ async function boundedJSONResponse(response, maximumBytes) {
 function renderAll() {
   renderStatus()
   renderTranscript()
+  renderApprovals()
   renderTools()
   renderSurfaces()
   renderDiagnostics()
@@ -434,6 +518,46 @@ function renderRunError(error) {
   return card
 }
 
+function renderApprovals() {
+  const visible = viewState.approvalOrder.map((approvalID) => viewState.approvals[approvalID]).filter(Boolean)
+  elements.approvalsEmpty.hidden = visible.length !== 0
+  const fragment = document.createDocumentFragment()
+  for (const approval of visible) {
+    const command = approvalCommands.get(approval.approvalId)
+    const card = createElement('article', `approval-card approval-${approval.status}`)
+    const header = createElement('div', 'approval-header')
+    header.append(
+      createElement('strong', '', approval.toolName),
+      createElement('span', `approval-status approval-status-${approval.status}`, approval.status),
+    )
+    const facts = createElement('div', 'approval-facts')
+    facts.append(
+      createElement('span', '', `Approval ${shortID(approval.approvalId)}`),
+      createElement('span', '', `Expires ${formatTimestamp(approval.expiresAt)}`),
+    )
+    card.append(header, facts)
+    if (approval.status === 'pending') {
+      const actions = createElement('div', 'approval-actions')
+      const deny = createElement('button', 'approval-deny', command?.phase === 'sending' && command.decision === 'deny' ? 'Denying…' : 'Deny')
+      const approve = createElement('button', 'approval-approve', command?.phase === 'sending' && command.decision === 'approve' ? 'Approving…' : 'Approve')
+      deny.type = 'button'
+      approve.type = 'button'
+      const blocked = command?.phase === 'sending' || command?.phase === 'committed'
+      deny.disabled = blocked
+      approve.disabled = blocked
+      deny.addEventListener('click', () => decideApproval(approval, 'deny'))
+      approve.addEventListener('click', () => decideApproval(approval, 'approve'))
+      actions.append(deny, approve)
+      card.append(actions)
+    }
+    if (command?.message) {
+      card.append(createElement('div', command.phase === 'error' ? 'approval-command-error' : 'approval-command-note', command.message))
+    }
+    fragment.append(card)
+  }
+  elements.approvalList.replaceChildren(fragment)
+}
+
 function renderTools() {
   elements.toolsEmpty.hidden = viewState.tools.length !== 0
   const fragment = document.createDocumentFragment()
@@ -475,7 +599,9 @@ function renderSurfaces() {
   for (const surfaceID of visible) {
     const surface = viewState.surfaces[surfaceID]
     const wrapper = createElement('article', 'a2ui-surface')
-    const label = surfaceID.startsWith('file-change-') ? 'File changes' : surfaceID.startsWith('command-') ? 'Command result' : 'A2UI surface'
+    const label = surfaceID.startsWith('file-change-') ? 'File changes'
+      : surfaceID.startsWith('command-') ? 'Command result'
+        : surfaceID.startsWith('approval-') ? 'Approval audit' : 'A2UI surface'
     wrapper.append(createElement('div', 'surface-kicker', label))
     try {
       wrapper.append(renderSurfaceComponent(surface, 'root', new Set(), 0))
@@ -593,6 +719,11 @@ function randomID() {
 function shortID(value) {
   if (!value) return '—'
   return value.length > 18 ? `${value.slice(0, 8)}…${value.slice(-6)}` : value
+}
+
+function formatTimestamp(value) {
+  const timestamp = new Date(value)
+  return Number.isNaN(timestamp.valueOf()) ? '—' : timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
 function safeErrorMessage(error) {

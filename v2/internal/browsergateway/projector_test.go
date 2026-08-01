@@ -136,6 +136,42 @@ func TestProjectorPublishesCanonicalCancellingStateWithoutEndingStream(t *testin
 	}
 }
 
+func TestProjectorMapsApprovalAuthorityToCustomAndDisplayOnlyA2UI(t *testing.T) {
+	projector := newTestProjector(t, 0)
+	event := projectorEvent(t, 1, runevent.KindApprovalRequested, runevent.ApprovalPayload{
+		RunID: projectorRunID, RunAttemptID: "50000000-0000-4000-8000-000000000005",
+		RunAttemptGeneration: 1, ExecutionID: "70000000-0000-4000-8000-000000000007",
+		ApprovalID: "80000000-0000-4000-8000-000000000008", ToolName: "shell", Status: "pending",
+		Nonce: "90000000-0000-4000-8000-000000000009", ContextSHA256: strings.Repeat("a", 64),
+		ExpiresAt: time.Date(2026, 7, 31, 12, 10, 0, 0, time.UTC),
+		Version:   1,
+	})
+	event.Source = "approval"
+	result, err := projector.Project(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Terminal || len(result.Events) != 2 {
+		t.Fatalf("approval projection = %+v", result)
+	}
+	authority := result.Events[0].(*events.CustomEvent)
+	value, ok := authority.Value.(map[string]any)
+	digest, digestOK := value["contextDigest"].(map[string]any)
+	if authority.Name != "agentserver.approval" || !ok || value["approvalId"] != "80000000-0000-4000-8000-000000000008" ||
+		value["status"] != "pending" || value["version"] != int64(1) || !digestOK || digest["domain"] != "approval-context" ||
+		digest["canonicalizerVersion"] != "rfc8785-v1" || digest["sha256"] != strings.Repeat("a", 64) {
+		t.Fatalf("approval authority event = %#v", authority)
+	}
+	display := result.Events[1].(*events.CustomEvent)
+	operations, ok := display.Value.([]a2ui.Message)
+	if display.Name != "a2ui.operations" || !ok {
+		t.Fatalf("approval display event = %#v", display)
+	}
+	if err := a2ui.ValidateOperations(operations); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestProjectorMapsReasoningAndNonSuccessTerminalToRunError(t *testing.T) {
 	projector := newTestProjector(t, 0)
 	input := []runevent.Event{

@@ -48,6 +48,7 @@ func TestDevelopmentAttemptRuntimeCapabilitySourceIssuesBoundAudienceSeparatedTo
 	}
 	claim := prepared.Scheduled.Claim
 	wantExpiry := now.Add(time.Duration(prepared.Manifest.Limits.MaxRunDurationMS)*time.Millisecond + config.ExpiryGrace).UnixMilli()
+	wantRunDeadline := now.Add(time.Duration(prepared.Manifest.Limits.MaxRunDurationMS) * time.Millisecond).UnixMilli()
 	if executor.CapabilityID != "81000000-0000-4000-8000-000000000001" ||
 		executor.WorkspaceID != prepared.Manifest.WorkspaceID || executor.SessionID != prepared.Manifest.SessionID ||
 		executor.RunID != prepared.Manifest.RunID || executor.RunAttemptID != prepared.Manifest.RunAttemptID ||
@@ -55,7 +56,8 @@ func TestDevelopmentAttemptRuntimeCapabilitySourceIssuesBoundAudienceSeparatedTo
 		executor.HolderID != claim.RunAttempt.HolderID || executor.ExecutorID != config.ExecutorID ||
 		executor.ToolCatalogDigest != prepared.Manifest.ExecutorMCP.CatalogDigest ||
 		executor.ExpectedRunVersion != claim.Run.Version+1 || executor.ExpectedRunAttemptVersion != claim.RunAttempt.Version+1 ||
-		executor.IssuedAtUnixMS != now.UnixMilli() || executor.ExpiresAtUnixMS != wantExpiry ||
+		executor.MaxApprovalTTLMillis != prepared.Manifest.Limits.MaxApprovalTTLMS ||
+		executor.IssuedAtUnixMS != now.UnixMilli() || executor.RunDeadlineUnixMS != wantRunDeadline || executor.ExpiresAtUnixMS != wantExpiry ||
 		executor.Model != "" || executor.Provider != "" {
 		t.Fatalf("executor claims = %#v", executor)
 	}
@@ -69,9 +71,10 @@ func TestDevelopmentAttemptRuntimeCapabilitySourceIssuesBoundAudienceSeparatedTo
 		model.RunID != executor.RunID || model.RunAttemptID != executor.RunAttemptID ||
 		model.RunAttemptGeneration != executor.RunAttemptGeneration || model.ActorID != executor.ActorID ||
 		model.HolderID != executor.HolderID || model.IssuedAtUnixMS != executor.IssuedAtUnixMS ||
+		model.RunDeadlineUnixMS != executor.RunDeadlineUnixMS ||
 		model.ExpiresAtUnixMS != executor.ExpiresAtUnixMS || model.Model != prepared.Manifest.Model.Model ||
 		model.Provider != prepared.Manifest.Model.Provider || model.ExecutorID != "" ||
-		model.ToolCatalogDigest != "" || model.ExpectedRunVersion != 0 || model.ExpectedRunAttemptVersion != 0 {
+		model.ToolCatalogDigest != "" || model.ExpectedRunVersion != 0 || model.ExpectedRunAttemptVersion != 0 || model.MaxApprovalTTLMillis != 0 {
 		t.Fatalf("model claims = %#v", model)
 	}
 	if _, err := codec.Verify(capabilities.ExecutorMCP, runcapability.AudienceLLMProxy, now); err == nil {

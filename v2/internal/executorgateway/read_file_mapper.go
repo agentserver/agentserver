@@ -111,9 +111,12 @@ type ReadFileV1Plan struct {
 	Read           ReadFileV1Operation
 }
 
-func MapReadFileV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal, toolCallID string, environment ResolvedEnvironment, identities ReadFileV1Identities) (ReadFileV1Plan, error) {
+func MapReadFileV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal, toolCallID string, environment ResolvedEnvironment, policy ExecutionPolicyResolution, identities ReadFileV1Identities) (ReadFileV1Plan, error) {
 	if err := validateExecutorMCPPrincipal(principal); err != nil {
 		return ReadFileV1Plan{}, fmt.Errorf("read-file principal: %w", err)
+	}
+	if err := validateExecutionPolicyResolution(policy); err != nil {
+		return ReadFileV1Plan{}, fmt.Errorf("read-file policy: %w", err)
 	}
 	if toolCallID == "" || len(toolCallID) > 256 || !utf8.ValidString(toolCallID) || strings.ContainsRune(toolCallID, 0) {
 		return ReadFileV1Plan{}, errors.New("app-server tool call ID must contain between 1 and 256 valid UTF-8 bytes without NUL")
@@ -227,8 +230,8 @@ func MapReadFileV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal,
 		ToolSchema:     append(json.RawMessage(nil), tool.InputSchema...),
 		OperationPlan:  operationPlan,
 		PolicyContext:  policyContext,
-		PolicyDecision: "allow",
-		PolicyVersion:  ReadFileV1PolicyVersion,
+		PolicyDecision: policy.Decision,
+		PolicyVersion:  policy.Version,
 		ToolCallID:     toolCallID,
 		Environment:    environment,
 		RelativePath:   arguments.Path,

@@ -18,7 +18,7 @@ func TestMapShellV1BuildsDeterministicRestrictedProcessPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := json.RawMessage(`{ "environment_id":"60000000-0000-4000-8000-000000000006", "argv":["/usr/bin/printf","ok"], "env":{"LANG":"C"}, "timeout_ms":17000, "tty":true }`)
-	plan, err := MapShellV1(raw, testExecutorMCPPrincipal("capability-shell"), "call-shell-1", environment, testShellV1Identities())
+	plan, err := MapShellV1(raw, testExecutorMCPPrincipal("capability-shell"), "call-shell-1", environment, testShellPolicy(), testShellV1Identities())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestMapShellV1DefaultsAndWindowsFileURIs(t *testing.T) {
 	}
 	plan, err := MapShellV1(
 		json.RawMessage(`{"environment_id":"60000000-0000-4000-8000-000000000006","argv":["tool.exe"]}`),
-		testExecutorMCPPrincipal("capability-shell"), "call-shell-windows", environment, testShellV1Identities(),
+		testExecutorMCPPrincipal("capability-shell"), "call-shell-windows", environment, testShellPolicy(), testShellV1Identities(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -143,17 +143,21 @@ func TestMapShellV1RejectsUnmappedOrEscapingInputs(t *testing.T) {
 		fmt.Sprintf(valid, `,"timeout_ms":3600001`),
 	}
 	for _, raw := range tests {
-		if _, err := MapShellV1(json.RawMessage(raw), testExecutorMCPPrincipal("capability-shell"), "call-shell-invalid", environment, testShellV1Identities()); err == nil {
+		if _, err := MapShellV1(json.RawMessage(raw), testExecutorMCPPrincipal("capability-shell"), "call-shell-invalid", environment, testShellPolicy(), testShellV1Identities()); err == nil {
 			t.Errorf("invalid shell input was accepted: %s", raw)
 		}
 	}
 	wrongEnvironment := testShellV1Identities()
 	if _, err := MapShellV1(
 		json.RawMessage(`{"environment_id":"30000000-0000-4000-8000-000000000099","argv":["/bin/true"]}`),
-		testExecutorMCPPrincipal("capability-shell"), "call-shell-invalid", environment, wrongEnvironment,
+		testExecutorMCPPrincipal("capability-shell"), "call-shell-invalid", environment, testShellPolicy(), wrongEnvironment,
 	); err == nil {
 		t.Fatal("mismatched environment identity was accepted")
 	}
+}
+
+func testShellPolicy() ExecutionPolicyResolution {
+	return ExecutionPolicyResolution{Version: ShellV1PolicyVersion, Decision: PolicyDecisionAllow}
 }
 
 func TestShellV1IdentityAllocatorRejectsDuplicateGeneratorValues(t *testing.T) {

@@ -135,21 +135,17 @@ func executeSmoke(parent context.Context, options smokeOptions) (string, []byte,
 		return requestID, nil, fmt.Errorf("send AG-UI request: %w", err)
 	}
 	defer response.Body.Close()
-	stream, readErr := io.ReadAll(io.LimitReader(response.Body, maximumSSEBytes+1))
-	if readErr != nil {
-		return requestID, stream, fmt.Errorf("read AG-UI event stream: %w", readErr)
-	}
-	if len(stream) > maximumSSEBytes {
-		return requestID, stream[:maximumSSEBytes], fmt.Errorf("AG-UI event stream exceeds %d bytes", maximumSSEBytes)
-	}
 	if response.StatusCode != http.StatusOK {
+		stream, _ := io.ReadAll(io.LimitReader(response.Body, maximumSSEBytes+1))
 		return requestID, stream, fmt.Errorf("AG-UI status = %d", response.StatusCode)
 	}
 	mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	if err != nil || mediaType != "text/event-stream" {
-		return requestID, stream, fmt.Errorf("AG-UI Content-Type = %q", response.Header.Get("Content-Type"))
+		return requestID, nil, fmt.Errorf("AG-UI Content-Type = %q", response.Header.Get("Content-Type"))
 	}
-	terminal, scripted, commandSurface, err := inspectSSE(stream)
+	stream, terminal, scripted, commandSurface, err := readCompletionSmokeStream(
+		ctx, response.Body, client, origin, bearer,
+	)
 	if err != nil {
 		return requestID, stream, err
 	}
@@ -217,6 +213,7 @@ func executeCancellationSmoke(parent context.Context, options smokeOptions) (str
 	serverRunID := ""
 	cancelSent := false
 	terminal := false
+	decidedApprovals := make(map[string]int64)
 	for {
 		line, readErr := reader.ReadBytes('\n')
 		if len(line) != 0 {
@@ -226,6 +223,16 @@ func executeCancellationSmoke(parent context.Context, options smokeOptions) (str
 			}
 			data, isData := bytes.CutPrefix(line, []byte("data: "))
 			if isData {
+				approval, err := pendingSmokeApproval(data)
+				if err != nil {
+					return requestID, append([]byte(nil), stream.Bytes()...), err
+				}
+				if approval != nil && decidedApprovals[approval.ApprovalID] < approval.Version {
+					if err := sendSmokeApproval(ctx, client, origin, bearer, *approval); err != nil {
+						return requestID, append([]byte(nil), stream.Bytes()...), err
+					}
+					decidedApprovals[approval.ApprovalID] = approval.Version
+				}
 				var event struct {
 					Type  string `json:"type"`
 					RunID string `json:"runId"`
@@ -281,6 +288,191 @@ func executeCancellationSmoke(parent context.Context, options smokeOptions) (str
 		return requestID, append([]byte(nil), stream.Bytes()...), errors.New("cancellation AG-UI stream has no user_cancelled terminal")
 	}
 	return requestID, append([]byte(nil), stream.Bytes()...), nil
+}
+
+func readCompletionSmokeStream(
+	ctx context.Context,
+	body io.Reader,
+	client *http.Client,
+	origin *url.URL,
+	bearer string,
+) ([]byte, bool, bool, bool, error) {
+	reader := bufio.NewReaderSize(io.LimitReader(body, maximumSSEBytes+1), 128*1024)
+	var stream bytes.Buffer
+	decidedApprovals := make(map[string]int64)
+	terminal, scripted, commandSurface := false, false, false
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		if len(line) != 0 {
+			_, _ = stream.Write(line)
+			if stream.Len() > maximumSSEBytes {
+				return append([]byte(nil), stream.Bytes()[:maximumSSEBytes]...), false, false, false,
+					fmt.Errorf("AG-UI event stream exceeds %d bytes", maximumSSEBytes)
+			}
+			data, isData := bytes.CutPrefix(line, []byte("data: "))
+			if isData {
+				approval, err := pendingSmokeApproval(data)
+				if err != nil {
+					return append([]byte(nil), stream.Bytes()...), false, false, false, err
+				}
+				if approval != nil && decidedApprovals[approval.ApprovalID] < approval.Version {
+					if err := sendSmokeApproval(ctx, client, origin, bearer, *approval); err != nil {
+						return append([]byte(nil), stream.Bytes()...), false, false, false, err
+					}
+					decidedApprovals[approval.ApprovalID] = approval.Version
+				}
+			}
+			lineTerminal, lineScripted, lineCommand, err := inspectSSE(line)
+			if err != nil {
+				return append([]byte(nil), stream.Bytes()...), false, false, false, err
+			}
+			terminal = terminal || lineTerminal
+			scripted = scripted || lineScripted
+			commandSurface = commandSurface || lineCommand
+		}
+		if terminal {
+			return append([]byte(nil), stream.Bytes()...), terminal, scripted, commandSurface, nil
+		}
+		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				return append([]byte(nil), stream.Bytes()...), false, false, false,
+					fmt.Errorf("read AG-UI event stream: %w", readErr)
+			}
+			return append([]byte(nil), stream.Bytes()...), terminal, scripted, commandSurface, nil
+		}
+	}
+}
+
+type smokeApproval struct {
+	ApprovalID string
+	Nonce      string
+	Version    int64
+	Digest     struct {
+		Domain               string `json:"domain"`
+		CanonicalizerVersion string `json:"canonicalizerVersion"`
+		SHA256               string `json:"sha256"`
+	}
+}
+
+func pendingSmokeApproval(data []byte) (*smokeApproval, error) {
+	var event struct {
+		Type  string          `json:"type"`
+		Name  string          `json:"name"`
+		Value json.RawMessage `json:"value"`
+	}
+	if err := json.Unmarshal(data, &event); err != nil {
+		return nil, fmt.Errorf("decode AG-UI SSE data: %w", err)
+	}
+	if event.Type != "CUSTOM" || event.Name != "agentserver.approval" {
+		return nil, nil
+	}
+	var value struct {
+		ApprovalID    string `json:"approvalId"`
+		Nonce         string `json:"nonce"`
+		Status        string `json:"status"`
+		Version       int64  `json:"version"`
+		ContextDigest struct {
+			Domain               string `json:"domain"`
+			CanonicalizerVersion string `json:"canonicalizerVersion"`
+			SHA256               string `json:"sha256"`
+		} `json:"contextDigest"`
+	}
+	if err := json.Unmarshal(event.Value, &value); err != nil {
+		return nil, fmt.Errorf("decode canonical approval authority: %w", err)
+	}
+	if value.Status != "pending" {
+		return nil, nil
+	}
+	if !validSmokeUUID(value.ApprovalID) || !validSmokeUUID(value.Nonce) || value.Version < 1 ||
+		value.ContextDigest.Domain != "approval-context" ||
+		value.ContextDigest.CanonicalizerVersion != "rfc8785-v1" ||
+		!validSmokeSHA256(value.ContextDigest.SHA256) {
+		return nil, errors.New("canonical approval event contains invalid command authority")
+	}
+	approval := &smokeApproval{
+		ApprovalID: value.ApprovalID, Nonce: value.Nonce, Version: value.Version,
+	}
+	approval.Digest = value.ContextDigest
+	return approval, nil
+}
+
+func sendSmokeApproval(
+	ctx context.Context,
+	client *http.Client,
+	origin *url.URL,
+	bearer string,
+	approval smokeApproval,
+) error {
+	body, err := json.Marshal(map[string]any{
+		"decision": "approve", "nonce": approval.Nonce,
+		"contextDigest": approval.Digest, "expectedApprovalVersion": approval.Version,
+	})
+	if err != nil {
+		return fmt.Errorf("encode approval decision: %w", err)
+	}
+	endpoint := origin.JoinPath(
+		"v2", "workspaces", smokeWorkspaceID, "approvals", approval.ApprovalID+":decide",
+	)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create approval decision request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+bearer)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("send approval decision: %w", err)
+	}
+	defer response.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(response.Body, 64*1024+1))
+	if err != nil {
+		return fmt.Errorf("read approval decision response: %w", err)
+	}
+	if len(raw) > 64*1024 {
+		return errors.New("approval decision response exceeds 64 KiB")
+	}
+	mediaType, _, mediaErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if response.StatusCode != http.StatusOK || mediaErr != nil || mediaType != "application/json" {
+		return fmt.Errorf(
+			"approval decision response = status %d Content-Type %q body %q",
+			response.StatusCode, response.Header.Get("Content-Type"), raw,
+		)
+	}
+	var result struct {
+		ExecutionStatus string `json:"executionStatus"`
+		Approval        struct {
+			ApprovalID string `json:"approvalId"`
+			Nonce      string `json:"nonce"`
+			Status     string `json:"status"`
+			Decision   string `json:"decision"`
+			Version    int64  `json:"version"`
+		} `json:"approval"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return fmt.Errorf("decode approval decision response: %w", err)
+	}
+	if result.ExecutionStatus != "pending_approval" || result.Approval.ApprovalID != approval.ApprovalID ||
+		result.Approval.Nonce != approval.Nonce || result.Approval.Status != "approved" ||
+		result.Approval.Decision != "approve" || result.Approval.Version <= approval.Version {
+		return fmt.Errorf("approval decision did not produce canonical approved state: %+v", result)
+	}
+	return nil
+}
+
+func validSmokeUUID(value string) bool {
+	if len(value) != 36 || value == "00000000-0000-0000-0000-000000000000" ||
+		value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' {
+		return false
+	}
+	compact := strings.ReplaceAll(value, "-", "")
+	decoded, err := hex.DecodeString(compact)
+	return err == nil && len(decoded) == 16 && strings.ToLower(value) == value
+}
+
+func validSmokeSHA256(value string) bool {
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == 32 && strings.ToLower(value) == value && value != strings.Repeat("0", 64)
 }
 
 func sendSmokeCancellation(ctx context.Context, client *http.Client, origin *url.URL, bearer, runID string) error {

@@ -39,6 +39,10 @@ type AttemptEventCore interface {
 	AppendAttemptEvents(context.Context, AppendAttemptEventsRequest) (AppendAttemptEventsResult, error)
 }
 
+type AttemptApprovalCore interface {
+	ObserveApproval(context.Context, ObserveApprovalRequest) (ObserveApprovalResult, error)
+}
+
 type TransitionIdentityAllocator interface {
 	AllocateTransitionRecord() (TransitionRecord, error)
 }
@@ -54,6 +58,10 @@ type AttemptLifecycle interface {
 
 type AttemptRuntimeLifecycle interface {
 	RuntimeEvent(context.Context, AttemptRuntimeEvent) error
+}
+
+type AttemptApprovalLifecycle interface {
+	AwaitApproval(context.Context, harnesscontrol.ApprovalRequestEvent) (harnesscontrol.ApprovalOutcomeCommand, error)
 }
 
 // AttemptRuntimeEvent binds one decoded runtime payload to its immutable

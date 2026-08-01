@@ -191,6 +191,40 @@ func (backend *CoreRunBackend) CancelRun(ctx context.Context, request CancelRunR
 	return result, nil
 }
 
+func (backend *CoreRunBackend) DecideApproval(ctx context.Context, request DecideApprovalRequest) (DecideApprovalResult, error) {
+	body, err := json.Marshal(corecontract.DecideUserApprovalRequest{
+		Decision: request.Decision, Nonce: request.Nonce, ContextDigest: request.ContextDigest,
+		ExpectedApprovalVersion: request.ExpectedApprovalVersion,
+	})
+	if err != nil {
+		return DecideApprovalResult{}, fmt.Errorf("encode core approval decision request: %w", err)
+	}
+	endpoint := backend.endpoint(corecontract.DecideUserApprovalPath(request.WorkspaceID, request.ApprovalID))
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
+	if err != nil {
+		return DecideApprovalResult{}, fmt.Errorf("construct core approval decision request: %w", err)
+	}
+	httpRequest.Header.Set("Authorization", "Bearer "+request.BearerToken)
+	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set("Accept", "application/json")
+	response, raw, err := backend.do(httpRequest)
+	if err != nil {
+		return DecideApprovalResult{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return DecideApprovalResult{}, decodePublicCoreError(response.StatusCode, raw)
+	}
+	var result corecontract.DecideUserApprovalResponse
+	if err := decodeStrictCoreJSON(raw, &result); err != nil {
+		return DecideApprovalResult{}, fmt.Errorf("decode core approval decision response: %w", err)
+	}
+	if err := validateCoreApprovalDecisionResult(result, request); err != nil {
+		return DecideApprovalResult{}, fmt.Errorf("validate core approval decision response: %w", err)
+	}
+	return result, nil
+}
+
 func (backend *CoreRunBackend) resolveRunCursor(ctx context.Context, bearer, workspaceID, sessionID, runID, after string) (corecontract.ReadUserRunEventsResponse, *CursorExpiredError, error) {
 	endpoint := backend.endpoint(corecontract.ReadUserRunEventsPath(workspaceID, runID))
 	query := endpoint.Query()
@@ -332,6 +366,101 @@ func coreRunLoopbackHost(host string) bool {
 
 var _ RunBackend = (*CoreRunBackend)(nil)
 var _ RunCommandBackend = (*CoreRunBackend)(nil)
+var _ ApprovalCommandBackend = (*CoreRunBackend)(nil)
+
+func validateCoreApprovalDecisionResult(result corecontract.DecideUserApprovalResponse, request DecideApprovalRequest) error {
+	approval := result.Approval
+	if result.WorkspaceID != request.WorkspaceID || approval.ApprovalID != request.ApprovalID ||
+		result.ExecutionID != approval.ExecutionID || approval.Nonce != request.Nonce ||
+		approval.ContextDigest != request.ContextDigest {
+		return errors.New("approval decision response escaped or contradicted the requested authority scope")
+	}
+	for field, value := range map[string]string{
+		"executionId": approval.ExecutionID, "runId": approval.RunID,
+		"runAttemptId": approval.RunAttemptID, "approvalId": approval.ApprovalID, "nonce": approval.Nonce,
+	} {
+		if err := validateCanonicalUUID(field, value); err != nil {
+			return err
+		}
+	}
+	if approval.RunAttemptGeneration < 1 || approval.RunAttemptGeneration >= 1<<53-1 ||
+		approval.Version < request.ExpectedApprovalVersion || approval.Version >= 1<<53-1 ||
+		result.ExecutionVersion < 1 || result.ExecutionVersion >= 1<<53-1 ||
+		approval.RequesterID == "" || len(approval.RequesterID) > 256 || approval.ExpiresAt.IsZero() ||
+		approval.CreatedAt.IsZero() || approval.UpdatedAt.IsZero() {
+		return errors.New("approval decision response contains invalid bounded state")
+	}
+	if !validApprovalStatus(approval.Status) || !validApprovalExecutionStatus(result.ExecutionStatus) ||
+		!approvalDecisionMatchesStatus(approval.Status, approval.Decision, approval.ApproverID) ||
+		!approvalExecutionStatusMatches(approval.Status, result.ExecutionStatus) {
+		return errors.New("approval decision response contains contradictory status")
+	}
+	if request.Decision == "approve" {
+		if !((approval.Decision == "approve" && (approval.Status == "approved" || approval.Status == "consumed")) ||
+			(approval.Decision == "" && approval.Status == "expired")) {
+			return errors.New("approval decision response does not contain the requested approve outcome")
+		}
+	} else if request.Decision == "deny" {
+		if !((approval.Decision == "deny" && approval.Status == "denied") ||
+			(approval.Decision == "" && approval.Status == "expired")) {
+			return errors.New("approval decision response does not contain the requested deny outcome")
+		}
+	} else {
+		return errors.New("approval decision request contains an unsupported decision")
+	}
+	return nil
+}
+
+func validApprovalStatus(status string) bool {
+	switch status {
+	case "pending", "approved", "denied", "expired", "cancelled", "consumed":
+		return true
+	default:
+		return false
+	}
+}
+
+func validApprovalExecutionStatus(status string) bool {
+	switch status {
+	case "pending_approval", "approved", "denied", "expired", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
+func approvalDecisionMatchesStatus(status, decision, approverID string) bool {
+	switch status {
+	case "pending":
+		return decision == "" && approverID == ""
+	case "approved", "consumed":
+		return decision == "approve" && validateCanonicalUUID("approverId", approverID) == nil
+	case "denied":
+		return decision == "deny" && validateCanonicalUUID("approverId", approverID) == nil
+	case "expired", "cancelled":
+		return (decision == "" && approverID == "") ||
+			(decision == "approve" && validateCanonicalUUID("approverId", approverID) == nil)
+	default:
+		return false
+	}
+}
+
+func approvalExecutionStatusMatches(approvalStatus, executionStatus string) bool {
+	switch approvalStatus {
+	case "pending", "approved":
+		return executionStatus == "pending_approval"
+	case "consumed":
+		return executionStatus == "approved"
+	case "denied":
+		return executionStatus == "denied"
+	case "expired":
+		return executionStatus == "expired"
+	case "cancelled":
+		return executionStatus == "cancelled"
+	default:
+		return false
+	}
+}
 
 func validCancelRunStatus(status string) bool {
 	switch status {

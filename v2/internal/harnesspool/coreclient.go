@@ -290,6 +290,45 @@ type AppendAttemptEventsResult struct {
 	NewCount int
 }
 
+type ObserveApprovalRequest struct {
+	ApprovalID           string
+	ExecutionID          string
+	RunID                string
+	RunAttemptID         string
+	HolderID             string
+	RunAttemptGeneration int64
+	Nonce                string
+	ContextHash          [32]byte
+	AfterApprovalVersion int64
+	Wait                 time.Duration
+	Record               TransitionRecord
+}
+
+type ObservedApproval struct {
+	ApprovalID           string
+	ExecutionID          string
+	RunID                string
+	RunAttemptID         string
+	RunAttemptGeneration int64
+	Nonce                string
+	ContextHash          [32]byte
+	Status               string
+	Version              int64
+	ExpiresAt            time.Time
+	ApproverID           string
+	Decision             string
+	DecidedAt            *time.Time
+	ConsumedAt           *time.Time
+}
+
+type ObserveApprovalResult struct {
+	ExecutionID      string
+	ExecutionStatus  string
+	ExecutionVersion int64
+	Approval         ObservedApproval
+	OutcomeAvailable bool
+}
+
 type BrainToolCatalog struct {
 	CatalogID                string
 	WorkspaceID              string
@@ -728,6 +767,51 @@ func (client *CoreClient) AppendAttemptEvents(ctx context.Context, request Appen
 	return result, nil
 }
 
+func (client *CoreClient) ObserveApproval(ctx context.Context, request ObserveApprovalRequest) (ObserveApprovalResult, error) {
+	if request.Wait < 0 || request.Wait > 25*time.Second || request.Wait%time.Millisecond != 0 {
+		return ObserveApprovalResult{}, errors.New("approval observe wait must be a whole number of milliseconds between 0 and 25 seconds")
+	}
+	contractRequest := corecontract.ObserveApprovalRequest{
+		ApprovalID: request.ApprovalID, ExecutionID: request.ExecutionID,
+		RunID: request.RunID, RunAttemptID: request.RunAttemptID, HolderID: request.HolderID,
+		RunAttemptGeneration: request.RunAttemptGeneration, Nonce: request.Nonce,
+		ContextDigest: corecontract.CanonicalJSONDigest{
+			Domain: "approval-context", CanonicalizerVersion: "rfc8785-v1",
+			SHA256: hex.EncodeToString(request.ContextHash[:]),
+		},
+		AfterApprovalVersion: request.AfterApprovalVersion, WaitMillis: request.Wait.Milliseconds(),
+		Record: contractTransitionRecord(request.Record),
+	}
+	var response corecontract.ObserveApprovalResponse
+	if err := client.post(ctx, corecontract.ObserveApprovalPath(request.ApprovalID), contractRequest, &response); err != nil {
+		return ObserveApprovalResult{}, err
+	}
+	contextHash, err := decodeClientSHA256(response.Approval.ContextDigest.SHA256)
+	if err != nil || response.Approval.ContextDigest.Domain != "approval-context" ||
+		response.Approval.ContextDigest.CanonicalizerVersion != "rfc8785-v1" {
+		return ObserveApprovalResult{}, errors.New("core approval observation returned an invalid context digest")
+	}
+	approval := ObservedApproval{
+		ApprovalID: response.Approval.ApprovalID, ExecutionID: response.Approval.ExecutionID,
+		RunID: response.Approval.RunID, RunAttemptID: response.Approval.RunAttemptID,
+		RunAttemptGeneration: response.Approval.RunAttemptGeneration,
+		Nonce:                response.Approval.Nonce, ContextHash: contextHash,
+		Status: response.Approval.Status, Version: response.Approval.Version,
+		ExpiresAt: response.Approval.ExpiresAt, ApproverID: response.Approval.ApproverID,
+		Decision: response.Approval.Decision, DecidedAt: response.Approval.DecidedAt,
+		ConsumedAt: response.Approval.ConsumedAt,
+	}
+	result := ObserveApprovalResult{
+		ExecutionID: response.ExecutionID, ExecutionStatus: response.ExecutionStatus,
+		ExecutionVersion: response.ExecutionVersion, Approval: approval,
+		OutcomeAvailable: response.OutcomeAvailable,
+	}
+	if err := validateObservedApproval(request, result); err != nil {
+		return ObserveApprovalResult{}, fmt.Errorf("validate core approval observation: %w", err)
+	}
+	return result, nil
+}
+
 func (client *CoreClient) FreezeBrainToolCatalog(ctx context.Context, request FreezeBrainToolCatalogRequest) (FreezeBrainToolCatalogResult, error) {
 	contractRequest := corecontract.FreezeBrainToolCatalogRequest{
 		CatalogID: request.CatalogID, WorkspaceID: request.WorkspaceID, SessionID: request.SessionID,
@@ -862,6 +946,55 @@ func validateClaimResult(request ClaimRunAttemptRequest, result ClaimRunAttemptR
 	}
 	if result.Reclaimed && !result.Created {
 		return errors.New("reclaimed claim must also be newly created")
+	}
+	return nil
+}
+
+func validateObservedApproval(request ObserveApprovalRequest, result ObserveApprovalResult) error {
+	approval := result.Approval
+	if result.ExecutionID != request.ExecutionID || approval.ApprovalID != request.ApprovalID ||
+		approval.ExecutionID != request.ExecutionID || approval.RunID != request.RunID ||
+		approval.RunAttemptID != request.RunAttemptID || approval.RunAttemptGeneration != request.RunAttemptGeneration ||
+		approval.Nonce != request.Nonce || approval.ContextHash != request.ContextHash ||
+		approval.Version < request.AfterApprovalVersion || approval.Version < 1 || result.ExecutionVersion < 1 ||
+		approval.ExpiresAt.IsZero() {
+		return errors.New("approval fingerprint, version, or timestamps differ from the request")
+	}
+	wantExecutionStatus := "pending_approval"
+	switch approval.Status {
+	case "pending":
+		if approval.ApproverID != "" || approval.Decision != "" || approval.DecidedAt != nil || approval.ConsumedAt != nil {
+			return errors.New("pending approval contains decision evidence")
+		}
+	case "approved":
+		if approval.ApproverID == "" || approval.Decision != "approve" || approval.DecidedAt == nil || approval.ConsumedAt != nil {
+			return errors.New("approved approval lacks decision evidence")
+		}
+	case "denied":
+		wantExecutionStatus = "denied"
+		if approval.ApproverID == "" || approval.Decision != "deny" || approval.DecidedAt == nil || approval.ConsumedAt != nil {
+			return errors.New("denied approval lacks decision evidence")
+		}
+	case "expired":
+		wantExecutionStatus = "expired"
+		if approval.DecidedAt == nil || approval.ConsumedAt != nil {
+			return errors.New("expired approval lacks terminal evidence")
+		}
+	case "cancelled":
+		wantExecutionStatus = "cancelled"
+		if approval.DecidedAt == nil || approval.ConsumedAt != nil {
+			return errors.New("cancelled approval lacks terminal evidence")
+		}
+	case "consumed":
+		wantExecutionStatus = "approved"
+		if approval.ApproverID == "" || approval.Decision != "approve" || approval.DecidedAt == nil || approval.ConsumedAt == nil || approval.ConsumedAt.Before(*approval.DecidedAt) {
+			return errors.New("consumed approval lacks consumption evidence")
+		}
+	default:
+		return fmt.Errorf("unsupported approval status %q", approval.Status)
+	}
+	if result.ExecutionStatus != wantExecutionStatus || result.OutcomeAvailable != (approval.Status != "pending") {
+		return errors.New("approval outcome availability or execution status is inconsistent")
 	}
 	return nil
 }

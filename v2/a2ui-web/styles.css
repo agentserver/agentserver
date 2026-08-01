@@ -643,7 +643,8 @@ p {
 }
 
 .phase-badge,
-.display-only {
+.display-only,
+.authority-badge {
   flex: 0 0 auto;
   padding: 5px 7px;
   border-radius: 6px;
@@ -662,6 +663,11 @@ p {
 .display-only {
   color: var(--green);
   background: var(--green-pale);
+}
+
+.authority-badge {
+  color: #76500c;
+  background: var(--amber-pale);
 }
 
 .run-facts {
@@ -710,9 +716,118 @@ p {
 }
 
 .tool-list,
+.approval-list,
 .surface-list {
   display: grid;
   gap: 10px;
+}
+
+.approval-card {
+  overflow: hidden;
+  border: 1px solid #e5cfac;
+  border-radius: 11px;
+  background: #fffcf6;
+}
+
+.approval-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 11px;
+  border-bottom: 1px solid #eee0c9;
+}
+
+.approval-header strong {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.approval-status {
+  padding: 4px 6px;
+  border-radius: 5px;
+  color: var(--amber);
+  background: var(--amber-pale);
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.approval-status-approved,
+.approval-status-consumed {
+  color: var(--green);
+  background: var(--green-pale);
+}
+
+.approval-status-denied,
+.approval-status-expired,
+.approval-status-cancelled {
+  color: var(--red);
+  background: var(--red-pale);
+}
+
+.approval-facts {
+  display: grid;
+  gap: 4px;
+  padding: 9px 11px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 8px;
+}
+
+.approval-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 0 11px 11px;
+}
+
+.approval-actions button {
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.approval-deny {
+  border: 1px solid #deb0aa;
+  color: var(--red);
+  background: #fff8f6;
+}
+
+.approval-approve {
+  border: 1px solid #80b49d;
+  color: var(--green-dark);
+  background: var(--green-pale);
+}
+
+.approval-actions button:disabled {
+  cursor: progress;
+  opacity: 0.55;
+}
+
+.approval-command-note,
+.approval-command-error {
+  margin: 0 11px 11px;
+  padding: 7px 8px;
+  border-radius: 7px;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.approval-command-note {
+  color: var(--green-dark);
+  background: var(--green-pale);
+}
+
+.approval-command-error {
+  color: var(--red);
+  background: var(--red-pale);
 }
 
 .tool-card {

@@ -221,8 +221,9 @@ func TestPreparedDevelopmentFixturesServeCoreIntrospectionAndTLSResponses(t *tes
 		SessionID: fixture.document.Authority.SessionID, RunID: "80000000-0000-4000-8000-000000000008",
 		RunAttemptID: "90000000-0000-4000-8000-000000000009", RunAttemptGeneration: 1,
 		ActorID: fixture.document.Authority.ActorID, HolderID: "fixture-holder",
-		IssuedAtUnixMS: now.Add(-time.Minute).UnixMilli(), ExpiresAtUnixMS: now.Add(time.Hour).UnixMilli(),
-		Model: fixture.document.Model.Name, Provider: fixture.document.Model.Provider,
+		IssuedAtUnixMS: now.Add(-time.Minute).UnixMilli(), RunDeadlineUnixMS: now.Add(30 * time.Minute).UnixMilli(),
+		ExpiresAtUnixMS: now.Add(time.Hour).UnixMilli(),
+		Model:           fixture.document.Model.Name, Provider: fixture.document.Model.Provider,
 	})
 	if err != nil {
 		t.Fatal(err)

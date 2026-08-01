@@ -19,6 +19,8 @@ import (
 
 const HarnessControlPath = "/internal/v2/harness/control"
 
+const maximumControlOutstandingApprovals = 256
+
 var (
 	errControlServerShuttingDown = errors.New("harness control server is shutting down")
 	ErrControlWriteAmbiguous     = errors.New("control command was journaled but its transport write is ambiguous")
@@ -35,6 +37,7 @@ type ControlServerConfig struct {
 	WireLimits              harnesscontrol.Limits
 	MaxUnackedFrames        int
 	MaxReceiveHistoryFrames int
+	MaxOutstandingApprovals int
 	HandshakeTimeout        time.Duration
 	WriteTimeout            time.Duration
 	IDGenerator             IDGenerator
@@ -54,7 +57,7 @@ func DefaultControlServerConfig(
 		WireLimits: harnesscontrol.Limits{
 			MaxFrameBytes: 1024 * 1024, MaxJSONValues: 65_536, MaxJSONDepth: 128,
 		},
-		MaxUnackedFrames: 1024, MaxReceiveHistoryFrames: 4096,
+		MaxUnackedFrames: 1024, MaxReceiveHistoryFrames: 4096, MaxOutstandingApprovals: 64,
 		HandshakeTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second,
 		IDGenerator: newRandomUUID, CapabilityGenerator: newControlCapability, Now: time.Now,
 	}
@@ -68,8 +71,10 @@ type controlExpectedAttempt struct {
 	RunAttemptGeneration int64
 	HolderID             string
 	ManifestDigest       string
+	ToolCatalogDigest    string
 	Resumed              bool
 	MaxJournalBytes      int
+	MaxApprovalTTL       time.Duration
 }
 
 type controlConnection struct {
@@ -106,6 +111,11 @@ type controlOutcome struct {
 	err      error
 }
 
+type outstandingControlApproval struct {
+	request harnesscontrol.ApprovalRequestEvent
+	cancel  context.CancelFunc
+}
+
 type attemptControlRuntime struct {
 	server       *ControlServer
 	expected     controlExpectedAttempt
@@ -113,23 +123,31 @@ type attemptControlRuntime struct {
 	capabilityID [sha256.Size]byte
 	controlID    string
 
-	mu              sync.Mutex
-	eventMu         sync.Mutex
-	commandMu       sync.Mutex
-	ackBarrier      sync.Mutex
-	session         *harnesscontrol.Session
-	workerID        string
-	connection      *controlConnection
-	connectionReady bool
-	epoch           uint64
-	resumeTimer     *time.Timer
-	closed          bool
-	ready           chan struct{}
-	readyOnce       sync.Once
-	readyErr        error
-	done            chan struct{}
-	doneOnce        sync.Once
-	outcome         controlOutcome
+	mu                sync.Mutex
+	eventMu           sync.Mutex
+	commandMu         sync.Mutex
+	ackBarrier        sync.Mutex
+	session           *harnesscontrol.Session
+	workerID          string
+	connection        *controlConnection
+	connectionReady   bool
+	epoch             uint64
+	resumeTimer       *time.Timer
+	closed            bool
+	ready             chan struct{}
+	readyOnce         sync.Once
+	readyErr          error
+	done              chan struct{}
+	doneOnce          sync.Once
+	outcome           controlOutcome
+	connectionChanged chan struct{}
+
+	approvalCtx    context.Context
+	approvalCancel context.CancelCauseFunc
+	approvalMu     sync.Mutex
+	approvals      map[string]*outstandingControlApproval
+	approvalIDs    map[string]struct{}
+	approvalCalls  map[string]struct{}
 
 	threadID     string
 	turnID       string
@@ -337,16 +355,22 @@ func (server *ControlServer) RegisterAttempt(prepared PreparedRunLaunch, lifecyc
 	if capability == "" {
 		return nil, errors.New("could not allocate a distinct attempt control capability")
 	}
+	approvalCtx, cancelApprovals := context.WithCancelCause(context.Background())
 	runtime := &attemptControlRuntime{
 		server: server,
 		expected: controlExpectedAttempt{
 			WorkspaceID: manifest.WorkspaceID, SessionID: manifest.SessionID, RunID: manifest.RunID,
 			RunAttemptID: manifest.RunAttemptID, RunAttemptGeneration: manifest.RunAttemptGeneration,
 			HolderID: manifest.HolderID, ManifestDigest: manifestDigest,
-			Resumed: manifest.PreviousCheckpoint != nil, MaxJournalBytes: int(manifest.Limits.MaxControlBufferBytes),
+			ToolCatalogDigest: manifest.ExecutorMCP.CatalogDigest,
+			Resumed:           manifest.PreviousCheckpoint != nil, MaxJournalBytes: int(manifest.Limits.MaxControlBufferBytes),
+			MaxApprovalTTL: time.Duration(manifest.Limits.MaxApprovalTTLMS) * time.Millisecond,
 		},
 		lifecycle: lifecycle, capabilityID: capabilityID, controlID: controlID,
-		ready: make(chan struct{}), done: make(chan struct{}),
+		ready: make(chan struct{}), done: make(chan struct{}), connectionChanged: make(chan struct{}),
+		approvalCtx: approvalCtx, approvalCancel: cancelApprovals,
+		approvals:   make(map[string]*outstandingControlApproval),
+		approvalIDs: make(map[string]struct{}), approvalCalls: make(map[string]struct{}),
 	}
 	server.byCapability[capabilityID] = runtime
 	server.byAttempt[manifest.RunAttemptID] = runtime
@@ -674,6 +698,7 @@ func (runtime *attemptControlRuntime) processSequencedEvent(ctx context.Context,
 		}
 		copy := *value
 		runtime.terminalSeen = true
+		runtime.approvalCancel(errors.New("turn reached terminal state"))
 		runtime.mu.Lock()
 		runtime.finishLocked(controlOutcome{terminal: &copy})
 		runtime.mu.Unlock()
@@ -692,9 +717,183 @@ func (runtime *attemptControlRuntime) processSequencedEvent(ctx context.Context,
 			return fmt.Errorf("apply worker runtime event: %w", err)
 		}
 		return nil
+	case harnesscontrol.EventKindApprovalRequest:
+		if !runtime.turnAccepted || runtime.terminalSeen || event.ApprovalRequest == nil {
+			return controlProtocolError(harnesscontrol.ErrorAttemptMismatch, "approval request is outside the accepted turn")
+		}
+		return runtime.registerApproval(*event.ApprovalRequest)
 	default:
 		return controlProtocolError(harnesscontrol.ErrorMalformedFrame, "unknown worker lifecycle event")
 	}
+}
+
+func (runtime *attemptControlRuntime) registerApproval(request harnesscontrol.ApprovalRequestEvent) error {
+	if err := request.Validate(); err != nil {
+		return err
+	}
+	if request.RunID != runtime.expected.RunID ||
+		request.RunAttemptGeneration != runtime.expected.RunAttemptGeneration ||
+		request.ToolCatalogDigest != runtime.expected.ToolCatalogDigest {
+		return controlProtocolError(
+			harnesscontrol.ErrorAttemptMismatch,
+			"approval request does not match the signed run attempt and executor catalog",
+		)
+	}
+	now := runtime.server.config.Now()
+	if !now.Before(request.ExpiresAt) || request.ExpiresAt.After(now.Add(runtime.expected.MaxApprovalTTL)) {
+		return controlProtocolError(
+			harnesscontrol.ErrorAttemptMismatch,
+			"approval request expiry is outside the signed attempt limit",
+		)
+	}
+	lifecycle, ok := runtime.lifecycle.(AttemptApprovalLifecycle)
+	if !ok {
+		return errors.New("attempt lifecycle does not implement approval observation authority")
+	}
+
+	runtime.approvalMu.Lock()
+	if _, duplicate := runtime.approvalIDs[request.ApprovalID]; duplicate {
+		runtime.approvalMu.Unlock()
+		return controlProtocolError(harnesscontrol.ErrorAttemptMismatch, "approval ID was already observed in this attempt")
+	}
+	if _, duplicate := runtime.approvalCalls[request.CallID]; duplicate {
+		runtime.approvalMu.Unlock()
+		return controlProtocolError(harnesscontrol.ErrorAttemptMismatch, "approval call ID was already observed in this attempt")
+	}
+	if len(runtime.approvals) >= runtime.server.config.MaxOutstandingApprovals {
+		runtime.approvalMu.Unlock()
+		return controlProtocolError(harnesscontrol.ErrorJournalFull, "too many outstanding approval observations")
+	}
+	// Retaining seen IDs prevents a later sequence from reusing authority
+	// identifiers after its outcome was delivered. Bound the history by the
+	// already-negotiated per-session receive-history limit.
+	if len(runtime.approvalIDs) >= runtime.server.config.MaxReceiveHistoryFrames {
+		runtime.approvalMu.Unlock()
+		return controlProtocolError(harnesscontrol.ErrorJournalFull, "approval identity history is full")
+	}
+	approvalCtx, cancel := context.WithCancel(runtime.approvalCtx)
+	entry := &outstandingControlApproval{request: request, cancel: cancel}
+	runtime.approvals[request.ApprovalID] = entry
+	runtime.approvalIDs[request.ApprovalID] = struct{}{}
+	runtime.approvalCalls[request.CallID] = struct{}{}
+	runtime.approvalMu.Unlock()
+
+	go runtime.awaitApproval(approvalCtx, lifecycle, entry)
+	return nil
+}
+
+func (runtime *attemptControlRuntime) awaitApproval(
+	ctx context.Context,
+	lifecycle AttemptApprovalLifecycle,
+	entry *outstandingControlApproval,
+) {
+	defer entry.cancel()
+	defer runtime.removeOutstandingApproval(entry)
+
+	outcome, err := lifecycle.AwaitApproval(ctx, entry.request)
+	if err != nil {
+		if ctx.Err() == nil {
+			runtime.server.unregister(runtime, fmt.Errorf("observe canonical approval outcome: %w", err))
+		}
+		return
+	}
+	if err := validateApprovalOutcomeCorrelation(entry.request, outcome); err != nil {
+		runtime.server.unregister(runtime, err)
+		return
+	}
+	if err := runtime.sendApprovalOutcome(ctx, outcome); err != nil && ctx.Err() == nil {
+		runtime.server.unregister(runtime, fmt.Errorf("send canonical approval outcome: %w", err))
+	}
+}
+
+func validateApprovalOutcomeCorrelation(
+	request harnesscontrol.ApprovalRequestEvent,
+	outcome harnesscontrol.ApprovalOutcomeCommand,
+) error {
+	if err := outcome.Validate(); err != nil {
+		return fmt.Errorf("validate canonical approval outcome: %w", err)
+	}
+	if outcome.RunID != request.RunID || outcome.CallID != request.CallID ||
+		outcome.RunAttemptGeneration != request.RunAttemptGeneration ||
+		outcome.ToolCatalogDigest != request.ToolCatalogDigest ||
+		outcome.ExecutionID != request.ExecutionID || outcome.ApprovalID != request.ApprovalID ||
+		outcome.Nonce != request.Nonce || outcome.ContextHash != request.ContextHash ||
+		outcome.ApprovalVersion <= request.ApprovalVersion {
+		return errors.New("canonical approval outcome does not match the registered request")
+	}
+	return nil
+}
+
+// sendApprovalOutcome allocates the command only while a connection is
+// attached. Once allocated, the exact frame is authoritative in the bounded
+// session journal: a failed transport write is recovered by normal resume and
+// must never allocate a replacement sequence.
+func (runtime *attemptControlRuntime) sendApprovalOutcome(
+	ctx context.Context,
+	outcome harnesscontrol.ApprovalOutcomeCommand,
+) error {
+	payload, err := json.Marshal(outcome)
+	if err != nil {
+		return err
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return context.Cause(ctx)
+		}
+
+		runtime.ackBarrier.Lock()
+		runtime.commandMu.Lock()
+		runtime.mu.Lock()
+		if runtime.closed {
+			runtime.mu.Unlock()
+			runtime.commandMu.Unlock()
+			runtime.ackBarrier.Unlock()
+			return errors.New("attempt control registration is closed")
+		}
+		if runtime.session == nil || runtime.connection == nil || !runtime.connectionReady {
+			changed := runtime.connectionChanged
+			runtime.mu.Unlock()
+			runtime.commandMu.Unlock()
+			runtime.ackBarrier.Unlock()
+			select {
+			case <-changed:
+				continue
+			case <-ctx.Done():
+				return context.Cause(ctx)
+			}
+		}
+		session := runtime.session
+		connection := runtime.connection
+		frame, sendErr := session.Send(harnesscontrol.Payload{
+			Type: harnesscontrol.MessageTypeCommand, Payload: payload,
+		})
+		runtime.mu.Unlock()
+		runtime.commandMu.Unlock()
+		runtime.ackBarrier.Unlock()
+		if sendErr != nil {
+			return sendErr
+		}
+		if err := connection.write(ctx, runtime.server.config.WriteTimeout, runtime.server.config.WireLimits, frame); err != nil {
+			// The command is already journaled. Force the reader to detach so the
+			// same bytes are replayed; treating this as a new send would duplicate
+			// the approval outcome under another sequence.
+			connection.closeNow()
+		}
+		return nil
+	}
+}
+
+func (runtime *attemptControlRuntime) removeOutstandingApproval(entry *outstandingControlApproval) {
+	runtime.approvalMu.Lock()
+	defer runtime.approvalMu.Unlock()
+	if runtime.approvals[entry.request.ApprovalID] == entry {
+		delete(runtime.approvals, entry.request.ApprovalID)
+	}
+}
+
+func (runtime *attemptControlRuntime) signalConnectionChangedLocked() {
+	close(runtime.connectionChanged)
+	runtime.connectionChanged = make(chan struct{})
 }
 
 func (runtime *attemptControlRuntime) terminalReceived() bool {
@@ -716,6 +915,7 @@ func (runtime *attemptControlRuntime) activateConnection(epoch uint64) {
 		return
 	}
 	runtime.connectionReady = true
+	runtime.signalConnectionChangedLocked()
 	runtime.readyOnce.Do(func() { close(runtime.ready) })
 }
 
@@ -725,6 +925,7 @@ func (runtime *attemptControlRuntime) fail(err error) {
 	}
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
+	runtime.approvalCancel(err)
 	runtime.finishLocked(controlOutcome{err: err})
 }
 
@@ -756,6 +957,7 @@ func (runtime *attemptControlRuntime) detach(epoch uint64, now time.Time) {
 	}
 	runtime.connection = nil
 	runtime.connectionReady = false
+	runtime.signalConnectionChangedLocked()
 	if runtime.closed || runtime.session == nil {
 		runtime.mu.Unlock()
 		return
@@ -788,6 +990,7 @@ func (runtime *attemptControlRuntime) expireResume(epoch uint64) {
 		return
 	}
 	runtime.resumeTimer = nil
+	runtime.approvalCancel(err)
 	runtime.session.Close(err)
 	runtime.finishLocked(controlOutcome{err: err})
 	runtime.mu.Unlock()
@@ -814,6 +1017,7 @@ func (server *ControlServer) unregister(runtime *attemptControlRuntime, cause er
 		return
 	}
 	runtime.closed = true
+	runtime.approvalCancel(cause)
 	if runtime.resumeTimer != nil {
 		runtime.resumeTimer.Stop()
 		runtime.resumeTimer = nil
@@ -821,6 +1025,7 @@ func (server *ControlServer) unregister(runtime *attemptControlRuntime, cause er
 	connection := runtime.connection
 	runtime.connection = nil
 	runtime.connectionReady = false
+	runtime.signalConnectionChangedLocked()
 	session := runtime.session
 	runtime.finishLocked(controlOutcome{err: cause})
 	runtime.mu.Unlock()
@@ -884,6 +1089,9 @@ func validateControlServerConfig(config ControlServerConfig) (string, error) {
 	}
 	if config.MaxUnackedFrames < 1 || config.MaxReceiveHistoryFrames < 1 {
 		return "", errors.New("control journal frame limits must be positive")
+	}
+	if config.MaxOutstandingApprovals < 1 || config.MaxOutstandingApprovals > maximumControlOutstandingApprovals {
+		return "", fmt.Errorf("control outstanding approvals must be between 1 and %d", maximumControlOutstandingApprovals)
 	}
 	if config.HandshakeTimeout <= 0 || config.WriteTimeout <= 0 {
 		return "", errors.New("control handshake and write timeouts must be positive")

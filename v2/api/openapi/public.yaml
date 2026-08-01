@@ -3,7 +3,7 @@
   "info": {
     "title": "agentserver v2 browser resource API",
     "version": "0.1.0",
-    "description": "Browser-delegated CreateRun and authorized canonical event cursor. The current core endpoint requires both the browser-gateway workload identity and the original aud=agentserver-api user bearer."
+    "description": "Browser-delegated run commands, approval decisions, and authorized canonical event cursor. The current core endpoint requires both the browser-gateway workload identity and the original aud=agentserver-api user bearer."
   },
   "servers": [{"url": "https://agentserver-core"}],
   "security": [{"browserGatewayMTLS": [], "userOAuth": ["runs:write"]}],
@@ -47,6 +47,25 @@
         }
       }
     },
+    "/v2/workspaces/{workspaceId}/approvals/{approvalId}:decide": {
+      "parameters": [
+        {"$ref": "#/components/parameters/WorkspaceId"},
+        {"$ref": "#/components/parameters/ApprovalId"}
+      ],
+      "post": {
+        "operationId": "decideUserApproval",
+        "description": "Commits the first approve or deny decision after rechecking current workspace RBAC, database expiry, live attempt generation, nonce, and the core-derived execution context digest. Approval alone does not authorize dispatch.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DecideUserApprovalRequest"}}}},
+        "responses": {
+          "200": {"description": "Authoritative approval outcome or exact decision retry", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DecideUserApprovalResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
     "/v2/workspaces/{workspaceId}/runs/{runId}/events": {
       "parameters": [
         {"$ref": "#/components/parameters/WorkspaceId"},
@@ -81,6 +100,7 @@
       }
     },
     "parameters": {
+      "ApprovalId": {"name": "approvalId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "WorkspaceId": {"name": "workspaceId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "SessionId": {"name": "sessionId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "RunId": {"name": "runId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
@@ -121,6 +141,60 @@
           "status": {"type": "string", "enum": ["cancelling", "completed", "failed", "interrupted", "cancelled"]},
           "runVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740990},
           "terminal": {"type": "boolean"},
+          "changed": {"type": "boolean"}
+        }
+      },
+      "CanonicalJSONDigest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["domain", "canonicalizerVersion", "sha256"],
+        "properties": {
+          "domain": {"const": "approval-context"},
+          "canonicalizerVersion": {"const": "rfc8785-v1"},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      },
+      "ApprovalState": {
+        "type": "object", "additionalProperties": false,
+        "required": ["approvalId", "executionId", "runId", "runAttemptId", "runAttemptGeneration", "nonce", "requesterId", "contextDigest", "status", "expiresAt", "version", "createdAt", "updatedAt"],
+        "properties": {
+          "approvalId": {"$ref": "#/components/schemas/UUID"},
+          "executionId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "nonce": {"$ref": "#/components/schemas/UUID"},
+          "requesterId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "approverId": {"$ref": "#/components/schemas/UUID"},
+          "decision": {"enum": ["approve", "deny"]},
+          "contextDigest": {"$ref": "#/components/schemas/CanonicalJSONDigest"},
+          "status": {"enum": ["pending", "approved", "denied", "expired", "cancelled", "consumed"]},
+          "expiresAt": {"type": "string", "format": "date-time"},
+          "decidedAt": {"type": "string", "format": "date-time"},
+          "consumedAt": {"type": "string", "format": "date-time"},
+          "version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "DecideUserApprovalRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["decision", "nonce", "contextDigest", "expectedApprovalVersion"],
+        "properties": {
+          "decision": {"enum": ["approve", "deny"]},
+          "nonce": {"$ref": "#/components/schemas/UUID"},
+          "contextDigest": {"$ref": "#/components/schemas/CanonicalJSONDigest"},
+          "expectedApprovalVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+        }
+      },
+      "DecideUserApprovalResponse": {
+        "type": "object", "additionalProperties": false,
+        "required": ["workspaceId", "executionId", "executionStatus", "executionVersion", "approval", "changed"],
+        "properties": {
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "executionId": {"$ref": "#/components/schemas/UUID"},
+          "executionStatus": {"enum": ["pending_approval", "approved", "denied", "expired", "cancelled"]},
+          "executionVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "approval": {"$ref": "#/components/schemas/ApprovalState"},
           "changed": {"type": "boolean"}
         }
       },

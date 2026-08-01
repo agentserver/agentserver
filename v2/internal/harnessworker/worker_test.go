@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -45,6 +46,11 @@ func TestOneShotWorkerAssemblesVerifiedRuntimeAndReportsAfterCleanup(t *testing.
 		fixture.mcpConfig.BearerToken != oneShotExecutorCapability ||
 		fixture.mcpConfig.ExpectedCatalogDigest != fixture.catalog.Digest() {
 		t.Fatalf("MCP config did not come from verified authority: %+v", fixture.mcpConfig)
+	}
+	approvalRequest := ElicitationRequest{ApprovalID: "approval-composition-probe"}
+	decision, err := fixture.mcpConfig.ElicitationHandler(t.Context(), approvalRequest)
+	if err != nil || decision.Action != ApprovalDecline || !reflect.DeepEqual(fixture.control.approvalSnapshot(), approvalRequest) {
+		t.Fatalf("MCP approval handler was not the connected control client: decision=%+v request=%+v error=%v", decision, fixture.control.approvalSnapshot(), err)
 	}
 	if fixture.processConfig.Environment.ModelCapability != oneShotLLMCapability {
 		t.Fatalf("app-server model capability = %q", fixture.processConfig.Environment.ModelCapability)
@@ -185,9 +191,6 @@ func newOneShotWorkerFixture(t *testing.T) *oneShotWorkerFixture {
 		ControlHTTPClient: &http.Client{}, ExecutorHTTPClient: &http.Client{},
 		WorkerInstanceIDGenerator: func() (string, error) {
 			return "71000000-0000-4000-8000-000000000007", nil
-		},
-		ElicitationHandler: func(context.Context, ElicitationRequest) (ElicitationDecision, error) {
-			return ElicitationDecision{Action: ApprovalDecline}, nil
 		},
 		NotificationHandler: func(context.Context, codexwire.Message) error { return nil },
 		ClientInfo:          AppServerClientInfo{Name: "agentserver-harness-worker", Title: "Agentserver Harness Worker", Version: "v2-test"},
@@ -382,6 +385,7 @@ type fakeOneShotWorkerControl struct {
 	threadID                               string
 	turnID                                 string
 	terminal                               harnesscontrol.TurnTerminalEvent
+	approval                               ElicitationRequest
 }
 
 func newFakeOneShotWorkerControl(order *workerOrder) *fakeOneShotWorkerControl {
@@ -398,6 +402,13 @@ func (control *fakeOneShotWorkerControl) Start(ctx context.Context) error {
 
 func (control *fakeOneShotWorkerControl) Interrupts() <-chan harnesscontrol.InterruptCommand {
 	return control.interrupts
+}
+
+func (control *fakeOneShotWorkerControl) AwaitApproval(_ context.Context, request ElicitationRequest) (ElicitationDecision, error) {
+	control.mu.Lock()
+	control.approval = request
+	control.mu.Unlock()
+	return ElicitationDecision{Action: ApprovalDecline}, nil
 }
 
 func (control *fakeOneShotWorkerControl) SendThreadReady(_ context.Context, threadID string, _ bool) error {
@@ -459,6 +470,12 @@ func (control *fakeOneShotWorkerControl) terminalSnapshot() harnesscontrol.TurnT
 	control.mu.Lock()
 	defer control.mu.Unlock()
 	return control.terminal
+}
+
+func (control *fakeOneShotWorkerControl) approvalSnapshot() ElicitationRequest {
+	control.mu.Lock()
+	defer control.mu.Unlock()
+	return control.approval
 }
 
 type fakeOneShotWorkerMCP struct {

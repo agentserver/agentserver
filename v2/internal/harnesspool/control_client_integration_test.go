@@ -207,6 +207,127 @@ func TestWorkerControlClientPipelinesRuntimeEventsThroughPoolAndCoreBeforeTermin
 	}
 }
 
+func TestWorkerControlClientRoutesCanonicalApprovalOutcome(t *testing.T) {
+	lifecycle := newBlockingControlApprovalLifecycle()
+	fixture := newWorkerControlIntegrationFixture(t, lifecycle)
+	client := fixture.newClient(t, fixture.control.Capability(), fixture.prepared.Manifest, fixture.prepared.SignedManifest)
+	startWorkerControlClient(t, client)
+
+	ctx := testContext(t)
+	if err := client.SendThreadReady(ctx, "thread-worker-approval", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SendTurnAccepted(ctx, "thread-worker-approval", "turn-worker-approval"); err != nil {
+		t.Fatal(err)
+	}
+	request := workerApprovalRequest(fixture, "a4", "call-worker-approval")
+	result := make(chan struct {
+		decision harnessworker.ElicitationDecision
+		err      error
+	}, 1)
+	go func() {
+		decision, err := client.AwaitApproval(ctx, request)
+		result <- struct {
+			decision harnessworker.ElicitationDecision
+			err      error
+		}{decision: decision, err: err}
+	}()
+
+	select {
+	case observed := <-lifecycle.requests:
+		if observed.ApprovalID != request.ApprovalID || observed.CallID != request.CallID ||
+			observed.ExecutionID != request.ExecutionID || observed.ContextHash != request.ContextHash {
+			t.Fatalf("worker approval projection = %+v, want request %+v", observed, request)
+		}
+	case <-ctx.Done():
+		t.Fatal("worker approval did not reach pool observation")
+	}
+	select {
+	case completed := <-result:
+		t.Fatalf("worker approval returned before canonical decision: %+v", completed)
+	case <-time.After(20 * time.Millisecond):
+	}
+	lifecycle.releaseAll()
+
+	select {
+	case completed := <-result:
+		if completed.err != nil || completed.decision.Action != harnessworker.ApprovalAccept {
+			t.Fatalf("worker approval decision = %+v, %v", completed.decision, completed.err)
+		}
+		want := map[string]any{
+			"approvalId": request.ApprovalID, "executionId": request.ExecutionID,
+			"runId": request.RunID, "runAttemptId": fixture.prepared.Manifest.RunAttemptID,
+			"runAttemptGeneration": request.RunAttemptGeneration,
+			"nonce":                request.Nonce, "contextHash": request.ContextHash,
+			"status": "approved", "approvalVersion": int64(2),
+		}
+		if !reflect.DeepEqual(completed.decision.Content, want) {
+			t.Fatalf("canonical MCP approval evidence = %#v, want %#v", completed.decision.Content, want)
+		}
+	case <-ctx.Done():
+		t.Fatal("worker approval did not return canonical outcome")
+	}
+	waitForControlJournalFrames(t, fixture.control, 0)
+
+	terminal := harnesscontrol.TurnTerminalEvent{
+		Kind: harnesscontrol.EventKindTurnTerminal, ThreadID: "thread-worker-approval",
+		TurnID: "turn-worker-approval", Status: "completed", RolloutLocator: testCompletedRolloutLocator,
+	}
+	if err := client.SendTurnTerminal(ctx, terminal); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Wait(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWorkerControlClientBoundsPendingApprovals(t *testing.T) {
+	lifecycle := newBlockingControlApprovalLifecycle()
+	fixture := newWorkerControlIntegrationFixture(t, lifecycle)
+	config := harnessworker.DefaultWorkerControlClientConfig(
+		fixture.prepared.Manifest, fixture.prepared.SignedManifest,
+		fixture.control.Capability(), testHarnessWorkerID, fixture.httpClient,
+	)
+	config.MaxPendingApprovals = 1
+	config.HandshakeTimeout = 2 * time.Second
+	config.WriteTimeout = 2 * time.Second
+	config.ReconnectBackoff = 5 * time.Millisecond
+	client, err := harnessworker.NewWorkerControlClient(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { client.Close(errors.New("pending approval test complete")) })
+	startWorkerControlClient(t, client)
+
+	ctx := testContext(t)
+	if err := client.SendThreadReady(ctx, "thread-worker-approval-limit", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SendTurnAccepted(ctx, "thread-worker-approval-limit", "turn-worker-approval-limit"); err != nil {
+		t.Fatal(err)
+	}
+	firstDone := make(chan struct{})
+	go func() {
+		_, _ = client.AwaitApproval(ctx, workerApprovalRequest(fixture, "b4", "call-worker-limit-1"))
+		close(firstDone)
+	}()
+	select {
+	case <-lifecycle.requests:
+	case <-ctx.Done():
+		t.Fatal("first pending approval did not reach pool")
+	}
+	_, err = client.AwaitApproval(ctx, workerApprovalRequest(fixture, "c4", "call-worker-limit-2"))
+	if err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("second pending approval error = %v", err)
+	}
+	lifecycle.releaseAll()
+	select {
+	case <-firstDone:
+	case <-ctx.Done():
+		t.Fatal("first pending approval did not finish")
+	}
+}
+
 func TestWorkerControlClientRejectsWrongSPIFFEAndBearer(t *testing.T) {
 	t.Run("wrong server SPIFFE URI", func(t *testing.T) {
 		fixture := newWorkerControlIntegrationFixture(t, &recordingAttemptLifecycle{})
@@ -362,6 +483,25 @@ func startWorkerControlClient(t *testing.T, client *harnessworker.WorkerControlC
 	t.Helper()
 	if err := client.Start(testContext(t)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func workerApprovalRequest(
+	fixture *workerControlIntegrationFixture,
+	prefix string,
+	callID string,
+) harnessworker.ElicitationRequest {
+	manifest := fixture.prepared.Manifest
+	return harnessworker.ElicitationRequest{
+		RunID: manifest.RunID, CallID: callID,
+		RunAttemptGeneration: manifest.RunAttemptGeneration,
+		ToolCatalogDigest:    manifest.ExecutorMCP.CatalogDigest,
+		ExecutionID:          prefix + "000000-0000-4000-8000-000000000041",
+		ApprovalID:           prefix + "000000-0000-4000-8000-000000000042",
+		Nonce:                prefix + "000000-0000-4000-8000-000000000043",
+		ApprovalVersion:      1, ContextHash: strings.Repeat("a", 64),
+		ExpiresAt: time.Now().Add(10 * time.Second).UTC(),
+		Message:   "approve deterministic tool operation", RequestedSchema: []byte(`{"type":"object"}`),
 	}
 }
 

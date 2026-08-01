@@ -224,13 +224,16 @@ func developmentTestClaims(audience string) Claims {
 		SessionID: "73000000-0000-4000-8000-000000000003", RunID: "74000000-0000-4000-8000-000000000004",
 		RunAttemptID: "75000000-0000-4000-8000-000000000005", RunAttemptGeneration: 3,
 		ActorID: "76000000-0000-4000-8000-000000000006", HolderID: "development-pool-holder",
-		IssuedAtUnixMS: developmentTestNow.Add(-time.Minute).UnixMilli(), ExpiresAtUnixMS: developmentTestNow.Add(time.Hour).UnixMilli(),
+		IssuedAtUnixMS:    developmentTestNow.Add(-time.Minute).UnixMilli(),
+		RunDeadlineUnixMS: developmentTestNow.Add(30 * time.Minute).UnixMilli(),
+		ExpiresAtUnixMS:   developmentTestNow.Add(time.Hour).UnixMilli(),
 	}
 	if audience == AudienceExecutorMCP {
 		claims.ExecutorID = "77000000-0000-4000-8000-000000000007"
 		claims.ToolCatalogDigest = strings.Repeat("a", 64)
 		claims.ExpectedRunVersion = 4
 		claims.ExpectedRunAttemptVersion = 5
+		claims.MaxApprovalTTLMillis = 60_000
 	} else {
 		claims.Model = "gpt-5"
 		claims.Provider = "development-llmproxy"

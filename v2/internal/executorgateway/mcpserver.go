@@ -30,6 +30,7 @@ const (
 	maximumExecutorMCPMaxRequestBytes  = 8 * 1024 * 1024
 	maximumExecutorMCPCapabilityIDSize = 256
 	maximumExecutorMCPSessionIDTries   = 8
+	maximumExecutorMCPApprovalTTL      = 24 * time.Hour
 
 	mcpSessionIDHeader = "Mcp-Session-Id"
 
@@ -39,6 +40,12 @@ const (
 	executorMCPMetaCallID               = "io.agentserver/callId"
 	executorMCPMetaRunAttemptGeneration = "io.agentserver/runAttemptGeneration"
 	executorMCPMetaToolCatalogDigest    = "io.agentserver/toolCatalogDigest"
+	executorMCPMetaExecutionID          = "io.agentserver/executionId"
+	executorMCPMetaApprovalID           = "io.agentserver/approvalId"
+	executorMCPMetaApprovalNonce        = "io.agentserver/approvalNonce"
+	executorMCPMetaApprovalVersion      = "io.agentserver/approvalVersion"
+	executorMCPMetaContextHash          = "io.agentserver/contextHash"
+	executorMCPMetaExpiresAt            = "io.agentserver/expiresAt"
 	executorMCPMetaProgressToken        = "progressToken"
 )
 
@@ -52,8 +59,15 @@ var errExecutorMCPShuttingDown = errors.New("executor MCP server is shutting dow
 type ExecutorMCPPrincipal struct {
 	CapabilityID      string
 	WorkspaceID       string
+	ActorID           string
 	ToolCatalogDigest string
-	Run               ExecutorMCPRunContext
+	MaxApprovalTTL    time.Duration
+	// RunDeadline and CapabilityExpiresAt are absolute, signed bounds. The
+	// latter may include a small cleanup grace, but no new approval may outlive
+	// either bound.
+	RunDeadline         time.Time
+	CapabilityExpiresAt time.Time
+	Run                 ExecutorMCPRunContext
 	// ExecutorID optionally narrows list_environments to one executor. The
 	// empty value grants the workspace-wide registry projection.
 	ExecutorID string
@@ -366,6 +380,7 @@ func (handler *ExecutorMCPHandler) newScopedServer(session *executorMCPSession) 
 			result, err := handler.shell.Execute(ctx, ShellExecuteRequest{
 				Principal: session.principal, ToolCallID: call.CallID,
 				Arguments: append(json.RawMessage(nil), request.Params.Arguments...),
+				Elicitor:  request.Session,
 			})
 			if err != nil {
 				if handler.config.Logger != nil {
@@ -404,6 +419,7 @@ func (handler *ExecutorMCPHandler) newScopedServer(session *executorMCPSession) 
 			result, err := handler.readFile.Execute(ctx, ReadFileExecuteRequest{
 				Principal: session.principal, ToolCallID: call.CallID,
 				Arguments: append(json.RawMessage(nil), request.Params.Arguments...),
+				Elicitor:  request.Session,
 			})
 			if err != nil {
 				if handler.config.Logger != nil {
@@ -654,6 +670,9 @@ func validateExecutorMCPPrincipal(principal ExecutorMCPPrincipal) error {
 	if err := validateRegistryIdentity("workspace ID", principal.WorkspaceID); err != nil {
 		return err
 	}
+	if err := validateRegistryIdentity("actor ID", principal.ActorID); err != nil {
+		return err
+	}
 	if err := validateRegistryIdentity("run ID", principal.Run.RunID); err != nil {
 		return err
 	}
@@ -662,6 +681,13 @@ func validateExecutorMCPPrincipal(principal ExecutorMCPPrincipal) error {
 	}
 	if principal.Run.RunAttemptGeneration < 1 || principal.Run.ExpectedRunVersion < 1 || principal.Run.ExpectedRunAttemptVersion < 1 {
 		return errors.New("MCP run generation and expected versions must be positive")
+	}
+	if principal.MaxApprovalTTL <= 0 || principal.MaxApprovalTTL > maximumExecutorMCPApprovalTTL {
+		return errors.New("MCP maximum approval TTL must be positive and at most 24 hours")
+	}
+	if principal.RunDeadline.IsZero() || principal.CapabilityExpiresAt.IsZero() ||
+		principal.RunDeadline.After(principal.CapabilityExpiresAt) {
+		return errors.New("MCP run deadline and capability expiry are missing or inconsistent")
 	}
 	if principal.Run.HolderID == "" || len(principal.Run.HolderID) > 256 || !utf8.ValidString(principal.Run.HolderID) || strings.ContainsRune(principal.Run.HolderID, 0) {
 		return errors.New("MCP run holder ID must contain between 1 and 256 valid UTF-8 bytes without NUL")

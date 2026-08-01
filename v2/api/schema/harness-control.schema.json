@@ -112,7 +112,7 @@
       ],
       "properties": {
         "type": {"const": "welcome"},
-        "protocolVersion": {"const": "1.2"},
+        "protocolVersion": {"const": "1.3"},
         "poolInstanceId": {"$ref": "#/$defs/canonicalUUID"},
         "controlSessionId": {"$ref": "#/$defs/canonicalUUID"},
         "runAttemptGeneration": {"$ref": "#/$defs/positiveSafeInteger"},
@@ -231,6 +231,24 @@
         "message": {"type": "string", "maxLength": 4096, "pattern": "^[^\\x00]*$"}
       }
     },
+    "approvalRequestEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "runId", "callId", "runAttemptGeneration", "toolCatalogDigest", "executionId", "approvalId", "nonce", "approvalVersion", "contextHash", "expiresAt"],
+      "properties": {
+        "kind": {"const": "approval_request"},
+        "runId": {"$ref": "#/$defs/canonicalUUID"},
+        "callId": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\x00\\r\\n\\t ]+$"},
+        "runAttemptGeneration": {"$ref": "#/$defs/positiveSafeInteger"},
+        "toolCatalogDigest": {"$ref": "#/$defs/digest"},
+        "executionId": {"$ref": "#/$defs/canonicalUUID"},
+        "approvalId": {"$ref": "#/$defs/canonicalUUID"},
+        "nonce": {"$ref": "#/$defs/canonicalUUID"},
+        "approvalVersion": {"$ref": "#/$defs/positiveSafeInteger"},
+        "contextHash": {"$ref": "#/$defs/digest"},
+        "expiresAt": {"type": "string", "format": "date-time"}
+      }
+    },
     "interruptCommand": {
       "type": "object",
       "additionalProperties": false,
@@ -240,6 +258,24 @@
         "reason": {"enum": ["lease_lost", "cancelled", "fenced", "shutdown", "protocol_error"]},
         "graceMs": {"type": "integer", "minimum": 1, "maximum": 300000},
         "message": {"$ref": "#/$defs/boundedText"}
+      }
+    },
+    "approvalOutcomeCommand": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "runId", "callId", "runAttemptGeneration", "toolCatalogDigest", "executionId", "approvalId", "nonce", "contextHash", "status", "approvalVersion"],
+      "properties": {
+        "kind": {"const": "approval_outcome"},
+        "runId": {"$ref": "#/$defs/canonicalUUID"},
+        "callId": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\x00\\r\\n\\t ]+$"},
+        "runAttemptGeneration": {"$ref": "#/$defs/positiveSafeInteger"},
+        "toolCatalogDigest": {"$ref": "#/$defs/digest"},
+        "executionId": {"$ref": "#/$defs/canonicalUUID"},
+        "approvalId": {"$ref": "#/$defs/canonicalUUID"},
+        "nonce": {"$ref": "#/$defs/canonicalUUID"},
+        "contextHash": {"$ref": "#/$defs/digest"},
+        "status": {"enum": ["approved", "denied", "expired", "cancelled", "consumed"]},
+        "approvalVersion": {"$ref": "#/$defs/positiveSafeInteger"}
       }
     },
     "eventFrame": {
@@ -258,7 +294,8 @@
             {"$ref": "#/$defs/turnAcceptedEvent"},
             {"$ref": "#/$defs/turnTerminalEvent"},
             {"$ref": "#/$defs/appServerNotificationEvent"},
-            {"$ref": "#/$defs/executorMCPProgressEvent"}
+            {"$ref": "#/$defs/executorMCPProgressEvent"},
+            {"$ref": "#/$defs/approvalRequestEvent"}
           ]
         }
       }
@@ -273,7 +310,12 @@
         "sessionSeq": {"$ref": "#/$defs/positiveSafeInteger"},
         "ack": {"$ref": "#/$defs/safeCursor"},
         "runAttemptGeneration": {"$ref": "#/$defs/positiveSafeInteger"},
-        "payload": {"$ref": "#/$defs/interruptCommand"}
+        "payload": {
+          "oneOf": [
+            {"$ref": "#/$defs/interruptCommand"},
+            {"$ref": "#/$defs/approvalOutcomeCommand"}
+          ]
+        }
       }
     },
     "ack": {

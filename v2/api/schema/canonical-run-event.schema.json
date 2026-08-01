@@ -188,6 +188,18 @@
         "required": ["payload"],
         "not": {"required": ["object"]}
       }
+    },
+    {
+      "if": {"properties": {"kind": {"enum": ["approval.requested", "approval.approved", "approval.denied", "approval.expired", "approval.cancelled", "approval.consumed"]}}, "required": ["kind"]},
+      "then": {
+        "properties": {
+          "schemaVersion": {"const": 1},
+          "source": {"const": "approval"},
+          "payload": {"$ref": "#/$defs/approvalPayload"}
+        },
+        "required": ["payload"],
+        "not": {"required": ["object"]}
+      }
     }
   ],
   "$defs": {
@@ -385,6 +397,26 @@
         "code": {"type": "string", "maxLength": 128, "pattern": "^[^\\x00\\r\\n]*$"},
         "message": {"type": "string", "minLength": 1, "maxLength": 4096},
         "result": true
+      }
+    },
+    "approvalPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runId", "runAttemptId", "runAttemptGeneration", "executionId", "approvalId", "toolName", "status", "nonce", "contextSha256", "expiresAt", "version"],
+      "properties": {
+        "runId": {"$ref": "#/$defs/canonicalUUID"},
+        "runAttemptId": {"$ref": "#/$defs/canonicalUUID"},
+        "runAttemptGeneration": {"$ref": "#/$defs/positiveSafeInteger"},
+        "executionId": {"$ref": "#/$defs/canonicalUUID"},
+        "approvalId": {"$ref": "#/$defs/canonicalUUID"},
+        "toolName": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[^\\x00\\r\\n]+$"},
+        "status": {"enum": ["pending", "approved", "denied", "expired", "cancelled", "consumed"]},
+        "decision": {"enum": ["approve", "deny"]},
+        "nonce": {"$ref": "#/$defs/canonicalUUID"},
+        "contextSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "expiresAt": {"type": "string", "format": "date-time"},
+        "approverId": {"$ref": "#/$defs/canonicalUUID"},
+        "version": {"$ref": "#/$defs/positiveSafeInteger"}
       }
     }
   }

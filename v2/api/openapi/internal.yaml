@@ -347,6 +347,80 @@
         }
       }
     },
+    "/internal/v2/approvals:create": {
+      "post": {
+        "operationId": "createApproval",
+        "description": "Creates the sole expiring approval authority for one pending policy=ask execution. Core derives its context digest from the frozen execution fingerprint.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateApprovalRequest"}}}},
+        "responses": {
+          "200": {"description": "Approval created or exact execution retry returned", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateApprovalResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/approvals/{approvalId}:expire": {
+      "parameters": [{"$ref": "#/components/parameters/ApprovalId"}],
+      "post": {
+        "operationId": "expireApproval",
+        "description": "Uses database time to expire an unconsumed pending or approved approval and terminally fence its execution.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApprovalTerminalRequest"}}}},
+        "responses": {
+          "200": {"description": "Authoritative expiry outcome", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApprovalTerminalResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/approvals/{approvalId}:cancel": {
+      "parameters": [{"$ref": "#/components/parameters/ApprovalId"}],
+      "post": {
+        "operationId": "cancelApproval",
+        "description": "Fail-closed cancellation for an outstanding MCP elicitation or cancelling run; database expiry wins if already due.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApprovalTerminalRequest"}}}},
+        "responses": {
+          "200": {"description": "Authoritative cancellation or expiry outcome", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApprovalTerminalResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/approvals/{approvalId}:observe": {
+      "parameters": [{"$ref": "#/components/parameters/ApprovalId"}],
+      "post": {
+        "operationId": "observeApproval",
+        "description": "Harness-pool-only bounded long poll for the canonical approval outcome. The complete live holder, generation, nonce, and context scope is revalidated on every database-backed sample; database time may atomically expire the approval.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ObserveApprovalRequest"}}}},
+        "responses": {
+          "200": {"description": "Current canonical state, with outcomeAvailable indicating whether the approval is terminal for the waiting worker", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ObserveApprovalResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/approvals/{approvalId}:consume": {
+      "parameters": [{"$ref": "#/components/parameters/ApprovalId"}],
+      "post": {
+        "operationId": "consumeApprovalAndAuthorizeExecution",
+        "description": "Single-consumes an approved nonce under the exact live holder/generation after rechecking expiry, frozen context, and current approver RBAC. Only then does the execution enter approved.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConsumeApprovalRequest"}}}},
+        "responses": {
+          "200": {"description": "Consumption, terminal fail-closed outcome, or exact retry", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ConsumeApprovalResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
     "/internal/v2/executor-connections/{executorId}:renew": {
       "parameters": [{"$ref": "#/components/parameters/ExecutorId"}],
       "post": {
@@ -393,6 +467,7 @@
       "workloadMTLS": {"type": "mutualTLS", "description": "Verified component-specific workload SPIFFE identity; handlers authorize each action separately"}
     },
     "parameters": {
+      "ApprovalId": {"name": "approvalId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "CatalogId": {"name": "catalogId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "ExecutorId": {"name": "executorId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "ExecutionId": {"name": "executionId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
@@ -1397,6 +1472,138 @@
         "properties": {
           "execution": {"$ref": "#/components/schemas/ExecutionState"},
           "changed": {"type": "boolean"}
+        }
+      },
+      "ApprovalState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["approvalId", "executionId", "runId", "runAttemptId", "runAttemptGeneration", "nonce", "requesterId", "contextDigest", "status", "expiresAt", "version", "createdAt", "updatedAt"],
+        "properties": {
+          "approvalId": {"$ref": "#/components/schemas/UUID"},
+          "executionId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "nonce": {"$ref": "#/components/schemas/UUID"},
+          "requesterId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "approverId": {"$ref": "#/components/schemas/UUID"},
+          "decision": {"enum": ["approve", "deny"]},
+          "contextDigest": {"$ref": "#/components/schemas/CanonicalJSONDigest"},
+          "status": {"enum": ["pending", "approved", "denied", "expired", "cancelled", "consumed"]},
+          "expiresAt": {"type": "string", "format": "date-time"},
+          "decidedAt": {"type": "string", "format": "date-time"},
+          "consumedAt": {"type": "string", "format": "date-time"},
+          "version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "CreateApprovalRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["approvalId", "executionId", "runId", "runAttemptId", "holderId", "runAttemptGeneration", "expectedExecutionVersion", "nonce", "requesterId", "expiresAt", "record"],
+        "properties": {
+          "approvalId": {"$ref": "#/components/schemas/UUID"},
+          "executionId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "expectedExecutionVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "nonce": {"$ref": "#/components/schemas/UUID"},
+          "requesterId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "expiresAt": {"type": "string", "format": "date-time"},
+          "record": {"$ref": "#/components/schemas/TransitionRecord"}
+        }
+      },
+      "CreateApprovalResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["execution", "approval", "created"],
+        "properties": {
+          "execution": {"$ref": "#/components/schemas/ExecutionState"},
+          "approval": {"$ref": "#/components/schemas/ApprovalState"},
+          "created": {"type": "boolean"}
+        }
+      },
+      "ApprovalTerminalRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["approvalId", "nonce", "contextDigest", "expectedApprovalVersion", "record"],
+        "properties": {
+          "approvalId": {"$ref": "#/components/schemas/UUID"},
+          "nonce": {"$ref": "#/components/schemas/UUID"},
+          "contextDigest": {"$ref": "#/components/schemas/CanonicalJSONDigest"},
+          "expectedApprovalVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "record": {"$ref": "#/components/schemas/TransitionRecord"}
+        }
+      },
+      "ApprovalTerminalResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["execution", "approval", "changed"],
+        "properties": {
+          "execution": {"$ref": "#/components/schemas/ExecutionState"},
+          "approval": {"$ref": "#/components/schemas/ApprovalState"},
+          "changed": {"type": "boolean"}
+        }
+      },
+      "ConsumeApprovalRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["approvalId", "executionId", "runId", "runAttemptId", "holderId", "runAttemptGeneration", "nonce", "contextDigest", "expectedApprovalVersion", "expectedExecutionVersion", "record"],
+        "properties": {
+          "approvalId": {"$ref": "#/components/schemas/UUID"},
+          "executionId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "nonce": {"$ref": "#/components/schemas/UUID"},
+          "contextDigest": {"$ref": "#/components/schemas/CanonicalJSONDigest"},
+          "expectedApprovalVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "expectedExecutionVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "record": {"$ref": "#/components/schemas/TransitionRecord"}
+        }
+      },
+      "ConsumeApprovalResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["execution", "approval", "consumed"],
+        "properties": {
+          "execution": {"$ref": "#/components/schemas/ExecutionState"},
+          "approval": {"$ref": "#/components/schemas/ApprovalState"},
+          "consumed": {"type": "boolean"}
+        }
+      },
+      "ObserveApprovalRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["approvalId", "executionId", "runId", "runAttemptId", "holderId", "runAttemptGeneration", "nonce", "contextDigest", "afterApprovalVersion", "waitMs", "record"],
+        "properties": {
+          "approvalId": {"$ref": "#/components/schemas/UUID"},
+          "executionId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "nonce": {"$ref": "#/components/schemas/UUID"},
+          "contextDigest": {"$ref": "#/components/schemas/CanonicalJSONDigest"},
+          "afterApprovalVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "waitMs": {"type": "integer", "minimum": 0, "maximum": 25000},
+          "record": {"$ref": "#/components/schemas/TransitionRecord"}
+        }
+      },
+      "ObserveApprovalResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["executionId", "executionStatus", "executionVersion", "approval", "outcomeAvailable"],
+        "properties": {
+          "executionId": {"$ref": "#/components/schemas/UUID"},
+          "executionStatus": {"enum": ["created", "pending_approval", "approved", "denied", "expired", "dispatching", "running", "cancelling", "succeeded", "failed", "cancelled", "unknown"]},
+          "executionVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "approval": {"$ref": "#/components/schemas/ApprovalState"},
+          "outcomeAvailable": {"type": "boolean"}
         }
       },
       "ErrorResponse": {

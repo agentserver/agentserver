@@ -58,8 +58,10 @@ func TestDevMCPAuthenticatorRequiresExactBearer(t *testing.T) {
 	authenticator, err := newDevMCPAuthenticator(
 		bearer,
 		"40000000-0000-4000-8000-000000000004",
+		"44000000-0000-4000-8000-000000000004",
 		"20000000-0000-4000-8000-000000000002",
 		strings.Repeat("a", 64),
+		time.Minute,
 		executorgateway.ExecutorMCPRunContext{
 			RunID:                     "41000000-0000-4000-8000-000000000004",
 			RunAttemptID:              "42000000-0000-4000-8000-000000000004",
@@ -79,6 +81,7 @@ func TestDevMCPAuthenticatorRequiresExactBearer(t *testing.T) {
 		t.Fatal(err)
 	}
 	if principal.WorkspaceID != "40000000-0000-4000-8000-000000000004" ||
+		principal.ActorID != "44000000-0000-4000-8000-000000000004" || principal.MaxApprovalTTL != time.Minute ||
 		principal.ExecutorID != "20000000-0000-4000-8000-000000000002" ||
 		principal.ToolCatalogDigest != strings.Repeat("a", 64) ||
 		!strings.HasPrefix(principal.CapabilityID, "insecure-dev:") || strings.Contains(principal.CapabilityID, bearer) {
@@ -91,7 +94,7 @@ func TestDevMCPAuthenticatorRequiresExactBearer(t *testing.T) {
 	if principal.Run.RunID != "41000000-0000-4000-8000-000000000004" || principal.Run.ExpectedRunAttemptVersion != 5 {
 		t.Fatalf("development MCP run context = %+v", principal.Run)
 	}
-	if _, err := newDevMCPAuthenticator("short", principal.WorkspaceID, principal.ExecutorID, principal.ToolCatalogDigest, principal.Run); err == nil {
+	if _, err := newDevMCPAuthenticator("short", principal.WorkspaceID, principal.ActorID, principal.ExecutorID, principal.ToolCatalogDigest, principal.MaxApprovalTTL, principal.Run); err == nil {
 		t.Fatal("short development MCP bearer was accepted")
 	}
 }
@@ -119,11 +122,14 @@ func TestDevRunCapabilityAuthenticatorMapsDynamicAttemptAuthority(t *testing.T) 
 		t.Fatal(err)
 	}
 	if principal.CapabilityID != "insecure-dev:"+claims.CapabilityID ||
-		principal.WorkspaceID != claims.WorkspaceID || principal.ExecutorID != claims.ExecutorID ||
+		principal.WorkspaceID != claims.WorkspaceID || principal.ActorID != claims.ActorID || principal.ExecutorID != claims.ExecutorID ||
 		principal.ToolCatalogDigest != claims.ToolCatalogDigest || principal.Run.RunID != claims.RunID ||
 		principal.Run.RunAttemptID != claims.RunAttemptID || principal.Run.RunAttemptGeneration != claims.RunAttemptGeneration ||
 		principal.Run.HolderID != claims.HolderID || principal.Run.ExpectedRunVersion != claims.ExpectedRunVersion ||
-		principal.Run.ExpectedRunAttemptVersion != claims.ExpectedRunAttemptVersion {
+		principal.Run.ExpectedRunAttemptVersion != claims.ExpectedRunAttemptVersion ||
+		principal.MaxApprovalTTL != time.Duration(claims.MaxApprovalTTLMillis)*time.Millisecond ||
+		!principal.RunDeadline.Equal(time.UnixMilli(claims.RunDeadlineUnixMS)) ||
+		!principal.CapabilityExpiresAt.Equal(time.UnixMilli(claims.ExpiresAtUnixMS)) {
 		t.Fatalf("dynamic development MCP principal = %+v", principal)
 	}
 
@@ -151,6 +157,7 @@ func TestDevRunCapabilityAuthenticatorRejectsWrongAuthorityAndExpiry(t *testing.
 		"expired": func() runcapability.Claims {
 			claims := testDevRunCapabilityClaims(now, executorID, runcapability.AudienceExecutorMCP)
 			claims.IssuedAtUnixMS = now.Add(-2 * time.Hour).UnixMilli()
+			claims.RunDeadlineUnixMS = now.Add(-time.Minute).UnixMilli()
 			claims.ExpiresAtUnixMS = now.UnixMilli()
 			return claims
 		}(),
@@ -233,13 +240,15 @@ func testDevRunCapabilityClaims(now time.Time, executorID, audience string) runc
 		SessionID:   "41000000-0000-4000-8000-000000000004", RunID: "42000000-0000-4000-8000-000000000004",
 		RunAttemptID: "43000000-0000-4000-8000-000000000004", RunAttemptGeneration: 3,
 		ActorID: "44000000-0000-4000-8000-000000000004", HolderID: "dev-holder",
-		IssuedAtUnixMS: now.Add(-time.Minute).UnixMilli(), ExpiresAtUnixMS: now.Add(time.Hour).UnixMilli(),
+		IssuedAtUnixMS: now.Add(-time.Minute).UnixMilli(), RunDeadlineUnixMS: now.Add(30 * time.Minute).UnixMilli(),
+		ExpiresAtUnixMS: now.Add(time.Hour).UnixMilli(),
 	}
 	if audience == runcapability.AudienceExecutorMCP {
 		claims.ExecutorID = executorID
 		claims.ToolCatalogDigest = strings.Repeat("a", 64)
 		claims.ExpectedRunVersion = 4
 		claims.ExpectedRunAttemptVersion = 5
+		claims.MaxApprovalTTLMillis = 60_000
 	} else {
 		claims.Model = "gpt-5"
 		claims.Provider = "development-llmproxy"

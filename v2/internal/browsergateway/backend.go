@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/runevent"
 )
 
@@ -60,6 +61,21 @@ type CancelRunResult struct {
 	Changed     bool
 }
 
+type DecideApprovalRequest struct {
+	BearerToken             string
+	WorkspaceID             string
+	ApprovalID              string
+	Decision                string
+	Nonce                   string
+	ContextDigest           corecontract.CanonicalJSONDigest
+	ExpectedApprovalVersion int64
+}
+
+// DecideApprovalResult deliberately mirrors Core's public command result.
+// browser-gateway validates the full authority response before returning it to
+// the browser; it never derives approval state from A2UI display data.
+type DecideApprovalResult = corecontract.DecideUserApprovalResponse
+
 // RunBackend is the only authority-facing surface used by browser-gateway.
 // Implementations create/idempotently recover a core run and long-poll only
 // already committed canonical events. There is intentionally no CancelRun
@@ -74,6 +90,13 @@ type RunBackend interface {
 // authenticated command route may cross this boundary.
 type RunCommandBackend interface {
 	CancelRun(context.Context, CancelRunRequest) (CancelRunResult, error)
+}
+
+// ApprovalCommandBackend is separate from RunBackend so an SSE disconnect can
+// never be mistaken for an approval decision. Only the explicit authenticated
+// resource command route can invoke it.
+type ApprovalCommandBackend interface {
+	DecideApproval(context.Context, DecideApprovalRequest) (DecideApprovalResult, error)
 }
 
 // CursorExpiredError carries an authorized state snapshot and a new canonical

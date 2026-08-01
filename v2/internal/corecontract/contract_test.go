@@ -71,6 +71,11 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 		CompleteOperationPath("{executionId}", "{operationId}"):      "completeOperation",
 		SkipOperationPath("{executionId}", "{operationId}"):          "skipOperation",
 		CompleteExecutionPath("{executionId}"):                       "completeExecution",
+		CreateApprovalPath:                                           "createApproval",
+		ExpireApprovalPath("{approvalId}"):                           "expireApproval",
+		CancelApprovalPath("{approvalId}"):                           "cancelApproval",
+		ObserveApprovalPath("{approvalId}"):                          "observeApproval",
+		ConsumeApprovalPath("{approvalId}"):                          "consumeApprovalAndAuthorizeExecution",
 	}
 	for path, operationID := range want {
 		operation, found := document.Paths[path]
@@ -151,6 +156,15 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "SkipOperationResponse", reflect.TypeFor[SkipOperationResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "CompleteExecutionRequest", reflect.TypeFor[CompleteExecutionRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "CompleteExecutionResponse", reflect.TypeFor[CompleteExecutionResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "ApprovalState", reflect.TypeFor[ApprovalState]())
+	assertSchemaFields(t, document.Components.Schemas, "CreateApprovalRequest", reflect.TypeFor[CreateApprovalRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "CreateApprovalResponse", reflect.TypeFor[CreateApprovalResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "ApprovalTerminalRequest", reflect.TypeFor[ApprovalTerminalRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "ApprovalTerminalResponse", reflect.TypeFor[ApprovalTerminalResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "ConsumeApprovalRequest", reflect.TypeFor[ConsumeApprovalRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "ConsumeApprovalResponse", reflect.TypeFor[ConsumeApprovalResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "ObserveApprovalRequest", reflect.TypeFor[ObserveApprovalRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "ObserveApprovalResponse", reflect.TypeFor[ObserveApprovalResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "ErrorResponse", reflect.TypeFor[ErrorResponse]())
 
 	wantProfiles := []string{execprofile.Version, execprofile.FilesystemReadVersion}
@@ -210,13 +224,21 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	createPath := CreateUserRunPath("{workspaceId}", "{sessionId}")
 	cancelPath := CancelUserRunPath("{workspaceId}", "{runId}")
 	readPath := ReadUserRunEventsPath("{workspaceId}", "{runId}")
-	if len(document.Paths) != 3 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
+	decidePath := DecideUserApprovalPath("{workspaceId}", "{approvalId}")
+	if len(document.Paths) != 4 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
 		document.Paths[cancelPath].Post.OperationID != "cancelUserRun" || document.Paths[readPath].Get.OperationID != "readUserRunEvents" {
 		t.Fatalf("public OpenAPI paths = %+v", document.Paths)
+	}
+	if document.Paths[decidePath].Post.OperationID != "decideUserApproval" {
+		t.Fatalf("public approval path = %+v", document.Paths[decidePath])
 	}
 	assertSchemaFields(t, document.Components.Schemas, "CreateUserRunRequest", reflect.TypeFor[CreateUserRunRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "CreateUserRunResponse", reflect.TypeFor[CreateUserRunResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "CancelUserRunResponse", reflect.TypeFor[CancelUserRunResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "CanonicalJSONDigest", reflect.TypeFor[CanonicalJSONDigest]())
+	assertSchemaFields(t, document.Components.Schemas, "ApprovalState", reflect.TypeFor[ApprovalState]())
+	assertSchemaFields(t, document.Components.Schemas, "DecideUserApprovalRequest", reflect.TypeFor[DecideUserApprovalRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "DecideUserApprovalResponse", reflect.TypeFor[DecideUserApprovalResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "ReadUserRunEventsResponse", reflect.TypeFor[ReadUserRunEventsResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "UserRunSnapshot", reflect.TypeFor[UserRunSnapshot]())
 	assertSchemaFields(t, document.Components.Schemas, "UserRunCursorExpiredResponse", reflect.TypeFor[UserRunCursorExpiredResponse]())

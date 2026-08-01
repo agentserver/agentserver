@@ -3,7 +3,7 @@
   "id": "urn:agentserver:v2:harness-worker-control",
   "info": {
     "title": "agentserver v2 harness worker control stream",
-    "version": "1.2.0",
+    "version": "1.3.0",
     "description": "Holder-routed WebSocket between one harness-pool attempt supervisor and its stateless harness-worker. Phase 1 resume requires the original holder process and its in-memory journals."
   },
   "defaultContentType": "application/json",
@@ -37,7 +37,7 @@
     "receiveFromWorker": {
       "action": "receive",
       "channel": {"$ref": "#/channels/attemptControl"},
-      "summary": "Receive the authenticated hello, worker lifecycle/runtime events, cumulative ACKs, and terminal session errors.",
+      "summary": "Receive the authenticated hello, worker lifecycle/runtime/approval-request events, cumulative ACKs, and terminal session errors.",
       "messages": [
         {"$ref": "#/channels/attemptControl/messages/hello"},
         {"$ref": "#/channels/attemptControl/messages/event"},
@@ -48,7 +48,7 @@
     "sendToWorker": {
       "action": "send",
       "channel": {"$ref": "#/channels/attemptControl"},
-      "summary": "Send fresh/resumed session selection, interrupt commands, cumulative ACKs, and bounded protocol errors.",
+      "summary": "Send fresh/resumed session selection, interrupt or canonical approval-outcome commands, cumulative ACKs, and bounded protocol errors.",
       "messages": [
         {"$ref": "#/channels/attemptControl/messages/welcome"},
         {"$ref": "#/channels/attemptControl/messages/command"},
@@ -71,12 +71,12 @@
       },
       "Event": {
         "name": "event",
-        "title": "Sequenced worker lifecycle or bounded runtime fact",
+        "title": "Sequenced worker lifecycle, bounded runtime fact, or approval observation request",
         "payload": {"$ref": "../schema/harness-control.schema.json#/$defs/eventFrame"}
       },
       "Command": {
         "name": "command",
-        "title": "Sequenced pool interrupt command",
+        "title": "Sequenced pool interrupt or canonical approval outcome command",
         "payload": {"$ref": "../schema/harness-control.schema.json#/$defs/commandFrame"}
       },
       "Ack": {
@@ -111,6 +111,9 @@
     "standaloneAckSequenced": false,
     "transportAckAuthorizesCoreTransition": false,
     "runtimeEventAckAfterCoreCommit": true,
+    "approvalRequestAckBeforeDecision": true,
+    "approvalOutcomeJournaled": true,
+    "mcpAcceptAuthorizesDispatch": false,
     "terminalAckCoversPriorRuntime": true,
     "completedTerminalCarriesRolloutLocator": true,
     "authentication": "worker mTLS AND per-attempt bearer",

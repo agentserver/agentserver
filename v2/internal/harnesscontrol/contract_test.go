@@ -7,7 +7,9 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -71,13 +73,25 @@ func TestHarnessControlJSONSchemaAcceptsGoContractAndRejectsUnsafeShapes(t *test
 		Frame{
 			Type: MessageTypeEvent, ControlSessionID: testControlSessionID, SessionSeq: 5, Ack: 1,
 			RunAttemptGeneration: 3,
+			Payload: mustPayload(t, ApprovalRequestEvent{
+				Kind: EventKindApprovalRequest, RunID: testRunID, CallID: "call-approval-1",
+				RunAttemptGeneration: 3, ToolCatalogDigest: strings.Repeat("b", 64),
+				ExecutionID: "44000000-0000-4000-8000-000000000004",
+				ApprovalID:  "45000000-0000-4000-8000-000000000004",
+				Nonce:       "46000000-0000-4000-8000-000000000004", ApprovalVersion: 1,
+				ContextHash: strings.Repeat("c", 64), ExpiresAt: time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC),
+			}),
+		},
+		Frame{
+			Type: MessageTypeEvent, ControlSessionID: testControlSessionID, SessionSeq: 6, Ack: 1,
+			RunAttemptGeneration: 3,
 			Payload: mustPayload(t, TurnTerminalEvent{
 				Kind: EventKindTurnTerminal, ThreadID: "thread-1", TurnID: "turn-1", Status: "completed",
 				RolloutLocator: testRolloutLocator,
 			}),
 		},
 		Frame{
-			Type: MessageTypeEvent, ControlSessionID: testControlSessionID, SessionSeq: 6, Ack: 1,
+			Type: MessageTypeEvent, ControlSessionID: testControlSessionID, SessionSeq: 7, Ack: 1,
 			RunAttemptGeneration: 3,
 			Payload: mustPayload(t, TurnTerminalEvent{
 				Kind: EventKindTurnTerminal, ThreadID: "thread-1", TurnID: "turn-1", Status: "failed",
@@ -90,6 +104,18 @@ func TestHarnessControlJSONSchemaAcceptsGoContractAndRejectsUnsafeShapes(t *test
 			Payload: mustPayload(t, InterruptCommand{
 				Kind: CommandKindInterrupt, Reason: "lease_lost", GraceMillis: 10_000,
 				Message: "attempt lease was fenced",
+			}),
+		},
+		Frame{
+			Type: MessageTypeCommand, ControlSessionID: testControlSessionID, SessionSeq: 2, Ack: 5,
+			RunAttemptGeneration: 3,
+			Payload: mustPayload(t, ApprovalOutcomeCommand{
+				Kind: CommandKindApprovalOutcome, RunID: testRunID, CallID: "call-approval-1",
+				RunAttemptGeneration: 3, ToolCatalogDigest: strings.Repeat("b", 64),
+				ExecutionID: "44000000-0000-4000-8000-000000000004",
+				ApprovalID:  "45000000-0000-4000-8000-000000000004",
+				Nonce:       "46000000-0000-4000-8000-000000000004",
+				ContextHash: strings.Repeat("c", 64), Status: "approved", ApprovalVersion: 2,
 			}),
 		},
 		Ack{Type: MessageTypeAck, ControlSessionID: testControlSessionID, RunAttemptGeneration: 3, Ack: 3},
@@ -207,6 +233,9 @@ func TestHarnessControlAsyncAPIReferencesSingleSchemaAndPhaseOneSemantics(t *tes
 			StandaloneAckSequenced           bool   `json:"standaloneAckSequenced"`
 			TransportAckAuthorizesTransition bool   `json:"transportAckAuthorizesCoreTransition"`
 			RuntimeEventAckAfterCoreCommit   bool   `json:"runtimeEventAckAfterCoreCommit"`
+			ApprovalRequestAckBeforeDecision bool   `json:"approvalRequestAckBeforeDecision"`
+			ApprovalOutcomeJournaled         bool   `json:"approvalOutcomeJournaled"`
+			MCPAcceptAuthorizesDispatch      bool   `json:"mcpAcceptAuthorizesDispatch"`
 			TerminalAckCoversPriorRuntime    bool   `json:"terminalAckCoversPriorRuntime"`
 			CompletedTerminalCarriesLocator  bool   `json:"completedTerminalCarriesRolloutLocator"`
 			Authentication                   string `json:"authentication"`
@@ -216,7 +245,7 @@ func TestHarnessControlAsyncAPIReferencesSingleSchemaAndPhaseOneSemantics(t *tes
 	if err := json.Unmarshal(raw, &document); err != nil {
 		t.Fatalf("harness-control.yaml must remain valid JSON (and therefore YAML): %v", err)
 	}
-	if document.AsyncAPI != "3.0.0" || document.Info.Version != "1.2.0" {
+	if document.AsyncAPI != "3.0.0" || document.Info.Version != "1.3.0" {
 		t.Fatalf("AsyncAPI identity = %q/%q", document.AsyncAPI, document.Info.Version)
 	}
 	wantReferences := map[string]string{
@@ -235,6 +264,7 @@ func TestHarnessControlAsyncAPIReferencesSingleSchemaAndPhaseOneSemantics(t *tes
 	phase := document.Phase
 	if phase.ResumeWindowMillis != ResumeWindowMillis || phase.CrossProcessResume || !phase.HolderRoutedEndpoint ||
 		phase.StandaloneAckSequenced || phase.TransportAckAuthorizesTransition || !phase.RuntimeEventAckAfterCoreCommit ||
+		!phase.ApprovalRequestAckBeforeDecision || !phase.ApprovalOutcomeJournaled || phase.MCPAcceptAuthorizesDispatch ||
 		!phase.TerminalAckCoversPriorRuntime || !phase.CompletedTerminalCarriesLocator ||
 		phase.Authentication != "worker mTLS AND per-attempt bearer" || phase.WorkerHasDurableState {
 		t.Fatalf("AsyncAPI Phase 1 semantics = %+v", phase)

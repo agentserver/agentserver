@@ -34,6 +34,7 @@ const (
 	maximumClaimsBytes     = 16 * 1024
 	maximumTextBytes       = 256
 	maxSafeJSONInteger     = int64(1<<53 - 1)
+	maximumApprovalTTLMS   = int64(24 * time.Hour / time.Millisecond)
 )
 
 var (
@@ -53,12 +54,14 @@ type Claims struct {
 	ActorID              string `json:"actorId"`
 	HolderID             string `json:"holderId"`
 	IssuedAtUnixMS       int64  `json:"issuedAtUnixMs"`
+	RunDeadlineUnixMS    int64  `json:"runDeadlineUnixMs"`
 	ExpiresAtUnixMS      int64  `json:"expiresAtUnixMs"`
 
 	ExecutorID                string `json:"executorId,omitempty"`
 	ToolCatalogDigest         string `json:"toolCatalogDigest,omitempty"`
 	ExpectedRunVersion        int64  `json:"expectedRunVersion,omitempty"`
 	ExpectedRunAttemptVersion int64  `json:"expectedRunAttemptVersion,omitempty"`
+	MaxApprovalTTLMillis      int64  `json:"maxApprovalTtlMs,omitempty"`
 
 	Model    string `json:"model,omitempty"`
 	Provider string `json:"provider,omitempty"`
@@ -187,14 +190,16 @@ func (claims Claims) Validate() error {
 		return errors.New("development run capability generation must be a positive safe integer")
 	}
 	if claims.IssuedAtUnixMS < 1 || claims.IssuedAtUnixMS > maxSafeJSONInteger ||
-		claims.ExpiresAtUnixMS <= claims.IssuedAtUnixMS || claims.ExpiresAtUnixMS > maxSafeJSONInteger {
+		claims.RunDeadlineUnixMS <= claims.IssuedAtUnixMS || claims.RunDeadlineUnixMS > maxSafeJSONInteger ||
+		claims.ExpiresAtUnixMS < claims.RunDeadlineUnixMS || claims.ExpiresAtUnixMS > maxSafeJSONInteger {
 		return errors.New("development run capability time bounds are invalid")
 	}
 	switch claims.Audience {
 	case AudienceExecutorMCP:
 		if !validDevelopmentUUID(claims.ExecutorID) || !developmentDigestPattern.MatchString(claims.ToolCatalogDigest) ||
 			claims.ExpectedRunVersion < 1 || claims.ExpectedRunVersion > maxSafeJSONInteger ||
-			claims.ExpectedRunAttemptVersion < 1 || claims.ExpectedRunAttemptVersion > maxSafeJSONInteger {
+			claims.ExpectedRunAttemptVersion < 1 || claims.ExpectedRunAttemptVersion > maxSafeJSONInteger ||
+			claims.MaxApprovalTTLMillis < 1 || claims.MaxApprovalTTLMillis > maximumApprovalTTLMS {
 			return errors.New("development executor capability authority is invalid")
 		}
 		if claims.Model != "" || claims.Provider != "" {
@@ -205,7 +210,7 @@ func (claims Claims) Validate() error {
 			return errors.New("development model capability route is invalid")
 		}
 		if claims.ExecutorID != "" || claims.ToolCatalogDigest != "" ||
-			claims.ExpectedRunVersion != 0 || claims.ExpectedRunAttemptVersion != 0 {
+			claims.ExpectedRunVersion != 0 || claims.ExpectedRunAttemptVersion != 0 || claims.MaxApprovalTTLMillis != 0 {
 			return errors.New("development model capability contains executor authority")
 		}
 	default:

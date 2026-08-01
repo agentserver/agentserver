@@ -1,6 +1,7 @@
 export const EVENT_CURSOR_NAME = 'agentserver.event_cursor'
 export const TOOL_PROGRESS_NAME = 'agentserver.tool_progress'
 export const RUN_STATUS_NAME = 'agentserver.run_status'
+export const APPROVAL_NAME = 'agentserver.approval'
 export const A2UI_OPERATIONS_NAME = 'a2ui.operations'
 export const A2UI_VERSION = 'v0.9'
 export const A2UI_BASIC_CATALOG = 'https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json'
@@ -154,6 +155,8 @@ export function createViewState() {
     messages: [],
     reasoning: [],
     tools: [],
+    approvals: {},
+    approvalOrder: [],
     surfaces: {},
     surfaceOrder: [],
     snapshot: null,
@@ -315,6 +318,8 @@ function reduceCustomEvent(state, event) {
       }
       return { ...state, status: 'cancelling', error: null }
     }
+    case APPROVAL_NAME:
+      return reduceApprovalAuthority(state, event.value)
     case A2UI_OPERATIONS_NAME: {
       const applied = applyA2UIOperations(state.surfaces, state.surfaceOrder, event.value)
       return { ...state, surfaces: applied.surfaces, surfaceOrder: applied.surfaceOrder }
@@ -322,6 +327,102 @@ function reduceCustomEvent(state, event) {
     default:
       return state
   }
+}
+
+function reduceApprovalAuthority(state, value) {
+  if (!isRecord(value)) throw new Error('invalid canonical approval payload')
+  const approvalID = requireCanonicalUUID('approvalId', value.approvalId)
+  const executionID = requireCanonicalUUID('executionId', value.executionId)
+  const runID = requireCanonicalUUID('runId', value.runId)
+  const runAttemptID = requireCanonicalUUID('runAttemptId', value.runAttemptId)
+  const nonce = requireCanonicalUUID('approval nonce', value.nonce)
+  if (state.runID && runID !== state.runID) throw new Error('approval escaped the active run')
+  if (!Number.isSafeInteger(value.runAttemptGeneration) || value.runAttemptGeneration < 1 ||
+      !Number.isSafeInteger(value.version) || value.version < 1) {
+    throw new Error('approval generation and version must be positive safe integers')
+  }
+  const toolName = requireText('approval toolName', value.toolName)
+  if (toolName.length > 128) throw new Error('approval toolName exceeds 128 characters')
+  const status = requireText('approval status', value.status)
+  if (!['pending', 'approved', 'denied', 'expired', 'cancelled', 'consumed'].includes(status)) {
+    throw new Error('approval status is unsupported')
+  }
+  const decision = value.decision === undefined ? '' : requireString('approval decision', value.decision)
+  const approverID = value.approverId === undefined ? '' : requireString('approval approverId', value.approverId)
+  validateApprovalOutcome(status, decision, approverID)
+  if (!isRecord(value.contextDigest) ||
+      !hasExactObjectKeys(value.contextDigest, ['domain', 'canonicalizerVersion', 'sha256']) ||
+      value.contextDigest.domain !== 'approval-context' || value.contextDigest.canonicalizerVersion !== 'rfc8785-v1' ||
+      typeof value.contextDigest.sha256 !== 'string' || !/^[0-9a-f]{64}$/u.test(value.contextDigest.sha256) ||
+      /^0{64}$/u.test(value.contextDigest.sha256)) {
+    throw new Error('approval contextDigest is invalid')
+  }
+  const expiresAt = requireText('approval expiresAt', value.expiresAt)
+  if (expiresAt.length > 64 || Number.isNaN(Date.parse(expiresAt))) throw new Error('approval expiresAt is invalid')
+
+  const approval = {
+    approvalId: approvalID,
+    executionId: executionID,
+    runId: runID,
+    runAttemptId: runAttemptID,
+    runAttemptGeneration: value.runAttemptGeneration,
+    nonce,
+    contextDigest: cloneValue(value.contextDigest),
+    toolName,
+    status,
+    decision,
+    approverId: approverID,
+    expiresAt,
+    version: value.version,
+  }
+  const existing = state.approvals[approvalID]
+  if (existing) {
+    for (const field of ['executionId', 'runId', 'runAttemptId', 'runAttemptGeneration', 'nonce', 'toolName', 'expiresAt']) {
+      if (existing[field] !== approval[field]) throw new Error(`approval ${approvalID} changed immutable ${field}`)
+    }
+    if (JSON.stringify(existing.contextDigest) !== JSON.stringify(approval.contextDigest)) {
+      throw new Error(`approval ${approvalID} changed immutable contextDigest`)
+    }
+    if (approval.version < existing.version) throw new Error(`approval ${approvalID} version moved backwards`)
+    if (approval.version === existing.version) {
+      if (approval.status !== existing.status || approval.decision !== existing.decision || approval.approverId !== existing.approverId) {
+        throw new Error(`approval ${approvalID} reused a version for different state`)
+      }
+      return state
+    }
+    if (!validApprovalTransition(existing.status, approval.status)) {
+      throw new Error(`approval ${approvalID} has invalid ${existing.status} to ${approval.status} transition`)
+    }
+  }
+  const approvals = { ...state.approvals, [approvalID]: approval }
+  const approvalOrder = existing ? state.approvalOrder : [...state.approvalOrder, approvalID]
+  return { ...state, approvals, approvalOrder }
+}
+
+function validateApprovalOutcome(status, decision, approverID) {
+  if (status === 'pending') {
+    if (decision !== '' || approverID !== '') throw new Error('pending approval contains decision evidence')
+    return
+  }
+  if (status === 'approved' || status === 'consumed') {
+    if (decision !== 'approve') throw new Error(`${status} approval must contain approve`)
+    requireCanonicalUUID('approval approverId', approverID)
+    return
+  }
+  if (status === 'denied') {
+    if (decision !== 'deny') throw new Error('denied approval must contain deny')
+    requireCanonicalUUID('approval approverId', approverID)
+    return
+  }
+  if ((decision === '') !== (approverID === '')) throw new Error(`${status} approval has partial decision evidence`)
+  if (decision !== '' && decision !== 'approve') throw new Error(`${status} approval can preserve only approve evidence`)
+  if (approverID !== '') requireCanonicalUUID('approval approverId', approverID)
+}
+
+function validApprovalTransition(from, to) {
+  if (from === 'pending') return ['approved', 'denied', 'expired', 'cancelled'].includes(to)
+  if (from === 'approved') return ['consumed', 'expired', 'cancelled'].includes(to)
+  return false
 }
 
 export function applyA2UIOperations(currentSurfaces, currentOrder, operations) {
@@ -459,6 +560,18 @@ function isRecord(value) {
 function requireText(label, value) {
   if (typeof value !== 'string' || value.length < 1 || /[\0\r\n]/u.test(value)) throw new Error(`${label} must be non-empty bounded text`)
   return value
+}
+
+function requireCanonicalUUID(label, value) {
+  validateScopeID(label, value)
+  if (value === '00000000-0000-0000-0000-000000000000') throw new Error(`${label} must not be the zero UUID`)
+  return value
+}
+
+function hasExactObjectKeys(value, expected) {
+  const actual = Object.keys(value).sort()
+  const wanted = [...expected].sort()
+  return actual.length === wanted.length && actual.every((key, index) => key === wanted[index])
 }
 
 function safeObjectKey(label, value) {

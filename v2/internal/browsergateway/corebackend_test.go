@@ -93,6 +93,47 @@ func TestCoreRunBackendForwardsExplicitCancelWithoutIdempotencyOrBody(t *testing
 	}
 }
 
+func TestCoreRunBackendForwardsApprovalDecisionWithExactAuthority(t *testing.T) {
+	digest := corecontract.CanonicalJSONDigest{
+		Domain: "approval-context", CanonicalizerVersion: "rfc8785-v1", SHA256: strings.Repeat("a", 64),
+	}
+	approvalID := "80000000-0000-4000-8000-000000000008"
+	nonce := "90000000-0000-4000-8000-000000000009"
+	client := &http.Client{Transport: browserRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodPost || request.URL.Path != corecontract.DecideUserApprovalPath(projectorWorkspaceID, approvalID) ||
+			request.Header.Get("Authorization") != "Bearer user-token" || request.Header.Get("Content-Type") != "application/json" ||
+			request.Header.Get("Idempotency-Key") != "" {
+			t.Fatalf("approval request = %s %s headers=%v", request.Method, request.URL, request.Header)
+		}
+		var input corecontract.DecideUserApprovalRequest
+		if err := json.NewDecoder(request.Body).Decode(&input); err != nil || input.Decision != "approve" ||
+			input.Nonce != nonce || input.ContextDigest != digest || input.ExpectedApprovalVersion != 1 {
+			t.Fatalf("approval body = %+v, %v", input, err)
+		}
+		now := time.Date(2026, 7, 31, 17, 0, 0, 0, time.UTC)
+		return browserJSONResponse(request, http.StatusOK, corecontract.DecideUserApprovalResponse{
+			WorkspaceID: projectorWorkspaceID, ExecutionID: "70000000-0000-4000-8000-000000000007",
+			ExecutionStatus: "pending_approval", ExecutionVersion: 2, Changed: true,
+			Approval: corecontract.ApprovalState{
+				ApprovalID: approvalID, ExecutionID: "70000000-0000-4000-8000-000000000007",
+				RunID: projectorRunID, RunAttemptID: "50000000-0000-4000-8000-000000000005",
+				RunAttemptGeneration: 1, Nonce: nonce, RequesterID: "gateway-1",
+				ApproverID: "10000000-0000-4000-8000-000000000010", Decision: "approve",
+				ContextDigest: digest, Status: "approved", ExpiresAt: now.Add(time.Minute),
+				Version: 2, CreatedAt: now, UpdatedAt: now,
+			},
+		}), nil
+	})}
+	backend, _ := NewCoreRunBackend("https://core.agentserver.local", client)
+	result, err := backend.DecideApproval(t.Context(), DecideApprovalRequest{
+		BearerToken: "user-token", WorkspaceID: projectorWorkspaceID, ApprovalID: approvalID,
+		Decision: "approve", Nonce: nonce, ContextDigest: digest, ExpectedApprovalVersion: 1,
+	})
+	if err != nil || result.Approval.Status != "approved" || result.ExecutionStatus != "pending_approval" || !result.Changed {
+		t.Fatalf("DecideApproval() = %+v, %v", result, err)
+	}
+}
+
 func TestCoreRunBackendRejectsNonPostCancelState(t *testing.T) {
 	client := &http.Client{Transport: browserRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		return browserJSONResponse(request, http.StatusOK, corecontract.CancelUserRunResponse{

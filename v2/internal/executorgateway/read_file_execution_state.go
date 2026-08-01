@@ -40,11 +40,22 @@ func newReadFileExecutionState(authority ExecutionAuthority, transitions *Execut
 }
 
 func (state *readFileExecutionState) Prepare(ctx context.Context) error {
+	execution, err := state.PrepareExecution(ctx)
+	if err != nil {
+		return err
+	}
+	if execution.Status != "approved" {
+		return fmt.Errorf("read-file execution policy status is %q, want approved", execution.Status)
+	}
+	return state.PrepareOperation(ctx)
+}
+
+func (state *readFileExecutionState) PrepareExecution(ctx context.Context) (ExecutionState, error) {
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	record, err := state.allocateRecordLocked("prepare execution")
 	if err != nil {
-		return err
+		return ExecutionState{}, err
 	}
 	prepared, err := state.authority.PrepareExecution(ctx, PrepareExecutionRequest{
 		ExecutionID:               state.plan.Read.Routing.ExecutionID,
@@ -70,15 +81,33 @@ func (state *readFileExecutionState) Prepare(ctx context.Context) error {
 		Record:                    record,
 	})
 	if err != nil {
-		return fmt.Errorf("prepare read-file execution: %w", err)
+		return ExecutionState{}, fmt.Errorf("prepare read-file execution: %w", err)
 	}
 	if err := state.acceptExecutionLocked(prepared.Execution); err != nil {
-		return fmt.Errorf("prepare read-file execution response: %w", err)
+		return ExecutionState{}, fmt.Errorf("prepare read-file execution response: %w", err)
+	}
+	return state.execution, nil
+}
+
+func (state *readFileExecutionState) AcceptAuthorizedExecution(execution ExecutionState) error {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if err := state.acceptExecutionLocked(execution); err != nil {
+		return fmt.Errorf("accept authorized read-file execution: %w", err)
 	}
 	if state.execution.Status != "approved" {
-		return fmt.Errorf("read-file execution policy status is %q, want approved", state.execution.Status)
+		return fmt.Errorf("authorized read-file execution status is %q, want approved", state.execution.Status)
 	}
-	record, err = state.allocateRecordLocked("prepare fs_read")
+	return nil
+}
+
+func (state *readFileExecutionState) PrepareOperation(ctx context.Context) error {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.execution.Status != "approved" {
+		return fmt.Errorf("read-file operation requires approved execution, got %q", state.execution.Status)
+	}
+	record, err := state.allocateRecordLocked("prepare fs_read")
 	if err != nil {
 		return err
 	}

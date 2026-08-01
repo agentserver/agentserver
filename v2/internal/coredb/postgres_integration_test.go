@@ -460,6 +460,7 @@ func openPostgresTestConnection(t *testing.T, connectionConfig *pgx.ConnConfig) 
 func assertDatabaseObjects(t *testing.T, connection *pgx.Conn, schema string) {
 	t.Helper()
 	wantTables := map[string]bool{
+		"approvals":                    false,
 		"attempt_leases":               false,
 		"brain_tool_catalogs":          false,
 		"checkpoints":                  false,
@@ -511,6 +512,12 @@ WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, schema)
 	}
 
 	wantConstraints := map[string]bool{
+		"approvals_execution_unique":                              false,
+		"approvals_nonce_unique":                                  false,
+		"approvals_execution_scope_fk":                            false,
+		"approvals_context_hash_sha256":                           false,
+		"approvals_decision_evidence_matches_status":              false,
+		"executions_identity_attempt_scope_unique":                false,
 		"runs_session_workspace_fk":                               false,
 		"sessions_active_run_same_session_fk":                     false,
 		"runs_idempotency_unique":                                 false,
@@ -596,6 +603,7 @@ WHERE constraint_schema = $1`, schema)
 	}
 
 	wantIndexes := map[string]bool{
+		"approvals_run_status_expiry_idx":                    false,
 		"brain_tool_catalogs_session_created_idx":            false,
 		"checkpoints_session_created_idx":                    false,
 		"runs_session_status_created_idx":                    false,

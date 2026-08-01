@@ -214,9 +214,11 @@ func TestExecutorMCPReadFileUsesFullCatalogAndBoundedExecutor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	readFileConfig := DefaultReadFileExecutorConfig(t.Context())
+	configureTestReadFilePolicy(t, &readFileConfig)
 	readFile, err := NewReadFileExecutor(
 		resolver, authority, dispatcher, identities, transitions,
-		DefaultReadFileExecutorConfig(t.Context()),
+		readFileConfig,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -495,10 +497,14 @@ func newTestExecutorMCPHandler(t *testing.T, registry EnvironmentRegistry, princ
 
 func testExecutorMCPPrincipal(capabilityID string) ExecutorMCPPrincipal {
 	return ExecutorMCPPrincipal{
-		CapabilityID:      capabilityID,
-		WorkspaceID:       testMCPWorkspaceID,
-		ExecutorID:        testExecutorID,
-		ToolCatalogDigest: strings.Repeat("a", 64),
+		CapabilityID:        capabilityID,
+		WorkspaceID:         testMCPWorkspaceID,
+		ActorID:             "44000000-0000-4000-8000-000000000004",
+		ExecutorID:          testExecutorID,
+		ToolCatalogDigest:   strings.Repeat("a", 64),
+		MaxApprovalTTL:      time.Minute,
+		RunDeadline:         time.Now().Add(time.Hour),
+		CapabilityExpiresAt: time.Now().Add(2 * time.Hour),
 		Run: ExecutorMCPRunContext{
 			RunID:                     testMCPRunID,
 			RunAttemptID:              testMCPAttemptID,

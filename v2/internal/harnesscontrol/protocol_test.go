@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -105,9 +106,9 @@ func TestHarnessControlRejectsUnknownMissingNullDuplicateAndOversized(t *testing
 	}{
 		{name: "unknown", raw: strings.TrimSuffix(string(validRaw), "}") + `,"future":true}`, want: "unknown field"},
 		{name: "missing", raw: `{"type":"ack","controlSessionId":"20000000-0000-4000-8000-000000000002","runAttemptGeneration":3}`, want: "required field"},
-		{name: "null", raw: `{"type":"hello","protocolVersions":["1.2"],"workerInstanceId":"30000000-0000-4000-8000-000000000003","workspaceId":"40000000-0000-4000-8000-000000000004","sessionId":"41000000-0000-4000-8000-000000000004","runId":"42000000-0000-4000-8000-000000000004","runAttemptId":"43000000-0000-4000-8000-000000000004","runAttemptGeneration":3,"holderId":"pool-holder","manifestDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resume":null}`, want: "cannot be null"},
-		{name: "nested unknown", raw: `{"type":"hello","protocolVersions":["1.2"],"workerInstanceId":"30000000-0000-4000-8000-000000000003","workspaceId":"40000000-0000-4000-8000-000000000004","sessionId":"41000000-0000-4000-8000-000000000004","runId":"42000000-0000-4000-8000-000000000004","runAttemptId":"43000000-0000-4000-8000-000000000004","runAttemptGeneration":3,"holderId":"pool-holder","manifestDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resume":{"poolInstanceId":"10000000-0000-4000-8000-000000000001","controlSessionId":"20000000-0000-4000-8000-000000000002","runAttemptGeneration":3,"workerSentThrough":1,"workerReceivedThrough":0,"future":true}}`, want: "unknown field"},
-		{name: "nested missing", raw: `{"type":"hello","protocolVersions":["1.2"],"workerInstanceId":"30000000-0000-4000-8000-000000000003","workspaceId":"40000000-0000-4000-8000-000000000004","sessionId":"41000000-0000-4000-8000-000000000004","runId":"42000000-0000-4000-8000-000000000004","runAttemptId":"43000000-0000-4000-8000-000000000004","runAttemptGeneration":3,"holderId":"pool-holder","manifestDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resume":{"poolInstanceId":"10000000-0000-4000-8000-000000000001","controlSessionId":"20000000-0000-4000-8000-000000000002","runAttemptGeneration":3,"workerSentThrough":1}}`, want: "required field"},
+		{name: "null", raw: `{"type":"hello","protocolVersions":["1.3"],"workerInstanceId":"30000000-0000-4000-8000-000000000003","workspaceId":"40000000-0000-4000-8000-000000000004","sessionId":"41000000-0000-4000-8000-000000000004","runId":"42000000-0000-4000-8000-000000000004","runAttemptId":"43000000-0000-4000-8000-000000000004","runAttemptGeneration":3,"holderId":"pool-holder","manifestDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resume":null}`, want: "cannot be null"},
+		{name: "nested unknown", raw: `{"type":"hello","protocolVersions":["1.3"],"workerInstanceId":"30000000-0000-4000-8000-000000000003","workspaceId":"40000000-0000-4000-8000-000000000004","sessionId":"41000000-0000-4000-8000-000000000004","runId":"42000000-0000-4000-8000-000000000004","runAttemptId":"43000000-0000-4000-8000-000000000004","runAttemptGeneration":3,"holderId":"pool-holder","manifestDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resume":{"poolInstanceId":"10000000-0000-4000-8000-000000000001","controlSessionId":"20000000-0000-4000-8000-000000000002","runAttemptGeneration":3,"workerSentThrough":1,"workerReceivedThrough":0,"future":true}}`, want: "unknown field"},
+		{name: "nested missing", raw: `{"type":"hello","protocolVersions":["1.3"],"workerInstanceId":"30000000-0000-4000-8000-000000000003","workspaceId":"40000000-0000-4000-8000-000000000004","sessionId":"41000000-0000-4000-8000-000000000004","runId":"42000000-0000-4000-8000-000000000004","runAttemptId":"43000000-0000-4000-8000-000000000004","runAttemptGeneration":3,"holderId":"pool-holder","manifestDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resume":{"poolInstanceId":"10000000-0000-4000-8000-000000000001","controlSessionId":"20000000-0000-4000-8000-000000000002","runAttemptGeneration":3,"workerSentThrough":1}}`, want: "required field"},
 		{name: "duplicate", raw: `{"type":"ack","type":"ack","controlSessionId":"20000000-0000-4000-8000-000000000002","runAttemptGeneration":3,"ack":0}`, want: "duplicate"},
 		{name: "payload array", raw: `{"type":"event","controlSessionId":"20000000-0000-4000-8000-000000000002","sessionSeq":1,"ack":0,"runAttemptGeneration":3,"payload":[]}`, want: "must be an object"},
 	}
@@ -137,6 +138,14 @@ func TestHarnessControlEventAndInterruptSemanticsFailClosed(t *testing.T) {
 		},
 		ExecutorMCPProgressEvent{
 			Kind: EventKindExecutorMCPProgress, CallID: "call-1", Progress: 3, Total: 10, Message: "running",
+		},
+		ApprovalRequestEvent{
+			Kind: EventKindApprovalRequest, RunID: testRunID, CallID: "call-approval-1",
+			RunAttemptGeneration: 3, ToolCatalogDigest: strings.Repeat("b", 64),
+			ExecutionID: "44000000-0000-4000-8000-000000000004",
+			ApprovalID:  "45000000-0000-4000-8000-000000000004",
+			Nonce:       "46000000-0000-4000-8000-000000000004", ApprovalVersion: 1,
+			ContextHash: strings.Repeat("c", 64), ExpiresAt: time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC),
 		},
 		TurnTerminalEvent{
 			Kind: EventKindTurnTerminal, ThreadID: "thread-1", TurnID: "turn-1", Status: "completed",
@@ -187,6 +196,16 @@ func TestHarnessControlEventAndInterruptSemanticsFailClosed(t *testing.T) {
 		Kind: CommandKindInterrupt, Reason: "retry", GraceMillis: 1000, Message: "try again",
 	}), limits); err == nil || !strings.Contains(err.Error(), "not negotiated") {
 		t.Fatalf("unsafe interrupt reason error = %v", err)
+	}
+	if _, err := DecodeCommandPayload(mustPayload(t, ApprovalOutcomeCommand{
+		Kind: CommandKindApprovalOutcome, RunID: testRunID, CallID: "call-approval-1",
+		RunAttemptGeneration: 3, ToolCatalogDigest: strings.Repeat("b", 64),
+		ExecutionID: "44000000-0000-4000-8000-000000000004",
+		ApprovalID:  "45000000-0000-4000-8000-000000000004",
+		Nonce:       "46000000-0000-4000-8000-000000000004",
+		ContextHash: strings.Repeat("c", 64), Status: "approved", ApprovalVersion: 2,
+	}), limits); err != nil {
+		t.Fatalf("canonical approval outcome error = %v", err)
 	}
 }
 

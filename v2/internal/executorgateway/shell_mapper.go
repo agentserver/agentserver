@@ -126,9 +126,12 @@ type ShellV1Plan struct {
 	Directives     agentxconn.DispatchDirectives
 }
 
-func MapShellV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal, toolCallID string, environment ResolvedEnvironment, identities ShellV1Identities) (ShellV1Plan, error) {
+func MapShellV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal, toolCallID string, environment ResolvedEnvironment, policy ExecutionPolicyResolution, identities ShellV1Identities) (ShellV1Plan, error) {
 	if err := validateExecutorMCPPrincipal(principal); err != nil {
 		return ShellV1Plan{}, fmt.Errorf("shell principal: %w", err)
+	}
+	if err := validateExecutionPolicyResolution(policy); err != nil {
+		return ShellV1Plan{}, fmt.Errorf("shell policy: %w", err)
 	}
 	if toolCallID == "" || len(toolCallID) > 256 || !utf8.ValidString(toolCallID) || strings.ContainsRune(toolCallID, 0) {
 		return ShellV1Plan{}, errors.New("app-server tool call ID must contain between 1 and 256 valid UTF-8 bytes without NUL")
@@ -303,8 +306,8 @@ func MapShellV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal, to
 		ToolSchema:     append(json.RawMessage(nil), tool.InputSchema...),
 		OperationPlan:  operationPlan,
 		PolicyContext:  policyContext,
-		PolicyDecision: "allow",
-		PolicyVersion:  ShellV1PolicyVersion,
+		PolicyDecision: policy.Decision,
+		PolicyVersion:  policy.Version,
 		ToolCallID:     toolCallID,
 		Environment:    environment,
 		ProcessID:      identities.ProcessID,

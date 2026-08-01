@@ -111,11 +111,6 @@ func executeWorker(ctx context.Context, configPath string, bootstrap, prompt, ch
 		BootstrapPipe: bootstrap, PromptPipe: prompt, CheckpointPipe: checkpoint,
 		VerificationKeyring: deployment.keyring, RuntimePreparer: deployment.preparer,
 		ControlHTTPClient: deployment.controlClient, ExecutorHTTPClient: deployment.executorClient,
-		ElicitationHandler: func(context.Context, harnessworker.ElicitationRequest) (harnessworker.ElicitationDecision, error) {
-			// Approval transport is not part of harness-control 1.2 yet. Decline
-			// deterministically; never infer approval in the worker.
-			return harnessworker.ElicitationDecision{Action: harnessworker.ApprovalDecline}, nil
-		},
 		ProgressHandler: func(context.Context, harnessworker.ProgressEvent) error { return nil },
 		NotificationHandler: func(context.Context, codexwire.Message) error {
 			// Runtime notifications and progress are forwarded to control by the

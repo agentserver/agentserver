@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/events"
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/runevent"
 )
 
@@ -22,20 +23,28 @@ type fakeReadResult struct {
 }
 
 type fakeRunBackend struct {
-	startResult  StartRunResult
-	startErr     error
-	reads        []fakeReadResult
-	cancelResult CancelRunResult
-	cancelErr    error
+	startResult    StartRunResult
+	startErr       error
+	reads          []fakeReadResult
+	cancelResult   CancelRunResult
+	cancelErr      error
+	approvalResult DecideApprovalResult
+	approvalErr    error
 
-	startRequests  []StartRunRequest
-	readRequests   []ReadRunEventsRequest
-	cancelRequests []CancelRunRequest
+	startRequests    []StartRunRequest
+	readRequests     []ReadRunEventsRequest
+	cancelRequests   []CancelRunRequest
+	approvalRequests []DecideApprovalRequest
 }
 
 func (backend *fakeRunBackend) CancelRun(_ context.Context, request CancelRunRequest) (CancelRunResult, error) {
 	backend.cancelRequests = append(backend.cancelRequests, request)
 	return backend.cancelResult, backend.cancelErr
+}
+
+func (backend *fakeRunBackend) DecideApproval(_ context.Context, request DecideApprovalRequest) (DecideApprovalResult, error) {
+	backend.approvalRequests = append(backend.approvalRequests, request)
+	return backend.approvalResult, backend.approvalErr
 }
 
 func TestAGUIHandlerForwardsOnlyExplicitAuthenticatedCancel(t *testing.T) {
@@ -96,6 +105,70 @@ func TestAGUIHandlerRejectsInvalidCancelBackendResult(t *testing.T) {
 	handler.Routes().ServeHTTP(response, request)
 	if response.Code != http.StatusBadGateway || len(backend.cancelRequests) != 1 {
 		t.Fatalf("invalid backend cancel = %d %s requests=%+v", response.Code, response.Body.String(), backend.cancelRequests)
+	}
+}
+
+func TestAGUIHandlerForwardsApprovalDecisionOnlyFromAuthenticatedResourceCommand(t *testing.T) {
+	approvalID := "80000000-0000-4000-8000-000000000008"
+	nonce := "90000000-0000-4000-8000-000000000009"
+	digest := corecontract.CanonicalJSONDigest{
+		Domain: "approval-context", CanonicalizerVersion: "rfc8785-v1", SHA256: strings.Repeat("a", 64),
+	}
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	backend := &fakeRunBackend{approvalResult: DecideApprovalResult{
+		WorkspaceID: projectorWorkspaceID, ExecutionID: "70000000-0000-4000-8000-000000000007",
+		ExecutionStatus: "pending_approval", ExecutionVersion: 2, Changed: true,
+		Approval: corecontract.ApprovalState{
+			ApprovalID: approvalID, ExecutionID: "70000000-0000-4000-8000-000000000007",
+			RunID: projectorRunID, RunAttemptID: "50000000-0000-4000-8000-000000000005",
+			RunAttemptGeneration: 1, Nonce: nonce, RequesterID: "gateway-1",
+			ApproverID: "10000000-0000-4000-8000-000000000010", Decision: "approve",
+			ContextDigest: digest, Status: "approved", ExpiresAt: now.Add(time.Minute),
+			Version: 2, CreatedAt: now, UpdatedAt: now,
+		},
+	}}
+	handler := newTestHandler(t, backend)
+	body := `{"decision":"approve","nonce":"` + nonce + `","contextDigest":{"domain":"approval-context","canonicalizerVersion":"rfc8785-v1","sha256":"` + strings.Repeat("a", 64) + `"},"expectedApprovalVersion":1}`
+	request := httptest.NewRequest(http.MethodPost, "/v2/workspaces/"+projectorWorkspaceID+"/approvals/"+approvalID+":decide", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer user-token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" || len(backend.approvalRequests) != 1 {
+		t.Fatalf("approval response = %d %s headers=%v requests=%+v", response.Code, response.Body.String(), response.Header(), backend.approvalRequests)
+	}
+	forwarded := backend.approvalRequests[0]
+	if forwarded.BearerToken != "user-token" || forwarded.WorkspaceID != projectorWorkspaceID || forwarded.ApprovalID != approvalID ||
+		forwarded.Decision != "approve" || forwarded.Nonce != nonce || forwarded.ContextDigest != digest || forwarded.ExpectedApprovalVersion != 1 {
+		t.Fatalf("approval request = %+v", forwarded)
+	}
+	if len(backend.startRequests) != 0 || len(backend.readRequests) != 0 || len(backend.cancelRequests) != 0 {
+		t.Fatalf("approval crossed another backend: starts=%+v reads=%+v cancels=%+v", backend.startRequests, backend.readRequests, backend.cancelRequests)
+	}
+
+	for _, test := range []struct {
+		name       string
+		path       string
+		body       string
+		authorize  bool
+		wantStatus int
+	}{
+		{name: "missing bearer", path: "/v2/workspaces/" + projectorWorkspaceID + "/approvals/" + approvalID + ":decide", body: body, wantStatus: http.StatusUnauthorized},
+		{name: "query", path: "/v2/workspaces/" + projectorWorkspaceID + "/approvals/" + approvalID + ":decide?force=true", body: body, authorize: true, wantStatus: http.StatusBadRequest},
+		{name: "unknown field", path: "/v2/workspaces/" + projectorWorkspaceID + "/approvals/" + approvalID + ":decide", body: strings.Replace(body, `"decision":"approve"`, `"decision":"approve","authority":true`, 1), authorize: true, wantStatus: http.StatusBadRequest},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body))
+			request.Header.Set("Content-Type", "application/json")
+			if test.authorize {
+				request.Header.Set("Authorization", "Bearer user-token")
+			}
+			response := httptest.NewRecorder()
+			handler.Routes().ServeHTTP(response, request)
+			if response.Code != test.wantStatus || len(backend.approvalRequests) != 1 {
+				t.Fatalf("invalid approval = %d %s requests=%+v", response.Code, response.Body.String(), backend.approvalRequests)
+			}
+		})
 	}
 }
 

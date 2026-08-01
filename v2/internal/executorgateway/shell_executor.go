@@ -43,6 +43,8 @@ type ShellExecutorConfig struct {
 	Now            func() time.Time
 	TerminalGrace  time.Duration
 	MaxOutputBytes int
+	PolicyResolver ExecutionPolicyResolver
+	ApprovalGate   ExecutionApprovalGate
 }
 
 func DefaultShellExecutorConfig(lifecycle context.Context) ShellExecutorConfig {
@@ -56,6 +58,7 @@ type ShellExecuteRequest struct {
 	Principal  ExecutorMCPPrincipal
 	ToolCallID string
 	Arguments  json.RawMessage
+	Elicitor   ApprovalElicitor
 }
 
 // ShellExecutor owns one terminal-only shell vertical slice. Once core grants
@@ -80,6 +83,9 @@ func NewShellExecutor(resolver *EnvironmentResolver, authority ExecutionAuthorit
 	}
 	if config.Now == nil {
 		return nil, errors.New("shell executor clock is required")
+	}
+	if config.PolicyResolver == nil || config.ApprovalGate == nil {
+		return nil, errors.New("shell execution policy resolver and approval gate are required")
 	}
 	if config.TerminalGrace <= 0 || config.TerminalGrace > maximumShellTerminalGrace {
 		return nil, fmt.Errorf("shell terminal grace must be positive and at most %s", maximumShellTerminalGrace)
@@ -115,7 +121,13 @@ func (executor *ShellExecutor) Execute(ctx context.Context, request ShellExecute
 	if err != nil {
 		return ShellV1Result{}, fmt.Errorf("allocate shell identities: %w", err)
 	}
-	plan, err := MapShellV1(request.Arguments, request.Principal, request.ToolCallID, environment, identities)
+	policy, err := executor.config.PolicyResolver.ResolveExecutionPolicy(ctx, ExecutionPolicyInput{
+		Principal: request.Principal, ToolName: "shell", Arguments: append(json.RawMessage(nil), request.Arguments...), Environment: environment,
+	})
+	if err != nil {
+		return ShellV1Result{}, fmt.Errorf("resolve shell execution policy: %w", err)
+	}
+	plan, err := MapShellV1(request.Arguments, request.Principal, request.ToolCallID, environment, policy, identities)
 	if err != nil {
 		return ShellV1Result{}, err
 	}
@@ -123,7 +135,29 @@ func (executor *ShellExecutor) Execute(ctx context.Context, request ShellExecute
 	if err != nil {
 		return ShellV1Result{}, err
 	}
-	if err := state.Prepare(ctx); err != nil {
+	prepared, err := state.PrepareExecution(ctx)
+	if err != nil {
+		return ShellV1Result{}, err
+	}
+	switch prepared.Status {
+	case "denied":
+		return ShellV1Result{}, fmt.Errorf("%w: shell", ErrExecutionPolicyDenied)
+	case "pending_approval":
+		authorized, authorizeErr := executor.config.ApprovalGate.AuthorizeExecution(ctx, ApprovalGateRequest{
+			Principal: request.Principal, Execution: prepared, ToolName: "shell",
+			ToolCallID: request.ToolCallID, Elicitor: request.Elicitor,
+		})
+		if authorizeErr != nil {
+			return ShellV1Result{}, authorizeErr
+		}
+		if err := state.AcceptAuthorizedExecution(authorized); err != nil {
+			return ShellV1Result{}, err
+		}
+	case "approved":
+	default:
+		return ShellV1Result{}, fmt.Errorf("prepared shell execution has unsupported policy status %q", prepared.Status)
+	}
+	if err := state.PrepareOperations(ctx); err != nil {
 		return ShellV1Result{}, err
 	}
 	begin, err := state.BeginStart(ctx)

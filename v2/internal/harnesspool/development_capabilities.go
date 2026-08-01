@@ -95,7 +95,8 @@ func (source *DevelopmentAttemptRuntimeCapabilitySource) IssueAttemptRuntimeCapa
 
 	now := source.config.Now().UTC()
 	maximumDuration := time.Duration(prepared.Manifest.Limits.MaxRunDurationMS) * time.Millisecond
-	expiresAt := now.Add(maximumDuration + source.config.ExpiryGrace)
+	runDeadline := now.Add(maximumDuration)
+	expiresAt := runDeadline.Add(source.config.ExpiryGrace)
 	claim := prepared.Scheduled.Claim
 	common := runcapability.Claims{
 		Version:     runcapability.DevelopmentVersion,
@@ -103,7 +104,8 @@ func (source *DevelopmentAttemptRuntimeCapabilitySource) IssueAttemptRuntimeCapa
 		RunID: prepared.Manifest.RunID, RunAttemptID: prepared.Manifest.RunAttemptID,
 		RunAttemptGeneration: prepared.Manifest.RunAttemptGeneration,
 		ActorID:              claim.Run.ActorID, HolderID: prepared.Manifest.HolderID,
-		IssuedAtUnixMS: now.UnixMilli(), ExpiresAtUnixMS: expiresAt.UnixMilli(),
+		IssuedAtUnixMS: now.UnixMilli(), RunDeadlineUnixMS: runDeadline.UnixMilli(),
+		ExpiresAtUnixMS: expiresAt.UnixMilli(),
 	}
 	executorClaims := common
 	executorClaims.CapabilityID = executorCapabilityID
@@ -112,6 +114,7 @@ func (source *DevelopmentAttemptRuntimeCapabilitySource) IssueAttemptRuntimeCapa
 	executorClaims.ToolCatalogDigest = prepared.Manifest.ExecutorMCP.CatalogDigest
 	executorClaims.ExpectedRunVersion = claim.Run.Version + 1
 	executorClaims.ExpectedRunAttemptVersion = claim.RunAttempt.Version + 1
+	executorClaims.MaxApprovalTTLMillis = prepared.Manifest.Limits.MaxApprovalTTLMS
 	executorCapability, err := source.codec.Sign(executorClaims)
 	if err != nil {
 		return harnessbootstrap.RuntimeCapabilities{}, fmt.Errorf("sign development executor capability: %w", err)

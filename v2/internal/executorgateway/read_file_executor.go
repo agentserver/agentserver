@@ -27,7 +27,9 @@ type ReadFileV1Result struct {
 }
 
 type ReadFileExecutorConfig struct {
-	Lifecycle context.Context
+	Lifecycle      context.Context
+	PolicyResolver ExecutionPolicyResolver
+	ApprovalGate   ExecutionApprovalGate
 }
 
 func DefaultReadFileExecutorConfig(lifecycle context.Context) ReadFileExecutorConfig {
@@ -38,6 +40,7 @@ type ReadFileExecuteRequest struct {
 	Principal  ExecutorMCPPrincipal
 	ToolCallID string
 	Arguments  json.RawMessage
+	Elicitor   ApprovalElicitor
 }
 
 // ReadFileExecutor owns the complete unary read_file state machine. Once core
@@ -58,6 +61,9 @@ func NewReadFileExecutor(resolver *EnvironmentResolver, authority ExecutionAutho
 	}
 	if config.Lifecycle == nil {
 		return nil, errors.New("read-file executor lifecycle context is required")
+	}
+	if config.PolicyResolver == nil || config.ApprovalGate == nil {
+		return nil, errors.New("read-file execution policy resolver and approval gate are required")
 	}
 	return &ReadFileExecutor{
 		resolver: resolver, authority: authority, dispatcher: dispatcher,
@@ -87,7 +93,13 @@ func (executor *ReadFileExecutor) Execute(ctx context.Context, request ReadFileE
 	if err != nil {
 		return ReadFileV1Result{}, fmt.Errorf("allocate read-file identities: %w", err)
 	}
-	plan, err := MapReadFileV1(request.Arguments, request.Principal, request.ToolCallID, environment, identities)
+	policy, err := executor.config.PolicyResolver.ResolveExecutionPolicy(ctx, ExecutionPolicyInput{
+		Principal: request.Principal, ToolName: "read_file", Arguments: append(json.RawMessage(nil), request.Arguments...), Environment: environment,
+	})
+	if err != nil {
+		return ReadFileV1Result{}, fmt.Errorf("resolve read_file execution policy: %w", err)
+	}
+	plan, err := MapReadFileV1(request.Arguments, request.Principal, request.ToolCallID, environment, policy, identities)
 	if err != nil {
 		return ReadFileV1Result{}, err
 	}
@@ -95,7 +107,29 @@ func (executor *ReadFileExecutor) Execute(ctx context.Context, request ReadFileE
 	if err != nil {
 		return ReadFileV1Result{}, err
 	}
-	if err := state.Prepare(ctx); err != nil {
+	prepared, err := state.PrepareExecution(ctx)
+	if err != nil {
+		return ReadFileV1Result{}, err
+	}
+	switch prepared.Status {
+	case "denied":
+		return ReadFileV1Result{}, fmt.Errorf("%w: read_file", ErrExecutionPolicyDenied)
+	case "pending_approval":
+		authorized, authorizeErr := executor.config.ApprovalGate.AuthorizeExecution(ctx, ApprovalGateRequest{
+			Principal: request.Principal, Execution: prepared, ToolName: "read_file",
+			ToolCallID: request.ToolCallID, Elicitor: request.Elicitor,
+		})
+		if authorizeErr != nil {
+			return ReadFileV1Result{}, authorizeErr
+		}
+		if err := state.AcceptAuthorizedExecution(authorized); err != nil {
+			return ReadFileV1Result{}, err
+		}
+	case "approved":
+	default:
+		return ReadFileV1Result{}, fmt.Errorf("prepared read-file execution has unsupported policy status %q", prepared.Status)
+	}
+	if err := state.PrepareOperation(ctx); err != nil {
 		return ReadFileV1Result{}, err
 	}
 	begin, err := state.Begin(ctx)

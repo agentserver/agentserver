@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   A2UI_BASIC_CATALOG,
+  APPROVAL_NAME,
   SSEDecoder,
   appendUserMessage,
   buildRunRequest,
@@ -117,4 +118,43 @@ test('explicit cancellation remains distinct from a failed run', () => {
   assert.equal(state.error.code, 'user_cancelled')
   assert.equal(isTerminalRunStatus(state.status), true)
   assert.equal(isTerminalRunStatus('cancelling'), false)
+})
+
+test('approval reducer keeps command authority separate from A2UI display data', () => {
+  const runID = '40000000-0000-4000-8000-000000000004'
+  let state = reduceAGUIEvent(createViewState(), { type: 'RUN_STARTED', runId: runID })
+  const pending = {
+    approvalId: '80000000-0000-4000-8000-000000000008',
+    executionId: '70000000-0000-4000-8000-000000000007',
+    runId: runID,
+    runAttemptId: '50000000-0000-4000-8000-000000000005',
+    runAttemptGeneration: 1,
+    nonce: '90000000-0000-4000-8000-000000000009',
+    contextDigest: {
+      domain: 'approval-context', canonicalizerVersion: 'rfc8785-v1',
+      sha256: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    },
+    toolName: 'shell', status: 'pending', decision: '', approverId: '',
+    expiresAt: '2026-07-31T12:10:00Z', version: 1,
+  }
+  state = reduceAGUIEvent(state, { type: 'CUSTOM', name: APPROVAL_NAME, value: pending })
+  assert.deepEqual(state.approvalOrder, [pending.approvalId])
+  assert.equal(state.approvals[pending.approvalId].status, 'pending')
+
+  const approved = {
+    ...pending, status: 'approved', decision: 'approve',
+    approverId: '10000000-0000-4000-8000-000000000010', version: 2,
+  }
+  state = reduceAGUIEvent(state, { type: 'CUSTOM', name: APPROVAL_NAME, value: approved })
+  state = reduceAGUIEvent(state, { type: 'CUSTOM', name: APPROVAL_NAME, value: approved })
+  assert.equal(state.approvals[pending.approvalId].status, 'approved')
+
+  const consumed = { ...approved, status: 'consumed', version: 3 }
+  state = reduceAGUIEvent(state, { type: 'CUSTOM', name: APPROVAL_NAME, value: consumed })
+  assert.equal(state.approvals[pending.approvalId].status, 'consumed')
+  assert.throws(
+    () => reduceAGUIEvent(state, { type: 'CUSTOM', name: APPROVAL_NAME, value: { ...consumed, nonce: '10000000-0000-4000-8000-000000000011', version: 4 } }),
+    /immutable nonce/,
+  )
+  assert.equal(Object.keys(state.surfaces).length, 0)
 })

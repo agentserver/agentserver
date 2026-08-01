@@ -14,6 +14,13 @@ type FileChange struct {
 	Diff string
 }
 
+type ApprovalView struct {
+	ApprovalID string
+	ToolName   string
+	Status     string
+	ExpiresAt  string
+}
+
 // CommandCard returns createSurface, updateComponents, and updateDataModel for
 // one deterministic command-result card.
 func CommandCard(id string, command CommandView) []Message {
@@ -74,5 +81,31 @@ func FileChangeCard(id string, files []FileChange) []Message {
 		{Version: Version, CreateSurface: &CreateSurface{SurfaceID: surfaceID, CatalogID: CatalogID}},
 		{Version: Version, UpdateComponents: &UpdateComponents{SurfaceID: surfaceID, Components: components}},
 		{Version: Version, UpdateDataModel: &UpdateDataModel{SurfaceID: surfaceID, Value: data}},
+	}
+}
+
+// ApprovalCard returns a display-only audit card. The actual approve/deny
+// command remains the separately authenticated resource API; A2UI data is
+// never accepted as dispatch authority.
+func ApprovalCard(eventID string, approval ApprovalView) []Message {
+	surfaceID := "approval-" + eventID
+	return []Message{
+		{Version: Version, CreateSurface: &CreateSurface{SurfaceID: surfaceID, CatalogID: CatalogID}},
+		{Version: Version, UpdateComponents: &UpdateComponents{SurfaceID: surfaceID, Components: []Component{
+			{ID: "root", Component: "Card", Child: "content"},
+			{ID: "content", Component: "Column", Children: []string{"title", "tool", "status", "expiry", "approval"}},
+			{ID: "title", Component: "Text", Text: bind("/title")},
+			{ID: "tool", Component: "Text", Text: bind("/tool")},
+			{ID: "status", Component: "Text", Text: bind("/status")},
+			{ID: "expiry", Component: "Text", Text: bind("/expiry")},
+			{ID: "approval", Component: "Text", Text: bind("/approval")},
+		}}},
+		{Version: Version, UpdateDataModel: &UpdateDataModel{SurfaceID: surfaceID, Value: map[string]string{
+			"title":    "Approval",
+			"tool":     "Tool: " + approval.ToolName,
+			"status":   "Status: " + approval.Status,
+			"expiry":   "Expires: " + approval.ExpiresAt,
+			"approval": "Approval: " + approval.ApprovalID,
+		}}},
 	}
 }

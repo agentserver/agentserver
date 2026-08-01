@@ -18,19 +18,23 @@ import (
 	aguitypes "github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/types"
 	"github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/encoding/sse"
 	"github.com/agentserver/agentserver/v2/internal/braincatalog"
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 )
 
 const (
-	AGUIRoutePattern       = "POST /v2/workspaces/{workspaceId}/sessions/{sessionId}/agui"
-	CancelRoutePattern     = "POST /v2/workspaces/{workspaceId}/runs/{runAction}"
-	EventCursorCustomName  = "agentserver.event_cursor"
-	defaultMaxRequestBytes = int64(1024 * 1024)
-	defaultPollLimit       = 128
-	defaultLongPollWait    = 15 * time.Second
-	maxPromptBytes         = 256 * 1024
+	AGUIRoutePattern        = "POST /v2/workspaces/{workspaceId}/sessions/{sessionId}/agui"
+	CancelRoutePattern      = "POST /v2/workspaces/{workspaceId}/runs/{runAction}"
+	ApprovalRoutePattern    = "POST /v2/workspaces/{workspaceId}/approvals/{approvalAction}"
+	EventCursorCustomName   = "agentserver.event_cursor"
+	defaultMaxRequestBytes  = int64(1024 * 1024)
+	defaultPollLimit        = 128
+	defaultLongPollWait     = 15 * time.Second
+	maxPromptBytes          = 256 * 1024
+	maxApprovalRequestBytes = int64(16 * 1024)
 )
 
 var canonicalUUIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+var canonicalSHA256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 type HandlerConfig struct {
 	MaxRequestBytes int64
@@ -51,10 +55,11 @@ func DefaultHandlerConfig() HandlerConfig {
 }
 
 type AGUIHandler struct {
-	backend  RunBackend
-	commands RunCommandBackend
-	config   HandlerConfig
-	writer   *sse.SSEWriter
+	backend   RunBackend
+	commands  RunCommandBackend
+	approvals ApprovalCommandBackend
+	config    HandlerConfig
+	writer    *sse.SSEWriter
 }
 
 func NewAGUIHandler(backend RunBackend, config HandlerConfig) (*AGUIHandler, error) {
@@ -64,6 +69,10 @@ func NewAGUIHandler(backend RunBackend, config HandlerConfig) (*AGUIHandler, err
 	commands, ok := backend.(RunCommandBackend)
 	if !ok {
 		return nil, errors.New("explicit run command backend is required")
+	}
+	approvals, ok := backend.(ApprovalCommandBackend)
+	if !ok {
+		return nil, errors.New("explicit approval command backend is required")
 	}
 	if config.MaxRequestBytes <= 0 || config.MaxRequestBytes > 16*1024*1024 {
 		return nil, errors.New("maximum AG-UI request bytes must be positive and at most 16 MiB")
@@ -81,7 +90,7 @@ func NewAGUIHandler(backend RunBackend, config HandlerConfig) (*AGUIHandler, err
 		return nil, errors.New("logger is required")
 	}
 	return &AGUIHandler{
-		backend: backend, commands: commands, config: config,
+		backend: backend, commands: commands, approvals: approvals, config: config,
 		writer: sse.NewSSEWriter().WithLogger(config.Logger),
 	}, nil
 }
@@ -90,10 +99,20 @@ func (handler *AGUIHandler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle(AGUIRoutePattern, handler)
 	mux.Handle(CancelRoutePattern, handler)
+	mux.Handle(ApprovalRoutePattern, handler)
 	return mux
 }
 
 func (handler *AGUIHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
+	if approvalAction := request.PathValue("approvalAction"); approvalAction != "" {
+		approvalID, ok := strings.CutSuffix(approvalAction, ":decide")
+		if ok && approvalID != "" {
+			handler.decideApproval(response, request, request.PathValue("workspaceId"), approvalID)
+			return
+		}
+		writeHTTPError(response, http.StatusNotFound, "not_found", "approval command endpoint not found")
+		return
+	}
 	if runAction := request.PathValue("runAction"); runAction != "" {
 		runID, ok := strings.CutSuffix(runAction, ":cancel")
 		if ok && runID != "" {
@@ -194,6 +213,58 @@ func (handler *AGUIHandler) ServeHTTP(response http.ResponseWriter, request *htt
 		return
 	}
 	handler.streamCommittedEvents(request.Context(), response, bearer, started, projector)
+}
+
+func (handler *AGUIHandler) decideApproval(response http.ResponseWriter, request *http.Request, workspaceID, approvalID string) {
+	if request.Method != http.MethodPost || request.URL.RawQuery != "" {
+		writeHTTPError(response, http.StatusBadRequest, "invalid_approval_request", "approval decision requires POST with no query parameters")
+		return
+	}
+	if err := validateCanonicalUUID("workspaceId", workspaceID); err != nil {
+		writeHTTPError(response, http.StatusBadRequest, "invalid_scope", err.Error())
+		return
+	}
+	if err := validateCanonicalUUID("approvalId", approvalID); err != nil {
+		writeHTTPError(response, http.StatusBadRequest, "invalid_scope", err.Error())
+		return
+	}
+	bearer, err := extractBearer(request.Header)
+	if err != nil {
+		response.Header().Set("WWW-Authenticate", `Bearer realm="agentserver-api"`)
+		writeHTTPError(response, http.StatusUnauthorized, "unauthorized", "a single bearer token is required")
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeHTTPError(response, http.StatusUnsupportedMediaType, "unsupported_media_type", "Content-Type must be application/json")
+		return
+	}
+	input, err := decodeApprovalDecisionInput(response, request)
+	if err != nil {
+		writeHTTPError(response, http.StatusBadRequest, "invalid_approval_request", err.Error())
+		return
+	}
+	result, err := handler.approvals.DecideApproval(request.Context(), DecideApprovalRequest{
+		BearerToken: bearer, WorkspaceID: workspaceID, ApprovalID: approvalID,
+		Decision: input.Decision, Nonce: input.Nonce, ContextDigest: input.ContextDigest,
+		ExpectedApprovalVersion: input.ExpectedApprovalVersion,
+	})
+	if err != nil {
+		handler.writeCommandError(response, request, err)
+		return
+	}
+	if err := validateCoreApprovalDecisionResult(result, DecideApprovalRequest{
+		WorkspaceID: workspaceID, ApprovalID: approvalID, Decision: input.Decision,
+		Nonce: input.Nonce, ContextDigest: input.ContextDigest,
+		ExpectedApprovalVersion: input.ExpectedApprovalVersion,
+	}); err != nil {
+		handler.config.Logger.ErrorContext(request.Context(), "browser-gateway received invalid DecideApproval result", "error", err)
+		writeHTTPError(response, http.StatusBadGateway, "backend_contract_error", "approval backend returned an invalid decision result")
+		return
+	}
+	response.Header().Set("Content-Type", "application/json")
+	response.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(response).Encode(result)
 }
 
 func (handler *AGUIHandler) cancel(response http.ResponseWriter, request *http.Request, workspaceID, runID string) {
@@ -421,6 +492,66 @@ func decodeRunAgentInput(response http.ResponseWriter, request *http.Request, ma
 		return aguitypes.RunAgentInput{}, fmt.Errorf("decode RunAgentInput: %w", err)
 	}
 	return input, nil
+}
+
+func decodeApprovalDecisionInput(response http.ResponseWriter, request *http.Request) (corecontract.DecideUserApprovalRequest, error) {
+	request.Body = http.MaxBytesReader(response, request.Body, maxApprovalRequestBytes)
+	raw, err := io.ReadAll(request.Body)
+	if err != nil {
+		return corecontract.DecideUserApprovalRequest{}, fmt.Errorf("read approval decision: %w", err)
+	}
+	limits := braincatalog.DefaultLimits()
+	limits.MaxJSONValues = 32
+	limits.MaxJSONDepth = 8
+	value, _, err := braincatalog.DecodeCanonicalJSON(raw, int(maxApprovalRequestBytes), limits)
+	if err != nil {
+		return corecontract.DecideUserApprovalRequest{}, err
+	}
+	object, ok := value.(map[string]any)
+	if !ok || !hasExactKeys(object, "decision", "nonce", "contextDigest", "expectedApprovalVersion") {
+		return corecontract.DecideUserApprovalRequest{}, errors.New("approval decision must contain exactly decision, nonce, contextDigest, and expectedApprovalVersion")
+	}
+	digest, ok := object["contextDigest"].(map[string]any)
+	if !ok || !hasExactKeys(digest, "domain", "canonicalizerVersion", "sha256") {
+		return corecontract.DecideUserApprovalRequest{}, errors.New("contextDigest must contain exactly domain, canonicalizerVersion, and sha256")
+	}
+	var input corecontract.DecideUserApprovalRequest
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return corecontract.DecideUserApprovalRequest{}, fmt.Errorf("decode approval decision: %w", err)
+	}
+	if err := validateApprovalDecisionInput(input); err != nil {
+		return corecontract.DecideUserApprovalRequest{}, err
+	}
+	return input, nil
+}
+
+func validateApprovalDecisionInput(input corecontract.DecideUserApprovalRequest) error {
+	if input.Decision != "approve" && input.Decision != "deny" {
+		return errors.New("decision must be approve or deny")
+	}
+	if err := validateCanonicalUUID("nonce", input.Nonce); err != nil {
+		return err
+	}
+	if input.ContextDigest.Domain != "approval-context" || input.ContextDigest.CanonicalizerVersion != "rfc8785-v1" ||
+		!canonicalSHA256Pattern.MatchString(input.ContextDigest.SHA256) || input.ContextDigest.SHA256 == strings.Repeat("0", 64) {
+		return errors.New("contextDigest must be a non-zero approval-context rfc8785-v1 SHA-256 digest")
+	}
+	if input.ExpectedApprovalVersion < 1 || input.ExpectedApprovalVersion >= 1<<53-1 {
+		return errors.New("expectedApprovalVersion must be a positive JSON-safe integer")
+	}
+	return nil
+}
+
+func hasExactKeys(object map[string]any, keys ...string) bool {
+	if len(object) != len(keys) {
+		return false
+	}
+	for _, key := range keys {
+		if _, ok := object[key]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func validateRunAgentInputKeys(object map[string]any) error {

@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 )
 
 const (
-	CurrentProtocolVersion = "1.2"
+	CurrentProtocolVersion = "1.3"
 	ResumeWindowMillis     = 30_000
 
 	MessageTypeHello        = "hello"
@@ -24,8 +25,10 @@ const (
 	EventKindTurnTerminal          = "turn_terminal"
 	EventKindAppServerNotification = "app_server_notification"
 	EventKindExecutorMCPProgress   = "executor_mcp_progress"
+	EventKindApprovalRequest       = "approval_request"
 
-	CommandKindInterrupt = "interrupt"
+	CommandKindInterrupt       = "interrupt"
+	CommandKindApprovalOutcome = "approval_outcome"
 )
 
 type Role string
@@ -199,11 +202,43 @@ type ExecutorMCPProgressEvent struct {
 	Message  string  `json:"message,omitempty"`
 }
 
+// ApprovalRequestEvent is the worker's exact projection of gateway-owned MCP
+// elicitation metadata. It carries no model-authored arguments and creates no
+// dispatch authority; the pool uses it only to observe Core's canonical
+// decision for this already-created approval.
+type ApprovalRequestEvent struct {
+	Kind                 string    `json:"kind"`
+	RunID                string    `json:"runId"`
+	CallID               string    `json:"callId"`
+	RunAttemptGeneration int64     `json:"runAttemptGeneration"`
+	ToolCatalogDigest    string    `json:"toolCatalogDigest"`
+	ExecutionID          string    `json:"executionId"`
+	ApprovalID           string    `json:"approvalId"`
+	Nonce                string    `json:"nonce"`
+	ApprovalVersion      int64     `json:"approvalVersion"`
+	ContextHash          string    `json:"contextHash"`
+	ExpiresAt            time.Time `json:"expiresAt"`
+}
+
 type InterruptCommand struct {
 	Kind        string `json:"kind"`
 	Reason      string `json:"reason"`
 	GraceMillis int64  `json:"graceMs"`
 	Message     string `json:"message"`
+}
+
+type ApprovalOutcomeCommand struct {
+	Kind                 string `json:"kind"`
+	RunID                string `json:"runId"`
+	CallID               string `json:"callId"`
+	RunAttemptGeneration int64  `json:"runAttemptGeneration"`
+	ToolCatalogDigest    string `json:"toolCatalogDigest"`
+	ExecutionID          string `json:"executionId"`
+	ApprovalID           string `json:"approvalId"`
+	Nonce                string `json:"nonce"`
+	ContextHash          string `json:"contextHash"`
+	Status               string `json:"status"`
+	ApprovalVersion      int64  `json:"approvalVersion"`
 }
 
 type Event struct {
@@ -213,11 +248,13 @@ type Event struct {
 	TurnTerminal          *TurnTerminalEvent
 	AppServerNotification *AppServerNotificationEvent
 	ExecutorMCPProgress   *ExecutorMCPProgressEvent
+	ApprovalRequest       *ApprovalRequestEvent
 }
 
 type Command struct {
-	Kind      string
-	Interrupt *InterruptCommand
+	Kind            string
+	Interrupt       *InterruptCommand
+	ApprovalOutcome *ApprovalOutcomeCommand
 }
 
 type Message struct {

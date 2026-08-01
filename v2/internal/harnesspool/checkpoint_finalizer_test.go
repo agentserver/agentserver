@@ -60,6 +60,9 @@ func TestCheckpointFinalizerCommitsFreshAndResumedArtifactsBeforeCleanup(t *test
 			if len(core.beginRequests) != 1 || len(core.commitRequests) != 1 || len(objects.payloads) != 1 {
 				t.Fatalf("begin/commit/upload calls = %d/%d/%d", len(core.beginRequests), len(core.commitRequests), len(objects.payloads))
 			}
+			if len(objects.workspaces) != 1 || objects.workspaces[0] != prepared.Manifest.WorkspaceID {
+				t.Fatalf("checkpoint object workspace = %q, want %q", objects.workspaces, prepared.Manifest.WorkspaceID)
+			}
 			claim := prepared.Scheduled.Claim
 			begin := core.beginRequests[0]
 			if begin.ExpectedRunVersion != claim.Run.Version+1 || begin.ExpectedRunAttemptVersion != claim.RunAttempt.Version+1 ||
@@ -477,14 +480,21 @@ type checkpointFinalizerTestObjects struct {
 	errors             []error
 	mutatePointer      func(EventObjectPointer) EventObjectPointer
 	inspectPermissions bool
+	workspaces         []string
 	pointers           []EventObjectPointer
 	payloads           [][]byte
 	stagedDirectory    string
 	stagedArtifact     string
 }
 
-func (objects *checkpointFinalizerTestObjects) PutCheckpointObject(_ context.Context, pointer EventObjectPointer, source io.Reader) (EventObjectPointer, error) {
+func (objects *checkpointFinalizerTestObjects) PutCheckpointObject(
+	_ context.Context,
+	request CheckpointObjectWriteRequest,
+	source io.Reader,
+) (EventObjectPointer, error) {
 	checkpointFinalizerAppendOrder(objects.order, "upload")
+	objects.workspaces = append(objects.workspaces, request.WorkspaceID)
+	pointer := request.Object
 	objects.pointers = append(objects.pointers, pointer)
 	if objects.inspectPermissions {
 		objects.inspectStagingPermissions(source)

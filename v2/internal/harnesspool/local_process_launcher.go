@@ -20,6 +20,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/checkpoint"
 	"github.com/agentserver/agentserver/v2/internal/harnessbootstrap"
+	"github.com/agentserver/agentserver/v2/internal/objectstore"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
 
@@ -62,8 +63,14 @@ type LocalProcessLauncherConfig struct {
 // AttemptObjectSource is implemented by the pool's encrypted object-store
 // client. The launcher streams exact objects into one-shot worker pipes and
 // never delegates object-store credentials to the worker.
+type AttemptObjectRequest struct {
+	WorkspaceID string
+	Kind        objectstore.Kind
+	Pointer     runmanifest.ObjectPointer
+}
+
 type AttemptObjectSource interface {
-	OpenRunObject(context.Context, runmanifest.ObjectPointer) (io.ReadCloser, error)
+	OpenRunObject(context.Context, AttemptObjectRequest) (io.ReadCloser, error)
 }
 
 // LocalProcessLauncher starts a fresh worker process for every attempt. It
@@ -119,7 +126,9 @@ func (launcher *LocalProcessLauncher) Launch(ctx context.Context, launch Attempt
 		return nil, fmt.Errorf("encode local worker bootstrap: %w", err)
 	}
 	defer clear(bootstrap)
-	promptObject, err := launcher.config.ObjectSource.OpenRunObject(ctx, manifest.Prompt)
+	promptObject, err := launcher.config.ObjectSource.OpenRunObject(ctx, AttemptObjectRequest{
+		WorkspaceID: manifest.WorkspaceID, Kind: objectstore.KindUserPrompt, Pointer: manifest.Prompt,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("open local worker prompt object: %w", err)
 	}
@@ -130,7 +139,10 @@ func (launcher *LocalProcessLauncher) Launch(ctx context.Context, launch Attempt
 	defer promptObject.Close()
 	var checkpointObject io.ReadCloser
 	if manifest.PreviousCheckpoint != nil {
-		checkpointObject, err = launcher.config.ObjectSource.OpenRunObject(ctx, manifest.PreviousCheckpoint.Object)
+		checkpointObject, err = launcher.config.ObjectSource.OpenRunObject(ctx, AttemptObjectRequest{
+			WorkspaceID: manifest.WorkspaceID, Kind: objectstore.KindCheckpoint,
+			Pointer: manifest.PreviousCheckpoint.Object,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("open local worker checkpoint object: %w", err)
 		}

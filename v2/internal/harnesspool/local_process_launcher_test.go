@@ -22,6 +22,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/checkpoint"
 	"github.com/agentserver/agentserver/v2/internal/harnessbootstrap"
+	"github.com/agentserver/agentserver/v2/internal/objectstore"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 	"github.com/ucarion/jcs"
 )
@@ -496,8 +497,9 @@ func localCheckpointPreparedLaunch(t *testing.T) (PreparedRunLaunch, []byte) {
 
 type localTestObjectSource struct{}
 
-func (localTestObjectSource) OpenRunObject(_ context.Context, pointer runmanifest.ObjectPointer) (io.ReadCloser, error) {
-	if pointer.ObjectID != "46000000-0000-4000-8000-000000000004" {
+func (localTestObjectSource) OpenRunObject(_ context.Context, request AttemptObjectRequest) (io.ReadCloser, error) {
+	if request.WorkspaceID != "40000000-0000-4000-8000-000000000004" || request.Kind != objectstore.KindUserPrompt ||
+		request.Pointer.ObjectID != "46000000-0000-4000-8000-000000000004" {
 		return nil, errors.New("unexpected local test object pointer")
 	}
 	return io.NopCloser(bytes.NewReader(testRunPromptContents())), nil
@@ -505,14 +507,14 @@ func (localTestObjectSource) OpenRunObject(_ context.Context, pointer runmanifes
 
 type localBytesObjectSource struct{ contents []byte }
 
-func (source localBytesObjectSource) OpenRunObject(context.Context, runmanifest.ObjectPointer) (io.ReadCloser, error) {
+func (source localBytesObjectSource) OpenRunObject(context.Context, AttemptObjectRequest) (io.ReadCloser, error) {
 	return io.NopCloser(bytes.NewReader(source.contents)), nil
 }
 
 type localObjectMapSource map[string][]byte
 
-func (source localObjectMapSource) OpenRunObject(_ context.Context, pointer runmanifest.ObjectPointer) (io.ReadCloser, error) {
-	contents, exists := source[pointer.ObjectID]
+func (source localObjectMapSource) OpenRunObject(_ context.Context, request AttemptObjectRequest) (io.ReadCloser, error) {
+	contents, exists := source[request.Pointer.ObjectID]
 	if !exists {
 		return nil, errors.New("unexpected local mapped object pointer")
 	}

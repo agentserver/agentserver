@@ -3,7 +3,6 @@ package coreserver
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -42,29 +41,14 @@ func (store *LocalUserPromptStore) PutUserPrompt(ctx context.Context, request Us
 	if err := ctx.Err(); err != nil {
 		return coredb.ObjectPointer{}, err
 	}
-	identityHash := sha256.New()
-	_, _ = io.WriteString(identityHash, "agentserver-v2/user-prompt-object/v1\x00")
-	for _, value := range []string{request.WorkspaceID, request.ActorID, request.SessionID, request.IdempotencyKey} {
-		_, _ = io.WriteString(identityHash, value)
-		_, _ = identityHash.Write([]byte{0})
-	}
-	identityDigest := identityHash.Sum(nil)
-	var objectRaw [16]byte
-	copy(objectRaw[:], identityDigest[:16])
-	objectRaw[6] = (objectRaw[6] & 0x0f) | 0x50
-	objectRaw[8] = (objectRaw[8] & 0x3f) | 0x80
-	objectID := formatPromptUUID(objectRaw)
 	contents := []byte(request.Prompt)
-	digest := sha256.Sum256(contents)
-	pointer := coredb.ObjectPointer{
-		ObjectID: objectID, SHA256: digest, Size: int64(len(contents)), MediaType: "text/plain; charset=utf-8",
-	}
-	finalPath := filepath.Join(store.root, objectID+".prompt")
+	pointer := userPromptObjectPointer(request)
+	finalPath := filepath.Join(store.root, pointer.ObjectID+".prompt")
 	if matches, exists, err := promptFileMatches(finalPath, contents); err != nil {
 		return coredb.ObjectPointer{}, err
 	} else if exists {
 		if !matches {
-			return coredb.ObjectPointer{}, publicRunStateError(coredb.ErrorIdempotencyConflict, "PutUserPrompt", "object", objectID, "idempotency key already names different prompt bytes")
+			return coredb.ObjectPointer{}, publicRunStateError(coredb.ErrorIdempotencyConflict, "PutUserPrompt", "object", pointer.ObjectID, "idempotency key already names different prompt bytes")
 		}
 		return pointer, nil
 	}
@@ -103,7 +87,7 @@ func (store *LocalUserPromptStore) PutUserPrompt(ctx context.Context, request Us
 			return coredb.ObjectPointer{}, verifyErr
 		}
 		if !matches {
-			return coredb.ObjectPointer{}, publicRunStateError(coredb.ErrorIdempotencyConflict, "PutUserPrompt", "object", objectID, "concurrent idempotency key names different prompt bytes")
+			return coredb.ObjectPointer{}, publicRunStateError(coredb.ErrorIdempotencyConflict, "PutUserPrompt", "object", pointer.ObjectID, "concurrent idempotency key names different prompt bytes")
 		}
 	}
 	return pointer, nil

@@ -26,8 +26,13 @@ type CheckpointFinalizationIdentityAllocator interface {
 // CheckpointObjectSink stores an immutable object under the supplied complete
 // pointer. It must either return that exact pointer or an error; an exact retry
 // with a freshly rewound reader must not create a second object.
+type CheckpointObjectWriteRequest struct {
+	WorkspaceID string
+	Object      EventObjectPointer
+}
+
 type CheckpointObjectSink interface {
-	PutCheckpointObject(context.Context, EventObjectPointer, io.Reader) (EventObjectPointer, error)
+	PutCheckpointObject(context.Context, CheckpointObjectWriteRequest, io.Reader) (EventObjectPointer, error)
 }
 
 type CheckpointFinalizerConfig struct {
@@ -226,7 +231,7 @@ func (finalizer *CheckpointFinalizer) FinalizeCompletedAttempt(
 		ObjectID: checkpointIdentity.ObjectID, SHA256: artifactDigest,
 		Size: artifactDescriptor.SizeBytes, MediaType: artifactDescriptor.MediaType,
 	}
-	storedObject, err := finalizer.putObjectExactly(ctx, artifactPath, expectedObject)
+	storedObject, err := finalizer.putObjectExactly(ctx, prepared.Manifest.WorkspaceID, artifactPath, expectedObject)
 	if err != nil {
 		return CommitCheckpointResult{}, err
 	}
@@ -283,13 +288,19 @@ func (finalizer *CheckpointFinalizer) beginExactly(ctx context.Context, request 
 	return BeginRunFinalizationResult{}, &AttemptRuntimeRetentionError{Operation: "begin run finalization", Err: errors.Join(err, retryErr)}
 }
 
-func (finalizer *CheckpointFinalizer) putObjectExactly(ctx context.Context, artifactPath string, expected EventObjectPointer) (EventObjectPointer, error) {
+func (finalizer *CheckpointFinalizer) putObjectExactly(
+	ctx context.Context,
+	workspaceID, artifactPath string,
+	expected EventObjectPointer,
+) (EventObjectPointer, error) {
 	put := func() (EventObjectPointer, error) {
 		artifact, err := os.Open(artifactPath)
 		if err != nil {
 			return EventObjectPointer{}, fmt.Errorf("open staged checkpoint artifact: %w", err)
 		}
-		stored, putErr := finalizer.objects.PutCheckpointObject(ctx, expected, &contextReader{ctx: ctx, reader: artifact})
+		stored, putErr := finalizer.objects.PutCheckpointObject(ctx, CheckpointObjectWriteRequest{
+			WorkspaceID: workspaceID, Object: expected,
+		}, &contextReader{ctx: ctx, reader: artifact})
 		closeErr := artifact.Close()
 		return stored, errors.Join(putErr, wrapCheckpointError("close staged checkpoint artifact", closeErr))
 	}

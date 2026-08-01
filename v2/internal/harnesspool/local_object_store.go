@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 
 	"github.com/agentserver/agentserver/v2/internal/checkpoint"
+	"github.com/agentserver/agentserver/v2/internal/objectstore"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
 
@@ -42,7 +43,7 @@ func NewLocalDevelopmentObjectStore(root string) (*LocalDevelopmentObjectStore, 
 	return &LocalDevelopmentObjectStore{root: root}, nil
 }
 
-func (store *LocalDevelopmentObjectStore) OpenRunObject(ctx context.Context, pointer runmanifest.ObjectPointer) (io.ReadCloser, error) {
+func (store *LocalDevelopmentObjectStore) OpenRunObject(ctx context.Context, request AttemptObjectRequest) (io.ReadCloser, error) {
 	if ctx == nil {
 		return nil, errors.New("local development object read context is required")
 	}
@@ -52,11 +53,14 @@ func (store *LocalDevelopmentObjectStore) OpenRunObject(ctx context.Context, poi
 	if store == nil || store.root == "" {
 		return nil, errors.New("local development object store is required")
 	}
-	path, err := store.runObjectPath(pointer)
+	if err := validateUUIDIdentity("local run object workspace", request.WorkspaceID); err != nil {
+		return nil, err
+	}
+	path, err := store.runObjectPath(request.Kind, request.Pointer)
 	if err != nil {
 		return nil, err
 	}
-	file, err := openImmutableLocalObject(path, pointer.SizeBytes)
+	file, err := openImmutableLocalObject(path, request.Pointer.SizeBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +69,7 @@ func (store *LocalDevelopmentObjectStore) OpenRunObject(ctx context.Context, poi
 
 func (store *LocalDevelopmentObjectStore) PutCheckpointObject(
 	ctx context.Context,
-	pointer EventObjectPointer,
+	request CheckpointObjectWriteRequest,
 	source io.Reader,
 ) (_ EventObjectPointer, returnErr error) {
 	if ctx == nil {
@@ -80,6 +84,10 @@ func (store *LocalDevelopmentObjectStore) PutCheckpointObject(
 	if source == nil {
 		return EventObjectPointer{}, errors.New("local checkpoint object source is required")
 	}
+	if err := validateUUIDIdentity("local checkpoint object workspace", request.WorkspaceID); err != nil {
+		return EventObjectPointer{}, err
+	}
+	pointer := request.Object
 	if err := validateLocalCheckpointPointer(pointer); err != nil {
 		return EventObjectPointer{}, err
 	}
@@ -161,7 +169,7 @@ func (store *LocalDevelopmentObjectStore) PutCheckpointObject(
 	return pointer, nil
 }
 
-func (store *LocalDevelopmentObjectStore) runObjectPath(pointer runmanifest.ObjectPointer) (string, error) {
+func (store *LocalDevelopmentObjectStore) runObjectPath(kind objectstore.Kind, pointer runmanifest.ObjectPointer) (string, error) {
 	if err := validateUUIDIdentity("local run object ID", pointer.ObjectID); err != nil {
 		return "", err
 	}
@@ -172,16 +180,22 @@ func (store *LocalDevelopmentObjectStore) runObjectPath(pointer runmanifest.Obje
 		return "", errors.New("local run object digest must be canonical SHA-256")
 	}
 	var suffix string
-	switch pointer.MediaType {
-	case localDevelopmentPromptMediaType:
+	switch kind {
+	case objectstore.KindUserPrompt:
+		if pointer.MediaType != localDevelopmentPromptMediaType {
+			return "", errors.New("local development prompt object has an invalid media type")
+		}
 		suffix = ".prompt"
-	case checkpoint.ArtifactMediaType:
+	case objectstore.KindCheckpoint:
+		if pointer.MediaType != checkpoint.ArtifactMediaType {
+			return "", errors.New("local development checkpoint object has an invalid media type")
+		}
 		if pointer.SizeBytes > checkpoint.MaximumArtifactBytes {
 			return "", errors.New("local checkpoint object exceeds the artifact size bound")
 		}
 		suffix = ".checkpoint"
 	default:
-		return "", errors.New("local development object store does not support this media type")
+		return "", errors.New("local development object store does not support this object kind")
 	}
 	return filepath.Join(store.root, pointer.ObjectID+suffix), nil
 }

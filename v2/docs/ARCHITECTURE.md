@@ -371,7 +371,17 @@ mid-turn crash 时只允许恢复上一个已由 core提交指针的 completed-t
 
 `brain_thread_id` 是优化和追踪标识，不是 session 的权威主键。native `thread/resume` 只适用于相同 pinned schema 的完整 checkpoint；不兼容时可从受保护的模型可见 conversation record 创建新 thread，但这是语义降级，必须生成审计事件，不能声称与原生 resume 等价。
 
-### 7.4 启动延迟与容量
+### 7.4 加密对象协议
+
+对象存储中的权威是Core提交的**明文 pointer**，不是S3 metadata、ETag、presigned URL或加密后大小。完整authority由`workspace_id + object_kind + object_id + plaintext SHA-256 + plaintext size + canonical media type`组成；当前closed-world kind只有`user-prompt`与`checkpoint`。对象key只按受限prefix、workspace、kind和object ID定位，header与KMS encryption context再次绑定完整authority，因此即使数据库pointer或后端key被错误替换，也不能把一个合法密文跨workspace或跨kind打开。
+
+对象协议v1使用per-object envelope encryption。`GenerateDataKey`必须为每个新对象返回新的AES-256 plaintext data key及可持久化wrapped key；KMS在生成和解封时都必须把完整authority作为encryption context。应用为每个对象再生成随机64-bit nonce prefix，以`prefix || uint32be(chunk_index)`构造nonce，把明文按1 MiB分块做AES-256-GCM。明文authority和key envelope进入有界header；每块AAD绑定完整header的SHA-256、chunk index和该块明文长度。打开对象时先校验header authority、后端报告的精确ciphertext size和KMS context，再逐块认证并复算明文SHA-256；即使调用方没有读完，`Close`也必须认证未读尾部并拒绝截断、尾随数据或篡改。
+
+后端接口只有immutable `PutIfAbsent`和`Open`。`PutIfAbsent`必须在消费并验证声明的全部ciphertext字节后才原子发布，provider返回歧义错误时上层只允许用同一pointer和重新打开的明文做exact retry。若key已存在，协议会解密并完整验证已有对象：authority确定不同时返回immutable conflict；后端/KMS暂时失败、context取消或已有对象损坏不能伪装成用户幂等冲突。Core的prompt adapter由`workspace/actor/session/idempotency key`稳定派生object ID并提交明文pointer；harness-pool adapter只用签名manifest中的workspace/kind/pointer读取prompt/checkpoint，并以finalizer生成的exact pointer写checkpoint。对象存储与KMS credential始终留在Core/pool域，worker只接收已经复核的明文字节流。
+
+`internal/objectstore`及Core/pool adapter已经实现上述供应商无关协议；chunk boundary、并发exact put、幂等冲突、跨scope替换、KMS authority、篡改/截断/尾随、未读尾部认证和adapter scope转换均有普通及race测试。2026-08-02又把当前源码交叉编译的`objectstore/coreserver/harnesspool`测试二进制放入OCI digest `24c44fe44872962a828df84d3ff67ae2d541e076fad1e4101f9dc0dca5d8bf21`的固定Linux arm64容器各运行5轮并通过。该证据只关闭应用层格式和接入边界：具体S3-compatible transport、KMS provider、credential/rotation、retention清理与生产部署仍需供应商ADR和独立集成/故障门禁，当前不能宣称生产对象存储已经部署。
+
+### 7.5 启动延迟与容量
 
 Phase 1 不在 run 热路径创建 Kubernetes Job、Pod、Secret 或 NetworkPolicy。harness-pool 保持至少一个常驻副本，接到已 claim 的 attempt 后只执行本地目录初始化、`fork/exec harness-worker` 和 `fork/exec stock app-server`。启动 SLO 分开记录 `claim→worker exec`、`worker exec→control ready`、`control ready→turn accepted` 三段，不用首个模型 token 掩盖 launcher 延迟。
 
@@ -841,6 +851,7 @@ agentx 的实现不放入上述 Go module。`github.com/agentserver/agentx` v2 �
 | D22 | `process-v1/shell-v1`固定clean-env与managed/restricted sandbox，stock可选proxy启动字段由agentx本地受信策略生成 | 双手只执行确定性任务；远端不能恢复ambient env、选择任意proxy或借upstream新增字段扩大能力 |
 | D23 | filesystem read使用组合profile和一次性fs-only `open(null) → readBlock → close`，远端不开放stock handle或`fs/readFile` | stock流式读取不支持platform sandbox；有界outer请求、agentx双重root复核与runner containment共同形成可审计边界 |
 | D24 | run cancel采用`cancelling`两阶段协议；pre-turn停止用`AbandonAttempt`在run锁内仲裁requeue/cancel | API调用不能证明远端workload已经停止；原子交接消除“最后观察”与holder释放之间的竞态，并让session、双lease、event/outbox一致收口 |
+| D25 | 对象pointer描述明文authority；应用层使用KMS envelope、分块AEAD和immutable create-if-absent，S3/KMS只实现窄provider接口 | ETag、provider metadata和presigned URL不能承担跨workspace/kind授权、完整性或幂等语义；供应商选择不能渗入Core/worker协议 |
 
 ## 15. 设计审查结论与实现门槛
 

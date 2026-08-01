@@ -13,8 +13,11 @@ import (
 	"testing"
 
 	"github.com/agentserver/agentserver/v2/internal/checkpoint"
+	"github.com/agentserver/agentserver/v2/internal/objectstore"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
+
+const localObjectTestWorkspaceID = "80000000-0000-4000-8000-000000000008"
 
 func TestLocalDevelopmentObjectStoreReadsPromptAndCheckpointObjects(t *testing.T) {
 	root := secureLocalDevelopmentObjectRoot(t)
@@ -30,7 +33,7 @@ func TestLocalDevelopmentObjectStoreReadsPromptAndCheckpointObjects(t *testing.T
 	writeLocalObjectForTest(t, filepath.Join(root, promptPointer.ObjectID+".prompt"), prompt)
 	checkpointBytes := []byte("bounded checkpoint object")
 	checkpointPointer := checkpointPointerForTest("82000000-0000-4000-8000-000000000001", checkpointBytes)
-	if _, err := store.PutCheckpointObject(t.Context(), checkpointPointer, bytes.NewReader(checkpointBytes)); err != nil {
+	if _, err := store.PutCheckpointObject(t.Context(), localCheckpointWrite(checkpointPointer), bytes.NewReader(checkpointBytes)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -42,7 +45,11 @@ func TestLocalDevelopmentObjectStoreReadsPromptAndCheckpointObjects(t *testing.T
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			reader, err := store.OpenRunObject(t.Context(), pointer)
+			kind := objectstore.KindUserPrompt
+			if name == "checkpoint" {
+				kind = objectstore.KindCheckpoint
+			}
+			reader, err := store.OpenRunObject(t.Context(), localObjectRead(kind, pointer))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -71,7 +78,7 @@ func TestLocalDevelopmentObjectStoreCheckpointPutIsImmutableAndIdempotent(t *tes
 	contents := []byte("first immutable checkpoint")
 	pointer := checkpointPointerForTest("83000000-0000-4000-8000-000000000001", contents)
 	for attempt := 0; attempt < 2; attempt++ {
-		stored, err := store.PutCheckpointObject(t.Context(), pointer, bytes.NewReader(contents))
+		stored, err := store.PutCheckpointObject(t.Context(), localCheckpointWrite(pointer), bytes.NewReader(contents))
 		if err != nil || stored != pointer {
 			t.Fatalf("PutCheckpointObject() attempt %d = %+v, %v", attempt+1, stored, err)
 		}
@@ -87,7 +94,7 @@ func TestLocalDevelopmentObjectStoreCheckpointPutIsImmutableAndIdempotent(t *tes
 
 	changed := []byte("other immutable checkpoint")
 	changedPointer := checkpointPointerForTest(pointer.ObjectID, changed)
-	if _, err := store.PutCheckpointObject(t.Context(), changedPointer, bytes.NewReader(changed)); err == nil {
+	if _, err := store.PutCheckpointObject(t.Context(), localCheckpointWrite(changedPointer), bytes.NewReader(changed)); err == nil {
 		t.Fatal("same object ID accepted different immutable contents")
 	}
 	got, err := os.ReadFile(finalPath)
@@ -123,7 +130,7 @@ func TestLocalDevelopmentObjectStoreRejectsIncompleteCheckpointWrites(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.PutCheckpointObject(t.Context(), test.pointer, bytes.NewReader(test.source)); err == nil {
+			if _, err := store.PutCheckpointObject(t.Context(), localCheckpointWrite(test.pointer), bytes.NewReader(test.source)); err == nil {
 				t.Fatal("PutCheckpointObject() unexpectedly succeeded")
 			}
 			entries, err := os.ReadDir(root)
@@ -172,7 +179,7 @@ func TestLocalDevelopmentObjectStoreRejectsUnsafeRootsAndObjects(t *testing.T) {
 	if err := os.Chmod(path, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.OpenRunObject(t.Context(), pointer); err == nil {
+	if _, err := store.OpenRunObject(t.Context(), localObjectRead(objectstore.KindUserPrompt, pointer)); err == nil {
 		t.Fatal("broad prompt object mode was accepted")
 	}
 	if err := os.Remove(path); err != nil {
@@ -183,7 +190,7 @@ func TestLocalDevelopmentObjectStoreRejectsUnsafeRootsAndObjects(t *testing.T) {
 	if err := os.Symlink(outside, path); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.OpenRunObject(t.Context(), pointer); err == nil {
+	if _, err := store.OpenRunObject(t.Context(), localObjectRead(objectstore.KindUserPrompt, pointer)); err == nil {
 		t.Fatal("symlink prompt object was accepted")
 	}
 }
@@ -201,7 +208,7 @@ func TestLocalDevelopmentObjectStoreReadObservesContextCancellation(t *testing.T
 	}
 	writeLocalObjectForTest(t, filepath.Join(root, pointer.ObjectID+".prompt"), contents)
 	ctx, cancel := context.WithCancel(t.Context())
-	reader, err := store.OpenRunObject(ctx, pointer)
+	reader, err := store.OpenRunObject(ctx, localObjectRead(objectstore.KindUserPrompt, pointer))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,6 +235,14 @@ func checkpointPointerForTest(objectID string, contents []byte) EventObjectPoint
 	return EventObjectPointer{
 		ObjectID: objectID, SHA256: sha256.Sum256(contents), Size: int64(len(contents)), MediaType: checkpoint.ArtifactMediaType,
 	}
+}
+
+func localCheckpointWrite(pointer EventObjectPointer) CheckpointObjectWriteRequest {
+	return CheckpointObjectWriteRequest{WorkspaceID: localObjectTestWorkspaceID, Object: pointer}
+}
+
+func localObjectRead(kind objectstore.Kind, pointer runmanifest.ObjectPointer) AttemptObjectRequest {
+	return AttemptObjectRequest{WorkspaceID: localObjectTestWorkspaceID, Kind: kind, Pointer: pointer}
 }
 
 func localObjectDigestForTest(contents []byte) string {

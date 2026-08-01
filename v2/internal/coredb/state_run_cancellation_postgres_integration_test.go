@@ -280,6 +280,10 @@ func TestPostgreSQLPreTurnAbandonmentAtomicallyArbitratesCancellation(t *testing
 
 func insertCancellationMember(t *testing.T, pool *pgxpool.Pool, schema, workspaceID, actorID, role string) {
 	t.Helper()
+	userQuery := fmt.Sprintf("INSERT INTO %s.users (id, status) VALUES ($1, 'active') ON CONFLICT (id) DO NOTHING", quoteIdentifier(schema))
+	if _, err := pool.Exec(t.Context(), userQuery, actorID); err != nil {
+		t.Fatal(err)
+	}
 	query := fmt.Sprintf("INSERT INTO %s.workspace_members (workspace_id, user_id, role) VALUES ($1, $2, $3)", quoteIdentifier(schema))
 	if _, err := pool.Exec(t.Context(), query, workspaceID, actorID, role); err != nil {
 		t.Fatal(err)

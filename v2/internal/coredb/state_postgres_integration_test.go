@@ -187,6 +187,10 @@ func TestPostgreSQLAuthorizedCreateRunAndCommittedEventReadRecheckMembership(t *
 	actorID := stateTestUUID(140_003)
 	insertStateTestSession(t, pool, schema, workspaceID, sessionID)
 	insertStateTestSessionOnly(t, pool, schema, workspaceID, viewerSessionID)
+	userQuery := fmt.Sprintf("INSERT INTO %s.users (id, status) VALUES ($1, 'active')", quoteIdentifier(schema))
+	if _, err := pool.Exec(t.Context(), userQuery, actorID); err != nil {
+		t.Fatal(err)
+	}
 	membershipQuery := fmt.Sprintf("INSERT INTO %s.workspace_members (workspace_id, user_id, role) VALUES ($1, $2, $3)", quoteIdentifier(schema))
 	if _, err := pool.Exec(t.Context(), membershipQuery, workspaceID, actorID, "developer"); err != nil {
 		t.Fatal(err)

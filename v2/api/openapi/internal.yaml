@@ -460,11 +460,54 @@
           "409": {"$ref": "#/components/responses/CommandError"}
         }
       }
+    },
+    "/internal/v2/run-capabilities:issue": {
+      "post": {
+        "operationId": "issueRunCapabilities",
+        "description": "Issues deterministic audience-separated executor-MCP and llmproxy Ed25519 capabilities only for the exact live harness-pool holder, attempt generation, production executor, frozen catalog, actor membership, and Core production policy.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/IssueRunCapabilitiesRequest"}}}},
+        "responses": {
+          "200": {"description": "Executor-MCP and llmproxy capabilities for one live attempt", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/IssueRunCapabilitiesResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"},
+          "500": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/run-capabilities:authorize-executor-mcp": {
+      "post": {
+        "operationId": "authorizeExecutorRunCapability",
+        "description": "Revalidates an executor-MCP capability against the database clock and current workspace, session, run, attempt, holder, generation, leases, actor membership, production executor and frozen catalog. Local signature verification is not sufficient.",
+        "security": [{"workloadMTLS": [], "runCapabilityBearer": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AuthorizeExecutorRunCapabilityRequest"}}}},
+        "responses": {
+          "200": {"description": "Capability is authorized for this request instant", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AuthorizeRunCapabilityResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "500": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/run-capabilities:authorize-llmproxy": {
+      "post": {
+        "operationId": "authorizeLLMProxyRunCapability",
+        "description": "Revalidates a model-route capability against the database clock and current workspace, session, run, attempt, holder, generation, leases, actor membership and Core model/provider policy. Local signature verification is not sufficient.",
+        "security": [{"workloadMTLS": [], "runCapabilityBearer": []}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AuthorizeLLMProxyRunCapabilityRequest"}}}},
+        "responses": {
+          "200": {"description": "Capability is authorized for this request instant", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AuthorizeRunCapabilityResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "500": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
     }
   },
   "components": {
     "securitySchemes": {
-      "workloadMTLS": {"type": "mutualTLS", "description": "Verified component-specific workload SPIFFE identity; handlers authorize each action separately"}
+      "workloadMTLS": {"type": "mutualTLS", "description": "Verified component-specific workload SPIFFE identity; handlers authorize each action separately"},
+      "runCapabilityBearer": {"type": "http", "scheme": "bearer", "bearerFormat": "asv2cap1 Ed25519", "description": "Audience-specific short-lived production run capability; every use is also live-authorized by Core"}
     },
     "parameters": {
       "ApprovalId": {"name": "approvalId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
@@ -484,6 +527,83 @@
     "schemas": {
       "UUID": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "not": {"const": "00000000-0000-0000-0000-000000000000"}},
       "SHA256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+      "IssueRunCapabilitiesRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["workspaceId", "sessionId", "runId", "runAttemptId", "holderId", "runAttemptGeneration", "expectedRunVersion", "expectedRunAttemptVersion", "executorId", "brainToolCatalogId", "toolCatalogDigest", "model", "provider", "maxRunDurationMs", "maxApprovalTtlMs"],
+        "properties": {
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "sessionId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "expectedRunVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740990},
+          "expectedRunAttemptVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740990},
+          "executorId": {"$ref": "#/components/schemas/UUID"},
+          "brainToolCatalogId": {"$ref": "#/components/schemas/UUID"},
+          "toolCatalogDigest": {"$ref": "#/components/schemas/SHA256"},
+          "model": {"type": "string", "minLength": 1, "maxLength": 256},
+          "provider": {"type": "string", "minLength": 1, "maxLength": 256},
+          "maxRunDurationMs": {"type": "integer", "minimum": 1000, "maximum": 86400000},
+          "maxApprovalTtlMs": {"type": "integer", "minimum": 1000, "maximum": 86400000}
+        }
+      },
+      "IssuedRunCapability": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["capabilityId", "audience", "token", "issuedAt", "runDeadline", "expiresAt"],
+        "properties": {
+          "capabilityId": {"$ref": "#/components/schemas/UUID"},
+          "audience": {"enum": ["executor-mcp", "llmproxy"]},
+          "token": {"type": "string", "minLength": 1, "maxLength": 32768},
+          "issuedAt": {"type": "string", "format": "date-time"},
+          "runDeadline": {"type": "string", "format": "date-time"},
+          "expiresAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "IssueRunCapabilitiesResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["executorMcp", "llmproxy"],
+        "properties": {
+          "executorMcp": {"$ref": "#/components/schemas/IssuedRunCapability"},
+          "llmproxy": {"$ref": "#/components/schemas/IssuedRunCapability"}
+        }
+      },
+      "AuthorizeExecutorRunCapabilityRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["executorId", "toolCatalogDigest"],
+        "properties": {
+          "executorId": {"$ref": "#/components/schemas/UUID"},
+          "toolCatalogDigest": {"$ref": "#/components/schemas/SHA256"}
+        }
+      },
+      "AuthorizeLLMProxyRunCapabilityRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["model", "provider"],
+        "properties": {
+          "model": {"type": "string", "minLength": 1, "maxLength": 256},
+          "provider": {"type": "string", "minLength": 1, "maxLength": 256}
+        }
+      },
+      "AuthorizeRunCapabilityResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["capabilityId", "audience", "runId", "runAttemptId", "runAttemptGeneration", "runVersion", "runAttemptVersion", "authorizedAt"],
+        "properties": {
+          "capabilityId": {"$ref": "#/components/schemas/UUID"},
+          "audience": {"enum": ["executor-mcp", "llmproxy"]},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "runVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "runAttemptVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "authorizedAt": {"type": "string", "format": "date-time"}
+        }
+      },
       "ClaimRunDispatchesRequest": {
         "type": "object",
         "additionalProperties": false,

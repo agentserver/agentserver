@@ -40,7 +40,21 @@ func (s *StateStore) table(name string) string {
 }
 
 func withStateTransaction[T any](ctx context.Context, store *StateStore, operation string, command func(pgx.Tx) (T, error)) (result T, returnErr error) {
-	transaction, err := store.database.BeginTx(ctx, pgx.TxOptions{})
+	return withStateTransactionOptions(ctx, store, operation, pgx.TxOptions{}, command)
+}
+
+// withStateReadTransaction gives multi-query authorization checks one
+// repeatable, read-only snapshot without taking locks that would delay lease
+// heartbeats. A successful read is only evidence for that instant; callers
+// still re-run it for every externally authorized request.
+func withStateReadTransaction[T any](ctx context.Context, store *StateStore, operation string, query func(pgx.Tx) (T, error)) (result T, returnErr error) {
+	return withStateTransactionOptions(ctx, store, operation, pgx.TxOptions{
+		IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly,
+	}, query)
+}
+
+func withStateTransactionOptions[T any](ctx context.Context, store *StateStore, operation string, options pgx.TxOptions, command func(pgx.Tx) (T, error)) (result T, returnErr error) {
+	transaction, err := store.database.BeginTx(ctx, options)
 	if err != nil {
 		return result, databaseError(operation, err)
 	}

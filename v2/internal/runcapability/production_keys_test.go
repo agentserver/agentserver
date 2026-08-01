@@ -142,6 +142,34 @@ func TestParseProductionVerifierSupportsExplicitRotationOverlap(t *testing.T) {
 	}
 }
 
+func TestLoadProductionVerifierRequiresAbsoluteBoundedRegularFile(t *testing.T) {
+	privateKey := ed25519.NewKeyFromSeed(bytesOf(0x96, ed25519.SeedSize))
+	raw := productionKeyringJSON(t, []ProductionVerificationKeyDocument{
+		productionVerificationKey(productionTestKeyID, privateKey),
+	})
+	path := filepath.Join(t.TempDir(), "keyring.json")
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := LoadProductionVerifier(productionTestIssuer, path)
+	if err != nil || !slices.Equal(verifier.KeyIDs(), []string{productionTestKeyID}) {
+		t.Fatalf("LoadProductionVerifier() = %+v, %v", verifier, err)
+	}
+	if _, err := LoadProductionVerifier(productionTestIssuer, "relative.json"); err == nil {
+		t.Fatal("relative keyring path was accepted")
+	}
+	if _, err := LoadProductionVerifier(productionTestIssuer, t.TempDir()); err == nil {
+		t.Fatal("directory keyring was accepted")
+	}
+	empty := filepath.Join(t.TempDir(), "empty.json")
+	if err := os.WriteFile(empty, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadProductionVerifier(productionTestIssuer, empty); err == nil {
+		t.Fatal("empty keyring was accepted")
+	}
+}
+
 func TestParseProductionVerifierRejectsOpenWorldAndAmbiguousKeyrings(t *testing.T) {
 	privateKey := ed25519.NewKeyFromSeed(bytesOf(0x95, ed25519.SeedSize))
 	entry := productionVerificationKey(productionTestKeyID, privateKey)

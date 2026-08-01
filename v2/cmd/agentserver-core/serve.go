@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -18,36 +19,57 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/coredb"
 	"github.com/agentserver/agentserver/v2/internal/coreserver"
 	"github.com/agentserver/agentserver/v2/internal/objectruntime"
+	"github.com/agentserver/agentserver/v2/internal/runcapability"
 	"github.com/agentserver/agentserver/v2/internal/runcursor"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
-	coreListenAddressEnvironment        = "AGENTSERVER_V2_CORE_LISTEN_ADDR"
-	coreTLSCertificateEnvironment       = "AGENTSERVER_V2_CORE_TLS_CERT_FILE"
-	coreTLSKeyEnvironment               = "AGENTSERVER_V2_CORE_TLS_KEY_FILE"
-	coreClientCAEnvironment             = "AGENTSERVER_V2_CORE_CLIENT_CA_FILE"
-	coreGatewayIdentityEnvironment      = "AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID"
-	coreHarnessPoolIdentityEnvironment  = "AGENTSERVER_V2_HARNESS_POOL_SPIFFE_ID"
-	coreBrowserIdentityEnvironment      = "AGENTSERVER_V2_BROWSER_GATEWAY_SPIFFE_ID"
-	coreHydraIntrospectionEnvironment   = "AGENTSERVER_V2_HYDRA_INTROSPECTION_URL"
-	coreHydraAdminEnvironment           = "AGENTSERVER_V2_HYDRA_ADMIN_URL"
-	coreHydraPublicOriginEnvironment    = "AGENTSERVER_V2_HYDRA_PUBLIC_ORIGIN"
-	coreHydraBrowserClientEnvironment   = "AGENTSERVER_V2_HYDRA_BROWSER_CLIENT_ID"
-	coreHydraInsecureHTTPEnvironment    = "AGENTSERVER_V2_HYDRA_ALLOW_INSECURE_HTTP"
-	coreExternalOIDCIssuerEnvironment   = "AGENTSERVER_V2_EXTERNAL_OIDC_ISSUER"
-	coreExternalOIDCClientEnvironment   = "AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_ID"
-	coreExternalOIDCSecretEnvironment   = "AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_SECRET"
-	coreExternalOIDCRedirectEnvironment = "AGENTSERVER_V2_EXTERNAL_OIDC_REDIRECT_URL"
-	coreExternalOIDCInsecureEnvironment = "AGENTSERVER_V2_EXTERNAL_OIDC_ALLOW_INSECURE_HTTP"
-	coreLoginTransactionKeyEnvironment  = "AGENTSERVER_V2_LOGIN_TRANSACTION_KEY"
-	coreRunCursorKeyEnvironment         = "AGENTSERVER_V2_RUN_CURSOR_KEY"
-	coreDevPromptObjectRootEnvironment  = "AGENTSERVER_V2_DEV_PROMPT_OBJECT_DIR"
-	coreRunPolicyVersionEnvironment     = "AGENTSERVER_V2_RUN_POLICY_VERSION"
-	coreRunAllowedToolsEnvironment      = "AGENTSERVER_V2_RUN_ALLOWED_TOOLS"
+	coreListenAddressEnvironment         = "AGENTSERVER_V2_CORE_LISTEN_ADDR"
+	coreTLSCertificateEnvironment        = "AGENTSERVER_V2_CORE_TLS_CERT_FILE"
+	coreTLSKeyEnvironment                = "AGENTSERVER_V2_CORE_TLS_KEY_FILE"
+	coreClientCAEnvironment              = "AGENTSERVER_V2_CORE_CLIENT_CA_FILE"
+	coreGatewayIdentityEnvironment       = "AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID"
+	coreHarnessPoolIdentityEnvironment   = "AGENTSERVER_V2_HARNESS_POOL_SPIFFE_ID"
+	coreBrowserIdentityEnvironment       = "AGENTSERVER_V2_BROWSER_GATEWAY_SPIFFE_ID"
+	coreHydraIntrospectionEnvironment    = "AGENTSERVER_V2_HYDRA_INTROSPECTION_URL"
+	coreHydraAdminEnvironment            = "AGENTSERVER_V2_HYDRA_ADMIN_URL"
+	coreHydraPublicOriginEnvironment     = "AGENTSERVER_V2_HYDRA_PUBLIC_ORIGIN"
+	coreHydraBrowserClientEnvironment    = "AGENTSERVER_V2_HYDRA_BROWSER_CLIENT_ID"
+	coreHydraInsecureHTTPEnvironment     = "AGENTSERVER_V2_HYDRA_ALLOW_INSECURE_HTTP"
+	coreExternalOIDCIssuerEnvironment    = "AGENTSERVER_V2_EXTERNAL_OIDC_ISSUER"
+	coreExternalOIDCClientEnvironment    = "AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_ID"
+	coreExternalOIDCSecretEnvironment    = "AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_SECRET"
+	coreExternalOIDCRedirectEnvironment  = "AGENTSERVER_V2_EXTERNAL_OIDC_REDIRECT_URL"
+	coreExternalOIDCInsecureEnvironment  = "AGENTSERVER_V2_EXTERNAL_OIDC_ALLOW_INSECURE_HTTP"
+	coreLoginTransactionKeyEnvironment   = "AGENTSERVER_V2_LOGIN_TRANSACTION_KEY"
+	coreRunCursorKeyEnvironment          = "AGENTSERVER_V2_RUN_CURSOR_KEY"
+	coreDevPromptObjectRootEnvironment   = "AGENTSERVER_V2_DEV_PROMPT_OBJECT_DIR"
+	coreRunPolicyVersionEnvironment      = "AGENTSERVER_V2_RUN_POLICY_VERSION"
+	coreRunAllowedToolsEnvironment       = "AGENTSERVER_V2_RUN_ALLOWED_TOOLS"
+	coreLLMProxyIdentityEnvironment      = "AGENTSERVER_V2_LLMPROXY_SPIFFE_ID"
+	coreCapabilityIssuerEnvironment      = "AGENTSERVER_V2_RUN_CAPABILITY_ISSUER"
+	coreCapabilityKeyIDEnvironment       = "AGENTSERVER_V2_RUN_CAPABILITY_SIGNING_KEY_ID"
+	coreCapabilityPrivateKeyEnvironment  = "AGENTSERVER_V2_RUN_CAPABILITY_SIGNING_KEY_FILE"
+	coreCapabilityKeyringEnvironment     = "AGENTSERVER_V2_RUN_CAPABILITY_KEYRING_FILE"
+	coreProductionExecutorEnvironment    = "AGENTSERVER_V2_EXECUTOR_ID"
+	coreModelEnvironment                 = "AGENTSERVER_V2_MODEL"
+	coreModelProviderEnvironment         = "AGENTSERVER_V2_MODEL_PROVIDER"
+	coreMaxRunDurationEnvironment        = "AGENTSERVER_V2_MAX_RUN_DURATION"
+	coreMaxApprovalTTLEnvironment        = "AGENTSERVER_V2_MAX_APPROVAL_TTL"
+	coreCapabilityExpiryGraceEnvironment = "AGENTSERVER_V2_RUN_CAPABILITY_EXPIRY_GRACE"
 )
 
+type coreProductionRunCapabilityConfig struct {
+	signer   *runcapability.ProductionSigner
+	verifier *runcapability.ProductionVerifier
+	policy   coreserver.ProductionRunCapabilityPolicy
+}
+
 func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer, mode coreServeMode) error {
+	if mode != coreServeProduction && mode != coreServeInsecureDevelopment {
+		return errors.New("Core serve mode is invalid")
+	}
 	databaseURL, err := requiredConfiguration(getenv, databaseURLEnvironment)
 	if err != nil {
 		return err
@@ -85,6 +107,16 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	}
 	if browserIdentity == gatewayIdentity || browserIdentity == harnessPoolIdentity {
 		return errors.New("browser-gateway, executor-gateway, and harness-pool SPIFFE identities must be distinct")
+	}
+	var llmproxyIdentity string
+	if mode == coreServeProduction {
+		llmproxyIdentity, err = requiredConfiguration(getenv, coreLLMProxyIdentityEnvironment)
+		if err != nil {
+			return err
+		}
+		if slices.Contains([]string{gatewayIdentity, harnessPoolIdentity, browserIdentity}, llmproxyIdentity) {
+			return errors.New("llmproxy, browser-gateway, executor-gateway, and harness-pool SPIFFE identities must be distinct")
+		}
 	}
 	hydraEndpoint, err := requiredConfiguration(getenv, coreHydraIntrospectionEnvironment)
 	if err != nil {
@@ -143,6 +175,10 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	if err != nil {
 		return err
 	}
+	productionCapabilities, err := configureCoreProductionRunCapabilities(getenv, mode)
+	if err != nil {
+		return err
+	}
 	promptStore, objectStoreDescription, err := configureCorePromptStore(ctx, getenv, mode)
 	if err != nil {
 		return err
@@ -186,6 +222,13 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	if err != nil {
 		return err
 	}
+	var llmproxyAuthorizer coreserver.WorkloadAuthorizer
+	if productionCapabilities != nil {
+		llmproxyAuthorizer, err = coreserver.NewSPIFFEWorkloadAuthorizer(llmproxyIdentity)
+		if err != nil {
+			return err
+		}
+	}
 	hydraIntrospector, err := coreserver.NewHydraUserIntrospector(hydraEndpoint, &http.Client{Timeout: 5 * time.Second}, allowInsecureHydra)
 	if err != nil {
 		return err
@@ -216,6 +259,22 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 		return err
 	}
 	store := coredb.NewStateStore(pool)
+	var runCapabilityHandler *coreserver.RunCapabilityHandler
+	if productionCapabilities != nil {
+		runCapabilityService, err := coreserver.NewProductionRunCapabilityService(coreserver.ProductionRunCapabilityServiceConfig{
+			Store: store, Signer: productionCapabilities.signer,
+			Verifier: productionCapabilities.verifier, Policy: productionCapabilities.policy,
+		})
+		if err != nil {
+			return fmt.Errorf("configure production run capability authority: %w", err)
+		}
+		runCapabilityHandler, err = coreserver.NewRunCapabilityHandler(
+			harnessPoolAuthorizer, authorizer, llmproxyAuthorizer, runCapabilityService,
+		)
+		if err != nil {
+			return err
+		}
+	}
 	loginBridge, err := coreserver.NewLoginBridge(coreserver.LoginBridgeConfig{
 		Store: store, Hydra: hydraAdmin, IdentityProvider: externalOIDC, Sealer: loginSealer,
 		HydraBrowserClientID: hydraBrowserClientID, HydraPublicOrigin: hydraPublicOrigin,
@@ -307,6 +366,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	handler.Handle(corecontract.CreateApprovalPath, approvalHandler)
 	handler.Handle(corecontract.ApprovalActionRoutePattern, approvalActionHandler)
 	handler.Handle(corecontract.ApprovalPathPrefix, approvalHandler)
+	mountCoreRunCapabilityRoutes(handler, runCapabilityHandler)
 	handler.Handle("/", connectionHandler)
 	tlsConfig, err := coreTLSConfig(certificateFile, keyFile, clientCAFile)
 	if err != nil {
@@ -346,6 +406,15 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	return err
 }
 
+func mountCoreRunCapabilityRoutes(mux *http.ServeMux, handler http.Handler) {
+	if mux == nil || handler == nil {
+		return
+	}
+	mux.Handle(corecontract.IssueRunCapabilitiesPath, handler)
+	mux.Handle(corecontract.AuthorizeExecutorRunCapabilityPath, handler)
+	mux.Handle(corecontract.AuthorizeLLMProxyRunCapabilityPath, handler)
+}
+
 func configureCorePromptStore(
 	ctx context.Context,
 	getenv func(string) string,
@@ -379,6 +448,90 @@ func configureCorePromptStore(
 	default:
 		return nil, "", errors.New("Core serve mode is invalid")
 	}
+}
+
+func configureCoreProductionRunCapabilities(
+	getenv func(string) string,
+	mode coreServeMode,
+) (*coreProductionRunCapabilityConfig, error) {
+	switch mode {
+	case coreServeInsecureDevelopment:
+		return nil, nil
+	case coreServeProduction:
+	default:
+		return nil, errors.New("Core serve mode is invalid")
+	}
+	issuer, err := requiredConfiguration(getenv, coreCapabilityIssuerEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	keyID, err := requiredConfiguration(getenv, coreCapabilityKeyIDEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	privateKeyFile, err := requiredConfiguration(getenv, coreCapabilityPrivateKeyEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	keyringFile, err := requiredConfiguration(getenv, coreCapabilityKeyringEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	signer, err := runcapability.LoadProductionSigner(issuer, keyID, privateKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("configure production run capability signer: %w", err)
+	}
+	verifier, err := runcapability.LoadProductionVerifier(issuer, keyringFile)
+	if err != nil {
+		return nil, fmt.Errorf("configure production run capability verifier: %w", err)
+	}
+	if verifier.Issuer() != signer.Issuer() || !slices.Contains(verifier.KeyIDs(), signer.KeyID()) {
+		return nil, errors.New("production run capability keyring must contain the active signing key for the configured issuer")
+	}
+	executorID, err := requiredConfiguration(getenv, coreProductionExecutorEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	model, err := requiredConfiguration(getenv, coreModelEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	provider, err := requiredConfiguration(getenv, coreModelProviderEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	maxRunDuration, err := requiredCoreDuration(getenv, coreMaxRunDurationEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	maxApprovalTTL, err := requiredCoreDuration(getenv, coreMaxApprovalTTLEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	expiryGrace, err := requiredCoreDuration(getenv, coreCapabilityExpiryGraceEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	policy := coreserver.ProductionRunCapabilityPolicy{
+		ExecutorID: executorID, Model: model, Provider: provider,
+		MaxRunDuration: maxRunDuration, MaxApprovalTTL: maxApprovalTTL, ExpiryGrace: expiryGrace,
+	}
+	if err := coreserver.ValidateProductionRunCapabilityPolicy(policy); err != nil {
+		return nil, fmt.Errorf("configure production run capability policy: %w", err)
+	}
+	return &coreProductionRunCapabilityConfig{signer: signer, verifier: verifier, policy: policy}, nil
+}
+
+func requiredCoreDuration(getenv func(string) string, name string) (time.Duration, error) {
+	raw, err := requiredConfiguration(getenv, name)
+	if err != nil {
+		return 0, err
+	}
+	value, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a Go duration: %w", name, err)
+	}
+	return value, nil
 }
 
 func decodeRunCursorKey(encoded string) ([]byte, error) {

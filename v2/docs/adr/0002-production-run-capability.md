@@ -76,4 +76,4 @@ verifier 使用 closed-world `api/schema/run-capability-keyring.schema.json`，�
 - executor 与 model authority 不能跨 audience 复用。
 - 公钥 overlap 支持无停机轮换；Core 仍是唯一签发者。
 - token 被窃取后的有效范围受 attempt、holder、generation、route、deadline 与在线授权共同限制，但 bearer token 本身仍必须只经受限内存/pipe/header传递并避免日志和 checkpoint。
-- 当前提交固定 codec、key loader、keyring和schema合同；Core issuance/live-authorize、pool/gateway/llmproxy生产装配及真实部署门禁必须在后续 Phase 5 切片完成，不能因为本 ADR 已落地而开放 production serve。
+- codec、key loader、keyring和schema合同已经固定；后续 Core authority 切片又完成了签发、executor-MCP/llmproxy分路live-authorize和production `agentserver-core serve`装配。pool/gateway/llmproxy消费者的生产装配及真实部署门禁仍必须在后续 Phase 5 切片完成，不能因为Core端点已经存在就开放其余组件的production serve。

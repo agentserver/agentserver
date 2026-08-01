@@ -212,6 +212,8 @@ func writeCommandError(response http.ResponseWriter, err error) {
 	switch stateError.Code {
 	case coredb.ErrorInvalidArgument:
 		status = http.StatusBadRequest
+	case coredb.ErrorForbidden:
+		status = http.StatusForbidden
 	case coredb.ErrorNotFound:
 		status = http.StatusNotFound
 	case coredb.ErrorDatabase:

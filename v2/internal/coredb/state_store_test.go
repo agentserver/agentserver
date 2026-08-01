@@ -35,11 +35,40 @@ func TestWithStateTransactionCommandErrorReturnsZeroResult(t *testing.T) {
 	}
 }
 
+func TestWithStateReadTransactionUsesRepeatableReadOnlySnapshot(t *testing.T) {
+	database := &optionsRecordingDatabase{}
+	store := newStateStore(database, "read_options_test")
+	result, err := withStateReadTransaction(t.Context(), store, "read boundary", func(pgx.Tx) (int, error) {
+		return 42, nil
+	})
+	if err != nil || result != 42 {
+		t.Fatalf("withStateReadTransaction() = %d, %v", result, err)
+	}
+	if database.options.IsoLevel != pgx.RepeatableRead || database.options.AccessMode != pgx.ReadOnly {
+		t.Fatalf("read transaction options = %+v", database.options)
+	}
+}
+
 type commitErrorDatabase struct{}
 
 func (commitErrorDatabase) BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error) {
 	return commitErrorTransaction{}, nil
 }
+
+type optionsRecordingDatabase struct {
+	options pgx.TxOptions
+}
+
+func (database *optionsRecordingDatabase) BeginTx(_ context.Context, options pgx.TxOptions) (pgx.Tx, error) {
+	database.options = options
+	return successfulStateTransaction{}, nil
+}
+
+type successfulStateTransaction struct {
+	commitErrorTransaction
+}
+
+func (successfulStateTransaction) Commit(context.Context) error { return nil }
 
 type commitErrorTransaction struct{}
 

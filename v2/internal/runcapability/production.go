@@ -63,6 +63,24 @@ func NewProductionSigner(issuer, keyID string, privateKey ed25519.PrivateKey) (*
 	}, nil
 }
 
+// Issuer returns the non-secret issuer authority embedded in every token.
+func (signer *ProductionSigner) Issuer() string {
+	if signer == nil {
+		return ""
+	}
+	return signer.issuer
+}
+
+// KeyID returns the non-secret active signing key identifier. Callers use it
+// only to derive stable issuance identities and diagnostics; it is not a
+// substitute for signature verification.
+func (signer *ProductionSigner) KeyID() string {
+	if signer == nil {
+		return ""
+	}
+	return signer.keyID
+}
+
 func (signer *ProductionSigner) Sign(claims Claims) (string, error) {
 	if signer == nil || signer.privateKey == nil || signer.issuer == "" || signer.keyID == "" {
 		return "", errors.New("production run capability signer is required")
@@ -103,6 +121,14 @@ func (signer *ProductionSigner) Sign(claims Claims) (string, error) {
 type ProductionVerifier struct {
 	issuer string
 	keys   map[string]ed25519.PublicKey
+}
+
+// Issuer returns the exact non-secret issuer accepted by this verifier.
+func (verifier *ProductionVerifier) Issuer() string {
+	if verifier == nil {
+		return ""
+	}
+	return verifier.issuer
 }
 
 func NewProductionVerifier(issuer string, keys map[string]ed25519.PublicKey) (*ProductionVerifier, error) {

@@ -28,11 +28,13 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 		Security []map[string][]string `json:"security"`
 		Paths    map[string]struct {
 			Post struct {
-				OperationID string `json:"operationId"`
+				OperationID string                `json:"operationId"`
+				Security    []map[string][]string `json:"security"`
 			} `json:"post"`
 		} `json:"paths"`
 		Components struct {
-			Schemas map[string]struct {
+			SecuritySchemes map[string]json.RawMessage `json:"securitySchemes"`
+			Schemas         map[string]struct {
 				Required   []string                   `json:"required"`
 				Properties map[string]json.RawMessage `json:"properties"`
 			} `json:"schemas"`
@@ -76,6 +78,9 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 		CancelApprovalPath("{approvalId}"):                           "cancelApproval",
 		ObserveApprovalPath("{approvalId}"):                          "observeApproval",
 		ConsumeApprovalPath("{approvalId}"):                          "consumeApprovalAndAuthorizeExecution",
+		IssueRunCapabilitiesPath:                                     "issueRunCapabilities",
+		AuthorizeExecutorRunCapabilityPath:                           "authorizeExecutorRunCapability",
+		AuthorizeLLMProxyRunCapabilityPath:                           "authorizeLLMProxyRunCapability",
 	}
 	for path, operationID := range want {
 		operation, found := document.Paths[path]
@@ -86,9 +91,25 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 	if len(document.Paths) != len(want) {
 		t.Fatalf("internal OpenAPI path count = %d, want %d", len(document.Paths), len(want))
 	}
+	if len(document.Components.SecuritySchemes) != 2 || document.Components.SecuritySchemes["workloadMTLS"] == nil ||
+		document.Components.SecuritySchemes["runCapabilityBearer"] == nil {
+		t.Fatalf("internal OpenAPI security schemes = %v", document.Components.SecuritySchemes)
+	}
+	for _, path := range []string{AuthorizeExecutorRunCapabilityPath, AuthorizeLLMProxyRunCapabilityPath} {
+		security := document.Paths[path].Post.Security
+		if len(security) != 1 || security[0]["workloadMTLS"] == nil || security[0]["runCapabilityBearer"] == nil || len(security[0]) != 2 {
+			t.Errorf("internal OpenAPI %s security = %+v", path, security)
+		}
+	}
 
 	assertSchemaFields(t, document.Components.Schemas, "EnvironmentDeclaration", reflect.TypeFor[EnvironmentDeclaration]())
 	assertSchemaFields(t, document.Components.Schemas, "ConnectionHolder", reflect.TypeFor[ConnectionHolder]())
+	assertSchemaFields(t, document.Components.Schemas, "IssueRunCapabilitiesRequest", reflect.TypeFor[IssueRunCapabilitiesRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "IssuedRunCapability", reflect.TypeFor[IssuedRunCapability]())
+	assertSchemaFields(t, document.Components.Schemas, "IssueRunCapabilitiesResponse", reflect.TypeFor[IssueRunCapabilitiesResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "AuthorizeExecutorRunCapabilityRequest", reflect.TypeFor[AuthorizeExecutorRunCapabilityRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "AuthorizeLLMProxyRunCapabilityRequest", reflect.TypeFor[AuthorizeLLMProxyRunCapabilityRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "AuthorizeRunCapabilityResponse", reflect.TypeFor[AuthorizeRunCapabilityResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "AcquireExecutorConnectionRequest", reflect.TypeFor[AcquireExecutorConnectionRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "RenewExecutorConnectionRequest", reflect.TypeFor[RenewExecutorConnectionRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "ActivateExecutorConnectionRequest", reflect.TypeFor[ActivateExecutorConnectionRequest]())

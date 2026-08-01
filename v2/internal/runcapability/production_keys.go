@@ -82,6 +82,46 @@ func LoadProductionSigner(issuer, keyID, path string) (*ProductionSigner, error)
 	return NewProductionSigner(issuer, keyID, privateKey)
 }
 
+// LoadProductionVerifier reads the public overlap keyring from an absolute,
+// bounded regular-file projection. The keyring is not secret and may be
+// group-readable, but it is still restatted so a partial in-place rotation
+// cannot silently construct a mixed verifier.
+func LoadProductionVerifier(issuer, path string) (*ProductionVerifier, error) {
+	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return nil, errors.New("production run capability keyring path must be absolute and clean")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open production run capability keyring: %w", err)
+	}
+	defer file.Close()
+	before, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat production run capability keyring: %w", err)
+	}
+	if !before.Mode().IsRegular() {
+		return nil, errors.New("production run capability keyring must resolve to a regular file")
+	}
+	if before.Size() < 1 || before.Size() > maximumKeyringBytes {
+		return nil, fmt.Errorf("production run capability keyring must contain between 1 and %d bytes", maximumKeyringBytes)
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, maximumKeyringBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read production run capability keyring: %w", err)
+	}
+	if len(raw) > maximumKeyringBytes {
+		return nil, fmt.Errorf("production run capability keyring exceeds %d bytes", maximumKeyringBytes)
+	}
+	after, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("restat production run capability keyring: %w", err)
+	}
+	if !os.SameFile(before, after) || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
+		return nil, errors.New("production run capability keyring changed while it was being read")
+	}
+	return ParseProductionVerifier(issuer, raw)
+}
+
 func decodeProductionPrivateKey(raw []byte) (ed25519.PrivateKey, error) {
 	if len(raw) == ed25519.SeedSize {
 		return ed25519.NewKeyFromSeed(raw), nil

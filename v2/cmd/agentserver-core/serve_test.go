@@ -1,12 +1,21 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/objectruntime"
+	"github.com/agentserver/agentserver/v2/internal/runcapability"
 )
 
 func TestServeCoreRequiresDistinctHarnessPoolIdentityBeforeOpeningDatabase(t *testing.T) {
@@ -43,6 +52,31 @@ func TestServeCoreRequiresDistinctHarnessPoolIdentityBeforeOpeningDatabase(t *te
 	}
 }
 
+func TestServeCoreProductionRequiresDistinctLLMProxyIdentity(t *testing.T) {
+	configuration := map[string]string{
+		databaseURLEnvironment:             "postgres://unused",
+		coreListenAddressEnvironment:       "127.0.0.1:0",
+		coreTLSCertificateEnvironment:      "/unused/server.crt",
+		coreTLSKeyEnvironment:              "/unused/server.key",
+		coreClientCAEnvironment:            "/unused/client-ca.crt",
+		coreGatewayIdentityEnvironment:     "spiffe://agentserver.local/ns/agentserver/sa/executor-gateway",
+		coreHarnessPoolIdentityEnvironment: "spiffe://agentserver.local/ns/agentserver/sa/harness-pool",
+		coreBrowserIdentityEnvironment:     "spiffe://agentserver.local/ns/agentserver/sa/browser-gateway",
+	}
+	getenv := func(name string) string { return configuration[name] }
+	if err := serveCore(t.Context(), getenv, io.Discard, coreServeProduction); err == nil || !strings.Contains(err.Error(), coreLLMProxyIdentityEnvironment+" is required") {
+		t.Fatalf("missing llmproxy identity error = %v", err)
+	}
+	configuration[coreLLMProxyIdentityEnvironment] = configuration[coreGatewayIdentityEnvironment]
+	if err := serveCore(t.Context(), getenv, io.Discard, coreServeProduction); err == nil || !strings.Contains(err.Error(), "must be distinct") {
+		t.Fatalf("shared llmproxy identity error = %v", err)
+	}
+	configuration[coreLLMProxyIdentityEnvironment] = "spiffe://agentserver.local/ns/agentserver/sa/llmproxy"
+	if err := serveCore(t.Context(), getenv, io.Discard, coreServeProduction); err == nil || !strings.Contains(err.Error(), coreHydraIntrospectionEnvironment+" is required") {
+		t.Fatalf("distinct llmproxy identity next-boundary error = %v", err)
+	}
+}
+
 func TestConfigureCorePromptStoreSeparatesProductionAndDevelopment(t *testing.T) {
 	root := t.TempDir()
 	development, description, err := configureCorePromptStore(
@@ -69,6 +103,70 @@ func TestConfigureCorePromptStoreSeparatesProductionAndDevelopment(t *testing.T)
 	}
 }
 
+func TestConfigureCoreProductionRunCapabilitiesLoadsOnlyProductionAuthority(t *testing.T) {
+	configuration := productionRunCapabilityEnvironment(t, true)
+	getenv := func(name string) string { return configuration[name] }
+	loaded, err := configureCoreProductionRunCapabilities(getenv, coreServeProduction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded == nil || loaded.signer.Issuer() != configuration[coreCapabilityIssuerEnvironment] ||
+		loaded.signer.KeyID() != configuration[coreCapabilityKeyIDEnvironment] ||
+		len(loaded.verifier.KeyIDs()) != 1 || loaded.verifier.KeyIDs()[0] != loaded.signer.KeyID() ||
+		loaded.policy.ExecutorID != configuration[coreProductionExecutorEnvironment] ||
+		loaded.policy.Model != configuration[coreModelEnvironment] || loaded.policy.Provider != configuration[coreModelProviderEnvironment] ||
+		loaded.policy.MaxRunDuration != 30*time.Minute || loaded.policy.MaxApprovalTTL != 10*time.Second ||
+		loaded.policy.ExpiryGrace != 45*time.Second {
+		t.Fatalf("production capability config = %+v", loaded)
+	}
+	development, err := configureCoreProductionRunCapabilities(func(name string) string {
+		t.Fatalf("insecure-development mode read production setting %s", name)
+		return ""
+	}, coreServeInsecureDevelopment)
+	if err != nil || development != nil {
+		t.Fatalf("development production capability config = %+v, %v", development, err)
+	}
+	if _, err := configureCoreProductionRunCapabilities(getenv, coreServeMode(255)); err == nil {
+		t.Fatal("invalid Core mode was accepted")
+	}
+
+	missingActive := productionRunCapabilityEnvironment(t, false)
+	if _, err := configureCoreProductionRunCapabilities(func(name string) string { return missingActive[name] }, coreServeProduction); err == nil || !strings.Contains(err.Error(), "active signing key") {
+		t.Fatalf("missing active key error = %v", err)
+	}
+	invalidPolicy := productionRunCapabilityEnvironment(t, true)
+	invalidPolicy[coreMaxApprovalTTLEnvironment] = "31m"
+	if _, err := configureCoreProductionRunCapabilities(func(name string) string { return invalidPolicy[name] }, coreServeProduction); err == nil || !strings.Contains(err.Error(), "maximum approval TTL") {
+		t.Fatalf("invalid capability policy error = %v", err)
+	}
+}
+
+func TestMountCoreRunCapabilityRoutesIsProductionOnly(t *testing.T) {
+	development := http.NewServeMux()
+	mountCoreRunCapabilityRoutes(development, nil)
+	response := httptest.NewRecorder()
+	development.ServeHTTP(response, httptest.NewRequest(http.MethodPost, corecontract.IssueRunCapabilitiesPath, nil))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("development run capability route status = %d", response.Code)
+	}
+
+	production := http.NewServeMux()
+	mountCoreRunCapabilityRoutes(production, http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	for _, path := range []string{
+		corecontract.IssueRunCapabilitiesPath,
+		corecontract.AuthorizeExecutorRunCapabilityPath,
+		corecontract.AuthorizeLLMProxyRunCapabilityPath,
+	} {
+		response = httptest.NewRecorder()
+		production.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, nil))
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("production route %s status = %d", path, response.Code)
+		}
+	}
+}
+
 func TestCoreBrowserConfigurationParsersFailClosed(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
 	encoded := base64.RawURLEncoding.EncodeToString(key)
@@ -90,4 +188,54 @@ func TestCoreBrowserConfigurationParsersFailClosed(t *testing.T) {
 	if tools := commaSeparatedTools("read_file,shell"); len(tools) != 2 || tools[0] != "read_file" || tools[1] != "shell" {
 		t.Fatalf("commaSeparatedTools() = %q", tools)
 	}
+}
+
+func productionRunCapabilityEnvironment(t *testing.T, includeActiveKey bool) map[string]string {
+	t.Helper()
+	root := t.TempDir()
+	active := ed25519.NewKeyFromSeed(bytesOfForCoreTest(0x61, ed25519.SeedSize))
+	verification := active
+	keyID := "core-production-active"
+	if !includeActiveKey {
+		verification = ed25519.NewKeyFromSeed(bytesOfForCoreTest(0x62, ed25519.SeedSize))
+		keyID = "core-production-other"
+	}
+	privateKeyPath := filepath.Join(root, "active.seed")
+	if err := os.WriteFile(privateKeyPath, active.Seed(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	keyringRaw, err := json.Marshal(runcapability.ProductionKeyringDocument{
+		Version: runcapability.ProductionKeyringVersion,
+		Keys: []runcapability.ProductionVerificationKeyDocument{{
+			KeyID: keyID, Algorithm: runcapability.ProductionSignatureAlgorithm,
+			PublicKey: base64.RawURLEncoding.EncodeToString(verification.Public().(ed25519.PublicKey)),
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyringPath := filepath.Join(root, "keyring.json")
+	if err := os.WriteFile(keyringPath, keyringRaw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return map[string]string{
+		coreCapabilityIssuerEnvironment:      "https://agentserver.example.test/core",
+		coreCapabilityKeyIDEnvironment:       "core-production-active",
+		coreCapabilityPrivateKeyEnvironment:  privateKeyPath,
+		coreCapabilityKeyringEnvironment:     keyringPath,
+		coreProductionExecutorEnvironment:    "63000000-0000-4000-8000-000000000001",
+		coreModelEnvironment:                 "gpt-5.6-codex",
+		coreModelProviderEnvironment:         "openai",
+		coreMaxRunDurationEnvironment:        "30m",
+		coreMaxApprovalTTLEnvironment:        "10s",
+		coreCapabilityExpiryGraceEnvironment: "45s",
+	}
+}
+
+func bytesOfForCoreTest(value byte, count int) []byte {
+	result := make([]byte, count)
+	for index := range result {
+		result[index] = value
+	}
+	return result
 }

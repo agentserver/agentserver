@@ -824,10 +824,11 @@ func validateApprovalOutcomeCorrelation(
 	return nil
 }
 
-// sendApprovalOutcome allocates the command only while a connection is
-// attached. Once allocated, the exact frame is authoritative in the bounded
-// session journal: a failed transport write is recovered by normal resume and
-// must never allocate a replacement sequence.
+// sendApprovalOutcome makes the exact command authoritative in the bounded
+// session journal. If the transport is detached, the frame is allocated for
+// the next same-holder resume. If a transport write fails after allocation,
+// normal resume replays those same bytes and must never allocate a replacement
+// sequence.
 func (runtime *attemptControlRuntime) sendApprovalOutcome(
 	ctx context.Context,
 	outcome harnesscontrol.ApprovalOutcomeCommand,
@@ -850,7 +851,7 @@ func (runtime *attemptControlRuntime) sendApprovalOutcome(
 			runtime.ackBarrier.Unlock()
 			return errors.New("attempt control registration is closed")
 		}
-		if runtime.session == nil || runtime.connection == nil || !runtime.connectionReady {
+		if runtime.session == nil {
 			changed := runtime.connectionChanged
 			runtime.mu.Unlock()
 			runtime.commandMu.Unlock()
@@ -863,6 +864,30 @@ func (runtime *attemptControlRuntime) sendApprovalOutcome(
 			}
 		}
 		session := runtime.session
+		if runtime.connection == nil && session.Snapshot().State == harnesscontrol.SessionDisconnected {
+			_, sendErr := session.QueueForResume(harnesscontrol.Payload{
+				Type: harnesscontrol.MessageTypeCommand, Payload: payload,
+			})
+			runtime.mu.Unlock()
+			runtime.commandMu.Unlock()
+			runtime.ackBarrier.Unlock()
+			return sendErr
+		}
+		if runtime.connection == nil || !runtime.connectionReady {
+			// A resume handshake has already fixed the welcome cursors while its
+			// connection is not ready. Wait until replay completes before
+			// allocating a later live frame.
+			changed := runtime.connectionChanged
+			runtime.mu.Unlock()
+			runtime.commandMu.Unlock()
+			runtime.ackBarrier.Unlock()
+			select {
+			case <-changed:
+				continue
+			case <-ctx.Done():
+				return context.Cause(ctx)
+			}
+		}
 		connection := runtime.connection
 		frame, sendErr := session.Send(harnesscontrol.Payload{
 			Type: harnesscontrol.MessageTypeCommand, Payload: payload,

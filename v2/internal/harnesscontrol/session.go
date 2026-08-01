@@ -215,6 +215,25 @@ func (session *Session) Send(payload Payload) (Frame, error) {
 	if err := session.requireActiveLocked(); err != nil {
 		return Frame{}, err
 	}
+	return session.sendLocked(payload)
+}
+
+// QueueForResume allocates one immutable outbound frame while the transport
+// is detached. The frame cannot cross a socket until the same holder resumes
+// this session, where it is included in the ordinary exact replay range.
+func (session *Session) QueueForResume(payload Payload) (Frame, error) {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.state != SessionDisconnected {
+		return Frame{}, protocolError(
+			ErrorSessionClosed, false,
+			"cannot queue control frame for resume in session state %s", session.state,
+		)
+	}
+	return session.sendLocked(payload)
+}
+
+func (session *Session) sendLocked(payload Payload) (Frame, error) {
 	if session.sentThrough >= maxSafeJSONInteger {
 		err := protocolError(ErrorSessionClosed, true, "control session sequence exhausted")
 		session.closeLocked(err, SessionClosed)

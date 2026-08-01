@@ -89,6 +89,39 @@ func TestControlSessionJournalsImmutableFrameBeforeTransport(t *testing.T) {
 	}
 }
 
+func TestControlSessionQueuesExactFrameForSameHolderResume(t *testing.T) {
+	now := time.Unix(1_100, 0)
+	pool := newTestControlSession(t, RolePool, 8)
+	payload := poolInterruptPayload(t, "outcome became ready while disconnected")
+	if _, err := pool.QueueForResume(payload); errorCode(err) != ErrorSessionClosed {
+		t.Fatalf("QueueForResume() while active error = %v", err)
+	}
+	if err := pool.Disconnect(now); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := pool.QueueForResume(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := pool.Snapshot(); snapshot.State != SessionDisconnected ||
+		snapshot.SentThrough != 1 || snapshot.JournalFrames != 1 {
+		t.Fatalf("queued disconnected snapshot = %+v", snapshot)
+	}
+	resumed, err := pool.Resume(ResumeRequest{
+		PoolInstanceID: testPoolInstanceID, ControlSessionID: testControlSessionID,
+		RunAttemptGeneration: 3, PeerReceivedThrough: 0, PeerSentThrough: 0,
+	}, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resumed.Replay) != 1 || !reflect.DeepEqual(resumed.Replay[0], queued) {
+		t.Fatalf("queued resume replay = %+v, want %+v", resumed.Replay, queued)
+	}
+	if _, err := pool.QueueForResume(payload); errorCode(err) != ErrorSessionClosed {
+		t.Fatalf("QueueForResume() after resume error = %v", err)
+	}
+}
+
 func TestControlSessionPreparedReceiveDoesNotAdvanceAuthorityCursorsBeforeCommit(t *testing.T) {
 	pool := newTestControlSession(t, RolePool, 8)
 	worker := newTestControlSession(t, RoleWorker, 8)

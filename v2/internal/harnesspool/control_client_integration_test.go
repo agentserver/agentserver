@@ -1,6 +1,7 @@
 package harnesspool
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -357,6 +358,98 @@ func TestWorkerControlClientRoutesCanonicalApprovalOutcome(t *testing.T) {
 	}
 }
 
+func TestWorkerControlClientResumesJournaledApprovalOutcomeAfterPendingDisconnect(t *testing.T) {
+	lifecycle := newBlockingControlApprovalLifecycle()
+	fixture := newWorkerControlIntegrationFixture(t, lifecycle)
+	reconnectGate := newSecondControlHandshakeGate(t, fixture.httpClient)
+	config := harnessworker.DefaultWorkerControlClientConfig(
+		fixture.prepared.Manifest, fixture.prepared.SignedManifest,
+		fixture.control.Capability(), testHarnessWorkerID, fixture.httpClient,
+	)
+	config.HandshakeTimeout = 2 * time.Second
+	config.WriteTimeout = 2 * time.Second
+	config.ReconnectBackoff = 200 * time.Millisecond
+	client, err := harnessworker.NewWorkerControlClient(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { client.Close(errors.New("pending approval resume test complete")) })
+	t.Cleanup(reconnectGate.release)
+	startWorkerControlClient(t, client)
+
+	ctx := testContext(t)
+	const threadID = "thread-worker-approval-resume"
+	const turnID = "turn-worker-approval-resume"
+	if err := client.SendThreadReady(ctx, threadID, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SendTurnAccepted(ctx, threadID, turnID); err != nil {
+		t.Fatal(err)
+	}
+	request := workerApprovalRequest(fixture, "d4", "call-worker-approval-resume")
+	type approvalResult struct {
+		decision harnessworker.ElicitationDecision
+		err      error
+	}
+	result := make(chan approvalResult, 1)
+	go func() {
+		decision, err := client.AwaitApproval(ctx, request)
+		result <- approvalResult{decision: decision, err: err}
+	}()
+	select {
+	case observed := <-lifecycle.requests:
+		if observed.ApprovalID != request.ApprovalID || observed.CallID != request.CallID {
+			t.Fatalf("observed approval = %+v, want %+v", observed, request)
+		}
+	case <-ctx.Done():
+		t.Fatal("pending approval did not reach pool observation")
+	}
+
+	closeActiveControlConnection(t, fixture.control)
+	select {
+	case <-reconnectGate.reconnectStarted:
+	case <-ctx.Done():
+		t.Fatal("worker did not start the gated resume handshake")
+	}
+	waitForControlState(t, fixture.control, harnesscontrol.SessionDisconnected)
+	lifecycle.releaseAll()
+	waitForControlJournalFrames(t, fixture.control, 1)
+	select {
+	case completed := <-result:
+		t.Fatalf("approval outcome crossed a disconnected transport: %+v", completed)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	reconnectGate.release()
+	select {
+	case completed := <-result:
+		if completed.err != nil || completed.decision.Action != harnessworker.ApprovalAccept {
+			t.Fatalf("resumed approval decision = %+v, %v", completed.decision, completed.err)
+		}
+		if completed.decision.Content["approvalId"] != request.ApprovalID ||
+			completed.decision.Content["approvalVersion"] != int64(2) {
+			t.Fatalf("resumed canonical approval evidence = %#v", completed.decision.Content)
+		}
+	case <-ctx.Done():
+		t.Fatal("worker did not receive journaled approval outcome after resume")
+	}
+	waitForControlJournalFrames(t, fixture.control, 0)
+
+	terminal := harnesscontrol.TurnTerminalEvent{
+		Kind: harnesscontrol.EventKindTurnTerminal, ThreadID: threadID, TurnID: turnID,
+		Status: "completed", RolloutLocator: testCompletedRolloutLocator,
+	}
+	if err := client.SendTurnTerminal(ctx, terminal); err != nil {
+		t.Fatal(err)
+	}
+	if accepted, err := fixture.control.WaitTerminal(ctx); err != nil || accepted != terminal {
+		t.Fatalf("WaitTerminal() = %+v, %v", accepted, err)
+	}
+	if err := client.Wait(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestWorkerControlClientBoundsPendingApprovals(t *testing.T) {
 	lifecycle := newBlockingControlApprovalLifecycle()
 	fixture := newWorkerControlIntegrationFixture(t, lifecycle)
@@ -485,6 +578,58 @@ type workerControlIntegrationFixture struct {
 	control    *AttemptControl
 	http       *httptest.Server
 	httpClient *http.Client
+}
+
+type secondControlHandshakeGate struct {
+	dial             func(context.Context, string, string) (net.Conn, error)
+	reconnectStarted chan struct{}
+	releaseReconnect chan struct{}
+
+	mu          sync.Mutex
+	dialCount   int
+	startedOnce sync.Once
+	releaseOnce sync.Once
+}
+
+func newSecondControlHandshakeGate(t *testing.T, client *http.Client) *secondControlHandshakeGate {
+	t.Helper()
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok || transport == nil {
+		t.Fatal("worker control test client must use an explicit *http.Transport")
+	}
+	dial := transport.DialContext
+	if dial == nil {
+		dial = (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	}
+	gate := &secondControlHandshakeGate{
+		dial: dial, reconnectStarted: make(chan struct{}), releaseReconnect: make(chan struct{}),
+	}
+	transport.DialContext = gate.dialContext
+	return gate
+}
+
+func (gate *secondControlHandshakeGate) dialContext(
+	ctx context.Context,
+	network string,
+	address string,
+) (net.Conn, error) {
+	gate.mu.Lock()
+	gate.dialCount++
+	dialCount := gate.dialCount
+	gate.mu.Unlock()
+	if dialCount > 1 {
+		gate.startedOnce.Do(func() { close(gate.reconnectStarted) })
+		select {
+		case <-gate.releaseReconnect:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return gate.dial(ctx, network, address)
+}
+
+func (gate *secondControlHandshakeGate) release() {
+	gate.releaseOnce.Do(func() { close(gate.releaseReconnect) })
 }
 
 func newWorkerControlIntegrationFixture(t *testing.T, lifecycle AttemptLifecycle) *workerControlIntegrationFixture {

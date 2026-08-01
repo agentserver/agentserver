@@ -379,7 +379,9 @@ mid-turn crash 时只允许恢复上一个已由 core提交指针的 completed-t
 
 后端接口只有immutable `PutIfAbsent`和`Open`。`PutIfAbsent`必须在消费并验证声明的全部ciphertext字节后才原子发布，provider返回歧义错误时上层只允许用同一pointer和重新打开的明文做exact retry。若key已存在，协议会解密并完整验证已有对象：authority确定不同时返回immutable conflict；后端/KMS暂时失败、context取消或已有对象损坏不能伪装成用户幂等冲突。Core的prompt adapter由`workspace/actor/session/idempotency key`稳定派生object ID并提交明文pointer；harness-pool adapter只用签名manifest中的workspace/kind/pointer读取prompt/checkpoint，并以finalizer生成的exact pointer写checkpoint。对象存储与KMS credential始终留在Core/pool域，worker只接收已经复核的明文字节流。
 
-`internal/objectstore`及Core/pool adapter已经实现上述供应商无关协议；chunk boundary、并发exact put、幂等冲突、跨scope替换、KMS authority、篡改/截断/尾随、未读尾部认证和adapter scope转换均有普通及race测试。2026-08-02又把当前源码交叉编译的`objectstore/coreserver/harnesspool`测试二进制放入OCI digest `24c44fe44872962a828df84d3ff67ae2d541e076fad1e4101f9dc0dca5d8bf21`的固定Linux arm64容器各运行5轮并通过。该证据只关闭应用层格式和接入边界：具体S3-compatible transport、KMS provider、credential/rotation、retention清理与生产部署仍需供应商ADR和独立集成/故障门禁，当前不能宣称生产对象存储已经部署。
+`internal/objectstore`及Core/pool adapter已经实现上述供应商无关协议；chunk boundary、并发exact put、幂等冲突、跨scope替换、KMS authority、篡改/截断/尾随、未读尾部认证和adapter scope转换均有普通及race测试。2026-08-02又把当前源码交叉编译的`objectstore/coreserver/harnesspool`测试二进制放入OCI digest `24c44fe44872962a828df84d3ff67ae2d541e076fad1e4101f9dc0dca5d8bf21`的固定Linux arm64容器各运行5轮并通过。
+
+具体transport的参考决策记录在[`ADR 0001`](adr/0001-aws-reference-object-provider.md)：AWS SDK v2 adapter以无自动重试的conditional `PutObject`实现immutable S3写边界，以`GetObject`的精确content length实现读边界，并用AWS KMS `AES_256` data key及authority digest context实现envelope boundary。它支持显式HTTPS S3-compatible endpoint，但不接受静态access-key配置，也不改变应用对象格式。provider单测/race与SDK serializer/error-decoder门禁已通过；最终Linux arm64测试二进制SHA-256为`2b46ba9a4433747bb90a08ca7381ea25321e75b22a65163f7017503339adb2bb`、size为`14515151`，在同一OCI index digest `24c44fe44872962a828df84d3ff67ae2d541e076fad1e4101f9dc0dca5d8bf21`中以network none、read-only root、非root和零capability连续运行5轮通过。该证据只关闭provider代码边界；真实bucket/KMS IAM、conditional-write兼容性、credential/rotation、retention清理、故障注入与生产装配仍需独立部署门禁，当前不能宣称生产对象存储已经部署。
 
 ### 7.5 启动延迟与容量
 

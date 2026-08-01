@@ -25,16 +25,22 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer, serve serveFunc) int {
-	if len(args) != 2 || args[0] != "serve" || args[1] != "--insecure-dev" {
-		fmt.Fprintln(stderr, "usage: harness-pool serve --insecure-dev")
-		fmt.Fprintln(stderr, "production capability issuance and encrypted object storage are not implemented yet; no production serve mode is exposed")
+	var mode harnessPoolServeMode
+	switch {
+	case len(args) == 1 && args[0] == "serve":
+		mode = harnessPoolServeProduction
+	case len(args) == 2 && args[0] == "serve" && args[1] == "--insecure-dev":
+		mode = harnessPoolServeInsecureDevelopment
+	default:
+		fmt.Fprintln(stderr, "usage: harness-pool serve")
+		fmt.Fprintln(stderr, "       harness-pool serve --insecure-dev")
 		return 2
 	}
 	if serve == nil {
 		fmt.Fprintln(stderr, "harness-pool serve: command is unavailable")
 		return 1
 	}
-	if err := serve(ctx, getenv, stdout, stderr, harnessPoolServeInsecureDevelopment); err != nil {
+	if err := serve(ctx, getenv, stdout, stderr, mode); err != nil {
 		fmt.Fprintf(stderr, "harness-pool serve: %v\n", err)
 		return 1
 	}

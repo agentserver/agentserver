@@ -74,10 +74,16 @@ func serveHarnessPool(
 	if ctx == nil {
 		return errors.New("harness-pool serve context is required")
 	}
-	if mode != harnessPoolServeInsecureDevelopment {
-		return errors.New("production harness-pool capability issuance is not configured")
+	var config harnessPoolConfig
+	var err error
+	switch mode {
+	case harnessPoolServeProduction:
+		config, err = loadHarnessPoolProductionConfig(getenv)
+	case harnessPoolServeInsecureDevelopment:
+		config, err = loadHarnessPoolDevelopmentConfig(getenv)
+	default:
+		return errors.New("harness-pool serve mode is invalid")
 	}
-	config, err := loadHarnessPoolDevelopmentConfig(getenv)
 	if err != nil {
 		return err
 	}
@@ -133,7 +139,7 @@ func serveHarnessPool(
 	if err != nil {
 		return err
 	}
-	profile := developmentRunLaunchProfile(config, callbackEndpoint)
+	profile := runLaunchProfile(config, callbackEndpoint)
 	resolver, err := harnesspool.NewConfiguredRunLaunchInputResolver(coreClient, profile)
 	if err != nil {
 		return err
@@ -142,8 +148,14 @@ func serveHarnessPool(
 	if err != nil {
 		return err
 	}
-	capabilityConfig := harnesspool.DefaultDevelopmentAttemptRuntimeCapabilitySourceConfig(config.executorID)
-	capabilities, err := harnesspool.NewDevelopmentAttemptRuntimeCapabilitySource(config.capabilityCodec, capabilityConfig)
+	var capabilities harnesspool.AttemptRuntimeCapabilitySource
+	switch mode {
+	case harnessPoolServeProduction:
+		capabilities, err = harnesspool.NewProductionAttemptRuntimeCapabilitySource(coreClient, config.executorID)
+	case harnessPoolServeInsecureDevelopment:
+		capabilityConfig := harnesspool.DefaultDevelopmentAttemptRuntimeCapabilitySourceConfig(config.executorID)
+		capabilities, err = harnesspool.NewDevelopmentAttemptRuntimeCapabilitySource(config.capabilityCodec, capabilityConfig)
+	}
 	if err != nil {
 		return err
 	}
@@ -223,11 +235,12 @@ func serveHarnessPool(
 		TLSConfig:         controlTLS,
 	}
 	readiness.ready.Store(true)
-	fmt.Fprintf(
-		stdout,
-		"harness-pool serve: INSECURE DEV capabilities; %s; holder %s; control %s; max attempts %d\n",
-		objectStoreDescription, poolInstanceID, callbackEndpoint, config.maxConcurrent,
-	)
+	authorityDescription := "production Core-issued Ed25519 capabilities"
+	if mode == harnessPoolServeInsecureDevelopment {
+		authorityDescription = "INSECURE DEV capabilities"
+	}
+	fmt.Fprintf(stdout, "harness-pool serve: %s; %s; holder %s; control %s; max attempts %d\n",
+		authorityDescription, objectStoreDescription, poolInstanceID, callbackEndpoint, config.maxConcurrent)
 	return runHarnessPoolServices(ctx, pool, controls, server, tls.NewListener(listener, controlTLS), readiness)
 }
 
@@ -269,7 +282,7 @@ func configureHarnessPoolObjectStore(
 	}
 }
 
-func developmentRunLaunchProfile(config harnessPoolDevelopmentConfig, callbackEndpoint string) harnesspool.RunLaunchProfile {
+func runLaunchProfile(config harnessPoolConfig, callbackEndpoint string) harnesspool.RunLaunchProfile {
 	maxExecution := min(config.maxRunDuration, 10*time.Minute)
 	return harnesspool.RunLaunchProfile{
 		CodexRuntimeManifestDigest: config.runtimeDigest,

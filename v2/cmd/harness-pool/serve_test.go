@@ -139,11 +139,11 @@ func TestHarnessPoolObjectStoreModesAreSeparated(t *testing.T) {
 	}
 }
 
-func TestServeHarnessPoolRejectsProductionUntilCapabilityIssuerExists(t *testing.T) {
+func TestServeHarnessPoolProductionRequiresCompleteConfiguration(t *testing.T) {
 	err := serveHarnessPool(
 		t.Context(), func(string) string { return "" }, io.Discard, io.Discard, harnessPoolServeProduction,
 	)
-	if err == nil || !strings.Contains(err.Error(), "capability issuance") {
+	if err == nil || !strings.Contains(err.Error(), poolListenAddressEnvironment+" is required") {
 		t.Fatalf("production harness-pool error = %v", err)
 	}
 }

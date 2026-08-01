@@ -36,6 +36,7 @@ type CoreClient struct {
 }
 
 var _ RunLaunchStateSource = (*CoreClient)(nil)
+var _ RunCapabilityIssuanceClient = (*CoreClient)(nil)
 
 type CoreCommandError struct {
 	HTTPStatus        int
@@ -412,6 +413,35 @@ func NewCoreClient(baseURL string, httpClient *http.Client) (*CoreClient, error)
 	clientCopy := *httpClient
 	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &CoreClient{baseURL: parsed, httpClient: &clientCopy}, nil
+}
+
+func (client *CoreClient) IssueRunCapabilities(
+	ctx context.Context,
+	request IssueRunCapabilitiesRequest,
+) (IssueRunCapabilitiesResult, error) {
+	contractRequest := corecontract.IssueRunCapabilitiesRequest{
+		WorkspaceID: request.WorkspaceID, SessionID: request.SessionID,
+		RunID: request.RunID, RunAttemptID: request.RunAttemptID,
+		HolderID: request.HolderID, RunAttemptGeneration: request.RunAttemptGeneration,
+		ExpectedRunVersion:        request.ExpectedRunVersion,
+		ExpectedRunAttemptVersion: request.ExpectedRunAttemptVersion,
+		ExecutorID:                request.ExecutorID, BrainToolCatalogID: request.BrainToolCatalogID,
+		ToolCatalogDigest: request.ToolCatalogDigest, Model: request.Model, Provider: request.Provider,
+		MaxRunDurationMillis: request.MaxRunDuration.Milliseconds(),
+		MaxApprovalTTLMillis: request.MaxApprovalTTL.Milliseconds(),
+	}
+	var response corecontract.IssueRunCapabilitiesResponse
+	if err := client.postNoStore(ctx, corecontract.IssueRunCapabilitiesPath, contractRequest, &response); err != nil {
+		return IssueRunCapabilitiesResult{}, err
+	}
+	result := IssueRunCapabilitiesResult{
+		ExecutorMCP: issuedRunCapability(response.ExecutorMCP),
+		LLMProxy:    issuedRunCapability(response.LLMProxy),
+	}
+	if err := validateProductionCapabilityIssuanceResult(request, response.ExecutorMCP.IssuedAt, result); err != nil {
+		return IssueRunCapabilitiesResult{}, fmt.Errorf("validate Core capability issuance response: %w", err)
+	}
+	return result, nil
 }
 
 func (client *CoreClient) ClaimRunAttempt(ctx context.Context, request ClaimRunAttemptRequest) (ClaimRunAttemptResult, error) {
@@ -862,6 +892,19 @@ func (client *CoreClient) BindBrainThreadCatalog(ctx context.Context, request Bi
 }
 
 func (client *CoreClient) post(ctx context.Context, path string, command, destination any) error {
+	return client.postWithPolicy(ctx, path, command, destination, false)
+}
+
+func (client *CoreClient) postNoStore(ctx context.Context, path string, command, destination any) error {
+	return client.postWithPolicy(ctx, path, command, destination, true)
+}
+
+func (client *CoreClient) postWithPolicy(
+	ctx context.Context,
+	path string,
+	command, destination any,
+	requireNoStore bool,
+) error {
 	if ctx == nil {
 		return errors.New("core command context is required")
 	}
@@ -897,6 +940,9 @@ func (client *CoreClient) post(ctx context.Context, path string, command, destin
 	if len(body) > maxCoreCommandResponseBytes {
 		return errors.New("core command response exceeds size limit")
 	}
+	if requireNoStore && response.Header.Get("Cache-Control") != "no-store" {
+		return errors.New("core capability response is missing Cache-Control no-store")
+	}
 	if response.StatusCode != http.StatusOK {
 		return decodeCoreCommandError(response.StatusCode, body)
 	}
@@ -909,6 +955,13 @@ func (client *CoreClient) post(ctx context.Context, path string, command, destin
 		return fmt.Errorf("finish core command response: %w", err)
 	}
 	return nil
+}
+
+func issuedRunCapability(source corecontract.IssuedRunCapability) IssuedRunCapability {
+	return IssuedRunCapability{
+		CapabilityID: source.CapabilityID, Audience: source.Audience, Token: source.Token,
+		IssuedAt: source.IssuedAt, RunDeadline: source.RunDeadline, ExpiresAt: source.ExpiresAt,
+	}
 }
 
 func decodeCoreCommandError(status int, body []byte) error {

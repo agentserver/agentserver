@@ -9,24 +9,25 @@ import (
 	"testing"
 )
 
-func TestRunRequiresExplicitInsecureDevelopmentMode(t *testing.T) {
-	var stderr bytes.Buffer
-	exitCode := run(t.Context(), []string{"serve"}, func(string) string { return "" }, io.Discard, &stderr, nil)
-	if exitCode != 2 || !strings.Contains(stderr.String(), "production capability issuance") {
-		t.Fatalf("run() = %d, stderr %q", exitCode, stderr.String())
-	}
+func TestRunProductionServe(t *testing.T) {
+	assertHarnessPoolRunMode(t, []string{"serve"}, harnessPoolServeProduction)
 }
 
 func TestRunInsecureDevelopmentServe(t *testing.T) {
+	assertHarnessPoolRunMode(t, []string{"serve", "--insecure-dev"}, harnessPoolServeInsecureDevelopment)
+}
+
+func assertHarnessPoolRunMode(t *testing.T, arguments []string, wantMode harnessPoolServeMode) {
+	t.Helper()
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	called := false
 	exitCode := run(
-		t.Context(), []string{"serve", "--insecure-dev"},
+		t.Context(), arguments,
 		func(string) string { return "configured" }, &stdout, &stderr,
 		func(_ context.Context, getenv func(string) string, output, errors io.Writer, mode harnessPoolServeMode) error {
 			called = true
-			if getenv("value") != "configured" || errors != &stderr || mode != harnessPoolServeInsecureDevelopment {
+			if getenv("value") != "configured" || errors != &stderr || mode != wantMode {
 				t.Fatal("serve inputs were not forwarded")
 			}
 			fmt.Fprintln(output, "serving")
@@ -35,5 +36,25 @@ func TestRunInsecureDevelopmentServe(t *testing.T) {
 	)
 	if exitCode != 0 || !called || stdout.String() != "serving\n" || stderr.Len() != 0 {
 		t.Fatalf("run() = %d, called %v, stdout %q, stderr %q", exitCode, called, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunRejectsInvalidServeArguments(t *testing.T) {
+	for _, arguments := range [][]string{
+		nil,
+		{"run"},
+		{"serve", "--production"},
+		{"serve", "--insecure-dev", "extra"},
+	} {
+		var stderr bytes.Buffer
+		called := false
+		exitCode := run(t.Context(), arguments, func(string) string { return "" }, io.Discard, &stderr,
+			func(context.Context, func(string) string, io.Writer, io.Writer, harnessPoolServeMode) error {
+				called = true
+				return nil
+			})
+		if exitCode != 2 || called || !strings.Contains(stderr.String(), "harness-pool serve") {
+			t.Fatalf("run(%q) = %d, called %v, stderr %q", arguments, exitCode, called, stderr.String())
+		}
 	}
 }

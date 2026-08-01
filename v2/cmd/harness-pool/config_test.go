@@ -25,6 +25,56 @@ func TestLoadHarnessPoolDevelopmentConfig(t *testing.T) {
 	}
 }
 
+func TestLoadHarnessPoolProductionConfig(t *testing.T) {
+	configuration := validHarnessPoolProductionConfiguration(t)
+	config, err := loadHarnessPoolProductionConfig(func(name string) string { return configuration[name] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.listenAddress != "127.0.0.1:8443" || config.executorID != configuration[poolExecutorIDEnvironment] ||
+		config.objectRoot != "" || config.capabilityCodec != nil || config.workerCredential == nil ||
+		config.workerCredential.UID != 65531 || config.workerCredential.GID != 65531 ||
+		config.appCredential.UID != 65532 || config.appCredential.GID != 65532 {
+		t.Fatalf("loaded production config = %+v", config)
+	}
+}
+
+func TestLoadHarnessPoolProductionConfigDoesNotReadDevelopmentSecrets(t *testing.T) {
+	configuration := validHarnessPoolProductionConfiguration(t)
+	configuration[poolDevExecutorIDEnvironment] = "not-a-uuid"
+	configuration[poolDevRunCapabilityKeyEnvironment] = "not-a-capability-key"
+	configuration[poolDevObjectRootEnvironment] = "relative-development-object-root"
+	if _, err := loadHarnessPoolProductionConfig(func(name string) string { return configuration[name] }); err != nil {
+		t.Fatalf("production configuration consumed a development-only value: %v", err)
+	}
+}
+
+func TestLoadHarnessPoolProductionConfigRejectsUnsafeValues(t *testing.T) {
+	for name, mutation := range map[string]func(map[string]string){
+		"missing executor": func(config map[string]string) { delete(config, poolExecutorIDEnvironment) },
+		"executor id":      func(config map[string]string) { config[poolExecutorIDEnvironment] = "not-a-uuid" },
+		"missing fork":     func(config map[string]string) { delete(config, poolPrivilegedForkEnvironment) },
+		"disabled fork":    func(config map[string]string) { config[poolPrivilegedForkEnvironment] = "false" },
+		"missing worker uid": func(config map[string]string) {
+			delete(config, poolWorkerUIDEnvironment)
+		},
+		"shared worker app uid": func(config map[string]string) {
+			config[poolWorkerUIDEnvironment] = config[poolAppUIDEnvironment]
+		},
+		"shared worker app gid": func(config map[string]string) {
+			config[poolWorkerGIDEnvironment] = config[poolAppGIDEnvironment]
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			configuration := validHarnessPoolProductionConfiguration(t)
+			mutation(configuration)
+			if _, err := loadHarnessPoolProductionConfig(func(name string) string { return configuration[name] }); err == nil {
+				t.Fatal("unsafe production harness-pool configuration was accepted")
+			}
+		})
+	}
+}
+
 func TestLoadHarnessPoolDevelopmentConfigSelectsPrivilegedFork(t *testing.T) {
 	configuration := validHarnessPoolConfiguration(t)
 	configuration[poolPrivilegedForkEnvironment] = "true"
@@ -136,6 +186,20 @@ func validHarnessPoolConfiguration(t *testing.T) map[string]string {
 	if runtime.GOOS == "windows" {
 		t.Skip("harness-pool local process command tests require Unix executable paths")
 	}
+	return configuration
+}
+
+func validHarnessPoolProductionConfiguration(t *testing.T) map[string]string {
+	t.Helper()
+	configuration := validHarnessPoolConfiguration(t)
+	configuration[poolListenAddressEnvironment] = "127.0.0.1:8443"
+	configuration[poolExecutorIDEnvironment] = "21000000-0000-4000-8000-000000000002"
+	configuration[poolPrivilegedForkEnvironment] = "true"
+	configuration[poolWorkerUIDEnvironment] = "65531"
+	configuration[poolWorkerGIDEnvironment] = "65531"
+	delete(configuration, poolDevExecutorIDEnvironment)
+	delete(configuration, poolDevRunCapabilityKeyEnvironment)
+	delete(configuration, poolDevObjectRootEnvironment)
 	return configuration
 }
 

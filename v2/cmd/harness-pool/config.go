@@ -28,6 +28,7 @@ const (
 	poolCoreURLEnvironment               = "AGENTSERVER_V2_CORE_URL"
 	poolCoreCAEnvironment                = "AGENTSERVER_V2_CORE_CA_FILE"
 	poolCoreServerNameEnvironment        = "AGENTSERVER_V2_CORE_SERVER_NAME"
+	poolExecutorIDEnvironment            = "AGENTSERVER_V2_EXECUTOR_ID"
 	poolDevExecutorIDEnvironment         = "AGENTSERVER_V2_DEV_EXECUTOR_ID"
 	poolDevRunCapabilityKeyEnvironment   = "AGENTSERVER_V2_DEV_RUN_CAPABILITY_KEY"
 	poolDevObjectRootEnvironment         = "AGENTSERVER_V2_DEV_PROMPT_OBJECT_DIR"
@@ -71,7 +72,7 @@ var (
 	poolDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
-type harnessPoolDevelopmentConfig struct {
+type harnessPoolConfig struct {
 	listenAddress     string
 	tlsCertificate    string
 	tlsKey            string
@@ -109,9 +110,17 @@ type harnessPoolDevelopmentConfig struct {
 	maxApprovalTTL      time.Duration
 }
 
-func loadHarnessPoolDevelopmentConfig(getenv func(string) string) (harnessPoolDevelopmentConfig, error) {
+func loadHarnessPoolDevelopmentConfig(getenv func(string) string) (harnessPoolConfig, error) {
+	return loadHarnessPoolConfig(getenv, false)
+}
+
+func loadHarnessPoolProductionConfig(getenv func(string) string) (harnessPoolConfig, error) {
+	return loadHarnessPoolConfig(getenv, true)
+}
+
+func loadHarnessPoolConfig(getenv func(string) string, production bool) (harnessPoolConfig, error) {
 	if getenv == nil {
-		return harnessPoolDevelopmentConfig{}, errors.New("harness-pool configuration source is required")
+		return harnessPoolConfig{}, errors.New("harness-pool configuration source is required")
 	}
 	required := func(name string) (string, error) {
 		value := strings.TrimSpace(getenv(name))
@@ -120,13 +129,17 @@ func loadHarnessPoolDevelopmentConfig(getenv func(string) string) (harnessPoolDe
 		}
 		return value, nil
 	}
-	var config harnessPoolDevelopmentConfig
+	var config harnessPoolConfig
 	var err error
 	if config.listenAddress, err = required(poolListenAddressEnvironment); err != nil {
-		return harnessPoolDevelopmentConfig{}, err
+		return harnessPoolConfig{}, err
 	}
-	if err := requireDevelopmentLoopbackAddress(config.listenAddress); err != nil {
-		return harnessPoolDevelopmentConfig{}, err
+	if !production {
+		if err := requireDevelopmentLoopbackAddress(config.listenAddress); err != nil {
+			return harnessPoolConfig{}, err
+		}
+	} else if _, _, err := net.SplitHostPort(config.listenAddress); err != nil {
+		return harnessPoolConfig{}, fmt.Errorf("parse production harness-pool listen address: %w", err)
 	}
 	for target, name := range map[*string]string{
 		&config.tlsCertificate:      poolTLSCertificateEnvironment,
@@ -136,8 +149,6 @@ func loadHarnessPoolDevelopmentConfig(getenv func(string) string) (harnessPoolDe
 		&config.workerTLSIdentity:   poolWorkerTLSIdentityEnvironment,
 		&config.coreURL:             poolCoreURLEnvironment,
 		&config.coreCA:              poolCoreCAEnvironment,
-		&config.executorID:          poolDevExecutorIDEnvironment,
-		&config.objectRoot:          poolDevObjectRootEnvironment,
 		&config.runtimeRoot:         poolRuntimeRootEnvironment,
 		&config.checkpointRoot:      poolCheckpointStagingRootEnvironment,
 		&config.workerExecutable:    poolWorkerExecutableEnvironment,
@@ -155,80 +166,98 @@ func loadHarnessPoolDevelopmentConfig(getenv func(string) string) (harnessPoolDe
 	} {
 		*target, err = required(name)
 		if err != nil {
-			return harnessPoolDevelopmentConfig{}, err
+			return harnessPoolConfig{}, err
+		}
+	}
+	executorEnvironment := poolDevExecutorIDEnvironment
+	if production {
+		executorEnvironment = poolExecutorIDEnvironment
+	}
+	if config.executorID, err = required(executorEnvironment); err != nil {
+		return harnessPoolConfig{}, err
+	}
+	if !production {
+		config.objectRoot, err = required(poolDevObjectRootEnvironment)
+		if err != nil {
+			return harnessPoolConfig{}, err
 		}
 	}
 	config.coreServerName = strings.TrimSpace(getenv(poolCoreServerNameEnvironment))
 	if err := requireHTTPSOrigin(config.coreURL, poolCoreURLEnvironment); err != nil {
-		return harnessPoolDevelopmentConfig{}, err
+		return harnessPoolConfig{}, err
 	}
 	if !validPoolUUID(config.executorID) {
-		return harnessPoolDevelopmentConfig{}, fmt.Errorf("%s must be a non-zero canonical lowercase UUID", poolDevExecutorIDEnvironment)
+		return harnessPoolConfig{}, fmt.Errorf("%s must be a non-zero canonical lowercase UUID", executorEnvironment)
 	}
-	encodedCapabilityKey, err := required(poolDevRunCapabilityKeyEnvironment)
-	if err != nil {
-		return harnessPoolDevelopmentConfig{}, err
-	}
-	config.capabilityCodec, err = runcapability.NewDevelopmentCodecFromBase64Key(encodedCapabilityKey)
-	if err != nil {
-		return harnessPoolDevelopmentConfig{}, fmt.Errorf("%s: %w", poolDevRunCapabilityKeyEnvironment, err)
+	if !production {
+		encodedCapabilityKey, err := required(poolDevRunCapabilityKeyEnvironment)
+		if err != nil {
+			return harnessPoolConfig{}, err
+		}
+		config.capabilityCodec, err = runcapability.NewDevelopmentCodecFromBase64Key(encodedCapabilityKey)
+		if err != nil {
+			return harnessPoolConfig{}, fmt.Errorf("%s: %w", poolDevRunCapabilityKeyEnvironment, err)
+		}
 	}
 	if !poolDigestPattern.MatchString(config.runtimeDigest) {
-		return harnessPoolDevelopmentConfig{}, fmt.Errorf("%s must be a lowercase SHA-256 digest", poolRuntimeManifestDigestEnvironment)
+		return harnessPoolConfig{}, fmt.Errorf("%s must be a lowercase SHA-256 digest", poolRuntimeManifestDigestEnvironment)
 	}
 	config.allowlistVersion, err = requiredSafePositiveInt(getenv, poolCheckpointAllowlistEnvironment)
 	if err != nil {
-		return harnessPoolDevelopmentConfig{}, err
+		return harnessPoolConfig{}, err
 	}
 	appUID, err := requiredCredentialID(getenv, poolAppUIDEnvironment)
 	if err != nil {
-		return harnessPoolDevelopmentConfig{}, err
+		return harnessPoolConfig{}, err
 	}
 	appGID, err := requiredCredentialID(getenv, poolAppGIDEnvironment)
 	if err != nil {
-		return harnessPoolDevelopmentConfig{}, err
+		return harnessPoolConfig{}, err
 	}
 	config.appCredential = harnesspool.LocalProcessCredential{UID: appUID, GID: appGID}
 	privilegedFork := strings.TrimSpace(getenv(poolPrivilegedForkEnvironment))
 	switch privilegedFork {
 	case "":
+		if production {
+			return harnessPoolConfig{}, fmt.Errorf("%s must be exactly true in production", poolPrivilegedForkEnvironment)
+		}
 	case "true":
 		workerUID, err := requiredCredentialID(getenv, poolWorkerUIDEnvironment)
 		if err != nil {
-			return harnessPoolDevelopmentConfig{}, err
+			return harnessPoolConfig{}, err
 		}
 		workerGID, err := requiredCredentialID(getenv, poolWorkerGIDEnvironment)
 		if err != nil {
-			return harnessPoolDevelopmentConfig{}, err
+			return harnessPoolConfig{}, err
 		}
 		if workerUID == appUID || workerGID == appGID {
-			return harnessPoolDevelopmentConfig{}, errors.New("privileged-fork worker and app identities must be distinct")
+			return harnessPoolConfig{}, errors.New("privileged-fork worker and app identities must be distinct")
 		}
 		config.workerCredential = &harnesspool.LocalProcessCredential{UID: workerUID, GID: workerGID}
 	default:
-		return harnessPoolDevelopmentConfig{}, fmt.Errorf("%s must be exactly true when present", poolPrivilegedForkEnvironment)
+		return harnessPoolConfig{}, fmt.Errorf("%s must be exactly true when present", poolPrivilegedForkEnvironment)
 	}
 	config.maxConcurrent, err = optionalBoundedInt(getenv(poolMaxConcurrentEnvironment), defaultPoolMaxConcurrent, 1, maximumCommandConcurrency, poolMaxConcurrentEnvironment)
 	if err != nil {
-		return harnessPoolDevelopmentConfig{}, err
+		return harnessPoolConfig{}, err
 	}
 	config.maxRunDuration, err = optionalBoundedDuration(getenv(poolMaxRunDurationEnvironment), defaultMaxRunDuration, time.Second, 24*time.Hour, poolMaxRunDurationEnvironment)
 	if err != nil {
-		return harnessPoolDevelopmentConfig{}, err
+		return harnessPoolConfig{}, err
 	}
 	config.maxApprovalTTL, err = optionalBoundedDuration(getenv(poolMaxApprovalTTLEnvironment), defaultMaxApprovalTTL, time.Second, 24*time.Hour, poolMaxApprovalTTLEnvironment)
 	if err != nil {
-		return harnessPoolDevelopmentConfig{}, err
+		return harnessPoolConfig{}, err
 	}
 	if config.maxApprovalTTL > config.maxRunDuration {
-		return harnessPoolDevelopmentConfig{}, fmt.Errorf("%s must not exceed %s", poolMaxApprovalTTLEnvironment, poolMaxRunDurationEnvironment)
+		return harnessPoolConfig{}, fmt.Errorf("%s must not exceed %s", poolMaxApprovalTTLEnvironment, poolMaxRunDurationEnvironment)
 	}
 	if err := validateDirectConfigurationFile(config.workerConfig); err != nil {
-		return harnessPoolDevelopmentConfig{}, fmt.Errorf("%s: %w", poolWorkerConfigEnvironment, err)
+		return harnessPoolConfig{}, fmt.Errorf("%s: %w", poolWorkerConfigEnvironment, err)
 	}
 	workerDigest, _, err := runtimelock.HashFile(config.workerExecutable)
 	if err != nil {
-		return harnessPoolDevelopmentConfig{}, fmt.Errorf("hash local harness-worker executable: %w", err)
+		return harnessPoolConfig{}, fmt.Errorf("hash local harness-worker executable: %w", err)
 	}
 	config.workerDigest = workerDigest
 	return config, nil

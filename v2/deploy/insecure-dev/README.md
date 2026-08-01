@@ -55,9 +55,27 @@ Run the real deterministic smoke from `v2/`:
 ./deploy/insecure-dev/smoke.sh
 ```
 
-It sends an HTTPS AG-UI request through the published browser-gateway, waits
-for `RUN_FINISHED`, checks the scripted assistant message, and verifies that a
-checkpoint exists in PostgreSQL. Inspect and stop the stack with:
+The browser-gateway also serves the dependency-free reference web at `/`.
+Print a local URL whose fragment contains the insecure development bearer:
+
+```sh
+./deploy/insecure-dev/browser-url.sh
+```
+
+The reference page removes the fragment immediately and keeps the bearer and
+AG-UI reconnect cursor only in page memory. The URL still exposes the fixture
+bearer to terminal history, so it is strictly an `INSECURE DEV` convenience.
+The page uses same-origin `fetch` streaming rather than `EventSource`, renders
+AG-UI message/tool lifecycles, and accepts only the display-only A2UI v0.9
+Card/Column/Text subset emitted by browser-gateway. It never connects to stock
+app-server or exec-server directly. The deterministic development turn first
+discovers its single environment, then executes exact argv `["/bin/pwd"]` so
+the page receives a real command-result A2UI surface from stock exec-server.
+
+The smoke first checks the reference-web marker and CSP, then sends an HTTPS
+AG-UI request through the published browser-gateway, waits for `RUN_FINISHED`,
+checks the scripted assistant message, and verifies that a checkpoint exists
+in PostgreSQL. Inspect and stop the stack with:
 
 ```sh
 container logs agentserver-v2-dev

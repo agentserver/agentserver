@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="description" content="Agentserver v2 AG-UI and A2UI reference client">
+    <title>Agentserver v2 · Reference Web</title>
+    <link rel="stylesheet" href="/reference/styles.css">
+    <script type="module" src="/reference/app.js"></script>
+  </head>
+  <body>
+    <div class="app-shell" data-agentserver-reference-web="v2">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Agentserver v2 reference web">
+          <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span>
+            <strong>Agentserver</strong>
+            <small>v2 protocol desk</small>
+          </span>
+        </a>
+        <div class="topbar-actions">
+          <span class="health-pill" id="health-pill"><i aria-hidden="true"></i><span id="health-label">checking gateway</span></span>
+          <button class="quiet-button" id="connection-button" type="button">Connect</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="conversation-panel" aria-label="Agent conversation">
+          <div class="conversation-heading">
+            <div>
+              <p class="eyebrow">AG-UI stream</p>
+              <h1>One prompt in. Durable events out.</h1>
+            </div>
+            <div class="run-state" id="run-state" data-state="idle">
+              <span class="run-state-dot" aria-hidden="true"></span>
+              <span id="run-state-label">Idle</span>
+            </div>
+          </div>
+
+          <div class="transcript" id="transcript" aria-live="polite">
+            <div class="welcome-card" id="welcome-card">
+              <p class="eyebrow">Reference client</p>
+              <h2>The browser talks only to browser-gateway.</h2>
+              <p>Each send creates one closed-world AG-UI request. Model execution remains inside the short-lived harness, while executor work flows through agentx and stock exec-server.</p>
+              <div class="protocol-route" aria-label="Protocol route">
+                <span>Browser</span><b>AG-UI</b><span>Core</span><b>harness</b><span>Codex</span><b>MCP</b><span>agentx</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="stream-warning" id="stream-warning" hidden>
+            <div>
+              <strong>Projection stream disconnected</strong>
+              <span>The run is still executing. Reconnect from the latest lifecycle-safe cursor.</span>
+            </div>
+            <button class="secondary-button" id="reconnect-button" type="button">Reconnect stream</button>
+          </div>
+
+          <form class="composer" id="composer">
+            <label class="sr-only" for="prompt">Message</label>
+            <textarea id="prompt" name="prompt" rows="1" maxlength="262144" placeholder="Ask the agent to inspect the workspace…" disabled></textarea>
+            <div class="composer-footer">
+              <span id="composer-hint">Connect an in-memory development bearer to begin.</span>
+              <button class="send-button" id="send-button" type="submit" disabled>
+                <span>Send</span><span aria-hidden="true">↗</span>
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <aside class="activity-panel" aria-label="Execution activity">
+          <section class="activity-section run-inspector">
+            <div class="section-heading">
+              <div><p class="eyebrow">Authority</p><h2>Run inspector</h2></div>
+              <span class="phase-badge">INSECURE DEV</span>
+            </div>
+            <dl class="run-facts">
+              <div><dt>Workspace</dt><dd id="workspace-fact">not connected</dd></div>
+              <div><dt>Session</dt><dd id="session-fact">not connected</dd></div>
+              <div><dt>Run</dt><dd id="run-fact">—</dd></div>
+              <div><dt>Cursor</dt><dd id="cursor-fact">—</dd></div>
+              <div><dt>Events</dt><dd id="event-count">0</dd></div>
+            </dl>
+          </section>
+
+          <section class="activity-section">
+            <div class="section-heading compact"><div><p class="eyebrow">Executor</p><h2>Tool activity</h2></div></div>
+            <div class="empty-activity" id="tools-empty">No tool calls yet.</div>
+            <div class="tool-list" id="tool-list"></div>
+          </section>
+
+          <section class="activity-section">
+            <div class="section-heading compact">
+              <div><p class="eyebrow">A2UI v0.9</p><h2>Display surfaces</h2></div>
+              <span class="display-only">display only</span>
+            </div>
+            <div class="empty-activity" id="surfaces-empty">Command and file-change cards appear here.</div>
+            <div class="surface-list" id="surface-list"></div>
+          </section>
+
+          <details class="event-drawer">
+            <summary>Protocol diagnostics <span id="diagnostic-count">0 frames</span></summary>
+            <ol id="event-log"></ol>
+          </details>
+        </aside>
+      </main>
+    </div>
+
+    <div class="connection-layer" id="connection-layer" role="dialog" aria-modal="true" aria-labelledby="connection-title">
+      <form class="connection-card" id="connection-form">
+        <div class="connection-art" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+        <p class="eyebrow">Local development authority</p>
+        <h2 id="connection-title">Connect the reference client</h2>
+        <p class="connection-copy">The bearer stays in this page's memory. A token supplied in the URL fragment is scrubbed before any API request.</p>
+
+        <label for="bearer">Browser bearer</label>
+        <input id="bearer" name="bearer" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" required placeholder="asv2dev-browser-…">
+        <div class="scope-grid">
+          <label>Workspace ID<input id="workspace-id" name="workspace" autocomplete="off" spellcheck="false" required></label>
+          <label>Session ID<input id="session-id" name="session" autocomplete="off" spellcheck="false" required></label>
+        </div>
+        <p class="form-error" id="connection-error" role="alert" hidden></p>
+        <button class="connect-button" type="submit">Use in memory <span aria-hidden="true">→</span></button>
+        <p class="connection-note">No Codex login is entered here. This token authorizes only the browser-gateway development boundary.</p>
+      </form>
+    </div>
+  </body>
+</html>

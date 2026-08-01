@@ -88,7 +88,7 @@ func TestHydraFixtureRejectsAmbiguousProtocolInputs(t *testing.T) {
 	}
 }
 
-func TestLLMProxyFixtureRunsToolThenFinalPerCapability(t *testing.T) {
+func TestLLMProxyFixtureRunsListShellThenFinalPerCapability(t *testing.T) {
 	runtime, codec := newTestRuntime(t)
 	token := signTestCapability(t, codec, "70000000-0000-4000-8000-000000000007", "80000000-0000-4000-8000-000000000008", runcapability.AudienceLLMProxy, fixtureTestNow.Add(time.Hour), "gpt-5", "llmproxy")
 
@@ -96,9 +96,9 @@ func TestLLMProxyFixtureRunsToolThenFinalPerCapability(t *testing.T) {
 	if first.Code != http.StatusOK || first.Header().Get("Content-Type") != "text/event-stream" {
 		t.Fatalf("first scripted response = %d %s", first.Code, first.Body.String())
 	}
-	callID := responseCallID(t, first.Body.Bytes())
+	listCallID := responseCallID(t, first.Body.Bytes())
 	if !strings.Contains(first.Body.String(), `"namespace":"executor"`) ||
-		!strings.Contains(first.Body.String(), `"name":"list_environments"`) || callID == "" {
+		!strings.Contains(first.Body.String(), `"name":"list_environments"`) || listCallID == "" {
 		t.Fatalf("first scripted response omitted executor call: %s", first.Body.String())
 	}
 
@@ -106,12 +106,28 @@ func TestLLMProxyFixtureRunsToolThenFinalPerCapability(t *testing.T) {
 	if missing.Code != http.StatusConflict {
 		t.Fatalf("missing tool output status = %d", missing.Code)
 	}
-	secondInput := `[{"type":"function_call_output","call_id":` + mustJSONString(t, callID) + `,"output":"{\"environments\":[]}"}]`
-	second := callLLMProxy(t, runtime, token, modelBody(secondInput))
-	if second.Code != http.StatusOK || !strings.Contains(second.Body.String(), "Agentserver v2 scripted development turn completed.") {
-		t.Fatalf("final scripted response = %d %s", second.Code, second.Body.String())
+	invalidEnvironmentInput := `[{"type":"function_call_output","call_id":` + mustJSONString(t, listCallID) + `,"output":"{\"environments\":[]}"}]`
+	if invalid := callLLMProxy(t, runtime, token, modelBody(invalidEnvironmentInput)); invalid.Code != http.StatusConflict {
+		t.Fatalf("invalid environment result status = %d", invalid.Code)
 	}
-	exhausted := callLLMProxy(t, runtime, token, modelBody(secondInput))
+	secondInput := functionOutputInput(t, listCallID, developmentEnvironmentOutput())
+	second := callLLMProxy(t, runtime, token, modelBody(secondInput))
+	shellCallID := responseCallID(t, second.Body.Bytes())
+	if second.Code != http.StatusOK || shellCallID == "" || !strings.Contains(second.Body.String(), `"name":"shell"`) ||
+		!strings.Contains(second.Body.String(), `\"argv\":[\"/bin/pwd\"]`) ||
+		!strings.Contains(second.Body.String(), `\"environment_id\":\"60000000-0000-4000-8000-000000000006\"`) {
+		t.Fatalf("shell scripted response = %d %s", second.Code, second.Body.String())
+	}
+	failedShellInput := functionOutputInput(t, shellCallID, `{"status":"failed","exit_code":1,"sandbox_denied":false,"timed_out":false,"output_complete":true}`)
+	if failed := callLLMProxy(t, runtime, token, modelBody(failedShellInput)); failed.Code != http.StatusConflict {
+		t.Fatalf("failed shell result status = %d", failed.Code)
+	}
+	thirdInput := functionOutputInput(t, shellCallID, developmentShellOutput())
+	third := callLLMProxy(t, runtime, token, modelBody(thirdInput))
+	if third.Code != http.StatusOK || !strings.Contains(third.Body.String(), "Agentserver v2 scripted development turn completed.") {
+		t.Fatalf("final scripted response = %d %s", third.Code, third.Body.String())
+	}
+	exhausted := callLLMProxy(t, runtime, token, modelBody(thirdInput))
 	if exhausted.Code != http.StatusConflict {
 		t.Fatalf("exhausted scripted response status = %d", exhausted.Code)
 	}
@@ -123,7 +139,7 @@ func TestLLMProxyFixtureSeparatesConcurrentRunScripts(t *testing.T) {
 		signTestCapability(t, codec, "70000000-0000-4000-8000-000000000017", "80000000-0000-4000-8000-000000000018", runcapability.AudienceLLMProxy, fixtureTestNow.Add(time.Hour), "gpt-5", "llmproxy"),
 		signTestCapability(t, codec, "70000000-0000-4000-8000-000000000027", "80000000-0000-4000-8000-000000000028", runcapability.AudienceLLMProxy, fixtureTestNow.Add(time.Hour), "gpt-5", "llmproxy"),
 	}
-	callIDs := make([]string, len(tokens))
+	listCallIDs := make([]string, len(tokens))
 	var wait sync.WaitGroup
 	for index := range tokens {
 		wait.Add(1)
@@ -134,16 +150,22 @@ func TestLLMProxyFixtureSeparatesConcurrentRunScripts(t *testing.T) {
 				t.Errorf("run %d first response = %d %s", index, response.Code, response.Body.String())
 				return
 			}
-			callIDs[index] = responseCallID(t, response.Body.Bytes())
+			listCallIDs[index] = responseCallID(t, response.Body.Bytes())
 		}(index)
 	}
 	wait.Wait()
-	if callIDs[0] == "" || callIDs[1] == "" || callIDs[0] == callIDs[1] {
-		t.Fatalf("isolated call IDs = %v", callIDs)
+	if listCallIDs[0] == "" || listCallIDs[1] == "" || listCallIDs[0] == listCallIDs[1] {
+		t.Fatalf("isolated list call IDs = %v", listCallIDs)
 	}
 	for index, token := range tokens {
-		input := `[{"type":"function_call_output","call_id":` + mustJSONString(t, callIDs[index]) + `,"output":"ok"}]`
-		if response := callLLMProxy(t, runtime, token, modelBody(input)); response.Code != http.StatusOK {
+		listInput := functionOutputInput(t, listCallIDs[index], developmentEnvironmentOutput())
+		shell := callLLMProxy(t, runtime, token, modelBody(listInput))
+		if shell.Code != http.StatusOK {
+			t.Fatalf("run %d shell response = %d %s", index, shell.Code, shell.Body.String())
+		}
+		shellCallID := responseCallID(t, shell.Body.Bytes())
+		finalInput := functionOutputInput(t, shellCallID, developmentShellOutput())
+		if response := callLLMProxy(t, runtime, token, modelBody(finalInput)); response.Code != http.StatusOK {
 			t.Fatalf("run %d final response = %d %s", index, response.Code, response.Body.String())
 		}
 	}
@@ -288,7 +310,20 @@ func signTestCapability(
 }
 
 func modelBody(input string) string {
-	return `{"model":"gpt-5","stream":true,"input":` + input + `,"tools":[{"type":"namespace","name":"executor","tools":[{"type":"function","name":"list_environments"}]}]}`
+	return `{"model":"gpt-5","stream":true,"input":` + input + `,"tools":[{"type":"namespace","name":"executor","tools":[{"type":"function","name":"list_environments"},{"type":"function","name":"shell"}]}]}`
+}
+
+func developmentEnvironmentOutput() string {
+	return `{"environments":[{"environment_id":"60000000-0000-4000-8000-000000000006"}]}`
+}
+
+func developmentShellOutput() string {
+	return `{"status":"succeeded","exit_code":0,"sandbox_denied":false,"timed_out":false,"output_complete":true}`
+}
+
+func functionOutputInput(t *testing.T, callID, output string) string {
+	t.Helper()
+	return `[{"type":"function_call_output","call_id":` + mustJSONString(t, callID) + `,"output":` + mustJSONString(t, output) + `}]`
 }
 
 func callLLMProxy(t *testing.T, runtime *fixtureRuntime, token, body string) *httptest.ResponseRecorder {

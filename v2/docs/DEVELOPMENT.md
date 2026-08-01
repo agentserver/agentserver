@@ -174,7 +174,7 @@ go run ./cmd/agentserver-dev fixtures --insecure-dev \
 
 - Hydra 侧只接受 Core 实际发送的 exact form POST。正确的 `secrets/browser-bearer.token` 映射到 bootstrap `actorId`、单一 `aud=agentserver-api` 和 `runs:write`；其他规范 bearer 返回 `active:false`，模糊 method/path/header/form 输入直接拒绝。`exp` 在每次正确 introspection 时按当前时间向后生成。
 - llmproxy 侧使用生成的 TLS identity，只接受 `POST <llmproxyEndpoint>/responses` 和唯一 `Authorization: Bearer ...`。每次请求都校验 HMAC、`aud=llmproxy`、有效期、workspace/session/actor 以及 model/provider route；`aud=executor-mcp`、过期、篡改和跨 route token 都会被拒绝。
-- 模型脚本按 `capability + run + attempt + generation` 分别维护有界状态，不使用进程级全局序号。第一轮要求模型可见 catalog 中精确存在 `executor.list_environments` 并发出参数 `{}` 的 dynamic call；只有第二个请求带回同一 `call_id` 的 `function_call_output` 后，才返回最终 assistant message。第三次请求和错误顺序均失败。
+- 模型脚本按 `capability + run + attempt + generation` 分别维护有界状态，不使用进程级全局序号。第一轮要求模型可见 catalog 中精确存在 `executor.list_environments` 与 `executor.shell`，先发出参数 `{}` 的 environment call；第二轮只从同一 `call_id` 的结构化结果中取得唯一 environment ID，再发出固定 `argv=["/bin/pwd"]` 的 shell call；第三轮收到匹配 shell output 后才返回最终 assistant message。第四次请求、缺工具、环境歧义和错误顺序均失败。这样开发演示会真实经过 stock exec-server，并产生可由 reference web 渲染的 command A2UI card。
 
 随后执行一次 Core bootstrap：
 
@@ -233,12 +233,15 @@ https://127.0.0.1:17444/v2/workspaces/{workspaceId}/sessions/{sessionId}/agui
   --agentx-source=/absolute/agentx-v2
 
 ./deploy/insecure-dev/run.sh
+./deploy/insecure-dev/browser-url.sh
 ./deploy/insecure-dev/smoke.sh
 ```
 
+`browser-url.sh` 会把固定开发 bearer 放在 URL fragment 中输出一条可点击的 reference-web 地址。页面加载后立即从地址栏清除 fragment，bearer 与 lifecycle-safe AG-UI cursor 都只保存在页面内存；但该 URL 仍会进入终端历史，所以只适用于这套 `INSECURE DEV` authority。reference web 由 browser-gateway 在同一 HTTPS origin 的 `/` 提供，使用带 `Authorization` header 的 `fetch` streaming，不使用 `EventSource`，也不连接 app-server 或 exec-server。它渲染 AG-UI message/reasoning/tool lifecycle，以及 `a2ui.operations` 中当前 display-only A2UI v0.9 Card/Column/Text 子集。
+
 状态使用 Apple `container` 的 VM-backed named volume，默认名为 `agentserver-v2-dev-state`。这是因为宿主 bind mount 不能可靠地把私有 harness 输入改属固定 worker UID/GID；executor workspace 仍是普通的宿主 bind mount，不与 authority 状态混放。Apple `container` 的端口发布转发到容器 NIC，因此部署入口只把 browser-gateway 覆盖为监听 `0.0.0.0:17444`，宿主仍只发布 `127.0.0.1:17444`；Core、executor-gateway、harness-pool 和 fixtures 保持容器 loopback 监听。
 
-真实 smoke 已验证以下闭环：
+真实 smoke 会先验证 reference web 与 CSP，再验证以下闭环：
 
 ```text
 AG-UI → Core → harness-worker → stock app-server

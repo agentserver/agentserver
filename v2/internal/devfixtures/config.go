@@ -40,6 +40,7 @@ const (
 	BrowserTokenScope    = "runs:write"
 	ToolNamespace        = "executor"
 	ScriptedToolName     = "list_environments"
+	ScriptedShellName    = "shell"
 
 	maximumConfigBytes = int64(128 * 1024)
 	maximumSecretBytes = int64(32 * 1024)
@@ -247,7 +248,7 @@ func validateDocument(document ConfigDocument, bundleDirectory string) (*url.URL
 		}
 	}
 	if document.LLMProxy.ToolNamespace != ToolNamespace || document.LLMProxy.ScriptedTool != ScriptedToolName {
-		return nil, "", nil, "", 0, errors.New("development llmproxy fixture supports only executor.list_environments")
+		return nil, "", nil, "", 0, errors.New("development llmproxy fixture must start its deterministic script with executor.list_environments")
 	}
 	return hydraEndpoint, hydraListen, llmEndpoint, llmListen, responseTTL, nil
 }

@@ -310,7 +310,8 @@ func (runtime *fixtureRuntime) nextResponse(claims runcapability.Claims, request
 		attemptID: claims.RunAttemptID, generation: claims.RunAttemptGeneration,
 	}
 	fragment := scriptFragment(key)
-	callID := "call-dev-" + fragment
+	listCallID := "call-dev-list-" + fragment
+	shellCallID := "call-dev-shell-" + fragment
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
 	runtime.pruneExpiredLocked(now.UnixMilli())
@@ -326,11 +327,12 @@ func (runtime *fixtureRuntime) nextResponse(claims runcapability.Claims, request
 	}
 	switch session.step {
 	case 0:
-		if countNamespacedTool(request.tools, runtime.bundle.document.LLMProxy.ToolNamespace, runtime.bundle.document.LLMProxy.ScriptedTool) != 1 {
-			return nil, errors.New("scripted executor tool is not present exactly once")
+		if countNamespacedTool(request.tools, runtime.bundle.document.LLMProxy.ToolNamespace, runtime.bundle.document.LLMProxy.ScriptedTool) != 1 ||
+			countNamespacedTool(request.tools, runtime.bundle.document.LLMProxy.ToolNamespace, ScriptedShellName) != 1 {
+			return nil, errors.New("scripted list_environments and shell tools are not both present exactly once")
 		}
 		response, err := namespacedFunctionCall(
-			"response-dev-tool-"+fragment, callID,
+			"response-dev-list-"+fragment, listCallID,
 			runtime.bundle.document.LLMProxy.ToolNamespace,
 			runtime.bundle.document.LLMProxy.ScriptedTool, `{}`,
 		)
@@ -341,8 +343,32 @@ func (runtime *fixtureRuntime) nextResponse(claims runcapability.Claims, request
 		runtime.sessions[key] = session
 		return response, nil
 	case 1:
-		if countFunctionOutputs(request.input, callID) != 1 {
-			return nil, errors.New("scripted executor result is missing or ambiguous")
+		environmentID, err := environmentIDFromFunctionOutput(request.input, listCallID)
+		if err != nil {
+			return nil, fmt.Errorf("validate scripted list_environments result: %w", err)
+		}
+		arguments, err := json.Marshal(struct {
+			EnvironmentID string   `json:"environment_id"`
+			Argv          []string `json:"argv"`
+			TimeoutMS     int      `json:"timeout_ms"`
+		}{EnvironmentID: environmentID, Argv: []string{"/bin/pwd"}, TimeoutMS: 10_000})
+		if err != nil {
+			return nil, fmt.Errorf("encode scripted shell arguments: %w", err)
+		}
+		response, err := namespacedFunctionCall(
+			"response-dev-shell-"+fragment, shellCallID,
+			runtime.bundle.document.LLMProxy.ToolNamespace,
+			ScriptedShellName, string(arguments),
+		)
+		if err != nil {
+			return nil, err
+		}
+		session.step = 2
+		runtime.sessions[key] = session
+		return response, nil
+	case 2:
+		if err := validateSuccessfulShellFunctionOutput(request.input, shellCallID); err != nil {
+			return nil, fmt.Errorf("validate scripted shell result: %w", err)
 		}
 		response, err := assistantMessage(
 			"response-dev-final-"+fragment, "message-dev-final-"+fragment,
@@ -351,12 +377,88 @@ func (runtime *fixtureRuntime) nextResponse(claims runcapability.Claims, request
 		if err != nil {
 			return nil, err
 		}
-		session.step = 2
+		session.step = 3
 		runtime.sessions[key] = session
 		return response, nil
 	default:
 		return nil, errors.New("scripted model sequence is exhausted")
 	}
+}
+
+func environmentIDFromFunctionOutput(input []any, callID string) (string, error) {
+	output, err := functionOutputText(input, callID)
+	if err != nil {
+		return "", err
+	}
+	var result struct {
+		Environments []struct {
+			EnvironmentID string `json:"environment_id"`
+		} `json:"environments"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(output))
+	if err := decoder.Decode(&result); err != nil {
+		return "", errors.New("scripted function output is not environment JSON")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return "", errors.New("scripted function output contains trailing JSON")
+	}
+	if len(result.Environments) != 1 || !uuidPattern.MatchString(result.Environments[0].EnvironmentID) ||
+		result.Environments[0].EnvironmentID == "00000000-0000-0000-0000-000000000000" {
+		return "", errors.New("scripted function output must contain exactly one canonical environment")
+	}
+	return result.Environments[0].EnvironmentID, nil
+}
+
+func validateSuccessfulShellFunctionOutput(input []any, callID string) error {
+	output, err := functionOutputText(input, callID)
+	if err != nil {
+		return err
+	}
+	var result struct {
+		Status         string `json:"status"`
+		ExitCode       *int   `json:"exit_code"`
+		SandboxDenied  bool   `json:"sandbox_denied"`
+		TimedOut       bool   `json:"timed_out"`
+		OutputComplete bool   `json:"output_complete"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(output))
+	if err := decoder.Decode(&result); err != nil {
+		return errors.New("scripted shell output is not result JSON")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return errors.New("scripted shell output contains trailing JSON")
+	}
+	if result.Status != "succeeded" || result.ExitCode == nil || *result.ExitCode != 0 ||
+		result.SandboxDenied || result.TimedOut || !result.OutputComplete {
+		return errors.New("scripted /bin/pwd execution did not complete successfully")
+	}
+	return nil
+}
+
+func functionOutputText(input []any, callID string) (string, error) {
+	if callID == "" {
+		return "", errors.New("scripted call ID is required")
+	}
+	var output string
+	count := 0
+	for _, rawItem := range input {
+		item, ok := rawItem.(map[string]any)
+		if !ok || item["type"] != "function_call_output" || item["call_id"] != callID {
+			continue
+		}
+		value, ok := item["output"].(string)
+		if !ok || len(value) == 0 || len(value) > 1024*1024 {
+			return "", errors.New("scripted function output must be bounded JSON text")
+		}
+		output = value
+		count++
+	}
+	if count != 1 {
+		return "", errors.New("scripted function output is missing or ambiguous")
+	}
+	return output, nil
 }
 
 func (runtime *fixtureRuntime) pruneExpiredLocked(nowMS int64) {
@@ -383,18 +485,6 @@ func countNamespacedTool(tools []any, namespace, name string) int {
 			if ok && child["name"] == name {
 				count++
 			}
-		}
-	}
-	return count
-}
-
-func countFunctionOutputs(input []any, callID string) int {
-	count := 0
-	for _, rawItem := range input {
-		item, ok := rawItem.(map[string]any)
-		_, hasOutput := item["output"]
-		if ok && hasOutput && item["type"] == "function_call_output" && item["call_id"] == callID {
-			count++
 		}
 	}
 	return count

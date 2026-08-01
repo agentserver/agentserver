@@ -1,9 +1,10 @@
 GO ?= go
 GOFMT ?= gofmt
+NODE ?= node
 
-.PHONY: check fmt fmt-check vet test postgres-test import-boundary contract-check conformance conformance-live conformance-image-a04 conformance-image-a12 conformance-image-e09
+.PHONY: check fmt fmt-check vet test web-test postgres-test import-boundary contract-check conformance conformance-live conformance-image-a04 conformance-image-a12 conformance-image-e09
 
-check: fmt-check vet test import-boundary contract-check
+check: fmt-check vet test web-test import-boundary contract-check
 
 fmt:
 	find . -name '*.go' -type f -exec $(GOFMT) -w {} +
@@ -20,6 +21,9 @@ vet:
 
 test:
 	$(GO) test ./... -count=1
+
+web-test:
+	cd a2ui-web && $(NODE) --test protocol.test.mjs
 
 postgres-test:
 	@test -n "$$AGENTSERVER_V2_TEST_DATABASE_URL" || \

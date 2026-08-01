@@ -29,7 +29,9 @@ const (
 	smokeSessionID   = "50000000-0000-4000-8000-000000000005"
 	maximumSSEBytes  = 16 * 1024 * 1024
 	maximumFileBytes = 1024 * 1024
+	maximumWebBytes  = 1024 * 1024
 	finalMessage     = "Agentserver v2 scripted development turn completed."
+	referenceMarker  = `data-agentserver-reference-web="v2"`
 )
 
 type smokeOptions struct {
@@ -67,7 +69,7 @@ func run(parent context.Context, arguments []string, stdout, stderr io.Writer) i
 		}
 		return 1
 	}
-	fmt.Fprintf(stdout, "agentserver-dev-smoke: AG-UI request %s reached RUN_FINISHED with the scripted assistant message\n", requestID)
+	fmt.Fprintf(stdout, "agentserver-dev-smoke: reference web loaded and AG-UI request %s reached RUN_FINISHED with the scripted assistant message\n", requestID)
 	return 0
 }
 
@@ -137,7 +139,11 @@ func executeSmoke(parent context.Context, options smokeOptions) (string, []byte,
 		},
 	}
 	defer transport.CloseIdleConnections()
-	response, err := (&http.Client{Transport: transport}).Do(request)
+	client := &http.Client{Transport: transport}
+	if err := verifyReferenceWeb(ctx, client, origin); err != nil {
+		return requestID, nil, err
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		return requestID, nil, fmt.Errorf("send AG-UI request: %w", err)
 	}
@@ -156,7 +162,7 @@ func executeSmoke(parent context.Context, options smokeOptions) (string, []byte,
 	if err != nil || mediaType != "text/event-stream" {
 		return requestID, stream, fmt.Errorf("AG-UI Content-Type = %q", response.Header.Get("Content-Type"))
 	}
-	terminal, scripted, err := inspectSSE(stream)
+	terminal, scripted, commandSurface, err := inspectSSE(stream)
 	if err != nil {
 		return requestID, stream, err
 	}
@@ -166,7 +172,41 @@ func executeSmoke(parent context.Context, options smokeOptions) (string, []byte,
 	if !scripted {
 		return requestID, stream, errors.New("AG-UI event stream has no scripted final assistant message")
 	}
+	if !commandSurface {
+		return requestID, stream, errors.New("AG-UI event stream has no command A2UI surface")
+	}
 	return requestID, stream, nil
+}
+
+func verifyReferenceWeb(ctx context.Context, client *http.Client, origin *url.URL) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, origin.String()+"/", nil)
+	if err != nil {
+		return fmt.Errorf("create reference web request: %w", err)
+	}
+	request.Header.Set("Accept", "text/html")
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("load reference web: %w", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, maximumWebBytes+1))
+	if err != nil {
+		return fmt.Errorf("read reference web: %w", err)
+	}
+	if len(body) > maximumWebBytes {
+		return fmt.Errorf("reference web exceeds %d bytes", maximumWebBytes)
+	}
+	mediaType, _, mediaErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	policy := response.Header.Get("Content-Security-Policy")
+	if response.StatusCode != http.StatusOK || mediaErr != nil || mediaType != "text/html" ||
+		!bytes.Contains(body, []byte(referenceMarker)) ||
+		!strings.Contains(policy, "default-src 'self'") ||
+		!strings.Contains(policy, "script-src 'self'") ||
+		!strings.Contains(policy, "connect-src 'self'") ||
+		response.Header.Get("Cache-Control") != "no-store" {
+		return fmt.Errorf("reference web contract is invalid: status=%d content-type=%q", response.StatusCode, response.Header.Get("Content-Type"))
+	}
+	return nil
 }
 
 func validateOrigin(raw string) (*url.URL, error) {
@@ -206,17 +246,19 @@ func newRequestID() (string, error) {
 	return "smoke-" + hex.EncodeToString(random), nil
 }
 
-func inspectSSE(stream []byte) (terminal, scripted bool, err error) {
+func inspectSSE(stream []byte) (terminal, scripted, commandSurface bool, err error) {
 	for _, line := range bytes.Split(stream, []byte{'\n'}) {
 		data, found := bytes.CutPrefix(line, []byte("data: "))
 		if !found {
 			continue
 		}
 		var event struct {
-			Type string `json:"type"`
+			Type  string          `json:"type"`
+			Name  string          `json:"name"`
+			Value json.RawMessage `json:"value"`
 		}
 		if err := json.Unmarshal(data, &event); err != nil {
-			return false, false, fmt.Errorf("decode AG-UI SSE data: %w", err)
+			return false, false, false, fmt.Errorf("decode AG-UI SSE data: %w", err)
 		}
 		if event.Type == "RUN_FINISHED" {
 			terminal = true
@@ -224,6 +266,37 @@ func inspectSSE(stream []byte) (terminal, scripted bool, err error) {
 		if bytes.Contains(data, []byte(finalMessage)) {
 			scripted = true
 		}
+		if event.Type == "CUSTOM" && event.Name == "a2ui.operations" {
+			var operations []struct {
+				CreateSurface *struct {
+					SurfaceID string `json:"surfaceId"`
+				} `json:"createSurface"`
+				UpdateDataModel *struct {
+					SurfaceID string `json:"surfaceId"`
+					Value     struct {
+						Command string `json:"command"`
+						Output  string `json:"output"`
+						Status  string `json:"status"`
+					} `json:"value"`
+				} `json:"updateDataModel"`
+			}
+			if err := json.Unmarshal(event.Value, &operations); err != nil {
+				return false, false, false, fmt.Errorf("decode command A2UI operations: %w", err)
+			}
+			createdSurface := ""
+			succeededSurface := ""
+			for _, operation := range operations {
+				if operation.CreateSurface != nil && strings.HasPrefix(operation.CreateSurface.SurfaceID, "command-") {
+					createdSurface = operation.CreateSurface.SurfaceID
+				}
+				if operation.UpdateDataModel != nil && operation.UpdateDataModel.Value.Command == `["/bin/pwd"]` &&
+					operation.UpdateDataModel.Value.Output == "/workspace\n" &&
+					operation.UpdateDataModel.Value.Status == "succeeded (exit 0)" {
+					succeededSurface = operation.UpdateDataModel.SurfaceID
+				}
+			}
+			commandSurface = commandSurface || (createdSurface != "" && createdSurface == succeededSurface)
+		}
 	}
-	return terminal, scripted, nil
+	return terminal, scripted, commandSurface, nil
 }

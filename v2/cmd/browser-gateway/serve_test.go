@@ -38,6 +38,14 @@ func TestBrowserGatewayHealthAndReadiness(t *testing.T) {
 	if response.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST /healthz status = %d", response.Code)
 	}
+	referenceRequest := httptest.NewRequest(http.MethodGet, "https://gateway.test/", nil)
+	referenceResponse := httptest.NewRecorder()
+	handler.ServeHTTP(referenceResponse, referenceRequest)
+	if referenceResponse.Code != http.StatusOK ||
+		!strings.Contains(referenceResponse.Body.String(), `data-agentserver-reference-web="v2"`) ||
+		referenceResponse.Header().Get("Content-Security-Policy") == "" {
+		t.Fatalf("GET / reference web = %d %q headers=%v", referenceResponse.Code, referenceResponse.Body.String(), referenceResponse.Header())
+	}
 }
 
 func TestValidateBrowserCoreURLRequiresHTTPSOrigin(t *testing.T) {

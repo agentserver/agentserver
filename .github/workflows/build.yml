@@ -23,6 +23,10 @@ jobs:
         with:
           go-version-file: v2/go.mod
 
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+
       - name: Verify v2 module boundary and unit tests
         run: make -C v2 check
 

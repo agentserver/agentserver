@@ -17,6 +17,16 @@ import (
 
 func TestExecuteSmokeRequiresTLS13AndObservesTerminal(t *testing.T) {
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodGet && request.URL.Path == "/" {
+			if request.Header.Get("Authorization") != "" {
+				t.Errorf("reference web request leaked Authorization: %v", request.Header)
+			}
+			response.Header().Set("Content-Type", "text/html; charset=utf-8")
+			response.Header().Set("Cache-Control", "no-store")
+			response.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; connect-src 'self'")
+			_, _ = io.WriteString(response, `<main data-agentserver-reference-web="v2"></main>`)
+			return
+		}
 		if request.Method != http.MethodPost || request.URL.Path != "/v2/workspaces/"+smokeWorkspaceID+"/sessions/"+smokeSessionID+"/agui" ||
 			request.Header.Get("Authorization") != "Bearer test-browser-bearer" || request.Header.Get("Idempotency-Key") == "" {
 			t.Errorf("smoke request = %s %s headers=%v", request.Method, request.URL.Path, request.Header)
@@ -25,6 +35,7 @@ func TestExecuteSmokeRequiresTLS13AndObservesTerminal(t *testing.T) {
 		}
 		response.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(response, "data: {\"type\":\"TEXT_MESSAGE_CONTENT\",\"delta\":\""+finalMessage+"\"}\n\n")
+		_, _ = io.WriteString(response, "data: {\"type\":\"CUSTOM\",\"name\":\"a2ui.operations\",\"value\":[{\"version\":\"v0.9\",\"createSurface\":{\"surfaceId\":\"command-event-1\"}},{\"version\":\"v0.9\",\"updateDataModel\":{\"surfaceId\":\"command-event-1\",\"value\":{\"command\":\"[\\\"/bin/pwd\\\"]\",\"output\":\"/workspace\\n\",\"status\":\"succeeded (exit 0)\"}}}]}\n\n")
 		_, _ = io.WriteString(response, "data: {\"type\":\"RUN_FINISHED\"}\n\n")
 	}))
 	server.TLS = &tls.Config{MinVersion: tls.VersionTLS13}
@@ -60,12 +71,12 @@ func TestExecuteSmokeRequiresTLS13AndObservesTerminal(t *testing.T) {
 }
 
 func TestInspectSSERejectsMalformedDataAndReportsMissingPieces(t *testing.T) {
-	if _, _, err := inspectSSE([]byte("data: not-json\n")); err == nil {
+	if _, _, _, err := inspectSSE([]byte("data: not-json\n")); err == nil {
 		t.Fatal("malformed SSE data accepted")
 	}
-	terminal, scripted, err := inspectSSE([]byte("data: {\"type\":\"RUN_FINISHED\"}\n"))
-	if err != nil || !terminal || scripted {
-		t.Fatalf("inspectSSE terminal = %v scripted = %v error = %v", terminal, scripted, err)
+	terminal, scripted, commandSurface, err := inspectSSE([]byte("data: {\"type\":\"RUN_FINISHED\"}\n"))
+	if err != nil || !terminal || scripted || commandSurface {
+		t.Fatalf("inspectSSE terminal = %v scripted = %v commandSurface = %v error = %v", terminal, scripted, commandSurface, err)
 	}
 }
 

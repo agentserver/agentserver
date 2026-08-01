@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	a2uiweb "github.com/agentserver/agentserver/v2/a2ui-web"
 	"github.com/agentserver/agentserver/v2/internal/browsergateway"
 )
 
@@ -122,7 +123,11 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 	}()
 
 	readiness.ready.Store(true)
-	fmt.Fprintf(stdout, "browser-gateway serve: listening with TLS on %s; AG-UI endpoint /v2/workspaces/{workspaceId}/sessions/{sessionId}/agui\n", listener.Addr())
+	fmt.Fprintf(
+		stdout,
+		"browser-gateway serve: listening with TLS on %s; AG-UI endpoint /v2/workspaces/{workspaceId}/sessions/{sessionId}/agui; %s at /\n",
+		listener.Addr(), a2uiweb.AssetSummary(),
+	)
 	err = server.Serve(tls.NewListener(listener, tlsConfig))
 	readiness.ready.Store(false)
 	if errors.Is(err, http.ErrServerClosed) && ctx.Err() != nil {
@@ -144,6 +149,7 @@ func browserGatewayRoutes(agui http.Handler, readiness *browserReadiness) http.H
 		}
 		writeHealth(response, http.StatusOK, `{"status":"ready"}`)
 	})
+	mux.Handle("/", a2uiweb.Handler())
 	return mux
 }
 

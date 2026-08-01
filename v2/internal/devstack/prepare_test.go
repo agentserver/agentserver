@@ -237,7 +237,7 @@ func TestPreparedDevelopmentFixturesServeCoreIntrospectionAndTLSResponses(t *tes
 	}}
 	defer transport.CloseIdleConnections()
 	modelClient := &http.Client{Transport: transport, Timeout: 2 * time.Second}
-	body := `{"model":"gpt-5","stream":true,"input":[],"tools":[{"type":"namespace","name":"executor","tools":[{"type":"function","name":"list_environments"}]}]}`
+	body := `{"model":"gpt-5","stream":true,"input":[],"tools":[{"type":"namespace","name":"executor","tools":[{"type":"function","name":"list_environments"},{"type":"function","name":"shell"}]}]}`
 	request, err := http.NewRequestWithContext(
 		t.Context(), http.MethodPost, fixture.document.Network.LLMProxyEndpoint+"/responses", strings.NewReader(body),
 	)
@@ -256,7 +256,8 @@ func TestPreparedDevelopmentFixturesServeCoreIntrospectionAndTLSResponses(t *tes
 		t.Fatal(errors.Join(readErr, closeErr))
 	}
 	if response.StatusCode != http.StatusOK || !bytes.Contains(responseBody, []byte(`"namespace":"executor"`)) ||
-		!bytes.Contains(responseBody, []byte(`"name":"list_environments"`)) {
+		!bytes.Contains(responseBody, []byte(`"name":"list_environments"`)) ||
+		bytes.Contains(responseBody, []byte(`"name":"shell"`)) {
 		t.Fatalf("served TLS Responses result = %d %s", response.StatusCode, responseBody)
 	}
 

@@ -64,6 +64,7 @@ func TestPrepareBuildsClosedDevelopmentStackWithoutWorkerSecrets(t *testing.T) {
 		coreEnvironment["AGENTSERVER_V2_RUN_ALLOWED_TOOLS"] != "list_environments,read_file,shell" ||
 		executorEnvironment["AGENTSERVER_V2_DEV_EXECUTOR_ID"] != fixture.document.Authority.ExecutorID ||
 		poolEnvironment["AGENTSERVER_V2_CODEX_RUNTIME_MANIFEST_SHA256"] != loaded.ManifestSHA256 ||
+		poolEnvironment["AGENTSERVER_V2_MAX_APPROVAL_TTL"] != fixture.document.Harness.MaxApprovalTTL ||
 		poolEnvironment["AGENTSERVER_V2_HARNESS_PRIVILEGED_FORK"] != "true" ||
 		poolEnvironment["AGENTSERVER_V2_HARNESS_WORKER_UID"] != "65531" ||
 		poolEnvironment["AGENTSERVER_V2_HARNESS_WORKER_GID"] != "65531" {
@@ -407,6 +408,14 @@ func TestValidateConfigRejectsUnlaunchableDevelopmentFixtures(t *testing.T) {
 			},
 			want: "must include list_environments",
 		},
+		{
+			name: "approval ttl exceeds run",
+			mutate: func(document *ConfigDocument) {
+				document.Harness.MaxRunDuration = "5s"
+				document.Harness.MaxApprovalTTL = "6s"
+			},
+			want: "must not exceed",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -485,9 +494,11 @@ func newConfigFixture(t *testing.T) configFixture {
 				ExecutorGatewayListenAddress: "127.0.0.1:17445", HarnessPoolListenAddress: "127.0.0.1:17446",
 				HydraIntrospectionURL: "http://127.0.0.1:17447/oauth2/introspect", LLMProxyEndpoint: "https://127.0.0.1:17448/v1",
 			},
-			Model:      ModelDocument{Name: "gpt-5", Provider: "llmproxy"},
-			Policy:     PolicyDocument{Version: "dev-v1", AllowedTools: []string{"shell", "list_environments", "read_file"}},
-			Harness:    HarnessDocument{MaxConcurrentAttempts: 2, MaxRunDuration: "30m"},
+			Model:  ModelDocument{Name: "gpt-5", Provider: "llmproxy"},
+			Policy: PolicyDocument{Version: "dev-v1", AllowedTools: []string{"shell", "list_environments", "read_file"}},
+			Harness: HarnessDocument{
+				MaxConcurrentAttempts: 2, MaxRunDuration: "30m", MaxApprovalTTL: "10s",
+			},
 			Identities: IdentitiesDocument{WorkerUID: 65531, WorkerGID: 65531, AppUID: 65532, AppGID: 65532},
 		},
 	}

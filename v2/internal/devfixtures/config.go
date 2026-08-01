@@ -42,6 +42,10 @@ const (
 	ScriptedToolName       = "list_environments"
 	ScriptedShellName      = "shell"
 	CancellationHoldMarker = "[agentserver-dev-cancel-hold]"
+	ApprovalDenyMarker     = "[agentserver-dev-approval-deny]"
+	ApprovalExpiryMarker   = "[agentserver-dev-approval-expiry]"
+	ApprovalCancelMarker   = "[agentserver-dev-approval-cancel]"
+	ApprovalFailureMessage = "Agentserver v2 scripted approval failure was contained."
 
 	maximumConfigBytes = int64(128 * 1024)
 	maximumSecretBytes = int64(32 * 1024)

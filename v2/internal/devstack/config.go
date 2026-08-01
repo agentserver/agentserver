@@ -99,6 +99,7 @@ type PolicyDocument struct {
 type HarnessDocument struct {
 	MaxConcurrentAttempts int    `json:"maxConcurrentAttempts"`
 	MaxRunDuration        string `json:"maxRunDuration"`
+	MaxApprovalTTL        string `json:"maxApprovalTtl"`
 }
 
 type IdentitiesDocument struct {
@@ -117,6 +118,7 @@ type LoadedConfig struct {
 	ManifestSHA256    string
 	Platform          string
 	MaxRunDuration    time.Duration
+	MaxApprovalTTL    time.Duration
 	CoreOrigin        string
 	BrowserOrigin     string
 	ExecutorOrigin    string
@@ -178,6 +180,13 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 	if err != nil || maxRunDuration < time.Second || maxRunDuration > 24*time.Hour {
 		return LoadedConfig{}, errors.New("harness.maxRunDuration must be a Go duration between 1s and 24h")
 	}
+	maxApprovalTTL, err := time.ParseDuration(document.Harness.MaxApprovalTTL)
+	if err != nil || maxApprovalTTL < time.Second || maxApprovalTTL > 24*time.Hour {
+		return LoadedConfig{}, errors.New("harness.maxApprovalTtl must be a Go duration between 1s and 24h")
+	}
+	if maxApprovalTTL > maxRunDuration {
+		return LoadedConfig{}, errors.New("harness.maxApprovalTtl must not exceed harness.maxRunDuration")
+	}
 
 	addresses := []struct {
 		name  string
@@ -236,7 +245,8 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 
 	return LoadedConfig{
 		Document: document, Manifest: manifest, ManifestBytes: append([]byte(nil), manifestBytes...),
-		ManifestSHA256: manifestDigest, Platform: runtimelock.CurrentPlatform(), MaxRunDuration: maxRunDuration,
+		ManifestSHA256: manifestDigest, Platform: runtimelock.CurrentPlatform(),
+		MaxRunDuration: maxRunDuration, MaxApprovalTTL: maxApprovalTTL,
 		CoreOrigin: origins[0], BrowserOrigin: origins[1], ExecutorOrigin: origins[2], HarnessPoolOrigin: origins[3],
 	}, nil
 }

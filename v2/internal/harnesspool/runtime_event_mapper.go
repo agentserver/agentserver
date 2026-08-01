@@ -125,7 +125,7 @@ func (mapper *runtimeEventMapper) mapAppServer(event harnesscontrol.AppServerNot
 		// readable reasoning summary has its own notification stream.
 		return nil, nil
 	case "turn/completed":
-		return nil, mapper.mapTurnCompleted(event.Params)
+		return mapper.mapTurnCompleted(event.Params)
 	default:
 		return nil, fmt.Errorf("app-server notification method %q is outside the pinned runtime event profile", event.Method)
 	}
@@ -443,7 +443,7 @@ func (mapper *runtimeEventMapper) mapProgress(event harnesscontrol.ExecutorMCPPr
 	})
 }
 
-func (mapper *runtimeEventMapper) mapTurnCompleted(raw json.RawMessage) error {
+func (mapper *runtimeEventMapper) mapTurnCompleted(raw json.RawMessage) ([]mappedRuntimeEvent, error) {
 	var params struct {
 		ThreadID string `json:"threadId"`
 		Turn     struct {
@@ -452,21 +452,91 @@ func (mapper *runtimeEventMapper) mapTurnCompleted(raw json.RawMessage) error {
 		} `json:"turn"`
 	}
 	if err := json.Unmarshal(raw, &params); err != nil {
-		return fmt.Errorf("decode app-server turn/completed: %w", err)
+		return nil, fmt.Errorf("decode app-server turn/completed: %w", err)
 	}
 	if err := mapper.validateScope(params.ThreadID, params.Turn.ID); err != nil {
-		return err
+		return nil, err
 	}
 	switch params.Turn.Status {
 	case "completed", "interrupted", "failed":
 	default:
-		return fmt.Errorf("app-server turn/completed status %q is not terminal", params.Turn.Status)
+		return nil, fmt.Errorf("app-server turn/completed status %q is not terminal", params.Turn.Status)
 	}
-	if len(mapper.messages) != 0 || len(mapper.reasoning) != 0 || len(mapper.toolCalls) != 0 {
-		return errors.New("app-server turn completed with unfinished canonical item lifecycles")
+	unfinished := len(mapper.messages) != 0 || len(mapper.reasoning) != 0 || len(mapper.toolCalls) != 0
+	if params.Turn.Status == "completed" {
+		if unfinished {
+			return nil, errors.New("app-server turn completed with unfinished canonical item lifecycles")
+		}
+		mapper.terminal = true
+		return nil, nil
 	}
+
+	// Stock app-server can terminate an interrupted or failed turn without
+	// emitting item/completed for items that were active at the terminal
+	// boundary. Close only their browser projection lifecycles. In particular,
+	// an unfinished dynamic tool gets no executor result or command
+	// presentation: the synthetic result records only why its projection ended.
+	// Map iteration is sorted so one terminal notification always produces the
+	// same canonical event sequence.
+	mapped := make([]mappedRuntimeEvent, 0, len(mapper.messages)+len(mapper.reasoning)+2*len(mapper.toolCalls))
+	messageIDs := make([]string, 0, len(mapper.messages))
+	for id := range mapper.messages {
+		messageIDs = append(messageIDs, id)
+	}
+	sort.Strings(messageIDs)
+	for _, id := range messageIDs {
+		completed, err := mappedPayload("brain", runevent.KindAssistantMessageCompleted, runevent.MessageCompletedPayload{MessageID: id})
+		if err != nil {
+			return nil, err
+		}
+		mapped = append(mapped, completed...)
+	}
+
+	reasoningIDs := make([]string, 0, len(mapper.reasoning))
+	for id := range mapper.reasoning {
+		reasoningIDs = append(reasoningIDs, id)
+	}
+	sort.Strings(reasoningIDs)
+	for _, id := range reasoningIDs {
+		done, err := mappedPayload("brain", runevent.KindAssistantReasoningDone, runevent.MessageCompletedPayload{MessageID: id})
+		if err != nil {
+			return nil, err
+		}
+		mapped = append(mapped, done...)
+	}
+
+	toolIDs := make([]string, 0, len(mapper.toolCalls))
+	for id := range mapper.toolCalls {
+		toolIDs = append(toolIDs, id)
+	}
+	sort.Strings(toolIDs)
+	for _, id := range toolIDs {
+		completed, err := mappedPayload("brain", runevent.KindToolCallCompleted, runevent.ToolCallCompletedPayload{ToolCallID: id})
+		if err != nil {
+			return nil, err
+		}
+		result, err := mappedPayload("brain", runevent.KindToolCallResult, runevent.ToolCallResultPayload{
+			MessageID: id, ToolCallID: id, Content: unfinishedToolProjectionResult(params.Turn.Status),
+		})
+		if err != nil {
+			return nil, err
+		}
+		mapped = append(mapped, completed...)
+		mapped = append(mapped, result...)
+	}
+
+	clear(mapper.messages)
+	clear(mapper.reasoning)
+	clear(mapper.toolCalls)
 	mapper.terminal = true
-	return nil
+	return mapped, nil
+}
+
+func unfinishedToolProjectionResult(turnStatus string) string {
+	if turnStatus == "interrupted" {
+		return "dynamic tool projection closed because the stock turn was interrupted before emitting a terminal result"
+	}
+	return "dynamic tool projection closed because the stock turn failed before emitting a terminal result"
 }
 
 func (mapper *runtimeEventMapper) decodeItemEnvelope(raw json.RawMessage) (appItemEnvelope, appItemDiscriminator, error) {

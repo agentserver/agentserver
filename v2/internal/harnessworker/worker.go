@@ -251,6 +251,7 @@ func runOneShotWorker(ctx context.Context, config OneShotWorkerConfig, dependenc
 		ElicitationHandler:    control.AwaitApproval,
 		ProgressHandler:       runtimeEvents.HandleProgress,
 		CloseGrace:            time.Duration(bootstrap.Manifest.Limits.MCPTransportGraceMS) * time.Millisecond,
+		ApprovalOutcomeGrace:  time.Duration(bootstrap.Manifest.Limits.MCPTransportGraceMS) * time.Millisecond,
 	})
 	if err != nil {
 		return fmt.Errorf("connect worker executor MCP: %w", err)

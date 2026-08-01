@@ -35,7 +35,24 @@ const (
 	maximumWebBytes  = 1024 * 1024
 	finalMessage     = "Agentserver v2 scripted development turn completed."
 	referenceMarker  = `data-agentserver-reference-web="v2"`
+
+	smokeApprovalApprove = "approve"
+	smokeApprovalDeny    = "deny"
 )
+
+type approvalGateSmokeMode string
+
+const (
+	approvalGateSmokeDeny          approvalGateSmokeMode = "deny"
+	approvalGateSmokeExpiry        approvalGateSmokeMode = "expiry"
+	approvalGateSmokePendingCancel approvalGateSmokeMode = "pending-cancel"
+)
+
+type approvalGateSmokeResult struct {
+	RequestID  string
+	RunID      string
+	ApprovalID string
+}
 
 type smokeOptions struct {
 	origin     string
@@ -83,13 +100,42 @@ func run(parent context.Context, arguments []string, stdout, stderr io.Writer) i
 		}
 		return 1
 	}
+	denied, deniedStream, err := executeApprovalGateSmoke(parent, options, approvalGateSmokeDeny)
+	if err != nil {
+		writeSmokeFailure(stderr, "denied approval smoke", err, deniedStream)
+		return 1
+	}
+	expired, expiredStream, err := executeApprovalGateSmoke(parent, options, approvalGateSmokeExpiry)
+	if err != nil {
+		writeSmokeFailure(stderr, "expired approval smoke", err, expiredStream)
+		return 1
+	}
+	pendingCancelled, pendingCancelledStream, err := executeApprovalGateSmoke(parent, options, approvalGateSmokePendingCancel)
+	if err != nil {
+		writeSmokeFailure(stderr, "pending approval cancellation smoke", err, pendingCancelledStream)
+		return 1
+	}
 	fmt.Fprintf(
 		stdout,
-		"agentserver-dev-smoke: reference web loaded; AG-UI request %s reached RUN_FINISHED and request %s reached explicit user_cancelled\n",
+		"agentserver-dev-smoke: reference web loaded; AG-UI request %s completed, request %s was cancelled after execution, and deny/expiry/pending-cancel gates contained all three pre-dispatch attempts\n",
 		requestID,
 		cancelRequestID,
 	)
+	fmt.Fprintf(stdout, "agentserver-dev-smoke-result denied %s %s\n", denied.RunID, denied.ApprovalID)
+	fmt.Fprintf(stdout, "agentserver-dev-smoke-result expired %s %s\n", expired.RunID, expired.ApprovalID)
+	fmt.Fprintf(stdout, "agentserver-dev-smoke-result pending-cancel %s %s\n", pendingCancelled.RunID, pendingCancelled.ApprovalID)
 	return 0
+}
+
+func writeSmokeFailure(writer io.Writer, label string, err error, stream []byte) {
+	fmt.Fprintf(writer, "agentserver-dev-smoke: %s: %v\n", label, err)
+	if len(stream) == 0 {
+		return
+	}
+	_, _ = writer.Write(stream)
+	if stream[len(stream)-1] != '\n' {
+		fmt.Fprintln(writer)
+	}
 }
 
 func executeSmoke(parent context.Context, options smokeOptions) (string, []byte, error) {
@@ -228,7 +274,7 @@ func executeCancellationSmoke(parent context.Context, options smokeOptions) (str
 					return requestID, append([]byte(nil), stream.Bytes()...), err
 				}
 				if approval != nil && decidedApprovals[approval.ApprovalID] < approval.Version {
-					if err := sendSmokeApproval(ctx, client, origin, bearer, *approval); err != nil {
+					if err := sendSmokeApproval(ctx, client, origin, bearer, *approval, smokeApprovalApprove); err != nil {
 						return requestID, append([]byte(nil), stream.Bytes()...), err
 					}
 					decidedApprovals[approval.ApprovalID] = approval.Version
@@ -290,6 +336,192 @@ func executeCancellationSmoke(parent context.Context, options smokeOptions) (str
 	return requestID, append([]byte(nil), stream.Bytes()...), nil
 }
 
+func executeApprovalGateSmoke(
+	parent context.Context,
+	options smokeOptions,
+	mode approvalGateSmokeMode,
+) (approvalGateSmokeResult, []byte, error) {
+	marker, expectedApprovalStatus, err := approvalGateSmokeSpec(mode)
+	if err != nil {
+		return approvalGateSmokeResult{}, nil, err
+	}
+	origin, bearer, client, closeClient, err := newSmokeHTTPClient(options)
+	if err != nil {
+		return approvalGateSmokeResult{}, nil, err
+	}
+	defer closeClient()
+	requestID, err := newRequestID()
+	if err != nil {
+		return approvalGateSmokeResult{}, nil, err
+	}
+	result := approvalGateSmokeResult{RequestID: requestID}
+	body, err := json.Marshal(map[string]any{
+		"threadId": smokeSessionID,
+		"runId":    requestID,
+		"messages": []map[string]string{{
+			"id": "user-" + requestID, "role": "user",
+			"content": "Run the deterministic Agentserver v2 " + string(mode) + " approval smoke. " + marker,
+		}},
+		"tools": []any{}, "context": []any{},
+	})
+	if err != nil {
+		return result, nil, fmt.Errorf("encode %s AG-UI request: %w", mode, err)
+	}
+
+	ctx, cancel := context.WithTimeout(parent, 3*time.Minute)
+	defer cancel()
+	endpoint := origin.JoinPath("v2", "workspaces", smokeWorkspaceID, "sessions", smokeSessionID, "agui")
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
+	if err != nil {
+		return result, nil, fmt.Errorf("create %s AG-UI request: %w", mode, err)
+	}
+	request.Header.Set("Authorization", "Bearer "+bearer)
+	request.Header.Set("Idempotency-Key", requestID)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return result, nil, fmt.Errorf("send %s AG-UI request: %w", mode, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(response.Body, maximumSSEBytes+1))
+		return result, raw, fmt.Errorf("%s AG-UI status = %d", mode, response.StatusCode)
+	}
+	mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if err != nil || mediaType != "text/event-stream" {
+		return result, nil, fmt.Errorf("%s AG-UI Content-Type = %q", mode, response.Header.Get("Content-Type"))
+	}
+
+	reader := bufio.NewReaderSize(io.LimitReader(response.Body, maximumSSEBytes+1), 128*1024)
+	var stream bytes.Buffer
+	var authority *smokeApproval
+	lastApprovalVersion := int64(0)
+	actionSent := false
+	approvalSettled := false
+	terminalType, terminalCode := "", ""
+	failureMessage, commandSurface := false, false
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		if len(line) != 0 {
+			_, _ = stream.Write(line)
+			if stream.Len() > maximumSSEBytes {
+				return result, append([]byte(nil), stream.Bytes()[:maximumSSEBytes]...), fmt.Errorf("%s AG-UI event stream exceeds %d bytes", mode, maximumSSEBytes)
+			}
+			data, isData := bytes.CutPrefix(line, []byte("data: "))
+			if isData {
+				var event struct {
+					Type  string `json:"type"`
+					RunID string `json:"runId"`
+					Code  string `json:"code"`
+				}
+				if err := json.Unmarshal(data, &event); err != nil {
+					return result, append([]byte(nil), stream.Bytes()...), fmt.Errorf("decode %s AG-UI SSE data: %w", mode, err)
+				}
+				if event.Type == "RUN_STARTED" {
+					if result.RunID != "" || !validSmokeUUID(event.RunID) {
+						return result, append([]byte(nil), stream.Bytes()...), fmt.Errorf("%s AG-UI stream contains an invalid RUN_STARTED identity", mode)
+					}
+					result.RunID = event.RunID
+				}
+				approval, err := smokeApprovalEvent(data)
+				if err != nil {
+					return result, append([]byte(nil), stream.Bytes()...), err
+				}
+				if approval != nil {
+					if authority == nil {
+						if approval.Status != "pending" {
+							return result, append([]byte(nil), stream.Bytes()...), fmt.Errorf("%s approval stream began at status %q", mode, approval.Status)
+						}
+						copy := *approval
+						authority = &copy
+						result.ApprovalID = approval.ApprovalID
+					} else if approval.ApprovalID != authority.ApprovalID || approval.Nonce != authority.Nonce || approval.Digest != authority.Digest {
+						return result, append([]byte(nil), stream.Bytes()...), fmt.Errorf("%s approval event changed canonical authority", mode)
+					}
+					if approval.Version <= lastApprovalVersion {
+						return result, append([]byte(nil), stream.Bytes()...), fmt.Errorf("%s approval version did not strictly increase", mode)
+					}
+					lastApprovalVersion = approval.Version
+					if approval.Status == expectedApprovalStatus {
+						approvalSettled = true
+					} else if approval.Status != "pending" {
+						return result, append([]byte(nil), stream.Bytes()...), fmt.Errorf("%s approval reached unexpected status %q", mode, approval.Status)
+					}
+					if approval.Status == "pending" && !actionSent {
+						if result.RunID == "" {
+							return result, append([]byte(nil), stream.Bytes()...), fmt.Errorf("%s approval arrived before RUN_STARTED", mode)
+						}
+						switch mode {
+						case approvalGateSmokeDeny:
+							err = sendSmokeApproval(ctx, client, origin, bearer, *approval, smokeApprovalDeny)
+						case approvalGateSmokeExpiry:
+							// Core database time and the signed per-attempt TTL settle this request.
+						case approvalGateSmokePendingCancel:
+							err = sendSmokeCancellation(ctx, client, origin, bearer, result.RunID)
+						}
+						if err != nil {
+							return result, append([]byte(nil), stream.Bytes()...), err
+						}
+						actionSent = true
+					}
+				}
+				failureMessage = failureMessage || bytes.Contains(data, []byte(devfixtures.ApprovalFailureMessage))
+				_, _, lineCommandSurface, inspectErr := inspectSSE(line)
+				if inspectErr != nil {
+					return result, append([]byte(nil), stream.Bytes()...), inspectErr
+				}
+				commandSurface = commandSurface || lineCommandSurface
+				switch event.Type {
+				case "RUN_FINISHED", "RUN_ERROR":
+					terminalType, terminalCode = event.Type, event.Code
+				}
+			}
+		}
+		if terminalType != "" {
+			break
+		}
+		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				return result, append([]byte(nil), stream.Bytes()...), fmt.Errorf("read %s AG-UI stream: %w", mode, readErr)
+			}
+			break
+		}
+	}
+	streamBytes := append([]byte(nil), stream.Bytes()...)
+	if result.RunID == "" || result.ApprovalID == "" || authority == nil || !actionSent {
+		return result, streamBytes, fmt.Errorf("%s smoke did not observe complete pending approval authority", mode)
+	}
+	if !approvalSettled {
+		return result, streamBytes, fmt.Errorf("%s smoke did not observe canonical approval status %q", mode, expectedApprovalStatus)
+	}
+	if commandSurface {
+		return result, streamBytes, fmt.Errorf("%s approval gate emitted a command-result surface before dispatch authority", mode)
+	}
+	if mode == approvalGateSmokePendingCancel {
+		if terminalType != "RUN_ERROR" || terminalCode != "user_cancelled" {
+			return result, streamBytes, fmt.Errorf("pending-cancel terminal = %q/%q", terminalType, terminalCode)
+		}
+		return result, streamBytes, nil
+	}
+	if terminalType != "RUN_FINISHED" || !failureMessage {
+		return result, streamBytes, fmt.Errorf("%s terminal/message = %q/%t", mode, terminalType, failureMessage)
+	}
+	return result, streamBytes, nil
+}
+
+func approvalGateSmokeSpec(mode approvalGateSmokeMode) (marker, expectedApprovalStatus string, err error) {
+	switch mode {
+	case approvalGateSmokeDeny:
+		return devfixtures.ApprovalDenyMarker, "denied", nil
+	case approvalGateSmokeExpiry:
+		return devfixtures.ApprovalExpiryMarker, "expired", nil
+	case approvalGateSmokePendingCancel:
+		return devfixtures.ApprovalCancelMarker, "cancelled", nil
+	default:
+		return "", "", fmt.Errorf("unsupported approval gate smoke mode %q", mode)
+	}
+}
+
 func readCompletionSmokeStream(
 	ctx context.Context,
 	body io.Reader,
@@ -316,7 +548,7 @@ func readCompletionSmokeStream(
 					return append([]byte(nil), stream.Bytes()...), false, false, false, err
 				}
 				if approval != nil && decidedApprovals[approval.ApprovalID] < approval.Version {
-					if err := sendSmokeApproval(ctx, client, origin, bearer, *approval); err != nil {
+					if err := sendSmokeApproval(ctx, client, origin, bearer, *approval, smokeApprovalApprove); err != nil {
 						return append([]byte(nil), stream.Bytes()...), false, false, false, err
 					}
 					decidedApprovals[approval.ApprovalID] = approval.Version
@@ -346,6 +578,8 @@ func readCompletionSmokeStream(
 type smokeApproval struct {
 	ApprovalID string
 	Nonce      string
+	Status     string
+	Decision   string
 	Version    int64
 	Digest     struct {
 		Domain               string `json:"domain"`
@@ -355,6 +589,17 @@ type smokeApproval struct {
 }
 
 func pendingSmokeApproval(data []byte) (*smokeApproval, error) {
+	approval, err := smokeApprovalEvent(data)
+	if err != nil || approval == nil {
+		return approval, err
+	}
+	if approval.Status != "pending" {
+		return nil, nil
+	}
+	return approval, nil
+}
+
+func smokeApprovalEvent(data []byte) (*smokeApproval, error) {
 	var event struct {
 		Type  string          `json:"type"`
 		Name  string          `json:"name"`
@@ -370,6 +615,7 @@ func pendingSmokeApproval(data []byte) (*smokeApproval, error) {
 		ApprovalID    string `json:"approvalId"`
 		Nonce         string `json:"nonce"`
 		Status        string `json:"status"`
+		Decision      string `json:"decision"`
 		Version       int64  `json:"version"`
 		ContextDigest struct {
 			Domain               string `json:"domain"`
@@ -380,17 +626,35 @@ func pendingSmokeApproval(data []byte) (*smokeApproval, error) {
 	if err := json.Unmarshal(event.Value, &value); err != nil {
 		return nil, fmt.Errorf("decode canonical approval authority: %w", err)
 	}
-	if value.Status != "pending" {
-		return nil, nil
-	}
 	if !validSmokeUUID(value.ApprovalID) || !validSmokeUUID(value.Nonce) || value.Version < 1 ||
 		value.ContextDigest.Domain != "approval-context" ||
 		value.ContextDigest.CanonicalizerVersion != "rfc8785-v1" ||
 		!validSmokeSHA256(value.ContextDigest.SHA256) {
 		return nil, errors.New("canonical approval event contains invalid command authority")
 	}
+	switch value.Status {
+	case "pending":
+		if value.Decision != "" {
+			return nil, errors.New("pending approval event contains terminal decision evidence")
+		}
+	case "approved", "consumed":
+		if value.Decision != smokeApprovalApprove {
+			return nil, errors.New("approved approval event lacks approve evidence")
+		}
+	case "denied":
+		if value.Decision != smokeApprovalDeny {
+			return nil, errors.New("denied approval event lacks deny evidence")
+		}
+	case "expired", "cancelled":
+		if value.Decision != "" && value.Decision != smokeApprovalApprove {
+			return nil, errors.New("terminal approval event contains invalid decision evidence")
+		}
+	default:
+		return nil, fmt.Errorf("canonical approval event contains unsupported status %q", value.Status)
+	}
 	approval := &smokeApproval{
-		ApprovalID: value.ApprovalID, Nonce: value.Nonce, Version: value.Version,
+		ApprovalID: value.ApprovalID, Nonce: value.Nonce, Status: value.Status,
+		Decision: value.Decision, Version: value.Version,
 	}
 	approval.Digest = value.ContextDigest
 	return approval, nil
@@ -402,9 +666,13 @@ func sendSmokeApproval(
 	origin *url.URL,
 	bearer string,
 	approval smokeApproval,
+	decision string,
 ) error {
+	if decision != smokeApprovalApprove && decision != smokeApprovalDeny {
+		return fmt.Errorf("unsupported smoke approval decision %q", decision)
+	}
 	body, err := json.Marshal(map[string]any{
-		"decision": "approve", "nonce": approval.Nonce,
+		"decision": decision, "nonce": approval.Nonce,
 		"contextDigest": approval.Digest, "expectedApprovalVersion": approval.Version,
 	})
 	if err != nil {
@@ -452,10 +720,14 @@ func sendSmokeApproval(
 	if err := json.Unmarshal(raw, &result); err != nil {
 		return fmt.Errorf("decode approval decision response: %w", err)
 	}
-	if result.ExecutionStatus != "pending_approval" || result.Approval.ApprovalID != approval.ApprovalID ||
-		result.Approval.Nonce != approval.Nonce || result.Approval.Status != "approved" ||
-		result.Approval.Decision != "approve" || result.Approval.Version <= approval.Version {
-		return fmt.Errorf("approval decision did not produce canonical approved state: %+v", result)
+	wantExecutionStatus, wantApprovalStatus := "pending_approval", "approved"
+	if decision == smokeApprovalDeny {
+		wantExecutionStatus, wantApprovalStatus = "denied", "denied"
+	}
+	if result.ExecutionStatus != wantExecutionStatus || result.Approval.ApprovalID != approval.ApprovalID ||
+		result.Approval.Nonce != approval.Nonce || result.Approval.Status != wantApprovalStatus ||
+		result.Approval.Decision != decision || result.Approval.Version <= approval.Version {
+		return fmt.Errorf("approval decision did not produce canonical %s state: %+v", wantApprovalStatus, result)
 	}
 	return nil
 }

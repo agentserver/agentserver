@@ -18,7 +18,7 @@ func TestLoadHarnessPoolDevelopmentConfig(t *testing.T) {
 	}
 	if config.listenAddress != "127.0.0.1:0" || config.executorID != configuration[poolDevExecutorIDEnvironment] ||
 		config.workerDigest == "" || config.maxConcurrent != defaultPoolMaxConcurrent ||
-		config.maxRunDuration != defaultMaxRunDuration || config.allowlistVersion != 1 ||
+		config.maxRunDuration != defaultMaxRunDuration || config.maxApprovalTTL != defaultMaxApprovalTTL || config.allowlistVersion != 1 ||
 		config.appCredential.UID != 65532 || config.appCredential.GID != 65532 ||
 		config.workerCredential != nil || config.capabilityCodec == nil {
 		t.Fatalf("loaded development config = %+v", config)
@@ -59,8 +59,13 @@ func TestLoadHarnessPoolDevelopmentConfigRejectsUnsafeValues(t *testing.T) {
 			config[poolWorkerUIDEnvironment] = "65531"
 			config[poolWorkerGIDEnvironment] = "65532"
 		},
-		"concurrency":   func(config map[string]string) { config[poolMaxConcurrentEnvironment] = "65" },
-		"duration":      func(config map[string]string) { config[poolMaxRunDurationEnvironment] = "25h" },
+		"concurrency":  func(config map[string]string) { config[poolMaxConcurrentEnvironment] = "65" },
+		"duration":     func(config map[string]string) { config[poolMaxRunDurationEnvironment] = "25h" },
+		"approval ttl": func(config map[string]string) { config[poolMaxApprovalTTLEnvironment] = "25h" },
+		"approval over run": func(config map[string]string) {
+			config[poolMaxRunDurationEnvironment] = "2s"
+			config[poolMaxApprovalTTLEnvironment] = "3s"
+		},
 		"worker-config": func(config map[string]string) { config[poolWorkerConfigEnvironment] = "relative.json" },
 	} {
 		t.Run(name, func(t *testing.T) {

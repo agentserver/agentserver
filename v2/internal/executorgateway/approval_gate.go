@@ -142,9 +142,13 @@ func (gate *CoreApprovalGate) AuthorizeExecution(ctx context.Context, request Ap
 		settleErr := gate.cancelApproval(ctx, created.Approval)
 		return ExecutionState{}, errors.Join(err, settleErr)
 	}
-	elicitationCtx, cancel := context.WithDeadline(ctx, created.Approval.ExpiresAt)
+	// The approval authority still expires at ExpiresAt. The extra bounded
+	// transport window only lets the worker receive Core's database-time
+	// terminal outcome; ConsumeApproval independently rejects an approval once
+	// that authority boundary has passed.
+	elicitationCtx, cancel := context.WithDeadline(ctx, created.Approval.ExpiresAt.Add(gate.settlementGrace))
 	result, elicitErr := request.Elicitor.Elicit(elicitationCtx, params)
-	timedOut := errors.Is(elicitationCtx.Err(), context.DeadlineExceeded) || !gate.now().Before(created.Approval.ExpiresAt)
+	timedOut := gate.approvalWaitReachedExpiry(ctx, elicitationCtx, created.Approval.ExpiresAt)
 	cancel()
 	if elicitErr != nil {
 		settleErr := gate.settleUnconsumed(ctx, created.Approval, timedOut)
@@ -182,6 +186,20 @@ func (gate *CoreApprovalGate) AuthorizeExecution(ctx context.Context, request Ap
 		return ExecutionState{}, fmt.Errorf("%w: Core outcome is approval=%q execution=%q", ErrApprovalNotGranted, consumed.Approval.Status, consumed.Execution.Status)
 	}
 	return consumed.Execution, nil
+}
+
+func (gate *CoreApprovalGate) approvalWaitReachedExpiry(parent, wait context.Context, expiresAt time.Time) bool {
+	if !gate.now().Before(expiresAt) {
+		return true
+	}
+	if !errors.Is(wait.Err(), context.DeadlineExceeded) {
+		return false
+	}
+	// A parent deadline before the approval boundary is request cancellation,
+	// not evidence of approval expiry. Otherwise the gate-owned transport
+	// deadline can only fire after ExpiresAt plus the bounded grace.
+	parentDeadline, ok := parent.Deadline()
+	return !ok || !parentDeadline.Before(expiresAt)
 }
 
 type approvalDecisionEvidence struct {

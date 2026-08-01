@@ -115,10 +115,11 @@
     "harness": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["maxConcurrentAttempts", "maxRunDuration"],
+      "required": ["maxConcurrentAttempts", "maxRunDuration", "maxApprovalTtl"],
       "properties": {
         "maxConcurrentAttempts": {"type": "integer", "minimum": 1, "maximum": 64},
-        "maxRunDuration": {"type": "string", "minLength": 2, "maxLength": 64}
+        "maxRunDuration": {"type": "string", "minLength": 2, "maxLength": 64},
+        "maxApprovalTtl": {"type": "string", "minLength": 2, "maxLength": 64}
       }
     },
     "identities": {

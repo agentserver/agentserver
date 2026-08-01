@@ -89,9 +89,11 @@ func Prepare(root string) (Fixture, error) {
 			ExecutorGatewayListenAddress: "127.0.0.1:27445", HarnessPoolListenAddress: "127.0.0.1:27446",
 			HydraIntrospectionURL: "http://127.0.0.1:27447/oauth2/introspect", LLMProxyEndpoint: "https://127.0.0.1:27448/v1",
 		},
-		Model:      devstack.ModelDocument{Name: "gpt-5", Provider: "llmproxy"},
-		Policy:     devstack.PolicyDocument{Version: "dev-v1", AllowedTools: []string{"list_environments", "shell", "read_file"}},
-		Harness:    devstack.HarnessDocument{MaxConcurrentAttempts: 2, MaxRunDuration: "30m"},
+		Model:  devstack.ModelDocument{Name: "gpt-5", Provider: "llmproxy"},
+		Policy: devstack.PolicyDocument{Version: "dev-v1", AllowedTools: []string{"list_environments", "shell", "read_file"}},
+		Harness: devstack.HarnessDocument{
+			MaxConcurrentAttempts: 2, MaxRunDuration: "30m", MaxApprovalTTL: "10s",
+		},
 		Identities: devstack.IdentitiesDocument{WorkerUID: 65531, WorkerGID: 65531, AppUID: 65532, AppGID: 65532},
 	}
 	loaded, err := devstack.ValidateConfig(document)

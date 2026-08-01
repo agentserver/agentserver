@@ -232,7 +232,7 @@ func (s *StateStore) CancelApproval(ctx context.Context, command CancelApprovalC
 		if err := verifyApprovalCapability(execution, approval, command.Nonce, command.ExpectedContextHash); err != nil {
 			return CancelApprovalResult{}, commandError(ErrorIdempotencyConflict, operation, "approval", approval.ID, err.Error())
 		}
-		if approval.Status == ApprovalStatusCancelled || approval.Status == ApprovalStatusExpired {
+		if approval.Status == ApprovalStatusCancelled || approval.Status == ApprovalStatusExpired || approval.Status == ApprovalStatusDenied {
 			return CancelApprovalResult{Execution: execution, Approval: approval, Changed: false}, nil
 		}
 		if approval.Status != ApprovalStatusPending && approval.Status != ApprovalStatusApproved {
@@ -384,7 +384,7 @@ func (s *StateStore) ObserveApproval(ctx context.Context, command ObserveApprova
 		if approval.Version < command.AfterApprovalVersion {
 			return ObserveApprovalResult{}, versionConflict(operation, "approval", approval.ID, approval.Version)
 		}
-		if err := s.requireLiveExecutionContext(ctx, transaction, operation, run, attempt, command.HolderID, command.Generation); err != nil {
+		if err := s.requireApprovalObservationContext(ctx, transaction, operation, run, attempt, command.HolderID, command.Generation); err != nil {
 			return ObserveApprovalResult{}, err
 		}
 		if approval.Status != ApprovalStatusPending && approval.Status != ApprovalStatusApproved {
@@ -405,6 +405,42 @@ func (s *StateStore) ObserveApproval(ctx context.Context, command ObserveApprova
 		}
 		return ObserveApprovalResult{Execution: updatedExecution, Approval: updatedApproval, Changed: true}, nil
 	})
+}
+
+// requireApprovalObservationContext preserves the exact holder, generation,
+// active-run, and live-lease checks used by execution commands while allowing
+// an accepted turn to finish the approval handshake after user cancellation
+// has moved the run to cancelling. The attempt remains running until the
+// worker has received the canonical outcome, acknowledged turn/interrupt, and
+// the holder commits InterruptAttempt.
+func (s *StateStore) requireApprovalObservationContext(
+	ctx context.Context,
+	transaction pgx.Tx,
+	operation string,
+	run Run,
+	attempt RunAttempt,
+	holderID string,
+	generation int64,
+) error {
+	if run.CurrentAttemptGeneration != generation || attempt.Generation != generation {
+		return fencedAttemptError(operation, attempt.ID, run.CurrentAttemptGeneration, "attempt generation was fenced")
+	}
+	if attempt.HolderID != holderID {
+		return fencedAttemptError(operation, attempt.ID, run.CurrentAttemptGeneration, "attempt holder was fenced")
+	}
+	if (run.Status != RunStatusRunning && run.Status != RunStatusCancelling) ||
+		attempt.Status != AttemptStatusRunning || attempt.TurnStartedAt == nil {
+		return commandError(ErrorInvalidState, operation, "attempt", attempt.ID, "approval observation requires a running accepted turn")
+	}
+	activeQuery := fmt.Sprintf("SELECT active_run_id::text FROM %s WHERE id = $1", s.table("sessions"))
+	var activeRunID *string
+	if err := transaction.QueryRow(ctx, activeQuery, run.SessionID).Scan(&activeRunID); err != nil {
+		return databaseError(operation+" read active run", err)
+	}
+	if activeRunID == nil || *activeRunID != run.ID {
+		return commandError(ErrorInvalidState, operation, "run", run.ID, "run is not the session active run")
+	}
+	return s.requireLiveLeases(ctx, transaction, run, attempt, holderID, generation)
 }
 
 func deriveApprovalContextHash(execution Execution) (CanonicalJSONHash, error) {

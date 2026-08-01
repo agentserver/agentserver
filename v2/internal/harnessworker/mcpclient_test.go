@@ -380,6 +380,56 @@ func TestMCPClientA07CancellationReachesServerBeforeDispatch(t *testing.T) {
 	}
 }
 
+func TestMCPClientApprovalOutcomeGraceDoesNotExtendAcceptAuthority(t *testing.T) {
+	limits := DefaultLimits()
+	catalog := mustCatalog(t, nil, limits)
+	now := time.Now().UTC()
+	expiresAt := now.Add(50 * time.Millisecond)
+	call := DynamicCall{
+		RunID: "run-expiry-grace", CallID: "call-expiry-grace", RunAttemptGeneration: 13,
+	}
+	client := &MCPClient{
+		catalog: catalog, limits: limits, approvalOutcomeGrace: 200 * time.Millisecond,
+		now: time.Now, pendingCalls: map[string]*pendingMCPCall{
+			call.CallID: {call: call, ctx: context.Background()},
+		},
+		elicitation: func(ctx context.Context, _ ElicitationRequest) (ElicitationDecision, error) {
+			timer := time.NewTimer(time.Until(expiresAt.Add(25 * time.Millisecond)))
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+				return ElicitationDecision{Action: ApprovalAccept, Content: map[string]any{"confirmed": true}}, nil
+			case <-ctx.Done():
+				return ElicitationDecision{}, ctx.Err()
+			}
+		},
+	}
+	result, err := client.handleElicitation(t.Context(), &mcp.ElicitRequest{Params: &mcp.ElicitParams{
+		Meta: mcp.Meta{
+			MCPMetaRunID: call.RunID, MCPMetaCallID: call.CallID,
+			MCPMetaRunAttemptGeneration: call.RunAttemptGeneration,
+			MCPMetaToolCatalogDigest:    catalog.Digest(),
+			MCPMetaExecutionID:          "execution-expiry-grace",
+			MCPMetaApprovalID:           "approval-expiry-grace",
+			MCPMetaApprovalNonce:        "nonce-expiry-grace",
+			MCPMetaApprovalVersion:      int64(1),
+			MCPMetaContextHash:          strings.Repeat("a", 64),
+			MCPMetaExpiresAt:            expiresAt.Format(time.RFC3339Nano),
+		},
+		Mode: "form", Message: "Correlate the canonical expiry.",
+		RequestedSchema: json.RawMessage(`{"type":"object"}`),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || result.Action != string(ApprovalDecline) {
+		t.Fatalf("post-expiry accepted outcome = %+v, want decline", result)
+	}
+	if time.Now().Before(expiresAt) {
+		t.Fatalf("elicitation returned before authority expiry %s", expiresAt)
+	}
+}
+
 func TestMCPClientRejectsProtocolWithoutStatefulElicitation(t *testing.T) {
 	limits := DefaultLimits()
 	expected := mustCatalog(t, nil, limits)
@@ -567,6 +617,7 @@ func testMCPClientConfig(endpoint string, expected *Catalog, limits Limits, hand
 		Limits:                limits,
 		ElicitationHandler:    handler,
 		CloseGrace:            250 * time.Millisecond,
+		ApprovalOutcomeGrace:  250 * time.Millisecond,
 	}
 }
 
@@ -617,6 +668,20 @@ func TestValidateMCPEndpointAndBearer(t *testing.T) {
 		config.CloseGrace = closeGrace
 		if _, err := ConnectMCP(t.Context(), config); err == nil || !strings.Contains(err.Error(), "close grace") {
 			t.Errorf("ConnectMCP close grace %s error = %v", closeGrace, err)
+		}
+	}
+	for _, approvalGrace := range []time.Duration{-time.Second, maxMCPShutdownGrace + time.Nanosecond} {
+		config := testMCPClientConfig(
+			"http://127.0.0.1:1/mcp",
+			catalog,
+			DefaultLimits(),
+			func(context.Context, ElicitationRequest) (ElicitationDecision, error) {
+				return ElicitationDecision{Action: ApprovalCancel}, nil
+			},
+		)
+		config.ApprovalOutcomeGrace = approvalGrace
+		if _, err := ConnectMCP(t.Context(), config); err == nil || !strings.Contains(err.Error(), "approval outcome grace") {
+			t.Errorf("ConnectMCP approval outcome grace %s error = %v", approvalGrace, err)
 		}
 	}
 }

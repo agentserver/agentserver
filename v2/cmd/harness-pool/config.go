@@ -53,6 +53,7 @@ const (
 	poolModelTLSIdentityEnvironment      = "AGENTSERVER_V2_LLMPROXY_SPIFFE_ID"
 	poolMaxConcurrentEnvironment         = "AGENTSERVER_V2_HARNESS_MAX_CONCURRENT_ATTEMPTS"
 	poolMaxRunDurationEnvironment        = "AGENTSERVER_V2_MAX_RUN_DURATION"
+	poolMaxApprovalTTLEnvironment        = "AGENTSERVER_V2_MAX_APPROVAL_TTL"
 
 	developmentControlAudience     = "harness-pool-control"
 	developmentExecutorMCPAudience = runcapability.AudienceExecutorMCP
@@ -62,6 +63,7 @@ const (
 	defaultPoolMaxConcurrent  = 2
 	maximumCommandConcurrency = 64
 	defaultMaxRunDuration     = 30 * time.Minute
+	defaultMaxApprovalTTL     = 10 * time.Second
 )
 
 var (
@@ -104,6 +106,7 @@ type harnessPoolDevelopmentConfig struct {
 	modelTLSIdentity    string
 	maxConcurrent       int
 	maxRunDuration      time.Duration
+	maxApprovalTTL      time.Duration
 }
 
 func loadHarnessPoolDevelopmentConfig(getenv func(string) string) (harnessPoolDevelopmentConfig, error) {
@@ -212,6 +215,13 @@ func loadHarnessPoolDevelopmentConfig(getenv func(string) string) (harnessPoolDe
 	config.maxRunDuration, err = optionalBoundedDuration(getenv(poolMaxRunDurationEnvironment), defaultMaxRunDuration, time.Second, 24*time.Hour, poolMaxRunDurationEnvironment)
 	if err != nil {
 		return harnessPoolDevelopmentConfig{}, err
+	}
+	config.maxApprovalTTL, err = optionalBoundedDuration(getenv(poolMaxApprovalTTLEnvironment), defaultMaxApprovalTTL, time.Second, 24*time.Hour, poolMaxApprovalTTLEnvironment)
+	if err != nil {
+		return harnessPoolDevelopmentConfig{}, err
+	}
+	if config.maxApprovalTTL > config.maxRunDuration {
+		return harnessPoolDevelopmentConfig{}, fmt.Errorf("%s must not exceed %s", poolMaxApprovalTTLEnvironment, poolMaxRunDurationEnvironment)
 	}
 	if err := validateDirectConfigurationFile(config.workerConfig); err != nil {
 		return harnessPoolDevelopmentConfig{}, fmt.Errorf("%s: %w", poolWorkerConfigEnvironment, err)

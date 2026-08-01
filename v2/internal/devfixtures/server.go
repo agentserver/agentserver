@@ -38,9 +38,10 @@ type scriptKey struct {
 }
 
 type scriptSession struct {
-	step        int
-	expiresAtMS int64
-	cancelHold  bool
+	step                  int
+	expiresAtMS           int64
+	cancelHold            bool
+	acceptApprovalFailure bool
 }
 
 type fixtureRuntime struct {
@@ -357,7 +358,13 @@ func (runtime *fixtureRuntime) nextResponse(claims runcapability.Claims, request
 			return scriptedModelResponse{}, err
 		}
 		session.step = 1
-		session.cancelHold = containsCancellationHoldMarker(request.input)
+		// A resumed stock thread includes prior turns in the Responses input.
+		// Scenario markers belong only to the newest user message; scanning the
+		// full input would make deny/expiry/cancel behavior leak into every later
+		// run resumed from that checkpoint.
+		session.cancelHold = latestUserMessageContainsMarker(request.input, CancellationHoldMarker)
+		session.acceptApprovalFailure = latestUserMessageContainsMarker(request.input, ApprovalDenyMarker) ||
+			latestUserMessageContainsMarker(request.input, ApprovalExpiryMarker)
 		runtime.sessions[key] = session
 		return scriptedModelResponse{body: response}, nil
 	case 1:
@@ -385,7 +392,11 @@ func (runtime *fixtureRuntime) nextResponse(claims runcapability.Claims, request
 		runtime.sessions[key] = session
 		return scriptedModelResponse{body: response}, nil
 	case 2:
-		if err := validateSuccessfulShellFunctionOutput(request.input, shellCallID); err != nil {
+		if session.acceptApprovalFailure {
+			if err := validateUnsuccessfulShellFunctionOutput(request.input, shellCallID); err != nil {
+				return scriptedModelResponse{}, fmt.Errorf("validate scripted approval failure: %w", err)
+			}
+		} else if err := validateSuccessfulShellFunctionOutput(request.input, shellCallID); err != nil {
 			return scriptedModelResponse{}, fmt.Errorf("validate scripted shell result: %w", err)
 		}
 		session.step = 3
@@ -393,9 +404,13 @@ func (runtime *fixtureRuntime) nextResponse(claims runcapability.Claims, request
 		if session.cancelHold {
 			return scriptedModelResponse{hold: true}, nil
 		}
+		message := runtime.bundle.document.LLMProxy.FinalMessage
+		if session.acceptApprovalFailure {
+			message = ApprovalFailureMessage
+		}
 		response, err := assistantMessage(
 			"response-dev-final-"+fragment, "message-dev-final-"+fragment,
-			runtime.bundle.document.LLMProxy.FinalMessage,
+			message,
 		)
 		if err != nil {
 			return scriptedModelResponse{}, err
@@ -406,19 +421,36 @@ func (runtime *fixtureRuntime) nextResponse(claims runcapability.Claims, request
 	}
 }
 
-func containsCancellationHoldMarker(value any) bool {
+func latestUserMessageContainsMarker(input []any, marker string) bool {
+	if marker == "" {
+		return false
+	}
+	for index := len(input) - 1; index >= 0; index-- {
+		item, ok := input[index].(map[string]any)
+		if !ok || item["role"] != "user" {
+			continue
+		}
+		return containsMarker(item["content"], marker)
+	}
+	return false
+}
+
+func containsMarker(value any, marker string) bool {
+	if marker == "" {
+		return false
+	}
 	switch typed := value.(type) {
 	case string:
-		return strings.Contains(typed, CancellationHoldMarker)
+		return strings.Contains(typed, marker)
 	case []any:
 		for _, child := range typed {
-			if containsCancellationHoldMarker(child) {
+			if containsMarker(child, marker) {
 				return true
 			}
 		}
 	case map[string]any:
 		for _, child := range typed {
-			if containsCancellationHoldMarker(child) {
+			if containsMarker(child, marker) {
 				return true
 			}
 		}
@@ -474,6 +506,20 @@ func validateSuccessfulShellFunctionOutput(input []any, callID string) error {
 	if result.Status != "succeeded" || result.ExitCode == nil || *result.ExitCode != 0 ||
 		result.SandboxDenied || result.TimedOut || !result.OutputComplete {
 		return errors.New("scripted /bin/pwd execution did not complete successfully")
+	}
+	return nil
+}
+
+func validateUnsuccessfulShellFunctionOutput(input []any, callID string) error {
+	output, err := functionOutputText(input, callID)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(output) == "" {
+		return errors.New("scripted approval failure output is empty")
+	}
+	if validateSuccessfulShellFunctionOutput(input, callID) == nil {
+		return errors.New("scripted approval failure unexpectedly contains a successful shell result")
 	}
 	return nil
 }

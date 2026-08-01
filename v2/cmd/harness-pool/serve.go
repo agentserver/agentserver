@@ -20,7 +20,11 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
 
-const harnessPoolShutdownTimeout = 30 * time.Second
+const (
+	harnessPoolShutdownTimeout                 = 30 * time.Second
+	developmentAttemptLeaseTTL                 = 45 * time.Second
+	developmentAttemptAuthorityRefreshInterval = time.Second
+)
 
 const maximumHarnessPoolFailureLogBytes = 4 * 1024
 
@@ -172,7 +176,7 @@ func serveHarnessPool(ctx context.Context, getenv func(string) string, stdout, s
 	}
 	controller, err := harnesspool.NewController(coreClient, identities, harnesspool.ControllerConfig{
 		HolderID: poolInstanceID, DispatchLockTTL: 30 * time.Second,
-		AttemptLeaseTTL: 45 * time.Second, LongPollTimeout: 20 * time.Second,
+		AttemptLeaseTTL: developmentAttemptLeaseTTL, LongPollTimeout: 20 * time.Second,
 		ContentionBackoff: time.Second,
 	})
 	if err != nil {
@@ -183,8 +187,12 @@ func serveHarnessPool(ctx context.Context, getenv func(string) string, stdout, s
 		&harnessPoolFailureReporter{writer: stderr},
 		harnesspool.PoolConfig{
 			MaxConcurrentAttempts: config.maxConcurrent,
-			LeaseRenewInterval:    15 * time.Second,
-			IdleBackoff:           100 * time.Millisecond, FailureBackoff: time.Second,
+			// Renewal is also the current phase's durable cancellation
+			// observation path. Keep it well below the minimum approval TTL so
+			// an explicit run cancellation interrupts a pending elicitation
+			// instead of waiting for approval expiry.
+			LeaseRenewInterval: developmentAttemptAuthorityRefreshInterval,
+			IdleBackoff:        100 * time.Millisecond, FailureBackoff: time.Second,
 			CleanupTimeout: 30 * time.Second,
 		},
 	)
@@ -210,7 +218,6 @@ func serveHarnessPool(ctx context.Context, getenv func(string) string, stdout, s
 }
 
 func developmentRunLaunchProfile(config harnessPoolDevelopmentConfig, callbackEndpoint string) harnesspool.RunLaunchProfile {
-	maxApproval := min(config.maxRunDuration, 5*time.Minute)
 	maxExecution := min(config.maxRunDuration, 10*time.Minute)
 	return harnesspool.RunLaunchProfile{
 		CodexRuntimeManifestDigest: config.runtimeDigest,
@@ -223,7 +230,7 @@ func developmentRunLaunchProfile(config harnessPoolDevelopmentConfig, callbackEn
 		ExecutorMCPAudience:    developmentExecutorMCPAudience,
 		Limits: runmanifest.RunLimits{
 			MaxRunDurationMS:                config.maxRunDuration.Milliseconds(),
-			MaxApprovalTTLMS:                maxApproval.Milliseconds(),
+			MaxApprovalTTLMS:                config.maxApprovalTTL.Milliseconds(),
 			GatewayActiveExecutionTimeoutMS: maxExecution.Milliseconds(),
 			MCPTransportGraceMS:             5_000, WorkerCallbackGraceMS: 10_000,
 			MaxEventBufferBytes: 8 * 1024 * 1024, MaxControlBufferBytes: 2 * 1024 * 1024,

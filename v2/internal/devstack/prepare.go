@@ -621,6 +621,7 @@ func renderServiceEnvironments(
 			"AGENTSERVER_V2_LLMPROXY_SPIFFE_ID":              llmproxy.spiffeID,
 			"AGENTSERVER_V2_HARNESS_MAX_CONCURRENT_ATTEMPTS": strconv.Itoa(document.Harness.MaxConcurrentAttempts),
 			"AGENTSERVER_V2_MAX_RUN_DURATION":                document.Harness.MaxRunDuration,
+			"AGENTSERVER_V2_MAX_APPROVAL_TTL":                document.Harness.MaxApprovalTTL,
 		},
 	}, nil
 }

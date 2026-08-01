@@ -85,16 +85,34 @@ the worker control stream remains alive through the interrupted-terminal ACK
 and the pool lifecycle-command context remains alive through workload cleanup.
 Only the exact holder can then commit terminal `cancelled/interrupted`.
 
-The smoke first checks the reference-web marker and CSP. For each run it reads
-the canonical approval custom event, calls the independent decision endpoint,
-and verifies the tool proceeds only after Core consumes that approval; it
-never treats an A2UI action as authority. It then waits for `RUN_FINISHED`,
-checks the scripted assistant message, and commits one durable checkpoint. A
-second deterministic request approves the same real executor command, pauses
-after it, sends the explicit cancel command, observes `run.cancelling`
-followed by `RUN_ERROR` with `code=user_cancelled`, and must commit no
-checkpoint. The PostgreSQL checkpoint count must therefore increase by
-exactly one and the latest run must be `cancelled` with zero checkpoints.
+The insecure-development run manifest signs a 10-second maximum approval TTL;
+this deliberately short value makes the real database-time expiry path
+repeatable and is not a production recommendation. The smoke checks the
+reference-web marker and CSP, then runs five deterministic requests. The first
+reads canonical approval authority, approves through the independent command
+endpoint, and verifies that the real shell command proceeds only after Core
+consumes the approval. The second does the same, pauses after execution, then
+sends explicit run cancellation and observes `RUN_ERROR` with
+`code=user_cancelled`. The remaining requests deny the pending approval, let
+it expire without a decision, and cancel the run while approval is still
+pending. Denial and expiry return bounded tool failures to the scripted model,
+which completes without a command-result surface; pending cancellation ends
+as `user_cancelled`.
+
+The host-side database gate checks all five approval records and the three
+pre-dispatch failures individually. Their approval/execution pairs must be
+`denied/denied`, `expired/expired`, and `cancelled/cancelled`, each with
+`dispatched_at IS NULL` and zero `execution_operations`. Across the five runs,
+only the two approved commands may create operations. Each approved shell
+freezes a two-row `process_start + timeout_terminate` operation plan, while
+only its `process_start` row may have `dispatched_at`; the expected delta is
+therefore four plan rows and two dispatched rows, not four dispatches. Normal
+completion, denial, and expiry commit three checkpoints in total; both
+cancellation paths commit none. The same smoke can be rerun against the same
+persistent volume: scripted scenario markers are read only from the newest
+user message and are not inherited from checkpoint history. A2UI remains
+display-only throughout.
+
 Inspect and stop the stack with:
 
 ```sh

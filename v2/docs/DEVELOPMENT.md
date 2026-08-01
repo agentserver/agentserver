@@ -100,7 +100,8 @@ agentx 仍从独立的 `github.com/agentserver/agentx` 仓库构建。它只监�
   },
   "harness": {
     "maxConcurrentAttempts": 2,
-    "maxRunDuration": "30m"
+    "maxRunDuration": "30m",
+    "maxApprovalTtl": "10s"
   },
   "identities": {
     "workerUid": 65531,
@@ -111,7 +112,7 @@ agentx 仍从独立的 `github.com/agentserver/agentx` 仓库构建。它只监�
 }
 ```
 
-`platform`、Codex release/commit/digest、exec protocol digest 和 checkpoint allowlist不能在这里另填一份；命令从 runtime manifest 的原始字节派生它们。当前 harness config profile只接受 stock `0.146.0`。四个服务和两个 fixture 监听地址必须全部不同、端口非零且显式指向规范的 loopback host。Hydra 开发 endpoint 固定为 cleartext loopback HTTP；llmproxy endpoint 固定为 loopback HTTPS。当前确定性模型脚本会调用 `executor.list_environments`，因此 `policy.allowedTools` 必须包含 `list_environments`。
+`platform`、Codex release/commit/digest、exec protocol digest 和 checkpoint allowlist不能在这里另填一份；命令从 runtime manifest 的原始字节派生它们。当前 harness config profile只接受 stock `0.146.0`。`maxApprovalTtl` 会进入签名 run manifest，且不能超过 `maxRunDuration`；insecure-dev 用 10 秒让真实 expiry smoke 可重复完成，生产值不由这个开发配置决定。四个服务和两个 fixture 监听地址必须全部不同、端口非零且显式指向规范的 loopback host。Hydra 开发 endpoint 固定为 cleartext loopback HTTP；llmproxy endpoint 固定为 loopback HTTPS。当前确定性模型脚本会调用 `executor.list_environments`，因此 `policy.allowedTools` 必须包含 `list_environments`。
 
 `workerUid/workerGid` 是运行 harness-worker 的 Linux identity，`appUid/appGid` 是 stock app-server 的固定 Linux identity；UID 和 GID都必须分别不同。生成的 harness-pool 环境显式启用 privileged-fork backend：常驻 pool保留 `CHOWN/DAC_OVERRIDE/SETUID/SETGID`，每个 attempt直接 fork固定worker identity，worker再 fork固定app identity并在启动后封死自身 capability；热路径不创建容器、Job或Pod。开发 attempt anchor使用execute-only traversal，不允许app列目录或读pool/worker文件。
 
@@ -257,7 +258,7 @@ body必须精确包含`decision=approve|deny`、canonical `nonce`、Core投影�
 
 状态使用 Apple `container` 的 VM-backed named volume，默认名为 `agentserver-v2-dev-state`。这是因为宿主 bind mount 不能可靠地把私有 harness 输入改属固定 worker UID/GID；executor workspace 仍是普通的宿主 bind mount，不与 authority 状态混放。Apple `container` 的端口发布转发到容器 NIC，因此部署入口只把 browser-gateway 覆盖为监听 `0.0.0.0:17444`，宿主仍只发布 `127.0.0.1:17444`；Core、executor-gateway、harness-pool 和 fixtures 保持容器 loopback 监听。
 
-真实 smoke 会先验证 reference web 与 CSP，再连续验证带审批的正常完成和显式取消两条闭环：
+真实 smoke 会先验证 reference web 与 CSP，再连续执行五条独立 run：
 
 ```text
 AG-UI → Core → harness-worker → stock app-server
@@ -268,9 +269,19 @@ AG-UI → Core → harness-worker → stock app-server
 AG-UI → approval/consume → deterministic post-execution hold → POST :cancel
       → run.cancelling → stock turn interrupted/workload stopped
       → run.cancelled → RUN_ERROR(user_cancelled) → no checkpoint
+
+AG-UI → pending approval → deny | database-time expiry
+      → bounded tool failure → scripted final message → RUN_FINISHED
+      → zero dispatch → durable checkpoint
+
+AG-UI → pending approval → POST :cancel
+      → approval.cancelled + execution.cancelled → turn/interrupt
+      → RUN_ERROR(user_cancelled) → zero dispatch → no checkpoint
 ```
 
-脚本只从`CUSTOM agentserver.approval`读取nonce/digest/version并调用独立`:decide` API，不读取或触发A2UI action。它在运行前后直接查询PostgreSQL：checkpoint总数必须恰好增加1，且最新取消run必须为`cancelled`并拥有0条checkpoint。这同时验证批准点击本身不直接dispatch，并防止把被取消turn的临时rollout误提交为可恢复历史。
+脚本只从`CUSTOM agentserver.approval`读取nonce/digest/version并调用独立`:decide` API，不读取或触发A2UI action。它在运行前后直接查询PostgreSQL：五条run必须恰好新增3个checkpoint和5个approval；两个获批shell各冻结`process_start + timeout_terminate`两条operation-plan记录，所以总operation增加4，但只有两个`process_start`拥有`dispatched_at`。deny、expiry和pending-cancel对应的execution必须分别为`denied|expired|cancelled`、没有dispatch timestamp且各自拥有0条operation；两个取消run都必须拥有0个checkpoint。这同时验证批准点击本身不直接dispatch、防止pre-dispatch失败越过agentx发送边界，也防止把被取消turn的临时rollout误提交为可恢复历史。
+
+2026-08-01的实跑镜像manifest digest为`88c190d2e5192b5216ca49f80d9305526a5bd64fddf4a689d32104200964bd9c`。它在全新状态卷上通过后，又在同一容器和同一卷上立即完整复跑一次；累计计数从`checkpoints=3 approvals=5 operations=4 dispatched_operations=2`增长为`6/10/8/4`。fixture只从最新user message读取场景marker，checkpoint resume不会把历史deny/expiry/cancel行为继承给后续run。
 
 正常停止应给 supervisor 足够时间让 PostgreSQL fast shutdown 并回收子进程：
 

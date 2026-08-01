@@ -139,7 +139,7 @@ write_stack_config() {
     "version": "dev-v1",
     "allowedTools": ["list_environments", "shell", "read_file"]
   },
-  "harness": {"maxConcurrentAttempts": 2, "maxRunDuration": "30m"},
+  "harness": {"maxConcurrentAttempts": 2, "maxRunDuration": "30m", "maxApprovalTtl": "10s"},
   "identities": {
     "workerUid": 65531,
     "workerGid": 65531,

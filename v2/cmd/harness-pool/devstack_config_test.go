@@ -24,6 +24,7 @@ func TestGeneratedDevelopmentStackLoadsHarnessPoolConfiguration(t *testing.T) {
 	}
 	if config.executorID != fixture.Config.Authority.ExecutorID || config.capabilityCodec == nil ||
 		config.runtimeDigest == "" || config.workerDigest == "" || config.maxConcurrent != fixture.Config.Harness.MaxConcurrentAttempts ||
+		config.maxApprovalTTL.String() != fixture.Config.Harness.MaxApprovalTTL ||
 		config.workerCredential == nil || config.workerCredential.UID != fixture.Config.Identities.WorkerUID ||
 		config.workerCredential.GID != fixture.Config.Identities.WorkerGID {
 		t.Fatalf("generated harness-pool configuration = %+v", config)

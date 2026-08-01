@@ -112,6 +112,85 @@ func TestRuntimeEventMapperMapsMessageReasoningDynamicToolAndProgressInOrder(t *
 	}
 }
 
+func TestRuntimeEventMapperClosesUnfinishedProjectionLifecyclesAtAbnormalTurnTerminal(t *testing.T) {
+	for _, status := range []string{"interrupted", "failed"} {
+		t.Run(status, func(t *testing.T) {
+			wantResultText := "stock turn was interrupted"
+			if status == "failed" {
+				wantResultText = "stock turn failed"
+			}
+			mapper := newTestRuntimeEventMapperWithTools(t, mcpcontract.ToolShell)
+			for _, id := range []string{"message-z", "message-a"} {
+				if _, err := mapper.Map(appRuntimeEvent(t, "item/started", map[string]any{
+					"threadId": "thread-runtime-1", "turnId": "turn-runtime-1",
+					"item": map[string]any{"type": "agentMessage", "id": id, "text": ""},
+				})); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, id := range []string{"reasoning-z", "reasoning-a"} {
+				if _, err := mapper.Map(appRuntimeEvent(t, "item/started", map[string]any{
+					"threadId": "thread-runtime-1", "turnId": "turn-runtime-1",
+					"item": map[string]any{"type": "reasoning", "id": id, "summary": []string{}, "content": []string{}},
+				})); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, id := range []string{"call-z", "call-a"} {
+				arguments := map[string]any{"environment_id": runtimeMapperEnvironmentID, "argv": []string{"sh", "-c", id}}
+				if _, err := mapper.Map(dynamicToolRuntimeEvent(t, "item/started", id, mcpcontract.ToolShell, "inProgress", arguments, nil, nil)); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			mapped, err := mapper.Map(appRuntimeEvent(t, "turn/completed", map[string]any{
+				"threadId": "thread-runtime-1", "turn": map[string]any{"id": "turn-runtime-1", "status": status},
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, event := range mapped {
+				if event.Source != "brain" {
+					t.Fatalf("terminal projection source = %q", event.Source)
+				}
+				switch event.Kind {
+				case runevent.KindAssistantMessageCompleted, runevent.KindAssistantReasoningDone:
+					payload := decodeMappedPayload[runevent.MessageCompletedPayload](t, event)
+					got = append(got, event.Kind+":"+payload.MessageID)
+				case runevent.KindToolCallCompleted:
+					payload := decodeMappedPayload[runevent.ToolCallCompletedPayload](t, event)
+					got = append(got, event.Kind+":"+payload.ToolCallID)
+				case runevent.KindToolCallResult:
+					payload := decodeMappedPayload[runevent.ToolCallResultPayload](t, event)
+					if payload.Presentation != nil || !strings.Contains(payload.Content, wantResultText) {
+						t.Fatalf("%s unfinished tool result = %+v", status, payload)
+					}
+					got = append(got, event.Kind+":"+payload.ToolCallID)
+				default:
+					t.Fatalf("unexpected terminal projection kind %q", event.Kind)
+				}
+			}
+			want := []string{
+				runevent.KindAssistantMessageCompleted + ":message-a",
+				runevent.KindAssistantMessageCompleted + ":message-z",
+				runevent.KindAssistantReasoningDone + ":reasoning-a",
+				runevent.KindAssistantReasoningDone + ":reasoning-z",
+				runevent.KindToolCallCompleted + ":call-a",
+				runevent.KindToolCallResult + ":call-a",
+				runevent.KindToolCallCompleted + ":call-z",
+				runevent.KindToolCallResult + ":call-z",
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("terminal projection order = %v, want %v", got, want)
+			}
+			if !mapper.terminal || len(mapper.messages) != 0 || len(mapper.reasoning) != 0 || len(mapper.toolCalls) != 0 {
+				t.Fatalf("terminal mapper retained unfinished state: %+v", mapper)
+			}
+		})
+	}
+}
+
 func TestRuntimeEventMapperUsesCompletedItemFallbacksAndBoundsLargeContent(t *testing.T) {
 	mapper := newTestRuntimeEventMapper(t)
 	if _, err := mapper.Map(appRuntimeEvent(t, "item/started", map[string]any{

@@ -171,6 +171,8 @@ func (core *dynamicAttemptCore) ServeHTTP(response http.ResponseWriter, request 
 		core.resolveLaunch(response, request)
 	case request.URL.Path == corecontract.FreezeBrainToolCatalogPath:
 		core.freezeCatalog(response, request)
+	case strings.HasPrefix(request.URL.Path, corecontract.RunAttemptPathPrefix) && strings.HasSuffix(request.URL.Path, ":renew"):
+		core.renewAttempt(response, request)
 	case strings.HasPrefix(request.URL.Path, corecontract.RunDispatchPathPrefix) && strings.HasSuffix(request.URL.Path, ":release"):
 		core.releaseDispatch(response, request)
 	default:
@@ -265,6 +267,39 @@ func (core *dynamicAttemptCore) freezeCatalog(response http.ResponseWriter, requ
 			Version: 1, CreatedAt: core.now, UpdatedAt: core.now,
 		},
 		Created: true,
+	})
+}
+
+func (core *dynamicAttemptCore) renewAttempt(response http.ResponseWriter, request *http.Request) {
+	var command corecontract.RenewRunAttemptRequest
+	if !decodeDynamicCoreRequest(response, request, &command) {
+		return
+	}
+	core.mu.Lock()
+	attemptID, holderID := core.attemptID, core.holderID
+	core.mu.Unlock()
+	if command.SessionID != dynamicTestSessionID || command.RunID != dynamicTestRunID ||
+		command.RunAttemptID != attemptID || command.HolderID != holderID || command.RunAttemptGeneration != 1 {
+		http.Error(response, "renew command escaped the synthetic attempt", http.StatusConflict)
+		return
+	}
+	now := time.Now().UTC()
+	lease := corecontract.LeaseState{
+		HolderID: holderID, Generation: 1, ExpiresAt: now.Add(time.Minute),
+		AcquiredAt: core.now, RenewedAt: now,
+	}
+	writeDynamicCoreResponse(response, corecontract.RenewRunAttemptResponse{
+		Run: corecontract.RunState{
+			RunID: dynamicTestRunID, WorkspaceID: dynamicTestWorkspaceID, SessionID: dynamicTestSessionID,
+			ActorID: dynamicTestActorID, Status: "starting", CurrentAttemptGeneration: 1,
+			NextEventSeq: 2, Version: 2, CreatedAt: core.now, UpdatedAt: now,
+		},
+		RunAttempt: corecontract.RunAttemptState{
+			RunAttemptID: attemptID, RunID: dynamicTestRunID, Generation: 1,
+			Status: "leased", HolderID: holderID, Version: 1,
+			CreatedAt: core.now, UpdatedAt: now,
+		},
+		SessionLease: lease, AttemptLease: lease,
 	})
 }
 

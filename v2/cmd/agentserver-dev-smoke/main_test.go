@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -204,6 +205,107 @@ func TestExecuteCancellationSmokeWaitsForRunningHoldAndExplicitTerminal(t *testi
 		!strings.Contains(string(stream), `"code":"user_cancelled"`) {
 		t.Fatalf("executeCancellationSmoke() = id %q stream %q error %v", requestID, stream, err)
 	}
+}
+
+func TestExecuteApprovalGateSmokeContainsPreDispatchFailures(t *testing.T) {
+	const (
+		serverRunID = "30000000-0000-4000-8000-000000000013"
+		approvalID  = "70000000-0000-4000-8000-000000000070"
+		nonce       = "71000000-0000-4000-8000-000000000071"
+	)
+	digest := strings.Repeat("a", 64)
+	tests := []struct {
+		mode           approvalGateSmokeMode
+		marker         string
+		approvalStatus string
+		decision       string
+		terminal       string
+	}{
+		{approvalGateSmokeDeny, devfixtures.ApprovalDenyMarker, "denied", "deny", `{"type":"RUN_FINISHED","runId":"` + serverRunID + `"}`},
+		{approvalGateSmokeExpiry, devfixtures.ApprovalExpiryMarker, "expired", "", `{"type":"RUN_FINISHED","runId":"` + serverRunID + `"}`},
+		{approvalGateSmokePendingCancel, devfixtures.ApprovalCancelMarker, "cancelled", "", `{"type":"RUN_ERROR","runId":"` + serverRunID + `","code":"user_cancelled","message":"cancelled"}`},
+	}
+	for _, test := range tests {
+		t.Run(string(test.mode), func(t *testing.T) {
+			action := make(chan struct{})
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				switch {
+				case request.Method == http.MethodPost && request.URL.Path == "/v2/workspaces/"+smokeWorkspaceID+"/sessions/"+smokeSessionID+"/agui":
+					body, err := io.ReadAll(request.Body)
+					if err != nil || !strings.Contains(string(body), test.marker) || request.Header.Get("Authorization") != "Bearer test-browser-bearer" {
+						t.Errorf("%s request body=%q headers=%v error=%v", test.mode, body, request.Header, err)
+						http.Error(response, "bad request", http.StatusBadRequest)
+						return
+					}
+					flusher := response.(http.Flusher)
+					response.Header().Set("Content-Type", "text/event-stream")
+					_, _ = fmt.Fprintf(response, "data: {\"type\":\"RUN_STARTED\",\"runId\":%q}\n\n", serverRunID)
+					_, _ = io.WriteString(response, testApprovalSSE(approvalID, nonce, digest, "pending", "", 1))
+					flusher.Flush()
+					if test.mode != approvalGateSmokeExpiry {
+						select {
+						case <-action:
+						case <-request.Context().Done():
+							return
+						}
+					}
+					_, _ = io.WriteString(response, testApprovalSSE(approvalID, nonce, digest, test.approvalStatus, test.decision, 2))
+					if test.mode != approvalGateSmokePendingCancel {
+						_, _ = fmt.Fprintf(response, "data: {\"type\":\"TEXT_MESSAGE_CONTENT\",\"delta\":%q}\n\n", devfixtures.ApprovalFailureMessage)
+					}
+					_, _ = fmt.Fprintf(response, "data: %s\n\n", test.terminal)
+					flusher.Flush()
+				case request.Method == http.MethodPost && request.URL.Path == "/v2/workspaces/"+smokeWorkspaceID+"/approvals/"+approvalID+":decide":
+					if test.mode != approvalGateSmokeDeny {
+						t.Errorf("unexpected decision request for %s", test.mode)
+						http.Error(response, "unexpected", http.StatusBadRequest)
+						return
+					}
+					var input struct {
+						Decision string `json:"decision"`
+					}
+					if err := json.NewDecoder(request.Body).Decode(&input); err != nil || input.Decision != smokeApprovalDeny {
+						t.Errorf("deny input = %+v, %v", input, err)
+						http.Error(response, "bad decision", http.StatusBadRequest)
+						return
+					}
+					close(action)
+					response.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(response, `{"executionStatus":"denied","approval":{"approvalId":"`+approvalID+`","nonce":"`+nonce+`","status":"denied","decision":"deny","version":2}}`)
+				case request.Method == http.MethodPost && request.URL.Path == "/v2/workspaces/"+smokeWorkspaceID+"/runs/"+serverRunID+":cancel":
+					if test.mode != approvalGateSmokePendingCancel {
+						t.Errorf("unexpected cancellation request for %s", test.mode)
+						http.Error(response, "unexpected", http.StatusBadRequest)
+						return
+					}
+					close(action)
+					response.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(response, `{"workspaceId":"`+smokeWorkspaceID+`","sessionId":"`+smokeSessionID+`","runId":"`+serverRunID+`","status":"cancelling","runVersion":4,"terminal":false,"changed":true}`)
+				default:
+					http.NotFound(response, request)
+				}
+			}))
+			server.EnableHTTP2 = true
+			server.TLS = &tls.Config{MinVersion: tls.VersionTLS13}
+			server.StartTLS()
+			defer server.Close()
+			caFile, bearerFile := writeSmokeTestAuthority(t, server)
+
+			result, stream, err := executeApprovalGateSmoke(t.Context(), smokeOptions{
+				origin: server.URL, caFile: caFile, bearerFile: bearerFile,
+			}, test.mode)
+			if err != nil || result.RunID != serverRunID || result.ApprovalID != approvalID || len(stream) == 0 {
+				t.Fatalf("executeApprovalGateSmoke(%s) = %+v stream %q error %v", test.mode, result, stream, err)
+			}
+		})
+	}
+}
+
+func testApprovalSSE(approvalID, nonce, digest, status, decision string, version int64) string {
+	return fmt.Sprintf(
+		"data: {\"type\":\"CUSTOM\",\"name\":\"agentserver.approval\",\"value\":{\"approvalId\":%q,\"nonce\":%q,\"status\":%q,\"decision\":%q,\"version\":%d,\"contextDigest\":{\"domain\":\"approval-context\",\"canonicalizerVersion\":\"rfc8785-v1\",\"sha256\":%q}}}\n\n",
+		approvalID, nonce, status, decision, version, digest,
+	)
 }
 
 func TestInspectSSERejectsMalformedDataAndReportsMissingPieces(t *testing.T) {

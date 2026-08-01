@@ -1,6 +1,7 @@
 package coredb
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -260,6 +261,158 @@ func TestPostgreSQLApprovalObservationBindsScopeAndExpiresByDatabaseTime(t *test
 	if err != nil || retry.Changed || retry.Approval.Status != ApprovalStatusExpired {
 		t.Fatalf("ObserveApproval(expiry retry) = %+v, %v", retry, err)
 	}
+	assertApprovalEventLedger(t, pool, schema, running.Run.ID, 2)
+}
+
+func TestPostgreSQLApprovalObservationCompletesDuringRunCancellationForExactHolder(t *testing.T) {
+	store, pool, schema := newPostgresStateStore(t)
+	running := startExecutionTestRun(t, store, pool, schema, 166_000)
+	insertCancellationMember(t, pool, schema, running.Run.WorkspaceID, running.Run.ActorID, "developer")
+	created := approvalTestPrepareAndCreate(t, store, running, 166_100, "approval-cancel-observe", time.Now().Add(10*time.Minute))
+	contextHash := created.Approval.ContextHash.SHA256()
+	observe := ObserveApprovalCommand{
+		ApprovalID: created.Approval.ID, ExecutionID: created.Execution.ID, RunID: running.Run.ID,
+		AttemptID: running.Attempt.ID, HolderID: running.Attempt.HolderID, Generation: running.Attempt.Generation,
+		Nonce: created.Approval.Nonce, ExpectedContextHash: contextHash,
+		AfterApprovalVersion: created.Approval.Version, Record: stateTransitionRecord(166_300),
+	}
+
+	cancelling, err := store.CancelRun(t.Context(), CancelRunCommand{
+		WorkspaceID: running.Run.WorkspaceID, RunID: running.Run.ID, ActorID: running.Run.ActorID,
+		Record: stateTransitionRecord(166_400),
+	})
+	if err != nil || cancelling.Run.Status != RunStatusCancelling {
+		t.Fatalf("CancelRun() = %+v, %v", cancelling, err)
+	}
+	pending, err := store.ObserveApproval(t.Context(), observe)
+	if err != nil || pending.Changed || pending.Approval.Status != ApprovalStatusPending {
+		t.Fatalf("ObserveApproval(cancelling pending) = %+v, %v", pending, err)
+	}
+
+	wrongHolder := observe
+	wrongHolder.HolderID = "stale-holder"
+	if _, err := store.ObserveApproval(t.Context(), wrongHolder); !HasStateErrorCode(err, ErrorLeaseLost) {
+		t.Fatalf("ObserveApproval(cancelling wrong holder) = %v, want lease_lost", err)
+	}
+	wrongGeneration := observe
+	wrongGeneration.Generation++
+	if _, err := store.ObserveApproval(t.Context(), wrongGeneration); !HasStateErrorCode(err, ErrorLeaseLost) {
+		t.Fatalf("ObserveApproval(cancelling wrong generation) = %v, want lease_lost", err)
+	}
+
+	cancelledApproval, err := store.CancelApproval(t.Context(), CancelApprovalCommand{
+		ApprovalID: created.Approval.ID, Nonce: created.Approval.Nonce, ExpectedContextHash: contextHash,
+		ExpectedApprovalVersion: created.Approval.Version, Record: stateTransitionRecord(166_500),
+	})
+	if err != nil || !cancelledApproval.Changed || cancelledApproval.Approval.Status != ApprovalStatusCancelled ||
+		cancelledApproval.Execution.Status != ExecutionStatusCancelled {
+		t.Fatalf("CancelApproval() = %+v, %v", cancelledApproval, err)
+	}
+	terminal, err := store.ObserveApproval(t.Context(), observe)
+	if err != nil || terminal.Changed || terminal.Approval.Status != ApprovalStatusCancelled ||
+		terminal.Execution.Status != ExecutionStatusCancelled {
+		t.Fatalf("ObserveApproval(cancelling terminal) = %+v, %v", terminal, err)
+	}
+	if _, err := store.ObserveApproval(t.Context(), wrongHolder); !HasStateErrorCode(err, ErrorLeaseLost) {
+		t.Fatalf("ObserveApproval(terminal wrong holder) = %v, want lease_lost", err)
+	}
+	if _, err := store.ObserveApproval(t.Context(), wrongGeneration); !HasStateErrorCode(err, ErrorLeaseLost) {
+		t.Fatalf("ObserveApproval(terminal wrong generation) = %v, want lease_lost", err)
+	}
+
+	interrupted, err := store.InterruptAttempt(t.Context(), InterruptAttemptCommand{
+		RunID: running.Run.ID, AttemptID: running.Attempt.ID, HolderID: running.Attempt.HolderID,
+		Generation: running.Attempt.Generation, ExpectedRunVersion: cancelling.Run.Version,
+		ExpectedAttemptVersion: running.Attempt.Version, Reason: cancelReasonUser,
+		Record: stateTransitionRecord(166_600),
+	})
+	if err != nil || interrupted.Run.Status != RunStatusCancelled || interrupted.Attempt.Status != AttemptStatusInterrupted {
+		t.Fatalf("InterruptAttempt() = %+v, %v", interrupted, err)
+	}
+	assertStateTableCount(t, pool, schema, "execution_operations", 0)
+	assertApprovalEventLedger(t, pool, schema, running.Run.ID, 2)
+}
+
+func TestPostgreSQLApprovalObservationAndLeaseRenewalShareGlobalLockOrder(t *testing.T) {
+	store, pool, schema := newPostgresStateStore(t)
+	running := startExecutionTestRun(t, store, pool, schema, 168_000)
+	created := approvalTestPrepareAndCreate(t, store, running, 168_100, "approval-renew-lock-order", time.Now().Add(10*time.Minute))
+	contextHash := created.Approval.ContextHash.SHA256()
+	observe := ObserveApprovalCommand{
+		ApprovalID: created.Approval.ID, ExecutionID: created.Execution.ID, RunID: running.Run.ID,
+		AttemptID: running.Attempt.ID, HolderID: running.Attempt.HolderID, Generation: running.Attempt.Generation,
+		Nonce: created.Approval.Nonce, ExpectedContextHash: contextHash,
+		AfterApprovalVersion: created.Approval.Version, Record: stateTransitionRecord(168_300),
+	}
+	renew := RenewRunAttemptLeasesCommand{
+		SessionID: running.Run.SessionID, RunID: running.Run.ID, AttemptID: running.Attempt.ID,
+		HolderID: running.Attempt.HolderID, Generation: running.Attempt.Generation, LeaseTTL: time.Minute,
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	start := make(chan struct{})
+	errorsChannel := make(chan error, 2)
+	var wait sync.WaitGroup
+	wait.Add(2)
+	go func() {
+		defer wait.Done()
+		<-start
+		for range 50 {
+			if _, err := store.ObserveApproval(ctx, observe); err != nil {
+				errorsChannel <- fmt.Errorf("observe approval: %w", err)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wait.Done()
+		<-start
+		for range 50 {
+			if _, err := store.RenewRunAttemptLeases(ctx, renew); err != nil {
+				errorsChannel <- fmt.Errorf("renew attempt leases: %w", err)
+				return
+			}
+		}
+	}()
+	close(start)
+	wait.Wait()
+	close(errorsChannel)
+	for err := range errorsChannel {
+		t.Fatal(err)
+	}
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("concurrent approval observation and renewal exceeded deadline: %v", err)
+	}
+}
+
+func TestPostgreSQLDeniedApprovalIsAlreadySettledForGatewayCleanup(t *testing.T) {
+	store, pool, schema := newPostgresStateStore(t)
+	running := startExecutionTestRun(t, store, pool, schema, 167_000)
+	insertCancellationMember(t, pool, schema, running.Run.WorkspaceID, running.Run.ActorID, "developer")
+	created := approvalTestPrepareAndCreate(t, store, running, 167_100, "approval-denied-settlement", time.Now().Add(10*time.Minute))
+	contextHash := created.Approval.ContextHash.SHA256()
+	denied, err := store.DecideApproval(t.Context(), DecideApprovalCommand{
+		ApprovalID: created.Approval.ID, WorkspaceID: running.Run.WorkspaceID, ActorID: running.Run.ActorID,
+		Nonce: created.Approval.Nonce, ExpectedContextHash: contextHash,
+		ExpectedApprovalVersion: created.Approval.Version, Decision: ApprovalDecisionDeny,
+		Record: stateTransitionRecord(167_300),
+	})
+	if err != nil || denied.Approval.Status != ApprovalStatusDenied || denied.Execution.Status != ExecutionStatusDenied {
+		t.Fatalf("DecideApproval(deny) = %+v, %v", denied, err)
+	}
+
+	settled, err := store.CancelApproval(t.Context(), CancelApprovalCommand{
+		ApprovalID: created.Approval.ID, Nonce: created.Approval.Nonce, ExpectedContextHash: contextHash,
+		// The gateway only has the creation version when canonical denial is
+		// correlated back as an MCP decline. A terminal denial still converges.
+		ExpectedApprovalVersion: created.Approval.Version, Record: stateTransitionRecord(167_400),
+	})
+	if err != nil || settled.Changed || settled.Approval.Status != ApprovalStatusDenied ||
+		settled.Execution.Status != ExecutionStatusDenied {
+		t.Fatalf("CancelApproval(already denied) = %+v, %v", settled, err)
+	}
+	assertStateTableCount(t, pool, schema, "execution_operations", 0)
 	assertApprovalEventLedger(t, pool, schema, running.Run.ID, 2)
 }
 

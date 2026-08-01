@@ -140,6 +140,10 @@ type MCPClientConfig struct {
 	// CloseGrace bounds the SDK's graceful session close before the private
 	// HTTP transport is aborted. Zero selects the bounded reference default.
 	CloseGrace time.Duration
+	// ApprovalOutcomeGrace permits only correlation of Core's canonical
+	// terminal approval outcome after expiresAt. It never extends approval or
+	// dispatch authority. Zero selects the bounded reference default.
+	ApprovalOutcomeGrace time.Duration
 }
 
 type pendingMCPCall struct {
@@ -152,19 +156,20 @@ type pendingMCPCall struct {
 // MCPClient is the worker-owned, bounded executor-gateway MCP client. Its
 // bearer and HTTP transport never enter app-server configuration or stdio.
 type MCPClient struct {
-	session      *mcp.ClientSession
-	transport    *exactMCPTransport
-	catalog      *Catalog
-	limits       Limits
-	closeGrace   time.Duration
-	elicitation  ElicitationHandler
-	progress     ProgressHandler
-	now          func() time.Time
-	closeOnce    sync.Once
-	closeErr     error
-	pendingMu    sync.Mutex
-	closed       bool
-	pendingCalls map[string]*pendingMCPCall
+	session              *mcp.ClientSession
+	transport            *exactMCPTransport
+	catalog              *Catalog
+	limits               Limits
+	closeGrace           time.Duration
+	approvalOutcomeGrace time.Duration
+	elicitation          ElicitationHandler
+	progress             ProgressHandler
+	now                  func() time.Time
+	closeOnce            sync.Once
+	closeErr             error
+	pendingMu            sync.Mutex
+	closed               bool
+	pendingCalls         map[string]*pendingMCPCall
 }
 
 // ConnectMCP initializes one bounded Streamable HTTP session, reads every
@@ -221,16 +226,27 @@ func ConnectMCP(ctx context.Context, config MCPClientConfig) (*MCPClient, error)
 	if closeGrace > maxMCPShutdownGrace {
 		return nil, fmt.Errorf("executor MCP close grace exceeds hard maximum %s", maxMCPShutdownGrace)
 	}
+	approvalOutcomeGrace := config.ApprovalOutcomeGrace
+	if approvalOutcomeGrace == 0 {
+		approvalOutcomeGrace = defaultMCPShutdownGrace
+	}
+	if approvalOutcomeGrace < 0 {
+		return nil, errors.New("executor MCP approval outcome grace must be positive")
+	}
+	if approvalOutcomeGrace > maxMCPShutdownGrace {
+		return nil, fmt.Errorf("executor MCP approval outcome grace exceeds hard maximum %s", maxMCPShutdownGrace)
+	}
 
 	httpClient, transport := boundedMCPHTTPClient(httpClient, endpoint, config.BearerToken, transportMessageLimit(config.Limits))
 	result := &MCPClient{
-		limits:       config.Limits,
-		closeGrace:   closeGrace,
-		transport:    transport,
-		elicitation:  config.ElicitationHandler,
-		progress:     config.ProgressHandler,
-		now:          time.Now,
-		pendingCalls: make(map[string]*pendingMCPCall),
+		limits:               config.Limits,
+		closeGrace:           closeGrace,
+		approvalOutcomeGrace: approvalOutcomeGrace,
+		transport:            transport,
+		elicitation:          config.ElicitationHandler,
+		progress:             config.ProgressHandler,
+		now:                  time.Now,
+		pendingCalls:         make(map[string]*pendingMCPCall),
 	}
 	capture := newCatalogCapture()
 	client := mcp.NewClient(
@@ -447,7 +463,10 @@ func (c *MCPClient) handleElicitation(ctx context.Context, request *mcp.ElicitRe
 		return &mcp.ElicitResult{Action: string(ApprovalDecline)}, nil
 	}
 
-	decisionCtx, cancel := context.WithDeadline(ctx, metadata.ExpiresAt)
+	// Keep the correlation request alive through a bounded transport grace so
+	// Core's database clock can publish expired. Any accept arriving during
+	// this window is still rejected below and again by Core consumption.
+	decisionCtx, cancel := context.WithDeadline(ctx, metadata.ExpiresAt.Add(c.approvalOutcomeGrace))
 	stopPendingCancellation := context.AfterFunc(pending.ctx, cancel)
 	if pending.ctx.Err() != nil {
 		cancel()

@@ -206,6 +206,33 @@ func TestCoreApprovalGateSettlesDeclineAndExpiry(t *testing.T) {
 	}
 }
 
+func TestCoreApprovalGateKeepsOnlyOutcomeTransportAlivePastExpiry(t *testing.T) {
+	now := time.Now().UTC()
+	execution := testPendingApprovalExecution(now)
+	authority := newRecordingApprovalAuthority(execution, now)
+	principal := testApprovalPrincipal(now)
+	principal.MaxApprovalTTL = 20 * time.Millisecond
+	principal.RunDeadline = now.Add(time.Second)
+	const grace = 60 * time.Millisecond
+	gate := newTestCoreApprovalGate(t, authority, now, grace)
+
+	_, err := gate.AuthorizeExecution(t.Context(), ApprovalGateRequest{
+		Principal: principal, Execution: execution, ToolName: "shell", ToolCallID: execution.AppServerToolCallID,
+		Elicitor: approvalElicitorFunc(func(ctx context.Context, _ *mcp.ElicitParams) (*mcp.ElicitResult, error) {
+			deadline, ok := ctx.Deadline()
+			want := authority.created.ExpiresAt.Add(grace)
+			if !ok || !deadline.Equal(want) {
+				return nil, fmt.Errorf("elicitation deadline = %s/%t, want %s", deadline, ok, want)
+			}
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}),
+	})
+	if err == nil || authority.expireCalls != 1 || authority.cancelCalls != 0 || authority.consumeCalls != 0 {
+		t.Fatalf("expiry transport settlement error=%v expire=%d cancel=%d consume=%d", err, authority.expireCalls, authority.cancelCalls, authority.consumeCalls)
+	}
+}
+
 func TestCoreApprovalGateBoundsCleanupAfterRequestCancellation(t *testing.T) {
 	now := time.Now().UTC()
 	execution := testPendingApprovalExecution(now)

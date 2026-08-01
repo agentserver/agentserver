@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"errors"
 	"math/big"
 	"net"
@@ -204,6 +205,81 @@ func TestWorkerControlClientPipelinesRuntimeEventsThroughPoolAndCoreBeforeTermin
 	}
 	if snapshot, found := fixture.control.Snapshot(); !found || snapshot.ReceivedThrough != 7 {
 		t.Fatalf("terminal cumulative receive cursor = found %v snapshot %+v", found, snapshot)
+	}
+}
+
+func TestWorkerControlClientAcceptsInterruptedTerminalAfterClosingUnfinishedToolProjection(t *testing.T) {
+	fixture := newWorkerControlIntegrationFixture(t, &recordingAttemptLifecycle{})
+	core := newRuntimeAppendCore(fixture.prepared)
+	authority := &attemptLifecycleAuthority{
+		ctx: t.Context(), scheduler: &poolTestScheduler{}, core: core,
+		identities: &runtimeSequenceIdentityAllocator{}, prepared: fixture.prepared,
+	}
+	fixture.control.runtime.lifecycle = authority
+	client := fixture.newClient(t, fixture.control.Capability(), fixture.prepared.Manifest, fixture.prepared.SignedManifest)
+	startWorkerControlClient(t, client)
+
+	ctx := testContext(t)
+	threadID, turnID, callID := "thread-runtime-1", "turn-runtime-1", "call-runtime-interrupted"
+	if err := client.SendThreadReady(ctx, threadID, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SendTurnAccepted(ctx, threadID, turnID); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SendAppServerNotification(ctx, codexwire.Message{
+		Kind: codexwire.KindNotification, Method: "item/started",
+		Params: []byte(`{
+			"threadId":"thread-runtime-1","turnId":"turn-runtime-1","startedAtMs":1,
+			"item":{"type":"dynamicToolCall","id":"call-runtime-interrupted","namespace":"executor","tool":"read_file","arguments":{"environment_id":"91000000-0000-4000-8000-000000000091","path":"README.md"},"status":"inProgress","contentItems":null,"success":null}
+		}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SendAppServerNotification(ctx, codexwire.Message{
+		Kind: codexwire.KindNotification, Method: "turn/completed",
+		Params: []byte(`{"threadId":"thread-runtime-1","turn":{"id":"turn-runtime-1","status":"interrupted"}}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	terminal := harnesscontrol.TurnTerminalEvent{
+		Kind: harnesscontrol.EventKindTurnTerminal, ThreadID: threadID, TurnID: turnID,
+		Status: "interrupted", ErrorCode: "turn_interrupted",
+		ErrorMessage: "stock app-server confirmed that the turn was interrupted",
+	}
+	if err := client.SendTurnTerminal(ctx, terminal); err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := fixture.control.WaitTerminal(ctx)
+	if err != nil || accepted != terminal {
+		t.Fatalf("WaitTerminal() = %+v, %v", accepted, err)
+	}
+	if err := client.Wait(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	requests := core.appendSnapshot()
+	var events []AttemptEvent
+	for _, request := range requests {
+		events = append(events, request.Events...)
+	}
+	var kinds []string
+	for _, event := range events {
+		kinds = append(kinds, event.Kind)
+	}
+	want := []string{
+		runevent.KindToolCallStarted, runevent.KindToolCallArguments,
+		runevent.KindToolCallCompleted, runevent.KindToolCallResult,
+	}
+	if !reflect.DeepEqual(kinds, want) {
+		t.Fatalf("interrupted canonical event kinds = %v, want %v", kinds, want)
+	}
+	var result runevent.ToolCallResultPayload
+	if err := json.Unmarshal(events[len(events)-1].Payload, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.ToolCallID != callID || result.Presentation != nil || !strings.Contains(result.Content, "stock turn was interrupted") {
+		t.Fatalf("interrupted canonical tool result = %+v", result)
 	}
 }
 

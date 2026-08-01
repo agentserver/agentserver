@@ -762,6 +762,14 @@ func (s *StateStore) RenewSessionLease(ctx context.Context, command RenewSession
 		return Lease{}, commandError(ErrorInvalidArgument, operation, "session", command.SessionID, err.Error())
 	}
 	return withStateTransaction(ctx, s, operation, func(transaction pgx.Tx) (Lease, error) {
+		// All live-attempt commands lock run state before lease rows. Preserve
+		// that global order so approval observation cannot deadlock renewal.
+		if _, err := s.lockRun(ctx, transaction, operation, command.RunID); err != nil {
+			if HasStateErrorCode(err, ErrorNotFound) {
+				return Lease{}, commandError(ErrorLeaseLost, operation, "session", command.SessionID, "lease no longer owns a live run")
+			}
+			return Lease{}, err
+		}
 		return s.renewSessionLease(ctx, transaction, operation, command.SessionID, command.RunID, command.HolderID, command.Generation, leaseMilliseconds)
 	})
 }
@@ -789,6 +797,12 @@ func (s *StateStore) RenewAttemptLease(ctx context.Context, command RenewAttempt
 		return Lease{}, commandError(ErrorInvalidArgument, operation, "attempt", command.AttemptID, err.Error())
 	}
 	return withStateTransaction(ctx, s, operation, func(transaction pgx.Tx) (Lease, error) {
+		if _, _, err := s.lockRunAttempt(ctx, transaction, operation, command.RunID, command.AttemptID); err != nil {
+			if HasStateErrorCode(err, ErrorNotFound) {
+				return Lease{}, commandError(ErrorLeaseLost, operation, "attempt", command.AttemptID, "lease no longer owns a live run attempt")
+			}
+			return Lease{}, err
+		}
 		return s.renewAttemptLease(ctx, transaction, operation, command.RunID, command.AttemptID, command.HolderID, command.Generation, leaseMilliseconds)
 	})
 }
@@ -809,9 +823,11 @@ func validateRenewAttemptLease(command RenewAttemptLeaseCommand) (int64, error) 
 	return durationMilliseconds("lease_ttl", command.LeaseTTL, MaxLeaseTTL)
 }
 
-// RenewRunAttemptLeases extends both leases in one transaction. Each UPDATE
-// checks the other lease and the live run/attempt ownership tuple; if either
-// check fails, the transaction rolls back the other renewal.
+// RenewRunAttemptLeases extends both leases in one transaction. It follows the
+// global run -> attempt -> session lease -> attempt lease lock order used by
+// execution and approval commands. Each UPDATE checks the other lease and the
+// live run/attempt ownership tuple; if either check fails, the transaction
+// rolls back the other renewal.
 func (s *StateStore) RenewRunAttemptLeases(ctx context.Context, command RenewRunAttemptLeasesCommand) (RenewRunAttemptLeasesResult, error) {
 	const operation = "RenewRunAttemptLeases"
 	leaseMilliseconds, err := validateRenewRunAttemptLeases(command)
@@ -819,15 +835,18 @@ func (s *StateStore) RenewRunAttemptLeases(ctx context.Context, command RenewRun
 		return RenewRunAttemptLeasesResult{}, commandError(ErrorInvalidArgument, operation, "attempt", command.AttemptID, err.Error())
 	}
 	return withStateTransaction(ctx, s, operation, func(transaction pgx.Tx) (RenewRunAttemptLeasesResult, error) {
+		run, attempt, err := s.lockRunAttempt(ctx, transaction, operation, command.RunID, command.AttemptID)
+		if err != nil {
+			if HasStateErrorCode(err, ErrorNotFound) {
+				return RenewRunAttemptLeasesResult{}, commandError(ErrorLeaseLost, operation, "attempt", command.AttemptID, "lease pair no longer owns a live run attempt")
+			}
+			return RenewRunAttemptLeasesResult{}, err
+		}
 		sessionLease, err := s.renewSessionLease(ctx, transaction, operation, command.SessionID, command.RunID, command.HolderID, command.Generation, leaseMilliseconds)
 		if err != nil {
 			return RenewRunAttemptLeasesResult{}, err
 		}
 		attemptLease, err := s.renewAttemptLease(ctx, transaction, operation, command.RunID, command.AttemptID, command.HolderID, command.Generation, leaseMilliseconds)
-		if err != nil {
-			return RenewRunAttemptLeasesResult{}, err
-		}
-		run, attempt, err := s.lockRunAttempt(ctx, transaction, operation, command.RunID, command.AttemptID)
 		if err != nil {
 			return RenewRunAttemptLeasesResult{}, err
 		}

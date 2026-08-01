@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -183,6 +184,53 @@ func TestLLMProxyFixtureCancellationHoldEndsOnlyWithRequestContext(t *testing.T)
 	}
 	if response.Body.Len() != 0 {
 		t.Fatalf("held model response wrote bytes after cancellation: %q", response.Body.String())
+	}
+}
+
+func TestLLMProxyFixtureEndsApprovalFailuresWithoutRequiringExecution(t *testing.T) {
+	for index, marker := range []string{ApprovalDenyMarker, ApprovalExpiryMarker} {
+		t.Run(marker, func(t *testing.T) {
+			runtime, codec := newTestRuntime(t)
+			capabilityID := fmt.Sprintf("70000000-0000-4000-8000-%012d", 100+index)
+			runID := fmt.Sprintf("80000000-0000-4000-8000-%012d", 100+index)
+			token := signTestCapability(t, codec, capabilityID, runID, runcapability.AudienceLLMProxy, fixtureTestNow.Add(time.Hour), "gpt-5", "llmproxy")
+
+			firstInput := `[{"role":"user","content":"approval fixture ` + marker + `"}]`
+			first := callLLMProxy(t, runtime, token, modelBody(firstInput))
+			listCallID := responseCallID(t, first.Body.Bytes())
+			second := callLLMProxy(t, runtime, token, modelBody(functionOutputInput(t, listCallID, developmentEnvironmentOutput())))
+			shellCallID := responseCallID(t, second.Body.Bytes())
+			failureInput := functionOutputInput(t, shellCallID, "execution approval was not granted")
+			final := callLLMProxy(t, runtime, token, modelBody(failureInput))
+			if first.Code != http.StatusOK || second.Code != http.StatusOK || final.Code != http.StatusOK ||
+				listCallID == "" || shellCallID == "" || !strings.Contains(final.Body.String(), ApprovalFailureMessage) {
+				t.Fatalf("approval failure script = first %d second %d final %d body %s", first.Code, second.Code, final.Code, final.Body.String())
+			}
+		})
+	}
+}
+
+func TestLLMProxyFixtureDoesNotInheritScenarioMarkersFromResumedHistory(t *testing.T) {
+	markers := []string{CancellationHoldMarker, ApprovalDenyMarker, ApprovalExpiryMarker, ApprovalCancelMarker}
+	for _, marker := range markers {
+		input := []any{
+			map[string]any{"type": "message", "role": "user", "content": "historical request " + marker},
+			map[string]any{"type": "message", "role": "assistant", "content": "historical response"},
+			map[string]any{"type": "message", "role": "user", "content": []any{
+				map[string]any{"type": "input_text", "text": "current normal request"},
+			}},
+		}
+		if latestUserMessageContainsMarker(input, marker) {
+			t.Fatalf("historical marker %q leaked into the current resumed turn", marker)
+		}
+		input = append(input, map[string]any{
+			"type": "message", "role": "user", "content": []any{
+				map[string]any{"type": "input_text", "text": "current scenario " + marker},
+			},
+		})
+		if !latestUserMessageContainsMarker(input, marker) {
+			t.Fatalf("latest user marker %q was not detected", marker)
+		}
 	}
 }
 

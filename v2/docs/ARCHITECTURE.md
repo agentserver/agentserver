@@ -196,11 +196,13 @@ Hydra token 只证明用户身份和授权受众。workspace 角色必须在每�
 | per-executor access token | 每个 executor 独立 OAuth client，`aud=executor-gateway` | agentx WSS 连接 |
 | 短期 run capability | core 按 run 和 audience 分别签发 | app-server child → llmproxy；harness-worker → executor MCP |
 
-每枚 run capability 的公共 claim 至少绑定 `workspace_id`、`session_id`、`run_id`、`run_attempt_id`、`run_attempt_generation`、`user_id`、`aud`、过期时间和 `jti`。`aud=llmproxy` 只增加允许的 model/provider route；`aud=executor-gateway` 才增加允许的 executor/env/tool 和 `tool_catalog_digest`，不能把执行权限塞进模型 token，也不能把一枚 token 同时用于模型与执行。共享的 `agentserver-api` audience 只覆盖两个浏览器入口，不得被任何内部服务或 executor 接受。executor-gateway 的 `tools/list` 按 capability 中的 catalog digest 返回 core 已冻结的精确 catalog；未知或不匹配 digest 直接拒绝。
+每枚 run capability 的公共 claim 至少绑定 issuer、`workspace_id`、`session_id`、`run_id`、`run_attempt_id`、`run_attempt_generation`、actor、holder、`aud`、强制run deadline、过期时间和唯一 capability ID（jti）。`aud=llmproxy` 只增加允许的 model/provider route；`aud=executor-mcp` 才增加允许的 executor、`tool_catalog_digest`、预期run/attempt version和approval TTL。具体environment由工具请求选择并在每次调用时在线复核归属与policy，不能把执行权限塞进模型 token，也不能把一枚 token 同时用于模型与执行。共享的 `agentserver-api` audience 只覆盖两个浏览器入口，不得被任何内部服务或 executor 接受。executor-gateway 的 `tools/list` 按 capability 中的 catalog digest 返回 core 已冻结的精确 catalog；未知或不匹配 digest 直接拒绝。
 
 用户 bearer 不进入 harness、executor-gateway 或 agentx。browser-gateway 使用内部身份调用 core 的 authorize API，并将目标 workspace/action 一并提交；core 只向 browser-gateway 返回 actor context 与 run handle。run capability 在 harness-pool 持有效 session lease 和 run-attempt lease 后签发给目标 worker 进程，不能经浏览器链路转交。
 
 Phase 1 不尝试修改已启动 app-server 的环境变量来轮换 llmproxy capability。系统必须定义并强制 `max_run_duration`；每个 capability 的 TTL 覆盖该上限与很短的收尾 grace，但 llmproxy 和 executor-gateway 在每次请求时仍校验 live run-attempt lease/generation，因此取消、fence 或成员移除可以立即生效。executor MCP capability 只由 worker 持有，可以在不触碰 app-server 环境的情况下轮换。超过硬上限的 attempt 必须被中断，不能带过期 token 继续运行。
+
+生产capability的精确wire、Ed25519签名域、Core-only私钥、最多32枚公钥overlap及在线撤销边界见[`ADR 0002`](adr/0002-production-run-capability.md)。executor-gateway与llmproxy的本地验签不是最终授权；每个实际请求仍必须调用Core live-authorize，Core不可达时fail closed。
 
 ### 5.3 凭证存储
 
@@ -381,7 +383,7 @@ mid-turn crash 时只允许恢复上一个已由 core提交指针的 completed-t
 
 `internal/objectstore`及Core/pool adapter已经实现上述供应商无关协议；chunk boundary、并发exact put、幂等冲突、跨scope替换、KMS authority、篡改/截断/尾随、未读尾部认证和adapter scope转换均有普通及race测试。2026-08-02又把当前源码交叉编译的`objectstore/coreserver/harnesspool`测试二进制放入OCI digest `24c44fe44872962a828df84d3ff67ae2d541e076fad1e4101f9dc0dca5d8bf21`的固定Linux arm64容器各运行5轮并通过。
 
-具体transport的参考决策记录在[`ADR 0001`](adr/0001-aws-reference-object-provider.md)：AWS SDK v2 adapter以无自动重试的conditional `PutObject`实现immutable S3写边界，以`GetObject`的精确content length实现读边界，并用AWS KMS `AES_256` data key及authority digest context实现envelope boundary。它支持显式HTTPS S3-compatible endpoint，但不接受静态access-key配置，也不改变应用对象格式。provider单测/race与SDK serializer/error-decoder门禁已通过；最终Linux arm64测试二进制SHA-256为`2b46ba9a4433747bb90a08ca7381ea25321e75b22a65163f7017503339adb2bb`、size为`14515151`，在同一OCI index digest `24c44fe44872962a828df84d3ff67ae2d541e076fad1e4101f9dc0dca5d8bf21`中以network none、read-only root、非root和零capability连续运行5轮通过。共享production配置/factory、Core的`serve`加密装配和pool的encrypted-store选择路径也已实现，plaintext只允许显式`--insecure-dev`；pool production入口仍在capability issuer完成前fail closed。上述证据仍不关闭真实bucket/KMS IAM、conditional-write兼容性、credential/rotation、retention清理、故障注入与Kubernetes部署门禁，当前不能宣称生产对象存储已经部署。
+具体transport的参考决策记录在[`ADR 0001`](adr/0001-aws-reference-object-provider.md)：AWS SDK v2 adapter以无自动重试的conditional `PutObject`实现immutable S3写边界，以`GetObject`的精确content length实现读边界，并用AWS KMS `AES_256` data key及authority digest context实现envelope boundary。它支持显式HTTPS S3-compatible endpoint，但不接受静态access-key配置，也不改变应用对象格式。provider单测/race与SDK serializer/error-decoder门禁已通过；最终Linux arm64测试二进制SHA-256为`2b46ba9a4433747bb90a08ca7381ea25321e75b22a65163f7017503339adb2bb`、size为`14515151`，在同一OCI index digest `24c44fe44872962a828df84d3ff67ae2d541e076fad1e4101f9dc0dca5d8bf21`中以network none、read-only root、非root和零capability连续运行5轮通过。共享production配置/factory、Core的`serve`加密装配和pool的encrypted-store选择路径也已实现，plaintext只允许显式`--insecure-dev`；pool production入口仍在Core capability issuance/live-authorize完成前fail closed。上述证据仍不关闭真实bucket/KMS IAM、conditional-write兼容性、credential/rotation、retention清理、故障注入与Kubernetes部署门禁，当前不能宣称生产对象存储已经部署。
 
 ### 7.5 启动延迟与容量
 

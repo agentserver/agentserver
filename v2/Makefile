@@ -38,6 +38,7 @@ contract-check:
 	$(GO) test ./internal/runtimelock -run '^TestRuntimeManifestJSONSchemaContract$$' -count=1
 	$(GO) test ./internal/runmanifest -run '^TestRunManifestJSONSchemaAcceptsSignedEnvelope$$' -count=1
 	$(GO) test ./internal/runmanifest -run '^TestRunManifestVerificationKeyringJSONSchema$$' -count=1
+	$(GO) test ./internal/runcapability -run '^TestProductionCapabilityKeyringJSONSchemaContract$$' -count=1
 	$(GO) test ./internal/execprofile ./internal/executorgateway/... -run 'Contract|Schema|Profile' -count=1
 	$(GO) test ./internal/harnesscontrol -run 'Contract|Schema|AsyncAPI' -count=1
 	$(GO) test ./internal/harnessbootstrap -run 'Contract|Schema|Protocol' -count=1

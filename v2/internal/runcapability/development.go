@@ -44,6 +44,7 @@ var (
 
 type Claims struct {
 	Version              int    `json:"version"`
+	Issuer               string `json:"issuer,omitempty"`
 	CapabilityID         string `json:"capabilityId"`
 	Audience             string `json:"audience"`
 	WorkspaceID          string `json:"workspaceId"`
@@ -172,27 +173,34 @@ func (claims Claims) Validate() error {
 	if claims.Version != DevelopmentVersion {
 		return fmt.Errorf("development run capability version must be %d", DevelopmentVersion)
 	}
+	if claims.Issuer != "" {
+		return errors.New("development run capability must not contain a production issuer")
+	}
+	return claims.validateAuthority("development")
+}
+
+func (claims Claims) validateAuthority(profile string) error {
 	for field, value := range map[string]string{
 		"capabilityId": claims.CapabilityID, "workspaceId": claims.WorkspaceID,
 		"sessionId": claims.SessionID, "runId": claims.RunID,
 		"runAttemptId": claims.RunAttemptID,
 	} {
 		if !validDevelopmentUUID(value) {
-			return fmt.Errorf("development run capability %s must be a non-zero canonical lowercase UUID", field)
+			return fmt.Errorf("%s run capability %s must be a non-zero canonical lowercase UUID", profile, field)
 		}
 	}
 	for field, value := range map[string]string{"actorId": claims.ActorID, "holderId": claims.HolderID} {
 		if !validDevelopmentText(value, maximumTextBytes) {
-			return fmt.Errorf("development run capability %s is invalid", field)
+			return fmt.Errorf("%s run capability %s is invalid", profile, field)
 		}
 	}
 	if claims.RunAttemptGeneration < 1 || claims.RunAttemptGeneration > maxSafeJSONInteger {
-		return errors.New("development run capability generation must be a positive safe integer")
+		return fmt.Errorf("%s run capability generation must be a positive safe integer", profile)
 	}
 	if claims.IssuedAtUnixMS < 1 || claims.IssuedAtUnixMS > maxSafeJSONInteger ||
 		claims.RunDeadlineUnixMS <= claims.IssuedAtUnixMS || claims.RunDeadlineUnixMS > maxSafeJSONInteger ||
 		claims.ExpiresAtUnixMS < claims.RunDeadlineUnixMS || claims.ExpiresAtUnixMS > maxSafeJSONInteger {
-		return errors.New("development run capability time bounds are invalid")
+		return fmt.Errorf("%s run capability time bounds are invalid", profile)
 	}
 	switch claims.Audience {
 	case AudienceExecutorMCP:
@@ -200,21 +208,21 @@ func (claims Claims) Validate() error {
 			claims.ExpectedRunVersion < 1 || claims.ExpectedRunVersion > maxSafeJSONInteger ||
 			claims.ExpectedRunAttemptVersion < 1 || claims.ExpectedRunAttemptVersion > maxSafeJSONInteger ||
 			claims.MaxApprovalTTLMillis < 1 || claims.MaxApprovalTTLMillis > maximumApprovalTTLMS {
-			return errors.New("development executor capability authority is invalid")
+			return fmt.Errorf("%s executor capability authority is invalid", profile)
 		}
 		if claims.Model != "" || claims.Provider != "" {
-			return errors.New("development executor capability contains model authority")
+			return fmt.Errorf("%s executor capability contains model authority", profile)
 		}
 	case AudienceLLMProxy:
 		if !validDevelopmentText(claims.Model, maximumTextBytes) || !validDevelopmentText(claims.Provider, maximumTextBytes) {
-			return errors.New("development model capability route is invalid")
+			return fmt.Errorf("%s model capability route is invalid", profile)
 		}
 		if claims.ExecutorID != "" || claims.ToolCatalogDigest != "" ||
 			claims.ExpectedRunVersion != 0 || claims.ExpectedRunAttemptVersion != 0 || claims.MaxApprovalTTLMillis != 0 {
-			return errors.New("development model capability contains executor authority")
+			return fmt.Errorf("%s model capability contains executor authority", profile)
 		}
 	default:
-		return errors.New("development run capability audience is unsupported")
+		return fmt.Errorf("%s run capability audience is unsupported", profile)
 	}
 	return nil
 }
@@ -234,10 +242,10 @@ func decodeCanonicalClaims(raw []byte) (any, []byte, error) {
 	limits.MaxJSONDepth = 4
 	value, canonical, err := braincatalog.DecodeCanonicalJSON(raw, maximumClaimsBytes, limits)
 	if err != nil {
-		return nil, nil, fmt.Errorf("validate development run capability JSON: %w", err)
+		return nil, nil, fmt.Errorf("validate run capability JSON: %w", err)
 	}
 	if _, ok := value.(map[string]any); !ok {
-		return nil, nil, errors.New("development run capability claims root must be an object")
+		return nil, nil, errors.New("run capability claims root must be an object")
 	}
 	return value, canonical, nil
 }

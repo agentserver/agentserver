@@ -60,7 +60,7 @@ provider 配置只包含 bucket、两个 region、两个可选 HTTPS endpoint、
 - `AGENTSERVER_V2_KMS_REGION`、`AGENTSERVER_V2_KMS_KEY_ID`；
 - 可选`AGENTSERVER_V2_KMS_ENDPOINT`。
 
-`agentserver-core serve`只装配这套加密S3/KMS store；本地plaintext目录只在显式`agentserver-core serve --insecure-dev`下可用。harness-pool已经具备同一production store factory和`EncryptedRunObjectStore`装配路径，但在production capability issuer完成前，命令入口继续只接受`serve --insecure-dev`，不能因为对象后端已完成就回退使用开发HMAC并伪装成production。
+`agentserver-core serve`只装配这套加密S3/KMS store；本地plaintext目录只在显式`agentserver-core serve --insecure-dev`下可用。harness-pool已经具备同一production store factory和`EncryptedRunObjectStore`装配路径；production capability wire/keyring合同见[`ADR 0002`](0002-production-run-capability.md)，但在Core issuance/live-authorize和完整consumer装配完成前，命令入口继续只接受`serve --insecure-dev`，不能因为对象后端或codec已完成就回退使用开发HMAC并伪装成production。
 
 显式 endpoint 是应用 authority。adapter 清除 SDK 从 ambient endpoint 环境或 shared config 解析出的 endpoint，只使用这里的配置；空 endpoint 使用 SDK 的标准 AWS endpoint resolution。Core 与 harness-pool 的 workload identity可以调用 S3/KMS，worker 和 stock app-server 不获得这些凭证。
 

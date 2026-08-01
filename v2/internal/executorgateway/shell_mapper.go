@@ -152,6 +152,9 @@ func MapShellV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal, to
 	if principal.ExecutorID != "" && environment.ExecutorID != principal.ExecutorID {
 		return ShellV1Plan{}, errors.New("shell environment is outside the authenticated executor scope")
 	}
+	if principal.Production && environment.InsecureDev {
+		return ShellV1Plan{}, errors.New("production shell environment cannot be insecure-development")
+	}
 
 	var arguments ShellV1Arguments
 	if err := decodeExactJSON(rawArguments, &arguments); err != nil {

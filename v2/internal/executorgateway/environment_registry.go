@@ -57,6 +57,16 @@ func NewEnvironmentResolver(registry EnvironmentRegistry) (*EnvironmentResolver,
 }
 
 func (resolver *EnvironmentResolver) List(ctx context.Context, workspaceID, executorID string) (ListEnvironmentsResult, error) {
+	return resolver.list(ctx, workspaceID, executorID, false)
+}
+
+// ListProduction omits insecure-development environments while preserving
+// the same live Core registry lookup and deterministic ordering.
+func (resolver *EnvironmentResolver) ListProduction(ctx context.Context, workspaceID, executorID string) (ListEnvironmentsResult, error) {
+	return resolver.list(ctx, workspaceID, executorID, true)
+}
+
+func (resolver *EnvironmentResolver) list(ctx context.Context, workspaceID, executorID string, production bool) (ListEnvironmentsResult, error) {
 	if err := validateRegistryIdentity("workspace ID", workspaceID); err != nil {
 		return ListEnvironmentsResult{}, err
 	}
@@ -72,7 +82,7 @@ func (resolver *EnvironmentResolver) List(ctx context.Context, workspaceID, exec
 	if len(registered) > 256 {
 		return ListEnvironmentsResult{}, errors.New("environment registry exceeded the Phase 1 result bound")
 	}
-	result := ListEnvironmentsResult{Environments: make([]EnvironmentSummary, len(registered))}
+	result := ListEnvironmentsResult{Environments: make([]EnvironmentSummary, 0, len(registered))}
 	seen := make(map[string]struct{}, len(registered))
 	for index, environment := range registered {
 		resolved, err := resolveRegisteredEnvironment(environment)
@@ -82,18 +92,21 @@ func (resolver *EnvironmentResolver) List(ctx context.Context, workspaceID, exec
 		if executorID != "" && resolved.ExecutorID != executorID {
 			return ListEnvironmentsResult{}, fmt.Errorf("environment registry returned executor %s outside requested executor %s", resolved.ExecutorID, executorID)
 		}
+		if production && resolved.InsecureDev {
+			continue
+		}
 		if _, duplicate := seen[resolved.EnvironmentID]; duplicate {
 			return ListEnvironmentsResult{}, fmt.Errorf("environment registry duplicated environment %s", resolved.EnvironmentID)
 		}
 		seen[resolved.EnvironmentID] = struct{}{}
-		result.Environments[index] = EnvironmentSummary{
+		result.Environments = append(result.Environments, EnvironmentSummary{
 			EnvironmentID: resolved.EnvironmentID,
 			ExecutorID:    resolved.ExecutorID,
 			DisplayName:   resolved.DisplayName,
 			Description:   resolved.Description,
 			Platform:      resolved.Platform,
 			DefaultCWD:    resolved.DefaultCWD,
-		}
+		})
 	}
 	sort.Slice(result.Environments, func(left, right int) bool {
 		if result.Environments[left].ExecutorID != result.Environments[right].ExecutorID {

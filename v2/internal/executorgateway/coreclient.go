@@ -168,7 +168,67 @@ func (client *CoreConnectionClient) ListEnvironments(ctx context.Context, worksp
 	return result, nil
 }
 
+func (client *CoreConnectionClient) AuthorizeExecutorRunCapability(
+	ctx context.Context,
+	request ExecutorRunCapabilityAuthorizationRequest,
+) (ExecutorRunCapabilityAuthorization, error) {
+	if request.Token == "" || strings.TrimSpace(request.Token) != request.Token ||
+		strings.ContainsAny(request.Token, "\r\n") || len(request.Token) > 16*1024 {
+		return ExecutorRunCapabilityAuthorization{}, errors.New("executor run capability bearer is invalid")
+	}
+	contractRequest := corecontract.AuthorizeExecutorRunCapabilityRequest{
+		ExecutorID: request.ExecutorID, ToolCatalogDigest: request.ToolCatalogDigest,
+	}
+	var response corecontract.AuthorizeRunCapabilityResponse
+	if err := client.postWithPolicy(
+		ctx, corecontract.AuthorizeExecutorRunCapabilityPath, contractRequest, &response,
+		http.StatusOK, request.Token, true,
+	); err != nil {
+		// The bearer is deliberately excluded from the JSON body, but a
+		// transport or Core error envelope is still untrusted diagnostic text.
+		// Do not let either reflect the capability into a caller-visible error.
+		return ExecutorRunCapabilityAuthorization{}, errors.New("Core executor capability live authorization failed")
+	}
+	result := ExecutorRunCapabilityAuthorization{
+		CapabilityID: response.CapabilityID, Audience: response.Audience,
+		RunID: response.RunID, RunAttemptID: response.RunAttemptID,
+		RunAttemptGeneration: response.RunAttemptGeneration,
+		RunVersion:           resultSafeVersion(response.RunVersion), RunAttemptVersion: resultSafeVersion(response.RunAttemptVersion),
+		AuthorizedAt: response.AuthorizedAt,
+	}
+	versionsMatch := result.RunVersion == request.ExpectedRunVersion &&
+		result.RunAttemptVersion == request.ExpectedRunAttemptVersion
+	preTurnVersions := result.RunVersion > 0 && result.RunAttemptVersion > 0 &&
+		result.RunVersion+1 == request.ExpectedRunVersion &&
+		result.RunAttemptVersion+1 == request.ExpectedRunAttemptVersion
+	if result.CapabilityID != request.CapabilityID || result.Audience != "executor-mcp" ||
+		result.RunID != request.RunID || result.RunAttemptID != request.RunAttemptID ||
+		result.RunAttemptGeneration != request.RunAttemptGeneration || result.AuthorizedAt.IsZero() ||
+		(!versionsMatch && !preTurnVersions) {
+		return ExecutorRunCapabilityAuthorization{}, errors.New("Core executor capability authorization response is inconsistent")
+	}
+	return result, nil
+}
+
+func resultSafeVersion(value int64) int64 {
+	if value < 1 || value > 1<<53-1 {
+		return 0
+	}
+	return value
+}
+
 func (client *CoreConnectionClient) post(ctx context.Context, path string, command, destination any, wantStatus int) error {
+	return client.postWithPolicy(ctx, path, command, destination, wantStatus, "", false)
+}
+
+func (client *CoreConnectionClient) postWithPolicy(
+	ctx context.Context,
+	path string,
+	command, destination any,
+	wantStatus int,
+	bearer string,
+	requireNoStore bool,
+) error {
 	raw, err := json.Marshal(command)
 	if err != nil {
 		return fmt.Errorf("encode core command: %w", err)
@@ -181,6 +241,9 @@ func (client *CoreConnectionClient) post(ctx context.Context, path string, comma
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
+	if bearer != "" {
+		request.Header.Set("Authorization", "Bearer "+bearer)
+	}
 	response, err := client.httpClient.Do(request)
 	if err != nil {
 		return fmt.Errorf("execute core command: %w", err)
@@ -193,6 +256,9 @@ func (client *CoreConnectionClient) post(ctx context.Context, path string, comma
 	}
 	if len(body) > maxCoreCommandResponseBytes {
 		return errors.New("core command response exceeds size limit")
+	}
+	if requireNoStore && response.Header.Get("Cache-Control") != "no-store" {
+		return errors.New("Core capability authorization response is missing Cache-Control no-store")
 	}
 	if response.StatusCode != wantStatus {
 		return decodeCoreCommandError(response.StatusCode, body)

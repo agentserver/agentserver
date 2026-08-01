@@ -71,6 +71,9 @@ type ExecutorMCPPrincipal struct {
 	// ExecutorID optionally narrows list_environments to one executor. The
 	// empty value grants the workspace-wide registry projection.
 	ExecutorID string
+	// Production requires every selected and listed environment to be backed
+	// by a non-insecure enrollment. Development principals leave this false.
+	Production bool
 }
 
 // ExecutorMCPRunContext is the immutable, capability-derived core command
@@ -340,7 +343,13 @@ func (handler *ExecutorMCPHandler) newScopedServer(session *executorMCPSession) 
 			}
 			executorID = session.principal.ExecutorID
 		}
-		result, err := handler.resolver.List(ctx, session.principal.WorkspaceID, executorID)
+		var result ListEnvironmentsResult
+		var err error
+		if session.principal.Production {
+			result, err = handler.resolver.ListProduction(ctx, session.principal.WorkspaceID, executorID)
+		} else {
+			result, err = handler.resolver.List(ctx, session.principal.WorkspaceID, executorID)
+		}
 		if err != nil {
 			if handler.config.Logger != nil {
 				handler.config.Logger.ErrorContext(ctx, "list executor MCP environments",

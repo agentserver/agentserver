@@ -135,6 +135,9 @@ func MapReadFileV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal,
 	if principal.ExecutorID != "" && environment.ExecutorID != principal.ExecutorID {
 		return ReadFileV1Plan{}, errors.New("read-file environment is outside the authenticated executor scope")
 	}
+	if principal.Production && environment.InsecureDev {
+		return ReadFileV1Plan{}, errors.New("production read-file environment cannot be insecure-development")
+	}
 	if !execprofile.SupportsFilesystemRead(environment.OuterProfileVersion) {
 		return ReadFileV1Plan{}, errors.New("read-file environment does not advertise the bounded filesystem-read profile")
 	}

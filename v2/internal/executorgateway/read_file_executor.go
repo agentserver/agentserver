@@ -89,6 +89,9 @@ func (executor *ReadFileExecutor) Execute(ctx context.Context, request ReadFileE
 	if err != nil {
 		return ReadFileV1Result{}, fmt.Errorf("resolve read_file environment: %w", err)
 	}
+	if request.Principal.Production && environment.InsecureDev {
+		return ReadFileV1Result{}, errors.New("production read_file execution cannot target an insecure-development environment")
+	}
 	identities, err := executor.identities.Allocate()
 	if err != nil {
 		return ReadFileV1Result{}, fmt.Errorf("allocate read-file identities: %w", err)

@@ -117,6 +117,9 @@ func (executor *ShellExecutor) Execute(ctx context.Context, request ShellExecute
 	if err != nil {
 		return ShellV1Result{}, fmt.Errorf("resolve shell environment: %w", err)
 	}
+	if request.Principal.Production && environment.InsecureDev {
+		return ShellV1Result{}, errors.New("production shell execution cannot target an insecure-development environment")
+	}
 	identities, err := executor.identities.Allocate()
 	if err != nil {
 		return ShellV1Result{}, fmt.Errorf("allocate shell identities: %w", err)

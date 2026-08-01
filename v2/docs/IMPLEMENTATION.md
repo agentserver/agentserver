@@ -458,6 +458,7 @@ execution 的唯一调用身份为：
 - BeginRunFinalization
 - CommitCheckpointAndTerminalRun
 - InterruptAttempt
+- AbandonAttempt
 - CancelRun
 - AcquireExecutorConnection
 - RenewExecutorConnection
@@ -473,6 +474,9 @@ PR 9 reference command store固定以下首批语义：
 - `CreateRun`先锁session，按`(workspace_id, actor_id, session_id, idempotency_key)`查重；相同request hash还必须逐字段匹配prompt object pointer及规范化后的executor policy/allowlist才能返回原run，任一不同均返回`idempotency_conflict`。只有没有active run且expected session version匹配时，才在同一事务写run、不可变launch authority、`run.queued` event/outbox并设置`active_run_id`，不能先入队再补prompt或policy。
 - `ClaimQueuedRun`把`queued`推进为`starting`并创建attempt、session lease和attempt lease。两条lease都使用数据库时钟；任一仍存活时不能换holder。只有尚未接受turn、attempt仍为`leased|starting`且两条lease都过期时，才可fence旧attempt并以更高generation重领；mid-turn禁止自动重领。
 - `RenewSessionLease`与`RenewAttemptLease`都要求另一条同holder/generation lease仍存活，避免只续住半条lease后无限阻塞reclaim。
+- `CancelRun`先在同一事务重新校验workspace membership、锁run/session并写规范事件与outbox。尚无attempt的`queued` run直接进入`cancelled`并清空`active_run_id`；已有holder的`starting|running|finalizing` run只进入`cancelling`，不能在调用线程里假装远端workload已经停止。terminal run和已经进入`cancelling`的exact retry均为零写入。
+- harness-pool的成对lease heartbeat同时返回当前run/attempt authority。观察到`cancelling`后，它只取消驱动turn/MCP的attempt context；worker control context必须继续到`turn_terminal(interrupted)`累计ACK，pool侧`AttemptLifecycle` command context必须绑定仍在续租的holder lifecycle并继续到supervisor/workload cleanup完成，不能随attempt context一起取消。这样terminal前已经排队的notification/progress仍可跨`AppendAttemptEvents`边界，且cleanup期间不会被另一holder误领。已接受turn通常必须取得stock `turn/completed(interrupted)`并清空typed callbacks；若attempt已在`finalizing`，则沿已经确认的terminal cleanup边界收口。只有exact live holder证明所有execution terminal/unknown且workload停止后，`InterruptAttempt`才在一个事务中把attempt置为`interrupted`、run置为`cancelled`、清session active run、删除双lease并写`run.cancelled` event/outbox。
+- pre-turn启动失败不能用“观察一次run状态，再释放dispatch/等待lease TTL”的两步协议。workload完全停止且双lease仍live时，exact holder调用`AbandonAttempt`：若run仍为`starting`，同事务执行`attempt → failed`、`run → queued`、删除双lease并写`attempt.abandoned`，原dispatch随后release即可立即重试；若`CancelRun`已先把run推进为`cancelling`，同一命令改为`attempt → interrupted`、`run → cancelled`、清session active run、删除双lease并写`run.cancelled`。若abandon先提交，随后取消面对的是无holder的`queued` run并直接终止，因此两种提交顺序都不会留下永久`cancelling`。
 - `MarkTurnAccepted`是不可逆的mid-turn边界：原子推进run/attempt为`running`、记录`turn_started_at`并写event/outbox。提交后的同holder重试返回原结果；不同holder或旧generation失败。
 - `AppendAttemptEvents`一次最多256项、inline JSON object最多64 KiB；同一batch只允许一个producer且producer seq严格递增。新事件要求live双lease和当前generation；exact producer-key重试即使随后被fence也只返回原run seq，不写新行，而同key不同内容返回`event_conflict`。
 - outbox一次最多claim 100项，使用`FOR UPDATE SKIP LOCKED`。每次claim增加`attempts`，consumer必须携带`owner + attempts`完成或释放；旧claim即使owner字符串复用也不能完成新generation的工作。
@@ -595,6 +599,7 @@ POST /internal/v2/run-attempts/{attemptId}/events:append
 POST /internal/v2/run-attempts/{attemptId}:beginFinalization
 POST /internal/v2/run-attempts/{attemptId}:commitCheckpoint
 POST /internal/v2/run-attempts/{attemptId}:interrupt
+POST /internal/v2/run-attempts/{attemptId}:abandon
 GET  /internal/v2/run-attempts/{attemptId}/toolCatalog
 
 POST /internal/v2/run-dispatches:claim
@@ -769,12 +774,12 @@ controller 循环：
 3. 从core读取已冻结的brain tool catalog/canonical digest（新thread先执行`FreezeBrainToolCatalog`），生成不可变、签名run manifest；`controller_callback`绑定当前holder instance直连地址。
 4. 在当前 holder 副本内创建 pool-owned、worker-group-writable 的 attempt 临时根和独立进程组；control server生成control capability，capability issuer再按manifest audience为该generation签发executor-MCP/llmproxy两枚分离token。签名manifest与三枚token写入只继承给worker的bootstrap pipe，pool从对象存储读取prompt并按完整pointer复算size/hash后写入FD 4；仅当签名manifest存在previous checkpoint时，再以同样的发送侧校验将对象写入FD 5，然后本地 `fork/exec harness-worker`。run 热路径不调用 Kubernetes API。
 5. 接受 worker mTLS control stream并核对 attempt/generation。
-6. 续租、提交事件、转发 cancel/fence/approval。
+6. 从claim开始持续成对续租session/attempt lease，并从每次heartbeat返回值观察权威run/attempt状态；提交事件，转发cancel/fence/approval。收到cancel后先驱动worker/MCP/app-server与进程组清理，workload停止前不停止heartbeat。
 7. 收到completed terminal并确认worker/app-server整个进程组clean exit后，先请求core冻结terminal thread/turn，再由pool从固定attempt目录的受信FD边界打开唯一rollout；pool不通过worker传checkpoint chunks，也不让worker读取rollout内容。
 8. 在pool-owned `0700/0600` staging内校验JSONL、固定size与SHA-256，生成确定性artifact，以完整不可变pointer上传并复核返回pointer，最后请求core原子提交checkpoint + terminal。
 9. 只有core commit明确成功或某一步明确失败后才删除本次attempt临时目录；连续transport歧义必须保留runtime供同holder审计/恢复，不能把结果不明当成功清理。
 
-worker 进程退出后 launcher 不自动重启相同 attempt。只有 core/harness-pool 在 pre-turn 权威边界内显式创建新 generation 时才能再启动；`turn/start` 已接受后不重放。
+worker 进程退出后 launcher 不自动重启相同 attempt。pre-turn失败时，exact holder必须在workload已经停止且双lease仍live时调用`AbandonAttempt`，由core在run锁内原子决定requeue还是完成并发cancel；只有requeue后的新claim才会创建更高generation。`turn/start` 已接受后不重放。
 
 Phase 1 明确接受共享 pool Pod 的故障域：一个 Pod 崩溃/OOM 可同时中断该副本上的多个 attempt。因此每副本并发必须有小而硬的上限，pool 只在本地槽位可用时 claim 新 dispatch；超出容量的 run 留在 durable queue。这是基于“harness 不执行本地任意用户代码”的有意取舍，不冒充 per-run Pod 隔离。
 
@@ -868,11 +873,11 @@ pool侧新增launch-preparer边界：先从版本化executor MCP contract按显�
 
 随后加入的`0008_run_launch_authority`把prompt完整object pointer与规范化executor policy/allowlist作为不可变run authority，要求与`CreateRun + run.queued`同事务提交；同request hash的重试若launch authority不同仍报`idempotency_conflict`。该migration同时建立不可变checkpoint读模型及`sessions.latest_checkpoint_id`同session外键。harness-pool通过独立mTLS `run-launch-states:resolve`查询，core在同一事务锁定run/attempt，逐项核对workspace/session、expected versions、`starting + leased|starting + pre-turn`、active run及两条数据库时钟live lease后，才返回prompt、latest checkpoint、其绑定的完整frozen catalog和policy。`CoreClient`对所有UUID/digest/size/text/catalog canonical bytes重新验真；deployment resolver还要求checkpoint的Codex runtime manifest digest、allowlist version及catalog/policy全部与当前profile一致。新thread才分配catalog ID并freeze；已有thread恢复严格复用checkpoint绑定的catalog，allocator与freeze命令均为零调用，避免给同一thread制造第二份catalog authority。
 
-pool侧随后加入常驻监督骨架：只在有并发槽位时long-poll下一项dispatch；每个attempt从claim起即以固定间隔成对续租，普通transport歧义只用完全相同请求重试一次，任何明确lease/generation失败都会取消该attempt runtime。新thread必须先由runtime同步上报thread ID并完成catalog CAS绑定，随后同一thread的turn accepted才能使用一次性transition identity推进core；恢复thread只核对并复用原catalog，零bind调用。turn accepted一旦由core确认，dispatch清理失败不反向否定已接受的turn，迟到consumer仍可按run状态安全complete；接受前的prepare/runtime失败则有界release delivery并等待lease过期后的generation reclaim。所有attempt有界并发、单项失败隔离上报，pool shutdown取消并等待在途supervisor。
+pool侧随后加入常驻监督骨架：只在有并发槽位时long-poll下一项dispatch；每个attempt从claim起即以固定间隔成对续租，普通transport歧义只用完全相同请求重试一次，任何明确lease/generation失败都会取消该attempt runtime。新thread必须先由runtime同步上报thread ID并完成catalog CAS绑定，随后同一thread的turn accepted才能使用一次性transition identity推进core；恢复thread只核对并复用原catalog，零bind调用。turn accepted一旦由core确认，dispatch清理失败不反向否定已接受的turn，迟到consumer仍可按run状态安全complete；接受前的prepare/runtime失败则先完全停止workload，在live lease下用`AbandonAttempt`原子requeue/取消，再release原dispatch，不再依赖lease TTL。所有attempt有界并发、单项失败隔离上报，pool shutdown取消并等待在途supervisor。
 
 其后补入了contract-first的harness worker control stream。`api/schema/harness-control.schema.json`与`api/asyncapi/harness-control.yaml`当前为1.1，冻结fresh/resume hello、welcome、独立双向sequence、非sequenced cumulative ACK、`thread_ready|turn_accepted|turn_terminal|app_server_notification|executor_mcp_progress`和pool单向`interrupt`；Go decoder同时执行有界JSON token/depth、duplicate key、unknown/missing/null、safe integer与方向校验。完整hello绑定worker instance、workspace/session/run/attempt/generation、holder和domain-separated manifest digest。每端先把完整不可变frame放入有界journal再交给transport；duplicate必须命中保留的同frame digest，future sequence、ACK回退/越界或缺失重放区间都会关闭session。resume只接受原pool instance、原control session和原worker instance，且必须在原holder进程内journal仍覆盖缺口的30秒窗口内完成，不承诺跨Pod恢复。
 
-pool `ControlServer`在WebSocket升级前同时要求TLS栈已验证且只有一个精确worker SPIFFE URI SAN，以及canonical 256-bit per-attempt bearer；registry只保存bearer SHA-256，不保存明文。注册时再次核对签名manifest与本holder的callback/TLS audience/service-account profile；首个hello才绑定worker instance，后续fresh连接不能替换原journal。worker事件按序同步调用`AttemptLifecycle`；pool先prepare frame，只有catalog bind、turn accepted或runtime `AppendAttemptEvents`的core边界成功后才commit receive cursor并ACK。runtime append结果不明时保留同一control sequence对应的完整core request，同holder resume复用原event/producer/outbox身份；ACK本身仍不授权core transition。`ControlAttemptSupervisor`再把该注册、workload启动/完全停止、startup timeout、lease/cancel interrupt和terminal分类组合到原`AttemptSupervisor`接口。普通、mTLS WebSocket和race测试已覆盖完整生命周期、乱序拒绝、core提交前不ACK与断线后的原帧重放。
+pool `ControlServer`在WebSocket升级前同时要求TLS栈已验证且只有一个精确worker SPIFFE URI SAN，以及canonical 256-bit per-attempt bearer；registry只保存bearer SHA-256，不保存明文。注册时再次核对签名manifest与本holder的callback/TLS audience/service-account profile；首个hello才绑定worker instance，后续fresh连接不能替换原journal。worker事件按序同步调用`AttemptLifecycle`；pool先prepare frame，只有catalog bind、turn accepted或runtime `AppendAttemptEvents`的core边界成功后才commit receive cursor并ACK。runtime append结果不明时保留同一control sequence对应的完整core request，同holder resume复用原event/producer/outbox身份；ACK本身仍不授权core transition。worker用独立于turn/MCP的context维持control stream，pool则用独立于attempt runtime、但受holder lease与pool shutdown约束的context执行这些lifecycle command；两者都不能在取消信号到达时抢先切断terminal证据链。`ControlAttemptSupervisor`再把该注册、workload启动/完全停止、startup timeout、lease/cancel interrupt和terminal分类组合到原`AttemptSupervisor`接口。普通、mTLS WebSocket和race测试已覆盖完整生命周期、乱序拒绝、core提交前不ACK与断线后的原帧重放。
 
 根据修订后的威胁模型，pool侧已加入本地 process launcher 和 `api/schema/harness-bootstrap.schema.json` v2：launcher使用绝对路径、显式空环境、独立进程组与 Linux parent-death signal。签名manifest和control/executor-MCP/llmproxy capability只经 inherited FD 3 传递；prompt由pool-owned object source读取，经FD 4流式发送，发送侧与worker侧都按签名pointer独立复算size/SHA-256。单测已覆盖非规范/unknown bootstrap、profile drift在fork前拒绝、错误prompt hash导致整个launch失败、capability不进入argv/env、正常清理和强制回收带孙进程的整个process group。app UID拥有的`0700`树不再依赖普通`RemoveAll`侥幸成功：production credential模式要求runtime根为execute-only traversal的`0711`，并要求Linux pool在构造launcher时证明effective `CHOWN|SETUID|SETGID|DAC_OVERRIDE`及受限的production cleaner；清理目标只能是该根下规范的随机attempt直接子目录。macOS和无credential路径明确只是开发模式。production capability issuer、加密对象存储adapter及真实Linux Pod capability/image gate仍待装配。
 
@@ -1021,6 +1026,7 @@ browser-gateway只做：
 
 - 验证用户 bearer的基本格式/受众后委托 core authorize；
 - 创建 run并获取 run handle；
+- 转发显式run cancel命令；
 - 读取 canonical event cursor；
 - 映射为 AG-UI/A2UI；
 - fetch streaming与 backpressure；
@@ -1028,13 +1034,13 @@ browser-gateway只做：
 
 它不保存 session、run或 approval事实。浏览器断开只停止投影，不调用 cancel。
 
-当前把 Phase 4 中不依赖真实模型运行时的协议子阶段前置：`internal/runevent`与`api/schema/canonical-run-event.schema.json`冻结canonical envelope及首批message/reasoning/tool/run terminal schema-v1 payload；未来未知kind可在完成envelope/sequence校验后跳过，已知kind的未知schema version必须fail closed。`internal/browsergateway`实现`POST /v2/workspaces/{workspaceId}/sessions/{sessionId}/agui`，要求用户bearer和`Idempotency-Key`，只接受一条新的user message，拒绝客户端历史messages/state/tools/context。投影覆盖AG-UI message/reasoning/tool lifecycle、仅`run.completed → RUN_FINISHED`、其他terminal → `RUN_ERROR`，以及`CUSTOM{name:"a2ui.operations"}`承载的display-only A2UI v0.9 command/file-change卡。
+当前把 Phase 4 中不依赖真实模型运行时的协议子阶段前置：`internal/runevent`与`api/schema/canonical-run-event.schema.json`冻结canonical envelope及首批message/reasoning/tool/run terminal schema-v1 payload；未来未知kind可在完成envelope/sequence校验后跳过，已知kind的未知schema version必须fail closed。`internal/browsergateway`实现`POST /v2/workspaces/{workspaceId}/sessions/{sessionId}/agui`，要求用户bearer和`Idempotency-Key`，只接受一条新的user message，拒绝客户端历史messages/state/tools/context；另以独立command backend实现`POST /v2/workspaces/{workspaceId}/runs/{runId}:cancel`。投影覆盖AG-UI message/reasoning/tool lifecycle、`run.cancelling → CUSTOM{name:"agentserver.run_status",status:"cancelling"}`、`run.cancelled → RUN_ERROR{code:"user_cancelled"}`、仅`run.completed → RUN_FINISHED`，以及`CUSTOM{name:"a2ui.operations"}`承载的display-only A2UI v0.9 command/file-change卡。SSE断开不调用cancel，cancel请求失败也不能覆盖event stream已经观察到的canonical状态。
 
 core现已实现真实`CreateRun`与授权event-read API：browser-gateway的mTLS SPIFFE identity和原始用户bearer必须同时成立；Hydra introspection强制`active`、未过期、canonical UUID subject、单一`aud=agentserver-api`与`runs:write`，CreateRun写事务和每次long-poll都重新检查当前membership。HMAC opaque cursor绑定workspace/session/run/sequence，事件页返回per-event cursors，`limit=0`只解析重连位置。浏览器通过`forwardedProps.agentserver.eventCursor`续接；gateway只在初始queued位置、完整AG-UI lifecycle boundary或snapshot rebase后发布`CUSTOM{name:"agentserver.event_cursor"}`。retention gap没有已物化的完整lifecycle snapshot时不能虚构rebase。
 
 `cmd/browser-gateway`现已提供真实HTTPS入口、到core的mTLS client、`/healthz`、`/readyz`、header/read timeout和SSE有界优雅关闭；用户bearer禁止跟随redirect，也不会进入harness/executor/agentx。core的`AGENTSERVER_V2_DEV_PROMPT_OBJECT_DIR`后端只为本地联调提供`0600` plaintext immutable object与稳定幂等pointer，它不是加密、共享或多副本安全的生产对象存储。生产部署必须替换为前文定义的加密S3-compatible实现，不能把该目录挂载后冒充生产闭环。
 
-纯协议测试仍不需要启动codex app-server，因为输入可以是确定的canonical fixture；真实开发栈则已经由harness按attempt启动stock app-server负责模型循环并产出候选事件。`deploy/insecure-dev`当前已贯通AG-UI → Core → harness-worker → stock app-server → executor MCP → agentx → stock exec-server → durable checkpoint。browser-gateway同时在同一HTTPS origin的`/`提供dependency-free reference web：bearer和cursor只驻留页面内存，SSE使用带Authorization header的fetch streaming，A2UI只渲染服务端已校验的display-only v0.9 Card/Column/Text子集。该闭环仍是fixture identity、scripted Responses和单容器拓扑，不能据此宣称完整产品链已经生产部署。
+纯协议测试仍不需要启动codex app-server，因为输入可以是确定的canonical fixture；真实开发栈则已经由harness按attempt启动stock app-server负责模型循环并产出候选事件。`deploy/insecure-dev`当前已贯通AG-UI → Core → harness-worker → stock app-server → executor MCP → agentx → stock exec-server → durable checkpoint，并以第二条确定性run验证显式两阶段取消。browser-gateway同时在同一HTTPS origin的`/`提供dependency-free reference web：bearer和cursor只驻留页面内存，SSE使用带Authorization header的fetch streaming，A2UI只渲染服务端已校验的display-only v0.9 Card/Column/Text子集；页面的Cancel按钮调用独立command endpoint并显示`Cancelling/Cancelled`。正常run生成一个completed-turn checkpoint，取消run不得生成checkpoint。该闭环仍是fixture identity、scripted Responses和单容器拓扑，不能据此宣称完整产品链已经生产部署。
 
 browser-gateway运行配置为：public listener使用`AGENTSERVER_V2_BROWSER_GATEWAY_LISTEN_ADDR`、`AGENTSERVER_V2_BROWSER_GATEWAY_TLS_CERT_FILE`、`AGENTSERVER_V2_BROWSER_GATEWAY_TLS_KEY_FILE`；core origin与mTLS使用`AGENTSERVER_V2_CORE_URL`、`AGENTSERVER_V2_CORE_CA_FILE`、`AGENTSERVER_V2_CORE_CLIENT_CERT_FILE`、`AGENTSERVER_V2_CORE_CLIENT_KEY_FILE`，可选`AGENTSERVER_V2_CORE_SERVER_NAME`覆盖证书名。core URL必须是无credential/path/query/fragment的HTTPS origin。
 
@@ -1203,7 +1209,7 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 退出条件：浏览器断线/重连不取消 run，approval TTL/cancel/断线全部 fail closed。
 
-其中canonical event → AG-UI/A2UI、SSE handler、core public CreateRun/event cursor、真实backend以及browser-gateway command/config已作为Phase 3期间的前置协议子阶段实现；Phase 4仍需补生产加密对象存储、Hydra login/consent bridge、approval/显式cancel、reference Web与部署，不能把queued SSE或fixture投影测试计作Phase 4退出。
+其中canonical event → AG-UI/A2UI、SSE handler、core public CreateRun/event cursor/cancel、真实backend、两阶段holder清理、reference Web与单容器部署已作为Phase 3期间的前置协议子阶段实现；Phase 4仍需补Hydra login/consent bridge及approval/elicitation完整authority链。生产加密对象存储、capability adapter和部署门禁仍是生产化工作，不能把insecure-dev smoke计作Phase 4退出。
 
 ### Phase 5 — Hardening 与生产门槛
 
@@ -1241,7 +1247,7 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 Phase 3当前从第13项开始：已有run/attempt/event component API、独立harness-pool workload identity、原子双lease续期、`run.queued`专用long-poll delivery、pool侧单项claim controller内核、brain catalog冻结/线程绑定core API、签名manifest launch-preparer、受限私钥装载/公钥轮换keyring、deployment profile resolver、由`CreateRun`原子持久化并由live attempt fence保护的core-backed launch-state source，以及带有界并发、lease心跳、thread/turn顺序门和dispatch清理语义的常驻监督骨架；checkpoint恢复会复用原thread绑定catalog。per-attempt control 1.2机器合同、同holder进程resume journal、双向control server/client、mTLS+bearer入口、具体`ControlAttemptSupervisor`、本地process launcher、v2 closed-world bootstrap/runtime-capability合同、prompt object双端流式校验、checkpoint v1确定性artifact、FD 5双端对象校验及worker安全恢复入口也已完成。真实app-server child/final-exec、fresh runtime、exact-SPIFFE executor MCP以及notification/progress→canonical event链现已装配进可运行的one-shot `cmd/harness-worker`，production本地清理权限也改为启动前fail-closed。completed terminal现在携带经过`CODEX_HOME`词法包含校验的rollout locator；本地workload又把“进程组已停止”和“runtime已删除”拆成两个边界，并从启动前固定的attempt目录FD以Linux `openat2(BENEATH|NO_SYMLINKS)`及expected app UID/GID安全暴露唯一rollout。pool finalizer现已流式生成并验证artifact、以同一identity精确重试上传/commit、完整核对Core结果，并在连续歧义时保留attempt runtime；fresh/resume catalog authority均有PostgreSQL路径覆盖。常驻`cmd/harness-pool serve --insecure-dev`现已把这些边界、开发动态capability和本地对象存储装配起来，并由真实dispatch集成测试覆盖到worker bootstrap与有界release。`cmd/agentserver-dev prepare --insecure-dev`又把同一runtime authority派生为不可覆盖的开发PKI、secrets、Core bootstrap、worker deployment、分服务env和无secret agentx argv，并通过所有现有配置loader；开发attempt anchor的app traversal mode矛盾也已修正。后续仍须扩展approval通道并实现生产capability/object-store adapter；开发命令和library测试都不能替代这些生产边界。
 
-Phase 4的协议前置子阶段已完成下一段接线：canonical run-event schema/AsyncAPI、AG-UI SDK pin、A2UI v0.9 display builders、严格projector、public CreateRun/event cursor、Hydra token introspection、HMAC cursor、真实core backend及browser-gateway command/health/config均已有实现和门禁；worker↔pool control中的app-server notification/MCP progress也已成为core committed canonical event并接入AG-UI投影。可重复的单容器开发启动、固定opaque bearer的loopback Hydra fixture、动态`aud=llmproxy` capability校验、Linux privileged fork runtime、真实AG-UI → dynamic executor call → checkpoint smoke以及同源reference web均已完成。下一步进入Phase 4尚未关闭的authority链：approval/elicitation、显式cancel及Hydra login/consent bridge；生产对象存储/capability adapter及部署门禁仍是生产化必做项。当前plaintext对象目录、共享开发HMAC、URL-fragment开发bearer和scripted Responses只提供联调能力，仍不等于完整产品run可用。
+Phase 4的协议前置子阶段已完成下一段接线：canonical run-event schema/AsyncAPI、AG-UI SDK pin、A2UI v0.9 display builders、严格projector、public CreateRun/event cursor/cancel、Hydra token introspection、HMAC cursor、真实core backend及browser-gateway command/health/config均已有实现和门禁；worker↔pool control中的app-server notification/MCP progress也已成为core committed canonical event并接入AG-UI投影。显式cancel已经覆盖`queued → cancelled`和有holder时`cancelling → cancelled`两阶段收口；heartbeat在workload cleanup期间保持，pre-turn `AbandonAttempt`又在run锁内仲裁startup failure与并发cancel，避免永久`cancelling`。可重复的单容器开发启动、固定opaque bearer的loopback Hydra fixture、动态`aud=llmproxy` capability校验、Linux privileged fork runtime、正常run checkpoint、取消run零checkpoint以及同源reference web均已完成。下一步进入Phase 4尚未关闭的authority链：approval/elicitation与Hydra login/consent bridge；生产对象存储/capability adapter及部署门禁仍是生产化必做项。当前plaintext对象目录、共享开发HMAC、URL-fragment开发bearer和scripted Responses只提供联调能力，仍不等于完整产品run可用。
 
 ## 14. 尚未锁定但有明确决策点的事项
 

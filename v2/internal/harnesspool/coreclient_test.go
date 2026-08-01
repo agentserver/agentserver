@@ -60,6 +60,30 @@ func TestCoreClientRunAttemptRoundTrip(t *testing.T) {
 	if commands.renew.LeaseTTLMillis != 45_000 || commands.renew.SessionID != testSessionID {
 		t.Fatalf("renew wire request = %+v", commands.renew)
 	}
+	interrupted, err := client.InterruptRunAttempt(t.Context(), InterruptRunAttemptRequest{
+		RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
+		ExpectedRunVersion: renewed.Run.Version, ExpectedRunAttemptVersion: renewed.RunAttempt.Version,
+		Reason: "cancelled", Record: testTransitionRecord(5),
+	})
+	if err != nil || !interrupted.Changed || interrupted.Run.Status != "cancelled" ||
+		interrupted.RunAttempt.Status != "interrupted" || interrupted.SessionVersion != 4 {
+		t.Fatalf("InterruptRunAttempt() = %+v, %v", interrupted, err)
+	}
+	if commands.interrupt.Reason != "cancelled" || commands.interrupt.ExpectedRunVersion != renewed.Run.Version ||
+		commands.interrupt.Record.OutboxID != testTransitionRecord(5).OutboxID {
+		t.Fatalf("interrupt wire request = %+v", commands.interrupt)
+	}
+	abandoned, err := client.AbandonRunAttempt(t.Context(), AbandonRunAttemptRequest{
+		RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
+		Reason: "startup_failed", Record: testTransitionRecord(6),
+	})
+	if err != nil || !abandoned.Changed || abandoned.Disposition != "requeued" ||
+		abandoned.Run.Status != "queued" || abandoned.RunAttempt.Status != "failed" {
+		t.Fatalf("AbandonRunAttempt() = %+v, %v", abandoned, err)
+	}
+	if commands.abandon.Reason != "startup_failed" || commands.abandon.Record.OutboxID != testTransitionRecord(6).OutboxID {
+		t.Fatalf("abandon wire request = %+v", commands.abandon)
+	}
 
 	accepted, err := client.MarkTurnAccepted(t.Context(), MarkTurnAcceptedRequest{
 		RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
@@ -330,6 +354,8 @@ type recordingContractCommands struct {
 	now                time.Time
 	claim              corecontract.ClaimRunAttemptRequest
 	renew              corecontract.RenewRunAttemptRequest
+	interrupt          corecontract.InterruptRunAttemptRequest
+	abandon            corecontract.AbandonRunAttemptRequest
 	begin              corecontract.BeginRunFinalizationRequest
 	commit             corecontract.CommitCheckpointRequest
 	append             corecontract.AppendAttemptEventsRequest
@@ -412,7 +438,57 @@ func (commands *recordingContractCommands) RenewRunAttempt(_ context.Context, re
 	}
 	commands.renew = request
 	lease := testContractLease(request.HolderID, request.RunAttemptGeneration, commands.now, time.Duration(request.LeaseTTLMillis)*time.Millisecond)
-	return corecontract.RenewRunAttemptResponse{SessionLease: lease, AttemptLease: lease}, nil
+	return corecontract.RenewRunAttemptResponse{
+		Run: corecontract.RunState{
+			RunID: request.RunID, WorkspaceID: "40000000-0000-4000-8000-000000000004", SessionID: request.SessionID,
+			ActorID: "44000000-0000-4000-8000-000000000004", Status: "running", CurrentAttemptGeneration: request.RunAttemptGeneration,
+			NextEventSeq: 4, Version: 3, CreatedAt: commands.now, UpdatedAt: commands.now,
+		},
+		RunAttempt: corecontract.RunAttemptState{
+			RunAttemptID: request.RunAttemptID, RunID: request.RunID, Generation: request.RunAttemptGeneration,
+			Status: "running", HolderID: request.HolderID, Version: 2, CreatedAt: commands.now, UpdatedAt: commands.now,
+		},
+		SessionLease: lease, AttemptLease: lease,
+	}, nil
+}
+
+func (commands *recordingContractCommands) InterruptRunAttempt(_ context.Context, request corecontract.InterruptRunAttemptRequest) (corecontract.InterruptRunAttemptResponse, error) {
+	if commands.commandError != nil {
+		return corecontract.InterruptRunAttemptResponse{}, commands.commandError
+	}
+	commands.interrupt = request
+	return corecontract.InterruptRunAttemptResponse{
+		Run: corecontract.RunState{
+			RunID: request.RunID, WorkspaceID: "40000000-0000-4000-8000-000000000004", SessionID: testSessionID,
+			ActorID: "44000000-0000-4000-8000-000000000004", Status: "cancelled", CurrentAttemptGeneration: request.RunAttemptGeneration,
+			NextEventSeq: 6, Version: request.ExpectedRunVersion + 1, CreatedAt: commands.now, UpdatedAt: commands.now,
+		},
+		RunAttempt: corecontract.RunAttemptState{
+			RunAttemptID: request.RunAttemptID, RunID: request.RunID, Generation: request.RunAttemptGeneration,
+			Status: "interrupted", HolderID: request.HolderID, Version: request.ExpectedRunAttemptVersion + 1,
+			CreatedAt: commands.now, UpdatedAt: commands.now,
+		},
+		SessionVersion: 4, Changed: true,
+	}, nil
+}
+
+func (commands *recordingContractCommands) AbandonRunAttempt(_ context.Context, request corecontract.AbandonRunAttemptRequest) (corecontract.AbandonRunAttemptResponse, error) {
+	if commands.commandError != nil {
+		return corecontract.AbandonRunAttemptResponse{}, commands.commandError
+	}
+	commands.abandon = request
+	return corecontract.AbandonRunAttemptResponse{
+		Run: corecontract.RunState{
+			RunID: request.RunID, WorkspaceID: "40000000-0000-4000-8000-000000000004", SessionID: testSessionID,
+			ActorID: "44000000-0000-4000-8000-000000000004", Status: "queued", CurrentAttemptGeneration: request.RunAttemptGeneration,
+			NextEventSeq: 6, Version: 4, CreatedAt: commands.now, UpdatedAt: commands.now,
+		},
+		RunAttempt: corecontract.RunAttemptState{
+			RunAttemptID: request.RunAttemptID, RunID: request.RunID, Generation: request.RunAttemptGeneration,
+			Status: "failed", HolderID: request.HolderID, Version: 2, CreatedAt: commands.now, UpdatedAt: commands.now,
+		},
+		SessionVersion: 3, Disposition: "requeued", Changed: true,
+	}, nil
 }
 
 func (commands *recordingContractCommands) MarkTurnAccepted(_ context.Context, request corecontract.MarkTurnAcceptedRequest) (corecontract.MarkTurnAcceptedResponse, error) {

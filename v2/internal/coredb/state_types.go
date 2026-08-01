@@ -97,6 +97,19 @@ type CreateRunResult struct {
 	Created        bool
 }
 
+type CancelRunCommand struct {
+	WorkspaceID string
+	RunID       string
+	ActorID     string
+	Record      TransitionRecord
+}
+
+type CancelRunResult struct {
+	Run            Run
+	SessionVersion int64
+	Changed        bool
+}
+
 // AuthorizedSession is the minimum user-facing scope projection needed before
 // preparing immutable run inputs. CreateAuthorizedRun rechecks this membership
 // in the write transaction; callers must not treat this preliminary read as
@@ -256,8 +269,49 @@ type RenewRunAttemptLeasesCommand struct {
 }
 
 type RenewRunAttemptLeasesResult struct {
+	Run          Run
+	Attempt      RunAttempt
 	SessionLease Lease
 	AttemptLease Lease
+}
+
+type InterruptAttemptCommand struct {
+	RunID                  string
+	AttemptID              string
+	HolderID               string
+	Generation             int64
+	ExpectedRunVersion     int64
+	ExpectedAttemptVersion int64
+	Reason                 string
+	Record                 TransitionRecord
+}
+
+type InterruptAttemptResult struct {
+	Run            Run
+	Attempt        RunAttempt
+	SessionVersion int64
+	Changed        bool
+}
+
+// AbandonAttemptCommand is the trusted pre-turn workload-stopped handoff from
+// the exact harness holder. Unlike a lease expiry, it proves that this holder
+// has finished local cleanup, so core can either requeue the run or close a
+// cancellation that raced with cleanup in the same transaction.
+type AbandonAttemptCommand struct {
+	RunID      string
+	AttemptID  string
+	HolderID   string
+	Generation int64
+	Reason     string
+	Record     TransitionRecord
+}
+
+type AbandonAttemptResult struct {
+	Run            Run
+	Attempt        RunAttempt
+	SessionVersion int64
+	Disposition    string
+	Changed        bool
 }
 
 type ObjectPointer struct {

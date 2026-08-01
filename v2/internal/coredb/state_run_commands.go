@@ -827,7 +827,13 @@ func (s *StateStore) RenewRunAttemptLeases(ctx context.Context, command RenewRun
 		if err != nil {
 			return RenewRunAttemptLeasesResult{}, err
 		}
-		return RenewRunAttemptLeasesResult{SessionLease: sessionLease, AttemptLease: attemptLease}, nil
+		run, attempt, err := s.lockRunAttempt(ctx, transaction, operation, command.RunID, command.AttemptID)
+		if err != nil {
+			return RenewRunAttemptLeasesResult{}, err
+		}
+		return RenewRunAttemptLeasesResult{
+			Run: run, Attempt: attempt, SessionLease: sessionLease, AttemptLease: attemptLease,
+		}, nil
 	})
 }
 

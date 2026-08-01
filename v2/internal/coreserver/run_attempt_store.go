@@ -14,6 +14,8 @@ import (
 type RunAttemptStateStore interface {
 	ClaimQueuedRun(context.Context, coredb.ClaimQueuedRunCommand) (coredb.ClaimQueuedRunResult, error)
 	RenewRunAttemptLeases(context.Context, coredb.RenewRunAttemptLeasesCommand) (coredb.RenewRunAttemptLeasesResult, error)
+	InterruptAttempt(context.Context, coredb.InterruptAttemptCommand) (coredb.InterruptAttemptResult, error)
+	AbandonAttempt(context.Context, coredb.AbandonAttemptCommand) (coredb.AbandonAttemptResult, error)
 	MarkTurnAccepted(context.Context, coredb.MarkTurnAcceptedCommand) (coredb.MarkTurnAcceptedResult, error)
 	BeginRunFinalization(context.Context, coredb.BeginRunFinalizationCommand) (coredb.BeginRunFinalizationResult, error)
 	CommitCheckpointAndTerminalRun(context.Context, coredb.CommitCheckpointAndTerminalRunCommand) (coredb.CommitCheckpointAndTerminalRunResult, error)
@@ -75,8 +77,47 @@ func (commands StateStoreRunAttemptCommands) RenewRunAttempt(ctx context.Context
 		return corecontract.RenewRunAttemptResponse{}, err
 	}
 	return corecontract.RenewRunAttemptResponse{
+		Run:          contractRun(result.Run),
+		RunAttempt:   contractRunAttempt(result.Attempt),
 		SessionLease: contractLease(result.SessionLease),
 		AttemptLease: contractLease(result.AttemptLease),
+	}, nil
+}
+
+func (commands StateStoreRunAttemptCommands) InterruptRunAttempt(ctx context.Context, request corecontract.InterruptRunAttemptRequest) (corecontract.InterruptRunAttemptResponse, error) {
+	if commands.Store == nil {
+		return corecontract.InterruptRunAttemptResponse{}, errors.New("nil core state store")
+	}
+	result, err := commands.Store.InterruptAttempt(ctx, coredb.InterruptAttemptCommand{
+		RunID: request.RunID, AttemptID: request.RunAttemptID, HolderID: request.HolderID,
+		Generation: request.RunAttemptGeneration, ExpectedRunVersion: request.ExpectedRunVersion,
+		ExpectedAttemptVersion: request.ExpectedRunAttemptVersion, Reason: request.Reason,
+		Record: databaseTransitionRecord(request.Record),
+	})
+	if err != nil {
+		return corecontract.InterruptRunAttemptResponse{}, err
+	}
+	return corecontract.InterruptRunAttemptResponse{
+		Run: contractRun(result.Run), RunAttempt: contractRunAttempt(result.Attempt),
+		SessionVersion: result.SessionVersion, Changed: result.Changed,
+	}, nil
+}
+
+func (commands StateStoreRunAttemptCommands) AbandonRunAttempt(ctx context.Context, request corecontract.AbandonRunAttemptRequest) (corecontract.AbandonRunAttemptResponse, error) {
+	if commands.Store == nil {
+		return corecontract.AbandonRunAttemptResponse{}, errors.New("nil core state store")
+	}
+	result, err := commands.Store.AbandonAttempt(ctx, coredb.AbandonAttemptCommand{
+		RunID: request.RunID, AttemptID: request.RunAttemptID, HolderID: request.HolderID,
+		Generation: request.RunAttemptGeneration, Reason: request.Reason,
+		Record: databaseTransitionRecord(request.Record),
+	})
+	if err != nil {
+		return corecontract.AbandonRunAttemptResponse{}, err
+	}
+	return corecontract.AbandonRunAttemptResponse{
+		Run: contractRun(result.Run), RunAttempt: contractRunAttempt(result.Attempt),
+		SessionVersion: result.SessionVersion, Disposition: result.Disposition, Changed: result.Changed,
 	}, nil
 }
 

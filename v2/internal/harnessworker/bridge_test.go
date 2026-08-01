@@ -193,9 +193,11 @@ func TestDynamicBridgeFailureWaitsForTerminalAndNeverBecomesResponse(t *testing.
 
 func TestDynamicBridgeRejectsMalformedScopeDuplicatesAndBounds(t *testing.T) {
 	block := make(chan struct{})
+	started := make(chan struct{}, 1)
 	var calls atomic.Int64
 	caller := &fakeDynamicCaller{call: func(ctx context.Context, _ DynamicCall) (DynamicToolResult, error) {
 		calls.Add(1)
+		started <- struct{}{}
 		select {
 		case <-block:
 			return DynamicToolResult{ContentItems: []InputTextContent{{Type: "inputText", Text: "ok"}}, Success: true}, nil
@@ -213,6 +215,7 @@ func TestDynamicBridgeRejectsMalformedScopeDuplicatesAndBounds(t *testing.T) {
 	if err := bridge.HandleToolCall(t.Context(), valid, scope); err != nil {
 		t.Fatal(err)
 	}
+	waitSignal(t, started, "bounded dynamic call")
 	for _, test := range []struct {
 		name    string
 		message codexwire.Message

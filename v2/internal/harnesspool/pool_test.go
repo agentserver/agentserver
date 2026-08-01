@@ -3,6 +3,7 @@ package harnesspool
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -193,6 +194,292 @@ func TestPoolLeaseLossCancelsRuntimeAndFailsClosed(t *testing.T) {
 		}
 	default:
 		t.Fatal("lease loss did not cancel the attempt runtime")
+	}
+}
+
+func TestPoolCancellationKeepsLeaseUntilAcceptedTurnInterruptionIsCommitted(t *testing.T) {
+	prepared := poolTestPreparedLaunch(t)
+	scheduler := &poolTestScheduler{leaseTTL: 40 * time.Millisecond}
+	core := newPoolTestCore(prepared)
+	turnAccepted := make(chan struct{})
+	core.renewMutate = func(result *RenewRunAttemptResult) {
+		select {
+		case <-turnAccepted:
+			result.Run.Status = "cancelling"
+			result.Run.Version = 4
+			result.RunAttempt.Status = "running"
+			result.RunAttempt.Version = 2
+		default:
+		}
+	}
+	cleanupStarted := make(chan struct{}, 1)
+	cleanupRelease := make(chan struct{})
+	supervisor := attemptSupervisorFunc(func(ctx context.Context, _ PreparedRunLaunch, lifecycle AttemptLifecycle) error {
+		if err := lifecycle.ThreadStarted("thread-cancel-running"); err != nil {
+			return err
+		}
+		if err := lifecycle.TurnAccepted("thread-cancel-running", "turn-cancel-running"); err != nil {
+			return err
+		}
+		close(turnAccepted)
+		<-ctx.Done()
+		cleanupStarted <- struct{}{}
+		<-cleanupRelease
+		return errors.Join(context.Cause(ctx), &AttemptTerminalError{
+			Status: "interrupted", Code: "turn_interrupted", Message: "cancelled by user",
+		})
+	})
+	pool := newPoolForTest(t, scheduler, fixedPoolPreparer{prepared: prepared}, core, supervisor, PoolConfig{
+		MaxConcurrentAttempts: 1, LeaseRenewInterval: 5 * time.Millisecond,
+		IdleBackoff: time.Millisecond, FailureBackoff: time.Millisecond, CleanupTimeout: time.Second,
+	})
+
+	type processResult struct {
+		stage PoolFailureStage
+		err   error
+	}
+	done := make(chan processResult, 1)
+	go func() {
+		stage, err := pool.processAttempt(t.Context(), prepared.Scheduled)
+		done <- processResult{stage: stage, err: err}
+	}()
+	waitPoolTestSignal(t, cleanupStarted, "cancelled workload cleanup")
+	core.mu.Lock()
+	renewalsAtCleanup := len(core.renewRequests)
+	interruptsBeforeCleanup := len(core.interruptRequests)
+	core.mu.Unlock()
+	if interruptsBeforeCleanup != 0 {
+		t.Fatalf("cancellation committed before workload cleanup: %d interrupt(s)", interruptsBeforeCleanup)
+	}
+	waitPoolTestCondition(t, "lease renewal during workload cleanup", func() bool {
+		core.mu.Lock()
+		defer core.mu.Unlock()
+		return len(core.renewRequests) > renewalsAtCleanup
+	})
+	close(cleanupRelease)
+	select {
+	case result := <-done:
+		if result.stage != PoolFailureCleanup || result.err != nil {
+			t.Fatalf("cancelled process stage/error = %s / %v", result.stage, result.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled attempt did not finish")
+	}
+	core.mu.Lock()
+	interrupts := append([]InterruptRunAttemptRequest(nil), core.interruptRequests...)
+	core.mu.Unlock()
+	if len(interrupts) != 1 || interrupts[0].ExpectedRunVersion != 4 ||
+		interrupts[0].ExpectedRunAttemptVersion != 2 || interrupts[0].Reason != "cancelled" {
+		t.Fatalf("interrupt requests = %+v", interrupts)
+	}
+}
+
+func TestPoolCancellationKeepsLifecycleAuthorityAliveThroughTerminalCleanup(t *testing.T) {
+	prepared := poolTestPreparedLaunch(t)
+	scheduler := &poolTestScheduler{leaseTTL: 40 * time.Millisecond}
+	core := newRuntimeAppendCore(prepared)
+	turnAccepted := make(chan struct{})
+	core.renewMutate = func(result *RenewRunAttemptResult) {
+		select {
+		case <-turnAccepted:
+			result.Run.Status = "cancelling"
+			result.Run.Version = 4
+			result.RunAttempt.Status = "running"
+			result.RunAttempt.Version = 2
+		default:
+		}
+	}
+	supervisor := attemptSupervisorFunc(func(ctx context.Context, _ PreparedRunLaunch, lifecycle AttemptLifecycle) error {
+		if err := lifecycle.ThreadStarted("thread-cancel-runtime"); err != nil {
+			return err
+		}
+		if err := lifecycle.TurnAccepted("thread-cancel-runtime", "turn-cancel-runtime"); err != nil {
+			return err
+		}
+		close(turnAccepted)
+		<-ctx.Done()
+		runtimeLifecycle, ok := lifecycle.(AttemptRuntimeLifecycle)
+		if !ok {
+			return errors.New("attempt lifecycle does not accept runtime events")
+		}
+		event := appRuntimeEvent(t, "item/started", map[string]any{
+			"threadId": "thread-cancel-runtime", "turnId": "turn-cancel-runtime",
+			"item": map[string]any{"type": "agentMessage", "id": "message-cancel-runtime", "text": ""},
+		})
+		if err := runtimeLifecycle.RuntimeEvent(t.Context(), AttemptRuntimeEvent{ControlSequence: 3, Event: event}); err != nil {
+			return fmt.Errorf("append runtime event during cancellation cleanup: %w", err)
+		}
+		return errors.Join(context.Cause(ctx), &AttemptTerminalError{
+			Status: "interrupted", Code: "turn_interrupted", Message: "cancelled by user",
+		})
+	})
+	pool := newPoolForTest(t, scheduler, fixedPoolPreparer{prepared: prepared}, core, supervisor, PoolConfig{
+		MaxConcurrentAttempts: 1, LeaseRenewInterval: 5 * time.Millisecond,
+		IdleBackoff: time.Millisecond, FailureBackoff: time.Millisecond, CleanupTimeout: time.Second,
+	})
+
+	stage, err := pool.processAttempt(t.Context(), prepared.Scheduled)
+	if stage != PoolFailureCleanup || err != nil {
+		t.Fatalf("cancelled process stage/error = %s / %v", stage, err)
+	}
+	appends := core.appendSnapshot()
+	if len(appends) != 1 || len(appends[0].Events) != 1 {
+		t.Fatalf("runtime events committed during cancellation cleanup = %+v", appends)
+	}
+	core.mu.Lock()
+	interruptCount := len(core.interruptRequests)
+	core.mu.Unlock()
+	if interruptCount != 1 {
+		t.Fatalf("cancelled attempt interruption count = %d, want 1", interruptCount)
+	}
+}
+
+func TestPoolCancellationWithoutAcceptedTurnTerminalProofRemainsCancelling(t *testing.T) {
+	prepared := poolTestPreparedLaunch(t)
+	scheduler := &poolTestScheduler{leaseTTL: 40 * time.Millisecond}
+	core := newPoolTestCore(prepared)
+	turnAccepted := make(chan struct{})
+	core.renewMutate = func(result *RenewRunAttemptResult) {
+		select {
+		case <-turnAccepted:
+			result.Run.Status = "cancelling"
+			result.Run.Version = 4
+			result.RunAttempt.Status = "running"
+			result.RunAttempt.Version = 2
+		default:
+		}
+	}
+	supervisor := attemptSupervisorFunc(func(ctx context.Context, _ PreparedRunLaunch, lifecycle AttemptLifecycle) error {
+		if err := lifecycle.ThreadStarted("thread-cancel-unconfirmed"); err != nil {
+			return err
+		}
+		if err := lifecycle.TurnAccepted("thread-cancel-unconfirmed", "turn-cancel-unconfirmed"); err != nil {
+			return err
+		}
+		close(turnAccepted)
+		<-ctx.Done()
+		return context.Cause(ctx)
+	})
+	pool := newPoolForTest(t, scheduler, fixedPoolPreparer{prepared: prepared}, core, supervisor, PoolConfig{
+		MaxConcurrentAttempts: 1, LeaseRenewInterval: 5 * time.Millisecond,
+		IdleBackoff: time.Millisecond, FailureBackoff: time.Millisecond, CleanupTimeout: time.Second,
+	})
+	stage, err := pool.processAttempt(t.Context(), prepared.Scheduled)
+	if stage != PoolFailureCleanup || err == nil || !strings.Contains(err.Error(), "did not confirm an interrupted stock turn") {
+		t.Fatalf("unconfirmed cancellation stage/error = %s / %v", stage, err)
+	}
+	core.mu.Lock()
+	interruptCount := len(core.interruptRequests)
+	core.mu.Unlock()
+	if interruptCount != 0 {
+		t.Fatalf("unconfirmed cancellation committed %d interruption(s)", interruptCount)
+	}
+}
+
+func TestPoolCancellationBeforeTurnAcceptanceCommitsAfterWorkloadStops(t *testing.T) {
+	prepared := poolTestPreparedLaunch(t)
+	scheduler := &poolTestScheduler{leaseTTL: 40 * time.Millisecond}
+	core := newPoolTestCore(prepared)
+	core.renewMutate = func(result *RenewRunAttemptResult) {
+		result.Run.Status = "cancelling"
+		result.Run.Version = 3
+	}
+	supervisor := attemptSupervisorFunc(func(ctx context.Context, _ PreparedRunLaunch, _ AttemptLifecycle) error {
+		<-ctx.Done()
+		return context.Cause(ctx)
+	})
+	pool := newPoolForTest(t, scheduler, fixedPoolPreparer{prepared: prepared}, core, supervisor, PoolConfig{
+		MaxConcurrentAttempts: 1, LeaseRenewInterval: 5 * time.Millisecond,
+		IdleBackoff: time.Millisecond, FailureBackoff: time.Millisecond, CleanupTimeout: time.Second,
+	})
+	stage, err := pool.processAttempt(t.Context(), prepared.Scheduled)
+	if stage != PoolFailureCleanup || err != nil {
+		t.Fatalf("pre-turn cancellation stage/error = %s / %v", stage, err)
+	}
+	core.mu.Lock()
+	abandons := append([]AbandonRunAttemptRequest(nil), core.abandonRequests...)
+	core.mu.Unlock()
+	if len(abandons) != 1 || abandons[0].Reason != "startup_failed" ||
+		abandons[0].RunAttemptGeneration != prepared.Scheduled.Claim.RunAttempt.Generation {
+		t.Fatalf("pre-turn abandon requests = %+v", abandons)
+	}
+	scheduler.mu.Lock()
+	completed := len(scheduler.completed)
+	scheduler.mu.Unlock()
+	if completed != 1 {
+		t.Fatalf("pre-turn cancelled dispatch completion count = %d", completed)
+	}
+}
+
+func TestPoolCancellationDuringPreparationCommitsWithoutLaunchingWorkload(t *testing.T) {
+	prepared := poolTestPreparedLaunch(t)
+	scheduler := &poolTestScheduler{leaseTTL: 40 * time.Millisecond}
+	core := newPoolTestCore(prepared)
+	core.renewMutate = func(result *RenewRunAttemptResult) {
+		result.Run.Status = "cancelling"
+		result.Run.Version = 3
+	}
+	supervisorCalls := 0
+	preparer := runAttemptPreparerFunc(func(ctx context.Context, _ ScheduledRunAttempt) (PreparedRunLaunch, error) {
+		<-ctx.Done()
+		return PreparedRunLaunch{}, context.Cause(ctx)
+	})
+	pool := newPoolForTest(t, scheduler, preparer, core, attemptSupervisorFunc(
+		func(context.Context, PreparedRunLaunch, AttemptLifecycle) error {
+			supervisorCalls++
+			return nil
+		},
+	), PoolConfig{
+		MaxConcurrentAttempts: 1, LeaseRenewInterval: 5 * time.Millisecond,
+		IdleBackoff: time.Millisecond, FailureBackoff: time.Millisecond, CleanupTimeout: time.Second,
+	})
+	stage, err := pool.processAttempt(t.Context(), prepared.Scheduled)
+	if stage != PoolFailureCleanup || err != nil || supervisorCalls != 0 {
+		t.Fatalf("prepare cancellation stage/error/supervisor calls = %s / %v / %d", stage, err, supervisorCalls)
+	}
+	core.mu.Lock()
+	abandonCount := len(core.abandonRequests)
+	core.mu.Unlock()
+	if abandonCount != 1 {
+		t.Fatalf("prepare cancellation abandon count = %d", abandonCount)
+	}
+}
+
+func TestPoolStoppedPreTurnHandoffClosesCancellationAfterLastLeaseObservation(t *testing.T) {
+	prepared := poolTestPreparedLaunch(t)
+	scheduler := &poolTestScheduler{leaseTTL: time.Second}
+	core := newPoolTestCore(prepared)
+	// No renewal reports cancellation. The atomic abandon command sees that
+	// CancelRun won after the holder's final observation and closes it.
+	core.abandonMutate = func(result *AbandonRunAttemptResult) {
+		result.Run.Status = "cancelled"
+		result.RunAttempt.Status = "interrupted"
+		result.Disposition = "cancelled"
+	}
+	supervisor := attemptSupervisorFunc(func(context.Context, PreparedRunLaunch, AttemptLifecycle) error {
+		return errors.New("worker exited before accepting a turn")
+	})
+	pool := newPoolForTest(t, scheduler, fixedPoolPreparer{prepared: prepared}, core, supervisor, PoolConfig{
+		MaxConcurrentAttempts: 1, LeaseRenewInterval: 100 * time.Millisecond,
+		IdleBackoff: time.Millisecond, FailureBackoff: time.Millisecond, CleanupTimeout: time.Second,
+	})
+	stage, err := pool.processAttempt(t.Context(), prepared.Scheduled)
+	if stage != PoolFailureCleanup || err != nil {
+		t.Fatalf("racing cancellation stage/error = %s / %v", stage, err)
+	}
+	core.mu.Lock()
+	abandonCount := len(core.abandonRequests)
+	interruptCount := len(core.interruptRequests)
+	core.mu.Unlock()
+	if abandonCount != 1 || interruptCount != 0 {
+		t.Fatalf("racing cancellation abandon/interrupt calls = %d/%d", abandonCount, interruptCount)
+	}
+	scheduler.mu.Lock()
+	completeCount := len(scheduler.completed)
+	releaseCount := len(scheduler.released)
+	scheduler.mu.Unlock()
+	if completeCount != 1 || releaseCount != 0 {
+		t.Fatalf("racing cancellation complete/release calls = %d/%d", completeCount, releaseCount)
 	}
 }
 
@@ -440,6 +727,12 @@ type fixedPoolPreparer struct {
 	err      error
 }
 
+type runAttemptPreparerFunc func(context.Context, ScheduledRunAttempt) (PreparedRunLaunch, error)
+
+func (preparer runAttemptPreparerFunc) Prepare(ctx context.Context, scheduled ScheduledRunAttempt) (PreparedRunLaunch, error) {
+	return preparer(ctx, scheduled)
+}
+
 func (preparer fixedPoolPreparer) Prepare(context.Context, ScheduledRunAttempt) (PreparedRunLaunch, error) {
 	return preparer.prepared, preparer.err
 }
@@ -533,16 +826,22 @@ func (scheduler *poolTestScheduler) AttemptLeaseTTL() time.Duration { return sch
 type poolTestCore struct {
 	mu sync.Mutex
 
-	prepared      PreparedRunLaunch
-	bindErrors    []error
-	markErrors    []error
-	renewErrors   []error
-	bindRequests  []BindBrainThreadCatalogRequest
-	markRequests  []MarkTurnAcceptedRequest
-	renewRequests []RenewRunAttemptRequest
-	renewed       chan struct{}
-	bindMutate    func(*BrainToolCatalog)
-	markMutate    func(*MarkTurnAcceptedResult)
+	prepared          PreparedRunLaunch
+	bindErrors        []error
+	markErrors        []error
+	renewErrors       []error
+	interruptErrors   []error
+	abandonErrors     []error
+	bindRequests      []BindBrainThreadCatalogRequest
+	markRequests      []MarkTurnAcceptedRequest
+	renewRequests     []RenewRunAttemptRequest
+	interruptRequests []InterruptRunAttemptRequest
+	abandonRequests   []AbandonRunAttemptRequest
+	renewed           chan struct{}
+	bindMutate        func(*BrainToolCatalog)
+	markMutate        func(*MarkTurnAcceptedResult)
+	renewMutate       func(*RenewRunAttemptResult)
+	abandonMutate     func(*AbandonRunAttemptResult)
 }
 
 func newPoolTestCore(prepared PreparedRunLaunch) *poolTestCore {
@@ -567,7 +866,64 @@ func (core *poolTestCore) RenewRunAttempt(_ context.Context, request RenewRunAtt
 		HolderID: request.HolderID, Generation: request.RunAttemptGeneration,
 		ExpiresAt: now.Add(request.LeaseTTL), AcquiredAt: now, RenewedAt: now,
 	}
-	return RenewRunAttemptResult{SessionLease: lease, AttemptLease: lease}, nil
+	run := core.prepared.Scheduled.Claim.Run
+	attempt := core.prepared.Scheduled.Claim.RunAttempt
+	result := RenewRunAttemptResult{Run: run, RunAttempt: attempt, SessionLease: lease, AttemptLease: lease}
+	if core.renewMutate != nil {
+		core.renewMutate(&result)
+	}
+	return result, nil
+}
+
+func (core *poolTestCore) InterruptRunAttempt(_ context.Context, request InterruptRunAttemptRequest) (InterruptRunAttemptResult, error) {
+	core.mu.Lock()
+	defer core.mu.Unlock()
+	core.interruptRequests = append(core.interruptRequests, request)
+	if err := popPoolTestError(&core.interruptErrors); err != nil {
+		return InterruptRunAttemptResult{}, err
+	}
+	run := core.prepared.Scheduled.Claim.Run
+	run.Status = "cancelled"
+	run.Version = request.ExpectedRunVersion + 1
+	attempt := core.prepared.Scheduled.Claim.RunAttempt
+	attempt.Status = "interrupted"
+	attempt.Version = request.ExpectedRunAttemptVersion + 1
+	return InterruptRunAttemptResult{Run: run, RunAttempt: attempt, SessionVersion: 2, Changed: true}, nil
+}
+
+func (core *poolTestCore) AbandonRunAttempt(_ context.Context, request AbandonRunAttemptRequest) (AbandonRunAttemptResult, error) {
+	core.mu.Lock()
+	defer core.mu.Unlock()
+	core.abandonRequests = append(core.abandonRequests, request)
+	if err := popPoolTestError(&core.abandonErrors); err != nil {
+		return AbandonRunAttemptResult{}, err
+	}
+	run := core.prepared.Scheduled.Claim.Run
+	run.Status = "queued"
+	run.Version++
+	attempt := core.prepared.Scheduled.Claim.RunAttempt
+	attempt.Status = "failed"
+	attempt.Version++
+	result := AbandonRunAttemptResult{
+		Run: run, RunAttempt: attempt, SessionVersion: 2, Disposition: "requeued", Changed: true,
+	}
+	if core.renewMutate != nil {
+		renewed := RenewRunAttemptResult{Run: run, RunAttempt: attempt}
+		core.renewMutate(&renewed)
+		if renewed.Run.Status == "cancelling" {
+			result.Run = renewed.Run
+			result.Run.Status = "cancelled"
+			result.Run.Version++
+			result.RunAttempt = renewed.RunAttempt
+			result.RunAttempt.Status = "interrupted"
+			result.RunAttempt.Version++
+			result.Disposition = "cancelled"
+		}
+	}
+	if core.abandonMutate != nil {
+		core.abandonMutate(&result)
+	}
+	return result, nil
 }
 
 func (core *poolTestCore) BindBrainThreadCatalog(_ context.Context, request BindBrainThreadCatalogRequest) (BindBrainThreadCatalogResult, error) {
@@ -624,5 +980,16 @@ func waitPoolTestSignal(t *testing.T, signal <-chan struct{}, label string) {
 	case <-signal:
 	case <-time.After(time.Second):
 		t.Fatalf("timed out waiting for %s", label)
+	}
+}
+
+func waitPoolTestCondition(t *testing.T, label string, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for !condition() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", label)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

@@ -76,8 +76,45 @@ type RenewRunAttemptRequest struct {
 }
 
 type RenewRunAttemptResponse struct {
-	SessionLease LeaseState `json:"sessionLease"`
-	AttemptLease LeaseState `json:"attemptLease"`
+	Run          RunState        `json:"run"`
+	RunAttempt   RunAttemptState `json:"runAttempt"`
+	SessionLease LeaseState      `json:"sessionLease"`
+	AttemptLease LeaseState      `json:"attemptLease"`
+}
+
+type InterruptRunAttemptRequest struct {
+	RunID                     string           `json:"runId"`
+	RunAttemptID              string           `json:"runAttemptId"`
+	HolderID                  string           `json:"holderId"`
+	RunAttemptGeneration      int64            `json:"runAttemptGeneration"`
+	ExpectedRunVersion        int64            `json:"expectedRunVersion"`
+	ExpectedRunAttemptVersion int64            `json:"expectedRunAttemptVersion"`
+	Reason                    string           `json:"reason"`
+	Record                    TransitionRecord `json:"record"`
+}
+
+type InterruptRunAttemptResponse struct {
+	Run            RunState        `json:"run"`
+	RunAttempt     RunAttemptState `json:"runAttempt"`
+	SessionVersion int64           `json:"sessionVersion"`
+	Changed        bool            `json:"changed"`
+}
+
+type AbandonRunAttemptRequest struct {
+	RunID                string           `json:"runId"`
+	RunAttemptID         string           `json:"runAttemptId"`
+	HolderID             string           `json:"holderId"`
+	RunAttemptGeneration int64            `json:"runAttemptGeneration"`
+	Reason               string           `json:"reason"`
+	Record               TransitionRecord `json:"record"`
+}
+
+type AbandonRunAttemptResponse struct {
+	Run            RunState        `json:"run"`
+	RunAttempt     RunAttemptState `json:"runAttempt"`
+	SessionVersion int64           `json:"sessionVersion"`
+	Disposition    string          `json:"disposition"`
+	Changed        bool            `json:"changed"`
 }
 
 type MarkTurnAcceptedRequest struct {
@@ -205,6 +242,14 @@ type AppendAttemptEventsResponse struct {
 
 func RenewRunAttemptPath(runAttemptID string) string {
 	return RunAttemptPathPrefix + runAttemptID + ":renew"
+}
+
+func InterruptRunAttemptPath(runAttemptID string) string {
+	return RunAttemptPathPrefix + runAttemptID + ":interrupt"
+}
+
+func AbandonRunAttemptPath(runAttemptID string) string {
+	return RunAttemptPathPrefix + runAttemptID + ":abandon"
 }
 
 func MarkTurnAcceptedPath(runAttemptID string) string {

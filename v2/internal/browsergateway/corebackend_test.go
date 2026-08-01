@@ -73,6 +73,41 @@ func TestCoreRunBackendCreatesRunAndReadsScopedCommittedEvents(t *testing.T) {
 	}
 }
 
+func TestCoreRunBackendForwardsExplicitCancelWithoutIdempotencyOrBody(t *testing.T) {
+	client := &http.Client{Transport: browserRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodPost || request.URL.Path != corecontract.CancelUserRunPath(projectorWorkspaceID, projectorRunID) ||
+			request.Header.Get("Authorization") != "Bearer user-token" || request.Header.Get("Idempotency-Key") != "" || request.Body != nil {
+			t.Fatalf("cancel request = %s %s headers=%v body=%v", request.Method, request.URL, request.Header, request.Body)
+		}
+		return browserJSONResponse(request, http.StatusOK, corecontract.CancelUserRunResponse{
+			WorkspaceID: projectorWorkspaceID, SessionID: projectorSessionID, RunID: projectorRunID,
+			Status: "cancelling", RunVersion: 4, Terminal: false, Changed: true,
+		}), nil
+	})}
+	backend, _ := NewCoreRunBackend("https://core.agentserver.local", client)
+	result, err := backend.CancelRun(t.Context(), CancelRunRequest{
+		BearerToken: "user-token", WorkspaceID: projectorWorkspaceID, RunID: projectorRunID,
+	})
+	if err != nil || result.Status != "cancelling" || result.Terminal || !result.Changed {
+		t.Fatalf("CancelRun() = %+v, %v", result, err)
+	}
+}
+
+func TestCoreRunBackendRejectsNonPostCancelState(t *testing.T) {
+	client := &http.Client{Transport: browserRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return browserJSONResponse(request, http.StatusOK, corecontract.CancelUserRunResponse{
+			WorkspaceID: projectorWorkspaceID, SessionID: projectorSessionID, RunID: projectorRunID,
+			Status: "running", RunVersion: 4, Terminal: false, Changed: true,
+		}), nil
+	})}
+	backend, _ := NewCoreRunBackend("https://core.agentserver.local", client)
+	if _, err := backend.CancelRun(t.Context(), CancelRunRequest{
+		BearerToken: "user-token", WorkspaceID: projectorWorkspaceID, RunID: projectorRunID,
+	}); err == nil || !strings.Contains(err.Error(), "escaped or contradicted") {
+		t.Fatalf("non-post-cancel state error = %v", err)
+	}
+}
+
 func TestCoreRunBackendResolvesExplicitReconnectCursorBeforeSSE(t *testing.T) {
 	calls := 0
 	client := &http.Client{Transport: browserRoundTripFunc(func(request *http.Request) (*http.Response, error) {

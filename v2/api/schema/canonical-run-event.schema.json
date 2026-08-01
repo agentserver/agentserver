@@ -179,7 +179,7 @@
       }
     },
     {
-      "if": {"properties": {"kind": {"enum": ["run.failed", "run.interrupted", "run.cancelled"]}}, "required": ["kind"]},
+      "if": {"properties": {"kind": {"enum": ["run.failed", "run.interrupted", "run.cancelling", "run.cancelled"]}}, "required": ["kind"]},
       "then": {
         "properties": {
           "schemaVersion": {"const": 1},

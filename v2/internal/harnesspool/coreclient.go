@@ -126,8 +126,45 @@ type RenewRunAttemptRequest struct {
 }
 
 type RenewRunAttemptResult struct {
+	Run          Run
+	RunAttempt   RunAttempt
 	SessionLease Lease
 	AttemptLease Lease
+}
+
+type InterruptRunAttemptRequest struct {
+	RunID                     string
+	RunAttemptID              string
+	HolderID                  string
+	RunAttemptGeneration      int64
+	ExpectedRunVersion        int64
+	ExpectedRunAttemptVersion int64
+	Reason                    string
+	Record                    TransitionRecord
+}
+
+type InterruptRunAttemptResult struct {
+	Run            Run
+	RunAttempt     RunAttempt
+	SessionVersion int64
+	Changed        bool
+}
+
+type AbandonRunAttemptRequest struct {
+	RunID                string
+	RunAttemptID         string
+	HolderID             string
+	RunAttemptGeneration int64
+	Reason               string
+	Record               TransitionRecord
+}
+
+type AbandonRunAttemptResult struct {
+	Run            Run
+	RunAttempt     RunAttempt
+	SessionVersion int64
+	Disposition    string
+	Changed        bool
 }
 
 type MarkTurnAcceptedRequest struct {
@@ -476,11 +513,80 @@ func (client *CoreClient) RenewRunAttempt(ctx context.Context, request RenewRunA
 	if err := client.post(ctx, corecontract.RenewRunAttemptPath(request.RunAttemptID), contractRequest, &response); err != nil {
 		return RenewRunAttemptResult{}, err
 	}
-	result := RenewRunAttemptResult{SessionLease: contractLease(response.SessionLease), AttemptLease: contractLease(response.AttemptLease)}
-	if !sameLeaseHolder(result.SessionLease, request.HolderID, request.RunAttemptGeneration) || !sameLeaseHolder(result.AttemptLease, request.HolderID, request.RunAttemptGeneration) {
+	result := RenewRunAttemptResult{
+		Run: contractRun(response.Run), RunAttempt: contractRunAttempt(response.RunAttempt),
+		SessionLease: contractLease(response.SessionLease), AttemptLease: contractLease(response.AttemptLease),
+	}
+	if !sameLeaseHolder(result.SessionLease, request.HolderID, request.RunAttemptGeneration) ||
+		!sameLeaseHolder(result.AttemptLease, request.HolderID, request.RunAttemptGeneration) ||
+		result.Run.RunID != request.RunID || result.Run.SessionID != request.SessionID ||
+		result.RunAttempt.RunAttemptID != request.RunAttemptID || result.RunAttempt.RunID != request.RunID ||
+		result.Run.CurrentAttemptGeneration != request.RunAttemptGeneration ||
+		result.RunAttempt.Generation != request.RunAttemptGeneration || result.RunAttempt.HolderID != request.HolderID {
 		return RenewRunAttemptResult{}, errors.New("core renew response does not match the requested holder generation")
 	}
 	return result, nil
+}
+
+func (client *CoreClient) InterruptRunAttempt(ctx context.Context, request InterruptRunAttemptRequest) (InterruptRunAttemptResult, error) {
+	contractRequest := corecontract.InterruptRunAttemptRequest{
+		RunID: request.RunID, RunAttemptID: request.RunAttemptID, HolderID: request.HolderID,
+		RunAttemptGeneration: request.RunAttemptGeneration, ExpectedRunVersion: request.ExpectedRunVersion,
+		ExpectedRunAttemptVersion: request.ExpectedRunAttemptVersion, Reason: request.Reason,
+		Record: contractTransitionRecord(request.Record),
+	}
+	var response corecontract.InterruptRunAttemptResponse
+	if err := client.post(ctx, corecontract.InterruptRunAttemptPath(request.RunAttemptID), contractRequest, &response); err != nil {
+		return InterruptRunAttemptResult{}, err
+	}
+	result := InterruptRunAttemptResult{
+		Run: contractRun(response.Run), RunAttempt: contractRunAttempt(response.RunAttempt),
+		SessionVersion: response.SessionVersion, Changed: response.Changed,
+	}
+	if result.Run.RunID != request.RunID || result.RunAttempt.RunID != request.RunID ||
+		result.RunAttempt.RunAttemptID != request.RunAttemptID ||
+		result.Run.CurrentAttemptGeneration != request.RunAttemptGeneration ||
+		result.RunAttempt.Generation != request.RunAttemptGeneration || result.RunAttempt.HolderID != request.HolderID ||
+		result.Run.Status != "cancelled" || result.RunAttempt.Status != "interrupted" || result.SessionVersion < 1 {
+		return InterruptRunAttemptResult{}, errors.New("core interrupt response does not match the cancelled attempt identity")
+	}
+	return result, nil
+}
+
+func (client *CoreClient) AbandonRunAttempt(ctx context.Context, request AbandonRunAttemptRequest) (AbandonRunAttemptResult, error) {
+	contractRequest := corecontract.AbandonRunAttemptRequest{
+		RunID: request.RunID, RunAttemptID: request.RunAttemptID, HolderID: request.HolderID,
+		RunAttemptGeneration: request.RunAttemptGeneration, Reason: request.Reason,
+		Record: contractTransitionRecord(request.Record),
+	}
+	var response corecontract.AbandonRunAttemptResponse
+	if err := client.post(ctx, corecontract.AbandonRunAttemptPath(request.RunAttemptID), contractRequest, &response); err != nil {
+		return AbandonRunAttemptResult{}, err
+	}
+	result := AbandonRunAttemptResult{
+		Run: contractRun(response.Run), RunAttempt: contractRunAttempt(response.RunAttempt),
+		SessionVersion: response.SessionVersion, Disposition: response.Disposition, Changed: response.Changed,
+	}
+	if result.Run.RunID != request.RunID || result.RunAttempt.RunID != request.RunID ||
+		result.RunAttempt.RunAttemptID != request.RunAttemptID ||
+		result.Run.CurrentAttemptGeneration != request.RunAttemptGeneration ||
+		result.RunAttempt.Generation != request.RunAttemptGeneration || result.RunAttempt.HolderID != request.HolderID ||
+		result.SessionVersion < 1 || !validAbandonRunAttemptResult(result) {
+		return AbandonRunAttemptResult{}, errors.New("core abandon response does not match the stopped attempt identity")
+	}
+	return result, nil
+}
+
+func validAbandonRunAttemptResult(result AbandonRunAttemptResult) bool {
+	switch result.Disposition {
+	case "requeued":
+		return result.Run.Status == "queued" && result.RunAttempt.Status == "failed"
+	case "cancelled":
+		return result.Run.Status == "cancelled" &&
+			(result.RunAttempt.Status == "interrupted" || result.RunAttempt.Status == "failed")
+	default:
+		return false
+	}
 }
 
 func (client *CoreClient) MarkTurnAccepted(ctx context.Context, request MarkTurnAcceptedRequest) (MarkTurnAcceptedResult, error) {

@@ -50,6 +50,8 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 		ReleaseRunDispatchPath("{runDispatchId}"):                    "releaseRunDispatch",
 		ClaimRunAttemptPath:                                          "claimRunAttempt",
 		RenewRunAttemptPath("{runAttemptId}"):                        "renewRunAttempt",
+		InterruptRunAttemptPath("{runAttemptId}"):                    "interruptRunAttempt",
+		AbandonRunAttemptPath("{runAttemptId}"):                      "abandonRunAttempt",
 		MarkTurnAcceptedPath("{runAttemptId}"):                       "markTurnAccepted",
 		BeginRunFinalizationPath("{runAttemptId}"):                   "beginRunFinalization",
 		CommitCheckpointPath("{runAttemptId}"):                       "commitCheckpointAndTerminalRun",
@@ -104,6 +106,10 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "ClaimRunAttemptResponse", reflect.TypeFor[ClaimRunAttemptResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "RenewRunAttemptRequest", reflect.TypeFor[RenewRunAttemptRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "RenewRunAttemptResponse", reflect.TypeFor[RenewRunAttemptResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "InterruptRunAttemptRequest", reflect.TypeFor[InterruptRunAttemptRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "InterruptRunAttemptResponse", reflect.TypeFor[InterruptRunAttemptResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "AbandonRunAttemptRequest", reflect.TypeFor[AbandonRunAttemptRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "AbandonRunAttemptResponse", reflect.TypeFor[AbandonRunAttemptResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "MarkTurnAcceptedRequest", reflect.TypeFor[MarkTurnAcceptedRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "MarkTurnAcceptedResponse", reflect.TypeFor[MarkTurnAcceptedResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "BeginRunFinalizationRequest", reflect.TypeFor[BeginRunFinalizationRequest]())
@@ -202,12 +208,15 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 		t.Fatalf("public OpenAPI identity/security = %q / %+v", document.OpenAPI, document.Security)
 	}
 	createPath := CreateUserRunPath("{workspaceId}", "{sessionId}")
+	cancelPath := CancelUserRunPath("{workspaceId}", "{runId}")
 	readPath := ReadUserRunEventsPath("{workspaceId}", "{runId}")
-	if len(document.Paths) != 2 || document.Paths[createPath].Post.OperationID != "createUserRun" || document.Paths[readPath].Get.OperationID != "readUserRunEvents" {
+	if len(document.Paths) != 3 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
+		document.Paths[cancelPath].Post.OperationID != "cancelUserRun" || document.Paths[readPath].Get.OperationID != "readUserRunEvents" {
 		t.Fatalf("public OpenAPI paths = %+v", document.Paths)
 	}
 	assertSchemaFields(t, document.Components.Schemas, "CreateUserRunRequest", reflect.TypeFor[CreateUserRunRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "CreateUserRunResponse", reflect.TypeFor[CreateUserRunResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "CancelUserRunResponse", reflect.TypeFor[CancelUserRunResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "ReadUserRunEventsResponse", reflect.TypeFor[ReadUserRunEventsResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "UserRunSnapshot", reflect.TypeFor[UserRunSnapshot]())
 	assertSchemaFields(t, document.Components.Schemas, "UserRunCursorExpiredResponse", reflect.TypeFor[UserRunCursorExpiredResponse]())

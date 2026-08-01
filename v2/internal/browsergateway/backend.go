@@ -44,6 +44,22 @@ type ReadRunEventsResult struct {
 	NextCursor   string
 }
 
+type CancelRunRequest struct {
+	BearerToken string
+	WorkspaceID string
+	RunID       string
+}
+
+type CancelRunResult struct {
+	WorkspaceID string
+	SessionID   string
+	RunID       string
+	Status      string
+	RunVersion  int64
+	Terminal    bool
+	Changed     bool
+}
+
 // RunBackend is the only authority-facing surface used by browser-gateway.
 // Implementations create/idempotently recover a core run and long-poll only
 // already committed canonical events. There is intentionally no CancelRun
@@ -51,6 +67,13 @@ type ReadRunEventsResult struct {
 type RunBackend interface {
 	StartRun(context.Context, StartRunRequest) (StartRunResult, error)
 	ReadRunEvents(context.Context, ReadRunEventsRequest) (ReadRunEventsResult, error)
+}
+
+// RunCommandBackend is deliberately separate from the SSE backend contract:
+// dropping a projection request never invokes CancelRun. Only the explicit
+// authenticated command route may cross this boundary.
+type RunCommandBackend interface {
+	CancelRun(context.Context, CancelRunRequest) (CancelRunResult, error)
 }
 
 // CursorExpiredError carries an authorized state snapshot and a new canonical

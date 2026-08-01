@@ -1,5 +1,6 @@
 export const EVENT_CURSOR_NAME = 'agentserver.event_cursor'
 export const TOOL_PROGRESS_NAME = 'agentserver.tool_progress'
+export const RUN_STATUS_NAME = 'agentserver.run_status'
 export const A2UI_OPERATIONS_NAME = 'a2ui.operations'
 export const A2UI_VERSION = 'v0.9'
 export const A2UI_BASIC_CATALOG = 'https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json'
@@ -7,6 +8,10 @@ export const MAXIMUM_EVENT_STREAM_BYTES = 16 * 1024 * 1024
 
 const canonicalUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const maximumDiagnostics = 80
+
+export function isTerminalRunStatus(status) {
+  return status === 'completed' || status === 'failed' || status === 'cancelled'
+}
 
 export function validateScopeID(label, value) {
   if (typeof value !== 'string' || !canonicalUUID.test(value)) {
@@ -268,7 +273,7 @@ export function reduceAGUIEvent(state, event) {
       if (event.runId && next.runID && event.runId !== next.runID) throw new Error('RUN_ERROR escaped the active run')
       next = {
         ...next,
-        status: 'failed',
+        status: event.code === 'user_cancelled' || event.code === 'run.cancelled' ? 'cancelled' : 'failed',
         error: { code: typeof event.code === 'string' ? event.code : 'run_error', message: requireText('run error message', event.message) },
       }
       break
@@ -301,6 +306,14 @@ function reduceCustomEvent(state, event) {
         ...state,
         tools: updateByID(state.tools, value.toolCallId, 'tool call', (tool) => ({ ...tool, progress, status: 'running' })),
       }
+    }
+    case RUN_STATUS_NAME: {
+      const value = event.value
+      if (!isRecord(value) || value.status !== 'cancelling' || typeof value.runId !== 'string' ||
+          (state.runID && value.runId !== state.runID) || typeof value.code !== 'string' || typeof value.message !== 'string') {
+        throw new Error('invalid canonical run status payload')
+      }
+      return { ...state, status: 'cancelling', error: null }
     }
     case A2UI_OPERATIONS_NAME: {
       const applied = applyA2UIOperations(state.surfaces, state.surfaceOrder, event.value)

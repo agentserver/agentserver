@@ -40,20 +40,27 @@ type scriptKey struct {
 type scriptSession struct {
 	step        int
 	expiresAtMS int64
+	cancelHold  bool
 }
 
 type fixtureRuntime struct {
 	bundle *Bundle
 	now    func() time.Time
 
-	mu       sync.Mutex
-	sessions map[scriptKey]scriptSession
+	mu          sync.Mutex
+	sessions    map[scriptKey]scriptSession
+	holdEntered chan struct{}
 }
 
 type modelRequest struct {
 	model string
 	input []any
 	tools []any
+}
+
+type scriptedModelResponse struct {
+	body []byte
+	hold bool
 }
 
 func ServeBundle(ctx context.Context, bundleDirectory string, stdout io.Writer) error {
@@ -261,11 +268,21 @@ func (runtime *fixtureRuntime) serveLLMProxy(writer http.ResponseWriter, request
 		writeFixtureError(writer, http.StatusConflict, "scripted model sequence rejected")
 		return
 	}
+	if response.hold {
+		if runtime.holdEntered != nil {
+			select {
+			case runtime.holdEntered <- struct{}{}:
+			default:
+			}
+		}
+		<-request.Context().Done()
+		return
+	}
 	writer.Header().Set("Content-Type", "text/event-stream")
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.Header().Set("X-Content-Type-Options", "nosniff")
 	writer.WriteHeader(http.StatusOK)
-	_, _ = writer.Write(response)
+	_, _ = writer.Write(response.body)
 }
 
 func readModelRequest(writer http.ResponseWriter, request *http.Request) (modelRequest, error) {
@@ -304,7 +321,7 @@ func readModelRequest(writer http.ResponseWriter, request *http.Request) (modelR
 	return modelRequest{model: model, input: input, tools: tools}, nil
 }
 
-func (runtime *fixtureRuntime) nextResponse(claims runcapability.Claims, request modelRequest, now time.Time) ([]byte, error) {
+func (runtime *fixtureRuntime) nextResponse(claims runcapability.Claims, request modelRequest, now time.Time) (scriptedModelResponse, error) {
 	key := scriptKey{
 		capabilityID: claims.CapabilityID, runID: claims.RunID,
 		attemptID: claims.RunAttemptID, generation: claims.RunAttemptGeneration,
@@ -318,18 +335,18 @@ func (runtime *fixtureRuntime) nextResponse(claims runcapability.Claims, request
 	session, found := runtime.sessions[key]
 	if !found {
 		if len(runtime.sessions) >= maximumScriptSessions {
-			return nil, errors.New("scripted model session bound reached")
+			return scriptedModelResponse{}, errors.New("scripted model session bound reached")
 		}
 		session = scriptSession{expiresAtMS: claims.ExpiresAtUnixMS}
 	}
 	if session.expiresAtMS != claims.ExpiresAtUnixMS {
-		return nil, errors.New("scripted model capability identity changed authority")
+		return scriptedModelResponse{}, errors.New("scripted model capability identity changed authority")
 	}
 	switch session.step {
 	case 0:
 		if countNamespacedTool(request.tools, runtime.bundle.document.LLMProxy.ToolNamespace, runtime.bundle.document.LLMProxy.ScriptedTool) != 1 ||
 			countNamespacedTool(request.tools, runtime.bundle.document.LLMProxy.ToolNamespace, ScriptedShellName) != 1 {
-			return nil, errors.New("scripted list_environments and shell tools are not both present exactly once")
+			return scriptedModelResponse{}, errors.New("scripted list_environments and shell tools are not both present exactly once")
 		}
 		response, err := namespacedFunctionCall(
 			"response-dev-list-"+fragment, listCallID,
@@ -337,15 +354,16 @@ func (runtime *fixtureRuntime) nextResponse(claims runcapability.Claims, request
 			runtime.bundle.document.LLMProxy.ScriptedTool, `{}`,
 		)
 		if err != nil {
-			return nil, err
+			return scriptedModelResponse{}, err
 		}
 		session.step = 1
+		session.cancelHold = containsCancellationHoldMarker(request.input)
 		runtime.sessions[key] = session
-		return response, nil
+		return scriptedModelResponse{body: response}, nil
 	case 1:
 		environmentID, err := environmentIDFromFunctionOutput(request.input, listCallID)
 		if err != nil {
-			return nil, fmt.Errorf("validate scripted list_environments result: %w", err)
+			return scriptedModelResponse{}, fmt.Errorf("validate scripted list_environments result: %w", err)
 		}
 		arguments, err := json.Marshal(struct {
 			EnvironmentID string   `json:"environment_id"`
@@ -353,7 +371,7 @@ func (runtime *fixtureRuntime) nextResponse(claims runcapability.Claims, request
 			TimeoutMS     int      `json:"timeout_ms"`
 		}{EnvironmentID: environmentID, Argv: []string{"/bin/pwd"}, TimeoutMS: 10_000})
 		if err != nil {
-			return nil, fmt.Errorf("encode scripted shell arguments: %w", err)
+			return scriptedModelResponse{}, fmt.Errorf("encode scripted shell arguments: %w", err)
 		}
 		response, err := namespacedFunctionCall(
 			"response-dev-shell-"+fragment, shellCallID,
@@ -361,28 +379,51 @@ func (runtime *fixtureRuntime) nextResponse(claims runcapability.Claims, request
 			ScriptedShellName, string(arguments),
 		)
 		if err != nil {
-			return nil, err
+			return scriptedModelResponse{}, err
 		}
 		session.step = 2
 		runtime.sessions[key] = session
-		return response, nil
+		return scriptedModelResponse{body: response}, nil
 	case 2:
 		if err := validateSuccessfulShellFunctionOutput(request.input, shellCallID); err != nil {
-			return nil, fmt.Errorf("validate scripted shell result: %w", err)
+			return scriptedModelResponse{}, fmt.Errorf("validate scripted shell result: %w", err)
+		}
+		session.step = 3
+		runtime.sessions[key] = session
+		if session.cancelHold {
+			return scriptedModelResponse{hold: true}, nil
 		}
 		response, err := assistantMessage(
 			"response-dev-final-"+fragment, "message-dev-final-"+fragment,
 			runtime.bundle.document.LLMProxy.FinalMessage,
 		)
 		if err != nil {
-			return nil, err
+			return scriptedModelResponse{}, err
 		}
-		session.step = 3
-		runtime.sessions[key] = session
-		return response, nil
+		return scriptedModelResponse{body: response}, nil
 	default:
-		return nil, errors.New("scripted model sequence is exhausted")
+		return scriptedModelResponse{}, errors.New("scripted model sequence is exhausted")
 	}
+}
+
+func containsCancellationHoldMarker(value any) bool {
+	switch typed := value.(type) {
+	case string:
+		return strings.Contains(typed, CancellationHoldMarker)
+	case []any:
+		for _, child := range typed {
+			if containsCancellationHoldMarker(child) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, child := range typed {
+			if containsCancellationHoldMarker(child) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func environmentIDFromFunctionOutput(input []any, callID string) (string, error) {

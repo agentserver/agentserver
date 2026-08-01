@@ -22,6 +22,7 @@ import (
 
 const (
 	AGUIRoutePattern       = "POST /v2/workspaces/{workspaceId}/sessions/{sessionId}/agui"
+	CancelRoutePattern     = "POST /v2/workspaces/{workspaceId}/runs/{runAction}"
 	EventCursorCustomName  = "agentserver.event_cursor"
 	defaultMaxRequestBytes = int64(1024 * 1024)
 	defaultPollLimit       = 128
@@ -50,14 +51,19 @@ func DefaultHandlerConfig() HandlerConfig {
 }
 
 type AGUIHandler struct {
-	backend RunBackend
-	config  HandlerConfig
-	writer  *sse.SSEWriter
+	backend  RunBackend
+	commands RunCommandBackend
+	config   HandlerConfig
+	writer   *sse.SSEWriter
 }
 
 func NewAGUIHandler(backend RunBackend, config HandlerConfig) (*AGUIHandler, error) {
 	if backend == nil {
 		return nil, errors.New("run backend is required")
+	}
+	commands, ok := backend.(RunCommandBackend)
+	if !ok {
+		return nil, errors.New("explicit run command backend is required")
 	}
 	if config.MaxRequestBytes <= 0 || config.MaxRequestBytes > 16*1024*1024 {
 		return nil, errors.New("maximum AG-UI request bytes must be positive and at most 16 MiB")
@@ -75,19 +81,28 @@ func NewAGUIHandler(backend RunBackend, config HandlerConfig) (*AGUIHandler, err
 		return nil, errors.New("logger is required")
 	}
 	return &AGUIHandler{
-		backend: backend,
-		config:  config,
-		writer:  sse.NewSSEWriter().WithLogger(config.Logger),
+		backend: backend, commands: commands, config: config,
+		writer: sse.NewSSEWriter().WithLogger(config.Logger),
 	}, nil
 }
 
 func (handler *AGUIHandler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle(AGUIRoutePattern, handler)
+	mux.Handle(CancelRoutePattern, handler)
 	return mux
 }
 
 func (handler *AGUIHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
+	if runAction := request.PathValue("runAction"); runAction != "" {
+		runID, ok := strings.CutSuffix(runAction, ":cancel")
+		if ok && runID != "" {
+			handler.cancel(response, request, request.PathValue("workspaceId"), runID)
+			return
+		}
+		writeHTTPError(response, http.StatusNotFound, "not_found", "run command endpoint not found")
+		return
+	}
 	if _, ok := response.(http.Flusher); !ok {
 		writeHTTPError(response, http.StatusInternalServerError, "streaming_unsupported", "HTTP response does not support streaming")
 		return
@@ -179,6 +194,53 @@ func (handler *AGUIHandler) ServeHTTP(response http.ResponseWriter, request *htt
 		return
 	}
 	handler.streamCommittedEvents(request.Context(), response, bearer, started, projector)
+}
+
+func (handler *AGUIHandler) cancel(response http.ResponseWriter, request *http.Request, workspaceID, runID string) {
+	if request.Method != http.MethodPost || request.URL.RawQuery != "" || request.ContentLength != 0 || len(request.TransferEncoding) != 0 {
+		writeHTTPError(response, http.StatusBadRequest, "invalid_cancel_request", "cancel requires POST with an empty body and no query parameters")
+		return
+	}
+	if err := validateCanonicalUUID("workspaceId", workspaceID); err != nil {
+		writeHTTPError(response, http.StatusBadRequest, "invalid_scope", err.Error())
+		return
+	}
+	if err := validateCanonicalUUID("runId", runID); err != nil {
+		writeHTTPError(response, http.StatusBadRequest, "invalid_scope", err.Error())
+		return
+	}
+	bearer, err := extractBearer(request.Header)
+	if err != nil {
+		response.Header().Set("WWW-Authenticate", `Bearer realm="agentserver-api"`)
+		writeHTTPError(response, http.StatusUnauthorized, "unauthorized", "a single bearer token is required")
+		return
+	}
+	result, err := handler.commands.CancelRun(request.Context(), CancelRunRequest{
+		BearerToken: bearer, WorkspaceID: workspaceID, RunID: runID,
+	})
+	if err != nil {
+		handler.writeCommandError(response, request, err)
+		return
+	}
+	if err := validateCancelResult(result, workspaceID, runID); err != nil {
+		handler.config.Logger.ErrorContext(request.Context(), "browser-gateway received invalid CancelRun result", "error", err)
+		writeHTTPError(response, http.StatusBadGateway, "backend_contract_error", "run backend returned an invalid cancel result")
+		return
+	}
+	response.Header().Set("Content-Type", "application/json")
+	response.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(response).Encode(struct {
+		WorkspaceID string `json:"workspaceId"`
+		SessionID   string `json:"sessionId"`
+		RunID       string `json:"runId"`
+		Status      string `json:"status"`
+		RunVersion  int64  `json:"runVersion"`
+		Terminal    bool   `json:"terminal"`
+		Changed     bool   `json:"changed"`
+	}{
+		WorkspaceID: result.WorkspaceID, SessionID: result.SessionID, RunID: result.RunID,
+		Status: result.Status, RunVersion: result.RunVersion, Terminal: result.Terminal, Changed: result.Changed,
+	})
 }
 
 func (handler *AGUIHandler) streamCommittedEvents(ctx context.Context, response http.ResponseWriter, bearer string, started StartRunResult, projector *Projector) {
@@ -297,6 +359,19 @@ func (handler *AGUIHandler) writeStartError(response http.ResponseWriter, err er
 		return
 	}
 	handler.config.Logger.Error("browser-gateway StartRun failed", "error", err)
+	writeHTTPError(response, http.StatusBadGateway, "run_backend_unavailable", "run backend is unavailable")
+}
+
+func (handler *AGUIHandler) writeCommandError(response http.ResponseWriter, request *http.Request, err error) {
+	var public *BackendHTTPError
+	if errors.As(err, &public) && validBackendHTTPError(public) {
+		if public.Status == http.StatusUnauthorized {
+			response.Header().Set("WWW-Authenticate", `Bearer realm="agentserver-api"`)
+		}
+		writeHTTPError(response, public.Status, public.Code, public.Message, public.CurrentRunID)
+		return
+	}
+	handler.config.Logger.ErrorContext(request.Context(), "browser-gateway run command failed", "error", err)
 	writeHTTPError(response, http.StatusBadGateway, "run_backend_unavailable", "run backend is unavailable")
 }
 
@@ -492,6 +567,22 @@ func validateStartResult(result StartRunResult, workspaceID, sessionID string) e
 		return errors.New("StartRun last event sequence is outside the JSON-safe range")
 	}
 	return validateCursor("StartRun cursor", result.Cursor)
+}
+
+func validateCancelResult(result CancelRunResult, workspaceID, runID string) error {
+	if result.WorkspaceID != workspaceID || result.RunID != runID {
+		return errors.New("CancelRun result escaped request scope")
+	}
+	if err := validateCanonicalUUID("sessionId", result.SessionID); err != nil {
+		return err
+	}
+	if result.RunVersion < 1 || result.RunVersion >= 1<<53-1 {
+		return errors.New("CancelRun version is outside the JSON-safe range")
+	}
+	if !validCancelRunStatus(result.Status) || result.Terminal != terminalCancelRunStatus(result.Status) {
+		return errors.New("CancelRun status and terminal flag disagree")
+	}
+	return nil
 }
 
 func validateEventBatch(batch ReadRunEventsResult, previousCursor string, maximumEvents int) error {

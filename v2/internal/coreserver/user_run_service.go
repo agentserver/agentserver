@@ -22,6 +22,7 @@ const maxUserRunPromptBytes = 256 * 1024
 type UserRunStateStore interface {
 	AuthorizeRunSession(context.Context, string, string, string) (coredb.AuthorizedSession, error)
 	CreateAuthorizedRun(context.Context, coredb.CreateRunCommand) (coredb.CreateRunResult, error)
+	CancelRun(context.Context, coredb.CancelRunCommand) (coredb.CancelRunResult, error)
 	ReadAuthorizedRunEvents(context.Context, coredb.ReadAuthorizedRunEventsCommand) (coredb.ReadAuthorizedRunEventsResult, error)
 }
 
@@ -81,6 +82,12 @@ type ReadUserRunEventsQuery struct {
 	After       string
 	Limit       int
 	Wait        time.Duration
+}
+
+type CancelUserRunCommand struct {
+	ActorID     string
+	WorkspaceID string
+	RunID       string
 }
 
 type UserRunCursorExpiredError struct {
@@ -167,6 +174,45 @@ func (service *UserRunService) CreateUserRun(ctx context.Context, command Create
 	return corecontract.CreateUserRunResponse{
 		WorkspaceID: created.Run.WorkspaceID, SessionID: created.Run.SessionID, RunID: created.Run.ID,
 		CreatedAt: created.Run.CreatedAt, Cursor: cursor, LastEventSequence: 1, Created: created.Created,
+	}, nil
+}
+
+func (service *UserRunService) CancelUserRun(ctx context.Context, command CancelUserRunCommand) (corecontract.CancelUserRunResponse, error) {
+	if err := validateCancelUserRunCommand(command); err != nil {
+		return corecontract.CancelUserRunResponse{}, publicRunStateError(coredb.ErrorInvalidArgument, "CancelUserRun", "run", command.RunID, err.Error())
+	}
+	identities := make([]string, 3)
+	seen := make(map[string]struct{}, len(identities))
+	for index := range identities {
+		identity, err := service.newID()
+		if err != nil {
+			return corecontract.CancelUserRunResponse{}, fmt.Errorf("allocate cancel transition identity: %w", err)
+		}
+		if _, duplicate := seen[identity]; duplicate {
+			return corecontract.CancelUserRunResponse{}, errors.New("cancel identity generator returned a duplicate identity")
+		}
+		seen[identity] = struct{}{}
+		identities[index] = identity
+	}
+	result, err := service.store.CancelRun(ctx, coredb.CancelRunCommand{
+		WorkspaceID: command.WorkspaceID, RunID: command.RunID, ActorID: command.ActorID,
+		Record: coredb.TransitionRecord{
+			EventID: identities[0], ProducerInstanceID: identities[1], ProducerSeq: 1, OutboxID: identities[2],
+		},
+	})
+	if err != nil {
+		return corecontract.CancelUserRunResponse{}, err
+	}
+	if result.Run.WorkspaceID != command.WorkspaceID || result.Run.ID != command.RunID ||
+		result.Run.SessionID == "" || !cancelRunResponseStatus(result.Run.Status) ||
+		result.Run.Version < 1 || result.Run.Version >= 1<<53-1 ||
+		result.SessionVersion < 1 || result.SessionVersion >= 1<<53-1 {
+		return corecontract.CancelUserRunResponse{}, errors.New("core state store returned an invalid cancelled run scope")
+	}
+	return corecontract.CancelUserRunResponse{
+		WorkspaceID: result.Run.WorkspaceID, SessionID: result.Run.SessionID, RunID: result.Run.ID,
+		Status: result.Run.Status, RunVersion: result.Run.Version,
+		Terminal: terminalRunStatus(result.Run.Status), Changed: result.Changed,
 	}, nil
 }
 
@@ -318,6 +364,17 @@ func validateCreateUserRunCommand(command CreateUserRunCommand) error {
 	return nil
 }
 
+func validateCancelUserRunCommand(command CancelUserRunCommand) error {
+	for field, value := range map[string]string{
+		"actorId": command.ActorID, "workspaceId": command.WorkspaceID, "runId": command.RunID,
+	} {
+		if !canonicalPublicUUID(value) {
+			return fmt.Errorf("%s must be a non-zero canonical lowercase UUID", field)
+		}
+	}
+	return nil
+}
+
 func validateReadUserRunEventsQuery(query ReadUserRunEventsQuery) error {
 	for field, value := range map[string]string{"actorId": query.ActorID, "workspaceId": query.WorkspaceID, "runId": query.RunID} {
 		if !canonicalPublicUUID(value) {
@@ -408,6 +465,10 @@ func knownRunStatus(status string) bool {
 	default:
 		return false
 	}
+}
+
+func cancelRunResponseStatus(status string) bool {
+	return status == coredb.RunStatusCancelling || terminalRunStatus(status)
 }
 
 func publicRunStateError(code coredb.StateErrorCode, operation, resource, resourceID, message string) error {

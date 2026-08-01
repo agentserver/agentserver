@@ -24,6 +24,20 @@ type CreateUserRunResponse struct {
 	Created           bool      `json:"created"`
 }
 
+// CancelUserRunResponse reports the authoritative run state after an explicit
+// user cancel command. Terminal is true only after Core has made the session
+// available for another run; a cancelling response means the live holder must
+// still interrupt and fence its attempt.
+type CancelUserRunResponse struct {
+	WorkspaceID string `json:"workspaceId"`
+	SessionID   string `json:"sessionId"`
+	RunID       string `json:"runId"`
+	Status      string `json:"status"`
+	RunVersion  int64  `json:"runVersion"`
+	Terminal    bool   `json:"terminal"`
+	Changed     bool   `json:"changed"`
+}
+
 type ReadUserRunEventsResponse struct {
 	Events            []runevent.Event `json:"events"`
 	EventCursors      []string         `json:"eventCursors"`
@@ -62,4 +76,8 @@ func CreateUserRunPath(workspaceID, sessionID string) string {
 
 func ReadUserRunEventsPath(workspaceID, runID string) string {
 	return PublicRunPathPrefix + workspaceID + "/runs/" + runID + "/events"
+}
+
+func CancelUserRunPath(workspaceID, runID string) string {
+	return PublicRunPathPrefix + workspaceID + "/runs/" + runID + ":cancel"
 }

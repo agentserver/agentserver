@@ -29,6 +29,24 @@
         }
       }
     },
+    "/v2/workspaces/{workspaceId}/runs/{runId}:cancel": {
+      "parameters": [
+        {"$ref": "#/components/parameters/WorkspaceId"},
+        {"$ref": "#/components/parameters/RunId"}
+      ],
+      "post": {
+        "operationId": "cancelUserRun",
+        "description": "Explicitly requests cancellation. Queued runs become terminal atomically; a live attempt first becomes cancelling and reaches cancelled only after its exact holder confirms bounded interruption cleanup.",
+        "responses": {
+          "200": {"description": "Authoritative cancelling or terminal run state", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CancelUserRunResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
     "/v2/workspaces/{workspaceId}/runs/{runId}/events": {
       "parameters": [
         {"$ref": "#/components/parameters/WorkspaceId"},
@@ -91,6 +109,19 @@
           "cursor": {"type": "string", "minLength": 1, "maxLength": 4096},
           "lastEventSequence": {"type": "integer", "minimum": 1, "maximum": 9007199254740990},
           "created": {"type": "boolean"}
+        }
+      },
+      "CancelUserRunResponse": {
+        "type": "object", "additionalProperties": false,
+        "required": ["workspaceId", "sessionId", "runId", "status", "runVersion", "terminal", "changed"],
+        "properties": {
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "sessionId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "status": {"type": "string", "enum": ["cancelling", "completed", "failed", "interrupted", "cancelled"]},
+          "runVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740990},
+          "terminal": {"type": "boolean"},
+          "changed": {"type": "boolean"}
         }
       },
       "ReadUserRunEventsResponse": {

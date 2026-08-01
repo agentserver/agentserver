@@ -17,6 +17,7 @@ import (
 
 const (
 	CreateUserRunRoutePattern     = "POST /v2/workspaces/{workspaceId}/sessions/{sessionId}/runs"
+	CancelUserRunRoutePattern     = "POST /v2/workspaces/{workspaceId}/runs/{runAction}"
 	ReadUserRunEventsRoutePattern = "GET /v2/workspaces/{workspaceId}/runs/{runId}/events"
 	maxPublicRunRequestBytes      = int64(512 * 1024)
 	defaultPublicEventLimit       = 128
@@ -34,6 +35,7 @@ type UserTokenAuthorizer interface {
 
 type UserRunCommands interface {
 	CreateUserRun(context.Context, CreateUserRunCommand) (corecontract.CreateUserRunResponse, error)
+	CancelUserRun(context.Context, CancelUserRunCommand) (corecontract.CancelUserRunResponse, error)
 	ReadUserRunEvents(context.Context, ReadUserRunEventsQuery) (corecontract.ReadUserRunEventsResponse, error)
 }
 
@@ -53,6 +55,7 @@ func NewUserRunHandler(workload WorkloadAuthorizer, users UserTokenAuthorizer, c
 func (handler *UserRunHandler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle(CreateUserRunRoutePattern, handler)
+	mux.Handle(CancelUserRunRoutePattern, handler)
 	mux.Handle(ReadUserRunEventsRoutePattern, handler)
 	return mux
 }
@@ -64,11 +67,37 @@ func (handler *UserRunHandler) ServeHTTP(response http.ResponseWriter, request *
 		handler.create(response, request, workspaceID, request.PathValue("sessionId"))
 		return
 	}
+	if request.Method == http.MethodPost && request.PathValue("runAction") != "" && request.PathValue("sessionId") == "" {
+		runID, ok := strings.CutSuffix(request.PathValue("runAction"), ":cancel")
+		if ok && runID != "" {
+			handler.cancel(response, request, workspaceID, runID)
+			return
+		}
+	}
 	if request.Method == http.MethodGet && request.PathValue("runId") != "" && request.PathValue("sessionId") == "" {
 		handler.readEvents(response, request, workspaceID, request.PathValue("runId"))
 		return
 	}
 	writePublicRunError(response, http.StatusNotFound, "not_found", "user run endpoint not found", "")
+}
+
+func (handler *UserRunHandler) cancel(response http.ResponseWriter, request *http.Request, workspaceID, runID string) {
+	actorID, ok := handler.authorize(response, request, "runs.cancel")
+	if !ok {
+		return
+	}
+	if request.URL.RawQuery != "" || request.ContentLength != 0 || len(request.TransferEncoding) != 0 {
+		writePublicRunError(response, http.StatusBadRequest, "invalid_argument", "cancel requires an empty request without query parameters", "")
+		return
+	}
+	result, err := handler.commands.CancelUserRun(request.Context(), CancelUserRunCommand{
+		ActorID: actorID, WorkspaceID: workspaceID, RunID: runID,
+	})
+	if err != nil {
+		handler.writeServiceError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
 }
 
 func (handler *UserRunHandler) create(response http.ResponseWriter, request *http.Request, workspaceID, sessionID string) {

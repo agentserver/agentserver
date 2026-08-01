@@ -36,11 +36,12 @@ const (
 	RelativeLLMProxyCertificate    = "pki/llmproxy.crt"
 	RelativeLLMProxyPrivateKey     = "pki/llmproxy.key"
 
-	BrowserTokenAudience = "agentserver-api"
-	BrowserTokenScope    = "runs:write"
-	ToolNamespace        = "executor"
-	ScriptedToolName     = "list_environments"
-	ScriptedShellName    = "shell"
+	BrowserTokenAudience   = "agentserver-api"
+	BrowserTokenScope      = "runs:write"
+	ToolNamespace          = "executor"
+	ScriptedToolName       = "list_environments"
+	ScriptedShellName      = "shell"
+	CancellationHoldMarker = "[agentserver-dev-cancel-hold]"
 
 	maximumConfigBytes = int64(128 * 1024)
 	maximumSecretBytes = int64(32 * 1024)

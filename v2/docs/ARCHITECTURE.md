@@ -228,7 +228,7 @@ stock app-server 访问 llmproxy 所需的短期 capability 优先通过 tmpfs/�
 9. 收到 `turn/completed` 后，run 先进入 `finalizing`，但该 notification不是统一的 transport cleanup barrier。worker按 request 类型清理：已回复的 `item/tool/call` 以对应 JSON-RPC response 写入完成为准；未回复的 dynamic call 以所属 turn terminal 为准，并同时取消 worker→MCP 请求；只有 app-server 明确定义会发 resolved 的其他 server request 才等待 `serverRequest/resolved`。worker还要确认 execution/process收口，随后才关闭 app-server stdin并等待优雅退出。只有 child 在有界时间内确认退出后，worker才能在terminal中附带由app-server thread response得到、且已按`CODEX_HOME`做纯路径包含校验的rollout locator；若等待超时，worker不得用failed terminal冒充清理屏障，而应断开control并退出，由holder回收和核验整个进程组，当前已接受turn按crash语义进入interrupted。holder确认整个进程组停止后，pool的受信本地finalizer才以pinned allowlist和安全`openat2`边界读取app UID私有rollout、生成checkpoint manifest；worker不持有读该树的DAC能力。SQLite 主库及其 WAL/SHM 等运行时派生文件不进入 checkpoint。harness-pool 先上传加密对象，再由 core 以 CAS 在同一状态事务中提交 checkpoint 指针与 run terminal event；未提交的对象由后台清理。
 10. harness-pool确认worker/app-server进程组已退出后完成checkpoint finalization；core确认terminal state和checkpoint后，pool才删除本次attempt临时目录。mid-turn crash不生成可恢复checkpoint，也不能继续原turn。
 
-浏览器断开不自动取消 run。取消必须通过显式 API/action，并产生规范事件；重新连接使用 cursor 继续读取。
+浏览器断开不自动取消 run。取消必须通过`POST /v2/workspaces/{workspaceId}/runs/{runId}:cancel`显式发起，并产生规范事件；重新连接使用cursor继续读取。尚无holder的queued run在授权事务中直接进入`cancelled`。已有attempt时先写`run.cancelling`，holder通过成对lease heartbeat观察该状态，取消MCP并interrupt stock turn，同时在整个workload/process cleanup期间继续续租。turn/MCP runtime context与control/lifecycle command context必须分离：取消只立即结束前者；worker control必须活到`turn_terminal(interrupted)`获得累计ACK，pool lifecycle authority则必须和heartbeat一起活到supervisor确认workload cleanup完成，使terminal前已经接收的runtime fact仍能同步提交core。只有exact live holder确认typed callback、execution和进程组已经收口后，core才原子写`run.cancelled`、清session active run并删除双lease。browser-gateway将中间态投影为`CUSTOM agentserver.run_status`，将终态投影为`RUN_ERROR code=user_cancelled`。
 
 Phase 1 在一个 session 已有 active run 时不接受第二个新 run，返回带当前 `run_id` 的 `409 active_run`；不隐式映射为 `turn/steer`。未来支持 steer 时必须新增显式 API、绑定 `expected_turn_id` 并进入同一 fencing/审计链路。
 
@@ -249,14 +249,14 @@ WSS/session 恢复只恢复 gateway ↔ agentx 通道，不能恢复已断开的
 
 ### 6.3 故障与恢复
 
-- harness attempt 进程在 app-server 接受 `turn/start` 之前失败，可以从最近 completed-turn checkpoint 创建新的 run attempt；旧 attempt 被 fence。`turn/start` 一旦被接受，任何 worker/app-server mid-turn crash 都使当前 run 进入 `interrupted`，即使尚未 dispatch executor 副作用也不能自动重跑该 turn；这避免重复模型调用和已流式输出分叉。
+- harness attempt进程在app-server接受`turn/start`之前失败时，holder必须先确认本地workload已经停止，再在双lease仍live时调用`AbandonAttempt`。core持run锁原子仲裁：普通startup failure执行`attempt → failed`、`run: starting → queued`并删除双lease，允许原dispatch释放后立即重领；若显式cancel已先进入`cancelling`，则执行`attempt → interrupted`、`run → cancelled`、清session active run并删除双lease。若abandon先提交，随后cancel会直接终止无holder的queued run。不能用“观察状态后再release”的两步协议，否则两步之间的cancel可能永久停在`cancelling`。`turn/start`一旦被接受，任何worker/app-server mid-turn crash都使当前run进入`interrupted`，即使尚未dispatch executor副作用也不能自动重跑该turn；这避免重复模型调用和已流式输出分叉。
 - 一旦 execution 已进入 `dispatching`，harness/gateway 崩溃后不得自动重放；run 标记为 `interrupted`，无法从 agentx journal/core terminal record确认的 execution 标记为 `unknown`，由用户决定下一步。
 - harness-worker 与 harness-pool 的 control stream 短时断开时，worker 只做有界事件缓冲且不接受新的控制决策；approval 一律失败关闭。grace period 到期、缓冲溢出、ACK 出现不可恢复缺口或 lease 无法确认时，worker 调 `turn/interrupt` 并终止 app-server。重连必须携带 attempt generation 和 producer ACK，旧 generation 的消息全部丢弃。
 - agentx 与 gateway 短时断线时，agentx 保持所有活跃 stdio pipes/exec-server instances 存活，并用 `exec_session_id` 与外层 sequence/ACK 恢复；Phase 1 默认 grace period 为 30 秒。
 - grace period 到期后，agentx 主动关闭每个活跃 process独占的 stdio instance。upstream connection shutdown会尝试终止该 instance唯一的 managed process；已确认退出的 process正常收口，未收到终态的 execution标记为 `unknown`，绝不自动重新执行。
 - exec-server 自身崩溃时不能假定孙进程随之退出。agentx 必须把 exec-server 及其后代放入可整体回收的 cgroup/process group/job object，异常时执行 kill-tree 并核对结果；在确认前 execution 为 `unknown`。
 - 每次 stdio 断开或 child 退出都使对应 `local_exec_instance_id` 失效；gateway 不能把旧 process handle绑定到新子进程。
-- 显式 cancel先将 run置为 `cancelling`，由 harness-pool向当前 generation的worker发送 `turn/interrupt`；worker取消未完成的MCP请求，gateway/agentx对所有 run-scoped process发terminate。收到app-server `turn/completed(interrupted)`、所有dynamic callback按“response已写入或所属turn已terminal”清理、其他需resolved的server request已清空且进程退出确认后才能记为 `cancelled`；未确认的execution记为 `unknown`。
+- 显式cancel先将有holder的run置为`cancelling`，由harness-pool通过heartbeat观察后向当前generation的worker发送`turn/interrupt`；worker取消未完成的MCP请求，gateway/agentx对所有run-scoped process发terminate。cleanup期间holder继续成对续租，避免另一副本接管尚未停止的workload。收到app-server `turn/completed(interrupted)`、所有dynamic callback按“response已写入或所属turn已terminal”清理、其他需resolved的server request已清空且进程退出确认后，exact holder才调用`InterruptAttempt`记为`cancelled`；未确认的execution记为`unknown`。若cancel与已进入finalizing的自然完成竞态，先提交的权威边界决定结果：completed已经提交则cancel为terminal幂等读取；cancel先提交则不得再产生checkpoint。
 - 正常完成 run 前也必须确认所有 process 已 closed，或显式 terminate 并收到确认。存在未确认 process 时 run 进入 `interrupted`，不能记为 `completed`。
 
 ## 7. Harness 设计
@@ -725,8 +725,8 @@ users ──< workspace_members >── workspaces
 
 关键状态机：
 
-- run：`queued → starting|cancelled`；`starting → running|failed|cancelled|interrupted`；`running → finalizing|failed|cancelling|interrupted`；`cancelling → finalizing|cancelled|failed|interrupted`；`finalizing → completed|cancelled|failed|interrupted`。`finalizing` 覆盖 child 优雅退出、process 收口、checkpoint 上传和 CAS 提交；这些步骤完成前不能对外宣布 completed。cancel 与自然完成竞态时允许以已确认的真实 terminal result 收口，不能强行覆盖为 cancelled；
-- run attempt：`created → leased → starting → running → finalizing → succeeded|failed|interrupted|fenced`。只有旧 attempt 尚未让 app-server 接受 `turn/start` 时才可自动创建新 attempt；任何 mid-turn 失败都使 run 进入 `interrupted`；
+- run：`queued → starting|cancelled`；`starting → queued|running|cancelling|failed|interrupted`；`running → finalizing|failed|cancelling|interrupted`；`cancelling → finalizing|cancelled|failed|interrupted`；`finalizing → completed|cancelled|failed|interrupted|cancelling`。`starting → queued`只允许exact holder在workload已停止后通过原子`AbandonAttempt`重排；不是普通错误回退。`finalizing`覆盖child优雅退出、process收口、checkpoint上传和CAS提交；这些步骤完成前不能对外宣布completed。cancel与自然完成竞态由先提交的权威状态决定，不能用迟到意图覆盖已经确认的terminal；
+- run attempt：主路径为`created → leased → starting → running → finalizing → succeeded|failed|interrupted|fenced`；pre-turn abandon允许`leased|starting → failed`（requeue）或`leased|starting → interrupted`（并发cancel），已接受turn的取消允许`running|finalizing → interrupted`。只有旧attempt尚未让app-server接受`turn/start`且workload已确认停止时才可创建新attempt；任何mid-turn失败都使run进入`interrupted`；
 - execution：`created → pending_approval|approved|denied|cancelled`；`pending_approval → approved|denied|expired|cancelled`；`approved → dispatching|expired|cancelled`；`dispatching → running|failed|cancelling|unknown`；`running → succeeded|failed|cancelling|unknown`；`cancelling → cancelled|succeeded|failed|unknown`。跨过 `dispatching` 后，只有收到 agentx/child 的确定拒绝或退出确认才能记为 `failed|cancelled`，否则必须为 `unknown`；
 - execution operation：一次 execution 的每个确定性 RPC/副作用步骤各有一行，例如 process start、stdin write、timeout terminate 或条件写。execution先冻结`operation_count`，全部`1..operation_count` ordinal必须在首次dispatch前持久化；已发送分支为`prepared → dispatching → acknowledged → succeeded|failed|cancelled|unknown`，其中未收到ACK的`dispatching`只能直接进入`unknown`。未触发的条件步骤必须走显式非发送分支；首版只允许冻结计划末尾的`timeout_terminate`在全部前序operation terminal后从`prepared → skipped`，并保持connection generation、dispatch时间和ACK为空。`skipped`只作为execution聚合的中性终态，任何其他残留`prepared`都阻止execution terminal。每行拥有独立`mutation_key`、参数hash和effect class。execution只是MCP工具级聚合，不能用一个mutation key覆盖多个可独立发生的副作用；
 - approval：`pending → approved|denied|expired|cancelled`；`approved → consumed|expired|cancelled`。只有未过期的 approved 可通过唯一 CAS 进入 `consumed`，消费时同时推进对应 execution；
@@ -832,6 +832,7 @@ agentx 的实现不放入上述 Go module。`github.com/agentserver/agentx` v2 �
 | D21 | worker MCP reference profile固定`2025-11-25` stateful；其他协商版本在catalog读取前拒绝 | 当前approval依赖`tools/call`内的server-originated `elicitation/create`，official SDK的新stateless profile不能承载该反向请求；协议升级必须连同approval transport重新设计和门禁 |
 | D22 | `process-v1/shell-v1`固定clean-env与managed/restricted sandbox，stock可选proxy启动字段由agentx本地受信策略生成 | 双手只执行确定性任务；远端不能恢复ambient env、选择任意proxy或借upstream新增字段扩大能力 |
 | D23 | filesystem read使用组合profile和一次性fs-only `open(null) → readBlock → close`，远端不开放stock handle或`fs/readFile` | stock流式读取不支持platform sandbox；有界outer请求、agentx双重root复核与runner containment共同形成可审计边界 |
+| D24 | run cancel采用`cancelling`两阶段协议；pre-turn停止用`AbandonAttempt`在run锁内仲裁requeue/cancel | API调用不能证明远端workload已经停止；原子交接消除“最后观察”与holder释放之间的竞态，并让session、双lease、event/outbox一致收口 |
 
 ## 15. 设计审查结论与实现门槛
 

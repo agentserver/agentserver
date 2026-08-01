@@ -86,6 +86,7 @@ func TestOneShotWorkerTurnsHolderInterruptIntoOneBoundedAppServerInterrupt(t *te
 	accepted := make(chan struct{})
 	fixture.runner.accepted = accepted
 	fixture.runner.waitForCancellation = true
+	fixture.control.requireLiveStartContextThroughTerminal = true
 	go func() {
 		<-accepted
 		fixture.control.interrupts <- harnesscontrol.InterruptCommand{
@@ -371,21 +372,26 @@ func (runtime *fakePreparedWorkerRuntime) Close() error {
 }
 
 type fakeOneShotWorkerControl struct {
-	order      *workerOrder
-	interrupts chan harnesscontrol.InterruptCommand
-	done       chan struct{}
-	doneOnce   sync.Once
-	mu         sync.Mutex
-	threadID   string
-	turnID     string
-	terminal   harnesscontrol.TurnTerminalEvent
+	order                                  *workerOrder
+	interrupts                             chan harnesscontrol.InterruptCommand
+	done                                   chan struct{}
+	doneOnce                               sync.Once
+	mu                                     sync.Mutex
+	startContext                           context.Context
+	requireLiveStartContextThroughTerminal bool
+	threadID                               string
+	turnID                                 string
+	terminal                               harnesscontrol.TurnTerminalEvent
 }
 
 func newFakeOneShotWorkerControl(order *workerOrder) *fakeOneShotWorkerControl {
 	return &fakeOneShotWorkerControl{order: order, interrupts: make(chan harnesscontrol.InterruptCommand, 1), done: make(chan struct{})}
 }
 
-func (control *fakeOneShotWorkerControl) Start(context.Context) error {
+func (control *fakeOneShotWorkerControl) Start(ctx context.Context) error {
+	control.mu.Lock()
+	control.startContext = ctx
+	control.mu.Unlock()
 	control.order.add("control_start")
 	return nil
 }
@@ -421,6 +427,10 @@ func (*fakeOneShotWorkerControl) SendExecutorMCPProgress(context.Context, Progre
 
 func (control *fakeOneShotWorkerControl) SendTurnTerminal(_ context.Context, event harnesscontrol.TurnTerminalEvent) error {
 	control.mu.Lock()
+	if control.requireLiveStartContextThroughTerminal && control.startContext.Err() != nil {
+		control.mu.Unlock()
+		return errors.New("fake control start context ended before turn terminal")
+	}
 	if event.ThreadID != control.threadID || event.TurnID != control.turnID {
 		control.mu.Unlock()
 		return errors.New("fake control terminal identity changed")

@@ -145,7 +145,9 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	}
 	userAuthorizer, err := coreserver.NewIntrospectedUserAuthorizer(coreserver.IntrospectedUserAuthorizerConfig{
 		Introspector: hydraIntrospector, ExpectedAudience: "agentserver-api",
-		ActionScopes: map[string]string{"runs.create": "runs:write", "runs.events.read": "runs:write"},
+		ActionScopes: map[string]string{
+			"runs.create": "runs:write", "runs.cancel": "runs:write", "runs.events.read": "runs:write",
+		},
 	})
 	if err != nil {
 		return err

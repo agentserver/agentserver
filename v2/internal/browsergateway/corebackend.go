@@ -158,6 +158,39 @@ func (backend *CoreRunBackend) ReadRunEvents(ctx context.Context, request ReadRu
 	return ReadRunEventsResult{Events: result.Events, EventCursors: result.EventCursors, NextCursor: result.NextCursor}, nil
 }
 
+func (backend *CoreRunBackend) CancelRun(ctx context.Context, request CancelRunRequest) (CancelRunResult, error) {
+	endpoint := backend.endpoint(corecontract.CancelUserRunPath(request.WorkspaceID, request.RunID))
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), nil)
+	if err != nil {
+		return CancelRunResult{}, fmt.Errorf("construct core cancel request: %w", err)
+	}
+	httpRequest.Header.Set("Authorization", "Bearer "+request.BearerToken)
+	httpRequest.Header.Set("Accept", "application/json")
+	response, raw, err := backend.do(httpRequest)
+	if err != nil {
+		return CancelRunResult{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return CancelRunResult{}, decodePublicCoreError(response.StatusCode, raw)
+	}
+	var contract corecontract.CancelUserRunResponse
+	if err := decodeStrictCoreJSON(raw, &contract); err != nil {
+		return CancelRunResult{}, fmt.Errorf("decode core cancel response: %w", err)
+	}
+	result := CancelRunResult{
+		WorkspaceID: contract.WorkspaceID, SessionID: contract.SessionID, RunID: contract.RunID,
+		Status: contract.Status, RunVersion: contract.RunVersion,
+		Terminal: contract.Terminal, Changed: contract.Changed,
+	}
+	if result.WorkspaceID != request.WorkspaceID || result.RunID != request.RunID ||
+		validateCanonicalUUID("sessionId", result.SessionID) != nil || result.RunVersion < 1 || result.RunVersion >= 1<<53-1 ||
+		!validCancelRunStatus(result.Status) || result.Terminal != terminalCancelRunStatus(result.Status) {
+		return CancelRunResult{}, errors.New("core cancel response escaped or contradicted the requested run scope")
+	}
+	return result, nil
+}
+
 func (backend *CoreRunBackend) resolveRunCursor(ctx context.Context, bearer, workspaceID, sessionID, runID, after string) (corecontract.ReadUserRunEventsResponse, *CursorExpiredError, error) {
 	endpoint := backend.endpoint(corecontract.ReadUserRunEventsPath(workspaceID, runID))
 	query := endpoint.Query()
@@ -298,3 +331,22 @@ func coreRunLoopbackHost(host string) bool {
 }
 
 var _ RunBackend = (*CoreRunBackend)(nil)
+var _ RunCommandBackend = (*CoreRunBackend)(nil)
+
+func validCancelRunStatus(status string) bool {
+	switch status {
+	case "completed", "failed", "interrupted", "cancelling", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
+func terminalCancelRunStatus(status string) bool {
+	switch status {
+	case "completed", "failed", "interrupted", "cancelled":
+		return true
+	default:
+		return false
+	}
+}

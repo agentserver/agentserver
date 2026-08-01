@@ -8,6 +8,7 @@ import {
   buildRunRequest,
   cloneViewState,
   createViewState,
+  isTerminalRunStatus,
   readFragmentConfiguration,
   reduceAGUIEvent,
   resolveJSONPointer,
@@ -100,4 +101,20 @@ test('reducer fails closed on lifecycle gaps and cross-run cursors', () => {
 	  ] }),
 	  /forbidden object key/,
 	)
+})
+
+test('explicit cancellation remains distinct from a failed run', () => {
+  let state = reduceAGUIEvent(createViewState(), { type: 'RUN_STARTED', runId: 'run-1' })
+  state = reduceAGUIEvent(state, {
+    type: 'CUSTOM', name: 'agentserver.run_status',
+    value: { runId: 'run-1', status: 'cancelling', code: 'user_cancelled', message: 'cancellation requested' },
+  })
+  assert.equal(state.status, 'cancelling')
+  state = reduceAGUIEvent(state, {
+    type: 'RUN_ERROR', runId: 'run-1', code: 'user_cancelled', message: 'cancelled by user',
+  })
+  assert.equal(state.status, 'cancelled')
+  assert.equal(state.error.code, 'user_cancelled')
+  assert.equal(isTerminalRunStatus(state.status), true)
+  assert.equal(isTerminalRunStatus('cancelling'), false)
 })

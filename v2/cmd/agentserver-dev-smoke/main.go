@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -22,6 +23,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/agentserver/agentserver/v2/internal/devfixtures"
 )
 
 const (
@@ -69,32 +72,32 @@ func run(parent context.Context, arguments []string, stdout, stderr io.Writer) i
 		}
 		return 1
 	}
-	fmt.Fprintf(stdout, "agentserver-dev-smoke: reference web loaded and AG-UI request %s reached RUN_FINISHED with the scripted assistant message\n", requestID)
+	cancelRequestID, cancelStream, err := executeCancellationSmoke(parent, options)
+	if err != nil {
+		fmt.Fprintf(stderr, "agentserver-dev-smoke: cancellation smoke: %v\n", err)
+		if len(cancelStream) != 0 {
+			_, _ = stderr.Write(cancelStream)
+			if cancelStream[len(cancelStream)-1] != '\n' {
+				fmt.Fprintln(stderr)
+			}
+		}
+		return 1
+	}
+	fmt.Fprintf(
+		stdout,
+		"agentserver-dev-smoke: reference web loaded; AG-UI request %s reached RUN_FINISHED and request %s reached explicit user_cancelled\n",
+		requestID,
+		cancelRequestID,
+	)
 	return 0
 }
 
 func executeSmoke(parent context.Context, options smokeOptions) (string, []byte, error) {
-	origin, err := validateOrigin(options.origin)
+	origin, bearer, client, closeClient, err := newSmokeHTTPClient(options)
 	if err != nil {
 		return "", nil, err
 	}
-	caPEM, err := readBoundedFile("development CA", options.caFile, maximumFileBytes)
-	if err != nil {
-		return "", nil, err
-	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(caPEM) {
-		return "", nil, errors.New("development CA file contains no certificates")
-	}
-	bearerRaw, err := readBoundedFile("browser bearer", options.bearerFile, 16*1024)
-	if err != nil {
-		return "", nil, err
-	}
-	bearer := strings.TrimSuffix(string(bearerRaw), "\n")
-	clear(bearerRaw)
-	if bearer == "" || strings.TrimSpace(bearer) != bearer || strings.ContainsAny(bearer, "\x00\r\n") {
-		return "", nil, errors.New("browser bearer file does not contain one canonical token line")
-	}
+	defer closeClient()
 
 	requestID, err := newRequestID()
 	if err != nil {
@@ -124,22 +127,6 @@ func executeSmoke(parent context.Context, options smokeOptions) (string, []byte,
 	request.Header.Set("Idempotency-Key", requestID)
 	request.Header.Set("Content-Type", "application/json")
 
-	transport := &http.Transport{
-		Proxy: nil,
-		DialContext: (&net.Dialer{
-			Timeout: 5 * time.Second, KeepAlive: 30 * time.Second,
-		}).DialContext,
-		ForceAttemptHTTP2:     true,
-		TLSHandshakeTimeout:   5 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
-		DisableCompression:    true,
-		TLSClientConfig: &tls.Config{
-			MinVersion: tls.VersionTLS13,
-			RootCAs:    roots,
-		},
-	}
-	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport}
 	if err := verifyReferenceWeb(ctx, client, origin); err != nil {
 		return requestID, nil, err
 	}
@@ -176,6 +163,206 @@ func executeSmoke(parent context.Context, options smokeOptions) (string, []byte,
 		return requestID, stream, errors.New("AG-UI event stream has no command A2UI surface")
 	}
 	return requestID, stream, nil
+}
+
+func executeCancellationSmoke(parent context.Context, options smokeOptions) (string, []byte, error) {
+	origin, bearer, client, closeClient, err := newSmokeHTTPClient(options)
+	if err != nil {
+		return "", nil, err
+	}
+	defer closeClient()
+	requestID, err := newRequestID()
+	if err != nil {
+		return "", nil, err
+	}
+	body, err := json.Marshal(map[string]any{
+		"threadId": smokeSessionID,
+		"runId":    requestID,
+		"messages": []map[string]string{{
+			"id": "user-" + requestID, "role": "user",
+			"content": "Run the deterministic Agentserver v2 cancellation smoke. " + devfixtures.CancellationHoldMarker,
+		}},
+		"tools": []any{}, "context": []any{},
+	})
+	if err != nil {
+		return requestID, nil, fmt.Errorf("encode cancellation AG-UI request: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(parent, 3*time.Minute)
+	defer cancel()
+	endpoint := origin.JoinPath("v2", "workspaces", smokeWorkspaceID, "sessions", smokeSessionID, "agui")
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
+	if err != nil {
+		return requestID, nil, fmt.Errorf("create cancellation AG-UI request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+bearer)
+	request.Header.Set("Idempotency-Key", requestID)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return requestID, nil, fmt.Errorf("send cancellation AG-UI request: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(response.Body, maximumSSEBytes+1))
+		return requestID, raw, fmt.Errorf("cancellation AG-UI status = %d", response.StatusCode)
+	}
+	mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if err != nil || mediaType != "text/event-stream" {
+		return requestID, nil, fmt.Errorf("cancellation AG-UI Content-Type = %q", response.Header.Get("Content-Type"))
+	}
+
+	reader := bufio.NewReaderSize(io.LimitReader(response.Body, maximumSSEBytes+1), 128*1024)
+	var stream bytes.Buffer
+	serverRunID := ""
+	cancelSent := false
+	terminal := false
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		if len(line) != 0 {
+			_, _ = stream.Write(line)
+			if stream.Len() > maximumSSEBytes {
+				return requestID, append([]byte(nil), stream.Bytes()[:maximumSSEBytes]...), fmt.Errorf("cancellation AG-UI event stream exceeds %d bytes", maximumSSEBytes)
+			}
+			data, isData := bytes.CutPrefix(line, []byte("data: "))
+			if isData {
+				var event struct {
+					Type  string `json:"type"`
+					RunID string `json:"runId"`
+					Code  string `json:"code"`
+				}
+				if err := json.Unmarshal(data, &event); err != nil {
+					return requestID, append([]byte(nil), stream.Bytes()...), fmt.Errorf("decode cancellation AG-UI SSE data: %w", err)
+				}
+				if event.Type == "RUN_STARTED" {
+					if serverRunID != "" || event.RunID == "" || len(event.RunID) > 256 || strings.ContainsAny(event.RunID, "\x00\r\n/") {
+						return requestID, append([]byte(nil), stream.Bytes()...), errors.New("cancellation AG-UI stream contains an invalid RUN_STARTED identity")
+					}
+					serverRunID = event.RunID
+				}
+				_, _, commandSurface, inspectErr := inspectSSE(line)
+				if inspectErr != nil {
+					return requestID, append([]byte(nil), stream.Bytes()...), inspectErr
+				}
+				if commandSurface && !cancelSent {
+					if serverRunID == "" {
+						return requestID, append([]byte(nil), stream.Bytes()...), errors.New("cancellation smoke reached its hold point before RUN_STARTED")
+					}
+					if err := sendSmokeCancellation(ctx, client, origin, bearer, serverRunID); err != nil {
+						return requestID, append([]byte(nil), stream.Bytes()...), err
+					}
+					cancelSent = true
+				}
+				switch event.Type {
+				case "RUN_FINISHED":
+					return requestID, append([]byte(nil), stream.Bytes()...), errors.New("cancellation AG-UI request completed instead of being cancelled")
+				case "RUN_ERROR":
+					if event.Code != "user_cancelled" {
+						return requestID, append([]byte(nil), stream.Bytes()...), fmt.Errorf("cancellation AG-UI terminal code = %q", event.Code)
+					}
+					terminal = true
+				}
+			}
+		}
+		if terminal {
+			break
+		}
+		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				return requestID, append([]byte(nil), stream.Bytes()...), fmt.Errorf("read cancellation AG-UI stream: %w", readErr)
+			}
+			break
+		}
+	}
+	if !cancelSent {
+		return requestID, append([]byte(nil), stream.Bytes()...), errors.New("cancellation AG-UI stream never reached the deterministic post-execution hold")
+	}
+	if !terminal {
+		return requestID, append([]byte(nil), stream.Bytes()...), errors.New("cancellation AG-UI stream has no user_cancelled terminal")
+	}
+	return requestID, append([]byte(nil), stream.Bytes()...), nil
+}
+
+func sendSmokeCancellation(ctx context.Context, client *http.Client, origin *url.URL, bearer, runID string) error {
+	endpoint := origin.JoinPath("v2", "workspaces", smokeWorkspaceID, "runs", runID+":cancel")
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), nil)
+	if err != nil {
+		return fmt.Errorf("create explicit cancel request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+bearer)
+	request.Header.Set("Accept", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("send explicit cancel request: %w", err)
+	}
+	defer response.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(response.Body, 64*1024+1))
+	if err != nil {
+		return fmt.Errorf("read explicit cancel response: %w", err)
+	}
+	if len(raw) > 64*1024 {
+		return errors.New("explicit cancel response exceeds 64 KiB")
+	}
+	mediaType, _, mediaErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if response.StatusCode != http.StatusOK || mediaErr != nil || mediaType != "application/json" {
+		return fmt.Errorf("explicit cancel response = status %d Content-Type %q body %q", response.StatusCode, response.Header.Get("Content-Type"), raw)
+	}
+	var result struct {
+		WorkspaceID string `json:"workspaceId"`
+		SessionID   string `json:"sessionId"`
+		RunID       string `json:"runId"`
+		Status      string `json:"status"`
+		RunVersion  int64  `json:"runVersion"`
+		Terminal    bool   `json:"terminal"`
+		Changed     bool   `json:"changed"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return fmt.Errorf("decode explicit cancel response: %w", err)
+	}
+	if result.WorkspaceID != smokeWorkspaceID || result.SessionID != smokeSessionID || result.RunID != runID ||
+		result.Status != "cancelling" || result.Terminal || !result.Changed || result.RunVersion < 1 {
+		return fmt.Errorf("explicit cancel did not enter two-stage cancellation: %+v", result)
+	}
+	return nil
+}
+
+func newSmokeHTTPClient(options smokeOptions) (*url.URL, string, *http.Client, func(), error) {
+	origin, err := validateOrigin(options.origin)
+	if err != nil {
+		return nil, "", nil, nil, err
+	}
+	caPEM, err := readBoundedFile("development CA", options.caFile, maximumFileBytes)
+	if err != nil {
+		return nil, "", nil, nil, err
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(caPEM) {
+		return nil, "", nil, nil, errors.New("development CA file contains no certificates")
+	}
+	bearerRaw, err := readBoundedFile("browser bearer", options.bearerFile, 16*1024)
+	if err != nil {
+		return nil, "", nil, nil, err
+	}
+	bearer := strings.TrimSuffix(string(bearerRaw), "\n")
+	clear(bearerRaw)
+	if bearer == "" || strings.TrimSpace(bearer) != bearer || strings.ContainsAny(bearer, "\x00\r\n") {
+		return nil, "", nil, nil, errors.New("browser bearer file does not contain one canonical token line")
+	}
+	transport := &http.Transport{
+		Proxy: nil,
+		DialContext: (&net.Dialer{
+			Timeout: 5 * time.Second, KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		DisableCompression:    true,
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS13,
+			RootCAs:    roots,
+		},
+	}
+	return origin, bearer, &http.Client{Transport: transport}, transport.CloseIdleConnections, nil
 }
 
 func verifyReferenceWeb(ctx context.Context, client *http.Client, origin *url.URL) error {

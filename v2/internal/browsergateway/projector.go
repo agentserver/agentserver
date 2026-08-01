@@ -227,6 +227,13 @@ func (projector *Projector) projectKnown(event runevent.Event, payload any) (Pro
 			projected = append(projected, events.NewCustomEvent("a2ui.operations", events.WithValue(operations)))
 		}
 		return Projection{Events: projected}, nil
+	case runevent.KindRunCancelling:
+		status := payload.(runevent.RunTerminalPayload)
+		return Projection{Events: []events.Event{
+			events.NewCustomEvent("agentserver.run_status", events.WithValue(map[string]any{
+				"runId": event.RunID, "status": "cancelling", "code": status.Code, "message": status.Message,
+			})),
+		}}, nil
 	case runevent.KindRunCompleted:
 		if err := projector.requireClosedLifecycles(); err != nil {
 			return Projection{}, err

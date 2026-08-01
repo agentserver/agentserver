@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,26 +18,36 @@ type recordingUserAuthorizer struct {
 	actorID string
 	err     error
 	calls   int
+	action  string
 }
 
-func (authorizer *recordingUserAuthorizer) AuthorizeUser(*http.Request, string) (string, error) {
+func (authorizer *recordingUserAuthorizer) AuthorizeUser(_ *http.Request, action string) (string, error) {
 	authorizer.calls++
+	authorizer.action = action
 	return authorizer.actorID, authorizer.err
 }
 
 type recordingUserRunCommands struct {
 	createResult corecontract.CreateUserRunResponse
 	createErr    error
+	cancelResult corecontract.CancelUserRunResponse
+	cancelErr    error
 	readResult   corecontract.ReadUserRunEventsResponse
 	readErr      error
 
 	create CreateUserRunCommand
+	cancel CancelUserRunCommand
 	read   ReadUserRunEventsQuery
 }
 
 func (commands *recordingUserRunCommands) CreateUserRun(_ context.Context, command CreateUserRunCommand) (corecontract.CreateUserRunResponse, error) {
 	commands.create = command
 	return commands.createResult, commands.createErr
+}
+
+func (commands *recordingUserRunCommands) CancelUserRun(_ context.Context, command CancelUserRunCommand) (corecontract.CancelUserRunResponse, error) {
+	commands.cancel = command
+	return commands.cancelResult, commands.cancelErr
 }
 
 func (commands *recordingUserRunCommands) ReadUserRunEvents(_ context.Context, query ReadUserRunEventsQuery) (corecontract.ReadUserRunEventsResponse, error) {
@@ -67,6 +78,52 @@ func TestUserRunHandlerCreatesRunWithBothAuthorizationLayers(t *testing.T) {
 	}
 	if users.calls != 1 || commands.create.ActorID != userRunActorID || commands.create.IdempotencyKey != "request-1" || commands.create.Prompt != "hello" {
 		t.Fatalf("CreateUserRun command = %+v, user calls = %d", commands.create, users.calls)
+	}
+}
+
+func TestUserRunHandlerForwardsOnlyExplicitEmptyCancelCommand(t *testing.T) {
+	commands := &recordingUserRunCommands{cancelResult: corecontract.CancelUserRunResponse{
+		WorkspaceID: userRunWorkspaceID, SessionID: userRunSessionID, RunID: userRunID,
+		Status: "cancelling", RunVersion: 4, Terminal: false, Changed: true,
+	}}
+	workload := &recordingRunAttemptAuthorizer{}
+	users := &recordingUserAuthorizer{actorID: userRunActorID}
+	handler, err := NewUserRunHandler(workload, users, commands)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, corecontract.CancelUserRunPath(userRunWorkspaceID, userRunID), nil)
+	request.Header.Set("Authorization", "Bearer user-token")
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("cancel response = %d %s", response.Code, response.Body.String())
+	}
+	if workload.action != "runs.cancel" || users.action != "runs.cancel" || users.calls != 1 ||
+		commands.cancel.ActorID != userRunActorID || commands.cancel.WorkspaceID != userRunWorkspaceID || commands.cancel.RunID != userRunID {
+		t.Fatalf("cancel authority/command = %q / %q / %+v", workload.action, users.action, commands.cancel)
+	}
+	var result corecontract.CancelUserRunResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || result.Status != "cancelling" || !result.Changed {
+		t.Fatalf("cancel response body = %+v, %v", result, err)
+	}
+
+	for _, suffix := range []string{"?force=true", "#body"} {
+		commands.cancel = CancelUserRunCommand{}
+		path := corecontract.CancelUserRunPath(userRunWorkspaceID, userRunID)
+		var body io.Reader
+		if suffix == "#body" {
+			body = strings.NewReader(`{}`)
+		} else {
+			path += suffix
+		}
+		request := httptest.NewRequest(http.MethodPost, path, body)
+		request.Header.Set("Authorization", "Bearer user-token")
+		response := httptest.NewRecorder()
+		handler.Routes().ServeHTTP(response, request)
+		if response.Code != http.StatusBadRequest || commands.cancel.ActorID != "" {
+			t.Fatalf("invalid cancel %q = %d %s; command=%+v", suffix, response.Code, response.Body.String(), commands.cancel)
+		}
 	}
 }
 

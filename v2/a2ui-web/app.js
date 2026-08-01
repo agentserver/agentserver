@@ -7,6 +7,7 @@ import {
   buildRunRequest,
   cloneViewState,
   createViewState,
+  isTerminalRunStatus,
   readFragmentConfiguration,
   reduceAGUIEvent,
   resolveJSONPointer,
@@ -29,6 +30,7 @@ const elements = {
   sessionID: requiredElement('session-id'),
   runState: requiredElement('run-state'),
   runStateLabel: requiredElement('run-state-label'),
+  cancelButton: requiredElement('cancel-button'),
   transcript: requiredElement('transcript'),
   welcomeCard: requiredElement('welcome-card'),
   streamWarning: requiredElement('stream-warning'),
@@ -54,6 +56,7 @@ const welcomeTemplate = elements.welcomeCard.cloneNode(true)
 let connection = null
 let viewState = createViewState()
 let activeRun = null
+let cancellationPending = false
 
 initialize()
 
@@ -64,6 +67,7 @@ function initialize() {
   elements.connectionButton.addEventListener('click', toggleConnection)
   elements.composer.addEventListener('submit', sendPrompt)
   elements.reconnectButton.addEventListener('click', () => streamRun(true))
+  elements.cancelButton.addEventListener('click', cancelActiveRun)
   elements.prompt.addEventListener('input', renderComposer)
   window.addEventListener('online', checkGatewayHealth)
   window.addEventListener('offline', () => setHealth('offline', 'browser offline'))
@@ -102,6 +106,7 @@ function connectFromValues() {
     elements.connectionButton.textContent = 'Disconnect'
     viewState = createViewState()
     activeRun = null
+    cancellationPending = false
     renderAll()
     elements.prompt.focus()
     return true
@@ -122,6 +127,7 @@ function toggleConnection() {
   }
   const previous = activeRun
   activeRun = null
+  cancellationPending = false
   if (previous?.controller) previous.controller.abort()
   connection.token = ''
   connection = null
@@ -224,20 +230,77 @@ async function streamRun(reconnect) {
     const finalText = text.decode()
     for (const event of decoder.push(finalText)) applyServerEvent(run, event)
     for (const event of decoder.finish()) applyServerEvent(run, event)
-    if (viewState.status !== 'completed' && viewState.status !== 'failed') {
+    if (!isTerminalRunStatus(viewState.status)) {
       throw new Error('AG-UI stream ended without a terminal event')
     }
     run.controller = null
     if (activeRun === run) activeRun = null
+    cancellationPending = false
     renderAll()
   } catch (error) {
     run.controller = null
     if (activeRun !== run || controller.signal.aborted) return
+    if (isTerminalRunStatus(viewState.status)) {
+      activeRun = null
+      cancellationPending = false
+      renderAll()
+      return
+    }
     viewState = {
       ...viewState,
       status: 'disconnected',
       error: { code: 'stream_disconnected', message: safeErrorMessage(error) },
     }
+    renderAll()
+  }
+}
+
+async function cancelActiveRun() {
+  if (!connection || !activeRun || !viewState.runID || cancellationPending) return
+  if (!window.confirm('Cancel this server-side run? The projection stream will stay open until Core commits the terminal cancellation.')) return
+  const run = activeRun
+  const runID = viewState.runID
+  const currentConnection = connection
+  cancellationPending = true
+  renderAll()
+  try {
+    const response = await fetch(`/v2/workspaces/${encodeURIComponent(currentConnection.workspaceID)}/runs/${encodeURIComponent(runID)}:cancel`, {
+      method: 'POST',
+      mode: 'same-origin',
+      cache: 'no-store',
+      credentials: 'omit',
+      redirect: 'error',
+      referrerPolicy: 'no-referrer',
+      headers: { Accept: 'application/json', Authorization: `Bearer ${currentConnection.token}` },
+    })
+    if (!response.ok) throw await responseError(response)
+    const result = await boundedJSONResponse(response, 64 * 1024)
+    const validStatuses = new Set(['cancelling', 'completed', 'failed', 'interrupted', 'cancelled'])
+    const terminalStatus = result && ['completed', 'failed', 'interrupted', 'cancelled'].includes(result.status)
+    if (!result || result.workspaceId !== currentConnection.workspaceID || result.sessionId !== currentConnection.sessionID ||
+        result.runId !== runID || !validStatuses.has(result.status) || typeof result.terminal !== 'boolean' ||
+        result.terminal !== terminalStatus || typeof result.changed !== 'boolean' ||
+        !Number.isSafeInteger(result.runVersion) || result.runVersion < 1 || result.runVersion >= Number.MAX_SAFE_INTEGER) {
+      throw new Error('browser-gateway returned an invalid cancel result')
+    }
+    if (activeRun !== run) return
+    if (result.status === 'cancelling') {
+      viewState = { ...viewState, status: 'cancelling', error: null }
+    } else if (result.terminal) {
+      const status = result.status === 'completed' ? 'completed' : result.status === 'cancelled' ? 'cancelled' : 'failed'
+      viewState = { ...viewState, status, error: status === 'failed' ? {
+        code: `run_${result.status}`,
+        message: `The run was already terminal with status ${result.status}.`,
+      } : null }
+    }
+  } catch (error) {
+    if (activeRun !== run) return
+    viewState = {
+      ...viewState,
+      error: { code: 'cancel_failed', message: safeErrorMessage(error) },
+    }
+  } finally {
+    if (activeRun === run) cancellationPending = false
     renderAll()
   }
 }
@@ -273,6 +336,30 @@ async function responseError(response) {
   return error
 }
 
+async function boundedJSONResponse(response, maximumBytes) {
+  if (!response.body) throw new Error('browser does not expose the response body')
+  const reader = response.body.getReader()
+  const chunks = []
+  let size = 0
+  while (true) {
+    const result = await reader.read()
+    if (result.done) break
+    size += result.value.byteLength
+    if (size > maximumBytes) {
+      await reader.cancel()
+      throw new Error(`browser-gateway response exceeds ${maximumBytes} bytes`)
+    }
+    chunks.push(result.value)
+  }
+  const bytes = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
+}
+
 function renderAll() {
   renderStatus()
   renderTranscript()
@@ -285,7 +372,7 @@ function renderAll() {
 function renderStatus() {
   const labels = {
     idle: 'Idle', connecting: 'Opening stream', running: 'Running', completed: 'Completed',
-    failed: 'Failed', disconnected: 'Disconnected',
+    failed: 'Failed', disconnected: 'Disconnected', cancelling: 'Cancelling', cancelled: 'Cancelled',
   }
   elements.runState.dataset.state = viewState.status
   elements.runStateLabel.textContent = labels[viewState.status] || viewState.status
@@ -299,6 +386,11 @@ function renderStatus() {
   elements.cursorFact.title = viewState.cursor ? 'Opaque cursor held only in page memory' : ''
   elements.eventCount.textContent = String(viewState.eventCount)
   elements.streamWarning.hidden = viewState.status !== 'disconnected' || !activeRun
+  const cancellable = Boolean(connection && activeRun && viewState.runID &&
+    ['running', 'connecting', 'disconnected', 'cancelling'].includes(viewState.status))
+  elements.cancelButton.hidden = !cancellable
+  elements.cancelButton.disabled = cancellationPending || viewState.status === 'cancelling'
+  elements.cancelButton.textContent = cancellationPending || viewState.status === 'cancelling' ? 'Cancelling…' : 'Cancel run'
 }
 
 function renderTranscript() {
@@ -445,6 +537,8 @@ function renderComposer() {
     elements.composerHint.textContent = 'Connect an in-memory development bearer to begin.'
   } else if (viewState.status === 'disconnected') {
     elements.composerHint.textContent = 'Reconnect the existing stream before sending another prompt.'
+  } else if (viewState.status === 'cancelling') {
+    elements.composerHint.textContent = 'Core accepted explicit cancellation; waiting for bounded attempt cleanup.'
   } else if (busy) {
     elements.composerHint.textContent = `Streaming committed AG-UI events${activeRun.reconnects ? ` · reconnect ${activeRun.reconnects}` : ''}`
   } else {

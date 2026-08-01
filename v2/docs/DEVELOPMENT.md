@@ -218,6 +218,14 @@ go run ./cmd/agentserver-dev fixtures --insecure-dev \
 https://127.0.0.1:17444/v2/workspaces/{workspaceId}/sessions/{sessionId}/agui
 ```
 
+显式取消使用同一origin上的独立command endpoint：
+
+```text
+POST https://127.0.0.1:17444/v2/workspaces/{workspaceId}/runs/{runId}:cancel
+```
+
+空body、同一browser bearer。无holder的queued run会直接返回terminal `cancelled`；已有attempt时先返回非terminal `cancelling`，harness-pool通过成对lease heartbeat观察取消，在worker/app-server/MCP与进程组清理期间继续续租。取消只终止turn/MCP runtime context；worker control要继续到interrupted terminal获得ACK，pool lifecycle command context也要继续到workload cleanup完成，避免terminal前已经排队的runtime event因取消而丢失。最后由exact holder提交`cancelled/interrupted`。启动前失败已经停止workload时，pool使用内部`AbandonAttempt`在一个Core事务中仲裁requeue与并发cancel，不能用一次状态查询后再release来替代。SSE断开本身不触发取消。
+
 开发前端从 `secrets/browser-bearer.token` 读取 bearer 并只发送给 browser-gateway；该值不会出现在 metadata 或任何服务 env 中。harness-pool 为每个 attempt 动态签发 `aud=executor-mcp` 与 `aud=llmproxy` 两枚不同 capability；前端不接触它们，app-server 也永远拿不到 executor capability。
 
 ## 6. 单容器可运行开发栈
@@ -237,17 +245,23 @@ https://127.0.0.1:17444/v2/workspaces/{workspaceId}/sessions/{sessionId}/agui
 ./deploy/insecure-dev/smoke.sh
 ```
 
-`browser-url.sh` 会把固定开发 bearer 放在 URL fragment 中输出一条可点击的 reference-web 地址。页面加载后立即从地址栏清除 fragment，bearer 与 lifecycle-safe AG-UI cursor 都只保存在页面内存；但该 URL 仍会进入终端历史，所以只适用于这套 `INSECURE DEV` authority。reference web 由 browser-gateway 在同一 HTTPS origin 的 `/` 提供，使用带 `Authorization` header 的 `fetch` streaming，不使用 `EventSource`，也不连接 app-server 或 exec-server。它渲染 AG-UI message/reasoning/tool lifecycle，以及 `a2ui.operations` 中当前 display-only A2UI v0.9 Card/Column/Text 子集。
+`browser-url.sh` 会把固定开发 bearer 放在 URL fragment 中输出一条可点击的 reference-web 地址。页面加载后立即从地址栏清除 fragment，bearer 与 lifecycle-safe AG-UI cursor 都只保存在页面内存；但该 URL 仍会进入终端历史，所以只适用于这套 `INSECURE DEV` authority。reference web 由 browser-gateway 在同一 HTTPS origin 的 `/` 提供，使用带 `Authorization` header 的 `fetch` streaming，不使用 `EventSource`，也不连接 app-server 或 exec-server。它渲染 AG-UI message/reasoning/tool lifecycle、`a2ui.operations` 中当前 display-only A2UI v0.9 Card/Column/Text 子集，以及显式Cancel按钮和`Cancelling/Cancelled`状态；canonical terminal到达后，迟到的网络尾部错误不会把页面降级成disconnected。
 
 状态使用 Apple `container` 的 VM-backed named volume，默认名为 `agentserver-v2-dev-state`。这是因为宿主 bind mount 不能可靠地把私有 harness 输入改属固定 worker UID/GID；executor workspace 仍是普通的宿主 bind mount，不与 authority 状态混放。Apple `container` 的端口发布转发到容器 NIC，因此部署入口只把 browser-gateway 覆盖为监听 `0.0.0.0:17444`，宿主仍只发布 `127.0.0.1:17444`；Core、executor-gateway、harness-pool 和 fixtures 保持容器 loopback 监听。
 
-真实 smoke 会先验证 reference web 与 CSP，再验证以下闭环：
+真实 smoke 会先验证 reference web 与 CSP，再连续验证正常完成和显式取消两条闭环：
 
 ```text
 AG-UI → Core → harness-worker → stock app-server
       → executor MCP → agentx → stock exec-server
       → RUN_FINISHED → durable checkpoint
+
+AG-UI → deterministic post-execution hold → POST :cancel
+      → run.cancelling → stock turn interrupted/workload stopped
+      → run.cancelled → RUN_ERROR(user_cancelled) → no checkpoint
 ```
+
+脚本在运行前后直接查询PostgreSQL：checkpoint总数必须恰好增加1，且最新取消run必须为`cancelled`并拥有0条checkpoint。这同时防止把被取消turn的临时rollout误提交为可恢复历史。
 
 正常停止应给 supervisor 足够时间让 PostgreSQL fast shutdown 并回收子进程：
 

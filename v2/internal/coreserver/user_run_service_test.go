@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,13 +21,15 @@ const (
 )
 
 type recordingUserRunStore struct {
-	session coredb.AuthorizedSession
-	created coredb.CreateRunResult
-	pages   []coredb.ReadAuthorizedRunEventsResult
-	err     error
+	session   coredb.AuthorizedSession
+	created   coredb.CreateRunResult
+	cancelled coredb.CancelRunResult
+	pages     []coredb.ReadAuthorizedRunEventsResult
+	err       error
 
 	authorizeCalls int
 	create         coredb.CreateRunCommand
+	cancel         coredb.CancelRunCommand
 	reads          []coredb.ReadAuthorizedRunEventsCommand
 }
 
@@ -38,6 +41,11 @@ func (store *recordingUserRunStore) AuthorizeRunSession(context.Context, string,
 func (store *recordingUserRunStore) CreateAuthorizedRun(_ context.Context, command coredb.CreateRunCommand) (coredb.CreateRunResult, error) {
 	store.create = command
 	return store.created, store.err
+}
+
+func (store *recordingUserRunStore) CancelRun(_ context.Context, command coredb.CancelRunCommand) (coredb.CancelRunResult, error) {
+	store.cancel = command
+	return store.cancelled, store.err
 }
 
 func (store *recordingUserRunStore) ReadAuthorizedRunEvents(_ context.Context, command coredb.ReadAuthorizedRunEventsCommand) (coredb.ReadAuthorizedRunEventsResult, error) {
@@ -121,6 +129,80 @@ func TestUserRunServiceCreatesAtomicAuthorizedRunAndInitialCursor(t *testing.T) 
 	sequence, err := codec.Decode(response.Cursor, runcursor.Scope{WorkspaceID: userRunWorkspaceID, SessionID: userRunSessionID, RunID: userRunID})
 	if err != nil || sequence != 1 {
 		t.Fatalf("initial cursor = %d, %v", sequence, err)
+	}
+}
+
+func TestUserRunServiceCancelsThroughTransactionalMembershipBoundary(t *testing.T) {
+	store := &recordingUserRunStore{cancelled: coredb.CancelRunResult{
+		Run: coredb.Run{
+			ID: userRunID, WorkspaceID: userRunWorkspaceID, SessionID: userRunSessionID,
+			ActorID: userRunActorID, Status: coredb.RunStatusCancelling, Version: 4,
+		},
+		SessionVersion: 9, Changed: true,
+	}}
+	identities := []string{
+		"61000000-0000-4000-8000-000000000006",
+		"71000000-0000-4000-8000-000000000007",
+		"81000000-0000-4000-8000-000000000008",
+	}
+	codec, _ := runcursor.NewCodec([]byte("0123456789abcdef0123456789abcdef"))
+	service, err := NewUserRunService(UserRunServiceConfig{
+		Store: store, Prompts: &recordingPromptStore{}, Policies: fixedRunPolicy{}, CursorCodec: codec,
+		PollInterval: 10 * time.Millisecond,
+		NewID: func() (string, error) {
+			value := identities[0]
+			identities = identities[1:]
+			return value, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := service.CancelUserRun(t.Context(), CancelUserRunCommand{
+		ActorID: userRunActorID, WorkspaceID: userRunWorkspaceID, RunID: userRunID,
+	})
+	if err != nil || response.Status != coredb.RunStatusCancelling || response.Terminal || !response.Changed || response.RunVersion != 4 {
+		t.Fatalf("CancelUserRun() = %+v, %v", response, err)
+	}
+	if store.authorizeCalls != 0 || store.cancel.ActorID != userRunActorID ||
+		store.cancel.WorkspaceID != userRunWorkspaceID || store.cancel.RunID != userRunID ||
+		store.cancel.Record.EventID != "61000000-0000-4000-8000-000000000006" ||
+		store.cancel.Record.ProducerInstanceID != "71000000-0000-4000-8000-000000000007" ||
+		store.cancel.Record.ProducerSeq != 1 || store.cancel.Record.OutboxID != "81000000-0000-4000-8000-000000000008" {
+		t.Fatalf("transactional cancel command = %+v, authorize calls = %d", store.cancel, store.authorizeCalls)
+	}
+}
+
+func TestUserRunServiceRejectsImpossibleCancelStoreResult(t *testing.T) {
+	store := &recordingUserRunStore{cancelled: coredb.CancelRunResult{
+		Run: coredb.Run{
+			ID: userRunID, WorkspaceID: userRunWorkspaceID, SessionID: userRunSessionID,
+			ActorID: userRunActorID, Status: coredb.RunStatusRunning, Version: 4,
+		},
+		SessionVersion: 9, Changed: true,
+	}}
+	codec, _ := runcursor.NewCodec([]byte("0123456789abcdef0123456789abcdef"))
+	identities := []string{
+		"62000000-0000-4000-8000-000000000006",
+		"72000000-0000-4000-8000-000000000007",
+		"82000000-0000-4000-8000-000000000008",
+	}
+	service, err := NewUserRunService(UserRunServiceConfig{
+		Store: store, Prompts: &recordingPromptStore{}, Policies: fixedRunPolicy{}, CursorCodec: codec,
+		PollInterval: 10 * time.Millisecond,
+		NewID: func() (string, error) {
+			value := identities[0]
+			identities = identities[1:]
+			return value, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CancelUserRun(t.Context(), CancelUserRunCommand{
+		ActorID: userRunActorID, WorkspaceID: userRunWorkspaceID, RunID: userRunID,
+	}); err == nil || !strings.Contains(err.Error(), "invalid cancelled run scope") {
+		t.Fatalf("impossible cancel result error = %v", err)
 	}
 }
 

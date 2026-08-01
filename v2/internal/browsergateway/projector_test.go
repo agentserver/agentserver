@@ -117,6 +117,25 @@ func TestProjectorRejectsToolProgressOutsideToolLifecycle(t *testing.T) {
 	}
 }
 
+func TestProjectorPublishesCanonicalCancellingStateWithoutEndingStream(t *testing.T) {
+	projector := newTestProjector(t, 0)
+	result, err := projector.Project(projectorEvent(t, 1, runevent.KindRunCancelling, runevent.RunTerminalPayload{
+		Code: "user_cancelled", Message: "the run was cancelled by a workspace member",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Terminal || len(result.Events) != 1 || result.Events[0].Type() != events.EventTypeCustom {
+		t.Fatalf("cancelling projection = %+v", result)
+	}
+	custom := result.Events[0].(*events.CustomEvent)
+	value, ok := custom.Value.(map[string]any)
+	if custom.Name != "agentserver.run_status" || !ok || value["runId"] != projectorRunID ||
+		value["status"] != "cancelling" || value["code"] != "user_cancelled" {
+		t.Fatalf("cancelling custom event = %#v", custom)
+	}
+}
+
 func TestProjectorMapsReasoningAndNonSuccessTerminalToRunError(t *testing.T) {
 	projector := newTestProjector(t, 0)
 	input := []runevent.Event{

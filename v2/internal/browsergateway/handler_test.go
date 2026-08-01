@@ -22,12 +22,81 @@ type fakeReadResult struct {
 }
 
 type fakeRunBackend struct {
-	startResult StartRunResult
-	startErr    error
-	reads       []fakeReadResult
+	startResult  StartRunResult
+	startErr     error
+	reads        []fakeReadResult
+	cancelResult CancelRunResult
+	cancelErr    error
 
-	startRequests []StartRunRequest
-	readRequests  []ReadRunEventsRequest
+	startRequests  []StartRunRequest
+	readRequests   []ReadRunEventsRequest
+	cancelRequests []CancelRunRequest
+}
+
+func (backend *fakeRunBackend) CancelRun(_ context.Context, request CancelRunRequest) (CancelRunResult, error) {
+	backend.cancelRequests = append(backend.cancelRequests, request)
+	return backend.cancelResult, backend.cancelErr
+}
+
+func TestAGUIHandlerForwardsOnlyExplicitAuthenticatedCancel(t *testing.T) {
+	backend := &fakeRunBackend{cancelResult: CancelRunResult{
+		WorkspaceID: projectorWorkspaceID, SessionID: projectorSessionID, RunID: projectorRunID,
+		Status: "cancelling", RunVersion: 4, Changed: true,
+	}}
+	handler := newTestHandler(t, backend)
+	request := httptest.NewRequest(http.MethodPost, "/v2/workspaces/"+projectorWorkspaceID+"/runs/"+projectorRunID+":cancel", nil)
+	request.Header.Set("Authorization", "Bearer user-token")
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" || len(backend.cancelRequests) != 1 {
+		t.Fatalf("cancel response = %d %s headers=%v requests=%+v", response.Code, response.Body.String(), response.Header(), backend.cancelRequests)
+	}
+	if backend.cancelRequests[0].BearerToken != "user-token" || backend.cancelRequests[0].RunID != projectorRunID {
+		t.Fatalf("cancel request = %+v", backend.cancelRequests[0])
+	}
+	if len(backend.startRequests) != 0 || len(backend.readRequests) != 0 {
+		t.Fatalf("cancel crossed SSE backend: starts=%+v reads=%+v", backend.startRequests, backend.readRequests)
+	}
+
+	missing := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(missing, httptest.NewRequest(http.MethodPost, "/v2/workspaces/"+projectorWorkspaceID+"/runs/"+projectorRunID+":cancel", nil))
+	if missing.Code != http.StatusUnauthorized || len(backend.cancelRequests) != 1 {
+		t.Fatalf("unauthorized cancel = %d %s requests=%+v", missing.Code, missing.Body.String(), backend.cancelRequests)
+	}
+
+	for _, test := range []struct {
+		name string
+		path string
+		body io.Reader
+	}{
+		{name: "query", path: "/v2/workspaces/" + projectorWorkspaceID + "/runs/" + projectorRunID + ":cancel?force=true"},
+		{name: "body", path: "/v2/workspaces/" + projectorWorkspaceID + "/runs/" + projectorRunID + ":cancel", body: strings.NewReader(`{}`)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, test.path, test.body)
+			request.Header.Set("Authorization", "Bearer user-token")
+			response := httptest.NewRecorder()
+			handler.Routes().ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest || len(backend.cancelRequests) != 1 {
+				t.Fatalf("invalid cancel = %d %s requests=%+v", response.Code, response.Body.String(), backend.cancelRequests)
+			}
+		})
+	}
+}
+
+func TestAGUIHandlerRejectsInvalidCancelBackendResult(t *testing.T) {
+	backend := &fakeRunBackend{cancelResult: CancelRunResult{
+		WorkspaceID: projectorWorkspaceID, SessionID: projectorSessionID, RunID: projectorRunID,
+		Status: "running", RunVersion: 4, Changed: true,
+	}}
+	handler := newTestHandler(t, backend)
+	request := httptest.NewRequest(http.MethodPost, "/v2/workspaces/"+projectorWorkspaceID+"/runs/"+projectorRunID+":cancel", nil)
+	request.Header.Set("Authorization", "Bearer user-token")
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusBadGateway || len(backend.cancelRequests) != 1 {
+		t.Fatalf("invalid backend cancel = %d %s requests=%+v", response.Code, response.Body.String(), backend.cancelRequests)
+	}
 }
 
 func (backend *fakeRunBackend) StartRun(_ context.Context, request StartRunRequest) (StartRunResult, error) {

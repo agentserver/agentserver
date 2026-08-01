@@ -29,6 +29,8 @@ type RunAttemptPreparer interface {
 
 type AttemptSupervisionCore interface {
 	RenewRunAttempt(context.Context, RenewRunAttemptRequest) (RenewRunAttemptResult, error)
+	InterruptRunAttempt(context.Context, InterruptRunAttemptRequest) (InterruptRunAttemptResult, error)
+	AbandonRunAttempt(context.Context, AbandonRunAttemptRequest) (AbandonRunAttemptResult, error)
 	BindBrainThreadCatalog(context.Context, BindBrainThreadCatalogRequest) (BindBrainThreadCatalogResult, error)
 	MarkTurnAccepted(context.Context, MarkTurnAcceptedRequest) (MarkTurnAcceptedResult, error)
 }
@@ -205,39 +207,91 @@ func (pool *Pool) processAttempt(parent context.Context, scheduled ScheduledRunA
 		return PoolFailurePrepare, pool.releaseAfterStartupFailure(parent, scheduled, err)
 	}
 	attemptCtx, cancelAttempt := context.WithCancelCause(parent)
+	// Keep the holder's lifecycle-command path separate from the turn runtime.
+	// Explicit cancellation stops attemptCtx immediately, but control still has
+	// to append already-observed runtime facts and acknowledge an interrupted
+	// terminal while the exact holder keeps both leases alive.
+	leaseCtx, stopLease := context.WithCancel(parent)
+	defer stopLease()
+	state := newAttemptAuthorityState(scheduled.Claim)
 	leaseDone := make(chan error, 1)
 	go func() {
-		leaseDone <- pool.keepAttemptLease(attemptCtx, cancelAttempt, scheduled)
+		leaseDone <- pool.keepAttemptLease(leaseCtx, cancelAttempt, scheduled, state)
 	}()
 
 	prepared, err := pool.preparer.Prepare(attemptCtx, scheduled)
 	if err != nil {
 		cancelAttempt(err)
+		stopLease()
 		leaseErr := <-leaseDone
 		failure := errors.Join(fmt.Errorf("prepare run launch: %w", err), leaseErr)
+		if parent.Err() == nil && leaseErr == nil {
+			abandoned, abandonErr := pool.abandonStoppedPreTurnAttempt(scheduled)
+			if abandonErr != nil {
+				return PoolFailureCleanup, pool.releaseAfterStartupFailure(parent, scheduled, errors.Join(failure, abandonErr))
+			}
+			if abandoned.Disposition == "cancelled" {
+				return PoolFailureCleanup, pool.completeStoppedDispatch(scheduled.Dispatch)
+			}
+		}
 		return PoolFailurePrepare, pool.releaseAfterStartupFailure(parent, scheduled, failure)
 	}
 	if err := validatePreparedSupervisionInput(scheduled, prepared); err != nil {
 		cancelAttempt(err)
+		stopLease()
 		leaseErr := <-leaseDone
 		failure := errors.Join(fmt.Errorf("validate prepared run launch: %w", err), leaseErr)
+		if parent.Err() == nil && leaseErr == nil {
+			abandoned, abandonErr := pool.abandonStoppedPreTurnAttempt(scheduled)
+			if abandonErr != nil {
+				return PoolFailureCleanup, pool.releaseAfterStartupFailure(parent, scheduled, errors.Join(failure, abandonErr))
+			}
+			if abandoned.Disposition == "cancelled" {
+				return PoolFailureCleanup, pool.completeStoppedDispatch(scheduled.Dispatch)
+			}
+		}
 		return PoolFailurePrepare, pool.releaseAfterStartupFailure(parent, scheduled, failure)
 	}
 
 	authority := &attemptLifecycleAuthority{
-		ctx: attemptCtx, scheduler: pool.scheduler, core: pool.core, identities: pool.identities,
+		ctx: leaseCtx, scheduler: pool.scheduler, core: pool.core, identities: pool.identities,
 		prepared: prepared,
 	}
 	supervisionErr := pool.supervisor.Supervise(attemptCtx, prepared, authority)
+	accepted := authority.accepted()
+	if accepted && supervisionErr != nil && state.snapshot().Run.Status != "cancelling" && parent.Err() == nil {
+		// A cancel can win while an accepted attempt is crossing finalization,
+		// causing that command to fail before the normal lease tick observes
+		// the new run version. One exact renewal resolves that common race.
+		_, _ = pool.observeAttemptAuthority(parent, scheduled, state)
+	}
 	cancelAttempt(errors.New("attempt supervisor returned"))
-	leaseErr := <-leaseDone
 	cleanupErr := authority.dispatchCleanupError()
-	if !authority.accepted() {
+	stopLease()
+	leaseErr := <-leaseDone
+	latest := state.snapshot()
+	if !accepted {
 		failure := errors.Join(supervisionErr, leaseErr, cleanupErr)
 		if failure == nil {
 			failure = errors.New("attempt supervisor stopped before turn acceptance")
 		}
+		if parent.Err() == nil && leaseErr == nil {
+			abandoned, abandonErr := pool.abandonStoppedPreTurnAttempt(scheduled)
+			if abandonErr != nil {
+				return PoolFailureCleanup, pool.releaseAfterStartupFailure(parent, scheduled, errors.Join(failure, abandonErr))
+			}
+			if abandoned.Disposition == "cancelled" {
+				return PoolFailureCleanup, errors.Join(cleanupErr, pool.completeStoppedDispatch(scheduled.Dispatch))
+			}
+		}
 		return PoolFailureSupervise, pool.releaseAfterStartupFailure(parent, scheduled, failure)
+	}
+	if latest.Run.Status == "cancelling" {
+		cancelErr := pool.finishCancelledAttempt(scheduled, authority.accepted(), latest, supervisionErr)
+		if cancelErr != nil {
+			return PoolFailureCleanup, errors.Join(supervisionErr, leaseErr, cleanupErr, cancelErr)
+		}
+		return PoolFailureCleanup, cleanupErr
 	}
 	if cleanupErr != nil && supervisionErr == nil && leaseErr == nil {
 		return PoolFailureCleanup, cleanupErr
@@ -245,7 +299,57 @@ func (pool *Pool) processAttempt(parent context.Context, scheduled ScheduledRunA
 	return PoolFailureSupervise, errors.Join(supervisionErr, leaseErr, cleanupErr)
 }
 
-func (pool *Pool) keepAttemptLease(ctx context.Context, cancel context.CancelCauseFunc, scheduled ScheduledRunAttempt) error {
+func (pool *Pool) abandonStoppedPreTurnAttempt(scheduled ScheduledRunAttempt) (AbandonRunAttemptResult, error) {
+	record, err := pool.identities.AllocateTransitionRecord()
+	if err != nil {
+		return AbandonRunAttemptResult{}, fmt.Errorf("allocate attempt-abandoned transition identity: %w", err)
+	}
+	claim := scheduled.Claim
+	request := AbandonRunAttemptRequest{
+		RunID: claim.Run.RunID, RunAttemptID: claim.RunAttempt.RunAttemptID,
+		HolderID: claim.RunAttempt.HolderID, RunAttemptGeneration: claim.RunAttempt.Generation,
+		Reason: "startup_failed", Record: record,
+	}
+	commandTimeout := pool.config.CleanupTimeout
+	if leaseWindow := pool.scheduler.AttemptLeaseTTL() / 2; commandTimeout > leaseWindow {
+		commandTimeout = leaseWindow
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	result, err := pool.core.AbandonRunAttempt(cleanupCtx, request)
+	if err != nil && ambiguousPoolCommand(err, cleanupCtx) {
+		result, err = pool.core.AbandonRunAttempt(cleanupCtx, request)
+	}
+	if err != nil {
+		return AbandonRunAttemptResult{}, fmt.Errorf("reconcile stopped pre-turn attempt: %w", err)
+	}
+	if result.Run.RunID != request.RunID || result.RunAttempt.RunAttemptID != request.RunAttemptID ||
+		result.RunAttempt.Generation != request.RunAttemptGeneration || result.RunAttempt.HolderID != request.HolderID ||
+		!validAbandonRunAttemptResult(result) {
+		return AbandonRunAttemptResult{}, errors.New("core returned an invalid stopped pre-turn attempt result")
+	}
+	return result, nil
+}
+
+func (pool *Pool) completeStoppedDispatch(dispatch RunDispatch) error {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), pool.config.CleanupTimeout)
+	defer cancel()
+	err := pool.scheduler.CompleteAcceptedDispatch(cleanupCtx, dispatch)
+	if err != nil && ambiguousPoolCommand(err, cleanupCtx) {
+		err = pool.scheduler.CompleteAcceptedDispatch(cleanupCtx, dispatch)
+	}
+	if err != nil {
+		return fmt.Errorf("complete terminal run dispatch: %w", err)
+	}
+	return nil
+}
+
+func (pool *Pool) keepAttemptLease(
+	ctx context.Context,
+	cancel context.CancelCauseFunc,
+	scheduled ScheduledRunAttempt,
+	state *attemptAuthorityState,
+) error {
 	ticker := time.NewTicker(pool.config.LeaseRenewInterval)
 	defer ticker.Stop()
 	claim := scheduled.Claim
@@ -259,13 +363,101 @@ func (pool *Pool) keepAttemptLease(ctx context.Context, cancel context.CancelCau
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			if _, err := pool.renewAttemptExactly(ctx, request); err != nil {
+			result, err := pool.renewAttemptExactly(ctx, request)
+			if err != nil {
 				failure := fmt.Errorf("renew run-attempt leases: %w", err)
 				cancel(failure)
 				return failure
 			}
+			state.observe(result)
+			if result.Run.Status == "cancelling" {
+				cancel(errors.New("explicit run cancellation requested"))
+			}
 		}
 	}
+}
+
+type attemptAuthoritySnapshot struct {
+	Run        Run
+	RunAttempt RunAttempt
+}
+
+type attemptAuthorityState struct {
+	mu            sync.Mutex
+	snapshotValue attemptAuthoritySnapshot
+}
+
+func newAttemptAuthorityState(claim ClaimRunAttemptResult) *attemptAuthorityState {
+	return &attemptAuthorityState{snapshotValue: attemptAuthoritySnapshot{Run: claim.Run, RunAttempt: claim.RunAttempt}}
+}
+
+func (state *attemptAuthorityState) observe(result RenewRunAttemptResult) {
+	state.mu.Lock()
+	state.snapshotValue = attemptAuthoritySnapshot{Run: result.Run, RunAttempt: result.RunAttempt}
+	state.mu.Unlock()
+}
+
+func (state *attemptAuthorityState) snapshot() attemptAuthoritySnapshot {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.snapshotValue
+}
+
+func (pool *Pool) observeAttemptAuthority(ctx context.Context, scheduled ScheduledRunAttempt, state *attemptAuthorityState) (RenewRunAttemptResult, error) {
+	claim := scheduled.Claim
+	result, err := pool.renewAttemptExactly(ctx, RenewRunAttemptRequest{
+		SessionID: claim.Run.SessionID, RunID: claim.Run.RunID,
+		RunAttemptID: claim.RunAttempt.RunAttemptID, HolderID: claim.RunAttempt.HolderID,
+		RunAttemptGeneration: claim.RunAttempt.Generation, LeaseTTL: pool.scheduler.AttemptLeaseTTL(),
+	})
+	if err == nil {
+		state.observe(result)
+	}
+	return result, err
+}
+
+func (pool *Pool) finishCancelledAttempt(
+	scheduled ScheduledRunAttempt,
+	turnAccepted bool,
+	latest attemptAuthoritySnapshot,
+	supervisionErr error,
+) error {
+	if turnAccepted && latest.RunAttempt.Status != "finalizing" {
+		var terminal *AttemptTerminalError
+		if !errors.As(supervisionErr, &terminal) || terminal.Status != "interrupted" {
+			return errors.New("cancelling accepted attempt did not confirm an interrupted stock turn")
+		}
+	}
+	record, err := pool.identities.AllocateTransitionRecord()
+	if err != nil {
+		return fmt.Errorf("allocate run-cancelled transition identity: %w", err)
+	}
+	claim := scheduled.Claim
+	request := InterruptRunAttemptRequest{
+		RunID: claim.Run.RunID, RunAttemptID: claim.RunAttempt.RunAttemptID,
+		HolderID: claim.RunAttempt.HolderID, RunAttemptGeneration: claim.RunAttempt.Generation,
+		ExpectedRunVersion: latest.Run.Version, ExpectedRunAttemptVersion: latest.RunAttempt.Version,
+		Reason: "cancelled", Record: record,
+	}
+	commandTimeout := pool.config.CleanupTimeout
+	if leaseWindow := pool.scheduler.AttemptLeaseTTL() / 2; commandTimeout > leaseWindow {
+		commandTimeout = leaseWindow
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	result, err := pool.core.InterruptRunAttempt(cleanupCtx, request)
+	if err != nil && ambiguousPoolCommand(err, cleanupCtx) {
+		result, err = pool.core.InterruptRunAttempt(cleanupCtx, request)
+	}
+	if err != nil {
+		return fmt.Errorf("commit cancelled run after attempt cleanup: %w", err)
+	}
+	if result.Run.RunID != request.RunID || result.Run.Status != "cancelled" ||
+		result.RunAttempt.RunAttemptID != request.RunAttemptID || result.RunAttempt.Status != "interrupted" ||
+		result.RunAttempt.Generation != request.RunAttemptGeneration || result.RunAttempt.HolderID != request.HolderID {
+		return errors.New("core returned an invalid cancelled attempt result")
+	}
+	return nil
 }
 
 func (pool *Pool) renewAttemptExactly(ctx context.Context, request RenewRunAttemptRequest) (RenewRunAttemptResult, error) {

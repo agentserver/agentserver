@@ -43,6 +43,28 @@ func TestStateStoreRunAttemptCommandsMapCompleteControlBoundary(t *testing.T) {
 	if store.renew.LeaseTTL != 45*time.Second || store.renew.SessionID == "" || renewed.SessionLease.Generation != 3 || renewed.AttemptLease.Generation != 3 {
 		t.Fatalf("renew store/response = %+v / %+v", store.renew, renewed)
 	}
+	interrupted, err := commands.InterruptRunAttempt(t.Context(), corecontract.InterruptRunAttemptRequest{
+		RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
+		ExpectedRunVersion: 3, ExpectedRunAttemptVersion: 2, Reason: "cancelled", Record: record,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.interrupt.Reason != "cancelled" || interrupted.Run.Status != coredb.RunStatusCancelled ||
+		interrupted.RunAttempt.Status != coredb.AttemptStatusInterrupted || interrupted.SessionVersion != 10 {
+		t.Fatalf("interrupt store/response = %+v / %+v", store.interrupt, interrupted)
+	}
+	abandoned, err := commands.AbandonRunAttempt(t.Context(), corecontract.AbandonRunAttemptRequest{
+		RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
+		Reason: "startup_failed", Record: record,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.abandon.Reason != "startup_failed" || abandoned.Disposition != coredb.AbandonDispositionRequeued ||
+		abandoned.Run.Status != coredb.RunStatusQueued || abandoned.RunAttempt.Status != coredb.AttemptStatusFailed {
+		t.Fatalf("abandon store/response = %+v / %+v", store.abandon, abandoned)
+	}
 
 	accepted, err := commands.MarkTurnAccepted(t.Context(), corecontract.MarkTurnAcceptedRequest{
 		RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
@@ -141,6 +163,8 @@ type recordingRunAttemptStore struct {
 
 	claim       coredb.ClaimQueuedRunCommand
 	renew       coredb.RenewRunAttemptLeasesCommand
+	interrupt   coredb.InterruptAttemptCommand
+	abandon     coredb.AbandonAttemptCommand
 	accept      coredb.MarkTurnAcceptedCommand
 	begin       coredb.BeginRunFinalizationCommand
 	commit      coredb.CommitCheckpointAndTerminalRunCommand
@@ -171,7 +195,47 @@ func (store *recordingRunAttemptStore) ClaimQueuedRun(_ context.Context, command
 func (store *recordingRunAttemptStore) RenewRunAttemptLeases(_ context.Context, command coredb.RenewRunAttemptLeasesCommand) (coredb.RenewRunAttemptLeasesResult, error) {
 	store.renew = command
 	lease := coredb.Lease{HolderID: command.HolderID, Generation: command.Generation, ExpiresAt: store.now.Add(command.LeaseTTL), AcquiredAt: store.now, RenewedAt: store.now}
-	return coredb.RenewRunAttemptLeasesResult{SessionLease: lease, AttemptLease: lease}, nil
+	return coredb.RenewRunAttemptLeasesResult{
+		Run: coredb.Run{
+			ID: command.RunID, WorkspaceID: "40000000-0000-4000-8000-000000000004", SessionID: command.SessionID,
+			Status: coredb.RunStatusRunning, CurrentAttemptGeneration: command.Generation, Version: 3,
+		},
+		Attempt: coredb.RunAttempt{
+			ID: command.AttemptID, RunID: command.RunID, Generation: command.Generation,
+			Status: coredb.AttemptStatusRunning, HolderID: command.HolderID, Version: 2,
+		},
+		SessionLease: lease, AttemptLease: lease,
+	}, nil
+}
+
+func (store *recordingRunAttemptStore) InterruptAttempt(_ context.Context, command coredb.InterruptAttemptCommand) (coredb.InterruptAttemptResult, error) {
+	store.interrupt = command
+	return coredb.InterruptAttemptResult{
+		Run: coredb.Run{
+			ID: command.RunID, WorkspaceID: "40000000-0000-4000-8000-000000000004", SessionID: "40000000-0000-4000-8000-000000000005",
+			Status: coredb.RunStatusCancelled, CurrentAttemptGeneration: command.Generation, Version: command.ExpectedRunVersion + 1,
+		},
+		Attempt: coredb.RunAttempt{
+			ID: command.AttemptID, RunID: command.RunID, Generation: command.Generation,
+			Status: coredb.AttemptStatusInterrupted, HolderID: command.HolderID, Version: command.ExpectedAttemptVersion + 1,
+		},
+		SessionVersion: 10, Changed: true,
+	}, nil
+}
+
+func (store *recordingRunAttemptStore) AbandonAttempt(_ context.Context, command coredb.AbandonAttemptCommand) (coredb.AbandonAttemptResult, error) {
+	store.abandon = command
+	return coredb.AbandonAttemptResult{
+		Run: coredb.Run{
+			ID: command.RunID, WorkspaceID: "40000000-0000-4000-8000-000000000004", SessionID: "40000000-0000-4000-8000-000000000005",
+			Status: coredb.RunStatusQueued, CurrentAttemptGeneration: command.Generation, Version: 4,
+		},
+		Attempt: coredb.RunAttempt{
+			ID: command.AttemptID, RunID: command.RunID, Generation: command.Generation,
+			Status: coredb.AttemptStatusFailed, HolderID: command.HolderID, Version: 2,
+		},
+		SessionVersion: 3, Disposition: coredb.AbandonDispositionRequeued, Changed: true,
+	}, nil
 }
 
 func (store *recordingRunAttemptStore) MarkTurnAccepted(_ context.Context, command coredb.MarkTurnAcceptedCommand) (coredb.MarkTurnAcceptedResult, error) {

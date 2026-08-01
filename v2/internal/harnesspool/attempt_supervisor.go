@@ -302,7 +302,13 @@ func (supervisor *ControlAttemptSupervisor) stopAttempt(
 			select {
 			case waitErr := <-workloadDone:
 				graceTimer.Stop()
-				return errors.Join(cause, interruptErr, waitErr)
+				terminalContext, cancelTerminal := context.WithTimeout(context.Background(), supervisor.config.StopTimeout)
+				terminal, terminalErr := control.WaitTerminal(terminalContext)
+				cancelTerminal()
+				if terminalErr == nil {
+					return errors.Join(cause, interruptErr, terminalResultError(terminal, waitErr))
+				}
+				return errors.Join(cause, interruptErr, waitErr, terminalErr)
 			case <-graceTimer.C:
 			}
 		}

@@ -71,11 +71,24 @@ Card/Column/Text subset emitted by browser-gateway. It never connects to stock
 app-server or exec-server directly. The deterministic development turn first
 discovers its single environment, then executes exact argv `["/bin/pwd"]` so
 the page receives a real command-result A2UI surface from stock exec-server.
+Its Cancel button calls the separate same-origin
+`POST /v2/workspaces/{workspaceId}/runs/{runId}:cancel` command. Disconnecting
+the event stream does not cancel a run. A held attempt first reports
+`cancelling`; harness-pool keeps both leases alive while interrupting the stock
+turn and stopping the workload. Cancellation stops the turn/MCP context, while
+the worker control stream remains alive through the interrupted-terminal ACK
+and the pool lifecycle-command context remains alive through workload cleanup.
+Only the exact holder can then commit terminal `cancelled/interrupted`.
 
-The smoke first checks the reference-web marker and CSP, then sends an HTTPS
-AG-UI request through the published browser-gateway, waits for `RUN_FINISHED`,
-checks the scripted assistant message, and verifies that a checkpoint exists
-in PostgreSQL. Inspect and stop the stack with:
+The smoke first checks the reference-web marker and CSP. It then sends one
+HTTPS AG-UI request through the published browser-gateway, waits for
+`RUN_FINISHED`, checks the scripted assistant message, and commits one durable
+checkpoint. A second deterministic request pauses after a real executor
+command, sends the explicit cancel command, observes `run.cancelling` followed
+by `RUN_ERROR` with `code=user_cancelled`, and must commit no checkpoint. The
+PostgreSQL checkpoint count must therefore increase by exactly one and the
+latest run must be `cancelled` with zero checkpoints. Inspect and stop the
+stack with:
 
 ```sh
 container logs agentserver-v2-dev

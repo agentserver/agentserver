@@ -193,9 +193,14 @@ textarea:disabled {
 }
 
 .run-state[data-state="running"] .run-state-dot,
-.run-state[data-state="connecting"] .run-state-dot {
+.run-state[data-state="connecting"] .run-state-dot,
+.run-state[data-state="cancelling"] .run-state-dot {
   background: #d28a30;
   animation: pulse 1.5s ease-in-out infinite;
+}
+
+.run-state[data-state="cancelled"] .run-state-dot {
+  background: #8f9893;
 }
 
 .quiet-button,
@@ -244,6 +249,32 @@ textarea:disabled {
 
 .conversation-heading {
   padding-bottom: 24px;
+}
+
+.run-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.cancel-button {
+  padding: 8px 11px;
+  border: 1px solid #e3b4ad;
+  border-radius: 9px;
+  color: #a53e34;
+  background: #fff8f6;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.cancel-button:hover:not(:disabled) {
+  border-color: #cf8177;
+  background: var(--red-pale);
+}
+
+.cancel-button:disabled {
+  cursor: progress;
+  opacity: 0.65;
 }
 
 .eyebrow {

@@ -2,6 +2,7 @@ package devfixtures
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -130,6 +131,58 @@ func TestLLMProxyFixtureRunsListShellThenFinalPerCapability(t *testing.T) {
 	exhausted := callLLMProxy(t, runtime, token, modelBody(thirdInput))
 	if exhausted.Code != http.StatusConflict {
 		t.Fatalf("exhausted scripted response status = %d", exhausted.Code)
+	}
+}
+
+func TestLLMProxyFixtureCancellationHoldEndsOnlyWithRequestContext(t *testing.T) {
+	runtime, codec := newTestRuntime(t)
+	runtime.holdEntered = make(chan struct{}, 1)
+	token := signTestCapability(t, codec, "70000000-0000-4000-8000-000000000087", "80000000-0000-4000-8000-000000000088", runcapability.AudienceLLMProxy, fixtureTestNow.Add(time.Hour), "gpt-5", "llmproxy")
+	firstInput := `[{"role":"user","content":"cancel fixture ` + CancellationHoldMarker + `"}]`
+	first := callLLMProxy(t, runtime, token, modelBody(firstInput))
+	listCallID := responseCallID(t, first.Body.Bytes())
+	if first.Code != http.StatusOK || listCallID == "" {
+		t.Fatalf("cancellation script first response = %d %s", first.Code, first.Body.String())
+	}
+	second := callLLMProxy(t, runtime, token, modelBody(functionOutputInput(t, listCallID, developmentEnvironmentOutput())))
+	shellCallID := responseCallID(t, second.Body.Bytes())
+	if second.Code != http.StatusOK || shellCallID == "" {
+		t.Fatalf("cancellation script shell response = %d %s", second.Code, second.Body.String())
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	request := httptest.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		runtime.bundle.llmEndpoint.String()+"/responses",
+		strings.NewReader(modelBody(functionOutputInput(t, shellCallID, developmentShellOutput()))),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		runtime.serveLLMProxy(response, request)
+		close(done)
+	}()
+	select {
+	case <-runtime.holdEntered:
+	case <-time.After(time.Second):
+		t.Fatal("cancellation model response did not enter its deterministic hold")
+	}
+	select {
+	case <-done:
+		t.Fatal("cancellation model response returned before request cancellation")
+	default:
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("cancellation model response did not stop with its request context")
+	}
+	if response.Body.Len() != 0 {
+		t.Fatalf("held model response wrote bytes after cancellation: %q", response.Body.String())
 	}
 }
 

@@ -209,15 +209,25 @@ func runOneShotWorker(ctx context.Context, config OneShotWorkerConfig, dependenc
 	if control == nil {
 		return errors.New("worker control factory returned nil")
 	}
+	// The control stream is the cleanup evidence path for a cancelled turn, so
+	// it must outlive runCtx. In particular, a holder interrupt cancels runCtx
+	// to drive turn/interrupt and MCP cleanup, then the worker still has to send
+	// turn_terminal(interrupted) and wait for its cumulative ACK. The stream is
+	// bounded by explicit close below rather than by the turn context.
+	controlLifetimeCtx, cancelControlLifetime := context.WithCancelCause(context.Background())
 	controlClosed := false
 	closeControl := func(cause error) {
 		if !controlClosed {
 			controlClosed = true
+			if cause == nil {
+				cause = context.Canceled
+			}
+			cancelControlLifetime(cause)
 			control.Close(cause)
 		}
 	}
 	defer closeControl(errors.New("one-shot worker ended"))
-	if err := control.Start(runCtx); err != nil {
+	if err := control.Start(controlLifetimeCtx); err != nil {
 		return fmt.Errorf("start worker control client: %w", err)
 	}
 	runtimeEvents := newWorkerRuntimeEventForwarder(control, config.NotificationHandler, config.ProgressHandler)
@@ -347,6 +357,7 @@ func runOneShotWorker(ctx context.Context, config OneShotWorkerConfig, dependenc
 		return errors.Join(cleanupErr, fmt.Errorf("finish worker control terminal: %w", err))
 	}
 	stopWatchers()
+	cancelControlLifetime(errors.New("worker terminal was acknowledged"))
 	controlClosed = true
 	return nil
 }

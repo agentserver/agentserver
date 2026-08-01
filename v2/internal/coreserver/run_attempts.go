@@ -14,6 +14,8 @@ const maxRunAttemptEventCommandBytes = 18 * 1024 * 1024
 type RunAttemptCommands interface {
 	ClaimRunAttempt(context.Context, corecontract.ClaimRunAttemptRequest) (corecontract.ClaimRunAttemptResponse, error)
 	RenewRunAttempt(context.Context, corecontract.RenewRunAttemptRequest) (corecontract.RenewRunAttemptResponse, error)
+	InterruptRunAttempt(context.Context, corecontract.InterruptRunAttemptRequest) (corecontract.InterruptRunAttemptResponse, error)
+	AbandonRunAttempt(context.Context, corecontract.AbandonRunAttemptRequest) (corecontract.AbandonRunAttemptResponse, error)
 	MarkTurnAccepted(context.Context, corecontract.MarkTurnAcceptedRequest) (corecontract.MarkTurnAcceptedResponse, error)
 	BeginRunFinalization(context.Context, corecontract.BeginRunFinalizationRequest) (corecontract.BeginRunFinalizationResponse, error)
 	CommitCheckpoint(context.Context, corecontract.CommitCheckpointRequest) (corecontract.CommitCheckpointResponse, error)
@@ -52,6 +54,10 @@ func (handler *RunAttemptHandler) ServeHTTP(response http.ResponseWriter, reques
 	switch action {
 	case "renew":
 		handler.renew(response, request, attemptID)
+	case "interrupt":
+		handler.interrupt(response, request, attemptID)
+	case "abandon":
+		handler.abandon(response, request, attemptID)
 	case "turn-accepted":
 		handler.turnAccepted(response, request, attemptID)
 	case "begin-finalization":
@@ -63,6 +69,46 @@ func (handler *RunAttemptHandler) ServeHTTP(response http.ResponseWriter, reques
 	default:
 		writeError(response, http.StatusNotFound, corecontract.ErrorResponse{Code: "not_found", Message: "internal command endpoint not found"})
 	}
+}
+
+func (handler *RunAttemptHandler) abandon(response http.ResponseWriter, request *http.Request, attemptID string) {
+	if !handler.authorize(response, request, "run-attempts.abandon") {
+		return
+	}
+	var command corecontract.AbandonRunAttemptRequest
+	if !decodeCommand(response, request, &command) {
+		return
+	}
+	if command.RunAttemptID != attemptID {
+		writePathIdentityError(response, "runAttemptId")
+		return
+	}
+	result, err := handler.commands.AbandonRunAttempt(request.Context(), command)
+	if err != nil {
+		writeCommandError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (handler *RunAttemptHandler) interrupt(response http.ResponseWriter, request *http.Request, attemptID string) {
+	if !handler.authorize(response, request, "run-attempts.interrupt") {
+		return
+	}
+	var command corecontract.InterruptRunAttemptRequest
+	if !decodeCommand(response, request, &command) {
+		return
+	}
+	if command.RunAttemptID != attemptID {
+		writePathIdentityError(response, "runAttemptId")
+		return
+	}
+	result, err := handler.commands.InterruptRunAttempt(request.Context(), command)
+	if err != nil {
+		writeCommandError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
 }
 
 func (handler *RunAttemptHandler) claim(response http.ResponseWriter, request *http.Request) {
@@ -201,6 +247,14 @@ func parseRunAttemptAction(path string) (attemptID, action string, ok bool) {
 		const renewSuffix = ":renew"
 		if strings.HasSuffix(remainder, renewSuffix) && len(remainder) > len(renewSuffix) {
 			return strings.TrimSuffix(remainder, renewSuffix), "renew", true
+		}
+		const interruptSuffix = ":interrupt"
+		if strings.HasSuffix(remainder, interruptSuffix) && len(remainder) > len(interruptSuffix) {
+			return strings.TrimSuffix(remainder, interruptSuffix), "interrupt", true
+		}
+		const abandonSuffix = ":abandon"
+		if strings.HasSuffix(remainder, abandonSuffix) && len(remainder) > len(abandonSuffix) {
+			return strings.TrimSuffix(remainder, abandonSuffix), "abandon", true
 		}
 		const turnAcceptedSuffix = ":turnAccepted"
 		if strings.HasSuffix(remainder, turnAcceptedSuffix) && len(remainder) > len(turnAcceptedSuffix) {

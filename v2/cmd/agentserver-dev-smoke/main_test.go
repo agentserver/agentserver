@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/agentserver/agentserver/v2/internal/devfixtures"
 )
 
 func TestExecuteSmokeRequiresTLS13AndObservesTerminal(t *testing.T) {
@@ -70,6 +72,62 @@ func TestExecuteSmokeRequiresTLS13AndObservesTerminal(t *testing.T) {
 	}
 }
 
+func TestExecuteCancellationSmokeWaitsForRunningHoldAndExplicitTerminal(t *testing.T) {
+	const serverRunID = "30000000-0000-4000-8000-000000000003"
+	cancelled := make(chan struct{})
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodPost && request.URL.Path == "/v2/workspaces/"+smokeWorkspaceID+"/sessions/"+smokeSessionID+"/agui":
+			body, err := io.ReadAll(request.Body)
+			if err != nil || !strings.Contains(string(body), devfixtures.CancellationHoldMarker) || request.Header.Get("Authorization") != "Bearer test-browser-bearer" {
+				t.Errorf("cancellation smoke request = body %q error %v headers=%v", body, err, request.Header)
+				http.Error(response, "bad request", http.StatusBadRequest)
+				return
+			}
+			flusher, ok := response.(http.Flusher)
+			if !ok {
+				t.Error("test response does not support streaming")
+				return
+			}
+			response.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(response, "data: {\"type\":\"RUN_STARTED\",\"runId\":\""+serverRunID+"\"}\n\n")
+			_, _ = io.WriteString(response, "data: {\"type\":\"CUSTOM\",\"name\":\"a2ui.operations\",\"value\":[{\"version\":\"v0.9\",\"createSurface\":{\"surfaceId\":\"command-event-1\"}},{\"version\":\"v0.9\",\"updateDataModel\":{\"surfaceId\":\"command-event-1\",\"value\":{\"command\":\"[\\\"/bin/pwd\\\"]\",\"output\":\"/workspace\\n\",\"status\":\"succeeded (exit 0)\"}}}]}\n\n")
+			flusher.Flush()
+			select {
+			case <-cancelled:
+			case <-request.Context().Done():
+				return
+			}
+			_, _ = io.WriteString(response, "data: {\"type\":\"RUN_ERROR\",\"runId\":\""+serverRunID+"\",\"code\":\"user_cancelled\",\"message\":\"cancelled\"}\n\n")
+			flusher.Flush()
+		case request.Method == http.MethodPost && request.URL.Path == "/v2/workspaces/"+smokeWorkspaceID+"/runs/"+serverRunID+":cancel":
+			if request.ContentLength != 0 || request.URL.RawQuery != "" || request.Header.Get("Authorization") != "Bearer test-browser-bearer" {
+				t.Errorf("explicit cancel request = length %d query %q headers=%v", request.ContentLength, request.URL.RawQuery, request.Header)
+				http.Error(response, "bad request", http.StatusBadRequest)
+				return
+			}
+			close(cancelled)
+			response.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(response, `{"workspaceId":"`+smokeWorkspaceID+`","sessionId":"`+smokeSessionID+`","runId":"`+serverRunID+`","status":"cancelling","runVersion":4,"terminal":false,"changed":true}`)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	server.EnableHTTP2 = true
+	server.TLS = &tls.Config{MinVersion: tls.VersionTLS13}
+	server.StartTLS()
+	defer server.Close()
+	caFile, bearerFile := writeSmokeTestAuthority(t, server)
+
+	requestID, stream, err := executeCancellationSmoke(t.Context(), smokeOptions{
+		origin: server.URL, caFile: caFile, bearerFile: bearerFile,
+	})
+	if err != nil || !strings.HasPrefix(requestID, "smoke-") ||
+		!strings.Contains(string(stream), `"code":"user_cancelled"`) {
+		t.Fatalf("executeCancellationSmoke() = id %q stream %q error %v", requestID, stream, err)
+	}
+}
+
 func TestInspectSSERejectsMalformedDataAndReportsMissingPieces(t *testing.T) {
 	if _, _, _, err := inspectSSE([]byte("data: not-json\n")); err == nil {
 		t.Fatal("malformed SSE data accepted")
@@ -93,4 +151,22 @@ func TestRunRejectsIncompleteArguments(t *testing.T) {
 	if exitCode := run(cancelled, nil, io.Discard, io.Discard); exitCode != 1 || time.Since(start) > time.Second {
 		t.Fatalf("cancelled run() = %d after %s", exitCode, time.Since(start))
 	}
+}
+
+func writeSmokeTestAuthority(t *testing.T, server *httptest.Server) (string, string) {
+	t.Helper()
+	root := t.TempDir()
+	caFile := filepath.Join(root, "ca.pem")
+	certificate := server.Certificate()
+	if certificate == nil {
+		t.Fatal("test server has no certificate")
+	}
+	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bearerFile := filepath.Join(root, "bearer.token")
+	if err := os.WriteFile(bearerFile, []byte("test-browser-bearer\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return caFile, bearerFile
 }

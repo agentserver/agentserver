@@ -26,6 +26,7 @@ const (
 	KindRunCompleted              = "run.completed"
 	KindRunFailed                 = "run.failed"
 	KindRunInterrupted            = "run.interrupted"
+	KindRunCancelling             = "run.cancelling"
 	KindRunCancelled              = "run.cancelled"
 )
 
@@ -44,6 +45,7 @@ var knownKinds = map[string]struct{}{
 	KindRunCompleted:              {},
 	KindRunFailed:                 {},
 	KindRunInterrupted:            {},
+	KindRunCancelling:             {},
 	KindRunCancelled:              {},
 }
 
@@ -190,7 +192,7 @@ func DecodeSemanticPayload(event Event) (any, error) {
 			err = payload.validate()
 		}
 		return payload, wrapPayloadError(event.Kind, err)
-	case KindRunCompleted, KindRunFailed, KindRunInterrupted, KindRunCancelled:
+	case KindRunCompleted, KindRunFailed, KindRunInterrupted, KindRunCancelling, KindRunCancelled:
 		payload, err := decodePayload[RunTerminalPayload](event.Payload)
 		if err == nil {
 			err = payload.validate(event.Kind)

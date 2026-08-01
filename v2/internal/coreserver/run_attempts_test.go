@@ -49,6 +49,22 @@ func TestRunAttemptHandlerRoutesAllCommands(t *testing.T) {
 			wantAction: "run-attempts.renew", wantCall: "renew",
 		},
 		{
+			name: "interrupt", path: corecontract.InterruptRunAttemptPath(testRunAttemptID),
+			command: corecontract.InterruptRunAttemptRequest{
+				RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
+				ExpectedRunVersion: 3, ExpectedRunAttemptVersion: 2, Reason: "cancelled", Record: record,
+			},
+			wantAction: "run-attempts.interrupt", wantCall: "interrupt",
+		},
+		{
+			name: "abandon", path: corecontract.AbandonRunAttemptPath(testRunAttemptID),
+			command: corecontract.AbandonRunAttemptRequest{
+				RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
+				Reason: "startup_failed", Record: record,
+			},
+			wantAction: "run-attempts.abandon", wantCall: "abandon",
+		},
+		{
 			name: "turn accepted", path: corecontract.MarkTurnAcceptedPath(testRunAttemptID),
 			command: corecontract.MarkTurnAcceptedRequest{
 				RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
@@ -209,6 +225,16 @@ func (commands *recordingRunAttemptCommands) ClaimRunAttempt(context.Context, co
 func (commands *recordingRunAttemptCommands) RenewRunAttempt(context.Context, corecontract.RenewRunAttemptRequest) (corecontract.RenewRunAttemptResponse, error) {
 	commands.call = "renew"
 	return corecontract.RenewRunAttemptResponse{}, nil
+}
+
+func (commands *recordingRunAttemptCommands) InterruptRunAttempt(context.Context, corecontract.InterruptRunAttemptRequest) (corecontract.InterruptRunAttemptResponse, error) {
+	commands.call = "interrupt"
+	return corecontract.InterruptRunAttemptResponse{}, nil
+}
+
+func (commands *recordingRunAttemptCommands) AbandonRunAttempt(context.Context, corecontract.AbandonRunAttemptRequest) (corecontract.AbandonRunAttemptResponse, error) {
+	commands.call = "abandon"
+	return corecontract.AbandonRunAttemptResponse{}, nil
 }
 
 func (commands *recordingRunAttemptCommands) MarkTurnAccepted(context.Context, corecontract.MarkTurnAcceptedRequest) (corecontract.MarkTurnAcceptedResponse, error) {

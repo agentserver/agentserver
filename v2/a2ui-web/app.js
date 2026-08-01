@@ -9,12 +9,21 @@ import {
   cloneViewState,
   createViewState,
   isTerminalRunStatus,
-  readFragmentConfiguration,
   reduceAGUIEvent,
   resolveJSONPointer,
   validateBearer,
   validateScopeID,
 } from './protocol.js'
+
+import {
+  buildTokenExchangeBody,
+  consumeAuthorizationTransaction,
+  createAuthorizationTransaction,
+  readAuthorizationCallback,
+  storeAuthorizationTransaction,
+  validateAuthorizationConfig,
+  validateTokenResponse,
+} from './auth.js'
 
 const developmentWorkspaceID = '40000000-0000-4000-8000-000000000004'
 const developmentSessionID = '50000000-0000-4000-8000-000000000005'
@@ -26,7 +35,7 @@ const elements = {
   connectionLayer: requiredElement('connection-layer'),
   connectionForm: requiredElement('connection-form'),
   connectionError: requiredElement('connection-error'),
-  bearer: requiredElement('bearer'),
+  loginButton: requiredElement('login-button'),
   workspaceID: requiredElement('workspace-id'),
   sessionID: requiredElement('session-id'),
   runState: requiredElement('run-state'),
@@ -57,17 +66,18 @@ const elements = {
 
 const welcomeTemplate = elements.welcomeCard.cloneNode(true)
 let connection = null
+let authorizationConfig = null
 let viewState = createViewState()
 let activeRun = null
 let cancellationPending = false
 const approvalCommands = new Map()
 
-initialize()
+void initialize()
 
-function initialize() {
+async function initialize() {
   elements.workspaceID.value = developmentWorkspaceID
   elements.sessionID.value = developmentSessionID
-  elements.connectionForm.addEventListener('submit', connectFromForm)
+  elements.connectionForm.addEventListener('submit', beginAuthorization)
   elements.connectionButton.addEventListener('click', toggleConnection)
   elements.composer.addEventListener('submit', sendPrompt)
   elements.reconnectButton.addEventListener('click', () => streamRun(true))
@@ -76,50 +86,97 @@ function initialize() {
   window.addEventListener('online', checkGatewayHealth)
   window.addEventListener('offline', () => setHealth('offline', 'browser offline'))
 
-  const fragment = readFragmentConfiguration(window.location.hash)
   if (window.location.hash) {
     history.replaceState(null, '', `${window.location.pathname}${window.location.search}`)
-  }
-  if (fragment.workspaceID) elements.workspaceID.value = fragment.workspaceID
-  if (fragment.sessionID) elements.sessionID.value = fragment.sessionID
-  if (fragment.token) {
-    elements.bearer.value = fragment.token
-    if (!connectFromValues()) showConnectionLayer()
-  } else {
-    showConnectionLayer()
   }
   renderAll()
   checkGatewayHealth()
   window.setInterval(checkGatewayHealth, 10_000)
-}
 
-function connectFromForm(event) {
-  event.preventDefault()
-  connectFromValues()
-}
-
-function connectFromValues() {
+  let callback = null
   try {
-    const token = validateBearer(elements.bearer.value)
+    callback = readAuthorizationCallback(window.location.search)
+  } catch (error) {
+    history.replaceState(null, '', window.location.pathname)
+    showConnectionLayer(error)
+    return
+  }
+  if (callback) history.replaceState(null, '', window.location.pathname)
+  try {
+    authorizationConfig = await loadAuthorizationConfig()
+    if (callback) {
+      await completeAuthorization(callback)
+    } else {
+      showConnectionLayer()
+    }
+  } catch (error) {
+    showConnectionLayer(error)
+  }
+}
+
+async function loadAuthorizationConfig() {
+  const response = await fetch('/auth/config', {
+    method: 'GET', mode: 'same-origin', cache: 'no-store', credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer',
+    headers: { Accept: 'application/json' },
+  })
+  if (!response.ok) throw await responseError(response)
+  return validateAuthorizationConfig(await boundedJSONResponse(response, 32 * 1024))
+}
+
+async function beginAuthorization(event) {
+  event.preventDefault()
+  if (!authorizationConfig || connection || elements.loginButton.disabled) return
+  elements.loginButton.disabled = true
+  elements.loginButton.textContent = 'Preparing PKCE…'
+  elements.connectionError.hidden = true
+  try {
     const workspaceID = validateScopeID('workspace ID', elements.workspaceID.value.trim())
     const sessionID = validateScopeID('session ID', elements.sessionID.value.trim())
-    connection = { token, workspaceID, sessionID }
-    elements.bearer.value = ''
-    elements.connectionError.hidden = true
-    elements.connectionLayer.hidden = true
-    elements.connectionButton.textContent = 'Disconnect'
-    viewState = createViewState()
-    activeRun = null
-    cancellationPending = false
-    approvalCommands.clear()
-    renderAll()
-    elements.prompt.focus()
-    return true
+    const generated = await createAuthorizationTransaction({
+      config: authorizationConfig,
+      origin: window.location.origin,
+      workspaceID,
+      sessionID,
+      cryptoAPI: window.crypto,
+    })
+    storeAuthorizationTransaction(window.sessionStorage, generated.transaction)
+    window.location.assign(generated.authorizationURL)
   } catch (error) {
     elements.connectionError.textContent = safeErrorMessage(error)
     elements.connectionError.hidden = false
-    return false
+    elements.loginButton.disabled = false
+    elements.loginButton.textContent = 'Continue with development OIDC →'
   }
+}
+
+async function completeAuthorization(callback) {
+  const transaction = consumeAuthorizationTransaction(window.sessionStorage, authorizationConfig, callback)
+  elements.workspaceID.value = validateScopeID('workspace ID', transaction.workspaceID)
+  elements.sessionID.value = validateScopeID('session ID', transaction.sessionID)
+  if (callback.error) {
+    throw new Error(`identity provider returned ${callback.error}${callback.errorDescription ? `: ${callback.errorDescription}` : ''}`)
+  }
+  const response = await fetch(authorizationConfig.tokenEndpoint, {
+    method: 'POST', mode: 'same-origin', cache: 'no-store', credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: buildTokenExchangeBody(authorizationConfig, transaction, callback.code),
+  })
+  if (!response.ok) throw await responseError(response)
+  const token = validateTokenResponse(await boundedJSONResponse(response, 128 * 1024), authorizationConfig.scopes)
+  establishConnection(validateBearer(token.accessToken), transaction.workspaceID, transaction.sessionID)
+}
+
+function establishConnection(token, workspaceID, sessionID) {
+  connection = { token, workspaceID, sessionID }
+  elements.connectionError.hidden = true
+  elements.connectionLayer.hidden = true
+  elements.connectionButton.textContent = 'Disconnect'
+  viewState = createViewState()
+  activeRun = null
+  cancellationPending = false
+  approvalCommands.clear()
+  renderAll()
+  elements.prompt.focus()
 }
 
 function toggleConnection() {
@@ -138,16 +195,23 @@ function toggleConnection() {
   connection.token = ''
   connection = null
   viewState = createViewState()
-  elements.connectionButton.textContent = 'Connect'
+  elements.connectionButton.textContent = 'Sign in'
   elements.prompt.value = ''
   showConnectionLayer()
   renderAll()
 }
 
-function showConnectionLayer() {
+function showConnectionLayer(error = null) {
   elements.connectionLayer.hidden = false
-  elements.connectionError.hidden = true
-  window.setTimeout(() => elements.bearer.focus(), 0)
+  elements.loginButton.disabled = !authorizationConfig
+  elements.loginButton.textContent = authorizationConfig ? 'Continue with development OIDC →' : 'Authorization unavailable'
+  if (error) {
+    elements.connectionError.textContent = safeErrorMessage(error)
+    elements.connectionError.hidden = false
+  } else {
+    elements.connectionError.hidden = true
+  }
+  window.setTimeout(() => (authorizationConfig ? elements.loginButton : elements.workspaceID).focus(), 0)
 }
 
 function sendPrompt(event) {
@@ -660,7 +724,7 @@ function renderComposer() {
   elements.prompt.disabled = !connection || busy
   elements.sendButton.disabled = !connection || busy || !elements.prompt.value.trim()
   if (!connection) {
-    elements.composerHint.textContent = 'Connect an in-memory development bearer to begin.'
+    elements.composerHint.textContent = 'Sign in with Authorization Code + PKCE to begin.'
   } else if (viewState.status === 'disconnected') {
     elements.composerHint.textContent = 'Reconnect the existing stream before sending another prompt.'
   } else if (viewState.status === 'cancelling') {

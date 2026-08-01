@@ -58,10 +58,16 @@ func TestPrepareBuildsClosedDevelopmentStackWithoutWorkerSecrets(t *testing.T) {
 	assertGeneratedTLS(t, output, createdAt)
 
 	coreEnvironment := readGeneratedEnvironment(t, result.EnvironmentFiles["agentserver-core"])
+	browserEnvironment := readGeneratedEnvironment(t, result.EnvironmentFiles["browser-gateway"])
 	executorEnvironment := readGeneratedEnvironment(t, result.EnvironmentFiles["executor-gateway"])
 	poolEnvironment := readGeneratedEnvironment(t, result.EnvironmentFiles["harness-pool"])
 	if coreEnvironment["AGENTSERVER_V2_DATABASE_URL"] != fixture.document.DatabaseURL ||
 		coreEnvironment["AGENTSERVER_V2_RUN_ALLOWED_TOOLS"] != "list_environments,read_file,shell" ||
+		coreEnvironment["AGENTSERVER_V2_HYDRA_ADMIN_URL"] != loaded.HydraFixtureOrigin ||
+		coreEnvironment["AGENTSERVER_V2_HYDRA_PUBLIC_ORIGIN"] != loaded.BrowserOrigin ||
+		coreEnvironment["AGENTSERVER_V2_EXTERNAL_OIDC_ISSUER"] != loaded.HydraFixtureOrigin+"/idp" ||
+		coreEnvironment["AGENTSERVER_V2_EXTERNAL_OIDC_REDIRECT_URL"] != loaded.BrowserOrigin+"/auth/oidc/callback" ||
+		browserEnvironment["AGENTSERVER_V2_DEVELOPMENT_OIDC_AUTHORIZATION_UPSTREAM"] != loaded.HydraFixtureOrigin ||
 		executorEnvironment["AGENTSERVER_V2_DEV_EXECUTOR_ID"] != fixture.document.Authority.ExecutorID ||
 		poolEnvironment["AGENTSERVER_V2_CODEX_RUNTIME_MANIFEST_SHA256"] != loaded.ManifestSHA256 ||
 		poolEnvironment["AGENTSERVER_V2_MAX_APPROVAL_TTL"] != fixture.document.Harness.MaxApprovalTTL ||
@@ -88,6 +94,14 @@ func TestPrepareBuildsClosedDevelopmentStackWithoutWorkerSecrets(t *testing.T) {
 	}
 	if _, err := runcursor.NewCodec(cursorBytes); err != nil {
 		t.Fatalf("generated cursor key: %v", err)
+	}
+	loginKeyBytes, err := base64.RawURLEncoding.DecodeString(coreEnvironment["AGENTSERVER_V2_LOGIN_TRANSACTION_KEY"])
+	if err != nil || len(loginKeyBytes) != 32 {
+		t.Fatalf("generated login transaction key has invalid encoding or size: %v, %d", err, len(loginKeyBytes))
+	}
+	externalSecret := strings.TrimSuffix(string(mustReadFile(t, filepath.Join(output, externalOIDCSecretFile))), "\n")
+	if externalSecret == "" || coreEnvironment["AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_SECRET"] != externalSecret {
+		t.Fatal("Core and external OIDC fixture do not share the generated client secret")
 	}
 
 	signer, err := harnesspool.LoadEd25519ManifestSigner(manifestSigningKeyID, filepath.Join(output, manifestSeedFile))
@@ -124,10 +138,12 @@ func TestPrepareBuildsClosedDevelopmentStackWithoutWorkerSecrets(t *testing.T) {
 	fixturesBytes := mustReadFile(t, result.FixturesConfigFile)
 	metadataBytes := mustReadFile(t, result.MetadataFile)
 	for name, secret := range map[string][]byte{
-		"capability HMAC": []byte(capabilityKey),
-		"cursor HMAC":     []byte(coreEnvironment["AGENTSERVER_V2_RUN_CURSOR_KEY"]),
-		"manifest seed":   seed,
-		"browser bearer":  browserBearer,
+		"capability HMAC":             []byte(capabilityKey),
+		"cursor HMAC":                 []byte(coreEnvironment["AGENTSERVER_V2_RUN_CURSOR_KEY"]),
+		"manifest seed":               seed,
+		"browser bearer":              browserBearer,
+		"external OIDC client secret": []byte(externalSecret),
+		"login transaction key":       []byte(coreEnvironment["AGENTSERVER_V2_LOGIN_TRANSACTION_KEY"]),
 	} {
 		for target, contents := range map[string][]byte{
 			"worker deployment": workerBytes, "agentx launch": agentxBytes,

@@ -94,6 +94,7 @@ type WorkerControlClient struct {
 	done             chan struct{}
 	doneOnce         sync.Once
 	commands         chan harnesscontrol.InterruptCommand
+	ackBarrier       sync.Mutex
 
 	approvalMu sync.Mutex
 	approvals  map[string]*workerPendingApproval
@@ -104,9 +105,15 @@ type workerPendingApproval struct {
 	result  chan harnesscontrol.ApprovalOutcomeCommand
 }
 
+type workerControlSocket interface {
+	Read(context.Context) (websocket.MessageType, []byte, error)
+	Write(context.Context, websocket.MessageType, []byte) error
+	CloseNow() error
+}
+
 type workerControlConnection struct {
 	writeMu sync.Mutex
-	socket  *websocket.Conn
+	socket  workerControlSocket
 }
 
 func NewWorkerControlClient(config WorkerControlClientConfig) (*WorkerControlClient, error) {
@@ -677,22 +684,40 @@ func (client *WorkerControlClient) connectResume(ctx context.Context, session *h
 			return nil, err
 		}
 	}
-	if session.Snapshot().ReceivedThrough > snapshot.ReceivedThrough {
-		ack, err := session.AckFrame()
-		if err != nil {
-			return nil, err
-		}
-		if err := connection.write(ctx, client.config.WriteTimeout, client.config.WireLimits, ack); err != nil {
-			return nil, err
-		}
-	}
-	for _, frame := range resumed.Replay {
-		if err := connection.write(ctx, client.config.WriteTimeout, client.config.WireLimits, frame); err != nil {
-			return nil, err
-		}
+	// Exact worker replay frames can carry older piggyback ACK cursors. Put
+	// them on the wire before acknowledging commands just drained from the
+	// holder's replay; sending the new standalone ACK first would make the
+	// subsequent immutable replay bytes look like an ACK regression.
+	if err := client.writeResumeTail(
+		ctx, session, connection, resumed.Replay,
+		session.Snapshot().ReceivedThrough > snapshot.ReceivedThrough,
+	); err != nil {
+		return nil, err
 	}
 	fail = false
 	return connection, nil
+}
+
+func (client *WorkerControlClient) writeResumeTail(
+	ctx context.Context,
+	session *harnesscontrol.Session,
+	connection *workerControlConnection,
+	replay []harnesscontrol.Frame,
+	acknowledgeDrainedPeerReplay bool,
+) error {
+	for _, frame := range replay {
+		if err := connection.write(ctx, client.config.WriteTimeout, client.config.WireLimits, frame); err != nil {
+			return err
+		}
+	}
+	if !acknowledgeDrainedPeerReplay {
+		return nil
+	}
+	ack, err := session.AckFrame()
+	if err != nil {
+		return err
+	}
+	return connection.write(ctx, client.config.WriteTimeout, client.config.WireLimits, ack)
 }
 
 func (client *WorkerControlClient) dial(ctx context.Context) (*workerControlConnection, error) {
@@ -785,6 +810,13 @@ func (client *WorkerControlClient) readOne(
 		client.notifyStateChange()
 		return nil
 	case message.Frame != nil:
+		// Keep receive-cursor advancement and its cumulative ACK on the wire
+		// ahead of any later worker event that piggybacks that newer cursor.
+		// Conversely, an event that already froze an older piggyback ACK holds
+		// this barrier through its write, so a standalone newer ACK cannot
+		// overtake it and make the holder observe an ACK regression.
+		client.ackBarrier.Lock()
+		defer client.ackBarrier.Unlock()
 		received, err := session.Receive(*message.Frame)
 		if err != nil {
 			return err
@@ -821,6 +853,7 @@ func (client *WorkerControlClient) readOne(
 				return err
 			}
 			if err := connection.write(ctx, client.config.WriteTimeout, client.config.WireLimits, ack); err != nil {
+				connection.closeNow()
 				return err
 			}
 		}
@@ -864,9 +897,13 @@ func (client *WorkerControlClient) sendControlEvent(ctx context.Context, event a
 		// Bind sequence allocation to the currently attached connection. If
 		// detach wins first, retry after resume without allocating a frame. If
 		// allocation wins first, detach retains this exact frame for replay.
+		// The ACK barrier also binds the frame's piggyback cursor to wire order
+		// with standalone ACKs emitted by the command reader.
+		client.ackBarrier.Lock()
 		client.mu.Lock()
 		if client.session != session || client.connection != candidate {
 			client.mu.Unlock()
+			client.ackBarrier.Unlock()
 			continue
 		}
 		frame, err = session.Send(harnesscontrol.Payload{
@@ -881,18 +918,24 @@ func (client *WorkerControlClient) sendControlEvent(ctx context.Context, event a
 		client.mu.Unlock()
 		if err == nil {
 			connection = candidate
+			writeErr := connection.write(ctx, client.config.WriteTimeout, client.config.WireLimits, frame)
+			if writeErr != nil {
+				// Close before releasing the ordering barrier. Otherwise the reader
+				// could put a newer ACK on a transport where this older frame has an
+				// ambiguous write outcome.
+				connection.closeNow()
+			}
+			client.ackBarrier.Unlock()
+			if writeErr != nil && ctx.Err() != nil {
+				return ctx.Err()
+			}
 			break
 		}
+		client.ackBarrier.Unlock()
 		if session.Snapshot().State == harnesscontrol.SessionDisconnected {
 			continue
 		}
 		return err
-	}
-	if err := connection.write(ctx, client.config.WriteTimeout, client.config.WireLimits, frame); err != nil {
-		connection.closeNow()
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
 	}
 	if !waitForAuthority {
 		return nil

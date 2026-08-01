@@ -181,6 +181,10 @@ executor 侧不存在 Codex thread，也不存在“大脑 thread 与 executor t
 4. core 接受 Hydra login/consent challenge；Hydra 签发带正确 `aud` 和 `scope` 的 token。
 5. core 不保存或验证用户密码；身份认证仍由外部 IdP 完成。
 
+浏览器只使用browser-gateway的同一HTTPS origin：`/oauth2/auth`和`/oauth2/token`精确代理Hydra public API，`/auth/hydra/login`、`/auth/oidc/callback`和`/auth/hydra/consent`经browser-gateway mTLS代理到Core。生产外部IdP authorization endpoint通常直接指向IdP；只有insecure-dev显式配置`/auth/idp/authorize`的精确代理，且该代理会剥离同origin事务Cookie。Hydra Admin、外部IdP token、discovery和JWKS调用都不经过浏览器。
+
+Core以数据库单次状态机持久化login与consent receipt。Hydra challenge、OIDC state/nonce、PKCE verifier和browser binding只以SHA-256 lookup或AES-256-GCM密文保存，密文AAD绑定transaction/purpose；浏览器只持有`Secure + HttpOnly + SameSite=Lax`的`__Host-`随机binding Cookie。callback必须同时命中state hash与binding hash并原子claim，`(issuer, subject)`只映射到预先存在且active的本地user；callback、consent challenge和authorization code都不能重放。Hydra continuation必须精确回到同origin的`/oauth2/auth`，login和consent分别只能携带单个对应verifier；成功redirect密封后作为状态与审计证据提交，失败或不明确结果不能被当作登录成功恢复。
+
 Hydra token 只证明用户身份和授权受众。workspace 角色必须在每次敏感操作时从 core 的当前成员关系校验，不能信任 token 中可能过期的角色声明。
 
 ### 5.2 四类 principal
@@ -849,7 +853,7 @@ agentx 的实现不放入上述 Go module。`github.com/agentserver/agentx` v2 �
 - 让stock app-server直连executor MCP，无法移除通用resource handler，也把MCP bearer和endpoint带入模型子进程；现改为worker-owned dynamic bridge与Codex MCP deny-all；
 - browser-gateway、harness-pool 和 core 同时声称拥有 session；
 - 用户 bearer、workspace 机器 token 和模型凭证跨信任域复用；
-- Hydra 缺少实际的 login/consent bridge；
+- Hydra原先缺少实际的login/consent bridge；现已补齐一次性login/consent事务、外部OIDC验证和同origin Code + PKCE入口；
 - executor 重连缺少 generation fencing，多副本缺少连接 owner routing；
 - 假设stock `process/signal`成功响应可证明送达，并让多个process共享一个无法operation-scoped回收的stdio instance；现排除signal并让每process独占instance；
 - process/fs 副作用缺少审批、幂等边界和 ambiguous 结果；
@@ -864,7 +868,7 @@ PR 11已把executor contract部分落成机器事实源：`agentx-envelope.schem
 
 PR 12已把gateway/core连接和首个executor shell纵向切片变成可运行代码：forward-only `0004`保存executor/environment、不可复用connection attempt和当前generation holder，`0005`增加只适用于尾部`timeout_terminate`的非dispatch `skipped`终态；mTLS internal command API原子执行acquire/renew/activate/fence以及七个execution/operation命令；真实WebSocket server完成`hello/welcome`、远端`initialize/initialized`、ACK、bounded replay、同进程30秒resume和fresh generation fence。fresh acquire只得到`connecting`，远端lifecycle成功后才把env发布为`online`；旧connectionId留在attempt表中，更新generation后重试只能被fence，不能反向夺回owner。gateway拥有按generation和完整routing context关联的有界process exchange；独立agentx仓库已实现connector/runner IPC、registered-root重复复核、outer timeout signal及每process独占的stock exec-server stdio监管。core的online environment查询以数据库时钟检查lease，gateway的stateful MCP `/mcp`固定`2025-11-25`，实际开发serve只在shell terminal链装配完成后发布`list_environments|shell`。execution transport不接受调用方提供的digest：core从原始JSON按tool schema/domain重新验证、JCS和hash；gateway以单调transition allocator和core返回version推进两项operation，只有一次性`Began=true`才发送start/terminate，匹配RPC response才写各自ACK，真实`exited/closed`才写terminal/output complete，deadline前终态则用`SkipOperation`关闭预分配timeout。发送歧义不重发并收为unknown。shell mapper固定生成`special:minimal(read) + registered-root(write)`；exact stock 0.146.0 macOS live gate已证明该profile可在clean env下执行绝对系统命令，而workspace-only path负向探测以exit 134失败，防止再次删掉必要的platform runtime。相关mapper、MCP组合、socket和race门禁已通过；DB-clock lease过滤case仍必须由配置PostgreSQL执行integration gate。
 
-该状态仍不能称为生产可部署executor：loopback insecure-dev已经把per-tool `ask`、Core Create/Observe/Decide/Expire/Cancel/Consume、真实MCP elicitation、harness-control outcome和consume-before-dispatch接通，并通过pinned Linux整栈happy-path；但生产agentx OAuth/机器key proof、enrollment、core签发/在线撤销的短期run capability、gateway进程丢失后的dispatching/acknowledged恢复审计、平台containment、故障注入门禁和部署manifest仍未实现。当前gateway命令只提供显式loopback `--insecure-dev`，并要求静态开发bearer加完整run/attempt/version/catalog scope；生产serve模式刻意不存在。任何未关联business RPC与不匹配MCP call metadata仍会fail closed。
+该状态仍不能称为生产可部署executor：loopback insecure-dev已经把per-tool `ask`、Core Create/Observe/Decide/Expire/Cancel/Consume、真实MCP elicitation、harness-control outcome、consume-before-dispatch和浏览器Code + PKCE登录链接通；包含登录与重放门禁的新pinned Linux arm64镜像已在全新状态卷及同卷复跑通过。但生产agentx OAuth/机器key proof、enrollment、core签发/在线撤销的短期run capability、gateway进程丢失后的dispatching/acknowledged恢复审计、平台containment、故障注入门禁和部署manifest仍未实现。当前gateway命令只提供显式loopback `--insecure-dev`，executor MCP使用开发HMAC动态签发且绑定完整run/attempt/version/catalog scope的短期capability；生产serve模式刻意不存在。任何未关联business RPC与不匹配MCP call metadata仍会fail closed。
 
 进入实现前必须完成以下 Phase 0 gate：
 
@@ -883,7 +887,7 @@ PR 12已把gateway/core连接和首个executor shell纵向切片变成可运行�
 - [ ] 完成worker MCP client收到的elicitation → core approval链路：参数/上下文冻结、独立approval expiry主动清理、gateway active-time deadline、nonce单次消费、cancel/断线fail-closed和审计闭环，证明app-server不参与第二套审批。
 - [ ] 验证 Phase 1 executor-gateway 单副本部署、同进程 30 秒 resume，以及 gateway 重启后 fail-closed 拒绝 resume/operation 进入 unknown；Phase 2 owner routing 不进入首版。
 - [ ] 验证harness-worker/app-server crash后不会自动重放已发出的MCP副作用，worker MCP transport或dynamic callback丢失时execution可独立收口而run明确interrupted。
-- [ ] 验证 `aud=agentserver-api`、fetch-streaming bearer、AG-UI cursor/rebase、显式 cancel、Hydra challenge 防重放和浏览器断线不取消 run。
+- [x] 验证`aud=agentserver-api`、fetch-streaming bearer、AG-UI cursor/rebase、显式cancel、Hydra callback/consent/code防重放和浏览器断线不取消run（协议、组合及包含登录链的pinned Linux整栈复跑均已完成）。
 - [ ] 验证 capability TTL 覆盖并不超过强制 `max_run_duration + grace`，且 lease fence/RBAC 变更能在 llmproxy 和所有 MCP 入口即时拒绝后续请求。
 
 ## 附录 A：Codex 对齐基线

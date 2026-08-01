@@ -108,8 +108,8 @@ func TestRunInsecureDevelopmentBootstrap(t *testing.T) {
 				t.Fatalf("bootstrap inputs = %q, %q", databaseURL, configPath)
 			}
 			return developmentBootstrapResult{
-				Migration:   coredb.MigrationResult{CurrentVersion: 12},
-				Bootstrap:   coredb.InsecureDevelopmentBootstrapResult{CreatedRows: 5},
+				Migration:   coredb.MigrationResult{CurrentVersion: 13},
+				Bootstrap:   coredb.InsecureDevelopmentBootstrapResult{CreatedRows: 7},
 				WorkspaceID: "workspace", SessionID: "session", ActorID: "actor",
 				ExecutorID: "executor", EnvironmentID: "environment",
 			}, nil
@@ -117,7 +117,7 @@ func TestRunInsecureDevelopmentBootstrap(t *testing.T) {
 	)
 	if exitCode != 0 || !called || stderr.Len() != 0 ||
 		!strings.Contains(stdout.String(), "INSECURE DEV workspace workspace") ||
-		!strings.Contains(stdout.String(), "schema 0012; created 5 row(s)") {
+		!strings.Contains(stdout.String(), "schema 0013; created 7 row(s)") {
 		t.Fatalf("bootstrap result = exit %d, called %v, stdout %q, stderr %q", exitCode, called, stdout.String(), stderr.String())
 	}
 }

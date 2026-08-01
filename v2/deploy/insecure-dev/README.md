@@ -56,16 +56,17 @@ Run the real deterministic smoke from `v2/`:
 ```
 
 The browser-gateway also serves the dependency-free reference web at `/`.
-Print a local URL whose fragment contains the insecure development bearer:
+Print its local URL:
 
 ```sh
 ./deploy/insecure-dev/browser-url.sh
 ```
 
-The reference page removes the fragment immediately and keeps the bearer and
-AG-UI reconnect cursor only in page memory. The URL still exposes the fixture
-bearer to terminal history, so it is strictly an `INSECURE DEV` convenience.
-The page uses same-origin `fetch` streaming rather than `EventSource`, renders
+The reference page signs in through the same-origin Hydra Authorization Code
+flow with PKCE. Only the short-lived state/verifier transaction is kept in
+`sessionStorage`; the resulting access token and AG-UI reconnect cursor stay
+in page memory and the URL contains no bearer. The page uses same-origin
+`fetch` streaming rather than `EventSource`, renders
 AG-UI message/tool lifecycles, and accepts only the display-only A2UI v0.9
 Card/Column/Text subset emitted by browser-gateway. It never connects to stock
 app-server or exec-server directly. Approval controls read nonce, context
@@ -87,8 +88,15 @@ Only the exact holder can then commit terminal `cancelled/interrupted`.
 
 The insecure-development run manifest signs a 10-second maximum approval TTL;
 this deliberately short value makes the real database-time expiry path
-repeatable and is not a production recommendation. The smoke checks the
-reference-web marker and CSP, then runs five deterministic requests. The first
+repeatable and is not a production recommendation. Before any run, the smoke
+uses one TLS 1.3 client and cookie jar to complete the same Hydra Authorization
+Code + PKCE, Core login bridge, external development IdP, callback, consent,
+and browser code exchange as the page. It then proves that the captured
+callback binding cannot replay the callback, the consent challenge cannot be
+accepted twice, and the browser authorization code cannot be exchanged twice.
+Only the resulting dynamic access token remains in smoke-process memory; the
+script copies no browser bearer out of the container. The smoke then checks the
+reference-web marker and CSP and runs five deterministic requests. The first
 reads canonical approval authority, approves through the independent command
 endpoint, and verifies that the real shell command proceeds only after Core
 consumes the approval. The second does the same, pauses after execution, then
@@ -124,7 +132,8 @@ The 15-second stop grace lets the supervisor request PostgreSQL fast shutdown
 and reap every service process before the VM is stopped. A normal restart
 therefore does not rely on PostgreSQL crash recovery.
 
-The database password, browser bearer, generated CA, and all other authority
-material are insecure local fixtures. Delete the chosen volume with
+The database password, legacy fixture bearer, external OIDC client secret,
+login-transaction key, generated CA, and all other authority material are
+insecure local fixtures. Delete the chosen volume with
 `container volume delete` to discard that authority only after its container
 has been stopped and removed.

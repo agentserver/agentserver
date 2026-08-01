@@ -77,6 +77,6 @@ until container exec "${name}" test -f /run/agentserver-v2/ready >/dev/null 2>&1
 done
 
 printf '%s\n' "run.sh: ready at https://127.0.0.1:${browser_port}"
-printf '%s\n' "run.sh: print a reference-web URL with: ./deploy/insecure-dev/browser-url.sh --name=${name} --browser-port=${browser_port}"
+printf '%s\n' "run.sh: open the reference web with: ./deploy/insecure-dev/browser-url.sh --name=${name} --browser-port=${browser_port}"
 printf '%s\n' "run.sh: run ./deploy/insecure-dev/smoke.sh --name=${name} --browser-port=${browser_port}"
 printf '%s\n' "run.sh: stop with: container stop --time 15 ${name}"

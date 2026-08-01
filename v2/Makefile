@@ -23,7 +23,7 @@ test:
 	$(GO) test ./... -count=1
 
 web-test:
-	cd a2ui-web && $(NODE) --test protocol.test.mjs
+	cd a2ui-web && $(NODE) --test *.test.mjs
 
 postgres-test:
 	@test -n "$$AGENTSERVER_V2_TEST_DATABASE_URL" || \

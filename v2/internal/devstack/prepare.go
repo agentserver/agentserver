@@ -42,6 +42,7 @@ const (
 	cursorKeyFile            = "secrets/run-cursor.key"
 	manifestSeedFile         = "secrets/run-manifest.seed"
 	browserBearerTokenFile   = devfixtures.RelativeBrowserBearerTokenPath
+	externalOIDCSecretFile   = devfixtures.RelativeExternalOIDCSecretPath
 
 	objectDirectory            = "state/objects"
 	harnessRuntimeDirectory    = "state/harness-runtime"
@@ -70,7 +71,13 @@ type coreBootstrapDocument struct {
 	WorkspaceID string                        `json:"workspaceId"`
 	SessionID   string                        `json:"sessionId"`
 	ActorID     string                        `json:"actorId"`
+	Identity    coreBootstrapIdentityDocument `json:"identity"`
 	Executor    coreBootstrapExecutorDocument `json:"executor"`
+}
+
+type coreBootstrapIdentityDocument struct {
+	Issuer  string `json:"issuer"`
+	Subject string `json:"subject"`
 }
 
 type coreBootstrapExecutorDocument struct {
@@ -208,6 +215,16 @@ func Prepare(config LoadedConfig, outputDirectory string, random io.Reader, now 
 		return Result{}, err
 	}
 	defer clear(browserBearerEntropy)
+	externalOIDCSecret, err := randomSecret(random, 32, "external OIDC client secret")
+	if err != nil {
+		return Result{}, err
+	}
+	defer clear(externalOIDCSecret)
+	loginTransactionKey, err := randomSecret(random, 32, "login transaction AES key")
+	if err != nil {
+		return Result{}, err
+	}
+	defer clear(loginTransactionKey)
 	cursorKey, err := randomSecret(random, 32, "run cursor HMAC")
 	if err != nil {
 		return Result{}, err
@@ -230,7 +247,7 @@ func Prepare(config LoadedConfig, outputDirectory string, random io.Reader, now 
 	}
 	paths := newOutputPaths(outputDirectory)
 	files, err := renderOutputFiles(
-		config, paths, pki, capabilityKey, browserBearerEntropy, cursorKey, manifestSeed,
+		config, paths, pki, capabilityKey, browserBearerEntropy, externalOIDCSecret, loginTransactionKey, cursorKey, manifestSeed,
 		manifestPublic, finalExecDigest, finalExecSize, now.UTC(),
 	)
 	if err != nil {
@@ -299,6 +316,7 @@ type outputPaths struct {
 	cursorKey              string
 	manifestSeed           string
 	browserBearer          string
+	externalOIDCSecret     string
 	objects                string
 	harnessRuntime         string
 	checkpointStaging      string
@@ -318,8 +336,8 @@ func newOutputPaths(root string) outputPaths {
 		workerDeployment: absolute(workerDeploymentConfigFile), keyring: absolute(manifestVerificationKeyringFile),
 		agentxLaunch: absolute(agentxLaunchFile), fixturesConfig: absolute(developmentFixturesConfigFile), ca: absolute(certificateAuthorityFile),
 		capabilityKey: absolute(capabilityKeyFile), cursorKey: absolute(cursorKeyFile), manifestSeed: absolute(manifestSeedFile),
-		browserBearer: absolute(browserBearerTokenFile),
-		objects:       absolute(objectDirectory), harnessRuntime: absolute(harnessRuntimeDirectory),
+		browserBearer: absolute(browserBearerTokenFile), externalOIDCSecret: absolute(externalOIDCSecretFile),
+		objects: absolute(objectDirectory), harnessRuntime: absolute(harnessRuntimeDirectory),
 		checkpointStaging: absolute(checkpointStagingDirectory), agentxRuntime: absolute(agentxRuntimeDirectory),
 		coreEnvironment: absolute(coreEnvironmentFile), browserEnvironment: absolute(browserEnvironmentFile),
 		executorEnvironment: absolute(executorEnvironmentFile), harnessPoolEnvironment: absolute(harnessPoolEnvironmentFile),
@@ -336,7 +354,7 @@ func renderOutputFiles(
 	config LoadedConfig,
 	paths outputPaths,
 	pki developmentPKI,
-	capabilityKey, browserBearerEntropy, cursorKey, manifestSeed []byte,
+	capabilityKey, browserBearerEntropy, externalOIDCSecret, loginTransactionKey, cursorKey, manifestSeed []byte,
 	manifestPublic ed25519.PublicKey,
 	finalExecDigest string,
 	finalExecSize int64,
@@ -355,9 +373,12 @@ func renderOutputFiles(
 	}
 	capabilityEncoded := base64.RawURLEncoding.EncodeToString(capabilityKey)
 	browserBearer := "asv2dev-browser-" + base64.RawURLEncoding.EncodeToString(browserBearerEntropy)
+	externalOIDCSecretEncoded := base64.RawURLEncoding.EncodeToString(externalOIDCSecret)
+	loginTransactionKeyEncoded := base64.RawURLEncoding.EncodeToString(loginTransactionKey)
 	cursorEncoded := base64.RawURLEncoding.EncodeToString(cursorKey)
 	put(capabilityKeyFile, []byte(capabilityEncoded+"\n"))
 	put(browserBearerTokenFile, []byte(browserBearer+"\n"))
+	put(externalOIDCSecretFile, []byte(externalOIDCSecretEncoded+"\n"))
 	put(cursorKeyFile, []byte(cursorEncoded+"\n"))
 	put(manifestSeedFile, manifestSeed)
 
@@ -377,6 +398,9 @@ func renderOutputFiles(
 	authority := config.Document.Authority
 	bootstrap := coreBootstrapDocument{
 		Version: CurrentConfigVersion, WorkspaceID: authority.WorkspaceID, SessionID: authority.SessionID, ActorID: authority.ActorID,
+		Identity: coreBootstrapIdentityDocument{
+			Issuer: config.HydraFixtureOrigin + "/idp", Subject: devfixtures.ExternalOIDCSubject,
+		},
 		Executor: coreBootstrapExecutorDocument{
 			ExecutorID: authority.ExecutorID, EnvironmentID: authority.EnvironmentID, AgentxVersion: authority.AgentxVersion,
 			Platform: config.Platform, RuntimeManifestFile: config.Document.Runtime.ManifestFile,
@@ -436,6 +460,15 @@ func renderOutputFiles(
 			IntrospectionEndpoint:  config.Document.Network.HydraIntrospectionURL,
 			BrowserBearerTokenFile: paths.browserBearer,
 			Audience:               devfixtures.BrowserTokenAudience, Scope: devfixtures.BrowserTokenScope, ResponseTTL: "15m",
+			PublicOrigin: config.BrowserOrigin, BrowserClientID: devfixtures.BrowserOAuthClientID,
+			BrowserRedirectURI: config.BrowserOrigin + "/",
+			LoginURL:           config.BrowserOrigin + "/auth/hydra/login", ConsentURL: config.BrowserOrigin + "/auth/hydra/consent",
+			ExternalOIDC: devfixtures.ExternalOIDCDocument{
+				Issuer: config.HydraFixtureOrigin + "/idp", ClientID: devfixtures.ExternalOIDCClientID,
+				AuthorizationURL: config.BrowserOrigin + "/auth/idp/authorize",
+				ClientSecretFile: paths.externalOIDCSecret, RedirectURI: config.BrowserOrigin + "/auth/oidc/callback",
+				Subject: devfixtures.ExternalOIDCSubject,
+			},
 		},
 		LLMProxy: devfixtures.LLMProxyDocument{
 			Endpoint:        config.Document.Network.LLMProxyEndpoint,
@@ -452,7 +485,9 @@ func renderOutputFiles(
 	}
 	put(developmentFixturesConfigFile, fixturesBytes)
 
-	environments, err := renderServiceEnvironments(config, paths, pki, capabilityEncoded, cursorEncoded)
+	environments, err := renderServiceEnvironments(
+		config, paths, pki, capabilityEncoded, externalOIDCSecretEncoded, loginTransactionKeyEncoded, cursorEncoded,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -517,7 +552,7 @@ func renderServiceEnvironments(
 	config LoadedConfig,
 	paths outputPaths,
 	pki developmentPKI,
-	capabilityKey, cursorKey string,
+	capabilityKey, externalOIDCSecret, loginTransactionKey, cursorKey string,
 ) (map[string]map[string]string, error) {
 	identity := func(service string) (developmentTLSIdentity, error) {
 		value, found := pki.identities[service]
@@ -549,29 +584,43 @@ func renderServiceEnvironments(
 	document := config.Document
 	return map[string]map[string]string{
 		coreEnvironmentFile: {
-			"AGENTSERVER_V2_DATABASE_URL":               document.DatabaseURL,
-			"AGENTSERVER_V2_CORE_LISTEN_ADDR":           document.Network.CoreListenAddress,
-			"AGENTSERVER_V2_CORE_TLS_CERT_FILE":         paths.certificates["agentserver-core"],
-			"AGENTSERVER_V2_CORE_TLS_KEY_FILE":          paths.privateKeys["agentserver-core"],
-			"AGENTSERVER_V2_CORE_CLIENT_CA_FILE":        paths.ca,
-			"AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID": executor.spiffeID,
-			"AGENTSERVER_V2_HARNESS_POOL_SPIFFE_ID":     pool.spiffeID,
-			"AGENTSERVER_V2_BROWSER_GATEWAY_SPIFFE_ID":  browser.spiffeID,
-			"AGENTSERVER_V2_HYDRA_INTROSPECTION_URL":    document.Network.HydraIntrospectionURL,
-			"AGENTSERVER_V2_HYDRA_ALLOW_INSECURE_HTTP":  "true",
-			"AGENTSERVER_V2_RUN_CURSOR_KEY":             cursorKey,
-			"AGENTSERVER_V2_DEV_PROMPT_OBJECT_DIR":      paths.objects,
-			"AGENTSERVER_V2_RUN_POLICY_VERSION":         document.Policy.Version,
-			"AGENTSERVER_V2_RUN_ALLOWED_TOOLS":          strings.Join(document.Policy.AllowedTools, ","),
+			"AGENTSERVER_V2_DATABASE_URL":                      document.DatabaseURL,
+			"AGENTSERVER_V2_CORE_LISTEN_ADDR":                  document.Network.CoreListenAddress,
+			"AGENTSERVER_V2_CORE_TLS_CERT_FILE":                paths.certificates["agentserver-core"],
+			"AGENTSERVER_V2_CORE_TLS_KEY_FILE":                 paths.privateKeys["agentserver-core"],
+			"AGENTSERVER_V2_CORE_CLIENT_CA_FILE":               paths.ca,
+			"AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID":        executor.spiffeID,
+			"AGENTSERVER_V2_HARNESS_POOL_SPIFFE_ID":            pool.spiffeID,
+			"AGENTSERVER_V2_BROWSER_GATEWAY_SPIFFE_ID":         browser.spiffeID,
+			"AGENTSERVER_V2_HYDRA_INTROSPECTION_URL":           document.Network.HydraIntrospectionURL,
+			"AGENTSERVER_V2_HYDRA_ADMIN_URL":                   config.HydraFixtureOrigin,
+			"AGENTSERVER_V2_HYDRA_PUBLIC_ORIGIN":               config.BrowserOrigin,
+			"AGENTSERVER_V2_HYDRA_BROWSER_CLIENT_ID":           devfixtures.BrowserOAuthClientID,
+			"AGENTSERVER_V2_HYDRA_ALLOW_INSECURE_HTTP":         "true",
+			"AGENTSERVER_V2_EXTERNAL_OIDC_ISSUER":              config.HydraFixtureOrigin + "/idp",
+			"AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_ID":           devfixtures.ExternalOIDCClientID,
+			"AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_SECRET":       externalOIDCSecret,
+			"AGENTSERVER_V2_EXTERNAL_OIDC_REDIRECT_URL":        config.BrowserOrigin + "/auth/oidc/callback",
+			"AGENTSERVER_V2_EXTERNAL_OIDC_ALLOW_INSECURE_HTTP": "true",
+			"AGENTSERVER_V2_LOGIN_TRANSACTION_KEY":             loginTransactionKey,
+			"AGENTSERVER_V2_RUN_CURSOR_KEY":                    cursorKey,
+			"AGENTSERVER_V2_DEV_PROMPT_OBJECT_DIR":             paths.objects,
+			"AGENTSERVER_V2_RUN_POLICY_VERSION":                document.Policy.Version,
+			"AGENTSERVER_V2_RUN_ALLOWED_TOOLS":                 strings.Join(document.Policy.AllowedTools, ","),
 		},
 		browserEnvironmentFile: {
-			"AGENTSERVER_V2_BROWSER_GATEWAY_LISTEN_ADDR":   document.Network.BrowserGatewayListenAddress,
-			"AGENTSERVER_V2_BROWSER_GATEWAY_TLS_CERT_FILE": paths.certificates["browser-gateway"],
-			"AGENTSERVER_V2_BROWSER_GATEWAY_TLS_KEY_FILE":  paths.privateKeys["browser-gateway"],
-			"AGENTSERVER_V2_CORE_URL":                      config.CoreOrigin,
-			"AGENTSERVER_V2_CORE_CA_FILE":                  paths.ca,
-			"AGENTSERVER_V2_CORE_CLIENT_CERT_FILE":         paths.certificates["browser-gateway"],
-			"AGENTSERVER_V2_CORE_CLIENT_KEY_FILE":          paths.privateKeys["browser-gateway"],
+			"AGENTSERVER_V2_BROWSER_GATEWAY_LISTEN_ADDR":             document.Network.BrowserGatewayListenAddress,
+			"AGENTSERVER_V2_BROWSER_GATEWAY_TLS_CERT_FILE":           paths.certificates["browser-gateway"],
+			"AGENTSERVER_V2_BROWSER_GATEWAY_TLS_KEY_FILE":            paths.privateKeys["browser-gateway"],
+			"AGENTSERVER_V2_CORE_URL":                                config.CoreOrigin,
+			"AGENTSERVER_V2_CORE_CA_FILE":                            paths.ca,
+			"AGENTSERVER_V2_CORE_CLIENT_CERT_FILE":                   paths.certificates["browser-gateway"],
+			"AGENTSERVER_V2_CORE_CLIENT_KEY_FILE":                    paths.privateKeys["browser-gateway"],
+			"AGENTSERVER_V2_HYDRA_PUBLIC_UPSTREAM":                   config.HydraFixtureOrigin,
+			"AGENTSERVER_V2_DEVELOPMENT_OIDC_AUTHORIZATION_UPSTREAM": config.HydraFixtureOrigin,
+			"AGENTSERVER_V2_BROWSER_OAUTH_CLIENT_ID":                 devfixtures.BrowserOAuthClientID,
+			"AGENTSERVER_V2_BROWSER_OAUTH_AUDIENCE":                  devfixtures.BrowserTokenAudience,
+			"AGENTSERVER_V2_BROWSER_OAUTH_SCOPES":                    "openid," + devfixtures.BrowserTokenScope,
 		},
 		executorEnvironmentFile: {
 			"AGENTSERVER_V2_EXECUTOR_GATEWAY_LISTEN_ADDR":   document.Network.ExecutorGatewayListenAddress,

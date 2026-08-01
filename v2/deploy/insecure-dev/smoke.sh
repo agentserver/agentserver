@@ -33,9 +33,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 container exec "${name}" /bin/cat /var/lib/agentserver/stack/pki/ca.pem >"${smoke_root}/ca.pem"
-container exec "${name}" /bin/cat /var/lib/agentserver/stack/secrets/browser-bearer.token >"${smoke_root}/browser-bearer.token"
-[ -s "${smoke_root}/browser-bearer.token" ] || { printf '%s\n' 'smoke.sh: browser bearer is empty' >&2; exit 1; }
-chmod 0600 "${smoke_root}/ca.pem" "${smoke_root}/browser-bearer.token"
+chmod 0600 "${smoke_root}/ca.pem"
 
 database_scalar() {
     container exec \
@@ -57,14 +55,13 @@ before_approval_count=$(validated_count 'SELECT count(*) FROM agentserver_v2.app
 before_operation_count=$(validated_count 'SELECT count(*) FROM agentserver_v2.execution_operations' 'initial execution operation')
 before_dispatched_operation_count=$(validated_count 'SELECT count(*) FROM agentserver_v2.execution_operations WHERE dispatched_at IS NOT NULL' 'initial dispatched execution operation')
 
-printf '%s\n' "smoke.sh: starting five TLS 1.3 AG-UI requests through the published host port"
+printf '%s\n' "smoke.sh: completing OAuth Code + PKCE login, replay gates, and five TLS 1.3 AG-UI requests through the published host port"
 smoke_output=$(
     cd "${v2_root}"
     env GOCACHE="${TMPDIR:-/tmp}/agentserver-v2-smoke-go-cache" \
         go run ./cmd/agentserver-dev-smoke \
         --origin="https://127.0.0.1:${browser_port}" \
-        --ca-file="${smoke_root}/ca.pem" \
-        --bearer-file="${smoke_root}/browser-bearer.token"
+        --ca-file="${smoke_root}/ca.pem"
 )
 printf '%s\n' "${smoke_output}"
 

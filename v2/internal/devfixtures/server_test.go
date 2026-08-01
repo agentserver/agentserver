@@ -359,14 +359,25 @@ func newTestRuntime(t *testing.T) (*fixtureRuntime, *runcapability.DevelopmentCo
 				SessionID:   "50000000-0000-4000-8000-000000000005",
 				ActorID:     "10000000-0000-4000-8000-000000000001",
 			},
-			Hydra: HydraDocument{Audience: BrowserTokenAudience, Scope: BrowserTokenScope},
+			Hydra: HydraDocument{
+				Audience: BrowserTokenAudience, Scope: BrowserTokenScope, ResponseTTL: "15m",
+				PublicOrigin: "https://127.0.0.1:17444", BrowserClientID: BrowserOAuthClientID,
+				BrowserRedirectURI: "https://127.0.0.1:17444/",
+				LoginURL:           "https://127.0.0.1:17444/auth/hydra/login", ConsentURL: "https://127.0.0.1:17444/auth/hydra/consent",
+				ExternalOIDC: ExternalOIDCDocument{
+					Issuer: "http://127.0.0.1:17447/idp", ClientID: ExternalOIDCClientID,
+					AuthorizationURL: "https://127.0.0.1:17444/auth/idp/authorize",
+					RedirectURI:      "https://127.0.0.1:17444/auth/oidc/callback", Subject: ExternalOIDCSubject,
+				},
+			},
 			LLMProxy: LLMProxyDocument{
 				Model: "gpt-5", Provider: "llmproxy", ToolNamespace: ToolNamespace,
 				ScriptedTool: ScriptedToolName, FinalMessage: "Agentserver v2 scripted development turn completed.",
 			},
 		},
 		hydraEndpoint: hydraEndpoint, llmEndpoint: llmEndpoint, responseTTL: 15 * time.Minute,
-		browserToken: []byte("asv2dev-browser-0123456789012345678901234567890123456789012"), codec: codec,
+		browserToken:             []byte("asv2dev-browser-0123456789012345678901234567890123456789012"),
+		externalOIDCClientSecret: []byte("0123456789012345678901234567890123456789012"), codec: codec,
 	}
 	return &fixtureRuntime{bundle: bundle, now: func() time.Time { return fixtureTestNow }, sessions: make(map[scriptKey]scriptSession)}, codec
 }

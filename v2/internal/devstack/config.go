@@ -112,17 +112,18 @@ type IdentitiesDocument struct {
 // LoadedConfig contains only validated, copied values and runtime-manifest
 // facts derived from the exact bytes that will be referenced by the bundle.
 type LoadedConfig struct {
-	Document          ConfigDocument
-	Manifest          runtimelock.Manifest
-	ManifestBytes     []byte
-	ManifestSHA256    string
-	Platform          string
-	MaxRunDuration    time.Duration
-	MaxApprovalTTL    time.Duration
-	CoreOrigin        string
-	BrowserOrigin     string
-	ExecutorOrigin    string
-	HarnessPoolOrigin string
+	Document           ConfigDocument
+	Manifest           runtimelock.Manifest
+	ManifestBytes      []byte
+	ManifestSHA256     string
+	Platform           string
+	MaxRunDuration     time.Duration
+	MaxApprovalTTL     time.Duration
+	CoreOrigin         string
+	BrowserOrigin      string
+	ExecutorOrigin     string
+	HarnessPoolOrigin  string
+	HydraFixtureOrigin string
 }
 
 func LoadConfig(configPath string) (LoadedConfig, error) {
@@ -248,6 +249,7 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 		ManifestSHA256: manifestDigest, Platform: runtimelock.CurrentPlatform(),
 		MaxRunDuration: maxRunDuration, MaxApprovalTTL: maxApprovalTTL,
 		CoreOrigin: origins[0], BrowserOrigin: origins[1], ExecutorOrigin: origins[2], HarnessPoolOrigin: origins[3],
+		HydraFixtureOrigin: "http://" + hydraAddress,
 	}, nil
 }
 

@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "test": "node --test protocol.test.mjs"
+    "test": "node --test *.test.mjs"
   },
   "engines": {
     "node": ">=20"

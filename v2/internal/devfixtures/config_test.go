@@ -39,6 +39,15 @@ func TestInsecureDevelopmentFixturesJSONSchemaContract(t *testing.T) {
 			IntrospectionEndpoint:  "http://127.0.0.1:17447/oauth2/introspect",
 			BrowserBearerTokenFile: "/private/dev/secrets/browser-bearer.token",
 			Audience:               BrowserTokenAudience, Scope: BrowserTokenScope, ResponseTTL: "15m",
+			PublicOrigin: "https://127.0.0.1:17444", BrowserClientID: BrowserOAuthClientID,
+			BrowserRedirectURI: "https://127.0.0.1:17444/",
+			LoginURL:           "https://127.0.0.1:17444/auth/hydra/login", ConsentURL: "https://127.0.0.1:17444/auth/hydra/consent",
+			ExternalOIDC: ExternalOIDCDocument{
+				Issuer: "http://127.0.0.1:17447/idp", ClientID: ExternalOIDCClientID,
+				AuthorizationURL: "https://127.0.0.1:17444/auth/idp/authorize",
+				ClientSecretFile: "/private/dev/secrets/external-oidc-client.secret",
+				RedirectURI:      "https://127.0.0.1:17444/auth/oidc/callback", Subject: ExternalOIDCSubject,
+			},
 		},
 		LLMProxy: LLMProxyDocument{
 			Endpoint:        "https://127.0.0.1:17448/v1",

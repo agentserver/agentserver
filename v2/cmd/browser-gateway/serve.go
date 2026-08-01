@@ -20,14 +20,19 @@ import (
 )
 
 const (
-	browserListenAddressEnvironment         = "AGENTSERVER_V2_BROWSER_GATEWAY_LISTEN_ADDR"
-	browserTLSCertificateEnvironment        = "AGENTSERVER_V2_BROWSER_GATEWAY_TLS_CERT_FILE"
-	browserTLSKeyEnvironment                = "AGENTSERVER_V2_BROWSER_GATEWAY_TLS_KEY_FILE"
-	browserCoreURLEnvironment               = "AGENTSERVER_V2_CORE_URL"
-	browserCoreCAEnvironment                = "AGENTSERVER_V2_CORE_CA_FILE"
-	browserCoreClientCertificateEnvironment = "AGENTSERVER_V2_CORE_CLIENT_CERT_FILE"
-	browserCoreClientKeyEnvironment         = "AGENTSERVER_V2_CORE_CLIENT_KEY_FILE"
-	browserCoreServerNameEnvironment        = "AGENTSERVER_V2_CORE_SERVER_NAME"
+	browserListenAddressEnvironment           = "AGENTSERVER_V2_BROWSER_GATEWAY_LISTEN_ADDR"
+	browserTLSCertificateEnvironment          = "AGENTSERVER_V2_BROWSER_GATEWAY_TLS_CERT_FILE"
+	browserTLSKeyEnvironment                  = "AGENTSERVER_V2_BROWSER_GATEWAY_TLS_KEY_FILE"
+	browserCoreURLEnvironment                 = "AGENTSERVER_V2_CORE_URL"
+	browserCoreCAEnvironment                  = "AGENTSERVER_V2_CORE_CA_FILE"
+	browserCoreClientCertificateEnvironment   = "AGENTSERVER_V2_CORE_CLIENT_CERT_FILE"
+	browserCoreClientKeyEnvironment           = "AGENTSERVER_V2_CORE_CLIENT_KEY_FILE"
+	browserCoreServerNameEnvironment          = "AGENTSERVER_V2_CORE_SERVER_NAME"
+	browserHydraPublicUpstreamEnvironment     = "AGENTSERVER_V2_HYDRA_PUBLIC_UPSTREAM"
+	browserDevelopmentOIDCUpstreamEnvironment = "AGENTSERVER_V2_DEVELOPMENT_OIDC_AUTHORIZATION_UPSTREAM"
+	browserOAuthClientIDEnvironment           = "AGENTSERVER_V2_BROWSER_OAUTH_CLIENT_ID"
+	browserOAuthAudienceEnvironment           = "AGENTSERVER_V2_BROWSER_OAUTH_AUDIENCE"
+	browserOAuthScopesEnvironment             = "AGENTSERVER_V2_BROWSER_OAUTH_SCOPES"
 )
 
 const browserShutdownTimeout = 10 * time.Second
@@ -68,6 +73,22 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 	if err != nil {
 		return err
 	}
+	hydraPublicUpstream, err := requiredBrowserConfiguration(getenv, browserHydraPublicUpstreamEnvironment)
+	if err != nil {
+		return err
+	}
+	browserOAuthClientID, err := requiredBrowserConfiguration(getenv, browserOAuthClientIDEnvironment)
+	if err != nil {
+		return err
+	}
+	browserOAuthAudience, err := requiredBrowserConfiguration(getenv, browserOAuthAudienceEnvironment)
+	if err != nil {
+		return err
+	}
+	browserOAuthScopes, err := requiredBrowserConfiguration(getenv, browserOAuthScopesEnvironment)
+	if err != nil {
+		return err
+	}
 
 	coreHTTPClient, err := newBrowserCoreHTTPClient(
 		coreCAFile,
@@ -83,12 +104,38 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 	if err != nil {
 		return err
 	}
+	authProxy, err := browsergateway.NewAuthBridgeProxy(coreURL, coreHTTPClient)
+	if err != nil {
+		return err
+	}
+	hydraProxy, err := browsergateway.NewHydraPublicProxy(hydraPublicUpstream, &http.Client{Timeout: 10 * time.Second})
+	if err != nil {
+		return err
+	}
+	developmentOIDCHandler := http.NotFoundHandler()
+	if upstream := strings.TrimSpace(getenv(browserDevelopmentOIDCUpstreamEnvironment)); upstream != "" {
+		developmentOIDCProxy, err := browsergateway.NewDevelopmentOIDCAuthorizationProxy(
+			upstream, &http.Client{Timeout: 10 * time.Second},
+		)
+		if err != nil {
+			return err
+		}
+		developmentOIDCHandler = developmentOIDCProxy.Routes()
+	}
+	authConfig, err := browsergateway.NewBrowserAuthorizationConfigHandler(
+		browserOAuthClientID, browserOAuthAudience, strings.Split(browserOAuthScopes, ","),
+	)
+	if err != nil {
+		return err
+	}
 	aguiHandler, err := browsergateway.NewAGUIHandler(backend, browsergateway.DefaultHandlerConfig())
 	if err != nil {
 		return err
 	}
 	readiness := &browserReadiness{}
-	handler := browserGatewayRoutes(aguiHandler.Routes(), readiness)
+	handler := browserGatewayRoutes(
+		aguiHandler.Routes(), authProxy.Routes(), authConfig, hydraProxy.Routes(), developmentOIDCHandler, readiness,
+	)
 	tlsConfig, err := browserGatewayTLSConfig(certificateFile, keyFile)
 	if err != nil {
 		return err
@@ -136,9 +183,13 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 	return err
 }
 
-func browserGatewayRoutes(agui http.Handler, readiness *browserReadiness) http.Handler {
+func browserGatewayRoutes(agui, auth, authConfig, hydra, developmentOIDC http.Handler, readiness *browserReadiness) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/v2/", agui)
+	mux.Handle("/auth/", auth)
+	mux.Handle("GET /auth/config", authConfig)
+	mux.Handle("GET /auth/idp/authorize", developmentOIDC)
+	mux.Handle("/oauth2/", hydra)
 	mux.HandleFunc("GET /healthz", func(response http.ResponseWriter, _ *http.Request) {
 		writeHealth(response, http.StatusOK, `{"status":"ok"}`)
 	})

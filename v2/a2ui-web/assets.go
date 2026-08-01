@@ -21,6 +21,9 @@ var applicationJavaScript []byte
 //go:embed protocol.js
 var protocolJavaScript []byte
 
+//go:embed auth.js
+var authorizationJavaScript []byte
+
 //go:embed styles.css
 var styleSheet []byte
 
@@ -34,6 +37,7 @@ var assets = map[string]asset{
 	"/index.html":            {contentType: "text/html; charset=utf-8", contents: indexHTML},
 	"/reference/app.js":      {contentType: "text/javascript; charset=utf-8", contents: applicationJavaScript},
 	"/reference/protocol.js": {contentType: "text/javascript; charset=utf-8", contents: protocolJavaScript},
+	"/reference/auth.js":     {contentType: "text/javascript; charset=utf-8", contents: authorizationJavaScript},
 	"/reference/styles.css":  {contentType: "text/css; charset=utf-8", contents: styleSheet},
 }
 

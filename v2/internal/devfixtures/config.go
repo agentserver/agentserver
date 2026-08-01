@@ -28,16 +28,20 @@ import (
 )
 
 const (
-	CurrentConfigVersion = 1
+	CurrentConfigVersion = 2
 
 	RelativeConfigPath             = "config/dev-fixtures.json"
 	RelativeBrowserBearerTokenPath = "secrets/browser-bearer.token"
 	RelativeRunCapabilityKeyPath   = "secrets/run-capability.key"
+	RelativeExternalOIDCSecretPath = "secrets/external-oidc-client.secret"
 	RelativeLLMProxyCertificate    = "pki/llmproxy.crt"
 	RelativeLLMProxyPrivateKey     = "pki/llmproxy.key"
 
 	BrowserTokenAudience   = "agentserver-api"
 	BrowserTokenScope      = "runs:write"
+	BrowserOAuthClientID   = "agentserver-web"
+	ExternalOIDCClientID   = "agentserver-core"
+	ExternalOIDCSubject    = "agentserver-dev-user"
 	ToolNamespace          = "executor"
 	ScriptedToolName       = "list_environments"
 	ScriptedShellName      = "shell"
@@ -71,11 +75,26 @@ type AuthorityDocument struct {
 }
 
 type HydraDocument struct {
-	IntrospectionEndpoint  string `json:"introspectionEndpoint"`
-	BrowserBearerTokenFile string `json:"browserBearerTokenFile"`
-	Audience               string `json:"audience"`
-	Scope                  string `json:"scope"`
-	ResponseTTL            string `json:"responseTtl"`
+	IntrospectionEndpoint  string               `json:"introspectionEndpoint"`
+	BrowserBearerTokenFile string               `json:"browserBearerTokenFile"`
+	Audience               string               `json:"audience"`
+	Scope                  string               `json:"scope"`
+	ResponseTTL            string               `json:"responseTtl"`
+	PublicOrigin           string               `json:"publicOrigin"`
+	BrowserClientID        string               `json:"browserClientId"`
+	BrowserRedirectURI     string               `json:"browserRedirectUri"`
+	LoginURL               string               `json:"loginUrl"`
+	ConsentURL             string               `json:"consentUrl"`
+	ExternalOIDC           ExternalOIDCDocument `json:"externalOidc"`
+}
+
+type ExternalOIDCDocument struct {
+	Issuer           string `json:"issuer"`
+	AuthorizationURL string `json:"authorizationUrl"`
+	ClientID         string `json:"clientId"`
+	ClientSecretFile string `json:"clientSecretFile"`
+	RedirectURI      string `json:"redirectUri"`
+	Subject          string `json:"subject"`
 }
 
 type LLMProxyDocument struct {
@@ -93,15 +112,16 @@ type LLMProxyDocument struct {
 // Bundle is a fully loaded fixture configuration. It owns in-memory copies of
 // the browser bearer and capability verifier; neither is exposed by metadata.
 type Bundle struct {
-	document      ConfigDocument
-	hydraEndpoint *url.URL
-	llmEndpoint   *url.URL
-	hydraListen   string
-	llmListen     string
-	responseTTL   time.Duration
-	browserToken  []byte
-	codec         *runcapability.DevelopmentCodec
-	tlsIdentity   tls.Certificate
+	document                 ConfigDocument
+	hydraEndpoint            *url.URL
+	llmEndpoint              *url.URL
+	hydraListen              string
+	llmListen                string
+	responseTTL              time.Duration
+	browserToken             []byte
+	externalOIDCClientSecret []byte
+	codec                    *runcapability.DevelopmentCodec
+	tlsIdentity              tls.Certificate
 }
 
 func LoadBundle(bundleDirectory string) (*Bundle, error) {
@@ -143,22 +163,38 @@ func LoadBundle(bundleDirectory string) (*Bundle, error) {
 	if err != nil {
 		return nil, err
 	}
+	externalSecretPath := filepath.Join(bundleDirectory, filepath.FromSlash(RelativeExternalOIDCSecretPath))
+	externalSecretRaw, err := readRestrictedFile("development external OIDC client secret", externalSecretPath, maximumSecretBytes)
+	if err != nil {
+		clear(browserToken)
+		return nil, err
+	}
+	externalSecretLine, err := parseSecretLine("development external OIDC client secret", externalSecretRaw)
+	clear(externalSecretRaw)
+	if err != nil || len(externalSecretLine) < 43 || len(externalSecretLine) > 128 {
+		clear(browserToken)
+		return nil, errors.New("development external OIDC client secret is invalid")
+	}
+	externalSecret := []byte(externalSecretLine)
 
 	capabilityKeyPath := filepath.Join(bundleDirectory, filepath.FromSlash(RelativeRunCapabilityKeyPath))
 	capabilityKeyRaw, err := readRestrictedFile("development run capability key", capabilityKeyPath, maximumSecretBytes)
 	if err != nil {
 		clear(browserToken)
+		clear(externalSecret)
 		return nil, err
 	}
 	encodedKey, err := parseSecretLine("development run capability key", capabilityKeyRaw)
 	clear(capabilityKeyRaw)
 	if err != nil {
 		clear(browserToken)
+		clear(externalSecret)
 		return nil, err
 	}
 	codec, err := runcapability.NewDevelopmentCodecFromBase64Key(encodedKey)
 	if err != nil {
 		clear(browserToken)
+		clear(externalSecret)
 		return nil, fmt.Errorf("load development run capability key: %w", err)
 	}
 
@@ -167,29 +203,34 @@ func LoadBundle(bundleDirectory string) (*Bundle, error) {
 	certificateRaw, err := readRestrictedFile("development llmproxy certificate", certificatePath, maximumSecretBytes)
 	if err != nil {
 		clear(browserToken)
+		clear(externalSecret)
 		return nil, err
 	}
 	clear(certificateRaw)
 	privateKeyRaw, err := readRestrictedFile("development llmproxy private key", privateKeyPath, maximumSecretBytes)
 	if err != nil {
 		clear(browserToken)
+		clear(externalSecret)
 		return nil, err
 	}
 	clear(privateKeyRaw)
 	identity, err := tls.LoadX509KeyPair(certificatePath, privateKeyPath)
 	if err != nil {
 		clear(browserToken)
+		clear(externalSecret)
 		return nil, fmt.Errorf("load development llmproxy TLS identity: %w", err)
 	}
 	if err := validateLLMProxyIdentity(&identity, llmEndpoint.Hostname()); err != nil {
 		clear(browserToken)
+		clear(externalSecret)
 		return nil, err
 	}
 
 	return &Bundle{
 		document: document, hydraEndpoint: hydraEndpoint, llmEndpoint: llmEndpoint,
 		hydraListen: hydraListen, llmListen: llmListen, responseTTL: responseTTL,
-		browserToken: browserToken, codec: codec, tlsIdentity: identity,
+		browserToken: browserToken, externalOIDCClientSecret: externalSecret,
+		codec: codec, tlsIdentity: identity,
 	}, nil
 }
 
@@ -222,6 +263,26 @@ func validateDocument(document ConfigDocument, bundleDirectory string) (*url.URL
 	}
 	if document.Hydra.Audience != BrowserTokenAudience || document.Hydra.Scope != BrowserTokenScope {
 		return nil, "", nil, "", 0, errors.New("development Hydra fixture audience or scope is unsupported")
+	}
+	fixtureOrigin := hydraEndpoint.Scheme + "://" + hydraEndpoint.Host
+	if document.Hydra.PublicOrigin == "" || document.Hydra.BrowserClientID != BrowserOAuthClientID ||
+		document.Hydra.BrowserRedirectURI != document.Hydra.PublicOrigin+"/" ||
+		document.Hydra.LoginURL != document.Hydra.PublicOrigin+"/auth/hydra/login" ||
+		document.Hydra.ConsentURL != document.Hydra.PublicOrigin+"/auth/hydra/consent" {
+		return nil, "", nil, "", 0, errors.New("development Hydra public client or bridge URLs are unsupported")
+	}
+	publicOrigin, err := url.Parse(document.Hydra.PublicOrigin)
+	if err != nil || publicOrigin.Scheme != "https" || publicOrigin.User != nil || publicOrigin.RawQuery != "" || publicOrigin.Fragment != "" ||
+		(publicOrigin.Path != "" && publicOrigin.Path != "/") {
+		return nil, "", nil, "", 0, errors.New("development Hydra public origin must be an exact HTTPS origin")
+	}
+	if document.Hydra.ExternalOIDC.Issuer != fixtureOrigin+"/idp" ||
+		document.Hydra.ExternalOIDC.AuthorizationURL != document.Hydra.PublicOrigin+"/auth/idp/authorize" ||
+		document.Hydra.ExternalOIDC.ClientID != ExternalOIDCClientID ||
+		document.Hydra.ExternalOIDC.ClientSecretFile != filepath.Join(bundleDirectory, filepath.FromSlash(RelativeExternalOIDCSecretPath)) ||
+		document.Hydra.ExternalOIDC.RedirectURI != document.Hydra.PublicOrigin+"/auth/oidc/callback" ||
+		document.Hydra.ExternalOIDC.Subject != ExternalOIDCSubject {
+		return nil, "", nil, "", 0, errors.New("development external OIDC fixture authority is unsupported")
 	}
 	responseTTL, err := time.ParseDuration(document.Hydra.ResponseTTL)
 	if err != nil || responseTTL < time.Minute || responseTTL > 24*time.Hour {

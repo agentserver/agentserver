@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"slices"
+	"strings"
 
 	"github.com/agentserver/agentserver/v2/internal/execprofile"
 	"github.com/jackc/pgx/v5"
@@ -27,6 +29,9 @@ type InsecureDevelopmentBootstrap struct {
 	WorkspaceID string
 	SessionID   string
 	ActorID     string
+
+	ExternalOIDCIssuer  string
+	ExternalOIDCSubject string
 
 	ExecutorID               string
 	MachineKeySHA256         [sha256.Size]byte
@@ -126,6 +131,16 @@ func bootstrapInsecureDevelopmentConfig(
 		return result, err
 	}
 	result.CreatedRows += created
+	created, err = insertDevelopmentUser(ctx, transaction, quotedSchema, bootstrap)
+	if err != nil {
+		return result, err
+	}
+	result.CreatedRows += created
+	created, err = insertDevelopmentIdentity(ctx, transaction, quotedSchema, bootstrap)
+	if err != nil {
+		return result, err
+	}
+	result.CreatedRows += created
 	created, err = insertDevelopmentMembership(ctx, transaction, quotedSchema, bootstrap)
 	if err != nil {
 		return result, err
@@ -167,6 +182,14 @@ func validateInsecureDevelopmentBootstrap(bootstrap InsecureDevelopmentBootstrap
 		return errors.New("invalid insecure development bootstrap: executor enrollment digests must not be all zeroes")
 	}
 	if err := validateBoundedText("agentx_version", bootstrap.AgentxVersion, 256); err != nil {
+		return fmt.Errorf("invalid insecure development bootstrap: %w", err)
+	}
+	issuer, err := url.Parse(bootstrap.ExternalOIDCIssuer)
+	if err != nil || issuer.Scheme != "http" || !isLoopbackBootstrapHost(issuer.Hostname()) || issuer.User != nil ||
+		issuer.RawQuery != "" || issuer.Fragment != "" || issuer.Path == "" || issuer.Path == "/" || strings.HasSuffix(issuer.Path, "/") {
+		return errors.New("invalid insecure development bootstrap: external OIDC issuer must be an exact cleartext loopback URL with a non-root path")
+	}
+	if err := validateBoundedText("external_oidc_subject", bootstrap.ExternalOIDCSubject, 2048); err != nil {
 		return fmt.Errorf("invalid insecure development bootstrap: %w", err)
 	}
 	environment := bootstrap.Environment
@@ -261,6 +284,54 @@ func insertDevelopmentMembership(ctx context.Context, transaction pgx.Tx, schema
 		return 0, developmentBootstrapConflict("workspace membership", bootstrap.ActorID)
 	}
 	return created, nil
+}
+
+func insertDevelopmentUser(ctx context.Context, transaction pgx.Tx, schema string, bootstrap InsecureDevelopmentBootstrap) (int, error) {
+	insert := fmt.Sprintf("INSERT INTO %s.users (id, status) VALUES ($1, 'active') ON CONFLICT DO NOTHING", schema)
+	created, err := developmentInsert(ctx, transaction, "insert development user", insert, bootstrap.ActorID)
+	if err != nil {
+		return 0, err
+	}
+	query := fmt.Sprintf("SELECT status FROM %s.users WHERE id = $1 FOR UPDATE", schema)
+	var status string
+	if err := transaction.QueryRow(ctx, query, bootstrap.ActorID).Scan(&status); err != nil {
+		return 0, databaseError("verify development user", err)
+	}
+	if status != "active" {
+		return 0, developmentBootstrapConflict("user", bootstrap.ActorID)
+	}
+	return created, nil
+}
+
+func insertDevelopmentIdentity(ctx context.Context, transaction pgx.Tx, schema string, bootstrap InsecureDevelopmentBootstrap) (int, error) {
+	insert := fmt.Sprintf(`
+INSERT INTO %s.user_identities (issuer, subject, user_id, status)
+VALUES ($1, $2, $3, 'active')
+ON CONFLICT DO NOTHING`, schema)
+	created, err := developmentInsert(
+		ctx, transaction, "insert development OIDC identity", insert,
+		bootstrap.ExternalOIDCIssuer, bootstrap.ExternalOIDCSubject, bootstrap.ActorID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	query := fmt.Sprintf(`
+SELECT user_id::text, status
+FROM %s.user_identities
+WHERE issuer = $1 AND subject = $2
+FOR UPDATE`, schema)
+	var userID, status string
+	if err := transaction.QueryRow(ctx, query, bootstrap.ExternalOIDCIssuer, bootstrap.ExternalOIDCSubject).Scan(&userID, &status); err != nil {
+		return 0, databaseError("verify development OIDC identity", err)
+	}
+	if userID != bootstrap.ActorID || status != "active" {
+		return 0, developmentBootstrapConflict("OIDC identity", bootstrap.ExternalOIDCSubject)
+	}
+	return created, nil
+}
+
+func isLoopbackBootstrapHost(host string) bool {
+	return host == "127.0.0.1" || host == "::1" || strings.EqualFold(host, "localhost")
 }
 
 func insertDevelopmentExecutor(ctx context.Context, transaction pgx.Tx, schema string, bootstrap InsecureDevelopmentBootstrap) (int, error) {

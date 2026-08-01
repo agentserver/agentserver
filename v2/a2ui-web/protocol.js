@@ -65,15 +65,6 @@ export function buildRunRequest({ sessionID, clientRunID, messageID, prompt, cur
   return request
 }
 
-export function readFragmentConfiguration(rawHash) {
-  const parameters = new URLSearchParams(String(rawHash || '').replace(/^#/, ''))
-  return {
-    token: parameters.get('token') || '',
-    workspaceID: parameters.get('workspace') || '',
-    sessionID: parameters.get('session') || '',
-  }
-}
-
 export class SSEDecoder {
   constructor(maximumBytes = MAXIMUM_EVENT_STREAM_BYTES) {
     if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) {

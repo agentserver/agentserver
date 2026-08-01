@@ -51,6 +51,15 @@ type fixtureRuntime struct {
 	mu          sync.Mutex
 	sessions    map[scriptKey]scriptSession
 	holdEntered chan struct{}
+
+	authMu             sync.Mutex
+	hydraLogins        map[string]hydraLoginFixture
+	hydraLoginProofs   map[string]string
+	hydraConsents      map[string]hydraConsentFixture
+	hydraConsentProofs map[string]string
+	idpCodes           map[string]idpCodeFixture
+	hydraCodes         map[string]hydraCodeFixture
+	accessTokens       map[string]accessTokenFixture
 }
 
 type modelRequest struct {
@@ -77,6 +86,8 @@ func (bundle *Bundle) Close() {
 	if bundle != nil {
 		clear(bundle.browserToken)
 		bundle.browserToken = nil
+		clear(bundle.externalOIDCClientSecret)
+		bundle.externalOIDCClientSecret = nil
 	}
 }
 
@@ -84,7 +95,8 @@ func (bundle *Bundle) Serve(ctx context.Context, stdout io.Writer) error {
 	if ctx == nil {
 		return errors.New("development fixture context is required")
 	}
-	if bundle == nil || bundle.hydraEndpoint == nil || bundle.llmEndpoint == nil || bundle.codec == nil || len(bundle.browserToken) == 0 {
+	if bundle == nil || bundle.hydraEndpoint == nil || bundle.llmEndpoint == nil || bundle.codec == nil ||
+		len(bundle.browserToken) == 0 || len(bundle.externalOIDCClientSecret) == 0 {
 		return errors.New("development fixture bundle is not initialized")
 	}
 	if stdout == nil {
@@ -169,12 +181,49 @@ func isExpectedServeError(err error) bool {
 }
 
 func (runtime *fixtureRuntime) serveHydra(writer http.ResponseWriter, request *http.Request) {
+	endpoint := runtime.bundle.hydraEndpoint
+	if request.Host != endpoint.Host || request.URL.RawPath != "" {
+		writeFixtureError(writer, http.StatusNotFound, "development authorization fixture request rejected")
+		return
+	}
+	switch request.URL.Path {
+	case endpoint.Path:
+		runtime.serveHydraIntrospection(writer, request)
+	case "/oauth2/auth":
+		runtime.serveHydraAuthorization(writer, request)
+	case "/oauth2/token":
+		runtime.serveHydraToken(writer, request)
+	case "/admin/oauth2/auth/requests/login":
+		runtime.serveHydraAdminLogin(writer, request)
+	case "/admin/oauth2/auth/requests/login/accept":
+		runtime.serveHydraAdminLoginAccept(writer, request)
+	case "/admin/oauth2/auth/requests/login/reject":
+		runtime.serveHydraAdminLoginReject(writer, request)
+	case "/admin/oauth2/auth/requests/consent":
+		runtime.serveHydraAdminConsent(writer, request)
+	case "/admin/oauth2/auth/requests/consent/accept":
+		runtime.serveHydraAdminConsentAccept(writer, request)
+	case "/admin/oauth2/auth/requests/consent/reject":
+		runtime.serveHydraAdminConsentReject(writer, request)
+	case "/idp/.well-known/openid-configuration":
+		runtime.serveExternalOIDCDiscovery(writer, request)
+	case "/idp/authorize":
+		runtime.serveExternalOIDCAuthorization(writer, request)
+	case "/idp/token":
+		runtime.serveExternalOIDCToken(writer, request)
+	case "/idp/jwks":
+		runtime.serveExternalOIDCJWKS(writer, request)
+	default:
+		writeFixtureError(writer, http.StatusNotFound, "development authorization fixture request rejected")
+	}
+}
+
+func (runtime *fixtureRuntime) serveHydraIntrospection(writer http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
 		writeFixtureError(writer, http.StatusMethodNotAllowed, "development introspection request rejected")
 		return
 	}
-	endpoint := runtime.bundle.hydraEndpoint
-	if request.Host != endpoint.Host || request.URL.Path != endpoint.Path || request.URL.RawPath != "" || request.URL.RawQuery != "" {
+	if request.URL.RawQuery != "" {
 		writeFixtureError(writer, http.StatusNotFound, "development introspection request rejected")
 		return
 	}
@@ -200,19 +249,27 @@ func (runtime *fixtureRuntime) serveHydra(writer http.ResponseWriter, request *h
 		writeFixtureError(writer, http.StatusBadRequest, "development introspection request rejected")
 		return
 	}
-	if !exactTokenEqual(runtime.bundle.browserToken, form["token"][0]) {
-		writeJSON(writer, http.StatusOK, map[string]any{"active": false})
-		return
-	}
 	now := runtime.now().UTC()
 	if now.IsZero() {
 		writeFixtureError(writer, http.StatusServiceUnavailable, "development introspection unavailable")
 		return
 	}
+	if exactTokenEqual(runtime.bundle.browserToken, form["token"][0]) {
+		writeJSON(writer, http.StatusOK, map[string]any{
+			"active": true, "sub": runtime.bundle.document.Authority.ActorID,
+			"aud": []string{runtime.bundle.document.Hydra.Audience}, "scope": runtime.bundle.document.Hydra.Scope,
+			"exp": now.Add(runtime.bundle.responseTTL).Unix(),
+		})
+		return
+	}
+	access, active := runtime.lookupAccessToken(form["token"][0], now)
+	if !active {
+		writeJSON(writer, http.StatusOK, map[string]any{"active": false})
+		return
+	}
 	writeJSON(writer, http.StatusOK, map[string]any{
-		"active": true, "sub": runtime.bundle.document.Authority.ActorID,
-		"aud": []string{runtime.bundle.document.Hydra.Audience}, "scope": runtime.bundle.document.Hydra.Scope,
-		"exp": now.Add(runtime.bundle.responseTTL).Unix(),
+		"active": true, "sub": access.subject, "aud": append([]string(nil), access.audience...),
+		"scope": strings.Join(access.scopes, " "), "exp": access.expiresAt.Unix(),
 	})
 }
 

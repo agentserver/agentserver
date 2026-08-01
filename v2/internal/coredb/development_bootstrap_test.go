@@ -20,6 +20,8 @@ func TestValidateInsecureDevelopmentBootstrap(t *testing.T) {
 		"workspace identity": func(value *InsecureDevelopmentBootstrap) { value.WorkspaceID = "not-a-uuid" },
 		"runtime digest":     func(value *InsecureDevelopmentBootstrap) { value.RuntimeManifestSHA256 = [sha256.Size]byte{} },
 		"agentx version":     func(value *InsecureDevelopmentBootstrap) { value.AgentxVersion = "" },
+		"OIDC issuer":        func(value *InsecureDevelopmentBootstrap) { value.ExternalOIDCIssuer = "https://idp.example" },
+		"OIDC subject":       func(value *InsecureDevelopmentBootstrap) { value.ExternalOIDCSubject = "" },
 		"environment identity": func(value *InsecureDevelopmentBootstrap) {
 			value.Environment.EnvironmentID = "not-a-uuid"
 		},
@@ -63,11 +65,13 @@ func TestDevelopmentBootstrapConflictSentinel(t *testing.T) {
 func validInsecureDevelopmentBootstrap() InsecureDevelopmentBootstrap {
 	digest := func(value string) [sha256.Size]byte { return sha256.Sum256([]byte(value)) }
 	return InsecureDevelopmentBootstrap{
-		WorkspaceID:      "40000000-0000-4000-8000-000000000004",
-		SessionID:        "50000000-0000-4000-8000-000000000005",
-		ActorID:          "10000000-0000-4000-8000-000000000001",
-		ExecutorID:       "20000000-0000-4000-8000-000000000002",
-		MachineKeySHA256: digest("development-machine-key"), AgentxVersion: "0.1.0-dev",
+		WorkspaceID:         "40000000-0000-4000-8000-000000000004",
+		SessionID:           "50000000-0000-4000-8000-000000000005",
+		ActorID:             "10000000-0000-4000-8000-000000000001",
+		ExternalOIDCIssuer:  "http://127.0.0.1:17447/idp",
+		ExternalOIDCSubject: "agentserver-dev-user",
+		ExecutorID:          "20000000-0000-4000-8000-000000000002",
+		MachineKeySHA256:    digest("development-machine-key"), AgentxVersion: "0.1.0-dev",
 		RuntimeManifestSHA256:    digest("development-runtime-manifest"),
 		ExecProtocolSourceSHA256: digest("development-exec-protocol"),
 		Environment: InsecureDevelopmentEnvironment{

@@ -10,7 +10,6 @@ import {
   cloneViewState,
   createViewState,
   isTerminalRunStatus,
-  readFragmentConfiguration,
   reduceAGUIEvent,
   resolveJSONPointer,
 } from './protocol.js'
@@ -34,9 +33,6 @@ test('buildRunRequest keeps browser authority out of the request', () => {
     forwardedProps: { agentserver: { eventCursor: 'opaque-cursor' } },
   })
   assert.equal('state' in request, false)
-  assert.deepEqual(readFragmentConfiguration('#token=secret&workspace=w&session=s'), {
-    token: 'secret', workspaceID: 'w', sessionID: 's',
-  })
 })
 
 test('SSEDecoder handles fragmented CRLF, comments, and multiple frames', () => {

@@ -41,6 +41,14 @@ func TestGeneratedDevelopmentStackLoadsCoreAuthorityAndTLS(t *testing.T) {
 	if len(cursorKey) != 32 {
 		t.Fatalf("generated cursor key bytes = %d", len(cursorKey))
 	}
+	loginKey, err := base64.RawURLEncoding.DecodeString(environment[coreLoginTransactionKeyEnvironment])
+	if err != nil || len(loginKey) != 32 {
+		t.Fatalf("generated login transaction key = %d bytes, err %v", len(loginKey), err)
+	}
+	if environment[coreHydraAdminEnvironment] == "" || environment[coreHydraPublicOriginEnvironment] == "" ||
+		environment[coreExternalOIDCIssuerEnvironment] == "" || environment[coreExternalOIDCSecretEnvironment] == "" {
+		t.Fatal("generated Core environment omits login bridge configuration")
+	}
 	if environment[coreDevPromptObjectRootEnvironment] != filepath.Join(fixture.Output, "state", "objects") {
 		t.Fatalf("generated object root = %q", environment[coreDevPromptObjectRootEnvironment])
 	}

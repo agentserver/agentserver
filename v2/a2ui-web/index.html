@@ -21,7 +21,7 @@
         </a>
         <div class="topbar-actions">
           <span class="health-pill" id="health-pill"><i aria-hidden="true"></i><span id="health-label">checking gateway</span></span>
-          <button class="quiet-button" id="connection-button" type="button">Connect</button>
+          <button class="quiet-button" id="connection-button" type="button">Sign in</button>
         </div>
       </header>
 
@@ -64,7 +64,7 @@
             <label class="sr-only" for="prompt">Message</label>
             <textarea id="prompt" name="prompt" rows="1" maxlength="262144" placeholder="Ask the agent to inspect the workspace…" disabled></textarea>
             <div class="composer-footer">
-              <span id="composer-hint">Connect an in-memory development bearer to begin.</span>
+              <span id="composer-hint">Sign in with Authorization Code + PKCE to begin.</span>
               <button class="send-button" id="send-button" type="submit" disabled>
                 <span>Send</span><span aria-hidden="true">↗</span>
               </button>
@@ -122,19 +122,17 @@
     <div class="connection-layer" id="connection-layer" role="dialog" aria-modal="true" aria-labelledby="connection-title">
       <form class="connection-card" id="connection-form">
         <div class="connection-art" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
-        <p class="eyebrow">Local development authority</p>
-        <h2 id="connection-title">Connect the reference client</h2>
-        <p class="connection-copy">The bearer stays in this page's memory. A token supplied in the URL fragment is scrubbed before any API request.</p>
+        <p class="eyebrow">OIDC development authority</p>
+        <h2 id="connection-title">Sign in to the reference client</h2>
+        <p class="connection-copy">The browser uses Authorization Code + PKCE. The short-lived PKCE transaction stays in sessionStorage; the resulting access token exists only in this page's memory.</p>
 
-        <label for="bearer">Browser bearer</label>
-        <input id="bearer" name="bearer" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" required placeholder="asv2dev-browser-…">
         <div class="scope-grid">
           <label>Workspace ID<input id="workspace-id" name="workspace" autocomplete="off" spellcheck="false" required></label>
           <label>Session ID<input id="session-id" name="session" autocomplete="off" spellcheck="false" required></label>
         </div>
         <p class="form-error" id="connection-error" role="alert" hidden></p>
-        <button class="connect-button" type="submit">Use in memory <span aria-hidden="true">→</span></button>
-        <p class="connection-note">No Codex login is entered here. This token authorizes only the browser-gateway development boundary.</p>
+        <button class="connect-button" id="login-button" type="submit">Continue with development OIDC <span aria-hidden="true">→</span></button>
+        <p class="connection-note">browser-gateway never receives an external IdP password. Core maps only the pre-provisioned issuer/subject pair to this development user.</p>
       </form>
     </div>
   </body>

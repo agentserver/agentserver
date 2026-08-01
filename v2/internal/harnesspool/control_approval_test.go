@@ -101,6 +101,58 @@ func TestControlServerReplaysJournaledApprovalOutcomeAfterResume(t *testing.T) {
 	}
 }
 
+func TestControlServerKeepsAckOrderingBarrierThroughApprovalOutcomeWrite(t *testing.T) {
+	lifecycle := newBlockingControlApprovalLifecycle()
+	fixture := newControlServerFixture(t, lifecycle)
+	connection, worker := connectAcceptedControlTurn(t, fixture)
+	request := controlApprovalRequest(fixture, "93", "call-approval-write-order")
+	sendWorkerEvent(t, connection, worker, request)
+	select {
+	case <-lifecycle.requests:
+	case <-time.After(time.Second):
+		t.Fatal("approval observation did not start")
+	}
+
+	fixture.control.runtime.mu.Lock()
+	serverConnection := fixture.control.runtime.connection
+	fixture.control.runtime.mu.Unlock()
+	if serverConnection == nil {
+		t.Fatal("control connection is not active")
+	}
+
+	// Hold the socket writer so the approval goroutine can allocate its
+	// journaled command but cannot yet put it on the wire. The ACK ordering
+	// barrier must remain held across that gap: otherwise a later receive can
+	// emit a newer standalone ACK before this command's older piggyback ACK.
+	serverConnection.writeMu.Lock()
+	lifecycle.releaseAll()
+	waitForControlJournalFrames(t, fixture.control, 1)
+
+	barrierAcquired := make(chan struct{})
+	go func() {
+		fixture.control.runtime.ackBarrier.Lock()
+		close(barrierAcquired)
+		fixture.control.runtime.ackBarrier.Unlock()
+	}()
+	select {
+	case <-barrierAcquired:
+		serverConnection.writeMu.Unlock()
+		t.Fatal("ACK ordering barrier was released before the approval outcome write")
+	case <-time.After(20 * time.Millisecond):
+	}
+	serverConnection.writeMu.Unlock()
+
+	select {
+	case <-barrierAcquired:
+	case <-time.After(time.Second):
+		t.Fatal("ACK ordering barrier did not release after the approval outcome write")
+	}
+	message := readControlMessage(t, connection, fixture.config.WireLimits)
+	if message.Frame == nil || message.Frame.Type != harnesscontrol.MessageTypeCommand {
+		t.Fatalf("approval outcome = %+v", message)
+	}
+}
+
 func TestControlServerBoundsAndUniquelyCorrelatesOutstandingApprovals(t *testing.T) {
 	tests := []struct {
 		name   string

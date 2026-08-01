@@ -8,8 +8,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -19,6 +21,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"strings"
@@ -33,6 +36,7 @@ const (
 	maximumSSEBytes  = 16 * 1024 * 1024
 	maximumFileBytes = 1024 * 1024
 	maximumWebBytes  = 1024 * 1024
+	maximumAuthBytes = 64 * 1024
 	finalMessage     = "Agentserver v2 scripted development turn completed."
 	referenceMarker  = `data-agentserver-reference-web="v2"`
 
@@ -55,9 +59,16 @@ type approvalGateSmokeResult struct {
 }
 
 type smokeOptions struct {
-	origin     string
-	caFile     string
-	bearerFile string
+	origin      string
+	caFile      string
+	accessToken string
+	session     *smokeSession
+}
+
+type smokeSession struct {
+	origin      *url.URL
+	accessToken string
+	client      *http.Client
 }
 
 func main() {
@@ -70,7 +81,6 @@ func run(parent context.Context, arguments []string, stdout, stderr io.Writer) i
 	var options smokeOptions
 	flags.StringVar(&options.origin, "origin", "", "published browser-gateway HTTPS origin")
 	flags.StringVar(&options.caFile, "ca-file", "", "development CA PEM file")
-	flags.StringVar(&options.bearerFile, "bearer-file", "", "development browser bearer file")
 	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 {
 		return 2
 	}
@@ -78,6 +88,13 @@ func run(parent context.Context, arguments []string, stdout, stderr io.Writer) i
 		fmt.Fprintln(stderr, "agentserver-dev-smoke: context is required")
 		return 1
 	}
+	session, closeSession, err := newSmokeSession(parent, options)
+	if err != nil {
+		fmt.Fprintf(stderr, "agentserver-dev-smoke: authenticate browser session: %v\n", err)
+		return 1
+	}
+	defer closeSession()
+	options.session = session
 	requestID, eventStream, err := executeSmoke(parent, options)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentserver-dev-smoke: %v\n", err)
@@ -117,7 +134,7 @@ func run(parent context.Context, arguments []string, stdout, stderr io.Writer) i
 	}
 	fmt.Fprintf(
 		stdout,
-		"agentserver-dev-smoke: reference web loaded; AG-UI request %s completed, request %s was cancelled after execution, and deny/expiry/pending-cancel gates contained all three pre-dispatch attempts\n",
+		"agentserver-dev-smoke: OAuth Code + PKCE login and replay gates passed; reference web loaded; AG-UI request %s completed, request %s was cancelled after execution, and deny/expiry/pending-cancel gates contained all three pre-dispatch attempts\n",
 		requestID,
 		cancelRequestID,
 	)
@@ -139,11 +156,12 @@ func writeSmokeFailure(writer io.Writer, label string, err error, stream []byte)
 }
 
 func executeSmoke(parent context.Context, options smokeOptions) (string, []byte, error) {
-	origin, bearer, client, closeClient, err := newSmokeHTTPClient(options)
+	session, closeClient, err := newSmokeSession(parent, options)
 	if err != nil {
 		return "", nil, err
 	}
 	defer closeClient()
+	origin, bearer, client := session.origin, session.accessToken, session.client
 
 	requestID, err := newRequestID()
 	if err != nil {
@@ -208,11 +226,12 @@ func executeSmoke(parent context.Context, options smokeOptions) (string, []byte,
 }
 
 func executeCancellationSmoke(parent context.Context, options smokeOptions) (string, []byte, error) {
-	origin, bearer, client, closeClient, err := newSmokeHTTPClient(options)
+	session, closeClient, err := newSmokeSession(parent, options)
 	if err != nil {
 		return "", nil, err
 	}
 	defer closeClient()
+	origin, bearer, client := session.origin, session.accessToken, session.client
 	requestID, err := newRequestID()
 	if err != nil {
 		return "", nil, err
@@ -345,11 +364,12 @@ func executeApprovalGateSmoke(
 	if err != nil {
 		return approvalGateSmokeResult{}, nil, err
 	}
-	origin, bearer, client, closeClient, err := newSmokeHTTPClient(options)
+	session, closeClient, err := newSmokeSession(parent, options)
 	if err != nil {
 		return approvalGateSmokeResult{}, nil, err
 	}
 	defer closeClient()
+	origin, bearer, client := session.origin, session.accessToken, session.client
 	requestID, err := newRequestID()
 	if err != nil {
 		return approvalGateSmokeResult{}, nil, err
@@ -790,27 +810,64 @@ func sendSmokeCancellation(ctx context.Context, client *http.Client, origin *url
 	return nil
 }
 
-func newSmokeHTTPClient(options smokeOptions) (*url.URL, string, *http.Client, func(), error) {
+type smokeAuthorizationConfig struct {
+	Version               int      `json:"version"`
+	AuthorizationEndpoint string   `json:"authorizationEndpoint"`
+	TokenEndpoint         string   `json:"tokenEndpoint"`
+	RedirectPath          string   `json:"redirectPath"`
+	ClientID              string   `json:"clientId"`
+	Scopes                []string `json:"scopes"`
+	Audience              string   `json:"audience"`
+}
+
+func newSmokeSession(parent context.Context, options smokeOptions) (*smokeSession, func(), error) {
+	if parent == nil {
+		return nil, nil, errors.New("smoke context is required")
+	}
+	if options.session != nil {
+		if options.session.origin == nil || options.session.client == nil || !validSmokeAccessToken(options.session.accessToken) {
+			return nil, nil, errors.New("preconfigured smoke session is invalid")
+		}
+		return options.session, func() {}, nil
+	}
+	origin, client, closeClient, err := newSmokeHTTPClient(options)
+	if err != nil {
+		return nil, nil, err
+	}
+	accessToken := options.accessToken
+	if accessToken == "" {
+		ctx, cancel := context.WithTimeout(parent, time.Minute)
+		defer cancel()
+		accessToken, err = authenticateSmoke(ctx, client, origin)
+		if err != nil {
+			closeClient()
+			return nil, nil, err
+		}
+	}
+	if !validSmokeAccessToken(accessToken) {
+		closeClient()
+		return nil, nil, errors.New("smoke access token is empty or outside protocol bounds")
+	}
+	return &smokeSession{origin: origin, accessToken: accessToken, client: client}, closeClient, nil
+}
+
+func newSmokeHTTPClient(options smokeOptions) (*url.URL, *http.Client, func(), error) {
 	origin, err := validateOrigin(options.origin)
 	if err != nil {
-		return nil, "", nil, nil, err
+		return nil, nil, nil, err
 	}
 	caPEM, err := readBoundedFile("development CA", options.caFile, maximumFileBytes)
 	if err != nil {
-		return nil, "", nil, nil, err
+		return nil, nil, nil, err
 	}
+	defer clear(caPEM)
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM(caPEM) {
-		return nil, "", nil, nil, errors.New("development CA file contains no certificates")
+		return nil, nil, nil, errors.New("development CA file contains no certificates")
 	}
-	bearerRaw, err := readBoundedFile("browser bearer", options.bearerFile, 16*1024)
+	jar, err := cookiejar.New(nil)
 	if err != nil {
-		return nil, "", nil, nil, err
-	}
-	bearer := strings.TrimSuffix(string(bearerRaw), "\n")
-	clear(bearerRaw)
-	if bearer == "" || strings.TrimSpace(bearer) != bearer || strings.ContainsAny(bearer, "\x00\r\n") {
-		return nil, "", nil, nil, errors.New("browser bearer file does not contain one canonical token line")
+		return nil, nil, nil, fmt.Errorf("create smoke browser cookie jar: %w", err)
 	}
 	transport := &http.Transport{
 		Proxy: nil,
@@ -826,7 +883,416 @@ func newSmokeHTTPClient(options smokeOptions) (*url.URL, string, *http.Client, f
 			RootCAs:    roots,
 		},
 	}
-	return origin, bearer, &http.Client{Transport: transport}, transport.CloseIdleConnections, nil
+	client := &http.Client{
+		Transport: transport,
+		Jar:       jar,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	return origin, client, transport.CloseIdleConnections, nil
+}
+
+func authenticateSmoke(ctx context.Context, client *http.Client, origin *url.URL) (string, error) {
+	if ctx == nil || client == nil || client.Jar == nil || origin == nil {
+		return "", errors.New("OAuth smoke requires a browser client, cookie jar, and origin")
+	}
+	config, err := readSmokeAuthorizationConfig(ctx, client, origin)
+	if err != nil {
+		return "", err
+	}
+	verifier, err := newSmokePKCESecret()
+	if err != nil {
+		return "", err
+	}
+	state, err := newSmokePKCESecret()
+	if err != nil {
+		return "", err
+	}
+	nonce, err := newSmokePKCESecret()
+	if err != nil {
+		return "", err
+	}
+	challengeDigest := sha256.Sum256([]byte(verifier))
+	redirectURI := origin.String() + config.RedirectPath
+	authorizationURL := *origin
+	authorizationURL.Path = config.AuthorizationEndpoint
+	authorizationURL.RawQuery = (url.Values{
+		"response_type":         {"code"},
+		"client_id":             {config.ClientID},
+		"redirect_uri":          {redirectURI},
+		"scope":                 {strings.Join(config.Scopes, " ")},
+		"audience":              {config.Audience},
+		"state":                 {state},
+		"nonce":                 {nonce},
+		"code_challenge":        {base64.RawURLEncoding.EncodeToString(challengeDigest[:])},
+		"code_challenge_method": {"S256"},
+	}).Encode()
+
+	loginURL, err := followSmokeAuthorizationRedirect(ctx, client, origin, &authorizationURL, "Hydra authorization")
+	if err != nil {
+		return "", err
+	}
+	if err := requireSmokeAuthorizationPath(loginURL, "/auth/hydra/login"); err != nil {
+		return "", err
+	}
+	idpURL, err := followSmokeAuthorizationRedirect(ctx, client, origin, loginURL, "Hydra login bridge")
+	if err != nil {
+		return "", err
+	}
+	if err := requireSmokeAuthorizationPath(idpURL, "/auth/idp/authorize"); err != nil {
+		return "", err
+	}
+	externalCallbackURL, err := followSmokeAuthorizationRedirect(ctx, client, origin, idpURL, "external OIDC authorization")
+	if err != nil {
+		return "", err
+	}
+	if err := requireSmokeAuthorizationPath(externalCallbackURL, "/auth/oidc/callback"); err != nil {
+		return "", err
+	}
+	binding, err := smokeLoginBinding(client.Jar, origin)
+	if err != nil {
+		return "", err
+	}
+	loginContinuationURL, err := followSmokeAuthorizationRedirect(ctx, client, origin, externalCallbackURL, "external OIDC callback")
+	if err != nil {
+		return "", err
+	}
+	if err := requireSmokeAuthorizationPath(loginContinuationURL, "/oauth2/auth"); err != nil {
+		return "", err
+	}
+	if _, err := smokeLoginBinding(client.Jar, origin); err == nil {
+		return "", errors.New("external OIDC callback did not clear its browser binding cookie")
+	}
+	consentURL, err := followSmokeAuthorizationRedirect(ctx, client, origin, loginContinuationURL, "Hydra login continuation")
+	if err != nil {
+		return "", err
+	}
+	if err := requireSmokeAuthorizationPath(consentURL, "/auth/hydra/consent"); err != nil {
+		return "", err
+	}
+	consentContinuationURL, err := followSmokeAuthorizationRedirect(ctx, client, origin, consentURL, "Hydra consent bridge")
+	if err != nil {
+		return "", err
+	}
+	if err := requireSmokeAuthorizationPath(consentContinuationURL, "/oauth2/auth"); err != nil {
+		return "", err
+	}
+	browserCallbackURL, err := followSmokeAuthorizationRedirect(ctx, client, origin, consentContinuationURL, "Hydra consent continuation")
+	if err != nil {
+		return "", err
+	}
+	if err := requireSmokeAuthorizationPath(browserCallbackURL, "/"); err != nil {
+		return "", err
+	}
+	browserCode, err := validateSmokeBrowserCallback(browserCallbackURL, state)
+	if err != nil {
+		return "", err
+	}
+	tokenForm := url.Values{
+		"grant_type": {"authorization_code"}, "code": {browserCode}, "redirect_uri": {redirectURI},
+		"client_id": {config.ClientID}, "code_verifier": {verifier},
+	}.Encode()
+	accessToken, err := exchangeSmokeAuthorizationCode(ctx, client, origin, config, tokenForm)
+	if err != nil {
+		return "", err
+	}
+	if err := requireSmokeAuthorizationCodeReplayFailure(ctx, client, origin, config.TokenEndpoint, tokenForm); err != nil {
+		return "", err
+	}
+	client.Jar.SetCookies(origin, []*http.Cookie{{
+		Name: "__Host-agentserver-oidc", Value: binding, Path: "/", Secure: true, HttpOnly: true,
+	}})
+	if err := requireSmokeAuthorizationReplayFailure(ctx, client, origin, externalCallbackURL, "external OIDC callback", http.StatusBadRequest); err != nil {
+		return "", err
+	}
+	client.Jar.SetCookies(origin, []*http.Cookie{{
+		Name: "__Host-agentserver-oidc", Value: "", Path: "/", Secure: true, MaxAge: -1, Expires: time.Unix(1, 0),
+	}})
+	if err := requireSmokeAuthorizationReplayFailure(ctx, client, origin, consentURL, "Hydra consent", http.StatusServiceUnavailable); err != nil {
+		return "", err
+	}
+	return accessToken, nil
+}
+
+func readSmokeAuthorizationConfig(ctx context.Context, client *http.Client, origin *url.URL) (smokeAuthorizationConfig, error) {
+	endpoint := *origin
+	endpoint.Path = "/auth/config"
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return smokeAuthorizationConfig{}, fmt.Errorf("create browser authorization config request: %w", err)
+	}
+	request.Header.Set("Accept", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return smokeAuthorizationConfig{}, fmt.Errorf("read browser authorization config: %w", err)
+	}
+	defer response.Body.Close()
+	body, err := readSmokeAuthBody(response.Body, "browser authorization config")
+	if err != nil {
+		return smokeAuthorizationConfig{}, err
+	}
+	mediaType, _, mediaErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if response.StatusCode != http.StatusOK || mediaErr != nil || mediaType != "application/json" || response.Header.Get("Cache-Control") != "no-store" {
+		return smokeAuthorizationConfig{}, fmt.Errorf("browser authorization config response = status %d Content-Type %q", response.StatusCode, response.Header.Get("Content-Type"))
+	}
+	var config smokeAuthorizationConfig
+	if err := decodeSmokeJSON(body, &config); err != nil {
+		return smokeAuthorizationConfig{}, fmt.Errorf("decode browser authorization config: %w", err)
+	}
+	if config.Version != 1 || config.AuthorizationEndpoint != "/oauth2/auth" || config.TokenEndpoint != "/oauth2/token" ||
+		config.RedirectPath != "/" || config.ClientID != devfixtures.BrowserOAuthClientID ||
+		config.Audience != devfixtures.BrowserTokenAudience ||
+		!sameSmokeTextSet(config.Scopes, []string{"openid", devfixtures.BrowserTokenScope}) {
+		return smokeAuthorizationConfig{}, errors.New("browser authorization config does not match the insecure development OAuth profile")
+	}
+	return config, nil
+}
+
+func followSmokeAuthorizationRedirect(
+	ctx context.Context,
+	client *http.Client,
+	origin, endpoint *url.URL,
+	label string,
+) (*url.URL, error) {
+	if !sameSmokeOrigin(origin, endpoint) || endpoint.User != nil || endpoint.Fragment != "" {
+		return nil, fmt.Errorf("%s endpoint escaped the published browser origin", label)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("create %s request: %w", label, err)
+	}
+	request.Header.Set("Accept", "text/html,application/xhtml+xml,application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("send %s request: %w", label, err)
+	}
+	defer response.Body.Close()
+	body, readErr := readSmokeAuthBody(response.Body, label)
+	if readErr != nil {
+		return nil, readErr
+	}
+	locations := response.Header.Values("Location")
+	if response.StatusCode != http.StatusFound || len(locations) != 1 || locations[0] == "" {
+		return nil, fmt.Errorf("%s response = status %d Location %q body %q", label, response.StatusCode, response.Header.Get("Location"), body)
+	}
+	redirect, err := url.Parse(locations[0])
+	if err != nil || !redirect.IsAbs() || !sameSmokeOrigin(origin, redirect) || redirect.User != nil || redirect.Fragment != "" || len(locations[0]) > 8192 {
+		return nil, fmt.Errorf("%s returned an invalid or cross-origin redirect", label)
+	}
+	return redirect, nil
+}
+
+func exchangeSmokeAuthorizationCode(
+	ctx context.Context,
+	client *http.Client,
+	origin *url.URL,
+	config smokeAuthorizationConfig,
+	form string,
+) (string, error) {
+	endpoint := *origin
+	endpoint.Path = config.TokenEndpoint
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), strings.NewReader(form))
+	if err != nil {
+		return "", fmt.Errorf("create browser token request: %w", err)
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response, err := client.Do(request)
+	if err != nil {
+		return "", fmt.Errorf("exchange browser authorization code: %w", err)
+	}
+	defer response.Body.Close()
+	body, err := readSmokeAuthBody(response.Body, "browser token response")
+	if err != nil {
+		return "", err
+	}
+	mediaType, _, mediaErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if response.StatusCode != http.StatusOK || mediaErr != nil || mediaType != "application/json" {
+		return "", fmt.Errorf("browser token response = status %d Content-Type %q body %q", response.StatusCode, response.Header.Get("Content-Type"), body)
+	}
+	var token struct {
+		AccessToken string `json:"access_token"`
+		TokenType   string `json:"token_type"`
+		ExpiresIn   int64  `json:"expires_in"`
+		Scope       string `json:"scope"`
+	}
+	if err := decodeSmokeJSON(body, &token); err != nil {
+		return "", fmt.Errorf("decode browser token response: %w", err)
+	}
+	if !validSmokeAccessToken(token.AccessToken) || token.TokenType != "Bearer" || token.ExpiresIn < 1 || token.ExpiresIn > 24*60*60 ||
+		!sameSmokeTextSet(strings.Fields(token.Scope), config.Scopes) {
+		return "", errors.New("browser token response does not match requested OAuth authority")
+	}
+	return token.AccessToken, nil
+}
+
+func requireSmokeAuthorizationCodeReplayFailure(
+	ctx context.Context,
+	client *http.Client,
+	origin *url.URL,
+	tokenPath, form string,
+) error {
+	endpoint := *origin
+	endpoint.Path = tokenPath
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), strings.NewReader(form))
+	if err != nil {
+		return fmt.Errorf("create browser code replay request: %w", err)
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("send browser code replay request: %w", err)
+	}
+	defer response.Body.Close()
+	body, err := readSmokeAuthBody(response.Body, "browser code replay response")
+	if err != nil {
+		return err
+	}
+	var oauthError struct {
+		Error string `json:"error"`
+	}
+	if response.StatusCode != http.StatusBadRequest || decodeSmokeJSON(body, &oauthError) != nil || oauthError.Error != "invalid_grant" || response.Header.Get("Location") != "" {
+		return fmt.Errorf("browser authorization code replay was not rejected canonically: status %d body %q", response.StatusCode, body)
+	}
+	return nil
+}
+
+func requireSmokeAuthorizationReplayFailure(
+	ctx context.Context,
+	client *http.Client,
+	origin, endpoint *url.URL,
+	label string,
+	expectedStatus int,
+) error {
+	if !sameSmokeOrigin(origin, endpoint) {
+		return fmt.Errorf("%s replay endpoint escaped the published browser origin", label)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return fmt.Errorf("create %s replay request: %w", label, err)
+	}
+	request.Header.Set("Accept", "text/html,application/xhtml+xml,application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return fmt.Errorf("send %s replay request: %w", label, err)
+	}
+	defer response.Body.Close()
+	body, err := readSmokeAuthBody(response.Body, label+" replay response")
+	if err != nil {
+		return err
+	}
+	if response.StatusCode != expectedStatus || response.Header.Get("Location") != "" {
+		return fmt.Errorf("%s replay was not rejected: status %d Location %q body %q", label, response.StatusCode, response.Header.Get("Location"), body)
+	}
+	return nil
+}
+
+func validateSmokeBrowserCallback(callback *url.URL, expectedState string) (string, error) {
+	query := callback.Query()
+	if len(query) != 2 || len(query["code"]) != 1 || len(query["state"]) != 1 ||
+		query.Get("state") != expectedState || !validSmokeAccessToken(query.Get("code")) {
+		return "", errors.New("Hydra browser callback did not contain one matching state and authorization code")
+	}
+	return query.Get("code"), nil
+}
+
+func smokeLoginBinding(jar http.CookieJar, origin *url.URL) (string, error) {
+	value := ""
+	for _, cookie := range jar.Cookies(origin) {
+		if cookie.Name != "__Host-agentserver-oidc" {
+			continue
+		}
+		if value != "" || !validSmokeAccessToken(cookie.Value) {
+			return "", errors.New("OAuth browser binding cookie is duplicate or invalid")
+		}
+		value = cookie.Value
+	}
+	if value == "" {
+		return "", errors.New("OAuth browser binding cookie is missing")
+	}
+	return value, nil
+}
+
+func requireSmokeAuthorizationPath(endpoint *url.URL, expected string) error {
+	if endpoint == nil || endpoint.Path != expected || endpoint.RawPath != "" || endpoint.RawQuery == "" {
+		return fmt.Errorf("OAuth redirect path = %v, want %s with a query", endpoint, expected)
+	}
+	return nil
+}
+
+func newSmokePKCESecret() (string, error) {
+	raw := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, raw); err != nil {
+		return "", fmt.Errorf("generate OAuth PKCE correlation: %w", err)
+	}
+	defer clear(raw)
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func readSmokeAuthBody(reader io.Reader, label string) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(reader, maximumAuthBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", label, err)
+	}
+	if len(body) > maximumAuthBytes {
+		return nil, fmt.Errorf("%s exceeds %d bytes", label, maximumAuthBytes)
+	}
+	return body, nil
+}
+
+func decodeSmokeJSON(raw []byte, destination any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return errors.New("JSON response contains trailing data")
+	}
+	return nil
+}
+
+func sameSmokeOrigin(left, right *url.URL) bool {
+	return left != nil && right != nil && left.Scheme == "https" && right.Scheme == left.Scheme &&
+		strings.EqualFold(right.Host, left.Host)
+}
+
+func sameSmokeTextSet(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	values := make(map[string]struct{}, len(left))
+	for _, value := range left {
+		if value == "" {
+			return false
+		}
+		values[value] = struct{}{}
+	}
+	if len(values) != len(left) {
+		return false
+	}
+	for _, value := range right {
+		if _, found := values[value]; !found {
+			return false
+		}
+	}
+	return true
+}
+
+func validSmokeAccessToken(value string) bool {
+	if value == "" || len(value) > 8192 {
+		return false
+	}
+	for _, character := range value {
+		if !((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || strings.ContainsRune("-._~+/=", character)) {
+			return false
+		}
+	}
+	return true
 }
 
 func verifyReferenceWeb(ctx context.Context, client *http.Client, origin *url.URL) error {
@@ -862,8 +1328,9 @@ func verifyReferenceWeb(ctx context.Context, client *http.Client, origin *url.UR
 
 func validateOrigin(raw string) (*url.URL, error) {
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil ||
-		(parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" || parsed.Opaque != "" ||
+		parsed.User != nil || parsed.RawPath != "" || parsed.ForceQuery || (parsed.Path != "" && parsed.Path != "/") ||
+		parsed.RawQuery != "" || parsed.Fragment != "" {
 		return nil, errors.New("origin must be an HTTPS origin without credentials, path, query, or fragment")
 	}
 	parsed.Path = ""

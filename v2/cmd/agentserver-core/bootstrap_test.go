@@ -18,6 +18,7 @@ func TestLoadDevelopmentBootstrapDerivesExecutorEnrollment(t *testing.T) {
 		WorkspaceID: "40000000-0000-4000-8000-000000000004",
 		SessionID:   "50000000-0000-4000-8000-000000000005",
 		ActorID:     "10000000-0000-4000-8000-000000000001",
+		Identity:    developmentBootstrapIdentityDocument{Issuer: "http://127.0.0.1:17447/idp", Subject: "agentserver-dev-user"},
 		Executor: developmentBootstrapExecutorDocument{
 			ExecutorID:    "20000000-0000-4000-8000-000000000002",
 			EnvironmentID: "60000000-0000-4000-8000-000000000006",
@@ -32,7 +33,8 @@ func TestLoadDevelopmentBootstrapDerivesExecutorEnrollment(t *testing.T) {
 	wantRuntimeDigest := sha256.Sum256(manifestBytes)
 	if bootstrap.WorkspaceID != "40000000-0000-4000-8000-000000000004" ||
 		bootstrap.ExecutorID != "20000000-0000-4000-8000-000000000002" ||
-		bootstrap.RuntimeManifestSHA256 != wantRuntimeDigest || bootstrap.AgentxVersion != "0.1.0-dev" {
+		bootstrap.RuntimeManifestSHA256 != wantRuntimeDigest || bootstrap.AgentxVersion != "0.1.0-dev" ||
+		bootstrap.ExternalOIDCIssuer != "http://127.0.0.1:17447/idp" || bootstrap.ExternalOIDCSubject != "agentserver-dev-user" {
 		t.Fatalf("derived development bootstrap = %+v", bootstrap)
 	}
 	environment := bootstrap.Environment
@@ -54,6 +56,7 @@ func TestLoadDevelopmentBootstrapRejectsAmbiguousOrUnsafeConfig(t *testing.T) {
 		WorkspaceID: "40000000-0000-4000-8000-000000000004",
 		SessionID:   "50000000-0000-4000-8000-000000000005",
 		ActorID:     "10000000-0000-4000-8000-000000000001",
+		Identity:    developmentBootstrapIdentityDocument{Issuer: "http://127.0.0.1:17447/idp", Subject: "agentserver-dev-user"},
 		Executor: developmentBootstrapExecutorDocument{
 			ExecutorID:    "20000000-0000-4000-8000-000000000002",
 			EnvironmentID: "60000000-0000-4000-8000-000000000006",
@@ -61,11 +64,13 @@ func TestLoadDevelopmentBootstrapRejectsAmbiguousOrUnsafeConfig(t *testing.T) {
 		},
 	}
 	for name, mutate := range map[string]func(*developmentBootstrapDocument){
-		"version":       func(value *developmentBootstrapDocument) { value.Version = 2 },
-		"workspace":     func(value *developmentBootstrapDocument) { value.WorkspaceID = "not-a-uuid" },
-		"platform":      func(value *developmentBootstrapDocument) { value.Executor.Platform = "plan9-amd64" },
-		"relative root": func(value *developmentBootstrapDocument) { value.Executor.WorkspaceRoot = "workspace" },
-		"default cwd":   func(value *developmentBootstrapDocument) { value.Executor.DefaultCWD = "../escape" },
+		"version":          func(value *developmentBootstrapDocument) { value.Version = 2 },
+		"workspace":        func(value *developmentBootstrapDocument) { value.WorkspaceID = "not-a-uuid" },
+		"identity issuer":  func(value *developmentBootstrapDocument) { value.Identity.Issuer = "https://idp.example" },
+		"identity subject": func(value *developmentBootstrapDocument) { value.Identity.Subject = "" },
+		"platform":         func(value *developmentBootstrapDocument) { value.Executor.Platform = "plan9-amd64" },
+		"relative root":    func(value *developmentBootstrapDocument) { value.Executor.WorkspaceRoot = "workspace" },
+		"default cwd":      func(value *developmentBootstrapDocument) { value.Executor.DefaultCWD = "../escape" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			document := valid

@@ -22,19 +22,28 @@ import (
 )
 
 const (
-	coreListenAddressEnvironment       = "AGENTSERVER_V2_CORE_LISTEN_ADDR"
-	coreTLSCertificateEnvironment      = "AGENTSERVER_V2_CORE_TLS_CERT_FILE"
-	coreTLSKeyEnvironment              = "AGENTSERVER_V2_CORE_TLS_KEY_FILE"
-	coreClientCAEnvironment            = "AGENTSERVER_V2_CORE_CLIENT_CA_FILE"
-	coreGatewayIdentityEnvironment     = "AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID"
-	coreHarnessPoolIdentityEnvironment = "AGENTSERVER_V2_HARNESS_POOL_SPIFFE_ID"
-	coreBrowserIdentityEnvironment     = "AGENTSERVER_V2_BROWSER_GATEWAY_SPIFFE_ID"
-	coreHydraIntrospectionEnvironment  = "AGENTSERVER_V2_HYDRA_INTROSPECTION_URL"
-	coreHydraInsecureHTTPEnvironment   = "AGENTSERVER_V2_HYDRA_ALLOW_INSECURE_HTTP"
-	coreRunCursorKeyEnvironment        = "AGENTSERVER_V2_RUN_CURSOR_KEY"
-	coreDevPromptObjectRootEnvironment = "AGENTSERVER_V2_DEV_PROMPT_OBJECT_DIR"
-	coreRunPolicyVersionEnvironment    = "AGENTSERVER_V2_RUN_POLICY_VERSION"
-	coreRunAllowedToolsEnvironment     = "AGENTSERVER_V2_RUN_ALLOWED_TOOLS"
+	coreListenAddressEnvironment        = "AGENTSERVER_V2_CORE_LISTEN_ADDR"
+	coreTLSCertificateEnvironment       = "AGENTSERVER_V2_CORE_TLS_CERT_FILE"
+	coreTLSKeyEnvironment               = "AGENTSERVER_V2_CORE_TLS_KEY_FILE"
+	coreClientCAEnvironment             = "AGENTSERVER_V2_CORE_CLIENT_CA_FILE"
+	coreGatewayIdentityEnvironment      = "AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID"
+	coreHarnessPoolIdentityEnvironment  = "AGENTSERVER_V2_HARNESS_POOL_SPIFFE_ID"
+	coreBrowserIdentityEnvironment      = "AGENTSERVER_V2_BROWSER_GATEWAY_SPIFFE_ID"
+	coreHydraIntrospectionEnvironment   = "AGENTSERVER_V2_HYDRA_INTROSPECTION_URL"
+	coreHydraAdminEnvironment           = "AGENTSERVER_V2_HYDRA_ADMIN_URL"
+	coreHydraPublicOriginEnvironment    = "AGENTSERVER_V2_HYDRA_PUBLIC_ORIGIN"
+	coreHydraBrowserClientEnvironment   = "AGENTSERVER_V2_HYDRA_BROWSER_CLIENT_ID"
+	coreHydraInsecureHTTPEnvironment    = "AGENTSERVER_V2_HYDRA_ALLOW_INSECURE_HTTP"
+	coreExternalOIDCIssuerEnvironment   = "AGENTSERVER_V2_EXTERNAL_OIDC_ISSUER"
+	coreExternalOIDCClientEnvironment   = "AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_ID"
+	coreExternalOIDCSecretEnvironment   = "AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_SECRET"
+	coreExternalOIDCRedirectEnvironment = "AGENTSERVER_V2_EXTERNAL_OIDC_REDIRECT_URL"
+	coreExternalOIDCInsecureEnvironment = "AGENTSERVER_V2_EXTERNAL_OIDC_ALLOW_INSECURE_HTTP"
+	coreLoginTransactionKeyEnvironment  = "AGENTSERVER_V2_LOGIN_TRANSACTION_KEY"
+	coreRunCursorKeyEnvironment         = "AGENTSERVER_V2_RUN_CURSOR_KEY"
+	coreDevPromptObjectRootEnvironment  = "AGENTSERVER_V2_DEV_PROMPT_OBJECT_DIR"
+	coreRunPolicyVersionEnvironment     = "AGENTSERVER_V2_RUN_POLICY_VERSION"
+	coreRunAllowedToolsEnvironment      = "AGENTSERVER_V2_RUN_ALLOWED_TOOLS"
 )
 
 func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer) error {
@@ -80,10 +89,51 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	if err != nil {
 		return err
 	}
+	hydraAdminOrigin, err := requiredConfiguration(getenv, coreHydraAdminEnvironment)
+	if err != nil {
+		return err
+	}
+	hydraPublicOrigin, err := requiredConfiguration(getenv, coreHydraPublicOriginEnvironment)
+	if err != nil {
+		return err
+	}
+	hydraBrowserClientID, err := requiredConfiguration(getenv, coreHydraBrowserClientEnvironment)
+	if err != nil {
+		return err
+	}
 	allowInsecureHydra, err := strictOptionalBoolean(getenv(coreHydraInsecureHTTPEnvironment), coreHydraInsecureHTTPEnvironment)
 	if err != nil {
 		return err
 	}
+	externalOIDCIssuer, err := requiredConfiguration(getenv, coreExternalOIDCIssuerEnvironment)
+	if err != nil {
+		return err
+	}
+	externalOIDCClientID, err := requiredConfiguration(getenv, coreExternalOIDCClientEnvironment)
+	if err != nil {
+		return err
+	}
+	externalOIDCClientSecret, err := requiredConfiguration(getenv, coreExternalOIDCSecretEnvironment)
+	if err != nil {
+		return err
+	}
+	externalOIDCRedirectURL, err := requiredConfiguration(getenv, coreExternalOIDCRedirectEnvironment)
+	if err != nil {
+		return err
+	}
+	allowInsecureExternalOIDC, err := strictOptionalBoolean(getenv(coreExternalOIDCInsecureEnvironment), coreExternalOIDCInsecureEnvironment)
+	if err != nil {
+		return err
+	}
+	loginTransactionKeyEncoded, err := requiredConfiguration(getenv, coreLoginTransactionKeyEnvironment)
+	if err != nil {
+		return err
+	}
+	loginTransactionKey, err := decodeLoginTransactionKey(loginTransactionKeyEncoded)
+	if err != nil {
+		return err
+	}
+	defer clear(loginTransactionKey)
 	cursorKeyEncoded, err := requiredConfiguration(getenv, coreRunCursorKeyEnvironment)
 	if err != nil {
 		return err
@@ -143,6 +193,21 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	if err != nil {
 		return err
 	}
+	hydraAdmin, err := coreserver.NewHydraAdminClient(hydraAdminOrigin, &http.Client{Timeout: 5 * time.Second}, allowInsecureHydra)
+	if err != nil {
+		return err
+	}
+	externalOIDC, err := coreserver.NewDiscoveredExternalOIDCProvider(
+		ctx, externalOIDCIssuer, externalOIDCClientID, externalOIDCClientSecret,
+		externalOIDCRedirectURL, &http.Client{Timeout: 5 * time.Second}, allowInsecureExternalOIDC,
+	)
+	if err != nil {
+		return err
+	}
+	loginSealer, err := coreserver.NewLoginTransactionSealer(loginTransactionKey)
+	if err != nil {
+		return err
+	}
 	userAuthorizer, err := coreserver.NewIntrospectedUserAuthorizer(coreserver.IntrospectedUserAuthorizerConfig{
 		Introspector: hydraIntrospector, ExpectedAudience: "agentserver-api",
 		ActionScopes: map[string]string{
@@ -154,6 +219,17 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 		return err
 	}
 	store := coredb.NewStateStore(pool)
+	loginBridge, err := coreserver.NewLoginBridge(coreserver.LoginBridgeConfig{
+		Store: store, Hydra: hydraAdmin, IdentityProvider: externalOIDC, Sealer: loginSealer,
+		HydraBrowserClientID: hydraBrowserClientID, HydraPublicOrigin: hydraPublicOrigin,
+	})
+	if err != nil {
+		return err
+	}
+	loginBridgeHandler, err := coreserver.NewLoginBridgeHandler(browserAuthorizer, loginBridge)
+	if err != nil {
+		return err
+	}
 	userRunService, err := coreserver.NewUserRunService(coreserver.UserRunServiceConfig{
 		Store: store, Prompts: promptStore, Policies: policyResolver, CursorCodec: cursorCodec,
 	})
@@ -218,6 +294,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 		return err
 	}
 	handler := http.NewServeMux()
+	handler.Handle("/internal/v2/auth/", loginBridgeHandler.Routes())
 	handler.Handle("/v2/", userRunHandler.Routes())
 	handler.Handle(corecontract.DecideUserApprovalRoutePattern, userApprovalHandler)
 	handler.Handle(corecontract.FreezeBrainToolCatalogPath, brainToolCatalogHandler)
@@ -276,6 +353,14 @@ func decodeRunCursorKey(encoded string) ([]byte, error) {
 	decoded, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil || len(decoded) != 32 || base64.RawURLEncoding.EncodeToString(decoded) != encoded {
 		return nil, fmt.Errorf("%s must be a canonical unpadded base64url 256-bit key", coreRunCursorKeyEnvironment)
+	}
+	return decoded, nil
+}
+
+func decodeLoginTransactionKey(encoded string) ([]byte, error) {
+	decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil || len(decoded) != 32 || base64.RawURLEncoding.EncodeToString(decoded) != encoded {
+		return nil, fmt.Errorf("%s must be a canonical unpadded base64url 256-bit key", coreLoginTransactionKeyEnvironment)
 	}
 	return decoded, nil
 }

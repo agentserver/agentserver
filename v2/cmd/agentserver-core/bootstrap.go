@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -35,7 +37,13 @@ type developmentBootstrapDocument struct {
 	WorkspaceID string                               `json:"workspaceId"`
 	SessionID   string                               `json:"sessionId"`
 	ActorID     string                               `json:"actorId"`
+	Identity    developmentBootstrapIdentityDocument `json:"identity"`
 	Executor    developmentBootstrapExecutorDocument `json:"executor"`
+}
+
+type developmentBootstrapIdentityDocument struct {
+	Issuer  string `json:"issuer"`
+	Subject string `json:"subject"`
 }
 
 type developmentBootstrapExecutorDocument struct {
@@ -141,6 +149,7 @@ func loadDevelopmentBootstrap(configPath string) (coredb.InsecureDevelopmentBoot
 
 	return coredb.InsecureDevelopmentBootstrap{
 		WorkspaceID: document.WorkspaceID, SessionID: document.SessionID, ActorID: document.ActorID,
+		ExternalOIDCIssuer: document.Identity.Issuer, ExternalOIDCSubject: document.Identity.Subject,
 		ExecutorID: document.Executor.ExecutorID, MachineKeySHA256: machineKeyDigest,
 		AgentxVersion: document.Executor.AgentxVersion, RuntimeManifestSHA256: runtimeManifestDigest,
 		ExecProtocolSourceSHA256: execProtocolDigest,
@@ -169,6 +178,14 @@ func validateDevelopmentBootstrapDocument(document developmentBootstrapDocument)
 	if err := validateDevelopmentText("executor.agentxVersion", document.Executor.AgentxVersion, 1, 256); err != nil {
 		return err
 	}
+	issuer, err := url.Parse(document.Identity.Issuer)
+	if err != nil || issuer.Scheme != "http" || issuer.Host == "" || issuer.User != nil || issuer.RawQuery != "" || issuer.Fragment != "" ||
+		issuer.Path == "" || issuer.Path == "/" || strings.HasSuffix(issuer.Path, "/") || !developmentLoopbackHost(issuer.Hostname()) {
+		return errors.New("insecure development bootstrap identity.issuer must be an exact cleartext loopback URL with a non-root path")
+	}
+	if err := validateDevelopmentText("identity.subject", document.Identity.Subject, 1, 2048); err != nil {
+		return err
+	}
 	if document.Executor.RuntimeManifestFile == "" || !filepath.IsAbs(document.Executor.RuntimeManifestFile) ||
 		filepath.Clean(document.Executor.RuntimeManifestFile) != document.Executor.RuntimeManifestFile {
 		return errors.New("insecure development bootstrap executor.runtimeManifestFile must be an absolute clean path")
@@ -190,6 +207,14 @@ func validateDevelopmentBootstrapDocument(document developmentBootstrapDocument)
 		}
 	}
 	return nil
+}
+
+func developmentLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	address := net.ParseIP(host)
+	return address != nil && address.IsLoopback()
 }
 
 func developmentRootDescriptor(executor developmentBootstrapExecutorDocument) (json.RawMessage, error) {

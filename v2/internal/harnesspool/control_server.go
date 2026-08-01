@@ -248,6 +248,7 @@ func (control *AttemptControl) SendInterrupt(ctx context.Context, command harnes
 		return err
 	}
 	if err := connection.write(ctx, runtime.server.config.WriteTimeout, runtime.server.config.WireLimits, frame); err != nil {
+		connection.closeNow()
 		return errors.Join(ErrControlWriteAmbiguous, err)
 	}
 	return nil
@@ -646,6 +647,7 @@ func (server *ControlServer) handleMessage(ctx context.Context, runtime *attempt
 			// The event and its synchronous authority boundary may already be
 			// committed. Treat only the ACK write as ambiguous transport loss;
 			// the peer will reconcile the cumulative cursor on resume.
+			connection.closeNow()
 			return false, err
 		}
 		return runtime.terminalReceived(), nil
@@ -893,17 +895,20 @@ func (runtime *attemptControlRuntime) sendApprovalOutcome(
 			Type: harnesscontrol.MessageTypeCommand, Payload: payload,
 		})
 		runtime.mu.Unlock()
-		runtime.commandMu.Unlock()
-		runtime.ackBarrier.Unlock()
 		if sendErr != nil {
+			runtime.commandMu.Unlock()
+			runtime.ackBarrier.Unlock()
 			return sendErr
 		}
-		if err := connection.write(ctx, runtime.server.config.WriteTimeout, runtime.server.config.WireLimits, frame); err != nil {
-			// The command is already journaled. Force the reader to detach so the
-			// same bytes are replayed; treating this as a new send would duplicate
-			// the approval outcome under another sequence.
+		writeErr := connection.write(ctx, runtime.server.config.WriteTimeout, runtime.server.config.WireLimits, frame)
+		if writeErr != nil {
+			// Prevent a newer ACK or command from entering a transport where this
+			// journaled frame has an ambiguous write outcome. Resume will replay
+			// the exact bytes before later cursors advance.
 			connection.closeNow()
 		}
+		runtime.commandMu.Unlock()
+		runtime.ackBarrier.Unlock()
 		return nil
 	}
 }

@@ -14,13 +14,13 @@
 - Core bootstrap JSON 和 harness-worker deployment JSON；
 - Core、browser-gateway、executor-gateway、harness-pool 四份可由 POSIX shell `source` 的环境文件；
 - agentx 的确定性 program/argv JSON；
-- 固定 opaque browser bearer、只引用 secret 文件路径的 fixture launch 配置；
+- 外部 OIDC client secret、Core 登录事务 AES-256-GCM key、兼容旧 introspection 测试的固定 opaque browser bearer，以及只引用 secret 文件路径的 fixture launch 配置；
 - objects、harness runtime、checkpoint staging 和 agentx runtime 四个本地状态目录；
 - 不含 secret 值的 metadata、服务端点和明确的运行限制说明。
 
 输出目录必须是一个尚不存在的绝对路径。命令不会 merge、覆盖或复用旧 authority；任何生成失败都会清理本次新建的不完整目录。所有目录固定为 `0700`，所有文件固定为 `0600`。CA 私钥不会落盘，生成结束后不能用这套 bundle 继续签发新身份。
 
-run-capability HMAC 只进入 executor-gateway 和 harness-pool 环境，并由开发 llmproxy fixture 从独立 `0600` 文件加载；cursor key 只进入 Core 环境，manifest signing seed 只由 harness-pool 引用。browser bearer 只存在于 `secrets/browser-bearer.token`。harness-worker deployment 只引用公钥 keyring 和自己的 mTLS identity；agentx launch JSON、fixture config 和 metadata 都不含任何 secret 值。
+run-capability HMAC 只进入 executor-gateway 和 harness-pool 环境，并由开发 llmproxy fixture 从独立 `0600` 文件加载；cursor key和登录事务 AES key只进入 Core 环境，manifest signing seed只由 harness-pool引用。外部 OIDC client secret由 Core环境和IdP fixture的独立`0600`文件共享。兼容用固定browser bearer只存在于`secrets/browser-bearer.token`，reference web和host smoke都不再读取它。harness-worker deployment只引用公钥keyring和自己的mTLS identity；agentx launch JSON、fixture config和metadata都不含任何secret值。
 
 prepare 输入 schema 位于 `api/schema/insecure-dev-stack.schema.json`，生成的 fixture 进程合同位于 `api/schema/insecure-dev-fixtures.schema.json`。Go loader 还会检查 schema 无法表达的文件类型、权限、symlink、runtime digest、当前平台 artifact、stock Codex release、workspace containment、loopback 和身份分离约束。
 
@@ -148,6 +148,7 @@ new-agentserver-v2-dev/
 │   └── <service>.crt / <service>.key
 ├── secrets/
 │   ├── browser-bearer.token
+│   ├── external-oidc-client.secret
 │   ├── run-capability.key
 │   ├── run-cursor.key
 │   └── run-manifest.seed
@@ -173,7 +174,7 @@ go run ./cmd/agentserver-dev fixtures --insecure-dev \
 
 这个进程只绑定配置中的两个 loopback listener：
 
-- Hydra 侧只接受 Core 实际发送的 exact form POST。正确的 `secrets/browser-bearer.token` 映射到 bootstrap `actorId`、单一 `aud=agentserver-api` 和 `runs:write`；其他规范 bearer 返回 `active:false`，模糊 method/path/header/form 输入直接拒绝。`exp` 在每次正确 introspection 时按当前时间向后生成。
+- Hydra/OIDC侧实现开发所需的最小Authorization Code + PKCE合同：Hydra public authorize/token、Hydra Admin login/consent、外部IdP discovery/authorize/token/JWKS和动态opaque access-token introspection。authorization code、login verifier和consent verifier都只能消费一次；外部IdP使用Ed25519签发带nonce的ID token，Core使用真实discovery/JWKS verifier。浏览器只能经browser-gateway访问同origin的`/oauth2/auth`、`/oauth2/token`和显式启用的`/auth/idp/authorize`；IdP token/JWKS和Hydra Admin仍是Core到loopback fixture的私有调用。Hydra public与开发IdP授权代理都允许浏览器携带同origin事务Cookie，以便中断后立即重试；两者都以全新upstream request剥离Cookie，Hydra代理还禁用client Cookie Jar，任何浏览器Cookie都不会进入fixture。动态token映射到bootstrap actor、唯一`aud=agentserver-api`和`openid runs:write`。兼容用`secrets/browser-bearer.token`仍可被introspection识别，但reference web与smoke不使用它；模糊method/path/header/form输入一律拒绝。
 - llmproxy 侧使用生成的 TLS identity，只接受 `POST <llmproxyEndpoint>/responses` 和唯一 `Authorization: Bearer ...`。每次请求都校验 HMAC、`aud=llmproxy`、有效期、workspace/session/actor 以及 model/provider route；`aud=executor-mcp`、过期、篡改和跨 route token 都会被拒绝。
 - 模型脚本按 `capability + run + attempt + generation` 分别维护有界状态，不使用进程级全局序号。第一轮要求模型可见 catalog 中精确存在 `executor.list_environments` 与 `executor.shell`，先发出参数 `{}` 的 environment call；第二轮只从同一 `call_id` 的结构化结果中取得唯一 environment ID，再发出固定 `argv=["/bin/pwd"]` 的 shell call；第三轮收到匹配 shell output 后才返回最终 assistant message。第四次请求、缺工具、环境歧义和错误顺序均失败。这样开发演示会真实经过 stock exec-server，并产生可由 reference web 渲染的 command A2UI card。
 
@@ -225,7 +226,7 @@ https://127.0.0.1:17444/v2/workspaces/{workspaceId}/sessions/{sessionId}/agui
 POST https://127.0.0.1:17444/v2/workspaces/{workspaceId}/runs/{runId}:cancel
 ```
 
-空body、同一browser bearer。无holder的queued run会直接返回terminal `cancelled`；已有attempt时先返回非terminal `cancelling`，harness-pool通过成对lease heartbeat观察取消，在worker/app-server/MCP与进程组清理期间继续续租。取消只终止turn/MCP runtime context；worker control要继续到interrupted terminal获得ACK，pool lifecycle command context也要继续到workload cleanup完成，避免terminal前已经排队的runtime event因取消而丢失。最后由exact holder提交`cancelled/interrupted`。启动前失败已经停止workload时，pool使用内部`AbandonAttempt`在一个Core事务中仲裁requeue与并发cancel，不能用一次状态查询后再release来替代。SSE断开本身不触发取消。
+空body、同一短期OAuth access token。无holder的queued run会直接返回terminal `cancelled`；已有attempt时先返回非terminal `cancelling`，harness-pool通过成对lease heartbeat观察取消，在worker/app-server/MCP与进程组清理期间继续续租。取消只终止turn/MCP runtime context；worker control要继续到interrupted terminal获得ACK，pool lifecycle command context也要继续到workload cleanup完成，避免terminal前已经排队的runtime event因取消而丢失。最后由exact holder提交`cancelled/interrupted`。启动前失败已经停止workload时，pool使用内部`AbandonAttempt`在一个Core事务中仲裁requeue与并发cancel，不能用一次状态查询后再release来替代。SSE断开本身不触发取消。
 
 审批决定使用同一origin上的另一条独立command endpoint：
 
@@ -233,9 +234,9 @@ POST https://127.0.0.1:17444/v2/workspaces/{workspaceId}/runs/{runId}:cancel
 POST https://127.0.0.1:17444/v2/workspaces/{workspaceId}/approvals/{approvalId}:decide
 ```
 
-body必须精确包含`decision=approve|deny`、canonical `nonce`、Core投影的`approval-context/rfc8785-v1` digest和`expectedApprovalVersion`；这些值只能来自`CUSTOM agentserver.approval`，不能从display-only A2UI卡片读取或由浏览器改写。Core会同时复核browser-gateway mTLS identity、原始browser bearer的当前RBAC、数据库时间expiry与live attempt generation。`approve`响应只表示approval已批准，execution仍为`pending_approval`；精确gateway后续成功consume才产生dispatch authority。开发栈的shell policy固定为`ask`，executor-gateway会在原MCP `tools/call`上发起真实elicitation，worker通过harness-control 1.3等待Core canonical outcome；reference按钮可人工决定，smoke则从同一`CUSTOM`事件读取authority后自动批准。任何一侧都不能从A2UI display card推导批准。
+body必须精确包含`decision=approve|deny`、canonical `nonce`、Core投影的`approval-context/rfc8785-v1` digest和`expectedApprovalVersion`；这些值只能来自`CUSTOM agentserver.approval`，不能从display-only A2UI卡片读取或由浏览器改写。Core会同时复核browser-gateway mTLS identity、原始OAuth access token的当前RBAC、数据库时间expiry与live attempt generation。`approve`响应只表示approval已批准，execution仍为`pending_approval`；精确gateway后续成功consume才产生dispatch authority。开发栈的shell policy固定为`ask`，executor-gateway会在原MCP `tools/call`上发起真实elicitation，worker通过harness-control 1.3等待Core canonical outcome；reference按钮可人工决定，smoke则从同一`CUSTOM`事件读取authority后自动批准。任何一侧都不能从A2UI display card推导批准。
 
-开发前端从 `secrets/browser-bearer.token` 读取 bearer 并只发送给 browser-gateway；该值不会出现在 metadata 或任何服务 env 中。harness-pool 为每个 attempt 动态签发 `aud=executor-mcp` 与 `aud=llmproxy` 两枚不同 capability；前端不接触它们，app-server 也永远拿不到 executor capability。
+开发前端先从无敏感信息的`GET /auth/config`读取同origin OAuth配置，再使用Authorization Code + PKCE登录。PKCE state/verifier/nonce和workspace/session关联只在`sessionStorage`保留十分钟以内，callback时单次消费；access token只驻留页面内存，URL、localStorage、metadata和服务环境都不含用户token。harness-pool为每个attempt动态签发`aud=executor-mcp`与`aud=llmproxy`两枚不同capability；前端不接触它们，app-server也永远拿不到executor capability。
 
 ## 6. 单容器可运行开发栈
 
@@ -254,11 +255,11 @@ body必须精确包含`decision=approve|deny`、canonical `nonce`、Core投影�
 ./deploy/insecure-dev/smoke.sh
 ```
 
-`browser-url.sh` 会把固定开发 bearer 放在 URL fragment 中输出一条可点击的 reference-web 地址。页面加载后立即从地址栏清除 fragment，bearer 与 lifecycle-safe AG-UI cursor 都只保存在页面内存；但该 URL 仍会进入终端历史，所以只适用于这套 `INSECURE DEV` authority。reference web 由 browser-gateway 在同一 HTTPS origin 的 `/` 提供，使用带`Authorization` header的`fetch` streaming，不使用`EventSource`，也不连接app-server或exec-server。它渲染AG-UI message/reasoning/tool lifecycle、`a2ui.operations`中当前display-only A2UI v0.9 Card/Column/Text子集，以及显式Cancel按钮和`Cancelling/Cancelled`状态。审批区只从`agentserver.approval`保存nonce/digest/version并调用独立Approve/Deny API；A2UI approval surface仍然display-only。canonical terminal到达后，迟到的网络尾部错误不会把页面降级成disconnected。
+`browser-url.sh`只输出`https://127.0.0.1:<port>/`，不读取或输出任何bearer。reference web在同一HTTPS origin完成Hydra Authorization Code + PKCE登录，使用带`Authorization` header的`fetch` streaming，不使用`EventSource`，也不连接app-server或exec-server。它渲染AG-UI message/reasoning/tool lifecycle、`a2ui.operations`中当前display-only A2UI v0.9 Card/Column/Text子集，以及显式Cancel按钮和`Cancelling/Cancelled`状态。审批区只从`agentserver.approval`保存nonce/digest/version并调用独立Approve/Deny API；A2UI approval surface仍然display-only。canonical terminal到达后，迟到的网络尾部错误不会把页面降级成disconnected。
 
 状态使用 Apple `container` 的 VM-backed named volume，默认名为 `agentserver-v2-dev-state`。这是因为宿主 bind mount 不能可靠地把私有 harness 输入改属固定 worker UID/GID；executor workspace 仍是普通的宿主 bind mount，不与 authority 状态混放。Apple `container` 的端口发布转发到容器 NIC，因此部署入口只把 browser-gateway 覆盖为监听 `0.0.0.0:17444`，宿主仍只发布 `127.0.0.1:17444`；Core、executor-gateway、harness-pool 和 fixtures 保持容器 loopback 监听。
 
-真实 smoke 会先验证 reference web 与 CSP，再连续执行五条独立 run：
+真实smoke会先用TLS 1.3 client和Cookie Jar读取`/auth/config`，完整经过Hydra authorize、Core login bridge、开发外部IdP、callback、consent与浏览器code exchange，再验证捕获原事务Cookie后callback仍不可重放、consent不可重放、浏览器authorization code不可二次兑换。它只把本次动态access token留在进程内，随后验证reference web与CSP并连续执行五条独立run：
 
 ```text
 AG-UI → Core → harness-worker → stock app-server
@@ -281,7 +282,7 @@ AG-UI → pending approval → POST :cancel
 
 脚本只从`CUSTOM agentserver.approval`读取nonce/digest/version并调用独立`:decide` API，不读取或触发A2UI action。它在运行前后直接查询PostgreSQL：五条run必须恰好新增3个checkpoint和5个approval；两个获批shell各冻结`process_start + timeout_terminate`两条operation-plan记录，所以总operation增加4，但只有两个`process_start`拥有`dispatched_at`。deny、expiry和pending-cancel对应的execution必须分别为`denied|expired|cancelled`、没有dispatch timestamp且各自拥有0条operation；两个取消run都必须拥有0个checkpoint。这同时验证批准点击本身不直接dispatch、防止pre-dispatch失败越过agentx发送边界，也防止把被取消turn的临时rollout误提交为可恢复历史。
 
-2026-08-01的实跑镜像manifest digest为`88c190d2e5192b5216ca49f80d9305526a5bd64fddf4a689d32104200964bd9c`。它在全新状态卷上通过后，又在同一容器和同一卷上立即完整复跑一次；累计计数从`checkpoints=3 approvals=5 operations=4 dispatched_operations=2`增长为`6/10/8/4`。fixture只从最新user message读取场景marker，checkpoint resume不会把历史deny/expiry/cancel行为继承给后续run。
+2026-08-01包含完整Code + PKCE登录链的实跑镜像manifest digest为`24c44fe44872962a828df84d3ff67ae2d541e076fad1e4101f9dc0dca5d8bf21`。它在全新状态卷上通过后，又在同一容器和同一卷上立即完整复跑一次；两轮都先通过登录与三项replay gate，累计计数再从`checkpoints=3 approvals=5 operations=4 dispatched_operations=2`增长为`6/10/8/4`。fixture只从最新user message读取场景marker，checkpoint resume不会把历史deny/expiry/cancel行为继承给后续run。该轮实跑同时关闭了harness control累计ACK的三个线序缺口：pool写approval outcome、worker写带piggyback ACK的event时都将cursor冻结与socket write置于同一顺序屏障；resume时worker先重放携带旧ACK的不可变journal frame，再发送刚接收完peer replay后的新standalone ACK。确定性阻塞写测试、重复测试和race detector共同守住这些边界。
 
 正常停止应给 supervisor 足够时间让 PostgreSQL fast shutdown 并回收子进程：
 
@@ -289,4 +290,4 @@ AG-UI → pending approval → POST :cancel
 container stop --time 15 agentserver-v2-dev
 ```
 
-这仍是明确的 `insecure-dev` 部署：数据库口令、browser bearer、开发 CA 和 fixture 模型响应都只适用于本地开发；所有控制面服务与 PostgreSQL 仍同容器、executor-gateway 仍是单副本，也没有生产级 secret 分发、网络策略、升级迁移、监控告警或高可用保证。它的用途是验证协议和真实执行闭环，并作为后续 reference web 体验的后端，不应直接作为生产拓扑。
+这仍是明确的`insecure-dev`部署：数据库口令、兼容用固定browser bearer、外部OIDC client secret、登录事务key、开发CA和fixture模型响应都只适用于本地开发；所有控制面服务与PostgreSQL仍同容器、executor-gateway仍是单副本，也没有生产级secret分发、网络策略、升级迁移、监控告警或高可用保证。它的用途是验证协议和真实执行闭环，并作为reference web体验的后端，不应直接作为生产拓扑。

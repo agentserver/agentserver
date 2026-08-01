@@ -27,7 +27,9 @@ func TestServeBrowserGatewayRequiresConfigurationBeforeListening(t *testing.T) {
 
 func TestBrowserGatewayHealthAndReadiness(t *testing.T) {
 	readiness := &browserReadiness{}
-	handler := browserGatewayRoutes(http.NotFoundHandler(), readiness)
+	handler := browserGatewayRoutes(
+		http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), readiness,
+	)
 	assertBrowserHealth(t, handler, "/healthz", http.StatusOK, `{"status":"ok"}`)
 	assertBrowserHealth(t, handler, "/readyz", http.StatusServiceUnavailable, `{"status":"not_ready"}`)
 	readiness.ready.Store(true)

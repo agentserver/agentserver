@@ -2,14 +2,18 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +22,138 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/devfixtures"
 )
+
+func TestAuthenticateSmokeCompletesCodePKCEAndRejectsReplays(t *testing.T) {
+	origin, err := url.Parse("https://browser.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &smokeOAuthRoundTripper{t: t, origin: origin}
+	client := &http.Client{
+		Transport: transport,
+		Jar:       jar,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	token, err := authenticateSmoke(t.Context(), client, origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != "dynamic-browser-access-token" || transport.callbackCalls != 2 || transport.consentCalls != 2 || transport.tokenCalls != 2 {
+		t.Fatalf("OAuth smoke token/calls = %q callback=%d consent=%d token=%d", token, transport.callbackCalls, transport.consentCalls, transport.tokenCalls)
+	}
+}
+
+type smokeOAuthRoundTripper struct {
+	t             *testing.T
+	origin        *url.URL
+	browserState  string
+	challenge     string
+	callbackCalls int
+	consentCalls  int
+	tokenCalls    int
+	continuations int
+}
+
+func (transport *smokeOAuthRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	transport.t.Helper()
+	if request.URL.Scheme != "https" || request.URL.Host != transport.origin.Host || request.Header.Get("Authorization") != "" {
+		transport.t.Fatalf("OAuth request escaped browser authority: %s %s headers=%v", request.Method, request.URL, request.Header)
+	}
+	redirect := func(path string, cookies ...string) (*http.Response, error) {
+		headers := http.Header{"Location": []string{transport.origin.String() + path}, "Cache-Control": []string{"no-store"}}
+		for _, cookie := range cookies {
+			headers.Add("Set-Cookie", cookie)
+		}
+		return smokeOAuthResponse(request, http.StatusFound, headers, ""), nil
+	}
+	switch {
+	case request.Method == http.MethodGet && request.URL.Path == "/auth/config":
+		if request.Header.Get("Cookie") != "" || request.URL.RawQuery != "" {
+			transport.t.Fatalf("authorization config request = %s headers=%v", request.URL, request.Header)
+		}
+		return smokeOAuthResponse(request, http.StatusOK, http.Header{
+			"Content-Type": []string{"application/json"}, "Cache-Control": []string{"no-store"},
+		}, `{"version":1,"authorizationEndpoint":"/oauth2/auth","tokenEndpoint":"/oauth2/token","redirectPath":"/","clientId":"agentserver-web","scopes":["openid","runs:write"],"audience":"agentserver-api"}`), nil
+	case request.Method == http.MethodGet && request.URL.Path == "/oauth2/auth" && request.URL.Query().Get("response_type") == "code":
+		query := request.URL.Query()
+		transport.browserState = query.Get("state")
+		transport.challenge = query.Get("code_challenge")
+		if !validSmokeAccessToken(transport.browserState) || query.Get("nonce") == "" ||
+			query.Get("client_id") != devfixtures.BrowserOAuthClientID || query.Get("scope") != "openid "+devfixtures.BrowserTokenScope ||
+			query.Get("audience") != devfixtures.BrowserTokenAudience || query.Get("redirect_uri") != transport.origin.String()+"/" ||
+			query.Get("code_challenge_method") != "S256" {
+			transport.t.Fatalf("initial authorization query = %v", query)
+		}
+		return redirect("/auth/hydra/login?login_challenge=hydra-login")
+	case request.Method == http.MethodGet && request.URL.Path == "/auth/hydra/login":
+		return redirect(
+			"/auth/idp/authorize?state="+strings.Repeat("s", 43),
+			"__Host-agentserver-oidc="+strings.Repeat("b", 43)+"; Path=/; Secure; HttpOnly; SameSite=Lax",
+		)
+	case request.Method == http.MethodGet && request.URL.Path == "/auth/idp/authorize":
+		if !strings.Contains(request.Header.Get("Cookie"), "__Host-agentserver-oidc="+strings.Repeat("b", 43)) {
+			transport.t.Fatalf("development IdP request omitted browser binding cookie: %v", request.Header)
+		}
+		return redirect("/auth/oidc/callback?code=external-code&state=" + strings.Repeat("s", 43) + "&iss=https%3A%2F%2Fissuer.example")
+	case request.Method == http.MethodGet && request.URL.Path == "/auth/oidc/callback":
+		transport.callbackCalls++
+		if !strings.Contains(request.Header.Get("Cookie"), "__Host-agentserver-oidc="+strings.Repeat("b", 43)) {
+			transport.t.Fatalf("callback %d omitted captured browser binding: %v", transport.callbackCalls, request.Header)
+		}
+		cleared := "__Host-agentserver-oidc=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:01 GMT; Secure; HttpOnly; SameSite=Lax"
+		if transport.callbackCalls == 1 {
+			return redirect("/oauth2/auth?login_verifier=hydra-login-proof", cleared)
+		}
+		return smokeOAuthResponse(request, http.StatusBadRequest, http.Header{"Set-Cookie": []string{cleared}}, "callback replay rejected"), nil
+	case request.Method == http.MethodGet && request.URL.Path == "/oauth2/auth" && request.URL.Query().Get("login_verifier") != "":
+		transport.continuations++
+		return redirect("/auth/hydra/consent?consent_challenge=hydra-consent")
+	case request.Method == http.MethodGet && request.URL.Path == "/auth/hydra/consent":
+		transport.consentCalls++
+		if transport.consentCalls == 1 {
+			return redirect("/oauth2/auth?consent_verifier=hydra-consent-proof")
+		}
+		return smokeOAuthResponse(request, http.StatusServiceUnavailable, nil, "consent replay rejected"), nil
+	case request.Method == http.MethodGet && request.URL.Path == "/oauth2/auth" && request.URL.Query().Get("consent_verifier") != "":
+		transport.continuations++
+		return redirect("/?code=browser-code&state=" + url.QueryEscape(transport.browserState))
+	case request.Method == http.MethodPost && request.URL.Path == "/oauth2/token":
+		transport.tokenCalls++
+		if err := request.ParseForm(); err != nil {
+			transport.t.Fatal(err)
+		}
+		verifier := request.PostForm.Get("code_verifier")
+		digest := sha256.Sum256([]byte(verifier))
+		if request.PostForm.Get("code") != "browser-code" || request.PostForm.Get("client_id") != devfixtures.BrowserOAuthClientID ||
+			request.PostForm.Get("redirect_uri") != transport.origin.String()+"/" || request.PostForm.Get("grant_type") != "authorization_code" ||
+			base64.RawURLEncoding.EncodeToString(digest[:]) != transport.challenge {
+			transport.t.Fatalf("token exchange form = %v", request.PostForm)
+		}
+		if transport.tokenCalls == 1 {
+			return smokeOAuthResponse(request, http.StatusOK, http.Header{"Content-Type": []string{"application/json"}},
+				`{"access_token":"dynamic-browser-access-token","token_type":"Bearer","expires_in":900,"scope":"runs:write openid"}`), nil
+		}
+		return smokeOAuthResponse(request, http.StatusBadRequest, http.Header{"Content-Type": []string{"application/json"}}, `{"error":"invalid_grant"}`), nil
+	default:
+		transport.t.Fatalf("unexpected OAuth request: %s %s", request.Method, request.URL)
+		return nil, nil
+	}
+}
+
+func smokeOAuthResponse(request *http.Request, status int, header http.Header, body string) *http.Response {
+	if header == nil {
+		header = make(http.Header)
+	}
+	return &http.Response{
+		StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(body)), Request: request,
+	}
+}
 
 func TestExecuteSmokeRequiresTLS13AndObservesTerminal(t *testing.T) {
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -55,13 +191,8 @@ func TestExecuteSmokeRequiresTLS13AndObservesTerminal(t *testing.T) {
 	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Raw}), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	bearerFile := filepath.Join(root, "bearer.token")
-	if err := os.WriteFile(bearerFile, []byte("test-browser-bearer\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
 	requestID, stream, err := executeSmoke(t.Context(), smokeOptions{
-		origin: server.URL, caFile: caFile, bearerFile: bearerFile,
+		origin: server.URL, caFile: caFile, accessToken: "test-browser-bearer",
 	})
 	if err != nil || !strings.HasPrefix(requestID, "smoke-") || len(stream) == 0 {
 		t.Fatalf("executeSmoke() = id %q stream %q error %v", requestID, stream, err)
@@ -141,10 +272,10 @@ func TestExecuteSmokeApprovesOnlyCanonicalApprovalCommandEvent(t *testing.T) {
 	server.TLS = &tls.Config{MinVersion: tls.VersionTLS13}
 	server.StartTLS()
 	defer server.Close()
-	caFile, bearerFile := writeSmokeTestAuthority(t, server)
+	caFile := writeSmokeTestAuthority(t, server)
 
 	requestID, stream, err := executeSmoke(t.Context(), smokeOptions{
-		origin: server.URL, caFile: caFile, bearerFile: bearerFile,
+		origin: server.URL, caFile: caFile, accessToken: "test-browser-bearer",
 	})
 	if err != nil || !strings.HasPrefix(requestID, "smoke-") || !strings.Contains(string(stream), approvalID) {
 		t.Fatalf("executeSmoke() = id %q stream %q error %v", requestID, stream, err)
@@ -196,10 +327,10 @@ func TestExecuteCancellationSmokeWaitsForRunningHoldAndExplicitTerminal(t *testi
 	server.TLS = &tls.Config{MinVersion: tls.VersionTLS13}
 	server.StartTLS()
 	defer server.Close()
-	caFile, bearerFile := writeSmokeTestAuthority(t, server)
+	caFile := writeSmokeTestAuthority(t, server)
 
 	requestID, stream, err := executeCancellationSmoke(t.Context(), smokeOptions{
-		origin: server.URL, caFile: caFile, bearerFile: bearerFile,
+		origin: server.URL, caFile: caFile, accessToken: "test-browser-bearer",
 	})
 	if err != nil || !strings.HasPrefix(requestID, "smoke-") ||
 		!strings.Contains(string(stream), `"code":"user_cancelled"`) {
@@ -289,10 +420,10 @@ func TestExecuteApprovalGateSmokeContainsPreDispatchFailures(t *testing.T) {
 			server.TLS = &tls.Config{MinVersion: tls.VersionTLS13}
 			server.StartTLS()
 			defer server.Close()
-			caFile, bearerFile := writeSmokeTestAuthority(t, server)
+			caFile := writeSmokeTestAuthority(t, server)
 
 			result, stream, err := executeApprovalGateSmoke(t.Context(), smokeOptions{
-				origin: server.URL, caFile: caFile, bearerFile: bearerFile,
+				origin: server.URL, caFile: caFile, accessToken: "test-browser-bearer",
 			}, test.mode)
 			if err != nil || result.RunID != serverRunID || result.ApprovalID != approvalID || len(stream) == 0 {
 				t.Fatalf("executeApprovalGateSmoke(%s) = %+v stream %q error %v", test.mode, result, stream, err)
@@ -333,7 +464,7 @@ func TestRunRejectsIncompleteArguments(t *testing.T) {
 	}
 }
 
-func writeSmokeTestAuthority(t *testing.T, server *httptest.Server) (string, string) {
+func writeSmokeTestAuthority(t *testing.T, server *httptest.Server) string {
 	t.Helper()
 	root := t.TempDir()
 	caFile := filepath.Join(root, "ca.pem")
@@ -344,9 +475,5 @@ func writeSmokeTestAuthority(t *testing.T, server *httptest.Server) (string, str
 	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Raw}), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	bearerFile := filepath.Join(root, "bearer.token")
-	if err := os.WriteFile(bearerFile, []byte("test-browser-bearer\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return caFile, bearerFile
+	return caFile
 }

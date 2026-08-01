@@ -1,0 +1,466 @@
+package coreserver
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"errors"
+	"net/url"
+	"testing"
+	"time"
+
+	"github.com/agentserver/agentserver/v2/internal/coredb"
+)
+
+const (
+	loginBridgeTestTransactionID = "71000000-0000-4000-8000-000000000007"
+	loginBridgeTestUserID        = "10000000-0000-4000-8000-000000000001"
+)
+
+func TestLoginBridgeBindsAndConsumesExternalOIDCCallbackOnce(t *testing.T) {
+	bridge, store, hydra, provider := newLoginBridgeFixture(t)
+	started, err := bridge.BeginLogin(t.Context(), "login-challenge", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !started.External || started.BrowserBinding == "" || started.RedirectTo == "" || store.login.Status != coredb.OIDCLoginStatusPending {
+		t.Fatalf("started login = %+v stored=%+v", started, store.login)
+	}
+	for label, secret := range map[string]string{
+		"challenge": "login-challenge", "state": provider.state, "nonce": provider.nonce,
+		"verifier": provider.verifier, "binding": started.BrowserBinding,
+	} {
+		if bytes.Contains(store.login.SealedSecrets, []byte(secret)) {
+			t.Fatalf("sealed transaction exposes %s", label)
+		}
+	}
+	parsed, err := url.Parse(started.RedirectTo)
+	if err != nil || parsed.Query().Get("state") != provider.state || parsed.Query().Get("nonce") != provider.nonce {
+		t.Fatalf("external authorization redirect = %q", started.RedirectTo)
+	}
+
+	completed, err := bridge.CompleteCallback(t.Context(), provider.state, "external-code", "", started.BrowserBinding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !completed.ClearBinding || completed.RedirectTo != "https://browser.example/oauth2/auth?login_verifier=accepted" ||
+		store.login.Status != coredb.OIDCLoginStatusAccepted || store.login.UserID != loginBridgeTestUserID ||
+		hydra.acceptLoginCalls != 1 || hydra.acceptedSubject != loginBridgeTestUserID || provider.exchangeCalls != 1 {
+		t.Fatalf("completed login = %+v stored=%+v hydra=%+v provider=%+v", completed, store.login, hydra, provider)
+	}
+	if len(store.login.SealedRedirect) == 0 || bytes.Contains(store.login.SealedRedirect, []byte(completed.RedirectTo)) {
+		t.Fatal("accepted Hydra redirect was not sealed at rest")
+	}
+
+	if _, err := bridge.CompleteCallback(t.Context(), provider.state, "external-code", "", started.BrowserBinding); err == nil {
+		t.Fatal("replayed callback was accepted")
+	}
+	if hydra.acceptLoginCalls != 1 || provider.exchangeCalls != 1 {
+		t.Fatalf("callback replay crossed an external boundary: accept=%d exchange=%d", hydra.acceptLoginCalls, provider.exchangeCalls)
+	}
+}
+
+func TestLoginBridgeRejectsWrongBrowserBindingBeforeCodeExchange(t *testing.T) {
+	bridge, store, hydra, provider := newLoginBridgeFixture(t)
+	started, err := bridge.BeginLogin(t.Context(), "login-challenge", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongBinding := "wrong-binding-value-that-is-exactly-long-enough-1234567890"
+	if _, err := bridge.CompleteCallback(t.Context(), provider.state, "external-code", "", wrongBinding); err == nil {
+		t.Fatal("callback with a different browser binding was accepted")
+	}
+	if store.login.Status != coredb.OIDCLoginStatusPending || provider.exchangeCalls != 0 || hydra.acceptLoginCalls != 0 {
+		t.Fatalf("wrong binding mutated authority: stored=%+v exchange=%d accept=%d original=%q", store.login, provider.exchangeCalls, hydra.acceptLoginCalls, started.BrowserBinding)
+	}
+}
+
+func TestLoginBridgeFailsClosedForUnmappedIdentity(t *testing.T) {
+	bridge, store, hydra, provider := newLoginBridgeFixture(t)
+	provider.identity.Subject = "unmapped-user"
+	started, err := bridge.BeginLogin(t.Context(), "login-challenge", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := bridge.CompleteCallback(t.Context(), provider.state, "external-code", "", started.BrowserBinding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RedirectTo != "https://browser.example/oauth2/auth?login_verifier=rejected" ||
+		store.login.Status != coredb.OIDCLoginStatusFailed || store.login.FailureCode != "identity_not_mapped" ||
+		hydra.rejectLoginCalls != 1 || hydra.acceptLoginCalls != 0 {
+		t.Fatalf("unmapped identity result=%+v stored=%+v hydra=%+v", result, store.login, hydra)
+	}
+}
+
+func TestLoginBridgeConsentRequiresExactClientScopeAudienceAndIsOneShot(t *testing.T) {
+	bridge, store, hydra, _ := newLoginBridgeFixture(t)
+	hydra.consentRequest = HydraConsentRequest{
+		Challenge: "consent-challenge", Subject: loginBridgeTestUserID,
+		Client:         HydraOAuth2Client{ClientID: "agentserver-web"},
+		RequestedScope: []string{"runs:write", "openid"}, RequestedAccessTokenAudience: []string{"agentserver-api"},
+		LoginChallenge: "login-challenge", LoginSessionID: "login-session",
+	}
+	result, err := bridge.Consent(t.Context(), "consent-challenge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RedirectTo != "https://browser.example/oauth2/auth?consent_verifier=accepted" ||
+		store.consent.Status != coredb.HydraConsentStatusAccepted || hydra.acceptConsentCalls != 1 {
+		t.Fatalf("accepted consent=%+v stored=%+v hydra=%+v", result, store.consent, hydra)
+	}
+	if _, err := bridge.Consent(t.Context(), "consent-challenge"); err == nil {
+		t.Fatal("replayed consent challenge was accepted")
+	}
+	if hydra.acceptConsentCalls != 1 {
+		t.Fatalf("consent replay reached Hydra accept %d times", hydra.acceptConsentCalls)
+	}
+
+	otherBridge, otherStore, otherHydra, _ := newLoginBridgeFixture(t)
+	otherHydra.consentRequest = hydra.consentRequest
+	otherHydra.consentRequest.RequestedScope = []string{"openid", "runs:write", "admin"}
+	rejected, err := otherBridge.Consent(t.Context(), "consent-challenge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rejected.RedirectTo != "https://browser.example/oauth2/auth?consent_verifier=rejected" ||
+		otherHydra.rejectConsentCalls != 1 || otherHydra.acceptConsentCalls != 0 || otherStore.consent.Status != "" {
+		t.Fatalf("overbroad consent=%+v stored=%+v hydra=%+v", rejected, otherStore.consent, otherHydra)
+	}
+}
+
+func TestLoginBridgeRequiresExactHydraContinuationRedirect(t *testing.T) {
+	bridge, _, _, _ := newLoginBridgeFixture(t)
+	for _, valid := range []struct {
+		name, redirect, verifier string
+	}{
+		{name: "login", redirect: "https://browser.example/oauth2/auth?login_verifier=opaque", verifier: hydraLoginVerifierQuery},
+		{name: "consent", redirect: "https://browser.example/oauth2/auth?consent_verifier=opaque", verifier: hydraConsentVerifierQuery},
+	} {
+		t.Run(valid.name, func(t *testing.T) {
+			if err := bridge.validateHydraRedirect(valid.redirect, valid.verifier); err != nil {
+				t.Fatalf("valid redirect rejected: %v", err)
+			}
+		})
+	}
+
+	for _, invalid := range []struct {
+		name, redirect, verifier string
+	}{
+		{name: "wrong origin", redirect: "https://sink.invalid/oauth2/auth?login_verifier=opaque", verifier: hydraLoginVerifierQuery},
+		{name: "wrong path", redirect: "https://browser.example/other?login_verifier=opaque", verifier: hydraLoginVerifierQuery},
+		{name: "encoded path", redirect: "https://browser.example/oauth2/%61uth?login_verifier=opaque", verifier: hydraLoginVerifierQuery},
+		{name: "wrong verifier", redirect: "https://browser.example/oauth2/auth?consent_verifier=opaque", verifier: hydraLoginVerifierQuery},
+		{name: "duplicate verifier", redirect: "https://browser.example/oauth2/auth?login_verifier=one&login_verifier=two", verifier: hydraLoginVerifierQuery},
+		{name: "extra query", redirect: "https://browser.example/oauth2/auth?login_verifier=opaque&next=https%3A%2F%2Fsink.invalid", verifier: hydraLoginVerifierQuery},
+		{name: "empty verifier", redirect: "https://browser.example/oauth2/auth?login_verifier=", verifier: hydraLoginVerifierQuery},
+		{name: "fragment", redirect: "https://browser.example/oauth2/auth?login_verifier=opaque#fragment", verifier: hydraLoginVerifierQuery},
+		{name: "empty fragment", redirect: "https://browser.example/oauth2/auth?login_verifier=opaque#", verifier: hydraLoginVerifierQuery},
+		{name: "unknown verifier type", redirect: "https://browser.example/oauth2/auth?login_verifier=opaque", verifier: "other_verifier"},
+	} {
+		t.Run(invalid.name, func(t *testing.T) {
+			if err := bridge.validateHydraRedirect(invalid.redirect, invalid.verifier); err == nil {
+				t.Fatal("invalid redirect was accepted")
+			}
+		})
+	}
+}
+
+func TestConsentRequestHashCoversLoginAuthority(t *testing.T) {
+	request := HydraConsentRequest{
+		Challenge: "consent-challenge", LoginChallenge: "login-challenge", LoginSessionID: "login-session",
+		Subject: loginBridgeTestUserID, Client: HydraOAuth2Client{ClientID: "agentserver-web"},
+		RequestedScope: []string{"runs:write", "openid"}, RequestedAccessTokenAudience: []string{"agentserver-api"},
+	}
+	original, err := consentRequestHash(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.LoginChallenge = "different-login-challenge"
+	changed, err := consentRequestHash(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if original == changed {
+		t.Fatal("login challenge did not change the consent authority fingerprint")
+	}
+	request.LoginChallenge = ""
+	if _, err := consentRequestHash(request); err == nil {
+		t.Fatal("empty login challenge was fingerprinted")
+	}
+}
+
+func TestLoginTransactionSealerAuthenticatesScopePurposeAndCiphertext(t *testing.T) {
+	key := bytes.Repeat([]byte{0x42}, 32)
+	sealer, err := NewLoginTransactionSealer(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := sealer.Seal(loginBridgeTestTransactionID, loginSecretsPurpose, []byte("secret-value"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := sealer.Unseal(loginBridgeTestTransactionID, loginSecretsPurpose, sealed)
+	if err != nil || string(opened) != "secret-value" {
+		t.Fatalf("unsealed = %q, %v", opened, err)
+	}
+	for name, mutate := range map[string]func() (string, string, []byte){
+		"scope":   func() (string, string, []byte) { return loginBridgeTestUserID, loginSecretsPurpose, sealed },
+		"purpose": func() (string, string, []byte) { return loginBridgeTestTransactionID, loginRedirectPurpose, sealed },
+		"ciphertext": func() (string, string, []byte) {
+			changed := append([]byte(nil), sealed...)
+			changed[len(changed)-1] ^= 1
+			return loginBridgeTestTransactionID, loginSecretsPurpose, changed
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			scope, purpose, ciphertext := mutate()
+			if _, err := sealer.Unseal(scope, purpose, ciphertext); err == nil {
+				t.Fatal("tampered sealed value was accepted")
+			}
+		})
+	}
+}
+
+func newLoginBridgeFixture(t *testing.T) (*LoginBridge, *memoryLoginBridgeStore, *recordingHydraAdmin, *recordingExternalOIDC) {
+	t.Helper()
+	store := &memoryLoginBridgeStore{}
+	hydra := &recordingHydraAdmin{loginRequest: HydraLoginRequest{
+		Challenge: "login-challenge", Client: HydraOAuth2Client{ClientID: "agentserver-web"},
+		RequestedScope: []string{"openid", "runs:write"}, RequestedAccessTokenAudience: []string{"agentserver-api"},
+	}}
+	provider := &recordingExternalOIDC{identity: ExternalOIDCIdentity{Issuer: "https://idp.example", Subject: "external-user"}}
+	sealer, err := NewLoginTransactionSealer(bytes.Repeat([]byte{0x29}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	randomBytes := make([]byte, 128)
+	for index := range randomBytes {
+		randomBytes[index] = byte(index + 1)
+	}
+	bridge, err := NewLoginBridge(LoginBridgeConfig{
+		Store: store, Hydra: hydra, IdentityProvider: provider, Sealer: sealer,
+		HydraBrowserClientID: "agentserver-web", HydraPublicOrigin: "https://browser.example",
+		TransactionTTL: 5 * time.Minute, Random: bytes.NewReader(randomBytes),
+		NewID: func() (string, error) { return loginBridgeTestTransactionID, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bridge, store, hydra, provider
+}
+
+type recordingExternalOIDC struct {
+	state, nonce, verifier string
+	identity               ExternalOIDCIdentity
+	exchangeErr            error
+	exchangeCalls          int
+}
+
+func (provider *recordingExternalOIDC) Issuer() string { return "https://idp.example" }
+
+func (provider *recordingExternalOIDC) AuthorizationURL(state, nonce, verifier string) (string, error) {
+	provider.state, provider.nonce, provider.verifier = state, nonce, verifier
+	query := url.Values{"state": {state}, "nonce": {nonce}, "code_challenge": {sha256Text(verifier)}}
+	return "https://idp.example/authorize?" + query.Encode(), nil
+}
+
+func (provider *recordingExternalOIDC) Exchange(_ context.Context, code, verifier, nonce string) (ExternalOIDCIdentity, error) {
+	provider.exchangeCalls++
+	if code != "external-code" || verifier != provider.verifier || nonce != provider.nonce {
+		return ExternalOIDCIdentity{}, errors.New("exchange correlation mismatch")
+	}
+	return provider.identity, provider.exchangeErr
+}
+
+type recordingHydraAdmin struct {
+	loginRequest       HydraLoginRequest
+	consentRequest     HydraConsentRequest
+	acceptLoginCalls   int
+	rejectLoginCalls   int
+	acceptConsentCalls int
+	rejectConsentCalls int
+	acceptedSubject    string
+}
+
+func (hydra *recordingHydraAdmin) GetLoginRequest(_ context.Context, challenge string) (HydraLoginRequest, error) {
+	if challenge != hydra.loginRequest.Challenge {
+		return HydraLoginRequest{}, errors.New("unknown login challenge")
+	}
+	return hydra.loginRequest, nil
+}
+
+func (hydra *recordingHydraAdmin) AcceptLoginRequest(_ context.Context, challenge, subject string) (HydraRedirect, error) {
+	if challenge != hydra.loginRequest.Challenge {
+		return HydraRedirect{}, errors.New("unknown login challenge")
+	}
+	hydra.acceptLoginCalls++
+	hydra.acceptedSubject = subject
+	return HydraRedirect{RedirectTo: "https://browser.example/oauth2/auth?login_verifier=accepted"}, nil
+}
+
+func (hydra *recordingHydraAdmin) RejectLoginRequest(_ context.Context, challenge, _, _ string) (HydraRedirect, error) {
+	if challenge != hydra.loginRequest.Challenge {
+		return HydraRedirect{}, errors.New("unknown login challenge")
+	}
+	hydra.rejectLoginCalls++
+	return HydraRedirect{RedirectTo: "https://browser.example/oauth2/auth?login_verifier=rejected"}, nil
+}
+
+func (hydra *recordingHydraAdmin) GetConsentRequest(_ context.Context, challenge string) (HydraConsentRequest, error) {
+	if challenge != hydra.consentRequest.Challenge {
+		return HydraConsentRequest{}, errors.New("unknown consent challenge")
+	}
+	return hydra.consentRequest, nil
+}
+
+func (hydra *recordingHydraAdmin) AcceptConsentRequest(_ context.Context, challenge string, scopes, audience []string) (HydraRedirect, error) {
+	if challenge != hydra.consentRequest.Challenge || !sameUniqueTextSet(scopes, defaultBrowserOAuthScopes) || !sameUniqueTextSet(audience, defaultBrowserAudience) {
+		return HydraRedirect{}, errors.New("invalid consent acceptance")
+	}
+	hydra.acceptConsentCalls++
+	return HydraRedirect{RedirectTo: "https://browser.example/oauth2/auth?consent_verifier=accepted"}, nil
+}
+
+func (hydra *recordingHydraAdmin) RejectConsentRequest(_ context.Context, challenge, _, _ string) (HydraRedirect, error) {
+	if challenge != hydra.consentRequest.Challenge {
+		return HydraRedirect{}, errors.New("unknown consent challenge")
+	}
+	hydra.rejectConsentCalls++
+	return HydraRedirect{RedirectTo: "https://browser.example/oauth2/auth?consent_verifier=rejected"}, nil
+}
+
+type memoryLoginBridgeStore struct {
+	login   coredb.OIDCLoginTransaction
+	consent coredb.HydraConsentTransaction
+}
+
+func (store *memoryLoginBridgeStore) CreateOIDCLoginTransaction(_ context.Context, command coredb.CreateOIDCLoginTransactionCommand) (coredb.OIDCLoginTransaction, error) {
+	if store.login.ID != "" {
+		return coredb.OIDCLoginTransaction{}, loginBridgeStateError(coredb.ErrorIdempotencyConflict)
+	}
+	now := time.Now().UTC()
+	store.login = coredb.OIDCLoginTransaction{
+		ID: command.ID, LoginChallengeSHA256: command.LoginChallengeSHA256,
+		OIDCStateSHA256: command.OIDCStateSHA256, BrowserBindingSHA256: command.BrowserBindingSHA256,
+		SealedSecrets: append([]byte(nil), command.SealedSecrets...), OIDCIssuer: command.OIDCIssuer,
+		HydraClientID: command.HydraClientID, Status: coredb.OIDCLoginStatusPending,
+		ExpiresAt: now.Add(command.TTL), Version: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	return store.login, nil
+}
+
+func (store *memoryLoginBridgeStore) ResumeOIDCLoginTransaction(_ context.Context, challenge, binding [32]byte) (coredb.OIDCLoginTransaction, error) {
+	if store.login.Status != coredb.OIDCLoginStatusPending || store.login.LoginChallengeSHA256 != challenge || store.login.BrowserBindingSHA256 != binding {
+		return coredb.OIDCLoginTransaction{}, loginBridgeStateError(coredb.ErrorNotFound)
+	}
+	return store.login, nil
+}
+
+func (store *memoryLoginBridgeStore) ClaimOIDCLoginCallback(_ context.Context, command coredb.ClaimOIDCLoginCallbackCommand) (coredb.OIDCLoginTransaction, error) {
+	if store.login.OIDCStateSHA256 != command.OIDCStateSHA256 {
+		return coredb.OIDCLoginTransaction{}, loginBridgeStateError(coredb.ErrorNotFound)
+	}
+	if store.login.BrowserBindingSHA256 != command.BrowserBindingSHA256 {
+		return coredb.OIDCLoginTransaction{}, loginBridgeStateError(coredb.ErrorForbidden)
+	}
+	if store.login.Status != coredb.OIDCLoginStatusPending {
+		return coredb.OIDCLoginTransaction{}, loginBridgeStateError(coredb.ErrorIdempotencyConflict)
+	}
+	now := time.Now().UTC()
+	store.login.Status = coredb.OIDCLoginStatusCallbackClaimed
+	store.login.CallbackClaimedAt = &now
+	store.login.Version++
+	return store.login, nil
+}
+
+func (store *memoryLoginBridgeStore) AuthenticateOIDCLogin(_ context.Context, command coredb.AuthenticateOIDCLoginCommand) (coredb.OIDCLoginTransaction, error) {
+	if store.login.ID != command.TransactionID || store.login.Status != coredb.OIDCLoginStatusCallbackClaimed {
+		return coredb.OIDCLoginTransaction{}, loginBridgeStateError(coredb.ErrorInvalidState)
+	}
+	now := time.Now().UTC()
+	if command.OIDCIssuer != "https://idp.example" || command.Subject != "external-user" {
+		store.login.Status = coredb.OIDCLoginStatusFailed
+		store.login.FailureCode = "identity_not_mapped"
+		store.login.CompletedAt = &now
+		return store.login, nil
+	}
+	store.login.Status = coredb.OIDCLoginStatusAuthenticated
+	store.login.UserID = loginBridgeTestUserID
+	store.login.AuthenticatedAt = &now
+	store.login.Version++
+	return store.login, nil
+}
+
+func (store *memoryLoginBridgeStore) BeginOIDCLoginAcceptance(_ context.Context, transactionID string) (coredb.OIDCLoginTransaction, error) {
+	if store.login.ID != transactionID || store.login.Status != coredb.OIDCLoginStatusAuthenticated {
+		return coredb.OIDCLoginTransaction{}, loginBridgeStateError(coredb.ErrorInvalidState)
+	}
+	store.login.Status = coredb.OIDCLoginStatusAccepting
+	store.login.Version++
+	return store.login, nil
+}
+
+func (store *memoryLoginBridgeStore) CompleteOIDCLogin(_ context.Context, command coredb.CompleteOIDCLoginCommand) (coredb.OIDCLoginTransaction, error) {
+	if store.login.ID != command.TransactionID || store.login.Status != coredb.OIDCLoginStatusAccepting {
+		return coredb.OIDCLoginTransaction{}, loginBridgeStateError(coredb.ErrorInvalidState)
+	}
+	now := time.Now().UTC()
+	store.login.Status = coredb.OIDCLoginStatusAccepted
+	store.login.SealedRedirect = append([]byte(nil), command.SealedRedirect...)
+	store.login.CompletedAt = &now
+	store.login.Version++
+	return store.login, nil
+}
+
+func (store *memoryLoginBridgeStore) FailOIDCLogin(_ context.Context, command coredb.FailOIDCLoginCommand) (coredb.OIDCLoginTransaction, error) {
+	now := time.Now().UTC()
+	store.login.Status, store.login.FailureCode, store.login.CompletedAt = command.Status, command.FailureCode, &now
+	store.login.Version++
+	return store.login, nil
+}
+
+func (store *memoryLoginBridgeStore) RequireActiveUser(_ context.Context, userID string) error {
+	if userID != loginBridgeTestUserID {
+		return loginBridgeStateError(coredb.ErrorForbidden)
+	}
+	return nil
+}
+
+func (store *memoryLoginBridgeStore) CreateHydraConsentTransaction(_ context.Context, command coredb.CreateHydraConsentTransactionCommand) (coredb.HydraConsentTransaction, error) {
+	if store.consent.Status != "" {
+		return coredb.HydraConsentTransaction{}, loginBridgeStateError(coredb.ErrorIdempotencyConflict)
+	}
+	now := time.Now().UTC()
+	store.consent = coredb.HydraConsentTransaction{
+		ConsentChallengeSHA256: command.ConsentChallengeSHA256, RequestSHA256: command.RequestSHA256,
+		HydraClientID: command.HydraClientID, UserID: command.UserID, Status: coredb.HydraConsentStatusAccepting,
+		ExpiresAt: now.Add(command.TTL), Version: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	return store.consent, nil
+}
+
+func (store *memoryLoginBridgeStore) CompleteHydraConsent(_ context.Context, command coredb.CompleteHydraConsentCommand) (coredb.HydraConsentTransaction, error) {
+	now := time.Now().UTC()
+	store.consent.Status = coredb.HydraConsentStatusAccepted
+	store.consent.SealedRedirect = append([]byte(nil), command.SealedRedirect...)
+	store.consent.CompletedAt = &now
+	store.consent.Version++
+	return store.consent, nil
+}
+
+func (store *memoryLoginBridgeStore) FailHydraConsent(_ context.Context, command coredb.FailHydraConsentCommand) (coredb.HydraConsentTransaction, error) {
+	now := time.Now().UTC()
+	store.consent.Status, store.consent.FailureCode, store.consent.CompletedAt = command.Status, command.FailureCode, &now
+	store.consent.Version++
+	return store.consent, nil
+}
+
+func loginBridgeStateError(code coredb.StateErrorCode) error {
+	return &coredb.StateError{Code: code, Operation: "login bridge test"}
+}
+
+func sha256Text(value string) string {
+	digest := sha256.Sum256([]byte(value))
+	return string(digest[:])
+}

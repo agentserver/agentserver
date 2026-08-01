@@ -795,7 +795,7 @@ pool侧reference controller每次只领一项，以一次分配的attempt/event/
 
 #### 8.1.1 当前开发启动入口
 
-开发authority、PKI、共享开发key、worker deployment、四份服务环境、agentx argv、browser bearer和fixture launch config现在由单一入口生成：
+开发authority、PKI、共享开发key、外部OIDC client secret、登录事务AES key、兼容用browser bearer、worker deployment、四份服务环境、agentx argv和fixture launch config现在由单一入口生成：
 
 ```bash
 go run ./cmd/agentserver-dev prepare --insecure-dev \
@@ -803,7 +803,7 @@ go run ./cmd/agentserver-dev prepare --insecure-dev \
   --output-dir=/absolute/new-agentserver-v2-dev
 ```
 
-输入是closed-world `api/schema/insecure-dev-stack.schema.json`；输出目录必须事先不存在，命令绝不merge或覆盖。它从runtime manifest原始字节派生platform、Codex/runtime digest和checkpoint allowlist，生成独立服务SPIFFE证书、run capability/cursor key、browser bearer、Ed25519 signing seed及public worker keyring。目录固定`0700`、文件固定`0600`；worker deployment、agentx launch、fixture config和metadata均不含secret值。生成物由Core bootstrap/TLS、browser、executor、pool、完整worker和fixture bundle现有loader交叉加载测试。完整输入、输出树、source方式、启动顺序和剩余依赖见[`DEVELOPMENT.md`](DEVELOPMENT.md)。
+输入是closed-world `api/schema/insecure-dev-stack.schema.json`；输出目录必须事先不存在，命令绝不merge或覆盖。它从runtime manifest原始字节派生platform、Codex/runtime digest和checkpoint allowlist，生成独立服务SPIFFE证书、run capability/cursor/login-transaction key、外部OIDC client secret、兼容用browser bearer、Ed25519 signing seed及public worker keyring。目录固定`0700`、文件固定`0600`；worker deployment、agentx launch、fixture config和metadata均不含secret值。生成物由Core bootstrap/TLS、browser、executor、pool、完整worker和fixture bundle现有loader交叉加载测试。完整输入、输出树、source方式、启动顺序和剩余依赖见[`DEVELOPMENT.md`](DEVELOPMENT.md)。
 
 开发外部依赖入口固定为：
 
@@ -812,7 +812,7 @@ go run ./cmd/agentserver-dev fixtures --insecure-dev \
   --bundle=/absolute/new-agentserver-v2-dev
 ```
 
-单进程只绑定生成配置中的cleartext loopback Hydra introspection和TLS loopback Responses端点。Hydra将唯一opaque browser bearer映射为bootstrap actor、单一`agentserver-api` audience和`runs:write` scope。Responses端逐请求验证动态HMAC capability的`aud=llmproxy`、时间、authority和model/provider route，明确拒绝executor token；脚本状态按capability/run/attempt/generation隔离，先调用`executor.list_environments {}`，再要求对应`function_call_output`后返回terminal assistant message。该fixture是可复现联调依赖，不是生产Hydra/llmproxy实现。
+单进程只绑定生成配置中的cleartext loopback Hydra/OIDC endpoint和TLS loopback Responses端点。Hydra/OIDC fixture实现public authorize/token、Admin login/consent、外部IdP discovery/authorize/token/JWKS、Code + PKCE单次消费、Ed25519 ID token和动态opaque access-token introspection；动态token映射到bootstrap actor、单一`agentserver-api` audience和`openid runs:write` scope。兼容用固定browser bearer仍只服务旧introspection测试，reference web和整栈smoke均不读取。Responses端逐请求验证动态HMAC capability的`aud=llmproxy`、时间、authority和model/provider route，明确拒绝executor token；脚本状态按capability/run/attempt/generation隔离，先调用`executor.list_environments {}`，再要求对应`function_call_output`后返回terminal assistant message。该fixture是可复现联调依赖，不是生产Hydra、外部IdP或llmproxy实现。
 
 harness-pool运行入口固定为：
 
@@ -1043,9 +1043,15 @@ core现已实现真实`CreateRun`与授权event-read API：browser-gateway的mTL
 
 `cmd/browser-gateway`现已提供真实HTTPS入口、到core的mTLS client、`/healthz`、`/readyz`、header/read timeout和SSE有界优雅关闭；用户bearer禁止跟随redirect，也不会进入harness/executor/agentx。core的`AGENTSERVER_V2_DEV_PROMPT_OBJECT_DIR`后端只为本地联调提供`0600` plaintext immutable object与稳定幂等pointer，它不是加密、共享或多副本安全的生产对象存储。生产部署必须替换为前文定义的加密S3-compatible实现，不能把该目录挂载后冒充生产闭环。
 
-纯协议测试仍不需要启动codex app-server，因为输入可以是确定的canonical fixture；真实开发栈则已经由harness按attempt启动stock app-server负责模型循环并产出候选事件。`deploy/insecure-dev`当前已贯通AG-UI → Core → harness-worker → stock app-server → executor MCP → agentx → stock exec-server → durable checkpoint。browser-gateway同时在同一HTTPS origin的`/`提供dependency-free reference web：bearer和cursor只驻留页面内存，SSE使用带Authorization header的fetch streaming，A2UI只渲染服务端已校验的display-only v0.9 Card/Column/Text子集；页面的Cancel按钮调用独立command endpoint并显示`Cancelling/Cancelled`，Approve/Deny按钮则只从canonical approval projection构造带nonce/digest/version的decision command。开发shell policy固定为`ask`；五run smoke分别验证批准完成、批准执行后取消、拒绝、数据库时钟过期和pending时取消。正常、deny和expiry三条run提交checkpoint；两个取消run均不得提交checkpoint。deny/expiry/pending-cancel没有agentx dispatch或operation，两个批准shell各冻结两条operation-plan但只有`process_start`实际dispatch。2026-08-01构建的Linux arm64镜像manifest digest `88c190d2e5192b5216ca49f80d9305526a5bd64fddf4a689d32104200964bd9c`在全新卷及同卷立即复跑均通过，累计数据库计数从`3/5/4/2`增长到`6/10/8/4`（checkpoint/approval/operation/dispatched operation）。fixture场景marker只读取最新user message，不会由checkpoint历史污染后续run。该闭环仍是fixture identity、scripted Responses和单容器拓扑，不能据此宣称完整产品链已经生产部署。
+Hydra登录链现已落地。migration 0013增加独立`users`、`(issuer, subject) → user` identity映射、一次性`oidc_login_transactions`和`hydra_consent_transactions`；旧workspace principal在加外键前物化为active user。Core只明文保存challenge/state/browser-binding SHA-256索引，Hydra challenge、OIDC state/nonce、外部PKCE verifier、browser binding和成功redirect由AES-256-GCM密封，AAD绑定transaction与purpose。callback必须同时命中state与`Secure; HttpOnly; SameSite=Lax`的`__Host-agentserver-oidc` binding并以PostgreSQL CAS从`pending`单次claim；外部identity必须命中active user和active mapping。login acceptance和consent各自有独立receipt；成功redirect会密封为状态与审计证据，但当前不会用它猜测或恢复一次结果不明的Hydra Admin写入。客户端callback/challenge本身不能再次消费。
 
-browser-gateway运行配置为：public listener使用`AGENTSERVER_V2_BROWSER_GATEWAY_LISTEN_ADDR`、`AGENTSERVER_V2_BROWSER_GATEWAY_TLS_CERT_FILE`、`AGENTSERVER_V2_BROWSER_GATEWAY_TLS_KEY_FILE`；core origin与mTLS使用`AGENTSERVER_V2_CORE_URL`、`AGENTSERVER_V2_CORE_CA_FILE`、`AGENTSERVER_V2_CORE_CLIENT_CERT_FILE`、`AGENTSERVER_V2_CORE_CLIENT_KEY_FILE`，可选`AGENTSERVER_V2_CORE_SERVER_NAME`覆盖证书名。core URL必须是无credential/path/query/fragment的HTTPS origin。
+Core使用真实`go-oidc` discovery/JWKS/ID-token verifier和OAuth Code + PKCE exchange，严格核对issuer、audience、nonce及可选`at_hash`；Hydra Admin client禁止redirect并限制method、JSON和response bounds。Hydra continuation只允许同origin exact `/oauth2/auth`及单个、类型匹配的login/consent verifier，禁止fragment、RawPath和额外query；consent fingerprint覆盖consent/login challenge与login session。browser-gateway只把三个login/consent/callback GET通过mTLS送到Core，并同origin代理Hydra public authorize/token。public代理允许中断后遗留的浏览器Cookie，但用全新request并禁用client Cookie Jar，Cookie不会进入Hydra upstream。insecure-dev另以显式环境变量启用唯一`GET /auth/idp/authorize`代理，使宿主浏览器可到达容器loopback IdP；该代理同样接受同origin事务Cookie但绝不向fixture转发，discovery/token/JWKS仍由Core私下访问。生产未显式配置时这条开发路由为404。
+
+reference SPA从无敏感信息的`GET /auth/config`启动Authorization Code + PKCE；state/verifier/nonce和workspace/session关联只短期保存在`sessionStorage`并在callback时先删除后校验，access token只留页面内存。旧的手填bearer和URL-fragment入口已删除，`browser-url.sh`只输出origin。host smoke使用一个TLS 1.3 Cookie Jar走相同完整链，主动验证携带原binding的callback replay、consent replay和浏览器authorization-code replay都失败，再把本次动态token复用于五条AG-UI run。
+
+纯协议测试仍不需要启动codex app-server，因为输入可以是确定的canonical fixture；真实开发栈则已经由harness按attempt启动stock app-server负责模型循环并产出候选事件。`deploy/insecure-dev`当前已贯通AG-UI → Core → harness-worker → stock app-server → executor MCP → agentx → stock exec-server → durable checkpoint。browser-gateway同时在同一HTTPS origin的`/`提供dependency-free reference web：OAuth access token和cursor只驻留页面内存，SSE使用带Authorization header的fetch streaming，A2UI只渲染服务端已校验的display-only v0.9 Card/Column/Text子集；页面的Cancel按钮调用独立command endpoint并显示`Cancelling/Cancelled`，Approve/Deny按钮则只从canonical approval projection构造带nonce/digest/version的decision command。开发shell policy固定为`ask`；五run smoke分别验证批准完成、批准执行后取消、拒绝、数据库时钟过期和pending时取消。正常、deny和expiry三条run提交checkpoint；两个取消run均不得提交checkpoint。deny/expiry/pending-cancel没有agentx dispatch或operation，两个批准shell各冻结两条operation-plan但只有`process_start`实际dispatch。2026-08-01新Linux arm64镜像manifest digest `24c44fe44872962a828df84d3ff67ae2d541e076fad1e4101f9dc0dca5d8bf21`已在全新卷及同卷立即复跑通过：每轮先完成Code + PKCE登录与callback/consent/code重放门禁，累计数据库计数从`3/5/4/2`增长到`6/10/8/4`（checkpoint/approval/operation/dispatched operation）。fixture场景marker只读取最新user message，不会由checkpoint历史污染后续run。该验证还补齐pool approval outcome写、worker event写及双向resume replay三处ACK线序：旧piggyback cursor对应的不可变frame总在更新的standalone ACK之前上链，测试以人为阻塞socket write稳定复现并由重复/race门禁覆盖。该闭环仍是fixture identity、scripted Responses和单容器拓扑，不能据此宣称完整产品链已经生产部署。
+
+browser-gateway运行配置为：public listener使用`AGENTSERVER_V2_BROWSER_GATEWAY_LISTEN_ADDR`、`AGENTSERVER_V2_BROWSER_GATEWAY_TLS_CERT_FILE`、`AGENTSERVER_V2_BROWSER_GATEWAY_TLS_KEY_FILE`；core origin与mTLS使用`AGENTSERVER_V2_CORE_URL`、`AGENTSERVER_V2_CORE_CA_FILE`、`AGENTSERVER_V2_CORE_CLIENT_CERT_FILE`、`AGENTSERVER_V2_CORE_CLIENT_KEY_FILE`，可选`AGENTSERVER_V2_CORE_SERVER_NAME`覆盖证书名。Hydra同origin代理和前端public-client配置使用`AGENTSERVER_V2_HYDRA_PUBLIC_UPSTREAM`、`AGENTSERVER_V2_BROWSER_OAUTH_CLIENT_ID`、`AGENTSERVER_V2_BROWSER_OAUTH_AUDIENCE`、`AGENTSERVER_V2_BROWSER_OAUTH_SCOPES`；`AGENTSERVER_V2_DEVELOPMENT_OIDC_AUTHORIZATION_UPSTREAM`只在insecure-dev设置。core URL必须是无credential/path/query/fragment的HTTPS origin。
 
 审批链路：
 
@@ -1060,7 +1066,7 @@ browser-gateway运行配置为：public listener使用`AGENTSERVER_V2_BROWSER_GA
 
 app-server使用`approvalPolicy=never`，因此不会出现第二张Codex tool approval卡。gateway active-execution deadline在pending approval期间由我们自己的状态机暂停；MCP transport timeout不能充当approval expiry timer。
 
-Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后实现，避免身份 UI掩盖运行状态机问题。
+Hydra login/consent bridge和reference Web的Code + PKCE入口现已在executor+harness主链稳定后接入；后续产品Web UI仍复用同一browser-gateway协议边界，不引入codex app-server直连。
 
 ## 10. 部署与安全
 
@@ -1212,7 +1218,7 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 退出条件：浏览器断线/重连不取消 run，approval TTL/cancel/断线全部 fail closed。
 
-其中canonical event → AG-UI/A2UI、SSE handler、core public CreateRun/event cursor/cancel/approval-decide、两阶段Core approval authority、真实backend、两阶段holder清理、reference Web按钮与单容器部署已作为Phase 3期间的前置协议子阶段实现；executor-gateway `policy=ask → CreateApproval/ConsumeApproval`、worker MCP elicitation及harness-control decision/expiry/cancel也已接成开发运行链。开发smoke现覆盖approve、执行后cancel、deny、database-time expiry和pending-approval cancel，并对后三者逐项断言`dispatched_at IS NULL`及零`execution_operations`。进程级故障门禁现已分别覆盖control mTLS pending-approval断线/journal/replay、MCP HTTP pending elicitation断线后迟到accept零dispatch，以及真实MCP→shell→agentx WebSocket恢复窗口到期后的Core unknown收口。Phase 4仍需补Hydra login/consent bridge，并在pinned Linux整栈上复核这组三段transport fault后才能退出。生产加密对象存储、capability adapter和部署门禁仍是生产化工作，不能把insecure-dev smoke计作Phase 4生产退出证据。
+其中canonical event → AG-UI/A2UI、SSE handler、core public CreateRun/event cursor/cancel/approval-decide、两阶段Core approval authority、真实backend、两阶段holder清理、reference Web按钮与单容器部署已作为Phase 3期间的前置协议子阶段实现；executor-gateway `policy=ask → CreateApproval/ConsumeApproval`、worker MCP elicitation及harness-control decision/expiry/cancel也已接成开发运行链。migration 0013、Core Hydra Admin +外部OIDC bridge、browser-gateway同origin OAuth边界、reference SPA Code + PKCE和动态token smoke现已实现并由协议/组合测试覆盖。新pinned Linux arm64镜像又在全新卷及同卷复跑中先通过登录和三项replay gate，再覆盖approve、执行后cancel、deny、database-time expiry和pending-approval cancel，并对后三者逐项断言`dispatched_at IS NULL`及零`execution_operations`。该复跑发现并关闭control双端live write及worker resume tail的累计ACK线序缺口；旧cursor frame不再可能被新standalone ACK超车。进程级故障门禁现已分别覆盖control mTLS pending-approval断线/journal/replay、MCP HTTP pending elicitation断线后迟到accept零dispatch，以及真实MCP→shell→agentx WebSocket恢复窗口到期后的Core unknown收口。Phase 4剩余退出工作只是在pinned Linux环境复核这组三段transport-fault gate。生产加密对象存储、capability adapter和部署门禁仍是生产化工作，不能把insecure-dev smoke计作Phase 4生产退出证据。
 
 ### Phase 5 — Hardening 与生产门槛
 
@@ -1250,7 +1256,7 @@ Hydra login/consent bridge和完整 Web UI放在 executor+harness主链稳定后
 
 Phase 3当前从第13项开始：已有run/attempt/event component API、独立harness-pool workload identity、原子双lease续期、`run.queued`专用long-poll delivery、pool侧单项claim controller内核、brain catalog冻结/线程绑定core API、签名manifest launch-preparer、受限私钥装载/公钥轮换keyring、deployment profile resolver、由`CreateRun`原子持久化并由live attempt fence保护的core-backed launch-state source，以及带有界并发、lease心跳、thread/turn顺序门和dispatch清理语义的常驻监督骨架；checkpoint恢复会复用原thread绑定catalog。per-attempt control 1.3机器合同、同holder进程resume journal、双向control server/client、mTLS+bearer入口、具体`ControlAttemptSupervisor`、本地process launcher、v2 closed-world bootstrap/runtime-capability合同、prompt object双端流式校验、checkpoint v1确定性artifact、FD 5双端对象校验及worker安全恢复入口也已完成。真实app-server child/final-exec、fresh runtime、exact-SPIFFE executor MCP、notification/progress→canonical event以及approval request/outcome链现已装配进可运行的one-shot `cmd/harness-worker`，production本地清理权限也改为启动前fail-closed。completed terminal现在携带经过`CODEX_HOME`词法包含校验的rollout locator；本地workload又把“进程组已停止”和“runtime已删除”拆成两个边界，并从启动前固定的attempt目录FD以Linux `openat2(BENEATH|NO_SYMLINKS)`及expected app UID/GID安全暴露唯一rollout。pool finalizer现已流式生成并验证artifact、以同一identity精确重试上传/commit、完整核对Core结果，并在连续歧义时保留attempt runtime；fresh/resume catalog authority均有PostgreSQL路径覆盖。常驻`cmd/harness-pool serve --insecure-dev`现已把这些边界、开发动态capability和本地对象存储装配起来，并由真实dispatch集成测试覆盖到worker bootstrap与有界release。`cmd/agentserver-dev prepare --insecure-dev`又把同一runtime authority派生为不可覆盖的开发PKI、secrets、Core bootstrap、worker deployment、分服务env和无secret agentx argv，并通过所有现有配置loader；开发attempt anchor的app traversal mode矛盾也已修正。后续仍须实现生产capability/object-store adapter并完成部署门禁；开发命令和library测试都不能替代这些生产边界。
 
-Phase 4的协议前置子阶段已完成下一段接线：canonical run-event schema/AsyncAPI、AG-UI SDK pin、A2UI v0.9 display builders、严格projector、public CreateRun/event cursor/cancel/approval-decide、Hydra token introspection、HMAC cursor、真实core backend及browser-gateway command/health/config均已有实现和门禁；worker↔pool control中的app-server notification/MCP progress也已成为core committed canonical event并接入AG-UI投影。显式cancel已经覆盖`queued → cancelled`和有holder时`cancelling → cancelled`两阶段收口；heartbeat在workload cleanup期间保持，pre-turn `AbandonAttempt`又在run锁内仲裁startup failure与并发cancel，避免永久`cancelling`。migration 0012及Core commands现已提供`pending → approved|denied|expired|cancelled → consumed`的两阶段authority，canonical approval event同时驱动reference web中的独立Approve/Deny command与display-only A2UI审计卡。executor-gateway per-tool `ask`、真实MCP elicitation、harness-control 1.3 decision/主动expiry/cancel及consume-before-dispatch已完成。开发profile把可配置的`maxApprovalTtl`签入run manifest；整栈smoke按五个独立run验证批准执行、执行后取消、用户拒绝、数据库时钟过期和pending时取消，并要求后三条execution从未产生dispatch timestamp或operation。control/MCP/gateway三段进程级断线故障注入现均已有稳定重复与race门禁；下一步是Hydra login/consent bridge和pinned Linux整栈transport fault复核。生产对象存储/capability adapter及部署门禁仍是生产化必做项。当前plaintext对象目录、共享开发HMAC、URL-fragment开发bearer和scripted Responses只提供联调能力，仍不等于完整产品run可用。
+Phase 4当前已完成canonical run-event schema/AsyncAPI、AG-UI SDK pin、A2UI v0.9 display builders、严格projector、public CreateRun/event cursor/cancel/approval-decide、Hydra token introspection、HMAC cursor、真实core backend及browser-gateway command/health/config；worker↔pool control中的app-server notification/MCP progress也已成为core committed canonical event并接入AG-UI投影。显式cancel覆盖`queued → cancelled`和有holder时`cancelling → cancelled`两阶段收口；heartbeat在workload cleanup期间保持，pre-turn `AbandonAttempt`又在run锁内仲裁startup failure与并发cancel。migration 0012及Core commands提供`pending → approved|denied|expired|cancelled → consumed`两阶段authority，executor-gateway per-tool `ask`、真实MCP elicitation、harness-control 1.3 decision/主动expiry/cancel及consume-before-dispatch均已完成。migration 0013与Core login bridge又加入一次性login/consent状态、AES密封、真实外部OIDC验证和active identity mapping；browser-gateway/SPA只使用同origin Code + PKCE，URL不再携带bearer。开发smoke先验证登录callback/consent/code重放失败，再按五个独立run覆盖批准执行、执行后取消、用户拒绝、数据库时钟过期和pending时取消；包含该链的新pinned Linux镜像已在全新状态卷及同卷复跑通过。harness-control live write和resume replay的ACK单调性也已有确定性阻塞写、重复与race门禁。control/MCP/gateway三段进程级断线故障注入已有稳定重复与race门禁；当前下一步只剩pinned Linux环境中的transport-fault复核。生产对象存储/capability adapter及部署门禁仍是生产化必做项。当前plaintext对象目录、共享开发HMAC、legacy fixture bearer和scripted Responses只提供联调能力，仍不等于完整产品run可用。
 
 ## 14. 尚未锁定但有明确决策点的事项
 
@@ -1259,7 +1265,7 @@ Phase 4的协议前置子阶段已完成下一段接线：canonical run-event sc
 1. 具体stock Codex release/tag：stable 0.146.0是当前修订门禁candidate，只有A07–A08及目标平台E09全部通过后才写production manifest；E03/E07 reference adapter已对上述macOS artifact通过，真实agentx兼容仍在Phase 2验收。
 2. macOS production agentx隔离方式：必须通过 signed launchd/Keychain/ptrace/FD gate；否则只标 dev。
 3. KMS与对象存储供应商：接口固定为 envelope encryption + S3-compatible，部署实现需单独 ADR。
-4. 外部 OIDC IdP claim mapping：Hydra bridge实现前需确定 issuer/sub、组织和 workspace映射规则。
+4. 外部 OIDC IdP claim mapping：`(issuer, subject) → active local user`和每次敏感操作实时workspace membership复核已经固定；生产组织claim、自动provisioning/邀请与identity-linking策略仍需单独确定，当前实现不会静默创建用户或成员关系。
 5. Phase 2 多副本 executor owner routing：只有业务 SLO要求时启动，不能混入 Phase 1。
 
 这些都不阻塞v2 module和Codex conformance/reference bridge建设；实际Codex pin仍是进入production runtime前必须完成的选择。

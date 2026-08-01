@@ -23,7 +23,7 @@ func TestPostgreSQLInsecureDevelopmentBootstrapIsAtomicAndIdempotent(t *testing.
 
 	bootstrap := validInsecureDevelopmentBootstrap()
 	first, err := bootstrapInsecureDevelopmentConfig(t.Context(), connectionConfig, schema, bootstrap)
-	if err != nil || first.CreatedRows != 5 {
+	if err != nil || first.CreatedRows != 7 {
 		t.Fatalf("first development bootstrap = %+v, %v", first, err)
 	}
 	retry, err := bootstrapInsecureDevelopmentConfig(t.Context(), connectionConfig, schema, bootstrap)
@@ -35,7 +35,7 @@ func TestPostgreSQLInsecureDevelopmentBootstrapIsAtomicAndIdempotent(t *testing.
 	defer connection.Close(context.Background())
 	quotedSchema := quoteIdentifier(schema)
 	for table, want := range map[string]int{
-		"workspaces": 1, "sessions": 1, "workspace_members": 1,
+		"workspaces": 1, "sessions": 1, "users": 1, "user_identities": 1, "workspace_members": 1,
 		"executors": 1, "executor_environments": 1,
 	} {
 		var count int

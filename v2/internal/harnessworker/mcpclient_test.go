@@ -380,6 +380,126 @@ func TestMCPClientA07CancellationReachesServerBeforeDispatch(t *testing.T) {
 	}
 }
 
+func TestMCPClientA07TransportDisconnectRejectsLateApprovalWithoutDispatch(t *testing.T) {
+	limits := DefaultLimits()
+	descriptor := ToolDescriptor{
+		Name:        "approved_echo",
+		Description: "Wait for approval without dispatching after transport loss.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"message":{"type":"string"}},"required":["message"],"additionalProperties":false}`),
+	}
+	expected := mustCatalog(t, []ToolDescriptor{descriptor}, limits)
+	server := mcp.NewServer(
+		&mcp.Implementation{Name: "disconnecting-approval-gateway", Version: "v2-test"},
+		&mcp.ServerOptions{Capabilities: &mcp.ServerCapabilities{}},
+	)
+	callEntered := make(chan struct{})
+	approvalEntered := make(chan struct{})
+	approvalContextCancelled := make(chan struct{})
+	releaseLateAccept := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(releaseLateAccept)
+		}
+	}()
+	type gatewayResult struct {
+		action string
+		err    error
+	}
+	gatewayDone := make(chan gatewayResult, 1)
+	var calls atomic.Int64
+	var dispatches atomic.Int64
+	server.AddTool(&mcp.Tool{
+		Name: descriptor.Name, Description: descriptor.Description, InputSchema: descriptor.InputSchema,
+	}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		calls.Add(1)
+		close(callEntered)
+		decision, err := request.Session.Elicit(ctx, &mcp.ElicitParams{
+			Meta: mcp.Meta{
+				MCPMetaRunID:                "run-a07-disconnect",
+				MCPMetaCallID:               "call-a07-disconnect",
+				MCPMetaRunAttemptGeneration: int64(12),
+				MCPMetaToolCatalogDigest:    expected.Digest(),
+				MCPMetaExecutionID:          "execution-a07-disconnect",
+				MCPMetaApprovalID:           "approval-a07-disconnect",
+				MCPMetaApprovalNonce:        "nonce-a07-disconnect",
+				MCPMetaApprovalVersion:      int64(1),
+				MCPMetaContextHash:          strings.Repeat("c", 64),
+				MCPMetaExpiresAt:            time.Now().Add(10 * time.Second).UTC().Format(time.RFC3339Nano),
+			},
+			Mode: "form", Message: "Wait for a canonical decision.",
+			RequestedSchema: json.RawMessage(`{"type":"object","properties":{"confirmed":{"type":"boolean"}},"required":["confirmed"]}`),
+		})
+		if err != nil {
+			gatewayDone <- gatewayResult{err: err}
+			return nil, err
+		}
+		gatewayDone <- gatewayResult{action: decision.Action}
+		if decision.Action == string(ApprovalAccept) {
+			dispatches.Add(1)
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "unexpected dispatch"}}}, nil
+		}
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "not dispatched: " + decision.Action}}, IsError: true,
+		}, nil
+	})
+	httpServer := startTestMCPServer(t, server)
+	client, err := ConnectMCP(t.Context(), testMCPClientConfig(
+		httpServer.endpoint(), expected, limits,
+		func(ctx context.Context, _ ElicitationRequest) (ElicitationDecision, error) {
+			close(approvalEntered)
+			<-ctx.Done()
+			close(approvalContextCancelled)
+			<-releaseLateAccept
+			return ElicitationDecision{Action: ApprovalAccept, Content: map[string]any{"confirmed": true}}, nil
+		},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	type clientResult struct {
+		result DynamicToolResult
+		err    error
+	}
+	callDone := make(chan clientResult, 1)
+	go func() {
+		result, err := client.CallDynamicTool(t.Context(), DynamicCall{
+			RunID: "run-a07-disconnect", ThreadID: "thread-a07-disconnect", TurnID: "turn-a07-disconnect",
+			CallID: "call-a07-disconnect", RunAttemptGeneration: 12,
+			Namespace: "executor", Tool: descriptor.Name, Arguments: json.RawMessage(`{"message":"hello"}`),
+		})
+		callDone <- clientResult{result: result, err: err}
+	}()
+	waitSignal(t, callEntered, "gateway pending tools/call")
+	waitSignal(t, approvalEntered, "worker pending elicitation")
+	httpServer.server.CloseClientConnections()
+	waitSignal(t, approvalContextCancelled, "MCP disconnect cancellation at the worker approval handler")
+	close(releaseLateAccept)
+	released = true
+
+	select {
+	case result := <-callDone:
+		if result.err == nil && result.result.Success {
+			t.Fatalf("disconnected MCP call returned a successful result: %+v", result.result)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("disconnected MCP call did not terminate")
+	}
+	select {
+	case result := <-gatewayDone:
+		if result.err == nil && result.action == string(ApprovalAccept) {
+			t.Fatal("gateway accepted a late approval after the MCP transport disconnected")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("gateway pending approval did not terminate after MCP disconnect")
+	}
+	if calls.Load() != 1 || dispatches.Load() != 0 {
+		t.Fatalf("disconnected approval calls/dispatches = %d/%d, want 1/0", calls.Load(), dispatches.Load())
+	}
+}
+
 func TestMCPClientApprovalOutcomeGraceDoesNotExtendAcceptAuthority(t *testing.T) {
 	limits := DefaultLimits()
 	catalog := mustCatalog(t, nil, limits)

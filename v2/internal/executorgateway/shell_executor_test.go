@@ -157,7 +157,7 @@ func TestShellExecutorDoesNotTreatTerminateResponseAsProcessTerminal(t *testing.
 	}
 }
 
-func newTestShellExecutor(t *testing.T, authority *fakeShellAuthority, dispatcher *fakeShellDispatcher) *ShellExecutor {
+func newTestShellExecutor(t *testing.T, authority *fakeShellAuthority, dispatcher ProcessDispatcher) *ShellExecutor {
 	t.Helper()
 	registry := &fakeEnvironmentRegistry{environments: []RegisteredEnvironment{
 		testRegisteredEnvironment(testEnvironmentID, `{"kind":"local","root":"/workspace","defaultCwd":"."}`),

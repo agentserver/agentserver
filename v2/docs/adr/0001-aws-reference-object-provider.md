@@ -52,6 +52,16 @@ KMS encryption context 固定两项非秘密值：
 
 provider 配置只包含 bucket、两个 region、两个可选 HTTPS endpoint、path-style 选择和 KMS key ID。没有 access key、secret key 或 session token 字段。凭证只通过 AWS SDK workload/default credential chain 获取；生产部署应使用 workload identity，不能把静态云密钥写入 ConfigMap、命令行或 v2 自定义配置。
 
+两个持有对象权限的组件复用同一组显式环境变量；prefix 必须配置，不能用代码默认值静默分裂已有对象namespace：
+
+- `AGENTSERVER_V2_OBJECT_PREFIX`；
+- `AGENTSERVER_V2_S3_BUCKET`、`AGENTSERVER_V2_S3_REGION`；
+- 可选`AGENTSERVER_V2_S3_ENDPOINT`与`AGENTSERVER_V2_S3_USE_PATH_STYLE=true|false`；
+- `AGENTSERVER_V2_KMS_REGION`、`AGENTSERVER_V2_KMS_KEY_ID`；
+- 可选`AGENTSERVER_V2_KMS_ENDPOINT`。
+
+`agentserver-core serve`只装配这套加密S3/KMS store；本地plaintext目录只在显式`agentserver-core serve --insecure-dev`下可用。harness-pool已经具备同一production store factory和`EncryptedRunObjectStore`装配路径，但在production capability issuer完成前，命令入口继续只接受`serve --insecure-dev`，不能因为对象后端已完成就回退使用开发HMAC并伪装成production。
+
 显式 endpoint 是应用 authority。adapter 清除 SDK 从 ambient endpoint 环境或 shared config 解析出的 endpoint，只使用这里的配置；空 endpoint 使用 SDK 的标准 AWS endpoint resolution。Core 与 harness-pool 的 workload identity可以调用 S3/KMS，worker 和 stock app-server 不获得这些凭证。
 
 ## Key rotation 与 retention
@@ -64,5 +74,5 @@ provider 配置只包含 bucket、两个 region、两个可选 HTTPS endpoint、
 
 - AWS SDK 是参考 transport，不是对象格式的一部分。
 - S3-compatible 产品必须通过 conditional put、错误分类、body consumption、content length 和断线歧义集成门禁后才能声明兼容。
-- 当前 adapter单测、race及锁定Linux arm64镜像门禁不证明真实bucket/KMS IAM、endpoint TLS、rotation、orphan cleanup或provider故障注入已经完成；这些仍属于Phase 5部署门禁。
+- 当前 adapter单测、race、锁定Linux arm64镜像门禁及命令级装配测试不证明真实bucket/KMS IAM、endpoint TLS、rotation、orphan cleanup或provider故障注入已经完成；这些仍属于Phase 5部署门禁。
 - 其他云 provider 必须实现同一窄接口及等价门禁，并另写 provider ADR；不得为了迁就 provider 修改已经提交的明文 pointer 或对象格式。

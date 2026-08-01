@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/harnesspool"
+	"github.com/agentserver/agentserver/v2/internal/objectruntime"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
 
@@ -59,9 +60,22 @@ func (reporter *harnessPoolFailureReporter) ReportPoolFailure(failure harnesspoo
 	)
 }
 
-func serveHarnessPool(ctx context.Context, getenv func(string) string, stdout, stderr io.Writer) error {
+type harnessPoolObjectStore interface {
+	harnesspool.AttemptObjectSource
+	harnesspool.CheckpointObjectSink
+}
+
+func serveHarnessPool(
+	ctx context.Context,
+	getenv func(string) string,
+	stdout, stderr io.Writer,
+	mode harnessPoolServeMode,
+) error {
 	if ctx == nil {
 		return errors.New("harness-pool serve context is required")
+	}
+	if mode != harnessPoolServeInsecureDevelopment {
+		return errors.New("production harness-pool capability issuance is not configured")
 	}
 	config, err := loadHarnessPoolDevelopmentConfig(getenv)
 	if err != nil {
@@ -91,9 +105,9 @@ func serveHarnessPool(ctx context.Context, getenv func(string) string, stdout, s
 	if err != nil {
 		return err
 	}
-	objects, err := harnesspool.NewLocalDevelopmentObjectStore(config.objectRoot)
+	objects, objectStoreDescription, err := configureHarnessPoolObjectStore(ctx, getenv, mode, config.objectRoot)
 	if err != nil {
-		return fmt.Errorf("configure insecure-development object store: %w", err)
+		return err
 	}
 	controlTLS, err := newHarnessPoolControlTLSConfig(
 		config.tlsCertificate, config.tlsKey, config.workerClientCA, config.poolTLSIdentity,
@@ -211,10 +225,48 @@ func serveHarnessPool(ctx context.Context, getenv func(string) string, stdout, s
 	readiness.ready.Store(true)
 	fmt.Fprintf(
 		stdout,
-		"harness-pool serve: INSECURE DEV capabilities/object store; holder %s; control %s; max attempts %d\n",
-		poolInstanceID, callbackEndpoint, config.maxConcurrent,
+		"harness-pool serve: INSECURE DEV capabilities; %s; holder %s; control %s; max attempts %d\n",
+		objectStoreDescription, poolInstanceID, callbackEndpoint, config.maxConcurrent,
 	)
 	return runHarnessPoolServices(ctx, pool, controls, server, tls.NewListener(listener, controlTLS), readiness)
+}
+
+func configureHarnessPoolObjectStore(
+	ctx context.Context,
+	getenv func(string) string,
+	mode harnessPoolServeMode,
+	developmentRoot string,
+) (harnessPoolObjectStore, string, error) {
+	if ctx == nil {
+		return nil, "", errors.New("harness-pool object store context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+	switch mode {
+	case harnessPoolServeProduction:
+		config, err := objectruntime.ParseEnvironment(getenv)
+		if err != nil {
+			return nil, "", fmt.Errorf("configure production object routing: %w", err)
+		}
+		protocol, err := objectruntime.Open(ctx, config)
+		if err != nil {
+			return nil, "", err
+		}
+		objects, err := harnesspool.NewEncryptedRunObjectStore(protocol)
+		if err != nil {
+			return nil, "", err
+		}
+		return objects, "encrypted S3/KMS object store", nil
+	case harnessPoolServeInsecureDevelopment:
+		objects, err := harnesspool.NewLocalDevelopmentObjectStore(developmentRoot)
+		if err != nil {
+			return nil, "", fmt.Errorf("configure insecure-development object store: %w", err)
+		}
+		return objects, "INSECURE DEV plaintext object store", nil
+	default:
+		return nil, "", errors.New("harness-pool serve mode is invalid")
+	}
 }
 
 func developmentRunLaunchProfile(config harnessPoolDevelopmentConfig, callbackEndpoint string) harnesspool.RunLaunchProfile {

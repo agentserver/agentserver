@@ -275,7 +275,7 @@ start_agentserver() {
     grant_worker_inputs
 
     start_with_environment core "${stack_root}/env/agentserver-core.env" \
-        /usr/local/bin/agentserver-core serve
+        /usr/local/bin/agentserver-core serve --insecure-dev
     wait_for_port core 17443
 
     start_browser_gateway

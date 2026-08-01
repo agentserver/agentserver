@@ -5,6 +5,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/agentserver/agentserver/v2/internal/objectruntime"
 )
 
 func TestServeCoreRequiresDistinctHarnessPoolIdentityBeforeOpeningDatabase(t *testing.T) {
@@ -18,26 +20,52 @@ func TestServeCoreRequiresDistinctHarnessPoolIdentityBeforeOpeningDatabase(t *te
 		coreHarnessPoolIdentityEnvironment: "",
 	}
 	getenv := func(name string) string { return configuration[name] }
-	err := serveCore(t.Context(), getenv, io.Discard)
+	err := serveCore(t.Context(), getenv, io.Discard, coreServeInsecureDevelopment)
 	if err == nil || !strings.Contains(err.Error(), coreHarnessPoolIdentityEnvironment+" is required") {
 		t.Fatalf("missing harness-pool identity error = %v", err)
 	}
 
 	configuration[coreHarnessPoolIdentityEnvironment] = configuration[coreGatewayIdentityEnvironment]
-	err = serveCore(t.Context(), getenv, io.Discard)
+	err = serveCore(t.Context(), getenv, io.Discard, coreServeInsecureDevelopment)
 	if err == nil || !strings.Contains(err.Error(), "must be distinct") {
 		t.Fatalf("shared workload identity error = %v", err)
 	}
 
 	configuration[coreHarnessPoolIdentityEnvironment] = "spiffe://agentserver.local/ns/agentserver/sa/harness-pool"
-	err = serveCore(t.Context(), getenv, io.Discard)
+	err = serveCore(t.Context(), getenv, io.Discard, coreServeInsecureDevelopment)
 	if err == nil || !strings.Contains(err.Error(), coreBrowserIdentityEnvironment+" is required") {
 		t.Fatalf("missing browser-gateway identity error = %v", err)
 	}
 	configuration[coreBrowserIdentityEnvironment] = configuration[coreGatewayIdentityEnvironment]
-	err = serveCore(t.Context(), getenv, io.Discard)
+	err = serveCore(t.Context(), getenv, io.Discard, coreServeInsecureDevelopment)
 	if err == nil || !strings.Contains(err.Error(), "browser-gateway, executor-gateway, and harness-pool") {
 		t.Fatalf("shared browser workload identity error = %v", err)
+	}
+}
+
+func TestConfigureCorePromptStoreSeparatesProductionAndDevelopment(t *testing.T) {
+	root := t.TempDir()
+	development, description, err := configureCorePromptStore(
+		t.Context(),
+		func(name string) string {
+			if name == coreDevPromptObjectRootEnvironment {
+				return root
+			}
+			return ""
+		},
+		coreServeInsecureDevelopment,
+	)
+	if err != nil || development == nil || !strings.Contains(description, "INSECURE DEV") {
+		t.Fatalf("development prompt store = %T, %q, %v", development, description, err)
+	}
+
+	_, _, err = configureCorePromptStore(t.Context(), func(string) string { return "" }, coreServeProduction)
+	if err == nil || !strings.Contains(err.Error(), objectruntime.ObjectPrefixEnvironment+" is required") {
+		t.Fatalf("production prompt store missing routing error = %v", err)
+	}
+	_, _, err = configureCorePromptStore(t.Context(), func(string) string { return "" }, coreServeMode(255))
+	if err == nil || !strings.Contains(err.Error(), "mode") {
+		t.Fatalf("invalid Core serve mode error = %v", err)
 	}
 }
 

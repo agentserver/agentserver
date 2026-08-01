@@ -268,6 +268,13 @@ func validatePrefix(prefix string) error {
 	return nil
 }
 
+// ValidatePrefix checks the stable deployment-owned namespace placed before
+// every workspace/kind/object tuple. Runtime assembly uses it before loading a
+// concrete provider so malformed authority fails without touching credentials.
+func ValidatePrefix(prefix string) error {
+	return validatePrefix(prefix)
+}
+
 func canonicalUUID(value string) bool {
 	return value != "00000000-0000-0000-0000-000000000000" && canonicalUUIDPattern.MatchString(value)
 }

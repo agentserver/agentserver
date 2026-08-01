@@ -193,7 +193,7 @@ go run ./cmd/agentserver-dev fixtures --insecure-dev \
 ```bash
 (
   . /absolute/new-agentserver-v2-dev/env/agentserver-core.env
-  exec go run ./cmd/agentserver-core serve
+  exec go run ./cmd/agentserver-core serve --insecure-dev
 )
 
 (

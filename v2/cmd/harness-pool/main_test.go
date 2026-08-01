@@ -24,9 +24,9 @@ func TestRunInsecureDevelopmentServe(t *testing.T) {
 	exitCode := run(
 		t.Context(), []string{"serve", "--insecure-dev"},
 		func(string) string { return "configured" }, &stdout, &stderr,
-		func(_ context.Context, getenv func(string) string, output, errors io.Writer) error {
+		func(_ context.Context, getenv func(string) string, output, errors io.Writer, mode harnessPoolServeMode) error {
 			called = true
-			if getenv("value") != "configured" || errors != &stderr {
+			if getenv("value") != "configured" || errors != &stderr || mode != harnessPoolServeInsecureDevelopment {
 				t.Fatal("serve inputs were not forwarded")
 			}
 			fmt.Fprintln(output, "serving")

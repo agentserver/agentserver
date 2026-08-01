@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/harnesspool"
+	"github.com/agentserver/agentserver/v2/internal/objectruntime"
 )
 
 const harnessPoolServeIntegrationTimeout = 15 * time.Second
@@ -55,7 +56,10 @@ func TestServeHarnessPoolStartsPollingAndShutsDownCleanly(t *testing.T) {
 	var stderr bytes.Buffer
 	serveDone := make(chan error, 1)
 	go func() {
-		serveDone <- serveHarnessPool(ctx, func(name string) string { return configuration[name] }, &stdout, &stderr)
+		serveDone <- serveHarnessPool(
+			ctx, func(name string) string { return configuration[name] }, &stdout, &stderr,
+			harnessPoolServeInsecureDevelopment,
+		)
 	}()
 	select {
 	case <-coreRequested:
@@ -106,6 +110,41 @@ func TestServeHarnessPoolStartsPollingAndShutsDownCleanly(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("harness-pool stderr = %q", stderr.String())
+	}
+}
+
+func TestHarnessPoolObjectStoreModesAreSeparated(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	development, description, err := configureHarnessPoolObjectStore(
+		t.Context(), func(string) string { return "" }, harnessPoolServeInsecureDevelopment, root,
+	)
+	if err != nil || development == nil || !strings.Contains(description, "INSECURE DEV") {
+		t.Fatalf("development object store = %T, %q, %v", development, description, err)
+	}
+
+	_, _, err = configureHarnessPoolObjectStore(
+		t.Context(), func(string) string { return "" }, harnessPoolServeProduction, "",
+	)
+	if err == nil || !strings.Contains(err.Error(), objectruntime.ObjectPrefixEnvironment+" is required") {
+		t.Fatalf("production object store missing routing error = %v", err)
+	}
+	_, _, err = configureHarnessPoolObjectStore(
+		t.Context(), func(string) string { return "" }, harnessPoolServeMode(255), "",
+	)
+	if err == nil || !strings.Contains(err.Error(), "mode") {
+		t.Fatalf("invalid object store mode error = %v", err)
+	}
+}
+
+func TestServeHarnessPoolRejectsProductionUntilCapabilityIssuerExists(t *testing.T) {
+	err := serveHarnessPool(
+		t.Context(), func(string) string { return "" }, io.Discard, io.Discard, harnessPoolServeProduction,
+	)
+	if err == nil || !strings.Contains(err.Error(), "capability issuance") {
+		t.Fatalf("production harness-pool error = %v", err)
 	}
 }
 

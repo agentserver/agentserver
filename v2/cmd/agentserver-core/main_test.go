@@ -54,7 +54,7 @@ func TestRunRejectsMissingConfiguration(t *testing.T) {
 func TestRunRejectsUnknownCommand(t *testing.T) {
 	var stderr bytes.Buffer
 	exitCode := run(t.Context(), []string{"unknown"}, func(string) string { return "" }, &bytes.Buffer{}, &stderr, commandFunctions{})
-	if exitCode != 2 || !strings.Contains(stderr.String(), "usage: agentserver-core <migrate|serve>") {
+	if exitCode != 2 || !strings.Contains(stderr.String(), "usage: agentserver-core migrate") {
 		t.Fatalf("run() exit code = %d, stderr = %q", exitCode, stderr.String())
 	}
 }
@@ -75,9 +75,9 @@ func TestRunServe(t *testing.T) {
 	var stderr bytes.Buffer
 	called := false
 	exitCode := run(t.Context(), []string{"serve"}, func(string) string { return "configured" }, &stdout, &stderr, commandFunctions{
-		serve: func(_ context.Context, getenv func(string) string, output io.Writer) error {
+		serve: func(_ context.Context, getenv func(string) string, output io.Writer, mode coreServeMode) error {
 			called = true
-			if getenv("anything") != "configured" {
+			if getenv("anything") != "configured" || mode != coreServeProduction {
 				t.Fatal("serve getenv was not forwarded")
 			}
 			fmt.Fprintln(output, "serving")
@@ -86,6 +86,38 @@ func TestRunServe(t *testing.T) {
 	})
 	if exitCode != 0 || !called || stdout.String() != "serving\n" || stderr.Len() != 0 {
 		t.Fatalf("serve result = exit %d, called %v, stdout %q, stderr %q", exitCode, called, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunInsecureDevelopmentServeIsExplicit(t *testing.T) {
+	var stderr bytes.Buffer
+	called := false
+	exitCode := run(
+		t.Context(), []string{"serve", "--insecure-dev"}, func(string) string { return "configured" }, io.Discard, &stderr,
+		commandFunctions{serve: func(_ context.Context, _ func(string) string, _ io.Writer, mode coreServeMode) error {
+			called = true
+			if mode != coreServeInsecureDevelopment {
+				t.Fatalf("serve mode = %d", mode)
+			}
+			return nil
+		}},
+	)
+	if exitCode != 0 || !called || stderr.Len() != 0 {
+		t.Fatalf("insecure serve result = exit %d, called %v, stderr %q", exitCode, called, stderr.String())
+	}
+
+	for _, arguments := range [][]string{{"serve", "--production"}, {"serve", "--insecure-dev", "extra"}} {
+		called = false
+		stderr.Reset()
+		exitCode = run(t.Context(), arguments, func(string) string { return "" }, io.Discard, &stderr, commandFunctions{
+			serve: func(context.Context, func(string) string, io.Writer, coreServeMode) error {
+				called = true
+				return nil
+			},
+		})
+		if exitCode != 2 || called || !strings.Contains(stderr.String(), "serve --insecure-dev") {
+			t.Fatalf("run(%v) = %d, called %v, stderr %q", arguments, exitCode, called, stderr.String())
+		}
 	}
 }
 

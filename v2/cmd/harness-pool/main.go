@@ -9,7 +9,14 @@ import (
 	"syscall"
 )
 
-type serveFunc func(context.Context, func(string) string, io.Writer, io.Writer) error
+type harnessPoolServeMode uint8
+
+const (
+	harnessPoolServeProduction harnessPoolServeMode = iota + 1
+	harnessPoolServeInsecureDevelopment
+)
+
+type serveFunc func(context.Context, func(string) string, io.Writer, io.Writer, harnessPoolServeMode) error
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -27,7 +34,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		fmt.Fprintln(stderr, "harness-pool serve: command is unavailable")
 		return 1
 	}
-	if err := serve(ctx, getenv, stdout, stderr); err != nil {
+	if err := serve(ctx, getenv, stdout, stderr, harnessPoolServeInsecureDevelopment); err != nil {
 		fmt.Fprintf(stderr, "harness-pool serve: %v\n", err)
 		return 1
 	}

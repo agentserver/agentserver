@@ -15,7 +15,14 @@ import (
 const databaseURLEnvironment = "AGENTSERVER_V2_DATABASE_URL"
 
 type migrateFunc func(context.Context, string) (coredb.MigrationResult, error)
-type serveFunc func(context.Context, func(string) string, io.Writer) error
+type coreServeMode uint8
+
+const (
+	coreServeProduction coreServeMode = iota + 1
+	coreServeInsecureDevelopment
+)
+
+type serveFunc func(context.Context, func(string) string, io.Writer, coreServeMode) error
 type bootstrapFunc func(context.Context, string, string) (developmentBootstrapResult, error)
 
 type commandFunctions struct {
@@ -38,7 +45,10 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		return 2
 	}
 	if args[0] == "serve" {
-		if len(args) != 1 {
+		mode := coreServeProduction
+		if len(args) == 2 && args[1] == "--insecure-dev" {
+			mode = coreServeInsecureDevelopment
+		} else if len(args) != 1 {
 			writeCoreUsage(stderr)
 			return 2
 		}
@@ -46,7 +56,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 			fmt.Fprintln(stderr, "agentserver-core serve: command is unavailable")
 			return 1
 		}
-		if err := commands.serve(ctx, getenv, stdout); err != nil {
+		if err := commands.serve(ctx, getenv, stdout, mode); err != nil {
 			fmt.Fprintf(stderr, "agentserver-core serve: %v\n", err)
 			return 1
 		}
@@ -103,6 +113,8 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 }
 
 func writeCoreUsage(writer io.Writer) {
-	fmt.Fprintln(writer, "usage: agentserver-core <migrate|serve>")
+	fmt.Fprintln(writer, "usage: agentserver-core migrate")
+	fmt.Fprintln(writer, "       agentserver-core serve")
+	fmt.Fprintln(writer, "       agentserver-core serve --insecure-dev")
 	fmt.Fprintln(writer, "       agentserver-core bootstrap --insecure-dev --config=/absolute/path")
 }

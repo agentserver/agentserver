@@ -65,7 +65,10 @@ func TestServeHarnessPoolIssuesDynamicCapabilitiesForClaimedAttempt(t *testing.T
 	defer cancel()
 	serveDone := make(chan error, 1)
 	go func() {
-		serveDone <- serveHarnessPool(ctx, func(name string) string { return configuration[name] }, io.Discard, io.Discard)
+		serveDone <- serveHarnessPool(
+			ctx, func(name string) string { return configuration[name] }, io.Discard, io.Discard,
+			harnessPoolServeInsecureDevelopment,
+		)
 	}()
 	select {
 	case <-core.released:

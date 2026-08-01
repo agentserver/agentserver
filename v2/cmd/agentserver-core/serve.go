@@ -17,6 +17,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/coredb"
 	"github.com/agentserver/agentserver/v2/internal/coreserver"
+	"github.com/agentserver/agentserver/v2/internal/objectruntime"
 	"github.com/agentserver/agentserver/v2/internal/runcursor"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -46,7 +47,7 @@ const (
 	coreRunAllowedToolsEnvironment      = "AGENTSERVER_V2_RUN_ALLOWED_TOOLS"
 )
 
-func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer) error {
+func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer, mode coreServeMode) error {
 	databaseURL, err := requiredConfiguration(getenv, databaseURLEnvironment)
 	if err != nil {
 		return err
@@ -142,13 +143,9 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	if err != nil {
 		return err
 	}
-	promptObjectRoot, err := requiredConfiguration(getenv, coreDevPromptObjectRootEnvironment)
+	promptStore, objectStoreDescription, err := configureCorePromptStore(ctx, getenv, mode)
 	if err != nil {
 		return err
-	}
-	promptStore, err := coreserver.NewLocalUserPromptStore(promptObjectRoot)
-	if err != nil {
-		return fmt.Errorf("configure developer prompt object store: %w", err)
 	}
 	policyVersion, err := requiredConfiguration(getenv, coreRunPolicyVersionEnvironment)
 	if err != nil {
@@ -341,12 +338,47 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 		case <-serveContext.Done():
 		}
 	}()
-	fmt.Fprintf(stdout, "agentserver-core serve: listening with mTLS on %s\n", listener.Addr())
+	fmt.Fprintf(stdout, "agentserver-core serve: listening with mTLS on %s; %s\n", listener.Addr(), objectStoreDescription)
 	err = server.Serve(tls.NewListener(listener, tlsConfig))
 	if errors.Is(err, http.ErrServerClosed) && ctx.Err() != nil {
 		return nil
 	}
 	return err
+}
+
+func configureCorePromptStore(
+	ctx context.Context,
+	getenv func(string) string,
+	mode coreServeMode,
+) (coreserver.UserPromptStore, string, error) {
+	switch mode {
+	case coreServeProduction:
+		config, err := objectruntime.ParseEnvironment(getenv)
+		if err != nil {
+			return nil, "", fmt.Errorf("configure production object routing: %w", err)
+		}
+		objects, err := objectruntime.Open(ctx, config)
+		if err != nil {
+			return nil, "", err
+		}
+		prompts, err := coreserver.NewEncryptedUserPromptStore(objects)
+		if err != nil {
+			return nil, "", err
+		}
+		return prompts, "encrypted S3/KMS object store", nil
+	case coreServeInsecureDevelopment:
+		promptObjectRoot, err := requiredConfiguration(getenv, coreDevPromptObjectRootEnvironment)
+		if err != nil {
+			return nil, "", err
+		}
+		prompts, err := coreserver.NewLocalUserPromptStore(promptObjectRoot)
+		if err != nil {
+			return nil, "", fmt.Errorf("configure insecure-development prompt object store: %w", err)
+		}
+		return prompts, "INSECURE DEV plaintext object store", nil
+	default:
+		return nil, "", errors.New("Core serve mode is invalid")
+	}
 }
 
 func decodeRunCursorKey(encoded string) ([]byte, error) {

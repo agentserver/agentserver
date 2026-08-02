@@ -155,6 +155,7 @@ printf '%s\n' "build-images.sh: building ${service_image}"
 container build \
     --platform linux/arm64 \
     --progress plain \
+    --no-cache \
     --build-arg "SOURCE_REVISION=${source_revision}" \
     --tag "${service_image}" \
     "${work_directory}/service-payload"
@@ -163,6 +164,7 @@ printf '%s\n' "build-images.sh: building ${harness_image}"
 container build \
     --platform linux/arm64 \
     --progress plain \
+    --no-cache \
     --build-arg "SOURCE_REVISION=${source_revision}" \
     --tag "${harness_image}" \
     "${work_directory}/harness-payload"

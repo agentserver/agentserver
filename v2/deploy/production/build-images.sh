@@ -197,6 +197,7 @@ verify_image() {
         *) fail "internal unknown image kind" ;;
     esac
     container start "${verifier_name}" >/dev/null
+    container stop "${verifier_name}" >/dev/null 2>&1 || true
     container export --output "${archive}" "${verifier_name}"
     chmod 0400 "${archive}"
     "${work_directory}/agentserver-image" verify-tar \

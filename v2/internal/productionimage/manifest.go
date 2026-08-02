@@ -33,7 +33,7 @@ const (
 
 	ManifestPath = "usr/share/agentserver/image-manifest.json"
 
-	CABundleSourceImage = "docker.io/library/postgres@sha256:9b9fb55f7e3b2149854def33c728b781dc44d1c5e86492ad62912a527ae234b3"
+	CABundleSourceImage = "docker.io/library/postgres@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94"
 	CABundleSHA256      = "657ca6ba4bc43138f89de75fb63794cbfaa897e0e110b069fd1367bd66a5bb6c"
 	CABundleSizeBytes   = int64(219404)
 	CABundlePath        = "etc/ssl/certs/ca-certificates.crt"

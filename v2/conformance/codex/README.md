@@ -98,12 +98,15 @@ descendant while the second instance remains alive and can terminate normally.
 This is reference composition evidence; the real agentx WSS adapter and target
 platform containment remain Phase 2 gates.
 
-The E04 result is likewise a stock-protocol fact, not a containment proof.
-Agentx must expose only `agentx/fs/readFileBlock`, cap one block at 1 MiB, check
-the registered canonical root before and after the stock call, and close the
-fs-only stdio instance after `open(null) -> readBlock -> close`. A production
-runner still needs platform safe-open/immutable-root controls; the current
-same-UID development shape cannot rule out symlink TOCTOU.
+The E04 result is likewise a stock-protocol fact, not by itself a containment
+proof. Agentx exposes only `agentx/fs/readFileBlock`, caps one block at 1 MiB,
+and closes the fs-only stdio instance after
+`open(null) -> readBlock -> close`. The explicitly same-UID development shape
+still checks the registered canonical root before and after the stock call and
+cannot rule out symlink TOCTOU. Production Linux agentx commit `066acf6` closes
+that separate boundary with a root-pinned `openat2` resolver and passes stock
+only an inherited read-only fd at `file:///proc/self/fd/3`; process-tree and
+runtime-executable containment remain independent gates.
 
 The process probe deliberately accepts a `process/start` response arriving
 after early output notifications and uses the one-based event sequence as the
@@ -140,7 +143,7 @@ proves read-only plus workspace-write enforcement. It refuses Apple
 Silicon-to-amd64 emulation because that path rewrites argv0 and rejects the
 seccomp filter; `linux-amd64` remains open until the same target runs on a
 native amd64 worker. Neither platform result closes the eventual agentx
-safe-open/exec TOCTOU requirement.
+immutable-install or runtime-executable safe-exec TOCTOU requirement.
 
 E10 deliberately separates upstream facts from product admission. The stock
 `ExecParams` deserializer and launch path clone `argv` and `env` without a

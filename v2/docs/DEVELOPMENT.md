@@ -329,8 +329,8 @@ retry、revoke及shutdown。它不需要外部Hydra；真实Hydra v26.2.0的ES25
 `private_key_jwt`兼容性由`make hydra-live-test`单独验证。
 
 这一切仍不是可部署整栈：独立agentx现已完成owner-only双钥、RFC 7523
-token exchange、每次物理连接的production challenge/WSS接线及connector与
-降权runner的credential隔离；其filesystem safe-open和不可逃逸process-tree
-containment仍待关闭。Kubernetes/S3/KMS/Hydra/IAM清单与全拓扑故障注入也
+token exchange、每次物理连接的production challenge/WSS接线、connector与
+降权runner的credential隔离，以及Linux filesystem safe-open；不可逃逸
+process-tree containment与runtime executable safe-exec仍待关闭。Kubernetes/S3/KMS/Hydra/IAM清单与全拓扑故障注入也
 尚未完成。Phase 1必须保持executor-gateway单副本；进程重启会丢失challenge
 与resume journal，不能打开HPA或宣称跨Pod恢复。

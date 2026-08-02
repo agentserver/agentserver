@@ -98,6 +98,32 @@ func (commands StateStoreExecutorConnectionCommands) FenceExecutorConnection(ctx
 	return err
 }
 
+func (commands StateStoreExecutorConnectionCommands) RecoverExecutorGateway(
+	ctx context.Context,
+	executorID string,
+	request corecontract.RecoverExecutorGatewayRequest,
+) (corecontract.RecoverExecutorGatewayResponse, error) {
+	if commands.Store == nil {
+		return corecontract.RecoverExecutorGatewayResponse{}, errors.New("nil core state store")
+	}
+	records := make([]coredb.TransitionRecord, len(request.Records))
+	for index, record := range request.Records {
+		records[index] = databaseTransitionRecord(record)
+	}
+	result, err := commands.Store.RecoverExecutorGateway(ctx, coredb.RecoverExecutorGatewayCommand{
+		ExecutorID: executorID, GatewayInstanceID: request.GatewayInstanceID, Records: records,
+	})
+	if err != nil {
+		return corecontract.RecoverExecutorGatewayResponse{}, err
+	}
+	return corecontract.RecoverExecutorGatewayResponse{
+		FencedConnectionGeneration: result.FencedConnectionGeneration,
+		ConnectionFenced:           result.ConnectionFenced,
+		RecoveredExecutions:        result.RecoveredExecutions,
+		Remaining:                  result.Remaining,
+	}, nil
+}
+
 func contractDigest(value string) ([32]byte, error) {
 	var result [32]byte
 	decoded, err := hex.DecodeString(value)

@@ -25,6 +25,7 @@ type ExecutorConnectionCommands interface {
 	RenewExecutorConnection(context.Context, corecontract.RenewExecutorConnectionRequest) (corecontract.ConnectionHolder, error)
 	ActivateExecutorConnection(context.Context, corecontract.ActivateExecutorConnectionRequest) (corecontract.ConnectionHolder, error)
 	FenceExecutorConnection(context.Context, corecontract.FenceExecutorConnectionRequest) error
+	RecoverExecutorGateway(context.Context, string, corecontract.RecoverExecutorGatewayRequest) (corecontract.RecoverExecutorGatewayResponse, error)
 }
 
 type ExecutorConnectionHandler struct {
@@ -63,6 +64,8 @@ func (handler *ExecutorConnectionHandler) ServeHTTP(response http.ResponseWriter
 		handler.activate(response, request, executorID)
 	case "fence":
 		handler.fence(response, request, executorID)
+	case "recover-gateway":
+		handler.recoverGateway(response, request, executorID)
 	default:
 		writeError(response, http.StatusNotFound, corecontract.ErrorResponse{Code: "not_found", Message: "internal command endpoint not found"})
 	}
@@ -141,6 +144,22 @@ func (handler *ExecutorConnectionHandler) fence(response http.ResponseWriter, re
 		return
 	}
 	response.WriteHeader(http.StatusNoContent)
+}
+
+func (handler *ExecutorConnectionHandler) recoverGateway(response http.ResponseWriter, request *http.Request, executorID string) {
+	if !handler.authorize(response, request, "executor-connections.recover-gateway") {
+		return
+	}
+	var command corecontract.RecoverExecutorGatewayRequest
+	if !decodeCommand(response, request, &command) {
+		return
+	}
+	result, err := handler.commands.RecoverExecutorGateway(request.Context(), executorID, command)
+	if err != nil {
+		writeCommandError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
 }
 
 func (handler *ExecutorConnectionHandler) authorize(response http.ResponseWriter, request *http.Request, action string) bool {

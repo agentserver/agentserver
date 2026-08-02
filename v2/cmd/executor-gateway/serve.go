@@ -58,6 +58,7 @@ const (
 	gatewayDevExecutorHeader                  = "X-Agentserver-Dev-Executor-Id"
 	maximumDevMCPBearerBytes                  = 16 * 1024
 	maximumGatewayTLSFileBytes                = int64(1024 * 1024)
+	gatewayStartupRecoveryTimeout             = 2 * time.Minute
 )
 
 var canonicalUUIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -293,6 +294,18 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	if err != nil {
 		return err
 	}
+	var startupRecovery *executorgateway.GatewayStartupRecoveryResult
+	if mode == gatewayServeProduction {
+		recoveryContext, cancelRecovery := context.WithTimeout(ctx, gatewayStartupRecoveryTimeout)
+		recovered, recoveryErr := executorgateway.RecoverGatewayStartup(
+			recoveryContext, coreClient, executorID, gatewayInstanceID, executionTransitions,
+		)
+		cancelRecovery()
+		if recoveryErr != nil {
+			return recoveryErr
+		}
+		startupRecovery = &recovered
+	}
 	listener, err := net.Listen("tcp", listenAddress)
 	if err != nil {
 		return fmt.Errorf("listen on executor-gateway address: %w", err)
@@ -340,9 +353,18 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	if mode == gatewayServeInsecureDevelopment {
 		authorityDescription = "INSECURE DEV authentication"
 	}
+	recoveryDescription := "development startup recovery disabled"
+	if startupRecovery != nil {
+		recoveryDescription = fmt.Sprintf(
+			"startup recovery generation %d, reconciled %d executions in %d passes",
+			startupRecovery.FencedConnectionGeneration,
+			startupRecovery.RecoveredExecutions,
+			startupRecovery.Passes,
+		)
+	}
 	readiness.ready.Store(true)
-	fmt.Fprintf(stdout, "executor-gateway serve: %s; single-replica process-local resume/challenges; listening on %s; MCP endpoint %s; gateway instance %s\n",
-		authorityDescription, listener.Addr(), executorgateway.ExecutorMCPPath, gatewayInstanceID)
+	fmt.Fprintf(stdout, "executor-gateway serve: %s; %s; single-replica process-local resume/challenges; listening on %s; MCP endpoint %s; gateway instance %s\n",
+		authorityDescription, recoveryDescription, listener.Addr(), executorgateway.ExecutorMCPPath, gatewayInstanceID)
 	err = server.Serve(tls.NewListener(listener, tlsConfig))
 	readiness.ready.Store(false)
 	if errors.Is(err, http.ErrServerClosed) && ctx.Err() != nil {

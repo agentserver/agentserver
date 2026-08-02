@@ -74,6 +74,7 @@ func TestPostgreSQLApprovalDecisionRequiresSingleConsumptionBeforeDispatch(t *te
 	if err != nil || consumeRetry.Consumed || consumeRetry.Approval.Status != ApprovalStatusConsumed {
 		t.Fatalf("retry ConsumeApproval() = %+v, %v", consumeRetry, err)
 	}
+	installExecutionTestConnection(t, pool, schema, running, consumed.Execution, 31, 750_000)
 
 	begin := executionTestBeginCommand(t, 160_700, running, preparedOperation, 31)
 	begin.ExpectedExecutionVersion = consumed.Execution.Version

@@ -21,6 +21,9 @@ const (
 
 	MaxExecutorConnectionTTL      = 5 * time.Minute
 	MaxListedExecutorEnvironments = 256
+	MaxGatewayRecoveryBatch       = 64
+
+	GatewayRecoveryReasonProcessRestart = "gateway_process_restart"
 )
 
 type ListOnlineExecutorEnvironmentsQuery struct {
@@ -113,4 +116,22 @@ type FenceExecutorConnectionCommand struct {
 	SessionID         string
 	GatewayInstanceID string
 	Generation        int64
+}
+
+// RecoverExecutorGatewayCommand is the startup-only fail-closed boundary for
+// one Phase 1 single-replica gateway. Records are consumed in deterministic
+// execution order, one per recovered execution. A transport-ambiguous retry
+// must use fresh records: executions committed by the previous call are
+// already terminal and therefore cannot receive a duplicate event.
+type RecoverExecutorGatewayCommand struct {
+	ExecutorID        string
+	GatewayInstanceID string
+	Records           []TransitionRecord
+}
+
+type RecoverExecutorGatewayResult struct {
+	FencedConnectionGeneration int64
+	ConnectionFenced           bool
+	RecoveredExecutions        int
+	Remaining                  bool
 }

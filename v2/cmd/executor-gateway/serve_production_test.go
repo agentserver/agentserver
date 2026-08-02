@@ -101,6 +101,7 @@ func TestServeExecutorGatewayProductionMachineIdentityEndToEnd(t *testing.T) {
 	}
 	var completeCalls atomic.Int64
 	var authorizeCalls atomic.Int64
+	var recoveryCalls atomic.Int64
 	var unavailable atomic.Bool
 	var revoked atomic.Bool
 	coreServer := newExecutorGatewayTLSServer(t, pki, coreIdentity, gatewayIdentityURI, http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -110,6 +111,24 @@ func TestServeExecutorGatewayProductionMachineIdentityEndToEnd(t *testing.T) {
 			return
 		}
 		switch request.URL.Path {
+		case corecontract.RecoverExecutorGatewayPath(executorID):
+			recoveryCalls.Add(1)
+			var command corecontract.RecoverExecutorGatewayRequest
+			if request.Method != http.MethodPost || request.Header.Get("Content-Type") != "application/json" ||
+				json.NewDecoder(io.LimitReader(request.Body, 512*1024+1)).Decode(&command) != nil ||
+				command.GatewayInstanceID == "" || len(command.Records) != corecontract.MaxGatewayRecoveryRecords {
+				writeExecutorGatewayTestCoreJSON(response, http.StatusBadRequest, corecontract.ErrorResponse{Code: "invalid_argument", Message: "invalid gateway recovery"})
+				return
+			}
+			for index, record := range command.Records {
+				if record.ProducerInstanceID != command.GatewayInstanceID || record.ProducerSeq != int64(index+1) {
+					writeExecutorGatewayTestCoreJSON(response, http.StatusBadRequest, corecontract.ErrorResponse{Code: "invalid_argument", Message: "invalid gateway recovery records"})
+					return
+				}
+			}
+			writeExecutorGatewayTestCoreJSON(response, http.StatusOK, corecontract.RecoverExecutorGatewayResponse{
+				FencedConnectionGeneration: 0, RecoveredExecutions: 0, Remaining: false,
+			})
 		case corecontract.CompleteExecutorEnrollmentPath:
 			completeCalls.Add(1)
 			if request.Method != http.MethodPost || request.Header.Get("Authorization") != "Bearer "+enrollmentToken ||
@@ -245,6 +264,9 @@ func TestServeExecutorGatewayProductionMachineIdentityEndToEnd(t *testing.T) {
 	assertExecutorGatewayUpgradeFailure(t, client, baseURL, revokedHeaders, http.StatusUnauthorized)
 	if got := authorizeCalls.Load(); got != 9 {
 		t.Fatalf("Core live authorization calls = %d, want 9", got)
+	}
+	if recoveryCalls.Load() != 1 {
+		t.Fatalf("Core gateway startup recovery calls = %d, want 1", recoveryCalls.Load())
 	}
 
 	cancel()

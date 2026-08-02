@@ -85,6 +85,19 @@ func TestCoreConnectionClientRoundTrip(t *testing.T) {
 	if !commands.fenced {
 		t.Fatal("core fence command was not delivered")
 	}
+	recovery, err := client.RecoverExecutorGateway(t.Context(), RecoverGatewayRequest{
+		ExecutorID: testExecutorID, GatewayInstanceID: testGatewayInstanceID,
+		Records: []ExecutionTransitionRecord{{
+			EventID: "78000000-0000-4000-8000-000000000001", ProducerInstanceID: testGatewayInstanceID,
+			ProducerSeq: 1, OutboxID: "78000000-0000-4000-8000-000000000002",
+		}},
+	})
+	if err != nil || recovery.FencedConnectionGeneration != 7 || recovery.RecoveredExecutions != 1 {
+		t.Fatalf("RecoverExecutorGateway() = %+v, %v", recovery, err)
+	}
+	if commands.recoveryExecutorID != testExecutorID || commands.lastRecovery.GatewayInstanceID != testGatewayInstanceID || len(commands.lastRecovery.Records) != 1 {
+		t.Fatalf("core recovery contract = %q / %+v", commands.recoveryExecutorID, commands.lastRecovery)
+	}
 }
 
 func TestCoreConnectionClientMapsFencedAndRejectsRedirect(t *testing.T) {
@@ -182,11 +195,13 @@ type allowCoreWorkload struct{}
 func (allowCoreWorkload) AuthorizeWorkload(*http.Request, string) error { return nil }
 
 type recordingCoreCommands struct {
-	mu          sync.Mutex
-	lastAcquire corecontract.AcquireExecutorConnectionRequest
-	holder      corecontract.ConnectionHolder
-	renewError  error
-	fenced      bool
+	mu                 sync.Mutex
+	lastAcquire        corecontract.AcquireExecutorConnectionRequest
+	holder             corecontract.ConnectionHolder
+	renewError         error
+	fenced             bool
+	recoveryExecutorID string
+	lastRecovery       corecontract.RecoverExecutorGatewayRequest
 }
 
 type recordingEnvironmentQueries struct {
@@ -246,6 +261,14 @@ func (commands *recordingCoreCommands) FenceExecutorConnection(_ context.Context
 	commands.holder = request.Holder
 	commands.holder.Status = "fenced"
 	return nil
+}
+
+func (commands *recordingCoreCommands) RecoverExecutorGateway(_ context.Context, executorID string, request corecontract.RecoverExecutorGatewayRequest) (corecontract.RecoverExecutorGatewayResponse, error) {
+	commands.mu.Lock()
+	defer commands.mu.Unlock()
+	commands.recoveryExecutorID = executorID
+	commands.lastRecovery = request
+	return corecontract.RecoverExecutorGatewayResponse{FencedConnectionGeneration: 7, RecoveredExecutions: 1}, nil
 }
 
 func testCoreHolder() ConnectionHolder {

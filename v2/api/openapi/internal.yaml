@@ -498,6 +498,21 @@
         }
       }
     },
+    "/internal/v2/executor-connections/{executorId}:recover-gateway": {
+      "parameters": [{"$ref": "#/components/parameters/ExecutorId"}],
+      "post": {
+        "operationId": "recoverExecutorGateway",
+        "description": "Production startup-only fail-closed recovery for the Phase 1 single-replica executor-gateway. Core first commits fencing of the previous connection, then terminally reconciles a bounded batch of executions that crossed the old external-send boundary. The caller must repeat with fresh transition records until remaining=false before publishing readiness.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RecoverExecutorGatewayRequest"}}}},
+        "responses": {
+          "200": {"description": "Previous connection fenced and one deterministic recovery batch reconciled", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RecoverExecutorGatewayResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
     "/internal/v2/run-capabilities:issue": {
       "post": {
         "operationId": "issueRunCapabilities",
@@ -1382,6 +1397,26 @@
         "additionalProperties": false,
         "required": ["holder"],
         "properties": {"holder": {"$ref": "#/components/schemas/ConnectionHolder"}}
+      },
+      "RecoverExecutorGatewayRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["gatewayInstanceId", "records"],
+        "properties": {
+          "gatewayInstanceId": {"$ref": "#/components/schemas/UUID"},
+          "records": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"$ref": "#/components/schemas/TransitionRecord"}}
+        }
+      },
+      "RecoverExecutorGatewayResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["fencedConnectionGeneration", "connectionFenced", "recoveredExecutions", "remaining"],
+        "properties": {
+          "fencedConnectionGeneration": {"type": "integer", "minimum": 0},
+          "connectionFenced": {"type": "boolean"},
+          "recoveredExecutions": {"type": "integer", "minimum": 0, "maximum": 64},
+          "remaining": {"type": "boolean"}
+        }
       },
       "ExecutorConnectionResponse": {
         "type": "object",

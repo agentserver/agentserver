@@ -328,6 +328,27 @@ live authorization、signed WSS upgrade、bad proof、replay、Core unavailable
 retry、revoke及shutdown。它不需要外部Hydra；真实Hydra v26.2.0的ES256
 `private_key_jwt`兼容性由`make hydra-live-test`单独验证。
 
+production gateway不会先监听再异步恢复。它在创建listener和发布`/readyz`
+之前生成新的gateway identity，并调用
+`POST /internal/v2/executor-connections/{executorId}:recover-gateway`直到Core返回
+`remaining=false`。任何错误或响应不明都使进程直接退出；同一进程不会重试
+模糊结果。Core先提交旧connection generation的fence，再恢复execution，因此
+即使第二阶段遇到无法安全聚合的operation，旧gateway也已经不能继续写入。
+
+真实PostgreSQL恢复与独立进程hard-kill门禁需要显式测试数据库：
+
+```bash
+AGENTSERVER_RUN_POSTGRES_TESTS=1 \
+AGENTSERVER_V2_TEST_DATABASE_URL='postgres://...' \
+go test ./internal/coredb -run '^TestPostgreSQLExecutorGatewayRecovery' -count=1 -v
+```
+
+该矩阵逐点kill实际Go子进程，并验证Begin、不可逆发送、ACK、operation
+terminal和execution terminal前后的恢复结果、零redispatch、stale generation
+拒绝及重复startup零重复event。测试中的不可逆发送使用append+fsync marker固定
+事务外边界；真实agentx WSS断线语义另由executor-gateway纵向测试覆盖，最终
+Kubernetes跨仓门禁仍不能省略。
+
 这一切仍不是可部署整栈：独立agentx现已完成owner-only双钥、RFC 7523
 token exchange、每次物理连接的production challenge/WSS接线、connector与
 降权runner的credential隔离、Linux filesystem safe-open、cgroup v2
@@ -336,6 +357,7 @@ production runtime安装链要求从`/`到Codex与bundled bwrap全部root-owned�
 不可group/other写，Codex以固定descriptor在cgroup Commit后执行。cgroup
 containment另要求root connector只保留`CHOWN/SETUID/SETGID`、拥有writable
 delegated cgroup v2 subtree，并由真实PID 1 init/reaper监管；普通insecure-dev
-启动不宣称这些生产边界。仍未完成Kubernetes/S3/KMS/Hydra/IAM清单与全拓扑
-故障注入。Phase 1必须保持executor-gateway单副本；进程重启会丢失challenge
-与resume journal，不能打开HPA或宣称跨Pod恢复。
+启动不宣称这些生产边界。gateway restart的应用层fence/unknown恢复已经完成，
+但仍未完成Kubernetes/S3/KMS/Hydra/IAM清单与全拓扑故障注入。Phase 1必须保持
+executor-gateway单副本并使用`Recreate`；进程重启会丢失challenge与resume
+journal，不能打开HPA、使用rolling overlap或宣称跨Pod恢复。

@@ -11,8 +11,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 14 {
-		t.Fatalf("migration count = %d, want 14", len(migrations))
+	if len(migrations) != 15 {
+		t.Fatalf("migration count = %d, want 15", len(migrations))
 	}
 	migration := migrations[0]
 	if migration.Version != 1 || migration.Name != "session_run_kernel" {
@@ -59,6 +59,9 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	if migrations[13].Version != 14 || migrations[13].Name != "executor_enrollment_identity" {
 		t.Fatalf("fourteenth migration identity = %04d_%s, want 0014_executor_enrollment_identity", migrations[13].Version, migrations[13].Name)
+	}
+	if migrations[14].Version != 15 || migrations[14].Name != "executor_gateway_recovery" {
+		t.Fatalf("fifteenth migration identity = %04d_%s, want 0015_executor_gateway_recovery", migrations[14].Version, migrations[14].Name)
 	}
 }
 

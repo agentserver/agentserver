@@ -69,3 +69,103 @@ func TestValidatePreparedOperationSkip(t *testing.T) {
 		})
 	}
 }
+
+func TestPlanGatewayExecutionRecoveryIsFailClosed(t *testing.T) {
+	execution := Execution{ID: stateTestUUID(81_000), Status: ExecutionStatusRunning, OperationCount: 2}
+	process := ExecutionOperation{
+		ID: stateTestUUID(81_001), Ordinal: 1, Kind: "process_start",
+		Status: OperationStatusDispatching, ConnectionGeneration: 7,
+	}
+	timeout := ExecutionOperation{
+		ID: stateTestUUID(81_002), Ordinal: 2, Kind: OperationKindTimeoutTerminate,
+		Status: OperationStatusPrepared,
+	}
+	statuses, changes, err := planGatewayExecutionRecovery(execution, []ExecutionOperation{process, timeout}, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 2 || statuses[0] != OperationStatusUnknown || statuses[1] != OperationStatusSkipped ||
+		len(changes) != 2 || changes[0].FromStatus != OperationStatusDispatching || changes[0].ToStatus != OperationStatusUnknown ||
+		changes[1].FromStatus != OperationStatusPrepared || changes[1].ToStatus != OperationStatusSkipped {
+		t.Fatalf("gateway recovery plan = statuses %v, changes %+v", statuses, changes)
+	}
+	if aggregate, err := aggregateExecutionStatus(execution.Status, statuses); err != nil || aggregate != ExecutionStatusUnknown {
+		t.Fatalf("gateway recovery aggregate = %q, %v", aggregate, err)
+	}
+
+	terminal := process
+	terminal.Status = OperationStatusSucceeded
+	statuses, changes, err = planGatewayExecutionRecovery(execution, []ExecutionOperation{terminal, timeout}, 7)
+	if err != nil || len(changes) != 1 || statuses[0] != OperationStatusSucceeded || statuses[1] != OperationStatusSkipped {
+		t.Fatalf("terminal-only gateway recovery plan = statuses %v, changes %+v, error %v", statuses, changes, err)
+	}
+	if aggregate, err := aggregateExecutionStatus(execution.Status, statuses); err != nil || aggregate != ExecutionStatusSucceeded {
+		t.Fatalf("terminal-only gateway recovery aggregate = %q, %v", aggregate, err)
+	}
+
+	required := timeout
+	required.Kind = "required_followup"
+	if _, _, err := planGatewayExecutionRecovery(execution, []ExecutionOperation{process, required}, 7); err == nil {
+		t.Fatal("gateway recovery fabricated a terminal outcome for an unsent required operation")
+	}
+	future := process
+	future.ConnectionGeneration = 8
+	if _, _, err := planGatewayExecutionRecovery(execution, []ExecutionOperation{future, timeout}, 7); err == nil {
+		t.Fatal("gateway recovery consumed an operation from an unfenced generation")
+	}
+}
+
+func TestGatewayExecutionRecoveryFitsCanonicalEventBoundaryAtMaximumPlan(t *testing.T) {
+	execution := Execution{
+		ID: stateTestUUID(82_000), ExecutorID: stateTestUUID(82_001),
+		Status: ExecutionStatusRunning, OperationCount: MaxExecutionOperations,
+	}
+	operations := make([]ExecutionOperation, MaxExecutionOperations)
+	for index := range operations {
+		operations[index] = ExecutionOperation{
+			ID: stateTestUUID(82_100 + index), Ordinal: index + 1,
+			Kind: "required_operation", Status: OperationStatusAcknowledged,
+			ConnectionGeneration: 7,
+		}
+	}
+	statuses, changes, err := planGatewayExecutionRecovery(execution, operations, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != MaxExecutionOperations || len(changes) != MaxExecutionOperations {
+		t.Fatalf("maximum recovery plan = %d statuses, %d changes", len(statuses), len(changes))
+	}
+	for index, status := range statuses {
+		if status != OperationStatusUnknown || changes[index].ToStatus != OperationStatusUnknown {
+			t.Fatalf("maximum recovery operation %d = status %q, change %+v", index, status, changes[index])
+		}
+	}
+
+	states := make([]gatewayRecoveryOperationState, len(operations))
+	for index, operation := range operations {
+		states[index] = gatewayRecoveryOperationState{
+			OperationID: operation.ID, Ordinal: operation.Ordinal,
+			Status: statuses[index], ConnectionGeneration: operation.ConnectionGeneration,
+		}
+	}
+	if evidence, _, err := gatewayExecutionRecoveryEvidence(
+		execution, ExecutionStatusUnknown, states, stateTestUUID(82_500), 7,
+	); err != nil || len(evidence) > MaxInlineEventPayloadBytes {
+		t.Fatalf("maximum recovery evidence = %d bytes, %v", len(evidence), err)
+	}
+	payload, err := gatewayExecutionRecoveryEventPayload(
+		Run{ID: stateTestUUID(82_501)},
+		RunAttempt{ID: stateTestUUID(82_502), Generation: 3},
+		execution,
+		ExecutionStatusUnknown,
+		changes,
+		stateTestUUID(82_500),
+		7,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) > MaxInlineEventPayloadBytes {
+		t.Fatalf("maximum recovery event = %d bytes, limit %d", len(payload), MaxInlineEventPayloadBytes)
+	}
+}

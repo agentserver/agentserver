@@ -11,6 +11,7 @@ const (
 	AcquireExecutorConnectionPath = "/internal/v2/executor-connections:acquire"
 	ExecutorConnectionPathPrefix  = "/internal/v2/executor-connections/"
 	ListExecutorEnvironmentsPath  = "/internal/v2/executor-environments:list"
+	MaxGatewayRecoveryRecords     = 64
 )
 
 type EnvironmentDeclaration struct {
@@ -60,6 +61,18 @@ type FenceExecutorConnectionRequest struct {
 	Holder ConnectionHolder `json:"holder"`
 }
 
+type RecoverExecutorGatewayRequest struct {
+	GatewayInstanceID string             `json:"gatewayInstanceId"`
+	Records           []TransitionRecord `json:"records"`
+}
+
+type RecoverExecutorGatewayResponse struct {
+	FencedConnectionGeneration int64 `json:"fencedConnectionGeneration"`
+	ConnectionFenced           bool  `json:"connectionFenced"`
+	RecoveredExecutions        int   `json:"recoveredExecutions"`
+	Remaining                  bool  `json:"remaining"`
+}
+
 type ExecutorConnectionResponse struct {
 	Holder ConnectionHolder `json:"holder"`
 }
@@ -101,4 +114,8 @@ func ActivateExecutorConnectionPath(executorID string) string {
 
 func FenceExecutorConnectionPath(executorID string) string {
 	return ExecutorConnectionPathPrefix + executorID + ":fence"
+}
+
+func RecoverExecutorGatewayPath(executorID string) string {
+	return ExecutorConnectionPathPrefix + executorID + ":recover-gateway"
 }

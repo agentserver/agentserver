@@ -73,6 +73,7 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 		RenewExecutorConnectionPath("{executorId}"):                  "renewExecutorConnection",
 		ActivateExecutorConnectionPath("{executorId}"):               "activateExecutorConnection",
 		FenceExecutorConnectionPath("{executorId}"):                  "fenceExecutorConnection",
+		RecoverExecutorGatewayPath("{executorId}"):                   "recoverExecutorGateway",
 		PrepareExecutionPath:                                         "prepareExecution",
 		PrepareOperationPath("{executionId}"):                        "prepareOperation",
 		BeginOperationDispatchPath("{executionId}", "{operationId}"): "beginOperationDispatch",
@@ -142,6 +143,8 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "RenewExecutorConnectionRequest", reflect.TypeFor[RenewExecutorConnectionRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "ActivateExecutorConnectionRequest", reflect.TypeFor[ActivateExecutorConnectionRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "FenceExecutorConnectionRequest", reflect.TypeFor[FenceExecutorConnectionRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "RecoverExecutorGatewayRequest", reflect.TypeFor[RecoverExecutorGatewayRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "RecoverExecutorGatewayResponse", reflect.TypeFor[RecoverExecutorGatewayResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "ExecutorConnectionResponse", reflect.TypeFor[ExecutorConnectionResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "ListExecutorEnvironmentsRequest", reflect.TypeFor[ListExecutorEnvironmentsRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "ExecutorEnvironment", reflect.TypeFor[ExecutorEnvironment]())

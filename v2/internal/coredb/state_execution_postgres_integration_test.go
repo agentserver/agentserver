@@ -1,6 +1,7 @@
 package coredb
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"sync"
@@ -23,6 +24,7 @@ func TestPostgreSQLExecutionCrashAfterDispatchCommitDoesNotAuthorizeReplay(t *te
 	if err != nil || !preparedOperation.Created || preparedOperation.Operation.Status != OperationStatusPrepared {
 		t.Fatalf("PrepareOperation() = %+v, error = %v", preparedOperation, err)
 	}
+	installExecutionTestConnection(t, pool, schema, running, preparedExecution.Execution, 7, 710_000)
 
 	// Force failure at the final outbox insert. The operation transition, the
 	// execution version, the run sequence, and event insert must all roll back.
@@ -108,6 +110,7 @@ func TestPostgreSQLExecutionAcknowledgedTerminalStateMachine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	installExecutionTestConnection(t, pool, schema, running, preparedExecution.Execution, 11, 720_000)
 	dispatching, err := store.BeginOperationDispatch(t.Context(), executionTestBeginCommand(t, 23_000, running, preparedOperation, 11))
 	if err != nil {
 		t.Fatal(err)
@@ -216,6 +219,7 @@ func TestPostgreSQLExecutionSkipsTrailingTimeoutAfterProcessTerminal(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	installExecutionTestConnection(t, pool, schema, running, preparedExecution.Execution, 12, 730_000)
 
 	beginCommand := executionTestBeginCommand(t, 25_400, running, process, 12)
 	beginCommand.ExpectedExecutionVersion = timeout.Execution.Version
@@ -437,6 +441,7 @@ func TestPostgreSQLBeginDispatchRequiresCompleteFrozenOperationPlan(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	installExecutionTestConnection(t, pool, schema, running, preparedExecution.Execution, 17, 740_000)
 	beginFirst := executionTestBeginCommand(t, 38_200, running, first, 17)
 	if _, err := store.BeginOperationDispatch(t.Context(), beginFirst); !HasStateErrorCode(err, ErrorInvalidState) {
 		t.Fatalf("incomplete-plan BeginOperationDispatch() error = %v, want invalid_state", err)
@@ -620,4 +625,71 @@ func executionTestHash(t *testing.T, domain CanonicalHashDomain, seed int) Canon
 		t.Fatalf("create execution test hash: %v", err)
 	}
 	return hash
+}
+
+func installExecutionTestConnection(
+	t *testing.T,
+	pool *pgxpool.Pool,
+	schema string,
+	running executionTestRunningRun,
+	execution Execution,
+	generation int64,
+	seed int,
+) {
+	t.Helper()
+	quotedSchema := quoteIdentifier(schema)
+	machineHash := sha256.Sum256([]byte(fmt.Sprintf("execution-machine-%d", seed)))
+	runtimeHash := sha256.Sum256([]byte(fmt.Sprintf("execution-runtime-%d", seed)))
+	protocolHash := sha256.Sum256([]byte(fmt.Sprintf("execution-protocol-%d", seed)))
+	codexHash := sha256.Sum256([]byte(fmt.Sprintf("execution-codex-%d", seed)))
+	ownerPolicyHash := sha256.Sum256([]byte(fmt.Sprintf("execution-policy-%d", seed)))
+	environmentSetHash := sha256.Sum256([]byte(fmt.Sprintf("execution-environments-%d", seed)))
+	if _, err := pool.Exec(t.Context(), fmt.Sprintf(`
+INSERT INTO %s.executors
+    (id, workspace_id, status, machine_key_sha256, agentx_version,
+     runtime_manifest_sha256, exec_protocol_source_sha256)
+VALUES ($1, $2, 'online', $3, 'test-agentx', $4, $5)`, quotedSchema),
+		execution.ExecutorID, running.Run.WorkspaceID, machineHash[:], runtimeHash[:], protocolHash[:],
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), fmt.Sprintf(`
+INSERT INTO %s.executor_environments
+    (id, executor_id, root_descriptor, owner_policy_sha256, platform,
+     codex_release, codex_commit, codex_sha256, outer_profile_version,
+     process_methods, insecure_dev, status)
+VALUES ($1, $2, '{"kind":"local","root":"/workspace"}'::jsonb, $3,
+        'linux-arm64', '0.146.0', $4, $5, 'process-v1',
+        ARRAY['process/start','process/read','process/write','process/terminate']::text[],
+        false, 'online')`, quotedSchema),
+		execution.EnvID, execution.ExecutorID, ownerPolicyHash[:], fmt.Sprintf("%040x", seed), codexHash[:],
+	); err != nil {
+		t.Fatal(err)
+	}
+	connectionID := stateTestUUID(seed)
+	sessionID := stateTestUUID(seed + 1)
+	gatewayID := stateTestUUID(seed + 2)
+	if _, err := pool.Exec(t.Context(), fmt.Sprintf(`
+INSERT INTO %s.executor_connection_attempts
+    (connection_id, executor_id, generation, session_id, gateway_instance_id,
+     agentx_version, runtime_manifest_sha256, exec_protocol_source_sha256,
+     environment_set_sha256)
+VALUES ($1, $2, $3, $4, $5, 'test-agentx', $6, $7, $8)`, quotedSchema),
+		connectionID, execution.ExecutorID, generation, sessionID, gatewayID,
+		runtimeHash[:], protocolHash[:], environmentSetHash[:],
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), fmt.Sprintf(`
+INSERT INTO %s.executor_connections
+    (executor_id, generation, connection_id, session_id, gateway_instance_id,
+     agentx_version, runtime_manifest_sha256, exec_protocol_source_sha256,
+     environment_set_sha256, status, expires_at)
+VALUES ($1, $2, $3, $4, $5, 'test-agentx', $6, $7, $8, 'online',
+        pg_catalog.clock_timestamp() + interval '5 minutes')`, quotedSchema),
+		execution.ExecutorID, generation, connectionID, sessionID, gatewayID,
+		runtimeHash[:], protocolHash[:], environmentSetHash[:],
+	); err != nil {
+		t.Fatal(err)
+	}
 }

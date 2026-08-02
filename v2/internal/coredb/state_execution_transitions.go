@@ -64,6 +64,9 @@ func (s *StateStore) BeginOperationDispatch(ctx context.Context, command BeginOp
 		if operationCount != execution.OperationCount {
 			return BeginOperationDispatchResult{}, commandError(ErrorInvalidState, operation, "execution", execution.ID, "all frozen operations must be prepared before the first dispatch")
 		}
+		if err := s.requireLiveExecutorConnection(ctx, transaction, operation, execution, command.ConnectionGeneration); err != nil {
+			return BeginOperationDispatchResult{}, err
+		}
 
 		updateOperation := fmt.Sprintf(`
 UPDATE %s
@@ -164,6 +167,9 @@ func (s *StateStore) AcknowledgeOperation(ctx context.Context, command Acknowled
 		}
 		if execution.Status != ExecutionStatusDispatching && execution.Status != ExecutionStatusRunning && execution.Status != ExecutionStatusCancelling {
 			return AcknowledgeOperationResult{}, commandError(ErrorInvalidState, operation, "execution", execution.ID, "execution is not awaiting operation acknowledgement")
+		}
+		if err := s.requireLiveExecutorConnection(ctx, transaction, operation, execution, command.ConnectionGeneration); err != nil {
+			return AcknowledgeOperationResult{}, err
 		}
 
 		acknowledgementHash := command.AcknowledgementHash.SHA256()
@@ -268,6 +274,9 @@ func (s *StateStore) CompleteOperation(ctx context.Context, command CompleteOper
 		}
 		if execution.Status != ExecutionStatusDispatching && execution.Status != ExecutionStatusRunning && execution.Status != ExecutionStatusCancelling {
 			return CompleteOperationResult{}, commandError(ErrorInvalidState, operation, "execution", execution.ID, "execution is not accepting operation terminal evidence")
+		}
+		if err := s.requireLiveExecutorConnection(ctx, transaction, operation, execution, command.ConnectionGeneration); err != nil {
+			return CompleteOperationResult{}, err
 		}
 
 		resultHash := command.ResultHash.SHA256()

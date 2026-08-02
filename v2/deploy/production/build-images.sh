@@ -64,8 +64,8 @@ source_revision=$(git -C "${repository_root}" rev-parse --verify HEAD)
 [ "${#source_revision}" -eq 40 ] || fail "HEAD is not a canonical 40-character Git SHA"
 case "${source_revision}" in *[!0-9a-f]*) fail "HEAD is not a canonical 40-character Git SHA" ;; esac
 
-mkdir -m 0700 "${output_directory}"
 work_directory=$(mktemp -d "${TMPDIR:-/tmp}/agentserver-v2-production-images.XXXXXX")
+work_directory=$(CDPATH= cd -- "${work_directory}" && pwd -P)
 service_verifier_name="agentserver-v2-service-verify-$$"
 harness_verifier_name="agentserver-v2-harness-verify-$$"
 service_verifier_created=false
@@ -198,6 +198,7 @@ verify_image service "${service_image}" "${service_verifier_name}" \
 verify_image harness "${harness_image}" "${harness_verifier_name}" \
     "${work_directory}/harness-payload" "${work_directory}/harness-rootfs.tar"
 
+mkdir -m 0700 "${output_directory}"
 cp "${work_directory}/service-payload/image-manifest.json" "${output_directory}/service-image-manifest.json"
 cp "${work_directory}/harness-payload/image-manifest.json" "${output_directory}/harness-image-manifest.json"
 container image inspect "${service_image}" >"${output_directory}/service-image-inspect.json"

@@ -37,6 +37,7 @@ var materialProfiles = map[string][]workerMaterial{
 		{name: "run-capability.key", maximum: 4 * 1024},
 		{name: "run-capability-keyring.json", maximum: 64 * 1024},
 		{name: "executor-enrollment.key", maximum: 4 * 1024},
+		{name: "llm-gateway-sealing-keyring.json", maximum: 64 * 1024},
 	},
 	ProfileBrowserGateway: {
 		{name: "ca.crt", maximum: 1024 * 1024},
@@ -66,8 +67,6 @@ var materialProfiles = map[string][]workerMaterial{
 		{name: "tls.crt", maximum: 1024 * 1024},
 		{name: "tls.key", maximum: 1024 * 1024},
 		{name: "run-capability-keyring.json", maximum: 64 * 1024},
-		{name: "upstream-ca.crt", maximum: 1024 * 1024},
-		{name: "upstream-credential", maximum: 64 * 1024},
 	},
 }
 

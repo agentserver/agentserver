@@ -6,6 +6,14 @@
 >
 > 本文中 stock Codex 有两个严格分离的运行角色：大脑由 per-run `harness-worker` 通过 stdio 驱动 stock app-server；双手由 agentx 监管本地 `codex exec-server --listen stdio`。app-server 子进程只运行模型循环，从 `dynamicTools` 看见冻结的工具目录，并以 `item/tool/call` 把结构化调用交还 worker；worker 才是 executor MCP client。exec-server 只处理确定性的 process/fs JSON-RPC，不运行模型。两侧的宿主进程都不替模型推理。
 
+> 当前生产部署覆盖：只部署 SG、只支持 `linux/amd64`。公网 TLS 由现有 Istio Gateway
+> 终止；frontend、browser API、executor agentx 分别使用
+> `agent.byted.bps.dev`、`browser-gateway.byted.bps.dev`、
+> `executor-gateway.byted.bps.dev`。当前 S3-compatible 服务没有 KMS，因此 SG profile 按
+> [ADR 0004](adr/0004-sg-plaintext-s3-production.md) 明文保存 prompt/checkpoint；本文后面保留的
+> envelope/KMS 内容只描述库中的历史/候选 profile，不是 SG Chart 的运行事实。PostgreSQL 固定为
+> `agentserver` Namespace 内由 Pulumi 声明的三实例 CloudNativePG Cluster；owner 密码和 DSN 自动生成。
+
 ## 0. 架构约束
 
 以下约束是 v2 的设计前提，不是实现选项：
@@ -110,7 +118,7 @@
                                                                  用户本地工作环境
 ```
 
-除了 5 个产品组件，部署还依赖 Hydra、Postgres、对象存储和 llmproxy。`harness-worker` 是 harness-pool 在本地按 attempt 启动的短命数据面进程，不是第六个常驻服务，也不会为每个 run 创建 Kubernetes Job/Pod。外部 OIDC IdP 和用户侧 agentx 不计入集群组件数。a2ui-web 的 workspace/resource REST 直连 core；图中经过 browser-gateway 的业务链路仅指 AG-UI run/事件接口。
+除了 5 个产品组件，部署还依赖 Hydra、CloudNativePG PostgreSQL、对象存储和 llmproxy。`harness-worker` 是 harness-pool 在本地按 attempt 启动的短命数据面进程，不是第六个常驻服务，也不会为每个 run 创建 Kubernetes Job/Pod。外部 OIDC IdP 和用户侧 agentx 不计入集群组件数。a2ui-web 的 workspace/resource REST 直连 core；图中经过 browser-gateway 的业务链路仅指 AG-UI run/事件接口。
 
 ## 3. 组件职责
 
@@ -158,10 +166,10 @@ executor 侧不存在 Codex thread，也不存在“大脑 thread 与 executor t
 |---|---|---|
 | workspace、成员、角色、资源 | Postgres | gateway 鉴权缓存 |
 | session/run 状态 | Postgres | harness affinity |
-| prompt、对话上下文、恢复快照 | 加密的 DB 记录或对象存储，受 workspace retention policy 管理 | harness 本地上下文 |
+| prompt、对话上下文、恢复快照 | DB pointer + 对象存储；当前 SG S3 profile 为明文，受 bucket ACL/retention 管理 | harness 本地上下文 |
 | run attempt、run-attempt lease、generation | Postgres | harness-worker 本地心跳/控制流 |
 | 小型规范事件 | Postgres | SSE 发送缓冲 |
-| 模型可见 completed-turn checkpoint | 加密对象存储，DB 原子提交 manifest/hash | pool持有的attempt临时`CODEX_HOME`，进程组停止后读取 |
+| 模型可见 completed-turn checkpoint | 对象存储，DB 原子提交 manifest/hash；当前 SG S3 字节为明文 | pool持有的attempt临时`CODEX_HOME`，进程组停止后读取 |
 | brain thread tool catalog、canonical bytes 与 digest | Postgres/受版本控制的 contract artifact | worker 的解析结果 |
 | 大型 stdout/stderr、UI 制品 | 对象存储，DB 保存摘要与指针 | pod 本地临时文件 |
 | executor 注册与环境声明 | Postgres | 在线状态缓存 |
@@ -206,14 +214,16 @@ Phase 1 不尝试修改已启动 app-server 的环境变量来轮换 llmproxy ca
 
 ### 5.3 凭证存储
 
-LLM 上游 key、外部服务 credential 和 executor 机器材料都必须：
+当前 SG 部署不把 LLM 上游 key、OIDC/S3 credential 或 executor 机器材料写入普通 DB 字段。
+AgentServer 自有 CA、TLS、签名与对称密钥以及 CNPG owner 密码由 Pulumi `tls`/`random` 生成；
+数据库 DSN 由固定 RW Service DNS 与该随机密码派生；外部系统签发的
+credential 由对应资源的 secret Output 进入 Pulumi 管理的 Kubernetes Secret。Pulumi state
+必须使用 stack encryption，私钥/credential 不得导出为普通 output。
 
-- 使用 KMS envelope encryption；
-- 每条记录使用随机 nonce；
-- AAD 至少包含 workspace、credential type 和 record id；
-- 保存 key version，支持轮换和旧版本重加密；
-- 记录读取、更新和使用审计；
-- 永不写入日志、规范事件 payload 或 Codex rollout；运行时传递必须最小化、短期化且不可持久化。
+若未来把 credential 作为数据库记录持久化，才需要另行实现每记录随机 nonce、AAD、key
+version、envelope encryption、重加密和审计；当前不存在可调用的 KMS，不能在文档中把这一
+候选设计描述为已部署能力。无论存储方式如何，credential 永不写入日志、规范事件 payload 或
+Codex rollout，运行时传递必须最小化、短期化且不可持久化。
 
 llmproxy 根据受众正确的 run capability 注入上游模型凭证；harness 不直接获得真实上游 key。per-executor token 必须在 llmproxy 处被拒绝。
 
@@ -231,7 +241,7 @@ stock app-server 访问 llmproxy 所需的短期 capability 优先通过 tmpfs/�
 6. harness-pool 在当前 holder 进程内为该 attempt 创建新的临时目录和进程组，以本地 `fork/exec` 启动一个全新 harness-worker，不调用 Kubernetes API。pool先按manifest中的完整object pointer从对象存储读取prompt并复算size/hash；worker通过仅本次启动继承的独立pipe接收不可变签名manifest、control/executor-MCP/llmproxy三枚受众分离的capability以及prompt原始字节，并再次按签名pointer复算prompt。若存在core已提交的previous checkpoint，pool再通过可选FD 5流式发送其精确对象；worker先在staging中复算外层size/hash，再校验checkpoint manifest digest与签名的source run/attempt/generation、runtime、allowlist和catalog，任一不符都不创建rollout。capability和prompt均不进入argv、worker环境或临时磁盘；checkpoint只允许进入本attempt的有界staging。worker随后创建清洗后的临时 `CODEX_HOME`，以 MCP client 初始化 executor-gateway，并要求协商到manifest固定的protocol profile；reference profile是可承载嵌套server-originated elicitation的`2025-11-25` stateful Streamable HTTP，其他版本在`tools/list`前fail closed。随后worker读取`tools/list`，并要求规范化后的名称、description、input schema 与签名 manifest 中冻结的 catalog/hash 完全一致；不一致时在启动 turn 前 fail closed。
 7. harness-worker 以 stdio 启动并初始化 stock app-server。新 thread 的 `thread/start.dynamicTools` 由冻结 catalog 机械生成；native resume 没有 dynamicTools override，所以只允许恢复 catalog digest 相同的 thread，catalog 变化必须创建新 thread。worker 随后以原始用户输入调用 `turn/start`，不改写 prompt。app-server 只通过 llmproxy 调模型；需要工具时发出 `item/tool/call`，worker 校验 thread/turn/call/tool/arguments 后转成 executor MCP `tools/call`。
 8. harness-worker 将允许的原始 app-server notification和已经与dynamic call关联的executor MCP progress写入唯一mTLS control stream；frame只携带当前attempt generation与单调control sequence，不让无状态worker分配canonical producer身份。harness-pool按冻结catalog和已接受thread/turn做closed-world映射，为候选canonical event分配`event_id + producer_instance_id/producer_seq + outbox_id`，并同步提交core；core提交成功后pool才推进control receive cursor并累计ACK。core拒收旧generation，browser-gateway从已提交事件映射AG-UI/A2UI。
-9. 收到 `turn/completed` 后，run 先进入 `finalizing`，但该 notification不是统一的 transport cleanup barrier。worker按 request 类型清理：已回复的 `item/tool/call` 以对应 JSON-RPC response 写入完成为准；未回复的 dynamic call 以所属 turn terminal 为准，并同时取消 worker→MCP 请求；只有 app-server 明确定义会发 resolved 的其他 server request 才等待 `serverRequest/resolved`。worker还要确认 execution/process收口，随后才关闭 app-server stdin并等待优雅退出。只有 child 在有界时间内确认退出后，worker才能在terminal中附带由app-server thread response得到、且已按`CODEX_HOME`做纯路径包含校验的rollout locator；若等待超时，worker不得用failed terminal冒充清理屏障，而应断开control并退出，由holder回收和核验整个进程组，当前已接受turn按crash语义进入interrupted。holder确认整个进程组停止后，pool的受信本地finalizer才以pinned allowlist和安全`openat2`边界读取app UID私有rollout、生成checkpoint manifest；worker不持有读该树的DAC能力。SQLite 主库及其 WAL/SHM 等运行时派生文件不进入 checkpoint。harness-pool 先上传加密对象，再由 core 以 CAS 在同一状态事务中提交 checkpoint 指针与 run terminal event；未提交的对象由后台清理。
+9. 收到 `turn/completed` 后，run 先进入 `finalizing`，但该 notification不是统一的 transport cleanup barrier。worker按 request 类型清理：已回复的 `item/tool/call` 以对应 JSON-RPC response 写入完成为准；未回复的 dynamic call 以所属 turn terminal 为准，并同时取消 worker→MCP 请求；只有 app-server 明确定义会发 resolved 的其他 server request 才等待 `serverRequest/resolved`。worker还要确认 execution/process收口，随后才关闭 app-server stdin并等待优雅退出。只有 child 在有界时间内确认退出后，worker才能在terminal中附带由app-server thread response得到、且已按`CODEX_HOME`做纯路径包含校验的rollout locator；若等待超时，worker不得用failed terminal冒充清理屏障，而应断开control并退出，由holder回收和核验整个进程组，当前已接受turn按crash语义进入interrupted。holder确认整个进程组停止后，pool的受信本地finalizer才以pinned allowlist和安全`openat2`边界读取app UID私有rollout、生成checkpoint manifest；worker不持有读该树的DAC能力。SQLite 主库及其 WAL/SHM 等运行时派生文件不进入 checkpoint。harness-pool 先上传按当前 profile 编码的 immutable 对象（SG 为明文），再由 core 以 CAS 在同一状态事务中提交 checkpoint 指针与 run terminal event；未提交的对象由后台清理。
 10. harness-pool确认worker/app-server进程组已退出后完成checkpoint finalization；core确认terminal state和checkpoint后，pool才删除本次attempt临时目录。mid-turn crash不生成可恢复checkpoint，也不能继续原turn。
 
 浏览器断开不自动取消 run。取消必须通过`POST /v2/workspaces/{workspaceId}/runs/{runId}:cancel`显式发起，并产生规范事件；重新连接使用cursor继续读取。尚无holder的queued run在授权事务中直接进入`cancelled`。已有attempt时先写`run.cancelling`，holder通过成对lease heartbeat观察该状态，取消MCP并interrupt stock turn，同时在整个workload/process cleanup期间继续续租。turn/MCP runtime context与control/lifecycle command context必须分离：取消只立即结束前者；worker control必须活到`turn_terminal(interrupted)`获得累计ACK，pool lifecycle authority则必须和heartbeat一起活到supervisor确认workload cleanup完成，使terminal前已经接收的runtime fact仍能同步提交core。只有exact live holder确认typed callback、execution和进程组已经收口后，core才原子写`run.cancelled`、清session active run并删除双lease。browser-gateway将中间态投影为`CUSTOM agentserver.run_status`，将终态投影为`RUN_ERROR code=user_cancelled`。
@@ -344,10 +354,10 @@ A04 deny-all gate 已在 official stable 0.146.0 Linux amd64 musl artifact 上�
 
 恢复状态与 UI/审计事件是两种不同投影：
 
-- **模型可见 checkpoint**：加密保存恢复 thread 所必需的完整、模型可见历史，包括后续 turn 需要的 dynamic tool call/result、冻结 tool catalog、compaction/rollout 元数据；不能为了 UI 脱敏而从中任意删除模型已经看到的内容。
+- **模型可见 checkpoint**：完整保存恢复 thread 所必需的模型可见历史，包括后续 turn 需要的 dynamic tool call/result、冻结 tool catalog、compaction/rollout 元数据；不能为了 UI 脱敏而从中任意删除模型已经看到的内容。当前 SG 对象为明文，因此保护依赖 bucket ACL/credential/retention。
 - **规范/UI/审计事件**：按 secret/prompt policy 过滤，只用于展示、审计和事件恢复，不能反向拼成模型上下文。
 
-checkpoint 只能在 app-server 发出 terminal `turn/completed`、所有 dynamic callback 已按“response 写入完成或所属 turn terminal”清理、其他需要 resolved 的 server request 已清空、worker 关闭 stdin、child完成有界优雅退出且holder确认整个进程组停止后生成。不能在仍运行的 `CODEX_HOME` 上取文件，也不能用固定 sleep 猜测稳定。对已验证的 0.146.0-alpha.14 与 stable 0.146.0，pinned allowlist 是每个 `brain_thread_id` 恰好一个由 app-server thread response 返回的 rollout JSONL。worker只把该绝对路径规范化为相对其已验证`CODEX_HOME`的locator，不读取文件；pool finalizer以固定attempt目录FD、`openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS)`和expected app UID打开，验证普通文件、相对路径、大小和hash，checkpoint staging也必须严格只有该manifest entry。manifest 至少包含 `brain_thread_id`、terminal `turn_id`、run/attempt generation、Codex build/schema、checkpoint allowlist version、dynamic tool catalog digest、相对路径、大小和文件 hash。`state_5.sqlite`、所有 SQLite WAL/SHM、goals/logs/memories DB 均为运行时派生状态，不进入 checkpoint；配置、requirements、token、环境变量、诊断日志、cache 和临时 transport 缓冲同样禁止进入。每个新 Codex build 都必须重新通过 native `thread/resume` round-trip 才能获得 allowlist，禁止打包整个 `CODEX_HOME`。harness-pool 先上传加密对象，core 再以 CAS 原子提交 checkpoint pointer 与 run terminal state；未引用对象可清理。
+checkpoint 只能在 app-server 发出 terminal `turn/completed`、所有 dynamic callback 已按“response 写入完成或所属 turn terminal”清理、其他需要 resolved 的 server request 已清空、worker 关闭 stdin、child完成有界优雅退出且holder确认整个进程组停止后生成。不能在仍运行的 `CODEX_HOME` 上取文件，也不能用固定 sleep 猜测稳定。对已验证的 0.146.0-alpha.14 与 stable 0.146.0，pinned allowlist 是每个 `brain_thread_id` 恰好一个由 app-server thread response 返回的 rollout JSONL。worker只把该绝对路径规范化为相对其已验证`CODEX_HOME`的locator，不读取文件；pool finalizer以固定attempt目录FD、`openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS)`和expected app UID打开，验证普通文件、相对路径、大小和hash，checkpoint staging也必须严格只有该manifest entry。manifest 至少包含 `brain_thread_id`、terminal `turn_id`、run/attempt generation、Codex build/schema、checkpoint allowlist version、dynamic tool catalog digest、相对路径、大小和文件 hash。`state_5.sqlite`、所有 SQLite WAL/SHM、goals/logs/memories DB 均为运行时派生状态，不进入 checkpoint；配置、requirements、token、环境变量、诊断日志、cache 和临时 transport 缓冲同样禁止进入。每个新 Codex build 都必须重新通过 native `thread/resume` round-trip 才能获得 allowlist，禁止打包整个 `CODEX_HOME`。harness-pool 先上传 immutable 对象并验证完整 pointer；SG PlainStore 写入原始 artifact 字节，core 再以 CAS 原子提交 checkpoint pointer 与 run terminal state；未引用对象可清理。
 
 checkpoint artifact v1 不使用 tar/zip，其字节布局固定为 `16-byte magic/version || uint32be manifest_length || RFC 8785 canonical manifest || rollout bytes`，media type固定为`application/vnd.agentserver.codex-checkpoint.v1`，总大小上限为67,174,420字节。manifest只允许一个`purpose=codex-rollout, fileType=regular, mode=0600`的`sessions/.../*.jsonl`文件；实现同时拒绝非规范路径、`.`/`..`、反斜杠、symlink类型、额外entry和尾随字节，并逐行校验有界JSONL。manifest digest使用`agentserver-v2/checkpoint-manifest/rfc8785-v1\0`域隔离，与外层object SHA-256分开存储；run manifest v2还冻结源run/attempt/generation、terminal turn、runtime manifest digest和allowlist version，恢复时不只凭object ID或thread ID。
 
@@ -373,17 +383,30 @@ mid-turn crash 时只允许恢复上一个已由 core提交指针的 completed-t
 
 `brain_thread_id` 是优化和追踪标识，不是 session 的权威主键。native `thread/resume` 只适用于相同 pinned schema 的完整 checkpoint；不兼容时可从受保护的模型可见 conversation record 创建新 thread，但这是语义降级，必须生成审计事件，不能声称与原生 resume 等价。
 
-### 7.4 加密对象协议
+### 7.4 对象 authority 与 SG 明文 S3 profile
 
-对象存储中的权威是Core提交的**明文 pointer**，不是S3 metadata、ETag、presigned URL或加密后大小。完整authority由`workspace_id + object_kind + object_id + plaintext SHA-256 + plaintext size + canonical media type`组成；当前closed-world kind只有`user-prompt`与`checkpoint`。对象key只按受限prefix、workspace、kind和object ID定位，header与KMS encryption context再次绑定完整authority，因此即使数据库pointer或后端key被错误替换，也不能把一个合法密文跨workspace或跨kind打开。
+对象存储中的权威是 Core 提交的**明文 pointer**，不是 S3 metadata、ETag 或 presigned URL。
+完整 authority 由 `workspace_id + object_kind + object_id + SHA-256 + size + canonical media type`
+组成；当前 closed-world kind 只有 `user-prompt` 与 `checkpoint`。对象 key 按受限 prefix、
+workspace、kind 和 object ID 定位。Core 的 prompt adapter 由
+`workspace/actor/session/idempotency key` 稳定派生 object ID；pool 只使用签名 manifest 中的
+scope/pointer 读取或写入。
 
-对象协议v1使用per-object envelope encryption。`GenerateDataKey`必须为每个新对象返回新的AES-256 plaintext data key及可持久化wrapped key；KMS在生成和解封时都必须把完整authority作为encryption context。应用为每个对象再生成随机64-bit nonce prefix，以`prefix || uint32be(chunk_index)`构造nonce，把明文按1 MiB分块做AES-256-GCM。明文authority和key envelope进入有界header；每块AAD绑定完整header的SHA-256、chunk index和该块明文长度。打开对象时先校验header authority、后端报告的精确ciphertext size和KMS context，再逐块认证并复算明文SHA-256；即使调用方没有读完，`Close`也必须认证未读尾部并拒绝截断、尾随数据或篡改。
+后端接口只有 immutable `PutIfAbsent` 和 `Open`。SG `s3-plaintext-v1` profile 把 pointer 描述
+的原始字节直接传给 S3，但仍在写入前/读取完成时验证精确 size、SHA-256、EOF 和尾随字节。
+`PutObject` 固定使用 `If-None-Match: *`、single-part、无 SDK 自动重试；只有明确
+`412 PreconditionFailed` 表示 existing。409、timeout、断线和 5xx 保留为歧义错误，上层只能
+用同一 pointer 做 exact retry，并重新打开已有对象完成全量校验。
 
-后端接口只有immutable `PutIfAbsent`和`Open`。`PutIfAbsent`必须在消费并验证声明的全部ciphertext字节后才原子发布，provider返回歧义错误时上层只允许用同一pointer和重新打开的明文做exact retry。若key已存在，协议会解密并完整验证已有对象：authority确定不同时返回immutable conflict；后端/KMS暂时失败、context取消或已有对象损坏不能伪装成用户幂等冲突。Core的prompt adapter由`workspace/actor/session/idempotency key`稳定派生object ID并提交明文pointer；harness-pool adapter只用签名manifest中的workspace/kind/pointer读取prompt/checkpoint，并以finalizer生成的exact pointer写checkpoint。对象存储与KMS credential始终留在Core/pool域，worker只接收已经复核的明文字节流。
+S3 access key 只进入 Core/pool Pod 的 Pulumi-managed `agentserver-object-store-secrets`，不使用
+KMS、STS、IAM role、WebIdentity 或 ambient AWS credential chain。worker/app-server 不持有
+对象 credential，只接收 pool 已按 pointer 校验的字节流。bucket、管理员、备份和 credential
+持有方因此都在明文数据可信边界内，必须有最小权限、审计、retention 和删除控制。
 
-`internal/objectstore`及Core/pool adapter已经实现上述供应商无关协议；chunk boundary、并发exact put、幂等冲突、跨scope替换、KMS authority、篡改/截断/尾随、未读尾部认证和adapter scope转换均有普通及race测试。2026-08-02又把当前源码交叉编译的`objectstore/coreserver/harnesspool`测试二进制放入OCI digest `24c44fe44872962a828df84d3ff67ae2d541e076fad1e4101f9dc0dca5d8bf21`的固定Linux arm64容器各运行5轮并通过。
-
-具体transport的参考决策记录在[`ADR 0001`](adr/0001-aws-reference-object-provider.md)：AWS SDK v2 adapter以无自动重试的conditional `PutObject`实现immutable S3写边界，以`GetObject`的精确content length实现读边界，并用AWS KMS `AES_256` data key及authority digest context实现envelope boundary。它支持显式HTTPS S3-compatible endpoint，但不接受静态access-key配置，也不改变应用对象格式。provider单测/race与SDK serializer/error-decoder门禁已通过；最终Linux arm64测试二进制SHA-256为`2b46ba9a4433747bb90a08ca7381ea25321e75b22a65163f7017503339adb2bb`、size为`14515151`，在同一OCI index digest `24c44fe44872962a828df84d3ff67ae2d541e076fad1e4101f9dc0dca5d8bf21`中以network none、read-only root、非root和零capability连续运行5轮通过。共享production配置/factory、Core的`serve`加密装配和pool的encrypted-store选择路径也已实现，plaintext只允许显式`--insecure-dev`。Core capability issuance/live-authorize现已完成，但pool仍在其production capability source接入前fail closed。上述证据仍不关闭真实bucket/KMS IAM、conditional-write兼容性、credential/rotation、retention清理、故障注入与Kubernetes部署门禁，当前不能宣称生产对象存储已经部署。
+库中仍保留原 envelope-encrypted Store 及 [ADR 0001](adr/0001-aws-reference-object-provider.md)
+作为历史/未来 profile；当前生产选择见 [ADR 0004](adr/0004-sg-plaintext-s3-production.md)。两种
+实现共同满足 `objectstore.Protocol`，不会改变 Core pointer 或 run manifest。未来改回加密必须
+发布新 profile 并以新 object ID + pointer CAS 迁移，不能覆盖当前 immutable 明文 key。
 
 Core只在production mode注册`run-capabilities:issue`、`authorize-executor-mcp`和`authorize-llmproxy`三条精确内部路由，并分别要求harness-pool、executor-gateway和llmproxy的独立SPIFFE identity。签发事务以attempt `created_at`稳定派生issued-at，以Core policy派生deadline/grace，并同时用本机与数据库时钟fail closed；同一active key与同一authority的exact retry得到相同Ed25519 token和UUIDv8 capability ID。每次live-authorize在repeatable-read/read-only PostgreSQL snapshot中重查active workspace、actor owner/developer membership、active session、成对live lease、holder/generation、pre-turn或accepted状态、生产executor/connection/environment及fresh/resume catalog-policy一致性；取消、finalizing、成员移除、lease expiry、executor下线或catalog/policy漂移立即拒绝。LLM token不携带executor/version authority，具体environment仍须由gateway在解析每次tool call后结合Core execution authority复核。
 
@@ -869,7 +892,8 @@ agentx 的实现不放入上述 Go module。`github.com/agentserver/agentx` v2 �
 | D22 | `process-v1/shell-v1`固定clean-env与managed/restricted sandbox，stock可选proxy启动字段由agentx本地受信策略生成 | 双手只执行确定性任务；远端不能恢复ambient env、选择任意proxy或借upstream新增字段扩大能力 |
 | D23 | filesystem read使用组合profile和一次性fs-only `open(null) → readBlock → close`，远端不开放stock handle或`fs/readFile` | stock流式读取不支持platform sandbox；有界outer请求、agentx双重root复核与runner containment共同形成可审计边界 |
 | D24 | run cancel采用`cancelling`两阶段协议；pre-turn停止用`AbandonAttempt`在run锁内仲裁requeue/cancel | API调用不能证明远端workload已经停止；原子交接消除“最后观察”与holder释放之间的竞态，并让session、双lease、event/outbox一致收口 |
-| D25 | 对象pointer描述明文authority；应用层使用KMS envelope、分块AEAD和immutable create-if-absent，S3/KMS只实现窄provider接口 | ETag、provider metadata和presigned URL不能承担跨workspace/kind授权、完整性或幂等语义；供应商选择不能渗入Core/worker协议 |
+| D25 | 对象 pointer 描述明文 authority；SG 使用 plaintext immutable create-if-absent + size/SHA-256 全量校验，KMS envelope 仅保留为未启用 profile | 当前对象服务无 KMS；ETag、provider metadata 和 presigned URL 仍不能承担跨 workspace/kind authority 或幂等语义 |
+| D26 | SG PostgreSQL 固定为 Pulumi 管理的三实例 CNPG Cluster；owner 密码/DSN 自动生成，应用按 CNPG Pod label 放行 5432 | 消除外部 DSN、静态数据库 IP 与手工 Secret 漂移；Cluster 生命周期和数据备份仍按数据库资源管理 |
 
 ## 15. 设计审查结论与实现门槛
 

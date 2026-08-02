@@ -20,6 +20,7 @@ const config = {
   clientId: 'agentserver-web',
   scopes: ['openid', 'runs:write'],
   audience: 'agentserver-api',
+  apiOrigin: 'https://browser-gateway.byted.bps.dev',
 }
 
 test('PKCE transaction binds browser state without storing an access token', async () => {
@@ -38,6 +39,7 @@ test('PKCE transaction binds browser state without storing an access token', asy
   assert.equal(authorizationURL.searchParams.get('code_challenge').length, 43)
   assert.equal(authorizationURL.searchParams.get('state'), generated.transaction.state)
   assert.equal('accessToken' in generated.transaction, false)
+  assert.equal(generated.transaction.apiOrigin, config.apiOrigin)
 
   const values = new Map()
   const storage = {
@@ -63,6 +65,7 @@ test('callback and token validation fail closed on replay, mismatch, and persist
   assert.throws(() => readAuthorizationCallback('?code=x&state=s&future=y'), /unknown/)
   assert.throws(() => readAuthorizationCallback('?code=x&error=denied&state=s'), /exactly one/)
   assert.throws(() => validateAuthorizationConfig({ ...config, future: true }), /unknown/)
+  assert.throws(() => validateAuthorizationConfig({ ...config, apiOrigin: 'http://browser-gateway.byted.bps.dev' }), /HTTPS/)
 
   const generated = await createAuthorizationTransaction({
     config,

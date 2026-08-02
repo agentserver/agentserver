@@ -39,6 +39,16 @@ type Config struct {
 	KMSKeyID       string
 }
 
+// S3Config is the routing-only subset used by the explicit plaintext profile.
+// Credentials are supplied separately so they cannot be formatted with this
+// document or confused with endpoint authority.
+type S3Config struct {
+	Bucket       string
+	Region       string
+	Endpoint     string
+	UsePathStyle bool
+}
+
 type Providers struct {
 	Blobs *S3BlobStore
 	Keys  *KMSDataKeyProvider
@@ -84,6 +94,36 @@ func Load(ctx context.Context, config Config) (Providers, error) {
 	return Providers{Blobs: blobs, Keys: keys}, nil
 }
 
+// LoadS3 constructs only the immutable S3-compatible blob boundary. It is used
+// by the plaintext production profile and therefore has no KMS dependency.
+func LoadS3(ctx context.Context, config S3Config, credentialProvider aws.CredentialsProvider) (*S3BlobStore, error) {
+	if ctx == nil {
+		return nil, errors.New("S3 object provider context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := validateS3Config(config); err != nil {
+		return nil, err
+	}
+	if credentialProvider == nil {
+		return nil, errors.New("S3 credential provider is required")
+	}
+	sdkConfig, err := awsconfig.LoadDefaultConfig(
+		ctx,
+		awsconfig.WithRegion(config.Region),
+		awsconfig.WithCredentialsProvider(credentialProvider),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("load S3 SDK configuration: %w", err)
+	}
+	sdkConfig = sanitizeSDKConfig(sdkConfig)
+	s3Config := sdkConfig.Copy()
+	s3Config.Region = config.Region
+	client := s3.NewFromConfig(s3Config, s3OnlyClientOptions(config))
+	return NewS3BlobStore(client, config.Bucket)
+}
+
 func sanitizeSDKConfig(config aws.Config) aws.Config {
 	config.BaseEndpoint = nil
 	config.ConfigSources = nil
@@ -117,6 +157,30 @@ func validateConfig(config Config) error {
 		return err
 	}
 	return nil
+}
+
+func validateS3Config(config S3Config) error {
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{name: "S3 bucket", value: config.Bucket},
+		{name: "S3 region", value: config.Region},
+	} {
+		if !validProviderText(field.value, maximumProviderIdentifierBytes) {
+			return fmt.Errorf("%s is required and must be bounded printable text", field.name)
+		}
+	}
+	if !providerRegionPattern.MatchString(config.Region) {
+		return errors.New("S3 region must be a canonical signing-region name")
+	}
+	return validateEndpoint("S3 endpoint", config.Endpoint)
+}
+
+// ValidateS3Config verifies plaintext S3 routing without resolving credentials
+// or touching the provider.
+func ValidateS3Config(config S3Config) error {
+	return validateS3Config(config)
 }
 
 // ValidateConfig verifies the complete non-secret provider routing without
@@ -155,10 +219,17 @@ func validProviderText(value string, maximum int) bool {
 }
 
 func s3ClientOptions(config Config) func(*s3.Options) {
+	return s3OnlyClientOptions(S3Config{
+		Bucket: config.S3Bucket, Region: config.S3Region, Endpoint: config.S3Endpoint,
+		UsePathStyle: config.S3UsePathStyle,
+	})
+}
+
+func s3OnlyClientOptions(config S3Config) func(*s3.Options) {
 	return func(options *s3.Options) {
-		options.Region = config.S3Region
-		options.BaseEndpoint = optionalString(config.S3Endpoint)
-		options.UsePathStyle = config.S3UsePathStyle
+		options.Region = config.Region
+		options.BaseEndpoint = optionalString(config.Endpoint)
+		options.UsePathStyle = config.UsePathStyle
 		options.Retryer = aws.NopRetryer{}
 		options.RetryMaxAttempts = 1
 		options.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired

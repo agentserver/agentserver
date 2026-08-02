@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 
 const (
 	gatewayListenAddressEnvironment           = "AGENTSERVER_V2_EXECUTOR_GATEWAY_LISTEN_ADDR"
+	gatewayPublicListenAddressEnvironment     = "AGENTSERVER_V2_EXECUTOR_GATEWAY_PUBLIC_LISTEN_ADDR"
 	gatewayTLSCertificateEnvironment          = "AGENTSERVER_V2_EXECUTOR_GATEWAY_TLS_CERT_FILE"
 	gatewayTLSKeyEnvironment                  = "AGENTSERVER_V2_EXECUTOR_GATEWAY_TLS_KEY_FILE"
 	gatewayCoreURLEnvironment                 = "AGENTSERVER_V2_CORE_URL"
@@ -79,7 +81,20 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 			return err
 		}
 	} else if _, _, err := net.SplitHostPort(listenAddress); err != nil {
-		return fmt.Errorf("parse production executor-gateway listen address: %w", err)
+		return fmt.Errorf("parse production executor-gateway internal listen address: %w", err)
+	}
+	var publicListenAddress string
+	if mode == gatewayServeProduction {
+		publicListenAddress, err = requiredGatewayConfiguration(getenv, gatewayPublicListenAddressEnvironment)
+		if err != nil {
+			return err
+		}
+		if _, _, err := net.SplitHostPort(publicListenAddress); err != nil {
+			return fmt.Errorf("parse production executor-gateway public listen address: %w", err)
+		}
+		if publicListenAddress == listenAddress {
+			return errors.New("production executor-gateway public and internal listen addresses must be distinct")
+		}
 	}
 	certificateFile, err := requiredGatewayConfiguration(getenv, gatewayTLSCertificateEnvironment)
 	if err != nil {
@@ -284,7 +299,6 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 		return err
 	}
 	readiness := &gatewayReadiness{}
-	handler := gatewayRoutes(mcpHandler, agentxHandler, identityHandler, readiness)
 	var tlsConfig *tls.Config
 	if mode == gatewayServeProduction {
 		tlsConfig, err = productionGatewayTLSConfig(certificateFile, keyFile, gatewaySPIFFEIdentity)
@@ -306,38 +320,59 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 		}
 		startupRecovery = &recovered
 	}
-	listener, err := net.Listen("tcp", listenAddress)
+	internalListener, err := net.Listen("tcp", listenAddress)
 	if err != nil {
-		return fmt.Errorf("listen on executor-gateway address: %w", err)
+		return fmt.Errorf("listen on executor-gateway internal address: %w", err)
 	}
-	defer listener.Close()
-
-	server := &http.Server{
-		Handler:           handler,
+	defer internalListener.Close()
+	internalHandler := gatewayRoutes(mcpHandler, agentxHandler, identityHandler, readiness)
+	if mode == gatewayServeProduction {
+		internalHandler = gatewayInternalRoutes(mcpHandler, readiness)
+	}
+	internalServer := &http.Server{
+		Handler:           internalHandler,
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    32 * 1024,
 		TLSConfig:         tlsConfig,
 	}
-	serveContext, cancelServe := context.WithCancel(context.Background())
-	defer cancelServe()
-	go func() {
-		select {
-		case <-ctx.Done():
+	type serveEndpoint struct {
+		server   *http.Server
+		listener net.Listener
+		useTLS   bool
+	}
+	endpoints := []serveEndpoint{{server: internalServer, listener: internalListener, useTLS: true}}
+	var publicListener net.Listener
+	if mode == gatewayServeProduction {
+		publicListener, err = net.Listen("tcp", publicListenAddress)
+		if err != nil {
+			return fmt.Errorf("listen on executor-gateway public address: %w", err)
+		}
+		defer publicListener.Close()
+		endpoints = append(endpoints, serveEndpoint{
+			server: &http.Server{
+				Handler:           gatewayPublicRoutes(agentxHandler, identityHandler, readiness),
+				ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32 * 1024,
+			},
+			listener: publicListener,
+		})
+	}
+	var shutdownOnce sync.Once
+	shutdown := func() {
+		shutdownOnce.Do(func() {
 			readiness.ready.Store(false)
 			shutdownContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			shutdowns := []func(context.Context) error{
-				server.Shutdown,
-				agentxHandler.Shutdown,
-				mcpHandler.Shutdown,
+			shutdowns := []func(context.Context) error{agentxHandler.Shutdown, mcpHandler.Shutdown}
+			for _, endpoint := range endpoints {
+				shutdowns = append(shutdowns, endpoint.server.Shutdown)
 			}
 			completed := make(chan struct{}, len(shutdowns))
-			for _, shutdown := range shutdowns {
-				go func() {
-					_ = shutdown(shutdownContext)
+			for _, stop := range shutdowns {
+				go func(stop func(context.Context) error) {
+					_ = stop(shutdownContext)
 					completed <- struct{}{}
-				}()
+				}(stop)
 			}
 			for range shutdowns {
 				select {
@@ -346,7 +381,14 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 					return
 				}
 			}
-		case <-serveContext.Done():
+		})
+	}
+	watchDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			shutdown()
+		case <-watchDone:
 		}
 	}()
 	authorityDescription := "production OAuth + Ed25519 machine proof"
@@ -363,18 +405,49 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 		)
 	}
 	readiness.ready.Store(true)
-	fmt.Fprintf(stdout, "executor-gateway serve: %s; %s; single-replica process-local resume/challenges; listening on %s; MCP endpoint %s; gateway instance %s\n",
-		authorityDescription, recoveryDescription, listener.Addr(), executorgateway.ExecutorMCPPath, gatewayInstanceID)
-	err = server.Serve(tls.NewListener(listener, tlsConfig))
-	readiness.ready.Store(false)
-	if errors.Is(err, http.ErrServerClosed) && ctx.Err() != nil {
+	if mode == gatewayServeProduction {
+		fmt.Fprintf(stdout, "executor-gateway serve: %s; %s; single-replica process-local resume/challenges; public agentx HTTP on %s; internal MCP TLS on %s%s; gateway instance %s\n",
+			authorityDescription, recoveryDescription, publicListener.Addr(), internalListener.Addr(), executorgateway.ExecutorMCPPath, gatewayInstanceID)
+	} else {
+		fmt.Fprintf(stdout, "executor-gateway serve: %s; %s; single-replica process-local resume/challenges; development TLS on %s; MCP endpoint %s; gateway instance %s\n",
+			authorityDescription, recoveryDescription, internalListener.Addr(), executorgateway.ExecutorMCPPath, gatewayInstanceID)
+	}
+	serveErrors := make(chan error, len(endpoints))
+	for _, endpoint := range endpoints {
+		go func(endpoint serveEndpoint) {
+			listener := endpoint.listener
+			if endpoint.useTLS {
+				listener = tls.NewListener(listener, tlsConfig)
+			}
+			serveErrors <- endpoint.server.Serve(listener)
+		}(endpoint)
+	}
+	firstError := <-serveErrors
+	shutdown()
+	for remaining := 1; remaining < len(endpoints); remaining++ {
+		<-serveErrors
+	}
+	close(watchDone)
+	if errors.Is(firstError, http.ErrServerClosed) && ctx.Err() != nil {
 		return nil
 	}
-	return err
+	return firstError
 }
 
 type gatewayReadiness struct {
 	ready atomic.Bool
+}
+
+func gatewayInternalRoutes(mcp http.Handler, readiness *gatewayReadiness) http.Handler {
+	return gatewayRoutes(mcp, nil, nil, readiness)
+}
+
+func gatewayPublicRoutes(
+	agentx http.Handler,
+	identity *executorgateway.ExecutorIdentityHandler,
+	readiness *gatewayReadiness,
+) http.Handler {
+	return gatewayRoutes(nil, agentx, identity, readiness)
 }
 
 func gatewayRoutes(

@@ -183,15 +183,46 @@ func TestServeExecutorGatewayProductionMachineIdentityEndToEnd(t *testing.T) {
 	var startupLine string
 	select {
 	case startupLine = <-startup:
+	case err := <-serveDone:
+		t.Fatalf("executor-gateway exited before publishing its production listeners: %v", err)
 	case <-time.After(executorGatewayServeTestTimeout):
 		t.Fatal("executor-gateway did not publish its production listener")
 	}
 	address := executorGatewayAddressFromStartup(t, startupLine)
-	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
-		MinVersion: tls.VersionTLS13, RootCAs: pki.pool(t), ServerName: "localhost",
-	}}}
+	internalAddress := executorGatewayInternalAddressFromStartup(t, startupLine)
+	client := &http.Client{}
 	defer client.CloseIdleConnections()
-	baseURL := "https://" + address
+	baseURL := "http://" + address
+	publicMCPResponse, err := client.Get(baseURL + executorgateway.ExecutorMCPPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = publicMCPResponse.Body.Close()
+	if publicMCPResponse.StatusCode != http.StatusNotFound {
+		t.Fatalf("public /mcp status = %d", publicMCPResponse.StatusCode)
+	}
+	internalClient := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
+		MinVersion: tls.VersionTLS13,
+		RootCAs:    pki.pool(t),
+		ServerName: "localhost",
+	}}}
+	defer internalClient.CloseIdleConnections()
+	internalMCPResponse, err := internalClient.Post("https://"+internalAddress+executorgateway.ExecutorMCPPath, "application/json", bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = internalMCPResponse.Body.Close()
+	if internalMCPResponse.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("internal /mcp status = %d", internalMCPResponse.StatusCode)
+	}
+	internalAgentxResponse, err := internalClient.Get("https://" + internalAddress + executorgateway.AgentxConnectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = internalAgentxResponse.Body.Close()
+	if internalAgentxResponse.StatusCode != http.StatusNotFound {
+		t.Fatalf("internal agentx status = %d", internalAgentxResponse.StatusCode)
+	}
 
 	enrollmentCommand := corecontract.CompleteExecutorEnrollmentRequest{
 		MachinePublicKeyEd25519: base64.RawURLEncoding.EncodeToString(machinePublicKey),
@@ -244,7 +275,7 @@ func TestServeExecutorGatewayProductionMachineIdentityEndToEnd(t *testing.T) {
 	unavailable.Store(true)
 	assertExecutorGatewayUpgradeFailure(t, client, baseURL, retryHeaders, http.StatusServiceUnavailable)
 	unavailable.Store(false)
-	connection, response, err := websocket.Dial(t.Context(), "wss://"+address+executorgateway.AgentxConnectPath, &websocket.DialOptions{
+	connection, response, err := websocket.Dial(t.Context(), "ws://"+address+executorgateway.AgentxConnectPath, &websocket.DialOptions{
 		HTTPClient: client, HTTPHeader: retryHeaders, CompressionMode: websocket.CompressionDisabled,
 	})
 	if err != nil || response == nil || response.StatusCode != http.StatusSwitchingProtocols || response.Header.Get("Cache-Control") != "no-store" {
@@ -309,7 +340,7 @@ func executorGatewayProofHeaders(challenge executorgateway.ExecutorChallengeResp
 
 func assertExecutorGatewayUpgradeFailure(t *testing.T, client *http.Client, baseURL string, header http.Header, wantStatus int) {
 	t.Helper()
-	connection, response, err := websocket.Dial(t.Context(), "wss://"+strings.TrimPrefix(baseURL, "https://")+executorgateway.AgentxConnectPath, &websocket.DialOptions{
+	connection, response, err := websocket.Dial(t.Context(), "ws://"+strings.TrimPrefix(baseURL, "http://")+executorgateway.AgentxConnectPath, &websocket.DialOptions{
 		HTTPClient: client, HTTPHeader: header, CompressionMode: websocket.CompressionDisabled,
 	})
 	if err == nil || connection != nil || response == nil || response.StatusCode != wantStatus ||
@@ -477,6 +508,7 @@ func materializeExecutorGatewayProductionConfiguration(
 	keyPath := write("executor-gateway.key", identity.privateKeyPEM, 0o600)
 	return map[string]string{
 		gatewayListenAddressEnvironment:          "127.0.0.1:0",
+		gatewayPublicListenAddressEnvironment:    "localhost:0",
 		gatewayTLSCertificateEnvironment:         certificatePath,
 		gatewayTLSKeyEnvironment:                 keyPath,
 		gatewayCoreURLEnvironment:                coreURL,
@@ -496,19 +528,38 @@ func materializeExecutorGatewayProductionConfiguration(
 
 func executorGatewayAddressFromStartup(t *testing.T, line string) string {
 	t.Helper()
-	const prefix = "listening on "
+	const prefix = "public agentx HTTP on "
 	start := strings.Index(line, prefix)
 	if start < 0 {
 		t.Fatalf("executor-gateway startup line = %q", line)
 	}
 	rest := line[start+len(prefix):]
-	end := strings.Index(rest, "; MCP endpoint ")
+	end := strings.Index(rest, "; internal MCP TLS on ")
 	if end < 0 {
 		t.Fatalf("executor-gateway startup line = %q", line)
 	}
 	address := rest[:end]
 	if _, _, err := net.SplitHostPort(address); err != nil {
 		t.Fatalf("executor-gateway startup address %q: %v", address, err)
+	}
+	return address
+}
+
+func executorGatewayInternalAddressFromStartup(t *testing.T, line string) string {
+	t.Helper()
+	const prefix = "; internal MCP TLS on "
+	start := strings.Index(line, prefix)
+	if start < 0 {
+		t.Fatalf("executor-gateway startup line = %q", line)
+	}
+	rest := line[start+len(prefix):]
+	end := strings.Index(rest, executorgateway.ExecutorMCPPath+";")
+	if end < 0 {
+		t.Fatalf("executor-gateway startup line = %q", line)
+	}
+	address := rest[:end]
+	if _, _, err := net.SplitHostPort(address); err != nil {
+		t.Fatalf("executor-gateway internal startup address %q: %v", address, err)
 	}
 	return address
 }

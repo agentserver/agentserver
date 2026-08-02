@@ -41,6 +41,13 @@ type RunLaunchExecutorPolicyState struct {
 	AllowedTools  []string `json:"allowedTools"`
 }
 
+type RunLaunchLLMGatewayState struct {
+	GatewayID     string `json:"gatewayId"`
+	ConfigVersion int64  `json:"configVersion"`
+	GrantUserID   string `json:"grantUserId"`
+	Model         string `json:"model"`
+}
+
 type ResolveRunLaunchStateResponse struct {
 	WorkspaceID          string                       `json:"workspaceId"`
 	SessionID            string                       `json:"sessionId"`
@@ -53,4 +60,5 @@ type ResolveRunLaunchStateResponse struct {
 	Prompt               RunLaunchObjectPointer       `json:"prompt"`
 	PreviousCheckpoint   *RunLaunchCheckpointState    `json:"previousCheckpoint,omitempty"`
 	ExecutorPolicy       RunLaunchExecutorPolicyState `json:"executorPolicy"`
+	LLMGateway           *RunLaunchLLMGatewayState    `json:"llmGateway,omitempty"`
 }

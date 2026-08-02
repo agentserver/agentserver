@@ -29,6 +29,11 @@ func TestRunCapabilityHandlerKeepsWorkloadRoutesAndAudiencesSeparate(t *testing.
 			RunAttemptID: testCapabilityAttempt, RunAttemptGeneration: 3,
 			RunVersion: 5, RunAttemptVersion: 6, AuthorizedAt: time.Date(2026, 8, 2, 7, 0, 0, 0, time.UTC),
 		},
+		llmproxyResponse: corecontract.AuthorizeLLMProxyRunCapabilityResponse{
+			CapabilityID: testCapabilityCatalog, Audience: "llmproxy", RunID: testCapabilityRun,
+			RunAttemptID: testCapabilityAttempt, RunAttemptGeneration: 3,
+			RunVersion: 5, RunAttemptVersion: 6, AuthorizedAt: time.Date(2026, 8, 2, 7, 0, 0, 0, time.UTC),
+		},
 	}
 	handler, err := NewRunCapabilityHandler(pool, executor, llmproxy, authority)
 	if err != nil {
@@ -55,7 +60,11 @@ func TestRunCapabilityHandlerKeepsWorkloadRoutesAndAudiencesSeparate(t *testing.
 		t.Fatalf("executor response/calls = %d / %+v / %q / %+v", response.Code, authority.executorCalls, authority.executorTokens, executor.actions)
 	}
 
-	modelBody, _ := json.Marshal(corecontract.AuthorizeLLMProxyRunCapabilityRequest{Model: issueRequest.Model, Provider: issueRequest.Provider})
+	modelBody, _ := json.Marshal(corecontract.AuthorizeLLMProxyRunCapabilityRequest{
+		Model: issueRequest.Model, Provider: issueRequest.Provider,
+		LLMGatewayID: issueRequest.LLMGatewayID, LLMGatewayVersion: issueRequest.LLMGatewayVersion,
+		LLMGatewayGrantUserID: issueRequest.LLMGatewayGrantUserID,
+	})
 	response = serveRunCapabilityRequest(
 		t, handler, corecontract.AuthorizeLLMProxyRunCapabilityPath,
 		"llmproxy", "Bearer model-token", modelBody,
@@ -242,6 +251,7 @@ type recordingRunCapabilityAuthority struct {
 	issueResponse     corecontract.IssueRunCapabilitiesResponse
 	issueErr          error
 	authorizeResponse corecontract.AuthorizeRunCapabilityResponse
+	llmproxyResponse  corecontract.AuthorizeLLMProxyRunCapabilityResponse
 	executorErr       error
 	llmproxyErr       error
 	issueCalls        []corecontract.IssueRunCapabilitiesRequest
@@ -273,8 +283,8 @@ func (authority *recordingRunCapabilityAuthority) AuthorizeLLMProxyRunCapability
 	_ context.Context,
 	token string,
 	request corecontract.AuthorizeLLMProxyRunCapabilityRequest,
-) (corecontract.AuthorizeRunCapabilityResponse, error) {
+) (corecontract.AuthorizeLLMProxyRunCapabilityResponse, error) {
 	authority.llmproxyTokens = append(authority.llmproxyTokens, token)
 	authority.llmproxyCalls = append(authority.llmproxyCalls, request)
-	return authority.authorizeResponse, authority.llmproxyErr
+	return authority.llmproxyResponse, authority.llmproxyErr
 }

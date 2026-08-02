@@ -1,11 +1,12 @@
 {
   "version": 1,
+  "region": "sg",
   "namespace": "agentserver",
   "clusterDomain": "cluster.local",
   "platform": "linux-amd64",
   "images": {
-    "service": "registry.example.com/agentserver/service@sha256:1111111111111111111111111111111111111111111111111111111111111111",
-    "harness": "registry.example.com/agentserver/harness@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "service": "registry-sg.byted.cs.ac.cn/agentserver/v2-service@sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "harness": "registry-sg.byted.cs.ac.cn/agentserver/v2-harness@sha256:2222222222222222222222222222222222222222222222222222222222222222",
     "pullSecret": "agentserver-registry-pull"
   },
   "replicas": {
@@ -16,17 +17,24 @@
   },
   "services": {
     "core": {"clusterIp": "10.96.10.10", "port": 8443},
-    "browserGateway": {
-      "clusterIp": "10.96.10.11",
-      "port": 8443,
-      "publicHostname": "agent.example.com"
-    },
+    "browserGateway": {"clusterIp": "10.96.10.11", "port": 8080},
     "executorGateway": {
       "clusterIp": "10.96.10.12",
-      "port": 8443,
-      "publicHostname": "executor.example.com"
+      "publicPort": 8080,
+      "internalPort": 8443
     },
     "llmproxy": {"clusterIp": "10.96.10.13", "port": 8443}
+  },
+  "ingress": {
+    "gatewayNamespace": "istio-ingress",
+    "gatewayName": "istio-gateway",
+    "gatewaySection": "https-byted-bps",
+    "gatewayPodSelector": {
+      "gateway.networking.k8s.io/gateway-name": "istio-gateway"
+    },
+    "frontendHostname": "agent.byted.bps.dev",
+    "browserGatewayHostname": "browser-gateway.byted.bps.dev",
+    "executorGatewayHostname": "executor-gateway.byted.bps.dev"
   },
   "bootstrap": {
     "workspaceId": "40000000-0000-4000-8000-000000000004",
@@ -35,29 +43,26 @@
     "externalOidcSubject": "replace-with-exact-idp-subject",
     "executorId": "20000000-0000-4000-8000-000000000002"
   },
-  "spiffeTrustDomain": "agentserver.example.com",
+  "spiffeTrustDomain": "agentserver.byted.bps.dev",
   "oauth": {
     "hydra": {
-      "issuer": "https://auth.example.com",
+      "issuer": "https://agent.byted.bps.dev",
       "adminUrl": "https://hydra-admin.example.com",
-      "publicOrigin": "https://auth.example.com",
+      "publicOrigin": "https://agent.byted.bps.dev",
+      "publicUpstream": "https://hydra-public.example.com",
       "introspectionUrl": "https://hydra-admin.example.com/admin/oauth2/introspect",
       "browserClientId": "agentserver-browser"
     },
     "externalOidc": {
       "issuer": "https://idp.example.com/oidc",
       "clientId": "agentserver-production",
-      "redirectUrl": "https://agent.example.com/auth/oidc/callback"
+      "redirectUrl": "https://agent.byted.bps.dev/auth/oidc/callback"
     }
   },
   "runtime": {
-    "capabilityIssuer": "spiffe://agentserver.example.com/ns/agentserver/sa/agentserver-core",
-    "capabilitySigningKeyId": "run-capability-2026-08",
-    "manifestSigningKeyId": "run-manifest-2026-08",
-    "model": "gpt-5",
-    "provider": "openai",
-    "upstreamResponsesUrl": "https://api.openai.com/v1/responses",
-    "upstreamAuthHeader": "Authorization",
+    "capabilityIssuer": "spiffe://agentserver.byted.bps.dev/ns/agentserver/sa/agentserver-core",
+    "capabilitySigningKeyId": "run-capability-sg-v1",
+    "manifestSigningKeyId": "run-manifest-sg-v1",
     "runPolicyVersion": "run-policy-v1",
     "allowedTools": ["list_environments", "read_file", "shell"],
     "executionPolicyVersion": "execution-policy-v1",
@@ -74,14 +79,12 @@
     "finalExecSizeBytes": 1048576
   },
   "objectStore": {
+    "mode": "s3-plaintext-v1",
     "prefix": "agentserver/v2/production",
     "s3Bucket": "agentserver-production",
-    "s3Region": "ap-southeast-1",
-    "s3UsePathStyle": false,
-    "kmsRegion": "ap-southeast-1",
-    "kmsKeyId": "arn:aws:kms:ap-southeast-1:123456789012:key/11111111-1111-4111-8111-111111111111",
-    "coreRoleArn": "arn:aws:iam::123456789012:role/agentserver-core",
-    "harnessPoolRoleArn": "arn:aws:iam::123456789012:role/agentserver-harness-pool"
+    "s3Region": "sg-central",
+    "s3Endpoint": "https://tos-s3-sg.byted.org",
+    "s3UsePathStyle": true
   },
   "secrets": {
     "core": "agentserver-core-secrets",
@@ -89,7 +92,8 @@
     "executorGateway": "agentserver-executor-secrets",
     "harnessPool": "agentserver-pool-secrets",
     "harnessWorker": "agentserver-worker-secrets",
-    "llmproxy": "agentserver-llmproxy-secrets"
+    "llmproxy": "agentserver-llmproxy-secrets",
+    "objectStore": "agentserver-object-store-secrets"
   },
   "network": {
     "dnsClusterIp": "10.96.0.10",
@@ -97,13 +101,9 @@
     "dnsPodSelector": {
       "k8s-app": "kube-dns"
     },
-    "databaseEgress": [{"cidr": "10.20.0.10/32", "ports": [5432]}],
     "coreExternalEgress": [{"cidr": "192.0.2.0/24", "ports": [443]}],
     "browserExternalEgress": [{"cidr": "198.51.100.0/24", "ports": [443]}],
-    "harnessExternalEgress": [{"cidr": "192.0.2.0/24", "ports": [443]}],
-    "llmproxyExternalEgress": [{"cidr": "203.0.113.0/24", "ports": [443]}],
-    "browserIngressCidrs": ["0.0.0.0/0"],
-    "executorIngressCidrs": ["203.0.113.0/24"]
+    "harnessExternalEgress": [{"cidr": "192.0.2.0/24", "ports": [443]}]
   },
   "resources": {
     "core": {

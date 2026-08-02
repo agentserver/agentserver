@@ -139,7 +139,7 @@ func serveHarnessPool(
 	if err != nil {
 		return err
 	}
-	profile := runLaunchProfile(config, callbackEndpoint)
+	profile := runLaunchProfile(config, callbackEndpoint, mode == harnessPoolServeProduction)
 	resolver, err := harnesspool.NewConfiguredRunLaunchInputResolver(coreClient, profile)
 	if err != nil {
 		return err
@@ -270,7 +270,7 @@ func configureHarnessPoolObjectStore(
 		if err != nil {
 			return nil, "", err
 		}
-		return objects, "encrypted S3/KMS object store", nil
+		return objects, "explicit plaintext S3 object store", nil
 	case harnessPoolServeInsecureDevelopment:
 		objects, err := harnesspool.NewLocalDevelopmentObjectStore(developmentRoot)
 		if err != nil {
@@ -282,7 +282,7 @@ func configureHarnessPoolObjectStore(
 	}
 }
 
-func runLaunchProfile(config harnessPoolConfig, callbackEndpoint string) harnesspool.RunLaunchProfile {
+func runLaunchProfile(config harnessPoolConfig, callbackEndpoint string, modelFromRun bool) harnesspool.RunLaunchProfile {
 	maxExecution := min(config.maxRunDuration, 10*time.Minute)
 	return harnesspool.RunLaunchProfile{
 		CodexRuntimeManifestDigest: config.runtimeDigest,
@@ -290,6 +290,7 @@ func runLaunchProfile(config harnessPoolConfig, callbackEndpoint string) harness
 			Model: config.model, Provider: config.modelProvider, Endpoint: config.modelEndpoint,
 			TLSIdentity: config.modelTLSIdentity, Audience: developmentModelAudience,
 		},
+		ModelFromRun:           modelFromRun,
 		ExecutorMCPEndpoint:    config.executorMCPEndpoint,
 		ExecutorMCPTLSIdentity: config.executorMCPIdentity,
 		ExecutorMCPAudience:    developmentExecutorMCPAudience,

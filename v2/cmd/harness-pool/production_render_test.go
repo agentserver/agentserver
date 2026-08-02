@@ -32,12 +32,23 @@ func TestProductionRendererHarnessPoolEnvironmentPassesCommandLoader(t *testing.
 	}
 	environment.Values[poolWorkerConfigEnvironment] = workerConfig
 	environment.Values[poolWorkerExecutableEnvironment] = workerExecutable
+	for name, value := range map[string]string{
+		"AGENTSERVER_V2_S3_ACCESS_KEY_ID":     "production-render-test-access-key",
+		"AGENTSERVER_V2_S3_SECRET_ACCESS_KEY": "production-render-test-secret-key",
+	} {
+		if reference := environment.Secrets[name]; reference.Name == "" || reference.Key == "" {
+			t.Fatalf("rendered object-store environment %s is not Secret-backed", name)
+		}
+		environment.Values[name] = value
+		delete(environment.Secrets, name)
+	}
 	loaded, err := loadHarnessPoolProductionConfig(environment.Get)
 	if err != nil {
 		t.Fatalf("harness-pool rejected rendered production environment: %v", err)
 	}
 	if loaded.executorID != environment.Get(poolExecutorIDEnvironment) || loaded.workerCredential == nil ||
-		loaded.workerCredential.UID != 65531 || loaded.appCredential.UID != 65532 {
+		loaded.workerCredential.UID != 65531 || loaded.appCredential.UID != 65532 ||
+		!strings.HasSuffix(loaded.modelEndpoint, "/v1") || strings.HasSuffix(loaded.modelEndpoint, "/v1/responses") {
 		t.Fatalf("harness-pool loaded different production authority: %+v", loaded)
 	}
 }
@@ -71,8 +82,6 @@ func assertHarnessPoolProductionEnvironmentNames(t *testing.T, got []string) {
 		poolAppGIDEnvironment,
 		poolExecutorMCPEndpointEnvironment,
 		poolExecutorMCPIdentityEnvironment,
-		poolModelEnvironment,
-		poolModelProviderEnvironment,
 		poolModelEndpointEnvironment,
 		poolModelTLSIdentityEnvironment,
 		poolMaxConcurrentEnvironment,
@@ -81,14 +90,10 @@ func assertHarnessPoolProductionEnvironmentNames(t *testing.T, got []string) {
 		"AGENTSERVER_V2_OBJECT_PREFIX",
 		"AGENTSERVER_V2_S3_BUCKET",
 		"AGENTSERVER_V2_S3_REGION",
+		"AGENTSERVER_V2_S3_ENDPOINT",
 		"AGENTSERVER_V2_S3_USE_PATH_STYLE",
-		"AGENTSERVER_V2_KMS_REGION",
-		"AGENTSERVER_V2_KMS_KEY_ID",
-		"AWS_ROLE_ARN",
-		"AWS_WEB_IDENTITY_TOKEN_FILE",
-		"AWS_REGION",
-		"AWS_DEFAULT_REGION",
-		"AWS_EC2_METADATA_DISABLED",
+		"AGENTSERVER_V2_S3_ACCESS_KEY_ID",
+		"AGENTSERVER_V2_S3_SECRET_ACCESS_KEY",
 	}
 	slices.Sort(want)
 	if !slices.Equal(got, want) {

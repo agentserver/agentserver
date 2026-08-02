@@ -5,15 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"mime"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/braincatalog"
+	"github.com/agentserver/agentserver/v2/internal/publichttps"
 )
 
 const (
@@ -26,19 +25,8 @@ type ModelRequestAuthenticator interface {
 	AuthenticateModelRequest(*http.Request, string) (Principal, error)
 }
 
-type UpstreamCredential struct {
-	HeaderName  string
-	HeaderValue string
-}
-
-type UpstreamCredentialSource interface {
-	Credential(context.Context, Principal) (UpstreamCredential, error)
-}
-
 type HandlerConfig struct {
 	Authenticator        ModelRequestAuthenticator
-	Credentials          UpstreamCredentialSource
-	UpstreamURL          string
 	HTTPClient           *http.Client
 	MaximumRequestBytes  int64
 	MaximumResponseBytes int64
@@ -51,8 +39,6 @@ type HandlerConfig struct {
 // upstream redirect.
 type Handler struct {
 	authenticator ModelRequestAuthenticator
-	credentials   UpstreamCredentialSource
-	upstream      *url.URL
 	client        *http.Client
 	maxRequest    int64
 	maxResponse   int64
@@ -60,17 +46,8 @@ type Handler struct {
 }
 
 func NewHandler(config HandlerConfig) (*Handler, error) {
-	if config.Authenticator == nil || config.Credentials == nil || config.HTTPClient == nil {
-		return nil, errors.New("llmproxy authenticator, credential source, and upstream HTTP client are required")
-	}
-	upstream, err := url.Parse(config.UpstreamURL)
-	if err != nil {
-		return nil, fmt.Errorf("parse llmproxy upstream URL: %w", err)
-	}
-	if upstream.Scheme != "https" || upstream.Host == "" || upstream.User != nil || upstream.RawQuery != "" ||
-		upstream.Fragment != "" || upstream.RawPath != "" || upstream.Opaque != "" || upstream.ForceQuery ||
-		upstream.Path != ResponsesPath {
-		return nil, errors.New("llmproxy upstream URL must be an exact HTTPS /v1/responses endpoint")
+	if config.Authenticator == nil || config.HTTPClient == nil {
+		return nil, errors.New("llmproxy authenticator and upstream HTTP client are required")
 	}
 	if config.MaximumRequestBytes == 0 {
 		config.MaximumRequestBytes = defaultMaximumRequestSize
@@ -88,8 +65,7 @@ func NewHandler(config HandlerConfig) (*Handler, error) {
 	clientCopy := *config.HTTPClient
 	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Handler{
-		authenticator: config.Authenticator, credentials: config.Credentials,
-		upstream: upstream, client: &clientCopy,
+		authenticator: config.Authenticator, client: &clientCopy,
 		maxRequest: config.MaximumRequestBytes, maxResponse: config.MaximumResponseBytes,
 		now: config.Now,
 	}, nil
@@ -97,7 +73,7 @@ func NewHandler(config HandlerConfig) (*Handler, error) {
 
 func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
 	setNoStore(response.Header())
-	if handler == nil || handler.authenticator == nil || handler.credentials == nil || handler.client == nil || handler.upstream == nil || handler.now == nil {
+	if handler == nil || handler.authenticator == nil || handler.client == nil || handler.now == nil {
 		writeProxyError(response, http.StatusServiceUnavailable, "service_unavailable")
 		return
 	}
@@ -139,20 +115,21 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 	}
 	operationContext, cancelOperation := context.WithDeadline(request.Context(), principal.RunDeadline)
 	defer cancelOperation()
-	credential, err := handler.credentials.Credential(operationContext, principal)
-	if err != nil || !validUpstreamCredential(credential) {
+	upstream, err := publichttps.ValidateURL(principal.ResponsesURL, ResponsesPath)
+	if err != nil || !validUpstreamAuthorization(principal.UpstreamAuthorization) ||
+		principal.BearerExpiresAt.IsZero() || !handler.now().UTC().Before(principal.BearerExpiresAt) {
 		writeProxyError(response, http.StatusServiceUnavailable, "credential_unavailable")
 		return
 	}
 	upstreamRequest, err := http.NewRequestWithContext(
-		operationContext, http.MethodPost, handler.upstream.String(), bytes.NewReader(body),
+		operationContext, http.MethodPost, upstream.String(), bytes.NewReader(body),
 	)
 	if err != nil {
 		writeProxyError(response, http.StatusBadGateway, "upstream_unavailable")
 		return
 	}
 	copyModelRequestHeaders(upstreamRequest.Header, request.Header)
-	upstreamRequest.Header.Set(credential.HeaderName, credential.HeaderValue)
+	upstreamRequest.Header.Set("Authorization", principal.UpstreamAuthorization)
 	upstreamResponse, err := handler.client.Do(upstreamRequest)
 	if err != nil {
 		writeProxyError(response, http.StatusBadGateway, "upstream_unavailable")
@@ -217,13 +194,9 @@ func validModelRequestMediaType(header http.Header) bool {
 		len(header.Values("Content-Encoding")) <= 1
 }
 
-func validUpstreamCredential(credential UpstreamCredential) bool {
-	if credential.HeaderName != "Authorization" && credential.HeaderName != "api-key" {
-		return false
-	}
-	return credential.HeaderValue != "" && len(credential.HeaderValue) <= 16*1024 &&
-		strings.TrimSpace(credential.HeaderValue) == credential.HeaderValue &&
-		!strings.ContainsAny(credential.HeaderValue, "\r\n\x00")
+func validUpstreamAuthorization(value string) bool {
+	return strings.HasPrefix(value, "Bearer ") && len(value) > len("Bearer ") && len(value) <= 16*1024 &&
+		strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\r\n\x00")
 }
 
 func copyModelRequestHeaders(destination, source http.Header) {

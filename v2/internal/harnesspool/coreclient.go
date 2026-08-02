@@ -427,8 +427,10 @@ func (client *CoreClient) IssueRunCapabilities(
 		ExpectedRunAttemptVersion: request.ExpectedRunAttemptVersion,
 		ExecutorID:                request.ExecutorID, BrainToolCatalogID: request.BrainToolCatalogID,
 		ToolCatalogDigest: request.ToolCatalogDigest, Model: request.Model, Provider: request.Provider,
-		MaxRunDurationMillis: request.MaxRunDuration.Milliseconds(),
-		MaxApprovalTTLMillis: request.MaxApprovalTTL.Milliseconds(),
+		LLMGatewayID: request.LLMGatewayID, LLMGatewayVersion: request.LLMGatewayVersion,
+		LLMGatewayGrantUserID: request.LLMGatewayGrantUserID,
+		MaxRunDurationMillis:  request.MaxRunDuration.Milliseconds(),
+		MaxApprovalTTLMillis:  request.MaxApprovalTTL.Milliseconds(),
 	}
 	var response corecontract.IssueRunCapabilitiesResponse
 	if err := client.postNoStore(ctx, corecontract.IssueRunCapabilitiesPath, contractRequest, &response); err != nil {
@@ -506,6 +508,22 @@ func (client *CoreClient) ResolveRunLaunchState(ctx context.Context, scheduled S
 	}
 
 	state := RunLaunchState{Prompt: prompt, ExecutorPolicy: policy}
+	if response.LLMGateway != nil {
+		gateway := response.LLMGateway
+		if err := validateUUIDIdentity("LLM gateway ID", gateway.GatewayID); err != nil {
+			return RunLaunchState{}, fmt.Errorf("validate core launch-state response: %w", err)
+		}
+		if err := validateUUIDIdentity("LLM gateway grant user ID", gateway.GrantUserID); err != nil {
+			return RunLaunchState{}, fmt.Errorf("validate core launch-state response: %w", err)
+		}
+		if gateway.ConfigVersion < 1 || gateway.ConfigVersion > 1<<53-1 || !validClientProtocolText(gateway.Model, 256) {
+			return RunLaunchState{}, errors.New("validate core launch-state response: LLM gateway version or model is invalid")
+		}
+		state.LLMGateway = &RunLLMGatewayBinding{
+			GatewayID: gateway.GatewayID, ConfigVersion: gateway.ConfigVersion,
+			GrantUserID: gateway.GrantUserID, Model: gateway.Model,
+		}
+	}
 	if response.PreviousCheckpoint == nil {
 		return state, nil
 	}

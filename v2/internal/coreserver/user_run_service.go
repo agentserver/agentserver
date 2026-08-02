@@ -46,12 +46,17 @@ type UserRunPolicyResolver interface {
 	ResolveUserRunPolicy(context.Context, coredb.AuthorizedSession) (coredb.RunExecutorPolicy, error)
 }
 
+type UserRunLLMGatewayResolver interface {
+	ResolveUserRunLLMGatewayBinding(context.Context, coredb.ResolveUserRunLLMGatewayBindingCommand) (coredb.RunLLMGatewayBinding, error)
+}
+
 type UserRunIDGenerator func() (string, error)
 
 type UserRunServiceConfig struct {
 	Store        UserRunStateStore
 	Prompts      UserPromptStore
 	Policies     UserRunPolicyResolver
+	LLMGateways  UserRunLLMGatewayResolver
 	CursorCodec  *runcursor.Codec
 	NewID        UserRunIDGenerator
 	PollInterval time.Duration
@@ -61,6 +66,7 @@ type UserRunService struct {
 	store        UserRunStateStore
 	prompts      UserPromptStore
 	policies     UserRunPolicyResolver
+	llmGateways  UserRunLLMGatewayResolver
 	cursors      *runcursor.Codec
 	newID        UserRunIDGenerator
 	pollInterval time.Duration
@@ -110,7 +116,7 @@ func NewUserRunService(config UserRunServiceConfig) (*UserRunService, error) {
 		return nil, errors.New("user run poll interval must be between 10ms and one second")
 	}
 	return &UserRunService{
-		store: config.Store, prompts: config.Prompts, policies: config.Policies,
+		store: config.Store, prompts: config.Prompts, policies: config.Policies, llmGateways: config.LLMGateways,
 		cursors: config.CursorCodec, newID: config.NewID, pollInterval: config.PollInterval,
 	}, nil
 }
@@ -138,6 +144,16 @@ func (service *UserRunService) CreateUserRun(ctx context.Context, command Create
 	if err != nil {
 		return corecontract.CreateUserRunResponse{}, fmt.Errorf("resolve user run executor policy: %w", err)
 	}
+	var llmGateway coredb.RunLLMGatewayBinding
+	if service.llmGateways != nil {
+		llmGateway, err = service.llmGateways.ResolveUserRunLLMGatewayBinding(ctx, coredb.ResolveUserRunLLMGatewayBindingCommand{
+			WorkspaceID: command.WorkspaceID, SessionID: command.SessionID,
+			ActorID: command.ActorID, IdempotencyKey: command.IdempotencyKey,
+		})
+		if err != nil {
+			return corecontract.CreateUserRunResponse{}, err
+		}
+	}
 	identities := make([]string, 4)
 	seen := make(map[string]struct{}, len(identities))
 	for index := range identities {
@@ -154,7 +170,7 @@ func (service *UserRunService) CreateUserRun(ctx context.Context, command Create
 	created, err := service.store.CreateAuthorizedRun(ctx, coredb.CreateRunCommand{
 		RunID: identities[0], WorkspaceID: command.WorkspaceID, SessionID: command.SessionID,
 		ActorID: command.ActorID, RequestHash: requestHash, IdempotencyKey: command.IdempotencyKey,
-		Prompt: prompt, ExecutorPolicy: policy,
+		Prompt: prompt, ExecutorPolicy: policy, LLMGateway: llmGateway,
 		Record: coredb.TransitionRecord{
 			EventID: identities[1], ProducerInstanceID: identities[2], ProducerSeq: 1, OutboxID: identities[3],
 		},

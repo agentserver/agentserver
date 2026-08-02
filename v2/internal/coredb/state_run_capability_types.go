@@ -19,6 +19,7 @@ type ResolveRunCapabilityIssuanceCommand struct {
 	ExecutorID             string
 	BrainToolCatalogID     string
 	ToolCatalogDigest      [32]byte
+	LLMGateway             RunLLMGatewayBinding
 }
 
 type RunCapabilityIssuanceAuthority struct {
@@ -36,6 +37,7 @@ type RunCapabilityIssuanceAuthority struct {
 	ExecutorID         string
 	BrainToolCatalogID string
 	ToolCatalogDigest  [32]byte
+	LLMGateway         RunLLMGatewayBinding
 }
 
 type AuthorizeRunCapabilityCommand struct {
@@ -52,6 +54,7 @@ type AuthorizeRunCapabilityCommand struct {
 	ToolCatalogDigest      [32]byte
 	ExpectedRunVersion     int64
 	ExpectedAttemptVersion int64
+	LLMGateway             RunLLMGatewayBinding
 }
 
 type AuthorizedRunCapability struct {
@@ -60,4 +63,5 @@ type AuthorizedRunCapability struct {
 	RunStatus      string
 	AttemptStatus  string
 	DatabaseTime   time.Time
+	LLMGateway     *LLMGatewayLiveAuthority
 }

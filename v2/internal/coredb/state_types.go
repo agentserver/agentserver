@@ -87,6 +87,7 @@ type CreateRunCommand struct {
 	IdempotencyKey         string
 	Prompt                 ObjectPointer
 	ExecutorPolicy         RunExecutorPolicy
+	LLMGateway             RunLLMGatewayBinding
 	ExpectedSessionVersion int64
 	Record                 TransitionRecord
 }
@@ -375,6 +376,7 @@ type ResolvedRunLaunchState struct {
 	Prompt             ObjectPointer
 	PreviousCheckpoint *Checkpoint
 	ExecutorPolicy     RunExecutorPolicy
+	LLMGateway         RunLLMGatewayBinding
 }
 
 type AttemptEvent struct {

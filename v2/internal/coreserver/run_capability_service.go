@@ -31,8 +31,6 @@ var productionCapabilityUUIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{
 
 type ProductionRunCapabilityPolicy struct {
 	ExecutorID     string
-	Model          string
-	Provider       string
 	MaxRunDuration time.Duration
 	MaxApprovalTTL time.Duration
 	ExpiryGrace    time.Duration
@@ -46,15 +44,20 @@ type RunCapabilityStateStore interface {
 type RunCapabilityAuthority interface {
 	IssueRunCapabilities(context.Context, corecontract.IssueRunCapabilitiesRequest) (corecontract.IssueRunCapabilitiesResponse, error)
 	AuthorizeExecutorRunCapability(context.Context, string, corecontract.AuthorizeExecutorRunCapabilityRequest) (corecontract.AuthorizeRunCapabilityResponse, error)
-	AuthorizeLLMProxyRunCapability(context.Context, string, corecontract.AuthorizeLLMProxyRunCapabilityRequest) (corecontract.AuthorizeRunCapabilityResponse, error)
+	AuthorizeLLMProxyRunCapability(context.Context, string, corecontract.AuthorizeLLMProxyRunCapabilityRequest) (corecontract.AuthorizeLLMProxyRunCapabilityResponse, error)
+}
+
+type LLMGatewayUpstreamResolver interface {
+	ResolveUpstream(context.Context, coredb.LLMGatewayLiveAuthority) (LLMGatewayUpstreamAuthorization, error)
 }
 
 type ProductionRunCapabilityServiceConfig struct {
-	Store    RunCapabilityStateStore
-	Signer   *runcapability.ProductionSigner
-	Verifier *runcapability.ProductionVerifier
-	Policy   ProductionRunCapabilityPolicy
-	Now      func() time.Time
+	Store              RunCapabilityStateStore
+	Signer             *runcapability.ProductionSigner
+	Verifier           *runcapability.ProductionVerifier
+	Policy             ProductionRunCapabilityPolicy
+	LLMGatewayResolver LLMGatewayUpstreamResolver
+	Now                func() time.Time
 }
 
 // ProductionRunCapabilityService keeps signing and online authorization in
@@ -62,11 +65,12 @@ type ProductionRunCapabilityServiceConfig struct {
 // for current PostgreSQL lease, generation, membership, catalog and executor
 // facts.
 type ProductionRunCapabilityService struct {
-	store    RunCapabilityStateStore
-	signer   *runcapability.ProductionSigner
-	verifier *runcapability.ProductionVerifier
-	policy   ProductionRunCapabilityPolicy
-	now      func() time.Time
+	store              RunCapabilityStateStore
+	signer             *runcapability.ProductionSigner
+	verifier           *runcapability.ProductionVerifier
+	policy             ProductionRunCapabilityPolicy
+	llmGatewayResolver LLMGatewayUpstreamResolver
+	now                func() time.Time
 }
 
 var _ RunCapabilityAuthority = (*ProductionRunCapabilityService)(nil)
@@ -81,6 +85,9 @@ func NewProductionRunCapabilityService(config ProductionRunCapabilityServiceConf
 	if config.Verifier == nil || config.Verifier.Issuer() != config.Signer.Issuer() {
 		return nil, errors.New("production run capability verifier must trust the signer issuer")
 	}
+	if config.LLMGatewayResolver == nil {
+		return nil, errors.New("workspace LLM gateway upstream resolver is required")
+	}
 	if !slices.Contains(config.Verifier.KeyIDs(), config.Signer.KeyID()) {
 		return nil, errors.New("production run capability verifier does not contain the active signing key")
 	}
@@ -92,7 +99,7 @@ func NewProductionRunCapabilityService(config ProductionRunCapabilityServiceConf
 	}
 	return &ProductionRunCapabilityService{
 		store: config.Store, signer: config.Signer, verifier: config.Verifier,
-		policy: config.Policy, now: config.Now,
+		policy: config.Policy, llmGatewayResolver: config.LLMGatewayResolver, now: config.Now,
 	}, nil
 }
 
@@ -127,6 +134,10 @@ func (service *ProductionRunCapabilityService) IssueRunCapabilities(
 		ExpectedAttemptVersion: request.ExpectedRunAttemptVersion,
 		ExecutorID:             request.ExecutorID, BrainToolCatalogID: request.BrainToolCatalogID,
 		ToolCatalogDigest: catalogDigest,
+		LLMGateway: coredb.RunLLMGatewayBinding{
+			GatewayID: request.LLMGatewayID, ConfigVersion: request.LLMGatewayVersion,
+			GrantUserID: request.LLMGatewayGrantUserID, Model: request.Model,
+		},
 	})
 	if err != nil {
 		return corecontract.IssueRunCapabilitiesResponse{}, err
@@ -176,8 +187,11 @@ func (service *ProductionRunCapabilityService) IssueRunCapabilities(
 
 	modelClaims := common
 	modelClaims.Audience = runcapability.AudienceLLMProxy
-	modelClaims.Model = service.policy.Model
-	modelClaims.Provider = service.policy.Provider
+	modelClaims.Model = authority.LLMGateway.Model
+	modelClaims.Provider = corecontract.WorkspaceLLMGatewayProvider
+	modelClaims.LLMGatewayID = authority.LLMGateway.GatewayID
+	modelClaims.LLMGatewayVersion = authority.LLMGateway.ConfigVersion
+	modelClaims.LLMGatewayGrantUserID = authority.LLMGateway.GrantUserID
 	modelCapability, err := service.issueOne(modelClaims)
 	if err != nil {
 		return corecontract.IssueRunCapabilitiesResponse{}, fmt.Errorf("issue llmproxy run capability: %w", err)
@@ -221,21 +235,61 @@ func (service *ProductionRunCapabilityService) AuthorizeLLMProxyRunCapability(
 	ctx context.Context,
 	token string,
 	request corecontract.AuthorizeLLMProxyRunCapabilityRequest,
-) (corecontract.AuthorizeRunCapabilityResponse, error) {
+) (corecontract.AuthorizeLLMProxyRunCapabilityResponse, error) {
 	claims, err := service.verifyForLiveAuthorization(token, runcapability.AudienceLLMProxy)
 	if err != nil {
-		return corecontract.AuthorizeRunCapabilityResponse{}, err
+		return corecontract.AuthorizeLLMProxyRunCapabilityResponse{}, err
 	}
 	if request.Model != claims.Model || request.Provider != claims.Provider ||
-		claims.Model != service.policy.Model || claims.Provider != service.policy.Provider {
-		return corecontract.AuthorizeRunCapabilityResponse{}, deniedRunCapability(claims.CapabilityID)
+		request.LLMGatewayID != claims.LLMGatewayID ||
+		request.LLMGatewayVersion != claims.LLMGatewayVersion ||
+		request.LLMGatewayGrantUserID != claims.LLMGatewayGrantUserID ||
+		claims.Provider != corecontract.WorkspaceLLMGatewayProvider {
+		return corecontract.AuthorizeLLMProxyRunCapabilityResponse{}, deniedRunCapability(claims.CapabilityID)
 	}
-	return service.authorizeClaims(ctx, claims, coredb.AuthorizeRunCapabilityCommand{
+	if ctx == nil {
+		return corecontract.AuthorizeLLMProxyRunCapabilityResponse{}, errors.New("run capability authorization context is required")
+	}
+	result, err := service.store.AuthorizeRunCapability(ctx, coredb.AuthorizeRunCapabilityCommand{
 		Audience: coredb.RunCapabilityAudienceLLMProxy, CapabilityID: claims.CapabilityID,
 		WorkspaceID: claims.WorkspaceID, SessionID: claims.SessionID, RunID: claims.RunID,
 		AttemptID: claims.RunAttemptID, ActorID: claims.ActorID, HolderID: claims.HolderID,
 		Generation: claims.RunAttemptGeneration,
+		LLMGateway: coredb.RunLLMGatewayBinding{
+			GatewayID: claims.LLMGatewayID, ConfigVersion: claims.LLMGatewayVersion,
+			GrantUserID: claims.LLMGatewayGrantUserID, Model: claims.Model,
+		},
 	})
+	if err != nil {
+		return corecontract.AuthorizeLLMProxyRunCapabilityResponse{}, err
+	}
+	issuedAt := time.UnixMilli(claims.IssuedAtUnixMS).UTC()
+	deadline := time.UnixMilli(claims.RunDeadlineUnixMS).UTC()
+	expiresAt := time.UnixMilli(claims.ExpiresAtUnixMS).UTC()
+	if err := validateCapabilityTimes(result.DatabaseTime, issuedAt, deadline, expiresAt); err != nil || result.LLMGateway == nil {
+		return corecontract.AuthorizeLLMProxyRunCapabilityResponse{}, deniedRunCapability(claims.CapabilityID)
+	}
+	upstream, err := service.llmGatewayResolver.ResolveUpstream(ctx, *result.LLMGateway)
+	if err != nil {
+		return corecontract.AuthorizeLLMProxyRunCapabilityResponse{}, deniedRunCapability(claims.CapabilityID)
+	}
+	if upstream.GatewayID != claims.LLMGatewayID || upstream.GatewayConfigVersion != claims.LLMGatewayVersion ||
+		upstream.GrantUserID != claims.LLMGatewayGrantUserID || upstream.Model != claims.Model ||
+		upstream.ResponsesURL == "" || upstream.Authorization == "" ||
+		!upstream.BearerExpiresAt.After(result.DatabaseTime.UTC()) {
+		return corecontract.AuthorizeLLMProxyRunCapabilityResponse{}, deniedRunCapability(claims.CapabilityID)
+	}
+	return corecontract.AuthorizeLLMProxyRunCapabilityResponse{
+		CapabilityID: claims.CapabilityID, Audience: claims.Audience,
+		RunID: claims.RunID, RunAttemptID: claims.RunAttemptID,
+		RunAttemptGeneration: claims.RunAttemptGeneration,
+		RunVersion:           result.RunVersion, RunAttemptVersion: result.AttemptVersion,
+		AuthorizedAt: result.DatabaseTime.UTC(), Model: claims.Model,
+		Provider:     corecontract.WorkspaceLLMGatewayProvider,
+		LLMGatewayID: upstream.GatewayID, LLMGatewayVersion: upstream.GatewayConfigVersion,
+		LLMGatewayGrantUserID: upstream.GrantUserID, ResponsesURL: upstream.ResponsesURL,
+		UpstreamAuthorization: upstream.Authorization, BearerExpiresAt: upstream.BearerExpiresAt.UTC(),
+	}, nil
 }
 
 func (service *ProductionRunCapabilityService) authorizeClaims(
@@ -330,6 +384,12 @@ func validateIssueRunCapabilitiesRequest(request corecontract.IssueRunCapabiliti
 	if !validCapabilityRouteText(request.Model) || !validCapabilityRouteText(request.Provider) {
 		return errors.New("model and provider must be canonical bounded text")
 	}
+	if request.Provider != corecontract.WorkspaceLLMGatewayProvider ||
+		!productionCapabilityUUIDPattern.MatchString(request.LLMGatewayID) ||
+		!productionCapabilityUUIDPattern.MatchString(request.LLMGatewayGrantUserID) ||
+		request.LLMGatewayVersion < 1 || request.LLMGatewayVersion > maximumCapabilitySafeJSONInteger {
+		return errors.New("workspace LLM gateway route must contain an exact provider, gateway, version, and grant user")
+	}
 	if request.MaxRunDurationMillis < int64(time.Second/time.Millisecond) ||
 		request.MaxRunDurationMillis > int64(maximumProductionRunDuration/time.Millisecond) {
 		return errors.New("maxRunDurationMs is outside the production bound")
@@ -351,7 +411,11 @@ func validateRunCapabilityIssuanceProjection(
 		authority.HolderID != request.HolderID || authority.Generation != request.RunAttemptGeneration ||
 		authority.RunVersion != request.ExpectedRunVersion || authority.AttemptVersion != request.ExpectedRunAttemptVersion ||
 		authority.ExecutorID != request.ExecutorID || authority.BrainToolCatalogID != request.BrainToolCatalogID ||
-		authority.ToolCatalogDigest != catalogDigest {
+		authority.ToolCatalogDigest != catalogDigest ||
+		authority.LLMGateway != (coredb.RunLLMGatewayBinding{
+			GatewayID: request.LLMGatewayID, ConfigVersion: request.LLMGatewayVersion,
+			GrantUserID: request.LLMGatewayGrantUserID, Model: request.Model,
+		}) {
 		return errors.New("production run capability store returned an inconsistent issuance projection")
 	}
 	if authority.ActorID == "00000000-0000-0000-0000-000000000000" ||
@@ -363,8 +427,7 @@ func validateRunCapabilityIssuanceProjection(
 }
 
 func (service *ProductionRunCapabilityService) requireIssuePolicy(request corecontract.IssueRunCapabilitiesRequest) error {
-	if request.ExecutorID != service.policy.ExecutorID || request.Model != service.policy.Model ||
-		request.Provider != service.policy.Provider ||
+	if request.ExecutorID != service.policy.ExecutorID ||
 		request.MaxRunDurationMillis != service.policy.MaxRunDuration.Milliseconds() ||
 		request.MaxApprovalTTLMillis != service.policy.MaxApprovalTTL.Milliseconds() {
 		return capabilityServiceStateError(
@@ -381,9 +444,6 @@ func ValidateProductionRunCapabilityPolicy(policy ProductionRunCapabilityPolicy)
 	if policy.ExecutorID == "00000000-0000-0000-0000-000000000000" ||
 		!productionCapabilityUUIDPattern.MatchString(policy.ExecutorID) {
 		return errors.New("executor ID must be a non-zero canonical lowercase UUID")
-	}
-	if !validCapabilityRouteText(policy.Model) || !validCapabilityRouteText(policy.Provider) {
-		return errors.New("model and provider must be canonical bounded text")
 	}
 	if policy.MaxRunDuration < time.Second || policy.MaxRunDuration > maximumProductionRunDuration {
 		return fmt.Errorf("maximum run duration must be between 1s and %s", maximumProductionRunDuration)

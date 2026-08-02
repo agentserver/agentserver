@@ -112,11 +112,11 @@ WHERE r.workspace_id = $1
 			// changed after the original run was committed, but that must not make
 			// recovery of the original run conflict.
 			if !requireUserMembership {
-				prompt, policy, launchErr := s.readRunLaunchInput(ctx, transaction, operation, existing.ID)
+				prompt, policy, llmGateway, launchErr := s.readRunLaunchInput(ctx, transaction, operation, existing.ID)
 				if launchErr != nil {
 					return CreateRunResult{}, launchErr
 				}
-				if !runLaunchInputMatches(prompt, policy, command) {
+				if !runLaunchInputMatches(prompt, policy, llmGateway, command) {
 					return CreateRunResult{}, &StateError{
 						Code:         ErrorIdempotencyConflict,
 						Operation:    operation,
@@ -180,6 +180,11 @@ RETURNING %s`, s.table("runs"), runColumns(""))
 				return CreateRunResult{}, commandError(ErrorConflict, operation, "run", command.RunID, "run identity is already in use")
 			}
 			return CreateRunResult{}, databaseError(operation+" insert run", err)
+		}
+		if command.LLMGateway != (RunLLMGatewayBinding{}) {
+			if err := s.requireCreateRunLLMGateway(ctx, transaction, command); err != nil {
+				return CreateRunResult{}, err
+			}
 		}
 		if err := s.insertRunLaunchInput(ctx, transaction, command); err != nil {
 			return CreateRunResult{}, err
@@ -257,6 +262,14 @@ func validateCreateRunBase(command CreateRunCommand) error {
 	}
 	if err := validateRunExecutorPolicy(command.ExecutorPolicy); err != nil {
 		return err
+	}
+	if command.LLMGateway != (RunLLMGatewayBinding{}) {
+		if err := validateRunLLMGatewayBinding(command.LLMGateway); err != nil {
+			return err
+		}
+		if command.LLMGateway.GrantUserID != command.ActorID {
+			return errors.New("LLM gateway grant user must be the run actor")
+		}
 	}
 	return validateTransitionRecord(command.Record)
 }

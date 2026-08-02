@@ -6,12 +6,14 @@
   "additionalProperties": false,
   "required": [
     "version",
+    "region",
     "namespace",
     "clusterDomain",
     "platform",
     "images",
     "replicas",
     "services",
+    "ingress",
     "bootstrap",
     "spiffeTrustDomain",
     "oauth",
@@ -23,14 +25,16 @@
   ],
   "properties": {
     "version": {"const": 1},
-    "namespace": {"$ref": "#/$defs/dnsLabel"},
+    "region": {"const": "sg"},
+    "namespace": {"const": "agentserver"},
     "clusterDomain": {"$ref": "#/$defs/dnsName"},
-    "platform": {"enum": ["linux-amd64", "linux-arm64"]},
+    "platform": {"const": "linux-amd64"},
     "images": {"$ref": "#/$defs/images"},
     "replicas": {"$ref": "#/$defs/replicas"},
     "services": {"$ref": "#/$defs/services"},
+    "ingress": {"$ref": "#/$defs/ingress"},
     "bootstrap": {"$ref": "#/$defs/bootstrap"},
-    "spiffeTrustDomain": {"$ref": "#/$defs/dnsName"},
+    "spiffeTrustDomain": {"const": "agentserver.byted.bps.dev"},
     "oauth": {"$ref": "#/$defs/oauth"},
     "runtime": {"$ref": "#/$defs/runtime"},
     "objectStore": {"$ref": "#/$defs/objectStore"},
@@ -81,16 +85,11 @@
     "images": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["service", "harness"],
+      "required": ["service", "harness", "pullSecret"],
       "properties": {
         "service": {"$ref": "#/$defs/image"},
         "harness": {"$ref": "#/$defs/image"},
-        "pullSecret": {
-          "anyOf": [
-            {"const": ""},
-            {"$ref": "#/$defs/dnsName"}
-          ]
-        }
+        "pullSecret": {"const": "agentserver-registry-pull"}
       }
     },
     "replicas": {
@@ -119,14 +118,23 @@
         "port": {"const": 8443}
       }
     },
-    "publicService": {
+    "publicHTTPService": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["clusterIp", "port", "publicHostname"],
+      "required": ["clusterIp", "port"],
       "properties": {
         "clusterIp": {"$ref": "#/$defs/ipv4"},
-        "port": {"const": 8443},
-        "publicHostname": {"$ref": "#/$defs/dnsName"}
+        "port": {"const": 8080}
+      }
+    },
+    "executorService": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clusterIp", "publicPort", "internalPort"],
+      "properties": {
+        "clusterIp": {"$ref": "#/$defs/ipv4"},
+        "publicPort": {"const": 8080},
+        "internalPort": {"const": 8443}
       }
     },
     "services": {
@@ -135,9 +143,31 @@
       "required": ["core", "browserGateway", "executorGateway", "llmproxy"],
       "properties": {
         "core": {"$ref": "#/$defs/internalService"},
-        "browserGateway": {"$ref": "#/$defs/publicService"},
-        "executorGateway": {"$ref": "#/$defs/publicService"},
+        "browserGateway": {"$ref": "#/$defs/publicHTTPService"},
+        "executorGateway": {"$ref": "#/$defs/executorService"},
         "llmproxy": {"$ref": "#/$defs/internalService"}
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gatewayNamespace",
+        "gatewayName",
+        "gatewaySection",
+        "gatewayPodSelector",
+        "frontendHostname",
+        "browserGatewayHostname",
+        "executorGatewayHostname"
+      ],
+      "properties": {
+        "gatewayNamespace": {"const": "istio-ingress"},
+        "gatewayName": {"const": "istio-gateway"},
+        "gatewaySection": {"const": "https-byted-bps"},
+        "gatewayPodSelector": {"$ref": "#/$defs/labelSelector"},
+        "frontendHostname": {"const": "agent.byted.bps.dev"},
+        "browserGatewayHostname": {"const": "browser-gateway.byted.bps.dev"},
+        "executorGatewayHostname": {"const": "executor-gateway.byted.bps.dev"}
       }
     },
     "bootstrap": {
@@ -155,11 +185,12 @@
     "hydra": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["issuer", "adminUrl", "publicOrigin", "introspectionUrl", "browserClientId"],
+      "required": ["issuer", "adminUrl", "publicOrigin", "publicUpstream", "introspectionUrl", "browserClientId"],
       "properties": {
         "issuer": {"$ref": "#/$defs/httpsUrl"},
         "adminUrl": {"$ref": "#/$defs/httpsUrl"},
         "publicOrigin": {"$ref": "#/$defs/httpsUrl"},
+        "publicUpstream": {"$ref": "#/$defs/httpsUrl"},
         "introspectionUrl": {"$ref": "#/$defs/httpsUrl"},
         "browserClientId": {"type": "string", "minLength": 1, "maxLength": 256}
       }
@@ -196,10 +227,6 @@
         "capabilityIssuer",
         "capabilitySigningKeyId",
         "manifestSigningKeyId",
-        "model",
-        "provider",
-        "upstreamResponsesUrl",
-        "upstreamAuthHeader",
         "runPolicyVersion",
         "allowedTools",
         "executionPolicyVersion",
@@ -216,13 +243,9 @@
         "finalExecSizeBytes"
       ],
       "properties": {
-        "capabilityIssuer": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^spiffe://"},
-        "capabilitySigningKeyId": {"type": "string", "minLength": 1, "maxLength": 256},
-        "manifestSigningKeyId": {"type": "string", "minLength": 1, "maxLength": 256},
-        "model": {"type": "string", "minLength": 1, "maxLength": 256},
-        "provider": {"type": "string", "minLength": 1, "maxLength": 256},
-        "upstreamResponsesUrl": {"type": "string", "format": "uri", "pattern": "^https://[^/?#]+/v1/responses$"},
-        "upstreamAuthHeader": {"enum": ["Authorization", "api-key"]},
+        "capabilityIssuer": {"const": "spiffe://agentserver.byted.bps.dev/ns/agentserver/sa/agentserver-core"},
+        "capabilitySigningKeyId": {"const": "run-capability-sg-v1"},
+        "manifestSigningKeyId": {"const": "run-manifest-sg-v1"},
         "runPolicyVersion": {"$ref": "#/$defs/versionText"},
         "allowedTools": {
           "type": "array",
@@ -256,16 +279,14 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "mode",
         "prefix",
         "s3Bucket",
         "s3Region",
-        "s3UsePathStyle",
-        "kmsRegion",
-        "kmsKeyId",
-        "coreRoleArn",
-        "harnessPoolRoleArn"
+        "s3UsePathStyle"
       ],
       "properties": {
+        "mode": {"const": "s3-plaintext-v1"},
         "prefix": {
           "type": "string",
           "minLength": 1,
@@ -276,29 +297,21 @@
         "s3Bucket": {"$ref": "#/$defs/boundedText"},
         "s3Region": {"$ref": "#/$defs/boundedText"},
         "s3Endpoint": {"$ref": "#/$defs/httpsUrl"},
-        "s3UsePathStyle": {"type": "boolean"},
-        "kmsRegion": {"$ref": "#/$defs/boundedText"},
-        "kmsEndpoint": {"$ref": "#/$defs/httpsUrl"},
-        "kmsKeyId": {"$ref": "#/$defs/boundedText"},
-        "coreRoleArn": {"$ref": "#/$defs/roleArn"},
-        "harnessPoolRoleArn": {"$ref": "#/$defs/roleArn"}
+        "s3UsePathStyle": {"type": "boolean"}
       }
-    },
-    "roleArn": {
-      "type": "string",
-      "pattern": "^arn:(?:aws|aws-us-gov|aws-cn):iam::[0-9]{12}:role/[0-9A-Za-z+=,.@_/-]{1,512}$"
     },
     "secrets": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["core", "browserGateway", "executorGateway", "harnessPool", "harnessWorker", "llmproxy"],
+      "required": ["core", "browserGateway", "executorGateway", "harnessPool", "harnessWorker", "llmproxy", "objectStore"],
       "properties": {
-        "core": {"$ref": "#/$defs/dnsName"},
-        "browserGateway": {"$ref": "#/$defs/dnsName"},
-        "executorGateway": {"$ref": "#/$defs/dnsName"},
-        "harnessPool": {"$ref": "#/$defs/dnsName"},
-        "harnessWorker": {"$ref": "#/$defs/dnsName"},
-        "llmproxy": {"$ref": "#/$defs/dnsName"}
+        "core": {"const": "agentserver-core-secrets"},
+        "browserGateway": {"const": "agentserver-browser-secrets"},
+        "executorGateway": {"const": "agentserver-executor-secrets"},
+        "harnessPool": {"const": "agentserver-pool-secrets"},
+        "harnessWorker": {"const": "agentserver-worker-secrets"},
+        "llmproxy": {"const": "agentserver-llmproxy-secrets"},
+        "objectStore": {"const": "agentserver-object-store-secrets"}
       }
     },
     "labelSelector": {
@@ -350,25 +363,17 @@
         "dnsClusterIp",
         "dnsNamespace",
         "dnsPodSelector",
-        "databaseEgress",
         "coreExternalEgress",
         "browserExternalEgress",
-        "harnessExternalEgress",
-        "llmproxyExternalEgress",
-        "browserIngressCidrs",
-        "executorIngressCidrs"
+        "harnessExternalEgress"
       ],
       "properties": {
         "dnsClusterIp": {"$ref": "#/$defs/ipv4"},
         "dnsNamespace": {"$ref": "#/$defs/dnsLabel"},
         "dnsPodSelector": {"$ref": "#/$defs/labelSelector"},
-        "databaseEgress": {"$ref": "#/$defs/egressRules"},
         "coreExternalEgress": {"$ref": "#/$defs/egressRules"},
         "browserExternalEgress": {"$ref": "#/$defs/egressRules"},
-        "harnessExternalEgress": {"$ref": "#/$defs/egressRules"},
-        "llmproxyExternalEgress": {"$ref": "#/$defs/egressRules"},
-        "browserIngressCidrs": {"$ref": "#/$defs/ingressCidrs"},
-        "executorIngressCidrs": {"$ref": "#/$defs/ingressCidrs"}
+        "harnessExternalEgress": {"$ref": "#/$defs/egressRules"}
       }
     },
     "resourceQuantity": {

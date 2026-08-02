@@ -27,6 +27,9 @@ type IssueRunCapabilitiesRequest struct {
 	ToolCatalogDigest         string `json:"toolCatalogDigest"`
 	Model                     string `json:"model"`
 	Provider                  string `json:"provider"`
+	LLMGatewayID              string `json:"llmGatewayId"`
+	LLMGatewayVersion         int64  `json:"llmGatewayVersion"`
+	LLMGatewayGrantUserID     string `json:"llmGatewayGrantUserId"`
 	MaxRunDurationMillis      int64  `json:"maxRunDurationMs"`
 	MaxApprovalTTLMillis      int64  `json:"maxApprovalTtlMs"`
 }
@@ -56,8 +59,11 @@ type AuthorizeExecutorRunCapabilityRequest struct {
 // AuthorizeLLMProxyRunCapabilityRequest binds the bearer token to the exact
 // upstream route requested through llmproxy.
 type AuthorizeLLMProxyRunCapabilityRequest struct {
-	Model    string `json:"model"`
-	Provider string `json:"provider"`
+	Model                 string `json:"model"`
+	Provider              string `json:"provider"`
+	LLMGatewayID          string `json:"llmGatewayId"`
+	LLMGatewayVersion     int64  `json:"llmGatewayVersion"`
+	LLMGatewayGrantUserID string `json:"llmGatewayGrantUserId"`
 }
 
 type AuthorizeRunCapabilityResponse struct {
@@ -69,4 +75,26 @@ type AuthorizeRunCapabilityResponse struct {
 	RunVersion           int64     `json:"runVersion"`
 	RunAttemptVersion    int64     `json:"runAttemptVersion"`
 	AuthorizedAt         time.Time `json:"authorizedAt"`
+}
+
+// AuthorizeLLMProxyRunCapabilityResponse is intentionally separate from the
+// executor response. The route and bearer are a fresh Core decision for this
+// one proxy request; llmproxy must neither source nor cache either value.
+type AuthorizeLLMProxyRunCapabilityResponse struct {
+	CapabilityID          string    `json:"capabilityId"`
+	Audience              string    `json:"audience"`
+	RunID                 string    `json:"runId"`
+	RunAttemptID          string    `json:"runAttemptId"`
+	RunAttemptGeneration  int64     `json:"runAttemptGeneration"`
+	RunVersion            int64     `json:"runVersion"`
+	RunAttemptVersion     int64     `json:"runAttemptVersion"`
+	AuthorizedAt          time.Time `json:"authorizedAt"`
+	Model                 string    `json:"model"`
+	Provider              string    `json:"provider"`
+	LLMGatewayID          string    `json:"llmGatewayId"`
+	LLMGatewayVersion     int64     `json:"llmGatewayVersion"`
+	LLMGatewayGrantUserID string    `json:"llmGatewayGrantUserId"`
+	ResponsesURL          string    `json:"responsesUrl"`
+	UpstreamAuthorization string    `json:"upstreamAuthorization"`
+	BearerExpiresAt       time.Time `json:"bearerExpiresAt"`
 }

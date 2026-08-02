@@ -66,11 +66,14 @@ type PreviousCheckpoint struct {
 }
 
 type ModelRoute struct {
-	Model       string `json:"model"`
-	Provider    string `json:"provider"`
-	Endpoint    string `json:"endpoint"`
-	TLSIdentity string `json:"tlsIdentity"`
-	Audience    string `json:"audience"`
+	Model                 string `json:"model"`
+	Provider              string `json:"provider"`
+	Endpoint              string `json:"endpoint"`
+	TLSIdentity           string `json:"tlsIdentity"`
+	Audience              string `json:"audience"`
+	LLMGatewayID          string `json:"llmGatewayId,omitempty"`
+	LLMGatewayVersion     int64  `json:"llmGatewayVersion,omitempty"`
+	LLMGatewayGrantUserID string `json:"llmGatewayGrantUserId,omitempty"`
 }
 
 type MCPTool struct {
@@ -498,7 +501,24 @@ func (route ModelRoute) validate() error {
 	if err := validateHTTPSURL("model.endpoint", route.Endpoint); err != nil {
 		return err
 	}
-	return validateSPIFFEIdentity("model.tlsIdentity", route.TLSIdentity)
+	if err := validateSPIFFEIdentity("model.tlsIdentity", route.TLSIdentity); err != nil {
+		return err
+	}
+	gatewayBound := route.LLMGatewayID != "" || route.LLMGatewayVersion != 0 || route.LLMGatewayGrantUserID != ""
+	if route.Provider == "workspace-gateway" {
+		if err := validateUUID("model.llmGatewayId", route.LLMGatewayID); err != nil {
+			return err
+		}
+		if err := validateUUID("model.llmGatewayGrantUserId", route.LLMGatewayGrantUserID); err != nil {
+			return err
+		}
+		if route.LLMGatewayVersion < 1 || route.LLMGatewayVersion > maxJSONInteger {
+			return fmt.Errorf("model.llmGatewayVersion must be between 1 and %d", maxJSONInteger)
+		}
+	} else if gatewayBound {
+		return errors.New("non-workspace model route contains workspace LLM gateway authority")
+	}
+	return nil
 }
 
 func (executor ExecutorMCP) validate() error {

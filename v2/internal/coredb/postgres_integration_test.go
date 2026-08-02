@@ -472,6 +472,7 @@ func assertDatabaseObjects(t *testing.T, connection *pgx.Conn, schema string) {
 		"execution_operations":         false,
 		"executions":                   false,
 		"outbox":                       false,
+		"production_bootstrap_seeds":   false,
 		"run_attempts":                 false,
 		"run_events":                   false,
 		"run_event_rebases":            false,

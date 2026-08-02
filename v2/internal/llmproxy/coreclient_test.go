@@ -52,7 +52,8 @@ func TestCoreClientAuthorizesLLMProxyCapabilityOverExactHTTPContract(t *testing.
 	if err := json.Unmarshal(wire.body, &body); err != nil {
 		t.Fatal(err)
 	}
-	if len(body) != 2 || string(body["model"]) != `"`+testModel+`"` || string(body["provider"]) != `"`+testProvider+`"` {
+	if len(body) != 5 || string(body["model"]) != `"`+testModel+`"` || string(body["provider"]) != `"`+testProvider+`"` ||
+		string(body["llmGatewayId"]) != `"`+request.LLMGatewayID+`"` {
 		t.Fatalf("Core llmproxy JSON body = %s", wire.body)
 	}
 }
@@ -62,22 +63,24 @@ func TestCoreClientRejectsInconsistentLLMProxyAuthorization(t *testing.T) {
 	valid := testCoreAuthorizationResponse(request, time.Date(2026, 8, 2, 16, 30, 0, 0, time.UTC))
 	tests := []struct {
 		name   string
-		mutate func(*corecontract.AuthorizeRunCapabilityResponse)
+		mutate func(*corecontract.AuthorizeLLMProxyRunCapabilityResponse)
 	}{
-		{name: "capability", mutate: func(value *corecontract.AuthorizeRunCapabilityResponse) {
+		{name: "capability", mutate: func(value *corecontract.AuthorizeLLMProxyRunCapabilityResponse) {
 			value.CapabilityID = "97000000-0000-4000-8000-000000000099"
 		}},
-		{name: "audience", mutate: func(value *corecontract.AuthorizeRunCapabilityResponse) { value.Audience = "executor-mcp" }},
-		{name: "run", mutate: func(value *corecontract.AuthorizeRunCapabilityResponse) {
+		{name: "audience", mutate: func(value *corecontract.AuthorizeLLMProxyRunCapabilityResponse) { value.Audience = "executor-mcp" }},
+		{name: "run", mutate: func(value *corecontract.AuthorizeLLMProxyRunCapabilityResponse) {
 			value.RunID = "97000000-0000-4000-8000-000000000099"
 		}},
-		{name: "attempt", mutate: func(value *corecontract.AuthorizeRunCapabilityResponse) {
+		{name: "attempt", mutate: func(value *corecontract.AuthorizeLLMProxyRunCapabilityResponse) {
 			value.RunAttemptID = "97000000-0000-4000-8000-000000000099"
 		}},
-		{name: "generation", mutate: func(value *corecontract.AuthorizeRunCapabilityResponse) { value.RunAttemptGeneration++ }},
-		{name: "run version", mutate: func(value *corecontract.AuthorizeRunCapabilityResponse) { value.RunVersion = 0 }},
-		{name: "attempt version", mutate: func(value *corecontract.AuthorizeRunCapabilityResponse) { value.RunAttemptVersion = 1 << 53 }},
-		{name: "authorization time", mutate: func(value *corecontract.AuthorizeRunCapabilityResponse) { value.AuthorizedAt = time.Time{} }},
+		{name: "generation", mutate: func(value *corecontract.AuthorizeLLMProxyRunCapabilityResponse) { value.RunAttemptGeneration++ }},
+		{name: "run version", mutate: func(value *corecontract.AuthorizeLLMProxyRunCapabilityResponse) { value.RunVersion = 0 }},
+		{name: "attempt version", mutate: func(value *corecontract.AuthorizeLLMProxyRunCapabilityResponse) { value.RunAttemptVersion = 1 << 53 }},
+		{name: "authorization time", mutate: func(value *corecontract.AuthorizeLLMProxyRunCapabilityResponse) { value.AuthorizedAt = time.Time{} }},
+		{name: "gateway", mutate: func(value *corecontract.AuthorizeLLMProxyRunCapabilityResponse) { value.LLMGatewayVersion++ }},
+		{name: "upstream bearer", mutate: func(value *corecontract.AuthorizeLLMProxyRunCapabilityResponse) { value.UpstreamAuthorization = "" }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -154,7 +157,7 @@ func TestCoreClientRejectsCleartextNonLoopback(t *testing.T) {
 	}
 }
 
-func testAuthorizationServer(status int, cacheControl string, body corecontract.AuthorizeRunCapabilityResponse) *httptest.Server {
+func testAuthorizationServer(status int, cacheControl string, body corecontract.AuthorizeLLMProxyRunCapabilityResponse) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
 		if cacheControl != "" {
@@ -169,17 +172,24 @@ func testCoreAuthorizationRequest() RunCapabilityAuthorizationRequest {
 	return RunCapabilityAuthorizationRequest{
 		Token: "asv2cap1.key.claims.signature", CapabilityID: "97000000-0000-4000-8000-000000000001",
 		Model: testModel, Provider: testProvider,
-		RunID: "97000000-0000-4000-8000-000000000004", RunAttemptID: "97000000-0000-4000-8000-000000000005",
+		LLMGatewayID: "97000000-0000-4000-8000-000000000007", LLMGatewayVersion: 2,
+		LLMGatewayGrantUserID: "97000000-0000-4000-8000-000000000006",
+		RunID:                 "97000000-0000-4000-8000-000000000004", RunAttemptID: "97000000-0000-4000-8000-000000000005",
 		RunAttemptGeneration: 3,
 	}
 }
 
-func testCoreAuthorizationResponse(request RunCapabilityAuthorizationRequest, now time.Time) corecontract.AuthorizeRunCapabilityResponse {
-	return corecontract.AuthorizeRunCapabilityResponse{
+func testCoreAuthorizationResponse(request RunCapabilityAuthorizationRequest, now time.Time) corecontract.AuthorizeLLMProxyRunCapabilityResponse {
+	return corecontract.AuthorizeLLMProxyRunCapabilityResponse{
 		CapabilityID: request.CapabilityID, Audience: "llmproxy",
 		RunID: request.RunID, RunAttemptID: request.RunAttemptID,
 		RunAttemptGeneration: request.RunAttemptGeneration,
 		RunVersion:           5, RunAttemptVersion: 6, AuthorizedAt: now,
+		Model: request.Model, Provider: request.Provider,
+		LLMGatewayID: request.LLMGatewayID, LLMGatewayVersion: request.LLMGatewayVersion,
+		LLMGatewayGrantUserID: request.LLMGatewayGrantUserID,
+		ResponsesURL:          "https://gateway.example.com/v1/responses",
+		UpstreamAuthorization: "Bearer upstream-secret", BearerExpiresAt: now.Add(10 * time.Minute),
 	}
 }
 

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 )
 
 func TestPostgreSQLProductionBootstrapIsAtomicAndIdempotent(t *testing.T) {
@@ -35,7 +37,7 @@ func TestPostgreSQLProductionBootstrapIsAtomicAndIdempotent(t *testing.T) {
 	quotedSchema := quoteIdentifier(schema)
 	for table, want := range map[string]int{
 		"workspaces": 1, "sessions": 1, "users": 1, "user_identities": 1,
-		"workspace_members": 1, "executors": 1,
+		"workspace_members": 1, "executors": 1, "production_bootstrap_seeds": 1,
 	} {
 		var count int
 		if err := connection.QueryRow(
@@ -62,5 +64,66 @@ func TestPostgreSQLProductionBootstrapIsAtomicAndIdempotent(t *testing.T) {
 	}
 	if insertedSessionCount != 0 {
 		t.Fatal("conflicting production bootstrap did not roll back its newly inserted session")
+	}
+}
+
+func TestPostgreSQLProductionBootstrapAdoptsOnlyExactPreLedgerAuthority(t *testing.T) {
+	connectionConfig := postgresIntegrationConfig(t)
+	schema := newPostgresTestSchema(t, connectionConfig)
+	catalog, err := EmbeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) < 17 {
+		t.Fatalf("migration catalog has only %d entries", len(catalog))
+	}
+	if _, err := migrateConfig(t.Context(), connectionConfig, runnerConfig{
+		schema: schema, lockKey: migrationAdvisoryLockKey, catalog: catalog[:16],
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	bootstrap := validProductionBootstrap()
+	connection := openPostgresTestConnection(t, connectionConfig)
+	transaction, err := connection.Begin(t.Context())
+	if err != nil {
+		connection.Close(context.Background())
+		t.Fatal(err)
+	}
+	quotedSchema := quoteIdentifier(schema)
+	for _, step := range []func(context.Context, pgx.Tx, string, ProductionBootstrap) (int, error){
+		insertProductionWorkspace,
+		insertProductionSession,
+		insertProductionUser,
+		insertProductionIdentity,
+		insertProductionMembership,
+		insertProductionExecutor,
+	} {
+		if _, err := step(t.Context(), transaction, quotedSchema, bootstrap); err != nil {
+			_ = transaction.Rollback(context.Background())
+			connection.Close(context.Background())
+			t.Fatal(err)
+		}
+	}
+	if err := transaction.Commit(t.Context()); err != nil {
+		connection.Close(context.Background())
+		t.Fatal(err)
+	}
+	connection.Close(context.Background())
+
+	if _, err := migrateConfig(t.Context(), connectionConfig, runnerConfig{
+		schema: schema, lockKey: migrationAdvisoryLockKey, catalog: catalog,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	adopted, err := bootstrapProductionConfig(t.Context(), connectionConfig, schema, bootstrap)
+	if err != nil || adopted.CreatedRows != 0 || adopted.SchemaVersion != int64(len(catalog)) {
+		t.Fatalf("adopt exact pre-ledger production bootstrap = %+v, %v", adopted, err)
+	}
+
+	conflicting := bootstrap
+	conflicting.SessionID = stateTestUUID(997)
+	if _, err := bootstrapProductionConfig(t.Context(), connectionConfig, schema, conflicting); !errors.Is(err, ErrProductionBootstrapConflict) {
+		t.Fatalf("adopt conflicting pre-ledger production bootstrap error = %v", err)
 	}
 }

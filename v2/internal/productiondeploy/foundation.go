@@ -1,5 +1,7 @@
 package productiondeploy
 
+import "github.com/agentserver/agentserver/v2/internal/executorgateway"
+
 const (
 	coreComponent           = "agentserver-core"
 	browserComponent        = "browser-gateway"
@@ -15,12 +17,12 @@ func renderFoundation(context renderContext) []kubeObject {
 	config := context.config
 	items := []kubeObject{
 		namespaceResource(config),
-		serviceAccountResource(config, coreComponent, config.Document.Objects.CoreRoleARN),
-		serviceAccountResource(config, browserComponent, ""),
-		serviceAccountResource(config, executorComponent, ""),
-		serviceAccountResource(config, harnessComponent, config.Document.Objects.HarnessPoolRoleARN),
-		serviceAccountResource(config, llmproxyComponent, ""),
-		serviceAccountResource(config, bootstrapServiceAccount, ""),
+		serviceAccountResource(config, coreComponent),
+		serviceAccountResource(config, browserComponent),
+		serviceAccountResource(config, executorComponent),
+		serviceAccountResource(config, harnessComponent),
+		serviceAccountResource(config, llmproxyComponent),
+		serviceAccountResource(config, bootstrapServiceAccount),
 		configMapResource(config, context.bootstrapConfigName, map[string]string{
 			"bootstrap.json": string(context.bootstrapJSON),
 		}),
@@ -29,13 +31,12 @@ func renderFoundation(context renderContext) []kubeObject {
 			"network-guard.json":     string(context.networkGuardJSON),
 		}),
 		internalService(config, coreComponent, config.Document.Services.Core),
-		browserPublicService(config),
-		internalService(config, executorComponent, InternalServiceDocument{
-			ClusterIP: config.Document.Services.ExecutorGateway.ClusterIP,
-			Port:      config.Document.Services.ExecutorGateway.Port,
-		}),
-		executorPublicService(config),
+		browserService(config),
+		executorService(config),
 		internalService(config, llmproxyComponent, config.Document.Services.LLMProxy),
+		frontendHTTPRoute(config),
+		browserHTTPRoute(config),
+		executorHTTPRoute(config),
 	}
 	items = append(items, renderNetworkPolicies(context)...)
 	return items
@@ -55,46 +56,84 @@ func internalService(config LoadedConfig, component string, service InternalServ
 	}
 }
 
-func browserPublicService(config LoadedConfig) kubeObject {
+func browserService(config LoadedConfig) kubeObject {
 	service := config.Document.Services.BrowserGateway
 	return kubeObject{
 		"apiVersion": "v1", "kind": "Service",
-		"metadata": metadata(browserComponent, config.Document.Namespace, componentLabels(browserComponent), map[string]string{
-			"external-dns.alpha.kubernetes.io/hostname": service.PublicHostname,
-		}),
+		"metadata": metadata(browserComponent, config.Document.Namespace, componentLabels(browserComponent), nil),
 		"spec": kubeObject{
-			"type": "LoadBalancer", "clusterIP": service.ClusterIP, "externalTrafficPolicy": "Local",
-			"loadBalancerSourceRanges": stringSliceAny(config.Document.Network.BrowserIngressCIDRs),
-			"selector":                 selectorLabels(browserComponent),
+			"type": "ClusterIP", "clusterIP": service.ClusterIP,
+			"selector": selectorLabels(browserComponent),
 			"ports": []any{kubeObject{
-				"name": "https", "protocol": "TCP", "port": 443, "targetPort": "https",
+				"name": "http", "protocol": "TCP", "port": int(service.Port), "targetPort": "http",
 			}},
 		},
 	}
 }
 
-func executorPublicService(config LoadedConfig) kubeObject {
+func executorService(config LoadedConfig) kubeObject {
 	service := config.Document.Services.ExecutorGateway
 	return kubeObject{
 		"apiVersion": "v1", "kind": "Service",
-		"metadata": metadata(executorComponent+"-public", config.Document.Namespace, componentLabels(executorComponent), map[string]string{
-			"external-dns.alpha.kubernetes.io/hostname": service.PublicHostname,
-		}),
+		"metadata": metadata(executorComponent, config.Document.Namespace, componentLabels(executorComponent), nil),
 		"spec": kubeObject{
-			"type": "LoadBalancer", "externalTrafficPolicy": "Local",
-			"loadBalancerSourceRanges": stringSliceAny(config.Document.Network.ExecutorIngressCIDRs),
-			"selector":                 selectorLabels(executorComponent),
-			"ports": []any{kubeObject{
-				"name": "https", "protocol": "TCP", "port": 443, "targetPort": "https",
+			"type": "ClusterIP", "clusterIP": service.ClusterIP,
+			"selector": selectorLabels(executorComponent),
+			"ports": []any{
+				kubeObject{"name": "http-agentx", "protocol": "TCP", "port": int(service.PublicPort), "targetPort": "http-agentx"},
+				kubeObject{"name": "https-mcp", "protocol": "TCP", "port": int(service.InternalPort), "targetPort": "https-mcp"},
+			},
+		},
+	}
+}
+
+func frontendHTTPRoute(config LoadedConfig) kubeObject {
+	return httpRoute(config, "agentserver-frontend", config.Document.Ingress.FrontendHostname, browserComponent,
+		config.Document.Services.BrowserGateway.Port, []kubeObject{
+			pathMatch("Exact", "/"), pathMatch("Exact", "/index.html"), pathMatch("Exact", "/readyz"),
+			pathMatch("PathPrefix", "/reference"), pathMatch("PathPrefix", "/auth"), pathMatch("PathPrefix", "/oauth2"),
+		})
+}
+
+func browserHTTPRoute(config LoadedConfig) kubeObject {
+	return httpRoute(config, "agentserver-browser-api", config.Document.Ingress.BrowserHostname, browserComponent,
+		config.Document.Services.BrowserGateway.Port, []kubeObject{pathMatch("PathPrefix", "/v2")})
+}
+
+func executorHTTPRoute(config LoadedConfig) kubeObject {
+	return httpRoute(config, "agentserver-executor-agentx", config.Document.Ingress.ExecutorHostname, executorComponent,
+		config.Document.Services.ExecutorGateway.PublicPort, []kubeObject{
+			pathMatch("Exact", executorgateway.AgentxEnrollmentPath),
+			pathMatch("Exact", executorgateway.AgentxChallengePath),
+			pathMatch("Exact", executorgateway.AgentxConnectPath),
+		})
+}
+
+func httpRoute(config LoadedConfig, name, hostname, backend string, port uint16, matches []kubeObject) kubeObject {
+	matchValues := make([]any, len(matches))
+	for index := range matches {
+		matchValues[index] = matches[index]
+	}
+	return kubeObject{
+		"apiVersion": "gateway.networking.k8s.io/v1", "kind": "HTTPRoute",
+		"metadata": metadata(name, config.Document.Namespace, map[string]string{
+			"app.kubernetes.io/part-of": "agentserver-v2", "app.kubernetes.io/managed-by": "agentserver-deploy",
+		}, nil),
+		"spec": kubeObject{
+			"parentRefs": []any{kubeObject{
+				"group": "gateway.networking.k8s.io", "kind": "Gateway",
+				"namespace": config.Document.Ingress.GatewayNamespace, "name": config.Document.Ingress.GatewayName,
+				"sectionName": config.Document.Ingress.GatewaySection,
+			}},
+			"hostnames": []any{hostname},
+			"rules": []any{kubeObject{
+				"matches":     matchValues,
+				"backendRefs": []any{kubeObject{"group": "", "kind": "Service", "name": backend, "port": int(port)}},
 			}},
 		},
 	}
 }
 
-func stringSliceAny(values []string) []any {
-	result := make([]any, len(values))
-	for index, value := range values {
-		result[index] = value
-	}
-	return result
+func pathMatch(kind, value string) kubeObject {
+	return kubeObject{"path": kubeObject{"type": kind, "value": value}}
 }

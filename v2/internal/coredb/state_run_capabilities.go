@@ -27,7 +27,9 @@ WITH authority_time AS MATERIALIZED (
     SELECT pg_catalog.clock_timestamp() AS now
 )
 SELECT r.actor_id::text, r.version, a.version, a.created_at,
-       authority_time.now, s.latest_checkpoint_id::text
+       authority_time.now, s.latest_checkpoint_id::text,
+       launch.llm_gateway_id::text, launch.llm_gateway_version,
+       launch.llm_gateway_grant_user_id::text, launch.model
 FROM authority_time
 JOIN %s AS r
   ON r.id = $3 AND r.workspace_id = $1 AND r.session_id = $2
@@ -49,6 +51,10 @@ JOIN %s AS al
   ON al.run_attempt_id = a.id
  AND al.holder_id = $5 AND al.generation = $6
  AND al.expires_at > authority_time.now
+JOIN %s AS launch
+  ON launch.run_id = r.id
+ AND launch.workspace_id = r.workspace_id
+ AND launch.session_id = r.session_id
 WHERE r.status = 'starting'
   AND r.current_attempt_generation = $6
   AND r.version = $7
@@ -58,7 +64,7 @@ WHERE r.status = 'starting'
   AND a.version = $8`,
 			s.table("runs"), s.table("run_attempts"), s.table("sessions"),
 			s.table("workspaces"), s.table("workspace_members"),
-			s.table("session_leases"), s.table("attempt_leases"),
+			s.table("session_leases"), s.table("attempt_leases"), s.table("run_launch_states"),
 		)
 		var authority RunCapabilityIssuanceAuthority
 		var latestCheckpointID *string
@@ -70,6 +76,8 @@ WHERE r.status = 'starting'
 		).Scan(
 			&authority.ActorID, &authority.RunVersion, &authority.AttemptVersion,
 			&authority.AttemptCreatedAt, &authority.DatabaseTime, &latestCheckpointID,
+			&authority.LLMGateway.GatewayID, &authority.LLMGateway.ConfigVersion,
+			&authority.LLMGateway.GrantUserID, &authority.LLMGateway.Model,
 		); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return RunCapabilityIssuanceAuthority{}, unavailableRunCapabilityAuthority(
@@ -77,6 +85,9 @@ WHERE r.status = 'starting'
 				)
 			}
 			return RunCapabilityIssuanceAuthority{}, databaseError(operation+" read live attempt authority", err)
+		}
+		if authority.LLMGateway != command.LLMGateway || authority.LLMGateway.GrantUserID != authority.ActorID {
+			return RunCapabilityIssuanceAuthority{}, unavailableRunCapabilityAuthority(operation, command.AttemptID)
 		}
 		if err := s.requireProductionExecutor(
 			ctx, transaction, operation, command.WorkspaceID, command.ExecutorID, authority.DatabaseTime,
@@ -200,9 +211,43 @@ WHERE r.current_attempt_generation = $7
 			if subtle.ConstantTimeCompare(catalogDigest[:], command.ToolCatalogDigest[:]) != 1 {
 				return AuthorizedRunCapability{}, unavailableRunCapabilityAuthority(operation, command.CapabilityID)
 			}
+		} else {
+			binding, err := s.readRunCapabilityLLMGatewayBinding(ctx, transaction, operation, command.RunID)
+			if err != nil || binding != command.LLMGateway || binding.GrantUserID != command.ActorID {
+				return AuthorizedRunCapability{}, unavailableRunCapabilityAuthority(operation, command.CapabilityID)
+			}
+			authority, err := s.readWorkspaceLLMGatewayLiveAuthority(
+				ctx, transaction, operation, command.WorkspaceID, binding,
+			)
+			if err != nil {
+				return AuthorizedRunCapability{}, err
+			}
+			result.LLMGateway = &authority
 		}
 		return result, nil
 	})
+}
+
+func (s *StateStore) readRunCapabilityLLMGatewayBinding(
+	ctx context.Context,
+	transaction pgx.Tx,
+	operation, runID string,
+) (RunLLMGatewayBinding, error) {
+	query := fmt.Sprintf(`
+SELECT llm_gateway_id::text, llm_gateway_version,
+       llm_gateway_grant_user_id::text, model
+FROM %s
+WHERE run_id = $1`, s.table("run_launch_states"))
+	var binding RunLLMGatewayBinding
+	if err := transaction.QueryRow(ctx, query, runID).Scan(
+		&binding.GatewayID, &binding.ConfigVersion, &binding.GrantUserID, &binding.Model,
+	); err != nil {
+		return RunLLMGatewayBinding{}, err
+	}
+	if err := validateRunLLMGatewayBinding(binding); err != nil {
+		return RunLLMGatewayBinding{}, databaseError(operation+" validate frozen LLM gateway binding", err)
+	}
+	return binding, nil
 }
 
 func (s *StateStore) requireProductionExecutor(
@@ -312,6 +357,9 @@ func validateResolveRunCapabilityIssuance(command ResolveRunCapabilityIssuanceCo
 	if command.ToolCatalogDigest == ([sha256.Size]byte{}) {
 		return errors.New("tool_catalog_digest is required")
 	}
+	if err := validateRunLLMGatewayBinding(command.LLMGateway); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -341,10 +389,16 @@ func validateAuthorizeRunCapability(command AuthorizeRunCapabilityCommand) error
 			command.ExpectedAttemptVersion < 1 || command.ExpectedAttemptVersion > maxSafeJSONInteger {
 			return errors.New("executor capability catalog and expected versions are required")
 		}
+		if command.LLMGateway != (RunLLMGatewayBinding{}) {
+			return errors.New("executor capability contains LLM gateway authority")
+		}
 	case RunCapabilityAudienceLLMProxy:
 		if command.ExecutorID != "" || command.ToolCatalogDigest != ([sha256.Size]byte{}) ||
 			command.ExpectedRunVersion != 0 || command.ExpectedAttemptVersion != 0 {
 			return errors.New("llmproxy capability contains executor authority")
+		}
+		if err := validateRunLLMGatewayBinding(command.LLMGateway); err != nil {
+			return err
 		}
 	default:
 		return errors.New("run capability audience is unsupported")

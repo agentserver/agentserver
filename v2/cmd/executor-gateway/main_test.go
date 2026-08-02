@@ -104,6 +104,46 @@ func TestGatewayHealthAndDevelopmentRouteSurface(t *testing.T) {
 	}
 }
 
+func TestProductionGatewayListenersHaveDisjointRouteSurfaces(t *testing.T) {
+	mcpCalls := 0
+	agentxCalls := 0
+	mcp := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		mcpCalls++
+		response.WriteHeader(http.StatusAccepted)
+	})
+	agentx := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		agentxCalls++
+		response.WriteHeader(http.StatusSwitchingProtocols)
+	})
+	internal := gatewayInternalRoutes(mcp, &gatewayReadiness{})
+	public := gatewayPublicRoutes(agentx, nil, &gatewayReadiness{})
+
+	request := httptest.NewRequest(http.MethodPost, "https://executor.internal"+executorgateway.ExecutorMCPPath, nil)
+	response := httptest.NewRecorder()
+	internal.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted || mcpCalls != 1 {
+		t.Fatalf("internal MCP = %d calls=%d", response.Code, mcpCalls)
+	}
+	request = httptest.NewRequest(http.MethodPost, "http://executor.public"+executorgateway.ExecutorMCPPath, nil)
+	response = httptest.NewRecorder()
+	public.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound || mcpCalls != 1 {
+		t.Fatalf("public MCP = %d internal calls=%d", response.Code, mcpCalls)
+	}
+	request = httptest.NewRequest(http.MethodGet, "http://executor.public"+executorgateway.AgentxConnectPath, nil)
+	response = httptest.NewRecorder()
+	public.ServeHTTP(response, request)
+	if response.Code != http.StatusSwitchingProtocols || agentxCalls != 1 {
+		t.Fatalf("public agentx = %d calls=%d", response.Code, agentxCalls)
+	}
+	request = httptest.NewRequest(http.MethodGet, "https://executor.internal"+executorgateway.AgentxConnectPath, nil)
+	response = httptest.NewRecorder()
+	internal.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound || agentxCalls != 1 {
+		t.Fatalf("internal agentx = %d public calls=%d", response.Code, agentxCalls)
+	}
+}
+
 func TestDevMCPAuthenticatorRequiresExactBearer(t *testing.T) {
 	const bearer = "0123456789abcdef0123456789abcdef"
 	authenticator, err := newDevMCPAuthenticator(

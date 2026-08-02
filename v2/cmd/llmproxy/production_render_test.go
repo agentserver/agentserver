@@ -23,12 +23,6 @@ func TestProductionRendererLLMProxyEnvironmentPassesCommandLoader(t *testing.T) 
 		llmProxyCoreServerNameEnvironment,
 		llmProxyCapabilityIssuerEnvironment,
 		llmProxyCapabilityKeyringEnvironment,
-		llmProxyModelEnvironment,
-		llmProxyModelProviderEnvironment,
-		llmProxyUpstreamResponsesURLEnvironment,
-		llmProxyUpstreamCAEnvironment,
-		llmProxyUpstreamAuthHeaderEnvironment,
-		llmProxyUpstreamCredentialEnvironment,
 	}
 	slices.Sort(want)
 	if got := environment.Names(); !slices.Equal(got, want) {
@@ -39,11 +33,7 @@ func TestProductionRendererLLMProxyEnvironmentPassesCommandLoader(t *testing.T) 
 			t.Fatalf("production renderer emitted development authority %s", name)
 		}
 	}
-	loaded, err := loadLLMProxyConfig(environment.Get)
-	if err != nil {
+	if _, err := loadLLMProxyConfig(environment.Get); err != nil {
 		t.Fatalf("llmproxy rejected rendered production environment: %v", err)
-	}
-	if loaded.model != environment.Get(llmProxyModelEnvironment) || loaded.provider != environment.Get(llmProxyModelProviderEnvironment) {
-		t.Fatalf("llmproxy loaded different production route: %+v", loaded)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
 )
 
@@ -22,24 +23,35 @@ var (
 )
 
 type RunCapabilityAuthorizationRequest struct {
-	Token                string
-	CapabilityID         string
-	Model                string
-	Provider             string
-	RunID                string
-	RunAttemptID         string
-	RunAttemptGeneration int64
+	Token                 string
+	CapabilityID          string
+	Model                 string
+	Provider              string
+	LLMGatewayID          string
+	LLMGatewayVersion     int64
+	LLMGatewayGrantUserID string
+	RunID                 string
+	RunAttemptID          string
+	RunAttemptGeneration  int64
 }
 
 type RunCapabilityAuthorization struct {
-	CapabilityID         string
-	Audience             string
-	RunID                string
-	RunAttemptID         string
-	RunAttemptGeneration int64
-	RunVersion           int64
-	RunAttemptVersion    int64
-	AuthorizedAt         time.Time
+	CapabilityID          string
+	Audience              string
+	RunID                 string
+	RunAttemptID          string
+	RunAttemptGeneration  int64
+	RunVersion            int64
+	RunAttemptVersion     int64
+	AuthorizedAt          time.Time
+	Model                 string
+	Provider              string
+	LLMGatewayID          string
+	LLMGatewayVersion     int64
+	LLMGatewayGrantUserID string
+	ResponsesURL          string
+	UpstreamAuthorization string
+	BearerExpiresAt       time.Time
 }
 
 type RunCapabilityAuthorizer interface {
@@ -47,19 +59,25 @@ type RunCapabilityAuthorizer interface {
 }
 
 type Principal struct {
-	CapabilityID         string
-	WorkspaceID          string
-	SessionID            string
-	RunID                string
-	RunAttemptID         string
-	RunAttemptGeneration int64
-	ActorID              string
-	HolderID             string
-	Model                string
-	Provider             string
-	RunDeadline          time.Time
-	CapabilityExpiresAt  time.Time
-	AuthorizedAt         time.Time
+	CapabilityID          string
+	WorkspaceID           string
+	SessionID             string
+	RunID                 string
+	RunAttemptID          string
+	RunAttemptGeneration  int64
+	ActorID               string
+	HolderID              string
+	Model                 string
+	Provider              string
+	LLMGatewayID          string
+	LLMGatewayVersion     int64
+	LLMGatewayGrantUserID string
+	ResponsesURL          string
+	UpstreamAuthorization string
+	BearerExpiresAt       time.Time
+	RunDeadline           time.Time
+	CapabilityExpiresAt   time.Time
+	AuthorizedAt          time.Time
 }
 
 // ProductionAuthenticator applies both authorization layers to every model
@@ -68,16 +86,12 @@ type Principal struct {
 type ProductionAuthenticator struct {
 	verifier   *runcapability.ProductionVerifier
 	authorizer RunCapabilityAuthorizer
-	model      string
-	provider   string
 	now        func() time.Time
 }
 
 func NewProductionAuthenticator(
 	verifier *runcapability.ProductionVerifier,
 	authorizer RunCapabilityAuthorizer,
-	model string,
-	provider string,
 	now func() time.Time,
 ) (*ProductionAuthenticator, error) {
 	if verifier == nil || verifier.Issuer() == "" {
@@ -86,14 +100,11 @@ func NewProductionAuthenticator(
 	if authorizer == nil {
 		return nil, errors.New("production llmproxy live authorizer is required")
 	}
-	if !validRouteText(model) || !validRouteText(provider) {
-		return nil, errors.New("production llmproxy model and provider route is invalid")
-	}
 	if now == nil {
 		return nil, errors.New("production llmproxy clock is required")
 	}
 	return &ProductionAuthenticator{
-		verifier: verifier, authorizer: authorizer, model: model, provider: provider, now: now,
+		verifier: verifier, authorizer: authorizer, now: now,
 	}, nil
 }
 
@@ -114,7 +125,7 @@ func (authenticator *ProductionAuthenticator) AuthenticateModelRequest(
 	if err != nil {
 		return Principal{}, ErrUnauthenticated
 	}
-	if model != authenticator.model || claims.Model != model || claims.Provider != authenticator.provider ||
+	if claims.Model != model || claims.Provider != corecontract.WorkspaceLLMGatewayProvider ||
 		now.UnixMilli() >= claims.RunDeadlineUnixMS {
 		return Principal{}, ErrForbidden
 	}
@@ -123,7 +134,9 @@ func (authenticator *ProductionAuthenticator) AuthenticateModelRequest(
 		RunCapabilityAuthorizationRequest{
 			Token: token, CapabilityID: claims.CapabilityID,
 			Model: claims.Model, Provider: claims.Provider,
-			RunID: claims.RunID, RunAttemptID: claims.RunAttemptID,
+			LLMGatewayID: claims.LLMGatewayID, LLMGatewayVersion: claims.LLMGatewayVersion,
+			LLMGatewayGrantUserID: claims.LLMGatewayGrantUserID,
+			RunID:                 claims.RunID, RunAttemptID: claims.RunAttemptID,
 			RunAttemptGeneration: claims.RunAttemptGeneration,
 		},
 	)
@@ -139,6 +152,10 @@ func (authenticator *ProductionAuthenticator) AuthenticateModelRequest(
 		RunAttemptID: claims.RunAttemptID, RunAttemptGeneration: claims.RunAttemptGeneration,
 		ActorID: claims.ActorID, HolderID: claims.HolderID,
 		Model: claims.Model, Provider: claims.Provider,
+		LLMGatewayID: claims.LLMGatewayID, LLMGatewayVersion: claims.LLMGatewayVersion,
+		LLMGatewayGrantUserID: claims.LLMGatewayGrantUserID,
+		ResponsesURL:          authorized.ResponsesURL, UpstreamAuthorization: authorized.UpstreamAuthorization,
+		BearerExpiresAt:     authorized.BearerExpiresAt.UTC(),
 		RunDeadline:         time.UnixMilli(claims.RunDeadlineUnixMS).UTC(),
 		CapabilityExpiresAt: time.UnixMilli(claims.ExpiresAtUnixMS).UTC(),
 		AuthorizedAt:        authorized.AuthorizedAt.UTC(),
@@ -163,6 +180,12 @@ func authorizationMatchesClaims(authorized RunCapabilityAuthorization, claims ru
 		authorized.RunID == claims.RunID &&
 		authorized.RunAttemptID == claims.RunAttemptID &&
 		authorized.RunAttemptGeneration == claims.RunAttemptGeneration &&
+		authorized.Model == claims.Model && authorized.Provider == claims.Provider &&
+		authorized.LLMGatewayID == claims.LLMGatewayID &&
+		authorized.LLMGatewayVersion == claims.LLMGatewayVersion &&
+		authorized.LLMGatewayGrantUserID == claims.LLMGatewayGrantUserID &&
+		authorized.ResponsesURL != "" && authorized.UpstreamAuthorization != "" &&
+		!authorized.BearerExpiresAt.IsZero() &&
 		safeVersion(authorized.RunVersion) && safeVersion(authorized.RunAttemptVersion) &&
 		!authorized.AuthorizedAt.IsZero()
 }

@@ -23,7 +23,7 @@ type encryptedRunObjectProtocol interface {
 	Open(context.Context, objectstore.Scope) (io.ReadCloser, error)
 }
 
-func NewEncryptedRunObjectStore(objects *objectstore.Store) (*EncryptedRunObjectStore, error) {
+func NewEncryptedRunObjectStore(objects objectstore.Protocol) (*EncryptedRunObjectStore, error) {
 	if objects == nil {
 		return nil, errors.New("pool encrypted object store is required")
 	}

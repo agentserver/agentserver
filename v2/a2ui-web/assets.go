@@ -7,6 +7,7 @@ import (
 	_ "embed"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 )
 
@@ -24,6 +25,9 @@ var protocolJavaScript []byte
 //go:embed auth.js
 var authorizationJavaScript []byte
 
+//go:embed llm-gateways.js
+var llmGatewaysJavaScript []byte
+
 //go:embed styles.css
 var styleSheet []byte
 
@@ -33,22 +37,38 @@ type asset struct {
 }
 
 var assets = map[string]asset{
-	"/":                      {contentType: "text/html; charset=utf-8", contents: indexHTML},
-	"/index.html":            {contentType: "text/html; charset=utf-8", contents: indexHTML},
-	"/reference/app.js":      {contentType: "text/javascript; charset=utf-8", contents: applicationJavaScript},
-	"/reference/protocol.js": {contentType: "text/javascript; charset=utf-8", contents: protocolJavaScript},
-	"/reference/auth.js":     {contentType: "text/javascript; charset=utf-8", contents: authorizationJavaScript},
-	"/reference/styles.css":  {contentType: "text/css; charset=utf-8", contents: styleSheet},
+	"/":                          {contentType: "text/html; charset=utf-8", contents: indexHTML},
+	"/index.html":                {contentType: "text/html; charset=utf-8", contents: indexHTML},
+	"/reference/app.js":          {contentType: "text/javascript; charset=utf-8", contents: applicationJavaScript},
+	"/reference/protocol.js":     {contentType: "text/javascript; charset=utf-8", contents: protocolJavaScript},
+	"/reference/auth.js":         {contentType: "text/javascript; charset=utf-8", contents: authorizationJavaScript},
+	"/reference/llm-gateways.js": {contentType: "text/javascript; charset=utf-8", contents: llmGatewaysJavaScript},
+	"/reference/styles.css":      {contentType: "text/css; charset=utf-8", contents: styleSheet},
 }
 
 // Handler returns a closed static-file handler. It deliberately has no SPA
 // fallback: an unknown API or asset path must remain a visible 404.
 func Handler() http.Handler {
-	return http.HandlerFunc(serveAsset)
+	return assetHandler{contentSecurityPolicy: contentSecurityPolicy}
 }
 
-func serveAsset(response http.ResponseWriter, request *http.Request) {
-	setSecurityHeaders(response.Header())
+// HandlerForAPIOrigin serves the same closed asset set while allowing the
+// reviewed reference client to connect to one exact cross-origin AG-UI API.
+func HandlerForAPIOrigin(apiOrigin string) (http.Handler, error) {
+	parsed, err := url.Parse(apiOrigin)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil ||
+		parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.String() != apiOrigin {
+		return nil, fmt.Errorf("reference web API origin must be an exact HTTPS origin")
+	}
+	return assetHandler{contentSecurityPolicy: contentSecurityPolicy + " " + apiOrigin}, nil
+}
+
+type assetHandler struct {
+	contentSecurityPolicy string
+}
+
+func (handler assetHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
+	setSecurityHeaders(response.Header(), handler.contentSecurityPolicy)
 	if request.Method != http.MethodGet && request.Method != http.MethodHead {
 		response.Header().Set("Allow", "GET, HEAD")
 		http.Error(response, "method not allowed", http.StatusMethodNotAllowed)
@@ -70,10 +90,13 @@ func serveAsset(response http.ResponseWriter, request *http.Request) {
 	}
 }
 
-func setSecurityHeaders(header http.Header) {
+func setSecurityHeaders(header http.Header, policy string) {
 	header.Set("Cache-Control", "no-store")
-	header.Set("Content-Security-Policy", contentSecurityPolicy)
-	header.Set("Cross-Origin-Opener-Policy", "same-origin")
+	header.Set("Content-Security-Policy", policy)
+	// The workspace Gateway OIDC flow uses a same-origin callback popup. The
+	// allow-popups variant deliberately preserves its opener while the popup is
+	// temporarily navigated through the third-party authorization endpoint.
+	header.Set("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
 	header.Set("Cross-Origin-Resource-Policy", "same-origin")
 	header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
 	header.Set("Referrer-Policy", "no-referrer")

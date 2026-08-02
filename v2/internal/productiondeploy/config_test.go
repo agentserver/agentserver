@@ -21,23 +21,19 @@ func TestValidateConfigAcceptsSupportedLinuxDeployment(t *testing.T) {
 	}
 }
 
-func TestValidateConfigAcceptsLinuxAMD64Deployment(t *testing.T) {
+func TestValidateConfigRejectsNonAMD64SGDeployment(t *testing.T) {
 	document := validConfigDocument()
-	document.Platform = ProductionPlatformLinuxAMD64
-	loaded, err := ValidateConfig(document)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.Document.Platform != ProductionPlatformLinuxAMD64 {
-		t.Fatalf("loaded platform = %q", loaded.Document.Platform)
+	document.Platform = "linux-arm64"
+	if _, err := ValidateConfig(document); err == nil {
+		t.Fatal("SG production accepted a non-amd64 platform")
 	}
 }
 
-func TestValidateConfigAllowsPublicOrNodeCredentialedImages(t *testing.T) {
+func TestValidateConfigRequiresManagedSGImagePullSecret(t *testing.T) {
 	document := validConfigDocument()
 	document.Images.PullSecret = ""
-	if _, err := ValidateConfig(document); err != nil {
-		t.Fatal(err)
+	if _, err := ValidateConfig(document); err == nil {
+		t.Fatal("SG production accepted an unmanaged image pull credential path")
 	}
 }
 
@@ -76,11 +72,16 @@ func TestValidateConfigUsesEnrollmentAuthorityMaximumTTL(t *testing.T) {
 func TestValidateConfigRejectsUnsafeProductionShapes(t *testing.T) {
 	for name, mutate := range map[string]func(*ConfigDocument){
 		"platform":                  func(value *ConfigDocument) { value.Platform = "linux-riscv64" },
+		"non-SG region":             func(value *ConfigDocument) { value.Region = "cn" },
+		"wrong namespace":           func(value *ConfigDocument) { value.Namespace = "agentserver-test" },
+		"wrong trust domain":        func(value *ConfigDocument) { value.TrustDomain = "other.byted.bps.dev" },
 		"mutable image":             func(value *ConfigDocument) { value.Images.Service = "registry.example.test/agentserver:latest" },
 		"invalid pull secret":       func(value *ConfigDocument) { value.Images.PullSecret = "Not_Canonical" },
 		"pull secret collision":     func(value *ConfigDocument) { value.Images.PullSecret = value.Secrets.Core },
-		"gateway replicas implied":  func(value *ConfigDocument) { value.Services.ExecutorGateway.Port = 9443 },
-		"shared role":               func(value *ConfigDocument) { value.Objects.HarnessPoolRoleARN = value.Objects.CoreRoleARN },
+		"gateway replicas implied":  func(value *ConfigDocument) { value.Services.ExecutorGateway.InternalPort = 9443 },
+		"wrong frontend hostname":   func(value *ConfigDocument) { value.Ingress.FrontendHostname = "agent-cn.byted.bps.dev" },
+		"missing gateway selector":  func(value *ConfigDocument) { value.Ingress.GatewayPodSelector = nil },
+		"invalid object mode":       func(value *ConfigDocument) { value.Objects.Mode = "encrypted" },
 		"invalid object prefix":     func(value *ConfigDocument) { value.Objects.Prefix = "agentserver/../production" },
 		"invalid provider region":   func(value *ConfigDocument) { value.Objects.S3Region = "not a region" },
 		"open egress":               func(value *ConfigDocument) { value.Network.CoreExternalEgress[0].CIDR = "0.0.0.0/0" },
@@ -106,6 +107,8 @@ func TestValidateConfigRejectsUnsafeProductionShapes(t *testing.T) {
 			value.Runtime.AllowedTools = []string{"list_environments", "exec_command"}
 		},
 		"unreviewed runtime manifest": func(value *ConfigDocument) { value.Runtime.RuntimeManifestSHA256 = strings.Repeat("9", 64) },
+		"capability key mismatch":     func(value *ConfigDocument) { value.Runtime.CapabilitySigningKeyID = "other" },
+		"manifest key mismatch":       func(value *ConfigDocument) { value.Runtime.ManifestSigningKeyID = "other" },
 		"runtime allowlist drift":     func(value *ConfigDocument) { value.Runtime.CheckpointAllowlistVersion++ },
 		"shared secret":               func(value *ConfigDocument) { value.Secrets.HarnessWorker = value.Secrets.HarnessPool },
 	} {
@@ -128,7 +131,7 @@ func validConfigDocument() ConfigDocument {
 		}
 	}
 	return ConfigDocument{
-		Version: 1, Namespace: "agentserver", ClusterDomain: "cluster.local", Platform: ProductionPlatform,
+		Version: 1, Region: ProductionRegion, Namespace: "agentserver", ClusterDomain: "cluster.local", Platform: ProductionPlatform,
 		Images: ImagesDocument{
 			Service:    "registry.example.test/agentserver/service@sha256:" + digest("1"),
 			Harness:    "registry.example.test/agentserver/harness@sha256:" + digest("2"),
@@ -137,9 +140,16 @@ func validConfigDocument() ConfigDocument {
 		Replicas: ReplicasDocument{Core: 2, BrowserGateway: 2, HarnessPool: 2, LLMProxy: 2},
 		Services: ServicesDocument{
 			Core:            InternalServiceDocument{ClusterIP: "10.96.10.10", Port: HarnessControlPort},
-			BrowserGateway:  PublicServiceDocument{ClusterIP: "10.96.10.11", Port: HarnessControlPort, PublicHostname: "agent.example.test"},
-			ExecutorGateway: PublicServiceDocument{ClusterIP: "10.96.10.12", Port: HarnessControlPort, PublicHostname: "executor.example.test"},
+			BrowserGateway:  InternalServiceDocument{ClusterIP: "10.96.10.11", Port: PublicHTTPPort},
+			ExecutorGateway: ExecutorServiceDocument{ClusterIP: "10.96.10.12", PublicPort: PublicHTTPPort, InternalPort: HarnessControlPort},
 			LLMProxy:        InternalServiceDocument{ClusterIP: "10.96.10.13", Port: HarnessControlPort},
+		},
+		Ingress: IngressDocument{
+			GatewayNamespace: ProductionGatewayNamespace, GatewayName: ProductionGatewayName,
+			GatewaySection:     ProductionGatewaySection,
+			GatewayPodSelector: map[string]string{"gateway.networking.k8s.io/gateway-name": ProductionGatewayName},
+			FrontendHostname:   ProductionFrontendHostname, BrowserHostname: ProductionBrowserHostname,
+			ExecutorHostname: ProductionExecutorHostname,
 		},
 		Bootstrap: BootstrapDocument{
 			WorkspaceID:         "40000000-0000-4000-8000-000000000004",
@@ -148,24 +158,24 @@ func validConfigDocument() ConfigDocument {
 			ExternalOIDCSubject: "production-owner",
 			ExecutorID:          "20000000-0000-4000-8000-000000000002",
 		},
-		TrustDomain: "agentserver.example.test",
+		TrustDomain: ProductionTrustDomain,
 		OAuth: OAuthDocument{
 			Hydra: HydraDocument{
-				Issuer: "https://auth.example.test", AdminURL: "https://hydra-admin.example.test",
-				PublicOrigin: "https://auth.example.test", IntrospectionURL: "https://hydra-admin.example.test/admin/oauth2/introspect",
-				BrowserClientID: "agentserver-browser",
+				Issuer: "https://agent.byted.bps.dev", AdminURL: "https://hydra-admin.example.test",
+				PublicOrigin: "https://agent.byted.bps.dev", PublicUpstream: "https://hydra-public.example.test",
+				IntrospectionURL: "https://hydra-admin.example.test/admin/oauth2/introspect",
+				BrowserClientID:  "agentserver-browser",
 			},
 			ExternalOIDC: ExternalOIDCDocument{
 				Issuer: "https://idp.example.test/oidc", ClientID: "agentserver-production",
-				RedirectURL: "https://agent.example.test/auth/oidc/callback",
+				RedirectURL: "https://agent.byted.bps.dev/auth/oidc/callback",
 			},
 		},
 		Runtime: RuntimeDocument{
-			CapabilityIssuer:       "spiffe://agentserver.example.test/ns/agentserver/sa/agentserver-core",
-			CapabilitySigningKeyID: "run-capability-2026-08", ManifestSigningKeyID: "run-manifest-2026-08",
-			Model: "gpt-5", Provider: "openai", UpstreamResponsesURL: "https://api.openai.com/v1/responses",
-			UpstreamAuthHeader: "Authorization", RunPolicyVersion: "run-policy-v1",
-			AllowedTools: []string{"shell", "list_environments", "read_file"}, ExecutionPolicyVersion: "execution-policy-v1",
+			CapabilityIssuer:       "spiffe://" + ProductionTrustDomain + "/ns/" + ProductionNamespace + "/sa/agentserver-core",
+			CapabilitySigningKeyID: ProductionCapabilityKeyID, ManifestSigningKeyID: ProductionManifestKeyID,
+			RunPolicyVersion: "run-policy-v1",
+			AllowedTools:     []string{"shell", "list_environments", "read_file"}, ExecutionPolicyVersion: "execution-policy-v1",
 			ShellPolicyDecision: "ask", ReadFilePolicyDecision: "allow",
 			MaxRunDuration: "30m", MaxApprovalTTL: "5m", CapabilityExpiryGrace: "30s", EnrollmentTokenTTL: "5m",
 			MaxConcurrentAttempts: 4, RuntimeManifestSHA256: stockruntime.ManifestSHA256,
@@ -173,26 +183,22 @@ func validConfigDocument() ConfigDocument {
 			FinalExecSHA256:            digest("4"), FinalExecSizeBytes: 1048576,
 		},
 		Objects: ObjectStoreDocument{
-			Prefix: "agentserver/v2/production", S3Bucket: "agentserver-production", S3Region: "ap-southeast-1",
-			KMSRegion: "ap-southeast-1", KMSKeyID: "arn:aws:kms:ap-southeast-1:123456789012:key/11111111-1111-4111-8111-111111111111",
-			CoreRoleARN:        "arn:aws:iam::123456789012:role/agentserver-core",
-			HarnessPoolRoleARN: "arn:aws:iam::123456789012:role/agentserver-harness-pool",
+			Mode: "s3-plaintext-v1", Prefix: "agentserver/v2/production",
+			S3Bucket: "agentserver-production", S3Region: "sg-central",
 		},
 		Secrets: SecretsDocument{
 			Core: "agentserver-core-secrets", BrowserGateway: "agentserver-browser-secrets",
 			ExecutorGateway: "agentserver-executor-secrets", HarnessPool: "agentserver-pool-secrets",
 			HarnessWorker: "agentserver-worker-secrets", LLMProxy: "agentserver-llmproxy-secrets",
+			ObjectStore: "agentserver-object-store-secrets",
 		},
 		Network: NetworkDocument{
-			DNSClusterIP:           "10.96.0.10",
-			DNSNamespace:           "kube-system",
-			DNSPodSelector:         map[string]string{"k8s-app": "kube-dns"},
-			DatabaseEgress:         []EgressRuleDocument{{CIDR: "10.20.0.10/32", Ports: []uint16{5432}}},
-			CoreExternalEgress:     []EgressRuleDocument{{CIDR: "10.30.0.0/24", Ports: []uint16{443}}},
-			BrowserExternalEgress:  []EgressRuleDocument{{CIDR: "10.31.0.0/24", Ports: []uint16{443}}},
-			HarnessExternalEgress:  []EgressRuleDocument{{CIDR: "10.32.0.0/24", Ports: []uint16{443}}},
-			LLMProxyExternalEgress: []EgressRuleDocument{{CIDR: "10.33.0.0/24", Ports: []uint16{443}}},
-			BrowserIngressCIDRs:    []string{"0.0.0.0/0"}, ExecutorIngressCIDRs: []string{"203.0.113.0/24"},
+			DNSClusterIP:          "10.96.0.10",
+			DNSNamespace:          "kube-system",
+			DNSPodSelector:        map[string]string{"k8s-app": "kube-dns"},
+			CoreExternalEgress:    []EgressRuleDocument{{CIDR: "10.30.0.0/24", Ports: []uint16{443}}},
+			BrowserExternalEgress: []EgressRuleDocument{{CIDR: "10.31.0.0/24", Ports: []uint16{443}}},
+			HarnessExternalEgress: []EgressRuleDocument{{CIDR: "10.32.0.0/24", Ports: []uint16{443}}},
 		},
 		Resources: ResourcesDocument{
 			Core:            resources("500m", "512Mi", "2", "2Gi"),

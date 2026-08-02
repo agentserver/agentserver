@@ -1,7 +1,11 @@
 # ADR 0001：AWS SDK v2 作为加密对象协议的参考 provider
 
-- 状态：Accepted
+- 状态：Superseded for production by [ADR 0004](0004-sg-plaintext-s3-production.md)
 - 日期：2026-08-02
+
+本 ADR 保留加密协议和 S3/KMS adapter 的历史设计依据，但不再描述当前 SG 生产装配。当前
+生产 profile 不使用 KMS、STS 或 workload identity，见 ADR 0004；这里的加密 Store 仍可作为
+未来其他部署 profile 的库级实现，不能据此向 SG Chart 加回 KMS 配置。
 
 ## 背景
 

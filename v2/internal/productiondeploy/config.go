@@ -1,7 +1,7 @@
 // Package productiondeploy validates and renders the closed-world Phase 5
-// Kubernetes production deployment. It never accepts secret values or static
-// AWS credentials; the input names pre-created Kubernetes Secrets and AWS
-// workload-identity roles only.
+// Kubernetes production deployment. It never accepts secret values directly;
+// the input names pre-created Kubernetes Secrets, including the explicit
+// credentials required by the selected S3-compatible object service.
 package productiondeploy
 
 import (
@@ -32,10 +32,22 @@ import (
 )
 
 const (
-	CurrentVersion               = 1
-	ProductionPlatformLinuxAMD64 = "linux-amd64"
-	ProductionPlatformLinuxARM64 = "linux-arm64"
-	ProductionPlatform           = ProductionPlatformLinuxARM64
+	CurrentVersion                = 1
+	ProductionRegion              = "sg"
+	ProductionNamespace           = "agentserver"
+	ProductionTrustDomain         = "agentserver.byted.bps.dev"
+	ProductionPlatformLinuxAMD64  = "linux-amd64"
+	ProductionPlatform            = ProductionPlatformLinuxAMD64
+	ProductionCapabilityKeyID     = "run-capability-sg-v1"
+	ProductionManifestKeyID       = "run-manifest-sg-v1"
+	ProductionCoreSecret          = "agentserver-core-secrets"
+	ProductionBrowserSecret       = "agentserver-browser-secrets"
+	ProductionExecutorSecret      = "agentserver-executor-secrets"
+	ProductionHarnessPoolSecret   = "agentserver-pool-secrets"
+	ProductionHarnessWorkerSecret = "agentserver-worker-secrets"
+	ProductionLLMProxySecret      = "agentserver-llmproxy-secrets"
+	ProductionObjectStoreSecret   = "agentserver-object-store-secrets"
+	ProductionImagePullSecret     = "agentserver-registry-pull"
 
 	PoolUID    uint32 = 65530
 	PoolGID    uint32 = 65530
@@ -50,6 +62,14 @@ const (
 	ExecutorInternalHost = "executor.agentserver.internal"
 	LLMProxyInternalHost = "llmproxy.agentserver.internal"
 	HarnessControlPort   = 8443
+	PublicHTTPPort       = 8080
+
+	ProductionGatewayNamespace = "istio-ingress"
+	ProductionGatewayName      = "istio-gateway"
+	ProductionGatewaySection   = "https-byted-bps"
+	ProductionFrontendHostname = "agent.byted.bps.dev"
+	ProductionBrowserHostname  = "browser-gateway.byted.bps.dev"
+	ProductionExecutorHostname = "executor-gateway.byted.bps.dev"
 
 	maximumConfigBytes = int64(256 * 1024)
 	maximumTextBytes   = 4096
@@ -65,19 +85,20 @@ var (
 	toolPattern        = regexp.MustCompile(`^[a-z][a-z0-9_]{0,127}$`)
 	digestPattern      = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	imagePattern       = regexp.MustCompile(`^[^[:space:]@]+@sha256:[0-9a-f]{64}$`)
-	roleARNPattern     = regexp.MustCompile(`^arn:(?:aws|aws-us-gov|aws-cn):iam::[0-9]{12}:role/[0-9A-Za-z+=,.@_/-]{1,512}$`)
 	cpuQuantityPattern = regexp.MustCompile(`^(?:[1-9][0-9]*|[1-9][0-9]*m)$`)
 	memQuantityPattern = regexp.MustCompile(`^[1-9][0-9]*(?:Ki|Mi|Gi|Ti)$`)
 )
 
 type ConfigDocument struct {
 	Version       int                 `json:"version"`
+	Region        string              `json:"region"`
 	Namespace     string              `json:"namespace"`
 	ClusterDomain string              `json:"clusterDomain"`
 	Platform      string              `json:"platform"`
 	Images        ImagesDocument      `json:"images"`
 	Replicas      ReplicasDocument    `json:"replicas"`
 	Services      ServicesDocument    `json:"services"`
+	Ingress       IngressDocument     `json:"ingress"`
 	Bootstrap     BootstrapDocument   `json:"bootstrap"`
 	TrustDomain   string              `json:"spiffeTrustDomain"`
 	OAuth         OAuthDocument       `json:"oauth"`
@@ -103,8 +124,8 @@ type ReplicasDocument struct {
 
 type ServicesDocument struct {
 	Core            InternalServiceDocument `json:"core"`
-	BrowserGateway  PublicServiceDocument   `json:"browserGateway"`
-	ExecutorGateway PublicServiceDocument   `json:"executorGateway"`
+	BrowserGateway  InternalServiceDocument `json:"browserGateway"`
+	ExecutorGateway ExecutorServiceDocument `json:"executorGateway"`
 	LLMProxy        InternalServiceDocument `json:"llmproxy"`
 }
 
@@ -113,10 +134,20 @@ type InternalServiceDocument struct {
 	Port      uint16 `json:"port"`
 }
 
-type PublicServiceDocument struct {
-	ClusterIP      string `json:"clusterIp"`
-	Port           uint16 `json:"port"`
-	PublicHostname string `json:"publicHostname"`
+type ExecutorServiceDocument struct {
+	ClusterIP    string `json:"clusterIp"`
+	PublicPort   uint16 `json:"publicPort"`
+	InternalPort uint16 `json:"internalPort"`
+}
+
+type IngressDocument struct {
+	GatewayNamespace   string            `json:"gatewayNamespace"`
+	GatewayName        string            `json:"gatewayName"`
+	GatewaySection     string            `json:"gatewaySection"`
+	GatewayPodSelector map[string]string `json:"gatewayPodSelector"`
+	FrontendHostname   string            `json:"frontendHostname"`
+	BrowserHostname    string            `json:"browserGatewayHostname"`
+	ExecutorHostname   string            `json:"executorGatewayHostname"`
 }
 
 type BootstrapDocument struct {
@@ -136,6 +167,7 @@ type HydraDocument struct {
 	Issuer           string `json:"issuer"`
 	AdminURL         string `json:"adminUrl"`
 	PublicOrigin     string `json:"publicOrigin"`
+	PublicUpstream   string `json:"publicUpstream"`
 	IntrospectionURL string `json:"introspectionUrl"`
 	BrowserClientID  string `json:"browserClientId"`
 }
@@ -150,10 +182,6 @@ type RuntimeDocument struct {
 	CapabilityIssuer           string   `json:"capabilityIssuer"`
 	CapabilitySigningKeyID     string   `json:"capabilitySigningKeyId"`
 	ManifestSigningKeyID       string   `json:"manifestSigningKeyId"`
-	Model                      string   `json:"model"`
-	Provider                   string   `json:"provider"`
-	UpstreamResponsesURL       string   `json:"upstreamResponsesUrl"`
-	UpstreamAuthHeader         string   `json:"upstreamAuthHeader"`
 	RunPolicyVersion           string   `json:"runPolicyVersion"`
 	AllowedTools               []string `json:"allowedTools"`
 	ExecutionPolicyVersion     string   `json:"executionPolicyVersion"`
@@ -171,16 +199,12 @@ type RuntimeDocument struct {
 }
 
 type ObjectStoreDocument struct {
-	Prefix             string `json:"prefix"`
-	S3Bucket           string `json:"s3Bucket"`
-	S3Region           string `json:"s3Region"`
-	S3Endpoint         string `json:"s3Endpoint,omitempty"`
-	S3UsePathStyle     bool   `json:"s3UsePathStyle"`
-	KMSRegion          string `json:"kmsRegion"`
-	KMSEndpoint        string `json:"kmsEndpoint,omitempty"`
-	KMSKeyID           string `json:"kmsKeyId"`
-	CoreRoleARN        string `json:"coreRoleArn"`
-	HarnessPoolRoleARN string `json:"harnessPoolRoleArn"`
+	Mode           string `json:"mode"`
+	Prefix         string `json:"prefix"`
+	S3Bucket       string `json:"s3Bucket"`
+	S3Region       string `json:"s3Region"`
+	S3Endpoint     string `json:"s3Endpoint,omitempty"`
+	S3UsePathStyle bool   `json:"s3UsePathStyle"`
 }
 
 type SecretsDocument struct {
@@ -190,19 +214,16 @@ type SecretsDocument struct {
 	HarnessPool     string `json:"harnessPool"`
 	HarnessWorker   string `json:"harnessWorker"`
 	LLMProxy        string `json:"llmproxy"`
+	ObjectStore     string `json:"objectStore"`
 }
 
 type NetworkDocument struct {
-	DNSClusterIP           string               `json:"dnsClusterIp"`
-	DNSNamespace           string               `json:"dnsNamespace"`
-	DNSPodSelector         map[string]string    `json:"dnsPodSelector"`
-	DatabaseEgress         []EgressRuleDocument `json:"databaseEgress"`
-	CoreExternalEgress     []EgressRuleDocument `json:"coreExternalEgress"`
-	BrowserExternalEgress  []EgressRuleDocument `json:"browserExternalEgress"`
-	HarnessExternalEgress  []EgressRuleDocument `json:"harnessExternalEgress"`
-	LLMProxyExternalEgress []EgressRuleDocument `json:"llmproxyExternalEgress"`
-	BrowserIngressCIDRs    []string             `json:"browserIngressCidrs"`
-	ExecutorIngressCIDRs   []string             `json:"executorIngressCidrs"`
+	DNSClusterIP          string               `json:"dnsClusterIp"`
+	DNSNamespace          string               `json:"dnsNamespace"`
+	DNSPodSelector        map[string]string    `json:"dnsPodSelector"`
+	CoreExternalEgress    []EgressRuleDocument `json:"coreExternalEgress"`
+	BrowserExternalEgress []EgressRuleDocument `json:"browserExternalEgress"`
+	HarnessExternalEgress []EgressRuleDocument `json:"harnessExternalEgress"`
 }
 
 type EgressRuleDocument struct {
@@ -293,14 +314,17 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 	if document.Version != CurrentVersion {
 		return LoadedConfig{}, fmt.Errorf("production deployment version must be %d", CurrentVersion)
 	}
-	if !dnsLabelPattern.MatchString(document.Namespace) {
-		return LoadedConfig{}, errors.New("namespace must be a canonical Kubernetes DNS label")
+	if document.Region != ProductionRegion {
+		return LoadedConfig{}, fmt.Errorf("region must be exactly %s for the current production deployment", ProductionRegion)
+	}
+	if document.Namespace != ProductionNamespace {
+		return LoadedConfig{}, fmt.Errorf("namespace must be exactly %s for the SG production deployment", ProductionNamespace)
 	}
 	if !validDNSName(document.ClusterDomain) || strings.Contains(document.ClusterDomain, "..") {
 		return LoadedConfig{}, errors.New("clusterDomain must be a canonical lowercase DNS name")
 	}
-	if document.Platform != ProductionPlatformLinuxAMD64 && document.Platform != ProductionPlatformLinuxARM64 {
-		return LoadedConfig{}, fmt.Errorf("platform must be %s or %s", ProductionPlatformLinuxAMD64, ProductionPlatformLinuxARM64)
+	if document.Platform != ProductionPlatformLinuxAMD64 {
+		return LoadedConfig{}, fmt.Errorf("platform must be %s for the SG production cluster", ProductionPlatformLinuxAMD64)
 	}
 	if !imagePattern.MatchString(document.Images.Service) || !imagePattern.MatchString(document.Images.Harness) {
 		return LoadedConfig{}, errors.New("service and harness images must be immutable OCI references ending in @sha256:<64 lowercase hex>")
@@ -314,13 +338,16 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 	if err := validateServices(document.Services); err != nil {
 		return LoadedConfig{}, err
 	}
+	if err := validateIngress(document.Ingress); err != nil {
+		return LoadedConfig{}, err
+	}
 	if err := validateBootstrap(document.Bootstrap); err != nil {
 		return LoadedConfig{}, err
 	}
-	if !validDNSName(document.TrustDomain) || strings.Contains(document.TrustDomain, "..") {
-		return LoadedConfig{}, errors.New("spiffeTrustDomain must be a canonical lowercase DNS name")
+	if document.TrustDomain != ProductionTrustDomain {
+		return LoadedConfig{}, fmt.Errorf("spiffeTrustDomain must be exactly %s for the SG production deployment", ProductionTrustDomain)
 	}
-	if err := validateOAuth(document.OAuth, document.Bootstrap, document.Services.BrowserGateway.PublicHostname); err != nil {
+	if err := validateOAuth(document.OAuth, document.Bootstrap, document.Ingress.FrontendHostname); err != nil {
 		return LoadedConfig{}, err
 	}
 	loaded, err := validateRuntime(document.Runtime)
@@ -332,6 +359,12 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 	)
 	if document.Runtime.CapabilityIssuer != wantCapabilityIssuer {
 		return LoadedConfig{}, fmt.Errorf("runtime.capabilityIssuer must be exactly %s", wantCapabilityIssuer)
+	}
+	if document.Runtime.CapabilitySigningKeyID != ProductionCapabilityKeyID {
+		return LoadedConfig{}, fmt.Errorf("runtime.capabilitySigningKeyId must be exactly %s", ProductionCapabilityKeyID)
+	}
+	if document.Runtime.ManifestSigningKeyID != ProductionManifestKeyID {
+		return LoadedConfig{}, fmt.Errorf("runtime.manifestSigningKeyId must be exactly %s", ProductionManifestKeyID)
 	}
 	loaded.Document = document
 	loaded.Document.Runtime.AllowedTools = append([]string(nil), document.Runtime.AllowedTools...)
@@ -373,12 +406,11 @@ func validateServices(document ServicesDocument) error {
 	addresses := []struct {
 		name string
 		ip   string
-		port uint16
 	}{
-		{"core", document.Core.ClusterIP, document.Core.Port},
-		{"browserGateway", document.BrowserGateway.ClusterIP, document.BrowserGateway.Port},
-		{"executorGateway", document.ExecutorGateway.ClusterIP, document.ExecutorGateway.Port},
-		{"llmproxy", document.LLMProxy.ClusterIP, document.LLMProxy.Port},
+		{"core", document.Core.ClusterIP},
+		{"browserGateway", document.BrowserGateway.ClusterIP},
+		{"executorGateway", document.ExecutorGateway.ClusterIP},
+		{"llmproxy", document.LLMProxy.ClusterIP},
 	}
 	seen := make(map[netip.Addr]struct{}, len(addresses))
 	for _, service := range addresses {
@@ -393,23 +425,47 @@ func validateServices(document ServicesDocument) error {
 			return errors.New("service ClusterIPs must be distinct")
 		}
 		seen[address] = struct{}{}
-		if service.port < 1024 {
-			return fmt.Errorf("services.%s.port must be between 1024 and 65535", service.name)
-		}
-		if service.port != HarnessControlPort {
-			return fmt.Errorf("services.%s.port must be exactly %d in the Phase 5 production profile", service.name, HarnessControlPort)
-		}
 	}
-	for name, hostname := range map[string]string{
-		"browserGateway":  document.BrowserGateway.PublicHostname,
-		"executorGateway": document.ExecutorGateway.PublicHostname,
+	for name, actual := range map[string]uint16{
+		"core.port":                    document.Core.Port,
+		"llmproxy.port":                document.LLMProxy.Port,
+		"executorGateway.internalPort": document.ExecutorGateway.InternalPort,
 	} {
-		if !validDNSName(hostname) || strings.Contains(hostname, "..") {
-			return fmt.Errorf("services.%s.publicHostname must be a canonical lowercase DNS name", name)
+		if actual != HarnessControlPort {
+			return fmt.Errorf("services.%s must be exactly %d", name, HarnessControlPort)
 		}
 	}
-	if document.BrowserGateway.PublicHostname == document.ExecutorGateway.PublicHostname {
-		return errors.New("browser and executor public hostnames must be distinct")
+	for name, actual := range map[string]uint16{
+		"browserGateway.port":        document.BrowserGateway.Port,
+		"executorGateway.publicPort": document.ExecutorGateway.PublicPort,
+	} {
+		if actual != PublicHTTPPort {
+			return fmt.Errorf("services.%s must be exactly %d", name, PublicHTTPPort)
+		}
+	}
+	return nil
+}
+
+func validateIngress(document IngressDocument) error {
+	for _, field := range []struct{ name, actual, expected string }{
+		{name: "gatewayNamespace", actual: document.GatewayNamespace, expected: ProductionGatewayNamespace},
+		{name: "gatewayName", actual: document.GatewayName, expected: ProductionGatewayName},
+		{name: "gatewaySection", actual: document.GatewaySection, expected: ProductionGatewaySection},
+		{name: "frontendHostname", actual: document.FrontendHostname, expected: ProductionFrontendHostname},
+		{name: "browserGatewayHostname", actual: document.BrowserHostname, expected: ProductionBrowserHostname},
+		{name: "executorGatewayHostname", actual: document.ExecutorHostname, expected: ProductionExecutorHostname},
+	} {
+		if field.actual != field.expected {
+			return fmt.Errorf("ingress.%s must be exactly %s for the SG production deployment", field.name, field.expected)
+		}
+	}
+	if len(document.GatewayPodSelector) < 1 || len(document.GatewayPodSelector) > 8 {
+		return errors.New("ingress.gatewayPodSelector must contain between 1 and 8 exact pod labels")
+	}
+	for key, value := range document.GatewayPodSelector {
+		if !validLabelKey(key) || !labelValuePattern.MatchString(value) {
+			return fmt.Errorf("ingress.gatewayPodSelector contains invalid Kubernetes label %q=%q", key, value)
+		}
 	}
 	return nil
 }
@@ -437,6 +493,12 @@ func validateOAuth(document OAuthDocument, bootstrap BootstrapDocument, browserH
 		return err
 	}
 	if err := validateHTTPSOrigin("oauth.hydra.publicOrigin", document.Hydra.PublicOrigin); err != nil {
+		return err
+	}
+	if document.Hydra.PublicOrigin != "https://"+browserHostname {
+		return fmt.Errorf("oauth.hydra.publicOrigin must be exactly https://%s", browserHostname)
+	}
+	if err := validateHTTPSOrigin("oauth.hydra.publicUpstream", document.Hydra.PublicUpstream); err != nil {
 		return err
 	}
 	if err := validateHTTPSURL("oauth.hydra.introspectionUrl", document.Hydra.IntrospectionURL, true); err != nil {
@@ -469,7 +531,6 @@ func validateRuntime(document RuntimeDocument) (LoadedConfig, error) {
 		"capabilityIssuer":       document.CapabilityIssuer,
 		"capabilitySigningKeyId": document.CapabilitySigningKeyID,
 		"manifestSigningKeyId":   document.ManifestSigningKeyID,
-		"model":                  document.Model, "provider": document.Provider,
 	} {
 		if err := validateText("runtime."+name, value, 1, 256); err != nil {
 			return LoadedConfig{}, err
@@ -477,12 +538,6 @@ func validateRuntime(document RuntimeDocument) (LoadedConfig, error) {
 	}
 	if document.CapabilitySigningKeyID == document.ManifestSigningKeyID {
 		return LoadedConfig{}, errors.New("capability and run-manifest signing key IDs must be distinct")
-	}
-	if err := validateResponsesURL(document.UpstreamResponsesURL); err != nil {
-		return LoadedConfig{}, err
-	}
-	if document.UpstreamAuthHeader != "Authorization" && document.UpstreamAuthHeader != "api-key" {
-		return LoadedConfig{}, errors.New("runtime.upstreamAuthHeader must be exactly Authorization or api-key")
 	}
 	for name, value := range map[string]string{
 		"runPolicyVersion":       document.RunPolicyVersion,
@@ -564,9 +619,11 @@ func validateRuntime(document RuntimeDocument) (LoadedConfig, error) {
 }
 
 func validateObjects(document ObjectStoreDocument) error {
+	if document.Mode != "s3-plaintext-v1" {
+		return errors.New("objectStore.mode must be exactly s3-plaintext-v1")
+	}
 	for name, value := range map[string]string{
 		"prefix": document.Prefix, "s3Bucket": document.S3Bucket, "s3Region": document.S3Region,
-		"kmsRegion": document.KMSRegion, "kmsKeyId": document.KMSKeyID,
 	} {
 		if err := validateText("objectStore."+name, value, 1, maximumTextBytes); err != nil {
 			return err
@@ -580,21 +637,9 @@ func validateObjects(document ObjectStoreDocument) error {
 			return err
 		}
 	}
-	if document.KMSEndpoint != "" {
-		if err := validateHTTPSOrigin("objectStore.kmsEndpoint", document.KMSEndpoint); err != nil {
-			return err
-		}
-	}
-	if !roleARNPattern.MatchString(document.CoreRoleARN) || !roleARNPattern.MatchString(document.HarnessPoolRoleARN) {
-		return errors.New("objectStore role ARNs must be explicit AWS IAM role ARNs")
-	}
-	if document.CoreRoleARN == document.HarnessPoolRoleARN {
-		return errors.New("Core and harness-pool must use distinct least-privilege AWS roles")
-	}
-	if err := awsprovider.ValidateConfig(awsprovider.Config{
-		S3Bucket: document.S3Bucket, S3Region: document.S3Region,
-		S3Endpoint: document.S3Endpoint, S3UsePathStyle: document.S3UsePathStyle,
-		KMSRegion: document.KMSRegion, KMSEndpoint: document.KMSEndpoint, KMSKeyID: document.KMSKeyID,
+	if err := awsprovider.ValidateS3Config(awsprovider.S3Config{
+		Bucket: document.S3Bucket, Region: document.S3Region,
+		Endpoint: document.S3Endpoint, UsePathStyle: document.S3UsePathStyle,
 	}); err != nil {
 		return fmt.Errorf("objectStore provider routing: %w", err)
 	}
@@ -602,27 +647,21 @@ func validateObjects(document ObjectStoreDocument) error {
 }
 
 func validateSecrets(document SecretsDocument, pullSecret string) error {
-	seen := make(map[string]struct{}, 7)
-	for name, value := range map[string]string{
-		"core": document.Core, "browserGateway": document.BrowserGateway,
-		"executorGateway": document.ExecutorGateway, "harnessPool": document.HarnessPool,
-		"harnessWorker": document.HarnessWorker, "llmproxy": document.LLMProxy,
+	for name, pair := range map[string][2]string{
+		"core":            {document.Core, ProductionCoreSecret},
+		"browserGateway":  {document.BrowserGateway, ProductionBrowserSecret},
+		"executorGateway": {document.ExecutorGateway, ProductionExecutorSecret},
+		"harnessPool":     {document.HarnessPool, ProductionHarnessPoolSecret},
+		"harnessWorker":   {document.HarnessWorker, ProductionHarnessWorkerSecret},
+		"llmproxy":        {document.LLMProxy, ProductionLLMProxySecret},
+		"objectStore":     {document.ObjectStore, ProductionObjectStoreSecret},
 	} {
-		if !validDNSName(value) || strings.Contains(value, "..") {
-			return fmt.Errorf("secrets.%s must be a canonical Kubernetes Secret name", name)
+		if pair[0] != pair[1] {
+			return fmt.Errorf("secrets.%s must be exactly %s for the SG production deployment", name, pair[1])
 		}
-		if _, duplicate := seen[value]; duplicate {
-			return errors.New("each workload must use a distinct Kubernetes Secret")
-		}
-		seen[value] = struct{}{}
 	}
-	if pullSecret != "" {
-		if !validDNSName(pullSecret) || strings.Contains(pullSecret, "..") {
-			return errors.New("images.pullSecret must be a canonical Kubernetes Secret name")
-		}
-		if _, collision := seen[pullSecret]; collision {
-			return errors.New("images.pullSecret must be distinct from workload material Secrets")
-		}
+	if pullSecret != ProductionImagePullSecret {
+		return fmt.Errorf("images.pullSecret must be exactly %s for the SG production deployment", ProductionImagePullSecret)
 	}
 	return nil
 }
@@ -659,11 +698,9 @@ func validateNetwork(document *NetworkDocument, services ServicesDocument) error
 		rules    *[]EgressRuleDocument
 		required bool
 	}{
-		{"databaseEgress", &document.DatabaseEgress, true},
 		{"coreExternalEgress", &document.CoreExternalEgress, true},
 		{"browserExternalEgress", &document.BrowserExternalEgress, true},
 		{"harnessExternalEgress", &document.HarnessExternalEgress, true},
-		{"llmproxyExternalEgress", &document.LLMProxyExternalEgress, true},
 	}
 	for _, group := range groups {
 		if group.required && len(*group.rules) == 0 {
@@ -672,26 +709,6 @@ func validateNetwork(document *NetworkDocument, services ServicesDocument) error
 		if err := normalizeEgressRules("network."+group.name, group.rules); err != nil {
 			return err
 		}
-	}
-	for name, cidrs := range map[string][]string{
-		"browserIngressCidrs":  document.BrowserIngressCIDRs,
-		"executorIngressCidrs": document.ExecutorIngressCIDRs,
-	} {
-		if len(cidrs) == 0 || len(cidrs) > 64 {
-			return fmt.Errorf("network.%s must contain between 1 and 64 CIDRs", name)
-		}
-		seen := make(map[string]struct{}, len(cidrs))
-		for _, raw := range cidrs {
-			prefix, err := netip.ParsePrefix(raw)
-			if err != nil || !prefix.Addr().Is4() || prefix.Masked().String() != raw {
-				return fmt.Errorf("network.%s contains non-canonical IPv4 CIDR %q", name, raw)
-			}
-			if _, duplicate := seen[raw]; duplicate {
-				return fmt.Errorf("network.%s repeats %q", name, raw)
-			}
-			seen[raw] = struct{}{}
-		}
-		slices.Sort(cidrs)
 	}
 	return nil
 }
@@ -854,15 +871,6 @@ func validateHTTPSURL(name, raw string, requirePath bool) error {
 		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.RawPath != "" || parsed.Opaque != "" || parsed.ForceQuery ||
 		(requirePath && (parsed.Path == "" || parsed.Path == "/")) {
 		return fmt.Errorf("%s must be a credential-free absolute HTTPS URL", name)
-	}
-	return nil
-}
-
-func validateResponsesURL(raw string) error {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil ||
-		parsed.Path != "/v1/responses" || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Opaque != "" {
-		return errors.New("runtime.upstreamResponsesUrl must be an exact credential-free HTTPS /v1/responses endpoint")
 	}
 	return nil
 }

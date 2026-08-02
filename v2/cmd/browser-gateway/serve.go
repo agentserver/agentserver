@@ -35,6 +35,8 @@ const (
 	browserOAuthClientIDEnvironment           = "AGENTSERVER_V2_BROWSER_OAUTH_CLIENT_ID"
 	browserOAuthAudienceEnvironment           = "AGENTSERVER_V2_BROWSER_OAUTH_AUDIENCE"
 	browserOAuthScopesEnvironment             = "AGENTSERVER_V2_BROWSER_OAUTH_SCOPES"
+	browserFrontendOriginEnvironment          = "AGENTSERVER_V2_BROWSER_FRONTEND_ORIGIN"
+	browserAPIOriginEnvironment               = "AGENTSERVER_V2_BROWSER_API_ORIGIN"
 )
 
 const browserShutdownTimeout = 10 * time.Second
@@ -48,13 +50,20 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 	if err != nil {
 		return err
 	}
-	certificateFile, err := requiredBrowserConfiguration(getenv, browserTLSCertificateEnvironment)
+	frontendOrigin, apiOrigin, splitPublicOrigins, err := browserPublicOrigins(getenv)
 	if err != nil {
 		return err
 	}
-	keyFile, err := requiredBrowserConfiguration(getenv, browserTLSKeyEnvironment)
-	if err != nil {
-		return err
+	var certificateFile, keyFile string
+	if !splitPublicOrigins {
+		certificateFile, err = requiredBrowserConfiguration(getenv, browserTLSCertificateEnvironment)
+		if err != nil {
+			return err
+		}
+		keyFile, err = requiredBrowserConfiguration(getenv, browserTLSKeyEnvironment)
+		if err != nil {
+			return err
+		}
 	}
 	coreURL, err := requiredBrowserConfiguration(getenv, browserCoreURLEnvironment)
 	if err != nil {
@@ -95,7 +104,6 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 	if err != nil {
 		return err
 	}
-
 	coreHTTPClient, err := newBrowserCoreHTTPClient(
 		coreCAFile,
 		coreClientCertificateFile,
@@ -107,6 +115,10 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 	}
 	defer coreHTTPClient.CloseIdleConnections()
 	backend, err := browsergateway.NewCoreRunBackend(coreURL, coreHTTPClient)
+	if err != nil {
+		return err
+	}
+	llmGatewayProxy, err := browsergateway.NewWorkspaceLLMGatewayProxy(coreURL, coreHTTPClient)
 	if err != nil {
 		return err
 	}
@@ -129,7 +141,7 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 		developmentOIDCHandler = developmentOIDCProxy.Routes()
 	}
 	authConfig, err := browsergateway.NewBrowserAuthorizationConfigHandler(
-		browserOAuthClientID, browserOAuthAudience, canonicalBrowserScopes,
+		browserOAuthClientID, browserOAuthAudience, canonicalBrowserScopes, apiOrigin,
 	)
 	if err != nil {
 		return err
@@ -143,13 +155,32 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 		return err
 	}
 	readiness := &browserReadiness{}
-	handler := browserGatewayRoutes(
-		aguiHandler.Routes(), executorHandler.Routes(), authProxy.Routes(), authConfig,
-		hydraProxy.Routes(), developmentOIDCHandler, readiness,
-	)
-	tlsConfig, err := browserGatewayTLSConfig(certificateFile, keyFile)
-	if err != nil {
-		return err
+	referenceHandler := a2uiweb.Handler()
+	if splitPublicOrigins {
+		referenceHandler, err = a2uiweb.HandlerForAPIOrigin(apiOrigin)
+		if err != nil {
+			return err
+		}
+	}
+	var handler http.Handler
+	if splitPublicOrigins {
+		handler = browserGatewaySplitRoutes(
+			aguiHandler.Routes(), executorHandler.Routes(), llmGatewayProxy.Routes(), authProxy.Routes(), authConfig,
+			hydraProxy.Routes(), developmentOIDCHandler, readiness, referenceHandler,
+			frontendOrigin, apiOrigin,
+		)
+	} else {
+		handler = browserGatewayRoutesWithReference(
+			aguiHandler.Routes(), executorHandler.Routes(), llmGatewayProxy.Routes(), authProxy.Routes(), authConfig,
+			hydraProxy.Routes(), developmentOIDCHandler, readiness, referenceHandler,
+		)
+	}
+	var tlsConfig *tls.Config
+	if !splitPublicOrigins {
+		tlsConfig, err = browserGatewayTLSConfig(certificateFile, keyFile)
+		if err != nil {
+			return err
+		}
 	}
 	listener, err := net.Listen("tcp", listenAddress)
 	if err != nil {
@@ -181,12 +212,20 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 	}()
 
 	readiness.ready.Store(true)
+	listenerDescription := "TLS"
+	if splitPublicOrigins {
+		listenerDescription = "HTTP behind the configured Istio TLS gateway"
+	}
 	fmt.Fprintf(
 		stdout,
-		"browser-gateway serve: listening with TLS on %s; AG-UI endpoint /v2/workspaces/{workspaceId}/sessions/{sessionId}/agui; %s at /\n",
-		listener.Addr(), a2uiweb.AssetSummary(),
+		"browser-gateway serve: listening with %s on %s; AG-UI endpoint /v2/workspaces/{workspaceId}/sessions/{sessionId}/agui; %s at /\n",
+		listenerDescription, listener.Addr(), a2uiweb.AssetSummary(),
 	)
-	err = server.Serve(tls.NewListener(listener, tlsConfig))
+	if splitPublicOrigins {
+		err = server.Serve(listener)
+	} else {
+		err = server.Serve(tls.NewListener(listener, tlsConfig))
+	}
 	readiness.ready.Store(false)
 	if errors.Is(err, http.ErrServerClosed) && ctx.Err() != nil {
 		return nil
@@ -206,8 +245,24 @@ func validateBrowserOAuthAuthority(audience, commaSeparatedScopes string) ([]str
 	return scopes, nil
 }
 
-func browserGatewayRoutes(agui, executors, auth, authConfig, hydra, developmentOIDC http.Handler, readiness *browserReadiness) http.Handler {
+func browserGatewayRoutes(agui, executors, llmGateways, auth, authConfig, hydra, developmentOIDC http.Handler, readiness *browserReadiness) http.Handler {
+	return browserGatewayRoutesWithReference(agui, executors, llmGateways, auth, authConfig, hydra, developmentOIDC, readiness, a2uiweb.Handler())
+}
+
+func browserGatewayRoutesWithReference(
+	agui, executors, llmGateways, auth, authConfig, hydra, developmentOIDC http.Handler,
+	readiness *browserReadiness,
+	reference http.Handler,
+) http.Handler {
 	mux := http.NewServeMux()
+	mountBrowserAPIRoutes(mux, agui, executors, llmGateways)
+	mountBrowserFrontendRoutes(mux, auth, authConfig, hydra, developmentOIDC)
+	mountBrowserHealthRoutes(mux, readiness)
+	mux.Handle("/", reference)
+	return mux
+}
+
+func mountBrowserAPIRoutes(mux *http.ServeMux, agui, executors, llmGateways http.Handler) {
 	mux.Handle("POST "+corecontract.ExecutorManagementRoutePattern, executors)
 	mux.Handle("POST "+corecontract.ExecutorEnrollmentTokenRoutePattern, executors)
 	executorMethodGuard := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
@@ -216,11 +271,20 @@ func browserGatewayRoutes(agui, executors, auth, authConfig, hydra, developmentO
 	})
 	mux.Handle(corecontract.ExecutorManagementRoutePattern, executorMethodGuard)
 	mux.Handle(corecontract.ExecutorEnrollmentTokenRoutePattern, executorMethodGuard)
+	mux.Handle(corecontract.LLMGatewayCollectionRoutePattern, llmGateways)
+	mux.Handle(corecontract.LLMGatewayActionRoutePattern, llmGateways)
 	mux.Handle("/v2/", agui)
+}
+
+func mountBrowserFrontendRoutes(mux *http.ServeMux, auth, authConfig, hydra, developmentOIDC http.Handler) {
+	mux.Handle(corecontract.LLMGatewayOIDCCallbackPath, browsergateway.NewLLMGatewayCallbackHandler())
 	mux.Handle("/auth/", auth)
 	mux.Handle("GET /auth/config", authConfig)
 	mux.Handle("GET /auth/idp/authorize", developmentOIDC)
 	mux.Handle("/oauth2/", hydra)
+}
+
+func mountBrowserHealthRoutes(mux *http.ServeMux, readiness *browserReadiness) {
 	mux.HandleFunc("GET /healthz", func(response http.ResponseWriter, _ *http.Request) {
 		writeHealth(response, http.StatusOK, `{"status":"ok"}`)
 	})
@@ -231,8 +295,112 @@ func browserGatewayRoutes(agui, executors, auth, authConfig, hydra, developmentO
 		}
 		writeHealth(response, http.StatusOK, `{"status":"ready"}`)
 	})
-	mux.Handle("/", a2uiweb.Handler())
-	return mux
+}
+
+func browserPublicOrigins(getenv func(string) string) (frontend, api string, split bool, err error) {
+	frontend = strings.TrimSpace(getenv(browserFrontendOriginEnvironment))
+	api = strings.TrimSpace(getenv(browserAPIOriginEnvironment))
+	if frontend == "" && api == "" {
+		return "", "", false, nil
+	}
+	if frontend == "" || api == "" {
+		return "", "", false, errors.New("browser frontend and API origins must either both be configured or both be absent")
+	}
+	for name, raw := range map[string]string{
+		browserFrontendOriginEnvironment: frontend,
+		browserAPIOriginEnvironment:      api,
+	} {
+		parsed, parseErr := url.Parse(raw)
+		if parseErr != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil ||
+			parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.String() != raw {
+			return "", "", false, fmt.Errorf("%s must be an exact HTTPS origin", name)
+		}
+	}
+	if frontend == api {
+		return "", "", false, errors.New("browser frontend and API origins must be distinct in split-origin mode")
+	}
+	return frontend, api, true, nil
+}
+
+func browserGatewaySplitRoutes(
+	agui, executors, llmGateways, auth, authConfig, hydra, developmentOIDC http.Handler,
+	readiness *browserReadiness,
+	reference http.Handler,
+	frontendOrigin, apiOrigin string,
+) http.Handler {
+	frontendURL, _ := url.Parse(frontendOrigin)
+	apiURL, _ := url.Parse(apiOrigin)
+	frontend := http.NewServeMux()
+	mountBrowserFrontendRoutes(frontend, auth, authConfig, hydra, developmentOIDC)
+	mountBrowserHealthRoutes(frontend, readiness)
+	frontend.Handle("/", reference)
+	api := http.NewServeMux()
+	mountBrowserAPIRoutes(api, agui, executors, llmGateways)
+	apiHandler := browserCORSMiddleware(api, frontendOrigin)
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		host := canonicalRequestHostname(request)
+		switch host {
+		case frontendURL.Hostname():
+			frontend.ServeHTTP(response, request)
+		case apiURL.Hostname():
+			apiHandler.ServeHTTP(response, request)
+		default:
+			writeBrowserRouteError(response, http.StatusNotFound, "not_found", "browser route is not exposed on this host")
+		}
+	})
+}
+
+func canonicalRequestHostname(request *http.Request) string {
+	if request == nil {
+		return ""
+	}
+	host := request.Host
+	if parsed, _, err := net.SplitHostPort(host); err == nil {
+		host = parsed
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+}
+
+func browserCORSMiddleware(next http.Handler, allowedOrigin string) http.Handler {
+	allowedHeaders := map[string]struct{}{
+		"accept": {}, "authorization": {}, "content-type": {}, "idempotency-key": {},
+	}
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		origins := request.Header.Values("Origin")
+		if len(origins) > 1 || (len(origins) == 1 && origins[0] != allowedOrigin) {
+			writeBrowserRouteError(response, http.StatusForbidden, "origin_not_allowed", "browser API origin is not allowed")
+			return
+		}
+		if len(origins) == 1 {
+			response.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+			response.Header().Add("Vary", "Origin")
+		}
+		if request.Method == http.MethodOptions {
+			requestedMethod := request.Header.Get("Access-Control-Request-Method")
+			if len(origins) != 1 || (requestedMethod != http.MethodGet && requestedMethod != http.MethodPost) {
+				writeBrowserRouteError(response, http.StatusForbidden, "invalid_preflight", "browser API preflight is not allowed")
+				return
+			}
+			for _, raw := range strings.Split(request.Header.Get("Access-Control-Request-Headers"), ",") {
+				name := strings.ToLower(strings.TrimSpace(raw))
+				if name == "" {
+					continue
+				}
+				if _, found := allowedHeaders[name]; !found {
+					writeBrowserRouteError(response, http.StatusForbidden, "invalid_preflight", "browser API preflight requested an unsupported header")
+					return
+				}
+			}
+			response.Header().Set("Access-Control-Allow-Methods", "GET, POST")
+			response.Header().Set("Access-Control-Allow-Headers", "Accept, Authorization, Content-Type, Idempotency-Key")
+			response.Header().Set("Access-Control-Max-Age", "600")
+			response.Header().Add("Vary", "Access-Control-Request-Method")
+			response.Header().Add("Vary", "Access-Control-Request-Headers")
+			response.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(response, request)
+	})
 }
 
 func writeBrowserRouteError(response http.ResponseWriter, status int, code, message string) {

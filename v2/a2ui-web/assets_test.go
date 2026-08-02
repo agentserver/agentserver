@@ -19,6 +19,7 @@ func TestHandlerServesClosedReferenceAssetsWithSecurityHeaders(t *testing.T) {
 		{path: "/reference/app.js", contentType: "text/javascript; charset=utf-8", marker: "streamRun"},
 		{path: "/reference/protocol.js", contentType: "text/javascript; charset=utf-8", marker: "SSEDecoder"},
 		{path: "/reference/auth.js", contentType: "text/javascript; charset=utf-8", marker: "createAuthorizationTransaction"},
+		{path: "/reference/llm-gateways.js", contentType: "text/javascript; charset=utf-8", marker: "createBrowserBinding"},
 		{path: "/reference/styles.css", contentType: "text/css; charset=utf-8", marker: ".app-shell"},
 	}
 	handler := Handler()
@@ -32,6 +33,7 @@ func TestHandlerServesClosedReferenceAssetsWithSecurityHeaders(t *testing.T) {
 				t.Fatalf("GET %s = %d %q headers=%v", test.path, response.Code, response.Body.String(), response.Header())
 			}
 			if response.Header().Get("Content-Security-Policy") != contentSecurityPolicy ||
+				response.Header().Get("Cross-Origin-Opener-Policy") != "same-origin-allow-popups" ||
 				response.Header().Get("Cache-Control") != "no-store" ||
 				response.Header().Get("Referrer-Policy") != "no-referrer" ||
 				response.Header().Get("X-Content-Type-Options") != "nosniff" {
@@ -41,6 +43,24 @@ func TestHandlerServesClosedReferenceAssetsWithSecurityHeaders(t *testing.T) {
 				t.Fatalf("GET %s Content-Length = %q body=%d", test.path, response.Header().Get("Content-Length"), response.Body.Len())
 			}
 		})
+	}
+}
+
+func TestHandlerForAPIOriginAddsOneExactCSPConnectionAuthority(t *testing.T) {
+	handler, err := HandlerForAPIOrigin("https://browser-gateway.byted.bps.dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "https://agent.byted.bps.dev/", nil))
+	if response.Code != http.StatusOK || response.Header().Get("Content-Security-Policy") !=
+		contentSecurityPolicy+" https://browser-gateway.byted.bps.dev" {
+		t.Fatalf("cross-origin CSP response = %d headers=%v", response.Code, response.Header())
+	}
+	for _, invalid := range []string{"", "http://browser-gateway.byted.bps.dev", "https://browser-gateway.byted.bps.dev/path"} {
+		if _, err := HandlerForAPIOrigin(invalid); err == nil {
+			t.Fatalf("invalid API origin %q was accepted", invalid)
+		}
 	}
 }
 

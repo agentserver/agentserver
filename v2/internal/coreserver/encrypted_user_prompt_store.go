@@ -23,7 +23,7 @@ type encryptedPromptObjectProtocol interface {
 	Put(context.Context, objectstore.Scope, io.Reader) error
 }
 
-func NewEncryptedUserPromptStore(objects *objectstore.Store) (*EncryptedUserPromptStore, error) {
+func NewEncryptedUserPromptStore(objects objectstore.Protocol) (*EncryptedUserPromptStore, error) {
 	if objects == nil {
 		return nil, errors.New("Core encrypted prompt object store is required")
 	}

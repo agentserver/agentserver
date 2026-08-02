@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
 
@@ -27,6 +28,14 @@ type RunLaunchState struct {
 	Prompt             runmanifest.ObjectPointer
 	PreviousCheckpoint *RunLaunchCheckpoint
 	ExecutorPolicy     ExecutorCatalogPolicy
+	LLMGateway         *RunLLMGatewayBinding
+}
+
+type RunLLMGatewayBinding struct {
+	GatewayID     string
+	ConfigVersion int64
+	GrantUserID   string
+	Model         string
 }
 
 type RunLaunchStateSource interface {
@@ -39,6 +48,7 @@ type RunLaunchStateSource interface {
 type RunLaunchProfile struct {
 	CodexRuntimeManifestDigest string
 	Model                      runmanifest.ModelRoute
+	ModelFromRun               bool
 	ExecutorMCPEndpoint        string
 	ExecutorMCPTLSIdentity     string
 	ExecutorMCPAudience        string
@@ -122,9 +132,22 @@ func (profile RunLaunchProfile) inputs(state RunLaunchState) (RunLaunchInputs, e
 		catalogCopy := cloneBrainToolCatalog(catalog)
 		previousCatalog = &catalogCopy
 	}
+	model := profile.Model
+	if profile.ModelFromRun {
+		if state.LLMGateway == nil {
+			return RunLaunchInputs{}, errors.New("production run has no frozen workspace LLM gateway binding")
+		}
+		model.Model = state.LLMGateway.Model
+		model.Provider = corecontract.WorkspaceLLMGatewayProvider
+		model.LLMGatewayID = state.LLMGateway.GatewayID
+		model.LLMGatewayVersion = state.LLMGateway.ConfigVersion
+		model.LLMGatewayGrantUserID = state.LLMGateway.GrantUserID
+	} else if state.LLMGateway != nil {
+		return RunLaunchInputs{}, errors.New("static development model profile received production workspace LLM gateway authority")
+	}
 	return RunLaunchInputs{
 		Prompt: state.Prompt, PreviousCheckpoint: previousCheckpoint, PreviousBrainToolCatalog: previousCatalog,
-		CodexRuntimeManifestDigest: profile.CodexRuntimeManifestDigest, Model: profile.Model,
+		CodexRuntimeManifestDigest: profile.CodexRuntimeManifestDigest, Model: model,
 		ExecutorCatalogPolicy: policy, ExecutorMCPEndpoint: profile.ExecutorMCPEndpoint,
 		ExecutorMCPTLSIdentity: profile.ExecutorMCPTLSIdentity, ExecutorMCPAudience: profile.ExecutorMCPAudience,
 		Limits: profile.Limits, CheckpointAllowlistVersion: profile.CheckpointAllowlistVersion,
@@ -164,6 +187,12 @@ func validateRunLaunchProfile(profile RunLaunchProfile) error {
 			SizeBytes: 1, MediaType: "application/json",
 		},
 		ExecutorPolicy: ExecutorCatalogPolicy{Version: "profile-validation-policy", ContextDigest: policyDigest},
+	}
+	if profile.ModelFromRun {
+		state.LLMGateway = &RunLLMGatewayBinding{
+			GatewayID: "37000000-0000-4000-8000-000000000003", ConfigVersion: 1,
+			GrantUserID: "38000000-0000-4000-8000-000000000003", Model: "profile-validation-model",
+		}
 	}
 	inputs, err := profile.inputs(state)
 	if err != nil {

@@ -15,8 +15,8 @@ func TestProductionRendererBrowserEnvironmentMatchesCommandContract(t *testing.T
 	}
 	want := []string{
 		browserListenAddressEnvironment,
-		browserTLSCertificateEnvironment,
-		browserTLSKeyEnvironment,
+		browserFrontendOriginEnvironment,
+		browserAPIOriginEnvironment,
 		browserCoreURLEnvironment,
 		browserCoreCAEnvironment,
 		browserCoreClientCertificateEnvironment,
@@ -44,5 +44,9 @@ func TestProductionRendererBrowserEnvironmentMatchesCommandContract(t *testing.T
 		environment.Get(browserOAuthScopesEnvironment),
 	); err != nil {
 		t.Fatalf("browser rejected rendered OAuth authority: %v", err)
+	}
+	frontend, api, split, err := browserPublicOrigins(environment.Get)
+	if err != nil || !split || frontend != "https://agent.byted.bps.dev" || api != "https://browser-gateway.byted.bps.dev" {
+		t.Fatalf("browser rejected rendered split origins: %q %q split=%v error=%v", frontend, api, split, err)
 	}
 }

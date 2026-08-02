@@ -64,8 +64,11 @@ type Claims struct {
 	ExpectedRunAttemptVersion int64  `json:"expectedRunAttemptVersion,omitempty"`
 	MaxApprovalTTLMillis      int64  `json:"maxApprovalTtlMs,omitempty"`
 
-	Model    string `json:"model,omitempty"`
-	Provider string `json:"provider,omitempty"`
+	Model                 string `json:"model,omitempty"`
+	Provider              string `json:"provider,omitempty"`
+	LLMGatewayID          string `json:"llmGatewayId,omitempty"`
+	LLMGatewayVersion     int64  `json:"llmGatewayVersion,omitempty"`
+	LLMGatewayGrantUserID string `json:"llmGatewayGrantUserId,omitempty"`
 }
 
 // DevelopmentCodec uses one shared HMAC key and therefore must never be
@@ -210,12 +213,23 @@ func (claims Claims) validateAuthority(profile string) error {
 			claims.MaxApprovalTTLMillis < 1 || claims.MaxApprovalTTLMillis > maximumApprovalTTLMS {
 			return fmt.Errorf("%s executor capability authority is invalid", profile)
 		}
-		if claims.Model != "" || claims.Provider != "" {
+		if claims.Model != "" || claims.Provider != "" || claims.LLMGatewayID != "" ||
+			claims.LLMGatewayVersion != 0 || claims.LLMGatewayGrantUserID != "" {
 			return fmt.Errorf("%s executor capability contains model authority", profile)
 		}
 	case AudienceLLMProxy:
 		if !validDevelopmentText(claims.Model, maximumTextBytes) || !validDevelopmentText(claims.Provider, maximumTextBytes) {
 			return fmt.Errorf("%s model capability route is invalid", profile)
+		}
+		gatewayBound := claims.LLMGatewayID != "" || claims.LLMGatewayVersion != 0 || claims.LLMGatewayGrantUserID != ""
+		if claims.Provider == "workspace-gateway" {
+			if !validDevelopmentUUID(claims.LLMGatewayID) ||
+				!validDevelopmentUUID(claims.LLMGatewayGrantUserID) ||
+				claims.LLMGatewayVersion < 1 || claims.LLMGatewayVersion > maxSafeJSONInteger {
+				return fmt.Errorf("%s workspace model gateway authority is invalid", profile)
+			}
+		} else if gatewayBound {
+			return fmt.Errorf("%s non-workspace model capability contains gateway authority", profile)
 		}
 		if claims.ExecutorID != "" || claims.ToolCatalogDigest != "" ||
 			claims.ExpectedRunVersion != 0 || claims.ExpectedRunAttemptVersion != 0 || claims.MaxApprovalTTLMillis != 0 {

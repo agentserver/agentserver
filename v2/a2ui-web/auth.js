@@ -3,7 +3,7 @@ const maximumTransactionAgeMS = 10 * 60 * 1000
 
 export function validateAuthorizationConfig(value) {
   requireExactObject(value, [
-    'version', 'authorizationEndpoint', 'tokenEndpoint', 'redirectPath', 'clientId', 'scopes', 'audience',
+    'version', 'authorizationEndpoint', 'tokenEndpoint', 'redirectPath', 'clientId', 'scopes', 'audience', 'apiOrigin',
   ], 'authorization config')
   if (value.version !== 1 || value.authorizationEndpoint !== '/oauth2/auth' ||
       value.tokenEndpoint !== '/oauth2/token' || value.redirectPath !== '/') {
@@ -11,6 +11,7 @@ export function validateAuthorizationConfig(value) {
   }
   validateProtocolText('OAuth client ID', value.clientId, 512)
   validateProtocolText('OAuth audience', value.audience, 512)
+  const apiOrigin = validateOptionalHTTPSOrigin(value.apiOrigin)
   if (!Array.isArray(value.scopes) || value.scopes.length < 1 || value.scopes.length > 16) {
     throw new Error('authorization config scopes are missing or outside bounds')
   }
@@ -28,6 +29,7 @@ export function validateAuthorizationConfig(value) {
     clientId: value.clientId,
     scopes: Object.freeze([...value.scopes]),
     audience: value.audience,
+    apiOrigin,
   })
 }
 
@@ -71,6 +73,7 @@ export async function createAuthorizationTransaction({ config, origin, workspace
       redirectURI,
       scopes: [...config.scopes],
       audience: config.audience,
+      apiOrigin: config.apiOrigin,
     },
   }
 }
@@ -103,7 +106,8 @@ export function consumeAuthorizationTransaction(storage, config, callback, nowMS
     throw new Error('authorization callback state is missing, mismatched, or expired')
   }
   if (transaction.clientID !== config.clientId || transaction.tokenEndpoint !== config.tokenEndpoint ||
-      transaction.audience !== config.audience || !sameTextArray(transaction.scopes, config.scopes)) {
+      transaction.audience !== config.audience || transaction.apiOrigin !== config.apiOrigin ||
+      !sameTextArray(transaction.scopes, config.scopes)) {
     throw new Error('authorization configuration changed during the PKCE transaction')
   }
   return transaction
@@ -165,7 +169,7 @@ export function validateTokenResponse(value, expectedScopes) {
 function validateStoredTransaction(value) {
   requireExactObject(value, [
     'version', 'state', 'verifier', 'nonce', 'workspaceID', 'sessionID', 'createdAtMS',
-    'clientID', 'tokenEndpoint', 'redirectURI', 'scopes', 'audience',
+    'clientID', 'tokenEndpoint', 'redirectURI', 'scopes', 'audience', 'apiOrigin',
   ], 'PKCE transaction')
   if (value.version !== 1 || !validPKCESecret(value.state) || !validPKCESecret(value.verifier) || !validPKCESecret(value.nonce) ||
       !Number.isSafeInteger(value.createdAtMS) || value.createdAtMS < 1 || !Array.isArray(value.scopes)) {
@@ -178,7 +182,18 @@ function validateStoredTransaction(value) {
   if (value.tokenEndpoint !== '/oauth2/token' || value.scopes.length < 1 || !sameTextSet(value.scopes, value.scopes)) {
     throw new Error('PKCE transaction endpoint or scopes are invalid')
   }
+  validateOptionalHTTPSOrigin(value.apiOrigin)
   return value
+}
+
+function validateOptionalHTTPSOrigin(raw) {
+  if (raw === '') return ''
+  if (typeof raw !== 'string') throw new Error('browser API origin must be an exact HTTPS origin')
+  const parsed = new URL(raw)
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash || parsed.origin !== raw) {
+    throw new Error('browser API origin must be an exact HTTPS origin')
+  }
+  return parsed.origin
 }
 
 function validateHTTPSOrigin(raw) {

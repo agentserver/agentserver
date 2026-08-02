@@ -5,8 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/agentserver/agentserver/v2/internal/executorgateway"
 )
 
 func TestRenderProducesDeterministicStagedProductionBundle(t *testing.T) {
@@ -94,8 +97,30 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 	if countKind(foundation, "NetworkPolicy") != 8 {
 		t.Fatalf("foundation NetworkPolicy count = %d", countKind(foundation, "NetworkPolicy"))
 	}
+	if countKind(foundation, "HTTPRoute") != 3 {
+		t.Fatalf("foundation HTTPRoute count = %d", countKind(foundation, "HTTPRoute"))
+	}
+	for _, resource := range foundation {
+		if resource["kind"] == "Service" && stringField(t, objectField(t, resource, "spec"), "type") != "ClusterIP" {
+			t.Fatalf("service %v is not ClusterIP", objectField(t, resource, "metadata")["name"])
+		}
+	}
+	assertHTTPRoute(t, foundation, "agentserver-frontend", ProductionFrontendHostname, browserComponent, PublicHTTPPort,
+		[]string{"/", "/auth", "/index.html", "/oauth2", "/readyz", "/reference"})
+	assertHTTPRoute(t, foundation, "agentserver-browser-api", ProductionBrowserHostname, browserComponent, PublicHTTPPort,
+		[]string{"/v2"})
+	assertHTTPRoute(t, foundation, "agentserver-executor-agentx", ProductionExecutorHostname, executorComponent, PublicHTTPPort,
+		[]string{executorgateway.AgentxChallengePath, executorgateway.AgentxConnectPath, executorgateway.AgentxEnrollmentPath})
+	if bytes.Contains(mustJSONResource(t, findResource(t, foundation, "HTTPRoute", "agentserver-executor-agentx")), []byte(executorgateway.ExecutorMCPPath)) {
+		t.Fatal("executor public HTTPRoute exposes /mcp")
+	}
 	defaultDeny := findResource(t, foundation, "NetworkPolicy", "agentserver-default-deny")
 	defaultSpec := objectField(t, defaultDeny, "spec")
+	defaultSelector := objectField(t, defaultSpec, "podSelector")
+	defaultLabels := objectField(t, defaultSelector, "matchLabels")
+	if len(defaultLabels) != 1 || defaultLabels["agentserver.dev/network"] != "managed" {
+		t.Fatalf("default-deny selector = %#v, want only AgentServer managed pods", defaultLabels)
+	}
 	if _, hasIngress := defaultSpec["ingress"]; hasIngress {
 		t.Fatal("default-deny unexpectedly contains an ingress allowance")
 	}
@@ -103,6 +128,9 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 		t.Fatal("default-deny unexpectedly contains an egress allowance")
 	}
 	assertDNSPolicySupportsServiceAndPodDestinations(t, findResource(t, foundation, "NetworkPolicy", coreComponent))
+	for _, name := range []string{"agentserver-migrate-egress", "agentserver-bootstrap-egress", coreComponent} {
+		assertCNPGDatabaseEgress(t, findResource(t, foundation, "NetworkPolicy", name))
+	}
 
 	for _, resources := range [][]map[string]any{foundation, migration, bootstrap, runtime} {
 		for _, resource := range resources {
@@ -110,18 +138,24 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 				continue
 			}
 			assertPinnedImages(t, resource)
-			assertProductionNodeSelector(t, resource, "arm64")
+			assertProductionNodeSelector(t, resource, "amd64")
 			assertImagePullSecret(t, resource, loaded.Document.Images.PullSecret)
 		}
 	}
 	all := append(append(append(append([]byte(nil), mustBundleFile(t, bundle, foundationFile)...), mustBundleFile(t, bundle, migrationFile)...), mustBundleFile(t, bundle, bootstrapFile)...), mustBundleFile(t, bundle, runtimeFile)...)
 	for _, forbidden := range []string{
-		"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "aws_access_key_id", "secretAccessKey",
-		"AGENTSERVER_V2_DEV_",
+		"AGENTSERVER_V2_KMS_", "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE",
+		"eks.amazonaws.com/role-arn", "sts.amazonaws.com", "AGENTSERVER_V2_DEV_",
 	} {
 		if bytes.Contains(all, []byte(forbidden)) {
 			t.Fatalf("rendered bundle contains static AWS credential field %q", forbidden)
 		}
+	}
+	for _, component := range []string{coreComponent, harnessComponent} {
+		deployment := findResource(t, runtime, "Deployment", component)
+		container := objectArrayFirst(t, objectField(t, objectField(t, objectField(t, deployment, "spec"), "template"), "spec"), "containers")
+		assertSecretEnvironment(t, container, "AGENTSERVER_V2_S3_ACCESS_KEY_ID", loaded.Document.Secrets.ObjectStore, "access-key-id")
+		assertSecretEnvironment(t, container, "AGENTSERVER_V2_S3_SECRET_ACCESS_KEY", loaded.Document.Secrets.ObjectStore, "secret-access-key")
 	}
 }
 
@@ -140,26 +174,6 @@ func TestRenderPinsLinuxAMD64Nodes(t *testing.T) {
 		for _, resource := range parseKubernetesList(t, mustBundleFile(t, bundle, file)) {
 			if resource["kind"] == "Deployment" || resource["kind"] == "Job" {
 				assertProductionNodeSelector(t, resource, "amd64")
-			}
-		}
-	}
-}
-
-func TestRenderAllowsPublicOrNodeCredentialedImagesWithoutPullSecret(t *testing.T) {
-	document := validConfigDocument()
-	document.Images.PullSecret = ""
-	loaded, err := ValidateConfig(document)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bundle, err := Render(loaded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, file := range []string{migrationFile, bootstrapFile, runtimeFile} {
-		for _, resource := range parseKubernetesList(t, mustBundleFile(t, bundle, file)) {
-			if resource["kind"] == "Deployment" || resource["kind"] == "Job" {
-				assertImagePullSecret(t, resource, "")
 			}
 		}
 	}
@@ -360,6 +374,70 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
+func assertHTTPRoute(
+	t *testing.T,
+	resources []map[string]any,
+	name, hostname, backend string,
+	port uint16,
+	wantPaths []string,
+) {
+	t.Helper()
+	route := findResource(t, resources, "HTTPRoute", name)
+	spec := objectField(t, route, "spec")
+	hostnames := arrayField(t, spec, "hostnames")
+	if len(hostnames) != 1 || hostnames[0] != hostname {
+		t.Fatalf("HTTPRoute %s hostnames = %#v", name, hostnames)
+	}
+	parent := objectArrayFirst(t, spec, "parentRefs")
+	if parent["namespace"] != ProductionGatewayNamespace || parent["name"] != ProductionGatewayName || parent["sectionName"] != ProductionGatewaySection {
+		t.Fatalf("HTTPRoute %s parent = %#v", name, parent)
+	}
+	rule := objectArrayFirst(t, spec, "rules")
+	backendRef := objectArrayFirst(t, rule, "backendRefs")
+	if backendRef["name"] != backend || numberField(t, backendRef, "port") != int(port) {
+		t.Fatalf("HTTPRoute %s backend = %#v", name, backendRef)
+	}
+	paths := make([]string, 0, len(wantPaths))
+	for _, raw := range arrayField(t, rule, "matches") {
+		match, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("HTTPRoute %s match = %#v", name, raw)
+		}
+		paths = append(paths, stringField(t, objectField(t, match, "path"), "value"))
+	}
+	slices.Sort(paths)
+	slices.Sort(wantPaths)
+	if !slices.Equal(paths, wantPaths) {
+		t.Fatalf("HTTPRoute %s paths = %v, want %v", name, paths, wantPaths)
+	}
+}
+
+func mustJSONResource(t *testing.T, resource map[string]any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(resource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func assertSecretEnvironment(t *testing.T, container map[string]any, name, secretName, key string) {
+	t.Helper()
+	for _, raw := range arrayField(t, container, "env") {
+		environment, ok := raw.(map[string]any)
+		if !ok || environment["name"] != name {
+			continue
+		}
+		valueFrom := objectField(t, environment, "valueFrom")
+		secretKeyRef := objectField(t, valueFrom, "secretKeyRef")
+		if secretKeyRef["name"] != secretName || secretKeyRef["key"] != key {
+			t.Fatalf("environment %s secretKeyRef = %#v", name, secretKeyRef)
+		}
+		return
+	}
+	t.Fatalf("environment %s not found", name)
+}
+
 func assertPinnedImages(t *testing.T, resource map[string]any) {
 	t.Helper()
 	spec := objectField(t, resource, "spec")
@@ -441,4 +519,41 @@ func assertDNSPolicySupportsServiceAndPodDestinations(t *testing.T, resource map
 		return
 	}
 	t.Fatal("Core NetworkPolicy has no exact DNS egress rule")
+}
+
+func assertCNPGDatabaseEgress(t *testing.T, resource map[string]any) {
+	t.Helper()
+	egress := arrayField(t, objectField(t, resource, "spec"), "egress")
+	matches := 0
+	for _, rawRule := range egress {
+		rule, ok := rawRule.(map[string]any)
+		if !ok {
+			continue
+		}
+		ports, _ := rule["ports"].([]any)
+		if len(ports) != 1 {
+			continue
+		}
+		port, _ := ports[0].(map[string]any)
+		if port["protocol"] != "TCP" || port["port"] != float64(productionPostgresPort) {
+			continue
+		}
+		peers := arrayField(t, rule, "to")
+		if len(peers) != 1 {
+			t.Fatalf("CNPG egress peers = %#v, want one pod selector", peers)
+		}
+		peer, _ := peers[0].(map[string]any)
+		selector := objectField(t, peer, "podSelector")
+		labels := objectField(t, selector, "matchLabels")
+		if len(labels) != 1 || labels["cnpg.io/cluster"] != productionPostgresClusterName {
+			t.Fatalf("CNPG egress selector = %#v", labels)
+		}
+		if _, hasIPBlock := peer["ipBlock"]; hasIPBlock {
+			t.Fatal("CNPG egress unexpectedly uses an externally supplied IP block")
+		}
+		matches++
+	}
+	if matches != 1 {
+		t.Fatalf("CNPG PostgreSQL egress rules = %d, want 1", matches)
+	}
 }

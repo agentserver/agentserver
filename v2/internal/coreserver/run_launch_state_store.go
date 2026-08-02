@@ -42,6 +42,12 @@ func (queries StateStoreRunLaunchStateQueries) ResolveRunLaunchState(ctx context
 			AllowedTools: append([]string(nil), resolved.ExecutorPolicy.AllowedTools...),
 		},
 	}
+	if resolved.LLMGateway != (coredb.RunLLMGatewayBinding{}) {
+		response.LLMGateway = &corecontract.RunLaunchLLMGatewayState{
+			GatewayID: resolved.LLMGateway.GatewayID, ConfigVersion: resolved.LLMGateway.ConfigVersion,
+			GrantUserID: resolved.LLMGateway.GrantUserID, Model: resolved.LLMGateway.Model,
+		}
+	}
 	if resolved.PreviousCheckpoint != nil {
 		checkpoint := resolved.PreviousCheckpoint
 		response.PreviousCheckpoint = &corecontract.RunLaunchCheckpointState{

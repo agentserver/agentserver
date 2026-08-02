@@ -53,7 +53,10 @@ func TestServeLLMProxyProductionEndToEnd(t *testing.T) {
 		RunID: "99000000-0000-4000-8000-000000000004", RunAttemptID: "99000000-0000-4000-8000-000000000005",
 		RunAttemptGeneration: 2, ActorID: "99000000-0000-4000-8000-000000000006", HolderID: "pool/production-holder",
 		IssuedAtUnixMS: now.Add(-time.Minute).UnixMilli(), RunDeadlineUnixMS: now.Add(5 * time.Minute).UnixMilli(),
-		ExpiresAtUnixMS: now.Add(6 * time.Minute).UnixMilli(), Model: "gpt-5.6-codex", Provider: "openai",
+		ExpiresAtUnixMS: now.Add(6 * time.Minute).UnixMilli(), Model: "gpt-5.6-codex",
+		Provider:     corecontract.WorkspaceLLMGatewayProvider,
+		LLMGatewayID: "99000000-0000-4000-8000-000000000007", LLMGatewayVersion: 2,
+		LLMGatewayGrantUserID: "99000000-0000-4000-8000-000000000006",
 	}
 	runToken, err := signer.Sign(claims)
 	if err != nil {
@@ -73,10 +76,15 @@ func TestServeLLMProxyProductionEndToEnd(t *testing.T) {
 		}
 		response.Header().Set("Content-Type", "application/json")
 		response.Header().Set("Cache-Control", "no-store")
-		_ = json.NewEncoder(response).Encode(corecontract.AuthorizeRunCapabilityResponse{
+		_ = json.NewEncoder(response).Encode(corecontract.AuthorizeLLMProxyRunCapabilityResponse{
 			CapabilityID: claims.CapabilityID, Audience: runcapability.AudienceLLMProxy,
 			RunID: claims.RunID, RunAttemptID: claims.RunAttemptID, RunAttemptGeneration: claims.RunAttemptGeneration,
 			RunVersion: 4, RunAttemptVersion: 5, AuthorizedAt: time.Now().UTC(),
+			Model: claims.Model, Provider: claims.Provider,
+			LLMGatewayID: claims.LLMGatewayID, LLMGatewayVersion: claims.LLMGatewayVersion,
+			LLMGatewayGrantUserID: claims.LLMGatewayGrantUserID,
+			ResponsesURL:          "https://gateway.example.com/v1/responses",
+			UpstreamAuthorization: "Bearer upstream-secret", BearerExpiresAt: time.Now().UTC().Add(4 * time.Minute),
 		})
 	}))
 	defer coreServer.Close()
@@ -95,14 +103,28 @@ func TestServeLLMProxyProductionEndToEnd(t *testing.T) {
 
 	configuration := materializeLLMProxyServeConfiguration(
 		t, pki, identity, issuer, keyID, capabilityPrivate.Public().(ed25519.PublicKey),
-		identityURI, coreServer.URL, upstreamServer.URL+llmproxy.ResponsesPath,
+		identityURI, coreServer.URL,
 	)
+	localUpstreamURL, err := url.Parse(upstreamServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstreamClient := &http.Client{Transport: llmProxyRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		clone := request.Clone(request.Context())
+		clonedURL := *request.URL
+		clonedURL.Scheme = localUpstreamURL.Scheme
+		clonedURL.Host = localUpstreamURL.Host
+		clone.URL = &clonedURL
+		return upstreamServer.Client().Transport.RoundTrip(clone)
+	})}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	startup := make(chan string, 1)
 	serveDone := make(chan error, 1)
 	go func() {
-		serveDone <- serveLLMProxy(ctx, func(name string) string { return configuration[name] }, channelWriter(startup))
+		serveDone <- serveLLMProxyWithUpstreamHTTPClient(
+			ctx, func(name string) string { return configuration[name] }, channelWriter(startup), upstreamClient,
+		)
 	}()
 	var line string
 	select {
@@ -111,7 +133,7 @@ func TestServeLLMProxyProductionEndToEnd(t *testing.T) {
 		t.Fatal("llmproxy did not publish its production listener")
 	}
 	endpoint := strings.TrimSuffix(strings.TrimPrefix(line, "llmproxy serve: production TLS endpoint "),
-		"; model gpt-5.6-codex via provider openai\n")
+		"; workspace gateway routes resolved live by Core\n")
 	if !strings.HasSuffix(endpoint, llmproxy.ResponsesPath) {
 		t.Fatalf("llmproxy startup line = %q", line)
 	}
@@ -309,7 +331,6 @@ func materializeLLMProxyServeConfiguration(
 	publicKey ed25519.PublicKey,
 	identityURI string,
 	coreURL string,
-	upstreamURL string,
 ) map[string]string {
 	t.Helper()
 	root := t.TempDir()
@@ -331,19 +352,19 @@ func materializeLLMProxyServeConfiguration(
 		t.Fatal(err)
 	}
 	return map[string]string{
-		llmProxyListenAddressEnvironment:        "127.0.0.1:0",
-		llmProxyTLSCertificateEnvironment:       write("llmproxy.crt", identity.certificatePEM, 0o644),
-		llmProxyTLSKeyEnvironment:               write("llmproxy.key", identity.privateKeyPEM, 0o600),
-		llmProxySPIFFEIdentityEnvironment:       identityURI,
-		llmProxyCoreURLEnvironment:              coreURL,
-		llmProxyCoreCAEnvironment:               write("ca.pem", pki.caPEM, 0o644),
-		llmProxyCapabilityIssuerEnvironment:     issuer,
-		llmProxyCapabilityKeyringEnvironment:    write("keyring.json", keyring, 0o644),
-		llmProxyModelEnvironment:                "gpt-5.6-codex",
-		llmProxyModelProviderEnvironment:        "openai",
-		llmProxyUpstreamResponsesURLEnvironment: upstreamURL,
-		llmProxyUpstreamCAEnvironment:           filepath.Join(root, "ca.pem"),
-		llmProxyUpstreamAuthHeaderEnvironment:   "Authorization",
-		llmProxyUpstreamCredentialEnvironment:   write("upstream-credential", []byte("Bearer upstream-secret"), 0o600),
+		llmProxyListenAddressEnvironment:     "127.0.0.1:0",
+		llmProxyTLSCertificateEnvironment:    write("llmproxy.crt", identity.certificatePEM, 0o644),
+		llmProxyTLSKeyEnvironment:            write("llmproxy.key", identity.privateKeyPEM, 0o600),
+		llmProxySPIFFEIdentityEnvironment:    identityURI,
+		llmProxyCoreURLEnvironment:           coreURL,
+		llmProxyCoreCAEnvironment:            write("ca.pem", pki.caPEM, 0o644),
+		llmProxyCapabilityIssuerEnvironment:  issuer,
+		llmProxyCapabilityKeyringEnvironment: write("keyring.json", keyring, 0o644),
 	}
+}
+
+type llmProxyRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function llmProxyRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
 }

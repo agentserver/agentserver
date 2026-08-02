@@ -41,8 +41,8 @@ func TestProductionRendererCoreEnvironmentMatchesCommandContract(t *testing.T) {
 		coreCapabilityPrivateKeyEnvironment,
 		coreCapabilityKeyringEnvironment,
 		coreProductionExecutorEnvironment,
-		coreModelEnvironment,
-		coreModelProviderEnvironment,
+		coreLLMGatewaySealingKeyringEnvironment,
+		coreLLMGatewayRedirectURLEnvironment,
 		coreMaxRunDurationEnvironment,
 		coreMaxApprovalTTLEnvironment,
 		coreCapabilityExpiryGraceEnvironment,
@@ -51,14 +51,10 @@ func TestProductionRendererCoreEnvironmentMatchesCommandContract(t *testing.T) {
 		"AGENTSERVER_V2_OBJECT_PREFIX",
 		"AGENTSERVER_V2_S3_BUCKET",
 		"AGENTSERVER_V2_S3_REGION",
+		"AGENTSERVER_V2_S3_ENDPOINT",
 		"AGENTSERVER_V2_S3_USE_PATH_STYLE",
-		"AGENTSERVER_V2_KMS_REGION",
-		"AGENTSERVER_V2_KMS_KEY_ID",
-		"AWS_ROLE_ARN",
-		"AWS_WEB_IDENTITY_TOKEN_FILE",
-		"AWS_REGION",
-		"AWS_DEFAULT_REGION",
-		"AWS_EC2_METADATA_DISABLED",
+		"AGENTSERVER_V2_S3_ACCESS_KEY_ID",
+		"AGENTSERVER_V2_S3_SECRET_ACCESS_KEY",
 	}
 	slices.Sort(want)
 	if got := environment.Names(); !slices.Equal(got, want) {
@@ -74,6 +70,8 @@ func TestProductionRendererCoreEnvironmentMatchesCommandContract(t *testing.T) {
 		coreExternalOIDCSecretEnvironment,
 		coreLoginTransactionKeyEnvironment,
 		coreRunCursorKeyEnvironment,
+		"AGENTSERVER_V2_S3_ACCESS_KEY_ID",
+		"AGENTSERVER_V2_S3_SECRET_ACCESS_KEY",
 	} {
 		if environment.Secrets[name].Name == "" || environment.Secrets[name].Key == "" {
 			t.Fatalf("Core secret environment %s is not sourced from one exact Secret key", name)

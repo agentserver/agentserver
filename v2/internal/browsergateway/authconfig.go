@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -15,13 +16,14 @@ type BrowserAuthorizationConfig struct {
 	ClientID              string   `json:"clientId"`
 	Scopes                []string `json:"scopes"`
 	Audience              string   `json:"audience"`
+	APIOrigin             string   `json:"apiOrigin"`
 }
 
 type BrowserAuthorizationConfigHandler struct {
 	body []byte
 }
 
-func NewBrowserAuthorizationConfigHandler(clientID, audience string, scopes []string) (*BrowserAuthorizationConfigHandler, error) {
+func NewBrowserAuthorizationConfigHandler(clientID, audience string, scopes []string, apiOrigin string) (*BrowserAuthorizationConfigHandler, error) {
 	if !boundedAuthorizationText(clientID, 512) || !boundedAuthorizationText(audience, 512) || len(scopes) < 1 || len(scopes) > 16 {
 		return nil, errors.New("browser OAuth client, audience, and scopes are required within protocol bounds")
 	}
@@ -35,9 +37,16 @@ func NewBrowserAuthorizationConfigHandler(clientID, audience string, scopes []st
 		}
 		seen[scope] = struct{}{}
 	}
+	if apiOrigin != "" {
+		parsed, err := url.Parse(apiOrigin)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil ||
+			parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.String() != apiOrigin {
+			return nil, errors.New("browser API origin must be an exact HTTPS origin when configured")
+		}
+	}
 	document := BrowserAuthorizationConfig{
 		Version: 1, AuthorizationEndpoint: "/oauth2/auth", TokenEndpoint: "/oauth2/token", RedirectPath: "/",
-		ClientID: clientID, Scopes: append([]string(nil), scopes...), Audience: audience,
+		ClientID: clientID, Scopes: append([]string(nil), scopes...), Audience: audience, APIOrigin: apiOrigin,
 	}
 	body, err := json.Marshal(document)
 	if err != nil {

@@ -159,13 +159,19 @@ func loadHarnessPoolConfig(getenv func(string) string, production bool) (harness
 		&config.serviceAccount:      poolWorkerServiceAccountEnvironment,
 		&config.executorMCPEndpoint: poolExecutorMCPEndpointEnvironment,
 		&config.executorMCPIdentity: poolExecutorMCPIdentityEnvironment,
-		&config.model:               poolModelEnvironment,
-		&config.modelProvider:       poolModelProviderEnvironment,
 		&config.modelEndpoint:       poolModelEndpointEnvironment,
 		&config.modelTLSIdentity:    poolModelTLSIdentityEnvironment,
 	} {
 		*target, err = required(name)
 		if err != nil {
+			return harnessPoolConfig{}, err
+		}
+	}
+	if !production {
+		if config.model, err = required(poolModelEnvironment); err != nil {
+			return harnessPoolConfig{}, err
+		}
+		if config.modelProvider, err = required(poolModelProviderEnvironment); err != nil {
 			return harnessPoolConfig{}, err
 		}
 	}

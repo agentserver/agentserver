@@ -99,6 +99,25 @@ func bootstrapProductionConfig(
 	}
 
 	quotedSchema := quoteIdentifier(schema)
+	seeded, err := readProductionBootstrapSeed(ctx, transaction, quotedSchema, bootstrap)
+	if err != nil {
+		return ProductionBootstrapResult{}, err
+	}
+	if !seeded {
+		hasAuthority, err := productionBootstrapAuthorityExists(ctx, transaction, quotedSchema)
+		if err != nil {
+			return ProductionBootstrapResult{}, err
+		}
+		if hasAuthority {
+			matches, err := productionBootstrapRowsMatch(ctx, transaction, quotedSchema, bootstrap)
+			if err != nil {
+				return ProductionBootstrapResult{}, err
+			}
+			if !matches {
+				return ProductionBootstrapResult{}, productionBootstrapConflict("bootstrap seed", "singleton")
+			}
+		}
+	}
 	steps := []func(context.Context, pgx.Tx, string, ProductionBootstrap) (int, error){
 		insertProductionWorkspace,
 		insertProductionSession,
@@ -114,11 +133,129 @@ func bootstrapProductionConfig(
 		}
 		result.CreatedRows += created
 	}
+	if err := ensureProductionBootstrapSeed(ctx, transaction, quotedSchema, bootstrap); err != nil {
+		return ProductionBootstrapResult{}, err
+	}
 
 	if err := transaction.Commit(ctx); err != nil {
 		return ProductionBootstrapResult{}, databaseError("commit production bootstrap", err)
 	}
 	return result, nil
+}
+
+func readProductionBootstrapSeed(
+	ctx context.Context,
+	transaction pgx.Tx,
+	schema string,
+	bootstrap ProductionBootstrap,
+) (bool, error) {
+	query := fmt.Sprintf(`
+SELECT workspace_id::text, session_id::text, user_id::text,
+       external_oidc_issuer, external_oidc_subject, executor_id::text
+FROM %s.production_bootstrap_seeds
+WHERE singleton = TRUE
+FOR UPDATE`, schema)
+	var stored ProductionBootstrap
+	err := transaction.QueryRow(ctx, query).Scan(
+		&stored.WorkspaceID, &stored.SessionID, &stored.UserID,
+		&stored.ExternalOIDCIssuer, &stored.ExternalOIDCSubject, &stored.ExecutorID,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, databaseError("read production bootstrap seed", err)
+	}
+	if stored != bootstrap {
+		return false, productionBootstrapConflict("bootstrap seed", "singleton")
+	}
+	return true, nil
+}
+
+func productionBootstrapAuthorityExists(ctx context.Context, transaction pgx.Tx, schema string) (bool, error) {
+	query := fmt.Sprintf(`
+SELECT EXISTS (
+    SELECT 1 FROM %s.workspaces
+    UNION ALL SELECT 1 FROM %s.sessions
+    UNION ALL SELECT 1 FROM %s.users
+    UNION ALL SELECT 1 FROM %s.user_identities
+    UNION ALL SELECT 1 FROM %s.workspace_members
+    UNION ALL SELECT 1 FROM %s.executors
+)`, schema, schema, schema, schema, schema, schema)
+	var exists bool
+	if err := transaction.QueryRow(ctx, query).Scan(&exists); err != nil {
+		return false, databaseError("inspect pre-ledger production bootstrap authority", err)
+	}
+	return exists, nil
+}
+
+func productionBootstrapRowsMatch(
+	ctx context.Context,
+	transaction pgx.Tx,
+	schema string,
+	bootstrap ProductionBootstrap,
+) (bool, error) {
+	query := fmt.Sprintf(`
+SELECT EXISTS (
+    SELECT 1
+    FROM %s.workspaces AS workspace
+    JOIN %s.sessions AS session
+      ON session.id = $2 AND session.workspace_id = workspace.id
+    JOIN %s.users AS local_user
+      ON local_user.id = $3
+    JOIN %s.user_identities AS identity
+      ON identity.issuer = $4 AND identity.subject = $5
+     AND identity.user_id = local_user.id
+    JOIN %s.workspace_members AS member
+      ON member.workspace_id = workspace.id AND member.user_id = local_user.id
+    JOIN %s.executors AS executor
+      ON executor.id = $6 AND executor.workspace_id = workspace.id
+    WHERE workspace.id = $1
+      AND workspace.status = 'active'
+      AND local_user.status = 'active'
+      AND identity.status = 'active'
+      AND member.role = 'owner'
+      AND executor.status IN ('enrolling', 'offline', 'online')
+)`, schema, schema, schema, schema, schema, schema)
+	var matches bool
+	if err := transaction.QueryRow(
+		ctx, query,
+		bootstrap.WorkspaceID, bootstrap.SessionID, bootstrap.UserID,
+		bootstrap.ExternalOIDCIssuer, bootstrap.ExternalOIDCSubject, bootstrap.ExecutorID,
+	).Scan(&matches); err != nil {
+		return false, databaseError("verify pre-ledger production bootstrap authority", err)
+	}
+	return matches, nil
+}
+
+func ensureProductionBootstrapSeed(
+	ctx context.Context,
+	transaction pgx.Tx,
+	schema string,
+	bootstrap ProductionBootstrap,
+) error {
+	query := fmt.Sprintf(`
+INSERT INTO %s.production_bootstrap_seeds
+    (singleton, workspace_id, session_id, user_id,
+     external_oidc_issuer, external_oidc_subject, executor_id)
+VALUES
+    (TRUE, $1, $2, $3, $4, $5, $6)
+ON CONFLICT (singleton) DO NOTHING`, schema)
+	if _, err := productionInsert(
+		ctx, transaction, "insert production bootstrap seed", query,
+		bootstrap.WorkspaceID, bootstrap.SessionID, bootstrap.UserID,
+		bootstrap.ExternalOIDCIssuer, bootstrap.ExternalOIDCSubject, bootstrap.ExecutorID,
+	); err != nil {
+		return err
+	}
+	seeded, err := readProductionBootstrapSeed(ctx, transaction, schema, bootstrap)
+	if err != nil {
+		return err
+	}
+	if !seeded {
+		return productionBootstrapConflict("bootstrap seed", "singleton")
+	}
+	return nil
 }
 
 func validateProductionBootstrap(bootstrap ProductionBootstrap) error {

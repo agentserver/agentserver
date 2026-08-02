@@ -8,7 +8,7 @@ import (
 )
 
 func TestBrowserAuthorizationConfigIsPublicBoundedAndSecretFree(t *testing.T) {
-	handler, err := NewBrowserAuthorizationConfigHandler("agentserver-web", "agentserver-api", []string{"openid", "runs:write"})
+	handler, err := NewBrowserAuthorizationConfigHandler("agentserver-web", "agentserver-api", []string{"openid", "runs:write"}, "https://browser-gateway.byted.bps.dev")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -18,7 +18,7 @@ func TestBrowserAuthorizationConfigIsPublicBoundedAndSecretFree(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" ||
 		response.Header().Get("Content-Type") != "application/json" ||
-		response.Body.String() != `{"version":1,"authorizationEndpoint":"/oauth2/auth","tokenEndpoint":"/oauth2/token","redirectPath":"/","clientId":"agentserver-web","scopes":["openid","runs:write"],"audience":"agentserver-api"}`+"\n" {
+		response.Body.String() != `{"version":1,"authorizationEndpoint":"/oauth2/auth","tokenEndpoint":"/oauth2/token","redirectPath":"/","clientId":"agentserver-web","scopes":["openid","runs:write"],"audience":"agentserver-api","apiOrigin":"https://browser-gateway.byted.bps.dev"}`+"\n" {
 		t.Fatalf("authorization config = %d %q headers=%v", response.Code, response.Body.String(), response.Header())
 	}
 	if strings.Contains(response.Body.String(), "secret") {
@@ -27,10 +27,10 @@ func TestBrowserAuthorizationConfigIsPublicBoundedAndSecretFree(t *testing.T) {
 }
 
 func TestBrowserAuthorizationConfigRejectsDuplicateScopesAndBrowserAuthority(t *testing.T) {
-	if _, err := NewBrowserAuthorizationConfigHandler("agentserver-web", "agentserver-api", []string{"openid", "openid"}); err == nil {
+	if _, err := NewBrowserAuthorizationConfigHandler("agentserver-web", "agentserver-api", []string{"openid", "openid"}, ""); err == nil {
 		t.Fatal("duplicate OAuth scopes were accepted")
 	}
-	handler, err := NewBrowserAuthorizationConfigHandler("agentserver-web", "agentserver-api", []string{"openid"})
+	handler, err := NewBrowserAuthorizationConfigHandler("agentserver-web", "agentserver-api", []string{"openid"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

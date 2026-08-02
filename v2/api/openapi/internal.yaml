@@ -544,11 +544,11 @@
     "/internal/v2/run-capabilities:authorize-llmproxy": {
       "post": {
         "operationId": "authorizeLLMProxyRunCapability",
-        "description": "Revalidates a model-route capability against the database clock and current workspace, session, run, attempt, holder, generation, leases, actor membership and Core model/provider policy. Local signature verification is not sufficient.",
+        "description": "Revalidates a frozen workspace Gateway capability against the database clock and current workspace, session, run, attempt, holder, generation, leases, membership, Gateway version and per-user OIDC grant. On success Core returns the live Responses route and one upstream bearer for this request.",
         "security": [{"workloadMTLS": [], "runCapabilityBearer": []}],
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AuthorizeLLMProxyRunCapabilityRequest"}}}},
         "responses": {
-          "200": {"description": "Capability is authorized for this request instant", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AuthorizeRunCapabilityResponse"}}}},
+          "200": {"description": "Capability and workspace Gateway grant are authorized for this request instant", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AuthorizeLLMProxyRunCapabilityResponse"}}}},
           "400": {"$ref": "#/components/responses/CommandError"},
           "403": {"$ref": "#/components/responses/CommandError"},
           "500": {"$ref": "#/components/responses/CommandError"}
@@ -655,7 +655,7 @@
       "IssueRunCapabilitiesRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["workspaceId", "sessionId", "runId", "runAttemptId", "holderId", "runAttemptGeneration", "expectedRunVersion", "expectedRunAttemptVersion", "executorId", "brainToolCatalogId", "toolCatalogDigest", "model", "provider", "maxRunDurationMs", "maxApprovalTtlMs"],
+        "required": ["workspaceId", "sessionId", "runId", "runAttemptId", "holderId", "runAttemptGeneration", "expectedRunVersion", "expectedRunAttemptVersion", "executorId", "brainToolCatalogId", "toolCatalogDigest", "model", "provider", "llmGatewayId", "llmGatewayVersion", "llmGatewayGrantUserId", "maxRunDurationMs", "maxApprovalTtlMs"],
         "properties": {
           "workspaceId": {"$ref": "#/components/schemas/UUID"},
           "sessionId": {"$ref": "#/components/schemas/UUID"},
@@ -669,7 +669,10 @@
           "brainToolCatalogId": {"$ref": "#/components/schemas/UUID"},
           "toolCatalogDigest": {"$ref": "#/components/schemas/SHA256"},
           "model": {"type": "string", "minLength": 1, "maxLength": 256},
-          "provider": {"type": "string", "minLength": 1, "maxLength": 256},
+          "provider": {"const": "workspace-gateway"},
+          "llmGatewayId": {"$ref": "#/components/schemas/UUID"},
+          "llmGatewayVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "llmGatewayGrantUserId": {"$ref": "#/components/schemas/UUID"},
           "maxRunDurationMs": {"type": "integer", "minimum": 1000, "maximum": 86400000},
           "maxApprovalTtlMs": {"type": "integer", "minimum": 1000, "maximum": 86400000}
         }
@@ -708,10 +711,13 @@
       "AuthorizeLLMProxyRunCapabilityRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["model", "provider"],
+        "required": ["model", "provider", "llmGatewayId", "llmGatewayVersion", "llmGatewayGrantUserId"],
         "properties": {
           "model": {"type": "string", "minLength": 1, "maxLength": 256},
-          "provider": {"type": "string", "minLength": 1, "maxLength": 256}
+          "provider": {"const": "workspace-gateway"},
+          "llmGatewayId": {"$ref": "#/components/schemas/UUID"},
+          "llmGatewayVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "llmGatewayGrantUserId": {"$ref": "#/components/schemas/UUID"}
         }
       },
       "AuthorizeRunCapabilityResponse": {
@@ -727,6 +733,29 @@
           "runVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
           "runAttemptVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
           "authorizedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "AuthorizeLLMProxyRunCapabilityResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["capabilityId", "audience", "runId", "runAttemptId", "runAttemptGeneration", "runVersion", "runAttemptVersion", "authorizedAt", "model", "provider", "llmGatewayId", "llmGatewayVersion", "llmGatewayGrantUserId", "responsesUrl", "upstreamAuthorization", "bearerExpiresAt"],
+        "properties": {
+          "capabilityId": {"$ref": "#/components/schemas/UUID"},
+          "audience": {"const": "llmproxy"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "runVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "runAttemptVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "authorizedAt": {"type": "string", "format": "date-time"},
+          "model": {"type": "string", "minLength": 1, "maxLength": 256},
+          "provider": {"const": "workspace-gateway"},
+          "llmGatewayId": {"$ref": "#/components/schemas/UUID"},
+          "llmGatewayVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "llmGatewayGrantUserId": {"$ref": "#/components/schemas/UUID"},
+          "responsesUrl": {"type": "string", "format": "uri", "pattern": "^https://[^/?#:]+(?:\\:443)?/v1/responses$"},
+          "upstreamAuthorization": {"type": "string", "minLength": 8, "maxLength": 16384, "x-agentserver-sensitive": true},
+          "bearerExpiresAt": {"type": "string", "format": "date-time"}
         }
       },
       "ClaimRunDispatchesRequest": {
@@ -1202,6 +1231,17 @@
           "allowedTools": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 128}}
         }
       },
+      "RunLaunchLLMGatewayState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["gatewayId", "configVersion", "grantUserId", "model"],
+        "properties": {
+          "gatewayId": {"$ref": "#/components/schemas/UUID"},
+          "configVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "grantUserId": {"$ref": "#/components/schemas/UUID"},
+          "model": {"type": "string", "minLength": 1, "maxLength": 256}
+        }
+      },
       "ResolveRunLaunchStateResponse": {
         "type": "object",
         "additionalProperties": false,
@@ -1217,7 +1257,8 @@
           "runAttemptVersion": {"type": "integer", "minimum": 1},
           "prompt": {"$ref": "#/components/schemas/RunLaunchObjectPointer"},
           "previousCheckpoint": {"$ref": "#/components/schemas/RunLaunchCheckpointState"},
-          "executorPolicy": {"$ref": "#/components/schemas/RunLaunchExecutorPolicyState"}
+          "executorPolicy": {"$ref": "#/components/schemas/RunLaunchExecutorPolicyState"},
+          "llmGateway": {"$ref": "#/components/schemas/RunLaunchLLMGatewayState"}
         }
       },
       "BrainToolDescriptor": {

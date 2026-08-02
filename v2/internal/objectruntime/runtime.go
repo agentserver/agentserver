@@ -1,7 +1,6 @@
-// Package objectruntime constructs the production encrypted object store from
-// deployment routing configuration. It intentionally has no static credential
-// fields: S3 and KMS credentials come only from the AWS SDK workload/default
-// credential chain.
+// Package objectruntime constructs the deliberately plaintext production
+// object store for an S3-compatible service. Credentials are explicit inputs;
+// KMS, STS and ambient AWS credential discovery are not part of this profile.
 package objectruntime
 
 import (
@@ -15,6 +14,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/checkpoint"
 	"github.com/agentserver/agentserver/v2/internal/objectstore"
 	"github.com/agentserver/agentserver/v2/internal/objectstore/awsprovider"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 )
 
 const (
@@ -23,23 +23,23 @@ const (
 	S3RegionEnvironment     = "AGENTSERVER_V2_S3_REGION"
 	S3EndpointEnvironment   = "AGENTSERVER_V2_S3_ENDPOINT"
 	S3PathStyleEnvironment  = "AGENTSERVER_V2_S3_USE_PATH_STYLE"
-	KMSRegionEnvironment    = "AGENTSERVER_V2_KMS_REGION"
-	KMSEndpointEnvironment  = "AGENTSERVER_V2_KMS_ENDPOINT"
-	KMSKeyIDEnvironment     = "AGENTSERVER_V2_KMS_KEY_ID"
+	S3AccessKeyEnvironment  = "AGENTSERVER_V2_S3_ACCESS_KEY_ID"
+	S3SecretKeyEnvironment  = "AGENTSERVER_V2_S3_SECRET_ACCESS_KEY"
 	maximumEnvironmentBytes = 4 * 1024
 )
 
-// Config contains the complete non-secret authority needed to locate the
-// production ciphertext and KMS key. ObjectPrefix is required rather than
-// defaulted so a deployment cannot silently fork its durable object namespace.
+// Config contains the complete authority and credential needed to locate the
+// production plaintext objects. ObjectPrefix is required rather than defaulted
+// so a deployment cannot silently fork its durable object namespace.
 type Config struct {
-	ObjectPrefix string
-	Provider     awsprovider.Config
+	ObjectPrefix    string
+	Provider        awsprovider.S3Config
+	AccessKeyID     string
+	SecretAccessKey string
 }
 
-// ParseEnvironment reads only agentserver-owned non-secret routing. AWS
-// credentials, profiles, web-identity files and metadata endpoints remain the
-// responsibility of the SDK's workload/default credential chain.
+// ParseEnvironment reads agentserver-owned routing and exact Secret-backed S3
+// credentials. It does not consult profiles, web identity or metadata services.
 func ParseEnvironment(getenv func(string) string) (Config, error) {
 	if getenv == nil {
 		return Config{}, errors.New("production object configuration source is required")
@@ -73,60 +73,56 @@ func ParseEnvironment(getenv func(string) string) (Config, error) {
 	if err := objectstore.ValidatePrefix(config.ObjectPrefix); err != nil {
 		return Config{}, fmt.Errorf("%s: %w", ObjectPrefixEnvironment, err)
 	}
-	if config.Provider.S3Bucket, err = required(S3BucketEnvironment); err != nil {
+	if config.Provider.Bucket, err = required(S3BucketEnvironment); err != nil {
 		return Config{}, err
 	}
-	if config.Provider.S3Region, err = required(S3RegionEnvironment); err != nil {
+	if config.Provider.Region, err = required(S3RegionEnvironment); err != nil {
 		return Config{}, err
 	}
-	if config.Provider.S3Endpoint, err = optional(S3EndpointEnvironment); err != nil {
+	if config.Provider.Endpoint, err = optional(S3EndpointEnvironment); err != nil {
 		return Config{}, err
 	}
 	switch pathStyle := getenv(S3PathStyleEnvironment); pathStyle {
 	case "", "false":
-		config.Provider.S3UsePathStyle = false
+		config.Provider.UsePathStyle = false
 	case "true":
-		config.Provider.S3UsePathStyle = true
+		config.Provider.UsePathStyle = true
 	default:
 		return Config{}, fmt.Errorf("%s must be exactly true or false when present", S3PathStyleEnvironment)
 	}
-	if config.Provider.KMSRegion, err = required(KMSRegionEnvironment); err != nil {
+	if config.AccessKeyID, err = required(S3AccessKeyEnvironment); err != nil {
 		return Config{}, err
 	}
-	if config.Provider.KMSEndpoint, err = optional(KMSEndpointEnvironment); err != nil {
-		return Config{}, err
-	}
-	if config.Provider.KMSKeyID, err = required(KMSKeyIDEnvironment); err != nil {
+	if config.SecretAccessKey, err = required(S3SecretKeyEnvironment); err != nil {
 		return Config{}, err
 	}
 	return config, nil
 }
 
-// Open loads the AWS workload/default configuration and returns the shared
-// provider-neutral protocol store. The bound covers every currently supported
-// semantic kind; each Core/pool adapter applies its narrower kind-specific
-// limit before calling the protocol.
-func Open(ctx context.Context, config Config) (*objectstore.Store, error) {
-	return open(ctx, config, loadAWSProviders)
+// Open constructs the shared plaintext protocol store. The bound covers every
+// currently supported semantic kind; each Core/pool adapter applies its
+// narrower kind-specific limit before calling the protocol.
+func Open(ctx context.Context, config Config) (*objectstore.PlainStore, error) {
+	return open(ctx, config, loadS3Provider)
 }
 
 type providerLoader func(
 	context.Context,
-	awsprovider.Config,
-) (objectstore.ImmutableBlobStore, objectstore.DataKeyProvider, error)
+	awsprovider.S3Config,
+	string,
+	string,
+) (objectstore.ImmutableBlobStore, error)
 
-func loadAWSProviders(
+func loadS3Provider(
 	ctx context.Context,
-	config awsprovider.Config,
-) (objectstore.ImmutableBlobStore, objectstore.DataKeyProvider, error) {
-	providers, err := awsprovider.Load(ctx, config)
-	if err != nil {
-		return nil, nil, err
-	}
-	return providers.Blobs, providers.Keys, nil
+	config awsprovider.S3Config,
+	accessKeyID string,
+	secretAccessKey string,
+) (objectstore.ImmutableBlobStore, error) {
+	return awsprovider.LoadS3(ctx, config, credentials.NewStaticCredentialsProvider(accessKeyID, secretAccessKey, ""))
 }
 
-func open(ctx context.Context, config Config, load providerLoader) (*objectstore.Store, error) {
+func open(ctx context.Context, config Config, load providerLoader) (*objectstore.PlainStore, error) {
 	if ctx == nil {
 		return nil, errors.New("production object store context is required")
 	}
@@ -136,19 +132,25 @@ func open(ctx context.Context, config Config, load providerLoader) (*objectstore
 	if err := objectstore.ValidatePrefix(config.ObjectPrefix); err != nil {
 		return nil, fmt.Errorf("%s: %w", ObjectPrefixEnvironment, err)
 	}
+	if err := awsprovider.ValidateS3Config(config.Provider); err != nil {
+		return nil, err
+	}
+	if !validEnvironmentValue(config.AccessKeyID) || !validEnvironmentValue(config.SecretAccessKey) {
+		return nil, errors.New("production S3 credentials are missing or invalid")
+	}
 	if load == nil {
 		return nil, errors.New("production object provider loader is required")
 	}
-	blobs, keys, err := load(ctx, config.Provider)
+	blobs, err := load(ctx, config.Provider, config.AccessKeyID, config.SecretAccessKey)
 	if err != nil {
-		return nil, fmt.Errorf("load production AWS object providers: %w", err)
+		return nil, fmt.Errorf("load production S3 object provider: %w", err)
 	}
-	store, err := objectstore.New(objectstore.Config{
-		Backend: blobs, Keys: keys, Prefix: config.ObjectPrefix,
+	store, err := objectstore.NewPlain(objectstore.PlainConfig{
+		Backend: blobs, Prefix: config.ObjectPrefix,
 		MaximumPlaintextBytes: checkpoint.MaximumArtifactBytes,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("configure production encrypted object protocol: %w", err)
+		return nil, fmt.Errorf("configure production plaintext object protocol: %w", err)
 	}
 	return store, nil
 }

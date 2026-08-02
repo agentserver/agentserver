@@ -54,6 +54,8 @@ func (client *CoreClient) AuthorizeLLMProxyRunCapability(
 	}
 	body, err := json.Marshal(corecontract.AuthorizeLLMProxyRunCapabilityRequest{
 		Model: request.Model, Provider: request.Provider,
+		LLMGatewayID: request.LLMGatewayID, LLMGatewayVersion: request.LLMGatewayVersion,
+		LLMGatewayGrantUserID: request.LLMGatewayGrantUserID,
 	})
 	if err != nil {
 		return RunCapabilityAuthorization{}, errors.New("encode Core llmproxy authorization request")
@@ -77,7 +79,7 @@ func (client *CoreClient) AuthorizeLLMProxyRunCapability(
 		response.StatusCode != http.StatusOK {
 		return RunCapabilityAuthorization{}, errors.New("Core llmproxy capability live authorization failed")
 	}
-	var contractResponse corecontract.AuthorizeRunCapabilityResponse
+	var contractResponse corecontract.AuthorizeLLMProxyRunCapabilityResponse
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&contractResponse); err != nil || finishJSON(decoder) != nil {
@@ -89,11 +91,21 @@ func (client *CoreClient) AuthorizeLLMProxyRunCapability(
 		RunAttemptGeneration: contractResponse.RunAttemptGeneration,
 		RunVersion:           contractResponse.RunVersion, RunAttemptVersion: contractResponse.RunAttemptVersion,
 		AuthorizedAt: contractResponse.AuthorizedAt,
+		Model:        contractResponse.Model, Provider: contractResponse.Provider,
+		LLMGatewayID: contractResponse.LLMGatewayID, LLMGatewayVersion: contractResponse.LLMGatewayVersion,
+		LLMGatewayGrantUserID: contractResponse.LLMGatewayGrantUserID,
+		ResponsesURL:          contractResponse.ResponsesURL,
+		UpstreamAuthorization: contractResponse.UpstreamAuthorization,
+		BearerExpiresAt:       contractResponse.BearerExpiresAt,
 	}
 	if result.CapabilityID != request.CapabilityID || result.Audience != runcapabilityAudience ||
 		result.RunID != request.RunID || result.RunAttemptID != request.RunAttemptID ||
 		result.RunAttemptGeneration != request.RunAttemptGeneration || !safeVersion(result.RunVersion) ||
-		!safeVersion(result.RunAttemptVersion) || result.AuthorizedAt.IsZero() {
+		!safeVersion(result.RunAttemptVersion) || result.AuthorizedAt.IsZero() ||
+		result.Model != request.Model || result.Provider != request.Provider ||
+		result.LLMGatewayID != request.LLMGatewayID || result.LLMGatewayVersion != request.LLMGatewayVersion ||
+		result.LLMGatewayGrantUserID != request.LLMGatewayGrantUserID || result.ResponsesURL == "" ||
+		result.UpstreamAuthorization == "" || result.BearerExpiresAt.IsZero() {
 		return RunCapabilityAuthorization{}, errors.New("Core llmproxy capability authorization response is inconsistent")
 	}
 	return result, nil

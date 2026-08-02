@@ -16,6 +16,7 @@ func TestProductionRendererExecutorEnvironmentMatchesCommandContract(t *testing.
 	}
 	want := []string{
 		gatewayListenAddressEnvironment,
+		gatewayPublicListenAddressEnvironment,
 		gatewayTLSCertificateEnvironment,
 		gatewayTLSKeyEnvironment,
 		gatewayCoreURLEnvironment,

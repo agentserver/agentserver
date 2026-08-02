@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/harnessinit"
 )
 
@@ -22,6 +23,8 @@ type deploymentInput struct {
 	initContainers  []any
 	volumes         []any
 	volumeMounts    []any
+	ports           []any
+	probePort       uint16
 	hostAliases     map[string]string
 	resources       ContainerResourcesDocument
 	uid             uint32
@@ -103,8 +106,8 @@ func renderCoreDeployment(context renderContext) (kubeObject, error) {
 		valueEnvironment("AGENTSERVER_V2_RUN_CAPABILITY_SIGNING_KEY_FILE", serviceMaterialPath("run-capability.key")),
 		valueEnvironment("AGENTSERVER_V2_RUN_CAPABILITY_KEYRING_FILE", serviceMaterialPath("run-capability-keyring.json")),
 		valueEnvironment("AGENTSERVER_V2_EXECUTOR_ID", document.Bootstrap.ExecutorID),
-		valueEnvironment("AGENTSERVER_V2_MODEL", document.Runtime.Model),
-		valueEnvironment("AGENTSERVER_V2_MODEL_PROVIDER", document.Runtime.Provider),
+		valueEnvironment("AGENTSERVER_V2_LLM_GATEWAY_SEALING_KEYRING_FILE", serviceMaterialPath("llm-gateway-sealing-keyring.json")),
+		valueEnvironment("AGENTSERVER_V2_LLM_GATEWAY_REDIRECT_URL", "https://"+document.Ingress.FrontendHostname+corecontract.LLMGatewayOIDCCallbackPath),
 		valueEnvironment("AGENTSERVER_V2_MAX_RUN_DURATION", document.Runtime.MaxRunDuration),
 		valueEnvironment("AGENTSERVER_V2_MAX_APPROVAL_TTL", document.Runtime.MaxApprovalTTL),
 		valueEnvironment("AGENTSERVER_V2_RUN_CAPABILITY_EXPIRY_GRACE", document.Runtime.CapabilityExpiryGrace),
@@ -112,7 +115,6 @@ func renderCoreDeployment(context renderContext) (kubeObject, error) {
 		valueEnvironment("AGENTSERVER_V2_EXECUTOR_ENROLLMENT_TOKEN_TTL", document.Runtime.EnrollmentTokenTTL),
 	}
 	environment = append(environment, objectStoreEnvironment(document)...)
-	environment = append(environment, awsWorkloadEnvironment(document.Objects.CoreRoleARN, document.Objects.S3Region)...)
 	return deployment(deploymentInput{
 		namespace: document.Namespace, platform: document.Platform, component: coreComponent, replicas: document.Replicas.Core,
 		image: document.Images.Service, imagePullSecret: document.Images.PullSecret, serviceAccount: coreComponent,
@@ -122,10 +124,9 @@ func renderCoreDeployment(context renderContext) (kubeObject, error) {
 			document.Images.Service, harnessinit.ProfileCore, "material-source", "/var/run/agentserver-source",
 			"material", "/var/run/agentserver/material", ServiceUID, ServiceGID,
 		)},
-		volumes: []any{source, emptyDirVolume("material", "Memory", "16Mi"), awsTokenVolume(), emptyDirVolume("scratch", "Memory", document.Resources.ScratchTmpfs)},
+		volumes: []any{source, emptyDirVolume("material", "Memory", "16Mi"), emptyDirVolume("scratch", "Memory", document.Resources.ScratchTmpfs)},
 		volumeMounts: []any{
 			kubeObject{"name": "material", "mountPath": "/var/run/agentserver"},
-			kubeObject{"name": "aws-token", "mountPath": "/var/run/secrets/aws", "readOnly": true},
 			kubeObject{"name": "scratch", "mountPath": "/tmp"},
 		},
 		resources: document.Resources.Core, uid: ServiceUID, gid: ServiceGID, fsGroup: ServiceGID,
@@ -142,14 +143,14 @@ func renderBrowserDeployment(context renderContext) (kubeObject, error) {
 	}
 	environment := []any{
 		valueEnvironment("AGENTSERVER_V2_BROWSER_GATEWAY_LISTEN_ADDR", listenAddress(document.Services.BrowserGateway.Port)),
-		valueEnvironment("AGENTSERVER_V2_BROWSER_GATEWAY_TLS_CERT_FILE", serviceMaterialPath("tls.crt")),
-		valueEnvironment("AGENTSERVER_V2_BROWSER_GATEWAY_TLS_KEY_FILE", serviceMaterialPath("tls.key")),
+		valueEnvironment("AGENTSERVER_V2_BROWSER_FRONTEND_ORIGIN", "https://"+document.Ingress.FrontendHostname),
+		valueEnvironment("AGENTSERVER_V2_BROWSER_API_ORIGIN", "https://"+document.Ingress.BrowserHostname),
 		valueEnvironment("AGENTSERVER_V2_CORE_URL", internalOrigin(CoreInternalHost, document.Services.Core.Port)),
 		valueEnvironment("AGENTSERVER_V2_CORE_CA_FILE", serviceMaterialPath("ca.crt")),
 		valueEnvironment("AGENTSERVER_V2_CORE_CLIENT_CERT_FILE", serviceMaterialPath("tls.crt")),
 		valueEnvironment("AGENTSERVER_V2_CORE_CLIENT_KEY_FILE", serviceMaterialPath("tls.key")),
 		valueEnvironment("AGENTSERVER_V2_CORE_SERVER_NAME", CoreInternalHost),
-		valueEnvironment("AGENTSERVER_V2_HYDRA_PUBLIC_UPSTREAM", document.OAuth.Hydra.PublicOrigin),
+		valueEnvironment("AGENTSERVER_V2_HYDRA_PUBLIC_UPSTREAM", document.OAuth.Hydra.PublicUpstream),
 		valueEnvironment("AGENTSERVER_V2_BROWSER_OAUTH_CLIENT_ID", document.OAuth.Hydra.BrowserClientID),
 		valueEnvironment("AGENTSERVER_V2_BROWSER_OAUTH_AUDIENCE", BrowserOAuthAudience()),
 		valueEnvironment("AGENTSERVER_V2_BROWSER_OAUTH_SCOPES", strings.Join(BrowserOAuthScopes(), ",")),
@@ -167,6 +168,8 @@ func renderBrowserDeployment(context renderContext) (kubeObject, error) {
 			kubeObject{"name": "material", "mountPath": "/var/run/agentserver"},
 			kubeObject{"name": "scratch", "mountPath": "/tmp"},
 		},
+		ports:       []any{kubeObject{"name": "http", "containerPort": int(document.Services.BrowserGateway.Port), "protocol": "TCP"}},
+		probePort:   document.Services.BrowserGateway.Port,
 		hostAliases: map[string]string{CoreInternalHost: document.Services.Core.ClusterIP},
 		resources:   document.Resources.BrowserGateway, uid: ServiceUID, gid: ServiceGID, fsGroup: ServiceGID,
 		strategy: "RollingUpdate", configHash: context.documentHash, termination: 20,
@@ -181,7 +184,8 @@ func renderExecutorDeployment(context renderContext) (kubeObject, error) {
 		return nil, err
 	}
 	environment := []any{
-		valueEnvironment("AGENTSERVER_V2_EXECUTOR_GATEWAY_LISTEN_ADDR", listenAddress(document.Services.ExecutorGateway.Port)),
+		valueEnvironment("AGENTSERVER_V2_EXECUTOR_GATEWAY_LISTEN_ADDR", listenAddress(document.Services.ExecutorGateway.InternalPort)),
+		valueEnvironment("AGENTSERVER_V2_EXECUTOR_GATEWAY_PUBLIC_LISTEN_ADDR", listenAddress(document.Services.ExecutorGateway.PublicPort)),
 		valueEnvironment("AGENTSERVER_V2_EXECUTOR_GATEWAY_TLS_CERT_FILE", serviceMaterialPath("tls.crt")),
 		valueEnvironment("AGENTSERVER_V2_EXECUTOR_GATEWAY_TLS_KEY_FILE", serviceMaterialPath("tls.key")),
 		valueEnvironment("AGENTSERVER_V2_CORE_URL", internalOrigin(CoreInternalHost, document.Services.Core.Port)),
@@ -210,6 +214,11 @@ func renderExecutorDeployment(context renderContext) (kubeObject, error) {
 			kubeObject{"name": "material", "mountPath": "/var/run/agentserver"},
 			kubeObject{"name": "scratch", "mountPath": "/tmp"},
 		},
+		ports: []any{
+			kubeObject{"name": "http-agentx", "containerPort": int(document.Services.ExecutorGateway.PublicPort), "protocol": "TCP"},
+			kubeObject{"name": "https-mcp", "containerPort": int(document.Services.ExecutorGateway.InternalPort), "protocol": "TCP"},
+		},
+		probePort:   document.Services.ExecutorGateway.PublicPort,
 		hostAliases: map[string]string{CoreInternalHost: document.Services.Core.ClusterIP},
 		resources:   document.Resources.ExecutorGateway, uid: ServiceUID, gid: ServiceGID, fsGroup: ServiceGID,
 		strategy: "Recreate", configHash: context.documentHash, termination: 30,
@@ -252,18 +261,18 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 		valueEnvironment("AGENTSERVER_V2_HARNESS_WORKER_GID", strconv.FormatUint(uint64(WorkerGID), 10)),
 		valueEnvironment("AGENTSERVER_V2_HARNESS_APP_UID", strconv.FormatUint(uint64(AppUID), 10)),
 		valueEnvironment("AGENTSERVER_V2_HARNESS_APP_GID", strconv.FormatUint(uint64(AppGID), 10)),
-		valueEnvironment("AGENTSERVER_V2_EXECUTOR_MCP_ENDPOINT", internalOrigin(ExecutorInternalHost, document.Services.ExecutorGateway.Port)+"/mcp"),
+		valueEnvironment("AGENTSERVER_V2_EXECUTOR_MCP_ENDPOINT", internalOrigin(ExecutorInternalHost, document.Services.ExecutorGateway.InternalPort)+"/mcp"),
 		valueEnvironment("AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID", spiffeIdentity(config, executorComponent)),
-		valueEnvironment("AGENTSERVER_V2_MODEL", document.Runtime.Model),
-		valueEnvironment("AGENTSERVER_V2_MODEL_PROVIDER", document.Runtime.Provider),
-		valueEnvironment("AGENTSERVER_V2_LLMPROXY_ENDPOINT", internalOrigin(LLMProxyInternalHost, document.Services.LLMProxy.Port)+"/v1/responses"),
+		// Stock Codex treats this as an API base URL and appends /responses.
+		// The workspace-configured third-party URL is the separate exact
+		// /v1/responses authority resolved inside llmproxy by Core.
+		valueEnvironment("AGENTSERVER_V2_LLMPROXY_ENDPOINT", internalOrigin(LLMProxyInternalHost, document.Services.LLMProxy.Port)+"/v1"),
 		valueEnvironment("AGENTSERVER_V2_LLMPROXY_SPIFFE_ID", spiffeIdentity(config, llmproxyComponent)),
 		valueEnvironment("AGENTSERVER_V2_HARNESS_MAX_CONCURRENT_ATTEMPTS", strconv.Itoa(document.Runtime.MaxConcurrentAttempts)),
 		valueEnvironment("AGENTSERVER_V2_MAX_RUN_DURATION", document.Runtime.MaxRunDuration),
 		valueEnvironment("AGENTSERVER_V2_MAX_APPROVAL_TTL", document.Runtime.MaxApprovalTTL),
 	}
 	environment = append(environment, objectStoreEnvironment(document)...)
-	environment = append(environment, awsWorkloadEnvironment(document.Objects.HarnessPoolRoleARN, document.Objects.S3Region)...)
 	configVolume := configMapVolume("harness-config", context.harnessConfigName, map[string]string{
 		"worker-deployment.json": "worker-deployment.json",
 		"network-guard.json":     "network-guard.json",
@@ -282,7 +291,7 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 			poolSource, workerSource, emptyDirVolume("material", "Memory", "16Mi"), configVolume,
 			emptyDirVolume("runtime", "Memory", document.Resources.RuntimeTmpfs),
 			emptyDirVolume("checkpoint", "Memory", document.Resources.CheckpointTmpfs),
-			emptyDirVolume("scratch", "Memory", document.Resources.ScratchTmpfs), awsTokenVolume(),
+			emptyDirVolume("scratch", "Memory", document.Resources.ScratchTmpfs),
 		},
 		volumeMounts: []any{
 			kubeObject{"name": "material", "mountPath": "/var/run/agentserver"},
@@ -290,7 +299,6 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 			kubeObject{"name": "runtime", "mountPath": "/var/lib/agentserver/runtime"},
 			kubeObject{"name": "checkpoint", "mountPath": "/var/lib/agentserver/checkpoint"},
 			kubeObject{"name": "scratch", "mountPath": "/tmp"},
-			kubeObject{"name": "aws-token", "mountPath": "/var/run/secrets/aws", "readOnly": true},
 		},
 		hostAliases: map[string]string{
 			CoreInternalHost:     document.Services.Core.ClusterIP,
@@ -320,12 +328,6 @@ func renderLLMProxyDeployment(context renderContext) (kubeObject, error) {
 		valueEnvironment("AGENTSERVER_V2_CORE_SERVER_NAME", CoreInternalHost),
 		valueEnvironment("AGENTSERVER_V2_RUN_CAPABILITY_ISSUER", document.Runtime.CapabilityIssuer),
 		valueEnvironment("AGENTSERVER_V2_RUN_CAPABILITY_KEYRING_FILE", serviceMaterialPath("run-capability-keyring.json")),
-		valueEnvironment("AGENTSERVER_V2_MODEL", document.Runtime.Model),
-		valueEnvironment("AGENTSERVER_V2_MODEL_PROVIDER", document.Runtime.Provider),
-		valueEnvironment("AGENTSERVER_V2_LLM_UPSTREAM_RESPONSES_URL", document.Runtime.UpstreamResponsesURL),
-		valueEnvironment("AGENTSERVER_V2_LLM_UPSTREAM_CA_FILE", serviceMaterialPath("upstream-ca.crt")),
-		valueEnvironment("AGENTSERVER_V2_LLM_UPSTREAM_AUTH_HEADER", document.Runtime.UpstreamAuthHeader),
-		valueEnvironment("AGENTSERVER_V2_LLM_UPSTREAM_CREDENTIAL_FILE", serviceMaterialPath("upstream-credential")),
 	}
 	return deployment(deploymentInput{
 		namespace: document.Namespace, platform: document.Platform, component: llmproxyComponent, replicas: document.Replicas.LLMProxy,
@@ -361,16 +363,24 @@ func deployment(input deploymentInput) kubeObject {
 	if input.strategy == "RollingUpdate" {
 		strategy["rollingUpdate"] = kubeObject{"maxUnavailable": 0, "maxSurge": 1}
 	}
+	ports := input.ports
+	if len(ports) == 0 {
+		ports = []any{kubeObject{"name": "https", "containerPort": HarnessControlPort, "protocol": "TCP"}}
+	}
+	probePort := input.probePort
+	if probePort == 0 {
+		probePort = HarnessControlPort
+	}
 	container := kubeObject{
 		"name": input.component, "image": input.image, "imagePullPolicy": "IfNotPresent",
 		"command": input.command, "args": input.args, "env": input.environment,
-		"ports":           []any{kubeObject{"name": "https", "containerPort": HarnessControlPort, "protocol": "TCP"}},
+		"ports":           ports,
 		"resources":       resources(input.resources),
 		"securityContext": runtimeSecurityContext(input.uid, input.gid, input.capabilities...),
 		"volumeMounts":    input.volumeMounts,
-		"startupProbe":    execProbe("127.0.0.1:" + strconv.Itoa(HarnessControlPort)),
-		"readinessProbe":  execProbe("127.0.0.1:" + strconv.Itoa(HarnessControlPort)),
-		"livenessProbe":   execProbe("127.0.0.1:" + strconv.Itoa(HarnessControlPort)),
+		"startupProbe":    execProbe("127.0.0.1:" + strconv.Itoa(int(probePort))),
+		"readinessProbe":  execProbe("127.0.0.1:" + strconv.Itoa(int(probePort))),
+		"livenessProbe":   execProbe("127.0.0.1:" + strconv.Itoa(int(probePort))),
 	}
 	podSpec := kubeObject{
 		"serviceAccountName": input.serviceAccount, "automountServiceAccountToken": false,
@@ -391,7 +401,9 @@ func deployment(input deploymentInput) kubeObject {
 	}
 	return kubeObject{
 		"apiVersion": "apps/v1", "kind": "Deployment",
-		"metadata": metadata(input.component, input.namespace, componentLabels(input.component), nil),
+		"metadata": metadata(input.component, input.namespace, componentLabels(input.component), map[string]string{
+			"reloader.stakater.com/auto": "true",
+		}),
 		"spec": kubeObject{
 			"replicas": input.replicas, "revisionHistoryLimit": 3, "progressDeadlineSeconds": 600,
 			"strategy": strategy, "selector": kubeObject{"matchLabels": selectorLabels(input.component)},
@@ -421,38 +433,13 @@ func objectStoreEnvironment(document ConfigDocument) []any {
 		valueEnvironment("AGENTSERVER_V2_S3_BUCKET", document.Objects.S3Bucket),
 		valueEnvironment("AGENTSERVER_V2_S3_REGION", document.Objects.S3Region),
 		valueEnvironment("AGENTSERVER_V2_S3_USE_PATH_STYLE", strconv.FormatBool(document.Objects.S3UsePathStyle)),
-		valueEnvironment("AGENTSERVER_V2_KMS_REGION", document.Objects.KMSRegion),
-		valueEnvironment("AGENTSERVER_V2_KMS_KEY_ID", document.Objects.KMSKeyID),
+		secretEnvironment("AGENTSERVER_V2_S3_ACCESS_KEY_ID", document.Secrets.ObjectStore, "access-key-id"),
+		secretEnvironment("AGENTSERVER_V2_S3_SECRET_ACCESS_KEY", document.Secrets.ObjectStore, "secret-access-key"),
 	}
 	if document.Objects.S3Endpoint != "" {
 		values = append(values, valueEnvironment("AGENTSERVER_V2_S3_ENDPOINT", document.Objects.S3Endpoint))
 	}
-	if document.Objects.KMSEndpoint != "" {
-		values = append(values, valueEnvironment("AGENTSERVER_V2_KMS_ENDPOINT", document.Objects.KMSEndpoint))
-	}
 	return values
-}
-
-func awsWorkloadEnvironment(roleARN, region string) []any {
-	return []any{
-		valueEnvironment("AWS_ROLE_ARN", roleARN),
-		valueEnvironment("AWS_WEB_IDENTITY_TOKEN_FILE", "/var/run/secrets/aws/token"),
-		valueEnvironment("AWS_REGION", region),
-		valueEnvironment("AWS_DEFAULT_REGION", region),
-		valueEnvironment("AWS_EC2_METADATA_DISABLED", "true"),
-	}
-}
-
-func awsTokenVolume() kubeObject {
-	return kubeObject{
-		"name": "aws-token",
-		"projected": kubeObject{
-			"defaultMode": 288,
-			"sources": []any{kubeObject{"serviceAccountToken": kubeObject{
-				"path": "token", "audience": "sts.amazonaws.com", "expirationSeconds": 3600,
-			}}},
-		},
-	}
 }
 
 func spiffeIdentity(config LoadedConfig, component string) string {

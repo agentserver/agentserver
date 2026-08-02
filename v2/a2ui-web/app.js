@@ -25,6 +25,20 @@ import {
   validateTokenResponse,
 } from './auth.js'
 
+import {
+  buildCreateGatewayRequest,
+  createBrowserBinding,
+  validateBeginAuthorization,
+  validateCompleteAuthorization,
+  validateCreateGateway,
+  validateDisableGateway,
+  validateGatewayCallbackMessage,
+  validateGatewayList,
+  validateRevokeGrant,
+  workspaceLLMGatewayActionPath,
+  workspaceLLMGatewaysPath,
+} from './llm-gateways.js'
+
 const developmentWorkspaceID = '40000000-0000-4000-8000-000000000004'
 const developmentSessionID = '50000000-0000-4000-8000-000000000005'
 
@@ -32,6 +46,7 @@ const elements = {
   healthPill: requiredElement('health-pill'),
   healthLabel: requiredElement('health-label'),
   connectionButton: requiredElement('connection-button'),
+  gatewayButton: requiredElement('gateway-button'),
   connectionLayer: requiredElement('connection-layer'),
   connectionForm: requiredElement('connection-form'),
   connectionError: requiredElement('connection-error'),
@@ -62,6 +77,24 @@ const elements = {
   surfaceList: requiredElement('surface-list'),
   diagnosticCount: requiredElement('diagnostic-count'),
   eventLog: requiredElement('event-log'),
+  gatewayLayer: requiredElement('gateway-layer'),
+  gatewayClose: requiredElement('gateway-close'),
+  gatewayRefresh: requiredElement('gateway-refresh'),
+  gatewayStatus: requiredElement('gateway-status'),
+  gatewayError: requiredElement('gateway-error'),
+  gatewayList: requiredElement('gateway-list'),
+  gatewayEmpty: requiredElement('gateway-empty'),
+  gatewayCreateForm: requiredElement('gateway-create-form'),
+  gatewayCreateButton: requiredElement('gateway-create-button'),
+  gatewayName: requiredElement('gateway-name'),
+  gatewayModel: requiredElement('gateway-model'),
+  gatewayResponsesURL: requiredElement('gateway-responses-url'),
+  gatewayOIDCIssuer: requiredElement('gateway-oidc-issuer'),
+  gatewayOIDCClientID: requiredElement('gateway-oidc-client-id'),
+  gatewayOIDCScopes: requiredElement('gateway-oidc-scopes'),
+  gatewayBearerType: requiredElement('gateway-bearer-type'),
+  gatewayMakeDefault: requiredElement('gateway-make-default'),
+  gatewayCallbackURI: requiredElement('gateway-callback-uri'),
 }
 
 const welcomeTemplate = elements.welcomeCard.cloneNode(true)
@@ -71,14 +104,25 @@ let viewState = createViewState()
 let activeRun = null
 let cancellationPending = false
 const approvalCommands = new Map()
+let gatewayView = { phase: 'idle', gateways: [], error: '' }
+let gatewayAuthorization = null
 
 void initialize()
 
 async function initialize() {
   elements.workspaceID.value = developmentWorkspaceID
   elements.sessionID.value = developmentSessionID
+  elements.gatewayCallbackURI.textContent = new URL('/auth/llm-gateway/callback', window.location.origin).href
   elements.connectionForm.addEventListener('submit', beginAuthorization)
   elements.connectionButton.addEventListener('click', toggleConnection)
+  elements.gatewayButton.addEventListener('click', openGatewaySettings)
+  elements.gatewayClose.addEventListener('click', closeGatewaySettings)
+  elements.gatewayRefresh.addEventListener('click', loadWorkspaceGateways)
+  elements.gatewayCreateForm.addEventListener('submit', createWorkspaceGateway)
+  elements.gatewayLayer.addEventListener('click', (event) => {
+    if (event.target === elements.gatewayLayer) closeGatewaySettings()
+  })
+  window.addEventListener('message', completeWorkspaceGatewayAuthorization)
   elements.composer.addEventListener('submit', sendPrompt)
   elements.reconnectButton.addEventListener('click', () => streamRun(true))
   elements.cancelButton.addEventListener('click', cancelActiveRun)
@@ -167,14 +211,17 @@ async function completeAuthorization(callback) {
 }
 
 function establishConnection(token, workspaceID, sessionID) {
+  clearGatewayAuthorization()
   connection = { token, workspaceID, sessionID }
   elements.connectionError.hidden = true
   elements.connectionLayer.hidden = true
   elements.connectionButton.textContent = 'Disconnect'
+  elements.gatewayButton.hidden = false
   viewState = createViewState()
   activeRun = null
   cancellationPending = false
   approvalCommands.clear()
+  gatewayView = { phase: 'idle', gateways: [], error: '' }
   renderAll()
   elements.prompt.focus()
 }
@@ -194,11 +241,319 @@ function toggleConnection() {
   if (previous?.controller) previous.controller.abort()
   connection.token = ''
   connection = null
+  clearGatewayAuthorization()
+  closeGatewaySettings()
+  gatewayView = { phase: 'idle', gateways: [], error: '' }
+  elements.gatewayButton.hidden = true
   viewState = createViewState()
   elements.connectionButton.textContent = 'Sign in'
   elements.prompt.value = ''
   showConnectionLayer()
   renderAll()
+}
+
+function openGatewaySettings() {
+  if (!connection) return
+  elements.gatewayLayer.hidden = false
+  renderGatewaySettings()
+  void loadWorkspaceGateways()
+}
+
+function closeGatewaySettings() {
+  elements.gatewayLayer.hidden = true
+}
+
+async function loadWorkspaceGateways() {
+  if (!connection || gatewayView.phase === 'loading') return
+  const currentConnection = connection
+  gatewayView = { ...gatewayView, phase: 'loading', error: '' }
+  renderGatewaySettings()
+  try {
+    const response = await gatewayAPIRequest(workspaceLLMGatewaysPath(currentConnection.workspaceID), currentConnection, { method: 'GET' })
+    if (!response.ok) throw await responseError(response)
+    const gateways = validateGatewayList(await boundedJSONResponse(response, 512 * 1024), currentConnection.workspaceID)
+    if (connection !== currentConnection) return
+    gatewayView = { phase: 'ready', gateways, error: '' }
+  } catch (error) {
+    if (connection !== currentConnection) return
+    gatewayView = { ...gatewayView, phase: 'error', error: safeErrorMessage(error) }
+  }
+  renderGatewaySettings()
+}
+
+async function createWorkspaceGateway(event) {
+  event.preventDefault()
+  if (!connection || gatewayView.phase === 'creating') return
+  const currentConnection = connection
+  gatewayView = { ...gatewayView, phase: 'creating', error: '' }
+  renderGatewaySettings()
+  try {
+    const request = buildCreateGatewayRequest({
+      name: elements.gatewayName.value.trim(),
+      responsesUrl: elements.gatewayResponsesURL.value.trim(),
+      oidcIssuer: elements.gatewayOIDCIssuer.value.trim(),
+      oidcClientId: elements.gatewayOIDCClientID.value.trim(),
+      oidcScopes: elements.gatewayOIDCScopes.value.trim(),
+      bearerTokenType: elements.gatewayBearerType.value,
+      defaultModel: elements.gatewayModel.value.trim(),
+      makeDefault: elements.gatewayMakeDefault.checked,
+    }, window.crypto)
+    const response = await gatewayAPIRequest(workspaceLLMGatewaysPath(currentConnection.workspaceID), currentConnection, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    })
+    if (!response.ok) throw await responseError(response)
+    validateCreateGateway(await boundedJSONResponse(response, 512 * 1024), currentConnection.workspaceID)
+    if (connection !== currentConnection) return
+    elements.gatewayCreateForm.reset()
+    elements.gatewayOIDCScopes.value = 'openid profile email offline_access'
+    elements.gatewayMakeDefault.checked = true
+    gatewayView = { ...gatewayView, phase: 'idle', error: '' }
+    await loadWorkspaceGateways()
+  } catch (error) {
+    if (connection !== currentConnection) return
+    gatewayView = { ...gatewayView, phase: 'error', error: safeErrorMessage(error) }
+    renderGatewaySettings()
+  }
+}
+
+async function beginWorkspaceGatewayAuthorization(gateway) {
+  if (!connection || gatewayAuthorization) return
+  const currentConnection = connection
+  const popup = window.open('about:blank', `agentserver-llm-gateway-${gateway.gatewayId}`, 'popup,width=560,height=760')
+  if (!popup) {
+    gatewayView = { ...gatewayView, phase: 'error', error: 'The browser blocked the OIDC authorization popup.' }
+    renderGatewaySettings()
+    return
+  }
+  const transaction = {
+    popup,
+    connection: currentConnection,
+    workspaceID: currentConnection.workspaceID,
+    gatewayID: gateway.gatewayId,
+    browserBinding: createBrowserBinding(window.crypto),
+    expiresAtMS: 0,
+    monitorID: null,
+  }
+  gatewayAuthorization = transaction
+  gatewayView = { ...gatewayView, phase: 'authorizing', error: '' }
+  renderGatewaySettings()
+  try {
+    const response = await gatewayAPIRequest(
+      workspaceLLMGatewayActionPath(transaction.workspaceID, transaction.gatewayID, 'authorize'),
+      currentConnection,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ browserBinding: transaction.browserBinding }) },
+    )
+    if (!response.ok) throw await responseError(response)
+    const authorization = validateBeginAuthorization(await boundedJSONResponse(response, 128 * 1024), transaction.gatewayID)
+    if (gatewayAuthorization !== transaction || connection !== currentConnection || popup.closed) throw new Error('Gateway authorization popup was closed or superseded')
+    transaction.expiresAtMS = Date.parse(authorization.expiresAt)
+    popup.location.replace(authorization.authorizationUrl)
+    transaction.monitorID = window.setInterval(() => monitorWorkspaceGatewayAuthorization(transaction), 500)
+  } catch (error) {
+    if (gatewayAuthorization === transaction) clearGatewayAuthorization()
+    if (connection === currentConnection) {
+      gatewayView = { ...gatewayView, phase: 'error', error: safeErrorMessage(error) }
+      renderGatewaySettings()
+    }
+  }
+}
+
+async function completeWorkspaceGatewayAuthorization(event) {
+  const transaction = gatewayAuthorization
+  if (!transaction || event.origin !== window.location.origin || event.source !== transaction.popup) return
+  gatewayAuthorization = null
+  stopGatewayAuthorizationMonitor(transaction)
+  try {
+    const callback = validateGatewayCallbackMessage(event.data)
+    if (transaction.popup && !transaction.popup.closed) transaction.popup.close()
+    if (connection !== transaction.connection) throw new Error('AgentServer session changed during Gateway authorization')
+    gatewayView = { ...gatewayView, phase: 'completing', error: '' }
+    renderGatewaySettings()
+    const response = await gatewayAPIRequest(
+      workspaceLLMGatewayActionPath(transaction.workspaceID, transaction.gatewayID, 'completeAuthorization'),
+      transaction.connection,
+      {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          state: callback.state,
+          code: callback.code || undefined,
+          providerError: callback.providerError || undefined,
+          browserBinding: transaction.browserBinding,
+        }),
+      },
+    )
+    if (!response.ok) {
+      const failure = await responseError(response)
+      if (callback.providerErrorDescription) failure.message += `: ${callback.providerErrorDescription}`
+      throw failure
+    }
+    validateCompleteAuthorization(await boundedJSONResponse(response, 128 * 1024), transaction.gatewayID)
+    gatewayView = { ...gatewayView, phase: 'idle', error: '' }
+    await loadWorkspaceGateways()
+  } catch (error) {
+    if (transaction.popup && !transaction.popup.closed) transaction.popup.close()
+    if (connection === transaction.connection) {
+      gatewayView = { ...gatewayView, phase: 'error', error: safeErrorMessage(error) }
+      renderGatewaySettings()
+    }
+  } finally {
+    transaction.browserBinding = ''
+  }
+}
+
+async function revokeWorkspaceGatewayGrant(gateway) {
+  if (!connection || gatewayAuthorization || !window.confirm(`Revoke your authorization for ${gateway.name}? Active runs using it will fail closed.`)) return
+  const currentConnection = connection
+  gatewayView = { ...gatewayView, phase: 'revoking', error: '' }
+  renderGatewaySettings()
+  try {
+    const response = await gatewayAPIRequest(
+      workspaceLLMGatewayActionPath(currentConnection.workspaceID, gateway.gatewayId, 'revoke'),
+      currentConnection,
+      { method: 'POST' },
+    )
+    if (!response.ok) throw await responseError(response)
+    validateRevokeGrant(await boundedJSONResponse(response, 128 * 1024), gateway.gatewayId)
+    if (connection !== currentConnection) return
+    gatewayView = { ...gatewayView, phase: 'idle', error: '' }
+    await loadWorkspaceGateways()
+  } catch (error) {
+    if (connection !== currentConnection) return
+    gatewayView = { ...gatewayView, phase: 'error', error: safeErrorMessage(error) }
+    renderGatewaySettings()
+  }
+}
+
+async function disableWorkspaceGateway(gateway) {
+  if (!connection || gatewayAuthorization || gateway.status !== 'active' ||
+      !window.confirm(`Disable ${gateway.name}? Existing runs bound to v${gateway.version} will fail closed, and this cannot be undone in the current version.`)) return
+  const currentConnection = connection
+  gatewayView = { ...gatewayView, phase: 'disabling', error: '' }
+  renderGatewaySettings()
+  try {
+    const response = await gatewayAPIRequest(
+      workspaceLLMGatewayActionPath(currentConnection.workspaceID, gateway.gatewayId, 'disable'),
+      currentConnection,
+      { method: 'POST' },
+    )
+    if (!response.ok) throw await responseError(response)
+    validateDisableGateway(await boundedJSONResponse(response, 128 * 1024), gateway.gatewayId)
+    if (connection !== currentConnection) return
+    gatewayView = { ...gatewayView, phase: 'idle', error: '' }
+    await loadWorkspaceGateways()
+  } catch (error) {
+    if (connection !== currentConnection) return
+    gatewayView = { ...gatewayView, phase: 'error', error: safeErrorMessage(error) }
+    renderGatewaySettings()
+  }
+}
+
+function monitorWorkspaceGatewayAuthorization(transaction) {
+  if (gatewayAuthorization !== transaction) {
+    stopGatewayAuthorizationMonitor(transaction)
+    return
+  }
+  const sessionChanged = connection !== transaction.connection
+  const expired = !Number.isSafeInteger(transaction.expiresAtMS) || Date.now() >= transaction.expiresAtMS
+  let popupClosed = true
+  try {
+    popupClosed = !transaction.popup || transaction.popup.closed
+  } catch {
+    popupClosed = true
+  }
+  if (!sessionChanged && !expired && !popupClosed) return
+  clearGatewayAuthorization()
+  if (sessionChanged) return
+  gatewayView = {
+    ...gatewayView,
+    phase: 'error',
+    error: expired ? 'The third-party Gateway authorization transaction expired.' : 'The third-party Gateway authorization popup was closed.',
+  }
+  renderGatewaySettings()
+}
+
+function stopGatewayAuthorizationMonitor(transaction) {
+  if (!transaction || transaction.monitorID === null) return
+  window.clearInterval(transaction.monitorID)
+  transaction.monitorID = null
+}
+
+function clearGatewayAuthorization() {
+  const transaction = gatewayAuthorization
+  gatewayAuthorization = null
+  if (!transaction) return
+  stopGatewayAuthorizationMonitor(transaction)
+  transaction.browserBinding = ''
+  if (transaction.popup && !transaction.popup.closed) transaction.popup.close()
+}
+
+function gatewayAPIRequest(path, currentConnection, options) {
+  return fetch(browserAPIEndpoint(path), {
+    mode: 'cors', cache: 'no-store', credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer',
+    ...options,
+    headers: { Accept: 'application/json', Authorization: `Bearer ${currentConnection.token}`, ...(options.headers || {}) },
+  })
+}
+
+function renderGatewaySettings() {
+  const busy = ['loading', 'creating', 'authorizing', 'completing', 'revoking', 'disabling'].includes(gatewayView.phase)
+  const labels = {
+    loading: 'Loading workspace Gateways…', creating: 'Creating and verifying OIDC discovery…',
+    authorizing: 'Waiting for third-party authorization…', completing: 'Verifying and sealing your OIDC grant…',
+    revoking: 'Revoking your grant…', disabling: 'Disabling the workspace Gateway and fencing bound runs…',
+    ready: `${gatewayView.gateways.length} Gateway${gatewayView.gateways.length === 1 ? '' : 's'}`,
+    error: 'Gateway operation failed', idle: 'Workspace Gateway configuration',
+  }
+  elements.gatewayStatus.textContent = labels[gatewayView.phase] || gatewayView.phase
+  elements.gatewayRefresh.disabled = busy
+  elements.gatewayCreateButton.disabled = busy
+  elements.gatewayCreateButton.textContent = gatewayView.phase === 'creating' ? 'Creating…' : 'Create Gateway'
+  elements.gatewayError.hidden = !gatewayView.error
+  elements.gatewayError.textContent = gatewayView.error
+  elements.gatewayEmpty.hidden = gatewayView.phase === 'loading' || gatewayView.gateways.length !== 0
+  const fragment = document.createDocumentFragment()
+  for (const gateway of gatewayView.gateways) {
+    const card = createElement('article', 'gateway-item')
+    const heading = createElement('div', 'gateway-item-heading')
+    const title = createElement('div')
+    title.append(createElement('strong', '', gateway.name), createElement('span', '', `${gateway.defaultModel} · v${gateway.version}`))
+    const badges = createElement('div', 'gateway-badges')
+    if (gateway.default) badges.append(createElement('span', 'gateway-badge gateway-default', 'default'))
+    if (gateway.status === 'disabled') badges.append(createElement('span', 'gateway-badge gateway-disabled', 'disabled'))
+    badges.append(createElement('span', `gateway-badge gateway-${gateway.grantStatus || 'unlinked'}`, gateway.grantStatus || 'not authorized'))
+    heading.append(title, badges)
+    const facts = createElement('dl', 'gateway-facts')
+    for (const [label, value] of [['Responses', gateway.responsesUrl], ['Issuer', gateway.oidcIssuer], ['Bearer', gateway.bearerTokenType]]) {
+      const row = document.createElement('div')
+      row.append(createElement('dt', '', label), createElement('dd', '', value))
+      facts.append(row)
+    }
+    const actions = createElement('div', 'gateway-actions')
+    const authorize = createElement('button', 'secondary-button', gateway.grantStatus === 'active' ? 'Reauthorize' : 'Authorize')
+    authorize.type = 'button'
+    authorize.disabled = busy || gateway.status !== 'active'
+    authorize.addEventListener('click', () => beginWorkspaceGatewayAuthorization(gateway))
+    actions.append(authorize)
+    if (gateway.grantStatus) {
+      const revoke = createElement('button', 'gateway-revoke', 'Revoke my grant')
+      revoke.type = 'button'
+      revoke.disabled = busy || gateway.grantStatus === 'revoked'
+      revoke.addEventListener('click', () => revokeWorkspaceGatewayGrant(gateway))
+      actions.append(revoke)
+    }
+    if (gateway.status === 'active') {
+      const disable = createElement('button', 'gateway-disable', 'Disable Gateway')
+      disable.type = 'button'
+      disable.disabled = busy
+      disable.addEventListener('click', () => disableWorkspaceGateway(gateway))
+      actions.append(disable)
+    }
+    card.append(heading, facts, actions)
+    fragment.append(card)
+  }
+  elements.gatewayList.replaceChildren(fragment)
 }
 
 function showConnectionLayer(error = null) {
@@ -258,9 +613,9 @@ async function streamRun(reconnect) {
   run.controller = controller
   renderAll()
   try {
-    const response = await fetch(buildRunEndpoint(connection.workspaceID, connection.sessionID), {
+    const response = await fetch(browserAPIEndpoint(buildRunEndpoint(connection.workspaceID, connection.sessionID)), {
       method: 'POST',
-      mode: 'same-origin',
+      mode: 'cors',
       cache: 'no-store',
       credentials: 'omit',
       redirect: 'error',
@@ -335,9 +690,9 @@ async function cancelActiveRun() {
   cancellationPending = true
   renderAll()
   try {
-    const response = await fetch(`/v2/workspaces/${encodeURIComponent(currentConnection.workspaceID)}/runs/${encodeURIComponent(runID)}:cancel`, {
+    const response = await fetch(browserAPIEndpoint(`/v2/workspaces/${encodeURIComponent(currentConnection.workspaceID)}/runs/${encodeURIComponent(runID)}:cancel`), {
       method: 'POST',
-      mode: 'same-origin',
+      mode: 'cors',
       cache: 'no-store',
       credentials: 'omit',
       redirect: 'error',
@@ -383,9 +738,9 @@ async function decideApproval(approval, decision) {
   approvalCommands.set(approval.approvalId, { phase: 'sending', decision, message: '' })
   renderAll()
   try {
-    const response = await fetch(`/v2/workspaces/${encodeURIComponent(currentConnection.workspaceID)}/approvals/${encodeURIComponent(approval.approvalId)}:decide`, {
+    const response = await fetch(browserAPIEndpoint(`/v2/workspaces/${encodeURIComponent(currentConnection.workspaceID)}/approvals/${encodeURIComponent(approval.approvalId)}:decide`), {
       method: 'POST',
-      mode: 'same-origin',
+      mode: 'cors',
       cache: 'no-store',
       credentials: 'omit',
       redirect: 'error',
@@ -470,9 +825,10 @@ async function responseError(response) {
     if (raw.length <= 64 * 1024) {
       const envelope = JSON.parse(raw)
       if (envelope && typeof envelope === 'object') {
-        if (typeof envelope.code === 'string') code = envelope.code
-        if (typeof envelope.message === 'string') message = envelope.message
-        if (typeof envelope.currentRunId === 'string') message += ` (active run ${shortID(envelope.currentRunId)})`
+        const detail = envelope.error && typeof envelope.error === 'object' ? envelope.error : envelope
+        if (typeof detail.code === 'string') code = detail.code
+        if (typeof detail.message === 'string') message = detail.message
+        if (typeof detail.currentRunId === 'string') message += ` (active run ${shortID(detail.currentRunId)})`
       }
     }
   } catch {
@@ -754,6 +1110,13 @@ async function checkGatewayHealth() {
   } catch {
     setHealth('offline', 'gateway unavailable')
   }
+}
+
+function browserAPIEndpoint(path) {
+  if (!authorizationConfig || typeof path !== 'string' || !path.startsWith('/v2/')) {
+    throw new Error('browser API endpoint is unavailable')
+  }
+  return new URL(path, authorizationConfig.apiOrigin || window.location.origin).href
 }
 
 function setHealth(state, label) {

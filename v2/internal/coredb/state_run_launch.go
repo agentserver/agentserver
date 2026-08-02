@@ -45,7 +45,7 @@ func (s *StateStore) ResolveRunLaunchState(ctx context.Context, command ResolveR
 			return ResolvedRunLaunchState{}, err
 		}
 
-		prompt, policy, err := s.readRunLaunchInput(ctx, transaction, operation, run.ID)
+		prompt, policy, llmGateway, err := s.readRunLaunchInput(ctx, transaction, operation, run.ID)
 		if err != nil {
 			return ResolvedRunLaunchState{}, err
 		}
@@ -57,7 +57,7 @@ func (s *StateStore) ResolveRunLaunchState(ctx context.Context, command ResolveR
 			WorkspaceID: run.WorkspaceID, SessionID: run.SessionID, RunID: run.ID,
 			AttemptID: attempt.ID, HolderID: attempt.HolderID, Generation: attempt.Generation,
 			RunVersion: run.Version, AttemptVersion: attempt.Version,
-			Prompt: prompt, PreviousCheckpoint: checkpoint, ExecutorPolicy: policy,
+			Prompt: prompt, PreviousCheckpoint: checkpoint, ExecutorPolicy: policy, LLMGateway: llmGateway,
 		}, nil
 	})
 }
@@ -136,13 +136,25 @@ func validateRunObjectPointer(field string, pointer ObjectPointer) error {
 }
 
 func (s *StateStore) insertRunLaunchInput(ctx context.Context, transaction pgx.Tx, command CreateRunCommand) error {
+	var gatewayID, grantUserID, model any
+	var gatewayVersion any
+	if command.LLMGateway != (RunLLMGatewayBinding{}) {
+		if err := validateRunLLMGatewayBinding(command.LLMGateway); err != nil {
+			return commandError(ErrorInvalidArgument, "CreateRun", "llm_gateway", command.LLMGateway.GatewayID, err.Error())
+		}
+		gatewayID = command.LLMGateway.GatewayID
+		gatewayVersion = command.LLMGateway.ConfigVersion
+		grantUserID = command.LLMGateway.GrantUserID
+		model = command.LLMGateway.Model
+	}
 	query := fmt.Sprintf(`
 INSERT INTO %s
     (run_id, workspace_id, session_id,
      prompt_object_id, prompt_sha256, prompt_size, prompt_media_type,
-     executor_policy_version, executor_policy_context_digest)
+     executor_policy_version, executor_policy_context_digest,
+     llm_gateway_id, llm_gateway_version, llm_gateway_grant_user_id, model)
 VALUES
-    ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, s.table("run_launch_states"))
+    ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`, s.table("run_launch_states"))
 	if _, err := transaction.Exec(ctx, query,
 		command.RunID,
 		command.WorkspaceID,
@@ -153,6 +165,10 @@ VALUES
 		command.Prompt.MediaType,
 		command.ExecutorPolicy.Version,
 		command.ExecutorPolicy.ContextDigest[:],
+		gatewayID,
+		gatewayVersion,
+		grantUserID,
+		model,
 	); err != nil {
 		var postgresError *pgconn.PgError
 		if pgxErrorAs(err, &postgresError) && postgresError.Code == "23505" {
@@ -172,16 +188,20 @@ VALUES ($1, $2, $3)`, s.table("run_launch_allowed_tools"))
 	return nil
 }
 
-func (s *StateStore) readRunLaunchInput(ctx context.Context, transaction pgx.Tx, operation, runID string) (ObjectPointer, RunExecutorPolicy, error) {
+func (s *StateStore) readRunLaunchInput(ctx context.Context, transaction pgx.Tx, operation, runID string) (ObjectPointer, RunExecutorPolicy, RunLLMGatewayBinding, error) {
 	query := fmt.Sprintf(`
 SELECT prompt_object_id::text, prompt_sha256, prompt_size, prompt_media_type,
-       executor_policy_version, executor_policy_context_digest
+       executor_policy_version, executor_policy_context_digest,
+       llm_gateway_id::text, llm_gateway_version,
+       llm_gateway_grant_user_id::text, model
 FROM %s
 WHERE run_id = $1`, s.table("run_launch_states"))
 	var prompt ObjectPointer
 	var promptDigest []byte
 	var policy RunExecutorPolicy
 	var policyDigest []byte
+	var gatewayID, grantUserID, model *string
+	var gatewayVersion *int64
 	if err := transaction.QueryRow(ctx, query, runID).Scan(
 		&prompt.ObjectID,
 		&promptDigest,
@@ -189,17 +209,31 @@ WHERE run_id = $1`, s.table("run_launch_states"))
 		&prompt.MediaType,
 		&policy.Version,
 		&policyDigest,
+		&gatewayID,
+		&gatewayVersion,
+		&grantUserID,
+		&model,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return ObjectPointer{}, RunExecutorPolicy{}, commandError(ErrorInvalidState, operation, "run", runID, "run has no immutable launch authority")
+			return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, commandError(ErrorInvalidState, operation, "run", runID, "run has no immutable launch authority")
 		}
-		return ObjectPointer{}, RunExecutorPolicy{}, databaseError(operation+" read run launch state", err)
+		return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, databaseError(operation+" read run launch state", err)
 	}
 	if err := copyStoredSHA256(&prompt.SHA256, promptDigest); err != nil {
-		return ObjectPointer{}, RunExecutorPolicy{}, databaseError(operation+" decode prompt digest", err)
+		return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, databaseError(operation+" decode prompt digest", err)
 	}
 	if err := copyStoredSHA256(&policy.ContextDigest, policyDigest); err != nil {
-		return ObjectPointer{}, RunExecutorPolicy{}, databaseError(operation+" decode policy digest", err)
+		return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, databaseError(operation+" decode policy digest", err)
+	}
+	var llmGateway RunLLMGatewayBinding
+	if gatewayID != nil || gatewayVersion != nil || grantUserID != nil || model != nil {
+		if gatewayID == nil || gatewayVersion == nil || grantUserID == nil || model == nil {
+			return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, databaseError(operation+" decode LLM gateway binding", errors.New("stored binding is incomplete"))
+		}
+		llmGateway = RunLLMGatewayBinding{GatewayID: *gatewayID, ConfigVersion: *gatewayVersion, GrantUserID: *grantUserID, Model: *model}
+		if err := validateRunLLMGatewayBinding(llmGateway); err != nil {
+			return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, databaseError(operation+" validate LLM gateway binding", err)
+		}
 	}
 
 	toolQuery := fmt.Sprintf(`
@@ -209,26 +243,26 @@ WHERE run_id = $1
 ORDER BY ordinal`, s.table("run_launch_allowed_tools"))
 	rows, err := transaction.Query(ctx, toolQuery, runID)
 	if err != nil {
-		return ObjectPointer{}, RunExecutorPolicy{}, databaseError(operation+" read allowed tools", err)
+		return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, databaseError(operation+" read allowed tools", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var tool string
 		if err := rows.Scan(&tool); err != nil {
-			return ObjectPointer{}, RunExecutorPolicy{}, databaseError(operation+" scan allowed tool", err)
+			return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, databaseError(operation+" scan allowed tool", err)
 		}
 		policy.AllowedTools = append(policy.AllowedTools, tool)
 	}
 	if err := rows.Err(); err != nil {
-		return ObjectPointer{}, RunExecutorPolicy{}, databaseError(operation+" finish allowed tools", err)
+		return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, databaseError(operation+" finish allowed tools", err)
 	}
 	if err := validateRunObjectPointer("prompt", prompt); err != nil {
-		return ObjectPointer{}, RunExecutorPolicy{}, databaseError(operation+" validate stored prompt", err)
+		return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, databaseError(operation+" validate stored prompt", err)
 	}
 	if err := validateRunExecutorPolicy(policy); err != nil {
-		return ObjectPointer{}, RunExecutorPolicy{}, databaseError(operation+" validate stored executor policy", err)
+		return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, databaseError(operation+" validate stored executor policy", err)
 	}
-	return prompt, policy, nil
+	return prompt, policy, llmGateway, nil
 }
 
 func (s *StateStore) readLatestCheckpoint(ctx context.Context, transaction pgx.Tx, operation, sessionID string) (*Checkpoint, error) {
@@ -363,12 +397,13 @@ func copyStoredSHA256(destination *[sha256.Size]byte, source []byte) error {
 	return nil
 }
 
-func runLaunchInputMatches(prompt ObjectPointer, policy RunExecutorPolicy, command CreateRunCommand) bool {
+func runLaunchInputMatches(prompt ObjectPointer, policy RunExecutorPolicy, llmGateway RunLLMGatewayBinding, command CreateRunCommand) bool {
 	return prompt.ObjectID == command.Prompt.ObjectID &&
 		subtle.ConstantTimeCompare(prompt.SHA256[:], command.Prompt.SHA256[:]) == 1 &&
 		prompt.Size == command.Prompt.Size &&
 		prompt.MediaType == command.Prompt.MediaType &&
 		policy.Version == command.ExecutorPolicy.Version &&
 		subtle.ConstantTimeCompare(policy.ContextDigest[:], command.ExecutorPolicy.ContextDigest[:]) == 1 &&
-		slices.Equal(policy.AllowedTools, command.ExecutorPolicy.AllowedTools)
+		slices.Equal(policy.AllowedTools, command.ExecutorPolicy.AllowedTools) &&
+		llmGateway == command.LLMGateway
 }

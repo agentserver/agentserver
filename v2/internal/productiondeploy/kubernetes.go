@@ -61,14 +61,10 @@ func namespaceResource(config LoadedConfig) kubeObject {
 	}
 }
 
-func serviceAccountResource(config LoadedConfig, name, roleARN string) kubeObject {
-	annotations := map[string]string(nil)
-	if roleARN != "" {
-		annotations = map[string]string{"eks.amazonaws.com/role-arn": roleARN}
-	}
+func serviceAccountResource(config LoadedConfig, name string) kubeObject {
 	return kubeObject{
 		"apiVersion": "v1", "kind": "ServiceAccount",
-		"metadata":                     metadata(name, config.Document.Namespace, componentLabels(name), annotations),
+		"metadata":                     metadata(name, config.Document.Namespace, componentLabels(name), nil),
 		"automountServiceAccountToken": false,
 	}
 }

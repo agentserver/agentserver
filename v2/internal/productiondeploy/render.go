@@ -223,7 +223,7 @@ func renderHarnessNetworkGuardJSON(config LoadedConfig) ([]byte, error) {
 		Policies: []networkGuardPolicyJSON{
 			{UID: WorkerUID, TCP: []networkGuardEndpointJSON{
 				{Address: "127.0.0.1", Port: HarnessControlPort},
-				{Address: document.Services.ExecutorGateway.ClusterIP, Port: document.Services.ExecutorGateway.Port},
+				{Address: document.Services.ExecutorGateway.ClusterIP, Port: document.Services.ExecutorGateway.InternalPort},
 			}},
 			{UID: AppUID, TCP: []networkGuardEndpointJSON{
 				{Address: document.Services.LLMProxy.ClusterIP, Port: document.Services.LLMProxy.Port},

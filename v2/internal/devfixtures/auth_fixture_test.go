@@ -124,7 +124,7 @@ func TestAuthorizationFixturesCompleteCodePKCEAndMintIntrospectableToken(t *test
 	if consentRequest.Code != http.StatusOK {
 		t.Fatalf("get consent request = %d %s", consentRequest.Code, consentRequest.Body.String())
 	}
-	acceptConsentBody := []byte(`{"grant_scope":["openid","runs:write","executors:write"],"grant_access_token_audience":["agentserver-api"],"remember":false,"remember_for":0,"session":{"access_token":{},"id_token":{}}}`)
+	acceptConsentBody := []byte(`{"grant_scope":["openid","runs:write","executors:write","llm-gateways:write"],"grant_access_token_audience":["agentserver-api"],"remember":false,"remember_for":0,"session":{"access_token":{},"id_token":{}}}`)
 	acceptedConsent := callAuthorizationFixture(
 		t, runtime, http.MethodPut,
 		"/admin/oauth2/auth/requests/consent/accept?"+(url.Values{"consent_challenge": {consentChallenge}}).Encode(),

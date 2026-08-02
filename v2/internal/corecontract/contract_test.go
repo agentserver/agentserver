@@ -139,6 +139,13 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "AuthorizeExecutorRunCapabilityRequest", reflect.TypeFor[AuthorizeExecutorRunCapabilityRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "AuthorizeLLMProxyRunCapabilityRequest", reflect.TypeFor[AuthorizeLLMProxyRunCapabilityRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "AuthorizeRunCapabilityResponse", reflect.TypeFor[AuthorizeRunCapabilityResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "AuthorizeLLMProxyRunCapabilityResponse", reflect.TypeFor[AuthorizeLLMProxyRunCapabilityResponse]())
+	var upstreamAuthorizationProperty struct {
+		Sensitive bool `json:"x-agentserver-sensitive"`
+	}
+	if err := json.Unmarshal(document.Components.Schemas["AuthorizeLLMProxyRunCapabilityResponse"].Properties["upstreamAuthorization"], &upstreamAuthorizationProperty); err != nil || !upstreamAuthorizationProperty.Sensitive {
+		t.Errorf("llmproxy upstream authorization sensitivity contract = %+v, %v", upstreamAuthorizationProperty, err)
+	}
 	assertSchemaFields(t, document.Components.Schemas, "AcquireExecutorConnectionRequest", reflect.TypeFor[AcquireExecutorConnectionRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "RenewExecutorConnectionRequest", reflect.TypeFor[RenewExecutorConnectionRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "ActivateExecutorConnectionRequest", reflect.TypeFor[ActivateExecutorConnectionRequest]())
@@ -251,7 +258,8 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 				Security    []map[string][]string `json:"security"`
 			} `json:"post"`
 			Get struct {
-				OperationID string `json:"operationId"`
+				OperationID string                `json:"operationId"`
+				Security    []map[string][]string `json:"security"`
 			} `json:"get"`
 		} `json:"paths"`
 		Components struct {
@@ -280,7 +288,12 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	decidePath := DecideUserApprovalPath("{workspaceId}", "{approvalId}")
 	createExecutorPath := CreateExecutorResourcePath("{workspaceId}")
 	issueEnrollmentPath := IssueExecutorEnrollmentTokenPath("{workspaceId}", "{executorId}")
-	if len(document.Paths) != 6 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
+	llmGatewayCollectionPath := WorkspaceLLMGatewaysPath("{workspaceId}")
+	llmGatewayAuthorizePath := AuthorizeLLMGatewayPath("{workspaceId}", "{gatewayId}")
+	llmGatewayCompletePath := CompleteLLMGatewayAuthorizationPath("{workspaceId}", "{gatewayId}")
+	llmGatewayRevokePath := RevokeLLMGatewayGrantPath("{workspaceId}", "{gatewayId}")
+	llmGatewayDisablePath := DisableLLMGatewayPath("{workspaceId}", "{gatewayId}")
+	if len(document.Paths) != 11 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
 		document.Paths[cancelPath].Post.OperationID != "cancelUserRun" || document.Paths[readPath].Get.OperationID != "readUserRunEvents" {
 		t.Fatalf("public OpenAPI paths = %+v", document.Paths)
 	}
@@ -298,10 +311,41 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 			t.Errorf("public executor path %s security = %+v", path, security)
 		}
 	}
+	if document.Paths[llmGatewayCollectionPath].Get.OperationID != "listWorkspaceLLMGateways" ||
+		document.Paths[llmGatewayCollectionPath].Post.OperationID != "createWorkspaceLLMGateway" ||
+		document.Paths[llmGatewayAuthorizePath].Post.OperationID != "beginWorkspaceLLMGatewayAuthorization" ||
+		document.Paths[llmGatewayCompletePath].Post.OperationID != "completeWorkspaceLLMGatewayAuthorization" ||
+		document.Paths[llmGatewayRevokePath].Post.OperationID != "revokeWorkspaceLLMGatewayGrant" ||
+		document.Paths[llmGatewayDisablePath].Post.OperationID != "disableWorkspaceLLMGateway" {
+		t.Fatalf("public workspace LLM Gateway paths = %+v", document.Paths)
+	}
+	for _, security := range [][]map[string][]string{
+		document.Paths[llmGatewayCollectionPath].Get.Security,
+		document.Paths[llmGatewayCollectionPath].Post.Security,
+		document.Paths[llmGatewayAuthorizePath].Post.Security,
+		document.Paths[llmGatewayCompletePath].Post.Security,
+		document.Paths[llmGatewayRevokePath].Post.Security,
+		document.Paths[llmGatewayDisablePath].Post.Security,
+	} {
+		if len(security) != 1 || len(security[0]) != 2 || security[0]["browserGatewayMTLS"] == nil ||
+			!slices.Equal(security[0]["userOAuth"], []string{BrowserOAuthLLMGatewayScope}) {
+			t.Errorf("public workspace LLM Gateway security = %+v", security)
+		}
+	}
 	assertSchemaFields(t, document.Components.Schemas, "CreateExecutorResourceRequest", reflect.TypeFor[CreateExecutorResourceRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "ExecutorResourceState", reflect.TypeFor[ExecutorResourceState]())
 	assertSchemaFields(t, document.Components.Schemas, "CreateExecutorResourceResponse", reflect.TypeFor[CreateExecutorResourceResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "IssueExecutorEnrollmentTokenResponse", reflect.TypeFor[IssueExecutorEnrollmentTokenResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "CreateWorkspaceLLMGatewayRequest", reflect.TypeFor[CreateWorkspaceLLMGatewayRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "WorkspaceLLMGatewayState", reflect.TypeFor[WorkspaceLLMGatewayState]())
+	assertSchemaFields(t, document.Components.Schemas, "CreateWorkspaceLLMGatewayResponse", reflect.TypeFor[CreateWorkspaceLLMGatewayResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "ListWorkspaceLLMGatewaysResponse", reflect.TypeFor[ListWorkspaceLLMGatewaysResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "BeginWorkspaceLLMGatewayAuthorizationRequest", reflect.TypeFor[BeginWorkspaceLLMGatewayAuthorizationRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "BeginWorkspaceLLMGatewayAuthorizationResponse", reflect.TypeFor[BeginWorkspaceLLMGatewayAuthorizationResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "CompleteWorkspaceLLMGatewayAuthorizationRequest", reflect.TypeFor[CompleteWorkspaceLLMGatewayAuthorizationRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "CompleteWorkspaceLLMGatewayAuthorizationResponse", reflect.TypeFor[CompleteWorkspaceLLMGatewayAuthorizationResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "RevokeWorkspaceLLMGatewayGrantResponse", reflect.TypeFor[RevokeWorkspaceLLMGatewayGrantResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "DisableWorkspaceLLMGatewayResponse", reflect.TypeFor[DisableWorkspaceLLMGatewayResponse]())
 	var enrollmentTokenProperty struct {
 		WriteOnly bool `json:"writeOnly"`
 		Sensitive bool `json:"x-agentserver-sensitive"`

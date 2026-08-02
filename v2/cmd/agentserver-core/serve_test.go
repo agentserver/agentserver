@@ -114,7 +114,6 @@ func TestConfigureCoreProductionRunCapabilitiesLoadsOnlyProductionAuthority(t *t
 		loaded.signer.KeyID() != configuration[coreCapabilityKeyIDEnvironment] ||
 		len(loaded.verifier.KeyIDs()) != 1 || loaded.verifier.KeyIDs()[0] != loaded.signer.KeyID() ||
 		loaded.policy.ExecutorID != configuration[coreProductionExecutorEnvironment] ||
-		loaded.policy.Model != configuration[coreModelEnvironment] || loaded.policy.Provider != configuration[coreModelProviderEnvironment] ||
 		loaded.policy.MaxRunDuration != 30*time.Minute || loaded.policy.MaxApprovalTTL != 10*time.Second ||
 		loaded.policy.ExpiryGrace != 45*time.Second {
 		t.Fatalf("production capability config = %+v", loaded)
@@ -284,8 +283,6 @@ func productionRunCapabilityEnvironment(t *testing.T, includeActiveKey bool) map
 		coreCapabilityPrivateKeyEnvironment:  privateKeyPath,
 		coreCapabilityKeyringEnvironment:     keyringPath,
 		coreProductionExecutorEnvironment:    "63000000-0000-4000-8000-000000000001",
-		coreModelEnvironment:                 "gpt-5.6-codex",
-		coreModelProviderEnvironment:         "openai",
 		coreMaxRunDurationEnvironment:        "30m",
 		coreMaxApprovalTTLEnvironment:        "10s",
 		coreCapabilityExpiryGraceEnvironment: "45s",

@@ -47,6 +47,7 @@ func TestValidateAuthorizeRunCapabilitySeparatesAudiences(t *testing.T) {
 	model.ToolCatalogDigest = [sha256.Size]byte{}
 	model.ExpectedRunVersion = 0
 	model.ExpectedAttemptVersion = 0
+	model.LLMGateway = validRunCapabilityLLMGatewayBinding()
 	if err := validateAuthorizeRunCapability(model); err != nil {
 		t.Fatal(err)
 	}
@@ -83,6 +84,14 @@ func validResolveRunCapabilityIssuanceCommand() ResolveRunCapabilityIssuanceComm
 		ExecutorID:         "62000000-0000-4000-8000-000000000005",
 		BrainToolCatalogID: "62000000-0000-4000-8000-000000000006",
 		ToolCatalogDigest:  sha256.Sum256([]byte("catalog")),
+		LLMGateway:         validRunCapabilityLLMGatewayBinding(),
+	}
+}
+
+func validRunCapabilityLLMGatewayBinding() RunLLMGatewayBinding {
+	return RunLLMGatewayBinding{
+		GatewayID: "62000000-0000-4000-8000-000000000009", ConfigVersion: 2,
+		GrantUserID: "62000000-0000-4000-8000-000000000008", Model: "gpt-5.6-codex",
 	}
 }
 

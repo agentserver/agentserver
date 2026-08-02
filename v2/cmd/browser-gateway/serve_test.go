@@ -31,7 +31,7 @@ func TestBrowserGatewayHealthAndReadiness(t *testing.T) {
 	readiness := &browserReadiness{}
 	handler := browserGatewayRoutes(
 		http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(),
-		http.NotFoundHandler(), http.NotFoundHandler(), readiness,
+		http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), readiness,
 	)
 	assertBrowserHealth(t, handler, "/healthz", http.StatusOK, `{"status":"ok"}`)
 	assertBrowserHealth(t, handler, "/readyz", http.StatusServiceUnavailable, `{"status":"not_ready"}`)
@@ -66,7 +66,7 @@ func TestBrowserGatewayExecutorRoutesAreClosedBeforeAGUIFallback(t *testing.T) {
 	})
 	handler := browserGatewayRoutes(
 		agui, executors, http.NotFoundHandler(), http.NotFoundHandler(),
-		http.NotFoundHandler(), http.NotFoundHandler(), &browserReadiness{},
+		http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), &browserReadiness{},
 	)
 	workspaceID := "71000000-0000-4000-8000-000000000002"
 	executorID := "71000000-0000-4000-8000-000000000003"
@@ -98,19 +98,86 @@ func TestBrowserGatewayExecutorRoutesAreClosedBeforeAGUIFallback(t *testing.T) {
 	}
 }
 
+func TestBrowserGatewaySplitOriginsRestrictHostsAndApplyExactCORS(t *testing.T) {
+	apiCalls := 0
+	agui := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		apiCalls++
+		response.WriteHeader(http.StatusAccepted)
+	})
+	handler := browserGatewaySplitRoutes(
+		agui, http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(),
+		http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), &browserReadiness{}, http.NotFoundHandler(),
+		"https://agent.byted.bps.dev", "https://browser-gateway.byted.bps.dev",
+	)
+
+	frontendAPI := httptest.NewRequest(http.MethodPost, "http://agent.byted.bps.dev/v2/test", nil)
+	frontendAPI.Host = "agent.byted.bps.dev"
+	frontendAPIResponse := httptest.NewRecorder()
+	handler.ServeHTTP(frontendAPIResponse, frontendAPI)
+	if frontendAPIResponse.Code != http.StatusNotFound || apiCalls != 0 {
+		t.Fatalf("frontend /v2 response = %d, API calls %d", frontendAPIResponse.Code, apiCalls)
+	}
+
+	preflight := httptest.NewRequest(http.MethodOptions, "http://browser-gateway.byted.bps.dev/v2/test", nil)
+	preflight.Host = "browser-gateway.byted.bps.dev"
+	preflight.Header.Set("Origin", "https://agent.byted.bps.dev")
+	preflight.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	preflight.Header.Set("Access-Control-Request-Headers", "authorization, content-type, idempotency-key")
+	preflightResponse := httptest.NewRecorder()
+	handler.ServeHTTP(preflightResponse, preflight)
+	if preflightResponse.Code != http.StatusNoContent ||
+		preflightResponse.Header().Get("Access-Control-Allow-Origin") != "https://agent.byted.bps.dev" ||
+		preflightResponse.Header().Get("Access-Control-Allow-Credentials") != "" || apiCalls != 0 {
+		t.Fatalf("preflight = %d headers=%v API calls=%d", preflightResponse.Code, preflightResponse.Header(), apiCalls)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "http://browser-gateway.byted.bps.dev/v2/test", nil)
+	request.Host = "browser-gateway.byted.bps.dev"
+	request.Header.Set("Origin", "https://agent.byted.bps.dev")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted || response.Header().Get("Access-Control-Allow-Origin") != "https://agent.byted.bps.dev" || apiCalls != 1 {
+		t.Fatalf("cross-origin API = %d headers=%v calls=%d", response.Code, response.Header(), apiCalls)
+	}
+
+	attacker := httptest.NewRequest(http.MethodPost, "http://browser-gateway.byted.bps.dev/v2/test", nil)
+	attacker.Host = "browser-gateway.byted.bps.dev"
+	attacker.Header.Set("Origin", "https://attacker.example")
+	attackerResponse := httptest.NewRecorder()
+	handler.ServeHTTP(attackerResponse, attacker)
+	if attackerResponse.Code != http.StatusForbidden || apiCalls != 1 {
+		t.Fatalf("attacker origin = %d calls=%d", attackerResponse.Code, apiCalls)
+	}
+}
+
+func TestBrowserPublicOriginsRequireExactDistinctPair(t *testing.T) {
+	values := map[string]string{
+		browserFrontendOriginEnvironment: "https://agent.byted.bps.dev",
+		browserAPIOriginEnvironment:      "https://browser-gateway.byted.bps.dev",
+	}
+	frontend, api, split, err := browserPublicOrigins(func(name string) string { return values[name] })
+	if err != nil || !split || frontend != values[browserFrontendOriginEnvironment] || api != values[browserAPIOriginEnvironment] {
+		t.Fatalf("browser origins = %q %q %v %v", frontend, api, split, err)
+	}
+	delete(values, browserAPIOriginEnvironment)
+	if _, _, _, err := browserPublicOrigins(func(name string) string { return values[name] }); err == nil {
+		t.Fatal("partial split-origin configuration was accepted")
+	}
+}
+
 func TestValidateBrowserOAuthAuthorityMatchesCoreLoginContract(t *testing.T) {
-	scopes, err := validateBrowserOAuthAuthority("agentserver-api", "openid,runs:write,executors:write")
-	if err != nil || len(scopes) != 3 || scopes[2] != "executors:write" {
+	scopes, err := validateBrowserOAuthAuthority("agentserver-api", "openid,runs:write,executors:write,llm-gateways:write")
+	if err != nil || len(scopes) != 4 || scopes[3] != "llm-gateways:write" {
 		t.Fatalf("canonical browser OAuth authority = %q, %v", scopes, err)
 	}
 	for _, input := range []struct {
 		audience string
 		scopes   string
 	}{
-		{audience: "other-api", scopes: "openid,runs:write,executors:write"},
+		{audience: "other-api", scopes: "openid,runs:write,executors:write,llm-gateways:write"},
 		{audience: "agentserver-api", scopes: "openid,runs:write"},
-		{audience: "agentserver-api", scopes: "openid,executors:write,runs:write"},
-		{audience: "agentserver-api", scopes: "openid,runs:write,executors:write,"},
+		{audience: "agentserver-api", scopes: "openid,executors:write,runs:write,llm-gateways:write"},
+		{audience: "agentserver-api", scopes: "openid,runs:write,executors:write,llm-gateways:write,"},
 	} {
 		if _, err := validateBrowserOAuthAuthority(input.audience, input.scopes); err == nil {
 			t.Fatalf("non-canonical browser OAuth authority was accepted: %+v", input)

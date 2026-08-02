@@ -22,6 +22,7 @@ const (
 	testCapabilityAttempt   = "61000000-0000-4000-8000-000000000005"
 	testCapabilityActor     = "61000000-0000-4000-8000-000000000006"
 	testCapabilityCatalog   = "61000000-0000-4000-8000-000000000007"
+	testCapabilityGateway   = "61000000-0000-4000-8000-000000000008"
 )
 
 func TestProductionRunCapabilityServiceIssuesStableSeparatedCapabilitiesAndAuthorizesLiveState(t *testing.T) {
@@ -81,6 +82,8 @@ func TestProductionRunCapabilityServiceIssuesStableSeparatedCapabilitiesAndAutho
 	}
 	if modelClaims.CapabilityID != first.LLMProxy.CapabilityID || modelClaims.Model != request.Model ||
 		modelClaims.Provider != request.Provider || modelClaims.ExecutorID != "" ||
+		modelClaims.LLMGatewayID != request.LLMGatewayID || modelClaims.LLMGatewayVersion != request.LLMGatewayVersion ||
+		modelClaims.LLMGatewayGrantUserID != request.LLMGatewayGrantUserID ||
 		modelClaims.ToolCatalogDigest != "" || modelClaims.ExpectedRunVersion != 0 ||
 		modelClaims.ExpectedRunAttemptVersion != 0 || modelClaims.MaxApprovalTTLMillis != 0 {
 		t.Fatalf("llmproxy claims = %+v", modelClaims)
@@ -116,19 +119,24 @@ func TestProductionRunCapabilityServiceIssuesStableSeparatedCapabilitiesAndAutho
 
 	modelAuthorization, err := service.AuthorizeLLMProxyRunCapability(
 		t.Context(), first.LLMProxy.Token,
-		corecontract.AuthorizeLLMProxyRunCapabilityRequest{Model: request.Model, Provider: request.Provider},
+		corecontract.AuthorizeLLMProxyRunCapabilityRequest{
+			Model: request.Model, Provider: request.Provider, LLMGatewayID: request.LLMGatewayID,
+			LLMGatewayVersion: request.LLMGatewayVersion, LLMGatewayGrantUserID: request.LLMGatewayGrantUserID,
+		},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if modelAuthorization.CapabilityID != first.LLMProxy.CapabilityID ||
-		modelAuthorization.Audience != runcapability.AudienceLLMProxy {
+		modelAuthorization.Audience != runcapability.AudienceLLMProxy ||
+		modelAuthorization.ResponsesURL != "https://gateway.example.com/v1/responses" ||
+		modelAuthorization.UpstreamAuthorization != "Bearer workspace-token" {
 		t.Fatalf("llmproxy authorization = %+v", modelAuthorization)
 	}
 	modelCommand := store.authorizationCalls[len(store.authorizationCalls)-1]
 	if modelCommand.Audience != coredb.RunCapabilityAudienceLLMProxy || modelCommand.ExecutorID != "" ||
 		modelCommand.ToolCatalogDigest != ([sha256.Size]byte{}) || modelCommand.ExpectedRunVersion != 0 ||
-		modelCommand.ExpectedAttemptVersion != 0 {
+		modelCommand.ExpectedAttemptVersion != 0 || modelCommand.LLMGateway != authority.LLMGateway {
 		t.Fatalf("llmproxy authorization command = %+v", modelCommand)
 	}
 }
@@ -147,7 +155,7 @@ func TestProductionRunCapabilityServiceRejectsInvalidPolicyProjectionAndAudience
 		t.Fatalf("structurally invalid issuance error = %v, want invalid_argument", err)
 	}
 	invalid = request
-	invalid.Provider = "different"
+	invalid.MaxRunDurationMillis++
 	if _, err := service.IssueRunCapabilities(t.Context(), invalid); !coredb.HasStateErrorCode(err, coredb.ErrorForbidden) {
 		t.Fatalf("policy mismatch issuance error = %v, want forbidden", err)
 	}
@@ -254,7 +262,7 @@ func TestNewProductionRunCapabilityServiceRequiresMatchingActiveKeyAndPolicy(t *
 	}
 	valid := ProductionRunCapabilityServiceConfig{
 		Store: &recordingRunCapabilityStore{}, Signer: signer, Verifier: verifier,
-		Policy: productionCapabilityTestPolicy(), Now: time.Now,
+		Policy: productionCapabilityTestPolicy(), LLMGatewayResolver: recordingLLMGatewayResolver{}, Now: time.Now,
 	}
 	if _, err := NewProductionRunCapabilityService(valid); err != nil {
 		t.Fatal(err)
@@ -317,7 +325,22 @@ func (store *recordingRunCapabilityStore) AuthorizeRunCapability(
 	command coredb.AuthorizeRunCapabilityCommand,
 ) (coredb.AuthorizedRunCapability, error) {
 	store.authorizationCalls = append(store.authorizationCalls, command)
-	return store.authorized, store.authorizationErr
+	result := store.authorized
+	if command.Audience == coredb.RunCapabilityAudienceLLMProxy && result.LLMGateway == nil {
+		result.LLMGateway = &coredb.LLMGatewayLiveAuthority{
+			Gateway: coredb.WorkspaceLLMGateway{
+				ID: command.LLMGateway.GatewayID, WorkspaceID: command.WorkspaceID,
+				Version: command.LLMGateway.ConfigVersion, DefaultModel: command.LLMGateway.Model,
+				Status: coredb.LLMGatewayStatusActive, ResponsesURL: "https://gateway.example.com/v1/responses",
+			},
+			Grant: coredb.WorkspaceLLMGatewayGrant{
+				GatewayID: command.LLMGateway.GatewayID, WorkspaceID: command.WorkspaceID,
+				UserID: command.LLMGateway.GrantUserID, Status: coredb.LLMGatewayGrantStatusActive,
+			},
+			Model: command.LLMGateway.Model,
+		}
+	}
+	return result, store.authorizationErr
 }
 
 func productionCapabilityIssuanceFixture(createdAt time.Time) (
@@ -331,9 +354,12 @@ func productionCapabilityIssuanceFixture(createdAt time.Time) (
 		HolderID: "pool-instance/attempt-holder", RunAttemptGeneration: 3,
 		ExpectedRunVersion: 4, ExpectedRunAttemptVersion: 5,
 		ExecutorID: testCapabilityExecutor, BrainToolCatalogID: testCapabilityCatalog,
-		ToolCatalogDigest: fmtSHA256(digest), Model: "gpt-5.6-codex", Provider: "openai",
-		MaxRunDurationMillis: int64(30 * time.Minute / time.Millisecond),
-		MaxApprovalTTLMillis: int64(10 * time.Second / time.Millisecond),
+		ToolCatalogDigest: fmtSHA256(digest), Model: "gpt-5.6-codex",
+		Provider:     corecontract.WorkspaceLLMGatewayProvider,
+		LLMGatewayID: testCapabilityGateway, LLMGatewayVersion: 2,
+		LLMGatewayGrantUserID: testCapabilityActor,
+		MaxRunDurationMillis:  int64(30 * time.Minute / time.Millisecond),
+		MaxApprovalTTLMillis:  int64(10 * time.Second / time.Millisecond),
 	}
 	authority := coredb.RunCapabilityIssuanceAuthority{
 		WorkspaceID: request.WorkspaceID, SessionID: request.SessionID, RunID: request.RunID,
@@ -342,6 +368,10 @@ func productionCapabilityIssuanceFixture(createdAt time.Time) (
 		AttemptVersion: request.ExpectedRunAttemptVersion, AttemptCreatedAt: createdAt,
 		DatabaseTime: createdAt.Add(time.Minute), ExecutorID: request.ExecutorID,
 		BrainToolCatalogID: request.BrainToolCatalogID, ToolCatalogDigest: digest,
+		LLMGateway: coredb.RunLLMGatewayBinding{
+			GatewayID: request.LLMGatewayID, ConfigVersion: request.LLMGatewayVersion,
+			GrantUserID: request.LLMGatewayGrantUserID, Model: request.Model,
+		},
 	}
 	return request, authority
 }
@@ -364,7 +394,8 @@ func newProductionRunCapabilityTestService(
 		t.Fatal(err)
 	}
 	service, err := NewProductionRunCapabilityService(ProductionRunCapabilityServiceConfig{
-		Store: store, Signer: signer, Verifier: verifier, Policy: productionCapabilityTestPolicy(), Now: now,
+		Store: store, Signer: signer, Verifier: verifier, Policy: productionCapabilityTestPolicy(),
+		LLMGatewayResolver: recordingLLMGatewayResolver{}, Now: now,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -374,9 +405,23 @@ func newProductionRunCapabilityTestService(
 
 func productionCapabilityTestPolicy() ProductionRunCapabilityPolicy {
 	return ProductionRunCapabilityPolicy{
-		ExecutorID: testCapabilityExecutor, Model: "gpt-5.6-codex", Provider: "openai",
+		ExecutorID:     testCapabilityExecutor,
 		MaxRunDuration: 30 * time.Minute, MaxApprovalTTL: 10 * time.Second, ExpiryGrace: 45 * time.Second,
 	}
+}
+
+type recordingLLMGatewayResolver struct{}
+
+func (recordingLLMGatewayResolver) ResolveUpstream(
+	_ context.Context,
+	authority coredb.LLMGatewayLiveAuthority,
+) (LLMGatewayUpstreamAuthorization, error) {
+	return LLMGatewayUpstreamAuthorization{
+		GatewayID: authority.Gateway.ID, GatewayConfigVersion: authority.Gateway.Version,
+		GrantUserID: authority.Grant.UserID, Model: authority.Model,
+		ResponsesURL:  "https://gateway.example.com/v1/responses",
+		Authorization: "Bearer workspace-token", BearerExpiresAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+	}, nil
 }
 
 func bytesOf(value byte, count int) []byte {

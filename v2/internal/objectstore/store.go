@@ -1,7 +1,7 @@
-// Package objectstore implements the application-owned encrypted object
-// protocol used above an immutable S3-compatible blob backend. Concrete KMS
-// and S3 clients implement the narrow interfaces in this package; plaintext
-// object authority never depends on provider metadata or presigned URLs.
+// Package objectstore implements the application-owned immutable object
+// protocols used above an S3-compatible blob backend. The encrypted protocol
+// remains available, while PlainStore is the deliberately plaintext profile
+// used by deployments whose object service has no compatible KMS.
 package objectstore
 
 import (
@@ -32,9 +32,9 @@ const (
 )
 
 var (
-	ErrObjectConflict          = errors.New("immutable encrypted object conflicts with requested authority")
+	ErrObjectConflict          = errors.New("immutable object conflicts with requested authority")
 	ErrBlobNotFound            = errors.New("immutable blob does not exist")
-	errObjectAuthorityMismatch = errors.New("encrypted object header does not match requested authority")
+	errObjectAuthorityMismatch = errors.New("object bytes do not match requested authority")
 
 	canonicalUUIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	prefixSegmentPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -95,6 +95,15 @@ type ImmutableBlobStore interface {
 	Open(context.Context, string) (Blob, error)
 }
 
+// Protocol is the authority-preserving object surface consumed by Core and
+// harness-pool. Implementations may encrypt the provider bytes or deliberately
+// store plaintext, but must validate the committed descriptor on every open
+// and exact retry.
+type Protocol interface {
+	Put(context.Context, Scope, io.Reader) error
+	Open(context.Context, Scope) (io.ReadCloser, error)
+}
+
 type Config struct {
 	Backend               ImmutableBlobStore
 	Keys                  DataKeyProvider
@@ -110,6 +119,8 @@ type Store struct {
 	maximum int64
 	random  io.Reader
 }
+
+var _ Protocol = (*Store)(nil)
 
 func New(config Config) (*Store, error) {
 	if config.Backend == nil || config.Keys == nil {

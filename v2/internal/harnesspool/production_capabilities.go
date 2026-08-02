@@ -29,6 +29,9 @@ type IssueRunCapabilitiesRequest struct {
 	ToolCatalogDigest         string
 	Model                     string
 	Provider                  string
+	LLMGatewayID              string
+	LLMGatewayVersion         int64
+	LLMGatewayGrantUserID     string
 	MaxRunDuration            time.Duration
 	MaxApprovalTTL            time.Duration
 }
@@ -101,8 +104,11 @@ func (source *ProductionAttemptRuntimeCapabilitySource) IssueAttemptRuntimeCapab
 		ExecutorID: source.executorID, BrainToolCatalogID: prepared.Manifest.ExecutorMCP.CatalogID,
 		ToolCatalogDigest: prepared.Manifest.ExecutorMCP.CatalogDigest,
 		Model:             prepared.Manifest.Model.Model, Provider: prepared.Manifest.Model.Provider,
-		MaxRunDuration: time.Duration(prepared.Manifest.Limits.MaxRunDurationMS) * time.Millisecond,
-		MaxApprovalTTL: time.Duration(prepared.Manifest.Limits.MaxApprovalTTLMS) * time.Millisecond,
+		LLMGatewayID:          prepared.Manifest.Model.LLMGatewayID,
+		LLMGatewayVersion:     prepared.Manifest.Model.LLMGatewayVersion,
+		LLMGatewayGrantUserID: prepared.Manifest.Model.LLMGatewayGrantUserID,
+		MaxRunDuration:        time.Duration(prepared.Manifest.Limits.MaxRunDurationMS) * time.Millisecond,
+		MaxApprovalTTL:        time.Duration(prepared.Manifest.Limits.MaxApprovalTTLMS) * time.Millisecond,
 	}
 	result, err := source.issueExactly(ctx, request)
 	if err != nil {

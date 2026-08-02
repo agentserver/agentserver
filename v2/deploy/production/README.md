@@ -1,10 +1,15 @@
 # Production deployment artifacts
 
-- `config.example.json`：closed-world 生产环境输入示例，支持外置私有 registry pull Secret。
-- `build-images.sh`：按显式 `linux-amd64` 或 `linux-arm64` 构建并逐文件验证
-  service/harness 镜像。
+- `config.example.json`：SG-only closed-world 生产输入；固定 Namespace、域名、Secret 名称和
+  `linux-amd64` platform。
+- `build-images.sh`：生产发布只使用 `linux-amd64`，并逐文件验证 service/harness 镜像。
 - `service.Containerfile`、`harness.Containerfile`：digest-pinned base、scratch runtime 镜像。
 - `agentserver-deploy chart`：从生产配置生成环境锁定的 Helm Chart。
+
+当前 SG profile 由 Istio 终止公网 TLS，prompt/checkpoint 以明文写入 S3-compatible bucket；
+内部 CA、workload 证书、签名/对称密钥和 Kubernetes Secret 由 `../k8s-byted` 的 Pulumi 模块
+生成；同一模块还会创建 3 实例 CloudNativePG Cluster、随机 owner 密码和应用 DSN，不需要外部
+`databaseUrl`。构建脚本保留其他平台参数只用于历史 conformance/开发，不代表该平台可部署到生产。
 
 完整远程安装、Secret key 集合、升级和回滚说明见
 [`../../docs/PRODUCTION_DEPLOYMENT.md`](../../docs/PRODUCTION_DEPLOYMENT.md)。

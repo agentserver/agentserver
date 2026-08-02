@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/llmproxy"
+	"github.com/agentserver/agentserver/v2/internal/publichttps"
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
 )
 
@@ -28,6 +29,15 @@ type llmProxyReadiness struct {
 }
 
 func serveLLMProxy(ctx context.Context, getenv func(string) string, stdout io.Writer) error {
+	return serveLLMProxyWithUpstreamHTTPClient(ctx, getenv, stdout, nil)
+}
+
+func serveLLMProxyWithUpstreamHTTPClient(
+	ctx context.Context,
+	getenv func(string) string,
+	stdout io.Writer,
+	upstreamHTTPClient *http.Client,
+) error {
 	if ctx == nil {
 		return errors.New("llmproxy serve context is required")
 	}
@@ -56,23 +66,20 @@ func serveLLMProxy(ctx context.Context, getenv func(string) string, stdout io.Wr
 		return err
 	}
 	authenticator, err := llmproxy.NewProductionAuthenticator(
-		verifier, coreClient, config.model, config.provider, time.Now,
+		verifier, coreClient, time.Now,
 	)
 	if err != nil {
 		return err
 	}
-	credentials, err := llmproxy.NewFileCredentialSource(config.upstreamCredential, config.upstreamAuthHeader)
-	if err != nil {
-		return err
-	}
-	upstreamHTTPClient, err := newLLMProxyUpstreamHTTPClient(config.upstreamCA)
-	if err != nil {
-		return err
+	if upstreamHTTPClient == nil {
+		upstreamHTTPClient, err = newLLMProxyUpstreamHTTPClient()
+		if err != nil {
+			return err
+		}
 	}
 	defer upstreamHTTPClient.CloseIdleConnections()
 	modelHandler, err := llmproxy.NewHandler(llmproxy.HandlerConfig{
-		Authenticator: authenticator, Credentials: credentials,
-		UpstreamURL: config.upstreamResponsesURL, HTTPClient: upstreamHTTPClient,
+		Authenticator: authenticator, HTTPClient: upstreamHTTPClient,
 	})
 	if err != nil {
 		return err
@@ -111,8 +118,8 @@ func serveLLMProxy(ctx context.Context, getenv func(string) string, stdout io.Wr
 		}
 	}()
 	readiness.ready.Store(true)
-	fmt.Fprintf(stdout, "llmproxy serve: production TLS endpoint %s%s; model %s via provider %s\n",
-		listener.Addr(), llmproxy.ResponsesPath, config.model, config.provider)
+	fmt.Fprintf(stdout, "llmproxy serve: production TLS endpoint %s%s; workspace gateway routes resolved live by Core\n",
+		listener.Addr(), llmproxy.ResponsesPath)
 	err = server.Serve(tls.NewListener(listener, tlsConfig))
 	readiness.ready.Store(false)
 	if errors.Is(err, http.ErrServerClosed) && ctx.Err() != nil {
@@ -226,29 +233,11 @@ func newLLMProxyCoreHTTPClient(caPath, serverName string, identity tls.Certifica
 	return &http.Client{Transport: transport}, nil
 }
 
-func newLLMProxyUpstreamHTTPClient(caPath string) (*http.Client, error) {
-	var roots *x509.CertPool
-	var err error
-	if caPath != "" {
-		roots, err = loadLLMProxyCertPool("upstream CA", caPath)
-		if err != nil {
-			return nil, err
-		}
-	}
-	transport := &http.Transport{
-		Proxy:                 nil,
-		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          64,
-		MaxIdleConnsPerHost:   64,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   5 * time.Second,
-		ResponseHeaderTimeout: 60 * time.Second,
-		ExpectContinueTimeout: time.Second,
-		DisableCompression:    true,
-		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots},
-	}
-	return &http.Client{Transport: transport}, nil
+func newLLMProxyUpstreamHTTPClient() (*http.Client, error) {
+	return publichttps.NewClient(publichttps.ClientConfig{
+		NoOverallTimeout: true, ResponseHeaderTimeout: 60 * time.Second,
+		MaxIdleConns: 64, MaxIdleConnsPerHost: 16,
+	})
 }
 
 func loadLLMProxyCertPool(label, path string) (*x509.CertPool, error) {

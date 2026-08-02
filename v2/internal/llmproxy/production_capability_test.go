@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
 )
 
@@ -16,7 +17,7 @@ const (
 	testIssuer   = "https://agentserver.example.test/core"
 	testKeyID    = "production-llmproxy-test-key"
 	testModel    = "gpt-5.6-codex"
-	testProvider = "openai"
+	testProvider = corecontract.WorkspaceLLMGatewayProvider
 )
 
 func TestProductionAuthenticatorVerifiesAndLiveAuthorizesEveryModelRequest(t *testing.T) {
@@ -24,7 +25,7 @@ func TestProductionAuthenticatorVerifiesAndLiveAuthorizesEveryModelRequest(t *te
 	claims := productionModelClaims(now)
 	token, verifier := signProductionClaims(t, claims)
 	authorizer := &recordingAuthorizer{result: productionModelAuthorization(claims, now)}
-	authenticator, err := NewProductionAuthenticator(verifier, authorizer, testModel, testProvider, func() time.Time { return now })
+	authenticator, err := NewProductionAuthenticator(verifier, authorizer, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +52,8 @@ func TestProductionAuthenticatorVerifiesAndLiveAuthorizesEveryModelRequest(t *te
 	for _, call := range authorizer.calls {
 		if call.Token != token || call.CapabilityID != claims.CapabilityID || call.Model != testModel ||
 			call.Provider != testProvider || call.RunID != claims.RunID || call.RunAttemptID != claims.RunAttemptID ||
-			call.RunAttemptGeneration != claims.RunAttemptGeneration {
+			call.RunAttemptGeneration != claims.RunAttemptGeneration || call.LLMGatewayID != claims.LLMGatewayID ||
+			call.LLMGatewayVersion != claims.LLMGatewayVersion || call.LLMGatewayGrantUserID != claims.LLMGatewayGrantUserID {
 			t.Fatalf("Core live authorization request = %+v", call)
 		}
 	}
@@ -76,7 +78,7 @@ func TestProductionAuthenticatorFailsClosedBeforeAndAfterCore(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			authorizer := &recordingAuthorizer{}
-			authenticator, err := NewProductionAuthenticator(test.verifier, authorizer, testModel, testProvider, func() time.Time { return now })
+			authenticator, err := NewProductionAuthenticator(test.verifier, authorizer, func() time.Time { return now })
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -92,6 +94,9 @@ func TestProductionAuthenticatorFailsClosedBeforeAndAfterCore(t *testing.T) {
 	executorClaims.Audience = runcapability.AudienceExecutorMCP
 	executorClaims.Model = ""
 	executorClaims.Provider = ""
+	executorClaims.LLMGatewayID = ""
+	executorClaims.LLMGatewayVersion = 0
+	executorClaims.LLMGatewayGrantUserID = ""
 	executorClaims.ExecutorID = "96000000-0000-4000-8000-000000000001"
 	executorClaims.ToolCatalogDigest = strings.Repeat("a", 64)
 	executorClaims.ExpectedRunVersion = 5
@@ -105,7 +110,7 @@ func TestProductionAuthenticatorFailsClosedBeforeAndAfterCore(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			authorizer := &recordingAuthorizer{}
-			authenticator, _ := NewProductionAuthenticator(verifier, authorizer, testModel, testProvider, func() time.Time { return now })
+			authenticator, _ := NewProductionAuthenticator(verifier, authorizer, func() time.Time { return now })
 			request := httptest.NewRequest("POST", "https://llmproxy.test/v1/responses", nil)
 			request.Header["Authorization"] = authorization
 			if _, err := authenticator.AuthenticateModelRequest(request, testModel); err == nil || len(authorizer.calls) != 0 {
@@ -115,7 +120,7 @@ func TestProductionAuthenticatorFailsClosedBeforeAndAfterCore(t *testing.T) {
 	}
 
 	coreFailure := &recordingAuthorizer{err: errors.New("Core unavailable " + validToken)}
-	authenticator, _ := NewProductionAuthenticator(verifier, coreFailure, testModel, testProvider, func() time.Time { return now })
+	authenticator, _ := NewProductionAuthenticator(verifier, coreFailure, func() time.Time { return now })
 	request := httptest.NewRequest("POST", "https://llmproxy.test/v1/responses", nil)
 	request.Header.Set("Authorization", "Bearer "+validToken)
 	if _, err := authenticator.AuthenticateModelRequest(request, testModel); err == nil || strings.Contains(err.Error(), validToken) {
@@ -124,7 +129,7 @@ func TestProductionAuthenticatorFailsClosedBeforeAndAfterCore(t *testing.T) {
 
 	drift := &recordingAuthorizer{result: productionModelAuthorization(claims, now)}
 	drift.result.RunID = "97000000-0000-4000-8000-000000000099"
-	authenticator, _ = NewProductionAuthenticator(verifier, drift, testModel, testProvider, func() time.Time { return now })
+	authenticator, _ = NewProductionAuthenticator(verifier, drift, func() time.Time { return now })
 	if _, err := authenticator.AuthenticateModelRequest(request, testModel); err == nil {
 		t.Fatal("inconsistent Core live authorization was accepted")
 	}
@@ -136,19 +141,13 @@ func TestProductionAuthenticatorValidatesConstruction(t *testing.T) {
 	authorizer := &recordingAuthorizer{}
 	for name, build := range map[string]func() (*ProductionAuthenticator, error){
 		"verifier": func() (*ProductionAuthenticator, error) {
-			return NewProductionAuthenticator(nil, authorizer, testModel, testProvider, time.Now)
+			return NewProductionAuthenticator(nil, authorizer, time.Now)
 		},
 		"authorizer": func() (*ProductionAuthenticator, error) {
-			return NewProductionAuthenticator(verifier, nil, testModel, testProvider, time.Now)
-		},
-		"model": func() (*ProductionAuthenticator, error) {
-			return NewProductionAuthenticator(verifier, authorizer, "", testProvider, time.Now)
-		},
-		"provider": func() (*ProductionAuthenticator, error) {
-			return NewProductionAuthenticator(verifier, authorizer, testModel, "bad\nprovider", time.Now)
+			return NewProductionAuthenticator(verifier, nil, time.Now)
 		},
 		"clock": func() (*ProductionAuthenticator, error) {
-			return NewProductionAuthenticator(verifier, authorizer, testModel, testProvider, nil)
+			return NewProductionAuthenticator(verifier, authorizer, nil)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -173,6 +172,8 @@ func productionModelClaims(now time.Time) runcapability.Claims {
 		RunDeadlineUnixMS: now.Add(30 * time.Minute).UnixMilli(),
 		ExpiresAtUnixMS:   now.Add(31 * time.Minute).UnixMilli(),
 		Model:             testModel, Provider: testProvider,
+		LLMGatewayID: "97000000-0000-4000-8000-000000000007", LLMGatewayVersion: 2,
+		LLMGatewayGrantUserID: "97000000-0000-4000-8000-000000000006",
 	}
 }
 
@@ -202,6 +203,11 @@ func productionModelAuthorization(claims runcapability.Claims, now time.Time) Ru
 		RunID: claims.RunID, RunAttemptID: claims.RunAttemptID,
 		RunAttemptGeneration: claims.RunAttemptGeneration,
 		RunVersion:           5, RunAttemptVersion: 6, AuthorizedAt: now,
+		Model: claims.Model, Provider: claims.Provider,
+		LLMGatewayID: claims.LLMGatewayID, LLMGatewayVersion: claims.LLMGatewayVersion,
+		LLMGatewayGrantUserID: claims.LLMGatewayGrantUserID,
+		ResponsesURL:          "https://gateway.example.com/v1/responses",
+		UpstreamAuthorization: "Bearer upstream-secret", BearerExpiresAt: now.Add(20 * time.Minute),
 	}
 }
 

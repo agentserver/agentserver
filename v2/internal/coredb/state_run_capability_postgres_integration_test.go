@@ -24,7 +24,7 @@ func TestPostgreSQLRunCapabilityFreshCatalogIsLiveRevocable(t *testing.T) {
 		authority.Generation != fixture.claim.Attempt.Generation || authority.RunVersion != fixture.claim.Run.Version ||
 		authority.AttemptVersion != fixture.claim.Attempt.Version || authority.ExecutorID != fixture.executor.ExecutorID ||
 		authority.BrainToolCatalogID != fixture.freeze.CatalogID || authority.ToolCatalogDigest != fixture.freeze.CatalogDigest ||
-		authority.AttemptCreatedAt.IsZero() || authority.DatabaseTime.IsZero() {
+		authority.LLMGateway != fixture.llmGateway || authority.AttemptCreatedAt.IsZero() || authority.DatabaseTime.IsZero() {
 		t.Fatalf("fresh issuance authority = %+v", authority)
 	}
 
@@ -71,6 +71,47 @@ func TestPostgreSQLRunCapabilityFreshCatalogIsLiveRevocable(t *testing.T) {
 	assertPostgresRunCapabilityForbidden(t, fixture.store, modelAuthorization)
 	insertMember := fmt.Sprintf("INSERT INTO %s.workspace_members (workspace_id, user_id, role) VALUES ($1, $2, 'developer')", quotedSchema)
 	if _, err := fixture.pool.Exec(t.Context(), insertMember, fixture.workspaceID, fixture.createCommand.ActorID); err != nil {
+		t.Fatal(err)
+	}
+
+	setGatewayVersion := fmt.Sprintf("UPDATE %s.workspace_llm_gateways SET version = $2 WHERE id = $1", quotedSchema)
+	if _, err := fixture.pool.Exec(t.Context(), setGatewayVersion, fixture.llmGateway.GatewayID, fixture.llmGateway.ConfigVersion+1); err != nil {
+		t.Fatal(err)
+	}
+	assertPostgresRunCapabilityForbidden(t, fixture.store, modelAuthorization)
+	if _, err := fixture.pool.Exec(t.Context(), setGatewayVersion, fixture.llmGateway.GatewayID, fixture.llmGateway.ConfigVersion); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.pool.Exec(t.Context(), updateRole, fixture.workspaceID, fixture.createCommand.ActorID, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	disabled, err := fixture.store.DisableWorkspaceLLMGateway(t.Context(), DisableWorkspaceLLMGatewayCommand{
+		WorkspaceID: fixture.workspaceID, GatewayID: fixture.llmGateway.GatewayID, ActorID: fixture.createCommand.ActorID,
+	})
+	if err != nil || !disabled.Changed || disabled.Gateway.Status != LLMGatewayStatusDisabled || disabled.Gateway.Default ||
+		disabled.Gateway.Version != fixture.llmGateway.ConfigVersion+1 {
+		t.Fatalf("disabled workspace LLM Gateway = %+v, %v", disabled, err)
+	}
+	repeatedDisable, err := fixture.store.DisableWorkspaceLLMGateway(t.Context(), DisableWorkspaceLLMGatewayCommand{
+		WorkspaceID: fixture.workspaceID, GatewayID: fixture.llmGateway.GatewayID, ActorID: fixture.createCommand.ActorID,
+	})
+	if err != nil || repeatedDisable.Changed || repeatedDisable.Gateway.Version != disabled.Gateway.Version {
+		t.Fatalf("repeated workspace LLM Gateway disable = %+v, %v", repeatedDisable, err)
+	}
+	assertPostgresRunCapabilityForbidden(t, fixture.store, modelAuthorization)
+	restoreGateway := fmt.Sprintf("UPDATE %s.workspace_llm_gateways SET status = $2, is_default = TRUE, version = $3 WHERE id = $1", quotedSchema)
+	if _, err := fixture.pool.Exec(t.Context(), restoreGateway, fixture.llmGateway.GatewayID, LLMGatewayStatusActive, fixture.llmGateway.ConfigVersion); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.pool.Exec(t.Context(), updateRole, fixture.workspaceID, fixture.createCommand.ActorID, "developer"); err != nil {
+		t.Fatal(err)
+	}
+	setGrantStatus := fmt.Sprintf("UPDATE %s.workspace_llm_gateway_grants SET status = $2 WHERE gateway_id = $1 AND user_id = $3", quotedSchema)
+	if _, err := fixture.pool.Exec(t.Context(), setGrantStatus, fixture.llmGateway.GatewayID, LLMGatewayGrantStatusRevoked, fixture.llmGateway.GrantUserID); err != nil {
+		t.Fatal(err)
+	}
+	assertPostgresRunCapabilityForbidden(t, fixture.store, modelAuthorization)
+	if _, err := fixture.pool.Exec(t.Context(), setGrantStatus, fixture.llmGateway.GatewayID, LLMGatewayGrantStatusActive, fixture.llmGateway.GrantUserID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -193,6 +234,7 @@ func TestPostgreSQLRunCapabilityResumeUsesCommittedCheckpointAndFencesFinalizing
 	resumeCommand.ActorID = fixture.createCommand.ActorID
 	resumeCommand.ExpectedSessionVersion = committed.SessionVersion
 	resumeCommand.ExecutorPolicy = fixture.createCommand.ExecutorPolicy
+	resumeCommand.LLMGateway = fixture.llmGateway
 	resume := mustCreateStateRun(t, fixture.store, resumeCommand)
 	resumeClaim := mustClaimStateRun(t, fixture.store, stateClaimRunCommand(181_010, resume.Run.ID, resume.Run.Version, "capability-resume-holder"))
 	resumeIssuance := ResolveRunCapabilityIssuanceCommand{
@@ -201,6 +243,7 @@ func TestPostgreSQLRunCapabilityResumeUsesCommittedCheckpointAndFencesFinalizing
 		Generation: resumeClaim.Attempt.Generation, ExpectedRunVersion: resumeClaim.Run.Version,
 		ExpectedAttemptVersion: resumeClaim.Attempt.Version, ExecutorID: fixture.executor.ExecutorID,
 		BrainToolCatalogID: bound.Catalog.ID, ToolCatalogDigest: bound.Catalog.CatalogDigest,
+		LLMGateway: fixture.llmGateway,
 	}
 	resumeAuthority, err := fixture.store.ResolveRunCapabilityIssuance(t.Context(), resumeIssuance)
 	if err != nil {
@@ -226,6 +269,7 @@ func TestPostgreSQLRunCapabilityResumeUsesCommittedCheckpointAndFencesFinalizing
 	resumeModelAuthorization.ToolCatalogDigest = [sha256.Size]byte{}
 	resumeModelAuthorization.ExpectedRunVersion = 0
 	resumeModelAuthorization.ExpectedAttemptVersion = 0
+	resumeModelAuthorization.LLMGateway = fixture.llmGateway
 	assertPostgresRunCapabilityAuthorized(t, fixture.store, resumeExecutorAuthorization, RunStatusStarting, AttemptStatusLeased)
 	assertPostgresRunCapabilityAuthorized(t, fixture.store, resumeModelAuthorization, RunStatusStarting, AttemptStatusLeased)
 
@@ -261,6 +305,7 @@ type postgresRunCapabilityFixture struct {
 	freeze        FreezeBrainToolCatalogCommand
 	frozen        FreezeBrainToolCatalogResult
 	executor      AcquireExecutorConnectionCommand
+	llmGateway    RunLLMGatewayBinding
 }
 
 func newPostgresRunCapabilityFixture(t *testing.T, seed int) postgresRunCapabilityFixture {
@@ -278,6 +323,30 @@ func newPostgresRunCapabilityFixture(t *testing.T, seed int) postgresRunCapabili
 	if _, err := pool.Exec(t.Context(), memberQuery, workspaceID, createCommand.ActorID); err != nil {
 		t.Fatal(err)
 	}
+	llmGateway := RunLLMGatewayBinding{
+		GatewayID: stateTestUUID(seed + 500), ConfigVersion: 1,
+		GrantUserID: createCommand.ActorID, Model: "capability-test-model",
+	}
+	quotedSchema := quoteIdentifier(schema)
+	insertGateway := fmt.Sprintf(`INSERT INTO %s.workspace_llm_gateways
+    (id, workspace_id, name, responses_url, oidc_issuer, oidc_client_id, oidc_scopes,
+     bearer_token_type, default_model, status, is_default, version, created_by)
+VALUES ($1, $2, $3, 'https://llm.example.com/v1/responses', 'https://id.example.com',
+        'capability-test-client', 'offline_access openid', 'id_token', $4, 'active', TRUE, $5, $6)`, quotedSchema)
+	if _, err := pool.Exec(t.Context(), insertGateway, llmGateway.GatewayID, workspaceID,
+		fmt.Sprintf("capability-gateway-%d", seed), llmGateway.Model, llmGateway.ConfigVersion, createCommand.ActorID); err != nil {
+		t.Fatal(err)
+	}
+	insertGrant := fmt.Sprintf(`INSERT INTO %s.workspace_llm_gateway_grants
+    (id, gateway_id, workspace_id, user_id, oidc_issuer, oidc_subject, status,
+     sealed_token_set, bearer_expires_at)
+VALUES ($1, $2, $3, $4, 'https://id.example.com', $5, 'active', $6,
+        pg_catalog.clock_timestamp() + interval '30 minutes')`, quotedSchema)
+	if _, err := pool.Exec(t.Context(), insertGrant, stateTestUUID(seed+501), llmGateway.GatewayID,
+		workspaceID, createCommand.ActorID, fmt.Sprintf("capability-subject-%d", seed), make([]byte, 64)); err != nil {
+		t.Fatal(err)
+	}
+	createCommand.LLMGateway = llmGateway
 	created := mustCreateStateRun(t, store, createCommand)
 	claim := mustClaimStateRun(t, store, stateClaimRunCommand(seed+20, created.Run.ID, created.Run.Version, fmt.Sprintf("capability-holder-%d", seed)))
 	catalog, err := braincatalog.BuildCatalog("executor", "Production executor tools.", []braincatalog.ToolDescriptor{{
@@ -318,6 +387,7 @@ func newPostgresRunCapabilityFixture(t *testing.T, seed int) postgresRunCapabili
 	return postgresRunCapabilityFixture{
 		store: store, pool: pool, schema: schema, workspaceID: workspaceID, sessionID: sessionID,
 		createCommand: createCommand, claim: claim, freeze: freeze, frozen: frozen, executor: executor,
+		llmGateway: llmGateway,
 	}
 }
 
@@ -328,6 +398,7 @@ func (fixture postgresRunCapabilityFixture) issuanceCommand() ResolveRunCapabili
 		Generation: fixture.claim.Attempt.Generation, ExpectedRunVersion: fixture.claim.Run.Version,
 		ExpectedAttemptVersion: fixture.claim.Attempt.Version, ExecutorID: fixture.executor.ExecutorID,
 		BrainToolCatalogID: fixture.freeze.CatalogID, ToolCatalogDigest: fixture.freeze.CatalogDigest,
+		LLMGateway: fixture.llmGateway,
 	}
 }
 
@@ -350,6 +421,7 @@ func (fixture postgresRunCapabilityFixture) modelAuthorizationCommand() Authoriz
 	command.ToolCatalogDigest = [sha256.Size]byte{}
 	command.ExpectedRunVersion = 0
 	command.ExpectedAttemptVersion = 0
+	command.LLMGateway = fixture.llmGateway
 	return command
 }
 

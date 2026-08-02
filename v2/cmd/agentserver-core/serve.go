@@ -20,48 +20,49 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/coreserver"
 	"github.com/agentserver/agentserver/v2/internal/enrollmenttoken"
 	"github.com/agentserver/agentserver/v2/internal/objectruntime"
+	"github.com/agentserver/agentserver/v2/internal/publichttps"
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
 	"github.com/agentserver/agentserver/v2/internal/runcursor"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
-	coreListenAddressEnvironment         = "AGENTSERVER_V2_CORE_LISTEN_ADDR"
-	coreTLSCertificateEnvironment        = "AGENTSERVER_V2_CORE_TLS_CERT_FILE"
-	coreTLSKeyEnvironment                = "AGENTSERVER_V2_CORE_TLS_KEY_FILE"
-	coreClientCAEnvironment              = "AGENTSERVER_V2_CORE_CLIENT_CA_FILE"
-	coreGatewayIdentityEnvironment       = "AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID"
-	coreHarnessPoolIdentityEnvironment   = "AGENTSERVER_V2_HARNESS_POOL_SPIFFE_ID"
-	coreBrowserIdentityEnvironment       = "AGENTSERVER_V2_BROWSER_GATEWAY_SPIFFE_ID"
-	coreHydraIntrospectionEnvironment    = "AGENTSERVER_V2_HYDRA_INTROSPECTION_URL"
-	coreHydraAdminEnvironment            = "AGENTSERVER_V2_HYDRA_ADMIN_URL"
-	coreHydraPublicOriginEnvironment     = "AGENTSERVER_V2_HYDRA_PUBLIC_ORIGIN"
-	coreHydraIssuerEnvironment           = "AGENTSERVER_V2_HYDRA_ISSUER"
-	coreHydraBrowserClientEnvironment    = "AGENTSERVER_V2_HYDRA_BROWSER_CLIENT_ID"
-	coreHydraInsecureHTTPEnvironment     = "AGENTSERVER_V2_HYDRA_ALLOW_INSECURE_HTTP"
-	coreExternalOIDCIssuerEnvironment    = "AGENTSERVER_V2_EXTERNAL_OIDC_ISSUER"
-	coreExternalOIDCClientEnvironment    = "AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_ID"
-	coreExternalOIDCSecretEnvironment    = "AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_SECRET"
-	coreExternalOIDCRedirectEnvironment  = "AGENTSERVER_V2_EXTERNAL_OIDC_REDIRECT_URL"
-	coreExternalOIDCInsecureEnvironment  = "AGENTSERVER_V2_EXTERNAL_OIDC_ALLOW_INSECURE_HTTP"
-	coreLoginTransactionKeyEnvironment   = "AGENTSERVER_V2_LOGIN_TRANSACTION_KEY"
-	coreRunCursorKeyEnvironment          = "AGENTSERVER_V2_RUN_CURSOR_KEY"
-	coreDevPromptObjectRootEnvironment   = "AGENTSERVER_V2_DEV_PROMPT_OBJECT_DIR"
-	coreRunPolicyVersionEnvironment      = "AGENTSERVER_V2_RUN_POLICY_VERSION"
-	coreRunAllowedToolsEnvironment       = "AGENTSERVER_V2_RUN_ALLOWED_TOOLS"
-	coreLLMProxyIdentityEnvironment      = "AGENTSERVER_V2_LLMPROXY_SPIFFE_ID"
-	coreCapabilityIssuerEnvironment      = "AGENTSERVER_V2_RUN_CAPABILITY_ISSUER"
-	coreCapabilityKeyIDEnvironment       = "AGENTSERVER_V2_RUN_CAPABILITY_SIGNING_KEY_ID"
-	coreCapabilityPrivateKeyEnvironment  = "AGENTSERVER_V2_RUN_CAPABILITY_SIGNING_KEY_FILE"
-	coreCapabilityKeyringEnvironment     = "AGENTSERVER_V2_RUN_CAPABILITY_KEYRING_FILE"
-	coreProductionExecutorEnvironment    = "AGENTSERVER_V2_EXECUTOR_ID"
-	coreModelEnvironment                 = "AGENTSERVER_V2_MODEL"
-	coreModelProviderEnvironment         = "AGENTSERVER_V2_MODEL_PROVIDER"
-	coreMaxRunDurationEnvironment        = "AGENTSERVER_V2_MAX_RUN_DURATION"
-	coreMaxApprovalTTLEnvironment        = "AGENTSERVER_V2_MAX_APPROVAL_TTL"
-	coreCapabilityExpiryGraceEnvironment = "AGENTSERVER_V2_RUN_CAPABILITY_EXPIRY_GRACE"
-	coreEnrollmentKeyEnvironment         = "AGENTSERVER_V2_EXECUTOR_ENROLLMENT_TOKEN_KEY_FILE"
-	coreEnrollmentTTLEnvironment         = "AGENTSERVER_V2_EXECUTOR_ENROLLMENT_TOKEN_TTL"
+	coreListenAddressEnvironment            = "AGENTSERVER_V2_CORE_LISTEN_ADDR"
+	coreTLSCertificateEnvironment           = "AGENTSERVER_V2_CORE_TLS_CERT_FILE"
+	coreTLSKeyEnvironment                   = "AGENTSERVER_V2_CORE_TLS_KEY_FILE"
+	coreClientCAEnvironment                 = "AGENTSERVER_V2_CORE_CLIENT_CA_FILE"
+	coreGatewayIdentityEnvironment          = "AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID"
+	coreHarnessPoolIdentityEnvironment      = "AGENTSERVER_V2_HARNESS_POOL_SPIFFE_ID"
+	coreBrowserIdentityEnvironment          = "AGENTSERVER_V2_BROWSER_GATEWAY_SPIFFE_ID"
+	coreHydraIntrospectionEnvironment       = "AGENTSERVER_V2_HYDRA_INTROSPECTION_URL"
+	coreHydraAdminEnvironment               = "AGENTSERVER_V2_HYDRA_ADMIN_URL"
+	coreHydraPublicOriginEnvironment        = "AGENTSERVER_V2_HYDRA_PUBLIC_ORIGIN"
+	coreHydraIssuerEnvironment              = "AGENTSERVER_V2_HYDRA_ISSUER"
+	coreHydraBrowserClientEnvironment       = "AGENTSERVER_V2_HYDRA_BROWSER_CLIENT_ID"
+	coreHydraInsecureHTTPEnvironment        = "AGENTSERVER_V2_HYDRA_ALLOW_INSECURE_HTTP"
+	coreExternalOIDCIssuerEnvironment       = "AGENTSERVER_V2_EXTERNAL_OIDC_ISSUER"
+	coreExternalOIDCClientEnvironment       = "AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_ID"
+	coreExternalOIDCSecretEnvironment       = "AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_SECRET"
+	coreExternalOIDCRedirectEnvironment     = "AGENTSERVER_V2_EXTERNAL_OIDC_REDIRECT_URL"
+	coreExternalOIDCInsecureEnvironment     = "AGENTSERVER_V2_EXTERNAL_OIDC_ALLOW_INSECURE_HTTP"
+	coreLoginTransactionKeyEnvironment      = "AGENTSERVER_V2_LOGIN_TRANSACTION_KEY"
+	coreRunCursorKeyEnvironment             = "AGENTSERVER_V2_RUN_CURSOR_KEY"
+	coreDevPromptObjectRootEnvironment      = "AGENTSERVER_V2_DEV_PROMPT_OBJECT_DIR"
+	coreRunPolicyVersionEnvironment         = "AGENTSERVER_V2_RUN_POLICY_VERSION"
+	coreRunAllowedToolsEnvironment          = "AGENTSERVER_V2_RUN_ALLOWED_TOOLS"
+	coreLLMProxyIdentityEnvironment         = "AGENTSERVER_V2_LLMPROXY_SPIFFE_ID"
+	coreCapabilityIssuerEnvironment         = "AGENTSERVER_V2_RUN_CAPABILITY_ISSUER"
+	coreCapabilityKeyIDEnvironment          = "AGENTSERVER_V2_RUN_CAPABILITY_SIGNING_KEY_ID"
+	coreCapabilityPrivateKeyEnvironment     = "AGENTSERVER_V2_RUN_CAPABILITY_SIGNING_KEY_FILE"
+	coreCapabilityKeyringEnvironment        = "AGENTSERVER_V2_RUN_CAPABILITY_KEYRING_FILE"
+	coreProductionExecutorEnvironment       = "AGENTSERVER_V2_EXECUTOR_ID"
+	coreLLMGatewaySealingKeyringEnvironment = "AGENTSERVER_V2_LLM_GATEWAY_SEALING_KEYRING_FILE"
+	coreLLMGatewayRedirectURLEnvironment    = "AGENTSERVER_V2_LLM_GATEWAY_REDIRECT_URL"
+	coreMaxRunDurationEnvironment           = "AGENTSERVER_V2_MAX_RUN_DURATION"
+	coreMaxApprovalTTLEnvironment           = "AGENTSERVER_V2_MAX_APPROVAL_TTL"
+	coreCapabilityExpiryGraceEnvironment    = "AGENTSERVER_V2_RUN_CAPABILITY_EXPIRY_GRACE"
+	coreEnrollmentKeyEnvironment            = "AGENTSERVER_V2_EXECUTOR_ENROLLMENT_TOKEN_KEY_FILE"
+	coreEnrollmentTTLEnvironment            = "AGENTSERVER_V2_EXECUTOR_ENROLLMENT_TOKEN_TTL"
 )
 
 type coreProductionRunCapabilityConfig struct {
@@ -273,14 +274,53 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 		ActionScopes: map[string]string{
 			"runs.create": corecontract.BrowserOAuthRunScope, "runs.cancel": corecontract.BrowserOAuthRunScope,
 			"runs.events.read": corecontract.BrowserOAuthRunScope, "approvals.decide": corecontract.BrowserOAuthRunScope,
-			"executors.create":                 corecontract.BrowserOAuthExecutorScope,
-			"executors.enrollment-token.issue": corecontract.BrowserOAuthExecutorScope,
+			"executors.create":                    corecontract.BrowserOAuthExecutorScope,
+			"executors.enrollment-token.issue":    corecontract.BrowserOAuthExecutorScope,
+			"llm-gateways.list":                   corecontract.BrowserOAuthLLMGatewayScope,
+			"llm-gateways.create":                 corecontract.BrowserOAuthLLMGatewayScope,
+			"llm-gateways.authorize":              corecontract.BrowserOAuthLLMGatewayScope,
+			"llm-gateways.complete-authorization": corecontract.BrowserOAuthLLMGatewayScope,
+			"llm-gateways.revoke":                 corecontract.BrowserOAuthLLMGatewayScope,
+			"llm-gateways.disable":                corecontract.BrowserOAuthLLMGatewayScope,
 		},
 	})
 	if err != nil {
 		return err
 	}
 	store := coredb.NewStateStore(pool)
+	var llmGatewayService *coreserver.WorkspaceLLMGatewayService
+	if productionCapabilities != nil {
+		sealingKeyring, err := requiredConfiguration(getenv, coreLLMGatewaySealingKeyringEnvironment)
+		if err != nil {
+			return err
+		}
+		redirectURL, err := requiredConfiguration(getenv, coreLLMGatewayRedirectURLEnvironment)
+		if err != nil {
+			return err
+		}
+		sealer, err := coreserver.LoadLLMGatewayGrantSealer(sealingKeyring)
+		if err != nil {
+			return fmt.Errorf("configure workspace LLM gateway token sealing: %w", err)
+		}
+		gatewayHTTPClient, err := publichttps.NewClient(publichttps.ClientConfig{
+			Timeout: 30 * time.Second, ResponseHeaderTimeout: 20 * time.Second,
+			MaxIdleConns: 32, MaxIdleConnsPerHost: 8,
+		})
+		if err != nil {
+			return fmt.Errorf("configure workspace LLM gateway outbound HTTPS: %w", err)
+		}
+		defer gatewayHTTPClient.CloseIdleConnections()
+		providers, err := coreserver.NewDiscoveredWorkspaceLLMGatewayOIDCFactory(gatewayHTTPClient)
+		if err != nil {
+			return fmt.Errorf("configure workspace LLM gateway OIDC discovery: %w", err)
+		}
+		llmGatewayService, err = coreserver.NewWorkspaceLLMGatewayService(coreserver.WorkspaceLLMGatewayServiceConfig{
+			Store: store, Sealer: sealer, Providers: providers, RedirectURL: redirectURL,
+		})
+		if err != nil {
+			return fmt.Errorf("configure workspace LLM gateway service: %w", err)
+		}
+	}
 	var userExecutorHandler *coreserver.UserExecutorManagementHandler
 	var internalExecutorIdentityHandler *coreserver.InternalExecutorIdentityHandler
 	if productionEnrollment != nil {
@@ -310,6 +350,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 		runCapabilityService, err := coreserver.NewProductionRunCapabilityService(coreserver.ProductionRunCapabilityServiceConfig{
 			Store: store, Signer: productionCapabilities.signer,
 			Verifier: productionCapabilities.verifier, Policy: productionCapabilities.policy,
+			LLMGatewayResolver: llmGatewayService,
 		})
 		if err != nil {
 			return fmt.Errorf("configure production run capability authority: %w", err)
@@ -334,6 +375,12 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	}
 	userRunService, err := coreserver.NewUserRunService(coreserver.UserRunServiceConfig{
 		Store: store, Prompts: promptStore, Policies: policyResolver, CursorCodec: cursorCodec,
+		LLMGateways: func() coreserver.UserRunLLMGatewayResolver {
+			if productionCapabilities != nil {
+				return store
+			}
+			return nil
+		}(),
 	})
 	if err != nil {
 		return err
@@ -341,6 +388,15 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	userRunHandler, err := coreserver.NewUserRunHandler(browserAuthorizer, userAuthorizer, userRunService)
 	if err != nil {
 		return err
+	}
+	var workspaceLLMGatewayHandler *coreserver.WorkspaceLLMGatewayHandler
+	if llmGatewayService != nil {
+		workspaceLLMGatewayHandler, err = coreserver.NewWorkspaceLLMGatewayHandler(
+			browserAuthorizer, userAuthorizer, llmGatewayService,
+		)
+		if err != nil {
+			return err
+		}
 	}
 	userApprovalService, err := coreserver.NewUserApprovalService(coreserver.UserApprovalServiceConfig{Store: store})
 	if err != nil {
@@ -398,6 +454,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	handler := http.NewServeMux()
 	handler.Handle("/internal/v2/auth/", loginBridgeHandler.Routes())
 	handler.Handle("/v2/", userRunHandler.Routes())
+	mountCoreWorkspaceLLMGatewayRoutes(handler, workspaceLLMGatewayHandler)
 	handler.Handle(corecontract.DecideUserApprovalRoutePattern, userApprovalHandler)
 	mountCoreExecutorIdentityRoutes(handler, userExecutorHandler, internalExecutorIdentityHandler)
 	handler.Handle(corecontract.FreezeBrainToolCatalogPath, brainToolCatalogHandler)
@@ -462,6 +519,14 @@ func mountCoreRunCapabilityRoutes(mux *http.ServeMux, handler http.Handler) {
 	mux.Handle(corecontract.AuthorizeLLMProxyRunCapabilityPath, handler)
 }
 
+func mountCoreWorkspaceLLMGatewayRoutes(mux *http.ServeMux, handler http.Handler) {
+	if mux == nil || handler == nil {
+		return
+	}
+	mux.Handle(corecontract.LLMGatewayCollectionRoutePattern, handler)
+	mux.Handle(corecontract.LLMGatewayActionRoutePattern, handler)
+}
+
 func mountCoreExecutorIdentityRoutes(mux *http.ServeMux, users, internal http.Handler) {
 	if mux == nil {
 		return
@@ -495,7 +560,7 @@ func configureCorePromptStore(
 		if err != nil {
 			return nil, "", err
 		}
-		return prompts, "encrypted S3/KMS object store", nil
+		return prompts, "explicit plaintext S3 object store", nil
 	case coreServeInsecureDevelopment:
 		promptObjectRoot, err := requiredConfiguration(getenv, coreDevPromptObjectRootEnvironment)
 		if err != nil {
@@ -553,14 +618,6 @@ func configureCoreProductionRunCapabilities(
 	if err != nil {
 		return nil, err
 	}
-	model, err := requiredConfiguration(getenv, coreModelEnvironment)
-	if err != nil {
-		return nil, err
-	}
-	provider, err := requiredConfiguration(getenv, coreModelProviderEnvironment)
-	if err != nil {
-		return nil, err
-	}
 	maxRunDuration, err := requiredCoreDuration(getenv, coreMaxRunDurationEnvironment)
 	if err != nil {
 		return nil, err
@@ -574,7 +631,7 @@ func configureCoreProductionRunCapabilities(
 		return nil, err
 	}
 	policy := coreserver.ProductionRunCapabilityPolicy{
-		ExecutorID: executorID, Model: model, Provider: provider,
+		ExecutorID:     executorID,
 		MaxRunDuration: maxRunDuration, MaxApprovalTTL: maxApprovalTTL, ExpiryGrace: expiryGrace,
 	}
 	if err := coreserver.ValidateProductionRunCapabilityPolicy(policy); err != nil {

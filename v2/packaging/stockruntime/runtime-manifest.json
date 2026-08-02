@@ -1,0 +1,47 @@
+{
+  "manifestVersion": 1,
+  "codexRelease": "0.146.0",
+  "codexCommit": "e363b08c9175ac1cbe5893615dd2cb9ddf95043b",
+  "appServerSchemaSha256": "834975f055f4dc0bf25231ab23f446f4bfef63fd3f7832bc9b0c5fe8a32363bb",
+  "appServerSchemaDigestAlgorithm": "canonical-json-tree-v1",
+  "execProtocolSourceSha256": "7917ed958875dc94258d04e088f349fc6d7fbab41ccf133226767af326d22a1f",
+  "execServerBounds": {
+    "maxStdioFrameBytes": 67108864,
+    "maxJsonValues": 262144,
+    "argvEnvLimit": "transport-and-platform-only",
+    "retainedOutputBytesPerProcess": 1048576,
+    "retainedOutputChunksPerProcess": 50000,
+    "retainedStdinWriteIdsPerProcess": 4096,
+    "exitedProcessRetentionMilliseconds": 30000
+  },
+  "agentxLimits": {
+    "maxFrameBytes": 8388608,
+    "maxJsonValues": 65536,
+    "maxArgvElements": 256,
+    "maxArgvBytes": 16384,
+    "maxEnvVariables": 256,
+    "maxEnvBytes": 16384,
+    "maxWriteIdBytes": 128,
+    "maxOutputBufferBytesPerProcess": 8388608
+  },
+  "checkpointAllowlistVersion": 1,
+  "agentxProtocolVersion": "2.0",
+  "artifacts": {
+    "linux-arm64": {
+      "codex": {
+        "path": "bin/codex",
+        "sourceUrl": "https://github.com/openai/codex/releases/download/rust-v0.146.0/codex-aarch64-unknown-linux-musl.tar.gz",
+        "sha256": "cb5e8cb8a333a408ce6adbe0d4fad1845c69772c2216af7c1f88c98a11460dc6",
+        "sizeBytes": 269098800
+      },
+      "externalExecutables": {
+        "bwrap": {
+          "path": "codex-resources/bwrap",
+          "sourceUrl": "https://github.com/openai/codex/releases/download/rust-v0.146.0/bwrap-aarch64-unknown-linux-musl.tar.gz",
+          "sha256": "c547cbdc762a70ed216789ffaa4c6c0e7d2beabe32245a498f8e365a9fc8dab4",
+          "sizeBytes": 529168
+        }
+      }
+    }
+  }
+}

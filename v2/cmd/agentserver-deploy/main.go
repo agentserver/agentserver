@@ -10,14 +10,17 @@ import (
 )
 
 type deployCommands struct {
-	load   func(string) (productiondeploy.LoadedConfig, error)
-	render func(productiondeploy.LoadedConfig) (productiondeploy.Bundle, error)
-	write  func(productiondeploy.Bundle, string) error
+	load       func(string) (productiondeploy.LoadedConfig, error)
+	render     func(productiondeploy.LoadedConfig) (productiondeploy.Bundle, error)
+	write      func(productiondeploy.Bundle, string) error
+	chart      func(productiondeploy.LoadedConfig) (productiondeploy.HelmChart, error)
+	writeChart func(productiondeploy.HelmChart, string) error
 }
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, deployCommands{
 		load: productiondeploy.LoadConfig, render: productiondeploy.Render, write: productiondeploy.WriteBundle,
+		chart: productiondeploy.RenderHelmChart, writeChart: productiondeploy.WriteHelmChart,
 	}))
 }
 
@@ -71,6 +74,34 @@ func run(arguments []string, stdout, stderr io.Writer, commands deployCommands) 
 			fmt.Fprintf(stdout, "%s  %s\n", file.SHA256, file.Name)
 		}
 		return 0
+	case "chart":
+		values, ok := exactArguments(arguments[1:], "config", "output")
+		if !ok {
+			writeUsage(stderr)
+			return 2
+		}
+		if commands.load == nil || commands.chart == nil || commands.writeChart == nil {
+			fmt.Fprintln(stderr, "agentserver-deploy chart: command is unavailable")
+			return 1
+		}
+		config, err := commands.load(values["config"])
+		if err != nil {
+			fmt.Fprintf(stderr, "agentserver-deploy chart: %v\n", err)
+			return 1
+		}
+		chart, err := commands.chart(config)
+		if err == nil {
+			err = commands.writeChart(chart, values["output"])
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "agentserver-deploy chart: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "agentserver-deploy chart: wrote %d immutable files to %s\n", len(chart.Files), values["output"])
+		for _, file := range chart.Files {
+			fmt.Fprintf(stdout, "%s  %s\n", file.SHA256, file.Name)
+		}
+		return 0
 	default:
 		writeUsage(stderr)
 		return 2
@@ -108,4 +139,5 @@ func exactArguments(arguments []string, names ...string) (map[string]string, boo
 func writeUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "usage: agentserver-deploy validate --config=/absolute/path")
 	fmt.Fprintln(writer, "       agentserver-deploy render --config=/absolute/path --output=/absolute/directory")
+	fmt.Fprintln(writer, "       agentserver-deploy chart --config=/absolute/path --output=/absolute/new-chart")
 }

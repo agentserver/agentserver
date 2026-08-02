@@ -1,9 +1,10 @@
 # agentx runtime lock
 
-`runtime-manifest.json` is deliberately absent while Phase 0 is incomplete.
-The production filename is reserved for a stock Codex release that has passed
-the full A01-A12 and E01-E10 matrix; a developer-machine binary or source
-checkout must never be promoted by filling in plausible values.
+The production runtime identity is checked in at
+[`../stockruntime/runtime-manifest.json`](../stockruntime/runtime-manifest.json).
+It is generated from the shared `internal/stockruntime` profile after the exact
+stock Codex release passed the required release-bound gates. A developer-machine
+binary or source checkout must never replace those pinned artifact bytes.
 
 The source contract is
 [`../../api/schema/runtime-manifest.schema.json`](../../api/schema/runtime-manifest.schema.json).
@@ -34,16 +35,15 @@ Digest rules:
 - Original generated files are retained as conformance evidence even though
   their raw tree digest is not a reproducible protocol identity.
 - `execProtocolSourceSha256` covers the explicitly pinned upstream protocol
-  source allowlist. The insecure-development stable 0.146.0 profile currently
+  source allowlist. The shared stable 0.146.0 production profile
   records the five production Rust modules under
   `codex-rs/exec-server-protocol/src` (`lib.rs`, `network_policy.rs`,
   `process_id.rs`, `protocol.rs`, and `rpc.rs`) at peeled commit
   `e363b08c9175ac1cbe5893615dd2cb9ddf95043b`. It hashes sorted
   `<file-sha256><two spaces><repo-relative-path><LF>` records to
   `7917ed958875dc94258d04e088f349fc6d7fbab41ccf133226767af326d22a1f`.
-  Tests and build metadata are excluded. A future signed production lock must
-  commit and review its own allowlist rather than silently inheriting this
-  development profile.
+  Tests and build metadata are excluded. The reviewed allowlist and aggregate
+  are enforced byte-for-byte by the stockruntime contract test.
 - `execServerBounds` records release behavior established by E10. For the two
   characterized 0.146 builds this is a 64 MiB stdio payload, 262,144 JSON
   values, no dedicated argv/env limit beyond transport and the host process

@@ -72,3 +72,36 @@ func TestRunStopsBeforeWriteOnRenderFailure(t *testing.T) {
 		t.Fatalf("render failure exit = %d", exitCode)
 	}
 }
+
+func TestRunChartUsesExactClosedArgumentsAndReportsChecksums(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	called := []string{}
+	chart := productiondeploy.HelmChart{Files: []productiondeploy.RenderedFile{{
+		Name: "Chart.yaml", SHA256: strings.Repeat("b", 64), Content: []byte("chart"),
+	}}}
+	exitCode := run(
+		[]string{"chart", "--output=/absolute/chart", "--config=/absolute/config.json"},
+		&stdout, &stderr,
+		deployCommands{
+			load: func(path string) (productiondeploy.LoadedConfig, error) {
+				called = append(called, "load:"+path)
+				return productiondeploy.LoadedConfig{}, nil
+			},
+			chart: func(productiondeploy.LoadedConfig) (productiondeploy.HelmChart, error) {
+				called = append(called, "chart")
+				return chart, nil
+			},
+			writeChart: func(actual productiondeploy.HelmChart, path string) error {
+				called = append(called, "write:"+path)
+				if len(actual.Files) != 1 {
+					t.Fatal("writer received wrong chart")
+				}
+				return nil
+			},
+		},
+	)
+	if exitCode != 0 || stderr.Len() != 0 || strings.Join(called, ",") != "load:/absolute/config.json,chart,write:/absolute/chart" ||
+		!strings.Contains(stdout.String(), strings.Repeat("b", 64)+"  Chart.yaml") {
+		t.Fatalf("run = %d, calls %v, stdout %q, stderr %q", exitCode, called, stdout.String(), stderr.String())
+	}
+}

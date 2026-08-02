@@ -236,8 +236,8 @@
         "capabilityExpiryGrace": {"$ref": "#/$defs/duration"},
         "enrollmentTokenTtl": {"$ref": "#/$defs/duration"},
         "maxConcurrentAttempts": {"type": "integer", "minimum": 1, "maximum": 64},
-        "runtimeManifestSha256": {"$ref": "#/$defs/sha256"},
-        "checkpointAllowlistVersion": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+        "runtimeManifestSha256": {"const": "bd226a5e888a73f31372f02e0b7a48763f50cc4a2acfac28e9dc48df4e7679fa"},
+        "checkpointAllowlistVersion": {"const": 1},
         "finalExecSha256": {"$ref": "#/$defs/sha256"},
         "finalExecSizeBytes": {"type": "integer", "minimum": 1, "maximum": 1073741824}
       }

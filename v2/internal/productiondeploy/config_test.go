@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/enrollmenttoken"
+	"github.com/agentserver/agentserver/v2/internal/stockruntime"
 )
 
 func TestValidateConfigAcceptsClosedLinuxARM64Deployment(t *testing.T) {
@@ -82,7 +83,9 @@ func TestValidateConfigRejectsUnsafeProductionShapes(t *testing.T) {
 		"unknown tool": func(value *ConfigDocument) {
 			value.Runtime.AllowedTools = []string{"list_environments", "exec_command"}
 		},
-		"shared secret": func(value *ConfigDocument) { value.Secrets.HarnessWorker = value.Secrets.HarnessPool },
+		"unreviewed runtime manifest": func(value *ConfigDocument) { value.Runtime.RuntimeManifestSHA256 = strings.Repeat("9", 64) },
+		"runtime allowlist drift":     func(value *ConfigDocument) { value.Runtime.CheckpointAllowlistVersion++ },
+		"shared secret":               func(value *ConfigDocument) { value.Secrets.HarnessWorker = value.Secrets.HarnessPool },
 	} {
 		t.Run(name, func(t *testing.T) {
 			document := validConfigDocument()
@@ -142,8 +145,9 @@ func validConfigDocument() ConfigDocument {
 			AllowedTools: []string{"shell", "list_environments", "read_file"}, ExecutionPolicyVersion: "execution-policy-v1",
 			ShellPolicyDecision: "ask", ReadFilePolicyDecision: "allow",
 			MaxRunDuration: "30m", MaxApprovalTTL: "5m", CapabilityExpiryGrace: "30s", EnrollmentTokenTTL: "5m",
-			MaxConcurrentAttempts: 4, RuntimeManifestSHA256: digest("3"), CheckpointAllowlistVersion: 1,
-			FinalExecSHA256: digest("4"), FinalExecSizeBytes: 1048576,
+			MaxConcurrentAttempts: 4, RuntimeManifestSHA256: stockruntime.ManifestSHA256,
+			CheckpointAllowlistVersion: stockruntime.CheckpointAllowlistVersion,
+			FinalExecSHA256:            digest("4"), FinalExecSizeBytes: 1048576,
 		},
 		Objects: ObjectStoreDocument{
 			Prefix: "agentserver/v2/production", S3Bucket: "agentserver-production", S3Region: "ap-southeast-1",

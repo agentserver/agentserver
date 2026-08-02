@@ -42,6 +42,15 @@ func renderOneShotJob(
 ) kubeObject {
 	config := context.config
 	labels := componentLabels(component)
+	serviceAccountName := bootstrapServiceAccount
+	if component == migrationComponent {
+		// A Helm pre-install/pre-upgrade migration runs before chart-managed
+		// ServiceAccounts exist. The migration has no Kubernetes API capability
+		// and receives no projected token, so the namespace's pre-existing
+		// default ServiceAccount is the smallest dependency that preserves the
+		// required migrate-before-rollout ordering.
+		serviceAccountName = "default"
+	}
 	volumes := append([]any(nil), extraVolumes...)
 	volumes = append(volumes, emptyDirVolume("scratch", "Memory", config.Document.Resources.ScratchTmpfs))
 	mounts := append([]any(nil), extraMounts...)
@@ -54,7 +63,7 @@ func renderOneShotJob(
 			"template": kubeObject{
 				"metadata": kubeObject{"labels": labels, "annotations": annotations},
 				"spec": kubeObject{
-					"serviceAccountName":           bootstrapServiceAccount,
+					"serviceAccountName":           serviceAccountName,
 					"automountServiceAccountToken": false,
 					"restartPolicy":                "OnFailure", "enableServiceLinks": false,
 					"terminationGracePeriodSeconds": 10,

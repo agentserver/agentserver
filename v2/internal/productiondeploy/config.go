@@ -28,6 +28,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/harnessworker"
 	"github.com/agentserver/agentserver/v2/internal/objectstore"
 	"github.com/agentserver/agentserver/v2/internal/objectstore/awsprovider"
+	"github.com/agentserver/agentserver/v2/internal/stockruntime"
 )
 
 const (
@@ -541,11 +542,14 @@ func validateRuntime(document RuntimeDocument) (LoadedConfig, error) {
 	if document.MaxConcurrentAttempts < 1 || document.MaxConcurrentAttempts > 64 {
 		return LoadedConfig{}, errors.New("runtime.maxConcurrentAttempts must be between 1 and 64")
 	}
-	if !digestPattern.MatchString(document.RuntimeManifestSHA256) || !digestPattern.MatchString(document.FinalExecSHA256) {
-		return LoadedConfig{}, errors.New("runtime manifest and final-exec SHA-256 values must be 64 lowercase hexadecimal characters")
+	if document.RuntimeManifestSHA256 != stockruntime.ManifestSHA256 {
+		return LoadedConfig{}, fmt.Errorf("runtime.runtimeManifestSha256 must select the reviewed stock runtime %s", stockruntime.ManifestSHA256)
 	}
-	if document.CheckpointAllowlistVersion < 1 || document.CheckpointAllowlistVersion > 1<<31-1 {
-		return LoadedConfig{}, errors.New("runtime.checkpointAllowlistVersion must be a positive signed-32-bit integer")
+	if !digestPattern.MatchString(document.FinalExecSHA256) {
+		return LoadedConfig{}, errors.New("runtime.finalExecSha256 must be 64 lowercase hexadecimal characters")
+	}
+	if document.CheckpointAllowlistVersion != stockruntime.CheckpointAllowlistVersion {
+		return LoadedConfig{}, fmt.Errorf("runtime.checkpointAllowlistVersion must be %d for the reviewed stock runtime", stockruntime.CheckpointAllowlistVersion)
 	}
 	if document.FinalExecSizeBytes < 1 || document.FinalExecSizeBytes > 1<<30 {
 		return LoadedConfig{}, errors.New("runtime.finalExecSizeBytes must be between 1 and 1073741824")

@@ -1,0 +1,2 @@
+check_for_update_on_startup = false
+mcp_servers = {}

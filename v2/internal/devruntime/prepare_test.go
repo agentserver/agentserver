@@ -1,33 +1,15 @@
 package devruntime
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 
 	"github.com/agentserver/agentserver/v2/internal/runtimelock"
+	"github.com/agentserver/agentserver/v2/internal/stockruntime"
 )
-
-func TestStockExecProtocolSourceDigestMatchesPinnedRecords(t *testing.T) {
-	records := append([]protocolSourceFile(nil), stockExecProtocolSources...)
-	sort.Slice(records, func(i, j int) bool { return records[i].Path < records[j].Path })
-	hasher := sha256.New()
-	for _, record := range records {
-		if !strings.HasPrefix(record.Path, "codex-rs/exec-server-protocol/src/") ||
-			len(record.SHA256) != sha256.Size*2 {
-			t.Fatalf("invalid protocol source record: %+v", record)
-		}
-		_, _ = hasher.Write([]byte(record.SHA256 + "  " + record.Path + "\n"))
-	}
-	if got := hex.EncodeToString(hasher.Sum(nil)); got != stockExecProtocolSHA256 {
-		t.Fatalf("protocol source digest = %s, want %s", got, stockExecProtocolSHA256)
-	}
-}
 
 func TestPrepareRejectsUnpinnedArtifactsWithoutLeavingOutput(t *testing.T) {
 	root := canonicalTemporaryDirectory(t)
@@ -59,8 +41,8 @@ func TestBuiltInLinuxARM64ManifestIsClosedWorld(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(parsed.Artifacts) != 1 || parsed.CodexRelease != stockCodexRelease ||
-		parsed.CodexCommit != stockCodexCommit || parsed.ExecProtocolSourceSHA256 != stockExecProtocolSHA256 {
+	if len(parsed.Artifacts) != 1 || parsed.CodexRelease != stockruntime.CodexRelease ||
+		parsed.CodexCommit != stockruntime.CodexCommit || parsed.ExecProtocolSourceSHA256 != stockruntime.ExecProtocolSHA256 {
 		t.Fatalf("development manifest = %+v", parsed)
 	}
 	artifacts := parsed.Artifacts[PlatformLinuxARM64]

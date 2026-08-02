@@ -111,10 +111,17 @@ only an inherited read-only fd at `file:///proc/self/fd/3`. Agentx commit
 `b4fb3eb` independently closes Linux process-tree containment with a unique
 cgroup v2 root, a CAP_CHOWN-only guardian, atomic runner/launcher placement,
 freeze-bounded migration grants and unconditional `cgroup.kill` before removal.
-The transaction/`setsid` gate, four-way crash gate and this stock safe-open
-chain each passed 20 consecutive runs in a no-network, read-only-root Linux
-arm64 VM with only `CHOWN/SETUID/SETGID`; runtime-executable immutable/safe-exec
-remains an independent gate.
+Agentx commit `5d40b6b` then closes the production Linux runtime-executable
+safe-open/execute boundary: artifacts are opened and hashed through the same
+`openat2` descriptor, the launch plan retains the verified Codex inode, and the
+cgroup launcher executes `/proc/self/fd/N` only after commit. The complete path
+from `/` through Codex and bundled bwrap must be root-owned and not writable by
+group or others; stock 0.146.0 additionally verifies the bundled bwrap digest.
+The transaction/`setsid` gate, four-way crash gate, stock filesystem safe-open
+chain, Codex/root swap gate and bwrap replacement gate each passed 20
+consecutive runs in a no-network, read-only-root Linux arm64 VM with only
+`CHOWN/SETUID/SETGID`. New releases, architectures and non-Linux platforms must
+rerun their native gates.
 
 The process probe deliberately accepts a `process/start` response arriving
 after early output notifications and uses the one-based event sequence as the
@@ -150,8 +157,9 @@ Linux sandbox alias, leaves a working ambient poison bwrap untouched, and
 proves read-only plus workspace-write enforcement. It refuses Apple
 Silicon-to-amd64 emulation because that path rewrites argv0 and rejects the
 seccomp filter; `linux-amd64` remains open until the same target runs on a
-native amd64 worker. Neither platform result closes the eventual agentx
-immutable-install or runtime-executable safe-exec TOCTOU requirement.
+native amd64 worker. Those image probes alone do not close installation-path
+TOCTOU; the separate production Linux agentx `5d40b6b` pinned-exec gate above
+does so only when the complete root-owned installation contract is satisfied.
 
 E10 deliberately separates upstream facts from product admission. The stock
 `ExecParams` deserializer and launch path clone `argv` and `env` without a

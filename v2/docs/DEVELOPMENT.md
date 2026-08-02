@@ -330,10 +330,12 @@ retry、revoke及shutdown。它不需要外部Hydra；真实Hydra v26.2.0的ES25
 
 这一切仍不是可部署整栈：独立agentx现已完成owner-only双钥、RFC 7523
 token exchange、每次物理连接的production challenge/WSS接线、connector与
-降权runner的credential隔离、Linux filesystem safe-open，以及cgroup v2
-不可逃逸process-tree containment。后者要求root connector只保留
-`CHOWN/SETUID/SETGID`、拥有writable delegated cgroup v2 subtree，并由真实
-PID 1 init/reaper监管；普通insecure-dev启动不宣称这条生产边界。runtime
-executable immutable/safe-exec、Kubernetes/S3/KMS/Hydra/IAM清单与全拓扑
-故障注入仍未完成。Phase 1必须保持executor-gateway单副本；进程重启会丢失
-challenge与resume journal，不能打开HPA或宣称跨Pod恢复。
+降权runner的credential隔离、Linux filesystem safe-open、cgroup v2
+不可逃逸process-tree containment，以及`5d40b6b`的runtime pinned-exec。
+production runtime安装链要求从`/`到Codex与bundled bwrap全部root-owned且
+不可group/other写，Codex以固定descriptor在cgroup Commit后执行。cgroup
+containment另要求root connector只保留`CHOWN/SETUID/SETGID`、拥有writable
+delegated cgroup v2 subtree，并由真实PID 1 init/reaper监管；普通insecure-dev
+启动不宣称这些生产边界。仍未完成Kubernetes/S3/KMS/Hydra/IAM清单与全拓扑
+故障注入。Phase 1必须保持executor-gateway单副本；进程重启会丢失challenge
+与resume journal，不能打开HPA或宣称跨Pod恢复。

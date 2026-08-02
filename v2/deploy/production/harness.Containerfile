@@ -8,7 +8,7 @@ LABEL org.opencontainers.image.description="Fork-based stateless harness with pi
 LABEL org.opencontainers.image.revision="${SOURCE_REVISION}"
 LABEL org.opencontainers.image.source="https://github.com/agentserver/agentserver"
 
-COPY --chown=0:0 rootfs/ /
+ADD --chown=0:0 rootfs.tar /
 COPY --from=certificates --chown=0:0 --chmod=0444 /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
 USER 65530:65530

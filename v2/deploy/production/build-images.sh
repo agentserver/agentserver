@@ -50,6 +50,7 @@ case "${output_directory}" in /*) ;; *) usage >&2; exit 2 ;; esac
 
 command -v go >/dev/null 2>&1 || fail "go is required"
 command -v git >/dev/null 2>&1 || fail "git is required"
+command -v tar >/dev/null 2>&1 || fail "tar is required"
 command -v container >/dev/null 2>&1 || fail "Apple container CLI is required"
 [ "$(go env GOVERSION)" = "go1.26.5" ] || fail "exact Go toolchain go1.26.5 is required"
 case "$(container --version)" in
@@ -88,7 +89,12 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-mkdir -m 0700 "${work_directory}/all-bin" "${work_directory}/service-bin" "${work_directory}/harness-bin"
+mkdir -m 0700 \
+    "${work_directory}/all-bin" \
+    "${work_directory}/service-bin" \
+    "${work_directory}/harness-bin" \
+    "${work_directory}/service-context" \
+    "${work_directory}/harness-context"
 
 build_binary() {
     source_command=$1
@@ -142,14 +148,23 @@ chmod 0500 "${work_directory}/agentserver-image"
     --requirements="${v2_root}/packaging/stockruntime/requirements.toml" \
     --output="${work_directory}/harness-payload"
 
-# Apple container 1.2.0 must discover the default Dockerfile inside its build
-# context. An absolute --file path can silently yield a two-byte definition and
-# an empty-context cache hit even when that path is below the context root.
-cp "${script_dir}/service.Containerfile" "${work_directory}/service-payload/Dockerfile"
-cp "${script_dir}/harness.Containerfile" "${work_directory}/harness-payload/Dockerfile"
+# Apple container 1.2.0 does not transfer a directory operand used by COPY from
+# these generated contexts, but it does transfer a regular archive operand.
+# Package the already verified rootfs without macOS metadata; the final image
+# export is still checked entry-by-entry against the external manifest.
+env COPYFILE_DISABLE=1 tar -cf "${work_directory}/service-context/rootfs.tar" \
+    --format=ustar --no-xattrs --no-mac-metadata \
+    -C "${work_directory}/service-payload/rootfs" .
+env COPYFILE_DISABLE=1 tar -cf "${work_directory}/harness-context/rootfs.tar" \
+    --format=ustar --no-xattrs --no-mac-metadata \
+    -C "${work_directory}/harness-payload/rootfs" .
+cp "${script_dir}/service.Containerfile" "${work_directory}/service-context/Dockerfile"
+cp "${script_dir}/harness.Containerfile" "${work_directory}/harness-context/Dockerfile"
 chmod 0444 \
-    "${work_directory}/service-payload/Dockerfile" \
-    "${work_directory}/harness-payload/Dockerfile"
+    "${work_directory}/service-context/Dockerfile" \
+    "${work_directory}/service-context/rootfs.tar" \
+    "${work_directory}/harness-context/Dockerfile" \
+    "${work_directory}/harness-context/rootfs.tar"
 
 printf '%s\n' "build-images.sh: building ${service_image}"
 container build \
@@ -158,7 +173,7 @@ container build \
     --no-cache \
     --build-arg "SOURCE_REVISION=${source_revision}" \
     --tag "${service_image}" \
-    "${work_directory}/service-payload"
+    "${work_directory}/service-context"
 
 printf '%s\n' "build-images.sh: building ${harness_image}"
 container build \
@@ -167,7 +182,7 @@ container build \
     --no-cache \
     --build-arg "SOURCE_REVISION=${source_revision}" \
     --tag "${harness_image}" \
-    "${work_directory}/harness-payload"
+    "${work_directory}/harness-context"
 
 verify_image() {
     kind=$1

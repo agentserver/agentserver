@@ -95,8 +95,10 @@ arm64 (SHA-256
 `ae1d3ffe6d48aec6a4dc3f50e7eb8e0d11962485a6a9406c5a7012139383da02`,
 size `271056976`): closing the crashed-root instance reaps its pipe-holding
 descendant while the second instance remains alive and can terminate normally.
-This is reference composition evidence; the real agentx WSS adapter and target
-platform containment remain Phase 2 gates.
+This is reference composition evidence. The real agentx WSS adapter is now
+implemented; Linux production containment is closed separately by the native
+agentx cgroup gate below. macOS remains development-only until it has an
+equivalent signed platform boundary.
 
 The E04 result is likewise a stock-protocol fact, not by itself a containment
 proof. Agentx exposes only `agentx/fs/readFileBlock`, caps one block at 1 MiB,
@@ -105,8 +107,14 @@ and closes the fs-only stdio instance after
 still checks the registered canonical root before and after the stock call and
 cannot rule out symlink TOCTOU. Production Linux agentx commit `066acf6` closes
 that separate boundary with a root-pinned `openat2` resolver and passes stock
-only an inherited read-only fd at `file:///proc/self/fd/3`; process-tree and
-runtime-executable containment remain independent gates.
+only an inherited read-only fd at `file:///proc/self/fd/3`. Agentx commit
+`b4fb3eb` independently closes Linux process-tree containment with a unique
+cgroup v2 root, a CAP_CHOWN-only guardian, atomic runner/launcher placement,
+freeze-bounded migration grants and unconditional `cgroup.kill` before removal.
+The transaction/`setsid` gate, four-way crash gate and this stock safe-open
+chain each passed 20 consecutive runs in a no-network, read-only-root Linux
+arm64 VM with only `CHOWN/SETUID/SETGID`; runtime-executable immutable/safe-exec
+remains an independent gate.
 
 The process probe deliberately accepts a `process/start` response arriving
 after early output notifications and uses the one-based event sequence as the

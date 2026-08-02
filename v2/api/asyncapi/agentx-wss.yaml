@@ -12,7 +12,7 @@
       "host": "executor-gateway",
       "pathname": "/internal/v2/agentx/connect",
       "protocol": "wss",
-      "description": "Authenticated executor-gateway endpoint. executor_id is derived from the key-bound access token, never from a message field.",
+      "description": "Authenticated executor-gateway endpoint. executor_id is derived by Core from the OAuth client mapping, never from a message field. Before each fresh or resumed upgrade, agentx obtains a process-local challenge from POST /internal/v2/agentx/challenges and supplies the challenge ID plus Ed25519 machine proof in the required upgrade headers.",
       "security": [{"$ref": "#/components/securitySchemes/executorOAuth"}]
     }
   },
@@ -92,7 +92,7 @@
     "securitySchemes": {
       "executorOAuth": {
         "type": "oauth2",
-        "description": "Short-lived aud=executor-gateway, scope=executor:connect token bound to the enrolled machine key. The WSS upgrade must prove possession (DPoP/cnf or nonce challenge).",
+        "description": "Short-lived aud=executor-gateway, scope=executor:connect token. Bearer possession alone is insufficient: the WSS upgrade must consume a fresh process-local challenge and prove possession of the separately enrolled Ed25519 machine key.",
         "flows": {
           "clientCredentials": {
             "tokenUrl": "/oauth2/token",
@@ -105,6 +105,11 @@
   "x-agentserver-phase1": {
     "gatewayReplicas": 1,
     "resumeWindowMs": 30000,
+    "challengePath": "/internal/v2/agentx/challenges",
+    "challengeIdHeader": "X-Agentserver-Challenge-Id",
+    "machineProofHeader": "X-Agentserver-Machine-Proof",
+    "machineProofVersion": "executor-wss-proof/ed25519-v1",
+    "challengePersistence": false,
     "crossProcessResume": false,
     "sequenceDirections": "independent",
     "standaloneAckSequenced": false,

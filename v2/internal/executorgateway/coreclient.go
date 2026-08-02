@@ -3,17 +3,22 @@ package executorgateway
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/braincatalog"
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 )
 
@@ -72,7 +77,8 @@ func NewCoreConnectionClient(baseURL string, httpClient *http.Client) (*CoreConn
 	if err != nil {
 		return nil, fmt.Errorf("parse core base URL: %w", err)
 	}
-	if (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+	if (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil ||
+		parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Opaque != "" || parsed.ForceQuery {
 		return nil, errors.New("core base URL must be an absolute HTTP(S) origin without userinfo, query, or fragment")
 	}
 	if parsed.Path != "" && parsed.Path != "/" {
@@ -143,6 +149,72 @@ func (client *CoreConnectionClient) FenceConnection(ctx context.Context, holder 
 	return client.post(ctx, corecontract.FenceExecutorConnectionPath(holder.ExecutorID), request, nil, http.StatusNoContent)
 }
 
+func (client *CoreConnectionClient) CompleteExecutorEnrollment(
+	ctx context.Context,
+	bearer string,
+	expectedExecutorID string,
+	command corecontract.CompleteExecutorEnrollmentRequest,
+) (corecontract.CompleteExecutorEnrollmentResponse, error) {
+	if err := validateSensitiveCoreBearer(bearer, "executor enrollment"); err != nil {
+		return corecontract.CompleteExecutorEnrollmentResponse{}, err
+	}
+	if err := validateRegistryIdentity("expected executor ID", expectedExecutorID); err != nil {
+		return corecontract.CompleteExecutorEnrollmentResponse{}, err
+	}
+	var response corecontract.CompleteExecutorEnrollmentResponse
+	if err := client.postWithPolicy(
+		ctx, corecontract.CompleteExecutorEnrollmentPath, command, &response,
+		http.StatusOK, bearer, true,
+		map[string]string{corecontract.ExpectedExecutorIDHeader: expectedExecutorID},
+	); err != nil {
+		return corecontract.CompleteExecutorEnrollmentResponse{}, err
+	}
+	return response, nil
+}
+
+func (client *CoreConnectionClient) AuthorizeExecutorConnection(
+	ctx context.Context,
+	bearer string,
+) (ExecutorMachineAuthority, error) {
+	if err := validateSensitiveCoreBearer(bearer, "executor OAuth"); err != nil {
+		return ExecutorMachineAuthority{}, err
+	}
+	var response corecontract.AuthorizeExecutorConnectionResponse
+	if err := client.postWithPolicy(
+		ctx, corecontract.AuthorizeExecutorConnectionPath, nil, &response,
+		http.StatusOK, bearer, true, nil,
+	); err != nil {
+		return ExecutorMachineAuthority{}, err
+	}
+	publicKey, err := base64.RawURLEncoding.DecodeString(response.MachinePublicKeyEd25519)
+	if err != nil || len(publicKey) != ed25519.PublicKeySize ||
+		base64.RawURLEncoding.EncodeToString(publicKey) != response.MachinePublicKeyEd25519 {
+		return ExecutorMachineAuthority{}, errors.New("Core executor authorization returned an invalid machine public key")
+	}
+	machineDigest, err := hex.DecodeString(response.MachineKeySHA256)
+	if err != nil || len(machineDigest) != sha256.Size || hex.EncodeToString(machineDigest) != response.MachineKeySHA256 {
+		return ExecutorMachineAuthority{}, errors.New("Core executor authorization returned an invalid machine key fingerprint")
+	}
+	result := ExecutorMachineAuthority{
+		ExecutorID: response.ExecutorID, WorkspaceID: response.WorkspaceID, OAuthClientID: response.OAuthClientID,
+		MachinePublicKeyEd25519: append(ed25519.PublicKey(nil), publicKey...),
+		ExecutorVersion:         response.ExecutorVersion, TokenExpiresAt: response.TokenExpiresAt, AuthorizedAt: response.AuthorizedAt,
+	}
+	copy(result.MachineKeySHA256[:], machineDigest)
+	if err := validateMachineAuthority(result, response.ExecutorID); err != nil {
+		return ExecutorMachineAuthority{}, err
+	}
+	return result, nil
+}
+
+func validateSensitiveCoreBearer(bearer, kind string) error {
+	if bearer == "" || len(bearer) > maximumExecutorBearerBytes || strings.TrimSpace(bearer) != bearer ||
+		strings.ContainsAny(bearer, " \t\x00\r\n") {
+		return fmt.Errorf("%s bearer is invalid", kind)
+	}
+	return nil
+}
+
 func (client *CoreConnectionClient) ListEnvironments(ctx context.Context, workspaceID, executorID string) ([]RegisteredEnvironment, error) {
 	request := corecontract.ListExecutorEnvironmentsRequest{WorkspaceID: workspaceID, ExecutorID: executorID}
 	var response corecontract.ListExecutorEnvironmentsResponse
@@ -182,7 +254,7 @@ func (client *CoreConnectionClient) AuthorizeExecutorRunCapability(
 	var response corecontract.AuthorizeRunCapabilityResponse
 	if err := client.postWithPolicy(
 		ctx, corecontract.AuthorizeExecutorRunCapabilityPath, contractRequest, &response,
-		http.StatusOK, request.Token, true,
+		http.StatusOK, request.Token, true, nil,
 	); err != nil {
 		// The bearer is deliberately excluded from the JSON body, but a
 		// transport or Core error envelope is still untrusted diagnostic text.
@@ -218,7 +290,7 @@ func resultSafeVersion(value int64) int64 {
 }
 
 func (client *CoreConnectionClient) post(ctx context.Context, path string, command, destination any, wantStatus int) error {
-	return client.postWithPolicy(ctx, path, command, destination, wantStatus, "", false)
+	return client.postWithPolicy(ctx, path, command, destination, wantStatus, "", false, nil)
 }
 
 func (client *CoreConnectionClient) postWithPolicy(
@@ -228,21 +300,38 @@ func (client *CoreConnectionClient) postWithPolicy(
 	wantStatus int,
 	bearer string,
 	requireNoStore bool,
+	extraHeaders map[string]string,
 ) error {
-	raw, err := json.Marshal(command)
-	if err != nil {
-		return fmt.Errorf("encode core command: %w", err)
+	var raw []byte
+	var err error
+	if command != nil {
+		raw, err = json.Marshal(command)
+		if err != nil {
+			return fmt.Errorf("encode core command: %w", err)
+		}
 	}
 	endpoint := *client.baseURL
 	endpoint.Path = path
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(raw))
+	var requestBody io.Reader
+	if command != nil {
+		requestBody = bytes.NewReader(raw)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), requestBody)
 	if err != nil {
 		return fmt.Errorf("construct core command: %w", err)
 	}
-	request.Header.Set("Content-Type", "application/json")
+	if command != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
 	request.Header.Set("Accept", "application/json")
 	if bearer != "" {
 		request.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	for name, value := range extraHeaders {
+		if name == "" || value == "" || strings.EqualFold(name, "Authorization") || strings.ContainsAny(name+value, "\x00\r\n") {
+			return errors.New("construct core command with invalid additional header")
+		}
+		request.Header.Set(name, value)
 	}
 	response, err := client.httpClient.Do(request)
 	if err != nil {
@@ -258,7 +347,13 @@ func (client *CoreConnectionClient) postWithPolicy(
 		return errors.New("core command response exceeds size limit")
 	}
 	if requireNoStore && response.Header.Get("Cache-Control") != "no-store" {
-		return errors.New("Core capability authorization response is missing Cache-Control no-store")
+		return errors.New("sensitive Core response is missing Cache-Control no-store")
+	}
+	if destination != nil || response.StatusCode != wantStatus {
+		mediaType, _, mediaTypeErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
+		if mediaTypeErr != nil || mediaType != "application/json" {
+			return fmt.Errorf("core command returned HTTP %d with a non-JSON response", response.StatusCode)
+		}
 	}
 	if response.StatusCode != wantStatus {
 		return decodeCoreCommandError(response.StatusCode, body)
@@ -269,22 +364,15 @@ func (client *CoreConnectionClient) postWithPolicy(
 		}
 		return nil
 	}
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(destination); err != nil {
+	if err := decodeStrictCoreCommandJSON(body, destination); err != nil {
 		return fmt.Errorf("decode core command response: %w", err)
-	}
-	if err := finishCoreJSON(decoder); err != nil {
-		return fmt.Errorf("finish core command response: %w", err)
 	}
 	return nil
 }
 
 func decodeCoreCommandError(status int, body []byte) error {
 	var response corecontract.ErrorResponse
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&response); err != nil || finishCoreJSON(decoder) != nil || response.Code == "" {
+	if err := decodeStrictCoreCommandJSON(body, &response); err != nil || response.Code == "" {
 		return fmt.Errorf("core command returned HTTP %d with an invalid error envelope", status)
 	}
 	commandError := &CoreCommandError{
@@ -298,6 +386,25 @@ func decodeCoreCommandError(status int, body []byte) error {
 		commandError.cause = ErrConnectionFenced
 	}
 	return commandError
+}
+
+func decodeStrictCoreCommandJSON(body []byte, destination any) error {
+	limits := braincatalog.DefaultLimits()
+	limits.MaxJSONValues = 65_536
+	limits.MaxJSONDepth = 256
+	value, canonical, err := braincatalog.DecodeCanonicalJSON(body, maxCoreCommandResponseBytes, limits)
+	if err != nil {
+		return err
+	}
+	if _, ok := value.(map[string]any); !ok {
+		return errors.New("core command response is not a JSON object")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(canonical))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		return err
+	}
+	return finishCoreJSON(decoder)
 }
 
 func finishCoreJSON(decoder *json.Decoder) error {

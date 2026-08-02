@@ -110,6 +110,7 @@ func (service *ExecutorEnrollmentService) IssueEnrollmentToken(ctx context.Conte
 func (service *ExecutorEnrollmentService) CompleteEnrollment(
 	ctx context.Context,
 	bearer string,
+	expectedExecutorID string,
 	request corecontract.CompleteExecutorEnrollmentRequest,
 ) (corecontract.CompleteExecutorEnrollmentResponse, error) {
 	if service == nil || service.store == nil || service.tokens == nil || service.hydra == nil || service.now == nil {
@@ -120,6 +121,12 @@ func (service *ExecutorEnrollmentService) CompleteEnrollment(
 		return corecontract.CompleteExecutorEnrollmentResponse{}, &coredb.StateError{
 			Code: coredb.ErrorForbidden, Operation: "CompleteExecutorEnrollment", Resource: "executor_enrollment_token",
 			Message: "enrollment token is invalid",
+		}
+	}
+	if !canonicalPublicUUID(expectedExecutorID) || claims.ExecutorID != expectedExecutorID {
+		return corecontract.CompleteExecutorEnrollmentResponse{}, &coredb.StateError{
+			Code: coredb.ErrorForbidden, Operation: "CompleteExecutorEnrollment", Resource: "executor",
+			ResourceID: claims.ExecutorID, Message: "enrollment token belongs to another gateway deployment",
 		}
 	}
 	validated, err := executorenrollment.Validate(request)

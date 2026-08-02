@@ -15,9 +15,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/executorgateway"
@@ -33,6 +35,10 @@ const (
 	gatewayCoreClientCertificateEnvironment   = "AGENTSERVER_V2_CORE_CLIENT_CERT_FILE"
 	gatewayCoreClientKeyEnvironment           = "AGENTSERVER_V2_CORE_CLIENT_KEY_FILE"
 	gatewayCoreServerNameEnvironment          = "AGENTSERVER_V2_CORE_SERVER_NAME"
+	gatewaySPIFFEIdentityEnvironment          = "AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID"
+	gatewayExecutorIDEnvironment              = "AGENTSERVER_V2_EXECUTOR_ID"
+	gatewayCapabilityIssuerEnvironment        = "AGENTSERVER_V2_RUN_CAPABILITY_ISSUER"
+	gatewayCapabilityKeyringEnvironment       = "AGENTSERVER_V2_RUN_CAPABILITY_KEYRING_FILE"
 	gatewayDevExecutorIDEnvironment           = "AGENTSERVER_V2_DEV_EXECUTOR_ID"
 	gatewayDevWorkspaceIDEnvironment          = "AGENTSERVER_V2_DEV_WORKSPACE_ID"
 	gatewayDevActorIDEnvironment              = "AGENTSERVER_V2_DEV_ACTOR_ID"
@@ -51,17 +57,28 @@ const (
 	gatewayReadPolicyDecisionEnvironment      = "AGENTSERVER_V2_READ_FILE_POLICY_DECISION"
 	gatewayDevExecutorHeader                  = "X-Agentserver-Dev-Executor-Id"
 	maximumDevMCPBearerBytes                  = 16 * 1024
+	maximumGatewayTLSFileBytes                = int64(1024 * 1024)
 )
 
 var canonicalUUIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
-func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Writer) error {
+func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Writer, mode gatewayServeMode) error {
+	if ctx == nil || getenv == nil || stdout == nil {
+		return errors.New("executor-gateway serve context, configuration source, and output are required")
+	}
+	if mode != gatewayServeProduction && mode != gatewayServeInsecureDevelopment {
+		return errors.New("executor-gateway serve mode is invalid")
+	}
 	listenAddress, err := requiredGatewayConfiguration(getenv, gatewayListenAddressEnvironment)
 	if err != nil {
 		return err
 	}
-	if err := requireLoopbackAddress(listenAddress); err != nil {
-		return err
+	if mode == gatewayServeInsecureDevelopment {
+		if err := requireLoopbackAddress(listenAddress); err != nil {
+			return err
+		}
+	} else if _, _, err := net.SplitHostPort(listenAddress); err != nil {
+		return fmt.Errorf("parse production executor-gateway listen address: %w", err)
 	}
 	certificateFile, err := requiredGatewayConfiguration(getenv, gatewayTLSCertificateEnvironment)
 	if err != nil {
@@ -75,9 +92,8 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	if err != nil {
 		return err
 	}
-	parsedCoreURL, err := url.Parse(coreURL)
-	if err != nil || parsedCoreURL.Scheme != "https" {
-		return errors.New("AGENTSERVER_V2_CORE_URL must be an HTTPS origin")
+	if err := validateGatewayHTTPSOrigin(coreURL, gatewayCoreURLEnvironment); err != nil {
+		return err
 	}
 	coreCAFile, err := requiredGatewayConfiguration(getenv, gatewayCoreCAEnvironment)
 	if err != nil {
@@ -91,27 +107,28 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	if err != nil {
 		return err
 	}
-	devExecutorID, err := requiredGatewayConfiguration(getenv, gatewayDevExecutorIDEnvironment)
-	if err != nil {
-		return err
+	coreServerName := strings.TrimSpace(getenv(gatewayCoreServerNameEnvironment))
+	var gatewaySPIFFEIdentity string
+	if mode == gatewayServeProduction {
+		gatewaySPIFFEIdentity, err = requiredGatewayConfiguration(getenv, gatewaySPIFFEIdentityEnvironment)
+		if err != nil {
+			return err
+		}
+		if err := validateGatewaySPIFFEIdentity(gatewaySPIFFEIdentity); err != nil {
+			return fmt.Errorf("%s: %w", gatewaySPIFFEIdentityEnvironment, err)
+		}
+		if coreServerName == "" {
+			return fmt.Errorf("%s is required in production", gatewayCoreServerNameEnvironment)
+		}
 	}
-	if devExecutorID == "00000000-0000-0000-0000-000000000000" || !canonicalUUIDPattern.MatchString(devExecutorID) {
-		return errors.New("AGENTSERVER_V2_DEV_EXECUTOR_ID must be a non-zero canonical lowercase UUID")
-	}
-	mcpAuthenticator, err := configuredDevMCPAuthenticator(getenv, devExecutorID)
-	if err != nil {
-		return err
-	}
-
-	coreHTTPClient, err := newCoreHTTPClient(
-		coreCAFile,
-		coreClientCertificateFile,
-		coreClientKeyFile,
-		strings.TrimSpace(getenv(gatewayCoreServerNameEnvironment)),
+	coreHTTPClient, err := newCoreHTTPClientWithIdentity(
+		coreCAFile, coreClientCertificateFile, coreClientKeyFile,
+		coreServerName, gatewaySPIFFEIdentity,
 	)
 	if err != nil {
 		return err
 	}
+	defer coreHTTPClient.CloseIdleConnections()
 	coreClient, err := executorgateway.NewCoreConnectionClient(coreURL, coreHTTPClient)
 	if err != nil {
 		return err
@@ -120,8 +137,67 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	if err != nil {
 		return err
 	}
+	var executorID string
+	var executorAuthenticator executorgateway.ExecutorAuthenticator
+	var mcpAuthenticator executorgateway.ExecutorMCPAuthenticator
+	var identityHandler *executorgateway.ExecutorIdentityHandler
+	switch mode {
+	case gatewayServeInsecureDevelopment:
+		executorID, err = requiredGatewayConfiguration(getenv, gatewayDevExecutorIDEnvironment)
+		if err != nil {
+			return err
+		}
+		if err := validateGatewayExecutorID(gatewayDevExecutorIDEnvironment, executorID); err != nil {
+			return err
+		}
+		mcpAuthenticator, err = configuredDevMCPAuthenticator(getenv, executorID)
+		if err != nil {
+			return err
+		}
+		executorAuthenticator = devExecutorAuthenticator{executorID: executorID}
+	case gatewayServeProduction:
+		executorID, err = requiredGatewayConfiguration(getenv, gatewayExecutorIDEnvironment)
+		if err != nil {
+			return err
+		}
+		if err := validateGatewayExecutorID(gatewayExecutorIDEnvironment, executorID); err != nil {
+			return err
+		}
+		capabilityIssuer, err := requiredGatewayConfiguration(getenv, gatewayCapabilityIssuerEnvironment)
+		if err != nil {
+			return err
+		}
+		capabilityKeyring, err := requiredGatewayConfiguration(getenv, gatewayCapabilityKeyringEnvironment)
+		if err != nil {
+			return err
+		}
+		if err := validateGatewayConfigPath(capabilityKeyring); err != nil {
+			return fmt.Errorf("%s: %w", gatewayCapabilityKeyringEnvironment, err)
+		}
+		verifier, err := runcapability.LoadProductionVerifier(capabilityIssuer, capabilityKeyring)
+		if err != nil {
+			return fmt.Errorf("configure executor-gateway production run capability verifier: %w", err)
+		}
+		mcpAuthenticator, err = executorgateway.NewProductionExecutorMCPAuthenticator(verifier, coreClient, executorID, time.Now)
+		if err != nil {
+			return err
+		}
+		challengeConfig := executorgateway.DefaultExecutorChallengeConfig(gatewayInstanceID, executorID)
+		challenges, err := executorgateway.NewExecutorChallengeAuthority(coreClient, challengeConfig)
+		if err != nil {
+			return err
+		}
+		executorAuthenticator, err = executorgateway.NewProductionExecutorAuthenticator(coreClient, challenges)
+		if err != nil {
+			return err
+		}
+		identityHandler, err = executorgateway.NewExecutorIdentityHandler(coreClient, challenges)
+		if err != nil {
+			return err
+		}
+	}
 	agentxHandler, err := executorgateway.NewServer(
-		devExecutorAuthenticator{executorID: devExecutorID},
+		executorAuthenticator,
 		coreClient,
 		executorgateway.DefaultServerConfig(gatewayInstanceID),
 	)
@@ -206,10 +282,14 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	if err != nil {
 		return err
 	}
-	handler := http.NewServeMux()
-	handler.Handle(executorgateway.ExecutorMCPPath, mcpHandler)
-	handler.Handle("/", agentxHandler)
-	tlsConfig, err := gatewayTLSConfig(certificateFile, keyFile)
+	readiness := &gatewayReadiness{}
+	handler := gatewayRoutes(mcpHandler, agentxHandler, identityHandler, readiness)
+	var tlsConfig *tls.Config
+	if mode == gatewayServeProduction {
+		tlsConfig, err = productionGatewayTLSConfig(certificateFile, keyFile, gatewaySPIFFEIdentity)
+	} else {
+		tlsConfig, err = gatewayTLSConfig(certificateFile, keyFile)
+	}
 	if err != nil {
 		return err
 	}
@@ -231,6 +311,7 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	go func() {
 		select {
 		case <-ctx.Done():
+			readiness.ready.Store(false)
 			shutdownContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			shutdowns := []func(context.Context) error{
@@ -255,12 +336,80 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 		case <-serveContext.Done():
 		}
 	}()
-	fmt.Fprintf(stdout, "executor-gateway serve: INSECURE DEV authentication; listening on %s; MCP endpoint %s; gateway instance %s\n", listener.Addr(), executorgateway.ExecutorMCPPath, gatewayInstanceID)
+	authorityDescription := "production OAuth + Ed25519 machine proof"
+	if mode == gatewayServeInsecureDevelopment {
+		authorityDescription = "INSECURE DEV authentication"
+	}
+	readiness.ready.Store(true)
+	fmt.Fprintf(stdout, "executor-gateway serve: %s; single-replica process-local resume/challenges; listening on %s; MCP endpoint %s; gateway instance %s\n",
+		authorityDescription, listener.Addr(), executorgateway.ExecutorMCPPath, gatewayInstanceID)
 	err = server.Serve(tls.NewListener(listener, tlsConfig))
+	readiness.ready.Store(false)
 	if errors.Is(err, http.ErrServerClosed) && ctx.Err() != nil {
 		return nil
 	}
 	return err
+}
+
+type gatewayReadiness struct {
+	ready atomic.Bool
+}
+
+func gatewayRoutes(
+	mcp, agentx http.Handler,
+	identity *executorgateway.ExecutorIdentityHandler,
+	readiness *gatewayReadiness,
+) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request == nil || request.URL == nil {
+			writeGatewayHealth(response, http.StatusNotFound, `{"status":"not_found"}`)
+			return
+		}
+		switch request.URL.Path {
+		case executorgateway.ExecutorMCPPath:
+			if mcp != nil {
+				mcp.ServeHTTP(response, request)
+				return
+			}
+		case executorgateway.AgentxConnectPath:
+			if agentx != nil {
+				agentx.ServeHTTP(response, request)
+				return
+			}
+		case executorgateway.AgentxEnrollmentPath, executorgateway.AgentxChallengePath:
+			if identity != nil {
+				identity.ServeHTTP(response, request)
+				return
+			}
+		case "/healthz":
+			if exactGatewayHealthRequest(request) {
+				writeGatewayHealth(response, http.StatusOK, `{"status":"ok"}`)
+				return
+			}
+		case "/readyz":
+			if exactGatewayHealthRequest(request) {
+				if readiness == nil || !readiness.ready.Load() {
+					writeGatewayHealth(response, http.StatusServiceUnavailable, `{"status":"not_ready"}`)
+					return
+				}
+				writeGatewayHealth(response, http.StatusOK, `{"status":"ready"}`)
+				return
+			}
+		}
+		writeGatewayHealth(response, http.StatusNotFound, `{"status":"not_found"}`)
+	})
+}
+
+func exactGatewayHealthRequest(request *http.Request) bool {
+	return request.Method == http.MethodGet && request.URL.RawPath == "" && request.URL.RawQuery == "" && !request.URL.ForceQuery
+}
+
+func writeGatewayHealth(response http.ResponseWriter, status int, body string) {
+	response.Header().Set("Content-Type", "application/json")
+	response.Header().Set("Cache-Control", "no-store")
+	response.Header().Set("X-Content-Type-Options", "nosniff")
+	response.WriteHeader(status)
+	_, _ = io.WriteString(response, body+"\n")
 }
 
 type devExecutorAuthenticator struct {
@@ -467,11 +616,26 @@ func (authenticator devExecutorAuthenticator) AuthenticateExecutor(request *http
 }
 
 func newCoreHTTPClient(caFile, certificateFile, keyFile, serverName string) (*http.Client, error) {
-	certificate, err := tls.LoadX509KeyPair(certificateFile, keyFile)
+	return newCoreHTTPClientWithIdentity(caFile, certificateFile, keyFile, serverName, "")
+}
+
+func newCoreHTTPClientWithIdentity(caFile, certificateFile, keyFile, serverName, expectedSPIFFEIdentity string) (*http.Client, error) {
+	var certificate tls.Certificate
+	var err error
+	if expectedSPIFFEIdentity == "" {
+		certificate, err = tls.LoadX509KeyPair(certificateFile, keyFile)
+	} else {
+		certificate, err = loadGatewayTLSIdentity(certificateFile, keyFile, expectedSPIFFEIdentity)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("load executor-gateway core client identity: %w", err)
 	}
-	caPEM, err := os.ReadFile(caFile)
+	var caPEM []byte
+	if expectedSPIFFEIdentity == "" {
+		caPEM, err = os.ReadFile(caFile)
+	} else {
+		caPEM, err = readStableGatewayFile("Core CA", caFile, maximumGatewayTLSFileBytes, false)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read core server CA: %w", err)
 	}
@@ -480,12 +644,16 @@ func newCoreHTTPClient(caFile, certificateFile, keyFile, serverName string) (*ht
 		return nil, errors.New("core server CA file contains no certificates")
 	}
 	transport := &http.Transport{
+		Proxy:                 nil,
+		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          16,
-		MaxIdleConnsPerHost:   16,
-		IdleConnTimeout:       30 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 10 * time.Second,
+		MaxIdleConns:          32,
+		MaxIdleConnsPerHost:   32,
+		IdleConnTimeout:       60 * time.Second,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		ExpectContinueTimeout: time.Second,
+		DisableCompression:    true,
 		TLSClientConfig: &tls.Config{
 			MinVersion:   tls.VersionTLS13,
 			RootCAs:      rootCAs,
@@ -494,6 +662,77 @@ func newCoreHTTPClient(caFile, certificateFile, keyFile, serverName string) (*ht
 		},
 	}
 	return &http.Client{Transport: transport}, nil
+}
+
+func productionGatewayTLSConfig(certificateFile, keyFile, expectedSPIFFEIdentity string) (*tls.Config, error) {
+	certificate, err := loadGatewayTLSIdentity(certificateFile, keyFile, expectedSPIFFEIdentity)
+	if err != nil {
+		return nil, fmt.Errorf("load executor-gateway production TLS identity: %w", err)
+	}
+	return &tls.Config{
+		MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{certificate},
+		NextProtos: []string{"http/1.1"},
+	}, nil
+}
+
+func loadGatewayTLSIdentity(certificatePath, keyPath, expectedSPIFFEIdentity string) (tls.Certificate, error) {
+	if err := validateGatewaySPIFFEIdentity(expectedSPIFFEIdentity); err != nil {
+		return tls.Certificate{}, err
+	}
+	certificateBytes, err := readStableGatewayFile("TLS certificate", certificatePath, maximumGatewayTLSFileBytes, false)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	keyBytes, err := readStableGatewayFile("TLS private key", keyPath, maximumGatewayTLSFileBytes, true)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	defer clear(keyBytes)
+	certificate, err := tls.X509KeyPair(certificateBytes, keyBytes)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("parse TLS key pair: %w", err)
+	}
+	if len(certificate.Certificate) == 0 {
+		return tls.Certificate{}, errors.New("TLS certificate chain is empty")
+	}
+	leaf, err := x509.ParseCertificate(certificate.Certificate[0])
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("parse TLS leaf certificate: %w", err)
+	}
+	if len(leaf.URIs) != 1 || leaf.URIs[0].String() != expectedSPIFFEIdentity {
+		return tls.Certificate{}, errors.New("TLS leaf certificate does not contain the exact configured SPIFFE identity")
+	}
+	certificate.Leaf = leaf
+	return certificate, nil
+}
+
+func readStableGatewayFile(label, path string, maximum int64, restricted bool) ([]byte, error) {
+	if err := validateGatewayConfigPath(path); err != nil {
+		return nil, fmt.Errorf("%s path: %w", label, err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", label, err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("inspect %s: %w", label, err)
+	}
+	if !info.Mode().IsRegular() || info.Size() < 1 || info.Size() > maximum || (restricted && info.Mode().Perm()&0o077 != 0) {
+		return nil, fmt.Errorf("%s must be a bounded regular file with safe permissions", label)
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, maximum+1))
+	if err != nil || int64(len(raw)) != info.Size() {
+		clear(raw)
+		return nil, fmt.Errorf("read stable %s", label)
+	}
+	after, err := file.Stat()
+	if err != nil || !os.SameFile(info, after) || info.Size() != after.Size() || !info.ModTime().Equal(after.ModTime()) || info.Mode() != after.Mode() {
+		clear(raw)
+		return nil, fmt.Errorf("%s changed while it was being read", label)
+	}
+	return raw, nil
 }
 
 func gatewayTLSConfig(certificateFile, keyFile string) (*tls.Config, error) {
@@ -519,6 +758,40 @@ func requireLoopbackAddress(address string) error {
 	ip := net.ParseIP(host)
 	if ip == nil || !ip.IsLoopback() {
 		return errors.New("insecure-dev executor-gateway must bind an explicit loopback address")
+	}
+	return nil
+}
+
+func validateGatewayHTTPSOrigin(raw, name string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil ||
+		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.RawPath != "" || parsed.Opaque != "" || parsed.ForceQuery ||
+		(parsed.Path != "" && parsed.Path != "/") {
+		return fmt.Errorf("%s must be an HTTPS origin without credentials, path, query, or fragment", name)
+	}
+	return nil
+}
+
+func validateGatewaySPIFFEIdentity(raw string) error {
+	identity, err := url.Parse(raw)
+	if err != nil || identity.Scheme != "spiffe" || identity.Host == "" || identity.User != nil || identity.Path == "" ||
+		identity.RawPath != "" || identity.RawQuery != "" || identity.Fragment != "" || identity.Opaque != "" || identity.ForceQuery ||
+		identity.String() != raw || len(raw) > 2048 || strings.ContainsAny(raw, "\x00\r\n") {
+		return errors.New("value must be an exact bounded SPIFFE URI")
+	}
+	return nil
+}
+
+func validateGatewayConfigPath(path string) error {
+	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.ContainsRune(path, 0) {
+		return errors.New("path must be absolute and clean")
+	}
+	return nil
+}
+
+func validateGatewayExecutorID(name, value string) error {
+	if value == "00000000-0000-0000-0000-000000000000" || !canonicalUUIDPattern.MatchString(value) {
+		return fmt.Errorf("%s must be a non-zero canonical lowercase UUID", name)
 	}
 	return nil
 }

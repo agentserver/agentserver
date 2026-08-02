@@ -179,11 +179,12 @@ func TestInternalExecutorIdentityHandlerSeparatesEnrollmentAndOAuthBearers(t *te
 	}`))
 	complete.Header.Set("Authorization", "Bearer enrollment-bearer")
 	complete.Header.Set("Content-Type", "application/json")
+	complete.Header.Set(corecontract.ExpectedExecutorIDHeader, enrollmentTestExecutor)
 	complete.Header.Set("X-Test-Identity", "executor-gateway")
 	completeResponse := httptest.NewRecorder()
 	handler.ServeHTTP(completeResponse, complete)
 	if completeResponse.Code != http.StatusOK || len(enrollment.calls) != 1 ||
-		enrollment.bearers[0] != "enrollment-bearer" || len(connections.bearers) != 0 ||
+		enrollment.bearers[0] != "enrollment-bearer" || enrollment.expectedExecutors[0] != enrollmentTestExecutor || len(connections.bearers) != 0 ||
 		workload.actions[0] != "executor-enrollments.complete" {
 		t.Fatalf("complete response/calls = %d / %q / %q / %+v", completeResponse.Code, enrollment.bearers, connections.bearers, workload.actions)
 	}
@@ -218,6 +219,12 @@ func TestInternalExecutorIdentityHandlerRejectsAmbiguousAuthorityBeforeServices(
 		{name: "missing enrollment bearer", path: corecontract.CompleteExecutorEnrollmentPath, body: []byte(`{}`), mutate: func(request *http.Request) {
 			request.Header.Del("Authorization")
 		}, status: http.StatusUnauthorized},
+		{name: "missing gateway executor binding", path: corecontract.CompleteExecutorEnrollmentPath, body: []byte(`{}`), mutate: func(request *http.Request) {
+			request.Header.Del(corecontract.ExpectedExecutorIDHeader)
+		}, status: http.StatusBadRequest},
+		{name: "duplicate gateway executor binding", path: corecontract.CompleteExecutorEnrollmentPath, body: []byte(`{}`), mutate: func(request *http.Request) {
+			request.Header.Add(corecontract.ExpectedExecutorIDHeader, enrollmentTestExecutor)
+		}, status: http.StatusBadRequest},
 		{name: "duplicate OAuth bearer", path: corecontract.AuthorizeExecutorConnectionPath, mutate: func(request *http.Request) {
 			request.Header.Add("Authorization", "Bearer second")
 		}, status: http.StatusForbidden},
@@ -238,6 +245,7 @@ func TestInternalExecutorIdentityHandlerRejectsAmbiguousAuthorityBeforeServices(
 			request := httptest.NewRequest(http.MethodPost, test.path, bytes.NewReader(test.body))
 			request.Header.Set("Authorization", "Bearer authority")
 			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set(corecontract.ExpectedExecutorIDHeader, enrollmentTestExecutor)
 			request.Header.Set("X-Test-Identity", "executor-gateway")
 			if test.mutate != nil {
 				test.mutate(request)
@@ -314,14 +322,16 @@ func (commands *recordingExecutorManagementCommands) IssueEnrollmentToken(_ cont
 }
 
 type recordingInternalEnrollmentCommands struct {
-	bearers  []string
-	calls    []corecontract.CompleteExecutorEnrollmentRequest
-	response corecontract.CompleteExecutorEnrollmentResponse
-	err      error
+	bearers           []string
+	expectedExecutors []string
+	calls             []corecontract.CompleteExecutorEnrollmentRequest
+	response          corecontract.CompleteExecutorEnrollmentResponse
+	err               error
 }
 
-func (commands *recordingInternalEnrollmentCommands) CompleteEnrollment(_ context.Context, bearer string, request corecontract.CompleteExecutorEnrollmentRequest) (corecontract.CompleteExecutorEnrollmentResponse, error) {
+func (commands *recordingInternalEnrollmentCommands) CompleteEnrollment(_ context.Context, bearer, expectedExecutorID string, request corecontract.CompleteExecutorEnrollmentRequest) (corecontract.CompleteExecutorEnrollmentResponse, error) {
 	commands.bearers = append(commands.bearers, bearer)
+	commands.expectedExecutors = append(commands.expectedExecutors, expectedExecutorID)
 	commands.calls = append(commands.calls, request)
 	return commands.response, commands.err
 }

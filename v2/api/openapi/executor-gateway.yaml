@@ -1,0 +1,154 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "agentserver v2 executor-gateway machine identity API",
+    "version": "2.0.0",
+    "description": "Public agentx enrollment relay, short-lived machine-proof challenge, and authenticated WebSocket upgrade. Phase 1 is single-replica and all challenge/journal authority is process-local."
+  },
+  "servers": [{"url": "https://executor-gateway"}],
+  "paths": {
+    "/internal/v2/agentx/enrollments": {
+      "post": {
+        "operationId": "completeAgentxEnrollment",
+        "description": "Bounds and relays one dual-key enrollment command to Core. The short-lived enrollment bearer is sent only in Authorization and is never persisted by executor-gateway. The gateway injects its configured executor ID on the internal hop, and Core rejects a token for another deployment before any mutation.",
+        "security": [{"executorEnrollmentBearer": []}],
+        "requestBody": {
+          "required": true,
+          "x-agentserver-maxBytes": 524288,
+          "content": {"application/json": {"schema": {"$ref": "./internal.yaml#/components/schemas/CompleteExecutorEnrollmentRequest"}}}
+        },
+        "responses": {
+          "200": {
+            "description": "Core consumed or exactly replayed the enrollment and reconciled the Hydra client",
+            "headers": {"Cache-Control": {"schema": {"const": "no-store"}}},
+            "content": {"application/json": {"schema": {"$ref": "./internal.yaml#/components/schemas/CompleteExecutorEnrollmentResponse"}}}
+          },
+          "4XX": {"$ref": "#/components/responses/Error"},
+          "5XX": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
+    "/internal/v2/agentx/challenges": {
+      "post": {
+        "operationId": "issueAgentxChallenge",
+        "description": "Live-authorizes the opaque executor OAuth bearer through Core and creates one random 256-bit process-local challenge. The request body is empty. Expiry is the earlier of 30 seconds and the OAuth token expiry. Local capacity exhaustion and Core/Hydra unavailability return a non-cacheable 503.",
+        "security": [{"executorOAuthBearer": ["executor:connect"]}],
+        "responses": {
+          "201": {
+            "description": "Single-use challenge bound to bearer hash, executor/key fingerprint, gateway process, and exact WSS request target",
+            "headers": {"Cache-Control": {"schema": {"const": "no-store"}}},
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExecutorChallengeResponse"}}}
+          },
+          "4XX": {"$ref": "#/components/responses/Error"},
+          "5XX": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    },
+    "/internal/v2/agentx/connect": {
+      "get": {
+        "operationId": "connectAgentxWebSocket",
+        "description": "Live-authorizes the same OAuth bearer again, atomically consumes the process-local challenge, verifies all bindings and the Ed25519 proof, and only then performs the WebSocket upgrade. The request target is the literal path below: encoded/raw paths, queries, and an empty trailing query marker are rejected. A transient Core 503 does not consume the challenge; authorization/proof failures return 401, and proof verification consumes once.",
+        "security": [{"executorOAuthBearer": ["executor:connect"]}],
+        "parameters": [
+          {
+            "name": "X-Agentserver-Challenge-Id",
+            "in": "header",
+            "required": true,
+            "schema": {"$ref": "#/components/schemas/UUID"},
+            "description": "Challenge returned by the same live gateway process"
+          },
+          {
+            "name": "X-Agentserver-Machine-Proof",
+            "in": "header",
+            "required": true,
+            "schema": {"type": "string", "pattern": "^[A-Za-z0-9_-]{86}$"},
+            "description": "Canonical raw-base64url 64-byte Ed25519 signature over the executor-wss-proof/ed25519-v1 transcript"
+          }
+        ],
+        "responses": {
+          "101": {"description": "Authenticated agentx WebSocket; subsequent messages use agentx-wss AsyncAPI"},
+          "401": {"$ref": "#/components/responses/Error"},
+          "503": {"$ref": "#/components/responses/Error"}
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "executorEnrollmentBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "asv2enr1 HMAC-SHA256",
+        "description": "Short-lived single-executor enrollment authority"
+      },
+      "executorOAuthBearer": {
+        "type": "oauth2",
+        "description": "Opaque five-minute Hydra client-credentials access token; bearer possession alone is insufficient for WSS",
+        "flows": {"clientCredentials": {"tokenUrl": "/oauth2/token", "scopes": {"executor:connect": "Open the enrolled executor connection"}}}
+      }
+    },
+    "schemas": {
+      "UUID": {"type": "string", "format": "uuid", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+      "ExecutorChallengeResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version", "challengeId", "challenge", "executorId", "machineKeySha256", "gatewayInstanceId", "target", "issuedAt", "expiresAt"],
+        "properties": {
+          "version": {"const": "executor-wss-proof/ed25519-v1"},
+          "challengeId": {"$ref": "#/components/schemas/UUID"},
+          "challenge": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$", "description": "Canonical raw-base64url random 256-bit nonce"},
+          "executorId": {"$ref": "#/components/schemas/UUID"},
+          "machineKeySha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "gatewayInstanceId": {"$ref": "#/components/schemas/UUID"},
+          "target": {"const": "/internal/v2/agentx/connect"},
+          "issuedAt": {"type": "string", "format": "date-time", "x-agentserver-timePrecision": "whole-millisecond UTC"},
+          "expiresAt": {"type": "string", "format": "date-time", "x-agentserver-timePrecision": "whole-millisecond UTC"}
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "message"],
+        "properties": {
+          "code": {"type": "string", "minLength": 1, "maxLength": 128},
+          "message": {"type": "string", "minLength": 1, "maxLength": 1024},
+          "currentVersion": {"type": "integer", "minimum": 1},
+          "currentGeneration": {"type": "integer", "minimum": 1}
+        }
+      }
+    },
+    "responses": {
+      "Error": {
+        "description": "Fail-closed identity or authority error",
+        "headers": {"Cache-Control": {"schema": {"const": "no-store"}}},
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}}
+      }
+    }
+  },
+  "x-agentserver-machine-proof": {
+    "version": "executor-wss-proof/ed25519-v1",
+    "domainUtf8WithTrailingNul": "agentserver-v2/executor-wss-proof/ed25519-v1\u0000",
+    "fieldEncoding": "fixed order; each field is uint32be byte length followed by bytes",
+    "fields": [
+      "version UTF-8",
+      "challengeId UTF-8",
+      "challenge decoded 32 bytes",
+      "executorId UTF-8",
+      "machineKeySha256 decoded 32 bytes",
+      "SHA-256 of exact OAuth bearer bytes",
+      "gatewayInstanceId UTF-8",
+      "target UTF-8",
+      "issuedAt Unix milliseconds as 8-byte uint64be",
+      "expiresAt Unix milliseconds as 8-byte uint64be"
+    ],
+    "signature": "Ed25519; raw 64 bytes encoded as canonical unpadded base64url",
+    "goldenTranscriptSha256": "6399fd9b16c2b8a75590083505bb08492a32d4a8b5548d9d74b560c344d484f4"
+  },
+  "x-agentserver-phase1": {
+    "gatewayReplicas": 1,
+    "challengePersistence": false,
+    "crossProcessResume": false,
+    "maximumChallengeTtlMs": 30000,
+    "maximumOutstandingChallenges": 4096
+  }
+}

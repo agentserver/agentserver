@@ -54,7 +54,7 @@ func TestExecutorEnrollmentServiceCompletesMachineOwnedHydraIdentity(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := service.CompleteEnrollment(t.Context(), bearer, request)
+	response, err := service.CompleteEnrollment(t.Context(), bearer, enrollmentTestExecutor, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestExecutorEnrollmentServiceReconcilesOnlyExactHydraConflict(t *testing.T)
 			"agentserver-executor-"+enrollmentTestExecutor, enrollmentTestExecutor,
 			validated.OAuthPublicKeyP256X, validated.OAuthPublicKeyP256Y, validated.OAuthKeySHA256,
 		)
-		if _, err := service.CompleteEnrollment(t.Context(), bearer, request); err != nil {
+		if _, err := service.CompleteEnrollment(t.Context(), bearer, enrollmentTestExecutor, request); err != nil {
 			t.Fatal(err)
 		}
 		if len(hydra.gets) != 1 || len(store.completions) != 1 {
@@ -120,7 +120,7 @@ func TestExecutorEnrollmentServiceReconcilesOnlyExactHydraConflict(t *testing.T)
 			validated.OAuthPublicKeyP256X, validated.OAuthPublicKeyP256Y, validated.OAuthKeySHA256,
 		)
 		hydra.getResult.Scope = "runs:write"
-		if _, err := service.CompleteEnrollment(t.Context(), bearer, request); err == nil || len(store.completions) != 0 {
+		if _, err := service.CompleteEnrollment(t.Context(), bearer, enrollmentTestExecutor, request); err == nil || len(store.completions) != 0 {
 			t.Fatalf("conflicting client error/completions = %v/%d", err, len(store.completions))
 		}
 	})
@@ -136,8 +136,26 @@ func TestExecutorEnrollmentServiceRejectsInvalidProofBeforeStateOrHydra(t *testi
 	store := &recordingEnrollmentStore{}
 	hydra := &recordingHydraExecutorAdmin{}
 	service, _ := NewExecutorEnrollmentService(ExecutorEnrollmentServiceConfig{Store: store, Tokens: codec, Hydra: hydra, TokenTTL: 10 * time.Minute, Now: func() time.Time { return now }})
-	if _, err := service.CompleteEnrollment(t.Context(), bearer, request); err == nil || len(store.claims) != 0 || len(hydra.creates) != 0 {
+	if _, err := service.CompleteEnrollment(t.Context(), bearer, enrollmentTestExecutor, request); err == nil || len(store.claims) != 0 || len(hydra.creates) != 0 {
 		t.Fatalf("invalid proof error/state/Hydra = %v/%d/%d", err, len(store.claims), len(hydra.creates))
+	}
+}
+
+func TestExecutorEnrollmentServiceRejectsAnotherGatewayDeploymentBeforeStateOrHydra(t *testing.T) {
+	now := time.Date(2026, 8, 2, 11, 15, 0, 0, time.UTC)
+	codec := enrollmentTestCodec(t)
+	bearer, _ := codec.Sign(enrollmentTestClaims(now))
+	privateKey := ed25519.NewKeyFromSeed([]byte(strings.Repeat("m", ed25519.SeedSize)))
+	request := signedEnrollmentRequest(t, bearer, privateKey)
+	store := &recordingEnrollmentStore{}
+	hydra := &recordingHydraExecutorAdmin{}
+	service, _ := NewExecutorEnrollmentService(ExecutorEnrollmentServiceConfig{
+		Store: store, Tokens: codec, Hydra: hydra, TokenTTL: 10 * time.Minute, Now: func() time.Time { return now },
+	})
+	if _, err := service.CompleteEnrollment(
+		t.Context(), bearer, "71000000-0000-4000-8000-000000000099", request,
+	); err == nil || len(store.claims) != 0 || len(store.completions) != 0 || len(hydra.creates) != 0 {
+		t.Fatalf("foreign deployment error/state/Hydra = %v/%d/%d/%d", err, len(store.claims), len(store.completions), len(hydra.creates))
 	}
 }
 

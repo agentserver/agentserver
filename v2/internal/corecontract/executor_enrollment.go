@@ -8,6 +8,7 @@ import (
 const (
 	CompleteExecutorEnrollmentPath      = "/internal/v2/executor-enrollments:complete"
 	AuthorizeExecutorConnectionPath     = "/internal/v2/executor-connections:authorize"
+	ExpectedExecutorIDHeader            = "X-Agentserver-Expected-Executor-Id"
 	ExecutorManagementRoutePattern      = "/v2/workspaces/{workspaceId}/executors"
 	ExecutorEnrollmentTokenRoutePattern = "/v2/workspaces/{workspaceId}/executors/{executorAction}"
 )

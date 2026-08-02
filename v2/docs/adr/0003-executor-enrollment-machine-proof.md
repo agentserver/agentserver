@@ -49,8 +49,13 @@ never acquire a production token from the selected OAuth authority.
    `agentserver-v2/executor-enrollment-proof/es256-v1\0`. The ES256 proof is
    exactly 64-byte IEEE P1363 `r || s`, not ASN.1 DER, and Core requires a
    canonical low-S signature.
-5. The executor-gateway only bounds and relays this request to Core over its
-   mTLS workload identity. Core verifies and consumes the enrollment authority.
+5. The executor-gateway bounds the request and relays it to Core over its mTLS
+   workload identity. On that internal hop it injects the gateway's configured
+   executor ID in `X-Agentserver-Expected-Executor-Id`; this header is never
+   copied from agentx input. Core compares it with the verified token claims
+   before any database or Hydra mutation, then verifies and consumes the
+   enrollment authority. This makes the Phase 1 single-executor deployment
+   binding a precondition rather than a response-time consistency check.
 6. Core registers one deterministic Hydra client for the executor. The client
    permits only `client_credentials`, `scope=executor:connect`, and
    `audience=executor-gateway`; it authenticates with `private_key_jwt`,
@@ -104,13 +109,30 @@ input.
    executor identity to the WSS handler. A challenge cannot be replayed, moved
    to another gateway process/path, or paired with another bearer.
 
+The exact proof version is `executor-wss-proof/ed25519-v1`. The signed bytes
+start with `agentserver-v2/executor-wss-proof/ed25519-v1\0`; each following
+field is `uint32be(length) || bytes`, in this order: version, challenge ID,
+decoded 32-byte nonce, executor ID, decoded 32-byte machine-key SHA-256,
+SHA-256 of the exact OAuth bearer bytes, gateway instance ID, literal target
+`/internal/v2/agentx/connect`, issued-at Unix milliseconds and expires-at Unix
+milliseconds. Both timestamps are emitted at whole-millisecond UTC precision.
+The Ed25519 signature is encoded as canonical unpadded base64url. The machine
+contract and golden transcript digest live in
+`api/openapi/executor-gateway.yaml`; upgrade headers and session transport live
+in `api/asyncapi/agentx-wss.yaml`.
+
 The bearer is therefore necessary but not sufficient. This is the nonce
 challenge option already allowed by the agentx AsyncAPI; Phase 1 does not rely
 on provider-specific DPoP support.
 
 ## Failure and deployment boundaries
 
-- Core or Hydra introspection unavailable: fail closed.
+- Core or Hydra introspection unavailable: the challenge/upgrade endpoint fails
+  closed with a non-cacheable `503`. A transient second-authorization failure
+  does not consume the challenge, so the same proof can be retried within its
+  original deadline. An authorization rejection returns `401`; once gateway
+  reaches proof verification, an invalid proof or changed authority consumes
+  the challenge.
 - Gateway restart: all outstanding challenges and process-local resume journals
   disappear. Agentx obtains a new challenge and starts a fresh connection;
   cross-process resume is not claimed.
@@ -127,6 +149,12 @@ on provider-specific DPoP support.
   and capability-smuggling gates; unknown client fields fail reconciliation.
 - Phase 1 executor-gateway remains one replica. HPA is not enabled until a
   durable challenge/journal owner-routing design exists.
+- Kubernetes Secret projections may use the usual `key -> ..data/key` symlink
+  layout. At startup the gateway opens the resolved target, requires a bounded
+  regular private-key file with no group/other permission, and re-stats the
+  same open file after reading. Key/certificate rotation requires a process
+  rollout in Phase 1; the process does not hot-reload an atomically swapped
+  `..data` target.
 - Enrollment/OAuth credentials are connector-only. Runner startup is performed
   through an inherited credential-free IPC boundary, and child environments
   are independently scrubbed.
@@ -149,6 +177,18 @@ document now sends and reconciles the canonical `5m0s` representation, and the
 introspected lifetime remains exactly 300 seconds. This local evidence does
 not replace the pinned Linux image, production TLS/database configuration, or
 deployment-level dynamic-registration gate still required before release.
+
+The executor-gateway package also has a process-level production gate. It
+starts `executor-gateway serve` with TLS 1.3, an exact single-URI SPIFFE client
+identity, a production run-capability public keyring and a mutually
+authenticated fake Core. It exercises deployment-bound enrollment, challenge
+issuance, a signed WebSocket upgrade, proof rejection and consumption, replay,
+Core outage/retry, revocation, and bounded shutdown. Unit and contract gates
+separately cover expiry/capacity, timestamp canonicalization, bearer secrecy,
+duplicate JSON/header rejection, the OpenAPI/AsyncAPI field set and Kubernetes
+projected-Secret resolution. These gates prove the gateway side; production
+agentx credential storage and connector behavior remain a separate required
+gate.
 
 ## Consequences
 

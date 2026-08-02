@@ -291,3 +291,44 @@ container stop --time 15 agentserver-v2-dev
 ```
 
 这仍是明确的`insecure-dev`部署：数据库口令、兼容用固定browser bearer、外部OIDC client secret、登录事务key、开发CA和fixture模型响应都只适用于本地开发；所有控制面服务与PostgreSQL仍同容器、executor-gateway仍是单副本，也没有生产级secret分发、网络策略、升级迁移、监控告警或高可用保证。它的用途是验证协议和真实执行闭环，并作为reference web体验的后端，不应直接作为生产拓扑。
+
+## 7. executor-gateway production 切片验证
+
+`executor-gateway serve`现在默认装配production authority；只有显式
+`serve --insecure-dev`才进入上文开发路径。production启动除通用listen、
+TLS、Core mTLS和tool policy配置外，还必须提供：
+
+```text
+AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID
+AGENTSERVER_V2_EXECUTOR_ID
+AGENTSERVER_V2_RUN_CAPABILITY_ISSUER
+AGENTSERVER_V2_RUN_CAPABILITY_KEYRING_FILE
+```
+
+SPIFFE值必须与gateway server/client leaf中唯一URI SAN完全一致；私钥路径
+必须是absolute clean path，并解析为group/other不可读的有界regular file。
+Kubernetes projected Secret常见的`key -> ..data/key`符号链接允许使用，检查
+的是启动时打开的最终target；Phase 1不hot reload，Secret轮换必须触发Pod
+rollout。公钥keyring可读但仍要求有界、closed-world且读前后file identity
+稳定。
+
+production identity的快速门禁从`v2/`运行：
+
+```bash
+go test ./internal/corecontract ./internal/coreserver ./internal/executorgateway ./cmd/executor-gateway \
+  -run 'ExecutorEnrollment|ExecutorIdentity|MachineIdentity|ProductionMachineIdentity|InternalOpenAPI' \
+  -count=1
+
+go test -race ./cmd/executor-gateway ./internal/executorgateway -count=1
+```
+
+进程级测试会临时启动TLS/mTLS Core和真实production gateway，覆盖gateway
+注入且Core在副作用前校验的单executor enrollment binding、challenge、两次
+live authorization、signed WSS upgrade、bad proof、replay、Core unavailable
+retry、revoke及shutdown。它不需要外部Hydra；真实Hydra v26.2.0的ES256
+`private_key_jwt`兼容性由`make hydra-live-test`单独验证。
+
+这一切仍不是可部署整栈：独立agentx尚需完成owner-only双钥、RFC 7523
+token exchange和production challenge/WSS接线，Kubernetes/S3/KMS/Hydra/IAM
+清单与故障注入也尚未关闭。Phase 1必须保持executor-gateway单副本；进程
+重启会丢失challenge与resume journal，不能打开HPA或宣称跨Pod恢复。

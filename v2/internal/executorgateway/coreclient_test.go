@@ -164,6 +164,17 @@ func TestCoreConnectionClientRejectsCleartextNonLoopback(t *testing.T) {
 	if _, err := NewCoreConnectionClient("http://core.internal:8080", http.DefaultClient); err == nil || !strings.Contains(err.Error(), "loopback") {
 		t.Fatalf("cleartext non-loopback error = %v", err)
 	}
+	for _, endpoint := range []string{
+		"https://core.internal?",
+		"https://core.internal/?query=1",
+		"https://core.internal/%2f",
+		"https://user@core.internal",
+		"https://:443",
+	} {
+		if _, err := NewCoreConnectionClient(endpoint, http.DefaultClient); err == nil {
+			t.Errorf("non-canonical Core origin %q was accepted", endpoint)
+		}
+	}
 }
 
 type allowCoreWorkload struct{}

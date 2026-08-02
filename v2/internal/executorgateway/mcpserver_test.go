@@ -471,6 +471,31 @@ func TestExecutorMCPShutdownRejectsNewSessions(t *testing.T) {
 	}
 }
 
+func TestExecutorMCPRejectsNonCanonicalRequestTargetsBeforeAuthentication(t *testing.T) {
+	handler := newTestExecutorMCPHandler(t, &recordingMCPEnvironmentRegistry{}, map[string]ExecutorMCPPrincipal{
+		testMCPBearerA: testExecutorMCPPrincipal("capability-a"),
+	})
+	requests := map[string]*http.Request{
+		"query":       httptest.NewRequest(http.MethodPost, "https://gateway.test"+ExecutorMCPPath+"?other=1", strings.NewReader(`{}`)),
+		"force query": httptest.NewRequest(http.MethodPost, "https://gateway.test"+ExecutorMCPPath+"?", strings.NewReader(`{}`)),
+		"raw path": func() *http.Request {
+			request := httptest.NewRequest(http.MethodPost, "https://gateway.test"+ExecutorMCPPath, strings.NewReader(`{}`))
+			request.URL.RawPath = "/%6dcp"
+			return request
+		}(),
+	}
+	for name, request := range requests {
+		t.Run(name, func(t *testing.T) {
+			request.Header.Set("Authorization", "Bearer "+testMCPBearerA)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusNotFound || response.Header().Get("WWW-Authenticate") != "" {
+				t.Fatalf("non-canonical MCP target = %d headers %v", response.Code, response.Header())
+			}
+		})
+	}
+}
+
 func newTestExecutorMCPHandler(t *testing.T, registry EnvironmentRegistry, principals map[string]ExecutorMCPPrincipal) *ExecutorMCPHandler {
 	t.Helper()
 	resolver, err := NewEnvironmentResolver(registry)

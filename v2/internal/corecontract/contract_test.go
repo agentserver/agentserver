@@ -30,6 +30,11 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 			Post struct {
 				OperationID string                `json:"operationId"`
 				Security    []map[string][]string `json:"security"`
+				Parameters  []struct {
+					Name     string `json:"name"`
+					In       string `json:"in"`
+					Required bool   `json:"required"`
+				} `json:"parameters"`
 			} `json:"post"`
 		} `json:"paths"`
 		Components struct {
@@ -113,6 +118,11 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 		if len(security) != 1 || security[0]["workloadMTLS"] == nil || security[0][bearer] == nil || len(security[0]) != 2 {
 			t.Errorf("internal OpenAPI %s security = %+v", path, security)
 		}
+	}
+	enrollmentParameters := document.Paths[CompleteExecutorEnrollmentPath].Post.Parameters
+	if len(enrollmentParameters) != 1 || enrollmentParameters[0].Name != ExpectedExecutorIDHeader ||
+		enrollmentParameters[0].In != "header" || !enrollmentParameters[0].Required {
+		t.Fatalf("internal enrollment deployment binding = %+v", enrollmentParameters)
 	}
 
 	assertSchemaFields(t, document.Components.Schemas, "ExecutorResourceState", reflect.TypeFor[ExecutorResourceState]())

@@ -167,7 +167,7 @@ func decodeExecutorManagementJSON(response http.ResponseWriter, request *http.Re
 }
 
 type InternalExecutorEnrollmentCommands interface {
-	CompleteEnrollment(context.Context, string, corecontract.CompleteExecutorEnrollmentRequest) (corecontract.CompleteExecutorEnrollmentResponse, error)
+	CompleteEnrollment(context.Context, string, string, corecontract.CompleteExecutorEnrollmentRequest) (corecontract.CompleteExecutorEnrollmentResponse, error)
 }
 
 type InternalExecutorConnectionAuthorizer interface {
@@ -213,16 +213,29 @@ func (handler *InternalExecutorIdentityHandler) complete(response http.ResponseW
 		writeError(response, http.StatusUnauthorized, corecontract.ErrorResponse{Code: "unauthorized", Message: "a valid executor enrollment bearer is required"})
 		return
 	}
+	expectedExecutorID, err := exactExpectedExecutorID(request.Header)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, corecontract.ErrorResponse{Code: "invalid_argument", Message: "a valid gateway executor binding is required"})
+		return
+	}
 	var command corecontract.CompleteExecutorEnrollmentRequest
 	if !decodeExecutorEnrollmentJSON(response, request, &command, 512*1024) {
 		return
 	}
-	result, err := handler.enrollment.CompleteEnrollment(request.Context(), bearer, command)
+	result, err := handler.enrollment.CompleteEnrollment(request.Context(), bearer, expectedExecutorID, command)
 	if err != nil {
 		writeExecutorIdentityError(response, request, err)
 		return
 	}
 	writeJSON(response, http.StatusOK, result)
+}
+
+func exactExpectedExecutorID(header http.Header) (string, error) {
+	values := header.Values(corecontract.ExpectedExecutorIDHeader)
+	if len(values) != 1 || !canonicalPublicUUID(values[0]) {
+		return "", errors.New("expected executor ID header is invalid")
+	}
+	return values[0], nil
 }
 
 func decodeExecutorEnrollmentJSON(response http.ResponseWriter, request *http.Request, destination any, maximumBytes int64) bool {

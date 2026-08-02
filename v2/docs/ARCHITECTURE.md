@@ -495,8 +495,8 @@ agentx 在请求进入 stdio exec-server 前执行第一层校验，exec-server 
 
 1. owner/maintainer 在 core 创建 executor resource。
 2. core 返回绑定 `executor_id`、短期、单次使用的 enrollment token；推荐通过 `agentx enroll --token-stdin` 输入，避免写入 shell history。
-3. agentx 本地生成两把connector-only私钥：Ed25519用于enrollment/WSS机器证明，P-256用于Hydra `private_key_jwt`；提交 token、两把公钥、对同一canonical request digest的双持有证明、平台、workdir roots，以及通过 manifest/本地握手确认的 exec-server version、binary digest 和 capability。
-4. core 消耗 token，并为该 executor 建立唯一双钥机器身份。Hydra v26.2.0 client固定为`private_key_jwt`/`ES256`、opaque access token、唯一`executor:connect` scope、唯一`executor-gateway` audience和5分钟client-credentials token lifespan；不允许client-secret回退。完整合同见[`ADR 0003`](adr/0003-executor-enrollment-machine-proof.md)。
+3. agentx 本地生成两把connector-only私钥：Ed25519用于enrollment/WSS机器证明，P-256用于Hydra `private_key_jwt`；向executor-gateway提交 token、两把公钥、对同一canonical request digest的双持有证明、平台、workdir roots，以及通过 manifest/本地握手确认的 exec-server version、binary digest 和 capability。gateway只做有界closed-world relay，并在到Core的mTLS内部请求上注入自身配置的executor ID；该绑定不能由agentx header/body覆盖。
+4. core先验证token claims中的executor与gateway注入的deployment binding一致，再进行任何数据库/Hydra写入；随后消费 token，并为该 executor 建立唯一双钥机器身份。Hydra v26.2.0 client固定为`private_key_jwt`/`ES256`、opaque access token、唯一`executor:connect` scope、唯一`executor-gateway` audience和5分钟client-credentials token lifespan；不允许client-secret回退。完整合同见[`ADR 0003`](adr/0003-executor-enrollment-machine-proof.md)。
 5. agentx 使用P-256私钥生成RFC 7523 assertion，获取短期 `aud=executor-gateway`、`scope=executor:connect` access token。
 6. 删除 enrollment token；后续只使用机器身份换短期 token。
 
@@ -506,7 +506,7 @@ workspace 共享的永久 service token 不得用于 executor enrollment 或连�
 
 1. agentx 主动拨出 WSS，不要求用户环境开放入站端口。
 2. executor-gateway 让Core实时introspect并校验唯一audience/scope、executor状态、公钥绑定、Hydra中完整P-256 client document和workspace归属。`executor_id`只从`client_id`到已登记executor的映射取得，不能信任客户端声明；Hydra client删除、key/grant漂移或Admin read不可用均fail closed。
-3. agentx 使用登记的Ed25519私钥完成gateway nonce签名挑战；P-256私钥只用于Hydra client authentication。只有 bearer token 而没有独立Ed25519持有证明不能建立执行通道。Phase 1不声称Hydra DPoP/`cnf`支持。
+3. agentx先以同一OAuth bearer调用`POST /internal/v2/agentx/challenges`；gateway经Core在线授权后生成最多30秒、256-bit、单次、进程内challenge，绑定bearer hash、executor/key、gateway instance和无query的literal WSS path。agentx用登记的Ed25519私钥签名`executor-wss-proof/ed25519-v1`定长顺序/长度分隔transcript，并在WSS upgrade携带challenge ID与proof header；gateway升级前再次在线授权并原子consume。P-256私钥只用于Hydra client authentication。只有 bearer token 而没有独立Ed25519持有证明不能建立执行通道。Phase 1不声称Hydra DPoP/`cnf`支持。
 4. 完成第3步的key proof后，agentx先发送不占`sessionSeq`的`hello`连接前导，声明agentx protocol、各env的pinned exec-server build/schema、capability probe摘要，以及恢复窗口内仍活跃的`{processId, localExecInstanceId}`集合。可选resume cursor精确为`{gatewayInstanceId, sessionId, generation, agentxSentThrough, agentxReceivedThrough}`。hello由已认证WSS与第3步proof绑定；它仍只是恢复提示，不是可信身份，gateway必须用注册manifest和既有ownership核对，不能接受客户端凭空声明process。
 5. fresh连接必须先由core CAS取得新的connection generation，再创建进程内session journal；resume则必须命中同一个`gatewayInstanceId/sessionId/generation`和仍完整的journal，不能增加generation或创建空journal冒充旧session。gateway随后发送不占sequence的`welcome`，明确`fresh|resumed`、双向cursor和固定30秒窗口。resume不满足任一条件时返回terminal `resume_rejected|resume_gap|resume_expired`，agentx先清理旧instance，不能在同一连接静默降级为fresh。
 6. fresh session由gateway发送第一条有序`type=lifecycle` frame；其`rpc`使用标准JSON-RPC 2.0：
@@ -885,7 +885,7 @@ PR 11已把executor contract部分落成机器事实源：`agentx-envelope.schem
 
 PR 12已把gateway/core连接和首个executor shell纵向切片变成可运行代码：forward-only `0004`保存executor/environment、不可复用connection attempt和当前generation holder，`0005`增加只适用于尾部`timeout_terminate`的非dispatch `skipped`终态；mTLS internal command API原子执行acquire/renew/activate/fence以及七个execution/operation命令；真实WebSocket server完成`hello/welcome`、远端`initialize/initialized`、ACK、bounded replay、同进程30秒resume和fresh generation fence。fresh acquire只得到`connecting`，远端lifecycle成功后才把env发布为`online`；旧connectionId留在attempt表中，更新generation后重试只能被fence，不能反向夺回owner。gateway拥有按generation和完整routing context关联的有界process exchange；独立agentx仓库已实现connector/runner IPC、registered-root重复复核、outer timeout signal及每process独占的stock exec-server stdio监管。core的online environment查询以数据库时钟检查lease，gateway的stateful MCP `/mcp`固定`2025-11-25`，实际开发serve只在shell terminal链装配完成后发布`list_environments|shell`。execution transport不接受调用方提供的digest：core从原始JSON按tool schema/domain重新验证、JCS和hash；gateway以单调transition allocator和core返回version推进两项operation，只有一次性`Began=true`才发送start/terminate，匹配RPC response才写各自ACK，真实`exited/closed`才写terminal/output complete，deadline前终态则用`SkipOperation`关闭预分配timeout。发送歧义不重发并收为unknown。shell mapper固定生成`special:minimal(read) + registered-root(write)`；exact stock 0.146.0 macOS live gate已证明该profile可在clean env下执行绝对系统命令，而workspace-only path负向探测以exit 134失败，防止再次删掉必要的platform runtime。相关mapper、MCP组合、socket和race门禁已通过；DB-clock lease过滤case仍必须由配置PostgreSQL执行integration gate。
 
-该状态仍不能称为生产可部署executor：loopback insecure-dev已经把per-tool `ask`、Core Create/Observe/Decide/Expire/Cancel/Consume、真实MCP elicitation、harness-control outcome、consume-before-dispatch和浏览器Code + PKCE登录链接通；包含登录与重放门禁的新pinned Linux arm64镜像已在全新状态卷及同卷复跑通过。Core签发/在线撤销的短期run capability authority已经实现，但生产agentx OAuth/机器key proof、enrollment、gateway/llmproxy本地验签与逐请求Core授权、gateway进程丢失后的dispatching/acknowledged恢复审计、平台containment、故障注入门禁和部署manifest仍未实现。当前gateway命令只提供显式loopback `--insecure-dev`，executor MCP使用开发HMAC动态签发且绑定完整run/attempt/version/catalog scope的短期capability；生产serve模式刻意不存在。任何未关联business RPC与不匹配MCP call metadata仍会fail closed。
+该状态仍不能称为生产可部署executor，但缺口已经后移。Core的双钥enrollment、Hydra v26.2.0 ES256 `private_key_jwt`、opaque短期token在线授权/吊销已经实现；llmproxy和executor-gateway也已有production serve、本地Ed25519 run-capability验签及逐请求Core live-authorize。executor-gateway额外完成deployment-bound enrollment relay、256-bit/30秒进程内challenge、Ed25519 WSS proof、replay/expiry/Core故障/revoke门禁、TLS/mTLS SPIFFE装配和真实进程级production E2E；`serve --insecure-dev`只保留为显式开发入口。仍未完成的是独立agentx中的owner-only双私钥存储、RFC 7523换token、challenge签名/WSS重连和connector→runner/exec-server凭证隔离，以及gateway进程丢失后的dispatching/acknowledged恢复审计、目标平台containment、生产Kubernetes/IAM/Secret/NetworkPolicy清单与故障注入。任何未关联business RPC与不匹配MCP call metadata仍会fail closed。
 
 进入实现前必须完成以下 Phase 0 gate：
 
@@ -897,7 +897,7 @@ PR 12已把gateway/core连接和首个executor shell纵向切片变成可运行�
 - [ ] 完成 session lease、run-attempt lease/generation、producer idempotency、cursor-expired snapshot 和大 payload 临时对象/孤儿清理原型。
 - [ ] 完成 `PrepareExecution → approval → dispatching → ACK/running → terminal` 状态机，并在 DB commit、WSS send、agentx ACK、MCP response 各边界注入 crash，证明未知副作用不会自动重放。
 - [ ] 验证 executor 侧空 Codex home、清洗环境、无模型 credential、禁用 `--remote`/`http/request`，且不能回退到未校验系统 Codex。
-- [ ] 完成 executor enrollment、独立机器身份、吊销、30 秒 WSS 恢复和 stdio child 跨重连存活测试。
+- [ ] 完成 executor enrollment、独立机器身份、吊销、30 秒 WSS 恢复和 stdio child 跨重连存活测试（Core/Hydra/gateway的enrollment、在线吊销、challenge/proof/replay/同进程WSS门禁已完成；agentx生产credential与真实connector跨重连仍待完成）。
 - [ ] 完成 child → agentx `network/policyRequest` 的 allow/deny/ask、断线超时 fail-closed 和审批审计测试。
 - [ ] 完成路径逃逸、symlink/TOCTOU、环境变量泄漏和 sandbox policy 安全测试。
 - [ ] 完成 agentx 控制面与执行树的 uid/namespace、ptrace/`/proc`、继承 FD、signal 和 non-exportable key 隔离测试。

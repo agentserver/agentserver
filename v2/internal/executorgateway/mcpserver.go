@@ -181,7 +181,8 @@ func NewExecutorMCPHandler(authenticator ExecutorMCPAuthenticator, resolver *Env
 }
 
 func (handler *ExecutorMCPHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
-	if request.URL.Path != ExecutorMCPPath || request.URL.RawQuery != "" {
+	if request == nil || request.URL == nil || request.URL.Path != ExecutorMCPPath || request.URL.RawPath != "" ||
+		request.URL.RawQuery != "" || request.URL.ForceQuery {
 		http.NotFound(response, request)
 		return
 	}

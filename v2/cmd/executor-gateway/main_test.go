@@ -16,11 +16,29 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
 )
 
-func TestRunRequiresExplicitInsecureDevMode(t *testing.T) {
+func TestRunRejectsUnknownMode(t *testing.T) {
 	var stderr bytes.Buffer
-	exitCode := run(t.Context(), []string{"serve"}, func(string) string { return "" }, &bytes.Buffer{}, &stderr, nil)
-	if exitCode != 2 || !strings.Contains(stderr.String(), "production agentx OAuth key binding is not implemented") {
+	exitCode := run(t.Context(), []string{"unknown"}, func(string) string { return "" }, &bytes.Buffer{}, &stderr, nil)
+	if exitCode != 2 || !strings.Contains(stderr.String(), "executor-gateway serve") || !strings.Contains(stderr.String(), "--insecure-dev") {
 		t.Fatalf("run() = %d, stderr %q", exitCode, stderr.String())
+	}
+}
+
+func TestRunProductionServe(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	called := false
+	exitCode := run(t.Context(), []string{"serve"}, func(string) string { return "configured" }, &stdout, &stderr,
+		func(_ context.Context, getenv func(string) string, output io.Writer, mode gatewayServeMode) error {
+			called = true
+			if mode != gatewayServeProduction || getenv("value") != "configured" {
+				t.Fatalf("production serve mode = %d", mode)
+			}
+			fmt.Fprintln(output, "serving production")
+			return nil
+		})
+	if exitCode != 0 || !called || stdout.String() != "serving production\n" || stderr.Len() != 0 {
+		t.Fatalf("run() = %d, called %v, stdout %q, stderr %q", exitCode, called, stdout.String(), stderr.String())
 	}
 }
 
@@ -29,9 +47,9 @@ func TestRunInsecureDevServe(t *testing.T) {
 	var stderr bytes.Buffer
 	called := false
 	exitCode := run(t.Context(), []string{"serve", "--insecure-dev"}, func(string) string { return "configured" }, &stdout, &stderr,
-		func(_ context.Context, getenv func(string) string, output io.Writer) error {
+		func(_ context.Context, getenv func(string) string, output io.Writer, mode gatewayServeMode) error {
 			called = true
-			if getenv("value") != "configured" {
+			if mode != gatewayServeInsecureDevelopment || getenv("value") != "configured" {
 				t.Fatal("getenv was not forwarded")
 			}
 			fmt.Fprintln(output, "serving")
@@ -50,6 +68,39 @@ func TestRequireLoopbackAddress(t *testing.T) {
 	}
 	if err := requireLoopbackAddress(":8443"); err == nil {
 		t.Fatal("wildcard insecure-dev listen address was accepted")
+	}
+}
+
+func TestGatewayHealthAndDevelopmentRouteSurface(t *testing.T) {
+	readiness := &gatewayReadiness{}
+	handler := gatewayRoutes(nil, nil, nil, readiness)
+	for _, test := range []struct {
+		method string
+		path   string
+		status int
+	}{
+		{method: http.MethodGet, path: "/healthz", status: http.StatusOK},
+		{method: http.MethodGet, path: "/readyz", status: http.StatusServiceUnavailable},
+		{method: http.MethodGet, path: "/healthz?query=1", status: http.StatusNotFound},
+		{method: http.MethodGet, path: "/healthz?", status: http.StatusNotFound},
+		{method: http.MethodPost, path: "/healthz", status: http.StatusNotFound},
+		{method: http.MethodGet, path: "//healthz", status: http.StatusNotFound},
+		{method: http.MethodGet, path: executorgateway.AgentxEnrollmentPath, status: http.StatusNotFound},
+		{method: http.MethodGet, path: executorgateway.AgentxChallengePath, status: http.StatusNotFound},
+	} {
+		request := httptest.NewRequest(test.method, "https://gateway.test"+test.path, nil)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != test.status || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Location") != "" {
+			t.Fatalf("%s %s = %d headers %+v", test.method, test.path, response.Code, response.Header())
+		}
+	}
+	readiness.ready.Store(true)
+	request := httptest.NewRequest(http.MethodGet, "https://gateway.test/readyz", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "ready") {
+		t.Fatalf("ready response = %d %s", response.Code, response.Body)
 	}
 }
 

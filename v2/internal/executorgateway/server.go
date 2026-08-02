@@ -152,17 +152,25 @@ func NewServer(authenticator ExecutorAuthenticator, authority ConnectionAuthorit
 }
 
 func (s *Server) ServeHTTP(response http.ResponseWriter, request *http.Request) {
-	if request.Method != http.MethodGet || request.URL.Path != AgentxConnectPath {
+	response.Header().Set("Cache-Control", "no-store")
+	response.Header().Set("X-Content-Type-Options", "nosniff")
+	if request == nil || request.URL == nil || request.Method != http.MethodGet || request.URL.Path != AgentxConnectPath ||
+		request.URL.RawPath != "" || request.URL.RawQuery != "" || request.URL.ForceQuery {
 		http.NotFound(response, request)
 		return
 	}
 	if !s.acceptingConnections() {
-		http.Error(response, "executor gateway is shutting down", http.StatusServiceUnavailable)
+		writeExecutorIdentityHTTPError(response, http.StatusServiceUnavailable, "unavailable", "executor gateway is shutting down")
 		return
 	}
 	identity, err := s.authenticator.AuthenticateExecutor(request)
 	if err != nil || identity.ExecutorID == "" {
-		http.Error(response, "executor authentication failed", http.StatusUnauthorized)
+		if errors.Is(err, errExecutorAuthenticationUnavailable) {
+			writeExecutorIdentityHTTPError(response, http.StatusServiceUnavailable, "unavailable", "executor authentication authority is temporarily unavailable")
+			return
+		}
+		response.Header().Set("WWW-Authenticate", `Bearer realm="executor-gateway"`)
+		writeExecutorIdentityHTTPError(response, http.StatusUnauthorized, "unauthorized", "executor authentication failed")
 		return
 	}
 

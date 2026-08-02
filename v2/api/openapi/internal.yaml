@@ -11,8 +11,15 @@
     "/internal/v2/executor-enrollments:complete": {
       "post": {
         "operationId": "completeExecutorEnrollment",
-        "description": "The executor-gateway relays one enrollment request. Core verifies the short-lived bearer, possession of the Ed25519 connection-proof key and P-256 OAuth key, immutable runtime/environment fingerprint, and exact Hydra ES256 private_key_jwt client before changing the executor to offline.",
+        "description": "The executor-gateway relays one enrollment request and injects its configured single-executor binding. Core verifies that binding against the short-lived bearer before any database or Hydra mutation, then verifies possession of the Ed25519 connection-proof key and P-256 OAuth key, immutable runtime/environment fingerprint, and exact Hydra ES256 private_key_jwt client before changing the executor to offline.",
         "security": [{"workloadMTLS": [], "executorEnrollmentBearer": []}],
+        "parameters": [{
+          "name": "X-Agentserver-Expected-Executor-Id",
+          "in": "header",
+          "required": true,
+          "description": "Gateway-configured executor deployment binding; never copied from the agentx request",
+          "schema": {"$ref": "#/components/schemas/UUID"}
+        }],
         "requestBody": {"required": true, "x-agentserver-maxBytes": 524288, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CompleteExecutorEnrollmentRequest"}}}},
         "responses": {
           "200": {"description": "Enrollment completed or exactly recovered", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CompleteExecutorEnrollmentResponse"}}}},

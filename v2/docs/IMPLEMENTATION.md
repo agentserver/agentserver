@@ -812,7 +812,7 @@ go run ./cmd/agentserver-dev fixtures --insecure-dev \
   --bundle=/absolute/new-agentserver-v2-dev
 ```
 
-单进程只绑定生成配置中的cleartext loopback Hydra/OIDC endpoint和TLS loopback Responses端点。Hydra/OIDC fixture实现public authorize/token、Admin login/consent、外部IdP discovery/authorize/token/JWKS、Code + PKCE单次消费、Ed25519 ID token和动态opaque access-token introspection；动态token映射到bootstrap actor、单一`agentserver-api` audience和`openid runs:write` scope。兼容用固定browser bearer仍只服务旧introspection测试，reference web和整栈smoke均不读取。Responses端逐请求验证动态HMAC capability的`aud=llmproxy`、时间、authority和model/provider route，明确拒绝executor token；脚本状态按capability/run/attempt/generation隔离，先调用`executor.list_environments {}`，再要求对应`function_call_output`后返回terminal assistant message。该fixture是可复现联调依赖，不是生产Hydra、外部IdP或llmproxy实现。
+单进程只绑定生成配置中的cleartext loopback Hydra/OIDC endpoint和TLS loopback Responses端点。Hydra/OIDC fixture实现public authorize/token、Admin login/consent、外部IdP discovery/authorize/token/JWKS、Code + PKCE单次消费、Ed25519 ID token和动态opaque access-token introspection；动态token映射到bootstrap actor、单一`agentserver-api` audience和`openid runs:write executors:write` scope，executor写操作仍由Core复核workspace owner角色。兼容用固定browser bearer仍只服务旧introspection测试，reference web和整栈smoke均不读取。Responses端逐请求验证动态HMAC capability的`aud=llmproxy`、时间、authority和model/provider route，明确拒绝executor token；脚本状态按capability/run/attempt/generation隔离，先调用`executor.list_environments {}`，再要求对应`function_call_output`后返回terminal assistant message。该fixture是可复现联调依赖，不是生产Hydra、外部IdP或llmproxy实现。
 
 harness-pool运行入口固定为：
 

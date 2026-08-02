@@ -11,12 +11,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	a2uiweb "github.com/agentserver/agentserver/v2/a2ui-web"
 	"github.com/agentserver/agentserver/v2/internal/browsergateway"
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 )
 
 const (
@@ -89,6 +91,10 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 	if err != nil {
 		return err
 	}
+	canonicalBrowserScopes, err := validateBrowserOAuthAuthority(browserOAuthAudience, browserOAuthScopes)
+	if err != nil {
+		return err
+	}
 
 	coreHTTPClient, err := newBrowserCoreHTTPClient(
 		coreCAFile,
@@ -123,7 +129,7 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 		developmentOIDCHandler = developmentOIDCProxy.Routes()
 	}
 	authConfig, err := browsergateway.NewBrowserAuthorizationConfigHandler(
-		browserOAuthClientID, browserOAuthAudience, strings.Split(browserOAuthScopes, ","),
+		browserOAuthClientID, browserOAuthAudience, canonicalBrowserScopes,
 	)
 	if err != nil {
 		return err
@@ -132,9 +138,14 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 	if err != nil {
 		return err
 	}
+	executorHandler, err := browsergateway.NewExecutorResourceHandler(backend, browsergateway.ExecutorResourceHandlerConfig{})
+	if err != nil {
+		return err
+	}
 	readiness := &browserReadiness{}
 	handler := browserGatewayRoutes(
-		aguiHandler.Routes(), authProxy.Routes(), authConfig, hydraProxy.Routes(), developmentOIDCHandler, readiness,
+		aguiHandler.Routes(), executorHandler.Routes(), authProxy.Routes(), authConfig,
+		hydraProxy.Routes(), developmentOIDCHandler, readiness,
 	)
 	tlsConfig, err := browserGatewayTLSConfig(certificateFile, keyFile)
 	if err != nil {
@@ -183,8 +194,28 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 	return err
 }
 
-func browserGatewayRoutes(agui, auth, authConfig, hydra, developmentOIDC http.Handler, readiness *browserReadiness) http.Handler {
+func validateBrowserOAuthAuthority(audience, commaSeparatedScopes string) ([]string, error) {
+	scopes := strings.Split(commaSeparatedScopes, ",")
+	expected := corecontract.BrowserOAuthScopes()
+	if audience != corecontract.BrowserOAuthAudience || !slices.Equal(scopes, expected) {
+		return nil, fmt.Errorf(
+			"browser OAuth authority must be audience %q and canonical scopes %q",
+			corecontract.BrowserOAuthAudience, strings.Join(expected, ","),
+		)
+	}
+	return scopes, nil
+}
+
+func browserGatewayRoutes(agui, executors, auth, authConfig, hydra, developmentOIDC http.Handler, readiness *browserReadiness) http.Handler {
 	mux := http.NewServeMux()
+	mux.Handle("POST "+corecontract.ExecutorManagementRoutePattern, executors)
+	mux.Handle("POST "+corecontract.ExecutorEnrollmentTokenRoutePattern, executors)
+	executorMethodGuard := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Allow", http.MethodPost)
+		writeBrowserRouteError(response, http.StatusMethodNotAllowed, "method_not_allowed", "executor resource endpoints require POST")
+	})
+	mux.Handle(corecontract.ExecutorManagementRoutePattern, executorMethodGuard)
+	mux.Handle(corecontract.ExecutorEnrollmentTokenRoutePattern, executorMethodGuard)
 	mux.Handle("/v2/", agui)
 	mux.Handle("/auth/", auth)
 	mux.Handle("GET /auth/config", authConfig)
@@ -202,6 +233,13 @@ func browserGatewayRoutes(agui, auth, authConfig, hydra, developmentOIDC http.Ha
 	})
 	mux.Handle("/", a2uiweb.Handler())
 	return mux
+}
+
+func writeBrowserRouteError(response http.ResponseWriter, status int, code, message string) {
+	response.Header().Set("Content-Type", "application/json")
+	response.Header().Set("Cache-Control", "no-store")
+	response.WriteHeader(status)
+	_, _ = fmt.Fprintf(response, "{\"error\":{\"code\":%q,\"message\":%q}}\n", code, message)
 }
 
 func writeHealth(response http.ResponseWriter, status int, body string) {

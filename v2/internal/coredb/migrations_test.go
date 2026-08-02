@@ -11,8 +11,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 13 {
-		t.Fatalf("migration count = %d, want 13", len(migrations))
+	if len(migrations) != 14 {
+		t.Fatalf("migration count = %d, want 14", len(migrations))
 	}
 	migration := migrations[0]
 	if migration.Version != 1 || migration.Name != "session_run_kernel" {
@@ -56,6 +56,9 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	if migrations[12].Version != 13 || migrations[12].Name != "oidc_login_bridge" {
 		t.Fatalf("thirteenth migration identity = %04d_%s, want 0013_oidc_login_bridge", migrations[12].Version, migrations[12].Name)
+	}
+	if migrations[13].Version != 14 || migrations[13].Name != "executor_enrollment_identity" {
+		t.Fatalf("fourteenth migration identity = %04d_%s, want 0014_executor_enrollment_identity", migrations[13].Version, migrations[13].Name)
 	}
 }
 

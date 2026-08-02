@@ -24,6 +24,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/braincatalog"
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
 )
 
@@ -37,8 +38,9 @@ const (
 	RelativeLLMProxyCertificate    = "pki/llmproxy.crt"
 	RelativeLLMProxyPrivateKey     = "pki/llmproxy.key"
 
-	BrowserTokenAudience   = "agentserver-api"
-	BrowserTokenScope      = "runs:write"
+	BrowserTokenAudience   = corecontract.BrowserOAuthAudience
+	BrowserTokenScope      = corecontract.BrowserOAuthRunScope
+	BrowserExecutorScope   = corecontract.BrowserOAuthExecutorScope
 	BrowserOAuthClientID   = "agentserver-web"
 	ExternalOIDCClientID   = "agentserver-core"
 	ExternalOIDCSubject    = "agentserver-dev-user"
@@ -55,6 +57,10 @@ const (
 	maximumSecretBytes = int64(32 * 1024)
 	llmproxySPIFFEID   = "spiffe://agentserver.dev/ns/insecure-dev/sa/llmproxy"
 )
+
+func browserAuthorizationScopes() []string {
+	return corecontract.BrowserOAuthScopes()
+}
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 

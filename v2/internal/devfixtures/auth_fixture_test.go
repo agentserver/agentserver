@@ -29,7 +29,7 @@ func TestAuthorizationFixturesCompleteCodePKCEAndMintIntrospectableToken(t *test
 	authorize := url.Values{
 		"response_type": {"code"}, "client_id": {BrowserOAuthClientID},
 		"redirect_uri": {runtime.bundle.document.Hydra.BrowserRedirectURI},
-		"scope":        {"openid " + BrowserTokenScope}, "audience": {BrowserTokenAudience},
+		"scope":        {strings.Join(browserAuthorizationScopes(), " ")}, "audience": {BrowserTokenAudience},
 		"state": {browserState}, "nonce": {browserNonce},
 		"code_challenge": {browserChallenge}, "code_challenge_method": {"S256"},
 	}
@@ -55,7 +55,7 @@ func TestAuthorizationFixturesCompleteCodePKCEAndMintIntrospectableToken(t *test
 	}
 	decodeFixtureResponse(t, loginRequest, &loginDocument)
 	if loginDocument.Challenge != loginChallenge || loginDocument.Client.ClientID != BrowserOAuthClientID ||
-		!sameFixtureSet(loginDocument.RequestedScope, []string{"openid", BrowserTokenScope}) ||
+		!sameFixtureSet(loginDocument.RequestedScope, browserAuthorizationScopes()) ||
 		!sameFixtureSet(loginDocument.RequestedAudience, []string{BrowserTokenAudience}) {
 		t.Fatalf("login request authority = %+v", loginDocument)
 	}
@@ -124,7 +124,7 @@ func TestAuthorizationFixturesCompleteCodePKCEAndMintIntrospectableToken(t *test
 	if consentRequest.Code != http.StatusOK {
 		t.Fatalf("get consent request = %d %s", consentRequest.Code, consentRequest.Body.String())
 	}
-	acceptConsentBody := []byte(`{"grant_scope":["openid","runs:write"],"grant_access_token_audience":["agentserver-api"],"remember":false,"remember_for":0,"session":{"access_token":{},"id_token":{}}}`)
+	acceptConsentBody := []byte(`{"grant_scope":["openid","runs:write","executors:write"],"grant_access_token_audience":["agentserver-api"],"remember":false,"remember_for":0,"session":{"access_token":{},"id_token":{}}}`)
 	acceptedConsent := callAuthorizationFixture(
 		t, runtime, http.MethodPut,
 		"/admin/oauth2/auth/requests/consent/accept?"+(url.Values{"consent_challenge": {consentChallenge}}).Encode(),
@@ -160,7 +160,7 @@ func TestAuthorizationFixturesCompleteCodePKCEAndMintIntrospectableToken(t *test
 	}
 	decodeFixtureResponse(t, browserToken, &browserTokenDocument)
 	if browserTokenDocument.AccessToken == "" || browserTokenDocument.TokenType != "Bearer" ||
-		!sameFixtureSet(strings.Fields(browserTokenDocument.Scope), []string{"openid", BrowserTokenScope}) {
+		!sameFixtureSet(strings.Fields(browserTokenDocument.Scope), browserAuthorizationScopes()) {
 		t.Fatalf("browser token authority = %+v", browserTokenDocument)
 	}
 	introspection := httptest.NewRecorder()
@@ -236,7 +236,7 @@ func TestHydraAdminFixtureWorksWithProductionClient(t *testing.T) {
 	authorize := url.Values{
 		"response_type": {"code"}, "client_id": {BrowserOAuthClientID},
 		"redirect_uri": {runtime.bundle.document.Hydra.BrowserRedirectURI},
-		"scope":        {"openid " + BrowserTokenScope}, "audience": {BrowserTokenAudience},
+		"scope":        {strings.Join(browserAuthorizationScopes(), " ")}, "audience": {BrowserTokenAudience},
 		"state": {state}, "nonce": {nonce},
 		"code_challenge": {base64.RawURLEncoding.EncodeToString(challengeRaw[:])}, "code_challenge_method": {"S256"},
 	}
@@ -263,7 +263,7 @@ func TestHydraAdminFixtureWorksWithProductionClient(t *testing.T) {
 		t.Fatalf("Hydra Admin consent request = %+v", consent)
 	}
 	consentRedirect, err := admin.AcceptConsentRequest(
-		t.Context(), consentChallenge, []string{"openid", BrowserTokenScope}, []string{BrowserTokenAudience},
+		t.Context(), consentChallenge, browserAuthorizationScopes(), []string{BrowserTokenAudience},
 	)
 	if err != nil || consentRedirect.RedirectTo == "" {
 		t.Fatalf("Hydra Admin consent acceptance = %+v, %v", consentRedirect, err)

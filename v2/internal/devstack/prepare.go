@@ -620,7 +620,7 @@ func renderServiceEnvironments(
 			"AGENTSERVER_V2_DEVELOPMENT_OIDC_AUTHORIZATION_UPSTREAM": config.HydraFixtureOrigin,
 			"AGENTSERVER_V2_BROWSER_OAUTH_CLIENT_ID":                 devfixtures.BrowserOAuthClientID,
 			"AGENTSERVER_V2_BROWSER_OAUTH_AUDIENCE":                  devfixtures.BrowserTokenAudience,
-			"AGENTSERVER_V2_BROWSER_OAUTH_SCOPES":                    "openid," + devfixtures.BrowserTokenScope,
+			"AGENTSERVER_V2_BROWSER_OAUTH_SCOPES":                    "openid," + devfixtures.BrowserTokenScope + "," + devfixtures.BrowserExecutorScope,
 		},
 		executorEnvironmentFile: {
 			"AGENTSERVER_V2_EXECUTOR_GATEWAY_LISTEN_ADDR":   document.Network.ExecutorGatewayListenAddress,

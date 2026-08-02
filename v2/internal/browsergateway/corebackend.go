@@ -290,6 +290,13 @@ func decodeCoreCursorExpired(raw []byte, expected ProjectionScope) (*CursorExpir
 }
 
 func (backend *CoreRunBackend) do(request *http.Request) (*http.Response, []byte, error) {
+	return backend.doBounded(request, maxCoreRunResponseBytes)
+}
+
+func (backend *CoreRunBackend) doBounded(request *http.Request, maximumBytes int64) (*http.Response, []byte, error) {
+	if maximumBytes <= 0 || maximumBytes > maxCoreRunResponseBytes {
+		return nil, nil, errors.New("core response size bound is invalid")
+	}
 	response, err := backend.httpClient.Do(request)
 	if err != nil {
 		return nil, nil, fmt.Errorf("execute core run request: %w", err)
@@ -299,12 +306,12 @@ func (backend *CoreRunBackend) do(request *http.Request) (*http.Response, []byte
 		response.Body.Close()
 		return nil, nil, errors.New("core run response is not application/json")
 	}
-	raw, err := io.ReadAll(io.LimitReader(response.Body, maxCoreRunResponseBytes+1))
+	raw, err := io.ReadAll(io.LimitReader(response.Body, maximumBytes+1))
 	if err != nil {
 		response.Body.Close()
 		return nil, nil, fmt.Errorf("read core run response: %w", err)
 	}
-	if len(raw) > int(maxCoreRunResponseBytes) {
+	if int64(len(raw)) > maximumBytes {
 		response.Body.Close()
 		return nil, nil, errors.New("core run response exceeds size limit")
 	}

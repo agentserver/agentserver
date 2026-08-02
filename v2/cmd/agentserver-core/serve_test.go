@@ -167,6 +167,66 @@ func TestMountCoreRunCapabilityRoutesIsProductionOnly(t *testing.T) {
 	}
 }
 
+func TestConfigureCoreProductionEnrollmentLoadsRestrictedAuthorityOnlyInProduction(t *testing.T) {
+	capabilityEnvironment := productionRunCapabilityEnvironment(t, true)
+	capabilityConfig, err := configureCoreProductionRunCapabilities(
+		func(name string) string { return capabilityEnvironment[name] },
+		coreServeProduction,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	keyPath := filepath.Join(root, "enrollment.key")
+	key := base64.RawURLEncoding.EncodeToString(bytesOfForCoreTest(0x6b, 32))
+	if err := os.WriteFile(keyPath, []byte(key), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configuration := map[string]string{coreEnrollmentKeyEnvironment: keyPath, coreEnrollmentTTLEnvironment: "10m"}
+	loaded, err := configureCoreProductionEnrollment(func(name string) string { return configuration[name] }, coreServeProduction, capabilityConfig)
+	if err != nil || loaded == nil || loaded.tokens.Issuer() != capabilityConfig.signer.Issuer() || loaded.ttl != 10*time.Minute {
+		t.Fatalf("production enrollment config = %+v, %v", loaded, err)
+	}
+	development, err := configureCoreProductionEnrollment(func(name string) string {
+		t.Fatalf("development enrollment read %s", name)
+		return ""
+	}, coreServeInsecureDevelopment, nil)
+	if err != nil || development != nil {
+		t.Fatalf("development enrollment config = %+v, %v", development, err)
+	}
+	configuration[coreEnrollmentTTLEnvironment] = "16m"
+	if _, err := configureCoreProductionEnrollment(func(name string) string { return configuration[name] }, coreServeProduction, capabilityConfig); err == nil {
+		t.Fatal("oversized executor enrollment TTL was accepted")
+	}
+}
+
+func TestMountCoreExecutorIdentityRoutesIsProductionOnly(t *testing.T) {
+	development := http.NewServeMux()
+	mountCoreExecutorIdentityRoutes(development, nil, nil)
+	response := httptest.NewRecorder()
+	development.ServeHTTP(response, httptest.NewRequest(http.MethodPost, corecontract.CompleteExecutorEnrollmentPath, nil))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("development executor identity route status = %d", response.Code)
+	}
+
+	production := http.NewServeMux()
+	users := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) { response.WriteHeader(http.StatusCreated) })
+	internal := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) { response.WriteHeader(http.StatusNoContent) })
+	mountCoreExecutorIdentityRoutes(production, users, internal)
+	for path, want := range map[string]int{
+		corecontract.CreateExecutorResourcePath("71000000-0000-4000-8000-000000000002"):                                               http.StatusCreated,
+		corecontract.IssueExecutorEnrollmentTokenPath("71000000-0000-4000-8000-000000000002", "71000000-0000-4000-8000-000000000003"): http.StatusCreated,
+		corecontract.CompleteExecutorEnrollmentPath:                                                                                   http.StatusNoContent,
+		corecontract.AuthorizeExecutorConnectionPath:                                                                                  http.StatusNoContent,
+	} {
+		response = httptest.NewRecorder()
+		production.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, nil))
+		if response.Code != want {
+			t.Fatalf("production executor route %s status = %d, want %d", path, response.Code, want)
+		}
+	}
+}
+
 func TestCoreBrowserConfigurationParsersFailClosed(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
 	encoded := base64.RawURLEncoding.EncodeToString(key)

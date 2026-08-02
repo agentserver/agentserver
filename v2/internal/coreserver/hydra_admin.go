@@ -21,6 +21,43 @@ type HydraOAuth2Client struct {
 	ClientID string `json:"client_id"`
 }
 
+type HydraJSONWebKey struct {
+	KeyType   string `json:"kty"`
+	Use       string `json:"use"`
+	Curve     string `json:"crv"`
+	KeyID     string `json:"kid"`
+	X         string `json:"x"`
+	Y         string `json:"y,omitempty"`
+	Algorithm string `json:"alg"`
+}
+
+type HydraJSONWebKeySet struct {
+	Keys []HydraJSONWebKey `json:"keys"`
+}
+
+// HydraExecutorOAuthClient is the exact non-secret business profile Core
+// reconciles for one executor. Hydra may return create-only provisioning
+// credentials; the Admin adapter reads them within strict bounds and discards
+// them before this profile crosses the boundary. Client reads reject them.
+type HydraExecutorOAuthClient struct {
+	ClientID                                  string             `json:"client_id"`
+	ClientName                                string             `json:"client_name"`
+	GrantTypes                                []string           `json:"grant_types"`
+	ResponseTypes                             []string           `json:"response_types"`
+	Scope                                     string             `json:"scope"`
+	Audience                                  []string           `json:"audience"`
+	TokenEndpointAuthMethod                   string             `json:"token_endpoint_auth_method"`
+	TokenEndpointAuthSigningAlg               string             `json:"token_endpoint_auth_signing_alg"`
+	AccessTokenStrategy                       string             `json:"access_token_strategy"`
+	ClientCredentialsGrantAccessTokenLifespan string             `json:"client_credentials_grant_access_token_lifespan"`
+	JSONWebKeys                               HydraJSONWebKeySet `json:"jwks"`
+}
+
+type HydraExecutorClientAdmin interface {
+	CreateExecutorOAuthClient(context.Context, HydraExecutorOAuthClient) (HydraExecutorOAuthClient, error)
+	GetExecutorOAuthClient(context.Context, string) (HydraExecutorOAuthClient, error)
+}
+
 type HydraLoginRequest struct {
 	Challenge                    string            `json:"challenge"`
 	Skip                         bool              `json:"skip"`
@@ -165,6 +202,28 @@ func (client *HydraAdminClient) RejectConsentRequest(ctx context.Context, challe
 	return validateHydraRedirect(result, err)
 }
 
+func (client *HydraAdminClient) CreateExecutorOAuthClient(ctx context.Context, document HydraExecutorOAuthClient) (HydraExecutorOAuthClient, error) {
+	if err := validateHydraExecutorClientInput(document); err != nil {
+		return HydraExecutorOAuthClient{}, err
+	}
+	result := hydraExecutorClientResponse{allowProvisioningSecrets: true}
+	if err := client.doExpected(ctx, http.MethodPost, "/admin/clients", "", "", document, &result, "create executor OAuth client", http.StatusCreated); err != nil {
+		return HydraExecutorOAuthClient{}, err
+	}
+	return result.document, nil
+}
+
+func (client *HydraAdminClient) GetExecutorOAuthClient(ctx context.Context, clientID string) (HydraExecutorOAuthClient, error) {
+	if !boundedHydraClientText(clientID, 128) {
+		return HydraExecutorOAuthClient{}, errors.New("Hydra executor OAuth client ID is invalid")
+	}
+	result := hydraExecutorClientResponse{}
+	if err := client.doExpected(ctx, http.MethodGet, "/admin/clients/"+url.PathEscape(clientID), "", "", nil, &result, "get executor OAuth client", http.StatusOK); err != nil {
+		return HydraExecutorOAuthClient{}, err
+	}
+	return result.document, nil
+}
+
 type hydraRejectRequest struct {
 	Error            string `json:"error"`
 	ErrorDescription string `json:"error_description"`
@@ -177,17 +236,29 @@ func (client *HydraAdminClient) do(
 	body, destination any,
 	operation string,
 ) error {
+	return client.doExpected(ctx, method, path, challengeName, challenge, body, destination, operation, http.StatusOK)
+}
+
+func (client *HydraAdminClient) doExpected(
+	ctx context.Context,
+	method, path, challengeName, challenge string,
+	body, destination any,
+	operation string,
+	expectedStatus int,
+) error {
 	if client == nil || client.origin == nil || client.httpClient == nil {
 		return errors.New("Hydra Admin client is not initialized")
 	}
-	if challenge == "" || len(challenge) > 4096 || strings.ContainsAny(challenge, "\x00\r\n") {
+	if challengeName != "" && (challenge == "" || len(challenge) > 4096 || strings.ContainsAny(challenge, "\x00\r\n")) {
 		return errors.New("Hydra challenge is empty or outside protocol bounds")
 	}
 	endpoint := *client.origin
 	endpoint.Path = path
-	query := url.Values{}
-	query.Set(challengeName, challenge)
-	endpoint.RawQuery = query.Encode()
+	if challengeName != "" {
+		query := url.Values{}
+		query.Set(challengeName, challenge)
+		endpoint.RawQuery = query.Encode()
+	}
 
 	var requestBody io.Reader
 	if body != nil {
@@ -220,7 +291,7 @@ func (client *HydraAdminClient) do(
 	if int64(len(raw)) > maximumHydraAdminResponseBytes {
 		return errors.New("Hydra Admin response exceeds size limit")
 	}
-	if response.StatusCode != http.StatusOK {
+	if response.StatusCode != expectedStatus {
 		return &HydraAdminError{StatusCode: response.StatusCode, Operation: operation}
 	}
 	mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
@@ -238,6 +309,28 @@ func (client *HydraAdminClient) do(
 		return fmt.Errorf("decode Hydra Admin %s response: %w", operation, err)
 	}
 	return nil
+}
+
+func validateHydraExecutorClientInput(document HydraExecutorOAuthClient) error {
+	if !boundedHydraClientText(document.ClientID, 128) || !boundedHydraClientText(document.ClientName, 256) {
+		return errors.New("Hydra executor OAuth client identity is outside bounds")
+	}
+	if len(document.GrantTypes) != 1 || document.GrantTypes[0] != "client_credentials" || len(document.ResponseTypes) != 0 ||
+		document.Scope != "executor:connect" || len(document.Audience) != 1 || document.Audience[0] != "executor-gateway" ||
+		document.TokenEndpointAuthMethod != "private_key_jwt" || document.TokenEndpointAuthSigningAlg != "ES256" ||
+		document.AccessTokenStrategy != "opaque" || document.ClientCredentialsGrantAccessTokenLifespan != "5m0s" || len(document.JSONWebKeys.Keys) != 1 {
+		return errors.New("Hydra executor OAuth client does not use the closed production profile")
+	}
+	key := document.JSONWebKeys.Keys[0]
+	if key.KeyType != "EC" || key.Use != "sig" || key.Curve != "P-256" || key.Algorithm != "ES256" ||
+		!boundedHydraClientText(key.KeyID, 128) || !boundedHydraClientText(key.X, 128) || !boundedHydraClientText(key.Y, 128) {
+		return errors.New("Hydra executor OAuth client JWK is invalid")
+	}
+	return nil
+}
+
+func boundedHydraClientText(value string, maximum int) bool {
+	return value != "" && len(value) <= maximum && strings.TrimSpace(value) == value && !strings.ContainsAny(value, "\x00\r\n")
 }
 
 func validateHydraRedirect(result HydraRedirect, err error) (HydraRedirect, error) {

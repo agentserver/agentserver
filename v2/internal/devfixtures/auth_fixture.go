@@ -119,7 +119,7 @@ func (runtime *fixtureRuntime) beginHydraAuthorization(writer http.ResponseWrite
 		values["code_challenge_method"] != "S256" ||
 		!validFixtureSecret(values["state"]) || !validFixtureSecret(values["nonce"]) ||
 		!validPKCEChallenge(values["code_challenge"]) ||
-		!sameFixtureSet(strings.Fields(values["scope"]), []string{"openid", BrowserTokenScope}) ||
+		!sameFixtureSet(strings.Fields(values["scope"]), browserAuthorizationScopes()) ||
 		values["audience"] != BrowserTokenAudience {
 		writeFixtureError(writer, http.StatusBadRequest, "development authorization request rejected")
 		return
@@ -144,7 +144,7 @@ func (runtime *fixtureRuntime) beginHydraAuthorization(writer http.ResponseWrite
 	runtime.hydraLogins[challenge] = hydraLoginFixture{
 		clientID: values["client_id"], redirectURI: values["redirect_uri"], state: values["state"],
 		nonce: values["nonce"], codeChallenge: values["code_challenge"],
-		scopes: []string{"openid", BrowserTokenScope}, audience: []string{BrowserTokenAudience},
+		scopes: browserAuthorizationScopes(), audience: []string{BrowserTokenAudience},
 		status: hydraLoginPending, expiresAt: now.Add(authorizationTransactionTTL),
 	}
 	runtime.authMu.Unlock()
@@ -382,7 +382,7 @@ func (runtime *fixtureRuntime) serveHydraAdminConsentAccept(writer http.Response
 		} `json:"session"`
 	}
 	if err != nil || parameterErr != nil || readFixtureJSON(writer, request, &body) != nil ||
-		!sameFixtureSet(body.GrantScope, []string{"openid", BrowserTokenScope}) ||
+		!sameFixtureSet(body.GrantScope, browserAuthorizationScopes()) ||
 		!sameFixtureSet(body.GrantAccessTokenAudience, []string{BrowserTokenAudience}) ||
 		body.Remember || body.RememberFor != 0 || len(body.Session.AccessToken) != 0 || len(body.Session.IDToken) != 0 {
 		writeFixtureError(writer, http.StatusBadRequest, "development Hydra consent acceptance rejected")

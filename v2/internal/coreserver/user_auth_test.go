@@ -98,7 +98,10 @@ func TestHydraUserIntrospectorBoundsResponseAndDoesNotFollowRedirects(t *testing
 		}
 		return &http.Response{
 			StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
-			Body:    io.NopCloser(strings.NewReader(`{"active":true,"sub":"` + userRunActorID + `","aud":"agentserver-api","scope":"runs:write","exp":2000000000,"extra":"ignored"}`)),
+			Body: io.NopCloser(strings.NewReader(`{"active":true,"sub":"` + userRunActorID +
+				`","client_id":"executor-client","aud":"agentserver-api","scope":"runs:write","exp":2000000000,` +
+				`"iat":1999999700,"nbf":1999999700,"iss":"https://hydra.example/","token_type":"Bearer",` +
+				`"token_use":"access_token","extra":"ignored"}`)),
 			Request: request,
 		}, nil
 	})}
@@ -108,7 +111,9 @@ func TestHydraUserIntrospectorBoundsResponseAndDoesNotFollowRedirects(t *testing
 		t.Fatal(err)
 	}
 	result, err := introspector.IntrospectUserToken(t.Context(), "opaque-token")
-	if err != nil || !result.Active || result.Subject != userRunActorID || len(result.Audience) != 1 {
+	if err != nil || !result.Active || result.Subject != userRunActorID || result.ClientID != "executor-client" ||
+		len(result.Audience) != 1 || result.IssuedAt != 1999999700 || result.NotBefore != 1999999700 ||
+		result.Issuer != "https://hydra.example/" || result.TokenType != "Bearer" || result.TokenUse != "access_token" {
 		t.Fatalf("IntrospectUserToken() = %+v, %v", result, err)
 	}
 
@@ -130,6 +135,23 @@ func TestHydraUserIntrospectorBoundsResponseAndDoesNotFollowRedirects(t *testing
 	}
 	if requests != 1 {
 		t.Fatalf("valid introspection requests = %d", requests)
+	}
+}
+
+func TestHydraUserIntrospectorRejectsDuplicateAuthorityFields(t *testing.T) {
+	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body:    io.NopCloser(strings.NewReader(`{"active":true,"active":false,"sub":"` + userRunActorID + `","aud":"agentserver-api","scope":"runs:write","exp":2000000000}`)),
+			Request: request,
+		}, nil
+	})}
+	introspector, err := NewHydraUserIntrospector("https://hydra.example/admin/oauth2/introspect", httpClient, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := introspector.IntrospectUserToken(t.Context(), "opaque-token"); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("duplicate introspection authority error = %v", err)
 	}
 }
 

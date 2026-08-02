@@ -34,6 +34,7 @@ const (
 	HashDomainExecutionResult    CanonicalHashDomain = "execution-result"
 	HashDomainCreateRunRequest   CanonicalHashDomain = "create-run-request"
 	HashDomainApprovalContext    CanonicalHashDomain = "approval-context"
+	HashDomainExecutorEnrollment CanonicalHashDomain = "executor-enrollment-request"
 )
 
 // CanonicalJSONHash can only be constructed by ValidateAndHashCanonicalJSON
@@ -191,7 +192,8 @@ func validCanonicalHashDomain(domain CanonicalHashDomain) bool {
 		HashDomainOperationResult,
 		HashDomainExecutionResult,
 		HashDomainCreateRunRequest,
-		HashDomainApprovalContext:
+		HashDomainApprovalContext,
+		HashDomainExecutorEnrollment:
 		return true
 	default:
 		return false

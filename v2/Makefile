@@ -2,7 +2,7 @@ GO ?= go
 GOFMT ?= gofmt
 NODE ?= node
 
-.PHONY: check fmt fmt-check vet test web-test postgres-test import-boundary contract-check conformance conformance-live conformance-image-a04 conformance-image-a12 conformance-image-e09
+.PHONY: check fmt fmt-check vet test web-test postgres-test hydra-live-test import-boundary contract-check conformance conformance-live conformance-image-a04 conformance-image-a12 conformance-image-e09
 
 check: fmt-check vet test web-test import-boundary contract-check
 
@@ -29,6 +29,14 @@ postgres-test:
 	@test -n "$$AGENTSERVER_V2_TEST_DATABASE_URL" || \
 		(printf '%s\n' 'AGENTSERVER_V2_TEST_DATABASE_URL is required'; exit 2)
 	@AGENTSERVER_RUN_POSTGRES_TESTS=1 $(GO) test ./internal/coredb -run '^TestPostgreSQL' -count=1 -v
+
+hydra-live-test:
+	@test -n "$$AGENTSERVER_V2_TEST_HYDRA_ADMIN_ORIGIN" || \
+		(printf '%s\n' 'AGENTSERVER_V2_TEST_HYDRA_ADMIN_ORIGIN is required'; exit 2)
+	@test -n "$$AGENTSERVER_V2_TEST_HYDRA_PUBLIC_ORIGIN" || \
+		(printf '%s\n' 'AGENTSERVER_V2_TEST_HYDRA_PUBLIC_ORIGIN is required'; exit 2)
+	@AGENTSERVER_RUN_HYDRA_LIVE_TESTS=1 $(GO) test ./internal/coreserver \
+		-run '^TestHydraV262ExecutorPrivateKeyJWTLive$$' -count=1 -v
 
 import-boundary:
 	$(GO) test ./internal/buildguard -run '^TestRepositoryHasNoV1RuntimeImports$$' -count=1

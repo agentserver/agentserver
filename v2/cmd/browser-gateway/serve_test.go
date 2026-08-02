@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 )
 
 func TestServeBrowserGatewayRequiresConfigurationBeforeListening(t *testing.T) {
@@ -28,7 +30,8 @@ func TestServeBrowserGatewayRequiresConfigurationBeforeListening(t *testing.T) {
 func TestBrowserGatewayHealthAndReadiness(t *testing.T) {
 	readiness := &browserReadiness{}
 	handler := browserGatewayRoutes(
-		http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), readiness,
+		http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(),
+		http.NotFoundHandler(), http.NotFoundHandler(), readiness,
 	)
 	assertBrowserHealth(t, handler, "/healthz", http.StatusOK, `{"status":"ok"}`)
 	assertBrowserHealth(t, handler, "/readyz", http.StatusServiceUnavailable, `{"status":"not_ready"}`)
@@ -47,6 +50,71 @@ func TestBrowserGatewayHealthAndReadiness(t *testing.T) {
 		!strings.Contains(referenceResponse.Body.String(), `data-agentserver-reference-web="v2"`) ||
 		referenceResponse.Header().Get("Content-Security-Policy") == "" {
 		t.Fatalf("GET / reference web = %d %q headers=%v", referenceResponse.Code, referenceResponse.Body.String(), referenceResponse.Header())
+	}
+}
+
+func TestBrowserGatewayExecutorRoutesAreClosedBeforeAGUIFallback(t *testing.T) {
+	executorCalls := 0
+	aguiCalls := 0
+	executors := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		executorCalls++
+		response.WriteHeader(http.StatusCreated)
+	})
+	agui := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		aguiCalls++
+		response.WriteHeader(http.StatusAccepted)
+	})
+	handler := browserGatewayRoutes(
+		agui, executors, http.NotFoundHandler(), http.NotFoundHandler(),
+		http.NotFoundHandler(), http.NotFoundHandler(), &browserReadiness{},
+	)
+	workspaceID := "71000000-0000-4000-8000-000000000002"
+	executorID := "71000000-0000-4000-8000-000000000003"
+	for _, path := range []string{
+		corecontract.CreateExecutorResourcePath(workspaceID),
+		corecontract.IssueExecutorEnrollmentTokenPath(workspaceID, executorID),
+	} {
+		request := httptest.NewRequest(http.MethodPost, "https://gateway.test"+path, nil)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusCreated {
+			t.Fatalf("POST %s status = %d", path, response.Code)
+		}
+
+		request = httptest.NewRequest(http.MethodGet, "https://gateway.test"+path, nil)
+		response = httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != http.MethodPost ||
+			response.Header().Get("Cache-Control") != "no-store" || !strings.Contains(response.Body.String(), "method_not_allowed") {
+			t.Fatalf("GET %s response = %d headers=%v body=%q", path, response.Code, response.Header(), response.Body.String())
+		}
+	}
+
+	aguiRequest := httptest.NewRequest(http.MethodPost, "https://gateway.test/v2/workspaces/"+workspaceID+"/sessions/71000000-0000-4000-8000-000000000004/agui", nil)
+	aguiResponse := httptest.NewRecorder()
+	handler.ServeHTTP(aguiResponse, aguiRequest)
+	if aguiResponse.Code != http.StatusAccepted || executorCalls != 2 || aguiCalls != 1 {
+		t.Fatalf("route calls/status = executor:%d agui:%d status:%d", executorCalls, aguiCalls, aguiResponse.Code)
+	}
+}
+
+func TestValidateBrowserOAuthAuthorityMatchesCoreLoginContract(t *testing.T) {
+	scopes, err := validateBrowserOAuthAuthority("agentserver-api", "openid,runs:write,executors:write")
+	if err != nil || len(scopes) != 3 || scopes[2] != "executors:write" {
+		t.Fatalf("canonical browser OAuth authority = %q, %v", scopes, err)
+	}
+	for _, input := range []struct {
+		audience string
+		scopes   string
+	}{
+		{audience: "other-api", scopes: "openid,runs:write,executors:write"},
+		{audience: "agentserver-api", scopes: "openid,runs:write"},
+		{audience: "agentserver-api", scopes: "openid,executors:write,runs:write"},
+		{audience: "agentserver-api", scopes: "openid,runs:write,executors:write,"},
+	} {
+		if _, err := validateBrowserOAuthAuthority(input.audience, input.scopes); err == nil {
+			t.Fatalf("non-canonical browser OAuth authority was accepted: %+v", input)
+		}
 	}
 }
 

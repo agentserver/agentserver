@@ -3,11 +3,41 @@
   "info": {
     "title": "agentserver v2 internal command API",
     "version": "0.1.0",
-    "description": "Run-dispatch, run-attempt, fenced run-launch state, brain tool catalog, executor connection, environment registry, and execution state commands/queries. Every endpoint requires the explicitly authorized component workload identity."
+    "description": "Run-dispatch, run-attempt, fenced run-launch state, brain tool catalog, executor enrollment/connection, environment registry, and execution state commands/queries. Every endpoint requires the explicitly authorized component workload identity."
   },
   "servers": [{"url": "https://agentserver-core"}],
   "security": [{"workloadMTLS": []}],
   "paths": {
+    "/internal/v2/executor-enrollments:complete": {
+      "post": {
+        "operationId": "completeExecutorEnrollment",
+        "description": "The executor-gateway relays one enrollment request. Core verifies the short-lived bearer, possession of the Ed25519 connection-proof key and P-256 OAuth key, immutable runtime/environment fingerprint, and exact Hydra ES256 private_key_jwt client before changing the executor to offline.",
+        "security": [{"workloadMTLS": [], "executorEnrollmentBearer": []}],
+        "requestBody": {"required": true, "x-agentserver-maxBytes": 524288, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CompleteExecutorEnrollmentRequest"}}}},
+        "responses": {
+          "200": {"description": "Enrollment completed or exactly recovered", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CompleteExecutorEnrollmentResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "401": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"},
+          "503": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/executor-connections:authorize": {
+      "post": {
+        "operationId": "authorizeExecutorConnection",
+        "description": "Live-introspects an executor OAuth bearer, resolves its current non-revoked enrolled machine identity, and reconciles the exact Hydra P-256 client document. The bearer is sent only in Authorization and the request body is empty.",
+        "security": [{"workloadMTLS": [], "executorOAuthBearer": ["executor:connect"]}],
+        "responses": {
+          "200": {"description": "Current machine authority for a subsequent nonce challenge or WSS proof", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AuthorizeExecutorConnectionResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "503": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
     "/internal/v2/run-dispatches:claim": {
       "post": {
         "operationId": "claimRunDispatches",
@@ -507,7 +537,13 @@
   "components": {
     "securitySchemes": {
       "workloadMTLS": {"type": "mutualTLS", "description": "Verified component-specific workload SPIFFE identity; handlers authorize each action separately"},
-      "runCapabilityBearer": {"type": "http", "scheme": "bearer", "bearerFormat": "asv2cap1 Ed25519", "description": "Audience-specific short-lived production run capability; every use is also live-authorized by Core"}
+      "runCapabilityBearer": {"type": "http", "scheme": "bearer", "bearerFormat": "asv2cap1 Ed25519", "description": "Audience-specific short-lived production run capability; every use is also live-authorized by Core"},
+      "executorEnrollmentBearer": {"type": "http", "scheme": "bearer", "bearerFormat": "asv2enr1 HMAC-SHA256", "description": "Short-lived single-executor enrollment authority; the bearer is never stored in PostgreSQL"},
+      "executorOAuthBearer": {
+        "type": "oauth2",
+        "description": "Opaque Hydra client-credentials token obtained with the enrolled P-256 ES256 private_key_jwt identity",
+        "flows": {"clientCredentials": {"tokenUrl": "/oauth2/token", "scopes": {"executor:connect": "Open an enrolled executor connection"}}}
+      }
     },
     "parameters": {
       "ApprovalId": {"name": "approvalId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
@@ -527,6 +563,73 @@
     "schemas": {
       "UUID": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "not": {"const": "00000000-0000-0000-0000-000000000000"}},
       "SHA256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+      "ExecutorResourceState": {
+        "type": "object", "additionalProperties": false,
+        "required": ["executorId", "workspaceId", "status", "version", "createdAt", "updatedAt"],
+        "properties": {
+          "executorId": {"$ref": "#/components/schemas/UUID"},
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "status": {"enum": ["enrolling", "offline", "online", "revoked"]},
+          "version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "ExecutorEnrollmentEnvironment": {
+        "type": "object", "additionalProperties": false,
+        "required": ["envId", "platform", "codexRelease", "codexCommit", "codexSha256", "outerProfileVersion", "processMethods", "insecureDev", "rootDescriptor", "ownerPolicySha256"],
+        "properties": {
+          "envId": {"$ref": "#/components/schemas/UUID"},
+          "platform": {"enum": ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64", "windows-arm64"]},
+          "codexRelease": {"type": "string", "minLength": 1, "maxLength": 128},
+          "codexCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "codexSha256": {"$ref": "#/components/schemas/SHA256"},
+          "outerProfileVersion": {"enum": ["process-v1", "process-v1+filesystem-read-v1"]},
+          "processMethods": {"$ref": "#/components/schemas/ProcessMethods"},
+          "insecureDev": {"const": false},
+          "rootDescriptor": {"type": "object", "maxProperties": 256, "x-agentserver-maxBytes": 65536},
+          "ownerPolicySha256": {"$ref": "#/components/schemas/SHA256"}
+        }
+      },
+      "CompleteExecutorEnrollmentRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["machinePublicKeyEd25519", "machineProofEd25519", "oauthPublicKeyP256X", "oauthPublicKeyP256Y", "oauthProofES256", "agentxVersion", "runtimeManifestSha256", "execProtocolSourceSha256", "environments"],
+        "properties": {
+          "machinePublicKeyEd25519": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$"},
+          "machineProofEd25519": {"type": "string", "pattern": "^[A-Za-z0-9_-]{86}$"},
+          "oauthPublicKeyP256X": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$"},
+          "oauthPublicKeyP256Y": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$"},
+          "oauthProofES256": {"type": "string", "pattern": "^[A-Za-z0-9_-]{86}$", "description": "Canonical low-S IEEE P1363 r||s signature over the versioned enrollment OAuth-proof digest"},
+          "agentxVersion": {"type": "string", "minLength": 1, "maxLength": 256},
+          "runtimeManifestSha256": {"$ref": "#/components/schemas/SHA256"},
+          "execProtocolSourceSha256": {"$ref": "#/components/schemas/SHA256"},
+          "environments": {"type": "array", "minItems": 1, "maxItems": 256, "items": {"$ref": "#/components/schemas/ExecutorEnrollmentEnvironment"}}
+        }
+      },
+      "CompleteExecutorEnrollmentResponse": {
+        "type": "object", "additionalProperties": false,
+        "required": ["executor", "oauthClientId", "audience", "scope"],
+        "properties": {
+          "executor": {"$ref": "#/components/schemas/ExecutorResourceState"},
+          "oauthClientId": {"type": "string", "minLength": 1, "maxLength": 128},
+          "audience": {"const": "executor-gateway"},
+          "scope": {"const": "executor:connect"}
+        }
+      },
+      "AuthorizeExecutorConnectionResponse": {
+        "type": "object", "additionalProperties": false,
+        "required": ["executorId", "workspaceId", "oauthClientId", "machinePublicKeyEd25519", "machineKeySha256", "executorVersion", "tokenExpiresAt", "authorizedAt"],
+        "properties": {
+          "executorId": {"$ref": "#/components/schemas/UUID"},
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "oauthClientId": {"type": "string", "minLength": 1, "maxLength": 128},
+          "machinePublicKeyEd25519": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$"},
+          "machineKeySha256": {"$ref": "#/components/schemas/SHA256"},
+          "executorVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "tokenExpiresAt": {"type": "string", "format": "date-time"},
+          "authorizedAt": {"type": "string", "format": "date-time"}
+        }
+      },
       "IssueRunCapabilitiesRequest": {
         "type": "object",
         "additionalProperties": false,

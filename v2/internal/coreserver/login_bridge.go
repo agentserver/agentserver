@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/coredb"
 )
 
@@ -30,8 +31,8 @@ const (
 )
 
 var (
-	defaultBrowserOAuthScopes = []string{"openid", "runs:write"}
-	defaultBrowserAudience    = []string{"agentserver-api"}
+	defaultBrowserOAuthScopes = corecontract.BrowserOAuthScopes()
+	defaultBrowserAudience    = []string{corecontract.BrowserOAuthAudience}
 )
 
 type LoginBridgeStore interface {

@@ -18,6 +18,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/coredb"
 	"github.com/agentserver/agentserver/v2/internal/coreserver"
+	"github.com/agentserver/agentserver/v2/internal/enrollmenttoken"
 	"github.com/agentserver/agentserver/v2/internal/objectruntime"
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
 	"github.com/agentserver/agentserver/v2/internal/runcursor"
@@ -35,6 +36,7 @@ const (
 	coreHydraIntrospectionEnvironment    = "AGENTSERVER_V2_HYDRA_INTROSPECTION_URL"
 	coreHydraAdminEnvironment            = "AGENTSERVER_V2_HYDRA_ADMIN_URL"
 	coreHydraPublicOriginEnvironment     = "AGENTSERVER_V2_HYDRA_PUBLIC_ORIGIN"
+	coreHydraIssuerEnvironment           = "AGENTSERVER_V2_HYDRA_ISSUER"
 	coreHydraBrowserClientEnvironment    = "AGENTSERVER_V2_HYDRA_BROWSER_CLIENT_ID"
 	coreHydraInsecureHTTPEnvironment     = "AGENTSERVER_V2_HYDRA_ALLOW_INSECURE_HTTP"
 	coreExternalOIDCIssuerEnvironment    = "AGENTSERVER_V2_EXTERNAL_OIDC_ISSUER"
@@ -58,12 +60,19 @@ const (
 	coreMaxRunDurationEnvironment        = "AGENTSERVER_V2_MAX_RUN_DURATION"
 	coreMaxApprovalTTLEnvironment        = "AGENTSERVER_V2_MAX_APPROVAL_TTL"
 	coreCapabilityExpiryGraceEnvironment = "AGENTSERVER_V2_RUN_CAPABILITY_EXPIRY_GRACE"
+	coreEnrollmentKeyEnvironment         = "AGENTSERVER_V2_EXECUTOR_ENROLLMENT_TOKEN_KEY_FILE"
+	coreEnrollmentTTLEnvironment         = "AGENTSERVER_V2_EXECUTOR_ENROLLMENT_TOKEN_TTL"
 )
 
 type coreProductionRunCapabilityConfig struct {
 	signer   *runcapability.ProductionSigner
 	verifier *runcapability.ProductionVerifier
 	policy   coreserver.ProductionRunCapabilityPolicy
+}
+
+type coreProductionEnrollmentConfig struct {
+	tokens *enrollmenttoken.Codec
+	ttl    time.Duration
 }
 
 func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer, mode coreServeMode) error {
@@ -130,6 +139,13 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	if err != nil {
 		return err
 	}
+	var hydraIssuer string
+	if mode == coreServeProduction {
+		hydraIssuer, err = requiredConfiguration(getenv, coreHydraIssuerEnvironment)
+		if err != nil {
+			return err
+		}
+	}
 	hydraBrowserClientID, err := requiredConfiguration(getenv, coreHydraBrowserClientEnvironment)
 	if err != nil {
 		return err
@@ -176,6 +192,10 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 		return err
 	}
 	productionCapabilities, err := configureCoreProductionRunCapabilities(getenv, mode)
+	if err != nil {
+		return err
+	}
+	productionEnrollment, err := configureCoreProductionEnrollment(getenv, mode, productionCapabilities)
 	if err != nil {
 		return err
 	}
@@ -249,16 +269,42 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 		return err
 	}
 	userAuthorizer, err := coreserver.NewIntrospectedUserAuthorizer(coreserver.IntrospectedUserAuthorizerConfig{
-		Introspector: hydraIntrospector, ExpectedAudience: "agentserver-api",
+		Introspector: hydraIntrospector, ExpectedAudience: corecontract.BrowserOAuthAudience,
 		ActionScopes: map[string]string{
-			"runs.create": "runs:write", "runs.cancel": "runs:write", "runs.events.read": "runs:write",
-			"approvals.decide": "runs:write",
+			"runs.create": corecontract.BrowserOAuthRunScope, "runs.cancel": corecontract.BrowserOAuthRunScope,
+			"runs.events.read": corecontract.BrowserOAuthRunScope, "approvals.decide": corecontract.BrowserOAuthRunScope,
+			"executors.create":                 corecontract.BrowserOAuthExecutorScope,
+			"executors.enrollment-token.issue": corecontract.BrowserOAuthExecutorScope,
 		},
 	})
 	if err != nil {
 		return err
 	}
 	store := coredb.NewStateStore(pool)
+	var userExecutorHandler *coreserver.UserExecutorManagementHandler
+	var internalExecutorIdentityHandler *coreserver.InternalExecutorIdentityHandler
+	if productionEnrollment != nil {
+		executorEnrollmentService, err := coreserver.NewExecutorEnrollmentService(coreserver.ExecutorEnrollmentServiceConfig{
+			Store: store, Tokens: productionEnrollment.tokens, Hydra: hydraAdmin, TokenTTL: productionEnrollment.ttl,
+		})
+		if err != nil {
+			return fmt.Errorf("configure executor enrollment service: %w", err)
+		}
+		executorOAuthAuthorizer, err := coreserver.NewExecutorOAuthAuthorizer(coreserver.ExecutorOAuthAuthorizerConfig{
+			Introspector: hydraIntrospector, Store: store, Hydra: hydraAdmin, ExpectedIssuer: hydraIssuer,
+		})
+		if err != nil {
+			return fmt.Errorf("configure executor OAuth authorizer: %w", err)
+		}
+		userExecutorHandler, err = coreserver.NewUserExecutorManagementHandler(browserAuthorizer, userAuthorizer, executorEnrollmentService)
+		if err != nil {
+			return err
+		}
+		internalExecutorIdentityHandler, err = coreserver.NewInternalExecutorIdentityHandler(authorizer, executorEnrollmentService, executorOAuthAuthorizer)
+		if err != nil {
+			return err
+		}
+	}
 	var runCapabilityHandler *coreserver.RunCapabilityHandler
 	if productionCapabilities != nil {
 		runCapabilityService, err := coreserver.NewProductionRunCapabilityService(coreserver.ProductionRunCapabilityServiceConfig{
@@ -353,6 +399,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	handler.Handle("/internal/v2/auth/", loginBridgeHandler.Routes())
 	handler.Handle("/v2/", userRunHandler.Routes())
 	handler.Handle(corecontract.DecideUserApprovalRoutePattern, userApprovalHandler)
+	mountCoreExecutorIdentityRoutes(handler, userExecutorHandler, internalExecutorIdentityHandler)
 	handler.Handle(corecontract.FreezeBrainToolCatalogPath, brainToolCatalogHandler)
 	handler.Handle(corecontract.BrainToolCatalogPathPrefix, brainToolCatalogHandler)
 	handler.Handle(corecontract.ClaimRunDispatchesPath, runDispatchHandler)
@@ -413,6 +460,20 @@ func mountCoreRunCapabilityRoutes(mux *http.ServeMux, handler http.Handler) {
 	mux.Handle(corecontract.IssueRunCapabilitiesPath, handler)
 	mux.Handle(corecontract.AuthorizeExecutorRunCapabilityPath, handler)
 	mux.Handle(corecontract.AuthorizeLLMProxyRunCapabilityPath, handler)
+}
+
+func mountCoreExecutorIdentityRoutes(mux *http.ServeMux, users, internal http.Handler) {
+	if mux == nil {
+		return
+	}
+	if users != nil {
+		mux.Handle("POST "+corecontract.ExecutorManagementRoutePattern, users)
+		mux.Handle("POST "+corecontract.ExecutorEnrollmentTokenRoutePattern, users)
+	}
+	if internal != nil {
+		mux.Handle(corecontract.CompleteExecutorEnrollmentPath, internal)
+		mux.Handle(corecontract.AuthorizeExecutorConnectionPath, internal)
+	}
 }
 
 func configureCorePromptStore(
@@ -520,6 +581,39 @@ func configureCoreProductionRunCapabilities(
 		return nil, fmt.Errorf("configure production run capability policy: %w", err)
 	}
 	return &coreProductionRunCapabilityConfig{signer: signer, verifier: verifier, policy: policy}, nil
+}
+
+func configureCoreProductionEnrollment(
+	getenv func(string) string,
+	mode coreServeMode,
+	capabilities *coreProductionRunCapabilityConfig,
+) (*coreProductionEnrollmentConfig, error) {
+	switch mode {
+	case coreServeInsecureDevelopment:
+		return nil, nil
+	case coreServeProduction:
+	default:
+		return nil, errors.New("Core serve mode is invalid")
+	}
+	if capabilities == nil || capabilities.signer == nil || capabilities.signer.Issuer() == "" {
+		return nil, errors.New("production executor enrollment requires the configured Core capability issuer")
+	}
+	keyFile, err := requiredConfiguration(getenv, coreEnrollmentKeyEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	codec, err := enrollmenttoken.LoadCodec(capabilities.signer.Issuer(), keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("configure executor enrollment token authority: %w", err)
+	}
+	ttl, err := requiredCoreDuration(getenv, coreEnrollmentTTLEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	if ttl <= 0 || ttl > enrollmenttoken.MaximumTTL || ttl%time.Millisecond != 0 {
+		return nil, fmt.Errorf("%s must be a positive whole-millisecond duration no greater than %s", coreEnrollmentTTLEnvironment, enrollmenttoken.MaximumTTL)
+	}
+	return &coreProductionEnrollmentConfig{tokens: codec, ttl: ttl}, nil
 }
 
 func requiredCoreDuration(getenv func(string) string, name string) (time.Duration, error) {

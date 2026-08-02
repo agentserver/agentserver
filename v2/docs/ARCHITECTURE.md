@@ -495,9 +495,9 @@ agentx 在请求进入 stdio exec-server 前执行第一层校验，exec-server 
 
 1. owner/maintainer 在 core 创建 executor resource。
 2. core 返回绑定 `executor_id`、短期、单次使用的 enrollment token；推荐通过 `agentx enroll --token-stdin` 输入，避免写入 shell history。
-3. agentx 本地生成机器密钥，提交 token、公钥、平台、workdir roots，以及通过 manifest/本地握手确认的 exec-server version、binary digest 和 capability。
-4. core 消耗 token，并为该 executor 建立唯一机器身份。优先使用 Hydra `private_key_jwt` client；若只能使用 client secret，必须单机唯一、可轮换、可吊销并存入 OS keychain。
-5. agentx 获取短期 `aud=executor-gateway`、`scope=executor:connect` access token。
+3. agentx 本地生成两把connector-only私钥：Ed25519用于enrollment/WSS机器证明，P-256用于Hydra `private_key_jwt`；提交 token、两把公钥、对同一canonical request digest的双持有证明、平台、workdir roots，以及通过 manifest/本地握手确认的 exec-server version、binary digest 和 capability。
+4. core 消耗 token，并为该 executor 建立唯一双钥机器身份。Hydra v26.2.0 client固定为`private_key_jwt`/`ES256`、opaque access token、唯一`executor:connect` scope、唯一`executor-gateway` audience和5分钟client-credentials token lifespan；不允许client-secret回退。完整合同见[`ADR 0003`](adr/0003-executor-enrollment-machine-proof.md)。
+5. agentx 使用P-256私钥生成RFC 7523 assertion，获取短期 `aud=executor-gateway`、`scope=executor:connect` access token。
 6. 删除 enrollment token；后续只使用机器身份换短期 token。
 
 workspace 共享的永久 service token 不得用于 executor enrollment 或连接。
@@ -505,8 +505,8 @@ workspace 共享的永久 service token 不得用于 executor enrollment 或连�
 ### 9.2 连接与恢复
 
 1. agentx 主动拨出 WSS，不要求用户环境开放入站端口。
-2. executor-gateway 校验 audience/scope、executor 状态、公钥绑定和实时 workspace 归属。`executor_id` 从已验证 token subject 取得，不能信任客户端声明。
-3. agentx 使用登记私钥完成 DPoP/`cnf` proof；若 Hydra 无法签发 key-bound token，则在 WSS 建连后完成 gateway nonce 签名挑战。只有 bearer token 而没有私钥证明不能建立执行通道。
+2. executor-gateway 让Core实时introspect并校验唯一audience/scope、executor状态、公钥绑定、Hydra中完整P-256 client document和workspace归属。`executor_id`只从`client_id`到已登记executor的映射取得，不能信任客户端声明；Hydra client删除、key/grant漂移或Admin read不可用均fail closed。
+3. agentx 使用登记的Ed25519私钥完成gateway nonce签名挑战；P-256私钥只用于Hydra client authentication。只有 bearer token 而没有独立Ed25519持有证明不能建立执行通道。Phase 1不声称Hydra DPoP/`cnf`支持。
 4. 完成第3步的key proof后，agentx先发送不占`sessionSeq`的`hello`连接前导，声明agentx protocol、各env的pinned exec-server build/schema、capability probe摘要，以及恢复窗口内仍活跃的`{processId, localExecInstanceId}`集合。可选resume cursor精确为`{gatewayInstanceId, sessionId, generation, agentxSentThrough, agentxReceivedThrough}`。hello由已认证WSS与第3步proof绑定；它仍只是恢复提示，不是可信身份，gateway必须用注册manifest和既有ownership核对，不能接受客户端凭空声明process。
 5. fresh连接必须先由core CAS取得新的connection generation，再创建进程内session journal；resume则必须命中同一个`gatewayInstanceId/sessionId/generation`和仍完整的journal，不能增加generation或创建空journal冒充旧session。gateway随后发送不占sequence的`welcome`，明确`fresh|resumed`、双向cursor和固定30秒窗口。resume不满足任一条件时返回terminal `resume_rejected|resume_gap|resume_expired`，agentx先清理旧instance，不能在同一连接静默降级为fresh。
 6. fresh session由gateway发送第一条有序`type=lifecycle` frame；其`rpc`使用标准JSON-RPC 2.0：

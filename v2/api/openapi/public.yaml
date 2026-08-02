@@ -3,11 +3,52 @@
   "info": {
     "title": "agentserver v2 browser resource API",
     "version": "0.1.0",
-    "description": "Browser-delegated run commands, approval decisions, and authorized canonical event cursor. The current core endpoint requires both the browser-gateway workload identity and the original aud=agentserver-api user bearer."
+    "description": "Browser-delegated run, approval, and executor-management resources. Every core endpoint requires both the browser-gateway workload identity and the original aud=agentserver-api user bearer."
   },
   "servers": [{"url": "https://agentserver-core"}],
   "security": [{"browserGatewayMTLS": [], "userOAuth": ["runs:write"]}],
   "paths": {
+    "/v2/workspaces/{workspaceId}/executors": {
+      "parameters": [
+        {"$ref": "#/components/parameters/WorkspaceId"}
+      ],
+      "post": {
+        "operationId": "createExecutorResource",
+        "description": "Creates one enrolling executor identity. Core rechecks that the current user is an owner of the active workspace.",
+        "security": [{"browserGatewayMTLS": [], "userOAuth": ["executors:write"]}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateExecutorResourceRequest"}}}},
+        "responses": {
+          "200": {"description": "Exact executor identity already exists", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateExecutorResourceResponse"}}}},
+          "201": {"description": "Executor identity created in enrolling state", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateExecutorResourceResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
+    "/v2/workspaces/{workspaceId}/executors/{executorId}:enrollmentToken": {
+      "parameters": [
+        {"$ref": "#/components/parameters/WorkspaceId"},
+        {"$ref": "#/components/parameters/ExecutorId"}
+      ],
+      "post": {
+        "operationId": "issueExecutorEnrollmentToken",
+        "description": "Issues or exactly recovers one short-lived, single-executor enrollment bearer. A new idempotency key revokes the prior unconsumed bearer authority.",
+        "security": [{"browserGatewayMTLS": [], "userOAuth": ["executors:write"]}],
+        "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}],
+        "responses": {
+          "200": {"description": "Exact idempotent token request recovered", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/IssueExecutorEnrollmentTokenResponse"}}}},
+          "201": {"description": "Enrollment token issued", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/IssueExecutorEnrollmentTokenResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
     "/v2/workspaces/{workspaceId}/sessions/{sessionId}/runs": {
       "parameters": [
         {"$ref": "#/components/parameters/WorkspaceId"},
@@ -96,11 +137,15 @@
       "userOAuth": {
         "type": "oauth2",
         "description": "Original user access token; core introspects active, unexpired, single aud=agentserver-api tokens and rechecks current workspace membership.",
-        "flows": {"authorizationCode": {"authorizationUrl": "/oauth2/auth", "tokenUrl": "/oauth2/token", "scopes": {"runs:write": "Create runs and read their committed event projection"}}}
+        "flows": {"authorizationCode": {"authorizationUrl": "/oauth2/auth", "tokenUrl": "/oauth2/token", "scopes": {
+          "runs:write": "Create runs, decide approvals, and read committed event projections",
+          "executors:write": "Create and enroll executor machine identities"
+        }}}
       }
     },
     "parameters": {
       "ApprovalId": {"name": "approvalId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
+      "ExecutorId": {"name": "executorId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "WorkspaceId": {"name": "workspaceId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "SessionId": {"name": "sessionId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "RunId": {"name": "runId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
@@ -111,6 +156,41 @@
     },
     "schemas": {
       "UUID": {"type": "string", "format": "uuid", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "not": {"const": "00000000-0000-0000-0000-000000000000"}},
+      "CreateExecutorResourceRequest": {
+        "type": "object", "additionalProperties": false, "required": ["executorId"],
+        "properties": {
+          "executorId": {"$ref": "#/components/schemas/UUID"}
+        }
+      },
+      "ExecutorResourceState": {
+        "type": "object", "additionalProperties": false,
+        "required": ["executorId", "workspaceId", "status", "version", "createdAt", "updatedAt"],
+        "properties": {
+          "executorId": {"$ref": "#/components/schemas/UUID"},
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "status": {"enum": ["enrolling", "offline", "online", "revoked"]},
+          "version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "CreateExecutorResourceResponse": {
+        "type": "object", "additionalProperties": false, "required": ["executor", "created"],
+        "properties": {
+          "executor": {"$ref": "#/components/schemas/ExecutorResourceState"},
+          "created": {"type": "boolean"}
+        }
+      },
+      "IssueExecutorEnrollmentTokenResponse": {
+        "type": "object", "additionalProperties": false,
+        "required": ["executorId", "token", "expiresAt", "created"],
+        "properties": {
+          "executorId": {"$ref": "#/components/schemas/UUID"},
+          "token": {"type": "string", "minLength": 1, "maxLength": 8192, "pattern": "^asv2enr1\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$", "description": "Sensitive short-lived enrollment bearer; clients must not log or persist it", "x-agentserver-sensitive": true},
+          "expiresAt": {"type": "string", "format": "date-time"},
+          "created": {"type": "boolean"}
+        }
+      },
       "CreateUserRunRequest": {
         "type": "object", "additionalProperties": false, "required": ["prompt"],
         "properties": {

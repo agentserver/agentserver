@@ -7,11 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/agentserver/agentserver/v2/internal/braincatalog"
 )
 
 const maxIntrospectionResponseBytes = int64(64 * 1024)
@@ -19,9 +22,15 @@ const maxIntrospectionResponseBytes = int64(64 * 1024)
 type UserTokenIntrospection struct {
 	Active    bool
 	Subject   string
+	ClientID  string
 	Audience  []string
 	Scope     string
 	ExpiresAt int64
+	IssuedAt  int64
+	NotBefore int64
+	Issuer    string
+	TokenType string
+	TokenUse  string
 }
 
 type UserTokenIntrospector interface {
@@ -152,14 +161,34 @@ func (introspector *HydraUserIntrospector) IntrospectUserToken(ctx context.Conte
 	if response.StatusCode != http.StatusOK {
 		return UserTokenIntrospection{}, fmt.Errorf("Hydra introspection returned HTTP %d", response.StatusCode)
 	}
+	mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		return UserTokenIntrospection{}, errors.New("Hydra introspection response Content-Type is not application/json")
+	}
+	limits := braincatalog.DefaultLimits()
+	limits.MaxJSONValues = 1024
+	limits.MaxJSONDepth = 16
+	value, canonical, err := braincatalog.DecodeCanonicalJSON(body, int(maxIntrospectionResponseBytes), limits)
+	if err != nil {
+		return UserTokenIntrospection{}, fmt.Errorf("validate Hydra introspection response: %w", err)
+	}
+	if _, ok := value.(map[string]any); !ok {
+		return UserTokenIntrospection{}, errors.New("Hydra introspection response is not a JSON object")
+	}
 	var wire struct {
 		Active    bool          `json:"active"`
 		Subject   string        `json:"sub"`
+		ClientID  string        `json:"client_id"`
 		Audience  oauthAudience `json:"aud"`
 		Scope     string        `json:"scope"`
 		ExpiresAt int64         `json:"exp"`
+		IssuedAt  int64         `json:"iat"`
+		NotBefore int64         `json:"nbf"`
+		Issuer    string        `json:"iss"`
+		TokenType string        `json:"token_type"`
+		TokenUse  string        `json:"token_use"`
 	}
-	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder := json.NewDecoder(bytes.NewReader(canonical))
 	if err := decoder.Decode(&wire); err != nil {
 		return UserTokenIntrospection{}, fmt.Errorf("decode Hydra introspection response: %w", err)
 	}
@@ -168,8 +197,9 @@ func (introspector *HydraUserIntrospector) IntrospectUserToken(ctx context.Conte
 		return UserTokenIntrospection{}, errors.New("Hydra introspection response contains trailing JSON")
 	}
 	return UserTokenIntrospection{
-		Active: wire.Active, Subject: wire.Subject, Audience: append([]string(nil), wire.Audience...),
-		Scope: wire.Scope, ExpiresAt: wire.ExpiresAt,
+		Active: wire.Active, Subject: wire.Subject, ClientID: wire.ClientID, Audience: append([]string(nil), wire.Audience...),
+		Scope: wire.Scope, ExpiresAt: wire.ExpiresAt, IssuedAt: wire.IssuedAt, NotBefore: wire.NotBefore,
+		Issuer: wire.Issuer, TokenType: wire.TokenType, TokenUse: wire.TokenUse,
 	}, nil
 }
 

@@ -98,7 +98,7 @@ func TestLoginBridgeConsentRequiresExactClientScopeAudienceAndIsOneShot(t *testi
 	hydra.consentRequest = HydraConsentRequest{
 		Challenge: "consent-challenge", Subject: loginBridgeTestUserID,
 		Client:         HydraOAuth2Client{ClientID: "agentserver-web"},
-		RequestedScope: []string{"runs:write", "openid"}, RequestedAccessTokenAudience: []string{"agentserver-api"},
+		RequestedScope: []string{"runs:write", "openid", "executors:write"}, RequestedAccessTokenAudience: []string{"agentserver-api"},
 		LoginChallenge: "login-challenge", LoginSessionID: "login-session",
 	}
 	result, err := bridge.Consent(t.Context(), "consent-challenge")
@@ -118,7 +118,7 @@ func TestLoginBridgeConsentRequiresExactClientScopeAudienceAndIsOneShot(t *testi
 
 	otherBridge, otherStore, otherHydra, _ := newLoginBridgeFixture(t)
 	otherHydra.consentRequest = hydra.consentRequest
-	otherHydra.consentRequest.RequestedScope = []string{"openid", "runs:write", "admin"}
+	otherHydra.consentRequest.RequestedScope = []string{"openid", "runs:write", "executors:write", "admin"}
 	rejected, err := otherBridge.Consent(t.Context(), "consent-challenge")
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +170,7 @@ func TestConsentRequestHashCoversLoginAuthority(t *testing.T) {
 	request := HydraConsentRequest{
 		Challenge: "consent-challenge", LoginChallenge: "login-challenge", LoginSessionID: "login-session",
 		Subject: loginBridgeTestUserID, Client: HydraOAuth2Client{ClientID: "agentserver-web"},
-		RequestedScope: []string{"runs:write", "openid"}, RequestedAccessTokenAudience: []string{"agentserver-api"},
+		RequestedScope: []string{"runs:write", "openid", "executors:write"}, RequestedAccessTokenAudience: []string{"agentserver-api"},
 	}
 	original, err := consentRequestHash(request)
 	if err != nil {
@@ -227,7 +227,7 @@ func newLoginBridgeFixture(t *testing.T) (*LoginBridge, *memoryLoginBridgeStore,
 	store := &memoryLoginBridgeStore{}
 	hydra := &recordingHydraAdmin{loginRequest: HydraLoginRequest{
 		Challenge: "login-challenge", Client: HydraOAuth2Client{ClientID: "agentserver-web"},
-		RequestedScope: []string{"openid", "runs:write"}, RequestedAccessTokenAudience: []string{"agentserver-api"},
+		RequestedScope: []string{"openid", "runs:write", "executors:write"}, RequestedAccessTokenAudience: []string{"agentserver-api"},
 	}}
 	provider := &recordingExternalOIDC{identity: ExternalOIDCIdentity{Issuer: "https://idp.example", Subject: "external-user"}}
 	sealer, err := NewLoginTransactionSealer(bytes.Repeat([]byte{0x29}, 32))

@@ -47,6 +47,8 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 		t.Fatalf("internal OpenAPI identity/security = %q / %+v", document.OpenAPI, document.Security)
 	}
 	want := map[string]string{
+		CompleteExecutorEnrollmentPath:                               "completeExecutorEnrollment",
+		AuthorizeExecutorConnectionPath:                              "authorizeExecutorConnection",
 		ClaimRunDispatchesPath:                                       "claimRunDispatches",
 		CompleteRunDispatchPath("{runDispatchId}"):                   "completeRunDispatch",
 		ReleaseRunDispatchPath("{runDispatchId}"):                    "releaseRunDispatch",
@@ -91,8 +93,10 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 	if len(document.Paths) != len(want) {
 		t.Fatalf("internal OpenAPI path count = %d, want %d", len(document.Paths), len(want))
 	}
-	if len(document.Components.SecuritySchemes) != 2 || document.Components.SecuritySchemes["workloadMTLS"] == nil ||
-		document.Components.SecuritySchemes["runCapabilityBearer"] == nil {
+	if len(document.Components.SecuritySchemes) != 4 || document.Components.SecuritySchemes["workloadMTLS"] == nil ||
+		document.Components.SecuritySchemes["runCapabilityBearer"] == nil ||
+		document.Components.SecuritySchemes["executorEnrollmentBearer"] == nil ||
+		document.Components.SecuritySchemes["executorOAuthBearer"] == nil {
 		t.Fatalf("internal OpenAPI security schemes = %v", document.Components.SecuritySchemes)
 	}
 	for _, path := range []string{AuthorizeExecutorRunCapabilityPath, AuthorizeLLMProxyRunCapabilityPath} {
@@ -101,7 +105,21 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 			t.Errorf("internal OpenAPI %s security = %+v", path, security)
 		}
 	}
+	for path, bearer := range map[string]string{
+		CompleteExecutorEnrollmentPath:  "executorEnrollmentBearer",
+		AuthorizeExecutorConnectionPath: "executorOAuthBearer",
+	} {
+		security := document.Paths[path].Post.Security
+		if len(security) != 1 || security[0]["workloadMTLS"] == nil || security[0][bearer] == nil || len(security[0]) != 2 {
+			t.Errorf("internal OpenAPI %s security = %+v", path, security)
+		}
+	}
 
+	assertSchemaFields(t, document.Components.Schemas, "ExecutorResourceState", reflect.TypeFor[ExecutorResourceState]())
+	assertSchemaFields(t, document.Components.Schemas, "ExecutorEnrollmentEnvironment", reflect.TypeFor[ExecutorEnrollmentEnvironment]())
+	assertSchemaFields(t, document.Components.Schemas, "CompleteExecutorEnrollmentRequest", reflect.TypeFor[CompleteExecutorEnrollmentRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "CompleteExecutorEnrollmentResponse", reflect.TypeFor[CompleteExecutorEnrollmentResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "AuthorizeExecutorConnectionResponse", reflect.TypeFor[AuthorizeExecutorConnectionResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "EnvironmentDeclaration", reflect.TypeFor[EnvironmentDeclaration]())
 	assertSchemaFields(t, document.Components.Schemas, "ConnectionHolder", reflect.TypeFor[ConnectionHolder]())
 	assertSchemaFields(t, document.Components.Schemas, "IssueRunCapabilitiesRequest", reflect.TypeFor[IssueRunCapabilitiesRequest]())
@@ -216,7 +234,8 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 		Security []map[string][]string `json:"security"`
 		Paths    map[string]struct {
 			Post struct {
-				OperationID string `json:"operationId"`
+				OperationID string                `json:"operationId"`
+				Security    []map[string][]string `json:"security"`
 			} `json:"post"`
 			Get struct {
 				OperationID string `json:"operationId"`
@@ -239,19 +258,44 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 		t.Fatalf("decode public OpenAPI contract: %v", err)
 	}
 	if document.OpenAPI != "3.1.0" || len(document.Security) != 1 || len(document.Security[0]) != 2 ||
-		document.Security[0]["browserGatewayMTLS"] == nil || !slices.Equal(document.Security[0]["userOAuth"], []string{"runs:write"}) {
+		document.Security[0]["browserGatewayMTLS"] == nil || !slices.Equal(document.Security[0]["userOAuth"], []string{BrowserOAuthRunScope}) {
 		t.Fatalf("public OpenAPI identity/security = %q / %+v", document.OpenAPI, document.Security)
 	}
 	createPath := CreateUserRunPath("{workspaceId}", "{sessionId}")
 	cancelPath := CancelUserRunPath("{workspaceId}", "{runId}")
 	readPath := ReadUserRunEventsPath("{workspaceId}", "{runId}")
 	decidePath := DecideUserApprovalPath("{workspaceId}", "{approvalId}")
-	if len(document.Paths) != 4 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
+	createExecutorPath := CreateExecutorResourcePath("{workspaceId}")
+	issueEnrollmentPath := IssueExecutorEnrollmentTokenPath("{workspaceId}", "{executorId}")
+	if len(document.Paths) != 6 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
 		document.Paths[cancelPath].Post.OperationID != "cancelUserRun" || document.Paths[readPath].Get.OperationID != "readUserRunEvents" {
 		t.Fatalf("public OpenAPI paths = %+v", document.Paths)
 	}
 	if document.Paths[decidePath].Post.OperationID != "decideUserApproval" {
 		t.Fatalf("public approval path = %+v", document.Paths[decidePath])
+	}
+	if document.Paths[createExecutorPath].Post.OperationID != "createExecutorResource" ||
+		document.Paths[issueEnrollmentPath].Post.OperationID != "issueExecutorEnrollmentToken" {
+		t.Fatalf("public executor paths = %+v / %+v", document.Paths[createExecutorPath], document.Paths[issueEnrollmentPath])
+	}
+	for _, path := range []string{createExecutorPath, issueEnrollmentPath} {
+		security := document.Paths[path].Post.Security
+		if len(security) != 1 || len(security[0]) != 2 || security[0]["browserGatewayMTLS"] == nil ||
+			!slices.Equal(security[0]["userOAuth"], []string{BrowserOAuthExecutorScope}) {
+			t.Errorf("public executor path %s security = %+v", path, security)
+		}
+	}
+	assertSchemaFields(t, document.Components.Schemas, "CreateExecutorResourceRequest", reflect.TypeFor[CreateExecutorResourceRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "ExecutorResourceState", reflect.TypeFor[ExecutorResourceState]())
+	assertSchemaFields(t, document.Components.Schemas, "CreateExecutorResourceResponse", reflect.TypeFor[CreateExecutorResourceResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "IssueExecutorEnrollmentTokenResponse", reflect.TypeFor[IssueExecutorEnrollmentTokenResponse]())
+	var enrollmentTokenProperty struct {
+		WriteOnly bool `json:"writeOnly"`
+		Sensitive bool `json:"x-agentserver-sensitive"`
+	}
+	if err := json.Unmarshal(document.Components.Schemas["IssueExecutorEnrollmentTokenResponse"].Properties["token"], &enrollmentTokenProperty); err != nil ||
+		enrollmentTokenProperty.WriteOnly || !enrollmentTokenProperty.Sensitive {
+		t.Errorf("public enrollment token response sensitivity contract = %+v, %v", enrollmentTokenProperty, err)
 	}
 	assertSchemaFields(t, document.Components.Schemas, "CreateUserRunRequest", reflect.TypeFor[CreateUserRunRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "CreateUserRunResponse", reflect.TypeFor[CreateUserRunResponse]())
@@ -286,17 +330,7 @@ func assertSchemaFields(t *testing.T, schemas map[string]struct {
 	sort.Strings(properties)
 	var goFields []string
 	var goRequired []string
-	for index := range goType.NumField() {
-		tag := goType.Field(index).Tag.Get("json")
-		parts := strings.Split(tag, ",")
-		if parts[0] == "" || parts[0] == "-" {
-			continue
-		}
-		goFields = append(goFields, parts[0])
-		if !slices.Contains(parts[1:], "omitempty") {
-			goRequired = append(goRequired, parts[0])
-		}
-	}
+	collectJSONFields(goType, &goFields, &goRequired)
 	sort.Strings(goFields)
 	sort.Strings(goRequired)
 	sort.Strings(schema.Required)
@@ -305,5 +339,26 @@ func assertSchemaFields(t *testing.T, schemas map[string]struct {
 	}
 	if !slices.Equal(schema.Required, goRequired) {
 		t.Errorf("OpenAPI %s required = %v, Go required fields = %v", name, schema.Required, goRequired)
+	}
+}
+
+func collectJSONFields(goType reflect.Type, fields, required *[]string) {
+	for index := range goType.NumField() {
+		field := goType.Field(index)
+		tag := field.Tag.Get("json")
+		parts := strings.Split(tag, ",")
+		if parts[0] == "-" {
+			continue
+		}
+		if parts[0] == "" {
+			if field.Anonymous && field.Type.Kind() == reflect.Struct {
+				collectJSONFields(field.Type, fields, required)
+			}
+			continue
+		}
+		*fields = append(*fields, parts[0])
+		if !slices.Contains(parts[1:], "omitempty") {
+			*required = append(*required, parts[0])
+		}
 	}
 }

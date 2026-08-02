@@ -67,20 +67,10 @@ case "${source_revision}" in *[!0-9a-f]*) fail "HEAD is not a canonical 40-chara
 
 work_directory=$(mktemp -d "${TMPDIR:-/tmp}/agentserver-v2-production-images.XXXXXX")
 work_directory=$(CDPATH= cd -- "${work_directory}" && pwd -P)
-service_verifier_name="agentserver-v2-service-verify-$$"
-harness_verifier_name="agentserver-v2-harness-verify-$$"
-service_verifier_created=false
-harness_verifier_created=false
 
 cleanup() {
     status=$?
     trap - EXIT INT TERM
-    if [ "${service_verifier_created}" = true ]; then
-        container delete --force "${service_verifier_name}" >/dev/null 2>&1 || true
-    fi
-    if [ "${harness_verifier_created}" = true ]; then
-        container delete --force "${harness_verifier_name}" >/dev/null 2>&1 || true
-    fi
     chmod -R u+w "${work_directory}" >/dev/null 2>&1 || true
     rm -rf -- "${work_directory}"
     exit "${status}"
@@ -187,33 +177,20 @@ container build \
 verify_image() {
     kind=$1
     image=$2
-    verifier_name=$3
-    payload=$4
-    archive=$5
-    container create --name "${verifier_name}" --no-dns "${image}" /usr/local/bin/agentserver-probe >/dev/null
-    case "${kind}" in
-        service) service_verifier_created=true ;;
-        harness) harness_verifier_created=true ;;
-        *) fail "internal unknown image kind" ;;
-    esac
-    container start "${verifier_name}" >/dev/null
-    container stop "${verifier_name}" >/dev/null 2>&1 || true
-    container export --output "${archive}" "${verifier_name}"
+    payload=$3
+    archive=$4
+    case "${kind}" in service|harness) ;; *) fail "internal unknown image kind" ;; esac
+    container image save --platform linux/arm64 --output "${archive}" "${image}" >/dev/null
     chmod 0400 "${archive}"
-    "${work_directory}/agentserver-image" verify-tar \
+    "${work_directory}/agentserver-image" verify-oci \
         --manifest="${payload}/image-manifest.json" \
-        --tar="${archive}"
-    container delete "${verifier_name}" >/dev/null
-    case "${kind}" in
-        service) service_verifier_created=false ;;
-        harness) harness_verifier_created=false ;;
-    esac
+        --archive="${archive}"
 }
 
-verify_image service "${service_image}" "${service_verifier_name}" \
-    "${work_directory}/service-payload" "${work_directory}/service-rootfs.tar"
-verify_image harness "${harness_image}" "${harness_verifier_name}" \
-    "${work_directory}/harness-payload" "${work_directory}/harness-rootfs.tar"
+verify_image service "${service_image}" \
+    "${work_directory}/service-payload" "${work_directory}/service-image.oci.tar"
+verify_image harness "${harness_image}" \
+    "${work_directory}/harness-payload" "${work_directory}/harness-image.oci.tar"
 
 mkdir -m 0700 "${output_directory}"
 cp "${work_directory}/service-payload/image-manifest.json" "${output_directory}/service-image-manifest.json"

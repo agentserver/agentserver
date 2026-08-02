@@ -33,13 +33,45 @@ func VerifyImageTar(reader io.Reader, manifestBytes []byte) error {
 	files[ManifestPath] = FileEntry{
 		Path: ManifestPath, SHA256: sha256Hex(manifestBytes), SizeBytes: int64(len(manifestBytes)), Mode: 0o444,
 	}
-	return verifyTarEntries(reader, directories, files)
+	verifier := newTarEntryVerifier(directories, files)
+	if err := verifier.verifyLayer(reader); err != nil {
+		return err
+	}
+	return verifier.complete()
 }
 
 func verifyTarEntries(reader io.Reader, directories map[string]DirectoryEntry, files map[string]FileEntry) error {
+	verifier := newTarEntryVerifier(directories, files)
+	if err := verifier.verifyLayer(reader); err != nil {
+		return err
+	}
+	return verifier.complete()
+}
+
+type tarEntryVerifier struct {
+	directories     map[string]DirectoryEntry
+	files           map[string]FileEntry
+	seenDirectories map[string]struct{}
+	seenFiles       map[string]struct{}
+}
+
+func newTarEntryVerifier(directories map[string]DirectoryEntry, files map[string]FileEntry) *tarEntryVerifier {
+	return &tarEntryVerifier{
+		directories:     directories,
+		files:           files,
+		seenDirectories: make(map[string]struct{}, len(directories)),
+		seenFiles:       make(map[string]struct{}, len(files)),
+	}
+}
+
+// verifyLayer accepts repeated declared directories across OCI layers because
+// image builders commonly repeat parent directories. Files may appear exactly
+// once across the complete image, and every layer-local entry remains strict.
+func (verifier *tarEntryVerifier) verifyLayer(reader io.Reader) error {
 	archive := tar.NewReader(reader)
-	seenDirectories := make(map[string]struct{}, len(directories))
-	seenFiles := make(map[string]struct{}, len(files))
+	layerDirectories := make(map[string]struct{}, len(verifier.directories))
+	layerFiles := make(map[string]struct{}, len(verifier.files))
+	seenRoot := false
 	for {
 		header, err := archive.Next()
 		if errors.Is(err, io.EOF) {
@@ -53,32 +85,40 @@ func verifyTarEntries(reader io.Reader, directories map[string]DirectoryEntry, f
 			return err
 		}
 		if isRoot {
+			if seenRoot {
+				return errors.New("production image tar repeats root directory")
+			}
 			if header.Typeflag != tar.TypeDir || header.Uid != 0 || header.Gid != 0 || uint32(header.Mode&0o7777) != 0o755 {
 				return errors.New("production image tar root has invalid type, ownership, or mode")
 			}
+			seenRoot = true
 			continue
 		}
 		switch header.Typeflag {
 		case tar.TypeDir:
-			wanted, found := directories[name]
+			wanted, found := verifier.directories[name]
 			if !found {
 				return fmt.Errorf("production image tar contains undeclared directory %s", name)
 			}
-			if _, duplicate := seenDirectories[name]; duplicate {
+			if _, duplicate := layerDirectories[name]; duplicate {
 				return fmt.Errorf("production image tar repeats directory %s", name)
 			}
 			if header.Size != 0 || header.Uid != int(wanted.UID) || header.Gid != int(wanted.GID) ||
 				uint32(header.Mode&0o7777) != wanted.Mode {
 				return fmt.Errorf("production image directory %s has invalid size, ownership, or mode", name)
 			}
-			seenDirectories[name] = struct{}{}
+			layerDirectories[name] = struct{}{}
+			verifier.seenDirectories[name] = struct{}{}
 		case tar.TypeReg, tar.TypeRegA:
-			wanted, found := files[name]
+			wanted, found := verifier.files[name]
 			if !found {
 				return fmt.Errorf("production image tar contains undeclared file %s", name)
 			}
-			if _, duplicate := seenFiles[name]; duplicate {
+			if _, duplicate := layerFiles[name]; duplicate {
 				return fmt.Errorf("production image tar repeats file %s", name)
+			}
+			if _, replaces := verifier.seenFiles[name]; replaces {
+				return fmt.Errorf("production image layers replace file %s", name)
 			}
 			if header.Size != wanted.SizeBytes || header.Uid != int(wanted.UID) || header.Gid != int(wanted.GID) ||
 				uint32(header.Mode&0o7777) != wanted.Mode {
@@ -92,13 +132,18 @@ func verifyTarEntries(reader io.Reader, directories map[string]DirectoryEntry, f
 			if actual := hex.EncodeToString(hasher.Sum(nil)); actual != wanted.SHA256 {
 				return fmt.Errorf("production image file %s SHA-256 = %s, want %s", name, actual, wanted.SHA256)
 			}
-			seenFiles[name] = struct{}{}
+			layerFiles[name] = struct{}{}
+			verifier.seenFiles[name] = struct{}{}
 		default:
 			return fmt.Errorf("production image tar contains forbidden type %d at %s", header.Typeflag, name)
 		}
 	}
-	missingDirectories := missingEntryNames(directories, seenDirectories)
-	missingFiles := missingEntryNames(files, seenFiles)
+	return nil
+}
+
+func (verifier *tarEntryVerifier) complete() error {
+	missingDirectories := missingEntryNames(verifier.directories, verifier.seenDirectories)
+	missingFiles := missingEntryNames(verifier.files, verifier.seenFiles)
 	if len(missingDirectories) != 0 || len(missingFiles) != 0 {
 		return fmt.Errorf(
 			"production image tar is incomplete: directories=%s files=%s",

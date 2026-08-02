@@ -27,6 +27,8 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 	switch arguments[0] {
 	case "prepare":
 		err = runPrepare(arguments[1:], stdout, stderr)
+	case "verify-oci":
+		err = runVerifyOCI(arguments[1:], stdout, stderr)
 	case "verify-tar":
 		err = runVerifyTar(arguments[1:], stdout, stderr)
 	default:
@@ -38,6 +40,39 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func runVerifyOCI(arguments []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("verify-oci", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	var manifestPath, archivePath string
+	flags.StringVar(&manifestPath, "manifest", "", "external production image manifest")
+	flags.StringVar(&archivePath, "archive", "", "saved OCI image archive")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("verify-oci accepts no positional arguments")
+	}
+	manifest, err := readDirectFile("production image manifest", manifestPath, maximumImageManifestBytes)
+	if err != nil {
+		return err
+	}
+	archive, err := openDirectFile("production OCI archive", archivePath)
+	if err != nil {
+		return err
+	}
+	verifyErr := productionimage.VerifyImageOCI(archive, manifest)
+	closeErr := archive.Close()
+	if verifyErr != nil || closeErr != nil {
+		return errors.Join(verifyErr, closeErr)
+	}
+	parsed, err := productionimage.ParseManifest(manifest)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "agentserver-image verify-oci: %s %s image verified\n", parsed.Kind, parsed.Platform)
+	return nil
 }
 
 func runPrepare(arguments []string, stdout, stderr io.Writer) error {
@@ -154,5 +189,6 @@ func writeUsage(writer io.Writer) {
 	}
 	fmt.Fprintln(writer, "usage: agentserver-image prepare --kind=service --source-revision=GIT_SHA --binary-dir=/absolute/path --output=/absolute/new-directory")
 	fmt.Fprintln(writer, "       agentserver-image prepare --kind=harness --source-revision=GIT_SHA --binary-dir=/absolute/path --codex=/absolute/path --bwrap=/absolute/path --requirements=/absolute/path --output=/absolute/new-directory")
+	fmt.Fprintln(writer, "       agentserver-image verify-oci --manifest=/absolute/image-manifest.json --archive=/absolute/image.oci.tar")
 	fmt.Fprintln(writer, "       agentserver-image verify-tar --manifest=/absolute/image-manifest.json --tar=/absolute/rootfs.tar")
 }

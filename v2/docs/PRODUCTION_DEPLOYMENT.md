@@ -80,9 +80,12 @@ cd /absolute/agentserver/v2
   --output-dir=/absolute/new-image-evidence
 ```
 
-脚本会交叉编译九个 arm64 Go executable，组装两个 scratch 镜像，导出 rootfs 并按
-closed-world image manifest 逐文件复核。只有脚本打印 `verified production images` 后才可
-推送：
+脚本会交叉编译九个 arm64 Go executable，组装两个 scratch 镜像，再通过
+`container image save` 读取 OCI archive：校验唯一 `linux/arm64` manifest、所有 descriptor
+digest、锁定的运行配置、两层 diff ID，以及 closed-world image manifest 中声明的逐文件
+mode/owner/size/SHA-256。校验不使用运行后容器的 rootfs，避免把 runtime 注入的
+`dev/proc/sys`、hostname 或 hosts 文件误认为镜像内容。只有脚本打印
+`verified production images` 后才可推送：
 
 ```bash
 container registry login registry.example.com

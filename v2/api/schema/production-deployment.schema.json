@@ -84,7 +84,13 @@
       "required": ["service", "harness"],
       "properties": {
         "service": {"$ref": "#/$defs/image"},
-        "harness": {"$ref": "#/$defs/image"}
+        "harness": {"$ref": "#/$defs/image"},
+        "pullSecret": {
+          "anyOf": [
+            {"const": ""},
+            {"$ref": "#/$defs/dnsName"}
+          ]
+        }
       }
     },
     "replicas": {

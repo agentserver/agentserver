@@ -111,6 +111,7 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 			}
 			assertPinnedImages(t, resource)
 			assertProductionNodeSelector(t, resource)
+			assertImagePullSecret(t, resource, loaded.Document.Images.PullSecret)
 		}
 	}
 	all := append(append(append(append([]byte(nil), mustBundleFile(t, bundle, foundationFile)...), mustBundleFile(t, bundle, migrationFile)...), mustBundleFile(t, bundle, bootstrapFile)...), mustBundleFile(t, bundle, runtimeFile)...)
@@ -120,6 +121,26 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 	} {
 		if bytes.Contains(all, []byte(forbidden)) {
 			t.Fatalf("rendered bundle contains static AWS credential field %q", forbidden)
+		}
+	}
+}
+
+func TestRenderAllowsPublicOrNodeCredentialedImagesWithoutPullSecret(t *testing.T) {
+	document := validConfigDocument()
+	document.Images.PullSecret = ""
+	loaded, err := ValidateConfig(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := Render(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []string{migrationFile, bootstrapFile, runtimeFile} {
+		for _, resource := range parseKubernetesList(t, mustBundleFile(t, bundle, file)) {
+			if resource["kind"] == "Deployment" || resource["kind"] == "Job" {
+				assertImagePullSecret(t, resource, "")
+			}
 		}
 	}
 }
@@ -350,6 +371,22 @@ func assertProductionNodeSelector(t *testing.T, resource map[string]any) {
 	selector := objectField(t, podSpec, "nodeSelector")
 	if stringField(t, selector, "kubernetes.io/os") != "linux" || stringField(t, selector, "kubernetes.io/arch") != "arm64" {
 		t.Fatalf("%s is not pinned to the gated linux-arm64 platform: %#v", resource["kind"], selector)
+	}
+}
+
+func assertImagePullSecret(t *testing.T, resource map[string]any, want string) {
+	t.Helper()
+	spec := objectField(t, resource, "spec")
+	podSpec := objectField(t, objectField(t, spec, "template"), "spec")
+	secrets := arrayField(t, podSpec, "imagePullSecrets")
+	if want == "" {
+		if len(secrets) != 0 {
+			t.Fatalf("%s imagePullSecrets = %#v, want empty", resource["kind"], secrets)
+		}
+		return
+	}
+	if len(secrets) != 1 || stringField(t, secrets[0].(map[string]any), "name") != want {
+		t.Fatalf("%s imagePullSecrets = %#v, want %s", resource["kind"], secrets, want)
 	}
 }
 

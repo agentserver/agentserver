@@ -18,7 +18,7 @@
 以下资源故意不归 Chart 管理，卸载 release 时也不会删除：
 
 - Namespace；
-- 六组 Kubernetes Secret；
+- 六组 Kubernetes workload Secret，以及私有 registry 场景下可选的 image pull Secret；
 - PostgreSQL、Hydra、外部 OIDC IdP；
 - S3 bucket、KMS key、AWS workload identity/IAM role；
 - DNS zone、证书颁发系统和外部 LoadBalancer 控制器；
@@ -35,10 +35,13 @@ NetworkPolicy 尚未创建，migration 二进制仍只有读取数据库 URL 并
 部署前必须同时满足：
 
 1. 构建机安装 Go `1.26.5`、Apple container CLI `1.2.0`、Helm 3/4 和 kubectl。
-2. 目标集群存在可调度的 `linux/arm64` 节点；当前生产 profile 不接受 amd64。
+2. 目标集群存在可调度的 `linux/arm64` 节点；当前生产 profile 不接受 amd64。功能验收可用
+   单节点，但生产高可用至少需要两个独立故障域中的 arm64 节点和足够容量。
 3. CNI 实际执行 Kubernetes NetworkPolicy；集群支持 projected ServiceAccount token、
    PDB、LoadBalancer Service 和固定 ClusterIP。
-4. 目标 OCI registry 能被构建机推送、被 arm64 节点拉取，并能返回不可变 digest。
+4. 目标 OCI registry 能被构建机推送、被 arm64 节点拉取，并能返回不可变 digest。私有
+   registry 应预创建 `kubernetes.io/dockerconfigjson` pull Secret，并写入
+   `images.pullSecret`；公开 registry 或节点已统一配置凭据时才将该字段置空。
 5. PostgreSQL 已创建数据库；migration 身份有 DDL 权限，运行期 core 身份至少有 DML
    权限。当前只接受一条 `database-url`，若暂未拆分身份则该 URL 同时供 migration、
    bootstrap 和 core 使用。
@@ -104,7 +107,7 @@ arm64 manifest digest 混用。`new-image-evidence/` 应随部署记录保存，
 
 | 区域 | 必须确认的内容 |
 | --- | --- |
-| `images` | 两个远端、arm64、digest-pinned 镜像 |
+| `images` | 两个远端、arm64、digest-pinned 镜像，以及可选的外置 registry pull Secret |
 | `services` | 四个未占用且属于集群 Service CIDR 的固定 ClusterIP、两个 public hostname |
 | `bootstrap` | 首个 owner、workspace、session、executor UUID，以及 IdP 的精确 `sub` |
 | `oauth` | Hydra issuer/admin/public/introspection、browser client、外部 OIDC issuer/client/redirect |
@@ -142,6 +145,21 @@ kubectl --context "${KUBE_CONTEXT}" create namespace "${NAMESPACE}"
 
 若 Namespace 已存在，上述命令会失败，此时应检查其 owner、Pod Security、ResourceQuota、
 LimitRange 和基线 NetworkPolicy，而不是用 `--force` 或 `--take-ownership`。
+
+若 registry 私有，先从受限的 Docker config 文件创建独立 pull Secret；不要把 registry
+密码直接放进命令参数或 shell history：
+
+```bash
+kubectl --context "${KUBE_CONTEXT}" --namespace "${NAMESPACE}" \
+  create secret generic agentserver-registry-pull \
+  --type=kubernetes.io/dockerconfigjson \
+  --from-file=.dockerconfigjson=/absolute/secure-registry/docker-config.json
+```
+
+名称必须与 `production.json` 的 `images.pullSecret` 一致。该 Secret 会挂到 migration、
+bootstrap 和五个 runtime Deployment 的 PodSpec；它仍是外置资源，不归 Helm 删除。若字段
+为空，Chart 会渲染空的 `imagePullSecrets`，此时必须提前证明镜像公开或所有目标节点均有
+pull credential。
 
 六组 Secret 的精确 key 集合如下。表中的文件名就是 Kubernetes Secret key：
 
@@ -332,8 +350,8 @@ helm uninstall "${RELEASE}" \
   --wait --timeout 10m
 ```
 
-Namespace、六组 Secret、PostgreSQL 数据、S3 对象和 KMS key 会保留。是否删除这些外部
-资源必须作为单独的、经确认的数据生命周期操作处理。
+Namespace、六组 workload Secret、可选 registry pull Secret、PostgreSQL 数据、S3 对象和
+KMS key 会保留。是否删除这些外部资源必须作为单独的、经确认的数据生命周期操作处理。
 
 ## 10. 常见故障定位
 
@@ -344,7 +362,8 @@ Namespace、六组 Secret、PostgreSQL 数据、S3 对象和 KMS key 会保留�
 - Pod Pending：确认 arm64 节点容量、tmpfs limit、ResourceQuota 和 PDB。
 - Service 创建失败：固定 ClusterIP 已占用或不属于 Service CIDR；修改配置并重新生成
   Chart，不要在线 patch。
-- ImagePullBackOff：节点无法读取 registry 或配置使用了错误平台/错误 digest。
+- ImagePullBackOff：节点无法读取 registry、`images.pullSecret` 缺失/错误，或配置使用了错误
+  平台/错误 digest；构建机完成 registry login 不等于集群节点可以拉取。
 - 外部请求 timeout：把实际目的 IPv4/CIDR 加到正确的 egress 分组并重新生成；同时检查
   CoreDNS Service IP 和 selector。
 - Helm Namespace/config guard 失败：使用生成 Chart 对应的 Namespace 和原始

@@ -5,7 +5,8 @@
   "platform": "linux-arm64",
   "images": {
     "service": "registry.example.com/agentserver/service@sha256:1111111111111111111111111111111111111111111111111111111111111111",
-    "harness": "registry.example.com/agentserver/harness@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    "harness": "registry.example.com/agentserver/harness@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "pullSecret": "agentserver-registry-pull"
   },
   "replicas": {
     "core": 2,

@@ -21,6 +21,14 @@ func TestValidateConfigAcceptsClosedLinuxARM64Deployment(t *testing.T) {
 	}
 }
 
+func TestValidateConfigAllowsPublicOrNodeCredentialedImages(t *testing.T) {
+	document := validConfigDocument()
+	document.Images.PullSecret = ""
+	if _, err := ValidateConfig(document); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestParseConfigRejectsUnknownDuplicateAndSecretFields(t *testing.T) {
 	document := validConfigDocument()
 	raw, err := json.Marshal(document)
@@ -57,6 +65,8 @@ func TestValidateConfigRejectsUnsafeProductionShapes(t *testing.T) {
 	for name, mutate := range map[string]func(*ConfigDocument){
 		"platform":                  func(value *ConfigDocument) { value.Platform = "linux-amd64" },
 		"mutable image":             func(value *ConfigDocument) { value.Images.Service = "registry.example.test/agentserver:latest" },
+		"invalid pull secret":       func(value *ConfigDocument) { value.Images.PullSecret = "Not_Canonical" },
+		"pull secret collision":     func(value *ConfigDocument) { value.Images.PullSecret = value.Secrets.Core },
 		"gateway replicas implied":  func(value *ConfigDocument) { value.Services.ExecutorGateway.Port = 9443 },
 		"shared role":               func(value *ConfigDocument) { value.Objects.HarnessPoolRoleARN = value.Objects.CoreRoleARN },
 		"invalid object prefix":     func(value *ConfigDocument) { value.Objects.Prefix = "agentserver/../production" },
@@ -108,8 +118,9 @@ func validConfigDocument() ConfigDocument {
 	return ConfigDocument{
 		Version: 1, Namespace: "agentserver", ClusterDomain: "cluster.local", Platform: ProductionPlatform,
 		Images: ImagesDocument{
-			Service: "registry.example.test/agentserver/service@sha256:" + digest("1"),
-			Harness: "registry.example.test/agentserver/harness@sha256:" + digest("2"),
+			Service:    "registry.example.test/agentserver/service@sha256:" + digest("1"),
+			Harness:    "registry.example.test/agentserver/harness@sha256:" + digest("2"),
+			PullSecret: "agentserver-registry-pull",
 		},
 		Replicas: ReplicasDocument{Core: 2, BrowserGateway: 2, HarnessPool: 2, LLMProxy: 2},
 		Services: ServicesDocument{

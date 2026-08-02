@@ -87,8 +87,9 @@ type ConfigDocument struct {
 }
 
 type ImagesDocument struct {
-	Service string `json:"service"`
-	Harness string `json:"harness"`
+	Service    string `json:"service"`
+	Harness    string `json:"harness"`
+	PullSecret string `json:"pullSecret,omitempty"`
 }
 
 type ReplicasDocument struct {
@@ -336,7 +337,7 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 	if err := validateObjects(document.Objects); err != nil {
 		return LoadedConfig{}, err
 	}
-	if err := validateSecrets(document.Secrets); err != nil {
+	if err := validateSecrets(document.Secrets, document.Images.PullSecret); err != nil {
 		return LoadedConfig{}, err
 	}
 	if err := validateNetwork(&loaded.Document.Network, loaded.Document.Services); err != nil {
@@ -598,8 +599,8 @@ func validateObjects(document ObjectStoreDocument) error {
 	return nil
 }
 
-func validateSecrets(document SecretsDocument) error {
-	seen := make(map[string]struct{}, 6)
+func validateSecrets(document SecretsDocument, pullSecret string) error {
+	seen := make(map[string]struct{}, 7)
 	for name, value := range map[string]string{
 		"core": document.Core, "browserGateway": document.BrowserGateway,
 		"executorGateway": document.ExecutorGateway, "harnessPool": document.HarnessPool,
@@ -612,6 +613,14 @@ func validateSecrets(document SecretsDocument) error {
 			return errors.New("each workload must use a distinct Kubernetes Secret")
 		}
 		seen[value] = struct{}{}
+	}
+	if pullSecret != "" {
+		if !validDNSName(pullSecret) || strings.Contains(pullSecret, "..") {
+			return errors.New("images.pullSecret must be a canonical Kubernetes Secret name")
+		}
+		if _, collision := seen[pullSecret]; collision {
+			return errors.New("images.pullSecret must be distinct from workload material Secrets")
+		}
 	}
 	return nil
 }

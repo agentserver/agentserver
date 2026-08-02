@@ -9,26 +9,27 @@ import (
 )
 
 type deploymentInput struct {
-	namespace      string
-	component      string
-	replicas       int
-	image          string
-	serviceAccount string
-	command        []any
-	args           []any
-	environment    []any
-	initContainers []any
-	volumes        []any
-	volumeMounts   []any
-	hostAliases    map[string]string
-	resources      ContainerResourcesDocument
-	uid            uint32
-	gid            uint32
-	fsGroup        uint32
-	capabilities   []string
-	strategy       string
-	configHash     string
-	termination    int
+	namespace       string
+	component       string
+	replicas        int
+	image           string
+	imagePullSecret string
+	serviceAccount  string
+	command         []any
+	args            []any
+	environment     []any
+	initContainers  []any
+	volumes         []any
+	volumeMounts    []any
+	hostAliases     map[string]string
+	resources       ContainerResourcesDocument
+	uid             uint32
+	gid             uint32
+	fsGroup         uint32
+	capabilities    []string
+	strategy        string
+	configHash      string
+	termination     int
 }
 
 func renderRuntime(context renderContext) ([]kubeObject, error) {
@@ -113,7 +114,7 @@ func renderCoreDeployment(context renderContext) (kubeObject, error) {
 	environment = append(environment, awsWorkloadEnvironment(document.Objects.CoreRoleARN, document.Objects.S3Region)...)
 	return deployment(deploymentInput{
 		namespace: document.Namespace, component: coreComponent, replicas: document.Replicas.Core,
-		image: document.Images.Service, serviceAccount: coreComponent,
+		image: document.Images.Service, imagePullSecret: document.Images.PullSecret, serviceAccount: coreComponent,
 		command: []any{"/usr/local/bin/agentserver-core"}, args: []any{"serve"},
 		environment: environment,
 		initContainers: []any{materializeInitContainer(
@@ -154,7 +155,7 @@ func renderBrowserDeployment(context renderContext) (kubeObject, error) {
 	}
 	return deployment(deploymentInput{
 		namespace: document.Namespace, component: browserComponent, replicas: document.Replicas.BrowserGateway,
-		image: document.Images.Service, serviceAccount: browserComponent,
+		image: document.Images.Service, imagePullSecret: document.Images.PullSecret, serviceAccount: browserComponent,
 		command: []any{"/usr/local/bin/browser-gateway"}, args: []any{"serve"}, environment: environment,
 		initContainers: []any{materializeInitContainer(
 			document.Images.Service, harnessinit.ProfileBrowserGateway, "material-source", "/var/run/agentserver-source",
@@ -197,7 +198,7 @@ func renderExecutorDeployment(context renderContext) (kubeObject, error) {
 	}
 	return deployment(deploymentInput{
 		namespace: document.Namespace, component: executorComponent, replicas: 1,
-		image: document.Images.Service, serviceAccount: executorComponent,
+		image: document.Images.Service, imagePullSecret: document.Images.PullSecret, serviceAccount: executorComponent,
 		command: []any{"/usr/local/bin/executor-gateway"}, args: []any{"serve"}, environment: environment,
 		initContainers: []any{materializeInitContainer(
 			document.Images.Service, harnessinit.ProfileExecutorGateway, "material-source", "/var/run/agentserver-source",
@@ -268,7 +269,7 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 	})
 	return deployment(deploymentInput{
 		namespace: document.Namespace, component: harnessComponent, replicas: document.Replicas.HarnessPool,
-		image: document.Images.Harness, serviceAccount: harnessComponent,
+		image: document.Images.Harness, imagePullSecret: document.Images.PullSecret, serviceAccount: harnessComponent,
 		command: []any{"/usr/local/bin/harness-pool"}, args: []any{"serve"}, environment: environment,
 		initContainers: []any{
 			materializeInitContainer(document.Images.Harness, harnessinit.ProfileHarnessPool, "pool-source", "/var/run/pool-source", "material", "/var/run/agentserver/pool", PoolUID, PoolGID),
@@ -327,7 +328,7 @@ func renderLLMProxyDeployment(context renderContext) (kubeObject, error) {
 	}
 	return deployment(deploymentInput{
 		namespace: document.Namespace, component: llmproxyComponent, replicas: document.Replicas.LLMProxy,
-		image: document.Images.Service, serviceAccount: llmproxyComponent,
+		image: document.Images.Service, imagePullSecret: document.Images.PullSecret, serviceAccount: llmproxyComponent,
 		command: []any{"/usr/local/bin/llmproxy"}, args: []any{"serve"}, environment: environment,
 		initContainers: []any{materializeInitContainer(
 			document.Images.Service, harnessinit.ProfileLLMProxy, "material-source", "/var/run/agentserver-source",
@@ -372,6 +373,7 @@ func deployment(input deploymentInput) kubeObject {
 	}
 	podSpec := kubeObject{
 		"serviceAccountName": input.serviceAccount, "automountServiceAccountToken": false,
+		"imagePullSecrets":   imagePullSecrets(input.imagePullSecret),
 		"enableServiceLinks": false, "terminationGracePeriodSeconds": input.termination,
 		"securityContext": podSecurity, "nodeSelector": productionNodeSelector(), "containers": []any{container},
 		"volumes": input.volumes,

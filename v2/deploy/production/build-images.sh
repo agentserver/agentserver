@@ -80,6 +80,7 @@ cleanup() {
     if [ "${harness_verifier_created}" = true ]; then
         container delete --force "${harness_verifier_name}" >/dev/null 2>&1 || true
     fi
+    chmod -R u+w "${work_directory}" >/dev/null 2>&1 || true
     rm -rf -- "${work_directory}"
     exit "${status}"
 }
@@ -141,22 +142,20 @@ chmod 0500 "${work_directory}/agentserver-image"
     --requirements="${v2_root}/packaging/stockruntime/requirements.toml" \
     --output="${work_directory}/harness-payload"
 
-# Apple container requires --file to resolve inside the build context. Keeping
-# the reviewed Containerfiles beside this script but copying their exact bytes
-# into each one-shot context prevents an external file path from producing an
-# empty-context cache hit.
-cp "${script_dir}/service.Containerfile" "${work_directory}/service-payload/Containerfile"
-cp "${script_dir}/harness.Containerfile" "${work_directory}/harness-payload/Containerfile"
+# Apple container 1.2.0 must discover the default Dockerfile inside its build
+# context. An absolute --file path can silently yield a two-byte definition and
+# an empty-context cache hit even when that path is below the context root.
+cp "${script_dir}/service.Containerfile" "${work_directory}/service-payload/Dockerfile"
+cp "${script_dir}/harness.Containerfile" "${work_directory}/harness-payload/Dockerfile"
 chmod 0444 \
-    "${work_directory}/service-payload/Containerfile" \
-    "${work_directory}/harness-payload/Containerfile"
+    "${work_directory}/service-payload/Dockerfile" \
+    "${work_directory}/harness-payload/Dockerfile"
 
 printf '%s\n' "build-images.sh: building ${service_image}"
 container build \
     --platform linux/arm64 \
     --progress plain \
     --build-arg "SOURCE_REVISION=${source_revision}" \
-    --file "${work_directory}/service-payload/Containerfile" \
     --tag "${service_image}" \
     "${work_directory}/service-payload"
 
@@ -165,7 +164,6 @@ container build \
     --platform linux/arm64 \
     --progress plain \
     --build-arg "SOURCE_REVISION=${source_revision}" \
-    --file "${work_directory}/harness-payload/Containerfile" \
     --tag "${harness_image}" \
     "${work_directory}/harness-payload"
 
@@ -181,6 +179,7 @@ verify_image() {
         harness) harness_verifier_created=true ;;
         *) fail "internal unknown image kind" ;;
     esac
+    container start "${verifier_name}" >/dev/null
     container export --output "${archive}" "${verifier_name}"
     chmod 0400 "${archive}"
     "${work_directory}/agentserver-image" verify-tar \

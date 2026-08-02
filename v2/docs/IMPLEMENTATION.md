@@ -1080,6 +1080,8 @@ Hydra login/consent bridge和reference Web的Code + PKCE入口现已在executor+
 - pool、worker与 app-server使用固定的不同 UID/文件权限域；child禁止 ptrace/process-vm和读取 worker/pool `/proc`状态。固定 worker 代码可以共享 Pod，但不把这种边界宣称为对任意代码安全。
 - rootfs只读；CODEX_HOME与 staging位于有配额 tmpfs/emptyDir；child mount view不含 workspace或 service-account token，worker-only staging依靠不同 UID和 `0700`目录不可读。
 - 只有 init-network-guard持有短期 `NET_ADMIN`并安装按 UID默认拒绝的 nftables OUTPUT规则；runtime pool/worker/app-server都丢弃 `NET_ADMIN/NET_RAW`。
+- network init在任何runtime container启动前replace同名IPv4/IPv6 table；若规则已经提交而init进程在退出前被杀，Kubernetes重试会先清理旧table再原子发布完整新规则集，不会因`EEXIST`卡死Pod。
+- Kubernetes projected Secret不是direct regular file。受信init按closed-world service profile通过受限descriptor读取projection，再原子物化为固定UID/GID独占、目录`0500`、文件`0400`的direct-file view；runtime不直接放宽自身safe-open合同。
 - final-exec trampoline只保留 stdin/stdout/stderr，fd 3以上 close-all；worker control/credential FD同时必须为 `O_CLOEXEC`。
 - app-server没有 Kubernetes API token。
 - worker 只使用 pool 签发的 per-attempt control/MCP capability；不可读 pool service account、对象存储或签名凭证。
@@ -1261,6 +1263,10 @@ agentx cgroup切片由connector在自身delegated unified hierarchy下创建随�
 gateway restart切片增加migration 0015及startup-only recovery API。production `executor-gateway`在listener/readiness之前用全新gateway identity调用Core；Core先在独立事务中fence当前connection generation并把executor/environment下线，再在第二个事务中按确定性顺序恢复最多64个execution。拆成两个事务是为了避免recovery采用`connection → run`而旧operation写路径采用`run → connection`的反向锁序；第二个事务持有executor锁阻止fresh generation，并且Begin/ACK/terminal写路径现在都在实际变化前重新锁定、核对online/current/unexpired connection。完全未发送的approved operation保留prepared，`dispatching|acknowledged`收为unknown，合法尾部timeout收为skipped，已有可信operation终态则补交execution聚合终态；其他未发送必执行operation使恢复fail closed，但不能撤销已经提交的fence。每个恢复execution只产生一条带reason、generation和changes的canonical event/outbox；响应不明时进程退出，不在原producer identity内重试。
 
 真实PostgreSQL 17全量套件已经覆盖该迁移、connection liveness、恢复聚合、先fence后fail-closed和重复调用。额外的独立OS进程矩阵在Begin前/后、WSS不可逆发送marker前/后、ACK前/后、operation terminal前/后、execution terminal前/后逐点hard-kill，随后用新gateway/producer identity执行与production相同的`RecoverGatewayStartup`，证明send marker不增加、旧generation不能dispatch、重复恢复无第二条event。最大256-operation恢复evidence/event也已验证不超过64 KiB inline boundary；相关Core/gateway包的race detector通过。这关闭的是应用层单副本restart合同，不能替代尚未完成的真实Kubernetes、agentx跨仓和网络故障部署门禁。
+
+生产部署初始化切片新增`agentserver-core bootstrap --config=/absolute/path`。它不隐式执行migration；部署顺序固定为`migrate → bootstrap → runtime`。bootstrap在单个PostgreSQL transaction和独立advisory lock内创建首个workspace/session/owner user、外部`(issuer, subject)`映射、owner membership及固定`enrolling` executor；完全相同的重试零写入，任一既有authority不一致整笔回滚且绝不覆盖。配置为bounded、closed-world canonical JSON，允许Kubernetes projection解析到稳定regular target，但拒绝group/other可写target。
+
+同一切片新增生产镜像内命令`agentserver-init`。`materialize`只接受`core|browser-gateway|executor-gateway|harness-worker|llmproxy`五个固定profile；Linux以`openat2(RESOLVE_BENEATH|RESOLVE_NO_MAGICLINKS|RESOLVE_NO_XDEV)`读取projected source，输出精确file set并在重试时逐项核对内容、mode和owner。`install-network-guard`只接受closed-world JSON中的显式IPv4 TCP tuple和固定UID；worker/app的其他IPv4及全部IPv6均拒绝。A12 Linux gate连续安装同一规则集两次，覆盖init commit后被杀的重试形状。该切片仍只是production manifest的构件；在真实Secret projection、Service ClusterIP、NetworkPolicy和Pod securityContext被renderer固定并通过整栈门禁前，不能宣称可部署。
 
 ## 13. 建议的首批 PR
 

@@ -745,6 +745,9 @@ func TestAppServerA12ProductionIsolationImageGate(t *testing.T) {
 	if err := networkguard.Install("agentserver_a12", policies); err != nil {
 		t.Fatalf("install A12 per-UID nftables policy: %v", err)
 	}
+	if err := networkguard.Install("agentserver_a12", policies); err != nil {
+		t.Fatalf("retry exact A12 per-UID nftables policy: %v", err)
+	}
 	for _, scenario := range []struct {
 		name     string
 		modelURL string

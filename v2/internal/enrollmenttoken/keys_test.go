@@ -44,11 +44,25 @@ func TestLoadCodecRequiresRestrictedCanonicalKeyFile(t *testing.T) {
 	if _, err := LoadCodec("issuer", broad); err == nil {
 		t.Fatal("broad key permissions were accepted")
 	}
-	symlink := filepath.Join(directory, "symlink")
-	if err := os.Symlink(valid, symlink); err != nil {
+	projectionDirectory := filepath.Join(directory, "..2026_08_02")
+	if err := os.Mkdir(projectionDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadCodec("issuer", symlink); err == nil {
-		t.Fatal("symlinked key file was accepted")
+	projectedTarget := filepath.Join(projectionDirectory, "enrollment.key")
+	if err := os.WriteFile(projectedTarget, []byte(encoded), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	projection := filepath.Join(directory, "projected.key")
+	if err := os.Symlink(filepath.Join(filepath.Base(projectionDirectory), "enrollment.key"), projection); err != nil {
+		t.Fatal(err)
+	}
+	if codec, err := LoadCodec("issuer", projection); err != nil || codec.Issuer() != "issuer" {
+		t.Fatalf("restricted projected Secret = %v / %v", codec, err)
+	}
+	if err := os.Chmod(projectedTarget, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadCodec("issuer", projection); err == nil {
+		t.Fatal("broad projected Secret target was accepted")
 	}
 }

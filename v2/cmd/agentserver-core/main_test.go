@@ -154,6 +154,37 @@ func TestRunInsecureDevelopmentBootstrap(t *testing.T) {
 	}
 }
 
+func TestRunProductionBootstrap(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	called := false
+	exitCode := run(
+		t.Context(), []string{"bootstrap", "--config=/absolute/bootstrap.json"},
+		func(name string) string {
+			if name != databaseURLEnvironment {
+				t.Fatalf("environment lookup = %q", name)
+			}
+			return "postgres://configured"
+		},
+		&stdout, &stderr,
+		commandFunctions{bootstrapProduction: func(_ context.Context, databaseURL, configPath string) (productionBootstrapCommandResult, error) {
+			called = true
+			if databaseURL != "postgres://configured" || configPath != "/absolute/bootstrap.json" {
+				t.Fatalf("bootstrap inputs = %q, %q", databaseURL, configPath)
+			}
+			return productionBootstrapCommandResult{
+				Bootstrap:   coredb.ProductionBootstrapResult{SchemaVersion: 15, CreatedRows: 6},
+				WorkspaceID: "workspace", SessionID: "session", UserID: "user", ExecutorID: "executor",
+			}, nil
+		}},
+	)
+	if exitCode != 0 || !called || stderr.Len() != 0 ||
+		!strings.Contains(stdout.String(), "production workspace workspace session session user user executor executor") ||
+		!strings.Contains(stdout.String(), "schema 0015; created 6 row(s)") {
+		t.Fatalf("bootstrap result = exit %d, called %v, stdout %q, stderr %q", exitCode, called, stdout.String(), stderr.String())
+	}
+}
+
 func TestRunInsecureDevelopmentBootstrapRequiresExactMode(t *testing.T) {
 	for _, args := range [][]string{
 		{"bootstrap"},

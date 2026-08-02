@@ -42,6 +42,28 @@ func Install(tableName string, policies []UIDPolicy) error {
 	if os.Geteuid() != 0 {
 		return errors.New("install nftables UID egress policy as container root")
 	}
+	return installNormalized(tableName, normalized, transact)
+}
+
+// installNormalized replaces both family tables before publishing one new
+// atomic ruleset. Install is an init-container boundary: Kubernetes never
+// starts the workload containers until this function returns successfully.
+// Replacing a previous complete ruleset therefore makes a kill after the
+// kernel commit but before process exit exactly retryable without opening a
+// runtime-process egress window.
+func installNormalized(tableName string, normalized []UIDPolicy, transactCommands func([]nftCommand) error) error {
+	for _, family := range []struct {
+		id    uint8
+		label string
+	}{
+		{id: unix.NFPROTO_IPV4, label: "IPv4"},
+		{id: unix.NFPROTO_IPV6, label: "IPv6"},
+	} {
+		if err := removeTableIfPresent(tableName, family.id, family.label, transactCommands); err != nil {
+			return err
+		}
+	}
+
 	commands := newTableAndOutputChainCommands(tableName, unix.NFPROTO_IPV4, "IPv4")
 	for _, policy := range normalized {
 		for _, endpoint := range policy.AllowedEndpoints {
@@ -76,7 +98,25 @@ func Install(tableName string, policies []UIDPolicy) error {
 			[]nftExpression{metaSKUIDExpression(), compareUIDExpression(policy.UID), verdictExpression(netfilterDrop)},
 		))
 	}
-	return transact(commands)
+	return transactCommands(commands)
+}
+
+func removeTableIfPresent(
+	tableName string,
+	family uint8,
+	familyLabel string,
+	transactCommands func([]nftCommand) error,
+) error {
+	command := nftCommand{
+		label:  "remove previous " + familyLabel + " table",
+		typeID: unix.NFT_MSG_DELTABLE,
+		family: family,
+		attrs:  nftAttributes(nftString(unix.NFTA_TABLE_NAME, tableName)),
+	}
+	if err := transactCommands([]nftCommand{command}); err != nil && !errors.Is(err, syscall.ENOENT) {
+		return err
+	}
+	return nil
 }
 
 func newTableAndOutputChainCommands(tableName string, family uint8, familyLabel string) []nftCommand {

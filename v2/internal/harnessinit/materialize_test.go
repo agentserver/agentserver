@@ -54,10 +54,15 @@ func TestMaterializeFilesPublishesEveryClosedProfile(t *testing.T) {
 		ProfileCore,
 		ProfileBrowserGateway,
 		ProfileExecutorGateway,
+		ProfileHarnessPool,
 		ProfileHarnessWorker,
 		ProfileLLMProxy,
 	} {
 		t.Run(profileName, func(t *testing.T) {
+			fileNames, found := MaterialProfileFiles(profileName)
+			if !found || len(fileNames) != len(materialProfiles[profileName]) {
+				t.Fatalf("profile files = %v, %v", fileNames, found)
+			}
 			source := projectedMaterialFixture(t, profileName)
 			destination := filepath.Join(t.TempDir(), "direct")
 			if err := MaterializeFiles(profileName, source, destination, uid, gid); err != nil {

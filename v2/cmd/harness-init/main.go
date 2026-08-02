@@ -54,6 +54,26 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintln(stdout, "agentserver-init install-network-guard: installed")
 		return 0
+	case "prepare-harness-directories":
+		values, ok := exactArguments(arguments[1:], "runtime", "checkpoint", "scratch", "uid", "gid")
+		if !ok {
+			writeUsage(stderr)
+			return 2
+		}
+		uid, uidErr := parseIdentity(values["uid"])
+		gid, gidErr := parseIdentity(values["gid"])
+		if uidErr != nil || gidErr != nil {
+			fmt.Fprintln(stderr, "agentserver-init prepare-harness-directories: uid and gid must be unprivileged base-10 identities")
+			return 2
+		}
+		if err := harnessinit.PrepareHarnessDirectories(
+			values["runtime"], values["checkpoint"], values["scratch"], uid, gid,
+		); err != nil {
+			fmt.Fprintf(stderr, "agentserver-init prepare-harness-directories: %v\n", err)
+			return 1
+		}
+		fmt.Fprintln(stdout, "agentserver-init prepare-harness-directories: ready")
+		return 0
 	default:
 		writeUsage(stderr)
 		return 2
@@ -100,4 +120,5 @@ func parseIdentity(value string) (uint32, error) {
 func writeUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "usage: agentserver-init materialize --profile=NAME --source=/absolute/path --destination=/absolute/path --uid=N --gid=N")
 	fmt.Fprintln(writer, "       agentserver-init install-network-guard --config=/absolute/path")
+	fmt.Fprintln(writer, "       agentserver-init prepare-harness-directories --runtime=/absolute/path --checkpoint=/absolute/path --scratch=/absolute/path --uid=N --gid=N")
 }

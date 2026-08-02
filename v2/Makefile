@@ -52,6 +52,9 @@ contract-check:
 	$(GO) test ./internal/harnessbootstrap -run 'Contract|Schema|Protocol' -count=1
 	$(GO) test ./internal/runevent -run 'Contract|Schema|AsyncAPI' -count=1
 	$(GO) test ./internal/devstack ./internal/devfixtures -run 'SchemaContract' -count=1
+	$(GO) test ./internal/productiondeploy -run 'Schema|Topology|Contracts' -count=1
+	$(GO) test ./cmd/agentserver-core ./cmd/browser-gateway ./cmd/executor-gateway \
+		./cmd/harness-pool ./cmd/harness-worker ./cmd/llmproxy -run '^TestProductionRenderer' -count=1
 
 conformance:
 	$(GO) test ./conformance/codex/... -count=1

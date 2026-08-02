@@ -1,0 +1,415 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentserver.dev/v2/schema/production-deployment.schema.json",
+  "title": "Agentserver v2 Phase 5 production deployment input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "namespace",
+    "clusterDomain",
+    "platform",
+    "images",
+    "replicas",
+    "services",
+    "bootstrap",
+    "spiffeTrustDomain",
+    "oauth",
+    "runtime",
+    "objectStore",
+    "secrets",
+    "network",
+    "resources"
+  ],
+  "properties": {
+    "version": {"const": 1},
+    "namespace": {"$ref": "#/$defs/dnsLabel"},
+    "clusterDomain": {"$ref": "#/$defs/dnsName"},
+    "platform": {"const": "linux-arm64"},
+    "images": {"$ref": "#/$defs/images"},
+    "replicas": {"$ref": "#/$defs/replicas"},
+    "services": {"$ref": "#/$defs/services"},
+    "bootstrap": {"$ref": "#/$defs/bootstrap"},
+    "spiffeTrustDomain": {"$ref": "#/$defs/dnsName"},
+    "oauth": {"$ref": "#/$defs/oauth"},
+    "runtime": {"$ref": "#/$defs/runtime"},
+    "objectStore": {"$ref": "#/$defs/objectStore"},
+    "secrets": {"$ref": "#/$defs/secrets"},
+    "network": {"$ref": "#/$defs/network"},
+    "resources": {"$ref": "#/$defs/resources"}
+  },
+  "$defs": {
+    "dnsLabel": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+    },
+    "dnsName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 253,
+      "pattern": "^(?:[a-z0-9]|[a-z0-9][a-z0-9-]{0,61}[a-z0-9])(?:\\.(?:[a-z0-9]|[a-z0-9][a-z0-9-]{0,61}[a-z0-9]))*$",
+      "not": {"pattern": "\\.\\."}
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": {"const": "00000000-0000-0000-0000-000000000000"}
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "boundedText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "httpsUrl": {
+      "type": "string",
+      "minLength": 9,
+      "maxLength": 4096,
+      "format": "uri",
+      "pattern": "^https://"
+    },
+    "image": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^[^\\s@]+@sha256:[0-9a-f]{64}$"
+    },
+    "images": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service", "harness"],
+      "properties": {
+        "service": {"$ref": "#/$defs/image"},
+        "harness": {"$ref": "#/$defs/image"}
+      }
+    },
+    "replicas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["core", "browserGateway", "harnessPool", "llmproxy"],
+      "properties": {
+        "core": {"type": "integer", "minimum": 2, "maximum": 32},
+        "browserGateway": {"type": "integer", "minimum": 2, "maximum": 32},
+        "harnessPool": {"type": "integer", "minimum": 1, "maximum": 32},
+        "llmproxy": {"type": "integer", "minimum": 2, "maximum": 32}
+      }
+    },
+    "ipv4": {
+      "type": "string",
+      "minLength": 7,
+      "maxLength": 15,
+      "pattern": "^[0-9]{1,3}(?:\\.[0-9]{1,3}){3}$"
+    },
+    "internalService": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clusterIp", "port"],
+      "properties": {
+        "clusterIp": {"$ref": "#/$defs/ipv4"},
+        "port": {"const": 8443}
+      }
+    },
+    "publicService": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clusterIp", "port", "publicHostname"],
+      "properties": {
+        "clusterIp": {"$ref": "#/$defs/ipv4"},
+        "port": {"const": 8443},
+        "publicHostname": {"$ref": "#/$defs/dnsName"}
+      }
+    },
+    "services": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["core", "browserGateway", "executorGateway", "llmproxy"],
+      "properties": {
+        "core": {"$ref": "#/$defs/internalService"},
+        "browserGateway": {"$ref": "#/$defs/publicService"},
+        "executorGateway": {"$ref": "#/$defs/publicService"},
+        "llmproxy": {"$ref": "#/$defs/internalService"}
+      }
+    },
+    "bootstrap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workspaceId", "sessionId", "ownerUserId", "externalOidcSubject", "executorId"],
+      "properties": {
+        "workspaceId": {"$ref": "#/$defs/uuid"},
+        "sessionId": {"$ref": "#/$defs/uuid"},
+        "ownerUserId": {"$ref": "#/$defs/uuid"},
+        "externalOidcSubject": {"type": "string", "minLength": 1, "maxLength": 2048},
+        "executorId": {"$ref": "#/$defs/uuid"}
+      }
+    },
+    "hydra": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer", "adminUrl", "publicOrigin", "introspectionUrl", "browserClientId"],
+      "properties": {
+        "issuer": {"$ref": "#/$defs/httpsUrl"},
+        "adminUrl": {"$ref": "#/$defs/httpsUrl"},
+        "publicOrigin": {"$ref": "#/$defs/httpsUrl"},
+        "introspectionUrl": {"$ref": "#/$defs/httpsUrl"},
+        "browserClientId": {"type": "string", "minLength": 1, "maxLength": 256}
+      }
+    },
+    "externalOidc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer", "clientId", "redirectUrl"],
+      "properties": {
+        "issuer": {"$ref": "#/$defs/httpsUrl"},
+        "clientId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "redirectUrl": {"$ref": "#/$defs/httpsUrl"}
+      }
+    },
+    "oauth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hydra", "externalOidc"],
+      "properties": {
+        "hydra": {"$ref": "#/$defs/hydra"},
+        "externalOidc": {"$ref": "#/$defs/externalOidc"}
+      }
+    },
+    "duration": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 64,
+      "pattern": "^[0-9]"
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capabilityIssuer",
+        "capabilitySigningKeyId",
+        "manifestSigningKeyId",
+        "model",
+        "provider",
+        "upstreamResponsesUrl",
+        "upstreamAuthHeader",
+        "runPolicyVersion",
+        "allowedTools",
+        "executionPolicyVersion",
+        "shellPolicyDecision",
+        "readFilePolicyDecision",
+        "maxRunDuration",
+        "maxApprovalTtl",
+        "capabilityExpiryGrace",
+        "enrollmentTokenTtl",
+        "maxConcurrentAttempts",
+        "runtimeManifestSha256",
+        "checkpointAllowlistVersion",
+        "finalExecSha256",
+        "finalExecSizeBytes"
+      ],
+      "properties": {
+        "capabilityIssuer": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^spiffe://"},
+        "capabilitySigningKeyId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "manifestSigningKeyId": {"type": "string", "minLength": 1, "maxLength": 256},
+        "model": {"type": "string", "minLength": 1, "maxLength": 256},
+        "provider": {"type": "string", "minLength": 1, "maxLength": 256},
+        "upstreamResponsesUrl": {"type": "string", "format": "uri", "pattern": "^https://[^/?#]+/v1/responses$"},
+        "upstreamAuthHeader": {"enum": ["Authorization", "api-key"]},
+        "runPolicyVersion": {"$ref": "#/$defs/versionText"},
+        "allowedTools": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {"enum": ["list_environments", "read_file", "shell"]},
+          "contains": {"const": "list_environments"},
+          "minContains": 1,
+          "maxContains": 1
+        },
+        "executionPolicyVersion": {"$ref": "#/$defs/versionText"},
+        "shellPolicyDecision": {"enum": ["allow", "ask", "deny"]},
+        "readFilePolicyDecision": {"enum": ["allow", "ask", "deny"]},
+        "maxRunDuration": {"$ref": "#/$defs/duration"},
+        "maxApprovalTtl": {"$ref": "#/$defs/duration"},
+        "capabilityExpiryGrace": {"$ref": "#/$defs/duration"},
+        "enrollmentTokenTtl": {"$ref": "#/$defs/duration"},
+        "maxConcurrentAttempts": {"type": "integer", "minimum": 1, "maximum": 64},
+        "runtimeManifestSha256": {"$ref": "#/$defs/sha256"},
+        "checkpointAllowlistVersion": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+        "finalExecSha256": {"$ref": "#/$defs/sha256"},
+        "finalExecSizeBytes": {"type": "integer", "minimum": 1, "maximum": 1073741824}
+      }
+    },
+    "versionText": {
+      "type": "string",
+      "pattern": "^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$"
+    },
+    "objectStore": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "prefix",
+        "s3Bucket",
+        "s3Region",
+        "s3UsePathStyle",
+        "kmsRegion",
+        "kmsKeyId",
+        "coreRoleArn",
+        "harnessPoolRoleArn"
+      ],
+      "properties": {
+        "prefix": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*$",
+          "not": {"pattern": "(?:^|/)\\.{1,2}(?:/|$)"}
+        },
+        "s3Bucket": {"$ref": "#/$defs/boundedText"},
+        "s3Region": {"$ref": "#/$defs/boundedText"},
+        "s3Endpoint": {"$ref": "#/$defs/httpsUrl"},
+        "s3UsePathStyle": {"type": "boolean"},
+        "kmsRegion": {"$ref": "#/$defs/boundedText"},
+        "kmsEndpoint": {"$ref": "#/$defs/httpsUrl"},
+        "kmsKeyId": {"$ref": "#/$defs/boundedText"},
+        "coreRoleArn": {"$ref": "#/$defs/roleArn"},
+        "harnessPoolRoleArn": {"$ref": "#/$defs/roleArn"}
+      }
+    },
+    "roleArn": {
+      "type": "string",
+      "pattern": "^arn:(?:aws|aws-us-gov|aws-cn):iam::[0-9]{12}:role/[0-9A-Za-z+=,.@_/-]{1,512}$"
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["core", "browserGateway", "executorGateway", "harnessPool", "harnessWorker", "llmproxy"],
+      "properties": {
+        "core": {"$ref": "#/$defs/dnsName"},
+        "browserGateway": {"$ref": "#/$defs/dnsName"},
+        "executorGateway": {"$ref": "#/$defs/dnsName"},
+        "harnessPool": {"$ref": "#/$defs/dnsName"},
+        "harnessWorker": {"$ref": "#/$defs/dnsName"},
+        "llmproxy": {"$ref": "#/$defs/dnsName"}
+      }
+    },
+    "labelSelector": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 8,
+      "propertyNames": {
+        "pattern": "^(?:(?:[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?)/)?[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 63,
+        "pattern": "^(?:[A-Za-z0-9](?:[-_.A-Za-z0-9]{0,61}[A-Za-z0-9])?)?$"
+      }
+    },
+    "portList": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {"type": "integer", "minimum": 1, "maximum": 65535}
+    },
+    "egressRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cidr", "ports"],
+      "properties": {
+        "cidr": {"type": "string", "minLength": 9, "maxLength": 18, "pattern": "^[0-9.]+/(?:[89]|[12][0-9]|3[0-2])$"},
+        "ports": {"$ref": "#/$defs/portList"}
+      }
+    },
+    "egressRules": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": {"$ref": "#/$defs/egressRule"}
+    },
+    "ingressCidrs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 9, "maxLength": 18, "pattern": "^[0-9.]+/(?:[0-9]|[12][0-9]|3[0-2])$"}
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dnsClusterIp",
+        "dnsNamespace",
+        "dnsPodSelector",
+        "databaseEgress",
+        "coreExternalEgress",
+        "browserExternalEgress",
+        "harnessExternalEgress",
+        "llmproxyExternalEgress",
+        "browserIngressCidrs",
+        "executorIngressCidrs"
+      ],
+      "properties": {
+        "dnsClusterIp": {"$ref": "#/$defs/ipv4"},
+        "dnsNamespace": {"$ref": "#/$defs/dnsLabel"},
+        "dnsPodSelector": {"$ref": "#/$defs/labelSelector"},
+        "databaseEgress": {"$ref": "#/$defs/egressRules"},
+        "coreExternalEgress": {"$ref": "#/$defs/egressRules"},
+        "browserExternalEgress": {"$ref": "#/$defs/egressRules"},
+        "harnessExternalEgress": {"$ref": "#/$defs/egressRules"},
+        "llmproxyExternalEgress": {"$ref": "#/$defs/egressRules"},
+        "browserIngressCidrs": {"$ref": "#/$defs/ingressCidrs"},
+        "executorIngressCidrs": {"$ref": "#/$defs/ingressCidrs"}
+      }
+    },
+    "resourceQuantity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cpu", "memory"],
+      "properties": {
+        "cpu": {"type": "string", "pattern": "^(?:[1-9][0-9]*|[1-9][0-9]*m)$"},
+        "memory": {"$ref": "#/$defs/memoryQuantity"}
+      }
+    },
+    "containerResources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requests", "limits"],
+      "properties": {
+        "requests": {"$ref": "#/$defs/resourceQuantity"},
+        "limits": {"$ref": "#/$defs/resourceQuantity"}
+      }
+    },
+    "memoryQuantity": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*(?:Ki|Mi|Gi|Ti)$"
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "core",
+        "browserGateway",
+        "executorGateway",
+        "harnessPool",
+        "llmproxy",
+        "runtimeTmpfs",
+        "checkpointTmpfs",
+        "scratchTmpfs"
+      ],
+      "properties": {
+        "core": {"$ref": "#/$defs/containerResources"},
+        "browserGateway": {"$ref": "#/$defs/containerResources"},
+        "executorGateway": {"$ref": "#/$defs/containerResources"},
+        "harnessPool": {"$ref": "#/$defs/containerResources"},
+        "llmproxy": {"$ref": "#/$defs/containerResources"},
+        "runtimeTmpfs": {"$ref": "#/$defs/memoryQuantity"},
+        "checkpointTmpfs": {"$ref": "#/$defs/memoryQuantity"},
+        "scratchTmpfs": {"$ref": "#/$defs/memoryQuantity"}
+      }
+    }
+  }
+}

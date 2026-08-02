@@ -119,6 +119,13 @@ func validateConfig(config Config) error {
 	return nil
 }
 
+// ValidateConfig verifies the complete non-secret provider routing without
+// resolving credentials or touching S3/KMS. Deployment renderers use this to
+// reject configurations that would otherwise fail only after a Pod starts.
+func ValidateConfig(config Config) error {
+	return validateConfig(config)
+}
+
 func validateEndpoint(name, raw string) error {
 	if raw == "" {
 		return nil

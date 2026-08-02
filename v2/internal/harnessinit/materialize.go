@@ -18,6 +18,7 @@ const (
 	ProfileCore            = "core"
 	ProfileBrowserGateway  = "browser-gateway"
 	ProfileExecutorGateway = "executor-gateway"
+	ProfileHarnessPool     = "harness-pool"
 	ProfileHarnessWorker   = "harness-worker"
 	ProfileLLMProxy        = "llmproxy"
 )
@@ -48,6 +49,12 @@ var materialProfiles = map[string][]workerMaterial{
 		{name: "tls.key", maximum: 1024 * 1024},
 		{name: "run-capability-keyring.json", maximum: 64 * 1024},
 	},
+	ProfileHarnessPool: {
+		{name: "ca.crt", maximum: 1024 * 1024},
+		{name: "tls.crt", maximum: 1024 * 1024},
+		{name: "tls.key", maximum: 1024 * 1024},
+		{name: "run-manifest.key", maximum: 4 * 1024},
+	},
 	ProfileHarnessWorker: {
 		{name: "ca.crt", maximum: 1024 * 1024},
 		{name: "tls.crt", maximum: 1024 * 1024},
@@ -62,6 +69,21 @@ var materialProfiles = map[string][]workerMaterial{
 		{name: "upstream-ca.crt", maximum: 1024 * 1024},
 		{name: "upstream-credential", maximum: 64 * 1024},
 	},
+}
+
+// MaterialProfileFiles returns the exact projected keys required by one
+// deployment profile. Renderers use this as the single source of truth for
+// Kubernetes Secret projections; callers cannot mutate the internal profile.
+func MaterialProfileFiles(profile string) ([]string, bool) {
+	materials, found := materialProfiles[profile]
+	if !found {
+		return nil, false
+	}
+	result := make([]string, len(materials))
+	for index, material := range materials {
+		result[index] = material.name
+	}
+	return result, true
 }
 
 // MaterializeWorkerFiles copies exactly the worker's CA, TLS identity, and

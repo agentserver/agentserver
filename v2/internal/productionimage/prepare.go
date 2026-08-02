@@ -17,6 +17,7 @@ import (
 
 type PrepareConfig struct {
 	Kind             string
+	Platform         string
 	SourceRevision   string
 	BinaryDirectory  string
 	CodexExecutable  string
@@ -64,7 +65,7 @@ func Prepare(config PrepareConfig) (_ PrepareResult, returnErr error) {
 	}}
 	for _, binary := range ExpectedBinaries(config.Kind) {
 		source := filepath.Join(config.BinaryDirectory, binary)
-		if err := validateLinuxARM64GoExecutable(source, binary); err != nil {
+		if err := validateLinuxGoExecutable(source, binary, config.Platform); err != nil {
 			return PrepareResult{}, err
 		}
 		entry, err := copyArtifact(source, rootfs, "usr/local/bin/"+binary, 0o555, "production Go executable "+binary)
@@ -93,9 +94,10 @@ func Prepare(config PrepareConfig) (_ PrepareResult, returnErr error) {
 		}
 		files = append(files, runtimeEntry)
 
+		codexDigest, codexSize, bwrapDigest, bwrapSize := stockRuntimePins(config.Platform)
 		codex, err := copyPinnedArtifact(
 			config.CodexExecutable, rootfs, RuntimeBundleRoot+"/bin/codex", 0o555,
-			stockruntime.LinuxARM64CodexSHA256, stockruntime.LinuxARM64CodexSize, "stock Codex",
+			codexDigest, codexSize, "stock Codex",
 		)
 		if err != nil {
 			return PrepareResult{}, err
@@ -103,7 +105,7 @@ func Prepare(config PrepareConfig) (_ PrepareResult, returnErr error) {
 		files = append(files, codex)
 		bwrap, err := copyPinnedArtifact(
 			config.BwrapExecutable, rootfs, RuntimeBundleRoot+"/codex-resources/bwrap", 0o555,
-			stockruntime.LinuxARM64BwrapSHA256, stockruntime.LinuxARM64BwrapSize, "stock bwrap",
+			bwrapDigest, bwrapSize, "stock bwrap",
 		)
 		if err != nil {
 			return PrepareResult{}, err
@@ -112,7 +114,7 @@ func Prepare(config PrepareConfig) (_ PrepareResult, returnErr error) {
 	}
 	slices.SortFunc(files, func(left, right FileEntry) int { return strings.Compare(left.Path, right.Path) })
 	manifest := Manifest{
-		Version: ManifestVersion, Kind: config.Kind, Platform: Platform,
+		Version: ManifestVersion, Kind: config.Kind, Platform: config.Platform,
 		SourceRevision: config.SourceRevision, GoToolchain: GoToolchain,
 		CABundleSource: CABundleSourceImage,
 		Directories:    expectedDirectories(config.Kind), Files: files,
@@ -149,6 +151,9 @@ func Prepare(config PrepareConfig) (_ PrepareResult, returnErr error) {
 func validatePrepareConfig(config PrepareConfig) error {
 	if config.Kind != KindService && config.Kind != KindHarness {
 		return errors.New("production image kind must be service or harness")
+	}
+	if !supportedPlatform(config.Platform) {
+		return fmt.Errorf("production image platform must be %s or %s", PlatformLinuxAMD64, PlatformLinuxARM64)
 	}
 	if !revisionPattern.MatchString(config.SourceRevision) {
 		return errors.New("production image source revision must be a lowercase 40-character Git SHA")

@@ -218,10 +218,14 @@ func resources(document ContainerResourcesDocument) kubeObject {
 	}
 }
 
-func productionNodeSelector() kubeObject {
+func productionNodeSelector(platform string) kubeObject {
+	architecture := "arm64"
+	if platform == ProductionPlatformLinuxAMD64 {
+		architecture = "amd64"
+	}
 	return kubeObject{
 		"kubernetes.io/os":   "linux",
-		"kubernetes.io/arch": "arm64",
+		"kubernetes.io/arch": architecture,
 	}
 }
 

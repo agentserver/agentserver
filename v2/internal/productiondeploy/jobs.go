@@ -68,7 +68,7 @@ func renderOneShotJob(
 					"imagePullSecrets":             imagePullSecrets(config.Document.Images.PullSecret),
 					"restartPolicy":                "OnFailure", "enableServiceLinks": false,
 					"terminationGracePeriodSeconds": 10,
-					"nodeSelector":                  productionNodeSelector(),
+					"nodeSelector":                  productionNodeSelector(config.Document.Platform),
 					"securityContext": kubeObject{
 						"runAsUser": int64(ServiceUID), "runAsGroup": int64(ServiceGID), "runAsNonRoot": true,
 						"seccompProfile": kubeObject{"type": "RuntimeDefault"},

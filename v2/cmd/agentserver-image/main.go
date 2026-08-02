@@ -80,6 +80,7 @@ func runPrepare(arguments []string, stdout, stderr io.Writer) error {
 	flags.SetOutput(stderr)
 	var config productionimage.PrepareConfig
 	flags.StringVar(&config.Kind, "kind", "", "closed-world image kind")
+	flags.StringVar(&config.Platform, "platform", "", "closed-world image platform")
 	flags.StringVar(&config.SourceRevision, "source-revision", "", "agentserver Git revision")
 	flags.StringVar(&config.BinaryDirectory, "binary-dir", "", "directory containing the exact binary set")
 	flags.StringVar(&config.CodexExecutable, "codex", "", "pinned stock Codex artifact")
@@ -187,8 +188,8 @@ func writeUsage(writer io.Writer) {
 	if writer == nil {
 		return
 	}
-	fmt.Fprintln(writer, "usage: agentserver-image prepare --kind=service --source-revision=GIT_SHA --binary-dir=/absolute/path --output=/absolute/new-directory")
-	fmt.Fprintln(writer, "       agentserver-image prepare --kind=harness --source-revision=GIT_SHA --binary-dir=/absolute/path --codex=/absolute/path --bwrap=/absolute/path --requirements=/absolute/path --output=/absolute/new-directory")
+	fmt.Fprintln(writer, "usage: agentserver-image prepare --kind=service --platform=linux-amd64|linux-arm64 --source-revision=GIT_SHA --binary-dir=/absolute/path --output=/absolute/new-directory")
+	fmt.Fprintln(writer, "       agentserver-image prepare --kind=harness --platform=linux-amd64|linux-arm64 --source-revision=GIT_SHA --binary-dir=/absolute/path --codex=/absolute/path --bwrap=/absolute/path --requirements=/absolute/path --output=/absolute/new-directory")
 	fmt.Fprintln(writer, "       agentserver-image verify-oci --manifest=/absolute/image-manifest.json --archive=/absolute/image.oci.tar")
 	fmt.Fprintln(writer, "       agentserver-image verify-tar --manifest=/absolute/image-manifest.json --tar=/absolute/rootfs.tar")
 }

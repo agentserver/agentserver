@@ -60,12 +60,25 @@ func TestManifestBytesMatchCheckedInProductionArtifact(t *testing.T) {
 }
 
 func TestManifestReturnsDefensiveArtifactMaps(t *testing.T) {
-	first := LinuxARM64Manifest()
+	first := ProductionManifest()
 	artifacts := first.Artifacts[PlatformLinuxARM64]
 	delete(artifacts.ExternalExecutables, "bwrap")
 	first.Artifacts[PlatformLinuxARM64] = artifacts
-	second := LinuxARM64Manifest()
-	if len(second.Artifacts) != 1 || len(second.Artifacts[PlatformLinuxARM64].ExternalExecutables) != 1 {
-		t.Fatal("LinuxARM64Manifest exposed mutable package state")
+	delete(first.Artifacts, PlatformLinuxAMD64)
+	second := ProductionManifest()
+	if len(second.Artifacts) != 2 || len(second.Artifacts[PlatformLinuxARM64].ExternalExecutables) != 1 ||
+		len(second.Artifacts[PlatformLinuxAMD64].ExternalExecutables) != 1 {
+		t.Fatal("ProductionManifest exposed mutable package state")
+	}
+}
+
+func TestSinglePlatformManifestsRemainClosedWorld(t *testing.T) {
+	arm64 := LinuxARM64Manifest()
+	if len(arm64.Artifacts) != 1 || arm64.Artifacts[PlatformLinuxARM64].Codex.SHA256 != LinuxARM64CodexSHA256 {
+		t.Fatalf("LinuxARM64Manifest() = %+v", arm64.Artifacts)
+	}
+	amd64 := LinuxAMD64Manifest()
+	if len(amd64.Artifacts) != 1 || amd64.Artifacts[PlatformLinuxAMD64].Codex.SHA256 != LinuxAMD64CodexSHA256 {
+		t.Fatalf("LinuxAMD64Manifest() = %+v", amd64.Artifacts)
 	}
 }

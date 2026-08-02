@@ -9,14 +9,16 @@ repository_root=$(CDPATH= cd -- "${v2_root}/.." && pwd -P)
 
 codex_artifact=""
 bwrap_artifact=""
+platform=""
 service_image=""
 harness_image=""
 output_directory=""
 
 usage() {
     printf '%s\n' \
-        'usage: build-images.sh --codex=/absolute/codex-aarch64-unknown-linux-musl' \
-        '                       --bwrap=/absolute/bwrap-aarch64-unknown-linux-musl' \
+        'usage: build-images.sh --platform=linux-amd64|linux-arm64' \
+        '                       --codex=/absolute/codex-ARCH-unknown-linux-musl' \
+        '                       --bwrap=/absolute/bwrap-ARCH-unknown-linux-musl' \
         '                       --service-image=registry/name:tag' \
         '                       --harness-image=registry/name:tag' \
         '                       --output-dir=/absolute/new-directory'
@@ -29,6 +31,7 @@ fail() {
 
 for argument in "$@"; do
     case "${argument}" in
+        --platform=*) platform=${argument#--platform=} ;;
         --codex=*) codex_artifact=${argument#--codex=} ;;
         --bwrap=*) bwrap_artifact=${argument#--bwrap=} ;;
         --service-image=*) service_image=${argument#--service-image=} ;;
@@ -38,6 +41,13 @@ for argument in "$@"; do
         *) usage >&2; exit 2 ;;
     esac
 done
+
+case "${platform}" in
+    linux-amd64) goarch=amd64 ;;
+    linux-arm64) goarch=arm64 ;;
+    *) usage >&2; exit 2 ;;
+esac
+oci_platform="linux/${goarch}"
 
 case "${codex_artifact}" in /*) ;; *) usage >&2; exit 2 ;; esac
 case "${bwrap_artifact}" in /*) ;; *) usage >&2; exit 2 ;; esac
@@ -92,7 +102,7 @@ build_binary() {
     printf '%s\n' "build-images.sh: compiling ${output_name} from cmd/${source_command}"
     (
         cd "${v2_root}"
-        env CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+        env CGO_ENABLED=0 GOOS=linux GOARCH="${goarch}" \
             go build -buildvcs=false -trimpath -ldflags='-s -w -buildid=' \
             -o "${work_directory}/all-bin/${output_name}" "./cmd/${source_command}"
     )
@@ -126,11 +136,13 @@ chmod 0500 "${work_directory}/agentserver-image"
 
 "${work_directory}/agentserver-image" prepare \
     --kind=service \
+    --platform="${platform}" \
     --source-revision="${source_revision}" \
     --binary-dir="${work_directory}/service-bin" \
     --output="${work_directory}/service-payload"
 "${work_directory}/agentserver-image" prepare \
     --kind=harness \
+    --platform="${platform}" \
     --source-revision="${source_revision}" \
     --binary-dir="${work_directory}/harness-bin" \
     --codex="${codex_artifact}" \
@@ -158,7 +170,7 @@ chmod 0444 \
 
 printf '%s\n' "build-images.sh: building ${service_image}"
 container build \
-    --platform linux/arm64 \
+    --platform "${oci_platform}" \
     --progress plain \
     --no-cache \
     --build-arg "SOURCE_REVISION=${source_revision}" \
@@ -167,7 +179,7 @@ container build \
 
 printf '%s\n' "build-images.sh: building ${harness_image}"
 container build \
-    --platform linux/arm64 \
+    --platform "${oci_platform}" \
     --progress plain \
     --no-cache \
     --build-arg "SOURCE_REVISION=${source_revision}" \
@@ -180,7 +192,7 @@ verify_image() {
     payload=$3
     archive=$4
     case "${kind}" in service|harness) ;; *) fail "internal unknown image kind" ;; esac
-    container image save --platform linux/arm64 --output "${archive}" "${image}" >/dev/null
+    container image save --platform "${oci_platform}" --output "${archive}" "${image}" >/dev/null
     chmod 0400 "${archive}"
     "${work_directory}/agentserver-image" verify-oci \
         --manifest="${payload}/image-manifest.json" \
@@ -200,6 +212,7 @@ container image inspect "${harness_image}" >"${output_directory}/harness-image-i
 chmod 0444 "${output_directory}"/*
 
 printf '%s\n' "build-images.sh: verified production images"
+printf '%s\n' "  platform=${platform}"
 printf '%s\n' "  service=${service_image}"
 printf '%s\n' "  harness=${harness_image}"
 printf '%s\n' "  evidence=${output_directory}"

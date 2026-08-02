@@ -36,7 +36,7 @@ type testLayerEntry struct {
 func testOCIImage(t *testing.T, extraBlob bool) ([]byte, Manifest, map[string]DirectoryEntry, map[string]FileEntry) {
 	t.Helper()
 	revision := strings.Repeat("a", 40)
-	manifest := Manifest{Kind: KindService, SourceRevision: revision}
+	manifest := Manifest{Kind: KindService, Platform: PlatformLinuxARM64, SourceRevision: revision}
 	directories := map[string]DirectoryEntry{
 		"etc": {Path: "etc", Mode: 0o555},
 		"usr": {Path: "usr", Mode: 0o555},

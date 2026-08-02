@@ -110,7 +110,7 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 				continue
 			}
 			assertPinnedImages(t, resource)
-			assertProductionNodeSelector(t, resource)
+			assertProductionNodeSelector(t, resource, "arm64")
 			assertImagePullSecret(t, resource, loaded.Document.Images.PullSecret)
 		}
 	}
@@ -121,6 +121,26 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 	} {
 		if bytes.Contains(all, []byte(forbidden)) {
 			t.Fatalf("rendered bundle contains static AWS credential field %q", forbidden)
+		}
+	}
+}
+
+func TestRenderPinsLinuxAMD64Nodes(t *testing.T) {
+	document := validConfigDocument()
+	document.Platform = ProductionPlatformLinuxAMD64
+	loaded, err := ValidateConfig(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := Render(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []string{migrationFile, bootstrapFile, runtimeFile} {
+		for _, resource := range parseKubernetesList(t, mustBundleFile(t, bundle, file)) {
+			if resource["kind"] == "Deployment" || resource["kind"] == "Job" {
+				assertProductionNodeSelector(t, resource, "amd64")
+			}
 		}
 	}
 }
@@ -364,13 +384,13 @@ func assertPinnedImages(t *testing.T, resource map[string]any) {
 	}
 }
 
-func assertProductionNodeSelector(t *testing.T, resource map[string]any) {
+func assertProductionNodeSelector(t *testing.T, resource map[string]any, architecture string) {
 	t.Helper()
 	spec := objectField(t, resource, "spec")
 	podSpec := objectField(t, objectField(t, spec, "template"), "spec")
 	selector := objectField(t, podSpec, "nodeSelector")
-	if stringField(t, selector, "kubernetes.io/os") != "linux" || stringField(t, selector, "kubernetes.io/arch") != "arm64" {
-		t.Fatalf("%s is not pinned to the gated linux-arm64 platform: %#v", resource["kind"], selector)
+	if stringField(t, selector, "kubernetes.io/os") != "linux" || stringField(t, selector, "kubernetes.io/arch") != architecture {
+		t.Fatalf("%s is not pinned to linux/%s: %#v", resource["kind"], architecture, selector)
 	}
 }
 

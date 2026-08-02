@@ -5,8 +5,9 @@ harness image and the independently released `agentx` executor endpoint. Its
 bytes are generated from `internal/stockruntime`; a contract test rejects any
 drift between the Go profile and this reviewed artifact.
 
-The enabled production platform is intentionally only `linux-arm64`. The
-runtime bundle paired with this manifest contains exactly:
+The packaged production platforms are `linux-amd64` and `linux-arm64`. Each
+architecture-specific runtime bundle paired with this manifest contains
+exactly:
 
 ```text
 bundle/
@@ -14,8 +15,10 @@ bundle/
 └── codex-resources/bwrap
 ```
 
-Both executables are official stock Codex 0.146.0 release artifacts and are
-verified by SHA-256 and size before packaging. The build never downloads them.
+Both executables are official stock Codex 0.146.0 release artifacts for the
+selected architecture and are verified by SHA-256 and size before packaging.
+The build never downloads them. The amd64 A12/E09 native isolation gates remain
+separate release evidence and must not be inferred from this packaging check.
 
 The manifest is not self-authenticating. The harness trusts the copy sealed in
 an image selected by OCI digest. An `agentx` installation additionally requires

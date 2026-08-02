@@ -1,7 +1,6 @@
-// Package productionimage assembles and verifies the two closed-world
-// linux/arm64 OCI root filesystems used by the agentserver v2 production
-// deployment. It never downloads dependencies and never accepts an open-ended
-// file list.
+// Package productionimage assembles and verifies the closed-world Linux OCI
+// root filesystems used by the agentserver v2 production deployment. It never
+// downloads dependencies and never accepts an open-ended file list.
 package productionimage
 
 import (
@@ -21,9 +20,13 @@ import (
 )
 
 const (
-	ManifestVersion = 1
-	Platform        = "linux-arm64"
-	GoToolchain     = "go1.26.5"
+	ManifestVersion    = 1
+	PlatformLinuxAMD64 = "linux-amd64"
+	PlatformLinuxARM64 = "linux-arm64"
+	// Platform is retained as the arm64 default for test fixtures and callers
+	// compiled against the original single-platform profile.
+	Platform    = PlatformLinuxARM64
+	GoToolchain = "go1.26.5"
 
 	KindService = "service"
 	KindHarness = "harness"
@@ -107,8 +110,8 @@ func (manifest Manifest) Validate() error {
 	if manifest.Kind != KindService && manifest.Kind != KindHarness {
 		return errors.New("production image manifest kind must be service or harness")
 	}
-	if manifest.Platform != Platform {
-		return fmt.Errorf("production image manifest platform must be %s", Platform)
+	if !supportedPlatform(manifest.Platform) {
+		return fmt.Errorf("production image manifest platform must be %s or %s", PlatformLinuxAMD64, PlatformLinuxARM64)
 	}
 	if !revisionPattern.MatchString(manifest.SourceRevision) {
 		return errors.New("production image source revision must be a lowercase 40-character Git SHA")
@@ -117,7 +120,7 @@ func (manifest Manifest) Validate() error {
 		return fmt.Errorf("production image Go toolchain must be %s", GoToolchain)
 	}
 	if manifest.CABundleSource != CABundleSourceImage {
-		return errors.New("production image CA bundle source is not the pinned arm64 image")
+		return errors.New("production image CA bundle source is not the pinned image")
 	}
 	wantDirectories := expectedDirectories(manifest.Kind)
 	if !slices.Equal(manifest.Directories, wantDirectories) {
@@ -155,14 +158,43 @@ func (manifest Manifest) Validate() error {
 		if err := requirePinnedFile(files, RuntimeManifestPath, stockruntime.ManifestSHA256, stockruntime.ManifestSizeBytes, 0o444); err != nil {
 			return err
 		}
-		if err := requirePinnedFile(files, RuntimeBundleRoot+"/bin/codex", stockruntime.LinuxARM64CodexSHA256, stockruntime.LinuxARM64CodexSize, 0o555); err != nil {
+		codexDigest, codexSize, bwrapDigest, bwrapSize := stockRuntimePins(manifest.Platform)
+		if err := requirePinnedFile(files, RuntimeBundleRoot+"/bin/codex", codexDigest, codexSize, 0o555); err != nil {
 			return err
 		}
-		if err := requirePinnedFile(files, RuntimeBundleRoot+"/codex-resources/bwrap", stockruntime.LinuxARM64BwrapSHA256, stockruntime.LinuxARM64BwrapSize, 0o555); err != nil {
+		if err := requirePinnedFile(files, RuntimeBundleRoot+"/codex-resources/bwrap", bwrapDigest, bwrapSize, 0o555); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func supportedPlatform(platform string) bool {
+	return platform == PlatformLinuxAMD64 || platform == PlatformLinuxARM64
+}
+
+func platformArchitecture(platform string) string {
+	switch platform {
+	case PlatformLinuxAMD64:
+		return "amd64"
+	case PlatformLinuxARM64:
+		return "arm64"
+	default:
+		return ""
+	}
+}
+
+func stockRuntimePins(platform string) (codexDigest string, codexSize int64, bwrapDigest string, bwrapSize int64) {
+	switch platform {
+	case PlatformLinuxAMD64:
+		return stockruntime.LinuxAMD64CodexSHA256, stockruntime.LinuxAMD64CodexSize,
+			stockruntime.LinuxAMD64BwrapSHA256, stockruntime.LinuxAMD64BwrapSize
+	case PlatformLinuxARM64:
+		return stockruntime.LinuxARM64CodexSHA256, stockruntime.LinuxARM64CodexSize,
+			stockruntime.LinuxARM64BwrapSHA256, stockruntime.LinuxARM64BwrapSize
+	default:
+		return "", 0, "", 0
+	}
 }
 
 func MarshalManifest(manifest Manifest) ([]byte, error) {

@@ -35,11 +35,11 @@ NetworkPolicy 尚未创建，migration 二进制仍只有读取数据库 URL 并
 部署前必须同时满足：
 
 1. 构建机安装 Go `1.26.5`、Apple container CLI `1.2.0`、Helm 3/4 和 kubectl。
-2. 目标集群存在可调度的 `linux/arm64` 节点；当前生产 profile 不接受 amd64。功能验收可用
-   单节点，但生产高可用至少需要两个独立故障域中的 arm64 节点和足够容量。
+2. 目标集群存在与配置中 `platform` 一致的 `linux/amd64` 或 `linux/arm64` 节点。功能验收
+   可用单节点，但生产高可用至少需要两个独立故障域中的同架构节点和足够容量。
 3. CNI 实际执行 Kubernetes NetworkPolicy；集群支持 projected ServiceAccount token、
    PDB、LoadBalancer Service 和固定 ClusterIP。
-4. 目标 OCI registry 能被构建机推送、被 arm64 节点拉取，并能返回不可变 digest。私有
+4. 目标 OCI registry 能被构建机推送、被目标节点拉取，并能返回不可变 digest。私有
    registry 应预创建 `kubernetes.io/dockerconfigjson` pull Secret，并写入
    `images.pullSecret`；公开 registry 或节点已统一配置凭据时才将该字段置空。
 5. PostgreSQL 已创建数据库；migration 身份有 DDL 权限，运行期 core 身份至少有 DML
@@ -57,11 +57,12 @@ NetworkPolicy 尚未创建，migration 二进制仍只有读取数据库 URL 并
 export KUBE_CONTEXT='replace-me'
 export NAMESPACE='agentserver'
 export RELEASE='agentserver-v2'
+export TARGET_ARCH='amd64'
 
 kubectl --context "${KUBE_CONTEXT}" cluster-info
 kubectl --context "${KUBE_CONTEXT}" auth can-i create deployments.apps --namespace "${NAMESPACE}"
 kubectl --context "${KUBE_CONTEXT}" get nodes \
-  --selector='kubernetes.io/os=linux,kubernetes.io/arch=arm64'
+  --selector="kubernetes.io/os=linux,kubernetes.io/arch=${TARGET_ARCH}"
 ```
 
 在任何写操作前，再人工核对 `KUBE_CONTEXT` 指向的 cluster server 和账号。不要把真实生产
@@ -69,22 +70,24 @@ kubectl --context "${KUBE_CONTEXT}" get nodes \
 
 ## 3. 构建并推送两个生产镜像
 
-构建脚本只接受官方 stock Codex `0.146.0` 的已审核 linux/arm64 Codex 和 bwrap 文件，
-不会联网下载或接受开放文件列表。`v2/` 必须先提交且与 `HEAD` 一致。
+构建脚本只接受官方 stock Codex `0.146.0` 中与 `--platform` 一致、已经锁定 SHA-256 和
+size 的 Codex/bwrap 文件，不会联网下载或接受开放文件列表。`v2/` 必须先提交且与
+`HEAD` 一致。下面是 amd64 构建；arm64 构建将平台和两个 artifact 文件名对应替换即可。
 
 ```bash
 cd /absolute/agentserver/v2
 
 ./deploy/production/build-images.sh \
-  --codex=/absolute/codex-aarch64-unknown-linux-musl \
-  --bwrap=/absolute/bwrap-aarch64-unknown-linux-musl \
+  --platform=linux-amd64 \
+  --codex=/absolute/codex-x86_64-unknown-linux-musl \
+  --bwrap=/absolute/bwrap-x86_64-unknown-linux-musl \
   --service-image=registry.example.com/agentserver/v2-service:<git-sha> \
   --harness-image=registry.example.com/agentserver/v2-harness:<git-sha> \
   --output-dir=/absolute/new-image-evidence
 ```
 
-脚本会交叉编译九个 arm64 Go executable，组装两个 scratch 镜像，再通过
-`container image save` 读取 OCI archive：校验唯一 `linux/arm64` manifest、所有 descriptor
+脚本会按所选架构交叉编译九个 Go executable，组装两个 scratch 镜像，再通过
+`container image save` 读取 OCI archive：校验唯一且架构匹配的 Linux manifest、所有 descriptor
 digest、锁定的运行配置、两层 diff ID，以及 closed-world image manifest 中声明的逐文件
 mode/owner/size/SHA-256。校验不使用运行后容器的 rootfs，避免把 runtime 注入的
 `dev/proc/sys`、hostname 或 hosts 文件误认为镜像内容。只有脚本打印
@@ -97,8 +100,15 @@ container image push registry.example.com/agentserver/v2-harness:<git-sha>
 ```
 
 从 registry 查询两个远端 digest，并把配置中的镜像写成完整
-`repository@sha256:<64 hex>`。不要把本地 image ID、tag 或 manifest-list digest 与目标
-arm64 manifest digest 混用。`new-image-evidence/` 应随部署记录保存，但不得放入 Secret。
+`repository@sha256:<64 hex>`。单架构发布必须使用对应平台 manifest digest；同时发布 amd64 和
+arm64 时可以使用包含且只包含这两个平台的 OCI index digest，并由 `platform`/nodeSelector
+选择目标 manifest。不要把本地 image ID 或 tag 当作远端 digest。每个架构的
+`new-image-evidence/` 应随部署记录保存，但不得放入 Secret。
+
+当前 amd64 artifact 已完成官方 release intake、A04 deny-all 和上述 closed-world 镜像校验，
+但 A12/E09 的完整隔离行为证据此前只在原生 arm64 上关闭。amd64 Chart 可用于目标集群功能
+验收；在原生 amd64 runner 复跑并关闭 A12/E09 前，不应把该架构表述为已经完成同等安全
+认证。跨架构仿真结果不能替代这项门禁。
 
 ## 4. 准备生产配置
 
@@ -107,7 +117,8 @@ arm64 manifest digest 混用。`new-image-evidence/` 应随部署记录保存，
 
 | 区域 | 必须确认的内容 |
 | --- | --- |
-| `images` | 两个远端、arm64、digest-pinned 镜像，以及可选的外置 registry pull Secret |
+| `platform` | 精确选择 `linux-amd64` 或 `linux-arm64`，必须与镜像和目标节点一致 |
+| `images` | 两个远端、digest-pinned 单架构或双架构镜像，以及可选的外置 registry pull Secret |
 | `services` | 四个未占用且属于集群 Service CIDR 的固定 ClusterIP、两个 public hostname |
 | `bootstrap` | 首个 owner、workspace、session、executor UUID，以及 IdP 的精确 `sub` |
 | `oauth` | Hydra issuer/admin/public/introspection、browser client、外部 OIDC issuer/client/redirect |
@@ -359,7 +370,7 @@ KMS key 会保留。是否删除这些外部资源必须作为单独的、经确
   NetworkPolicy 和数据库 DDL 权限；不要跳过 hook 继续 rollout。
 - Pod 卡在 init：检查 Secret 是否缺 key、证书/私钥是否匹配、SPIFFE URI、keyring JSON 和
   私钥权限；materialize init 会 fail closed。
-- Pod Pending：确认 arm64 节点容量、tmpfs limit、ResourceQuota 和 PDB。
+- Pod Pending：确认所选架构的节点容量、tmpfs limit、ResourceQuota 和 PDB。
 - Service 创建失败：固定 ClusterIP 已占用或不属于 Service CIDR；修改配置并重新生成
   Chart，不要在线 patch。
 - ImagePullBackOff：节点无法读取 registry、`images.pullSecret` 缺失/错误，或配置使用了错误

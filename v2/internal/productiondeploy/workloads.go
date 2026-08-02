@@ -10,6 +10,7 @@ import (
 
 type deploymentInput struct {
 	namespace       string
+	platform        string
 	component       string
 	replicas        int
 	image           string
@@ -113,7 +114,7 @@ func renderCoreDeployment(context renderContext) (kubeObject, error) {
 	environment = append(environment, objectStoreEnvironment(document)...)
 	environment = append(environment, awsWorkloadEnvironment(document.Objects.CoreRoleARN, document.Objects.S3Region)...)
 	return deployment(deploymentInput{
-		namespace: document.Namespace, component: coreComponent, replicas: document.Replicas.Core,
+		namespace: document.Namespace, platform: document.Platform, component: coreComponent, replicas: document.Replicas.Core,
 		image: document.Images.Service, imagePullSecret: document.Images.PullSecret, serviceAccount: coreComponent,
 		command: []any{"/usr/local/bin/agentserver-core"}, args: []any{"serve"},
 		environment: environment,
@@ -154,7 +155,7 @@ func renderBrowserDeployment(context renderContext) (kubeObject, error) {
 		valueEnvironment("AGENTSERVER_V2_BROWSER_OAUTH_SCOPES", strings.Join(BrowserOAuthScopes(), ",")),
 	}
 	return deployment(deploymentInput{
-		namespace: document.Namespace, component: browserComponent, replicas: document.Replicas.BrowserGateway,
+		namespace: document.Namespace, platform: document.Platform, component: browserComponent, replicas: document.Replicas.BrowserGateway,
 		image: document.Images.Service, imagePullSecret: document.Images.PullSecret, serviceAccount: browserComponent,
 		command: []any{"/usr/local/bin/browser-gateway"}, args: []any{"serve"}, environment: environment,
 		initContainers: []any{materializeInitContainer(
@@ -197,7 +198,7 @@ func renderExecutorDeployment(context renderContext) (kubeObject, error) {
 		valueEnvironment("AGENTSERVER_V2_READ_FILE_POLICY_DECISION", document.Runtime.ReadFilePolicyDecision),
 	}
 	return deployment(deploymentInput{
-		namespace: document.Namespace, component: executorComponent, replicas: 1,
+		namespace: document.Namespace, platform: document.Platform, component: executorComponent, replicas: 1,
 		image: document.Images.Service, imagePullSecret: document.Images.PullSecret, serviceAccount: executorComponent,
 		command: []any{"/usr/local/bin/executor-gateway"}, args: []any{"serve"}, environment: environment,
 		initContainers: []any{materializeInitContainer(
@@ -268,7 +269,7 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 		"network-guard.json":     "network-guard.json",
 	})
 	return deployment(deploymentInput{
-		namespace: document.Namespace, component: harnessComponent, replicas: document.Replicas.HarnessPool,
+		namespace: document.Namespace, platform: document.Platform, component: harnessComponent, replicas: document.Replicas.HarnessPool,
 		image: document.Images.Harness, imagePullSecret: document.Images.PullSecret, serviceAccount: harnessComponent,
 		command: []any{"/usr/local/bin/harness-pool"}, args: []any{"serve"}, environment: environment,
 		initContainers: []any{
@@ -327,7 +328,7 @@ func renderLLMProxyDeployment(context renderContext) (kubeObject, error) {
 		valueEnvironment("AGENTSERVER_V2_LLM_UPSTREAM_CREDENTIAL_FILE", serviceMaterialPath("upstream-credential")),
 	}
 	return deployment(deploymentInput{
-		namespace: document.Namespace, component: llmproxyComponent, replicas: document.Replicas.LLMProxy,
+		namespace: document.Namespace, platform: document.Platform, component: llmproxyComponent, replicas: document.Replicas.LLMProxy,
 		image: document.Images.Service, imagePullSecret: document.Images.PullSecret, serviceAccount: llmproxyComponent,
 		command: []any{"/usr/local/bin/llmproxy"}, args: []any{"serve"}, environment: environment,
 		initContainers: []any{materializeInitContainer(
@@ -375,7 +376,7 @@ func deployment(input deploymentInput) kubeObject {
 		"serviceAccountName": input.serviceAccount, "automountServiceAccountToken": false,
 		"imagePullSecrets":   imagePullSecrets(input.imagePullSecret),
 		"enableServiceLinks": false, "terminationGracePeriodSeconds": input.termination,
-		"securityContext": podSecurity, "nodeSelector": productionNodeSelector(), "containers": []any{container},
+		"securityContext": podSecurity, "nodeSelector": productionNodeSelector(input.platform), "containers": []any{container},
 		"volumes": input.volumes,
 		"topologySpreadConstraints": []any{kubeObject{
 			"maxSkew": 1, "topologyKey": "kubernetes.io/hostname", "whenUnsatisfiable": "ScheduleAnyway",

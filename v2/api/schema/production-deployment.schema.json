@@ -25,7 +25,7 @@
     "version": {"const": 1},
     "namespace": {"$ref": "#/$defs/dnsLabel"},
     "clusterDomain": {"$ref": "#/$defs/dnsName"},
-    "platform": {"const": "linux-arm64"},
+    "platform": {"enum": ["linux-amd64", "linux-arm64"]},
     "images": {"$ref": "#/$defs/images"},
     "replicas": {"$ref": "#/$defs/replicas"},
     "services": {"$ref": "#/$defs/services"},
@@ -242,7 +242,7 @@
         "capabilityExpiryGrace": {"$ref": "#/$defs/duration"},
         "enrollmentTokenTtl": {"$ref": "#/$defs/duration"},
         "maxConcurrentAttempts": {"type": "integer", "minimum": 1, "maximum": 64},
-        "runtimeManifestSha256": {"const": "bd226a5e888a73f31372f02e0b7a48763f50cc4a2acfac28e9dc48df4e7679fa"},
+        "runtimeManifestSha256": {"const": "5b7297d0a4e5eb294dc201ce2e82ae8f73f27b51c3360c8737e4338e46e3d128"},
         "checkpointAllowlistVersion": {"const": 1},
         "finalExecSha256": {"$ref": "#/$defs/sha256"},
         "finalExecSizeBytes": {"type": "integer", "minimum": 1, "maximum": 1073741824}

@@ -97,8 +97,9 @@ type ociRootFS struct {
 	DiffIDs []string `json:"diff_ids"`
 }
 
-// VerifyImageOCI proves the saved OCI image itself has one linux/arm64
-// manifest, the locked runtime configuration, exact descriptor digests, and
+// VerifyImageOCI proves the saved OCI image itself has one manifest for the
+// platform named by the external manifest, the locked runtime configuration,
+// exact descriptor digests, and
 // only manifest-declared rootfs entries. It intentionally avoids a container
 // export because runtimes inject dev, proc, sys, hostname, and hosts entries.
 func VerifyImageOCI(reader io.Reader, manifestBytes []byte) error {
@@ -138,7 +139,8 @@ func verifyOCIArchive(reader io.Reader, manifest Manifest, directories map[strin
 	if err := decodeOCIDocument("OCI root index", archive.index, &rootIndex); err != nil {
 		return err
 	}
-	if err := validateOCIIndex(rootIndex, ociImageLayoutMediaType, false); err != nil {
+	architecture := platformArchitecture(manifest.Platform)
+	if err := validateOCIIndex(rootIndex, ociImageLayoutMediaType, false, architecture); err != nil {
 		return fmt.Errorf("validate OCI root index: %w", err)
 	}
 	innerIndexBytes, err := resolveOCIDescriptor(rootIndex.Manifests[0], ociImageLayoutMediaType, archive.blobs, referenced)
@@ -150,7 +152,7 @@ func verifyOCIArchive(reader io.Reader, manifest Manifest, directories map[strin
 	if err := decodeOCIDocument("OCI platform index", innerIndexBytes, &platformIndex); err != nil {
 		return err
 	}
-	if err := validateOCIIndex(platformIndex, ociImageManifestMediaType, true); err != nil {
+	if err := validateOCIIndex(platformIndex, ociImageManifestMediaType, true, architecture); err != nil {
 		return fmt.Errorf("validate OCI platform index: %w", err)
 	}
 	manifestBytes, err := resolveOCIDescriptor(platformIndex.Manifests[0], ociImageManifestMediaType, archive.blobs, referenced)
@@ -329,7 +331,7 @@ func decodeOCIDocument(label string, raw []byte, destination any) error {
 	return nil
 }
 
-func validateOCIIndex(index ociIndexDocument, descriptorMediaType string, requirePlatform bool) error {
+func validateOCIIndex(index ociIndexDocument, descriptorMediaType string, requirePlatform bool, architecture string) error {
 	if index.SchemaVersion != 2 || index.MediaType != ociImageLayoutMediaType || len(index.Manifests) != 1 {
 		return errors.New("index must contain exactly one OCI image descriptor")
 	}
@@ -338,8 +340,8 @@ func validateOCIIndex(index ociIndexDocument, descriptorMediaType string, requir
 		return errors.New("index descriptor has unexpected media type")
 	}
 	if requirePlatform {
-		if descriptor.Platform == nil || descriptor.Platform.OS != "linux" || descriptor.Platform.Architecture != "arm64" {
-			return errors.New("index descriptor must select linux/arm64")
+		if descriptor.Platform == nil || descriptor.Platform.OS != "linux" || descriptor.Platform.Architecture != architecture {
+			return fmt.Errorf("index descriptor must select linux/%s", architecture)
 		}
 		if len(descriptor.Annotations) != 0 {
 			return errors.New("platform descriptor contains unexpected annotations")
@@ -367,8 +369,9 @@ func resolveOCIDescriptor(descriptor ociDescriptor, mediaType string, blobs map[
 }
 
 func validateOCIImageConfig(config ociImageConfig, manifest Manifest) error {
-	if config.Architecture != "arm64" || config.OS != "linux" || config.RootFS.Type != "layers" || len(config.RootFS.DiffIDs) != 2 {
-		return errors.New("production OCI config is not a two-layer linux/arm64 image")
+	architecture := platformArchitecture(manifest.Platform)
+	if config.Architecture != architecture || config.OS != "linux" || config.RootFS.Type != "layers" || len(config.RootFS.DiffIDs) != 2 {
+		return fmt.Errorf("production OCI config is not a two-layer linux/%s image", architecture)
 	}
 	if _, err := time.Parse(time.RFC3339Nano, config.Created); err != nil {
 		return errors.New("production OCI config has invalid creation time")

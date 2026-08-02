@@ -2,7 +2,7 @@
   "version": 1,
   "namespace": "agentserver",
   "clusterDomain": "cluster.local",
-  "platform": "linux-arm64",
+  "platform": "linux-amd64",
   "images": {
     "service": "registry.example.com/agentserver/service@sha256:1111111111111111111111111111111111111111111111111111111111111111",
     "harness": "registry.example.com/agentserver/harness@sha256:2222222222222222222222222222222222222222222222222222222222222222",
@@ -68,7 +68,7 @@
     "capabilityExpiryGrace": "30s",
     "enrollmentTokenTtl": "5m",
     "maxConcurrentAttempts": 4,
-    "runtimeManifestSha256": "bd226a5e888a73f31372f02e0b7a48763f50cc4a2acfac28e9dc48df4e7679fa",
+    "runtimeManifestSha256": "5b7297d0a4e5eb294dc201ce2e82ae8f73f27b51c3360c8737e4338e46e3d128",
     "checkpointAllowlistVersion": 1,
     "finalExecSha256": "4444444444444444444444444444444444444444444444444444444444444444",
     "finalExecSizeBytes": 1048576

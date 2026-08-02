@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"strings"
 	"testing"
+
+	"github.com/agentserver/agentserver/v2/internal/stockruntime"
 )
 
 func TestServiceManifestIsClosedWorldAndRoundTrips(t *testing.T) {
@@ -30,7 +32,7 @@ func TestServiceManifestIsClosedWorldAndRoundTrips(t *testing.T) {
 func TestManifestRejectsOpenOrDriftingImageLayouts(t *testing.T) {
 	for name, mutate := range map[string]func(*Manifest){
 		"kind":      func(value *Manifest) { value.Kind = "combined" },
-		"platform":  func(value *Manifest) { value.Platform = "linux-amd64" },
+		"platform":  func(value *Manifest) { value.Platform = "linux-riscv64" },
 		"toolchain": func(value *Manifest) { value.GoToolchain = "go1.26.4" },
 		"CA source": func(value *Manifest) { value.CABundleSource = "postgres:latest" },
 		"directory": func(value *Manifest) { value.Directories[0].Mode = 0o755 },
@@ -44,6 +46,26 @@ func TestManifestRejectsOpenOrDriftingImageLayouts(t *testing.T) {
 			mutate(&manifest)
 			if err := manifest.Validate(); err == nil {
 				t.Fatal("unsafe production image manifest was accepted")
+			}
+		})
+	}
+}
+
+func TestHarnessManifestPinsSelectedArchitectureArtifacts(t *testing.T) {
+	for _, platform := range []string{PlatformLinuxAMD64, PlatformLinuxARM64} {
+		t.Run(platform, func(t *testing.T) {
+			manifest := validHarnessManifest(platform)
+			if err := manifest.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			for index := range manifest.Files {
+				if manifest.Files[index].Path == RuntimeBundleRoot+"/bin/codex" {
+					manifest.Files[index].SHA256 = strings.Repeat("f", 64)
+					break
+				}
+			}
+			if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "pinned release artifact") {
+				t.Fatalf("cross-architecture Codex artifact error = %v", err)
 			}
 		})
 	}
@@ -96,6 +118,33 @@ func validServiceManifest() Manifest {
 		SourceRevision: strings.Repeat("a", 40), GoToolchain: GoToolchain,
 		CABundleSource: CABundleSourceImage,
 		Directories:    expectedDirectories(KindService), Files: files,
+	}
+}
+
+func validHarnessManifest(platform string) Manifest {
+	codexDigest, codexSize, bwrapDigest, bwrapSize := stockRuntimePins(platform)
+	files := make([]FileEntry, 0, len(expectedFilePaths(KindHarness)))
+	for _, path := range expectedFilePaths(KindHarness) {
+		entry := FileEntry{Path: path, SHA256: strings.Repeat("b", 64), SizeBytes: 1, Mode: 0o555}
+		switch path {
+		case CABundlePath:
+			entry.SHA256, entry.SizeBytes, entry.Mode = CABundleSHA256, CABundleSizeBytes, 0o444
+		case RequirementsPath:
+			entry.SHA256, entry.SizeBytes, entry.Mode = RequirementsSHA256, RequirementsSizeBytes, 0o444
+		case RuntimeManifestPath:
+			entry.SHA256, entry.SizeBytes, entry.Mode = stockruntime.ManifestSHA256, stockruntime.ManifestSizeBytes, 0o444
+		case RuntimeBundleRoot + "/bin/codex":
+			entry.SHA256, entry.SizeBytes = codexDigest, codexSize
+		case RuntimeBundleRoot + "/codex-resources/bwrap":
+			entry.SHA256, entry.SizeBytes = bwrapDigest, bwrapSize
+		}
+		files = append(files, entry)
+	}
+	return Manifest{
+		Version: ManifestVersion, Kind: KindHarness, Platform: platform,
+		SourceRevision: strings.Repeat("a", 40), GoToolchain: GoToolchain,
+		CABundleSource: CABundleSourceImage,
+		Directories:    expectedDirectories(KindHarness), Files: files,
 	}
 }
 

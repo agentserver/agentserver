@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 )
 
-func validateLinuxARM64GoExecutable(path, binaryName string) error {
+func validateLinuxGoExecutable(path, binaryName, platform string) error {
 	if err := validateCanonicalFile("production Go executable "+binaryName, path); err != nil {
 		return err
 	}
@@ -25,9 +25,13 @@ func validateLinuxARM64GoExecutable(path, binaryName string) error {
 		return fmt.Errorf("open production Go executable %s as ELF: %w", binaryName, err)
 	}
 	defer executable.Close()
+	wantMachine := elf.EM_AARCH64
+	if platform == PlatformLinuxAMD64 {
+		wantMachine = elf.EM_X86_64
+	}
 	if executable.Class != elf.ELFCLASS64 || executable.Data != elf.ELFDATA2LSB ||
-		executable.Machine != elf.EM_AARCH64 || executable.Type != elf.ET_EXEC {
-		return fmt.Errorf("production Go executable %s must be a linux/arm64 static executable", binaryName)
+		executable.Machine != wantMachine || executable.Type != elf.ET_EXEC {
+		return fmt.Errorf("production Go executable %s must be a %s static executable", binaryName, platform)
 	}
 	for _, program := range executable.Progs {
 		if program.Type == elf.PT_INTERP {
@@ -55,7 +59,7 @@ func validateLinuxARM64GoExecutable(path, binaryName string) error {
 		settings[setting.Key] = setting.Value
 	}
 	for key, value := range map[string]string{
-		"GOOS": "linux", "GOARCH": "arm64", "CGO_ENABLED": "0", "-buildmode": "exe", "-trimpath": "true",
+		"GOOS": "linux", "GOARCH": platformArchitecture(platform), "CGO_ENABLED": "0", "-buildmode": "exe", "-trimpath": "true",
 	} {
 		if settings[key] != value {
 			return fmt.Errorf("production Go executable %s build setting %s = %q, want %q", binaryName, key, settings[key], value)

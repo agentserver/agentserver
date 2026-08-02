@@ -32,8 +32,10 @@ import (
 )
 
 const (
-	CurrentVersion     = 1
-	ProductionPlatform = "linux-arm64"
+	CurrentVersion               = 1
+	ProductionPlatformLinuxAMD64 = "linux-amd64"
+	ProductionPlatformLinuxARM64 = "linux-arm64"
+	ProductionPlatform           = ProductionPlatformLinuxARM64
 
 	PoolUID    uint32 = 65530
 	PoolGID    uint32 = 65530
@@ -297,8 +299,8 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 	if !validDNSName(document.ClusterDomain) || strings.Contains(document.ClusterDomain, "..") {
 		return LoadedConfig{}, errors.New("clusterDomain must be a canonical lowercase DNS name")
 	}
-	if document.Platform != ProductionPlatform {
-		return LoadedConfig{}, fmt.Errorf("platform must be exactly %s until the native amd64 gates close", ProductionPlatform)
+	if document.Platform != ProductionPlatformLinuxAMD64 && document.Platform != ProductionPlatformLinuxARM64 {
+		return LoadedConfig{}, fmt.Errorf("platform must be %s or %s", ProductionPlatformLinuxAMD64, ProductionPlatformLinuxARM64)
 	}
 	if !imagePattern.MatchString(document.Images.Service) || !imagePattern.MatchString(document.Images.Harness) {
 		return LoadedConfig{}, errors.New("service and harness images must be immutable OCI references ending in @sha256:<64 lowercase hex>")

@@ -1,7 +1,8 @@
 # Production deployment artifacts
 
 - `config.example.json`：closed-world 生产环境输入示例，支持外置私有 registry pull Secret。
-- `build-images.sh`：构建并逐文件验证 service/harness 两个 linux/arm64 镜像。
+- `build-images.sh`：按显式 `linux-amd64` 或 `linux-arm64` 构建并逐文件验证
+  service/harness 镜像。
 - `service.Containerfile`、`harness.Containerfile`：digest-pinned base、scratch runtime 镜像。
 - `agentserver-deploy chart`：从生产配置生成环境锁定的 Helm Chart。
 

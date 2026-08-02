@@ -13,6 +13,7 @@ import (
 )
 
 const (
+	PlatformLinuxAMD64 = "linux-amd64"
 	PlatformLinuxARM64 = "linux-arm64"
 
 	CodexRelease = "0.146.0"
@@ -20,8 +21,8 @@ const (
 
 	AppServerSchemaSHA256 = "834975f055f4dc0bf25231ab23f446f4bfef63fd3f7832bc9b0c5fe8a32363bb"
 	ExecProtocolSHA256    = "7917ed958875dc94258d04e088f349fc6d7fbab41ccf133226767af326d22a1f"
-	ManifestSHA256        = "bd226a5e888a73f31372f02e0b7a48763f50cc4a2acfac28e9dc48df4e7679fa"
-	ManifestSizeBytes     = int64(1744)
+	ManifestSHA256        = "5b7297d0a4e5eb294dc201ce2e82ae8f73f27b51c3360c8737e4338e46e3d128"
+	ManifestSizeBytes     = int64(2429)
 
 	CheckpointAllowlistVersion = 1
 	AgentxProtocolVersion      = "2.0"
@@ -33,6 +34,14 @@ const (
 	LinuxARM64BwrapSHA256 = "c547cbdc762a70ed216789ffaa4c6c0e7d2beabe32245a498f8e365a9fc8dab4"
 	LinuxARM64BwrapSize   = int64(529168)
 	LinuxARM64BwrapURL    = "https://github.com/openai/codex/releases/download/rust-v0.146.0/bwrap-aarch64-unknown-linux-musl.tar.gz"
+
+	LinuxAMD64CodexSHA256 = "2e863156ed35ecc5253b1e2f907a9143077b9f7cb51942070c61996471ff6e04"
+	LinuxAMD64CodexSize   = int64(311001136)
+	LinuxAMD64CodexURL    = "https://github.com/openai/codex/releases/download/rust-v0.146.0/codex-x86_64-unknown-linux-musl.tar.gz"
+
+	LinuxAMD64BwrapSHA256 = "77360cb751ccedc5971391444ac86a8a33c15b04d6b4a6fe45f5d25496e62c4c"
+	LinuxAMD64BwrapSize   = int64(529776)
+	LinuxAMD64BwrapURL    = "https://github.com/openai/codex/releases/download/rust-v0.146.0/bwrap-x86_64-unknown-linux-musl.tar.gz"
 )
 
 type ProtocolSourceFile struct {
@@ -59,9 +68,10 @@ func ProtocolSources() []ProtocolSourceFile {
 	return append([]ProtocolSourceFile(nil), protocolSources...)
 }
 
-// LinuxARM64Manifest returns a fresh closed-world manifest. Callers may mutate
-// the returned maps without changing the release profile used by later calls.
-func LinuxARM64Manifest() runtimelock.Manifest {
+// ProductionManifest returns a fresh closed-world manifest for every packaged
+// production architecture. Callers may mutate the returned maps without
+// changing the release profile used by later calls.
+func ProductionManifest() runtimelock.Manifest {
 	return runtimelock.Manifest{
 		ManifestVersion:                runtimelock.CurrentManifestVersion,
 		CodexRelease:                   CodexRelease,
@@ -91,6 +101,18 @@ func LinuxARM64Manifest() runtimelock.Manifest {
 		CheckpointAllowlistVersion: CheckpointAllowlistVersion,
 		AgentxProtocolVersion:      AgentxProtocolVersion,
 		Artifacts: map[string]runtimelock.PlatformArtifacts{
+			PlatformLinuxAMD64: {
+				Codex: runtimelock.FileArtifact{
+					Path: "bin/codex", SourceURL: LinuxAMD64CodexURL,
+					SHA256: LinuxAMD64CodexSHA256, SizeBytes: LinuxAMD64CodexSize,
+				},
+				ExternalExecutables: map[string]runtimelock.FileArtifact{
+					"bwrap": {
+						Path: "codex-resources/bwrap", SourceURL: LinuxAMD64BwrapURL,
+						SHA256: LinuxAMD64BwrapSHA256, SizeBytes: LinuxAMD64BwrapSize,
+					},
+				},
+			},
 			PlatformLinuxARM64: {
 				Codex: runtimelock.FileArtifact{
 					Path: "bin/codex", SourceURL: LinuxARM64CodexURL,
@@ -107,11 +129,25 @@ func LinuxARM64Manifest() runtimelock.Manifest {
 	}
 }
 
+// LinuxARM64Manifest retains the single-platform development bundle profile.
+func LinuxARM64Manifest() runtimelock.Manifest {
+	manifest := ProductionManifest()
+	delete(manifest.Artifacts, PlatformLinuxAMD64)
+	return manifest
+}
+
+// LinuxAMD64Manifest returns the single-platform amd64 bundle profile.
+func LinuxAMD64Manifest() runtimelock.Manifest {
+	manifest := ProductionManifest()
+	delete(manifest.Artifacts, PlatformLinuxARM64)
+	return manifest
+}
+
 // ManifestBytes is the single deterministic textual representation checked
 // into packaging/stockruntime/runtime-manifest.json and copied into release
 // artifacts. A trailing LF is part of the signed bytes.
 func ManifestBytes() ([]byte, error) {
-	manifest := LinuxARM64Manifest()
+	manifest := ProductionManifest()
 	if err := manifest.Validate(); err != nil {
 		return nil, fmt.Errorf("validate stock runtime profile: %w", err)
 	}

@@ -27,6 +27,22 @@
   "checkpointAllowlistVersion": 1,
   "agentxProtocolVersion": "2.0",
   "artifacts": {
+    "linux-amd64": {
+      "codex": {
+        "path": "bin/codex",
+        "sourceUrl": "https://github.com/openai/codex/releases/download/rust-v0.146.0/codex-x86_64-unknown-linux-musl.tar.gz",
+        "sha256": "2e863156ed35ecc5253b1e2f907a9143077b9f7cb51942070c61996471ff6e04",
+        "sizeBytes": 311001136
+      },
+      "externalExecutables": {
+        "bwrap": {
+          "path": "codex-resources/bwrap",
+          "sourceUrl": "https://github.com/openai/codex/releases/download/rust-v0.146.0/bwrap-x86_64-unknown-linux-musl.tar.gz",
+          "sha256": "77360cb751ccedc5971391444ac86a8a33c15b04d6b4a6fe45f5d25496e62c4c",
+          "sizeBytes": 529776
+        }
+      }
+    },
     "linux-arm64": {
       "codex": {
         "path": "bin/codex",

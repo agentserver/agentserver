@@ -10,7 +10,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/stockruntime"
 )
 
-func TestValidateConfigAcceptsClosedLinuxARM64Deployment(t *testing.T) {
+func TestValidateConfigAcceptsSupportedLinuxDeployment(t *testing.T) {
 	loaded, err := ValidateConfig(validConfigDocument())
 	if err != nil {
 		t.Fatal(err)
@@ -18,6 +18,18 @@ func TestValidateConfigAcceptsClosedLinuxARM64Deployment(t *testing.T) {
 	if loaded.Document.Platform != ProductionPlatform || loaded.MaxRunDuration.String() != "30m0s" ||
 		strings.Join(loaded.Document.Runtime.AllowedTools, ",") != "list_environments,read_file,shell" {
 		t.Fatalf("loaded config = %+v", loaded)
+	}
+}
+
+func TestValidateConfigAcceptsLinuxAMD64Deployment(t *testing.T) {
+	document := validConfigDocument()
+	document.Platform = ProductionPlatformLinuxAMD64
+	loaded, err := ValidateConfig(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Document.Platform != ProductionPlatformLinuxAMD64 {
+		t.Fatalf("loaded platform = %q", loaded.Document.Platform)
 	}
 }
 
@@ -63,7 +75,7 @@ func TestValidateConfigUsesEnrollmentAuthorityMaximumTTL(t *testing.T) {
 
 func TestValidateConfigRejectsUnsafeProductionShapes(t *testing.T) {
 	for name, mutate := range map[string]func(*ConfigDocument){
-		"platform":                  func(value *ConfigDocument) { value.Platform = "linux-amd64" },
+		"platform":                  func(value *ConfigDocument) { value.Platform = "linux-riscv64" },
 		"mutable image":             func(value *ConfigDocument) { value.Images.Service = "registry.example.test/agentserver:latest" },
 		"invalid pull secret":       func(value *ConfigDocument) { value.Images.PullSecret = "Not_Canonical" },
 		"pull secret collision":     func(value *ConfigDocument) { value.Images.PullSecret = value.Secrets.Core },

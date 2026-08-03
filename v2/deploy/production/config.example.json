@@ -6,8 +6,7 @@
   "platform": "linux-amd64",
   "images": {
     "service": "registry-sg.byted.cs.ac.cn/agentserver/v2-service@sha256:aa50b3718e3689409613f8a9e9f765a08eed38466bb8d60da995d3fb394b6718",
-    "harness": "registry-sg.byted.cs.ac.cn/agentserver/v2-harness@sha256:7607137412935aa7ced2afc7ed42318fa6457d16a9bd97d7dcb1cfbb5c59d0b7",
-    "pullSecret": "agentserver-registry-pull"
+    "harness": "registry-sg.byted.cs.ac.cn/agentserver/v2-harness@sha256:7607137412935aa7ced2afc7ed42318fa6457d16a9bd97d7dcb1cfbb5c59d0b7"
   },
   "replicas": {
     "core": 2,

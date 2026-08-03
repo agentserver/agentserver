@@ -225,13 +225,6 @@ func productionNodeSelector(platform string) kubeObject {
 	}
 }
 
-func imagePullSecrets(name string) []any {
-	if name == "" {
-		return []any{}
-	}
-	return []any{kubeObject{"name": name}}
-}
-
 func valueEnvironment(name, value string) kubeObject {
 	return kubeObject{"name": name, "value": value}
 }

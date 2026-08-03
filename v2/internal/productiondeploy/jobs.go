@@ -65,7 +65,6 @@ func renderOneShotJob(
 				"spec": kubeObject{
 					"serviceAccountName":           serviceAccountName,
 					"automountServiceAccountToken": false,
-					"imagePullSecrets":             imagePullSecrets(config.Document.Images.PullSecret),
 					"restartPolicy":                "OnFailure", "enableServiceLinks": false,
 					"terminationGracePeriodSeconds": 10,
 					"nodeSelector":                  productionNodeSelector(config.Document.Platform),

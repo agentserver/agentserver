@@ -29,14 +29,6 @@ func TestValidateConfigRejectsNonAMD64SGDeployment(t *testing.T) {
 	}
 }
 
-func TestValidateConfigRequiresManagedSGImagePullSecret(t *testing.T) {
-	document := validConfigDocument()
-	document.Images.PullSecret = ""
-	if _, err := ValidateConfig(document); err == nil {
-		t.Fatal("SG production accepted an unmanaged image pull credential path")
-	}
-}
-
 func TestParseConfigRejectsUnknownDuplicateAndSecretFields(t *testing.T) {
 	document := validConfigDocument()
 	raw, err := json.Marshal(document)
@@ -47,6 +39,12 @@ func TestParseConfigRejectsUnknownDuplicateAndSecretFields(t *testing.T) {
 	withUnknown = append(withUnknown, []byte(`,"awsAccessKeyId":"forbidden"}`)...)
 	if _, err := ParseConfig(withUnknown); err == nil {
 		t.Fatal("unknown static credential field was accepted")
+	}
+	withPullSecret := strings.Replace(
+		string(raw), `"images":{`, `"images":{"pullSecret":"agentserver-registry-pull",`, 1,
+	)
+	if _, err := ParseConfig([]byte(withPullSecret)); err == nil {
+		t.Fatal("public SG registry config accepted an image pull credential")
 	}
 	if _, err := ParseConfig([]byte(`{"version":1,"version":1}`)); err == nil || !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("duplicate-key error = %v", err)
@@ -82,8 +80,6 @@ func TestValidateConfigRejectsUnsafeProductionShapes(t *testing.T) {
 		"wrong harness registry": func(value *ConfigDocument) {
 			value.Images.Harness = "registry.example.test/agentserver/harness@sha256:" + strings.Repeat("2", 64)
 		},
-		"invalid pull secret":       func(value *ConfigDocument) { value.Images.PullSecret = "Not_Canonical" },
-		"pull secret collision":     func(value *ConfigDocument) { value.Images.PullSecret = value.Secrets.Core },
 		"gateway replicas implied":  func(value *ConfigDocument) { value.Services.ExecutorGateway.InternalPort = 9443 },
 		"wrong frontend hostname":   func(value *ConfigDocument) { value.Ingress.FrontendHostname = "agent-cn.byted.bps.dev" },
 		"missing gateway selector":  func(value *ConfigDocument) { value.Ingress.GatewayPodSelector = nil },
@@ -140,9 +136,8 @@ func validConfigDocument() ConfigDocument {
 	return ConfigDocument{
 		Version: 1, Region: ProductionRegion, Namespace: "agentserver", ClusterDomain: "cluster.local", Platform: ProductionPlatform,
 		Images: ImagesDocument{
-			Service:    ProductionServiceImage + "@sha256:" + digest("1"),
-			Harness:    ProductionHarnessImage + "@sha256:" + digest("2"),
-			PullSecret: "agentserver-registry-pull",
+			Service: ProductionServiceImage + "@sha256:" + digest("1"),
+			Harness: ProductionHarnessImage + "@sha256:" + digest("2"),
 		},
 		Replicas: ReplicasDocument{Core: 2, BrowserGateway: 2, HarnessPool: 2, LLMProxy: 2},
 		Services: ServicesDocument{

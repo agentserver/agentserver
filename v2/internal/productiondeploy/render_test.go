@@ -139,7 +139,7 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 			}
 			assertPinnedImages(t, resource)
 			assertProductionNodeSelector(t, resource, "amd64")
-			assertImagePullSecret(t, resource, loaded.Document.Images.PullSecret)
+			assertNoImagePullSecrets(t, resource)
 		}
 	}
 	all := append(append(append(append([]byte(nil), mustBundleFile(t, bundle, foundationFile)...), mustBundleFile(t, bundle, migrationFile)...), mustBundleFile(t, bundle, bootstrapFile)...), mustBundleFile(t, bundle, runtimeFile)...)
@@ -472,19 +472,12 @@ func assertProductionNodeSelector(t *testing.T, resource map[string]any, archite
 	}
 }
 
-func assertImagePullSecret(t *testing.T, resource map[string]any, want string) {
+func assertNoImagePullSecrets(t *testing.T, resource map[string]any) {
 	t.Helper()
 	spec := objectField(t, resource, "spec")
 	podSpec := objectField(t, objectField(t, spec, "template"), "spec")
-	secrets := arrayField(t, podSpec, "imagePullSecrets")
-	if want == "" {
-		if len(secrets) != 0 {
-			t.Fatalf("%s imagePullSecrets = %#v, want empty", resource["kind"], secrets)
-		}
-		return
-	}
-	if len(secrets) != 1 || stringField(t, secrets[0].(map[string]any), "name") != want {
-		t.Fatalf("%s imagePullSecrets = %#v, want %s", resource["kind"], secrets, want)
+	if secrets, exists := podSpec["imagePullSecrets"]; exists {
+		t.Fatalf("%s imagePullSecrets = %#v, want field omitted for the public registry", resource["kind"], secrets)
 	}
 }
 

@@ -70,12 +70,12 @@ Job 只用于数据库 migration/bootstrap。每个 run 的 harness 仍由 harne
 - CNPG 1.30.0 支持的 PostgreSQL 17.6 system-trixie amd64 manifest（tag + digest 双重固定）；
 - 以 `kubernetes.io/hostname` 为 topology key 的 required Pod anti-affinity，三个实例不能落在同一节点；
 - 指向 `agentserver-postgres-rw.agentserver.svc.cluster.local:5432` 的应用 DSN；
-- 7 个应用 Secret 和一个 registry pull Secret；
+- 7 个应用 Secret；
 - 环境锁定的 OCI Helm release。
 
 证书和密钥由 Pulumi `tls`/`random` provider 生成，用户不需要手工生成文件、选择 Secret 名称
 或执行 `kubectl create secret`。Deployment 带 Reloader annotation，受引用 Secret 更新时会
-触发 rollout。Namespace、CNPG Cluster、PostgreSQL owner Secret 和 8 个托管 Secret 都设置
+触发 rollout。Namespace、CNPG Cluster、PostgreSQL owner Secret 和 7 个托管 Secret 都设置
 `protect: true`：正常轮换仍可原地更新，但误关模块或普通 `pulumi destroy` 不能删除数据库和密钥。
 
 以下值是外部系统已经认可的授权，不能用随机字节替代；Pulumi 只负责安全接入并组装最终
@@ -85,7 +85,6 @@ Kubernetes Secret：
 | --- | --- |
 | `externalOidcClientSecret` | 外部 OIDC 中已注册的 AgentServer client |
 | `s3AccessKeyId` / `s3SecretAccessKey` | 目标 S3-compatible bucket 的真实 credential |
-| `registryDockerConfigJson` | SG registry 可用的 Docker config JSON |
 
 如果这些外部系统由 Pulumi provider 管理，应直接把对应资源 Output 传给 AgentServer 模块；当前
 模块也保留加密 Pulumi config 接口作为接入点。不要生成一个外部系统从未注册的随机密码并把它
@@ -126,7 +125,7 @@ Chart/Pulumi 不管理 Hydra、外部 OIDC IdP、S3 bucket、第三方 LLM Gatew
 9. 至少一个待接入的第三方 Gateway 支持公网、系统信任 HTTPS 的精确 `/v1/responses` endpoint，
    streaming 和 stock Codex 所需 tool-call 语义；其 OIDC public client 已允许精确 callback
    `https://agent.byted.bps.dev/auth/llm-gateway/callback`；
-10. SG registry credential 可被集群节点用于拉取两个私有 amd64 镜像；
+10. SG 公开 registry 可由集群节点匿名拉取两个 digest-pinned amd64 镜像和环境锁定 Chart；
 11. CoreDNS ClusterIP、Gateway Pod label selector、Service CIDR 中 4 个空闲固定 ClusterIP，以及
     S3/平台 OIDC/Hydra 的实际 IPv4 CIDR/port 已确定。
 
@@ -145,11 +144,10 @@ Chart/Pulumi 不管理 Hydra、外部 OIDC IdP、S3 bucket、第三方 LLM Gatew
 对应 Secret 的精确含义：
 
 - `externalOidcClientSecret` 是与 `oauth.externalOidc.clientId` 同一注册项的 client secret；
-- `registryDockerConfigJson` 是只包含目标 registry 的最小 Docker `config.json`，顶层只能有
-  `auths`，且只能包含 `auths["registry-sg.byted.cs.ac.cn"].auth`；该值是 canonical base64 编码的非空
-  `username:password`。Pulumi 将完整 JSON 写入 `kubernetes.io/dockerconfigjson` Secret 供 kubelet
-  拉镜像，同时把解析出的 username/password 作为 secret inputs 交给 Helm provider 拉私有 OCI Chart。
-  只有本机 credential helper、却没有上述 `auth` 项的 config 不能用于无人值守部署。
+
+`registry-sg.byted.cs.ac.cn/agentserver` 的拉取面是公开的。生产配置拒绝 `pullSecret`，生成的 Pod 不含
+`imagePullSecrets`，Pulumi 也不接收 `registryDockerConfigJson`。发布镜像或 Chart 所需的写权限只属于
+发布工作站，不进入 SG stack、Kubernetes Secret 或运行时 Pod。
 
 不存在 `upstreamCaPem`、`upstreamCredential` 或 llmproxy 静态上游 Secret。Core 用 Pulumi 生成的
 `llm-gateway-sealing-keyring.json` 加密每个 `(workspace, gateway, user)` token set；这个 key 只能解密
@@ -223,7 +221,7 @@ registry-sg.byted.cs.ac.cn/agentserver/v2-harness@sha256:<remote-amd64-digest>
 - `spiffeTrustDomain=agentserver.byted.bps.dev`；
 - 三个域名及 Istio Gateway/listener；
 - `run-capability-sg-v1`、`run-manifest-sg-v1`；
-- 7 个 Secret 名称和 `agentserver-registry-pull`；
+- 7 个应用 Secret 名称；
 - `objectStore.mode=s3-plaintext-v1`；
 - 镜像仓库只能是 `registry-sg.byted.cs.ac.cn/agentserver/v2-service` 和 `v2-harness`，且必须使用 digest。
 
@@ -301,18 +299,10 @@ pulumi config set --stack sg agentserver:deploymentConfigSHA256 '<64-lowercase-h
 pulumi config set --stack sg --secret agentserver:externalOidcClientSecret '<oidc-secret>'
 pulumi config set --stack sg --secret agentserver:s3AccessKeyId '<s3-access-key-id>'
 pulumi config set --stack sg --secret agentserver:s3SecretAccessKey '<s3-secret-access-key>'
-pulumi config set --stack sg --secret agentserver:registryDockerConfigJson '<docker-config-json>'
 ```
 
-最后一项的精确形状是：
-
-```json
-{"auths":{"registry-sg.byted.cs.ac.cn":{"auth":"<canonical-base64-of-username:password>"}}}
-```
-
-发布 Chart 的操作者仍需先登录 registry 执行 `helm push`。部署阶段不依赖另一次交互式
-`helm registry login`：Pulumi 会从上述 Docker config 的精确 registry `auth` 项获得 OCI Chart
-拉取凭据，并以 secret 传播；若该项不存在，preview/up 会在创建任何 AgentServer 资源前失败。
+发布 Chart 的操作者可能仍需写权限才能执行 `helm push`；该凭据只保留在发布工作站。部署阶段由
+Pulumi 匿名拉取 OCI Chart，kubelet 匿名拉取镜像，不依赖交互式 `helm registry login`。
 
 不要设置 `agentserver:databaseUrl`。CNPG owner 密码和 DSN 在 `pulumi up` 时自动生成；模块会等待
 CNPG `Cluster` 的 `Ready` condition，再启动 Helm migration/bootstrap hooks。
@@ -399,6 +389,6 @@ CNPG Cluster、PVC 和 S3 bucket 都是数据资源，不能把 `pulumi destroy`
 - migration 失败：检查 `agentserver-postgres-rw`、owner Secret、TLS 和 CNPG Pod selector egress；
 - S3 写失败：重点检查 `If-None-Match: *`、`412 PreconditionFailed` 语义、endpoint/path-style/region；
 - Pod 卡在 init：检查 Pulumi Secret 是否齐全、证书 SPIFFE URI、keyring 和私钥格式；
-- ImagePullBackOff：检查 `agentserver-registry-pull` 的 Docker config 和远端 amd64 digest；
+- ImagePullBackOff：检查公开仓库匿名拉取策略、网络连通性和远端 amd64 digest；
 - 外部请求 timeout：更新正确 egress CIDR/port 后重新生成 Chart，不能在线 patch；
 - Helm guard 失败：Chart 与 `deploymentConfigSHA256` 不匹配，必须选择同一份生成制品。

@@ -90,11 +90,10 @@
     "images": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["service", "harness", "pullSecret"],
+      "required": ["service", "harness"],
       "properties": {
         "service": {"$ref": "#/$defs/serviceImage"},
-        "harness": {"$ref": "#/$defs/harnessImage"},
-        "pullSecret": {"const": "agentserver-registry-pull"}
+        "harness": {"$ref": "#/$defs/harnessImage"}
       }
     },
     "replicas": {

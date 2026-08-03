@@ -47,7 +47,6 @@ const (
 	ProductionHarnessWorkerSecret = "agentserver-worker-secrets"
 	ProductionLLMProxySecret      = "agentserver-llmproxy-secrets"
 	ProductionObjectStoreSecret   = "agentserver-object-store-secrets"
-	ProductionImagePullSecret     = "agentserver-registry-pull"
 	ProductionServiceImage        = "registry-sg.byted.cs.ac.cn/agentserver/v2-service"
 	ProductionHarnessImage        = "registry-sg.byted.cs.ac.cn/agentserver/v2-harness"
 
@@ -112,9 +111,8 @@ type ConfigDocument struct {
 }
 
 type ImagesDocument struct {
-	Service    string `json:"service"`
-	Harness    string `json:"harness"`
-	PullSecret string `json:"pullSecret,omitempty"`
+	Service string `json:"service"`
+	Harness string `json:"harness"`
 }
 
 type ReplicasDocument struct {
@@ -380,7 +378,7 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 	if err := validateObjects(document.Objects); err != nil {
 		return LoadedConfig{}, err
 	}
-	if err := validateSecrets(document.Secrets, document.Images.PullSecret); err != nil {
+	if err := validateSecrets(document.Secrets); err != nil {
 		return LoadedConfig{}, err
 	}
 	if err := validateNetwork(&loaded.Document.Network, loaded.Document.Services); err != nil {
@@ -652,7 +650,7 @@ func validateObjects(document ObjectStoreDocument) error {
 	return nil
 }
 
-func validateSecrets(document SecretsDocument, pullSecret string) error {
+func validateSecrets(document SecretsDocument) error {
 	for name, pair := range map[string][2]string{
 		"core":            {document.Core, ProductionCoreSecret},
 		"browserGateway":  {document.BrowserGateway, ProductionBrowserSecret},
@@ -665,9 +663,6 @@ func validateSecrets(document SecretsDocument, pullSecret string) error {
 		if pair[0] != pair[1] {
 			return fmt.Errorf("secrets.%s must be exactly %s for the SG production deployment", name, pair[1])
 		}
-	}
-	if pullSecret != ProductionImagePullSecret {
-		return fmt.Errorf("images.pullSecret must be exactly %s for the SG production deployment", ProductionImagePullSecret)
 	}
 	return nil
 }

@@ -13,10 +13,9 @@ import (
 const maximumKeyFileBytes = 4096
 
 // LoadCodec reads the Core-only enrollment MAC key from a restricted regular
-// file target. Kubernetes projected-Secret symlinks are supported: the target
-// is opened once and its descriptor identity is held through the complete
-// bounded read. The file contains canonical unpadded base64url, with no
-// newline.
+// file target. A Kubernetes read-only Secret mount may grant read access to
+// the Pod's fsGroup; group write/execute and every other-user bit remain
+// forbidden. The file contains canonical unpadded base64url, with no newline.
 func LoadCodec(issuer, path string) (*Codec, error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return nil, errors.New("executor enrollment token key path must be absolute")
@@ -30,9 +29,9 @@ func LoadCodec(issuer, path string) (*Codec, error) {
 		_ = file.Close()
 		return nil, fmt.Errorf("stat executor enrollment token key: %w", err)
 	}
-	if !before.Mode().IsRegular() || before.Mode().Perm()&0o077 != 0 || before.Size() < 1 || before.Size() > maximumKeyFileBytes {
+	if !before.Mode().IsRegular() || before.Mode().Perm()&0o037 != 0 || before.Size() < 1 || before.Size() > maximumKeyFileBytes {
 		_ = file.Close()
-		return nil, errors.New("executor enrollment token key must resolve to a bounded regular file inaccessible to group and other")
+		return nil, errors.New("executor enrollment token key must resolve to a bounded regular file only group-readable and inaccessible to other")
 	}
 	raw, readErr := io.ReadAll(io.LimitReader(file, maximumKeyFileBytes+1))
 	defer clear(raw)
@@ -41,7 +40,7 @@ func LoadCodec(issuer, path string) (*Codec, error) {
 	if readErr != nil || statErr != nil || closeErr != nil {
 		return nil, errors.Join(readErr, statErr, closeErr)
 	}
-	if !after.Mode().IsRegular() || after.Mode().Perm()&0o077 != 0 || !os.SameFile(before, after) ||
+	if !after.Mode().IsRegular() || after.Mode().Perm()&0o037 != 0 || !os.SameFile(before, after) ||
 		before.Mode() != after.Mode() || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) ||
 		int64(len(raw)) != after.Size() || len(raw) > maximumKeyFileBytes {
 		return nil, errors.New("executor enrollment token key file changed or exceeds its size bound")

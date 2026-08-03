@@ -193,7 +193,7 @@ func readLLMProxyFile(label, path string, maximum int64, restricted bool) ([]byt
 	if err != nil {
 		return nil, fmt.Errorf("inspect llmproxy %s: %w", label, err)
 	}
-	if !info.Mode().IsRegular() || info.Size() < 1 || info.Size() > maximum || (restricted && info.Mode().Perm()&0o077 != 0) {
+	if !info.Mode().IsRegular() || info.Size() < 1 || info.Size() > maximum || (restricted && info.Mode().Perm()&0o037 != 0) {
 		return nil, fmt.Errorf("llmproxy %s must be a bounded regular file with safe permissions", label)
 	}
 	raw, err := io.ReadAll(io.LimitReader(file, maximum+1))

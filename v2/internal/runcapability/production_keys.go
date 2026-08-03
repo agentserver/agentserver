@@ -35,8 +35,10 @@ type ProductionKeyringDocument struct {
 }
 
 // LoadProductionSigner reads the Core-only active key from a restricted
-// Secret projection. Rotation deploys a new key ID while verifiers retain an
-// explicit old/new public-key overlap; unknown IDs never fall back.
+// Secret mount. A Kubernetes Pod may expose the read-only target to its
+// fsGroup, but write/execute group bits and every other-user bit are rejected.
+// Rotation deploys a new key ID while verifiers retain an explicit old/new
+// public-key overlap; unknown IDs never fall back.
 func LoadProductionSigner(issuer, keyID, path string) (*ProductionSigner, error) {
 	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return nil, errors.New("production run capability signing key path must be absolute and clean")
@@ -53,8 +55,8 @@ func LoadProductionSigner(issuer, keyID, path string) (*ProductionSigner, error)
 	if !before.Mode().IsRegular() {
 		return nil, errors.New("production run capability signing key must resolve to a regular file")
 	}
-	if before.Mode().Perm()&0o077 != 0 {
-		return nil, errors.New("production run capability signing key must not be accessible by group or other")
+	if before.Mode().Perm()&0o037 != 0 {
+		return nil, errors.New("production run capability signing key must only be group-readable and inaccessible to other")
 	}
 	if before.Size() < 1 || before.Size() > maximumPrivateKeyBytes {
 		return nil, fmt.Errorf("production run capability signing key must contain between 1 and %d bytes", maximumPrivateKeyBytes)

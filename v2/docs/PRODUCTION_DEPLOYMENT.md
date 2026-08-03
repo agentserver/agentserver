@@ -76,7 +76,7 @@ Job 只用于控制面安装期的数据库 migration、Hydra client setup 和 b
 - 指向 `agentserver-postgres-rw.agentserver.svc.cluster.local:5432` 的 AgentServer/Hydra 独立 DSN；
 - Hydra system/cookie secret；
 - 8 个应用 Secret；
-- 环境锁定的 OCI Helm release。
+- 环境锁定的 OCI Helm release。Release显式使用`atomic=false`和`cleanupOnFail=false`：失败资源会保留供排障，修复仍由下一次Pulumi更新收敛，不自动卸载现场。
 
 证书和密钥由 Pulumi `tls`/`random` provider 生成，用户不需要手工生成文件、选择 Secret 名称
 或执行 `kubectl create secret`。Deployment 带 Reloader annotation，受引用 Secret 更新时会
@@ -114,6 +114,10 @@ Hydra 26.2.0 由同一 Chart 管理。Chart 固定 issuer、Admin/Public endpoin
 双副本 Deployment 和 browser public client profile；Pulumi 管理它的 database、DSN、内部 TLS 与
 system/cookie secret。Chart/Pulumi 不管理外部 OIDC IdP、S3 bucket、第三方 LLM Gateway、Istio
 Gateway、DNS 和用户机器上的 agentx。
+
+运行时不会再启动`materialize-*` init container或复制Secret。Chart把每个closed-world Secret key
+以只读`subPath`文件挂载；该文件在单个Pod生命周期内保持固定，Secret轮换通过Reloader创建新Pod接收。
+harness-pool只保留目录准备和network guard两个init container。
 
 ## 3. 部署前必须准备的真实输入
 
@@ -428,7 +432,8 @@ CNPG Cluster、PVC 和 S3 bucket 都是数据资源，不能把 `pulumi destroy`
 - migration 失败：检查 `agentserver-postgres-rw`、对应 owner Secret、TLS 和 CNPG Pod selector egress；
 - Hydra client setup 失败：检查 Hydra readiness、内部 CA/SAN、Admin `4445` NetworkPolicy 和 client profile；
 - S3 写失败：重点检查 `If-None-Match: *`、`412 PreconditionFailed` 语义、endpoint/path-style/region；
-- Pod 卡在 init：检查 Pulumi Secret 是否齐全、证书 SPIFFE URI、keyring 和私钥格式；
+- harness-pool 卡在 init：检查目录权限、network guard配置和节点nftables能力；普通服务不应再有Secret materialize init；
+- Helm/Pulumi更新失败：失败Pod会因non-atomic release保留，先读取对应container日志和Events，再通过下一次`pulumi up`修复；
 - ImagePullBackOff：检查公开仓库匿名拉取策略、网络连通性和远端 amd64 digest；
 - 外部请求 timeout：更新正确 egress CIDR/port 后重新生成 Chart，不能在线 patch；
 - Helm guard 失败：Chart 与 `deploymentConfigSHA256` 不匹配，必须选择同一份生成制品。

@@ -21,7 +21,7 @@ func TestServiceManifestIsClosedWorldAndRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Kind != KindService || parsed.SourceRevision != strings.Repeat("a", 40) || len(parsed.Files) != 7 {
+	if parsed.Kind != KindService || parsed.SourceRevision != strings.Repeat("a", 40) || len(parsed.Files) != len(expectedFilePaths(KindService)) {
 		t.Fatalf("parsed production image manifest = %+v", parsed)
 	}
 	if _, err := ParseManifest([]byte(`{"version":1,"version":1}`)); err == nil || !strings.Contains(err.Error(), "duplicate") {

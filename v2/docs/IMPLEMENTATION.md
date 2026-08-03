@@ -1081,7 +1081,7 @@ Hydra login/consent bridge和reference Web的Code + PKCE入口现已在executor+
 - rootfs只读；CODEX_HOME与 staging位于有配额 tmpfs/emptyDir；child mount view不含 workspace或 service-account token，worker-only staging依靠不同 UID和 `0700`目录不可读。
 - 只有 init-network-guard持有短期 `NET_ADMIN`并安装按 UID默认拒绝的 nftables OUTPUT规则；runtime pool/worker/app-server都丢弃 `NET_ADMIN/NET_RAW`。
 - network init在任何runtime container启动前replace同名IPv4/IPv6 table；若规则已经提交而init进程在退出前被杀，Kubernetes重试会先清理旧table再原子发布完整新规则集，不会因`EEXIST`卡死Pod。
-- Kubernetes projected Secret不是direct regular file。受信init按closed-world service profile通过受限descriptor读取projection，再原子物化为固定UID/GID独占、目录`0500`、文件`0400`的direct-file view；runtime不直接放宽自身safe-open合同。
+- runtime不再复制或物化Kubernetes Secret。renderer把closed-world profile中的每个key以只读`subPath`单文件挂载为Pod生命周期内固定的regular-file snapshot；普通组件以`0440 + fsGroup`读取，独立GID的fork worker只读取其Pod内`0444`的worker client identity/public keyring。pool signing material仍为`0440`，worker不加入pool group。Secret更新由新Pod rollout接收，不做原地热切换。
 - final-exec trampoline只保留 stdin/stdout/stderr，fd 3以上 close-all；worker control/credential FD同时必须为 `O_CLOEXEC`。
 - app-server没有 Kubernetes API token。
 - worker 只使用 pool 签发的 per-attempt control/MCP capability；不可读 pool service account、对象存储或签名凭证。
@@ -1266,7 +1266,7 @@ gateway restart切片增加migration 0015及startup-only recovery API。producti
 
 生产部署初始化切片新增`agentserver-core bootstrap --config=/absolute/path`。它不隐式执行migration；部署顺序固定为`migrate → bootstrap → runtime`。bootstrap在单个PostgreSQL transaction和独立advisory lock内创建首个workspace/session/owner user、外部`(issuer, subject)`映射、owner membership及固定`enrolling` executor；完全相同的重试零写入，任一既有authority不一致整笔回滚且绝不覆盖。配置为bounded、closed-world canonical JSON，允许Kubernetes projection解析到稳定regular target，但拒绝group/other可写target。
 
-同一切片新增生产镜像内命令`agentserver-init`。`materialize`只接受`core|browser-gateway|executor-gateway|harness-pool|harness-worker|llmproxy`六个固定profile；pool签名authority与worker公钥/TLS材料分别物化到不同UID域。Linux以`openat2(RESOLVE_BENEATH|RESOLVE_NO_MAGICLINKS|RESOLVE_NO_XDEV)`读取projected source，输出精确file set并在重试时逐项核对内容、mode和owner。`install-network-guard`只接受closed-world JSON中的显式IPv4 TCP tuple和固定UID；worker/app的其他IPv4及全部IPv6均拒绝。A12 Linux gate连续安装同一规则集两次，覆盖init commit后被杀的重试形状。该切片仍只是production manifest的构件；在真实Secret projection、Service ClusterIP、NetworkPolicy和Pod securityContext被renderer固定并通过整栈门禁前，不能宣称可部署。
+同一切片曾在生产镜像内加入`agentserver-init materialize`，但真实集群验证发现它把所有服务绑定到同一个不必要的init失败域，且`fsGroup`对`emptyDir`根权限的处理会使该路径拒绝自己的destination parent。该materialize子命令、实现和service镜像副本现已删除；renderer改用Kubernetes Secret只读单文件`subPath`挂载。`agentserver-init`只保留harness目录准备与`install-network-guard`：后者只接受closed-world JSON中的显式IPv4 TCP tuple和固定UID；worker/app的其他IPv4及全部IPv6均拒绝。A12 Linux gate连续安装同一规则集两次，覆盖network init commit后被杀的重试形状。
 
 后续renderer切片新增`agentserver-deploy validate|render`和closed-world `production-deployment.schema.json`。输入只接受`linux-arm64`、digest-pinned service/harness镜像、固定ClusterIP、显式CoreDNS Service与Pod selector、AWS workload role、六个互异Secret和bounded resource/egress；Core/browser/llmproxy至少双副本，executor-gateway固定单副本`Recreate`且无HPA/PDB。renderer按`foundation → migrate → bootstrap → runtime`输出五个只读、原子、exact-retry文件，其中Job仅用于migration/bootstrap，run热路径仍由harness-pool本地fork worker。五个runtime Deployment固定linux/arm64 node selector、只读rootfs、tmpfs、最小capability、默认拒绝NetworkPolicy、精确内部Pod egress、DNAT前后DNS目标、固定hostAliases和AWS projected workload token；harness另装配目录初始化和UID nftables guard。
 

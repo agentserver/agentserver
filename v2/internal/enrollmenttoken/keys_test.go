@@ -37,8 +37,14 @@ func TestLoadCodecRequiresRestrictedCanonicalKeyFile(t *testing.T) {
 			}
 		})
 	}
+	if err := os.Chmod(valid, 0o440); err != nil {
+		t.Fatal(err)
+	}
+	if codec, err := LoadCodec("issuer", valid); err != nil || codec.Issuer() != "issuer" {
+		t.Fatalf("load group-readable Secret = %v / %v", codec, err)
+	}
 	broad := filepath.Join(directory, "broad")
-	if err := os.WriteFile(broad, []byte(encoded), 0o640); err != nil {
+	if err := os.WriteFile(broad, []byte(encoded), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadCodec("issuer", broad); err == nil {
@@ -59,7 +65,13 @@ func TestLoadCodecRequiresRestrictedCanonicalKeyFile(t *testing.T) {
 	if codec, err := LoadCodec("issuer", projection); err != nil || codec.Issuer() != "issuer" {
 		t.Fatalf("restricted projected Secret = %v / %v", codec, err)
 	}
-	if err := os.Chmod(projectedTarget, 0o640); err != nil {
+	if err := os.Chmod(projectedTarget, 0o440); err != nil {
+		t.Fatal(err)
+	}
+	if codec, err := LoadCodec("issuer", projection); err != nil || codec.Issuer() != "issuer" {
+		t.Fatalf("group-readable projected Secret = %v / %v", codec, err)
+	}
+	if err := os.Chmod(projectedTarget, 0o444); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadCodec("issuer", projection); err == nil {

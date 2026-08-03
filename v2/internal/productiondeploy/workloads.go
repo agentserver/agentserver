@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
-	"github.com/agentserver/agentserver/v2/internal/harnessinit"
 )
 
 type deploymentInput struct {
@@ -179,7 +178,11 @@ func hydraHealthProbe(path string, port uint16, failures int) kubeObject {
 func renderCoreDeployment(context renderContext) (kubeObject, error) {
 	config := context.config
 	document := config.Document
-	source, err := projectedMaterialVolume("material-source", document.Secrets.Core, harnessinit.ProfileCore)
+	material, err := secretMaterialVolume("material", document.Secrets.Core, materialProfileCore, groupReadableSecretMode)
+	if err != nil {
+		return nil, err
+	}
+	materialMounts, err := secretMaterialMounts("material", "/var/run/agentserver/material", materialProfileCore)
 	if err != nil {
 		return nil, err
 	}
@@ -226,17 +229,10 @@ func renderCoreDeployment(context renderContext) (kubeObject, error) {
 		namespace: document.Namespace, platform: document.Platform, component: coreComponent, replicas: document.Replicas.Core,
 		image: document.Images.Service, serviceAccount: coreComponent,
 		command: []any{"/usr/local/bin/agentserver-core"}, args: []any{"serve"},
-		environment: environment,
-		initContainers: []any{materializeInitContainer(
-			document.Images.Service, harnessinit.ProfileCore, "material-source", "/var/run/agentserver-source",
-			"material", "/var/run/agentserver/material", ServiceUID, ServiceGID,
-		)},
-		volumes: []any{source, emptyDirVolume("material", "Memory", "16Mi"), emptyDirVolume("scratch", "Memory", document.Resources.ScratchTmpfs)},
-		volumeMounts: []any{
-			kubeObject{"name": "material", "mountPath": "/var/run/agentserver"},
-			kubeObject{"name": "scratch", "mountPath": "/tmp"},
-		},
-		resources: document.Resources.Core, uid: ServiceUID, gid: ServiceGID, fsGroup: ServiceGID,
+		environment:  environment,
+		volumes:      []any{material, emptyDirVolume("scratch", "Memory", document.Resources.ScratchTmpfs)},
+		volumeMounts: append(materialMounts, kubeObject{"name": "scratch", "mountPath": "/tmp"}),
+		resources:    document.Resources.Core, uid: ServiceUID, gid: ServiceGID, fsGroup: ServiceGID,
 		hostAliases: map[string]string{HydraInternalHost: document.Services.Hydra.ClusterIP},
 		strategy:    "RollingUpdate", configHash: context.documentHash, termination: 20,
 	}), nil
@@ -245,7 +241,11 @@ func renderCoreDeployment(context renderContext) (kubeObject, error) {
 func renderBrowserDeployment(context renderContext) (kubeObject, error) {
 	config := context.config
 	document := config.Document
-	source, err := projectedMaterialVolume("material-source", document.Secrets.BrowserGateway, harnessinit.ProfileBrowserGateway)
+	material, err := secretMaterialVolume("material", document.Secrets.BrowserGateway, materialProfileBrowserGateway, groupReadableSecretMode)
+	if err != nil {
+		return nil, err
+	}
+	materialMounts, err := secretMaterialMounts("material", "/var/run/agentserver/material", materialProfileBrowserGateway)
 	if err != nil {
 		return nil, err
 	}
@@ -269,17 +269,10 @@ func renderBrowserDeployment(context renderContext) (kubeObject, error) {
 		namespace: document.Namespace, platform: document.Platform, component: browserComponent, replicas: document.Replicas.BrowserGateway,
 		image: document.Images.Service, serviceAccount: browserComponent,
 		command: []any{"/usr/local/bin/browser-gateway"}, args: []any{"serve"}, environment: environment,
-		initContainers: []any{materializeInitContainer(
-			document.Images.Service, harnessinit.ProfileBrowserGateway, "material-source", "/var/run/agentserver-source",
-			"material", "/var/run/agentserver/material", ServiceUID, ServiceGID,
-		)},
-		volumes: []any{source, emptyDirVolume("material", "Memory", "8Mi"), emptyDirVolume("scratch", "Memory", document.Resources.ScratchTmpfs)},
-		volumeMounts: []any{
-			kubeObject{"name": "material", "mountPath": "/var/run/agentserver"},
-			kubeObject{"name": "scratch", "mountPath": "/tmp"},
-		},
-		ports:     []any{kubeObject{"name": "http", "containerPort": int(document.Services.BrowserGateway.Port), "protocol": "TCP"}},
-		probePort: document.Services.BrowserGateway.Port,
+		volumes:      []any{material, emptyDirVolume("scratch", "Memory", document.Resources.ScratchTmpfs)},
+		volumeMounts: append(materialMounts, kubeObject{"name": "scratch", "mountPath": "/tmp"}),
+		ports:        []any{kubeObject{"name": "http", "containerPort": int(document.Services.BrowserGateway.Port), "protocol": "TCP"}},
+		probePort:    document.Services.BrowserGateway.Port,
 		hostAliases: map[string]string{
 			CoreInternalHost:  document.Services.Core.ClusterIP,
 			HydraInternalHost: document.Services.Hydra.ClusterIP,
@@ -292,7 +285,11 @@ func renderBrowserDeployment(context renderContext) (kubeObject, error) {
 func renderExecutorDeployment(context renderContext) (kubeObject, error) {
 	config := context.config
 	document := config.Document
-	source, err := projectedMaterialVolume("material-source", document.Secrets.ExecutorGateway, harnessinit.ProfileExecutorGateway)
+	material, err := secretMaterialVolume("material", document.Secrets.ExecutorGateway, materialProfileExecutorGateway, groupReadableSecretMode)
+	if err != nil {
+		return nil, err
+	}
+	materialMounts, err := secretMaterialMounts("material", "/var/run/agentserver/material", materialProfileExecutorGateway)
 	if err != nil {
 		return nil, err
 	}
@@ -318,15 +315,8 @@ func renderExecutorDeployment(context renderContext) (kubeObject, error) {
 		namespace: document.Namespace, platform: document.Platform, component: executorComponent, replicas: 1,
 		image: document.Images.Service, serviceAccount: executorComponent,
 		command: []any{"/usr/local/bin/executor-gateway"}, args: []any{"serve"}, environment: environment,
-		initContainers: []any{materializeInitContainer(
-			document.Images.Service, harnessinit.ProfileExecutorGateway, "material-source", "/var/run/agentserver-source",
-			"material", "/var/run/agentserver/material", ServiceUID, ServiceGID,
-		)},
-		volumes: []any{source, emptyDirVolume("material", "Memory", "8Mi"), emptyDirVolume("scratch", "Memory", document.Resources.ScratchTmpfs)},
-		volumeMounts: []any{
-			kubeObject{"name": "material", "mountPath": "/var/run/agentserver"},
-			kubeObject{"name": "scratch", "mountPath": "/tmp"},
-		},
+		volumes:      []any{material, emptyDirVolume("scratch", "Memory", document.Resources.ScratchTmpfs)},
+		volumeMounts: append(materialMounts, kubeObject{"name": "scratch", "mountPath": "/tmp"}),
 		ports: []any{
 			kubeObject{"name": "http-agentx", "containerPort": int(document.Services.ExecutorGateway.PublicPort), "protocol": "TCP"},
 			kubeObject{"name": "https-mcp", "containerPort": int(document.Services.ExecutorGateway.InternalPort), "protocol": "TCP"},
@@ -341,11 +331,19 @@ func renderExecutorDeployment(context renderContext) (kubeObject, error) {
 func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 	config := context.config
 	document := config.Document
-	poolSource, err := projectedMaterialVolume("pool-source", document.Secrets.HarnessPool, harnessinit.ProfileHarnessPool)
+	poolMaterial, err := secretMaterialVolume("pool-material", document.Secrets.HarnessPool, materialProfileHarnessPool, groupReadableSecretMode)
 	if err != nil {
 		return nil, err
 	}
-	workerSource, err := projectedMaterialVolume("worker-source", document.Secrets.HarnessWorker, harnessinit.ProfileHarnessWorker)
+	workerMaterial, err := secretMaterialVolume("worker-material", document.Secrets.HarnessWorker, materialProfileHarnessWorker, workerReadableSecretMode)
+	if err != nil {
+		return nil, err
+	}
+	poolMaterialMounts, err := secretMaterialMounts("pool-material", "/var/run/agentserver/pool", materialProfileHarnessPool)
+	if err != nil {
+		return nil, err
+	}
+	workerMaterialMounts, err := secretMaterialMounts("worker-material", "/var/run/agentserver/worker", materialProfileHarnessWorker)
 	if err != nil {
 		return nil, err
 	}
@@ -395,24 +393,21 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 		image: document.Images.Harness, serviceAccount: harnessComponent,
 		command: []any{"/usr/local/bin/harness-pool"}, args: []any{"serve"}, environment: environment,
 		initContainers: []any{
-			materializeInitContainer(document.Images.Harness, harnessinit.ProfileHarnessPool, "pool-source", "/var/run/pool-source", "material", "/var/run/agentserver/pool", PoolUID, PoolGID),
-			materializeInitContainer(document.Images.Harness, harnessinit.ProfileHarnessWorker, "worker-source", "/var/run/worker-source", "material", "/var/run/agentserver/worker", WorkerUID, WorkerGID),
 			prepareHarnessDirectoriesInitContainer(document.Images.Harness),
 			networkGuardInitContainer(document.Images.Harness),
 		},
 		volumes: []any{
-			poolSource, workerSource, emptyDirVolume("material", "Memory", "16Mi"), configVolume,
+			poolMaterial, workerMaterial, configVolume,
 			emptyDirVolume("runtime", "Memory", document.Resources.RuntimeTmpfs),
 			emptyDirVolume("checkpoint", "Memory", document.Resources.CheckpointTmpfs),
 			emptyDirVolume("scratch", "Memory", document.Resources.ScratchTmpfs),
 		},
-		volumeMounts: []any{
-			kubeObject{"name": "material", "mountPath": "/var/run/agentserver"},
+		volumeMounts: append(append(poolMaterialMounts, workerMaterialMounts...),
 			kubeObject{"name": "harness-config", "mountPath": "/etc/agentserver/worker-deployment.json", "subPath": "worker-deployment.json", "readOnly": true},
 			kubeObject{"name": "runtime", "mountPath": "/var/lib/agentserver/runtime"},
 			kubeObject{"name": "checkpoint", "mountPath": "/var/lib/agentserver/checkpoint"},
 			kubeObject{"name": "scratch", "mountPath": "/tmp"},
-		},
+		),
 		hostAliases: map[string]string{
 			CoreInternalHost:     document.Services.Core.ClusterIP,
 			ExecutorInternalHost: document.Services.ExecutorGateway.ClusterIP,
@@ -427,7 +422,11 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 func renderLLMProxyDeployment(context renderContext) (kubeObject, error) {
 	config := context.config
 	document := config.Document
-	source, err := projectedMaterialVolume("material-source", document.Secrets.LLMProxy, harnessinit.ProfileLLMProxy)
+	material, err := secretMaterialVolume("material", document.Secrets.LLMProxy, materialProfileLLMProxy, groupReadableSecretMode)
+	if err != nil {
+		return nil, err
+	}
+	materialMounts, err := secretMaterialMounts("material", "/var/run/agentserver/material", materialProfileLLMProxy)
 	if err != nil {
 		return nil, err
 	}
@@ -446,17 +445,10 @@ func renderLLMProxyDeployment(context renderContext) (kubeObject, error) {
 		namespace: document.Namespace, platform: document.Platform, component: llmproxyComponent, replicas: document.Replicas.LLMProxy,
 		image: document.Images.Service, serviceAccount: llmproxyComponent,
 		command: []any{"/usr/local/bin/llmproxy"}, args: []any{"serve"}, environment: environment,
-		initContainers: []any{materializeInitContainer(
-			document.Images.Service, harnessinit.ProfileLLMProxy, "material-source", "/var/run/agentserver-source",
-			"material", "/var/run/agentserver/material", ServiceUID, ServiceGID,
-		)},
-		volumes: []any{source, emptyDirVolume("material", "Memory", "16Mi"), emptyDirVolume("scratch", "Memory", document.Resources.ScratchTmpfs)},
-		volumeMounts: []any{
-			kubeObject{"name": "material", "mountPath": "/var/run/agentserver"},
-			kubeObject{"name": "scratch", "mountPath": "/tmp"},
-		},
-		hostAliases: map[string]string{CoreInternalHost: document.Services.Core.ClusterIP},
-		resources:   document.Resources.LLMProxy, uid: ServiceUID, gid: ServiceGID, fsGroup: ServiceGID,
+		volumes:      []any{material, emptyDirVolume("scratch", "Memory", document.Resources.ScratchTmpfs)},
+		volumeMounts: append(materialMounts, kubeObject{"name": "scratch", "mountPath": "/tmp"}),
+		hostAliases:  map[string]string{CoreInternalHost: document.Services.Core.ClusterIP},
+		resources:    document.Resources.LLMProxy, uid: ServiceUID, gid: ServiceGID, fsGroup: ServiceGID,
 		strategy: "RollingUpdate", configHash: context.documentHash, termination: 30,
 	}), nil
 }

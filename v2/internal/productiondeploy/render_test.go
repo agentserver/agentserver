@@ -119,10 +119,29 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 	}
 	poolSpec := objectField(t, poolTemplate, "spec")
 	initNames := containerNames(t, arrayField(t, poolSpec, "initContainers"))
-	wantInit := []string{"materialize-harness-pool", "materialize-harness-worker", "prepare-harness-directories", "install-network-guard"}
+	wantInit := []string{"prepare-harness-directories", "install-network-guard"}
 	if strings.Join(initNames, ",") != strings.Join(wantInit, ",") {
 		t.Fatalf("harness init order = %v, want %v", initNames, wantInit)
 	}
+	runtimeJSON := mustBundleFile(t, bundle, runtimeFile)
+	for _, forbidden := range []string{"materialize-", "material-source", "pool-source", "worker-source"} {
+		if bytes.Contains(runtimeJSON, []byte(forbidden)) {
+			t.Fatalf("runtime still contains removed materialization path %q", forbidden)
+		}
+	}
+	assertSecretMaterialMounts(t, findResource(t, runtime, "Deployment", coreComponent), "material", loaded.Document.Secrets.Core,
+		"/var/run/agentserver/material", groupReadableSecretMode,
+		[]string{"ca.crt", "tls.crt", "tls.key", "run-capability.key", "run-capability-keyring.json", "executor-enrollment.key", "llm-gateway-sealing-keyring.json"})
+	assertSecretMaterialMounts(t, findResource(t, runtime, "Deployment", browserComponent), "material", loaded.Document.Secrets.BrowserGateway,
+		"/var/run/agentserver/material", groupReadableSecretMode, []string{"ca.crt", "tls.crt", "tls.key"})
+	assertSecretMaterialMounts(t, findResource(t, runtime, "Deployment", executorComponent), "material", loaded.Document.Secrets.ExecutorGateway,
+		"/var/run/agentserver/material", groupReadableSecretMode, []string{"ca.crt", "tls.crt", "tls.key", "run-capability-keyring.json"})
+	assertSecretMaterialMounts(t, pool, "pool-material", loaded.Document.Secrets.HarnessPool,
+		"/var/run/agentserver/pool", groupReadableSecretMode, []string{"ca.crt", "tls.crt", "tls.key", "run-manifest.key"})
+	assertSecretMaterialMounts(t, pool, "worker-material", loaded.Document.Secrets.HarnessWorker,
+		"/var/run/agentserver/worker", workerReadableSecretMode, []string{"ca.crt", "tls.crt", "tls.key", "run-manifest-keyring.json"})
+	assertSecretMaterialMounts(t, findResource(t, runtime, "Deployment", llmproxyComponent), "material", loaded.Document.Secrets.LLMProxy,
+		"/var/run/agentserver/material", groupReadableSecretMode, []string{"ca.crt", "tls.crt", "tls.key", "run-capability-keyring.json"})
 	poolContainer := objectArrayFirst(t, poolSpec, "containers")
 	capabilities := stringArray(t, objectField(t, objectField(t, poolContainer, "securityContext"), "capabilities"), "add")
 	if strings.Join(capabilities, ",") != "CHOWN,SETUID,SETGID,DAC_OVERRIDE" {
@@ -359,6 +378,62 @@ func objectArrayFirst(t *testing.T, object map[string]any, name string) map[stri
 		t.Fatalf("field %s first value is not an object", name)
 	}
 	return value
+}
+
+func assertSecretMaterialMounts(
+	t *testing.T,
+	deployment map[string]any,
+	volumeName, secretName, destination string,
+	mode int,
+	files []string,
+) {
+	t.Helper()
+	podSpec := objectField(t, objectField(t, objectField(t, deployment, "spec"), "template"), "spec")
+	var volume map[string]any
+	for _, raw := range arrayField(t, podSpec, "volumes") {
+		candidate, ok := raw.(map[string]any)
+		if ok && candidate["name"] == volumeName {
+			volume = candidate
+			break
+		}
+	}
+	if volume == nil {
+		t.Fatalf("Secret material volume %s not found", volumeName)
+	}
+	secret := objectField(t, volume, "secret")
+	if stringField(t, secret, "secretName") != secretName || int(numberField(t, secret, "defaultMode")) != mode {
+		t.Fatalf("Secret material volume %s = %#v", volumeName, secret)
+	}
+	items := arrayField(t, secret, "items")
+	if len(items) != len(files) {
+		t.Fatalf("Secret material volume %s item count = %d, want %d", volumeName, len(items), len(files))
+	}
+	for index, file := range files {
+		item, ok := items[index].(map[string]any)
+		if !ok || item["key"] != file || item["path"] != file || int(numberField(t, item, "mode")) != mode {
+			t.Fatalf("Secret material volume %s item %d = %#v", volumeName, index, items[index])
+		}
+	}
+	container := objectArrayFirst(t, podSpec, "containers")
+	wanted := make(map[string]struct{}, len(files))
+	for _, file := range files {
+		wanted[file] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(files))
+	for _, raw := range arrayField(t, container, "volumeMounts") {
+		mount, ok := raw.(map[string]any)
+		if !ok || mount["name"] != volumeName {
+			continue
+		}
+		subPath, _ := mount["subPath"].(string)
+		if _, found := wanted[subPath]; !found || mount["mountPath"] != destination+"/"+subPath || mount["readOnly"] != true {
+			t.Fatalf("Secret material mount %s/%s = %#v", volumeName, subPath, mount)
+		}
+		seen[subPath] = struct{}{}
+	}
+	if len(seen) != len(wanted) {
+		t.Fatalf("Secret material mounts %s = %v, want %v", volumeName, seen, wanted)
+	}
 }
 
 func stringField(t *testing.T, object map[string]any, name string) string {

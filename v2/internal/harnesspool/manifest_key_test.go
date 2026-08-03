@@ -23,15 +23,17 @@ func TestLoadEd25519ManifestSignerAcceptsSeedAndPKCS8(t *testing.T) {
 	tests := []struct {
 		name string
 		raw  []byte
+		mode os.FileMode
 	}{
-		{name: "seed", raw: seed[:]},
-		{name: "private", raw: privateKey},
-		{name: "pkcs8", raw: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8})},
+		{name: "seed", raw: seed[:], mode: 0o600},
+		{name: "group-readable Secret", raw: seed[:], mode: 0o440},
+		{name: "private", raw: privateKey, mode: 0o600},
+		{name: "pkcs8", raw: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8}), mode: 0o600},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "manifest-signing-key")
-			if err := os.WriteFile(path, test.raw, 0o600); err != nil {
+			if err := os.WriteFile(path, test.raw, test.mode); err != nil {
 				t.Fatal(err)
 			}
 			signer, err := LoadEd25519ManifestSigner("cluster-key-2026-07", path)
@@ -62,7 +64,7 @@ func TestLoadEd25519ManifestSignerRejectsUnsafeFilesAndKeys(t *testing.T) {
 		mode os.FileMode
 		want string
 	}{
-		{name: "broad permissions", raw: seed[:], mode: 0o644, want: "group or other"},
+		{name: "broad permissions", raw: seed[:], mode: 0o644, want: "inaccessible to other"},
 		{name: "zero seed", raw: make([]byte, ed25519.SeedSize), mode: 0o600, want: "all zero"},
 		{name: "zero seed private", raw: zeroPrivateKey, mode: 0o600, want: "all zero"},
 		{name: "zero seed PKCS8", raw: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: zeroPKCS8}), mode: 0o600, want: "all zero"},

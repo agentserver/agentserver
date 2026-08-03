@@ -3,9 +3,8 @@ package productiondeploy
 import (
 	"encoding/json"
 	"fmt"
+	"path"
 	"strconv"
-
-	"github.com/agentserver/agentserver/v2/internal/harnessinit"
 )
 
 type kubeObject map[string]any
@@ -81,22 +80,73 @@ func configMapResource(config LoadedConfig, name string, data map[string]string)
 	}
 }
 
-func projectedMaterialVolume(name, secretName, profile string) (kubeObject, error) {
-	files, found := harnessinit.MaterialProfileFiles(profile)
+const (
+	materialProfileCore            = "core"
+	materialProfileBrowserGateway  = "browser-gateway"
+	materialProfileExecutorGateway = "executor-gateway"
+	materialProfileHarnessPool     = "harness-pool"
+	materialProfileHarnessWorker   = "harness-worker"
+	materialProfileLLMProxy        = "llmproxy"
+
+	// Kubernetes owns Secret volume targets as root. Runtime Pods use fsGroup
+	// to read their private material without copying or changing ownership.
+	groupReadableSecretMode = 0o440
+	// The forked worker deliberately has a GID distinct from harness-pool. Its
+	// Secret contains only its client identity and public verification keyring,
+	// so it is read-only to every process in that one Pod instead of granting
+	// the worker access to the pool's signing-key group.
+	workerReadableSecretMode = 0o444
+)
+
+var materialProfileFiles = map[string][]string{
+	materialProfileCore: {
+		"ca.crt", "tls.crt", "tls.key", "run-capability.key",
+		"run-capability-keyring.json", "executor-enrollment.key",
+		"llm-gateway-sealing-keyring.json",
+	},
+	materialProfileBrowserGateway:  {"ca.crt", "tls.crt", "tls.key"},
+	materialProfileExecutorGateway: {"ca.crt", "tls.crt", "tls.key", "run-capability-keyring.json"},
+	materialProfileHarnessPool:     {"ca.crt", "tls.crt", "tls.key", "run-manifest.key"},
+	materialProfileHarnessWorker:   {"ca.crt", "tls.crt", "tls.key", "run-manifest-keyring.json"},
+	materialProfileLLMProxy:        {"ca.crt", "tls.crt", "tls.key", "run-capability-keyring.json"},
+}
+
+func secretMaterialVolume(name, secretName, profile string, mode int) (kubeObject, error) {
+	files, found := materialProfileFiles[profile]
 	if !found || len(files) == 0 {
 		return nil, fmt.Errorf("unknown or empty material profile %q", profile)
 	}
 	items := make([]any, len(files))
 	for index, file := range files {
-		items[index] = kubeObject{"key": file, "path": file, "mode": 256}
+		items[index] = kubeObject{"key": file, "path": file, "mode": mode}
 	}
 	return kubeObject{
 		"name": name,
-		"projected": kubeObject{
-			"defaultMode": 256,
-			"sources":     []any{kubeObject{"secret": kubeObject{"name": secretName, "items": items}}},
+		"secret": kubeObject{
+			"secretName":  secretName,
+			"defaultMode": mode,
+			"items":       items,
 		},
 	}, nil
+}
+
+// secretMaterialMounts binds every Secret key as an individual read-only
+// subPath. Unlike a normal Secret directory mount, these paths are direct
+// regular-file snapshots and do not follow Kubernetes' mutable ..data
+// symlink. No init container or material-copy volume is involved.
+func secretMaterialMounts(volumeName, destination, profile string) ([]any, error) {
+	files, found := materialProfileFiles[profile]
+	if !found || len(files) == 0 {
+		return nil, fmt.Errorf("unknown or empty material profile %q", profile)
+	}
+	mounts := make([]any, len(files))
+	for index, file := range files {
+		mounts[index] = kubeObject{
+			"name": volumeName, "mountPath": path.Join(destination, file),
+			"subPath": file, "readOnly": true,
+		}
+	}
+	return mounts, nil
 }
 
 func emptyDirVolume(name, medium, sizeLimit string) kubeObject {
@@ -121,24 +171,6 @@ func configMapVolume(name, configMapName string, items map[string]string) kubeOb
 	return kubeObject{"name": name, "configMap": kubeObject{
 		"name": configMapName, "defaultMode": 292, "items": projectedItems,
 	}}
-}
-
-func materializeInitContainer(image, profile, sourceVolume, sourcePath, materialVolume, destination string, uid, gid uint32) kubeObject {
-	return kubeObject{
-		"name":    "materialize-" + profile,
-		"image":   image,
-		"command": []any{"/usr/local/bin/agentserver-init"},
-		"args": []any{
-			"materialize", "--profile=" + profile, "--source=" + sourcePath,
-			"--destination=" + destination, "--uid=" + strconv.FormatUint(uint64(uid), 10),
-			"--gid=" + strconv.FormatUint(uint64(gid), 10),
-		},
-		"securityContext": initSecurityContext("CHOWN"),
-		"volumeMounts": []any{
-			kubeObject{"name": sourceVolume, "mountPath": sourcePath, "readOnly": true},
-			kubeObject{"name": materialVolume, "mountPath": "/var/run/agentserver"},
-		},
-	}
 }
 
 func networkGuardInitContainer(image string) kubeObject {

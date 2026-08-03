@@ -28,14 +28,16 @@ func TestLoadProductionSignerAcceptsRestrictedSeedPrivateKeyAndPKCS8(t *testing.
 	for _, test := range []struct {
 		name string
 		raw  []byte
+		mode os.FileMode
 	}{
-		{name: "seed", raw: privateKey.Seed()},
-		{name: "private key", raw: privateKey},
-		{name: "PKCS8", raw: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8})},
+		{name: "seed", raw: privateKey.Seed(), mode: 0o600},
+		{name: "group-readable Secret", raw: privateKey.Seed(), mode: 0o440},
+		{name: "private key", raw: privateKey, mode: 0o600},
+		{name: "PKCS8", raw: pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8}), mode: 0o600},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "run-capability.key")
-			if err := os.WriteFile(path, test.raw, 0o600); err != nil {
+			if err := os.WriteFile(path, test.raw, test.mode); err != nil {
 				t.Fatal(err)
 			}
 			signer, err := LoadProductionSigner(productionTestIssuer, productionTestKeyID, path)
@@ -78,7 +80,7 @@ func TestLoadProductionSignerRejectsUnsafeFilesAndKeyMaterial(t *testing.T) {
 		mode os.FileMode
 		want string
 	}{
-		{name: "broad permissions", raw: validSeed, mode: 0o640, want: "group or other"},
+		{name: "other-readable permissions", raw: validSeed, mode: 0o644, want: "inaccessible to other"},
 		{name: "zero seed", raw: make([]byte, ed25519.SeedSize), mode: 0o600, want: "all zero"},
 		{name: "noncanonical private", raw: noncanonical, mode: 0o600, want: "not canonical"},
 		{name: "unsupported", raw: []byte("not-a-key"), mode: 0o600, want: "raw Ed25519"},

@@ -23,10 +23,10 @@ func TestExactArgumentsRejectsMissingPrefixDuplicateAndUnknown(t *testing.T) {
 	}
 }
 
-func TestRunRejectsInvalidIdentityBeforeMaterialization(t *testing.T) {
+func TestRunRejectsInvalidDirectoryIdentity(t *testing.T) {
 	var stderr bytes.Buffer
 	exitCode := run(
-		[]string{"materialize", "--profile=harness-worker", "--source=/source", "--destination=/destination", "--uid=0", "--gid=65531"},
+		[]string{"prepare-harness-directories", "--runtime=/runtime", "--checkpoint=/checkpoint", "--scratch=/scratch", "--uid=0", "--gid=65531"},
 		io.Discard, &stderr,
 	)
 	if exitCode != 2 || !strings.Contains(stderr.String(), "unprivileged") {

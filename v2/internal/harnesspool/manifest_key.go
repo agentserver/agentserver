@@ -21,9 +21,9 @@ const maximumManifestSigningKeyFileBytes = 4 * 1024
 // old and new public keys during the overlap window.
 //
 // The file may contain a raw 32-byte Ed25519 seed, a canonical 64-byte
-// private key, or one unencrypted PKCS#8 PRIVATE KEY PEM block. Group/other
-// permissions are rejected so a mistakenly broad Kubernetes Secret mount
-// cannot silently become a signing authority.
+// private key, or one unencrypted PKCS#8 PRIVATE KEY PEM block. A Kubernetes
+// read-only Secret mount may grant read access to the pool's fsGroup, while
+// group write/execute and every other-user bit remain forbidden.
 func LoadEd25519ManifestSigner(keyID, path string) (*Ed25519ManifestSigner, error) {
 	if !filepath.IsAbs(path) {
 		return nil, errors.New("run manifest signing key path must be absolute")
@@ -41,8 +41,8 @@ func LoadEd25519ManifestSigner(keyID, path string) (*Ed25519ManifestSigner, erro
 	if !before.Mode().IsRegular() {
 		return nil, errors.New("run manifest signing key must resolve to a regular file")
 	}
-	if before.Mode().Perm()&0o077 != 0 {
-		return nil, errors.New("run manifest signing key must not be readable or writable by group or other")
+	if before.Mode().Perm()&0o037 != 0 {
+		return nil, errors.New("run manifest signing key must only be group-readable and inaccessible to other")
 	}
 	if before.Size() < 1 || before.Size() > maximumManifestSigningKeyFileBytes {
 		return nil, fmt.Errorf("run manifest signing key file must contain between 1 and %d bytes", maximumManifestSigningKeyFileBytes)

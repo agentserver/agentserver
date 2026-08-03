@@ -58,11 +58,17 @@ func TestReadStableGatewayFileAcceptsRestrictedKubernetesSecretProjection(t *tes
 	if err != nil || !bytes.Equal(read, contents) {
 		t.Fatalf("read projected Secret = %q, %v", read, err)
 	}
-	if err := os.Chmod(target, 0o640); err != nil {
+	if err := os.Chmod(target, 0o440); err != nil {
+		t.Fatal(err)
+	}
+	if read, err := readStableGatewayFile("projected TLS private key", projection, 1024, true); err != nil || !bytes.Equal(read, contents) {
+		t.Fatalf("read group-readable projected Secret = %q, %v", read, err)
+	}
+	if err := os.Chmod(target, 0o444); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := readStableGatewayFile("projected TLS private key", projection, 1024, true); err == nil {
-		t.Fatal("group-readable projected private key was accepted")
+		t.Fatal("other-readable projected private key was accepted")
 	}
 }
 

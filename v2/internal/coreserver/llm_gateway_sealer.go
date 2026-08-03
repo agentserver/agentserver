@@ -80,8 +80,8 @@ func LoadLLMGatewayGrantSealer(path string) (*LLMGatewayGrantSealer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("stat LLM gateway sealing keyring: %w", err)
 	}
-	if !before.Mode().IsRegular() || before.Mode().Perm()&0o077 != 0 || before.Size() < 1 || before.Size() > maximumLLMGatewayKeyringBytes {
-		return nil, errors.New("LLM gateway sealing keyring must be a bounded regular file inaccessible to group and other")
+	if !before.Mode().IsRegular() || before.Mode().Perm()&0o037 != 0 || before.Size() < 1 || before.Size() > maximumLLMGatewayKeyringBytes {
+		return nil, errors.New("LLM gateway sealing keyring must be a bounded regular file only group-readable and inaccessible to other")
 	}
 	raw, err := io.ReadAll(io.LimitReader(file, maximumLLMGatewayKeyringBytes+1))
 	if err != nil || len(raw) > maximumLLMGatewayKeyringBytes {

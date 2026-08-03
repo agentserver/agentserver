@@ -297,8 +297,11 @@ func newWorkerHTTPClient(document workerTLSDocument) (*http.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("inspect worker TLS private key: %w", err)
 	}
-	if keyInfo.Mode().Perm()&0o077 != 0 {
-		return nil, fmt.Errorf("worker TLS private key permissions are too broad: mode=%s", keyInfo.Mode())
+	permissions := keyInfo.Mode().Perm()
+	ownerPrivate := permissions&0o077 == 0
+	podReadOnly := permissions&0o333 == 0
+	if !ownerPrivate && !podReadOnly {
+		return nil, fmt.Errorf("worker TLS private key must be owner-private or Pod-wide read-only: mode=%s", keyInfo.Mode())
 	}
 	keyBytes, err := readBoundedWorkerFile("worker TLS private key", document.KeyFile, maximumWorkerTLSIdentityBytes)
 	if err != nil {

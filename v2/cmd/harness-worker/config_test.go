@@ -61,13 +61,26 @@ func TestLoadWorkerDeploymentVerifiesPinnedArtifacts(t *testing.T) {
 		}
 	})
 
-	t.Run("world-readable TLS private key", func(t *testing.T) {
+	t.Run("read-only Pod-visible TLS private key", func(t *testing.T) {
 		fixture := newWorkerDeploymentFixture(t)
 		if err := os.Chmod(fixture.tlsKeyPath, 0o444); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := loadWorkerDeployment(fixture.configPath, fixture.attemptRoot); err == nil || !strings.Contains(err.Error(), "permissions are too broad") {
-			t.Fatalf("broad TLS private key error = %v", err)
+		deployment, err := loadWorkerDeployment(fixture.configPath, fixture.attemptRoot)
+		if err != nil {
+			t.Fatalf("read-only Pod-visible TLS private key = %v", err)
+		}
+		deployment.controlClient.CloseIdleConnections()
+		deployment.executorClient.CloseIdleConnections()
+	})
+
+	t.Run("writable TLS private key", func(t *testing.T) {
+		fixture := newWorkerDeploymentFixture(t)
+		if err := os.Chmod(fixture.tlsKeyPath, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadWorkerDeployment(fixture.configPath, fixture.attemptRoot); err == nil || !strings.Contains(err.Error(), "Pod-wide read-only") {
+			t.Fatalf("writable TLS private key error = %v", err)
 		}
 	})
 

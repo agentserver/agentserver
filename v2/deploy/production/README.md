@@ -14,6 +14,8 @@ harness-pool 的 NetworkPolicy 同时固定该 endpoint 当前解析出的 IPv4/
 内部 CA、workload 证书、签名/对称密钥和 Kubernetes Secret 由 `../k8s-byted` 的 Pulumi 模块
 生成；同一模块还会创建 3 实例 CloudNativePG Cluster、随机 owner 密码和应用 DSN，不需要外部
 `databaseUrl`。构建脚本保留其他平台参数只用于历史 conformance/开发，不代表该平台可部署到生产。
+运行时Secret以只读单文件`subPath`直接挂载，不经过materialize init；Helm release为non-atomic，
+部署失败时保留Pod和日志供排障。
 
 完整远程安装、Secret key 集合、升级和回滚说明见
 [`../../docs/PRODUCTION_DEPLOYMENT.md`](../../docs/PRODUCTION_DEPLOYMENT.md)。

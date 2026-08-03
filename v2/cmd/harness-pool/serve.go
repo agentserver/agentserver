@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/harnesspool"
+	"github.com/agentserver/agentserver/v2/internal/httperrorlog"
 	"github.com/agentserver/agentserver/v2/internal/objectruntime"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
@@ -233,6 +234,7 @@ func serveHarnessPool(
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    32 * 1024,
 		TLSConfig:         controlTLS,
+		ErrorLog:          httperrorlog.New(stderr),
 	}
 	readiness.ready.Store(true)
 	authorityDescription := "production Core-issued Ed25519 capabilities"

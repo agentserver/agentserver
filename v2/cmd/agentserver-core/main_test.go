@@ -75,7 +75,7 @@ func TestRunServe(t *testing.T) {
 	var stderr bytes.Buffer
 	called := false
 	exitCode := run(t.Context(), []string{"serve"}, func(string) string { return "configured" }, &stdout, &stderr, commandFunctions{
-		serve: func(_ context.Context, getenv func(string) string, output io.Writer, mode coreServeMode) error {
+		serve: func(_ context.Context, getenv func(string) string, output, _ io.Writer, mode coreServeMode) error {
 			called = true
 			if getenv("anything") != "configured" || mode != coreServeProduction {
 				t.Fatal("serve getenv was not forwarded")
@@ -94,7 +94,7 @@ func TestRunInsecureDevelopmentServeIsExplicit(t *testing.T) {
 	called := false
 	exitCode := run(
 		t.Context(), []string{"serve", "--insecure-dev"}, func(string) string { return "configured" }, io.Discard, &stderr,
-		commandFunctions{serve: func(_ context.Context, _ func(string) string, _ io.Writer, mode coreServeMode) error {
+		commandFunctions{serve: func(_ context.Context, _ func(string) string, _, _ io.Writer, mode coreServeMode) error {
 			called = true
 			if mode != coreServeInsecureDevelopment {
 				t.Fatalf("serve mode = %d", mode)
@@ -110,7 +110,7 @@ func TestRunInsecureDevelopmentServeIsExplicit(t *testing.T) {
 		called = false
 		stderr.Reset()
 		exitCode = run(t.Context(), arguments, func(string) string { return "" }, io.Discard, &stderr, commandFunctions{
-			serve: func(context.Context, func(string) string, io.Writer, coreServeMode) error {
+			serve: func(context.Context, func(string) string, io.Writer, io.Writer, coreServeMode) error {
 				called = true
 				return nil
 			},

@@ -22,7 +22,7 @@ const (
 	coreServeInsecureDevelopment
 )
 
-type serveFunc func(context.Context, func(string) string, io.Writer, coreServeMode) error
+type serveFunc func(context.Context, func(string) string, io.Writer, io.Writer, coreServeMode) error
 type bootstrapFunc func(context.Context, string, string) (developmentBootstrapResult, error)
 type productionBootstrapFunc func(context.Context, string, string) (productionBootstrapCommandResult, error)
 
@@ -59,7 +59,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 			fmt.Fprintln(stderr, "agentserver-core serve: command is unavailable")
 			return 1
 		}
-		if err := commands.serve(ctx, getenv, stdout, mode); err != nil {
+		if err := commands.serve(ctx, getenv, stdout, stderr, mode); err != nil {
 			fmt.Fprintf(stderr, "agentserver-core serve: %v\n", err)
 			return 1
 		}

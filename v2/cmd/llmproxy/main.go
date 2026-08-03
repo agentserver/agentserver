@@ -9,7 +9,7 @@ import (
 	"syscall"
 )
 
-type serveFunc func(context.Context, func(string) string, io.Writer) error
+type serveFunc func(context.Context, func(string) string, io.Writer, io.Writer) error
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -26,7 +26,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		fmt.Fprintln(stderr, "llmproxy serve: command is unavailable")
 		return 1
 	}
-	if err := serve(ctx, getenv, stdout); err != nil {
+	if err := serve(ctx, getenv, stdout, stderr); err != nil {
 		fmt.Fprintf(stderr, "llmproxy serve: %v\n", err)
 		return 1
 	}

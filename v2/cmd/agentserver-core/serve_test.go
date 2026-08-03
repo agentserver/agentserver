@@ -29,24 +29,24 @@ func TestServeCoreRequiresDistinctHarnessPoolIdentityBeforeOpeningDatabase(t *te
 		coreHarnessPoolIdentityEnvironment: "",
 	}
 	getenv := func(name string) string { return configuration[name] }
-	err := serveCore(t.Context(), getenv, io.Discard, coreServeInsecureDevelopment)
+	err := serveCore(t.Context(), getenv, io.Discard, io.Discard, coreServeInsecureDevelopment)
 	if err == nil || !strings.Contains(err.Error(), coreHarnessPoolIdentityEnvironment+" is required") {
 		t.Fatalf("missing harness-pool identity error = %v", err)
 	}
 
 	configuration[coreHarnessPoolIdentityEnvironment] = configuration[coreGatewayIdentityEnvironment]
-	err = serveCore(t.Context(), getenv, io.Discard, coreServeInsecureDevelopment)
+	err = serveCore(t.Context(), getenv, io.Discard, io.Discard, coreServeInsecureDevelopment)
 	if err == nil || !strings.Contains(err.Error(), "must be distinct") {
 		t.Fatalf("shared workload identity error = %v", err)
 	}
 
 	configuration[coreHarnessPoolIdentityEnvironment] = "spiffe://agentserver.local/ns/agentserver/sa/harness-pool"
-	err = serveCore(t.Context(), getenv, io.Discard, coreServeInsecureDevelopment)
+	err = serveCore(t.Context(), getenv, io.Discard, io.Discard, coreServeInsecureDevelopment)
 	if err == nil || !strings.Contains(err.Error(), coreBrowserIdentityEnvironment+" is required") {
 		t.Fatalf("missing browser-gateway identity error = %v", err)
 	}
 	configuration[coreBrowserIdentityEnvironment] = configuration[coreGatewayIdentityEnvironment]
-	err = serveCore(t.Context(), getenv, io.Discard, coreServeInsecureDevelopment)
+	err = serveCore(t.Context(), getenv, io.Discard, io.Discard, coreServeInsecureDevelopment)
 	if err == nil || !strings.Contains(err.Error(), "browser-gateway, executor-gateway, and harness-pool") {
 		t.Fatalf("shared browser workload identity error = %v", err)
 	}
@@ -64,15 +64,15 @@ func TestServeCoreProductionRequiresDistinctLLMProxyIdentity(t *testing.T) {
 		coreBrowserIdentityEnvironment:     "spiffe://agentserver.local/ns/agentserver/sa/browser-gateway",
 	}
 	getenv := func(name string) string { return configuration[name] }
-	if err := serveCore(t.Context(), getenv, io.Discard, coreServeProduction); err == nil || !strings.Contains(err.Error(), coreLLMProxyIdentityEnvironment+" is required") {
+	if err := serveCore(t.Context(), getenv, io.Discard, io.Discard, coreServeProduction); err == nil || !strings.Contains(err.Error(), coreLLMProxyIdentityEnvironment+" is required") {
 		t.Fatalf("missing llmproxy identity error = %v", err)
 	}
 	configuration[coreLLMProxyIdentityEnvironment] = configuration[coreGatewayIdentityEnvironment]
-	if err := serveCore(t.Context(), getenv, io.Discard, coreServeProduction); err == nil || !strings.Contains(err.Error(), "must be distinct") {
+	if err := serveCore(t.Context(), getenv, io.Discard, io.Discard, coreServeProduction); err == nil || !strings.Contains(err.Error(), "must be distinct") {
 		t.Fatalf("shared llmproxy identity error = %v", err)
 	}
 	configuration[coreLLMProxyIdentityEnvironment] = "spiffe://agentserver.local/ns/agentserver/sa/llmproxy"
-	if err := serveCore(t.Context(), getenv, io.Discard, coreServeProduction); err == nil || !strings.Contains(err.Error(), coreHydraIntrospectionEnvironment+" is required") {
+	if err := serveCore(t.Context(), getenv, io.Discard, io.Discard, coreServeProduction); err == nil || !strings.Contains(err.Error(), coreHydraIntrospectionEnvironment+" is required") {
 		t.Fatalf("distinct llmproxy identity next-boundary error = %v", err)
 	}
 }

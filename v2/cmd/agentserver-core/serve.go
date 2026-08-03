@@ -19,6 +19,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/coredb"
 	"github.com/agentserver/agentserver/v2/internal/coreserver"
 	"github.com/agentserver/agentserver/v2/internal/enrollmenttoken"
+	"github.com/agentserver/agentserver/v2/internal/httperrorlog"
 	"github.com/agentserver/agentserver/v2/internal/objectruntime"
 	"github.com/agentserver/agentserver/v2/internal/publichttps"
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
@@ -78,7 +79,7 @@ type coreProductionEnrollmentConfig struct {
 	ttl    time.Duration
 }
 
-func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer, mode coreServeMode) error {
+func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr io.Writer, mode coreServeMode) error {
 	if mode != coreServeProduction && mode != coreServeInsecureDevelopment {
 		return errors.New("Core serve mode is invalid")
 	}
@@ -514,6 +515,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 		IdleTimeout:       30 * time.Second,
 		MaxHeaderBytes:    32 * 1024,
 		TLSConfig:         tlsConfig,
+		ErrorLog:          httperrorlog.New(stderr),
 	}
 	serveContext, cancelServe := context.WithCancel(context.Background())
 	defer cancelServe()

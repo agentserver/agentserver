@@ -15,7 +15,7 @@ func TestRunServesProductionLLMProxy(t *testing.T) {
 	var stderr bytes.Buffer
 	called := false
 	exitCode := run(t.Context(), []string{"serve"}, func(string) string { return "configured" }, &stdout, &stderr,
-		func(_ context.Context, getenv func(string) string, output io.Writer) error {
+		func(_ context.Context, getenv func(string) string, output, _ io.Writer) error {
 			called = true
 			if getenv("value") != "configured" {
 				t.Fatal("configuration source was not forwarded")
@@ -33,7 +33,7 @@ func TestRunRejectsInvalidArgumentsAndReportsServeFailure(t *testing.T) {
 		var stderr bytes.Buffer
 		called := false
 		exitCode := run(t.Context(), arguments, func(string) string { return "" }, io.Discard, &stderr,
-			func(context.Context, func(string) string, io.Writer) error {
+			func(context.Context, func(string) string, io.Writer, io.Writer) error {
 				called = true
 				return nil
 			})
@@ -43,7 +43,9 @@ func TestRunRejectsInvalidArgumentsAndReportsServeFailure(t *testing.T) {
 	}
 	var stderr bytes.Buffer
 	exitCode := run(t.Context(), []string{"serve"}, func(string) string { return "" }, io.Discard, &stderr,
-		func(context.Context, func(string) string, io.Writer) error { return errors.New("startup failed") })
+		func(context.Context, func(string) string, io.Writer, io.Writer) error {
+			return errors.New("startup failed")
+		})
 	if exitCode != 1 || !strings.Contains(stderr.String(), "startup failed") {
 		t.Fatalf("failed run = %d, stderr %q", exitCode, stderr.String())
 	}

@@ -123,7 +123,7 @@ func TestServeLLMProxyProductionEndToEnd(t *testing.T) {
 	serveDone := make(chan error, 1)
 	go func() {
 		serveDone <- serveLLMProxyWithUpstreamHTTPClient(
-			ctx, func(name string) string { return configuration[name] }, channelWriter(startup), upstreamClient,
+			ctx, func(name string) string { return configuration[name] }, channelWriter(startup), io.Discard, upstreamClient,
 		)
 	}()
 	var line string

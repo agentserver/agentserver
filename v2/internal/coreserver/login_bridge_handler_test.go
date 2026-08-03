@@ -35,7 +35,7 @@ func TestLoginBridgeHandlerSetsHostCookieAndClearsItAfterCallback(t *testing.T) 
 
 	callbackRequest := httptest.NewRequest(
 		http.MethodGet,
-		"https://core.internal"+corecontract.OIDCCallbackBridgePath+"?state="+provider.state+"&code=external-code&iss=https%3A%2F%2Fidp.example",
+		"https://core.internal"+corecontract.OIDCCallbackBridgePath+"?state="+provider.state+"&code=external-code&scope=openid&iss=https%3A%2F%2Fidp.example",
 		nil,
 	)
 	callbackRequest.AddCookie(cookies[0])

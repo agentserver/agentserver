@@ -99,7 +99,7 @@ func (handler *LoginBridgeHandler) callback(response http.ResponseWriter, reques
 	}
 	state, err := exactAuthQuery(query, "state", map[string]bool{
 		"code": true, "error": true, "error_description": true, "error_uri": true,
-		"iss": true, "session_state": true,
+		"iss": true, "scope": true, "session_state": true,
 	})
 	if err != nil {
 		writeLoginBridgeError(response, http.StatusBadRequest)
@@ -115,7 +115,7 @@ func (handler *LoginBridgeHandler) callback(response http.ResponseWriter, reques
 		writeLoginBridgeError(response, http.StatusBadRequest)
 		return
 	}
-	for _, optional := range []string{"error_description", "error_uri", "session_state"} {
+	for _, optional := range []string{"error_description", "error_uri", "scope", "session_state"} {
 		if _, err := optionalSingularAuthQuery(query, optional); err != nil {
 			writeLoginBridgeError(response, http.StatusBadRequest)
 			return

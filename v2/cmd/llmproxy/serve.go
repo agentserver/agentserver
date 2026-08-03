@@ -7,13 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"os"
 	"sync/atomic"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/httperrorlog"
 	"github.com/agentserver/agentserver/v2/internal/llmproxy"
 	"github.com/agentserver/agentserver/v2/internal/publichttps"
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
@@ -28,14 +28,14 @@ type llmProxyReadiness struct {
 	ready atomic.Bool
 }
 
-func serveLLMProxy(ctx context.Context, getenv func(string) string, stdout io.Writer) error {
-	return serveLLMProxyWithUpstreamHTTPClient(ctx, getenv, stdout, nil)
+func serveLLMProxy(ctx context.Context, getenv func(string) string, stdout, stderr io.Writer) error {
+	return serveLLMProxyWithUpstreamHTTPClient(ctx, getenv, stdout, stderr, nil)
 }
 
 func serveLLMProxyWithUpstreamHTTPClient(
 	ctx context.Context,
 	getenv func(string) string,
-	stdout io.Writer,
+	stdout, stderr io.Writer,
 	upstreamHTTPClient *http.Client,
 ) error {
 	if ctx == nil {
@@ -101,7 +101,7 @@ func serveLLMProxyWithUpstreamHTTPClient(
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    32 * 1024,
 		TLSConfig:         tlsConfig,
-		ErrorLog:          log.New(io.Discard, "", 0),
+		ErrorLog:          httperrorlog.New(stderr),
 	}
 	serveContext, cancelServe := context.WithCancel(context.Background())
 	defer cancelServe()

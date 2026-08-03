@@ -22,11 +22,12 @@ grant。平台没有统一的模型 API key。
 
 | Host | 公开路径 | 后端 |
 | --- | --- | --- |
-| `agent.byted.bps.dev` | `/`、`/index.html`、`/reference*`、`/auth*`、`/oauth2*`、`/readyz` | browser-gateway HTTP `8080` |
+| `agent.byted.bps.dev` | Platform SPA、`/auth*`、`/oauth2*`、Platform `/v2*`、`/readyz` | platform-gateway HTTP `8080` |
+| `browser.byted.bps.dev` | Browser SPA、`/reference*`、`/auth/config`、`/readyz` | browser-gateway HTTP `8080` |
 | `browser-gateway.byted.bps.dev` | `/v2*` | browser-gateway HTTP `8080` |
 | `executor-gateway.byted.bps.dev` | `/internal/v2/agentx/enrollments`、`/internal/v2/agentx/challenges`、`/internal/v2/agentx/connect` | executor-gateway HTTP `8080` |
 
-三条 `HTTPRoute` 都挂到：
+四条 `HTTPRoute` 都挂到：
 
 ```text
 namespace:   istio-ingress
@@ -36,12 +37,13 @@ sectionName: https-byted-bps
 
 Chart 不创建 Gateway、证书、LoadBalancer 或 external-dns 资源。现有 Istio listener 必须：
 
-1. 持有覆盖上述三个域名的公网证书；
+1. 持有覆盖上述四个域名的公网证书；
 2. 允许 `agentserver` Namespace 中的 HTTPRoute attach；
 3. 将 TLS 终止后的 HTTP 请求转发给 ClusterIP Service。
 
-前端只允许 `https://agent.byted.bps.dev` 作为浏览器 Origin，并跨域访问
-`https://browser-gateway.byted.bps.dev/v2`。CORS 不允许 credentials。executor 的公网 listener
+Browser API 只允许 `https://browser.byted.bps.dev` 作为 Origin，并跨域访问
+`https://browser-gateway.byted.bps.dev/v2`；Platform 只为该 Browser origin 的
+`POST /oauth2/token` 开放 CORS。两处 CORS 都不允许 credentials。executor 的公网 listener
 绝不注册 `/mcp`；`/mcp` 只存在于 executor-gateway 的内部 TLS `8443` listener，并只允许
 harness-pool Pod 访问。
 
@@ -49,12 +51,12 @@ harness-pool Pod 访问。
 
 Chart 管理：
 
-- 6 个常驻 Deployment：core、browser-gateway、executor-gateway、harness-pool、llmproxy、Hydra；
+- 7 个常驻 Deployment：core、platform-gateway、browser-gateway、executor-gateway、harness-pool、llmproxy、Hydra；
 - executor-gateway 固定单副本、`Recreate`、无 HPA/PDB；
-- 5 个固定 ClusterIP Service、3 条 HTTPRoute、11 条 NetworkPolicy；
+- 6 个固定 ClusterIP Service、4 条 HTTPRoute、12 条 NetworkPolicy；
 - Hydra SQL migration（weight `-20`）和 AgentServer migration（weight `-10`）
   `pre-install,pre-upgrade` Job；
-- Hydra browser OAuth client setup（weight `-10`）和幂等 AgentServer bootstrap（weight `0`）
+- Hydra Platform/Browser 两个 public OAuth client setup（weight `-10`）和幂等 AgentServer bootstrap（weight `0`）
   `post-install,post-upgrade` Job。
 
 Job 只用于控制面安装期的数据库 migration、Hydra client setup 和 bootstrap。每个 run 的 harness 仍由 harness-pool 在本 Pod 内普通
@@ -63,7 +65,7 @@ Job 只用于控制面安装期的数据库 migration、Hydra client setup 和 b
 `../k8s-byted/apps/agentserver.ts` 只在 `sg` stack 生效，并负责创建：
 
 - `agentserver` Namespace；
-- 内部 ECDSA CA、7 个带精确 SPIFFE URI 的 workload 证书（包含 Hydra server identity）；
+- 内部 ECDSA CA、8 个带精确 SPIFFE URI 的 workload 证书（包含独立 platform-gateway identity 与 Hydra server identity）；
 - run-capability 与 run-manifest 两套 Ed25519 signer/keyring；
 - executor enrollment、login transaction、run cursor 和 workspace LLM Gateway grant sealing 四个独立的
   256-bit key/keyring；
@@ -75,12 +77,12 @@ Job 只用于控制面安装期的数据库 migration、Hydra client setup 和 b
 - 以 `kubernetes.io/hostname` 为 topology key 的 required Pod anti-affinity，三个实例不能落在同一节点；
 - 指向 `agentserver-postgres-rw.agentserver.svc.cluster.local:5432` 的 AgentServer/Hydra 独立 DSN；
 - Hydra system/cookie secret；
-- 8 个应用 Secret；
+- 9 个应用 Secret；
 - 环境锁定的 OCI Helm release。Release显式使用`atomic=false`和`cleanupOnFail=false`：失败资源会保留供排障，修复仍由下一次Pulumi更新收敛，不自动卸载现场。
 
 证书和密钥由 Pulumi `tls`/`random` provider 生成，用户不需要手工生成文件、选择 Secret 名称
 或执行 `kubectl create secret`。Deployment 带 Reloader annotation，受引用 Secret 更新时会
-触发 rollout。Namespace、CNPG Cluster/Database、PostgreSQL owner Secret 和 8 个托管 Secret 都设置
+触发 rollout。Namespace、CNPG Cluster/Database、PostgreSQL owner Secret 和 9 个托管 Secret 都设置
 `protect: true`：正常轮换仍可原地更新，但误关模块或普通 `pulumi destroy` 不能删除数据库和密钥。
 
 以下值是外部系统已经认可的授权，不能用随机字节替代；Pulumi 只负责安全接入并组装最终
@@ -126,7 +128,7 @@ harness-pool只保留目录准备和network guard两个init container。
 1. SG 集群只有 `linux/amd64` 目标节点，且容量足够；
 2. CNI 实际执行 Kubernetes NetworkPolicy；集群已安装 Gateway API CRD、Istio、Reloader、
    CloudNativePG operator 和 Longhorn；
-3. `https-byted-bps` listener 的证书和 `allowedRoutes` 已覆盖三个固定域名/Namespace；
+3. `https-byted-bps` listener 的证书和 `allowedRoutes` 已覆盖四个固定域名/Namespace；
 4. Longhorn 至少能为 3 个 PostgreSQL 实例各提供 50Gi 卷，并有跨节点调度容量；
 5. 外部 OIDC issuer/client 已配置，redirect URI 精确为
    `https://agent.byted.bps.dev/auth/oidc/callback`，并取得 owner 的精确 `sub`；
@@ -138,7 +140,7 @@ harness-pool只保留目录准备和network guard两个init container。
    `https://agent.byted.bps.dev/auth/llm-gateway/callback`；
 9. SG 公开 registry 可由集群节点匿名拉取 service、harness、Hydra 三个 digest-pinned amd64 镜像
    和环境锁定 Chart；
-10. CoreDNS ClusterIP、Gateway Pod label selector、Service CIDR 中 5 个空闲固定 ClusterIP，以及
+10. CoreDNS ClusterIP、Gateway Pod label selector、Service CIDR 中 6 个空闲固定 ClusterIP，以及
     S3/平台 OIDC 的实际 IPv4 CIDR/port 已确定。
 
 这些非 Secret 参数写入 `production.json`，不是 Pulumi Secret：
@@ -169,7 +171,8 @@ harness-pool只保留目录准备和network guard两个init container。
 固定按 `cnpg.io/cluster=agentserver-postgres` Pod selector 放行 TCP 5432。至少需要：
 
 - core：CNPG PostgreSQL、集群内 Hydra Admin、平台 OIDC、S3，以及动态 workspace Gateway OIDC 的公网 443；
-- browser-gateway：Hydra Public；
+- platform-gateway：Core 与 Hydra Public；
+- browser-gateway：Core；
 - harness-pool：S3；
 - llmproxy：动态 workspace Gateway `/v1/responses` 的公网 443；
 - Hydra/AgentServer migration 与 bootstrap：CNPG PostgreSQL；Hydra client setup：集群内 Hydra Admin。
@@ -245,15 +248,15 @@ Hydra 镜像也已镜像到同一公开仓库；其远端单平台 index 为
 ## 5. 准备并校验 SG production.json
 
 复制 [`deploy/production/config.example.json`](../deploy/production/config.example.json) 到一个绝对、
-不可被 group/other 写入的安全路径。模板已经写入本轮远端 amd64 manifest digest、五个已 dry-run
+不可被 group/other 写入的安全路径。模板已经写入本轮远端 amd64 manifest digest、六个已 dry-run
 确认可分配的 SG ClusterIP、CoreDNS `192.168.0.10`、固定 bootstrap UUID、runtime manifest 和
 `harness-final-exec` 摘要。以下字段已经固定，不能修改：
 
 - `region=sg`、`namespace=agentserver`、`platform=linux-amd64`；
 - `spiffeTrustDomain=agentserver.byted.bps.dev`；
-- 三个域名及 Istio Gateway/listener；
+- 四个域名及 Istio Gateway/listener；
 - `run-capability-sg-v1`、`run-manifest-sg-v1`；
-- 8 个应用 Secret 名称；
+- 9 个应用 Secret 名称；
 - `objectStore.mode=s3-plaintext-v1`；
 - 镜像仓库只能是 `registry-sg.byted.cs.ac.cn/agentserver/v2-service`、`v2-harness` 和 `hydra`，
   且必须使用 digest。
@@ -262,9 +265,8 @@ Hydra 镜像也已镜像到同一公开仓库；其远端单平台 index 为
 Chart 内置 Hydra 合同，以及从 SG Pod 解析得到的 TOS 地址 `10.8.103.160/32` 和
 `fdbd:dc51:fe:200d::1/128`。平台 OIDC 当前解析为公网地址，由受 SSRF 保留网段约束的
 public-HTTPS egress 规则覆盖；TOS 内网地址分别显式写入 core 和 harness-pool 的 TCP 443 白名单。
-这里必须保持 `s3Endpoint=https://tos-s3-sg.byted.org` 与 `s3UsePathStyle=false`：AWS SDK 据此访问
-`agentserver-sg.tos-s3-sg.byted.org` bucket virtual-host。裸 endpoint 的 IPv4 在当前 SG Pod 不可达，
-不能改回 path-style。DNS 地址变化时必须重新生成 Chart。新代码提交后仍须重新构建、远端核验和
+这里必须保持 `s3Endpoint=https://tos-s3-sg.byted.org` 与 `s3UsePathStyle=true`，以用户提供的
+S3-compatible path-style 合同访问 `agentserver-sg` bucket。DNS 地址变化时必须重新生成 Chart。新代码提交后仍须重新构建、远端核验和
 替换 service/harness digest 及对应 runtime artifact；Hydra digest 只在升级 Hydra 版本时变化。资源配额
 可按最终容量审计调整。S3 endpoint 是必填项，不能省略后回退到
 AWS 默认 endpoint。S3 对象是明文；bucket、credential、备份、retention 和访问审计
@@ -374,6 +376,8 @@ kubectl --context '<sg-context>' --namespace agentserver \
 kubectl --context '<sg-context>' --namespace agentserver \
   rollout status deployment/agentserver-core --timeout=10m
 kubectl --context '<sg-context>' --namespace agentserver \
+  rollout status deployment/platform-gateway --timeout=10m
+kubectl --context '<sg-context>' --namespace agentserver \
   rollout status deployment/browser-gateway --timeout=10m
 kubectl --context '<sg-context>' --namespace agentserver \
   rollout status deployment/executor-gateway --timeout=10m
@@ -390,15 +394,18 @@ kubectl --context '<sg-context>' --namespace agentserver \
 ```bash
 curl --fail --show-error https://agent.byted.bps.dev/readyz
 curl --fail --show-error https://agent.byted.bps.dev/
+curl --fail --show-error https://browser.byted.bps.dev/readyz
+curl --fail --show-error https://browser.byted.bps.dev/
 
 # /mcp 不得从公网 executor 域名暴露，期望 404。
 curl --output /dev/null --write-out '%{http_code}\n' \
   https://executor-gateway.byted.bps.dev/mcp
 ```
 
-还需用真实浏览器完成平台 OIDC Code + PKCE 登录。在 “LLM Gateway” 设置中，workspace owner 创建
-Gateway；随后 owner/developer 分别点击 Authorize，在 popup 中完成第三方 Gateway OIDC + PKCE。列表中
-个人 `grantStatus=active` 后，才从前端经 `browser-gateway.byted.bps.dev/v2` 创建 run。Core 在 run
+还需先在 `agent.byted.bps.dev` 用 `agentserver-platform` 完成 OIDC Code + PKCE 登录，并在 Platform
+应用中创建 Gateway；随后 owner/developer 分别完成第三方 Gateway OIDC + PKCE。个人
+`grantStatus=active` 后，从 Platform 进入 `browser.byted.bps.dev`，Browser 再为选中的 workspace 使用
+`agentserver-browser` 独立授权，最后经 `browser-gateway.byted.bps.dev/v2` 创建 run。Core 在 run
 创建时冻结 Gateway/config version/user/model；llmproxy 每次请求向 Core live-authorize，不缓存 bearer。
 
 完整 shell/read_file E2E 要求用户机器安装与本
@@ -424,7 +431,7 @@ CNPG Cluster、PVC 和 S3 bucket 都是数据资源，不能把 `pulumi destroy`
 
 ## 10. 常见故障
 
-- HTTPRoute `Accepted=False`：检查 listener `allowedRoutes`、三个 hostname 和 `sectionName`；
+- HTTPRoute `Accepted=False`：检查 listener `allowedRoutes`、四个 hostname 和 `sectionName`；
 - 公网 503：检查 Istio Gateway Pod selector、NetworkPolicy 和后端 HTTP `8080`；
 - executor 公网 `/mcp` 非 404：立即停止发布，公网路由面发生越界；
 - CNPG Cluster 不 Ready：检查 operator、Longhorn PVC、节点容量以及 CNPG Pod/事件；

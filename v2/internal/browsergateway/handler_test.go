@@ -453,7 +453,7 @@ func TestAGUIHandlerPreservesBearerChallengeFromCore(t *testing.T) {
 	handler := newTestHandler(t, backend)
 	response := httptest.NewRecorder()
 	handler.Routes().ServeHTTP(response, validAGUIRequest(t, validAGUIBody()))
-	if response.Code != http.StatusUnauthorized || response.Header().Get("WWW-Authenticate") != `Bearer realm="agentserver-api"` {
+	if response.Code != http.StatusUnauthorized || response.Header().Get("WWW-Authenticate") != `Bearer realm="agentserver-browser-api"` {
 		t.Fatalf("response = %d, challenge = %q", response.Code, response.Header().Get("WWW-Authenticate"))
 	}
 }

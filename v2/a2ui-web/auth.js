@@ -5,9 +5,15 @@ export function validateAuthorizationConfig(value) {
   requireExactObject(value, [
     'version', 'authorizationEndpoint', 'tokenEndpoint', 'redirectPath', 'clientId', 'scopes', 'audience', 'apiOrigin',
   ], 'authorization config')
-  if (value.version !== 1 || value.authorizationEndpoint !== '/oauth2/auth' ||
-      value.tokenEndpoint !== '/oauth2/token' || value.redirectPath !== '/') {
+  if (value.version !== 1 || value.redirectPath !== '/') {
     throw new Error('authorization config contains unsupported endpoints or version')
+  }
+  const authorizationEndpoint = validateOAuthEndpoint('authorization', value.authorizationEndpoint, '/oauth2/auth')
+  const tokenEndpoint = validateOAuthEndpoint('token', value.tokenEndpoint, '/oauth2/token')
+  const authorizationAuthority = oauthEndpointAuthority(authorizationEndpoint)
+  const tokenAuthority = oauthEndpointAuthority(tokenEndpoint)
+  if (authorizationAuthority !== tokenAuthority) {
+    throw new Error('authorization and token endpoints must use the same OAuth authority')
   }
   validateProtocolText('OAuth client ID', value.clientId, 512)
   validateProtocolText('OAuth audience', value.audience, 512)
@@ -23,8 +29,8 @@ export function validateAuthorizationConfig(value) {
   }
   return Object.freeze({
     version: 1,
-    authorizationEndpoint: value.authorizationEndpoint,
-    tokenEndpoint: value.tokenEndpoint,
+    authorizationEndpoint,
+    tokenEndpoint,
     redirectPath: value.redirectPath,
     clientId: value.clientId,
     scopes: Object.freeze([...value.scopes]),
@@ -53,6 +59,7 @@ export async function createAuthorizationTransaction({ config, origin, workspace
     redirect_uri: redirectURI,
     scope: config.scopes.join(' '),
     audience: config.audience,
+    resource: `urn:agentserver:workspace:${workspaceID}`,
     state,
     nonce,
     code_challenge: challenge,
@@ -161,7 +168,7 @@ export function validateTokenResponse(value, expectedScopes) {
   }
   validateProtocolText('token scope', value.scope, 2048)
   const scopes = value.scope.split(' ')
-  if (!sameTextSet(scopes, expectedScopes)) throw new Error('token response scope differs from the requested authority')
+  if (!isUniqueTextSubset(scopes, expectedScopes)) throw new Error('token response scope exceeds or is unrelated to the requested authority')
   if ('refresh_token' in value || 'client_secret' in value) throw new Error('reference browser does not accept persistent or client-secret token material')
   return { accessToken: value.access_token, expiresIn: value.expires_in, scopes }
 }
@@ -179,11 +186,32 @@ function validateStoredTransaction(value) {
     ['workspace ID', value.workspaceID, 128], ['session ID', value.sessionID, 128], ['client ID', value.clientID, 512],
     ['token endpoint', value.tokenEndpoint, 2048], ['redirect URI', value.redirectURI, 4096], ['audience', value.audience, 512],
   ]) validateProtocolText(label, text, maximum)
-  if (value.tokenEndpoint !== '/oauth2/token' || value.scopes.length < 1 || !sameTextSet(value.scopes, value.scopes)) {
+  validateOAuthEndpoint('token', value.tokenEndpoint, '/oauth2/token')
+  if (value.scopes.length < 1 || !sameTextSet(value.scopes, value.scopes)) {
     throw new Error('PKCE transaction endpoint or scopes are invalid')
   }
   validateOptionalHTTPSOrigin(value.apiOrigin)
   return value
+}
+
+function validateOAuthEndpoint(name, raw, requiredPath) {
+  if (raw === requiredPath) return raw
+  if (typeof raw !== 'string') throw new Error(`OAuth ${name} endpoint must be a local path or exact HTTPS URL`)
+  let parsed
+  try {
+    parsed = new URL(raw)
+  } catch {
+    throw new Error(`OAuth ${name} endpoint must be a local path or exact HTTPS URL`)
+  }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.pathname !== requiredPath ||
+      parsed.search || parsed.hash || parsed.href !== raw) {
+    throw new Error(`OAuth ${name} endpoint must be a local path or exact HTTPS URL`)
+  }
+  return parsed.href
+}
+
+function oauthEndpointAuthority(endpoint) {
+  return endpoint.startsWith('/') ? '' : new URL(endpoint).origin
 }
 
 function validateOptionalHTTPSOrigin(raw) {
@@ -239,6 +267,13 @@ function sameTextArray(left, right) {
 
 function sameTextSet(left, right) {
   if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false
+  const leftSet = new Set(left)
+  const rightSet = new Set(right)
+  return leftSet.size === left.length && rightSet.size === right.length && [...leftSet].every((value) => rightSet.has(value))
+}
+
+function isUniqueTextSubset(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length < 1) return false
   const leftSet = new Set(left)
   const rightSet = new Set(right)
   return leftSet.size === left.length && rightSet.size === right.length && [...leftSet].every((value) => rightSet.has(value))

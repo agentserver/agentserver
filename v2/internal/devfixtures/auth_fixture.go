@@ -12,8 +12,11 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
+
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 )
 
 const (
@@ -42,6 +45,7 @@ type hydraLoginFixture struct {
 	codeChallenge  string
 	scopes         []string
 	audience       []string
+	requestURL     string
 	subject        string
 	loginSessionID string
 	status         string
@@ -56,6 +60,9 @@ type hydraConsentFixture struct {
 	codeChallenge  string
 	scopes         []string
 	audience       []string
+	requestURL     string
+	grantedScopes  []string
+	authority      corecontract.UserOAuthAuthority
 	subject        string
 	loginSessionID string
 	status         string
@@ -76,14 +83,17 @@ type hydraCodeFixture struct {
 	codeChallenge string
 	scopes        []string
 	audience      []string
+	authority     corecontract.UserOAuthAuthority
 	subject       string
 	expiresAt     time.Time
 }
 
 type accessTokenFixture struct {
 	subject   string
+	clientID  string
 	scopes    []string
 	audience  []string
+	authority corecontract.UserOAuthAuthority
 	expiresAt time.Time
 }
 
@@ -105,13 +115,13 @@ func (runtime *fixtureRuntime) serveHydraAuthorization(writer http.ResponseWrite
 		runtime.continueHydraConsent(writer, query)
 		return
 	}
-	runtime.beginHydraAuthorization(writer, query)
+	runtime.beginHydraAuthorization(writer, request, query)
 }
 
-func (runtime *fixtureRuntime) beginHydraAuthorization(writer http.ResponseWriter, query url.Values) {
+func (runtime *fixtureRuntime) beginHydraAuthorization(writer http.ResponseWriter, request *http.Request, query url.Values) {
 	values, err := exactFixtureParameters(query, []string{
 		"response_type", "client_id", "redirect_uri", "scope", "state", "nonce",
-		"code_challenge", "code_challenge_method", "audience",
+		"code_challenge", "code_challenge_method", "audience", "resource",
 	})
 	if err != nil || values["response_type"] != "code" ||
 		values["client_id"] != runtime.bundle.document.Hydra.BrowserClientID ||
@@ -120,7 +130,8 @@ func (runtime *fixtureRuntime) beginHydraAuthorization(writer http.ResponseWrite
 		!validFixtureSecret(values["state"]) || !validFixtureSecret(values["nonce"]) ||
 		!validPKCEChallenge(values["code_challenge"]) ||
 		!sameFixtureSet(strings.Fields(values["scope"]), browserAuthorizationScopes()) ||
-		values["audience"] != BrowserTokenAudience {
+		values["audience"] != BrowserTokenAudience ||
+		values["resource"] != corecontract.UserOAuthWorkspaceURNPrefix+runtime.bundle.document.Authority.WorkspaceID {
 		writeFixtureError(writer, http.StatusBadRequest, "development authorization request rejected")
 		return
 	}
@@ -145,7 +156,8 @@ func (runtime *fixtureRuntime) beginHydraAuthorization(writer http.ResponseWrite
 		clientID: values["client_id"], redirectURI: values["redirect_uri"], state: values["state"],
 		nonce: values["nonce"], codeChallenge: values["code_challenge"],
 		scopes: browserAuthorizationScopes(), audience: []string{BrowserTokenAudience},
-		status: hydraLoginPending, expiresAt: now.Add(authorizationTransactionTTL),
+		requestURL: "http://" + request.Host + request.URL.RequestURI(),
+		status:     hydraLoginPending, expiresAt: now.Add(authorizationTransactionTTL),
 	}
 	runtime.authMu.Unlock()
 	redirect, err := fixtureURL(runtime.bundle.document.Hydra.LoginURL, url.Values{"login_challenge": {challenge}})
@@ -189,7 +201,8 @@ func (runtime *fixtureRuntime) continueHydraLogin(writer http.ResponseWriter, qu
 		loginChallenge: loginChallenge, clientID: login.clientID, redirectURI: login.redirectURI,
 		state: login.state, codeChallenge: login.codeChallenge,
 		scopes: append([]string(nil), login.scopes...), audience: append([]string(nil), login.audience...),
-		subject: login.subject, loginSessionID: login.loginSessionID,
+		requestURL: login.requestURL,
+		subject:    login.subject, loginSessionID: login.loginSessionID,
 		status: hydraConsentPending, expiresAt: login.expiresAt,
 	}
 	runtime.authMu.Unlock()
@@ -236,8 +249,9 @@ func (runtime *fixtureRuntime) continueHydraConsent(writer http.ResponseWriter, 
 	runtime.hydraLogins[consent.loginChallenge] = login
 	runtime.hydraCodes[code] = hydraCodeFixture{
 		clientID: consent.clientID, redirectURI: consent.redirectURI, codeChallenge: consent.codeChallenge,
-		scopes: append([]string(nil), consent.scopes...), audience: append([]string(nil), consent.audience...),
-		subject: consent.subject, expiresAt: consent.expiresAt,
+		scopes: append([]string(nil), consent.grantedScopes...), audience: append([]string(nil), consent.audience...),
+		authority: consent.authority,
+		subject:   consent.subject, expiresAt: consent.expiresAt,
 	}
 	runtime.authMu.Unlock()
 	redirect, err := fixtureURL(consent.redirectURI, url.Values{"code": {code}, "state": {consent.state}})
@@ -277,6 +291,7 @@ func (runtime *fixtureRuntime) serveHydraAdminLogin(writer http.ResponseWriter, 
 		"client":                          map[string]any{"client_id": login.clientID},
 		"requested_scope":                 append([]string(nil), login.scopes...),
 		"requested_access_token_audience": append([]string(nil), login.audience...),
+		"request_url":                     login.requestURL,
 	})
 }
 
@@ -361,6 +376,7 @@ func (runtime *fixtureRuntime) serveHydraAdminConsent(writer http.ResponseWriter
 		"requested_scope":                 append([]string(nil), consent.scopes...),
 		"requested_access_token_audience": append([]string(nil), consent.audience...),
 		"login_challenge":                 consent.loginChallenge, "login_session_id": consent.loginSessionID,
+		"request_url": consent.requestURL,
 	})
 }
 
@@ -377,14 +393,17 @@ func (runtime *fixtureRuntime) serveHydraAdminConsentAccept(writer http.Response
 		Remember                 bool     `json:"remember"`
 		RememberFor              int64    `json:"remember_for"`
 		Session                  struct {
-			AccessToken map[string]any `json:"access_token"`
-			IDToken     map[string]any `json:"id_token"`
+			AccessToken map[string]corecontract.UserOAuthAuthority `json:"access_token"`
+			IDToken     map[string]any                             `json:"id_token"`
 		} `json:"session"`
 	}
-	if err != nil || parameterErr != nil || readFixtureJSON(writer, request, &body) != nil ||
+	readErr := readFixtureJSON(writer, request, &body)
+	authority := body.Session.AccessToken["agentserver"]
+	if err != nil || parameterErr != nil || readErr != nil ||
 		!sameFixtureSet(body.GrantScope, browserAuthorizationScopes()) ||
 		!sameFixtureSet(body.GrantAccessTokenAudience, []string{BrowserTokenAudience}) ||
-		body.Remember || body.RememberFor != 0 || len(body.Session.AccessToken) != 0 || len(body.Session.IDToken) != 0 {
+		body.Remember || body.RememberFor != 0 || len(body.Session.AccessToken) != 1 || len(body.Session.IDToken) != 0 ||
+		!validFixtureBrowserAuthority(authority, runtime.bundle.document.Authority.WorkspaceID, body.GrantScope) {
 		writeFixtureError(writer, http.StatusBadRequest, "development Hydra consent acceptance rejected")
 		return
 	}
@@ -407,6 +426,8 @@ func (runtime *fixtureRuntime) serveHydraAdminConsentAccept(writer http.Response
 		return
 	}
 	consent.status = hydraConsentAccepted
+	consent.grantedScopes = append([]string(nil), body.GrantScope...)
+	consent.authority = authority
 	runtime.hydraConsents[values["consent_challenge"]] = consent
 	runtime.hydraConsentProofs[proof] = values["consent_challenge"]
 	runtime.authMu.Unlock()
@@ -642,8 +663,8 @@ func (runtime *fixtureRuntime) serveHydraToken(writer http.ResponseWriter, reque
 	delete(runtime.hydraCodes, values["code"])
 	expiresAt := now.Add(runtime.bundle.responseTTL)
 	runtime.accessTokens[accessToken] = accessTokenFixture{
-		subject: code.subject, scopes: append([]string(nil), code.scopes...),
-		audience: append([]string(nil), code.audience...), expiresAt: expiresAt,
+		subject: code.subject, clientID: code.clientID, scopes: append([]string(nil), code.scopes...),
+		audience: append([]string(nil), code.audience...), authority: code.authority, expiresAt: expiresAt,
 	}
 	runtime.authMu.Unlock()
 	writeJSON(writer, http.StatusOK, map[string]any{
@@ -893,6 +914,25 @@ func sameFixtureSet(actual, expected []string) bool {
 		seen[value] = struct{}{}
 	}
 	return true
+}
+
+func validFixtureBrowserAuthority(authority corecontract.UserOAuthAuthority, workspaceID string, grantedScopes []string) bool {
+	if authority.Version != corecontract.UserOAuthAuthorityVersion ||
+		authority.Authority != corecontract.UserOAuthBrowserAuthority || len(authority.GlobalPermissions) != 0 ||
+		len(authority.WorkspaceGrants) != 1 {
+		return false
+	}
+	grant := authority.WorkspaceGrants[0]
+	if grant.WorkspaceID != workspaceID || grant.Generation != 1 || !slices.IsSorted(grant.Permissions) {
+		return false
+	}
+	permissions := make([]string, 0, len(grantedScopes))
+	for _, scope := range grantedScopes {
+		if scope != corecontract.OAuthOpenIDScope {
+			permissions = append(permissions, scope)
+		}
+	}
+	return sameFixtureSet(grant.Permissions, permissions)
 }
 
 func canonicalFixtureUUID(value string) bool {

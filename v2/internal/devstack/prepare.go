@@ -459,7 +459,7 @@ func renderOutputFiles(
 		Hydra: devfixtures.HydraDocument{
 			IntrospectionEndpoint:  config.Document.Network.HydraIntrospectionURL,
 			BrowserBearerTokenFile: paths.browserBearer,
-			Audience:               devfixtures.BrowserTokenAudience, Scope: devfixtures.BrowserTokenScope, ResponseTTL: "15m",
+			Audience:               devfixtures.BrowserTokenAudience, Scope: devfixtures.BrowserOAuthScopeText, ResponseTTL: "15m",
 			PublicOrigin: config.BrowserOrigin, BrowserClientID: devfixtures.BrowserOAuthClientID,
 			BrowserRedirectURI: config.BrowserOrigin + "/",
 			LoginURL:           config.BrowserOrigin + "/auth/hydra/login", ConsentURL: config.BrowserOrigin + "/auth/hydra/consent",
@@ -595,6 +595,8 @@ func renderServiceEnvironments(
 			"AGENTSERVER_V2_HYDRA_INTROSPECTION_URL":           document.Network.HydraIntrospectionURL,
 			"AGENTSERVER_V2_HYDRA_ADMIN_URL":                   config.HydraFixtureOrigin,
 			"AGENTSERVER_V2_HYDRA_PUBLIC_ORIGIN":               config.BrowserOrigin,
+			"AGENTSERVER_V2_HYDRA_ISSUER":                      config.BrowserOrigin,
+			"AGENTSERVER_V2_HYDRA_PLATFORM_CLIENT_ID":          devfixtures.PlatformOAuthClientID,
 			"AGENTSERVER_V2_HYDRA_BROWSER_CLIENT_ID":           devfixtures.BrowserOAuthClientID,
 			"AGENTSERVER_V2_HYDRA_ALLOW_INSECURE_HTTP":         "true",
 			"AGENTSERVER_V2_EXTERNAL_OIDC_ISSUER":              config.HydraFixtureOrigin + "/idp",
@@ -620,7 +622,7 @@ func renderServiceEnvironments(
 			"AGENTSERVER_V2_DEVELOPMENT_OIDC_AUTHORIZATION_UPSTREAM": config.HydraFixtureOrigin,
 			"AGENTSERVER_V2_BROWSER_OAUTH_CLIENT_ID":                 devfixtures.BrowserOAuthClientID,
 			"AGENTSERVER_V2_BROWSER_OAUTH_AUDIENCE":                  devfixtures.BrowserTokenAudience,
-			"AGENTSERVER_V2_BROWSER_OAUTH_SCOPES":                    "openid," + devfixtures.BrowserTokenScope + "," + devfixtures.BrowserExecutorScope,
+			"AGENTSERVER_V2_BROWSER_OAUTH_SCOPES":                    strings.Join(devfixtures.BrowserAuthorizationScopes(), ","),
 		},
 		executorEnvironmentFile: {
 			"AGENTSERVER_V2_EXECUTOR_GATEWAY_LISTEN_ADDR":   document.Network.ExecutorGatewayListenAddress,

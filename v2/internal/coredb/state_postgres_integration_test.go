@@ -268,6 +268,44 @@ WHERE id = $1`, quoteIdentifier(schema), quoteIdentifier(schema))
 	}
 }
 
+func TestPostgreSQLResolveUserOAuthMembershipsProjectsOnlyActiveVersionedAuthority(t *testing.T) {
+	store, pool, schema := newPostgresStateStore(t)
+	userID := stateTestUUID(145_000)
+	firstWorkspace := stateTestUUID(145_001)
+	secondWorkspace := stateTestUUID(145_002)
+	suspendedWorkspace := stateTestUUID(145_003)
+	users := fmt.Sprintf("INSERT INTO %s.users (id, status) VALUES ($1, 'active')", quoteIdentifier(schema))
+	if _, err := pool.Exec(t.Context(), users, userID); err != nil {
+		t.Fatal(err)
+	}
+	workspaces := fmt.Sprintf("INSERT INTO %s.workspaces (id, status) VALUES ($1, 'active'), ($2, 'active'), ($3, 'suspended')", quoteIdentifier(schema))
+	if _, err := pool.Exec(t.Context(), workspaces, firstWorkspace, secondWorkspace, suspendedWorkspace); err != nil {
+		t.Fatal(err)
+	}
+	memberships := fmt.Sprintf("INSERT INTO %s.workspace_members (workspace_id, user_id, role, version) VALUES ($1, $4, 'owner', 7), ($2, $4, 'developer', 3), ($3, $4, 'viewer', 2)", quoteIdentifier(schema))
+	if _, err := pool.Exec(t.Context(), memberships, firstWorkspace, secondWorkspace, suspendedWorkspace, userID); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := store.ResolveUserOAuthMemberships(t.Context(), ResolveUserOAuthMembershipsCommand{UserID: userID, Limit: 256})
+	if err != nil || len(resolved) != 2 || resolved[0].WorkspaceID != firstWorkspace || resolved[0].Role != "owner" ||
+		resolved[0].Generation != 7 || resolved[1].WorkspaceID != secondWorkspace || resolved[1].Role != "developer" ||
+		resolved[1].Generation != 3 {
+		t.Fatalf("resolved OAuth memberships = %+v, %v", resolved, err)
+	}
+	exact, err := store.ResolveUserOAuthMemberships(t.Context(), ResolveUserOAuthMembershipsCommand{
+		UserID: userID, WorkspaceID: secondWorkspace, Limit: 1,
+	})
+	if err != nil || len(exact) != 1 || exact[0] != resolved[1] {
+		t.Fatalf("exact OAuth membership = %+v, %v", exact, err)
+	}
+	missing, err := store.ResolveUserOAuthMemberships(t.Context(), ResolveUserOAuthMembershipsCommand{
+		UserID: userID, WorkspaceID: suspendedWorkspace, Limit: 1,
+	})
+	if err != nil || len(missing) != 0 {
+		t.Fatalf("suspended workspace OAuth membership = %+v, %v", missing, err)
+	}
+}
+
 func TestPostgreSQLResolveRunLaunchStateRequiresLiveAttemptAuthority(t *testing.T) {
 	store, pool, schema := newPostgresStateStore(t)
 	workspaceID := stateTestUUID(150)

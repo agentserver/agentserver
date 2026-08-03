@@ -162,8 +162,8 @@ func (handler *UserRunHandler) authorize(response http.ResponseWriter, request *
 		writePublicRunError(response, http.StatusServiceUnavailable, "authorization_unavailable", "user authorization is temporarily unavailable", "")
 		return "", false
 	}
-	response.Header().Set("WWW-Authenticate", `Bearer realm="agentserver-api"`)
-	writePublicRunError(response, http.StatusUnauthorized, "unauthorized", "a valid agentserver-api user access token is required", "")
+	response.Header().Set("WWW-Authenticate", `Bearer realm="agentserver-browser-api"`)
+	writePublicRunError(response, http.StatusUnauthorized, "unauthorized", "a valid agentserver-browser-api access token is required", "")
 	return "", false
 }
 

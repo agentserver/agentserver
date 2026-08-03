@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 )
 
 func TestHydraAdminClientUsesExactChallengeContracts(t *testing.T) {
@@ -18,7 +20,7 @@ func TestHydraAdminClientUsesExactChallengeContracts(t *testing.T) {
 			if request.Method != http.MethodGet || request.URL.Query().Get("login_challenge") != "login-1" || len(request.URL.Query()) != 1 {
 				t.Fatalf("login request = %s %s", request.Method, request.URL.String())
 			}
-			body = `{"challenge":"login-1","skip":false,"subject":"","client":{"client_id":"agentserver-web"},"requested_scope":["openid","runs:write","executors:write"],"requested_access_token_audience":["agentserver-api"]}`
+			body = `{"challenge":"login-1","skip":false,"subject":"","client":{"client_id":"agentserver-browser"},"requested_scope":["openid","runs:read"],"requested_access_token_audience":["agentserver-browser-api"],"request_url":"https://hydra.example/oauth2/auth?resource=urn%3Aagentserver%3Aworkspace%3A20000000-0000-4000-8000-000000000002"}`
 		case "/admin/oauth2/auth/requests/login/accept":
 			if request.Method != http.MethodPut || request.URL.Query().Get("login_challenge") != "login-1" {
 				t.Fatalf("login accept = %s %s", request.Method, request.URL.String())
@@ -36,7 +38,7 @@ func TestHydraAdminClientUsesExactChallengeContracts(t *testing.T) {
 			if request.Method != http.MethodGet || request.URL.Query().Get("consent_challenge") != "consent-1" || len(request.URL.Query()) != 1 {
 				t.Fatalf("consent request = %s %s", request.Method, request.URL.String())
 			}
-			body = `{"challenge":"consent-1","skip":false,"subject":"` + loginBridgeTestUserID + `","client":{"client_id":"agentserver-web"},"requested_scope":["openid","runs:write","executors:write"],"requested_access_token_audience":["agentserver-api"],"login_challenge":"login-1","login_session_id":"session-1"}`
+			body = `{"challenge":"consent-1","skip":false,"subject":"` + loginBridgeTestUserID + `","client":{"client_id":"agentserver-browser"},"requested_scope":["openid","runs:read"],"requested_access_token_audience":["agentserver-browser-api"],"login_challenge":"login-1","login_session_id":"session-1","request_url":"https://hydra.example/oauth2/auth?resource=urn%3Aagentserver%3Aworkspace%3A20000000-0000-4000-8000-000000000002"}`
 		case "/admin/oauth2/auth/requests/consent/accept":
 			if request.Method != http.MethodPut || request.URL.Query().Get("consent_challenge") != "consent-1" {
 				t.Fatalf("consent accept = %s %s", request.Method, request.URL.String())
@@ -45,9 +47,18 @@ func TestHydraAdminClientUsesExactChallengeContracts(t *testing.T) {
 				Scopes   []string `json:"grant_scope"`
 				Audience []string `json:"grant_access_token_audience"`
 				Remember bool     `json:"remember"`
+				Session  struct {
+					AccessToken map[string]corecontract.UserOAuthAuthority `json:"access_token"`
+					IDToken     map[string]any                             `json:"id_token"`
+				} `json:"session"`
 			}
-			if err := json.NewDecoder(request.Body).Decode(&decoded); err != nil || !sameUniqueTextSet(decoded.Scopes, defaultBrowserOAuthScopes) || !sameUniqueTextSet(decoded.Audience, defaultBrowserAudience) || decoded.Remember {
-				t.Fatalf("consent accept body = %+v, %v", decoded, err)
+			decodeErr := json.NewDecoder(request.Body).Decode(&decoded)
+			authority := decoded.Session.AccessToken["agentserver"]
+			if decodeErr != nil ||
+				!sameUniqueTextSet(decoded.Scopes, []string{corecontract.OAuthOpenIDScope, corecontract.BrowserOAuthRunsReadScope}) ||
+				!sameUniqueTextSet(decoded.Audience, defaultBrowserAudience) || decoded.Remember || len(decoded.Session.IDToken) != 0 ||
+				authority.Version != corecontract.UserOAuthAuthorityVersion || authority.Authority != corecontract.UserOAuthBrowserAuthority {
+				t.Fatalf("consent accept body = %+v, %v", decoded, decodeErr)
 			}
 			body = `{"redirect_to":"https://browser.example/oauth2/auth?consent_verifier=ok"}`
 		default:
@@ -64,7 +75,7 @@ func TestHydraAdminClientUsesExactChallengeContracts(t *testing.T) {
 		t.Fatal(err)
 	}
 	login, err := client.GetLoginRequest(t.Context(), "login-1")
-	if err != nil || login.Client.ClientID != "agentserver-web" {
+	if err != nil || login.Client.ClientID != corecontract.BrowserOAuthClientID || login.RequestURL == "" {
 		t.Fatalf("login = %+v, %v", login, err)
 	}
 	if _, err := client.AcceptLoginRequest(t.Context(), "login-1", loginBridgeTestUserID); err != nil {
@@ -74,7 +85,17 @@ func TestHydraAdminClientUsesExactChallengeContracts(t *testing.T) {
 	if err != nil || consent.Subject != loginBridgeTestUserID {
 		t.Fatalf("consent = %+v, %v", consent, err)
 	}
-	if _, err := client.AcceptConsentRequest(t.Context(), "consent-1", defaultBrowserOAuthScopes, defaultBrowserAudience); err != nil {
+	grant := HydraConsentGrant{
+		Scope:    []string{corecontract.OAuthOpenIDScope, corecontract.BrowserOAuthRunsReadScope},
+		Audience: defaultBrowserAudience,
+		Authority: corecontract.UserOAuthAuthority{
+			Version: corecontract.UserOAuthAuthorityVersion, Authority: corecontract.UserOAuthBrowserAuthority,
+			GlobalPermissions: []string{}, WorkspaceGrants: []corecontract.UserOAuthWorkspaceGrant{{
+				WorkspaceID: loginBridgeTestWorkspaceID, Generation: 1, Permissions: []string{corecontract.BrowserOAuthRunsReadScope},
+			}},
+		},
+	}
+	if _, err := client.AcceptConsentRequest(t.Context(), "consent-1", grant); err != nil {
 		t.Fatal(err)
 	}
 	if requests != 4 {

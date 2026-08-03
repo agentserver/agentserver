@@ -64,6 +64,28 @@ func TestHandlerForAPIOriginAddsOneExactCSPConnectionAuthority(t *testing.T) {
 	}
 }
 
+func TestHandlerForConnectionOriginsAllowsOnlyReviewedAPIAndOAuthAuthorities(t *testing.T) {
+	handler, err := HandlerForConnectionOrigins(
+		"https://browser-gateway.byted.bps.dev",
+		"https://agent.byted.bps.dev",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "https://browser.byted.bps.dev/", nil))
+	if response.Code != http.StatusOK || response.Header().Get("Content-Security-Policy") !=
+		contentSecurityPolicy+" https://browser-gateway.byted.bps.dev https://agent.byted.bps.dev" {
+		t.Fatalf("split-origin CSP response = %d headers=%v", response.Code, response.Header())
+	}
+	if _, err := HandlerForConnectionOrigins(
+		"https://browser-gateway.byted.bps.dev",
+		"https://browser-gateway.byted.bps.dev",
+	); err == nil {
+		t.Fatal("duplicate connection authorities were accepted")
+	}
+}
+
 func TestHandlerSupportsHeadAndRejectsFallbacksAndWrites(t *testing.T) {
 	handler := Handler()
 	head := httptest.NewRecorder()

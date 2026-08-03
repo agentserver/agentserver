@@ -112,6 +112,7 @@ build_binary() {
 build_binary agentserver-core agentserver-core
 build_binary harness-init agentserver-init
 build_binary agentserver-probe agentserver-probe
+build_binary platform-gateway platform-gateway
 build_binary browser-gateway browser-gateway
 build_binary executor-gateway executor-gateway
 build_binary llmproxy llmproxy
@@ -119,7 +120,7 @@ build_binary harness-final-exec harness-final-exec
 build_binary harness-pool harness-pool
 build_binary harness-worker harness-worker
 
-for binary in agentserver-core agentserver-probe browser-gateway executor-gateway llmproxy; do
+for binary in agentserver-core agentserver-probe platform-gateway browser-gateway executor-gateway llmproxy; do
     cp "${work_directory}/all-bin/${binary}" "${work_directory}/service-bin/${binary}"
 done
 for binary in agentserver-init agentserver-probe harness-final-exec harness-pool harness-worker; do

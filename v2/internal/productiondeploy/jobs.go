@@ -1,6 +1,10 @@
 package productiondeploy
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
+)
 
 func renderHydraMigrationJob(context renderContext) kubeObject {
 	document := context.config.Document
@@ -42,32 +46,30 @@ func renderHydraClientSetupJob(context renderContext) kubeObject {
 	document := context.config.Document
 	labels := componentLabels(hydraSetupComponent)
 	adminOrigin := internalOrigin(HydraInternalHost, document.Services.Hydra.AdminPort)
-	clientID := document.OAuth.Hydra.BrowserClientID
-	flags := strings.Join([]string{
-		"--name 'AgentServer Browser'",
-		"--grant-type authorization_code",
-		"--response-type code",
-		"--scope openid",
-		"--scope runs:write",
-		"--scope executors:write",
-		"--scope llm-gateways:write",
-		"--redirect-uri '" + document.OAuth.Hydra.PublicOrigin + "/'",
-		"--token-endpoint-auth-method none",
-		"--audience agentserver-api",
-		"--access-token-strategy opaque",
-		"--subject-type public",
-	}, " ")
+	platformFlags := hydraPublicClientFlags(
+		"AgentServer Platform", corecontract.PlatformOAuthScopes(), corecontract.PlatformOAuthAudience,
+		"https://"+document.Ingress.FrontendHostname+"/",
+	)
+	browserFlags := hydraPublicClientFlags(
+		"AgentServer Browser", corecontract.BrowserOAuthScopes(), corecontract.BrowserOAuthAudience,
+		"https://"+document.Ingress.BrowserFrontendHostname+"/",
+	)
 	script := "set -eu\n" +
 		"endpoint='" + adminOrigin + "'\n" +
-		"client_id='" + clientID + "'\n" +
-		"if /usr/bin/hydra update oauth2-client \"$client_id\" --endpoint \"$endpoint\" " + flags + "; then\n" +
-		"  exit 0\n" +
-		"fi\n" +
-		"/usr/bin/hydra create oauth2-client --endpoint \"$endpoint\" --id \"$client_id\" " + flags + "\n"
+		"reconcile_client() {\n" +
+		"  client_id=\"$1\"\n" +
+		"  shift\n" +
+		"  if /usr/bin/hydra update oauth2-client \"$client_id\" --endpoint \"$endpoint\" \"$@\"; then\n" +
+		"    return 0\n" +
+		"  fi\n" +
+		"  /usr/bin/hydra create oauth2-client --endpoint \"$endpoint\" --id \"$client_id\" \"$@\"\n" +
+		"}\n" +
+		"reconcile_client '" + document.OAuth.Hydra.PlatformClientID + "' " + platformFlags + "\n" +
+		"reconcile_client '" + document.OAuth.Hydra.BrowserClientID + "' " + browserFlags + "\n"
 	return kubeObject{
 		"apiVersion": "batch/v1", "kind": "Job",
 		"metadata": metadata(context.hydraSetupJobName, document.Namespace, labels, map[string]string{
-			"agentserver.dev/hydra-client-id": clientID,
+			"agentserver.dev/hydra-client-profile": "platform-browser-v1",
 		}),
 		"spec": kubeObject{
 			"backoffLimit": 5, "activeDeadlineSeconds": 300,
@@ -103,6 +105,23 @@ func renderHydraClientSetupJob(context renderContext) kubeObject {
 			},
 		},
 	}
+}
+
+func hydraPublicClientFlags(name string, scopes []string, audience, redirectURI string) string {
+	flags := []string{
+		"--name '" + name + "'",
+		"--grant-type authorization_code",
+		"--response-type code",
+		"--redirect-uri '" + redirectURI + "'",
+		"--token-endpoint-auth-method none",
+		"--audience " + audience,
+		"--access-token-strategy opaque",
+		"--subject-type public",
+	}
+	for _, scope := range scopes {
+		flags = append(flags, "--scope "+scope)
+	}
+	return strings.Join(flags, " ")
 }
 
 func renderMigrationJob(context renderContext) kubeObject {

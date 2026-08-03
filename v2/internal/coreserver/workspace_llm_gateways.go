@@ -202,8 +202,8 @@ func (handler *WorkspaceLLMGatewayHandler) authorize(
 		writePublicRunError(response, http.StatusServiceUnavailable, "authorization_unavailable", "user authorization is temporarily unavailable", "")
 		return "", false
 	}
-	response.Header().Set("WWW-Authenticate", `Bearer realm="agentserver-api"`)
-	writePublicRunError(response, http.StatusUnauthorized, "unauthorized", "a valid agentserver-api user access token is required", "")
+	response.Header().Set("WWW-Authenticate", `Bearer realm="agentserver-platform-api"`)
+	writePublicRunError(response, http.StatusUnauthorized, "unauthorized", "a valid agentserver-platform-api access token is required", "")
 	return "", false
 }
 

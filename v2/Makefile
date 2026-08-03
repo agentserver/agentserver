@@ -36,7 +36,7 @@ hydra-live-test:
 	@test -n "$$AGENTSERVER_V2_TEST_HYDRA_PUBLIC_ORIGIN" || \
 		(printf '%s\n' 'AGENTSERVER_V2_TEST_HYDRA_PUBLIC_ORIGIN is required'; exit 2)
 	@AGENTSERVER_RUN_HYDRA_LIVE_TESTS=1 $(GO) test ./internal/coreserver \
-		-run '^TestHydraV262ExecutorPrivateKeyJWTLive$$' -count=1 -v
+		-run '^TestHydraV262(ExecutorPrivateKeyJWT|UserResourceAuthority)Live$$' -count=1 -v
 
 import-boundary:
 	$(GO) test ./internal/buildguard -run '^TestRepositoryHasNoV1RuntimeImports$$' -count=1
@@ -53,7 +53,7 @@ contract-check:
 	$(GO) test ./internal/runevent -run 'Contract|Schema|AsyncAPI' -count=1
 	$(GO) test ./internal/devstack ./internal/devfixtures -run 'SchemaContract' -count=1
 	$(GO) test ./internal/productiondeploy -run 'Schema|Topology|Contracts' -count=1
-	$(GO) test ./cmd/agentserver-core ./cmd/browser-gateway ./cmd/executor-gateway \
+	$(GO) test ./cmd/agentserver-core ./cmd/platform-gateway ./cmd/browser-gateway ./cmd/executor-gateway \
 		./cmd/harness-pool ./cmd/harness-worker ./cmd/llmproxy -run '^TestProductionRenderer' -count=1
 
 conformance:

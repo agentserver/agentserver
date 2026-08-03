@@ -74,12 +74,15 @@
     "securitySchemes": {
       "userOAuth": {
         "type": "oauth2",
-        "description": "Hydra access token with aud=agentserver-api; current workspace membership is rechecked by core.",
+        "description": "Hydra agentserver-browser access token with the single aud=agentserver-browser-api audience and exactly one versioned workspace resource grant. Core introspects every request and checks resource ownership invariants.",
         "flows": {
           "authorizationCode": {
-            "authorizationUrl": "/oauth2/auth",
-            "tokenUrl": "/oauth2/token",
-            "availableScopes": {"runs:write": "Create runs and read their authorized event projections"}
+            "authorizationUrl": "https://agent.byted.bps.dev/oauth2/auth",
+            "tokenUrl": "https://agent.byted.bps.dev/oauth2/token",
+            "availableScopes": {
+              "runs:create": "Create a run in a session owned by the token subject",
+              "runs:read": "Read an authorized run event projection"
+            }
           }
         }
       }

@@ -1,12 +1,12 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "agentserver v2 browser resource API",
+    "title": "agentserver v2 user resource API",
     "version": "0.1.0",
-    "description": "Browser-delegated run, approval, executor-management, and workspace LLM Gateway resources. Every core endpoint requires both the browser-gateway workload identity and the original aud=agentserver-api user bearer."
+    "description": "Platform and Browser user resources. Core requires the matching gateway workload identity and validates every original opaque user bearer through Hydra introspection, including its exact client, audience, action scopes, and workspace resource grant."
   },
   "servers": [{"url": "https://agentserver-core"}],
-  "security": [{"browserGatewayMTLS": [], "userOAuth": ["runs:write"]}],
+  "security": [{"browserGatewayMTLS": [], "browserOAuth": ["runs:read"]}],
   "paths": {
     "/v2/workspaces/{workspaceId}/executors": {
       "parameters": [
@@ -15,7 +15,7 @@
       "post": {
         "operationId": "createExecutorResource",
         "description": "Creates one enrolling executor identity. Core rechecks that the current user is an owner of the active workspace.",
-        "security": [{"browserGatewayMTLS": [], "userOAuth": ["executors:write"]}],
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["executors:create"]}],
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateExecutorResourceRequest"}}}},
         "responses": {
           "200": {"description": "Exact executor identity already exists", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateExecutorResourceResponse"}}}},
@@ -36,7 +36,7 @@
       "post": {
         "operationId": "issueExecutorEnrollmentToken",
         "description": "Issues or exactly recovers one short-lived, single-executor enrollment bearer. A new idempotency key revokes the prior unconsumed bearer authority.",
-        "security": [{"browserGatewayMTLS": [], "userOAuth": ["executors:write"]}],
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["executors:enroll"]}],
         "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}],
         "responses": {
           "200": {"description": "Exact idempotent token request recovered", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/IssueExecutorEnrollmentTokenResponse"}}}},
@@ -54,7 +54,7 @@
       "get": {
         "operationId": "listWorkspaceLLMGateways",
         "description": "Lists workspace Gateway configuration and only the current user's grant status; sealed token material is never projected.",
-        "security": [{"browserGatewayMTLS": [], "userOAuth": ["llm-gateways:write"]}],
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["llm-gateways:read"]}],
         "responses": {
           "200": {"description": "Workspace Gateways and current-user grant projections", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ListWorkspaceLLMGatewaysResponse"}}}},
           "401": {"$ref": "#/components/responses/PublicError"},
@@ -65,7 +65,7 @@
       "post": {
         "operationId": "createWorkspaceLLMGateway",
         "description": "Creates an owner-managed public Responses-compatible Gateway after safe OIDC discovery. The configured client is a public PKCE client and has no client secret.",
-        "security": [{"browserGatewayMTLS": [], "userOAuth": ["llm-gateways:write"]}],
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["llm-gateways:create"]}],
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateWorkspaceLLMGatewayRequest"}}}},
         "responses": {
           "200": {"description": "Exact Gateway identity already exists", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateWorkspaceLLMGatewayResponse"}}}},
@@ -82,7 +82,7 @@
       "post": {
         "operationId": "beginWorkspaceLLMGatewayAuthorization",
         "description": "Creates a bounded one-use state, nonce, PKCE, and browser-binding transaction and returns the third-party authorization URL.",
-        "security": [{"browserGatewayMTLS": [], "userOAuth": ["llm-gateways:write"]}],
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["llm-gateway-grants:authorize"]}],
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BeginWorkspaceLLMGatewayAuthorizationRequest"}}}},
         "responses": {
           "200": {"description": "Authorization transaction created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BeginWorkspaceLLMGatewayAuthorizationResponse"}}}},
@@ -99,7 +99,7 @@
       "post": {
         "operationId": "completeWorkspaceLLMGatewayAuthorization",
         "description": "Consumes one exact callback transaction, exchanges the code with PKCE, verifies OIDC identity and nonce, and seals the current user's token set in Core.",
-        "security": [{"browserGatewayMTLS": [], "userOAuth": ["llm-gateways:write"]}],
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["llm-gateway-grants:authorize"]}],
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CompleteWorkspaceLLMGatewayAuthorizationRequest"}}}},
         "responses": {
           "200": {"description": "Current-user grant activated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CompleteWorkspaceLLMGatewayAuthorizationResponse"}}}},
@@ -116,7 +116,7 @@
       "post": {
         "operationId": "revokeWorkspaceLLMGatewayGrant",
         "description": "Revokes only the current user's stored grant; subsequent llmproxy live authorization fails closed.",
-        "security": [{"browserGatewayMTLS": [], "userOAuth": ["llm-gateways:write"]}],
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["llm-gateway-grants:revoke"]}],
         "responses": {
           "200": {"description": "Current-user grant is revoked", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RevokeWorkspaceLLMGatewayGrantResponse"}}}},
           "401": {"$ref": "#/components/responses/PublicError"},
@@ -130,7 +130,7 @@
       "post": {
         "operationId": "disableWorkspaceLLMGateway",
         "description": "Owner-only idempotent disable. Clears default status and increments the Gateway configuration version so every run bound to the former version fails closed on its next live authorization.",
-        "security": [{"browserGatewayMTLS": [], "userOAuth": ["llm-gateways:write"]}],
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["llm-gateways:disable"]}],
         "responses": {
           "200": {"description": "Gateway is disabled", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DisableWorkspaceLLMGatewayResponse"}}}},
           "401": {"$ref": "#/components/responses/PublicError"},
@@ -148,6 +148,7 @@
       "post": {
         "operationId": "createUserRun",
         "description": "Authenticates current workspace membership and atomically creates or recovers the run, immutable launch authority, run.queued event, and scheduler outbox row.",
+        "security": [{"browserGatewayMTLS": [], "browserOAuth": ["runs:create"]}],
         "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}],
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateUserRunRequest"}}}},
         "responses": {
@@ -169,6 +170,7 @@
       "post": {
         "operationId": "cancelUserRun",
         "description": "Explicitly requests cancellation. Queued runs become terminal atomically; a live attempt first becomes cancelling and reaches cancelled only after its exact holder confirms bounded interruption cleanup.",
+        "security": [{"browserGatewayMTLS": [], "browserOAuth": ["runs:cancel"]}],
         "responses": {
           "200": {"description": "Authoritative cancelling or terminal run state", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CancelUserRunResponse"}}}},
           "400": {"$ref": "#/components/responses/PublicError"},
@@ -187,6 +189,7 @@
       "post": {
         "operationId": "decideUserApproval",
         "description": "Commits the first approve or deny decision after rechecking current workspace RBAC, database expiry, live attempt generation, nonce, and the core-derived execution context digest. Approval alone does not authorize dispatch.",
+        "security": [{"browserGatewayMTLS": [], "browserOAuth": ["approvals:decide"]}],
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DecideUserApprovalRequest"}}}},
         "responses": {
           "200": {"description": "Authoritative approval outcome or exact decision retry", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DecideUserApprovalResponse"}}}},
@@ -206,6 +209,7 @@
       "get": {
         "operationId": "readUserRunEvents",
         "description": "Long-polls committed canonical events after an authenticated opaque cursor. limit=0 validates and resolves a reconnect cursor without consuming events.",
+        "security": [{"browserGatewayMTLS": [], "browserOAuth": ["runs:read"]}],
         "parameters": [
           {"name": "after", "in": "query", "required": true, "schema": {"type": "string", "minLength": 1, "maxLength": 4096}},
           {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 0, "maximum": 1024, "default": 128}},
@@ -225,13 +229,43 @@
   "components": {
     "securitySchemes": {
       "browserGatewayMTLS": {"type": "mutualTLS", "description": "Exact configured browser-gateway SPIFFE workload identity."},
-      "userOAuth": {
+      "platformGatewayMTLS": {"type": "mutualTLS", "description": "Exact configured platform-gateway SPIFFE workload identity."},
+      "browserOAuth": {
         "type": "oauth2",
-        "description": "Original user access token; core introspects active, unexpired, single aud=agentserver-api tokens and rechecks current workspace membership.",
+        "description": "Original agentserver-browser token. Core requires active introspection, exact client_id, single aud=agentserver-browser-api, and one workspace resource grant matching the request path.",
         "flows": {"authorizationCode": {"authorizationUrl": "/oauth2/auth", "tokenUrl": "/oauth2/token", "scopes": {
-          "runs:write": "Create runs, decide approvals, and read committed event projections",
-          "executors:write": "Create and enroll executor machine identities",
-          "llm-gateways:write": "Manage workspace LLM Gateway configuration and the current user's OIDC grant"
+          "sessions:read": "List and read the current user's sessions",
+          "sessions:create": "Create a session for the current user",
+          "sessions:update": "Rename the current user's session",
+          "sessions:archive": "Archive the current user's session",
+          "runs:read": "Read the current user's run state and committed event projections",
+          "runs:create": "Create a run in the current user's session",
+          "runs:cancel": "Cancel the current user's run",
+          "approvals:decide": "Approve or deny a live approval for the current user's run"
+        }}}
+      },
+      "platformOAuth": {
+        "type": "oauth2",
+        "description": "Original agentserver-platform token. Core requires active introspection, exact client_id, single aud=agentserver-platform-api, and a matching global or workspace management grant.",
+        "flows": {"authorizationCode": {"authorizationUrl": "/oauth2/auth", "tokenUrl": "/oauth2/token", "scopes": {
+          "workspaces:read": "List and read granted workspaces",
+          "workspaces:create": "Create a workspace",
+          "workspaces:update": "Update a granted workspace",
+          "workspaces:archive": "Archive a granted workspace",
+          "members:read": "Read workspace members",
+          "members:add": "Add a workspace member",
+          "members:update": "Change a workspace member role",
+          "members:remove": "Remove a workspace member",
+          "executors:read": "Read workspace executor state",
+          "executors:create": "Create a workspace executor identity",
+          "executors:enroll": "Issue a workspace executor enrollment token",
+          "executors:update": "Update workspace executor metadata",
+          "executors:archive": "Archive a workspace executor",
+          "llm-gateways:read": "Read workspace LLM Gateway configuration and the current user's grant status",
+          "llm-gateways:create": "Create a workspace LLM Gateway",
+          "llm-gateways:disable": "Disable a workspace LLM Gateway",
+          "llm-gateway-grants:authorize": "Authorize the current user's third-party Gateway grant",
+          "llm-gateway-grants:revoke": "Revoke the current user's third-party Gateway grant"
         }}}
       }
     },

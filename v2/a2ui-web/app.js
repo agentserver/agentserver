@@ -200,8 +200,10 @@ async function completeAuthorization(callback) {
   if (callback.error) {
     throw new Error(`identity provider returned ${callback.error}${callback.errorDescription ? `: ${callback.errorDescription}` : ''}`)
   }
-  const response = await fetch(authorizationConfig.tokenEndpoint, {
-    method: 'POST', mode: 'same-origin', cache: 'no-store', credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer',
+  const tokenURL = new URL(authorizationConfig.tokenEndpoint, window.location.origin)
+  const response = await fetch(tokenURL.href, {
+    method: 'POST', mode: tokenURL.origin === window.location.origin ? 'same-origin' : 'cors',
+    cache: 'no-store', credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer',
     headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
     body: buildTokenExchangeBody(authorizationConfig, transaction, callback.code),
   })
@@ -216,7 +218,7 @@ function establishConnection(token, workspaceID, sessionID) {
   elements.connectionError.hidden = true
   elements.connectionLayer.hidden = true
   elements.connectionButton.textContent = 'Disconnect'
-  elements.gatewayButton.hidden = false
+  elements.gatewayButton.hidden = authorizationConfig.apiOrigin !== ''
   viewState = createViewState()
   activeRun = null
   cancellationPending = false

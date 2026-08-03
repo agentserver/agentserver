@@ -39,9 +39,9 @@ const (
 	RelativeLLMProxyPrivateKey     = "pki/llmproxy.key"
 
 	BrowserTokenAudience   = corecontract.BrowserOAuthAudience
-	BrowserTokenScope      = corecontract.BrowserOAuthRunScope
-	BrowserExecutorScope   = corecontract.BrowserOAuthExecutorScope
-	BrowserOAuthClientID   = "agentserver-web"
+	BrowserOAuthScopeText  = "openid sessions:read sessions:create sessions:update sessions:archive runs:read runs:create runs:cancel approvals:decide"
+	BrowserOAuthClientID   = corecontract.BrowserOAuthClientID
+	PlatformOAuthClientID  = corecontract.PlatformOAuthClientID
 	ExternalOIDCClientID   = "agentserver-core"
 	ExternalOIDCSubject    = "agentserver-dev-user"
 	ToolNamespace          = "executor"
@@ -60,6 +60,10 @@ const (
 
 func browserAuthorizationScopes() []string {
 	return corecontract.BrowserOAuthScopes()
+}
+
+func BrowserAuthorizationScopes() []string {
+	return browserAuthorizationScopes()
 }
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -267,7 +271,8 @@ func validateDocument(document ConfigDocument, bundleDirectory string) (*url.URL
 	if document.Hydra.BrowserBearerTokenFile != filepath.Join(bundleDirectory, filepath.FromSlash(RelativeBrowserBearerTokenPath)) {
 		return nil, "", nil, "", 0, errors.New("development Hydra fixture bearer path is not the exact prepared-bundle path")
 	}
-	if document.Hydra.Audience != BrowserTokenAudience || document.Hydra.Scope != BrowserTokenScope {
+	if document.Hydra.Audience != BrowserTokenAudience || document.Hydra.Scope != BrowserOAuthScopeText ||
+		strings.Join(browserAuthorizationScopes(), " ") != BrowserOAuthScopeText {
 		return nil, "", nil, "", 0, errors.New("development Hydra fixture audience or scope is unsupported")
 	}
 	fixtureOrigin := hydraEndpoint.Scheme + "://" + hydraEndpoint.Host

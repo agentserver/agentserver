@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/coreserver"
 )
 
@@ -30,7 +31,8 @@ func TestAuthorizationFixturesCompleteCodePKCEAndMintIntrospectableToken(t *test
 		"response_type": {"code"}, "client_id": {BrowserOAuthClientID},
 		"redirect_uri": {runtime.bundle.document.Hydra.BrowserRedirectURI},
 		"scope":        {strings.Join(browserAuthorizationScopes(), " ")}, "audience": {BrowserTokenAudience},
-		"state": {browserState}, "nonce": {browserNonce},
+		"resource": {corecontract.UserOAuthWorkspaceURNPrefix + runtime.bundle.document.Authority.WorkspaceID},
+		"state":    {browserState}, "nonce": {browserNonce},
 		"code_challenge": {browserChallenge}, "code_challenge_method": {"S256"},
 	}
 	begin := callAuthorizationFixture(t, runtime, http.MethodGet, "/oauth2/auth?"+authorize.Encode(), nil, nil)
@@ -52,11 +54,13 @@ func TestAuthorizationFixturesCompleteCodePKCEAndMintIntrospectableToken(t *test
 		} `json:"client"`
 		RequestedScope    []string `json:"requested_scope"`
 		RequestedAudience []string `json:"requested_access_token_audience"`
+		RequestURL        string   `json:"request_url"`
 	}
 	decodeFixtureResponse(t, loginRequest, &loginDocument)
 	if loginDocument.Challenge != loginChallenge || loginDocument.Client.ClientID != BrowserOAuthClientID ||
 		!sameFixtureSet(loginDocument.RequestedScope, browserAuthorizationScopes()) ||
-		!sameFixtureSet(loginDocument.RequestedAudience, []string{BrowserTokenAudience}) {
+		!sameFixtureSet(loginDocument.RequestedAudience, []string{BrowserTokenAudience}) ||
+		!strings.Contains(loginDocument.RequestURL, "resource=") {
 		t.Fatalf("login request authority = %+v", loginDocument)
 	}
 
@@ -124,7 +128,17 @@ func TestAuthorizationFixturesCompleteCodePKCEAndMintIntrospectableToken(t *test
 	if consentRequest.Code != http.StatusOK {
 		t.Fatalf("get consent request = %d %s", consentRequest.Code, consentRequest.Body.String())
 	}
-	acceptConsentBody := []byte(`{"grant_scope":["openid","runs:write","executors:write","llm-gateways:write"],"grant_access_token_audience":["agentserver-api"],"remember":false,"remember_for":0,"session":{"access_token":{},"id_token":{}}}`)
+	acceptConsentBody, err := json.Marshal(map[string]any{
+		"grant_scope": browserAuthorizationScopes(), "grant_access_token_audience": []string{BrowserTokenAudience},
+		"remember": false, "remember_for": 0,
+		"session": map[string]any{
+			"access_token": map[string]any{"agentserver": developmentBrowserAuthority(runtime.bundle.document.Authority.WorkspaceID)},
+			"id_token":     map[string]any{},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	acceptedConsent := callAuthorizationFixture(
 		t, runtime, http.MethodPut,
 		"/admin/oauth2/auth/requests/consent/accept?"+(url.Values{"consent_challenge": {consentChallenge}}).Encode(),
@@ -166,7 +180,8 @@ func TestAuthorizationFixturesCompleteCodePKCEAndMintIntrospectableToken(t *test
 	introspection := httptest.NewRecorder()
 	runtime.serveHydra(introspection, introspectionRequest(t, runtime, browserTokenDocument.AccessToken))
 	if introspection.Code != http.StatusOK || !strings.Contains(introspection.Body.String(), `"active":true`) ||
-		!strings.Contains(introspection.Body.String(), `"sub":"10000000-0000-4000-8000-000000000001"`) {
+		!strings.Contains(introspection.Body.String(), `"sub":"10000000-0000-4000-8000-000000000001"`) ||
+		!strings.Contains(introspection.Body.String(), `"authority":"browser"`) {
 		t.Fatalf("dynamic token introspection = %d %s", introspection.Code, introspection.Body.String())
 	}
 	replay := callAuthorizationFixture(
@@ -237,7 +252,8 @@ func TestHydraAdminFixtureWorksWithProductionClient(t *testing.T) {
 		"response_type": {"code"}, "client_id": {BrowserOAuthClientID},
 		"redirect_uri": {runtime.bundle.document.Hydra.BrowserRedirectURI},
 		"scope":        {strings.Join(browserAuthorizationScopes(), " ")}, "audience": {BrowserTokenAudience},
-		"state": {state}, "nonce": {nonce},
+		"resource": {corecontract.UserOAuthWorkspaceURNPrefix + runtime.bundle.document.Authority.WorkspaceID},
+		"state":    {state}, "nonce": {nonce},
 		"code_challenge": {base64.RawURLEncoding.EncodeToString(challengeRaw[:])}, "code_challenge_method": {"S256"},
 	}
 	begin := callAuthorizationFixture(t, runtime, http.MethodGet, "/oauth2/auth?"+authorize.Encode(), nil, nil)
@@ -263,7 +279,10 @@ func TestHydraAdminFixtureWorksWithProductionClient(t *testing.T) {
 		t.Fatalf("Hydra Admin consent request = %+v", consent)
 	}
 	consentRedirect, err := admin.AcceptConsentRequest(
-		t.Context(), consentChallenge, browserAuthorizationScopes(), []string{BrowserTokenAudience},
+		t.Context(), consentChallenge, coreserver.HydraConsentGrant{
+			Scope: browserAuthorizationScopes(), Audience: []string{BrowserTokenAudience},
+			Authority: developmentBrowserAuthority(runtime.bundle.document.Authority.WorkspaceID),
+		},
 	)
 	if err != nil || consentRedirect.RedirectTo == "" {
 		t.Fatalf("Hydra Admin consent acceptance = %+v, %v", consentRedirect, err)

@@ -82,6 +82,7 @@ func configMapResource(config LoadedConfig, name string, data map[string]string)
 
 const (
 	materialProfileCore            = "core"
+	materialProfilePlatformGateway = "platform-gateway"
 	materialProfileBrowserGateway  = "browser-gateway"
 	materialProfileExecutorGateway = "executor-gateway"
 	materialProfileHarnessPool     = "harness-pool"
@@ -104,6 +105,7 @@ var materialProfileFiles = map[string][]string{
 		"run-capability-keyring.json", "executor-enrollment.key",
 		"llm-gateway-sealing-keyring.json",
 	},
+	materialProfilePlatformGateway: {"ca.crt", "tls.crt", "tls.key"},
 	materialProfileBrowserGateway:  {"ca.crt", "tls.crt", "tls.key"},
 	materialProfileExecutorGateway: {"ca.crt", "tls.crt", "tls.key", "run-capability-keyring.json"},
 	materialProfileHarnessPool:     {"ca.crt", "tls.crt", "tls.key", "run-manifest.key"},

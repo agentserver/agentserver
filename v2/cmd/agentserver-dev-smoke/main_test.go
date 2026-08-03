@@ -79,15 +79,16 @@ func (transport *smokeOAuthRoundTripper) RoundTrip(request *http.Request) (*http
 		}
 		return smokeOAuthResponse(request, http.StatusOK, http.Header{
 			"Content-Type": []string{"application/json"}, "Cache-Control": []string{"no-store"},
-		}, `{"version":1,"authorizationEndpoint":"/oauth2/auth","tokenEndpoint":"/oauth2/token","redirectPath":"/","clientId":"agentserver-web","scopes":["openid","runs:write","executors:write"],"audience":"agentserver-api"}`), nil
+		}, `{"version":1,"authorizationEndpoint":"/oauth2/auth","tokenEndpoint":"/oauth2/token","redirectPath":"/","clientId":"agentserver-browser","scopes":["openid","sessions:read","sessions:create","sessions:update","sessions:archive","runs:read","runs:create","runs:cancel","approvals:decide"],"audience":"agentserver-browser-api","apiOrigin":""}`), nil
 	case request.Method == http.MethodGet && request.URL.Path == "/oauth2/auth" && request.URL.Query().Get("response_type") == "code":
 		query := request.URL.Query()
 		transport.browserState = query.Get("state")
 		transport.challenge = query.Get("code_challenge")
 		if !validSmokeAccessToken(transport.browserState) || query.Get("nonce") == "" ||
 			query.Get("client_id") != devfixtures.BrowserOAuthClientID ||
-			query.Get("scope") != "openid "+devfixtures.BrowserTokenScope+" "+devfixtures.BrowserExecutorScope ||
+			query.Get("scope") != strings.Join(devfixtures.BrowserAuthorizationScopes(), " ") ||
 			query.Get("audience") != devfixtures.BrowserTokenAudience || query.Get("redirect_uri") != transport.origin.String()+"/" ||
+			query.Get("resource") != "urn:agentserver:workspace:"+smokeWorkspaceID ||
 			query.Get("code_challenge_method") != "S256" {
 			transport.t.Fatalf("initial authorization query = %v", query)
 		}
@@ -138,7 +139,7 @@ func (transport *smokeOAuthRoundTripper) RoundTrip(request *http.Request) (*http
 		}
 		if transport.tokenCalls == 1 {
 			return smokeOAuthResponse(request, http.StatusOK, http.Header{"Content-Type": []string{"application/json"}},
-				`{"access_token":"dynamic-browser-access-token","token_type":"Bearer","expires_in":900,"scope":"runs:write openid executors:write"}`), nil
+				`{"access_token":"dynamic-browser-access-token","token_type":"Bearer","expires_in":900,"scope":"openid sessions:read sessions:create sessions:update sessions:archive runs:read runs:create runs:cancel approvals:decide"}`), nil
 		}
 		return smokeOAuthResponse(request, http.StatusBadRequest, http.Header{"Content-Type": []string{"application/json"}}, `{"error":"invalid_grant"}`), nil
 	default:

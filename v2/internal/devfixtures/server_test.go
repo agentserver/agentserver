@@ -37,7 +37,7 @@ func TestHydraFixtureReturnsOnlyExactDevelopmentBrowserAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !active.Active || active.Subject != runtime.bundle.document.Authority.ActorID ||
-		len(active.Audience) != 1 || active.Audience[0] != BrowserTokenAudience || active.Scope != BrowserTokenScope ||
+		len(active.Audience) != 1 || active.Audience[0] != BrowserTokenAudience || active.Scope != BrowserOAuthScopeText ||
 		active.Expires != fixtureTestNow.Add(15*time.Minute).Unix() {
 		t.Fatalf("active introspection = %+v", active)
 	}
@@ -360,7 +360,7 @@ func newTestRuntime(t *testing.T) (*fixtureRuntime, *runcapability.DevelopmentCo
 				ActorID:     "10000000-0000-4000-8000-000000000001",
 			},
 			Hydra: HydraDocument{
-				Audience: BrowserTokenAudience, Scope: BrowserTokenScope, ResponseTTL: "15m",
+				Audience: BrowserTokenAudience, Scope: BrowserOAuthScopeText, ResponseTTL: "15m",
 				PublicOrigin: "https://127.0.0.1:17444", BrowserClientID: BrowserOAuthClientID,
 				BrowserRedirectURI: "https://127.0.0.1:17444/",
 				LoginURL:           "https://127.0.0.1:17444/auth/hydra/login", ConsentURL: "https://127.0.0.1:17444/auth/hydra/consent",

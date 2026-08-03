@@ -12,7 +12,8 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 	document := config.Document
 	port := func(value uint16) []any { return []any{kubeObject{"protocol": "TCP", "port": int(value)}} }
 
-	coreIngress := ingressFromComponents([]string{browserComponent, executorComponent, harnessComponent, llmproxyComponent}, document.Services.Core.Port)
+	coreIngress := ingressFromComponents([]string{platformComponent, browserComponent, executorComponent, harnessComponent, llmproxyComponent}, document.Services.Core.Port)
+	platformIngress := ingressFromGateway(document.Ingress, document.Services.PlatformGateway.Port)
 	browserIngress := ingressFromGateway(document.Ingress, document.Services.BrowserGateway.Port)
 	executorIngress := append(
 		ingressFromGateway(document.Ingress, document.Services.ExecutorGateway.PublicPort),
@@ -23,7 +24,7 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 	)
 	llmIngress := ingressFromComponents([]string{harnessComponent}, document.Services.LLMProxy.Port)
 	hydraIngress := append(
-		ingressFromComponents([]string{browserComponent}, document.Services.Hydra.PublicPort),
+		ingressFromComponents([]string{platformComponent}, document.Services.Hydra.PublicPort),
 		ingressFromComponents([]string{coreComponent, hydraSetupComponent}, document.Services.Hydra.AdminPort)...,
 	)
 
@@ -33,8 +34,11 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 	coreEgress = append(coreEgress, externalEgress(document.Network.CoreExternalEgress)...)
 	coreEgress = append(coreEgress, publicHTTPSEgress()...)
 	coreEgress = append(coreEgress, componentTCPEgress(hydraComponent, document.Services.Hydra.AdminPort))
+	platformEgress := []any{
+		componentTCPEgress(coreComponent, document.Services.Core.Port),
+		componentTCPEgress(hydraComponent, document.Services.Hydra.PublicPort),
+	}
 	browserEgress := []any{componentTCPEgress(coreComponent, document.Services.Core.Port)}
-	browserEgress = append(browserEgress, componentTCPEgress(hydraComponent, document.Services.Hydra.PublicPort))
 	browserEgress = append(browserEgress, dns...)
 	browserEgress = append(browserEgress, externalEgress(document.Network.BrowserExternalEgress)...)
 	executorEgress := []any{componentTCPEgress(coreComponent, document.Services.Core.Port)}
@@ -58,6 +62,7 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 		networkPolicy(config, "hydra-client-setup-egress", matchComponent(hydraSetupComponent), nil, hydraSetupEgress),
 		networkPolicy(config, "agentserver-bootstrap-egress", matchComponent(bootstrapComponent), nil, databaseEgress),
 		networkPolicy(config, coreComponent, matchComponent(coreComponent), coreIngress, coreEgress),
+		networkPolicy(config, platformComponent, matchComponent(platformComponent), platformIngress, platformEgress),
 		networkPolicy(config, browserComponent, matchComponent(browserComponent), browserIngress, browserEgress),
 		networkPolicy(config, executorComponent, matchComponent(executorComponent), executorIngress, executorEgress),
 		networkPolicy(config, harnessComponent, matchComponent(harnessComponent), nil, harnessEgress),

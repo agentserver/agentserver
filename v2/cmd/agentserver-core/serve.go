@@ -35,10 +35,12 @@ const (
 	coreGatewayIdentityEnvironment          = "AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID"
 	coreHarnessPoolIdentityEnvironment      = "AGENTSERVER_V2_HARNESS_POOL_SPIFFE_ID"
 	coreBrowserIdentityEnvironment          = "AGENTSERVER_V2_BROWSER_GATEWAY_SPIFFE_ID"
+	corePlatformIdentityEnvironment         = "AGENTSERVER_V2_PLATFORM_GATEWAY_SPIFFE_ID"
 	coreHydraIntrospectionEnvironment       = "AGENTSERVER_V2_HYDRA_INTROSPECTION_URL"
 	coreHydraAdminEnvironment               = "AGENTSERVER_V2_HYDRA_ADMIN_URL"
 	coreHydraPublicOriginEnvironment        = "AGENTSERVER_V2_HYDRA_PUBLIC_ORIGIN"
 	coreHydraIssuerEnvironment              = "AGENTSERVER_V2_HYDRA_ISSUER"
+	coreHydraPlatformClientEnvironment      = "AGENTSERVER_V2_HYDRA_PLATFORM_CLIENT_ID"
 	coreHydraBrowserClientEnvironment       = "AGENTSERVER_V2_HYDRA_BROWSER_CLIENT_ID"
 	coreHydraCAEnvironment                  = "AGENTSERVER_V2_HYDRA_CA_FILE"
 	coreHydraServerNameEnvironment          = "AGENTSERVER_V2_HYDRA_SERVER_NAME"
@@ -121,14 +123,24 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	if browserIdentity == gatewayIdentity || browserIdentity == harnessPoolIdentity {
 		return errors.New("browser-gateway, executor-gateway, and harness-pool SPIFFE identities must be distinct")
 	}
+	platformIdentity := browserIdentity
+	if mode == coreServeProduction {
+		platformIdentity, err = requiredConfiguration(getenv, corePlatformIdentityEnvironment)
+		if err != nil {
+			return err
+		}
+		if slices.Contains([]string{gatewayIdentity, harnessPoolIdentity, browserIdentity}, platformIdentity) {
+			return errors.New("platform-gateway, browser-gateway, executor-gateway, and harness-pool SPIFFE identities must be distinct")
+		}
+	}
 	var llmproxyIdentity string
 	if mode == coreServeProduction {
 		llmproxyIdentity, err = requiredConfiguration(getenv, coreLLMProxyIdentityEnvironment)
 		if err != nil {
 			return err
 		}
-		if slices.Contains([]string{gatewayIdentity, harnessPoolIdentity, browserIdentity}, llmproxyIdentity) {
-			return errors.New("llmproxy, browser-gateway, executor-gateway, and harness-pool SPIFFE identities must be distinct")
+		if slices.Contains([]string{gatewayIdentity, harnessPoolIdentity, browserIdentity, platformIdentity}, llmproxyIdentity) {
+			return errors.New("llmproxy, platform-gateway, browser-gateway, executor-gateway, and harness-pool SPIFFE identities must be distinct")
 		}
 	}
 	hydraEndpoint, err := requiredConfiguration(getenv, coreHydraIntrospectionEnvironment)
@@ -143,16 +155,23 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	if err != nil {
 		return err
 	}
-	var hydraIssuer string
-	if mode == coreServeProduction {
-		hydraIssuer, err = requiredConfiguration(getenv, coreHydraIssuerEnvironment)
-		if err != nil {
-			return err
-		}
+	hydraIssuer, err := requiredConfiguration(getenv, coreHydraIssuerEnvironment)
+	if err != nil {
+		return err
+	}
+	hydraPlatformClientID, err := requiredConfiguration(getenv, coreHydraPlatformClientEnvironment)
+	if err != nil {
+		return err
+	}
+	if hydraPlatformClientID != corecontract.PlatformOAuthClientID {
+		return fmt.Errorf("%s must be exactly %q", coreHydraPlatformClientEnvironment, corecontract.PlatformOAuthClientID)
 	}
 	hydraBrowserClientID, err := requiredConfiguration(getenv, coreHydraBrowserClientEnvironment)
 	if err != nil {
 		return err
+	}
+	if hydraBrowserClientID != corecontract.BrowserOAuthClientID {
+		return fmt.Errorf("%s must be exactly %q", coreHydraBrowserClientEnvironment, corecontract.BrowserOAuthClientID)
 	}
 	allowInsecureHydra, err := strictOptionalBoolean(getenv(coreHydraInsecureHTTPEnvironment), coreHydraInsecureHTTPEnvironment)
 	if err != nil {
@@ -260,6 +279,10 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	if err != nil {
 		return err
 	}
+	platformAuthorizer, err := coreserver.NewSPIFFEWorkloadAuthorizer(platformIdentity)
+	if err != nil {
+		return err
+	}
 	var llmproxyAuthorizer coreserver.WorkloadAuthorizer
 	if productionCapabilities != nil {
 		llmproxyAuthorizer, err = coreserver.NewSPIFFEWorkloadAuthorizer(llmproxyIdentity)
@@ -294,20 +317,20 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	if err != nil {
 		return err
 	}
-	userAuthorizer, err := coreserver.NewIntrospectedUserAuthorizer(coreserver.IntrospectedUserAuthorizerConfig{
-		Introspector: hydraIntrospector, ExpectedAudience: corecontract.BrowserOAuthAudience,
-		ActionScopes: map[string]string{
-			"runs.create": corecontract.BrowserOAuthRunScope, "runs.cancel": corecontract.BrowserOAuthRunScope,
-			"runs.events.read": corecontract.BrowserOAuthRunScope, "approvals.decide": corecontract.BrowserOAuthRunScope,
-			"executors.create":                    corecontract.BrowserOAuthExecutorScope,
-			"executors.enrollment-token.issue":    corecontract.BrowserOAuthExecutorScope,
-			"llm-gateways.list":                   corecontract.BrowserOAuthLLMGatewayScope,
-			"llm-gateways.create":                 corecontract.BrowserOAuthLLMGatewayScope,
-			"llm-gateways.authorize":              corecontract.BrowserOAuthLLMGatewayScope,
-			"llm-gateways.complete-authorization": corecontract.BrowserOAuthLLMGatewayScope,
-			"llm-gateways.revoke":                 corecontract.BrowserOAuthLLMGatewayScope,
-			"llm-gateways.disable":                corecontract.BrowserOAuthLLMGatewayScope,
-		},
+	browserUserAuthorizer, err := coreserver.NewIntrospectedUserAuthorizer(coreserver.IntrospectedUserAuthorizerConfig{
+		Introspector: hydraIntrospector, ExpectedIssuer: hydraIssuer,
+		ExpectedClientID: corecontract.BrowserOAuthClientID, ExpectedAudience: corecontract.BrowserOAuthAudience,
+		ExpectedAuthority: corecontract.UserOAuthBrowserAuthority, AllowedScopes: corecontract.BrowserOAuthScopes(),
+		ActionPermissions: corecontract.BrowserOAuthActionPermissions(),
+	})
+	if err != nil {
+		return err
+	}
+	platformUserAuthorizer, err := coreserver.NewIntrospectedUserAuthorizer(coreserver.IntrospectedUserAuthorizerConfig{
+		Introspector: hydraIntrospector, ExpectedIssuer: hydraIssuer,
+		ExpectedClientID: corecontract.PlatformOAuthClientID, ExpectedAudience: corecontract.PlatformOAuthAudience,
+		ExpectedAuthority: corecontract.UserOAuthPlatformAuthority, AllowedScopes: corecontract.PlatformOAuthScopes(),
+		ActionPermissions: corecontract.PlatformOAuthActionPermissions(),
 	})
 	if err != nil {
 		return err
@@ -361,7 +384,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		if err != nil {
 			return fmt.Errorf("configure executor OAuth authorizer: %w", err)
 		}
-		userExecutorHandler, err = coreserver.NewUserExecutorManagementHandler(browserAuthorizer, userAuthorizer, executorEnrollmentService)
+		userExecutorHandler, err = coreserver.NewUserExecutorManagementHandler(platformAuthorizer, platformUserAuthorizer, executorEnrollmentService)
 		if err != nil {
 			return err
 		}
@@ -389,12 +412,16 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	}
 	loginBridge, err := coreserver.NewLoginBridge(coreserver.LoginBridgeConfig{
 		Store: store, Hydra: hydraAdmin, IdentityProvider: externalOIDC, Sealer: loginSealer,
-		HydraBrowserClientID: hydraBrowserClientID, HydraPublicOrigin: hydraPublicOrigin,
+		OAuthProfiles: []coreserver.LoginBridgeOAuthProfile{
+			{Authority: corecontract.UserOAuthPlatformAuthority, ClientID: hydraPlatformClientID, Scopes: corecontract.PlatformOAuthScopes(), Audience: []string{corecontract.PlatformOAuthAudience}},
+			{Authority: corecontract.UserOAuthBrowserAuthority, ClientID: hydraBrowserClientID, Scopes: corecontract.BrowserOAuthScopes(), Audience: []string{corecontract.BrowserOAuthAudience}},
+		},
+		HydraPublicOrigin: hydraPublicOrigin,
 	})
 	if err != nil {
 		return err
 	}
-	loginBridgeHandler, err := coreserver.NewLoginBridgeHandler(browserAuthorizer, loginBridge)
+	loginBridgeHandler, err := coreserver.NewLoginBridgeHandler(platformAuthorizer, loginBridge)
 	if err != nil {
 		return err
 	}
@@ -410,14 +437,14 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	if err != nil {
 		return err
 	}
-	userRunHandler, err := coreserver.NewUserRunHandler(browserAuthorizer, userAuthorizer, userRunService)
+	userRunHandler, err := coreserver.NewUserRunHandler(browserAuthorizer, browserUserAuthorizer, userRunService)
 	if err != nil {
 		return err
 	}
 	var workspaceLLMGatewayHandler *coreserver.WorkspaceLLMGatewayHandler
 	if llmGatewayService != nil {
 		workspaceLLMGatewayHandler, err = coreserver.NewWorkspaceLLMGatewayHandler(
-			browserAuthorizer, userAuthorizer, llmGatewayService,
+			platformAuthorizer, platformUserAuthorizer, llmGatewayService,
 		)
 		if err != nil {
 			return err
@@ -427,7 +454,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	if err != nil {
 		return err
 	}
-	userApprovalHandler, err := coreserver.NewUserApprovalHandler(browserAuthorizer, userAuthorizer, userApprovalService)
+	userApprovalHandler, err := coreserver.NewUserApprovalHandler(browserAuthorizer, browserUserAuthorizer, userApprovalService)
 	if err != nil {
 		return err
 	}

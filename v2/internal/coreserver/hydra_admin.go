@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/agentserver/agentserver/v2/internal/braincatalog"
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 )
 
 const maximumHydraAdminResponseBytes = int64(512 * 1024)
@@ -65,6 +66,7 @@ type HydraLoginRequest struct {
 	Client                       HydraOAuth2Client `json:"client"`
 	RequestedScope               []string          `json:"requested_scope"`
 	RequestedAccessTokenAudience []string          `json:"requested_access_token_audience"`
+	RequestURL                   string            `json:"request_url"`
 }
 
 type HydraConsentRequest struct {
@@ -76,6 +78,13 @@ type HydraConsentRequest struct {
 	RequestedAccessTokenAudience []string          `json:"requested_access_token_audience"`
 	LoginChallenge               string            `json:"login_challenge"`
 	LoginSessionID               string            `json:"login_session_id"`
+	RequestURL                   string            `json:"request_url"`
+}
+
+type HydraConsentGrant struct {
+	Scope     []string
+	Audience  []string
+	Authority corecontract.UserOAuthAuthority
 }
 
 type HydraRedirect struct {
@@ -87,7 +96,7 @@ type HydraAdminAPI interface {
 	AcceptLoginRequest(context.Context, string, string) (HydraRedirect, error)
 	RejectLoginRequest(context.Context, string, string, string) (HydraRedirect, error)
 	GetConsentRequest(context.Context, string) (HydraConsentRequest, error)
-	AcceptConsentRequest(context.Context, string, []string, []string) (HydraRedirect, error)
+	AcceptConsentRequest(context.Context, string, HydraConsentGrant) (HydraRedirect, error)
 	RejectConsentRequest(context.Context, string, string, string) (HydraRedirect, error)
 }
 
@@ -173,7 +182,7 @@ func (client *HydraAdminClient) GetConsentRequest(ctx context.Context, challenge
 func (client *HydraAdminClient) AcceptConsentRequest(
 	ctx context.Context,
 	challenge string,
-	grantScope, grantAudience []string,
+	grant HydraConsentGrant,
 ) (HydraRedirect, error) {
 	body := struct {
 		GrantScope               []string `json:"grant_scope"`
@@ -185,10 +194,10 @@ func (client *HydraAdminClient) AcceptConsentRequest(
 			IDToken     map[string]any `json:"id_token"`
 		} `json:"session"`
 	}{
-		GrantScope: append([]string(nil), grantScope...), GrantAccessTokenAudience: append([]string(nil), grantAudience...),
+		GrantScope: append([]string(nil), grant.Scope...), GrantAccessTokenAudience: append([]string(nil), grant.Audience...),
 		Remember: false, RememberFor: 0,
 	}
-	body.Session.AccessToken = map[string]any{}
+	body.Session.AccessToken = map[string]any{"agentserver": grant.Authority}
 	body.Session.IDToken = map[string]any{}
 	var result HydraRedirect
 	err := client.do(ctx, http.MethodPut, "/admin/oauth2/auth/requests/consent/accept", "consent_challenge", challenge, body, &result, "accept consent request")

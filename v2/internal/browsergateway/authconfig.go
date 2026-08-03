@@ -24,6 +24,16 @@ type BrowserAuthorizationConfigHandler struct {
 }
 
 func NewBrowserAuthorizationConfigHandler(clientID, audience string, scopes []string, apiOrigin string) (*BrowserAuthorizationConfigHandler, error) {
+	return NewBrowserAuthorizationConfigHandlerWithEndpoints(
+		clientID, audience, scopes, apiOrigin, "/oauth2/auth", "/oauth2/token",
+	)
+}
+
+func NewBrowserAuthorizationConfigHandlerWithEndpoints(
+	clientID, audience string,
+	scopes []string,
+	apiOrigin, authorizationEndpoint, tokenEndpoint string,
+) (*BrowserAuthorizationConfigHandler, error) {
 	if !boundedAuthorizationText(clientID, 512) || !boundedAuthorizationText(audience, 512) || len(scopes) < 1 || len(scopes) > 16 {
 		return nil, errors.New("browser OAuth client, audience, and scopes are required within protocol bounds")
 	}
@@ -44,8 +54,17 @@ func NewBrowserAuthorizationConfigHandler(clientID, audience string, scopes []st
 			return nil, errors.New("browser API origin must be an exact HTTPS origin when configured")
 		}
 	}
+	if err := validateBrowserOAuthEndpoint("authorization", authorizationEndpoint, "/oauth2/auth"); err != nil {
+		return nil, err
+	}
+	if err := validateBrowserOAuthEndpoint("token", tokenEndpoint, "/oauth2/token"); err != nil {
+		return nil, err
+	}
+	if browserOAuthEndpointAuthority(authorizationEndpoint) != browserOAuthEndpointAuthority(tokenEndpoint) {
+		return nil, errors.New("browser OAuth authorization and token endpoints must use the same authority")
+	}
 	document := BrowserAuthorizationConfig{
-		Version: 1, AuthorizationEndpoint: "/oauth2/auth", TokenEndpoint: "/oauth2/token", RedirectPath: "/",
+		Version: 1, AuthorizationEndpoint: authorizationEndpoint, TokenEndpoint: tokenEndpoint, RedirectPath: "/",
 		ClientID: clientID, Scopes: append([]string(nil), scopes...), Audience: audience, APIOrigin: apiOrigin,
 	}
 	body, err := json.Marshal(document)
@@ -54,6 +73,26 @@ func NewBrowserAuthorizationConfigHandler(clientID, audience string, scopes []st
 	}
 	body = append(body, '\n')
 	return &BrowserAuthorizationConfigHandler{body: body}, nil
+}
+
+func browserOAuthEndpointAuthority(raw string) string {
+	if strings.HasPrefix(raw, "/") {
+		return ""
+	}
+	parsed, _ := url.Parse(raw)
+	return parsed.Scheme + "://" + parsed.Host
+}
+
+func validateBrowserOAuthEndpoint(name, raw, requiredPath string) error {
+	if raw == requiredPath {
+		return nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil ||
+		parsed.Path != requiredPath || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.String() != raw {
+		return errors.New("browser OAuth " + name + " endpoint must be the local path or one exact HTTPS endpoint")
+	}
+	return nil
 }
 
 func (handler *BrowserAuthorizationConfigHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {

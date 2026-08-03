@@ -7,8 +7,8 @@
 > 本文中 stock Codex 有两个严格分离的运行角色：大脑由 per-run `harness-worker` 通过 stdio 驱动 stock app-server；双手由 agentx 监管本地 `codex exec-server --listen stdio`。app-server 子进程只运行模型循环，从 `dynamicTools` 看见冻结的工具目录，并以 `item/tool/call` 把结构化调用交还 worker；worker 才是 executor MCP client。exec-server 只处理确定性的 process/fs JSON-RPC，不运行模型。两侧的宿主进程都不替模型推理。
 
 > 当前生产部署覆盖：只部署 SG、只支持 `linux/amd64`。公网 TLS 由现有 Istio Gateway
-> 终止；frontend、browser API、executor agentx 分别使用
-> `agent.byted.bps.dev`、`browser-gateway.byted.bps.dev`、
+> 终止；Platform frontend、Browser frontend、Browser API、executor agentx 分别使用
+> `agent.byted.bps.dev`、`browser.byted.bps.dev`、`browser-gateway.byted.bps.dev`、
 > `executor-gateway.byted.bps.dev`。当前 S3-compatible 服务没有 KMS，因此 SG profile 按
 > [ADR 0004](adr/0004-sg-plaintext-s3-production.md) 明文保存 prompt/checkpoint；本文后面保留的
 > envelope/KMS 内容只描述库中的历史/候选 profile，不是 SG Chart 的运行事实。PostgreSQL 固定为
@@ -35,7 +35,7 @@
    - session、run、审批和规范化事件由 core 持久化。
    - 大输出与 Codex 会话制品存对象存储；本地缓存不能成为恢复前提。
 5. **身份凭证不跨越信任边界**
-   - 用户 access token 止于 browser-gateway/core。
+   - 用户 access token 止于 platform-gateway/browser-gateway/core。
    - harness 使用短期、受众绑定的 run capability。
    - 每个 executor 使用独立机器身份；executor 凭证不能被 llmproxy 接受。
 6. **副作用不能被隐式重放**
@@ -46,7 +46,7 @@
 ### 1.1 目标
 
 - 保留“托管大脑 + 用户环境双手”的产品形态，同时把协议和安全边界钉死。
-- 将集群内产品组件收敛为 5 个：`agentserver-core`、`browser-gateway`、`harness-pool`、`executor-gateway`、`a2ui-web`。
+- 将 Platform 管理面与 Browser 对话面拆成独立前端、gateway、Hydra client、audience 和权限集合；两类 access token 不能交叉使用。
 - 使用 stock Codex，不维护 Codex fork：harness 使用 app-server；executor 使用本地 stdio exec-server。
 - harness-pool 以本地 `fork/exec` 启动无状态的 per-attempt `harness-worker`，由 worker 驱动 app-server stdio；worker 是短命数据面进程，不增加常驻产品组件。
 - executor-gateway 向 harness-worker 提供 MCP 工具；worker 把冻结目录投影成 app-server `dynamicTools`，gateway 再把调用参数确定性地映射为 exec-server JSON-RPC。
@@ -65,68 +65,79 @@
 ## 2. 总体架构
 
 ```text
-                                     ┌──────────────────┐
-                                     │ 外部 OIDC IdP     │
-                                     └────────▲─────────┘
-                                              │ 身份认证
-┌──────────────┐  Code + PKCE  ┌──────────┐  challenge  ┌──────────────────┐
-│ a2ui-web     │◄──────────────►│ Hydra    │◄───────────►│ core login bridge│
-│ SPA/AG-UI UI │                │ OAuth2   │              └────────┬─────────┘
-└──────┬───────┘                └──────────┘                       │
-       │ REST / AG-UI                                              │
-       ▼                                                           │
-┌─────────────────┐  authorize / create run / event cursor         │
-│ browser-gateway │◄───────────────────────────────────────────────►│
-└─────────────────┘                                                │
-                                                           ┌───────▼────────┐
-                                                           │agentserver-core│
-                                                           └───┬────────┬───┘
-                                        queued run/outbox/lease│        ├──► Postgres
-                                                              │        └──► Object Storage
-                                                              ▼
-                                                    ┌─────────────────────┐
-                                                    │ harness-pool        │
-                                                    │ controller/launcher │
-                                                    └──────────┬──────────┘
-                                                               │ fork/exec per-attempt process
-                                                               ▼
-                                                    ┌─────────────────────┐
-                                                    │ harness-worker      │
-                                                    │ attempt process     │
-                                                    │ MCP client/bridge   │
-                                                    │   └─stdio app-server│
-                                                    │ Codex：模型+dynamic │
-                                                    └─────┬────────┬──────┘
-                                          app模型调用     │        │ worker MCP
-                                                          ▼        ▼
-                                                   ┌────────┐  ┌──────────────────┐
-                                                   │llmproxy│  │executor-gateway  │
-                                                   └────────┘  │MCP → JSON-RPC    │
-                                                               └────────┬─────────┘
-                                                        WSS（agentx 主动拨出）
-                                                                        ▼
-                                                               ┌──────────────────────┐
-                                                               │ agentx               │
-                                                               │ 注册/策略/连接/代理   │
-                                                               └──────────┬───────────┘
-                                                                          │ stdio
-                                                               ┌──────────▼───────────┐
-                                                               │ stock exec-server    │
-                                                               │ process/fs，无模型    │
-                                                               └──────────┬───────────┘
-                                                                          ▼
-                                                                 用户本地工作环境
+  外部 OIDC IdP
+        ▲
+        │ 身份认证
+┌───────┴──────────┐       ┌──────────────────┐
+│ Platform SPA     │       │ Browser SPA      │
+│ agent.byted...   │       │ browser.byted... │
+└────────┬─────────┘       └────────┬─────────┘
+         │ Platform API             │ Browser API / AG-UI
+         ▼                          ▼
+┌──────────────────┐       ┌──────────────────┐
+│ platform-gateway │       │ browser-gateway  │
+│ 管理面/OAuth入口 │       │ session/run 边缘 │
+└──────┬─────┬─────┘       └────────┬─────────┘
+       │     │ Hydra public         │
+       │     ▼                      │
+       │  ┌────────────┐            │
+       │  │ Hydra      │            │
+       │  │ OAuth2     │            │
+       │  └─────┬──────┘            │
+       │        │ login/consent     │
+       │        ▼                   │
+       │  ┌───────────────────┐     │
+       └─►│ agentserver-core  │◄────┘
+          │ login bridge/RBAC │
+          └───┬─────────┬─────┘
+              │         ├──────────────► PostgreSQL
+              │         └──────────────► Object Storage
+              │ queued run/outbox/lease
+              ▼
+       ┌─────────────────────┐
+       │ harness-pool        │
+       │ controller/launcher │
+       └──────────┬──────────┘
+                  │ fork/exec per-attempt
+                  ▼
+       ┌─────────────────────┐
+       │ harness-worker      │
+       │ MCP client/bridge   │
+       │ └─ stdio app-server │
+       └──────┬────────┬─────┘
+              │        │ executor MCP
+  模型请求    ▼        ▼
+       ┌──────────┐  ┌──────────────────┐
+       │ llmproxy │  │ executor-gateway │
+       └──────────┘  │ MCP → JSON-RPC   │
+                     └────────┬─────────┘
+                              │ WSS（agentx 主动拨出）
+                              ▼
+                     ┌──────────────────┐
+                     │ agentx           │
+                     │ 策略/连接/RPC代理│
+                     └────────┬─────────┘
+                              │ stdio
+                              ▼
+                     ┌──────────────────┐
+                     │ stock exec-server│
+                     │ process/fs，无模型│
+                     └────────┬─────────┘
+                              ▼
+                         用户本地工作环境
 ```
 
-除了 5 个产品组件，部署还依赖 Hydra、CloudNativePG PostgreSQL、对象存储和 llmproxy。`harness-worker` 是 harness-pool 在本地按 attempt 启动的短命数据面进程，不是第六个常驻服务，也不会为每个 run 创建 Kubernetes Job/Pod。外部 OIDC IdP 和用户侧 agentx 不计入集群组件数。a2ui-web 的 workspace/resource REST 直连 core；图中经过 browser-gateway 的业务链路仅指 AG-UI run/事件接口。
+生产中常驻的 AgentServer Deployment 是 core、platform-gateway、browser-gateway、harness-pool、executor-gateway 和 llmproxy，另部署 Hydra；Platform/Browser SPA 分别作为对应 gateway 的静态资源。CloudNativePG PostgreSQL 和对象存储是外部状态依赖。`harness-worker` 由 harness-pool 在本地按 attempt 启动，是短命数据面进程，不会为每个 run 创建 Kubernetes Job/Pod；用户侧 agentx 和外部 OIDC IdP 也不计入集群常驻组件。
 
 ## 3. 组件职责
 
 | 组件 | 唯一职责 | 明确不负责 |
 |---|---|---|
-| **a2ui-web** | 静态 SPA；OIDC Authorization Code + PKCE；AG-UI client；A2UI 渲染 | 不保存服务端会话状态，不持久化 access token |
+| **platform-web** | Platform 静态 SPA；以 `agentserver-platform` 完成 Code + PKCE；管理 workspace、成员、executor 与 LLM Gateway | 不承载对话，不持有 Browser token，不绕过 platform-gateway |
+| **platform-gateway** | 托管 Platform SPA；代理 Hydra public/login/consent；以独立 workload identity 转发 Platform 管理 API | 不接受 Browser token，不承载 session/run/AG-UI API，不拥有业务状态 |
+| **Browser SPA**（源码目录 `a2ui-web`） | 以 `agentserver-browser` 为单一 workspace 完成 Code + PKCE；session 导航、AG-UI client 与 A2UI 渲染 | 不管理 workspace/executor/LLM Gateway，不持久化 access token |
 | **agentserver-core** | workspace/RBAC；session/run；事件；审批；executor/credential/LLM authorization 控制面；Hydra login/consent bridge | 不运行 Codex，不代理模型，不托管 SPA |
-| **browser-gateway** | workspace 显式的 AG-UI/SSE 边缘；鉴权委托；规范事件到 AG-UI/A2UI 的映射 | 不创建权威 session，不持久化浏览器会话，不拥有运行状态 |
+| **browser-gateway** | 托管 Browser SPA；workspace 显式的 session/run/AG-UI/SSE 边缘；规范事件到 AG-UI/A2UI 的映射 | 不接受 Platform token，不暴露管理 API，不拥有运行状态 |
 | **harness-pool controller** | 从 core 的`run.queued`专用durable delivery lane领取任务；持有 session/run-attempt lease；有界地 fork/exec 并回收 per-attempt worker 进程；汇聚事件，并在进程组停止后以受信本地finalizer生成、上传和提交 checkpoint | 不消费其他event outbox kind，不复用已运行过 turn 的 worker/app-server 进程，不拥有 session/run/event 事实 |
 | **harness-worker**（per-run） | 作为 app-server stdio client 驱动 thread/turn；校验冻结的 executor tool catalog并生成 `dynamicTools`；把 `item/tool/call` 转成 MCP `tools/call`；转接 MCP elicitation；执行 cancel/fence和child监管；child退出后上报受限rollout locator | 不推理、不选工具、不改写 prompt、不在本地执行工具、不读取app UID私有rollout、不拥有持久状态 |
 | **stock app-server**（worker 子进程） | 运行模型循环；调用 llmproxy；对 client-hosted `dynamicTools` 发出结构化 callback | 不访问 MCP、工作树、core、对象存储或 harness-pool 控制接口，不执行本地工具 |
@@ -183,30 +194,47 @@ executor 侧不存在 Codex thread，也不存在“大脑 thread 与 executor t
 
 ### 5.1 用户登录
 
-1. a2ui-web 是 Hydra 的 public OIDC client，使用 Authorization Code + PKCE。
-2. Hydra 的 `URLS_LOGIN` 和 `URLS_CONSENT` 指向 core 的 bridge endpoint。
-3. core 接收 Hydra challenge，跳转外部 OIDC IdP，并将 `(issuer, sub)` 映射为本地 user。
-4. core 接受 Hydra login/consent challenge；Hydra 签发带正确 `aud` 和 `scope` 的 token。
-5. core 不保存或验证用户密码；身份认证仍由外部 IdP 完成。
+1. Platform SPA 和 Browser SPA 分别是 Hydra public client `agentserver-platform` 与
+   `agentserver-browser`，都使用 Authorization Code + PKCE，且没有 client secret。
+2. Platform 请求唯一 `aud=agentserver-platform-api`；Browser 请求唯一
+   `aud=agentserver-browser-api`，并携带单一
+   `resource=urn:agentserver:workspace:<workspace-id>`。
+3. Hydra 的 `URLS_LOGIN` 和 `URLS_CONSENT` 通过 platform-gateway 指向 core login bridge。
+4. core 接收 Hydra challenge，跳转外部 OIDC IdP，并将 `(issuer, sub)` 映射为本地 user；随后按
+   client、requested scope、当前 membership 与 workspace resource 计算 consent grant。
+5. Hydra 签发 opaque access token，Core 在每个用户请求上调用 Hydra introspection，并校验精确的
+   issuer、client、audience、scope 与 versioned resource grant。
+6. core 不保存或验证用户密码；身份认证仍由外部 IdP 完成。
 
-浏览器只使用browser-gateway的同一HTTPS origin：`/oauth2/auth`和`/oauth2/token`精确代理Hydra public API，`/auth/hydra/login`、`/auth/oidc/callback`和`/auth/hydra/consent`经browser-gateway mTLS代理到Core。生产外部IdP authorization endpoint通常直接指向IdP；只有insecure-dev显式配置`/auth/idp/authorize`的精确代理，且该代理会剥离同origin事务Cookie。Hydra Admin、外部IdP token、discovery和JWKS调用都不经过浏览器。
+Hydra public 的 `/oauth2/auth`、`/oauth2/token` 以及 `/auth/*` bridge 统一位于
+`https://agent.byted.bps.dev`，由 platform-gateway 精确代理。Platform 同源使用这些 endpoint；Browser
+以顶层导航跨域访问 authorize endpoint，并从 `https://browser.byted.bps.dev` 对 token endpoint 发起不带
+credentials 的 CORS 请求。生产外部 IdP authorization endpoint 通常直接指向 IdP；只有 insecure-dev
+显式配置 `/auth/idp/authorize` 的精确代理。Hydra Admin、外部 IdP token、discovery 和 JWKS 调用都不
+经过浏览器。
 
 Core以数据库单次状态机持久化login与consent receipt。Hydra challenge、OIDC state/nonce、PKCE verifier和browser binding只以SHA-256 lookup或AES-256-GCM密文保存，密文AAD绑定transaction/purpose；浏览器只持有`Secure + HttpOnly + SameSite=Lax`的`__Host-`随机binding Cookie。callback必须同时命中state hash与binding hash并原子claim，`(issuer, subject)`只映射到预先存在且active的本地user；callback、consent challenge和authorization code都不能重放。Hydra continuation必须精确回到同origin的`/oauth2/auth`，login和consent分别只能携带单个对应verifier；成功redirect密封后作为状态与审计证据提交，失败或不明确结果不能被当作登录成功恢复。
 
-Hydra token 只证明用户身份和授权受众。workspace 角色必须在每次敏感操作时从 core 的当前成员关系校验，不能信任 token 中可能过期的角色声明。
+Hydra access token 是用户 endpoint 权限的唯一 authority；前端不能自报 role 或 permission。Core 数据库
+继续校验 workspace、session、run、executor 等资源归属与业务不变量。membership/role 是 consent 编译
+permission 的输入；权限降低必须撤销旧 Hydra token，不能在 endpoint 上偷偷重新解释为另一套权限系统。
 
 ### 5.2 四类 principal
 
 | principal | 获取方式 | 使用范围 |
 |---|---|---|
-| 用户 access token | Authorization Code + PKCE；Phase 1 使用共享浏览器 API audience `aud=agentserver-api` | a2ui-web → core/browser-gateway |
+| Platform access token | `agentserver-platform` Code + PKCE；唯一 `aud=agentserver-platform-api` | Platform SPA → platform-gateway → core 管理 API |
+| Browser access token | `agentserver-browser` Code + PKCE；唯一 `aud=agentserver-browser-api`；精确绑定一个 workspace | Browser SPA → browser-gateway → core 对话 API |
 | 集群 workload token | workload identity、mTLS 或 Hydra client credentials | 产品组件之间的内部调用 |
 | per-executor access token | 每个 executor 独立 OAuth client，`aud=executor-gateway` | agentx WSS 连接 |
 | 短期 run capability | core 按 run 和 audience 分别签发 | app-server child → llmproxy；harness-worker → executor MCP |
 
-每枚 run capability 的公共 claim 至少绑定 issuer、`workspace_id`、`session_id`、`run_id`、`run_attempt_id`、`run_attempt_generation`、actor、holder、`aud`、强制run deadline、过期时间和唯一 capability ID（jti）。`aud=llmproxy` 只增加允许的 model/provider route；`aud=executor-mcp` 才增加允许的 executor、`tool_catalog_digest`、预期run/attempt version和approval TTL。具体environment由工具请求选择并在每次调用时在线复核归属与policy，不能把执行权限塞进模型 token，也不能把一枚 token 同时用于模型与执行。共享的 `agentserver-api` audience 只覆盖两个浏览器入口，不得被任何内部服务或 executor 接受。executor-gateway 的 `tools/list` 按 capability 中的 catalog digest 返回 core 已冻结的精确 catalog；未知或不匹配 digest 直接拒绝。
+每枚 run capability 的公共 claim 至少绑定 issuer、`workspace_id`、`session_id`、`run_id`、`run_attempt_id`、`run_attempt_generation`、actor、holder、`aud`、强制run deadline、过期时间和唯一 capability ID（jti）。`aud=llmproxy` 只增加允许的 model/provider route；`aud=executor-mcp` 才增加允许的 executor、`tool_catalog_digest`、预期run/attempt version和approval TTL。具体environment由工具请求选择并在每次调用时在线复核归属与policy，不能把执行权限塞进模型 token，也不能把一枚 token 同时用于模型与执行。Platform 与 Browser token 的 client、audience、scope 和 gateway identity 都是闭合且互斥的；任何内部服务或 executor 都不得接受这两类用户 audience。executor-gateway 的 `tools/list` 按 capability 中的 catalog digest 返回 core 已冻结的精确 catalog；未知或不匹配 digest 直接拒绝。
 
-用户 bearer 不进入 harness、executor-gateway 或 agentx。browser-gateway 使用内部身份调用 core 的 authorize API，并将目标 workspace/action 一并提交；core 只向 browser-gateway 返回 actor context 与 run handle。run capability 在 harness-pool 持有效 session lease 和 run-attempt lease 后签发给目标 worker 进程，不能经浏览器链路转交。
+用户 bearer 不进入 harness、executor-gateway 或 agentx。platform-gateway/browser-gateway 使用彼此独立的
+内部身份调用各自获准的 Core route，并原样转交对应用户 bearer；Core 每次 introspect 后才返回受限结果。
+run capability 在 harness-pool 持有效 session lease 和 run-attempt lease 后签发给目标 worker 进程，不能
+经浏览器链路转交。
 
 Phase 1 不尝试修改已启动 app-server 的环境变量来轮换 llmproxy capability。系统必须定义并强制 `max_run_duration`；每个 capability 的 TTL 覆盖该上限与很短的收尾 grace，但 llmproxy 和 executor-gateway 在每次请求时仍校验 live run-attempt lease/generation，因此取消、fence 或成员移除可以立即生效。executor MCP capability 只由 worker 持有，可以在不触碰 app-server 环境的情况下轮换。超过硬上限的 attempt 必须被中断，不能带过期 token 继续运行。
 
@@ -233,7 +261,7 @@ stock app-server 访问 llmproxy 所需的短期 capability 优先通过 tmpfs/�
 
 ### 6.1 创建并运行对话
 
-1. a2ui-web 调 core 创建或选择 `session_id`。
+1. Browser SPA 通过 browser-gateway 创建或选择当前用户在 token 所绑定 workspace 内的 `session_id`。
 2. 用户向 `POST /v2/workspaces/{workspaceId}/sessions/{sessionId}/agui` 提交 AG-UI `RunAgentInput` 和客户端生成的 `Idempotency-Key`；`threadId`必须为空或等于path中的`sessionId`，请求必须且只能包含一条新的user message，客户端不得提交历史messages、state、tools或context。重连游标只允许放在`forwardedProps.agentserver.eventCursor`，其他客户端权威字段一律拒绝。
 3. browser-gateway 以自己的mTLS workload identity调用core的`POST /v2/workspaces/{workspaceId}/sessions/{sessionId}/runs`，原样转交用户bearer与幂等键；core introspect得到actor、检查`active/exp/aud/scope`，并在写事务中再次检查当前workspace membership。core在同一事务中写入`run_id`、第一条规范事件和durable outbox。同一user/workspace/session下重复的幂等键只有在请求hash相同时才返回原`run_id`，不同payload必须报冲突。
 4. browser-gateway 将CreateRun结果映射为`RUN_STARTED`，并立即发布第一条`CUSTOM{name:"agentserver.event_cursor"}`。之后它通过core的`GET /v2/workspaces/{workspaceId}/runs/{runId}/events`只读取已提交事件；每次long-poll都重新验证用户token与当前membership，browser-gateway不读取PostgreSQL。
@@ -750,7 +778,9 @@ A07 dynamic probe已经确认：pending `item/tool/call`时调用`turn/interrupt
 
 ### 10.4 Web 安全
 
-- a2ui-web 只在内存中持 `aud=agentserver-api` token；刷新使用 Authorization Code + PKCE/refresh-token rotation 或重新授权，不使用 localStorage。若未来让 core 与 browser-gateway 使用不同 audience，必须显式取得两个 token 或做标准 token exchange，不能把一枚 token 跨 audience 接受。
+- Platform 与 Browser SPA 分别只在页面内存中持有自己的 access token，不使用 localStorage、
+  sessionStorage 或共享 cookie。刷新通过各自的 Authorization Code + PKCE 重新授权；两枚 token 的
+  client、audience、scope 与 resource grant 不同，不能跨 gateway 接受，也不做隐式 token exchange。
 - AG-UI/SSE 使用支持`Authorization` header的`fetch` streaming，并在`forwardedProps.agentserver.eventCursor`显式携带最近一条`agentserver.event_cursor`；不能依赖无法设置bearer header的原生`EventSource`，也不能把SSE `Last-Event-ID`误当core cursor。如果改用HttpOnly BFF cookie，则必须把该cookie session、CSRF和注销语义建模，不能同时宣称不存在浏览器会话。
 - Hydra login/consent bridge 为每次 challenge 保存短期、单次使用且绑定 state/nonce/PKCE 的登录事务；回调、重放、账户映射和 logout/revocation 都必须有明确状态机，不能把 SPA 的“token 只在内存”误当成 bridge 无需会话保护。
 - 配置严格 CSP、可信回调 URL、SameSite/CSRF 防护和最小 CORS。
@@ -799,12 +829,14 @@ users ──< workspace_members >── workspaces
 v2/
 ├─ cmd/
 │  ├─ agentserver-core/
+│  ├─ platform-gateway/
 │  ├─ browser-gateway/
 │  ├─ harness-pool/
 │  ├─ harness-worker/            # per-run app-server stdio host；与 harness-pool 同属一个产品组件
 │  └─ executor-gateway/
 ├─ internal/
 │  ├─ core/
+│  ├─ platformgateway/
 │  ├─ browsergateway/
 │  ├─ harnesspool/
 │  ├─ harnessworker/
@@ -822,7 +854,8 @@ v2/
 │  ├─ openapi/                   # REST
 │  ├─ asyncapi/                  # SSE/WSS；含 harness-control.yaml 与 agentx-wss.yaml
 │  └─ schema/                    # closed-world JSON Schema；含 harness-control/bootstrap schema
-├─ a2ui-web/
+├─ platform-web/                  # Platform 管理 SPA
+├─ a2ui-web/                      # Browser 对话 SPA（历史目录名）
 ├─ deploy/helm/
 ├─ images/harness/               # harness-worker + pinned stock Codex app-server
 ├─ packaging/agentx/
@@ -940,7 +973,9 @@ PR 12已把gateway/core连接和首个executor shell纵向切片变成可运行�
 - [ ] 完成worker MCP client收到的elicitation → core approval链路：参数/上下文冻结、独立approval expiry主动清理、gateway active-time deadline、nonce单次消费、cancel/断线fail-closed和审计闭环，证明app-server不参与第二套审批。
 - [ ] 验证 Phase 1 executor-gateway 单副本部署、同进程 30 秒 resume，以及 gateway 重启后 fail-closed 拒绝 resume/operation 进入 unknown（协议、Core事务、production启动顺序和独立进程hard-kill已经完成；尚缺Kubernetes `replicas: 1 + Recreate`部署及跨仓agentx实跑）；Phase 2 owner routing 不进入首版。
 - [ ] 验证harness-worker/app-server crash后不会自动重放已发出的MCP副作用，worker MCP transport或dynamic callback丢失时execution可独立收口而run明确interrupted。
-- [x] 验证`aud=agentserver-api`、fetch-streaming bearer、AG-UI cursor/rebase、显式cancel、Hydra callback/consent/code防重放和浏览器断线不取消run（协议、组合及包含登录链的pinned Linux整栈复跑均已完成）。
+- [x] 验证 Platform/Browser 的 client、audience、scope、单一 workspace grant 与 gateway identity 互斥；
+  验证 fetch-streaming bearer、AG-UI cursor/rebase、显式 cancel、Hydra callback/consent/code 防重放和
+  浏览器断线不取消 run。Hydra 26.2.0 的 resource/ext/revoke 行为仍由独立 live conformance gate 跟踪。
 - [ ] 验证 capability TTL 覆盖并不超过强制 `max_run_duration + grace`，且 lease fence/RBAC 变更能在 llmproxy 和所有 MCP 入口即时拒绝后续请求。
 
 ## 附录 A：Codex 对齐基线

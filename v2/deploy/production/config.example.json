@@ -5,12 +5,13 @@
   "clusterDomain": "cluster.local",
   "platform": "linux-amd64",
   "images": {
-    "service": "registry-sg.byted.cs.ac.cn/agentserver/v2-service@sha256:b5c589556aeadcbac5a976558a75e7ab9eed0a8d43a0866de323a536a980a066",
-    "harness": "registry-sg.byted.cs.ac.cn/agentserver/v2-harness@sha256:938d272e84ba7832a048d82006dc773084129516cacc5fdd3f5d77536c42f8ca",
+    "service": "registry-sg.byted.cs.ac.cn/agentserver/v2-service@sha256:a84b85dc3587bd3b1c7c273004f6e0e98ef257104dc5628ecce2822371820d7e",
+    "harness": "registry-sg.byted.cs.ac.cn/agentserver/v2-harness@sha256:a62bbc74fdbb6408537a25248877b785707bdaad731913d0ea0838134d52a9a0",
     "hydra": "registry-sg.byted.cs.ac.cn/agentserver/hydra@sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b"
   },
   "replicas": {
     "core": 2,
+    "platformGateway": 2,
     "browserGateway": 2,
     "harnessPool": 2,
     "llmproxy": 2,
@@ -18,6 +19,7 @@
   },
   "services": {
     "core": {"clusterIp": "192.168.250.10", "port": 8443},
+    "platformGateway": {"clusterIp": "192.168.250.15", "port": 8080},
     "browserGateway": {"clusterIp": "192.168.250.11", "port": 8080},
     "executorGateway": {
       "clusterIp": "192.168.250.12",
@@ -35,6 +37,7 @@
       "gateway.networking.k8s.io/gateway-name": "istio-gateway"
     },
     "frontendHostname": "agent.byted.bps.dev",
+    "browserFrontendHostname": "browser.byted.bps.dev",
     "browserGatewayHostname": "browser-gateway.byted.bps.dev",
     "executorGatewayHostname": "executor-gateway.byted.bps.dev"
   },
@@ -53,6 +56,7 @@
       "publicOrigin": "https://agent.byted.bps.dev",
       "publicUpstream": "https://hydra.agentserver.internal:4444",
       "introspectionUrl": "https://hydra.agentserver.internal:4445/admin/oauth2/introspect",
+      "platformClientId": "agentserver-platform",
       "browserClientId": "agentserver-browser"
     },
     "externalOidc": {
@@ -86,10 +90,11 @@
     "s3Bucket": "agentserver-sg",
     "s3Region": "sg-central",
     "s3Endpoint": "https://tos-s3-sg.byted.org",
-    "s3UsePathStyle": false
+    "s3UsePathStyle": true
   },
   "secrets": {
     "core": "agentserver-core-secrets",
+    "platformGateway": "agentserver-platform-secrets",
     "browserGateway": "agentserver-browser-secrets",
     "executorGateway": "agentserver-executor-secrets",
     "harnessPool": "agentserver-pool-secrets",
@@ -118,6 +123,10 @@
     "core": {
       "requests": {"cpu": "500m", "memory": "512Mi"},
       "limits": {"cpu": "2", "memory": "2Gi"}
+    },
+    "platformGateway": {
+      "requests": {"cpu": "250m", "memory": "256Mi"},
+      "limits": {"cpu": "1", "memory": "1Gi"}
     },
     "browserGateway": {
       "requests": {"cpu": "250m", "memory": "256Mi"},

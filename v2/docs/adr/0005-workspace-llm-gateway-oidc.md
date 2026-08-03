@@ -2,7 +2,11 @@
 
 - 状态：Accepted
 - 日期：2026-08-02
-- 影响范围：Core、llmproxy、harness-pool、browser-gateway、生产部署配置
+- 影响范围：Core、llmproxy、harness-pool、platform-gateway、生产部署配置
+
+> ADR 0006 后续取代了本文第 6 节的前端/API 归属和宽泛 OAuth scope：LLM Gateway 配置与个人 grant
+> 全部属于 Platform，使用细分的 `llm-gateways:*` / `llm-gateway-grants:*` permission；Browser 只在缺少
+> active grant 时跳转 Platform。本文的数据所有权、第三方 OIDC grant、存储和 llmproxy 转发决策不变。
 
 ## 背景
 
@@ -128,9 +132,9 @@ OIDC issuer：
 需要访问企业内网 Gateway 时，不能让 workspace 用户自行放开私网。后续应增加平台管理员维护的
 Gateway egress zone / egress proxy，按 zone ID 选择受审计的出口；在该能力完成前内网 endpoint 被拒绝。
 
-### 6. public API 和浏览器流程
+### 6. Platform API 和浏览器流程
 
-browser resource API 提供：
+platform-gateway 转发的 Platform resource API 提供：
 
 - `POST/GET /v2/workspaces/{workspaceId}/llm-gateways`；
 - `POST /v2/workspaces/{workspaceId}/llm-gateways/{gatewayId}:authorize`；
@@ -138,10 +142,12 @@ browser resource API 提供：
 - `POST /v2/workspaces/{workspaceId}/llm-gateways/{gatewayId}:revoke`；
 - `POST /v2/workspaces/{workspaceId}/llm-gateways/{gatewayId}:disable`。
 
-新增 OAuth scope `llm-gateways:write`。配置写操作还会在数据库中重新检查 owner；个人 authorize / complete /
-revoke 允许 owner、developer 操作自己的 grant；disable 仅允许 owner，原子清除 default、把状态设为
-disabled 并递增配置版本，因此旧版本 run 在下一次 live-authorize 时立即失败。首版不原地修改或重新启用
-Gateway；需要更换 endpoint、issuer、client 或 model 时先创建新的 Gateway 并设为 default，再禁用旧项。
+对应权限拆分为 `llm-gateways:read`、`llm-gateways:create`、`llm-gateways:disable`、
+`llm-gateway-grants:authorize` 和 `llm-gateway-grants:revoke`，完整角色编译见 ADR 0006 与
+`AUTHORIZATION.md`。个人 authorize / complete / revoke 的 grant owner 固定为 Hydra token subject；
+disable 原子清除 default、把状态设为 disabled 并递增配置版本，因此旧版本 run 在下一次 live-authorize
+时立即失败。首版不原地修改或重新启用 Gateway；需要更换 endpoint、issuer、client 或 model 时先创建
+新的 Gateway 并设为 default，再禁用旧项。
 
 前端在当前页面内存中保存随机 browser binding、workspace、Gateway ID 和 popup 引用，不写入
 `sessionStorage`。OIDC callback 落到前端 origin 的最小静态页面；它只把 state/code/error 通过限定

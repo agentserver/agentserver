@@ -62,6 +62,7 @@ func TestServeCoreProductionRequiresDistinctLLMProxyIdentity(t *testing.T) {
 		coreGatewayIdentityEnvironment:     "spiffe://agentserver.local/ns/agentserver/sa/executor-gateway",
 		coreHarnessPoolIdentityEnvironment: "spiffe://agentserver.local/ns/agentserver/sa/harness-pool",
 		coreBrowserIdentityEnvironment:     "spiffe://agentserver.local/ns/agentserver/sa/browser-gateway",
+		corePlatformIdentityEnvironment:    "spiffe://agentserver.local/ns/agentserver/sa/platform-gateway",
 	}
 	getenv := func(name string) string { return configuration[name] }
 	if err := serveCore(t.Context(), getenv, io.Discard, io.Discard, coreServeProduction); err == nil || !strings.Contains(err.Error(), coreLLMProxyIdentityEnvironment+" is required") {

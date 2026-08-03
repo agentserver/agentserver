@@ -35,6 +35,16 @@ var (
 	defaultBrowserAudience    = []string{corecontract.BrowserOAuthAudience}
 )
 
+// LoginBridgeOAuthProfile is one closed Hydra public-client authority accepted
+// by the login bridge. Client ID, scopes, and audience are matched as a unit;
+// authority from two profiles can never be combined in one authorization.
+type LoginBridgeOAuthProfile struct {
+	Authority string
+	ClientID  string
+	Scopes    []string
+	Audience  []string
+}
+
 type LoginBridgeStore interface {
 	CreateOIDCLoginTransaction(context.Context, coredb.CreateOIDCLoginTransactionCommand) (coredb.OIDCLoginTransaction, error)
 	ResumeOIDCLoginTransaction(context.Context, [32]byte, [32]byte) (coredb.OIDCLoginTransaction, error)
@@ -47,18 +57,19 @@ type LoginBridgeStore interface {
 	CreateHydraConsentTransaction(context.Context, coredb.CreateHydraConsentTransactionCommand) (coredb.HydraConsentTransaction, error)
 	CompleteHydraConsent(context.Context, coredb.CompleteHydraConsentCommand) (coredb.HydraConsentTransaction, error)
 	FailHydraConsent(context.Context, coredb.FailHydraConsentCommand) (coredb.HydraConsentTransaction, error)
+	ResolveUserOAuthMemberships(context.Context, coredb.ResolveUserOAuthMembershipsCommand) ([]coredb.UserOAuthMembership, error)
 }
 
 type LoginBridgeConfig struct {
-	Store                LoginBridgeStore
-	Hydra                HydraAdminAPI
-	IdentityProvider     ExternalOIDCProvider
-	Sealer               *LoginTransactionSealer
-	HydraBrowserClientID string
-	HydraPublicOrigin    string
-	TransactionTTL       time.Duration
-	NewID                func() (string, error)
-	Random               io.Reader
+	Store             LoginBridgeStore
+	Hydra             HydraAdminAPI
+	IdentityProvider  ExternalOIDCProvider
+	Sealer            *LoginTransactionSealer
+	OAuthProfiles     []LoginBridgeOAuthProfile
+	HydraPublicOrigin string
+	TransactionTTL    time.Duration
+	NewID             func() (string, error)
+	Random            io.Reader
 }
 
 type LoginBridge struct {
@@ -66,7 +77,7 @@ type LoginBridge struct {
 	hydra             HydraAdminAPI
 	identityProvider  ExternalOIDCProvider
 	sealer            *LoginTransactionSealer
-	hydraClientID     string
+	oauthProfiles     map[string]LoginBridgeOAuthProfile
 	hydraPublicOrigin string
 	transactionTTL    time.Duration
 	newID             func() (string, error)
@@ -101,8 +112,9 @@ func NewLoginBridge(config LoginBridgeConfig) (*LoginBridge, error) {
 	if config.Store == nil || config.Hydra == nil || config.IdentityProvider == nil || config.Sealer == nil {
 		return nil, errors.New("login bridge store, Hydra Admin API, external OIDC provider, and sealer are required")
 	}
-	if config.HydraBrowserClientID == "" || len(config.HydraBrowserClientID) > 512 || strings.ContainsAny(config.HydraBrowserClientID, "\x00\r\n") {
-		return nil, errors.New("login bridge Hydra browser client ID is empty or outside protocol bounds")
+	profiles, err := validateLoginBridgeOAuthProfiles(config.OAuthProfiles)
+	if err != nil {
+		return nil, err
 	}
 	canonicalOrigin, err := validateHydraPublicOrigin(config.HydraPublicOrigin)
 	if err != nil {
@@ -125,7 +137,7 @@ func NewLoginBridge(config LoginBridgeConfig) (*LoginBridge, error) {
 	}
 	return &LoginBridge{
 		store: config.Store, hydra: config.Hydra, identityProvider: config.IdentityProvider, sealer: config.Sealer,
-		hydraClientID: config.HydraBrowserClientID, hydraPublicOrigin: canonicalOrigin,
+		oauthProfiles: profiles, hydraPublicOrigin: canonicalOrigin,
 		transactionTTL: config.TransactionTTL, newID: config.NewID, random: config.Random,
 	}, nil
 }
@@ -144,12 +156,16 @@ func (bridge *LoginBridge) BeginLogin(ctx context.Context, challenge, browserBin
 	if loginRequest.Challenge != challenge {
 		return BeginLoginResult{}, errors.New("Hydra login request does not match the requested challenge")
 	}
-	if err := bridge.validateBrowserAuthorizationRequest(
+	profile, err := bridge.oauthProfileForAuthorizationRequest(
 		loginRequest.Client.ClientID,
 		loginRequest.RequestedScope,
 		loginRequest.RequestedAccessTokenAudience,
-	); err != nil {
-		return bridge.rejectUntrackedLogin(ctx, challenge, "invalid_request", "browser authorization request is not allowed")
+	)
+	if err != nil {
+		return bridge.rejectUntrackedLogin(ctx, challenge, "invalid_request", "authorization request is not allowed")
+	}
+	if _, err := userOAuthWorkspaceResource(profile.Authority, loginRequest.RequestURL); err != nil {
+		return bridge.rejectUntrackedLogin(ctx, challenge, "invalid_target", "authorization resource is not allowed")
 	}
 	if loginRequest.Skip {
 		if !canonicalPublicUUID(loginRequest.Subject) {
@@ -173,6 +189,9 @@ func (bridge *LoginBridge) BeginLogin(ctx context.Context, challenge, browserBin
 		bindingHash := sha256.Sum256([]byte(browserBinding))
 		resumed, resumeErr := bridge.store.ResumeOIDCLoginTransaction(ctx, challengeHash, bindingHash)
 		if resumeErr == nil {
+			if resumed.HydraClientID != profile.ClientID {
+				return BeginLoginResult{}, errors.New("resumed login transaction belongs to a different OAuth client")
+			}
 			secrets, err := bridge.openLoginSecrets(resumed)
 			if err != nil {
 				return BeginLoginResult{}, err
@@ -227,7 +246,7 @@ func (bridge *LoginBridge) BeginLogin(ctx context.Context, challenge, browserBin
 		OIDCStateSHA256:      sha256.Sum256([]byte(secrets.State)),
 		BrowserBindingSHA256: sha256.Sum256([]byte(secrets.BrowserBinding)),
 		SealedSecrets:        sealedSecrets, OIDCIssuer: bridge.identityProvider.Issuer(),
-		HydraClientID: bridge.hydraClientID, TTL: bridge.transactionTTL,
+		HydraClientID: profile.ClientID, TTL: bridge.transactionTTL,
 	})
 	if err != nil {
 		return BeginLoginResult{}, err
@@ -360,28 +379,48 @@ func (bridge *LoginBridge) Consent(ctx context.Context, challenge string) (Conse
 	if !canonicalPublicUUID(request.Subject) {
 		return bridge.rejectUntrackedConsent(ctx, challenge, "access_denied", "consent subject is invalid")
 	}
-	if err := bridge.validateBrowserAuthorizationRequest(
+	profile, err := bridge.oauthProfileForAuthorizationRequest(
 		request.Client.ClientID,
 		request.RequestedScope,
 		request.RequestedAccessTokenAudience,
-	); err != nil {
-		return bridge.rejectUntrackedConsent(ctx, challenge, "invalid_scope", "requested browser authority is not allowed")
+	)
+	if err != nil {
+		return bridge.rejectUntrackedConsent(ctx, challenge, "invalid_scope", "requested authority is not allowed")
+	}
+	workspaceID, err := userOAuthWorkspaceResource(profile.Authority, request.RequestURL)
+	if err != nil {
+		return bridge.rejectUntrackedConsent(ctx, challenge, "invalid_target", "authorization resource is not allowed")
+	}
+	membershipLimit := 256
+	if profile.Authority == corecontract.UserOAuthBrowserAuthority {
+		membershipLimit = 1
+	}
+	memberships, err := bridge.store.ResolveUserOAuthMemberships(ctx, coredb.ResolveUserOAuthMembershipsCommand{
+		UserID: request.Subject, WorkspaceID: workspaceID, Limit: membershipLimit,
+	})
+	if err != nil {
+		if coredb.HasStateErrorCode(err, coredb.ErrorForbidden) || coredb.HasStateErrorCode(err, coredb.ErrorNotFound) {
+			return bridge.rejectUntrackedConsent(ctx, challenge, "access_denied", "consent subject has no active resource authority")
+		}
+		return ConsentResult{}, err
+	}
+	grant, err := compileUserOAuthConsentGrant(profile, request.RequestedScope, workspaceID, memberships)
+	if err != nil {
+		return bridge.rejectUntrackedConsent(ctx, challenge, "access_denied", "consent subject has no requested resource authority")
 	}
 	challengeHash := sha256.Sum256([]byte(challenge))
-	requestHash, err := consentRequestHash(request)
+	requestHash, err := consentRequestHash(request, grant)
 	if err != nil {
 		return ConsentResult{}, err
 	}
 	created, err := bridge.store.CreateHydraConsentTransaction(ctx, coredb.CreateHydraConsentTransactionCommand{
 		ConsentChallengeSHA256: challengeHash, RequestSHA256: requestHash,
-		HydraClientID: bridge.hydraClientID, UserID: request.Subject, TTL: bridge.transactionTTL,
+		HydraClientID: profile.ClientID, UserID: request.Subject, TTL: bridge.transactionTTL,
 	})
 	if err != nil {
 		return ConsentResult{}, err
 	}
-	redirect, err := bridge.hydra.AcceptConsentRequest(
-		ctx, challenge, append([]string(nil), defaultBrowserOAuthScopes...), append([]string(nil), defaultBrowserAudience...),
-	)
+	redirect, err := bridge.hydra.AcceptConsentRequest(ctx, challenge, grant)
 	if err != nil {
 		_, _ = bridge.store.FailHydraConsent(ctx, coredb.FailHydraConsentCommand{
 			ConsentChallengeSHA256: challengeHash, Status: coredb.HydraConsentStatusFailed, FailureCode: "hydra_consent_accept_failed",
@@ -493,8 +532,11 @@ func (bridge *LoginBridge) openLoginSecrets(transaction coredb.OIDCLoginTransact
 	if sha256.Sum256([]byte(secrets.LoginChallenge)) != transaction.LoginChallengeSHA256 ||
 		sha256.Sum256([]byte(secrets.State)) != transaction.OIDCStateSHA256 ||
 		sha256.Sum256([]byte(secrets.BrowserBinding)) != transaction.BrowserBindingSHA256 ||
-		transaction.OIDCIssuer != bridge.identityProvider.Issuer() || transaction.HydraClientID != bridge.hydraClientID {
+		transaction.OIDCIssuer != bridge.identityProvider.Issuer() {
 		return oidcLoginSecrets{}, errors.New("sealed login transaction does not match its database correlation hashes")
+	}
+	if _, ok := bridge.oauthProfiles[transaction.HydraClientID]; !ok {
+		return oidcLoginSecrets{}, errors.New("sealed login transaction belongs to an unsupported OAuth client")
 	}
 	return secrets, nil
 }
@@ -507,17 +549,95 @@ func (bridge *LoginBridge) randomSecret(name string) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-func (bridge *LoginBridge) validateBrowserAuthorizationRequest(clientID string, scopes, audience []string) error {
-	if clientID != bridge.hydraClientID {
-		return errors.New("Hydra authorization request belongs to a different client")
+func (bridge *LoginBridge) oauthProfileForAuthorizationRequest(
+	clientID string,
+	scopes, audience []string,
+) (LoginBridgeOAuthProfile, error) {
+	profile, ok := bridge.oauthProfiles[clientID]
+	if !ok {
+		return LoginBridgeOAuthProfile{}, errors.New("Hydra authorization request belongs to an unsupported client")
 	}
-	if !sameUniqueTextSet(scopes, defaultBrowserOAuthScopes) {
-		return errors.New("Hydra authorization request contains an unsupported scope set")
+	if !uniqueCanonicalTextSubset(scopes, profile.Scopes) || !slices.Contains(scopes, corecontract.OAuthOpenIDScope) {
+		return LoginBridgeOAuthProfile{}, errors.New("Hydra authorization request contains an unsupported scope set")
 	}
-	if !sameUniqueTextSet(audience, defaultBrowserAudience) {
-		return errors.New("Hydra authorization request contains an unsupported audience set")
+	if !sameUniqueTextSet(audience, profile.Audience) {
+		return LoginBridgeOAuthProfile{}, errors.New("Hydra authorization request contains an unsupported audience set")
 	}
-	return nil
+	return profile, nil
+}
+
+func validateLoginBridgeOAuthProfiles(profiles []LoginBridgeOAuthProfile) (map[string]LoginBridgeOAuthProfile, error) {
+	if len(profiles) != 2 {
+		return nil, errors.New("login bridge requires exactly the Platform and Browser OAuth profiles")
+	}
+	validated := make(map[string]LoginBridgeOAuthProfile, len(profiles))
+	authorities := make(map[string]struct{}, len(profiles))
+	for _, profile := range profiles {
+		if profile.ClientID == "" || len(profile.ClientID) > 512 || strings.TrimSpace(profile.ClientID) != profile.ClientID ||
+			strings.ContainsAny(profile.ClientID, " \t\r\n\x00") {
+			return nil, errors.New("login bridge OAuth client ID is empty or outside protocol bounds")
+		}
+		if _, exists := validated[profile.ClientID]; exists {
+			return nil, errors.New("login bridge OAuth client IDs must be unique")
+		}
+		if _, exists := authorities[profile.Authority]; exists {
+			return nil, errors.New("login bridge OAuth authorities must be unique")
+		}
+		var expectedClientID, expectedAudience string
+		var expectedScopes []string
+		switch profile.Authority {
+		case corecontract.UserOAuthPlatformAuthority:
+			expectedClientID, expectedAudience, expectedScopes = corecontract.PlatformOAuthClientID, corecontract.PlatformOAuthAudience, corecontract.PlatformOAuthScopes()
+		case corecontract.UserOAuthBrowserAuthority:
+			expectedClientID, expectedAudience, expectedScopes = corecontract.BrowserOAuthClientID, corecontract.BrowserOAuthAudience, corecontract.BrowserOAuthScopes()
+		default:
+			return nil, errors.New("login bridge OAuth authority is unsupported")
+		}
+		if len(profile.Scopes) == 0 || len(profile.Scopes) > 32 || !sameUniqueTextSet(profile.Scopes, profile.Scopes) ||
+			!slices.Contains(profile.Scopes, corecontract.OAuthOpenIDScope) {
+			return nil, errors.New("login bridge OAuth scopes must be a non-empty unique canonical set")
+		}
+		if len(profile.Audience) != 1 || !sameUniqueTextSet(profile.Audience, profile.Audience) {
+			return nil, errors.New("login bridge OAuth profile must have exactly one canonical audience")
+		}
+		if profile.ClientID != expectedClientID || !sameUniqueTextSet(profile.Scopes, expectedScopes) ||
+			!sameUniqueTextSet(profile.Audience, []string{expectedAudience}) {
+			return nil, errors.New("login bridge OAuth profile does not match its closed authority contract")
+		}
+		clone := LoginBridgeOAuthProfile{
+			Authority: profile.Authority,
+			ClientID:  profile.ClientID,
+			Scopes:    append([]string(nil), profile.Scopes...),
+			Audience:  append([]string(nil), profile.Audience...),
+		}
+		validated[clone.ClientID] = clone
+		authorities[clone.Authority] = struct{}{}
+	}
+	return validated, nil
+}
+
+func uniqueCanonicalTextSubset(actual, allowed []string) bool {
+	if len(actual) == 0 || len(actual) > len(allowed) {
+		return false
+	}
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, value := range allowed {
+		allowedSet[value] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(actual))
+	for _, value := range actual {
+		if value == "" || strings.ContainsAny(value, " \t\r\n\x00") {
+			return false
+		}
+		if _, ok := allowedSet[value]; !ok {
+			return false
+		}
+		if _, duplicate := seen[value]; duplicate {
+			return false
+		}
+		seen[value] = struct{}{}
+	}
+	return true
 }
 
 func (bridge *LoginBridge) validateHydraRedirect(raw, verifierQuery string) error {
@@ -576,7 +696,7 @@ func sameUniqueTextSet(actual, expected []string) bool {
 	return slices.Equal(copyActual, copyExpected)
 }
 
-func consentRequestHash(request HydraConsentRequest) ([32]byte, error) {
+func consentRequestHash(request HydraConsentRequest, grant HydraConsentGrant) ([32]byte, error) {
 	if validateHydraChallenge(request.Challenge) != nil || validateHydraChallenge(request.LoginChallenge) != nil ||
 		request.LoginSessionID == "" || len(request.LoginSessionID) > 4096 || strings.ContainsAny(request.LoginSessionID, "\x00\r\n") {
 		return [32]byte{}, errors.New("Hydra consent correlation authority is outside protocol bounds")
@@ -586,23 +706,30 @@ func consentRequestHash(request HydraConsentRequest) ([32]byte, error) {
 	sort.Strings(scopes)
 	sort.Strings(audience)
 	canonical, err := json.Marshal(struct {
-		Challenge      string   `json:"challenge"`
-		LoginChallenge string   `json:"loginChallenge"`
-		ClientID       string   `json:"clientId"`
-		Subject        string   `json:"subject"`
-		Scopes         []string `json:"scopes"`
-		Audience       []string `json:"audience"`
-		LoginID        string   `json:"loginSessionId"`
-		Skip           bool     `json:"skip"`
+		Challenge      string                          `json:"challenge"`
+		LoginChallenge string                          `json:"loginChallenge"`
+		ClientID       string                          `json:"clientId"`
+		Subject        string                          `json:"subject"`
+		Scopes         []string                        `json:"scopes"`
+		Audience       []string                        `json:"audience"`
+		LoginID        string                          `json:"loginSessionId"`
+		RequestURL     string                          `json:"requestUrl"`
+		Skip           bool                            `json:"skip"`
+		GrantScope     []string                        `json:"grantScope"`
+		GrantAudience  []string                        `json:"grantAudience"`
+		Authority      corecontract.UserOAuthAuthority `json:"authority"`
 	}{
 		Challenge: request.Challenge, LoginChallenge: request.LoginChallenge,
 		ClientID: request.Client.ClientID, Subject: request.Subject,
-		Scopes: scopes, Audience: audience, LoginID: request.LoginSessionID, Skip: request.Skip,
+		Scopes: scopes, Audience: audience, LoginID: request.LoginSessionID,
+		RequestURL: request.RequestURL, Skip: request.Skip,
+		GrantScope: append([]string(nil), grant.Scope...), GrantAudience: append([]string(nil), grant.Audience...),
+		Authority: grant.Authority,
 	})
 	if err != nil {
 		return [32]byte{}, fmt.Errorf("encode Hydra consent request fingerprint: %w", err)
 	}
-	return sha256.Sum256(append([]byte("agentserver-v2/hydra-consent/v1\x00"), canonical...)), nil
+	return sha256.Sum256(append([]byte("agentserver-v2/hydra-consent/v2\x00"), canonical...)), nil
 }
 
 func oidcLoginTerminalStatus(status string) bool {

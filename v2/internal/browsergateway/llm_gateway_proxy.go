@@ -79,7 +79,7 @@ func (proxy *WorkspaceLLMGatewayProxy) ServeHTTP(response http.ResponseWriter, r
 	if len(authorizations) != 1 || !strings.HasPrefix(authorizations[0], "Bearer ") ||
 		len(authorizations[0]) < len("Bearer ")+1 || len(authorizations[0]) > 16*1024 ||
 		strings.ContainsAny(authorizations[0], "\x00\r\n,") {
-		response.Header().Set("WWW-Authenticate", `Bearer realm="agentserver-api"`)
+		response.Header().Set("WWW-Authenticate", `Bearer realm="agentserver-platform-api"`)
 		writeLLMGatewayProxyError(response, http.StatusUnauthorized, "unauthorized", "a single bounded user bearer is required")
 		return
 	}

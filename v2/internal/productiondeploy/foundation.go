@@ -4,6 +4,7 @@ import "github.com/agentserver/agentserver/v2/internal/executorgateway"
 
 const (
 	coreComponent           = "agentserver-core"
+	platformComponent       = "platform-gateway"
 	browserComponent        = "browser-gateway"
 	executorComponent       = "executor-gateway"
 	harnessComponent        = "harness-pool"
@@ -21,6 +22,7 @@ func renderFoundation(context renderContext) []kubeObject {
 	items := []kubeObject{
 		namespaceResource(config),
 		serviceAccountResource(config, coreComponent),
+		serviceAccountResource(config, platformComponent),
 		serviceAccountResource(config, browserComponent),
 		serviceAccountResource(config, executorComponent),
 		serviceAccountResource(config, harnessComponent),
@@ -36,11 +38,13 @@ func renderFoundation(context renderContext) []kubeObject {
 			"network-guard.json":     string(context.networkGuardJSON),
 		}),
 		internalService(config, coreComponent, config.Document.Services.Core),
+		publicHTTPService(config, platformComponent, config.Document.Services.PlatformGateway),
 		browserService(config),
 		executorService(config),
 		internalService(config, llmproxyComponent, config.Document.Services.LLMProxy),
 		hydraService(config),
 		frontendHTTPRoute(config),
+		browserFrontendHTTPRoute(config),
 		browserHTTPRoute(config),
 		executorHTTPRoute(config),
 	}
@@ -79,13 +83,16 @@ func internalService(config LoadedConfig, component string, service InternalServ
 }
 
 func browserService(config LoadedConfig) kubeObject {
-	service := config.Document.Services.BrowserGateway
+	return publicHTTPService(config, browserComponent, config.Document.Services.BrowserGateway)
+}
+
+func publicHTTPService(config LoadedConfig, component string, service InternalServiceDocument) kubeObject {
 	return kubeObject{
 		"apiVersion": "v1", "kind": "Service",
-		"metadata": metadata(browserComponent, config.Document.Namespace, componentLabels(browserComponent), nil),
+		"metadata": metadata(component, config.Document.Namespace, componentLabels(component), nil),
 		"spec": kubeObject{
 			"type": "ClusterIP", "clusterIP": service.ClusterIP,
-			"selector": selectorLabels(browserComponent),
+			"selector": selectorLabels(component),
 			"ports": []any{kubeObject{
 				"name": "http", "protocol": "TCP", "port": int(service.Port), "targetPort": "http",
 			}},
@@ -110,10 +117,19 @@ func executorService(config LoadedConfig) kubeObject {
 }
 
 func frontendHTTPRoute(config LoadedConfig) kubeObject {
-	return httpRoute(config, "agentserver-frontend", config.Document.Ingress.FrontendHostname, browserComponent,
+	return httpRoute(config, "agentserver-platform", config.Document.Ingress.FrontendHostname, platformComponent,
+		config.Document.Services.PlatformGateway.Port, []kubeObject{
+			pathMatch("Exact", "/"), pathMatch("Exact", "/index.html"), pathMatch("Exact", "/readyz"),
+			pathMatch("PathPrefix", "/platform"), pathMatch("PathPrefix", "/auth"), pathMatch("PathPrefix", "/oauth2"),
+			pathMatch("PathPrefix", "/v2"),
+		})
+}
+
+func browserFrontendHTTPRoute(config LoadedConfig) kubeObject {
+	return httpRoute(config, "agentserver-browser", config.Document.Ingress.BrowserFrontendHostname, browserComponent,
 		config.Document.Services.BrowserGateway.Port, []kubeObject{
 			pathMatch("Exact", "/"), pathMatch("Exact", "/index.html"), pathMatch("Exact", "/readyz"),
-			pathMatch("PathPrefix", "/reference"), pathMatch("PathPrefix", "/auth"), pathMatch("PathPrefix", "/oauth2"),
+			pathMatch("PathPrefix", "/reference"), pathMatch("Exact", "/auth/config"),
 		})
 }
 

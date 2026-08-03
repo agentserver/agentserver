@@ -118,6 +118,21 @@ type FailHydraConsentCommand struct {
 	FailureCode            string
 }
 
+// UserOAuthMembership is the minimum active workspace authority needed by the
+// Hydra consent compiler. Generation is the persisted membership version, not
+// a role encoded into the eventual access token.
+type UserOAuthMembership struct {
+	WorkspaceID string
+	Role        string
+	Generation  int64
+}
+
+type ResolveUserOAuthMembershipsCommand struct {
+	UserID      string
+	WorkspaceID string
+	Limit       int
+}
+
 func (s *StateStore) CreateOIDCLoginTransaction(ctx context.Context, command CreateOIDCLoginTransactionCommand) (OIDCLoginTransaction, error) {
 	const operation = "CreateOIDCLoginTransaction"
 	if err := validateCreateOIDCLoginTransaction(command); err != nil {
@@ -343,6 +358,68 @@ func (s *StateStore) RequireActiveUser(ctx context.Context, userID string) error
 		return struct{}{}, nil
 	})
 	return err
+}
+
+func (s *StateStore) ResolveUserOAuthMemberships(
+	ctx context.Context,
+	command ResolveUserOAuthMembershipsCommand,
+) ([]UserOAuthMembership, error) {
+	const operation = "ResolveUserOAuthMemberships"
+	if err := validateUUID("user_id", command.UserID); err != nil {
+		return nil, commandError(ErrorInvalidArgument, operation, "user", command.UserID, err.Error())
+	}
+	if command.WorkspaceID != "" {
+		if err := validateUUID("workspace_id", command.WorkspaceID); err != nil {
+			return nil, commandError(ErrorInvalidArgument, operation, "workspace", command.WorkspaceID, err.Error())
+		}
+	}
+	if command.Limit < 1 || command.Limit > 256 {
+		return nil, commandError(ErrorInvalidArgument, operation, "user", command.UserID, "membership projection limit must be between one and 256")
+	}
+	return withStateReadTransaction(ctx, s, operation, func(transaction pgx.Tx) ([]UserOAuthMembership, error) {
+		userQuery := fmt.Sprintf("SELECT 1 FROM %s WHERE id = $1 AND status = 'active'", s.table("users"))
+		var one int
+		if err := transaction.QueryRow(ctx, userQuery, command.UserID).Scan(&one); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, commandError(ErrorForbidden, operation, "user", command.UserID, "consent subject is not active")
+			}
+			return nil, databaseError(operation+" read user", err)
+		}
+
+		query := fmt.Sprintf(`
+SELECT member.workspace_id::text, member.role, member.version
+FROM %s AS member
+JOIN %s AS workspace ON workspace.id = member.workspace_id
+WHERE member.user_id = $1
+  AND workspace.status = 'active'
+  AND ($2::uuid IS NULL OR member.workspace_id = $2::uuid)
+ORDER BY member.workspace_id
+LIMIT $3`, s.table("workspace_members"), s.table("workspaces"))
+		var workspaceID any
+		if command.WorkspaceID != "" {
+			workspaceID = command.WorkspaceID
+		}
+		rows, err := transaction.Query(ctx, query, command.UserID, workspaceID, command.Limit+1)
+		if err != nil {
+			return nil, databaseError(operation+" read memberships", err)
+		}
+		defer rows.Close()
+		memberships := make([]UserOAuthMembership, 0, command.Limit)
+		for rows.Next() {
+			var membership UserOAuthMembership
+			if err := rows.Scan(&membership.WorkspaceID, &membership.Role, &membership.Generation); err != nil {
+				return nil, databaseError(operation+" scan membership", err)
+			}
+			memberships = append(memberships, membership)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, databaseError(operation+" finish memberships", err)
+		}
+		if len(memberships) > command.Limit {
+			return nil, commandError(ErrorConflict, operation, "user", command.UserID, "active workspace authority exceeds the bounded token projection")
+		}
+		return memberships, nil
+	})
 }
 
 func (s *StateStore) CreateHydraConsentTransaction(ctx context.Context, command CreateHydraConsentTransactionCommand) (HydraConsentTransaction, error) {

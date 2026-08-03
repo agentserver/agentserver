@@ -22,12 +22,11 @@ func TestProductionRendererBrowserEnvironmentMatchesCommandContract(t *testing.T
 		browserCoreClientCertificateEnvironment,
 		browserCoreClientKeyEnvironment,
 		browserCoreServerNameEnvironment,
-		browserHydraPublicUpstreamEnvironment,
-		browserHydraCAEnvironment,
-		browserHydraServerNameEnvironment,
 		browserOAuthClientIDEnvironment,
 		browserOAuthAudienceEnvironment,
 		browserOAuthScopesEnvironment,
+		browserOAuthAuthorizationEndpointEnvironment,
+		browserOAuthTokenEndpointEnvironment,
 	}
 	slices.Sort(want)
 	if got := environment.Names(); !slices.Equal(got, want) {
@@ -48,7 +47,13 @@ func TestProductionRendererBrowserEnvironmentMatchesCommandContract(t *testing.T
 		t.Fatalf("browser rejected rendered OAuth authority: %v", err)
 	}
 	frontend, api, split, err := browserPublicOrigins(environment.Get)
-	if err != nil || !split || frontend != "https://agent.byted.bps.dev" || api != "https://browser-gateway.byted.bps.dev" {
+	if err != nil || !split || frontend != "https://browser.byted.bps.dev" || api != "https://browser-gateway.byted.bps.dev" {
 		t.Fatalf("browser rejected rendered split origins: %q %q split=%v error=%v", frontend, api, split, err)
+	}
+	if got := environment.Get(browserOAuthAuthorizationEndpointEnvironment); got != "https://agent.byted.bps.dev/oauth2/auth" {
+		t.Fatalf("rendered Browser authorization endpoint = %q", got)
+	}
+	if got := environment.Get(browserOAuthTokenEndpointEnvironment); got != "https://agent.byted.bps.dev/oauth2/token" {
+		t.Fatalf("rendered Browser token endpoint = %q", got)
 	}
 }

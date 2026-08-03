@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AgentServer Platform</title>
+    <link rel="stylesheet" href="/platform/styles.css">
+  </head>
+  <body data-agentserver-platform-web="v2">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="AgentServer Platform home">
+        <span class="brand-mark">A</span>
+        <span>AgentServer Platform</span>
+      </a>
+      <button id="session-button" class="button secondary" type="button">Sign in</button>
+    </header>
+    <main>
+      <section class="hero">
+        <p class="eyebrow">Platform control plane</p>
+        <h1>Workspaces, runtimes, and model gateways belong here.</h1>
+        <p class="lede">Conversation sessions use the separate Browser application. This page authenticates with the dedicated <code>agentserver-platform</code> authority.</p>
+        <div class="actions">
+          <button id="login-button" class="button primary" type="button">Continue with SSO</button>
+          <a class="button secondary" href="https://browser.byted.bps.dev/">Open Browser</a>
+        </div>
+        <p id="error" class="error" hidden></p>
+      </section>
+      <section class="status-card" aria-live="polite">
+        <div>
+          <p class="eyebrow">Authorization status</p>
+          <h2 id="status-title">Not signed in</h2>
+          <p id="status-copy">No access token is stored. Sign in to establish an in-memory Platform session.</p>
+        </div>
+        <div>
+          <p class="eyebrow">Granted permissions</p>
+          <ul id="scope-list" class="scope-list"><li>None</li></ul>
+        </div>
+      </section>
+      <section class="next-card">
+        <p class="eyebrow">Implementation boundary</p>
+        <h2>Platform and Browser are now separate authorities.</h2>
+        <p>Workspace/member CRUD and the final management views will populate this control plane in the next product slice. Executor and LLM Gateway APIs already enter Core through platform-gateway only.</p>
+      </section>
+    </main>
+    <script type="module" src="/platform/app.js"></script>
+  </body>
+</html>

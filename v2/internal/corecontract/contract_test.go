@@ -279,7 +279,7 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 		t.Fatalf("decode public OpenAPI contract: %v", err)
 	}
 	if document.OpenAPI != "3.1.0" || len(document.Security) != 1 || len(document.Security[0]) != 2 ||
-		document.Security[0]["browserGatewayMTLS"] == nil || !slices.Equal(document.Security[0]["userOAuth"], []string{BrowserOAuthRunScope}) {
+		document.Security[0]["browserGatewayMTLS"] == nil || !slices.Equal(document.Security[0]["browserOAuth"], []string{BrowserOAuthRunsReadScope}) {
 		t.Fatalf("public OpenAPI identity/security = %q / %+v", document.OpenAPI, document.Security)
 	}
 	createPath := CreateUserRunPath("{workspaceId}", "{sessionId}")
@@ -306,8 +306,12 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	}
 	for _, path := range []string{createExecutorPath, issueEnrollmentPath} {
 		security := document.Paths[path].Post.Security
-		if len(security) != 1 || len(security[0]) != 2 || security[0]["browserGatewayMTLS"] == nil ||
-			!slices.Equal(security[0]["userOAuth"], []string{BrowserOAuthExecutorScope}) {
+		permission := PlatformOAuthExecutorsCreateScope
+		if path == issueEnrollmentPath {
+			permission = PlatformOAuthExecutorsEnrollScope
+		}
+		if len(security) != 1 || len(security[0]) != 2 || security[0]["platformGatewayMTLS"] == nil ||
+			!slices.Equal(security[0]["platformOAuth"], []string{permission}) {
 			t.Errorf("public executor path %s security = %+v", path, security)
 		}
 	}
@@ -319,17 +323,34 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 		document.Paths[llmGatewayDisablePath].Post.OperationID != "disableWorkspaceLLMGateway" {
 		t.Fatalf("public workspace LLM Gateway paths = %+v", document.Paths)
 	}
-	for _, security := range [][]map[string][]string{
-		document.Paths[llmGatewayCollectionPath].Get.Security,
-		document.Paths[llmGatewayCollectionPath].Post.Security,
-		document.Paths[llmGatewayAuthorizePath].Post.Security,
-		document.Paths[llmGatewayCompletePath].Post.Security,
-		document.Paths[llmGatewayRevokePath].Post.Security,
-		document.Paths[llmGatewayDisablePath].Post.Security,
+	for _, authority := range []struct {
+		security   []map[string][]string
+		permission string
+	}{
+		{document.Paths[llmGatewayCollectionPath].Get.Security, PlatformOAuthLLMGatewaysReadScope},
+		{document.Paths[llmGatewayCollectionPath].Post.Security, PlatformOAuthLLMGatewaysCreateScope},
+		{document.Paths[llmGatewayAuthorizePath].Post.Security, PlatformOAuthLLMGrantsAuthorizeScope},
+		{document.Paths[llmGatewayCompletePath].Post.Security, PlatformOAuthLLMGrantsAuthorizeScope},
+		{document.Paths[llmGatewayRevokePath].Post.Security, PlatformOAuthLLMGrantsRevokeScope},
+		{document.Paths[llmGatewayDisablePath].Post.Security, PlatformOAuthLLMGatewaysDisableScope},
 	} {
-		if len(security) != 1 || len(security[0]) != 2 || security[0]["browserGatewayMTLS"] == nil ||
-			!slices.Equal(security[0]["userOAuth"], []string{BrowserOAuthLLMGatewayScope}) {
-			t.Errorf("public workspace LLM Gateway security = %+v", security)
+		if len(authority.security) != 1 || len(authority.security[0]) != 2 || authority.security[0]["platformGatewayMTLS"] == nil ||
+			!slices.Equal(authority.security[0]["platformOAuth"], []string{authority.permission}) {
+			t.Errorf("public workspace LLM Gateway security = %+v", authority.security)
+		}
+	}
+	for _, authority := range []struct {
+		security   []map[string][]string
+		permission string
+	}{
+		{document.Paths[createPath].Post.Security, BrowserOAuthRunsCreateScope},
+		{document.Paths[cancelPath].Post.Security, BrowserOAuthRunsCancelScope},
+		{document.Paths[readPath].Get.Security, BrowserOAuthRunsReadScope},
+		{document.Paths[decidePath].Post.Security, BrowserOAuthApprovalsDecideScope},
+	} {
+		if len(authority.security) != 1 || len(authority.security[0]) != 2 || authority.security[0]["browserGatewayMTLS"] == nil ||
+			!slices.Equal(authority.security[0]["browserOAuth"], []string{authority.permission}) {
+			t.Errorf("public Browser action security = %+v", authority.security)
 		}
 	}
 	assertSchemaFields(t, document.Components.Schemas, "CreateExecutorResourceRequest", reflect.TypeFor[CreateExecutorResourceRequest]())

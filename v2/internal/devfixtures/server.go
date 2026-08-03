@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/braincatalog"
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
 )
 
@@ -255,10 +256,13 @@ func (runtime *fixtureRuntime) serveHydraIntrospection(writer http.ResponseWrite
 		return
 	}
 	if exactTokenEqual(runtime.bundle.browserToken, form["token"][0]) {
+		authority := developmentBrowserAuthority(runtime.bundle.document.Authority.WorkspaceID)
 		writeJSON(writer, http.StatusOK, map[string]any{
 			"active": true, "sub": runtime.bundle.document.Authority.ActorID,
 			"aud": []string{runtime.bundle.document.Hydra.Audience}, "scope": runtime.bundle.document.Hydra.Scope,
-			"exp": now.Add(runtime.bundle.responseTTL).Unix(),
+			"client_id": runtime.bundle.document.Hydra.BrowserClientID,
+			"iss":       runtime.bundle.document.Hydra.PublicOrigin, "token_type": "Bearer", "token_use": "access_token",
+			"exp": now.Add(runtime.bundle.responseTTL).Unix(), "ext": map[string]any{"agentserver": authority},
 		})
 		return
 	}
@@ -269,8 +273,23 @@ func (runtime *fixtureRuntime) serveHydraIntrospection(writer http.ResponseWrite
 	}
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"active": true, "sub": access.subject, "aud": append([]string(nil), access.audience...),
-		"scope": strings.Join(access.scopes, " "), "exp": access.expiresAt.Unix(),
+		"client_id": access.clientID, "scope": strings.Join(access.scopes, " "),
+		"iss": runtime.bundle.document.Hydra.PublicOrigin, "token_type": "Bearer", "token_use": "access_token",
+		"exp": access.expiresAt.Unix(), "ext": map[string]any{"agentserver": access.authority},
 	})
+}
+
+func developmentBrowserAuthority(workspaceID string) corecontract.UserOAuthAuthority {
+	permissions, ok := corecontract.BrowserOAuthWorkspacePermissions("owner")
+	if !ok {
+		panic("devfixtures: owner Browser permission registry is unavailable")
+	}
+	return corecontract.UserOAuthAuthority{
+		Version: corecontract.UserOAuthAuthorityVersion, Authority: corecontract.UserOAuthBrowserAuthority,
+		GlobalPermissions: []string{}, WorkspaceGrants: []corecontract.UserOAuthWorkspaceGrant{{
+			WorkspaceID: workspaceID, Generation: 1, Permissions: permissions,
+		}},
+	}
 }
 
 func (runtime *fixtureRuntime) serveLLMProxy(writer http.ResponseWriter, request *http.Request) {

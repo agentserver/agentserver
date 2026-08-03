@@ -260,7 +260,7 @@ func ExpectedBinaries(kind string) []string {
 	case KindService:
 		binaries = []string{
 			"agentserver-core", "agentserver-probe",
-			"browser-gateway", "executor-gateway", "llmproxy",
+			"browser-gateway", "executor-gateway", "llmproxy", "platform-gateway",
 		}
 	case KindHarness:
 		binaries = []string{

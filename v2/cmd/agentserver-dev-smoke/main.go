@@ -818,6 +818,7 @@ type smokeAuthorizationConfig struct {
 	ClientID              string   `json:"clientId"`
 	Scopes                []string `json:"scopes"`
 	Audience              string   `json:"audience"`
+	APIOrigin             string   `json:"apiOrigin"`
 }
 
 func newSmokeSession(parent context.Context, options smokeOptions) (*smokeSession, func(), error) {
@@ -923,6 +924,7 @@ func authenticateSmoke(ctx context.Context, client *http.Client, origin *url.URL
 		"redirect_uri":          {redirectURI},
 		"scope":                 {strings.Join(config.Scopes, " ")},
 		"audience":              {config.Audience},
+		"resource":              {"urn:agentserver:workspace:" + smokeWorkspaceID},
 		"state":                 {state},
 		"nonce":                 {nonce},
 		"code_challenge":        {base64.RawURLEncoding.EncodeToString(challengeDigest[:])},
@@ -1043,7 +1045,7 @@ func readSmokeAuthorizationConfig(ctx context.Context, client *http.Client, orig
 	if config.Version != 1 || config.AuthorizationEndpoint != "/oauth2/auth" || config.TokenEndpoint != "/oauth2/token" ||
 		config.RedirectPath != "/" || config.ClientID != devfixtures.BrowserOAuthClientID ||
 		config.Audience != devfixtures.BrowserTokenAudience ||
-		!sameSmokeTextSet(config.Scopes, []string{"openid", devfixtures.BrowserTokenScope, devfixtures.BrowserExecutorScope}) {
+		!sameSmokeTextSet(config.Scopes, devfixtures.BrowserAuthorizationScopes()) {
 		return smokeAuthorizationConfig{}, errors.New("browser authorization config does not match the insecure development OAuth profile")
 	}
 	return config, nil

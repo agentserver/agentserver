@@ -39,6 +39,10 @@ func renderRuntime(context renderContext) ([]kubeObject, error) {
 	if err != nil {
 		return nil, err
 	}
+	platform, err := renderPlatformDeployment(context)
+	if err != nil {
+		return nil, err
+	}
 	browser, err := renderBrowserDeployment(context)
 	if err != nil {
 		return nil, err
@@ -59,12 +63,14 @@ func renderRuntime(context renderContext) ([]kubeObject, error) {
 	config := context.config
 	return []kubeObject{
 		core,
+		platform,
 		browser,
 		executor,
 		harness,
 		llmproxy,
 		hydra,
 		podDisruptionBudget(config, coreComponent, config.Document.Replicas.Core),
+		podDisruptionBudget(config, platformComponent, config.Document.Replicas.PlatformGateway),
 		podDisruptionBudget(config, browserComponent, config.Document.Replicas.BrowserGateway),
 		podDisruptionBudget(config, harnessComponent, config.Document.Replicas.HarnessPool),
 		podDisruptionBudget(config, llmproxyComponent, config.Document.Replicas.LLMProxy),
@@ -195,11 +201,13 @@ func renderCoreDeployment(context renderContext) (kubeObject, error) {
 		valueEnvironment("AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID", spiffeIdentity(config, executorComponent)),
 		valueEnvironment("AGENTSERVER_V2_HARNESS_POOL_SPIFFE_ID", spiffeIdentity(config, harnessComponent)),
 		valueEnvironment("AGENTSERVER_V2_BROWSER_GATEWAY_SPIFFE_ID", spiffeIdentity(config, browserComponent)),
+		valueEnvironment("AGENTSERVER_V2_PLATFORM_GATEWAY_SPIFFE_ID", spiffeIdentity(config, platformComponent)),
 		valueEnvironment("AGENTSERVER_V2_LLMPROXY_SPIFFE_ID", spiffeIdentity(config, llmproxyComponent)),
 		valueEnvironment("AGENTSERVER_V2_HYDRA_INTROSPECTION_URL", document.OAuth.Hydra.IntrospectionURL),
 		valueEnvironment("AGENTSERVER_V2_HYDRA_ADMIN_URL", document.OAuth.Hydra.AdminURL),
 		valueEnvironment("AGENTSERVER_V2_HYDRA_PUBLIC_ORIGIN", document.OAuth.Hydra.PublicOrigin),
 		valueEnvironment("AGENTSERVER_V2_HYDRA_ISSUER", document.OAuth.Hydra.Issuer),
+		valueEnvironment("AGENTSERVER_V2_HYDRA_PLATFORM_CLIENT_ID", document.OAuth.Hydra.PlatformClientID),
 		valueEnvironment("AGENTSERVER_V2_HYDRA_BROWSER_CLIENT_ID", document.OAuth.Hydra.BrowserClientID),
 		valueEnvironment("AGENTSERVER_V2_HYDRA_CA_FILE", serviceMaterialPath("ca.crt")),
 		valueEnvironment("AGENTSERVER_V2_HYDRA_SERVER_NAME", HydraInternalHost),
@@ -238,6 +246,50 @@ func renderCoreDeployment(context renderContext) (kubeObject, error) {
 	}), nil
 }
 
+func renderPlatformDeployment(context renderContext) (kubeObject, error) {
+	config := context.config
+	document := config.Document
+	material, err := secretMaterialVolume("material", document.Secrets.PlatformGateway, materialProfilePlatformGateway, groupReadableSecretMode)
+	if err != nil {
+		return nil, err
+	}
+	materialMounts, err := secretMaterialMounts("material", "/var/run/agentserver/material", materialProfilePlatformGateway)
+	if err != nil {
+		return nil, err
+	}
+	environment := []any{
+		valueEnvironment("AGENTSERVER_V2_PLATFORM_GATEWAY_LISTEN_ADDR", listenAddress(document.Services.PlatformGateway.Port)),
+		valueEnvironment("AGENTSERVER_V2_PLATFORM_PUBLIC_ORIGIN", "https://"+document.Ingress.FrontendHostname),
+		valueEnvironment("AGENTSERVER_V2_BROWSER_FRONTEND_ORIGIN", "https://"+document.Ingress.BrowserFrontendHostname),
+		valueEnvironment("AGENTSERVER_V2_CORE_URL", internalOrigin(CoreInternalHost, document.Services.Core.Port)),
+		valueEnvironment("AGENTSERVER_V2_CORE_CA_FILE", serviceMaterialPath("ca.crt")),
+		valueEnvironment("AGENTSERVER_V2_CORE_CLIENT_CERT_FILE", serviceMaterialPath("tls.crt")),
+		valueEnvironment("AGENTSERVER_V2_CORE_CLIENT_KEY_FILE", serviceMaterialPath("tls.key")),
+		valueEnvironment("AGENTSERVER_V2_CORE_SERVER_NAME", CoreInternalHost),
+		valueEnvironment("AGENTSERVER_V2_HYDRA_PUBLIC_UPSTREAM", document.OAuth.Hydra.PublicUpstream),
+		valueEnvironment("AGENTSERVER_V2_HYDRA_CA_FILE", serviceMaterialPath("ca.crt")),
+		valueEnvironment("AGENTSERVER_V2_HYDRA_SERVER_NAME", HydraInternalHost),
+		valueEnvironment("AGENTSERVER_V2_PLATFORM_OAUTH_CLIENT_ID", document.OAuth.Hydra.PlatformClientID),
+		valueEnvironment("AGENTSERVER_V2_PLATFORM_OAUTH_AUDIENCE", PlatformOAuthAudience()),
+		valueEnvironment("AGENTSERVER_V2_PLATFORM_OAUTH_SCOPES", strings.Join(PlatformOAuthScopes(), ",")),
+	}
+	return deployment(deploymentInput{
+		namespace: document.Namespace, platform: document.Platform, component: platformComponent, replicas: document.Replicas.PlatformGateway,
+		image: document.Images.Service, serviceAccount: platformComponent,
+		command: []any{"/usr/local/bin/platform-gateway"}, args: []any{"serve"}, environment: environment,
+		volumes:      []any{material, emptyDirVolume("scratch", "Memory", document.Resources.ScratchTmpfs)},
+		volumeMounts: append(materialMounts, kubeObject{"name": "scratch", "mountPath": "/tmp"}),
+		ports:        []any{kubeObject{"name": "http", "containerPort": int(document.Services.PlatformGateway.Port), "protocol": "TCP"}},
+		probePort:    document.Services.PlatformGateway.Port,
+		hostAliases: map[string]string{
+			CoreInternalHost:  document.Services.Core.ClusterIP,
+			HydraInternalHost: document.Services.Hydra.ClusterIP,
+		},
+		resources: document.Resources.PlatformGateway, uid: ServiceUID, gid: ServiceGID, fsGroup: ServiceGID,
+		strategy: "RollingUpdate", configHash: context.documentHash, termination: 20,
+	}), nil
+}
+
 func renderBrowserDeployment(context renderContext) (kubeObject, error) {
 	config := context.config
 	document := config.Document
@@ -251,19 +303,18 @@ func renderBrowserDeployment(context renderContext) (kubeObject, error) {
 	}
 	environment := []any{
 		valueEnvironment("AGENTSERVER_V2_BROWSER_GATEWAY_LISTEN_ADDR", listenAddress(document.Services.BrowserGateway.Port)),
-		valueEnvironment("AGENTSERVER_V2_BROWSER_FRONTEND_ORIGIN", "https://"+document.Ingress.FrontendHostname),
+		valueEnvironment("AGENTSERVER_V2_BROWSER_FRONTEND_ORIGIN", "https://"+document.Ingress.BrowserFrontendHostname),
 		valueEnvironment("AGENTSERVER_V2_BROWSER_API_ORIGIN", "https://"+document.Ingress.BrowserHostname),
 		valueEnvironment("AGENTSERVER_V2_CORE_URL", internalOrigin(CoreInternalHost, document.Services.Core.Port)),
 		valueEnvironment("AGENTSERVER_V2_CORE_CA_FILE", serviceMaterialPath("ca.crt")),
 		valueEnvironment("AGENTSERVER_V2_CORE_CLIENT_CERT_FILE", serviceMaterialPath("tls.crt")),
 		valueEnvironment("AGENTSERVER_V2_CORE_CLIENT_KEY_FILE", serviceMaterialPath("tls.key")),
 		valueEnvironment("AGENTSERVER_V2_CORE_SERVER_NAME", CoreInternalHost),
-		valueEnvironment("AGENTSERVER_V2_HYDRA_PUBLIC_UPSTREAM", document.OAuth.Hydra.PublicUpstream),
-		valueEnvironment("AGENTSERVER_V2_HYDRA_CA_FILE", serviceMaterialPath("ca.crt")),
-		valueEnvironment("AGENTSERVER_V2_HYDRA_SERVER_NAME", HydraInternalHost),
 		valueEnvironment("AGENTSERVER_V2_BROWSER_OAUTH_CLIENT_ID", document.OAuth.Hydra.BrowserClientID),
 		valueEnvironment("AGENTSERVER_V2_BROWSER_OAUTH_AUDIENCE", BrowserOAuthAudience()),
 		valueEnvironment("AGENTSERVER_V2_BROWSER_OAUTH_SCOPES", strings.Join(BrowserOAuthScopes(), ",")),
+		valueEnvironment("AGENTSERVER_V2_BROWSER_OAUTH_AUTHORIZATION_ENDPOINT", "https://"+document.Ingress.FrontendHostname+"/oauth2/auth"),
+		valueEnvironment("AGENTSERVER_V2_BROWSER_OAUTH_TOKEN_ENDPOINT", "https://"+document.Ingress.FrontendHostname+"/oauth2/token"),
 	}
 	return deployment(deploymentInput{
 		namespace: document.Namespace, platform: document.Platform, component: browserComponent, replicas: document.Replicas.BrowserGateway,
@@ -273,11 +324,8 @@ func renderBrowserDeployment(context renderContext) (kubeObject, error) {
 		volumeMounts: append(materialMounts, kubeObject{"name": "scratch", "mountPath": "/tmp"}),
 		ports:        []any{kubeObject{"name": "http", "containerPort": int(document.Services.BrowserGateway.Port), "protocol": "TCP"}},
 		probePort:    document.Services.BrowserGateway.Port,
-		hostAliases: map[string]string{
-			CoreInternalHost:  document.Services.Core.ClusterIP,
-			HydraInternalHost: document.Services.Hydra.ClusterIP,
-		},
-		resources: document.Resources.BrowserGateway, uid: ServiceUID, gid: ServiceGID, fsGroup: ServiceGID,
+		hostAliases:  map[string]string{CoreInternalHost: document.Services.Core.ClusterIP},
+		resources:    document.Resources.BrowserGateway, uid: ServiceUID, gid: ServiceGID, fsGroup: ServiceGID,
 		strategy: "RollingUpdate", configHash: context.documentHash, termination: 20,
 	}), nil
 }

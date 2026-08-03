@@ -9,12 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/coredb"
 )
 
 const (
 	loginBridgeTestTransactionID = "71000000-0000-4000-8000-000000000007"
 	loginBridgeTestUserID        = "10000000-0000-4000-8000-000000000001"
+	loginBridgeTestWorkspaceID   = "20000000-0000-4000-8000-000000000002"
 )
 
 func TestLoginBridgeBindsAndConsumesExternalOIDCCallbackOnce(t *testing.T) {
@@ -93,20 +95,27 @@ func TestLoginBridgeFailsClosedForUnmappedIdentity(t *testing.T) {
 	}
 }
 
-func TestLoginBridgeConsentRequiresExactClientScopeAudienceAndIsOneShot(t *testing.T) {
+func TestLoginBridgeConsentAllowsProfileSubsetAndIsOneShot(t *testing.T) {
 	bridge, store, hydra, _ := newLoginBridgeFixture(t)
 	hydra.consentRequest = HydraConsentRequest{
 		Challenge: "consent-challenge", Subject: loginBridgeTestUserID,
-		Client:         HydraOAuth2Client{ClientID: "agentserver-web"},
-		RequestedScope: []string{"runs:write", "openid", "executors:write", "llm-gateways:write"}, RequestedAccessTokenAudience: []string{"agentserver-api"},
-		LoginChallenge: "login-challenge", LoginSessionID: "login-session",
+		Client:                       HydraOAuth2Client{ClientID: corecontract.BrowserOAuthClientID},
+		RequestedScope:               []string{corecontract.BrowserOAuthRunsCreateScope, corecontract.OAuthOpenIDScope, corecontract.BrowserOAuthSessionsCreateScope},
+		RequestedAccessTokenAudience: []string{corecontract.BrowserOAuthAudience},
+		LoginChallenge:               "login-challenge", LoginSessionID: "login-session",
+		RequestURL: browserAuthorizationRequestURL(loginBridgeTestWorkspaceID),
 	}
 	result, err := bridge.Consent(t.Context(), "consent-challenge")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.RedirectTo != "https://browser.example/oauth2/auth?consent_verifier=accepted" ||
-		store.consent.Status != coredb.HydraConsentStatusAccepted || hydra.acceptConsentCalls != 1 {
+		store.consent.Status != coredb.HydraConsentStatusAccepted || hydra.acceptConsentCalls != 1 ||
+		!sameUniqueTextSet(hydra.acceptedConsentScopes, hydra.consentRequest.RequestedScope) ||
+		!sameUniqueTextSet(hydra.acceptedConsentAudience, hydra.consentRequest.RequestedAccessTokenAudience) ||
+		hydra.acceptedConsentAuthority.Authority != corecontract.UserOAuthBrowserAuthority ||
+		len(hydra.acceptedConsentAuthority.WorkspaceGrants) != 1 ||
+		hydra.acceptedConsentAuthority.WorkspaceGrants[0].WorkspaceID != loginBridgeTestWorkspaceID {
 		t.Fatalf("accepted consent=%+v stored=%+v hydra=%+v", result, store.consent, hydra)
 	}
 	if _, err := bridge.Consent(t.Context(), "consent-challenge"); err == nil {
@@ -118,7 +127,10 @@ func TestLoginBridgeConsentRequiresExactClientScopeAudienceAndIsOneShot(t *testi
 
 	otherBridge, otherStore, otherHydra, _ := newLoginBridgeFixture(t)
 	otherHydra.consentRequest = hydra.consentRequest
-	otherHydra.consentRequest.RequestedScope = []string{"openid", "runs:write", "executors:write", "llm-gateways:write", "admin"}
+	otherHydra.consentRequest.RequestedScope = append(
+		append([]string(nil), hydra.consentRequest.RequestedScope...),
+		corecontract.PlatformOAuthExecutorsCreateScope,
+	)
 	rejected, err := otherBridge.Consent(t.Context(), "consent-challenge")
 	if err != nil {
 		t.Fatal(err)
@@ -126,6 +138,35 @@ func TestLoginBridgeConsentRequiresExactClientScopeAudienceAndIsOneShot(t *testi
 	if rejected.RedirectTo != "https://browser.example/oauth2/auth?consent_verifier=rejected" ||
 		otherHydra.rejectConsentCalls != 1 || otherHydra.acceptConsentCalls != 0 || otherStore.consent.Status != "" {
 		t.Fatalf("overbroad consent=%+v stored=%+v hydra=%+v", rejected, otherStore.consent, otherHydra)
+	}
+}
+
+func TestLoginBridgeSelectsPlatformAndBrowserProfilesWithoutMixingAuthority(t *testing.T) {
+	bridge, store, hydra, _ := newLoginBridgeFixture(t)
+	hydra.loginRequest.Client.ClientID = corecontract.PlatformOAuthClientID
+	hydra.loginRequest.RequestedScope = []string{
+		corecontract.OAuthOpenIDScope,
+		corecontract.PlatformOAuthWorkspacesReadScope,
+		corecontract.PlatformOAuthWorkspacesCreateScope,
+	}
+	hydra.loginRequest.RequestedAccessTokenAudience = []string{corecontract.PlatformOAuthAudience}
+	hydra.loginRequest.RequestURL = "https://hydra.internal/oauth2/auth?client_id=" + corecontract.PlatformOAuthClientID
+	if _, err := bridge.BeginLogin(t.Context(), "login-challenge", ""); err != nil {
+		t.Fatal(err)
+	}
+	if store.login.HydraClientID != corecontract.PlatformOAuthClientID {
+		t.Fatalf("stored login client = %q", store.login.HydraClientID)
+	}
+
+	otherBridge, otherStore, otherHydra, _ := newLoginBridgeFixture(t)
+	otherHydra.loginRequest.RequestedAccessTokenAudience = []string{corecontract.PlatformOAuthAudience}
+	result, err := otherBridge.BeginLogin(t.Context(), "login-challenge", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RedirectTo != "https://browser.example/oauth2/auth?login_verifier=rejected" ||
+		otherHydra.rejectLoginCalls != 1 || otherStore.login.ID != "" {
+		t.Fatalf("mixed profile result=%+v store=%+v hydra=%+v", result, otherStore.login, otherHydra)
 	}
 }
 
@@ -169,15 +210,26 @@ func TestLoginBridgeRequiresExactHydraContinuationRedirect(t *testing.T) {
 func TestConsentRequestHashCoversLoginAuthority(t *testing.T) {
 	request := HydraConsentRequest{
 		Challenge: "consent-challenge", LoginChallenge: "login-challenge", LoginSessionID: "login-session",
-		Subject: loginBridgeTestUserID, Client: HydraOAuth2Client{ClientID: "agentserver-web"},
-		RequestedScope: []string{"runs:write", "openid", "executors:write", "llm-gateways:write"}, RequestedAccessTokenAudience: []string{"agentserver-api"},
+		Subject: loginBridgeTestUserID, Client: HydraOAuth2Client{ClientID: corecontract.BrowserOAuthClientID},
+		RequestedScope: corecontract.BrowserOAuthScopes(), RequestedAccessTokenAudience: []string{corecontract.BrowserOAuthAudience},
+		RequestURL: browserAuthorizationRequestURL(loginBridgeTestWorkspaceID),
 	}
-	original, err := consentRequestHash(request)
+	grant := HydraConsentGrant{
+		Scope:    []string{corecontract.OAuthOpenIDScope, corecontract.BrowserOAuthRunsReadScope},
+		Audience: []string{corecontract.BrowserOAuthAudience},
+		Authority: corecontract.UserOAuthAuthority{
+			Version: corecontract.UserOAuthAuthorityVersion, Authority: corecontract.UserOAuthBrowserAuthority,
+			GlobalPermissions: []string{}, WorkspaceGrants: []corecontract.UserOAuthWorkspaceGrant{{
+				WorkspaceID: loginBridgeTestWorkspaceID, Generation: 1, Permissions: []string{corecontract.BrowserOAuthRunsReadScope},
+			}},
+		},
+	}
+	original, err := consentRequestHash(request, grant)
 	if err != nil {
 		t.Fatal(err)
 	}
 	request.LoginChallenge = "different-login-challenge"
-	changed, err := consentRequestHash(request)
+	changed, err := consentRequestHash(request, grant)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +237,7 @@ func TestConsentRequestHashCoversLoginAuthority(t *testing.T) {
 		t.Fatal("login challenge did not change the consent authority fingerprint")
 	}
 	request.LoginChallenge = ""
-	if _, err := consentRequestHash(request); err == nil {
+	if _, err := consentRequestHash(request, grant); err == nil {
 		t.Fatal("empty login challenge was fingerprinted")
 	}
 }
@@ -224,10 +276,13 @@ func TestLoginTransactionSealerAuthenticatesScopePurposeAndCiphertext(t *testing
 
 func newLoginBridgeFixture(t *testing.T) (*LoginBridge, *memoryLoginBridgeStore, *recordingHydraAdmin, *recordingExternalOIDC) {
 	t.Helper()
-	store := &memoryLoginBridgeStore{}
+	store := &memoryLoginBridgeStore{memberships: []coredb.UserOAuthMembership{{
+		WorkspaceID: loginBridgeTestWorkspaceID, Role: "owner", Generation: 1,
+	}}}
 	hydra := &recordingHydraAdmin{loginRequest: HydraLoginRequest{
-		Challenge: "login-challenge", Client: HydraOAuth2Client{ClientID: "agentserver-web"},
-		RequestedScope: []string{"openid", "runs:write", "executors:write", "llm-gateways:write"}, RequestedAccessTokenAudience: []string{"agentserver-api"},
+		Challenge: "login-challenge", Client: HydraOAuth2Client{ClientID: corecontract.BrowserOAuthClientID},
+		RequestedScope: corecontract.BrowserOAuthScopes(), RequestedAccessTokenAudience: []string{corecontract.BrowserOAuthAudience},
+		RequestURL: browserAuthorizationRequestURL(loginBridgeTestWorkspaceID),
 	}}
 	provider := &recordingExternalOIDC{identity: ExternalOIDCIdentity{Issuer: "https://idp.example", Subject: "external-user"}}
 	sealer, err := NewLoginTransactionSealer(bytes.Repeat([]byte{0x29}, 32))
@@ -240,8 +295,12 @@ func newLoginBridgeFixture(t *testing.T) (*LoginBridge, *memoryLoginBridgeStore,
 	}
 	bridge, err := NewLoginBridge(LoginBridgeConfig{
 		Store: store, Hydra: hydra, IdentityProvider: provider, Sealer: sealer,
-		HydraBrowserClientID: "agentserver-web", HydraPublicOrigin: "https://browser.example",
-		TransactionTTL: 5 * time.Minute, Random: bytes.NewReader(randomBytes),
+		OAuthProfiles: []LoginBridgeOAuthProfile{
+			{Authority: corecontract.UserOAuthPlatformAuthority, ClientID: corecontract.PlatformOAuthClientID, Scopes: corecontract.PlatformOAuthScopes(), Audience: []string{corecontract.PlatformOAuthAudience}},
+			{Authority: corecontract.UserOAuthBrowserAuthority, ClientID: corecontract.BrowserOAuthClientID, Scopes: corecontract.BrowserOAuthScopes(), Audience: []string{corecontract.BrowserOAuthAudience}},
+		},
+		HydraPublicOrigin: "https://browser.example",
+		TransactionTTL:    5 * time.Minute, Random: bytes.NewReader(randomBytes),
 		NewID: func() (string, error) { return loginBridgeTestTransactionID, nil },
 	})
 	if err != nil {
@@ -274,13 +333,16 @@ func (provider *recordingExternalOIDC) Exchange(_ context.Context, code, verifie
 }
 
 type recordingHydraAdmin struct {
-	loginRequest       HydraLoginRequest
-	consentRequest     HydraConsentRequest
-	acceptLoginCalls   int
-	rejectLoginCalls   int
-	acceptConsentCalls int
-	rejectConsentCalls int
-	acceptedSubject    string
+	loginRequest             HydraLoginRequest
+	consentRequest           HydraConsentRequest
+	acceptLoginCalls         int
+	rejectLoginCalls         int
+	acceptConsentCalls       int
+	rejectConsentCalls       int
+	acceptedSubject          string
+	acceptedConsentScopes    []string
+	acceptedConsentAudience  []string
+	acceptedConsentAuthority corecontract.UserOAuthAuthority
 }
 
 func (hydra *recordingHydraAdmin) GetLoginRequest(_ context.Context, challenge string) (HydraLoginRequest, error) {
@@ -314,11 +376,14 @@ func (hydra *recordingHydraAdmin) GetConsentRequest(_ context.Context, challenge
 	return hydra.consentRequest, nil
 }
 
-func (hydra *recordingHydraAdmin) AcceptConsentRequest(_ context.Context, challenge string, scopes, audience []string) (HydraRedirect, error) {
-	if challenge != hydra.consentRequest.Challenge || !sameUniqueTextSet(scopes, defaultBrowserOAuthScopes) || !sameUniqueTextSet(audience, defaultBrowserAudience) {
+func (hydra *recordingHydraAdmin) AcceptConsentRequest(_ context.Context, challenge string, grant HydraConsentGrant) (HydraRedirect, error) {
+	if challenge != hydra.consentRequest.Challenge {
 		return HydraRedirect{}, errors.New("invalid consent acceptance")
 	}
 	hydra.acceptConsentCalls++
+	hydra.acceptedConsentScopes = append([]string(nil), grant.Scope...)
+	hydra.acceptedConsentAudience = append([]string(nil), grant.Audience...)
+	hydra.acceptedConsentAuthority = grant.Authority
 	return HydraRedirect{RedirectTo: "https://browser.example/oauth2/auth?consent_verifier=accepted"}, nil
 }
 
@@ -331,8 +396,9 @@ func (hydra *recordingHydraAdmin) RejectConsentRequest(_ context.Context, challe
 }
 
 type memoryLoginBridgeStore struct {
-	login   coredb.OIDCLoginTransaction
-	consent coredb.HydraConsentTransaction
+	login       coredb.OIDCLoginTransaction
+	consent     coredb.HydraConsentTransaction
+	memberships []coredb.UserOAuthMembership
 }
 
 func (store *memoryLoginBridgeStore) CreateOIDCLoginTransaction(_ context.Context, command coredb.CreateOIDCLoginTransactionCommand) (coredb.OIDCLoginTransaction, error) {
@@ -427,6 +493,22 @@ func (store *memoryLoginBridgeStore) RequireActiveUser(_ context.Context, userID
 	return nil
 }
 
+func (store *memoryLoginBridgeStore) ResolveUserOAuthMemberships(_ context.Context, command coredb.ResolveUserOAuthMembershipsCommand) ([]coredb.UserOAuthMembership, error) {
+	if command.UserID != loginBridgeTestUserID {
+		return nil, loginBridgeStateError(coredb.ErrorForbidden)
+	}
+	result := make([]coredb.UserOAuthMembership, 0, len(store.memberships))
+	for _, membership := range store.memberships {
+		if command.WorkspaceID == "" || command.WorkspaceID == membership.WorkspaceID {
+			result = append(result, membership)
+		}
+	}
+	if len(result) > command.Limit {
+		return nil, loginBridgeStateError(coredb.ErrorConflict)
+	}
+	return result, nil
+}
+
 func (store *memoryLoginBridgeStore) CreateHydraConsentTransaction(_ context.Context, command coredb.CreateHydraConsentTransactionCommand) (coredb.HydraConsentTransaction, error) {
 	if store.consent.Status != "" {
 		return coredb.HydraConsentTransaction{}, loginBridgeStateError(coredb.ErrorIdempotencyConflict)
@@ -463,4 +545,9 @@ func loginBridgeStateError(code coredb.StateErrorCode) error {
 func sha256Text(value string) string {
 	digest := sha256.Sum256([]byte(value))
 	return string(digest[:])
+}
+
+func browserAuthorizationRequestURL(workspaceID string) string {
+	return "https://hydra.internal/oauth2/auth?client_id=" + corecontract.BrowserOAuthClientID +
+		"&resource=" + url.QueryEscape(corecontract.UserOAuthWorkspaceURNPrefix+workspaceID)
 }

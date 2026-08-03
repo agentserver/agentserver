@@ -13,10 +13,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/browsergateway"
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 )
 
@@ -104,43 +106,45 @@ func TestBrowserGatewaySplitOriginsRestrictHostsAndApplyExactCORS(t *testing.T) 
 		apiCalls++
 		response.WriteHeader(http.StatusAccepted)
 	})
+	aguiRoutes := http.NewServeMux()
+	aguiRoutes.Handle(browsergateway.AGUIRoutePattern, agui)
 	handler := browserGatewaySplitRoutes(
-		agui, http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(),
-		http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), &browserReadiness{}, http.NotFoundHandler(),
-		"https://agent.byted.bps.dev", "https://browser-gateway.byted.bps.dev",
+		aguiRoutes, http.NotFoundHandler(), &browserReadiness{}, http.NotFoundHandler(),
+		"https://browser.byted.bps.dev", "https://browser-gateway.byted.bps.dev",
 	)
+	aguiPath := "/v2/workspaces/40000000-0000-4000-8000-000000000004/sessions/50000000-0000-4000-8000-000000000005/agui"
 
-	frontendAPI := httptest.NewRequest(http.MethodPost, "http://agent.byted.bps.dev/v2/test", nil)
-	frontendAPI.Host = "agent.byted.bps.dev"
+	frontendAPI := httptest.NewRequest(http.MethodPost, "http://browser.byted.bps.dev/v2/test", nil)
+	frontendAPI.Host = "browser.byted.bps.dev"
 	frontendAPIResponse := httptest.NewRecorder()
 	handler.ServeHTTP(frontendAPIResponse, frontendAPI)
 	if frontendAPIResponse.Code != http.StatusNotFound || apiCalls != 0 {
 		t.Fatalf("frontend /v2 response = %d, API calls %d", frontendAPIResponse.Code, apiCalls)
 	}
 
-	preflight := httptest.NewRequest(http.MethodOptions, "http://browser-gateway.byted.bps.dev/v2/test", nil)
+	preflight := httptest.NewRequest(http.MethodOptions, "http://browser-gateway.byted.bps.dev"+aguiPath, nil)
 	preflight.Host = "browser-gateway.byted.bps.dev"
-	preflight.Header.Set("Origin", "https://agent.byted.bps.dev")
+	preflight.Header.Set("Origin", "https://browser.byted.bps.dev")
 	preflight.Header.Set("Access-Control-Request-Method", http.MethodPost)
 	preflight.Header.Set("Access-Control-Request-Headers", "authorization, content-type, idempotency-key")
 	preflightResponse := httptest.NewRecorder()
 	handler.ServeHTTP(preflightResponse, preflight)
 	if preflightResponse.Code != http.StatusNoContent ||
-		preflightResponse.Header().Get("Access-Control-Allow-Origin") != "https://agent.byted.bps.dev" ||
+		preflightResponse.Header().Get("Access-Control-Allow-Origin") != "https://browser.byted.bps.dev" ||
 		preflightResponse.Header().Get("Access-Control-Allow-Credentials") != "" || apiCalls != 0 {
 		t.Fatalf("preflight = %d headers=%v API calls=%d", preflightResponse.Code, preflightResponse.Header(), apiCalls)
 	}
 
-	request := httptest.NewRequest(http.MethodPost, "http://browser-gateway.byted.bps.dev/v2/test", nil)
+	request := httptest.NewRequest(http.MethodPost, "http://browser-gateway.byted.bps.dev"+aguiPath, nil)
 	request.Host = "browser-gateway.byted.bps.dev"
-	request.Header.Set("Origin", "https://agent.byted.bps.dev")
+	request.Header.Set("Origin", "https://browser.byted.bps.dev")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusAccepted || response.Header().Get("Access-Control-Allow-Origin") != "https://agent.byted.bps.dev" || apiCalls != 1 {
+	if response.Code != http.StatusAccepted || response.Header().Get("Access-Control-Allow-Origin") != "https://browser.byted.bps.dev" || apiCalls != 1 {
 		t.Fatalf("cross-origin API = %d headers=%v calls=%d", response.Code, response.Header(), apiCalls)
 	}
 
-	attacker := httptest.NewRequest(http.MethodPost, "http://browser-gateway.byted.bps.dev/v2/test", nil)
+	attacker := httptest.NewRequest(http.MethodPost, "http://browser-gateway.byted.bps.dev"+aguiPath, nil)
 	attacker.Host = "browser-gateway.byted.bps.dev"
 	attacker.Header.Set("Origin", "https://attacker.example")
 	attackerResponse := httptest.NewRecorder()
@@ -148,11 +152,29 @@ func TestBrowserGatewaySplitOriginsRestrictHostsAndApplyExactCORS(t *testing.T) 
 	if attackerResponse.Code != http.StatusForbidden || apiCalls != 1 {
 		t.Fatalf("attacker origin = %d calls=%d", attackerResponse.Code, apiCalls)
 	}
+
+	for _, route := range []struct {
+		host string
+		path string
+	}{
+		{host: "browser.byted.bps.dev", path: "/oauth2/auth"},
+		{host: "browser.byted.bps.dev", path: "/auth/hydra/login"},
+		{host: "browser.byted.bps.dev", path: "/v2/workspaces/40000000-0000-4000-8000-000000000004/executors"},
+		{host: "browser-gateway.byted.bps.dev", path: "/v2/workspaces/40000000-0000-4000-8000-000000000004/llm-gateways"},
+	} {
+		closed := httptest.NewRequest(http.MethodGet, "http://"+route.host+route.path, nil)
+		closed.Host = route.host
+		closedResponse := httptest.NewRecorder()
+		handler.ServeHTTP(closedResponse, closed)
+		if closedResponse.Code != http.StatusNotFound || apiCalls != 1 {
+			t.Fatalf("split Browser exposed %s%s: status=%d calls=%d", route.host, route.path, closedResponse.Code, apiCalls)
+		}
+	}
 }
 
 func TestBrowserPublicOriginsRequireExactDistinctPair(t *testing.T) {
 	values := map[string]string{
-		browserFrontendOriginEnvironment: "https://agent.byted.bps.dev",
+		browserFrontendOriginEnvironment: "https://browser.byted.bps.dev",
 		browserAPIOriginEnvironment:      "https://browser-gateway.byted.bps.dev",
 	}
 	frontend, api, split, err := browserPublicOrigins(func(name string) string { return values[name] })
@@ -166,18 +188,19 @@ func TestBrowserPublicOriginsRequireExactDistinctPair(t *testing.T) {
 }
 
 func TestValidateBrowserOAuthAuthorityMatchesCoreLoginContract(t *testing.T) {
-	scopes, err := validateBrowserOAuthAuthority("agentserver-api", "openid,runs:write,executors:write,llm-gateways:write")
-	if err != nil || len(scopes) != 4 || scopes[3] != "llm-gateways:write" {
+	expected := corecontract.BrowserOAuthScopes()
+	scopes, err := validateBrowserOAuthAuthority(corecontract.BrowserOAuthAudience, strings.Join(expected, ","))
+	if err != nil || !slices.Equal(scopes, expected) {
 		t.Fatalf("canonical browser OAuth authority = %q, %v", scopes, err)
 	}
 	for _, input := range []struct {
 		audience string
 		scopes   string
 	}{
-		{audience: "other-api", scopes: "openid,runs:write,executors:write,llm-gateways:write"},
-		{audience: "agentserver-api", scopes: "openid,runs:write"},
-		{audience: "agentserver-api", scopes: "openid,executors:write,runs:write,llm-gateways:write"},
-		{audience: "agentserver-api", scopes: "openid,runs:write,executors:write,llm-gateways:write,"},
+		{audience: "other-api", scopes: strings.Join(expected, ",")},
+		{audience: corecontract.BrowserOAuthAudience, scopes: "openid,runs:create"},
+		{audience: corecontract.BrowserOAuthAudience, scopes: strings.Join(append([]string{expected[1]}, expected[0], expected[2]), ",")},
+		{audience: corecontract.BrowserOAuthAudience, scopes: strings.Join(expected, ",") + ","},
 	} {
 		if _, err := validateBrowserOAuthAuthority(input.audience, input.scopes); err == nil {
 			t.Fatalf("non-canonical browser OAuth authority was accepted: %+v", input)

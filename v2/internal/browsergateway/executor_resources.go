@@ -134,7 +134,7 @@ func executorResourceBearer(response http.ResponseWriter, request *http.Request)
 	if err == nil {
 		return bearer, true
 	}
-	response.Header().Set("WWW-Authenticate", `Bearer realm="agentserver-api"`)
+	response.Header().Set("WWW-Authenticate", `Bearer realm="agentserver-platform-api"`)
 	writeHTTPError(response, http.StatusUnauthorized, "unauthorized", "a single user bearer token is required")
 	return "", false
 }

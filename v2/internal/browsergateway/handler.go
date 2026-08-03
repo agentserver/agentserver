@@ -138,7 +138,7 @@ func (handler *AGUIHandler) ServeHTTP(response http.ResponseWriter, request *htt
 	}
 	bearer, err := extractBearer(request.Header)
 	if err != nil {
-		response.Header().Set("WWW-Authenticate", `Bearer realm="agentserver-api"`)
+		response.Header().Set("WWW-Authenticate", `Bearer realm="agentserver-browser-api"`)
 		writeHTTPError(response, http.StatusUnauthorized, "unauthorized", "a single bearer token is required")
 		return
 	}
@@ -230,7 +230,7 @@ func (handler *AGUIHandler) decideApproval(response http.ResponseWriter, request
 	}
 	bearer, err := extractBearer(request.Header)
 	if err != nil {
-		response.Header().Set("WWW-Authenticate", `Bearer realm="agentserver-api"`)
+		response.Header().Set("WWW-Authenticate", `Bearer realm="agentserver-browser-api"`)
 		writeHTTPError(response, http.StatusUnauthorized, "unauthorized", "a single bearer token is required")
 		return
 	}
@@ -282,7 +282,7 @@ func (handler *AGUIHandler) cancel(response http.ResponseWriter, request *http.R
 	}
 	bearer, err := extractBearer(request.Header)
 	if err != nil {
-		response.Header().Set("WWW-Authenticate", `Bearer realm="agentserver-api"`)
+		response.Header().Set("WWW-Authenticate", `Bearer realm="agentserver-browser-api"`)
 		writeHTTPError(response, http.StatusUnauthorized, "unauthorized", "a single bearer token is required")
 		return
 	}
@@ -424,7 +424,7 @@ func (handler *AGUIHandler) writeStartError(response http.ResponseWriter, err er
 	var public *BackendHTTPError
 	if errors.As(err, &public) && validBackendHTTPError(public) {
 		if public.Status == http.StatusUnauthorized {
-			response.Header().Set("WWW-Authenticate", `Bearer realm="agentserver-api"`)
+			response.Header().Set("WWW-Authenticate", `Bearer realm="agentserver-browser-api"`)
 		}
 		writeHTTPError(response, public.Status, public.Code, public.Message, public.CurrentRunID)
 		return
@@ -437,7 +437,7 @@ func (handler *AGUIHandler) writeCommandError(response http.ResponseWriter, requ
 	var public *BackendHTTPError
 	if errors.As(err, &public) && validBackendHTTPError(public) {
 		if public.Status == http.StatusUnauthorized {
-			response.Header().Set("WWW-Authenticate", `Bearer realm="agentserver-api"`)
+			response.Header().Set("WWW-Authenticate", `Bearer realm="agentserver-browser-api"`)
 		}
 		writeHTTPError(response, public.Status, public.Code, public.Message, public.CurrentRunID)
 		return

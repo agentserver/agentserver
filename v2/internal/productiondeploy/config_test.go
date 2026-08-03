@@ -112,6 +112,7 @@ func TestValidateConfigRejectsUnsafeProductionShapes(t *testing.T) {
 		"DNS service collision":     func(value *ConfigDocument) { value.Network.DNSClusterIP = value.Services.Core.ClusterIP },
 		"oversize DNS label":        func(value *ConfigDocument) { value.ClusterDomain = strings.Repeat("a", 64) + ".test" },
 		"low core availability":     func(value *ConfigDocument) { value.Replicas.Core = 1 },
+		"low platform availability": func(value *ConfigDocument) { value.Replicas.PlatformGateway = 1 },
 		"low browser availability":  func(value *ConfigDocument) { value.Replicas.BrowserGateway = 1 },
 		"low llmproxy availability": func(value *ConfigDocument) { value.Replicas.LLMProxy = 1 },
 		"low Hydra availability":    func(value *ConfigDocument) { value.Replicas.Hydra = 1 },
@@ -167,9 +168,10 @@ func validConfigDocument() ConfigDocument {
 			Harness: ProductionHarnessImage + "@sha256:" + digest("2"),
 			Hydra:   ProductionHydraImage + "@sha256:" + digest("3"),
 		},
-		Replicas: ReplicasDocument{Core: 2, BrowserGateway: 2, HarnessPool: 2, LLMProxy: 2, Hydra: 2},
+		Replicas: ReplicasDocument{Core: 2, PlatformGateway: 2, BrowserGateway: 2, HarnessPool: 2, LLMProxy: 2, Hydra: 2},
 		Services: ServicesDocument{
 			Core:            InternalServiceDocument{ClusterIP: "10.96.10.10", Port: HarnessControlPort},
+			PlatformGateway: InternalServiceDocument{ClusterIP: "10.96.10.15", Port: PublicHTTPPort},
 			BrowserGateway:  InternalServiceDocument{ClusterIP: "10.96.10.11", Port: PublicHTTPPort},
 			ExecutorGateway: ExecutorServiceDocument{ClusterIP: "10.96.10.12", PublicPort: PublicHTTPPort, InternalPort: HarnessControlPort},
 			LLMProxy:        InternalServiceDocument{ClusterIP: "10.96.10.13", Port: HarnessControlPort},
@@ -179,7 +181,8 @@ func validConfigDocument() ConfigDocument {
 			GatewayNamespace: ProductionGatewayNamespace, GatewayName: ProductionGatewayName,
 			GatewaySection:     ProductionGatewaySection,
 			GatewayPodSelector: map[string]string{"gateway.networking.k8s.io/gateway-name": ProductionGatewayName},
-			FrontendHostname:   ProductionFrontendHostname, BrowserHostname: ProductionBrowserHostname,
+			FrontendHostname:   ProductionFrontendHostname, BrowserFrontendHostname: ProductionBrowserFrontendHostname,
+			BrowserHostname:  ProductionBrowserHostname,
 			ExecutorHostname: ProductionExecutorHostname,
 		},
 		Bootstrap: BootstrapDocument{
@@ -195,7 +198,7 @@ func validConfigDocument() ConfigDocument {
 				Issuer: "https://agent.byted.bps.dev/", AdminURL: "https://hydra.agentserver.internal:4445",
 				PublicOrigin: "https://agent.byted.bps.dev", PublicUpstream: "https://hydra.agentserver.internal:4444",
 				IntrospectionURL: "https://hydra.agentserver.internal:4445/admin/oauth2/introspect",
-				BrowserClientID:  "agentserver-browser",
+				PlatformClientID: "agentserver-platform", BrowserClientID: "agentserver-browser",
 			},
 			ExternalOIDC: ExternalOIDCDocument{
 				Issuer: "https://idp.example.test/oidc", ClientID: "agentserver-production",
@@ -219,7 +222,8 @@ func validConfigDocument() ConfigDocument {
 			S3Endpoint: "https://tos-s3-sg.byted.org",
 		},
 		Secrets: SecretsDocument{
-			Core: "agentserver-core-secrets", BrowserGateway: "agentserver-browser-secrets",
+			Core: "agentserver-core-secrets", PlatformGateway: "agentserver-platform-secrets",
+			BrowserGateway:  "agentserver-browser-secrets",
 			ExecutorGateway: "agentserver-executor-secrets", HarnessPool: "agentserver-pool-secrets",
 			HarnessWorker: "agentserver-worker-secrets", LLMProxy: "agentserver-llmproxy-secrets",
 			ObjectStore: "agentserver-object-store-secrets", Hydra: "agentserver-hydra-secrets",
@@ -234,6 +238,7 @@ func validConfigDocument() ConfigDocument {
 		},
 		Resources: ResourcesDocument{
 			Core:            resources("500m", "512Mi", "2", "2Gi"),
+			PlatformGateway: resources("250m", "256Mi", "1", "1Gi"),
 			BrowserGateway:  resources("250m", "256Mi", "1", "1Gi"),
 			ExecutorGateway: resources("500m", "512Mi", "2", "2Gi"),
 			HarnessPool:     resources("1", "2Gi", "4", "16Gi"),

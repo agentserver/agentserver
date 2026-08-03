@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 const contentSecurityPolicy = "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data:; font-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'"
@@ -55,12 +56,29 @@ func Handler() http.Handler {
 // HandlerForAPIOrigin serves the same closed asset set while allowing the
 // reviewed reference client to connect to one exact cross-origin AG-UI API.
 func HandlerForAPIOrigin(apiOrigin string) (http.Handler, error) {
-	parsed, err := url.Parse(apiOrigin)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil ||
-		parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.String() != apiOrigin {
-		return nil, fmt.Errorf("reference web API origin must be an exact HTTPS origin")
+	return HandlerForConnectionOrigins(apiOrigin)
+
+}
+
+// HandlerForConnectionOrigins serves the closed asset set while allowing the
+// reference client to call only the reviewed HTTPS API and OAuth authorities.
+func HandlerForConnectionOrigins(origins ...string) (http.Handler, error) {
+	if len(origins) < 1 || len(origins) > 2 {
+		return nil, fmt.Errorf("reference web requires one or two connection origins")
 	}
-	return assetHandler{contentSecurityPolicy: contentSecurityPolicy + " " + apiOrigin}, nil
+	seen := make(map[string]struct{}, len(origins))
+	for _, origin := range origins {
+		parsed, err := url.Parse(origin)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil ||
+			parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.String() != origin {
+			return nil, fmt.Errorf("reference web connection origin must be an exact HTTPS origin")
+		}
+		if _, duplicate := seen[origin]; duplicate {
+			return nil, fmt.Errorf("reference web connection origins must be unique")
+		}
+		seen[origin] = struct{}{}
+	}
+	return assetHandler{contentSecurityPolicy: contentSecurityPolicy + " " + strings.Join(origins, " ")}, nil
 }
 
 type assetHandler struct {

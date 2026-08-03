@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/executorgateway"
 )
 
@@ -63,7 +64,7 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 	if countKind(runtime, "Job") != 0 || countKind(runtime, "HorizontalPodAutoscaler") != 0 {
 		t.Fatal("runtime stage contains a per-run Job or HPA")
 	}
-	if countKind(runtime, "Deployment") != 6 || countKind(runtime, "PodDisruptionBudget") != 5 {
+	if countKind(runtime, "Deployment") != 7 || countKind(runtime, "PodDisruptionBudget") != 6 {
 		t.Fatalf("runtime topology = %d deployments, %d PDBs", countKind(runtime, "Deployment"), countKind(runtime, "PodDisruptionBudget"))
 	}
 	gateway := findResource(t, runtime, "Deployment", executorComponent)
@@ -98,12 +99,18 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 	setupScript, _ := setupArgs[1].(string)
 	for _, required := range []string{
 		"--grant-type authorization_code", "--token-endpoint-auth-method none",
-		"--redirect-uri 'https://agent.byted.bps.dev/'", "--audience agentserver-api",
-		"--scope openid", "--scope runs:write", "--scope executors:write", "--scope llm-gateways:write",
+		"reconcile_client 'agentserver-platform'", "reconcile_client 'agentserver-browser'",
+		"--redirect-uri 'https://agent.byted.bps.dev/'", "--redirect-uri 'https://browser.byted.bps.dev/'",
+		"--audience " + corecontract.PlatformOAuthAudience, "--audience " + corecontract.BrowserOAuthAudience,
 		"--access-token-strategy opaque",
 	} {
 		if !strings.Contains(setupScript, required) {
 			t.Fatalf("Hydra browser client setup is missing %q", required)
+		}
+	}
+	for _, scope := range append(corecontract.PlatformOAuthScopes(), corecontract.BrowserOAuthScopes()...) {
+		if !strings.Contains(setupScript, "--scope "+scope) {
+			t.Fatalf("Hydra user client setup is missing scope %q", scope)
 		}
 	}
 	if strings.Contains(setupScript, "client-secret") || strings.Contains(setupScript, "refresh_token") {
@@ -132,6 +139,8 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 	assertSecretMaterialMounts(t, findResource(t, runtime, "Deployment", coreComponent), "material", loaded.Document.Secrets.Core,
 		"/var/run/agentserver/material", groupReadableSecretMode,
 		[]string{"ca.crt", "tls.crt", "tls.key", "run-capability.key", "run-capability-keyring.json", "executor-enrollment.key", "llm-gateway-sealing-keyring.json"})
+	assertSecretMaterialMounts(t, findResource(t, runtime, "Deployment", platformComponent), "material", loaded.Document.Secrets.PlatformGateway,
+		"/var/run/agentserver/material", groupReadableSecretMode, []string{"ca.crt", "tls.crt", "tls.key"})
 	assertSecretMaterialMounts(t, findResource(t, runtime, "Deployment", browserComponent), "material", loaded.Document.Secrets.BrowserGateway,
 		"/var/run/agentserver/material", groupReadableSecretMode, []string{"ca.crt", "tls.crt", "tls.key"})
 	assertSecretMaterialMounts(t, findResource(t, runtime, "Deployment", executorComponent), "material", loaded.Document.Secrets.ExecutorGateway,
@@ -155,10 +164,10 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 		t.Fatal("harness runtime retained network administration capability")
 	}
 
-	if countKind(foundation, "NetworkPolicy") != 11 {
+	if countKind(foundation, "NetworkPolicy") != 12 {
 		t.Fatalf("foundation NetworkPolicy count = %d", countKind(foundation, "NetworkPolicy"))
 	}
-	if countKind(foundation, "HTTPRoute") != 3 {
+	if countKind(foundation, "HTTPRoute") != 4 {
 		t.Fatalf("foundation HTTPRoute count = %d", countKind(foundation, "HTTPRoute"))
 	}
 	for _, resource := range foundation {
@@ -166,8 +175,10 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 			t.Fatalf("service %v is not ClusterIP", objectField(t, resource, "metadata")["name"])
 		}
 	}
-	assertHTTPRoute(t, foundation, "agentserver-frontend", ProductionFrontendHostname, browserComponent, PublicHTTPPort,
-		[]string{"/", "/auth", "/index.html", "/oauth2", "/readyz", "/reference"})
+	assertHTTPRoute(t, foundation, "agentserver-platform", ProductionFrontendHostname, platformComponent, PublicHTTPPort,
+		[]string{"/", "/auth", "/index.html", "/oauth2", "/platform", "/readyz", "/v2"})
+	assertHTTPRoute(t, foundation, "agentserver-browser", ProductionBrowserFrontendHostname, browserComponent, PublicHTTPPort,
+		[]string{"/", "/auth/config", "/index.html", "/readyz", "/reference"})
 	assertHTTPRoute(t, foundation, "agentserver-browser-api", ProductionBrowserHostname, browserComponent, PublicHTTPPort,
 		[]string{"/v2"})
 	assertHTTPRoute(t, foundation, "agentserver-executor-agentx", ProductionExecutorHostname, executorComponent, PublicHTTPPort,

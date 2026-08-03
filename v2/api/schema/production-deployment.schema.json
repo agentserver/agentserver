@@ -105,9 +105,10 @@
     "replicas": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["core", "browserGateway", "harnessPool", "llmproxy", "hydra"],
+      "required": ["core", "platformGateway", "browserGateway", "harnessPool", "llmproxy", "hydra"],
       "properties": {
         "core": {"type": "integer", "minimum": 2, "maximum": 32},
+        "platformGateway": {"type": "integer", "minimum": 2, "maximum": 32},
         "browserGateway": {"type": "integer", "minimum": 2, "maximum": 32},
         "harnessPool": {"type": "integer", "minimum": 1, "maximum": 32},
         "llmproxy": {"type": "integer", "minimum": 2, "maximum": 32},
@@ -161,9 +162,10 @@
     "services": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["core", "browserGateway", "executorGateway", "llmproxy", "hydra"],
+      "required": ["core", "platformGateway", "browserGateway", "executorGateway", "llmproxy", "hydra"],
       "properties": {
         "core": {"$ref": "#/$defs/internalService"},
+        "platformGateway": {"$ref": "#/$defs/publicHTTPService"},
         "browserGateway": {"$ref": "#/$defs/publicHTTPService"},
         "executorGateway": {"$ref": "#/$defs/executorService"},
         "llmproxy": {"$ref": "#/$defs/internalService"},
@@ -179,6 +181,7 @@
         "gatewaySection",
         "gatewayPodSelector",
         "frontendHostname",
+        "browserFrontendHostname",
         "browserGatewayHostname",
         "executorGatewayHostname"
       ],
@@ -188,6 +191,7 @@
         "gatewaySection": {"const": "https-byted-bps"},
         "gatewayPodSelector": {"$ref": "#/$defs/labelSelector"},
         "frontendHostname": {"const": "agent.byted.bps.dev"},
+        "browserFrontendHostname": {"const": "browser.byted.bps.dev"},
         "browserGatewayHostname": {"const": "browser-gateway.byted.bps.dev"},
         "executorGatewayHostname": {"const": "executor-gateway.byted.bps.dev"}
       }
@@ -207,13 +211,14 @@
     "hydra": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["issuer", "adminUrl", "publicOrigin", "publicUpstream", "introspectionUrl", "browserClientId"],
+      "required": ["issuer", "adminUrl", "publicOrigin", "publicUpstream", "introspectionUrl", "platformClientId", "browserClientId"],
       "properties": {
         "issuer": {"const": "https://agent.byted.bps.dev/"},
         "adminUrl": {"const": "https://hydra.agentserver.internal:4445"},
         "publicOrigin": {"const": "https://agent.byted.bps.dev"},
         "publicUpstream": {"const": "https://hydra.agentserver.internal:4444"},
         "introspectionUrl": {"const": "https://hydra.agentserver.internal:4445/admin/oauth2/introspect"},
+        "platformClientId": {"const": "agentserver-platform"},
         "browserClientId": {"const": "agentserver-browser"}
       }
     },
@@ -326,9 +331,10 @@
     "secrets": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["core", "browserGateway", "executorGateway", "harnessPool", "harnessWorker", "llmproxy", "objectStore", "hydra"],
+      "required": ["core", "platformGateway", "browserGateway", "executorGateway", "harnessPool", "harnessWorker", "llmproxy", "objectStore", "hydra"],
       "properties": {
         "core": {"const": "agentserver-core-secrets"},
+        "platformGateway": {"const": "agentserver-platform-secrets"},
         "browserGateway": {"const": "agentserver-browser-secrets"},
         "executorGateway": {"const": "agentserver-executor-secrets"},
         "harnessPool": {"const": "agentserver-pool-secrets"},
@@ -437,6 +443,7 @@
       "additionalProperties": false,
       "required": [
         "core",
+        "platformGateway",
         "browserGateway",
         "executorGateway",
         "harnessPool",
@@ -448,6 +455,7 @@
       ],
       "properties": {
         "core": {"$ref": "#/$defs/containerResources"},
+        "platformGateway": {"$ref": "#/$defs/containerResources"},
         "browserGateway": {"$ref": "#/$defs/containerResources"},
         "executorGateway": {"$ref": "#/$defs/containerResources"},
         "harnessPool": {"$ref": "#/$defs/containerResources"},

@@ -41,6 +41,7 @@ const (
 	ProductionCapabilityKeyID     = "run-capability-sg-v1"
 	ProductionManifestKeyID       = "run-manifest-sg-v1"
 	ProductionCoreSecret          = "agentserver-core-secrets"
+	ProductionPlatformSecret      = "agentserver-platform-secrets"
 	ProductionBrowserSecret       = "agentserver-browser-secrets"
 	ProductionExecutorSecret      = "agentserver-executor-secrets"
 	ProductionHarnessPoolSecret   = "agentserver-pool-secrets"
@@ -72,12 +73,13 @@ const (
 	HydraPublicPort      = 4444
 	HydraAdminPort       = 4445
 
-	ProductionGatewayNamespace = "istio-ingress"
-	ProductionGatewayName      = "istio-gateway"
-	ProductionGatewaySection   = "https-byted-bps"
-	ProductionFrontendHostname = "agent.byted.bps.dev"
-	ProductionBrowserHostname  = "browser-gateway.byted.bps.dev"
-	ProductionExecutorHostname = "executor-gateway.byted.bps.dev"
+	ProductionGatewayNamespace        = "istio-ingress"
+	ProductionGatewayName             = "istio-gateway"
+	ProductionGatewaySection          = "https-byted-bps"
+	ProductionFrontendHostname        = "agent.byted.bps.dev"
+	ProductionBrowserFrontendHostname = "browser.byted.bps.dev"
+	ProductionBrowserHostname         = "browser-gateway.byted.bps.dev"
+	ProductionExecutorHostname        = "executor-gateway.byted.bps.dev"
 
 	maximumConfigBytes = int64(256 * 1024)
 	maximumTextBytes   = 4096
@@ -124,15 +126,17 @@ type ImagesDocument struct {
 }
 
 type ReplicasDocument struct {
-	Core           int `json:"core"`
-	BrowserGateway int `json:"browserGateway"`
-	HarnessPool    int `json:"harnessPool"`
-	LLMProxy       int `json:"llmproxy"`
-	Hydra          int `json:"hydra"`
+	Core            int `json:"core"`
+	PlatformGateway int `json:"platformGateway"`
+	BrowserGateway  int `json:"browserGateway"`
+	HarnessPool     int `json:"harnessPool"`
+	LLMProxy        int `json:"llmproxy"`
+	Hydra           int `json:"hydra"`
 }
 
 type ServicesDocument struct {
 	Core            InternalServiceDocument `json:"core"`
+	PlatformGateway InternalServiceDocument `json:"platformGateway"`
 	BrowserGateway  InternalServiceDocument `json:"browserGateway"`
 	ExecutorGateway ExecutorServiceDocument `json:"executorGateway"`
 	LLMProxy        InternalServiceDocument `json:"llmproxy"`
@@ -157,13 +161,14 @@ type HydraServiceDocument struct {
 }
 
 type IngressDocument struct {
-	GatewayNamespace   string            `json:"gatewayNamespace"`
-	GatewayName        string            `json:"gatewayName"`
-	GatewaySection     string            `json:"gatewaySection"`
-	GatewayPodSelector map[string]string `json:"gatewayPodSelector"`
-	FrontendHostname   string            `json:"frontendHostname"`
-	BrowserHostname    string            `json:"browserGatewayHostname"`
-	ExecutorHostname   string            `json:"executorGatewayHostname"`
+	GatewayNamespace        string            `json:"gatewayNamespace"`
+	GatewayName             string            `json:"gatewayName"`
+	GatewaySection          string            `json:"gatewaySection"`
+	GatewayPodSelector      map[string]string `json:"gatewayPodSelector"`
+	FrontendHostname        string            `json:"frontendHostname"`
+	BrowserFrontendHostname string            `json:"browserFrontendHostname"`
+	BrowserHostname         string            `json:"browserGatewayHostname"`
+	ExecutorHostname        string            `json:"executorGatewayHostname"`
 }
 
 type BootstrapDocument struct {
@@ -185,6 +190,7 @@ type HydraDocument struct {
 	PublicOrigin     string `json:"publicOrigin"`
 	PublicUpstream   string `json:"publicUpstream"`
 	IntrospectionURL string `json:"introspectionUrl"`
+	PlatformClientID string `json:"platformClientId"`
 	BrowserClientID  string `json:"browserClientId"`
 }
 
@@ -225,6 +231,7 @@ type ObjectStoreDocument struct {
 
 type SecretsDocument struct {
 	Core            string `json:"core"`
+	PlatformGateway string `json:"platformGateway"`
 	BrowserGateway  string `json:"browserGateway"`
 	ExecutorGateway string `json:"executorGateway"`
 	HarnessPool     string `json:"harnessPool"`
@@ -250,6 +257,7 @@ type EgressRuleDocument struct {
 
 type ResourcesDocument struct {
 	Core            ContainerResourcesDocument `json:"core"`
+	PlatformGateway ContainerResourcesDocument `json:"platformGateway"`
 	BrowserGateway  ContainerResourcesDocument `json:"browserGateway"`
 	ExecutorGateway ContainerResourcesDocument `json:"executorGateway"`
 	HarnessPool     ContainerResourcesDocument `json:"harnessPool"`
@@ -420,6 +428,7 @@ func validateReplicas(document ReplicasDocument) error {
 		minimum int
 	}{
 		{name: "core", value: document.Core, minimum: 2},
+		{name: "platformGateway", value: document.PlatformGateway, minimum: 2},
 		{name: "browserGateway", value: document.BrowserGateway, minimum: 2},
 		{name: "harnessPool", value: document.HarnessPool, minimum: 1},
 		{name: "llmproxy", value: document.LLMProxy, minimum: 2},
@@ -438,6 +447,7 @@ func validateServices(document ServicesDocument) error {
 		ip   string
 	}{
 		{"core", document.Core.ClusterIP},
+		{"platformGateway", document.PlatformGateway.ClusterIP},
 		{"browserGateway", document.BrowserGateway.ClusterIP},
 		{"executorGateway", document.ExecutorGateway.ClusterIP},
 		{"llmproxy", document.LLMProxy.ClusterIP},
@@ -467,6 +477,7 @@ func validateServices(document ServicesDocument) error {
 		}
 	}
 	for name, actual := range map[string]uint16{
+		"platformGateway.port":       document.PlatformGateway.Port,
 		"browserGateway.port":        document.BrowserGateway.Port,
 		"executorGateway.publicPort": document.ExecutorGateway.PublicPort,
 	} {
@@ -489,6 +500,7 @@ func validateIngress(document IngressDocument) error {
 		{name: "gatewayName", actual: document.GatewayName, expected: ProductionGatewayName},
 		{name: "gatewaySection", actual: document.GatewaySection, expected: ProductionGatewaySection},
 		{name: "frontendHostname", actual: document.FrontendHostname, expected: ProductionFrontendHostname},
+		{name: "browserFrontendHostname", actual: document.BrowserFrontendHostname, expected: ProductionBrowserFrontendHostname},
 		{name: "browserGatewayHostname", actual: document.BrowserHostname, expected: ProductionBrowserHostname},
 		{name: "executorGatewayHostname", actual: document.ExecutorHostname, expected: ProductionExecutorHostname},
 	} {
@@ -554,11 +566,17 @@ func validateOAuth(document OAuthDocument, bootstrap BootstrapDocument, browserH
 	if document.Hydra.IntrospectionURL != wantIntrospectionURL {
 		return fmt.Errorf("oauth.hydra.introspectionUrl must be exactly %s", wantIntrospectionURL)
 	}
+	if err := validateText("oauth.hydra.platformClientId", document.Hydra.PlatformClientID, 1, 256); err != nil {
+		return err
+	}
+	if document.Hydra.PlatformClientID != corecontract.PlatformOAuthClientID {
+		return fmt.Errorf("oauth.hydra.platformClientId must be exactly %s", corecontract.PlatformOAuthClientID)
+	}
 	if err := validateText("oauth.hydra.browserClientId", document.Hydra.BrowserClientID, 1, 256); err != nil {
 		return err
 	}
-	if document.Hydra.BrowserClientID != "agentserver-browser" {
-		return errors.New("oauth.hydra.browserClientId must be exactly agentserver-browser")
+	if document.Hydra.BrowserClientID != corecontract.BrowserOAuthClientID {
+		return fmt.Errorf("oauth.hydra.browserClientId must be exactly %s", corecontract.BrowserOAuthClientID)
 	}
 	if err := validateHTTPSURL("oauth.externalOidc.issuer", document.ExternalOIDC.Issuer, false); err != nil {
 		return err
@@ -700,6 +718,7 @@ func validateObjects(document ObjectStoreDocument) error {
 func validateSecrets(document SecretsDocument) error {
 	for name, pair := range map[string][2]string{
 		"core":            {document.Core, ProductionCoreSecret},
+		"platformGateway": {document.PlatformGateway, ProductionPlatformSecret},
 		"browserGateway":  {document.BrowserGateway, ProductionBrowserSecret},
 		"executorGateway": {document.ExecutorGateway, ProductionExecutorSecret},
 		"harnessPool":     {document.HarnessPool, ProductionHarnessPoolSecret},
@@ -724,7 +743,8 @@ func validateNetwork(document *NetworkDocument, services ServicesDocument) error
 		return errors.New("network.dnsClusterIp must be a usable canonical IPv4 address")
 	}
 	for name, clusterIP := range map[string]string{
-		"core": services.Core.ClusterIP, "browserGateway": services.BrowserGateway.ClusterIP,
+		"core": services.Core.ClusterIP, "platformGateway": services.PlatformGateway.ClusterIP,
+		"browserGateway":  services.BrowserGateway.ClusterIP,
 		"executorGateway": services.ExecutorGateway.ClusterIP, "llmproxy": services.LLMProxy.ClusterIP,
 		"hydra": services.Hydra.ClusterIP,
 	} {
@@ -812,6 +832,7 @@ func validateResources(document ResourcesDocument) error {
 		resource ContainerResourcesDocument
 	}{
 		{name: "core", resource: document.Core},
+		{name: "platformGateway", resource: document.PlatformGateway},
 		{name: "browserGateway", resource: document.BrowserGateway},
 		{name: "executorGateway", resource: document.ExecutorGateway},
 		{name: "harnessPool", resource: document.HarnessPool},
@@ -976,5 +997,9 @@ func validLabelKey(value string) bool {
 func BrowserOAuthAudience() string { return corecontract.BrowserOAuthAudience }
 
 func BrowserOAuthScopes() []string { return corecontract.BrowserOAuthScopes() }
+
+func PlatformOAuthAudience() string { return corecontract.PlatformOAuthAudience }
+
+func PlatformOAuthScopes() []string { return corecontract.PlatformOAuthScopes() }
 
 func CodexConfigProfile() string { return harnessworker.CodexConfigProfileStable0146 }

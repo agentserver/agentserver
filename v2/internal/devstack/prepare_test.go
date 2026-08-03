@@ -222,7 +222,7 @@ func TestPreparedDevelopmentFixturesServeCoreIntrospectionAndTLSResponses(t *tes
 	}
 	if !introspection.Active || introspection.Subject != fixture.document.Authority.ActorID ||
 		len(introspection.Audience) != 1 || introspection.Audience[0] != devfixtures.BrowserTokenAudience ||
-		introspection.Scope != devfixtures.BrowserTokenScope || introspection.ExpiresAt <= time.Now().Unix() {
+		introspection.Scope != devfixtures.BrowserOAuthScopeText || introspection.ExpiresAt <= time.Now().Unix() {
 		t.Fatalf("served development introspection = %+v", introspection)
 	}
 

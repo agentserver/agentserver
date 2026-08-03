@@ -38,7 +38,7 @@ func TestInsecureDevelopmentFixturesJSONSchemaContract(t *testing.T) {
 		Hydra: HydraDocument{
 			IntrospectionEndpoint:  "http://127.0.0.1:17447/oauth2/introspect",
 			BrowserBearerTokenFile: "/private/dev/secrets/browser-bearer.token",
-			Audience:               BrowserTokenAudience, Scope: BrowserTokenScope, ResponseTTL: "15m",
+			Audience:               BrowserTokenAudience, Scope: BrowserOAuthScopeText, ResponseTTL: "15m",
 			PublicOrigin: "https://127.0.0.1:17444", BrowserClientID: BrowserOAuthClientID,
 			BrowserRedirectURI: "https://127.0.0.1:17444/",
 			LoginURL:           "https://127.0.0.1:17444/auth/hydra/login", ConsentURL: "https://127.0.0.1:17444/auth/hydra/consent",

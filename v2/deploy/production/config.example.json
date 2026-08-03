@@ -5,8 +5,8 @@
   "clusterDomain": "cluster.local",
   "platform": "linux-amd64",
   "images": {
-    "service": "registry-sg.byted.cs.ac.cn/agentserver/v2-service@sha256:1111111111111111111111111111111111111111111111111111111111111111",
-    "harness": "registry-sg.byted.cs.ac.cn/agentserver/v2-harness@sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "service": "registry-sg.byted.cs.ac.cn/agentserver/v2-service@sha256:37087dd347c12f3dc19a409efa9a8e28050161acbe3ec2fe611a301c0eaedae2",
+    "harness": "registry-sg.byted.cs.ac.cn/agentserver/v2-harness@sha256:599fe7c93cbba7738ec1075b1a4fcda80247dc5b459724bf04fcc9be36bfed1f",
     "pullSecret": "agentserver-registry-pull"
   },
   "replicas": {
@@ -16,14 +16,14 @@
     "llmproxy": 2
   },
   "services": {
-    "core": {"clusterIp": "10.96.10.10", "port": 8443},
-    "browserGateway": {"clusterIp": "10.96.10.11", "port": 8080},
+    "core": {"clusterIp": "192.168.250.10", "port": 8443},
+    "browserGateway": {"clusterIp": "192.168.250.11", "port": 8080},
     "executorGateway": {
-      "clusterIp": "10.96.10.12",
+      "clusterIp": "192.168.250.12",
       "publicPort": 8080,
       "internalPort": 8443
     },
-    "llmproxy": {"clusterIp": "10.96.10.13", "port": 8443}
+    "llmproxy": {"clusterIp": "192.168.250.13", "port": 8443}
   },
   "ingress": {
     "gatewayNamespace": "istio-ingress",
@@ -37,11 +37,11 @@
     "executorGatewayHostname": "executor-gateway.byted.bps.dev"
   },
   "bootstrap": {
-    "workspaceId": "40000000-0000-4000-8000-000000000004",
-    "sessionId": "50000000-0000-4000-8000-000000000005",
-    "ownerUserId": "10000000-0000-4000-8000-000000000001",
+    "workspaceId": "9271bfe5-68a4-484b-a2d3-e9f450a42d0c",
+    "sessionId": "4847b054-ebf9-4f0b-9db8-c2fba1d57226",
+    "ownerUserId": "d8c5c377-31b4-4660-8b0d-d5a0bcf57407",
     "externalOidcSubject": "replace-with-exact-idp-subject",
-    "executorId": "20000000-0000-4000-8000-000000000002"
+    "executorId": "1eeb5890-7556-431f-b4e5-c4e40b2c9f29"
   },
   "spiffeTrustDomain": "agentserver.byted.bps.dev",
   "oauth": {
@@ -75,8 +75,8 @@
     "maxConcurrentAttempts": 4,
     "runtimeManifestSha256": "5b7297d0a4e5eb294dc201ce2e82ae8f73f27b51c3360c8737e4338e46e3d128",
     "checkpointAllowlistVersion": 1,
-    "finalExecSha256": "4444444444444444444444444444444444444444444444444444444444444444",
-    "finalExecSizeBytes": 1048576
+    "finalExecSha256": "f0547c830db66c94d2973071f2c2ef3bf03f9953c3af5225e3c9f4e115392398",
+    "finalExecSizeBytes": 1781886
   },
   "objectStore": {
     "mode": "s3-plaintext-v1",
@@ -96,7 +96,7 @@
     "objectStore": "agentserver-object-store-secrets"
   },
   "network": {
-    "dnsClusterIp": "10.96.0.10",
+    "dnsClusterIp": "192.168.0.10",
     "dnsNamespace": "kube-system",
     "dnsPodSelector": {
       "k8s-app": "kube-dns"

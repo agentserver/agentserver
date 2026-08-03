@@ -77,18 +77,23 @@
       "format": "uri",
       "pattern": "^https://"
     },
-    "image": {
+    "serviceImage": {
       "type": "string",
       "maxLength": 4096,
-      "pattern": "^[^\\s@]+@sha256:[0-9a-f]{64}$"
+      "pattern": "^registry-sg\\.byted\\.cs\\.ac\\.cn/agentserver/v2-service@sha256:[0-9a-f]{64}$"
+    },
+    "harnessImage": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^registry-sg\\.byted\\.cs\\.ac\\.cn/agentserver/v2-harness@sha256:[0-9a-f]{64}$"
     },
     "images": {
       "type": "object",
       "additionalProperties": false,
       "required": ["service", "harness", "pullSecret"],
       "properties": {
-        "service": {"$ref": "#/$defs/image"},
-        "harness": {"$ref": "#/$defs/image"},
+        "service": {"$ref": "#/$defs/serviceImage"},
+        "harness": {"$ref": "#/$defs/harnessImage"},
         "pullSecret": {"const": "agentserver-registry-pull"}
       }
     },
@@ -283,6 +288,7 @@
         "prefix",
         "s3Bucket",
         "s3Region",
+        "s3Endpoint",
         "s3UsePathStyle"
       ],
       "properties": {

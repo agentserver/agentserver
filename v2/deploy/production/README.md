@@ -1,7 +1,8 @@
 # Production deployment artifacts
 
-- `config.example.json`：SG-only closed-world 生产输入；固定 Namespace、域名、Secret 名称和
-  `linux-amd64` platform。
+- `config.example.json`：SG-only closed-world 生产输入；已写入核验过的 amd64 镜像 digest、
+  SG ClusterIP/CoreDNS、bootstrap UUID 和 runtime artifact，仍须替换外部 OIDC/Hydra/S3/egress
+  示例值后才能发布。
 - `build-images.sh`：生产发布只使用 `linux-amd64`，并逐文件验证 service/harness 镜像。
 - `service.Containerfile`、`harness.Containerfile`：digest-pinned base、scratch runtime 镜像。
 - `agentserver-deploy chart`：从生产配置生成环境锁定的 Helm Chart。

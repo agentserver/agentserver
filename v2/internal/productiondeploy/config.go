@@ -48,6 +48,8 @@ const (
 	ProductionLLMProxySecret      = "agentserver-llmproxy-secrets"
 	ProductionObjectStoreSecret   = "agentserver-object-store-secrets"
 	ProductionImagePullSecret     = "agentserver-registry-pull"
+	ProductionServiceImage        = "registry-sg.byted.cs.ac.cn/agentserver/v2-service"
+	ProductionHarnessImage        = "registry-sg.byted.cs.ac.cn/agentserver/v2-harness"
 
 	PoolUID    uint32 = 65530
 	PoolGID    uint32 = 65530
@@ -203,7 +205,7 @@ type ObjectStoreDocument struct {
 	Prefix         string `json:"prefix"`
 	S3Bucket       string `json:"s3Bucket"`
 	S3Region       string `json:"s3Region"`
-	S3Endpoint     string `json:"s3Endpoint,omitempty"`
+	S3Endpoint     string `json:"s3Endpoint"`
 	S3UsePathStyle bool   `json:"s3UsePathStyle"`
 }
 
@@ -328,6 +330,12 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 	}
 	if !imagePattern.MatchString(document.Images.Service) || !imagePattern.MatchString(document.Images.Harness) {
 		return LoadedConfig{}, errors.New("service and harness images must be immutable OCI references ending in @sha256:<64 lowercase hex>")
+	}
+	if !strings.HasPrefix(document.Images.Service, ProductionServiceImage+"@sha256:") {
+		return LoadedConfig{}, fmt.Errorf("images.service must use the SG production repository %s", ProductionServiceImage)
+	}
+	if !strings.HasPrefix(document.Images.Harness, ProductionHarnessImage+"@sha256:") {
+		return LoadedConfig{}, fmt.Errorf("images.harness must use the SG production repository %s", ProductionHarnessImage)
 	}
 	if document.Images.Service == document.Images.Harness {
 		return LoadedConfig{}, errors.New("service and harness images must be independently pinned artifacts")
@@ -632,10 +640,8 @@ func validateObjects(document ObjectStoreDocument) error {
 	if err := objectstore.ValidatePrefix(document.Prefix); err != nil {
 		return fmt.Errorf("objectStore.prefix: %w", err)
 	}
-	if document.S3Endpoint != "" {
-		if err := validateHTTPSOrigin("objectStore.s3Endpoint", document.S3Endpoint); err != nil {
-			return err
-		}
+	if err := validateHTTPSOrigin("objectStore.s3Endpoint", document.S3Endpoint); err != nil {
+		return err
 	}
 	if err := awsprovider.ValidateS3Config(awsprovider.S3Config{
 		Bucket: document.S3Bucket, Region: document.S3Region,

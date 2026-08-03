@@ -67,6 +67,7 @@ Job 只用于数据库 migration/bootstrap。每个 run 的 harness 仍由 harne
   256-bit key/keyring；
 - 32-byte 随机 PostgreSQL owner 密码、`kubernetes.io/basic-auth` Secret；
 - `agentserver-postgres` CloudNativePG Cluster：3 个实例，每实例 50Gi Longhorn；
+- CNPG 1.30.0 支持的 PostgreSQL 17.6 system-trixie amd64 manifest（tag + digest 双重固定）；
 - 指向 `agentserver-postgres-rw.agentserver.svc.cluster.local:5432` 的应用 DSN；
 - 7 个应用 Secret 和一个 registry pull Secret；
 - 环境锁定的 OCI Helm release。
@@ -142,8 +143,11 @@ Chart/Pulumi 不管理 Hydra、外部 OIDC IdP、S3 bucket、第三方 LLM Gatew
 对应 Secret 的精确含义：
 
 - `externalOidcClientSecret` 是与 `oauth.externalOidc.clientId` 同一注册项的 client secret；
-- `registryDockerConfigJson` 是私有 registry 的完整 Docker `config.json`，至少包含可拉取
-  `registry-sg.byted.cs.ac.cn` 的 `auths` 项；Pulumi 将其转成 `kubernetes.io/dockerconfigjson` Secret。
+- `registryDockerConfigJson` 是只包含目标 registry 的最小 Docker `config.json`，顶层只能有
+  `auths`，且只能包含 `auths["registry-sg.byted.cs.ac.cn"].auth`；该值是 canonical base64 编码的非空
+  `username:password`。Pulumi 将完整 JSON 写入 `kubernetes.io/dockerconfigjson` Secret 供 kubelet
+  拉镜像，同时把解析出的 username/password 作为 secret inputs 交给 Helm provider 拉私有 OCI Chart。
+  只有本机 credential helper、却没有上述 `auth` 项的 config 不能用于无人值守部署。
 
 不存在 `upstreamCaPem`、`upstreamCredential` 或 llmproxy 静态上游 Secret。Core 用 Pulumi 生成的
 `llm-gateway-sealing-keyring.json` 加密每个 `(workspace, gateway, user)` token set；这个 key 只能解密
@@ -197,17 +201,22 @@ registry-sg.byted.cs.ac.cn/agentserver/v2-harness@sha256:<remote-amd64-digest>
 ## 5. 准备并校验 SG production.json
 
 复制 [`deploy/production/config.example.json`](../deploy/production/config.example.json) 到一个绝对、
-不可被 group/other 写入的安全路径。以下字段已经固定，不能修改：
+不可被 group/other 写入的安全路径。模板已经写入本轮远端 amd64 manifest digest、四个已 dry-run
+确认可分配的 SG ClusterIP、CoreDNS `192.168.0.10`、固定 bootstrap UUID、runtime manifest 和
+`harness-final-exec` 摘要。以下字段已经固定，不能修改：
 
 - `region=sg`、`namespace=agentserver`、`platform=linux-amd64`；
 - `spiffeTrustDomain=agentserver.byted.bps.dev`；
 - 三个域名及 Istio Gateway/listener；
 - `run-capability-sg-v1`、`run-manifest-sg-v1`；
 - 7 个 Secret 名称和 `agentserver-registry-pull`；
-- `objectStore.mode=s3-plaintext-v1`。
+- `objectStore.mode=s3-plaintext-v1`；
+- 镜像仓库只能是 `registry-sg.byted.cs.ac.cn/agentserver/v2-service` 和 `v2-harness`，且必须使用 digest。
 
-需要替换的内容包括镜像 digest、固定 ClusterIP、bootstrap UUID/owner `sub`、Hydra/平台 OIDC、
-S3、外部系统 egress CIDR 和资源配额。S3 对象是明文；bucket、credential、备份、retention 和访问审计
+在发布当前提交时，只需替换 owner 精确 `sub`、Hydra/平台 OIDC、S3 endpoint/region/bucket/prefix/
+path-style、外部系统 egress CIDR；资源配额可按最终容量审计调整。发布后续代码版本时还必须重新构建、
+远端核验并替换两个镜像 digest 及对应 runtime artifact。S3 endpoint 是必填项，不能省略后回退到
+AWS 默认 endpoint。S3 对象是明文；bucket、credential、备份、retention 和访问审计
 必须按明文数据边界管理。S3 不是 PostgreSQL 或完整用户 session 数据库的替代品，只保存
 prompt/checkpoint 对象，数据库保存状态与 pointer。
 
@@ -265,7 +274,8 @@ oci://registry-sg.byted.cs.ac.cn/agentserver/agentserver-v2:<chart-version>
 
 `../k8s-byted/index.ts` 只在 `pulumi.getStack() === "sg"` 时调用 AgentServer，并等待 Istio
 Gateway 创建完成。Chart version 从完整配置摘要自动推导，不再单独配置 Namespace、release、
-Chart version、Secret 名称或 Secret 内容文件。
+Chart version、Secret 名称或 Secret 内容文件。CN/SG 集群的所有实际变更都必须经过这套 Pulumi
+资源；不要用 `helm install/upgrade` 或 `kubectl apply/create/patch` 绕过 Pulumi state。
 
 在外部资源 Output 尚未直接接线时，可把它们写入 Pulumi 的加密 config；这些值会进入加密
 Pulumi state 和 Kubernetes Secret，不会出现在 Chart：
@@ -279,6 +289,16 @@ pulumi config set --stack sg --secret agentserver:s3AccessKeyId '<s3-access-key-
 pulumi config set --stack sg --secret agentserver:s3SecretAccessKey '<s3-secret-access-key>'
 pulumi config set --stack sg --secret agentserver:registryDockerConfigJson '<docker-config-json>'
 ```
+
+最后一项的精确形状是：
+
+```json
+{"auths":{"registry-sg.byted.cs.ac.cn":{"auth":"<canonical-base64-of-username:password>"}}}
+```
+
+发布 Chart 的操作者仍需先登录 registry 执行 `helm push`。部署阶段不依赖另一次交互式
+`helm registry login`：Pulumi 会从上述 Docker config 的精确 registry `auth` 项获得 OCI Chart
+拉取凭据，并以 secret 传播；若该项不存在，preview/up 会在创建任何 AgentServer 资源前失败。
 
 不要设置 `agentserver:databaseUrl`。CNPG owner 密码和 DSN 在 `pulumi up` 时自动生成；模块会等待
 CNPG `Cluster` 的 `Ready` condition，再启动 Helm migration/bootstrap hooks。

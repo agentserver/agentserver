@@ -71,11 +71,17 @@ func TestValidateConfigUsesEnrollmentAuthorityMaximumTTL(t *testing.T) {
 
 func TestValidateConfigRejectsUnsafeProductionShapes(t *testing.T) {
 	for name, mutate := range map[string]func(*ConfigDocument){
-		"platform":                  func(value *ConfigDocument) { value.Platform = "linux-riscv64" },
-		"non-SG region":             func(value *ConfigDocument) { value.Region = "cn" },
-		"wrong namespace":           func(value *ConfigDocument) { value.Namespace = "agentserver-test" },
-		"wrong trust domain":        func(value *ConfigDocument) { value.TrustDomain = "other.byted.bps.dev" },
-		"mutable image":             func(value *ConfigDocument) { value.Images.Service = "registry.example.test/agentserver:latest" },
+		"platform":           func(value *ConfigDocument) { value.Platform = "linux-riscv64" },
+		"non-SG region":      func(value *ConfigDocument) { value.Region = "cn" },
+		"wrong namespace":    func(value *ConfigDocument) { value.Namespace = "agentserver-test" },
+		"wrong trust domain": func(value *ConfigDocument) { value.TrustDomain = "other.byted.bps.dev" },
+		"mutable image":      func(value *ConfigDocument) { value.Images.Service = "registry.example.test/agentserver:latest" },
+		"wrong service registry": func(value *ConfigDocument) {
+			value.Images.Service = "registry.example.test/agentserver/service@sha256:" + strings.Repeat("1", 64)
+		},
+		"wrong harness registry": func(value *ConfigDocument) {
+			value.Images.Harness = "registry.example.test/agentserver/harness@sha256:" + strings.Repeat("2", 64)
+		},
 		"invalid pull secret":       func(value *ConfigDocument) { value.Images.PullSecret = "Not_Canonical" },
 		"pull secret collision":     func(value *ConfigDocument) { value.Images.PullSecret = value.Secrets.Core },
 		"gateway replicas implied":  func(value *ConfigDocument) { value.Services.ExecutorGateway.InternalPort = 9443 },
@@ -84,6 +90,7 @@ func TestValidateConfigRejectsUnsafeProductionShapes(t *testing.T) {
 		"invalid object mode":       func(value *ConfigDocument) { value.Objects.Mode = "encrypted" },
 		"invalid object prefix":     func(value *ConfigDocument) { value.Objects.Prefix = "agentserver/../production" },
 		"invalid provider region":   func(value *ConfigDocument) { value.Objects.S3Region = "not a region" },
+		"missing S3 endpoint":       func(value *ConfigDocument) { value.Objects.S3Endpoint = "" },
 		"open egress":               func(value *ConfigDocument) { value.Network.CoreExternalEgress[0].CIDR = "0.0.0.0/0" },
 		"missing DNS selector":      func(value *ConfigDocument) { value.Network.DNSPodSelector = nil },
 		"DNS service collision":     func(value *ConfigDocument) { value.Network.DNSClusterIP = value.Services.Core.ClusterIP },
@@ -133,8 +140,8 @@ func validConfigDocument() ConfigDocument {
 	return ConfigDocument{
 		Version: 1, Region: ProductionRegion, Namespace: "agentserver", ClusterDomain: "cluster.local", Platform: ProductionPlatform,
 		Images: ImagesDocument{
-			Service:    "registry.example.test/agentserver/service@sha256:" + digest("1"),
-			Harness:    "registry.example.test/agentserver/harness@sha256:" + digest("2"),
+			Service:    ProductionServiceImage + "@sha256:" + digest("1"),
+			Harness:    ProductionHarnessImage + "@sha256:" + digest("2"),
 			PullSecret: "agentserver-registry-pull",
 		},
 		Replicas: ReplicasDocument{Core: 2, BrowserGateway: 2, HarnessPool: 2, LLMProxy: 2},
@@ -185,6 +192,7 @@ func validConfigDocument() ConfigDocument {
 		Objects: ObjectStoreDocument{
 			Mode: "s3-plaintext-v1", Prefix: "agentserver/v2/production",
 			S3Bucket: "agentserver-production", S3Region: "sg-central",
+			S3Endpoint: "https://tos-s3-sg.byted.org",
 		},
 		Secrets: SecretsDocument{
 			Core: "agentserver-core-secrets", BrowserGateway: "agentserver-browser-secrets",

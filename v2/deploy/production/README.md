@@ -1,8 +1,8 @@
 # Production deployment artifacts
 
 - `config.example.json`：SG-only closed-world 生产输入；已写入核验过的 amd64 镜像 digest、
-  SG ClusterIP/CoreDNS、bootstrap UUID 和 runtime artifact，仍须替换外部 OIDC/Hydra/S3/egress
-  示例值后才能发布。
+  SG ClusterIP/CoreDNS、bootstrap UUID、runtime artifact、owner、平台 OIDC、内置 Hydra、S3 与
+  当前 TOS 内网 egress 地址；这些环境值变化时必须重新生成和发布 Chart。
 - `build-images.sh`：生产发布只使用 `linux-amd64`，并逐文件验证 service/harness 镜像。
 - `service.Containerfile`、`harness.Containerfile`：digest-pinned base、scratch runtime 镜像。
 - `agentserver-deploy chart`：从生产配置生成环境锁定的 Helm Chart。

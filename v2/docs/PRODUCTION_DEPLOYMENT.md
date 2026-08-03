@@ -172,8 +172,7 @@ Gateway、DNS 和用户机器上的 agentx。
 
 ## 4. 构建并发布 SG amd64 镜像
 
-旧 registry digest 不包含本轮 SG、双 listener、分域和明文 S3 改动，不能继续使用。构建前
-`v2/` 必须已经提交且工作树干净。构建脚本只接受锁定的 stock Codex `0.146.0` amd64 artifact
+构建前 `v2/` 必须已经提交且工作树干净。构建脚本只接受锁定的 stock Codex `0.146.0` amd64 artifact
 和审核过的 amd64 bwrap：
 
 ```bash
@@ -223,17 +222,21 @@ registry-sg.byted.cs.ac.cn/agentserver/v2-harness@sha256:<remote-amd64-digest>
 
 不要写 tag、本地 image ID、arm64 digest 或未经核验的 multi-arch index digest。
 
-当前已发布并从远端回拉核验的 runtime source revision 为
-`5f0c43b388669f33e54a55959c21b02fafd49539`：
+当前已发布并从远端匿名回拉核验的 runtime source revision 为
+`d3aa74a9e2094e5d0fbb19fe557df7c5e0f4aee6`：
 
 | 镜像 | 远端 linux/amd64 manifest digest |
 | --- | --- |
-| `registry-sg.byted.cs.ac.cn/agentserver/v2-service` | `sha256:aa50b3718e3689409613f8a9e9f765a08eed38466bb8d60da995d3fb394b6718` |
-| `registry-sg.byted.cs.ac.cn/agentserver/v2-harness` | `sha256:7607137412935aa7ced2afc7ed42318fa6457d16a9bd97d7dcb1cfbb5c59d0b7` |
+| `registry-sg.byted.cs.ac.cn/agentserver/v2-service` | `sha256:b5c589556aeadcbac5a976558a75e7ab9eed0a8d43a0866de323a536a980a066` |
+| `registry-sg.byted.cs.ac.cn/agentserver/v2-harness` | `sha256:938d272e84ba7832a048d82006dc773084129516cacc5fdd3f5d77536c42f8ca` |
 
 service/harness 均为 `linux/amd64`，OCI revision label 与上述 source revision 完全一致。不要把远端 index digest
-`sha256:69bf4bc16c6dd41804c5850be7fc5197735a7b4dd5d3572d76319a539a40446d` /
-`sha256:f7fb74fd8b1d85d5bfea9d0771d5837fed65d30196143bbbf0e7eea11ceb7be4` 写入 production config。
+`sha256:95ef22d676b5c37227dc762e0dac1030d5f78fa737a29bb9be49545694b88ee6` /
+`sha256:fdcadd6ac10706e069a4d0f3b0411b14e22bb759aff88c03c4a681ac94ea5895` 写入 production config。
+Hydra 镜像也已镜像到同一公开仓库；其远端单平台 index 为
+`sha256:c417bfa39528b1d6bbdd3f1342f5d8d192f99a2af17c0b44fb17247c3035a07d`，Chart 锁定的
+`linux/amd64` 子 manifest 仍为官方的
+`sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b`。
 
 ## 5. 准备并校验 SG production.json
 
@@ -251,8 +254,10 @@ service/harness 均为 `linux/amd64`，OCI revision label 与上述 source revis
 - 镜像仓库只能是 `registry-sg.byted.cs.ac.cn/agentserver/v2-service`、`v2-harness` 和 `hydra`，
   且必须使用 digest。
 
-当前 SG 模板已经锁定 owner `sub=3506220589`、平台 OIDC、S3 endpoint/region/bucket/prefix/path-style
-和 Chart 内置 Hydra 合同。发布前仍须替换示例 egress CIDR，并在新代码提交后重新构建、远端核验和
+当前 SG 模板已经锁定 owner `sub=3506220589`、平台 OIDC、S3 endpoint/region/bucket/prefix/path-style、
+Chart 内置 Hydra 合同，以及从 SG Pod 解析得到的 TOS 地址 `10.8.103.160/32`。平台 OIDC 当前解析为
+公网地址，由受 SSRF 保留网段约束的 public-HTTPS egress 规则覆盖；TOS 内网地址分别显式写入 core 和
+harness-pool 的 TCP 443 白名单。DNS 地址变化时必须重新生成 Chart。新代码提交后仍须重新构建、远端核验和
 替换 service/harness digest 及对应 runtime artifact；Hydra digest 只在升级 Hydra 版本时变化。资源配额
 可按最终容量审计调整。S3 endpoint 是必填项，不能省略后回退到
 AWS 默认 endpoint。S3 对象是明文；bucket、credential、备份、retention 和访问审计

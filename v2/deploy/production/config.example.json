@@ -5,8 +5,8 @@
   "clusterDomain": "cluster.local",
   "platform": "linux-amd64",
   "images": {
-    "service": "registry-sg.byted.cs.ac.cn/agentserver/v2-service@sha256:aa50b3718e3689409613f8a9e9f765a08eed38466bb8d60da995d3fb394b6718",
-    "harness": "registry-sg.byted.cs.ac.cn/agentserver/v2-harness@sha256:7607137412935aa7ced2afc7ed42318fa6457d16a9bd97d7dcb1cfbb5c59d0b7",
+    "service": "registry-sg.byted.cs.ac.cn/agentserver/v2-service@sha256:b5c589556aeadcbac5a976558a75e7ab9eed0a8d43a0866de323a536a980a066",
+    "harness": "registry-sg.byted.cs.ac.cn/agentserver/v2-harness@sha256:938d272e84ba7832a048d82006dc773084129516cacc5fdd3f5d77536c42f8ca",
     "hydra": "registry-sg.byted.cs.ac.cn/agentserver/hydra@sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b"
   },
   "replicas": {
@@ -104,9 +104,9 @@
     "dnsPodSelector": {
       "k8s-app": "kube-dns"
     },
-    "coreExternalEgress": [{"cidr": "192.0.2.0/24", "ports": [443]}],
+    "coreExternalEgress": [{"cidr": "10.8.103.160/32", "ports": [443]}],
     "browserExternalEgress": [],
-    "harnessExternalEgress": [{"cidr": "192.0.2.0/24", "ports": [443]}]
+    "harnessExternalEgress": [{"cidr": "10.8.103.160/32", "ports": [443]}]
   },
   "resources": {
     "core": {

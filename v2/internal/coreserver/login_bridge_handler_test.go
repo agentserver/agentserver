@@ -45,7 +45,7 @@ func TestLoginBridgeHandlerSetsHostCookieAndClearsItAfterCallback(t *testing.T) 
 	callbackResponse := httptest.NewRecorder()
 	handler.Routes().ServeHTTP(callbackResponse, callbackRequest)
 	if callbackResponse.Code != http.StatusFound || workload.action != "auth.callback" ||
-		callbackResponse.Header().Get("Location") != "https://browser.example/oauth2/auth?login_verifier=accepted" ||
+		callbackResponse.Header().Get("Location") != hydraTestContinuationURL(hydra.loginRequest.RequestURL, hydraLoginVerifierQuery, "accepted") ||
 		hydra.acceptLoginCalls != 1 {
 		t.Fatalf("callback response = %d headers=%v action=%q hydra=%+v", callbackResponse.Code, callbackResponse.Header(), workload.action, hydra)
 	}

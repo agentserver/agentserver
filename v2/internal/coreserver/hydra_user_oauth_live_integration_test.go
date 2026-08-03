@@ -97,6 +97,7 @@ func TestHydraV262UserResourceAuthorityLive(t *testing.T) {
 	// request through a test-only helper without weakening the production
 	// redirect contract.
 	loginRedirect := acceptHydraLiveLoginRequest(t, adminClient, adminOrigin, loginChallenge, hydraLiveBrowserSubjectID)
+	assertHydraV262ContinuationQuery(t, authorizationURL, loginRedirect.RedirectTo, hydraLoginVerifierQuery)
 	consentLocation := hydraLiveRedirectLocation(t, publicClient, loginRedirect.RedirectTo)
 	consentChallenge := hydraLiveRedirectChallenge(t, consentLocation, "consent_challenge")
 	consent, err := admin.GetConsentRequest(t.Context(), consentChallenge)
@@ -127,6 +128,7 @@ func TestHydraV262UserResourceAuthorityLive(t *testing.T) {
 	consentRedirect := acceptHydraLiveConsentRequest(t, adminClient, adminOrigin, consentChallenge, HydraConsentGrant{
 		Scope: requestedScopes, Audience: []string{corecontract.BrowserOAuthAudience}, Authority: authority,
 	})
+	assertHydraV262ContinuationQuery(t, authorizationURL, consentRedirect.RedirectTo, hydraConsentVerifierQuery)
 	callbackLocation := hydraLiveRedirectLocation(t, publicClient, consentRedirect.RedirectTo)
 	callback, err := url.Parse(callbackLocation)
 	if err != nil || callback.Scheme+"://"+callback.Host+callback.Path != hydraLiveBrowserRedirectURI ||
@@ -188,6 +190,36 @@ func TestHydraV262UserResourceAuthorityLive(t *testing.T) {
 	request.SetPathValue("workspaceId", hydraLiveBrowserWorkspaceID)
 	if _, err := authorizer.AuthorizeUser(request, "runs.create"); !errors.Is(err, ErrInvalidUserAccessToken) {
 		t.Fatalf("Core accepted server-revoked Hydra user token: %v", err)
+	}
+}
+
+func assertHydraV262ContinuationQuery(t *testing.T, authorizationURL, continuationURL, verifierQuery string) {
+	t.Helper()
+	authorization, err := url.Parse(authorizationURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := url.Parse(continuationURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := continuation.Query()
+	verifiers := query[verifierQuery]
+	if len(verifiers) != 1 || verifiers[0] == "" {
+		t.Fatalf("Hydra 26.2 continuation is missing its singular %s", verifierQuery)
+	}
+	expected := authorization.Query()
+	if _, exists := expected[hydraLoginVerifierQuery]; exists {
+		t.Fatal("authorization request unexpectedly contains a login verifier")
+	}
+	if _, exists := expected[hydraConsentVerifierQuery]; exists {
+		t.Fatal("authorization request unexpectedly contains a consent verifier")
+	}
+	expected.Set(verifierQuery, verifiers[0])
+	if continuation.Scheme != authorization.Scheme || continuation.Host != authorization.Host ||
+		continuation.Path != authorization.Path || continuation.RawPath != "" || continuation.Fragment != "" ||
+		continuation.RawQuery != expected.Encode() {
+		t.Fatalf("Hydra 26.2 continuation did not preserve the exact authorization query plus %s", verifierQuery)
 	}
 }
 

@@ -33,6 +33,10 @@ const (
 var (
 	defaultBrowserOAuthScopes = corecontract.BrowserOAuthScopes()
 	defaultBrowserAudience    = []string{corecontract.BrowserOAuthAudience}
+	hydraAuthorizationQuery   = []string{
+		"audience", "client_id", "code_challenge", "code_challenge_method", "nonce",
+		"redirect_uri", "response_type", "scope", "state",
+	}
 )
 
 // LoginBridgeOAuthProfile is one closed Hydra public-client authority accepted
@@ -655,14 +659,74 @@ func (bridge *LoginBridge) validateHydraRedirect(raw, verifierQuery string) erro
 		return errors.New("Hydra continuation redirect verifier type is invalid")
 	}
 	query, err := url.ParseQuery(parsed.RawQuery)
-	if err != nil || len(query) != 1 {
-		return errors.New("Hydra continuation redirect has invalid query authority")
+	if err != nil {
+		return errors.New("Hydra continuation redirect has invalid query encoding")
 	}
-	verifiers, ok := query[verifierQuery]
-	if !ok || len(verifiers) != 1 || validateHydraChallenge(verifiers[0]) != nil {
+	shape := hydraContinuationQueryShape(query)
+	allowed := make(map[string]struct{}, len(hydraAuthorizationQuery)+2)
+	for _, name := range hydraAuthorizationQuery {
+		allowed[name] = struct{}{}
+	}
+	allowed["resource"] = struct{}{}
+	allowed[verifierQuery] = struct{}{}
+	for name, values := range query {
+		_, permitted := allowed[name]
+		if !permitted || len(values) != 1 || values[0] == "" || len(values[0]) > 4096 || strings.ContainsAny(values[0], "\x00\r\n") {
+			return fmt.Errorf("Hydra continuation redirect has invalid query authority (%s)", shape)
+		}
+	}
+	for _, required := range append(append([]string(nil), hydraAuthorizationQuery...), verifierQuery) {
+		if _, ok := query[required]; !ok {
+			return fmt.Errorf("Hydra continuation redirect has invalid query authority (%s)", shape)
+		}
+	}
+	verifiers := query[verifierQuery]
+	if validateHydraChallenge(verifiers[0]) != nil {
 		return errors.New("Hydra continuation redirect has invalid verifier authority")
 	}
+	profile, ok := bridge.oauthProfiles[query.Get("client_id")]
+	if !ok || query.Get("response_type") != "code" || query.Get("code_challenge_method") != "S256" ||
+		query.Get("audience") != profile.Audience[0] ||
+		!uniqueCanonicalTextSubset(strings.Split(query.Get("scope"), " "), profile.Scopes) ||
+		!slices.Contains(strings.Split(query.Get("scope"), " "), corecontract.OAuthOpenIDScope) ||
+		validateOIDCSecret("authorization state", query.Get("state")) != nil ||
+		validateOIDCSecret("authorization nonce", query.Get("nonce")) != nil ||
+		validateOIDCSecret("authorization PKCE challenge", query.Get("code_challenge")) != nil {
+		return fmt.Errorf("Hydra continuation redirect has invalid OAuth authority (%s)", shape)
+	}
+	redirectURI, err := url.Parse(query.Get("redirect_uri"))
+	if err != nil || redirectURI.Scheme != "https" || redirectURI.Host == "" || redirectURI.Hostname() == "" ||
+		redirectURI.User != nil || redirectURI.Opaque != "" || redirectURI.Path != "/" || redirectURI.RawPath != "" ||
+		redirectURI.RawQuery != "" || redirectURI.Fragment != "" || redirectURI.RawFragment != "" || redirectURI.ForceQuery {
+		return fmt.Errorf("Hydra continuation redirect has invalid client callback authority (%s)", shape)
+	}
+	if _, err := userOAuthWorkspaceResource(profile.Authority, parsed.String()); err != nil {
+		return fmt.Errorf("Hydra continuation redirect has invalid resource authority (%s)", shape)
+	}
+	expectedParameters := len(hydraAuthorizationQuery) + 1
+	if profile.Authority == corecontract.UserOAuthBrowserAuthority {
+		expectedParameters++
+	}
+	if len(query) != expectedParameters || parsed.RawQuery != query.Encode() {
+		return fmt.Errorf("Hydra continuation redirect has invalid query authority (%s)", shape)
+	}
 	return nil
+}
+
+func hydraContinuationQueryShape(query url.Values) string {
+	known := make([]string, 0, len(query))
+	unknown := 0
+	for name := range query {
+		switch name {
+		case "audience", "client_id", "code_challenge", "code_challenge_method", "consent_verifier",
+			"login_verifier", "nonce", "redirect_uri", "resource", "response_type", "scope", "state":
+			known = append(known, name)
+		default:
+			unknown++
+		}
+	}
+	sort.Strings(known)
+	return fmt.Sprintf("parameters=%s unknown_parameters=%d", strings.Join(known, ","), unknown)
 }
 
 func validateHydraPublicOrigin(raw string) (string, error) {

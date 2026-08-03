@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,7 +46,7 @@ func TestLoginBridgeBindsAndConsumesExternalOIDCCallbackOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !completed.ClearBinding || completed.RedirectTo != "https://browser.example/oauth2/auth?login_verifier=accepted" ||
+	if !completed.ClearBinding || completed.RedirectTo != hydraTestContinuationURL(hydra.loginRequest.RequestURL, hydraLoginVerifierQuery, "accepted") ||
 		store.login.Status != coredb.OIDCLoginStatusAccepted || store.login.UserID != loginBridgeTestUserID ||
 		hydra.acceptLoginCalls != 1 || hydra.acceptedSubject != loginBridgeTestUserID || provider.exchangeCalls != 1 {
 		t.Fatalf("completed login = %+v stored=%+v hydra=%+v provider=%+v", completed, store.login, hydra, provider)
@@ -88,7 +89,7 @@ func TestLoginBridgeFailsClosedForUnmappedIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.RedirectTo != "https://browser.example/oauth2/auth?login_verifier=rejected" ||
+	if result.RedirectTo != hydraTestContinuationURL(hydra.loginRequest.RequestURL, hydraLoginVerifierQuery, "rejected") ||
 		store.login.Status != coredb.OIDCLoginStatusFailed || store.login.FailureCode != "identity_not_mapped" ||
 		hydra.rejectLoginCalls != 1 || hydra.acceptLoginCalls != 0 {
 		t.Fatalf("unmapped identity result=%+v stored=%+v hydra=%+v", result, store.login, hydra)
@@ -109,7 +110,7 @@ func TestLoginBridgeConsentAllowsProfileSubsetAndIsOneShot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.RedirectTo != "https://browser.example/oauth2/auth?consent_verifier=accepted" ||
+	if result.RedirectTo != hydraTestContinuationURL(hydra.consentRequest.RequestURL, hydraConsentVerifierQuery, "accepted") ||
 		store.consent.Status != coredb.HydraConsentStatusAccepted || hydra.acceptConsentCalls != 1 ||
 		!sameUniqueTextSet(hydra.acceptedConsentScopes, hydra.consentRequest.RequestedScope) ||
 		!sameUniqueTextSet(hydra.acceptedConsentAudience, hydra.consentRequest.RequestedAccessTokenAudience) ||
@@ -135,7 +136,7 @@ func TestLoginBridgeConsentAllowsProfileSubsetAndIsOneShot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rejected.RedirectTo != "https://browser.example/oauth2/auth?consent_verifier=rejected" ||
+	if rejected.RedirectTo != hydraTestContinuationURL(otherHydra.consentRequest.RequestURL, hydraConsentVerifierQuery, "rejected") ||
 		otherHydra.rejectConsentCalls != 1 || otherHydra.acceptConsentCalls != 0 || otherStore.consent.Status != "" {
 		t.Fatalf("overbroad consent=%+v stored=%+v hydra=%+v", rejected, otherStore.consent, otherHydra)
 	}
@@ -164,7 +165,7 @@ func TestLoginBridgeSelectsPlatformAndBrowserProfilesWithoutMixingAuthority(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.RedirectTo != "https://browser.example/oauth2/auth?login_verifier=rejected" ||
+	if result.RedirectTo != hydraTestContinuationURL(otherHydra.loginRequest.RequestURL, hydraLoginVerifierQuery, "rejected") ||
 		otherHydra.rejectLoginCalls != 1 || otherStore.login.ID != "" {
 		t.Fatalf("mixed profile result=%+v store=%+v hydra=%+v", result, otherStore.login, otherHydra)
 	}
@@ -172,11 +173,17 @@ func TestLoginBridgeSelectsPlatformAndBrowserProfilesWithoutMixingAuthority(t *t
 
 func TestLoginBridgeRequiresExactHydraContinuationRedirect(t *testing.T) {
 	bridge, _, _, _ := newLoginBridgeFixture(t)
+	browserRequestURL := browserAuthorizationRequestURL(loginBridgeTestWorkspaceID)
+	platformRequestURL := platformAuthorizationRequestURL()
+	loginRedirect := hydraTestContinuationURL(browserRequestURL, hydraLoginVerifierQuery, "opaque")
+	consentRedirect := hydraTestContinuationURL(browserRequestURL, hydraConsentVerifierQuery, "opaque")
 	for _, valid := range []struct {
 		name, redirect, verifier string
 	}{
-		{name: "login", redirect: "https://browser.example/oauth2/auth?login_verifier=opaque", verifier: hydraLoginVerifierQuery},
-		{name: "consent", redirect: "https://browser.example/oauth2/auth?consent_verifier=opaque", verifier: hydraConsentVerifierQuery},
+		{name: "Hydra 26.2 Browser login", redirect: loginRedirect, verifier: hydraLoginVerifierQuery},
+		{name: "Hydra 26.2 Browser consent", redirect: consentRedirect, verifier: hydraConsentVerifierQuery},
+		{name: "Hydra 26.2 Platform login", redirect: hydraTestContinuationURL(platformRequestURL, hydraLoginVerifierQuery, "opaque"), verifier: hydraLoginVerifierQuery},
+		{name: "Hydra 26.2 Platform consent", redirect: hydraTestContinuationURL(platformRequestURL, hydraConsentVerifierQuery, "opaque"), verifier: hydraConsentVerifierQuery},
 	} {
 		t.Run(valid.name, func(t *testing.T) {
 			if err := bridge.validateHydraRedirect(valid.redirect, valid.verifier); err != nil {
@@ -188,22 +195,40 @@ func TestLoginBridgeRequiresExactHydraContinuationRedirect(t *testing.T) {
 	for _, invalid := range []struct {
 		name, redirect, verifier string
 	}{
-		{name: "wrong origin", redirect: "https://sink.invalid/oauth2/auth?login_verifier=opaque", verifier: hydraLoginVerifierQuery},
-		{name: "wrong path", redirect: "https://browser.example/other?login_verifier=opaque", verifier: hydraLoginVerifierQuery},
-		{name: "encoded path", redirect: "https://browser.example/oauth2/%61uth?login_verifier=opaque", verifier: hydraLoginVerifierQuery},
-		{name: "wrong verifier", redirect: "https://browser.example/oauth2/auth?consent_verifier=opaque", verifier: hydraLoginVerifierQuery},
-		{name: "duplicate verifier", redirect: "https://browser.example/oauth2/auth?login_verifier=one&login_verifier=two", verifier: hydraLoginVerifierQuery},
-		{name: "extra query", redirect: "https://browser.example/oauth2/auth?login_verifier=opaque&next=https%3A%2F%2Fsink.invalid", verifier: hydraLoginVerifierQuery},
-		{name: "empty verifier", redirect: "https://browser.example/oauth2/auth?login_verifier=", verifier: hydraLoginVerifierQuery},
-		{name: "fragment", redirect: "https://browser.example/oauth2/auth?login_verifier=opaque#fragment", verifier: hydraLoginVerifierQuery},
-		{name: "empty fragment", redirect: "https://browser.example/oauth2/auth?login_verifier=opaque#", verifier: hydraLoginVerifierQuery},
-		{name: "unknown verifier type", redirect: "https://browser.example/oauth2/auth?login_verifier=opaque", verifier: "other_verifier"},
+		{name: "wrong origin", redirect: strings.Replace(loginRedirect, "https://browser.example", "https://sink.invalid", 1), verifier: hydraLoginVerifierQuery},
+		{name: "wrong path", redirect: strings.Replace(loginRedirect, "/oauth2/auth?", "/other?", 1), verifier: hydraLoginVerifierQuery},
+		{name: "encoded path", redirect: strings.Replace(loginRedirect, "/oauth2/auth?", "/oauth2/%61uth?", 1), verifier: hydraLoginVerifierQuery},
+		{name: "wrong verifier", redirect: consentRedirect, verifier: hydraLoginVerifierQuery},
+		{name: "duplicate verifier", redirect: loginRedirect + "&login_verifier=second", verifier: hydraLoginVerifierQuery},
+		{name: "extra query", redirect: loginRedirect + "&next=https%3A%2F%2Fsink.invalid", verifier: hydraLoginVerifierQuery},
+		{name: "empty verifier", redirect: hydraTestContinuationURL(browserRequestURL, hydraLoginVerifierQuery, ""), verifier: hydraLoginVerifierQuery},
+		{name: "fragment", redirect: loginRedirect + "#fragment", verifier: hydraLoginVerifierQuery},
+		{name: "empty fragment", redirect: loginRedirect + "#", verifier: hydraLoginVerifierQuery},
+		{name: "unknown verifier type", redirect: loginRedirect, verifier: "other_verifier"},
 	} {
 		t.Run(invalid.name, func(t *testing.T) {
 			if err := bridge.validateHydraRedirect(invalid.redirect, invalid.verifier); err == nil {
 				t.Fatal("invalid redirect was accepted")
 			}
 		})
+	}
+}
+
+func TestLoginBridgeHydraContinuationDiagnosticsExposeOnlyKnownParameterNames(t *testing.T) {
+	bridge, _, _, _ := newLoginBridgeFixture(t)
+	redirect := hydraTestContinuationURL(
+		browserAuthorizationRequestURL(loginBridgeTestWorkspaceID),
+		hydraLoginVerifierQuery,
+		"opaque",
+	) + "&secret-parameter-name=secret-parameter-value"
+	err := bridge.validateHydraRedirect(redirect, hydraLoginVerifierQuery)
+	if err == nil || !strings.Contains(err.Error(), "unknown_parameters=1") {
+		t.Fatalf("unknown continuation parameter was not diagnosed safely: %v", err)
+	}
+	for _, secret := range []string{"secret-parameter-name", "secret-parameter-value"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("continuation diagnostic exposed %q: %v", secret, err)
+		}
 	}
 }
 
@@ -358,7 +383,7 @@ func (hydra *recordingHydraAdmin) AcceptLoginRequest(_ context.Context, challeng
 	}
 	hydra.acceptLoginCalls++
 	hydra.acceptedSubject = subject
-	return HydraRedirect{RedirectTo: "https://browser.example/oauth2/auth?login_verifier=accepted"}, nil
+	return HydraRedirect{RedirectTo: hydraTestContinuationURL(hydra.loginRequest.RequestURL, hydraLoginVerifierQuery, "accepted")}, nil
 }
 
 func (hydra *recordingHydraAdmin) RejectLoginRequest(_ context.Context, challenge, _, _ string) (HydraRedirect, error) {
@@ -366,7 +391,7 @@ func (hydra *recordingHydraAdmin) RejectLoginRequest(_ context.Context, challeng
 		return HydraRedirect{}, errors.New("unknown login challenge")
 	}
 	hydra.rejectLoginCalls++
-	return HydraRedirect{RedirectTo: "https://browser.example/oauth2/auth?login_verifier=rejected"}, nil
+	return HydraRedirect{RedirectTo: hydraTestContinuationURL(hydra.loginRequest.RequestURL, hydraLoginVerifierQuery, "rejected")}, nil
 }
 
 func (hydra *recordingHydraAdmin) GetConsentRequest(_ context.Context, challenge string) (HydraConsentRequest, error) {
@@ -384,7 +409,7 @@ func (hydra *recordingHydraAdmin) AcceptConsentRequest(_ context.Context, challe
 	hydra.acceptedConsentScopes = append([]string(nil), grant.Scope...)
 	hydra.acceptedConsentAudience = append([]string(nil), grant.Audience...)
 	hydra.acceptedConsentAuthority = grant.Authority
-	return HydraRedirect{RedirectTo: "https://browser.example/oauth2/auth?consent_verifier=accepted"}, nil
+	return HydraRedirect{RedirectTo: hydraTestContinuationURL(hydra.consentRequest.RequestURL, hydraConsentVerifierQuery, "accepted")}, nil
 }
 
 func (hydra *recordingHydraAdmin) RejectConsentRequest(_ context.Context, challenge, _, _ string) (HydraRedirect, error) {
@@ -392,7 +417,7 @@ func (hydra *recordingHydraAdmin) RejectConsentRequest(_ context.Context, challe
 		return HydraRedirect{}, errors.New("unknown consent challenge")
 	}
 	hydra.rejectConsentCalls++
-	return HydraRedirect{RedirectTo: "https://browser.example/oauth2/auth?consent_verifier=rejected"}, nil
+	return HydraRedirect{RedirectTo: hydraTestContinuationURL(hydra.consentRequest.RequestURL, hydraConsentVerifierQuery, "rejected")}, nil
 }
 
 type memoryLoginBridgeStore struct {
@@ -548,6 +573,50 @@ func sha256Text(value string) string {
 }
 
 func browserAuthorizationRequestURL(workspaceID string) string {
-	return "https://hydra.internal/oauth2/auth?client_id=" + corecontract.BrowserOAuthClientID +
-		"&resource=" + url.QueryEscape(corecontract.UserOAuthWorkspaceURNPrefix+workspaceID)
+	return testAuthorizationRequestURL(
+		corecontract.BrowserOAuthClientID,
+		corecontract.BrowserOAuthAudience,
+		corecontract.BrowserOAuthScopes(),
+		corecontract.UserOAuthWorkspaceURNPrefix+workspaceID,
+	)
+}
+
+func platformAuthorizationRequestURL() string {
+	return testAuthorizationRequestURL(
+		corecontract.PlatformOAuthClientID,
+		corecontract.PlatformOAuthAudience,
+		corecontract.PlatformOAuthScopes(),
+		"",
+	)
+}
+
+func testAuthorizationRequestURL(clientID, audience string, scopes []string, resource string) string {
+	query := url.Values{
+		"audience":              {audience},
+		"client_id":             {clientID},
+		"code_challenge":        {strings.Repeat("c", 43)},
+		"code_challenge_method": {"S256"},
+		"nonce":                 {strings.Repeat("n", 43)},
+		"redirect_uri":          {"https://browser-client.example/"},
+		"response_type":         {"code"},
+		"scope":                 {strings.Join(scopes, " ")},
+		"state":                 {strings.Repeat("s", 43)},
+	}
+	if resource != "" {
+		query.Set("resource", resource)
+	}
+	return "https://browser.example/oauth2/auth?" + query.Encode()
+}
+
+func hydraTestContinuationURL(requestURL, verifierQuery, verifier string) string {
+	parsed, err := url.Parse(requestURL)
+	if err != nil {
+		panic(err)
+	}
+	parsed.Scheme = "https"
+	parsed.Host = "browser.example"
+	query := parsed.Query()
+	query.Set(verifierQuery, verifier)
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
 }

@@ -771,8 +771,11 @@ func normalizeEgressRules(name string, rules *[]EgressRuleDocument) error {
 	for index := range *rules {
 		rule := &(*rules)[index]
 		prefix, err := netip.ParsePrefix(rule.CIDR)
-		if err != nil || !prefix.Addr().Is4() || prefix.Masked().String() != rule.CIDR || prefix.Bits() < 8 {
-			return fmt.Errorf("%s[%d].cidr must be a canonical IPv4 CIDR narrower than /8", name, index)
+		if err != nil || prefix.Masked().String() != rule.CIDR ||
+			(prefix.Addr().Is4() && prefix.Bits() < 8) ||
+			(prefix.Addr().Is6() && (prefix.Addr().Is4In6() || prefix.Bits() < 32)) ||
+			(!prefix.Addr().Is4() && !prefix.Addr().Is6()) {
+			return fmt.Errorf("%s[%d].cidr must be a canonical IP CIDR no broader than IPv4 /8 or IPv6 /32", name, index)
 		}
 		if len(rule.Ports) == 0 || len(rule.Ports) > 32 {
 			return fmt.Errorf("%s[%d].ports must contain between 1 and 32 ports", name, index)

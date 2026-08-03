@@ -255,9 +255,12 @@ Hydra 镜像也已镜像到同一公开仓库；其远端单平台 index 为
   且必须使用 digest。
 
 当前 SG 模板已经锁定 owner `sub=3506220589`、平台 OIDC、S3 endpoint/region/bucket/prefix/path-style、
-Chart 内置 Hydra 合同，以及从 SG Pod 解析得到的 TOS 地址 `10.8.103.160/32`。平台 OIDC 当前解析为
-公网地址，由受 SSRF 保留网段约束的 public-HTTPS egress 规则覆盖；TOS 内网地址分别显式写入 core 和
-harness-pool 的 TCP 443 白名单。DNS 地址变化时必须重新生成 Chart。新代码提交后仍须重新构建、远端核验和
+Chart 内置 Hydra 合同，以及从 SG Pod 解析得到的 TOS 地址 `10.8.103.160/32` 和
+`fdbd:dc51:fe:200d::1/128`。平台 OIDC 当前解析为公网地址，由受 SSRF 保留网段约束的
+public-HTTPS egress 规则覆盖；TOS 内网地址分别显式写入 core 和 harness-pool 的 TCP 443 白名单。
+这里必须保持 `s3Endpoint=https://tos-s3-sg.byted.org` 与 `s3UsePathStyle=false`：AWS SDK 据此访问
+`agentserver-sg.tos-s3-sg.byted.org` bucket virtual-host。裸 endpoint 的 IPv4 在当前 SG Pod 不可达，
+不能改回 path-style。DNS 地址变化时必须重新生成 Chart。新代码提交后仍须重新构建、远端核验和
 替换 service/harness digest 及对应 runtime artifact；Hydra digest 只在升级 Hydra 版本时变化。资源配额
 可按最终容量审计调整。S3 endpoint 是必填项，不能省略后回退到
 AWS 默认 endpoint。S3 对象是明文；bucket、credential、备份、retention 和访问审计

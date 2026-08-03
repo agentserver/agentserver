@@ -29,6 +29,19 @@ func TestValidateConfigRejectsNonAMD64SGDeployment(t *testing.T) {
 	}
 }
 
+func TestValidateConfigAcceptsCanonicalIPv6ExternalEgress(t *testing.T) {
+	document := validConfigDocument()
+	document.Network.CoreExternalEgress = append(document.Network.CoreExternalEgress,
+		EgressRuleDocument{CIDR: "fdbd:dc51:fe:200d::1/128", Ports: []uint16{443}})
+	loaded, err := ValidateConfig(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.Document.Network.CoreExternalEgress[1].CIDR; got != "fdbd:dc51:fe:200d::1/128" {
+		t.Fatalf("IPv6 egress CIDR = %q", got)
+	}
+}
+
 func TestParseConfigRejectsUnknownDuplicateAndSecretFields(t *testing.T) {
 	document := validConfigDocument()
 	raw, err := json.Marshal(document)
@@ -83,14 +96,18 @@ func TestValidateConfigRejectsUnsafeProductionShapes(t *testing.T) {
 		"wrong Hydra registry": func(value *ConfigDocument) {
 			value.Images.Hydra = "registry.example.test/agentserver/hydra@sha256:" + strings.Repeat("3", 64)
 		},
-		"gateway replicas implied":  func(value *ConfigDocument) { value.Services.ExecutorGateway.InternalPort = 9443 },
-		"wrong frontend hostname":   func(value *ConfigDocument) { value.Ingress.FrontendHostname = "agent-cn.byted.bps.dev" },
-		"missing gateway selector":  func(value *ConfigDocument) { value.Ingress.GatewayPodSelector = nil },
-		"invalid object mode":       func(value *ConfigDocument) { value.Objects.Mode = "encrypted" },
-		"invalid object prefix":     func(value *ConfigDocument) { value.Objects.Prefix = "agentserver/../production" },
-		"invalid provider region":   func(value *ConfigDocument) { value.Objects.S3Region = "not a region" },
-		"missing S3 endpoint":       func(value *ConfigDocument) { value.Objects.S3Endpoint = "" },
-		"open egress":               func(value *ConfigDocument) { value.Network.CoreExternalEgress[0].CIDR = "0.0.0.0/0" },
+		"gateway replicas implied": func(value *ConfigDocument) { value.Services.ExecutorGateway.InternalPort = 9443 },
+		"wrong frontend hostname":  func(value *ConfigDocument) { value.Ingress.FrontendHostname = "agent-cn.byted.bps.dev" },
+		"missing gateway selector": func(value *ConfigDocument) { value.Ingress.GatewayPodSelector = nil },
+		"invalid object mode":      func(value *ConfigDocument) { value.Objects.Mode = "encrypted" },
+		"invalid object prefix":    func(value *ConfigDocument) { value.Objects.Prefix = "agentserver/../production" },
+		"invalid provider region":  func(value *ConfigDocument) { value.Objects.S3Region = "not a region" },
+		"missing S3 endpoint":      func(value *ConfigDocument) { value.Objects.S3Endpoint = "" },
+		"open egress":              func(value *ConfigDocument) { value.Network.CoreExternalEgress[0].CIDR = "0.0.0.0/0" },
+		"open IPv6 egress":         func(value *ConfigDocument) { value.Network.CoreExternalEgress[0].CIDR = "::/0" },
+		"noncanonical IPv6 egress": func(value *ConfigDocument) {
+			value.Network.CoreExternalEgress[0].CIDR = "fdbd:dc51:fe:200d:0:0:0:1/128"
+		},
 		"missing DNS selector":      func(value *ConfigDocument) { value.Network.DNSPodSelector = nil },
 		"DNS service collision":     func(value *ConfigDocument) { value.Network.DNSClusterIP = value.Services.Core.ClusterIP },
 		"oversize DNS label":        func(value *ConfigDocument) { value.ClusterDomain = strings.Repeat("a", 64) + ".test" },

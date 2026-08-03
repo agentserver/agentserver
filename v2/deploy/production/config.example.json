@@ -86,7 +86,7 @@
     "s3Bucket": "agentserver-sg",
     "s3Region": "sg-central",
     "s3Endpoint": "https://tos-s3-sg.byted.org",
-    "s3UsePathStyle": true
+    "s3UsePathStyle": false
   },
   "secrets": {
     "core": "agentserver-core-secrets",
@@ -104,9 +104,15 @@
     "dnsPodSelector": {
       "k8s-app": "kube-dns"
     },
-    "coreExternalEgress": [{"cidr": "10.8.103.160/32", "ports": [443]}],
+    "coreExternalEgress": [
+      {"cidr": "10.8.103.160/32", "ports": [443]},
+      {"cidr": "fdbd:dc51:fe:200d::1/128", "ports": [443]}
+    ],
     "browserExternalEgress": [],
-    "harnessExternalEgress": [{"cidr": "10.8.103.160/32", "ports": [443]}]
+    "harnessExternalEgress": [
+      {"cidr": "10.8.103.160/32", "ports": [443]},
+      {"cidr": "fdbd:dc51:fe:200d::1/128", "ports": [443]}
+    ]
   },
   "resources": {
     "core": {

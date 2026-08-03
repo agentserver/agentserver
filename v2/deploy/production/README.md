@@ -8,6 +8,9 @@
 - `agentserver-deploy chart`：从生产配置生成环境锁定的 Helm Chart。
 
 当前 SG profile 由 Istio 终止公网 TLS，prompt/checkpoint 以明文写入 S3-compatible bucket；
+TOS 使用 `https://tos-s3-sg.byted.org` 作为 SDK base endpoint，并以
+`agentserver-sg.tos-s3-sg.byted.org` virtual-host 访问 bucket（`s3UsePathStyle=false`）；core 和
+harness-pool 的 NetworkPolicy 同时固定该 endpoint 当前解析出的 IPv4/IPv6 地址。
 内部 CA、workload 证书、签名/对称密钥和 Kubernetes Secret 由 `../k8s-byted` 的 Pulumi 模块
 生成；同一模块还会创建 3 实例 CloudNativePG Cluster、随机 owner 密码和应用 DSN，不需要外部
 `databaseUrl`。构建脚本保留其他平台参数只用于历史 conformance/开发，不代表该平台可部署到生产。

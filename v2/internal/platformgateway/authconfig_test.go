@@ -32,3 +32,30 @@ func TestAuthorizationConfigRejectsDuplicateScopes(t *testing.T) {
 		t.Fatal("duplicate Platform scopes were accepted")
 	}
 }
+
+func TestAuthorizationConfigPublishesOneExactExternalOAuthAuthority(t *testing.T) {
+	handler, err := NewAuthorizationConfigHandlerWithEndpoints(
+		corecontract.PlatformOAuthClientID,
+		corecontract.PlatformOAuthAudience,
+		corecontract.PlatformOAuthScopes(),
+		"https://auth-sg.byted.bps.dev/oauth2/auth",
+		"https://auth-sg.byted.bps.dev/oauth2/token",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "https://agent.byted.bps.dev/auth/config", nil))
+	var document AuthorizationConfig
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &document) != nil ||
+		document.AuthorizationEndpoint != "https://auth-sg.byted.bps.dev/oauth2/auth" ||
+		document.TokenEndpoint != "https://auth-sg.byted.bps.dev/oauth2/token" {
+		t.Fatalf("external platform authorization config = %d %+v", response.Code, document)
+	}
+	if _, err := NewAuthorizationConfigHandlerWithEndpoints(
+		corecontract.PlatformOAuthClientID, corecontract.PlatformOAuthAudience, corecontract.PlatformOAuthScopes(),
+		"https://auth-sg.byted.bps.dev/oauth2/auth", "https://other.example/oauth2/token",
+	); err == nil {
+		t.Fatal("mixed OAuth endpoint authorities were accepted")
+	}
+}

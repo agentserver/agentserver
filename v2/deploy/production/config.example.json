@@ -5,9 +5,9 @@
   "clusterDomain": "cluster.local",
   "platform": "linux-amd64",
   "images": {
-    "service": "registry-sg.byted.cs.ac.cn/agentserver/v2-service@sha256:93b8d19223877c14fa50e1ef0c176846e85f2be2394c56b4b9b1e2016b520ced",
-    "harness": "registry-sg.byted.cs.ac.cn/agentserver/v2-harness@sha256:1f1eb0864881052ed55b545ffc1b66ab57f8b60d047903a5255ea456a1634b1b",
-    "hydra": "registry-sg.byted.cs.ac.cn/agentserver/hydra@sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b"
+    "service": "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-service@sha256:93b8d19223877c14fa50e1ef0c176846e85f2be2394c56b4b9b1e2016b520ced",
+    "harness": "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-harness@sha256:1f1eb0864881052ed55b545ffc1b66ab57f8b60d047903a5255ea456a1634b1b",
+    "hydra": "registry-sg.byted.cs.ac.cn/ghcr/agentserver/hydra@sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b"
   },
   "replicas": {
     "core": 2,
@@ -39,7 +39,8 @@
     "frontendHostname": "agent.byted.bps.dev",
     "browserFrontendHostname": "browser.byted.bps.dev",
     "browserGatewayHostname": "browser-gateway.byted.bps.dev",
-    "executorGatewayHostname": "executor-gateway.byted.bps.dev"
+    "executorGatewayHostname": "executor-gateway.byted.bps.dev",
+    "hydraHostname": "auth-sg.byted.bps.dev"
   },
   "bootstrap": {
     "workspaceId": "9271bfe5-68a4-484b-a2d3-e9f450a42d0c",
@@ -51,10 +52,9 @@
   "spiffeTrustDomain": "agentserver.byted.bps.dev",
   "oauth": {
     "hydra": {
-      "issuer": "https://agent.byted.bps.dev/",
+      "issuer": "https://auth-sg.byted.bps.dev/",
       "adminUrl": "https://hydra.agentserver.internal:4445",
-      "publicOrigin": "https://agent.byted.bps.dev",
-      "publicUpstream": "https://hydra.agentserver.internal:4444",
+      "publicOrigin": "https://auth-sg.byted.bps.dev",
       "introspectionUrl": "https://hydra.agentserver.internal:4445/admin/oauth2/introspect",
       "platformClientId": "agentserver-platform",
       "browserClientId": "agentserver-browser"

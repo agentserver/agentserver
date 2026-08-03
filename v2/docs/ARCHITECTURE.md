@@ -134,7 +134,7 @@
 | 组件 | 唯一职责 | 明确不负责 |
 |---|---|---|
 | **platform-web** | Platform 静态 SPA；以 `agentserver-platform` 完成 Code + PKCE；管理 workspace、成员、executor 与 LLM Gateway | 不承载对话，不持有 Browser token，不绕过 platform-gateway |
-| **platform-gateway** | 托管 Platform SPA；代理 Hydra public/login/consent；以独立 workload identity 转发 Platform 管理 API | 不接受 Browser token，不承载 session/run/AG-UI API，不拥有业务状态 |
+| **platform-gateway** | 托管 Platform SPA；承载 Hydra login/consent bridge；以独立 workload identity 转发 Platform 管理 API | 不代理 Hydra public，不接受 Browser token，不承载 session/run/AG-UI API，不拥有业务状态 |
 | **Browser SPA**（源码目录 `a2ui-web`） | 以 `agentserver-browser` 为单一 workspace 完成 Code + PKCE；session 导航、AG-UI client 与 A2UI 渲染 | 不管理 workspace/executor/LLM Gateway，不持久化 access token |
 | **agentserver-core** | workspace/RBAC；session/run；事件；审批；executor/credential/LLM authorization 控制面；Hydra login/consent bridge | 不运行 Codex，不代理模型，不托管 SPA |
 | **browser-gateway** | 托管 Browser SPA；workspace 显式的 session/run/AG-UI/SSE 边缘；规范事件到 AG-UI/A2UI 的映射 | 不接受 Platform token，不暴露管理 API，不拥有运行状态 |
@@ -145,7 +145,7 @@
 | **agentx** | executor enrollment；出站 WSS；owner policy；监管/初始化本地 exec-server；RPC 转发、id 映射、重连缓冲和少量 agentserver 扩展 | 不含模型、不访问 llmproxy、不接受 prompt、不重写标准 process/fs handler |
 | **stock exec-server**（用户侧子进程） | 通过 stdio 接收确定性 JSON-RPC；执行 upstream process/fs/PTY/sandbox handler | 不使用 `--remote`，不读用户 Codex 登录态，不调用模型 |
 | **llmproxy** | 模型路由、配额、上游凭证注入 | 不接受 executor 机器凭证 |
-| **Hydra** | OAuth2/OIDC 授权服务器和 token 签发方 | 不提供用户登录 UI，不直接完成外部身份认证 |
+| **Hydra** | 在独立 `auth-sg` public origin 提供 OAuth2/OIDC authorize/token/discovery/JWKS，并签发 token | 不提供用户登录 UI，不直接完成外部身份认证，不公开 Admin listener |
 
 stock Codex 在两处使用同一个 pinned 构建，但能力不同：harness 启动 app-server 并可访问 llmproxy；agentx 只启动 `exec-server --listen stdio`，使用隔离的空 Codex home 且没有任何模型 credential。两者不能复用配置、身份或网络策略。
 
@@ -199,19 +199,22 @@ executor 侧不存在 Codex thread，也不存在“大脑 thread 与 executor t
 2. Platform 请求唯一 `aud=agentserver-platform-api`；Browser 请求唯一
    `aud=agentserver-browser-api`，并携带单一
    `resource=urn:agentserver:workspace:<workspace-id>`。
-3. Hydra 的 `URLS_LOGIN` 和 `URLS_CONSENT` 通过 platform-gateway 指向 core login bridge。
+3. Hydra public issuer 位于 `https://auth-sg.byted.bps.dev/`；`URLS_LOGIN` 和 `URLS_CONSENT` 指向
+   `https://agent.byted.bps.dev/auth/hydra/*`，再由 platform-gateway 送到 core login bridge。
 4. core 接收 Hydra challenge，跳转外部 OIDC IdP，并将 `(issuer, sub)` 映射为本地 user；随后按
    client、requested scope、当前 membership 与 workspace resource 计算 consent grant。
 5. Hydra 签发 opaque access token，Core 在每个用户请求上调用 Hydra introspection，并校验精确的
    issuer、client、audience、scope 与 versioned resource grant。
 6. core 不保存或验证用户密码；身份认证仍由外部 IdP 完成。
 
-Hydra public 的 `/oauth2/auth`、`/oauth2/token` 以及 `/auth/*` bridge 统一位于
-`https://agent.byted.bps.dev`，由 platform-gateway 精确代理。Platform 同源使用这些 endpoint；Browser
-以顶层导航跨域访问 authorize endpoint，并从 `https://browser.byted.bps.dev` 对 token endpoint 发起不带
-credentials 的 CORS 请求。生产外部 IdP authorization endpoint 通常直接指向 IdP；只有 insecure-dev
-显式配置 `/auth/idp/authorize` 的精确代理。Hydra Admin、外部 IdP token、discovery 和 JWKS 调用都不
-经过浏览器。
+Hydra public 的 `/oauth2/*`、discovery 和 JWKS 直接位于 `https://auth-sg.byted.bps.dev`，Istio TLS
+终止后将流量送到 Hydra public 明文 HTTP listener；platform-gateway 不代理 Hydra。Platform 与 Browser
+都以顶层导航访问该 authorize endpoint，并分别从 `https://agent.byted.bps.dev` 与
+`https://browser.byted.bps.dev` 对 token endpoint 发起不带 credentials 的 CORS 请求。Hydra public 只放行
+这两个精确 origin，并原生维护 CSRF/session cookie 与 authorize continuation。`/auth/hydra/login`、
+`/auth/hydra/consent` 和外部 OIDC callback 仍在 Platform host。生产外部 IdP authorization endpoint通常
+直接指向 IdP；只有 insecure-dev 显式配置 `/auth/idp/authorize` 的精确代理。Hydra Admin、外部 IdP
+token、discovery 和 JWKS 调用都不经过浏览器。
 
 Core以数据库单次状态机持久化login与consent receipt。Hydra challenge、OIDC state/nonce、PKCE verifier和browser binding只以SHA-256 lookup或AES-256-GCM密文保存，密文AAD绑定transaction/purpose；浏览器只持有`Secure + HttpOnly + SameSite=Lax`的`__Host-`随机binding Cookie。callback必须同时命中state hash与binding hash并原子claim，`(issuer, subject)`只映射到预先存在且active的本地user；callback、consent challenge和authorization code都不能重放。Hydra continuation必须精确回到同origin的`/oauth2/auth`，login和consent分别只能携带单个对应verifier；成功redirect密封后作为状态与审计证据提交，失败或不明确结果不能被当作登录成功恢复。
 

@@ -78,7 +78,16 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 	hydra := findResource(t, runtime, "Deployment", hydraComponent)
 	hydraContainer := objectArrayFirst(t, objectField(t, objectField(t, objectField(t, hydra, "spec"), "template"), "spec"), "containers")
 	for name, want := range map[string]string{
-		"URLS_SELF_ISSUER":                                 "https://agent.byted.bps.dev/",
+		"URLS_SELF_ISSUER":                                 "https://auth-sg.byted.bps.dev/",
+		"URLS_SELF_PUBLIC":                                 "https://auth-sg.byted.bps.dev",
+		"URLS_LOGIN":                                       "https://agent.byted.bps.dev/auth/hydra/login",
+		"URLS_CONSENT":                                     "https://agent.byted.bps.dev/auth/hydra/consent",
+		"SERVE_PUBLIC_TLS_ENABLED":                         "false",
+		"SERVE_ADMIN_TLS_ENABLED":                          "true",
+		"SERVE_PUBLIC_CORS_ENABLED":                        "true",
+		"SERVE_PUBLIC_CORS_ALLOWED_ORIGINS":                "https://agent.byted.bps.dev,https://browser.byted.bps.dev",
+		"SERVE_PUBLIC_CORS_ALLOW_CREDENTIALS":              "false",
+		"SERVE_COOKIES_SAME_SITE_MODE":                     "Lax",
 		"OAUTH2_PKCE_ENFORCED_FOR_PUBLIC_CLIENTS":          "true",
 		"OAUTH2_GRANT_REFRESH_TOKEN_ROTATION_GRACE_PERIOD": "0s",
 		"OIDC_DYNAMIC_CLIENT_REGISTRATION_ENABLED":         "false",
@@ -167,7 +176,7 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 	if countKind(foundation, "NetworkPolicy") != 12 {
 		t.Fatalf("foundation NetworkPolicy count = %d", countKind(foundation, "NetworkPolicy"))
 	}
-	if countKind(foundation, "HTTPRoute") != 4 {
+	if countKind(foundation, "HTTPRoute") != 5 {
 		t.Fatalf("foundation HTTPRoute count = %d", countKind(foundation, "HTTPRoute"))
 	}
 	for _, resource := range foundation {
@@ -176,13 +185,15 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 		}
 	}
 	assertHTTPRoute(t, foundation, "agentserver-platform", ProductionFrontendHostname, platformComponent, PublicHTTPPort,
-		[]string{"/", "/auth", "/index.html", "/oauth2", "/platform", "/readyz", "/v2"})
+		[]string{"/", "/auth", "/index.html", "/platform", "/readyz", "/v2"})
 	assertHTTPRoute(t, foundation, "agentserver-browser", ProductionBrowserFrontendHostname, browserComponent, PublicHTTPPort,
 		[]string{"/", "/auth/config", "/index.html", "/readyz", "/reference"})
 	assertHTTPRoute(t, foundation, "agentserver-browser-api", ProductionBrowserHostname, browserComponent, PublicHTTPPort,
 		[]string{"/v2"})
 	assertHTTPRoute(t, foundation, "agentserver-executor-agentx", ProductionExecutorHostname, executorComponent, PublicHTTPPort,
 		[]string{executorgateway.AgentxChallengePath, executorgateway.AgentxConnectPath, executorgateway.AgentxEnrollmentPath})
+	assertHTTPRoute(t, foundation, "agentserver-hydra-public", ProductionHydraHostname, hydraComponent, HydraPublicPort,
+		[]string{"/"})
 	if bytes.Contains(mustJSONResource(t, findResource(t, foundation, "HTTPRoute", "agentserver-executor-agentx")), []byte(executorgateway.ExecutorMCPPath)) {
 		t.Fatal("executor public HTTPRoute exposes /mcp")
 	}

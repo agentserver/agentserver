@@ -80,17 +80,17 @@
     "serviceImage": {
       "type": "string",
       "maxLength": 4096,
-      "pattern": "^registry-sg\\.byted\\.cs\\.ac\\.cn/agentserver/v2-service@sha256:[0-9a-f]{64}$"
+      "pattern": "^registry-sg\\.byted\\.cs\\.ac\\.cn/ghcr/agentserver/v2-service@sha256:[0-9a-f]{64}$"
     },
     "harnessImage": {
       "type": "string",
       "maxLength": 4096,
-      "pattern": "^registry-sg\\.byted\\.cs\\.ac\\.cn/agentserver/v2-harness@sha256:[0-9a-f]{64}$"
+      "pattern": "^registry-sg\\.byted\\.cs\\.ac\\.cn/ghcr/agentserver/v2-harness@sha256:[0-9a-f]{64}$"
     },
     "hydraImage": {
       "type": "string",
       "maxLength": 4096,
-      "pattern": "^registry-sg\\.byted\\.cs\\.ac\\.cn/agentserver/hydra@sha256:[0-9a-f]{64}$"
+      "pattern": "^registry-sg\\.byted\\.cs\\.ac\\.cn/ghcr/agentserver/hydra@sha256:[0-9a-f]{64}$"
     },
     "images": {
       "type": "object",
@@ -183,7 +183,8 @@
         "frontendHostname",
         "browserFrontendHostname",
         "browserGatewayHostname",
-        "executorGatewayHostname"
+        "executorGatewayHostname",
+        "hydraHostname"
       ],
       "properties": {
         "gatewayNamespace": {"const": "istio-ingress"},
@@ -193,7 +194,8 @@
         "frontendHostname": {"const": "agent.byted.bps.dev"},
         "browserFrontendHostname": {"const": "browser.byted.bps.dev"},
         "browserGatewayHostname": {"const": "browser-gateway.byted.bps.dev"},
-        "executorGatewayHostname": {"const": "executor-gateway.byted.bps.dev"}
+        "executorGatewayHostname": {"const": "executor-gateway.byted.bps.dev"},
+        "hydraHostname": {"const": "auth-sg.byted.bps.dev"}
       }
     },
     "bootstrap": {
@@ -211,12 +213,11 @@
     "hydra": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["issuer", "adminUrl", "publicOrigin", "publicUpstream", "introspectionUrl", "platformClientId", "browserClientId"],
+      "required": ["issuer", "adminUrl", "publicOrigin", "introspectionUrl", "platformClientId", "browserClientId"],
       "properties": {
-        "issuer": {"const": "https://agent.byted.bps.dev/"},
+        "issuer": {"const": "https://auth-sg.byted.bps.dev/"},
         "adminUrl": {"const": "https://hydra.agentserver.internal:4445"},
-        "publicOrigin": {"const": "https://agent.byted.bps.dev"},
-        "publicUpstream": {"const": "https://hydra.agentserver.internal:4444"},
+        "publicOrigin": {"const": "https://auth-sg.byted.bps.dev"},
         "introspectionUrl": {"const": "https://hydra.agentserver.internal:4445/admin/oauth2/introspect"},
         "platformClientId": {"const": "agentserver-platform"},
         "browserClientId": {"const": "agentserver-browser"}

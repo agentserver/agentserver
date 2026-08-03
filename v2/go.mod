@@ -2,6 +2,8 @@ module github.com/agentserver/agentserver/v2
 
 go 1.26
 
+toolchain go1.26.5
+
 require (
 	github.com/ag-ui-protocol/ag-ui/sdks/community/go v0.0.0-20260717195153-3a7433ef055a
 	github.com/aws/aws-sdk-go-v2 v1.43.3

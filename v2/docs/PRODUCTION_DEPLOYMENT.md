@@ -5,7 +5,8 @@
 - Pulumi stack 必须为 `sg`；
 - Kubernetes 节点必须为 `linux/amd64`；
 - Namespace 固定为 `agentserver`，Helm release 固定为 `agentserver-v2`；
-- OCI registry 固定在 `registry-sg.byted.cs.ac.cn/agentserver/`；
+- 发布源固定为 `ghcr.io/agentserver/*`，SG 集群经 registry mirror
+  `registry-sg.byted.cs.ac.cn/ghcr/agentserver/*` 匿名拉取；
 - 公网 TLS 由 `istio-ingress/istio-gateway` 的 `https-byted-bps` listener 终止；
 - 应用的公网后端使用集群内明文 HTTP，组件之间的内部控制面继续使用 TLS/mTLS；
 - prompt/checkpoint 以明文对象写入 S3-compatible bucket，应用仍逐次校验 pointer、size 和 SHA-256。
@@ -22,12 +23,13 @@ grant。平台没有统一的模型 API key。
 
 | Host | 公开路径 | 后端 |
 | --- | --- | --- |
-| `agent.byted.bps.dev` | Platform SPA、`/auth*`、`/oauth2*`、Platform `/v2*`、`/readyz` | platform-gateway HTTP `8080` |
+| `agent.byted.bps.dev` | Platform SPA、Hydra login/consent bridge、外部 OIDC callback、Platform `/v2*`、`/readyz` | platform-gateway HTTP `8080` |
 | `browser.byted.bps.dev` | Browser SPA、`/reference*`、`/auth/config`、`/readyz` | browser-gateway HTTP `8080` |
 | `browser-gateway.byted.bps.dev` | `/v2*` | browser-gateway HTTP `8080` |
 | `executor-gateway.byted.bps.dev` | `/internal/v2/agentx/enrollments`、`/internal/v2/agentx/challenges`、`/internal/v2/agentx/connect` | executor-gateway HTTP `8080` |
+| `auth-sg.byted.bps.dev` | Hydra public issuer：`/oauth2/*`、discovery、JWKS | Hydra public HTTP `4444` |
 
-四条 `HTTPRoute` 都挂到：
+五条 `HTTPRoute` 都挂到：
 
 ```text
 namespace:   istio-ingress
@@ -37,13 +39,16 @@ sectionName: https-byted-bps
 
 Chart 不创建 Gateway、证书、LoadBalancer 或 external-dns 资源。现有 Istio listener 必须：
 
-1. 持有覆盖上述四个域名的公网证书；
+1. 持有覆盖上述五个域名的公网证书；
 2. 允许 `agentserver` Namespace 中的 HTTPRoute attach；
 3. 将 TLS 终止后的 HTTP 请求转发给 ClusterIP Service。
 
 Browser API 只允许 `https://browser.byted.bps.dev` 作为 Origin，并跨域访问
-`https://browser-gateway.byted.bps.dev/v2`；Platform 只为该 Browser origin 的
-`POST /oauth2/token` 开放 CORS。两处 CORS 都不允许 credentials。executor 的公网 listener
+`https://browser-gateway.byted.bps.dev/v2`。Platform 和 Browser SPA 都直接跳转到
+`https://auth-sg.byted.bps.dev/oauth2/auth`，并直接向同一 authority 的 `/oauth2/token` 做
+Authorization Code + PKCE exchange；Hydra public CORS 只允许这两个精确 SPA origin，且不允许
+credentials。Platform 不代理 `/oauth2/*`。Hydra 的 CSRF/session cookie、authorize continuation 和
+`302/303` 跳转全部在 `auth-sg.byted.bps.dev` 原生闭环。executor 的公网 listener
 绝不注册 `/mcp`；`/mcp` 只存在于 executor-gateway 的内部 TLS `8443` listener，并只允许
 harness-pool Pod 访问。
 
@@ -53,7 +58,7 @@ Chart 管理：
 
 - 7 个常驻 Deployment：core、platform-gateway、browser-gateway、executor-gateway、harness-pool、llmproxy、Hydra；
 - executor-gateway 固定单副本、`Recreate`、无 HPA/PDB；
-- 6 个固定 ClusterIP Service、4 条 HTTPRoute、12 条 NetworkPolicy；
+- 6 个固定 ClusterIP Service、5 条 HTTPRoute、12 条 NetworkPolicy；
 - Hydra SQL migration（weight `-20`）和 AgentServer migration（weight `-10`）
   `pre-install,pre-upgrade` Job；
 - Hydra Platform/Browser 两个 public OAuth client setup（weight `-10`）和幂等 AgentServer bootstrap（weight `0`）
@@ -112,9 +117,11 @@ CNPG operator 和 Longhorn；AgentServer 模块管理 Cluster 声明，但不替
 Gateway 使用 workspace 自己在第三方 IdP 注册的 public client ID + PKCE，不向 Pulumi 或 AgentServer
 上传 client secret。
 
-Hydra 26.2.0 由同一 Chart 管理。Chart 固定 issuer、Admin/Public endpoint、PKCE、opaque access token、
-双副本 Deployment 和 browser public client profile；Pulumi 管理它的 database、DSN、内部 TLS 与
-system/cookie secret。Chart/Pulumi 不管理外部 OIDC IdP、S3 bucket、第三方 LLM Gateway、Istio
+Hydra 26.2.0 由同一 Chart 管理。Chart 固定 issuer `https://auth-sg.byted.bps.dev/`、Admin/Public endpoint、
+PKCE、opaque access token、双副本 Deployment 和 browser public client profile；Pulumi 管理它的
+database、DSN、内部 TLS 与 system/cookie secret。Hydra public `4444` 在 Pod 内使用明文 HTTP，由
+Istio 终止公网 TLS；Admin `4445` 继续使用集群内 TLS，且不创建公网路由。Chart/Pulumi 不管理外部
+OIDC IdP、S3 bucket、第三方 LLM Gateway、Istio
 Gateway、DNS 和用户机器上的 agentx。
 
 运行时不会再启动`materialize-*` init container或复制Secret。Chart把每个closed-world Secret key
@@ -128,7 +135,8 @@ harness-pool只保留目录准备和network guard两个init container。
 1. SG 集群只有 `linux/amd64` 目标节点，且容量足够；
 2. CNI 实际执行 Kubernetes NetworkPolicy；集群已安装 Gateway API CRD、Istio、Reloader、
    CloudNativePG operator 和 Longhorn；
-3. `https-byted-bps` listener 的证书和 `allowedRoutes` 已覆盖四个固定域名/Namespace；
+3. `https-byted-bps` listener 的证书和 `allowedRoutes` 已覆盖五个固定域名/Namespace；用户已为
+   `auth-sg.byted.bps.dev` 配置与现有 Istio 公网入口相同的 DNS 记录；
 4. Longhorn 至少能为 3 个 PostgreSQL 实例各提供 50Gi 卷，并有跨节点调度容量；
 5. 外部 OIDC issuer/client 已配置，redirect URI 精确为
    `https://agent.byted.bps.dev/auth/oidc/callback`，并取得 owner 的精确 `sub`；
@@ -138,8 +146,8 @@ harness-pool只保留目录准备和network guard两个init container。
 8. 至少一个待接入的第三方 Gateway 支持公网、系统信任 HTTPS 的精确 `/v1/responses` endpoint，
    streaming 和 stock Codex 所需 tool-call 语义；其 OIDC public client 已允许精确 callback
    `https://agent.byted.bps.dev/auth/llm-gateway/callback`；
-9. SG 公开 registry 可由集群节点匿名拉取 service、harness、Hydra 三个 digest-pinned amd64 镜像
-   和环境锁定 Chart；
+9. GHCR 上 service、harness、Hydra 与 Chart 四个 package 均为 public，SG mirror 可由集群节点匿名
+   拉取三个 digest-pinned amd64 镜像和环境锁定 Chart；
 10. CoreDNS ClusterIP、Gateway Pod label selector、Service CIDR 中 6 个空闲固定 ClusterIP，以及
     S3/平台 OIDC 的实际 IPv4 CIDR/port 已确定。
 
@@ -159,7 +167,8 @@ harness-pool只保留目录准备和network guard两个init container。
 
 - `externalOidcClientSecret` 是与 `oauth.externalOidc.clientId` 同一注册项的 client secret；
 
-`registry-sg.byted.cs.ac.cn/agentserver` 的拉取面是公开的。生产配置拒绝 `pullSecret`，生成的 Pod 不含
+`registry-sg.byted.cs.ac.cn/ghcr/agentserver` 的 GHCR mirror 拉取面是公开的。生产配置拒绝
+`pullSecret`，生成的 Pod 不含
 `imagePullSecrets`，Pulumi 也不接收 `registryDockerConfigJson`。发布镜像或 Chart 所需的写权限只属于
 发布工作站，不进入 SG stack、Kubernetes Secret 或运行时 Pod。
 
@@ -171,94 +180,57 @@ harness-pool只保留目录准备和network guard两个init container。
 固定按 `cnpg.io/cluster=agentserver-postgres` Pod selector 放行 TCP 5432。至少需要：
 
 - core：CNPG PostgreSQL、集群内 Hydra Admin、平台 OIDC、S3，以及动态 workspace Gateway OIDC 的公网 443；
-- platform-gateway：Core 与 Hydra Public；
+- platform-gateway：Core；
 - browser-gateway：Core；
 - harness-pool：S3；
 - llmproxy：动态 workspace Gateway `/v1/responses` 的公网 443；
 - Hydra/AgentServer migration 与 bootstrap：CNPG PostgreSQL；Hydra client setup：集群内 Hydra Admin。
 
-## 4. 构建并发布 SG amd64 镜像
+## 4. 通过 GitHub Actions 发布 SG amd64 制品
 
-构建前 `v2/` 必须已经提交且工作树干净。构建脚本只接受锁定的 stock Codex `0.146.0` amd64 artifact
-和审核过的 amd64 bwrap：
+`main` 上影响 `v2/**` 或发布 workflow 的提交会触发
+`.github/workflows/v2-production.yml`。流水线是唯一生产发布入口，它会：
 
-```bash
-cd /absolute/agentserver/v2
+1. 运行 `make -C v2 check`；
+2. 下载并校验固定的 stock Codex `0.146.0` 与 bwrap amd64 artifact；
+3. 使用 Docker buildx 构建 service/harness 的 `linux/amd64` OCI archive，并调用
+   `agentserver-image verify-oci` 校验 manifest、descriptor、diff ID 以及镜像文件合同；
+4. 推送 `ghcr.io/agentserver/v2-service` 与 `ghcr.io/agentserver/v2-harness`；
+5. 将固定的 Hydra 26.2.0 amd64 manifest 镜像到 `ghcr.io/agentserver/hydra`，并要求 digest 精确为
+   `sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b`；
+6. 用刚发布的三个 digest 生成环境锁定 Chart，并发布到
+   `ghcr.io/agentserver/agentserver-v2`；
+7. 在 workflow summary 和 artifact 中记录三个镜像 digest、Chart version、完整
+   `deploymentConfigSHA256`、生产配置和镜像验证报告。
 
-./deploy/production/build-images.sh \
-  --platform=linux-amd64 \
-  --codex=/absolute/codex-x86_64-unknown-linux-musl \
-  --bwrap=/absolute/bwrap-x86_64-unknown-linux-musl \
-  --service-image=registry-sg.byted.cs.ac.cn/agentserver/v2-service:<git-sha> \
-  --harness-image=registry-sg.byted.cs.ac.cn/agentserver/v2-harness:<git-sha> \
-  --output-dir=/absolute/new-agentserver-image-evidence
-```
-
-脚本会验证 OCI manifest、`linux/amd64` platform、descriptor/diff ID，以及镜像中每个文件的
-owner/mode/size/SHA-256。只有输出 `verified production images` 后才可推送：
-
-```bash
-container registry login registry-sg.byted.cs.ac.cn
-container image push registry-sg.byted.cs.ac.cn/agentserver/v2-service:<git-sha>
-container image push registry-sg.byted.cs.ac.cn/agentserver/v2-harness:<git-sha>
-```
-
-Hydra 不从生产集群直接拉 Docker Hub。把官方 v26.2.0 的 `linux/amd64` manifest 原样镜像到 SG
-公开仓库：
-
-```bash
-container image pull --platform linux/amd64 \
-  docker.io/oryd/hydra@sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b
-container image tag \
-  docker.io/oryd/hydra@sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b \
-  registry-sg.byted.cs.ac.cn/agentserver/hydra:v26.2.0
-container image push --platform linux/amd64 \
-  registry-sg.byted.cs.ac.cn/agentserver/hydra:v26.2.0
-```
-
-回查目标仓库的 amd64 manifest digest；只有目标 digest 仍为
-`sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b` 才能使用模板中的
-Hydra reference。不能用 arm64 或 multi-arch index digest 替代。
-
-从远端 registry 重新查询 service/harness 两个 amd64 manifest digest，并把 `production.json` 中镜像写成：
+SG 配置始终引用 mirror 路径：
 
 ```text
-registry-sg.byted.cs.ac.cn/agentserver/v2-service@sha256:<remote-amd64-digest>
-registry-sg.byted.cs.ac.cn/agentserver/v2-harness@sha256:<remote-amd64-digest>
+registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-service@sha256:<ci-amd64-digest>
+registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-harness@sha256:<ci-amd64-digest>
+registry-sg.byted.cs.ac.cn/ghcr/agentserver/hydra@sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b
 ```
 
-不要写 tag、本地 image ID、arm64 digest 或未经核验的 multi-arch index digest。
-
-当前已发布并从远端匿名回拉核验的 runtime source revision 为
-`3fe2d5a1d3d899927e3e7593a7eac364e83c57c3`：
-
-| 镜像 | 远端 linux/amd64 manifest digest |
-| --- | --- |
-| `registry-sg.byted.cs.ac.cn/agentserver/v2-service` | `sha256:93b8d19223877c14fa50e1ef0c176846e85f2be2394c56b4b9b1e2016b520ced` |
-| `registry-sg.byted.cs.ac.cn/agentserver/v2-harness` | `sha256:1f1eb0864881052ed55b545ffc1b66ab57f8b60d047903a5255ea456a1634b1b` |
-
-service/harness 均为 `linux/amd64`，OCI revision label 与上述 source revision 完全一致。不要把远端 index digest
-`sha256:46bd51e7f8d8b1c3d3b77b55a6fa3591bde819ddd8ddb7b3678d0cd9f856730a` /
-`sha256:9498f3bb89326f115a20eb17f74e8b0594b9d8d8f2ed6dee7371725625eacc23` 写入 production config。
-Hydra 镜像也已镜像到同一公开仓库；其远端单平台 index 为
-`sha256:c417bfa39528b1d6bbdd3f1342f5d8d192f99a2af17c0b44fb17247c3035a07d`，Chart 锁定的
-`linux/amd64` 子 manifest 仍为官方的
-`sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b`。
+首次发布后必须把四个 GHCR package 的 visibility 设为 public，并分别从 GHCR 和 SG mirror 做匿名
+manifest 查询。service/harness/Hydra 必须都是 `linux/amd64`，mirror 返回的子 manifest digest必须与
+workflow summary 一致。不要把 tag、本地 image ID、arm64 digest 或 multi-arch index digest 写入
+production config，也不要再从开发机手工构建上传生产镜像。
 
 ## 5. 准备并校验 SG production.json
 
 复制 [`deploy/production/config.example.json`](../deploy/production/config.example.json) 到一个绝对、
-不可被 group/other 写入的安全路径。模板已经写入本轮远端 amd64 manifest digest、六个已 dry-run
-确认可分配的 SG ClusterIP、CoreDNS `192.168.0.10`、固定 bootstrap UUID、runtime manifest 和
-`harness-final-exec` 摘要。以下字段已经固定，不能修改：
+不可被 group/other 写入的安全路径。模板中的镜像 digest 只用于本地配置校验；正式部署以对应提交的
+CI artifact 中 `production.json` 为准。模板同时写入六个已 dry-run 确认可分配的 SG ClusterIP、CoreDNS
+`192.168.0.10`、固定 bootstrap UUID、runtime manifest 和 `harness-final-exec` 摘要。以下字段已经固定，
+不能修改：
 
 - `region=sg`、`namespace=agentserver`、`platform=linux-amd64`；
 - `spiffeTrustDomain=agentserver.byted.bps.dev`；
-- 四个域名及 Istio Gateway/listener；
+- 五个域名及 Istio Gateway/listener；
 - `run-capability-sg-v1`、`run-manifest-sg-v1`；
 - 9 个应用 Secret 名称；
 - `objectStore.mode=s3-plaintext-v1`；
-- 镜像仓库只能是 `registry-sg.byted.cs.ac.cn/agentserver/v2-service`、`v2-harness` 和 `hydra`，
+- 镜像仓库只能是 `registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-service`、`v2-harness` 和 `hydra`，
   且必须使用 digest。
 
 当前 SG 模板已经锁定 owner `sub=3506220589`、平台 OIDC、S3 endpoint/region/bucket/prefix/path-style、
@@ -283,45 +255,21 @@ go run ./cmd/agentserver-deploy validate \
   --config=/absolute/production.json
 ```
 
-## 6. 生成、验证并发布 OCI Chart
+## 6. 核验并选择 CI 发布的 OCI Chart
 
-输出目录必须不存在：
+Chart version 固定为 `0.1.0-config.d<config-sha256-first-12>`，由第 4 节的同一流水线生成和发布，不能
+拿其他提交的镜像或本地 Chart 混用。完整摘要记录在 Chart annotation、`values.yaml`、
+`files/checksums.json` 与 workflow summary 中。
 
-```bash
-mkdir -m 0700 /absolute/helm-artifacts
-
-go run ./cmd/agentserver-deploy chart \
-  --config=/absolute/production.json \
-  --output=/absolute/helm-artifacts/agentserver-v2
-
-helm lint --strict \
-  --namespace agentserver \
-  /absolute/helm-artifacts/agentserver-v2
-
-helm template agentserver-v2 \
-  /absolute/helm-artifacts/agentserver-v2 \
-  --namespace agentserver \
-  --set-string deploymentConfigSHA256='<full-config-sha256>'
-```
-
-Chart version 固定为 `0.1.0-config.d<config-sha256-first-12>`。完整摘要同时记录在
-`Chart.yaml` annotation、`values.yaml` 和 `files/checksums.json` 中。确认后发布：
-
-```bash
-helm package \
-  /absolute/helm-artifacts/agentserver-v2 \
-  --destination /absolute/helm-artifacts/packages
-
-helm push \
-  /absolute/helm-artifacts/packages/agentserver-v2-0.1.0-config.d<first-12>.tgz \
-  oci://registry-sg.byted.cs.ac.cn/agentserver
-```
-
-最终 Chart 地址为：
+Pulumi 通过 SG mirror 使用：
 
 ```text
-oci://registry-sg.byted.cs.ac.cn/agentserver/agentserver-v2:<chart-version>
+oci://registry-sg.byted.cs.ac.cn/ghcr/agentserver/agentserver-v2:<chart-version>
 ```
+
+部署前从 workflow artifact 取得完整 `deploymentConfigSHA256`，并匿名执行 `helm show chart` 验证 mirror
+可拉取对应 version。若 mirror 尚未同步、package 不是 public、Chart 摘要与 workflow 不同，停止部署，
+不要临时改回手工仓库或本地 Chart。
 
 ## 7. 用 Pulumi 部署
 
@@ -396,6 +344,7 @@ curl --fail --show-error https://agent.byted.bps.dev/readyz
 curl --fail --show-error https://agent.byted.bps.dev/
 curl --fail --show-error https://browser.byted.bps.dev/readyz
 curl --fail --show-error https://browser.byted.bps.dev/
+curl --fail --show-error https://auth-sg.byted.bps.dev/.well-known/openid-configuration
 
 # /mcp 不得从公网 executor 域名暴露，期望 404。
 curl --output /dev/null --write-out '%{http_code}\n' \
@@ -431,13 +380,15 @@ CNPG Cluster、PVC 和 S3 bucket 都是数据资源，不能把 `pulumi destroy`
 
 ## 10. 常见故障
 
-- HTTPRoute `Accepted=False`：检查 listener `allowedRoutes`、四个 hostname 和 `sectionName`；
+- HTTPRoute `Accepted=False`：检查 listener `allowedRoutes`、五个 hostname 和 `sectionName`；
 - 公网 503：检查 Istio Gateway Pod selector、NetworkPolicy 和后端 HTTP `8080`；
 - executor 公网 `/mcp` 非 404：立即停止发布，公网路由面发生越界；
 - CNPG Cluster 不 Ready：检查 operator、Longhorn PVC、节点容量以及 CNPG Pod/事件；
 - Hydra Database 未 applied：检查 CNPG `Database` CR、`hydra` role reconciliation 和 owner Secret；
 - migration 失败：检查 `agentserver-postgres-rw`、对应 owner Secret、TLS 和 CNPG Pod selector egress；
 - Hydra client setup 失败：检查 Hydra readiness、内部 CA/SAN、Admin `4445` NetworkPolicy 和 client profile；
+- Hydra 登录在 continuation 阶段报 CSRF：确认浏览器始终直接访问 `auth-sg.byted.bps.dev`，Platform
+  HTTPRoute 没有 `/oauth2`，Hydra public route 没有被额外反向代理改写或丢弃 `Set-Cookie`；
 - S3 写失败：重点检查 `If-None-Match: *`、`412 PreconditionFailed` 语义、endpoint/path-style/region；
 - harness-pool 卡在 init：检查目录权限、network guard配置和节点nftables能力；普通服务不应再有Secret materialize init；
 - Helm/Pulumi更新失败：失败Pod会因non-atomic release保留，先读取对应container日志和Events，再通过下一次`pulumi up`修复；

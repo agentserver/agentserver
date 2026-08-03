@@ -56,8 +56,8 @@ func TestBrowserAuthorizationConfigAcceptsOneExactExternalOAuthAuthority(t *test
 		corecontract.BrowserOAuthAudience,
 		corecontract.BrowserOAuthScopes(),
 		"https://browser-gateway.byted.bps.dev",
-		"https://agent.byted.bps.dev/oauth2/auth",
-		"https://agent.byted.bps.dev/oauth2/token",
+		"https://auth-sg.byted.bps.dev/oauth2/auth",
+		"https://auth-sg.byted.bps.dev/oauth2/token",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -67,14 +67,14 @@ func TestBrowserAuthorizationConfigAcceptsOneExactExternalOAuthAuthority(t *test
 	handler.ServeHTTP(response, request)
 	var document BrowserAuthorizationConfig
 	if err := json.Unmarshal(response.Body.Bytes(), &document); err != nil ||
-		document.AuthorizationEndpoint != "https://agent.byted.bps.dev/oauth2/auth" ||
-		document.TokenEndpoint != "https://agent.byted.bps.dev/oauth2/token" {
+		document.AuthorizationEndpoint != "https://auth-sg.byted.bps.dev/oauth2/auth" ||
+		document.TokenEndpoint != "https://auth-sg.byted.bps.dev/oauth2/token" {
 		t.Fatalf("external authorization config = %+v, %v", document, err)
 	}
 	for _, endpoints := range [][2]string{
-		{"https://agent.byted.bps.dev/oauth2/auth", "https://other.example/oauth2/token"},
-		{"https://agent.byted.bps.dev/oauth2/auth", "/oauth2/token"},
-		{"https://agent.byted.bps.dev/oauth2/auth?unsafe=1", "https://agent.byted.bps.dev/oauth2/token"},
+		{"https://auth-sg.byted.bps.dev/oauth2/auth", "https://other.example/oauth2/token"},
+		{"https://auth-sg.byted.bps.dev/oauth2/auth", "/oauth2/token"},
+		{"https://auth-sg.byted.bps.dev/oauth2/auth?unsafe=1", "https://auth-sg.byted.bps.dev/oauth2/token"},
 	} {
 		if _, err := NewBrowserAuthorizationConfigHandlerWithEndpoints(
 			corecontract.BrowserOAuthClientID, corecontract.BrowserOAuthAudience, corecontract.BrowserOAuthScopes(), "",

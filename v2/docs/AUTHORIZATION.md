@@ -51,7 +51,8 @@ OAuth App scope 比较宽，官方也建议需要细粒度权限时使用 GitHub
 - 不得包含 workspace 配置、成员、executor 或 LLM Gateway 管理权限。
 
 两个前端不共享 access token。Platform 进入 Browser 时只传 workspace ID；Browser 为该 workspace
-独立发起 Hydra authorization。
+独立发起 Hydra authorization。两者都直接使用独立 authority
+`https://auth-sg.byted.bps.dev/oauth2/auth` 与 `/oauth2/token`；Platform 不代理 Hydra public endpoint。
 
 ## 3. Hydra introspection 合同
 
@@ -60,7 +61,7 @@ Core 要求 introspection 至少返回以下 authority：
 ```json
 {
   "active": true,
-  "iss": "https://agent.byted.bps.dev/",
+  "iss": "https://auth-sg.byted.bps.dev/",
   "sub": "10000000-0000-4000-8000-000000000001",
   "client_id": "agentserver-browser",
   "aud": ["agentserver-browser-api"],

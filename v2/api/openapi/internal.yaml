@@ -564,7 +564,7 @@
       "executorOAuthBearer": {
         "type": "oauth2",
         "description": "Opaque Hydra client-credentials token obtained with the enrolled P-256 ES256 private_key_jwt identity",
-        "flows": {"clientCredentials": {"tokenUrl": "/oauth2/token", "scopes": {"executor:connect": "Open an enrolled executor connection"}}}
+        "flows": {"clientCredentials": {"tokenUrl": "https://auth-sg.byted.bps.dev/oauth2/token", "scopes": {"executor:connect": "Open an enrolled executor connection"}}}
       }
     },
     "parameters": {

@@ -84,7 +84,7 @@
       "executorOAuthBearer": {
         "type": "oauth2",
         "description": "Opaque five-minute Hydra client-credentials access token; bearer possession alone is insufficient for WSS",
-        "flows": {"clientCredentials": {"tokenUrl": "/oauth2/token", "scopes": {"executor:connect": "Open the enrolled executor connection"}}}
+        "flows": {"clientCredentials": {"tokenUrl": "https://auth-sg.byted.bps.dev/oauth2/token", "scopes": {"executor:connect": "Open the enrolled executor connection"}}}
       }
     },
     "schemas": {

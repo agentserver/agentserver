@@ -22,3 +22,21 @@ func TestPlatformAssetsAreClosedAndHardened(t *testing.T) {
 		t.Fatalf("unknown platform asset = %d", unknown.Code)
 	}
 }
+
+func TestPlatformAssetsAllowOneExactOAuthAuthority(t *testing.T) {
+	handler, err := HandlerForOAuthOrigin("https://auth-sg.byted.bps.dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "https://agent.byted.bps.dev/", nil))
+	if response.Code != http.StatusOK || response.Header().Get("Content-Security-Policy") !=
+		contentSecurityPolicy+" https://auth-sg.byted.bps.dev" {
+		t.Fatalf("platform OAuth CSP = %d headers=%v", response.Code, response.Header())
+	}
+	for _, invalid := range []string{"", "http://auth-sg.byted.bps.dev", "https://auth-sg.byted.bps.dev/path"} {
+		if _, err := HandlerForOAuthOrigin(invalid); err == nil {
+			t.Fatalf("invalid OAuth origin %q was accepted", invalid)
+		}
+	}
+}

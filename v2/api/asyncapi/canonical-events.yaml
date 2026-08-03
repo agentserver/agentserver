@@ -77,8 +77,8 @@
         "description": "Hydra agentserver-browser access token with the single aud=agentserver-browser-api audience and exactly one versioned workspace resource grant. Core introspects every request and checks resource ownership invariants.",
         "flows": {
           "authorizationCode": {
-            "authorizationUrl": "https://agent.byted.bps.dev/oauth2/auth",
-            "tokenUrl": "https://agent.byted.bps.dev/oauth2/token",
+            "authorizationUrl": "https://auth-sg.byted.bps.dev/oauth2/auth",
+            "tokenUrl": "https://auth-sg.byted.bps.dev/oauth2/token",
             "availableScopes": {
               "runs:create": "Create a run in a session owned by the token subject",
               "runs:read": "Read an authorized run event projection"

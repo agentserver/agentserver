@@ -120,7 +120,7 @@ func TestValidateConfigRejectsUnsafeProductionShapes(t *testing.T) {
 			value.OAuth.Hydra.AdminURL = "https://hydra-admin.example.test"
 		},
 		"Hydra issuer slash drift": func(value *ConfigDocument) {
-			value.OAuth.Hydra.Issuer = "https://agent.byted.bps.dev"
+			value.OAuth.Hydra.Issuer = "https://auth-sg.byted.bps.dev"
 		},
 		"request above CPU limit": func(value *ConfigDocument) {
 			value.Resources.Core.Requests.CPU = "3"
@@ -184,6 +184,7 @@ func validConfigDocument() ConfigDocument {
 			FrontendHostname:   ProductionFrontendHostname, BrowserFrontendHostname: ProductionBrowserFrontendHostname,
 			BrowserHostname:  ProductionBrowserHostname,
 			ExecutorHostname: ProductionExecutorHostname,
+			HydraHostname:    ProductionHydraHostname,
 		},
 		Bootstrap: BootstrapDocument{
 			WorkspaceID:         "40000000-0000-4000-8000-000000000004",
@@ -195,8 +196,8 @@ func validConfigDocument() ConfigDocument {
 		TrustDomain: ProductionTrustDomain,
 		OAuth: OAuthDocument{
 			Hydra: HydraDocument{
-				Issuer: "https://agent.byted.bps.dev/", AdminURL: "https://hydra.agentserver.internal:4445",
-				PublicOrigin: "https://agent.byted.bps.dev", PublicUpstream: "https://hydra.agentserver.internal:4444",
+				Issuer: "https://auth-sg.byted.bps.dev/", AdminURL: "https://hydra.agentserver.internal:4445",
+				PublicOrigin:     "https://auth-sg.byted.bps.dev",
 				IntrospectionURL: "https://hydra.agentserver.internal:4445/admin/oauth2/introspect",
 				PlatformClientID: "agentserver-platform", BrowserClientID: "agentserver-browser",
 			},

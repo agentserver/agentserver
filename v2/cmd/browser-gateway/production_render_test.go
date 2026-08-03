@@ -50,10 +50,10 @@ func TestProductionRendererBrowserEnvironmentMatchesCommandContract(t *testing.T
 	if err != nil || !split || frontend != "https://browser.byted.bps.dev" || api != "https://browser-gateway.byted.bps.dev" {
 		t.Fatalf("browser rejected rendered split origins: %q %q split=%v error=%v", frontend, api, split, err)
 	}
-	if got := environment.Get(browserOAuthAuthorizationEndpointEnvironment); got != "https://agent.byted.bps.dev/oauth2/auth" {
+	if got := environment.Get(browserOAuthAuthorizationEndpointEnvironment); got != "https://auth-sg.byted.bps.dev/oauth2/auth" {
 		t.Fatalf("rendered Browser authorization endpoint = %q", got)
 	}
-	if got := environment.Get(browserOAuthTokenEndpointEnvironment); got != "https://agent.byted.bps.dev/oauth2/token" {
+	if got := environment.Get(browserOAuthTokenEndpointEnvironment); got != "https://auth-sg.byted.bps.dev/oauth2/token" {
 		t.Fatalf("rendered Browser token endpoint = %q", got)
 	}
 }

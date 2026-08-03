@@ -25,8 +25,8 @@ const config = {
 
 const splitOriginConfig = {
   ...config,
-  authorizationEndpoint: 'https://agent.byted.bps.dev/oauth2/auth',
-  tokenEndpoint: 'https://agent.byted.bps.dev/oauth2/token',
+  authorizationEndpoint: 'https://auth-sg.byted.bps.dev/oauth2/auth',
+  tokenEndpoint: 'https://auth-sg.byted.bps.dev/oauth2/token',
 }
 
 test('PKCE transaction binds browser state without storing an access token', async () => {
@@ -121,7 +121,7 @@ test('callback and token validation fail closed on replay, mismatch, and persist
   }, config.scopes), /exceeds/)
 })
 
-test('split-origin authorization uses the platform authority and persists its token endpoint', async () => {
+test('split-origin authorization uses the dedicated Hydra authority and persists its token endpoint', async () => {
   const generated = await createAuthorizationTransaction({
     config: splitOriginConfig,
     origin: 'https://browser.byted.bps.dev',
@@ -131,7 +131,7 @@ test('split-origin authorization uses the platform authority and persists its to
     nowMS: 1_800_000_000_000,
   })
   const authorizationURL = new URL(generated.authorizationURL)
-  assert.equal(authorizationURL.origin, 'https://agent.byted.bps.dev')
+  assert.equal(authorizationURL.origin, 'https://auth-sg.byted.bps.dev')
   assert.equal(authorizationURL.pathname, '/oauth2/auth')
   assert.equal(generated.transaction.tokenEndpoint, splitOriginConfig.tokenEndpoint)
 })

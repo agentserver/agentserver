@@ -95,7 +95,7 @@
         "description": "Short-lived aud=executor-gateway, scope=executor:connect token. Bearer possession alone is insufficient: the WSS upgrade must consume a fresh process-local challenge and prove possession of the separately enrolled Ed25519 machine key.",
         "flows": {
           "clientCredentials": {
-            "tokenUrl": "/oauth2/token",
+            "tokenUrl": "https://auth-sg.byted.bps.dev/oauth2/token",
             "availableScopes": {"executor:connect": "Open the enrolled executor connection"}
           }
         }

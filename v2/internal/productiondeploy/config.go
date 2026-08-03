@@ -49,9 +49,9 @@ const (
 	ProductionLLMProxySecret      = "agentserver-llmproxy-secrets"
 	ProductionObjectStoreSecret   = "agentserver-object-store-secrets"
 	ProductionHydraSecret         = "agentserver-hydra-secrets"
-	ProductionServiceImage        = "registry-sg.byted.cs.ac.cn/agentserver/v2-service"
-	ProductionHarnessImage        = "registry-sg.byted.cs.ac.cn/agentserver/v2-harness"
-	ProductionHydraImage          = "registry-sg.byted.cs.ac.cn/agentserver/hydra"
+	ProductionServiceImage        = "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-service"
+	ProductionHarnessImage        = "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-harness"
+	ProductionHydraImage          = "registry-sg.byted.cs.ac.cn/ghcr/agentserver/hydra"
 
 	PoolUID    uint32 = 65530
 	PoolGID    uint32 = 65530
@@ -80,6 +80,7 @@ const (
 	ProductionBrowserFrontendHostname = "browser.byted.bps.dev"
 	ProductionBrowserHostname         = "browser-gateway.byted.bps.dev"
 	ProductionExecutorHostname        = "executor-gateway.byted.bps.dev"
+	ProductionHydraHostname           = "auth-sg.byted.bps.dev"
 
 	maximumConfigBytes = int64(256 * 1024)
 	maximumTextBytes   = 4096
@@ -169,6 +170,7 @@ type IngressDocument struct {
 	BrowserFrontendHostname string            `json:"browserFrontendHostname"`
 	BrowserHostname         string            `json:"browserGatewayHostname"`
 	ExecutorHostname        string            `json:"executorGatewayHostname"`
+	HydraHostname           string            `json:"hydraHostname"`
 }
 
 type BootstrapDocument struct {
@@ -188,7 +190,6 @@ type HydraDocument struct {
 	Issuer           string `json:"issuer"`
 	AdminURL         string `json:"adminUrl"`
 	PublicOrigin     string `json:"publicOrigin"`
-	PublicUpstream   string `json:"publicUpstream"`
 	IntrospectionURL string `json:"introspectionUrl"`
 	PlatformClientID string `json:"platformClientId"`
 	BrowserClientID  string `json:"browserClientId"`
@@ -384,7 +385,7 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 	if document.TrustDomain != ProductionTrustDomain {
 		return LoadedConfig{}, fmt.Errorf("spiffeTrustDomain must be exactly %s for the SG production deployment", ProductionTrustDomain)
 	}
-	if err := validateOAuth(document.OAuth, document.Bootstrap, document.Ingress.FrontendHostname); err != nil {
+	if err := validateOAuth(document.OAuth, document.Bootstrap, document.Ingress); err != nil {
 		return LoadedConfig{}, err
 	}
 	loaded, err := validateRuntime(document.Runtime)
@@ -503,6 +504,7 @@ func validateIngress(document IngressDocument) error {
 		{name: "browserFrontendHostname", actual: document.BrowserFrontendHostname, expected: ProductionBrowserFrontendHostname},
 		{name: "browserGatewayHostname", actual: document.BrowserHostname, expected: ProductionBrowserHostname},
 		{name: "executorGatewayHostname", actual: document.ExecutorHostname, expected: ProductionExecutorHostname},
+		{name: "hydraHostname", actual: document.HydraHostname, expected: ProductionHydraHostname},
 	} {
 		if field.actual != field.expected {
 			return fmt.Errorf("ingress.%s must be exactly %s for the SG production deployment", field.name, field.expected)
@@ -531,11 +533,11 @@ func validateBootstrap(document BootstrapDocument) error {
 	return validateText("bootstrap.externalOidcSubject", document.ExternalOIDCSubject, 1, 2048)
 }
 
-func validateOAuth(document OAuthDocument, bootstrap BootstrapDocument, browserHostname string) error {
+func validateOAuth(document OAuthDocument, bootstrap BootstrapDocument, ingress IngressDocument) error {
 	if err := validateHTTPSURL("oauth.hydra.issuer", document.Hydra.Issuer, false); err != nil {
 		return err
 	}
-	wantIssuer := "https://" + browserHostname + "/"
+	wantIssuer := "https://" + ingress.HydraHostname + "/"
 	if document.Hydra.Issuer != wantIssuer {
 		return fmt.Errorf("oauth.hydra.issuer must be exactly %s", wantIssuer)
 	}
@@ -549,15 +551,8 @@ func validateOAuth(document OAuthDocument, bootstrap BootstrapDocument, browserH
 	if err := validateHTTPSOrigin("oauth.hydra.publicOrigin", document.Hydra.PublicOrigin); err != nil {
 		return err
 	}
-	if document.Hydra.PublicOrigin != "https://"+browserHostname {
-		return fmt.Errorf("oauth.hydra.publicOrigin must be exactly https://%s", browserHostname)
-	}
-	if err := validateHTTPSOrigin("oauth.hydra.publicUpstream", document.Hydra.PublicUpstream); err != nil {
-		return err
-	}
-	wantPublicUpstream := internalOrigin(HydraInternalHost, HydraPublicPort)
-	if document.Hydra.PublicUpstream != wantPublicUpstream {
-		return fmt.Errorf("oauth.hydra.publicUpstream must be exactly %s", wantPublicUpstream)
+	if document.Hydra.PublicOrigin != "https://"+ingress.HydraHostname {
+		return fmt.Errorf("oauth.hydra.publicOrigin must be exactly https://%s", ingress.HydraHostname)
 	}
 	if err := validateHTTPSURL("oauth.hydra.introspectionUrl", document.Hydra.IntrospectionURL, true); err != nil {
 		return err
@@ -587,7 +582,7 @@ func validateOAuth(document OAuthDocument, bootstrap BootstrapDocument, browserH
 	if err := validateText("oauth.externalOidc.clientId", document.ExternalOIDC.ClientID, 1, 256); err != nil {
 		return err
 	}
-	wantRedirect := "https://" + browserHostname + "/auth/oidc/callback"
+	wantRedirect := "https://" + ingress.FrontendHostname + "/auth/oidc/callback"
 	if document.ExternalOIDC.RedirectURL != wantRedirect {
 		return fmt.Errorf("oauth.externalOidc.redirectUrl must be exactly %s", wantRedirect)
 	}

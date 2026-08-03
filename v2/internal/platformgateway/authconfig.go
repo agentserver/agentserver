@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -22,6 +23,14 @@ type AuthorizationConfig struct {
 type AuthorizationConfigHandler struct{ body []byte }
 
 func NewAuthorizationConfigHandler(clientID, audience string, scopes []string) (*AuthorizationConfigHandler, error) {
+	return NewAuthorizationConfigHandlerWithEndpoints(clientID, audience, scopes, "/oauth2/auth", "/oauth2/token")
+}
+
+func NewAuthorizationConfigHandlerWithEndpoints(
+	clientID, audience string,
+	scopes []string,
+	authorizationEndpoint, tokenEndpoint string,
+) (*AuthorizationConfigHandler, error) {
 	if !boundedText(clientID, 512) || !boundedText(audience, 512) || len(scopes) < 1 || len(scopes) > 32 {
 		return nil, errors.New("platform OAuth client, audience, and scopes are required within protocol bounds")
 	}
@@ -35,8 +44,17 @@ func NewAuthorizationConfigHandler(clientID, audience string, scopes []string) (
 		}
 		seen[scope] = struct{}{}
 	}
+	if err := validateOAuthEndpoint("authorization", authorizationEndpoint, "/oauth2/auth"); err != nil {
+		return nil, err
+	}
+	if err := validateOAuthEndpoint("token", tokenEndpoint, "/oauth2/token"); err != nil {
+		return nil, err
+	}
+	if oauthEndpointAuthority(authorizationEndpoint) != oauthEndpointAuthority(tokenEndpoint) {
+		return nil, errors.New("platform OAuth authorization and token endpoints must use the same authority")
+	}
 	document := AuthorizationConfig{
-		Version: 1, AuthorizationEndpoint: "/oauth2/auth", TokenEndpoint: "/oauth2/token", RedirectPath: "/",
+		Version: 1, AuthorizationEndpoint: authorizationEndpoint, TokenEndpoint: tokenEndpoint, RedirectPath: "/",
 		ClientID: clientID, Scopes: append([]string(nil), scopes...), Audience: audience,
 	}
 	body, err := json.Marshal(document)
@@ -44,6 +62,26 @@ func NewAuthorizationConfigHandler(clientID, audience string, scopes []string) (
 		return nil, err
 	}
 	return &AuthorizationConfigHandler{body: append(body, '\n')}, nil
+}
+
+func validateOAuthEndpoint(name, raw, requiredPath string) error {
+	if raw == requiredPath {
+		return nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil ||
+		parsed.Path != requiredPath || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.String() != raw {
+		return errors.New("platform OAuth " + name + " endpoint must be the local path or one exact HTTPS endpoint")
+	}
+	return nil
+}
+
+func oauthEndpointAuthority(raw string) string {
+	if strings.HasPrefix(raw, "/") {
+		return ""
+	}
+	parsed, _ := url.Parse(raw)
+	return parsed.Scheme + "://" + parsed.Host
 }
 
 func (handler *AuthorizationConfigHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {

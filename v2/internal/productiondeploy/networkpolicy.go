@@ -24,7 +24,7 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 	)
 	llmIngress := ingressFromComponents([]string{harnessComponent}, document.Services.LLMProxy.Port)
 	hydraIngress := append(
-		ingressFromComponents([]string{platformComponent}, document.Services.Hydra.PublicPort),
+		ingressFromGateway(document.Ingress, document.Services.Hydra.PublicPort),
 		ingressFromComponents([]string{coreComponent, hydraSetupComponent}, document.Services.Hydra.AdminPort)...,
 	)
 
@@ -34,10 +34,7 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 	coreEgress = append(coreEgress, externalEgress(document.Network.CoreExternalEgress)...)
 	coreEgress = append(coreEgress, publicHTTPSEgress()...)
 	coreEgress = append(coreEgress, componentTCPEgress(hydraComponent, document.Services.Hydra.AdminPort))
-	platformEgress := []any{
-		componentTCPEgress(coreComponent, document.Services.Core.Port),
-		componentTCPEgress(hydraComponent, document.Services.Hydra.PublicPort),
-	}
+	platformEgress := []any{componentTCPEgress(coreComponent, document.Services.Core.Port)}
 	browserEgress := []any{componentTCPEgress(coreComponent, document.Services.Core.Port)}
 	browserEgress = append(browserEgress, dns...)
 	browserEgress = append(browserEgress, externalEgress(document.Network.BrowserExternalEgress)...)

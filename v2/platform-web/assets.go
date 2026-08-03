@@ -7,7 +7,9 @@ import (
 	_ "embed"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 )
 
 const contentSecurityPolicy = "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self'; font-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'"
@@ -34,12 +36,23 @@ var assets = map[string]asset{
 }
 
 // Handler returns a closed static asset handler without an SPA fallback.
-func Handler() http.Handler { return assetHandler{} }
+func Handler() http.Handler { return assetHandler{contentSecurityPolicy: contentSecurityPolicy} }
 
-type assetHandler struct{}
+// HandlerForOAuthOrigin allows the Platform SPA to exchange its public-client
+// PKCE code with one exact, separately hosted OAuth authority.
+func HandlerForOAuthOrigin(origin string) (http.Handler, error) {
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil ||
+		parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.String() != origin {
+		return nil, fmt.Errorf("platform web OAuth origin must be an exact HTTPS origin")
+	}
+	return assetHandler{contentSecurityPolicy: contentSecurityPolicy + " " + origin}, nil
+}
 
-func (assetHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
-	setSecurityHeaders(response.Header())
+type assetHandler struct{ contentSecurityPolicy string }
+
+func (handler assetHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
+	setSecurityHeaders(response.Header(), handler.contentSecurityPolicy)
 	if request.Method != http.MethodGet && request.Method != http.MethodHead {
 		response.Header().Set("Allow", "GET, HEAD")
 		http.Error(response, "method not allowed", http.StatusMethodNotAllowed)
@@ -59,9 +72,12 @@ func (assetHandler) ServeHTTP(response http.ResponseWriter, request *http.Reques
 	_, _ = response.Write(requested.contents)
 }
 
-func setSecurityHeaders(header http.Header) {
+func setSecurityHeaders(header http.Header, policy string) {
+	if strings.TrimSpace(policy) == "" {
+		policy = contentSecurityPolicy
+	}
 	header.Set("Cache-Control", "no-store")
-	header.Set("Content-Security-Policy", contentSecurityPolicy)
+	header.Set("Content-Security-Policy", policy)
 	header.Set("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
 	header.Set("Cross-Origin-Resource-Policy", "same-origin")
 	header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")

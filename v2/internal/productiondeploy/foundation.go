@@ -47,6 +47,7 @@ func renderFoundation(context renderContext) []kubeObject {
 		browserFrontendHTTPRoute(config),
 		browserHTTPRoute(config),
 		executorHTTPRoute(config),
+		hydraHTTPRoute(config),
 	}
 	items = append(items, renderNetworkPolicies(context)...)
 	return items
@@ -61,7 +62,7 @@ func hydraService(config LoadedConfig) kubeObject {
 			"type": "ClusterIP", "clusterIP": service.ClusterIP,
 			"selector": selectorLabels(hydraComponent),
 			"ports": []any{
-				kubeObject{"name": "https-public", "protocol": "TCP", "port": int(service.PublicPort), "targetPort": "https-public"},
+				kubeObject{"name": "http-public", "appProtocol": "http", "protocol": "TCP", "port": int(service.PublicPort), "targetPort": "http-public"},
 				kubeObject{"name": "https-admin", "protocol": "TCP", "port": int(service.AdminPort), "targetPort": "https-admin"},
 			},
 		},
@@ -120,7 +121,7 @@ func frontendHTTPRoute(config LoadedConfig) kubeObject {
 	return httpRoute(config, "agentserver-platform", config.Document.Ingress.FrontendHostname, platformComponent,
 		config.Document.Services.PlatformGateway.Port, []kubeObject{
 			pathMatch("Exact", "/"), pathMatch("Exact", "/index.html"), pathMatch("Exact", "/readyz"),
-			pathMatch("PathPrefix", "/platform"), pathMatch("PathPrefix", "/auth"), pathMatch("PathPrefix", "/oauth2"),
+			pathMatch("PathPrefix", "/platform"), pathMatch("PathPrefix", "/auth"),
 			pathMatch("PathPrefix", "/v2"),
 		})
 }
@@ -145,6 +146,11 @@ func executorHTTPRoute(config LoadedConfig) kubeObject {
 			pathMatch("Exact", executorgateway.AgentxChallengePath),
 			pathMatch("Exact", executorgateway.AgentxConnectPath),
 		})
+}
+
+func hydraHTTPRoute(config LoadedConfig) kubeObject {
+	return httpRoute(config, "agentserver-hydra-public", config.Document.Ingress.HydraHostname, hydraComponent,
+		config.Document.Services.Hydra.PublicPort, []kubeObject{pathMatch("PathPrefix", "/")})
 }
 
 func httpRoute(config LoadedConfig, name, hostname, backend string, port uint16, matches []kubeObject) kubeObject {

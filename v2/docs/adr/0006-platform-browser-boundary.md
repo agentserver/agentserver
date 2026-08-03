@@ -25,18 +25,19 @@ authority 随产品职责分开；双 OAuth client 是让这个职责边界在�
 
 ## 决策
 
-### 1. 四个公网 host 的职责
+### 1. 五个公网 host 的职责
 
 | Host | 职责 | 后端 |
 |---|---|---|
-| `agent.byted.bps.dev` | Platform SPA、统一 Hydra public issuer、Hydra login/consent bridge、外部 OIDC callback、Platform OAuth callback | `platform-gateway` |
+| `agent.byted.bps.dev` | Platform SPA、Hydra login/consent bridge、外部 OIDC callback、Platform OAuth callback | `platform-gateway` |
 | `browser.byted.bps.dev` | Browser SPA；通过路径选择 workspace；只托管静态资源和 Browser OAuth callback | `browser-gateway`（静态前端入口） |
 | `browser-gateway.byted.bps.dev` | Browser REST / AG-UI API | `browser-gateway` |
 | `executor-gateway.byted.bps.dev` | agentx enrollment、challenge 和 WSS connect | `executor-gateway` |
+| `auth-sg.byted.bps.dev` | Hydra public issuer、authorize/token、discovery 与 JWKS | Hydra public listener |
 
 公网 TLS 继续由 Istio Gateway 终止。组件到 Core 的身份使用各自的 mTLS SPIFFE identity；公网 host
-不参与集群内部路由。Hydra issuer 保持 `https://agent.byted.bps.dev/`，避免为两个 SPA 建立两套授权
-服务器。
+不参与集群内部路由。Hydra issuer 固定为 `https://auth-sg.byted.bps.dev/`；两个 SPA 共享这一授权
+服务器，但 Platform 不再代理 Hydra public 流量。Hydra Admin listener 仍只在集群内开放。
 
 ### 2. 两个 public OAuth client
 
@@ -74,9 +75,11 @@ Platform 与 Browser 不共享 access token，也不把 token 放进 URL、cooki
    `agentserver-browser-api` token；
 4. Core 每次 introspect，并要求 token resource grant 与 URL workspace 精确相等。
 
-Browser 的 authorize/token endpoint 是 `agent.byted.bps.dev` 上的绝对 URL。Authorization 是顶层导航，
-token exchange 只允许精确的 `https://browser.byted.bps.dev` CORS origin，且不允许 credentials。Browser
-业务 API 继续位于 `browser-gateway.byted.bps.dev`，同样只允许这个精确 frontend origin。
+两个 SPA 的 authorize/token endpoint 都是 `auth-sg.byted.bps.dev` 上的绝对 URL。Authorization 是顶层
+导航；Hydra token exchange 只允许精确的 `https://agent.byted.bps.dev` 与
+`https://browser.byted.bps.dev` CORS origin，且不允许 credentials。Hydra 自己维护 CSRF/session cookie和
+authorize continuation，避免反向代理丢失 `Set-Cookie` 或误判 `302/303`。Browser 业务 API 继续位于
+`browser-gateway.byted.bps.dev`，只允许精确 Browser frontend origin。
 
 外部身份认证仍复用一个部署级 confidential OIDC client。它只服务 Hydra login bridge，redirect URI
 保持 `https://agent.byted.bps.dev/auth/oidc/callback`，不等同于两个 SPA 的 Hydra OAuth callback。
@@ -87,7 +90,7 @@ token exchange 只允许精确的 `https://browser.byted.bps.dev` CORS origin，
 Platform 与 Browser 可以复用 HTTP、OAuth 和静态资源库，也可以位于同一 service 镜像，但运行时
 identity 和 Core route authority 必须分开：
 
-- `platform-gateway` 只代理 Platform resource API、Hydra public endpoint 和 login bridge；
+- `platform-gateway` 只代理 Platform resource API 和 login bridge，不注册 `/oauth2/*`；
 - `browser-gateway` 只代理 Browser session/run/approval API，并投影 AG-UI/A2UI；
 - Core 的 Platform handler 只接受 platform-gateway identity 和 Platform token；
 - Core 的 Browser handler 只接受 browser-gateway identity 和 Browser token；
@@ -138,7 +141,8 @@ Gateway 配置或 OAuth completion API。
    grant；Hydra setup 同时幂等维护两个 client；
 2. 增加 platform-gateway identity、handler 和部署拓扑，同时保留旧 reference web 仅作开发诊断；
 3. 增加 workspace/session 数据模型和 API，并把 executor 选择改为 workspace authority；
-4. 发布 Platform SPA 与 Browser SPA，切换四条公网 HTTPRoute；
+4. 发布 Platform SPA 与 Browser SPA，切换五条公网 HTTPRoute，其中 Hydra public route 直接指向
+   Hydra Service；
 5. 删除 browser-gateway 上的 executor / LLM Gateway 管理兼容路由和旧单 audience 合同。
 
 发布期间不接受一个 token 同时拥有两类 audience，也不通过临时 scope 扩大 Browser 权限。若某个阶段

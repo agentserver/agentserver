@@ -30,41 +30,27 @@ func TestValidatePlatformOAuthAuthority(t *testing.T) {
 	}
 }
 
-func TestPlatformPublicBoundaryAllowsOnlyBrowserTokenCORS(t *testing.T) {
+func TestPlatformPublicBoundaryRejectsCrossOriginRequests(t *testing.T) {
 	calls := 0
 	next := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) { calls++; response.WriteHeader(http.StatusOK) })
-	handler := platformPublicBoundary(next, "agent.byted.bps.dev", "https://agent.byted.bps.dev", "https://browser.byted.bps.dev")
+	handler := platformPublicBoundary(next, "agent.byted.bps.dev", "https://agent.byted.bps.dev")
 
-	preflight := httptest.NewRequest(http.MethodOptions, "http://agent.byted.bps.dev/oauth2/token", nil)
-	preflight.Host = "agent.byted.bps.dev"
-	preflight.Header.Set("Origin", "https://browser.byted.bps.dev")
-	preflight.Header.Set("Access-Control-Request-Method", http.MethodPost)
-	preflight.Header.Set("Access-Control-Request-Headers", "content-type")
-	preflightResponse := httptest.NewRecorder()
-	handler.ServeHTTP(preflightResponse, preflight)
-	if preflightResponse.Code != http.StatusNoContent || preflightResponse.Header().Get("Access-Control-Allow-Origin") != "https://browser.byted.bps.dev" ||
-		preflightResponse.Header().Get("Access-Control-Allow-Credentials") != "" || calls != 0 {
-		t.Fatalf("token preflight = %d headers=%v calls=%d", preflightResponse.Code, preflightResponse.Header(), calls)
+	crossOrigin := httptest.NewRequest(http.MethodPost, "http://agent.byted.bps.dev/v2/workspaces", nil)
+	crossOrigin.Host = "agent.byted.bps.dev"
+	crossOrigin.Header.Set("Origin", "https://browser.byted.bps.dev")
+	crossOriginResponse := httptest.NewRecorder()
+	handler.ServeHTTP(crossOriginResponse, crossOrigin)
+	if crossOriginResponse.Code != http.StatusForbidden || calls != 0 {
+		t.Fatalf("cross-origin request = %d calls=%d", crossOriginResponse.Code, calls)
 	}
 
-	token := httptest.NewRequest(http.MethodPost, "http://agent.byted.bps.dev/oauth2/token", nil)
-	token.Host = "agent.byted.bps.dev"
-	token.Header.Set("Origin", "https://browser.byted.bps.dev")
-	tokenResponse := httptest.NewRecorder()
-	handler.ServeHTTP(tokenResponse, token)
-	if tokenResponse.Code != http.StatusOK || tokenResponse.Header().Get("Access-Control-Allow-Origin") != "https://browser.byted.bps.dev" || calls != 1 {
-		t.Fatalf("browser token request = %d headers=%v calls=%d", tokenResponse.Code, tokenResponse.Header(), calls)
-	}
-
-	for _, path := range []string{"/oauth2/auth", "/v2/workspaces"} {
-		request := httptest.NewRequest(http.MethodGet, "http://agent.byted.bps.dev"+path, nil)
-		request.Host = "agent.byted.bps.dev"
-		request.Header.Set("Origin", "https://browser.byted.bps.dev")
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, request)
-		if response.Code != http.StatusForbidden || calls != 1 {
-			t.Fatalf("browser cross-origin %s = %d calls=%d", path, response.Code, calls)
-		}
+	sameOrigin := httptest.NewRequest(http.MethodGet, "http://agent.byted.bps.dev/", nil)
+	sameOrigin.Host = "agent.byted.bps.dev"
+	sameOrigin.Header.Set("Origin", "https://agent.byted.bps.dev")
+	sameOriginResponse := httptest.NewRecorder()
+	handler.ServeHTTP(sameOriginResponse, sameOrigin)
+	if sameOriginResponse.Code != http.StatusOK || calls != 1 {
+		t.Fatalf("same-origin request = %d calls=%d", sameOriginResponse.Code, calls)
 	}
 
 	wrongHost := httptest.NewRequest(http.MethodGet, "http://other.example/", nil)
@@ -87,8 +73,8 @@ func TestPlatformGatewayRoutesKeepPlatformAndAuthSurfaces(t *testing.T) {
 	readiness := &platformReadiness{}
 	readiness.ready.Store(true)
 	handler, err := platformGatewayRoutes(
-		h("executors"), h("llm"), h("auth"), h("hydra"), h("config"), h("callback"), h("web"), readiness,
-		"https://agent.byted.bps.dev", "https://browser.byted.bps.dev",
+		h("executors"), h("llm"), h("auth"), h("config"), h("callback"), h("web"), readiness,
+		"https://agent.byted.bps.dev",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -97,7 +83,6 @@ func TestPlatformGatewayRoutesKeepPlatformAndAuthSurfaces(t *testing.T) {
 		{http.MethodPost, "/v2/workspaces/40000000-0000-4000-8000-000000000004/executors", "executors"},
 		{http.MethodGet, "/v2/workspaces/40000000-0000-4000-8000-000000000004/llm-gateways", "llm"},
 		{http.MethodGet, "/auth/hydra/login?login_challenge=x", "auth"},
-		{http.MethodGet, "/oauth2/auth?client_id=x", "hydra"},
 		{http.MethodGet, "/auth/config", "config"},
 		{http.MethodGet, corecontract.LLMGatewayOIDCCallbackPath, "callback"},
 		{http.MethodGet, "/", "web"},

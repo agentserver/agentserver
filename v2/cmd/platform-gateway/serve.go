@@ -31,12 +31,11 @@ const (
 	platformCoreClientCertificateEnvironment = "AGENTSERVER_V2_CORE_CLIENT_CERT_FILE"
 	platformCoreClientKeyEnvironment         = "AGENTSERVER_V2_CORE_CLIENT_KEY_FILE"
 	platformCoreServerNameEnvironment        = "AGENTSERVER_V2_CORE_SERVER_NAME"
-	platformHydraPublicUpstreamEnvironment   = "AGENTSERVER_V2_HYDRA_PUBLIC_UPSTREAM"
-	platformHydraCAEnvironment               = "AGENTSERVER_V2_HYDRA_CA_FILE"
-	platformHydraServerNameEnvironment       = "AGENTSERVER_V2_HYDRA_SERVER_NAME"
 	platformOAuthClientIDEnvironment         = "AGENTSERVER_V2_PLATFORM_OAUTH_CLIENT_ID"
 	platformOAuthAudienceEnvironment         = "AGENTSERVER_V2_PLATFORM_OAUTH_AUDIENCE"
 	platformOAuthScopesEnvironment           = "AGENTSERVER_V2_PLATFORM_OAUTH_SCOPES"
+	platformOAuthAuthorizationEnvironment    = "AGENTSERVER_V2_PLATFORM_OAUTH_AUTHORIZATION_ENDPOINT"
+	platformOAuthTokenEnvironment            = "AGENTSERVER_V2_PLATFORM_OAUTH_TOKEN_ENDPOINT"
 )
 
 const platformShutdownTimeout = 10 * time.Second
@@ -82,18 +81,6 @@ func servePlatformGateway(ctx context.Context, getenv func(string) string, stdou
 	if err != nil {
 		return err
 	}
-	hydraPublicUpstream, err := requiredPlatformConfiguration(getenv, platformHydraPublicUpstreamEnvironment)
-	if err != nil {
-		return err
-	}
-	hydraCAFile, err := requiredPlatformConfiguration(getenv, platformHydraCAEnvironment)
-	if err != nil {
-		return err
-	}
-	hydraServerName, err := requiredPlatformConfiguration(getenv, platformHydraServerNameEnvironment)
-	if err != nil {
-		return err
-	}
 	oauthClientID, err := requiredPlatformConfiguration(getenv, platformOAuthClientIDEnvironment)
 	if err != nil {
 		return err
@@ -107,6 +94,14 @@ func servePlatformGateway(ctx context.Context, getenv func(string) string, stdou
 		return err
 	}
 	oauthScopes, err := validatePlatformOAuthAuthority(oauthClientID, oauthAudience, oauthScopeText)
+	if err != nil {
+		return err
+	}
+	authorizationEndpoint, err := requiredPlatformConfiguration(getenv, platformOAuthAuthorizationEnvironment)
+	if err != nil {
+		return err
+	}
+	tokenEndpoint, err := requiredPlatformConfiguration(getenv, platformOAuthTokenEnvironment)
 	if err != nil {
 		return err
 	}
@@ -132,24 +127,22 @@ func servePlatformGateway(ctx context.Context, getenv func(string) string, stdou
 	if err != nil {
 		return err
 	}
-	hydraClient, err := newPlatformHydraHTTPClient(hydraCAFile, hydraServerName)
+	authConfig, err := platformgateway.NewAuthorizationConfigHandlerWithEndpoints(
+		oauthClientID, oauthAudience, oauthScopes, authorizationEndpoint, tokenEndpoint,
+	)
 	if err != nil {
 		return err
 	}
-	defer hydraClient.CloseIdleConnections()
-	hydra, err := browsergateway.NewHydraPublicProxy(hydraPublicUpstream, publicOrigin, hydraClient)
-	if err != nil {
-		return err
-	}
-	authConfig, err := platformgateway.NewAuthorizationConfigHandler(oauthClientID, oauthAudience, oauthScopes)
+	oauthURL, _ := url.Parse(tokenEndpoint)
+	web, err := platformweb.HandlerForOAuthOrigin(oauthURL.Scheme + "://" + oauthURL.Host)
 	if err != nil {
 		return err
 	}
 
 	readiness := &platformReadiness{}
 	handler, err := platformGatewayRoutes(
-		executors.Routes(), llmGateways.Routes(), authBridge.Routes(), hydra.Routes(), authConfig,
-		browsergateway.NewLLMGatewayCallbackHandler(), platformweb.Handler(), readiness, publicOrigin, browserOrigin,
+		executors.Routes(), llmGateways.Routes(), authBridge.Routes(), authConfig,
+		browsergateway.NewLLMGatewayCallbackHandler(), web, readiness, publicOrigin,
 	)
 	if err != nil {
 		return err
@@ -200,17 +193,13 @@ func validatePlatformOAuthAuthority(clientID, audience, commaSeparatedScopes str
 }
 
 func platformGatewayRoutes(
-	executors, llmGateways, authBridge, hydra, authConfig, llmCallback, web http.Handler,
+	executors, llmGateways, authBridge, authConfig, llmCallback, web http.Handler,
 	readiness *platformReadiness,
-	publicOrigin, browserOrigin string,
+	publicOrigin string,
 ) (http.Handler, error) {
 	publicURL, err := url.Parse(publicOrigin)
 	if err != nil {
 		return nil, errors.New("Platform public origin is invalid")
-	}
-	browserURL, err := url.Parse(browserOrigin)
-	if err != nil {
-		return nil, errors.New("Browser public origin is invalid")
 	}
 	mux := http.NewServeMux()
 	mux.Handle("POST "+corecontract.ExecutorManagementRoutePattern, executors)
@@ -226,7 +215,6 @@ func platformGatewayRoutes(
 	mux.Handle(corecontract.LLMGatewayOIDCCallbackPath, llmCallback)
 	mux.Handle("/auth/", authBridge)
 	mux.Handle("GET /auth/config", authConfig)
-	mux.Handle("/oauth2/", hydra)
 	mux.HandleFunc("GET /healthz", func(response http.ResponseWriter, _ *http.Request) {
 		writePlatformHealth(response, http.StatusOK, `{"status":"ok"}`)
 	})
@@ -238,10 +226,10 @@ func platformGatewayRoutes(
 		writePlatformHealth(response, http.StatusOK, `{"status":"ready"}`)
 	})
 	mux.Handle("/", web)
-	return platformPublicBoundary(mux, publicURL.Hostname(), publicOrigin, browserURL.String()), nil
+	return platformPublicBoundary(mux, publicURL.Hostname(), publicOrigin), nil
 }
 
-func platformPublicBoundary(next http.Handler, hostname, publicOrigin, browserOrigin string) http.Handler {
+func platformPublicBoundary(next http.Handler, hostname, publicOrigin string) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if canonicalPlatformHostname(request.Host) != hostname {
 			writePlatformError(response, http.StatusNotFound, "not_found", "platform route is not exposed on this host")
@@ -256,37 +244,7 @@ func platformPublicBoundary(next http.Handler, hostname, publicOrigin, browserOr
 			next.ServeHTTP(response, request)
 			return
 		}
-		if origins[0] != browserOrigin || request.URL.Path != "/oauth2/token" {
-			writePlatformError(response, http.StatusForbidden, "origin_not_allowed", "request origin is not allowed")
-			return
-		}
-		response.Header().Set("Access-Control-Allow-Origin", browserOrigin)
-		response.Header().Add("Vary", "Origin")
-		if request.Method == http.MethodOptions {
-			if request.Header.Get("Access-Control-Request-Method") != http.MethodPost {
-				writePlatformError(response, http.StatusForbidden, "invalid_preflight", "token preflight method is not allowed")
-				return
-			}
-			for _, raw := range strings.Split(request.Header.Get("Access-Control-Request-Headers"), ",") {
-				name := strings.ToLower(strings.TrimSpace(raw))
-				if name != "" && name != "accept" && name != "content-type" {
-					writePlatformError(response, http.StatusForbidden, "invalid_preflight", "token preflight header is not allowed")
-					return
-				}
-			}
-			response.Header().Set("Access-Control-Allow-Methods", http.MethodPost)
-			response.Header().Set("Access-Control-Allow-Headers", "Accept, Content-Type")
-			response.Header().Set("Access-Control-Max-Age", "600")
-			response.Header().Add("Vary", "Access-Control-Request-Method")
-			response.Header().Add("Vary", "Access-Control-Request-Headers")
-			response.WriteHeader(http.StatusNoContent)
-			return
-		}
-		if request.Method != http.MethodPost {
-			writePlatformError(response, http.StatusForbidden, "origin_not_allowed", "cross-origin token request must use POST")
-			return
-		}
-		next.ServeHTTP(response, request)
+		writePlatformError(response, http.StatusForbidden, "origin_not_allowed", "request origin is not allowed")
 	})
 }
 
@@ -324,14 +282,6 @@ func newPlatformCoreHTTPClient(caFile, certificateFile, keyFile, serverName stri
 	return newPlatformHTTPClient(&tls.Config{
 		MinVersion: tls.VersionTLS13, RootCAs: rootCAs, Certificates: []tls.Certificate{certificate}, ServerName: serverName,
 	}), nil
-}
-
-func newPlatformHydraHTTPClient(caFile, serverName string) (*http.Client, error) {
-	rootCAs, err := loadPlatformRootCAs(caFile, "Hydra")
-	if err != nil {
-		return nil, err
-	}
-	return newPlatformHTTPClient(&tls.Config{MinVersion: tls.VersionTLS13, RootCAs: rootCAs, ServerName: serverName}), nil
 }
 
 func loadPlatformRootCAs(path, authority string) (*x509.CertPool, error) {

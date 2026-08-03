@@ -233,7 +233,7 @@
       "browserOAuth": {
         "type": "oauth2",
         "description": "Original agentserver-browser token. Core requires active introspection, exact client_id, single aud=agentserver-browser-api, and one workspace resource grant matching the request path.",
-        "flows": {"authorizationCode": {"authorizationUrl": "/oauth2/auth", "tokenUrl": "/oauth2/token", "scopes": {
+        "flows": {"authorizationCode": {"authorizationUrl": "https://auth-sg.byted.bps.dev/oauth2/auth", "tokenUrl": "https://auth-sg.byted.bps.dev/oauth2/token", "scopes": {
           "sessions:read": "List and read the current user's sessions",
           "sessions:create": "Create a session for the current user",
           "sessions:update": "Rename the current user's session",
@@ -247,7 +247,7 @@
       "platformOAuth": {
         "type": "oauth2",
         "description": "Original agentserver-platform token. Core requires active introspection, exact client_id, single aud=agentserver-platform-api, and a matching global or workspace management grant.",
-        "flows": {"authorizationCode": {"authorizationUrl": "/oauth2/auth", "tokenUrl": "/oauth2/token", "scopes": {
+        "flows": {"authorizationCode": {"authorizationUrl": "https://auth-sg.byted.bps.dev/oauth2/auth", "tokenUrl": "https://auth-sg.byted.bps.dev/oauth2/token", "scopes": {
           "workspaces:read": "List and read granted workspaces",
           "workspaces:create": "Create a workspace",
           "workspaces:update": "Update a granted workspace",

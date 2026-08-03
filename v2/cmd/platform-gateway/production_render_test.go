@@ -22,12 +22,11 @@ func TestProductionRendererPlatformEnvironmentMatchesCommandContract(t *testing.
 		platformCoreClientCertificateEnvironment,
 		platformCoreClientKeyEnvironment,
 		platformCoreServerNameEnvironment,
-		platformHydraPublicUpstreamEnvironment,
-		platformHydraCAEnvironment,
-		platformHydraServerNameEnvironment,
 		platformOAuthClientIDEnvironment,
 		platformOAuthAudienceEnvironment,
 		platformOAuthScopesEnvironment,
+		platformOAuthAuthorizationEnvironment,
+		platformOAuthTokenEnvironment,
 	}
 	slices.Sort(want)
 	if got := environment.Names(); !slices.Equal(got, want) {
@@ -53,5 +52,11 @@ func TestProductionRendererPlatformEnvironmentMatchesCommandContract(t *testing.
 		environment.Get(platformOAuthScopesEnvironment),
 	); err != nil {
 		t.Fatalf("platform-gateway rejected rendered OAuth authority: %v", err)
+	}
+	if got := environment.Get(platformOAuthAuthorizationEnvironment); got != "https://auth-sg.byted.bps.dev/oauth2/auth" {
+		t.Fatalf("rendered Platform authorization endpoint = %q", got)
+	}
+	if got := environment.Get(platformOAuthTokenEnvironment); got != "https://auth-sg.byted.bps.dev/oauth2/token" {
+		t.Fatalf("rendered Platform token endpoint = %q", got)
 	}
 }

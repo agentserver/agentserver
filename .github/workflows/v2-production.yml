@@ -1,0 +1,224 @@
+name: Publish v2 Production Artifacts
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "v2/**"
+      - ".github/workflows/v2-production.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: v2-production-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SERVICE_REPOSITORY: ghcr.io/agentserver/v2-service
+  HARNESS_REPOSITORY: ghcr.io/agentserver/v2-harness
+  HYDRA_REPOSITORY: ghcr.io/agentserver/hydra
+  CHART_REPOSITORY: ghcr.io/agentserver/agentserver-v2
+  CODEX_URL: https://github.com/openai/codex/releases/download/rust-v0.146.0/codex-x86_64-unknown-linux-musl.tar.gz
+  CODEX_ARCHIVE_SHA256: 5ba3b9405543953081f661d0854d266f76e2abbe51d41349355a36de7673776a
+  BWRAP_URL: https://github.com/openai/codex/releases/download/rust-v0.146.0/bwrap-x86_64-unknown-linux-musl.tar.gz
+  BWRAP_ARCHIVE_SHA256: debe6f23b085976553083e2a3090156f6e38bdc0f44245f4ee904fb515b8b4fe
+  HYDRA_SOURCE: docker.io/oryd/hydra@sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b
+  HYDRA_DIGEST: sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b
+
+jobs:
+  publish-linux-amd64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: v2/go.mod
+          cache-dependency-path: v2/go.sum
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.18.4
+
+      - name: Install OCI copy tooling
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends skopeo
+
+      - name: Verify source before publishing
+        run: make -C v2 check
+
+      - name: Download and verify stock Codex runtime
+        id: runtime
+        run: |
+          set -euo pipefail
+          runtime_dir="${RUNNER_TEMP}/agentserver-stock-runtime"
+          install -d -m 0700 "${runtime_dir}/codex-unpacked" "${runtime_dir}/bwrap-unpacked"
+          curl --fail --show-error --location --proto '=https' --tlsv1.2 \
+            "${CODEX_URL}" --output "${runtime_dir}/codex.tar.gz"
+          curl --fail --show-error --location --proto '=https' --tlsv1.2 \
+            "${BWRAP_URL}" --output "${runtime_dir}/bwrap.tar.gz"
+          printf '%s  %s\n' "${CODEX_ARCHIVE_SHA256}" "${runtime_dir}/codex.tar.gz" | sha256sum --check --strict
+          printf '%s  %s\n' "${BWRAP_ARCHIVE_SHA256}" "${runtime_dir}/bwrap.tar.gz" | sha256sum --check --strict
+          tar --extract --gzip --file "${runtime_dir}/codex.tar.gz" --directory "${runtime_dir}/codex-unpacked" --no-same-owner
+          tar --extract --gzip --file "${runtime_dir}/bwrap.tar.gz" --directory "${runtime_dir}/bwrap-unpacked" --no-same-owner
+          codex_source=$(find "${runtime_dir}/codex-unpacked" -type f -name 'codex-x86_64-unknown-linux-musl' -print)
+          bwrap_source=$(find "${runtime_dir}/bwrap-unpacked" -type f -name 'bwrap-x86_64-unknown-linux-musl' -print)
+          test -n "${codex_source}" && test "${codex_source}" = "$(printf '%s' "${codex_source}" | head -n 1)"
+          test -n "${bwrap_source}" && test "${bwrap_source}" = "$(printf '%s' "${bwrap_source}" | head -n 1)"
+          install -m 0555 "${codex_source}" "${runtime_dir}/codex"
+          install -m 0555 "${bwrap_source}" "${runtime_dir}/bwrap"
+          printf '%s  %s\n' '2e863156ed35ecc5253b1e2f907a9143077b9f7cb51942070c61996471ff6e04' "${runtime_dir}/codex" | sha256sum --check --strict
+          printf '%s  %s\n' '77360cb751ccedc5971391444ac86a8a33c15b04d6b4a6fe45f5d25496e62c4c' "${runtime_dir}/bwrap" | sha256sum --check --strict
+          test "$(stat --format=%s "${runtime_dir}/codex")" = '311001136'
+          test "$(stat --format=%s "${runtime_dir}/bwrap")" = '529776'
+          printf 'codex=%s\n' "${runtime_dir}/codex" >>"${GITHUB_OUTPUT}"
+          printf 'bwrap=%s\n' "${runtime_dir}/bwrap" >>"${GITHUB_OUTPUT}"
+
+      - name: Build and verify closed-world OCI images
+        env:
+          CODEX_PATH: ${{ steps.runtime.outputs.codex }}
+          BWRAP_PATH: ${{ steps.runtime.outputs.bwrap }}
+        run: |
+          set -euo pipefail
+          ./v2/deploy/production/build-images.sh \
+            --platform=linux-amd64 \
+            --codex="${CODEX_PATH}" \
+            --bwrap="${BWRAP_PATH}" \
+            --service-image="${SERVICE_REPOSITORY}:sha-${GITHUB_SHA}" \
+            --harness-image="${HARNESS_REPOSITORY}:sha-${GITHUB_SHA}" \
+            --engine=docker-buildx \
+            --output-dir="${RUNNER_TEMP}/agentserver-v2-image-evidence"
+
+      - name: Publish verified images and mirror Hydra
+        id: images
+        run: |
+          set -euo pipefail
+          evidence="${RUNNER_TEMP}/agentserver-v2-image-evidence"
+          service_tag="${SERVICE_REPOSITORY}:sha-${GITHUB_SHA}"
+          harness_tag="${HARNESS_REPOSITORY}:sha-${GITHUB_SHA}"
+          skopeo copy --retry-times 3 \
+            "oci-archive:${evidence}/service-image.oci.tar" "docker://${service_tag}"
+          skopeo copy --retry-times 3 \
+            "oci-archive:${evidence}/harness-image.oci.tar" "docker://${harness_tag}"
+          skopeo copy --retry-times 3 --override-os linux --override-arch amd64 \
+            "docker://${HYDRA_SOURCE}" "docker://${HYDRA_REPOSITORY}:26.2.0-amd64"
+          service_digest=$(skopeo inspect --format '{{.Digest}}' "docker://${service_tag}")
+          harness_digest=$(skopeo inspect --format '{{.Digest}}' "docker://${harness_tag}")
+          hydra_digest=$(skopeo inspect --format '{{.Digest}}' "docker://${HYDRA_REPOSITORY}:26.2.0-amd64")
+          test "$(skopeo inspect --format '{{.Os}}/{{.Architecture}}' "docker://${service_tag}")" = 'linux/amd64'
+          test "$(skopeo inspect --format '{{.Os}}/{{.Architecture}}' "docker://${harness_tag}")" = 'linux/amd64'
+          test "$(skopeo inspect --format '{{.Os}}/{{.Architecture}}' "docker://${HYDRA_REPOSITORY}:26.2.0-amd64")" = 'linux/amd64'
+          test "${hydra_digest}" = "${HYDRA_DIGEST}"
+          skopeo copy --retry-times 3 "docker://${SERVICE_REPOSITORY}@${service_digest}" "docker://${SERVICE_REPOSITORY}:main"
+          skopeo copy --retry-times 3 "docker://${HARNESS_REPOSITORY}@${harness_digest}" "docker://${HARNESS_REPOSITORY}:main"
+          printf 'service_digest=%s\n' "${service_digest}" >>"${GITHUB_OUTPUT}"
+          printf 'harness_digest=%s\n' "${harness_digest}" >>"${GITHUB_OUTPUT}"
+          printf 'hydra_digest=%s\n' "${hydra_digest}" >>"${GITHUB_OUTPUT}"
+
+      - name: Generate and publish environment-locked Helm chart
+        id: chart
+        env:
+          SERVICE_DIGEST: ${{ steps.images.outputs.service_digest }}
+          HARNESS_DIGEST: ${{ steps.images.outputs.harness_digest }}
+          PUBLISHED_HYDRA_DIGEST: ${{ steps.images.outputs.hydra_digest }}
+        run: |
+          set -euo pipefail
+          release_dir="${RUNNER_TEMP}/agentserver-v2-release"
+          chart_dir="${release_dir}/agentserver-v2"
+          install -d -m 0700 "${release_dir}"
+          jq \
+            --arg service "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-service@${SERVICE_DIGEST}" \
+            --arg harness "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-harness@${HARNESS_DIGEST}" \
+            --arg hydra "registry-sg.byted.cs.ac.cn/ghcr/agentserver/hydra@${PUBLISHED_HYDRA_DIGEST}" \
+            '.images.service = $service | .images.harness = $harness | .images.hydra = $hydra' \
+            v2/deploy/production/config.example.json >"${release_dir}/production.json"
+          go -C v2 run ./cmd/agentserver-deploy chart \
+            --config="${release_dir}/production.json" \
+            --output="${chart_dir}"
+          deployment_sha=$(sed -n 's/^deploymentConfigSHA256: "\([0-9a-f]\{64\}\)"$/\1/p' "${chart_dir}/values.yaml")
+          chart_version=$(sed -n 's/^version: \([^[:space:]]*\)$/\1/p' "${chart_dir}/Chart.yaml")
+          test "${#deployment_sha}" = 64
+          test "${chart_version}" = "0.1.0-config.d$(printf '%s' "${deployment_sha}" | cut -c1-12)"
+          helm package "${chart_dir}" --destination "${release_dir}"
+          printf '%s' "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
+          helm push "${release_dir}/agentserver-v2-${chart_version}.tgz" oci://ghcr.io/agentserver
+          helm show chart "oci://${CHART_REPOSITORY}" --version "${chart_version}" >/dev/null
+          printf 'deployment_sha=%s\n' "${deployment_sha}" >>"${GITHUB_OUTPUT}"
+          printf 'version=%s\n' "${chart_version}" >>"${GITHUB_OUTPUT}"
+          printf 'release_dir=%s\n' "${release_dir}" >>"${GITHUB_OUTPUT}"
+
+      - name: Publish packages publicly and verify anonymous GHCR pulls
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SERVICE_DIGEST: ${{ steps.images.outputs.service_digest }}
+          HARNESS_DIGEST: ${{ steps.images.outputs.harness_digest }}
+          PUBLISHED_HYDRA_DIGEST: ${{ steps.images.outputs.hydra_digest }}
+          CHART_VERSION: ${{ steps.chart.outputs.version }}
+        run: |
+          set -euo pipefail
+          for package in v2-service v2-harness hydra agentserver-v2; do
+            updated=false
+            for attempt in 1 2 3 4 5 6 7 8 9 10; do
+              if gh api --silent --method PATCH \
+                "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/${package}" \
+                -f visibility=public; then
+                updated=true
+                break
+              fi
+              sleep 3
+            done
+            test "${updated}" = true
+          done
+          test "$(skopeo inspect --no-creds --format '{{.Os}}/{{.Architecture}}' \
+            "docker://${SERVICE_REPOSITORY}@${SERVICE_DIGEST}")" = 'linux/amd64'
+          test "$(skopeo inspect --no-creds --format '{{.Os}}/{{.Architecture}}' \
+            "docker://${HARNESS_REPOSITORY}@${HARNESS_DIGEST}")" = 'linux/amd64'
+          test "$(skopeo inspect --no-creds --format '{{.Os}}/{{.Architecture}}' \
+            "docker://${HYDRA_REPOSITORY}@${PUBLISHED_HYDRA_DIGEST}")" = 'linux/amd64'
+          anonymous_helm_config="${RUNNER_TEMP}/anonymous-helm-registry.json"
+          printf '%s\n' '{"auths":{}}' >"${anonymous_helm_config}"
+          HELM_REGISTRY_CONFIG="${anonymous_helm_config}" \
+            helm show chart "oci://${CHART_REPOSITORY}" --version "${CHART_VERSION}" >/dev/null
+
+      - name: Record published artifact contract
+        env:
+          SERVICE_DIGEST: ${{ steps.images.outputs.service_digest }}
+          HARNESS_DIGEST: ${{ steps.images.outputs.harness_digest }}
+          PUBLISHED_HYDRA_DIGEST: ${{ steps.images.outputs.hydra_digest }}
+          CHART_VERSION: ${{ steps.chart.outputs.version }}
+          DEPLOYMENT_SHA: ${{ steps.chart.outputs.deployment_sha }}
+        run: |
+          set -euo pipefail
+          {
+            printf '## AgentServer v2 production artifacts\n\n'
+            printf -- '- Platform: `linux/amd64`\n'
+            printf -- '- Service: `%s@%s`\n' "${SERVICE_REPOSITORY}" "${SERVICE_DIGEST}"
+            printf -- '- Harness: `%s@%s`\n' "${HARNESS_REPOSITORY}" "${HARNESS_DIGEST}"
+            printf -- '- Hydra: `%s@%s`\n' "${HYDRA_REPOSITORY}" "${PUBLISHED_HYDRA_DIGEST}"
+            printf -- '- Chart: `oci://%s:%s`\n' "${CHART_REPOSITORY}" "${CHART_VERSION}"
+            printf -- '- Deployment config SHA-256: `%s`\n' "${DEPLOYMENT_SHA}"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agentserver-v2-production-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            ${{ runner.temp }}/agentserver-v2-image-evidence/*-image-manifest.json
+            ${{ steps.chart.outputs.release_dir }}/production.json
+            ${{ steps.chart.outputs.release_dir }}/agentserver-v2-*.tgz

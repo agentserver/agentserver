@@ -13,15 +13,17 @@ platform=""
 service_image=""
 harness_image=""
 output_directory=""
+engine="apple-container"
 
 usage() {
     printf '%s\n' \
         'usage: build-images.sh --platform=linux-amd64|linux-arm64' \
         '                       --codex=/absolute/codex-ARCH-unknown-linux-musl' \
         '                       --bwrap=/absolute/bwrap-ARCH-unknown-linux-musl' \
-        '                       --service-image=registry/name:tag' \
-        '                       --harness-image=registry/name:tag' \
-        '                       --output-dir=/absolute/new-directory'
+		'                       --service-image=registry/name:tag' \
+		'                       --harness-image=registry/name:tag' \
+		'                       --engine=apple-container|docker-buildx' \
+		'                       --output-dir=/absolute/new-directory'
 }
 
 fail() {
@@ -35,7 +37,8 @@ for argument in "$@"; do
         --codex=*) codex_artifact=${argument#--codex=} ;;
         --bwrap=*) bwrap_artifact=${argument#--bwrap=} ;;
         --service-image=*) service_image=${argument#--service-image=} ;;
-        --harness-image=*) harness_image=${argument#--harness-image=} ;;
+		--harness-image=*) harness_image=${argument#--harness-image=} ;;
+		--engine=*) engine=${argument#--engine=} ;;
         --output-dir=*) output_directory=${argument#--output-dir=} ;;
         --help|-h) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
@@ -61,11 +64,21 @@ case "${output_directory}" in /*) ;; *) usage >&2; exit 2 ;; esac
 command -v go >/dev/null 2>&1 || fail "go is required"
 command -v git >/dev/null 2>&1 || fail "git is required"
 command -v tar >/dev/null 2>&1 || fail "tar is required"
-command -v container >/dev/null 2>&1 || fail "Apple container CLI is required"
 [ "$(go env GOVERSION)" = "go1.26.5" ] || fail "exact Go toolchain go1.26.5 is required"
-case "$(container --version)" in
-    'container CLI version 1.2.0 '*) ;;
-    *) fail "exact Apple container CLI 1.2.0 is required" ;;
+case "${engine}" in
+    apple-container)
+		command -v container >/dev/null 2>&1 || fail "Apple container CLI is required"
+		case "$(container --version)" in
+			'container CLI version 1.2.0 '*) ;;
+			*) fail "exact Apple container CLI 1.2.0 is required" ;;
+		esac
+		;;
+    docker-buildx)
+		command -v docker >/dev/null 2>&1 || fail "Docker CLI is required"
+		docker buildx version >/dev/null 2>&1 || fail "Docker buildx is required"
+		[ "$(uname -s)" = "Linux" ] || fail "docker-buildx production builds run only on Linux"
+		;;
+    *) usage >&2; exit 2 ;;
 esac
 
 git -C "${repository_root}" diff --quiet HEAD -- v2 || fail "tracked v2 source differs from HEAD; commit before a production build"
@@ -151,16 +164,23 @@ chmod 0500 "${work_directory}/agentserver-image"
     --requirements="${v2_root}/packaging/stockruntime/requirements.toml" \
     --output="${work_directory}/harness-payload"
 
-# Apple container 1.2.0 does not transfer a directory operand used by COPY from
-# these generated contexts, but it does transfer a regular archive operand.
-# Package the already verified rootfs without macOS metadata; the final image
-# export is still checked entry-by-entry against the external manifest.
-env COPYFILE_DISABLE=1 tar -cf "${work_directory}/service-context/rootfs.tar" \
-    --format=ustar --no-xattrs --no-mac-metadata \
-    -C "${work_directory}/service-payload/rootfs" .
-env COPYFILE_DISABLE=1 tar -cf "${work_directory}/harness-context/rootfs.tar" \
-    --format=ustar --no-xattrs --no-mac-metadata \
-    -C "${work_directory}/harness-payload/rootfs" .
+# Both builders consume a regular archive so the already verified rootfs is
+# the only mutable context input. BSD tar needs the explicit macOS metadata
+# switches; GNU tar uses its own no-xattrs form. The exported OCI image is
+# checked entry-by-entry against the external manifest after the build.
+if [ "${engine}" = "apple-container" ]; then
+	env COPYFILE_DISABLE=1 tar -cf "${work_directory}/service-context/rootfs.tar" \
+		--format=ustar --no-xattrs --no-mac-metadata \
+		-C "${work_directory}/service-payload/rootfs" .
+	env COPYFILE_DISABLE=1 tar -cf "${work_directory}/harness-context/rootfs.tar" \
+		--format=ustar --no-xattrs --no-mac-metadata \
+		-C "${work_directory}/harness-payload/rootfs" .
+else
+	tar --format=ustar --no-xattrs -cf "${work_directory}/service-context/rootfs.tar" \
+		-C "${work_directory}/service-payload/rootfs" .
+	tar --format=ustar --no-xattrs -cf "${work_directory}/harness-context/rootfs.tar" \
+		-C "${work_directory}/harness-payload/rootfs" .
+fi
 cp "${script_dir}/service.Containerfile" "${work_directory}/service-context/Dockerfile"
 cp "${script_dir}/harness.Containerfile" "${work_directory}/harness-context/Dockerfile"
 chmod 0444 \
@@ -170,22 +190,46 @@ chmod 0444 \
     "${work_directory}/harness-context/rootfs.tar"
 
 printf '%s\n' "build-images.sh: building ${service_image}"
-container build \
-    --platform "${oci_platform}" \
-    --progress plain \
-    --no-cache \
-    --build-arg "SOURCE_REVISION=${source_revision}" \
-    --tag "${service_image}" \
-    "${work_directory}/service-context"
+if [ "${engine}" = "apple-container" ]; then
+	container build \
+		--platform "${oci_platform}" \
+		--progress plain \
+		--no-cache \
+		--build-arg "SOURCE_REVISION=${source_revision}" \
+		--tag "${service_image}" \
+		"${work_directory}/service-context"
+else
+	docker buildx build \
+		--platform "${oci_platform}" \
+		--progress plain \
+		--no-cache \
+		--provenance=false \
+		--sbom=false \
+		--build-arg "SOURCE_REVISION=${source_revision}" \
+		--output "type=oci,dest=${work_directory}/service-image.oci.tar" \
+		"${work_directory}/service-context"
+fi
 
 printf '%s\n' "build-images.sh: building ${harness_image}"
-container build \
-    --platform "${oci_platform}" \
-    --progress plain \
-    --no-cache \
-    --build-arg "SOURCE_REVISION=${source_revision}" \
-    --tag "${harness_image}" \
-    "${work_directory}/harness-context"
+if [ "${engine}" = "apple-container" ]; then
+	container build \
+		--platform "${oci_platform}" \
+		--progress plain \
+		--no-cache \
+		--build-arg "SOURCE_REVISION=${source_revision}" \
+		--tag "${harness_image}" \
+		"${work_directory}/harness-context"
+else
+	docker buildx build \
+		--platform "${oci_platform}" \
+		--progress plain \
+		--no-cache \
+		--provenance=false \
+		--sbom=false \
+		--build-arg "SOURCE_REVISION=${source_revision}" \
+		--output "type=oci,dest=${work_directory}/harness-image.oci.tar" \
+		"${work_directory}/harness-context"
+fi
 
 verify_image() {
     kind=$1
@@ -193,7 +237,9 @@ verify_image() {
     payload=$3
     archive=$4
     case "${kind}" in service|harness) ;; *) fail "internal unknown image kind" ;; esac
-    container image save --platform "${oci_platform}" --output "${archive}" "${image}" >/dev/null
+	if [ "${engine}" = "apple-container" ]; then
+		container image save --platform "${oci_platform}" --output "${archive}" "${image}" >/dev/null
+	fi
     chmod 0400 "${archive}"
     "${work_directory}/agentserver-image" verify-oci \
         --manifest="${payload}/image-manifest.json" \
@@ -208,12 +254,18 @@ verify_image harness "${harness_image}" \
 mkdir -m 0700 "${output_directory}"
 cp "${work_directory}/service-payload/image-manifest.json" "${output_directory}/service-image-manifest.json"
 cp "${work_directory}/harness-payload/image-manifest.json" "${output_directory}/harness-image-manifest.json"
-container image inspect "${service_image}" >"${output_directory}/service-image-inspect.json"
-container image inspect "${harness_image}" >"${output_directory}/harness-image-inspect.json"
+if [ "${engine}" = "apple-container" ]; then
+	container image inspect "${service_image}" >"${output_directory}/service-image-inspect.json"
+	container image inspect "${harness_image}" >"${output_directory}/harness-image-inspect.json"
+else
+	cp "${work_directory}/service-image.oci.tar" "${output_directory}/service-image.oci.tar"
+	cp "${work_directory}/harness-image.oci.tar" "${output_directory}/harness-image.oci.tar"
+fi
 chmod 0444 "${output_directory}"/*
 
 printf '%s\n' "build-images.sh: verified production images"
 printf '%s\n' "  platform=${platform}"
+printf '%s\n' "  engine=${engine}"
 printf '%s\n' "  service=${service_image}"
 printf '%s\n' "  harness=${harness_image}"
 printf '%s\n' "  evidence=${output_directory}"

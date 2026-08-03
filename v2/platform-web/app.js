@@ -73,8 +73,10 @@ async function completeAuthorization(callback) {
     throw new Error('The authorization transaction does not match this callback.')
   }
   if (callback.error) throw new Error(`Authorization failed: ${callback.error}`)
-  const response = await fetch(config.tokenEndpoint, {
-    method: 'POST', mode: 'same-origin', cache: 'no-store', credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer',
+  const tokenURL = new URL(config.tokenEndpoint, window.location.origin)
+  const response = await fetch(tokenURL.href, {
+    method: 'POST', mode: tokenURL.origin === window.location.origin ? 'same-origin' : 'cors',
+    cache: 'no-store', credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer',
     headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
       grant_type: 'authorization_code', code: callback.code, redirect_uri: transaction.redirectURI,
@@ -89,8 +91,13 @@ async function completeAuthorization(callback) {
 
 function validateConfig(value) {
   requireExactKeys(value, ['version', 'authorizationEndpoint', 'tokenEndpoint', 'redirectPath', 'clientId', 'scopes', 'audience'])
-  if (value.version !== 1 || value.authorizationEndpoint !== '/oauth2/auth' || value.tokenEndpoint !== '/oauth2/token' || value.redirectPath !== '/') {
+  if (value.version !== 1 || value.redirectPath !== '/') {
     throw new Error('Unsupported Platform authorization configuration.')
+  }
+  const authorizationEndpoint = validateOAuthEndpoint('authorization', value.authorizationEndpoint, '/oauth2/auth')
+  const tokenEndpoint = validateOAuthEndpoint('token', value.tokenEndpoint, '/oauth2/token')
+  if (oauthEndpointAuthority(authorizationEndpoint) !== oauthEndpointAuthority(tokenEndpoint)) {
+    throw new Error('Platform authorization endpoints use different authorities.')
   }
   validateText(value.clientId, 512)
   validateText(value.audience, 512)
@@ -98,8 +105,22 @@ function validateConfig(value) {
     throw new Error('Platform authorization scopes are invalid.')
   }
   value.scopes.forEach((scope) => { validateText(scope, 128); if (/\s/u.test(scope)) throw new Error('Platform scope is invalid.') })
-  return Object.freeze({ ...value, scopes: Object.freeze([...value.scopes]) })
+  return Object.freeze({ ...value, authorizationEndpoint, tokenEndpoint, scopes: Object.freeze([...value.scopes]) })
 }
+
+function validateOAuthEndpoint(name, raw, requiredPath) {
+  if (raw === requiredPath) return raw
+  if (typeof raw !== 'string') throw new Error(`Platform OAuth ${name} endpoint is invalid.`)
+  let parsed
+  try { parsed = new URL(raw) } catch { throw new Error(`Platform OAuth ${name} endpoint is invalid.`) }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.pathname !== requiredPath ||
+      parsed.search || parsed.hash || parsed.href !== raw) {
+    throw new Error(`Platform OAuth ${name} endpoint is invalid.`)
+  }
+  return parsed.href
+}
+
+function oauthEndpointAuthority(endpoint) { return endpoint.startsWith('/') ? '' : new URL(endpoint).origin }
 
 function readCallback(search) {
   const parameters = new URLSearchParams(String(search || '').replace(/^\?/, ''))

@@ -137,7 +137,7 @@ func servePlatformGateway(ctx context.Context, getenv func(string) string, stdou
 		return err
 	}
 	defer hydraClient.CloseIdleConnections()
-	hydra, err := browsergateway.NewHydraPublicProxy(hydraPublicUpstream, hydraClient)
+	hydra, err := browsergateway.NewHydraPublicProxy(hydraPublicUpstream, publicOrigin, hydraClient)
 	if err != nil {
 		return err
 	}

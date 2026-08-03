@@ -2,6 +2,8 @@ package coreserver
 
 import (
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -16,13 +18,14 @@ const LoginBridgeCookieName = "__Host-agentserver-oidc"
 type LoginBridgeHandler struct {
 	workload WorkloadAuthorizer
 	bridge   *LoginBridge
+	logger   *slog.Logger
 }
 
 func NewLoginBridgeHandler(workload WorkloadAuthorizer, bridge *LoginBridge) (*LoginBridgeHandler, error) {
 	if workload == nil || bridge == nil {
 		return nil, errors.New("browser workload authorizer and login bridge are required")
 	}
-	return &LoginBridgeHandler{workload: workload, bridge: bridge}, nil
+	return &LoginBridgeHandler{workload: workload, bridge: bridge, logger: slog.Default()}, nil
 }
 
 func (handler *LoginBridgeHandler) Routes() http.Handler {
@@ -35,27 +38,31 @@ func (handler *LoginBridgeHandler) Routes() http.Handler {
 
 func (handler *LoginBridgeHandler) login(response http.ResponseWriter, request *http.Request) {
 	setLoginBridgeHeaders(response.Header())
-	if !handler.authorize(response, request, "auth.login") || !emptyAuthBridgeRequest(response, request) {
+	if !handler.authorize(response, request, "auth.login") {
+		return
+	}
+	if err := emptyAuthBridgeRequest(request); err != nil {
+		handler.writeError(response, request, "login", "request_body", http.StatusBadRequest, err)
 		return
 	}
 	query, err := parseAuthBridgeQuery(request.URL.RawQuery)
 	if err != nil {
-		writeLoginBridgeError(response, http.StatusBadRequest)
+		handler.writeError(response, request, "login", "query", http.StatusBadRequest, err)
 		return
 	}
 	challenge, err := exactAuthQuery(query, "login_challenge", nil)
 	if err != nil {
-		writeLoginBridgeError(response, http.StatusBadRequest)
+		handler.writeError(response, request, "login", "challenge", http.StatusBadRequest, err)
 		return
 	}
 	binding, err := exactLoginBridgeCookie(request)
 	if err != nil {
-		writeLoginBridgeError(response, http.StatusBadRequest)
+		handler.writeError(response, request, "login", "browser_binding", http.StatusBadRequest, err)
 		return
 	}
 	result, err := handler.bridge.BeginLogin(request.Context(), challenge, binding)
 	if err != nil {
-		writeLoginBridgeServiceError(response, err)
+		handler.writeServiceError(response, request, "login", "begin", err)
 		return
 	}
 	if result.External {
@@ -66,22 +73,26 @@ func (handler *LoginBridgeHandler) login(response http.ResponseWriter, request *
 
 func (handler *LoginBridgeHandler) consent(response http.ResponseWriter, request *http.Request) {
 	setLoginBridgeHeaders(response.Header())
-	if !handler.authorize(response, request, "auth.consent") || !emptyAuthBridgeRequest(response, request) {
+	if !handler.authorize(response, request, "auth.consent") {
+		return
+	}
+	if err := emptyAuthBridgeRequest(request); err != nil {
+		handler.writeError(response, request, "consent", "request_body", http.StatusBadRequest, err)
 		return
 	}
 	query, err := parseAuthBridgeQuery(request.URL.RawQuery)
 	if err != nil {
-		writeLoginBridgeError(response, http.StatusBadRequest)
+		handler.writeError(response, request, "consent", "query", http.StatusBadRequest, err)
 		return
 	}
 	challenge, err := exactAuthQuery(query, "consent_challenge", nil)
 	if err != nil {
-		writeLoginBridgeError(response, http.StatusBadRequest)
+		handler.writeError(response, request, "consent", "challenge", http.StatusBadRequest, err)
 		return
 	}
 	result, err := handler.bridge.Consent(request.Context(), challenge)
 	if err != nil {
-		writeLoginBridgeServiceError(response, err)
+		handler.writeServiceError(response, request, "consent", "complete", err)
 		return
 	}
 	http.Redirect(response, request, result.RedirectTo, http.StatusFound)
@@ -89,12 +100,16 @@ func (handler *LoginBridgeHandler) consent(response http.ResponseWriter, request
 
 func (handler *LoginBridgeHandler) callback(response http.ResponseWriter, request *http.Request) {
 	setLoginBridgeHeaders(response.Header())
-	if !handler.authorize(response, request, "auth.callback") || !emptyAuthBridgeRequest(response, request) {
+	if !handler.authorize(response, request, "auth.callback") {
+		return
+	}
+	if err := emptyAuthBridgeRequest(request); err != nil {
+		handler.writeError(response, request, "callback", "request_body", http.StatusBadRequest, err)
 		return
 	}
 	query, err := parseAuthBridgeQuery(request.URL.RawQuery)
 	if err != nil {
-		writeLoginBridgeError(response, http.StatusBadRequest)
+		handler.writeError(response, request, "callback", "query", http.StatusBadRequest, err)
 		return
 	}
 	state, err := exactAuthQuery(query, "state", map[string]bool{
@@ -102,39 +117,47 @@ func (handler *LoginBridgeHandler) callback(response http.ResponseWriter, reques
 		"iss": true, "scope": true, "session_state": true,
 	})
 	if err != nil {
-		writeLoginBridgeError(response, http.StatusBadRequest)
+		handler.writeError(response, request, "callback", "state", http.StatusBadRequest, err)
 		return
 	}
 	code, err := optionalSingularAuthQuery(query, "code")
 	if err != nil {
-		writeLoginBridgeError(response, http.StatusBadRequest)
+		handler.writeError(response, request, "callback", "code", http.StatusBadRequest, err)
 		return
 	}
 	providerError, err := optionalSingularAuthQuery(query, "error")
 	if err != nil {
-		writeLoginBridgeError(response, http.StatusBadRequest)
+		handler.writeError(response, request, "callback", "provider_error", http.StatusBadRequest, err)
 		return
 	}
 	for _, optional := range []string{"error_description", "error_uri", "scope", "session_state"} {
 		if _, err := optionalSingularAuthQuery(query, optional); err != nil {
-			writeLoginBridgeError(response, http.StatusBadRequest)
+			handler.writeError(response, request, "callback", optional, http.StatusBadRequest, err)
 			return
 		}
 	}
 	issuer, err := optionalSingularAuthQuery(query, "iss")
-	if err != nil || (issuer != "" && issuer != handler.bridge.identityProvider.Issuer()) {
-		writeLoginBridgeError(response, http.StatusBadRequest)
+	if err != nil {
+		handler.writeError(response, request, "callback", "issuer", http.StatusBadRequest, err)
+		return
+	}
+	if issuer != "" && issuer != handler.bridge.identityProvider.Issuer() {
+		handler.writeError(response, request, "callback", "issuer", http.StatusBadRequest, errors.New("callback issuer does not match the configured provider"))
 		return
 	}
 	binding, err := exactLoginBridgeCookie(request)
-	if err != nil || binding == "" {
-		writeLoginBridgeError(response, http.StatusBadRequest)
+	if err != nil {
+		handler.writeError(response, request, "callback", "browser_binding", http.StatusBadRequest, err)
+		return
+	}
+	if binding == "" {
+		handler.writeError(response, request, "callback", "browser_binding", http.StatusBadRequest, errors.New("login bridge cookie is missing"))
 		return
 	}
 	result, err := handler.bridge.CompleteCallback(request.Context(), state, code, providerError, binding)
 	if err != nil {
 		clearLoginBridgeCookie(response)
-		writeLoginBridgeServiceError(response, err)
+		handler.writeServiceError(response, request, "callback", "complete", err)
 		return
 	}
 	if result.ClearBinding {
@@ -145,18 +168,17 @@ func (handler *LoginBridgeHandler) callback(response http.ResponseWriter, reques
 
 func (handler *LoginBridgeHandler) authorize(response http.ResponseWriter, request *http.Request, action string) bool {
 	if err := handler.workload.AuthorizeWorkload(request, action); err != nil {
-		writeLoginBridgeError(response, http.StatusForbidden)
+		handler.writeError(response, request, action, "workload_authorization", http.StatusForbidden, err)
 		return false
 	}
 	return true
 }
 
-func emptyAuthBridgeRequest(response http.ResponseWriter, request *http.Request) bool {
+func emptyAuthBridgeRequest(request *http.Request) error {
 	if request.ContentLength != 0 || len(request.TransferEncoding) != 0 {
-		writeLoginBridgeError(response, http.StatusBadRequest)
-		return false
+		return errors.New("authorization bridge request body must be empty")
 	}
-	return true
+	return nil
 }
 
 func parseAuthBridgeQuery(raw string) (url.Values, error) {
@@ -236,14 +258,81 @@ func setLoginBridgeHeaders(header http.Header) {
 	header.Set("X-Frame-Options", "DENY")
 }
 
-func writeLoginBridgeServiceError(response http.ResponseWriter, err error) {
+func (handler *LoginBridgeHandler) writeServiceError(
+	response http.ResponseWriter,
+	request *http.Request,
+	operation, stage string,
+	err error,
+) {
 	status := http.StatusBadRequest
 	var stateError *coredb.StateError
 	var hydraError *HydraAdminError
 	if (errors.As(err, &stateError) && stateError.Code == coredb.ErrorDatabase) || errors.As(err, &hydraError) {
 		status = http.StatusServiceUnavailable
 	}
+	handler.writeError(response, request, operation, stage, status, err)
+}
+
+func (handler *LoginBridgeHandler) writeError(
+	response http.ResponseWriter,
+	request *http.Request,
+	operation, stage string,
+	status int,
+	err error,
+) {
+	if handler != nil && handler.logger != nil {
+		level := slog.LevelWarn
+		if status >= http.StatusInternalServerError {
+			level = slog.LevelError
+		}
+		attributes := []any{
+			"operation", operation,
+			"stage", stage,
+			"status", status,
+			"error_type", fmt.Sprintf("%T", err),
+			"error", safeLoginBridgeLogError(err),
+		}
+		if request != nil {
+			attributes = append(attributes, "method", request.Method, "path", request.URL.Path)
+			if requestID := safeLoginBridgeRequestID(request.Header.Get("X-Request-Id")); requestID != "" {
+				attributes = append(attributes, "request_id", requestID)
+			}
+		}
+		handler.logger.Log(request.Context(), level, "authorization bridge request failed", attributes...)
+	}
 	writeLoginBridgeError(response, status)
+}
+
+func safeLoginBridgeLogError(err error) string {
+	if err == nil {
+		return "unspecified authorization bridge failure"
+	}
+	message := strings.NewReplacer("\r", " ", "\n", " ", "\t", " ").Replace(err.Error())
+	for offset := 0; ; {
+		query := strings.IndexByte(message[offset:], '?')
+		if query < 0 {
+			break
+		}
+		query += offset
+		end := query + 1
+		for end < len(message) && !strings.ContainsRune(" \"'<>)]}", rune(message[end])) {
+			end++
+		}
+		message = message[:query+1] + "<redacted>" + message[end:]
+		offset = query + len("?<redacted>")
+	}
+	message = strings.TrimSpace(message)
+	if len(message) > 512 {
+		message = message[:512] + "..."
+	}
+	return message
+}
+
+func safeLoginBridgeRequestID(value string) string {
+	if value == "" || len(value) > 128 || strings.TrimSpace(value) != value || strings.ContainsAny(value, " \t\r\n\x00") {
+		return ""
+	}
+	return value
 }
 
 func writeLoginBridgeError(response http.ResponseWriter, status int) {

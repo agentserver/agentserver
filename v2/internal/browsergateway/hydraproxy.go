@@ -14,11 +14,12 @@ import (
 const maximumHydraPublicResponseBytes = int64(512 * 1024)
 
 type HydraPublicProxy struct {
-	upstream *url.URL
-	client   *http.Client
+	upstream     *url.URL
+	publicOrigin *url.URL
+	client       *http.Client
 }
 
-func NewHydraPublicProxy(upstream string, client *http.Client) (*HydraPublicProxy, error) {
+func NewHydraPublicProxy(upstream, publicOrigin string, client *http.Client) (*HydraPublicProxy, error) {
 	if client == nil {
 		return nil, errors.New("Hydra public proxy HTTP client is required")
 	}
@@ -31,13 +32,22 @@ func NewHydraPublicProxy(upstream string, client *http.Client) (*HydraPublicProx
 		return nil, errors.New("cleartext Hydra public upstream is allowed only on explicit loopback")
 	}
 	parsed.Path = ""
+	public, err := url.Parse(publicOrigin)
+	if err != nil || public.Host == "" || public.Hostname() == "" || public.User != nil || public.RawQuery != "" ||
+		public.Fragment != "" || (public.Path != "" && public.Path != "/") {
+		return nil, errors.New("Hydra public origin must be an HTTP(S) origin without credentials, path, query, or fragment")
+	}
+	if public.Scheme != "https" && !(public.Scheme == "http" && hydraLoopbackHost(public.Hostname())) {
+		return nil, errors.New("cleartext Hydra public origin is allowed only on explicit loopback")
+	}
+	public.Path = ""
 	clientCopy := *client
 	// Browser cookies are never Hydra authority. A fresh upstream request already
 	// drops request headers; clearing the jar also prevents ambient client state
 	// from adding a Cookie header behind the proxy's back.
 	clientCopy.Jar = nil
 	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &HydraPublicProxy{upstream: parsed, client: &clientCopy}, nil
+	return &HydraPublicProxy{upstream: parsed, publicOrigin: public, client: &clientCopy}, nil
 }
 
 func (proxy *HydraPublicProxy) Routes() http.Handler {
@@ -84,7 +94,7 @@ func (proxy *HydraPublicProxy) forward(
 	body io.Reader,
 	contentType string,
 ) {
-	if proxy == nil || proxy.upstream == nil || proxy.client == nil {
+	if proxy == nil || proxy.upstream == nil || proxy.publicOrigin == nil || proxy.client == nil {
 		http.Error(response, "authorization service unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -96,6 +106,14 @@ func (proxy *HydraPublicProxy) forward(
 		http.Error(response, "authorization service unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	// The transport still connects to the internal mTLS upstream, while the
+	// HTTP authority is the canonical public origin. Hydra records this
+	// authority in request_url and uses it for the login/consent continuation
+	// returned by its Admin API. Letting the internal service hostname cross
+	// this boundary produces an unusable internal redirect after login.
+	upstream.Host = proxy.publicOrigin.Host
+	upstream.Header.Set("X-Forwarded-Host", proxy.publicOrigin.Host)
+	upstream.Header.Set("X-Forwarded-Proto", proxy.publicOrigin.Scheme)
 	upstream.Header.Set("Accept", "application/json")
 	if contentType != "" {
 		upstream.Header.Set("Content-Type", contentType)

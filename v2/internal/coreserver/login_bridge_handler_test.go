@@ -1,6 +1,9 @@
 package coreserver
 
 import (
+	"bytes"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -92,5 +95,42 @@ func TestLoginBridgeHandlerRejectsMalformedQueryBeforeHydra(t *testing.T) {
 	if response.Code != http.StatusBadRequest || store.login.ID != "" || provider.state != "" ||
 		hydra.acceptLoginCalls != 0 || hydra.rejectLoginCalls != 0 {
 		t.Fatalf("malformed query response=%d stored=%+v provider=%+v hydra=%+v", response.Code, store.login, provider, hydra)
+	}
+}
+
+func TestLoginBridgeHandlerLogsFailureStageWithoutAuthorizationSecrets(t *testing.T) {
+	bridge, _, _, provider := newLoginBridgeFixture(t)
+	started, err := bridge.BeginLogin(t.Context(), "login-challenge", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewLoginBridgeHandler(&recordingRunAttemptAuthorizer{}, bridge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	handler.logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"https://core.internal"+corecontract.OIDCCallbackBridgePath+"?state="+provider.state+"&state=secret-duplicate-state&code=secret-code",
+		nil,
+	)
+	request.AddCookie(&http.Cookie{Name: LoginBridgeCookieName, Value: started.BrowserBinding})
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	logged := logs.String()
+	if response.Code != http.StatusBadRequest || !strings.Contains(logged, `"operation":"callback"`) ||
+		!strings.Contains(logged, `"stage":"state"`) || !strings.Contains(logged, `"status":400`) {
+		t.Fatalf("failure response=%d log=%s", response.Code, logged)
+	}
+	for _, secret := range []string{provider.state, "secret-duplicate-state", "secret-code", started.BrowserBinding} {
+		if strings.Contains(logged, secret) {
+			t.Fatalf("authorization secret %q crossed the diagnostic log boundary: %s", secret, logged)
+		}
+	}
+
+	redacted := safeLoginBridgeLogError(errors.New(`GET "https://hydra.internal/oauth2/auth?login_challenge=secret-challenge": timeout`))
+	if strings.Contains(redacted, "secret-challenge") || !strings.Contains(redacted, "?<redacted>") {
+		t.Fatalf("Hydra URL query was not redacted: %q", redacted)
 	}
 }

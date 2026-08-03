@@ -19,7 +19,8 @@ func TestHydraPublicProxyForwardsAuthorizationAndTokenWithoutBrowserAuthority(t 
 	jar.SetCookies(&url.URL{Scheme: "http", Host: "127.0.0.1:17447"}, []*http.Cookie{{Name: "ambient", Value: "must-not-cross"}})
 	client := &http.Client{Jar: jar, Transport: browserRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		requests++
-		if request.URL.Scheme != "http" || request.URL.Host != "127.0.0.1:17447" ||
+		if request.URL.Scheme != "http" || request.URL.Host != "127.0.0.1:17447" || request.Host != "browser.example" ||
+			request.Header.Get("X-Forwarded-Host") != "browser.example" || request.Header.Get("X-Forwarded-Proto") != "https" ||
 			request.Header.Get("Authorization") != "" || request.Header.Get("Cookie") != "" {
 			t.Fatalf("forwarded Hydra request = %s %s headers=%v", request.Method, request.URL.String(), request.Header)
 		}
@@ -55,7 +56,7 @@ func TestHydraPublicProxyForwardsAuthorizationAndTokenWithoutBrowserAuthority(t 
 			return nil, nil
 		}
 	})}
-	proxy, err := NewHydraPublicProxy("http://127.0.0.1:17447", client)
+	proxy, err := NewHydraPublicProxy("http://127.0.0.1:17447", "https://browser.example", client)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,11 +83,14 @@ func TestHydraPublicProxyForwardsAuthorizationAndTokenWithoutBrowserAuthority(t 
 }
 
 func TestHydraPublicProxyRejectsBearerAndNonLoopbackCleartext(t *testing.T) {
-	if _, err := NewHydraPublicProxy("http://hydra.internal:4444", http.DefaultClient); err == nil {
+	if _, err := NewHydraPublicProxy("http://hydra.internal:4444", "https://browser.example", http.DefaultClient); err == nil {
 		t.Fatal("non-loopback cleartext Hydra upstream was accepted")
 	}
+	if _, err := NewHydraPublicProxy("https://hydra.internal", "http://browser.example", http.DefaultClient); err == nil {
+		t.Fatal("non-loopback cleartext Hydra public origin was accepted")
+	}
 	requests := 0
-	proxy, err := NewHydraPublicProxy("https://hydra.internal", &http.Client{Transport: browserRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+	proxy, err := NewHydraPublicProxy("https://hydra.internal", "https://browser.example", &http.Client{Transport: browserRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		requests++
 		return nil, io.EOF
 	})})

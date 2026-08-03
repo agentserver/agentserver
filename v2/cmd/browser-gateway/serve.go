@@ -171,7 +171,7 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 		if err != nil {
 			return err
 		}
-		hydraProxy, err := browsergateway.NewHydraPublicProxy(hydraPublicUpstream, &http.Client{Timeout: 10 * time.Second})
+		hydraProxy, err := browsergateway.NewHydraPublicProxy(hydraPublicUpstream, frontendOrigin, &http.Client{Timeout: 10 * time.Second})
 		if err != nil {
 			return err
 		}

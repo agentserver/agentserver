@@ -68,13 +68,15 @@ Job 只用于数据库 migration/bootstrap。每个 run 的 harness 仍由 harne
 - 32-byte 随机 PostgreSQL owner 密码、`kubernetes.io/basic-auth` Secret；
 - `agentserver-postgres` CloudNativePG Cluster：3 个实例，每实例 50Gi Longhorn；
 - CNPG 1.30.0 支持的 PostgreSQL 17.6 system-trixie amd64 manifest（tag + digest 双重固定）；
+- 以 `kubernetes.io/hostname` 为 topology key 的 required Pod anti-affinity，三个实例不能落在同一节点；
 - 指向 `agentserver-postgres-rw.agentserver.svc.cluster.local:5432` 的应用 DSN；
 - 7 个应用 Secret 和一个 registry pull Secret；
 - 环境锁定的 OCI Helm release。
 
 证书和密钥由 Pulumi `tls`/`random` provider 生成，用户不需要手工生成文件、选择 Secret 名称
 或执行 `kubectl create secret`。Deployment 带 Reloader annotation，受引用 Secret 更新时会
-触发 rollout。
+触发 rollout。Namespace、CNPG Cluster、PostgreSQL owner Secret 和 8 个托管 Secret 都设置
+`protect: true`：正常轮换仍可原地更新，但误关模块或普通 `pulumi destroy` 不能删除数据库和密钥。
 
 以下值是外部系统已经认可的授权，不能用随机字节替代；Pulumi 只负责安全接入并组装最终
 Kubernetes Secret：
@@ -87,7 +89,7 @@ Kubernetes Secret：
 
 如果这些外部系统由 Pulumi provider 管理，应直接把对应资源 Output 传给 AgentServer 模块；当前
 模块也保留加密 Pulumi config 接口作为接入点。不要生成一个外部系统从未注册的随机密码并把它
-当成可用 credential。
+当成可用 credential。模块会拒绝空值、首尾空白、控制字符和超出协议上限的 credential。
 
 PostgreSQL 不再是外部输入。Pulumi 自动生成：
 
@@ -384,7 +386,9 @@ Chart 相同 runtime manifest 的 agentx，完成 enrollment，并连接
 
 CNPG Cluster、PVC 和 S3 bucket 都是数据资源，不能把 `pulumi destroy` 或 Namespace 删除当作普通
 应用回滚。删除 Cluster/Namespace、Pulumi random state、外部 credential 或 bucket 前，必须先验证
-数据库备份、PVC retention 和恢复演练；Namespace 删除可能导致数据库数据不可恢复。
+数据库备份、PVC retention 和恢复演练；Namespace 删除可能导致数据库数据不可恢复。正式退役必须
+先在一次受审计的 Pulumi 变更中显式移除对应 `protect`，完成 preview/up 后再发起第二次删除变更，
+不能用 `kubectl` 强删绕过保护。
 
 ## 10. 常见故障
 

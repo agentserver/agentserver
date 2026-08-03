@@ -94,14 +94,28 @@ jobs:
           BWRAP_PATH: ${{ steps.runtime.outputs.bwrap }}
         run: |
           set -euo pipefail
-          ./v2/deploy/production/build-images.sh \
-            --platform=linux-amd64 \
-            --codex="${CODEX_PATH}" \
-            --bwrap="${BWRAP_PATH}" \
-            --service-image="${SERVICE_REPOSITORY}:sha-${GITHUB_SHA}" \
-            --harness-image="${HARNESS_REPOSITORY}:sha-${GITHUB_SHA}" \
-            --engine=docker-buildx \
-            --output-dir="${RUNNER_TEMP}/agentserver-v2-image-evidence"
+          build_log="${RUNNER_TEMP}/agentserver-v2-image-build.log"
+          if ! ./v2/deploy/production/build-images.sh \
+              --platform=linux-amd64 \
+              --codex="${CODEX_PATH}" \
+              --bwrap="${BWRAP_PATH}" \
+              --service-image="${SERVICE_REPOSITORY}:sha-${GITHUB_SHA}" \
+              --harness-image="${HARNESS_REPOSITORY}:sha-${GITHUB_SHA}" \
+              --engine=docker-buildx \
+              --output-dir="${RUNNER_TEMP}/agentserver-v2-image-evidence" \
+              2>&1 | tee "${build_log}"; then
+            {
+              printf '### Closed-world OCI image build failed\n\n```text\n'
+              tail -n 80 "${build_log}"
+              printf '```\n'
+            } >>"${GITHUB_STEP_SUMMARY}"
+            diagnostic=$(tail -n 1 "${build_log}")
+            diagnostic=${diagnostic//'%'/'%25'}
+            diagnostic=${diagnostic//$'\r'/'%0D'}
+            diagnostic=${diagnostic//$'\n'/'%0A'}
+            printf '::error title=Closed-world OCI image build failed::%s\n' "${diagnostic}"
+            exit 1
+          fi
 
       - name: Publish verified images and mirror Hydra
         id: images

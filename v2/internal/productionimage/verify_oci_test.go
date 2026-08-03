@@ -12,17 +12,29 @@ import (
 )
 
 func TestOCIImageVerifierAcceptsExactTwoLayerImage(t *testing.T) {
-	archive, manifest, directories, files := testOCIImage(t, false)
-	if err := verifyOCIArchive(bytes.NewReader(archive), manifest, directories, files); err != nil {
-		t.Fatal(err)
+	for _, layout := range []testOCIRootLayout{testOCINestedIndex, testOCIDirectManifest, testOCIDirectManifestWithPlatform} {
+		t.Run(string(layout), func(t *testing.T) {
+			archive, manifest, directories, files := testOCIImage(t, false, layout)
+			if err := verifyOCIArchive(bytes.NewReader(archive), manifest, directories, files); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
 func TestOCIImageVerifierRejectsUnreferencedBlob(t *testing.T) {
-	archive, manifest, directories, files := testOCIImage(t, true)
+	archive, manifest, directories, files := testOCIImage(t, true, testOCINestedIndex)
 	err := verifyOCIArchive(bytes.NewReader(archive), manifest, directories, files)
 	if err == nil || !strings.Contains(err.Error(), "unreferenced blobs") {
 		t.Fatalf("unreferenced blob error = %v", err)
+	}
+}
+
+func TestOCIImageVerifierRejectsWrongDirectDescriptorPlatform(t *testing.T) {
+	archive, manifest, directories, files := testOCIImage(t, false, testOCIDirectManifestWithWrongPlatform)
+	err := verifyOCIArchive(bytes.NewReader(archive), manifest, directories, files)
+	if err == nil || !strings.Contains(err.Error(), "direct descriptor must select linux/arm64") {
+		t.Fatalf("direct descriptor platform error = %v", err)
 	}
 }
 
@@ -33,7 +45,16 @@ type testLayerEntry struct {
 	directory bool
 }
 
-func testOCIImage(t *testing.T, extraBlob bool) ([]byte, Manifest, map[string]DirectoryEntry, map[string]FileEntry) {
+type testOCIRootLayout string
+
+const (
+	testOCINestedIndex                     testOCIRootLayout = "nested-index"
+	testOCIDirectManifest                  testOCIRootLayout = "direct-manifest"
+	testOCIDirectManifestWithPlatform      testOCIRootLayout = "direct-manifest-with-platform"
+	testOCIDirectManifestWithWrongPlatform testOCIRootLayout = "direct-manifest-with-wrong-platform"
+)
+
+func testOCIImage(t *testing.T, extraBlob bool, layout testOCIRootLayout) ([]byte, Manifest, map[string]DirectoryEntry, map[string]FileEntry) {
 	t.Helper()
 	revision := strings.Repeat("a", 40)
 	manifest := Manifest{Kind: KindService, Platform: PlatformLinuxARM64, SourceRevision: revision}
@@ -92,23 +113,35 @@ func testOCIImage(t *testing.T, extraBlob bool) ([]byte, Manifest, map[string]Di
 		},
 	}
 	imageManifestBytes := testOCIJSON(t, imageManifest)
-	platformIndex := ociIndexDocument{
-		SchemaVersion: 2,
-		MediaType:     ociImageLayoutMediaType,
-		Manifests: []ociDescriptor{{
-			MediaType: ociImageManifestMediaType,
-			Digest:    "sha256:" + testSHA256(imageManifestBytes),
-			Size:      int64(len(imageManifestBytes)),
-			Platform:  &ociPlatform{Architecture: "arm64", OS: "linux"},
-		}},
+	blobs := [][]byte{configBytes, firstLayer, secondLayer, imageManifestBytes}
+	rootIndex := ociIndexDocument{SchemaVersion: 2, MediaType: ociImageLayoutMediaType}
+	switch layout {
+	case testOCINestedIndex:
+		platformIndex := ociIndexDocument{
+			SchemaVersion: 2,
+			MediaType:     ociImageLayoutMediaType,
+			Manifests: []ociDescriptor{{
+				MediaType: ociImageManifestMediaType,
+				Digest:    "sha256:" + testSHA256(imageManifestBytes),
+				Size:      int64(len(imageManifestBytes)),
+				Platform:  &ociPlatform{Architecture: "arm64", OS: "linux"},
+			}},
+		}
+		platformIndexBytes := testOCIJSON(t, platformIndex)
+		rootIndex.Manifests = []ociDescriptor{testOCIDescriptor(ociImageLayoutMediaType, platformIndexBytes)}
+		blobs = append(blobs, platformIndexBytes)
+	case testOCIDirectManifest, testOCIDirectManifestWithPlatform, testOCIDirectManifestWithWrongPlatform:
+		descriptor := testOCIDescriptor(ociImageManifestMediaType, imageManifestBytes)
+		descriptor.Annotations = map[string]string{"org.opencontainers.image.ref.name": "example"}
+		if layout == testOCIDirectManifestWithPlatform {
+			descriptor.Platform = &ociPlatform{Architecture: "arm64", OS: "linux"}
+		} else if layout == testOCIDirectManifestWithWrongPlatform {
+			descriptor.Platform = &ociPlatform{Architecture: "amd64", OS: "linux"}
+		}
+		rootIndex.Manifests = []ociDescriptor{descriptor}
+	default:
+		t.Fatalf("unknown test OCI root layout %q", layout)
 	}
-	platformIndexBytes := testOCIJSON(t, platformIndex)
-	rootIndex := ociIndexDocument{
-		SchemaVersion: 2,
-		MediaType:     ociImageLayoutMediaType,
-		Manifests:     []ociDescriptor{testOCIDescriptor(ociImageLayoutMediaType, platformIndexBytes)},
-	}
-	blobs := [][]byte{configBytes, firstLayer, secondLayer, imageManifestBytes, platformIndexBytes}
 	if extraBlob {
 		blobs = append(blobs, []byte("unreferenced"))
 	}

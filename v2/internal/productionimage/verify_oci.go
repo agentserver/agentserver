@@ -140,24 +140,9 @@ func verifyOCIArchive(reader io.Reader, manifest Manifest, directories map[strin
 		return err
 	}
 	architecture := platformArchitecture(manifest.Platform)
-	if err := validateOCIIndex(rootIndex, ociImageLayoutMediaType, false, architecture); err != nil {
-		return fmt.Errorf("validate OCI root index: %w", err)
-	}
-	innerIndexBytes, err := resolveOCIDescriptor(rootIndex.Manifests[0], ociImageLayoutMediaType, archive.blobs, referenced)
+	manifestBytes, err := resolveOCIImageManifest(rootIndex, architecture, archive.blobs, referenced)
 	if err != nil {
-		return fmt.Errorf("resolve OCI platform index: %w", err)
-	}
-
-	var platformIndex ociIndexDocument
-	if err := decodeOCIDocument("OCI platform index", innerIndexBytes, &platformIndex); err != nil {
 		return err
-	}
-	if err := validateOCIIndex(platformIndex, ociImageManifestMediaType, true, architecture); err != nil {
-		return fmt.Errorf("validate OCI platform index: %w", err)
-	}
-	manifestBytes, err := resolveOCIDescriptor(platformIndex.Manifests[0], ociImageManifestMediaType, archive.blobs, referenced)
-	if err != nil {
-		return fmt.Errorf("resolve OCI image manifest: %w", err)
 	}
 
 	var imageManifest ociManifestDocument
@@ -210,6 +195,54 @@ func verifyOCIArchive(reader io.Reader, manifest Manifest, directories map[strin
 		return errors.New("production OCI archive contains unreferenced blobs")
 	}
 	return nil
+}
+
+// resolveOCIImageManifest accepts both OCI archive layouts emitted by the
+// production builders. Apple container save emits a named root index whose
+// sole descriptor resolves to a platform index. Docker BuildKit's OCI exporter
+// emits a root index whose sole descriptor resolves directly to the image
+// manifest. In either layout there is exactly one image, and the image config
+// remains the final authority for the required OS and architecture.
+func resolveOCIImageManifest(rootIndex ociIndexDocument, architecture string, blobs map[string][]byte, referenced map[string]struct{}) ([]byte, error) {
+	if rootIndex.SchemaVersion != 2 || rootIndex.MediaType != ociImageLayoutMediaType || len(rootIndex.Manifests) != 1 {
+		return nil, errors.New("validate OCI root index: index must contain exactly one OCI image descriptor")
+	}
+	rootDescriptor := rootIndex.Manifests[0]
+	switch rootDescriptor.MediaType {
+	case ociImageManifestMediaType:
+		if rootDescriptor.Platform != nil &&
+			(rootDescriptor.Platform.OS != "linux" || rootDescriptor.Platform.Architecture != architecture) {
+			return nil, fmt.Errorf("validate OCI root index: direct descriptor must select linux/%s", architecture)
+		}
+		manifestBytes, err := resolveOCIDescriptor(rootDescriptor, ociImageManifestMediaType, blobs, referenced)
+		if err != nil {
+			return nil, fmt.Errorf("resolve OCI image manifest: %w", err)
+		}
+		return manifestBytes, nil
+	case ociImageLayoutMediaType:
+		if rootDescriptor.Platform != nil {
+			return nil, errors.New("validate OCI root index: platform index descriptor must not select a platform")
+		}
+		innerIndexBytes, err := resolveOCIDescriptor(rootDescriptor, ociImageLayoutMediaType, blobs, referenced)
+		if err != nil {
+			return nil, fmt.Errorf("resolve OCI platform index: %w", err)
+		}
+
+		var platformIndex ociIndexDocument
+		if err := decodeOCIDocument("OCI platform index", innerIndexBytes, &platformIndex); err != nil {
+			return nil, err
+		}
+		if err := validateOCIIndex(platformIndex, ociImageManifestMediaType, true, architecture); err != nil {
+			return nil, fmt.Errorf("validate OCI platform index: %w", err)
+		}
+		manifestBytes, err := resolveOCIDescriptor(platformIndex.Manifests[0], ociImageManifestMediaType, blobs, referenced)
+		if err != nil {
+			return nil, fmt.Errorf("resolve OCI image manifest: %w", err)
+		}
+		return manifestBytes, nil
+	default:
+		return nil, errors.New("validate OCI root index: index descriptor has unexpected media type")
+	}
 }
 
 func readOCIArchive(reader io.Reader) (ociArchive, error) {

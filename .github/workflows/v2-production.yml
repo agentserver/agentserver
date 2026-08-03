@@ -175,9 +175,8 @@ jobs:
           printf 'version=%s\n' "${chart_version}" >>"${GITHUB_OUTPUT}"
           printf 'release_dir=%s\n' "${release_dir}" >>"${GITHUB_OUTPUT}"
 
-      - name: Publish packages publicly and verify anonymous GHCR pulls
+      - name: Verify public packages and anonymous GHCR pulls
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SERVICE_DIGEST: ${{ steps.images.outputs.service_digest }}
           HARNESS_DIGEST: ${{ steps.images.outputs.harness_digest }}
           PUBLISHED_HYDRA_DIGEST: ${{ steps.images.outputs.hydra_digest }}
@@ -185,17 +184,20 @@ jobs:
         run: |
           set -euo pipefail
           for package in v2-service v2-harness hydra agentserver-v2; do
-            updated=false
-            for attempt in 1 2 3 4 5 6 7 8 9 10; do
-              if gh api --silent --method PATCH \
-                "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/${package}" \
-                -f visibility=public; then
-                updated=true
-                break
-              fi
-              sleep 3
-            done
-            test "${updated}" = true
+            package_url="https://api.github.com/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/${package}"
+            if ! status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+                --max-time 30 \
+                --header 'Accept: application/vnd.github+json' \
+                --header 'X-GitHub-Api-Version: 2022-11-28' \
+                "${package_url}"); then
+              printf '::error title=GHCR public visibility check failed::Could not query %s anonymously\n' "${package}"
+              exit 1
+            fi
+            if [ "${status}" != 200 ]; then
+              printf '::error title=GHCR package is not public::Set agentserver/%s visibility to public once; received anonymous HTTP %s\n' \
+                "${package}" "${status}"
+              exit 1
+            fi
           done
           test "$(skopeo inspect --no-creds --format '{{.Os}}/{{.Architecture}}' \
             "docker://${SERVICE_REPOSITORY}@${SERVICE_DIGEST}")" = 'linux/amd64'

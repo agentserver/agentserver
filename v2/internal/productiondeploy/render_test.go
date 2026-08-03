@@ -143,7 +143,11 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 	assertSecretMaterialMounts(t, findResource(t, runtime, "Deployment", llmproxyComponent), "material", loaded.Document.Secrets.LLMProxy,
 		"/var/run/agentserver/material", groupReadableSecretMode, []string{"ca.crt", "tls.crt", "tls.key", "run-capability-keyring.json"})
 	poolContainer := objectArrayFirst(t, poolSpec, "containers")
-	capabilities := stringArray(t, objectField(t, objectField(t, poolContainer, "securityContext"), "capabilities"), "add")
+	poolSecurity := objectField(t, poolContainer, "securityContext")
+	if numberField(t, poolSecurity, "runAsUser") != 0 || boolField(t, poolSecurity, "runAsNonRoot") {
+		t.Fatalf("harness pool entrypoint must run as root with bounded capabilities: %v", poolSecurity)
+	}
+	capabilities := stringArray(t, objectField(t, poolSecurity, "capabilities"), "add")
 	if strings.Join(capabilities, ",") != "CHOWN,SETUID,SETGID,DAC_OVERRIDE" {
 		t.Fatalf("harness runtime capabilities = %v", capabilities)
 	}
@@ -452,6 +456,15 @@ func numberField(t *testing.T, object map[string]any, name string) int {
 		t.Fatalf("field %s is not a number", name)
 	}
 	return int(value)
+}
+
+func boolField(t *testing.T, object map[string]any, name string) bool {
+	t.Helper()
+	value, ok := object[name].(bool)
+	if !ok {
+		t.Fatalf("field %s is not a boolean", name)
+	}
+	return value
 }
 
 func containerNames(t *testing.T, values []any) []string {

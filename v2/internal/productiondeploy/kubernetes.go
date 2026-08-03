@@ -232,7 +232,7 @@ func runtimeSecurityContext(uid, gid uint32, capabilities ...string) kubeObject 
 		capabilitySpec["add"] = add
 	}
 	return kubeObject{
-		"runAsUser": int64(uid), "runAsGroup": int64(gid), "runAsNonRoot": true,
+		"runAsUser": int64(uid), "runAsGroup": int64(gid), "runAsNonRoot": uid != 0,
 		"allowPrivilegeEscalation": false, "readOnlyRootFilesystem": true,
 		"capabilities":   capabilitySpec,
 		"seccompProfile": kubeObject{"type": "RuntimeDefault"},

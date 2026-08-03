@@ -413,7 +413,11 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 			ExecutorInternalHost: document.Services.ExecutorGateway.ClusterIP,
 			LLMProxyInternalHost: document.Services.LLMProxy.ClusterIP,
 		},
-		resources: document.Resources.HarnessPool, uid: PoolUID, gid: PoolGID, fsGroup: PoolGID,
+		// The pool is fixed platform code and must retain these effective
+		// capabilities across runtimes that discard added capabilities for a
+		// non-root container entrypoint. Workers and app processes still switch
+		// to their fixed non-root credentials before executing harness or Codex.
+		resources: document.Resources.HarnessPool, uid: 0, gid: 0, fsGroup: PoolGID,
 		capabilities: []string{"CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE"},
 		strategy:     "RollingUpdate", configHash: context.harnessDeploymentHash, termination: 45,
 	}), nil

@@ -397,12 +397,16 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	}
 	recoveryDescription := "development startup recovery disabled"
 	if startupRecovery != nil {
-		recoveryDescription = fmt.Sprintf(
-			"startup recovery generation %d, reconciled %d executions in %d passes",
-			startupRecovery.FencedConnectionGeneration,
-			startupRecovery.RecoveredExecutions,
-			startupRecovery.Passes,
-		)
+		if startupRecovery.ExecutorPresent {
+			recoveryDescription = fmt.Sprintf(
+				"startup recovery generation %d, reconciled %d executions in %d passes",
+				startupRecovery.FencedConnectionGeneration,
+				startupRecovery.RecoveredExecutions,
+				startupRecovery.Passes,
+			)
+		} else {
+			recoveryDescription = "startup recovery found no enrolled executor state"
+		}
 	}
 	readiness.ready.Store(true)
 	if mode == gatewayServeProduction {

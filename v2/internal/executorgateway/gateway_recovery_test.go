@@ -3,6 +3,7 @@ package executorgateway
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 )
 
@@ -22,7 +23,7 @@ func TestRecoverGatewayStartupDrainsAllBatchesBeforeReturning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.FencedConnectionGeneration != 7 || !summary.ConnectionFenced ||
+	if !summary.ExecutorPresent || summary.FencedConnectionGeneration != 7 || !summary.ConnectionFenced ||
 		summary.RecoveredExecutions != GatewayRecoveryBatchSize+1 || summary.Passes != 2 {
 		t.Fatalf("gateway recovery summary = %+v", summary)
 	}
@@ -39,6 +40,31 @@ func TestRecoverGatewayStartupDrainsAllBatchesBeforeReturning(t *testing.T) {
 				t.Fatalf("gateway recovery record %d/%d = %+v, want sequence %d", pass, index, record, wantSequence)
 			}
 		}
+	}
+}
+
+func TestRecoverGatewayStartupAcceptsMissingUnenrolledExecutor(t *testing.T) {
+	const gatewayID = "77000000-0000-4000-8000-000000000001"
+	allocator, err := NewExecutionTransitionAllocator(gatewayID, deterministicIDGenerator())
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := &scriptedGatewayRecoveryAuthority{err: &CoreCommandError{
+		HTTPStatus: http.StatusNotFound,
+		Code:       "not_found",
+		Message:    "executor does not exist",
+	}}
+	summary, err := RecoverGatewayStartup(
+		t.Context(), authority, "78000000-0000-4000-8000-000000000001", gatewayID, allocator,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ExecutorPresent || summary.FencedConnectionGeneration != -1 || summary.RecoveredExecutions != 0 || summary.Passes != 1 {
+		t.Fatalf("missing-executor recovery summary = %+v", summary)
+	}
+	if len(authority.requests) != 1 {
+		t.Fatalf("missing-executor recovery calls = %d, want 1", len(authority.requests))
 	}
 }
 

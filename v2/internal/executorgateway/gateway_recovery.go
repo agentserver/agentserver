@@ -29,6 +29,7 @@ type GatewayRecoveryAuthority interface {
 }
 
 type GatewayStartupRecoveryResult struct {
+	ExecutorPresent            bool
 	FencedConnectionGeneration int64
 	ConnectionFenced           bool
 	RecoveredExecutions        int
@@ -73,6 +74,16 @@ func RecoverGatewayStartup(
 			ExecutorID: executorID, GatewayInstanceID: gatewayInstanceID, Records: records,
 		})
 		if err != nil {
+			// A fresh production installation can start the gateway before its
+			// executor enrollment is committed. An executor that does not exist
+			// cannot have a connection or execution state to recover,
+			// so publishing the enrollment endpoints is safe. Every other Core
+			// rejection remains fail-closed.
+			var commandError *CoreCommandError
+			if errors.As(err, &commandError) && commandError.HTTPStatus == http.StatusNotFound && commandError.Code == "not_found" {
+				summary.Passes++
+				return summary, nil
+			}
 			return GatewayStartupRecoveryResult{}, fmt.Errorf("recover executor-gateway startup state: %w", err)
 		}
 		if result.FencedConnectionGeneration < 0 || result.RecoveredExecutions < 0 || result.RecoveredExecutions > len(records) {
@@ -82,6 +93,7 @@ func RecoverGatewayStartup(
 			return GatewayStartupRecoveryResult{}, errors.New("Core changed the fenced connection generation during gateway recovery")
 		}
 		summary.FencedConnectionGeneration = result.FencedConnectionGeneration
+		summary.ExecutorPresent = true
 		summary.ConnectionFenced = summary.ConnectionFenced || result.ConnectionFenced
 		summary.RecoveredExecutions += result.RecoveredExecutions
 		summary.Passes++

@@ -230,16 +230,16 @@ registry-sg.byted.cs.ac.cn/agentserver/v2-harness@sha256:<remote-amd64-digest>
 不要写 tag、本地 image ID、arm64 digest 或未经核验的 multi-arch index digest。
 
 当前已发布并从远端匿名回拉核验的 runtime source revision 为
-`8f184a705899bc6ae280c388034d20f2e6747c8f`：
+`4e16613488223b8e7b1e1fc752068ea17d0c15d7`：
 
 | 镜像 | 远端 linux/amd64 manifest digest |
 | --- | --- |
-| `registry-sg.byted.cs.ac.cn/agentserver/v2-service` | `sha256:2987718f54390a8f8aae3bf16ce4e7c6405b054ba3b521d7bdb6830684e2ff53` |
-| `registry-sg.byted.cs.ac.cn/agentserver/v2-harness` | `sha256:8d37916586b77fc1bc801a4a19ad27d12ec5014d6465173a2a2fba8975ac5a10` |
+| `registry-sg.byted.cs.ac.cn/agentserver/v2-service` | `sha256:de6dcedc43313202401fe3565ea8a331c4c424e93dcde19ba2b536a7b72c1b07` |
+| `registry-sg.byted.cs.ac.cn/agentserver/v2-harness` | `sha256:dacef316704fb4d0755a2b4f2fed8b2665d789562764a953a2a57cf79db50ac3` |
 
 service/harness 均为 `linux/amd64`，OCI revision label 与上述 source revision 完全一致。不要把远端 index digest
-`sha256:f09456a67dcc4141f71008a76994a655b3e35739a76320365802f50b4c0b572f` /
-`sha256:d66d578a6dcae4f771204b12bfd4075ea5092df035817868aad7cf95d6dfa686` 写入 production config。
+`sha256:8a45ba4ac07cb67e233226d958ef402c2c1ab0e45c495801b12fbb839fa42bdc` /
+`sha256:c0f007d273e7c4983934c103617f5a3fe74d5ddf9f06679a1a754f4623fe53cb` 写入 production config。
 Hydra 镜像也已镜像到同一公开仓库；其远端单平台 index 为
 `sha256:c417bfa39528b1d6bbdd3f1342f5d8d192f99a2af17c0b44fb17247c3035a07d`，Chart 锁定的
 `linux/amd64` 子 manifest 仍为官方的

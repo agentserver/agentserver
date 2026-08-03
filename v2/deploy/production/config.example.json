@@ -5,8 +5,8 @@
   "clusterDomain": "cluster.local",
   "platform": "linux-amd64",
   "images": {
-    "service": "registry-sg.byted.cs.ac.cn/agentserver/v2-service@sha256:37087dd347c12f3dc19a409efa9a8e28050161acbe3ec2fe611a301c0eaedae2",
-    "harness": "registry-sg.byted.cs.ac.cn/agentserver/v2-harness@sha256:599fe7c93cbba7738ec1075b1a4fcda80247dc5b459724bf04fcc9be36bfed1f",
+    "service": "registry-sg.byted.cs.ac.cn/agentserver/v2-service@sha256:aa50b3718e3689409613f8a9e9f765a08eed38466bb8d60da995d3fb394b6718",
+    "harness": "registry-sg.byted.cs.ac.cn/agentserver/v2-harness@sha256:7607137412935aa7ced2afc7ed42318fa6457d16a9bd97d7dcb1cfbb5c59d0b7",
     "pullSecret": "agentserver-registry-pull"
   },
   "replicas": {

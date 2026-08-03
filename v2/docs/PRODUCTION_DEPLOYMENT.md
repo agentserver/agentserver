@@ -198,6 +198,18 @@ registry-sg.byted.cs.ac.cn/agentserver/v2-harness@sha256:<remote-amd64-digest>
 
 不要写 tag、本地 image ID、arm64 digest 或未经核验的 multi-arch index digest。
 
+当前已发布并从远端回拉核验的 runtime source revision 为
+`5f0c43b388669f33e54a55959c21b02fafd49539`：
+
+| 镜像 | 远端 linux/amd64 manifest digest |
+| --- | --- |
+| `registry-sg.byted.cs.ac.cn/agentserver/v2-service` | `sha256:aa50b3718e3689409613f8a9e9f765a08eed38466bb8d60da995d3fb394b6718` |
+| `registry-sg.byted.cs.ac.cn/agentserver/v2-harness` | `sha256:7607137412935aa7ced2afc7ed42318fa6457d16a9bd97d7dcb1cfbb5c59d0b7` |
+
+两者均为 `linux/amd64`，OCI revision label 与上述 source revision 完全一致。不要把远端 index digest
+`sha256:69bf4bc16c6dd41804c5850be7fc5197735a7b4dd5d3572d76319a539a40446d` /
+`sha256:f7fb74fd8b1d85d5bfea9d0771d5837fed65d30196143bbbf0e7eea11ceb7be4` 写入 production config。
+
 ## 5. 准备并校验 SG production.json
 
 复制 [`deploy/production/config.example.json`](../deploy/production/config.example.json) 到一个绝对、

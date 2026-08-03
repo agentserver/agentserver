@@ -49,33 +49,38 @@ harness-pool Pod 访问。
 
 Chart 管理：
 
-- 5 个常驻 Deployment：core、browser-gateway、executor-gateway、harness-pool、llmproxy；
+- 6 个常驻 Deployment：core、browser-gateway、executor-gateway、harness-pool、llmproxy、Hydra；
 - executor-gateway 固定单副本、`Recreate`、无 HPA/PDB；
-- 4 个固定 ClusterIP Service、3 条 HTTPRoute、8 条 NetworkPolicy；
-- migration `pre-install,pre-upgrade` Job；
-- 幂等 bootstrap `post-install,post-upgrade` Job。
+- 5 个固定 ClusterIP Service、3 条 HTTPRoute、11 条 NetworkPolicy；
+- Hydra SQL migration（weight `-20`）和 AgentServer migration（weight `-10`）
+  `pre-install,pre-upgrade` Job；
+- Hydra browser OAuth client setup（weight `-10`）和幂等 AgentServer bootstrap（weight `0`）
+  `post-install,post-upgrade` Job。
 
-Job 只用于数据库 migration/bootstrap。每个 run 的 harness 仍由 harness-pool 在本 Pod 内普通
+Job 只用于控制面安装期的数据库 migration、Hydra client setup 和 bootstrap。每个 run 的 harness 仍由 harness-pool 在本 Pod 内普通
 `fork/exec` 一个短命 harness-worker，不创建 Kubernetes Job 或 Pod。
 
 `../k8s-byted/apps/agentserver.ts` 只在 `sg` stack 生效，并负责创建：
 
 - `agentserver` Namespace；
-- 内部 ECDSA CA、6 个带精确 SPIFFE URI 的 workload 证书；
+- 内部 ECDSA CA、7 个带精确 SPIFFE URI 的 workload 证书（包含 Hydra server identity）；
 - run-capability 与 run-manifest 两套 Ed25519 signer/keyring；
 - executor enrollment、login transaction、run cursor 和 workspace LLM Gateway grant sealing 四个独立的
   256-bit key/keyring；
-- 32-byte 随机 PostgreSQL owner 密码、`kubernetes.io/basic-auth` Secret；
+- AgentServer/Hydra 两个独立的 32-byte 随机 PostgreSQL owner 密码与
+  `kubernetes.io/basic-auth` Secret；
 - `agentserver-postgres` CloudNativePG Cluster：3 个实例，每实例 50Gi Longhorn；
+- 独立 `hydra` role 和由 CNPG `Database` CR 管理的 `hydra` database；
 - CNPG 1.30.0 支持的 PostgreSQL 17.6 system-trixie amd64 manifest（tag + digest 双重固定）；
 - 以 `kubernetes.io/hostname` 为 topology key 的 required Pod anti-affinity，三个实例不能落在同一节点；
-- 指向 `agentserver-postgres-rw.agentserver.svc.cluster.local:5432` 的应用 DSN；
-- 7 个应用 Secret；
+- 指向 `agentserver-postgres-rw.agentserver.svc.cluster.local:5432` 的 AgentServer/Hydra 独立 DSN；
+- Hydra system/cookie secret；
+- 8 个应用 Secret；
 - 环境锁定的 OCI Helm release。
 
 证书和密钥由 Pulumi `tls`/`random` provider 生成，用户不需要手工生成文件、选择 Secret 名称
 或执行 `kubectl create secret`。Deployment 带 Reloader annotation，受引用 Secret 更新时会
-触发 rollout。Namespace、CNPG Cluster、PostgreSQL owner Secret 和 7 个托管 Secret 都设置
+触发 rollout。Namespace、CNPG Cluster/Database、PostgreSQL owner Secret 和 8 个托管 Secret 都设置
 `protect: true`：正常轮换仍可原地更新，但误关模块或普通 `pulumi destroy` 不能删除数据库和密钥。
 
 以下值是外部系统已经认可的授权，不能用随机字节替代；Pulumi 只负责安全接入并组装最终
@@ -94,18 +99,21 @@ PostgreSQL 不再是外部输入。Pulumi 自动生成：
 
 ```text
 postgres://agentserver:<generated-hex-password>@agentserver-postgres-rw.agentserver.svc.cluster.local:5432/agentserver?sslmode=require
+postgres://hydra:<generated-hex-password>@agentserver-postgres-rw.agentserver.svc.cluster.local:5432/hydra?sslmode=require
 ```
 
-同一密码 Secret 同时用于 CNPG `initdb` 和 declarative role reconciliation，DSN 只写入
-`agentserver-core-secrets/database-url`。用户不需要填写或读取密码。`../k8s-byted` 仍需先安装
+两个密码 Secret 分别用于 CNPG role reconciliation；AgentServer owner 还用于 `initdb`。DSN 只写入
+`agentserver-core-secrets/database-url` 和 `agentserver-hydra-secrets/database-url`。用户不需要填写或读取密码。`../k8s-byted` 仍需先安装
 CNPG operator 和 Longhorn；AgentServer 模块管理 Cluster 声明，但不替代数据库备份与恢复策略。
 
 `externalOidcClientSecret` 只属于 **AgentServer 平台登录** 的 confidential client。workspace LLM
 Gateway 使用 workspace 自己在第三方 IdP 注册的 public client ID + PKCE，不向 Pulumi 或 AgentServer
 上传 client secret。
 
-Chart/Pulumi 不管理 Hydra、外部 OIDC IdP、S3 bucket、第三方 LLM Gateway、Istio Gateway、DNS 和
-用户机器上的 agentx。
+Hydra 26.2.0 由同一 Chart 管理。Chart 固定 issuer、Admin/Public endpoint、PKCE、opaque access token、
+双副本 Deployment 和 browser public client profile；Pulumi 管理它的 database、DSN、内部 TLS 与
+system/cookie secret。Chart/Pulumi 不管理外部 OIDC IdP、S3 bucket、第三方 LLM Gateway、Istio
+Gateway、DNS 和用户机器上的 agentx。
 
 ## 3. 部署前必须准备的真实输入
 
@@ -116,18 +124,18 @@ Chart/Pulumi 不管理 Hydra、外部 OIDC IdP、S3 bucket、第三方 LLM Gatew
    CloudNativePG operator 和 Longhorn；
 3. `https-byted-bps` listener 的证书和 `allowedRoutes` 已覆盖三个固定域名/Namespace；
 4. Longhorn 至少能为 3 个 PostgreSQL 实例各提供 50Gi 卷，并有跨节点调度容量；
-5. Hydra Admin/Public/introspection/issuer/browser client 已配置；
-6. 外部 OIDC issuer/client 已配置，redirect URI 精确为
+5. 外部 OIDC issuer/client 已配置，redirect URI 精确为
    `https://agent.byted.bps.dev/auth/oidc/callback`，并取得 owner 的精确 `sub`；
-7. S3 endpoint、signing region、bucket、prefix、path-style 和 credential 已确定；
-8. S3-compatible 服务支持 single-part `PutObject` 的 `If-None-Match: *`，并把已存在对象明确返回
+6. S3 endpoint、signing region、bucket、prefix、path-style 和 credential 已确定；
+7. S3-compatible 服务支持 single-part `PutObject` 的 `If-None-Match: *`，并把已存在对象明确返回
    为 `412 PreconditionFailed`；
-9. 至少一个待接入的第三方 Gateway 支持公网、系统信任 HTTPS 的精确 `/v1/responses` endpoint，
+8. 至少一个待接入的第三方 Gateway 支持公网、系统信任 HTTPS 的精确 `/v1/responses` endpoint，
    streaming 和 stock Codex 所需 tool-call 语义；其 OIDC public client 已允许精确 callback
    `https://agent.byted.bps.dev/auth/llm-gateway/callback`；
-10. SG 公开 registry 可由集群节点匿名拉取两个 digest-pinned amd64 镜像和环境锁定 Chart；
-11. CoreDNS ClusterIP、Gateway Pod label selector、Service CIDR 中 4 个空闲固定 ClusterIP，以及
-    S3/平台 OIDC/Hydra 的实际 IPv4 CIDR/port 已确定。
+9. SG 公开 registry 可由集群节点匿名拉取 service、harness、Hydra 三个 digest-pinned amd64 镜像
+   和环境锁定 Chart；
+10. CoreDNS ClusterIP、Gateway Pod label selector、Service CIDR 中 5 个空闲固定 ClusterIP，以及
+    S3/平台 OIDC 的实际 IPv4 CIDR/port 已确定。
 
 这些非 Secret 参数写入 `production.json`，不是 Pulumi Secret：
 
@@ -135,7 +143,7 @@ Chart/Pulumi 不管理 Hydra、外部 OIDC IdP、S3 bucket、第三方 LLM Gatew
 | --- | --- |
 | 外部 OIDC | `oauth.externalOidc.issuer`、`clientId`；`redirectUrl` 固定为上述回调地址 |
 | S3-compatible | `objectStore.s3Endpoint`、`s3Region`、`s3Bucket`、`prefix`、`s3UsePathStyle` |
-| Hydra | `oauth.hydra` 下的 issuer、Admin/Public/introspection URL 与 browser client ID |
+| Chart 内置 Hydra | `oauth.hydra` 字段为固定合同，不是用户提供的外部 endpoint |
 
 第三方模型 Gateway **不写入** `production.json` 或 Pulumi config。部署完成后由 workspace owner 通过
 前端/API 写入 Gateway URL、OIDC issuer、public client ID、scopes、bearer 类型和默认 model；每个成员
@@ -156,11 +164,11 @@ Chart/Pulumi 不管理 Hydra、外部 OIDC IdP、S3 bucket、第三方 LLM Gatew
 外部系统的 NetworkPolicy 使用 CIDR，不会在 DNS 变化时自动更新。PostgreSQL 不使用外部 CIDR，
 固定按 `cnpg.io/cluster=agentserver-postgres` Pod selector 放行 TCP 5432。至少需要：
 
-- core：CNPG PostgreSQL、Hydra Admin、平台 OIDC、S3，以及动态 workspace Gateway OIDC 的公网 443；
+- core：CNPG PostgreSQL、集群内 Hydra Admin、平台 OIDC、S3，以及动态 workspace Gateway OIDC 的公网 443；
 - browser-gateway：Hydra Public；
 - harness-pool：S3；
 - llmproxy：动态 workspace Gateway `/v1/responses` 的公网 443；
-- migration/bootstrap：CNPG PostgreSQL。
+- Hydra/AgentServer migration 与 bootstrap：CNPG PostgreSQL；Hydra client setup：集群内 Hydra Admin。
 
 ## 4. 构建并发布 SG amd64 镜像
 
@@ -189,7 +197,24 @@ container image push registry-sg.byted.cs.ac.cn/agentserver/v2-service:<git-sha>
 container image push registry-sg.byted.cs.ac.cn/agentserver/v2-harness:<git-sha>
 ```
 
-从远端 registry 重新查询两个 amd64 manifest digest，并把 `production.json` 中镜像写成：
+Hydra 不从生产集群直接拉 Docker Hub。把官方 v26.2.0 的 `linux/amd64` manifest 原样镜像到 SG
+公开仓库：
+
+```bash
+container image pull --platform linux/amd64 \
+  docker.io/oryd/hydra@sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b
+container image tag \
+  docker.io/oryd/hydra@sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b \
+  registry-sg.byted.cs.ac.cn/agentserver/hydra:v26.2.0
+container image push --platform linux/amd64 \
+  registry-sg.byted.cs.ac.cn/agentserver/hydra:v26.2.0
+```
+
+回查目标仓库的 amd64 manifest digest；只有目标 digest 仍为
+`sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b` 才能使用模板中的
+Hydra reference。不能用 arm64 或 multi-arch index digest 替代。
+
+从远端 registry 重新查询 service/harness 两个 amd64 manifest digest，并把 `production.json` 中镜像写成：
 
 ```text
 registry-sg.byted.cs.ac.cn/agentserver/v2-service@sha256:<remote-amd64-digest>
@@ -206,14 +231,14 @@ registry-sg.byted.cs.ac.cn/agentserver/v2-harness@sha256:<remote-amd64-digest>
 | `registry-sg.byted.cs.ac.cn/agentserver/v2-service` | `sha256:aa50b3718e3689409613f8a9e9f765a08eed38466bb8d60da995d3fb394b6718` |
 | `registry-sg.byted.cs.ac.cn/agentserver/v2-harness` | `sha256:7607137412935aa7ced2afc7ed42318fa6457d16a9bd97d7dcb1cfbb5c59d0b7` |
 
-两者均为 `linux/amd64`，OCI revision label 与上述 source revision 完全一致。不要把远端 index digest
+service/harness 均为 `linux/amd64`，OCI revision label 与上述 source revision 完全一致。不要把远端 index digest
 `sha256:69bf4bc16c6dd41804c5850be7fc5197735a7b4dd5d3572d76319a539a40446d` /
 `sha256:f7fb74fd8b1d85d5bfea9d0771d5837fed65d30196143bbbf0e7eea11ceb7be4` 写入 production config。
 
 ## 5. 准备并校验 SG production.json
 
 复制 [`deploy/production/config.example.json`](../deploy/production/config.example.json) 到一个绝对、
-不可被 group/other 写入的安全路径。模板已经写入本轮远端 amd64 manifest digest、四个已 dry-run
+不可被 group/other 写入的安全路径。模板已经写入本轮远端 amd64 manifest digest、五个已 dry-run
 确认可分配的 SG ClusterIP、CoreDNS `192.168.0.10`、固定 bootstrap UUID、runtime manifest 和
 `harness-final-exec` 摘要。以下字段已经固定，不能修改：
 
@@ -221,13 +246,15 @@ registry-sg.byted.cs.ac.cn/agentserver/v2-harness@sha256:<remote-amd64-digest>
 - `spiffeTrustDomain=agentserver.byted.bps.dev`；
 - 三个域名及 Istio Gateway/listener；
 - `run-capability-sg-v1`、`run-manifest-sg-v1`；
-- 7 个应用 Secret 名称；
+- 8 个应用 Secret 名称；
 - `objectStore.mode=s3-plaintext-v1`；
-- 镜像仓库只能是 `registry-sg.byted.cs.ac.cn/agentserver/v2-service` 和 `v2-harness`，且必须使用 digest。
+- 镜像仓库只能是 `registry-sg.byted.cs.ac.cn/agentserver/v2-service`、`v2-harness` 和 `hydra`，
+  且必须使用 digest。
 
-在发布当前提交时，只需替换 owner 精确 `sub`、Hydra/平台 OIDC、S3 endpoint/region/bucket/prefix/
-path-style、外部系统 egress CIDR；资源配额可按最终容量审计调整。发布后续代码版本时还必须重新构建、
-远端核验并替换两个镜像 digest 及对应 runtime artifact。S3 endpoint 是必填项，不能省略后回退到
+当前 SG 模板已经锁定 owner `sub=3506220589`、平台 OIDC、S3 endpoint/region/bucket/prefix/path-style
+和 Chart 内置 Hydra 合同。发布前仍须替换示例 egress CIDR，并在新代码提交后重新构建、远端核验和
+替换 service/harness digest 及对应 runtime artifact；Hydra digest 只在升级 Hydra 版本时变化。资源配额
+可按最终容量审计调整。S3 endpoint 是必填项，不能省略后回退到
 AWS 默认 endpoint。S3 对象是明文；bucket、credential、备份、retention 和访问审计
 必须按明文数据边界管理。S3 不是 PostgreSQL 或完整用户 session 数据库的替代品，只保存
 prompt/checkpoint 对象，数据库保存状态与 pointer。
@@ -304,8 +331,9 @@ pulumi config set --stack sg --secret agentserver:s3SecretAccessKey '<s3-secret-
 发布 Chart 的操作者可能仍需写权限才能执行 `helm push`；该凭据只保留在发布工作站。部署阶段由
 Pulumi 匿名拉取 OCI Chart，kubelet 匿名拉取镜像，不依赖交互式 `helm registry login`。
 
-不要设置 `agentserver:databaseUrl`。CNPG owner 密码和 DSN 在 `pulumi up` 时自动生成；模块会等待
-CNPG `Cluster` 的 `Ready` condition，再启动 Helm migration/bootstrap hooks。
+不要设置 `agentserver:databaseUrl` 或 Hydra DSN。两个 CNPG owner 密码和 DSN 在 `pulumi up` 时自动
+生成；模块会等待 CNPG `Cluster` 的 `Ready` condition 和 Hydra `Database.status.applied=true`，再启动
+Helm migration/client-setup/bootstrap hooks。
 
 先 preview，确认只操作 SG：
 
@@ -327,7 +355,7 @@ pulumi up --stack sg
 
 ```bash
 kubectl --context '<sg-context>' --namespace agentserver get \
-  clusters.postgresql.cnpg.io,deployments,pods,services,httproutes,networkpolicies
+  clusters.postgresql.cnpg.io,databases.postgresql.cnpg.io,deployments,pods,services,httproutes,networkpolicies
 
 kubectl --context '<sg-context>' --namespace agentserver \
   wait --for=condition=Ready cluster/agentserver-postgres --timeout=15m
@@ -341,6 +369,8 @@ kubectl --context '<sg-context>' --namespace agentserver \
   rollout status deployment/harness-pool --timeout=10m
 kubectl --context '<sg-context>' --namespace agentserver \
   rollout status deployment/llmproxy --timeout=10m
+kubectl --context '<sg-context>' --namespace agentserver \
+  rollout status deployment/hydra --timeout=10m
 ```
 
 公网入口：
@@ -386,7 +416,9 @@ CNPG Cluster、PVC 和 S3 bucket 都是数据资源，不能把 `pulumi destroy`
 - 公网 503：检查 Istio Gateway Pod selector、NetworkPolicy 和后端 HTTP `8080`；
 - executor 公网 `/mcp` 非 404：立即停止发布，公网路由面发生越界；
 - CNPG Cluster 不 Ready：检查 operator、Longhorn PVC、节点容量以及 CNPG Pod/事件；
-- migration 失败：检查 `agentserver-postgres-rw`、owner Secret、TLS 和 CNPG Pod selector egress；
+- Hydra Database 未 applied：检查 CNPG `Database` CR、`hydra` role reconciliation 和 owner Secret；
+- migration 失败：检查 `agentserver-postgres-rw`、对应 owner Secret、TLS 和 CNPG Pod selector egress；
+- Hydra client setup 失败：检查 Hydra readiness、内部 CA/SAN、Admin `4445` NetworkPolicy 和 client profile；
 - S3 写失败：重点检查 `If-None-Match: *`、`412 PreconditionFailed` 语义、endpoint/path-style/region；
 - Pod 卡在 init：检查 Pulumi Secret 是否齐全、证书 SPIFFE URI、keyring 和私钥格式；
 - ImagePullBackOff：检查公开仓库匿名拉取策略、网络连通性和远端 amd64 digest；

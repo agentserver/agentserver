@@ -14,20 +14,24 @@ import (
 const (
 	helmChartName = "agentserver-v2"
 
-	helmChartFile              = "Chart.yaml"
-	helmValuesFile             = "values.yaml"
-	helmValuesSchemaFile       = "values.schema.json"
-	helmHelpersFile            = "templates/_helpers.tpl"
-	helmFoundationTemplateFile = "templates/00-foundation.yaml"
-	helmMigrationTemplateFile  = "templates/10-migrate.yaml"
-	helmBootstrapTemplateFile  = "templates/20-bootstrap.yaml"
-	helmRuntimeTemplateFile    = "templates/30-runtime.yaml"
-	helmFoundationManifestFile = "files/manifests/00-foundation.json"
-	helmMigrationManifestFile  = "files/manifests/10-migrate.json"
-	helmBootstrapManifestFile  = "files/manifests/20-bootstrap.json"
-	helmRuntimeManifestFile    = "files/manifests/30-runtime.json"
-	helmConfigFile             = "files/production-config.json"
-	helmChecksumsFile          = "files/checksums.json"
+	helmChartFile                  = "Chart.yaml"
+	helmValuesFile                 = "values.yaml"
+	helmValuesSchemaFile           = "values.schema.json"
+	helmHelpersFile                = "templates/_helpers.tpl"
+	helmFoundationTemplateFile     = "templates/00-foundation.yaml"
+	helmHydraMigrationTemplateFile = "templates/05-hydra-migrate.yaml"
+	helmMigrationTemplateFile      = "templates/10-migrate.yaml"
+	helmHydraSetupTemplateFile     = "templates/15-hydra-client-setup.yaml"
+	helmBootstrapTemplateFile      = "templates/20-bootstrap.yaml"
+	helmRuntimeTemplateFile        = "templates/30-runtime.yaml"
+	helmFoundationManifestFile     = "files/manifests/00-foundation.json"
+	helmHydraMigrationManifestFile = "files/manifests/05-hydra-migrate.json"
+	helmMigrationManifestFile      = "files/manifests/10-migrate.json"
+	helmHydraSetupManifestFile     = "files/manifests/15-hydra-client-setup.json"
+	helmBootstrapManifestFile      = "files/manifests/20-bootstrap.json"
+	helmRuntimeManifestFile        = "files/manifests/30-runtime.json"
+	helmConfigFile                 = "files/production-config.json"
+	helmChecksumsFile              = "files/checksums.json"
 )
 
 type HelmChart struct {
@@ -93,6 +97,20 @@ func RenderHelmChart(config LoadedConfig) (HelmChart, error) {
 	if err := addHelmHook(migration, migrationComponent, "pre-install,pre-upgrade", "-10"); err != nil {
 		return HelmChart{}, err
 	}
+	hydraMigration, err := helmResources(bundle, hydraMigrationFile)
+	if err != nil {
+		return HelmChart{}, err
+	}
+	if err := addHelmHook(hydraMigration, hydraMigrationComponent, "pre-install,pre-upgrade", "-20"); err != nil {
+		return HelmChart{}, err
+	}
+	hydraSetup, err := helmResources(bundle, hydraSetupFile)
+	if err != nil {
+		return HelmChart{}, err
+	}
+	if err := addHelmHook(hydraSetup, hydraSetupComponent, "post-install,post-upgrade", "-10"); err != nil {
+		return HelmChart{}, err
+	}
 	bootstrap, err := helmResources(bundle, bootstrapFile)
 	if err != nil {
 		return HelmChart{}, err
@@ -110,7 +128,9 @@ func RenderHelmChart(config LoadedConfig) (HelmChart, error) {
 		resources []kubeObject
 	}{
 		{name: helmFoundationManifestFile, resources: withoutNamespace},
+		{name: helmHydraMigrationManifestFile, resources: hydraMigration},
 		{name: helmMigrationManifestFile, resources: migration},
+		{name: helmHydraSetupManifestFile, resources: hydraSetup},
 		{name: helmBootstrapManifestFile, resources: bootstrap},
 		{name: helmRuntimeManifestFile, resources: runtime},
 	}
@@ -135,7 +155,9 @@ func RenderHelmChart(config LoadedConfig) (HelmChart, error) {
 		renderedFile(helmValuesSchemaFile, renderValuesSchema(configSHA256)),
 		renderedFile(helmHelpersFile, renderHelmGuard(config.Document.Namespace, configSHA256)),
 		renderedFile(helmFoundationTemplateFile, renderManifestTemplate(helmFoundationManifestFile)),
+		renderedFile(helmHydraMigrationTemplateFile, renderManifestTemplate(helmHydraMigrationManifestFile)),
 		renderedFile(helmMigrationTemplateFile, renderManifestTemplate(helmMigrationManifestFile)),
+		renderedFile(helmHydraSetupTemplateFile, renderManifestTemplate(helmHydraSetupManifestFile)),
 		renderedFile(helmBootstrapTemplateFile, renderManifestTemplate(helmBootstrapManifestFile)),
 		renderedFile(helmRuntimeTemplateFile, renderManifestTemplate(helmRuntimeManifestFile)),
 	}

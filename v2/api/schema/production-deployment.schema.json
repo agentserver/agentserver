@@ -87,24 +87,31 @@
       "maxLength": 4096,
       "pattern": "^registry-sg\\.byted\\.cs\\.ac\\.cn/agentserver/v2-harness@sha256:[0-9a-f]{64}$"
     },
+    "hydraImage": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^registry-sg\\.byted\\.cs\\.ac\\.cn/agentserver/hydra@sha256:[0-9a-f]{64}$"
+    },
     "images": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["service", "harness"],
+      "required": ["service", "harness", "hydra"],
       "properties": {
         "service": {"$ref": "#/$defs/serviceImage"},
-        "harness": {"$ref": "#/$defs/harnessImage"}
+        "harness": {"$ref": "#/$defs/harnessImage"},
+        "hydra": {"$ref": "#/$defs/hydraImage"}
       }
     },
     "replicas": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["core", "browserGateway", "harnessPool", "llmproxy"],
+      "required": ["core", "browserGateway", "harnessPool", "llmproxy", "hydra"],
       "properties": {
         "core": {"type": "integer", "minimum": 2, "maximum": 32},
         "browserGateway": {"type": "integer", "minimum": 2, "maximum": 32},
         "harnessPool": {"type": "integer", "minimum": 1, "maximum": 32},
-        "llmproxy": {"type": "integer", "minimum": 2, "maximum": 32}
+        "llmproxy": {"type": "integer", "minimum": 2, "maximum": 32},
+        "hydra": {"type": "integer", "minimum": 2, "maximum": 32}
       }
     },
     "ipv4": {
@@ -141,15 +148,26 @@
         "internalPort": {"const": 8443}
       }
     },
+    "hydraService": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["clusterIp", "publicPort", "adminPort"],
+      "properties": {
+        "clusterIp": {"$ref": "#/$defs/ipv4"},
+        "publicPort": {"const": 4444},
+        "adminPort": {"const": 4445}
+      }
+    },
     "services": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["core", "browserGateway", "executorGateway", "llmproxy"],
+      "required": ["core", "browserGateway", "executorGateway", "llmproxy", "hydra"],
       "properties": {
         "core": {"$ref": "#/$defs/internalService"},
         "browserGateway": {"$ref": "#/$defs/publicHTTPService"},
         "executorGateway": {"$ref": "#/$defs/executorService"},
-        "llmproxy": {"$ref": "#/$defs/internalService"}
+        "llmproxy": {"$ref": "#/$defs/internalService"},
+        "hydra": {"$ref": "#/$defs/hydraService"}
       }
     },
     "ingress": {
@@ -191,12 +209,12 @@
       "additionalProperties": false,
       "required": ["issuer", "adminUrl", "publicOrigin", "publicUpstream", "introspectionUrl", "browserClientId"],
       "properties": {
-        "issuer": {"$ref": "#/$defs/httpsUrl"},
-        "adminUrl": {"$ref": "#/$defs/httpsUrl"},
-        "publicOrigin": {"$ref": "#/$defs/httpsUrl"},
-        "publicUpstream": {"$ref": "#/$defs/httpsUrl"},
-        "introspectionUrl": {"$ref": "#/$defs/httpsUrl"},
-        "browserClientId": {"type": "string", "minLength": 1, "maxLength": 256}
+        "issuer": {"const": "https://agent.byted.bps.dev/"},
+        "adminUrl": {"const": "https://hydra.agentserver.internal:4445"},
+        "publicOrigin": {"const": "https://agent.byted.bps.dev"},
+        "publicUpstream": {"const": "https://hydra.agentserver.internal:4444"},
+        "introspectionUrl": {"const": "https://hydra.agentserver.internal:4445/admin/oauth2/introspect"},
+        "browserClientId": {"const": "agentserver-browser"}
       }
     },
     "externalOidc": {
@@ -308,7 +326,7 @@
     "secrets": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["core", "browserGateway", "executorGateway", "harnessPool", "harnessWorker", "llmproxy", "objectStore"],
+      "required": ["core", "browserGateway", "executorGateway", "harnessPool", "harnessWorker", "llmproxy", "objectStore", "hydra"],
       "properties": {
         "core": {"const": "agentserver-core-secrets"},
         "browserGateway": {"const": "agentserver-browser-secrets"},
@@ -316,7 +334,8 @@
         "harnessPool": {"const": "agentserver-pool-secrets"},
         "harnessWorker": {"const": "agentserver-worker-secrets"},
         "llmproxy": {"const": "agentserver-llmproxy-secrets"},
-        "objectStore": {"const": "agentserver-object-store-secrets"}
+        "objectStore": {"const": "agentserver-object-store-secrets"},
+        "hydra": {"const": "agentserver-hydra-secrets"}
       }
     },
     "labelSelector": {
@@ -354,6 +373,11 @@
       "maxItems": 128,
       "items": {"$ref": "#/$defs/egressRule"}
     },
+    "optionalEgressRules": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {"$ref": "#/$defs/egressRule"}
+    },
     "ingressCidrs": {
       "type": "array",
       "minItems": 1,
@@ -377,7 +401,7 @@
         "dnsNamespace": {"$ref": "#/$defs/dnsLabel"},
         "dnsPodSelector": {"$ref": "#/$defs/labelSelector"},
         "coreExternalEgress": {"$ref": "#/$defs/egressRules"},
-        "browserExternalEgress": {"$ref": "#/$defs/egressRules"},
+        "browserExternalEgress": {"$ref": "#/$defs/optionalEgressRules"},
         "harnessExternalEgress": {"$ref": "#/$defs/egressRules"}
       }
     },
@@ -412,6 +436,7 @@
         "executorGateway",
         "harnessPool",
         "llmproxy",
+        "hydra",
         "runtimeTmpfs",
         "checkpointTmpfs",
         "scratchTmpfs"
@@ -422,6 +447,7 @@
         "executorGateway": {"$ref": "#/$defs/containerResources"},
         "harnessPool": {"$ref": "#/$defs/containerResources"},
         "llmproxy": {"$ref": "#/$defs/containerResources"},
+        "hydra": {"$ref": "#/$defs/containerResources"},
         "runtimeTmpfs": {"$ref": "#/$defs/memoryQuantity"},
         "checkpointTmpfs": {"$ref": "#/$defs/memoryQuantity"},
         "scratchTmpfs": {"$ref": "#/$defs/memoryQuantity"}

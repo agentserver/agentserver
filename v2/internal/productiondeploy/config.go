@@ -47,8 +47,10 @@ const (
 	ProductionHarnessWorkerSecret = "agentserver-worker-secrets"
 	ProductionLLMProxySecret      = "agentserver-llmproxy-secrets"
 	ProductionObjectStoreSecret   = "agentserver-object-store-secrets"
+	ProductionHydraSecret         = "agentserver-hydra-secrets"
 	ProductionServiceImage        = "registry-sg.byted.cs.ac.cn/agentserver/v2-service"
 	ProductionHarnessImage        = "registry-sg.byted.cs.ac.cn/agentserver/v2-harness"
+	ProductionHydraImage          = "registry-sg.byted.cs.ac.cn/agentserver/hydra"
 
 	PoolUID    uint32 = 65530
 	PoolGID    uint32 = 65530
@@ -56,14 +58,19 @@ const (
 	WorkerGID  uint32 = 65531
 	AppUID     uint32 = 65532
 	AppGID     uint32 = 65532
+	HydraUID   uint32 = 65532
+	HydraGID   uint32 = 65532
 	ServiceUID uint32 = 65534
 	ServiceGID uint32 = 65534
 
 	CoreInternalHost     = "core.agentserver.internal"
 	ExecutorInternalHost = "executor.agentserver.internal"
 	LLMProxyInternalHost = "llmproxy.agentserver.internal"
+	HydraInternalHost    = "hydra.agentserver.internal"
 	HarnessControlPort   = 8443
 	PublicHTTPPort       = 8080
+	HydraPublicPort      = 4444
+	HydraAdminPort       = 4445
 
 	ProductionGatewayNamespace = "istio-ingress"
 	ProductionGatewayName      = "istio-gateway"
@@ -113,6 +120,7 @@ type ConfigDocument struct {
 type ImagesDocument struct {
 	Service string `json:"service"`
 	Harness string `json:"harness"`
+	Hydra   string `json:"hydra"`
 }
 
 type ReplicasDocument struct {
@@ -120,6 +128,7 @@ type ReplicasDocument struct {
 	BrowserGateway int `json:"browserGateway"`
 	HarnessPool    int `json:"harnessPool"`
 	LLMProxy       int `json:"llmproxy"`
+	Hydra          int `json:"hydra"`
 }
 
 type ServicesDocument struct {
@@ -127,6 +136,7 @@ type ServicesDocument struct {
 	BrowserGateway  InternalServiceDocument `json:"browserGateway"`
 	ExecutorGateway ExecutorServiceDocument `json:"executorGateway"`
 	LLMProxy        InternalServiceDocument `json:"llmproxy"`
+	Hydra           HydraServiceDocument    `json:"hydra"`
 }
 
 type InternalServiceDocument struct {
@@ -138,6 +148,12 @@ type ExecutorServiceDocument struct {
 	ClusterIP    string `json:"clusterIp"`
 	PublicPort   uint16 `json:"publicPort"`
 	InternalPort uint16 `json:"internalPort"`
+}
+
+type HydraServiceDocument struct {
+	ClusterIP  string `json:"clusterIp"`
+	PublicPort uint16 `json:"publicPort"`
+	AdminPort  uint16 `json:"adminPort"`
 }
 
 type IngressDocument struct {
@@ -215,6 +231,7 @@ type SecretsDocument struct {
 	HarnessWorker   string `json:"harnessWorker"`
 	LLMProxy        string `json:"llmproxy"`
 	ObjectStore     string `json:"objectStore"`
+	Hydra           string `json:"hydra"`
 }
 
 type NetworkDocument struct {
@@ -237,6 +254,7 @@ type ResourcesDocument struct {
 	ExecutorGateway ContainerResourcesDocument `json:"executorGateway"`
 	HarnessPool     ContainerResourcesDocument `json:"harnessPool"`
 	LLMProxy        ContainerResourcesDocument `json:"llmproxy"`
+	Hydra           ContainerResourcesDocument `json:"hydra"`
 	RuntimeTmpfs    string                     `json:"runtimeTmpfs"`
 	CheckpointTmpfs string                     `json:"checkpointTmpfs"`
 	ScratchTmpfs    string                     `json:"scratchTmpfs"`
@@ -326,8 +344,9 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 	if document.Platform != ProductionPlatformLinuxAMD64 {
 		return LoadedConfig{}, fmt.Errorf("platform must be %s for the SG production cluster", ProductionPlatformLinuxAMD64)
 	}
-	if !imagePattern.MatchString(document.Images.Service) || !imagePattern.MatchString(document.Images.Harness) {
-		return LoadedConfig{}, errors.New("service and harness images must be immutable OCI references ending in @sha256:<64 lowercase hex>")
+	if !imagePattern.MatchString(document.Images.Service) || !imagePattern.MatchString(document.Images.Harness) ||
+		!imagePattern.MatchString(document.Images.Hydra) {
+		return LoadedConfig{}, errors.New("service, harness, and Hydra images must be immutable OCI references ending in @sha256:<64 lowercase hex>")
 	}
 	if !strings.HasPrefix(document.Images.Service, ProductionServiceImage+"@sha256:") {
 		return LoadedConfig{}, fmt.Errorf("images.service must use the SG production repository %s", ProductionServiceImage)
@@ -335,8 +354,12 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 	if !strings.HasPrefix(document.Images.Harness, ProductionHarnessImage+"@sha256:") {
 		return LoadedConfig{}, fmt.Errorf("images.harness must use the SG production repository %s", ProductionHarnessImage)
 	}
-	if document.Images.Service == document.Images.Harness {
-		return LoadedConfig{}, errors.New("service and harness images must be independently pinned artifacts")
+	if !strings.HasPrefix(document.Images.Hydra, ProductionHydraImage+"@sha256:") {
+		return LoadedConfig{}, fmt.Errorf("images.hydra must use the SG production repository %s", ProductionHydraImage)
+	}
+	if document.Images.Service == document.Images.Harness || document.Images.Service == document.Images.Hydra ||
+		document.Images.Harness == document.Images.Hydra {
+		return LoadedConfig{}, errors.New("service, harness, and Hydra images must be independently pinned artifacts")
 	}
 	if err := validateReplicas(document.Replicas); err != nil {
 		return LoadedConfig{}, err
@@ -400,6 +423,7 @@ func validateReplicas(document ReplicasDocument) error {
 		{name: "browserGateway", value: document.BrowserGateway, minimum: 2},
 		{name: "harnessPool", value: document.HarnessPool, minimum: 1},
 		{name: "llmproxy", value: document.LLMProxy, minimum: 2},
+		{name: "hydra", value: document.Hydra, minimum: 2},
 	} {
 		if component.value < component.minimum || component.value > 32 {
 			return fmt.Errorf("replicas.%s must be between %d and 32", component.name, component.minimum)
@@ -417,6 +441,7 @@ func validateServices(document ServicesDocument) error {
 		{"browserGateway", document.BrowserGateway.ClusterIP},
 		{"executorGateway", document.ExecutorGateway.ClusterIP},
 		{"llmproxy", document.LLMProxy.ClusterIP},
+		{"hydra", document.Hydra.ClusterIP},
 	}
 	seen := make(map[netip.Addr]struct{}, len(addresses))
 	for _, service := range addresses {
@@ -448,6 +473,12 @@ func validateServices(document ServicesDocument) error {
 		if actual != PublicHTTPPort {
 			return fmt.Errorf("services.%s must be exactly %d", name, PublicHTTPPort)
 		}
+	}
+	if document.Hydra.PublicPort != HydraPublicPort {
+		return fmt.Errorf("services.hydra.publicPort must be exactly %d", HydraPublicPort)
+	}
+	if document.Hydra.AdminPort != HydraAdminPort {
+		return fmt.Errorf("services.hydra.adminPort must be exactly %d", HydraAdminPort)
 	}
 	return nil
 }
@@ -492,11 +523,16 @@ func validateOAuth(document OAuthDocument, bootstrap BootstrapDocument, browserH
 	if err := validateHTTPSURL("oauth.hydra.issuer", document.Hydra.Issuer, false); err != nil {
 		return err
 	}
-	if strings.HasSuffix(document.Hydra.Issuer, "/") {
-		return errors.New("oauth.hydra.issuer must not have a trailing slash")
+	wantIssuer := "https://" + browserHostname + "/"
+	if document.Hydra.Issuer != wantIssuer {
+		return fmt.Errorf("oauth.hydra.issuer must be exactly %s", wantIssuer)
 	}
 	if err := validateHTTPSOrigin("oauth.hydra.adminUrl", document.Hydra.AdminURL); err != nil {
 		return err
+	}
+	wantAdminURL := internalOrigin(HydraInternalHost, HydraAdminPort)
+	if document.Hydra.AdminURL != wantAdminURL {
+		return fmt.Errorf("oauth.hydra.adminUrl must be exactly %s", wantAdminURL)
 	}
 	if err := validateHTTPSOrigin("oauth.hydra.publicOrigin", document.Hydra.PublicOrigin); err != nil {
 		return err
@@ -507,11 +543,22 @@ func validateOAuth(document OAuthDocument, bootstrap BootstrapDocument, browserH
 	if err := validateHTTPSOrigin("oauth.hydra.publicUpstream", document.Hydra.PublicUpstream); err != nil {
 		return err
 	}
+	wantPublicUpstream := internalOrigin(HydraInternalHost, HydraPublicPort)
+	if document.Hydra.PublicUpstream != wantPublicUpstream {
+		return fmt.Errorf("oauth.hydra.publicUpstream must be exactly %s", wantPublicUpstream)
+	}
 	if err := validateHTTPSURL("oauth.hydra.introspectionUrl", document.Hydra.IntrospectionURL, true); err != nil {
 		return err
 	}
+	wantIntrospectionURL := wantAdminURL + "/admin/oauth2/introspect"
+	if document.Hydra.IntrospectionURL != wantIntrospectionURL {
+		return fmt.Errorf("oauth.hydra.introspectionUrl must be exactly %s", wantIntrospectionURL)
+	}
 	if err := validateText("oauth.hydra.browserClientId", document.Hydra.BrowserClientID, 1, 256); err != nil {
 		return err
+	}
+	if document.Hydra.BrowserClientID != "agentserver-browser" {
+		return errors.New("oauth.hydra.browserClientId must be exactly agentserver-browser")
 	}
 	if err := validateHTTPSURL("oauth.externalOidc.issuer", document.ExternalOIDC.Issuer, false); err != nil {
 		return err
@@ -659,6 +706,7 @@ func validateSecrets(document SecretsDocument) error {
 		"harnessWorker":   {document.HarnessWorker, ProductionHarnessWorkerSecret},
 		"llmproxy":        {document.LLMProxy, ProductionLLMProxySecret},
 		"objectStore":     {document.ObjectStore, ProductionObjectStoreSecret},
+		"hydra":           {document.Hydra, ProductionHydraSecret},
 	} {
 		if pair[0] != pair[1] {
 			return fmt.Errorf("secrets.%s must be exactly %s for the SG production deployment", name, pair[1])
@@ -678,6 +726,7 @@ func validateNetwork(document *NetworkDocument, services ServicesDocument) error
 	for name, clusterIP := range map[string]string{
 		"core": services.Core.ClusterIP, "browserGateway": services.BrowserGateway.ClusterIP,
 		"executorGateway": services.ExecutorGateway.ClusterIP, "llmproxy": services.LLMProxy.ClusterIP,
+		"hydra": services.Hydra.ClusterIP,
 	} {
 		if clusterIP == document.DNSClusterIP {
 			return fmt.Errorf("network.dnsClusterIp must differ from services.%s.clusterIp", name)
@@ -700,7 +749,7 @@ func validateNetwork(document *NetworkDocument, services ServicesDocument) error
 		required bool
 	}{
 		{"coreExternalEgress", &document.CoreExternalEgress, true},
-		{"browserExternalEgress", &document.BrowserExternalEgress, true},
+		{"browserExternalEgress", &document.BrowserExternalEgress, false},
 		{"harnessExternalEgress", &document.HarnessExternalEgress, true},
 	}
 	for _, group := range groups {
@@ -764,6 +813,7 @@ func validateResources(document ResourcesDocument) error {
 		{name: "executorGateway", resource: document.ExecutorGateway},
 		{name: "harnessPool", resource: document.HarnessPool},
 		{name: "llmproxy", resource: document.LLMProxy},
+		{name: "hydra", resource: document.Hydra},
 	}
 	for _, component := range components {
 		name, resource := component.name, component.resource

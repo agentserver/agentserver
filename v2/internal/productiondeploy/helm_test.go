@@ -41,8 +41,12 @@ func TestRenderHelmChartLocksNamespaceHooksAndValues(t *testing.T) {
 		t.Fatal("Helm chart attempts to own the operator-managed Namespace")
 	}
 	migration := parseHelmManifest(t, mustHelmFile(t, first, helmMigrationManifestFile))
+	hydraMigration := parseHelmManifest(t, mustHelmFile(t, first, helmHydraMigrationManifestFile))
+	hydraSetup := parseHelmManifest(t, mustHelmFile(t, first, helmHydraSetupManifestFile))
 	bootstrap := parseHelmManifest(t, mustHelmFile(t, first, helmBootstrapManifestFile))
+	assertHelmHook(t, hydraMigration, hydraMigrationComponent, "pre-install,pre-upgrade", "-20")
 	assertHelmHook(t, migration, migrationComponent, "pre-install,pre-upgrade", "-10")
+	assertHelmHook(t, hydraSetup, hydraSetupComponent, "post-install,post-upgrade", "-10")
 	assertHelmHook(t, bootstrap, bootstrapComponent, "post-install,post-upgrade", "0")
 	migrationPodSpec := objectField(t, objectField(t, objectField(t, migration[0], "spec"), "template"), "spec")
 	if stringField(t, migrationPodSpec, "serviceAccountName") != "default" || migrationPodSpec["automountServiceAccountToken"] != false {
@@ -58,7 +62,8 @@ func TestRenderHelmChartLocksNamespaceHooksAndValues(t *testing.T) {
 		t.Fatal("Helm values, schema, and guard do not lock the generated deployment config")
 	}
 	for _, templateName := range []string{
-		helmFoundationTemplateFile, helmMigrationTemplateFile, helmBootstrapTemplateFile, helmRuntimeTemplateFile,
+		helmFoundationTemplateFile, helmHydraMigrationTemplateFile, helmMigrationTemplateFile,
+		helmHydraSetupTemplateFile, helmBootstrapTemplateFile, helmRuntimeTemplateFile,
 	} {
 		template := mustHelmFile(t, first, templateName)
 		if bytes.Contains(template, []byte("template injection")) || !bytes.Contains(template, []byte(".Files.Get")) {

@@ -39,6 +39,8 @@ const (
 	coreHydraPublicOriginEnvironment        = "AGENTSERVER_V2_HYDRA_PUBLIC_ORIGIN"
 	coreHydraIssuerEnvironment              = "AGENTSERVER_V2_HYDRA_ISSUER"
 	coreHydraBrowserClientEnvironment       = "AGENTSERVER_V2_HYDRA_BROWSER_CLIENT_ID"
+	coreHydraCAEnvironment                  = "AGENTSERVER_V2_HYDRA_CA_FILE"
+	coreHydraServerNameEnvironment          = "AGENTSERVER_V2_HYDRA_SERVER_NAME"
 	coreHydraInsecureHTTPEnvironment        = "AGENTSERVER_V2_HYDRA_ALLOW_INSECURE_HTTP"
 	coreExternalOIDCIssuerEnvironment       = "AGENTSERVER_V2_EXTERNAL_OIDC_ISSUER"
 	coreExternalOIDCClientEnvironment       = "AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_ID"
@@ -155,6 +157,20 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 	if err != nil {
 		return err
 	}
+	var hydraCAFile, hydraServerName string
+	if mode == coreServeProduction {
+		if allowInsecureHydra {
+			return errors.New("production Core forbids cleartext Hydra access")
+		}
+		hydraCAFile, err = requiredConfiguration(getenv, coreHydraCAEnvironment)
+		if err != nil {
+			return err
+		}
+		hydraServerName, err = requiredConfiguration(getenv, coreHydraServerNameEnvironment)
+		if err != nil {
+			return err
+		}
+	}
 	externalOIDCIssuer, err := requiredConfiguration(getenv, coreExternalOIDCIssuerEnvironment)
 	if err != nil {
 		return err
@@ -250,11 +266,19 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout io.Writer
 			return err
 		}
 	}
-	hydraIntrospector, err := coreserver.NewHydraUserIntrospector(hydraEndpoint, &http.Client{Timeout: 5 * time.Second}, allowInsecureHydra)
+	hydraHTTPClient := &http.Client{Timeout: 5 * time.Second}
+	if mode == coreServeProduction {
+		hydraHTTPClient, err = newCoreHydraHTTPClient(hydraCAFile, hydraServerName)
+		if err != nil {
+			return err
+		}
+		defer hydraHTTPClient.CloseIdleConnections()
+	}
+	hydraIntrospector, err := coreserver.NewHydraUserIntrospector(hydraEndpoint, hydraHTTPClient, allowInsecureHydra)
 	if err != nil {
 		return err
 	}
-	hydraAdmin, err := coreserver.NewHydraAdminClient(hydraAdminOrigin, &http.Client{Timeout: 5 * time.Second}, allowInsecureHydra)
+	hydraAdmin, err := coreserver.NewHydraAdminClient(hydraAdminOrigin, hydraHTTPClient, allowInsecureHydra)
 	if err != nil {
 		return err
 	}
@@ -739,6 +763,33 @@ func coreTLSConfig(certificateFile, keyFile, clientCAFile string) (*tls.Config, 
 		ClientCAs:    clientCAs,
 		NextProtos:   []string{"h2", "http/1.1"},
 	}, nil
+}
+
+func newCoreHydraHTTPClient(caFile, serverName string) (*http.Client, error) {
+	caPEM, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("read Hydra server CA: %w", err)
+	}
+	rootCAs := x509.NewCertPool()
+	if !rootCAs.AppendCertsFromPEM(caPEM) {
+		return nil, errors.New("Hydra server CA file contains no certificates")
+	}
+	transport := &http.Transport{
+		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          16,
+		MaxIdleConnsPerHost:   16,
+		IdleConnTimeout:       30 * time.Second,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Second,
+		ExpectContinueTimeout: time.Second,
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS13,
+			RootCAs:    rootCAs,
+			ServerName: serverName,
+		},
+	}
+	return &http.Client{Transport: transport, Timeout: 5 * time.Second}, nil
 }
 
 func requiredConfiguration(getenv func(string) string, name string) (string, error) {

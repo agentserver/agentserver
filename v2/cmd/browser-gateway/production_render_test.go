@@ -23,6 +23,8 @@ func TestProductionRendererBrowserEnvironmentMatchesCommandContract(t *testing.T
 		browserCoreClientKeyEnvironment,
 		browserCoreServerNameEnvironment,
 		browserHydraPublicUpstreamEnvironment,
+		browserHydraCAEnvironment,
+		browserHydraServerNameEnvironment,
 		browserOAuthClientIDEnvironment,
 		browserOAuthAudienceEnvironment,
 		browserOAuthScopesEnvironment,

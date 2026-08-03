@@ -31,6 +31,8 @@ const (
 	browserCoreClientKeyEnvironment           = "AGENTSERVER_V2_CORE_CLIENT_KEY_FILE"
 	browserCoreServerNameEnvironment          = "AGENTSERVER_V2_CORE_SERVER_NAME"
 	browserHydraPublicUpstreamEnvironment     = "AGENTSERVER_V2_HYDRA_PUBLIC_UPSTREAM"
+	browserHydraCAEnvironment                 = "AGENTSERVER_V2_HYDRA_CA_FILE"
+	browserHydraServerNameEnvironment         = "AGENTSERVER_V2_HYDRA_SERVER_NAME"
 	browserDevelopmentOIDCUpstreamEnvironment = "AGENTSERVER_V2_DEVELOPMENT_OIDC_AUTHORIZATION_UPSTREAM"
 	browserOAuthClientIDEnvironment           = "AGENTSERVER_V2_BROWSER_OAUTH_CLIENT_ID"
 	browserOAuthAudienceEnvironment           = "AGENTSERVER_V2_BROWSER_OAUTH_AUDIENCE"
@@ -126,7 +128,23 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 	if err != nil {
 		return err
 	}
-	hydraProxy, err := browsergateway.NewHydraPublicProxy(hydraPublicUpstream, &http.Client{Timeout: 10 * time.Second})
+	hydraHTTPClient := &http.Client{Timeout: 10 * time.Second}
+	if splitPublicOrigins {
+		hydraCAFile, err := requiredBrowserConfiguration(getenv, browserHydraCAEnvironment)
+		if err != nil {
+			return err
+		}
+		hydraServerName, err := requiredBrowserConfiguration(getenv, browserHydraServerNameEnvironment)
+		if err != nil {
+			return err
+		}
+		hydraHTTPClient, err = newBrowserHydraHTTPClient(hydraCAFile, hydraServerName)
+		if err != nil {
+			return err
+		}
+		defer hydraHTTPClient.CloseIdleConnections()
+	}
+	hydraProxy, err := browsergateway.NewHydraPublicProxy(hydraPublicUpstream, hydraHTTPClient)
 	if err != nil {
 		return err
 	}
@@ -455,6 +473,33 @@ func newBrowserCoreHTTPClient(caFile, certificateFile, keyFile, serverName strin
 		},
 	}
 	return &http.Client{Transport: transport}, nil
+}
+
+func newBrowserHydraHTTPClient(caFile, serverName string) (*http.Client, error) {
+	caPEM, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("read Hydra server CA: %w", err)
+	}
+	rootCAs := x509.NewCertPool()
+	if !rootCAs.AppendCertsFromPEM(caPEM) {
+		return nil, errors.New("Hydra server CA file contains no certificates")
+	}
+	transport := &http.Transport{
+		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          32,
+		MaxIdleConnsPerHost:   32,
+		IdleConnTimeout:       60 * time.Second,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		ExpectContinueTimeout: time.Second,
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS13,
+			RootCAs:    rootCAs,
+			ServerName: serverName,
+		},
+	}
+	return &http.Client{Transport: transport, Timeout: 10 * time.Second}, nil
 }
 
 func browserGatewayTLSConfig(certificateFile, keyFile string) (*tls.Config, error) {

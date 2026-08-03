@@ -22,13 +22,19 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 		},
 	)
 	llmIngress := ingressFromComponents([]string{harnessComponent}, document.Services.LLMProxy.Port)
+	hydraIngress := append(
+		ingressFromComponents([]string{browserComponent}, document.Services.Hydra.PublicPort),
+		ingressFromComponents([]string{coreComponent, hydraSetupComponent}, document.Services.Hydra.AdminPort)...,
+	)
 
 	dns := dnsEgress(document.Network)
 	databaseEgress := append(append([]any(nil), dns...), postgresEgress()...)
 	coreEgress := append(append([]any(nil), dns...), postgresEgress()...)
 	coreEgress = append(coreEgress, externalEgress(document.Network.CoreExternalEgress)...)
 	coreEgress = append(coreEgress, publicHTTPSEgress()...)
+	coreEgress = append(coreEgress, componentTCPEgress(hydraComponent, document.Services.Hydra.AdminPort))
 	browserEgress := []any{componentTCPEgress(coreComponent, document.Services.Core.Port)}
+	browserEgress = append(browserEgress, componentTCPEgress(hydraComponent, document.Services.Hydra.PublicPort))
 	browserEgress = append(browserEgress, dns...)
 	browserEgress = append(browserEgress, externalEgress(document.Network.BrowserExternalEgress)...)
 	executorEgress := []any{componentTCPEgress(coreComponent, document.Services.Core.Port)}
@@ -42,16 +48,21 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 	llmEgress := []any{componentTCPEgress(coreComponent, document.Services.Core.Port)}
 	llmEgress = append(llmEgress, dns...)
 	llmEgress = append(llmEgress, publicHTTPSEgress()...)
+	hydraEgress := append(append([]any(nil), dns...), postgresEgress()...)
+	hydraSetupEgress := append(append([]any(nil), dns...), componentTCPEgress(hydraComponent, document.Services.Hydra.AdminPort))
 
 	return []kubeObject{
 		networkPolicy(config, "agentserver-default-deny", managedNetworkSelector(), nil, nil),
+		networkPolicy(config, "hydra-migrate-egress", matchComponent(hydraMigrationComponent), nil, databaseEgress),
 		networkPolicy(config, "agentserver-migrate-egress", matchComponent(migrationComponent), nil, databaseEgress),
+		networkPolicy(config, "hydra-client-setup-egress", matchComponent(hydraSetupComponent), nil, hydraSetupEgress),
 		networkPolicy(config, "agentserver-bootstrap-egress", matchComponent(bootstrapComponent), nil, databaseEgress),
 		networkPolicy(config, coreComponent, matchComponent(coreComponent), coreIngress, coreEgress),
 		networkPolicy(config, browserComponent, matchComponent(browserComponent), browserIngress, browserEgress),
 		networkPolicy(config, executorComponent, matchComponent(executorComponent), executorIngress, executorEgress),
 		networkPolicy(config, harnessComponent, matchComponent(harnessComponent), nil, harnessEgress),
 		networkPolicy(config, llmproxyComponent, matchComponent(llmproxyComponent), llmIngress, llmEgress),
+		networkPolicy(config, hydraComponent, matchComponent(hydraComponent), hydraIngress, hydraEgress),
 	}
 }
 

@@ -28,6 +28,8 @@ func TestProductionRendererCoreEnvironmentMatchesCommandContract(t *testing.T) {
 		coreHydraPublicOriginEnvironment,
 		coreHydraIssuerEnvironment,
 		coreHydraBrowserClientEnvironment,
+		coreHydraCAEnvironment,
+		coreHydraServerNameEnvironment,
 		coreExternalOIDCIssuerEnvironment,
 		coreExternalOIDCClientEnvironment,
 		coreExternalOIDCSecretEnvironment,

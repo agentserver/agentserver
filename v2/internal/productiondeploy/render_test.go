@@ -25,7 +25,7 @@ func TestRenderProducesDeterministicStagedProductionBundle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first.Files) != 5 || len(second.Files) != len(first.Files) {
+	if len(first.Files) != 7 || len(second.Files) != len(first.Files) {
 		t.Fatalf("rendered file count = %d / %d", len(first.Files), len(second.Files))
 	}
 	for index := range first.Files {
@@ -52,15 +52,18 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 	foundation := parseKubernetesList(t, mustBundleFile(t, bundle, foundationFile))
 	runtime := parseKubernetesList(t, mustBundleFile(t, bundle, runtimeFile))
 	migration := parseKubernetesList(t, mustBundleFile(t, bundle, migrationFile))
+	hydraMigration := parseKubernetesList(t, mustBundleFile(t, bundle, hydraMigrationFile))
+	hydraSetup := parseKubernetesList(t, mustBundleFile(t, bundle, hydraSetupFile))
 	bootstrap := parseKubernetesList(t, mustBundleFile(t, bundle, bootstrapFile))
 
-	if len(migration) != 1 || migration[0]["kind"] != "Job" || len(bootstrap) != 1 || bootstrap[0]["kind"] != "Job" {
-		t.Fatal("migration and bootstrap stages must each contain exactly one Kubernetes Job")
+	if len(migration) != 1 || migration[0]["kind"] != "Job" || len(hydraMigration) != 1 || hydraMigration[0]["kind"] != "Job" ||
+		len(hydraSetup) != 1 || hydraSetup[0]["kind"] != "Job" || len(bootstrap) != 1 || bootstrap[0]["kind"] != "Job" {
+		t.Fatal("Hydra migration/setup and AgentServer migration/bootstrap stages must each contain exactly one Kubernetes Job")
 	}
 	if countKind(runtime, "Job") != 0 || countKind(runtime, "HorizontalPodAutoscaler") != 0 {
 		t.Fatal("runtime stage contains a per-run Job or HPA")
 	}
-	if countKind(runtime, "Deployment") != 5 || countKind(runtime, "PodDisruptionBudget") != 4 {
+	if countKind(runtime, "Deployment") != 6 || countKind(runtime, "PodDisruptionBudget") != 5 {
 		t.Fatalf("runtime topology = %d deployments, %d PDBs", countKind(runtime, "Deployment"), countKind(runtime, "PodDisruptionBudget"))
 	}
 	gateway := findResource(t, runtime, "Deployment", executorComponent)
@@ -70,6 +73,41 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 	}
 	if findResourceOptional(runtime, "PodDisruptionBudget", executorComponent) != nil {
 		t.Fatal("executor-gateway unexpectedly has a PDB that can obstruct Recreate")
+	}
+	hydra := findResource(t, runtime, "Deployment", hydraComponent)
+	hydraContainer := objectArrayFirst(t, objectField(t, objectField(t, objectField(t, hydra, "spec"), "template"), "spec"), "containers")
+	for name, want := range map[string]string{
+		"URLS_SELF_ISSUER":                                 "https://agent.byted.bps.dev/",
+		"OAUTH2_PKCE_ENFORCED_FOR_PUBLIC_CLIENTS":          "true",
+		"OAUTH2_GRANT_REFRESH_TOKEN_ROTATION_GRACE_PERIOD": "0s",
+		"OIDC_DYNAMIC_CLIENT_REGISTRATION_ENABLED":         "false",
+		"STRATEGIES_ACCESS_TOKEN":                          "opaque",
+	} {
+		if got := literalEnvironment(t, hydraContainer, name); got != want {
+			t.Fatalf("Hydra environment %s = %q, want %q", name, got, want)
+		}
+	}
+	if literalEnvironmentOptional(t, hydraContainer, "OAUTH2_REFRESH_TOKEN_ROTATION_GRACE_PERIOD") != "" {
+		t.Fatal("Hydra deployment uses the obsolete refresh-token grace-period environment path")
+	}
+	setupContainer := objectArrayFirst(t, objectField(t, objectField(t, objectField(t, hydraSetup[0], "spec"), "template"), "spec"), "containers")
+	setupArgs := arrayField(t, setupContainer, "args")
+	if len(setupArgs) != 2 {
+		t.Fatalf("Hydra client setup args = %#v", setupArgs)
+	}
+	setupScript, _ := setupArgs[1].(string)
+	for _, required := range []string{
+		"--grant-type authorization_code", "--token-endpoint-auth-method none",
+		"--redirect-uri 'https://agent.byted.bps.dev/'", "--audience agentserver-api",
+		"--scope openid", "--scope runs:write", "--scope executors:write", "--scope llm-gateways:write",
+		"--access-token-strategy opaque",
+	} {
+		if !strings.Contains(setupScript, required) {
+			t.Fatalf("Hydra browser client setup is missing %q", required)
+		}
+	}
+	if strings.Contains(setupScript, "client-secret") || strings.Contains(setupScript, "refresh_token") {
+		t.Fatal("Hydra browser client setup contains a client secret or refresh-token grant")
 	}
 
 	pool := findResource(t, runtime, "Deployment", harnessComponent)
@@ -94,7 +132,7 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 		t.Fatal("harness runtime retained network administration capability")
 	}
 
-	if countKind(foundation, "NetworkPolicy") != 8 {
+	if countKind(foundation, "NetworkPolicy") != 11 {
 		t.Fatalf("foundation NetworkPolicy count = %d", countKind(foundation, "NetworkPolicy"))
 	}
 	if countKind(foundation, "HTTPRoute") != 3 {
@@ -128,11 +166,11 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 		t.Fatal("default-deny unexpectedly contains an egress allowance")
 	}
 	assertDNSPolicySupportsServiceAndPodDestinations(t, findResource(t, foundation, "NetworkPolicy", coreComponent))
-	for _, name := range []string{"agentserver-migrate-egress", "agentserver-bootstrap-egress", coreComponent} {
+	for _, name := range []string{"hydra-migrate-egress", "agentserver-migrate-egress", "agentserver-bootstrap-egress", coreComponent, hydraComponent} {
 		assertCNPGDatabaseEgress(t, findResource(t, foundation, "NetworkPolicy", name))
 	}
 
-	for _, resources := range [][]map[string]any{foundation, migration, bootstrap, runtime} {
+	for _, resources := range [][]map[string]any{foundation, hydraMigration, migration, hydraSetup, bootstrap, runtime} {
 		for _, resource := range resources {
 			if resource["kind"] != "Deployment" && resource["kind"] != "Job" {
 				continue
@@ -142,7 +180,10 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 			assertNoImagePullSecrets(t, resource)
 		}
 	}
-	all := append(append(append(append([]byte(nil), mustBundleFile(t, bundle, foundationFile)...), mustBundleFile(t, bundle, migrationFile)...), mustBundleFile(t, bundle, bootstrapFile)...), mustBundleFile(t, bundle, runtimeFile)...)
+	all := append([]byte(nil), mustBundleFile(t, bundle, foundationFile)...)
+	for _, name := range []string{hydraMigrationFile, migrationFile, hydraSetupFile, bootstrapFile, runtimeFile} {
+		all = append(all, mustBundleFile(t, bundle, name)...)
+	}
 	for _, forbidden := range []string{
 		"AGENTSERVER_V2_KMS_", "AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE",
 		"eks.amazonaws.com/role-arn", "sts.amazonaws.com", "AGENTSERVER_V2_DEV_",
@@ -170,7 +211,7 @@ func TestRenderPinsLinuxAMD64Nodes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, file := range []string{migrationFile, bootstrapFile, runtimeFile} {
+	for _, file := range []string{hydraMigrationFile, migrationFile, hydraSetupFile, bootstrapFile, runtimeFile} {
 		for _, resource := range parseKubernetesList(t, mustBundleFile(t, bundle, file)) {
 			if resource["kind"] == "Deployment" || resource["kind"] == "Job" {
 				assertProductionNodeSelector(t, resource, "amd64")
@@ -436,6 +477,31 @@ func assertSecretEnvironment(t *testing.T, container map[string]any, name, secre
 		return
 	}
 	t.Fatalf("environment %s not found", name)
+}
+
+func literalEnvironment(t *testing.T, container map[string]any, name string) string {
+	t.Helper()
+	for _, raw := range arrayField(t, container, "env") {
+		environment, ok := raw.(map[string]any)
+		if ok && environment["name"] == name {
+			value, _ := environment["value"].(string)
+			return value
+		}
+	}
+	t.Fatalf("environment %s not found", name)
+	return ""
+}
+
+func literalEnvironmentOptional(t *testing.T, container map[string]any, name string) string {
+	t.Helper()
+	for _, raw := range arrayField(t, container, "env") {
+		environment, ok := raw.(map[string]any)
+		if ok && environment["name"] == name {
+			value, _ := environment["value"].(string)
+			return value
+		}
+	}
+	return ""
 }
 
 func assertPinnedImages(t *testing.T, resource map[string]any) {

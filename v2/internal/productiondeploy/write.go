@@ -83,11 +83,12 @@ func WriteBundle(bundle Bundle, destination string) error {
 }
 
 func validateBundle(bundle Bundle) error {
-	if len(bundle.Files) != 5 {
-		return errors.New("production bundle must contain exactly five rendered files")
+	if len(bundle.Files) != 7 {
+		return errors.New("production bundle must contain exactly seven rendered files")
 	}
 	wantNames := map[string]struct{}{
-		foundationFile: {}, migrationFile: {}, bootstrapFile: {}, runtimeFile: {}, checksumsFile: {},
+		foundationFile: {}, hydraMigrationFile: {}, migrationFile: {}, hydraSetupFile: {},
+		bootstrapFile: {}, runtimeFile: {}, checksumsFile: {},
 	}
 	for _, file := range bundle.Files {
 		if _, found := wantNames[file.Name]; !found || filepath.Base(file.Name) != file.Name || len(file.Content) == 0 || sha256Hex(file.Content) != file.SHA256 {

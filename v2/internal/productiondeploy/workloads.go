@@ -56,6 +56,7 @@ func renderRuntime(context renderContext) ([]kubeObject, error) {
 	if err != nil {
 		return nil, err
 	}
+	hydra := renderHydraDeployment(context)
 	config := context.config
 	return []kubeObject{
 		core,
@@ -63,11 +64,116 @@ func renderRuntime(context renderContext) ([]kubeObject, error) {
 		executor,
 		harness,
 		llmproxy,
+		hydra,
 		podDisruptionBudget(config, coreComponent, config.Document.Replicas.Core),
 		podDisruptionBudget(config, browserComponent, config.Document.Replicas.BrowserGateway),
 		podDisruptionBudget(config, harnessComponent, config.Document.Replicas.HarnessPool),
 		podDisruptionBudget(config, llmproxyComponent, config.Document.Replicas.LLMProxy),
+		podDisruptionBudget(config, hydraComponent, config.Document.Replicas.Hydra),
 	}, nil
+}
+
+func renderHydraDeployment(context renderContext) kubeObject {
+	document := context.config.Document
+	service := document.Services.Hydra
+	labels := componentLabels(hydraComponent)
+	materialPath := "/var/run/agentserver/hydra"
+	container := kubeObject{
+		"name": hydraComponent, "image": document.Images.Hydra, "imagePullPolicy": "IfNotPresent",
+		"command": []any{"/usr/bin/hydra"}, "args": []any{"serve", "all", "--sqa-opt-out"},
+		"env": []any{
+			secretEnvironment("DSN", document.Secrets.Hydra, "database-url"),
+			secretEnvironment("SECRETS_SYSTEM", document.Secrets.Hydra, "system-secret"),
+			secretEnvironment("SECRETS_COOKIE", document.Secrets.Hydra, "cookie-secret"),
+			valueEnvironment("URLS_SELF_ISSUER", document.OAuth.Hydra.Issuer),
+			valueEnvironment("URLS_LOGIN", document.OAuth.Hydra.PublicOrigin+"/auth/hydra/login"),
+			valueEnvironment("URLS_CONSENT", document.OAuth.Hydra.PublicOrigin+"/auth/hydra/consent"),
+			valueEnvironment("SERVE_PUBLIC_PORT", strconv.Itoa(int(service.PublicPort))),
+			valueEnvironment("SERVE_ADMIN_PORT", strconv.Itoa(int(service.AdminPort))),
+			valueEnvironment("SERVE_TLS_ENABLED", "true"),
+			valueEnvironment("SERVE_TLS_CERT_PATH", materialPath+"/tls.crt"),
+			valueEnvironment("SERVE_TLS_KEY_PATH", materialPath+"/tls.key"),
+			valueEnvironment("SERVE_COOKIES_SECURE", "true"),
+			valueEnvironment("OIDC_DYNAMIC_CLIENT_REGISTRATION_ENABLED", "false"),
+			valueEnvironment("OIDC_SUBJECT_IDENTIFIERS_SUPPORTED_TYPES", "public"),
+			valueEnvironment("OAUTH2_PKCE_ENFORCED_FOR_PUBLIC_CLIENTS", "true"),
+			valueEnvironment("OAUTH2_EXPOSE_INTERNAL_ERRORS", "false"),
+			valueEnvironment("OAUTH2_GRANT_REFRESH_TOKEN_ROTATION_GRACE_PERIOD", "0s"),
+			valueEnvironment("STRATEGIES_ACCESS_TOKEN", "opaque"),
+			valueEnvironment("TTL_ACCESS_TOKEN", "1h"),
+			valueEnvironment("TTL_ID_TOKEN", "1h"),
+			valueEnvironment("TTL_AUTH_CODE", "10m"),
+			valueEnvironment("LOG_LEVEL", "info"),
+			valueEnvironment("LOG_FORMAT", "json"),
+		},
+		"ports": []any{
+			kubeObject{"name": "https-public", "containerPort": int(service.PublicPort), "protocol": "TCP"},
+			kubeObject{"name": "https-admin", "containerPort": int(service.AdminPort), "protocol": "TCP"},
+		},
+		"resources":       resources(document.Resources.Hydra),
+		"securityContext": runtimeSecurityContext(HydraUID, HydraGID),
+		"volumeMounts": []any{
+			kubeObject{"name": "hydra-material", "mountPath": materialPath, "readOnly": true},
+			kubeObject{"name": "scratch", "mountPath": "/tmp"},
+		},
+		"startupProbe":   hydraHealthProbe("/health/ready", service.AdminPort, 30),
+		"readinessProbe": hydraHealthProbe("/health/ready", service.AdminPort, 6),
+		"livenessProbe":  hydraHealthProbe("/health/alive", service.AdminPort, 6),
+	}
+	return kubeObject{
+		"apiVersion": "apps/v1", "kind": "Deployment",
+		"metadata": metadata(hydraComponent, document.Namespace, labels, map[string]string{"reloader.stakater.com/auto": "true"}),
+		"spec": kubeObject{
+			"replicas": document.Replicas.Hydra, "revisionHistoryLimit": 3, "progressDeadlineSeconds": 600,
+			"strategy": kubeObject{"type": "RollingUpdate", "rollingUpdate": kubeObject{"maxUnavailable": 0, "maxSurge": 1}},
+			"selector": kubeObject{"matchLabels": selectorLabels(hydraComponent)},
+			"template": kubeObject{
+				"metadata": kubeObject{"labels": labels, "annotations": kubeObject{
+					"agentserver.dev/config-sha256":                  context.documentHash,
+					"cluster-autoscaler.kubernetes.io/safe-to-evict": "false",
+				}},
+				"spec": kubeObject{
+					"serviceAccountName": hydraComponent, "automountServiceAccountToken": false,
+					"enableServiceLinks": false, "terminationGracePeriodSeconds": 30,
+					"securityContext": kubeObject{
+						"fsGroup": int64(HydraGID), "fsGroupChangePolicy": "OnRootMismatch",
+						"seccompProfile": kubeObject{"type": "RuntimeDefault"},
+					},
+					"nodeSelector": productionNodeSelector(document.Platform),
+					"containers":   []any{container},
+					"volumes": []any{
+						hydraMaterialVolume(document.Secrets.Hydra, true),
+						emptyDirVolume("scratch", "Memory", document.Resources.ScratchTmpfs),
+					},
+					"topologySpreadConstraints": []any{kubeObject{
+						"maxSkew": 1, "topologyKey": "kubernetes.io/hostname", "whenUnsatisfiable": "ScheduleAnyway",
+						"labelSelector": kubeObject{"matchLabels": selectorLabels(hydraComponent)},
+					}},
+				},
+			},
+		},
+	}
+}
+
+func hydraMaterialVolume(secretName string, includeServerIdentity bool) kubeObject {
+	keys := []string{"ca.crt"}
+	if includeServerIdentity {
+		keys = append(keys, "tls.crt", "tls.key")
+	}
+	items := make([]any, len(keys))
+	for index, key := range keys {
+		items[index] = kubeObject{"key": key, "path": key, "mode": 288}
+	}
+	return kubeObject{"name": "hydra-material", "secret": kubeObject{
+		"secretName": secretName, "defaultMode": 288, "items": items,
+	}}
+}
+
+func hydraHealthProbe(path string, port uint16, failures int) kubeObject {
+	return kubeObject{
+		"httpGet":        kubeObject{"scheme": "HTTPS", "path": path, "port": int(port)},
+		"timeoutSeconds": 3, "periodSeconds": 5, "failureThreshold": failures,
+	}
 }
 
 func renderCoreDeployment(context renderContext) (kubeObject, error) {
@@ -92,6 +198,8 @@ func renderCoreDeployment(context renderContext) (kubeObject, error) {
 		valueEnvironment("AGENTSERVER_V2_HYDRA_PUBLIC_ORIGIN", document.OAuth.Hydra.PublicOrigin),
 		valueEnvironment("AGENTSERVER_V2_HYDRA_ISSUER", document.OAuth.Hydra.Issuer),
 		valueEnvironment("AGENTSERVER_V2_HYDRA_BROWSER_CLIENT_ID", document.OAuth.Hydra.BrowserClientID),
+		valueEnvironment("AGENTSERVER_V2_HYDRA_CA_FILE", serviceMaterialPath("ca.crt")),
+		valueEnvironment("AGENTSERVER_V2_HYDRA_SERVER_NAME", HydraInternalHost),
 		valueEnvironment("AGENTSERVER_V2_EXTERNAL_OIDC_ISSUER", document.OAuth.ExternalOIDC.Issuer),
 		valueEnvironment("AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_ID", document.OAuth.ExternalOIDC.ClientID),
 		secretEnvironment("AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_SECRET", document.Secrets.Core, "external-oidc-client-secret"),
@@ -129,7 +237,8 @@ func renderCoreDeployment(context renderContext) (kubeObject, error) {
 			kubeObject{"name": "scratch", "mountPath": "/tmp"},
 		},
 		resources: document.Resources.Core, uid: ServiceUID, gid: ServiceGID, fsGroup: ServiceGID,
-		strategy: "RollingUpdate", configHash: context.documentHash, termination: 20,
+		hostAliases: map[string]string{HydraInternalHost: document.Services.Hydra.ClusterIP},
+		strategy:    "RollingUpdate", configHash: context.documentHash, termination: 20,
 	}), nil
 }
 
@@ -150,6 +259,8 @@ func renderBrowserDeployment(context renderContext) (kubeObject, error) {
 		valueEnvironment("AGENTSERVER_V2_CORE_CLIENT_KEY_FILE", serviceMaterialPath("tls.key")),
 		valueEnvironment("AGENTSERVER_V2_CORE_SERVER_NAME", CoreInternalHost),
 		valueEnvironment("AGENTSERVER_V2_HYDRA_PUBLIC_UPSTREAM", document.OAuth.Hydra.PublicUpstream),
+		valueEnvironment("AGENTSERVER_V2_HYDRA_CA_FILE", serviceMaterialPath("ca.crt")),
+		valueEnvironment("AGENTSERVER_V2_HYDRA_SERVER_NAME", HydraInternalHost),
 		valueEnvironment("AGENTSERVER_V2_BROWSER_OAUTH_CLIENT_ID", document.OAuth.Hydra.BrowserClientID),
 		valueEnvironment("AGENTSERVER_V2_BROWSER_OAUTH_AUDIENCE", BrowserOAuthAudience()),
 		valueEnvironment("AGENTSERVER_V2_BROWSER_OAUTH_SCOPES", strings.Join(BrowserOAuthScopes(), ",")),
@@ -167,10 +278,13 @@ func renderBrowserDeployment(context renderContext) (kubeObject, error) {
 			kubeObject{"name": "material", "mountPath": "/var/run/agentserver"},
 			kubeObject{"name": "scratch", "mountPath": "/tmp"},
 		},
-		ports:       []any{kubeObject{"name": "http", "containerPort": int(document.Services.BrowserGateway.Port), "protocol": "TCP"}},
-		probePort:   document.Services.BrowserGateway.Port,
-		hostAliases: map[string]string{CoreInternalHost: document.Services.Core.ClusterIP},
-		resources:   document.Resources.BrowserGateway, uid: ServiceUID, gid: ServiceGID, fsGroup: ServiceGID,
+		ports:     []any{kubeObject{"name": "http", "containerPort": int(document.Services.BrowserGateway.Port), "protocol": "TCP"}},
+		probePort: document.Services.BrowserGateway.Port,
+		hostAliases: map[string]string{
+			CoreInternalHost:  document.Services.Core.ClusterIP,
+			HydraInternalHost: document.Services.Hydra.ClusterIP,
+		},
+		resources: document.Resources.BrowserGateway, uid: ServiceUID, gid: ServiceGID, fsGroup: ServiceGID,
 		strategy: "RollingUpdate", configHash: context.documentHash, termination: 20,
 	}), nil
 }

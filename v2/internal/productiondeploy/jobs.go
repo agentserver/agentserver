@@ -1,5 +1,110 @@
 package productiondeploy
 
+import "strings"
+
+func renderHydraMigrationJob(context renderContext) kubeObject {
+	document := context.config.Document
+	labels := componentLabels(hydraMigrationComponent)
+	return kubeObject{
+		"apiVersion": "batch/v1", "kind": "Job",
+		"metadata": metadata(context.hydraMigrationJobName, document.Namespace, labels, map[string]string{
+			"agentserver.dev/hydra-version": "26.2.0",
+		}),
+		"spec": kubeObject{
+			"backoffLimit": 3, "activeDeadlineSeconds": 600,
+			"template": kubeObject{
+				"metadata": kubeObject{"labels": labels},
+				"spec": kubeObject{
+					"serviceAccountName": "default", "automountServiceAccountToken": false,
+					"restartPolicy": "OnFailure", "enableServiceLinks": false,
+					"terminationGracePeriodSeconds": 10,
+					"nodeSelector":                  productionNodeSelector(document.Platform),
+					"securityContext": kubeObject{
+						"runAsUser": int64(HydraUID), "runAsGroup": int64(HydraGID), "runAsNonRoot": true,
+						"seccompProfile": kubeObject{"type": "RuntimeDefault"},
+					},
+					"containers": []any{kubeObject{
+						"name": hydraMigrationComponent, "image": document.Images.Hydra, "imagePullPolicy": "IfNotPresent",
+						"command": []any{"/usr/bin/hydra"}, "args": []any{"migrate", "sql", "up", "-e", "--yes"},
+						"env":             []any{secretEnvironment("DSN", document.Secrets.Hydra, "database-url")},
+						"resources":       resources(document.Resources.Hydra),
+						"securityContext": runtimeSecurityContext(HydraUID, HydraGID),
+						"volumeMounts":    []any{kubeObject{"name": "scratch", "mountPath": "/tmp"}},
+					}},
+					"volumes": []any{emptyDirVolume("scratch", "Memory", document.Resources.ScratchTmpfs)},
+				},
+			},
+		},
+	}
+}
+
+func renderHydraClientSetupJob(context renderContext) kubeObject {
+	document := context.config.Document
+	labels := componentLabels(hydraSetupComponent)
+	adminOrigin := internalOrigin(HydraInternalHost, document.Services.Hydra.AdminPort)
+	clientID := document.OAuth.Hydra.BrowserClientID
+	flags := strings.Join([]string{
+		"--name 'AgentServer Browser'",
+		"--grant-type authorization_code",
+		"--response-type code",
+		"--scope openid",
+		"--scope runs:write",
+		"--scope executors:write",
+		"--scope llm-gateways:write",
+		"--redirect-uri '" + document.OAuth.Hydra.PublicOrigin + "/'",
+		"--token-endpoint-auth-method none",
+		"--audience agentserver-api",
+		"--access-token-strategy opaque",
+		"--subject-type public",
+	}, " ")
+	script := "set -eu\n" +
+		"endpoint='" + adminOrigin + "'\n" +
+		"client_id='" + clientID + "'\n" +
+		"if /usr/bin/hydra update oauth2-client \"$client_id\" --endpoint \"$endpoint\" " + flags + "; then\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"/usr/bin/hydra create oauth2-client --endpoint \"$endpoint\" --id \"$client_id\" " + flags + "\n"
+	return kubeObject{
+		"apiVersion": "batch/v1", "kind": "Job",
+		"metadata": metadata(context.hydraSetupJobName, document.Namespace, labels, map[string]string{
+			"agentserver.dev/hydra-client-id": clientID,
+		}),
+		"spec": kubeObject{
+			"backoffLimit": 5, "activeDeadlineSeconds": 300,
+			"template": kubeObject{
+				"metadata": kubeObject{"labels": labels},
+				"spec": kubeObject{
+					"serviceAccountName": hydraSetupComponent, "automountServiceAccountToken": false,
+					"restartPolicy": "OnFailure", "enableServiceLinks": false,
+					"terminationGracePeriodSeconds": 10,
+					"nodeSelector":                  productionNodeSelector(document.Platform),
+					"securityContext": kubeObject{
+						"runAsUser": int64(HydraUID), "runAsGroup": int64(HydraGID), "runAsNonRoot": true,
+						"fsGroup": int64(HydraGID), "fsGroupChangePolicy": "OnRootMismatch",
+						"seccompProfile": kubeObject{"type": "RuntimeDefault"},
+					},
+					"hostAliases": hostAliases(map[string]string{HydraInternalHost: document.Services.Hydra.ClusterIP}),
+					"containers": []any{kubeObject{
+						"name": hydraSetupComponent, "image": document.Images.Hydra, "imagePullPolicy": "IfNotPresent",
+						"command": []any{"/bin/sh"}, "args": []any{"-ec", script},
+						"env":             []any{valueEnvironment("SSL_CERT_FILE", "/var/run/agentserver/hydra/ca.crt")},
+						"resources":       resources(document.Resources.Hydra),
+						"securityContext": runtimeSecurityContext(HydraUID, HydraGID),
+						"volumeMounts": []any{
+							kubeObject{"name": "hydra-material", "mountPath": "/var/run/agentserver/hydra", "readOnly": true},
+							kubeObject{"name": "scratch", "mountPath": "/tmp"},
+						},
+					}},
+					"volumes": []any{
+						hydraMaterialVolume(document.Secrets.Hydra, false),
+						emptyDirVolume("scratch", "Memory", document.Resources.ScratchTmpfs),
+					},
+				},
+			},
+		},
+	}
+}
+
 func renderMigrationJob(context renderContext) kubeObject {
 	return renderOneShotJob(
 		context,

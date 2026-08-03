@@ -6,13 +6,15 @@
   "platform": "linux-amd64",
   "images": {
     "service": "registry-sg.byted.cs.ac.cn/agentserver/v2-service@sha256:aa50b3718e3689409613f8a9e9f765a08eed38466bb8d60da995d3fb394b6718",
-    "harness": "registry-sg.byted.cs.ac.cn/agentserver/v2-harness@sha256:7607137412935aa7ced2afc7ed42318fa6457d16a9bd97d7dcb1cfbb5c59d0b7"
+    "harness": "registry-sg.byted.cs.ac.cn/agentserver/v2-harness@sha256:7607137412935aa7ced2afc7ed42318fa6457d16a9bd97d7dcb1cfbb5c59d0b7",
+    "hydra": "registry-sg.byted.cs.ac.cn/agentserver/hydra@sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b"
   },
   "replicas": {
     "core": 2,
     "browserGateway": 2,
     "harnessPool": 2,
-    "llmproxy": 2
+    "llmproxy": 2,
+    "hydra": 2
   },
   "services": {
     "core": {"clusterIp": "192.168.250.10", "port": 8443},
@@ -22,7 +24,8 @@
       "publicPort": 8080,
       "internalPort": 8443
     },
-    "llmproxy": {"clusterIp": "192.168.250.13", "port": 8443}
+    "llmproxy": {"clusterIp": "192.168.250.13", "port": 8443},
+    "hydra": {"clusterIp": "192.168.250.14", "publicPort": 4444, "adminPort": 4445}
   },
   "ingress": {
     "gatewayNamespace": "istio-ingress",
@@ -39,22 +42,22 @@
     "workspaceId": "9271bfe5-68a4-484b-a2d3-e9f450a42d0c",
     "sessionId": "4847b054-ebf9-4f0b-9db8-c2fba1d57226",
     "ownerUserId": "d8c5c377-31b4-4660-8b0d-d5a0bcf57407",
-    "externalOidcSubject": "replace-with-exact-idp-subject",
+    "externalOidcSubject": "3506220589",
     "executorId": "1eeb5890-7556-431f-b4e5-c4e40b2c9f29"
   },
   "spiffeTrustDomain": "agentserver.byted.bps.dev",
   "oauth": {
     "hydra": {
-      "issuer": "https://agent.byted.bps.dev",
-      "adminUrl": "https://hydra-admin.example.com",
+      "issuer": "https://agent.byted.bps.dev/",
+      "adminUrl": "https://hydra.agentserver.internal:4445",
       "publicOrigin": "https://agent.byted.bps.dev",
-      "publicUpstream": "https://hydra-public.example.com",
-      "introspectionUrl": "https://hydra-admin.example.com/admin/oauth2/introspect",
+      "publicUpstream": "https://hydra.agentserver.internal:4444",
+      "introspectionUrl": "https://hydra.agentserver.internal:4445/admin/oauth2/introspect",
       "browserClientId": "agentserver-browser"
     },
     "externalOidc": {
-      "issuer": "https://idp.example.com/oidc",
-      "clientId": "agentserver-production",
+      "issuer": "https://connect.cs.ac.cn",
+      "clientId": "f47a1f3a-f92b-43ba-bc7f-76409612e106",
       "redirectUrl": "https://agent.byted.bps.dev/auth/oidc/callback"
     }
   },
@@ -80,7 +83,7 @@
   "objectStore": {
     "mode": "s3-plaintext-v1",
     "prefix": "agentserver/v2/production",
-    "s3Bucket": "agentserver-production",
+    "s3Bucket": "agentserver-sg",
     "s3Region": "sg-central",
     "s3Endpoint": "https://tos-s3-sg.byted.org",
     "s3UsePathStyle": true
@@ -92,7 +95,8 @@
     "harnessPool": "agentserver-pool-secrets",
     "harnessWorker": "agentserver-worker-secrets",
     "llmproxy": "agentserver-llmproxy-secrets",
-    "objectStore": "agentserver-object-store-secrets"
+    "objectStore": "agentserver-object-store-secrets",
+    "hydra": "agentserver-hydra-secrets"
   },
   "network": {
     "dnsClusterIp": "192.168.0.10",
@@ -101,7 +105,7 @@
       "k8s-app": "kube-dns"
     },
     "coreExternalEgress": [{"cidr": "192.0.2.0/24", "ports": [443]}],
-    "browserExternalEgress": [{"cidr": "198.51.100.0/24", "ports": [443]}],
+    "browserExternalEgress": [],
     "harnessExternalEgress": [{"cidr": "192.0.2.0/24", "ports": [443]}]
   },
   "resources": {
@@ -124,6 +128,10 @@
     "llmproxy": {
       "requests": {"cpu": "500m", "memory": "512Mi"},
       "limits": {"cpu": "2", "memory": "2Gi"}
+    },
+    "hydra": {
+      "requests": {"cpu": "100m", "memory": "128Mi"},
+      "limits": {"cpu": "1", "memory": "512Mi"}
     },
     "runtimeTmpfs": "8Gi",
     "checkpointTmpfs": "2Gi",

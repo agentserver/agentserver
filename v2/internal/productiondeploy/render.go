@@ -13,11 +13,13 @@ import (
 )
 
 const (
-	foundationFile = "00-foundation.json"
-	migrationFile  = "10-migrate.json"
-	bootstrapFile  = "20-bootstrap.json"
-	runtimeFile    = "30-runtime.json"
-	checksumsFile  = "checksums.json"
+	foundationFile     = "00-foundation.json"
+	hydraMigrationFile = "05-hydra-migrate.json"
+	migrationFile      = "10-migrate.json"
+	hydraSetupFile     = "15-hydra-client-setup.json"
+	bootstrapFile      = "20-bootstrap.json"
+	runtimeFile        = "30-runtime.json"
+	checksumsFile      = "checksums.json"
 )
 
 type RenderedFile struct {
@@ -78,10 +80,12 @@ func Render(config LoadedConfig) (Bundle, error) {
 		networkGuardJSON: networkGuardJSON, bootstrapHash: bootstrapHash,
 		harnessConfigHash: harnessConfigHash, harnessDeploymentHash: harnessDeploymentHash,
 		documentHash: documentHash, migrationVersion: migrationVersion,
-		bootstrapConfigName: "agentserver-bootstrap-" + bootstrapHash[:12],
-		harnessConfigName:   "agentserver-harness-" + harnessConfigHash[:12],
-		migrationJobName:    fmt.Sprintf("agentserver-migrate-v%04d", migrationVersion),
-		bootstrapJobName:    "agentserver-bootstrap-" + bootstrapHash[:12],
+		bootstrapConfigName:   "agentserver-bootstrap-" + bootstrapHash[:12],
+		harnessConfigName:     "agentserver-harness-" + harnessConfigHash[:12],
+		migrationJobName:      fmt.Sprintf("agentserver-migrate-v%04d", migrationVersion),
+		hydraMigrationJobName: "agentserver-hydra-migrate-v26-2-0",
+		hydraSetupJobName:     "agentserver-hydra-client-setup-" + documentHash[:12],
+		bootstrapJobName:      "agentserver-bootstrap-" + bootstrapHash[:12],
 	}
 
 	runtimeItems, err := renderRuntime(context)
@@ -93,7 +97,9 @@ func Render(config LoadedConfig) (Bundle, error) {
 		items []kubeObject
 	}{
 		{name: foundationFile, items: renderFoundation(context)},
+		{name: hydraMigrationFile, items: []kubeObject{renderHydraMigrationJob(context)}},
 		{name: migrationFile, items: []kubeObject{renderMigrationJob(context)}},
+		{name: hydraSetupFile, items: []kubeObject{renderHydraClientSetupJob(context)}},
 		{name: bootstrapFile, items: []kubeObject{renderBootstrapJob(context)}},
 		{name: runtimeFile, items: runtimeItems},
 	}
@@ -126,6 +132,8 @@ type renderContext struct {
 	bootstrapConfigName   string
 	harnessConfigName     string
 	migrationJobName      string
+	hydraMigrationJobName string
+	hydraSetupJobName     string
 	bootstrapJobName      string
 }
 

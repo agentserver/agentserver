@@ -8,6 +8,9 @@ const (
 	executorComponent       = "executor-gateway"
 	harnessComponent        = "harness-pool"
 	llmproxyComponent       = "llmproxy"
+	hydraComponent          = "hydra"
+	hydraMigrationComponent = "hydra-migrate"
+	hydraSetupComponent     = "hydra-client-setup"
 	migrationComponent      = "agentserver-migrate"
 	bootstrapComponent      = "agentserver-bootstrap"
 	bootstrapServiceAccount = "agentserver-bootstrap"
@@ -22,6 +25,8 @@ func renderFoundation(context renderContext) []kubeObject {
 		serviceAccountResource(config, executorComponent),
 		serviceAccountResource(config, harnessComponent),
 		serviceAccountResource(config, llmproxyComponent),
+		serviceAccountResource(config, hydraComponent),
+		serviceAccountResource(config, hydraSetupComponent),
 		serviceAccountResource(config, bootstrapServiceAccount),
 		configMapResource(config, context.bootstrapConfigName, map[string]string{
 			"bootstrap.json": string(context.bootstrapJSON),
@@ -34,12 +39,29 @@ func renderFoundation(context renderContext) []kubeObject {
 		browserService(config),
 		executorService(config),
 		internalService(config, llmproxyComponent, config.Document.Services.LLMProxy),
+		hydraService(config),
 		frontendHTTPRoute(config),
 		browserHTTPRoute(config),
 		executorHTTPRoute(config),
 	}
 	items = append(items, renderNetworkPolicies(context)...)
 	return items
+}
+
+func hydraService(config LoadedConfig) kubeObject {
+	service := config.Document.Services.Hydra
+	return kubeObject{
+		"apiVersion": "v1", "kind": "Service",
+		"metadata": metadata(hydraComponent, config.Document.Namespace, componentLabels(hydraComponent), nil),
+		"spec": kubeObject{
+			"type": "ClusterIP", "clusterIP": service.ClusterIP,
+			"selector": selectorLabels(hydraComponent),
+			"ports": []any{
+				kubeObject{"name": "https-public", "protocol": "TCP", "port": int(service.PublicPort), "targetPort": "https-public"},
+				kubeObject{"name": "https-admin", "protocol": "TCP", "port": int(service.AdminPort), "targetPort": "https-admin"},
+			},
+		},
+	}
 }
 
 func internalService(config LoadedConfig, component string, service InternalServiceDocument) kubeObject {

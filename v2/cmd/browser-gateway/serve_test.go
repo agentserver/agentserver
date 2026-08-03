@@ -220,6 +220,16 @@ func TestBrowserGatewayTLSAndCoreMTLSConfiguration(t *testing.T) {
 		transport.TLSClientConfig.ServerName != "core.internal" || !transport.ForceAttemptHTTP2 {
 		t.Fatalf("core mTLS transport = %#v", client.Transport)
 	}
+	hydraClient, err := newBrowserHydraHTTPClient(certificateFile, "hydra.agentserver.internal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hydraTransport, ok := hydraClient.Transport.(*http.Transport)
+	if !ok || hydraTransport.TLSClientConfig == nil || hydraTransport.TLSClientConfig.MinVersion != tls.VersionTLS13 ||
+		hydraTransport.TLSClientConfig.RootCAs == nil || len(hydraTransport.TLSClientConfig.Certificates) != 0 ||
+		hydraTransport.TLSClientConfig.ServerName != "hydra.agentserver.internal" || !hydraTransport.ForceAttemptHTTP2 {
+		t.Fatalf("Hydra TLS transport = %#v", hydraClient.Transport)
+	}
 }
 
 func assertBrowserHealth(t *testing.T, handler http.Handler, path string, status int, body string) {

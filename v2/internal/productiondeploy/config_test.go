@@ -80,6 +80,9 @@ func TestValidateConfigRejectsUnsafeProductionShapes(t *testing.T) {
 		"wrong harness registry": func(value *ConfigDocument) {
 			value.Images.Harness = "registry.example.test/agentserver/harness@sha256:" + strings.Repeat("2", 64)
 		},
+		"wrong Hydra registry": func(value *ConfigDocument) {
+			value.Images.Hydra = "registry.example.test/agentserver/hydra@sha256:" + strings.Repeat("3", 64)
+		},
 		"gateway replicas implied":  func(value *ConfigDocument) { value.Services.ExecutorGateway.InternalPort = 9443 },
 		"wrong frontend hostname":   func(value *ConfigDocument) { value.Ingress.FrontendHostname = "agent-cn.byted.bps.dev" },
 		"missing gateway selector":  func(value *ConfigDocument) { value.Ingress.GatewayPodSelector = nil },
@@ -94,6 +97,13 @@ func TestValidateConfigRejectsUnsafeProductionShapes(t *testing.T) {
 		"low core availability":     func(value *ConfigDocument) { value.Replicas.Core = 1 },
 		"low browser availability":  func(value *ConfigDocument) { value.Replicas.BrowserGateway = 1 },
 		"low llmproxy availability": func(value *ConfigDocument) { value.Replicas.LLMProxy = 1 },
+		"low Hydra availability":    func(value *ConfigDocument) { value.Replicas.Hydra = 1 },
+		"external Hydra Admin": func(value *ConfigDocument) {
+			value.OAuth.Hydra.AdminURL = "https://hydra-admin.example.test"
+		},
+		"Hydra issuer slash drift": func(value *ConfigDocument) {
+			value.OAuth.Hydra.Issuer = "https://agent.byted.bps.dev"
+		},
 		"request above CPU limit": func(value *ConfigDocument) {
 			value.Resources.Core.Requests.CPU = "3"
 		},
@@ -138,13 +148,15 @@ func validConfigDocument() ConfigDocument {
 		Images: ImagesDocument{
 			Service: ProductionServiceImage + "@sha256:" + digest("1"),
 			Harness: ProductionHarnessImage + "@sha256:" + digest("2"),
+			Hydra:   ProductionHydraImage + "@sha256:" + digest("3"),
 		},
-		Replicas: ReplicasDocument{Core: 2, BrowserGateway: 2, HarnessPool: 2, LLMProxy: 2},
+		Replicas: ReplicasDocument{Core: 2, BrowserGateway: 2, HarnessPool: 2, LLMProxy: 2, Hydra: 2},
 		Services: ServicesDocument{
 			Core:            InternalServiceDocument{ClusterIP: "10.96.10.10", Port: HarnessControlPort},
 			BrowserGateway:  InternalServiceDocument{ClusterIP: "10.96.10.11", Port: PublicHTTPPort},
 			ExecutorGateway: ExecutorServiceDocument{ClusterIP: "10.96.10.12", PublicPort: PublicHTTPPort, InternalPort: HarnessControlPort},
 			LLMProxy:        InternalServiceDocument{ClusterIP: "10.96.10.13", Port: HarnessControlPort},
+			Hydra:           HydraServiceDocument{ClusterIP: "10.96.10.14", PublicPort: HydraPublicPort, AdminPort: HydraAdminPort},
 		},
 		Ingress: IngressDocument{
 			GatewayNamespace: ProductionGatewayNamespace, GatewayName: ProductionGatewayName,
@@ -163,9 +175,9 @@ func validConfigDocument() ConfigDocument {
 		TrustDomain: ProductionTrustDomain,
 		OAuth: OAuthDocument{
 			Hydra: HydraDocument{
-				Issuer: "https://agent.byted.bps.dev", AdminURL: "https://hydra-admin.example.test",
-				PublicOrigin: "https://agent.byted.bps.dev", PublicUpstream: "https://hydra-public.example.test",
-				IntrospectionURL: "https://hydra-admin.example.test/admin/oauth2/introspect",
+				Issuer: "https://agent.byted.bps.dev/", AdminURL: "https://hydra.agentserver.internal:4445",
+				PublicOrigin: "https://agent.byted.bps.dev", PublicUpstream: "https://hydra.agentserver.internal:4444",
+				IntrospectionURL: "https://hydra.agentserver.internal:4445/admin/oauth2/introspect",
 				BrowserClientID:  "agentserver-browser",
 			},
 			ExternalOIDC: ExternalOIDCDocument{
@@ -193,14 +205,14 @@ func validConfigDocument() ConfigDocument {
 			Core: "agentserver-core-secrets", BrowserGateway: "agentserver-browser-secrets",
 			ExecutorGateway: "agentserver-executor-secrets", HarnessPool: "agentserver-pool-secrets",
 			HarnessWorker: "agentserver-worker-secrets", LLMProxy: "agentserver-llmproxy-secrets",
-			ObjectStore: "agentserver-object-store-secrets",
+			ObjectStore: "agentserver-object-store-secrets", Hydra: "agentserver-hydra-secrets",
 		},
 		Network: NetworkDocument{
 			DNSClusterIP:          "10.96.0.10",
 			DNSNamespace:          "kube-system",
 			DNSPodSelector:        map[string]string{"k8s-app": "kube-dns"},
 			CoreExternalEgress:    []EgressRuleDocument{{CIDR: "10.30.0.0/24", Ports: []uint16{443}}},
-			BrowserExternalEgress: []EgressRuleDocument{{CIDR: "10.31.0.0/24", Ports: []uint16{443}}},
+			BrowserExternalEgress: []EgressRuleDocument{},
 			HarnessExternalEgress: []EgressRuleDocument{{CIDR: "10.32.0.0/24", Ports: []uint16{443}}},
 		},
 		Resources: ResourcesDocument{
@@ -209,6 +221,7 @@ func validConfigDocument() ConfigDocument {
 			ExecutorGateway: resources("500m", "512Mi", "2", "2Gi"),
 			HarnessPool:     resources("1", "2Gi", "4", "16Gi"),
 			LLMProxy:        resources("500m", "512Mi", "2", "2Gi"),
+			Hydra:           resources("100m", "128Mi", "1", "512Mi"),
 			RuntimeTmpfs:    "8Gi", CheckpointTmpfs: "2Gi", ScratchTmpfs: "512Mi",
 		},
 	}

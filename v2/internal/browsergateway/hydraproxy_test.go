@@ -30,8 +30,12 @@ func TestHydraPublicProxyForwardsAuthorizationAndTokenWithoutBrowserAuthority(t 
 			}
 			return &http.Response{
 				StatusCode: http.StatusFound,
-				Header:     http.Header{"Location": []string{"https://browser.example/auth/hydra/login?login_challenge=opaque"}},
-				Body:       io.NopCloser(strings.NewReader("")), Request: request,
+				Header: http.Header{
+					"Location":     []string{"https://browser.example/auth/hydra/login?login_challenge=opaque"},
+					"Content-Type": []string{"text/html; charset=utf-8"},
+					"Set-Cookie":   []string{"hydra_csrf=must-not-cross; Secure; HttpOnly"},
+				},
+				Body: io.NopCloser(strings.NewReader("<html>Hydra redirect</html>")), Request: request,
 			}, nil
 		case 2:
 			body, err := io.ReadAll(request.Body)
@@ -61,7 +65,9 @@ func TestHydraPublicProxyForwardsAuthorizationAndTokenWithoutBrowserAuthority(t 
 	authorizeResponse := httptest.NewRecorder()
 	proxy.Routes().ServeHTTP(authorizeResponse, authorize)
 	if authorizeResponse.Code != http.StatusFound ||
-		authorizeResponse.Header().Get("Location") != "https://browser.example/auth/hydra/login?login_challenge=opaque" {
+		authorizeResponse.Header().Get("Location") != "https://browser.example/auth/hydra/login?login_challenge=opaque" ||
+		authorizeResponse.Body.Len() != 0 || authorizeResponse.Header().Get("Content-Length") != "0" ||
+		authorizeResponse.Header().Get("Content-Type") != "" || authorizeResponse.Header().Get("Set-Cookie") != "" {
 		t.Fatalf("authorization response = %d headers=%v", authorizeResponse.Code, authorizeResponse.Header())
 	}
 

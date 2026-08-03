@@ -111,7 +111,13 @@ func (proxy *HydraPublicProxy) forward(
 		http.Error(response, "authorization service returned an invalid response", http.StatusBadGateway)
 		return
 	}
-	if location := result.Header.Get("Location"); location != "" {
+	if result.StatusCode == http.StatusFound {
+		locations := result.Header.Values("Location")
+		if len(locations) != 1 {
+			http.Error(response, "authorization service returned an invalid redirect", http.StatusBadGateway)
+			return
+		}
+		location := locations[0]
 		parsed, err := url.Parse(location)
 		if method != http.MethodGet || err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" ||
 			parsed.User != nil || len(location) > 8192 || strings.ContainsAny(location, "\x00\r\n") {
@@ -119,6 +125,13 @@ func (proxy *HydraPublicProxy) forward(
 			return
 		}
 		response.Header().Set("Location", location)
+		// Hydra 26 returns a text/html convenience body and a Hydra cookie with
+		// its authorization redirect. Neither is browser authority at this
+		// boundary: the validated Location is sufficient and is the only
+		// upstream response value that crosses the proxy.
+		response.Header().Set("Content-Length", "0")
+		response.WriteHeader(result.StatusCode)
+		return
 	}
 	if contentType := result.Header.Get("Content-Type"); contentType != "" {
 		mediaType, _, err := mime.ParseMediaType(contentType)

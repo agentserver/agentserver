@@ -7,9 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/coredb"
 	"github.com/agentserver/agentserver/v2/internal/objectstore"
+)
+
+const (
+	userPromptPutAttempts     = 3
+	userPromptPutRetryBackoff = 25 * time.Millisecond
 )
 
 // EncryptedUserPromptStore persists user prompts through the provider-neutral
@@ -54,16 +60,37 @@ func (store *EncryptedUserPromptStore) PutUserPrompt(
 			Size: pointer.Size, MediaType: pointer.MediaType,
 		},
 	}
-	if err := store.objects.Put(ctx, scope, bytes.NewReader([]byte(request.Prompt))); err != nil {
-		if errors.Is(err, objectstore.ErrObjectConflict) {
+	plaintext := []byte(request.Prompt)
+	var putErr error
+	for attempt := 1; attempt <= userPromptPutAttempts; attempt++ {
+		putErr = store.objects.Put(ctx, scope, bytes.NewReader(plaintext))
+		if putErr == nil {
+			return pointer, nil
+		}
+		if errors.Is(putErr, objectstore.ErrObjectConflict) {
 			return coredb.ObjectPointer{}, publicRunStateError(
 				coredb.ErrorIdempotencyConflict, "PutUserPrompt", "object", pointer.ObjectID,
 				"idempotency key already names different prompt bytes",
 			)
 		}
-		return coredb.ObjectPointer{}, fmt.Errorf("put encrypted user prompt object: %w", err)
+		if err := ctx.Err(); err != nil {
+			return coredb.ObjectPointer{}, errors.Join(err, putErr)
+		}
+		if attempt < userPromptPutAttempts {
+			timer := time.NewTimer(time.Duration(attempt) * userPromptPutRetryBackoff)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return coredb.ObjectPointer{}, errors.Join(ctx.Err(), putErr)
+			}
+		}
 	}
-	return pointer, nil
+	return coredb.ObjectPointer{}, fmt.Errorf(
+		"put encrypted user prompt object after %d exact attempt(s): %w",
+		userPromptPutAttempts,
+		putErr,
+	)
 }
 
 func userPromptObjectPointer(request UserPromptWriteRequest) coredb.ObjectPointer {

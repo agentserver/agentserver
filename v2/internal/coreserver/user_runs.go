@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"strconv"
@@ -43,13 +44,14 @@ type UserRunHandler struct {
 	workload WorkloadAuthorizer
 	users    UserTokenAuthorizer
 	commands UserRunCommands
+	logger   *slog.Logger
 }
 
 func NewUserRunHandler(workload WorkloadAuthorizer, users UserTokenAuthorizer, commands UserRunCommands) (*UserRunHandler, error) {
 	if workload == nil || users == nil || commands == nil {
 		return nil, errors.New("browser workload authorizer, user token authorizer, and user run commands are required")
 	}
-	return &UserRunHandler{workload: workload, users: users, commands: commands}, nil
+	return &UserRunHandler{workload: workload, users: users, commands: commands, logger: slog.Default()}, nil
 }
 
 func (handler *UserRunHandler) Routes() http.Handler {
@@ -178,6 +180,19 @@ func (handler *UserRunHandler) writeServiceError(response http.ResponseWriter, r
 	}
 	var stateError *coredb.StateError
 	if !errors.As(err, &stateError) || stateError.Code == coredb.ErrorDatabase {
+		logger := handler.logger
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.ErrorContext(
+			request.Context(),
+			"core user run request failed",
+			"method", request.Method,
+			"workspace_id", request.PathValue("workspaceId"),
+			"session_id", request.PathValue("sessionId"),
+			"run_id", request.PathValue("runId"),
+			"error", err,
+		)
 		writePublicRunError(response, http.StatusInternalServerError, "internal_error", "core could not complete the user run request", "")
 		return
 	}

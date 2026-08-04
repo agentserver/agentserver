@@ -63,6 +63,25 @@ func TestEncryptedUserPromptStoreMapsOnlyObjectConflictToPublicIdempotencyConfli
 	}
 }
 
+func TestEncryptedUserPromptStoreReconcilesTransientObjectFailureExactly(t *testing.T) {
+	transient := errors.New("TLS handshake timeout")
+	objects := &recordingEncryptedPromptProtocol{errors: []error{transient, nil}}
+	store := &EncryptedUserPromptStore{objects: objects}
+	request := UserPromptWriteRequest{
+		WorkspaceID: userRunWorkspaceID, SessionID: userRunSessionID, ActorID: userRunActorID,
+		IdempotencyKey: "request-transient", Prompt: "hello",
+	}
+
+	pointer, err := store.PutUserPrompt(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if objects.calls != 2 || pointer != userPromptObjectPointer(request) ||
+		!bytes.Equal(objects.plaintext, []byte(request.Prompt)) {
+		t.Fatalf("transient reconciliation = calls %d, pointer %+v, plaintext %q", objects.calls, pointer, objects.plaintext)
+	}
+}
+
 func TestEncryptedUserPromptStoreRejectsInvalidCallsBeforeObjectProtocol(t *testing.T) {
 	if _, err := NewEncryptedUserPromptStore(nil); err == nil {
 		t.Fatal("nil encrypted object store was accepted")
@@ -106,6 +125,7 @@ type recordingEncryptedPromptProtocol struct {
 	scope     objectstore.Scope
 	plaintext []byte
 	err       error
+	errors    []error
 }
 
 func (protocol *recordingEncryptedPromptProtocol) Put(
@@ -116,5 +136,10 @@ func (protocol *recordingEncryptedPromptProtocol) Put(
 	protocol.calls++
 	protocol.scope = scope
 	protocol.plaintext, _ = io.ReadAll(source)
+	if len(protocol.errors) != 0 {
+		err := protocol.errors[0]
+		protocol.errors = protocol.errors[1:]
+		return err
+	}
 	return protocol.err
 }

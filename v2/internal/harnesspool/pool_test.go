@@ -200,7 +200,7 @@ func TestPoolDeterministicCoreStartupRejectionFailsRunWithoutRequeue(t *testing.
 	}
 }
 
-func TestDeterministicCoreStartupFailureClassification(t *testing.T) {
+func TestTerminalStartupFailureClassification(t *testing.T) {
 	tests := []struct {
 		name   string
 		err    error
@@ -212,11 +212,12 @@ func TestDeterministicCoreStartupFailureClassification(t *testing.T) {
 		{name: "throttled", err: &CoreCommandError{HTTPStatus: 429, Code: "throttled"}},
 		{name: "server failure", err: &CoreCommandError{HTTPStatus: 503, Code: "internal_error"}},
 		{name: "transport failure", err: errors.New("connection reset")},
+		{name: "worker stopped before control", err: errors.Join(ErrAttemptStoppedBeforeTerminal, errors.New("exit status 1")), failed: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := deterministicCoreStartupFailure(fmt.Errorf("wrapped: %w", test.err)); got != test.failed {
-				t.Fatalf("deterministicCoreStartupFailure() = %v, want %v", got, test.failed)
+			if got := terminalStartupFailure(fmt.Errorf("wrapped: %w", test.err)); got != test.failed {
+				t.Fatalf("terminalStartupFailure() = %v, want %v", got, test.failed)
 			}
 		})
 	}

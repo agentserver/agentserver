@@ -234,7 +234,7 @@ func (pool *Pool) processAttempt(parent context.Context, scheduled ScheduledRunA
 		leaseErr := <-leaseDone
 		failure := errors.Join(fmt.Errorf("prepare run launch: %w", err), leaseErr)
 		if parent.Err() == nil && leaseErr == nil {
-			abandoned, abandonErr := pool.abandonStoppedPreTurnAttempt(scheduled, deterministicCoreStartupFailure(err))
+			abandoned, abandonErr := pool.abandonStoppedPreTurnAttempt(scheduled, terminalStartupFailure(err))
 			if abandonErr != nil {
 				return PoolFailureCleanup, pool.releaseAfterStartupFailure(parent, scheduled, errors.Join(failure, abandonErr))
 			}
@@ -290,7 +290,7 @@ func (pool *Pool) processAttempt(parent context.Context, scheduled ScheduledRunA
 			failure = errors.New("attempt supervisor stopped before turn acceptance")
 		}
 		if parent.Err() == nil && leaseErr == nil {
-			abandoned, abandonErr := pool.abandonStoppedPreTurnAttempt(scheduled, deterministicCoreStartupFailure(failure))
+			abandoned, abandonErr := pool.abandonStoppedPreTurnAttempt(scheduled, terminalStartupFailure(failure))
 			if abandonErr != nil {
 				return PoolFailureCleanup, pool.releaseAfterStartupFailure(parent, scheduled, errors.Join(failure, abandonErr))
 			}
@@ -586,12 +586,15 @@ func ambiguousPoolCommand(err error, ctx context.Context) bool {
 	return !errors.As(err, &commandError)
 }
 
-// deterministicCoreStartupFailure identifies command rejections which cannot
-// be repaired by immediately claiming another attempt. Contention, throttling,
-// timeouts, server failures and transport ambiguity retain the existing retry
-// path; closed-world 4xx rejections become a visible terminal run instead of
-// an unbounded attempt storm.
-func deterministicCoreStartupFailure(err error) bool {
+// terminalStartupFailure identifies failures which cannot be repaired by
+// immediately claiming another attempt. A closed-world worker process that
+// exits before establishing control is deterministic for its immutable image
+// and deployment configuration. Contention, throttling, provider timeouts,
+// server failures and transport ambiguity retain the retry path.
+func terminalStartupFailure(err error) bool {
+	if errors.Is(err, ErrAttemptStoppedBeforeTerminal) {
+		return true
+	}
 	var commandError *CoreCommandError
 	if !errors.As(err, &commandError) || commandError.HTTPStatus < 400 || commandError.HTTPStatus >= 500 {
 		return false

@@ -173,7 +173,7 @@ func (handler *AGUIHandler) ServeHTTP(response http.ResponseWriter, request *htt
 		ResumeCursor:   resumeCursor,
 	})
 	if err != nil {
-		handler.writeStartError(response, err)
+		handler.writeStartError(response, request, err)
 		return
 	}
 	if err := validateStartResult(started, workspaceID, sessionID); err != nil {
@@ -420,16 +420,33 @@ func (handler *AGUIHandler) writeCursorEvent(ctx context.Context, response http.
 	return handler.writer.WriteEvent(ctx, response, event)
 }
 
-func (handler *AGUIHandler) writeStartError(response http.ResponseWriter, err error) {
+func (handler *AGUIHandler) writeStartError(response http.ResponseWriter, request *http.Request, err error) {
 	var public *BackendHTTPError
 	if errors.As(err, &public) && validBackendHTTPError(public) {
+		if public.Status >= http.StatusInternalServerError {
+			handler.config.Logger.ErrorContext(
+				request.Context(),
+				"browser-gateway StartRun backend failed",
+				"workspace_id", request.PathValue("workspaceId"),
+				"session_id", request.PathValue("sessionId"),
+				"status", public.Status,
+				"code", public.Code,
+				"error", err,
+			)
+		}
 		if public.Status == http.StatusUnauthorized {
 			response.Header().Set("WWW-Authenticate", `Bearer realm="agentserver-browser-api"`)
 		}
 		writeHTTPError(response, public.Status, public.Code, public.Message, public.CurrentRunID)
 		return
 	}
-	handler.config.Logger.Error("browser-gateway StartRun failed", "error", err)
+	handler.config.Logger.ErrorContext(
+		request.Context(),
+		"browser-gateway StartRun failed",
+		"workspace_id", request.PathValue("workspaceId"),
+		"session_id", request.PathValue("sessionId"),
+		"error", err,
+	)
 	writeHTTPError(response, http.StatusBadGateway, "run_backend_unavailable", "run backend is unavailable")
 }
 

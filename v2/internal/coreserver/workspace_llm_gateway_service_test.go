@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"
@@ -356,6 +357,69 @@ func TestWorkspaceLLMGatewayRefreshFailureFencesGrant(t *testing.T) {
 	}
 	if _, err := service.ResolveUpstream(t.Context(), authority); err == nil || marked != 1 {
 		t.Fatalf("refresh failure = %v, marked=%d", err, marked)
+	}
+}
+
+func TestWorkspaceLLMGatewayAccessTokenExpiryUsesStoredTimestampPrecision(t *testing.T) {
+	now := time.Date(2026, 8, 2, 3, 15, 0, 0, time.UTC)
+	expiresAt := now.Add(10*time.Minute + 789*time.Nanosecond)
+	storedExpiresAt := expiresAt.Truncate(time.Microsecond)
+	gateway := testWorkspaceLLMGateway()
+	gateway.BearerTokenType = coredb.LLMGatewayBearerAccessToken
+	binding := coredb.RunLLMGatewayBinding{
+		GatewayID: gateway.ID, ConfigVersion: gateway.Version,
+		GrantUserID: testLLMGatewayUserID, Model: gateway.DefaultModel,
+	}
+	marked := 0
+	store := &fakeWorkspaceLLMGatewayStore{markReauth: func(context.Context, string, int64) error {
+		marked++
+		return nil
+	}}
+	service := newTestWorkspaceLLMGatewayService(t, store, &fakeWorkspaceLLMGatewayProvider{}, now, nil)
+	tokens := testWorkspaceLLMGatewayTokens(expiresAt, "precision")
+
+	// Reproduce a grant produced before sealing canonicalized oauth2's
+	// nanosecond access-token expiry to PostgreSQL timestamptz precision.
+	raw, err := json.Marshal(tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacySealed, err := service.sealer.SealGrantTokenSet(LLMGatewaySealScope{
+		WorkspaceID: gateway.WorkspaceID, GatewayID: gateway.ID,
+		UserID: testLLMGatewayUserID, GatewayVersion: gateway.Version,
+	}, raw)
+	clear(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := coredb.LLMGatewayLiveAuthority{
+		Gateway: gateway, Model: gateway.DefaultModel,
+		Grant: coredb.WorkspaceLLMGatewayGrant{
+			ID: testLLMGatewayGrantID, GatewayID: gateway.ID, WorkspaceID: gateway.WorkspaceID,
+			UserID: testLLMGatewayUserID, OIDCIssuer: gateway.OIDCIssuer, OIDCSubject: "gateway-user-subject",
+			Status: coredb.LLMGatewayGrantStatusActive, SealedTokenSet: legacySealed,
+			BearerExpiresAt: storedExpiresAt, Version: 1,
+		},
+	}
+	resolved, err := service.ResolveUpstream(t.Context(), authority)
+	if err != nil || resolved.Authorization != "Bearer precision-access-token" || marked != 0 {
+		t.Fatalf("resolve legacy precision grant = %+v, %v, marked=%d", resolved, err, marked)
+	}
+
+	canonicalSealed, err := service.sealTokenSet(binding, gateway.WorkspaceID, tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority.Grant.SealedTokenSet = canonicalSealed
+	opened, err := service.openTokenSet(authority, binding)
+	if err != nil || !opened.AccessTokenExpiresAt.Equal(storedExpiresAt) || !opened.IDTokenExpiresAt.Equal(storedExpiresAt) {
+		t.Fatalf("canonical sealed expiries = %s / %s, %v", opened.AccessTokenExpiresAt, opened.IDTokenExpiresAt, err)
+	}
+
+	authority.Grant.SealedTokenSet = legacySealed
+	authority.Grant.BearerExpiresAt = storedExpiresAt.Add(time.Microsecond)
+	if _, err := service.ResolveUpstream(t.Context(), authority); err == nil || marked != 1 {
+		t.Fatalf("material expiry mismatch = %v, marked=%d", err, marked)
 	}
 }
 

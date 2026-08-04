@@ -466,7 +466,7 @@ func (service *WorkspaceLLMGatewayService) ResolveUpstream(
 		return LLMGatewayUpstreamAuthorization{}, err
 	}
 	bearer, expiresAt, err := workspaceLLMGatewayBearer(tokens, authority.Gateway.BearerTokenType)
-	if err != nil || !expiresAt.Equal(authority.Grant.BearerExpiresAt.UTC()) {
+	if err != nil || !sameStoredLLMGatewayTimestamp(expiresAt, authority.Grant.BearerExpiresAt) {
 		service.markGrantReauthRequired(ctx, authority.Grant)
 		service.logGatewayResolutionFailure("sealed_token_metadata")
 		return LLMGatewayUpstreamAuthorization{}, errors.New("sealed workspace LLM gateway token set contradicts grant metadata")
@@ -547,7 +547,7 @@ func (service *WorkspaceLLMGatewayService) refreshGrant(
 		return "", time.Time{}, coredb.LLMGatewayLiveAuthority{}, openErr
 	}
 	bearer, expiry, openErr = workspaceLLMGatewayBearer(latest, raced.Gateway.BearerTokenType)
-	if openErr != nil || !expiry.After(service.now().UTC()) || !expiry.Equal(raced.Grant.BearerExpiresAt.UTC()) {
+	if openErr != nil || !expiry.After(service.now().UTC()) || !sameStoredLLMGatewayTimestamp(expiry, raced.Grant.BearerExpiresAt) {
 		service.logGatewayResolutionFailure("refresh_race_bearer")
 		return "", time.Time{}, coredb.LLMGatewayLiveAuthority{}, errors.New("raced workspace LLM gateway grant is not usable")
 	}
@@ -582,6 +582,12 @@ func (service *WorkspaceLLMGatewayService) sealTokenSet(
 	if err := validateWorkspaceLLMGatewayOIDCTokenSet(tokens); err != nil {
 		return nil, err
 	}
+	// PostgreSQL timestamptz stores microseconds while oauth2 derives access
+	// token expiry from time.Now and therefore commonly retains nanoseconds.
+	// Seal the database-representable value so the ciphertext and its indexed
+	// live-authority projection remain stable across a database round trip.
+	tokens.AccessTokenExpiresAt = canonicalStoredLLMGatewayTimestamp(tokens.AccessTokenExpiresAt)
+	tokens.IDTokenExpiresAt = canonicalStoredLLMGatewayTimestamp(tokens.IDTokenExpiresAt)
 	raw, err := json.Marshal(tokens)
 	if err != nil {
 		return nil, errors.New("encode workspace LLM gateway token set")
@@ -591,6 +597,21 @@ func (service *WorkspaceLLMGatewayService) sealTokenSet(
 		WorkspaceID: workspaceID, GatewayID: binding.GatewayID,
 		UserID: binding.GrantUserID, GatewayVersion: binding.ConfigVersion,
 	}, raw)
+}
+
+func canonicalStoredLLMGatewayTimestamp(value time.Time) time.Time {
+	return value.UTC().Truncate(time.Microsecond)
+}
+
+// sameStoredLLMGatewayTimestamp compares at PostgreSQL's representable
+// timestamptz precision. This accepts legacy grants sealed before expiries were
+// canonicalized, while still rejecting any metadata change of one microsecond
+// or more.
+func sameStoredLLMGatewayTimestamp(sealed, stored time.Time) bool {
+	if sealed.IsZero() || stored.IsZero() {
+		return false
+	}
+	return canonicalStoredLLMGatewayTimestamp(sealed).Equal(canonicalStoredLLMGatewayTimestamp(stored))
 }
 
 func (service *WorkspaceLLMGatewayService) openTokenSet(

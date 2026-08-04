@@ -120,10 +120,10 @@ func bootstrapProductionConfig(
 	}
 	steps := []func(context.Context, pgx.Tx, string, ProductionBootstrap) (int, error){
 		insertProductionWorkspace,
-		insertProductionSession,
 		insertProductionUser,
 		insertProductionIdentity,
 		insertProductionMembership,
+		insertProductionSession,
 		insertProductionExecutor,
 	}
 	for _, step := range steps {
@@ -212,6 +212,8 @@ SELECT EXISTS (
       ON executor.id = $6 AND executor.workspace_id = workspace.id
     WHERE workspace.id = $1
       AND workspace.status = 'active'
+      AND session.creator_id = local_user.id
+      AND session.status = 'active'
       AND local_user.status = 'active'
       AND identity.status = 'active'
       AND member.role = 'owner'
@@ -324,17 +326,17 @@ func insertProductionWorkspace(ctx context.Context, transaction pgx.Tx, schema s
 }
 
 func insertProductionSession(ctx context.Context, transaction pgx.Tx, schema string, bootstrap ProductionBootstrap) (int, error) {
-	insert := fmt.Sprintf("INSERT INTO %s.sessions (id, workspace_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", schema)
-	created, err := productionInsert(ctx, transaction, "insert production session", insert, bootstrap.SessionID, bootstrap.WorkspaceID)
+	insert := fmt.Sprintf("INSERT INTO %s.sessions (id, workspace_id, creator_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING", schema)
+	created, err := productionInsert(ctx, transaction, "insert production session", insert, bootstrap.SessionID, bootstrap.WorkspaceID, bootstrap.UserID)
 	if err != nil {
 		return 0, err
 	}
-	query := fmt.Sprintf("SELECT workspace_id::text FROM %s.sessions WHERE id = $1 FOR UPDATE", schema)
-	var workspaceID string
-	if err := transaction.QueryRow(ctx, query, bootstrap.SessionID).Scan(&workspaceID); err != nil {
+	query := fmt.Sprintf("SELECT workspace_id::text, creator_id::text, status FROM %s.sessions WHERE id = $1 FOR UPDATE", schema)
+	var workspaceID, creatorID, status string
+	if err := transaction.QueryRow(ctx, query, bootstrap.SessionID).Scan(&workspaceID, &creatorID, &status); err != nil {
 		return 0, databaseError("verify production session", err)
 	}
-	if workspaceID != bootstrap.WorkspaceID {
+	if workspaceID != bootstrap.WorkspaceID || creatorID != bootstrap.UserID || status != UserSessionStatusActive {
 		return 0, productionBootstrapConflict("session", bootstrap.SessionID)
 	}
 	return created, nil

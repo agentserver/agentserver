@@ -288,6 +288,77 @@
         }
       }
     },
+    "/v2/workspaces/{workspaceId}/sessions": {
+      "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}],
+      "get": {
+        "operationId": "listUserSessions",
+        "description": "Lists only active sessions created by the current token subject in the bound workspace, ordered by latest activity.",
+        "security": [{"browserGatewayMTLS": [], "browserOAuth": ["sessions:read"]}],
+        "responses": {
+          "200": {"description": "Current-user active sessions", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ListUserSessionsResponse"}}}},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"}
+        }
+      },
+      "post": {
+        "operationId": "createUserSession",
+        "description": "Creates or exactly recovers one current-user session in the bound active workspace.",
+        "security": [{"browserGatewayMTLS": [], "browserOAuth": ["sessions:create"]}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateUserSessionRequest"}}}},
+        "responses": {
+          "200": {"description": "Exact idempotent retry", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateUserSessionResponse"}}}},
+          "201": {"description": "Session created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateUserSessionResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
+    "/v2/workspaces/{workspaceId}/sessions/{sessionId}": {
+      "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/SessionId"}],
+      "get": {
+        "operationId": "getUserSession",
+        "security": [{"browserGatewayMTLS": [], "browserOAuth": ["sessions:read"]}],
+        "responses": {
+          "200": {"description": "Current-user session", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UserSessionState"}}}},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"}
+        }
+      },
+      "patch": {
+        "operationId": "updateUserSession",
+        "description": "Renames an active current-user session with optimistic concurrency.",
+        "security": [{"browserGatewayMTLS": [], "browserOAuth": ["sessions:update"]}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateUserSessionRequest"}}}},
+        "responses": {
+          "200": {"description": "Updated session", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateUserSessionResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
+    "/v2/workspaces/{workspaceId}/sessions/{sessionId}/actions/archive": {
+      "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/SessionId"}],
+      "post": {
+        "operationId": "archiveUserSession",
+        "description": "Archives an idle current-user session without deleting its runs or events.",
+        "security": [{"browserGatewayMTLS": [], "browserOAuth": ["sessions:archive"]}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ArchiveUserSessionRequest"}}}},
+        "responses": {
+          "200": {"description": "Archived session", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ArchiveUserSessionResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
     "/v2/workspaces/{workspaceId}/sessions/{sessionId}/runs": {
       "parameters": [
         {"$ref": "#/components/parameters/WorkspaceId"},
@@ -639,6 +710,48 @@
           "version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
           "changed": {"type": "boolean"}
         }
+      },
+      "UserSessionState": {
+        "type": "object", "additionalProperties": false,
+        "required": ["sessionId", "workspaceId", "title", "status", "version", "createdAt", "updatedAt"],
+        "properties": {
+          "sessionId": {"$ref": "#/components/schemas/UUID"},
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "title": {"type": "string", "minLength": 1, "maxLength": 256},
+          "status": {"enum": ["active", "archived"]},
+          "activeRunId": {"$ref": "#/components/schemas/UUID"},
+          "version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "ListUserSessionsResponse": {
+        "type": "object", "additionalProperties": false, "required": ["sessions"],
+        "properties": {"sessions": {"type": "array", "maxItems": 256, "items": {"$ref": "#/components/schemas/UserSessionState"}}}
+      },
+      "CreateUserSessionRequest": {
+        "type": "object", "additionalProperties": false, "required": ["sessionId", "title"],
+        "properties": {"sessionId": {"$ref": "#/components/schemas/UUID"}, "title": {"type": "string", "minLength": 1, "maxLength": 256}}
+      },
+      "CreateUserSessionResponse": {
+        "type": "object", "additionalProperties": false, "required": ["session", "created"],
+        "properties": {"session": {"$ref": "#/components/schemas/UserSessionState"}, "created": {"type": "boolean"}}
+      },
+      "UpdateUserSessionRequest": {
+        "type": "object", "additionalProperties": false, "required": ["title", "expectedVersion"],
+        "properties": {"title": {"type": "string", "minLength": 1, "maxLength": 256}, "expectedVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}}
+      },
+      "UpdateUserSessionResponse": {
+        "type": "object", "additionalProperties": false, "required": ["session", "changed"],
+        "properties": {"session": {"$ref": "#/components/schemas/UserSessionState"}, "changed": {"type": "boolean"}}
+      },
+      "ArchiveUserSessionRequest": {
+        "type": "object", "additionalProperties": false, "required": ["expectedVersion"],
+        "properties": {"expectedVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}}
+      },
+      "ArchiveUserSessionResponse": {
+        "type": "object", "additionalProperties": false, "required": ["session", "changed"],
+        "properties": {"session": {"$ref": "#/components/schemas/UserSessionState"}, "changed": {"type": "boolean"}}
       },
       "CreateUserRunRequest": {
         "type": "object", "additionalProperties": false, "required": ["prompt"],

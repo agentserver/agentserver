@@ -93,7 +93,6 @@ func TestPostgreSQLProductionBootstrapAdoptsOnlyExactPreLedgerAuthority(t *testi
 	quotedSchema := quoteIdentifier(schema)
 	for _, step := range []func(context.Context, pgx.Tx, string, ProductionBootstrap) (int, error){
 		insertProductionWorkspace,
-		insertProductionSession,
 		insertProductionUser,
 		insertProductionIdentity,
 		insertProductionMembership,
@@ -104,6 +103,17 @@ func TestPostgreSQLProductionBootstrapAdoptsOnlyExactPreLedgerAuthority(t *testi
 			connection.Close(context.Background())
 			t.Fatal(err)
 		}
+	}
+	// Version 16 predates creator_id, title, and status. Build the historical
+	// row shape explicitly so this remains an upgrade test instead of calling
+	// the current-schema bootstrap helper against an old schema.
+	if _, err := transaction.Exec(
+		t.Context(), fmt.Sprintf("INSERT INTO %s.sessions (id, workspace_id) VALUES ($1, $2)", quotedSchema),
+		bootstrap.SessionID, bootstrap.WorkspaceID,
+	); err != nil {
+		_ = transaction.Rollback(context.Background())
+		connection.Close(context.Background())
+		t.Fatal(err)
 	}
 	if err := transaction.Commit(t.Context()); err != nil {
 		connection.Close(context.Background())

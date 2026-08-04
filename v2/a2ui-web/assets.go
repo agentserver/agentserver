@@ -29,6 +29,9 @@ var authorizationJavaScript []byte
 //go:embed llm-gateways.js
 var llmGatewaysJavaScript []byte
 
+//go:embed sessions.js
+var sessionsJavaScript []byte
+
 //go:embed styles.css
 var styleSheet []byte
 
@@ -44,6 +47,7 @@ var assets = map[string]asset{
 	"/reference/protocol.js":     {contentType: "text/javascript; charset=utf-8", contents: protocolJavaScript},
 	"/reference/auth.js":         {contentType: "text/javascript; charset=utf-8", contents: authorizationJavaScript},
 	"/reference/llm-gateways.js": {contentType: "text/javascript; charset=utf-8", contents: llmGatewaysJavaScript},
+	"/reference/sessions.js":     {contentType: "text/javascript; charset=utf-8", contents: sessionsJavaScript},
 	"/reference/styles.css":      {contentType: "text/css; charset=utf-8", contents: styleSheet},
 }
 

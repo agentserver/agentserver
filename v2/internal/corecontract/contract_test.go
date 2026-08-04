@@ -302,17 +302,25 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	archiveWorkspacePath := ArchiveWorkspacePath("{workspaceId}")
 	membersPath := WorkspaceMembersPath("{workspaceId}")
 	memberPath := WorkspaceMemberPath("{workspaceId}", "{memberId}")
+	sessionsPath := UserSessionsPath("{workspaceId}")
+	sessionPath := UserSessionPath("{workspaceId}", "{sessionId}")
+	archiveSessionPath := ArchiveUserSessionPath("{workspaceId}", "{sessionId}")
 	llmGatewayCollectionPath := WorkspaceLLMGatewaysPath("{workspaceId}")
 	llmGatewayAuthorizePath := AuthorizeLLMGatewayPath("{workspaceId}", "{gatewayId}")
 	llmGatewayCompletePath := CompleteLLMGatewayAuthorizationPath("{workspaceId}", "{gatewayId}")
 	llmGatewayRevokePath := RevokeLLMGatewayGrantPath("{workspaceId}", "{gatewayId}")
 	llmGatewayDisablePath := DisableLLMGatewayPath("{workspaceId}", "{gatewayId}")
-	if len(document.Paths) != 17 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
+	if len(document.Paths) != 20 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
 		document.Paths[cancelPath].Post.OperationID != "cancelUserRun" || document.Paths[readPath].Get.OperationID != "readUserRunEvents" {
 		t.Fatalf("public OpenAPI paths = %+v", document.Paths)
 	}
 	if document.Paths[decidePath].Post.OperationID != "decideUserApproval" {
 		t.Fatalf("public approval path = %+v", document.Paths[decidePath])
+	}
+	if document.Paths[sessionsPath].Get.OperationID != "listUserSessions" || document.Paths[sessionsPath].Post.OperationID != "createUserSession" ||
+		document.Paths[sessionPath].Get.OperationID != "getUserSession" || document.Paths[sessionPath].Patch.OperationID != "updateUserSession" ||
+		document.Paths[archiveSessionPath].Post.OperationID != "archiveUserSession" {
+		t.Fatalf("public Browser session paths = %+v", document.Paths)
 	}
 	if document.Paths[createExecutorPath].Post.OperationID != "createExecutorResource" ||
 		document.Paths[createExecutorPath].Get.OperationID != "listExecutorResources" ||
@@ -391,6 +399,11 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 		{document.Paths[cancelPath].Post.Security, BrowserOAuthRunsCancelScope},
 		{document.Paths[readPath].Get.Security, BrowserOAuthRunsReadScope},
 		{document.Paths[decidePath].Post.Security, BrowserOAuthApprovalsDecideScope},
+		{document.Paths[sessionsPath].Get.Security, BrowserOAuthSessionsReadScope},
+		{document.Paths[sessionsPath].Post.Security, BrowserOAuthSessionsCreateScope},
+		{document.Paths[sessionPath].Get.Security, BrowserOAuthSessionsReadScope},
+		{document.Paths[sessionPath].Patch.Security, BrowserOAuthSessionsUpdateScope},
+		{document.Paths[archiveSessionPath].Post.Security, BrowserOAuthSessionsArchiveScope},
 	} {
 		if len(authority.security) != 1 || len(authority.security[0]) != 2 || authority.security[0]["browserGatewayMTLS"] == nil ||
 			!slices.Equal(authority.security[0]["browserOAuth"], []string{authority.permission}) {
@@ -428,6 +441,14 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "CompleteWorkspaceLLMGatewayAuthorizationResponse", reflect.TypeFor[CompleteWorkspaceLLMGatewayAuthorizationResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "RevokeWorkspaceLLMGatewayGrantResponse", reflect.TypeFor[RevokeWorkspaceLLMGatewayGrantResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "DisableWorkspaceLLMGatewayResponse", reflect.TypeFor[DisableWorkspaceLLMGatewayResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "UserSessionState", reflect.TypeFor[UserSessionState]())
+	assertSchemaFields(t, document.Components.Schemas, "ListUserSessionsResponse", reflect.TypeFor[ListUserSessionsResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "CreateUserSessionRequest", reflect.TypeFor[CreateUserSessionRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "CreateUserSessionResponse", reflect.TypeFor[CreateUserSessionResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "UpdateUserSessionRequest", reflect.TypeFor[UpdateUserSessionRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "UpdateUserSessionResponse", reflect.TypeFor[UpdateUserSessionResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "ArchiveUserSessionRequest", reflect.TypeFor[ArchiveUserSessionRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "ArchiveUserSessionResponse", reflect.TypeFor[ArchiveUserSessionResponse]())
 	var enrollmentTokenProperty struct {
 		WriteOnly bool `json:"writeOnly"`
 		Sensitive bool `json:"x-agentserver-sensitive"`

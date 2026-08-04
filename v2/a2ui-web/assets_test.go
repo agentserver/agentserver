@@ -20,6 +20,7 @@ func TestHandlerServesClosedReferenceAssetsWithSecurityHeaders(t *testing.T) {
 		{path: "/reference/protocol.js", contentType: "text/javascript; charset=utf-8", marker: "SSEDecoder"},
 		{path: "/reference/auth.js", contentType: "text/javascript; charset=utf-8", marker: "createAuthorizationTransaction"},
 		{path: "/reference/llm-gateways.js", contentType: "text/javascript; charset=utf-8", marker: "createBrowserBinding"},
+		{path: "/reference/sessions.js", contentType: "text/javascript; charset=utf-8", marker: "validateUserSessionList"},
 		{path: "/reference/styles.css", contentType: "text/css; charset=utf-8", marker: ".app-shell"},
 	}
 	handler := Handler()

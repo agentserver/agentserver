@@ -38,6 +38,9 @@ func (s *StateStore) CancelRun(ctx context.Context, command CancelRunCommand) (C
 		if run.WorkspaceID != command.WorkspaceID {
 			return CancelRunResult{}, commandError(ErrorNotFound, operation, "run", run.ID, "run does not exist in the requested workspace")
 		}
+		if run.ActorID != command.ActorID {
+			return CancelRunResult{}, commandError(ErrorNotFound, operation, "run", run.ID, "active authorized run does not exist")
+		}
 		role, err := s.readCancellationMemberRole(ctx, transaction, command.WorkspaceID, command.ActorID)
 		if err != nil {
 			return CancelRunResult{}, err

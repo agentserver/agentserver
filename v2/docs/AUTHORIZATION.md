@@ -150,10 +150,10 @@ Platform introspection 使用同一结构：`authority=platform`，`global_permi
 
 | Permission | 资源范围 | 含义 | 初始状态 |
 |---|---|---|---|
-| `sessions:read` | workspace + self | 列出和读取当前用户自己的 session、标题与 durable transcript | 待实现 |
-| `sessions:create` | workspace + self | 新建当前用户的 session | 待实现 |
-| `sessions:update` | workspace + self | 重命名当前用户的 session | 待实现 |
-| `sessions:archive` | workspace + self | 归档当前用户的 session；不物理删除 | 待实现 |
+| `sessions:read` | workspace + self | 列出和读取当前用户自己的 session、标题与 durable transcript | session 元数据已实现；durable transcript 待实现 |
+| `sessions:create` | workspace + self | 新建当前用户的 session | 已有 |
+| `sessions:update` | workspace + self | 重命名当前用户的 session | 已有 |
+| `sessions:archive` | workspace + self | 归档当前用户的 session；不物理删除 | 已有 |
 | `runs:read` | workspace + self | 读取 session 的 run 状态、历史和 canonical event projection | 已有 event API，待补历史 API |
 | `runs:create` | workspace + self | 在 session 没有 active run 时创建一次 run | 已有 |
 | `runs:cancel` | workspace + self | 取消当前用户 session 中的 queued/running run | 已有 |
@@ -224,7 +224,7 @@ Browser scope。
 | `POST /v2/workspaces/{workspaceId}/sessions` | `sessions:create` | creator 固定为 token subject |
 | `GET /v2/workspaces/{workspaceId}/sessions/{sessionId}` | `sessions:read` | session creator 为 token subject |
 | `PATCH /v2/workspaces/{workspaceId}/sessions/{sessionId}` | `sessions:update` | session creator 为 token subject |
-| `POST /v2/workspaces/{workspaceId}/sessions/{sessionId}:archive` | `sessions:archive` | session creator 为 token subject |
+| `POST /v2/workspaces/{workspaceId}/sessions/{sessionId}/actions/archive` | `sessions:archive` | session creator 为 token subject |
 | `GET /v2/workspaces/{workspaceId}/sessions/{sessionId}/transcript` | `sessions:read` + `runs:read` | session creator 为 token subject |
 | `POST /v2/workspaces/{workspaceId}/sessions/{sessionId}/runs` | `runs:create` | session creator 为 token subject |
 | `GET /v2/workspaces/{workspaceId}/runs/{runId}/events` | `runs:read` | run actor 为 token subject |

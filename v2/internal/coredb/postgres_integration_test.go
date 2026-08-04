@@ -514,6 +514,10 @@ WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, schema)
 	}
 
 	wantConstraints := map[string]bool{
+		"sessions_creator_fk":                                     false,
+		"sessions_status_valid":                                   false,
+		"sessions_title_bounded":                                  false,
+		"sessions_title_canonical":                                false,
 		"approvals_execution_unique":                              false,
 		"approvals_nonce_unique":                                  false,
 		"approvals_execution_scope_fk":                            false,
@@ -615,6 +619,7 @@ WHERE constraint_schema = $1`, schema)
 	}
 
 	wantIndexes := map[string]bool{
+		"sessions_creator_activity_idx":                      false,
 		"approvals_run_status_expiry_idx":                    false,
 		"brain_tool_catalogs_session_created_idx":            false,
 		"checkpoints_session_created_idx":                    false,
@@ -672,7 +677,10 @@ func assertKernelConstraints(t *testing.T, connection *pgx.Conn, schema string) 
 	if _, err := connection.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.workspaces (id, status) VALUES ($1, 'active'), ($2, 'active')", quotedSchema), workspaceID, secondWorkspaceID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := connection.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.sessions (id, workspace_id) VALUES ($1, $2), ($3, $2)", quotedSchema), sessionID, workspaceID, secondSessionID); err != nil {
+	if _, err := connection.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.users (id, status) VALUES ($1, 'active')", quotedSchema), actorID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connection.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.sessions (id, workspace_id, creator_id) VALUES ($1, $2, $4), ($3, $2, $4)", quotedSchema), sessionID, workspaceID, secondSessionID, actorID); err != nil {
 		t.Fatal(err)
 	}
 	insertRun := fmt.Sprintf(`

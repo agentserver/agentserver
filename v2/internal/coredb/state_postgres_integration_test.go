@@ -191,6 +191,12 @@ func TestPostgreSQLAuthorizedCreateRunAndCommittedEventReadRecheckMembership(t *
 	if _, err := pool.Exec(t.Context(), userQuery, actorID); err != nil {
 		t.Fatal(err)
 	}
+	setCreatorQuery := fmt.Sprintf("UPDATE %s.sessions SET creator_id = $1 WHERE id = $2", quoteIdentifier(schema))
+	for _, ownedSessionID := range []string{sessionID, viewerSessionID} {
+		if _, err := pool.Exec(t.Context(), setCreatorQuery, actorID, ownedSessionID); err != nil {
+			t.Fatal(err)
+		}
+	}
 	membershipQuery := fmt.Sprintf("INSERT INTO %s.workspace_members (workspace_id, user_id, role) VALUES ($1, $2, $3)", quoteIdentifier(schema))
 	if _, err := pool.Exec(t.Context(), membershipQuery, workspaceID, actorID, "developer"); err != nil {
 		t.Fatal(err)
@@ -1136,8 +1142,13 @@ func insertStateTestSession(t *testing.T, pool *pgxpool.Pool, schema, workspaceI
 
 func insertStateTestSessionOnly(t *testing.T, pool *pgxpool.Pool, schema, workspaceID, sessionID string) {
 	t.Helper()
-	query := fmt.Sprintf("INSERT INTO %s.sessions (id, workspace_id) VALUES ($1, $2)", quoteIdentifier(schema))
-	if _, err := pool.Exec(t.Context(), query, sessionID, workspaceID); err != nil {
+	const creatorID = "99000000-0000-4000-8000-000000000001"
+	userQuery := fmt.Sprintf("INSERT INTO %s.users (id, status) VALUES ($1, 'active') ON CONFLICT (id) DO NOTHING", quoteIdentifier(schema))
+	if _, err := pool.Exec(t.Context(), userQuery, creatorID); err != nil {
+		t.Fatal(err)
+	}
+	query := fmt.Sprintf("INSERT INTO %s.sessions (id, workspace_id, creator_id) VALUES ($1, $2, $3)", quoteIdentifier(schema))
+	if _, err := pool.Exec(t.Context(), query, sessionID, workspaceID, creatorID); err != nil {
 		t.Fatal(err)
 	}
 }

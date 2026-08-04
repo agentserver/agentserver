@@ -39,8 +39,19 @@ import {
   workspaceLLMGatewaysPath,
 } from './llm-gateways.js'
 
+import {
+  archiveUserSessionPath,
+  newSessionID,
+  sessionTitleFromPrompt,
+  userSessionPath,
+  userSessionsPath,
+  validateSessionTitle,
+  validateUserSessionList,
+  validateUserSessionMutation,
+  validateUserSessionState,
+} from './sessions.js'
+
 const developmentWorkspaceID = '40000000-0000-4000-8000-000000000004'
-const developmentSessionID = '50000000-0000-4000-8000-000000000005'
 
 const elements = {
   healthPill: requiredElement('health-pill'),
@@ -52,7 +63,13 @@ const elements = {
   connectionError: requiredElement('connection-error'),
   loginButton: requiredElement('login-button'),
   workspaceID: requiredElement('workspace-id'),
-  sessionID: requiredElement('session-id'),
+  sessionTitle: requiredElement('session-title'),
+  sessionRefresh: requiredElement('session-refresh'),
+  newSessionButton: requiredElement('new-session-button'),
+  sessionList: requiredElement('session-list'),
+  sessionEmpty: requiredElement('session-empty'),
+  sessionError: requiredElement('session-error'),
+  sessionCount: requiredElement('session-count'),
   runState: requiredElement('run-state'),
   runStateLabel: requiredElement('run-state-label'),
   cancelButton: requiredElement('cancel-button'),
@@ -106,6 +123,7 @@ let cancellationPending = false
 const approvalCommands = new Map()
 let gatewayView = { phase: 'idle', gateways: [], error: '' }
 let gatewayAuthorization = null
+let sessionView = { phase: 'signed-out', sessions: [], selectedID: '', error: '' }
 
 void initialize()
 
@@ -116,7 +134,6 @@ async function initialize() {
     try { initialWorkspaceID = validateScopeID('workspace ID', requestedWorkspaceID) } catch { /* keep the safe development default */ }
   }
   elements.workspaceID.value = initialWorkspaceID
-  elements.sessionID.value = developmentSessionID
   elements.gatewayCallbackURI.textContent = new URL('/auth/llm-gateway/callback', window.location.origin).href
   elements.connectionForm.addEventListener('submit', beginAuthorization)
   elements.connectionButton.addEventListener('click', toggleConnection)
@@ -129,6 +146,8 @@ async function initialize() {
   })
   window.addEventListener('message', completeWorkspaceGatewayAuthorization)
   elements.composer.addEventListener('submit', sendPrompt)
+  elements.newSessionButton.addEventListener('click', () => createAndSelectSession('New conversation'))
+  elements.sessionRefresh.addEventListener('click', () => loadUserSessions(sessionView.selectedID))
   elements.reconnectButton.addEventListener('click', () => streamRun(true))
   elements.cancelButton.addEventListener('click', cancelActiveRun)
   elements.prompt.addEventListener('input', renderComposer)
@@ -180,12 +199,10 @@ async function beginAuthorization(event) {
   elements.connectionError.hidden = true
   try {
     const workspaceID = validateScopeID('workspace ID', elements.workspaceID.value.trim())
-    const sessionID = validateScopeID('session ID', elements.sessionID.value.trim())
     const generated = await createAuthorizationTransaction({
       config: authorizationConfig,
       origin: window.location.origin,
       workspaceID,
-      sessionID,
       cryptoAPI: window.crypto,
     })
     storeAuthorizationTransaction(window.sessionStorage, generated.transaction)
@@ -194,14 +211,13 @@ async function beginAuthorization(event) {
     elements.connectionError.textContent = safeErrorMessage(error)
     elements.connectionError.hidden = false
     elements.loginButton.disabled = false
-    elements.loginButton.textContent = 'Continue with development OIDC →'
+    elements.loginButton.textContent = 'Continue with SSO →'
   }
 }
 
 async function completeAuthorization(callback) {
   const transaction = consumeAuthorizationTransaction(window.sessionStorage, authorizationConfig, callback)
   elements.workspaceID.value = validateScopeID('workspace ID', transaction.workspaceID)
-  elements.sessionID.value = validateScopeID('session ID', transaction.sessionID)
   if (callback.error) {
     throw new Error(`identity provider returned ${callback.error}${callback.errorDescription ? `: ${callback.errorDescription}` : ''}`)
   }
@@ -214,12 +230,13 @@ async function completeAuthorization(callback) {
   })
   if (!response.ok) throw await responseError(response)
   const token = validateTokenResponse(await boundedJSONResponse(response, 128 * 1024), authorizationConfig.scopes)
-  establishConnection(validateBearer(token.accessToken), transaction.workspaceID, transaction.sessionID)
+  establishConnection(validateBearer(token.accessToken), transaction.workspaceID)
+  await loadUserSessions()
 }
 
-function establishConnection(token, workspaceID, sessionID) {
+function establishConnection(token, workspaceID) {
   clearGatewayAuthorization()
-  connection = { token, workspaceID, sessionID }
+  connection = { token, workspaceID, sessionID: '' }
   elements.connectionError.hidden = true
   elements.connectionLayer.hidden = true
   elements.connectionButton.textContent = 'Disconnect'
@@ -229,8 +246,8 @@ function establishConnection(token, workspaceID, sessionID) {
   cancellationPending = false
   approvalCommands.clear()
   gatewayView = { phase: 'idle', gateways: [], error: '' }
+  sessionView = { phase: 'idle', sessions: [], selectedID: '', error: '' }
   renderAll()
-  elements.prompt.focus()
 }
 
 function toggleConnection() {
@@ -251,12 +268,193 @@ function toggleConnection() {
   clearGatewayAuthorization()
   closeGatewaySettings()
   gatewayView = { phase: 'idle', gateways: [], error: '' }
+  sessionView = { phase: 'signed-out', sessions: [], selectedID: '', error: '' }
   elements.gatewayButton.hidden = true
   viewState = createViewState()
   elements.connectionButton.textContent = 'Sign in'
   elements.prompt.value = ''
   showConnectionLayer()
   renderAll()
+}
+
+async function loadUserSessions(preferredSessionID = '') {
+  if (!connection || sessionView.phase === 'loading') return
+  const currentConnection = connection
+  sessionView = { ...sessionView, phase: 'loading', error: '' }
+  renderSessions()
+  try {
+    const response = await sessionAPIRequest(userSessionsPath(currentConnection.workspaceID), currentConnection, { method: 'GET' })
+    if (!response.ok) throw await responseError(response)
+    const sessions = [...validateUserSessionList(await boundedJSONResponse(response, 1024 * 1024), currentConnection.workspaceID)]
+    if (connection !== currentConnection) return
+    const requested = preferredSessionID || currentConnection.sessionID
+    const selected = sessions.find((session) => session.sessionId === requested) || sessions[0] || null
+    sessionView = { phase: 'ready', sessions, selectedID: selected?.sessionId || '', error: '' }
+    currentConnection.sessionID = selected?.sessionId || ''
+    resetConversationView()
+    if (selected) elements.prompt.focus()
+  } catch (error) {
+    if (connection !== currentConnection) return
+    sessionView = { ...sessionView, phase: 'error', error: safeErrorMessage(error) }
+  }
+  renderAll()
+}
+
+async function createAndSelectSession(title, throwOnError = false) {
+  if (!connection || activeRun || ['loading', 'creating', 'archiving', 'renaming'].includes(sessionView.phase)) return null
+  const currentConnection = connection
+  const sessionID = newSessionID(window.crypto)
+  const canonicalTitle = validateSessionTitle(title)
+  sessionView = { ...sessionView, phase: 'creating', error: '' }
+  renderSessions()
+  try {
+    const response = await sessionAPIRequest(userSessionsPath(currentConnection.workspaceID), currentConnection, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: sessionID, title: canonicalTitle }),
+    })
+    if (!response.ok) throw await responseError(response)
+    const result = validateUserSessionMutation(
+      await boundedJSONResponse(response, 256 * 1024), currentConnection.workspaceID, sessionID, 'created',
+    )
+    if (connection !== currentConnection) return null
+    const sessions = [result.session, ...sessionView.sessions.filter((session) => session.sessionId !== sessionID)]
+    sessionView = { phase: 'ready', sessions, selectedID: sessionID, error: '' }
+    currentConnection.sessionID = sessionID
+    resetConversationView()
+    renderAll()
+    elements.prompt.focus()
+    return result.session
+  } catch (error) {
+    if (connection === currentConnection) {
+      sessionView = { ...sessionView, phase: 'error', error: safeErrorMessage(error) }
+      renderAll()
+    }
+    if (throwOnError) throw error
+    return null
+  }
+}
+
+async function refreshUserSessionMetadata(sessionID) {
+  if (!connection) return
+  const currentConnection = connection
+  try {
+    const response = await sessionAPIRequest(
+      userSessionPath(currentConnection.workspaceID, sessionID), currentConnection, { method: 'GET' },
+    )
+    if (!response.ok) throw await responseError(response)
+    const session = validateUserSessionState(
+      await boundedJSONResponse(response, 256 * 1024), currentConnection.workspaceID, sessionID,
+    )
+    if (connection !== currentConnection) return
+    const remaining = sessionView.sessions.filter((item) => item.sessionId !== sessionID)
+    const sessions = session.status === 'active' ? [session, ...remaining] : remaining
+    const selectedID = session.status === 'active' ? currentConnection.sessionID
+      : currentConnection.sessionID === sessionID ? sessions[0]?.sessionId || '' : currentConnection.sessionID
+    currentConnection.sessionID = selectedID
+    sessionView = { phase: 'ready', sessions, selectedID, error: '' }
+  } catch (error) {
+    if (connection !== currentConnection) return
+    sessionView = { ...sessionView, phase: 'error', error: `Conversation metadata refresh failed: ${safeErrorMessage(error)}` }
+  }
+  renderSessions()
+  renderStatus()
+}
+
+function selectUserSession(sessionID) {
+  if (!connection || sessionID === connection.sessionID) return
+  const selected = sessionView.sessions.find((session) => session.sessionId === sessionID)
+  if (!selected) return
+  if (activeRun && !window.confirm('Switch conversations? The current server-side run will continue, but this page will stop following its stream.')) return
+  if (activeRun?.controller) activeRun.controller.abort()
+  activeRun = null
+  cancellationPending = false
+  approvalCommands.clear()
+  connection.sessionID = selected.sessionId
+  sessionView = { ...sessionView, selectedID: selected.sessionId, error: '' }
+  resetConversationView()
+  renderAll()
+  elements.prompt.focus()
+}
+
+async function renameUserSession(session) {
+  if (!connection || activeRun || sessionView.phase !== 'ready') return
+  const proposed = window.prompt('Rename conversation', session.title)
+  if (proposed === null) return
+  let title
+  try {
+    title = validateSessionTitle(proposed.trim())
+  } catch (error) {
+    sessionView = { ...sessionView, error: safeErrorMessage(error) }
+    renderSessions()
+    return
+  }
+  const currentConnection = connection
+  sessionView = { ...sessionView, phase: 'renaming', error: '' }
+  renderSessions()
+  try {
+    const response = await sessionAPIRequest(userSessionPath(currentConnection.workspaceID, session.sessionId), currentConnection, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, expectedVersion: session.version }),
+    })
+    if (!response.ok) throw await responseError(response)
+    const result = validateUserSessionMutation(
+      await boundedJSONResponse(response, 256 * 1024), currentConnection.workspaceID, session.sessionId, 'changed',
+    )
+    if (connection !== currentConnection) return
+    sessionView = {
+      ...sessionView, phase: 'ready', error: '',
+      sessions: sessionView.sessions.map((item) => item.sessionId === result.session.sessionId ? result.session : item),
+    }
+  } catch (error) {
+    if (connection !== currentConnection) return
+    sessionView = { ...sessionView, phase: 'error', error: safeErrorMessage(error) }
+  }
+  renderAll()
+}
+
+async function archiveUserSession(session) {
+  if (!connection || activeRun || sessionView.phase !== 'ready' ||
+      !window.confirm(`Archive “${session.title}”? Its durable run history will be retained.`)) return
+  const currentConnection = connection
+  sessionView = { ...sessionView, phase: 'archiving', error: '' }
+  renderSessions()
+  try {
+    const response = await sessionAPIRequest(archiveUserSessionPath(currentConnection.workspaceID, session.sessionId), currentConnection, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expectedVersion: session.version }),
+    })
+    if (!response.ok) throw await responseError(response)
+    const result = validateUserSessionMutation(
+      await boundedJSONResponse(response, 256 * 1024), currentConnection.workspaceID, session.sessionId, 'changed',
+    )
+    if (connection !== currentConnection || result.session.status !== 'archived') return
+    const sessions = sessionView.sessions.filter((item) => item.sessionId !== session.sessionId)
+    const selected = currentConnection.sessionID === session.sessionId ? sessions[0] || null
+      : sessions.find((item) => item.sessionId === currentConnection.sessionID) || null
+    currentConnection.sessionID = selected?.sessionId || ''
+    sessionView = { phase: 'ready', sessions, selectedID: selected?.sessionId || '', error: '' }
+    resetConversationView()
+  } catch (error) {
+    if (connection !== currentConnection) return
+    sessionView = { ...sessionView, phase: 'error', error: safeErrorMessage(error) }
+  }
+  renderAll()
+}
+
+function resetConversationView() {
+  viewState = createViewState()
+  activeRun = null
+  cancellationPending = false
+  approvalCommands.clear()
+}
+
+function sessionAPIRequest(path, currentConnection, options) {
+  return fetch(browserAPIEndpoint(path), {
+    mode: 'cors', cache: 'no-store', credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer',
+    ...options,
+    headers: { Accept: 'application/json', Authorization: `Bearer ${currentConnection.token}`, ...(options.headers || {}) },
+  })
 }
 
 function openGatewaySettings() {
@@ -566,7 +764,7 @@ function renderGatewaySettings() {
 function showConnectionLayer(error = null) {
   elements.connectionLayer.hidden = false
   elements.loginButton.disabled = !authorizationConfig
-  elements.loginButton.textContent = authorizationConfig ? 'Continue with development OIDC →' : 'Authorization unavailable'
+  elements.loginButton.textContent = authorizationConfig ? 'Continue with SSO →' : 'Authorization unavailable'
   if (error) {
     elements.connectionError.textContent = safeErrorMessage(error)
     elements.connectionError.hidden = false
@@ -576,11 +774,19 @@ function showConnectionLayer(error = null) {
   window.setTimeout(() => (authorizationConfig ? elements.loginButton : elements.workspaceID).focus(), 0)
 }
 
-function sendPrompt(event) {
+async function sendPrompt(event) {
   event.preventDefault()
   if (!connection || activeRun) return
   const prompt = elements.prompt.value.trim()
   if (!prompt) return
+  if (!connection.sessionID) {
+    try {
+      const created = await createAndSelectSession(sessionTitleFromPrompt(prompt), true)
+      if (!created || !connection?.sessionID) return
+    } catch {
+      return
+    }
+  }
   const nonce = randomID()
   const messageID = `user-${nonce}`
   viewState = {
@@ -670,6 +876,7 @@ async function streamRun(reconnect) {
     if (activeRun === run) activeRun = null
     cancellationPending = false
     renderAll()
+    await refreshUserSessionMetadata(connection.sessionID)
   } catch (error) {
     run.controller = null
     if (activeRun !== run || controller.signal.aborted) return
@@ -677,6 +884,7 @@ async function streamRun(reconnect) {
       activeRun = null
       cancellationPending = false
       renderAll()
+      await refreshUserSessionMetadata(connection.sessionID)
       return
     }
     viewState = {
@@ -871,6 +1079,7 @@ async function boundedJSONResponse(response, maximumBytes) {
 }
 
 function renderAll() {
+  renderSessions()
   renderStatus()
   renderTranscript()
   renderApprovals()
@@ -878,6 +1087,47 @@ function renderAll() {
   renderSurfaces()
   renderDiagnostics()
   renderComposer()
+}
+
+function renderSessions() {
+  const connected = Boolean(connection)
+  const busy = ['loading', 'creating', 'renaming', 'archiving'].includes(sessionView.phase)
+  elements.newSessionButton.disabled = !connected || busy || Boolean(activeRun)
+  elements.newSessionButton.textContent = sessionView.phase === 'creating' ? 'Creating…' : '＋ New conversation'
+  elements.sessionRefresh.disabled = !connected || busy
+  elements.sessionError.hidden = !sessionView.error
+  elements.sessionError.textContent = sessionView.error
+  elements.sessionEmpty.hidden = !connected || sessionView.phase === 'loading' || sessionView.sessions.length !== 0
+  const count = sessionView.sessions.length
+  elements.sessionCount.textContent = !connected ? 'Sign in to load history'
+    : sessionView.phase === 'loading' ? 'Loading conversations…'
+      : `${count} conversation${count === 1 ? '' : 's'}`
+  const fragment = document.createDocumentFragment()
+  for (const session of sessionView.sessions) {
+    const item = createElement('div', `session-item${session.sessionId === sessionView.selectedID ? ' selected' : ''}`)
+    const select = createElement('button', 'session-select')
+    select.type = 'button'
+    select.disabled = busy
+    select.title = session.sessionId
+    select.append(
+      createElement('strong', '', session.title),
+      createElement('span', '', formatSessionActivity(session.updatedAt)),
+    )
+    select.addEventListener('click', () => selectUserSession(session.sessionId))
+    const actions = createElement('div', 'session-actions')
+    const rename = createElement('button', 'session-action', 'Rename')
+    rename.type = 'button'
+    rename.disabled = busy || Boolean(activeRun)
+    rename.addEventListener('click', () => renameUserSession(session))
+    const archive = createElement('button', 'session-action danger', 'Archive')
+    archive.type = 'button'
+    archive.disabled = busy || Boolean(activeRun) || Boolean(session.activeRunId)
+    archive.addEventListener('click', () => archiveUserSession(session))
+    actions.append(rename, archive)
+    item.append(select, actions)
+    fragment.append(item)
+  }
+  elements.sessionList.replaceChildren(fragment)
 }
 
 function renderStatus() {
@@ -889,7 +1139,9 @@ function renderStatus() {
   elements.runStateLabel.textContent = labels[viewState.status] || viewState.status
   elements.workspaceFact.textContent = connection ? shortID(connection.workspaceID) : 'not connected'
   elements.workspaceFact.title = connection?.workspaceID || ''
-  elements.sessionFact.textContent = connection ? shortID(connection.sessionID) : 'not connected'
+  const selectedSession = connection ? sessionView.sessions.find((session) => session.sessionId === connection.sessionID) : null
+  elements.sessionTitle.textContent = selectedSession?.title || 'New conversation'
+  elements.sessionFact.textContent = connection?.sessionID ? shortID(connection.sessionID) : connectedSessionLabel()
   elements.sessionFact.title = connection?.sessionID || ''
   elements.runFact.textContent = viewState.runID ? shortID(viewState.runID) : '—'
   elements.runFact.title = viewState.runID
@@ -1084,8 +1336,9 @@ function renderDiagnostics() {
 
 function renderComposer() {
   const busy = Boolean(activeRun)
-  elements.prompt.disabled = !connection || busy
-  elements.sendButton.disabled = !connection || busy || !elements.prompt.value.trim()
+  const sessionsBusy = ['loading', 'creating', 'renaming', 'archiving'].includes(sessionView.phase)
+  elements.prompt.disabled = !connection || busy || sessionsBusy
+  elements.sendButton.disabled = !connection || busy || sessionsBusy || !elements.prompt.value.trim()
   if (!connection) {
     elements.composerHint.textContent = 'Sign in with Authorization Code + PKCE to begin.'
   } else if (viewState.status === 'disconnected') {
@@ -1094,6 +1347,8 @@ function renderComposer() {
     elements.composerHint.textContent = 'Core accepted explicit cancellation; waiting for bounded attempt cleanup.'
   } else if (busy) {
     elements.composerHint.textContent = `Streaming committed AG-UI events${activeRun.reconnects ? ` · reconnect ${activeRun.reconnects}` : ''}`
+  } else if (sessionsBusy) {
+    elements.composerHint.textContent = 'Preparing conversation history…'
   } else {
     elements.composerHint.textContent = 'Enter sends a new run; Shift+Enter adds a line.'
   }
@@ -1158,6 +1413,20 @@ function shortID(value) {
 function formatTimestamp(value) {
   const timestamp = new Date(value)
   return Number.isNaN(timestamp.valueOf()) ? '—' : timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
+
+function formatSessionActivity(value) {
+  const timestamp = new Date(value)
+  if (Number.isNaN(timestamp.valueOf())) return 'Unknown activity'
+  const today = new Date()
+  const sameDay = timestamp.getFullYear() === today.getFullYear() && timestamp.getMonth() === today.getMonth() && timestamp.getDate() === today.getDate()
+  return sameDay
+    ? timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : timestamp.toLocaleDateString([], { month: 'short', day: 'numeric' })
+}
+
+function connectedSessionLabel() {
+  return connection ? 'not selected' : 'not connected'
 }
 
 function safeErrorMessage(error) {

@@ -47,18 +47,23 @@ func (s *StateStore) createRun(ctx context.Context, command CreateRunCommand, re
 	}
 	return withStateTransaction(ctx, s, operation, func(transaction pgx.Tx) (CreateRunResult, error) {
 		sessionQuery := fmt.Sprintf(`
-SELECT s.workspace_id::text, s.active_run_id::text, s.version, w.status
+SELECT s.workspace_id::text, s.creator_id::text, s.status,
+       s.active_run_id::text, s.version, w.status
 FROM %s AS s
 JOIN %s AS w ON w.id = s.workspace_id
 WHERE s.id = $1
 FOR UPDATE OF s
 FOR SHARE OF w`, s.table("sessions"), s.table("workspaces"))
 		var sessionWorkspaceID string
+		var sessionCreatorID string
+		var sessionStatus string
 		var activeRunID *string
 		var sessionVersion int64
 		var workspaceStatus string
 		if err := transaction.QueryRow(ctx, sessionQuery, command.SessionID).Scan(
 			&sessionWorkspaceID,
+			&sessionCreatorID,
+			&sessionStatus,
 			&activeRunID,
 			&sessionVersion,
 			&workspaceStatus,
@@ -71,6 +76,9 @@ FOR SHARE OF w`, s.table("sessions"), s.table("workspaces"))
 		if sessionWorkspaceID != command.WorkspaceID {
 			return CreateRunResult{}, commandError(ErrorNotFound, operation, "session", command.SessionID, "session is not in the requested workspace")
 		}
+		if sessionStatus != UserSessionStatusActive {
+			return CreateRunResult{}, commandError(ErrorInvalidState, operation, "session", command.SessionID, "session is not active")
+		}
 		if requireUserMembership {
 			role, err := s.readWorkspaceMemberRole(ctx, transaction, command.WorkspaceID, command.ActorID)
 			if err != nil {
@@ -78,6 +86,9 @@ FOR SHARE OF w`, s.table("sessions"), s.table("workspaces"))
 			}
 			if role == "viewer" {
 				return CreateRunResult{}, commandError(ErrorForbidden, operation, "workspace", command.WorkspaceID, "workspace role cannot create runs")
+			}
+			if sessionCreatorID != command.ActorID {
+				return CreateRunResult{}, commandError(ErrorNotFound, operation, "session", command.SessionID, "active authorized session does not exist")
 			}
 			command.ExpectedSessionVersion = sessionVersion
 		}

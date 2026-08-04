@@ -141,6 +141,11 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 	if err != nil {
 		return err
 	}
+	sessionProxy, err := browsergateway.NewSessionResourceProxy(backend)
+	if err != nil {
+		return err
+	}
+	conversationAPI := browserConversationRoutes(aguiHandler.Routes(), sessionProxy.Routes())
 	readiness := &browserReadiness{}
 	referenceHandler := a2uiweb.Handler()
 	if splitPublicOrigins {
@@ -156,7 +161,7 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 	var handler http.Handler
 	if splitPublicOrigins {
 		handler = browserGatewaySplitRoutes(
-			aguiHandler.Routes(), authConfig, readiness, referenceHandler, frontendOrigin, apiOrigin,
+			conversationAPI, authConfig, readiness, referenceHandler, frontendOrigin, apiOrigin,
 		)
 	} else {
 		hydraPublicUpstream, err := requiredBrowserConfiguration(getenv, browserHydraPublicUpstreamEnvironment)
@@ -190,7 +195,7 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 			return err
 		}
 		handler = browserGatewayRoutesWithReference(
-			aguiHandler.Routes(), executorHandler.Routes(), llmGatewayProxy.Routes(), authProxy.Routes(), authConfig,
+			conversationAPI, executorHandler.Routes(), llmGatewayProxy.Routes(), authProxy.Routes(), authConfig,
 			hydraProxy.Routes(), developmentOIDCHandler, readiness, referenceHandler,
 		)
 	}
@@ -299,6 +304,15 @@ func mountBrowserConversationAPIRoutes(mux *http.ServeMux, agui http.Handler) {
 	mux.Handle("/v2/", agui)
 }
 
+func browserConversationRoutes(agui, sessions http.Handler) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle(corecontract.UserSessionCollectionRoutePattern, sessions)
+	mux.Handle(corecontract.UserSessionResourceRoutePattern, sessions)
+	mux.Handle(corecontract.UserSessionArchiveRoutePattern, sessions)
+	mux.Handle("/v2/", agui)
+	return mux
+}
+
 func mountBrowserFrontendRoutes(mux *http.ServeMux, auth, authConfig, hydra, developmentOIDC http.Handler) {
 	mux.Handle(corecontract.LLMGatewayOIDCCallbackPath, browsergateway.NewLLMGatewayCallbackHandler())
 	mux.Handle("/auth/", auth)
@@ -400,7 +414,7 @@ func browserCORSMiddleware(next http.Handler, allowedOrigin string) http.Handler
 		}
 		if request.Method == http.MethodOptions {
 			requestedMethod := request.Header.Get("Access-Control-Request-Method")
-			if len(origins) != 1 || (requestedMethod != http.MethodGet && requestedMethod != http.MethodPost) {
+			if len(origins) != 1 || (requestedMethod != http.MethodGet && requestedMethod != http.MethodPost && requestedMethod != http.MethodPatch) {
 				writeBrowserRouteError(response, http.StatusForbidden, "invalid_preflight", "browser API preflight is not allowed")
 				return
 			}
@@ -414,7 +428,7 @@ func browserCORSMiddleware(next http.Handler, allowedOrigin string) http.Handler
 					return
 				}
 			}
-			response.Header().Set("Access-Control-Allow-Methods", "GET, POST")
+			response.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH")
 			response.Header().Set("Access-Control-Allow-Headers", "Accept, Authorization, Content-Type, Idempotency-Key")
 			response.Header().Set("Access-Control-Max-Age", "600")
 			response.Header().Add("Vary", "Access-Control-Request-Method")

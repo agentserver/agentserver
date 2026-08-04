@@ -39,7 +39,7 @@ export function validateAuthorizationConfig(value) {
   })
 }
 
-export async function createAuthorizationTransaction({ config, origin, workspaceID, sessionID, cryptoAPI, nowMS = Date.now() }) {
+export async function createAuthorizationTransaction({ config, origin, workspaceID, cryptoAPI, nowMS = Date.now() }) {
   config = validateAuthorizationConfig(config)
   const canonicalOrigin = validateHTTPSOrigin(origin)
   if (!cryptoAPI || typeof cryptoAPI.getRandomValues !== 'function' || !cryptoAPI.subtle ||
@@ -73,7 +73,6 @@ export async function createAuthorizationTransaction({ config, origin, workspace
       verifier,
       nonce,
       workspaceID,
-      sessionID,
       createdAtMS: nowMS,
       clientID: config.clientId,
       tokenEndpoint: config.tokenEndpoint,
@@ -194,7 +193,7 @@ export function validateTokenResponse(value, expectedScopes) {
 
 function validateStoredTransaction(value) {
   requireExactObject(value, [
-    'version', 'state', 'verifier', 'nonce', 'workspaceID', 'sessionID', 'createdAtMS',
+    'version', 'state', 'verifier', 'nonce', 'workspaceID', 'createdAtMS',
     'clientID', 'tokenEndpoint', 'redirectURI', 'scopes', 'audience', 'apiOrigin',
   ], 'PKCE transaction')
   if (value.version !== 1 || !validPKCESecret(value.state) || !validPKCESecret(value.verifier) || !validPKCESecret(value.nonce) ||
@@ -202,7 +201,7 @@ function validateStoredTransaction(value) {
     throw new Error('PKCE transaction fields are invalid')
   }
   for (const [label, text, maximum] of [
-    ['workspace ID', value.workspaceID, 128], ['session ID', value.sessionID, 128], ['client ID', value.clientID, 512],
+    ['workspace ID', value.workspaceID, 128], ['client ID', value.clientID, 512],
     ['token endpoint', value.tokenEndpoint, 2048], ['redirect URI', value.redirectURI, 4096], ['audience', value.audience, 512],
   ]) validateProtocolText(label, text, maximum)
   validateOAuthEndpoint('token', value.tokenEndpoint, '/oauth2/token')

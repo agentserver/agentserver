@@ -100,6 +100,29 @@ func TestBrowserGatewayExecutorRoutesAreClosedBeforeAGUIFallback(t *testing.T) {
 	}
 }
 
+func TestBrowserConversationRoutesDispatchSessionsBeforeAGUIFallback(t *testing.T) {
+	sessionCalls, aguiCalls := 0, 0
+	sessions := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		sessionCalls++
+		response.WriteHeader(http.StatusOK)
+	})
+	agui := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		aguiCalls++
+		response.WriteHeader(http.StatusAccepted)
+	})
+	handler := browserConversationRoutes(agui, sessions)
+	workspaceID := "40000000-0000-4000-8000-000000000004"
+	sessionID := "50000000-0000-4000-8000-000000000005"
+
+	sessionResponse := httptest.NewRecorder()
+	handler.ServeHTTP(sessionResponse, httptest.NewRequest(http.MethodGet, corecontract.UserSessionsPath(workspaceID), nil))
+	aguiResponse := httptest.NewRecorder()
+	handler.ServeHTTP(aguiResponse, httptest.NewRequest(http.MethodPost, "/v2/workspaces/"+workspaceID+"/sessions/"+sessionID+"/agui", nil))
+	if sessionResponse.Code != http.StatusOK || aguiResponse.Code != http.StatusAccepted || sessionCalls != 1 || aguiCalls != 1 {
+		t.Fatalf("conversation routing = session:%d/%d agui:%d/%d", sessionResponse.Code, sessionCalls, aguiResponse.Code, aguiCalls)
+	}
+}
+
 func TestBrowserGatewaySplitOriginsRestrictHostsAndApplyExactCORS(t *testing.T) {
 	apiCalls := 0
 	agui := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
@@ -133,6 +156,18 @@ func TestBrowserGatewaySplitOriginsRestrictHostsAndApplyExactCORS(t *testing.T) 
 		preflightResponse.Header().Get("Access-Control-Allow-Origin") != "https://browser.byted.bps.dev" ||
 		preflightResponse.Header().Get("Access-Control-Allow-Credentials") != "" || apiCalls != 0 {
 		t.Fatalf("preflight = %d headers=%v API calls=%d", preflightResponse.Code, preflightResponse.Header(), apiCalls)
+	}
+	patchPreflight := httptest.NewRequest(http.MethodOptions, "http://browser-gateway.byted.bps.dev"+corecontract.UserSessionPath(
+		"40000000-0000-4000-8000-000000000004", "50000000-0000-4000-8000-000000000005",
+	), nil)
+	patchPreflight.Host = "browser-gateway.byted.bps.dev"
+	patchPreflight.Header.Set("Origin", "https://browser.byted.bps.dev")
+	patchPreflight.Header.Set("Access-Control-Request-Method", http.MethodPatch)
+	patchPreflight.Header.Set("Access-Control-Request-Headers", "authorization, content-type")
+	patchPreflightResponse := httptest.NewRecorder()
+	handler.ServeHTTP(patchPreflightResponse, patchPreflight)
+	if patchPreflightResponse.Code != http.StatusNoContent || !strings.Contains(patchPreflightResponse.Header().Get("Access-Control-Allow-Methods"), "PATCH") {
+		t.Fatalf("PATCH preflight = %d headers=%v", patchPreflightResponse.Code, patchPreflightResponse.Header())
 	}
 
 	request := httptest.NewRequest(http.MethodPost, "http://browser-gateway.byted.bps.dev"+aguiPath, nil)

@@ -449,6 +449,14 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	if err != nil {
 		return err
 	}
+	userSessionHandler, err := coreserver.NewUserSessionHandler(
+		browserAuthorizer,
+		browserUserAuthorizer,
+		coreserver.StateStoreUserSessionCommands{Store: store},
+	)
+	if err != nil {
+		return err
+	}
 	var workspaceLLMGatewayHandler *coreserver.WorkspaceLLMGatewayHandler
 	if llmGatewayService != nil {
 		workspaceLLMGatewayHandler, err = coreserver.NewWorkspaceLLMGatewayHandler(
@@ -514,6 +522,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	handler := http.NewServeMux()
 	handler.Handle("/internal/v2/auth/", loginBridgeHandler.Routes())
 	mountCorePlatformResourceRoutes(handler, platformResourceHandler)
+	mountCoreUserSessionRoutes(handler, userSessionHandler)
 	handler.Handle("/v2/", userRunHandler.Routes())
 	mountCoreWorkspaceLLMGatewayRoutes(handler, workspaceLLMGatewayHandler)
 	handler.Handle(corecontract.DecideUserApprovalRoutePattern, userApprovalHandler)
@@ -582,6 +591,16 @@ func mountCorePlatformResourceRoutes(mux *http.ServeMux, handler *coreserver.Pla
 	mux.Handle(corecontract.WorkspaceArchiveRoutePattern, routes)
 	mux.Handle(corecontract.WorkspaceMembersCollectionPattern, routes)
 	mux.Handle(corecontract.WorkspaceMemberResourceRoutePattern, routes)
+}
+
+func mountCoreUserSessionRoutes(mux *http.ServeMux, handler *coreserver.UserSessionHandler) {
+	if mux == nil || handler == nil {
+		return
+	}
+	routes := handler.Routes()
+	mux.Handle(corecontract.UserSessionCollectionRoutePattern, routes)
+	mux.Handle(corecontract.UserSessionResourceRoutePattern, routes)
+	mux.Handle(corecontract.UserSessionArchiveRoutePattern, routes)
 }
 
 func mountCoreRunCapabilityRoutes(mux *http.ServeMux, handler http.Handler) {

@@ -126,11 +126,6 @@ func bootstrapInsecureDevelopmentConfig(
 		return result, err
 	}
 	result.CreatedRows += created
-	created, err = insertDevelopmentSession(ctx, transaction, quotedSchema, bootstrap)
-	if err != nil {
-		return result, err
-	}
-	result.CreatedRows += created
 	created, err = insertDevelopmentUser(ctx, transaction, quotedSchema, bootstrap)
 	if err != nil {
 		return result, err
@@ -142,6 +137,11 @@ func bootstrapInsecureDevelopmentConfig(
 	}
 	result.CreatedRows += created
 	created, err = insertDevelopmentMembership(ctx, transaction, quotedSchema, bootstrap)
+	if err != nil {
+		return result, err
+	}
+	result.CreatedRows += created
+	created, err = insertDevelopmentSession(ctx, transaction, quotedSchema, bootstrap)
 	if err != nil {
 		return result, err
 	}
@@ -253,17 +253,17 @@ func insertDevelopmentWorkspace(ctx context.Context, transaction pgx.Tx, schema 
 }
 
 func insertDevelopmentSession(ctx context.Context, transaction pgx.Tx, schema string, bootstrap InsecureDevelopmentBootstrap) (int, error) {
-	insert := fmt.Sprintf("INSERT INTO %s.sessions (id, workspace_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", schema)
-	created, err := developmentInsert(ctx, transaction, "insert development session", insert, bootstrap.SessionID, bootstrap.WorkspaceID)
+	insert := fmt.Sprintf("INSERT INTO %s.sessions (id, workspace_id, creator_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING", schema)
+	created, err := developmentInsert(ctx, transaction, "insert development session", insert, bootstrap.SessionID, bootstrap.WorkspaceID, bootstrap.ActorID)
 	if err != nil {
 		return 0, err
 	}
-	query := fmt.Sprintf("SELECT workspace_id::text FROM %s.sessions WHERE id = $1 FOR UPDATE", schema)
-	var workspaceID string
-	if err := transaction.QueryRow(ctx, query, bootstrap.SessionID).Scan(&workspaceID); err != nil {
+	query := fmt.Sprintf("SELECT workspace_id::text, creator_id::text, status FROM %s.sessions WHERE id = $1 FOR UPDATE", schema)
+	var workspaceID, creatorID, status string
+	if err := transaction.QueryRow(ctx, query, bootstrap.SessionID).Scan(&workspaceID, &creatorID, &status); err != nil {
 		return 0, databaseError("verify development session", err)
 	}
-	if workspaceID != bootstrap.WorkspaceID {
+	if workspaceID != bootstrap.WorkspaceID || creatorID != bootstrap.ActorID || status != UserSessionStatusActive {
 		return 0, developmentBootstrapConflict("session", bootstrap.SessionID)
 	}
 	return created, nil

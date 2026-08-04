@@ -31,7 +31,8 @@ SELECT wm.role, s.version
 FROM %s AS s
 JOIN %s AS w ON w.id = s.workspace_id
 JOIN %s AS wm ON wm.workspace_id = s.workspace_id AND wm.user_id = $3
-WHERE s.id = $1 AND s.workspace_id = $2 AND w.status = 'active'`,
+WHERE s.id = $1 AND s.workspace_id = $2 AND s.creator_id = $3
+  AND s.status = 'active' AND w.status = 'active'`,
 		s.table("sessions"), s.table("workspaces"), s.table("workspace_members"))
 	var role string
 	var version int64
@@ -61,7 +62,7 @@ SELECT %s
 FROM %s AS r
 JOIN %s AS w ON w.id = r.workspace_id AND w.status = 'active'
 JOIN %s AS wm ON wm.workspace_id = r.workspace_id AND wm.user_id = $3
-WHERE r.id = $1 AND r.workspace_id = $2
+WHERE r.id = $1 AND r.workspace_id = $2 AND r.actor_id = $3
 FOR SHARE OF r, w, wm`,
 			runColumns("r"), s.table("runs"), s.table("workspaces"), s.table("workspace_members"))
 		run, err := scanRun(transaction.QueryRow(ctx, runQuery, command.RunID, command.WorkspaceID, command.ActorID))

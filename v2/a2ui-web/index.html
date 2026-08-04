@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
-    <meta name="description" content="Agentserver v2 AG-UI and A2UI reference client">
-    <title>Agentserver v2 · Reference Web</title>
+    <meta name="description" content="AgentServer Browser workspace conversations">
+    <title>AgentServer Browser</title>
     <link rel="stylesheet" href="/reference/styles.css">
     <script type="module" src="/reference/app.js"></script>
   </head>
@@ -15,8 +15,8 @@
         <a class="brand" href="/" aria-label="Agentserver v2 reference web">
           <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
           <span>
-            <strong>Agentserver</strong>
-            <small>v2 protocol desk</small>
+            <strong>AgentServer</strong>
+            <small>Browser</small>
           </span>
         </a>
         <div class="topbar-actions">
@@ -27,11 +27,26 @@
       </header>
 
       <main class="workspace">
+        <aside class="session-panel" aria-label="Conversation history">
+          <div class="session-panel-heading">
+            <div><p class="eyebrow">Workspace</p><h2>Conversations</h2></div>
+            <button class="session-refresh" id="session-refresh" type="button" aria-label="Refresh conversations">↻</button>
+          </div>
+          <button class="new-session-button" id="new-session-button" type="button" disabled><span aria-hidden="true">＋</span> New conversation</button>
+          <p class="session-error" id="session-error" role="alert" hidden></p>
+          <div class="session-list" id="session-list" aria-live="polite"></div>
+          <div class="session-empty" id="session-empty">
+            <strong>No conversations yet</strong>
+            <span>Create one here, or type a message and Browser will create it automatically.</span>
+          </div>
+          <div class="session-panel-footer"><span id="session-count">Sign in to load history</span></div>
+        </aside>
+
         <section class="conversation-panel" aria-label="Agent conversation">
           <div class="conversation-heading">
             <div>
-              <p class="eyebrow">AG-UI stream</p>
-              <h1>One prompt in. Durable events out.</h1>
+              <p class="eyebrow">Agent conversation</p>
+              <h1 id="session-title">New conversation</h1>
             </div>
             <div class="run-heading-actions">
               <button class="cancel-button" id="cancel-button" type="button" hidden>Cancel run</button>
@@ -44,9 +59,9 @@
 
           <div class="transcript" id="transcript" aria-live="polite">
             <div class="welcome-card" id="welcome-card">
-              <p class="eyebrow">Reference client</p>
-              <h2>The browser talks only to browser-gateway.</h2>
-              <p>Each send creates one closed-world AG-UI request. Model execution remains inside the short-lived harness, while executor work flows through agentx and stock exec-server.</p>
+              <p class="eyebrow">AgentServer Browser</p>
+              <h2>Start a conversation in this workspace.</h2>
+              <p>Create a conversation from the sidebar or simply send your first message. Browser will create a durable session before starting the run.</p>
               <div class="protocol-route" aria-label="Protocol route">
                 <span>Browser</span><b>AG-UI</b><span>Core</span><b>harness</b><span>Codex</span><b>MCP</b><span>agentx</span>
               </div>
@@ -77,7 +92,7 @@
           <section class="activity-section run-inspector">
             <div class="section-heading">
               <div><p class="eyebrow">Authority</p><h2>Run inspector</h2></div>
-              <span class="phase-badge">INSECURE DEV</span>
+              <span class="phase-badge">CORE AUTH</span>
             </div>
             <dl class="run-facts">
               <div><dt>Workspace</dt><dd id="workspace-fact">not connected</dd></div>
@@ -123,17 +138,16 @@
     <div class="connection-layer" id="connection-layer" role="dialog" aria-modal="true" aria-labelledby="connection-title">
       <form class="connection-card" id="connection-form">
         <div class="connection-art" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
-        <p class="eyebrow">OIDC development authority</p>
-        <h2 id="connection-title">Sign in to the reference client</h2>
+        <p class="eyebrow">Workspace authority</p>
+        <h2 id="connection-title">Sign in to AgentServer Browser</h2>
         <p class="connection-copy">The browser uses Authorization Code + PKCE. The short-lived PKCE transaction stays in sessionStorage; the resulting access token exists only in this page's memory.</p>
 
-        <div class="scope-grid">
+        <div class="scope-grid single-field">
           <label>Workspace ID<input id="workspace-id" name="workspace" autocomplete="off" spellcheck="false" required></label>
-          <label>Session ID<input id="session-id" name="session" autocomplete="off" spellcheck="false" required></label>
         </div>
         <p class="form-error" id="connection-error" role="alert" hidden></p>
-        <button class="connect-button" id="login-button" type="submit">Continue with development OIDC <span aria-hidden="true">→</span></button>
-        <p class="connection-note">browser-gateway never receives an external IdP password. Core maps only the pre-provisioned issuer/subject pair to this development user.</p>
+        <button class="connect-button" id="login-button" type="submit">Continue with SSO <span aria-hidden="true">→</span></button>
+        <p class="connection-note">The access token is workspace-bound and held only in this page's memory.</p>
       </form>
     </div>
 

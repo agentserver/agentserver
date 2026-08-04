@@ -34,7 +34,6 @@ test('PKCE transaction binds browser state without storing an access token', asy
     config,
     origin: 'https://127.0.0.1:17444',
     workspaceID: '40000000-0000-4000-8000-000000000004',
-    sessionID: '50000000-0000-4000-8000-000000000005',
     cryptoAPI: webcrypto,
     nowMS: 1_800_000_000_000,
   })
@@ -46,6 +45,7 @@ test('PKCE transaction binds browser state without storing an access token', asy
   assert.equal(authorizationURL.searchParams.get('state'), generated.transaction.state)
   assert.equal(authorizationURL.searchParams.get('resource'), 'urn:agentserver:workspace:40000000-0000-4000-8000-000000000004')
   assert.equal('accessToken' in generated.transaction, false)
+  assert.equal('sessionID' in generated.transaction, false)
   assert.equal(generated.transaction.apiOrigin, config.apiOrigin)
 
   const values = new Map()
@@ -89,7 +89,6 @@ test('callback and token validation fail closed on replay, mismatch, and persist
     config,
     origin: 'https://browser.example',
     workspaceID: '40000000-0000-4000-8000-000000000004',
-    sessionID: '50000000-0000-4000-8000-000000000005',
     cryptoAPI: webcrypto,
     nowMS: 1_800_000_000_000,
   })
@@ -138,7 +137,6 @@ test('split-origin authorization uses the dedicated Hydra authority and persists
     config: splitOriginConfig,
     origin: 'https://browser.byted.bps.dev',
     workspaceID: '40000000-0000-4000-8000-000000000004',
-    sessionID: '50000000-0000-4000-8000-000000000005',
     cryptoAPI: webcrypto,
     nowMS: 1_800_000_000_000,
   })

@@ -8,10 +8,142 @@
   "servers": [{"url": "https://agentserver-core"}],
   "security": [{"browserGatewayMTLS": [], "browserOAuth": ["runs:read"]}],
   "paths": {
+    "/v2/workspaces": {
+      "get": {
+        "operationId": "listWorkspaces",
+        "description": "Lists the active user's persisted workspace memberships using global Platform read authority.",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["workspaces:read"]}],
+        "responses": {
+          "200": {"description": "Granted workspaces", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ListWorkspacesResponse"}}}},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "503": {"$ref": "#/components/responses/PublicError"}
+        }
+      },
+      "post": {
+        "operationId": "createWorkspace",
+        "description": "Creates an active workspace and its first owner membership in one transaction.",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["workspaces:create"]}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateWorkspaceRequest"}}}},
+        "responses": {
+          "200": {"description": "Exact workspace already exists", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateWorkspaceResponse"}}}},
+          "201": {"description": "Workspace created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateWorkspaceResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
+    "/v2/workspaces/{workspaceId}": {
+      "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}],
+      "get": {
+        "operationId": "getWorkspace",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["workspaces:read"]}],
+        "responses": {
+          "200": {"description": "Workspace state", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WorkspaceState"}}}},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"}
+        }
+      },
+      "patch": {
+        "operationId": "updateWorkspace",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["workspaces:update"]}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateWorkspaceRequest"}}}},
+        "responses": {
+          "200": {"description": "Updated workspace", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateWorkspaceResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
+    "/v2/workspaces/{workspaceId}/actions/archive": {
+      "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}],
+      "post": {
+        "operationId": "archiveWorkspace",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["workspaces:archive"]}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ArchiveWorkspaceRequest"}}}},
+        "responses": {
+          "200": {"description": "Archived workspace", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ArchiveWorkspaceResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
+    "/v2/workspaces/{workspaceId}/members": {
+      "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}],
+      "get": {
+        "operationId": "listWorkspaceMembers",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["members:read"]}],
+        "responses": {
+          "200": {"description": "Active workspace members", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ListWorkspaceMembersResponse"}}}},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"}
+        }
+      },
+      "post": {
+        "operationId": "addWorkspaceMember",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["members:add"]}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AddWorkspaceMemberRequest"}}}},
+        "responses": {
+          "200": {"description": "Exact member already exists", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AddWorkspaceMemberResponse"}}}},
+          "201": {"description": "Member added", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AddWorkspaceMemberResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
+    "/v2/workspaces/{workspaceId}/members/{memberId}": {
+      "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/MemberId"}],
+      "patch": {
+        "operationId": "updateWorkspaceMember",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["members:update"]}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateWorkspaceMemberRequest"}}}},
+        "responses": {
+          "200": {"description": "Updated member", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateWorkspaceMemberResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      },
+      "delete": {
+        "operationId": "removeWorkspaceMember",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["members:remove"]}],
+        "responses": {
+          "200": {"description": "Member removal result", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RemoveWorkspaceMemberResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
     "/v2/workspaces/{workspaceId}/executors": {
       "parameters": [
         {"$ref": "#/components/parameters/WorkspaceId"}
       ],
+      "get": {
+        "operationId": "listExecutorResources",
+        "description": "Lists bounded executor state for one active workspace.",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["executors:read"]}],
+        "responses": {
+          "200": {"description": "Workspace executors", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ListExecutorResourcesResponse"}}}},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"}
+        }
+      },
       "post": {
         "operationId": "createExecutorResource",
         "description": "Creates one enrolling executor identity. Core rechecks that the current user is an owner of the active workspace.",
@@ -20,6 +152,22 @@
         "responses": {
           "200": {"description": "Exact executor identity already exists", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateExecutorResourceResponse"}}}},
           "201": {"description": "Executor identity created in enrolling state", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateExecutorResourceResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
+    "/v2/workspaces/{workspaceId}/executors/{executorId}": {
+      "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/ExecutorId"}],
+      "delete": {
+        "operationId": "archiveExecutorResource",
+        "description": "Owner-only executor revocation that fences connections, disables environments, and revokes pending enrollment tokens atomically.",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["executors:archive"]}],
+        "responses": {
+          "200": {"description": "Revoked executor", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ArchiveExecutorResourceResponse"}}}},
           "400": {"$ref": "#/components/responses/PublicError"},
           "401": {"$ref": "#/components/responses/PublicError"},
           "403": {"$ref": "#/components/responses/PublicError"},
@@ -273,6 +421,7 @@
       "ApprovalId": {"name": "approvalId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "ExecutorId": {"name": "executorId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "GatewayId": {"name": "gatewayId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
+      "MemberId": {"name": "memberId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "WorkspaceId": {"name": "workspaceId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "SessionId": {"name": "sessionId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "RunId": {"name": "runId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
@@ -283,6 +432,79 @@
     },
     "schemas": {
       "UUID": {"type": "string", "format": "uuid", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "not": {"const": "00000000-0000-0000-0000-000000000000"}},
+      "WorkspaceState": {
+        "type": "object", "additionalProperties": false,
+        "required": ["workspaceId", "name", "status", "currentUserRole", "version", "createdAt", "updatedAt"],
+        "properties": {
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "name": {"type": "string", "minLength": 1, "maxLength": 256},
+          "status": {"enum": ["active", "suspended", "archived"]},
+          "currentUserRole": {"enum": ["owner", "developer", "viewer"]},
+          "version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "ListWorkspacesResponse": {
+        "type": "object", "additionalProperties": false, "required": ["workspaces"],
+        "properties": {"workspaces": {"type": "array", "maxItems": 256, "items": {"$ref": "#/components/schemas/WorkspaceState"}}}
+      },
+      "CreateWorkspaceRequest": {
+        "type": "object", "additionalProperties": false, "required": ["workspaceId", "name"],
+        "properties": {"workspaceId": {"$ref": "#/components/schemas/UUID"}, "name": {"type": "string", "minLength": 1, "maxLength": 256}}
+      },
+      "CreateWorkspaceResponse": {
+        "type": "object", "additionalProperties": false, "required": ["workspace", "created"],
+        "properties": {"workspace": {"$ref": "#/components/schemas/WorkspaceState"}, "created": {"type": "boolean"}}
+      },
+      "UpdateWorkspaceRequest": {
+        "type": "object", "additionalProperties": false, "required": ["name", "expectedVersion"],
+        "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 256}, "expectedVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}}
+      },
+      "UpdateWorkspaceResponse": {
+        "type": "object", "additionalProperties": false, "required": ["workspace", "changed"],
+        "properties": {"workspace": {"$ref": "#/components/schemas/WorkspaceState"}, "changed": {"type": "boolean"}}
+      },
+      "ArchiveWorkspaceRequest": {
+        "type": "object", "additionalProperties": false, "required": ["expectedVersion"],
+        "properties": {"expectedVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}}
+      },
+      "ArchiveWorkspaceResponse": {
+        "type": "object", "additionalProperties": false, "required": ["workspace", "changed"],
+        "properties": {"workspace": {"$ref": "#/components/schemas/WorkspaceState"}, "changed": {"type": "boolean"}}
+      },
+      "WorkspaceMemberState": {
+        "type": "object", "additionalProperties": false, "required": ["userId", "role", "version", "createdAt", "updatedAt"],
+        "properties": {
+          "userId": {"$ref": "#/components/schemas/UUID"}, "role": {"enum": ["owner", "developer", "viewer"]},
+          "version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "createdAt": {"type": "string", "format": "date-time"}, "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "ListWorkspaceMembersResponse": {
+        "type": "object", "additionalProperties": false, "required": ["members"],
+        "properties": {"members": {"type": "array", "maxItems": 256, "items": {"$ref": "#/components/schemas/WorkspaceMemberState"}}}
+      },
+      "AddWorkspaceMemberRequest": {
+        "type": "object", "additionalProperties": false, "required": ["userId", "role"],
+        "properties": {"userId": {"$ref": "#/components/schemas/UUID"}, "role": {"enum": ["owner", "developer", "viewer"]}}
+      },
+      "AddWorkspaceMemberResponse": {
+        "type": "object", "additionalProperties": false, "required": ["member", "created"],
+        "properties": {"member": {"$ref": "#/components/schemas/WorkspaceMemberState"}, "created": {"type": "boolean"}}
+      },
+      "UpdateWorkspaceMemberRequest": {
+        "type": "object", "additionalProperties": false, "required": ["role", "expectedVersion"],
+        "properties": {"role": {"enum": ["owner", "developer", "viewer"]}, "expectedVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}}
+      },
+      "UpdateWorkspaceMemberResponse": {
+        "type": "object", "additionalProperties": false, "required": ["member", "changed"],
+        "properties": {"member": {"$ref": "#/components/schemas/WorkspaceMemberState"}, "changed": {"type": "boolean"}}
+      },
+      "RemoveWorkspaceMemberResponse": {
+        "type": "object", "additionalProperties": false, "required": ["userId", "removed"],
+        "properties": {"userId": {"$ref": "#/components/schemas/UUID"}, "removed": {"type": "boolean"}}
+      },
       "CreateExecutorResourceRequest": {
         "type": "object", "additionalProperties": false, "required": ["executorId"],
         "properties": {
@@ -307,6 +529,14 @@
           "executor": {"$ref": "#/components/schemas/ExecutorResourceState"},
           "created": {"type": "boolean"}
         }
+      },
+      "ListExecutorResourcesResponse": {
+        "type": "object", "additionalProperties": false, "required": ["executors"],
+        "properties": {"executors": {"type": "array", "maxItems": 256, "items": {"$ref": "#/components/schemas/ExecutorResourceState"}}}
+      },
+      "ArchiveExecutorResourceResponse": {
+        "type": "object", "additionalProperties": false, "required": ["executor", "changed"],
+        "properties": {"executor": {"$ref": "#/components/schemas/ExecutorResourceState"}, "changed": {"type": "boolean"}}
       },
       "IssueExecutorEnrollmentTokenResponse": {
         "type": "object", "additionalProperties": false,

@@ -73,13 +73,14 @@ func TestPlatformGatewayRoutesKeepPlatformAndAuthSurfaces(t *testing.T) {
 	readiness := &platformReadiness{}
 	readiness.ready.Store(true)
 	handler, err := platformGatewayRoutes(
-		h("executors"), h("llm"), h("auth"), h("config"), h("callback"), h("web"), readiness,
+		h("resources"), h("executors"), h("llm"), h("auth"), h("config"), h("callback"), h("web"), readiness,
 		"https://agent.byted.bps.dev", "https://auth-sg.byted.bps.dev",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, test := range []struct{ method, path, call string }{
+		{http.MethodGet, "/v2/workspaces", "resources"},
 		{http.MethodPost, "/v2/workspaces/40000000-0000-4000-8000-000000000004/executors", "executors"},
 		{http.MethodGet, "/v2/workspaces/40000000-0000-4000-8000-000000000004/llm-gateways", "llm"},
 		{http.MethodGet, "/auth/config", "config"},

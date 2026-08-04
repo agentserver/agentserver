@@ -14,6 +14,32 @@ import (
 
 const maxCoreExecutorResponseBytes = int64(128 * 1024)
 
+func (backend *CoreRunBackend) ListExecutorResources(
+	ctx context.Context,
+	bearer, workspaceID string,
+) (corecontract.ListExecutorResourcesResponse, error) {
+	request, err := backend.executorRequest(ctx, http.MethodGet, corecontract.CreateExecutorResourcePath(workspaceID), bearer, nil)
+	if err != nil {
+		return corecontract.ListExecutorResourcesResponse{}, err
+	}
+	response, body, err := backend.doBounded(request, maxCoreExecutorResponseBytes)
+	if err != nil {
+		return corecontract.ListExecutorResourcesResponse{}, err
+	}
+	defer response.Body.Close()
+	if response.Header.Get("Cache-Control") != "no-store" {
+		return corecontract.ListExecutorResourcesResponse{}, errors.New("core executor list response is missing Cache-Control no-store")
+	}
+	if response.StatusCode != http.StatusOK {
+		return corecontract.ListExecutorResourcesResponse{}, decodePublicCoreError(response.StatusCode, body)
+	}
+	var result corecontract.ListExecutorResourcesResponse
+	if err := decodeStrictCoreJSON(body, &result); err != nil {
+		return corecontract.ListExecutorResourcesResponse{}, fmt.Errorf("decode core executor list response: %w", err)
+	}
+	return result, nil
+}
+
 func (backend *CoreRunBackend) CreateExecutorResource(
 	ctx context.Context,
 	bearer, workspaceID string,
@@ -78,6 +104,32 @@ func (backend *CoreRunBackend) IssueExecutorEnrollmentToken(
 	}
 	if (response.StatusCode == http.StatusCreated) != result.Created {
 		return corecontract.IssueExecutorEnrollmentTokenResponse{}, errors.New("core enrollment token status and created flag disagree")
+	}
+	return result, nil
+}
+
+func (backend *CoreRunBackend) ArchiveExecutorResource(
+	ctx context.Context,
+	bearer, workspaceID, executorID string,
+) (corecontract.ArchiveExecutorResourceResponse, error) {
+	request, err := backend.executorRequest(ctx, http.MethodDelete, corecontract.ArchiveExecutorResourcePath(workspaceID, executorID), bearer, nil)
+	if err != nil {
+		return corecontract.ArchiveExecutorResourceResponse{}, err
+	}
+	response, body, err := backend.doBounded(request, maxCoreExecutorResponseBytes)
+	if err != nil {
+		return corecontract.ArchiveExecutorResourceResponse{}, err
+	}
+	defer response.Body.Close()
+	if response.Header.Get("Cache-Control") != "no-store" {
+		return corecontract.ArchiveExecutorResourceResponse{}, errors.New("core executor archive response is missing Cache-Control no-store")
+	}
+	if response.StatusCode != http.StatusOK {
+		return corecontract.ArchiveExecutorResourceResponse{}, decodePublicCoreError(response.StatusCode, body)
+	}
+	var result corecontract.ArchiveExecutorResourceResponse
+	if err := decodeStrictCoreJSON(body, &result); err != nil {
+		return corecontract.ArchiveExecutorResourceResponse{}, fmt.Errorf("decode core executor archive response: %w", err)
 	}
 	return result, nil
 }

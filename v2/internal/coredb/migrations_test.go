@@ -11,8 +11,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 17 {
-		t.Fatalf("migration count = %d, want 17", len(migrations))
+	if len(migrations) != 18 {
+		t.Fatalf("migration count = %d, want 18", len(migrations))
 	}
 	migration := migrations[0]
 	if migration.Version != 1 || migration.Name != "session_run_kernel" {
@@ -68,6 +68,9 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	if migrations[16].Version != 17 || migrations[16].Name != "production_bootstrap_seed" {
 		t.Fatalf("seventeenth migration identity = %04d_%s, want 0017_production_bootstrap_seed", migrations[16].Version, migrations[16].Name)
+	}
+	if migrations[17].Version != 18 || migrations[17].Name != "platform_workspace_resources" {
+		t.Fatalf("eighteenth migration identity = %04d_%s, want 0018_platform_workspace_resources", migrations[17].Version, migrations[17].Name)
 	}
 }
 

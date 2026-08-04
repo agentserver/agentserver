@@ -21,6 +21,11 @@ func TestPlatformAssetsAreClosedAndHardened(t *testing.T) {
 	if auth.Code != http.StatusOK || !strings.Contains(auth.Body.String(), "readAuthorizationCallback") {
 		t.Fatalf("platform authorization asset = %d body=%q", auth.Code, auth.Body.String())
 	}
+	resources := httptest.NewRecorder()
+	handler.ServeHTTP(resources, httptest.NewRequest(http.MethodGet, "https://agent.example/platform/resources.js", nil))
+	if resources.Code != http.StatusOK || !strings.Contains(resources.Body.String(), "validateWorkspaceList") {
+		t.Fatalf("platform resource asset = %d body=%q", resources.Code, resources.Body.String())
+	}
 	unknown := httptest.NewRecorder()
 	handler.ServeHTTP(unknown, httptest.NewRequest(http.MethodGet, "https://agent.example/missing", nil))
 	if unknown.Code != http.StatusNotFound {

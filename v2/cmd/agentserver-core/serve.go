@@ -336,6 +336,14 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		return err
 	}
 	store := coredb.NewStateStore(pool)
+	platformResourceHandler, err := coreserver.NewPlatformResourceHandler(
+		platformAuthorizer,
+		platformUserAuthorizer,
+		coreserver.StateStorePlatformResourceCommands{Store: store},
+	)
+	if err != nil {
+		return err
+	}
 	var llmGatewayService *coreserver.WorkspaceLLMGatewayService
 	if productionCapabilities != nil {
 		sealingKeyring, err := requiredConfiguration(getenv, coreLLMGatewaySealingKeyringEnvironment)
@@ -505,6 +513,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	}
 	handler := http.NewServeMux()
 	handler.Handle("/internal/v2/auth/", loginBridgeHandler.Routes())
+	mountCorePlatformResourceRoutes(handler, platformResourceHandler)
 	handler.Handle("/v2/", userRunHandler.Routes())
 	mountCoreWorkspaceLLMGatewayRoutes(handler, workspaceLLMGatewayHandler)
 	handler.Handle(corecontract.DecideUserApprovalRoutePattern, userApprovalHandler)
@@ -563,6 +572,18 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	return err
 }
 
+func mountCorePlatformResourceRoutes(mux *http.ServeMux, handler *coreserver.PlatformResourceHandler) {
+	if mux == nil || handler == nil {
+		return
+	}
+	routes := handler.Routes()
+	mux.Handle(corecontract.WorkspaceCollectionRoutePattern, routes)
+	mux.Handle(corecontract.WorkspaceResourceRoutePattern, routes)
+	mux.Handle(corecontract.WorkspaceArchiveRoutePattern, routes)
+	mux.Handle(corecontract.WorkspaceMembersCollectionPattern, routes)
+	mux.Handle(corecontract.WorkspaceMemberResourceRoutePattern, routes)
+}
+
 func mountCoreRunCapabilityRoutes(mux *http.ServeMux, handler http.Handler) {
 	if mux == nil || handler == nil {
 		return
@@ -585,8 +606,10 @@ func mountCoreExecutorIdentityRoutes(mux *http.ServeMux, users, internal http.Ha
 		return
 	}
 	if users != nil {
+		mux.Handle("GET "+corecontract.ExecutorManagementRoutePattern, users)
 		mux.Handle("POST "+corecontract.ExecutorManagementRoutePattern, users)
 		mux.Handle("POST "+corecontract.ExecutorEnrollmentTokenRoutePattern, users)
+		mux.Handle("DELETE "+corecontract.ExecutorEnrollmentTokenRoutePattern, users)
 	}
 	if internal != nil {
 		mux.Handle(corecontract.CompleteExecutorEnrollmentPath, internal)

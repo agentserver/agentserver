@@ -280,6 +280,14 @@ func (store *recordingEnrollmentStore) CreateExecutorResource(context.Context, c
 	return coredb.CreateExecutorResourceResult{}, errors.New("not configured")
 }
 
+func (store *recordingEnrollmentStore) ListExecutorResources(context.Context, string, string) ([]coredb.ExecutorResource, error) {
+	return nil, errors.New("not configured")
+}
+
+func (store *recordingEnrollmentStore) ArchiveExecutorResource(context.Context, coredb.ArchiveExecutorResourceCommand) (coredb.ArchiveExecutorResourceResult, error) {
+	return coredb.ArchiveExecutorResourceResult{}, errors.New("not configured")
+}
+
 func (store *recordingEnrollmentStore) IssueExecutorEnrollmentToken(_ context.Context, command coredb.IssueExecutorEnrollmentTokenCommand) (coredb.IssueExecutorEnrollmentTokenResult, error) {
 	store.issues = append(store.issues, command)
 	return store.issued, nil

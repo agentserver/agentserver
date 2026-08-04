@@ -261,6 +261,14 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 				OperationID string                `json:"operationId"`
 				Security    []map[string][]string `json:"security"`
 			} `json:"get"`
+			Patch struct {
+				OperationID string                `json:"operationId"`
+				Security    []map[string][]string `json:"security"`
+			} `json:"patch"`
+			Delete struct {
+				OperationID string                `json:"operationId"`
+				Security    []map[string][]string `json:"security"`
+			} `json:"delete"`
 		} `json:"paths"`
 		Components struct {
 			Schemas map[string]struct {
@@ -288,12 +296,18 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	decidePath := DecideUserApprovalPath("{workspaceId}", "{approvalId}")
 	createExecutorPath := CreateExecutorResourcePath("{workspaceId}")
 	issueEnrollmentPath := IssueExecutorEnrollmentTokenPath("{workspaceId}", "{executorId}")
+	archiveExecutorPath := ArchiveExecutorResourcePath("{workspaceId}", "{executorId}")
+	workspacesPath := WorkspacesPath()
+	workspacePath := WorkspacePath("{workspaceId}")
+	archiveWorkspacePath := ArchiveWorkspacePath("{workspaceId}")
+	membersPath := WorkspaceMembersPath("{workspaceId}")
+	memberPath := WorkspaceMemberPath("{workspaceId}", "{memberId}")
 	llmGatewayCollectionPath := WorkspaceLLMGatewaysPath("{workspaceId}")
 	llmGatewayAuthorizePath := AuthorizeLLMGatewayPath("{workspaceId}", "{gatewayId}")
 	llmGatewayCompletePath := CompleteLLMGatewayAuthorizationPath("{workspaceId}", "{gatewayId}")
 	llmGatewayRevokePath := RevokeLLMGatewayGrantPath("{workspaceId}", "{gatewayId}")
 	llmGatewayDisablePath := DisableLLMGatewayPath("{workspaceId}", "{gatewayId}")
-	if len(document.Paths) != 11 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
+	if len(document.Paths) != 17 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
 		document.Paths[cancelPath].Post.OperationID != "cancelUserRun" || document.Paths[readPath].Get.OperationID != "readUserRunEvents" {
 		t.Fatalf("public OpenAPI paths = %+v", document.Paths)
 	}
@@ -301,8 +315,17 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 		t.Fatalf("public approval path = %+v", document.Paths[decidePath])
 	}
 	if document.Paths[createExecutorPath].Post.OperationID != "createExecutorResource" ||
-		document.Paths[issueEnrollmentPath].Post.OperationID != "issueExecutorEnrollmentToken" {
+		document.Paths[createExecutorPath].Get.OperationID != "listExecutorResources" ||
+		document.Paths[issueEnrollmentPath].Post.OperationID != "issueExecutorEnrollmentToken" ||
+		document.Paths[archiveExecutorPath].Delete.OperationID != "archiveExecutorResource" {
 		t.Fatalf("public executor paths = %+v / %+v", document.Paths[createExecutorPath], document.Paths[issueEnrollmentPath])
+	}
+	if document.Paths[workspacesPath].Get.OperationID != "listWorkspaces" || document.Paths[workspacesPath].Post.OperationID != "createWorkspace" ||
+		document.Paths[workspacePath].Get.OperationID != "getWorkspace" || document.Paths[workspacePath].Patch.OperationID != "updateWorkspace" ||
+		document.Paths[archiveWorkspacePath].Post.OperationID != "archiveWorkspace" ||
+		document.Paths[membersPath].Get.OperationID != "listWorkspaceMembers" || document.Paths[membersPath].Post.OperationID != "addWorkspaceMember" ||
+		document.Paths[memberPath].Patch.OperationID != "updateWorkspaceMember" || document.Paths[memberPath].Delete.OperationID != "removeWorkspaceMember" {
+		t.Fatalf("public Platform workspace paths = %+v", document.Paths)
 	}
 	for _, path := range []string{createExecutorPath, issueEnrollmentPath} {
 		security := document.Paths[path].Post.Security
@@ -313,6 +336,27 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 		if len(security) != 1 || len(security[0]) != 2 || security[0]["platformGatewayMTLS"] == nil ||
 			!slices.Equal(security[0]["platformOAuth"], []string{permission}) {
 			t.Errorf("public executor path %s security = %+v", path, security)
+		}
+	}
+	for _, authority := range []struct {
+		security   []map[string][]string
+		permission string
+	}{
+		{document.Paths[createExecutorPath].Get.Security, PlatformOAuthExecutorsReadScope},
+		{document.Paths[archiveExecutorPath].Delete.Security, PlatformOAuthExecutorsArchiveScope},
+		{document.Paths[workspacesPath].Get.Security, PlatformOAuthWorkspacesReadScope},
+		{document.Paths[workspacesPath].Post.Security, PlatformOAuthWorkspacesCreateScope},
+		{document.Paths[workspacePath].Get.Security, PlatformOAuthWorkspacesReadScope},
+		{document.Paths[workspacePath].Patch.Security, PlatformOAuthWorkspacesUpdateScope},
+		{document.Paths[archiveWorkspacePath].Post.Security, PlatformOAuthWorkspacesArchiveScope},
+		{document.Paths[membersPath].Get.Security, PlatformOAuthMembersReadScope},
+		{document.Paths[membersPath].Post.Security, PlatformOAuthMembersAddScope},
+		{document.Paths[memberPath].Patch.Security, PlatformOAuthMembersUpdateScope},
+		{document.Paths[memberPath].Delete.Security, PlatformOAuthMembersRemoveScope},
+	} {
+		if len(authority.security) != 1 || len(authority.security[0]) != 2 || authority.security[0]["platformGatewayMTLS"] == nil ||
+			!slices.Equal(authority.security[0]["platformOAuth"], []string{authority.permission}) {
+			t.Errorf("public Platform resource security = %+v", authority.security)
 		}
 	}
 	if document.Paths[llmGatewayCollectionPath].Get.OperationID != "listWorkspaceLLMGateways" ||
@@ -356,7 +400,24 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "CreateExecutorResourceRequest", reflect.TypeFor[CreateExecutorResourceRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "ExecutorResourceState", reflect.TypeFor[ExecutorResourceState]())
 	assertSchemaFields(t, document.Components.Schemas, "CreateExecutorResourceResponse", reflect.TypeFor[CreateExecutorResourceResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "ListExecutorResourcesResponse", reflect.TypeFor[ListExecutorResourcesResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "ArchiveExecutorResourceResponse", reflect.TypeFor[ArchiveExecutorResourceResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "IssueExecutorEnrollmentTokenResponse", reflect.TypeFor[IssueExecutorEnrollmentTokenResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "WorkspaceState", reflect.TypeFor[WorkspaceState]())
+	assertSchemaFields(t, document.Components.Schemas, "ListWorkspacesResponse", reflect.TypeFor[ListWorkspacesResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "CreateWorkspaceRequest", reflect.TypeFor[CreateWorkspaceRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "CreateWorkspaceResponse", reflect.TypeFor[CreateWorkspaceResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "UpdateWorkspaceRequest", reflect.TypeFor[UpdateWorkspaceRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "UpdateWorkspaceResponse", reflect.TypeFor[UpdateWorkspaceResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "ArchiveWorkspaceRequest", reflect.TypeFor[ArchiveWorkspaceRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "ArchiveWorkspaceResponse", reflect.TypeFor[ArchiveWorkspaceResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "WorkspaceMemberState", reflect.TypeFor[WorkspaceMemberState]())
+	assertSchemaFields(t, document.Components.Schemas, "ListWorkspaceMembersResponse", reflect.TypeFor[ListWorkspaceMembersResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "AddWorkspaceMemberRequest", reflect.TypeFor[AddWorkspaceMemberRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "AddWorkspaceMemberResponse", reflect.TypeFor[AddWorkspaceMemberResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "UpdateWorkspaceMemberRequest", reflect.TypeFor[UpdateWorkspaceMemberRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "UpdateWorkspaceMemberResponse", reflect.TypeFor[UpdateWorkspaceMemberResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "RemoveWorkspaceMemberResponse", reflect.TypeFor[RemoveWorkspaceMemberResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "CreateWorkspaceLLMGatewayRequest", reflect.TypeFor[CreateWorkspaceLLMGatewayRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "WorkspaceLLMGatewayState", reflect.TypeFor[WorkspaceLLMGatewayState]())
 	assertSchemaFields(t, document.Components.Schemas, "CreateWorkspaceLLMGatewayResponse", reflect.TypeFor[CreateWorkspaceLLMGatewayResponse]())

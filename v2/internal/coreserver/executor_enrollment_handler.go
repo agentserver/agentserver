@@ -17,6 +17,8 @@ import (
 
 type ExecutorManagementCommands interface {
 	CreateExecutor(context.Context, string, string, string) (corecontract.CreateExecutorResourceResponse, error)
+	ListExecutors(context.Context, string, string) (corecontract.ListExecutorResourcesResponse, error)
+	ArchiveExecutor(context.Context, string, string, string) (corecontract.ArchiveExecutorResourceResponse, error)
 	IssueEnrollmentToken(context.Context, string, string, string, string) (corecontract.IssueExecutorEnrollmentTokenResponse, error)
 }
 
@@ -35,8 +37,10 @@ func NewUserExecutorManagementHandler(workload WorkloadAuthorizer, users UserTok
 
 func (handler *UserExecutorManagementHandler) Routes() http.Handler {
 	mux := http.NewServeMux()
+	mux.Handle("GET "+corecontract.ExecutorManagementRoutePattern, handler)
 	mux.Handle("POST "+corecontract.ExecutorManagementRoutePattern, handler)
 	mux.Handle("POST "+corecontract.ExecutorEnrollmentTokenRoutePattern, handler)
+	mux.Handle("DELETE "+corecontract.ExecutorEnrollmentTokenRoutePattern, handler)
 	return mux
 }
 
@@ -44,15 +48,39 @@ func (handler *UserExecutorManagementHandler) ServeHTTP(response http.ResponseWr
 	response.Header().Set("Cache-Control", "no-store")
 	workspaceID := request.PathValue("workspaceId")
 	if action := request.PathValue("executorAction"); action != "" {
-		executorID, ok := strings.CutSuffix(action, ":enrollmentToken")
-		if !ok || executorID == "" {
-			writePublicRunError(response, http.StatusNotFound, "not_found", "executor management endpoint not found", "")
+		if executorID, ok := strings.CutSuffix(action, ":enrollmentToken"); ok && executorID != "" && request.Method == http.MethodPost {
+			handler.issueToken(response, request, workspaceID, executorID)
 			return
 		}
-		handler.issueToken(response, request, workspaceID, executorID)
+		if request.Method == http.MethodDelete && action != "" && !strings.Contains(action, ":") {
+			handler.archive(response, request, workspaceID, action)
+			return
+		}
+		writePublicRunError(response, http.StatusNotFound, "not_found", "executor management endpoint not found", "")
+		return
+	}
+	if request.Method == http.MethodGet {
+		handler.list(response, request, workspaceID)
 		return
 	}
 	handler.create(response, request, workspaceID)
+}
+
+func (handler *UserExecutorManagementHandler) list(response http.ResponseWriter, request *http.Request, workspaceID string) {
+	actorID, ok := handler.authorize(response, request, "executors.list")
+	if !ok {
+		return
+	}
+	if request.URL.RawQuery != "" || request.ContentLength != 0 || len(request.TransferEncoding) != 0 {
+		writePublicRunError(response, http.StatusBadRequest, "invalid_argument", "executor list requires an empty request without query parameters", "")
+		return
+	}
+	result, err := handler.commands.ListExecutors(request.Context(), actorID, workspaceID)
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
 }
 
 func (handler *UserExecutorManagementHandler) create(response http.ResponseWriter, request *http.Request, workspaceID string) {
@@ -104,6 +132,23 @@ func (handler *UserExecutorManagementHandler) issueToken(response http.ResponseW
 		status = http.StatusCreated
 	}
 	writeJSON(response, status, result)
+}
+
+func (handler *UserExecutorManagementHandler) archive(response http.ResponseWriter, request *http.Request, workspaceID, executorID string) {
+	actorID, ok := handler.authorize(response, request, "executors.archive")
+	if !ok {
+		return
+	}
+	if request.URL.RawQuery != "" || request.ContentLength != 0 || len(request.TransferEncoding) != 0 {
+		writePublicRunError(response, http.StatusBadRequest, "invalid_argument", "executor archive requires an empty request without query parameters", "")
+		return
+	}
+	result, err := handler.commands.ArchiveExecutor(request.Context(), actorID, workspaceID, executorID)
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
 }
 
 func (handler *UserExecutorManagementHandler) authorize(response http.ResponseWriter, request *http.Request, action string) (string, bool) {

@@ -110,7 +110,12 @@ let gatewayAuthorization = null
 void initialize()
 
 async function initialize() {
-  elements.workspaceID.value = developmentWorkspaceID
+  let initialWorkspaceID = developmentWorkspaceID
+  const requestedWorkspaceID = new URL(window.location.href).searchParams.get('workspace')
+  if (requestedWorkspaceID) {
+    try { initialWorkspaceID = validateScopeID('workspace ID', requestedWorkspaceID) } catch { /* keep the safe development default */ }
+  }
+  elements.workspaceID.value = initialWorkspaceID
   elements.sessionID.value = developmentSessionID
   elements.gatewayCallbackURI.textContent = new URL('/auth/llm-gateway/callback', window.location.origin).href
   elements.connectionForm.addEventListener('submit', beginAuthorization)

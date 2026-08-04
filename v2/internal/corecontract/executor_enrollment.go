@@ -31,6 +31,15 @@ type CreateExecutorResourceResponse struct {
 	Created  bool                  `json:"created"`
 }
 
+type ListExecutorResourcesResponse struct {
+	Executors []ExecutorResourceState `json:"executors"`
+}
+
+type ArchiveExecutorResourceResponse struct {
+	Executor ExecutorResourceState `json:"executor"`
+	Changed  bool                  `json:"changed"`
+}
+
 type IssueExecutorEnrollmentTokenResponse struct {
 	ExecutorID string    `json:"executorId"`
 	Token      string    `json:"token"`
@@ -80,4 +89,8 @@ func CreateExecutorResourcePath(workspaceID string) string {
 
 func IssueExecutorEnrollmentTokenPath(workspaceID, executorID string) string {
 	return "/v2/workspaces/" + workspaceID + "/executors/" + executorID + ":enrollmentToken"
+}
+
+func ArchiveExecutorResourcePath(workspaceID, executorID string) string {
+	return "/v2/workspaces/" + workspaceID + "/executors/" + executorID
 }

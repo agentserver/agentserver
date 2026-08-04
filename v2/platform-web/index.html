@@ -3,45 +3,123 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="description" content="AgentServer workspace administration">
     <title>AgentServer Platform</title>
     <link rel="stylesheet" href="/platform/styles.css">
   </head>
   <body data-agentserver-platform-web="v2">
     <header class="topbar">
-      <a class="brand" href="/" aria-label="AgentServer Platform home">
-        <span class="brand-mark">A</span>
-        <span>AgentServer Platform</span>
-      </a>
-      <button id="session-button" class="button secondary" type="button">Sign in</button>
+      <a class="brand" href="/" aria-label="AgentServer Platform home"><span class="brand-mark">A</span><span><strong>AgentServer</strong><small>Platform</small></span></a>
+      <div class="top-actions"><span id="session-label" class="session-label">Signed out</span><button id="session-button" class="button secondary" type="button">Sign in</button></div>
     </header>
-    <main>
+
+    <main id="signed-out-view" class="landing">
       <section class="hero">
-        <p class="eyebrow">Platform control plane</p>
-        <h1>Workspaces, runtimes, and model gateways belong here.</h1>
-        <p class="lede">Conversation sessions use the separate Browser application. This page authenticates with the dedicated <code>agentserver-platform</code> authority.</p>
-        <div class="actions">
-          <button id="login-button" class="button primary" type="button">Continue with SSO</button>
-          <a class="button secondary" href="https://browser.byted.bps.dev/">Open Browser</a>
-        </div>
-        <p id="error" class="error" hidden></p>
-      </section>
-      <section class="status-card" aria-live="polite">
-        <div>
-          <p class="eyebrow">Authorization status</p>
-          <h2 id="status-title">Not signed in</h2>
-          <p id="status-copy">No access token is stored. Sign in to establish an in-memory Platform session.</p>
-        </div>
-        <div>
-          <p class="eyebrow">Granted permissions</p>
-          <ul id="scope-list" class="scope-list"><li>None</li></ul>
-        </div>
-      </section>
-      <section class="next-card">
-        <p class="eyebrow">Implementation boundary</p>
-        <h2>Platform and Browser are now separate authorities.</h2>
-        <p>Workspace/member CRUD and the final management views will populate this control plane in the next product slice. Executor and LLM Gateway APIs already enter Core through platform-gateway only.</p>
+        <p class="eyebrow">Workspace control plane</p>
+        <h1>Manage the resources your agents run on.</h1>
+        <p class="lede">Create workspaces, manage members and executors, and connect each workspace to a third-party LLM Gateway. Conversations remain in the separate Browser application.</p>
+        <button id="login-button" class="button primary hero-button" type="button">Continue with SSO</button>
+        <p id="login-error" class="error" role="alert" hidden></p>
       </section>
     </main>
+
+    <main id="platform-app" class="app-shell" hidden>
+      <aside class="workspace-sidebar">
+        <div class="sidebar-heading"><div><p class="eyebrow">Organization</p><h2>Workspaces</h2></div><button id="refresh-workspaces" class="icon-button" type="button" aria-label="Refresh workspaces">↻</button></div>
+        <div id="workspace-list" class="workspace-list" aria-live="polite"></div>
+        <p id="workspace-empty" class="empty-copy" hidden>No workspaces yet. Create the first one below.</p>
+        <details class="create-card" id="create-workspace-details">
+          <summary>New workspace</summary>
+          <form id="create-workspace-form" class="stack-form">
+            <label>Name<input id="create-workspace-name" maxlength="256" autocomplete="off" required placeholder="Research SG"></label>
+            <button id="create-workspace-button" class="button primary" type="submit">Create workspace</button>
+          </form>
+        </details>
+      </aside>
+
+      <section class="control-plane">
+        <div id="selection-empty" class="selection-empty">
+          <span class="empty-mark">A</span><h2>Select a workspace</h2><p>Workspace resources and permissions will appear here.</p>
+        </div>
+
+        <div id="workspace-view" hidden>
+          <header class="workspace-header">
+            <div><div class="title-line"><h1 id="workspace-title">Workspace</h1><span id="workspace-status" class="badge">active</span></div><p id="workspace-subtitle" class="workspace-subtitle"></p></div>
+            <div class="workspace-actions"><a id="open-browser" class="button secondary" href="https://browser.byted.bps.dev/">Open Browser ↗</a><button id="archive-workspace" class="button danger" type="button">Archive</button></div>
+          </header>
+
+          <div id="reauthorize-banner" class="reauthorize-banner" hidden>
+            <div><strong>Refresh workspace permissions</strong><p>Your current Hydra token predates this workspace or its latest membership. Sign in again to receive its workspace grant.</p></div>
+            <button id="reauthorize-button" class="button primary" type="button">Authorize again</button>
+          </div>
+          <p id="app-error" class="error" role="alert" hidden></p>
+
+          <nav class="tabs" aria-label="Workspace resources">
+            <button class="tab active" data-tab="overview" type="button">Overview</button>
+            <button class="tab" data-tab="members" type="button">Members</button>
+            <button class="tab" data-tab="executors" type="button">Executors</button>
+            <button class="tab" data-tab="gateways" type="button">LLM Gateways</button>
+          </nav>
+
+          <section class="tab-panel" data-panel="overview">
+            <div class="section-heading"><div><p class="eyebrow">Workspace</p><h2>Overview</h2></div></div>
+            <dl id="workspace-facts" class="facts"></dl>
+            <form id="rename-workspace-form" class="inline-form card">
+              <label>Workspace name<input id="rename-workspace-name" maxlength="256" autocomplete="off" required></label>
+              <button id="rename-workspace-button" class="button primary" type="submit">Save name</button>
+            </form>
+          </section>
+
+          <section class="tab-panel" data-panel="members" hidden>
+            <div class="section-heading"><div><p class="eyebrow">Hydra authority</p><h2>Members</h2><p>Roles determine which workspace permissions Hydra can place in a user's next access token.</p></div><button id="refresh-members" class="button secondary" type="button">Refresh</button></div>
+            <div id="member-list" class="resource-list"></div>
+            <p id="member-empty" class="empty-copy" hidden>No active members.</p>
+            <details class="create-card owner-control" id="add-member-details">
+              <summary>Add member</summary>
+              <form id="add-member-form" class="form-grid">
+                <label>User subject UUID<input id="add-member-id" autocomplete="off" spellcheck="false" required placeholder="00000000-0000-4000-8000-000000000000"></label>
+                <label>Role<select id="add-member-role"><option value="developer">Developer</option><option value="viewer">Viewer</option><option value="owner">Owner</option></select></label>
+                <button id="add-member-button" class="button primary" type="submit">Add member</button>
+              </form>
+            </details>
+          </section>
+
+          <section class="tab-panel" data-panel="executors" hidden>
+            <div class="section-heading"><div><p class="eyebrow">Deterministic hands</p><h2>Executors</h2><p>Create an executor identity, then issue its one-time agentx enrollment token.</p></div><div class="heading-actions"><button id="refresh-executors" class="button secondary" type="button">Refresh</button><button id="create-executor" class="button primary owner-control" type="button">New executor</button></div></div>
+            <div id="executor-list" class="resource-list"></div>
+            <p id="executor-empty" class="empty-copy" hidden>No executors in this workspace.</p>
+          </section>
+
+          <section class="tab-panel" data-panel="gateways" hidden>
+            <div class="section-heading"><div><p class="eyebrow">Per-user OIDC grants</p><h2>LLM Gateways</h2><p>The platform stores no shared model key. Each member links their own grant to a workspace Gateway.</p></div><button id="refresh-gateways" class="button secondary" type="button">Refresh</button></div>
+            <p id="gateway-error" class="error" role="alert" hidden></p>
+            <div id="gateway-list" class="resource-list"></div>
+            <p id="gateway-empty" class="empty-copy" hidden>No LLM Gateway configured.</p>
+            <details class="create-card owner-control" id="create-gateway-details">
+              <summary>Add Responses-compatible Gateway</summary>
+              <form id="create-gateway-form" class="form-grid gateway-form">
+                <label>Name<input id="gateway-name" maxlength="128" autocomplete="off" required placeholder="Company Gateway"></label>
+                <label>Default model<input id="gateway-model" maxlength="256" autocomplete="off" required placeholder="gpt-5"></label>
+                <label class="wide">Responses URL<input id="gateway-responses-url" maxlength="4096" inputmode="url" autocomplete="off" required placeholder="https://gateway.example.com/v1/responses"></label>
+                <label class="wide">OIDC issuer<input id="gateway-oidc-issuer" maxlength="2048" inputmode="url" autocomplete="off" required placeholder="https://login.example.com/tenant/v2.0"></label>
+                <label class="wide">OIDC public client ID<input id="gateway-oidc-client-id" maxlength="512" autocomplete="off" required placeholder="agentserver-workspace-client"></label>
+                <label class="wide">OIDC scopes<input id="gateway-oidc-scopes" maxlength="2048" autocomplete="off" value="openid profile email offline_access"></label>
+                <label>Bearer sent upstream<select id="gateway-bearer-type"><option value="id_token">ID token</option><option value="access_token">Access token</option></select></label>
+                <label class="checkbox"><input id="gateway-make-default" type="checkbox" checked>Workspace default</label>
+                <p class="wide form-note">Register <code id="gateway-callback-uri"></code> as the exact public-client callback. No client secret is uploaded.</p>
+                <button id="create-gateway-button" class="button primary" type="submit">Create Gateway</button>
+              </form>
+            </details>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <div id="token-layer" class="modal-layer" role="dialog" aria-modal="true" aria-labelledby="token-title" hidden>
+      <section class="modal-card"><p class="eyebrow">One-time secret</p><h2 id="token-title">Executor enrollment token</h2><p>This token is shown only in page memory. Give it to agentx before <strong id="token-expiry"></strong>.</p><textarea id="token-value" rows="5" readonly></textarea><div class="modal-actions"><button id="copy-token" class="button primary" type="button">Copy token</button><button id="close-token" class="button secondary" type="button">Close</button></div></section>
+    </div>
+
     <script type="module" src="/platform/app.js"></script>
   </body>
 </html>

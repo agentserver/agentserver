@@ -80,6 +80,41 @@ func TestUserExecutorManagementHandlerCreatesAndIssuesUnderSeparateCommands(t *t
 	}
 }
 
+func TestUserExecutorManagementHandlerListsAndArchives(t *testing.T) {
+	now := time.Date(2026, 8, 4, 2, 0, 0, 0, time.UTC)
+	commands := &recordingExecutorManagementCommands{
+		listResult: corecontract.ListExecutorResourcesResponse{Executors: []corecontract.ExecutorResourceState{{
+			ExecutorID: enrollmentTestExecutor, WorkspaceID: enrollmentTestWorkspace, Status: coredb.ExecutorStatusOnline,
+			Version: 3, CreatedAt: now, UpdatedAt: now,
+		}}},
+		archiveResult: corecontract.ArchiveExecutorResourceResponse{Executor: corecontract.ExecutorResourceState{
+			ExecutorID: enrollmentTestExecutor, WorkspaceID: enrollmentTestWorkspace, Status: coredb.ExecutorStatusRevoked,
+			Version: 4, CreatedAt: now, UpdatedAt: now,
+		}, Changed: true},
+	}
+	workload := &identityCapabilityAuthorizer{identity: "platform-gateway"}
+	users := &recordingUserAuthorizer{actorID: enrollmentTestActor}
+	handler, err := NewUserExecutorManagementHandler(workload, users, commands)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := httptest.NewRequest(http.MethodGet, corecontract.CreateExecutorResourcePath(enrollmentTestWorkspace), nil)
+	list.Header.Set("X-Test-Identity", "platform-gateway")
+	listResponse := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(listResponse, list)
+	if listResponse.Code != http.StatusOK || commands.listWorkspace != enrollmentTestWorkspace || commands.listActor != enrollmentTestActor || users.action != "executors.list" {
+		t.Fatalf("list = %d %s / %q %q action=%q", listResponse.Code, listResponse.Body.String(), commands.listWorkspace, commands.listActor, users.action)
+	}
+	archive := httptest.NewRequest(http.MethodDelete, corecontract.ArchiveExecutorResourcePath(enrollmentTestWorkspace, enrollmentTestExecutor), nil)
+	archive.Header.Set("X-Test-Identity", "platform-gateway")
+	archiveResponse := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(archiveResponse, archive)
+	if archiveResponse.Code != http.StatusOK || commands.archiveWorkspace != enrollmentTestWorkspace || commands.archiveExecutor != enrollmentTestExecutor ||
+		commands.archiveActor != enrollmentTestActor || users.action != "executors.archive" {
+		t.Fatalf("archive = %d %s / %q %q %q action=%q", archiveResponse.Code, archiveResponse.Body.String(), commands.archiveWorkspace, commands.archiveExecutor, commands.archiveActor, users.action)
+	}
+}
+
 func TestUserExecutorManagementHandlerFailsClosedBeforeCommands(t *testing.T) {
 	validCreate := []byte(`{"executorId":"` + enrollmentTestExecutor + `"}`)
 	tests := []struct {
@@ -306,12 +341,29 @@ type recordingExecutorManagementCommands struct {
 	issueIdempotency string
 	issueResult      corecontract.IssueExecutorEnrollmentTokenResponse
 	issueErr         error
+	listActor        string
+	listWorkspace    string
+	listResult       corecontract.ListExecutorResourcesResponse
+	archiveActor     string
+	archiveWorkspace string
+	archiveExecutor  string
+	archiveResult    corecontract.ArchiveExecutorResourceResponse
 }
 
 func (commands *recordingExecutorManagementCommands) CreateExecutor(_ context.Context, actorID, workspaceID, executorID string) (corecontract.CreateExecutorResourceResponse, error) {
 	commands.calls++
 	commands.createActor, commands.createWorkspace, commands.createExecutor = actorID, workspaceID, executorID
 	return commands.createResult, commands.createErr
+}
+
+func (commands *recordingExecutorManagementCommands) ListExecutors(_ context.Context, actorID, workspaceID string) (corecontract.ListExecutorResourcesResponse, error) {
+	commands.listActor, commands.listWorkspace = actorID, workspaceID
+	return commands.listResult, nil
+}
+
+func (commands *recordingExecutorManagementCommands) ArchiveExecutor(_ context.Context, actorID, workspaceID, executorID string) (corecontract.ArchiveExecutorResourceResponse, error) {
+	commands.archiveActor, commands.archiveWorkspace, commands.archiveExecutor = actorID, workspaceID, executorID
+	return commands.archiveResult, nil
 }
 
 func (commands *recordingExecutorManagementCommands) IssueEnrollmentToken(_ context.Context, actorID, workspaceID, executorID, idempotencyKey string) (corecontract.IssueExecutorEnrollmentTokenResponse, error) {

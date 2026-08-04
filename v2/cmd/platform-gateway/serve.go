@@ -119,6 +119,10 @@ func servePlatformGateway(ctx context.Context, getenv func(string) string, stdou
 	if err != nil {
 		return err
 	}
+	resources, err := platformgateway.NewResourceProxy(coreURL, coreClient)
+	if err != nil {
+		return err
+	}
 	llmGateways, err := browsergateway.NewWorkspaceLLMGatewayProxy(coreURL, coreClient)
 	if err != nil {
 		return err
@@ -142,7 +146,7 @@ func servePlatformGateway(ctx context.Context, getenv func(string) string, stdou
 
 	readiness := &platformReadiness{}
 	handler, err := platformGatewayRoutes(
-		executors.Routes(), llmGateways.Routes(), authBridge.Routes(), authConfig,
+		resources.Routes(), executors.Routes(), llmGateways.Routes(), authBridge.Routes(), authConfig,
 		browsergateway.NewLLMGatewayCallbackHandler(), web, readiness, publicOrigin, oauthOrigin,
 	)
 	if err != nil {
@@ -194,7 +198,7 @@ func validatePlatformOAuthAuthority(clientID, audience, commaSeparatedScopes str
 }
 
 func platformGatewayRoutes(
-	executors, llmGateways, authBridge, authConfig, llmCallback, web http.Handler,
+	resources, executors, llmGateways, authBridge, authConfig, llmCallback, web http.Handler,
 	readiness *platformReadiness,
 	publicOrigin, authOrigin string,
 ) (http.Handler, error) {
@@ -207,11 +211,18 @@ func platformGatewayRoutes(
 		return nil, errors.New("Authentication public origin is invalid or not distinct from Platform")
 	}
 	platformMux := http.NewServeMux()
+	platformMux.Handle(corecontract.WorkspaceCollectionRoutePattern, resources)
+	platformMux.Handle(corecontract.WorkspaceResourceRoutePattern, resources)
+	platformMux.Handle(corecontract.WorkspaceArchiveRoutePattern, resources)
+	platformMux.Handle(corecontract.WorkspaceMembersCollectionPattern, resources)
+	platformMux.Handle(corecontract.WorkspaceMemberResourceRoutePattern, resources)
+	platformMux.Handle("GET "+corecontract.ExecutorManagementRoutePattern, executors)
 	platformMux.Handle("POST "+corecontract.ExecutorManagementRoutePattern, executors)
 	platformMux.Handle("POST "+corecontract.ExecutorEnrollmentTokenRoutePattern, executors)
+	platformMux.Handle("DELETE "+corecontract.ExecutorEnrollmentTokenRoutePattern, executors)
 	executorMethodGuard := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-		response.Header().Set("Allow", http.MethodPost)
-		writePlatformError(response, http.StatusMethodNotAllowed, "method_not_allowed", "executor resource endpoints require POST")
+		response.Header().Set("Allow", "GET, POST, DELETE")
+		writePlatformError(response, http.StatusMethodNotAllowed, "method_not_allowed", "executor resource method is not allowed")
 	})
 	platformMux.Handle(corecontract.ExecutorManagementRoutePattern, executorMethodGuard)
 	platformMux.Handle(corecontract.ExecutorEnrollmentTokenRoutePattern, executorMethodGuard)

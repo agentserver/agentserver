@@ -200,6 +200,14 @@ func (backend *recordingExecutorResourceBackend) CreateExecutorResource(_ contex
 	return backend.createResponse, backend.createErr
 }
 
+func (backend *recordingExecutorResourceBackend) ListExecutorResources(_ context.Context, _, _ string) (corecontract.ListExecutorResourcesResponse, error) {
+	return corecontract.ListExecutorResourcesResponse{}, nil
+}
+
+func (backend *recordingExecutorResourceBackend) ArchiveExecutorResource(_ context.Context, _, _, _ string) (corecontract.ArchiveExecutorResourceResponse, error) {
+	return corecontract.ArchiveExecutorResourceResponse{}, nil
+}
+
 func (backend *recordingExecutorResourceBackend) IssueExecutorEnrollmentToken(_ context.Context, bearer, workspaceID, executorID, idempotencyKey string) (corecontract.IssueExecutorEnrollmentTokenResponse, error) {
 	backend.calls++
 	backend.issueBearer, backend.issueWorkspace = bearer, workspaceID

@@ -28,6 +28,8 @@ const (
 
 type ExecutorEnrollmentStateStore interface {
 	CreateExecutorResource(context.Context, coredb.CreateExecutorResourceCommand) (coredb.CreateExecutorResourceResult, error)
+	ListExecutorResources(context.Context, string, string) ([]coredb.ExecutorResource, error)
+	ArchiveExecutorResource(context.Context, coredb.ArchiveExecutorResourceCommand) (coredb.ArchiveExecutorResourceResult, error)
 	IssueExecutorEnrollmentToken(context.Context, coredb.IssueExecutorEnrollmentTokenCommand) (coredb.IssueExecutorEnrollmentTokenResult, error)
 	ClaimExecutorEnrollment(context.Context, coredb.ClaimExecutorEnrollmentCommand) (coredb.ExecutorEnrollmentReservation, error)
 	CompleteExecutorEnrollment(context.Context, coredb.CompleteExecutorEnrollmentCommand) (coredb.ExecutorResource, error)
@@ -78,6 +80,25 @@ func (service *ExecutorEnrollmentService) CreateExecutor(ctx context.Context, ac
 		return corecontract.CreateExecutorResourceResponse{}, err
 	}
 	return corecontract.CreateExecutorResourceResponse{Executor: contractExecutorResource(result.Executor), Created: result.Created}, nil
+}
+
+func (service *ExecutorEnrollmentService) ListExecutors(ctx context.Context, actorID, workspaceID string) (corecontract.ListExecutorResourcesResponse, error) {
+	items, err := service.store.ListExecutorResources(ctx, workspaceID, actorID)
+	if err != nil {
+		return corecontract.ListExecutorResourcesResponse{}, err
+	}
+	result := make([]corecontract.ExecutorResourceState, len(items))
+	for index := range items {
+		result[index] = contractExecutorResource(items[index])
+	}
+	return corecontract.ListExecutorResourcesResponse{Executors: result}, nil
+}
+
+func (service *ExecutorEnrollmentService) ArchiveExecutor(ctx context.Context, actorID, workspaceID, executorID string) (corecontract.ArchiveExecutorResourceResponse, error) {
+	result, err := service.store.ArchiveExecutorResource(ctx, coredb.ArchiveExecutorResourceCommand{
+		WorkspaceID: workspaceID, ActorID: actorID, ExecutorID: executorID,
+	})
+	return corecontract.ArchiveExecutorResourceResponse{Executor: contractExecutorResource(result.Executor), Changed: result.Changed}, err
 }
 
 func (service *ExecutorEnrollmentService) IssueEnrollmentToken(ctx context.Context, actorID, workspaceID, executorID, idempotencyKey string) (corecontract.IssueExecutorEnrollmentTokenResponse, error) {

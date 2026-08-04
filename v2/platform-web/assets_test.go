@@ -16,6 +16,11 @@ func TestPlatformAssetsAreClosedAndHardened(t *testing.T) {
 		response.Header().Get("Content-Security-Policy") == "" || response.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("platform index = %d headers=%v body=%q", response.Code, response.Header(), response.Body.String())
 	}
+	auth := httptest.NewRecorder()
+	handler.ServeHTTP(auth, httptest.NewRequest(http.MethodGet, "https://agent.example/platform/auth.js", nil))
+	if auth.Code != http.StatusOK || !strings.Contains(auth.Body.String(), "readAuthorizationCallback") {
+		t.Fatalf("platform authorization asset = %d body=%q", auth.Code, auth.Body.String())
+	}
 	unknown := httptest.NewRecorder()
 	handler.ServeHTTP(unknown, httptest.NewRequest(http.MethodGet, "https://agent.example/missing", nil))
 	if unknown.Code != http.StatusNotFound {

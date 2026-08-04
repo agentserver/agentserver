@@ -112,6 +112,10 @@ export function consumeAuthorizationTransaction(storage, config, callback, nowMS
       nowMS < transaction.createdAtMS || nowMS - transaction.createdAtMS > maximumTransactionAgeMS) {
     throw new Error('authorization callback state is missing, mismatched, or expired')
   }
+  const callbackScopes = callback.scopes ?? []
+  if (!Array.isArray(callbackScopes) || (callbackScopes.length > 0 && !isUniqueTextSubset(callbackScopes, transaction.scopes))) {
+    throw new Error('authorization callback scope exceeds the requested Browser authority')
+  }
   if (transaction.clientID !== config.clientId || transaction.tokenEndpoint !== config.tokenEndpoint ||
       transaction.audience !== config.audience || transaction.apiOrigin !== config.apiOrigin ||
       !sameTextArray(transaction.scopes, config.scopes)) {
@@ -122,7 +126,7 @@ export function consumeAuthorizationTransaction(storage, config, callback, nowMS
 
 export function readAuthorizationCallback(rawSearch) {
   const parameters = new URLSearchParams(String(rawSearch || '').replace(/^\?/, ''))
-  const callbackNames = new Set(['code', 'state', 'error', 'error_description', 'error_uri', 'iss', 'session_state'])
+  const callbackNames = new Set(['code', 'state', 'scope', 'error', 'error_description', 'error_uri', 'iss', 'session_state'])
   const hasCallback = [...parameters.keys()].some((name) => callbackNames.has(name))
   if (!hasCallback) return null
   for (const [name, value] of parameters) {
@@ -141,7 +145,21 @@ export function readAuthorizationCallback(rawSearch) {
     code,
     error: providerError,
     errorDescription: parameters.get('error_description') || '',
+    scopes: parseCallbackScopes(parameters.get('scope') || ''),
   }
+}
+
+function parseCallbackScopes(raw) {
+  if (!raw) return Object.freeze([])
+  const scopes = raw.split(' ')
+  if (scopes.length > 16 || new Set(scopes).size !== scopes.length) {
+    throw new Error('authorization callback scope is invalid')
+  }
+  for (const scope of scopes) {
+    validateProtocolText('authorization callback scope', scope, 128)
+    if (/\s/u.test(scope)) throw new Error('authorization callback scope is invalid')
+  }
+  return Object.freeze(scopes)
 }
 
 export function buildTokenExchangeBody(config, transaction, code) {

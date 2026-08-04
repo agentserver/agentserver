@@ -24,6 +24,7 @@ test:
 
 web-test:
 	cd a2ui-web && $(NODE) --test *.test.mjs
+	cd platform-web && $(NODE) --test *.test.mjs
 
 postgres-test:
 	@test -n "$$AGENTSERVER_V2_TEST_DATABASE_URL" || \

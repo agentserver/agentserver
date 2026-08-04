@@ -55,7 +55,10 @@ test('PKCE transaction binds browser state without storing an access token', asy
     removeItem: (key) => values.delete(key),
   }
   storeAuthorizationTransaction(storage, generated.transaction)
-  const callback = readAuthorizationCallback(`?code=opaque-code&state=${encodeURIComponent(generated.transaction.state)}`)
+  const callback = readAuthorizationCallback(
+    `?code=opaque-code&scope=openid+runs%3Acreate&state=${encodeURIComponent(generated.transaction.state)}`,
+  )
+  assert.deepEqual(callback.scopes, ['openid', 'runs:create'])
   const consumed = consumeAuthorizationTransaction(storage, config, callback, 1_800_000_001_000)
   assert.equal(consumed.verifier, generated.transaction.verifier)
   assert.equal(values.size, 0)
@@ -98,10 +101,19 @@ test('callback and token validation fail closed on replay, mismatch, and persist
   }
   storeAuthorizationTransaction(storage, generated.transaction)
   assert.throws(
+    () => consumeAuthorizationTransaction(storage, config, {
+      state: generated.transaction.state, code: 'x', error: '', scopes: ['openid', 'workspaces:create'],
+    }, 1_800_000_001_000),
+    /scope exceeds/,
+  )
+  assert.equal(values.size, 0)
+  storeAuthorizationTransaction(storage, generated.transaction)
+  assert.throws(
     () => consumeAuthorizationTransaction(storage, config, { state: 'A'.repeat(43), code: 'x', error: '' }, 1_800_000_001_000),
     /mismatched/,
   )
   assert.equal(values.size, 0)
+  assert.throws(() => readAuthorizationCallback('?code=x&state=s&scope=openid++runs%3Acreate'), /scope/)
   assert.throws(
     () => consumeAuthorizationTransaction(storage, config, { state: generated.transaction.state, code: 'x', error: '' }, 1_800_000_001_000),
     /no pending/,

@@ -20,6 +20,9 @@ var indexHTML []byte
 //go:embed app.js
 var applicationJavaScript []byte
 
+//go:embed auth.js
+var authorizationJavaScript []byte
+
 //go:embed styles.css
 var styleSheet []byte
 
@@ -32,6 +35,7 @@ var assets = map[string]asset{
 	"/":                    {contentType: "text/html; charset=utf-8", contents: indexHTML},
 	"/index.html":          {contentType: "text/html; charset=utf-8", contents: indexHTML},
 	"/platform/app.js":     {contentType: "text/javascript; charset=utf-8", contents: applicationJavaScript},
+	"/platform/auth.js":    {contentType: "text/javascript; charset=utf-8", contents: authorizationJavaScript},
 	"/platform/styles.css": {contentType: "text/css; charset=utf-8", contents: styleSheet},
 }
 

@@ -1,3 +1,5 @@
+import { readAuthorizationCallback } from './auth.js'
+
 const transactionKey = 'agentserver-v2.platform-pkce.v1'
 const maximumTransactionAgeMS = 10 * 60 * 1000
 
@@ -27,7 +29,7 @@ async function initialize() {
   if (window.location.hash) history.replaceState(null, '', `${window.location.pathname}${window.location.search}`)
   try {
     config = validateConfig(await fetchJSON('/auth/config', 32 * 1024))
-    const callback = readCallback(window.location.search)
+    const callback = readAuthorizationCallback(window.location.search)
     if (!callback) return
     history.replaceState(null, '', window.location.pathname)
     await completeAuthorization(callback)
@@ -71,6 +73,10 @@ async function completeAuthorization(callback) {
       !Number.isSafeInteger(transaction.createdAtMS) || Date.now() < transaction.createdAtMS ||
       Date.now() - transaction.createdAtMS > maximumTransactionAgeMS) {
     throw new Error('The authorization transaction does not match this callback.')
+  }
+  const requestedScopes = new Set(config.scopes)
+  if (callback.scopes.some((scope) => !requestedScopes.has(scope))) {
+    throw new Error('The authorization callback scope exceeds the requested Platform authority.')
   }
   if (callback.error) throw new Error(`Authorization failed: ${callback.error}`)
   const tokenURL = new URL(config.tokenEndpoint, window.location.origin)
@@ -121,22 +127,6 @@ function validateOAuthEndpoint(name, raw, requiredPath) {
 }
 
 function oauthEndpointAuthority(endpoint) { return endpoint.startsWith('/') ? '' : new URL(endpoint).origin }
-
-function readCallback(search) {
-  const parameters = new URLSearchParams(String(search || '').replace(/^\?/, ''))
-  const allowed = new Set(['code', 'state', 'error', 'error_description', 'error_uri', 'iss', 'session_state'])
-  if (![...parameters.keys()].some((name) => allowed.has(name))) return null
-  for (const [name, value] of parameters) {
-    if (!allowed.has(name) || parameters.getAll(name).length !== 1 || !value || value.length > 8192 || /[\0\r\n]/u.test(value)) {
-      throw new Error('The authorization callback is invalid.')
-    }
-  }
-  const state = parameters.get('state') || ''
-  const code = parameters.get('code') || ''
-  const error = parameters.get('error') || ''
-  if (!state || Boolean(code) === Boolean(error)) throw new Error('The authorization callback is incomplete.')
-  return { state, code, error }
-}
 
 function validateToken(value, requestedScopes) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Token response is invalid.')

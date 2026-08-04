@@ -320,7 +320,11 @@ func runOneShotWorker(ctx context.Context, config OneShotWorkerConfig, dependenc
 	appServerStderr, appServerStderrTruncated := appServerProcessStderr(process)
 	mcpErr := closeMCP()
 	runtimeErr := closeRuntime()
-	cleanupErr := errors.Join(runnerErr, notificationErr, closeStdinErr, waitErr, mcpErr, runtimeErr)
+	cleanupFailures := workerCleanupFailures{
+		runner: runnerErr, notification: notificationErr, closeStdin: closeStdinErr,
+		processWait: waitErr, mcp: mcpErr, runtime: runtimeErr,
+	}
+	cleanupErr := cleanupFailures.joined()
 	if errors.Is(waitErr, context.DeadlineExceeded) || errors.Is(waitErr, context.Canceled) {
 		// A terminal event is not a substitute for process cleanup. Returning
 		// closes the worker control connection and lets the holder kill and
@@ -344,6 +348,12 @@ func runOneShotWorker(ctx context.Context, config OneShotWorkerConfig, dependenc
 		threadID, turnID, result, cleanupErr, context.Cause(runCtx),
 		appServerStderr, appServerStderrTruncated,
 	)
+	if terminal.ErrorCode == "worker_runtime_failed" {
+		terminal.ErrorMessage = workerRuntimeFailureMessage(
+			cleanupFailures, context.Cause(runCtx), result.Terminal.Turn.Status,
+			appServerStderr, appServerStderrTruncated,
+		)
+	}
 	if terminal.Status == "completed" {
 		locator, err := completedRolloutLocator(appRuntime, result)
 		if err != nil {
@@ -738,6 +748,84 @@ func classifyWorkerTerminal(
 		event.ErrorMessage = "the worker could not complete bounded runtime cleanup"
 	}
 	return event
+}
+
+type workerCleanupFailures struct {
+	runner       error
+	notification error
+	closeStdin   error
+	processWait  error
+	mcp          error
+	runtime      error
+}
+
+func (failures workerCleanupFailures) joined() error {
+	return errors.Join(
+		failures.runner, failures.notification, failures.closeStdin,
+		failures.processWait, failures.mcp, failures.runtime,
+	)
+}
+
+// workerRuntimeFailureMessage retains fixed cleanup stage names and bounded
+// fingerprints only. Raw errors and stderr can contain model content, provider
+// URLs, or capabilities and must never cross the worker boundary.
+func workerRuntimeFailureMessage(
+	failures workerCleanupFailures,
+	runCause error,
+	terminalStatus string,
+	stderr []byte,
+	stderrTruncated bool,
+) string {
+	type stagedFailure struct {
+		stage string
+		err   error
+	}
+	staged := []stagedFailure{
+		{stage: "runner", err: failures.runner},
+		{stage: "notification", err: failures.notification},
+		{stage: "close_stdin", err: failures.closeStdin},
+		{stage: "process_wait", err: failures.processWait},
+		{stage: "mcp", err: failures.mcp},
+		{stage: "runtime", err: failures.runtime},
+		{stage: "run_cause", err: runCause},
+	}
+	stages := make([]string, 0, len(staged))
+	details := make([]string, 0, len(staged)+3)
+	var classificationText []byte
+	for _, failure := range staged {
+		if failure.err == nil {
+			continue
+		}
+		stages = append(stages, failure.stage)
+		raw := []byte(failure.err.Error())
+		classificationText = append(classificationText, raw...)
+		classificationText = append(classificationText, '\n')
+		if digest := diagnosticFingerprint(raw); digest != "" {
+			details = append(details, failure.stage+"_error_sha256="+digest)
+		}
+		clear(raw)
+	}
+	if len(stages) == 0 {
+		stages = append(stages, "unknown")
+	}
+	switch terminalStatus {
+	case "completed", "failed", "interrupted":
+	default:
+		terminalStatus = "missing"
+	}
+	details = append([]string{
+		"category=" + classifyStockTurnFailure(classificationText, stderr),
+		"stages=" + strings.Join(stages, ","),
+		"terminal_status=" + terminalStatus,
+	}, details...)
+	clear(classificationText)
+	if digest := diagnosticFingerprint(stderr); digest != "" {
+		details = append(details, "stderr_sha256="+digest)
+	}
+	if stderrTruncated {
+		details = append(details, "stderr_truncated=true")
+	}
+	return "the worker could not complete bounded runtime cleanup; " + strings.Join(details, " ")
 }
 
 func appServerProcessStderr(process oneShotWorkerProcess) ([]byte, bool) {

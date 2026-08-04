@@ -204,6 +204,46 @@ func TestProjectorMapsReasoningAndNonSuccessTerminalToRunError(t *testing.T) {
 	}
 }
 
+func TestProjectorClosesPartialMessageBeforeRuntimeFailure(t *testing.T) {
+	projector := newTestProjector(t, 0)
+	input := []runevent.Event{
+		projectorEvent(t, 1, runevent.KindAssistantMessageStarted, runevent.MessageStartedPayload{MessageID: "partial-message", Role: "assistant"}),
+		projectorEvent(t, 2, runevent.KindAssistantMessageDelta, runevent.MessageDeltaPayload{MessageID: "partial-message", Delta: "partial reply"}),
+		projectorEvent(t, 3, runevent.KindRunFailed, runevent.RunTerminalPayload{
+			Code: "worker_runtime_failed", Message: "the worker could not complete bounded runtime cleanup",
+		}),
+	}
+	projected := []events.Event{events.NewRunStartedEvent(projectorSessionID, projectorRunID)}
+	for _, event := range input {
+		result, err := projector.Project(event)
+		if err != nil {
+			t.Fatalf("Project(seq=%d, kind=%s) error = %v", event.Seq, event.Kind, err)
+		}
+		projected = append(projected, result.Events...)
+		if event.Kind == runevent.KindRunFailed && !result.Terminal {
+			t.Fatal("run.failed did not terminate projection")
+		}
+	}
+	want := []events.EventType{
+		events.EventTypeRunStarted,
+		events.EventTypeTextMessageStart,
+		events.EventTypeTextMessageContent,
+		events.EventTypeTextMessageEnd,
+		events.EventTypeRunError,
+	}
+	if len(projected) != len(want) {
+		t.Fatalf("partial failure projected %d events, want %d", len(projected), len(want))
+	}
+	for index, eventType := range want {
+		if projected[index].Type() != eventType {
+			t.Fatalf("event %d = %s, want %s", index, projected[index].Type(), eventType)
+		}
+	}
+	if err := events.ValidateSequence(projected); err != nil {
+		t.Fatalf("partial failure AG-UI sequence is invalid: %v", err)
+	}
+}
+
 func TestProjectorSkipsUnknownKindsButFailsOnGapScopeAndKnownFutureSchema(t *testing.T) {
 	t.Run("unknown kind", func(t *testing.T) {
 		projector := newTestProjector(t, 0)

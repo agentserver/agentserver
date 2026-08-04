@@ -138,6 +138,33 @@ func TestOneShotWorkerDoesNotReportTerminalBeforeChildShutdownIsConfirmed(t *tes
 	fixture.order.requireBefore(t, "process_close_stdin", "process_wait", "mcp_close", "runtime_close")
 }
 
+func TestWorkerRuntimeFailureMessageContainsOnlySafeDiagnostics(t *testing.T) {
+	secret := "https://provider.example/v1/responses bearer-secret user-prompt"
+	message := workerRuntimeFailureMessage(
+		workerCleanupFailures{
+			runner:      errors.New("runner failed: " + secret),
+			processWait: errors.New("exit status 1"),
+		},
+		errors.New("run cause: "+secret),
+		"",
+		[]byte("stderr: "+secret),
+		true,
+	)
+	for _, want := range []string{
+		"category=unclassified", "stages=runner,process_wait,run_cause",
+		"terminal_status=missing",
+		"runner_error_sha256=", "process_wait_error_sha256=", "run_cause_error_sha256=",
+		"stderr_sha256=", "stderr_truncated=true",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("runtime diagnostic %q omitted %q", message, want)
+		}
+	}
+	if strings.Contains(message, secret) || strings.Contains(message, "provider.example") || strings.Contains(message, "user-prompt") {
+		t.Fatalf("runtime diagnostic leaked sensitive contents: %q", message)
+	}
+}
+
 const (
 	oneShotPrompt             = "perform the deterministic test turn"
 	oneShotExecutorCapability = "executor-capability-one-shot"

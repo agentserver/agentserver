@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/ag-ui-protocol/ag-ui/sdks/community/go/pkg/core/events"
 	"github.com/agentserver/agentserver/v2/internal/browsergateway/a2ui"
@@ -277,20 +278,52 @@ func (projector *Projector) projectKnown(event runevent.Event, payload any) (Pro
 			events.NewRunFinishedEventWithOptions(event.SessionID, event.RunID, options...),
 		}, Terminal: true}, nil
 	case runevent.KindRunFailed, runevent.KindRunInterrupted, runevent.KindRunCancelled:
-		if err := projector.requireClosedLifecycles(); err != nil {
-			return Projection{}, err
-		}
 		terminal := payload.(runevent.RunTerminalPayload)
 		code := terminal.Code
 		if code == "" {
 			code = event.Kind
 		}
-		return Projection{Events: []events.Event{
+		projected := projector.closeInterruptedLifecycles()
+		projected = append(projected,
 			events.NewRunErrorEvent(terminal.Message, events.WithErrorCode(code), events.WithRunID(event.RunID)),
-		}, Terminal: true}, nil
+		)
+		return Projection{Events: projected, Terminal: true}, nil
 	default:
 		return Projection{}, fmt.Errorf("canonical event kind %q has no AG-UI projection", event.Kind)
 	}
+}
+
+// closeInterruptedLifecycles makes a non-success terminal representable in
+// AG-UI when the runtime dies between a start/delta and its matching completed
+// notification. Canonical success remains strict: run.completed still requires
+// the app-server to have closed every lifecycle itself.
+func (projector *Projector) closeInterruptedLifecycles() []events.Event {
+	projected := make([]events.Event, 0,
+		len(projector.activeToolCalls)+len(projector.activeReasoning)+len(projector.activeMessages),
+	)
+	for _, toolCallID := range sortedLifecycleIDs(projector.activeToolCalls) {
+		projected = append(projected, events.NewToolCallEndEvent(toolCallID))
+	}
+	for _, messageID := range sortedLifecycleIDs(projector.activeReasoning) {
+		projected = append(projected, events.NewReasoningMessageEndEvent(messageID))
+	}
+	for _, messageID := range sortedLifecycleIDs(projector.activeMessages) {
+		projected = append(projected, events.NewTextMessageEndEvent(messageID))
+	}
+	clear(projector.activeToolCalls)
+	clear(projector.completedToolCall)
+	clear(projector.activeReasoning)
+	clear(projector.activeMessages)
+	return projected
+}
+
+func sortedLifecycleIDs(values map[string]struct{}) []string {
+	result := make([]string, 0, len(values))
+	for value := range values {
+		result = append(result, value)
+	}
+	slices.Sort(result)
+	return result
 }
 
 func presentationOperations(eventID string, presentation runevent.ToolPresentation) ([]a2ui.Message, error) {

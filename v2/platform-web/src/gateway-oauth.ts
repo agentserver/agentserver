@@ -3,7 +3,7 @@ import type { LLMGateway } from "@agentserver/v2-web-shared"
 export const gatewayCallbackChannelName = "agentserver-v2.llm-gateway-oidc-callback.v1"
 const secretPattern = /^[A-Za-z0-9._~-]{43,128}$/u
 
-export interface GatewayCallback {
+export interface GatewayCallbackSuccess {
   type: "agentserver-v2.llm-gateway-oidc-callback"
   version: 1
   state: string
@@ -11,6 +11,15 @@ export interface GatewayCallback {
   providerError: string
   providerErrorDescription: string
 }
+
+export interface GatewayCallbackProtocolError {
+  type: "agentserver-v2.llm-gateway-oidc-callback"
+  version: 1
+  state: string
+  protocolError: "invalid_callback"
+}
+
+export type GatewayCallback = GatewayCallbackSuccess | GatewayCallbackProtocolError
 
 export function gatewayBrowserBinding(): string {
   const value = new Uint8Array(32)
@@ -33,7 +42,16 @@ export function callbackState(authorizationUrl: string, expiresAt: string): stri
 export function validateGatewayCallback(value: unknown): GatewayCallback {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The Gateway callback is invalid.")
   const callback = value as Record<string, unknown>
-  if (callback.protocolError) throw new Error("The third-party Gateway returned an invalid callback.")
+  if (callback.protocolError !== undefined) {
+    const expected = ["type", "version", "state", "protocolError"].sort()
+    const actual = Object.keys(callback).sort()
+    if (actual.length !== expected.length || actual.some((name, index) => name !== expected[index]) ||
+        callback.type !== "agentserver-v2.llm-gateway-oidc-callback" || callback.version !== 1 ||
+        typeof callback.state !== "string" || !secretPattern.test(callback.state) || callback.protocolError !== "invalid_callback") {
+      throw new Error("The Gateway callback is invalid.")
+    }
+    return callback as unknown as GatewayCallbackProtocolError
+  }
   const expected = ["type", "version", "state", "code", "providerError", "providerErrorDescription"].sort()
   const actual = Object.keys(callback).sort()
   if (actual.length !== expected.length || actual.some((name, index) => name !== expected[index]) ||
@@ -44,7 +62,7 @@ export function validateGatewayCallback(value: unknown): GatewayCallback {
       typeof callback.providerErrorDescription !== "string" || callback.providerErrorDescription.length > 8192 || /[\0\r\n]/u.test(callback.providerErrorDescription)) {
     throw new Error("The Gateway callback is invalid.")
   }
-  return callback as unknown as GatewayCallback
+  return callback as unknown as GatewayCallbackSuccess
 }
 
 export function buildGatewayRequest(form: FormData, gatewayId: string) {

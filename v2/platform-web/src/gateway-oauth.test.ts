@@ -6,6 +6,8 @@ describe("Gateway OAuth boundary", () => {
     const state = "a".repeat(43)
     expect(callbackState(`https://provider.example/oauth2/auth?state=${state}`, new Date(Date.now() + 60_000).toISOString())).toBe(state)
     expect(validateGatewayCallback({ type: "agentserver-v2.llm-gateway-oidc-callback", version: 1, state, code: "code", providerError: "", providerErrorDescription: "" })).toMatchObject({ code: "code" })
+    expect(validateGatewayCallback({ type: "agentserver-v2.llm-gateway-oidc-callback", version: 1, state, protocolError: "invalid_callback" })).toMatchObject({ state, protocolError: "invalid_callback" })
+    expect(() => validateGatewayCallback({ type: "agentserver-v2.llm-gateway-oidc-callback", version: 1, state: "short", protocolError: "invalid_callback" })).toThrow(/invalid/u)
     expect(() => validateGatewayCallback({ type: "agentserver-v2.llm-gateway-oidc-callback", version: 1, state, code: "code", providerError: "error", providerErrorDescription: "" })).toThrow(/invalid/u)
   })
 

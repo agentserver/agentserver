@@ -262,6 +262,12 @@ function GatewaysPage({ workspace, api }: { workspace: Workspace; api: ResourceA
     let callback
     try { callback = validateGatewayCallback(raw) } catch { return }
     if (callback.state !== current.state) return
+    if ("protocolError" in callback) {
+      transaction.current = null; window.clearInterval(current.monitor); setWaiting(false)
+      try { if (!current.popup.closed) current.popup.close() } catch { /* COOP can sever the window proxy */ }
+      current.browserBinding = ""; current.state = ""; setError(t("gateways.invalidCallback"))
+      return
+    }
     const providerFailure = callback.providerError ? t("gateways.providerDenied", {
       detail: callback.providerErrorDescription ? `${callback.providerError} — ${callback.providerErrorDescription}` : callback.providerError,
     }) : ""

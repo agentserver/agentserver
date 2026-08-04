@@ -12,7 +12,9 @@ const llmGatewayCallbackScript = `(function () {
   const targetOrigin = window.location.origin;
   const opener = window.opener;
   const parameters = new URLSearchParams(window.location.search);
-  const allowed = new Set(['code', 'state', 'error', 'error_description', 'error_uri', 'iss', 'session_state']);
+  const allowed = new Set(['code', 'state', 'scope', 'error', 'error_description', 'error_uri', 'iss', 'session_state']);
+  const rawStates = parameters.getAll('state');
+  const recoverableState = rawStates.length === 1 && /^[A-Za-z0-9._~-]{43,128}$/u.test(rawStates[0]) ? rawStates[0] : '';
   let payload;
   try {
     for (const [name, value] of parameters) {
@@ -36,32 +38,55 @@ const llmGatewayCallbackScript = `(function () {
     payload = Object.freeze({
       type: 'agentserver-v2.llm-gateway-oidc-callback',
       version: 1,
+      state: recoverableState,
       protocolError: 'invalid_callback',
     });
   }
   history.replaceState(null, '', window.location.pathname);
   let delivered = false;
-  try {
-    if (opener && !opener.closed) {
-      opener.postMessage(payload, targetOrigin);
-      delivered = true;
-    }
-  } catch (_) {
-    // A third-party COOP policy may permanently sever the opener.
-  }
+  let channel = null;
   try {
     if (typeof window.BroadcastChannel === 'function') {
-      const channel = new window.BroadcastChannel(callbackChannelName);
-      channel.postMessage(payload);
-      channel.close();
-      delivered = true;
+      channel = new window.BroadcastChannel(callbackChannelName);
     }
   } catch (_) {
     // Keep the opener path as a compatibility fallback.
   }
-  if (delivered) {
-    window.close();
-    window.setTimeout(function () { document.body.textContent = 'Authorization completed. You may close this window.'; }, 250);
+  function deliver() {
+    try {
+      if (opener && !opener.closed) {
+        opener.postMessage(payload, targetOrigin);
+        delivered = true;
+      }
+    } catch (_) {
+      // A third-party COOP policy may permanently sever the opener.
+    }
+    try {
+      if (channel) {
+        channel.postMessage(payload);
+        delivered = true;
+      }
+    } catch (_) {
+      // The opener delivery above may still be available.
+    }
+  }
+  deliver();
+  if (delivered && (!('protocolError' in payload) || recoverableState)) {
+    // Keep this document and the channel alive long enough for Chromium to
+    // dispatch across a browsing-context-group change caused by provider COOP.
+    window.setTimeout(deliver, 100);
+    window.setTimeout(deliver, 250);
+    window.setTimeout(function () {
+      try {
+        if (channel) channel.close();
+      } catch (_) {
+        // Closing a best-effort transport must not block popup cleanup.
+      }
+      window.close();
+      window.setTimeout(function () { document.body.textContent = 'Authorization completed. You may close this window.'; }, 250);
+    }, 400);
+  } else if ('protocolError' in payload) {
+    document.body.textContent = 'The provider returned an invalid authorization response. Return to AgentServer and try again.';
   } else {
     document.body.textContent = 'The authorization window is no longer connected. Return to AgentServer and try again.';
   }

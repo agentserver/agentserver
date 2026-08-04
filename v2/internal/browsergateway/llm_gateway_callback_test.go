@@ -18,6 +18,9 @@ func TestLLMGatewayCallbackIsStaticNoStorePostMessageBridge(t *testing.T) {
 		!strings.Contains(response.Body.String(), "opener.postMessage(payload, targetOrigin)") ||
 		!strings.Contains(response.Body.String(), "new window.BroadcastChannel(callbackChannelName)") ||
 		!strings.Contains(response.Body.String(), "channel.postMessage(payload)") ||
+		!strings.Contains(response.Body.String(), "'code', 'state', 'scope'") ||
+		!strings.Contains(response.Body.String(), "window.setTimeout(deliver, 250)") ||
+		!strings.Contains(response.Body.String(), "protocolError: 'invalid_callback'") ||
 		!strings.Contains(response.Body.String(), "agentserver-v2.llm-gateway-oidc-callback.v1") ||
 		!strings.Contains(response.Body.String(), "history.replaceState") ||
 		strings.Contains(response.Body.String(), "state-1") || strings.Contains(response.Body.String(), "code-1") {

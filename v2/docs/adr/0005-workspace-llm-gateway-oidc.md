@@ -152,10 +152,13 @@ PostgreSQL 以 `expectedVersion` 乐观锁提交配置并递增版本，同时�
 `reauth_required`；旧 sealed token 和旧版本 run 随即 fail closed。disabled Gateway 仍不能修改或重新启用。
 
 前端在当前页面内存中保存随机 browser binding、workspace、Gateway ID 和 popup 引用，不写入
-`sessionStorage`。OIDC callback 落到前端 origin 的最小静态页面；它只把 state/code/error 通过限定
-target origin 的 `window.opener.postMessage` 交回原页面，并同时用固定版本名的同源
-`BroadcastChannel` 作为 COOP 切断 opener 后的回退；原页面必须再次匹配服务端 authorization URL 中的
-高熵 state，不能只凭广播来源完成事务。callback 不接触 AgentServer bearer，原页面再带内存中的
+`sessionStorage`。OIDC callback 落到前端 origin 的最小静态页面；它严格验证单值且有界的 OAuth
+响应字段，兼容提供方附带但不参与授权判断的 `scope`、`iss` 和 `session_state`，再把 state/code/error
+通过限定 target origin 的 `window.opener.postMessage` 交回原页面，并同时用固定版本名的同源
+`BroadcastChannel` 作为 COOP 切断 opener 后的回退。callback 会在短暂有界窗口内重投后再关闭，避免
+浏览上下文组切换时丢失异步消息；可恢复 state 的协议错误也必须回传并由原页面显式结束等待。原页面
+必须再次匹配服务端 authorization URL 中的高熵 state，不能只凭广播来源完成事务。callback 不接触
+AgentServer bearer，原页面再带内存中的
 AgentServer bearer 和 browser binding 调 completion API。Core 要求 API 用户与 auth transaction 中的 user
 完全相同。第三方页面的 `Cross-Origin-Opener-Policy` 可能让仍打开的 popup 在原页面表现为 closed，因此
 前端不以 `popup.closed` 提前销毁 PKCE 事务，而以服务端签发的过期时间为权威上界。AgentServer 页面使用

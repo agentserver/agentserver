@@ -23,6 +23,7 @@ import {
 import {
   buildCreateGatewayRequest,
   createBrowserBinding,
+  createGatewayCallbackChannel,
   validateBeginAuthorization,
   validateCompleteAuthorization,
   validateCreateGateway,
@@ -73,6 +74,7 @@ let gateways = []
 let pendingWorkspaceGrant = false
 let authorizationPending = false
 let gatewayAuthorization = null
+const gatewayCallbackChannel = createGatewayCallbackChannel(window.BroadcastChannel)
 
 wireEvents()
 void initialize()
@@ -95,7 +97,9 @@ function wireEvents() {
   elements.closeToken.addEventListener('click', closeEnrollmentToken)
   elements.tokenLayer.addEventListener('click', (event) => { if (event.target === elements.tokenLayer) closeEnrollmentToken() })
   document.querySelectorAll('.tab').forEach((button) => button.addEventListener('click', () => selectTab(button.dataset.tab)))
-  window.addEventListener('message', completeGatewayAuthorization)
+  window.addEventListener('message', receiveGatewayAuthorizationWindowMessage)
+  gatewayCallbackChannel?.addEventListener('message', receiveGatewayAuthorizationBroadcast)
+  window.addEventListener('pagehide', () => gatewayCallbackChannel?.close(), { once: true })
 }
 
 async function initialize() {
@@ -566,7 +570,7 @@ async function createGateway(event) {
     }, window.crypto)
     validateCreateGateway(await apiJSON(workspaceLLMGatewaysPath(workspace.workspaceId), jsonRequest('POST', request), 512 * 1024), workspace.workspaceId)
     elements.createGatewayForm.reset()
-    elements.gatewayOIDCScopes.value = 'openid profile email offline_access'
+    elements.gatewayOIDCScopes.value = 'openid offline_access'
     elements.gatewayMakeDefault.checked = true
     await loadGateways()
   } catch (error) {
@@ -582,13 +586,17 @@ async function beginGatewayAuthorization(gateway) {
   if (!workspace || gatewayAuthorization) return
   const popup = window.open('about:blank', `agentserver-llm-gateway-${gateway.gatewayId}`, 'popup,width=560,height=760')
   if (!popup) return showGatewayError(new Error('The browser blocked the Gateway authorization popup.'))
-  const transaction = { popup, workspaceID: workspace.workspaceId, gatewayID: gateway.gatewayId, browserBinding: createBrowserBinding(window.crypto), expiresAtMS: 0, monitorID: null }
+  const transaction = {
+    popup, workspaceID: workspace.workspaceId, gatewayID: gateway.gatewayId,
+    browserBinding: createBrowserBinding(window.crypto), callbackState: '', expiresAtMS: 0, monitorID: null,
+  }
   gatewayAuthorization = transaction
   clearGatewayError()
   try {
     const result = validateBeginAuthorization(await apiJSON(workspaceLLMGatewayActionPath(transaction.workspaceID, transaction.gatewayID, 'authorize'),
       jsonRequest('POST', { browserBinding: transaction.browserBinding }), 128 * 1024), transaction.gatewayID)
     if (gatewayAuthorization !== transaction || popup.closed) throw new Error('Gateway authorization popup was closed or superseded.')
+    transaction.callbackState = result.callbackState
     transaction.expiresAtMS = Date.parse(result.expiresAt)
     popup.location.replace(result.authorizationUrl)
     transaction.monitorID = window.setInterval(() => monitorGatewayAuthorization(transaction), 500)
@@ -599,13 +607,30 @@ async function beginGatewayAuthorization(gateway) {
   }
 }
 
-async function completeGatewayAuthorization(event) {
+function receiveGatewayAuthorizationWindowMessage(event) {
   const transaction = gatewayAuthorization
   if (!transaction || event.origin !== window.location.origin || event.source !== transaction.popup) return
+  void completeGatewayAuthorization(event.data)
+}
+
+function receiveGatewayAuthorizationBroadcast(event) {
+  if (!gatewayAuthorization) return
+  void completeGatewayAuthorization(event.data)
+}
+
+async function completeGatewayAuthorization(payload) {
+  const transaction = gatewayAuthorization
+  if (!transaction) return
+  let callback
+  try {
+    callback = validateGatewayCallbackMessage(payload)
+  } catch {
+    return
+  }
+  if (callback.state !== transaction.callbackState) return
   gatewayAuthorization = null
   stopGatewayMonitor(transaction)
   try {
-    const callback = validateGatewayCallbackMessage(event.data)
     if (transaction.popup && !transaction.popup.closed) transaction.popup.close()
     const result = await apiJSON(workspaceLLMGatewayActionPath(transaction.workspaceID, transaction.gatewayID, 'completeAuthorization'), jsonRequest('POST', {
       state: callback.state, code: callback.code || undefined, providerError: callback.providerError || undefined, browserBinding: transaction.browserBinding,
@@ -618,6 +643,7 @@ async function completeGatewayAuthorization(event) {
     handleAuthorizationError(error)
   } finally {
     transaction.browserBinding = ''
+    transaction.callbackState = ''
   }
 }
 
@@ -647,11 +673,14 @@ async function disableGateway(gateway) {
 
 function monitorGatewayAuthorization(transaction) {
   if (gatewayAuthorization !== transaction) return stopGatewayMonitor(transaction)
-  let closed = true
-  try { closed = transaction.popup.closed } catch { closed = true }
-  if (!closed && Date.now() < transaction.expiresAtMS && currentWorkspace()?.workspaceId === transaction.workspaceID) return
+  // Cross-Origin-Opener-Policy may sever the WindowProxy and report an open
+  // popup as closed. The server-issued expiry is the reliable lifetime bound;
+  // retaining the transaction lets the callback arrive via BroadcastChannel.
+  const workspaceChanged = currentWorkspace()?.workspaceId !== transaction.workspaceID
+  const expired = Date.now() >= transaction.expiresAtMS
+  if (!workspaceChanged && !expired) return
   clearGatewayAuthorization()
-  showGatewayError(new Error(closed ? 'The Gateway authorization popup was closed.' : 'The Gateway authorization transaction expired.'))
+  if (!workspaceChanged) showGatewayError(new Error('The Gateway authorization transaction expired.'))
 }
 
 function stopGatewayMonitor(transaction) {
@@ -665,6 +694,7 @@ function clearGatewayAuthorization() {
   if (!transaction) return
   stopGatewayMonitor(transaction)
   transaction.browserBinding = ''
+  transaction.callbackState = ''
   if (transaction.popup && !transaction.popup.closed) transaction.popup.close()
 }
 

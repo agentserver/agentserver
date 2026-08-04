@@ -8,6 +8,7 @@ import (
 
 const llmGatewayCallbackScript = `(function () {
   'use strict';
+  const callbackChannelName = 'agentserver-v2.llm-gateway-oidc-callback.v1';
   const targetOrigin = window.location.origin;
   const opener = window.opener;
   const parameters = new URLSearchParams(window.location.search);
@@ -39,8 +40,26 @@ const llmGatewayCallbackScript = `(function () {
     });
   }
   history.replaceState(null, '', window.location.pathname);
-  if (opener && !opener.closed) {
-    opener.postMessage(payload, targetOrigin);
+  let delivered = false;
+  try {
+    if (opener && !opener.closed) {
+      opener.postMessage(payload, targetOrigin);
+      delivered = true;
+    }
+  } catch (_) {
+    // A third-party COOP policy may permanently sever the opener.
+  }
+  try {
+    if (typeof window.BroadcastChannel === 'function') {
+      const channel = new window.BroadcastChannel(callbackChannelName);
+      channel.postMessage(payload);
+      channel.close();
+      delivered = true;
+    }
+  } catch (_) {
+    // Keep the opener path as a compatibility fallback.
+  }
+  if (delivered) {
     window.close();
     window.setTimeout(function () { document.body.textContent = 'Authorization completed. You may close this window.'; }, 250);
   } else {

@@ -104,7 +104,7 @@
                 <label class="wide">Responses URL<input id="gateway-responses-url" maxlength="4096" inputmode="url" autocomplete="off" required placeholder="https://gateway.example.com/v1/responses"></label>
                 <label class="wide">OIDC issuer<input id="gateway-oidc-issuer" maxlength="2048" inputmode="url" autocomplete="off" required placeholder="https://login.example.com/tenant/v2.0"></label>
                 <label class="wide">OIDC public client ID<input id="gateway-oidc-client-id" maxlength="512" autocomplete="off" required placeholder="agentserver-workspace-client"></label>
-                <label class="wide">OIDC scopes<input id="gateway-oidc-scopes" maxlength="2048" autocomplete="off" value="openid profile email offline_access"></label>
+                <label class="wide">OIDC scopes<input id="gateway-oidc-scopes" maxlength="2048" autocomplete="off" value="openid offline_access"></label>
                 <label>Bearer sent upstream<select id="gateway-bearer-type"><option value="id_token">ID token</option><option value="access_token">Access token</option></select></label>
                 <label class="checkbox"><input id="gateway-make-default" type="checkbox" checked>Workspace default</label>
                 <p class="wide form-note">Register <code id="gateway-callback-uri"></code> as the exact public-client callback. No client secret is uploaded.</p>

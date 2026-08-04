@@ -28,6 +28,7 @@ import {
 import {
   buildCreateGatewayRequest,
   createBrowserBinding,
+  createGatewayCallbackChannel,
   validateBeginAuthorization,
   validateCompleteAuthorization,
   validateCreateGateway,
@@ -124,6 +125,7 @@ const approvalCommands = new Map()
 let gatewayView = { phase: 'idle', gateways: [], error: '' }
 let gatewayAuthorization = null
 let sessionView = { phase: 'signed-out', sessions: [], selectedID: '', error: '' }
+const gatewayCallbackChannel = createGatewayCallbackChannel(window.BroadcastChannel)
 
 void initialize()
 
@@ -144,7 +146,9 @@ async function initialize() {
   elements.gatewayLayer.addEventListener('click', (event) => {
     if (event.target === elements.gatewayLayer) closeGatewaySettings()
   })
-  window.addEventListener('message', completeWorkspaceGatewayAuthorization)
+  window.addEventListener('message', receiveWorkspaceGatewayAuthorizationWindowMessage)
+  gatewayCallbackChannel?.addEventListener('message', receiveWorkspaceGatewayAuthorizationBroadcast)
+  window.addEventListener('pagehide', () => gatewayCallbackChannel?.close(), { once: true })
   elements.composer.addEventListener('submit', sendPrompt)
   elements.newSessionButton.addEventListener('click', () => createAndSelectSession('New conversation'))
   elements.sessionRefresh.addEventListener('click', () => loadUserSessions(sessionView.selectedID))
@@ -512,7 +516,7 @@ async function createWorkspaceGateway(event) {
     validateCreateGateway(await boundedJSONResponse(response, 512 * 1024), currentConnection.workspaceID)
     if (connection !== currentConnection) return
     elements.gatewayCreateForm.reset()
-    elements.gatewayOIDCScopes.value = 'openid profile email offline_access'
+    elements.gatewayOIDCScopes.value = 'openid offline_access'
     elements.gatewayMakeDefault.checked = true
     gatewayView = { ...gatewayView, phase: 'idle', error: '' }
     await loadWorkspaceGateways()
@@ -538,6 +542,7 @@ async function beginWorkspaceGatewayAuthorization(gateway) {
     workspaceID: currentConnection.workspaceID,
     gatewayID: gateway.gatewayId,
     browserBinding: createBrowserBinding(window.crypto),
+    callbackState: '',
     expiresAtMS: 0,
     monitorID: null,
   }
@@ -553,6 +558,7 @@ async function beginWorkspaceGatewayAuthorization(gateway) {
     if (!response.ok) throw await responseError(response)
     const authorization = validateBeginAuthorization(await boundedJSONResponse(response, 128 * 1024), transaction.gatewayID)
     if (gatewayAuthorization !== transaction || connection !== currentConnection || popup.closed) throw new Error('Gateway authorization popup was closed or superseded')
+    transaction.callbackState = authorization.callbackState
     transaction.expiresAtMS = Date.parse(authorization.expiresAt)
     popup.location.replace(authorization.authorizationUrl)
     transaction.monitorID = window.setInterval(() => monitorWorkspaceGatewayAuthorization(transaction), 500)
@@ -565,13 +571,30 @@ async function beginWorkspaceGatewayAuthorization(gateway) {
   }
 }
 
-async function completeWorkspaceGatewayAuthorization(event) {
+function receiveWorkspaceGatewayAuthorizationWindowMessage(event) {
   const transaction = gatewayAuthorization
   if (!transaction || event.origin !== window.location.origin || event.source !== transaction.popup) return
+  void completeWorkspaceGatewayAuthorization(event.data)
+}
+
+function receiveWorkspaceGatewayAuthorizationBroadcast(event) {
+  if (!gatewayAuthorization) return
+  void completeWorkspaceGatewayAuthorization(event.data)
+}
+
+async function completeWorkspaceGatewayAuthorization(payload) {
+  const transaction = gatewayAuthorization
+  if (!transaction) return
+  let callback
+  try {
+    callback = validateGatewayCallbackMessage(payload)
+  } catch {
+    return
+  }
+  if (callback.state !== transaction.callbackState) return
   gatewayAuthorization = null
   stopGatewayAuthorizationMonitor(transaction)
   try {
-    const callback = validateGatewayCallbackMessage(event.data)
     if (transaction.popup && !transaction.popup.closed) transaction.popup.close()
     if (connection !== transaction.connection) throw new Error('AgentServer session changed during Gateway authorization')
     gatewayView = { ...gatewayView, phase: 'completing', error: '' }
@@ -605,6 +628,7 @@ async function completeWorkspaceGatewayAuthorization(event) {
     }
   } finally {
     transaction.browserBinding = ''
+    transaction.callbackState = ''
   }
 }
 
@@ -662,19 +686,16 @@ function monitorWorkspaceGatewayAuthorization(transaction) {
   }
   const sessionChanged = connection !== transaction.connection
   const expired = !Number.isSafeInteger(transaction.expiresAtMS) || Date.now() >= transaction.expiresAtMS
-  let popupClosed = true
-  try {
-    popupClosed = !transaction.popup || transaction.popup.closed
-  } catch {
-    popupClosed = true
-  }
-  if (!sessionChanged && !expired && !popupClosed) return
+  // A provider's Cross-Origin-Opener-Policy can sever the WindowProxy and make
+  // an open popup look closed. Keep the in-memory PKCE transaction until its
+  // authoritative expiry so the same-origin callback broadcast can complete.
+  if (!sessionChanged && !expired) return
   clearGatewayAuthorization()
   if (sessionChanged) return
   gatewayView = {
     ...gatewayView,
     phase: 'error',
-    error: expired ? 'The third-party Gateway authorization transaction expired.' : 'The third-party Gateway authorization popup was closed.',
+    error: 'The third-party Gateway authorization transaction expired.',
   }
   renderGatewaySettings()
 }
@@ -691,6 +712,7 @@ function clearGatewayAuthorization() {
   if (!transaction) return
   stopGatewayAuthorizationMonitor(transaction)
   transaction.browserBinding = ''
+  transaction.callbackState = ''
   if (transaction.popup && !transaction.popup.closed) transaction.popup.close()
 }
 

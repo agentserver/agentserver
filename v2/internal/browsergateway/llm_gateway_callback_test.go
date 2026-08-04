@@ -16,6 +16,9 @@ func TestLLMGatewayCallbackIsStaticNoStorePostMessageBridge(t *testing.T) {
 		response.Header().Get("Referrer-Policy") != "no-referrer" ||
 		!strings.Contains(response.Header().Get("Content-Security-Policy"), "script-src 'sha256-") ||
 		!strings.Contains(response.Body.String(), "opener.postMessage(payload, targetOrigin)") ||
+		!strings.Contains(response.Body.String(), "new window.BroadcastChannel(callbackChannelName)") ||
+		!strings.Contains(response.Body.String(), "channel.postMessage(payload)") ||
+		!strings.Contains(response.Body.String(), "agentserver-v2.llm-gateway-oidc-callback.v1") ||
 		!strings.Contains(response.Body.String(), "history.replaceState") ||
 		strings.Contains(response.Body.String(), "state-1") || strings.Contains(response.Body.String(), "code-1") {
 		t.Fatalf("callback = %d headers=%v body=%q", response.Code, response.Header(), response.Body.String())

@@ -51,7 +51,7 @@ OIDC client secret。配置字段为：
 
 - issuer；
 - client ID；
-- scopes，默认 `openid profile email offline_access`；
+- scopes，最小默认值为 `openid offline_access`；provider-specific scope 由 workspace 显式添加，且第三方 client 必须允许最终的完整 scope 集合；
 - `bearerTokenType = id_token | access_token`；
 - 精确 redirect URI，由部署固定为 AgentServer 前端 callback；
 - 精确 `/v1/responses` endpoint 和默认 model。
@@ -151,10 +151,14 @@ disable 原子清除 default、把状态设为 disabled 并递增配置版本，
 
 前端在当前页面内存中保存随机 browser binding、workspace、Gateway ID 和 popup 引用，不写入
 `sessionStorage`。OIDC callback 落到前端 origin 的最小静态页面；它只把 state/code/error 通过限定
-target origin 的 `window.opener.postMessage` 交回原页面，不接触 AgentServer bearer。原页面再带内存中的
+target origin 的 `window.opener.postMessage` 交回原页面，并同时用固定版本名的同源
+`BroadcastChannel` 作为 COOP 切断 opener 后的回退；原页面必须再次匹配服务端 authorization URL 中的
+高熵 state，不能只凭广播来源完成事务。callback 不接触 AgentServer bearer，原页面再带内存中的
 AgentServer bearer 和 browser binding 调 completion API。Core 要求 API 用户与 auth transaction 中的 user
-完全相同。为保留经过第三方 origin 的 popup opener，前端使用 `Cross-Origin-Opener-Policy:
-same-origin-allow-popups`；callback 仍使用 no-store、no-referrer 和 hash-locked CSP。整个流程不依赖跨
+完全相同。第三方页面的 `Cross-Origin-Opener-Policy` 可能让仍打开的 popup 在原页面表现为 closed，因此
+前端不以 `popup.closed` 提前销毁 PKCE 事务，而以服务端签发的过期时间为权威上界。AgentServer 页面使用
+`Cross-Origin-Opener-Policy: same-origin-allow-popups` 保留兼容的 opener 快速路径；callback 仍使用
+no-store、no-referrer 和 hash-locked CSP。整个流程不依赖跨
 `agent.byted.bps.dev` 与 `browser-gateway.byted.bps.dev` 的 cookie。
 
 ### 7. 部署配置变化

@@ -1,6 +1,16 @@
 import { createResourceID, validateText, validateUUID } from './resources.js'
 
 const oidcSecretPattern = /^[A-Za-z0-9._~-]{43,128}$/u
+export const GATEWAY_CALLBACK_CHANNEL_NAME = 'agentserver-v2.llm-gateway-oidc-callback.v1'
+
+export function createGatewayCallbackChannel(BroadcastChannelAPI) {
+  if (typeof BroadcastChannelAPI !== 'function') return null
+  try {
+    return new BroadcastChannelAPI(GATEWAY_CALLBACK_CHANNEL_NAME)
+  } catch {
+    return null
+  }
+}
 
 export function workspaceLLMGatewaysPath(workspaceID) {
   return `/v2/workspaces/${encodeURIComponent(validateUUID('workspace ID', workspaceID))}/llm-gateways`
@@ -20,7 +30,8 @@ export function createBrowserBinding(cryptoAPI) {
 }
 
 export function buildCreateGatewayRequest(form, cryptoAPI) {
-  const scopes = String(form.oidcScopes || '').trim().split(/\s+/u)
+  const scopeText = String(form.oidcScopes || '').trim()
+  const scopes = scopeText ? scopeText.split(/\s+/u) : ['openid', 'offline_access']
   if (scopes.length < 1 || scopes.length > 16 || new Set(scopes).size !== scopes.length ||
       !scopes.includes('openid') || !scopes.includes('offline_access')) throw new Error('OIDC scopes must be unique and include openid and offline_access.')
   scopes.forEach((scope) => { validateText('OIDC scope', scope, 128); if (/\s/u.test(scope)) throw new Error('OIDC scope is invalid.') })
@@ -56,9 +67,14 @@ export function validateBeginAuthorization(value, gatewayID, nowMS = Date.now())
   requireObject(value, ['gatewayId', 'authorizationUrl', 'expiresAt'], 'Gateway authorization')
   if (value.gatewayId !== validateUUID('Gateway ID', gatewayID)) throw new Error('Gateway authorization escaped its scope.')
   const authorizationUrl = validateHTTPSURL('authorization URL', value.authorizationUrl, 8192)
+  const parsedAuthorizationURL = new URL(authorizationUrl)
+  const callbackStates = parsedAuthorizationURL.searchParams.getAll('state')
+  if (parsedAuthorizationURL.hash || callbackStates.length !== 1 || !oidcSecretPattern.test(callbackStates[0])) {
+    throw new Error('Gateway authorization callback state is invalid.')
+  }
   const expires = Date.parse(value.expiresAt)
   if (!Number.isFinite(expires) || expires <= nowMS || expires - nowMS > 10 * 60 * 1000) throw new Error('Gateway authorization expiry is invalid.')
-  return Object.freeze({ ...value, authorizationUrl })
+  return Object.freeze({ ...value, authorizationUrl, callbackState: callbackStates[0] })
 }
 
 export function validateGatewayCallbackMessage(value) {

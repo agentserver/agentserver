@@ -1,0 +1,11 @@
+{
+  "index.html": {
+    "file": "assets/platform-BlnLlstr.js",
+    "name": "index",
+    "src": "index.html",
+    "isEntry": true,
+    "css": [
+      "assets/platform-g9NmX8JA.css"
+    ]
+  }
+}

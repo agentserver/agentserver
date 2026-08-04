@@ -1,0 +1,169 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "agentserver v2 web edge API",
+    "version": "0.1.0",
+    "description": "Public, secret-free frontend bootstrap and Browser AG-UI streaming endpoints. Product resource commands remain in public.yaml."
+  },
+  "servers": [{"url": "https://agentserver-web"}],
+  "paths": {
+    "/auth/config": {
+      "get": {
+        "operationId": "getWebAuthorizationConfig",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "One closed Platform or Browser public-client OAuth profile",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {"$ref": "#/components/schemas/PlatformAuthorizationConfig"},
+                    {"$ref": "#/components/schemas/BrowserAuthorizationConfig"}
+                  ]
+                }
+              }
+            }
+          },
+          "400": {"$ref": "#/components/responses/WebError"},
+          "405": {"$ref": "#/components/responses/WebError"},
+          "503": {"$ref": "#/components/responses/WebError"}
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "operationId": "getWebReadiness",
+        "security": [],
+        "responses": {
+          "200": {"description": "Gateway ready", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Readiness"}}}},
+          "503": {"description": "Gateway not ready", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Readiness"}}}}
+        }
+      }
+    },
+    "/v2/workspaces/{workspaceId}/sessions/{sessionId}/agui": {
+      "post": {
+        "operationId": "streamBrowserAGUIRun",
+        "description": "Creates or reconnects one workspace-scoped run and streams its AG-UI projection as bounded server-sent events.",
+        "security": [{"browserOAuth": ["runs:create", "runs:read"]}],
+        "parameters": [
+          {"$ref": "#/components/parameters/WorkspaceId"},
+          {"$ref": "#/components/parameters/SessionId"},
+          {"$ref": "#/components/parameters/IdempotencyKey"}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AGUIRunRequest"}}}
+        },
+        "responses": {
+          "200": {
+            "description": "AG-UI event stream",
+            "content": {"text/event-stream": {"schema": {"type": "string", "contentMediaType": "text/event-stream"}}}
+          },
+          "400": {"$ref": "#/components/responses/WebError"},
+          "401": {"$ref": "#/components/responses/WebError"},
+          "403": {"$ref": "#/components/responses/WebError"},
+          "404": {"$ref": "#/components/responses/WebError"},
+          "409": {"$ref": "#/components/responses/WebError"},
+          "503": {"$ref": "#/components/responses/WebError"}
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "browserOAuth": {"type": "oauth2", "flows": {"authorizationCode": {
+        "authorizationUrl": "https://auth.example/oauth2/auth",
+        "tokenUrl": "https://auth.example/oauth2/token",
+        "scopes": {"runs:create": "Create a run", "runs:read": "Read run events"}
+      }}}
+    },
+    "parameters": {
+      "WorkspaceId": {"name": "workspaceId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
+      "SessionId": {"name": "sessionId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
+      "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 1, "maxLength": 256}}
+    },
+    "responses": {
+      "WebError": {
+        "description": "Bounded public error",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WebError"}}}
+      }
+    },
+    "schemas": {
+      "UUID": {"type": "string", "format": "uuid", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"},
+      "AuthorizationConfigBase": {
+        "type": "object",
+        "required": ["version", "authorizationEndpoint", "tokenEndpoint", "redirectPath", "clientId", "scopes", "audience"],
+        "properties": {
+          "version": {"const": 1},
+          "authorizationEndpoint": {"type": "string", "minLength": 1, "maxLength": 2048},
+          "tokenEndpoint": {"type": "string", "minLength": 1, "maxLength": 2048},
+          "redirectPath": {"const": "/"},
+          "clientId": {"type": "string", "minLength": 1, "maxLength": 512},
+          "scopes": {"type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 128}},
+          "audience": {"type": "string", "minLength": 1, "maxLength": 512}
+        }
+      },
+      "PlatformAuthorizationConfig": {
+        "allOf": [{"$ref": "#/components/schemas/AuthorizationConfigBase"}],
+        "unevaluatedProperties": false
+      },
+      "BrowserAuthorizationConfig": {
+        "allOf": [
+          {"$ref": "#/components/schemas/AuthorizationConfigBase"},
+          {
+            "type": "object",
+            "required": ["apiOrigin"],
+            "properties": {"apiOrigin": {"type": "string", "maxLength": 2048}}
+          }
+        ],
+        "unevaluatedProperties": false
+      },
+      "Readiness": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status"],
+        "properties": {"status": {"enum": ["ready", "not_ready"]}}
+      },
+      "AGUIRunRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["threadId", "runId", "messages", "tools", "context"],
+        "properties": {
+          "threadId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "messages": {"type": "array", "minItems": 1, "maxItems": 1, "items": {"$ref": "#/components/schemas/AGUIUserMessage"}},
+          "tools": {"type": "array", "maxItems": 0},
+          "context": {"type": "array", "maxItems": 0},
+          "forwardedProps": {"$ref": "#/components/schemas/AGUIForwardedProps"}
+        }
+      },
+      "AGUIUserMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "role", "content"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1, "maxLength": 256},
+          "role": {"const": "user"},
+          "content": {"type": "string", "minLength": 1, "maxLength": 262144}
+        }
+      },
+      "AGUIForwardedProps": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["agentserver"],
+        "properties": {"agentserver": {"type": "object", "additionalProperties": false, "required": ["eventCursor"], "properties": {"eventCursor": {"type": "string", "minLength": 1, "maxLength": 4096}}}}
+      },
+      "WebError": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["error"],
+        "properties": {
+          "error": {"type": "string", "minLength": 1, "maxLength": 128},
+          "message": {"type": "string", "maxLength": 4096},
+          "details": {"type": "object", "additionalProperties": true}
+        }
+      }
+    }
+  }
+}

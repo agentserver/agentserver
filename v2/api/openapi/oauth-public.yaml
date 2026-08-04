@@ -1,0 +1,63 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "agentserver v2 SPA OAuth token profile",
+    "version": "0.1.0",
+    "description": "The bounded OAuth 2.0 public-client token exchange used by the Platform and Browser SPAs."
+  },
+  "servers": [{"url": "https://auth.example"}],
+  "paths": {
+    "/oauth2/token": {
+      "post": {
+        "operationId": "exchangeWebAuthorizationCode",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {"application/x-www-form-urlencoded": {"schema": {"$ref": "#/components/schemas/AuthorizationCodeTokenRequest"}}}
+        },
+        "responses": {
+          "200": {"description": "Short-lived opaque bearer", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OAuthTokenResponse"}}}},
+          "400": {"description": "OAuth protocol error", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OAuthError"}}}},
+          "401": {"description": "OAuth client rejected", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OAuthError"}}}}
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AuthorizationCodeTokenRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["grant_type", "code", "redirect_uri", "client_id", "code_verifier"],
+        "properties": {
+          "grant_type": {"const": "authorization_code"},
+          "code": {"type": "string", "minLength": 1, "maxLength": 8192},
+          "redirect_uri": {"type": "string", "format": "uri", "minLength": 1, "maxLength": 4096},
+          "client_id": {"type": "string", "minLength": 1, "maxLength": 512},
+          "code_verifier": {"type": "string", "minLength": 43, "maxLength": 128, "pattern": "^[A-Za-z0-9._~-]+$"}
+        }
+      },
+      "OAuthTokenResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["access_token", "token_type", "expires_in", "scope"],
+        "properties": {
+          "access_token": {"type": "string", "minLength": 1, "maxLength": 8192},
+          "token_type": {"type": "string", "minLength": 1, "maxLength": 32},
+          "expires_in": {"type": "integer", "minimum": 1, "maximum": 86400},
+          "scope": {"type": "string", "minLength": 1, "maxLength": 4096}
+        }
+      },
+      "OAuthError": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["error"],
+        "properties": {
+          "error": {"type": "string", "minLength": 1, "maxLength": 128},
+          "error_description": {"type": "string", "maxLength": 4096},
+          "error_uri": {"type": "string", "format": "uri", "maxLength": 2048}
+        }
+      }
+    }
+  }
+}

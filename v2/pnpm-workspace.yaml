@@ -1,0 +1,7 @@
+packages:
+  - web-shared
+  - platform-web
+  - a2ui-web
+
+allowBuilds:
+  esbuild: true

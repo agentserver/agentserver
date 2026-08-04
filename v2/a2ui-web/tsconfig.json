@@ -1,0 +1,5 @@
+{
+  "extends": "../tsconfig.web.json",
+  "compilerOptions": { "types": ["vite/client", "react", "react-dom"] },
+  "include": ["src", "vite.config.ts"]
+}

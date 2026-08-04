@@ -1,6 +1,7 @@
 .idea/
 bin/
 node_modules/
+.pnpm-store/
 web/dist/
 sidecar-ts/dist/
 agentserver/dist/

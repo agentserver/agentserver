@@ -122,7 +122,7 @@ func frontendHTTPRoute(config LoadedConfig) kubeObject {
 	return httpRoute(config, "agentserver-platform", config.Document.Ingress.FrontendHostname, platformComponent,
 		config.Document.Services.PlatformGateway.Port, []kubeObject{
 			pathMatch("Exact", "/"), pathMatch("Exact", "/index.html"), pathMatch("Exact", "/readyz"),
-			pathMatch("PathPrefix", "/platform"), pathMatch("Exact", "/auth/config"),
+			pathMatch("PathPrefix", "/assets"), pathMatch("PathPrefix", "/workspaces"), pathMatch("Exact", "/auth/config"),
 			pathMatch("Exact", "/auth/llm-gateway/callback"),
 			pathMatch("PathPrefix", "/v2"),
 		})
@@ -132,7 +132,7 @@ func browserFrontendHTTPRoute(config LoadedConfig) kubeObject {
 	return httpRoute(config, "agentserver-browser", config.Document.Ingress.BrowserFrontendHostname, browserComponent,
 		config.Document.Services.BrowserGateway.Port, []kubeObject{
 			pathMatch("Exact", "/"), pathMatch("Exact", "/index.html"), pathMatch("Exact", "/readyz"),
-			pathMatch("PathPrefix", "/reference"), pathMatch("Exact", "/auth/config"),
+			pathMatch("PathPrefix", "/assets"), pathMatch("PathPrefix", "/workspaces"), pathMatch("Exact", "/auth/config"),
 		})
 }
 

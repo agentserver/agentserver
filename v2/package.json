@@ -1,0 +1,26 @@
+{
+  "name": "@agentserver/v2-web-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.18.0",
+  "scripts": {
+    "web:generate": "openapi-typescript api/openapi/public.yaml -o web-shared/src/generated/public.ts && openapi-typescript api/openapi/web-edge.yaml -o web-shared/src/generated/web-edge.ts && openapi-typescript api/openapi/oauth-public.yaml -o web-shared/src/generated/oauth-public.ts",
+    "web:build": "pnpm web:generate && pnpm --filter @agentserver/v2-platform-web build && pnpm --filter @agentserver/v2-browser-web build && pnpm web:normalize",
+    "web:normalize": "node web-shared/scripts/normalize-dist.mjs",
+    "web:typecheck": "pnpm --filter @agentserver/v2-web-shared typecheck && pnpm --filter @agentserver/v2-platform-web typecheck && pnpm --filter @agentserver/v2-browser-web typecheck",
+    "web:test": "pnpm --filter @agentserver/v2-web-shared test && pnpm --filter @agentserver/v2-platform-web test && pnpm --filter @agentserver/v2-browser-web test",
+    "web:check": "pnpm web:generate && pnpm web:typecheck && pnpm web:test && pnpm web:build"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.2.1",
+    "@types/node": "24.10.13",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "5.1.4",
+    "openapi-typescript": "7.13.0",
+    "tailwindcss": "4.2.1",
+    "typescript": "5.9.3",
+    "vite": "7.3.1",
+    "vitest": "3.2.7"
+  }
+}

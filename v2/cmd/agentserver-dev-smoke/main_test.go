@@ -166,7 +166,7 @@ func TestExecuteSmokeRequiresTLS13AndObservesTerminal(t *testing.T) {
 			response.Header().Set("Content-Type", "text/html; charset=utf-8")
 			response.Header().Set("Cache-Control", "no-store")
 			response.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; connect-src 'self'")
-			_, _ = io.WriteString(response, `<main data-agentserver-reference-web="v2"></main>`)
+			_, _ = io.WriteString(response, `<main data-agentserver-browser-web="v2"></main>`)
 			return
 		}
 		if request.Method != http.MethodPost || request.URL.Path != "/v2/workspaces/"+smokeWorkspaceID+"/sessions/"+smokeSessionID+"/agui" ||
@@ -220,7 +220,7 @@ func TestExecuteSmokeApprovesOnlyCanonicalApprovalCommandEvent(t *testing.T) {
 			response.Header().Set("Content-Type", "text/html; charset=utf-8")
 			response.Header().Set("Cache-Control", "no-store")
 			response.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; connect-src 'self'")
-			_, _ = io.WriteString(response, `<main data-agentserver-reference-web="v2"></main>`)
+			_, _ = io.WriteString(response, `<main data-agentserver-browser-web="v2"></main>`)
 		case request.Method == http.MethodPost && request.URL.Path == "/v2/workspaces/"+smokeWorkspaceID+"/sessions/"+smokeSessionID+"/agui":
 			flusher, ok := response.(http.Flusher)
 			if !ok {

@@ -38,7 +38,7 @@ const (
 	maximumWebBytes  = 1024 * 1024
 	maximumAuthBytes = 64 * 1024
 	finalMessage     = "Agentserver v2 scripted development turn completed."
-	referenceMarker  = `data-agentserver-reference-web="v2"`
+	referenceMarker  = `data-agentserver-browser-web="v2"`
 
 	smokeApprovalApprove = "approve"
 	smokeApprovalDeny    = "deny"
@@ -134,7 +134,7 @@ func run(parent context.Context, arguments []string, stdout, stderr io.Writer) i
 	}
 	fmt.Fprintf(
 		stdout,
-		"agentserver-dev-smoke: OAuth Code + PKCE login and replay gates passed; reference web loaded; AG-UI request %s completed, request %s was cancelled after execution, and deny/expiry/pending-cancel gates contained all three pre-dispatch attempts\n",
+		"agentserver-dev-smoke: OAuth Code + PKCE login and replay gates passed; Browser web loaded; AG-UI request %s completed, request %s was cancelled after execution, and deny/expiry/pending-cancel gates contained all three pre-dispatch attempts\n",
 		requestID,
 		cancelRequestID,
 	)
@@ -1300,20 +1300,20 @@ func validSmokeAccessToken(value string) bool {
 func verifyReferenceWeb(ctx context.Context, client *http.Client, origin *url.URL) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, origin.String()+"/", nil)
 	if err != nil {
-		return fmt.Errorf("create reference web request: %w", err)
+		return fmt.Errorf("create Browser web request: %w", err)
 	}
 	request.Header.Set("Accept", "text/html")
 	response, err := client.Do(request)
 	if err != nil {
-		return fmt.Errorf("load reference web: %w", err)
+		return fmt.Errorf("load Browser web: %w", err)
 	}
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, maximumWebBytes+1))
 	if err != nil {
-		return fmt.Errorf("read reference web: %w", err)
+		return fmt.Errorf("read Browser web: %w", err)
 	}
 	if len(body) > maximumWebBytes {
-		return fmt.Errorf("reference web exceeds %d bytes", maximumWebBytes)
+		return fmt.Errorf("Browser web exceeds %d bytes", maximumWebBytes)
 	}
 	mediaType, _, mediaErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	policy := response.Header.Get("Content-Security-Policy")
@@ -1323,7 +1323,7 @@ func verifyReferenceWeb(ctx context.Context, client *http.Client, origin *url.UR
 		!strings.Contains(policy, "script-src 'self'") ||
 		!strings.Contains(policy, "connect-src 'self'") ||
 		response.Header.Get("Cache-Control") != "no-store" {
-		return fmt.Errorf("reference web contract is invalid: status=%d content-type=%q", response.StatusCode, response.Header.Get("Content-Type"))
+		return fmt.Errorf("Browser web contract is invalid: status=%d content-type=%q", response.StatusCode, response.Header.Get("Content-Type"))
 	}
 	return nil
 }

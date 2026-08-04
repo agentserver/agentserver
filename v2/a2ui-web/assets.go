@@ -1,93 +1,74 @@
-// Package a2uiweb provides the dependency-free reference browser client for
-// the Agentserver v2 AG-UI boundary. The assets are embedded into
-// browser-gateway so the reference client and API always share an origin.
+// Package a2uiweb embeds the Browser production SPA into browser-gateway.
 package a2uiweb
 
 import (
-	_ "embed"
+	"crypto/sha256"
+	"embed"
+	"encoding/hex"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 )
 
 const contentSecurityPolicy = "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data:; font-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'"
 
-//go:embed index.html
-var indexHTML []byte
+//go:embed all:dist
+var embedded embed.FS
 
-//go:embed app.js
-var applicationJavaScript []byte
+var bundle = mustBundle()
 
-//go:embed protocol.js
-var protocolJavaScript []byte
-
-//go:embed auth.js
-var authorizationJavaScript []byte
-
-//go:embed llm-gateways.js
-var llmGatewaysJavaScript []byte
-
-//go:embed sessions.js
-var sessionsJavaScript []byte
-
-//go:embed styles.css
-var styleSheet []byte
-
-type asset struct {
-	contentType string
-	contents    []byte
+type staticBundle struct {
+	files fs.FS
+	index []byte
+	count int
 }
 
-var assets = map[string]asset{
-	"/":                          {contentType: "text/html; charset=utf-8", contents: indexHTML},
-	"/index.html":                {contentType: "text/html; charset=utf-8", contents: indexHTML},
-	"/reference/app.js":          {contentType: "text/javascript; charset=utf-8", contents: applicationJavaScript},
-	"/reference/protocol.js":     {contentType: "text/javascript; charset=utf-8", contents: protocolJavaScript},
-	"/reference/auth.js":         {contentType: "text/javascript; charset=utf-8", contents: authorizationJavaScript},
-	"/reference/llm-gateways.js": {contentType: "text/javascript; charset=utf-8", contents: llmGatewaysJavaScript},
-	"/reference/sessions.js":     {contentType: "text/javascript; charset=utf-8", contents: sessionsJavaScript},
-	"/reference/styles.css":      {contentType: "text/css; charset=utf-8", contents: styleSheet},
+func mustBundle() staticBundle {
+	files, err := fs.Sub(embedded, "dist")
+	if err != nil {
+		panic(fmt.Sprintf("open embedded Browser bundle: %v", err))
+	}
+	index, err := fs.ReadFile(files, "index.html")
+	if err != nil {
+		panic(fmt.Sprintf("read embedded Browser index: %v", err))
+	}
+	count := 0
+	_ = fs.WalkDir(files, ".", func(_ string, entry fs.DirEntry, walkErr error) error {
+		if walkErr == nil && !entry.IsDir() {
+			count++
+		}
+		return walkErr
+	})
+	return staticBundle{files: files, index: index, count: count}
 }
 
-// Handler returns a closed static-file handler. It deliberately has no SPA
-// fallback: an unknown API or asset path must remain a visible 404.
-func Handler() http.Handler {
-	return assetHandler{contentSecurityPolicy: contentSecurityPolicy}
-}
-
-// HandlerForAPIOrigin serves the same closed asset set while allowing the
-// reviewed reference client to connect to one exact cross-origin AG-UI API.
+func Handler() http.Handler { return assetHandler{contentSecurityPolicy: contentSecurityPolicy} }
 func HandlerForAPIOrigin(apiOrigin string) (http.Handler, error) {
 	return HandlerForConnectionOrigins(apiOrigin)
-
 }
 
-// HandlerForConnectionOrigins serves the closed asset set while allowing the
-// reference client to call only the reviewed HTTPS API and OAuth authorities.
 func HandlerForConnectionOrigins(origins ...string) (http.Handler, error) {
 	if len(origins) < 1 || len(origins) > 2 {
-		return nil, fmt.Errorf("reference web requires one or two connection origins")
+		return nil, fmt.Errorf("Browser web requires one or two connection origins")
 	}
 	seen := make(map[string]struct{}, len(origins))
 	for _, origin := range origins {
-		parsed, err := url.Parse(origin)
-		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil ||
-			parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.String() != origin {
-			return nil, fmt.Errorf("reference web connection origin must be an exact HTTPS origin")
+		if err := validateOrigin(origin); err != nil {
+			return nil, fmt.Errorf("Browser web connection origin must be an exact HTTPS origin")
 		}
 		if _, duplicate := seen[origin]; duplicate {
-			return nil, fmt.Errorf("reference web connection origins must be unique")
+			return nil, fmt.Errorf("Browser web connection origins must be unique")
 		}
 		seen[origin] = struct{}{}
 	}
 	return assetHandler{contentSecurityPolicy: contentSecurityPolicy + " " + strings.Join(origins, " ")}, nil
 }
 
-type assetHandler struct {
-	contentSecurityPolicy string
-}
+type assetHandler struct{ contentSecurityPolicy string }
 
 func (handler assetHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
 	setSecurityHeaders(response.Header(), handler.contentSecurityPolicy)
@@ -96,28 +77,82 @@ func (handler assetHandler) ServeHTTP(response http.ResponseWriter, request *htt
 		http.Error(response, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	requested, exists := assets[request.URL.Path]
-	if !exists {
+	if request.URL.Path == "/" || request.URL.Path == "/index.html" || isBrowserProductRoute(request.URL.Path) {
+		serveAsset(response, request, bundle.index, "text/html; charset=utf-8", false)
+		return
+	}
+	if !strings.HasPrefix(request.URL.Path, "/assets/") {
 		http.NotFound(response, request)
 		return
 	}
-	response.Header().Set("Content-Type", requested.contentType)
-	response.Header().Set("Content-Length", strconv.Itoa(len(requested.contents)))
+	name := strings.TrimPrefix(path.Clean(request.URL.Path), "/")
+	contents, err := fs.ReadFile(bundle.files, name)
+	if err != nil {
+		http.NotFound(response, request)
+		return
+	}
+	serveAsset(response, request, contents, assetContentType(name), true)
+}
+
+func isBrowserProductRoute(raw string) bool {
+	parts := strings.Split(strings.Trim(strings.TrimSuffix(raw, "/"), "/"), "/")
+	return len(parts) == 2 && parts[0] == "workspaces" && canonicalUUID(parts[1])
+}
+
+func canonicalUUID(value string) bool {
+	if len(value) != 36 || value == "00000000-0000-0000-0000-000000000000" {
+		return false
+	}
+	for index, character := range value {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			if character != '-' {
+				return false
+			}
+			continue
+		}
+		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func serveAsset(response http.ResponseWriter, request *http.Request, contents []byte, contentType string, immutable bool) {
+	response.Header().Set("Content-Type", contentType)
+	response.Header().Set("Content-Length", strconv.Itoa(len(contents)))
+	if immutable {
+		digest := sha256.Sum256(contents)
+		response.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		response.Header().Set("ETag", `"`+hex.EncodeToString(digest[:])+`"`)
+	}
 	response.WriteHeader(http.StatusOK)
-	if request.Method == http.MethodHead {
-		return
+	if request.Method == http.MethodGet {
+		_, _ = response.Write(contents)
 	}
-	if _, err := response.Write(requested.contents); err != nil {
-		return
+}
+
+func assetContentType(name string) string {
+	switch path.Ext(name) {
+	case ".js":
+		return "text/javascript; charset=utf-8"
+	case ".css":
+		return "text/css; charset=utf-8"
+	default:
+		return "application/octet-stream"
 	}
+}
+
+func validateOrigin(origin string) error {
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.String() != origin {
+		return fmt.Errorf("invalid origin")
+	}
+	return nil
 }
 
 func setSecurityHeaders(header http.Header, policy string) {
 	header.Set("Cache-Control", "no-store")
 	header.Set("Content-Security-Policy", policy)
-	// The workspace Gateway OIDC flow uses a same-origin callback popup. The
-	// allow-popups variant deliberately preserves its opener while the popup is
-	// temporarily navigated through the third-party authorization endpoint.
 	header.Set("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
 	header.Set("Cross-Origin-Resource-Policy", "same-origin")
 	header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
@@ -126,8 +161,4 @@ func setSecurityHeaders(header http.Header, policy string) {
 	header.Set("X-Frame-Options", "DENY")
 }
 
-// AssetSummary is intentionally small and secret-free; it is useful in the
-// command startup log and tests without exposing embedded bytes.
-func AssetSummary() string {
-	return fmt.Sprintf("reference web (%d embedded assets)", len(assets))
-}
+func AssetSummary() string { return fmt.Sprintf("browser web (%d embedded assets)", bundle.count) }

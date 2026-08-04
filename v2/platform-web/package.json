@@ -4,9 +4,19 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "test": "node --test *.test.mjs"
+    "build": "vite build",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@agentserver/v2-web-shared": "workspace:*",
+    "lucide-react": "1.28.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "react-i18next": "17.0.11",
+    "react-router-dom": "7.13.1"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20.19"
   }
 }

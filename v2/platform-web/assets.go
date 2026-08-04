@@ -1,61 +1,60 @@
-// Package platformweb provides the dependency-free Platform control-plane
-// shell embedded into platform-gateway. It deliberately contains no Browser
-// conversation UI or persistent access-token storage.
+// Package platformweb embeds the closed Platform production bundle into
+// platform-gateway. Product routes have an explicit SPA fallback; API and
+// unknown asset paths never do.
 package platformweb
 
 import (
-	_ "embed"
+	"crypto/sha256"
+	"embed"
+	"encoding/hex"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 )
 
 const contentSecurityPolicy = "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self'; font-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'"
 
-//go:embed index.html
-var indexHTML []byte
+//go:embed all:dist
+var embedded embed.FS
 
-//go:embed app.js
-var applicationJavaScript []byte
+var bundle = mustBundle()
 
-//go:embed auth.js
-var authorizationJavaScript []byte
-
-//go:embed resources.js
-var resourceJavaScript []byte
-
-//go:embed llm-gateways.js
-var llmGatewayJavaScript []byte
-
-//go:embed styles.css
-var styleSheet []byte
-
-type asset struct {
-	contentType string
-	contents    []byte
+type staticBundle struct {
+	files fs.FS
+	index []byte
+	count int
 }
 
-var assets = map[string]asset{
-	"/":                         {contentType: "text/html; charset=utf-8", contents: indexHTML},
-	"/index.html":               {contentType: "text/html; charset=utf-8", contents: indexHTML},
-	"/platform/app.js":          {contentType: "text/javascript; charset=utf-8", contents: applicationJavaScript},
-	"/platform/auth.js":         {contentType: "text/javascript; charset=utf-8", contents: authorizationJavaScript},
-	"/platform/resources.js":    {contentType: "text/javascript; charset=utf-8", contents: resourceJavaScript},
-	"/platform/llm-gateways.js": {contentType: "text/javascript; charset=utf-8", contents: llmGatewayJavaScript},
-	"/platform/styles.css":      {contentType: "text/css; charset=utf-8", contents: styleSheet},
+func mustBundle() staticBundle {
+	files, err := fs.Sub(embedded, "dist")
+	if err != nil {
+		panic(fmt.Sprintf("open embedded Platform bundle: %v", err))
+	}
+	index, err := fs.ReadFile(files, "index.html")
+	if err != nil {
+		panic(fmt.Sprintf("read embedded Platform index: %v", err))
+	}
+	count := 0
+	_ = fs.WalkDir(files, ".", func(_ string, entry fs.DirEntry, walkErr error) error {
+		if walkErr == nil && !entry.IsDir() {
+			count++
+		}
+		return walkErr
+	})
+	return staticBundle{files: files, index: index, count: count}
 }
 
-// Handler returns a closed static asset handler without an SPA fallback.
+// Handler returns the production bundle with no cross-origin connection authority.
 func Handler() http.Handler { return assetHandler{contentSecurityPolicy: contentSecurityPolicy} }
 
-// HandlerForOAuthOrigin allows the Platform SPA to exchange its public-client
-// PKCE code with one exact, separately hosted OAuth authority.
+// HandlerForOAuthOrigin allows only the exact public OAuth authority used for
+// public-client PKCE exchange.
 func HandlerForOAuthOrigin(origin string) (http.Handler, error) {
-	parsed, err := url.Parse(origin)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil ||
-		parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.String() != origin {
+	if err := validateOrigin(origin); err != nil {
 		return nil, fmt.Errorf("platform web OAuth origin must be an exact HTTPS origin")
 	}
 	return assetHandler{contentSecurityPolicy: contentSecurityPolicy + " " + origin}, nil
@@ -70,18 +69,84 @@ func (handler assetHandler) ServeHTTP(response http.ResponseWriter, request *htt
 		http.Error(response, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	requested, exists := assets[request.URL.Path]
-	if !exists {
+	if request.URL.Path == "/" || request.URL.Path == "/index.html" || isPlatformProductRoute(request.URL.Path) {
+		serveAsset(response, request, bundle.index, "text/html; charset=utf-8", false)
+		return
+	}
+	if !strings.HasPrefix(request.URL.Path, "/assets/") {
 		http.NotFound(response, request)
 		return
 	}
-	response.Header().Set("Content-Type", requested.contentType)
-	response.Header().Set("Content-Length", strconv.Itoa(len(requested.contents)))
-	response.WriteHeader(http.StatusOK)
-	if request.Method == http.MethodHead {
+	name := strings.TrimPrefix(path.Clean(request.URL.Path), "/")
+	contents, err := fs.ReadFile(bundle.files, name)
+	if err != nil {
+		http.NotFound(response, request)
 		return
 	}
-	_, _ = response.Write(requested.contents)
+	serveAsset(response, request, contents, assetContentType(name), true)
+}
+
+func isPlatformProductRoute(raw string) bool {
+	cleaned := strings.TrimSuffix(raw, "/")
+	if cleaned == "/workspaces" {
+		return true
+	}
+	parts := strings.Split(strings.TrimPrefix(cleaned, "/"), "/")
+	if len(parts) < 2 || len(parts) > 3 || parts[0] != "workspaces" || !canonicalUUID(parts[1]) {
+		return false
+	}
+	return len(parts) == 2 || parts[2] == "overview" || parts[2] == "members" || parts[2] == "executors" || parts[2] == "gateways"
+}
+
+func canonicalUUID(value string) bool {
+	if len(value) != 36 || value == "00000000-0000-0000-0000-000000000000" {
+		return false
+	}
+	for index, character := range value {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			if character != '-' {
+				return false
+			}
+			continue
+		}
+		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func serveAsset(response http.ResponseWriter, request *http.Request, contents []byte, contentType string, immutable bool) {
+	response.Header().Set("Content-Type", contentType)
+	response.Header().Set("Content-Length", strconv.Itoa(len(contents)))
+	if immutable {
+		digest := sha256.Sum256(contents)
+		response.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		response.Header().Set("ETag", `"`+hex.EncodeToString(digest[:])+`"`)
+	}
+	response.WriteHeader(http.StatusOK)
+	if request.Method == http.MethodGet {
+		_, _ = response.Write(contents)
+	}
+}
+
+func assetContentType(name string) string {
+	switch path.Ext(name) {
+	case ".js":
+		return "text/javascript; charset=utf-8"
+	case ".css":
+		return "text/css; charset=utf-8"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+func validateOrigin(origin string) error {
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.String() != origin {
+		return fmt.Errorf("invalid origin")
+	}
+	return nil
 }
 
 func setSecurityHeaders(header http.Header, policy string) {
@@ -98,4 +163,4 @@ func setSecurityHeaders(header http.Header, policy string) {
 	header.Set("X-Frame-Options", "DENY")
 }
 
-func AssetSummary() string { return fmt.Sprintf("platform web (%d embedded assets)", len(assets)) }
+func AssetSummary() string { return fmt.Sprintf("platform web (%d embedded assets)", bundle.count) }

@@ -185,9 +185,9 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 		}
 	}
 	assertHTTPRoute(t, foundation, "agentserver-platform", ProductionFrontendHostname, platformComponent, PublicHTTPPort,
-		[]string{"/", "/auth/config", "/auth/llm-gateway/callback", "/index.html", "/platform", "/readyz", "/v2"})
+		[]string{"/", "/assets", "/auth/config", "/auth/llm-gateway/callback", "/index.html", "/readyz", "/v2", "/workspaces"})
 	assertHTTPRoute(t, foundation, "agentserver-browser", ProductionBrowserFrontendHostname, browserComponent, PublicHTTPPort,
-		[]string{"/", "/auth/config", "/index.html", "/readyz", "/reference"})
+		[]string{"/", "/assets", "/auth/config", "/index.html", "/readyz", "/workspaces"})
 	assertHTTPRoute(t, foundation, "agentserver-browser-api", ProductionBrowserHostname, browserComponent, PublicHTTPPort,
 		[]string{"/v2"})
 	assertHTTPRoute(t, foundation, "agentserver-executor-agentx", ProductionExecutorHostname, executorComponent, PublicHTTPPort,

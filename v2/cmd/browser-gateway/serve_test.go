@@ -49,7 +49,7 @@ func TestBrowserGatewayHealthAndReadiness(t *testing.T) {
 	referenceResponse := httptest.NewRecorder()
 	handler.ServeHTTP(referenceResponse, referenceRequest)
 	if referenceResponse.Code != http.StatusOK ||
-		!strings.Contains(referenceResponse.Body.String(), `data-agentserver-reference-web="v2"`) ||
+		!strings.Contains(referenceResponse.Body.String(), `data-agentserver-browser-web="v2"`) ||
 		referenceResponse.Header().Get("Content-Security-Policy") == "" {
 		t.Fatalf("GET / reference web = %d %q headers=%v", referenceResponse.Code, referenceResponse.Body.String(), referenceResponse.Header())
 	}

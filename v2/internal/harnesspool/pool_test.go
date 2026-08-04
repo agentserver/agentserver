@@ -167,6 +167,61 @@ func TestPoolProcessKeepsLeasesAndReleasesUnacceptedStartup(t *testing.T) {
 	}
 }
 
+func TestPoolDeterministicCoreStartupRejectionFailsRunWithoutRequeue(t *testing.T) {
+	prepared := poolTestPreparedLaunch(t)
+	scheduler := &poolTestScheduler{leaseTTL: time.Second}
+	core := newPoolTestCore(prepared)
+	supervisor := attemptSupervisorFunc(func(context.Context, PreparedRunLaunch, AttemptLifecycle) error {
+		return fmt.Errorf("issue runtime capabilities: %w", &CoreCommandError{
+			HTTPStatus: 403, Code: "forbidden", Message: "live capability authority was rejected",
+		})
+	})
+	pool := newPoolForTest(t, scheduler, fixedPoolPreparer{prepared: prepared}, core, supervisor, PoolConfig{
+		MaxConcurrentAttempts: 1, LeaseRenewInterval: 100 * time.Millisecond,
+		IdleBackoff: time.Millisecond, FailureBackoff: time.Millisecond, CleanupTimeout: time.Second,
+	})
+
+	stage, err := pool.processAttempt(t.Context(), prepared.Scheduled)
+	if stage != PoolFailureSupervise || err == nil || !strings.Contains(err.Error(), "forbidden") {
+		t.Fatalf("deterministic rejection stage/error = %s / %v", stage, err)
+	}
+	core.mu.Lock()
+	abandons := append([]AbandonRunAttemptRequest(nil), core.abandonRequests...)
+	core.mu.Unlock()
+	if len(abandons) != 1 || !abandons[0].Terminal {
+		t.Fatalf("deterministic rejection abandon requests = %+v", abandons)
+	}
+	scheduler.mu.Lock()
+	completed := append([]RunDispatch(nil), scheduler.completed...)
+	released := append([]RunDispatch(nil), scheduler.released...)
+	scheduler.mu.Unlock()
+	if len(completed) != 1 || completed[0] != prepared.Scheduled.Dispatch || len(released) != 0 {
+		t.Fatalf("deterministic rejection complete/release = %+v / %+v", completed, released)
+	}
+}
+
+func TestDeterministicCoreStartupFailureClassification(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		failed bool
+	}{
+		{name: "forbidden", err: &CoreCommandError{HTTPStatus: 403, Code: "forbidden"}, failed: true},
+		{name: "invalid argument", err: &CoreCommandError{HTTPStatus: 400, Code: "invalid_argument"}, failed: true},
+		{name: "conflict", err: &CoreCommandError{HTTPStatus: 409, Code: "version_conflict"}},
+		{name: "throttled", err: &CoreCommandError{HTTPStatus: 429, Code: "throttled"}},
+		{name: "server failure", err: &CoreCommandError{HTTPStatus: 503, Code: "internal_error"}},
+		{name: "transport failure", err: errors.New("connection reset")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := deterministicCoreStartupFailure(fmt.Errorf("wrapped: %w", test.err)); got != test.failed {
+				t.Fatalf("deterministicCoreStartupFailure() = %v, want %v", got, test.failed)
+			}
+		})
+	}
+}
+
 func TestPoolLeaseLossCancelsRuntimeAndFailsClosed(t *testing.T) {
 	prepared := poolTestPreparedLaunch(t)
 	scheduler := &poolTestScheduler{leaseTTL: 20 * time.Millisecond}
@@ -539,11 +594,15 @@ func TestPoolRejectsPreparedAuthorityDriftBeforeSupervisor(t *testing.T) {
 	if stage != PoolFailurePrepare || err == nil || !strings.Contains(err.Error(), "signed run manifest") || supervisorCalls != 0 {
 		t.Fatalf("drift stage/error/supervisor calls = %s / %v / %d", stage, err, supervisorCalls)
 	}
+	core.mu.Lock()
+	abandons := append([]AbandonRunAttemptRequest(nil), core.abandonRequests...)
+	core.mu.Unlock()
 	scheduler.mu.Lock()
+	completeCount := len(scheduler.completed)
 	releaseCount := len(scheduler.released)
 	scheduler.mu.Unlock()
-	if releaseCount != 1 {
-		t.Fatalf("prepared drift release count = %d", releaseCount)
+	if len(abandons) != 1 || !abandons[0].Terminal || completeCount != 1 || releaseCount != 0 {
+		t.Fatalf("prepared drift abandon/complete/release = %+v / %d / %d", abandons, completeCount, releaseCount)
 	}
 }
 
@@ -906,6 +965,10 @@ func (core *poolTestCore) AbandonRunAttempt(_ context.Context, request AbandonRu
 	attempt.Version++
 	result := AbandonRunAttemptResult{
 		Run: run, RunAttempt: attempt, SessionVersion: 2, Disposition: "requeued", Changed: true,
+	}
+	if request.Terminal {
+		result.Run.Status = "failed"
+		result.Disposition = "failed"
 	}
 	if core.renewMutate != nil {
 		renewed := RenewRunAttemptResult{Run: run, RunAttempt: attempt}

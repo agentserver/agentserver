@@ -106,6 +106,7 @@ type AbandonRunAttemptRequest struct {
 	HolderID             string           `json:"holderId"`
 	RunAttemptGeneration int64            `json:"runAttemptGeneration"`
 	Reason               string           `json:"reason"`
+	Terminal             bool             `json:"terminal,omitempty"`
 	Record               TransitionRecord `json:"record"`
 }
 

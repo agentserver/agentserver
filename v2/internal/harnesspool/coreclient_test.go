@@ -84,6 +84,14 @@ func TestCoreClientRunAttemptRoundTrip(t *testing.T) {
 	if commands.abandon.Reason != "startup_failed" || commands.abandon.Record.OutboxID != testTransitionRecord(6).OutboxID {
 		t.Fatalf("abandon wire request = %+v", commands.abandon)
 	}
+	terminalAbandon, err := client.AbandonRunAttempt(t.Context(), AbandonRunAttemptRequest{
+		RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
+		Reason: "startup_failed", Terminal: true, Record: testTransitionRecord(7),
+	})
+	if err != nil || terminalAbandon.Disposition != "failed" || terminalAbandon.Run.Status != "failed" ||
+		terminalAbandon.RunAttempt.Status != "failed" || !commands.abandon.Terminal {
+		t.Fatalf("terminal AbandonRunAttempt() = %+v, %v; wire = %+v", terminalAbandon, err, commands.abandon)
+	}
 
 	accepted, err := client.MarkTurnAccepted(t.Context(), MarkTurnAcceptedRequest{
 		RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
@@ -477,17 +485,23 @@ func (commands *recordingContractCommands) AbandonRunAttempt(_ context.Context, 
 		return corecontract.AbandonRunAttemptResponse{}, commands.commandError
 	}
 	commands.abandon = request
+	status := "queued"
+	disposition := "requeued"
+	if request.Terminal {
+		status = "failed"
+		disposition = "failed"
+	}
 	return corecontract.AbandonRunAttemptResponse{
 		Run: corecontract.RunState{
 			RunID: request.RunID, WorkspaceID: "40000000-0000-4000-8000-000000000004", SessionID: testSessionID,
-			ActorID: "44000000-0000-4000-8000-000000000004", Status: "queued", CurrentAttemptGeneration: request.RunAttemptGeneration,
+			ActorID: "44000000-0000-4000-8000-000000000004", Status: status, CurrentAttemptGeneration: request.RunAttemptGeneration,
 			NextEventSeq: 6, Version: 4, CreatedAt: commands.now, UpdatedAt: commands.now,
 		},
 		RunAttempt: corecontract.RunAttemptState{
 			RunAttemptID: request.RunAttemptID, RunID: request.RunID, Generation: request.RunAttemptGeneration,
 			Status: "failed", HolderID: request.HolderID, Version: 2, CreatedAt: commands.now, UpdatedAt: commands.now,
 		},
-		SessionVersion: 3, Disposition: "requeued", Changed: true,
+		SessionVersion: 3, Disposition: disposition, Changed: true,
 	}, nil
 }
 

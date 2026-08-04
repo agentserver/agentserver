@@ -119,7 +119,7 @@ func TestPostgreSQLRunCapabilityFreshCatalogIsLiveRevocable(t *testing.T) {
 	if _, err := fixture.pool.Exec(t.Context(), setExecutorStatus, fixture.executor.ExecutorID, ExecutorStatusOffline); err != nil {
 		t.Fatal(err)
 	}
-	assertPostgresRunCapabilityForbidden(t, fixture.store, executorAuthorization)
+	assertPostgresRunCapabilityAuthorized(t, fixture.store, executorAuthorization, RunStatusStarting, AttemptStatusLeased)
 	if _, err := fixture.pool.Exec(t.Context(), setExecutorStatus, fixture.executor.ExecutorID, ExecutorStatusOnline); err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestPostgreSQLRunCapabilityFreshCatalogIsLiveRevocable(t *testing.T) {
 	if _, err := fixture.pool.Exec(t.Context(), setConnectionExpiry, fixture.executor.ExecutorID, time.Now().UTC().Add(-time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	assertPostgresRunCapabilityForbidden(t, fixture.store, executorAuthorization)
+	assertPostgresRunCapabilityAuthorized(t, fixture.store, executorAuthorization, RunStatusStarting, AttemptStatusLeased)
 	if _, err := fixture.pool.Exec(t.Context(), setConnectionExpiry, fixture.executor.ExecutorID, time.Now().UTC().Add(5*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
@@ -137,10 +137,36 @@ func TestPostgreSQLRunCapabilityFreshCatalogIsLiveRevocable(t *testing.T) {
 	if _, err := fixture.pool.Exec(t.Context(), setInsecure, fixture.executor.ExecutorID, true); err != nil {
 		t.Fatal(err)
 	}
-	assertPostgresRunCapabilityForbidden(t, fixture.store, executorAuthorization)
+	assertPostgresRunCapabilityAuthorized(t, fixture.store, executorAuthorization, RunStatusStarting, AttemptStatusLeased)
 	if _, err := fixture.pool.Exec(t.Context(), setInsecure, fixture.executor.ExecutorID, false); err != nil {
 		t.Fatal(err)
 	}
+
+	// Executor availability is optional run authority. Capability issuance and
+	// MCP session authorization must remain live while the workspace has no
+	// connected executor or production environment; the environment lookup and
+	// operation-dispatch transaction enforce those requirements only when an
+	// executor tool is actually called.
+	if _, err := fixture.pool.Exec(t.Context(), fmt.Sprintf("DELETE FROM %s.executor_connections WHERE executor_id = $1", quotedSchema), fixture.executor.ExecutorID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.pool.Exec(t.Context(), fmt.Sprintf("DELETE FROM %s.executor_environments WHERE executor_id = $1", quotedSchema), fixture.executor.ExecutorID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.pool.Exec(t.Context(), setExecutorStatus, fixture.executor.ExecutorID, ExecutorStatusEnrolling); err != nil {
+		t.Fatal(err)
+	}
+	environments, err := fixture.store.ListOnlineExecutorEnvironments(t.Context(), ListOnlineExecutorEnvironmentsQuery{
+		WorkspaceID: fixture.workspaceID, ExecutorID: fixture.executor.ExecutorID,
+	})
+	if err != nil || len(environments) != 0 {
+		t.Fatalf("offline executor environment projection = %+v, %v; want empty", environments, err)
+	}
+	if _, err := fixture.store.ResolveRunCapabilityIssuance(t.Context(), command); err != nil {
+		t.Fatalf("capability issuance without an executor = %v", err)
+	}
+	assertPostgresRunCapabilityAuthorized(t, fixture.store, executorAuthorization, RunStatusStarting, AttemptStatusLeased)
+	assertPostgresRunCapabilityAuthorized(t, fixture.store, modelAuthorization, RunStatusStarting, AttemptStatusLeased)
 
 	setPolicyVersion := fmt.Sprintf("UPDATE %s.run_launch_states SET executor_policy_version = $2 WHERE run_id = $1", quotedSchema)
 	if _, err := fixture.pool.Exec(t.Context(), setPolicyVersion, fixture.claim.Run.ID, "executor-policy/drift"); err != nil {

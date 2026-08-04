@@ -353,6 +353,35 @@ func TestPostgreSQLExecutionFingerprintLeaseAndGenerationFencing(t *testing.T) {
 	}
 }
 
+func TestPostgreSQLExecutionDispatchRequiresLiveExecutorConnection(t *testing.T) {
+	store, pool, schema := newPostgresStateStore(t)
+	running := startExecutionTestRun(t, store, pool, schema, 134_000)
+	preparedExecution, err := store.PrepareExecution(t.Context(), executionTestPrepareCommand(t, 135_000, running, "tool-call-offline-executor", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparedOperation, err := store.PrepareOperation(t.Context(), executionTestPrepareOperationCommand(t, 136_000, running, preparedExecution.Execution, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	installExecutionTestConnection(t, pool, schema, running, preparedExecution.Execution, 14, 834_000)
+	if _, err := pool.Exec(t.Context(), fmt.Sprintf(`
+UPDATE %s.executor_connections
+SET status = 'fenced', expires_at = pg_catalog.clock_timestamp() - interval '1 second'
+WHERE executor_id = $1`, quoteIdentifier(schema)), preparedExecution.Execution.ExecutorID); err != nil {
+		t.Fatal(err)
+	}
+
+	begin := executionTestBeginCommand(t, 137_000, running, preparedOperation, 14)
+	if _, err := store.BeginOperationDispatch(t.Context(), begin); !HasStateErrorCode(err, ErrorConnectionFenced) {
+		t.Fatalf("offline-executor BeginOperationDispatch() error = %v, want connection_fenced", err)
+	}
+	retry, err := store.PrepareOperation(t.Context(), executionTestPrepareOperationCommand(t, 136_000, running, preparedExecution.Execution, 1))
+	if err != nil || retry.Created || retry.Operation.Status != OperationStatusPrepared || retry.Execution.Status != ExecutionStatusApproved {
+		t.Fatalf("offline-executor operation changed before dispatch = %+v, %v", retry, err)
+	}
+}
+
 func TestPostgreSQLExecutionPolicyDecisionFencesDispatch(t *testing.T) {
 	store, pool, schema := newPostgresStateStore(t)
 	running := startExecutionTestRun(t, store, pool, schema, 34_100)

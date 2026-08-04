@@ -56,12 +56,12 @@ func TestStateStoreRunAttemptCommandsMapCompleteControlBoundary(t *testing.T) {
 	}
 	abandoned, err := commands.AbandonRunAttempt(t.Context(), corecontract.AbandonRunAttemptRequest{
 		RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
-		Reason: "startup_failed", Record: record,
+		Reason: "startup_failed", Terminal: true, Record: record,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.abandon.Reason != "startup_failed" || abandoned.Disposition != coredb.AbandonDispositionRequeued ||
+	if store.abandon.Reason != "startup_failed" || !store.abandon.Terminal || abandoned.Disposition != coredb.AbandonDispositionRequeued ||
 		abandoned.Run.Status != coredb.RunStatusQueued || abandoned.RunAttempt.Status != coredb.AttemptStatusFailed {
 		t.Fatalf("abandon store/response = %+v / %+v", store.abandon, abandoned)
 	}

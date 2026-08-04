@@ -53,9 +53,11 @@ executor-gateway 与 llmproxy 先本地完成格式、canonical JSON、Ed25519�
 - session lease 与 attempt lease 仍 live；
 - run 与 attempt 的预期版本和状态允许该动作；
 - actor 当前仍是 workspace 成员且 RBAC 允许；
-- executor、environment、冻结 catalog、model/provider 与当前生产 policy 精确匹配。
+- 冻结 catalog、model/provider 与当前生产 policy 精确匹配。
 
-本地验签只降低无效请求进入 Core 的成本，不能在 Core 不可达时 fallback 为离线授权。取消、lease fence、成员移除、executor 下线或 policy 变化必须让后续请求 fail closed。
+executor availability 不属于 run capability 的公共存活条件。executor-MCP 的 `initialize`、`tools/list` 与 `list_environments` 在没有在线 agentx/environment 时仍须可用，其中 `list_environments` 返回空集合。只有 `shell`、`read_file` 等真正产生执行的调用才要求 gateway 解析出在线environment，并由 Core 的 operation-dispatch 事务再次核对 executor connection 的精确generation、`online`状态与lease。
+
+本地验签只降低无效请求进入 Core 的成本，不能在 Core 不可达时 fallback 为离线授权。取消、lease fence、成员移除或 policy 变化必须让后续请求 fail closed；executor 下线只让后续执行工具 fail closed，不撤销 llmproxy 模型调用或只读的空environment枚举。
 
 ### 私钥与轮换
 

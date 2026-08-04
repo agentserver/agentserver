@@ -157,6 +157,7 @@ type AbandonRunAttemptRequest struct {
 	HolderID             string
 	RunAttemptGeneration int64
 	Reason               string
+	Terminal             bool
 	Record               TransitionRecord
 }
 
@@ -643,7 +644,7 @@ func (client *CoreClient) InterruptRunAttempt(ctx context.Context, request Inter
 func (client *CoreClient) AbandonRunAttempt(ctx context.Context, request AbandonRunAttemptRequest) (AbandonRunAttemptResult, error) {
 	contractRequest := corecontract.AbandonRunAttemptRequest{
 		RunID: request.RunID, RunAttemptID: request.RunAttemptID, HolderID: request.HolderID,
-		RunAttemptGeneration: request.RunAttemptGeneration, Reason: request.Reason,
+		RunAttemptGeneration: request.RunAttemptGeneration, Reason: request.Reason, Terminal: request.Terminal,
 		Record: contractTransitionRecord(request.Record),
 	}
 	var response corecontract.AbandonRunAttemptResponse
@@ -668,6 +669,8 @@ func validAbandonRunAttemptResult(result AbandonRunAttemptResult) bool {
 	switch result.Disposition {
 	case "requeued":
 		return result.Run.Status == "queued" && result.RunAttempt.Status == "failed"
+	case "failed":
+		return result.Run.Status == "failed" && result.RunAttempt.Status == "failed"
 	case "cancelled":
 		return result.Run.Status == "cancelled" &&
 			(result.RunAttempt.Status == "interrupted" || result.RunAttempt.Status == "failed")

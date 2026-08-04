@@ -218,7 +218,10 @@ func TestPostgreSQLPreTurnAbandonmentAtomicallyArbitratesCancellation(t *testing
 			t.Fatalf("AbandonAttempt() retry = %+v, %v", retry, err)
 		}
 		assertCancellationAggregate(t, pool, schema, created.Run.ID, sessionID, RunStatusQueued, abandoned.Run.Version, abandoned.Run.NextEventSeq, true, 0, 0)
-		assertAttemptAbandonedTransition(t, pool, schema, command.Record, created.Run.ID, claim.Attempt, 3)
+		assertAttemptAbandonmentTransition(
+			t, pool, schema, command.Record, created.Run.ID, claim.Attempt,
+			"attempt.abandoned", abandonCodeStartup, abandonMessage, 3,
+		)
 
 		cancelled, err := store.CancelRun(t.Context(), CancelRunCommand{
 			WorkspaceID: workspaceID, RunID: created.Run.ID, ActorID: created.Run.ActorID,
@@ -233,6 +236,42 @@ func TestPostgreSQLPreTurnAbandonmentAtomicallyArbitratesCancellation(t *testing
 			t.Fatalf("AbandonAttempt() after cancellation = %+v, %v", reconciled, err)
 		}
 		assertCancellationAggregate(t, pool, schema, created.Run.ID, sessionID, RunStatusCancelled, cancelled.Run.Version, cancelled.Run.NextEventSeq, false, 0, 0)
+	})
+
+	t.Run("terminal startup rejection", func(t *testing.T) {
+		store, pool, schema := newPostgresStateStore(t)
+		workspaceID := stateTestUUID(155_000)
+		sessionID := stateTestUUID(155_001)
+		insertStateTestSession(t, pool, schema, workspaceID, sessionID)
+		created := mustCreateStateRun(t, store, stateCreateRunCommand(155_010, workspaceID, sessionID, "terminal-startup-rejection"))
+		claim := mustClaimStateRun(t, store, stateClaimRunCommand(155_020, created.Run.ID, created.Run.Version, "terminal-abandon-holder"))
+		command := AbandonAttemptCommand{
+			RunID: created.Run.ID, AttemptID: claim.Attempt.ID, HolderID: claim.Attempt.HolderID,
+			Generation: claim.Attempt.Generation, Reason: abandonReasonStartup, Terminal: true,
+			Record: stateTransitionRecord(155_030),
+		}
+
+		failed, err := store.AbandonAttempt(t.Context(), command)
+		if err != nil || !failed.Changed || failed.Disposition != AbandonDispositionFailed ||
+			failed.Run.Status != RunStatusFailed || failed.Attempt.Status != AttemptStatusFailed ||
+			failed.SessionVersion != 3 {
+			t.Fatalf("terminal AbandonAttempt() = %+v, %v", failed, err)
+		}
+		retry, err := store.AbandonAttempt(t.Context(), command)
+		if err != nil || retry.Changed || retry.Disposition != AbandonDispositionFailed ||
+			retry.Run.ID != failed.Run.ID || retry.Run.Version != failed.Run.Version ||
+			retry.Attempt.ID != failed.Attempt.ID || retry.Attempt.Version != failed.Attempt.Version ||
+			retry.SessionVersion != failed.SessionVersion {
+			t.Fatalf("terminal AbandonAttempt() retry = %+v, %v", retry, err)
+		}
+		assertCancellationAggregate(
+			t, pool, schema, created.Run.ID, sessionID, RunStatusFailed,
+			failed.Run.Version, failed.Run.NextEventSeq, false, 0, 0,
+		)
+		assertAttemptAbandonmentTransition(
+			t, pool, schema, command.Record, created.Run.ID, claim.Attempt,
+			"run.failed", abandonCodeStartup, abandonTerminalMessage, 3,
+		)
 	})
 
 	t.Run("cancel then abandon", func(t *testing.T) {
@@ -252,7 +291,8 @@ func TestPostgreSQLPreTurnAbandonmentAtomicallyArbitratesCancellation(t *testing
 		}
 		command := AbandonAttemptCommand{
 			RunID: created.Run.ID, AttemptID: claim.Attempt.ID, HolderID: claim.Attempt.HolderID,
-			Generation: claim.Attempt.Generation, Reason: abandonReasonStartup, Record: stateTransitionRecord(154_040),
+			Generation: claim.Attempt.Generation, Reason: abandonReasonStartup, Terminal: true,
+			Record: stateTransitionRecord(154_040),
 		}
 		wrongHolder := command
 		wrongHolder.HolderID = "another-holder"
@@ -373,13 +413,14 @@ WHERE e.event_id = $1 AND e.run_id = $3`, quoteIdentifier(schema), quoteIdentifi
 	}
 }
 
-func assertAttemptAbandonedTransition(
+func assertAttemptAbandonmentTransition(
 	t *testing.T,
 	pool *pgxpool.Pool,
 	schema string,
 	record TransitionRecord,
 	runID string,
 	attempt RunAttempt,
+	wantKind, wantCode, wantMessage string,
 	wantSequence int64,
 ) {
 	t.Helper()
@@ -401,14 +442,14 @@ WHERE e.event_id = $1 AND e.run_id = $3`, quoteIdentifier(schema), quoteIdentifi
 		t.Fatal(err)
 	}
 	if sequence != wantSequence || attemptID == nil || *attemptID != attempt.ID || generation == nil || *generation != attempt.Generation ||
-		eventKind != "attempt.abandoned" || outboxKind != "attempt.abandoned" || aggregateID != runID || string(eventPayload) != string(outboxPayload) {
+		eventKind != wantKind || outboxKind != wantKind || aggregateID != runID || string(eventPayload) != string(outboxPayload) {
 		t.Fatalf("attempt abandonment transition = seq=%d scope=%v/%v eventKind=%s outboxKind=%s aggregate=%s event=%s outbox=%s", sequence, attemptID, generation, eventKind, outboxKind, aggregateID, eventPayload, outboxPayload)
 	}
 	var payload struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
 	}
-	if err := json.Unmarshal(eventPayload, &payload); err != nil || payload.Code != abandonCodeStartup || payload.Message != abandonMessage {
+	if err := json.Unmarshal(eventPayload, &payload); err != nil || payload.Code != wantCode || payload.Message != wantMessage {
 		t.Fatalf("attempt abandonment payload = %+v, %v", payload, err)
 	}
 }

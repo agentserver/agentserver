@@ -234,12 +234,15 @@ func (pool *Pool) processAttempt(parent context.Context, scheduled ScheduledRunA
 		leaseErr := <-leaseDone
 		failure := errors.Join(fmt.Errorf("prepare run launch: %w", err), leaseErr)
 		if parent.Err() == nil && leaseErr == nil {
-			abandoned, abandonErr := pool.abandonStoppedPreTurnAttempt(scheduled)
+			abandoned, abandonErr := pool.abandonStoppedPreTurnAttempt(scheduled, deterministicCoreStartupFailure(err))
 			if abandonErr != nil {
 				return PoolFailureCleanup, pool.releaseAfterStartupFailure(parent, scheduled, errors.Join(failure, abandonErr))
 			}
 			if abandoned.Disposition == "cancelled" {
 				return PoolFailureCleanup, pool.completeStoppedDispatch(scheduled.Dispatch)
+			}
+			if abandoned.Disposition == "failed" {
+				return PoolFailurePrepare, errors.Join(failure, pool.completeStoppedDispatch(scheduled.Dispatch))
 			}
 		}
 		return PoolFailurePrepare, pool.releaseAfterStartupFailure(parent, scheduled, failure)
@@ -250,12 +253,15 @@ func (pool *Pool) processAttempt(parent context.Context, scheduled ScheduledRunA
 		leaseErr := <-leaseDone
 		failure := errors.Join(fmt.Errorf("validate prepared run launch: %w", err), leaseErr)
 		if parent.Err() == nil && leaseErr == nil {
-			abandoned, abandonErr := pool.abandonStoppedPreTurnAttempt(scheduled)
+			abandoned, abandonErr := pool.abandonStoppedPreTurnAttempt(scheduled, true)
 			if abandonErr != nil {
 				return PoolFailureCleanup, pool.releaseAfterStartupFailure(parent, scheduled, errors.Join(failure, abandonErr))
 			}
 			if abandoned.Disposition == "cancelled" {
 				return PoolFailureCleanup, pool.completeStoppedDispatch(scheduled.Dispatch)
+			}
+			if abandoned.Disposition == "failed" {
+				return PoolFailurePrepare, errors.Join(failure, pool.completeStoppedDispatch(scheduled.Dispatch))
 			}
 		}
 		return PoolFailurePrepare, pool.releaseAfterStartupFailure(parent, scheduled, failure)
@@ -284,12 +290,15 @@ func (pool *Pool) processAttempt(parent context.Context, scheduled ScheduledRunA
 			failure = errors.New("attempt supervisor stopped before turn acceptance")
 		}
 		if parent.Err() == nil && leaseErr == nil {
-			abandoned, abandonErr := pool.abandonStoppedPreTurnAttempt(scheduled)
+			abandoned, abandonErr := pool.abandonStoppedPreTurnAttempt(scheduled, deterministicCoreStartupFailure(failure))
 			if abandonErr != nil {
 				return PoolFailureCleanup, pool.releaseAfterStartupFailure(parent, scheduled, errors.Join(failure, abandonErr))
 			}
 			if abandoned.Disposition == "cancelled" {
 				return PoolFailureCleanup, errors.Join(cleanupErr, pool.completeStoppedDispatch(scheduled.Dispatch))
+			}
+			if abandoned.Disposition == "failed" {
+				return PoolFailureSupervise, errors.Join(failure, pool.completeStoppedDispatch(scheduled.Dispatch))
 			}
 		}
 		return PoolFailureSupervise, pool.releaseAfterStartupFailure(parent, scheduled, failure)
@@ -307,7 +316,7 @@ func (pool *Pool) processAttempt(parent context.Context, scheduled ScheduledRunA
 	return PoolFailureSupervise, errors.Join(supervisionErr, leaseErr, cleanupErr)
 }
 
-func (pool *Pool) abandonStoppedPreTurnAttempt(scheduled ScheduledRunAttempt) (AbandonRunAttemptResult, error) {
+func (pool *Pool) abandonStoppedPreTurnAttempt(scheduled ScheduledRunAttempt, terminal bool) (AbandonRunAttemptResult, error) {
 	record, err := pool.identities.AllocateTransitionRecord()
 	if err != nil {
 		return AbandonRunAttemptResult{}, fmt.Errorf("allocate attempt-abandoned transition identity: %w", err)
@@ -316,7 +325,7 @@ func (pool *Pool) abandonStoppedPreTurnAttempt(scheduled ScheduledRunAttempt) (A
 	request := AbandonRunAttemptRequest{
 		RunID: claim.Run.RunID, RunAttemptID: claim.RunAttempt.RunAttemptID,
 		HolderID: claim.RunAttempt.HolderID, RunAttemptGeneration: claim.RunAttempt.Generation,
-		Reason: "startup_failed", Record: record,
+		Reason: "startup_failed", Terminal: terminal, Record: record,
 	}
 	commandTimeout := pool.config.CleanupTimeout
 	if leaseWindow := pool.scheduler.AttemptLeaseTTL() / 2; commandTimeout > leaseWindow {
@@ -575,6 +584,24 @@ func ambiguousPoolCommand(err error, ctx context.Context) bool {
 	}
 	var commandError *CoreCommandError
 	return !errors.As(err, &commandError)
+}
+
+// deterministicCoreStartupFailure identifies command rejections which cannot
+// be repaired by immediately claiming another attempt. Contention, throttling,
+// timeouts, server failures and transport ambiguity retain the existing retry
+// path; closed-world 4xx rejections become a visible terminal run instead of
+// an unbounded attempt storm.
+func deterministicCoreStartupFailure(err error) bool {
+	var commandError *CoreCommandError
+	if !errors.As(err, &commandError) || commandError.HTTPStatus < 400 || commandError.HTTPStatus >= 500 {
+		return false
+	}
+	switch commandError.HTTPStatus {
+	case 408, 409, 425, 429:
+		return false
+	default:
+		return true
+	}
 }
 
 func waitPoolBackoff(ctx context.Context, duration time.Duration) bool {

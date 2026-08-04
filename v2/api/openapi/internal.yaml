@@ -136,7 +136,7 @@
       "parameters": [{"$ref": "#/components/parameters/RunAttemptId"}],
       "post": {
         "operationId": "abandonRunAttempt",
-        "description": "After the exact holder has stopped a pre-turn workload, atomically requeues the run or closes a cancellation that raced with cleanup, then removes both leases.",
+        "description": "After the exact holder has stopped a pre-turn workload, atomically requeues a transient failure, fails a deterministic startup rejection, or closes a cancellation that raced with cleanup, then removes both leases.",
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AbandonRunAttemptRequest"}}}},
         "responses": {
           "200": {"description": "Stopped pre-turn attempt was reconciled or exact retry returned", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AbandonRunAttemptResponse"}}}},
@@ -962,6 +962,7 @@
           "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
           "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
           "reason": {"const": "startup_failed"},
+          "terminal": {"type": "boolean", "default": false},
           "record": {"$ref": "#/components/schemas/TransitionRecord"}
         }
       },
@@ -973,7 +974,7 @@
           "run": {"$ref": "#/components/schemas/RunState"},
           "runAttempt": {"$ref": "#/components/schemas/RunAttemptState"},
           "sessionVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
-          "disposition": {"enum": ["requeued", "cancelled"]},
+          "disposition": {"enum": ["requeued", "failed", "cancelled"]},
           "changed": {"type": "boolean"}
         }
       },

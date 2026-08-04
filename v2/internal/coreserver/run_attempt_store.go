@@ -109,7 +109,7 @@ func (commands StateStoreRunAttemptCommands) AbandonRunAttempt(ctx context.Conte
 	}
 	result, err := commands.Store.AbandonAttempt(ctx, coredb.AbandonAttemptCommand{
 		RunID: request.RunID, AttemptID: request.RunAttemptID, HolderID: request.HolderID,
-		Generation: request.RunAttemptGeneration, Reason: request.Reason,
+		Generation: request.RunAttemptGeneration, Reason: request.Reason, Terminal: request.Terminal,
 		Record: databaseTransitionRecord(request.Record),
 	})
 	if err != nil {

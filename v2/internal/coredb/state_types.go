@@ -304,6 +304,7 @@ type AbandonAttemptCommand struct {
 	HolderID   string
 	Generation int64
 	Reason     string
+	Terminal   bool
 	Record     TransitionRecord
 }
 

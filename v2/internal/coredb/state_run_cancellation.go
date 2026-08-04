@@ -9,14 +9,16 @@ import (
 )
 
 const (
-	cancelReasonUser     = "cancelled"
-	cancelCodeUser       = "user_cancelled"
-	cancelMessage        = "the run was cancelled by a workspace member"
-	abandonReasonStartup = "startup_failed"
-	abandonCodeStartup   = "attempt_startup_failed"
-	abandonMessage       = "the attempt stopped before accepting a turn and will be retried"
+	cancelReasonUser       = "cancelled"
+	cancelCodeUser         = "user_cancelled"
+	cancelMessage          = "the run was cancelled by a workspace member"
+	abandonReasonStartup   = "startup_failed"
+	abandonCodeStartup     = "attempt_startup_failed"
+	abandonMessage         = "the attempt stopped before accepting a turn and will be retried"
+	abandonTerminalMessage = "the attempt was rejected before accepting a turn and will not be retried"
 
 	AbandonDispositionRequeued  = "requeued"
+	AbandonDispositionFailed    = "failed"
 	AbandonDispositionCancelled = "cancelled"
 )
 
@@ -237,10 +239,11 @@ RETURNING version`, s.table("sessions"))
 
 // AbandonAttempt atomically hands a stopped pre-turn attempt back to core. It
 // deliberately chooses the disposition while holding the run lock: a normal
-// startup failure becomes queued with a failed historical attempt, while a
-// cancellation that committed before this handoff becomes terminal. This
-// removes the otherwise unavoidable observe-then-release race between the
-// harness holder and CancelRun.
+// transient startup failure becomes queued with a failed historical attempt,
+// a deterministic startup rejection becomes failed, and a cancellation that
+// committed before this handoff becomes cancelled. This removes the otherwise
+// unavoidable observe-then-release race between the harness holder and
+// CancelRun.
 func (s *StateStore) AbandonAttempt(ctx context.Context, command AbandonAttemptCommand) (AbandonAttemptResult, error) {
 	const operation = "AbandonAttempt"
 	if err := validateAbandonAttempt(command); err != nil {
@@ -269,6 +272,15 @@ func (s *StateStore) AbandonAttempt(ctx context.Context, command AbandonAttemptC
 			return AbandonAttemptResult{
 				Run: run, Attempt: attempt, SessionVersion: sessionVersion,
 				Disposition: AbandonDispositionRequeued, Changed: false,
+			}, nil
+		}
+		if run.Status == RunStatusFailed && attempt.Status == AttemptStatusFailed {
+			if activeRunID != nil && *activeRunID == run.ID {
+				return AbandonAttemptResult{}, databaseError(operation+" validate failed session", errors.New("failed run remains active in its session"))
+			}
+			return AbandonAttemptResult{
+				Run: run, Attempt: attempt, SessionVersion: sessionVersion,
+				Disposition: AbandonDispositionFailed, Changed: false,
 			}, nil
 		}
 		if run.Status == RunStatusCancelled && (attempt.Status == AttemptStatusInterrupted || attempt.Status == AttemptStatusFailed) {
@@ -303,6 +315,12 @@ func (s *StateStore) AbandonAttempt(ctx context.Context, command AbandonAttemptC
 		code := abandonCodeStartup
 		message := abandonMessage
 		disposition := AbandonDispositionRequeued
+		if command.Terminal {
+			runStatus = RunStatusFailed
+			kind = "run.failed"
+			message = abandonTerminalMessage
+			disposition = AbandonDispositionFailed
+		}
 		if run.Status == RunStatusCancelling {
 			attemptStatus = AttemptStatusInterrupted
 			runStatus = RunStatusCancelled
@@ -351,7 +369,7 @@ RETURNING %s`, s.table("runs"), runColumns(""))
 			return AbandonAttemptResult{}, err
 		}
 
-		if disposition == AbandonDispositionCancelled {
+		if disposition != AbandonDispositionRequeued {
 			updateSession := fmt.Sprintf(`
 UPDATE %s
 SET active_run_id = NULL,

@@ -10,9 +10,10 @@ const (
 
 // IssueRunCapabilitiesRequest is the complete manifest-derived projection a
 // harness-pool asks Core to authorize. Core re-derives live run, lease,
-// membership, catalog and executor facts and requires the route and limits to
-// match its production policy; no field in this request is authority by
-// itself.
+// membership, catalog and model-route facts and requires the route and limits
+// to match its production policy; no field in this request is authority by
+// itself. Executor availability is checked only when a tool is actually
+// dispatched, not while these audience-separated tokens are issued.
 type IssueRunCapabilitiesRequest struct {
 	WorkspaceID               string `json:"workspaceId"`
 	SessionID                 string `json:"sessionId"`

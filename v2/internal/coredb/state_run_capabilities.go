@@ -6,7 +6,6 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -88,11 +87,6 @@ WHERE r.status = 'starting'
 		}
 		if authority.LLMGateway != command.LLMGateway || authority.LLMGateway.GrantUserID != authority.ActorID {
 			return RunCapabilityIssuanceAuthority{}, unavailableRunCapabilityAuthority(operation, command.AttemptID)
-		}
-		if err := s.requireProductionExecutor(
-			ctx, transaction, operation, command.WorkspaceID, command.ExecutorID, authority.DatabaseTime,
-		); err != nil {
-			return RunCapabilityIssuanceAuthority{}, err
 		}
 		catalogID, catalogDigest, err := s.readAuthorizedCapabilityCatalog(
 			ctx, transaction, operation, command.RunID, command.SessionID, command.AttemptID,
@@ -196,11 +190,6 @@ WHERE r.current_attempt_generation = $7
 			if !versionsMatch {
 				return AuthorizedRunCapability{}, unavailableRunCapabilityAuthority(operation, command.CapabilityID)
 			}
-			if err := s.requireProductionExecutor(
-				ctx, transaction, operation, command.WorkspaceID, command.ExecutorID, result.DatabaseTime,
-			); err != nil {
-				return AuthorizedRunCapability{}, err
-			}
 			_, catalogDigest, err := s.readAuthorizedCapabilityCatalog(
 				ctx, transaction, operation, command.RunID, command.SessionID, command.AttemptID,
 				latestCheckpointID,
@@ -248,39 +237,6 @@ WHERE run_id = $1`, s.table("run_launch_states"))
 		return RunLLMGatewayBinding{}, databaseError(operation+" validate frozen LLM gateway binding", err)
 	}
 	return binding, nil
-}
-
-func (s *StateStore) requireProductionExecutor(
-	ctx context.Context,
-	transaction pgx.Tx,
-	operation, workspaceID, executorID string,
-	databaseTime time.Time,
-) error {
-	query := fmt.Sprintf(`
-SELECT 1
-FROM %s AS e
-JOIN %s AS c
-  ON c.executor_id = e.id
- AND c.status = 'online'
- AND c.expires_at > $3
-WHERE e.id = $1
-  AND e.workspace_id = $2
-  AND e.status = 'online'
-  AND EXISTS (
-      SELECT 1
-      FROM %s AS environment
-      WHERE environment.executor_id = e.id
-        AND environment.status = 'online'
-        AND environment.insecure_dev = FALSE
-  )`, s.table("executors"), s.table("executor_connections"), s.table("executor_environments"))
-	var marker int
-	if err := transaction.QueryRow(ctx, query, executorID, workspaceID, databaseTime).Scan(&marker); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return unavailableRunCapabilityAuthority(operation, executorID)
-		}
-		return databaseError(operation+" read production executor authority", err)
-	}
-	return nil
 }
 
 func (s *StateStore) readAuthorizedCapabilityCatalog(

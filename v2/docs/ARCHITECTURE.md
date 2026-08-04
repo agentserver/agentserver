@@ -237,6 +237,10 @@ permission 的输入；权限降低必须撤销旧 Hydra token，不能在 endpo
 
 每枚 run capability 的公共 claim 至少绑定 issuer、`workspace_id`、`session_id`、`run_id`、`run_attempt_id`、`run_attempt_generation`、actor、holder、`aud`、强制run deadline、过期时间和唯一 capability ID（jti）。`aud=llmproxy` 只增加允许的 model/provider route；`aud=executor-mcp` 才增加允许的 executor、`tool_catalog_digest`、预期run/attempt version和approval TTL。具体environment由工具请求选择并在每次调用时在线复核归属与policy，不能把执行权限塞进模型 token，也不能把一枚 token 同时用于模型与执行。Platform 与 Browser token 的 client、audience、scope 和 gateway identity 都是闭合且互斥的；任何内部服务或 executor 都不得接受这两类用户 audience。executor-gateway 的 `tools/list` 按 capability 中的 catalog digest 返回 core 已冻结的精确 catalog；未知或不匹配 digest 直接拒绝。
 
+executor 是 workspace 的可选执行能力，不是 run 启动或模型调用的前置条件。平台级 executor-gateway 仍需可达，以便 worker 完成 MCP `initialize`、`tools/list` 和动态工具桥接；但 Core 签发及 live-authorize run capability 时不得要求某台 agentx、executor connection 或 environment 已在线。没有在线 executor 时，`tools/list` 仍返回本 run 冻结的稳定 catalog，`list_environments` 返回空数组，llmproxy capability 保持有效，因此“你好”这类纯模型对话可以直接完成。
+
+只有模型真正调用 `shell`、`read_file` 等执行工具时，在线 executor 才成为必要条件：gateway 先从 Core 的在线投影解析请求中的 environment，`BeginOperationDispatch` 再在同一数据库事务中复核当前 connection generation、`online` 状态和 lease。任一步没有 live authority 都让该次工具调用 fail closed，且不得反向撤销同一 attempt 的 llmproxy 权限。executor 上下线只影响后续工具执行，不影响纯模型对话。
+
 用户 bearer 不进入 harness、executor-gateway 或 agentx。platform-gateway/browser-gateway 使用彼此独立的
 内部身份调用各自获准的 Core route，并原样转交对应用户 bearer；Core 每次 introspect 后才返回受限结果。
 run capability 在 harness-pool 持有效 session lease 和 run-attempt lease 后签发给目标 worker 进程，不能
@@ -442,7 +446,7 @@ KMS、STS、IAM role、WebIdentity 或 ambient AWS credential chain。worker/app
 实现共同满足 `objectstore.Protocol`，不会改变 Core pointer 或 run manifest。未来改回加密必须
 发布新 profile 并以新 object ID + pointer CAS 迁移，不能覆盖当前 immutable 明文 key。
 
-Core只在production mode注册`run-capabilities:issue`、`authorize-executor-mcp`和`authorize-llmproxy`三条精确内部路由，并分别要求harness-pool、executor-gateway和llmproxy的独立SPIFFE identity。签发事务以attempt `created_at`稳定派生issued-at，以Core policy派生deadline/grace，并同时用本机与数据库时钟fail closed；同一active key与同一authority的exact retry得到相同Ed25519 token和UUIDv8 capability ID。每次live-authorize在repeatable-read/read-only PostgreSQL snapshot中重查active workspace、actor owner/developer membership、active session、成对live lease、holder/generation、pre-turn或accepted状态、生产executor/connection/environment及fresh/resume catalog-policy一致性；取消、finalizing、成员移除、lease expiry、executor下线或catalog/policy漂移立即拒绝。LLM token不携带executor/version authority，具体environment仍须由gateway在解析每次tool call后结合Core execution authority复核。
+Core只在production mode注册`run-capabilities:issue`、`authorize-executor-mcp`和`authorize-llmproxy`三条精确内部路由，并分别要求harness-pool、executor-gateway和llmproxy的独立SPIFFE identity。签发事务以attempt `created_at`稳定派生issued-at，以Core policy派生deadline/grace，并同时用本机与数据库时钟fail closed；同一active key与同一authority的exact retry得到相同Ed25519 token和UUIDv8 capability ID。每次live-authorize在repeatable-read/read-only PostgreSQL snapshot中重查active workspace、actor owner/developer membership、active session、成对live lease、holder/generation、pre-turn或accepted状态及fresh/resume catalog-policy一致性；取消、finalizing、成员移除、lease expiry或catalog/policy漂移立即拒绝。executor-MCP 的初始化、`tools/list` 和 `list_environments` 不要求生产executor/connection/environment在线；具体执行工具在environment解析和`BeginOperationDispatch`时另行复核在线投影与精确connection generation。LLM token不携带executor/version authority，executor下线不得撤销模型调用权限。
 
 ### 7.5 启动延迟与容量
 

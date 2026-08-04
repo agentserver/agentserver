@@ -12,6 +12,7 @@ export type LLMGateway = PublicComponents["schemas"]["WorkspaceLLMGatewayState"]
 export type CreateLLMGateway = PublicComponents["schemas"]["CreateWorkspaceLLMGatewayRequest"]
 export type UpdateLLMGateway = PublicComponents["schemas"]["UpdateWorkspaceLLMGatewayRequest"]
 export type UserSession = PublicComponents["schemas"]["UserSessionState"]
+export type SessionTranscript = PublicComponents["schemas"]["GetUserSessionTranscriptResponse"]
 export type Approval = PublicComponents["schemas"]["ApprovalState"]
 export type ApprovalDecision = PublicComponents["schemas"]["DecideUserApprovalRequest"]
 export type AuthorizationConfig = EdgeComponents["schemas"]["PlatformAuthorizationConfig"] | EdgeComponents["schemas"]["BrowserAuthorizationConfig"]
@@ -184,6 +185,11 @@ export class ResourceAPI {
     return result
   }
 
+  async getSessionTranscript(workspaceId: string, sessionId: string) {
+    const result = take(await this.#client.GET("/v2/workspaces/{workspaceId}/sessions/{sessionId}/transcript", { params: { path: { workspaceId, sessionId } } }))
+    return validateSessionTranscript(result, workspaceId, sessionId)
+  }
+
   async updateSession(workspaceId: string, sessionId: string, body: PublicComponents["schemas"]["UpdateUserSessionRequest"]) {
     const result = take(await this.#client.PATCH("/v2/workspaces/{workspaceId}/sessions/{sessionId}", { params: { path: { workspaceId, sessionId } }, body }))
     if (validateSession(result.session, workspaceId).sessionId !== canonicalID("session ID", sessionId)) throw new Error("The session update response escaped its requested scope.")
@@ -290,6 +296,22 @@ function validateSession(value: UserSession, workspaceId: string): UserSession {
   if (value.workspaceId !== canonicalID("workspace ID", workspaceId) || value.status !== "active" || !positiveVersion(value.version) || !validTimestamp(value.createdAt) || !validTimestamp(value.updatedAt)) throw new Error("The session response escaped its requested scope.")
   if (value.activeRunId !== undefined) canonicalID("active run ID", value.activeRunId)
   boundedProtocolText(value.title, 256)
+  return value
+}
+
+function validateSessionTranscript(value: SessionTranscript, workspaceId: string, sessionId: string): SessionTranscript {
+  exactKeys(value, ["workspaceId", "sessionId", "messages", "truncated"], "session transcript")
+  if (value.workspaceId !== canonicalID("workspace ID", workspaceId) || value.sessionId !== canonicalID("session ID", sessionId) ||
+      !Array.isArray(value.messages) || value.messages.length > 512 || typeof value.truncated !== "boolean") throw new Error("The session transcript escaped its requested scope.")
+  let contentBytes = 0
+  for (const message of value.messages) {
+    exactKeys(message, ["messageId", "runId", "role", "content", "complete", "createdAt"], "session transcript message")
+    boundedProtocolText(message.messageId, 256); canonicalID("run ID", message.runId)
+    if (!['user', 'assistant'].includes(message.role) || typeof message.content !== "string" || /\0/u.test(message.content) ||
+        typeof message.complete !== "boolean" || !validTimestamp(message.createdAt)) throw new Error("A session transcript message is invalid.")
+    contentBytes += new TextEncoder().encode(message.content).byteLength
+    if (contentBytes > 256 * 1024) throw new Error("The session transcript exceeded its content bound.")
+  }
   return value
 }
 

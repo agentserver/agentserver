@@ -151,11 +151,11 @@ Platform introspection 使用同一结构：`authority=platform`，`global_permi
 
 | Permission | 资源范围 | 含义 | 初始状态 |
 |---|---|---|---|
-| `sessions:read` | workspace + self | 列出和读取当前用户自己的 session、标题与 durable transcript | session 元数据已实现；durable transcript 待实现 |
+| `sessions:read` | workspace + self | 列出和读取当前用户自己的 session、标题与 durable transcript | 已实现；transcript 同时要求 `runs:read` |
 | `sessions:create` | workspace + self | 新建当前用户的 session | 已有 |
 | `sessions:update` | workspace + self | 重命名当前用户的 session | 已有 |
 | `sessions:archive` | workspace + self | 归档当前用户的 session；不物理删除 | 已有 |
-| `runs:read` | workspace + self | 读取 session 的 run 状态、历史和 canonical event projection | 已有 event API，待补历史 API |
+| `runs:read` | workspace + self | 读取 session 的 run 状态、历史和 canonical event projection | 已实现 event API 与 bounded durable transcript |
 | `runs:create` | workspace + self | 在 session 没有 active run 时创建一次 run | 已有 |
 | `runs:cancel` | workspace + self | 取消当前用户 session 中的 queued/running run | 已有 |
 | `approvals:decide` | workspace + self | 对当前用户 run 的 live approval 作 approve/deny | 已有 |

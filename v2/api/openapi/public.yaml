@@ -376,6 +376,21 @@
         }
       }
     },
+    "/v2/workspaces/{workspaceId}/sessions/{sessionId}/transcript": {
+      "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/SessionId"}],
+      "get": {
+        "operationId": "getUserSessionTranscript",
+        "description": "Returns a bounded durable message projection from immutable user prompts and committed assistant lifecycle events. The oldest retained content is omitted first when protocol bounds are reached.",
+        "security": [{"browserGatewayMTLS": [], "browserOAuth": ["sessions:read", "runs:read"]}],
+        "responses": {
+          "200": {"description": "Durable current-user transcript", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GetUserSessionTranscriptResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
     "/v2/workspaces/{workspaceId}/sessions/{sessionId}/runs": {
       "parameters": [
         {"$ref": "#/components/parameters/WorkspaceId"},
@@ -789,6 +804,28 @@
       "ArchiveUserSessionResponse": {
         "type": "object", "additionalProperties": false, "required": ["session", "changed"],
         "properties": {"session": {"$ref": "#/components/schemas/UserSessionState"}, "changed": {"type": "boolean"}}
+      },
+      "UserSessionTranscriptMessage": {
+        "type": "object", "additionalProperties": false,
+        "required": ["messageId", "runId", "role", "content", "complete", "createdAt"],
+        "properties": {
+          "messageId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "role": {"type": "string", "enum": ["user", "assistant"]},
+          "content": {"type": "string", "maxLength": 262144, "x-agentserver-maxBytes": 262144},
+          "complete": {"type": "boolean"},
+          "createdAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "GetUserSessionTranscriptResponse": {
+        "type": "object", "additionalProperties": false,
+        "required": ["workspaceId", "sessionId", "messages", "truncated"],
+        "properties": {
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "sessionId": {"$ref": "#/components/schemas/UUID"},
+          "messages": {"type": "array", "maxItems": 512, "items": {"$ref": "#/components/schemas/UserSessionTranscriptMessage"}},
+          "truncated": {"type": "boolean"}
+        }
       },
       "CreateUserRunRequest": {
         "type": "object", "additionalProperties": false, "required": ["prompt"],

@@ -13,7 +13,7 @@ import (
 
 const (
 	maximumSessionResourceRequestBytes  = int64(64 * 1024)
-	maximumSessionResourceResponseBytes = int64(1024 * 1024)
+	maximumSessionResourceResponseBytes = int64(2 * 1024 * 1024)
 )
 
 // SessionResourceProxy is a closed Browser control-plane proxy. It forwards
@@ -34,6 +34,7 @@ func (proxy *SessionResourceProxy) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle(corecontract.UserSessionCollectionRoutePattern, proxy)
 	mux.Handle(corecontract.UserSessionResourceRoutePattern, proxy)
+	mux.Handle(corecontract.UserSessionTranscriptRoutePattern, proxy)
 	mux.Handle(corecontract.UserSessionArchiveRoutePattern, proxy)
 	return mux
 }
@@ -105,6 +106,9 @@ func (proxy *SessionResourceProxy) ServeHTTP(response http.ResponseWriter, reque
 func allowedSessionResourceMethods(request *http.Request) []string {
 	if strings.HasSuffix(request.URL.Path, "/actions/archive") {
 		return []string{http.MethodPost}
+	}
+	if strings.HasSuffix(request.URL.Path, "/transcript") {
+		return []string{http.MethodGet}
 	}
 	if request.PathValue("sessionId") != "" {
 		return []string{http.MethodGet, http.MethodPatch}

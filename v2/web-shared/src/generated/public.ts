@@ -335,6 +335,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v2/workspaces/{workspaceId}/sessions/{sessionId}/transcript": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        /** @description Returns a bounded durable message projection from immutable user prompts and committed assistant lifecycle events. The oldest retained content is omitted first when protocol bounds are reached. */
+        get: operations["getUserSessionTranscript"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v2/workspaces/{workspaceId}/sessions/{sessionId}/runs": {
         parameters: {
             query?: never;
@@ -667,6 +687,22 @@ export interface components {
         ArchiveUserSessionResponse: {
             session: components["schemas"]["UserSessionState"];
             changed: boolean;
+        };
+        UserSessionTranscriptMessage: {
+            messageId: string;
+            runId: components["schemas"]["UUID"];
+            /** @enum {string} */
+            role: "user" | "assistant";
+            content: string;
+            complete: boolean;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        GetUserSessionTranscriptResponse: {
+            workspaceId: components["schemas"]["UUID"];
+            sessionId: components["schemas"]["UUID"];
+            messages: components["schemas"]["UserSessionTranscriptMessage"][];
+            truncated: boolean;
         };
         CreateUserRunRequest: {
             /** @description Untrusted AG-UI correlation value; it is not the server run identity or part of the idempotency request hash. */
@@ -1792,6 +1828,33 @@ export interface operations {
             403: components["responses"]["PublicError"];
             404: components["responses"]["PublicError"];
             409: components["responses"]["PublicError"];
+        };
+    };
+    getUserSessionTranscript: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Durable current-user transcript */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GetUserSessionTranscriptResponse"];
+                };
+            };
+            400: components["responses"]["PublicError"];
+            401: components["responses"]["PublicError"];
+            403: components["responses"]["PublicError"];
+            404: components["responses"]["PublicError"];
         };
     };
     createUserRun: {

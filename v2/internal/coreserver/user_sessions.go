@@ -17,6 +17,7 @@ const maximumUserSessionRequestBytes = int64(64 * 1024)
 type UserSessionCommands interface {
 	ListSessions(context.Context, string, string) (corecontract.ListUserSessionsResponse, error)
 	GetSession(context.Context, string, string, string) (corecontract.UserSessionState, error)
+	GetTranscript(context.Context, string, string, string) (corecontract.GetUserSessionTranscriptResponse, error)
 	CreateSession(context.Context, string, string, corecontract.CreateUserSessionRequest) (corecontract.CreateUserSessionResponse, error)
 	UpdateSession(context.Context, string, string, string, corecontract.UpdateUserSessionRequest) (corecontract.UpdateUserSessionResponse, error)
 	ArchiveSession(context.Context, string, string, string, corecontract.ArchiveUserSessionRequest) (corecontract.ArchiveUserSessionResponse, error)
@@ -39,8 +40,34 @@ func (handler *UserSessionHandler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(corecontract.UserSessionCollectionRoutePattern, handler.collection)
 	mux.HandleFunc(corecontract.UserSessionResourceRoutePattern, handler.resource)
+	mux.HandleFunc(corecontract.UserSessionTranscriptRoutePattern, handler.transcript)
 	mux.HandleFunc(corecontract.UserSessionArchiveRoutePattern, handler.archive)
 	return mux
+}
+
+func (handler *UserSessionHandler) transcript(response http.ResponseWriter, request *http.Request) {
+	userSessionNoStore(response)
+	if request.Method != http.MethodGet {
+		response.Header().Set("Allow", http.MethodGet)
+		writePublicRunError(response, http.StatusMethodNotAllowed, "method_not_allowed", "session transcript requires GET", "")
+		return
+	}
+	if request.URL.RawQuery != "" {
+		writePublicRunError(response, http.StatusBadRequest, "invalid_argument", "session transcript does not accept query parameters", "")
+		return
+	}
+	actorID, ok := handler.authorize(response, request, "sessions.transcript")
+	if !ok || !requireEmptyUserSessionBody(response, request, "session transcript") {
+		return
+	}
+	result, err := handler.commands.GetTranscript(
+		request.Context(), request.PathValue("workspaceId"), request.PathValue("sessionId"), actorID,
+	)
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
 }
 
 func (handler *UserSessionHandler) collection(response http.ResponseWriter, request *http.Request) {
@@ -229,7 +256,10 @@ func decodeUserSessionJSON(response http.ResponseWriter, request *http.Request, 
 	return true
 }
 
-type StateStoreUserSessionCommands struct{ Store *coredb.StateStore }
+type StateStoreUserSessionCommands struct {
+	Store   *coredb.StateStore
+	Prompts UserPromptReader
+}
 
 func (commands StateStoreUserSessionCommands) ListSessions(ctx context.Context, workspaceID, actorID string) (corecontract.ListUserSessionsResponse, error) {
 	items, err := commands.Store.ListUserSessions(ctx, workspaceID, actorID)

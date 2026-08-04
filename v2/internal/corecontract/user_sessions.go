@@ -5,6 +5,7 @@ import "time"
 const (
 	UserSessionCollectionRoutePattern = "/v2/workspaces/{workspaceId}/sessions"
 	UserSessionResourceRoutePattern   = "/v2/workspaces/{workspaceId}/sessions/{sessionId}"
+	UserSessionTranscriptRoutePattern = "/v2/workspaces/{workspaceId}/sessions/{sessionId}/transcript"
 	UserSessionArchiveRoutePattern    = "/v2/workspaces/{workspaceId}/sessions/{sessionId}/actions/archive"
 )
 
@@ -14,6 +15,10 @@ func UserSessionsPath(workspaceID string) string {
 
 func UserSessionPath(workspaceID, sessionID string) string {
 	return UserSessionsPath(workspaceID) + "/" + sessionID
+}
+
+func UserSessionTranscriptPath(workspaceID, sessionID string) string {
+	return UserSessionPath(workspaceID, sessionID) + "/transcript"
 }
 
 func ArchiveUserSessionPath(workspaceID, sessionID string) string {
@@ -33,6 +38,22 @@ type UserSessionState struct {
 
 type ListUserSessionsResponse struct {
 	Sessions []UserSessionState `json:"sessions"`
+}
+
+type UserSessionTranscriptMessage struct {
+	MessageID string    `json:"messageId"`
+	RunID     string    `json:"runId"`
+	Role      string    `json:"role"`
+	Content   string    `json:"content"`
+	Complete  bool      `json:"complete"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+type GetUserSessionTranscriptResponse struct {
+	WorkspaceID string                         `json:"workspaceId"`
+	SessionID   string                         `json:"sessionId"`
+	Messages    []UserSessionTranscriptMessage `json:"messages"`
+	Truncated   bool                           `json:"truncated"`
 }
 
 type CreateUserSessionRequest struct {

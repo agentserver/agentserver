@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 import { enUS, zhCN } from "./i18n"
-import { SSEDecoder, appendUserMessage, createConversationState, reduceAGUIEvent } from "./agui"
+import { SSEDecoder, appendUserMessage, conversationFromTranscript, createConversationState, reduceAGUIEvent } from "./agui"
 import {
   authorizationSessionStorageKey,
   persistAuthorizationSession,
@@ -82,6 +82,24 @@ describe("product web contracts", () => {
     for (const event of events) state = reduceAGUIEvent(state, event)
     expect(state.status).toBe("running")
     expect(state.messages.at(-1)?.text).toBe("hello")
+  })
+
+  it("restores durable user and assistant messages from a session transcript", () => {
+    const runId = "9271bfe5-68a4-484b-a2d3-e9f450a42d0c"
+    const state = conversationFromTranscript({
+      workspaceId: "50000000-0000-4000-8000-000000000005",
+      sessionId: "60000000-0000-4000-8000-000000000006",
+      messages: [
+        { messageId: "user-1", runId, role: "user", content: "你好", complete: true, createdAt: "2026-08-05T01:00:00Z" },
+        { messageId: "assistant-1", runId, role: "assistant", content: "你好！", complete: true, createdAt: "2026-08-05T01:00:01Z" },
+      ],
+      truncated: false,
+    })
+    expect(state.status).toBe("idle")
+    expect(state.messages.map((message) => [message.role, message.text, message.complete])).toEqual([
+      ["user", "你好", true], ["assistant", "你好！", true],
+    ])
+    expect(new Set(state.messages.map((message) => message.id)).size).toBe(2)
   })
 
   it("keeps feature code behind generated OpenAPI transports", () => {

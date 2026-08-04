@@ -307,6 +307,7 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	memberPath := WorkspaceMemberPath("{workspaceId}", "{memberId}")
 	sessionsPath := UserSessionsPath("{workspaceId}")
 	sessionPath := UserSessionPath("{workspaceId}", "{sessionId}")
+	transcriptPath := UserSessionTranscriptPath("{workspaceId}", "{sessionId}")
 	archiveSessionPath := ArchiveUserSessionPath("{workspaceId}", "{sessionId}")
 	llmGatewayCollectionPath := WorkspaceLLMGatewaysPath("{workspaceId}")
 	llmGatewayResourcePath := WorkspaceLLMGatewayPath("{workspaceId}", "{gatewayId}")
@@ -314,7 +315,7 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	llmGatewayCompletePath := CompleteLLMGatewayAuthorizationPath("{workspaceId}", "{gatewayId}")
 	llmGatewayRevokePath := RevokeLLMGatewayGrantPath("{workspaceId}", "{gatewayId}")
 	llmGatewayDisablePath := DisableLLMGatewayPath("{workspaceId}", "{gatewayId}")
-	if len(document.Paths) != 21 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
+	if len(document.Paths) != 22 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
 		document.Paths[cancelPath].Post.OperationID != "cancelUserRun" || document.Paths[readPath].Get.OperationID != "readUserRunEvents" {
 		t.Fatalf("public OpenAPI paths = %+v", document.Paths)
 	}
@@ -323,6 +324,7 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	}
 	if document.Paths[sessionsPath].Get.OperationID != "listUserSessions" || document.Paths[sessionsPath].Post.OperationID != "createUserSession" ||
 		document.Paths[sessionPath].Get.OperationID != "getUserSession" || document.Paths[sessionPath].Patch.OperationID != "updateUserSession" ||
+		document.Paths[transcriptPath].Get.OperationID != "getUserSessionTranscript" ||
 		document.Paths[archiveSessionPath].Post.OperationID != "archiveUserSession" {
 		t.Fatalf("public Browser session paths = %+v", document.Paths)
 	}
@@ -416,6 +418,11 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 			t.Errorf("public Browser action security = %+v", authority.security)
 		}
 	}
+	transcriptSecurity := document.Paths[transcriptPath].Get.Security
+	if len(transcriptSecurity) != 1 || len(transcriptSecurity[0]) != 2 || transcriptSecurity[0]["browserGatewayMTLS"] == nil ||
+		!slices.Equal(transcriptSecurity[0]["browserOAuth"], []string{BrowserOAuthSessionsReadScope, BrowserOAuthRunsReadScope}) {
+		t.Errorf("public Browser transcript security = %+v", transcriptSecurity)
+	}
 	assertSchemaFields(t, document.Components.Schemas, "CreateExecutorResourceRequest", reflect.TypeFor[CreateExecutorResourceRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "ExecutorResourceState", reflect.TypeFor[ExecutorResourceState]())
 	assertSchemaFields(t, document.Components.Schemas, "CreateExecutorResourceResponse", reflect.TypeFor[CreateExecutorResourceResponse]())
@@ -457,6 +464,8 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "UpdateUserSessionResponse", reflect.TypeFor[UpdateUserSessionResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "ArchiveUserSessionRequest", reflect.TypeFor[ArchiveUserSessionRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "ArchiveUserSessionResponse", reflect.TypeFor[ArchiveUserSessionResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "UserSessionTranscriptMessage", reflect.TypeFor[UserSessionTranscriptMessage]())
+	assertSchemaFields(t, document.Components.Schemas, "GetUserSessionTranscriptResponse", reflect.TypeFor[GetUserSessionTranscriptResponse]())
 	var enrollmentTokenProperty struct {
 		WriteOnly bool `json:"writeOnly"`
 		Sensitive bool `json:"x-agentserver-sensitive"`

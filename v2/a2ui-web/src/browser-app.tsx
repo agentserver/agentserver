@@ -25,6 +25,7 @@ import {
   browserConfig,
   canonicalID,
   cloneConversationState,
+  conversationFromTranscript,
   createConversationState,
   newID,
   randomSecret,
@@ -90,6 +91,8 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
   const [selectedId, setSelectedId] = useState("")
   const [sessionLoading, setSessionLoading] = useState(true)
   const [sessionError, setSessionError] = useState("")
+  const [transcriptLoading, setTranscriptLoading] = useState(false)
+  const [transcriptTruncated, setTranscriptTruncated] = useState(false)
   const [query, setQuery] = useState("")
   const [prompt, setPrompt] = useState("")
   const [conversation, setConversation] = useState<ConversationState>(createConversationState)
@@ -97,12 +100,32 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
   const activeRun = useRef<ActiveRun | null>(null)
   const selectedIdRef = useRef(selectedId)
   const selectionRevisionRef = useRef(0)
+  const transcriptRevisionRef = useRef(0)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
 
   const commit = useCallback((next: ConversationState | ((current: ConversationState) => ConversationState)) => {
     const value = typeof next === "function" ? next(stateRef.current) : next
     stateRef.current = value; setConversation(value); return value
   }, [])
+
+  const loadTranscript = useCallback(async (sessionId: string) => {
+    const revision = ++transcriptRevisionRef.current
+    if (!sessionId) { setTranscriptLoading(false); setTranscriptTruncated(false); commit(createConversationState()); return }
+    setTranscriptLoading(true)
+    setTranscriptTruncated(false)
+    commit({ ...createConversationState(), status: "connecting" })
+    try {
+      const transcript = await api.getSessionTranscript(workspaceId, sessionId)
+      if (transcriptRevisionRef.current !== revision || selectedIdRef.current !== sessionId || activeRun.current) return
+      setTranscriptTruncated(transcript.truncated)
+      commit(conversationFromTranscript(transcript))
+    } catch (error) {
+      if (transcriptRevisionRef.current !== revision || selectedIdRef.current !== sessionId || activeRun.current) return
+      commit({ ...createConversationState(), error: { code: "transcript_load_failed", message: safeError(error) } })
+    } finally {
+      if (transcriptRevisionRef.current === revision) setTranscriptLoading(false)
+    }
+  }, [api, commit, workspaceId])
 
   const loadSessions = useCallback(async (preferred = "") => {
     const selectionRevision = selectionRevisionRef.current
@@ -124,12 +147,13 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
   }, [api, workspaceId])
 
   useEffect(() => { void loadSessions() }, [loadSessions])
+  useEffect(() => { void loadTranscript(selectedId) }, [loadTranscript, selectedId])
   useEffect(() => () => activeRun.current?.controller?.abort(), [])
 
   const selectSession = (id: string) => {
     if (activeRun.current) return
     selectionRevisionRef.current += 1
-    setSelectedId(id); selectedIdRef.current = id; commit(createConversationState()); setPrompt("")
+    setSelectedId(id); selectedIdRef.current = id; commit({ ...createConversationState(), status: "connecting" }); setPrompt("")
     requestAnimationFrame(() => composerRef.current?.focus())
   }
 
@@ -212,6 +236,8 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
     let next: ConversationState = { ...stateRef.current, status: "connecting", runId: "", cursor: "", cursorSequence: 0, error: null }
     next = appendUserMessage(next, messageId, canonicalPrompt)
     commit(next)
+    transcriptRevisionRef.current += 1
+    setTranscriptLoading(false)
     activeRun.current = { sessionId, idempotencyKey: randomSecret("run"), clientRunId: `browser-${nonce}`, messageId, prompt: canonicalPrompt, cursor: "", checkpoint: cloneConversationState(next), controller: null }
     setPrompt("")
     void stream(false)
@@ -261,8 +287,8 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
 
   return <AppShell sidebar={sidebar} commands={commands} accountLabel={shortID(workspaceId)} onSignOut={onSignOut}>
     <div className="browser-main">
-      <header className="conversation-header"><div><strong>{sessions.find((item) => item.sessionId === selectedId)?.title ?? t("browser.newChat")}</strong><small>{shortID(workspaceId)}</small></div><Button variant="ghost" size="icon" onClick={() => void loadSessions(selectedId)} aria-label={t("common.refresh")}><RefreshCw size={16} /></Button></header>
-      <ConversationView state={conversation} onDecision={decide} onConfigure={() => { window.location.href = `https://agent.byted.bps.dev/workspaces/${workspaceId}/gateways` }} />
+      <header className="conversation-header"><div><strong>{sessions.find((item) => item.sessionId === selectedId)?.title ?? t("browser.newChat")}</strong><small>{shortID(workspaceId)}</small></div><Button variant="ghost" size="icon" onClick={() => { void loadSessions(selectedId); if (selectedId) void loadTranscript(selectedId) }} aria-label={t("common.refresh")}><RefreshCw size={16} /></Button></header>
+      <ConversationView state={conversation} loading={transcriptLoading} truncated={transcriptTruncated} onDecision={decide} onConfigure={() => { window.location.href = `https://agent.byted.bps.dev/workspaces/${workspaceId}/gateways` }} />
       <Composer value={prompt} onChange={setPrompt} onSubmit={sendPrompt} onCancel={cancelRun} onReconnect={() => void stream(true)} state={conversation} inputRef={composerRef} />
     </div>
   </AppShell>
@@ -273,13 +299,15 @@ function SessionButton({ session, active, onSelect, onRename, onArchive }: { ses
   return <div className={`session-row${active ? " active" : ""}`}><button type="button" className="session-select" onClick={onSelect}><MessageSquare size={15} /><span className="sidebar-copy">{session.title}</span></button><div className="session-actions sidebar-copy"><Button variant="ghost" size="icon" aria-label={t("common.actions")} onClick={(event) => { event.stopPropagation(); onRename() }}><Pencil size={13} /></Button><Button variant="ghost" size="icon" aria-label={t("browser.archive")} onClick={(event) => { event.stopPropagation(); onArchive() }}><Archive size={13} /></Button></div></div>
 }
 
-function ConversationView({ state, onDecision, onConfigure }: { state: ConversationState; onDecision: (approval: ApprovalView, decision: "approve" | "deny") => Promise<void>; onConfigure: () => void }) {
+function ConversationView({ state, loading, truncated, onDecision, onConfigure }: { state: ConversationState; loading: boolean; truncated: boolean; onDecision: (approval: ApprovalView, decision: "approve" | "deny") => Promise<void>; onConfigure: () => void }) {
   const { t } = useTranslation()
+  if (loading) return <div className="conversation-scroll"><div className="session-loading">{t("common.loading")}</div></div>
   const empty = state.messages.length === 0 && state.tools.length === 0 && state.surfaceOrder.length === 0
   const missingGrant = Boolean(state.error && /gateway|grant|credential|model_authority/iu.test(`${state.error.code} ${state.error.message}`))
   return <div className="conversation-scroll"><div className="conversation-timeline">
+    {truncated ? <div className="notice-banner">{t("browser.historyTruncated")}</div> : null}
     {empty ? <div className="browser-welcome"><div className="welcome-mark"><Sparkles size={22} /></div><h1>{t("browser.welcomeTitle")}</h1><p>{t("browser.welcomeDescription")}</p></div> : null}
-    {state.messages.map((message) => <article key={message.id} className={`message message-${message.role}`}><div className="message-avatar">{message.role === "user" ? <CircleUser /> : <Bot size={17} />}</div><div className="message-body"><div className="message-role">{message.role === "user" ? t("browser.you") : t("browser.assistant")}</div><div className="message-copy">{message.text}{!message.complete ? <span className="stream-caret" /> : null}</div></div></article>)}
+    {state.messages.map((message) => <article key={message.id} className={`message message-${message.role}`}><div className="message-avatar">{message.role === "user" ? <CircleUser /> : <Bot size={17} />}</div><div className="message-body"><div className="message-role">{message.role === "user" ? t("browser.you") : t("browser.assistant")}</div><div className="message-copy">{message.text}{!message.complete && ["connecting", "running", "cancelling"].includes(state.status) ? <span className="stream-caret" /> : null}</div></div></article>)}
     {state.reasoning.length ? <details className="reasoning-card"><summary><Sparkles size={14} />{t("browser.reasoning")}<ChevronDown size={14} /></summary>{state.reasoning.map((item) => <pre key={item.id}>{item.text}</pre>)}</details> : null}
     {state.tools.map((tool) => <Card className="tool-card" key={tool.id}><div className="tool-header"><span><SquareTerminal size={15} />{tool.name}</span><Badge tone={tool.status === "completed" ? "success" : "neutral"}>{tool.status}</Badge></div>{tool.arguments ? <pre>{prettyJSON(tool.arguments)}</pre> : null}{tool.progress ? <div className="tool-progress">{tool.progress.total && tool.progress.value !== null ? <progress max={tool.progress.total} value={tool.progress.value} /> : null}<span>{tool.progress.message}</span></div> : null}{tool.result ? <pre className="tool-result">{tool.result}</pre> : null}</Card>)}
     {state.approvalOrder.map((id) => state.approvals[id]).filter((item): item is ApprovalView => Boolean(item)).map((approval) => <Card className="approval-card" key={approval.approvalId}><div className="approval-icon"><KeyRound size={17} /></div><div><h3>{t("browser.approval")}</h3><p>{approval.toolName} · {shortID(approval.executionId)}</p><Badge tone={approval.status === "pending" ? "warning" : approval.status === "approved" || approval.status === "consumed" ? "success" : "neutral"}>{approval.status}</Badge></div>{approval.status === "pending" ? <div className="approval-actions"><Button variant="outline" size="sm" onClick={() => void onDecision(approval, "deny")}>{t("browser.deny")}</Button><Button size="sm" onClick={() => void onDecision(approval, "approve")}>{t("browser.approve")}</Button></div> : null}</Card>)}

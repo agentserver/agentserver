@@ -19,4 +19,12 @@ describe("Browser product source", () => {
     expect(source).not.toContain("selectedIdRef.current = selectedId }, [selectedId]")
     expect(source).toContain("activeRun.current?.controller?.abort()")
   })
+
+  it("reloads the durable transcript when a session is restored or selected", () => {
+    const source = readFileSync(new URL("./browser-app.tsx", import.meta.url), "utf8")
+    expect(source).toContain("api.getSessionTranscript(workspaceId, sessionId)")
+    expect(source).toContain("conversationFromTranscript(transcript)")
+    expect(source).toContain("transcriptRevisionRef.current !== revision")
+    expect(source).toContain("void loadTranscript(selectedId)")
+  })
 })

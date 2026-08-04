@@ -80,7 +80,7 @@ func TestServeCoreProductionRequiresDistinctLLMProxyIdentity(t *testing.T) {
 
 func TestConfigureCorePromptStoreSeparatesProductionAndDevelopment(t *testing.T) {
 	root := t.TempDir()
-	development, description, err := configureCorePromptStore(
+	development, reader, description, err := configureCorePromptStore(
 		t.Context(),
 		func(name string) string {
 			if name == coreDevPromptObjectRootEnvironment {
@@ -90,15 +90,15 @@ func TestConfigureCorePromptStoreSeparatesProductionAndDevelopment(t *testing.T)
 		},
 		coreServeInsecureDevelopment,
 	)
-	if err != nil || development == nil || !strings.Contains(description, "INSECURE DEV") {
-		t.Fatalf("development prompt store = %T, %q, %v", development, description, err)
+	if err != nil || development == nil || reader == nil || !strings.Contains(description, "INSECURE DEV") {
+		t.Fatalf("development prompt store = %T/%T, %q, %v", development, reader, description, err)
 	}
 
-	_, _, err = configureCorePromptStore(t.Context(), func(string) string { return "" }, coreServeProduction)
+	_, _, _, err = configureCorePromptStore(t.Context(), func(string) string { return "" }, coreServeProduction)
 	if err == nil || !strings.Contains(err.Error(), objectruntime.ObjectPrefixEnvironment+" is required") {
 		t.Fatalf("production prompt store missing routing error = %v", err)
 	}
-	_, _, err = configureCorePromptStore(t.Context(), func(string) string { return "" }, coreServeMode(255))
+	_, _, _, err = configureCorePromptStore(t.Context(), func(string) string { return "" }, coreServeMode(255))
 	if err == nil || !strings.Contains(err.Error(), "mode") {
 		t.Fatalf("invalid Core serve mode error = %v", err)
 	}

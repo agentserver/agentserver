@@ -93,6 +93,49 @@ func (store *LocalUserPromptStore) PutUserPrompt(ctx context.Context, request Us
 	return pointer, nil
 }
 
+func (store *LocalUserPromptStore) ReadUserPrompt(ctx context.Context, request UserPromptReadRequest) (string, error) {
+	if store == nil || store.root == "" {
+		return "", errors.New("local prompt object store is not initialized")
+	}
+	if ctx == nil {
+		return "", errors.New("local user prompt context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := validateUserPromptReadRequest(request); err != nil {
+		return "", err
+	}
+	path := filepath.Join(store.root, request.Pointer.ObjectID+".prompt")
+	linkInfo, err := os.Lstat(path)
+	if err != nil {
+		return "", fmt.Errorf("lstat immutable prompt object: %w", err)
+	}
+	if !linkInfo.Mode().IsRegular() || linkInfo.Mode()&0o077 != 0 {
+		return "", errors.New("immutable prompt object has unsafe type or permissions")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open immutable prompt object: %w", err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", fmt.Errorf("stat immutable prompt object: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode()&0o077 != 0 || info.Size() != request.Pointer.Size {
+		return "", errors.New("immutable prompt object does not match its safe size and permissions authority")
+	}
+	contents, err := io.ReadAll(io.LimitReader(file, request.Pointer.Size+1))
+	if err != nil {
+		return "", fmt.Errorf("read immutable prompt object: %w", err)
+	}
+	if int64(len(contents)) > request.Pointer.Size {
+		return "", errors.New("immutable prompt object exceeds its authorized size")
+	}
+	return validateUserPromptContents(request, contents)
+}
+
 func promptFileMatches(path string, want []byte) (matches, exists bool, err error) {
 	linkInfo, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {

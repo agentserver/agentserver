@@ -3,6 +3,7 @@ package coreserver
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"io"
 	"testing"
@@ -120,12 +121,46 @@ func TestEncryptedUserPromptStoreRejectsInvalidCallsBeforeObjectProtocol(t *test
 	}
 }
 
+func TestEncryptedUserPromptStoreReadsOnlyDescriptorVerifiedPrompt(t *testing.T) {
+	contents := []byte("persisted hello")
+	pointer := coredb.ObjectPointer{
+		ObjectID:  "94000000-0000-4000-8000-000000000004",
+		SHA256:    sha256.Sum256(contents),
+		Size:      int64(len(contents)),
+		MediaType: userPromptMediaType,
+	}
+	objects := &recordingEncryptedPromptProtocol{openContents: contents}
+	store := &EncryptedUserPromptStore{objects: objects}
+	got, err := store.ReadUserPrompt(t.Context(), UserPromptReadRequest{WorkspaceID: userRunWorkspaceID, Pointer: pointer})
+	if err != nil || got != string(contents) || objects.openScope.Descriptor.ObjectID != pointer.ObjectID {
+		t.Fatalf("ReadUserPrompt() = %q, %v; scope=%+v", got, err, objects.openScope)
+	}
+	objects.openContents = []byte("tampered hello")
+	if _, err := store.ReadUserPrompt(t.Context(), UserPromptReadRequest{WorkspaceID: userRunWorkspaceID, Pointer: pointer}); err == nil {
+		t.Fatal("tampered prompt object was accepted")
+	}
+}
+
 type recordingEncryptedPromptProtocol struct {
-	calls     int
-	scope     objectstore.Scope
-	plaintext []byte
-	err       error
-	errors    []error
+	calls        int
+	scope        objectstore.Scope
+	plaintext    []byte
+	err          error
+	errors       []error
+	openScope    objectstore.Scope
+	openContents []byte
+	openErr      error
+}
+
+func (protocol *recordingEncryptedPromptProtocol) Open(
+	_ context.Context,
+	scope objectstore.Scope,
+) (io.ReadCloser, error) {
+	protocol.openScope = scope
+	if protocol.openErr != nil {
+		return nil, protocol.openErr
+	}
+	return io.NopCloser(bytes.NewReader(protocol.openContents)), nil
 }
 
 func (protocol *recordingEncryptedPromptProtocol) Put(

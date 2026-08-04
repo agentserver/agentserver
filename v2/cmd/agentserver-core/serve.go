@@ -238,7 +238,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	if err != nil {
 		return err
 	}
-	promptStore, objectStoreDescription, err := configureCorePromptStore(ctx, getenv, mode)
+	promptStore, promptReader, objectStoreDescription, err := configureCorePromptStore(ctx, getenv, mode)
 	if err != nil {
 		return err
 	}
@@ -454,7 +454,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	userSessionHandler, err := coreserver.NewUserSessionHandler(
 		browserAuthorizer,
 		browserUserAuthorizer,
-		coreserver.StateStoreUserSessionCommands{Store: store},
+		coreserver.StateStoreUserSessionCommands{Store: store, Prompts: promptReader},
 	)
 	if err != nil {
 		return err
@@ -602,6 +602,7 @@ func mountCoreUserSessionRoutes(mux *http.ServeMux, handler *coreserver.UserSess
 	routes := handler.Routes()
 	mux.Handle(corecontract.UserSessionCollectionRoutePattern, routes)
 	mux.Handle(corecontract.UserSessionResourceRoutePattern, routes)
+	mux.Handle(corecontract.UserSessionTranscriptRoutePattern, routes)
 	mux.Handle(corecontract.UserSessionArchiveRoutePattern, routes)
 }
 
@@ -642,34 +643,34 @@ func configureCorePromptStore(
 	ctx context.Context,
 	getenv func(string) string,
 	mode coreServeMode,
-) (coreserver.UserPromptStore, string, error) {
+) (coreserver.UserPromptStore, coreserver.UserPromptReader, string, error) {
 	switch mode {
 	case coreServeProduction:
 		config, err := objectruntime.ParseEnvironment(getenv)
 		if err != nil {
-			return nil, "", fmt.Errorf("configure production object routing: %w", err)
+			return nil, nil, "", fmt.Errorf("configure production object routing: %w", err)
 		}
 		objects, err := objectruntime.Open(ctx, config)
 		if err != nil {
-			return nil, "", err
+			return nil, nil, "", err
 		}
 		prompts, err := coreserver.NewEncryptedUserPromptStore(objects)
 		if err != nil {
-			return nil, "", err
+			return nil, nil, "", err
 		}
-		return prompts, "explicit plaintext S3 object store", nil
+		return prompts, prompts, "explicit plaintext S3 object store", nil
 	case coreServeInsecureDevelopment:
 		promptObjectRoot, err := requiredConfiguration(getenv, coreDevPromptObjectRootEnvironment)
 		if err != nil {
-			return nil, "", err
+			return nil, nil, "", err
 		}
 		prompts, err := coreserver.NewLocalUserPromptStore(promptObjectRoot)
 		if err != nil {
-			return nil, "", fmt.Errorf("configure insecure-development prompt object store: %w", err)
+			return nil, nil, "", fmt.Errorf("configure insecure-development prompt object store: %w", err)
 		}
-		return prompts, "INSECURE DEV plaintext object store", nil
+		return prompts, prompts, "INSECURE DEV plaintext object store", nil
 	default:
-		return nil, "", errors.New("Core serve mode is invalid")
+		return nil, nil, "", errors.New("Core serve mode is invalid")
 	}
 }
 

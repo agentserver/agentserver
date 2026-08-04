@@ -71,14 +71,50 @@ func TestUserSessionHandlerRejectsUnknownMutationJSON(t *testing.T) {
 	}
 }
 
+func TestUserSessionHandlerReadsTranscriptWithCombinedAuthorityAction(t *testing.T) {
+	now := time.Date(2026, 8, 5, 1, 0, 0, 0, time.UTC)
+	commands := &recordingUserSessionCommands{transcriptResult: corecontract.GetUserSessionTranscriptResponse{
+		WorkspaceID: userSessionTestWorkspace,
+		SessionID:   userSessionTestSession,
+		Messages: []corecontract.UserSessionTranscriptMessage{{
+			MessageID: "user-" + userSessionTestSession, RunID: userSessionTestSession,
+			Role: "user", Content: "hello", Complete: true, CreatedAt: now,
+		}},
+	}}
+	workload := &recordingRunAttemptAuthorizer{}
+	users := &recordingUserAuthorizer{actorID: userSessionTestActor}
+	handler, err := NewUserSessionHandler(workload, users, commands)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(
+		http.MethodGet,
+		corecontract.UserSessionTranscriptPath(userSessionTestWorkspace, userSessionTestSession),
+		nil,
+	)
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || commands.transcriptActor != userSessionTestActor ||
+		commands.transcriptSession != userSessionTestSession || users.action != "sessions.transcript" ||
+		workload.action != "sessions.transcript" || !strings.Contains(response.Body.String(), `"content":"hello"`) {
+		t.Fatalf("transcript response/authority = %d %s / actor=%q session=%q actions=%q/%q",
+			response.Code, response.Body.String(), commands.transcriptActor, commands.transcriptSession,
+			users.action, workload.action,
+		)
+	}
+}
+
 type recordingUserSessionCommands struct {
-	listResult      corecontract.ListUserSessionsResponse
-	createResult    corecontract.CreateUserSessionResponse
-	listActor       string
-	createActor     string
-	createWorkspace string
-	createInput     corecontract.CreateUserSessionRequest
-	createCalls     int
+	listResult        corecontract.ListUserSessionsResponse
+	createResult      corecontract.CreateUserSessionResponse
+	listActor         string
+	createActor       string
+	createWorkspace   string
+	createInput       corecontract.CreateUserSessionRequest
+	createCalls       int
+	transcriptResult  corecontract.GetUserSessionTranscriptResponse
+	transcriptActor   string
+	transcriptSession string
 }
 
 func (commands *recordingUserSessionCommands) ListSessions(_ context.Context, _ string, actorID string) (corecontract.ListUserSessionsResponse, error) {
@@ -88,6 +124,11 @@ func (commands *recordingUserSessionCommands) ListSessions(_ context.Context, _ 
 
 func (*recordingUserSessionCommands) GetSession(context.Context, string, string, string) (corecontract.UserSessionState, error) {
 	return corecontract.UserSessionState{}, nil
+}
+
+func (commands *recordingUserSessionCommands) GetTranscript(_ context.Context, _ string, sessionID, actorID string) (corecontract.GetUserSessionTranscriptResponse, error) {
+	commands.transcriptActor, commands.transcriptSession = actorID, sessionID
+	return commands.transcriptResult, nil
 }
 
 func (commands *recordingUserSessionCommands) CreateSession(_ context.Context, workspaceID, actorID string, input corecontract.CreateUserSessionRequest) (corecontract.CreateUserSessionResponse, error) {

@@ -155,6 +155,7 @@ export const enUS = {
   "browser.a2ui": "Interactive UI",
   "browser.sessionCreateError": "The conversation could not be created.",
   "browser.invalidSurface": "The interactive UI payload is invalid.",
+  "browser.historyTruncated": "Older messages were omitted because this conversation reached the bounded history limit.",
   "browser.disclaimer": "AgentServer can make mistakes. Review tool actions and approvals.",
 } as const
 
@@ -204,7 +205,8 @@ export const zhCN: Record<keyof typeof enUS, string> = {
   "browser.failed": "失败", "browser.cancelled": "已取消", "browser.reasoning": "推理过程", "browser.tool": "工具",
   "browser.approval": "需要授权", "browser.approve": "批准", "browser.deny": "拒绝",
   "browser.gatewayMissing": "此 workspace 没有可用的模型授权。", "browser.configureGateway": "前往 Platform 配置",
-  "browser.a2ui": "交互界面", "browser.sessionCreateError": "无法创建对话。", "browser.invalidSurface": "交互界面数据无效。", "browser.disclaimer": "AgentServer 也可能出错，请检查工具操作和审批内容。",
+  "browser.a2ui": "交互界面", "browser.sessionCreateError": "无法创建对话。", "browser.invalidSurface": "交互界面数据无效。",
+  "browser.historyTruncated": "此对话已达到有界历史记录上限，较早的消息未显示。", "browser.disclaimer": "AgentServer 也可能出错，请检查工具操作和审批内容。",
 }
 
 const instance = i18next.createInstance()

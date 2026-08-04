@@ -27,6 +27,7 @@ type EncryptedUserPromptStore struct {
 
 type encryptedPromptObjectProtocol interface {
 	Put(context.Context, objectstore.Scope, io.Reader) error
+	Open(context.Context, objectstore.Scope) (io.ReadCloser, error)
 }
 
 func NewEncryptedUserPromptStore(objects objectstore.Protocol) (*EncryptedUserPromptStore, error) {
@@ -91,6 +92,45 @@ func (store *EncryptedUserPromptStore) PutUserPrompt(
 		userPromptPutAttempts,
 		putErr,
 	)
+}
+
+func (store *EncryptedUserPromptStore) ReadUserPrompt(
+	ctx context.Context,
+	request UserPromptReadRequest,
+) (string, error) {
+	if ctx == nil {
+		return "", errors.New("encrypted user prompt context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if store == nil || store.objects == nil {
+		return "", errors.New("Core encrypted prompt object store is not initialized")
+	}
+	if err := validateUserPromptReadRequest(request); err != nil {
+		return "", err
+	}
+	scope := objectstore.Scope{
+		WorkspaceID: request.WorkspaceID,
+		Kind:        objectstore.KindUserPrompt,
+		Descriptor: objectstore.Descriptor{
+			ObjectID: request.Pointer.ObjectID, SHA256: request.Pointer.SHA256,
+			Size: request.Pointer.Size, MediaType: request.Pointer.MediaType,
+		},
+	}
+	reader, err := store.objects.Open(ctx, scope)
+	if err != nil {
+		return "", fmt.Errorf("open encrypted user prompt object: %w", err)
+	}
+	contents, readErr := io.ReadAll(io.LimitReader(reader, request.Pointer.Size+1))
+	closeErr := reader.Close()
+	if err := errors.Join(readErr, closeErr); err != nil {
+		return "", fmt.Errorf("read encrypted user prompt object: %w", err)
+	}
+	if int64(len(contents)) > request.Pointer.Size {
+		return "", errors.New("encrypted user prompt object exceeds its authorized size")
+	}
+	return validateUserPromptContents(request, contents)
 }
 
 func userPromptObjectPointer(request UserPromptWriteRequest) coredb.ObjectPointer {

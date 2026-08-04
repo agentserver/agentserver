@@ -35,11 +35,23 @@ type UserPromptWriteRequest struct {
 	Prompt         string
 }
 
+type UserPromptReadRequest struct {
+	WorkspaceID string
+	Pointer     coredb.ObjectPointer
+}
+
 // UserPromptStore must return the same complete object pointer for exact
 // retries of one workspace/actor/session/idempotency key. A different prompt
 // under that key must fail rather than allocate a second pointer.
 type UserPromptStore interface {
 	PutUserPrompt(context.Context, UserPromptWriteRequest) (coredb.ObjectPointer, error)
+}
+
+// UserPromptReader materializes only a Core-authorized immutable prompt
+// pointer. Implementations must verify its complete plaintext descriptor
+// before returning any user content.
+type UserPromptReader interface {
+	ReadUserPrompt(context.Context, UserPromptReadRequest) (string, error)
 }
 
 type UserRunPolicyResolver interface {

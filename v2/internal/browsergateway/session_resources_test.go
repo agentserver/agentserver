@@ -66,3 +66,37 @@ func TestSessionResourceProxyRejectsUnreviewedMethodBeforeCore(t *testing.T) {
 		t.Fatalf("unreviewed method response = %d headers=%v coreCalled=%v", response.Code, response.Header(), called)
 	}
 }
+
+func TestSessionResourceProxyForwardsTranscriptAsReadOnly(t *testing.T) {
+	called := 0
+	client := &http.Client{Transport: browserRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		called++
+		if request.Method != http.MethodGet || request.URL.Path != corecontract.UserSessionTranscriptPath(projectorWorkspaceID, projectorSessionID) ||
+			request.Header.Get("Authorization") != "Bearer user-token" {
+			t.Fatalf("Core transcript request = %s %s headers=%v", request.Method, request.URL, request.Header)
+		}
+		return browserJSONResponse(request, http.StatusOK, corecontract.GetUserSessionTranscriptResponse{
+			WorkspaceID: projectorWorkspaceID, SessionID: projectorSessionID,
+			Messages: []corecontract.UserSessionTranscriptMessage{}, Truncated: false,
+		}), nil
+	})}
+	backend, _ := NewCoreRunBackend("https://core.agentserver.local", client)
+	proxy, _ := NewSessionResourceProxy(backend)
+	path := corecontract.UserSessionTranscriptPath(projectorWorkspaceID, projectorSessionID)
+	request := httptest.NewRequest(http.MethodGet, path, nil)
+	request.Header.Set("Authorization", "Bearer user-token")
+	response := httptest.NewRecorder()
+	proxy.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || called != 1 || !strings.Contains(response.Body.String(), `"messages":[]`) {
+		t.Fatalf("transcript proxy response = %d %s calls=%d", response.Code, response.Body.String(), called)
+	}
+
+	patch := httptest.NewRequest(http.MethodPatch, path, strings.NewReader(`{}`))
+	patch.Header.Set("Authorization", "Bearer user-token")
+	patch.Header.Set("Content-Type", "application/json")
+	patchResponse := httptest.NewRecorder()
+	proxy.Routes().ServeHTTP(patchResponse, patch)
+	if patchResponse.Code != http.StatusMethodNotAllowed || patchResponse.Header().Get("Allow") != http.MethodGet || called != 1 {
+		t.Fatalf("transcript mutation response = %d headers=%v calls=%d", patchResponse.Code, patchResponse.Header(), called)
+	}
+}

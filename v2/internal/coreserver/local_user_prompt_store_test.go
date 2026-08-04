@@ -36,6 +36,10 @@ func TestLocalUserPromptStoreIsStableForExactRetryAndConflictsWithoutOverwrite(t
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("prompt permissions = %o", info.Mode().Perm())
 	}
+	read, err := store.ReadUserPrompt(t.Context(), UserPromptReadRequest{WorkspaceID: request.WorkspaceID, Pointer: first})
+	if err != nil || read != request.Prompt {
+		t.Fatalf("ReadUserPrompt() = %q, %v", read, err)
+	}
 	request.Prompt = "different"
 	if _, err := store.PutUserPrompt(t.Context(), request); !coredb.HasStateErrorCode(err, coredb.ErrorIdempotencyConflict) {
 		t.Fatalf("conflicting retry error = %v", err)

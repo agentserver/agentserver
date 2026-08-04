@@ -1,4 +1,5 @@
 import { canonicalID } from "./utils"
+import type { SessionTranscript } from "./api"
 
 export const EVENT_CURSOR_NAME = "agentserver.event_cursor"
 export const TOOL_PROGRESS_NAME = "agentserver.tool_progress"
@@ -28,6 +29,17 @@ export interface ConversationState {
 
 export function createConversationState(): ConversationState {
   return { status: "idle", runId: "", cursor: "", cursorSequence: 0, messages: [], reasoning: [], tools: [], approvals: {}, approvalOrder: [], surfaces: {}, surfaceOrder: [], error: null, eventCount: 0 }
+}
+
+export function conversationFromTranscript(transcript: SessionTranscript): ConversationState {
+  const state = createConversationState()
+  state.messages = transcript.messages.map((message) => ({
+    id: `${message.runId}:${message.messageId}`,
+    role: message.role,
+    text: message.content,
+    complete: message.complete,
+  }))
+  return state
 }
 
 export function cloneConversationState(state: ConversationState): ConversationState { return structuredClone(state) }

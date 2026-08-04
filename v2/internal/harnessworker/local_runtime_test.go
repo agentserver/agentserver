@@ -60,8 +60,9 @@ func TestLocalWorkerRuntimePreparerRejectsProfileAndDigestDrift(t *testing.T) {
 		FinalExec: runtimelock.VerifiedFile{
 			Path: filepath.Join(artifactRoot, "harness-final-exec"), SHA256: strings.Repeat("c", 64), SizeBytes: 2048,
 		},
-		CodexConfigProfile: CodexConfigProfileStable0146,
-		WorkerUID:          65531, WorkerGID: 65531, AppUID: 65532, AppGID: 65532,
+		CodexConfigProfile:     CodexConfigProfileStable0146,
+		TLSRootCertificateFile: filepath.Join(artifactRoot, "ca.crt"),
+		WorkerUID:              65531, WorkerGID: 65531, AppUID: 65532, AppGID: 65532,
 	}
 	if _, err := NewLocalWorkerRuntimePreparer(config); err != nil {
 		t.Fatalf("valid local runtime preparer config: %v", err)
@@ -84,6 +85,9 @@ func TestLocalWorkerRuntimePreparerRejectsProfileAndDigestDrift(t *testing.T) {
 		{name: "wrong stable profile", mutate: func(c *LocalWorkerRuntimePreparerConfig) {
 			c.CodexConfigProfile = "future"
 		}, want: "stable stock Codex 0.146.0"},
+		{name: "relative TLS root", mutate: func(c *LocalWorkerRuntimePreparerConfig) {
+			c.TLSRootCertificateFile = "ca.crt"
+		}, want: "TLS root"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

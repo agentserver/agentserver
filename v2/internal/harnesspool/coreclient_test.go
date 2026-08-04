@@ -73,6 +73,18 @@ func TestCoreClientRunAttemptRoundTrip(t *testing.T) {
 		commands.interrupt.Record.OutboxID != testTransitionRecord(5).OutboxID {
 		t.Fatalf("interrupt wire request = %+v", commands.interrupt)
 	}
+	terminal, err := client.CommitAttemptTerminal(t.Context(), CommitAttemptTerminalRequest{
+		RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
+		TerminalStatus: "failed", ThreadID: "thread-failed", TurnID: "turn-failed",
+		Code: "turn_failed", Message: "stock turn failed", Record: testTransitionRecord(8),
+	})
+	if err != nil || !terminal.Changed || terminal.Disposition != "failed" || terminal.Run.Status != "failed" ||
+		terminal.RunAttempt.Status != "failed" || terminal.RunAttempt.TerminalThreadID != "thread-failed" {
+		t.Fatalf("CommitAttemptTerminal() = %+v, %v", terminal, err)
+	}
+	if commands.terminal.Code != "turn_failed" || commands.terminal.Record.OutboxID != testTransitionRecord(8).OutboxID {
+		t.Fatalf("terminal wire request = %+v", commands.terminal)
+	}
 	abandoned, err := client.AbandonRunAttempt(t.Context(), AbandonRunAttemptRequest{
 		RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
 		Reason: "startup_failed", Record: testTransitionRecord(6),
@@ -363,6 +375,7 @@ type recordingContractCommands struct {
 	claim              corecontract.ClaimRunAttemptRequest
 	renew              corecontract.RenewRunAttemptRequest
 	interrupt          corecontract.InterruptRunAttemptRequest
+	terminal           corecontract.CommitAttemptTerminalRequest
 	abandon            corecontract.AbandonRunAttemptRequest
 	begin              corecontract.BeginRunFinalizationRequest
 	commit             corecontract.CommitCheckpointRequest
@@ -477,6 +490,29 @@ func (commands *recordingContractCommands) InterruptRunAttempt(_ context.Context
 			CreatedAt: commands.now, UpdatedAt: commands.now,
 		},
 		SessionVersion: 4, Changed: true,
+	}, nil
+}
+
+func (commands *recordingContractCommands) CommitAttemptTerminal(_ context.Context, request corecontract.CommitAttemptTerminalRequest) (corecontract.CommitAttemptTerminalResponse, error) {
+	if commands.commandError != nil {
+		return corecontract.CommitAttemptTerminalResponse{}, commands.commandError
+	}
+	commands.terminal = request
+	turnStarted := commands.now
+	return corecontract.CommitAttemptTerminalResponse{
+		Run: corecontract.RunState{
+			RunID: request.RunID, WorkspaceID: "40000000-0000-4000-8000-000000000004", SessionID: testSessionID,
+			ActorID: "44000000-0000-4000-8000-000000000004", Status: request.TerminalStatus,
+			CurrentAttemptGeneration: request.RunAttemptGeneration, NextEventSeq: 6, Version: 4,
+			CreatedAt: commands.now, UpdatedAt: commands.now,
+		},
+		RunAttempt: corecontract.RunAttemptState{
+			RunAttemptID: request.RunAttemptID, RunID: request.RunID, Generation: request.RunAttemptGeneration,
+			Status: request.TerminalStatus, TurnStartedAt: &turnStarted, TerminalThreadID: request.ThreadID,
+			TerminalTurnID: request.TurnID, HolderID: request.HolderID, Version: 3,
+			CreatedAt: commands.now, UpdatedAt: commands.now,
+		},
+		SessionVersion: 5, Disposition: request.TerminalStatus, Changed: true,
 	}, nil
 }
 

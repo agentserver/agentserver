@@ -100,6 +100,27 @@ type InterruptRunAttemptResponse struct {
 	Changed        bool            `json:"changed"`
 }
 
+type CommitAttemptTerminalRequest struct {
+	RunID                string           `json:"runId"`
+	RunAttemptID         string           `json:"runAttemptId"`
+	HolderID             string           `json:"holderId"`
+	RunAttemptGeneration int64            `json:"runAttemptGeneration"`
+	TerminalStatus       string           `json:"terminalStatus"`
+	ThreadID             string           `json:"threadId"`
+	TurnID               string           `json:"turnId"`
+	Code                 string           `json:"code"`
+	Message              string           `json:"message"`
+	Record               TransitionRecord `json:"record"`
+}
+
+type CommitAttemptTerminalResponse struct {
+	Run            RunState        `json:"run"`
+	RunAttempt     RunAttemptState `json:"runAttempt"`
+	SessionVersion int64           `json:"sessionVersion"`
+	Disposition    string          `json:"disposition"`
+	Changed        bool            `json:"changed"`
+}
+
 type AbandonRunAttemptRequest struct {
 	RunID                string           `json:"runId"`
 	RunAttemptID         string           `json:"runAttemptId"`
@@ -247,6 +268,10 @@ func RenewRunAttemptPath(runAttemptID string) string {
 
 func InterruptRunAttemptPath(runAttemptID string) string {
 	return RunAttemptPathPrefix + runAttemptID + ":interrupt"
+}
+
+func CommitAttemptTerminalPath(runAttemptID string) string {
+	return RunAttemptPathPrefix + runAttemptID + ":commitTerminal"
 }
 
 func AbandonRunAttemptPath(runAttemptID string) string {

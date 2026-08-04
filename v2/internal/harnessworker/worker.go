@@ -2,12 +2,14 @@ package harnessworker
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -101,6 +103,10 @@ type oneShotWorkerProcess interface {
 	AppServerTransport
 	CloseStdin() error
 	Wait(context.Context) error
+}
+
+type appServerStderrSource interface {
+	Stderr() (contents []byte, truncated bool)
 }
 
 type oneShotWorkerRunner interface {
@@ -311,6 +317,7 @@ func runOneShotWorker(ctx context.Context, config OneShotWorkerConfig, dependenc
 	)
 	waitErr := process.Wait(waitCtx)
 	cancelWait()
+	appServerStderr, appServerStderrTruncated := appServerProcessStderr(process)
 	mcpErr := closeMCP()
 	runtimeErr := closeRuntime()
 	cleanupErr := errors.Join(runnerErr, notificationErr, closeStdinErr, waitErr, mcpErr, runtimeErr)
@@ -333,7 +340,10 @@ func runOneShotWorker(ctx context.Context, config OneShotWorkerConfig, dependenc
 		closeControl(cleanupErr)
 		return cleanupErr
 	}
-	terminal := classifyWorkerTerminal(threadID, turnID, result, cleanupErr, context.Cause(runCtx))
+	terminal := classifyWorkerTerminal(
+		threadID, turnID, result, cleanupErr, context.Cause(runCtx),
+		appServerStderr, appServerStderrTruncated,
+	)
 	if terminal.Status == "completed" {
 		locator, err := completedRolloutLocator(appRuntime, result)
 		if err != nil {
@@ -683,6 +693,8 @@ func classifyWorkerTerminal(
 	result AppServerRunResult,
 	cleanupErr error,
 	runCause error,
+	appServerStderr []byte,
+	appServerStderrTruncated bool,
 ) harnesscontrol.TurnTerminalEvent {
 	event := harnesscontrol.TurnTerminalEvent{
 		Kind: harnesscontrol.EventKindTurnTerminal, ThreadID: threadID, TurnID: turnID,
@@ -700,7 +712,9 @@ func classifyWorkerTerminal(
 		case "failed":
 			event.Status = "failed"
 			event.ErrorCode = "turn_failed"
-			event.ErrorMessage = "stock app-server confirmed that the turn failed"
+			event.ErrorMessage = stockTurnFailureMessage(
+				result.Terminal.Turn.Error, appServerStderr, appServerStderrTruncated,
+			)
 			return event
 		}
 	}
@@ -724,6 +738,78 @@ func classifyWorkerTerminal(
 		event.ErrorMessage = "the worker could not complete bounded runtime cleanup"
 	}
 	return event
+}
+
+func appServerProcessStderr(process oneShotWorkerProcess) ([]byte, bool) {
+	source, ok := process.(appServerStderrSource)
+	if !ok {
+		return nil, false
+	}
+	contents, truncated := source.Stderr()
+	return append([]byte(nil), contents...), truncated
+}
+
+// stockTurnFailureMessage retains only a bounded classification and content
+// fingerprints. Raw app-server errors and stderr can contain provider URLs,
+// capabilities, or user content, so they never cross the worker boundary.
+func stockTurnFailureMessage(turnError json.RawMessage, stderr []byte, stderrTruncated bool) string {
+	const prefix = "stock app-server confirmed that the turn failed"
+	category := classifyStockTurnFailure(turnError, stderr)
+	details := "category=" + category
+	if digest := diagnosticFingerprint(turnError); digest != "" {
+		details += " turn_error_sha256=" + digest
+	}
+	if digest := diagnosticFingerprint(stderr); digest != "" {
+		details += " stderr_sha256=" + digest
+	}
+	if stderrTruncated {
+		details += " stderr_truncated=true"
+	}
+	return prefix + "; " + details
+}
+
+func classifyStockTurnFailure(turnError, stderr []byte) string {
+	contents := strings.ToLower(string(turnError) + "\n" + string(stderr))
+	switch {
+	case containsAny(contents,
+		"unknownissuer", "unknown issuer", "certificate verify", "certificate_verify",
+		"invalid peer certificate", "self signed certificate", "unable to get local issuer"):
+		return "tls_trust_failure"
+	case strings.Contains(contents, "bad record mac"):
+		return "tls_record_failure"
+	case containsAny(contents, "tls handshake", "handshake failure", "certificate"):
+		return "tls_failure"
+	case containsAny(contents, "status code: 401", "status 401", "unauthorized"):
+		return "model_unauthorized"
+	case containsAny(contents, "status code: 403", "status 403", "forbidden"):
+		return "model_forbidden"
+	case containsAny(contents, "status code: 429", "status 429", "rate limit"):
+		return "model_rate_limited"
+	case containsAny(contents, "connection refused", "connection reset", "error sending request", "dns error"):
+		return "model_transport_failure"
+	case containsAny(contents, "timed out", "timeout"):
+		return "model_timeout"
+	default:
+		return "unclassified"
+	}
+}
+
+func containsAny(value string, candidates ...string) bool {
+	for _, candidate := range candidates {
+		if strings.Contains(value, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func diagnosticFingerprint(contents []byte) string {
+	trimmed := strings.TrimSpace(string(contents))
+	if trimmed == "" || trimmed == "null" || trimmed == "{}" {
+		return ""
+	}
+	digest := sha256.Sum256(contents)
+	return fmt.Sprintf("%x", digest[:8])
 }
 
 func closeWorkerProcess(process oneShotWorkerProcess, graceMillis int64) error {

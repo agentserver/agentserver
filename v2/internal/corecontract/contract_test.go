@@ -60,6 +60,7 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 		ClaimRunAttemptPath:                                          "claimRunAttempt",
 		RenewRunAttemptPath("{runAttemptId}"):                        "renewRunAttempt",
 		InterruptRunAttemptPath("{runAttemptId}"):                    "interruptRunAttempt",
+		CommitAttemptTerminalPath("{runAttemptId}"):                  "commitAttemptTerminal",
 		AbandonRunAttemptPath("{runAttemptId}"):                      "abandonRunAttempt",
 		MarkTurnAcceptedPath("{runAttemptId}"):                       "markTurnAccepted",
 		BeginRunFinalizationPath("{runAttemptId}"):                   "beginRunFinalization",
@@ -172,6 +173,8 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "RenewRunAttemptResponse", reflect.TypeFor[RenewRunAttemptResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "InterruptRunAttemptRequest", reflect.TypeFor[InterruptRunAttemptRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "InterruptRunAttemptResponse", reflect.TypeFor[InterruptRunAttemptResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "CommitAttemptTerminalRequest", reflect.TypeFor[CommitAttemptTerminalRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "CommitAttemptTerminalResponse", reflect.TypeFor[CommitAttemptTerminalResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "AbandonRunAttemptRequest", reflect.TypeFor[AbandonRunAttemptRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "AbandonRunAttemptResponse", reflect.TypeFor[AbandonRunAttemptResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "MarkTurnAcceptedRequest", reflect.TypeFor[MarkTurnAcceptedRequest]())

@@ -15,6 +15,7 @@ type RunAttemptStateStore interface {
 	ClaimQueuedRun(context.Context, coredb.ClaimQueuedRunCommand) (coredb.ClaimQueuedRunResult, error)
 	RenewRunAttemptLeases(context.Context, coredb.RenewRunAttemptLeasesCommand) (coredb.RenewRunAttemptLeasesResult, error)
 	InterruptAttempt(context.Context, coredb.InterruptAttemptCommand) (coredb.InterruptAttemptResult, error)
+	CommitAttemptTerminal(context.Context, coredb.CommitAttemptTerminalCommand) (coredb.CommitAttemptTerminalResult, error)
 	AbandonAttempt(context.Context, coredb.AbandonAttemptCommand) (coredb.AbandonAttemptResult, error)
 	MarkTurnAccepted(context.Context, coredb.MarkTurnAcceptedCommand) (coredb.MarkTurnAcceptedResult, error)
 	BeginRunFinalization(context.Context, coredb.BeginRunFinalizationCommand) (coredb.BeginRunFinalizationResult, error)
@@ -100,6 +101,25 @@ func (commands StateStoreRunAttemptCommands) InterruptRunAttempt(ctx context.Con
 	return corecontract.InterruptRunAttemptResponse{
 		Run: contractRun(result.Run), RunAttempt: contractRunAttempt(result.Attempt),
 		SessionVersion: result.SessionVersion, Changed: result.Changed,
+	}, nil
+}
+
+func (commands StateStoreRunAttemptCommands) CommitAttemptTerminal(ctx context.Context, request corecontract.CommitAttemptTerminalRequest) (corecontract.CommitAttemptTerminalResponse, error) {
+	if commands.Store == nil {
+		return corecontract.CommitAttemptTerminalResponse{}, errors.New("nil core state store")
+	}
+	result, err := commands.Store.CommitAttemptTerminal(ctx, coredb.CommitAttemptTerminalCommand{
+		RunID: request.RunID, AttemptID: request.RunAttemptID, HolderID: request.HolderID,
+		Generation: request.RunAttemptGeneration, TerminalStatus: request.TerminalStatus,
+		ThreadID: request.ThreadID, TurnID: request.TurnID, Code: request.Code, Message: request.Message,
+		Record: databaseTransitionRecord(request.Record),
+	})
+	if err != nil {
+		return corecontract.CommitAttemptTerminalResponse{}, err
+	}
+	return corecontract.CommitAttemptTerminalResponse{
+		Run: contractRun(result.Run), RunAttempt: contractRunAttempt(result.Attempt),
+		SessionVersion: result.SessionVersion, Disposition: result.Disposition, Changed: result.Changed,
 	}, nil
 }
 

@@ -192,6 +192,67 @@ func TestPostgreSQLRunCancellationCannotHideNonTerminalExecution(t *testing.T) {
 	assertCancellationAggregate(t, pool, schema, running.Run.ID, running.Run.SessionID, RunStatusCancelling, cancelling.Run.Version, cancelling.Run.NextEventSeq, true, 1, 1)
 }
 
+func TestPostgreSQLAcceptedFailedTurnReleasesSessionAndLeasesAtomically(t *testing.T) {
+	store, pool, schema := newPostgresStateStore(t)
+	workspaceID := stateTestUUID(156_000)
+	sessionID := stateTestUUID(156_001)
+	insertStateTestSession(t, pool, schema, workspaceID, sessionID)
+	created := mustCreateStateRun(t, store, stateCreateRunCommand(156_010, workspaceID, sessionID, "accepted-turn-failed"))
+	claim := mustClaimStateRun(t, store, stateClaimRunCommand(156_020, created.Run.ID, created.Run.Version, "terminal-holder"))
+	accepted, err := store.MarkTurnAccepted(t.Context(), MarkTurnAcceptedCommand{
+		RunID: created.Run.ID, AttemptID: claim.Attempt.ID, HolderID: claim.Attempt.HolderID,
+		Generation: claim.Attempt.Generation, ExpectedRunVersion: claim.Run.Version,
+		ExpectedAttemptVersion: claim.Attempt.Version, Record: stateTransitionRecord(156_030),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := CommitAttemptTerminalCommand{
+		RunID: created.Run.ID, AttemptID: accepted.Attempt.ID, HolderID: accepted.Attempt.HolderID,
+		Generation: accepted.Attempt.Generation, TerminalStatus: AttemptStatusFailed,
+		ThreadID: "thread-failed", TurnID: "turn-failed", Code: "turn_failed",
+		Message: "stock app-server confirmed that the turn failed", Record: stateTransitionRecord(156_040),
+	}
+
+	rollback := command
+	rollback.Record = stateTransitionRecord(156_050)
+	preinsertOutbox(t, pool, schema, rollback.Record.OutboxID, created.Run.ID)
+	if _, err := store.CommitAttemptTerminal(t.Context(), rollback); !HasStateErrorCode(err, ErrorConflict) {
+		t.Fatalf("CommitAttemptTerminal() outbox conflict error = %v, want conflict", err)
+	}
+	assertCancellationAggregate(
+		t, pool, schema, created.Run.ID, sessionID, RunStatusRunning,
+		accepted.Run.Version, accepted.Run.NextEventSeq, true, 1, 1,
+	)
+	deleteConflict := fmt.Sprintf("DELETE FROM %s.outbox WHERE id = $1 AND kind = 'test.conflict'", quoteIdentifier(schema))
+	if result, err := pool.Exec(t.Context(), deleteConflict, rollback.Record.OutboxID); err != nil || result.RowsAffected() != 1 {
+		t.Fatalf("delete isolated conflict row = %v, %v", result, err)
+	}
+
+	failed, err := store.CommitAttemptTerminal(t.Context(), command)
+	if err != nil || !failed.Changed || failed.Disposition != AttemptTerminalDispositionFailed ||
+		failed.Run.Status != RunStatusFailed || failed.Attempt.Status != AttemptStatusFailed ||
+		failed.Attempt.TerminalThreadID != command.ThreadID || failed.Attempt.TerminalTurnID != command.TurnID ||
+		failed.SessionVersion != 3 {
+		t.Fatalf("CommitAttemptTerminal() = %+v, %v", failed, err)
+	}
+	retry, err := store.CommitAttemptTerminal(t.Context(), command)
+	if err != nil || retry.Changed || retry.Disposition != AttemptTerminalDispositionFailed ||
+		retry.Run.ID != failed.Run.ID || retry.Run.Version != failed.Run.Version ||
+		retry.Attempt.ID != failed.Attempt.ID || retry.Attempt.Version != failed.Attempt.Version ||
+		retry.SessionVersion != failed.SessionVersion {
+		t.Fatalf("CommitAttemptTerminal() retry = %+v, %v", retry, err)
+	}
+	assertCancellationAggregate(
+		t, pool, schema, created.Run.ID, sessionID, RunStatusFailed,
+		failed.Run.Version, failed.Run.NextEventSeq, false, 0, 0,
+	)
+	assertAttemptAbandonmentTransition(
+		t, pool, schema, command.Record, created.Run.ID, claim.Attempt,
+		"run.failed", command.Code, command.Message, 4,
+	)
+}
+
 func TestPostgreSQLPreTurnAbandonmentAtomicallyArbitratesCancellation(t *testing.T) {
 	t.Run("abandon then cancel", func(t *testing.T) {
 		store, pool, schema := newPostgresStateStore(t)

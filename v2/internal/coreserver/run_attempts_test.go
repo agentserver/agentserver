@@ -57,6 +57,15 @@ func TestRunAttemptHandlerRoutesAllCommands(t *testing.T) {
 			wantAction: "run-attempts.interrupt", wantCall: "interrupt",
 		},
 		{
+			name: "commit terminal", path: corecontract.CommitAttemptTerminalPath(testRunAttemptID),
+			command: corecontract.CommitAttemptTerminalRequest{
+				RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
+				TerminalStatus: "failed", ThreadID: "thread-1", TurnID: "turn-1", Code: "turn_failed",
+				Message: "stock turn failed", Record: record,
+			},
+			wantAction: "run-attempts.commit-terminal", wantCall: "commit-terminal",
+		},
+		{
 			name: "abandon", path: corecontract.AbandonRunAttemptPath(testRunAttemptID),
 			command: corecontract.AbandonRunAttemptRequest{
 				RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
@@ -230,6 +239,11 @@ func (commands *recordingRunAttemptCommands) RenewRunAttempt(context.Context, co
 func (commands *recordingRunAttemptCommands) InterruptRunAttempt(context.Context, corecontract.InterruptRunAttemptRequest) (corecontract.InterruptRunAttemptResponse, error) {
 	commands.call = "interrupt"
 	return corecontract.InterruptRunAttemptResponse{}, nil
+}
+
+func (commands *recordingRunAttemptCommands) CommitAttemptTerminal(context.Context, corecontract.CommitAttemptTerminalRequest) (corecontract.CommitAttemptTerminalResponse, error) {
+	commands.call = "commit-terminal"
+	return corecontract.CommitAttemptTerminalResponse{}, nil
 }
 
 func (commands *recordingRunAttemptCommands) AbandonRunAttempt(context.Context, corecontract.AbandonRunAttemptRequest) (corecontract.AbandonRunAttemptResponse, error) {

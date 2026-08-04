@@ -132,6 +132,21 @@
         }
       }
     },
+    "/internal/v2/run-attempts/{runAttemptId}:commitTerminal": {
+      "parameters": [{"$ref": "#/components/parameters/RunAttemptId"}],
+      "post": {
+        "operationId": "commitAttemptTerminal",
+        "description": "After the exact holder has stopped an accepted stock turn that ended failed or interrupted, atomically commits the non-success terminal, or closes a cancellation that raced with cleanup, then clears the active session and both leases.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CommitAttemptTerminalRequest"}}}},
+        "responses": {
+          "200": {"description": "Non-success terminal committed or exact retry returned", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CommitAttemptTerminalResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
     "/internal/v2/run-attempts/{runAttemptId}:abandon": {
       "parameters": [{"$ref": "#/components/parameters/RunAttemptId"}],
       "post": {
@@ -949,6 +964,35 @@
           "run": {"$ref": "#/components/schemas/RunState"},
           "runAttempt": {"$ref": "#/components/schemas/RunAttemptState"},
           "sessionVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "changed": {"type": "boolean"}
+        }
+      },
+      "CommitAttemptTerminalRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["runId", "runAttemptId", "holderId", "runAttemptGeneration", "terminalStatus", "threadId", "turnId", "code", "message", "record"],
+        "properties": {
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "terminalStatus": {"enum": ["failed", "interrupted"]},
+          "threadId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "turnId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "code": {"type": "string", "minLength": 1, "maxLength": 128},
+          "message": {"type": "string", "minLength": 1, "maxLength": 1024},
+          "record": {"$ref": "#/components/schemas/TransitionRecord"}
+        }
+      },
+      "CommitAttemptTerminalResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["run", "runAttempt", "sessionVersion", "disposition", "changed"],
+        "properties": {
+          "run": {"$ref": "#/components/schemas/RunState"},
+          "runAttempt": {"$ref": "#/components/schemas/RunAttemptState"},
+          "sessionVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "disposition": {"enum": ["failed", "interrupted", "cancelled"]},
           "changed": {"type": "boolean"}
         }
       },

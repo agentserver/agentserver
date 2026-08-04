@@ -294,6 +294,30 @@ type InterruptAttemptResult struct {
 	Changed        bool
 }
 
+// CommitAttemptTerminalCommand is the exact holder's post-cleanup handoff for
+// an accepted stock turn that ended failed or interrupted. Completed turns use
+// the separate checkpoint finalization transaction.
+type CommitAttemptTerminalCommand struct {
+	RunID          string
+	AttemptID      string
+	HolderID       string
+	Generation     int64
+	TerminalStatus string
+	ThreadID       string
+	TurnID         string
+	Code           string
+	Message        string
+	Record         TransitionRecord
+}
+
+type CommitAttemptTerminalResult struct {
+	Run            Run
+	Attempt        RunAttempt
+	SessionVersion int64
+	Disposition    string
+	Changed        bool
+}
+
 // AbandonAttemptCommand is the trusted pre-turn workload-stopped handoff from
 // the exact harness holder. Unlike a lease expiry, it proves that this holder
 // has finished local cleanup, so core can either requeue the run or close a

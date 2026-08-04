@@ -9,4 +9,14 @@ describe("Browser product source", () => {
     expect(source).toContain("new ResourceAPI")
     expect(source).toContain("new EdgeAPI")
   })
+
+  it("binds each run to the session selected when the prompt is submitted", () => {
+    const source = readFileSync(new URL("./browser-app.tsx", import.meta.url), "utf8")
+    expect(source).toContain("interface ActiveRun {\n  sessionId: string")
+    expect(source).toContain('const sessionId = run?.sessionId ?? ""')
+    expect(source).toContain("activeRun.current = { sessionId,")
+    expect(source).toContain("selectionRevisionRef.current !== selectionRevision")
+    expect(source).not.toContain("selectedIdRef.current = selectedId }, [selectedId]")
+    expect(source).toContain("activeRun.current?.controller?.abort()")
+  })
 })

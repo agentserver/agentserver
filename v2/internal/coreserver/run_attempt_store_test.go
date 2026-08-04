@@ -54,6 +54,19 @@ func TestStateStoreRunAttemptCommandsMapCompleteControlBoundary(t *testing.T) {
 		interrupted.RunAttempt.Status != coredb.AttemptStatusInterrupted || interrupted.SessionVersion != 10 {
 		t.Fatalf("interrupt store/response = %+v / %+v", store.interrupt, interrupted)
 	}
+	terminal, err := commands.CommitAttemptTerminal(t.Context(), corecontract.CommitAttemptTerminalRequest{
+		RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
+		TerminalStatus: "failed", ThreadID: "thread-1", TurnID: "turn-1", Code: "turn_failed",
+		Message: "stock turn failed", Record: record,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.terminal.TerminalStatus != "failed" || store.terminal.ThreadID != "thread-1" ||
+		terminal.Disposition != coredb.AttemptTerminalDispositionFailed || terminal.Run.Status != coredb.RunStatusFailed ||
+		terminal.RunAttempt.Status != coredb.AttemptStatusFailed || terminal.SessionVersion != 11 {
+		t.Fatalf("terminal store/response = %+v / %+v", store.terminal, terminal)
+	}
 	abandoned, err := commands.AbandonRunAttempt(t.Context(), corecontract.AbandonRunAttemptRequest{
 		RunID: testRunID, RunAttemptID: testRunAttemptID, HolderID: "pool-holder", RunAttemptGeneration: 3,
 		Reason: "startup_failed", Terminal: true, Record: record,
@@ -164,6 +177,7 @@ type recordingRunAttemptStore struct {
 	claim       coredb.ClaimQueuedRunCommand
 	renew       coredb.RenewRunAttemptLeasesCommand
 	interrupt   coredb.InterruptAttemptCommand
+	terminal    coredb.CommitAttemptTerminalCommand
 	abandon     coredb.AbandonAttemptCommand
 	accept      coredb.MarkTurnAcceptedCommand
 	begin       coredb.BeginRunFinalizationCommand
@@ -220,6 +234,24 @@ func (store *recordingRunAttemptStore) InterruptAttempt(_ context.Context, comma
 			Status: coredb.AttemptStatusInterrupted, HolderID: command.HolderID, Version: command.ExpectedAttemptVersion + 1,
 		},
 		SessionVersion: 10, Changed: true,
+	}, nil
+}
+
+func (store *recordingRunAttemptStore) CommitAttemptTerminal(_ context.Context, command coredb.CommitAttemptTerminalCommand) (coredb.CommitAttemptTerminalResult, error) {
+	store.terminal = command
+	turnStarted := store.now
+	return coredb.CommitAttemptTerminalResult{
+		Run: coredb.Run{
+			ID: command.RunID, WorkspaceID: "40000000-0000-4000-8000-000000000004", SessionID: "40000000-0000-4000-8000-000000000005",
+			Status: coredb.RunStatusFailed, CurrentAttemptGeneration: command.Generation, Version: 4,
+		},
+		Attempt: coredb.RunAttempt{
+			ID: command.AttemptID, RunID: command.RunID, Generation: command.Generation,
+			Status: coredb.AttemptStatusFailed, TurnStartedAt: &turnStarted,
+			TerminalThreadID: command.ThreadID, TerminalTurnID: command.TurnID,
+			HolderID: command.HolderID, Version: 3,
+		},
+		SessionVersion: 11, Disposition: coredb.AttemptTerminalDispositionFailed, Changed: true,
 	}, nil
 }
 

@@ -171,7 +171,8 @@ func loadWorkerDeployment(configPath, attemptRoot string) (loadedWorkerDeploymen
 		AttemptRoot: attemptRoot, RuntimeManifest: runtimeManifest,
 		RuntimeManifestSHA256: hex.EncodeToString(runtimeDigest[:]), VerifiedRuntime: verifiedRuntime,
 		FinalExec: finalExec, CodexConfigProfile: document.CodexConfigProfile,
-		WorkerUID: document.WorkerUID, WorkerGID: document.WorkerGID,
+		TLSRootCertificateFile: document.TLS.CAFile,
+		WorkerUID:              document.WorkerUID, WorkerGID: document.WorkerGID,
 		AppUID: document.AppUID, AppGID: document.AppGID,
 	})
 	if err != nil {

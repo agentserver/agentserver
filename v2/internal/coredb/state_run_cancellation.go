@@ -17,9 +17,12 @@ const (
 	abandonMessage         = "the attempt stopped before accepting a turn and will be retried"
 	abandonTerminalMessage = "the attempt was rejected before accepting a turn and will not be retried"
 
-	AbandonDispositionRequeued  = "requeued"
-	AbandonDispositionFailed    = "failed"
-	AbandonDispositionCancelled = "cancelled"
+	AbandonDispositionRequeued            = "requeued"
+	AbandonDispositionFailed              = "failed"
+	AbandonDispositionCancelled           = "cancelled"
+	AttemptTerminalDispositionFailed      = "failed"
+	AttemptTerminalDispositionInterrupted = "interrupted"
+	AttemptTerminalDispositionCancelled   = "cancelled"
 )
 
 // CancelRun is the user-authorized run cancellation boundary. A run without a
@@ -237,6 +240,149 @@ RETURNING version`, s.table("sessions"))
 	})
 }
 
+// CommitAttemptTerminal persists a non-success terminal only after the exact
+// holder has stopped the accepted attempt workload. It chooses cancellation
+// atomically if CancelRun won the race, releases the session, and deletes both
+// leases in the same transaction so a failed turn cannot strand a session.
+func (s *StateStore) CommitAttemptTerminal(ctx context.Context, command CommitAttemptTerminalCommand) (CommitAttemptTerminalResult, error) {
+	const operation = "CommitAttemptTerminal"
+	if err := validateCommitAttemptTerminal(command); err != nil {
+		return CommitAttemptTerminalResult{}, commandError(ErrorInvalidArgument, operation, "attempt", command.AttemptID, err.Error())
+	}
+	return withStateTransaction(ctx, s, operation, func(transaction pgx.Tx) (CommitAttemptTerminalResult, error) {
+		run, attempt, err := s.lockRunAttempt(ctx, transaction, operation, command.RunID, command.AttemptID)
+		if err != nil {
+			return CommitAttemptTerminalResult{}, err
+		}
+		if run.CurrentAttemptGeneration != command.Generation || attempt.Generation != command.Generation || attempt.HolderID != command.HolderID {
+			return CommitAttemptTerminalResult{}, fencedAttemptError(operation, attempt.ID, run.CurrentAttemptGeneration, "attempt holder or generation was fenced")
+		}
+		activeRunID, sessionVersion, err := s.lockCancellationSession(ctx, transaction, operation, run.SessionID)
+		if err != nil {
+			return CommitAttemptTerminalResult{}, err
+		}
+		attemptStatus, runStatus, disposition := nonCompletedTerminalStatuses(command.TerminalStatus)
+		if terminalAttemptCommitMatches(run, attempt, activeRunID, command, attemptStatus, runStatus) {
+			return CommitAttemptTerminalResult{
+				Run: run, Attempt: attempt, SessionVersion: sessionVersion,
+				Disposition: disposition, Changed: false,
+			}, nil
+		}
+		if terminalAttemptCommitMatches(run, attempt, activeRunID, command, attemptStatus, RunStatusCancelled) {
+			return CommitAttemptTerminalResult{
+				Run: run, Attempt: attempt, SessionVersion: sessionVersion,
+				Disposition: AttemptTerminalDispositionCancelled, Changed: false,
+			}, nil
+		}
+		if activeRunID == nil || *activeRunID != run.ID {
+			return CommitAttemptTerminalResult{}, commandError(ErrorInvalidState, operation, "run", run.ID, "run is not the session active run")
+		}
+		if run.Status != RunStatusRunning && run.Status != RunStatusCancelling {
+			return CommitAttemptTerminalResult{}, commandError(ErrorInvalidState, operation, "run", run.ID, "run cannot accept a non-success turn terminal from its current state")
+		}
+		if attempt.Status != AttemptStatusRunning || attempt.TurnStartedAt == nil || attempt.TerminalThreadID != "" || attempt.TerminalTurnID != "" {
+			return CommitAttemptTerminalResult{}, commandError(ErrorInvalidState, operation, "attempt", attempt.ID, "attempt is not an accepted unterminated turn")
+		}
+		if err := s.requireLiveLeases(ctx, transaction, run, attempt, command.HolderID, command.Generation); err != nil {
+			return CommitAttemptTerminalResult{}, err
+		}
+		if err := s.requireTerminalExecutions(ctx, transaction, operation, attempt.ID); err != nil {
+			return CommitAttemptTerminalResult{}, err
+		}
+
+		kind := "run." + runStatus
+		code, message := command.Code, command.Message
+		if run.Status == RunStatusCancelling {
+			runStatus = RunStatusCancelled
+			kind = "run.cancelled"
+			code, message = cancelCodeUser, cancelMessage
+			disposition = AttemptTerminalDispositionCancelled
+		}
+		updateAttempt := fmt.Sprintf(`
+UPDATE %s
+SET status = $1,
+    terminal_thread_id = $2,
+    terminal_turn_id = $3,
+    version = version + 1,
+    updated_at = pg_catalog.clock_timestamp()
+WHERE id = $4 AND version = $5
+RETURNING %s`, s.table("run_attempts"), attemptColumns(""))
+		updatedAttempt, err := scanAttempt(transaction.QueryRow(
+			ctx, updateAttempt, attemptStatus, command.ThreadID, command.TurnID, attempt.ID, attempt.Version,
+		))
+		if err != nil {
+			return CommitAttemptTerminalResult{}, databaseError(operation+" update attempt", err)
+		}
+
+		updateRun := fmt.Sprintf(`
+UPDATE %s
+SET status = $1,
+    next_event_seq = next_event_seq + 1,
+    version = version + 1,
+    updated_at = pg_catalog.clock_timestamp()
+WHERE id = $2 AND version = $3
+RETURNING %s`, s.table("runs"), runColumns(""))
+		updatedRun, err := scanRun(transaction.QueryRow(ctx, updateRun, runStatus, run.ID, run.Version))
+		if err != nil {
+			return CommitAttemptTerminalResult{}, databaseError(operation+" update run", err)
+		}
+
+		payload, err := marshalTransitionPayload(struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		}{code, message})
+		if err != nil {
+			return CommitAttemptTerminalResult{}, commandError(ErrorInvalidArgument, operation, "run", run.ID, err.Error())
+		}
+		if err := s.insertTransitionEvent(ctx, transaction, run.ID, run.NextEventSeq, &attempt.ID, &attempt.Generation, command.Record, EventSourceSystem, kind, payload); err != nil {
+			return CommitAttemptTerminalResult{}, err
+		}
+		if err := s.insertOutbox(ctx, transaction, command.Record.OutboxID, kind, run.ID, payload); err != nil {
+			return CommitAttemptTerminalResult{}, err
+		}
+
+		updateSession := fmt.Sprintf(`
+UPDATE %s
+SET active_run_id = NULL,
+    version = version + 1,
+    updated_at = pg_catalog.clock_timestamp()
+WHERE id = $1 AND active_run_id = $2 AND version = $3
+RETURNING version`, s.table("sessions"))
+		if err := transaction.QueryRow(ctx, updateSession, run.SessionID, run.ID, sessionVersion).Scan(&sessionVersion); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return CommitAttemptTerminalResult{}, versionConflict(operation, "session", run.SessionID, sessionVersion)
+			}
+			return CommitAttemptTerminalResult{}, databaseError(operation+" release session", err)
+		}
+		if err := s.deleteAttemptLeases(ctx, transaction, operation, run, attempt, command.HolderID, command.Generation); err != nil {
+			return CommitAttemptTerminalResult{}, err
+		}
+		return CommitAttemptTerminalResult{
+			Run: updatedRun, Attempt: updatedAttempt, SessionVersion: sessionVersion,
+			Disposition: disposition, Changed: true,
+		}, nil
+	})
+}
+
+func nonCompletedTerminalStatuses(status string) (attemptStatus, runStatus, disposition string) {
+	if status == AttemptStatusInterrupted {
+		return AttemptStatusInterrupted, RunStatusInterrupted, AttemptTerminalDispositionInterrupted
+	}
+	return AttemptStatusFailed, RunStatusFailed, AttemptTerminalDispositionFailed
+}
+
+func terminalAttemptCommitMatches(
+	run Run,
+	attempt RunAttempt,
+	activeRunID *string,
+	command CommitAttemptTerminalCommand,
+	attemptStatus string,
+	runStatus string,
+) bool {
+	return run.Status == runStatus && attempt.Status == attemptStatus && activeRunID == nil &&
+		attempt.TerminalThreadID == command.ThreadID && attempt.TerminalTurnID == command.TurnID
+}
+
 // AbandonAttempt atomically hands a stopped pre-turn attempt back to core. It
 // deliberately chooses the disposition while holding the run lock: a normal
 // transient startup failure becomes queued with a failed historical attempt,
@@ -422,6 +568,38 @@ func validateInterruptAttempt(command InterruptAttemptCommand) error {
 	}
 	if command.Reason != cancelReasonUser {
 		return errors.New("interrupt reason must be cancelled")
+	}
+	return validateTransitionRecord(command.Record)
+}
+
+func validateCommitAttemptTerminal(command CommitAttemptTerminalCommand) error {
+	if err := validateUUID("run_id", command.RunID); err != nil {
+		return err
+	}
+	if err := validateUUID("attempt_id", command.AttemptID); err != nil {
+		return err
+	}
+	if err := validateBoundedText("holder_id", command.HolderID, 256); err != nil {
+		return err
+	}
+	if command.Generation < 1 || command.Generation > maxSafeJSONInteger {
+		return errors.New("generation must be a positive safe integer")
+	}
+	if command.TerminalStatus != AttemptStatusFailed && command.TerminalStatus != AttemptStatusInterrupted {
+		return errors.New("terminal_status must be failed or interrupted")
+	}
+	for field, value := range map[string]string{
+		"thread_id": command.ThreadID, "turn_id": command.TurnID,
+	} {
+		if err := validateBoundedText(field, value, 256); err != nil {
+			return err
+		}
+	}
+	if err := validateBoundedText("code", command.Code, 128); err != nil {
+		return err
+	}
+	if err := validateBoundedText("message", command.Message, 1024); err != nil {
+		return err
 	}
 	return validateTransitionRecord(command.Record)
 }

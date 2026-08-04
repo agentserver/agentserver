@@ -223,6 +223,40 @@ func TestTerminalStartupFailureClassification(t *testing.T) {
 	}
 }
 
+func TestPoolCommitsAcceptedFailedTurnBeforeReportingFailure(t *testing.T) {
+	prepared := poolTestPreparedLaunch(t)
+	scheduler := &poolTestScheduler{leaseTTL: time.Second}
+	core := newPoolTestCore(prepared)
+	supervisor := attemptSupervisorFunc(func(_ context.Context, _ PreparedRunLaunch, lifecycle AttemptLifecycle) error {
+		if err := lifecycle.ThreadStarted("thread-failed"); err != nil {
+			return err
+		}
+		if err := lifecycle.TurnAccepted("thread-failed", "turn-failed"); err != nil {
+			return err
+		}
+		return &AttemptTerminalError{
+			Status: "failed", Code: "turn_failed", Message: "bounded diagnostic",
+			ThreadID: "thread-failed", TurnID: "turn-failed",
+		}
+	})
+	pool := newPoolForTest(t, scheduler, fixedPoolPreparer{prepared: prepared}, core, supervisor, PoolConfig{
+		MaxConcurrentAttempts: 1, LeaseRenewInterval: 100 * time.Millisecond,
+		IdleBackoff: time.Millisecond, FailureBackoff: time.Millisecond, CleanupTimeout: time.Second,
+	})
+
+	stage, err := pool.processAttempt(t.Context(), prepared.Scheduled)
+	if stage != PoolFailureSupervise || err == nil || !strings.Contains(err.Error(), "turn_failed") {
+		t.Fatalf("failed process stage/error = %s / %v", stage, err)
+	}
+	core.mu.Lock()
+	terminals := append([]CommitAttemptTerminalRequest(nil), core.terminalRequests...)
+	core.mu.Unlock()
+	if len(terminals) != 1 || terminals[0].TerminalStatus != "failed" || terminals[0].ThreadID != "thread-failed" ||
+		terminals[0].TurnID != "turn-failed" || terminals[0].Code != "turn_failed" || terminals[0].Message != "bounded diagnostic" {
+		t.Fatalf("terminal requests = %+v", terminals)
+	}
+}
+
 func TestPoolLeaseLossCancelsRuntimeAndFailsClosed(t *testing.T) {
 	prepared := poolTestPreparedLaunch(t)
 	scheduler := &poolTestScheduler{leaseTTL: 20 * time.Millisecond}
@@ -283,6 +317,7 @@ func TestPoolCancellationKeepsLeaseUntilAcceptedTurnInterruptionIsCommitted(t *t
 		<-cleanupRelease
 		return errors.Join(context.Cause(ctx), &AttemptTerminalError{
 			Status: "interrupted", Code: "turn_interrupted", Message: "cancelled by user",
+			ThreadID: "thread-cancel-running", TurnID: "turn-cancel-running",
 		})
 	})
 	pool := newPoolForTest(t, scheduler, fixedPoolPreparer{prepared: prepared}, core, supervisor, PoolConfig{
@@ -302,7 +337,7 @@ func TestPoolCancellationKeepsLeaseUntilAcceptedTurnInterruptionIsCommitted(t *t
 	waitPoolTestSignal(t, cleanupStarted, "cancelled workload cleanup")
 	core.mu.Lock()
 	renewalsAtCleanup := len(core.renewRequests)
-	interruptsBeforeCleanup := len(core.interruptRequests)
+	interruptsBeforeCleanup := len(core.terminalRequests)
 	core.mu.Unlock()
 	if interruptsBeforeCleanup != 0 {
 		t.Fatalf("cancellation committed before workload cleanup: %d interrupt(s)", interruptsBeforeCleanup)
@@ -322,10 +357,10 @@ func TestPoolCancellationKeepsLeaseUntilAcceptedTurnInterruptionIsCommitted(t *t
 		t.Fatal("cancelled attempt did not finish")
 	}
 	core.mu.Lock()
-	interrupts := append([]InterruptRunAttemptRequest(nil), core.interruptRequests...)
+	interrupts := append([]CommitAttemptTerminalRequest(nil), core.terminalRequests...)
 	core.mu.Unlock()
-	if len(interrupts) != 1 || interrupts[0].ExpectedRunVersion != 4 ||
-		interrupts[0].ExpectedRunAttemptVersion != 2 || interrupts[0].Reason != "cancelled" {
+	if len(interrupts) != 1 || interrupts[0].TerminalStatus != "interrupted" ||
+		interrupts[0].ThreadID != "thread-cancel-running" || interrupts[0].TurnID != "turn-cancel-running" {
 		t.Fatalf("interrupt requests = %+v", interrupts)
 	}
 }
@@ -367,6 +402,7 @@ func TestPoolCancellationKeepsLifecycleAuthorityAliveThroughTerminalCleanup(t *t
 		}
 		return errors.Join(context.Cause(ctx), &AttemptTerminalError{
 			Status: "interrupted", Code: "turn_interrupted", Message: "cancelled by user",
+			ThreadID: "thread-cancel-runtime", TurnID: "turn-cancel-runtime",
 		})
 	})
 	pool := newPoolForTest(t, scheduler, fixedPoolPreparer{prepared: prepared}, core, supervisor, PoolConfig{
@@ -383,7 +419,7 @@ func TestPoolCancellationKeepsLifecycleAuthorityAliveThroughTerminalCleanup(t *t
 		t.Fatalf("runtime events committed during cancellation cleanup = %+v", appends)
 	}
 	core.mu.Lock()
-	interruptCount := len(core.interruptRequests)
+	interruptCount := len(core.terminalRequests)
 	core.mu.Unlock()
 	if interruptCount != 1 {
 		t.Fatalf("cancelled attempt interruption count = %d, want 1", interruptCount)
@@ -891,11 +927,13 @@ type poolTestCore struct {
 	markErrors        []error
 	renewErrors       []error
 	interruptErrors   []error
+	terminalErrors    []error
 	abandonErrors     []error
 	bindRequests      []BindBrainThreadCatalogRequest
 	markRequests      []MarkTurnAcceptedRequest
 	renewRequests     []RenewRunAttemptRequest
 	interruptRequests []InterruptRunAttemptRequest
+	terminalRequests  []CommitAttemptTerminalRequest
 	abandonRequests   []AbandonRunAttemptRequest
 	renewed           chan struct{}
 	bindMutate        func(*BrainToolCatalog)
@@ -949,6 +987,42 @@ func (core *poolTestCore) InterruptRunAttempt(_ context.Context, request Interru
 	attempt.Status = "interrupted"
 	attempt.Version = request.ExpectedRunAttemptVersion + 1
 	return InterruptRunAttemptResult{Run: run, RunAttempt: attempt, SessionVersion: 2, Changed: true}, nil
+}
+
+func (core *poolTestCore) CommitAttemptTerminal(_ context.Context, request CommitAttemptTerminalRequest) (CommitAttemptTerminalResult, error) {
+	core.mu.Lock()
+	defer core.mu.Unlock()
+	core.terminalRequests = append(core.terminalRequests, request)
+	if err := popPoolTestError(&core.terminalErrors); err != nil {
+		return CommitAttemptTerminalResult{}, err
+	}
+	run := core.prepared.Scheduled.Claim.Run
+	run.Status = request.TerminalStatus
+	run.Version++
+	attempt := core.prepared.Scheduled.Claim.RunAttempt
+	attempt.Status = request.TerminalStatus
+	attempt.Version++
+	attempt.TerminalThreadID = request.ThreadID
+	attempt.TerminalTurnID = request.TurnID
+	disposition := request.TerminalStatus
+	if core.renewMutate != nil {
+		renewed := RenewRunAttemptResult{Run: run, RunAttempt: attempt}
+		core.renewMutate(&renewed)
+		if renewed.Run.Status == "cancelling" {
+			run = renewed.Run
+			run.Status = "cancelled"
+			run.Version++
+			attempt = renewed.RunAttempt
+			attempt.Status = request.TerminalStatus
+			attempt.Version++
+			attempt.TerminalThreadID = request.ThreadID
+			attempt.TerminalTurnID = request.TurnID
+			disposition = "cancelled"
+		}
+	}
+	return CommitAttemptTerminalResult{
+		Run: run, RunAttempt: attempt, SessionVersion: 2, Disposition: disposition, Changed: true,
+	}, nil
 }
 
 func (core *poolTestCore) AbandonRunAttempt(_ context.Context, request AbandonRunAttemptRequest) (AbandonRunAttemptResult, error) {

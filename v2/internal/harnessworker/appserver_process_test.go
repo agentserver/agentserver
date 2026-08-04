@@ -36,6 +36,7 @@ func TestAppServerProcessConfigBuildsClosedWorldChildEnvironment(t *testing.T) {
 		"NO_COLOR=1",
 		"PATH=/usr/bin:/bin",
 		"SHELL=/bin/sh",
+		"SSL_CERT_FILE=" + config.Environment.TLSRootCertificateFile,
 		"TMPDIR=" + config.Environment.Temporary,
 	}
 	if !reflect.DeepEqual(environment, want) {
@@ -74,6 +75,12 @@ func TestAppServerProcessConfigRejectsUnsafeBoundary(t *testing.T) {
 		}, want: "empty"},
 		{name: "missing model capability", mutate: func(c *AppServerProcessConfig) { c.Environment.ModelCapability = "" }, want: "capability"},
 		{name: "capability newline", mutate: func(c *AppServerProcessConfig) { c.Environment.ModelCapability = "secret\nvalue" }, want: "capability"},
+		{name: "missing TLS root", mutate: func(c *AppServerProcessConfig) { c.Environment.TLSRootCertificateFile = "" }, want: "TLS root"},
+		{name: "writable TLS root", mutate: func(c *AppServerProcessConfig) {
+			if err := os.Chmod(c.Environment.TLSRootCertificateFile, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, want: "read-only"},
 		{name: "root worker", mutate: func(c *AppServerProcessConfig) { c.WorkerUID = 0 }, want: "unprivileged"},
 		{name: "shared uid", mutate: func(c *AppServerProcessConfig) { c.AppUID = c.WorkerUID }, want: "distinct"},
 		{name: "too many frames", mutate: func(c *AppServerProcessConfig) { c.IncomingFrames = maximumAppServerIncomingFrames + 1 }, want: "incoming frame"},
@@ -84,7 +91,7 @@ func TestAppServerProcessConfigRejectsUnsafeBoundary(t *testing.T) {
 			config := base
 			// Each filesystem-mutating case gets its own path so parallel table
 			// semantics cannot make a later assertion depend on an earlier one.
-			if strings.Contains(test.name, "cwd") {
+			if strings.Contains(test.name, "cwd") || strings.Contains(test.name, "TLS root") {
 				config = validAppServerProcessConfig(t)
 			}
 			test.mutate(&config)
@@ -186,10 +193,14 @@ func validAppServerProcessConfig(t *testing.T) AppServerProcessConfig {
 	home := filepath.Join(root, "home")
 	codexHome := filepath.Join(root, "codex-home")
 	temporary := filepath.Join(root, "tmp")
+	tlsRoot := filepath.Join(root, "ca.crt")
 	for _, path := range []string{directory, home, codexHome, temporary} {
 		if err := os.Mkdir(path, 0o700); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := os.WriteFile(tlsRoot, []byte("test CA certificate"), 0o400); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.Chmod(directory, 0o500); err != nil {
 		t.Fatal(err)
@@ -201,7 +212,7 @@ func validAppServerProcessConfig(t *testing.T) AppServerProcessConfig {
 		Directory:           directory,
 		Environment: AppServerRuntimeEnvironment{
 			Home: home, CodexHome: codexHome, Temporary: temporary,
-			ModelCapability: "model-capability",
+			ModelCapability: "model-capability", TLSRootCertificateFile: tlsRoot,
 		},
 		WorkerUID: 65531, WorkerGID: 65531,
 		AppUID: 65532, AppGID: 65532,

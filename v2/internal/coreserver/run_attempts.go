@@ -15,6 +15,7 @@ type RunAttemptCommands interface {
 	ClaimRunAttempt(context.Context, corecontract.ClaimRunAttemptRequest) (corecontract.ClaimRunAttemptResponse, error)
 	RenewRunAttempt(context.Context, corecontract.RenewRunAttemptRequest) (corecontract.RenewRunAttemptResponse, error)
 	InterruptRunAttempt(context.Context, corecontract.InterruptRunAttemptRequest) (corecontract.InterruptRunAttemptResponse, error)
+	CommitAttemptTerminal(context.Context, corecontract.CommitAttemptTerminalRequest) (corecontract.CommitAttemptTerminalResponse, error)
 	AbandonRunAttempt(context.Context, corecontract.AbandonRunAttemptRequest) (corecontract.AbandonRunAttemptResponse, error)
 	MarkTurnAccepted(context.Context, corecontract.MarkTurnAcceptedRequest) (corecontract.MarkTurnAcceptedResponse, error)
 	BeginRunFinalization(context.Context, corecontract.BeginRunFinalizationRequest) (corecontract.BeginRunFinalizationResponse, error)
@@ -56,6 +57,8 @@ func (handler *RunAttemptHandler) ServeHTTP(response http.ResponseWriter, reques
 		handler.renew(response, request, attemptID)
 	case "interrupt":
 		handler.interrupt(response, request, attemptID)
+	case "commit-terminal":
+		handler.commitTerminal(response, request, attemptID)
 	case "abandon":
 		handler.abandon(response, request, attemptID)
 	case "turn-accepted":
@@ -104,6 +107,26 @@ func (handler *RunAttemptHandler) interrupt(response http.ResponseWriter, reques
 		return
 	}
 	result, err := handler.commands.InterruptRunAttempt(request.Context(), command)
+	if err != nil {
+		writeCommandError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (handler *RunAttemptHandler) commitTerminal(response http.ResponseWriter, request *http.Request, attemptID string) {
+	if !handler.authorize(response, request, "run-attempts.commit-terminal") {
+		return
+	}
+	var command corecontract.CommitAttemptTerminalRequest
+	if !decodeCommand(response, request, &command) {
+		return
+	}
+	if command.RunAttemptID != attemptID {
+		writePathIdentityError(response, "runAttemptId")
+		return
+	}
+	result, err := handler.commands.CommitAttemptTerminal(request.Context(), command)
 	if err != nil {
 		writeCommandError(response, err)
 		return
@@ -251,6 +274,10 @@ func parseRunAttemptAction(path string) (attemptID, action string, ok bool) {
 		const interruptSuffix = ":interrupt"
 		if strings.HasSuffix(remainder, interruptSuffix) && len(remainder) > len(interruptSuffix) {
 			return strings.TrimSuffix(remainder, interruptSuffix), "interrupt", true
+		}
+		const commitTerminalSuffix = ":commitTerminal"
+		if strings.HasSuffix(remainder, commitTerminalSuffix) && len(remainder) > len(commitTerminalSuffix) {
+			return strings.TrimSuffix(remainder, commitTerminalSuffix), "commit-terminal", true
 		}
 		const abandonSuffix = ":abandon"
 		if strings.HasSuffix(remainder, abandonSuffix) && len(remainder) > len(abandonSuffix) {

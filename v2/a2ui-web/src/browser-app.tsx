@@ -43,6 +43,7 @@ import {
 } from "@agentserver/v2-web-shared"
 
 interface ActiveRun {
+  sessionId: string
   idempotencyKey: string
   clientRunId: string
   messageId: string
@@ -95,6 +96,7 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
   const stateRef = useRef(conversation)
   const activeRun = useRef<ActiveRun | null>(null)
   const selectedIdRef = useRef(selectedId)
+  const selectionRevisionRef = useRef(0)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
 
   const commit = useCallback((next: ConversationState | ((current: ConversationState) => ConversationState)) => {
@@ -102,12 +104,18 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
     stateRef.current = value; setConversation(value); return value
   }, [])
 
-  useEffect(() => { selectedIdRef.current = selectedId }, [selectedId])
-
   const loadSessions = useCallback(async (preferred = "") => {
+    const selectionRevision = selectionRevisionRef.current
     setSessionLoading(true); setSessionError("")
     try {
       const loaded = [...(await api.listSessions(workspaceId))]
+      if (selectionRevisionRef.current !== selectionRevision) {
+        setSessions((current) => {
+          const selected = current.find((item) => item.sessionId === selectedIdRef.current)
+          return selected && !loaded.some((item) => item.sessionId === selected.sessionId) ? [selected, ...loaded] : loaded
+        })
+        return
+      }
       setSessions(loaded)
       const selected = loaded.find((item) => item.sessionId === (preferred || selectedIdRef.current)) ?? loaded[0]
       setSelectedId(selected?.sessionId ?? "")
@@ -120,6 +128,7 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
 
   const selectSession = (id: string) => {
     if (activeRun.current) return
+    selectionRevisionRef.current += 1
     setSelectedId(id); selectedIdRef.current = id; commit(createConversationState()); setPrompt("")
     requestAnimationFrame(() => composerRef.current?.focus())
   }
@@ -128,7 +137,10 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
     setSessionError("")
     try {
       const result = await api.createSession(workspaceId, { sessionId: newID(), title })
+      activeRun.current?.controller?.abort()
+      activeRun.current = null
       setSessions((current) => [result.session, ...current.filter((item) => item.sessionId !== result.session.sessionId)])
+      selectionRevisionRef.current += 1
       setSelectedId(result.session.sessionId); selectedIdRef.current = result.session.sessionId; commit(createConversationState())
       requestAnimationFrame(() => composerRef.current?.focus())
       return result.session
@@ -151,7 +163,7 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
 
   const stream = useCallback(async (reconnect: boolean) => {
     const run = activeRun.current
-    const sessionId = selectedIdRef.current
+    const sessionId = run?.sessionId ?? ""
     if (!run || run.controller || !sessionId) return
     if (reconnect) commit({ ...cloneConversationState(run.checkpoint), status: "connecting", error: null })
     const controller = new AbortController(); run.controller = controller
@@ -200,7 +212,7 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
     let next: ConversationState = { ...stateRef.current, status: "connecting", runId: "", cursor: "", cursorSequence: 0, error: null }
     next = appendUserMessage(next, messageId, canonicalPrompt)
     commit(next)
-    activeRun.current = { idempotencyKey: randomSecret("run"), clientRunId: `browser-${nonce}`, messageId, prompt: canonicalPrompt, cursor: "", checkpoint: cloneConversationState(next), controller: null }
+    activeRun.current = { sessionId, idempotencyKey: randomSecret("run"), clientRunId: `browser-${nonce}`, messageId, prompt: canonicalPrompt, cursor: "", checkpoint: cloneConversationState(next), controller: null }
     setPrompt("")
     void stream(false)
   }

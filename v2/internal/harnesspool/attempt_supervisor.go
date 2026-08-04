@@ -77,9 +77,11 @@ func DefaultControlAttemptSupervisorConfig() ControlAttemptSupervisorConfig {
 // AttemptTerminalError preserves the worker's bounded terminal classification
 // without pretending that transport success is a durable core finalization.
 type AttemptTerminalError struct {
-	Status  string
-	Code    string
-	Message string
+	Status   string
+	Code     string
+	Message  string
+	ThreadID string
+	TurnID   string
 }
 
 func (err *AttemptTerminalError) Error() string {
@@ -359,6 +361,7 @@ func terminalResultError(terminal harnesscontrol.TurnTerminalEvent, workloadErr 
 	}
 	return errors.Join(&AttemptTerminalError{
 		Status: terminal.Status, Code: terminal.ErrorCode, Message: terminal.ErrorMessage,
+		ThreadID: terminal.ThreadID, TurnID: terminal.TurnID,
 	}, workloadErr)
 }
 

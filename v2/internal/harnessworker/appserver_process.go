@@ -19,22 +19,25 @@ import (
 
 const (
 	AppServerModelCapabilityEnvironment = "AGENTSERVER_LLM_CAPABILITY"
+	AppServerTLSRootEnvironment         = "SSL_CERT_FILE"
 
 	defaultAppServerIncomingFrames = 64
 	defaultAppServerStderrBytes    = 1024 * 1024
 	maximumAppServerIncomingFrames = 4 * 1024
 	maximumAppServerStderrBytes    = 64 * 1024 * 1024
 	maximumModelCapabilityBytes    = 16 * 1024
+	maximumAppServerTLSRootBytes   = 1024 * 1024
 )
 
 // AppServerRuntimeEnvironment is the complete environment authority exposed
 // to stock app-server. In particular, executor MCP and worker control
 // credentials have no representation in this type.
 type AppServerRuntimeEnvironment struct {
-	Home            string
-	CodexHome       string
-	Temporary       string
-	ModelCapability string
+	Home                   string
+	CodexHome              string
+	Temporary              string
+	ModelCapability        string
+	TLSRootCertificateFile string
 }
 
 // AppServerProcessConfig selects only deployment-owned, pinned process facts.
@@ -271,6 +274,9 @@ func validateAppServerProcessConfig(config AppServerProcessConfig) (AppServerPro
 			return AppServerProcessConfig{}, nil, err
 		}
 	}
+	if err := validateAppServerTLSRoot(config.Environment.TLSRootCertificateFile); err != nil {
+		return AppServerProcessConfig{}, nil, err
+	}
 	if config.Environment.ModelCapability == "" || len(config.Environment.ModelCapability) > maximumModelCapabilityBytes ||
 		strings.ContainsAny(config.Environment.ModelCapability, "\x00\r\n") {
 		return AppServerProcessConfig{}, nil, errors.New("app-server model capability is invalid")
@@ -308,6 +314,7 @@ func validateAppServerProcessConfig(config AppServerProcessConfig) (AppServerPro
 		"NO_COLOR":                          "1",
 		"PATH":                              "/usr/bin:/bin",
 		"SHELL":                             "/bin/sh",
+		AppServerTLSRootEnvironment:         config.Environment.TLSRootCertificateFile,
 		"TMPDIR":                            config.Environment.Temporary,
 	}
 	names := make([]string, 0, len(environment))
@@ -320,6 +327,24 @@ func validateAppServerProcessConfig(config AppServerProcessConfig) (AppServerPro
 		explicit = append(explicit, name+"="+environment[name])
 	}
 	return config, explicit, nil
+}
+
+func validateAppServerTLSRoot(path string) error {
+	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.ContainsRune(path, 0) {
+		return errors.New("app-server TLS root certificate file must be an absolute clean path")
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("inspect app-server TLS root certificate file: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o222 != 0 ||
+		info.Size() < 1 || info.Size() > maximumAppServerTLSRootBytes {
+		return fmt.Errorf(
+			"app-server TLS root certificate file must be a direct read-only regular file between 1 and %d bytes: mode=%s size=%d",
+			maximumAppServerTLSRootBytes, info.Mode(), info.Size(),
+		)
+	}
+	return nil
 }
 
 func validateAppServerExecutable(label, path string) error {

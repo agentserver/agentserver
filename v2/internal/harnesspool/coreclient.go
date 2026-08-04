@@ -151,6 +151,27 @@ type InterruptRunAttemptResult struct {
 	Changed        bool
 }
 
+type CommitAttemptTerminalRequest struct {
+	RunID                string
+	RunAttemptID         string
+	HolderID             string
+	RunAttemptGeneration int64
+	TerminalStatus       string
+	ThreadID             string
+	TurnID               string
+	Code                 string
+	Message              string
+	Record               TransitionRecord
+}
+
+type CommitAttemptTerminalResult struct {
+	Run            Run
+	RunAttempt     RunAttempt
+	SessionVersion int64
+	Disposition    string
+	Changed        bool
+}
+
 type AbandonRunAttemptRequest struct {
 	RunID                string
 	RunAttemptID         string
@@ -639,6 +660,45 @@ func (client *CoreClient) InterruptRunAttempt(ctx context.Context, request Inter
 		return InterruptRunAttemptResult{}, errors.New("core interrupt response does not match the cancelled attempt identity")
 	}
 	return result, nil
+}
+
+func (client *CoreClient) CommitAttemptTerminal(ctx context.Context, request CommitAttemptTerminalRequest) (CommitAttemptTerminalResult, error) {
+	contractRequest := corecontract.CommitAttemptTerminalRequest{
+		RunID: request.RunID, RunAttemptID: request.RunAttemptID, HolderID: request.HolderID,
+		RunAttemptGeneration: request.RunAttemptGeneration, TerminalStatus: request.TerminalStatus,
+		ThreadID: request.ThreadID, TurnID: request.TurnID, Code: request.Code, Message: request.Message,
+		Record: contractTransitionRecord(request.Record),
+	}
+	var response corecontract.CommitAttemptTerminalResponse
+	if err := client.post(ctx, corecontract.CommitAttemptTerminalPath(request.RunAttemptID), contractRequest, &response); err != nil {
+		return CommitAttemptTerminalResult{}, err
+	}
+	result := CommitAttemptTerminalResult{
+		Run: contractRun(response.Run), RunAttempt: contractRunAttempt(response.RunAttempt),
+		SessionVersion: response.SessionVersion, Disposition: response.Disposition, Changed: response.Changed,
+	}
+	if result.Run.RunID != request.RunID || result.RunAttempt.RunID != request.RunID ||
+		result.RunAttempt.RunAttemptID != request.RunAttemptID ||
+		result.Run.CurrentAttemptGeneration != request.RunAttemptGeneration ||
+		result.RunAttempt.Generation != request.RunAttemptGeneration || result.RunAttempt.HolderID != request.HolderID ||
+		result.RunAttempt.TerminalThreadID != request.ThreadID || result.RunAttempt.TerminalTurnID != request.TurnID ||
+		result.SessionVersion < 1 || !validCommitAttemptTerminalResult(result, request.TerminalStatus) {
+		return CommitAttemptTerminalResult{}, errors.New("core terminal response does not match the stopped attempt identity")
+	}
+	return result, nil
+}
+
+func validCommitAttemptTerminalResult(result CommitAttemptTerminalResult, terminalStatus string) bool {
+	switch result.Disposition {
+	case "failed":
+		return terminalStatus == "failed" && result.Run.Status == "failed" && result.RunAttempt.Status == "failed"
+	case "interrupted":
+		return terminalStatus == "interrupted" && result.Run.Status == "interrupted" && result.RunAttempt.Status == "interrupted"
+	case "cancelled":
+		return result.Run.Status == "cancelled" && result.RunAttempt.Status == terminalStatus
+	default:
+		return false
+	}
 }
 
 func (client *CoreClient) AbandonRunAttempt(ctx context.Context, request AbandonRunAttemptRequest) (AbandonRunAttemptResult, error) {

@@ -30,6 +30,7 @@ type RunAttemptPreparer interface {
 type AttemptSupervisionCore interface {
 	RenewRunAttempt(context.Context, RenewRunAttemptRequest) (RenewRunAttemptResult, error)
 	InterruptRunAttempt(context.Context, InterruptRunAttemptRequest) (InterruptRunAttemptResult, error)
+	CommitAttemptTerminal(context.Context, CommitAttemptTerminalRequest) (CommitAttemptTerminalResult, error)
 	AbandonRunAttempt(context.Context, AbandonRunAttemptRequest) (AbandonRunAttemptResult, error)
 	BindBrainThreadCatalog(context.Context, BindBrainThreadCatalogRequest) (BindBrainThreadCatalogResult, error)
 	MarkTurnAccepted(context.Context, MarkTurnAcceptedRequest) (MarkTurnAcceptedResult, error)
@@ -303,6 +304,17 @@ func (pool *Pool) processAttempt(parent context.Context, scheduled ScheduledRunA
 		}
 		return PoolFailureSupervise, pool.releaseAfterStartupFailure(parent, scheduled, failure)
 	}
+	var terminal *AttemptTerminalError
+	if errors.As(supervisionErr, &terminal) && (terminal.Status == "failed" || terminal.Status == "interrupted") {
+		terminalResult, terminalErr := pool.finishNonCompletedAttempt(scheduled, terminal)
+		if terminalErr != nil {
+			return PoolFailureCleanup, errors.Join(supervisionErr, leaseErr, cleanupErr, terminalErr)
+		}
+		if terminalResult.Disposition == "cancelled" {
+			return PoolFailureCleanup, errors.Join(leaseErr, cleanupErr)
+		}
+		return PoolFailureSupervise, errors.Join(supervisionErr, leaseErr, cleanupErr)
+	}
 	if latest.Run.Status == "cancelling" {
 		cancelErr := pool.finishCancelledAttempt(scheduled, authority.accepted(), latest, supervisionErr)
 		if cancelErr != nil {
@@ -314,6 +326,44 @@ func (pool *Pool) processAttempt(parent context.Context, scheduled ScheduledRunA
 		return PoolFailureCleanup, cleanupErr
 	}
 	return PoolFailureSupervise, errors.Join(supervisionErr, leaseErr, cleanupErr)
+}
+
+func (pool *Pool) finishNonCompletedAttempt(scheduled ScheduledRunAttempt, terminal *AttemptTerminalError) (CommitAttemptTerminalResult, error) {
+	if terminal == nil || (terminal.Status != "failed" && terminal.Status != "interrupted") ||
+		terminal.Code == "" || terminal.Message == "" || terminal.ThreadID == "" || terminal.TurnID == "" {
+		return CommitAttemptTerminalResult{}, errors.New("accepted attempt returned an invalid non-success terminal")
+	}
+	record, err := pool.identities.AllocateTransitionRecord()
+	if err != nil {
+		return CommitAttemptTerminalResult{}, fmt.Errorf("allocate non-success terminal transition identity: %w", err)
+	}
+	claim := scheduled.Claim
+	request := CommitAttemptTerminalRequest{
+		RunID: claim.Run.RunID, RunAttemptID: claim.RunAttempt.RunAttemptID,
+		HolderID: claim.RunAttempt.HolderID, RunAttemptGeneration: claim.RunAttempt.Generation,
+		TerminalStatus: terminal.Status, ThreadID: terminal.ThreadID, TurnID: terminal.TurnID,
+		Code: terminal.Code, Message: terminal.Message, Record: record,
+	}
+	commandTimeout := pool.config.CleanupTimeout
+	if leaseWindow := pool.scheduler.AttemptLeaseTTL() / 2; commandTimeout > leaseWindow {
+		commandTimeout = leaseWindow
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	result, err := pool.core.CommitAttemptTerminal(cleanupCtx, request)
+	if err != nil && ambiguousPoolCommand(err, cleanupCtx) {
+		result, err = pool.core.CommitAttemptTerminal(cleanupCtx, request)
+	}
+	if err != nil {
+		return CommitAttemptTerminalResult{}, fmt.Errorf("commit non-success accepted turn: %w", err)
+	}
+	if result.Run.RunID != request.RunID || result.RunAttempt.RunAttemptID != request.RunAttemptID ||
+		result.RunAttempt.Generation != request.RunAttemptGeneration || result.RunAttempt.HolderID != request.HolderID ||
+		result.RunAttempt.TerminalThreadID != request.ThreadID || result.RunAttempt.TerminalTurnID != request.TurnID ||
+		!validCommitAttemptTerminalResult(result, request.TerminalStatus) {
+		return CommitAttemptTerminalResult{}, errors.New("core returned an invalid non-success terminal result")
+	}
+	return result, nil
 }
 
 func (pool *Pool) abandonStoppedPreTurnAttempt(scheduled ScheduledRunAttempt, terminal bool) (AbandonRunAttemptResult, error) {

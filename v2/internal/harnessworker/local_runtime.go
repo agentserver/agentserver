@@ -22,19 +22,20 @@ const (
 )
 
 type LocalWorkerRuntimePreparerConfig struct {
-	AttemptRoot           string
-	RuntimeManifest       runtimelock.Manifest
-	RuntimeManifestSHA256 string
-	VerifiedRuntime       runtimelock.VerifiedRuntime
-	FinalExec             runtimelock.VerifiedFile
-	CodexConfigProfile    string
-	WorkerUID             uint32
-	WorkerGID             uint32
-	AppUID                uint32
-	AppGID                uint32
-	MaxFrameBytes         int
-	IncomingFrames        int
-	MaxStderrBytes        int
+	AttemptRoot            string
+	RuntimeManifest        runtimelock.Manifest
+	RuntimeManifestSHA256  string
+	VerifiedRuntime        runtimelock.VerifiedRuntime
+	FinalExec              runtimelock.VerifiedFile
+	CodexConfigProfile     string
+	TLSRootCertificateFile string
+	WorkerUID              uint32
+	WorkerGID              uint32
+	AppUID                 uint32
+	AppGID                 uint32
+	MaxFrameBytes          int
+	IncomingFrames         int
+	MaxStderrBytes         int
 }
 
 // LocalWorkerRuntimePreparer materializes the fixed process-backend layout
@@ -192,6 +193,7 @@ func (runtime *localPreparedWorkerRuntime) Finalize(
 		Directory:           paths.CWD,
 		Environment: AppServerRuntimeEnvironment{
 			Home: paths.Home, CodexHome: paths.CodexHome, Temporary: paths.Temporary,
+			TLSRootCertificateFile: runtime.config.TLSRootCertificateFile,
 		},
 		WorkerUID: runtime.config.WorkerUID, WorkerGID: runtime.config.WorkerGID,
 		AppUID: runtime.config.AppUID, AppGID: runtime.config.AppGID,
@@ -262,6 +264,11 @@ func validateLocalWorkerRuntimePreparerConfig(config LocalWorkerRuntimePreparerC
 	}
 	if config.CodexConfigProfile != CodexConfigProfileStable0146 || config.RuntimeManifest.CodexRelease != "0.146.0" {
 		return errors.New("local Codex config profile must exactly match stable stock Codex 0.146.0")
+	}
+	if config.TLSRootCertificateFile == "" || !filepath.IsAbs(config.TLSRootCertificateFile) ||
+		filepath.Clean(config.TLSRootCertificateFile) != config.TLSRootCertificateFile ||
+		strings.ContainsRune(config.TLSRootCertificateFile, 0) {
+		return errors.New("local app-server TLS root certificate file must be an absolute clean path")
 	}
 	if err := validateAppServerIdentity("worker", config.WorkerUID, config.WorkerGID); err != nil {
 		return err

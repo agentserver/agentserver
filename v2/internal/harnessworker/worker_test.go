@@ -518,6 +518,21 @@ func (process *fakeOneShotWorkerProcess) Wait(context.Context) error {
 	return process.waitErr
 }
 
+func (process *fakeOneShotWorkerProcess) Stderr() ([]byte, bool) { return nil, false }
+
+func TestStockTurnFailureMessageIsClassifiedBoundedAndSecretFree(t *testing.T) {
+	turnError := json.RawMessage(`{"message":"error sending request: invalid peer certificate: UnknownIssuer","token":"must-not-leak"}`)
+	message := stockTurnFailureMessage(turnError, []byte("Bearer must-not-leak either"), true)
+	for _, wanted := range []string{"category=tls_trust_failure", "turn_error_sha256=", "stderr_sha256=", "stderr_truncated=true"} {
+		if !strings.Contains(message, wanted) {
+			t.Fatalf("stock turn failure message %q omits %q", message, wanted)
+		}
+	}
+	if strings.Contains(message, "must-not-leak") || len(message) > 512 {
+		t.Fatalf("stock turn failure message is unsafe: %q", message)
+	}
+}
+
 type fakeOneShotWorkerRunner struct {
 	order                *workerOrder
 	events               chan codexwire.Message

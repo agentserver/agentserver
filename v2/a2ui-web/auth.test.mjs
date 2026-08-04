@@ -123,7 +123,7 @@ test('callback and token validation fail closed on replay, mismatch, and persist
     scope: config.scopes.join(' '), refresh_token: 'must-not-persist',
   }, config.scopes), /persistent/)
   assert.deepEqual(validateTokenResponse({
-    access_token: 'opaque', token_type: 'Bearer', expires_in: 900, scope: 'openid runs:create',
+    access_token: 'opaque', token_type: 'bearer', expires_in: 900, scope: 'openid runs:create',
   }, config.scopes), { accessToken: 'opaque', expiresIn: 900, scopes: ['openid', 'runs:create'] })
   assert.throws(() => validateTokenResponse({
     access_token: 'opaque', token_type: 'Bearer', expires_in: 900, scope: 'openid workspaces:create',

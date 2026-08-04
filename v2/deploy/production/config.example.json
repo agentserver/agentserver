@@ -62,7 +62,7 @@
     "externalOidc": {
       "issuer": "https://connect.cs.ac.cn",
       "clientId": "f47a1f3a-f92b-43ba-bc7f-76409612e106",
-      "redirectUrl": "https://agent.byted.bps.dev/auth/oidc/callback"
+      "redirectUrl": "https://auth-sg.byted.bps.dev/auth/oidc/callback"
     }
   },
   "runtime": {

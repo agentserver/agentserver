@@ -74,7 +74,7 @@ func TestPlatformGatewayRoutesKeepPlatformAndAuthSurfaces(t *testing.T) {
 	readiness.ready.Store(true)
 	handler, err := platformGatewayRoutes(
 		h("executors"), h("llm"), h("auth"), h("config"), h("callback"), h("web"), readiness,
-		"https://agent.byted.bps.dev",
+		"https://agent.byted.bps.dev", "https://auth-sg.byted.bps.dev",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +82,6 @@ func TestPlatformGatewayRoutesKeepPlatformAndAuthSurfaces(t *testing.T) {
 	for _, test := range []struct{ method, path, call string }{
 		{http.MethodPost, "/v2/workspaces/40000000-0000-4000-8000-000000000004/executors", "executors"},
 		{http.MethodGet, "/v2/workspaces/40000000-0000-4000-8000-000000000004/llm-gateways", "llm"},
-		{http.MethodGet, "/auth/hydra/login?login_challenge=x", "auth"},
 		{http.MethodGet, "/auth/config", "config"},
 		{http.MethodGet, corecontract.LLMGatewayOIDCCallbackPath, "callback"},
 		{http.MethodGet, "/", "web"},
@@ -94,5 +93,28 @@ func TestPlatformGatewayRoutesKeepPlatformAndAuthSurfaces(t *testing.T) {
 		if response.Code != http.StatusOK || called[test.call] != 1 {
 			t.Fatalf("%s %s = %d calls=%v", test.method, test.path, response.Code, called)
 		}
+	}
+	for _, path := range []string{
+		"/auth/hydra/login?login_challenge=x",
+		"/auth/hydra/consent?consent_challenge=x",
+		"/auth/oidc/callback?code=x&state=y",
+	} {
+		request := httptest.NewRequest(http.MethodGet, "http://auth-sg.byted.bps.dev"+path, nil)
+		request.Host = "auth-sg.byted.bps.dev"
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET %s on auth host = %d", path, response.Code)
+		}
+	}
+	if called["auth"] != 3 {
+		t.Fatalf("auth host calls = %v", called)
+	}
+	request := httptest.NewRequest(http.MethodGet, "http://agent.byted.bps.dev/auth/hydra/login?login_challenge=x", nil)
+	request.Host = "agent.byted.bps.dev"
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound || called["auth"] != 3 {
+		t.Fatalf("Platform host exposed Hydra login: status=%d calls=%v", response.Code, called)
 	}
 }

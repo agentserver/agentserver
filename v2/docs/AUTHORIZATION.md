@@ -53,6 +53,10 @@ OAuth App scope 比较宽，官方也建议需要细粒度权限时使用 GitHub
 两个前端不共享 access token。Platform 进入 Browser 时只传 workspace ID；Browser 为该 workspace
 独立发起 Hydra authorization。两者都直接使用独立 authority
 `https://auth-sg.byted.bps.dev/oauth2/auth` 与 `/oauth2/token`；Platform 不代理 Hydra public endpoint。
+Hydra login、consent 和外部身份 callback 也位于同一 auth authority：只有
+`/auth/hydra/login`、`/auth/hydra/consent`、`/auth/oidc/callback` 三个精确路径由 HTTPRoute 分流到
+login bridge，其他协议路径仍直达 Hydra。外部 OIDC client 的 redirect URI 必须登记为
+`https://auth-sg.byted.bps.dev/auth/oidc/callback`。
 
 ## 3. Hydra introspection 合同
 

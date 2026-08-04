@@ -203,7 +203,7 @@ func validConfigDocument() ConfigDocument {
 			},
 			ExternalOIDC: ExternalOIDCDocument{
 				Issuer: "https://idp.example.test/oidc", ClientID: "agentserver-production",
-				RedirectURL: "https://agent.byted.bps.dev/auth/oidc/callback",
+				RedirectURL: "https://auth-sg.byted.bps.dev/auth/oidc/callback",
 			},
 		},
 		Runtime: RuntimeDocument{

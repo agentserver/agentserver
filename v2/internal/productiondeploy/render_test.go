@@ -80,8 +80,8 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 	for name, want := range map[string]string{
 		"URLS_SELF_ISSUER":                                 "https://auth-sg.byted.bps.dev/",
 		"URLS_SELF_PUBLIC":                                 "https://auth-sg.byted.bps.dev",
-		"URLS_LOGIN":                                       "https://agent.byted.bps.dev/auth/hydra/login",
-		"URLS_CONSENT":                                     "https://agent.byted.bps.dev/auth/hydra/consent",
+		"URLS_LOGIN":                                       "https://auth-sg.byted.bps.dev/auth/hydra/login",
+		"URLS_CONSENT":                                     "https://auth-sg.byted.bps.dev/auth/hydra/consent",
 		"SERVE_PUBLIC_TLS_ENABLED":                         "false",
 		"SERVE_ADMIN_TLS_ENABLED":                          "true",
 		"SERVE_PUBLIC_CORS_ENABLED":                        "true",
@@ -176,7 +176,7 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 	if countKind(foundation, "NetworkPolicy") != 12 {
 		t.Fatalf("foundation NetworkPolicy count = %d", countKind(foundation, "NetworkPolicy"))
 	}
-	if countKind(foundation, "HTTPRoute") != 5 {
+	if countKind(foundation, "HTTPRoute") != 6 {
 		t.Fatalf("foundation HTTPRoute count = %d", countKind(foundation, "HTTPRoute"))
 	}
 	for _, resource := range foundation {
@@ -185,13 +185,15 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 		}
 	}
 	assertHTTPRoute(t, foundation, "agentserver-platform", ProductionFrontendHostname, platformComponent, PublicHTTPPort,
-		[]string{"/", "/auth", "/index.html", "/platform", "/readyz", "/v2"})
+		[]string{"/", "/auth/config", "/auth/llm-gateway/callback", "/index.html", "/platform", "/readyz", "/v2"})
 	assertHTTPRoute(t, foundation, "agentserver-browser", ProductionBrowserFrontendHostname, browserComponent, PublicHTTPPort,
 		[]string{"/", "/auth/config", "/index.html", "/readyz", "/reference"})
 	assertHTTPRoute(t, foundation, "agentserver-browser-api", ProductionBrowserHostname, browserComponent, PublicHTTPPort,
 		[]string{"/v2"})
 	assertHTTPRoute(t, foundation, "agentserver-executor-agentx", ProductionExecutorHostname, executorComponent, PublicHTTPPort,
 		[]string{executorgateway.AgentxChallengePath, executorgateway.AgentxConnectPath, executorgateway.AgentxEnrollmentPath})
+	assertHTTPRoute(t, foundation, "agentserver-auth-ui", ProductionHydraHostname, platformComponent, PublicHTTPPort,
+		[]string{"/auth/hydra/consent", "/auth/hydra/login", "/auth/oidc/callback"})
 	assertHTTPRoute(t, foundation, "agentserver-hydra-public", ProductionHydraHostname, hydraComponent, HydraPublicPort,
 		[]string{"/"})
 	if bytes.Contains(mustJSONResource(t, findResource(t, foundation, "HTTPRoute", "agentserver-executor-agentx")), []byte(executorgateway.ExecutorMCPPath)) {

@@ -1,4 +1,4 @@
-import { readAuthorizationCallback } from './auth.js'
+import { readAuthorizationCallback, validateTokenResponse } from './auth.js'
 
 const transactionKey = 'agentserver-v2.platform-pkce.v1'
 const maximumTransactionAgeMS = 10 * 60 * 1000
@@ -90,7 +90,7 @@ async function completeAuthorization(callback) {
     }).toString(),
   })
   if (!response.ok) throw new Error(`Token exchange failed with HTTP ${response.status}.`)
-  const token = validateToken(await boundedJSON(response, 128 * 1024), config.scopes)
+  const token = validateTokenResponse(await boundedJSON(response, 128 * 1024), config.scopes)
   accessToken = token.accessToken
   renderSignedIn(token.scopes)
 }
@@ -127,21 +127,6 @@ function validateOAuthEndpoint(name, raw, requiredPath) {
 }
 
 function oauthEndpointAuthority(endpoint) { return endpoint.startsWith('/') ? '' : new URL(endpoint).origin }
-
-function validateToken(value, requestedScopes) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Token response is invalid.')
-  validateText(value.access_token, 8192)
-  validateText(value.scope, 4096)
-  if (value.token_type !== 'Bearer' || !Number.isSafeInteger(value.expires_in) || value.expires_in < 1 || value.expires_in > 86400 || 'refresh_token' in value) {
-    throw new Error('Token response authority is invalid.')
-  }
-  const scopes = value.scope.split(' ')
-  const requested = new Set(requestedScopes)
-  if (new Set(scopes).size !== scopes.length || !scopes.includes('openid') || scopes.some((scope) => !requested.has(scope))) {
-    throw new Error('Token contains permissions outside the requested Platform authority.')
-  }
-  return { accessToken: value.access_token, scopes }
-}
 
 async function fetchJSON(path, maximumBytes) {
   const response = await fetch(path, { method: 'GET', cache: 'no-store', credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer', headers: { Accept: 'application/json' } })

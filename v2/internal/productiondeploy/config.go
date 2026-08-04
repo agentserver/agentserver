@@ -582,7 +582,7 @@ func validateOAuth(document OAuthDocument, bootstrap BootstrapDocument, ingress 
 	if err := validateText("oauth.externalOidc.clientId", document.ExternalOIDC.ClientID, 1, 256); err != nil {
 		return err
 	}
-	wantRedirect := "https://" + ingress.FrontendHostname + "/auth/oidc/callback"
+	wantRedirect := "https://" + ingress.HydraHostname + "/auth/oidc/callback"
 	if document.ExternalOIDC.RedirectURL != wantRedirect {
 		return fmt.Errorf("oauth.externalOidc.redirectUrl must be exactly %s", wantRedirect)
 	}

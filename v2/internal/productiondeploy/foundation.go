@@ -47,6 +47,7 @@ func renderFoundation(context renderContext) []kubeObject {
 		browserFrontendHTTPRoute(config),
 		browserHTTPRoute(config),
 		executorHTTPRoute(config),
+		authUIHTTPRoute(config),
 		hydraHTTPRoute(config),
 	}
 	items = append(items, renderNetworkPolicies(context)...)
@@ -121,7 +122,8 @@ func frontendHTTPRoute(config LoadedConfig) kubeObject {
 	return httpRoute(config, "agentserver-platform", config.Document.Ingress.FrontendHostname, platformComponent,
 		config.Document.Services.PlatformGateway.Port, []kubeObject{
 			pathMatch("Exact", "/"), pathMatch("Exact", "/index.html"), pathMatch("Exact", "/readyz"),
-			pathMatch("PathPrefix", "/platform"), pathMatch("PathPrefix", "/auth"),
+			pathMatch("PathPrefix", "/platform"), pathMatch("Exact", "/auth/config"),
+			pathMatch("Exact", "/auth/llm-gateway/callback"),
 			pathMatch("PathPrefix", "/v2"),
 		})
 }
@@ -145,6 +147,15 @@ func executorHTTPRoute(config LoadedConfig) kubeObject {
 			pathMatch("Exact", executorgateway.AgentxEnrollmentPath),
 			pathMatch("Exact", executorgateway.AgentxChallengePath),
 			pathMatch("Exact", executorgateway.AgentxConnectPath),
+		})
+}
+
+func authUIHTTPRoute(config LoadedConfig) kubeObject {
+	return httpRoute(config, "agentserver-auth-ui", config.Document.Ingress.HydraHostname, platformComponent,
+		config.Document.Services.PlatformGateway.Port, []kubeObject{
+			pathMatch("Exact", "/auth/hydra/login"),
+			pathMatch("Exact", "/auth/hydra/consent"),
+			pathMatch("Exact", "/auth/oidc/callback"),
 		})
 }
 

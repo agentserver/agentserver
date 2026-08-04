@@ -134,7 +134,8 @@ func servePlatformGateway(ctx context.Context, getenv func(string) string, stdou
 		return err
 	}
 	oauthURL, _ := url.Parse(tokenEndpoint)
-	web, err := platformweb.HandlerForOAuthOrigin(oauthURL.Scheme + "://" + oauthURL.Host)
+	oauthOrigin := oauthURL.Scheme + "://" + oauthURL.Host
+	web, err := platformweb.HandlerForOAuthOrigin(oauthOrigin)
 	if err != nil {
 		return err
 	}
@@ -142,7 +143,7 @@ func servePlatformGateway(ctx context.Context, getenv func(string) string, stdou
 	readiness := &platformReadiness{}
 	handler, err := platformGatewayRoutes(
 		executors.Routes(), llmGateways.Routes(), authBridge.Routes(), authConfig,
-		browsergateway.NewLLMGatewayCallbackHandler(), web, readiness, publicOrigin,
+		browsergateway.NewLLMGatewayCallbackHandler(), web, readiness, publicOrigin, oauthOrigin,
 	)
 	if err != nil {
 		return err
@@ -195,38 +196,64 @@ func validatePlatformOAuthAuthority(clientID, audience, commaSeparatedScopes str
 func platformGatewayRoutes(
 	executors, llmGateways, authBridge, authConfig, llmCallback, web http.Handler,
 	readiness *platformReadiness,
-	publicOrigin string,
+	publicOrigin, authOrigin string,
 ) (http.Handler, error) {
 	publicURL, err := url.Parse(publicOrigin)
 	if err != nil {
 		return nil, errors.New("Platform public origin is invalid")
 	}
-	mux := http.NewServeMux()
-	mux.Handle("POST "+corecontract.ExecutorManagementRoutePattern, executors)
-	mux.Handle("POST "+corecontract.ExecutorEnrollmentTokenRoutePattern, executors)
+	authURL, err := url.Parse(authOrigin)
+	if err != nil || authURL.Hostname() == "" || authURL.Hostname() == publicURL.Hostname() {
+		return nil, errors.New("Authentication public origin is invalid or not distinct from Platform")
+	}
+	platformMux := http.NewServeMux()
+	platformMux.Handle("POST "+corecontract.ExecutorManagementRoutePattern, executors)
+	platformMux.Handle("POST "+corecontract.ExecutorEnrollmentTokenRoutePattern, executors)
 	executorMethodGuard := http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		response.Header().Set("Allow", http.MethodPost)
 		writePlatformError(response, http.StatusMethodNotAllowed, "method_not_allowed", "executor resource endpoints require POST")
 	})
-	mux.Handle(corecontract.ExecutorManagementRoutePattern, executorMethodGuard)
-	mux.Handle(corecontract.ExecutorEnrollmentTokenRoutePattern, executorMethodGuard)
-	mux.Handle(corecontract.LLMGatewayCollectionRoutePattern, llmGateways)
-	mux.Handle(corecontract.LLMGatewayActionRoutePattern, llmGateways)
-	mux.Handle(corecontract.LLMGatewayOIDCCallbackPath, llmCallback)
-	mux.Handle("/auth/", authBridge)
-	mux.Handle("GET /auth/config", authConfig)
-	mux.HandleFunc("GET /healthz", func(response http.ResponseWriter, _ *http.Request) {
+	platformMux.Handle(corecontract.ExecutorManagementRoutePattern, executorMethodGuard)
+	platformMux.Handle(corecontract.ExecutorEnrollmentTokenRoutePattern, executorMethodGuard)
+	platformMux.Handle(corecontract.LLMGatewayCollectionRoutePattern, llmGateways)
+	platformMux.Handle(corecontract.LLMGatewayActionRoutePattern, llmGateways)
+	platformMux.Handle(corecontract.LLMGatewayOIDCCallbackPath, llmCallback)
+	platformMux.Handle("GET /auth/config", authConfig)
+	platformMux.HandleFunc("GET /healthz", func(response http.ResponseWriter, _ *http.Request) {
 		writePlatformHealth(response, http.StatusOK, `{"status":"ok"}`)
 	})
-	mux.HandleFunc("GET /readyz", func(response http.ResponseWriter, _ *http.Request) {
+	platformMux.HandleFunc("GET /readyz", func(response http.ResponseWriter, _ *http.Request) {
 		if readiness == nil || !readiness.ready.Load() {
 			writePlatformHealth(response, http.StatusServiceUnavailable, `{"status":"not_ready"}`)
 			return
 		}
 		writePlatformHealth(response, http.StatusOK, `{"status":"ready"}`)
 	})
-	mux.Handle("/", web)
-	return platformPublicBoundary(mux, publicURL.Hostname(), publicOrigin), nil
+	for _, path := range []string{
+		corecontract.PublicHydraLoginPath, corecontract.PublicHydraConsentPath, corecontract.PublicOIDCCallbackPath,
+	} {
+		platformMux.Handle(path, http.NotFoundHandler())
+	}
+	platformMux.Handle("/", web)
+
+	authMux := http.NewServeMux()
+	for _, path := range []string{
+		corecontract.PublicHydraLoginPath, corecontract.PublicHydraConsentPath, corecontract.PublicOIDCCallbackPath,
+	} {
+		authMux.Handle("GET "+path, authBridge)
+	}
+	platformHandler := platformPublicBoundary(platformMux, publicURL.Hostname(), publicOrigin)
+	authHandler := platformPublicBoundary(authMux, authURL.Hostname(), authOrigin)
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch canonicalPlatformHostname(request.Host) {
+		case publicURL.Hostname():
+			platformHandler.ServeHTTP(response, request)
+		case authURL.Hostname():
+			authHandler.ServeHTTP(response, request)
+		default:
+			writePlatformError(response, http.StatusNotFound, "not_found", "route is not exposed on this host")
+		}
+	}), nil
 }
 
 func platformPublicBoundary(next http.Handler, hostname, publicOrigin string) http.Handler {

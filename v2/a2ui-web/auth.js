@@ -181,7 +181,8 @@ export function buildTokenExchangeBody(config, transaction, code) {
 export function validateTokenResponse(value, expectedScopes) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('token response must be an object')
   validateProtocolText('access token', value.access_token, 8192)
-  if (value.token_type !== 'Bearer' || !Number.isSafeInteger(value.expires_in) || value.expires_in < 1 || value.expires_in > 24 * 60 * 60) {
+  if (typeof value.token_type !== 'string' || value.token_type.toLowerCase() !== 'bearer' ||
+      !Number.isSafeInteger(value.expires_in) || value.expires_in < 1 || value.expires_in > 24 * 60 * 60) {
     throw new Error('token response type or lifetime is invalid')
   }
   validateProtocolText('token scope', value.scope, 2048)

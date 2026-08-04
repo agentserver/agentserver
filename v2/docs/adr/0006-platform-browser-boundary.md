@@ -29,11 +29,11 @@ authority 随产品职责分开；双 OAuth client 是让这个职责边界在�
 
 | Host | 职责 | 后端 |
 |---|---|---|
-| `agent.byted.bps.dev` | Platform SPA、Hydra login/consent bridge、外部 OIDC callback、Platform OAuth callback | `platform-gateway` |
+| `agent.byted.bps.dev` | Platform SPA、Platform OAuth callback、Platform 管理 API、LLM Gateway callback | `platform-gateway` |
 | `browser.byted.bps.dev` | Browser SPA；通过路径选择 workspace；只托管静态资源和 Browser OAuth callback | `browser-gateway`（静态前端入口） |
 | `browser-gateway.byted.bps.dev` | Browser REST / AG-UI API | `browser-gateway` |
 | `executor-gateway.byted.bps.dev` | agentx enrollment、challenge 和 WSS connect | `executor-gateway` |
-| `auth-sg.byted.bps.dev` | Hydra public issuer、authorize/token、discovery 与 JWKS | Hydra public listener |
+| `auth-sg.byted.bps.dev` | Hydra public issuer、authorize/token、discovery/JWKS，以及登录、consent、外部 OIDC callback 页面 | Hydra public listener；三个精确 `/auth/*` 路径转 `platform-gateway` login bridge |
 
 公网 TLS 继续由 Istio Gateway 终止。组件到 Core 的身份使用各自的 mTLS SPIFFE identity；公网 host
 不参与集群内部路由。Hydra issuer 固定为 `https://auth-sg.byted.bps.dev/`；两个 SPA 共享这一授权
@@ -82,7 +82,9 @@ authorize continuation，避免反向代理丢失 `Set-Cookie` 或误判 `302/30
 `browser-gateway.byted.bps.dev`，只允许精确 Browser frontend origin。
 
 外部身份认证仍复用一个部署级 confidential OIDC client。它只服务 Hydra login bridge，redirect URI
-保持 `https://agent.byted.bps.dev/auth/oidc/callback`，不等同于两个 SPA 的 Hydra OAuth callback。
+固定为 `https://auth-sg.byted.bps.dev/auth/oidc/callback`，不等同于两个 SPA 各自回到应用 origin 的
+Hydra OAuth callback。login、外部 OIDC callback 与 consent 因此共享 auth host 上的 `__Host-` binding
+cookie，不需要跨子域 cookie。
 
 ### 4. gateway 与 Core 路由边界
 
@@ -90,14 +92,15 @@ authorize continuation，避免反向代理丢失 `Set-Cookie` 或误判 `302/30
 Platform 与 Browser 可以复用 HTTP、OAuth 和静态资源库，也可以位于同一 service 镜像，但运行时
 identity 和 Core route authority 必须分开：
 
-- `platform-gateway` 只代理 Platform resource API 和 login bridge，不注册 `/oauth2/*`；
+- `platform-gateway` 代理 Platform resource API，并在 auth host 上仅承载三个精确 login bridge 路径；不注册或代理 `/oauth2/*`；
 - `browser-gateway` 只代理 Browser session/run/approval API，并投影 AG-UI/A2UI；
 - Core 的 Platform handler 只接受 platform-gateway identity 和 Platform token；
 - Core 的 Browser handler 只接受 browser-gateway identity 和 Browser token；
 - executor 与 LLM Gateway 管理路由从 browser-gateway 删除，不保留兼容旁路。
 
-Hydra 的 login/consent URL 只指向 platform-gateway，因此 Core login bridge 的 workload caller 是
-platform-gateway。browser-gateway 不需要访问 Hydra Admin，也不能调用 Platform resource handlers。
+Hydra 的 login/consent URL 指向 auth host 上由 HTTPRoute 精确分流到 platform-gateway 的路径，因此
+Core login bridge 的 workload caller 仍是 platform-gateway。browser-gateway 不需要访问 Hydra Admin，
+也不能调用 Platform resource handlers。
 
 ### 5. workspace、executor 与 session 生命周期
 

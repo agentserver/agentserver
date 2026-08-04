@@ -134,7 +134,7 @@
 | 组件 | 唯一职责 | 明确不负责 |
 |---|---|---|
 | **platform-web** | Platform 静态 SPA；以 `agentserver-platform` 完成 Code + PKCE；管理 workspace、成员、executor 与 LLM Gateway | 不承载对话，不持有 Browser token，不绕过 platform-gateway |
-| **platform-gateway** | 托管 Platform SPA；承载 Hydra login/consent bridge；以独立 workload identity 转发 Platform 管理 API | 不代理 Hydra public，不接受 Browser token，不承载 session/run/AG-UI API，不拥有业务状态 |
+| **platform-gateway** | 托管 Platform SPA；在 `auth-sg` 的三个精确 `/auth/*` 路径承载 Hydra login/consent bridge；以独立 workload identity 转发 Platform 管理 API | 不代理 Hydra public，不接受 Browser token，不承载 session/run/AG-UI API，不拥有业务状态 |
 | **Browser SPA**（源码目录 `a2ui-web`） | 以 `agentserver-browser` 为单一 workspace 完成 Code + PKCE；session 导航、AG-UI client 与 A2UI 渲染 | 不管理 workspace/executor/LLM Gateway，不持久化 access token |
 | **agentserver-core** | workspace/RBAC；session/run；事件；审批；executor/credential/LLM authorization 控制面；Hydra login/consent bridge | 不运行 Codex，不代理模型，不托管 SPA |
 | **browser-gateway** | 托管 Browser SPA；workspace 显式的 session/run/AG-UI/SSE 边缘；规范事件到 AG-UI/A2UI 的映射 | 不接受 Platform token，不暴露管理 API，不拥有运行状态 |
@@ -200,7 +200,7 @@ executor 侧不存在 Codex thread，也不存在“大脑 thread 与 executor t
    `aud=agentserver-browser-api`，并携带单一
    `resource=urn:agentserver:workspace:<workspace-id>`。
 3. Hydra public issuer 位于 `https://auth-sg.byted.bps.dev/`；`URLS_LOGIN` 和 `URLS_CONSENT` 指向
-   `https://agent.byted.bps.dev/auth/hydra/*`，再由 platform-gateway 送到 core login bridge。
+   同一 auth host 的 `/auth/hydra/*`，HTTPRoute 再把这两个精确路径送到 platform-gateway/Core login bridge。
 4. core 接收 Hydra challenge，跳转外部 OIDC IdP，并将 `(issuer, sub)` 映射为本地 user；随后按
    client、requested scope、当前 membership 与 workspace resource 计算 consent grant。
 5. Hydra 签发 opaque access token，Core 在每个用户请求上调用 Hydra introspection，并校验精确的
@@ -208,11 +208,14 @@ executor 侧不存在 Codex thread，也不存在“大脑 thread 与 executor t
 6. core 不保存或验证用户密码；身份认证仍由外部 IdP 完成。
 
 Hydra public 的 `/oauth2/*`、discovery 和 JWKS 直接位于 `https://auth-sg.byted.bps.dev`，Istio TLS
-终止后将流量送到 Hydra public 明文 HTTP listener；platform-gateway 不代理 Hydra。Platform 与 Browser
+终止后将流量送到 Hydra public 明文 HTTP listener；platform-gateway 不代理 Hydra。另一个同 host
+HTTPRoute 只把 `/auth/hydra/login`、`/auth/hydra/consent`、`/auth/oidc/callback` 三个精确路径送到
+platform-gateway login bridge。Platform 与 Browser
 都以顶层导航访问该 authorize endpoint，并分别从 `https://agent.byted.bps.dev` 与
 `https://browser.byted.bps.dev` 对 token endpoint 发起不带 credentials 的 CORS 请求。Hydra public 只放行
-这两个精确 origin，并原生维护 CSRF/session cookie 与 authorize continuation。`/auth/hydra/login`、
-`/auth/hydra/consent` 和外部 OIDC callback 仍在 Platform host。生产外部 IdP authorization endpoint通常
+这两个精确 origin，并原生维护 CSRF/session cookie 与 authorize continuation。login、外部 OIDC callback
+和 consent 全部留在 auth host；外部 OIDC redirect URI 固定为
+`https://auth-sg.byted.bps.dev/auth/oidc/callback`。生产外部 IdP authorization endpoint通常
 直接指向 IdP；只有 insecure-dev 显式配置 `/auth/idp/authorize` 的精确代理。Hydra Admin、外部 IdP
 token、discovery 和 JWKS 调用都不经过浏览器。
 

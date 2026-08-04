@@ -23,13 +23,13 @@ grant。平台没有统一的模型 API key。
 
 | Host | 公开路径 | 后端 |
 | --- | --- | --- |
-| `agent.byted.bps.dev` | Platform SPA、Hydra login/consent bridge、外部 OIDC callback、Platform `/v2*`、`/readyz` | platform-gateway HTTP `8080` |
+| `agent.byted.bps.dev` | Platform SPA、`/auth/config`、LLM Gateway callback、Platform `/v2*`、`/readyz` | platform-gateway HTTP `8080` |
 | `browser.byted.bps.dev` | Browser SPA、`/reference*`、`/auth/config`、`/readyz` | browser-gateway HTTP `8080` |
 | `browser-gateway.byted.bps.dev` | `/v2*` | browser-gateway HTTP `8080` |
 | `executor-gateway.byted.bps.dev` | `/internal/v2/agentx/enrollments`、`/internal/v2/agentx/challenges`、`/internal/v2/agentx/connect` | executor-gateway HTTP `8080` |
-| `auth-sg.byted.bps.dev` | Hydra public issuer：`/oauth2/*`、discovery、JWKS | Hydra public HTTP `4444` |
+| `auth-sg.byted.bps.dev` | Hydra public issuer：`/oauth2/*`、discovery、JWKS；以及三个精确 login/consent/callback 路径 | 协议路径到 Hydra public HTTP `4444`；`/auth/hydra/login`、`/auth/hydra/consent`、`/auth/oidc/callback` 到 platform-gateway HTTP `8080` |
 
-五条 `HTTPRoute` 都挂到：
+六条 `HTTPRoute`（五个 host；auth host 按路径使用两条 Route）都挂到：
 
 ```text
 namespace:   istio-ingress
@@ -47,8 +47,9 @@ Browser API 只允许 `https://browser.byted.bps.dev` 作为 Origin，并跨域�
 `https://browser-gateway.byted.bps.dev/v2`。Platform 和 Browser SPA 都直接跳转到
 `https://auth-sg.byted.bps.dev/oauth2/auth`，并直接向同一 authority 的 `/oauth2/token` 做
 Authorization Code + PKCE exchange；Hydra public CORS 只允许这两个精确 SPA origin，且不允许
-credentials。Platform 不代理 `/oauth2/*`。Hydra 的 CSRF/session cookie、authorize continuation 和
-`302/303` 跳转全部在 `auth-sg.byted.bps.dev` 原生闭环。executor 的公网 listener
+credentials。Platform 不代理 `/oauth2/*`。Hydra 的 CSRF/session cookie、authorize continuation、
+login、外部 OIDC callback、consent 和 `302/303` 跳转全部在 `auth-sg.byted.bps.dev` 闭环；只有上述
+三个精确 `/auth/*` 路径由 Gateway API 分流到 login bridge。executor 的公网 listener
 绝不注册 `/mcp`；`/mcp` 只存在于 executor-gateway 的内部 TLS `8443` listener，并只允许
 harness-pool Pod 访问。
 
@@ -58,7 +59,7 @@ Chart 管理：
 
 - 7 个常驻 Deployment：core、platform-gateway、browser-gateway、executor-gateway、harness-pool、llmproxy、Hydra；
 - executor-gateway 固定单副本、`Recreate`、无 HPA/PDB；
-- 6 个固定 ClusterIP Service、5 条 HTTPRoute、12 条 NetworkPolicy；
+- 6 个固定 ClusterIP Service、6 条 HTTPRoute、12 条 NetworkPolicy；
 - Hydra SQL migration（weight `-20`）和 AgentServer migration（weight `-10`）
   `pre-install,pre-upgrade` Job；
 - Hydra Platform/Browser 两个 public OAuth client setup（weight `-10`）和幂等 AgentServer bootstrap（weight `0`）
@@ -139,7 +140,8 @@ harness-pool只保留目录准备和network guard两个init container。
    `auth-sg.byted.bps.dev` 配置与现有 Istio 公网入口相同的 DNS 记录；
 4. Longhorn 至少能为 3 个 PostgreSQL 实例各提供 50Gi 卷，并有跨节点调度容量；
 5. 外部 OIDC issuer/client 已配置，redirect URI 精确为
-   `https://agent.byted.bps.dev/auth/oidc/callback`，并取得 owner 的精确 `sub`；
+   `https://auth-sg.byted.bps.dev/auth/oidc/callback`，并取得 owner 的精确 `sub`；旧 Platform host callback
+   不能替代这一登记，因为 `__Host-` login binding cookie 不跨域；
 6. S3 endpoint、signing region、bucket、prefix、path-style 和 credential 已确定；
 7. S3-compatible 服务支持 single-part `PutObject` 的 `If-None-Match: *`，并把已存在对象明确返回
    为 `412 PreconditionFailed`；

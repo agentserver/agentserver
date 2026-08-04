@@ -232,6 +232,26 @@ func TestLoginBridgeHydraContinuationDiagnosticsExposeOnlyKnownParameterNames(t 
 	}
 }
 
+func TestLoginBridgeHydraContinuationDiagnosesShortWebCorrelationWithoutExposingIt(t *testing.T) {
+	bridge, _, _, _ := newLoginBridgeFixture(t)
+	parsed, err := url.Parse(hydraTestContinuationURL(
+		browserAuthorizationRequestURL(loginBridgeTestWorkspaceID),
+		hydraLoginVerifierQuery,
+		"opaque",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := parsed.Query()
+	const shortState = "web-12345678901234567890123456789012"
+	query.Set("state", shortState)
+	parsed.RawQuery = query.Encode()
+	err = bridge.validateHydraRedirect(parsed.String(), hydraLoginVerifierQuery)
+	if err == nil || !strings.Contains(err.Error(), "OAuth state authority") || strings.Contains(err.Error(), shortState) {
+		t.Fatalf("short web correlation was not diagnosed safely: %v", err)
+	}
+}
+
 func TestConsentRequestHashCoversLoginAuthority(t *testing.T) {
 	request := HydraConsentRequest{
 		Challenge: "consent-challenge", LoginChallenge: "login-challenge", LoginSessionID: "login-session",

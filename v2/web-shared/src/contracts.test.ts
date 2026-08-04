@@ -4,6 +4,7 @@ import { enUS, zhCN } from "./i18n"
 import { SSEDecoder, appendUserMessage, createConversationState, reduceAGUIEvent } from "./agui"
 import { readAuthorizationCallback, validateAuthorizationConfig } from "./oauth"
 import type { AuthorizationConfig } from "./api"
+import { randomSecret } from "./utils"
 
 describe("product web contracts", () => {
   it("keeps English and Chinese catalog keys identical", () => {
@@ -31,6 +32,16 @@ describe("product web contracts", () => {
     expect(readAuthorizationCallback("?code=code&state=state&scope=openid")).toMatchObject({ code: "code", state: "state", scopes: ["openid"] })
     expect(() => readAuthorizationCallback("?code=a&code=b&state=s")).toThrow(/invalid/u)
     expect(() => readAuthorizationCallback("?code=a&state=s&unknown=x")).toThrow(/invalid/u)
+  })
+
+  it("generates OAuth correlation secrets accepted by the Core boundary", () => {
+    const values = Array.from({ length: 16 }, () => randomSecret())
+    expect(new Set(values).size).toBe(values.length)
+    for (const value of values) {
+      expect(value.length).toBeGreaterThanOrEqual(43)
+      expect(value.length).toBeLessThanOrEqual(128)
+      expect(value).toMatch(/^[A-Za-z0-9._~-]+$/u)
+    }
   })
 
   it("decodes bounded SSE and reduces a text lifecycle", () => {

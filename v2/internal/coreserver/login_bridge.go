@@ -685,14 +685,30 @@ func (bridge *LoginBridge) validateHydraRedirect(raw, verifierQuery string) erro
 		return errors.New("Hydra continuation redirect has invalid verifier authority")
 	}
 	profile, ok := bridge.oauthProfiles[query.Get("client_id")]
-	if !ok || query.Get("response_type") != "code" || query.Get("code_challenge_method") != "S256" ||
-		query.Get("audience") != profile.Audience[0] ||
-		!uniqueCanonicalTextSubset(strings.Split(query.Get("scope"), " "), profile.Scopes) ||
-		!slices.Contains(strings.Split(query.Get("scope"), " "), corecontract.OAuthOpenIDScope) ||
-		validateOIDCSecret("authorization state", query.Get("state")) != nil ||
-		validateOIDCSecret("authorization nonce", query.Get("nonce")) != nil ||
-		validateOIDCSecret("authorization PKCE challenge", query.Get("code_challenge")) != nil {
-		return fmt.Errorf("Hydra continuation redirect has invalid OAuth authority (%s)", shape)
+	if !ok {
+		return fmt.Errorf("Hydra continuation redirect has invalid OAuth client authority (%s)", shape)
+	}
+	if query.Get("response_type") != "code" {
+		return fmt.Errorf("Hydra continuation redirect has invalid OAuth response type authority (%s)", shape)
+	}
+	if query.Get("code_challenge_method") != "S256" {
+		return fmt.Errorf("Hydra continuation redirect has invalid OAuth PKCE method authority (%s)", shape)
+	}
+	if query.Get("audience") != profile.Audience[0] {
+		return fmt.Errorf("Hydra continuation redirect has invalid OAuth audience authority (%s)", shape)
+	}
+	scopes := strings.Split(query.Get("scope"), " ")
+	if !uniqueCanonicalTextSubset(scopes, profile.Scopes) || !slices.Contains(scopes, corecontract.OAuthOpenIDScope) {
+		return fmt.Errorf("Hydra continuation redirect has invalid OAuth scope authority (%s)", shape)
+	}
+	if validateOIDCSecret("authorization state", query.Get("state")) != nil {
+		return fmt.Errorf("Hydra continuation redirect has invalid OAuth state authority (%s)", shape)
+	}
+	if validateOIDCSecret("authorization nonce", query.Get("nonce")) != nil {
+		return fmt.Errorf("Hydra continuation redirect has invalid OAuth nonce authority (%s)", shape)
+	}
+	if validateOIDCSecret("authorization PKCE challenge", query.Get("code_challenge")) != nil {
+		return fmt.Errorf("Hydra continuation redirect has invalid OAuth PKCE challenge authority (%s)", shape)
 	}
 	redirectURI, err := url.Parse(query.Get("redirect_uri"))
 	if err != nil || redirectURI.Scheme != "https" || redirectURI.Host == "" || redirectURI.Hostname() == "" ||

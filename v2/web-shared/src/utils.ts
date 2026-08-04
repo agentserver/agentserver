@@ -21,7 +21,10 @@ export function newID(): string {
 
 export function randomSecret(prefix = "web"): string {
   if (!globalThis.crypto?.getRandomValues) throw new Error("Secure random generation is unavailable.")
-  const bytes = new Uint8Array(24)
+  // OAuth state, nonce, and PKCE verifier share the Core correlation-secret
+  // contract: 43-128 unreserved characters. Thirty-two random bytes encode to
+  // 43 base64url characters before the non-secret diagnostic prefix.
+  const bytes = new Uint8Array(32)
   globalThis.crypto.getRandomValues(bytes)
   let binary = ""
   for (const byte of bytes) binary += String.fromCharCode(byte)

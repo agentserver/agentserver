@@ -236,7 +236,7 @@ POST https://127.0.0.1:17444/v2/workspaces/{workspaceId}/approvals/{approvalId}:
 
 body必须精确包含`decision=approve|deny`、canonical `nonce`、Core投影的`approval-context/rfc8785-v1` digest和`expectedApprovalVersion`；这些值只能来自`CUSTOM agentserver.approval`，不能从display-only A2UI卡片读取或由浏览器改写。Core会同时复核browser-gateway mTLS identity、原始OAuth access token的当前RBAC、数据库时间expiry与live attempt generation。`approve`响应只表示approval已批准，execution仍为`pending_approval`；精确gateway后续成功consume才产生dispatch authority。开发栈的shell policy固定为`ask`，executor-gateway会在原MCP `tools/call`上发起真实elicitation，worker通过harness-control 1.3等待Core canonical outcome；reference按钮可人工决定，smoke则从同一`CUSTOM`事件读取authority后自动批准。任何一侧都不能从A2UI display card推导批准。
 
-开发前端先从无敏感信息的`GET /auth/config`读取同origin OAuth配置，再使用Authorization Code + PKCE登录。PKCE state/verifier/nonce和workspace/session关联只在`sessionStorage`保留十分钟以内，callback时单次消费；access token只驻留页面内存，URL、localStorage、metadata和服务环境都不含用户token。harness-pool为每个attempt动态签发`aud=executor-mcp`与`aud=llmproxy`两枚不同capability；前端不接触它们，app-server也永远拿不到executor capability。
+开发前端先从无敏感信息的`GET /auth/config`读取同origin OAuth配置，再使用Authorization Code + PKCE登录。PKCE state/verifier/nonce和workspace/session关联只在`sessionStorage`保留十分钟以内，callback时单次消费；Platform/Browser access token 分别写入各自 origin 的版本化`localStorage`记录，连同scope、workspace binding、绝对过期时间和配置指纹严格恢复，并通过`storage`事件同步同应用标签页。token仍不得进入URL、metadata或服务环境。harness-pool为每个attempt动态签发`aud=executor-mcp`与`aud=llmproxy`两枚不同capability；前端不接触它们，app-server也永远拿不到executor capability。
 
 ## 6. 单容器可运行开发栈
 

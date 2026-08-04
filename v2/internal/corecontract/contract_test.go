@@ -306,11 +306,12 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	sessionPath := UserSessionPath("{workspaceId}", "{sessionId}")
 	archiveSessionPath := ArchiveUserSessionPath("{workspaceId}", "{sessionId}")
 	llmGatewayCollectionPath := WorkspaceLLMGatewaysPath("{workspaceId}")
+	llmGatewayResourcePath := WorkspaceLLMGatewayPath("{workspaceId}", "{gatewayId}")
 	llmGatewayAuthorizePath := AuthorizeLLMGatewayPath("{workspaceId}", "{gatewayId}")
 	llmGatewayCompletePath := CompleteLLMGatewayAuthorizationPath("{workspaceId}", "{gatewayId}")
 	llmGatewayRevokePath := RevokeLLMGatewayGrantPath("{workspaceId}", "{gatewayId}")
 	llmGatewayDisablePath := DisableLLMGatewayPath("{workspaceId}", "{gatewayId}")
-	if len(document.Paths) != 20 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
+	if len(document.Paths) != 21 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
 		document.Paths[cancelPath].Post.OperationID != "cancelUserRun" || document.Paths[readPath].Get.OperationID != "readUserRunEvents" {
 		t.Fatalf("public OpenAPI paths = %+v", document.Paths)
 	}
@@ -369,6 +370,7 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	}
 	if document.Paths[llmGatewayCollectionPath].Get.OperationID != "listWorkspaceLLMGateways" ||
 		document.Paths[llmGatewayCollectionPath].Post.OperationID != "createWorkspaceLLMGateway" ||
+		document.Paths[llmGatewayResourcePath].Patch.OperationID != "updateWorkspaceLLMGateway" ||
 		document.Paths[llmGatewayAuthorizePath].Post.OperationID != "beginWorkspaceLLMGatewayAuthorization" ||
 		document.Paths[llmGatewayCompletePath].Post.OperationID != "completeWorkspaceLLMGatewayAuthorization" ||
 		document.Paths[llmGatewayRevokePath].Post.OperationID != "revokeWorkspaceLLMGatewayGrant" ||
@@ -381,6 +383,7 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	}{
 		{document.Paths[llmGatewayCollectionPath].Get.Security, PlatformOAuthLLMGatewaysReadScope},
 		{document.Paths[llmGatewayCollectionPath].Post.Security, PlatformOAuthLLMGatewaysCreateScope},
+		{document.Paths[llmGatewayResourcePath].Patch.Security, PlatformOAuthLLMGatewaysUpdateScope},
 		{document.Paths[llmGatewayAuthorizePath].Post.Security, PlatformOAuthLLMGrantsAuthorizeScope},
 		{document.Paths[llmGatewayCompletePath].Post.Security, PlatformOAuthLLMGrantsAuthorizeScope},
 		{document.Paths[llmGatewayRevokePath].Post.Security, PlatformOAuthLLMGrantsRevokeScope},
@@ -434,6 +437,8 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "CreateWorkspaceLLMGatewayRequest", reflect.TypeFor[CreateWorkspaceLLMGatewayRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "WorkspaceLLMGatewayState", reflect.TypeFor[WorkspaceLLMGatewayState]())
 	assertSchemaFields(t, document.Components.Schemas, "CreateWorkspaceLLMGatewayResponse", reflect.TypeFor[CreateWorkspaceLLMGatewayResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "UpdateWorkspaceLLMGatewayRequest", reflect.TypeFor[UpdateWorkspaceLLMGatewayRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "UpdateWorkspaceLLMGatewayResponse", reflect.TypeFor[UpdateWorkspaceLLMGatewayResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "ListWorkspaceLLMGatewaysResponse", reflect.TypeFor[ListWorkspaceLLMGatewaysResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "BeginWorkspaceLLMGatewayAuthorizationRequest", reflect.TypeFor[BeginWorkspaceLLMGatewayAuthorizationRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "BeginWorkspaceLLMGatewayAuthorizationResponse", reflect.TypeFor[BeginWorkspaceLLMGatewayAuthorizationResponse]())

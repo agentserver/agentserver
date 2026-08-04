@@ -138,6 +138,7 @@ Platform introspection 使用同一结构：`authority=platform`，`global_permi
 | `executors:archive` | workspace | 禁用并归档 executor | 待实现 |
 | `llm-gateways:read` | workspace | 查看 Gateway 配置和当前用户 grant 状态 | 已有 Core 能力，待迁移入口 |
 | `llm-gateways:create` | workspace | 创建新的 Gateway，并可设为 default | 已有 Core 能力，待迁移入口 |
+| `llm-gateways:update` | workspace | 修改 active Gateway 配置；递增配置版本并要求所有 active grant 重新授权 | 已有 |
 | `llm-gateways:disable` | workspace | 禁用 Gateway、清除 default 并 fence 旧版本 run | 已有 Core 能力，待迁移入口 |
 | `llm-gateway-grants:authorize` | workspace + self | 为当前 token subject 发起/完成第三方 OIDC grant | 已有 Core 能力，待迁移入口 |
 | `llm-gateway-grants:revoke` | workspace + self | 撤销当前 token subject 自己的第三方 grant | 已有 Core 能力，待迁移入口 |
@@ -211,6 +212,7 @@ Browser scope。
 | `POST /v2/workspaces/{workspaceId}/executors/{executorId}:archive` | `executors:archive` | executor 必须归属该 workspace |
 | `GET /v2/workspaces/{workspaceId}/llm-gateways` | `llm-gateways:read` | 只投影当前用户 grant 状态 |
 | `POST /v2/workspaces/{workspaceId}/llm-gateways` | `llm-gateways:create` | Gateway 归属该 workspace |
+| `PATCH /v2/workspaces/{workspaceId}/llm-gateways/{gatewayId}` | `llm-gateways:update` | owner-only；OIDC discovery、乐观锁、版本和 grant fence |
 | `POST .../{gatewayId}:disable` | `llm-gateways:disable` | Gateway 归属该 workspace |
 | `POST .../{gatewayId}:authorize` | `llm-gateway-grants:authorize` | grant user 固定为 token subject |
 | `POST .../{gatewayId}:completeAuthorization` | `llm-gateway-grants:authorize` | transaction user 与 token subject 相等 |

@@ -1,4 +1,4 @@
-import { Archive, Bot, Boxes, ChevronRight, CircleUserRound, Home, KeyRound, Network, Plus, RefreshCw, Search, Settings2, Users, Workflow } from "lucide-react"
+import { Archive, Bot, Boxes, ChevronRight, CircleUserRound, Home, KeyRound, Network, Pencil, Plus, RefreshCw, Search, Settings2, Users, Workflow } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react"
 import { useTranslation } from "react-i18next"
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom"
@@ -38,7 +38,7 @@ import {
   type Workspace,
   type WorkspaceMember,
 } from "@agentserver/v2-web-shared"
-import { buildGatewayRequest, callbackState, gatewayBrowserBinding, gatewayCallbackChannelName, gatewayTone, validateGatewayCallback } from "./gateway-oauth"
+import { buildGatewayRequest, buildGatewayUpdateRequest, callbackState, gatewayBrowserBinding, gatewayCallbackChannelName, gatewayTone, validateGatewayCallback } from "./gateway-oauth"
 
 type WorkspaceSection = "overview" | "members" | "executors" | "gateways"
 
@@ -262,6 +262,9 @@ function GatewaysPage({ workspace, api }: { workspace: Workspace; api: ResourceA
     let callback
     try { callback = validateGatewayCallback(raw) } catch { return }
     if (callback.state !== current.state) return
+    const providerFailure = callback.providerError ? t("gateways.providerDenied", {
+      detail: callback.providerErrorDescription ? `${callback.providerError} — ${callback.providerErrorDescription}` : callback.providerError,
+    }) : ""
     transaction.current = null; window.clearInterval(current.monitor); setWaiting(false)
     try {
       try { if (!current.popup.closed) current.popup.close() } catch { /* COOP can sever the window proxy */ }
@@ -271,8 +274,8 @@ function GatewaysPage({ workspace, api }: { workspace: Workspace; api: ResourceA
         browserBinding: current.browserBinding,
       })
       await load()
-    } catch (requestError) { setError(safeError(requestError)) } finally { current.browserBinding = ""; current.state = "" }
-  }, [api, load])
+    } catch (requestError) { setError(providerFailure || safeError(requestError)) } finally { current.browserBinding = ""; current.state = "" }
+  }, [api, load, t])
 
   useEffect(() => {
     const message = (event: MessageEvent) => { const current = transaction.current; if (current && event.origin === window.location.origin && event.source === current.popup) void complete(event.data) }
@@ -286,6 +289,10 @@ function GatewaysPage({ workspace, api }: { workspace: Workspace; api: ResourceA
     event.preventDefault(); setCreating(true); setError("")
     const formElement = event.currentTarget
     try { await api.createGateway(workspace.workspaceId, buildGatewayRequest(new FormData(formElement), newID())); formElement.reset(); await load() } catch (requestError) { setError(safeError(requestError)) } finally { setCreating(false) }
+  }
+  const update = async (gateway: LLMGateway, form: FormData) => {
+    await api.updateGateway(workspace.workspaceId, gateway.gatewayId, buildGatewayUpdateRequest(form, gateway.version))
+    await load()
   }
 
   const authorize = async (gateway: LLMGateway) => {
@@ -309,7 +316,7 @@ function GatewaysPage({ workspace, api }: { workspace: Workspace; api: ResourceA
   const developer = ["owner", "developer"].includes(workspace.currentUserRole) && workspace.status === "active"
   return <><PageHeader title={t("gateways.title")} description={t("gateways.description")} actions={<><AddGatewayDialog owner={owner} busy={creating} onSubmit={create} /><Button variant="outline" size="icon" onClick={() => void load()} aria-label={t("common.refresh")}><RefreshCw size={15} /></Button></>} />
     {error ? <div className="error-banner">{error}</div> : null}{waiting ? <div className="notice-banner"><span>{t("gateways.waiting")}</span><Button size="sm" variant="ghost" onClick={clearTransaction}>{t("common.cancel")}</Button></div> : null}
-    {loading ? <WorkspaceSkeleton /> : gateways.length === 0 ? <EmptyState icon={<KeyRound size={20} />} title={t("gateways.empty")} /> : <div className="resource-list">{gateways.map((gateway) => <Card className="resource-row" key={gateway.gatewayId}><div className="resource-main"><h3>{gateway.name} {gateway.default ? <Badge tone="info">{t("gateways.default")}</Badge> : null}</h3><p>{gateway.defaultModel} · {gateway.responsesUrl}</p><div className="resource-meta"><Badge tone={gatewayTone(gateway)}>{gateway.status === "disabled" ? gateway.status : gateway.grantStatus || t("gateways.unlinked")}</Badge><span className="resource-version">v{gateway.version}</span><span className="resource-version">{gateway.oidcIssuer}</span></div></div><div className="resource-actions">{developer && gateway.status === "active" ? <Button size="sm" onClick={() => void authorize(gateway)}>{gateway.grantStatus === "active" ? t("common.reauthorize") : t("common.authorize")}</Button> : null}{developer && gateway.grantStatus && gateway.grantStatus !== "revoked" ? <Button variant="outline" size="sm" onClick={() => void revoke(gateway)}>{t("common.revoke")}</Button> : null}{owner && gateway.status === "active" ? <Button variant="ghost" size="sm" onClick={() => void disable(gateway)}>{t("common.disable")}</Button> : null}</div></Card>)}</div>}
+    {loading ? <WorkspaceSkeleton /> : gateways.length === 0 ? <EmptyState icon={<KeyRound size={20} />} title={t("gateways.empty")} /> : <div className="resource-list">{gateways.map((gateway) => <Card className="resource-row" key={gateway.gatewayId}><div className="resource-main"><h3>{gateway.name} {gateway.default ? <Badge tone="info">{t("gateways.default")}</Badge> : null}</h3><p>{gateway.defaultModel} · {gateway.responsesUrl}</p><div className="resource-meta"><Badge tone={gatewayTone(gateway)}>{gateway.status === "disabled" ? gateway.status : gateway.grantStatus || t("gateways.unlinked")}</Badge><span className="resource-version">v{gateway.version}</span><span className="resource-version">{gateway.oidcIssuer}</span></div></div><div className="resource-actions">{developer && gateway.status === "active" ? <Button size="sm" onClick={() => void authorize(gateway)}>{gateway.grantStatus === "active" ? t("common.reauthorize") : t("common.authorize")}</Button> : null}{developer && gateway.grantStatus && gateway.grantStatus !== "revoked" ? <Button variant="outline" size="sm" onClick={() => void revoke(gateway)}>{t("common.revoke")}</Button> : null}{owner && gateway.status === "active" ? <EditGatewayDialog gateway={gateway} onSave={update} /> : null}{owner && gateway.status === "active" ? <Button variant="ghost" size="sm" onClick={() => void disable(gateway)}>{t("common.disable")}</Button> : null}</div></Card>)}</div>}
   </>
 }
 
@@ -328,8 +335,30 @@ function AddGatewayDialog({ owner, busy, onSubmit }: { owner: boolean; busy: boo
   </div><p className="form-help">{t("gateways.callback")} <code>{new URL("/auth/llm-gateway/callback", window.location.origin).href}</code></p><div className="form-actions"><DialogClose asChild><Button type="button" variant="ghost">{t("common.cancel")}</Button></DialogClose><Button type="submit" disabled={busy}>{busy ? t("common.loading") : t("common.create")}</Button></div></form></DialogContent></Dialog>
 }
 
-function Field({ name, label, full, ...props }: { name: string; label: string; full?: boolean } & React.InputHTMLAttributes<HTMLInputElement>) {
-  const id = `gateway-${name}`
+function EditGatewayDialog({ gateway, onSave }: { gateway: LLMGateway; onSave: (gateway: LLMGateway, form: FormData) => Promise<void> }) {
+  const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState("")
+  const prefix = `gateway-edit-${gateway.gatewayId}`
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault(); setBusy(true); setError("")
+    try { await onSave(gateway, new FormData(event.currentTarget)); setOpen(false) } catch (requestError) { setError(safeError(requestError)) } finally { setBusy(false) }
+  }
+  return <Dialog open={open} onOpenChange={(next) => { setOpen(next); if (!next) setError("") }}><DialogTrigger asChild><Button variant="outline" size="sm"><Pencil size={14} />{t("common.edit")}</Button></DialogTrigger><DialogContent title={`${t("common.edit")} · ${gateway.name}`} description={t("gateways.updateWarning")} className="gateway-dialog"><form onSubmit={(event) => void submit(event)}><div className="form-grid">
+    <Field prefix={prefix} name="name" label={t("common.name")} defaultValue={gateway.name} required />
+    <Field prefix={prefix} name="model" label={t("gateways.model")} defaultValue={gateway.defaultModel} required />
+    <Field prefix={prefix} name="responsesUrl" label={t("gateways.responsesUrl")} defaultValue={gateway.responsesUrl} full required />
+    <Field prefix={prefix} name="issuer" label={t("gateways.issuer")} defaultValue={gateway.oidcIssuer} full required />
+    <Field prefix={prefix} name="clientId" label={t("gateways.clientId")} defaultValue={gateway.oidcClientId} required />
+    <Field prefix={prefix} name="scopes" label={t("gateways.scopes")} defaultValue={gateway.oidcScopes.join(" ")} required />
+    <div className="form-field"><Label htmlFor={`${prefix}-bearer`}>{t("gateways.bearer")}</Label><NativeSelect id={`${prefix}-bearer`} name="bearer" defaultValue={gateway.bearerTokenType}><option value="id_token">id_token</option><option value="access_token">access_token</option></NativeSelect></div>
+    <label className="checkbox-row"><input type="checkbox" name="makeDefault" defaultChecked={gateway.default} />{t("gateways.makeDefault")}</label>
+  </div><p className="form-help">{t("gateways.updateWarning")}</p>{error ? <div className="error-banner inline-error">{error}</div> : null}<div className="form-actions"><DialogClose asChild><Button type="button" variant="ghost">{t("common.cancel")}</Button></DialogClose><Button type="submit" disabled={busy}>{busy ? t("common.loading") : t("common.save")}</Button></div></form></DialogContent></Dialog>
+}
+
+function Field({ name, label, full, prefix = "gateway", ...props }: { name: string; label: string; full?: boolean; prefix?: string } & React.InputHTMLAttributes<HTMLInputElement>) {
+  const id = `${prefix}-${name}`
   return <div className={`form-field${full ? " full" : ""}`}><Label htmlFor={id}>{label}</Label><Input id={id} name={name} {...props} /></div>
 }
 

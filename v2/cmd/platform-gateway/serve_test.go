@@ -83,15 +83,17 @@ func TestPlatformGatewayRoutesKeepPlatformAndAuthSurfaces(t *testing.T) {
 		{http.MethodGet, "/v2/workspaces", "resources"},
 		{http.MethodPost, "/v2/workspaces/40000000-0000-4000-8000-000000000004/executors", "executors"},
 		{http.MethodGet, "/v2/workspaces/40000000-0000-4000-8000-000000000004/llm-gateways", "llm"},
+		{http.MethodPatch, "/v2/workspaces/40000000-0000-4000-8000-000000000004/llm-gateways/40000000-0000-4000-8000-000000000005", "llm"},
 		{http.MethodGet, "/auth/config", "config"},
 		{http.MethodGet, corecontract.LLMGatewayOIDCCallbackPath, "callback"},
 		{http.MethodGet, "/", "web"},
 	} {
+		before := called[test.call]
 		request := httptest.NewRequest(test.method, "http://agent.byted.bps.dev"+test.path, nil)
 		request.Host = "agent.byted.bps.dev"
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
-		if response.Code != http.StatusOK || called[test.call] != 1 {
+		if response.Code != http.StatusOK || called[test.call] != before+1 {
 			t.Fatalf("%s %s = %d calls=%v", test.method, test.path, response.Code, called)
 		}
 	}

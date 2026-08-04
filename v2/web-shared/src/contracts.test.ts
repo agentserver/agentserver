@@ -2,7 +2,13 @@ import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 import { enUS, zhCN } from "./i18n"
 import { SSEDecoder, appendUserMessage, createConversationState, reduceAGUIEvent } from "./agui"
-import { readAuthorizationCallback, validateAuthorizationConfig } from "./oauth"
+import {
+  authorizationSessionStorageKey,
+  persistAuthorizationSession,
+  readAuthorizationCallback,
+  restoreAuthorizationSession,
+  validateAuthorizationConfig,
+} from "./oauth"
 import type { AuthorizationConfig } from "./api"
 import { randomSecret } from "./utils"
 
@@ -34,6 +40,31 @@ describe("product web contracts", () => {
     expect(() => readAuthorizationCallback("?code=a&state=s&unknown=x")).toThrow(/invalid/u)
   })
 
+  it("persists isolated and configuration-bound authorization sessions", () => {
+    const storage = new MemoryStorage()
+    const now = Date.now()
+    const platform = platformAuthorizationConfig()
+    persistAuthorizationSession(storage, platform, "platform", { token: "platform-token", expiresAt: now + 60_000, scopes: ["openid", "workspaces:read"], workspaceId: "" })
+    expect(authorizationSessionStorageKey("platform")).not.toBe(authorizationSessionStorageKey("browser"))
+    expect(restoreAuthorizationSession(storage, platform, "platform", now)).toEqual({ token: "platform-token", expiresAt: now + 60_000, scopes: ["openid", "workspaces:read"], workspaceId: "" })
+
+    const changed = { ...platform, audience: "replacement-platform-api" }
+    expect(restoreAuthorizationSession(storage, changed, "platform", now)).toBeNull()
+    expect(storage.getItem(authorizationSessionStorageKey("platform"))).toBeNull()
+    persistAuthorizationSession(storage, platform, "platform", { token: "platform-token", expiresAt: now + 60_000, scopes: ["openid"], workspaceId: "" })
+    expect(restoreAuthorizationSession(storage, { ...platform, scopes: [...platform.scopes, "llm-gateways:update"] }, "platform", now)).toBeNull()
+  })
+
+  it("rejects expired, over-scoped, and incorrectly bound saved sessions", () => {
+    const storage = new MemoryStorage()
+    const now = Date.now()
+    const platform = platformAuthorizationConfig()
+    expect(() => persistAuthorizationSession(storage, platform, "platform", { token: "token", expiresAt: now + 60_000, scopes: ["openid", "sessions:write"], workspaceId: "" })).toThrow(/scopes/u)
+    expect(() => persistAuthorizationSession(storage, platform, "platform", { token: "token", expiresAt: now + 60_000, scopes: ["openid"], workspaceId: "9271bfe5-68a4-484b-a2d3-e9f450a42d0c" })).toThrow(/workspace-bound/u)
+    persistAuthorizationSession(storage, platform, "platform", { token: "token", expiresAt: now + 1_000, scopes: ["openid"], workspaceId: "" })
+    expect(restoreAuthorizationSession(storage, platform, "platform", now + 1_001)).toBeNull()
+  })
+
   it("generates OAuth correlation secrets accepted by the Core boundary", () => {
     const values = Array.from({ length: 16 }, () => randomSecret())
     expect(new Set(values).size).toBe(values.length)
@@ -62,3 +93,25 @@ describe("product web contracts", () => {
     }
   })
 })
+
+function platformAuthorizationConfig(): AuthorizationConfig {
+  return {
+    version: 1,
+    authorizationEndpoint: "https://auth.example/oauth2/auth",
+    tokenEndpoint: "https://auth.example/oauth2/token",
+    redirectPath: "/",
+    clientId: "agentserver-platform",
+    scopes: ["openid", "workspaces:read"],
+    audience: "agentserver-platform-api",
+  }
+}
+
+class MemoryStorage implements Storage {
+  readonly #values = new Map<string, string>()
+  get length(): number { return this.#values.size }
+  clear(): void { this.#values.clear() }
+  getItem(key: string): string | null { return this.#values.get(key) ?? null }
+  key(index: number): string | null { return [...this.#values.keys()][index] ?? null }
+  removeItem(key: string): void { this.#values.delete(key) }
+  setItem(key: string, value: string): void { this.#values.set(key, value) }
+}

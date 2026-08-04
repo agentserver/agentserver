@@ -225,6 +225,23 @@
         }
       }
     },
+    "/v2/workspaces/{workspaceId}/llm-gateways/{gatewayId}": {
+      "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/GatewayId"}],
+      "patch": {
+        "operationId": "updateWorkspaceLLMGateway",
+        "description": "Owner-only optimistic configuration update. Safe OIDC discovery runs before the write; a changed configuration increments the Gateway version and atomically marks every active user grant reauth_required.",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["llm-gateways:update"]}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateWorkspaceLLMGatewayRequest"}}}},
+        "responses": {
+          "200": {"description": "Current Gateway configuration", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateWorkspaceLLMGatewayResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
     "/v2/workspaces/{workspaceId}/llm-gateways/{gatewayId}:authorize": {
       "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/GatewayId"}],
       "post": {
@@ -482,6 +499,7 @@
           "executors:archive": "Archive a workspace executor",
           "llm-gateways:read": "Read workspace LLM Gateway configuration and the current user's grant status",
           "llm-gateways:create": "Create a workspace LLM Gateway",
+          "llm-gateways:update": "Update a workspace LLM Gateway configuration",
           "llm-gateways:disable": "Disable a workspace LLM Gateway",
           "llm-gateway-grants:authorize": "Authorize the current user's third-party Gateway grant",
           "llm-gateway-grants:revoke": "Revoke the current user's third-party Gateway grant"
@@ -659,6 +677,25 @@
       "CreateWorkspaceLLMGatewayResponse": {
         "type": "object", "additionalProperties": false, "required": ["gateway", "created"],
         "properties": {"gateway": {"$ref": "#/components/schemas/WorkspaceLLMGatewayState"}, "created": {"type": "boolean"}}
+      },
+      "UpdateWorkspaceLLMGatewayRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["name", "responsesUrl", "oidcIssuer", "oidcClientId", "oidcScopes", "bearerTokenType", "defaultModel", "makeDefault", "expectedVersion"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 128},
+          "responsesUrl": {"type": "string", "format": "uri", "maxLength": 4096, "pattern": "^https://[^/?#:]+(?:\\:443)?/v1/responses$"},
+          "oidcIssuer": {"type": "string", "format": "uri", "minLength": 8, "maxLength": 2048},
+          "oidcClientId": {"type": "string", "minLength": 1, "maxLength": 512},
+          "oidcScopes": {"type": "array", "maxItems": 16, "items": {"type": "string", "minLength": 1, "maxLength": 128}},
+          "bearerTokenType": {"enum": ["id_token", "access_token"]},
+          "defaultModel": {"type": "string", "minLength": 1, "maxLength": 256},
+          "makeDefault": {"type": "boolean"},
+          "expectedVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+        }
+      },
+      "UpdateWorkspaceLLMGatewayResponse": {
+        "type": "object", "additionalProperties": false, "required": ["gateway", "changed"],
+        "properties": {"gateway": {"$ref": "#/components/schemas/WorkspaceLLMGatewayState"}, "changed": {"type": "boolean"}}
       },
       "ListWorkspaceLLMGatewaysResponse": {
         "type": "object", "additionalProperties": false, "required": ["gateways"],

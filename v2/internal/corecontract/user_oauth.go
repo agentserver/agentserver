@@ -28,6 +28,7 @@ const (
 	PlatformOAuthExecutorsArchiveScope   = "executors:archive"
 	PlatformOAuthLLMGatewaysReadScope    = "llm-gateways:read"
 	PlatformOAuthLLMGatewaysCreateScope  = "llm-gateways:create"
+	PlatformOAuthLLMGatewaysUpdateScope  = "llm-gateways:update"
 	PlatformOAuthLLMGatewaysDisableScope = "llm-gateways:disable"
 	PlatformOAuthLLMGrantsAuthorizeScope = "llm-gateway-grants:authorize"
 	PlatformOAuthLLMGrantsRevokeScope    = "llm-gateway-grants:revoke"
@@ -91,6 +92,7 @@ func PlatformOAuthScopes() []string {
 		PlatformOAuthExecutorsArchiveScope,
 		PlatformOAuthLLMGatewaysReadScope,
 		PlatformOAuthLLMGatewaysCreateScope,
+		PlatformOAuthLLMGatewaysUpdateScope,
 		PlatformOAuthLLMGatewaysDisableScope,
 		PlatformOAuthLLMGrantsAuthorizeScope,
 		PlatformOAuthLLMGrantsRevokeScope,
@@ -118,6 +120,7 @@ func PlatformOAuthActionPermissions() map[string]UserOAuthActionAuthority {
 		"executors.archive":                   {Resource: UserOAuthWorkspaceResource, Permissions: []string{PlatformOAuthExecutorsArchiveScope}},
 		"llm-gateways.list":                   {Resource: UserOAuthWorkspaceResource, Permissions: []string{PlatformOAuthLLMGatewaysReadScope}},
 		"llm-gateways.create":                 {Resource: UserOAuthWorkspaceResource, Permissions: []string{PlatformOAuthLLMGatewaysCreateScope}},
+		"llm-gateways.update":                 {Resource: UserOAuthWorkspaceResource, Permissions: []string{PlatformOAuthLLMGatewaysUpdateScope}},
 		"llm-gateways.disable":                {Resource: UserOAuthWorkspaceResource, Permissions: []string{PlatformOAuthLLMGatewaysDisableScope}},
 		"llm-gateways.authorize":              {Resource: UserOAuthWorkspaceResource, Permissions: []string{PlatformOAuthLLMGrantsAuthorizeScope}},
 		"llm-gateways.complete-authorization": {Resource: UserOAuthWorkspaceResource, Permissions: []string{PlatformOAuthLLMGrantsAuthorizeScope}},

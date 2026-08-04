@@ -784,11 +784,12 @@ A07 dynamic probe已经确认：pending `item/tool/call`时调用`turn/interrupt
 
 ### 10.4 Web 安全
 
-- Platform 与 Browser SPA 分别只在页面内存中持有自己的 access token，不使用 localStorage、
-  sessionStorage 或共享 cookie。刷新通过各自的 Authorization Code + PKCE 重新授权；两枚 token 的
+- Platform 与 Browser SPA 分别把自己的 access token、scope、workspace binding、绝对过期时间和配置
+  指纹写入各自 origin 上独立的版本化 localStorage key，并用 storage event 同步同应用标签页；恢复时
+  严格校验并在到期、登出或配置漂移时删除。PKCE 临时事务仍只使用 sessionStorage；两枚 token 的
   client、audience、scope 与 resource grant 不同，不能跨 gateway 接受，也不做隐式 token exchange。
 - AG-UI/SSE 使用支持`Authorization` header的`fetch` streaming，并在`forwardedProps.agentserver.eventCursor`显式携带最近一条`agentserver.event_cursor`；不能依赖无法设置bearer header的原生`EventSource`，也不能把SSE `Last-Event-ID`误当core cursor。如果改用HttpOnly BFF cookie，则必须把该cookie session、CSRF和注销语义建模，不能同时宣称不存在浏览器会话。
-- Hydra login/consent bridge 为每次 challenge 保存短期、单次使用且绑定 state/nonce/PKCE 的登录事务；回调、重放、账户映射和 logout/revocation 都必须有明确状态机，不能把 SPA 的“token 只在内存”误当成 bridge 无需会话保护。
+- Hydra login/consent bridge 为每次 challenge 保存短期、单次使用且绑定 state/nonce/PKCE 的登录事务；回调、重放、账户映射和 logout/revocation 都必须有明确状态机，不能把 SPA 的 localStorage 恢复机制误当成 bridge 无需会话保护。
 - 配置严格 CSP、可信回调 URL、SameSite/CSRF 防护和最小 CORS。
 - 前端日志走 RUM/telemetry，并做隐私过滤；浏览器没有“输出 JSON 到 stdout”的保证。
 

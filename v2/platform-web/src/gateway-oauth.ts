@@ -40,6 +40,7 @@ export function validateGatewayCallback(value: unknown): GatewayCallback {
       callback.type !== "agentserver-v2.llm-gateway-oidc-callback" || callback.version !== 1 ||
       typeof callback.state !== "string" || !secretPattern.test(callback.state) ||
       typeof callback.code !== "string" || typeof callback.providerError !== "string" || Boolean(callback.code) === Boolean(callback.providerError) ||
+      callback.providerError.length > 128 || /[\0\r\n]/u.test(callback.providerError) ||
       typeof callback.providerErrorDescription !== "string" || callback.providerErrorDescription.length > 8192 || /[\0\r\n]/u.test(callback.providerErrorDescription)) {
     throw new Error("The Gateway callback is invalid.")
   }
@@ -47,6 +48,21 @@ export function validateGatewayCallback(value: unknown): GatewayCallback {
 }
 
 export function buildGatewayRequest(form: FormData, gatewayId: string) {
+  return {
+    gatewayId,
+    ...buildGatewayConfiguration(form),
+  } satisfies Parameters<import("@agentserver/v2-web-shared").ResourceAPI["createGateway"]>[1]
+}
+
+export function buildGatewayUpdateRequest(form: FormData, expectedVersion: number) {
+  if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) throw new Error("Gateway version is invalid.")
+  return {
+    ...buildGatewayConfiguration(form),
+    expectedVersion,
+  } satisfies Parameters<import("@agentserver/v2-web-shared").ResourceAPI["updateGateway"]>[2]
+}
+
+function buildGatewayConfiguration(form: FormData) {
   const scopes = String(form.get("scopes") ?? "").trim().split(/\s+/u)
   if (scopes.length < 1 || scopes.length > 16 || new Set(scopes).size !== scopes.length || !scopes.includes("openid") || !scopes.includes("offline_access")) {
     throw new Error("OIDC scopes must be unique and include openid and offline_access.")
@@ -67,16 +83,15 @@ export function buildGatewayRequest(form: FormData, gatewayId: string) {
   const bearer = String(form.get("bearer") ?? "id_token")
   if (bearer !== "id_token" && bearer !== "access_token") throw new Error("Bearer token type is invalid.")
   return {
-    gatewayId,
     name: text("name", 128),
     responsesUrl,
     oidcIssuer: issuer,
     oidcClientId: text("clientId", 512),
     oidcScopes: scopes,
-    bearerTokenType: bearer,
+    bearerTokenType: bearer as "id_token" | "access_token",
     defaultModel: text("model", 256),
     makeDefault: form.get("makeDefault") === "on",
-  } satisfies Parameters<import("@agentserver/v2-web-shared").ResourceAPI["createGateway"]>[1]
+  }
 }
 
 export function gatewayTone(gateway: LLMGateway): "neutral" | "success" | "warning" | "danger" {

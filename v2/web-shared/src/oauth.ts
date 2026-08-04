@@ -12,6 +12,13 @@ export interface OAuthCallback {
   scopes: readonly string[]
 }
 
+export interface AuthorizationSession {
+  token: string
+  expiresAt: number
+  scopes: readonly string[]
+  workspaceId: string
+}
+
 interface PKCETransaction {
   version: 2
   mode: AuthMode
@@ -29,7 +36,52 @@ interface PKCETransaction {
 
 const transactionKey = "agentserver-v2.web-pkce.v2"
 const maximumTransactionAge = 10 * 60 * 1000
+const maximumAuthorizationSessionAge = 24 * 60 * 60 * 1000
+const maximumAuthorizationSessionBytes = 32 * 1024
 const pkcePattern = /^[A-Za-z0-9._~-]{43,128}$/u
+const authorizationSessionKeys: Record<AuthMode, string> = {
+  platform: "agentserver-v2.auth.platform.v1",
+  browser: "agentserver-v2.auth.browser.v1",
+}
+
+export function authorizationSessionStorageKey(mode: AuthMode): string {
+  return authorizationSessionKeys[mode]
+}
+
+export function persistAuthorizationSession(storage: Storage, configValue: AuthorizationConfig, mode: AuthMode, session: AuthorizationSession): void {
+  const config = validateAuthorizationConfig(configValue, mode)
+  const value = {
+    version: 1,
+    configuration: authorizationConfigurationFingerprint(config, mode),
+    accessToken: session.token,
+    scopes: [...session.scopes],
+    workspaceId: session.workspaceId,
+    expiresAt: session.expiresAt,
+  }
+  validatePersistedAuthorizationSession(value, config, mode, Date.now())
+  storage.setItem(authorizationSessionStorageKey(mode), JSON.stringify(value))
+}
+
+export function restoreAuthorizationSession(storage: Storage, configValue: AuthorizationConfig, mode: AuthMode, now = Date.now()): AuthorizationSession | null {
+  const config = validateAuthorizationConfig(configValue, mode)
+  const key = authorizationSessionStorageKey(mode)
+  const raw = storage.getItem(key)
+  if (raw === null) return null
+  if (raw.length > maximumAuthorizationSessionBytes) {
+    storage.removeItem(key)
+    return null
+  }
+  try {
+    return validatePersistedAuthorizationSession(JSON.parse(raw), config, mode, now)
+  } catch {
+    storage.removeItem(key)
+    return null
+  }
+}
+
+export function removeAuthorizationSession(storage: Storage, mode: AuthMode): void {
+  storage.removeItem(authorizationSessionStorageKey(mode))
+}
 
 export function validateAuthorizationConfig(value: AuthorizationConfig, mode: AuthMode): AuthorizationConfig {
   const record = exactRecord(value, mode === "browser" ? [
@@ -181,6 +233,45 @@ function validateTokenResponse(value: TokenResponse, requestedScopes: readonly s
     throw new Error("The token contains permissions outside the requested authority.")
   }
   return value
+}
+
+function authorizationConfigurationFingerprint(config: AuthorizationConfig, mode: AuthMode): string {
+  return JSON.stringify({
+    version: 1,
+    mode,
+    clientId: config.clientId,
+    audience: config.audience,
+    authorizationEndpoint: config.authorizationEndpoint,
+    tokenEndpoint: config.tokenEndpoint,
+    scopes: config.scopes,
+  })
+}
+
+function validatePersistedAuthorizationSession(value: unknown, config: AuthorizationConfig, mode: AuthMode, now: number): AuthorizationSession {
+  const record = exactRecord(value, ["version", "configuration", "accessToken", "scopes", "workspaceId", "expiresAt"])
+  if (record.version !== 1 || record.configuration !== authorizationConfigurationFingerprint(config, mode)) {
+    throw new Error("The saved authorization session belongs to a different application configuration.")
+  }
+  const token = protocolText(record.accessToken, 8192)
+  if (!Array.isArray(record.scopes) || record.scopes.length < 1 || record.scopes.length > 32) {
+    throw new Error("The saved authorization scopes are invalid.")
+  }
+  const scopes = record.scopes.map((scope: unknown) => protocolText(scope, 128))
+  const configuredScopes = new Set(config.scopes)
+  if (!scopes.includes("openid") || new Set(scopes).size !== scopes.length || scopes.some((scope: string) => /\s/u.test(scope) || !configuredScopes.has(scope))) {
+    throw new Error("The saved authorization scopes exceed the current application configuration.")
+  }
+  if (!Number.isSafeInteger(record.expiresAt) || record.expiresAt <= now || record.expiresAt - now > maximumAuthorizationSessionAge) {
+    throw new Error("The saved authorization session is expired or invalid.")
+  }
+  if (typeof record.workspaceId !== "string") throw new Error("The saved authorization workspace is invalid.")
+  const workspaceId = record.workspaceId
+  if (mode === "platform") {
+    if (workspaceId !== "") throw new Error("A Platform authorization session cannot be workspace-bound.")
+  } else {
+    canonicalID("workspace ID", workspaceId)
+  }
+  return { token, expiresAt: record.expiresAt, scopes, workspaceId }
 }
 
 function exactRecord(value: unknown, keys: string[]): Record<string, any> {

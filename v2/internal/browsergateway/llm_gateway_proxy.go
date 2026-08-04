@@ -65,12 +65,16 @@ func (proxy *WorkspaceLLMGatewayProxy) ServeHTTP(response http.ResponseWriter, r
 		return
 	}
 	action := request.PathValue("gatewayAction")
-	if (action == "" && request.Method != http.MethodGet && request.Method != http.MethodPost) ||
-		(action != "" && request.Method != http.MethodPost) {
-		allow := http.MethodPost
-		if action == "" {
-			allow = "GET, POST"
-		}
+	allow := "GET, POST"
+	allowed := action == "" && (request.Method == http.MethodGet || request.Method == http.MethodPost)
+	if action != "" && !strings.Contains(action, ":") {
+		allow = http.MethodPatch
+		allowed = request.Method == http.MethodPatch
+	} else if action != "" {
+		allow = http.MethodPost
+		allowed = request.Method == http.MethodPost
+	}
+	if !allowed {
 		response.Header().Set("Allow", allow)
 		writeLLMGatewayProxyError(response, http.StatusMethodNotAllowed, "method_not_allowed", "workspace LLM gateway method is not allowed")
 		return

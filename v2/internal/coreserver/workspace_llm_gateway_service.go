@@ -26,6 +26,7 @@ const (
 type WorkspaceLLMGatewayStore interface {
 	RequireWorkspaceLLMGatewayOwner(context.Context, string, string) error
 	CreateWorkspaceLLMGateway(context.Context, coredb.CreateWorkspaceLLMGatewayCommand) (coredb.CreateWorkspaceLLMGatewayResult, error)
+	UpdateWorkspaceLLMGateway(context.Context, coredb.UpdateWorkspaceLLMGatewayCommand) (coredb.UpdateWorkspaceLLMGatewayResult, error)
 	ListWorkspaceLLMGateways(context.Context, string, string) ([]coredb.WorkspaceLLMGateway, error)
 	ReadWorkspaceLLMGatewayForAuthorization(context.Context, string, string, string) (coredb.WorkspaceLLMGateway, error)
 	CreateWorkspaceLLMGatewayAuthTransaction(context.Context, coredb.CreateWorkspaceLLMGatewayAuthTransactionCommand) (coredb.WorkspaceLLMGatewayAuthTransaction, error)
@@ -179,6 +180,58 @@ func (service *WorkspaceLLMGatewayService) ListGateways(
 		result[index] = contractWorkspaceLLMGateway(gateways[index])
 	}
 	return corecontract.ListWorkspaceLLMGatewaysResponse{Gateways: result}, nil
+}
+
+func (service *WorkspaceLLMGatewayService) UpdateGateway(
+	ctx context.Context,
+	workspaceID, gatewayID, actorID string,
+	request corecontract.UpdateWorkspaceLLMGatewayRequest,
+) (corecontract.UpdateWorkspaceLLMGatewayResponse, error) {
+	const operation = "UpdateWorkspaceLLMGateway"
+	if service == nil {
+		return corecontract.UpdateWorkspaceLLMGatewayResponse{}, errors.New("workspace LLM gateway service is unavailable")
+	}
+	if !canonicalPublicUUID(workspaceID) || !canonicalPublicUUID(gatewayID) || !canonicalPublicUUID(actorID) || request.ExpectedVersion < 1 {
+		return corecontract.UpdateWorkspaceLLMGatewayResponse{}, llmGatewayStateError(coredb.ErrorInvalidArgument, operation, gatewayID, "workspace, gateway, actor, and expected version must be canonical")
+	}
+	if _, err := publichttps.ValidateURL(request.ResponsesURL, "/v1/responses"); err != nil {
+		return corecontract.UpdateWorkspaceLLMGatewayResponse{}, llmGatewayStateError(coredb.ErrorInvalidArgument, operation, gatewayID, "responsesUrl is not an allowed public Responses endpoint")
+	}
+	if _, err := publichttps.ValidateIssuer(request.OIDCIssuer); err != nil {
+		return corecontract.UpdateWorkspaceLLMGatewayResponse{}, llmGatewayStateError(coredb.ErrorInvalidArgument, operation, gatewayID, "oidcIssuer is not an allowed public OIDC issuer")
+	}
+	scopes, canonicalScopes, err := canonicalWorkspaceLLMGatewayScopes(request.OIDCScopes)
+	if err != nil {
+		return corecontract.UpdateWorkspaceLLMGatewayResponse{}, llmGatewayStateError(coredb.ErrorInvalidArgument, operation, gatewayID, err.Error())
+	}
+	if !validWorkspaceLLMGatewayPublicText(request.Name, 128) || !validWorkspaceLLMGatewayPublicText(request.OIDCClientID, 512) ||
+		!validWorkspaceLLMGatewayPublicText(request.DefaultModel, 256) ||
+		(request.BearerTokenType != coredb.LLMGatewayBearerIDToken && request.BearerTokenType != coredb.LLMGatewayBearerAccessToken) {
+		return corecontract.UpdateWorkspaceLLMGatewayResponse{}, llmGatewayStateError(coredb.ErrorInvalidArgument, operation, gatewayID, "gateway name, OIDC client ID, model, or bearer type is invalid")
+	}
+	// Authorize the owner before performing externally observable discovery;
+	// the store repeats this check in the final write transaction.
+	if err := service.store.RequireWorkspaceLLMGatewayOwner(ctx, workspaceID, actorID); err != nil {
+		return corecontract.UpdateWorkspaceLLMGatewayResponse{}, err
+	}
+	if _, err := service.providers.Discover(ctx, WorkspaceLLMGatewayOIDCConfig{
+		Issuer: request.OIDCIssuer, ClientID: request.OIDCClientID, Scopes: scopes, RedirectURL: service.redirectURL,
+	}); err != nil {
+		return corecontract.UpdateWorkspaceLLMGatewayResponse{}, llmGatewayStateError(coredb.ErrorInvalidArgument, operation, gatewayID, "OIDC discovery failed or returned unsafe metadata")
+	}
+	updated, err := service.store.UpdateWorkspaceLLMGateway(ctx, coredb.UpdateWorkspaceLLMGatewayCommand{
+		ID: gatewayID, WorkspaceID: workspaceID, ActorID: actorID,
+		Name: request.Name, ResponsesURL: request.ResponsesURL, OIDCIssuer: request.OIDCIssuer,
+		OIDCClientID: request.OIDCClientID, OIDCScopes: canonicalScopes,
+		BearerTokenType: request.BearerTokenType, DefaultModel: request.DefaultModel,
+		MakeDefault: request.MakeDefault, ExpectedVersion: request.ExpectedVersion,
+	})
+	if err != nil {
+		return corecontract.UpdateWorkspaceLLMGatewayResponse{}, err
+	}
+	return corecontract.UpdateWorkspaceLLMGatewayResponse{
+		Gateway: contractWorkspaceLLMGateway(updated.Gateway), Changed: updated.Changed,
+	}, nil
 }
 
 func (service *WorkspaceLLMGatewayService) BeginAuthorization(

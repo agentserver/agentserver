@@ -75,3 +75,29 @@ func TestWorkspaceLLMGatewayProxyRejectsInvalidAuthorityMethodAndResponse(t *tes
 		}
 	}
 }
+
+func TestWorkspaceLLMGatewayProxyForwardsGatewayPatch(t *testing.T) {
+	workspaceID := "71000000-0000-4000-8000-000000000011"
+	gatewayID := "71000000-0000-4000-8000-000000000012"
+	client := &http.Client{Transport: browserRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodPatch || request.URL.String() != "https://core.internal"+corecontract.WorkspaceLLMGatewayPath(workspaceID, gatewayID) {
+			t.Fatalf("proxied update = %s %s", request.Method, request.URL)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{"gateway":{"gatewayId":"` + gatewayID + `"},"changed":true}`)),
+		}, nil
+	})}
+	proxy, err := NewWorkspaceLLMGatewayProxy("https://core.internal", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPatch, "https://agent.example"+corecontract.WorkspaceLLMGatewayPath(workspaceID, gatewayID), strings.NewReader(`{"expectedVersion":1}`))
+	request.Header.Set("Authorization", "Bearer user-token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	proxy.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"changed":true`) {
+		t.Fatalf("patch proxy response = %d %s", response.Code, response.Body.String())
+	}
+}

@@ -17,6 +17,7 @@ const maximumPublicLLMGatewayRequestBytes = int64(128 * 1024)
 
 type WorkspaceLLMGatewayCommands interface {
 	CreateGateway(context.Context, string, string, corecontract.CreateWorkspaceLLMGatewayRequest) (corecontract.CreateWorkspaceLLMGatewayResponse, error)
+	UpdateGateway(context.Context, string, string, string, corecontract.UpdateWorkspaceLLMGatewayRequest) (corecontract.UpdateWorkspaceLLMGatewayResponse, error)
 	ListGateways(context.Context, string, string) (corecontract.ListWorkspaceLLMGatewaysResponse, error)
 	BeginAuthorization(context.Context, string, string, string, corecontract.BeginWorkspaceLLMGatewayAuthorizationRequest) (corecontract.BeginWorkspaceLLMGatewayAuthorizationResponse, error)
 	CompleteAuthorization(context.Context, string, string, string, corecontract.CompleteWorkspaceLLMGatewayAuthorizationRequest) (corecontract.CompleteWorkspaceLLMGatewayAuthorizationResponse, error)
@@ -105,6 +106,10 @@ func (handler *WorkspaceLLMGatewayHandler) collection(response http.ResponseWrit
 }
 
 func (handler *WorkspaceLLMGatewayHandler) action(response http.ResponseWriter, request *http.Request, workspaceID, gatewayAction string) {
+	if !strings.Contains(gatewayAction, ":") {
+		handler.update(response, request, workspaceID, gatewayAction)
+		return
+	}
 	if request.Method != http.MethodPost {
 		response.Header().Set("Allow", http.MethodPost)
 		writePublicRunError(response, http.StatusMethodNotAllowed, "method_not_allowed", "workspace LLM gateway actions require POST", "")
@@ -183,6 +188,28 @@ func (handler *WorkspaceLLMGatewayHandler) action(response http.ResponseWriter, 
 		}
 		writeJSON(response, http.StatusOK, result)
 	}
+}
+
+func (handler *WorkspaceLLMGatewayHandler) update(response http.ResponseWriter, request *http.Request, workspaceID, gatewayID string) {
+	if request.Method != http.MethodPatch {
+		response.Header().Set("Allow", http.MethodPatch)
+		writePublicRunError(response, http.StatusMethodNotAllowed, "method_not_allowed", "workspace LLM gateway resource requires PATCH", "")
+		return
+	}
+	actorID, ok := handler.authorize(response, request, "llm-gateways.update")
+	if !ok {
+		return
+	}
+	var input corecontract.UpdateWorkspaceLLMGatewayRequest
+	if !decodePublicLLMGatewayJSON(response, request, &input) {
+		return
+	}
+	result, err := handler.commands.UpdateGateway(request.Context(), workspaceID, gatewayID, actorID, input)
+	if err != nil {
+		handler.writeServiceError(response, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
 }
 
 func (handler *WorkspaceLLMGatewayHandler) authorize(

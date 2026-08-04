@@ -72,6 +72,26 @@ type CreateWorkspaceLLMGatewayResult struct {
 	Created bool
 }
 
+type UpdateWorkspaceLLMGatewayCommand struct {
+	ID              string
+	WorkspaceID     string
+	ActorID         string
+	Name            string
+	ResponsesURL    string
+	OIDCIssuer      string
+	OIDCClientID    string
+	OIDCScopes      string
+	BearerTokenType string
+	DefaultModel    string
+	MakeDefault     bool
+	ExpectedVersion int64
+}
+
+type UpdateWorkspaceLLMGatewayResult struct {
+	Gateway WorkspaceLLMGateway
+	Changed bool
+}
+
 type WorkspaceLLMGatewayGrant struct {
 	ID              string
 	GatewayID       string
@@ -305,6 +325,108 @@ ORDER BY gateway.is_default DESC, gateway.name, gateway.id`,
 			return nil, databaseError(operation+" finish", err)
 		}
 		return gateways, nil
+	})
+}
+
+// UpdateWorkspaceLLMGateway changes one active owner-managed configuration.
+// The Gateway version fence and all active user-grant fences are committed in
+// the same transaction, so no old sealed grant can authorize the new config.
+func (s *StateStore) UpdateWorkspaceLLMGateway(
+	ctx context.Context,
+	command UpdateWorkspaceLLMGatewayCommand,
+) (UpdateWorkspaceLLMGatewayResult, error) {
+	const operation = "UpdateWorkspaceLLMGateway"
+	if err := validateUpdateWorkspaceLLMGateway(command); err != nil {
+		return UpdateWorkspaceLLMGatewayResult{}, commandError(ErrorInvalidArgument, operation, "llm_gateway", command.ID, err.Error())
+	}
+	return withStateTransaction(ctx, s, operation, func(transaction pgx.Tx) (UpdateWorkspaceLLMGatewayResult, error) {
+		if err := s.requireWorkspaceLLMGatewayRole(ctx, transaction, operation, command.WorkspaceID, command.ActorID, true, true); err != nil {
+			return UpdateWorkspaceLLMGatewayResult{}, err
+		}
+		query := fmt.Sprintf(
+			"SELECT %s FROM %s WHERE id = $1 AND workspace_id = $2 FOR UPDATE",
+			workspaceLLMGatewayColumns(""), s.table("workspace_llm_gateways"),
+		)
+		gateway, err := scanWorkspaceLLMGateway(transaction.QueryRow(ctx, query, command.ID, command.WorkspaceID))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return UpdateWorkspaceLLMGatewayResult{}, commandError(ErrorNotFound, operation, "llm_gateway", command.ID, "workspace LLM gateway does not exist")
+		}
+		if err != nil {
+			return UpdateWorkspaceLLMGatewayResult{}, databaseError(operation+" read", err)
+		}
+		if gateway.Status != LLMGatewayStatusActive {
+			return UpdateWorkspaceLLMGatewayResult{}, commandError(ErrorInvalidState, operation, "llm_gateway", command.ID, "only an active workspace LLM gateway can be updated")
+		}
+		if gateway.Version != command.ExpectedVersion {
+			return UpdateWorkspaceLLMGatewayResult{}, versionConflict(operation, "llm_gateway", command.ID, gateway.Version)
+		}
+		if workspaceLLMGatewayMatchesUpdate(gateway, command) {
+			projected, found, readErr := s.readWorkspaceLLMGatewayByID(ctx, transaction, command.ID, command.WorkspaceID, command.ActorID, false)
+			if readErr != nil {
+				return UpdateWorkspaceLLMGatewayResult{}, readErr
+			}
+			if !found {
+				return UpdateWorkspaceLLMGatewayResult{}, databaseError(operation+" project", pgx.ErrNoRows)
+			}
+			return UpdateWorkspaceLLMGatewayResult{Gateway: projected, Changed: false}, nil
+		}
+		if command.MakeDefault {
+			clearDefault := fmt.Sprintf(`
+UPDATE %s
+SET is_default = FALSE,
+    updated_at = pg_catalog.clock_timestamp()
+WHERE workspace_id = $1 AND id <> $2 AND status = $3 AND is_default = TRUE`, s.table("workspace_llm_gateways"))
+			if _, err := transaction.Exec(ctx, clearDefault, command.WorkspaceID, command.ID, LLMGatewayStatusActive); err != nil {
+				return UpdateWorkspaceLLMGatewayResult{}, databaseError(operation+" clear prior default", err)
+			}
+		}
+		update := fmt.Sprintf(`
+UPDATE %s
+SET name = $1,
+    responses_url = $2,
+    oidc_issuer = $3,
+    oidc_client_id = $4,
+    oidc_scopes = $5,
+    bearer_token_type = $6,
+    default_model = $7,
+    is_default = $8,
+    version = version + 1,
+    updated_at = pg_catalog.clock_timestamp()
+WHERE id = $9 AND workspace_id = $10 AND version = $11 AND status = $12
+RETURNING %s`, s.table("workspace_llm_gateways"), workspaceLLMGatewayColumns(""))
+		gateway, err = scanWorkspaceLLMGateway(transaction.QueryRow(
+			ctx, update, command.Name, command.ResponsesURL, command.OIDCIssuer,
+			command.OIDCClientID, command.OIDCScopes, command.BearerTokenType,
+			command.DefaultModel, command.MakeDefault, command.ID, command.WorkspaceID,
+			command.ExpectedVersion, LLMGatewayStatusActive,
+		))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return UpdateWorkspaceLLMGatewayResult{}, versionConflict(operation, "llm_gateway", command.ID, command.ExpectedVersion)
+		}
+		if err != nil {
+			var postgresError *pgconn.PgError
+			if pgxErrorAs(err, &postgresError) && postgresError.Code == "23505" {
+				return UpdateWorkspaceLLMGatewayResult{}, commandError(ErrorConflict, operation, "llm_gateway", command.ID, "gateway name or default is already in use")
+			}
+			return UpdateWorkspaceLLMGatewayResult{}, databaseError(operation+" update", err)
+		}
+		fenceGrants := fmt.Sprintf(`
+UPDATE %s
+SET status = $1,
+    version = version + 1,
+    updated_at = pg_catalog.clock_timestamp()
+WHERE gateway_id = $2 AND workspace_id = $3 AND status = $4`, s.table("workspace_llm_gateway_grants"))
+		if _, err := transaction.Exec(ctx, fenceGrants, LLMGatewayGrantStatusReauthRequired, command.ID, command.WorkspaceID, LLMGatewayGrantStatusActive); err != nil {
+			return UpdateWorkspaceLLMGatewayResult{}, databaseError(operation+" fence grants", err)
+		}
+		projected, found, err := s.readWorkspaceLLMGatewayByID(ctx, transaction, command.ID, command.WorkspaceID, command.ActorID, false)
+		if err != nil {
+			return UpdateWorkspaceLLMGatewayResult{}, err
+		}
+		if !found {
+			return UpdateWorkspaceLLMGatewayResult{}, databaseError(operation+" project", pgx.ErrNoRows)
+		}
+		return UpdateWorkspaceLLMGatewayResult{Gateway: projected, Changed: true}, nil
 	})
 }
 
@@ -1087,6 +1209,22 @@ func validateCreateWorkspaceLLMGateway(command CreateWorkspaceLLMGatewayCommand)
 	return nil
 }
 
+func validateUpdateWorkspaceLLMGateway(command UpdateWorkspaceLLMGatewayCommand) error {
+	if err := validateCreateWorkspaceLLMGateway(CreateWorkspaceLLMGatewayCommand{
+		ID: command.ID, WorkspaceID: command.WorkspaceID, ActorID: command.ActorID,
+		Name: command.Name, ResponsesURL: command.ResponsesURL, OIDCIssuer: command.OIDCIssuer,
+		OIDCClientID: command.OIDCClientID, OIDCScopes: command.OIDCScopes,
+		BearerTokenType: command.BearerTokenType, DefaultModel: command.DefaultModel,
+		MakeDefault: command.MakeDefault,
+	}); err != nil {
+		return err
+	}
+	if command.ExpectedVersion < 1 || command.ExpectedVersion > maxSafeJSONInteger {
+		return errors.New("expected_version must be a positive safe integer")
+	}
+	return nil
+}
+
 func validateCreateWorkspaceLLMGatewayAuthTransaction(command CreateWorkspaceLLMGatewayAuthTransactionCommand) error {
 	for field, value := range map[string]string{"id": command.ID, "workspace_id": command.WorkspaceID, "gateway_id": command.GatewayID, "user_id": command.UserID} {
 		if err := validateUUID(field, value); err != nil {
@@ -1167,6 +1305,15 @@ func workspaceLLMGatewayMatchesCreate(gateway WorkspaceLLMGateway, command Creat
 		gateway.OIDCScopes == command.OIDCScopes && gateway.BearerTokenType == command.BearerTokenType &&
 		gateway.DefaultModel == command.DefaultModel && gateway.Status == LLMGatewayStatusActive &&
 		gateway.CreatedBy == command.ActorID
+}
+
+func workspaceLLMGatewayMatchesUpdate(gateway WorkspaceLLMGateway, command UpdateWorkspaceLLMGatewayCommand) bool {
+	return gateway.ID == command.ID && gateway.WorkspaceID == command.WorkspaceID &&
+		gateway.Name == command.Name && gateway.ResponsesURL == command.ResponsesURL &&
+		gateway.OIDCIssuer == command.OIDCIssuer && gateway.OIDCClientID == command.OIDCClientID &&
+		gateway.OIDCScopes == command.OIDCScopes && gateway.BearerTokenType == command.BearerTokenType &&
+		gateway.DefaultModel == command.DefaultModel && gateway.Default == command.MakeDefault &&
+		gateway.Status == LLMGatewayStatusActive
 }
 
 func canonicalLLMGatewayScopes(scopes []string) (string, error) {

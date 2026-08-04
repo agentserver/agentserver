@@ -132,6 +132,55 @@ func TestWorkspaceLLMGatewayCreateAuthorizesOwnerBeforeDiscovery(t *testing.T) {
 	}
 }
 
+func TestWorkspaceLLMGatewayUpdateDiscoversThenCommitsVersionedFence(t *testing.T) {
+	gateway := testWorkspaceLLMGateway()
+	ownerChecked := false
+	var command coredb.UpdateWorkspaceLLMGatewayCommand
+	store := &fakeWorkspaceLLMGatewayStore{
+		requireOwner: func(_ context.Context, workspaceID, actorID string) error {
+			if workspaceID != testLLMGatewayWorkspaceID || actorID != testLLMGatewayUserID {
+				t.Fatal("owner preflight escaped the requested workspace")
+			}
+			ownerChecked = true
+			return nil
+		},
+		updateGateway: func(_ context.Context, input coredb.UpdateWorkspaceLLMGatewayCommand) (coredb.UpdateWorkspaceLLMGatewayResult, error) {
+			if !ownerChecked {
+				t.Fatal("Gateway update ran before owner preflight")
+			}
+			command = input
+			gateway.Name = input.Name
+			gateway.OIDCScopes = input.OIDCScopes
+			gateway.BearerTokenType = input.BearerTokenType
+			gateway.DefaultModel = input.DefaultModel
+			gateway.Default = input.MakeDefault
+			gateway.Version++
+			gateway.GrantStatus = coredb.LLMGatewayGrantStatusReauthRequired
+			return coredb.UpdateWorkspaceLLMGatewayResult{Gateway: gateway, Changed: true}, nil
+		},
+	}
+	factory := &fakeWorkspaceLLMGatewayProviderFactory{provider: &fakeWorkspaceLLMGatewayProvider{}}
+	service, err := NewWorkspaceLLMGatewayService(WorkspaceLLMGatewayServiceConfig{
+		Store: store, Sealer: testLLMGatewaySealer(t, "test", map[string]byte{"test": 0x42}),
+		Providers: factory, RedirectURL: "https://agent.example.com/auth/llm-gateway/callback",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.UpdateGateway(t.Context(), testLLMGatewayWorkspaceID, testLLMGatewayID, testLLMGatewayUserID,
+		corecontract.UpdateWorkspaceLLMGatewayRequest{
+			Name: "updated Gateway", ResponsesURL: "https://llm.example.com/v1/responses",
+			OIDCIssuer: "https://id.example.com", OIDCClientID: "updated-public-client",
+			OIDCScopes:      []string{"project:inference", "offline_access", "openid"},
+			BearerTokenType: coredb.LLMGatewayBearerAccessToken, DefaultModel: "model-2",
+			MakeDefault: true, ExpectedVersion: 3,
+		})
+	if err != nil || !result.Changed || result.Gateway.Version != 4 || result.Gateway.GrantStatus != coredb.LLMGatewayGrantStatusReauthRequired ||
+		factory.discoverCalls != 1 || command.ExpectedVersion != 3 || command.OIDCScopes != "offline_access openid project:inference" {
+		t.Fatalf("update Gateway = %+v, %v; discovery=%d command=%+v", result, err, factory.discoverCalls, command)
+	}
+}
+
 func TestWorkspaceLLMGatewayResolveUpstreamRefreshesAndAcceptsExactRaceWinner(t *testing.T) {
 	now := time.Date(2026, 8, 2, 2, 0, 0, 0, time.UTC)
 	gateway := testWorkspaceLLMGateway()
@@ -409,6 +458,7 @@ func (provider *fakeWorkspaceLLMGatewayProvider) Refresh(context.Context, Worksp
 
 type fakeWorkspaceLLMGatewayStore struct {
 	requireOwner         func(context.Context, string, string) error
+	updateGateway        func(context.Context, coredb.UpdateWorkspaceLLMGatewayCommand) (coredb.UpdateWorkspaceLLMGatewayResult, error)
 	readForAuthorization func(context.Context, string, string, string) (coredb.WorkspaceLLMGateway, error)
 	createTransaction    func(context.Context, coredb.CreateWorkspaceLLMGatewayAuthTransactionCommand) (coredb.WorkspaceLLMGatewayAuthTransaction, error)
 	claimTransaction     func(context.Context, coredb.ClaimWorkspaceLLMGatewayAuthTransactionCommand) (coredb.WorkspaceLLMGatewayAuthTransaction, error)
@@ -426,6 +476,9 @@ func (store *fakeWorkspaceLLMGatewayStore) RequireWorkspaceLLMGatewayOwner(ctx c
 
 func (*fakeWorkspaceLLMGatewayStore) CreateWorkspaceLLMGateway(context.Context, coredb.CreateWorkspaceLLMGatewayCommand) (coredb.CreateWorkspaceLLMGatewayResult, error) {
 	panic("unexpected CreateWorkspaceLLMGateway")
+}
+func (store *fakeWorkspaceLLMGatewayStore) UpdateWorkspaceLLMGateway(ctx context.Context, command coredb.UpdateWorkspaceLLMGatewayCommand) (coredb.UpdateWorkspaceLLMGatewayResult, error) {
+	return store.updateGateway(ctx, command)
 }
 func (*fakeWorkspaceLLMGatewayStore) ListWorkspaceLLMGateways(context.Context, string, string) ([]coredb.WorkspaceLLMGateway, error) {
 	panic("unexpected ListWorkspaceLLMGateways")

@@ -10,6 +10,7 @@ export type Executor = PublicComponents["schemas"]["ExecutorResourceState"]
 export type EnrollmentToken = PublicComponents["schemas"]["IssueExecutorEnrollmentTokenResponse"]
 export type LLMGateway = PublicComponents["schemas"]["WorkspaceLLMGatewayState"]
 export type CreateLLMGateway = PublicComponents["schemas"]["CreateWorkspaceLLMGatewayRequest"]
+export type UpdateLLMGateway = PublicComponents["schemas"]["UpdateWorkspaceLLMGatewayRequest"]
 export type UserSession = PublicComponents["schemas"]["UserSessionState"]
 export type Approval = PublicComponents["schemas"]["ApprovalState"]
 export type ApprovalDecision = PublicComponents["schemas"]["DecideUserApprovalRequest"]
@@ -145,6 +146,12 @@ export class ResourceAPI {
 
   async createGateway(workspaceId: string, body: CreateLLMGateway) {
     return take(await this.#client.POST("/v2/workspaces/{workspaceId}/llm-gateways", { params: { path: { workspaceId } }, body }))
+  }
+
+  async updateGateway(workspaceId: string, gatewayId: string, body: UpdateLLMGateway) {
+    const result = take(await this.#client.PATCH("/v2/workspaces/{workspaceId}/llm-gateways/{gatewayId}", { params: { path: { workspaceId, gatewayId } }, body }))
+    if (validateGateway(result.gateway, workspaceId).gatewayId !== canonicalID("gateway ID", gatewayId)) throw new Error("The Gateway response escaped its requested scope.")
+    return result
   }
 
   async beginGatewayAuthorization(workspaceId: string, gatewayId: string, browserBinding: string) {

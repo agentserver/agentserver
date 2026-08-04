@@ -65,8 +65,13 @@ session/run 属于 token subject 等业务不变量。
 
 ### 3. token 和跳转边界
 
-Platform 与 Browser 不共享 access token，也不把 token 放进 URL、cookie、`localStorage` 或
-`sessionStorage`。两个 SPA 各自在页面内存中保存自己的 token：
+Platform 与 Browser 不共享 access token，也不把 token 放进 URL 或 cookie。两个 SPA 分别把自己的
+登录态写入各自 origin 的 `localStorage`，并使用不同的版本化 key；Platform token 和 Browser token
+仍不能互相读取或替代。保存记录包含 access token、实际 scopes、workspace binding、绝对过期时间，
+以及 mode/client/audience/authorize/token endpoint/requested scopes 的配置指纹。启动恢复时必须严格校验
+字段闭集、配置指纹、scope 子集、canonical workspace 和过期时间；任何漂移都删除记录并重新登录。
+同 origin 标签页通过标准 `storage` event 同步登录和登出，登出和到期都删除相应 key。PKCE
+state/verifier/nonce 仍只在 `sessionStorage` 中单次保存十分钟，不与长期登录态混用：
 
 1. 用户登录 Platform，得到 `agentserver-platform-api` token；
 2. 用户从 Platform 进入 `https://browser.byted.bps.dev/workspaces/{workspaceId}`，跳转只携带
@@ -74,6 +79,10 @@ Platform 与 Browser 不共享 access token，也不把 token 放进 URL、cooki
 3. Browser 为该 workspace 独立执行 PKCE，得到仅绑定该 workspace 的
    `agentserver-browser-api` token；
 4. Core 每次 introspect，并要求 token resource grant 与 URL workspace 精确相等。
+
+该选择接受“同源任意脚本在 token 有效期内可读取 bearer”的 XSS 风险，以换取刷新恢复和同应用多标签页
+共享登录态。CSP、无第三方脚本、无内联脚本、依赖锁定与输出转义仍是必要防线，但不能把 localStorage
+描述为 HttpOnly 等价物。token 不得进入日志、URL、跨 origin 消息或 Platform/Browser 之间的共享存储。
 
 两个 SPA 的 authorize/token endpoint 都是 `auth-sg.byted.bps.dev` 上的绝对 URL。Authorization 是顶层
 导航；Hydra token exchange 只允许精确的 `https://agent.byted.bps.dev` 与
@@ -154,6 +163,8 @@ Gateway 配置或 OAuth completion API。
 ## 后果
 
 - Platform 凭据和 workspace 控制面从对话应用中移出，XSS 或 token 泄漏的 blast radius 明显缩小；
+- 同一应用 origin 上的 XSS 可以读取该应用 localStorage 中尚未过期的 token；这是为刷新和多标签页登录态
+  明确接受的权衡，不扩大到另一应用的 origin/authority；
 - 用户从 Platform 进入 Browser 会发生一次独立 OAuth 流程，Hydra 可利用现有登录记忆降低交互成本，
   但两枚 token 的 authority 始终不同；
 - 集群新增一个常驻 gateway 和一张 workload certificate，生产拓扑、NetworkPolicy、证书生成与 Chart

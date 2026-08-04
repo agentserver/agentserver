@@ -13,6 +13,10 @@ func WorkspaceLLMGatewaysPath(workspaceID string) string {
 	return "/v2/workspaces/" + workspaceID + "/llm-gateways"
 }
 
+func WorkspaceLLMGatewayPath(workspaceID, gatewayID string) string {
+	return WorkspaceLLMGatewaysPath(workspaceID) + "/" + gatewayID
+}
+
 func AuthorizeLLMGatewayPath(workspaceID, gatewayID string) string {
 	return WorkspaceLLMGatewaysPath(workspaceID) + "/" + gatewayID + ":authorize"
 }
@@ -63,6 +67,23 @@ type WorkspaceLLMGatewayState struct {
 type CreateWorkspaceLLMGatewayResponse struct {
 	Gateway WorkspaceLLMGatewayState `json:"gateway"`
 	Created bool                     `json:"created"`
+}
+
+type UpdateWorkspaceLLMGatewayRequest struct {
+	Name            string   `json:"name"`
+	ResponsesURL    string   `json:"responsesUrl"`
+	OIDCIssuer      string   `json:"oidcIssuer"`
+	OIDCClientID    string   `json:"oidcClientId"`
+	OIDCScopes      []string `json:"oidcScopes"`
+	BearerTokenType string   `json:"bearerTokenType"`
+	DefaultModel    string   `json:"defaultModel"`
+	MakeDefault     bool     `json:"makeDefault"`
+	ExpectedVersion int64    `json:"expectedVersion"`
+}
+
+type UpdateWorkspaceLLMGatewayResponse struct {
+	Gateway WorkspaceLLMGatewayState `json:"gateway"`
+	Changed bool                     `json:"changed"`
 }
 
 type ListWorkspaceLLMGatewaysResponse struct {

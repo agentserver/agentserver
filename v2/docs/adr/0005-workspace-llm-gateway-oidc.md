@@ -137,17 +137,19 @@ Gateway egress zone / egress proxy，按 zone ID 选择受审计的出口；在�
 platform-gateway 转发的 Platform resource API 提供：
 
 - `POST/GET /v2/workspaces/{workspaceId}/llm-gateways`；
+- `PATCH /v2/workspaces/{workspaceId}/llm-gateways/{gatewayId}`；
 - `POST /v2/workspaces/{workspaceId}/llm-gateways/{gatewayId}:authorize`；
 - `POST /v2/workspaces/{workspaceId}/llm-gateways/{gatewayId}:completeAuthorization`；
 - `POST /v2/workspaces/{workspaceId}/llm-gateways/{gatewayId}:revoke`；
 - `POST /v2/workspaces/{workspaceId}/llm-gateways/{gatewayId}:disable`。
 
-对应权限拆分为 `llm-gateways:read`、`llm-gateways:create`、`llm-gateways:disable`、
+对应权限拆分为 `llm-gateways:read`、`llm-gateways:create`、`llm-gateways:update`、`llm-gateways:disable`、
 `llm-gateway-grants:authorize` 和 `llm-gateway-grants:revoke`，完整角色编译见 ADR 0006 与
 `AUTHORIZATION.md`。个人 authorize / complete / revoke 的 grant owner 固定为 Hydra token subject；
 disable 原子清除 default、把状态设为 disabled 并递增配置版本，因此旧版本 run 在下一次 live-authorize
-时立即失败。首版不原地修改或重新启用 Gateway；需要更换 endpoint、issuer、client 或 model 时先创建
-新的 Gateway 并设为 default，再禁用旧项。
+时立即失败。active Gateway 支持 owner-only 原地修改：Core 在任何写入前重新执行安全 OIDC discovery，
+PostgreSQL 以 `expectedVersion` 乐观锁提交配置并递增版本，同时把该 Gateway 的所有 active grant 标为
+`reauth_required`；旧 sealed token 和旧版本 run 随即 fail closed。disabled Gateway 仍不能修改或重新启用。
 
 前端在当前页面内存中保存随机 browser binding、workspace、Gateway ID 和 popup 引用，不写入
 `sessionStorage`。OIDC callback 落到前端 origin 的最小静态页面；它只把 state/code/error 通过限定

@@ -175,6 +175,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v2/workspaces/{workspaceId}/llm-gateways/{gatewayId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                gatewayId: components["parameters"]["GatewayId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** @description Owner-only optimistic configuration update. Safe OIDC discovery runs before the write; a changed configuration increments the Gateway version and atomically marks every active user grant reauth_required. */
+        patch: operations["updateWorkspaceLLMGateway"];
+        trace?: never;
+    };
     "/v2/workspaces/{workspaceId}/llm-gateways/{gatewayId}:authorize": {
         parameters: {
             query?: never;
@@ -551,6 +571,24 @@ export interface components {
         CreateWorkspaceLLMGatewayResponse: {
             gateway: components["schemas"]["WorkspaceLLMGatewayState"];
             created: boolean;
+        };
+        UpdateWorkspaceLLMGatewayRequest: {
+            name: string;
+            /** Format: uri */
+            responsesUrl: string;
+            /** Format: uri */
+            oidcIssuer: string;
+            oidcClientId: string;
+            oidcScopes: string[];
+            /** @enum {unknown} */
+            bearerTokenType: "id_token" | "access_token";
+            defaultModel: string;
+            makeDefault: boolean;
+            expectedVersion: number;
+        };
+        UpdateWorkspaceLLMGatewayResponse: {
+            gateway: components["schemas"]["WorkspaceLLMGatewayState"];
+            changed: boolean;
         };
         ListWorkspaceLLMGatewaysResponse: {
             gateways: components["schemas"]["WorkspaceLLMGatewayState"][];
@@ -1451,6 +1489,38 @@ export interface operations {
             400: components["responses"]["PublicError"];
             401: components["responses"]["PublicError"];
             403: components["responses"]["PublicError"];
+            409: components["responses"]["PublicError"];
+        };
+    };
+    updateWorkspaceLLMGateway: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                gatewayId: components["parameters"]["GatewayId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateWorkspaceLLMGatewayRequest"];
+            };
+        };
+        responses: {
+            /** @description Current Gateway configuration */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpdateWorkspaceLLMGatewayResponse"];
+                };
+            };
+            400: components["responses"]["PublicError"];
+            401: components["responses"]["PublicError"];
+            403: components["responses"]["PublicError"];
+            404: components["responses"]["PublicError"];
             409: components["responses"]["PublicError"];
         };
     };

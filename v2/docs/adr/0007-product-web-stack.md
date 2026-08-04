@@ -32,8 +32,10 @@ v2/
 └─ a2ui-web/         # Browser React/Vite app + Go static asset package
 ```
 
-两套 app 独立构建和生成 bundle，不共享 access token、React state 或浏览器存储。`web-shared` 只共享
-没有产品 authority 的实现：API transport、协议校验、样式 token、基础组件、theme 和 locale provider。
+两套 app 独立构建和生成 bundle，不共享 access token 或 React state；各自使用独立、版本化的
+origin-local `localStorage` 登录态 key。`web-shared` 共享存储格式和严格校验实现，但 mode/client/audience、
+workspace binding 与配置指纹阻止两类 authority 混用。其余共享内容仍只包括 API transport、协议校验、
+样式 token、基础组件、theme 和 locale provider。
 
 React、Vite、TypeScript、Tailwind 和依赖版本由 `v2/pnpm-lock.yaml` 固定。shadcn/ui 不是运行时远程
 组件库；所需组件源码保存在仓库内，并使用受控的 Radix primitives。浏览器不从 CDN 加载脚本、CSS、
@@ -79,7 +81,8 @@ Browser 不提供 executor 或 LLM Gateway 配置旁路；缺少模型 grant 时
 
 theme 值为 `light | dark | system`，locale 值为 `zh-CN | en-US`。它们是非敏感用户偏好，可以写入
 `localStorage`；首屏脚本不内联，应用挂载后立即应用选择，HTML `color-scheme` 与 shadcn CSS variables
-同步。access token、PKCE verifier、workspace grant 和任何 Gateway credential 不得进入这些存储。
+同步。OAuth access token 按 ADR 0006 使用独立版本化记录持久化；PKCE verifier、第三方 Gateway token
+和任何 Gateway credential 不得进入长期存储。
 
 所有用户可见产品字符串通过 i18n key 获取；中文与英文 catalog 在同一提交中保持 key 集合完全一致，
 缺 key 的 CI 测试失败。API/provider 原始错误先映射稳定 error code；只在无映射时显示经过边界限制的

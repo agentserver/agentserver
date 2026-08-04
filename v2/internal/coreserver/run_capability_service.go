@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"regexp"
 	"slices"
 	"strings"
@@ -58,6 +60,7 @@ type ProductionRunCapabilityServiceConfig struct {
 	Policy             ProductionRunCapabilityPolicy
 	LLMGatewayResolver LLMGatewayUpstreamResolver
 	Now                func() time.Time
+	Logger             *slog.Logger
 }
 
 // ProductionRunCapabilityService keeps signing and online authorization in
@@ -71,6 +74,7 @@ type ProductionRunCapabilityService struct {
 	policy             ProductionRunCapabilityPolicy
 	llmGatewayResolver LLMGatewayUpstreamResolver
 	now                func() time.Time
+	logger             *slog.Logger
 }
 
 var _ RunCapabilityAuthority = (*ProductionRunCapabilityService)(nil)
@@ -97,9 +101,13 @@ func NewProductionRunCapabilityService(config ProductionRunCapabilityServiceConf
 	if config.Now == nil {
 		config.Now = time.Now
 	}
+	if config.Logger == nil {
+		config.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
 	return &ProductionRunCapabilityService{
 		store: config.Store, signer: config.Signer, verifier: config.Verifier,
 		policy: config.Policy, llmGatewayResolver: config.LLMGatewayResolver, now: config.Now,
+		logger: config.Logger,
 	}, nil
 }
 
@@ -238,6 +246,7 @@ func (service *ProductionRunCapabilityService) AuthorizeLLMProxyRunCapability(
 ) (corecontract.AuthorizeLLMProxyRunCapabilityResponse, error) {
 	claims, err := service.verifyForLiveAuthorization(token, runcapability.AudienceLLMProxy)
 	if err != nil {
+		service.logLLMAuthorizationFailure("capability_verification", err)
 		return corecontract.AuthorizeLLMProxyRunCapabilityResponse{}, err
 	}
 	if request.Model != claims.Model || request.Provider != claims.Provider ||
@@ -245,6 +254,7 @@ func (service *ProductionRunCapabilityService) AuthorizeLLMProxyRunCapability(
 		request.LLMGatewayVersion != claims.LLMGatewayVersion ||
 		request.LLMGatewayGrantUserID != claims.LLMGatewayGrantUserID ||
 		claims.Provider != corecontract.WorkspaceLLMGatewayProvider {
+		service.logLLMAuthorizationFailure("route_claim_mismatch", nil)
 		return corecontract.AuthorizeLLMProxyRunCapabilityResponse{}, deniedRunCapability(claims.CapabilityID)
 	}
 	if ctx == nil {
@@ -261,22 +271,26 @@ func (service *ProductionRunCapabilityService) AuthorizeLLMProxyRunCapability(
 		},
 	})
 	if err != nil {
+		service.logLLMAuthorizationFailure("live_state_authority", err)
 		return corecontract.AuthorizeLLMProxyRunCapabilityResponse{}, err
 	}
 	issuedAt := time.UnixMilli(claims.IssuedAtUnixMS).UTC()
 	deadline := time.UnixMilli(claims.RunDeadlineUnixMS).UTC()
 	expiresAt := time.UnixMilli(claims.ExpiresAtUnixMS).UTC()
 	if err := validateCapabilityTimes(result.DatabaseTime, issuedAt, deadline, expiresAt); err != nil || result.LLMGateway == nil {
+		service.logLLMAuthorizationFailure("capability_time_or_gateway_projection", err)
 		return corecontract.AuthorizeLLMProxyRunCapabilityResponse{}, deniedRunCapability(claims.CapabilityID)
 	}
 	upstream, err := service.llmGatewayResolver.ResolveUpstream(ctx, *result.LLMGateway)
 	if err != nil {
+		service.logLLMAuthorizationFailure("gateway_upstream_resolution", err)
 		return corecontract.AuthorizeLLMProxyRunCapabilityResponse{}, deniedRunCapability(claims.CapabilityID)
 	}
 	if upstream.GatewayID != claims.LLMGatewayID || upstream.GatewayConfigVersion != claims.LLMGatewayVersion ||
 		upstream.GrantUserID != claims.LLMGatewayGrantUserID || upstream.Model != claims.Model ||
 		upstream.ResponsesURL == "" || upstream.Authorization == "" ||
 		!upstream.BearerExpiresAt.After(result.DatabaseTime.UTC()) {
+		service.logLLMAuthorizationFailure("resolved_upstream_projection", nil)
 		return corecontract.AuthorizeLLMProxyRunCapabilityResponse{}, deniedRunCapability(claims.CapabilityID)
 	}
 	return corecontract.AuthorizeLLMProxyRunCapabilityResponse{
@@ -290,6 +304,22 @@ func (service *ProductionRunCapabilityService) AuthorizeLLMProxyRunCapability(
 		LLMGatewayGrantUserID: upstream.GrantUserID, ResponsesURL: upstream.ResponsesURL,
 		UpstreamAuthorization: upstream.Authorization, BearerExpiresAt: upstream.BearerExpiresAt.UTC(),
 	}, nil
+}
+
+// logLLMAuthorizationFailure retains only a fixed decision stage and, when
+// available, the bounded database error code. Capabilities, model routes,
+// provider errors, URLs, credentials, and user content are intentionally
+// excluded from this boundary log.
+func (service *ProductionRunCapabilityService) logLLMAuthorizationFailure(stage string, err error) {
+	if service == nil || service.logger == nil {
+		return
+	}
+	code := "none"
+	var stateError *coredb.StateError
+	if errors.As(err, &stateError) {
+		code = string(stateError.Code)
+	}
+	service.logger.Warn("llmproxy capability authorization did not complete", "stage", stage, "state_code", code)
 }
 
 func (service *ProductionRunCapabilityService) authorizeClaims(

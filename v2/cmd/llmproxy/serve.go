@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -80,6 +81,7 @@ func serveLLMProxyWithUpstreamHTTPClient(
 	defer upstreamHTTPClient.CloseIdleConnections()
 	modelHandler, err := llmproxy.NewHandler(llmproxy.HandlerConfig{
 		Authenticator: authenticator, HTTPClient: upstreamHTTPClient,
+		Logger: slog.New(slog.NewJSONHandler(stderr, nil)),
 	})
 	if err != nil {
 		return err

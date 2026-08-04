@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"strings"
@@ -31,6 +32,7 @@ type HandlerConfig struct {
 	MaximumRequestBytes  int64
 	MaximumResponseBytes int64
 	Now                  func() time.Time
+	Logger               *slog.Logger
 }
 
 // Handler is a closed Responses API adapter. It authenticates and live-
@@ -43,6 +45,7 @@ type Handler struct {
 	maxRequest    int64
 	maxResponse   int64
 	now           func() time.Time
+	logger        *slog.Logger
 }
 
 func NewHandler(config HandlerConfig) (*Handler, error) {
@@ -62,12 +65,15 @@ func NewHandler(config HandlerConfig) (*Handler, error) {
 	if config.Now == nil {
 		config.Now = time.Now
 	}
+	if config.Logger == nil {
+		config.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
 	clientCopy := *config.HTTPClient
 	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Handler{
 		authenticator: config.Authenticator, client: &clientCopy,
 		maxRequest: config.MaximumRequestBytes, maxResponse: config.MaximumResponseBytes,
-		now: config.Now,
+		now: config.Now, logger: config.Logger,
 	}, nil
 }
 
@@ -102,10 +108,12 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 	principal, err := handler.authenticator.AuthenticateModelRequest(request, model)
 	if err != nil {
 		if errors.Is(err, ErrUnauthenticated) {
+			handler.logDisposition("local_authentication", http.StatusUnauthorized)
 			response.Header().Set("WWW-Authenticate", `Bearer realm="llmproxy"`)
 			writeProxyError(response, http.StatusUnauthorized, "unauthenticated")
 			return
 		}
+		handler.logDisposition("core_live_authorization", http.StatusForbidden)
 		writeProxyError(response, http.StatusForbidden, "forbidden")
 		return
 	}
@@ -118,6 +126,7 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 	upstream, err := publichttps.ValidateURL(principal.ResponsesURL, ResponsesPath)
 	if err != nil || !validUpstreamAuthorization(principal.UpstreamAuthorization) ||
 		principal.BearerExpiresAt.IsZero() || !handler.now().UTC().Before(principal.BearerExpiresAt) {
+		handler.logDisposition("resolved_credential_validation", http.StatusServiceUnavailable)
 		writeProxyError(response, http.StatusServiceUnavailable, "credential_unavailable")
 		return
 	}
@@ -132,13 +141,18 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 	upstreamRequest.Header.Set("Authorization", principal.UpstreamAuthorization)
 	upstreamResponse, err := handler.client.Do(upstreamRequest)
 	if err != nil {
+		handler.logDisposition("upstream_transport", http.StatusBadGateway)
 		writeProxyError(response, http.StatusBadGateway, "upstream_unavailable")
 		return
 	}
 	defer upstreamResponse.Body.Close()
 	if upstreamResponse.StatusCode >= 300 && upstreamResponse.StatusCode < 400 {
+		handler.logDisposition("upstream_redirect", upstreamResponse.StatusCode)
 		writeProxyError(response, http.StatusBadGateway, "upstream_redirect_rejected")
 		return
+	}
+	if upstreamResponse.StatusCode >= http.StatusBadRequest {
+		handler.logDisposition("upstream_response", upstreamResponse.StatusCode)
 	}
 	copyModelResponseHeaders(response.Header(), upstreamResponse.Header)
 	setNoStore(response.Header())
@@ -150,6 +164,15 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 	var trailing [1]byte
 	if count, _ := upstreamResponse.Body.Read(trailing[:]); count != 0 {
 		return
+	}
+}
+
+// logDisposition deliberately records only a fixed stage and numeric status.
+// Model input, route URLs, capabilities, provider credentials, response bodies,
+// and request headers must never enter llmproxy logs.
+func (handler *Handler) logDisposition(stage string, status int) {
+	if handler != nil && handler.logger != nil {
+		handler.logger.Warn("llmproxy model request did not complete", "stage", stage, "status", status)
 	}
 }
 

@@ -1,10 +1,12 @@
 package llmproxy
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -150,6 +152,31 @@ func TestHandlerRejectsUpstreamRedirectWithoutFollowing(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusBadGateway || calls.Load() != 1 || response.Header().Get("Location") != "" {
 		t.Fatalf("redirect result = status %d calls %d headers %v", response.Code, calls.Load(), response.Header())
+	}
+}
+
+func TestHandlerLogsOnlySafeUpstreamDisposition(t *testing.T) {
+	var logs bytes.Buffer
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusForbidden,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":"provider-secret-must-not-enter-logs"}`)),
+			Request:    request,
+		}, nil
+	})}
+	handler := mustHandler(t, HandlerConfig{
+		Authenticator: &recordingModelAuthenticator{principal: testProxyPrincipal()}, HTTPClient: client,
+		Logger: slog.New(slog.NewJSONHandler(&logs, nil)),
+	})
+	request := newTLSModelRequest(validProxyBody())
+	request.Header.Set("Authorization", "Bearer run-secret-must-not-enter-logs")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || !strings.Contains(logs.String(), `"stage":"upstream_response"`) ||
+		!strings.Contains(logs.String(), `"status":403`) || strings.Contains(logs.String(), "secret-must-not-enter-logs") ||
+		strings.Contains(logs.String(), "gpt-5.6-codex") || strings.Contains(logs.String(), "gateway.example.com") {
+		t.Fatalf("unsafe or incomplete llmproxy diagnostic log = %q", logs.String())
 	}
 }
 

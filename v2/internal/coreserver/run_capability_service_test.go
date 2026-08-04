@@ -1,9 +1,13 @@
 package coreserver
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +15,16 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/coredb"
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
 )
+
+func TestLLMCapabilityDiagnosticLogExcludesUnderlyingError(t *testing.T) {
+	var logs bytes.Buffer
+	service := &ProductionRunCapabilityService{logger: slog.New(slog.NewJSONHandler(&logs, nil))}
+	service.logLLMAuthorizationFailure("gateway_upstream_resolution", errors.New("Bearer secret-must-not-enter-logs"))
+	if !strings.Contains(logs.String(), `"stage":"gateway_upstream_resolution"`) ||
+		!strings.Contains(logs.String(), `"state_code":"none"`) || strings.Contains(logs.String(), "secret-must-not-enter-logs") {
+		t.Fatalf("unsafe or incomplete Core capability diagnostic log = %q", logs.String())
+	}
+}
 
 const (
 	testCapabilityIssuer    = "https://agentserver.example.test/core"

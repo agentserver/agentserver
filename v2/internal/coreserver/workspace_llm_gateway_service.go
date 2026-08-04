@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -50,6 +51,7 @@ type WorkspaceLLMGatewayServiceConfig struct {
 	NewID          func() (string, error)
 	Random         io.Reader
 	Now            func() time.Time
+	Logger         *slog.Logger
 }
 
 type WorkspaceLLMGatewayService struct {
@@ -62,6 +64,7 @@ type WorkspaceLLMGatewayService struct {
 	newID          func() (string, error)
 	random         io.Reader
 	now            func() time.Time
+	logger         *slog.Logger
 }
 
 type LLMGatewayUpstreamAuthorization struct {
@@ -102,10 +105,14 @@ func NewWorkspaceLLMGatewayService(config WorkspaceLLMGatewayServiceConfig) (*Wo
 	if config.Now == nil {
 		config.Now = time.Now
 	}
+	if config.Logger == nil {
+		config.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
 	return &WorkspaceLLMGatewayService{
 		store: config.Store, sealer: config.Sealer, providers: config.Providers,
 		redirectURL: config.RedirectURL, transactionTTL: config.TransactionTTL,
 		refreshSkew: config.RefreshSkew, newID: config.NewID, random: config.Random, now: config.Now,
+		logger: config.Logger,
 	}, nil
 }
 
@@ -449,14 +456,19 @@ func (service *WorkspaceLLMGatewayService) ResolveUpstream(
 		GrantUserID: authority.Grant.UserID, Model: authority.Model,
 	}
 	if err := validateLLMGatewayLiveProjection(authority, binding); err != nil {
+		service.logGatewayResolutionFailure("live_projection")
 		return LLMGatewayUpstreamAuthorization{}, err
 	}
 	tokens, err := service.openTokenSet(authority, binding)
 	if err != nil {
+		service.markGrantReauthRequired(ctx, authority.Grant)
+		service.logGatewayResolutionFailure("sealed_token_open")
 		return LLMGatewayUpstreamAuthorization{}, err
 	}
 	bearer, expiresAt, err := workspaceLLMGatewayBearer(tokens, authority.Gateway.BearerTokenType)
 	if err != nil || !expiresAt.Equal(authority.Grant.BearerExpiresAt.UTC()) {
+		service.markGrantReauthRequired(ctx, authority.Grant)
+		service.logGatewayResolutionFailure("sealed_token_metadata")
 		return LLMGatewayUpstreamAuthorization{}, errors.New("sealed workspace LLM gateway token set contradicts grant metadata")
 	}
 	now := service.now().UTC()
@@ -467,9 +479,11 @@ func (service *WorkspaceLLMGatewayService) ResolveUpstream(
 		}
 	}
 	if bearer == "" || !expiresAt.After(now) || strings.ContainsAny(bearer, "\x00\r\n") {
+		service.logGatewayResolutionFailure("resolved_bearer")
 		return LLMGatewayUpstreamAuthorization{}, errors.New("workspace LLM gateway bearer is unavailable")
 	}
 	if _, err := publichttps.ValidateURL(authority.Gateway.ResponsesURL, "/v1/responses"); err != nil {
+		service.logGatewayResolutionFailure("responses_url")
 		return LLMGatewayUpstreamAuthorization{}, errors.New("workspace LLM gateway Responses endpoint is no longer safe")
 	}
 	return LLMGatewayUpstreamAuthorization{
@@ -489,20 +503,24 @@ func (service *WorkspaceLLMGatewayService) refreshGrant(
 	provider, err := service.discoverGatewayProvider(ctx, authority.Gateway)
 	if err != nil {
 		service.markGrantReauthRequired(ctx, authority.Grant)
+		service.logGatewayResolutionFailure("oidc_discovery")
 		return "", time.Time{}, coredb.LLMGatewayLiveAuthority{}, errors.New("workspace LLM gateway OIDC refresh authority is unavailable")
 	}
 	refreshed, err := provider.Refresh(ctx, current, authority.Grant.OIDCSubject, authority.Gateway.BearerTokenType)
 	if err != nil || refreshed.Issuer != authority.Gateway.OIDCIssuer || refreshed.Subject != authority.Grant.OIDCSubject {
 		service.markGrantReauthRequired(ctx, authority.Grant)
+		service.logGatewayResolutionFailure("oidc_refresh")
 		return "", time.Time{}, coredb.LLMGatewayLiveAuthority{}, errors.New("workspace LLM gateway OIDC grant requires reauthorization")
 	}
 	bearer, expiry, err := workspaceLLMGatewayBearer(refreshed.Tokens, authority.Gateway.BearerTokenType)
 	if err != nil || !expiry.After(service.now().UTC()) {
 		service.markGrantReauthRequired(ctx, authority.Grant)
+		service.logGatewayResolutionFailure("refreshed_bearer")
 		return "", time.Time{}, coredb.LLMGatewayLiveAuthority{}, errors.New("workspace LLM gateway refreshed bearer is invalid")
 	}
 	sealed, err := service.sealTokenSet(binding, authority.Gateway.WorkspaceID, refreshed.Tokens)
 	if err != nil {
+		service.logGatewayResolutionFailure("refreshed_token_seal")
 		return "", time.Time{}, coredb.LLMGatewayLiveAuthority{}, err
 	}
 	updated, err := service.store.UpdateWorkspaceLLMGatewayGrantTokens(
@@ -513,23 +531,36 @@ func (service *WorkspaceLLMGatewayService) refreshGrant(
 		return bearer, expiry.UTC(), authority, nil
 	}
 	if !coredb.HasStateErrorCode(err, coredb.ErrorVersionConflict) {
+		service.logGatewayResolutionFailure("refreshed_token_persist")
 		return "", time.Time{}, coredb.LLMGatewayLiveAuthority{}, err
 	}
 	// Another Core may have refreshed, revoked, or fenced this grant. Re-read
 	// the complete live authority and accept only its exact active projection.
 	raced, readErr := service.store.ReadWorkspaceLLMGatewayLiveAuthority(ctx, authority.Gateway.WorkspaceID, binding)
 	if readErr != nil {
+		service.logGatewayResolutionFailure("refresh_race_read")
 		return "", time.Time{}, coredb.LLMGatewayLiveAuthority{}, readErr
 	}
 	latest, openErr := service.openTokenSet(raced, binding)
 	if openErr != nil {
+		service.logGatewayResolutionFailure("refresh_race_token_open")
 		return "", time.Time{}, coredb.LLMGatewayLiveAuthority{}, openErr
 	}
 	bearer, expiry, openErr = workspaceLLMGatewayBearer(latest, raced.Gateway.BearerTokenType)
 	if openErr != nil || !expiry.After(service.now().UTC()) || !expiry.Equal(raced.Grant.BearerExpiresAt.UTC()) {
+		service.logGatewayResolutionFailure("refresh_race_bearer")
 		return "", time.Time{}, coredb.LLMGatewayLiveAuthority{}, errors.New("raced workspace LLM gateway grant is not usable")
 	}
 	return bearer, expiry.UTC(), raced, nil
+}
+
+// logGatewayResolutionFailure records only a fixed implementation stage. OIDC
+// provider errors, endpoints, subjects, token material, and user content are
+// deliberately excluded.
+func (service *WorkspaceLLMGatewayService) logGatewayResolutionFailure(stage string) {
+	if service != nil && service.logger != nil {
+		service.logger.Warn("workspace LLM gateway resolution did not complete", "stage", stage)
+	}
 }
 
 func (service *WorkspaceLLMGatewayService) discoverGatewayProvider(

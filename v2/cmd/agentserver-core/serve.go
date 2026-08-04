@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -85,6 +86,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	if mode != coreServeProduction && mode != coreServeInsecureDevelopment {
 		return errors.New("Core serve mode is invalid")
 	}
+	logger := slog.New(slog.NewJSONHandler(stderr, nil))
 	databaseURL, err := requiredConfiguration(getenv, databaseURLEnvironment)
 	if err != nil {
 		return err
@@ -371,7 +373,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 			return fmt.Errorf("configure workspace LLM gateway OIDC discovery: %w", err)
 		}
 		llmGatewayService, err = coreserver.NewWorkspaceLLMGatewayService(coreserver.WorkspaceLLMGatewayServiceConfig{
-			Store: store, Sealer: sealer, Providers: providers, RedirectURL: redirectURL,
+			Store: store, Sealer: sealer, Providers: providers, RedirectURL: redirectURL, Logger: logger,
 		})
 		if err != nil {
 			return fmt.Errorf("configure workspace LLM gateway service: %w", err)
@@ -406,7 +408,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		runCapabilityService, err := coreserver.NewProductionRunCapabilityService(coreserver.ProductionRunCapabilityServiceConfig{
 			Store: store, Signer: productionCapabilities.signer,
 			Verifier: productionCapabilities.verifier, Policy: productionCapabilities.policy,
-			LLMGatewayResolver: llmGatewayService,
+			LLMGatewayResolver: llmGatewayService, Logger: logger,
 		})
 		if err != nil {
 			return fmt.Errorf("configure production run capability authority: %w", err)

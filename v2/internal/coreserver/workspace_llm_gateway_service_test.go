@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,17 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/coredb"
 )
+
+func TestWorkspaceLLMGatewayResolutionLogContainsOnlyStage(t *testing.T) {
+	var logs bytes.Buffer
+	service := &WorkspaceLLMGatewayService{logger: slog.New(slog.NewJSONHandler(&logs, nil))}
+	service.logGatewayResolutionFailure("sealed_token_open")
+	if !strings.Contains(logs.String(), `"stage":"sealed_token_open"`) ||
+		strings.Contains(logs.String(), `"error"`) || strings.Contains(logs.String(), `"gateway_id"`) ||
+		strings.Contains(logs.String(), `"authorization"`) {
+		t.Fatalf("unsafe or incomplete gateway resolution log = %q", logs.String())
+	}
+}
 
 const (
 	testLLMGatewayWorkspaceID = "93000000-0000-4000-8000-000000000001"
@@ -344,6 +356,32 @@ func TestWorkspaceLLMGatewayRefreshFailureFencesGrant(t *testing.T) {
 	}
 	if _, err := service.ResolveUpstream(t.Context(), authority); err == nil || marked != 1 {
 		t.Fatalf("refresh failure = %v, marked=%d", err, marked)
+	}
+}
+
+func TestWorkspaceLLMGatewayUnopenableGrantRequiresReauthorization(t *testing.T) {
+	now := time.Date(2026, 8, 2, 3, 30, 0, 0, time.UTC)
+	gateway := testWorkspaceLLMGateway()
+	marked := 0
+	store := &fakeWorkspaceLLMGatewayStore{markReauth: func(_ context.Context, grantID string, version int64) error {
+		if grantID != testLLMGatewayGrantID || version != 4 {
+			t.Fatalf("reauthorization fence = %s/%d", grantID, version)
+		}
+		marked++
+		return nil
+	}}
+	service := newTestWorkspaceLLMGatewayService(t, store, &fakeWorkspaceLLMGatewayProvider{}, now, nil)
+	authority := coredb.LLMGatewayLiveAuthority{
+		Gateway: gateway, Model: gateway.DefaultModel,
+		Grant: coredb.WorkspaceLLMGatewayGrant{
+			ID: testLLMGatewayGrantID, GatewayID: gateway.ID, WorkspaceID: gateway.WorkspaceID,
+			UserID: testLLMGatewayUserID, OIDCIssuer: gateway.OIDCIssuer, OIDCSubject: "gateway-user-subject",
+			Status: coredb.LLMGatewayGrantStatusActive, SealedTokenSet: bytes.Repeat([]byte{0x99}, 64),
+			BearerExpiresAt: now.Add(time.Hour), Version: 4,
+		},
+	}
+	if _, err := service.ResolveUpstream(t.Context(), authority); err == nil || marked != 1 {
+		t.Fatalf("unopenable grant resolution = %v, marked=%d", err, marked)
 	}
 }
 

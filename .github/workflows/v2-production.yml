@@ -146,6 +146,14 @@ jobs:
             "oci-archive:${evidence}/service-image.oci.tar" "docker://${service_tag}"
           skopeo copy --retry-times 3 \
             "oci-archive:${evidence}/harness-image.oci.tar" "docker://${harness_tag}"
+          # Push the convenience tags from the already-verified local archives.
+          # Reading a just-created private GHCR manifest back by digest can race
+          # package visibility and return a non-retryable 403 even though the
+          # authenticated tag inspect and both destination pushes succeeded.
+          skopeo copy --retry-times 3 \
+            "oci-archive:${evidence}/service-image.oci.tar" "docker://${SERVICE_REPOSITORY}:main"
+          skopeo copy --retry-times 3 \
+            "oci-archive:${evidence}/harness-image.oci.tar" "docker://${HARNESS_REPOSITORY}:main"
           skopeo copy --retry-times 3 --override-os linux --override-arch amd64 \
             "docker://${HYDRA_SOURCE}" "docker://${HYDRA_REPOSITORY}:26.2.0-amd64"
           service_digest=$(skopeo inspect --format '{{.Digest}}' "docker://${service_tag}")
@@ -155,8 +163,6 @@ jobs:
           test "$(skopeo inspect --format '{{.Os}}/{{.Architecture}}' "docker://${harness_tag}")" = 'linux/amd64'
           test "$(skopeo inspect --format '{{.Os}}/{{.Architecture}}' "docker://${HYDRA_REPOSITORY}:26.2.0-amd64")" = 'linux/amd64'
           test "${hydra_digest}" = "${HYDRA_DIGEST}"
-          skopeo copy --retry-times 3 "docker://${SERVICE_REPOSITORY}@${service_digest}" "docker://${SERVICE_REPOSITORY}:main"
-          skopeo copy --retry-times 3 "docker://${HARNESS_REPOSITORY}@${harness_digest}" "docker://${HARNESS_REPOSITORY}:main"
           printf 'service_digest=%s\n' "${service_digest}" >>"${GITHUB_OUTPUT}"
           printf 'harness_digest=%s\n' "${harness_digest}" >>"${GITHUB_OUTPUT}"
           printf 'hydra_digest=%s\n' "${hydra_digest}" >>"${GITHUB_OUTPUT}"

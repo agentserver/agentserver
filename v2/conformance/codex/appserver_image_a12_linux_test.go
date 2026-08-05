@@ -28,6 +28,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/conformance/codex/internal/codexprocess"
 	"github.com/agentserver/agentserver/v2/conformance/codex/internal/scriptedmodel"
+	"github.com/agentserver/agentserver/v2/internal/codexwire"
 	"github.com/agentserver/agentserver/v2/internal/finalexec"
 	"github.com/agentserver/agentserver/v2/internal/harnessworker"
 	"github.com/agentserver/agentserver/v2/internal/networkguard"

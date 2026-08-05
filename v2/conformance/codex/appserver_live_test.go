@@ -1556,8 +1556,7 @@ type appServerRunnerDynamicCaller struct {
 func drainAppServerRunnerEvents(runner *harnessworker.AppServerRunner) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
-		for range runner.Events() {
-		}
+		_ = runner.ConsumeEvents(func(codexwire.Message) {})
 		close(done)
 	}()
 	return done

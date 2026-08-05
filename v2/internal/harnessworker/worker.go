@@ -110,7 +110,7 @@ type appServerStderrSource interface {
 }
 
 type oneShotWorkerRunner interface {
-	Events() <-chan codexwire.Message
+	ConsumeEvents(func(codexwire.Message)) error
 	Run(context.Context, AppServerRunRequest) (AppServerRunResult, error)
 }
 
@@ -305,7 +305,7 @@ func runOneShotWorker(ctx context.Context, config OneShotWorkerConfig, dependenc
 	}
 
 	eventErr := make(chan error, 1)
-	go consumeAppServerNotifications(runCtx, runner.Events(), runtimeEvents.HandleNotification, cancelRun, eventErr)
+	go consumeAppServerNotifications(runCtx, runner.ConsumeEvents, runtimeEvents.HandleNotification, cancelRun, eventErr)
 	request := appServerRequest(bootstrap.Manifest, prompt, mcp.Catalog(), appRuntime, restored, config.ClientInfo)
 	result, runnerErr := runner.Run(runCtx, request)
 	notificationErr := <-eventErr
@@ -475,10 +475,10 @@ func validatePreparedAppServerRuntime(runtime PreparedAppServerRuntime, manifest
 
 func workerRunnerOptions(manifest runmanifest.Manifest, lifecycle AppServerLifecycleSink) AppServerRunnerOptions {
 	maximumEventBytes := min(int(manifest.Limits.MaxEventBufferBytes), workerMaxEventBytes)
-	eventBuffer := max(1, int(manifest.Limits.MaxEventBufferBytes)/maximumEventBytes)
 	options := DefaultAppServerRunnerOptions()
-	options.EventBuffer = eventBuffer
+	options.EventBuffer = maxConfiguredAppServerEvents
 	options.MaxEventBytes = maximumEventBytes
+	options.MaxEventBufferBytes = int(manifest.Limits.MaxEventBufferBytes)
 	options.InterruptGrace = time.Duration(manifest.Limits.WorkerCallbackGraceMS) * time.Millisecond
 	options.MaxPromptTextBytes = MaximumPromptBytes
 	options.LifecycleSink = lifecycle
@@ -572,22 +572,22 @@ func watchWorkerControl(ctx context.Context, control oneShotWorkerControl, cance
 
 func consumeAppServerNotifications(
 	ctx context.Context,
-	events <-chan codexwire.Message,
+	consumeEvents func(func(codexwire.Message)) error,
 	handler AppServerNotificationHandler,
 	cancel context.CancelCauseFunc,
 	result chan<- error,
 ) {
 	var first error
-	for event := range events {
+	consumeErr := consumeEvents(func(event codexwire.Message) {
 		if first != nil {
-			continue
+			return
 		}
 		if err := handler(ctx, event); err != nil {
 			first = fmt.Errorf("deliver app-server notification: %w", err)
 			cancel(first)
 		}
-	}
-	result <- first
+	})
+	result <- errors.Join(first, consumeErr)
 }
 
 // workerRuntimeEventForwarder preserves the causal edge between a dynamic

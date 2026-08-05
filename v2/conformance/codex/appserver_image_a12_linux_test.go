@@ -462,8 +462,7 @@ func runA12WorkerSubprocess() error {
 	}
 	eventsDone := make(chan struct{})
 	go func() {
-		for range runner.Events() {
-		}
+		_ = runner.ConsumeEvents(func(codexwire.Message) {})
 		close(eventsDone)
 	}()
 	runResult, runErr := runner.Run(runContext, harnessworker.AppServerRunRequest{

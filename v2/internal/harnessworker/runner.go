@@ -30,11 +30,12 @@ type AppServerTransport interface {
 }
 
 type AppServerRunnerOptions struct {
-	EventBuffer        int
-	MaxEventBytes      int
-	InterruptGrace     time.Duration
-	MaxPromptTextBytes int
-	LifecycleSink      AppServerLifecycleSink
+	EventBuffer         int
+	MaxEventBytes       int
+	MaxEventBufferBytes int
+	InterruptGrace      time.Duration
+	MaxPromptTextBytes  int
+	LifecycleSink       AppServerLifecycleSink
 }
 
 // AppServerLifecycleSink synchronously crosses the holder/core authority
@@ -47,10 +48,11 @@ type AppServerLifecycleSink interface {
 
 func DefaultAppServerRunnerOptions() AppServerRunnerOptions {
 	return AppServerRunnerOptions{
-		EventBuffer:        64,
-		MaxEventBytes:      1024 * 1024,
-		InterruptGrace:     10 * time.Second,
-		MaxPromptTextBytes: 1024 * 1024,
+		EventBuffer:         64,
+		MaxEventBytes:       1024 * 1024,
+		MaxEventBufferBytes: maxConfiguredAppServerBufferedBytes,
+		InterruptGrace:      10 * time.Second,
+		MaxPromptTextBytes:  1024 * 1024,
 	}
 }
 
@@ -148,10 +150,20 @@ type AppServerRunner struct {
 	peer    AppServerTransport
 	bridge  *DynamicBridge
 	options AppServerRunnerOptions
-	events  chan codexwire.Message
+	events  chan retainedAppServerEvent
+
+	eventMu              sync.Mutex
+	eventConsumerStarted bool
+	retainedEventCount   int
+	retainedEventBytes   int
 
 	mu      sync.Mutex
 	started bool
+}
+
+type retainedAppServerEvent struct {
+	message       codexwire.Message
+	retainedBytes int
 }
 
 func NewAppServerRunner(
@@ -177,11 +189,14 @@ func NewAppServerRunner(
 	if options.MaxEventBytes > maxConfiguredAppServerBufferedBytes {
 		return nil, fmt.Errorf("app-server max event bytes exceeds hard maximum %d", maxConfiguredAppServerBufferedBytes)
 	}
-	if options.EventBuffer > maxConfiguredAppServerBufferedBytes/options.MaxEventBytes {
-		return nil, fmt.Errorf(
-			"app-server event buffer could retain more than hard maximum %d bytes",
-			maxConfiguredAppServerBufferedBytes,
-		)
+	if options.MaxEventBufferBytes < 1 {
+		return nil, errors.New("app-server max event buffer bytes must be positive")
+	}
+	if options.MaxEventBufferBytes > maxConfiguredAppServerBufferedBytes {
+		return nil, fmt.Errorf("app-server max event buffer bytes exceeds hard maximum %d", maxConfiguredAppServerBufferedBytes)
+	}
+	if options.MaxEventBytes > options.MaxEventBufferBytes {
+		return nil, errors.New("app-server max event bytes must not exceed max event buffer bytes")
 	}
 	if options.InterruptGrace <= 0 {
 		return nil, errors.New("app-server interrupt grace must be positive")
@@ -199,13 +214,39 @@ func NewAppServerRunner(
 		peer:    peer,
 		bridge:  bridge,
 		options: options,
-		events:  make(chan codexwire.Message, options.EventBuffer),
+		events:  make(chan retainedAppServerEvent, options.EventBuffer),
 	}, nil
 }
 
-// Events contains validated app-server notifications without rewriting their
-// method or params. The channel is bounded and closes when Run returns.
-func (r *AppServerRunner) Events() <-chan codexwire.Message { return r.events }
+// ConsumeEvents synchronously hands one consumer each validated app-server
+// notification without rewriting its method or params. Retention is charged
+// until consume returns, so the configured aggregate byte limit covers both
+// queued events and the event currently crossing the delivery boundary. The
+// stream closes when Run returns and may be consumed exactly once.
+func (r *AppServerRunner) ConsumeEvents(consume func(codexwire.Message)) error {
+	if r == nil {
+		return errors.New("app-server runner is required")
+	}
+	if consume == nil {
+		return errors.New("app-server event consumer is required")
+	}
+	r.eventMu.Lock()
+	if r.eventConsumerStarted {
+		r.eventMu.Unlock()
+		return errors.New("app-server events already have a consumer")
+	}
+	r.eventConsumerStarted = true
+	r.eventMu.Unlock()
+
+	for event := range r.events {
+		consume(event.message)
+		r.eventMu.Lock()
+		r.retainedEventCount--
+		r.retainedEventBytes -= event.retainedBytes
+		r.eventMu.Unlock()
+	}
+	return nil
+}
 
 type appServerReadResult struct {
 	message codexwire.Message
@@ -997,12 +1038,25 @@ func (s *appServerProtocolState) emit(message codexwire.Message) error {
 	}
 	if retained := appServerMessageRetainedBytes(message); retained > s.runner.options.MaxEventBytes {
 		return fmt.Errorf("%w: retained bytes %d, limit %d", ErrAppServerEventTooLarge, retained, s.runner.options.MaxEventBytes)
-	}
-	select {
-	case s.runner.events <- message:
+	} else {
+		s.runner.eventMu.Lock()
+		defer s.runner.eventMu.Unlock()
+		if s.runner.retainedEventCount >= s.runner.options.EventBuffer {
+			return ErrAppServerEventBufferFull
+		}
+		if retained > s.runner.options.MaxEventBufferBytes-s.runner.retainedEventBytes {
+			return fmt.Errorf(
+				"%w: retained bytes %d, buffered bytes %d, limit %d",
+				ErrAppServerEventBufferFull,
+				retained,
+				s.runner.retainedEventBytes,
+				s.runner.options.MaxEventBufferBytes,
+			)
+		}
+		s.runner.retainedEventCount++
+		s.runner.retainedEventBytes += retained
+		s.runner.events <- retainedAppServerEvent{message: message, retainedBytes: retained}
 		return nil
-	default:
-		return ErrAppServerEventBufferFull
 	}
 }
 

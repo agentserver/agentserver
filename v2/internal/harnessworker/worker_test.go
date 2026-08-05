@@ -165,6 +165,23 @@ func TestWorkerRuntimeFailureMessageContainsOnlySafeDiagnostics(t *testing.T) {
 	}
 }
 
+func TestWorkerRunnerOptionsUseSignedAggregateByteLimit(t *testing.T) {
+	manifest := runmanifest.Manifest{Limits: runmanifest.RunLimits{
+		MaxEventBufferBytes:   8 * 1024 * 1024,
+		WorkerCallbackGraceMS: 10_000,
+	}}
+	options := workerRunnerOptions(manifest, nil)
+	if options.EventBuffer != maxConfiguredAppServerEvents {
+		t.Fatalf("event count bound = %d, want %d", options.EventBuffer, maxConfiguredAppServerEvents)
+	}
+	if options.MaxEventBytes != workerMaxEventBytes {
+		t.Fatalf("per-event byte bound = %d, want %d", options.MaxEventBytes, workerMaxEventBytes)
+	}
+	if options.MaxEventBufferBytes != int(manifest.Limits.MaxEventBufferBytes) {
+		t.Fatalf("aggregate byte bound = %d, want %d", options.MaxEventBufferBytes, manifest.Limits.MaxEventBufferBytes)
+	}
+}
+
 const (
 	oneShotPrompt             = "perform the deterministic test turn"
 	oneShotExecutorCapability = "executor-capability-one-shot"
@@ -581,7 +598,12 @@ func newFakeOneShotWorkerRunner(order *workerOrder, codexHome string) *fakeOneSh
 	}
 }
 
-func (runner *fakeOneShotWorkerRunner) Events() <-chan codexwire.Message { return runner.events }
+func (runner *fakeOneShotWorkerRunner) ConsumeEvents(consume func(codexwire.Message)) error {
+	for event := range runner.events {
+		consume(event)
+	}
+	return nil
+}
 
 func (runner *fakeOneShotWorkerRunner) Run(ctx context.Context, request AppServerRunRequest) (AppServerRunResult, error) {
 	runner.request = request

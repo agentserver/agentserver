@@ -111,7 +111,7 @@ func TestAppServerRunnerDrivesDynamicToolLifecycleAndWriteBarrier(t *testing.T) 
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("lifecycle calls = %v, want %v", got, want)
 	}
-	if got, want := collectRunnerEventMethods(runner.Events()), []string{
+	if got, want := collectRunnerEventMethods(runner), []string{
 		"thread/started", "turn/started", "item/completed", "turn/completed",
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("event methods = %v, want %v", got, want)
@@ -517,6 +517,85 @@ func TestAppServerRunnerEventOverflowInterruptsWithoutDispatch(t *testing.T) {
 	}
 }
 
+func TestAppServerRunnerRetainsSmallBurstByActualBytes(t *testing.T) {
+	caller := &fakeDynamicCaller{call: func(context.Context, DynamicCall) (DynamicToolResult, error) {
+		return DynamicToolResult{}, nil
+	}}
+	bridge, err := NewDynamicBridge(caller, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := DefaultAppServerRunnerOptions()
+	options.EventBuffer = maxConfiguredAppServerEvents
+	options.MaxEventBytes = workerMaxEventBytes
+	options.MaxEventBufferBytes = 8 * 1024 * 1024
+	runner, err := NewAppServerRunner(&countingAppServerTransport{}, bridge, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &appServerProtocolState{runner: runner}
+	const eventCount = 128
+	for index := 0; index < eventCount; index++ {
+		message := codexwire.Message{
+			Kind: codexwire.KindNotification, Method: "item/agentMessage/delta",
+			Params: json.RawMessage(`{"delta":"hello"}`),
+		}
+		if err := state.emit(message); err != nil {
+			t.Fatalf("emit small event %d: %v", index, err)
+		}
+	}
+	close(runner.events)
+	consumed := 0
+	if err := runner.ConsumeEvents(func(codexwire.Message) { consumed++ }); err != nil {
+		t.Fatal(err)
+	}
+	if consumed != eventCount {
+		t.Fatalf("consumed events = %d, want %d", consumed, eventCount)
+	}
+	runner.eventMu.Lock()
+	defer runner.eventMu.Unlock()
+	if runner.retainedEventCount != 0 || runner.retainedEventBytes != 0 {
+		t.Fatalf("retained events/bytes after drain = %d/%d", runner.retainedEventCount, runner.retainedEventBytes)
+	}
+}
+
+func TestAppServerRunnerEventAggregateBytesRemainBounded(t *testing.T) {
+	caller := &fakeDynamicCaller{call: func(context.Context, DynamicCall) (DynamicToolResult, error) {
+		return DynamicToolResult{}, nil
+	}}
+	bridge, err := NewDynamicBridge(caller, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := codexwire.Message{
+		Kind: codexwire.KindNotification, Method: "item/agentMessage/delta",
+		Params: json.RawMessage(`{"delta":"bounded"}`),
+	}
+	retained := appServerMessageRetainedBytes(message)
+	options := DefaultAppServerRunnerOptions()
+	options.EventBuffer = maxConfiguredAppServerEvents
+	options.MaxEventBytes = retained
+	options.MaxEventBufferBytes = retained * 2
+	runner, err := NewAppServerRunner(&countingAppServerTransport{}, bridge, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &appServerProtocolState{runner: runner}
+	if err := state.emit(message); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.emit(message); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.emit(message); !errors.Is(err, ErrAppServerEventBufferFull) {
+		t.Fatalf("aggregate byte overflow error = %v", err)
+	}
+	close(runner.events)
+	if err := runner.ConsumeEvents(func(codexwire.Message) {}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAppServerRunnerOversizedEventInterruptsWithoutRetention(t *testing.T) {
 	catalog := runnerTestCatalog(t)
 	var calls atomic.Int64
@@ -620,10 +699,13 @@ func TestAppServerRunnerRejectsUnboundedOptions(t *testing.T) {
 	}{
 		{"event count", func(options *AppServerRunnerOptions) { options.EventBuffer = maxConfiguredAppServerEvents + 1 }, "event buffer exceeds"},
 		{"event bytes", func(options *AppServerRunnerOptions) { options.MaxEventBytes = maxConfiguredAppServerBufferedBytes + 1 }, "max event bytes exceeds"},
+		{"event buffer bytes", func(options *AppServerRunnerOptions) {
+			options.MaxEventBufferBytes = maxConfiguredAppServerBufferedBytes + 1
+		}, "max event buffer bytes exceeds"},
 		{"event aggregate", func(options *AppServerRunnerOptions) {
-			options.EventBuffer = 2
-			options.MaxEventBytes = maxConfiguredAppServerBufferedBytes
-		}, "could retain more"},
+			options.MaxEventBytes = 1024
+			options.MaxEventBufferBytes = 512
+		}, "must not exceed max event buffer bytes"},
 		{"interrupt grace", func(options *AppServerRunnerOptions) { options.InterruptGrace = maxInterruptGrace + time.Second }, "interrupt grace exceeds"},
 		{"prompt bytes", func(options *AppServerRunnerOptions) { options.MaxPromptTextBytes = maxConfiguredPayloadBytes + 1 }, "prompt text bytes exceeds"},
 	} {
@@ -925,10 +1007,12 @@ func receiveRunnerMessage(
 	return message, nil
 }
 
-func collectRunnerEventMethods(events <-chan codexwire.Message) []string {
+func collectRunnerEventMethods(runner *AppServerRunner) []string {
 	var methods []string
-	for event := range events {
+	if err := runner.ConsumeEvents(func(event codexwire.Message) {
 		methods = append(methods, event.Method)
+	}); err != nil {
+		panic(err)
 	}
 	return methods
 }

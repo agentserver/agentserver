@@ -45,6 +45,28 @@ jobs:
           go-version-file: v2/go.mod
           cache-dependency-path: v2/go.sum
 
+      - name: Configure code.byted.org read access
+        env:
+          CODE_BYTED_USERNAME: ${{ secrets.CODE_BYTED_USERNAME }}
+          CODE_BYTED_TOKEN: ${{ secrets.CODE_BYTED_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${CODE_BYTED_USERNAME}" && test -n "${CODE_BYTED_TOKEN}" || {
+            echo 'CODE_BYTED_USERNAME and CODE_BYTED_TOKEN Actions secrets are required' >&2
+            exit 1
+          }
+          credential_file="${RUNNER_TEMP}/code-byted.credentials"
+          umask 077
+          git config --global credential.helper "store --file=${credential_file}"
+          printf 'protocol=https\nhost=code.byted.org\nusername=%s\npassword=%s\n\n' \
+            "${CODE_BYTED_USERNAME}" "${CODE_BYTED_TOKEN}" | git credential approve
+          printf '%s\n' \
+            'GIT_TERMINAL_PROMPT=0' \
+            'GOPRIVATE=code.byted.org' \
+            'GONOSUMDB=code.byted.org' >>"${GITHUB_ENV}"
+          GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code \
+            https://code.byted.org/security/zti-jwt-golang.git HEAD >/dev/null
+
       - uses: pnpm/action-setup@v4
         with:
           version: 11.18.0

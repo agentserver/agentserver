@@ -83,8 +83,8 @@ case "${engine}" in
     apple-container)
 		command -v container >/dev/null 2>&1 || fail "Apple container CLI is required"
 		case "$(container --version)" in
-			'container CLI version 1.2.0 '*) ;;
-			*) fail "exact Apple container CLI 1.2.0 is required" ;;
+			'container CLI version 1.2.2 '*) ;;
+			*) fail "exact Apple container CLI 1.2.2 is required" ;;
 		esac
 		;;
     docker-buildx)

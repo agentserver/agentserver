@@ -22,6 +22,10 @@ const (
 	ociImageConfigMediaType   = "application/vnd.oci.image.config.v1+json"
 	ociGzipLayerMediaType     = "application/vnd.oci.image.layer.v1.tar+gzip"
 	ociDefaultPath            = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	ociBuildkitEmptyLayer     = "sha256:4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1"
+	ociBuildkitEmptyLayerSize = int64(32)
+	ociEmptyTarDiffID         = "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef"
+	managedWorkdirHistory     = "WORKDIR /workspace"
 
 	maximumOCIDocumentBytes = int64(1024 * 1024)
 	maximumOCIBlobBytes     = int64(512 * 1024 * 1024)
@@ -103,8 +107,9 @@ type OCIImageEvidence struct {
 
 // VerifyImageOCI proves the saved OCI image itself has one manifest for the
 // platform named by the external manifest, the locked runtime configuration,
-// exact descriptor digests, and
-// only manifest-declared rootfs entries. It intentionally avoids a container
+// exact descriptor digests, and only manifest-declared rootfs entries. The
+// managed-sandbox profile additionally locks the canonical empty WORKDIR layer
+// emitted by Apple container 1.2.2. It intentionally avoids a container
 // export because runtimes inject dev, proc, sys, hostname, and hosts entries.
 func VerifyImageOCI(reader io.Reader, manifestBytes []byte) error {
 	_, err := VerifyImageOCIWithEvidence(reader, manifestBytes)
@@ -167,8 +172,15 @@ func verifyOCIArchiveWithEvidence(reader io.Reader, manifest Manifest, directori
 	if err := decodeOCIDocument("OCI image manifest", manifestBytes, &imageManifest); err != nil {
 		return OCIImageEvidence{}, err
 	}
-	if imageManifest.SchemaVersion != 2 || imageManifest.MediaType != ociImageManifestMediaType || len(imageManifest.Layers) != 2 {
-		return OCIImageEvidence{}, errors.New("production OCI image manifest must contain exactly two layers")
+	expectedLayers := expectedOCILayerCount(manifest.Kind)
+	if imageManifest.SchemaVersion != 2 || imageManifest.MediaType != ociImageManifestMediaType || len(imageManifest.Layers) != expectedLayers {
+		return OCIImageEvidence{}, fmt.Errorf("production OCI %s image manifest must contain exactly %d layers", manifest.Kind, expectedLayers)
+	}
+	if manifest.Kind == KindManagedSandbox {
+		workdirLayer := imageManifest.Layers[expectedLayers-1]
+		if workdirLayer.Digest != ociBuildkitEmptyLayer || workdirLayer.Size != ociBuildkitEmptyLayerSize {
+			return OCIImageEvidence{}, errors.New("production managed-sandbox OCI image lacks the locked empty WORKDIR layer")
+		}
 	}
 	if imageManifest.Config.Platform != nil || len(imageManifest.Config.Annotations) != 0 {
 		return OCIImageEvidence{}, errors.New("production OCI config descriptor contains unexpected metadata")
@@ -421,8 +433,9 @@ func resolveOCIDescriptor(descriptor ociDescriptor, mediaType string, blobs map[
 
 func validateOCIImageConfig(config ociImageConfig, manifest Manifest) error {
 	architecture := platformArchitecture(manifest.Platform)
-	if config.Architecture != architecture || config.OS != "linux" || config.RootFS.Type != "layers" || len(config.RootFS.DiffIDs) != 2 {
-		return fmt.Errorf("production OCI config is not a two-layer linux/%s image", architecture)
+	expectedLayers := expectedOCILayerCount(manifest.Kind)
+	if config.Architecture != architecture || config.OS != "linux" || config.RootFS.Type != "layers" || len(config.RootFS.DiffIDs) != expectedLayers {
+		return fmt.Errorf("production OCI %s config is not a %d-layer linux/%s image", manifest.Kind, expectedLayers, architecture)
 	}
 	if _, err := time.Parse(time.RFC3339Nano, config.Created); err != nil {
 		return errors.New("production OCI config has invalid creation time")
@@ -431,6 +444,9 @@ func validateOCIImageConfig(config ociImageConfig, manifest Manifest) error {
 		if !strings.HasPrefix(digest, "sha256:") || !digestPattern.MatchString(strings.TrimPrefix(digest, "sha256:")) {
 			return errors.New("production OCI config has invalid diff ID")
 		}
+	}
+	if manifest.Kind == KindManagedSandbox && config.RootFS.DiffIDs[expectedLayers-1] != ociEmptyTarDiffID {
+		return errors.New("production managed-sandbox OCI config lacks the locked empty WORKDIR diff ID")
 	}
 	expectedUser := "65534:65534"
 	expectedWorkingDirectory := "/"
@@ -456,19 +472,29 @@ func validateOCIImageConfig(config ociImageConfig, manifest Manifest) error {
 		config.Config.StopSignal != "SIGTERM" || !maps.Equal(config.Config.Labels, expectedLabels) {
 		return errors.New("production OCI runtime configuration differs from the locked profile")
 	}
-	nonEmptyLayers := 0
+	nonEmptyHistory := make([]string, 0, expectedLayers)
 	for _, history := range config.History {
 		if _, err := time.Parse(time.RFC3339Nano, history.Created); err != nil || history.CreatedBy == "" || history.Comment != "buildkit.dockerfile.v0" {
 			return errors.New("production OCI config contains invalid history")
 		}
 		if !history.EmptyLayer {
-			nonEmptyLayers++
+			nonEmptyHistory = append(nonEmptyHistory, history.CreatedBy)
 		}
 	}
-	if nonEmptyLayers != 2 {
-		return errors.New("production OCI config history does not describe exactly two layers")
+	if len(nonEmptyHistory) != expectedLayers {
+		return fmt.Errorf("production OCI %s config history does not describe exactly %d layers", manifest.Kind, expectedLayers)
+	}
+	if manifest.Kind == KindManagedSandbox && nonEmptyHistory[expectedLayers-1] != managedWorkdirHistory {
+		return errors.New("production managed-sandbox OCI config history lacks the locked WORKDIR instruction")
 	}
 	return nil
+}
+
+func expectedOCILayerCount(kind string) int {
+	if kind == KindManagedSandbox {
+		return 3
+	}
+	return 2
 }
 
 func verifyOCILayer(compressed []byte, verifier *tarEntryVerifier) (string, error) {

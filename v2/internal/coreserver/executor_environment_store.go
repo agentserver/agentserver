@@ -17,8 +17,9 @@ func (queries StateStoreExecutorEnvironmentQueries) ListExecutorEnvironments(ctx
 		return nil, errors.New("nil core state store")
 	}
 	environments, err := queries.Store.ListOnlineExecutorEnvironments(ctx, coredb.ListOnlineExecutorEnvironmentsQuery{
-		WorkspaceID: request.WorkspaceID,
-		ExecutorID:  request.ExecutorID,
+		WorkspaceID: request.WorkspaceID, SessionID: request.SessionID,
+		RunAttemptID: request.RunAttemptID, RunAttemptGeneration: request.RunAttemptGeneration,
+		ExecutorID: request.ExecutorID,
 	})
 	if err != nil {
 		return nil, err
@@ -34,6 +35,9 @@ func (queries StateStoreExecutorEnvironmentQueries) ListExecutorEnvironments(ctx
 			InsecureDev:          environment.InsecureDev,
 			EnvironmentVersion:   environment.EnvironmentVersion,
 			ConnectionGeneration: environment.ConnectionGeneration,
+			BackendKind:          environment.BackendKind,
+			TargetID:             environment.TargetID,
+			TargetGeneration:     environment.TargetGeneration,
 		}
 	}
 	return result, nil

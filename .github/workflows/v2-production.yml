@@ -19,12 +19,17 @@ concurrency:
 env:
   SERVICE_REPOSITORY: ghcr.io/agentserver/v2-service
   HARNESS_REPOSITORY: ghcr.io/agentserver/v2-harness
+  MANAGED_SANDBOX_REPOSITORY: ghcr.io/agentserver/v2-managed-sandbox
   HYDRA_REPOSITORY: ghcr.io/agentserver/hydra
   CHART_REPOSITORY: ghcr.io/agentserver/agentserver-v2
   CODEX_URL: https://github.com/openai/codex/releases/download/rust-v0.146.0/codex-x86_64-unknown-linux-musl.tar.gz
   CODEX_ARCHIVE_SHA256: 5ba3b9405543953081f661d0854d266f76e2abbe51d41349355a36de7673776a
   BWRAP_URL: https://github.com/openai/codex/releases/download/rust-v0.146.0/bwrap-x86_64-unknown-linux-musl.tar.gz
   BWRAP_ARCHIVE_SHA256: debe6f23b085976553083e2a3090156f6e38bdc0f44245f4ee904fb515b8b4fe
+  LARK_CLI_URL: https://github.com/larksuite/cli/releases/download/v1.0.69/lark-cli-1.0.69-linux-amd64.tar.gz
+  LARK_CLI_ARCHIVE_SHA256: 224e1f8c04bb194d668c750928c5b2f4942bbffd62a118c3dc163f27ee6e5c09
+  LARK_CLI_SHA256: faee6cf3f4d87194e079820ff7809182cbda1d815bc902700649c737ac0ed943
+  LARK_SKILL_SHA256: 3c03773ac40132e68c406c715d69847c1f60f10e00982bac9782d7bc5ac8bd29
   HYDRA_SOURCE: docker.io/oryd/hydra@sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b
   HYDRA_DIGEST: sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b
 
@@ -79,37 +84,55 @@ jobs:
             v2/platform-web/dist \
             v2/a2ui-web/dist
 
-      - name: Download and verify stock Codex runtime
+      - name: Download and verify pinned runtime artifacts
         id: runtime
         run: |
           set -euo pipefail
           runtime_dir="${RUNNER_TEMP}/agentserver-stock-runtime"
-          install -d -m 0700 "${runtime_dir}/codex-unpacked" "${runtime_dir}/bwrap-unpacked"
+          install -d -m 0700 \
+            "${runtime_dir}/codex-unpacked" \
+            "${runtime_dir}/bwrap-unpacked" \
+            "${runtime_dir}/lark-cli-unpacked"
           curl --fail --show-error --location --proto '=https' --tlsv1.2 \
             "${CODEX_URL}" --output "${runtime_dir}/codex.tar.gz"
           curl --fail --show-error --location --proto '=https' --tlsv1.2 \
             "${BWRAP_URL}" --output "${runtime_dir}/bwrap.tar.gz"
+          curl --fail --show-error --location --proto '=https' --tlsv1.2 \
+            "${LARK_CLI_URL}" --output "${runtime_dir}/lark-cli.tar.gz"
           printf '%s  %s\n' "${CODEX_ARCHIVE_SHA256}" "${runtime_dir}/codex.tar.gz" | sha256sum --check --strict
           printf '%s  %s\n' "${BWRAP_ARCHIVE_SHA256}" "${runtime_dir}/bwrap.tar.gz" | sha256sum --check --strict
+          printf '%s  %s\n' "${LARK_CLI_ARCHIVE_SHA256}" "${runtime_dir}/lark-cli.tar.gz" | sha256sum --check --strict
           tar --extract --gzip --file "${runtime_dir}/codex.tar.gz" --directory "${runtime_dir}/codex-unpacked" --no-same-owner
           tar --extract --gzip --file "${runtime_dir}/bwrap.tar.gz" --directory "${runtime_dir}/bwrap-unpacked" --no-same-owner
+          tar --extract --gzip --file "${runtime_dir}/lark-cli.tar.gz" --directory "${runtime_dir}/lark-cli-unpacked" --no-same-owner
           codex_source=$(find "${runtime_dir}/codex-unpacked" -type f -name 'codex-x86_64-unknown-linux-musl' -print)
           bwrap_source=$(find "${runtime_dir}/bwrap-unpacked" -type f -name 'bwrap-x86_64-unknown-linux-musl' -print)
+          lark_cli_source=$(find "${runtime_dir}/lark-cli-unpacked" -type f -name 'lark-cli' -print)
           test -n "${codex_source}" && test "${codex_source}" = "$(printf '%s' "${codex_source}" | head -n 1)"
           test -n "${bwrap_source}" && test "${bwrap_source}" = "$(printf '%s' "${bwrap_source}" | head -n 1)"
+          test -n "${lark_cli_source}" && test "${lark_cli_source}" = "$(printf '%s' "${lark_cli_source}" | head -n 1)"
           install -m 0555 "${codex_source}" "${runtime_dir}/codex"
           install -m 0555 "${bwrap_source}" "${runtime_dir}/bwrap"
+          install -m 0555 "${lark_cli_source}" "${runtime_dir}/lark-cli"
           printf '%s  %s\n' '2e863156ed35ecc5253b1e2f907a9143077b9f7cb51942070c61996471ff6e04' "${runtime_dir}/codex" | sha256sum --check --strict
           printf '%s  %s\n' '77360cb751ccedc5971391444ac86a8a33c15b04d6b4a6fe45f5d25496e62c4c' "${runtime_dir}/bwrap" | sha256sum --check --strict
+          printf '%s  %s\n' "${LARK_CLI_SHA256}" "${runtime_dir}/lark-cli" | sha256sum --check --strict
+          printf '%s  %s\n' "${LARK_SKILL_SHA256}" "${GITHUB_WORKSPACE}/v2/deploy/production/lark-readonly.SKILL.md" | sha256sum --check --strict
           test "$(stat --format=%s "${runtime_dir}/codex")" = '311001136'
           test "$(stat --format=%s "${runtime_dir}/bwrap")" = '529776'
+          test "$(stat --format=%s "${runtime_dir}/lark-cli")" = '42463384'
+          test "$("${runtime_dir}/lark-cli" --version)" = 'lark-cli version 1.0.69'
           printf 'codex=%s\n' "${runtime_dir}/codex" >>"${GITHUB_OUTPUT}"
           printf 'bwrap=%s\n' "${runtime_dir}/bwrap" >>"${GITHUB_OUTPUT}"
+          printf 'lark_cli=%s\n' "${runtime_dir}/lark-cli" >>"${GITHUB_OUTPUT}"
+          printf 'lark_skill=%s\n' "${GITHUB_WORKSPACE}/v2/deploy/production/lark-readonly.SKILL.md" >>"${GITHUB_OUTPUT}"
 
       - name: Build and verify closed-world OCI images
         env:
           CODEX_PATH: ${{ steps.runtime.outputs.codex }}
           BWRAP_PATH: ${{ steps.runtime.outputs.bwrap }}
+          LARK_CLI_PATH: ${{ steps.runtime.outputs.lark_cli }}
+          LARK_SKILL_PATH: ${{ steps.runtime.outputs.lark_skill }}
         run: |
           set -euo pipefail
           build_log="${RUNNER_TEMP}/agentserver-v2-image-build.log"
@@ -117,8 +140,11 @@ jobs:
               --platform=linux-amd64 \
               --codex="${CODEX_PATH}" \
               --bwrap="${BWRAP_PATH}" \
+              --lark-cli="${LARK_CLI_PATH}" \
+              --lark-skill="${LARK_SKILL_PATH}" \
               --service-image="${SERVICE_REPOSITORY}:sha-${GITHUB_SHA}" \
               --harness-image="${HARNESS_REPOSITORY}:sha-${GITHUB_SHA}" \
+              --managed-sandbox-image="${MANAGED_SANDBOX_REPOSITORY}:sha-${GITHUB_SHA}" \
               --engine=docker-buildx \
               --output-dir="${RUNNER_TEMP}/agentserver-v2-image-evidence" \
               2>&1 | tee "${build_log}"; then
@@ -142,10 +168,13 @@ jobs:
           evidence="${RUNNER_TEMP}/agentserver-v2-image-evidence"
           service_tag="${SERVICE_REPOSITORY}:sha-${GITHUB_SHA}"
           harness_tag="${HARNESS_REPOSITORY}:sha-${GITHUB_SHA}"
+          managed_sandbox_tag="${MANAGED_SANDBOX_REPOSITORY}:sha-${GITHUB_SHA}"
           skopeo copy --retry-times 3 \
             "oci-archive:${evidence}/service-image.oci.tar" "docker://${service_tag}"
           skopeo copy --retry-times 3 \
             "oci-archive:${evidence}/harness-image.oci.tar" "docker://${harness_tag}"
+          skopeo copy --retry-times 3 \
+            "oci-archive:${evidence}/managed-sandbox-image.oci.tar" "docker://${managed_sandbox_tag}"
           # Push the convenience tags from the already-verified local archives.
           # Reading a just-created private GHCR manifest back by digest can race
           # package visibility and return a non-retryable 403 even though the
@@ -154,17 +183,22 @@ jobs:
             "oci-archive:${evidence}/service-image.oci.tar" "docker://${SERVICE_REPOSITORY}:main"
           skopeo copy --retry-times 3 \
             "oci-archive:${evidence}/harness-image.oci.tar" "docker://${HARNESS_REPOSITORY}:main"
+          skopeo copy --retry-times 3 \
+            "oci-archive:${evidence}/managed-sandbox-image.oci.tar" "docker://${MANAGED_SANDBOX_REPOSITORY}:main"
           skopeo copy --retry-times 3 --override-os linux --override-arch amd64 \
             "docker://${HYDRA_SOURCE}" "docker://${HYDRA_REPOSITORY}:26.2.0-amd64"
           service_digest=$(skopeo inspect --format '{{.Digest}}' "docker://${service_tag}")
           harness_digest=$(skopeo inspect --format '{{.Digest}}' "docker://${harness_tag}")
+          managed_sandbox_digest=$(skopeo inspect --format '{{.Digest}}' "docker://${managed_sandbox_tag}")
           hydra_digest=$(skopeo inspect --format '{{.Digest}}' "docker://${HYDRA_REPOSITORY}:26.2.0-amd64")
           test "$(skopeo inspect --format '{{.Os}}/{{.Architecture}}' "docker://${service_tag}")" = 'linux/amd64'
           test "$(skopeo inspect --format '{{.Os}}/{{.Architecture}}' "docker://${harness_tag}")" = 'linux/amd64'
+          test "$(skopeo inspect --format '{{.Os}}/{{.Architecture}}' "docker://${managed_sandbox_tag}")" = 'linux/amd64'
           test "$(skopeo inspect --format '{{.Os}}/{{.Architecture}}' "docker://${HYDRA_REPOSITORY}:26.2.0-amd64")" = 'linux/amd64'
           test "${hydra_digest}" = "${HYDRA_DIGEST}"
           printf 'service_digest=%s\n' "${service_digest}" >>"${GITHUB_OUTPUT}"
           printf 'harness_digest=%s\n' "${harness_digest}" >>"${GITHUB_OUTPUT}"
+          printf 'managed_sandbox_digest=%s\n' "${managed_sandbox_digest}" >>"${GITHUB_OUTPUT}"
           printf 'hydra_digest=%s\n' "${hydra_digest}" >>"${GITHUB_OUTPUT}"
 
       - name: Generate and publish environment-locked Helm chart
@@ -172,21 +206,78 @@ jobs:
         env:
           SERVICE_DIGEST: ${{ steps.images.outputs.service_digest }}
           HARNESS_DIGEST: ${{ steps.images.outputs.harness_digest }}
+          MANAGED_SANDBOX_DIGEST: ${{ steps.images.outputs.managed_sandbox_digest }}
           PUBLISHED_HYDRA_DIGEST: ${{ steps.images.outputs.hydra_digest }}
+          SG_PRODUCTION_CONFIG_B64: ${{ secrets.V2_SG_PRODUCTION_CONFIG_B64 }}
         run: |
           set -euo pipefail
           release_dir="${RUNNER_TEMP}/agentserver-v2-release"
           chart_dir="${release_dir}/agentserver-v2"
           install -d -m 0700 "${release_dir}"
-          jq \
-            --arg service "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-service@${SERVICE_DIGEST}" \
-            --arg harness "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-harness@${HARNESS_DIGEST}" \
-            --arg hydra "registry-sg.byted.cs.ac.cn/ghcr/agentserver/hydra@${PUBLISHED_HYDRA_DIGEST}" \
-            '.images.service = $service | .images.harness = $harness | .images.hydra = $hydra' \
-            v2/deploy/production/config.example.json >"${release_dir}/production.json"
+          # The checked-in config.example.json is deliberately a renderer
+          # fixture. A Chart may only be promoted from the separately
+          # provisioned, evidence-backed SG configuration secret. Keep the
+          # decoded file owner-readable and never echo its contents.
+          if [ -z "${SG_PRODUCTION_CONFIG_B64:-}" ]; then
+            echo 'V2_SG_PRODUCTION_CONFIG_B64 is required to publish a production Chart (images were published; Chart promotion is blocked)' >&2
+            exit 1
+          fi
+          umask 077
+          production_template="${release_dir}/sg-production-template.json"
+          if ! printf '%s' "${SG_PRODUCTION_CONFIG_B64}" | base64 --decode >"${production_template}"; then
+            echo 'V2_SG_PRODUCTION_CONFIG_B64 is not valid base64' >&2
+            exit 1
+          fi
+          chmod 0600 "${production_template}"
+          go -C v2 run ./cmd/agentserver-deploy validate \
+            --config="${production_template}"
+          go -C v2 run ./cmd/agentserver-deploy lock-release \
+            --config="${production_template}" \
+            --output="${release_dir}/production.json" \
+            --service-image="registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-service@${SERVICE_DIGEST}" \
+            --harness-image="registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-harness@${HARNESS_DIGEST}" \
+            --hydra-image="registry-sg.byted.cs.ac.cn/ghcr/agentserver/hydra@${PUBLISHED_HYDRA_DIGEST}" \
+            --managed-sandbox-image="registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-managed-sandbox@${MANAGED_SANDBOX_DIGEST}" \
+            --lark-cli-sha256="${LARK_CLI_SHA256}" \
+            --lark-skill-sha256="${LARK_SKILL_SHA256}"
+          go -C v2 run ./cmd/agentserver-image verify-managed-release \
+            --config="${release_dir}/production.json" \
+            --harness-manifest="${RUNNER_TEMP}/agentserver-v2-image-evidence/harness-image-manifest.json" \
+            --harness-archive="${RUNNER_TEMP}/agentserver-v2-image-evidence/harness-image.oci.tar" \
+            --manifest="${RUNNER_TEMP}/agentserver-v2-image-evidence/managed-sandbox-image-manifest.json" \
+            --archive="${RUNNER_TEMP}/agentserver-v2-image-evidence/managed-sandbox-image.oci.tar" \
+            | tee "${release_dir}/managed-release-verification.txt"
           go -C v2 run ./cmd/agentserver-deploy chart \
             --config="${release_dir}/production.json" \
             --output="${chart_dir}"
+          helm lint --strict --namespace agentserver "${chart_dir}"
+          helm template agentserver-v2 "${chart_dir}" --namespace agentserver >/dev/null
+          managed_stage=$(jq -r '.managedExecutor.stage' "${release_dir}/production.json")
+          case "${managed_stage}" in
+            policy-bootstrap)
+              helm lint --strict --namespace agentserver \
+                --set taeNetworkProbe.enabled=true \
+                --set-string taeNetworkProbe.policyRevision=ci-published-revision-1 \
+                "${chart_dir}"
+              helm template agentserver-v2 "${chart_dir}" --namespace agentserver \
+                --set taeNetworkProbe.enabled=true \
+                --set-string taeNetworkProbe.policyRevision=ci-published-revision-1 \
+                --show-only templates/25-tae-network-probe.yaml >/dev/null
+              ;;
+            active|disabled)
+              if helm template agentserver-v2 "${chart_dir}" --namespace agentserver \
+                --set taeNetworkProbe.enabled=true \
+                --set-string taeNetworkProbe.policyRevision=ci-published-revision-1 \
+                >/dev/null 2>&1; then
+                echo "${managed_stage} Chart unexpectedly enabled the TAE network probe" >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "unsupported managed executor stage in locked Chart: ${managed_stage}" >&2
+              exit 1
+              ;;
+          esac
           deployment_sha=$(sed -n 's/^deploymentConfigSHA256: "\([0-9a-f]\{64\}\)"$/\1/p' "${chart_dir}/values.yaml")
           chart_version=$(sed -n 's/^version: \([^[:space:]]*\)$/\1/p' "${chart_dir}/Chart.yaml")
           test "${#deployment_sha}" = 64
@@ -203,6 +294,7 @@ jobs:
         env:
           SERVICE_DIGEST: ${{ steps.images.outputs.service_digest }}
           HARNESS_DIGEST: ${{ steps.images.outputs.harness_digest }}
+          MANAGED_SANDBOX_DIGEST: ${{ steps.images.outputs.managed_sandbox_digest }}
           PUBLISHED_HYDRA_DIGEST: ${{ steps.images.outputs.hydra_digest }}
           CHART_VERSION: ${{ steps.chart.outputs.version }}
         run: |
@@ -211,6 +303,8 @@ jobs:
             "docker://${SERVICE_REPOSITORY}@${SERVICE_DIGEST}")" = 'linux/amd64'
           test "$(skopeo inspect --no-creds --format '{{.Os}}/{{.Architecture}}' \
             "docker://${HARNESS_REPOSITORY}@${HARNESS_DIGEST}")" = 'linux/amd64'
+          test "$(skopeo inspect --no-creds --format '{{.Os}}/{{.Architecture}}' \
+            "docker://${MANAGED_SANDBOX_REPOSITORY}@${MANAGED_SANDBOX_DIGEST}")" = 'linux/amd64'
           test "$(skopeo inspect --no-creds --format '{{.Os}}/{{.Architecture}}' \
             "docker://${HYDRA_REPOSITORY}@${PUBLISHED_HYDRA_DIGEST}")" = 'linux/amd64'
           anonymous_helm_config="${RUNNER_TEMP}/anonymous-helm-registry.json"
@@ -222,6 +316,7 @@ jobs:
         env:
           SERVICE_DIGEST: ${{ steps.images.outputs.service_digest }}
           HARNESS_DIGEST: ${{ steps.images.outputs.harness_digest }}
+          MANAGED_SANDBOX_DIGEST: ${{ steps.images.outputs.managed_sandbox_digest }}
           PUBLISHED_HYDRA_DIGEST: ${{ steps.images.outputs.hydra_digest }}
           CHART_VERSION: ${{ steps.chart.outputs.version }}
           DEPLOYMENT_SHA: ${{ steps.chart.outputs.deployment_sha }}
@@ -232,6 +327,9 @@ jobs:
             printf -- '- Platform: `linux/amd64`\n'
             printf -- '- Service: `%s@%s`\n' "${SERVICE_REPOSITORY}" "${SERVICE_DIGEST}"
             printf -- '- Harness: `%s@%s`\n' "${HARNESS_REPOSITORY}" "${HARNESS_DIGEST}"
+            printf -- '- Managed sandbox: `%s@%s`\n' "${MANAGED_SANDBOX_REPOSITORY}" "${MANAGED_SANDBOX_DIGEST}"
+            printf -- '- Lark CLI SHA-256: `%s`\n' "${LARK_CLI_SHA256}"
+            printf -- '- Lark Skill SHA-256: `%s`\n' "${LARK_SKILL_SHA256}"
             printf -- '- Hydra: `%s@%s`\n' "${HYDRA_REPOSITORY}" "${PUBLISHED_HYDRA_DIGEST}"
             printf -- '- Chart: `oci://%s:%s`\n' "${CHART_REPOSITORY}" "${CHART_VERSION}"
             printf -- '- Deployment config SHA-256: `%s`\n' "${DEPLOYMENT_SHA}"
@@ -245,4 +343,5 @@ jobs:
           path: |
             ${{ runner.temp }}/agentserver-v2-image-evidence/*-image-manifest.json
             ${{ steps.chart.outputs.release_dir }}/production.json
+            ${{ steps.chart.outputs.release_dir }}/managed-release-verification.txt
             ${{ steps.chart.outputs.release_dir }}/agentserver-v2-*.tgz

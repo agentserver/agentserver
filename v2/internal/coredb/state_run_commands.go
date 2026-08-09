@@ -123,11 +123,11 @@ WHERE r.workspace_id = $1
 			// changed after the original run was committed, but that must not make
 			// recovery of the original run conflict.
 			if !requireUserMembership {
-				prompt, policy, llmGateway, launchErr := s.readRunLaunchInput(ctx, transaction, operation, existing.ID)
+				prompt, policy, llmGateway, larkEgress, launchErr := s.readRunLaunchInput(ctx, transaction, operation, existing.ID)
 				if launchErr != nil {
 					return CreateRunResult{}, launchErr
 				}
-				if !runLaunchInputMatches(prompt, policy, llmGateway, command) {
+				if !runLaunchInputMatches(prompt, policy, llmGateway, larkEgress, command) {
 					return CreateRunResult{}, &StateError{
 						Code:         ErrorIdempotencyConflict,
 						Operation:    operation,
@@ -194,6 +194,11 @@ RETURNING %s`, s.table("runs"), runColumns(""))
 		}
 		if command.LLMGateway != (RunLLMGatewayBinding{}) {
 			if err := s.requireCreateRunLLMGateway(ctx, transaction, command); err != nil {
+				return CreateRunResult{}, err
+			}
+		}
+		if command.LarkEgress != (RunLarkEgressBinding{}) {
+			if err := s.requireCreateRunLarkEgress(ctx, transaction, command); err != nil {
 				return CreateRunResult{}, err
 			}
 		}
@@ -280,6 +285,14 @@ func validateCreateRunBase(command CreateRunCommand) error {
 		}
 		if command.LLMGateway.GrantUserID != command.ActorID {
 			return errors.New("LLM gateway grant user must be the run actor")
+		}
+	}
+	if command.LarkEgress != (RunLarkEgressBinding{}) {
+		if err := validateRunLarkEgressBinding(command.LarkEgress); err != nil {
+			return err
+		}
+		if command.LarkEgress.GrantUserID != command.ActorID {
+			return errors.New("Lark egress grant user must be the run actor")
 		}
 	}
 	return validateTransitionRecord(command.Record)

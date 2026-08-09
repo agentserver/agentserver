@@ -46,6 +46,7 @@
         "catalogDigest": {"$ref": "#/$defs/sha256"},
         "codexRuntimeManifestDigest": {"$ref": "#/$defs/sha256"},
         "checkpointAllowlistVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "packSetDigest": {"$ref": "#/$defs/sha256"},
         "object": {
           "allOf": [
             {"$ref": "#/$defs/objectPointer"},
@@ -57,6 +58,16 @@
             }
           ]
         }
+      }
+    },
+    "toolPack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["packId", "packSetDigest", "skillSha256"],
+      "properties": {
+        "packId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}@v[1-9][0-9]{0,8}$"},
+        "packSetDigest": {"$ref": "#/$defs/sha256"},
+        "skillSha256": {"$ref": "#/$defs/sha256"}
       }
     },
     "modelRoute": {
@@ -162,7 +173,7 @@
       "additionalProperties": false,
       "required": ["manifestVersion", "canonicalizerVersion", "workspaceId", "sessionId", "runId", "runAttemptId", "runAttemptGeneration", "holderId", "prompt", "codexRuntimeManifestDigest", "model", "executorMcp", "executorPolicy", "limits", "checkpointAllowlistVersion", "workerImageDigest", "expectedServiceAccount", "controllerCallback"],
       "properties": {
-        "manifestVersion": {"const": 2},
+        "manifestVersion": {"const": 3},
         "canonicalizerVersion": {"const": "rfc8785-v1"},
         "workspaceId": {"$ref": "#/$defs/uuid"},
         "sessionId": {"$ref": "#/$defs/uuid"},
@@ -176,6 +187,7 @@
         "model": {"$ref": "#/$defs/modelRoute"},
         "executorMcp": {"$ref": "#/$defs/executorMcp"},
         "executorPolicy": {"$ref": "#/$defs/executorPolicy"},
+        "toolPack": {"$ref": "#/$defs/toolPack"},
         "limits": {"$ref": "#/$defs/runLimits"},
         "checkpointAllowlistVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
         "workerImageDigest": {"$ref": "#/$defs/sha256"},

@@ -13,6 +13,10 @@ func scanExecution(scanner rowScanner) (Execution, error) {
 	var operationPlanHash []byte
 	var policyContextHash []byte
 	var terminalResultHash []byte
+	var executorID *string
+	var targetKind *string
+	var targetID *string
+	var targetGeneration *int64
 	var dispatchedAt *time.Time
 	var terminalAt *time.Time
 	err := scanner.Scan(
@@ -21,8 +25,11 @@ func scanExecution(scanner rowScanner) (Execution, error) {
 		&execution.RunAttemptID,
 		&execution.RunAttemptGeneration,
 		&execution.AppServerToolCallID,
-		&execution.ExecutorID,
+		&executorID,
 		&execution.EnvID,
+		&targetKind,
+		&targetID,
+		&targetGeneration,
 		&execution.ToolName,
 		&execution.ToolVersion,
 		&execution.MapperVersion,
@@ -44,6 +51,18 @@ func scanExecution(scanner rowScanner) (Execution, error) {
 	)
 	if err != nil {
 		return Execution{}, err
+	}
+	if executorID != nil {
+		execution.ExecutorID = *executorID
+	}
+	if targetKind != nil {
+		execution.Target.Kind = *targetKind
+	}
+	if targetID != nil {
+		execution.Target.ID = *targetID
+	}
+	if targetGeneration != nil {
+		execution.Target.Generation = *targetGeneration
 	}
 	execution.DispatchedAt = dispatchedAt
 	execution.TerminalAt = terminalAt
@@ -76,6 +95,9 @@ func scanExecutionOperation(scanner rowScanner) (ExecutionOperation, error) {
 	var acknowledgementHash []byte
 	var terminalResultHash []byte
 	var connectionGeneration *int64
+	var targetKind *string
+	var targetID *string
+	var targetGeneration *int64
 	var dispatchedAt *time.Time
 	var acknowledgedAt *time.Time
 	var terminalAt *time.Time
@@ -90,6 +112,9 @@ func scanExecutionOperation(scanner rowScanner) (ExecutionOperation, error) {
 		&paramsHash,
 		&operation.Status,
 		&connectionGeneration,
+		&targetKind,
+		&targetID,
+		&targetGeneration,
 		&acknowledgementHash,
 		&terminalResultHash,
 		&dispatchedAt,
@@ -104,6 +129,15 @@ func scanExecutionOperation(scanner rowScanner) (ExecutionOperation, error) {
 	}
 	if connectionGeneration != nil {
 		operation.ConnectionGeneration = *connectionGeneration
+	}
+	if targetKind != nil {
+		operation.Target.Kind = *targetKind
+	}
+	if targetID != nil {
+		operation.Target.ID = *targetID
+	}
+	if targetGeneration != nil {
+		operation.Target.Generation = *targetGeneration
 	}
 	operation.DispatchedAt = dispatchedAt
 	operation.AcknowledgedAt = acknowledgedAt
@@ -139,6 +173,9 @@ func executionColumns(alias string) string {
 		alias + "app_server_tool_call_id, " +
 		alias + "executor_id::text, " +
 		alias + "env_id::text, " +
+		alias + "target_kind, " +
+		alias + "target_id::text, " +
+		alias + "target_generation, " +
 		alias + "tool_name, " +
 		alias + "tool_version, " +
 		alias + "mapper_version, " +
@@ -173,6 +210,9 @@ func executionOperationColumns(alias string) string {
 		alias + "params_hash, " +
 		alias + "status, " +
 		alias + "connection_generation, " +
+		alias + "target_kind, " +
+		alias + "target_id::text, " +
+		alias + "target_generation, " +
 		alias + "acknowledgement_hash, " +
 		alias + "terminal_result_hash, " +
 		alias + "dispatched_at, " +

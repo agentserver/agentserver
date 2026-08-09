@@ -78,19 +78,27 @@ type ExecutorConnectionResponse struct {
 }
 
 type ListExecutorEnvironmentsRequest struct {
-	WorkspaceID string `json:"workspaceId"`
-	ExecutorID  string `json:"executorId,omitempty"`
+	WorkspaceID          string `json:"workspaceId"`
+	SessionID            string `json:"sessionId,omitempty"`
+	RunAttemptID         string `json:"runAttemptId,omitempty"`
+	RunAttemptGeneration int64  `json:"runAttemptGeneration,omitempty"`
+	ExecutorID           string `json:"executorId,omitempty"`
 }
 
 type ExecutorEnvironment struct {
 	EnvironmentID        string          `json:"environmentId"`
-	ExecutorID           string          `json:"executorId"`
+	ExecutorID           string          `json:"executorId,omitempty"`
 	RootDescriptor       json.RawMessage `json:"rootDescriptor"`
 	Platform             string          `json:"platform"`
 	OuterProfileVersion  string          `json:"outerProfileVersion"`
 	InsecureDev          bool            `json:"insecureDev"`
 	EnvironmentVersion   int64           `json:"environmentVersion"`
-	ConnectionGeneration int64           `json:"connectionGeneration"`
+	ConnectionGeneration int64           `json:"connectionGeneration,omitempty"`
+	// Backend target fields are omitted for the legacy agentx projection so
+	// existing executor-gateway clients and response fingerprints are stable.
+	BackendKind      string `json:"backendKind,omitempty"`
+	TargetID         string `json:"targetId,omitempty"`
+	TargetGeneration int64  `json:"targetGeneration,omitempty"`
 }
 
 type ListExecutorEnvironmentsResponse struct {

@@ -71,6 +71,33 @@ func TestHarnessManifestPinsSelectedArchitectureArtifacts(t *testing.T) {
 	}
 }
 
+func TestManagedSandboxManifestLocksAMD64CLIAndSkill(t *testing.T) {
+	manifest := validManagedSandboxManifest()
+	if err := manifest.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	files := fileMap(manifest.Files)
+	for _, path := range []string{"usr/local/bin/lark-cli", ManagedLarkSkillPath, CABundlePath} {
+		if _, found := files[path]; !found {
+			t.Fatalf("managed sandbox manifest is missing %s", path)
+		}
+	}
+
+	manifest.Platform = PlatformLinuxARM64
+	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "linux-amd64") {
+		t.Fatalf("managed sandbox arm64 error = %v", err)
+	}
+	manifest = validManagedSandboxManifest()
+	for index := range manifest.Files {
+		if manifest.Files[index].Path == "usr/local/bin/lark-cli" {
+			manifest.Files[index].SHA256 = strings.Repeat("f", 64)
+		}
+	}
+	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "pinned release artifact") {
+		t.Fatalf("managed Lark CLI drift error = %v", err)
+	}
+}
+
 func TestTarVerifierAcceptsExactRootOwnedLayout(t *testing.T) {
 	payload := []byte("deterministic image payload")
 	digest := sha256.Sum256(payload)
@@ -137,6 +164,8 @@ func validHarnessManifest(platform string) Manifest {
 			entry.SHA256, entry.SizeBytes = codexDigest, codexSize
 		case RuntimeBundleRoot + "/codex-resources/bwrap":
 			entry.SHA256, entry.SizeBytes = bwrapDigest, bwrapSize
+		case ManagedLarkSkillPath:
+			entry.Mode = 0o444
 		}
 		files = append(files, entry)
 	}
@@ -145,6 +174,28 @@ func validHarnessManifest(platform string) Manifest {
 		SourceRevision: strings.Repeat("a", 40), GoToolchain: GoToolchain,
 		CABundleSource: CABundleSourceImage,
 		Directories:    expectedDirectories(KindHarness), Files: files,
+	}
+}
+
+func validManagedSandboxManifest() Manifest {
+	files := make([]FileEntry, 0, len(expectedFilePaths(KindManagedSandbox)))
+	for _, path := range expectedFilePaths(KindManagedSandbox) {
+		entry := FileEntry{Path: path, SHA256: strings.Repeat("b", 64), SizeBytes: 1, Mode: 0o555}
+		switch path {
+		case CABundlePath:
+			entry.SHA256, entry.SizeBytes, entry.Mode = CABundleSHA256, CABundleSizeBytes, 0o444
+		case ManagedLarkSkillPath:
+			entry.Mode = 0o444
+		case "usr/local/bin/lark-cli":
+			entry.SHA256, entry.SizeBytes = ManagedLarkCLISHA256, ManagedLarkCLISizeBytes
+		}
+		files = append(files, entry)
+	}
+	return Manifest{
+		Version: ManifestVersion, Kind: KindManagedSandbox, Platform: PlatformLinuxAMD64,
+		SourceRevision: strings.Repeat("a", 40), GoToolchain: GoToolchain,
+		CABundleSource: CABundleSourceImage,
+		Directories:    expectedDirectories(KindManagedSandbox), Files: files,
 	}
 }
 

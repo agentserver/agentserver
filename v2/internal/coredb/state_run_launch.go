@@ -45,7 +45,7 @@ func (s *StateStore) ResolveRunLaunchState(ctx context.Context, command ResolveR
 			return ResolvedRunLaunchState{}, err
 		}
 
-		prompt, policy, llmGateway, err := s.readRunLaunchInput(ctx, transaction, operation, run.ID)
+		prompt, policy, llmGateway, larkEgress, err := s.readRunLaunchInput(ctx, transaction, operation, run.ID)
 		if err != nil {
 			return ResolvedRunLaunchState{}, err
 		}
@@ -57,7 +57,8 @@ func (s *StateStore) ResolveRunLaunchState(ctx context.Context, command ResolveR
 			WorkspaceID: run.WorkspaceID, SessionID: run.SessionID, RunID: run.ID,
 			AttemptID: attempt.ID, HolderID: attempt.HolderID, Generation: attempt.Generation,
 			RunVersion: run.Version, AttemptVersion: attempt.Version,
-			Prompt: prompt, PreviousCheckpoint: checkpoint, ExecutorPolicy: policy, LLMGateway: llmGateway,
+			Prompt: prompt, PreviousCheckpoint: checkpoint, ExecutorPolicy: policy,
+			LLMGateway: llmGateway, LarkEgress: larkEgress,
 		}, nil
 	})
 }
@@ -147,14 +148,27 @@ func (s *StateStore) insertRunLaunchInput(ctx context.Context, transaction pgx.T
 		grantUserID = command.LLMGateway.GrantUserID
 		model = command.LLMGateway.Model
 	}
+	var larkGrantID, larkGrantUserID, larkPolicySHA256 any
+	var larkGrantVersion any
+	if command.LarkEgress != (RunLarkEgressBinding{}) {
+		if err := validateRunLarkEgressBinding(command.LarkEgress); err != nil {
+			return commandError(ErrorInvalidArgument, "CreateRun", "lark_grant", command.LarkEgress.GrantID, err.Error())
+		}
+		larkGrantID = command.LarkEgress.GrantID
+		larkGrantVersion = command.LarkEgress.GrantVersion
+		larkGrantUserID = command.LarkEgress.GrantUserID
+		larkPolicySHA256 = command.LarkEgress.PolicySHA256[:]
+	}
 	query := fmt.Sprintf(`
 INSERT INTO %s
     (run_id, workspace_id, session_id,
      prompt_object_id, prompt_sha256, prompt_size, prompt_media_type,
      executor_policy_version, executor_policy_context_digest,
-     llm_gateway_id, llm_gateway_version, llm_gateway_grant_user_id, model)
+     llm_gateway_id, llm_gateway_version, llm_gateway_grant_user_id, model,
+     lark_grant_id, lark_grant_version, lark_grant_user_id, lark_policy_sha256)
 VALUES
-    ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`, s.table("run_launch_states"))
+    ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+     $14, $15, $16, $17)`, s.table("run_launch_states"))
 	if _, err := transaction.Exec(ctx, query,
 		command.RunID,
 		command.WorkspaceID,
@@ -169,6 +183,10 @@ VALUES
 		gatewayVersion,
 		grantUserID,
 		model,
+		larkGrantID,
+		larkGrantVersion,
+		larkGrantUserID,
+		larkPolicySHA256,
 	); err != nil {
 		var postgresError *pgconn.PgError
 		if pgxErrorAs(err, &postgresError) && postgresError.Code == "23505" {
@@ -188,12 +206,14 @@ VALUES ($1, $2, $3)`, s.table("run_launch_allowed_tools"))
 	return nil
 }
 
-func (s *StateStore) readRunLaunchInput(ctx context.Context, transaction pgx.Tx, operation, runID string) (ObjectPointer, RunExecutorPolicy, RunLLMGatewayBinding, error) {
+func (s *StateStore) readRunLaunchInput(ctx context.Context, transaction pgx.Tx, operation, runID string) (ObjectPointer, RunExecutorPolicy, RunLLMGatewayBinding, RunLarkEgressBinding, error) {
 	query := fmt.Sprintf(`
 SELECT prompt_object_id::text, prompt_sha256, prompt_size, prompt_media_type,
        executor_policy_version, executor_policy_context_digest,
        llm_gateway_id::text, llm_gateway_version,
-       llm_gateway_grant_user_id::text, model
+       llm_gateway_grant_user_id::text, model,
+       lark_grant_id::text, lark_grant_version,
+       lark_grant_user_id::text, lark_policy_sha256
 FROM %s
 WHERE run_id = $1`, s.table("run_launch_states"))
 	var prompt ObjectPointer
@@ -202,6 +222,9 @@ WHERE run_id = $1`, s.table("run_launch_states"))
 	var policyDigest []byte
 	var gatewayID, grantUserID, model *string
 	var gatewayVersion *int64
+	var larkGrantID, larkGrantUserID *string
+	var larkGrantVersion *int64
+	var larkPolicySHA256 []byte
 	if err := transaction.QueryRow(ctx, query, runID).Scan(
 		&prompt.ObjectID,
 		&promptDigest,
@@ -213,26 +236,45 @@ WHERE run_id = $1`, s.table("run_launch_states"))
 		&gatewayVersion,
 		&grantUserID,
 		&model,
+		&larkGrantID,
+		&larkGrantVersion,
+		&larkGrantUserID,
+		&larkPolicySHA256,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, commandError(ErrorInvalidState, operation, "run", runID, "run has no immutable launch authority")
+			return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, RunLarkEgressBinding{}, commandError(ErrorInvalidState, operation, "run", runID, "run has no immutable launch authority")
 		}
-		return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, databaseError(operation+" read run launch state", err)
+		return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, RunLarkEgressBinding{}, databaseError(operation+" read run launch state", err)
 	}
 	if err := copyStoredSHA256(&prompt.SHA256, promptDigest); err != nil {
-		return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, databaseError(operation+" decode prompt digest", err)
+		return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, RunLarkEgressBinding{}, databaseError(operation+" decode prompt digest", err)
 	}
 	if err := copyStoredSHA256(&policy.ContextDigest, policyDigest); err != nil {
-		return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, databaseError(operation+" decode policy digest", err)
+		return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, RunLarkEgressBinding{}, databaseError(operation+" decode policy digest", err)
 	}
 	var llmGateway RunLLMGatewayBinding
 	if gatewayID != nil || gatewayVersion != nil || grantUserID != nil || model != nil {
 		if gatewayID == nil || gatewayVersion == nil || grantUserID == nil || model == nil {
-			return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, databaseError(operation+" decode LLM gateway binding", errors.New("stored binding is incomplete"))
+			return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, RunLarkEgressBinding{}, databaseError(operation+" decode LLM gateway binding", errors.New("stored binding is incomplete"))
 		}
 		llmGateway = RunLLMGatewayBinding{GatewayID: *gatewayID, ConfigVersion: *gatewayVersion, GrantUserID: *grantUserID, Model: *model}
 		if err := validateRunLLMGatewayBinding(llmGateway); err != nil {
-			return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, databaseError(operation+" validate LLM gateway binding", err)
+			return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, RunLarkEgressBinding{}, databaseError(operation+" validate LLM gateway binding", err)
+		}
+	}
+	var larkEgress RunLarkEgressBinding
+	if larkGrantID != nil || larkGrantVersion != nil || larkGrantUserID != nil || larkPolicySHA256 != nil {
+		if larkGrantID == nil || larkGrantVersion == nil || larkGrantUserID == nil || larkPolicySHA256 == nil {
+			return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, RunLarkEgressBinding{}, databaseError(operation+" decode Lark egress binding", errors.New("stored binding is incomplete"))
+		}
+		larkEgress = RunLarkEgressBinding{
+			GrantID: *larkGrantID, GrantVersion: *larkGrantVersion, GrantUserID: *larkGrantUserID,
+		}
+		if err := copyStoredSHA256(&larkEgress.PolicySHA256, larkPolicySHA256); err != nil {
+			return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, RunLarkEgressBinding{}, databaseError(operation+" decode Lark policy digest", err)
+		}
+		if err := validateRunLarkEgressBinding(larkEgress); err != nil {
+			return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, RunLarkEgressBinding{}, databaseError(operation+" validate Lark egress binding", err)
 		}
 	}
 
@@ -243,26 +285,26 @@ WHERE run_id = $1
 ORDER BY ordinal`, s.table("run_launch_allowed_tools"))
 	rows, err := transaction.Query(ctx, toolQuery, runID)
 	if err != nil {
-		return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, databaseError(operation+" read allowed tools", err)
+		return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, RunLarkEgressBinding{}, databaseError(operation+" read allowed tools", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var tool string
 		if err := rows.Scan(&tool); err != nil {
-			return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, databaseError(operation+" scan allowed tool", err)
+			return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, RunLarkEgressBinding{}, databaseError(operation+" scan allowed tool", err)
 		}
 		policy.AllowedTools = append(policy.AllowedTools, tool)
 	}
 	if err := rows.Err(); err != nil {
-		return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, databaseError(operation+" finish allowed tools", err)
+		return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, RunLarkEgressBinding{}, databaseError(operation+" finish allowed tools", err)
 	}
 	if err := validateRunObjectPointer("prompt", prompt); err != nil {
-		return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, databaseError(operation+" validate stored prompt", err)
+		return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, RunLarkEgressBinding{}, databaseError(operation+" validate stored prompt", err)
 	}
 	if err := validateRunExecutorPolicy(policy); err != nil {
-		return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, databaseError(operation+" validate stored executor policy", err)
+		return ObjectPointer{}, RunExecutorPolicy{}, RunLLMGatewayBinding{}, RunLarkEgressBinding{}, databaseError(operation+" validate stored executor policy", err)
 	}
-	return prompt, policy, llmGateway, nil
+	return prompt, policy, llmGateway, larkEgress, nil
 }
 
 func (s *StateStore) readLatestCheckpoint(ctx context.Context, transaction pgx.Tx, operation, sessionID string) (*Checkpoint, error) {
@@ -281,13 +323,13 @@ SELECT c.id::text, c.workspace_id::text, c.session_id::text,
        c.brain_tool_catalog_id::text, c.thread_id, c.turn_id,
        c.manifest_digest, b.catalog_digest,
        c.object_id::text, c.object_sha256, c.object_size, c.object_media_type,
-       c.codex_runtime_manifest_digest, c.checkpoint_allowlist_version,
+       c.codex_runtime_manifest_digest, c.checkpoint_allowlist_version, c.pack_set_digest,
        c.created_at, b.session_id::text, b.thread_id
 FROM %s AS c
 JOIN %s AS b ON b.id = c.brain_tool_catalog_id
 WHERE c.id = $1 AND c.session_id = $2`, s.table("checkpoints"), s.table("brain_tool_catalogs"))
 	var checkpoint Checkpoint
-	var manifestDigest, catalogDigest, objectDigest, runtimeDigest []byte
+	var manifestDigest, catalogDigest, objectDigest, runtimeDigest, packSetDigest []byte
 	var catalogSessionID string
 	var catalogThreadID *string
 	if err := transaction.QueryRow(ctx, query, *checkpointID, sessionID).Scan(
@@ -308,6 +350,7 @@ WHERE c.id = $1 AND c.session_id = $2`, s.table("checkpoints"), s.table("brain_t
 		&checkpoint.Object.MediaType,
 		&runtimeDigest,
 		&checkpoint.CheckpointAllowlistVersion,
+		&packSetDigest,
 		&checkpoint.CreatedAt,
 		&catalogSessionID,
 		&catalogThreadID,
@@ -317,6 +360,11 @@ WHERE c.id = $1 AND c.session_id = $2`, s.table("checkpoints"), s.table("brain_t
 		}
 		return nil, databaseError(operation+" read latest checkpoint", err)
 	}
+	decodedPackSetDigest, err := decodeOptionalStoredSHA256(packSetDigest)
+	if err != nil {
+		return nil, databaseError(operation+" decode latest checkpoint pack-set digest", err)
+	}
+	checkpoint.PackSetDigest = decodedPackSetDigest
 	for destination, source := range map[*[sha256.Size]byte][]byte{
 		&checkpoint.ManifestDigest:             manifestDigest,
 		&checkpoint.CatalogDigest:              catalogDigest,
@@ -383,6 +431,9 @@ func validateStoredCheckpoint(checkpoint Checkpoint) error {
 	if checkpoint.CheckpointAllowlistVersion < 1 || checkpoint.CheckpointAllowlistVersion > maxSafeJSONInteger {
 		return errors.New("checkpoint.checkpoint_allowlist_version must be a positive safe integer")
 	}
+	if checkpoint.PackSetDigest != nil && *checkpoint.PackSetDigest == ([sha256.Size]byte{}) {
+		return errors.New("checkpoint.pack_set_digest must be a non-zero SHA-256 when present")
+	}
 	if checkpoint.CreatedAt.IsZero() {
 		return errors.New("checkpoint.created_at is required")
 	}
@@ -397,7 +448,43 @@ func copyStoredSHA256(destination *[sha256.Size]byte, source []byte) error {
 	return nil
 }
 
-func runLaunchInputMatches(prompt ObjectPointer, policy RunExecutorPolicy, llmGateway RunLLMGatewayBinding, command CreateRunCommand) bool {
+func decodeOptionalStoredSHA256(source []byte) (*[sha256.Size]byte, error) {
+	if source == nil {
+		return nil, nil
+	}
+	var digest [sha256.Size]byte
+	if err := copyStoredSHA256(&digest, source); err != nil {
+		return nil, err
+	}
+	if digest == ([sha256.Size]byte{}) {
+		return nil, errors.New("stored optional SHA-256 must not be all zero")
+	}
+	return &digest, nil
+}
+
+func optionalSHA256Bytes(value *[sha256.Size]byte) []byte {
+	if value == nil {
+		return nil
+	}
+	return value[:]
+}
+
+func cloneOptionalSHA256(value *[sha256.Size]byte) *[sha256.Size]byte {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func optionalSHA256Equal(left, right *[sha256.Size]byte) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func runLaunchInputMatches(prompt ObjectPointer, policy RunExecutorPolicy, llmGateway RunLLMGatewayBinding, larkEgress RunLarkEgressBinding, command CreateRunCommand) bool {
 	return prompt.ObjectID == command.Prompt.ObjectID &&
 		subtle.ConstantTimeCompare(prompt.SHA256[:], command.Prompt.SHA256[:]) == 1 &&
 		prompt.Size == command.Prompt.Size &&
@@ -405,5 +492,5 @@ func runLaunchInputMatches(prompt ObjectPointer, policy RunExecutorPolicy, llmGa
 		policy.Version == command.ExecutorPolicy.Version &&
 		subtle.ConstantTimeCompare(policy.ContextDigest[:], command.ExecutorPolicy.ContextDigest[:]) == 1 &&
 		slices.Equal(policy.AllowedTools, command.ExecutorPolicy.AllowedTools) &&
-		llmGateway == command.LLMGateway
+		llmGateway == command.LLMGateway && larkEgress == command.LarkEgress
 }

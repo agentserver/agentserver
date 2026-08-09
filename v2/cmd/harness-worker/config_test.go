@@ -3,9 +3,11 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"math/big"
@@ -142,6 +144,30 @@ func TestWorkerDeploymentDocumentRejectsOpenEndedAuthority(t *testing.T) {
 				t.Fatalf("validation error = %v, want %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestVerifyManagedSkillPinsExactImmutableText(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "SKILL.md")
+	contents := []byte("---\nname: lark-readonly\n---\nUse lark-cli for read-only queries.\n")
+	if err := os.WriteFile(path, contents, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(contents)
+	document := &workerTextArtifactDocument{Path: path, SHA256: hex.EncodeToString(digest[:])}
+	if got, err := verifyManagedSkill(document); err != nil || got != string(contents) {
+		t.Fatalf("verifyManagedSkill() = %q, %v", got, err)
+	}
+	document.SHA256 = strings.Repeat("0", 64)
+	if _, err := verifyManagedSkill(document); err == nil || !strings.Contains(err.Error(), "deployment digest") {
+		t.Fatalf("drifted managed skill error = %v", err)
+	}
+	if err := os.Chmod(path, 0o622); err != nil {
+		t.Fatal(err)
+	}
+	document.SHA256 = hex.EncodeToString(digest[:])
+	if _, err := verifyManagedSkill(document); err == nil || !strings.Contains(err.Error(), "direct regular file") {
+		t.Fatalf("writable managed skill error = %v", err)
 	}
 }
 

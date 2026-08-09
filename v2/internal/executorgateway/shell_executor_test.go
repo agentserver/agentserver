@@ -320,7 +320,7 @@ func (authority *fakeShellAuthority) PrepareExecution(_ context.Context, request
 	authority.execution = ExecutionState{
 		ExecutionID: request.ExecutionID, RunID: request.RunID, RunAttemptID: request.RunAttemptID,
 		RunAttemptGeneration: request.RunAttemptGeneration, AppServerToolCallID: request.AppServerToolCallID,
-		ExecutorID: request.ExecutorID, EnvironmentID: request.EnvironmentID,
+		ExecutorID: request.ExecutorID, EnvironmentID: request.EnvironmentID, Target: request.Target,
 		ToolName: request.ToolName, ToolVersion: request.ToolVersion, MapperVersion: request.MapperVersion,
 		PolicyVersion: request.PolicyVersion, PolicyDecision: request.PolicyDecision, OperationCount: request.OperationCount,
 		Status: status, Version: 1,
@@ -339,7 +339,7 @@ func (authority *fakeShellAuthority) PrepareOperation(_ context.Context, request
 	operation := ExecutionOperationState{
 		OperationID: request.OperationID, ExecutionID: request.ExecutionID, Ordinal: request.Ordinal,
 		Kind: request.Kind, EffectClass: request.EffectClass, MutationKey: request.MutationKey,
-		Status: "prepared", Version: 1,
+		Status: "prepared", Version: 1, Target: authority.execution.Target,
 	}
 	authority.operations[request.Ordinal] = operation
 	return PrepareOperationResult{Execution: authority.execution, Operation: operation, Created: true}, nil
@@ -358,6 +358,7 @@ func (authority *fakeShellAuthority) BeginOperationDispatch(_ context.Context, r
 	authority.record(request.Record)
 	operation.Status = "dispatching"
 	operation.ConnectionGeneration = request.ConnectionGeneration
+	operation.Target = request.Target
 	operation.Version++
 	authority.operations[operation.Ordinal] = operation
 	authority.execution.Version++

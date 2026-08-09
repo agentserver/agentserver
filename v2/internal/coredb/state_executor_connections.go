@@ -523,6 +523,7 @@ SELECT id::text, platform, codex_release, codex_commit, codex_sha256,
        outer_profile_version, process_methods, insecure_dev, status
 FROM %s
 WHERE executor_id = $1
+	AND backend_kind = 'agentx'
 FOR UPDATE`, s.table("executor_environments"))
 	rows, err := transaction.Query(ctx, query, executorID)
 	if err != nil {
@@ -626,6 +627,7 @@ SET status = CASE WHEN id = ANY($2::uuid[]) THEN 'online' ELSE 'offline' END,
     version = version + 1,
     updated_at = pg_catalog.clock_timestamp()
 WHERE executor_id = $1
+	AND backend_kind = 'agentx'
   AND status <> 'disabled'
   AND status IS DISTINCT FROM CASE WHEN id = ANY($2::uuid[]) THEN 'online' ELSE 'offline' END`, s.table("executor_environments"))
 	if _, err := transaction.Exec(ctx, query, executorID, environmentIDs); err != nil {
@@ -649,7 +651,7 @@ UPDATE %s
 SET status = 'offline',
     version = version + 1,
     updated_at = pg_catalog.clock_timestamp()
-WHERE executor_id = $1 AND status = 'online'`, s.table("executor_environments"))
+WHERE executor_id = $1 AND backend_kind = 'agentx' AND status = 'online'`, s.table("executor_environments"))
 	if _, err := transaction.Exec(ctx, query, executorID); err != nil {
 		return databaseError(operation+" mark environments offline", err)
 	}

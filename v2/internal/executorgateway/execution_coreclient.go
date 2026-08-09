@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
+	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 )
 
 const coreCanonicalizerRFC8785V1 = "rfc8785-v1"
@@ -35,6 +36,7 @@ type ExecutionState struct {
 	AppServerToolCallID  string
 	ExecutorID           string
 	EnvironmentID        string
+	Target               executionbackend.Target
 	ToolName             string
 	ToolVersion          string
 	MapperVersion        string
@@ -64,6 +66,7 @@ type ExecutionOperationState struct {
 	ParamsDigest          CanonicalDigest
 	Status                string
 	ConnectionGeneration  int64
+	Target                executionbackend.Target
 	AcknowledgementDigest *CanonicalDigest
 	TerminalResultDigest  *CanonicalDigest
 	DispatchedAt          *time.Time
@@ -85,6 +88,7 @@ type PrepareExecutionRequest struct {
 	AppServerToolCallID       string
 	ExecutorID                string
 	EnvironmentID             string
+	Target                    executionbackend.Target
 	ToolName                  string
 	ToolVersion               string
 	MapperVersion             string
@@ -133,6 +137,7 @@ type BeginOperationDispatchRequest struct {
 	HolderID                 string
 	RunAttemptGeneration     int64
 	ConnectionGeneration     int64
+	Target                   executionbackend.Target
 	ExpectedExecutionVersion int64
 	ExpectedOperationVersion int64
 	PolicyContext            json.RawMessage
@@ -154,6 +159,7 @@ type AcknowledgeOperationRequest struct {
 	RunAttemptID             string
 	RunAttemptGeneration     int64
 	ConnectionGeneration     int64
+	Target                   executionbackend.Target
 	ExpectedExecutionVersion int64
 	ExpectedOperationVersion int64
 	Acknowledgement          json.RawMessage
@@ -173,6 +179,7 @@ type CompleteOperationRequest struct {
 	RunAttemptID             string
 	RunAttemptGeneration     int64
 	ConnectionGeneration     int64
+	Target                   executionbackend.Target
 	ExpectedExecutionVersion int64
 	ExpectedOperationVersion int64
 	TerminalStatus           string
@@ -245,6 +252,9 @@ func (client *CoreConnectionClient) PrepareExecution(ctx context.Context, reques
 		AppServerToolCallID:       request.AppServerToolCallID,
 		ExecutorID:                request.ExecutorID,
 		EnvironmentID:             request.EnvironmentID,
+		TargetKind:                string(request.Target.Kind),
+		TargetID:                  request.Target.ID,
+		TargetGeneration:          request.Target.Generation,
 		ToolName:                  request.ToolName,
 		ToolVersion:               request.ToolVersion,
 		MapperVersion:             request.MapperVersion,
@@ -310,6 +320,9 @@ func (client *CoreConnectionClient) BeginOperationDispatch(ctx context.Context, 
 		HolderID:                 request.HolderID,
 		RunAttemptGeneration:     request.RunAttemptGeneration,
 		ConnectionGeneration:     request.ConnectionGeneration,
+		TargetKind:               string(request.Target.Kind),
+		TargetID:                 request.Target.ID,
+		TargetGeneration:         request.Target.Generation,
 		ExpectedExecutionVersion: request.ExpectedExecutionVersion,
 		ExpectedOperationVersion: request.ExpectedOperationVersion,
 		PolicyContext:            copyCoreJSON(request.PolicyContext),
@@ -329,8 +342,14 @@ func (client *CoreConnectionClient) BeginOperationDispatch(ctx context.Context, 
 	if operation.OperationID != request.OperationID || operation.ExecutionID != request.ExecutionID {
 		return BeginOperationDispatchResult{}, errors.New("core BeginOperationDispatch response does not match the requested operation identity")
 	}
-	if response.Began && (operation.Status != "dispatching" || operation.ConnectionGeneration != request.ConnectionGeneration) {
-		return BeginOperationDispatchResult{}, errors.New("core granted dispatch without returning the matching dispatching operation generation")
+	if response.Began && operation.Status != "dispatching" {
+		return BeginOperationDispatchResult{}, errors.New("core granted dispatch without returning a dispatching operation")
+	}
+	if response.Began && request.Target.Kind == "" && operation.ConnectionGeneration != request.ConnectionGeneration {
+		return BeginOperationDispatchResult{}, errors.New("core granted agentx dispatch without returning the matching connection generation")
+	}
+	if response.Began && request.Target.Kind != "" && operation.Target != request.Target {
+		return BeginOperationDispatchResult{}, errors.New("core granted dispatch without returning the matching target generation")
 	}
 	return BeginOperationDispatchResult{Execution: execution, Operation: operation, Began: response.Began}, nil
 }
@@ -343,6 +362,9 @@ func (client *CoreConnectionClient) AcknowledgeOperation(ctx context.Context, re
 		RunAttemptID:             request.RunAttemptID,
 		RunAttemptGeneration:     request.RunAttemptGeneration,
 		ConnectionGeneration:     request.ConnectionGeneration,
+		TargetKind:               string(request.Target.Kind),
+		TargetID:                 request.Target.ID,
+		TargetGeneration:         request.Target.Generation,
 		ExpectedExecutionVersion: request.ExpectedExecutionVersion,
 		ExpectedOperationVersion: request.ExpectedOperationVersion,
 		Acknowledgement:          copyCoreJSON(request.Acknowledgement),
@@ -371,6 +393,9 @@ func (client *CoreConnectionClient) CompleteOperation(ctx context.Context, reque
 		RunAttemptID:             request.RunAttemptID,
 		RunAttemptGeneration:     request.RunAttemptGeneration,
 		ConnectionGeneration:     request.ConnectionGeneration,
+		TargetKind:               string(request.Target.Kind),
+		TargetID:                 request.Target.ID,
+		TargetGeneration:         request.Target.Generation,
 		ExpectedExecutionVersion: request.ExpectedExecutionVersion,
 		ExpectedOperationVersion: request.ExpectedOperationVersion,
 		TerminalStatus:           request.TerminalStatus,
@@ -474,6 +499,15 @@ func gatewayExecutionAndOperation(executionContract corecontract.ExecutionState,
 	if operation.ExecutionID != execution.ExecutionID {
 		return ExecutionState{}, ExecutionOperationState{}, errors.New("operation belongs to a different execution")
 	}
+	if operation.Target.Kind == "" {
+		operation.Target = execution.Target
+	} else {
+		operation.Target.EnvironmentID = execution.EnvironmentID
+		if execution.Target.Kind != "" && (operation.Target.Kind != execution.Target.Kind || operation.Target.ID != execution.Target.ID ||
+			(execution.Target.Generation > 0 && operation.Target.Generation > 0 && operation.Target.Generation != execution.Target.Generation)) {
+			return ExecutionState{}, ExecutionOperationState{}, errors.New("operation dispatch target differs from execution target")
+		}
+	}
 	return execution, operation, nil
 }
 
@@ -498,8 +532,12 @@ func gatewayExecutionState(source corecontract.ExecutionState) (ExecutionState, 
 	if err != nil {
 		return ExecutionState{}, fmt.Errorf("terminal result digest: %w", err)
 	}
-	if source.ExecutionID == "" || source.RunID == "" || source.RunAttemptID == "" || source.ExecutorID == "" || source.EnvironmentID == "" {
+	if source.ExecutionID == "" || source.RunID == "" || source.RunAttemptID == "" || source.EnvironmentID == "" {
 		return ExecutionState{}, errors.New("required execution identity is empty")
+	}
+	target, err := gatewayExecutionTarget(source.TargetKind, source.TargetID, source.TargetGeneration, source.EnvironmentID, source.ExecutorID, 0)
+	if err != nil {
+		return ExecutionState{}, fmt.Errorf("dispatch target: %w", err)
 	}
 	if source.RunAttemptGeneration < 1 || source.OperationCount < 1 || source.OperationCount > 256 || source.Version < 1 {
 		return ExecutionState{}, errors.New("execution generation, operation count, or version is invalid")
@@ -515,6 +553,7 @@ func gatewayExecutionState(source corecontract.ExecutionState) (ExecutionState, 
 		AppServerToolCallID:  source.AppServerToolCallID,
 		ExecutorID:           source.ExecutorID,
 		EnvironmentID:        source.EnvironmentID,
+		Target:               target,
 		ToolName:             source.ToolName,
 		ToolVersion:          source.ToolVersion,
 		MapperVersion:        source.MapperVersion,
@@ -557,6 +596,10 @@ func gatewayExecutionOperationState(source corecontract.ExecutionOperationState)
 	if !validCoreOperationStatus(source.Status) {
 		return ExecutionOperationState{}, fmt.Errorf("unsupported operation status %q", source.Status)
 	}
+	target, err := gatewayExecutionTarget(source.TargetKind, source.TargetID, source.TargetGeneration, "operation-environment", "", source.ConnectionGeneration)
+	if err != nil {
+		return ExecutionOperationState{}, fmt.Errorf("dispatch target: %w", err)
+	}
 	if source.Status == "skipped" && (source.ConnectionGeneration != 0 || source.DispatchedAt != nil ||
 		source.AcknowledgementDigest != nil || source.AcknowledgedAt != nil || source.TerminalResultDigest == nil || source.TerminalAt == nil) {
 		return ExecutionOperationState{}, errors.New("skipped operation crossed the dispatch boundary or lacks terminal evidence")
@@ -571,6 +614,7 @@ func gatewayExecutionOperationState(source corecontract.ExecutionOperationState)
 		ParamsDigest:          paramsDigest,
 		Status:                source.Status,
 		ConnectionGeneration:  source.ConnectionGeneration,
+		Target:                target,
 		AcknowledgementDigest: acknowledgementDigest,
 		TerminalResultDigest:  terminalResultDigest,
 		DispatchedAt:          source.DispatchedAt,
@@ -580,6 +624,35 @@ func gatewayExecutionOperationState(source corecontract.ExecutionOperationState)
 		CreatedAt:             source.CreatedAt,
 		UpdatedAt:             source.UpdatedAt,
 	}, nil
+}
+
+func gatewayExecutionTarget(kindText, targetID string, generation int64, environmentID, legacyExecutorID string, legacyConnectionGeneration int64) (executionbackend.Target, error) {
+	kind := executionbackend.Kind(kindText)
+	if kind == "" {
+		if legacyExecutorID == "" {
+			return executionbackend.Target{}, nil
+		}
+		kind = executionbackend.KindAgentX
+		targetID = legacyExecutorID
+		generation = legacyConnectionGeneration
+	}
+	if err := kind.Validate(); err != nil {
+		return executionbackend.Target{}, err
+	}
+	if targetID == "" || generation < 0 {
+		return executionbackend.Target{}, errors.New("target ID is empty or generation is negative")
+	}
+	if kind == executionbackend.KindAgentX {
+		if legacyExecutorID != "" && targetID != legacyExecutorID {
+			return executionbackend.Target{}, errors.New("agentx target differs from executor projection")
+		}
+		if legacyConnectionGeneration > 0 && generation != legacyConnectionGeneration {
+			return executionbackend.Target{}, errors.New("agentx target generation differs from connection projection")
+		}
+	} else if legacyConnectionGeneration != 0 {
+		return executionbackend.Target{}, errors.New("TAE target carries an agentx connection projection")
+	}
+	return executionbackend.Target{Kind: kind, ID: targetID, Generation: generation, EnvironmentID: environmentID}, nil
 }
 
 func gatewayCanonicalDigest(source corecontract.CanonicalJSONDigest, expectedDomain string) (CanonicalDigest, error) {

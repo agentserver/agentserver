@@ -1,0 +1,177 @@
+package productiondeploy
+
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/agentserver/agentserver/v2/internal/productionimage"
+)
+
+func releaseDigest(character string) string { return strings.Repeat(character, 64) }
+
+func TestLockReleaseRecomputesManagedAuthority(t *testing.T) {
+	base, err := ValidateConfig(validConfigDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock := ReleaseLock{
+		ServiceImage:        ProductionServiceImage + "@sha256:" + releaseDigest("a"),
+		HarnessImage:        ProductionHarnessImage + "@sha256:" + releaseDigest("b"),
+		HydraImage:          ProductionHydraImage + "@sha256:" + releaseDigest("c"),
+		ManagedSandboxImage: ProductionManagedSandboxImage + "@sha256:" + releaseDigest("d"),
+		LarkCLISHA256:       productionimage.ManagedLarkCLISHA256, LarkSkillSHA256: releaseDigest("f"),
+	}
+	raw, err := LockRelease(base, lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked, err := ParseConfig(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := locked.Document
+	if document.Images.Service != lock.ServiceImage || document.Images.Harness != lock.HarnessImage ||
+		document.Images.Hydra != lock.HydraImage || document.Images.ManagedSandbox != lock.ManagedSandboxImage ||
+		document.Managed.Lark.CLISHA256 != lock.LarkCLISHA256 || document.Managed.Lark.SkillSHA256 != lock.LarkSkillSHA256 ||
+		document.Managed.Environment.RuntimeProfileSHA256 != managedRuntimeProfileDigest(document, document.Managed) ||
+		document.Managed.Environment.PackSetSHA256 != managedPackSetDigest(document.Managed) {
+		t.Fatalf("locked release = %+v", document)
+	}
+	if bytes.Contains(raw, []byte(base.Document.Managed.Environment.RuntimeProfileSHA256)) ||
+		bytes.Contains(raw, []byte(base.Document.Managed.Environment.PackSetSHA256)) {
+		t.Fatal("locked release retained a stale derived digest")
+	}
+}
+
+func TestLockReleasePreservesEvidenceFreePolicyBootstrap(t *testing.T) {
+	base, err := ValidateConfig(policyBootstrapConfigDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := base.Document
+	raw, err := LockRelease(base, ReleaseLock{
+		ServiceImage: document.Images.Service, HarnessImage: document.Images.Harness,
+		HydraImage: document.Images.Hydra, ManagedSandboxImage: document.Images.ManagedSandbox,
+		LarkCLISHA256: document.Managed.Lark.CLISHA256, LarkSkillSHA256: document.Managed.Lark.SkillSHA256,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked, err := ParseConfig(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !managedPolicyBootstrap(locked.Document.Managed) ||
+		locked.Document.Managed.Environment.RuntimeProfileSHA256 != "" ||
+		locked.Document.Managed.Environment.PackSetSHA256 != "" ||
+		locked.Document.Managed.TAE.NetworkEvidence != (ManagedTAENetworkEvidenceDocument{}) ||
+		locked.Document.Managed.TAE.Policy.Published || locked.Document.Managed.TAE.Policy.Approved ||
+		locked.Document.Managed.TAE.Policy.EvidenceRef != "" {
+		t.Fatalf("locked bootstrap gained premature authority: %+v", locked.Document.Managed)
+	}
+}
+
+func TestLockReleaseRejectsUnverifiedInputs(t *testing.T) {
+	base, err := ValidateConfig(validConfigDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := ReleaseLock{
+		ServiceImage:        ProductionServiceImage + "@sha256:" + releaseDigest("a"),
+		HarnessImage:        ProductionHarnessImage + "@sha256:" + releaseDigest("b"),
+		HydraImage:          ProductionHydraImage + "@sha256:" + releaseDigest("c"),
+		ManagedSandboxImage: ProductionManagedSandboxImage + "@sha256:" + releaseDigest("d"),
+		LarkCLISHA256:       productionimage.ManagedLarkCLISHA256, LarkSkillSHA256: releaseDigest("f"),
+	}
+	for name, mutate := range map[string]func(*ReleaseLock){
+		"wrong image repository": func(lock *ReleaseLock) {
+			lock.ManagedSandboxImage = "registry.test/sandbox@sha256:" + releaseDigest("d")
+		},
+		"mutable image":        func(lock *ReleaseLock) { lock.HarnessImage = ProductionHarnessImage + ":latest" },
+		"zero CLI digest":      func(lock *ReleaseLock) { lock.LarkCLISHA256 = strings.Repeat("0", 64) },
+		"invalid skill digest": func(lock *ReleaseLock) { lock.LarkSkillSHA256 = strings.Repeat("A", 64) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			lock := valid
+			mutate(&lock)
+			if _, err := LockRelease(base, lock); err == nil {
+				t.Fatal("unsafe release lock was accepted")
+			}
+		})
+	}
+}
+
+func TestLockReleaseRejectsTemplateEvidence(t *testing.T) {
+	valid := validConfigDocument()
+	cases := map[string]func(*ConfigDocument){
+		"policy replace sentinel": func(document *ConfigDocument) {
+			document.Managed.TAE.Policy.EvidenceRef = "REPLACE_WITH_TAE_TICKET"
+			document.Managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(document.Managed.TAE).DigestHex()
+			document.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(*document)
+		},
+		"network TODO sentinel": func(document *ConfigDocument) {
+			document.Managed.TAE.NetworkEvidence.EvidenceRef = "TODO/network-report"
+			document.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(*document)
+		},
+		"network example sentinel": func(document *ConfigDocument) {
+			document.Managed.TAE.NetworkEvidence.EvidenceRef = "artifact://EXAMPLE/report.json"
+			document.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(*document)
+		},
+		"synthetic report digest": func(document *ConfigDocument) {
+			document.Managed.TAE.NetworkEvidence.ReportSHA256 = strings.Repeat("9", 64)
+			document.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(*document)
+		},
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			document := valid
+			mutate(&document)
+			document.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(document, document.Managed)
+			document.Managed.Environment.PackSetSHA256 = managedPackSetDigest(document.Managed)
+			base, err := ValidateConfig(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LockRelease(base, ReleaseLock{
+				ServiceImage: document.Images.Service, HarnessImage: document.Images.Harness,
+				HydraImage: document.Images.Hydra, ManagedSandboxImage: document.Images.ManagedSandbox,
+				LarkCLISHA256: document.Managed.Lark.CLISHA256, LarkSkillSHA256: document.Managed.Lark.SkillSHA256,
+			}); err == nil {
+				t.Fatal("template evidence was promoted into a release")
+			}
+		})
+	}
+}
+
+func TestWriteReleaseConfigIsExclusiveAndOwnerReadable(t *testing.T) {
+	base, err := ValidateConfig(validConfigDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := base.Document
+	raw, err := LockRelease(base, ReleaseLock{
+		ServiceImage: document.Images.Service, HarnessImage: document.Images.Harness,
+		HydraImage: document.Images.Hydra, ManagedSandboxImage: document.Images.ManagedSandbox,
+		LarkCLISHA256: document.Managed.Lark.CLISHA256, LarkSkillSHA256: document.Managed.Lark.SkillSHA256,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(t.TempDir(), "production.json")
+	if err := WriteReleaseConfig(raw, destination); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("release config mode = %o", info.Mode().Perm())
+	}
+	if err := WriteReleaseConfig(raw, destination); err == nil {
+		t.Fatal("release config writer overwrote an existing path")
+	}
+}

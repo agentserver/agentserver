@@ -185,6 +185,37 @@ func TestRunProductionBootstrap(t *testing.T) {
 	}
 }
 
+func TestRunManagedEnvironmentProfileBootstrap(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	called := false
+	exitCode := run(
+		t.Context(), []string{"bootstrap-managed-environment", "--config=/absolute/managed.json"},
+		func(name string) string {
+			if name != databaseURLEnvironment {
+				t.Fatalf("environment lookup = %q", name)
+			}
+			return "postgres://configured"
+		},
+		&stdout, &stderr,
+		commandFunctions{bootstrapManagedEnvironment: func(_ context.Context, databaseURL, configPath string) (managedEnvironmentProfileCommandResult, error) {
+			called = true
+			if databaseURL != "postgres://configured" || configPath != "/absolute/managed.json" {
+				t.Fatalf("managed environment bootstrap inputs = %q, %q", databaseURL, configPath)
+			}
+			return managedEnvironmentProfileCommandResult{
+				Bootstrap:   coredb.ManagedEnvironmentProfileBootstrapResult{Created: true, SchemaVersion: 20},
+				WorkspaceID: "workspace", ExecutorID: "executor", EnvironmentID: "managed-environment",
+			}, nil
+		}},
+	)
+	if exitCode != 0 || !called || stderr.Len() != 0 ||
+		!strings.Contains(stdout.String(), "workspace workspace executor executor environment managed-environment") ||
+		!strings.Contains(stdout.String(), "schema 0020; created") {
+		t.Fatalf("managed environment bootstrap = exit %d, called %v, stdout %q, stderr %q", exitCode, called, stdout.String(), stderr.String())
+	}
+}
+
 func TestRunInsecureDevelopmentBootstrapRequiresExactMode(t *testing.T) {
 	for _, args := range [][]string{
 		{"bootstrap"},

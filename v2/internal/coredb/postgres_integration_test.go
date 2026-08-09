@@ -47,6 +47,159 @@ func TestPostgreSQLMigrationKernel(t *testing.T) {
 	assertKernelConstraints(t, connection, schema)
 }
 
+func TestPostgreSQLMigration0020UpgradesPublishedVersion0019(t *testing.T) {
+	connectionConfig := postgresIntegrationConfig(t)
+	schema := newPostgresTestSchema(t, connectionConfig)
+	catalog, err := EmbeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) < 20 {
+		t.Fatal("embedded catalog does not contain migration 0020")
+	}
+	runner := runnerConfig{schema: schema, lockKey: migrationAdvisoryLockKey, catalog: catalog[:19]}
+	result, err := migrateConfig(t.Context(), connectionConfig, runner)
+	if err != nil {
+		t.Fatalf("apply published migrations through 0019: %v", err)
+	}
+	if result.Applied != 19 || result.CurrentVersion != 19 {
+		t.Fatalf("published migration result = %+v, want version 19", result)
+	}
+
+	runner.catalog = catalog[:20]
+	result, err = migrateConfig(t.Context(), connectionConfig, runner)
+	if err != nil {
+		t.Fatalf("upgrade to migration 0020: %v", err)
+	}
+	if result.Applied != 1 || result.CurrentVersion != 20 {
+		t.Fatalf("0020 upgrade result = %+v, want one applied migration at version 20", result)
+	}
+}
+
+func TestPostgreSQLMigration0021UpgradesManagedExecutionVersion0020(t *testing.T) {
+	connectionConfig := postgresIntegrationConfig(t)
+	schema := newPostgresTestSchema(t, connectionConfig)
+	catalog, err := EmbeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) < 21 {
+		t.Fatal("embedded catalog does not contain migration 0021")
+	}
+	runner := runnerConfig{schema: schema, lockKey: migrationAdvisoryLockKey, catalog: catalog[:20]}
+	result, err := migrateConfig(t.Context(), connectionConfig, runner)
+	if err != nil {
+		t.Fatalf("apply migrations through 0020: %v", err)
+	}
+	if result.Applied != 20 || result.CurrentVersion != 20 {
+		t.Fatalf("managed execution migration result = %+v, want version 20", result)
+	}
+
+	runner.catalog = catalog[:21]
+	result, err = migrateConfig(t.Context(), connectionConfig, runner)
+	if err != nil {
+		t.Fatalf("upgrade to migration 0021: %v", err)
+	}
+	if result.Applied != 1 || result.CurrentVersion != 21 {
+		t.Fatalf("0021 upgrade result = %+v, want one applied migration at version 21", result)
+	}
+}
+
+func TestPostgreSQLMigration0022UpgradesManagedLarkAuthorityVersion0021(t *testing.T) {
+	connectionConfig := postgresIntegrationConfig(t)
+	schema := newPostgresTestSchema(t, connectionConfig)
+	catalog, err := EmbeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) < 22 {
+		t.Fatal("embedded catalog does not contain migration 0022")
+	}
+	runner := runnerConfig{schema: schema, lockKey: migrationAdvisoryLockKey, catalog: catalog[:21]}
+	result, err := migrateConfig(t.Context(), connectionConfig, runner)
+	if err != nil {
+		t.Fatalf("apply migrations through 0021: %v", err)
+	}
+	if result.Applied != 21 || result.CurrentVersion != 21 {
+		t.Fatalf("managed Lark authority migration result = %+v, want version 21", result)
+	}
+
+	runner.catalog = catalog[:22]
+	result, err = migrateConfig(t.Context(), connectionConfig, runner)
+	if err != nil {
+		t.Fatalf("upgrade to migration 0022: %v", err)
+	}
+	if result.Applied != 1 || result.CurrentVersion != 22 {
+		t.Fatalf("0022 upgrade result = %+v, want one applied migration at version 22", result)
+	}
+}
+
+func TestPostgreSQLMigration0023UpgradesCheckpointAuthorityVersion0022(t *testing.T) {
+	connectionConfig := postgresIntegrationConfig(t)
+	schema := newPostgresTestSchema(t, connectionConfig)
+	catalog, err := EmbeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) < 23 {
+		t.Fatal("embedded catalog does not contain migration 0023")
+	}
+	runner := runnerConfig{schema: schema, lockKey: migrationAdvisoryLockKey, catalog: catalog[:22]}
+	result, err := migrateConfig(t.Context(), connectionConfig, runner)
+	if err != nil {
+		t.Fatalf("apply migrations through 0022: %v", err)
+	}
+	if result.Applied != 22 || result.CurrentVersion != 22 {
+		t.Fatalf("checkpoint authority migration result = %+v, want version 22", result)
+	}
+
+	connection := openPostgresTestConnection(t, connectionConfig)
+	var columnCount int
+	if err := connection.QueryRow(t.Context(), `
+SELECT pg_catalog.count(*)
+FROM information_schema.columns
+WHERE table_schema = $1 AND table_name = 'checkpoints' AND column_name = 'pack_set_digest'`, schema).Scan(&columnCount); err != nil {
+		connection.Close(context.Background())
+		t.Fatal(err)
+	}
+	connection.Close(context.Background())
+	if columnCount != 0 {
+		t.Fatalf("migration 0022 unexpectedly has checkpoint pack_set_digest column count %d", columnCount)
+	}
+
+	runner.catalog = catalog[:23]
+	result, err = migrateConfig(t.Context(), connectionConfig, runner)
+	if err != nil {
+		t.Fatalf("upgrade to migration 0023: %v", err)
+	}
+	if result.Applied != 1 || result.CurrentVersion != 23 {
+		t.Fatalf("0023 upgrade result = %+v, want one applied migration at version 23", result)
+	}
+	connection = openPostgresTestConnection(t, connectionConfig)
+	defer connection.Close(context.Background())
+	var nullable string
+	if err := connection.QueryRow(t.Context(), `
+SELECT is_nullable
+FROM information_schema.columns
+WHERE table_schema = $1 AND table_name = 'checkpoints' AND column_name = 'pack_set_digest'`, schema).Scan(&nullable); err != nil {
+		t.Fatal(err)
+	}
+	if nullable != "YES" {
+		t.Fatalf("checkpoint pack_set_digest nullability = %q, want YES for legacy checkpoints", nullable)
+	}
+	var constraintCount int
+	if err := connection.QueryRow(t.Context(), `
+SELECT pg_catalog.count(*)
+FROM information_schema.table_constraints
+WHERE constraint_schema = $1 AND table_name = 'checkpoints'
+  AND constraint_name = 'checkpoints_pack_set_digest_sha256'`, schema).Scan(&constraintCount); err != nil {
+		t.Fatal(err)
+	}
+	if constraintCount != 1 {
+		t.Fatalf("checkpoint pack-set constraint count = %d, want 1", constraintCount)
+	}
+}
+
 func TestPostgreSQLConcurrentMigrationRunsOnce(t *testing.T) {
 	connectionConfig := postgresIntegrationConfig(t)
 	schema := newPostgresTestSchema(t, connectionConfig)
@@ -471,6 +624,10 @@ func assertDatabaseObjects(t *testing.T, connection *pgx.Conn, schema string) {
 		"executors":                    false,
 		"execution_operations":         false,
 		"executions":                   false,
+		"managed_egress_audit_events":  false,
+		"managed_egress_audit_outbox":  false,
+		"managed_sandbox_activities":   false,
+		"managed_sandboxes":            false,
 		"outbox":                       false,
 		"production_bootstrap_seeds":   false,
 		"run_attempts":                 false,
@@ -483,6 +640,7 @@ func assertDatabaseObjects(t *testing.T, connection *pgx.Conn, schema string) {
 		"session_leases":               false,
 		"sessions":                     false,
 		"workspace_members":            false,
+		"workspace_lark_grants":        false,
 		"workspaces":                   false,
 	}
 	rows, err := connection.Query(t.Context(), `
@@ -549,6 +707,7 @@ WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, schema)
 		"checkpoints_attempt_scope_fk":                            false,
 		"checkpoints_catalog_scope_thread_fk":                     false,
 		"checkpoints_digests_sha256":                              false,
+		"checkpoints_pack_set_digest_sha256":                      false,
 		"checkpoints_object_media_type_bounded":                   false,
 		"checkpoints_object_size_bounded":                         false,
 		"checkpoints_run_scope_fk":                                false,
@@ -570,6 +729,55 @@ WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, schema)
 		"execution_operations_mutation_key_unique":                false,
 		"execution_operations_terminal_matches_status":            false,
 		"execution_operations_skipped_kind_valid":                 false,
+		"executions_target_complete":                              false,
+		"executions_agentx_legacy_projection":                     false,
+		"execution_operations_target_complete":                    false,
+		"execution_operations_agentx_generation_projection":       false,
+		"execution_operations_dispatch_matches_status":            false,
+		"managed_sandboxes_session_fk":                            false,
+		"managed_sandboxes_identity_generation_unique":            false,
+		"managed_sandboxes_provider_valid":                        false,
+		"managed_sandboxes_generation_positive":                   false,
+		"managed_sandboxes_desired_state_valid":                   false,
+		"managed_sandboxes_observed_state_valid":                  false,
+		"managed_sandboxes_digests_sha256":                        false,
+		"managed_sandboxes_ttls_valid":                            false,
+		"managed_sandboxes_ready_projection":                      false,
+		"managed_sandboxes_deleted_projection":                    false,
+		"managed_sandboxes_version_positive":                      false,
+		"managed_sandbox_activities_sandbox_fk":                   false,
+		"managed_sandbox_activities_attempt_fk":                   false,
+		"managed_sandbox_activities_generations_positive":         false,
+		"managed_sandbox_activities_release_valid":                false,
+		"managed_sandbox_activities_version_positive":             false,
+		"workspace_lark_grants_membership_fk":                     false,
+		"workspace_lark_grants_identity_scope_user_unique":        false,
+		"workspace_lark_grants_workspace_pack_user_unique":        false,
+		"workspace_lark_grants_pack_valid":                        false,
+		"workspace_lark_grants_policy_sha256_exact":               false,
+		"workspace_lark_grants_status_valid":                      false,
+		"workspace_lark_grants_token_set_bounded":                 false,
+		"workspace_lark_grants_versions_json_safe":                false,
+		"workspace_lark_grants_expiry_order":                      false,
+		"workspace_lark_grants_revocation_state":                  false,
+		"workspace_lark_grants_refresh_lock_pair":                 false,
+		"workspace_lark_grants_refresh_dispatch_locked":           false,
+		"workspace_lark_grants_refresh_active_lock":               false,
+		"workspace_lark_grants_refresh_attempts_nonnegative":      false,
+		"workspace_lark_grants_refresh_error_bounded":             false,
+		"run_launch_states_lark_grant_fk":                         false,
+		"run_launch_states_lark_grant_complete":                   false,
+		"managed_egress_audit_capability_bounded":                 false,
+		"managed_egress_audit_scope_bounded":                      false,
+		"managed_egress_audit_generations_positive":               false,
+		"managed_egress_audit_psm_bounded":                        false,
+		"managed_egress_audit_request_bounded":                    false,
+		"managed_egress_audit_decision_valid":                     false,
+		"managed_egress_audit_reason_bounded":                     false,
+		"managed_egress_audit_outbox_lock_owner_bounded":          false,
+		"managed_egress_audit_outbox_lock_pair":                   false,
+		"managed_egress_audit_outbox_attempts_nonnegative":        false,
+		"managed_egress_audit_outbox_completed_unlocked":          false,
 		"executors_enrollment_metadata_complete":                  false,
 		"executors_production_machine_identity_complete":          false,
 		"executor_enrollment_tokens_executor_scope_fk":            false,
@@ -619,24 +827,36 @@ WHERE constraint_schema = $1`, schema)
 	}
 
 	wantIndexes := map[string]bool{
-		"sessions_creator_activity_idx":                      false,
-		"approvals_run_status_expiry_idx":                    false,
-		"brain_tool_catalogs_session_created_idx":            false,
-		"checkpoints_session_created_idx":                    false,
-		"runs_session_status_created_idx":                    false,
-		"run_attempts_run_created_idx":                       false,
-		"run_events_run_created_idx":                         false,
-		"outbox_claim_idx":                                   false,
-		"executions_run_status_created_idx":                  false,
-		"execution_operations_execution_status_ordinal_idx":  false,
-		"executors_workspace_status_created_idx":             false,
-		"executor_environments_executor_status_created_idx":  false,
-		"executor_connections_expiry_idx":                    false,
-		"executor_connection_attempts_executor_acquired_idx": false,
-		"executors_oauth_client_id_unique":                   false,
-		"executor_enrollment_tokens_one_live_per_executor":   false,
-		"executor_enrollment_tokens_expiry_idx":              false,
-		"workspace_members_user_workspace_idx":               false,
+		"sessions_creator_activity_idx":                       false,
+		"approvals_run_status_expiry_idx":                     false,
+		"brain_tool_catalogs_session_created_idx":             false,
+		"checkpoints_session_created_idx":                     false,
+		"runs_session_status_created_idx":                     false,
+		"run_attempts_run_created_idx":                        false,
+		"run_events_run_created_idx":                          false,
+		"outbox_claim_idx":                                    false,
+		"executions_run_status_created_idx":                   false,
+		"execution_operations_execution_status_ordinal_idx":   false,
+		"executors_workspace_status_created_idx":              false,
+		"executor_environments_executor_status_created_idx":   false,
+		"executor_connections_expiry_idx":                     false,
+		"executor_connection_attempts_executor_acquired_idx":  false,
+		"executors_oauth_client_id_unique":                    false,
+		"executor_enrollment_tokens_one_live_per_executor":    false,
+		"executor_enrollment_tokens_expiry_idx":               false,
+		"workspace_members_user_workspace_idx":                false,
+		"executions_target_status_created_idx":                false,
+		"managed_sandboxes_active_session_environment_unique": false,
+		"managed_sandboxes_reconcile_idx":                     false,
+		"managed_sandbox_activities_live_idx":                 false,
+		"workspace_lark_grants_live_idx":                      false,
+		"workspace_lark_grants_refresh_claim_idx":             false,
+		"workspace_lark_grants_refresh_orphan_idx":            false,
+		"run_launch_states_lark_grant_idx":                    false,
+		"managed_egress_audit_run_time_idx":                   false,
+		"managed_egress_audit_capability_idx":                 false,
+		"managed_egress_audit_time_idx":                       false,
+		"managed_egress_audit_outbox_claim_idx":               false,
 	}
 	rows, err = connection.Query(t.Context(), "SELECT indexname FROM pg_catalog.pg_indexes WHERE schemaname = $1", schema)
 	if err != nil {

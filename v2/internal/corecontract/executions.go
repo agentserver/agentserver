@@ -33,8 +33,11 @@ type ExecutionState struct {
 	RunAttemptID         string               `json:"runAttemptId"`
 	RunAttemptGeneration int64                `json:"runAttemptGeneration"`
 	AppServerToolCallID  string               `json:"appServerToolCallId"`
-	ExecutorID           string               `json:"executorId"`
+	ExecutorID           string               `json:"executorId,omitempty"`
 	EnvironmentID        string               `json:"environmentId"`
+	TargetKind           string               `json:"targetKind,omitempty"`
+	TargetID             string               `json:"targetId,omitempty"`
+	TargetGeneration     int64                `json:"targetGeneration,omitempty"`
 	ToolName             string               `json:"toolName"`
 	ToolVersion          string               `json:"toolVersion"`
 	MapperVersion        string               `json:"mapperVersion"`
@@ -64,6 +67,9 @@ type ExecutionOperationState struct {
 	ParamsDigest          CanonicalJSONDigest  `json:"paramsDigest"`
 	Status                string               `json:"status"`
 	ConnectionGeneration  int64                `json:"connectionGeneration,omitempty"`
+	TargetKind            string               `json:"targetKind,omitempty"`
+	TargetID              string               `json:"targetId,omitempty"`
+	TargetGeneration      int64                `json:"targetGeneration,omitempty"`
 	AcknowledgementDigest *CanonicalJSONDigest `json:"acknowledgementDigest,omitempty"`
 	TerminalResultDigest  *CanonicalJSONDigest `json:"terminalResultDigest,omitempty"`
 	DispatchedAt          *time.Time           `json:"dispatchedAt,omitempty"`
@@ -83,8 +89,11 @@ type PrepareExecutionRequest struct {
 	ExpectedRunVersion        int64            `json:"expectedRunVersion"`
 	ExpectedRunAttemptVersion int64            `json:"expectedRunAttemptVersion"`
 	AppServerToolCallID       string           `json:"appServerToolCallId"`
-	ExecutorID                string           `json:"executorId"`
+	ExecutorID                string           `json:"executorId,omitempty"`
 	EnvironmentID             string           `json:"environmentId"`
+	TargetKind                string           `json:"targetKind,omitempty"`
+	TargetID                  string           `json:"targetId,omitempty"`
+	TargetGeneration          int64            `json:"targetGeneration,omitempty"`
 	ToolName                  string           `json:"toolName"`
 	ToolVersion               string           `json:"toolVersion"`
 	MapperVersion             string           `json:"mapperVersion"`
@@ -132,7 +141,10 @@ type BeginOperationDispatchRequest struct {
 	RunAttemptID             string           `json:"runAttemptId"`
 	HolderID                 string           `json:"holderId"`
 	RunAttemptGeneration     int64            `json:"runAttemptGeneration"`
-	ConnectionGeneration     int64            `json:"connectionGeneration"`
+	ConnectionGeneration     int64            `json:"connectionGeneration,omitempty"`
+	TargetKind               string           `json:"targetKind,omitempty"`
+	TargetID                 string           `json:"targetId,omitempty"`
+	TargetGeneration         int64            `json:"targetGeneration,omitempty"`
 	ExpectedExecutionVersion int64            `json:"expectedExecutionVersion"`
 	ExpectedOperationVersion int64            `json:"expectedOperationVersion"`
 	PolicyContext            json.RawMessage  `json:"policyContext"`
@@ -153,7 +165,10 @@ type AcknowledgeOperationRequest struct {
 	RunID                    string           `json:"runId"`
 	RunAttemptID             string           `json:"runAttemptId"`
 	RunAttemptGeneration     int64            `json:"runAttemptGeneration"`
-	ConnectionGeneration     int64            `json:"connectionGeneration"`
+	ConnectionGeneration     int64            `json:"connectionGeneration,omitempty"`
+	TargetKind               string           `json:"targetKind,omitempty"`
+	TargetID                 string           `json:"targetId,omitempty"`
+	TargetGeneration         int64            `json:"targetGeneration,omitempty"`
 	ExpectedExecutionVersion int64            `json:"expectedExecutionVersion"`
 	ExpectedOperationVersion int64            `json:"expectedOperationVersion"`
 	Acknowledgement          json.RawMessage  `json:"acknowledgement"`
@@ -172,7 +187,10 @@ type CompleteOperationRequest struct {
 	RunID                    string           `json:"runId"`
 	RunAttemptID             string           `json:"runAttemptId"`
 	RunAttemptGeneration     int64            `json:"runAttemptGeneration"`
-	ConnectionGeneration     int64            `json:"connectionGeneration"`
+	ConnectionGeneration     int64            `json:"connectionGeneration,omitempty"`
+	TargetKind               string           `json:"targetKind,omitempty"`
+	TargetID                 string           `json:"targetId,omitempty"`
+	TargetGeneration         int64            `json:"targetGeneration,omitempty"`
 	ExpectedExecutionVersion int64            `json:"expectedExecutionVersion"`
 	ExpectedOperationVersion int64            `json:"expectedOperationVersion"`
 	TerminalStatus           string           `json:"terminalStatus"`

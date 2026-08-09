@@ -73,7 +73,7 @@ func TestPlatformGatewayRoutesKeepPlatformAndAuthSurfaces(t *testing.T) {
 	readiness := &platformReadiness{}
 	readiness.ready.Store(true)
 	handler, err := platformGatewayRoutes(
-		h("resources"), h("executors"), h("llm"), h("auth"), h("config"), h("callback"), h("web"), readiness,
+		h("resources"), h("credentials"), h("executors"), h("llm"), h("auth"), h("config"), h("callback"), h("web"), readiness,
 		"https://agent.byted.bps.dev", "https://auth-sg.byted.bps.dev",
 	)
 	if err != nil {

@@ -28,6 +28,7 @@ func TestCheckpointFinalizerCommitsFreshAndResumedArtifactsBeforeCleanup(t *test
 	}{
 		{name: "fresh", prepared: poolTestPreparedLaunch},
 		{name: "resume", prepared: checkpointResumePreparedLaunch},
+		{name: "managed", prepared: checkpointManagedPreparedLaunch},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			prepared := test.prepared(t)
@@ -230,6 +231,10 @@ func TestCheckpointFinalizerRejectsCommittedCheckpointFingerprintDrift(t *testin
 		"allowlist": func(result *CommitCheckpointResult) {
 			result.Checkpoint.CheckpointAllowlistVersion++
 		},
+		"pack set": func(result *CommitCheckpointResult) {
+			changed := sha256.Sum256([]byte("changed pack set"))
+			result.Checkpoint.PackSetDigest = &changed
+		},
 		"source generation": func(result *CommitCheckpointResult) {
 			result.Checkpoint.RunAttemptGeneration++
 		},
@@ -239,7 +244,7 @@ func TestCheckpointFinalizerRejectsCommittedCheckpointFingerprintDrift(t *testin
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
-			prepared := poolTestPreparedLaunch(t)
+			prepared := checkpointManagedPreparedLaunch(t)
 			rollout := []byte("{\"type\":\"session_meta\"}\n")
 			core := &checkpointFinalizerTestCore{prepared: prepared, commitMutate: mutate}
 			finalizer := newCheckpointFinalizerForTest(
@@ -319,11 +324,20 @@ func assertCheckpointArtifactForTest(
 	if err != nil {
 		t.Fatal(err)
 	}
+	wantPackSetDigest := ""
+	if prepared.Manifest.ToolPack != nil {
+		wantPackSetDigest = prepared.Manifest.ToolPack.PackSetDigest
+	}
+	gotCommitPackSetDigest := ""
+	if commit.Checkpoint.PackSetDigest != nil {
+		gotCommitPackSetDigest = hex.EncodeToString(commit.Checkpoint.PackSetDigest[:])
+	}
 	if hex.EncodeToString(commit.Checkpoint.ManifestDigest[:]) != manifestDigest ||
 		gotManifest.CheckpointID != commit.Checkpoint.CheckpointID || gotManifest.WorkspaceID != prepared.Manifest.WorkspaceID ||
 		gotManifest.SessionID != prepared.Manifest.SessionID || gotManifest.RunID != prepared.Manifest.RunID ||
 		gotManifest.RunAttemptID != prepared.Manifest.RunAttemptID || gotManifest.RunAttemptGeneration != prepared.Manifest.RunAttemptGeneration ||
 		gotManifest.BrainThreadID != terminal.ThreadID || gotManifest.TerminalTurnID != terminal.TurnID ||
+		gotManifest.PackSetDigest != wantPackSetDigest || gotCommitPackSetDigest != wantPackSetDigest ||
 		gotManifest.CatalogDigest != prepared.Manifest.ExecutorMCP.CatalogDigest || len(gotRollout) == 0 {
 		t.Fatalf("checkpoint manifest/rollout = %+v / %q", gotManifest, gotRollout)
 	}
@@ -359,6 +373,24 @@ func checkpointResumePreparedLaunch(t *testing.T) PreparedRunLaunch {
 	inputs.PreviousBrainToolCatalog = &catalog
 	preparer := newTestLaunchPreparer(
 		t, &recordingLaunchCore{}, &fixedCatalogAllocator{id: "79000000-0000-4000-8000-000000000093"},
+		&fixedLaunchResolver{inputs: inputs},
+	)
+	prepared, err := preparer.Prepare(t.Context(), ScheduledRunAttempt{
+		Dispatch: testControllerDispatch("starting"), Claim: testControllerClaim(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return prepared
+}
+
+func checkpointManagedPreparedLaunch(t *testing.T) PreparedRunLaunch {
+	t.Helper()
+	inputs := testRunLaunchInputs()
+	spec := poolTestManagedSandboxSpec()
+	inputs.ManagedSandbox = &spec
+	preparer := newTestLaunchPreparer(
+		t, &recordingLaunchCore{}, &fixedCatalogAllocator{id: "79000000-0000-4000-8000-000000000094"},
 		&fixedLaunchResolver{inputs: inputs},
 	)
 	prepared, err := preparer.Prepare(t.Context(), ScheduledRunAttempt{
@@ -463,7 +495,8 @@ func (core *checkpointFinalizerTestCore) CommitCheckpoint(_ context.Context, req
 		ThreadID:           request.Checkpoint.ThreadID, TurnID: request.Checkpoint.TurnID,
 		ManifestDigest: request.Checkpoint.ManifestDigest, CatalogDigest: request.Checkpoint.CatalogDigest,
 		Object: request.Checkpoint.Object, CodexRuntimeManifestDigest: request.Checkpoint.CodexRuntimeManifestDigest,
-		CheckpointAllowlistVersion: request.Checkpoint.CheckpointAllowlistVersion, CreatedAt: now,
+		CheckpointAllowlistVersion: request.Checkpoint.CheckpointAllowlistVersion,
+		PackSetDigest:              request.Checkpoint.PackSetDigest, CreatedAt: now,
 	}
 	result := CommitCheckpointResult{
 		Run: run, RunAttempt: attempt, Checkpoint: checkpointResult, SessionVersion: 2, Created: true,

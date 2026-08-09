@@ -14,24 +14,28 @@ import (
 const (
 	helmChartName = "agentserver-v2"
 
-	helmChartFile                  = "Chart.yaml"
-	helmValuesFile                 = "values.yaml"
-	helmValuesSchemaFile           = "values.schema.json"
-	helmHelpersFile                = "templates/_helpers.tpl"
-	helmFoundationTemplateFile     = "templates/00-foundation.yaml"
-	helmHydraMigrationTemplateFile = "templates/05-hydra-migrate.yaml"
-	helmMigrationTemplateFile      = "templates/10-migrate.yaml"
-	helmHydraSetupTemplateFile     = "templates/15-hydra-client-setup.yaml"
-	helmBootstrapTemplateFile      = "templates/20-bootstrap.yaml"
-	helmRuntimeTemplateFile        = "templates/30-runtime.yaml"
-	helmFoundationManifestFile     = "files/manifests/00-foundation.json"
-	helmHydraMigrationManifestFile = "files/manifests/05-hydra-migrate.json"
-	helmMigrationManifestFile      = "files/manifests/10-migrate.json"
-	helmHydraSetupManifestFile     = "files/manifests/15-hydra-client-setup.json"
-	helmBootstrapManifestFile      = "files/manifests/20-bootstrap.json"
-	helmRuntimeManifestFile        = "files/manifests/30-runtime.json"
-	helmConfigFile                 = "files/production-config.json"
-	helmChecksumsFile              = "files/checksums.json"
+	helmChartFile                      = "Chart.yaml"
+	helmValuesFile                     = "values.yaml"
+	helmValuesSchemaFile               = "values.schema.json"
+	helmHelpersFile                    = "templates/_helpers.tpl"
+	helmFoundationTemplateFile         = "templates/00-foundation.yaml"
+	helmHydraMigrationTemplateFile     = "templates/05-hydra-migrate.yaml"
+	helmMigrationTemplateFile          = "templates/10-migrate.yaml"
+	helmHydraSetupTemplateFile         = "templates/15-hydra-client-setup.yaml"
+	helmBootstrapTemplateFile          = "templates/20-bootstrap.yaml"
+	helmManagedEnvironmentTemplateFile = "templates/22-managed-environment.yaml"
+	helmTAENetworkProbeTemplateFile    = "templates/25-tae-network-probe.yaml"
+	helmRuntimeTemplateFile            = "templates/30-runtime.yaml"
+	helmFoundationManifestFile         = "files/manifests/00-foundation.json"
+	helmHydraMigrationManifestFile     = "files/manifests/05-hydra-migrate.json"
+	helmMigrationManifestFile          = "files/manifests/10-migrate.json"
+	helmHydraSetupManifestFile         = "files/manifests/15-hydra-client-setup.json"
+	helmBootstrapManifestFile          = "files/manifests/20-bootstrap.json"
+	helmManagedEnvironmentManifestFile = "files/manifests/22-managed-environment.json"
+	helmTAENetworkProbeManifestFile    = "files/manifests/25-tae-network-probe.json"
+	helmRuntimeManifestFile            = "files/manifests/30-runtime.json"
+	helmConfigFile                     = "files/production-config.json"
+	helmChecksumsFile                  = "files/checksums.json"
 )
 
 type HelmChart struct {
@@ -57,6 +61,11 @@ func RenderHelmChart(config LoadedConfig) (HelmChart, error) {
 		return HelmChart{}, fmt.Errorf("validate production Helm input: %w", err)
 	}
 	config = validated
+	if managedExecutionActive(config.Document.Managed) {
+		if err := validateManagedReleaseEvidence(config.Document); err != nil {
+			return HelmChart{}, fmt.Errorf("production Helm chart requires evidence-backed managed executor config: %w", err)
+		}
+	}
 	bundle, err := Render(config)
 	if err != nil {
 		return HelmChart{}, err
@@ -68,6 +77,8 @@ func RenderHelmChart(config LoadedConfig) (HelmChart, error) {
 	}
 	configContent = append(configContent, '\n')
 	configSHA256 := sha256Hex(configContent)
+	managedLarkEnabledValue := managedLarkEnabled(config.Document.Managed)
+	taeNetworkProbeAllowed := managedPolicyBootstrap(config.Document.Managed)
 
 	foundation, err := helmResources(bundle, foundationFile)
 	if err != nil {
@@ -118,7 +129,21 @@ func RenderHelmChart(config LoadedConfig) (HelmChart, error) {
 	if err := addHelmHook(bootstrap, bootstrapComponent, "post-install,post-upgrade", "0"); err != nil {
 		return HelmChart{}, err
 	}
+	var managedEnvironment []kubeObject
+	if managedExecutionActive(config.Document.Managed) {
+		managedEnvironment, err = helmResources(bundle, managedEnvironmentBootstrapFile)
+		if err != nil {
+			return HelmChart{}, err
+		}
+		if err := addHelmHook(managedEnvironment, managedEnvironmentBootstrapComponent, "post-install,post-upgrade", "10"); err != nil {
+			return HelmChart{}, err
+		}
+	}
 	runtime, err := helmResources(bundle, runtimeFile)
+	if err != nil {
+		return HelmChart{}, err
+	}
+	taeNetworkProbe, err := taeNetworkProbeResources(config)
 	if err != nil {
 		return HelmChart{}, err
 	}
@@ -132,8 +157,23 @@ func RenderHelmChart(config LoadedConfig) (HelmChart, error) {
 		{name: helmMigrationManifestFile, resources: migration},
 		{name: helmHydraSetupManifestFile, resources: hydraSetup},
 		{name: helmBootstrapManifestFile, resources: bootstrap},
-		{name: helmRuntimeManifestFile, resources: runtime},
 	}
+	if managedExecutionActive(config.Document.Managed) {
+		manifestGroups = append(manifestGroups,
+			struct {
+				name      string
+				resources []kubeObject
+			}{name: helmManagedEnvironmentManifestFile, resources: managedEnvironment},
+		)
+	}
+	manifestGroups = append(manifestGroups, struct {
+		name      string
+		resources []kubeObject
+	}{name: helmTAENetworkProbeManifestFile, resources: taeNetworkProbe})
+	manifestGroups = append(manifestGroups, struct {
+		name      string
+		resources []kubeObject
+	}{name: helmRuntimeManifestFile, resources: runtime})
 	manifestFiles := make([]RenderedFile, 0, len(manifestGroups)+1)
 	for _, group := range manifestGroups {
 		content, err := marshalKubernetesDocuments(group.resources)
@@ -151,16 +191,23 @@ func RenderHelmChart(config LoadedConfig) (HelmChart, error) {
 
 	files := []RenderedFile{
 		renderedFile(helmChartFile, renderChartYAML(configSHA256, config.Document.Runtime.RuntimeManifestSHA256)),
-		renderedFile(helmValuesFile, []byte("deploymentConfigSHA256: \""+configSHA256+"\"\n")),
-		renderedFile(helmValuesSchemaFile, renderValuesSchema(configSHA256)),
-		renderedFile(helmHelpersFile, renderHelmGuard(config.Document.Namespace, configSHA256)),
+		renderedFile(helmValuesFile, []byte(fmt.Sprintf(
+			"deploymentConfigSHA256: \"%s\"\nmanagedLarkEnabled: %t\ntaeNetworkProbe:\n  enabled: false\n  policyRevision: \"\"\n",
+			configSHA256, managedLarkEnabledValue,
+		))),
+		renderedFile(helmValuesSchemaFile, renderValuesSchema(configSHA256, managedLarkEnabledValue, taeNetworkProbeAllowed)),
+		renderedFile(helmHelpersFile, renderHelmGuard(config.Document.Namespace, configSHA256, managedLarkEnabledValue, taeNetworkProbeAllowed)),
 		renderedFile(helmFoundationTemplateFile, renderManifestTemplate(helmFoundationManifestFile)),
 		renderedFile(helmHydraMigrationTemplateFile, renderManifestTemplate(helmHydraMigrationManifestFile)),
 		renderedFile(helmMigrationTemplateFile, renderManifestTemplate(helmMigrationManifestFile)),
 		renderedFile(helmHydraSetupTemplateFile, renderManifestTemplate(helmHydraSetupManifestFile)),
 		renderedFile(helmBootstrapTemplateFile, renderManifestTemplate(helmBootstrapManifestFile)),
-		renderedFile(helmRuntimeTemplateFile, renderManifestTemplate(helmRuntimeManifestFile)),
+		renderedFile(helmTAENetworkProbeTemplateFile, renderTAENetworkProbeTemplate(config.Document.Namespace)),
 	}
+	if managedExecutionActive(config.Document.Managed) {
+		files = append(files, renderedFile(helmManagedEnvironmentTemplateFile, renderManifestTemplate(helmManagedEnvironmentManifestFile)))
+	}
+	files = append(files, renderedFile(helmRuntimeTemplateFile, renderManifestTemplate(helmRuntimeManifestFile)))
 	files = append(files, manifestFiles...)
 	files = append(files, renderedFile(helmChecksumsFile, checksums))
 	return HelmChart{Files: files}, nil
@@ -256,23 +303,56 @@ annotations:
 `, helmChartName, version, configSHA256, runtimeSHA256))
 }
 
-func renderValuesSchema(configSHA256 string) []byte {
+func renderValuesSchema(configSHA256 string, managedLarkEnabled, taeNetworkProbeAllowed bool) []byte {
+	probeProperties := map[string]any{
+		"enabled":        map[string]any{"type": "boolean"},
+		"policyRevision": map[string]any{"type": "string", "maxLength": 128},
+	}
+	probeSchema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []string{"enabled", "policyRevision"},
+		"properties":           probeProperties,
+	}
+	if taeNetworkProbeAllowed {
+		probeSchema["allOf"] = []any{map[string]any{
+			"if": map[string]any{
+				"properties": map[string]any{"enabled": map[string]any{"const": true}},
+				"required":   []string{"enabled"},
+			},
+			"then": map[string]any{"properties": map[string]any{
+				"policyRevision": map[string]any{
+					"type": "string", "pattern": `^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$`,
+				},
+			}},
+			"else": map[string]any{"properties": map[string]any{
+				"policyRevision": map[string]any{"enum": []string{""}},
+			}},
+		}}
+	} else {
+		probeProperties["enabled"] = map[string]any{"type": "boolean", "enum": []bool{false}}
+		probeProperties["policyRevision"] = map[string]any{"type": "string", "enum": []string{""}}
+	}
 	document := map[string]any{
 		"$schema":              "http://json-schema.org/draft-07/schema#",
 		"type":                 "object",
 		"additionalProperties": false,
-		"required":             []string{"deploymentConfigSHA256"},
+		"required":             []string{"deploymentConfigSHA256", "managedLarkEnabled", "taeNetworkProbe"},
 		"properties": map[string]any{
 			"deploymentConfigSHA256": map[string]any{
 				"type": "string", "enum": []string{configSHA256},
 			},
+			"managedLarkEnabled": map[string]any{
+				"type": "boolean", "enum": []bool{managedLarkEnabled},
+			},
+			"taeNetworkProbe": probeSchema,
 		},
 	}
 	content, _ := json.MarshalIndent(document, "", "  ")
 	return append(content, '\n')
 }
 
-func renderHelmGuard(namespace, configSHA256 string) []byte {
+func renderHelmGuard(namespace, configSHA256 string, managedLarkEnabled, taeNetworkProbeAllowed bool) []byte {
 	return []byte(fmt.Sprintf(`{{- define "agentserver-v2.guard" -}}
 {{- if ne .Release.Namespace %q -}}
 {{- fail (printf "agentserver v2 chart is locked to namespace %s, got %%s" .Release.Namespace) -}}
@@ -280,12 +360,58 @@ func renderHelmGuard(namespace, configSHA256 string) []byte {
 {{- if ne (toString (default "" .Values.deploymentConfigSHA256)) %q -}}
 {{- fail "agentserver v2 deploymentConfigSHA256 does not match this generated chart" -}}
 {{- end -}}
+{{- if ne .Values.managedLarkEnabled %t -}}
+{{- fail "agentserver v2 managedLarkEnabled does not match this generated chart" -}}
 {{- end -}}
-`, namespace, namespace, configSHA256))
+{{- $probeRevision := toString (default "" .Values.taeNetworkProbe.policyRevision) -}}
+{{- if .Values.taeNetworkProbe.enabled -}}
+{{- if not %t -}}
+{{- fail "agentserver v2 TAE network probe is available only in the policy-bootstrap stage" -}}
+{{- end -}}
+{{- if not (regexMatch "^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$" $probeRevision) -}}
+{{- fail "agentserver v2 TAE network probe policy revision is invalid" -}}
+{{- end -}}
+{{- if regexMatch "(?i)(PENDING|REPLACE|TODO|TBD|EXAMPLE|PLACEHOLDER|CHANGEME|SAMPLE|DUMMY)" $probeRevision -}}
+{{- fail "agentserver v2 TAE network probe requires an actual published policy revision" -}}
+{{- end -}}
+{{- else if ne $probeRevision "" -}}
+{{- fail "agentserver v2 TAE network probe policy revision must be empty while disabled" -}}
+{{- end -}}
+{{- end -}}
+`, namespace, namespace, configSHA256, managedLarkEnabled, taeNetworkProbeAllowed))
 }
 
 func renderManifestTemplate(path string) []byte {
 	return []byte("{{- include \"agentserver-v2.guard\" . -}}\n{{ .Files.Get \"" + path + "\" }}\n")
+}
+
+func renderTAENetworkProbeTemplate(namespace string) []byte {
+	return []byte(fmt.Sprintf(`{{- include "agentserver-v2.guard" . -}}
+{{- if .Values.taeNetworkProbe.enabled }}
+{{- $revision := toString .Values.taeNetworkProbe.policyRevision -}}
+{{- $identity := printf "%%s\n%%s" .Values.deploymentConfigSHA256 $revision | sha256sum | trunc 12 -}}
+{{- $jobName := printf "tae-network-probe-%%s" $identity -}}
+{{- $inputName := printf "tae-network-probe-input-%%s" $identity -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $inputName | quote }}
+  namespace: %q
+  labels:
+    app.kubernetes.io/name: %q
+    app.kubernetes.io/part-of: "agentserver-v2"
+    app.kubernetes.io/managed-by: "agentserver-deploy"
+    agentserver.dev/network: "managed"
+  annotations:
+    agentserver.dev/deployment-config-sha256: {{ .Values.deploymentConfigSHA256 | quote }}
+immutable: true
+data:
+  policy-revision: {{ $revision | quote }}
+---
+{{ .Files.Get %q | replace %q $jobName | replace %q $inputName }}
+{{- end }}
+`, namespace, taeNetworkProbeComponent, helmTAENetworkProbeManifestFile,
+		taeNetworkProbeJobPlaceholder, taeNetworkProbeInputPlaceholder))
 }
 
 func renderHelmChecksums(configSHA256 string, files []RenderedFile) ([]byte, error) {

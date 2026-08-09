@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLLMGatewayGrantSealerAuthenticatesPurposeAndAuthorityScope(t *testing.T) {
@@ -70,6 +71,50 @@ func TestLLMGatewayGrantSealerSupportsExplicitRotationOverlap(t *testing.T) {
 	withoutOld := testLLMGatewaySealer(t, "new", map[string]byte{"new": 0x22})
 	if _, err := withoutOld.OpenGrantTokenSet(scope, sealed); err == nil || !strings.Contains(err.Error(), "rotation key") {
 		t.Fatalf("removed rotation key error = %v", err)
+	}
+}
+
+func TestLarkGrantSealerAuthenticatesScopeAndDomain(t *testing.T) {
+	sealer := testLLMGatewaySealer(t, "active", map[string]byte{"active": 0x51})
+	scope := LarkGrantSealScope{
+		WorkspaceID:  "93000000-0000-4000-8000-000000000001",
+		GrantID:      "93000000-0000-4000-8000-000000000002",
+		UserID:       "93000000-0000-4000-8000-000000000003",
+		PolicySHA256: [32]byte{1, 2, 3, 4},
+	}
+	accessExpiry := time.Date(2026, 8, 7, 1, 0, 0, 0, time.UTC)
+	refreshExpiry := accessExpiry.Add(30 * 24 * time.Hour)
+	tokens := LarkGrantTokenSet{
+		Version: 1, AccessToken: "u-lark-access-token", RefreshToken: "u-lark-refresh-token",
+		AccessExpiresAt: accessExpiry, RefreshExpiresAt: &refreshExpiry,
+	}
+	sealed, err := sealer.SealLarkGrantTokenSet(scope, tokens)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := sealer.OpenLarkGrantTokenSet(scope, sealed)
+	if err != nil || opened.AccessToken != tokens.AccessToken || opened.RefreshToken != tokens.RefreshToken ||
+		!opened.AccessExpiresAt.Equal(accessExpiry) || opened.RefreshExpiresAt == nil || !opened.RefreshExpiresAt.Equal(refreshExpiry) {
+		t.Fatalf("opened Lark grant = %#v, %v", opened, err)
+	}
+	for _, mutate := range []func(*LarkGrantSealScope){
+		func(value *LarkGrantSealScope) { value.WorkspaceID = "93000000-0000-4000-8000-000000000009" },
+		func(value *LarkGrantSealScope) { value.GrantID = "93000000-0000-4000-8000-000000000009" },
+		func(value *LarkGrantSealScope) { value.UserID = "93000000-0000-4000-8000-000000000009" },
+		func(value *LarkGrantSealScope) { value.PolicySHA256[0]++ },
+	} {
+		changed := scope
+		mutate(&changed)
+		if _, err := sealer.OpenLarkGrantTokenSet(changed, sealed); err == nil {
+			t.Fatal("sealed Lark grant was accepted in a different authority scope")
+		}
+	}
+	llmScope := LLMGatewaySealScope{
+		WorkspaceID: scope.WorkspaceID, GatewayID: scope.GrantID,
+		UserID: scope.UserID, GatewayVersion: 1,
+	}
+	if _, err := sealer.OpenGrantTokenSet(llmScope, sealed); err == nil {
+		t.Fatal("Lark ciphertext was accepted in the LLM gateway sealing domain")
 	}
 }
 

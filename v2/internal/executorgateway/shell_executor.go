@@ -2,6 +2,7 @@ package executorgateway
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/codexwire"
 	"github.com/agentserver/agentserver/v2/internal/execprofile"
+	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 )
 
 const (
@@ -39,12 +41,15 @@ type ShellV1Result struct {
 }
 
 type ShellExecutorConfig struct {
-	Lifecycle      context.Context
-	Now            func() time.Time
-	TerminalGrace  time.Duration
-	MaxOutputBytes int
-	PolicyResolver ExecutionPolicyResolver
-	ApprovalGate   ExecutionApprovalGate
+	Lifecycle                context.Context
+	Now                      func() time.Time
+	TerminalGrace            time.Duration
+	MaxOutputBytes           int
+	PolicyResolver           ExecutionPolicyResolver
+	ApprovalGate             ExecutionApprovalGate
+	BackendRouter            *executionbackend.Router
+	ManagedEnvironmentIssuer ManagedProcessEnvironmentIssuer
+	ManagedTargetFencer      ManagedTargetFencer
 }
 
 func DefaultShellExecutorConfig(lifecycle context.Context) ShellExecutorConfig {
@@ -113,7 +118,7 @@ func (executor *ShellExecutor) Execute(ctx context.Context, request ShellExecute
 	if err := validateRegistryIdentity("shell environment ID", arguments.EnvironmentID); err != nil {
 		return ShellV1Result{}, err
 	}
-	environment, err := executor.resolver.Resolve(ctx, request.Principal.WorkspaceID, arguments.EnvironmentID)
+	environment, err := executor.resolver.ResolveForPrincipal(ctx, request.Principal, arguments.EnvironmentID)
 	if err != nil {
 		return ShellV1Result{}, fmt.Errorf("resolve shell environment: %w", err)
 	}
@@ -169,6 +174,9 @@ func (executor *ShellExecutor) Execute(ctx context.Context, request ShellExecute
 	}
 	if !begin.Began {
 		return ShellV1Result{}, fmt.Errorf("core did not grant the one-shot shell process/start dispatch; operation status is %q", begin.Operation.Status)
+	}
+	if environment.Target.Kind == executionbackend.KindTAE {
+		return executor.executeManaged(ctx, request, environment, identities, plan, state)
 	}
 
 	deadline := executor.config.Now().Add(time.Duration(plan.TimeoutMillis) * time.Millisecond)
@@ -347,6 +355,374 @@ func (executor *ShellExecutor) Execute(ctx context.Context, request ShellExecute
 	// not replace it with an MCP transport error. Unknown/failed status carries
 	// the conservative outcome to the caller without leaking internal details.
 	return result, nil
+}
+
+func (executor *ShellExecutor) executeManaged(
+	_ context.Context,
+	request ShellExecuteRequest,
+	environment ResolvedEnvironment,
+	identities ShellV1Identities,
+	plan ShellV1Plan,
+	state *shellExecutionState,
+) (ShellV1Result, error) {
+	if executor.config.BackendRouter == nil {
+		result := newUnknownShellResult(plan.ProcessID)
+		executionCtx, cancel := context.WithTimeout(executor.config.Lifecycle, shellCoreFinalizationGrace)
+		defer cancel()
+		closed, err := executor.closeWithoutStartExchange(executionCtx, state, plan, result,
+			executionbackend.NewDispatchError(executionbackend.OutcomeNotSent, "backend_router_unavailable", errors.New("managed execution backend router is not configured")))
+		executor.fenceManagedUnknown(executionCtx, request.Principal, environment.Target, "backend_router_unavailable")
+		return closed, err
+	}
+
+	deadline := executor.config.Now().Add(time.Duration(plan.TimeoutMillis) * time.Millisecond)
+	processDeadline := deadline.Add(executor.config.TerminalGrace)
+	executionCtx, cancelExecution := context.WithDeadline(executor.config.Lifecycle, processDeadline.Add(shellCoreFinalizationGrace))
+	defer cancelExecution()
+	processCtx, cancelProcess := context.WithDeadline(executionCtx, processDeadline)
+	defer cancelProcess()
+
+	startOperation := backendOperationContext(request.Principal, plan.Start.Routing)
+	environmentValues, err := injectManagedProcessEnvironment(processCtx, executor.config.ManagedEnvironmentIssuer,
+		ManagedProcessEnvironmentRequest{
+			Principal: request.Principal, Target: environment.Target, Operation: startOperation,
+			ToolName: "shell", Executable: plan.Argv[0],
+		}, plan.ExplicitEnvironment)
+	if err != nil {
+		result := newUnknownShellResult(plan.ProcessID)
+		closed, closeErr := executor.closeWithoutStartExchange(executionCtx, state, plan, result, err)
+		return closed, closeErr
+	}
+	startExchange, dispatchErr := executor.config.BackendRouter.StartProcess(processCtx, executionbackend.StartProcessRequest{
+		Target: environment.Target, Operation: startOperation,
+		RequestID: identities.StartRPCRequestID, ProcessID: plan.ProcessID,
+		Executable: plan.Argv[0], Arguments: append([]string(nil), plan.Argv[1:]...),
+		WorkingDirectory: plan.WorkingDirectory, WorkspaceRoot: plan.WorkspaceRoot,
+		Platform: environment.Platform, Environment: environmentValues, TTY: plan.TTY,
+		Timeout:          time.Duration(plan.TimeoutMillis) * time.Millisecond,
+		OutputLimitBytes: int64(executor.config.MaxOutputBytes),
+		DeadlineNotification: &executionbackend.DeadlineNotification{
+			After:     time.Duration(plan.TimeoutMillis) * time.Millisecond,
+			Operation: backendOperationContext(request.Principal, plan.Timeout.Routing),
+			RequestID: identities.TimeoutRPCRequestID,
+		},
+	})
+	if startExchange == nil {
+		result := newUnknownShellResult(plan.ProcessID)
+		closed, closeErr := executor.closeWithoutStartExchange(executionCtx, state, plan, result, dispatchErr)
+		executor.fenceManagedUnknown(executionCtx, request.Principal, environment.Target, "process_start_dispatch_unknown")
+		return closed, closeErr
+	}
+	forceUnknown := dispatchErr != nil
+	acknowledgement, ackErr := startExchange.AwaitAcknowledgement(processCtx)
+	startAcknowledged := false
+	var orchestrationErrors []error
+	if ackErr != nil {
+		forceUnknown = true
+		orchestrationErrors = append(orchestrationErrors, fmt.Errorf("await managed process acknowledgement: %w", ackErr))
+	} else if acknowledgementJSON, marshalErr := marshalBackendAcknowledgement(identities.StartRPCRequestID, acknowledgement); marshalErr != nil {
+		forceUnknown = true
+		orchestrationErrors = append(orchestrationErrors, marshalErr)
+	} else if _, acknowledgeErr := state.Acknowledge(executionCtx, plan.Start, acknowledgementJSON); acknowledgeErr != nil {
+		forceUnknown = true
+		orchestrationErrors = append(orchestrationErrors, acknowledgeErr)
+	} else {
+		startAcknowledged = true
+	}
+
+	evidenceCh := make(chan managedShellEvidence, 1)
+	go func() {
+		evidenceCh <- collectManagedShellEvidence(processCtx, startExchange, executor.config.MaxOutputBytes, executor.config.Now)
+	}()
+
+	timerWait := time.Until(deadline)
+	if timerWait < 0 {
+		timerWait = 0
+	}
+	timer := time.NewTimer(timerWait)
+	defer timer.Stop()
+	var evidence managedShellEvidence
+	var timeoutBegan bool
+	var timeoutStatus string
+	var timeoutAcknowledged bool
+	var timeoutResponseError bool
+	timedOut := false
+	beginTimeout := func() {
+		timedOut = true
+		begin, beginErr := state.BeginOperationDispatch(executionCtx, BeginOperationDispatchRequest{
+			OperationID: plan.Timeout.OperationID, ExecutionID: plan.Timeout.Routing.ExecutionID,
+			RunID: request.Principal.Run.RunID, RunAttemptID: request.Principal.Run.RunAttemptID,
+			HolderID: request.Principal.Run.HolderID, RunAttemptGeneration: request.Principal.Run.RunAttemptGeneration,
+			ConnectionGeneration: targetConnectionGeneration(environment.Target), Target: environment.Target,
+			PolicyContext: plan.PolicyContext, OperationPlan: plan.OperationPlan, Params: plan.Timeout.Params,
+		})
+		if beginErr != nil {
+			// The deadline has been reached, so a failed/ambiguous Begin must
+			// never be projected as a successful process with a skipped timeout.
+			forceUnknown = true
+			orchestrationErrors = append(orchestrationErrors, beginErr)
+			return
+		}
+		timeoutBegan = begin.Began
+		if !timeoutBegan {
+			// A non-begin result can describe an operation whose earlier Begin
+			// already committed. Close a live operation conservatively as
+			// unknown; a prepared/terminal result still forces the aggregate
+			// away from success because this caller cannot prove termination
+			// happened before the frozen deadline.
+			switch state.OperationStatus(plan.Timeout.OperationID) {
+			case "dispatching", "acknowledged":
+				timeoutBegan = true
+				timeoutStatus = "unknown"
+				timeoutResponseError = true
+			}
+			forceUnknown = true
+			return
+		}
+		timeoutStatus, timeoutAcknowledged, timeoutResponseError, err = executor.dispatchManagedTerminate(
+			processCtx, executionCtx, request.Principal, environment.Target, identities.TimeoutRPCRequestID, plan, acknowledgement, state,
+		)
+		if err != nil {
+			orchestrationErrors = append(orchestrationErrors, err)
+		}
+	}
+	select {
+	case evidence = <-evidenceCh:
+		if evidence.err == nil && !evidence.observedAt.IsZero() && evidence.observedAt.Before(deadline) {
+			if _, skipErr := state.SkipTimeoutIfPrepared(executionCtx, "process_terminal_before_deadline"); skipErr != nil {
+				orchestrationErrors = append(orchestrationErrors, skipErr)
+			}
+		} else if !evidence.observedAt.IsZero() && !evidence.observedAt.Before(deadline) {
+			// Selecting the terminal channel does not prove it won the deadline:
+			// the terminal observation carries the authoritative local time. Route
+			// an at/after-deadline terminal through the exact same timeout path.
+			beginTimeout()
+		}
+	case <-timer.C:
+		beginTimeout()
+		evidence = <-evidenceCh
+	}
+	if evidence.err != nil {
+		forceUnknown = true
+		orchestrationErrors = append(orchestrationErrors, evidence.err)
+	}
+
+	startStatus := managedShellStartStatus(startAcknowledged, forceUnknown, evidence)
+	startResultJSON, err := json.Marshal(shellOperationTerminalResult{
+		Kind: ShellV1OperationProcessStart, ProcessID: plan.ProcessID, Status: startStatus,
+		Acknowledged: startAcknowledged, ResponseError: evidence.responseError,
+		ExitCode: evidence.exitCode, SandboxDenied: evidence.sandboxDenied,
+		OutputComplete: evidence.outputComplete(), LastSequence: evidence.nextSequence - 1,
+	})
+	if err != nil {
+		return ShellV1Result{}, err
+	}
+	if _, err := state.CompleteOperation(executionCtx, plan.Start, startStatus, startResultJSON); err != nil {
+		return ShellV1Result{}, errors.Join(append(orchestrationErrors, err)...)
+	}
+
+	if timeoutBegan {
+		if timeoutStatus == "" {
+			timeoutStatus = "unknown"
+		}
+		// A confirmed deadline termination is intentionally a failed shell
+		// operation, matching the existing agentx terminal contract.
+		if timeoutStatus == "succeeded" {
+			if evidence.outputComplete() {
+				timeoutStatus = "failed"
+			} else {
+				timeoutStatus = "unknown"
+			}
+		}
+		timeoutResultJSON, marshalErr := json.Marshal(shellOperationTerminalResult{
+			Kind: ShellV1OperationTimeoutTerminate, ProcessID: plan.ProcessID, Status: timeoutStatus,
+			Acknowledged: timeoutAcknowledged, ResponseError: timeoutResponseError,
+			ExitCode: evidence.exitCode, SandboxDenied: evidence.sandboxDenied,
+			OutputComplete: evidence.outputComplete(), LastSequence: evidence.nextSequence - 1,
+		})
+		if marshalErr != nil {
+			return ShellV1Result{}, marshalErr
+		}
+		if _, completeErr := state.CompleteOperation(executionCtx, plan.Timeout, timeoutStatus, timeoutResultJSON); completeErr != nil {
+			return ShellV1Result{}, errors.Join(append(orchestrationErrors, completeErr)...)
+		}
+	} else if state.OperationStatus(plan.Timeout.OperationID) == "prepared" {
+		if _, skipErr := state.SkipTimeoutIfPrepared(executionCtx, "process_terminal_without_timeout_dispatch"); skipErr != nil {
+			return ShellV1Result{}, errors.Join(append(orchestrationErrors, skipErr)...)
+		}
+	}
+
+	result := ShellV1Result{
+		ProcessID: plan.ProcessID, Chunks: evidence.chunks, NextSequence: evidence.nextSequence,
+		ExitCode: evidence.exitCode, SandboxDenied: evidence.sandboxDenied,
+		TimedOut: timedOut, OutputComplete: evidence.outputComplete(),
+	}
+	result.Status = aggregateShellResultStatus(state.OperationStatus(plan.Start.OperationID), state.OperationStatus(plan.Timeout.OperationID))
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return ShellV1Result{}, err
+	}
+	if len(resultJSON) > 1024*1024 {
+		return ShellV1Result{}, errors.New("shell terminal result exceeds the core canonical JSON bound")
+	}
+	if _, err := state.CompleteExecution(executionCtx, result.Status, resultJSON); err != nil {
+		return ShellV1Result{}, errors.Join(append(orchestrationErrors, err)...)
+	}
+	if result.Status == "unknown" || (timeoutBegan && timeoutStatus == "unknown") {
+		executor.fenceManagedUnknown(executionCtx, request.Principal, environment.Target, "managed_shell_outcome_unknown")
+	}
+	return result, nil
+}
+
+func (executor *ShellExecutor) dispatchManagedTerminate(
+	processCtx context.Context,
+	executionCtx context.Context,
+	principal ExecutorMCPPrincipal,
+	target executionbackend.Target,
+	requestID string,
+	plan ShellV1Plan,
+	startAcknowledgement executionbackend.Acknowledgement,
+	state *shellExecutionState,
+) (string, bool, bool, error) {
+	exchange, dispatchErr := executor.config.BackendRouter.SignalProcess(processCtx, executionbackend.SignalProcessRequest{
+		Target: target, Operation: backendOperationContext(principal, plan.Timeout.Routing),
+		RequestID: requestID, ProcessID: plan.ProcessID,
+		ProviderHandle: startAcknowledgement.ProviderOperationID,
+		Signal:         executionbackend.SignalTerminate, Reason: "shell deadline reached",
+	})
+	if exchange == nil {
+		return "unknown", false, true, dispatchErr
+	}
+	acknowledgement, err := exchange.AwaitAcknowledgement(processCtx)
+	if err != nil {
+		return "unknown", false, true, errors.Join(dispatchErr, err)
+	}
+	ackJSON, err := marshalBackendAcknowledgement(requestID, acknowledgement)
+	if err != nil {
+		return "unknown", false, true, err
+	}
+	if _, err := state.Acknowledge(executionCtx, plan.Timeout, ackJSON); err != nil {
+		return "unknown", false, true, err
+	}
+	terminal, err := exchange.AwaitTerminal(processCtx)
+	if err != nil || dispatchErr != nil {
+		return "unknown", true, true, errors.Join(dispatchErr, err)
+	}
+	switch terminal.Status {
+	case executionbackend.TerminalSucceeded:
+		return "succeeded", true, false, nil
+	case executionbackend.TerminalFailed, executionbackend.TerminalCancelled:
+		return "failed", true, true, nil
+	default:
+		return "unknown", true, true, nil
+	}
+}
+
+func (executor *ShellExecutor) fenceManagedUnknown(ctx context.Context, principal ExecutorMCPPrincipal, target executionbackend.Target, reason string) {
+	if executor.config.ManagedTargetFencer != nil {
+		_ = executor.config.ManagedTargetFencer.FenceManagedTarget(ctx, principal, target, reason)
+	}
+}
+
+type managedShellEvidence struct {
+	chunks        []ShellV1OutputChunk
+	nextSequence  uint64
+	exitCode      *int32
+	sandboxDenied bool
+	responseError bool
+	terminal      *executionbackend.TerminalResult
+	overflow      bool
+	observedAt    time.Time
+	err           error
+}
+
+func (evidence managedShellEvidence) outputComplete() bool {
+	return evidence.terminal != nil && evidence.terminal.OutputComplete && !evidence.overflow && evidence.err == nil
+}
+
+func collectManagedShellEvidence(ctx context.Context, exchange executionbackend.Exchange, maxOutputBytes int, now func() time.Time) managedShellEvidence {
+	evidence := managedShellEvidence{chunks: []ShellV1OutputChunk{}, nextSequence: 1}
+	retainedBytes := 0
+	for {
+		event, err := exchange.NextEvent(ctx)
+		if errors.Is(err, io.EOF) {
+			terminal, terminalErr := exchange.AwaitTerminal(ctx)
+			if terminalErr != nil {
+				evidence.err = fmt.Errorf("await managed process terminal: %w", terminalErr)
+				return evidence
+			}
+			evidence.terminal = &terminal
+			evidence.exitCode = terminal.ExitCode
+			evidence.sandboxDenied = terminal.ReasonCode == "sandbox_denied"
+			evidence.responseError = terminal.Status == executionbackend.TerminalFailed || terminal.Status == executionbackend.TerminalCancelled
+			evidence.observedAt = now()
+			return evidence
+		}
+		if err != nil {
+			evidence.err = fmt.Errorf("collect managed process events: %w", err)
+			return evidence
+		}
+		if event.Sequence != evidence.nextSequence {
+			evidence.err = errors.New("managed process event sequence differs from the backend exchange")
+			return evidence
+		}
+		evidence.nextSequence++
+		stream := ""
+		switch event.Kind {
+		case executionbackend.EventStdout:
+			stream = "stdout"
+		case executionbackend.EventStderr:
+			stream = "stderr"
+		default:
+			evidence.err = fmt.Errorf("managed process returned unsupported event kind %q", event.Kind)
+			return evidence
+		}
+		encoded := base64.StdEncoding.EncodeToString(event.Data)
+		projectedBytes := len(encoded) + len(stream) + 64
+		if len(evidence.chunks) == maximumShellOutputChunks || projectedBytes > maxOutputBytes-retainedBytes {
+			evidence.overflow = true
+			continue
+		}
+		retainedBytes += projectedBytes
+		evidence.chunks = append(evidence.chunks, ShellV1OutputChunk{
+			Sequence: event.Sequence, Stream: stream, ChunkBase64: encoded,
+		})
+	}
+}
+
+func managedShellStartStatus(acknowledged, forceUnknown bool, evidence managedShellEvidence) string {
+	if forceUnknown || !acknowledged || !evidence.outputComplete() {
+		return "unknown"
+	}
+	switch evidence.terminal.Status {
+	case executionbackend.TerminalSucceeded:
+		if evidence.exitCode != nil && *evidence.exitCode == 0 && !evidence.sandboxDenied {
+			return "succeeded"
+		}
+		return "failed"
+	case executionbackend.TerminalFailed, executionbackend.TerminalCancelled:
+		return "failed"
+	default:
+		return "unknown"
+	}
+}
+
+func marshalBackendAcknowledgement(requestID string, acknowledgement executionbackend.Acknowledgement) (json.RawMessage, error) {
+	if err := acknowledgement.Validate(); err != nil {
+		return nil, fmt.Errorf("validate backend acknowledgement: %w", err)
+	}
+	return json.Marshal(struct {
+		Version             string    `json:"version"`
+		RequestID           string    `json:"requestId"`
+		ProviderOperationID string    `json:"providerOperationId,omitempty"`
+		ProviderRequestID   string    `json:"providerRequestId,omitempty"`
+		AcceptedAt          time.Time `json:"acceptedAt"`
+	}{
+		Version: "execution-backend-ack-v1", RequestID: requestID,
+		ProviderOperationID: acknowledgement.ProviderOperationID,
+		ProviderRequestID:   acknowledgement.ProviderRequestID,
+		AcceptedAt:          acknowledgement.AcceptedAt,
+	})
 }
 
 func (executor *ShellExecutor) closeWithoutStartExchange(ctx context.Context, state *shellExecutionState, plan ShellV1Plan, result ShellV1Result, dispatchErr error) (ShellV1Result, error) {

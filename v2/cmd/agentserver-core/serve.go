@@ -17,8 +17,11 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
+	"github.com/agentserver/agentserver/v2/internal/corecredentials"
 	"github.com/agentserver/agentserver/v2/internal/coredb"
 	"github.com/agentserver/agentserver/v2/internal/coreserver"
+	"github.com/agentserver/agentserver/v2/internal/egresscapability"
+	"github.com/agentserver/agentserver/v2/internal/egressgateway"
 	"github.com/agentserver/agentserver/v2/internal/enrollmenttoken"
 	"github.com/agentserver/agentserver/v2/internal/httperrorlog"
 	"github.com/agentserver/agentserver/v2/internal/objectruntime"
@@ -35,6 +38,8 @@ const (
 	coreClientCAEnvironment                 = "AGENTSERVER_V2_CORE_CLIENT_CA_FILE"
 	coreGatewayIdentityEnvironment          = "AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID"
 	coreHarnessPoolIdentityEnvironment      = "AGENTSERVER_V2_HARNESS_POOL_SPIFFE_ID"
+	coreSandboxGatewayIdentityEnvironment   = "AGENTSERVER_V2_SANDBOX_GATEWAY_SPIFFE_ID"
+	coreEgressAuthorizerIdentityEnvironment = "AGENTSERVER_V2_EGRESS_AUTHORIZER_SPIFFE_ID"
 	coreBrowserIdentityEnvironment          = "AGENTSERVER_V2_BROWSER_GATEWAY_SPIFFE_ID"
 	corePlatformIdentityEnvironment         = "AGENTSERVER_V2_PLATFORM_GATEWAY_SPIFFE_ID"
 	coreHydraIntrospectionEnvironment       = "AGENTSERVER_V2_HYDRA_INTROSPECTION_URL"
@@ -69,6 +74,9 @@ const (
 	coreCapabilityExpiryGraceEnvironment    = "AGENTSERVER_V2_RUN_CAPABILITY_EXPIRY_GRACE"
 	coreEnrollmentKeyEnvironment            = "AGENTSERVER_V2_EXECUTOR_ENROLLMENT_TOKEN_KEY_FILE"
 	coreEnrollmentTTLEnvironment            = "AGENTSERVER_V2_EXECUTOR_ENROLLMENT_TOKEN_TTL"
+	coreManagedExecutorEnabledEnvironment   = "AGENTSERVER_V2_MANAGED_EXECUTOR_ENABLED"
+	coreEgressPlaceholderKeyringEnvironment = "AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEYRING_FILE"
+	coreCredentialSealingKeyringEnvironment = "AGENTSERVER_V2_CREDENTIAL_SEALING_KEYRING_FILE"
 )
 
 type coreProductionRunCapabilityConfig struct {
@@ -118,11 +126,32 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	if harnessPoolIdentity == gatewayIdentity {
 		return errors.New("executor-gateway and harness-pool SPIFFE identities must be distinct")
 	}
+	managedExecutorEnabled, err := strictOptionalBoolean(getenv(coreManagedExecutorEnabledEnvironment), coreManagedExecutorEnabledEnvironment)
+	if err != nil {
+		return err
+	}
+	if mode == coreServeProduction && strings.TrimSpace(getenv(coreManagedExecutorEnabledEnvironment)) == "" {
+		return fmt.Errorf("%s is required in production", coreManagedExecutorEnabledEnvironment)
+	}
+	sandboxGatewayIdentity := ""
+	if managedExecutorEnabled {
+		sandboxGatewayIdentity, err = requiredConfiguration(getenv, coreSandboxGatewayIdentityEnvironment)
+		if err != nil {
+			return err
+		}
+		if sandboxGatewayIdentity == gatewayIdentity || sandboxGatewayIdentity == harnessPoolIdentity {
+			return errors.New("sandbox-gateway must have a distinct production SPIFFE identity")
+		}
+	}
 	browserIdentity, err := requiredConfiguration(getenv, coreBrowserIdentityEnvironment)
 	if err != nil {
 		return err
 	}
-	if browserIdentity == gatewayIdentity || browserIdentity == harnessPoolIdentity {
+	if browserIdentity == gatewayIdentity || browserIdentity == harnessPoolIdentity ||
+		(managedExecutorEnabled && browserIdentity == sandboxGatewayIdentity) {
+		if mode == coreServeProduction {
+			return errors.New("browser-gateway, sandbox-gateway, executor-gateway, and harness-pool SPIFFE identities must be distinct")
+		}
 		return errors.New("browser-gateway, executor-gateway, and harness-pool SPIFFE identities must be distinct")
 	}
 	platformIdentity := browserIdentity
@@ -131,8 +160,19 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		if err != nil {
 			return err
 		}
-		if slices.Contains([]string{gatewayIdentity, harnessPoolIdentity, browserIdentity}, platformIdentity) {
-			return errors.New("platform-gateway, browser-gateway, executor-gateway, and harness-pool SPIFFE identities must be distinct")
+		identities := []string{gatewayIdentity, harnessPoolIdentity, browserIdentity}
+		if managedExecutorEnabled {
+			identities = append(identities, sandboxGatewayIdentity)
+		}
+		if slices.Contains(identities, platformIdentity) {
+			return errors.New("platform-gateway, browser-gateway, sandbox-gateway, executor-gateway, and harness-pool SPIFFE identities must be distinct")
+		}
+	}
+	var egressAuthorizerIdentity string
+	if managedExecutorEnabled && mode != coreServeProduction {
+		egressAuthorizerIdentity, err = requiredConfiguration(getenv, coreEgressAuthorizerIdentityEnvironment)
+		if err != nil {
+			return err
 		}
 	}
 	var llmproxyIdentity string
@@ -141,8 +181,24 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		if err != nil {
 			return err
 		}
-		if slices.Contains([]string{gatewayIdentity, harnessPoolIdentity, browserIdentity, platformIdentity}, llmproxyIdentity) {
-			return errors.New("llmproxy, platform-gateway, browser-gateway, executor-gateway, and harness-pool SPIFFE identities must be distinct")
+		identities := []string{gatewayIdentity, harnessPoolIdentity, browserIdentity, platformIdentity}
+		if managedExecutorEnabled {
+			identities = append(identities, sandboxGatewayIdentity)
+		}
+		if slices.Contains(identities, llmproxyIdentity) {
+			return errors.New("llmproxy, platform-gateway, browser-gateway, sandbox-gateway, executor-gateway, and harness-pool SPIFFE identities must be distinct")
+		}
+		if managedExecutorEnabled {
+			egressAuthorizerIdentity, err = requiredConfiguration(getenv, coreEgressAuthorizerIdentityEnvironment)
+			if err != nil {
+				return err
+			}
+			if slices.Contains([]string{
+				gatewayIdentity, harnessPoolIdentity, sandboxGatewayIdentity, browserIdentity,
+				platformIdentity, llmproxyIdentity,
+			}, egressAuthorizerIdentity) {
+				return errors.New("egress-authorizer must have a distinct production SPIFFE identity")
+			}
 		}
 	}
 	hydraEndpoint, err := requiredConfiguration(getenv, coreHydraIntrospectionEnvironment)
@@ -277,6 +333,13 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	if err != nil {
 		return err
 	}
+	var sandboxGatewayAuthorizer coreserver.WorkloadAuthorizer
+	if managedExecutorEnabled {
+		sandboxGatewayAuthorizer, err = coreserver.NewSPIFFEWorkloadAuthorizer(sandboxGatewayIdentity)
+		if err != nil {
+			return err
+		}
+	}
 	browserAuthorizer, err := coreserver.NewSPIFFEWorkloadAuthorizer(browserIdentity)
 	if err != nil {
 		return err
@@ -286,8 +349,15 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		return err
 	}
 	var llmproxyAuthorizer coreserver.WorkloadAuthorizer
+	var egressAuthorizer coreserver.WorkloadAuthorizer
 	if productionCapabilities != nil {
 		llmproxyAuthorizer, err = coreserver.NewSPIFFEWorkloadAuthorizer(llmproxyIdentity)
+		if err != nil {
+			return err
+		}
+	}
+	if managedExecutorEnabled {
+		egressAuthorizer, err = coreserver.NewSPIFFEWorkloadAuthorizer(egressAuthorizerIdentity)
 		if err != nil {
 			return err
 		}
@@ -338,6 +408,49 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		return err
 	}
 	store := coredb.NewStateStore(pool)
+	var workspaceCredentialHandler *coreserver.WorkspaceCredentialHandler
+	var egressCredentialHandler *coreserver.EgressCredentialHandler
+	if managedExecutorEnabled {
+		placeholderKeyringFile, keyringErr := requiredConfiguration(getenv, coreEgressPlaceholderKeyringEnvironment)
+		if keyringErr != nil {
+			return keyringErr
+		}
+		sealingKeyringFile, sealingErr := requiredConfiguration(getenv, coreCredentialSealingKeyringEnvironment)
+		if sealingErr != nil {
+			return sealingErr
+		}
+		placeholderVerifier, loadErr := egresscapability.LoadVerifier(placeholderKeyringFile)
+		if loadErr != nil {
+			return fmt.Errorf("configure v2 egress placeholder verifier: %w", loadErr)
+		}
+		capabilityVerifier, adapterErr := egressgateway.NewCapabilityPlaceholderVerifier(placeholderVerifier)
+		if adapterErr != nil {
+			return adapterErr
+		}
+		sealer, loadErr := corecredentials.LoadKeyring(sealingKeyringFile)
+		if loadErr != nil {
+			return fmt.Errorf("configure v2 workspace credential sealing keyring: %w", loadErr)
+		}
+		registry, registryErr := corecredentials.NewDefaultRegistry("", nil)
+		if registryErr != nil {
+			return fmt.Errorf("configure v2 workspace credential providers: %w", registryErr)
+		}
+		credentialCommands := coreserver.StateStoreWorkspaceCredentialCommands{Store: store, Registry: registry, Sealer: sealer, Now: time.Now}
+		workspaceCredentialHandler, err = coreserver.NewWorkspaceCredentialHandler(platformAuthorizer, platformUserAuthorizer, credentialCommands)
+		if err != nil {
+			return err
+		}
+		egressCredentialService, serviceErr := coreserver.NewEgressCredentialService(coreserver.EgressCredentialServiceConfig{
+			Store: store, Registry: registry, Sealer: sealer, Placeholders: capabilityVerifier, Now: time.Now,
+		})
+		if serviceErr != nil {
+			return fmt.Errorf("configure v2 egress credential resolver: %w", serviceErr)
+		}
+		egressCredentialHandler, err = coreserver.NewEgressCredentialHandler(authorizer, egressAuthorizer, egressCredentialService)
+		if err != nil {
+			return err
+		}
+	}
 	platformResourceHandler, err := coreserver.NewPlatformResourceHandler(
 		platformAuthorizer,
 		platformUserAuthorizer,
@@ -379,6 +492,10 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 			return fmt.Errorf("configure workspace LLM gateway service: %w", err)
 		}
 	}
+	// Managed TAE credentials use the provider-neutral egress credential
+	// resolver above. The legacy Lark grant/refresh HTTP surface is deliberately
+	// not mounted in the v2 production Core, so a deployment never needs a
+	// workspace token, client secret, or install-time grant Secret.
 	var userExecutorHandler *coreserver.UserExecutorManagementHandler
 	var internalExecutorIdentityHandler *coreserver.InternalExecutorIdentityHandler
 	if productionEnrollment != nil {
@@ -490,6 +607,16 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	if err != nil {
 		return err
 	}
+	var managedSandboxHandler *coreserver.ManagedSandboxHandler
+	if managedExecutorEnabled {
+		managedSandboxHandler, err = coreserver.NewManagedSandboxHandler(
+			sandboxGatewayAuthorizer,
+			coreserver.StateStoreManagedSandboxCommands{Store: store},
+		)
+		if err != nil {
+			return err
+		}
+	}
 	approvalHandler, err := coreserver.NewApprovalHandler(authorizer, coreserver.StateStoreApprovalCommands{Store: store})
 	if err != nil {
 		return err
@@ -524,6 +651,12 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	handler := http.NewServeMux()
 	handler.Handle("/internal/v2/auth/", loginBridgeHandler.Routes())
 	mountCorePlatformResourceRoutes(handler, platformResourceHandler)
+	if workspaceCredentialHandler != nil {
+		credentialRoutes := workspaceCredentialHandler.Routes()
+		handler.Handle(corecontract.WorkspaceCredentialProviderSchemasPath, credentialRoutes)
+		handler.Handle(corecontract.WorkspaceCredentialCollectionRoutePattern, credentialRoutes)
+		handler.Handle(corecontract.WorkspaceCredentialResourceRoutePattern, credentialRoutes)
+	}
 	mountCoreUserSessionRoutes(handler, userSessionHandler)
 	handler.Handle("/v2/", userRunHandler.Routes())
 	mountCoreWorkspaceLLMGatewayRoutes(handler, workspaceLLMGatewayHandler)
@@ -536,9 +669,20 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	handler.Handle(corecontract.ClaimRunAttemptPath, runAttemptHandler)
 	handler.Handle(corecontract.RunAttemptPathPrefix, runAttemptHandler)
 	handler.Handle(corecontract.ResolveRunLaunchStatePath, runLaunchStateHandler)
+	if egressCredentialHandler != nil {
+		handler.Handle(corecontract.ResolveEgressCredentialAuthorityPath, egressCredentialHandler)
+		handler.Handle(corecontract.ResolveEgressCredentialPath, egressCredentialHandler)
+		handler.Handle(corecontract.RecordEgressCredentialAuditPath, egressCredentialHandler)
+	}
 	handler.Handle(corecontract.ListExecutorEnvironmentsPath, environmentHandler)
 	handler.Handle(corecontract.PrepareExecutionPath, executionHandler)
 	handler.Handle(corecontract.ExecutionPathPrefix, executionHandler)
+	if managedSandboxHandler != nil {
+		handler.Handle(corecontract.ReserveManagedSandboxPath, managedSandboxHandler)
+		handler.Handle(corecontract.ListManagedSandboxesForReconcilePath, managedSandboxHandler)
+		handler.Handle(corecontract.AuthorizeManagedSandboxOperationPath, managedSandboxHandler)
+		handler.Handle(corecontract.ManagedSandboxPathPrefix, managedSandboxHandler)
+	}
 	handler.Handle(corecontract.CreateApprovalPath, approvalHandler)
 	handler.Handle(corecontract.ApprovalActionRoutePattern, approvalActionHandler)
 	handler.Handle(corecontract.ApprovalPathPrefix, approvalHandler)

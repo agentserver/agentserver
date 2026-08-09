@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -70,6 +71,42 @@ func TestOneShotWorkerAssemblesVerifiedRuntimeAndReportsAfterCleanup(t *testing.
 	if fixture.runner.request.Start == nil || fixture.runner.request.Start.Model != fixture.manifest.Model.Model ||
 		fixture.runner.request.Start.CWD != fixture.runtime.threadCWD {
 		t.Fatalf("runner request = %+v", fixture.runner.request)
+	}
+}
+
+func TestOneShotWorkerForwardsExactSignedManagedSkillToThreadStart(t *testing.T) {
+	fixture := newOneShotWorkerFixture(t)
+	instructions := "---\nname: lark-readonly\n---\nUse lark-cli for the approved document query.\n"
+	digest := sha256.Sum256([]byte(instructions))
+	fixture.manifest.ToolPack = &runmanifest.ToolPackAuthority{
+		PackID: "lark-readonly@v1", PackSetDigest: strings.Repeat("d", 64),
+		SkillSHA256: hex.EncodeToString(digest[:]),
+	}
+	seed := sha256.Sum256([]byte("one-shot-worker-signing-key"))
+	signed, err := runmanifest.Sign(fixture.manifest, "one-shot-worker-key", ed25519.NewKeyFromSeed(seed[:]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrap, err := harnessbootstrap.Encode(harnessbootstrap.Envelope{
+		Version: harnessbootstrap.CurrentVersion, SignedManifest: signed,
+		ControlCapability: base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)),
+		RuntimeCapabilities: harnessbootstrap.RuntimeCapabilities{
+			ExecutorMCP: oneShotExecutorCapability, LLMProxy: oneShotLLMCapability,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.config.BootstrapPipe = pipeWithWorkerBytes(t, bootstrap)
+	fixture.config.BaseInstructions = instructions
+	if err := runOneShotWorker(t.Context(), fixture.config, fixture.dependencies()); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.runner.request.Start == nil {
+		t.Fatal("worker did not issue thread/start for a fresh managed run")
+	}
+	if fixture.runner.request.Start.BaseInstructions != instructions {
+		t.Fatalf("thread/start base instructions = %q, want exact signed skill", fixture.runner.request.Start.BaseInstructions)
 	}
 }
 
@@ -240,6 +277,24 @@ func newOneShotWorkerFixture(t *testing.T) *oneShotWorkerFixture {
 		ClientInfo:          AppServerClientInfo{Name: "agentserver-harness-worker", Title: "Agentserver Harness Worker", Version: "v2-test"},
 	}
 	return fixture
+}
+
+func TestAuthorizedBaseInstructionsRequireExactSignedSkillDigest(t *testing.T) {
+	instructions := "Use lark-cli only for approved read-only document queries."
+	digest := sha256.Sum256([]byte(instructions))
+	manifest := runmanifest.Manifest{ToolPack: &runmanifest.ToolPackAuthority{
+		PackID: "lark-readonly@v1", PackSetDigest: strings.Repeat("a", 64),
+		SkillSHA256: hex.EncodeToString(digest[:]),
+	}}
+	if got, err := authorizedBaseInstructions(manifest, instructions); err != nil || got != instructions {
+		t.Fatalf("authorized base instructions = %q / %v", got, err)
+	}
+	if _, err := authorizedBaseInstructions(manifest, instructions+" drift"); err == nil {
+		t.Fatal("drifting base instructions were accepted")
+	}
+	if _, err := authorizedBaseInstructions(runmanifest.Manifest{}, instructions); err == nil {
+		t.Fatal("unsigned base instructions were accepted")
+	}
 }
 
 func (fixture *oneShotWorkerFixture) dependencies() oneShotWorkerDependencies {

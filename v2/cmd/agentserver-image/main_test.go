@@ -13,6 +13,7 @@ func TestRunRejectsUnknownAndIncompleteImageCommands(t *testing.T) {
 		{"unknown"},
 		{"prepare", "--kind=service"},
 		{"verify-oci", "--manifest=/missing", "--archive=/missing"},
+		{"verify-managed-release", "--config=/missing", "--harness-manifest=/missing", "--harness-archive=/missing", "--manifest=/missing", "--archive=/missing"},
 		{"verify-tar", "--manifest=/missing", "--tar=/missing"},
 	} {
 		var stdout, stderr bytes.Buffer

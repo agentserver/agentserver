@@ -62,6 +62,10 @@ type UserRunLLMGatewayResolver interface {
 	ResolveUserRunLLMGatewayBinding(context.Context, coredb.ResolveUserRunLLMGatewayBindingCommand) (coredb.RunLLMGatewayBinding, error)
 }
 
+type UserRunLarkEgressResolver interface {
+	ResolveUserRunLarkEgressBinding(context.Context, coredb.ResolveUserRunLarkEgressBindingCommand) (coredb.RunLarkEgressBinding, error)
+}
+
 type UserRunIDGenerator func() (string, error)
 
 type UserRunServiceConfig struct {
@@ -69,6 +73,7 @@ type UserRunServiceConfig struct {
 	Prompts      UserPromptStore
 	Policies     UserRunPolicyResolver
 	LLMGateways  UserRunLLMGatewayResolver
+	LarkEgress   UserRunLarkEgressResolver
 	CursorCodec  *runcursor.Codec
 	NewID        UserRunIDGenerator
 	PollInterval time.Duration
@@ -79,6 +84,7 @@ type UserRunService struct {
 	prompts      UserPromptStore
 	policies     UserRunPolicyResolver
 	llmGateways  UserRunLLMGatewayResolver
+	larkEgress   UserRunLarkEgressResolver
 	cursors      *runcursor.Codec
 	newID        UserRunIDGenerator
 	pollInterval time.Duration
@@ -128,7 +134,8 @@ func NewUserRunService(config UserRunServiceConfig) (*UserRunService, error) {
 		return nil, errors.New("user run poll interval must be between 10ms and one second")
 	}
 	return &UserRunService{
-		store: config.Store, prompts: config.Prompts, policies: config.Policies, llmGateways: config.LLMGateways,
+		store: config.Store, prompts: config.Prompts, policies: config.Policies,
+		llmGateways: config.LLMGateways, larkEgress: config.LarkEgress,
 		cursors: config.CursorCodec, newID: config.NewID, pollInterval: config.PollInterval,
 	}, nil
 }
@@ -166,6 +173,16 @@ func (service *UserRunService) CreateUserRun(ctx context.Context, command Create
 			return corecontract.CreateUserRunResponse{}, err
 		}
 	}
+	var larkEgress coredb.RunLarkEgressBinding
+	if service.larkEgress != nil {
+		larkEgress, err = service.larkEgress.ResolveUserRunLarkEgressBinding(ctx, coredb.ResolveUserRunLarkEgressBindingCommand{
+			WorkspaceID: command.WorkspaceID, SessionID: command.SessionID,
+			ActorID: command.ActorID, IdempotencyKey: command.IdempotencyKey,
+		})
+		if err != nil {
+			return corecontract.CreateUserRunResponse{}, err
+		}
+	}
 	identities := make([]string, 4)
 	seen := make(map[string]struct{}, len(identities))
 	for index := range identities {
@@ -182,7 +199,7 @@ func (service *UserRunService) CreateUserRun(ctx context.Context, command Create
 	created, err := service.store.CreateAuthorizedRun(ctx, coredb.CreateRunCommand{
 		RunID: identities[0], WorkspaceID: command.WorkspaceID, SessionID: command.SessionID,
 		ActorID: command.ActorID, RequestHash: requestHash, IdempotencyKey: command.IdempotencyKey,
-		Prompt: prompt, ExecutorPolicy: policy, LLMGateway: llmGateway,
+		Prompt: prompt, ExecutorPolicy: policy, LLMGateway: llmGateway, LarkEgress: larkEgress,
 		Record: coredb.TransitionRecord{
 			EventID: identities[1], ProducerInstanceID: identities[2], ProducerSeq: 1, OutboxID: identities[3],
 		},

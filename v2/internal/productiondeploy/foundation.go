@@ -1,20 +1,27 @@
 package productiondeploy
 
-import "github.com/agentserver/agentserver/v2/internal/executorgateway"
+import (
+	"github.com/agentserver/agentserver/v2/internal/egressgateway"
+	"github.com/agentserver/agentserver/v2/internal/executorgateway"
+)
 
 const (
-	coreComponent           = "agentserver-core"
-	platformComponent       = "platform-gateway"
-	browserComponent        = "browser-gateway"
-	executorComponent       = "executor-gateway"
-	harnessComponent        = "harness-pool"
-	llmproxyComponent       = "llmproxy"
-	hydraComponent          = "hydra"
-	hydraMigrationComponent = "hydra-migrate"
-	hydraSetupComponent     = "hydra-client-setup"
-	migrationComponent      = "agentserver-migrate"
-	bootstrapComponent      = "agentserver-bootstrap"
-	bootstrapServiceAccount = "agentserver-bootstrap"
+	coreComponent                        = "agentserver-core"
+	platformComponent                    = "platform-gateway"
+	browserComponent                     = "browser-gateway"
+	executorComponent                    = "executor-gateway"
+	harnessComponent                     = "harness-pool"
+	llmproxyComponent                    = "llmproxy"
+	sandboxComponent                     = "sandbox-gateway"
+	egressComponent                      = "egress-authorizer"
+	hydraComponent                       = "hydra"
+	hydraMigrationComponent              = "hydra-migrate"
+	hydraSetupComponent                  = "hydra-client-setup"
+	migrationComponent                   = "agentserver-migrate"
+	bootstrapComponent                   = "agentserver-bootstrap"
+	managedEnvironmentBootstrapComponent = "agentserver-managed-environment-bootstrap"
+	taeNetworkProbeComponent             = "tae-network-probe"
+	bootstrapServiceAccount              = "agentserver-bootstrap"
 )
 
 func renderFoundation(context renderContext) []kubeObject {
@@ -50,6 +57,27 @@ func renderFoundation(context renderContext) []kubeObject {
 		authUIHTTPRoute(config),
 		hydraHTTPRoute(config),
 	}
+	if managedExecutionActive(config.Document.Managed) {
+		managedItems := []kubeObject{
+			serviceAccountResource(config, sandboxComponent),
+			serviceAccountResource(config, egressComponent),
+			configMapResource(config, context.managedEnvironmentConfigName, map[string]string{
+				"managed-environment.json": string(context.managedEnvironmentJSON),
+			}),
+			internalService(config, sandboxComponent, config.Document.Services.SandboxGateway),
+			internalService(config, egressComponent, config.Document.Services.EgressAuthorizer),
+			egressAuthorizerHTTPRoute(config),
+			egressAuthorizerBackendTLSPolicy(config),
+		}
+		items = append(items, managedItems...)
+	} else if managedPolicyBootstrap(config.Document.Managed) {
+		items = append(items,
+			serviceAccountResource(config, egressComponent),
+			internalService(config, egressComponent, config.Document.Services.EgressAuthorizer),
+			egressAuthorizerHTTPRoute(config),
+			egressAuthorizerBackendTLSPolicy(config),
+		)
+	}
 	items = append(items, renderNetworkPolicies(context)...)
 	return items
 }
@@ -78,7 +106,7 @@ func internalService(config LoadedConfig, component string, service InternalServ
 			"type": "ClusterIP", "clusterIP": service.ClusterIP,
 			"selector": selectorLabels(component),
 			"ports": []any{kubeObject{
-				"name": "https", "protocol": "TCP", "port": int(service.Port), "targetPort": "https",
+				"name": "https", "appProtocol": "https", "protocol": "TCP", "port": int(service.Port), "targetPort": "https",
 			}},
 		},
 	}
@@ -162,6 +190,34 @@ func authUIHTTPRoute(config LoadedConfig) kubeObject {
 func hydraHTTPRoute(config LoadedConfig) kubeObject {
 	return httpRoute(config, "agentserver-hydra-public", config.Document.Ingress.HydraHostname, hydraComponent,
 		config.Document.Services.Hydra.PublicPort, []kubeObject{pathMatch("PathPrefix", "/")})
+}
+
+func egressAuthorizerHTTPRoute(config LoadedConfig) kubeObject {
+	return httpRoute(config, "agentserver-egress-authorizer-webhook", ProductionEgressAuthorizerHostname,
+		egressComponent, config.Document.Services.EgressAuthorizer.Port,
+		[]kubeObject{pathMatch("Exact", egressgateway.PolicyPath)})
+}
+
+// egressAuthorizerBackendTLSPolicy makes the Gateway re-encrypt the public
+// Webhook request to the egress-authorizer Service. The CA is public trust
+// material (not a credential) and is provisioned by the Pulumi stack in a
+// namespace-local ConfigMap. The backend certificate remains the workload
+// certificate whose DNS SAN is EgressInternalHost.
+func egressAuthorizerBackendTLSPolicy(config LoadedConfig) kubeObject {
+	return kubeObject{
+		"apiVersion": "gateway.networking.k8s.io/v1", "kind": "BackendTLSPolicy",
+		"metadata": metadata("agentserver-egress-authorizer-backend-tls", config.Document.Namespace,
+			map[string]string{"app.kubernetes.io/part-of": "agentserver-v2", "app.kubernetes.io/managed-by": "agentserver-deploy"}, nil),
+		"spec": kubeObject{
+			"targetRefs": []any{kubeObject{
+				"group": "", "kind": "Service", "name": egressComponent, "sectionName": "https",
+			}},
+			"validation": kubeObject{
+				"hostname":          EgressInternalHost,
+				"caCertificateRefs": []any{kubeObject{"group": "", "kind": "ConfigMap", "name": ProductionEgressBackendCAConfigMap}},
+			},
+		},
+	}
 }
 
 func httpRoute(config LoadedConfig, name, hostname, backend string, port uint16, matches []kubeObject) kubeObject {

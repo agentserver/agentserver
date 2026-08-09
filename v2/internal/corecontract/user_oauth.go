@@ -32,6 +32,8 @@ const (
 	PlatformOAuthLLMGatewaysDisableScope = "llm-gateways:disable"
 	PlatformOAuthLLMGrantsAuthorizeScope = "llm-gateway-grants:authorize"
 	PlatformOAuthLLMGrantsRevokeScope    = "llm-gateway-grants:revoke"
+	PlatformOAuthCredentialsReadScope    = "credentials:read"
+	PlatformOAuthCredentialsManageScope  = "credentials:manage"
 
 	BrowserOAuthClientID = "agentserver-browser"
 	BrowserOAuthAudience = "agentserver-browser-api"
@@ -96,6 +98,8 @@ func PlatformOAuthScopes() []string {
 		PlatformOAuthLLMGatewaysDisableScope,
 		PlatformOAuthLLMGrantsAuthorizeScope,
 		PlatformOAuthLLMGrantsRevokeScope,
+		PlatformOAuthCredentialsReadScope,
+		PlatformOAuthCredentialsManageScope,
 	}
 }
 
@@ -125,6 +129,14 @@ func PlatformOAuthActionPermissions() map[string]UserOAuthActionAuthority {
 		"llm-gateways.authorize":              {Resource: UserOAuthWorkspaceResource, Permissions: []string{PlatformOAuthLLMGrantsAuthorizeScope}},
 		"llm-gateways.complete-authorization": {Resource: UserOAuthWorkspaceResource, Permissions: []string{PlatformOAuthLLMGrantsAuthorizeScope}},
 		"llm-gateways.revoke":                 {Resource: UserOAuthWorkspaceResource, Permissions: []string{PlatformOAuthLLMGrantsRevokeScope}},
+		"credentials.schemas":                 {Resource: UserOAuthGlobalResource, Permissions: []string{PlatformOAuthCredentialsReadScope}},
+		"credentials.list":                    {Resource: UserOAuthWorkspaceResource, Permissions: []string{PlatformOAuthCredentialsReadScope}},
+		"credentials.create":                  {Resource: UserOAuthWorkspaceResource, Permissions: []string{PlatformOAuthCredentialsManageScope}},
+		"credentials.update":                  {Resource: UserOAuthWorkspaceResource, Permissions: []string{PlatformOAuthCredentialsManageScope}},
+		"credentials.rotate":                  {Resource: UserOAuthWorkspaceResource, Permissions: []string{PlatformOAuthCredentialsManageScope}},
+		"credentials.revoke":                  {Resource: UserOAuthWorkspaceResource, Permissions: []string{PlatformOAuthCredentialsManageScope}},
+		"credentials.delete":                  {Resource: UserOAuthWorkspaceResource, Permissions: []string{PlatformOAuthCredentialsManageScope}},
+		"credentials.set-default":             {Resource: UserOAuthWorkspaceResource, Permissions: []string{PlatformOAuthCredentialsManageScope}},
 	}
 }
 
@@ -169,6 +181,7 @@ func PlatformOAuthGlobalPermissions() []string {
 	return []string{
 		PlatformOAuthWorkspacesCreateScope,
 		PlatformOAuthWorkspacesReadScope,
+		PlatformOAuthCredentialsReadScope,
 	}
 }
 

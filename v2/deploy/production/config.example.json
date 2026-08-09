@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 3,
   "region": "sg",
   "namespace": "agentserver",
   "clusterDomain": "cluster.local",
@@ -7,7 +7,8 @@
   "images": {
     "service": "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-service@sha256:93b8d19223877c14fa50e1ef0c176846e85f2be2394c56b4b9b1e2016b520ced",
     "harness": "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-harness@sha256:1f1eb0864881052ed55b545ffc1b66ab57f8b60d047903a5255ea456a1634b1b",
-    "hydra": "registry-sg.byted.cs.ac.cn/ghcr/agentserver/hydra@sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b"
+    "hydra": "registry-sg.byted.cs.ac.cn/ghcr/agentserver/hydra@sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b",
+    "managedSandbox": "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-managed-sandbox@sha256:5555555555555555555555555555555555555555555555555555555555555555"
   },
   "replicas": {
     "core": 2,
@@ -15,7 +16,9 @@
     "browserGateway": 2,
     "harnessPool": 2,
     "llmproxy": 2,
-    "hydra": 2
+    "hydra": 2,
+    "sandboxGateway": 2,
+    "egressAuthorizer": 2
   },
   "services": {
     "core": {"clusterIp": "192.168.250.10", "port": 8443},
@@ -27,7 +30,9 @@
       "internalPort": 8443
     },
     "llmproxy": {"clusterIp": "192.168.250.13", "port": 8443},
-    "hydra": {"clusterIp": "192.168.250.14", "publicPort": 4444, "adminPort": 4445}
+    "hydra": {"clusterIp": "192.168.250.14", "publicPort": 4444, "adminPort": 4445},
+    "sandboxGateway": {"clusterIp": "192.168.250.16", "port": 8443},
+    "egressAuthorizer": {"clusterIp": "192.168.250.17", "port": 8443}
   },
   "ingress": {
     "gatewayNamespace": "istio-ingress",
@@ -84,12 +89,68 @@
     "finalExecSha256": "f0547c830db66c94d2973071f2c2ef3bf03f9953c3af5225e3c9f4e115392398",
     "finalExecSizeBytes": 1781886
   },
+  "managedExecutor": {
+    "enabled": true,
+    "stage": "active",
+    "workspaceAllowlist": ["9271bfe5-68a4-484b-a2d3-e9f450a42d0c"],
+    "environment": {
+      "environmentId": "30000000-0000-4000-8000-000000000003",
+      "root": {
+        "path": "/workspace",
+        "displayName": "Managed SG",
+        "description": "TAE managed Lark executor",
+        "defaultCwd": ""
+      },
+      "compatibilityRuntime": {
+        "codexRelease": "0.146.0",
+        "codexCommit": "e363b08c9175ac1cbe5893615dd2cb9ddf95043b",
+        "codexSha256": "2e863156ed35ecc5253b1e2f907a9143077b9f7cb51942070c61996471ff6e04"
+      },
+      "runtimeProfileSha256": "d5fee538c7c61ac2b21789deaecaca48835ba8f71df6dcf23b54369c4efe1a15",
+      "packSetSha256": "84441b312f80c848f6ffc3b161b1916c4baa3c9217f51479dea9aa92f655aaaf",
+      "sandboxTtl": "30m",
+      "activityTtl": "5m",
+      "idleTtl": "5m"
+    },
+    "tae": {
+      "region": "sg",
+      "psm": "bytedance.sandbox.agentserver",
+      "policy": {
+        "version": 1,
+        "revision": "lark-readonly-v1",
+        "policySha256": "d086154a58d7f805ad95ee0842a7b63020394e2ba35aa881838eec1d97d16331",
+        "bindingSha256": "b0965bc3f70dd53cded922c02c5627909337d8b5dac2230d1605870909f686ff",
+        "publicHost": "open.feishu.cn",
+        "publicAccess": "whitelist",
+        "publicWebhookRequired": true,
+        "webhookMode": "url",
+        "webhookPsm": "",
+        "webhookUrl": "https://egress-authorizer-sg.byted.bps.dev/v1/policy",
+        "webhookPath": "/v1/policy",
+        "published": true,
+        "approved": true,
+        "evidenceRef": "REPLACE_WITH_TAE_CHANGE_OR_SECURITY_TICKET"
+      },
+      "networkEvidence": {
+        "version": 1,
+        "reportSha256": "47d34822e5249f822ebb4b3d26d39e1704917fc39403c4ff94e77722626c4008",
+        "bindingSha256": "dcee82bf5cc7af80a2d80f03806cc4d1e4eda1339bd144074db087d55d20fa54",
+        "evidenceRef": "REPLACE_WITH_SG_NETWORK_TEST_REPORT"
+      }
+    },
+    "lark": {
+      "enabled": true,
+      "cliSha256": "faee6cf3f4d87194e079820ff7809182cbda1d815bc902700649c737ac0ed943",
+      "skillSha256": "3c03773ac40132e68c406c715d69847c1f60f10e00982bac9782d7bc5ac8bd29",
+      "policySha256": "d086154a58d7f805ad95ee0842a7b63020394e2ba35aa881838eec1d97d16331"
+    }
+  },
   "objectStore": {
     "mode": "s3-plaintext-v1",
     "prefix": "agentserver/v2/production",
-    "s3Bucket": "agentserver-sg",
-    "s3Region": "sg-central",
-    "s3Endpoint": "https://tos-s3-sg.byted.org",
+    "s3Bucket": "agentserver",
+    "s3Region": "sg-devbox-1",
+    "s3Endpoint": "https://s3-sg.byted.cs.ac.cn",
     "s3UsePathStyle": true
   },
   "secrets": {
@@ -101,7 +162,9 @@
     "harnessWorker": "agentserver-worker-secrets",
     "llmproxy": "agentserver-llmproxy-secrets",
     "objectStore": "agentserver-object-store-secrets",
-    "hydra": "agentserver-hydra-secrets"
+    "hydra": "agentserver-hydra-secrets",
+    "sandboxGateway": "agentserver-sandbox-secrets",
+    "egressAuthorizer": "agentserver-egress-secrets"
   },
   "network": {
     "dnsClusterIp": "192.168.0.10",
@@ -117,7 +180,10 @@
     "harnessExternalEgress": [
       {"cidr": "10.8.103.160/32", "ports": [443]},
       {"cidr": "fdbd:dc51:fe:200d::1/128", "ports": [443]}
-    ]
+    ],
+    "sandboxExternalEgress": [],
+    "egressAuthorizerExternalEgress": [],
+    "egressAuthorizerIngress": []
   },
   "resources": {
     "core": {
@@ -147,6 +213,14 @@
     "hydra": {
       "requests": {"cpu": "100m", "memory": "128Mi"},
       "limits": {"cpu": "1", "memory": "512Mi"}
+    },
+    "sandboxGateway": {
+      "requests": {"cpu": "500m", "memory": "512Mi"},
+      "limits": {"cpu": "2", "memory": "2Gi"}
+    },
+    "egressAuthorizer": {
+      "requests": {"cpu": "500m", "memory": "512Mi"},
+      "limits": {"cpu": "2", "memory": "2Gi"}
     },
     "runtimeTmpfs": "8Gi",
     "checkpointTmpfs": "2Gi",

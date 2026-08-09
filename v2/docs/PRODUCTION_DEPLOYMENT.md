@@ -19,6 +19,15 @@
 Responses-compatible 的第三方 LLM Gateway，每个成员再用 OIDC Authorization Code + PKCE 授权自己的
 grant。平台没有统一的模型 API key。
 
+`managedExecutor` 有三个显式且不兼容回退的 stage：`disabled`、`policy-bootstrap`、`active`。
+`policy-bootstrap` 只部署生产 TLS 的 deny-only Policy Webhook；`active` 才会部署 TAE managed executor vertical slice：
+`harness-pool → executor-gateway → sandbox-gateway → TAE`，以及 TAE Policy Webhook 对端
+`egress-authorizer → Core`。sandbox 内运行 digest-pinned Linux/amd64 `lark-cli` 和只读 skill；模型仍
+只看到既有 `list_environments`、`shell`、`read_file` MCP catalog。TAE policy 不通过 CreateSession 参数
+伪造，而由已发布的 PSM/网络策略 binding digest 在 sandbox-gateway 与 egress-authorizer 两端共同校验。
+代码和 provider-linked binary 已接入本地生产渲染，但真实 SG ByteCloud 应用 JWT/TAE/Lark、Webhook 可达性、IPv4/IPv6
+与 zero-secret 门禁仍须在目标集群执行，本文不把本地测试当作上线证据。
+
 ## 1. 固定公网拓扑
 
 | Host | 公开路径 | 后端 |
@@ -57,9 +66,14 @@ harness-pool Pod 访问。
 
 Chart 管理：
 
-- 7 个常驻 Deployment：core、platform-gateway、browser-gateway、executor-gateway、harness-pool、llmproxy、Hydra；
+- managed executor 关闭时有 7 个常驻 Deployment：core、platform-gateway、browser-gateway、executor-gateway、harness-pool、llmproxy、Hydra；
+- `policy-bootstrap` 只增加 deny-only `egress-authorizer`，共 8 个常驻 Deployment；它没有 Core egress、
+  workspace credential、ZTI verifier、TAE provider 或 sandbox authority；
+- `active` 再增加 `sandbox-gateway` 并把 egress-authorizer 切为完整校验路径，共 9 个常驻 Deployment；
 - executor-gateway 固定单副本、`Recreate`、无 HPA/PDB；
-- 6 个固定 ClusterIP Service、6 条 HTTPRoute、12 条 NetworkPolicy；
+- managed executor 关闭时有 6 个固定 ClusterIP Service、6 条 HTTPRoute；开启时再增加两个内部 ClusterIP
+  Service（公网 HTTPRoute 数仍为 6），并渲染完整的 managed NetworkPolicy；
+- managed profile 当前渲染 16 条 NetworkPolicy（含 default deny、TAE sandbox 与 Webhook ingress/egress）；
 - Hydra SQL migration（weight `-20`）和 AgentServer migration（weight `-10`）
   `pre-install,pre-upgrade` Job；
 - Hydra Platform/Browser 两个 public OAuth client setup（weight `-10`）和幂等 AgentServer bootstrap（weight `0`）
@@ -83,7 +97,9 @@ Job 只用于控制面安装期的数据库 migration、Hydra client setup 和 b
 - 以 `kubernetes.io/hostname` 为 topology key 的 required Pod anti-affinity，三个实例不能落在同一节点；
 - 指向 `agentserver-postgres-rw.agentserver.svc.cluster.local:5432` 的 AgentServer/Hydra 独立 DSN；
 - Hydra system/cookie secret；
-- 9 个应用 Secret；
+- base profile 使用 9 个应用 Secret；managed profile 额外使用 sandbox、egress-authorizer 和
+  Core workspace credential keyring 相关 Secret；这些只描述组件身份、keyring 和基础设施，不承载任何 workspace
+  Lark/ByteCloud/GitHub credential；
 - 环境锁定的 OCI Helm release。Release显式使用`atomic=false`和`cleanupOnFail=false`：失败资源会保留供排障，修复仍由下一次Pulumi更新收敛，不自动卸载现场。
 
 证书和密钥由 Pulumi `tls`/`random` provider 生成，用户不需要手工生成文件、选择 Secret 名称
@@ -98,6 +114,7 @@ Kubernetes Secret：
 | --- | --- |
 | `externalOidcClientSecret` | 外部 OIDC 中已注册的 AgentServer client |
 | `s3AccessKeyId` / `s3SecretAccessKey` | 目标 S3-compatible bucket 的真实 credential |
+| `byteCloudAccessKeyId` / `byteCloudSecretAccessKey` | 仅用于一次性 TAE 网络探针和 active sandbox-gateway 调 TAE control/data plane 的基础设施应用账号；workspace ByteCloud credential 不在 Pulumi 中配置 |
 
 如果这些外部系统由 Pulumi provider 管理，应直接把对应资源 Output 传给 AgentServer 模块；当前
 模块也保留加密 Pulumi config 接口作为接入点。不要生成一个外部系统从未注册的随机密码并把它
@@ -129,12 +146,61 @@ Gateway、DNS 和用户机器上的 agentx。
 以只读`subPath`文件挂载；该文件在单个Pod生命周期内保持固定，Secret轮换通过Reloader创建新Pod接收。
 harness-pool只保留目录准备和network guard两个init container。
 
+`disabled` 和初始 `policy-bootstrap` 不要求 ByteCloud AK/SK，缺失时不能阻塞普通 `pulumi up`。
+安全审批完成后，运行一次性网络探针之前必须把 AK/SK 作为一对 Pulumi secret 原子接入；只配置其中
+一个会 fail closed。`active` stage 的 `agentserver-sandbox-secrets` 必须精确包含 `ca.crt`、`tls.crt`、`tls.key`、
+`sandbox-capability-keyring.json`、`bytecloud-access-key-id` 和 `bytecloud-secret-access-key`。最后两个 key
+只挂载到 `sandbox-gateway`，通过文件路径传入；Chart 不把其内容写入环境变量。它们只用于 TAE
+基础设施调用，不能与 workspace credential binding 复用。workspace ByteCloud AK/SK 只能由 Platform
+写入 Core workspace credential service 的 canonical binding。provider 用官方
+ByteCloud Auth SDK 换取短期 JWT，并以 `X-Jwt-Token` 同时访问 TAE control-plane 与 sandboxd data-plane。
+SG production 的 Terminal Sandbox PSM 固定为 `bytedance.sandbox.agentserver`，并在 provider、policy
+binding 与 egress-authorizer 三处做 exact-match 校验。Policy Webhook 使用
+`https://egress-authorizer-sg.byted.bps.dev/v1/policy`；Istio Gateway 终止公网 TLS，Gateway 到
+egress-authorizer Service 使用 BackendTLSPolicy 和 `agentserver-egress-backend-ca` ConfigMap 做 TLS
+校验。
+SG 生产 exchange origin 固定为 `https://cloud-i18n-sg.bytedance.net`，通过
+`AGENTSERVER_V2_TAE_BYTECLOUD_JWT_ENDPOINT` 显式注入并精确校验；JWT exchange、TAE control-plane 与
+sandboxd data-plane 的 transport 全部固定使用
+`socks5h://ssh-egress-merlin-i18nbd-syd2a-83092.ssh-egress.svc.cluster.local:1080`，由
+`AGENTSERVER_V2_TAE_PROXY_URL` 精确校验。标准 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 仍被拒绝。
+control/data transport 在 dial 前分别校验固定 control host 和 canonical per-session data host，DNS 在
+syd2a 侧完成。sandbox-gateway NetworkPolicy 只允许访问 `ssh-egress` namespace 中
+`app=ssh-egress-merlin-i18nbd-syd2a-83092` 的 TCP 1080；`sandboxExternalEgress` 为空，不放行任何 TAE
+origin 直连 CIDR。
+启动时会强制刷新一次作为 readiness，之后由 SDK 缓存并自动刷新；TAE 明确返回 401 时只刷新下一次请求
+使用的身份，不重放已经写出的 create/process 操作。
+
+### 2.1 TAE policy 两阶段引导
+
+TAE 要求 Webhook URL 先可达，才能在控制台发送测试请求、发布网络策略并发起安全审批；正式 managed
+execution 又必须在策略发布和审批完成后才能启动。发布流程因此使用同一个 Helm release 的两个严格阶段：
+
+1. 从 active 模板生成 `policy-bootstrap` 配置。该转换会清空 policy 的
+   `published/approved/evidenceRef`、全部 network evidence、runtime profile 与 pack lock；
+2. CI 发布并由 Pulumi 升级到 bootstrap Chart。此时公开 URL 返回合法的 `200 + v1 deny`，且只挂载
+   egress-authorizer 的 `tls.crt/tls.key`；
+3. 在 TAE 控制台测试 URL、发布并完成安全审批；
+4. 通过 Pulumi 把 TAE 基础设施 AK/SK 原子写入 `agentserver-sandbox-secrets`，并把实际 policy
+   revision 传给已部署的 bootstrap Chart。Chart 默认不渲染探针；显式启用后由同一个 Pulumi release
+   创建一次性 `tae-network-probe`，只挂载 AK/SK，并只放行 DNS 与 syd2a TCP 1080；
+5. 保存探针生成的 canonical JSON，上传到不可变 evidence store。activation 命令直接解析报告、核对
+   Pod/ServiceAccount、bootstrap 配置 SHA、policy revision、20 次 JWT/control 尝试、完整 lifecycle、
+   42MB pinned CLI 下载摘要与资源清理，再自行计算 report SHA-256；
+6. 使用审批引用和报告引用执行唯一的 activation 命令；该命令原子计算 policy、network、runtime 和
+   pack binding；
+7. CI 发布 active Chart，Pulumi 对同一 release 做普通升级。只有这一步才会启动 sandbox-gateway，
+   并向 Core/executor/harness 开启 managed authority。
+
+bootstrap 请求无论内容、ZTI 或 credential 如何都不能返回 allow。它不访问 Core，也不读取 placeholder
+keyring。不得用伪造 `published=true` 或模板 evidence 绕过这个阶段。
+
 ## 3. 部署前必须准备的真实输入
 
 发布前必须确认：
 
 1. SG 集群只有 `linux/amd64` 目标节点，且容量足够；
-2. CNI 实际执行 Kubernetes NetworkPolicy；集群已安装 Gateway API CRD、Istio、Reloader、
+2. CNI 实际执行 Kubernetes NetworkPolicy；集群已安装 Gateway API CRD（含 `BackendTLSPolicy`）、Istio、Reloader、
    CloudNativePG operator 和 Longhorn；
 3. `https-byted-bps` listener 的证书和 `allowedRoutes` 已覆盖五个固定域名/Namespace；用户已为
    `auth-sg.byted.bps.dev` 配置与现有 Istio 公网入口相同的 DNS 记录；
@@ -151,7 +217,16 @@ harness-pool只保留目录准备和network guard两个init container。
 9. GHCR 上 service、harness、Hydra 与 Chart 四个 package 均为 public，SG mirror 可由集群节点匿名
    拉取三个 digest-pinned amd64 镜像和环境锁定 Chart；
 10. CoreDNS ClusterIP、Gateway Pod label selector、Service CIDR 中 6 个空闲固定 ClusterIP，以及
-    S3/平台 OIDC 的实际 IPv4 CIDR/port 已确定。
+    S3/平台 OIDC 的实际 IPv4 CIDR/port 已确定；若启用 managed executor，还必须确认 syd2a SOCKS Pod
+    selector/TCP 1080、经代理的 JWT/control/data-plane、Policy Webhook URL/PSM 可达性，以及目标路径的
+    PMTU/MTU/MSS。
+11. `egress-authorizer-sg.byted.bps.dev` 已解析到现有 SG Istio Gateway，wildcard `*.byted.bps.dev`
+    证书覆盖该 hostname，且 Gateway API `BackendTLSPolicy` 能使用 Pulumi 创建的
+    `agentserver-egress-backend-ca` ConfigMap 校验 egress-authorizer 后端证书。
+12. 若部署 `policy-bootstrap`，TAE policy 必须仍是 unpublished/unapproved 且 evidence 为空；若部署
+    `active`，TAE policy 必须已经发布并完成安全审批，`open.feishu.cn` 精确 whitelist、`/v1/policy`
+    Webhook binding、policy SHA-256 与 binding SHA-256 必须和 `managedExecutor.tae.policy` 完全一致。
+    CreateSession 不携带这些网络策略字段。
 
 这些非 Secret 参数写入 `production.json`，不是 Pulumi Secret：
 
@@ -186,6 +261,8 @@ harness-pool只保留目录准备和network guard两个init container。
 - browser-gateway：Core；
 - harness-pool：S3；
 - llmproxy：动态 workspace Gateway `/v1/responses` 的公网 443；
+- sandbox-gateway：集群内 Core，以及 `ssh-egress` namespace 固定 syd2a Pod 的 TCP 1080；不含外部 CIDR；
+- egress-authorizer：集群内 Core；公网 Webhook 入口只按 Istio Gateway namespace/Pod selector 放行；
 - Hydra/AgentServer migration 与 bootstrap：CNPG PostgreSQL；Hydra client setup：集群内 Hydra Admin。
 
 ## 4. 通过 GitHub Actions 发布 SG amd64 制品
@@ -197,12 +274,16 @@ harness-pool只保留目录准备和network guard两个init container。
 2. 下载并校验固定的 stock Codex `0.146.0` 与 bwrap amd64 artifact；
 3. 使用 Docker buildx 构建 service/harness 的 `linux/amd64` OCI archive，并调用
    `agentserver-image verify-oci` 校验 manifest、descriptor、diff ID 以及镜像文件合同；
-4. 推送 `ghcr.io/agentserver/v2-service` 与 `ghcr.io/agentserver/v2-harness`；
+4. 推送 `ghcr.io/agentserver/v2-service`、`ghcr.io/agentserver/v2-harness` 和 managed-sandbox；
 5. 将固定的 Hydra 26.2.0 amd64 manifest 镜像到 `ghcr.io/agentserver/hydra`，并要求 digest 精确为
    `sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b`；
-6. 用刚发布的三个 digest 生成环境锁定 Chart，并发布到
+6. 仅从 GitHub Environment Secret `V2_SG_PRODUCTION_CONFIG_B64` 解码真实 SG 配置；仓库内的
+   `config.example.json` 只用于 schema/renderer 测试。`lock-release` 会校验 TAE/网络 evidence
+   引用和 canonical network binding digest，发现 `REPLACE`、`TODO`、`TBD` 或 `EXAMPLE` 等模板值时
+   fail closed；Secret 缺失时已发布的镜像保留，但 Chart 不发布；
+7. 用刚发布的四个 digest 生成环境锁定 Chart，并发布到
    `ghcr.io/agentserver/agentserver-v2`；
-7. 在 workflow summary 和 artifact 中记录三个镜像 digest、Chart version、完整
+8. 在 workflow summary 和 artifact 中记录四个镜像 digest、Chart version、完整
    `deploymentConfigSHA256`、生产配置和镜像验证报告。
 
 SG 配置始终引用 mirror 路径：
@@ -221,8 +302,9 @@ production config，也不要再从开发机手工构建上传生产镜像。
 ## 5. 准备并校验 SG production.json
 
 复制 [`deploy/production/config.example.json`](../deploy/production/config.example.json) 到一个绝对、
-不可被 group/other 写入的安全路径。模板中的镜像 digest 只用于本地配置校验；正式部署以对应提交的
-CI artifact 中 `production.json` 为准。模板同时写入六个已 dry-run 确认可分配的 SG ClusterIP、CoreDNS
+不可被 group/other 写入的安全路径。模板中的镜像和网络值只用于本地 renderer/schema 测试；正式发布
+必须使用真实 SG evidence-backed 配置，并将其以 base64 写入 GitHub Environment Secret
+`V2_SG_PRODUCTION_CONFIG_B64`。模板同时写入六个已 dry-run 确认可分配的 SG ClusterIP、CoreDNS
 `192.168.0.10`、固定 bootstrap UUID、runtime manifest 和 `harness-final-exec` 摘要。以下字段已经固定，
 不能修改：
 
@@ -232,20 +314,95 @@ CI artifact 中 `production.json` 为准。模板同时写入六个已 dry-run �
 - `run-capability-sg-v1`、`run-manifest-sg-v1`；
 - 9 个应用 Secret 名称；
 - `objectStore.mode=s3-plaintext-v1`；
-- 镜像仓库只能是 `registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-service`、`v2-harness` 和 `hydra`，
+- 镜像仓库只能是 `registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-service`、`v2-harness`、
+  `v2-managed-sandbox` 和 `hydra`，
   且必须使用 digest。
 
 当前 SG 模板已经锁定 owner `sub=3506220589`、平台 OIDC、S3 endpoint/region/bucket/prefix/path-style、
 Chart 内置 Hydra 合同，以及从 SG Pod 解析得到的 TOS 地址 `10.8.103.160/32` 和
 `fdbd:dc51:fe:200d::1/128`。平台 OIDC 当前解析为公网地址，由受 SSRF 保留网段约束的
 public-HTTPS egress 规则覆盖；TOS 内网地址分别显式写入 core 和 harness-pool 的 TCP 443 白名单。
-这里必须保持 `s3Endpoint=https://tos-s3-sg.byted.org` 与 `s3UsePathStyle=true`，以用户提供的
-S3-compatible path-style 合同访问 `agentserver-sg` bucket。DNS 地址变化时必须重新生成 Chart。新代码提交后仍须重新构建、远端核验和
+这里必须保持 `s3Endpoint=https://s3-sg.byted.cs.ac.cn`、`s3Region=sg-devbox-1` 与
+`s3UsePathStyle=true`，以 Pulumi 管理的 SeaweedFS bucket-scoped 身份访问 `agentserver` bucket。
+DNS 地址变化时必须重新生成 Chart。新代码提交后仍须重新构建、远端核验和
 替换 service/harness digest 及对应 runtime artifact；Hydra digest 只在升级 Hydra 版本时变化。资源配额
 可按最终容量审计调整。S3 endpoint 是必填项，不能省略后回退到
 AWS 默认 endpoint。S3 对象是明文；bucket、credential、备份、retention 和访问审计
 必须按明文数据边界管理。S3 不是 PostgreSQL 或完整用户 session 数据库的替代品，只保存
 prompt/checkpoint 对象，数据库保存状态与 pointer。
+
+managed executor 的 `active` 配置还必须包含：
+
+- `managedExecutor.tae.networkEvidence.reportSha256`：activation 从 canonical SG 网络测试报告字节自动计算的不可变摘要；
+- `managedExecutor.tae.networkEvidence.evidenceRef`：变更单/安全评审/制品报告引用；
+- `managedExecutor.tae.networkEvidence.bindingSha256`：由上述报告和当前配置的 syd2a proxy authority/
+  Pod selector/port、空的 sandbox/egress-authorizer 外部 CIDR 与额外 Webhook source CIDR、TAE region/PSM
+  及 Webhook mode/PSM/URL 共同计算的 canonical digest。
+
+修改任意这些网络事实后必须重新执行 SG 实测、生成报告并更新摘要；不能只手工改 CIDR。`LockRelease`
+会再次计算并核对摘要，并拒绝模板 sentinel 或明显的重复字符伪摘要。
+
+第一次发布先从经过普通配置校验的 active 模板生成无权限 bootstrap 文件；输出必须是新路径：
+
+```bash
+cd /absolute/agentserver/v2
+go run ./cmd/agentserver-deploy prepare-policy-bootstrap \
+  --config=/absolute/active-template.json \
+  --output=/absolute/policy-bootstrap.json
+```
+
+TAE 审批完成后，通过 Pulumi 在**当前已部署且已锁镜像**的 bootstrap release 中启用一次性探针；不能拿
+active 模板、另一版配置或手工 manifest 代替。Chart 的默认值为 disabled，只有 bootstrap Chart 的
+closed values schema 接受实际 revision。Pulumi 会在同一次更新中先写入 AK/SK，再创建 immutable
+ConfigMap、专用 ServiceAccount、仅放行 DNS+syd2a 的 NetworkPolicy 和 `backoffLimit=0` 的 Job：
+
+```bash
+cd /absolute/k8s-byted
+pulumi config set --stack sg agentserver:taeNetworkProbePolicyRevision '<TAE实际发布revision>'
+pulumi up --stack sg
+
+probe_job=$(kubectl --context '<sg-context>' --namespace agentserver get jobs \
+  --selector='app.kubernetes.io/name=tae-network-probe' \
+  --output=jsonpath='{.items[0].metadata.name}')
+test -n "${probe_job}"
+kubectl --context '<sg-context>' --namespace agentserver logs "job/${probe_job}" \
+  | sed -n '/^{"schemaVersion":1,"kind":"agentserver.tae.sg-network-report"/p' \
+  > /absolute/sg-tae-network-report.json
+test "$(wc -l < /absolute/sg-tae-network-report.json | tr -d ' ')" = 1
+chmod 0600 /absolute/sg-tae-network-report.json
+```
+
+探针默认执行 20 次 bypass-cache JWT 强制刷新、20 次不存在 metadata 的 exact Search，以及一次
+Create→唯一 Search→Ready→TTL→`lark-cli --version`→Stat→完整读取并校验 42MB CLI→读取并校验
+Skill→Delete→Get/cleanup 确认。任一步失败都会输出 `passed=false` 并以非零退出；报告只含固定配置、
+耗时和稳定错误类别，不含 AK/SK/JWT、响应 body 或 Session ID。先保存失败报告和 Pod event 排障，不能
+把它送入 activation。报告本身必须先上传到不可变 evidence store。保存报告和所需诊断信息后，由
+Pulumi 关闭探针并删除这些临时资源；不要直接 `kubectl delete`：
+
+```bash
+cd /absolute/k8s-byted
+pulumi config rm --stack sg agentserver:taeNetworkProbePolicyRevision
+pulumi up --stack sg
+```
+
+取得不可变报告引用后，从同一 bootstrap 配置执行唯一 activation 边。命令会读取 canonical 报告并自行
+计算 `reportSha256`，设置实际 revision/审批引用，再同时重算 policy binding、network binding、
+`runtimeProfileSha256` 和 `packSetSha256`；不再接受人工填写的 report SHA：
+
+```bash
+go run ./cmd/agentserver-deploy activate-managed-executor \
+  --config=/absolute/policy-bootstrap.json \
+  --output=/absolute/active-production.json \
+  --network-report=/absolute/sg-tae-network-report.json \
+  --policy-revision=<TAE实际发布revision> \
+  --policy-evidence-ref=<安全工单或审批的不可变引用> \
+  --network-evidence-ref=<不可变报告引用>
+```
+
+后续 active 网络事实、镜像或 policy revision 发生变化时，不允许直接替换摘要或重绑旧报告。必须先从
+当前有效 active 配置生成新的 deny-only bootstrap，部署并重新执行上述真实 SG probe，再通过同一个
+`activate-managed-executor` 晋级。这样每次 active 配置都只能来自一份内容经过完整核对的 canonical
+报告，不存在只相信人工填写 SHA-256 的旁路。
 
 校验：
 
@@ -255,6 +412,9 @@ chmod 0600 /absolute/production.json
 cd /absolute/agentserver/v2
 go run ./cmd/agentserver-deploy validate \
   --config=/absolute/production.json
+
+# 供 GitHub Environment Secret 使用；不要把解码内容写入仓库或日志。
+base64 < /absolute/production.json | tr -d '\\n'
 ```
 
 ## 6. 核验并选择 CI 发布的 OCI Chart
@@ -291,6 +451,22 @@ pulumi config set --stack sg --secret agentserver:externalOidcClientSecret '<oid
 pulumi config set --stack sg --secret agentserver:s3AccessKeyId '<s3-access-key-id>'
 pulumi config set --stack sg --secret agentserver:s3SecretAccessKey '<s3-secret-access-key>'
 ```
+
+初次部署 `policy-bootstrap` 时不要设置 TAE AK/SK；它们缺失不会阻塞 `pulumi up`，也不会被填入空值。
+安全审批完成、准备运行一次性网络探针时，在操作者终端交互输入这对基础设施凭据。不要把值放进命令
+历史、文档、聊天或 `production.json`：
+
+```bash
+pulumi config set --stack sg --secret agentserver:byteCloudAccessKeyId
+pulumi config set --stack sg --secret agentserver:byteCloudSecretAccessKey
+pulumi up --stack sg
+```
+
+模块要求两个配置同时存在，把它们放进同一个 SecretPatch 更新，并且只写入
+`agentserver-sandbox-secrets/bytecloud-access-key-id` 与 `bytecloud-secret-access-key`。探针和 active
+`sandbox-gateway` 只读文件挂载；Core、executor、harness、egress-authorizer、TAE Session env/metadata
+均拿不到这对凭据。Pulumi backend 必须已经配置加密 secrets provider 和受控 state ACL；未确认这一
+持久化边界前不得设置这两个值。
 
 发布 Chart 的操作者可能仍需写权限才能执行 `helm push`；该凭据只保留在发布工作站。部署阶段由
 Pulumi 匿名拉取 OCI Chart，kubelet 匿名拉取镜像，不依赖交互式 `helm registry login`。
@@ -337,6 +513,15 @@ kubectl --context '<sg-context>' --namespace agentserver \
   rollout status deployment/llmproxy --timeout=10m
 kubectl --context '<sg-context>' --namespace agentserver \
   rollout status deployment/hydra --timeout=10m
+
+# managedExecutor.enabled=true 时额外核对 provider boundary 和 Policy Webhook
+kubectl --context '<sg-context>' --namespace agentserver \
+  rollout status deployment/sandbox-gateway --timeout=10m
+kubectl --context '<sg-context>' --namespace agentserver \
+  rollout status deployment/egress-authorizer --timeout=10m
+kubectl --context '<sg-context>' --namespace agentserver \
+  get service/sandbox-gateway service/egress-authorizer \
+  networkpolicy/sandbox-gateway networkpolicy/egress-authorizer
 ```
 
 公网入口：
@@ -363,6 +548,27 @@ curl --output /dev/null --write-out '%{http_code}\n' \
 Chart 相同 runtime manifest 的 agentx，完成 enrollment，并连接
 `wss://executor-gateway.byted.bps.dev/internal/v2/agentx/connect`。服务端不会在集群内伪造 executor。
 
+`policy-bootstrap` 部署后先验证公网 URL 返回 `200`、`version=v1`、`result=deny` 且
+`application_info=policy_bootstrap_inactive`；此时不应存在 sandbox-gateway Deployment。
+
+切换到 `active` 后，managed executor 的 golden path 还必须单独验证：
+
+1. `sandbox-gateway` 已用 `i18n-tt` 应用 AK/SK 成功换取 JWT并完成 TAE readiness；AK/SK/JWT 不出现在
+   execution gateway、harness、sandbox/TAE metadata、env、proc、文件、stdout/stderr、checkpoint 或日志；
+2. Platform 为测试 workspace 创建 active `kind=lark` binding，Core workspace credential service 能按
+   operation 解析并 materialize；当前 static bearer 的轮换由 Platform 发起，不存在后台 OAuth refresh。无需
+   Core bootstrap Lark grant、Pulumi expiry 或 Helm release；sandbox/TAE metadata、env、proc、文件、
+   stdout/stderr、checkpoint 和日志中都没有真实 token；
+3. `harness-worker` 依据既有 Lark skill 通过 MCP `shell` 调用 pinned `lark-cli`，不新增模型可见工具；
+4. TAE Agent Gateway 能从 SG 实际调用 `egress-authorizer` 的 PSM/URL Webhook，Webhook 在 500ms 内
+   只返回 allow/deny，真实 `Authorization` 只出现在上游请求；
+5. 真实 SG 环境分别测 ByteCloud JWT endpoint、TAE control/data-plane 和 Lark 路径的 IPv4、IPv6、DNS、
+   redirect、CONNECT、IP literal bypass、PMTU/MTU/MSS 和错误率，
+   超时/非 200/策略漂移全部 fail closed。
+
+上述证据尚未由本地 `go test` 或 Helm template 产生；发布前应将抓包、延迟、错误率和 zero-secret 扫描
+报告作为 release artifact 保存。
+
 ## 9. 升级、轮换与卸载
 
 升级顺序固定为：新代码提交 → 构建/推送新 amd64 digest → 更新 `production.json` → 生成并
@@ -373,6 +579,10 @@ Chart 相同 runtime manifest 的 agentx，完成 enrollment，并连接
 轮换资源会更新 Secret，并由 Reloader 触发工作负载重启。workspace Gateway sealing key 不能直接替换：
 先发布 active 新 key + 旧 key 的 overlap keyring，完成数据库 grant 重封装后才能删除旧 key。签名密钥轮换仍要先发布包含新旧公钥
 的 overlap keyring，再切 signer，最后删除旧公钥，不能一次替换 signer 和 verifier。
+
+ByteCloud AK/SK 必须作为一对原子更新 `agentserver-sandbox-secrets`，随后等待所有 `sandbox-gateway`
+新 Pod readiness 通过；旧 Pod 退出后再撤销旧 key。不要在一个运行中 Pod 内分别替换两个 subPath 文件，
+也不要把 JWT 当作需要持久化轮换的 Secret。
 
 CNPG Cluster、PVC 和 S3 bucket 都是数据资源，不能把 `pulumi destroy` 或 Namespace 删除当作普通
 应用回滚。删除 Cluster/Namespace、Pulumi random state、外部 credential 或 bucket 前，必须先验证
@@ -395,5 +605,13 @@ CNPG Cluster、PVC 和 S3 bucket 都是数据资源，不能把 `pulumi destroy`
 - harness-pool 卡在 init：检查目录权限、network guard配置和节点nftables能力；普通服务不应再有Secret materialize init；
 - Helm/Pulumi更新失败：失败Pod会因non-atomic release保留，先读取对应container日志和Events，再通过下一次`pulumi up`修复；
 - ImagePullBackOff：检查公开仓库匿名拉取策略、网络连通性和远端 amd64 digest；
-- 外部请求 timeout：更新正确 egress CIDR/port 后重新生成 Chart，不能在线 patch；
+- 外部请求 timeout：普通外部系统更新正确 egress CIDR/port 后重新生成 Chart；TAE 路径检查 syd2a Pod、
+  Service、NetworkPolicy、SOCKS remote DNS 和 SSH 链路，不能临时恢复 origin 直连或在线 patch；
 - Helm guard 失败：Chart 与 `deploymentConfigSHA256` 不匹配，必须选择同一份生成制品。
+- managed sandbox ensure 卡住：先检查 sandbox-gateway readiness、Core mTLS、syd2a SOCKS、ByteCloud 应用
+  JWT exchange、`i18n-tt` site、TAE PSM/ACL、session metadata
+  digest 和 TTL；不要手工在 CreateSession 请求里添加未支持的 network-policy 字段；
+- TAE Policy Webhook 无回调或 403：确认 TAE policy 已发布/审批、`open.feishu.cn` 精确 whitelist、
+  `/v1/policy`、PSM/URL authority 和两端 binding SHA-256 一致，并检查 SG IPv4/IPv6/PMTU；
+- managed Lark 请求被拒绝：查看 egress deny reason class、grant version/fence 和 placeholder JTI，
+  不要把真实 access/refresh token 写入 sandbox env 或临时放宽 NetworkPolicy。

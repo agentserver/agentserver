@@ -54,15 +54,17 @@ func TestServeCoreRequiresDistinctHarnessPoolIdentityBeforeOpeningDatabase(t *te
 
 func TestServeCoreProductionRequiresDistinctLLMProxyIdentity(t *testing.T) {
 	configuration := map[string]string{
-		databaseURLEnvironment:             "postgres://unused",
-		coreListenAddressEnvironment:       "127.0.0.1:0",
-		coreTLSCertificateEnvironment:      "/unused/server.crt",
-		coreTLSKeyEnvironment:              "/unused/server.key",
-		coreClientCAEnvironment:            "/unused/client-ca.crt",
-		coreGatewayIdentityEnvironment:     "spiffe://agentserver.local/ns/agentserver/sa/executor-gateway",
-		coreHarnessPoolIdentityEnvironment: "spiffe://agentserver.local/ns/agentserver/sa/harness-pool",
-		coreBrowserIdentityEnvironment:     "spiffe://agentserver.local/ns/agentserver/sa/browser-gateway",
-		corePlatformIdentityEnvironment:    "spiffe://agentserver.local/ns/agentserver/sa/platform-gateway",
+		databaseURLEnvironment:                "postgres://unused",
+		coreListenAddressEnvironment:          "127.0.0.1:0",
+		coreTLSCertificateEnvironment:         "/unused/server.crt",
+		coreTLSKeyEnvironment:                 "/unused/server.key",
+		coreClientCAEnvironment:               "/unused/client-ca.crt",
+		coreGatewayIdentityEnvironment:        "spiffe://agentserver.local/ns/agentserver/sa/executor-gateway",
+		coreHarnessPoolIdentityEnvironment:    "spiffe://agentserver.local/ns/agentserver/sa/harness-pool",
+		coreSandboxGatewayIdentityEnvironment: "spiffe://agentserver.local/ns/agentserver/sa/sandbox-gateway",
+		coreBrowserIdentityEnvironment:        "spiffe://agentserver.local/ns/agentserver/sa/browser-gateway",
+		corePlatformIdentityEnvironment:       "spiffe://agentserver.local/ns/agentserver/sa/platform-gateway",
+		coreManagedExecutorEnabledEnvironment: "true",
 	}
 	getenv := func(name string) string { return configuration[name] }
 	if err := serveCore(t.Context(), getenv, io.Discard, io.Discard, coreServeProduction); err == nil || !strings.Contains(err.Error(), coreLLMProxyIdentityEnvironment+" is required") {
@@ -73,6 +75,14 @@ func TestServeCoreProductionRequiresDistinctLLMProxyIdentity(t *testing.T) {
 		t.Fatalf("shared llmproxy identity error = %v", err)
 	}
 	configuration[coreLLMProxyIdentityEnvironment] = "spiffe://agentserver.local/ns/agentserver/sa/llmproxy"
+	if err := serveCore(t.Context(), getenv, io.Discard, io.Discard, coreServeProduction); err == nil || !strings.Contains(err.Error(), coreEgressAuthorizerIdentityEnvironment+" is required") {
+		t.Fatalf("missing egress-authorizer identity error = %v", err)
+	}
+	configuration[coreEgressAuthorizerIdentityEnvironment] = configuration[coreLLMProxyIdentityEnvironment]
+	if err := serveCore(t.Context(), getenv, io.Discard, io.Discard, coreServeProduction); err == nil || !strings.Contains(err.Error(), "must have a distinct") {
+		t.Fatalf("shared egress-authorizer identity error = %v", err)
+	}
+	configuration[coreEgressAuthorizerIdentityEnvironment] = "spiffe://agentserver.local/ns/agentserver/sa/egress-authorizer"
 	if err := serveCore(t.Context(), getenv, io.Discard, io.Discard, coreServeProduction); err == nil || !strings.Contains(err.Error(), coreHydraIntrospectionEnvironment+" is required") {
 		t.Fatalf("distinct llmproxy identity next-boundary error = %v", err)
 	}

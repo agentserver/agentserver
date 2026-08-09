@@ -81,13 +81,20 @@ func configMapResource(config LoadedConfig, name string, data map[string]string)
 }
 
 const (
-	materialProfileCore            = "core"
-	materialProfilePlatformGateway = "platform-gateway"
-	materialProfileBrowserGateway  = "browser-gateway"
-	materialProfileExecutorGateway = "executor-gateway"
-	materialProfileHarnessPool     = "harness-pool"
-	materialProfileHarnessWorker   = "harness-worker"
-	materialProfileLLMProxy        = "llmproxy"
+	materialProfileCore               = "core"
+	materialProfilePlatformGateway    = "platform-gateway"
+	materialProfileBrowserGateway     = "browser-gateway"
+	materialProfileExecutorGateway    = "executor-gateway"
+	materialProfileHarnessPool        = "harness-pool"
+	materialProfileHarnessWorker      = "harness-worker"
+	materialProfileLLMProxy           = "llmproxy"
+	materialProfileCoreManaged        = "core-managed"
+	materialProfileExecutorManaged    = "executor-gateway-managed"
+	materialProfileHarnessPoolManaged = "harness-pool-managed"
+	materialProfileSandboxGateway     = "sandbox-gateway"
+	materialProfileTAENetworkProbe    = "tae-network-probe"
+	materialProfileEgressAuthorizer   = "egress-authorizer"
+	materialProfileEgressBootstrap    = "egress-authorizer-policy-bootstrap"
 
 	// Kubernetes owns Secret volume targets as root. Runtime Pods use fsGroup
 	// to read their private material without copying or changing ownership.
@@ -111,6 +118,27 @@ var materialProfileFiles = map[string][]string{
 	materialProfileHarnessPool:     {"ca.crt", "tls.crt", "tls.key", "run-manifest.key"},
 	materialProfileHarnessWorker:   {"ca.crt", "tls.crt", "tls.key", "run-manifest-keyring.json"},
 	materialProfileLLMProxy:        {"ca.crt", "tls.crt", "tls.key", "run-capability-keyring.json"},
+	materialProfileCoreManaged: {
+		"ca.crt", "tls.crt", "tls.key", "run-capability.key",
+		"run-capability-keyring.json", "executor-enrollment.key",
+		"llm-gateway-sealing-keyring.json", "credential-sealing-keyring.json", "egress-placeholder-keyring.json",
+	},
+	materialProfileExecutorManaged: {
+		"ca.crt", "tls.crt", "tls.key", "run-capability-keyring.json",
+		"sandbox-backend-capability.key", "sandbox-fencer-capability.key", "egress-placeholder.key",
+	},
+	materialProfileHarnessPoolManaged: {
+		"ca.crt", "tls.crt", "tls.key", "run-manifest.key", "sandbox-lifecycle-capability.key",
+	},
+	materialProfileSandboxGateway: {
+		"ca.crt", "tls.crt", "tls.key", "sandbox-capability-keyring.json",
+		"bytecloud-access-key-id", "bytecloud-secret-access-key",
+	},
+	materialProfileTAENetworkProbe: {"bytecloud-access-key-id", "bytecloud-secret-access-key"},
+	materialProfileEgressAuthorizer: {
+		"ca.crt", "tls.crt", "tls.key", "egress-placeholder-keyring.json",
+	},
+	materialProfileEgressBootstrap: {"tls.crt", "tls.key"},
 }
 
 func secretMaterialVolume(name, secretName, profile string, mode int) (kubeObject, error) {
@@ -172,6 +200,18 @@ func configMapVolume(name, configMapName string, items map[string]string) kubeOb
 	}
 	return kubeObject{"name": name, "configMap": kubeObject{
 		"name": configMapName, "defaultMode": 292, "items": projectedItems,
+	}}
+}
+
+func exactSecretVolume(name, secretName string, items map[string]string, mode int) kubeObject {
+	projectedItems := make([]any, 0, len(items))
+	for _, key := range sortedKeys(items) {
+		projectedItems = append(projectedItems, kubeObject{
+			"key": key, "path": items[key], "mode": mode,
+		})
+	}
+	return kubeObject{"name": name, "secret": kubeObject{
+		"secretName": secretName, "defaultMode": mode, "items": projectedItems,
 	}}
 }
 

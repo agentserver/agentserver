@@ -17,6 +17,7 @@ import (
 
 func TestCheckpointManifestCanonicalDigestAndResumeAuthority(t *testing.T) {
 	manifest, _ := checkpointTestManifest()
+	manifest.PackSetDigest = strings.Repeat("c", 64)
 	canonical, err := CanonicalBytes(manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -41,10 +42,16 @@ func TestCheckpointManifestCanonicalDigestAndResumeAuthority(t *testing.T) {
 	if err := VerifyResume(parsed, canonical, authority); err == nil || !strings.Contains(err.Error(), "committed manifest digest") {
 		t.Fatalf("manifest digest drift error = %v", err)
 	}
+	authority = checkpointTestAuthority(manifest, digest)
+	authority.PackSetDigest = strings.Repeat("d", 64)
+	if err := VerifyResume(parsed, canonical, authority); err == nil || !strings.Contains(err.Error(), "resume authority") {
+		t.Fatalf("pack-set drift error = %v", err)
+	}
 }
 
 func TestCheckpointManifestRejectsNonCanonicalUnknownAndUnsafeFiles(t *testing.T) {
 	manifest, _ := checkpointTestManifest()
+	manifest.PackSetDigest = strings.Repeat("c", 64)
 	canonical, err := CanonicalBytes(manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -150,6 +157,7 @@ func checkpointTestAuthority(manifest Manifest, digest string) ResumeAuthority {
 		CodexRuntimeManifestDigest: manifest.CodexRuntimeManifestDigest,
 		CheckpointAllowlistVersion: manifest.CheckpointAllowlistVersion,
 		CatalogDigest:              manifest.CatalogDigest,
+		PackSetDigest:              manifest.PackSetDigest,
 	}
 }
 

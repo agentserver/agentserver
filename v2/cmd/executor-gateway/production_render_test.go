@@ -31,6 +31,18 @@ func TestProductionRendererExecutorEnvironmentMatchesCommandContract(t *testing.
 		gatewayExecutionPolicyVersionEnvironment,
 		gatewayShellPolicyDecisionEnvironment,
 		gatewayReadPolicyDecisionEnvironment,
+		gatewaySandboxGatewayURLEnvironment,
+		gatewaySandboxGatewayCAEnvironment,
+		gatewaySandboxGatewayServerNameEnvironment,
+		gatewaySandboxCapabilityIssuerEnvironment,
+		gatewaySandboxCapabilityKeyIDEnvironment,
+		gatewaySandboxCapabilityKeyEnvironment,
+		gatewaySandboxFencerIssuerEnvironment,
+		gatewaySandboxFencerKeyIDEnvironment,
+		gatewaySandboxFencerKeyEnvironment,
+		gatewayEgressPlaceholderIssuerEnvironment,
+		gatewayEgressPlaceholderKeyIDEnvironment,
+		gatewayEgressPlaceholderKeyEnvironment,
 	}
 	slices.Sort(want)
 	if got := environment.Names(); !slices.Equal(got, want) {

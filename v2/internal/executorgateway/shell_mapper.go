@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/execprofile"
+	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 	"github.com/agentserver/agentserver/v2/internal/executorgateway/agentxconn"
 	"github.com/agentserver/agentserver/v2/internal/executorgateway/mcpcontract"
 )
@@ -109,21 +110,26 @@ type ShellV1Operation struct {
 // dispatch boundary; the timeout directive is outer agentx metadata and is
 // deliberately absent from Start.Params and Start.RPC.
 type ShellV1Plan struct {
-	Arguments      json.RawMessage
-	ToolSchema     json.RawMessage
-	OperationPlan  json.RawMessage
-	PolicyContext  json.RawMessage
-	PolicyDecision string
-	PolicyVersion  string
-	ToolCallID     string
-	Environment    ResolvedEnvironment
-	ProcessID      string
-	TimeoutMillis  int64
-	RootURI        string
-	CWDURI         string
-	Start          ShellV1Operation
-	Timeout        ShellV1Operation
-	Directives     agentxconn.DispatchDirectives
+	Arguments           json.RawMessage
+	ToolSchema          json.RawMessage
+	OperationPlan       json.RawMessage
+	PolicyContext       json.RawMessage
+	PolicyDecision      string
+	PolicyVersion       string
+	ToolCallID          string
+	Environment         ResolvedEnvironment
+	ProcessID           string
+	TimeoutMillis       int64
+	RootURI             string
+	CWDURI              string
+	WorkspaceRoot       string
+	WorkingDirectory    string
+	Argv                []string
+	ExplicitEnvironment map[string]string
+	TTY                 bool
+	Start               ShellV1Operation
+	Timeout             ShellV1Operation
+	Directives          agentxconn.DispatchDirectives
 }
 
 func MapShellV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal, toolCallID string, environment ResolvedEnvironment, policy ExecutionPolicyResolution, identities ShellV1Identities) (ShellV1Plan, error) {
@@ -183,6 +189,10 @@ func MapShellV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal, to
 	}
 
 	rootURI, cwdURI, err := shellEnvironmentURIs(environment.Platform, environment.Root, cwd)
+	if err != nil {
+		return ShellV1Plan{}, err
+	}
+	workspaceRoot, workingDirectory, err := shellEnvironmentPaths(environment.Platform, environment.Root, cwd)
 	if err != nil {
 		return ShellV1Plan{}, err
 	}
@@ -278,6 +288,7 @@ func MapShellV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal, to
 	if err != nil {
 		return ShellV1Plan{}, fmt.Errorf("encode shell-v1 operation plan: %w", err)
 	}
+	policyTarget := managedPolicyTarget(environment.Target)
 	policyContext, err := json.Marshal(shellPolicyContext{
 		Version:                "shell-policy-context-v1",
 		WorkspaceID:            principal.WorkspaceID,
@@ -296,6 +307,9 @@ func MapShellV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal, to
 		FilesystemProfile:      "managed-restricted-workspace-v1",
 		NetworkProfile:         "managed-restricted",
 		EnforceManagedNetwork:  true,
+		BackendKind:            policyTarget.Kind,
+		TargetID:               policyTarget.ID,
+		TargetGeneration:       policyTarget.Generation,
 	})
 	if err != nil {
 		return ShellV1Plan{}, fmt.Errorf("encode shell-v1 policy context: %w", err)
@@ -305,18 +319,23 @@ func MapShellV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal, to
 		return ShellV1Plan{}, errors.New("shell-v1 is missing from the executor MCP contract")
 	}
 	return ShellV1Plan{
-		Arguments:      append(json.RawMessage(nil), rawArguments...),
-		ToolSchema:     append(json.RawMessage(nil), tool.InputSchema...),
-		OperationPlan:  operationPlan,
-		PolicyContext:  policyContext,
-		PolicyDecision: policy.Decision,
-		PolicyVersion:  policy.Version,
-		ToolCallID:     toolCallID,
-		Environment:    environment,
-		ProcessID:      identities.ProcessID,
-		TimeoutMillis:  timeoutMillis,
-		RootURI:        rootURI,
-		CWDURI:         cwdURI,
+		Arguments:           append(json.RawMessage(nil), rawArguments...),
+		ToolSchema:          append(json.RawMessage(nil), tool.InputSchema...),
+		OperationPlan:       operationPlan,
+		PolicyContext:       policyContext,
+		PolicyDecision:      policy.Decision,
+		PolicyVersion:       policy.Version,
+		ToolCallID:          toolCallID,
+		Environment:         environment,
+		ProcessID:           identities.ProcessID,
+		TimeoutMillis:       timeoutMillis,
+		RootURI:             rootURI,
+		CWDURI:              cwdURI,
+		WorkspaceRoot:       workspaceRoot,
+		WorkingDirectory:    workingDirectory,
+		Argv:                slices.Clone(arguments.Argv),
+		ExplicitEnvironment: cloneStringMap(explicitEnvironment),
+		TTY:                 tty,
 		Start: ShellV1Operation{
 			OperationID: identities.StartOperationID, Ordinal: 1, Kind: ShellV1OperationProcessStart,
 			EffectClass: ShellV1EffectMutation, MutationKey: identities.StartMutationKey,
@@ -425,6 +444,34 @@ func shellEnvironmentURIs(platform, root, relativeCWD string) (string, string, e
 	return (&url.URL{Scheme: "file", Path: root}).String(), (&url.URL{Scheme: "file", Path: cwdPath}).String(), nil
 }
 
+func shellEnvironmentPaths(platform, root, relativeCWD string) (string, string, error) {
+	if err := validateRegisteredRoot(platform, root); err != nil {
+		return "", "", err
+	}
+	if err := validateRelativeEnvironmentPath(relativeCWD); err != nil {
+		return "", "", err
+	}
+	if strings.HasPrefix(platform, "windows-") {
+		working := root
+		if relativeCWD != "." {
+			working = strings.TrimSuffix(root, `\`) + `\` + strings.ReplaceAll(relativeCWD, "/", `\`)
+		}
+		return root, working, nil
+	}
+	working := root
+	if relativeCWD != "." {
+		working = path.Join(root, relativeCWD)
+	}
+	return root, working, nil
+}
+
+func managedPolicyTarget(target executionbackend.Target) executionbackend.Target {
+	if target.Kind == executionbackend.KindTAE {
+		return target
+	}
+	return executionbackend.Target{}
+}
+
 func shellWindowsSandboxLevel(platform string) string {
 	if strings.HasPrefix(platform, "windows-") {
 		return "restricted-token"
@@ -528,21 +575,24 @@ type shellOperationPlanEntry struct {
 }
 
 type shellPolicyContext struct {
-	Version                string `json:"version"`
-	WorkspaceID            string `json:"workspaceId"`
-	RunID                  string `json:"runId"`
-	RunAttemptID           string `json:"runAttemptId"`
-	RunAttemptGeneration   int64  `json:"runAttemptGeneration"`
-	ExecutorID             string `json:"executorId"`
-	EnvironmentID          string `json:"environmentId"`
-	EnvironmentVersion     int64  `json:"environmentVersion"`
-	ConnectionGeneration   int64  `json:"connectionGeneration"`
-	Platform               string `json:"platform"`
-	RootURI                string `json:"rootUri"`
-	CWDURI                 string `json:"cwdUri"`
-	Lifecycle              string `json:"lifecycle"`
-	EnvironmentInheritance string `json:"environmentInheritance"`
-	FilesystemProfile      string `json:"filesystemProfile"`
-	NetworkProfile         string `json:"networkProfile"`
-	EnforceManagedNetwork  bool   `json:"enforceManagedNetwork"`
+	Version                string                `json:"version"`
+	WorkspaceID            string                `json:"workspaceId"`
+	RunID                  string                `json:"runId"`
+	RunAttemptID           string                `json:"runAttemptId"`
+	RunAttemptGeneration   int64                 `json:"runAttemptGeneration"`
+	ExecutorID             string                `json:"executorId"`
+	EnvironmentID          string                `json:"environmentId"`
+	EnvironmentVersion     int64                 `json:"environmentVersion"`
+	ConnectionGeneration   int64                 `json:"connectionGeneration"`
+	Platform               string                `json:"platform"`
+	RootURI                string                `json:"rootUri"`
+	CWDURI                 string                `json:"cwdUri"`
+	Lifecycle              string                `json:"lifecycle"`
+	EnvironmentInheritance string                `json:"environmentInheritance"`
+	FilesystemProfile      string                `json:"filesystemProfile"`
+	NetworkProfile         string                `json:"networkProfile"`
+	EnforceManagedNetwork  bool                  `json:"enforceManagedNetwork"`
+	BackendKind            executionbackend.Kind `json:"backendKind,omitempty"`
+	TargetID               string                `json:"targetId,omitempty"`
+	TargetGeneration       int64                 `json:"targetGeneration,omitempty"`
 }

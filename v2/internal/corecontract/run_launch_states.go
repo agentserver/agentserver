@@ -33,6 +33,7 @@ type RunLaunchCheckpointState struct {
 	Object                     RunLaunchObjectPointer `json:"object"`
 	CodexRuntimeManifestDigest string                 `json:"codexRuntimeManifestDigest"`
 	CheckpointAllowlistVersion int64                  `json:"checkpointAllowlistVersion"`
+	PackSetDigest              string                 `json:"packSetDigest,omitempty"`
 }
 
 type RunLaunchExecutorPolicyState struct {
@@ -48,6 +49,13 @@ type RunLaunchLLMGatewayState struct {
 	Model         string `json:"model"`
 }
 
+type RunLaunchLarkEgressState struct {
+	GrantID      string `json:"grantId"`
+	GrantVersion int64  `json:"grantVersion"`
+	GrantUserID  string `json:"grantUserId"`
+	PolicySHA256 string `json:"policySha256"`
+}
+
 type ResolveRunLaunchStateResponse struct {
 	WorkspaceID          string                       `json:"workspaceId"`
 	SessionID            string                       `json:"sessionId"`
@@ -61,4 +69,5 @@ type ResolveRunLaunchStateResponse struct {
 	PreviousCheckpoint   *RunLaunchCheckpointState    `json:"previousCheckpoint,omitempty"`
 	ExecutorPolicy       RunLaunchExecutorPolicyState `json:"executorPolicy"`
 	LLMGateway           *RunLaunchLLMGatewayState    `json:"llmGateway,omitempty"`
+	LarkEgress           *RunLaunchLarkEgressState    `json:"larkEgress,omitempty"`
 }

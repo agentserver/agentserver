@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/execprofile"
+	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 	"github.com/agentserver/agentserver/v2/internal/executorgateway/agentxconn"
 	"github.com/agentserver/agentserver/v2/internal/executorgateway/mcpcontract"
 )
@@ -105,6 +106,7 @@ type ReadFileV1Plan struct {
 	RelativePath   string
 	RootURI        string
 	PathURI        string
+	AbsolutePath   string
 	Offset         uint64
 	Limit          uint64
 	RPCRequestID   string
@@ -171,6 +173,10 @@ func MapReadFileV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal,
 	if err != nil {
 		return ReadFileV1Plan{}, err
 	}
+	absolutePath, err := readFileEnvironmentPath(environment.Platform, environment.Root, arguments.Path)
+	if err != nil {
+		return ReadFileV1Plan{}, err
+	}
 	params, err := json.Marshal(readFileBlockParams{Path: pathURI, Offset: offset, Length: limit})
 	if err != nil {
 		return ReadFileV1Plan{}, fmt.Errorf("encode read-file-v1 params: %w", err)
@@ -202,6 +208,7 @@ func MapReadFileV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal,
 	if err != nil {
 		return ReadFileV1Plan{}, fmt.Errorf("encode read-file-v1 operation plan: %w", err)
 	}
+	policyTarget := managedPolicyTarget(environment.Target)
 	policyContext, err := json.Marshal(readFilePolicyContext{
 		Version:              "read-file-policy-context-v1",
 		WorkspaceID:          principal.WorkspaceID,
@@ -220,6 +227,9 @@ func MapReadFileV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal,
 		Offset:               offset,
 		Limit:                limit,
 		FilesystemProfile:    "bounded-registered-root-read-v1",
+		BackendKind:          policyTarget.Kind,
+		TargetID:             policyTarget.ID,
+		TargetGeneration:     policyTarget.Generation,
 	})
 	if err != nil {
 		return ReadFileV1Plan{}, fmt.Errorf("encode read-file-v1 policy context: %w", err)
@@ -240,6 +250,7 @@ func MapReadFileV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal,
 		RelativePath:   arguments.Path,
 		RootURI:        rootURI,
 		PathURI:        pathURI,
+		AbsolutePath:   absolutePath,
 		Offset:         offset,
 		Limit:          limit,
 		RPCRequestID:   identities.RPCRequestID,
@@ -308,6 +319,19 @@ func readFileEnvironmentURIs(platform, root, relativePath string) (string, strin
 	return rootURI, targetURI, nil
 }
 
+func readFileEnvironmentPath(platform, root, relativePath string) (string, error) {
+	if err := validateRegisteredRoot(platform, root); err != nil {
+		return "", err
+	}
+	if err := validateReadFileRelativePath(relativePath); err != nil {
+		return "", err
+	}
+	if strings.HasPrefix(platform, "windows-") {
+		return strings.TrimSuffix(root, `\`) + `\` + strings.ReplaceAll(relativePath, "/", `\`), nil
+	}
+	return strings.TrimSuffix(root, "/") + "/" + relativePath, nil
+}
+
 func marshalReadFileRPC(requestID string, params json.RawMessage) (json.RawMessage, error) {
 	rpc, err := json.Marshal(struct {
 		ID     string          `json:"id"`
@@ -345,21 +369,24 @@ type readFileOperationPlanEntry struct {
 }
 
 type readFilePolicyContext struct {
-	Version              string `json:"version"`
-	WorkspaceID          string `json:"workspaceId"`
-	RunID                string `json:"runId"`
-	RunAttemptID         string `json:"runAttemptId"`
-	RunAttemptGeneration int64  `json:"runAttemptGeneration"`
-	ExecutorID           string `json:"executorId"`
-	EnvironmentID        string `json:"environmentId"`
-	EnvironmentVersion   int64  `json:"environmentVersion"`
-	ConnectionGeneration int64  `json:"connectionGeneration"`
-	Platform             string `json:"platform"`
-	OuterProfileVersion  string `json:"outerProfileVersion"`
-	RootURI              string `json:"rootUri"`
-	RelativePath         string `json:"relativePath"`
-	PathURI              string `json:"pathUri"`
-	Offset               uint64 `json:"offset"`
-	Limit                uint64 `json:"limit"`
-	FilesystemProfile    string `json:"filesystemProfile"`
+	Version              string                `json:"version"`
+	WorkspaceID          string                `json:"workspaceId"`
+	RunID                string                `json:"runId"`
+	RunAttemptID         string                `json:"runAttemptId"`
+	RunAttemptGeneration int64                 `json:"runAttemptGeneration"`
+	ExecutorID           string                `json:"executorId"`
+	EnvironmentID        string                `json:"environmentId"`
+	EnvironmentVersion   int64                 `json:"environmentVersion"`
+	ConnectionGeneration int64                 `json:"connectionGeneration"`
+	Platform             string                `json:"platform"`
+	OuterProfileVersion  string                `json:"outerProfileVersion"`
+	RootURI              string                `json:"rootUri"`
+	RelativePath         string                `json:"relativePath"`
+	PathURI              string                `json:"pathUri"`
+	Offset               uint64                `json:"offset"`
+	Limit                uint64                `json:"limit"`
+	FilesystemProfile    string                `json:"filesystemProfile"`
+	BackendKind          executionbackend.Kind `json:"backendKind,omitempty"`
+	TargetID             string                `json:"targetId,omitempty"`
+	TargetGeneration     int64                 `json:"targetGeneration,omitempty"`
 }

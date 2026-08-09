@@ -47,6 +47,7 @@ type RunLaunchInputs struct {
 	ControllerCallbackEndpoint string
 	ControllerCallbackIdentity string
 	ControllerCallbackAudience string
+	ManagedSandbox             *ManagedSandboxLaunchSpec
 }
 
 type PreparedRunLaunch struct {
@@ -54,6 +55,7 @@ type PreparedRunLaunch struct {
 	FrozenCatalog  BrainToolCatalog
 	Manifest       runmanifest.Manifest
 	SignedManifest runmanifest.SignedManifest
+	ManagedSandbox *ManagedSandboxLaunchSpec
 }
 
 type LaunchPreparer struct {
@@ -131,6 +133,7 @@ func (preparer *LaunchPreparer) Prepare(ctx context.Context, scheduled Scheduled
 	}
 	claim := scheduled.Claim
 	previousCheckpoint := clonePreviousCheckpoint(inputs.PreviousCheckpoint)
+	toolPack := managedToolPackAuthority(inputs.ManagedSandbox)
 	manifest := runmanifest.Manifest{
 		ManifestVersion: runmanifest.CurrentVersion, CanonicalizerVersion: runmanifest.Canonicalizer,
 		WorkspaceID: claim.Run.WorkspaceID, SessionID: claim.Run.SessionID, RunID: claim.Run.RunID,
@@ -141,7 +144,8 @@ func (preparer *LaunchPreparer) Prepare(ctx context.Context, scheduled Scheduled
 		ExecutorPolicy: runmanifest.ExecutorPolicy{
 			Version: proposal.PolicyVersion, ContextDigest: hex.EncodeToString(proposal.PolicyContextDigest[:]),
 		},
-		Limits: inputs.Limits, CheckpointAllowlistVersion: inputs.CheckpointAllowlistVersion,
+		ToolPack: toolPack,
+		Limits:   inputs.Limits, CheckpointAllowlistVersion: inputs.CheckpointAllowlistVersion,
 		WorkerImageDigest: inputs.WorkerImageDigest, ExpectedServiceAccount: inputs.ExpectedServiceAccount,
 		ControllerCallback: runmanifest.ControllerCallback{
 			Endpoint: inputs.ControllerCallbackEndpoint, TLSIdentity: inputs.ControllerCallbackIdentity,
@@ -155,6 +159,7 @@ func (preparer *LaunchPreparer) Prepare(ctx context.Context, scheduled Scheduled
 	if resumedCatalog != nil {
 		return PreparedRunLaunch{
 			Scheduled: scheduled, FrozenCatalog: *resumedCatalog, Manifest: manifest, SignedManifest: signed,
+			ManagedSandbox: cloneManagedSandboxLaunchSpec(inputs.ManagedSandbox),
 		}, nil
 	}
 	freezeRequest := FreezeBrainToolCatalogRequest{
@@ -175,7 +180,26 @@ func (preparer *LaunchPreparer) Prepare(ctx context.Context, scheduled Scheduled
 	}
 	return PreparedRunLaunch{
 		Scheduled: scheduled, FrozenCatalog: frozen.Catalog, Manifest: manifest, SignedManifest: signed,
+		ManagedSandbox: cloneManagedSandboxLaunchSpec(inputs.ManagedSandbox),
 	}, nil
+}
+
+func cloneManagedSandboxLaunchSpec(source *ManagedSandboxLaunchSpec) *ManagedSandboxLaunchSpec {
+	if source == nil {
+		return nil
+	}
+	copy := *source
+	return &copy
+}
+
+func managedToolPackAuthority(source *ManagedSandboxLaunchSpec) *runmanifest.ToolPackAuthority {
+	if source == nil {
+		return nil
+	}
+	return &runmanifest.ToolPackAuthority{
+		PackID: source.PackID, PackSetDigest: source.PackSetDigest,
+		SkillSHA256: source.SkillSHA256,
+	}
 }
 
 func validateResumeBrainToolCatalog(scheduled ScheduledRunAttempt, checkpoint *runmanifest.PreviousCheckpoint, catalog BrainToolCatalog, proposal ExecutorCatalogProposal) error {

@@ -399,6 +399,157 @@
         }
       }
     },
+    "/internal/v2/managed-sandboxes:reserve": {
+      "post": {
+        "operationId": "reserveManagedSandbox",
+        "description": "Serializes the session/environment identity and reserves exactly one active managed sandbox generation. Exact profile retries return the existing generation.",
+        "requestBody": {"required": true, "x-agentserver-maxBytes": 262144, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReserveManagedSandboxRequest"}}}},
+        "responses": {
+          "200": {"description": "Managed sandbox generation reserved or exact ensure retry returned", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReserveManagedSandboxResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/managed-sandboxes:reconcile": {
+      "post": {
+        "operationId": "listManagedSandboxesForReconcile",
+        "description": "Returns bounded non-converged, expired, or idle managed sandbox generations for sandbox-gateway reconciliation.",
+        "requestBody": {"required": true, "x-agentserver-maxBytes": 262144, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ListManagedSandboxesForReconcileRequest"}}}},
+        "responses": {
+          "200": {"description": "Managed sandbox reconciliation candidates", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ListManagedSandboxesForReconcileResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/managed-sandboxes/{sandboxId}": {
+      "parameters": [{"$ref": "#/components/parameters/SandboxId"}],
+      "get": {
+        "operationId": "getManagedSandbox",
+        "parameters": [{"name": "generation", "in": "query", "required": true, "schema": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}}],
+        "responses": {
+          "200": {"description": "Exact managed sandbox generation", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GetManagedSandboxResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/managed-sandboxes/{sandboxId}:begin-create": {
+      "parameters": [{"$ref": "#/components/parameters/SandboxId"}],
+      "post": {
+        "operationId": "beginManagedSandboxCreate",
+        "description": "CAS-transitions a reserved generation to creating before any provider create request is sent.",
+        "requestBody": {"required": true, "x-agentserver-maxBytes": 262144, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BeginManagedSandboxCreateRequest"}}}},
+        "responses": {
+          "200": {"description": "Create transition result", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ManagedSandboxMutationResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"}, "403": {"$ref": "#/components/responses/CommandError"}, "404": {"$ref": "#/components/responses/CommandError"}, "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/managed-sandboxes/{sandboxId}:observe": {
+      "parameters": [{"$ref": "#/components/parameters/SandboxId"}],
+      "post": {
+        "operationId": "observeManagedSandbox",
+        "description": "Submits one bounded provider observation under generation and version fencing; it never creates provider work.",
+        "requestBody": {"required": true, "x-agentserver-maxBytes": 262144, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ObserveManagedSandboxRequest"}}}},
+        "responses": {
+          "200": {"description": "Provider observation committed or exact retry returned", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ManagedSandboxMutationResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"}, "403": {"$ref": "#/components/responses/CommandError"}, "404": {"$ref": "#/components/responses/CommandError"}, "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/managed-sandboxes/{sandboxId}:renew-activity": {
+      "parameters": [{"$ref": "#/components/parameters/SandboxId"}],
+      "post": {
+        "operationId": "renewManagedSandboxActivity",
+        "description": "Binds a live run-attempt lease to the exact ready sandbox generation.",
+        "requestBody": {"required": true, "x-agentserver-maxBytes": 262144, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RenewManagedSandboxActivityRequest"}}}},
+        "responses": {
+          "200": {"description": "Activity lease renewed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ManagedSandboxMutationResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"}, "403": {"$ref": "#/components/responses/CommandError"}, "404": {"$ref": "#/components/responses/CommandError"}, "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/managed-sandboxes/{sandboxId}:release-activity": {
+      "parameters": [{"$ref": "#/components/parameters/SandboxId"}],
+      "post": {
+        "operationId": "releaseManagedSandboxActivity",
+        "description": "Idempotently releases the exact run-attempt activity and starts the sandbox idle window.",
+        "requestBody": {"required": true, "x-agentserver-maxBytes": 262144, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReleaseManagedSandboxActivityRequest"}}}},
+        "responses": {
+          "200": {"description": "Activity release result", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ManagedSandboxMutationResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"}, "403": {"$ref": "#/components/responses/CommandError"}, "404": {"$ref": "#/components/responses/CommandError"}, "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/managed-sandboxes/{sandboxId}:begin-delete": {
+      "parameters": [{"$ref": "#/components/parameters/SandboxId"}],
+      "post": {
+        "operationId": "beginManagedSandboxDelete",
+        "description": "CAS-fences a generation for deletion and releases all of its activity leases before provider deletion.",
+        "requestBody": {"required": true, "x-agentserver-maxBytes": 262144, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BeginManagedSandboxDeleteRequest"}}}},
+        "responses": {
+          "200": {"description": "Delete transition result", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ManagedSandboxMutationResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"}, "403": {"$ref": "#/components/responses/CommandError"}, "404": {"$ref": "#/components/responses/CommandError"}, "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/managed-sandbox-operations:authorize": {
+      "post": {
+        "operationId": "authorizeManagedSandboxOperation",
+        "description": "Fail-closed live introspection performed by sandbox-gateway immediately before one TAE provider operation. The response contains no provider reference or credential.",
+        "requestBody": {"required": true, "x-agentserver-maxBytes": 262144, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AuthorizeManagedSandboxOperationRequest"}}}},
+        "responses": {
+          "200": {"description": "Exact operation still owns a live dispatching TAE target and activity lease", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AuthorizeManagedSandboxOperationResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"}, "403": {"$ref": "#/components/responses/CommandError"}, "404": {"$ref": "#/components/responses/CommandError"}, "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/egress/credentials:resolve-authority": {
+      "post": {
+        "operationId": "resolveEgressCredentialAuthority",
+        "description": "Executor-gateway-only selection of the active default workspace credential for one live dispatching TAE process_start operation. An empty binding is valid product state and never blocks sandbox startup.",
+        "requestBody": {"required": true, "x-agentserver-maxBytes": 131072, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ResolveEgressCredentialAuthorityRequest"}}}},
+        "responses": {
+          "200": {"description": "Versioned binding reference, or an explicit empty reference when the workspace has no matching credential", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ResolveEgressCredentialAuthorityResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "503": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/egress/credentials:resolve": {
+      "post": {
+        "operationId": "resolveEgressCredential",
+        "description": "Egress-authorizer-only final-hop materialization. Core re-verifies the signed placeholder and every live operation/sandbox fence, opens the encrypted workspace binding, and returns only a provider allowlisted header mutation.",
+        "requestBody": {"required": true, "x-agentserver-maxBytes": 131072, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ResolveEgressCredentialRequest"}}}},
+        "responses": {
+          "200": {"description": "Closed-world one-hop provider header mutation", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ResolveEgressCredentialResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"},
+          "503": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/egress/credential-use-events": {
+      "post": {
+        "operationId": "recordEgressCredentialAuditEvent",
+        "description": "Egress-authorizer-only idempotent durable recording of a provider-neutral allow or deny. Pre-placeholder denials may have partial scope; every allow must carry the complete capability, operation, TAE PSM, binding, and request target.",
+        "requestBody": {"required": true, "x-agentserver-maxBytes": 131072, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RecordEgressCredentialAuditRequest"}}}},
+        "responses": {
+          "200": {"description": "Audit decision durably recorded or exact retry accepted", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RecordEgressCredentialAuditResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
     "/internal/v2/approvals:create": {
       "post": {
         "operationId": "createApproval",
@@ -589,7 +740,8 @@
       "ExecutionId": {"name": "executionId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "OperationId": {"name": "operationId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "RunAttemptId": {"name": "runAttemptId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
-      "RunDispatchId": {"name": "runDispatchId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}}
+      "RunDispatchId": {"name": "runDispatchId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
+      "SandboxId": {"name": "sandboxId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}}
     },
     "responses": {
       "CommandError": {
@@ -1090,7 +1242,8 @@
             ]
           },
           "codexRuntimeManifestDigest": {"$ref": "#/components/schemas/SHA256"},
-          "checkpointAllowlistVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+          "checkpointAllowlistVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "packSetDigest": {"$ref": "#/components/schemas/SHA256"}
         }
       },
       "CommitCheckpointRequest": {
@@ -1132,6 +1285,7 @@
           },
           "codexRuntimeManifestDigest": {"$ref": "#/components/schemas/SHA256"},
           "checkpointAllowlistVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "packSetDigest": {"$ref": "#/components/schemas/SHA256"},
           "createdAt": {"type": "string", "format": "date-time"}
         }
       },
@@ -1263,7 +1417,8 @@
             ]
           },
           "codexRuntimeManifestDigest": {"$ref": "#/components/schemas/SHA256"},
-          "checkpointAllowlistVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+          "checkpointAllowlistVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "packSetDigest": {"$ref": "#/components/schemas/SHA256"}
         }
       },
       "RunLaunchExecutorPolicyState": {
@@ -1287,6 +1442,17 @@
           "model": {"type": "string", "minLength": 1, "maxLength": 256}
         }
       },
+      "RunLaunchLarkEgressState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["grantId", "grantVersion", "grantUserId", "policySha256"],
+        "properties": {
+          "grantId": {"$ref": "#/components/schemas/UUID"},
+          "grantVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "grantUserId": {"$ref": "#/components/schemas/UUID"},
+          "policySha256": {"$ref": "#/components/schemas/SHA256"}
+        }
+      },
       "ResolveRunLaunchStateResponse": {
         "type": "object",
         "additionalProperties": false,
@@ -1303,7 +1469,8 @@
           "prompt": {"$ref": "#/components/schemas/RunLaunchObjectPointer"},
           "previousCheckpoint": {"$ref": "#/components/schemas/RunLaunchCheckpointState"},
           "executorPolicy": {"$ref": "#/components/schemas/RunLaunchExecutorPolicyState"},
-          "llmGateway": {"$ref": "#/components/schemas/RunLaunchLLMGatewayState"}
+          "llmGateway": {"$ref": "#/components/schemas/RunLaunchLLMGatewayState"},
+          "larkEgress": {"$ref": "#/components/schemas/RunLaunchLarkEgressState"}
         }
       },
       "BrainToolDescriptor": {
@@ -1516,13 +1683,16 @@
         "required": ["workspaceId"],
         "properties": {
           "workspaceId": {"$ref": "#/components/schemas/UUID"},
+		  "sessionId": {"$ref": "#/components/schemas/UUID"},
+		  "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+		  "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
           "executorId": {"$ref": "#/components/schemas/UUID"}
         }
       },
       "ExecutorEnvironment": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["environmentId", "executorId", "rootDescriptor", "platform", "outerProfileVersion", "insecureDev", "environmentVersion", "connectionGeneration"],
+		"required": ["environmentId", "rootDescriptor", "platform", "outerProfileVersion", "insecureDev", "environmentVersion"],
         "properties": {
           "environmentId": {"$ref": "#/components/schemas/UUID"},
           "executorId": {"$ref": "#/components/schemas/UUID"},
@@ -1531,7 +1701,10 @@
           "outerProfileVersion": {"enum": ["process-v1", "process-v1+filesystem-read-v1"]},
           "insecureDev": {"type": "boolean"},
           "environmentVersion": {"type": "integer", "minimum": 1},
-          "connectionGeneration": {"type": "integer", "minimum": 1}
+		  "connectionGeneration": {"type": "integer", "minimum": 1},
+		  "backendKind": {"enum": ["agentx", "tae"]},
+		  "targetId": {"$ref": "#/components/schemas/UUID"},
+		  "targetGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
         }
       },
       "ListExecutorEnvironmentsResponse": {
@@ -1570,7 +1743,7 @@
       "ExecutionState": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["executionId", "runId", "runAttemptId", "runAttemptGeneration", "appServerToolCallId", "executorId", "environmentId", "toolName", "toolVersion", "mapperVersion", "policyVersion", "policyDecision", "operationCount", "argumentsDigest", "toolSchemaDigest", "operationPlanDigest", "policyContextDigest", "status", "version", "createdAt", "updatedAt"],
+        "required": ["executionId", "runId", "runAttemptId", "runAttemptGeneration", "appServerToolCallId", "environmentId", "toolName", "toolVersion", "mapperVersion", "policyVersion", "policyDecision", "operationCount", "argumentsDigest", "toolSchemaDigest", "operationPlanDigest", "policyContextDigest", "status", "version", "createdAt", "updatedAt"],
         "properties": {
           "executionId": {"$ref": "#/components/schemas/UUID"},
           "runId": {"$ref": "#/components/schemas/UUID"},
@@ -1579,6 +1752,9 @@
           "appServerToolCallId": {"type": "string", "minLength": 1, "maxLength": 256},
           "executorId": {"$ref": "#/components/schemas/UUID"},
           "environmentId": {"$ref": "#/components/schemas/UUID"},
+          "targetKind": {"enum": ["agentx", "tae"]},
+          "targetId": {"$ref": "#/components/schemas/UUID"},
+          "targetGeneration": {"type": "integer", "minimum": 1},
           "toolName": {"type": "string", "minLength": 1, "maxLength": 128},
           "toolVersion": {"type": "string", "minLength": 1, "maxLength": 128},
           "mapperVersion": {"type": "string", "minLength": 1, "maxLength": 128},
@@ -1612,6 +1788,9 @@
           "paramsDigest": {"$ref": "#/components/schemas/CanonicalJSONDigest"},
           "status": {"enum": ["prepared", "dispatching", "acknowledged", "succeeded", "failed", "cancelled", "unknown", "skipped"]},
           "connectionGeneration": {"type": "integer", "minimum": 1},
+          "targetKind": {"enum": ["agentx", "tae"]},
+          "targetId": {"$ref": "#/components/schemas/UUID"},
+          "targetGeneration": {"type": "integer", "minimum": 1},
           "acknowledgementDigest": {"$ref": "#/components/schemas/CanonicalJSONDigest"},
           "terminalResultDigest": {"$ref": "#/components/schemas/CanonicalJSONDigest"},
           "dispatchedAt": {"type": "string", "format": "date-time"},
@@ -1625,7 +1804,7 @@
       "PrepareExecutionRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["executionId", "runId", "runAttemptId", "holderId", "runAttemptGeneration", "expectedRunVersion", "expectedRunAttemptVersion", "appServerToolCallId", "executorId", "environmentId", "toolName", "toolVersion", "mapperVersion", "policyVersion", "operationCount", "arguments", "toolSchema", "operationPlan", "policyContext", "policyDecision", "record"],
+        "required": ["executionId", "runId", "runAttemptId", "holderId", "runAttemptGeneration", "expectedRunVersion", "expectedRunAttemptVersion", "appServerToolCallId", "environmentId", "toolName", "toolVersion", "mapperVersion", "policyVersion", "operationCount", "arguments", "toolSchema", "operationPlan", "policyContext", "policyDecision", "record"],
         "properties": {
           "executionId": {"$ref": "#/components/schemas/UUID"},
           "runId": {"$ref": "#/components/schemas/UUID"},
@@ -1637,6 +1816,9 @@
           "appServerToolCallId": {"type": "string", "minLength": 1, "maxLength": 256},
           "executorId": {"$ref": "#/components/schemas/UUID"},
           "environmentId": {"$ref": "#/components/schemas/UUID"},
+          "targetKind": {"enum": ["agentx", "tae"]},
+          "targetId": {"$ref": "#/components/schemas/UUID"},
+          "targetGeneration": {"type": "integer", "minimum": 1},
           "toolName": {"type": "string", "minLength": 1, "maxLength": 128},
           "toolVersion": {"type": "string", "minLength": 1, "maxLength": 128},
           "mapperVersion": {"type": "string", "minLength": 1, "maxLength": 128},
@@ -1692,7 +1874,7 @@
       "BeginOperationDispatchRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["operationId", "executionId", "runId", "runAttemptId", "holderId", "runAttemptGeneration", "connectionGeneration", "expectedExecutionVersion", "expectedOperationVersion", "policyContext", "operationPlan", "params", "record"],
+        "required": ["operationId", "executionId", "runId", "runAttemptId", "holderId", "runAttemptGeneration", "expectedExecutionVersion", "expectedOperationVersion", "policyContext", "operationPlan", "params", "record"],
         "properties": {
           "operationId": {"$ref": "#/components/schemas/UUID"},
           "executionId": {"$ref": "#/components/schemas/UUID"},
@@ -1701,6 +1883,9 @@
           "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
           "runAttemptGeneration": {"type": "integer", "minimum": 1},
           "connectionGeneration": {"type": "integer", "minimum": 1},
+          "targetKind": {"enum": ["agentx", "tae"]},
+          "targetId": {"$ref": "#/components/schemas/UUID"},
+          "targetGeneration": {"type": "integer", "minimum": 1},
           "expectedExecutionVersion": {"type": "integer", "minimum": 1},
           "expectedOperationVersion": {"type": "integer", "minimum": 1},
           "policyContext": {"$ref": "#/components/schemas/CanonicalJSONObject"},
@@ -1722,7 +1907,7 @@
       "AcknowledgeOperationRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["operationId", "executionId", "runId", "runAttemptId", "runAttemptGeneration", "connectionGeneration", "expectedExecutionVersion", "expectedOperationVersion", "acknowledgement", "record"],
+        "required": ["operationId", "executionId", "runId", "runAttemptId", "runAttemptGeneration", "expectedExecutionVersion", "expectedOperationVersion", "acknowledgement", "record"],
         "properties": {
           "operationId": {"$ref": "#/components/schemas/UUID"},
           "executionId": {"$ref": "#/components/schemas/UUID"},
@@ -1730,6 +1915,9 @@
           "runAttemptId": {"$ref": "#/components/schemas/UUID"},
           "runAttemptGeneration": {"type": "integer", "minimum": 1},
           "connectionGeneration": {"type": "integer", "minimum": 1},
+          "targetKind": {"enum": ["agentx", "tae"]},
+          "targetId": {"$ref": "#/components/schemas/UUID"},
+          "targetGeneration": {"type": "integer", "minimum": 1},
           "expectedExecutionVersion": {"type": "integer", "minimum": 1},
           "expectedOperationVersion": {"type": "integer", "minimum": 1},
           "acknowledgement": {"$ref": "#/components/schemas/CanonicalJSONObject"},
@@ -1749,7 +1937,7 @@
       "CompleteOperationRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["operationId", "executionId", "runId", "runAttemptId", "runAttemptGeneration", "connectionGeneration", "expectedExecutionVersion", "expectedOperationVersion", "terminalStatus", "result", "record"],
+        "required": ["operationId", "executionId", "runId", "runAttemptId", "runAttemptGeneration", "expectedExecutionVersion", "expectedOperationVersion", "terminalStatus", "result", "record"],
         "properties": {
           "operationId": {"$ref": "#/components/schemas/UUID"},
           "executionId": {"$ref": "#/components/schemas/UUID"},
@@ -1757,6 +1945,9 @@
           "runAttemptId": {"$ref": "#/components/schemas/UUID"},
           "runAttemptGeneration": {"type": "integer", "minimum": 1},
           "connectionGeneration": {"type": "integer", "minimum": 1},
+          "targetKind": {"enum": ["agentx", "tae"]},
+          "targetId": {"$ref": "#/components/schemas/UUID"},
+          "targetGeneration": {"type": "integer", "minimum": 1},
           "expectedExecutionVersion": {"type": "integer", "minimum": 1},
           "expectedOperationVersion": {"type": "integer", "minimum": 1},
           "terminalStatus": {"enum": ["succeeded", "failed", "cancelled", "unknown"]},
@@ -1823,6 +2014,289 @@
         "properties": {
           "execution": {"$ref": "#/components/schemas/ExecutionState"},
           "changed": {"type": "boolean"}
+        }
+      },
+      "EgressCredentialOperation": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["workspaceId", "sessionId", "actorId", "environmentId", "runId", "runAttemptId", "runAttemptGeneration", "executionId", "operationId", "sandboxId", "targetGeneration"],
+        "properties": {
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "sessionId": {"$ref": "#/components/schemas/UUID"},
+          "actorId": {"$ref": "#/components/schemas/UUID"},
+          "environmentId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "executionId": {"$ref": "#/components/schemas/UUID"},
+          "operationId": {"$ref": "#/components/schemas/UUID"},
+          "sandboxId": {"$ref": "#/components/schemas/UUID"},
+          "targetGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+        }
+      },
+      "EgressCredentialAuditOperation": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "workspaceId": {"oneOf": [{"$ref": "#/components/schemas/UUID"}, {"const": ""}]},
+          "sessionId": {"oneOf": [{"$ref": "#/components/schemas/UUID"}, {"const": ""}]},
+          "actorId": {"oneOf": [{"$ref": "#/components/schemas/UUID"}, {"const": ""}]},
+          "environmentId": {"oneOf": [{"$ref": "#/components/schemas/UUID"}, {"const": ""}]},
+          "runId": {"oneOf": [{"$ref": "#/components/schemas/UUID"}, {"const": ""}]},
+          "runAttemptId": {"oneOf": [{"$ref": "#/components/schemas/UUID"}, {"const": ""}]},
+          "runAttemptGeneration": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+          "executionId": {"oneOf": [{"$ref": "#/components/schemas/UUID"}, {"const": ""}]},
+          "operationId": {"oneOf": [{"$ref": "#/components/schemas/UUID"}, {"const": ""}]},
+          "sandboxId": {"oneOf": [{"$ref": "#/components/schemas/UUID"}, {"const": ""}]},
+          "targetGeneration": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}
+        }
+      },
+      "ResolveEgressCredentialAuthorityRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operation", "providerKind", "policySha256"],
+        "properties": {
+          "operation": {"$ref": "#/components/schemas/EgressCredentialOperation"},
+          "providerKind": {"type": "string", "minLength": 1, "maxLength": 128},
+          "policySha256": {"$ref": "#/components/schemas/SHA256"}
+        }
+      },
+      "ResolveEgressCredentialAuthorityResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["providerKind", "bindingId", "authorityVersion", "credentialVersion", "policySha256", "authorizedAt"],
+        "properties": {
+          "providerKind": {"type": "string", "minLength": 1, "maxLength": 128},
+          "bindingId": {"oneOf": [{"$ref": "#/components/schemas/UUID"}, {"const": ""}]},
+          "authorityVersion": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+          "credentialVersion": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+          "policySha256": {"$ref": "#/components/schemas/SHA256"},
+          "authorizedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "ResolveEgressCredentialRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["placeholder", "operation", "providerKind", "bindingId", "authorityVersion", "policySha256", "taePsm", "host", "path", "method"],
+        "properties": {
+          "placeholder": {"type": "string", "minLength": 1, "maxLength": 32768, "x-agentserver-sensitive": true},
+          "operation": {"$ref": "#/components/schemas/EgressCredentialOperation"},
+          "providerKind": {"type": "string", "minLength": 1, "maxLength": 128},
+          "bindingId": {"$ref": "#/components/schemas/UUID"},
+          "authorityVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "policySha256": {"$ref": "#/components/schemas/SHA256"},
+          "taePsm": {"type": "string", "minLength": 1, "maxLength": 256},
+          "host": {"type": "string", "minLength": 1, "maxLength": 512},
+          "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+          "method": {"type": "string", "minLength": 1, "maxLength": 16},
+          "headers": {"type": "object", "maxProperties": 128, "additionalProperties": {"type": "string", "maxLength": 32768}, "x-agentserver-sensitive": true}
+        }
+      },
+      "ResolveEgressCredentialResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["headers", "providerKind", "bindingId", "authorityVersion", "credentialVersion", "resolvedAt"],
+        "properties": {
+          "headers": {"type": "object", "minProperties": 1, "maxProperties": 8, "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 32768}, "x-agentserver-sensitive": true},
+          "providerKind": {"type": "string", "minLength": 1, "maxLength": 128},
+          "bindingId": {"$ref": "#/components/schemas/UUID"},
+          "authorityVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "accessExpiresAt": {"type": "string", "format": "date-time"},
+          "credentialVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "resolvedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "RecordEgressCredentialAuditRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["eventId", "at", "operation", "providerKind", "host", "path", "method", "decision", "reasonCode"],
+        "properties": {
+          "eventId": {"$ref": "#/components/schemas/UUID"},
+          "at": {"type": "string", "format": "date-time"},
+          "capabilityId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "operation": {"$ref": "#/components/schemas/EgressCredentialAuditOperation"},
+          "providerKind": {"type": "string", "maxLength": 128},
+          "bindingId": {"oneOf": [{"$ref": "#/components/schemas/UUID"}, {"const": ""}]},
+          "authorityVersion": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+          "credentialVersion": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+          "taePsm": {"type": "string", "maxLength": 256},
+          "host": {"type": "string", "maxLength": 512},
+          "path": {"type": "string", "maxLength": 4096},
+          "method": {"type": "string", "maxLength": 16},
+          "decision": {"enum": ["allow", "deny"]},
+          "reasonCode": {"type": "string", "minLength": 1, "maxLength": 128}
+        }
+      },
+      "RecordEgressCredentialAuditResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["recorded"],
+        "properties": {
+          "recorded": {"type": "boolean"}
+        }
+      },
+      "ManagedSandboxState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sandboxId", "workspaceId", "sessionId", "environmentId", "providerKind", "generation", "desiredState", "observedState", "providerRegion", "providerPsm", "createIdempotencyKey", "runtimeProfileSha256", "packSetSha256", "requestedTtlSeconds", "idleTtlSeconds", "version", "createdAt", "updatedAt"],
+        "properties": {
+          "sandboxId": {"$ref": "#/components/schemas/UUID"},
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "sessionId": {"$ref": "#/components/schemas/UUID"},
+          "environmentId": {"$ref": "#/components/schemas/UUID"},
+          "providerKind": {"const": "tae"},
+          "generation": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "desiredState": {"enum": ["ready", "deleted"]},
+          "observedState": {"enum": ["reserved", "creating", "ready", "deleting", "deleted", "failed", "unknown"]},
+          "providerRegion": {"type": "string", "minLength": 1, "maxLength": 128},
+          "providerPsm": {"type": "string", "minLength": 1, "maxLength": 256},
+          "providerSessionRef": {"type": "string", "minLength": 1, "maxLength": 1024},
+          "createIdempotencyKey": {"$ref": "#/components/schemas/UUID"},
+          "runtimeProfileSha256": {"$ref": "#/components/schemas/SHA256"},
+          "packSetSha256": {"$ref": "#/components/schemas/SHA256"},
+          "requestedTtlSeconds": {"type": "integer", "minimum": 30, "maximum": 86400},
+          "idleTtlSeconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+          "expiresAt": {"type": "string", "format": "date-time"},
+          "idleExpiresAt": {"type": "string", "format": "date-time"},
+          "lastObservedAt": {"type": "string", "format": "date-time"},
+          "version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "updatedAt": {"type": "string", "format": "date-time"},
+          "deletedAt": {"type": "string", "format": "date-time"},
+          "lastErrorCode": {"type": "string", "minLength": 1, "maxLength": 128},
+          "lastErrorSha256": {"$ref": "#/components/schemas/SHA256"}
+        }
+      },
+      "ReserveManagedSandboxRequest": {
+        "type": "object",
+        "additionalProperties": false,
+		"required": ["sandboxId", "workspaceId", "sessionId", "environmentId", "providerRegion", "providerPsm", "providerSessionRef", "createIdempotencyKey", "runtimeProfileSha256", "packSetSha256", "requestedTtlSeconds", "idleTtlSeconds"],
+        "properties": {
+          "sandboxId": {"$ref": "#/components/schemas/UUID"},
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "sessionId": {"$ref": "#/components/schemas/UUID"},
+          "environmentId": {"$ref": "#/components/schemas/UUID"},
+          "providerRegion": {"type": "string", "minLength": 1, "maxLength": 128},
+          "providerPsm": {"type": "string", "minLength": 1, "maxLength": 256},
+          "providerSessionRef": {"type": "string", "minLength": 1, "maxLength": 1024},
+          "createIdempotencyKey": {"$ref": "#/components/schemas/UUID"},
+          "runtimeProfileSha256": {"$ref": "#/components/schemas/SHA256"},
+          "packSetSha256": {"$ref": "#/components/schemas/SHA256"},
+          "requestedTtlSeconds": {"type": "integer", "minimum": 30, "maximum": 86400},
+          "idleTtlSeconds": {"type": "integer", "minimum": 1, "maximum": 86400}
+        }
+      },
+      "ReserveManagedSandboxResponse": {
+        "type": "object", "additionalProperties": false,
+        "required": ["sandbox", "created"],
+        "properties": {"sandbox": {"$ref": "#/components/schemas/ManagedSandboxState"}, "created": {"type": "boolean"}}
+      },
+      "GetManagedSandboxResponse": {
+        "type": "object", "additionalProperties": false,
+        "required": ["sandbox"],
+        "properties": {"sandbox": {"$ref": "#/components/schemas/ManagedSandboxState"}}
+      },
+      "BeginManagedSandboxCreateRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["sandboxId", "generation", "expectedVersion"],
+        "properties": {
+          "sandboxId": {"$ref": "#/components/schemas/UUID"},
+          "generation": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "expectedVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+        }
+      },
+      "ObserveManagedSandboxRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["sandboxId", "generation", "expectedVersion", "observedState"],
+        "properties": {
+          "sandboxId": {"$ref": "#/components/schemas/UUID"},
+          "generation": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "expectedVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "observedState": {"enum": ["creating", "ready", "failed", "unknown", "deleted"]},
+          "providerSessionRef": {"type": "string", "minLength": 1, "maxLength": 1024},
+          "expiresAt": {"type": "string", "format": "date-time"},
+          "errorCode": {"type": "string", "minLength": 1, "maxLength": 128},
+          "errorSha256": {"$ref": "#/components/schemas/SHA256"}
+        }
+      },
+      "RenewManagedSandboxActivityRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["sandboxId", "generation", "runId", "runAttemptId", "runAttemptGeneration", "holderId", "activityTtlMillis"],
+        "properties": {
+          "sandboxId": {"$ref": "#/components/schemas/UUID"},
+          "generation": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "activityTtlMillis": {"type": "integer", "minimum": 1, "maximum": 3600000}
+        }
+      },
+      "ReleaseManagedSandboxActivityRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["sandboxId", "generation", "runId", "runAttemptId", "runAttemptGeneration", "holderId", "idleTtlMillis"],
+        "properties": {
+          "sandboxId": {"$ref": "#/components/schemas/UUID"},
+          "generation": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "holderId": {"type": "string", "minLength": 1, "maxLength": 256},
+          "idleTtlMillis": {"type": "integer", "minimum": 1, "maximum": 86400000}
+        }
+      },
+      "BeginManagedSandboxDeleteRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["sandboxId", "generation", "expectedVersion", "reason"],
+        "properties": {
+          "sandboxId": {"$ref": "#/components/schemas/UUID"},
+          "generation": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "expectedVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "reason": {"type": "string", "minLength": 1, "maxLength": 1024}
+        }
+      },
+      "ManagedSandboxMutationResponse": {
+        "type": "object", "additionalProperties": false,
+        "required": ["sandbox", "changed"],
+        "properties": {"sandbox": {"$ref": "#/components/schemas/ManagedSandboxState"}, "changed": {"type": "boolean"}}
+      },
+      "ListManagedSandboxesForReconcileRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["limit"],
+        "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 1000}}
+      },
+      "ListManagedSandboxesForReconcileResponse": {
+        "type": "object", "additionalProperties": false,
+        "required": ["sandboxes"],
+        "properties": {"sandboxes": {"type": "array", "maxItems": 1000, "items": {"$ref": "#/components/schemas/ManagedSandboxState"}}}
+      },
+      "AuthorizeManagedSandboxOperationRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["workspaceId", "sessionId", "runId", "runAttemptId", "runAttemptGeneration", "executionId", "operationId", "mutationKey", "sandboxId", "targetGeneration", "environmentId", "action"],
+        "properties": {
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "sessionId": {"$ref": "#/components/schemas/UUID"},
+          "runId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptId": {"$ref": "#/components/schemas/UUID"},
+          "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "executionId": {"$ref": "#/components/schemas/UUID"},
+          "operationId": {"$ref": "#/components/schemas/UUID"},
+          "mutationKey": {"$ref": "#/components/schemas/UUID"},
+          "sandboxId": {"$ref": "#/components/schemas/UUID"},
+          "targetGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "environmentId": {"$ref": "#/components/schemas/UUID"},
+          "action": {"enum": ["run_command", "signal_command", "read_file"]}
+        }
+      },
+      "AuthorizeManagedSandboxOperationResponse": {
+        "type": "object", "additionalProperties": false,
+        "required": ["sandboxId", "targetGeneration", "operationId", "operationKind", "authorizedAt"],
+        "properties": {
+          "sandboxId": {"$ref": "#/components/schemas/UUID"},
+          "targetGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "operationId": {"$ref": "#/components/schemas/UUID"},
+          "operationKind": {"enum": ["process_start", "timeout_terminate", "fs_read"]},
+          "authorizedAt": {"type": "string", "format": "date-time"}
         }
       },
       "ApprovalState": {

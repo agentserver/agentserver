@@ -34,6 +34,9 @@ func newReadFileExecutionState(authority ExecutionAuthority, transitions *Execut
 	if plan.Read.OperationID == "" || plan.Read.Routing.ExecutionID == "" || plan.Read.Routing.OperationID != plan.Read.OperationID {
 		return nil, errors.New("read-file plan has invalid execution or operation identities")
 	}
+	if _, err := executionTarget(plan.Environment); err != nil {
+		return nil, err
+	}
 	return &readFileExecutionState{
 		authority: authority, transitions: transitions, principal: principal, plan: plan,
 	}, nil
@@ -66,8 +69,9 @@ func (state *readFileExecutionState) PrepareExecution(ctx context.Context) (Exec
 		ExpectedRunVersion:        state.principal.Run.ExpectedRunVersion,
 		ExpectedRunAttemptVersion: state.principal.Run.ExpectedRunAttemptVersion,
 		AppServerToolCallID:       state.plan.ToolCallID,
-		ExecutorID:                state.plan.Environment.ExecutorID,
+		ExecutorID:                coreExecutorID(state.plan.Environment),
 		EnvironmentID:             state.plan.Environment.EnvironmentID,
+		Target:                    state.plan.Environment.Target,
 		ToolName:                  mcpcontract.ToolReadFile,
 		ToolVersion:               mcpcontract.Version,
 		MapperVersion:             "read-file-v1",
@@ -158,7 +162,8 @@ func (state *readFileExecutionState) Begin(ctx context.Context) (BeginOperationD
 		RunAttemptID:             state.principal.Run.RunAttemptID,
 		HolderID:                 state.principal.Run.HolderID,
 		RunAttemptGeneration:     state.principal.Run.RunAttemptGeneration,
-		ConnectionGeneration:     state.plan.Environment.ConnectionGeneration,
+		ConnectionGeneration:     targetConnectionGeneration(state.plan.Environment.Target),
+		Target:                   state.plan.Environment.Target,
 		ExpectedExecutionVersion: state.execution.Version,
 		ExpectedOperationVersion: state.operation.Version,
 		PolicyContext:            state.plan.PolicyContext,
@@ -175,8 +180,9 @@ func (state *readFileExecutionState) Begin(ctx context.Context) (BeginOperationD
 	if err := state.acceptOperationLocked(result.Operation); err != nil {
 		return result, fmt.Errorf("begin read-file operation response: %w", err)
 	}
-	if result.Began && (state.operation.Status != "dispatching" || state.operation.ConnectionGeneration != state.plan.Environment.ConnectionGeneration) {
-		return result, errors.New("core read-file dispatch permission has the wrong status or connection generation")
+	if result.Began && (state.operation.Status != "dispatching" || state.operation.Target != state.plan.Environment.Target ||
+		state.operation.ConnectionGeneration != targetConnectionGeneration(state.plan.Environment.Target)) {
+		return result, errors.New("core read-file dispatch permission has the wrong status or target generation")
 	}
 	return result, nil
 }
@@ -197,7 +203,8 @@ func (state *readFileExecutionState) Acknowledge(ctx context.Context, acknowledg
 		RunID:                    state.principal.Run.RunID,
 		RunAttemptID:             state.principal.Run.RunAttemptID,
 		RunAttemptGeneration:     state.principal.Run.RunAttemptGeneration,
-		ConnectionGeneration:     state.plan.Environment.ConnectionGeneration,
+		ConnectionGeneration:     targetConnectionGeneration(state.plan.Environment.Target),
+		Target:                   state.plan.Environment.Target,
 		ExpectedExecutionVersion: state.execution.Version,
 		ExpectedOperationVersion: state.operation.Version,
 		Acknowledgement:          acknowledgement,
@@ -234,7 +241,8 @@ func (state *readFileExecutionState) CompleteOperation(ctx context.Context, term
 		RunID:                    state.principal.Run.RunID,
 		RunAttemptID:             state.principal.Run.RunAttemptID,
 		RunAttemptGeneration:     state.principal.Run.RunAttemptGeneration,
-		ConnectionGeneration:     state.plan.Environment.ConnectionGeneration,
+		ConnectionGeneration:     targetConnectionGeneration(state.plan.Environment.Target),
+		Target:                   state.plan.Environment.Target,
 		ExpectedExecutionVersion: state.execution.Version,
 		ExpectedOperationVersion: state.operation.Version,
 		TerminalStatus:           terminalStatus,
@@ -302,10 +310,11 @@ func (state *readFileExecutionState) allocateRecordLocked(action string) (Execut
 func (state *readFileExecutionState) acceptExecutionLocked(execution ExecutionState) error {
 	if execution.ExecutionID != state.plan.Read.Routing.ExecutionID || execution.RunID != state.principal.Run.RunID ||
 		execution.RunAttemptID != state.principal.Run.RunAttemptID || execution.RunAttemptGeneration != state.principal.Run.RunAttemptGeneration ||
-		execution.AppServerToolCallID != state.plan.ToolCallID || execution.ExecutorID != state.plan.Environment.ExecutorID ||
+		execution.AppServerToolCallID != state.plan.ToolCallID || execution.ExecutorID != coreExecutorID(state.plan.Environment) ||
 		execution.EnvironmentID != state.plan.Environment.EnvironmentID || execution.ToolName != mcpcontract.ToolReadFile ||
 		execution.ToolVersion != mcpcontract.Version || execution.MapperVersion != "read-file-v1" ||
-		execution.PolicyVersion != state.plan.PolicyVersion || execution.PolicyDecision != state.plan.PolicyDecision || execution.OperationCount != 1 {
+		execution.PolicyVersion != state.plan.PolicyVersion || execution.PolicyDecision != state.plan.PolicyDecision || execution.OperationCount != 1 ||
+		execution.Target != state.plan.Environment.Target {
 		return errors.New("core execution identity or frozen read-file contract differs from the request")
 	}
 	state.execution = execution
@@ -316,7 +325,7 @@ func (state *readFileExecutionState) acceptOperationLocked(operation ExecutionOp
 	expected := state.plan.Read
 	if operation.OperationID != expected.OperationID || operation.ExecutionID != state.plan.Read.Routing.ExecutionID ||
 		operation.Ordinal != expected.Ordinal || operation.Kind != expected.Kind || operation.EffectClass != expected.EffectClass ||
-		operation.MutationKey != expected.MutationKey {
+		operation.MutationKey != expected.MutationKey || operation.Target != state.plan.Environment.Target {
 		return errors.New("core operation identity or frozen read-file contract differs from the request")
 	}
 	state.operation = operation

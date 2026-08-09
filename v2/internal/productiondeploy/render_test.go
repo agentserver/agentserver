@@ -11,6 +11,8 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/executorgateway"
+	"github.com/agentserver/agentserver/v2/internal/sandboxgatewayapp"
+	"github.com/agentserver/agentserver/v2/internal/taepolicy"
 )
 
 func TestRenderProducesDeterministicStagedProductionBundle(t *testing.T) {
@@ -26,7 +28,7 @@ func TestRenderProducesDeterministicStagedProductionBundle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first.Files) != 7 || len(second.Files) != len(first.Files) {
+	if len(first.Files) != 8 || len(second.Files) != len(first.Files) {
 		t.Fatalf("rendered file count = %d / %d", len(first.Files), len(second.Files))
 	}
 	for index := range first.Files {
@@ -38,6 +40,208 @@ func TestRenderProducesDeterministicStagedProductionBundle(t *testing.T) {
 		if hex.EncodeToString(digest[:]) != left.SHA256 {
 			t.Fatalf("rendered file %s checksum mismatch", left.Name)
 		}
+	}
+}
+
+func TestRenderManagedExecutorKillSwitchOmitsManagedRuntimeAndAuthorities(t *testing.T) {
+	document := validConfigDocument()
+	document.Managed.Enabled = false
+	document.Managed.Stage = ManagedExecutorStageDisabled
+	loaded, err := ValidateConfig(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := Render(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bundle.Files) != 7 {
+		t.Fatalf("disabled managed executor bundle files = %d, want 7", len(bundle.Files))
+	}
+	for _, name := range []string{managedEnvironmentBootstrapFile} {
+		if _, found := bundle.File(name); found {
+			t.Fatalf("disabled managed executor rendered %s", name)
+		}
+	}
+	foundation := parseKubernetesList(t, mustBundleFile(t, bundle, foundationFile))
+	runtime := parseKubernetesList(t, mustBundleFile(t, bundle, runtimeFile))
+	for _, component := range []string{sandboxComponent, egressComponent} {
+		if findResourceOptional(foundation, "Service", component) != nil ||
+			findResourceOptional(runtime, "Deployment", component) != nil ||
+			findResourceOptional(foundation, "NetworkPolicy", component) != nil {
+			t.Fatalf("disabled managed executor rendered component %s", component)
+		}
+	}
+	var workerConfig string
+	for _, resource := range foundation {
+		if resource["kind"] != "ConfigMap" {
+			continue
+		}
+		if value, found := objectField(t, resource, "data")["worker-deployment.json"].(string); found {
+			workerConfig = value
+		}
+	}
+	var workerDocument workerDeploymentJSON
+	if workerConfig == "" {
+		t.Fatal("disabled managed executor omitted the base worker deployment document")
+	}
+	if err := json.Unmarshal([]byte(workerConfig), &workerDocument); err != nil {
+		t.Fatal(err)
+	}
+	if workerDocument.Version != 2 || workerDocument.ManagedSkill != nil {
+		t.Fatalf("disabled managed executor retained worker skill authority: %+v", workerDocument.ManagedSkill)
+	}
+	core := findResource(t, runtime, "Deployment", coreComponent)
+	coreContainer := objectArrayFirst(t, objectField(t, objectField(t, objectField(t, core, "spec"), "template"), "spec"), "containers")
+	if got := literalEnvironment(t, coreContainer, "AGENTSERVER_V2_MANAGED_EXECUTOR_ENABLED"); got != "false" {
+		t.Fatalf("Core managed kill switch = %q", got)
+	}
+	for _, forbidden := range []string{
+		"AGENTSERVER_V2_SANDBOX_GATEWAY_SPIFFE_ID", "AGENTSERVER_V2_EGRESS_AUTHORIZER_SPIFFE_ID",
+		"AGENTSERVER_V2_LARK_CLIENT_ID", "AGENTSERVER_V2_LARK_CLIENT_SECRET_FILE", "AGENTSERVER_V2_LARK_REFRESH_WORKER_ID",
+	} {
+		if literalEnvironmentOptional(t, coreContainer, forbidden) != "" {
+			t.Fatalf("disabled managed executor retained Core environment %s", forbidden)
+		}
+	}
+	harness := findResource(t, runtime, "Deployment", harnessComponent)
+	harnessContainer := objectArrayFirst(t, objectField(t, objectField(t, objectField(t, harness, "spec"), "template"), "spec"), "containers")
+	for _, forbidden := range []string{
+		"AGENTSERVER_V2_MANAGED_ENVIRONMENT_ID", "AGENTSERVER_V2_MANAGED_RUNTIME_PROFILE_SHA256",
+		"AGENTSERVER_V2_MANAGED_PACK_SET_SHA256", "AGENTSERVER_V2_MANAGED_LARK_SKILL_SHA256",
+		"AGENTSERVER_V2_SANDBOX_GATEWAY_URL", "AGENTSERVER_V2_SANDBOX_LIFECYCLE_CAPABILITY_SIGNING_KEY_FILE",
+	} {
+		if literalEnvironmentOptional(t, harnessContainer, forbidden) != "" {
+			t.Fatalf("disabled managed executor retained harness environment %s", forbidden)
+		}
+	}
+	executor := findResource(t, runtime, "Deployment", executorComponent)
+	executorContainer := objectArrayFirst(t, objectField(t, objectField(t, objectField(t, executor, "spec"), "template"), "spec"), "containers")
+	if literalEnvironmentOptional(t, executorContainer, "AGENTSERVER_V2_MANAGED_LARK_CLIENT_ID") != "" {
+		t.Fatal("disabled managed executor retained the Lark client ID projection")
+	}
+	chart, err := RenderHelmChart(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chart.Files) != len(requiredHelmBaseChartFiles) {
+		t.Fatalf("disabled managed executor Helm file count = %d, want %d", len(chart.Files), len(requiredHelmBaseChartFiles))
+	}
+}
+
+func TestRenderPolicyBootstrapExposesOnlyDenyWebhook(t *testing.T) {
+	loaded, err := ValidateConfig(policyBootstrapConfigDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := Render(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bundle.Files) != 7 {
+		t.Fatalf("policy bootstrap bundle files = %d, want 7", len(bundle.Files))
+	}
+	if _, found := bundle.File(managedEnvironmentBootstrapFile); found {
+		t.Fatal("policy bootstrap rendered the managed environment authority")
+	}
+	foundation := parseKubernetesList(t, mustBundleFile(t, bundle, foundationFile))
+	runtime := parseKubernetesList(t, mustBundleFile(t, bundle, runtimeFile))
+	if findResourceOptional(foundation, "Service", sandboxComponent) != nil ||
+		findResourceOptional(runtime, "Deployment", sandboxComponent) != nil {
+		t.Fatal("policy bootstrap rendered a sandbox provider")
+	}
+	findResource(t, foundation, "Service", egressComponent)
+	findResource(t, foundation, "HTTPRoute", "agentserver-egress-authorizer-webhook")
+	egress := findResource(t, runtime, "Deployment", egressComponent)
+	podSpec := objectField(t, objectField(t, objectField(t, egress, "spec"), "template"), "spec")
+	container := objectArrayFirst(t, podSpec, "containers")
+	args := stringArray(t, container, "args")
+	if !slices.Equal(args, []string{"serve", "--policy-bootstrap"}) {
+		t.Fatalf("policy bootstrap args = %v", args)
+	}
+	for _, forbidden := range []string{
+		"AGENTSERVER_V2_CORE_URL", "AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEYRING_FILE",
+		"AGENTSERVER_V2_EGRESS_ALLOWED_TAE_PSM", "AGENTSERVER_V2_TAE_POLICY_BINDING_SHA256",
+	} {
+		if literalEnvironmentOptional(t, container, forbidden) != "" {
+			t.Fatalf("policy bootstrap received forbidden authority %s", forbidden)
+		}
+	}
+	assertSecretMaterialMounts(t, egress, "material", ProductionEgressSecret,
+		"/var/run/agentserver/material", groupReadableSecretMode, []string{"tls.crt", "tls.key"})
+	policy := findResource(t, foundation, "NetworkPolicy", egressComponent)
+	policySpec := objectField(t, policy, "spec")
+	if _, found := policySpec["egress"]; found {
+		t.Fatal("policy bootstrap has outbound network authority")
+	}
+	core := findResource(t, runtime, "Deployment", coreComponent)
+	coreContainer := objectArrayFirst(t, objectField(t, objectField(t, objectField(t, core, "spec"), "template"), "spec"), "containers")
+	if literalEnvironment(t, coreContainer, "AGENTSERVER_V2_MANAGED_EXECUTOR_ENABLED") != "false" {
+		t.Fatal("policy bootstrap activated managed execution in Core")
+	}
+}
+
+func TestRenderManagedExecutorWithoutLarkToolPackKeepsTAE(t *testing.T) {
+	document := validConfigDocument()
+	document.Managed.Lark.Enabled = false
+	document.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(document, document.Managed)
+	document.Managed.Environment.PackSetSHA256 = managedPackSetDigest(document.Managed)
+	loaded, err := ValidateConfig(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := Render(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bundle.Files) != 8 {
+		t.Fatalf("managed executor without Lark bundle files = %d, want 8", len(bundle.Files))
+	}
+	if _, found := bundle.File(managedEnvironmentBootstrapFile); !found {
+		t.Fatal("managed executor without Lark omitted the managed environment bootstrap")
+	}
+	foundation := parseKubernetesList(t, mustBundleFile(t, bundle, foundationFile))
+	runtime := parseKubernetesList(t, mustBundleFile(t, bundle, runtimeFile))
+	for _, component := range []string{sandboxComponent, egressComponent} {
+		if findResourceOptional(foundation, "Service", component) == nil ||
+			findResourceOptional(runtime, "Deployment", component) == nil {
+			t.Fatalf("managed executor without Lark omitted TAE component %s", component)
+		}
+	}
+	core := findResource(t, runtime, "Deployment", coreComponent)
+	coreContainer := objectArrayFirst(t, objectField(t, objectField(t, objectField(t, core, "spec"), "template"), "spec"), "containers")
+	if got := literalEnvironment(t, coreContainer, "AGENTSERVER_V2_MANAGED_EXECUTOR_ENABLED"); got != "true" {
+		t.Fatalf("managed executor flag = %q", got)
+	}
+	if literalEnvironmentOptional(t, coreContainer, "AGENTSERVER_V2_MANAGED_LARK_ENABLED") != "" {
+		t.Fatal("Core retained the removed static managed-Lark bootstrap flag")
+	}
+	for _, name := range []string{
+		"AGENTSERVER_V2_LARK_CLIENT_ID", "AGENTSERVER_V2_LARK_CLIENT_SECRET_FILE", "AGENTSERVER_V2_LARK_REFRESH_WORKER_ID",
+	} {
+		if literalEnvironmentOptional(t, coreContainer, name) != "" {
+			t.Fatalf("managed executor without Lark retained Core environment %s", name)
+		}
+	}
+	if bytes.Contains(mustJSONResource(t, core), []byte("lark-client-secret")) {
+		t.Fatal("managed executor without Lark retained the Core Lark secret mount")
+	}
+	executor := findResource(t, runtime, "Deployment", executorComponent)
+	executorContainer := objectArrayFirst(t, objectField(t, objectField(t, objectField(t, executor, "spec"), "template"), "spec"), "containers")
+	if literalEnvironmentOptional(t, executorContainer, "AGENTSERVER_V2_MANAGED_LARK_CLIENT_ID") != "" {
+		t.Fatal("managed executor without Lark projected a client ID into executor-gateway")
+	}
+	harness := findResource(t, runtime, "Deployment", harnessComponent)
+	harnessContainer := objectArrayFirst(t, objectField(t, objectField(t, objectField(t, harness, "spec"), "template"), "spec"), "containers")
+	if literalEnvironmentOptional(t, harnessContainer, "AGENTSERVER_V2_MANAGED_LARK_SKILL_SHA256") != "" {
+		t.Fatal("managed executor without Lark projected a skill authority into harness-pool")
+	}
+	chart, err := RenderHelmChart(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chart.Files) != len(requiredHelmManagedChartFiles) {
+		t.Fatalf("managed executor without Lark Helm file count = %d, want %d", len(chart.Files), len(requiredHelmManagedChartFiles))
 	}
 }
 
@@ -56,15 +260,17 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 	hydraMigration := parseKubernetesList(t, mustBundleFile(t, bundle, hydraMigrationFile))
 	hydraSetup := parseKubernetesList(t, mustBundleFile(t, bundle, hydraSetupFile))
 	bootstrap := parseKubernetesList(t, mustBundleFile(t, bundle, bootstrapFile))
+	managedEnvironmentBootstrap := parseKubernetesList(t, mustBundleFile(t, bundle, managedEnvironmentBootstrapFile))
 
 	if len(migration) != 1 || migration[0]["kind"] != "Job" || len(hydraMigration) != 1 || hydraMigration[0]["kind"] != "Job" ||
-		len(hydraSetup) != 1 || hydraSetup[0]["kind"] != "Job" || len(bootstrap) != 1 || bootstrap[0]["kind"] != "Job" {
-		t.Fatal("Hydra migration/setup and AgentServer migration/bootstrap stages must each contain exactly one Kubernetes Job")
+		len(hydraSetup) != 1 || hydraSetup[0]["kind"] != "Job" || len(bootstrap) != 1 || bootstrap[0]["kind"] != "Job" ||
+		len(managedEnvironmentBootstrap) != 1 || managedEnvironmentBootstrap[0]["kind"] != "Job" {
+		t.Fatal("Hydra, base bootstrap, and managed environment stages must each contain exactly one Kubernetes Job")
 	}
 	if countKind(runtime, "Job") != 0 || countKind(runtime, "HorizontalPodAutoscaler") != 0 {
 		t.Fatal("runtime stage contains a per-run Job or HPA")
 	}
-	if countKind(runtime, "Deployment") != 7 || countKind(runtime, "PodDisruptionBudget") != 6 {
+	if countKind(runtime, "Deployment") != 9 || countKind(runtime, "PodDisruptionBudget") != 8 {
 		t.Fatalf("runtime topology = %d deployments, %d PDBs", countKind(runtime, "Deployment"), countKind(runtime, "PodDisruptionBudget"))
 	}
 	gateway := findResource(t, runtime, "Deployment", executorComponent)
@@ -147,19 +353,74 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 	}
 	assertSecretMaterialMounts(t, findResource(t, runtime, "Deployment", coreComponent), "material", loaded.Document.Secrets.Core,
 		"/var/run/agentserver/material", groupReadableSecretMode,
-		[]string{"ca.crt", "tls.crt", "tls.key", "run-capability.key", "run-capability-keyring.json", "executor-enrollment.key", "llm-gateway-sealing-keyring.json"})
+		[]string{"ca.crt", "tls.crt", "tls.key", "run-capability.key", "run-capability-keyring.json", "executor-enrollment.key", "llm-gateway-sealing-keyring.json", "credential-sealing-keyring.json", "egress-placeholder-keyring.json"})
 	assertSecretMaterialMounts(t, findResource(t, runtime, "Deployment", platformComponent), "material", loaded.Document.Secrets.PlatformGateway,
 		"/var/run/agentserver/material", groupReadableSecretMode, []string{"ca.crt", "tls.crt", "tls.key"})
 	assertSecretMaterialMounts(t, findResource(t, runtime, "Deployment", browserComponent), "material", loaded.Document.Secrets.BrowserGateway,
 		"/var/run/agentserver/material", groupReadableSecretMode, []string{"ca.crt", "tls.crt", "tls.key"})
 	assertSecretMaterialMounts(t, findResource(t, runtime, "Deployment", executorComponent), "material", loaded.Document.Secrets.ExecutorGateway,
-		"/var/run/agentserver/material", groupReadableSecretMode, []string{"ca.crt", "tls.crt", "tls.key", "run-capability-keyring.json"})
+		"/var/run/agentserver/material", groupReadableSecretMode, []string{
+			"ca.crt", "tls.crt", "tls.key", "run-capability-keyring.json", "sandbox-backend-capability.key",
+			"sandbox-fencer-capability.key", "egress-placeholder.key",
+		})
 	assertSecretMaterialMounts(t, pool, "pool-material", loaded.Document.Secrets.HarnessPool,
-		"/var/run/agentserver/pool", groupReadableSecretMode, []string{"ca.crt", "tls.crt", "tls.key", "run-manifest.key"})
+		"/var/run/agentserver/pool", groupReadableSecretMode, []string{"ca.crt", "tls.crt", "tls.key", "run-manifest.key", "sandbox-lifecycle-capability.key"})
 	assertSecretMaterialMounts(t, pool, "worker-material", loaded.Document.Secrets.HarnessWorker,
 		"/var/run/agentserver/worker", workerReadableSecretMode, []string{"ca.crt", "tls.crt", "tls.key", "run-manifest-keyring.json"})
 	assertSecretMaterialMounts(t, findResource(t, runtime, "Deployment", llmproxyComponent), "material", loaded.Document.Secrets.LLMProxy,
 		"/var/run/agentserver/material", groupReadableSecretMode, []string{"ca.crt", "tls.crt", "tls.key", "run-capability-keyring.json"})
+	assertSecretMaterialMounts(t, findResource(t, runtime, "Deployment", sandboxComponent), "material", loaded.Document.Secrets.SandboxGateway,
+		"/var/run/agentserver/material", groupReadableSecretMode, []string{
+			"ca.crt", "tls.crt", "tls.key", "sandbox-capability-keyring.json",
+			"bytecloud-access-key-id", "bytecloud-secret-access-key",
+		})
+	assertSecretMaterialMounts(t, findResource(t, runtime, "Deployment", egressComponent), "material", loaded.Document.Secrets.EgressAuthorizer,
+		"/var/run/agentserver/material", groupReadableSecretMode, []string{"ca.crt", "tls.crt", "tls.key", "egress-placeholder-keyring.json"})
+	sandboxDeployment := findResource(t, runtime, "Deployment", sandboxComponent)
+	sandboxContainer := objectArrayFirst(t, objectField(t, objectField(t, objectField(t, sandboxDeployment, "spec"), "template"), "spec"), "containers")
+	sandboxEnvironment := literalEnvironmentLookup(t, sandboxContainer)
+	sandboxConfig, err := sandboxgatewayapp.LoadProductionConfig(sandboxEnvironment)
+	if err != nil {
+		t.Fatalf("provider-linked sandbox-gateway rejected rendered production environment: %v", err)
+	}
+	if sandboxConfig.ProviderRegion != "sg" || sandboxConfig.ProviderPSM != loaded.Document.Managed.TAE.PSM ||
+		len(sandboxConfig.WorkspaceAllowlist) != len(loaded.Document.Managed.WorkspaceAllowlist) ||
+		sandboxEnvironment("AGENTSERVER_V2_TAE_SANDBOX_IMAGE") != loaded.Document.Images.ManagedSandbox {
+		t.Fatalf("rendered sandbox-gateway authority = %+v", sandboxConfig)
+	}
+	for name, want := range map[string]string{
+		"AGENTSERVER_V2_TAE_AUTH_MODE":                        "bytecloud-app-aksk-v1",
+		"AGENTSERVER_V2_TAE_BYTECLOUD_SITE":                   "i18n-tt",
+		"AGENTSERVER_V2_TAE_BYTECLOUD_JWT_ENDPOINT":           ProductionByteCloudJWTEndpoint,
+		"AGENTSERVER_V2_TAE_PROXY_URL":                        ProductionTAEProxyURL,
+		"AGENTSERVER_V2_TAE_BYTECLOUD_ACCESS_KEY_ID_FILE":     "/var/run/agentserver/material/bytecloud-access-key-id",
+		"AGENTSERVER_V2_TAE_BYTECLOUD_SECRET_ACCESS_KEY_FILE": "/var/run/agentserver/material/bytecloud-secret-access-key",
+		"AGENTSERVER_V2_TAE_BYTECLOUD_JWT_TIMEOUT":            "5s",
+	} {
+		if got := sandboxEnvironment(name); got != want {
+			t.Fatalf("sandbox-gateway %s = %q, want %q", name, got, want)
+		}
+	}
+	for _, component := range []string{coreComponent, executorComponent, harnessComponent, egressComponent} {
+		deployment := findResource(t, runtime, "Deployment", component)
+		container := objectArrayFirst(t, objectField(t, objectField(t, objectField(t, deployment, "spec"), "template"), "spec"), "containers")
+		if literalEnvironmentOptional(t, container, "AGENTSERVER_V2_TAE_BYTECLOUD_SECRET_ACCESS_KEY_FILE") != "" {
+			t.Fatalf("ByteCloud secret key projected into non-sandbox component %s", component)
+		}
+	}
+	egressDeployment := findResource(t, runtime, "Deployment", egressComponent)
+	egressContainer := objectArrayFirst(t, objectField(t, objectField(t, objectField(t, egressDeployment, "spec"), "template"), "spec"), "containers")
+	egressEnvironment := literalEnvironmentLookup(t, egressContainer)
+	assertRenderedTAEPolicyEnvironment(t, sandboxEnvironment, egressEnvironment)
+	wantWebhookPSM := loaded.Document.Managed.TAE.Policy.WebhookPSM
+	wantWebhookURL := loaded.Document.Managed.TAE.Policy.WebhookURL
+	if sandboxEnvironment("AGENTSERVER_V2_TAE_WEBHOOK_PSM") != wantWebhookPSM ||
+		sandboxEnvironment("AGENTSERVER_V2_TAE_WEBHOOK_URL") != wantWebhookURL {
+		t.Fatalf("webhook authority was not rendered as an exclusive value: psm=%q/%q url=%q/%q",
+			sandboxEnvironment("AGENTSERVER_V2_TAE_WEBHOOK_PSM"), wantWebhookPSM,
+			sandboxEnvironment("AGENTSERVER_V2_TAE_WEBHOOK_URL"), wantWebhookURL)
+	}
+	assertManagedNetworkPolicyShape(t, foundation, loaded.Document)
 	poolContainer := objectArrayFirst(t, poolSpec, "containers")
 	poolSecurity := objectField(t, poolContainer, "securityContext")
 	if numberField(t, poolSecurity, "runAsUser") != 0 || boolField(t, poolSecurity, "runAsNonRoot") {
@@ -173,10 +434,10 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 		t.Fatal("harness runtime retained network administration capability")
 	}
 
-	if countKind(foundation, "NetworkPolicy") != 12 {
+	if countKind(foundation, "NetworkPolicy") != 15 {
 		t.Fatalf("foundation NetworkPolicy count = %d", countKind(foundation, "NetworkPolicy"))
 	}
-	if countKind(foundation, "HTTPRoute") != 6 {
+	if countKind(foundation, "HTTPRoute") != 7 {
 		t.Fatalf("foundation HTTPRoute count = %d", countKind(foundation, "HTTPRoute"))
 	}
 	for _, resource := range foundation {
@@ -196,6 +457,22 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 		[]string{"/auth/hydra/consent", "/auth/hydra/login", "/auth/oidc/callback"})
 	assertHTTPRoute(t, foundation, "agentserver-hydra-public", ProductionHydraHostname, hydraComponent, HydraPublicPort,
 		[]string{"/"})
+	assertHTTPRoute(t, foundation, "agentserver-egress-authorizer-webhook", ProductionEgressAuthorizerHostname, egressComponent,
+		loaded.Document.Services.EgressAuthorizer.Port, []string{"/v1/policy"})
+	backendTLS := findResource(t, foundation, "BackendTLSPolicy", "agentserver-egress-authorizer-backend-tls")
+	backendTLSSpec := objectField(t, backendTLS, "spec")
+	targetRef := objectArrayFirst(t, backendTLSSpec, "targetRefs")
+	if targetRef["kind"] != "Service" || targetRef["name"] != egressComponent || targetRef["sectionName"] != "https" {
+		t.Fatalf("egress BackendTLSPolicy target = %#v", targetRef)
+	}
+	validation := objectField(t, backendTLSSpec, "validation")
+	if stringField(t, validation, "hostname") != EgressInternalHost {
+		t.Fatalf("egress BackendTLSPolicy hostname = %#v", validation)
+	}
+	caRef := objectArrayFirst(t, validation, "caCertificateRefs")
+	if caRef["kind"] != "ConfigMap" || caRef["name"] != ProductionEgressBackendCAConfigMap {
+		t.Fatalf("egress BackendTLSPolicy CA ref = %#v", caRef)
+	}
 	if bytes.Contains(mustJSONResource(t, findResource(t, foundation, "HTTPRoute", "agentserver-executor-agentx")), []byte(executorgateway.ExecutorMCPPath)) {
 		t.Fatal("executor public HTTPRoute exposes /mcp")
 	}
@@ -213,11 +490,17 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 		t.Fatal("default-deny unexpectedly contains an egress allowance")
 	}
 	assertDNSPolicySupportsServiceAndPodDestinations(t, findResource(t, foundation, "NetworkPolicy", coreComponent))
-	for _, name := range []string{"hydra-migrate-egress", "agentserver-migrate-egress", "agentserver-bootstrap-egress", coreComponent, hydraComponent} {
+	for _, name := range []string{
+		"hydra-migrate-egress", "agentserver-migrate-egress", "agentserver-bootstrap-egress",
+		"agentserver-managed-environment-bootstrap-egress",
+		coreComponent, hydraComponent,
+	} {
 		assertCNPGDatabaseEgress(t, findResource(t, foundation, "NetworkPolicy", name))
 	}
 
-	for _, resources := range [][]map[string]any{foundation, hydraMigration, migration, hydraSetup, bootstrap, runtime} {
+	for _, resources := range [][]map[string]any{
+		foundation, hydraMigration, migration, hydraSetup, bootstrap, managedEnvironmentBootstrap, runtime,
+	} {
 		for _, resource := range resources {
 			if resource["kind"] != "Deployment" && resource["kind"] != "Job" {
 				continue
@@ -228,7 +511,10 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 		}
 	}
 	all := append([]byte(nil), mustBundleFile(t, bundle, foundationFile)...)
-	for _, name := range []string{hydraMigrationFile, migrationFile, hydraSetupFile, bootstrapFile, runtimeFile} {
+	for _, name := range []string{
+		hydraMigrationFile, migrationFile, hydraSetupFile, bootstrapFile,
+		managedEnvironmentBootstrapFile, runtimeFile,
+	} {
 		all = append(all, mustBundleFile(t, bundle, name)...)
 	}
 	for _, forbidden := range []string{
@@ -258,7 +544,10 @@ func TestRenderPinsLinuxAMD64Nodes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, file := range []string{hydraMigrationFile, migrationFile, hydraSetupFile, bootstrapFile, runtimeFile} {
+	for _, file := range []string{
+		hydraMigrationFile, migrationFile, hydraSetupFile, bootstrapFile,
+		managedEnvironmentBootstrapFile, runtimeFile,
+	} {
 		for _, resource := range parseKubernetesList(t, mustBundleFile(t, bundle, file)) {
 			if resource["kind"] == "Deployment" || resource["kind"] == "Job" {
 				assertProductionNodeSelector(t, resource, "amd64")
@@ -308,7 +597,10 @@ func TestRenderEmbedsExactBootstrapAndWorkerContracts(t *testing.T) {
 		t.Fatal(err)
 	}
 	if workerDocument.WorkerUID != WorkerUID || workerDocument.AppUID != AppUID || workerDocument.CodexConfigProfile != CodexConfigProfile() ||
-		workerDocument.RunManifestKeyringFile != workerMaterialPath("run-manifest-keyring.json") {
+		workerDocument.RunManifestKeyringFile != workerMaterialPath("run-manifest-keyring.json") ||
+		workerDocument.Version != 2 || workerDocument.ManagedSkill == nil ||
+		workerDocument.ManagedSkill.Path != managedLarkSkillPath ||
+		workerDocument.ManagedSkill.SHA256 != loaded.Document.Managed.Lark.SkillSHA256 {
 		t.Fatalf("worker document = %+v", workerDocument)
 	}
 	var guard networkGuardJSON
@@ -616,6 +908,27 @@ func literalEnvironmentOptional(t *testing.T, container map[string]any, name str
 	return ""
 }
 
+func literalEnvironmentLookup(t *testing.T, container map[string]any) func(string) string {
+	t.Helper()
+	values := make(map[string]string)
+	for _, raw := range arrayField(t, container, "env") {
+		environment, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatal("container environment entry is not an object")
+		}
+		name, _ := environment["name"].(string)
+		value, literal := environment["value"].(string)
+		if name == "" || !literal {
+			t.Fatalf("environment %q is not a literal value", name)
+		}
+		if _, duplicate := values[name]; duplicate {
+			t.Fatalf("environment %s is duplicated", name)
+		}
+		values[name] = value
+	}
+	return func(name string) string { return values[name] }
+}
+
 func assertPinnedImages(t *testing.T, resource map[string]any) {
 	t.Helper()
 	spec := objectField(t, resource, "spec")
@@ -727,4 +1040,232 @@ func assertCNPGDatabaseEgress(t *testing.T, resource map[string]any) {
 	if matches != 1 {
 		t.Fatalf("CNPG PostgreSQL egress rules = %d, want 1", matches)
 	}
+}
+
+func assertRenderedTAEPolicyEnvironment(t *testing.T, left, right func(string) string) {
+	t.Helper()
+	for _, name := range []string{
+		"AGENTSERVER_V2_TAE_POLICY_REVISION",
+		"AGENTSERVER_V2_TAE_POLICY_SHA256",
+		"AGENTSERVER_V2_TAE_POLICY_BINDING_SHA256",
+		"AGENTSERVER_V2_TAE_POLICY_HOST",
+		"AGENTSERVER_V2_TAE_POLICY_ACCESS",
+		"AGENTSERVER_V2_TAE_POLICY_WEBHOOK_REQUIRED",
+		"AGENTSERVER_V2_TAE_WEBHOOK_MODE",
+		"AGENTSERVER_V2_TAE_WEBHOOK_PSM",
+		"AGENTSERVER_V2_TAE_WEBHOOK_URL",
+		"AGENTSERVER_V2_TAE_WEBHOOK_PATH",
+		"AGENTSERVER_V2_TAE_POLICY_PUBLISHED",
+		"AGENTSERVER_V2_TAE_POLICY_APPROVED",
+		"AGENTSERVER_V2_TAE_POLICY_EVIDENCE_REF",
+		"AGENTSERVER_V2_TAE_NETWORK_BINDING_SHA256",
+		"AGENTSERVER_V2_TAE_NETWORK_REPORT_SHA256",
+		"AGENTSERVER_V2_TAE_NETWORK_EVIDENCE_REF",
+	} {
+		if left(name) != right(name) {
+			t.Fatalf("TAE policy environment %s differs between workloads: sandbox=%q egress=%q", name, left(name), right(name))
+		}
+	}
+	if left("AGENTSERVER_V2_TAE_POLICY_HOST") != taepolicy.PublicHost ||
+		left("AGENTSERVER_V2_TAE_POLICY_ACCESS") != taepolicy.PublicAccessWhitelist ||
+		left("AGENTSERVER_V2_TAE_WEBHOOK_PATH") != taepolicy.WebhookPath {
+		t.Fatalf("rendered TAE policy has a non-canonical public authority: host=%q access=%q path=%q",
+			left("AGENTSERVER_V2_TAE_POLICY_HOST"), left("AGENTSERVER_V2_TAE_POLICY_ACCESS"), left("AGENTSERVER_V2_TAE_WEBHOOK_PATH"))
+	}
+	switch left("AGENTSERVER_V2_TAE_WEBHOOK_MODE") {
+	case "psm":
+		if left("AGENTSERVER_V2_TAE_WEBHOOK_PSM") == "" || left("AGENTSERVER_V2_TAE_WEBHOOK_URL") != "" {
+			t.Fatalf("PSM webhook rendered with an ambiguous authority: psm=%q url=%q",
+				left("AGENTSERVER_V2_TAE_WEBHOOK_PSM"), left("AGENTSERVER_V2_TAE_WEBHOOK_URL"))
+		}
+	case "url":
+		if left("AGENTSERVER_V2_TAE_WEBHOOK_URL") == "" || left("AGENTSERVER_V2_TAE_WEBHOOK_PSM") != "" {
+			t.Fatalf("URL webhook rendered with an ambiguous authority: psm=%q url=%q",
+				left("AGENTSERVER_V2_TAE_WEBHOOK_PSM"), left("AGENTSERVER_V2_TAE_WEBHOOK_URL"))
+		}
+	default:
+		t.Fatalf("rendered unsupported TAE webhook mode %q", left("AGENTSERVER_V2_TAE_WEBHOOK_MODE"))
+	}
+}
+
+func assertManagedNetworkPolicyShape(t *testing.T, foundation []map[string]any, document ConfigDocument) {
+	t.Helper()
+	sandbox := findResource(t, foundation, "NetworkPolicy", sandboxComponent)
+	sandboxSpec := objectField(t, sandbox, "spec")
+	sandboxIngress := arrayField(t, sandboxSpec, "ingress")
+	if len(sandboxIngress) != 1 {
+		t.Fatalf("sandbox-gateway ingress rule count = %d, want 1", len(sandboxIngress))
+	}
+	ingressRule := sandboxIngress[0].(map[string]any)
+	if numberField(t, objectArrayFirst(t, ingressRule, "ports"), "port") != int(document.Services.SandboxGateway.Port) {
+		t.Fatalf("sandbox-gateway ingress port is not the service port")
+	}
+	from := arrayField(t, ingressRule, "from")
+	if len(from) != 2 {
+		t.Fatalf("sandbox-gateway ingress peer count = %d, want executor and harness-pool", len(from))
+	}
+	seenComponents := make(map[string]bool, 2)
+	for _, raw := range from {
+		peer := raw.(map[string]any)
+		labels := objectField(t, objectField(t, peer, "podSelector"), "matchLabels")
+		for _, component := range []string{executorComponent, harnessComponent} {
+			if labels["app.kubernetes.io/name"] == component {
+				seenComponents[component] = true
+			}
+		}
+	}
+	if len(seenComponents) != 2 {
+		t.Fatalf("sandbox-gateway ingress peers = %#v, want only executor-gateway and harness-pool", from)
+	}
+	assertPodPeerPresent(t, sandboxSpec, "egress", coreComponent, document.Services.Core.Port)
+	assertNamespacedPodPeerPresent(t, sandboxSpec, "egress", ProductionTAEProxyNamespace,
+		map[string]string{"app": ProductionTAEProxyPodApp}, ProductionTAEProxyPort)
+	if got := len(arrayField(t, sandboxSpec, "egress")); got != 3 {
+		t.Fatalf("sandbox-gateway egress rule count = %d, want only Core, DNS, and syd2a", got)
+	}
+	if podPeerPresent(t, sandboxSpec, "egress", egressComponent) {
+		t.Fatal("sandbox-gateway egress unexpectedly reaches egress-authorizer directly")
+	}
+
+	egress := findResource(t, foundation, "NetworkPolicy", egressComponent)
+	egressSpec := objectField(t, egress, "spec")
+	egressIngress := arrayField(t, egressSpec, "ingress")
+	wantIngressRules := 1
+	if len(document.Network.EgressAuthorizerIngress) > 0 {
+		wantIngressRules++
+	}
+	if len(egressIngress) != wantIngressRules {
+		t.Fatalf("egress-authorizer ingress rule count = %d, want %d", len(egressIngress), wantIngressRules)
+	}
+	wantCIDRs := make(map[string]bool, len(document.Network.EgressAuthorizerIngress))
+	for _, cidr := range document.Network.EgressAuthorizerIngress {
+		wantCIDRs[cidr] = true
+	}
+	seenCIDRs := make(map[string]bool, len(wantCIDRs))
+	seenGateway := false
+	for _, rawRule := range egressIngress {
+		rule := rawRule.(map[string]any)
+		if numberField(t, objectArrayFirst(t, rule, "ports"), "port") != int(document.Services.EgressAuthorizer.Port) {
+			t.Fatalf("egress-authorizer ingress port is not the service port")
+		}
+		for _, raw := range arrayField(t, rule, "from") {
+			peer := raw.(map[string]any)
+			if block, ok := peer["ipBlock"].(map[string]any); ok {
+				cidr := stringField(t, block, "cidr")
+				if !wantCIDRs[cidr] {
+					t.Fatalf("egress-authorizer ingress contains an unexpected CIDR %q", cidr)
+				}
+				seenCIDRs[cidr] = true
+				continue
+			}
+			namespace, namespaceOK := peer["namespaceSelector"].(map[string]any)
+			pod, podOK := peer["podSelector"].(map[string]any)
+			if !namespaceOK || !podOK || stringField(t, objectField(t, namespace, "matchLabels"), "kubernetes.io/metadata.name") != document.Ingress.GatewayNamespace {
+				t.Fatalf("egress-authorizer ingress contains an unexpected non-CIDR peer %#v", peer)
+			}
+			gatewayLabels := objectField(t, pod, "matchLabels")
+			for key, value := range document.Ingress.GatewayPodSelector {
+				if gatewayLabels[key] != value {
+					t.Fatalf("egress-authorizer ingress Gateway selector drift: got=%#v want=%#v", gatewayLabels, document.Ingress.GatewayPodSelector)
+				}
+			}
+			seenGateway = true
+		}
+	}
+	if len(seenCIDRs) != len(wantCIDRs) || !seenGateway {
+		t.Fatalf("egress-authorizer ingress peers missing CIDRs or Gateway: cidrs=%v gateway=%v", seenCIDRs, seenGateway)
+	}
+	assertPodPeerPresent(t, egressSpec, "egress", coreComponent, document.Services.Core.Port)
+	if got := len(arrayField(t, egressSpec, "egress")); got != 2 {
+		t.Fatalf("egress-authorizer egress rule count = %d, want only Core and DNS", got)
+	}
+}
+
+func assertPodPeerPresent(t *testing.T, spec map[string]any, field, component string, port uint16) {
+	t.Helper()
+	if !podPeerPresent(t, spec, field, component) {
+		t.Fatalf("NetworkPolicy %s is missing pod peer %s", field, component)
+	}
+	for _, rawRule := range arrayField(t, spec, field) {
+		rule := rawRule.(map[string]any)
+		if numberField(t, objectArrayFirst(t, rule, "ports"), "port") != int(port) {
+			continue
+		}
+		for _, rawPeer := range arrayField(t, rule, "to") {
+			peer := rawPeer.(map[string]any)
+			selector, ok := peer["podSelector"].(map[string]any)
+			if !ok {
+				continue
+			}
+			labels, _ := selector["matchLabels"].(map[string]any)
+			if labels["app.kubernetes.io/name"] == component {
+				return
+			}
+		}
+	}
+	t.Fatalf("NetworkPolicy %s pod peer %s is not bound to TCP port %d", field, component, port)
+}
+
+func podPeerPresent(t *testing.T, spec map[string]any, field, component string) bool {
+	t.Helper()
+	rules, ok := spec[field].([]any)
+	if !ok {
+		return false
+	}
+	for _, rawRule := range rules {
+		rule, ok := rawRule.(map[string]any)
+		if !ok {
+			continue
+		}
+		peers, _ := rule["to"].([]any)
+		for _, rawPeer := range peers {
+			peer, ok := rawPeer.(map[string]any)
+			if !ok {
+				continue
+			}
+			selector, ok := peer["podSelector"].(map[string]any)
+			if !ok {
+				continue
+			}
+			labels, _ := selector["matchLabels"].(map[string]any)
+			if labels["app.kubernetes.io/name"] == component {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func assertNamespacedPodPeerPresent(t *testing.T, spec map[string]any, field, namespace string, labels map[string]string, port uint16) {
+	t.Helper()
+	for _, rawRule := range arrayField(t, spec, field) {
+		rule := rawRule.(map[string]any)
+		if numberField(t, objectArrayFirst(t, rule, "ports"), "port") != int(port) {
+			continue
+		}
+		for _, rawPeer := range arrayField(t, rule, "to") {
+			peer := rawPeer.(map[string]any)
+			namespaceSelector, namespaceOK := peer["namespaceSelector"].(map[string]any)
+			podSelector, podOK := peer["podSelector"].(map[string]any)
+			if !namespaceOK || !podOK {
+				continue
+			}
+			namespaceLabels, _ := namespaceSelector["matchLabels"].(map[string]any)
+			podLabels, _ := podSelector["matchLabels"].(map[string]any)
+			if namespaceLabels["kubernetes.io/metadata.name"] != namespace {
+				continue
+			}
+			matches := true
+			for key, value := range labels {
+				if podLabels[key] != value {
+					matches = false
+					break
+				}
+			}
+			if matches {
+				return
+			}
+		}
+	}
+	t.Fatalf("NetworkPolicy %s is missing namespaced pod peer %s/%v on TCP port %d", field, namespace, labels, port)
 }

@@ -40,6 +40,84 @@ func TestRunRenderUsesExactClosedArgumentsAndReportsChecksums(t *testing.T) {
 	}
 }
 
+func TestRunPreparePolicyBootstrapUsesExactClosedArguments(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	called := ""
+	exitCode := run(
+		[]string{"prepare-policy-bootstrap", "--output=/absolute/bootstrap.json", "--config=/absolute/active.json"},
+		&stdout, &stderr,
+		deployCommands{preparePolicyBootstrap: func(config, output string) error {
+			called = config + "|" + output
+			return nil
+		}},
+	)
+	if exitCode != 0 || stderr.Len() != 0 || called != "/absolute/active.json|/absolute/bootstrap.json" ||
+		!strings.Contains(stdout.String(), "fail-closed bootstrap") {
+		t.Fatalf("run = %d, called %q, stdout %q, stderr %q", exitCode, called, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunActivateManagedExecutorUsesExactEvidenceArguments(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	called := ""
+	exitCode := run([]string{
+		"activate-managed-executor", "--config=/absolute/bootstrap.json", "--output=/absolute/active.json",
+		"--network-report=/absolute/sg-network-report.json",
+		"--policy-revision=lark-v2", "--policy-evidence-ref=ticket/123",
+		"--network-evidence-ref=artifact/report.json",
+	}, &stdout, &stderr, deployCommands{
+		activateManagedExecutor: func(input, output, report, revision, policyRef, networkRef string) error {
+			called = strings.Join([]string{input, output, report, revision, policyRef, networkRef}, "|")
+			return nil
+		},
+	})
+	want := strings.Join([]string{
+		"/absolute/bootstrap.json", "/absolute/active.json", "/absolute/sg-network-report.json",
+		"lark-v2", "ticket/123", "artifact/report.json",
+	}, "|")
+	if exitCode != 0 || stderr.Len() != 0 || called != want || !strings.Contains(stdout.String(), "evidence-bound active") {
+		t.Fatalf("run = %d, called %q, stdout %q, stderr %q", exitCode, called, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunLockReleasePassesExactAuthorityAndWritesOnce(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	called := []string{}
+	wantRaw := []byte("locked\n")
+	digest := strings.Repeat("a", 64)
+	arguments := []string{
+		"lock-release", "--config=/absolute/template.json", "--output=/absolute/production.json",
+		"--service-image=service@sha256:" + digest, "--harness-image=harness@sha256:" + digest,
+		"--hydra-image=hydra@sha256:" + digest, "--managed-sandbox-image=sandbox@sha256:" + digest,
+		"--lark-cli-sha256=" + digest, "--lark-skill-sha256=" + digest,
+	}
+	exitCode := run(arguments, &stdout, &stderr, deployCommands{
+		load: func(path string) (productiondeploy.LoadedConfig, error) {
+			called = append(called, "load:"+path)
+			return productiondeploy.LoadedConfig{}, nil
+		},
+		lock: func(_ productiondeploy.LoadedConfig, lock productiondeploy.ReleaseLock) ([]byte, error) {
+			called = append(called, strings.Join([]string{
+				lock.ServiceImage, lock.HarnessImage, lock.HydraImage, lock.ManagedSandboxImage,
+				lock.LarkCLISHA256, lock.LarkSkillSHA256,
+			}, ","))
+			return wantRaw, nil
+		},
+		writeLock: func(raw []byte, path string) error {
+			if !bytes.Equal(raw, wantRaw) {
+				t.Fatalf("locked bytes = %q", raw)
+			}
+			called = append(called, "write:"+path)
+			return nil
+		},
+	})
+	if exitCode != 0 || stderr.Len() != 0 || len(called) != 3 ||
+		called[0] != "load:/absolute/template.json" || called[2] != "write:/absolute/production.json" ||
+		!strings.Contains(stdout.String(), "/absolute/production.json") {
+		t.Fatalf("run = %d, calls %v, stdout %q, stderr %q", exitCode, called, stdout.String(), stderr.String())
+	}
+}
+
 func TestRunRejectsDuplicateUnknownAndMissingArguments(t *testing.T) {
 	for _, arguments := range [][]string{
 		{}, {"render"},

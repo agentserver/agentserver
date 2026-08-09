@@ -3,11 +3,128 @@
   "info": {
     "title": "agentserver v2 user resource API",
     "version": "0.1.0",
-    "description": "Platform and Browser user resources. Core requires the matching gateway workload identity and validates every original opaque user bearer through Hydra introspection, including its exact client, audience, action scopes, and workspace resource grant."
+    "description": "Platform and Browser user resources, including Core-owned workspace credential bindings. Core requires the matching gateway workload identity and validates every original opaque user bearer through Hydra introspection, including its exact client, audience, action scopes, and workspace resource grant."
   },
   "servers": [{"url": "https://agentserver-core"}],
   "security": [{"browserGatewayMTLS": [], "browserOAuth": ["runs:read"]}],
   "paths": {
+    "/v2/credential-providers": {
+      "get": {
+        "operationId": "listCredentialProviderSchemas",
+        "description": "Lists the provider schemas supported by the configured v2 Core. Schemas describe accepted secret envelopes; no credential instance or secret is returned.",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["credentials:read"]}],
+        "responses": {
+          "200": {"description": "Provider schemas", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ListWorkspaceCredentialProviderSchemasResponse"}}}},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "503": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
+    "/v2/workspaces/{workspaceId}/credentials/{kind}": {
+      "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/CredentialKind"}],
+      "get": {
+        "operationId": "listWorkspaceCredentials",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["credentials:read"]}],
+        "responses": {
+          "200": {"description": "Credential metadata", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ListWorkspaceCredentialsResponse"}}}},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"}
+        }
+      },
+      "post": {
+        "operationId": "createWorkspaceCredential",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["credentials:manage"]}],
+        "requestBody": {"required": true, "x-agentserver-maxBytes": 524288, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateWorkspaceCredentialRequest"}}}},
+        "responses": {
+          "201": {"description": "Credential binding created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CreateWorkspaceCredentialResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
+    "/v2/workspaces/{workspaceId}/credentials/{kind}/{bindingId}": {
+      "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/CredentialKind"}, {"$ref": "#/components/parameters/CredentialBindingId"}],
+      "patch": {
+        "operationId": "renameWorkspaceCredential",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["credentials:manage"]}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RenameWorkspaceCredentialRequest"}}}},
+        "responses": {
+          "200": {"description": "Credential metadata updated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RenameWorkspaceCredentialResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
+    "/v2/workspaces/{workspaceId}/credentials/{kind}/{bindingId}:rotate": {
+      "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/CredentialKind"}, {"$ref": "#/components/parameters/CredentialBindingId"}],
+      "post": {
+        "operationId": "rotateWorkspaceCredential",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["credentials:manage"]}],
+        "requestBody": {"required": true, "x-agentserver-maxBytes": 524288, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RotateWorkspaceCredentialRequest"}}}},
+        "responses": {
+          "200": {"description": "Credential binding rotated", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RotateWorkspaceCredentialResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
+    "/v2/workspaces/{workspaceId}/credentials/{kind}/{bindingId}:revoke": {
+      "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/CredentialKind"}, {"$ref": "#/components/parameters/CredentialBindingId"}],
+      "post": {
+        "operationId": "revokeWorkspaceCredential",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["credentials:manage"]}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RevokeWorkspaceCredentialRequest"}}}},
+        "responses": {
+          "200": {"description": "Credential binding revoked", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RevokeWorkspaceCredentialResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
+    "/v2/workspaces/{workspaceId}/credentials/{kind}/{bindingId}:delete": {
+      "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/CredentialKind"}, {"$ref": "#/components/parameters/CredentialBindingId"}],
+      "post": {
+        "operationId": "deleteWorkspaceCredential",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["credentials:manage"]}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeleteWorkspaceCredentialRequest"}}}},
+        "responses": {
+          "200": {"description": "Credential binding deleted", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeleteWorkspaceCredentialResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
+    "/v2/workspaces/{workspaceId}/credentials/{kind}/{bindingId}:setDefault": {
+      "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/CredentialKind"}, {"$ref": "#/components/parameters/CredentialBindingId"}],
+      "post": {
+        "operationId": "setDefaultWorkspaceCredential",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["credentials:manage"]}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SetDefaultWorkspaceCredentialRequest"}}}},
+        "responses": {
+          "200": {"description": "Credential default changed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SetDefaultWorkspaceCredentialResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
     "/v2/workspaces": {
       "get": {
         "operationId": "listWorkspaces",
@@ -517,7 +634,9 @@
           "llm-gateways:update": "Update a workspace LLM Gateway configuration",
           "llm-gateways:disable": "Disable a workspace LLM Gateway",
           "llm-gateway-grants:authorize": "Authorize the current user's third-party Gateway grant",
-          "llm-gateway-grants:revoke": "Revoke the current user's third-party Gateway grant"
+          "llm-gateway-grants:revoke": "Revoke the current user's third-party Gateway grant",
+          "credentials:read": "Read workspace credential metadata and provider schemas",
+          "credentials:manage": "Create, rotate, rename, revoke, delete, or select a workspace credential"
         }}}
       }
     },
@@ -527,6 +646,8 @@
       "GatewayId": {"name": "gatewayId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "MemberId": {"name": "memberId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "WorkspaceId": {"name": "workspaceId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
+      "CredentialKind": {"name": "kind", "in": "path", "required": true, "schema": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"}},
+      "CredentialBindingId": {"name": "bindingId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "SessionId": {"name": "sessionId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "RunId": {"name": "runId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[!-~]+$"}}
@@ -552,6 +673,111 @@
       "ListWorkspacesResponse": {
         "type": "object", "additionalProperties": false, "required": ["workspaces"],
         "properties": {"workspaces": {"type": "array", "maxItems": 256, "items": {"$ref": "#/components/schemas/WorkspaceState"}}}
+      },
+      "WorkspaceCredentialProviderSchema": {
+        "type": "object", "additionalProperties": false,
+        "required": ["kind", "displayName", "authTypes", "allowedHosts", "allowedHeaders", "secretFormat"],
+        "properties": {
+          "kind": {"type": "string", "minLength": 1, "maxLength": 128},
+          "displayName": {"type": "string", "minLength": 1, "maxLength": 256},
+          "authTypes": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string", "minLength": 1, "maxLength": 128}},
+          "allowedHosts": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string", "minLength": 1, "maxLength": 512}},
+          "allowedHeaders": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string", "minLength": 1, "maxLength": 256}},
+          "secretFormat": {"type": "string", "minLength": 1, "maxLength": 256}
+        }
+      },
+      "ListWorkspaceCredentialProviderSchemasResponse": {
+        "type": "object", "additionalProperties": false, "required": ["providers"],
+        "properties": {"providers": {"type": "array", "maxItems": 64, "items": {"$ref": "#/components/schemas/WorkspaceCredentialProviderSchema"}}}
+      },
+      "WorkspaceCredentialMetadata": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "workspaceId", "kind", "displayName", "ownerScope", "publicMetadata", "authType", "authorityVersion", "credentialVersion", "status", "isDefault"],
+        "properties": {
+          "id": {"$ref": "#/components/schemas/UUID"}, "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "kind": {"type": "string", "minLength": 1, "maxLength": 128},
+          "displayName": {"type": "string", "minLength": 1, "maxLength": 256},
+          "ownerScope": {"enum": ["workspace", "user"]}, "ownerUserId": {"$ref": "#/components/schemas/UUID"},
+          "publicMetadata": {"type": "object", "maxProperties": 64, "additionalProperties": true},
+          "authType": {"type": "string", "minLength": 1, "maxLength": 128},
+          "authorityVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "credentialVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "status": {"enum": ["active", "reauth_required", "revoked", "disabled"]},
+          "isDefault": {"type": "boolean"},
+          "accessExpiresAt": {"type": "string", "format": "date-time"},
+          "refreshExpiresAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "ListWorkspaceCredentialsResponse": {
+        "type": "object", "additionalProperties": false, "required": ["bindings"],
+        "properties": {"bindings": {"type": "array", "maxItems": 256, "items": {"$ref": "#/components/schemas/WorkspaceCredentialMetadata"}}}
+      },
+      "WorkspaceCredentialSecret": {
+        "description": "Provider-specific secret envelope. It is write-only and must never be logged, persisted by the Platform edge, or returned by Core.",
+        "oneOf": [{"type": "string", "minLength": 1, "maxLength": 524288}, {"type": "object", "maxProperties": 128, "additionalProperties": true}],
+        "writeOnly": true, "x-agentserver-sensitive": true
+      },
+      "CreateWorkspaceCredentialRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["displayName", "ownerScope", "authType", "secret", "makeDefault"],
+        "properties": {
+          "id": {"$ref": "#/components/schemas/UUID"}, "displayName": {"type": "string", "minLength": 1, "maxLength": 256},
+          "ownerScope": {"enum": ["workspace", "user"]}, "ownerUserId": {"$ref": "#/components/schemas/UUID"},
+          "authType": {"type": "string", "minLength": 1, "maxLength": 128}, "secret": {"$ref": "#/components/schemas/WorkspaceCredentialSecret"},
+          "publicMetadata": {"type": "object", "maxProperties": 64, "additionalProperties": true},
+          "accessExpiresAt": {"type": "string", "format": "date-time"}, "refreshExpiresAt": {"type": "string", "format": "date-time"},
+          "makeDefault": {"type": "boolean"}
+        }
+      },
+      "CreateWorkspaceCredentialResponse": {
+        "type": "object", "additionalProperties": false, "required": ["binding", "created"],
+        "properties": {"binding": {"$ref": "#/components/schemas/WorkspaceCredentialMetadata"}, "created": {"type": "boolean"}}
+      },
+      "RotateWorkspaceCredentialRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["expectedAuthorityVersion", "expectedCredentialVersion", "authType", "secret"],
+        "properties": {
+          "expectedAuthorityVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "expectedCredentialVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "authType": {"type": "string", "minLength": 1, "maxLength": 128}, "secret": {"$ref": "#/components/schemas/WorkspaceCredentialSecret"},
+          "accessExpiresAt": {"type": "string", "format": "date-time"}, "refreshExpiresAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "RotateWorkspaceCredentialResponse": {
+        "type": "object", "additionalProperties": false, "required": ["binding", "changed"],
+        "properties": {"binding": {"$ref": "#/components/schemas/WorkspaceCredentialMetadata"}, "changed": {"type": "boolean"}}
+      },
+      "RenameWorkspaceCredentialRequest": {
+        "type": "object", "additionalProperties": false, "required": ["displayName", "expectedAuthorityVersion"],
+        "properties": {"displayName": {"type": "string", "minLength": 1, "maxLength": 256}, "expectedAuthorityVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}}
+      },
+      "RenameWorkspaceCredentialResponse": {
+        "type": "object", "additionalProperties": false, "required": ["binding", "changed"],
+        "properties": {"binding": {"$ref": "#/components/schemas/WorkspaceCredentialMetadata"}, "changed": {"type": "boolean"}}
+      },
+      "RevokeWorkspaceCredentialRequest": {
+        "type": "object", "additionalProperties": false, "required": ["expectedAuthorityVersion"],
+        "properties": {"expectedAuthorityVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}}
+      },
+      "RevokeWorkspaceCredentialResponse": {
+        "type": "object", "additionalProperties": false, "required": ["binding", "changed"],
+        "properties": {"binding": {"$ref": "#/components/schemas/WorkspaceCredentialMetadata"}, "changed": {"type": "boolean"}}
+      },
+      "DeleteWorkspaceCredentialRequest": {
+        "type": "object", "additionalProperties": false, "required": ["expectedAuthorityVersion"],
+        "properties": {"expectedAuthorityVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}}
+      },
+      "DeleteWorkspaceCredentialResponse": {
+        "type": "object", "additionalProperties": false, "required": ["bindingId", "deleted"],
+        "properties": {"bindingId": {"$ref": "#/components/schemas/UUID"}, "deleted": {"type": "boolean"}}
+      },
+      "SetDefaultWorkspaceCredentialRequest": {
+        "type": "object", "additionalProperties": false, "required": ["expectedAuthorityVersion"],
+        "properties": {"expectedAuthorityVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}}
+      },
+      "SetDefaultWorkspaceCredentialResponse": {
+        "type": "object", "additionalProperties": false, "required": ["binding", "changed"],
+        "properties": {"binding": {"$ref": "#/components/schemas/WorkspaceCredentialMetadata"}, "changed": {"type": "boolean"}}
       },
       "CreateWorkspaceRequest": {
         "type": "object", "additionalProperties": false, "required": ["workspaceId", "name"],

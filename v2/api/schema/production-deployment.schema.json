@@ -18,13 +18,14 @@
     "spiffeTrustDomain",
     "oauth",
     "runtime",
+    "managedExecutor",
     "objectStore",
     "secrets",
     "network",
     "resources"
   ],
   "properties": {
-    "version": {"const": 1},
+    "version": {"const": 3},
     "region": {"const": "sg"},
     "namespace": {"const": "agentserver"},
     "clusterDomain": {"$ref": "#/$defs/dnsName"},
@@ -37,6 +38,7 @@
     "spiffeTrustDomain": {"const": "agentserver.byted.bps.dev"},
     "oauth": {"$ref": "#/$defs/oauth"},
     "runtime": {"$ref": "#/$defs/runtime"},
+    "managedExecutor": {"$ref": "#/$defs/managedExecutor"},
     "objectStore": {"$ref": "#/$defs/objectStore"},
     "secrets": {"$ref": "#/$defs/secrets"},
     "network": {"$ref": "#/$defs/network"},
@@ -65,6 +67,12 @@
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },
+    "optionalSha256": {
+      "anyOf": [
+        {"const": ""},
+        {"$ref": "#/$defs/sha256"}
+      ]
+    },
     "boundedText": {
       "type": "string",
       "minLength": 1,
@@ -92,27 +100,35 @@
       "maxLength": 4096,
       "pattern": "^registry-sg\\.byted\\.cs\\.ac\\.cn/ghcr/agentserver/hydra@sha256:[0-9a-f]{64}$"
     },
+    "managedSandboxImage": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^registry-sg\\.byted\\.cs\\.ac\\.cn/ghcr/agentserver/v2-managed-sandbox@sha256:[0-9a-f]{64}$"
+    },
     "images": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["service", "harness", "hydra"],
+      "required": ["service", "harness", "hydra", "managedSandbox"],
       "properties": {
         "service": {"$ref": "#/$defs/serviceImage"},
         "harness": {"$ref": "#/$defs/harnessImage"},
-        "hydra": {"$ref": "#/$defs/hydraImage"}
+        "hydra": {"$ref": "#/$defs/hydraImage"},
+        "managedSandbox": {"$ref": "#/$defs/managedSandboxImage"}
       }
     },
     "replicas": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["core", "platformGateway", "browserGateway", "harnessPool", "llmproxy", "hydra"],
+      "required": ["core", "platformGateway", "browserGateway", "harnessPool", "llmproxy", "hydra", "sandboxGateway", "egressAuthorizer"],
       "properties": {
         "core": {"type": "integer", "minimum": 2, "maximum": 32},
         "platformGateway": {"type": "integer", "minimum": 2, "maximum": 32},
         "browserGateway": {"type": "integer", "minimum": 2, "maximum": 32},
         "harnessPool": {"type": "integer", "minimum": 1, "maximum": 32},
         "llmproxy": {"type": "integer", "minimum": 2, "maximum": 32},
-        "hydra": {"type": "integer", "minimum": 2, "maximum": 32}
+        "hydra": {"type": "integer", "minimum": 2, "maximum": 32},
+        "sandboxGateway": {"type": "integer", "minimum": 2, "maximum": 32},
+        "egressAuthorizer": {"type": "integer", "minimum": 2, "maximum": 32}
       }
     },
     "ipv4": {
@@ -162,14 +178,16 @@
     "services": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["core", "platformGateway", "browserGateway", "executorGateway", "llmproxy", "hydra"],
+      "required": ["core", "platformGateway", "browserGateway", "executorGateway", "llmproxy", "hydra", "sandboxGateway", "egressAuthorizer"],
       "properties": {
         "core": {"$ref": "#/$defs/internalService"},
         "platformGateway": {"$ref": "#/$defs/publicHTTPService"},
         "browserGateway": {"$ref": "#/$defs/publicHTTPService"},
         "executorGateway": {"$ref": "#/$defs/executorService"},
         "llmproxy": {"$ref": "#/$defs/internalService"},
-        "hydra": {"$ref": "#/$defs/hydraService"}
+        "hydra": {"$ref": "#/$defs/hydraService"},
+        "sandboxGateway": {"$ref": "#/$defs/internalService"},
+        "egressAuthorizer": {"$ref": "#/$defs/internalService"}
       }
     },
     "ingress": {
@@ -303,6 +321,184 @@
       "type": "string",
       "pattern": "^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$"
     },
+    "managedEnvironmentRoot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "displayName", "description", "defaultCwd"],
+      "properties": {
+        "path": {"const": "/workspace"},
+        "displayName": {"type": "string", "minLength": 1, "maxLength": 256},
+        "description": {"type": "string", "maxLength": 2048},
+        "defaultCwd": {"type": "string", "maxLength": 4096}
+      }
+    },
+    "managedCompatibilityRuntime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["codexRelease", "codexCommit", "codexSha256"],
+      "properties": {
+        "codexRelease": {"const": "0.146.0"},
+        "codexCommit": {"const": "e363b08c9175ac1cbe5893615dd2cb9ddf95043b"},
+        "codexSha256": {"const": "2e863156ed35ecc5253b1e2f907a9143077b9f7cb51942070c61996471ff6e04"}
+      }
+    },
+    "managedEnvironment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["environmentId", "root", "compatibilityRuntime", "runtimeProfileSha256", "packSetSha256", "sandboxTtl", "activityTtl", "idleTtl"],
+      "properties": {
+        "environmentId": {"$ref": "#/$defs/uuid"},
+        "root": {"$ref": "#/$defs/managedEnvironmentRoot"},
+        "compatibilityRuntime": {"$ref": "#/$defs/managedCompatibilityRuntime"},
+        "runtimeProfileSha256": {"$ref": "#/$defs/optionalSha256"},
+        "packSetSha256": {"$ref": "#/$defs/optionalSha256"},
+        "sandboxTtl": {"$ref": "#/$defs/duration"},
+        "activityTtl": {"$ref": "#/$defs/duration"},
+        "idleTtl": {"$ref": "#/$defs/duration"}
+      }
+    },
+    "managedTAE": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["region", "psm", "policy", "networkEvidence"],
+      "properties": {
+        "region": {"const": "sg"},
+        "psm": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^ /:@]+$"},
+        "policy": {"$ref": "#/$defs/managedTAEPolicy"},
+        "networkEvidence": {"$ref": "#/$defs/managedTAENetworkEvidence"}
+      }
+    },
+    "managedTAENetworkEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "reportSha256", "bindingSha256", "evidenceRef"],
+      "properties": {
+        "version": {"type": "integer", "minimum": 0, "maximum": 1},
+        "reportSha256": {"$ref": "#/$defs/optionalSha256"},
+        "bindingSha256": {"$ref": "#/$defs/optionalSha256"},
+        "evidenceRef": {"type": "string", "maxLength": 1024}
+      }
+    },
+    "managedTAEPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version", "revision", "policySha256", "bindingSha256", "publicHost", "publicAccess",
+        "publicWebhookRequired", "webhookMode", "webhookPsm", "webhookUrl", "webhookPath",
+        "published", "approved", "evidenceRef"
+      ],
+      "properties": {
+        "version": {"const": 1},
+        "revision": {"$ref": "#/$defs/versionText"},
+        "policySha256": {"const": "d086154a58d7f805ad95ee0842a7b63020394e2ba35aa881838eec1d97d16331"},
+        "bindingSha256": {"$ref": "#/$defs/sha256"},
+        "publicHost": {"const": "open.feishu.cn"},
+        "publicAccess": {"const": "whitelist"},
+        "publicWebhookRequired": {"const": true},
+        "webhookMode": {"enum": ["psm", "url"]},
+        "webhookPsm": {"type": "string", "maxLength": 256, "pattern": "^[^ /:@]*$"},
+        "webhookUrl": {"type": "string", "maxLength": 2048},
+        "webhookPath": {"const": "/v1/policy"},
+        "published": {"type": "boolean"},
+        "approved": {"type": "boolean"},
+        "evidenceRef": {"type": "string", "maxLength": 1024}
+      }
+    },
+    "managedLark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "cliSha256", "skillSha256", "policySha256"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "cliSha256": {"$ref": "#/$defs/sha256"},
+        "skillSha256": {"$ref": "#/$defs/sha256"},
+        "policySha256": {"const": "d086154a58d7f805ad95ee0842a7b63020394e2ba35aa881838eec1d97d16331"}
+      }
+    },
+    "managedExecutor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "stage", "workspaceAllowlist", "environment", "tae", "lark"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "stage": {"enum": ["disabled", "policy-bootstrap", "active"]},
+        "workspaceAllowlist": {
+          "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/uuid"}
+        },
+        "environment": {"$ref": "#/$defs/managedEnvironment"},
+        "tae": {"$ref": "#/$defs/managedTAE"},
+        "lark": {"$ref": "#/$defs/managedLark"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]},
+          "then": {"properties": {"stage": {"enum": ["policy-bootstrap", "active"]}}},
+          "else": {"properties": {"stage": {"const": "disabled"}}}
+        },
+        {
+          "if": {"properties": {"stage": {"const": "policy-bootstrap"}}, "required": ["stage"]},
+          "then": {
+            "properties": {
+              "environment": {
+                "properties": {
+                  "runtimeProfileSha256": {"const": ""},
+                  "packSetSha256": {"const": ""}
+                }
+              },
+              "tae": {
+                "properties": {
+                  "policy": {
+                    "properties": {
+                      "published": {"const": false},
+                      "approved": {"const": false},
+                      "evidenceRef": {"const": ""}
+                    }
+                  },
+                  "networkEvidence": {
+                    "properties": {
+                      "version": {"const": 0},
+                      "reportSha256": {"const": ""},
+                      "bindingSha256": {"const": ""},
+                      "evidenceRef": {"const": ""}
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "environment": {
+                "properties": {
+                  "runtimeProfileSha256": {"$ref": "#/$defs/sha256"},
+                  "packSetSha256": {"$ref": "#/$defs/sha256"}
+                }
+              },
+              "tae": {
+                "properties": {
+                  "policy": {
+                    "properties": {
+                      "published": {"const": true},
+                      "approved": {"const": true},
+                      "evidenceRef": {"type": "string", "minLength": 1, "maxLength": 1024}
+                    }
+                  },
+                  "networkEvidence": {
+                    "properties": {
+                      "version": {"const": 1},
+                      "reportSha256": {"$ref": "#/$defs/sha256"},
+                      "bindingSha256": {"$ref": "#/$defs/sha256"},
+                      "evidenceRef": {"type": "string", "minLength": 1, "maxLength": 1024}
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
     "objectStore": {
       "type": "object",
       "additionalProperties": false,
@@ -332,7 +528,7 @@
     "secrets": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["core", "platformGateway", "browserGateway", "executorGateway", "harnessPool", "harnessWorker", "llmproxy", "objectStore", "hydra"],
+      "required": ["core", "platformGateway", "browserGateway", "executorGateway", "harnessPool", "harnessWorker", "llmproxy", "objectStore", "hydra", "sandboxGateway", "egressAuthorizer"],
       "properties": {
         "core": {"const": "agentserver-core-secrets"},
         "platformGateway": {"const": "agentserver-platform-secrets"},
@@ -342,7 +538,9 @@
         "harnessWorker": {"const": "agentserver-worker-secrets"},
         "llmproxy": {"const": "agentserver-llmproxy-secrets"},
         "objectStore": {"const": "agentserver-object-store-secrets"},
-        "hydra": {"const": "agentserver-hydra-secrets"}
+        "hydra": {"const": "agentserver-hydra-secrets"},
+        "sandboxGateway": {"const": "agentserver-sandbox-secrets"},
+        "egressAuthorizer": {"const": "agentserver-egress-secrets"}
       }
     },
     "labelSelector": {
@@ -392,10 +590,9 @@
     },
     "ingressCidrs": {
       "type": "array",
-      "minItems": 1,
       "maxItems": 64,
       "uniqueItems": true,
-      "items": {"type": "string", "minLength": 9, "maxLength": 18, "pattern": "^[0-9.]+/(?:[0-9]|[12][0-9]|3[0-2])$"}
+      "items": {"type": "string", "minLength": 5, "maxLength": 43, "pattern": "^(?:[0-9.]+/(?:[0-9]|[12][0-9]|3[0-2])|[0-9A-Fa-f:]+/(?:3[2-9]|[4-9][0-9]|1[01][0-9]|12[0-8]))$"}
     },
     "network": {
       "type": "object",
@@ -406,7 +603,10 @@
         "dnsPodSelector",
         "coreExternalEgress",
         "browserExternalEgress",
-        "harnessExternalEgress"
+        "harnessExternalEgress",
+        "sandboxExternalEgress",
+        "egressAuthorizerExternalEgress",
+        "egressAuthorizerIngress"
       ],
       "properties": {
         "dnsClusterIp": {"$ref": "#/$defs/ipv4"},
@@ -414,7 +614,10 @@
         "dnsPodSelector": {"$ref": "#/$defs/labelSelector"},
         "coreExternalEgress": {"$ref": "#/$defs/egressRules"},
         "browserExternalEgress": {"$ref": "#/$defs/optionalEgressRules"},
-        "harnessExternalEgress": {"$ref": "#/$defs/egressRules"}
+        "harnessExternalEgress": {"$ref": "#/$defs/egressRules"},
+        "sandboxExternalEgress": {"$ref": "#/$defs/optionalEgressRules"},
+        "egressAuthorizerExternalEgress": {"$ref": "#/$defs/optionalEgressRules"},
+        "egressAuthorizerIngress": {"$ref": "#/$defs/ingressCidrs"}
       }
     },
     "resourceQuantity": {
@@ -450,6 +653,8 @@
         "harnessPool",
         "llmproxy",
         "hydra",
+        "sandboxGateway",
+        "egressAuthorizer",
         "runtimeTmpfs",
         "checkpointTmpfs",
         "scratchTmpfs"
@@ -462,6 +667,8 @@
         "harnessPool": {"$ref": "#/$defs/containerResources"},
         "llmproxy": {"$ref": "#/$defs/containerResources"},
         "hydra": {"$ref": "#/$defs/containerResources"},
+        "sandboxGateway": {"$ref": "#/$defs/containerResources"},
+        "egressAuthorizer": {"$ref": "#/$defs/containerResources"},
         "runtimeTmpfs": {"$ref": "#/$defs/memoryQuantity"},
         "checkpointTmpfs": {"$ref": "#/$defs/memoryQuantity"},
         "scratchTmpfs": {"$ref": "#/$defs/memoryQuantity"}

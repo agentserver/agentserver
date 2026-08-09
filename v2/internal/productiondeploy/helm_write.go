@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-var requiredHelmChartFiles = []string{
+var requiredHelmBaseChartFiles = []string{
 	helmChartFile,
 	helmValuesFile,
 	helmValuesSchemaFile,
@@ -22,16 +22,22 @@ var requiredHelmChartFiles = []string{
 	helmMigrationTemplateFile,
 	helmHydraSetupTemplateFile,
 	helmBootstrapTemplateFile,
+	helmTAENetworkProbeTemplateFile,
 	helmRuntimeTemplateFile,
 	helmFoundationManifestFile,
 	helmHydraMigrationManifestFile,
 	helmMigrationManifestFile,
 	helmHydraSetupManifestFile,
 	helmBootstrapManifestFile,
+	helmTAENetworkProbeManifestFile,
 	helmRuntimeManifestFile,
 	helmConfigFile,
 	helmChecksumsFile,
 }
+
+var requiredHelmManagedChartFiles = append(append([]string(nil), requiredHelmBaseChartFiles...),
+	helmManagedEnvironmentTemplateFile, helmManagedEnvironmentManifestFile,
+)
 
 // WriteHelmChart atomically publishes an immutable chart directory. As with
 // WriteBundle, an exact retry is accepted and a differing destination is never
@@ -113,8 +119,6 @@ func WriteHelmChart(chart HelmChart, destination string) error {
 }
 
 func validateHelmChart(chart HelmChart) error {
-	wanted := append([]string(nil), requiredHelmChartFiles...)
-	slices.Sort(wanted)
 	actual := make([]string, 0, len(chart.Files))
 	for _, file := range chart.Files {
 		if !fs.ValidPath(file.Name) || strings.Contains(file.Name, "\\") || len(file.Content) == 0 || sha256Hex(file.Content) != file.SHA256 {
@@ -123,7 +127,11 @@ func validateHelmChart(chart HelmChart) error {
 		actual = append(actual, file.Name)
 	}
 	slices.Sort(actual)
-	if !slices.Equal(actual, wanted) {
+	base := append([]string(nil), requiredHelmBaseChartFiles...)
+	managed := append([]string(nil), requiredHelmManagedChartFiles...)
+	slices.Sort(base)
+	slices.Sort(managed)
+	if !slices.Equal(actual, base) && !slices.Equal(actual, managed) {
 		return errors.New("production Helm chart has an unexpected file set")
 	}
 	return nil

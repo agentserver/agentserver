@@ -72,7 +72,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends skopeo
+          sudo apt-get install -y --no-install-recommends make skopeo
 
       - name: Verify source before publishing
         run: |

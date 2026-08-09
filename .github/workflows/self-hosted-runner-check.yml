@@ -1,6 +1,7 @@
 name: Self-hosted Runner Check
 
 on:
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -12,10 +13,16 @@ concurrency:
 
 jobs:
   v2-check:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: k8s-sg
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends make
 
       - name: Verify runner Docker access
         run: docker version

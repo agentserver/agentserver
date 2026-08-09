@@ -19,6 +19,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends make
+
       - uses: actions/setup-go@v6
         with:
           go-version-file: v2/go.mod
@@ -42,8 +45,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install libolm
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libolm-dev
+      - name: Install build tools and libolm
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends make libolm-dev
 
       - name: Install agentx (for codexauth integration test)
         env:

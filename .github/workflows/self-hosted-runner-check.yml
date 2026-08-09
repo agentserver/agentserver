@@ -53,9 +53,19 @@ jobs:
           GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code \
             https://code.byted.org/security/zti-jwt-golang.git HEAD >/dev/null
 
-      - uses: actions/setup-node@v5
+      - uses: pnpm/action-setup@v4
         with:
-          node-version: "20"
+          version: 11.18.0
+          run_install: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: v2/.node-version
+          cache: pnpm
+          cache-dependency-path: v2/pnpm-lock.yaml
+
+      - name: Install v2 web dependencies
+        run: pnpm --dir v2 install --frozen-lockfile
 
       - name: Verify v2 module boundary and unit tests
         run: make -C v2 check

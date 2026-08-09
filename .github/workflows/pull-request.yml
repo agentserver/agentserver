@@ -1,0 +1,33 @@
+name: Pull Request CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pull-request-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  v2-check:
+    runs-on: k8s-sg
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Verify runner Docker access
+        run: docker version
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: v2/go.mod
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      - name: Verify v2 module boundary and unit tests
+        run: make -C v2 check

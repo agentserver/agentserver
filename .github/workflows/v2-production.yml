@@ -40,6 +40,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Install build and OCI copy tooling
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libatomic1 make skopeo
+
       - uses: actions/setup-go@v6
         with:
           go-version-file: v2/go.mod
@@ -89,12 +95,6 @@ jobs:
       - uses: azure/setup-helm@v4
         with:
           version: v3.18.4
-
-      - name: Install OCI copy tooling
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends make skopeo
 
       - name: Verify source before publishing
         run: |

@@ -35,7 +35,7 @@ env:
 
 jobs:
   publish-linux-amd64:
-    runs-on: ubuntu-24.04
+    runs-on: k8s-sg
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6

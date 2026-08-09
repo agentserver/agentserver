@@ -1,14 +1,13 @@
-name: Pull Request CI
+name: Self-hosted Runner Check
 
 on:
-  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: pull-request-ci-${{ github.ref }}
+  group: self-hosted-runner-check
   cancel-in-progress: true
 
 jobs:

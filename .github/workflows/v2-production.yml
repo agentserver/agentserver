@@ -35,15 +35,45 @@ env:
 
 jobs:
   publish-linux-amd64:
-    runs-on: ubuntu-24.04
+    runs-on: k8s-sg
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
 
+      - name: Install build and OCI copy tooling
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libatomic1 make skopeo
+
       - uses: actions/setup-go@v6
         with:
           go-version-file: v2/go.mod
-          cache-dependency-path: v2/go.sum
+          cache-dependency-path: |
+            v2/go.sum
+            v2/providers/tae/go.sum
+
+      - name: Configure code.byted.org read access
+        env:
+          CODE_BYTED_USERNAME: ${{ secrets.CODE_BYTED_USERNAME }}
+          CODE_BYTED_TOKEN: ${{ secrets.CODE_BYTED_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${CODE_BYTED_USERNAME}" && test -n "${CODE_BYTED_TOKEN}" || {
+            echo 'CODE_BYTED_USERNAME and CODE_BYTED_TOKEN Actions secrets are required' >&2
+            exit 1
+          }
+          credential_file="${RUNNER_TEMP}/code-byted.credentials"
+          umask 077
+          git config --global credential.helper "store --file=${credential_file}"
+          printf 'protocol=https\nhost=code.byted.org\nusername=%s\npassword=%s\n\n' \
+            "${CODE_BYTED_USERNAME}" "${CODE_BYTED_TOKEN}" | git credential approve
+          printf '%s\n' \
+            'GIT_TERMINAL_PROMPT=0' \
+            'GOPRIVATE=code.byted.org' \
+            'GONOSUMDB=code.byted.org' >>"${GITHUB_ENV}"
+          GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code \
+            https://code.byted.org/security/zti-jwt-golang.git HEAD >/dev/null
 
       - uses: pnpm/action-setup@v4
         with:
@@ -67,12 +97,6 @@ jobs:
       - uses: azure/setup-helm@v4
         with:
           version: v3.18.4
-
-      - name: Install OCI copy tooling
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends skopeo
 
       - name: Verify source before publishing
         run: |

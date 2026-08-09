@@ -15,24 +15,62 @@ permissions:
 
 jobs:
   v2-unit:
-    runs-on: ubuntu-latest
+    runs-on: k8s-sg
     steps:
       - uses: actions/checkout@v6
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends make libatomic1
 
       - uses: actions/setup-go@v6
         with:
           go-version-file: v2/go.mod
+          cache-dependency-path: |
+            v2/go.sum
+            v2/providers/tae/go.sum
 
-      - uses: actions/setup-node@v5
+      - name: Configure code.byted.org read access
+        env:
+          CODE_BYTED_USERNAME: ${{ secrets.CODE_BYTED_USERNAME }}
+          CODE_BYTED_TOKEN: ${{ secrets.CODE_BYTED_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${CODE_BYTED_USERNAME}" && test -n "${CODE_BYTED_TOKEN}" || {
+            echo 'CODE_BYTED_USERNAME and CODE_BYTED_TOKEN Actions secrets are required' >&2
+            exit 1
+          }
+          credential_file="${RUNNER_TEMP}/code-byted.credentials"
+          umask 077
+          git config --global credential.helper "store --file=${credential_file}"
+          printf 'protocol=https\nhost=code.byted.org\nusername=%s\npassword=%s\n\n' \
+            "${CODE_BYTED_USERNAME}" "${CODE_BYTED_TOKEN}" | git credential approve
+          printf '%s\n' \
+            'GIT_TERMINAL_PROMPT=0' \
+            'GOPRIVATE=code.byted.org' \
+            'GONOSUMDB=code.byted.org' >>"${GITHUB_ENV}"
+          GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code \
+            https://code.byted.org/security/zti-jwt-golang.git HEAD >/dev/null
+
+      - uses: pnpm/action-setup@v4
         with:
-          node-version: '20'
+          version: 11.18.0
+          run_install: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: v2/.node-version
+          cache: pnpm
+          cache-dependency-path: v2/pnpm-lock.yaml
+
+      - name: Install v2 web dependencies
+        run: pnpm --dir v2 install --frozen-lockfile
 
       - name: Verify v2 module boundary and unit tests
         run: make -C v2 check
 
   test:
     needs: [v2-unit]
-    runs-on: ubuntu-latest
+    runs-on: k8s-sg
     steps:
       - uses: actions/checkout@v6
         with:
@@ -42,8 +80,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install libolm
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libolm-dev
+      - name: Install build tools and libolm
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends make libolm-dev
 
       - name: Install agentx (for codexauth integration test)
         env:
@@ -100,7 +138,7 @@ jobs:
     # TEST_DATABASE_URL; otherwise t.Skip in test helpers). Broader db tests
     # have pre-existing FK-setup rot and need a separate cleanup pass before
     # they can all run in CI.
-    runs-on: ubuntu-latest
+    runs-on: k8s-sg
     services:
       postgres:
         image: postgres:15
@@ -145,7 +183,7 @@ jobs:
           go test ./internal/server/ -run '^TestMCPPAT' -count=1 -timeout 2m -v
 
   build-server:
-    runs-on: ubuntu-latest
+    runs-on: k8s-sg
     needs: [test, db-integration]
     steps:
       - uses: actions/checkout@v6
@@ -181,7 +219,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   build-opencode:
-    runs-on: ubuntu-latest
+    runs-on: k8s-sg
     needs: [test]
     steps:
       - uses: actions/checkout@v6
@@ -228,7 +266,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   build-llmproxy:
-    runs-on: ubuntu-latest
+    runs-on: k8s-sg
     needs: [test]
     steps:
       - uses: actions/checkout@v6
@@ -263,7 +301,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   build-imbridge:
-    runs-on: ubuntu-latest
+    runs-on: k8s-sg
     needs: [test]
     steps:
       - uses: actions/checkout@v6
@@ -298,7 +336,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   build-credentialproxy:
-    runs-on: ubuntu-latest
+    runs-on: k8s-sg
     needs: [test]
     steps:
       - uses: actions/checkout@v6
@@ -333,7 +371,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   build-sandboxproxy:
-    runs-on: ubuntu-latest
+    runs-on: k8s-sg
     needs: [test]
     steps:
       - uses: actions/checkout@v6
@@ -370,7 +408,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   build-claudecode:
-    runs-on: ubuntu-latest
+    runs-on: k8s-sg
     needs: [test]
     steps:
       - uses: actions/checkout@v6
@@ -405,7 +443,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   build-nanoclaw:
-    runs-on: ubuntu-latest
+    runs-on: k8s-sg
     needs: [test]
     steps:
       - uses: actions/checkout@v6
@@ -440,7 +478,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   build-codex-app-gateway:
-    runs-on: ubuntu-latest
+    runs-on: k8s-sg
     needs: [test]
     steps:
       - uses: actions/checkout@v6
@@ -475,7 +513,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   build-cc-app-gateway:
-    runs-on: ubuntu-latest
+    runs-on: k8s-sg
     needs: [test]
     steps:
       - uses: actions/checkout@v6
@@ -510,7 +548,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   build-browser-gateway:
-    runs-on: ubuntu-latest
+    runs-on: k8s-sg
     needs: [test]
     steps:
       - uses: actions/checkout@v6
@@ -543,7 +581,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
 
   integration-cc-app-gateway:
-    runs-on: ubuntu-latest
+    runs-on: k8s-sg
     needs: [build-cc-app-gateway]
     steps:
       - uses: actions/checkout@v6
@@ -563,7 +601,7 @@ jobs:
         run: go test -tags integration -v -timeout 10m ./internal/ccappgateway/...
 
   build-codex-exec-gateway:
-    runs-on: ubuntu-latest
+    runs-on: k8s-sg
     needs: [test]
     steps:
       - uses: actions/checkout@v6
@@ -598,7 +636,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   build-codex-exec-edge:
-    runs-on: ubuntu-latest
+    runs-on: k8s-sg
     needs: [test]
     steps:
       - uses: actions/checkout@v6
@@ -633,7 +671,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   build-envmcp-public-gateway:
-    runs-on: ubuntu-latest
+    runs-on: k8s-sg
     needs: [test]
     steps:
       - uses: actions/checkout@v6
@@ -668,7 +706,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   build-jupyter:
-    runs-on: ubuntu-latest
+    runs-on: k8s-sg
     needs: [test]
     steps:
       - uses: actions/checkout@v6
@@ -703,7 +741,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   publish-helm:
-    runs-on: ubuntu-latest
+    runs-on: k8s-sg
     needs: [build-server, build-opencode, build-llmproxy, build-imbridge, build-credentialproxy, build-sandboxproxy, build-nanoclaw, build-claudecode, build-cc-app-gateway, build-codex-app-gateway, build-codex-exec-gateway, build-codex-exec-edge, build-jupyter]
     steps:
       - uses: actions/checkout@v6
@@ -721,7 +759,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: k8s-sg
     needs: [build-server, build-opencode, build-llmproxy, build-imbridge, build-credentialproxy, build-sandboxproxy, build-nanoclaw, build-claudecode, build-cc-app-gateway, build-codex-app-gateway, build-codex-exec-gateway, build-codex-exec-edge, build-jupyter]
     steps:
       - uses: actions/checkout@v6

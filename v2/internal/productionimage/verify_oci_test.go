@@ -22,6 +22,37 @@ func TestOCIImageVerifierAcceptsExactTwoLayerImage(t *testing.T) {
 	}
 }
 
+func TestOCIImageVerifierAcceptsLockedManagedSandboxWorkdirLayer(t *testing.T) {
+	archive, manifest, directories, files := testOCIImageForKind(
+		t, false, testOCINestedIndex, KindManagedSandbox, nil, managedWorkdirHistory,
+	)
+	if err := verifyOCIArchive(bytes.NewReader(archive), manifest, directories, files); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOCIImageVerifierRejectsManagedSandboxWorkdirLayerWithContents(t *testing.T) {
+	archive, manifest, directories, files := testOCIImageForKind(
+		t, false, testOCINestedIndex, KindManagedSandbox,
+		[]testLayerEntry{{name: "unexpected", mode: 0o444, contents: []byte("unexpected")}},
+		managedWorkdirHistory,
+	)
+	err := verifyOCIArchive(bytes.NewReader(archive), manifest, directories, files)
+	if err == nil || !strings.Contains(err.Error(), "locked empty WORKDIR layer") {
+		t.Fatalf("managed sandbox non-empty WORKDIR layer error = %v", err)
+	}
+}
+
+func TestOCIImageVerifierRejectsManagedSandboxWithoutWorkdirHistory(t *testing.T) {
+	archive, manifest, directories, files := testOCIImageForKind(
+		t, false, testOCINestedIndex, KindManagedSandbox, nil, "RUN true",
+	)
+	err := verifyOCIArchive(bytes.NewReader(archive), manifest, directories, files)
+	if err == nil || !strings.Contains(err.Error(), "locked WORKDIR instruction") {
+		t.Fatalf("managed sandbox WORKDIR history error = %v", err)
+	}
+}
+
 func TestOCIImageVerifierRejectsUnreferencedBlob(t *testing.T) {
 	archive, manifest, directories, files := testOCIImage(t, true, testOCINestedIndex)
 	err := verifyOCIArchive(bytes.NewReader(archive), manifest, directories, files)
@@ -56,8 +87,33 @@ const (
 
 func testOCIImage(t *testing.T, extraBlob bool, layout testOCIRootLayout) ([]byte, Manifest, map[string]DirectoryEntry, map[string]FileEntry) {
 	t.Helper()
+	return testOCIImageForKind(t, extraBlob, layout, KindService, nil, "")
+}
+
+func testOCIImageForKind(
+	t *testing.T,
+	extraBlob bool,
+	layout testOCIRootLayout,
+	kind string,
+	managedWorkdirEntries []testLayerEntry,
+	managedWorkdirCreatedBy string,
+) ([]byte, Manifest, map[string]DirectoryEntry, map[string]FileEntry) {
+	t.Helper()
 	revision := strings.Repeat("a", 40)
-	manifest := Manifest{Kind: KindService, Platform: PlatformLinuxARM64, SourceRevision: revision}
+	platform := PlatformLinuxARM64
+	architecture := "arm64"
+	user := "65534:65534"
+	workingDirectory := "/"
+	title := "agentserver v2 production services"
+	description := "Closed-world service binaries for agentserver v2"
+	if kind == KindManagedSandbox {
+		platform = PlatformLinuxAMD64
+		architecture = "amd64"
+		workingDirectory = "/workspace"
+		title = "agentserver v2 managed sandbox"
+		description = "Closed-world TAE sandbox with pinned Lark CLI and skill"
+	}
+	manifest := Manifest{Kind: kind, Platform: platform, SourceRevision: revision}
 	directories := map[string]DirectoryEntry{
 		"etc": {Path: "etc", Mode: 0o555},
 		"usr": {Path: "usr", Mode: 0o555},
@@ -79,41 +135,63 @@ func testOCIImage(t *testing.T, extraBlob bool, layout testOCIRootLayout) ([]byt
 	})
 	firstLayer := testGzip(t, firstTar)
 	secondLayer := testGzip(t, secondTar)
+	layers := []ociDescriptor{
+		testOCIDescriptor(ociGzipLayerMediaType, firstLayer),
+		testOCIDescriptor(ociGzipLayerMediaType, secondLayer),
+	}
+	diffIDs := []string{
+		"sha256:" + testSHA256(firstTar),
+		"sha256:" + testSHA256(secondTar),
+	}
 	created := "2026-08-02T00:00:00Z"
+	history := []ociHistory{
+		{Created: created, CreatedBy: "ADD rootfs.tar /", Comment: "buildkit.dockerfile.v0"},
+		{Created: created, CreatedBy: "COPY ca", Comment: "buildkit.dockerfile.v0"},
+	}
+	blobs := [][]byte{firstLayer, secondLayer}
+	if kind == KindManagedSandbox {
+		workdirTar := testOCILayerTar(t, managedWorkdirEntries)
+		workdirLayer := testGzip(t, workdirTar)
+		if len(managedWorkdirEntries) == 0 {
+			if digest := "sha256:" + testSHA256(workdirLayer); digest != ociBuildkitEmptyLayer || int64(len(workdirLayer)) != ociBuildkitEmptyLayerSize {
+				t.Fatalf("test canonical empty layer = %s/%d", digest, len(workdirLayer))
+			}
+			if diffID := "sha256:" + testSHA256(workdirTar); diffID != ociEmptyTarDiffID {
+				t.Fatalf("test canonical empty layer diff ID = %s", diffID)
+			}
+		}
+		layers = append(layers, testOCIDescriptor(ociGzipLayerMediaType, workdirLayer))
+		diffIDs = append(diffIDs, "sha256:"+testSHA256(workdirTar))
+		history = append(history, ociHistory{
+			Created: created, CreatedBy: managedWorkdirCreatedBy, Comment: "buildkit.dockerfile.v0",
+		})
+		blobs = append(blobs, workdirLayer)
+	}
 	config := ociImageConfig{
-		Architecture: "arm64",
+		Architecture: architecture,
 		Config: ociRuntimeConfig{
-			User: "65534:65534", Env: []string{ociDefaultPath}, WorkingDir: "/", StopSignal: "SIGTERM",
+			User: user, Env: []string{ociDefaultPath}, WorkingDir: workingDirectory, StopSignal: "SIGTERM",
 			Labels: map[string]string{
-				"org.opencontainers.image.description": "Closed-world service binaries for agentserver v2",
+				"org.opencontainers.image.description": description,
 				"org.opencontainers.image.revision":    revision,
 				"org.opencontainers.image.source":      "https://github.com/agentserver/agentserver",
-				"org.opencontainers.image.title":       "agentserver v2 production services",
+				"org.opencontainers.image.title":       title,
 			},
 		},
 		Created: created,
-		History: []ociHistory{
-			{Created: created, CreatedBy: "ADD rootfs.tar /", Comment: "buildkit.dockerfile.v0"},
-			{Created: created, CreatedBy: "COPY ca", Comment: "buildkit.dockerfile.v0"},
-		},
-		OS: "linux",
-		RootFS: ociRootFS{Type: "layers", DiffIDs: []string{
-			"sha256:" + testSHA256(firstTar),
-			"sha256:" + testSHA256(secondTar),
-		}},
+		History: history,
+		OS:      "linux",
+		RootFS:  ociRootFS{Type: "layers", DiffIDs: diffIDs},
 	}
 	configBytes := testOCIJSON(t, config)
 	imageManifest := ociManifestDocument{
 		SchemaVersion: 2,
 		MediaType:     ociImageManifestMediaType,
 		Config:        testOCIDescriptor(ociImageConfigMediaType, configBytes),
-		Layers: []ociDescriptor{
-			testOCIDescriptor(ociGzipLayerMediaType, firstLayer),
-			testOCIDescriptor(ociGzipLayerMediaType, secondLayer),
-		},
+		Layers:        layers,
 	}
 	imageManifestBytes := testOCIJSON(t, imageManifest)
-	blobs := [][]byte{configBytes, firstLayer, secondLayer, imageManifestBytes}
+	blobs = append(blobs, configBytes, imageManifestBytes)
 	rootIndex := ociIndexDocument{SchemaVersion: 2, MediaType: ociImageLayoutMediaType}
 	switch layout {
 	case testOCINestedIndex:
@@ -124,7 +202,7 @@ func testOCIImage(t *testing.T, extraBlob bool, layout testOCIRootLayout) ([]byt
 				MediaType: ociImageManifestMediaType,
 				Digest:    "sha256:" + testSHA256(imageManifestBytes),
 				Size:      int64(len(imageManifestBytes)),
-				Platform:  &ociPlatform{Architecture: "arm64", OS: "linux"},
+				Platform:  &ociPlatform{Architecture: architecture, OS: "linux"},
 			}},
 		}
 		platformIndexBytes := testOCIJSON(t, platformIndex)
@@ -134,9 +212,13 @@ func testOCIImage(t *testing.T, extraBlob bool, layout testOCIRootLayout) ([]byt
 		descriptor := testOCIDescriptor(ociImageManifestMediaType, imageManifestBytes)
 		descriptor.Annotations = map[string]string{"org.opencontainers.image.ref.name": "example"}
 		if layout == testOCIDirectManifestWithPlatform {
-			descriptor.Platform = &ociPlatform{Architecture: "arm64", OS: "linux"}
+			descriptor.Platform = &ociPlatform{Architecture: architecture, OS: "linux"}
 		} else if layout == testOCIDirectManifestWithWrongPlatform {
-			descriptor.Platform = &ociPlatform{Architecture: "amd64", OS: "linux"}
+			wrongArchitecture := "amd64"
+			if architecture == wrongArchitecture {
+				wrongArchitecture = "arm64"
+			}
+			descriptor.Platform = &ociPlatform{Architecture: wrongArchitecture, OS: "linux"}
 		}
 		rootIndex.Manifests = []ociDescriptor{descriptor}
 	default:

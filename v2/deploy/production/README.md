@@ -4,7 +4,9 @@
   sandbox 镜像 digest、SG ClusterIP/CoreDNS、bootstrap UUID、runtime artifact、owner、平台 OIDC、
   内置 Hydra、TAE policy/proxy binding、S3 与当前 TOS egress 地址；这些环境值变化时必须重新生成和
   发布 Chart。
-- `build-images.sh`：生产发布只使用 `linux-amd64`，并逐文件验证 service/harness 镜像。
+- `build-images.sh`：生产发布只使用 `linux-amd64` 和 Apple Container `1.2.2`，并逐文件验证
+  service/harness/managed-sandbox 镜像。service/harness 固定为两层；managed-sandbox 额外只接受
+  `1.2.2` 为 `WORKDIR /workspace` 生成的 canonical 空层，所有非空文件仍属于相同 closed-world 清单。
 - `service.Containerfile`、`harness.Containerfile`、`managed-sandbox.Containerfile`：digest-pinned
   base、scratch runtime 镜像；service image 内含 provider-linked `sandbox-gateway` 和
   `egress-authorizer` binary，managed-sandbox image 只含 pinned `lark-cli`/skill runtime。

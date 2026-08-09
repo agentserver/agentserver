@@ -183,6 +183,16 @@ func (finalizer *CheckpointFinalizer) FinalizeCompletedAttempt(
 		)
 	}
 
+	var packSetDigest *[32]byte
+	packSetDigestText := ""
+	if prepared.Manifest.ToolPack != nil {
+		decoded, err := decodeClientSHA256(prepared.Manifest.ToolPack.PackSetDigest)
+		if err != nil {
+			return CommitCheckpointResult{}, fmt.Errorf("decode prepared pack-set digest: %w", err)
+		}
+		packSetDigest = &decoded
+		packSetDigestText = prepared.Manifest.ToolPack.PackSetDigest
+	}
 	manifest := checkpoint.Manifest{
 		ManifestVersion: checkpoint.CurrentManifestVersion, CanonicalizerVersion: checkpoint.Canonicalizer,
 		CheckpointID: checkpointIdentity.CheckpointID,
@@ -193,6 +203,7 @@ func (finalizer *CheckpointFinalizer) FinalizeCompletedAttempt(
 		CodexRuntimeManifestDigest: prepared.Manifest.CodexRuntimeManifestDigest,
 		CheckpointAllowlistVersion: int64(prepared.Manifest.CheckpointAllowlistVersion),
 		CatalogDigest:              prepared.Manifest.ExecutorMCP.CatalogDigest,
+		PackSetDigest:              packSetDigestText,
 		Files: []checkpoint.File{{
 			Purpose: checkpoint.RolloutPurpose, FileType: checkpoint.RegularFileType,
 			Path: terminal.RolloutLocator, Mode: checkpoint.RolloutMode,
@@ -257,6 +268,7 @@ func (finalizer *CheckpointFinalizer) FinalizeCompletedAttempt(
 			ManifestDigest: manifestDigest, CatalogDigest: prepared.FrozenCatalog.CatalogDigest,
 			Object: storedObject, CodexRuntimeManifestDigest: runtimeDigest,
 			CheckpointAllowlistVersion: int64(prepared.Manifest.CheckpointAllowlistVersion),
+			PackSetDigest:              packSetDigest,
 		},
 		Record: commitRecord,
 	}

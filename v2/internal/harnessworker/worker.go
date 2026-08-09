@@ -3,6 +3,7 @@ package harnessworker
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/checkpoint"
 	"github.com/agentserver/agentserver/v2/internal/codexwire"
@@ -69,6 +71,7 @@ type OneShotWorkerConfig struct {
 	RuntimePreparer     WorkerRuntimePreparer
 	ControlHTTPClient   *http.Client
 	ExecutorHTTPClient  *http.Client
+	BaseInstructions    string
 
 	WorkerInstanceIDGenerator WorkerInstanceIDGenerator
 	ProgressHandler           ProgressHandler
@@ -155,6 +158,10 @@ func runOneShotWorker(ctx context.Context, config OneShotWorkerConfig, dependenc
 
 	bootstrap, err := LoadBootstrap(config.BootstrapPipe, config.VerificationKeyring, config.WorkerInstanceIDGenerator)
 	config.BootstrapPipe = nil
+	if err != nil {
+		return errors.Join(err, closeUnconsumedWorkerInputs(config.PromptPipe, config.CheckpointPipe))
+	}
+	baseInstructions, err := authorizedBaseInstructions(bootstrap.Manifest, config.BaseInstructions)
 	if err != nil {
 		return errors.Join(err, closeUnconsumedWorkerInputs(config.PromptPipe, config.CheckpointPipe))
 	}
@@ -306,7 +313,7 @@ func runOneShotWorker(ctx context.Context, config OneShotWorkerConfig, dependenc
 
 	eventErr := make(chan error, 1)
 	go consumeAppServerNotifications(runCtx, runner.ConsumeEvents, runtimeEvents.HandleNotification, cancelRun, eventErr)
-	request := appServerRequest(bootstrap.Manifest, prompt, mcp.Catalog(), appRuntime, restored, config.ClientInfo)
+	request := appServerRequest(bootstrap.Manifest, prompt, baseInstructions, mcp.Catalog(), appRuntime, restored, config.ClientInfo)
 	result, runnerErr := runner.Run(runCtx, request)
 	notificationErr := <-eventErr
 
@@ -437,6 +444,11 @@ func validateOneShotWorkerConfig(ctx context.Context, config OneShotWorkerConfig
 	if config.NotificationHandler == nil {
 		return errors.New("one-shot worker notification handler is required")
 	}
+	if config.BaseInstructions != "" {
+		if len(config.BaseInstructions) > MaximumPromptBytes || !utf8.ValidString(config.BaseInstructions) || strings.ContainsRune(config.BaseInstructions, 0) {
+			return errors.New("one-shot worker base instructions are invalid or too large")
+		}
+	}
 	for label, value := range map[string]string{
 		"client name": config.ClientInfo.Name, "client title": config.ClientInfo.Title,
 		"client version": config.ClientInfo.Version,
@@ -450,6 +462,20 @@ func validateOneShotWorkerConfig(ctx context.Context, config OneShotWorkerConfig
 		return errors.New("one-shot worker dependencies are incomplete")
 	}
 	return nil
+}
+
+func authorizedBaseInstructions(manifest runmanifest.Manifest, instructions string) (string, error) {
+	if manifest.ToolPack == nil {
+		if instructions != "" {
+			return "", errors.New("worker deployment supplied base instructions without signed tool-pack authority")
+		}
+		return "", nil
+	}
+	digest := sha256.Sum256([]byte(instructions))
+	if instructions == "" || hex.EncodeToString(digest[:]) != manifest.ToolPack.SkillSHA256 {
+		return "", errors.New("worker base instructions do not match signed tool-pack skill authority")
+	}
+	return instructions, nil
 }
 
 func validatePreparedAppServerRuntime(runtime PreparedAppServerRuntime, manifest runmanifest.Manifest, restored *RestoredCheckpoint) error {
@@ -488,6 +514,7 @@ func workerRunnerOptions(manifest runmanifest.Manifest, lifecycle AppServerLifec
 func appServerRequest(
 	manifest runmanifest.Manifest,
 	prompt string,
+	baseInstructions string,
 	catalog *Catalog,
 	runtime PreparedAppServerRuntime,
 	restored *RestoredCheckpoint,
@@ -498,7 +525,9 @@ func appServerRequest(
 		ClientInfo: clientInfo, Catalog: catalog, UserText: prompt,
 	}
 	if restored == nil {
-		request.Start = &AppServerThreadStart{Model: manifest.Model.Model, CWD: runtime.ThreadCWD}
+		request.Start = &AppServerThreadStart{
+			Model: manifest.Model.Model, CWD: runtime.ThreadCWD, BaseInstructions: baseInstructions,
+		}
 		return request
 	}
 	request.Resume = &AppServerThreadResume{

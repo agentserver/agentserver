@@ -108,7 +108,7 @@ func (authenticator *ProductionExecutorMCPAuthenticator) AuthenticateExecutorMCP
 		return ExecutorMCPPrincipal{}, errors.New("Core returned inconsistent production executor MCP authority")
 	}
 	return ExecutorMCPPrincipal{
-		CapabilityID: claims.CapabilityID, WorkspaceID: claims.WorkspaceID,
+		CapabilityID: claims.CapabilityID, WorkspaceID: claims.WorkspaceID, SessionID: claims.SessionID,
 		ActorID: claims.ActorID, ExecutorID: claims.ExecutorID,
 		ToolCatalogDigest:   claims.ToolCatalogDigest,
 		MaxApprovalTTL:      time.Duration(claims.MaxApprovalTTLMillis) * time.Millisecond,

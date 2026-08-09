@@ -103,11 +103,12 @@ type PoolReporter interface {
 }
 
 type PoolConfig struct {
-	MaxConcurrentAttempts int
-	LeaseRenewInterval    time.Duration
-	IdleBackoff           time.Duration
-	FailureBackoff        time.Duration
-	CleanupTimeout        time.Duration
+	MaxConcurrentAttempts   int
+	LeaseRenewInterval      time.Duration
+	IdleBackoff             time.Duration
+	FailureBackoff          time.Duration
+	CleanupTimeout          time.Duration
+	ManagedSandboxLifecycle ManagedSandboxLifecycle
 }
 
 type Pool struct {
@@ -268,6 +269,55 @@ func (pool *Pool) processAttempt(parent context.Context, scheduled ScheduledRunA
 		return PoolFailurePrepare, pool.releaseAfterStartupFailure(parent, scheduled, failure)
 	}
 
+	var sandboxBinding *ManagedSandboxBinding
+	var sandboxStop context.CancelFunc
+	var sandboxDone chan error
+	if prepared.ManagedSandbox != nil {
+		if pool.config.ManagedSandboxLifecycle == nil {
+			err = errors.New("prepared managed run has no sandbox lifecycle client")
+		} else if prepared.ManagedSandbox.ActivityTTL <= 2*pool.config.LeaseRenewInterval {
+			err = errors.New("managed sandbox activity TTL must exceed twice the pool renewal interval")
+		} else {
+			binding, ensureErr := pool.config.ManagedSandboxLifecycle.Ensure(attemptCtx, scheduled, *prepared.ManagedSandbox)
+			if ensureErr == nil {
+				ensureErr = pool.config.ManagedSandboxLifecycle.Renew(attemptCtx, scheduled, *prepared.ManagedSandbox, binding)
+			}
+			if ensureErr == nil {
+				sandboxBinding = &binding
+				sandboxCtx, stop := context.WithCancel(parent)
+				sandboxStop = stop
+				sandboxDone = make(chan error, 1)
+				go func() {
+					sandboxDone <- pool.keepManagedSandboxActivity(sandboxCtx, cancelAttempt, scheduled, *prepared.ManagedSandbox, binding)
+				}()
+			} else {
+				err = fmt.Errorf("ensure managed sandbox activity: %w", ensureErr)
+				if binding.SandboxID != "" {
+					_ = pool.releaseManagedSandbox(scheduled, *prepared.ManagedSandbox, binding)
+				}
+			}
+		}
+		if err != nil {
+			cancelAttempt(err)
+			stopLease()
+			leaseErr := <-leaseDone
+			failure := errors.Join(err, leaseErr)
+			if parent.Err() == nil && leaseErr == nil {
+				abandoned, abandonErr := pool.abandonStoppedPreTurnAttempt(scheduled, terminalStartupFailure(err))
+				if abandonErr != nil {
+					return PoolFailureCleanup, pool.releaseAfterStartupFailure(parent, scheduled, errors.Join(failure, abandonErr))
+				}
+				if abandoned.Disposition == "cancelled" {
+					return PoolFailureCleanup, pool.completeStoppedDispatch(scheduled.Dispatch)
+				}
+				if abandoned.Disposition == "failed" {
+					return PoolFailurePrepare, errors.Join(failure, pool.completeStoppedDispatch(scheduled.Dispatch))
+				}
+			}
+			return PoolFailurePrepare, pool.releaseAfterStartupFailure(parent, scheduled, failure)
+		}
+	}
+
 	authority := &attemptLifecycleAuthority{
 		ctx: leaseCtx, scheduler: pool.scheduler, core: pool.core, identities: pool.identities,
 		prepared: prepared,
@@ -282,6 +332,13 @@ func (pool *Pool) processAttempt(parent context.Context, scheduled ScheduledRunA
 	}
 	cancelAttempt(errors.New("attempt supervisor returned"))
 	cleanupErr := authority.dispatchCleanupError()
+	if sandboxStop != nil {
+		sandboxStop()
+		cleanupErr = errors.Join(cleanupErr, <-sandboxDone)
+		if sandboxBinding != nil {
+			cleanupErr = errors.Join(cleanupErr, pool.releaseManagedSandbox(scheduled, *prepared.ManagedSandbox, *sandboxBinding))
+		}
+	}
 	stopLease()
 	leaseErr := <-leaseDone
 	latest := state.snapshot()
@@ -611,6 +668,11 @@ func validatePreparedSupervisionInput(scheduled ScheduledRunAttempt, prepared Pr
 	if prepared.Manifest.PreviousCheckpoint != nil && prepared.FrozenCatalog.ThreadID != prepared.Manifest.PreviousCheckpoint.ThreadID {
 		return errors.New("prepared resume catalog does not match the checkpoint thread")
 	}
+	if prepared.ManagedSandbox != nil {
+		if err := validateManagedSandboxLaunch(scheduled, *prepared.ManagedSandbox); err != nil {
+			return err
+		}
+	}
 	canonical, err := runmanifest.CanonicalBytes(prepared.Manifest)
 	if err != nil {
 		return err
@@ -624,6 +686,38 @@ func validatePreparedSupervisionInput(scheduled ScheduledRunAttempt, prepared Pr
 	if err != nil || len(signature) != ed25519.SignatureSize ||
 		base64.RawURLEncoding.EncodeToString(signature) != prepared.SignedManifest.Signature {
 		return errors.New("signed run manifest envelope contains a non-canonical signature")
+	}
+	return nil
+}
+
+func (pool *Pool) keepManagedSandboxActivity(
+	ctx context.Context,
+	cancelAttempt context.CancelCauseFunc,
+	scheduled ScheduledRunAttempt,
+	spec ManagedSandboxLaunchSpec,
+	binding ManagedSandboxBinding,
+) error {
+	ticker := time.NewTicker(pool.config.LeaseRenewInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if err := pool.config.ManagedSandboxLifecycle.Renew(ctx, scheduled, spec, binding); err != nil {
+				failure := fmt.Errorf("renew managed sandbox activity: %w", err)
+				cancelAttempt(failure)
+				return failure
+			}
+		}
+	}
+}
+
+func (pool *Pool) releaseManagedSandbox(scheduled ScheduledRunAttempt, spec ManagedSandboxLaunchSpec, binding ManagedSandboxBinding) error {
+	ctx, cancel := context.WithTimeout(context.Background(), pool.config.CleanupTimeout)
+	defer cancel()
+	if err := pool.config.ManagedSandboxLifecycle.Release(ctx, scheduled, spec, binding); err != nil {
+		return fmt.Errorf("release managed sandbox activity: %w", err)
 	}
 	return nil
 }

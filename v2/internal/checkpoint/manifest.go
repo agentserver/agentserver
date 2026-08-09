@@ -57,6 +57,7 @@ type Manifest struct {
 	CodexRuntimeManifestDigest string `json:"codexRuntimeManifestDigest"`
 	CheckpointAllowlistVersion int64  `json:"checkpointAllowlistVersion"`
 	CatalogDigest              string `json:"catalogDigest"`
+	PackSetDigest              string `json:"packSetDigest,omitempty"`
 	Files                      []File `json:"files"`
 }
 
@@ -88,6 +89,7 @@ type ResumeAuthority struct {
 	CodexRuntimeManifestDigest string
 	CheckpointAllowlistVersion int64
 	CatalogDigest              string
+	PackSetDigest              string
 }
 
 func (manifest Manifest) Validate() error {
@@ -123,6 +125,11 @@ func (manifest Manifest) Validate() error {
 	}
 	if err := validateDigest("catalogDigest", manifest.CatalogDigest); err != nil {
 		return err
+	}
+	if manifest.PackSetDigest != "" {
+		if err := validateDigest("packSetDigest", manifest.PackSetDigest); err != nil {
+			return err
+		}
 	}
 	if len(manifest.Files) != 1 {
 		return errors.New("checkpoint manifest must contain exactly one rollout file")
@@ -241,7 +248,8 @@ func VerifyResume(manifest Manifest, canonicalManifest []byte, authority ResumeA
 		manifest.BrainThreadID != authority.BrainThreadID || manifest.TerminalTurnID != authority.TerminalTurnID ||
 		manifest.CheckpointAllowlistVersion != authority.CheckpointAllowlistVersion ||
 		!equalDigest(manifest.CodexRuntimeManifestDigest, authority.CodexRuntimeManifestDigest) ||
-		!equalDigest(manifest.CatalogDigest, authority.CatalogDigest) {
+		!equalDigest(manifest.CatalogDigest, authority.CatalogDigest) ||
+		manifest.PackSetDigest != authority.PackSetDigest {
 		return errors.New("checkpoint manifest does not match signed resume authority")
 	}
 	return nil

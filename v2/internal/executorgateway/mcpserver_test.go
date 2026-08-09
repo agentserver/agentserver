@@ -23,6 +23,7 @@ import (
 
 const (
 	testMCPWorkspaceID = "40000000-0000-4000-8000-000000000004"
+	testMCPSessionID   = "40500000-0000-4000-8000-000000000004"
 	testMCPRunID       = "41000000-0000-4000-8000-000000000004"
 	testMCPAttemptID   = "42000000-0000-4000-8000-000000000004"
 	testMCPBearerA     = "executor-worker-test-bearer-a"
@@ -524,6 +525,7 @@ func testExecutorMCPPrincipal(capabilityID string) ExecutorMCPPrincipal {
 	return ExecutorMCPPrincipal{
 		CapabilityID:        capabilityID,
 		WorkspaceID:         testMCPWorkspaceID,
+		SessionID:           testMCPSessionID,
 		ActorID:             "44000000-0000-4000-8000-000000000004",
 		ExecutorID:          testExecutorID,
 		ToolCatalogDigest:   strings.Repeat("a", 64),

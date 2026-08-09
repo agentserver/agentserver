@@ -112,6 +112,13 @@ func serveHarnessPool(
 	if err != nil {
 		return err
 	}
+	managedSandboxLifecycle, sandboxGatewayHTTPClient, err := configureHarnessPoolManagedSandbox(config, mode)
+	if err != nil {
+		return err
+	}
+	if sandboxGatewayHTTPClient != nil {
+		defer sandboxGatewayHTTPClient.CloseIdleConnections()
+	}
 	objects, objectStoreDescription, err := configureHarnessPoolObjectStore(ctx, getenv, mode, config.objectRoot)
 	if err != nil {
 		return err
@@ -213,7 +220,8 @@ func serveHarnessPool(
 		controller, preparer, coreClient, identities, supervisor,
 		&harnessPoolFailureReporter{writer: stderr},
 		harnesspool.PoolConfig{
-			MaxConcurrentAttempts: config.maxConcurrent,
+			MaxConcurrentAttempts:   config.maxConcurrent,
+			ManagedSandboxLifecycle: managedSandboxLifecycle,
 			// Renewal is also the current phase's durable cancellation
 			// observation path. Keep it well below the minimum approval TTL so
 			// an explicit run cancellation interrupts a pending elicitation
@@ -241,8 +249,12 @@ func serveHarnessPool(
 	if mode == harnessPoolServeInsecureDevelopment {
 		authorityDescription = "INSECURE DEV capabilities"
 	}
-	fmt.Fprintf(stdout, "harness-pool serve: %s; %s; holder %s; control %s; max attempts %d\n",
-		authorityDescription, objectStoreDescription, poolInstanceID, callbackEndpoint, config.maxConcurrent)
+	managedDescription := "BYO-only"
+	if managedSandboxLifecycle != nil {
+		managedDescription = "managed sandbox lifecycle enabled"
+	}
+	fmt.Fprintf(stdout, "harness-pool serve: %s; %s; %s; holder %s; control %s; max attempts %d\n",
+		authorityDescription, objectStoreDescription, managedDescription, poolInstanceID, callbackEndpoint, config.maxConcurrent)
 	return runHarnessPoolServices(ctx, pool, controls, server, tls.NewListener(listener, controlTLS), readiness)
 }
 
@@ -308,7 +320,16 @@ func runLaunchProfile(config harnessPoolConfig, callbackEndpoint string, modelFr
 		ControllerCallbackEndpoint: callbackEndpoint,
 		ControllerCallbackIdentity: config.poolTLSIdentity,
 		ControllerCallbackAudience: developmentControlAudience,
+		ManagedSandbox:             cloneManagedSandboxProfile(config.managedSandbox),
 	}
+}
+
+func cloneManagedSandboxProfile(source *harnesspool.ManagedSandboxLaunchSpec) *harnesspool.ManagedSandboxLaunchSpec {
+	if source == nil {
+		return nil
+	}
+	copy := *source
+	return &copy
 }
 
 func runHarnessPoolServices(

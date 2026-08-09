@@ -123,6 +123,10 @@ func servePlatformGateway(ctx context.Context, getenv func(string) string, stdou
 	if err != nil {
 		return err
 	}
+	credentials, err := platformgateway.NewWorkspaceCredentialRoutes(coreURL, coreClient)
+	if err != nil {
+		return err
+	}
 	llmGateways, err := browsergateway.NewWorkspaceLLMGatewayProxy(coreURL, coreClient)
 	if err != nil {
 		return err
@@ -146,7 +150,7 @@ func servePlatformGateway(ctx context.Context, getenv func(string) string, stdou
 
 	readiness := &platformReadiness{}
 	handler, err := platformGatewayRoutes(
-		resources.Routes(), executors.Routes(), llmGateways.Routes(), authBridge.Routes(), authConfig,
+		resources.Routes(), credentials.Routes(), executors.Routes(), llmGateways.Routes(), authBridge.Routes(), authConfig,
 		browsergateway.NewLLMGatewayCallbackHandler(), web, readiness, publicOrigin, oauthOrigin,
 	)
 	if err != nil {
@@ -198,7 +202,7 @@ func validatePlatformOAuthAuthority(clientID, audience, commaSeparatedScopes str
 }
 
 func platformGatewayRoutes(
-	resources, executors, llmGateways, authBridge, authConfig, llmCallback, web http.Handler,
+	resources, credentials, executors, llmGateways, authBridge, authConfig, llmCallback, web http.Handler,
 	readiness *platformReadiness,
 	publicOrigin, authOrigin string,
 ) (http.Handler, error) {
@@ -216,6 +220,9 @@ func platformGatewayRoutes(
 	platformMux.Handle(corecontract.WorkspaceArchiveRoutePattern, resources)
 	platformMux.Handle(corecontract.WorkspaceMembersCollectionPattern, resources)
 	platformMux.Handle(corecontract.WorkspaceMemberResourceRoutePattern, resources)
+	platformMux.Handle(corecontract.WorkspaceCredentialProviderSchemasPath, credentials)
+	platformMux.Handle(corecontract.WorkspaceCredentialCollectionRoutePattern, credentials)
+	platformMux.Handle(corecontract.WorkspaceCredentialResourceRoutePattern, credentials)
 	platformMux.Handle("GET "+corecontract.ExecutorManagementRoutePattern, executors)
 	platformMux.Handle("POST "+corecontract.ExecutorManagementRoutePattern, executors)
 	platformMux.Handle("POST "+corecontract.ExecutorEnrollmentTokenRoutePattern, executors)

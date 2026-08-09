@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/execprofile"
+	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 )
 
 var registryUUIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -22,6 +23,21 @@ const MaxListEnvironmentsResultBytes = 512 * 1024
 
 type EnvironmentRegistry interface {
 	ListEnvironments(context.Context, string, string) ([]RegisteredEnvironment, error)
+}
+
+// ScopedEnvironmentRegistry adds the session/attempt authority needed to
+// project a ready managed sandbox. Legacy registries continue to implement
+// EnvironmentRegistry and therefore expose only agentx environments.
+type ScopedEnvironmentRegistry interface {
+	ListScopedEnvironments(context.Context, EnvironmentRegistryScope) ([]RegisteredEnvironment, error)
+}
+
+type EnvironmentRegistryScope struct {
+	WorkspaceID          string
+	SessionID            string
+	RunAttemptID         string
+	RunAttemptGeneration int64
+	ExecutorID           string
 }
 
 type EnvironmentSummary struct {
@@ -43,6 +59,7 @@ type ResolvedEnvironment struct {
 	DefaultCWD  string
 	DisplayName string
 	Description string
+	Target      executionbackend.Target
 }
 
 type EnvironmentResolver struct {
@@ -57,25 +74,44 @@ func NewEnvironmentResolver(registry EnvironmentRegistry) (*EnvironmentResolver,
 }
 
 func (resolver *EnvironmentResolver) List(ctx context.Context, workspaceID, executorID string) (ListEnvironmentsResult, error) {
-	return resolver.list(ctx, workspaceID, executorID, false)
+	return resolver.list(ctx, EnvironmentRegistryScope{WorkspaceID: workspaceID, ExecutorID: executorID}, false)
 }
 
 // ListProduction omits insecure-development environments while preserving
 // the same live Core registry lookup and deterministic ordering.
 func (resolver *EnvironmentResolver) ListProduction(ctx context.Context, workspaceID, executorID string) (ListEnvironmentsResult, error) {
-	return resolver.list(ctx, workspaceID, executorID, true)
+	return resolver.list(ctx, EnvironmentRegistryScope{WorkspaceID: workspaceID, ExecutorID: executorID}, true)
 }
 
-func (resolver *EnvironmentResolver) list(ctx context.Context, workspaceID, executorID string, production bool) (ListEnvironmentsResult, error) {
-	if err := validateRegistryIdentity("workspace ID", workspaceID); err != nil {
+func (resolver *EnvironmentResolver) ListForPrincipal(ctx context.Context, principal ExecutorMCPPrincipal, executorID string, production bool) (ListEnvironmentsResult, error) {
+	return resolver.list(ctx, EnvironmentRegistryScope{
+		WorkspaceID: principal.WorkspaceID, SessionID: principal.SessionID,
+		RunAttemptID: principal.Run.RunAttemptID, RunAttemptGeneration: principal.Run.RunAttemptGeneration,
+		ExecutorID: executorID,
+	}, production)
+}
+
+func (resolver *EnvironmentResolver) list(ctx context.Context, scope EnvironmentRegistryScope, production bool) (ListEnvironmentsResult, error) {
+	if err := validateRegistryIdentity("workspace ID", scope.WorkspaceID); err != nil {
 		return ListEnvironmentsResult{}, err
 	}
-	if executorID != "" {
-		if err := validateRegistryIdentity("executor ID", executorID); err != nil {
+	if scope.ExecutorID != "" {
+		if err := validateRegistryIdentity("executor ID", scope.ExecutorID); err != nil {
 			return ListEnvironmentsResult{}, err
 		}
 	}
-	registered, err := resolver.registry.ListEnvironments(ctx, workspaceID, executorID)
+	if scope.SessionID != "" || scope.RunAttemptID != "" || scope.RunAttemptGeneration != 0 {
+		if err := validateRegistryIdentity("session ID", scope.SessionID); err != nil {
+			return ListEnvironmentsResult{}, err
+		}
+		if err := validateRegistryIdentity("run attempt ID", scope.RunAttemptID); err != nil {
+			return ListEnvironmentsResult{}, err
+		}
+		if scope.RunAttemptGeneration < 1 {
+			return ListEnvironmentsResult{}, errors.New("run attempt generation must be positive for a scoped environment lookup")
+		}
+	}
+	registered, err := resolver.listRegistered(ctx, scope)
 	if err != nil {
 		return ListEnvironmentsResult{}, err
 	}
@@ -89,8 +125,8 @@ func (resolver *EnvironmentResolver) list(ctx context.Context, workspaceID, exec
 		if err != nil {
 			return ListEnvironmentsResult{}, fmt.Errorf("environment %d: %w", index, err)
 		}
-		if executorID != "" && resolved.ExecutorID != executorID {
-			return ListEnvironmentsResult{}, fmt.Errorf("environment registry returned executor %s outside requested executor %s", resolved.ExecutorID, executorID)
+		if scope.ExecutorID != "" && resolved.ExecutorID != scope.ExecutorID {
+			return ListEnvironmentsResult{}, fmt.Errorf("environment registry returned executor %s outside requested executor %s", resolved.ExecutorID, scope.ExecutorID)
 		}
 		if production && resolved.InsecureDev {
 			continue
@@ -125,13 +161,26 @@ func (resolver *EnvironmentResolver) list(ctx context.Context, workspaceID, exec
 }
 
 func (resolver *EnvironmentResolver) Resolve(ctx context.Context, workspaceID, environmentID string) (ResolvedEnvironment, error) {
+	return resolver.resolve(ctx, EnvironmentRegistryScope{WorkspaceID: workspaceID}, environmentID)
+}
+
+func (resolver *EnvironmentResolver) ResolveForPrincipal(ctx context.Context, principal ExecutorMCPPrincipal, environmentID string) (ResolvedEnvironment, error) {
+	return resolver.resolve(ctx, EnvironmentRegistryScope{
+		WorkspaceID: principal.WorkspaceID, SessionID: principal.SessionID,
+		RunAttemptID: principal.Run.RunAttemptID, RunAttemptGeneration: principal.Run.RunAttemptGeneration,
+		ExecutorID: principal.ExecutorID,
+	}, environmentID)
+}
+
+func (resolver *EnvironmentResolver) resolve(ctx context.Context, scope EnvironmentRegistryScope, environmentID string) (ResolvedEnvironment, error) {
+	workspaceID := scope.WorkspaceID
 	if err := validateRegistryIdentity("workspace ID", workspaceID); err != nil {
 		return ResolvedEnvironment{}, err
 	}
 	if err := validateRegistryIdentity("environment ID", environmentID); err != nil {
 		return ResolvedEnvironment{}, err
 	}
-	registered, err := resolver.registry.ListEnvironments(ctx, workspaceID, "")
+	registered, err := resolver.listRegistered(ctx, scope)
 	if err != nil {
 		return ResolvedEnvironment{}, err
 	}
@@ -152,7 +201,14 @@ func (resolver *EnvironmentResolver) Resolve(ctx context.Context, workspaceID, e
 	return resolveRegisteredEnvironment(*matched)
 }
 
-type localRootDescriptor struct {
+func (resolver *EnvironmentResolver) listRegistered(ctx context.Context, scope EnvironmentRegistryScope) ([]RegisteredEnvironment, error) {
+	if scoped, ok := resolver.registry.(ScopedEnvironmentRegistry); ok && scope.SessionID != "" {
+		return scoped.ListScopedEnvironments(ctx, scope)
+	}
+	return resolver.registry.ListEnvironments(ctx, scope.WorkspaceID, scope.ExecutorID)
+}
+
+type environmentRootDescriptor struct {
 	Kind        string `json:"kind"`
 	Root        string `json:"root"`
 	DisplayName string `json:"displayName,omitempty"`
@@ -167,8 +223,8 @@ func resolveRegisteredEnvironment(environment RegisteredEnvironment) (ResolvedEn
 	if err := validateRegistryIdentity("executor ID", environment.ExecutorID); err != nil {
 		return ResolvedEnvironment{}, err
 	}
-	if environment.EnvironmentVersion < 1 || environment.ConnectionGeneration < 1 {
-		return ResolvedEnvironment{}, errors.New("environment registry versions must be positive")
+	if environment.EnvironmentVersion < 1 {
+		return ResolvedEnvironment{}, errors.New("environment registry version must be positive")
 	}
 	if !supportedExecutorPlatform(environment.Platform) {
 		return ResolvedEnvironment{}, fmt.Errorf("unsupported executor platform %q", environment.Platform)
@@ -176,12 +232,23 @@ func resolveRegisteredEnvironment(environment RegisteredEnvironment) (ResolvedEn
 	if !execprofile.AllowsEnvironmentProfile(environment.OuterProfileVersion) {
 		return ResolvedEnvironment{}, fmt.Errorf("unsupported executor outer profile %q", environment.OuterProfileVersion)
 	}
-	var descriptor localRootDescriptor
+	target, err := registeredEnvironmentTarget(environment)
+	if err != nil {
+		return ResolvedEnvironment{}, err
+	}
+	var descriptor environmentRootDescriptor
 	if err := decodeRootDescriptor(environment.RootDescriptor, &descriptor); err != nil {
 		return ResolvedEnvironment{}, err
 	}
-	if descriptor.Kind != "local" {
-		return ResolvedEnvironment{}, fmt.Errorf("unsupported root descriptor kind %q", descriptor.Kind)
+	wantRootKind := "local"
+	if target.Kind == executionbackend.KindTAE {
+		wantRootKind = "managed"
+		if environment.Platform != "linux-amd64" {
+			return ResolvedEnvironment{}, errors.New("managed environments require the linux-amd64 platform")
+		}
+	}
+	if descriptor.Kind != wantRootKind {
+		return ResolvedEnvironment{}, fmt.Errorf("root descriptor kind %q does not match %s backend", descriptor.Kind, target.Kind)
 	}
 	if err := validateRegisteredRoot(environment.Platform, descriptor.Root); err != nil {
 		return ResolvedEnvironment{}, err
@@ -207,10 +274,42 @@ func resolveRegisteredEnvironment(environment RegisteredEnvironment) (ResolvedEn
 		DefaultCWD:            descriptor.DefaultCWD,
 		DisplayName:           descriptor.DisplayName,
 		Description:           descriptor.Description,
+		Target:                target,
 	}, nil
 }
 
-func decodeRootDescriptor(raw json.RawMessage, destination *localRootDescriptor) error {
+func registeredEnvironmentTarget(environment RegisteredEnvironment) (executionbackend.Target, error) {
+	kind := environment.BackendKind
+	targetID := environment.TargetID
+	generation := environment.TargetGeneration
+	if kind == "" {
+		kind = executionbackend.KindAgentX
+		targetID = environment.ExecutorID
+		generation = environment.ConnectionGeneration
+	}
+	target := executionbackend.Target{
+		Kind: kind, ID: targetID, Generation: generation,
+		EnvironmentID: environment.EnvironmentID,
+	}
+	if err := target.Validate(); err != nil {
+		return executionbackend.Target{}, fmt.Errorf("environment dispatch target: %w", err)
+	}
+	switch kind {
+	case executionbackend.KindAgentX:
+		if targetID != environment.ExecutorID || generation != environment.ConnectionGeneration {
+			return executionbackend.Target{}, errors.New("agentx environment target differs from its legacy executor projection")
+		}
+	case executionbackend.KindTAE:
+		if environment.ConnectionGeneration != 0 {
+			return executionbackend.Target{}, errors.New("managed environment carries an agentx connection generation")
+		}
+	default:
+		return executionbackend.Target{}, fmt.Errorf("unsupported environment backend kind %q", kind)
+	}
+	return target, nil
+}
+
+func decodeRootDescriptor(raw json.RawMessage, destination *environmentRootDescriptor) error {
 	if len(raw) == 0 || len(raw) > 64*1024 {
 		return errors.New("root descriptor is empty or exceeds 64 KiB")
 	}

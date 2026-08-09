@@ -136,7 +136,7 @@ func TestCoreExecutionClientRejectsInvalidOneShotPermission(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = client.BeginOperationDispatch(t.Context(), testGatewayBeginRequest())
-	if err == nil || !strings.Contains(err.Error(), "matching dispatching operation generation") {
+	if err == nil || !strings.Contains(err.Error(), "matching connection generation") {
 		t.Fatalf("invalid began response error = %v", err)
 	}
 }

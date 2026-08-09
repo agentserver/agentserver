@@ -4,6 +4,142 @@
  */
 
 export interface paths {
+    "/v2/credential-providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Lists the provider schemas supported by the configured v2 Core. Schemas describe accepted secret envelopes; no credential instance or secret is returned. */
+        get: operations["listCredentialProviderSchemas"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/workspaces/{workspaceId}/credentials/{kind}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                kind: components["parameters"]["CredentialKind"];
+            };
+            cookie?: never;
+        };
+        get: operations["listWorkspaceCredentials"];
+        put?: never;
+        post: operations["createWorkspaceCredential"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/workspaces/{workspaceId}/credentials/{kind}/{bindingId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                kind: components["parameters"]["CredentialKind"];
+                bindingId: components["parameters"]["CredentialBindingId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["renameWorkspaceCredential"];
+        trace?: never;
+    };
+    "/v2/workspaces/{workspaceId}/credentials/{kind}/{bindingId}:rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                kind: components["parameters"]["CredentialKind"];
+                bindingId: components["parameters"]["CredentialBindingId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["rotateWorkspaceCredential"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/workspaces/{workspaceId}/credentials/{kind}/{bindingId}:revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                kind: components["parameters"]["CredentialKind"];
+                bindingId: components["parameters"]["CredentialBindingId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["revokeWorkspaceCredential"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/workspaces/{workspaceId}/credentials/{kind}/{bindingId}:delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                kind: components["parameters"]["CredentialKind"];
+                bindingId: components["parameters"]["CredentialBindingId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["deleteWorkspaceCredential"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/workspaces/{workspaceId}/credentials/{kind}/{bindingId}:setDefault": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                kind: components["parameters"]["CredentialKind"];
+                bindingId: components["parameters"]["CredentialBindingId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["setDefaultWorkspaceCredential"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v2/workspaces": {
         parameters: {
             query?: never;
@@ -456,6 +592,110 @@ export interface components {
         };
         ListWorkspacesResponse: {
             workspaces: components["schemas"]["WorkspaceState"][];
+        };
+        WorkspaceCredentialProviderSchema: {
+            kind: string;
+            displayName: string;
+            authTypes: string[];
+            allowedHosts: string[];
+            allowedHeaders: string[];
+            secretFormat: string;
+        };
+        ListWorkspaceCredentialProviderSchemasResponse: {
+            providers: components["schemas"]["WorkspaceCredentialProviderSchema"][];
+        };
+        WorkspaceCredentialMetadata: {
+            id: components["schemas"]["UUID"];
+            workspaceId: components["schemas"]["UUID"];
+            kind: string;
+            displayName: string;
+            /** @enum {unknown} */
+            ownerScope: "workspace" | "user";
+            ownerUserId?: components["schemas"]["UUID"];
+            publicMetadata: {
+                [key: string]: unknown;
+            };
+            authType: string;
+            authorityVersion: number;
+            credentialVersion: number;
+            /** @enum {unknown} */
+            status: "active" | "reauth_required" | "revoked" | "disabled";
+            isDefault: boolean;
+            /** Format: date-time */
+            accessExpiresAt?: string;
+            /** Format: date-time */
+            refreshExpiresAt?: string;
+        };
+        ListWorkspaceCredentialsResponse: {
+            bindings: components["schemas"]["WorkspaceCredentialMetadata"][];
+        };
+        /** @description Provider-specific secret envelope. It is write-only and must never be logged, persisted by the Platform edge, or returned by Core. */
+        WorkspaceCredentialSecret: string | {
+            [key: string]: unknown;
+        };
+        CreateWorkspaceCredentialRequest: {
+            id?: components["schemas"]["UUID"];
+            displayName: string;
+            /** @enum {unknown} */
+            ownerScope: "workspace" | "user";
+            ownerUserId?: components["schemas"]["UUID"];
+            authType: string;
+            secret: components["schemas"]["WorkspaceCredentialSecret"];
+            publicMetadata?: {
+                [key: string]: unknown;
+            };
+            /** Format: date-time */
+            accessExpiresAt?: string;
+            /** Format: date-time */
+            refreshExpiresAt?: string;
+            makeDefault: boolean;
+        };
+        CreateWorkspaceCredentialResponse: {
+            binding: components["schemas"]["WorkspaceCredentialMetadata"];
+            created: boolean;
+        };
+        RotateWorkspaceCredentialRequest: {
+            expectedAuthorityVersion: number;
+            expectedCredentialVersion: number;
+            authType: string;
+            secret: components["schemas"]["WorkspaceCredentialSecret"];
+            /** Format: date-time */
+            accessExpiresAt?: string;
+            /** Format: date-time */
+            refreshExpiresAt?: string;
+        };
+        RotateWorkspaceCredentialResponse: {
+            binding: components["schemas"]["WorkspaceCredentialMetadata"];
+            changed: boolean;
+        };
+        RenameWorkspaceCredentialRequest: {
+            displayName: string;
+            expectedAuthorityVersion: number;
+        };
+        RenameWorkspaceCredentialResponse: {
+            binding: components["schemas"]["WorkspaceCredentialMetadata"];
+            changed: boolean;
+        };
+        RevokeWorkspaceCredentialRequest: {
+            expectedAuthorityVersion: number;
+        };
+        RevokeWorkspaceCredentialResponse: {
+            binding: components["schemas"]["WorkspaceCredentialMetadata"];
+            changed: boolean;
+        };
+        DeleteWorkspaceCredentialRequest: {
+            expectedAuthorityVersion: number;
+        };
+        DeleteWorkspaceCredentialResponse: {
+            bindingId: components["schemas"]["UUID"];
+            deleted: boolean;
+        };
+        SetDefaultWorkspaceCredentialRequest: {
+            expectedAuthorityVersion: number;
+        };
+        SetDefaultWorkspaceCredentialResponse: {
+            binding: components["schemas"]["WorkspaceCredentialMetadata"];
+            changed: boolean;
         };
         CreateWorkspaceRequest: {
             workspaceId: components["schemas"]["UUID"];
@@ -1053,6 +1293,8 @@ export interface components {
         GatewayId: components["schemas"]["UUID"];
         MemberId: components["schemas"]["UUID"];
         WorkspaceId: components["schemas"]["UUID"];
+        CredentialKind: string;
+        CredentialBindingId: components["schemas"]["UUID"];
         SessionId: components["schemas"]["UUID"];
         RunId: components["schemas"]["UUID"];
         IdempotencyKey: string;
@@ -1063,6 +1305,250 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    listCredentialProviderSchemas: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Provider schemas */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListWorkspaceCredentialProviderSchemasResponse"];
+                };
+            };
+            401: components["responses"]["PublicError"];
+            503: components["responses"]["PublicError"];
+        };
+    };
+    listWorkspaceCredentials: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                kind: components["parameters"]["CredentialKind"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Credential metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListWorkspaceCredentialsResponse"];
+                };
+            };
+            401: components["responses"]["PublicError"];
+            403: components["responses"]["PublicError"];
+            404: components["responses"]["PublicError"];
+        };
+    };
+    createWorkspaceCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                kind: components["parameters"]["CredentialKind"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateWorkspaceCredentialRequest"];
+            };
+        };
+        responses: {
+            /** @description Credential binding created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateWorkspaceCredentialResponse"];
+                };
+            };
+            400: components["responses"]["PublicError"];
+            401: components["responses"]["PublicError"];
+            403: components["responses"]["PublicError"];
+            409: components["responses"]["PublicError"];
+        };
+    };
+    renameWorkspaceCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                kind: components["parameters"]["CredentialKind"];
+                bindingId: components["parameters"]["CredentialBindingId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenameWorkspaceCredentialRequest"];
+            };
+        };
+        responses: {
+            /** @description Credential metadata updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenameWorkspaceCredentialResponse"];
+                };
+            };
+            400: components["responses"]["PublicError"];
+            401: components["responses"]["PublicError"];
+            403: components["responses"]["PublicError"];
+            404: components["responses"]["PublicError"];
+            409: components["responses"]["PublicError"];
+        };
+    };
+    rotateWorkspaceCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                kind: components["parameters"]["CredentialKind"];
+                bindingId: components["parameters"]["CredentialBindingId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RotateWorkspaceCredentialRequest"];
+            };
+        };
+        responses: {
+            /** @description Credential binding rotated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RotateWorkspaceCredentialResponse"];
+                };
+            };
+            400: components["responses"]["PublicError"];
+            401: components["responses"]["PublicError"];
+            403: components["responses"]["PublicError"];
+            404: components["responses"]["PublicError"];
+            409: components["responses"]["PublicError"];
+        };
+    };
+    revokeWorkspaceCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                kind: components["parameters"]["CredentialKind"];
+                bindingId: components["parameters"]["CredentialBindingId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RevokeWorkspaceCredentialRequest"];
+            };
+        };
+        responses: {
+            /** @description Credential binding revoked */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevokeWorkspaceCredentialResponse"];
+                };
+            };
+            400: components["responses"]["PublicError"];
+            401: components["responses"]["PublicError"];
+            403: components["responses"]["PublicError"];
+            404: components["responses"]["PublicError"];
+            409: components["responses"]["PublicError"];
+        };
+    };
+    deleteWorkspaceCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                kind: components["parameters"]["CredentialKind"];
+                bindingId: components["parameters"]["CredentialBindingId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteWorkspaceCredentialRequest"];
+            };
+        };
+        responses: {
+            /** @description Credential binding deleted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteWorkspaceCredentialResponse"];
+                };
+            };
+            400: components["responses"]["PublicError"];
+            401: components["responses"]["PublicError"];
+            403: components["responses"]["PublicError"];
+            404: components["responses"]["PublicError"];
+            409: components["responses"]["PublicError"];
+        };
+    };
+    setDefaultWorkspaceCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                kind: components["parameters"]["CredentialKind"];
+                bindingId: components["parameters"]["CredentialBindingId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetDefaultWorkspaceCredentialRequest"];
+            };
+        };
+        responses: {
+            /** @description Credential default changed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SetDefaultWorkspaceCredentialResponse"];
+                };
+            };
+            400: components["responses"]["PublicError"];
+            401: components["responses"]["PublicError"];
+            403: components["responses"]["PublicError"];
+            404: components["responses"]["PublicError"];
+            409: components["responses"]["PublicError"];
+        };
+    };
     listWorkspaces: {
         parameters: {
             query?: never;

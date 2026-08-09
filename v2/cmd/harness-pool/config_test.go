@@ -20,8 +20,88 @@ func TestLoadHarnessPoolDevelopmentConfig(t *testing.T) {
 		config.workerDigest == "" || config.maxConcurrent != defaultPoolMaxConcurrent ||
 		config.maxRunDuration != defaultMaxRunDuration || config.maxApprovalTTL != defaultMaxApprovalTTL || config.allowlistVersion != 1 ||
 		config.appCredential.UID != 65532 || config.appCredential.GID != 65532 ||
-		config.workerCredential != nil || config.capabilityCodec == nil {
+		config.workerCredential != nil || config.capabilityCodec == nil || config.managedSandbox != nil {
 		t.Fatalf("loaded development config = %+v", config)
+	}
+}
+
+func TestLoadHarnessPoolDevelopmentConfigEnablesManagedSandboxExactly(t *testing.T) {
+	configuration := validHarnessPoolConfiguration(t)
+	addValidManagedSandboxConfiguration(t, configuration, false)
+	config, err := loadHarnessPoolDevelopmentConfig(func(name string) string { return configuration[name] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.managedSandbox == nil ||
+		config.managedSandbox.EnvironmentID != configuration[poolManagedEnvironmentIDEnvironment] ||
+		config.managedSandbox.RuntimeProfileDigest != configuration[poolManagedRuntimeDigestEnvironment] ||
+		config.managedSandbox.PackSetDigest != configuration[poolManagedPackSetDigestEnvironment] ||
+		config.managedSandbox.SandboxTTL != 30*time.Minute || config.managedSandbox.ActivityTTL != 45*time.Second ||
+		config.sandboxGatewayURL != "http://127.0.0.1:9876" || config.sandboxCapabilityIssuer != "harness-pool-test" {
+		t.Fatalf("managed development config = %+v", config)
+	}
+	profile := runLaunchProfile(config, "https://127.0.0.1:9999/internal/v2/harness-control", false)
+	if profile.ManagedSandbox == nil || profile.ManagedSandbox == config.managedSandbox || *profile.ManagedSandbox != *config.managedSandbox {
+		t.Fatalf("managed launch profile = %+v", profile.ManagedSandbox)
+	}
+}
+
+func TestLoadHarnessPoolProductionConfigEnablesManagedSandboxOverTLS(t *testing.T) {
+	configuration := validHarnessPoolProductionConfiguration(t)
+	addValidManagedSandboxConfiguration(t, configuration, true)
+	config, err := loadHarnessPoolProductionConfig(func(name string) string { return configuration[name] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.managedSandbox == nil || config.sandboxGatewayURL != "https://sandbox-gateway.internal" ||
+		config.sandboxGatewayCA == "" || config.sandboxGatewayServer != "sandbox-gateway.internal" {
+		t.Fatalf("managed production config = %+v", config)
+	}
+}
+
+func TestLoadHarnessPoolManagedSandboxConfigRejectsPartialAndUnsafeValues(t *testing.T) {
+	for name, mutation := range map[string]func(map[string]string){
+		"partial": func(config map[string]string) {
+			config[poolManagedEnvironmentIDEnvironment] = "22000000-0000-4000-8000-000000000002"
+		},
+		"non-loopback-cleartext": func(config map[string]string) {
+			addValidManagedSandboxConfiguration(t, config, false)
+			config[poolSandboxGatewayURLEnvironment] = "http://sandbox-gateway.internal"
+		},
+		"credentials-in-url": func(config map[string]string) {
+			addValidManagedSandboxConfiguration(t, config, false)
+			config[poolSandboxGatewayURLEnvironment] = "http://user@127.0.0.1:9876"
+		},
+		"bad-runtime-digest": func(config map[string]string) {
+			addValidManagedSandboxConfiguration(t, config, false)
+			config[poolManagedRuntimeDigestEnvironment] = strings.Repeat("A", 64)
+		},
+		"activity-too-short": func(config map[string]string) {
+			addValidManagedSandboxConfiguration(t, config, false)
+			config[poolManagedActivityTTLEnvironment] = "2s"
+		},
+		"activity-over-sandbox": func(config map[string]string) {
+			addValidManagedSandboxConfiguration(t, config, false)
+			config[poolManagedActivityTTLEnvironment] = "31m"
+		},
+		"cleartext-with-tls-settings": func(config map[string]string) {
+			addValidManagedSandboxConfiguration(t, config, false)
+			config[poolSandboxGatewayCAEnvironment] = "/tmp/unused-ca.pem"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			configuration := validHarnessPoolConfiguration(t)
+			mutation(configuration)
+			if _, err := loadHarnessPoolDevelopmentConfig(func(name string) string { return configuration[name] }); err == nil {
+				t.Fatal("unsafe managed sandbox configuration was accepted")
+			}
+		})
+	}
+
+	production := validHarnessPoolProductionConfiguration(t)
+	addValidManagedSandboxConfiguration(t, production, false)
+	if _, err := loadHarnessPoolProductionConfig(func(name string) string { return production[name] }); err == nil {
+		t.Fatal("production accepted cleartext sandbox-gateway")
 	}
 }
 
@@ -201,6 +281,25 @@ func validHarnessPoolProductionConfiguration(t *testing.T) map[string]string {
 	delete(configuration, poolDevRunCapabilityKeyEnvironment)
 	delete(configuration, poolDevObjectRootEnvironment)
 	return configuration
+}
+
+func addValidManagedSandboxConfiguration(t *testing.T, configuration map[string]string, production bool) {
+	t.Helper()
+	configuration[poolManagedEnvironmentIDEnvironment] = "22000000-0000-4000-8000-000000000002"
+	configuration[poolManagedRuntimeDigestEnvironment] = strings.Repeat("b", 64)
+	configuration[poolManagedPackSetDigestEnvironment] = strings.Repeat("c", 64)
+	configuration[poolManagedSkillDigestEnvironment] = strings.Repeat("d", 64)
+	configuration[poolManagedSandboxTTLEnvironment] = "30m"
+	configuration[poolManagedActivityTTLEnvironment] = "45s"
+	configuration[poolSandboxGatewayURLEnvironment] = "http://127.0.0.1:9876"
+	configuration[poolSandboxCapabilityIssuerEnvironment] = "harness-pool-test"
+	configuration[poolSandboxCapabilityKeyIDEnvironment] = "lifecycle-key-1"
+	configuration[poolSandboxCapabilityKeyEnvironment] = filepath.Join(t.TempDir(), "lifecycle.key")
+	if production {
+		configuration[poolSandboxGatewayURLEnvironment] = "https://sandbox-gateway.internal"
+		configuration[poolSandboxGatewayCAEnvironment] = filepath.Join(t.TempDir(), "sandbox-ca.pem")
+		configuration[poolSandboxGatewayServerEnvironment] = "sandbox-gateway.internal"
+	}
 }
 
 func bytesRepeat(value byte, count int) []byte {

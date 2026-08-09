@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/agentserver/agentserver/v2/internal/productiondeploy"
 	"github.com/agentserver/agentserver/v2/internal/productionimage"
 )
 
@@ -29,6 +30,8 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 		err = runPrepare(arguments[1:], stdout, stderr)
 	case "verify-oci":
 		err = runVerifyOCI(arguments[1:], stdout, stderr)
+	case "verify-managed-release":
+		err = runVerifyManagedRelease(arguments[1:], stdout, stderr)
 	case "verify-tar":
 		err = runVerifyTar(arguments[1:], stdout, stderr)
 	default:
@@ -40,6 +43,76 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func runVerifyManagedRelease(arguments []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("verify-managed-release", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	var configPath, manifestPath, archivePath, harnessManifestPath, harnessArchivePath string
+	flags.StringVar(&configPath, "config", "", "validated production deployment config")
+	flags.StringVar(&manifestPath, "manifest", "", "external managed-sandbox image manifest")
+	flags.StringVar(&archivePath, "archive", "", "saved managed-sandbox OCI image archive")
+	flags.StringVar(&harnessManifestPath, "harness-manifest", "", "external harness image manifest")
+	flags.StringVar(&harnessArchivePath, "harness-archive", "", "saved harness OCI image archive")
+	if err := flags.Parse(arguments); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("verify-managed-release accepts no positional arguments")
+	}
+	config, err := productiondeploy.LoadConfig(configPath)
+	if err != nil {
+		return err
+	}
+	if !config.Document.Managed.Enabled {
+		return errors.New("production deployment has managed executor disabled")
+	}
+	harnessManifest, harnessEvidence, err := loadVerifiedReleaseImage("harness", harnessManifestPath, harnessArchivePath)
+	if err != nil {
+		return err
+	}
+	managedManifest, managedEvidence, err := loadVerifiedReleaseImage("managed-sandbox", manifestPath, archivePath)
+	if err != nil {
+		return err
+	}
+	document := config.Document
+	if err := productionimage.VerifyManagedReleaseLock(productionimage.ManagedReleaseArtifacts{
+		HarnessManifest: harnessManifest, HarnessEvidence: harnessEvidence,
+		ManagedSandboxManifest: managedManifest, ManagedSandboxEvidence: managedEvidence,
+	}, productionimage.ManagedReleaseLock{
+		Platform: document.Platform, HarnessImage: document.Images.Harness,
+		ManagedSandboxImage: document.Images.ManagedSandbox,
+		CLISHA256:           document.Managed.Lark.CLISHA256, SkillSHA256: document.Managed.Lark.SkillSHA256,
+	}); err != nil {
+		return err
+	}
+	fmt.Fprintf(
+		stdout,
+		"agentserver-image verify-managed-release: %s verified; harness=%s managed-sandbox=%s\n",
+		managedManifest.Platform, harnessEvidence.ImageManifestDigest, managedEvidence.ImageManifestDigest,
+	)
+	return nil
+}
+
+func loadVerifiedReleaseImage(label, manifestPath, archivePath string) (productionimage.Manifest, productionimage.OCIImageEvidence, error) {
+	manifestBytes, err := readDirectFile(label+" image manifest", manifestPath, maximumImageManifestBytes)
+	if err != nil {
+		return productionimage.Manifest{}, productionimage.OCIImageEvidence{}, err
+	}
+	manifest, err := productionimage.ParseManifest(manifestBytes)
+	if err != nil {
+		return productionimage.Manifest{}, productionimage.OCIImageEvidence{}, err
+	}
+	archive, err := openDirectFile(label+" OCI archive", archivePath)
+	if err != nil {
+		return productionimage.Manifest{}, productionimage.OCIImageEvidence{}, err
+	}
+	evidence, verifyErr := productionimage.VerifyImageOCIWithEvidence(archive, manifestBytes)
+	closeErr := archive.Close()
+	if verifyErr != nil || closeErr != nil {
+		return productionimage.Manifest{}, productionimage.OCIImageEvidence{}, errors.Join(verifyErr, closeErr)
+	}
+	return manifest, evidence, nil
 }
 
 func runVerifyOCI(arguments []string, stdout, stderr io.Writer) error {
@@ -62,7 +135,7 @@ func runVerifyOCI(arguments []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	verifyErr := productionimage.VerifyImageOCI(archive, manifest)
+	evidence, verifyErr := productionimage.VerifyImageOCIWithEvidence(archive, manifest)
 	closeErr := archive.Close()
 	if verifyErr != nil || closeErr != nil {
 		return errors.Join(verifyErr, closeErr)
@@ -71,7 +144,10 @@ func runVerifyOCI(arguments []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "agentserver-image verify-oci: %s %s image verified\n", parsed.Kind, parsed.Platform)
+	fmt.Fprintf(
+		stdout, "agentserver-image verify-oci: %s %s image verified; digest=%s\n",
+		parsed.Kind, parsed.Platform, evidence.ImageManifestDigest,
+	)
 	return nil
 }
 
@@ -86,6 +162,7 @@ func runPrepare(arguments []string, stdout, stderr io.Writer) error {
 	flags.StringVar(&config.CodexExecutable, "codex", "", "pinned stock Codex artifact")
 	flags.StringVar(&config.BwrapExecutable, "bwrap", "", "pinned stock bwrap artifact")
 	flags.StringVar(&config.RequirementsFile, "requirements", "", "reviewed Codex system requirements")
+	flags.StringVar(&config.LarkSkillFile, "lark-skill", "", "reviewed managed Lark skill")
 	flags.StringVar(&config.OutputDirectory, "output", "", "new image payload directory")
 	if err := flags.Parse(arguments); err != nil {
 		return err
@@ -189,7 +266,9 @@ func writeUsage(writer io.Writer) {
 		return
 	}
 	fmt.Fprintln(writer, "usage: agentserver-image prepare --kind=service --platform=linux-amd64|linux-arm64 --source-revision=GIT_SHA --binary-dir=/absolute/path --output=/absolute/new-directory")
-	fmt.Fprintln(writer, "       agentserver-image prepare --kind=harness --platform=linux-amd64|linux-arm64 --source-revision=GIT_SHA --binary-dir=/absolute/path --codex=/absolute/path --bwrap=/absolute/path --requirements=/absolute/path --output=/absolute/new-directory")
+	fmt.Fprintln(writer, "       agentserver-image prepare --kind=harness --platform=linux-amd64|linux-arm64 --source-revision=GIT_SHA --binary-dir=/absolute/path --codex=/absolute/path --bwrap=/absolute/path --requirements=/absolute/path --lark-skill=/absolute/SKILL.md --output=/absolute/new-directory")
+	fmt.Fprintln(writer, "       agentserver-image prepare --kind=managed-sandbox --platform=linux-amd64 --source-revision=GIT_SHA --binary-dir=/absolute/path --lark-skill=/absolute/SKILL.md --output=/absolute/new-directory")
 	fmt.Fprintln(writer, "       agentserver-image verify-oci --manifest=/absolute/image-manifest.json --archive=/absolute/image.oci.tar")
+	fmt.Fprintln(writer, "       agentserver-image verify-managed-release --config=/absolute/production-config.json --harness-manifest=/absolute/harness-image-manifest.json --harness-archive=/absolute/harness-image.oci.tar --manifest=/absolute/managed-sandbox-image-manifest.json --archive=/absolute/managed-sandbox-image.oci.tar")
 	fmt.Fprintln(writer, "       agentserver-image verify-tar --manifest=/absolute/image-manifest.json --tar=/absolute/rootfs.tar")
 }

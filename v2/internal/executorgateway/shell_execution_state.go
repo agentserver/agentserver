@@ -37,6 +37,9 @@ func newShellExecutionState(authority ExecutionAuthority, transitions *Execution
 	if plan.Start.OperationID == "" || plan.Timeout.OperationID == "" || plan.Start.OperationID == plan.Timeout.OperationID {
 		return nil, errors.New("shell plan has invalid operation identities")
 	}
+	if _, err := executionTarget(plan.Environment); err != nil {
+		return nil, err
+	}
 	return &shellExecutionState{
 		authority: authority, transitions: transitions, principal: principal, plan: plan,
 		operations: make(map[string]ExecutionOperationState, 2),
@@ -70,8 +73,9 @@ func (state *shellExecutionState) PrepareExecution(ctx context.Context) (Executi
 		ExpectedRunVersion:        state.principal.Run.ExpectedRunVersion,
 		ExpectedRunAttemptVersion: state.principal.Run.ExpectedRunAttemptVersion,
 		AppServerToolCallID:       state.plan.ToolCallID,
-		ExecutorID:                state.plan.Environment.ExecutorID,
+		ExecutorID:                coreExecutorID(state.plan.Environment),
 		EnvironmentID:             state.plan.Environment.EnvironmentID,
+		Target:                    state.plan.Environment.Target,
 		ToolName:                  mcpcontract.ToolShell,
 		ToolVersion:               mcpcontract.Version,
 		MapperVersion:             "shell-v1",
@@ -167,10 +171,15 @@ func (state *shellExecutionState) BeginOperationDispatch(ctx context.Context, re
 	state.mu.Lock()
 	defer state.mu.Unlock()
 	operation := state.plan.Timeout
+	target := state.plan.Environment.Target
+	requestTarget := request.Target
+	if requestTarget.Kind == "" && target.Kind == "agentx" {
+		requestTarget = target
+	}
 	if request.OperationID != operation.OperationID || request.ExecutionID != state.plan.Start.Routing.ExecutionID ||
 		request.RunID != state.principal.Run.RunID || request.RunAttemptID != state.principal.Run.RunAttemptID ||
 		request.HolderID != state.principal.Run.HolderID || request.RunAttemptGeneration != state.principal.Run.RunAttemptGeneration ||
-		request.ConnectionGeneration != state.plan.Environment.ConnectionGeneration ||
+		request.ConnectionGeneration != targetConnectionGeneration(target) || requestTarget != target ||
 		!bytes.Equal(request.PolicyContext, state.plan.PolicyContext) || !bytes.Equal(request.OperationPlan, state.plan.OperationPlan) ||
 		!bytes.Equal(request.Params, operation.Params) {
 		return BeginOperationDispatchResult{}, errors.New("timeout dispatch request differs from the frozen shell plan")
@@ -194,7 +203,8 @@ func (state *shellExecutionState) beginOperationLocked(ctx context.Context, oper
 		RunAttemptID:             state.principal.Run.RunAttemptID,
 		HolderID:                 state.principal.Run.HolderID,
 		RunAttemptGeneration:     state.principal.Run.RunAttemptGeneration,
-		ConnectionGeneration:     state.plan.Environment.ConnectionGeneration,
+		ConnectionGeneration:     targetConnectionGeneration(state.plan.Environment.Target),
+		Target:                   state.plan.Environment.Target,
 		ExpectedExecutionVersion: state.execution.Version,
 		ExpectedOperationVersion: current.Version,
 		PolicyContext:            state.plan.PolicyContext,
@@ -211,8 +221,9 @@ func (state *shellExecutionState) beginOperationLocked(ctx context.Context, oper
 	if err := state.acceptOperationLocked(operation, result.Operation); err != nil {
 		return result, fmt.Errorf("begin shell operation %s response: %w", operation.Kind, err)
 	}
-	if result.Began && (result.Operation.Status != "dispatching" || result.Operation.ConnectionGeneration != state.plan.Environment.ConnectionGeneration) {
-		return result, errors.New("core shell dispatch permission has the wrong status or connection generation")
+	if result.Began && (result.Operation.Status != "dispatching" || result.Operation.Target != state.plan.Environment.Target ||
+		result.Operation.ConnectionGeneration != targetConnectionGeneration(state.plan.Environment.Target)) {
+		return result, errors.New("core shell dispatch permission has the wrong status or target generation")
 	}
 	return result, nil
 }
@@ -234,7 +245,8 @@ func (state *shellExecutionState) Acknowledge(ctx context.Context, operation She
 		RunID:                    state.principal.Run.RunID,
 		RunAttemptID:             state.principal.Run.RunAttemptID,
 		RunAttemptGeneration:     state.principal.Run.RunAttemptGeneration,
-		ConnectionGeneration:     state.plan.Environment.ConnectionGeneration,
+		ConnectionGeneration:     targetConnectionGeneration(state.plan.Environment.Target),
+		Target:                   state.plan.Environment.Target,
 		ExpectedExecutionVersion: state.execution.Version,
 		ExpectedOperationVersion: current.Version,
 		Acknowledgement:          acknowledgement,
@@ -272,7 +284,8 @@ func (state *shellExecutionState) CompleteOperation(ctx context.Context, operati
 		RunID:                    state.principal.Run.RunID,
 		RunAttemptID:             state.principal.Run.RunAttemptID,
 		RunAttemptGeneration:     state.principal.Run.RunAttemptGeneration,
-		ConnectionGeneration:     state.plan.Environment.ConnectionGeneration,
+		ConnectionGeneration:     targetConnectionGeneration(state.plan.Environment.Target),
+		Target:                   state.plan.Environment.Target,
 		ExpectedExecutionVersion: state.execution.Version,
 		ExpectedOperationVersion: current.Version,
 		TerminalStatus:           terminalStatus,
@@ -392,10 +405,11 @@ func (state *shellExecutionState) allocateRecordLocked(action string) (Execution
 func (state *shellExecutionState) acceptExecutionLocked(execution ExecutionState) error {
 	if execution.ExecutionID != state.plan.Start.Routing.ExecutionID || execution.RunID != state.principal.Run.RunID ||
 		execution.RunAttemptID != state.principal.Run.RunAttemptID || execution.RunAttemptGeneration != state.principal.Run.RunAttemptGeneration ||
-		execution.AppServerToolCallID != state.plan.ToolCallID || execution.ExecutorID != state.plan.Environment.ExecutorID ||
+		execution.AppServerToolCallID != state.plan.ToolCallID || execution.ExecutorID != coreExecutorID(state.plan.Environment) ||
 		execution.EnvironmentID != state.plan.Environment.EnvironmentID || execution.ToolName != mcpcontract.ToolShell ||
 		execution.ToolVersion != mcpcontract.Version || execution.MapperVersion != "shell-v1" ||
-		execution.PolicyVersion != state.plan.PolicyVersion || execution.PolicyDecision != state.plan.PolicyDecision || execution.OperationCount != 2 {
+		execution.PolicyVersion != state.plan.PolicyVersion || execution.PolicyDecision != state.plan.PolicyDecision || execution.OperationCount != 2 ||
+		execution.Target != state.plan.Environment.Target {
 		return errors.New("core execution identity or frozen shell contract differs from the request")
 	}
 	state.execution = execution
@@ -405,7 +419,7 @@ func (state *shellExecutionState) acceptExecutionLocked(execution ExecutionState
 func (state *shellExecutionState) acceptOperationLocked(expected ShellV1Operation, operation ExecutionOperationState) error {
 	if operation.OperationID != expected.OperationID || operation.ExecutionID != state.plan.Start.Routing.ExecutionID ||
 		operation.Ordinal != expected.Ordinal || operation.Kind != expected.Kind || operation.EffectClass != expected.EffectClass ||
-		operation.MutationKey != expected.MutationKey {
+		operation.MutationKey != expected.MutationKey || operation.Target != state.plan.Environment.Target {
 		return errors.New("core operation identity or frozen shell contract differs from the request")
 	}
 	state.operations[operation.OperationID] = operation

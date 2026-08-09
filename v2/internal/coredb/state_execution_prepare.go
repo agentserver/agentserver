@@ -15,6 +15,10 @@ func (s *StateStore) PrepareExecution(ctx context.Context, command PrepareExecut
 		return PrepareExecutionResult{}, commandError(ErrorInvalidArgument, operation, "execution", command.ExecutionID, err.Error())
 	}
 	initialStatus := executionStatusForPolicyDecision(command.PolicyDecision)
+	target, err := normalizedPrepareTarget(command)
+	if err != nil {
+		return PrepareExecutionResult{}, commandError(ErrorInvalidArgument, operation, "execution", command.ExecutionID, err.Error())
+	}
 
 	return withStateTransaction(ctx, s, operation, func(transaction pgx.Tx) (PrepareExecutionResult, error) {
 		run, err := s.lockRun(ctx, transaction, operation, command.RunID)
@@ -67,14 +71,15 @@ FOR UPDATE`, executionColumns("e"), s.table("executions"))
 INSERT INTO %s
     (id, run_id, run_attempt_id, run_attempt_generation,
      app_server_tool_call_id, executor_id, env_id,
+     target_kind, target_id, target_generation,
      tool_name, tool_version, mapper_version, policy_version, policy_decision,
      operation_count,
      canonicalizer_version, arguments_hash, tool_schema_hash,
      operation_plan_hash, policy_context_hash, status, terminal_at)
 VALUES
-    ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-     $12, $13, $14, $15, $16, $17, $18, $19,
-     CASE WHEN $19 = 'denied' THEN pg_catalog.clock_timestamp() ELSE NULL END)
+    ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+     $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
+     CASE WHEN $22 = 'denied' THEN pg_catalog.clock_timestamp() ELSE NULL END)
 RETURNING %s`, s.table("executions"), executionColumns(""))
 		execution, err := scanExecution(transaction.QueryRow(ctx, insertQuery,
 			command.ExecutionID,
@@ -84,6 +89,9 @@ RETURNING %s`, s.table("executions"), executionColumns(""))
 			command.AppServerToolCallID,
 			command.ExecutorID,
 			command.EnvID,
+			target.Kind,
+			target.ID,
+			nullablePositiveInt64(target.Generation),
 			command.ToolName,
 			command.ToolVersion,
 			command.MapperVersion,
@@ -179,8 +187,9 @@ FOR UPDATE`, executionOperationColumns("o"), s.table("execution_operations"))
 		insertQuery := fmt.Sprintf(`
 INSERT INTO %s
     (id, execution_id, ordinal, kind, effect_class, mutation_key,
-     canonicalizer_version, params_hash, status)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     canonicalizer_version, params_hash, status,
+     target_kind, target_id, target_generation)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 RETURNING %s`, s.table("execution_operations"), executionOperationColumns(""))
 		prepared, err := scanExecutionOperation(transaction.QueryRow(ctx, insertQuery,
 			command.OperationID,
@@ -192,6 +201,9 @@ RETURNING %s`, s.table("execution_operations"), executionOperationColumns(""))
 			CanonicalizerRFC8785V1,
 			paramsHash[:],
 			OperationStatusPrepared,
+			execution.Target.Kind,
+			nullableUUID(execution.Target.ID),
+			nullablePositiveInt64(execution.Target.Generation),
 		))
 		if err != nil {
 			var postgresError *pgconn.PgError
@@ -242,13 +254,15 @@ func validatePrepareExecution(command PrepareExecutionCommand) error {
 		{"execution_id", command.ExecutionID},
 		{"run_id", command.RunID},
 		{"attempt_id", command.AttemptID},
-		{"executor_id", command.ExecutorID},
 		{"env_id", command.EnvID},
 	}
 	for _, identifier := range identifiers {
 		if err := validateUUID(identifier.field, identifier.value); err != nil {
 			return err
 		}
+	}
+	if _, err := normalizedPrepareTarget(command); err != nil {
+		return err
 	}
 	if err := validateBoundedText("holder_id", command.HolderID, 256); err != nil {
 		return err
@@ -344,12 +358,19 @@ func executionStatusForPolicyDecision(decision string) string {
 }
 
 func executionMatchesPrepare(execution Execution, command PrepareExecutionCommand) bool {
+	target, err := normalizedPrepareTarget(command)
+	if err != nil {
+		return false
+	}
+	targetMatches := execution.Target.Kind == target.Kind && execution.Target.ID == target.ID &&
+		(target.Generation == 0 || execution.Target.Generation == target.Generation)
 	return execution.RunID == command.RunID &&
 		execution.RunAttemptID == command.AttemptID &&
 		execution.RunAttemptGeneration == command.Generation &&
 		execution.AppServerToolCallID == command.AppServerToolCallID &&
 		execution.ExecutorID == command.ExecutorID &&
 		execution.EnvID == command.EnvID &&
+		targetMatches &&
 		execution.ToolName == command.ToolName &&
 		execution.ToolVersion == command.ToolVersion &&
 		execution.MapperVersion == command.MapperVersion &&
@@ -360,6 +381,57 @@ func executionMatchesPrepare(execution Execution, command PrepareExecutionComman
 		execution.ToolSchemaHash.equal(command.ToolSchemaHash) &&
 		execution.OperationPlanHash.equal(command.OperationPlanHash) &&
 		execution.PolicyContextHash.equal(command.PolicyContextHash)
+}
+
+func normalizedPrepareTarget(command PrepareExecutionCommand) (DispatchTarget, error) {
+	target := command.Target
+	if target.Kind == "" {
+		if err := validateUUID("executor_id", command.ExecutorID); err != nil {
+			return DispatchTarget{}, err
+		}
+		return DispatchTarget{Kind: DispatchTargetAgentX, ID: command.ExecutorID}, nil
+	}
+	if err := validateDispatchTarget(target, true); err != nil {
+		return DispatchTarget{}, err
+	}
+	switch target.Kind {
+	case DispatchTargetAgentX:
+		if command.ExecutorID != target.ID {
+			return DispatchTarget{}, errors.New("agentx target_id must equal executor_id")
+		}
+	case DispatchTargetTAE:
+		if command.ExecutorID != "" {
+			return DispatchTarget{}, errors.New("managed execution must not project a TAE sandbox as executor_id")
+		}
+	}
+	return target, nil
+}
+
+func validateDispatchTarget(target DispatchTarget, requireGeneration bool) error {
+	if target.Kind != DispatchTargetAgentX && target.Kind != DispatchTargetTAE {
+		return errors.New("target_kind must be agentx or tae")
+	}
+	if err := validateUUID("target_id", target.ID); err != nil {
+		return err
+	}
+	if target.Generation < 0 || (requireGeneration && target.Generation < 1) {
+		return errors.New("target_generation must be positive")
+	}
+	return nil
+}
+
+func nullablePositiveInt64(value int64) any {
+	if value < 1 {
+		return nil
+	}
+	return value
+}
+
+func nullableUUID(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }
 
 func operationMatchesPrepare(operation ExecutionOperation, command PrepareOperationCommand) bool {

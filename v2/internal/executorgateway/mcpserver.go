@@ -57,8 +57,12 @@ var errExecutorMCPShuttingDown = errors.New("executor MCP server is shutting dow
 // AuthenticateExecutorMCP is still invoked for every HTTP request and must
 // perform live expiry, generation, and authorization checks.
 type ExecutorMCPPrincipal struct {
-	CapabilityID      string
-	WorkspaceID       string
+	CapabilityID string
+	WorkspaceID  string
+	// SessionID is capability-derived authority metadata. It is not the MCP
+	// transport session ID; managed backends bind every sandbox operation to
+	// this agentserver session.
+	SessionID         string
 	ActorID           string
 	ToolCatalogDigest string
 	MaxApprovalTTL    time.Duration
@@ -344,13 +348,7 @@ func (handler *ExecutorMCPHandler) newScopedServer(session *executorMCPSession) 
 			}
 			executorID = session.principal.ExecutorID
 		}
-		var result ListEnvironmentsResult
-		var err error
-		if session.principal.Production {
-			result, err = handler.resolver.ListProduction(ctx, session.principal.WorkspaceID, executorID)
-		} else {
-			result, err = handler.resolver.List(ctx, session.principal.WorkspaceID, executorID)
-		}
+		result, err := handler.resolver.ListForPrincipal(ctx, session.principal, executorID, session.principal.Production)
 		if err != nil {
 			if handler.config.Logger != nil {
 				handler.config.Logger.ErrorContext(ctx, "list executor MCP environments",
@@ -678,6 +676,9 @@ func validateExecutorMCPSessionID(value string) error {
 
 func validateExecutorMCPPrincipal(principal ExecutorMCPPrincipal) error {
 	if err := validateRegistryIdentity("workspace ID", principal.WorkspaceID); err != nil {
+		return err
+	}
+	if err := validateRegistryIdentity("session ID", principal.SessionID); err != nil {
 		return err
 	}
 	if err := validateRegistryIdentity("actor ID", principal.ActorID); err != nil {

@@ -202,6 +202,10 @@ func (commands StateStoreRunAttemptCommands) CommitCheckpoint(ctx context.Contex
 	if err != nil {
 		return corecontract.CommitCheckpointResponse{}, runAttemptConversionError("CommitCheckpointAndTerminalRun", "checkpoint", request.Checkpoint.CheckpointID, fmt.Errorf("runtime manifest digest: %w", err))
 	}
+	packSetDigest, err := decodeOptionalCanonicalSHA256(request.Checkpoint.PackSetDigest)
+	if err != nil {
+		return corecontract.CommitCheckpointResponse{}, runAttemptConversionError("CommitCheckpointAndTerminalRun", "checkpoint", request.Checkpoint.CheckpointID, fmt.Errorf("pack-set digest: %w", err))
+	}
 	result, err := commands.Store.CommitCheckpointAndTerminalRun(ctx, coredb.CommitCheckpointAndTerminalRunCommand{
 		RunID: request.RunID, AttemptID: request.RunAttemptID, HolderID: request.HolderID,
 		Generation: request.RunAttemptGeneration, ExpectedRunVersion: request.ExpectedRunVersion,
@@ -215,6 +219,7 @@ func (commands StateStoreRunAttemptCommands) CommitCheckpoint(ctx context.Contex
 		},
 		CodexRuntimeManifestDigest: runtimeDigest,
 		CheckpointAllowlistVersion: request.Checkpoint.CheckpointAllowlistVersion,
+		PackSetDigest:              packSetDigest,
 		Record:                     databaseTransitionRecord(request.Record),
 	})
 	if err != nil {
@@ -346,8 +351,27 @@ func contractCheckpoint(checkpoint coredb.Checkpoint) corecontract.CheckpointSta
 			Size: checkpoint.Object.Size, MediaType: checkpoint.Object.MediaType,
 		},
 		CodexRuntimeManifestDigest: hex.EncodeToString(checkpoint.CodexRuntimeManifestDigest[:]),
-		CheckpointAllowlistVersion: checkpoint.CheckpointAllowlistVersion, CreatedAt: checkpoint.CreatedAt,
+		CheckpointAllowlistVersion: checkpoint.CheckpointAllowlistVersion,
+		PackSetDigest:              encodeOptionalCanonicalSHA256(checkpoint.PackSetDigest), CreatedAt: checkpoint.CreatedAt,
 	}
+}
+
+func decodeOptionalCanonicalSHA256(value string) (*[32]byte, error) {
+	if value == "" {
+		return nil, nil
+	}
+	digest, err := decodeCanonicalSHA256(value)
+	if err != nil {
+		return nil, err
+	}
+	return &digest, nil
+}
+
+func encodeOptionalCanonicalSHA256(value *[32]byte) string {
+	if value == nil {
+		return ""
+	}
+	return hex.EncodeToString(value[:])
 }
 
 func contractLease(lease coredb.Lease) corecontract.LeaseState {

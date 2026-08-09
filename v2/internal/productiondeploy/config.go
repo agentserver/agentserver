@@ -32,26 +32,34 @@ import (
 )
 
 const (
-	CurrentVersion                = 1
-	ProductionRegion              = "sg"
-	ProductionNamespace           = "agentserver"
-	ProductionTrustDomain         = "agentserver.byted.bps.dev"
-	ProductionPlatformLinuxAMD64  = "linux-amd64"
-	ProductionPlatform            = ProductionPlatformLinuxAMD64
-	ProductionCapabilityKeyID     = "run-capability-sg-v1"
-	ProductionManifestKeyID       = "run-manifest-sg-v1"
-	ProductionCoreSecret          = "agentserver-core-secrets"
-	ProductionPlatformSecret      = "agentserver-platform-secrets"
-	ProductionBrowserSecret       = "agentserver-browser-secrets"
-	ProductionExecutorSecret      = "agentserver-executor-secrets"
-	ProductionHarnessPoolSecret   = "agentserver-pool-secrets"
-	ProductionHarnessWorkerSecret = "agentserver-worker-secrets"
-	ProductionLLMProxySecret      = "agentserver-llmproxy-secrets"
-	ProductionObjectStoreSecret   = "agentserver-object-store-secrets"
-	ProductionHydraSecret         = "agentserver-hydra-secrets"
-	ProductionServiceImage        = "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-service"
-	ProductionHarnessImage        = "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-harness"
-	ProductionHydraImage          = "registry-sg.byted.cs.ac.cn/ghcr/agentserver/hydra"
+	CurrentVersion                     = 3
+	ProductionRegion                   = "sg"
+	ProductionNamespace                = "agentserver"
+	ProductionTrustDomain              = "agentserver.byted.bps.dev"
+	ProductionPlatformLinuxAMD64       = "linux-amd64"
+	ProductionPlatform                 = ProductionPlatformLinuxAMD64
+	ProductionCapabilityKeyID          = "run-capability-sg-v1"
+	ProductionManifestKeyID            = "run-manifest-sg-v1"
+	ProductionCoreSecret               = "agentserver-core-secrets"
+	ProductionPlatformSecret           = "agentserver-platform-secrets"
+	ProductionBrowserSecret            = "agentserver-browser-secrets"
+	ProductionExecutorSecret           = "agentserver-executor-secrets"
+	ProductionHarnessPoolSecret        = "agentserver-pool-secrets"
+	ProductionHarnessWorkerSecret      = "agentserver-worker-secrets"
+	ProductionLLMProxySecret           = "agentserver-llmproxy-secrets"
+	ProductionObjectStoreSecret        = "agentserver-object-store-secrets"
+	ProductionHydraSecret              = "agentserver-hydra-secrets"
+	ProductionSandboxSecret            = "agentserver-sandbox-secrets"
+	ProductionEgressSecret             = "agentserver-egress-secrets"
+	ProductionServiceImage             = "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-service"
+	ProductionHarnessImage             = "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-harness"
+	ProductionHydraImage               = "registry-sg.byted.cs.ac.cn/ghcr/agentserver/hydra"
+	ProductionManagedSandboxImage      = "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-managed-sandbox"
+	ProductionSandboxBackendKeyID      = "sandbox-backend-sg-v1"
+	ProductionSandboxFencerKeyID       = "sandbox-fencer-sg-v1"
+	ProductionSandboxLifecycleKeyID    = "sandbox-lifecycle-sg-v1"
+	ProductionEgressPlaceholderKeyID   = "egress-placeholder-sg-v1"
+	ProductionEgressBackendCAConfigMap = "agentserver-egress-backend-ca"
 
 	PoolUID    uint32 = 65530
 	PoolGID    uint32 = 65530
@@ -68,19 +76,23 @@ const (
 	ExecutorInternalHost = "executor.agentserver.internal"
 	LLMProxyInternalHost = "llmproxy.agentserver.internal"
 	HydraInternalHost    = "hydra.agentserver.internal"
+	SandboxInternalHost  = "sandbox-gateway.agentserver.internal"
+	EgressInternalHost   = "egress-authorizer.agentserver.internal"
 	HarnessControlPort   = 8443
 	PublicHTTPPort       = 8080
 	HydraPublicPort      = 4444
 	HydraAdminPort       = 4445
 
-	ProductionGatewayNamespace        = "istio-ingress"
-	ProductionGatewayName             = "istio-gateway"
-	ProductionGatewaySection          = "https-byted-bps"
-	ProductionFrontendHostname        = "agent.byted.bps.dev"
-	ProductionBrowserFrontendHostname = "browser.byted.bps.dev"
-	ProductionBrowserHostname         = "browser-gateway.byted.bps.dev"
-	ProductionExecutorHostname        = "executor-gateway.byted.bps.dev"
-	ProductionHydraHostname           = "auth-sg.byted.bps.dev"
+	ProductionGatewayNamespace         = "istio-ingress"
+	ProductionGatewayName              = "istio-gateway"
+	ProductionGatewaySection           = "https-byted-bps"
+	ProductionFrontendHostname         = "agent.byted.bps.dev"
+	ProductionBrowserFrontendHostname  = "browser.byted.bps.dev"
+	ProductionBrowserHostname          = "browser-gateway.byted.bps.dev"
+	ProductionExecutorHostname         = "executor-gateway.byted.bps.dev"
+	ProductionHydraHostname            = "auth-sg.byted.bps.dev"
+	ProductionEgressAuthorizerHostname = "egress-authorizer-sg.byted.bps.dev"
+	ProductionEgressAuthorizerURL      = "https://" + ProductionEgressAuthorizerHostname + "/v1/policy"
 
 	maximumConfigBytes = int64(256 * 1024)
 	maximumTextBytes   = 4096
@@ -101,47 +113,53 @@ var (
 )
 
 type ConfigDocument struct {
-	Version       int                 `json:"version"`
-	Region        string              `json:"region"`
-	Namespace     string              `json:"namespace"`
-	ClusterDomain string              `json:"clusterDomain"`
-	Platform      string              `json:"platform"`
-	Images        ImagesDocument      `json:"images"`
-	Replicas      ReplicasDocument    `json:"replicas"`
-	Services      ServicesDocument    `json:"services"`
-	Ingress       IngressDocument     `json:"ingress"`
-	Bootstrap     BootstrapDocument   `json:"bootstrap"`
-	TrustDomain   string              `json:"spiffeTrustDomain"`
-	OAuth         OAuthDocument       `json:"oauth"`
-	Runtime       RuntimeDocument     `json:"runtime"`
-	Objects       ObjectStoreDocument `json:"objectStore"`
-	Secrets       SecretsDocument     `json:"secrets"`
-	Network       NetworkDocument     `json:"network"`
-	Resources     ResourcesDocument   `json:"resources"`
+	Version       int                     `json:"version"`
+	Region        string                  `json:"region"`
+	Namespace     string                  `json:"namespace"`
+	ClusterDomain string                  `json:"clusterDomain"`
+	Platform      string                  `json:"platform"`
+	Images        ImagesDocument          `json:"images"`
+	Replicas      ReplicasDocument        `json:"replicas"`
+	Services      ServicesDocument        `json:"services"`
+	Ingress       IngressDocument         `json:"ingress"`
+	Bootstrap     BootstrapDocument       `json:"bootstrap"`
+	TrustDomain   string                  `json:"spiffeTrustDomain"`
+	OAuth         OAuthDocument           `json:"oauth"`
+	Runtime       RuntimeDocument         `json:"runtime"`
+	Managed       ManagedExecutorDocument `json:"managedExecutor"`
+	Objects       ObjectStoreDocument     `json:"objectStore"`
+	Secrets       SecretsDocument         `json:"secrets"`
+	Network       NetworkDocument         `json:"network"`
+	Resources     ResourcesDocument       `json:"resources"`
 }
 
 type ImagesDocument struct {
-	Service string `json:"service"`
-	Harness string `json:"harness"`
-	Hydra   string `json:"hydra"`
+	Service        string `json:"service"`
+	Harness        string `json:"harness"`
+	Hydra          string `json:"hydra"`
+	ManagedSandbox string `json:"managedSandbox"`
 }
 
 type ReplicasDocument struct {
-	Core            int `json:"core"`
-	PlatformGateway int `json:"platformGateway"`
-	BrowserGateway  int `json:"browserGateway"`
-	HarnessPool     int `json:"harnessPool"`
-	LLMProxy        int `json:"llmproxy"`
-	Hydra           int `json:"hydra"`
+	Core             int `json:"core"`
+	PlatformGateway  int `json:"platformGateway"`
+	BrowserGateway   int `json:"browserGateway"`
+	HarnessPool      int `json:"harnessPool"`
+	LLMProxy         int `json:"llmproxy"`
+	Hydra            int `json:"hydra"`
+	SandboxGateway   int `json:"sandboxGateway"`
+	EgressAuthorizer int `json:"egressAuthorizer"`
 }
 
 type ServicesDocument struct {
-	Core            InternalServiceDocument `json:"core"`
-	PlatformGateway InternalServiceDocument `json:"platformGateway"`
-	BrowserGateway  InternalServiceDocument `json:"browserGateway"`
-	ExecutorGateway ExecutorServiceDocument `json:"executorGateway"`
-	LLMProxy        InternalServiceDocument `json:"llmproxy"`
-	Hydra           HydraServiceDocument    `json:"hydra"`
+	Core             InternalServiceDocument `json:"core"`
+	PlatformGateway  InternalServiceDocument `json:"platformGateway"`
+	BrowserGateway   InternalServiceDocument `json:"browserGateway"`
+	ExecutorGateway  ExecutorServiceDocument `json:"executorGateway"`
+	LLMProxy         InternalServiceDocument `json:"llmproxy"`
+	Hydra            HydraServiceDocument    `json:"hydra"`
+	SandboxGateway   InternalServiceDocument `json:"sandboxGateway"`
+	EgressAuthorizer InternalServiceDocument `json:"egressAuthorizer"`
 }
 
 type InternalServiceDocument struct {
@@ -231,24 +249,29 @@ type ObjectStoreDocument struct {
 }
 
 type SecretsDocument struct {
-	Core            string `json:"core"`
-	PlatformGateway string `json:"platformGateway"`
-	BrowserGateway  string `json:"browserGateway"`
-	ExecutorGateway string `json:"executorGateway"`
-	HarnessPool     string `json:"harnessPool"`
-	HarnessWorker   string `json:"harnessWorker"`
-	LLMProxy        string `json:"llmproxy"`
-	ObjectStore     string `json:"objectStore"`
-	Hydra           string `json:"hydra"`
+	Core             string `json:"core"`
+	PlatformGateway  string `json:"platformGateway"`
+	BrowserGateway   string `json:"browserGateway"`
+	ExecutorGateway  string `json:"executorGateway"`
+	HarnessPool      string `json:"harnessPool"`
+	HarnessWorker    string `json:"harnessWorker"`
+	LLMProxy         string `json:"llmproxy"`
+	ObjectStore      string `json:"objectStore"`
+	Hydra            string `json:"hydra"`
+	SandboxGateway   string `json:"sandboxGateway"`
+	EgressAuthorizer string `json:"egressAuthorizer"`
 }
 
 type NetworkDocument struct {
-	DNSClusterIP          string               `json:"dnsClusterIp"`
-	DNSNamespace          string               `json:"dnsNamespace"`
-	DNSPodSelector        map[string]string    `json:"dnsPodSelector"`
-	CoreExternalEgress    []EgressRuleDocument `json:"coreExternalEgress"`
-	BrowserExternalEgress []EgressRuleDocument `json:"browserExternalEgress"`
-	HarnessExternalEgress []EgressRuleDocument `json:"harnessExternalEgress"`
+	DNSClusterIP                   string               `json:"dnsClusterIp"`
+	DNSNamespace                   string               `json:"dnsNamespace"`
+	DNSPodSelector                 map[string]string    `json:"dnsPodSelector"`
+	CoreExternalEgress             []EgressRuleDocument `json:"coreExternalEgress"`
+	BrowserExternalEgress          []EgressRuleDocument `json:"browserExternalEgress"`
+	HarnessExternalEgress          []EgressRuleDocument `json:"harnessExternalEgress"`
+	SandboxExternalEgress          []EgressRuleDocument `json:"sandboxExternalEgress"`
+	EgressAuthorizerExternalEgress []EgressRuleDocument `json:"egressAuthorizerExternalEgress"`
+	EgressAuthorizerIngress        []string             `json:"egressAuthorizerIngress"`
 }
 
 type EgressRuleDocument struct {
@@ -257,16 +280,18 @@ type EgressRuleDocument struct {
 }
 
 type ResourcesDocument struct {
-	Core            ContainerResourcesDocument `json:"core"`
-	PlatformGateway ContainerResourcesDocument `json:"platformGateway"`
-	BrowserGateway  ContainerResourcesDocument `json:"browserGateway"`
-	ExecutorGateway ContainerResourcesDocument `json:"executorGateway"`
-	HarnessPool     ContainerResourcesDocument `json:"harnessPool"`
-	LLMProxy        ContainerResourcesDocument `json:"llmproxy"`
-	Hydra           ContainerResourcesDocument `json:"hydra"`
-	RuntimeTmpfs    string                     `json:"runtimeTmpfs"`
-	CheckpointTmpfs string                     `json:"checkpointTmpfs"`
-	ScratchTmpfs    string                     `json:"scratchTmpfs"`
+	Core             ContainerResourcesDocument `json:"core"`
+	PlatformGateway  ContainerResourcesDocument `json:"platformGateway"`
+	BrowserGateway   ContainerResourcesDocument `json:"browserGateway"`
+	ExecutorGateway  ContainerResourcesDocument `json:"executorGateway"`
+	HarnessPool      ContainerResourcesDocument `json:"harnessPool"`
+	LLMProxy         ContainerResourcesDocument `json:"llmproxy"`
+	Hydra            ContainerResourcesDocument `json:"hydra"`
+	SandboxGateway   ContainerResourcesDocument `json:"sandboxGateway"`
+	EgressAuthorizer ContainerResourcesDocument `json:"egressAuthorizer"`
+	RuntimeTmpfs     string                     `json:"runtimeTmpfs"`
+	CheckpointTmpfs  string                     `json:"checkpointTmpfs"`
+	ScratchTmpfs     string                     `json:"scratchTmpfs"`
 }
 
 type ContainerResourcesDocument struct {
@@ -280,61 +305,81 @@ type ResourcePairDocument struct {
 }
 
 type LoadedConfig struct {
-	Document              ConfigDocument
-	MaxRunDuration        time.Duration
-	MaxApprovalTTL        time.Duration
-	CapabilityExpiryGrace time.Duration
-	EnrollmentTokenTTL    time.Duration
+	Document                 ConfigDocument
+	MaxRunDuration           time.Duration
+	MaxApprovalTTL           time.Duration
+	CapabilityExpiryGrace    time.Duration
+	EnrollmentTokenTTL       time.Duration
+	ManagedSandboxTTL        time.Duration
+	ManagedActivityTTL       time.Duration
+	ManagedIdleTTL           time.Duration
+	ManagedOwnerPolicySHA256 string
 }
 
 func LoadConfig(path string) (LoadedConfig, error) {
-	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
-		return LoadedConfig{}, errors.New("production deployment config path must be absolute and clean")
-	}
-	file, err := os.Open(path)
+	raw, err := readProductionConfigFile(path)
 	if err != nil {
-		return LoadedConfig{}, fmt.Errorf("open production deployment config: %w", err)
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return LoadedConfig{}, fmt.Errorf("inspect production deployment config: %w", err)
-	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o022 != 0 || info.Size() < 1 || info.Size() > maximumConfigBytes {
-		return LoadedConfig{}, fmt.Errorf("production deployment config must resolve to a regular file between 1 and %d bytes not writable by group or other", maximumConfigBytes)
-	}
-	raw, err := io.ReadAll(io.LimitReader(file, maximumConfigBytes+1))
-	if err != nil {
-		return LoadedConfig{}, fmt.Errorf("read production deployment config: %w", err)
-	}
-	after, err := file.Stat()
-	if err != nil || !os.SameFile(info, after) || info.Size() != after.Size() || !info.ModTime().Equal(after.ModTime()) || int64(len(raw)) != info.Size() {
-		return LoadedConfig{}, errors.New("production deployment config changed while it was being read")
+		return LoadedConfig{}, err
 	}
 	return ParseConfig(raw)
 }
 
+func readProductionConfigFile(path string) ([]byte, error) {
+	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return nil, errors.New("production deployment config path must be absolute and clean")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open production deployment config: %w", err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("inspect production deployment config: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o022 != 0 || info.Size() < 1 || info.Size() > maximumConfigBytes {
+		return nil, fmt.Errorf("production deployment config must resolve to a regular file between 1 and %d bytes not writable by group or other", maximumConfigBytes)
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, maximumConfigBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read production deployment config: %w", err)
+	}
+	after, err := file.Stat()
+	if err != nil || !os.SameFile(info, after) || info.Size() != after.Size() || !info.ModTime().Equal(after.ModTime()) || int64(len(raw)) != info.Size() {
+		return nil, errors.New("production deployment config changed while it was being read")
+	}
+	return raw, nil
+}
+
 func ParseConfig(raw []byte) (LoadedConfig, error) {
+	document, err := decodeConfigDocument(raw)
+	if err != nil {
+		return LoadedConfig{}, err
+	}
+	return ValidateConfig(document)
+}
+
+func decodeConfigDocument(raw []byte) (ConfigDocument, error) {
 	limits := braincatalog.DefaultLimits()
 	limits.MaxJSONValues = 4096
 	limits.MaxJSONDepth = 20
 	if _, _, err := braincatalog.DecodeCanonicalJSON(raw, int(maximumConfigBytes), limits); err != nil {
-		return LoadedConfig{}, fmt.Errorf("validate production deployment JSON: %w", err)
+		return ConfigDocument{}, fmt.Errorf("validate production deployment JSON: %w", err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	var document ConfigDocument
 	if err := decoder.Decode(&document); err != nil {
-		return LoadedConfig{}, fmt.Errorf("decode production deployment config: %w", err)
+		return ConfigDocument{}, fmt.Errorf("decode production deployment config: %w", err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return LoadedConfig{}, errors.New("production deployment config contains more than one JSON value")
+			return ConfigDocument{}, errors.New("production deployment config contains more than one JSON value")
 		}
-		return LoadedConfig{}, fmt.Errorf("finish production deployment config: %w", err)
+		return ConfigDocument{}, fmt.Errorf("finish production deployment config: %w", err)
 	}
-	return ValidateConfig(document)
+	return document, nil
 }
 
 func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
@@ -354,8 +399,8 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 		return LoadedConfig{}, fmt.Errorf("platform must be %s for the SG production cluster", ProductionPlatformLinuxAMD64)
 	}
 	if !imagePattern.MatchString(document.Images.Service) || !imagePattern.MatchString(document.Images.Harness) ||
-		!imagePattern.MatchString(document.Images.Hydra) {
-		return LoadedConfig{}, errors.New("service, harness, and Hydra images must be immutable OCI references ending in @sha256:<64 lowercase hex>")
+		!imagePattern.MatchString(document.Images.Hydra) || !imagePattern.MatchString(document.Images.ManagedSandbox) {
+		return LoadedConfig{}, errors.New("service, harness, Hydra, and managed sandbox images must be immutable OCI references ending in @sha256:<64 lowercase hex>")
 	}
 	if !strings.HasPrefix(document.Images.Service, ProductionServiceImage+"@sha256:") {
 		return LoadedConfig{}, fmt.Errorf("images.service must use the SG production repository %s", ProductionServiceImage)
@@ -366,9 +411,13 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 	if !strings.HasPrefix(document.Images.Hydra, ProductionHydraImage+"@sha256:") {
 		return LoadedConfig{}, fmt.Errorf("images.hydra must use the SG production repository %s", ProductionHydraImage)
 	}
-	if document.Images.Service == document.Images.Harness || document.Images.Service == document.Images.Hydra ||
-		document.Images.Harness == document.Images.Hydra {
-		return LoadedConfig{}, errors.New("service, harness, and Hydra images must be independently pinned artifacts")
+	if !strings.HasPrefix(document.Images.ManagedSandbox, ProductionManagedSandboxImage+"@sha256:") {
+		return LoadedConfig{}, fmt.Errorf("images.managedSandbox must use the SG production repository %s", ProductionManagedSandboxImage)
+	}
+	imageSet := []string{document.Images.Service, document.Images.Harness, document.Images.Hydra, document.Images.ManagedSandbox}
+	slices.Sort(imageSet)
+	if len(slices.Compact(imageSet)) != 4 {
+		return LoadedConfig{}, errors.New("service, harness, Hydra, and managed sandbox images must be independently pinned artifacts")
 	}
 	if err := validateReplicas(document.Replicas); err != nil {
 		return LoadedConfig{}, err
@@ -416,6 +465,15 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 	if err := validateNetwork(&loaded.Document.Network, loaded.Document.Services); err != nil {
 		return LoadedConfig{}, err
 	}
+	managedLoaded, err := validateManagedExecutor(loaded.Document.Managed, loaded.Document)
+	if err != nil {
+		return LoadedConfig{}, err
+	}
+	loaded.Document.Managed = managedLoaded.Document.Managed
+	loaded.ManagedSandboxTTL = managedLoaded.ManagedSandboxTTL
+	loaded.ManagedActivityTTL = managedLoaded.ManagedActivityTTL
+	loaded.ManagedIdleTTL = managedLoaded.ManagedIdleTTL
+	loaded.ManagedOwnerPolicySHA256 = managedLoaded.ManagedOwnerPolicySHA256
 	if err := validateResources(document.Resources); err != nil {
 		return LoadedConfig{}, err
 	}
@@ -434,6 +492,8 @@ func validateReplicas(document ReplicasDocument) error {
 		{name: "harnessPool", value: document.HarnessPool, minimum: 1},
 		{name: "llmproxy", value: document.LLMProxy, minimum: 2},
 		{name: "hydra", value: document.Hydra, minimum: 2},
+		{name: "sandboxGateway", value: document.SandboxGateway, minimum: 2},
+		{name: "egressAuthorizer", value: document.EgressAuthorizer, minimum: 2},
 	} {
 		if component.value < component.minimum || component.value > 32 {
 			return fmt.Errorf("replicas.%s must be between %d and 32", component.name, component.minimum)
@@ -453,6 +513,8 @@ func validateServices(document ServicesDocument) error {
 		{"executorGateway", document.ExecutorGateway.ClusterIP},
 		{"llmproxy", document.LLMProxy.ClusterIP},
 		{"hydra", document.Hydra.ClusterIP},
+		{"sandboxGateway", document.SandboxGateway.ClusterIP},
+		{"egressAuthorizer", document.EgressAuthorizer.ClusterIP},
 	}
 	seen := make(map[netip.Addr]struct{}, len(addresses))
 	for _, service := range addresses {
@@ -472,6 +534,8 @@ func validateServices(document ServicesDocument) error {
 		"core.port":                    document.Core.Port,
 		"llmproxy.port":                document.LLMProxy.Port,
 		"executorGateway.internalPort": document.ExecutorGateway.InternalPort,
+		"sandboxGateway.port":          document.SandboxGateway.Port,
+		"egressAuthorizer.port":        document.EgressAuthorizer.Port,
 	} {
 		if actual != HarnessControlPort {
 			return fmt.Errorf("services.%s must be exactly %d", name, HarnessControlPort)
@@ -712,15 +776,17 @@ func validateObjects(document ObjectStoreDocument) error {
 
 func validateSecrets(document SecretsDocument) error {
 	for name, pair := range map[string][2]string{
-		"core":            {document.Core, ProductionCoreSecret},
-		"platformGateway": {document.PlatformGateway, ProductionPlatformSecret},
-		"browserGateway":  {document.BrowserGateway, ProductionBrowserSecret},
-		"executorGateway": {document.ExecutorGateway, ProductionExecutorSecret},
-		"harnessPool":     {document.HarnessPool, ProductionHarnessPoolSecret},
-		"harnessWorker":   {document.HarnessWorker, ProductionHarnessWorkerSecret},
-		"llmproxy":        {document.LLMProxy, ProductionLLMProxySecret},
-		"objectStore":     {document.ObjectStore, ProductionObjectStoreSecret},
-		"hydra":           {document.Hydra, ProductionHydraSecret},
+		"core":             {document.Core, ProductionCoreSecret},
+		"platformGateway":  {document.PlatformGateway, ProductionPlatformSecret},
+		"browserGateway":   {document.BrowserGateway, ProductionBrowserSecret},
+		"executorGateway":  {document.ExecutorGateway, ProductionExecutorSecret},
+		"harnessPool":      {document.HarnessPool, ProductionHarnessPoolSecret},
+		"harnessWorker":    {document.HarnessWorker, ProductionHarnessWorkerSecret},
+		"llmproxy":         {document.LLMProxy, ProductionLLMProxySecret},
+		"objectStore":      {document.ObjectStore, ProductionObjectStoreSecret},
+		"hydra":            {document.Hydra, ProductionHydraSecret},
+		"sandboxGateway":   {document.SandboxGateway, ProductionSandboxSecret},
+		"egressAuthorizer": {document.EgressAuthorizer, ProductionEgressSecret},
 	} {
 		if pair[0] != pair[1] {
 			return fmt.Errorf("secrets.%s must be exactly %s for the SG production deployment", name, pair[1])
@@ -741,7 +807,9 @@ func validateNetwork(document *NetworkDocument, services ServicesDocument) error
 		"core": services.Core.ClusterIP, "platformGateway": services.PlatformGateway.ClusterIP,
 		"browserGateway":  services.BrowserGateway.ClusterIP,
 		"executorGateway": services.ExecutorGateway.ClusterIP, "llmproxy": services.LLMProxy.ClusterIP,
-		"hydra": services.Hydra.ClusterIP,
+		"hydra":            services.Hydra.ClusterIP,
+		"sandboxGateway":   services.SandboxGateway.ClusterIP,
+		"egressAuthorizer": services.EgressAuthorizer.ClusterIP,
 	} {
 		if clusterIP == document.DNSClusterIP {
 			return fmt.Errorf("network.dnsClusterIp must differ from services.%s.clusterIp", name)
@@ -766,6 +834,8 @@ func validateNetwork(document *NetworkDocument, services ServicesDocument) error
 		{"coreExternalEgress", &document.CoreExternalEgress, true},
 		{"browserExternalEgress", &document.BrowserExternalEgress, false},
 		{"harnessExternalEgress", &document.HarnessExternalEgress, true},
+		{"sandboxExternalEgress", &document.SandboxExternalEgress, false},
+		{"egressAuthorizerExternalEgress", &document.EgressAuthorizerExternalEgress, false},
 	}
 	for _, group := range groups {
 		if group.required && len(*group.rules) == 0 {
@@ -774,6 +844,19 @@ func validateNetwork(document *NetworkDocument, services ServicesDocument) error
 		if err := normalizeEgressRules("network."+group.name, group.rules); err != nil {
 			return err
 		}
+	}
+	for name, rules := range map[string][]EgressRuleDocument{
+		"network.sandboxExternalEgress":          document.SandboxExternalEgress,
+		"network.egressAuthorizerExternalEgress": document.EgressAuthorizerExternalEgress,
+	} {
+		if len(rules) > 0 {
+			if err := requireDualStackEgress(name, rules); err != nil {
+				return err
+			}
+		}
+	}
+	if err := validateIngressPrefixes("network.egressAuthorizerIngress", &document.EgressAuthorizerIngress); err != nil {
+		return err
 	}
 	return nil
 }
@@ -833,6 +916,8 @@ func validateResources(document ResourcesDocument) error {
 		{name: "harnessPool", resource: document.HarnessPool},
 		{name: "llmproxy", resource: document.LLMProxy},
 		{name: "hydra", resource: document.Hydra},
+		{name: "sandboxGateway", resource: document.SandboxGateway},
+		{name: "egressAuthorizer", resource: document.EgressAuthorizer},
 	}
 	for _, component := range components {
 		name, resource := component.name, component.resource

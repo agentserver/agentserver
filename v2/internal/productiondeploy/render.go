@@ -13,13 +13,14 @@ import (
 )
 
 const (
-	foundationFile     = "00-foundation.json"
-	hydraMigrationFile = "05-hydra-migrate.json"
-	migrationFile      = "10-migrate.json"
-	hydraSetupFile     = "15-hydra-client-setup.json"
-	bootstrapFile      = "20-bootstrap.json"
-	runtimeFile        = "30-runtime.json"
-	checksumsFile      = "checksums.json"
+	foundationFile                  = "00-foundation.json"
+	hydraMigrationFile              = "05-hydra-migrate.json"
+	migrationFile                   = "10-migrate.json"
+	hydraSetupFile                  = "15-hydra-client-setup.json"
+	bootstrapFile                   = "20-bootstrap.json"
+	managedEnvironmentBootstrapFile = "22-managed-environment.json"
+	runtimeFile                     = "30-runtime.json"
+	checksumsFile                   = "checksums.json"
 )
 
 type RenderedFile struct {
@@ -60,6 +61,13 @@ func Render(config LoadedConfig) (Bundle, error) {
 	if err != nil {
 		return Bundle{}, err
 	}
+	var managedEnvironmentJSON []byte
+	if managedExecutionActive(config.Document.Managed) {
+		managedEnvironmentJSON, err = renderManagedEnvironmentBootstrapJSON(config)
+		if err != nil {
+			return Bundle{}, err
+		}
+	}
 	documentJSON, err := json.Marshal(config.Document)
 	if err != nil {
 		return Bundle{}, fmt.Errorf("encode validated production deployment: %w", err)
@@ -68,6 +76,7 @@ func Render(config LoadedConfig) (Bundle, error) {
 	harnessConfigHash := sha256Framed(workerJSON, networkGuardJSON)
 	harnessDeploymentHash := sha256Framed(documentJSON, workerJSON, networkGuardJSON)
 	documentHash := sha256Hex(documentJSON)
+	managedEnvironmentHash := sha256Hex(managedEnvironmentJSON)
 
 	catalog, err := coredb.EmbeddedMigrations()
 	if err != nil || len(catalog) == 0 {
@@ -78,7 +87,9 @@ func Render(config LoadedConfig) (Bundle, error) {
 	context := renderContext{
 		config: config, bootstrapJSON: bootstrapJSON, workerJSON: workerJSON,
 		networkGuardJSON: networkGuardJSON, bootstrapHash: bootstrapHash,
-		harnessConfigHash: harnessConfigHash, harnessDeploymentHash: harnessDeploymentHash,
+		managedEnvironmentJSON: managedEnvironmentJSON,
+		managedEnvironmentHash: managedEnvironmentHash,
+		harnessConfigHash:      harnessConfigHash, harnessDeploymentHash: harnessDeploymentHash,
 		documentHash: documentHash, migrationVersion: migrationVersion,
 		bootstrapConfigName:   "agentserver-bootstrap-" + bootstrapHash[:12],
 		harnessConfigName:     "agentserver-harness-" + harnessConfigHash[:12],
@@ -86,6 +97,10 @@ func Render(config LoadedConfig) (Bundle, error) {
 		hydraMigrationJobName: "agentserver-hydra-migrate-v26-2-0",
 		hydraSetupJobName:     "agentserver-hydra-client-setup-" + documentHash[:12],
 		bootstrapJobName:      "agentserver-bootstrap-" + bootstrapHash[:12],
+	}
+	if managedExecutionActive(config.Document.Managed) {
+		context.managedEnvironmentConfigName = "agentserver-managed-environment-" + managedEnvironmentHash[:12]
+		context.managedEnvironmentJobName = "agentserver-managed-environment-" + managedEnvironmentHash[:12]
 	}
 
 	runtimeItems, err := renderRuntime(context)
@@ -101,8 +116,19 @@ func Render(config LoadedConfig) (Bundle, error) {
 		{name: migrationFile, items: []kubeObject{renderMigrationJob(context)}},
 		{name: hydraSetupFile, items: []kubeObject{renderHydraClientSetupJob(context)}},
 		{name: bootstrapFile, items: []kubeObject{renderBootstrapJob(context)}},
-		{name: runtimeFile, items: runtimeItems},
 	}
+	if managedExecutionActive(config.Document.Managed) {
+		groups = append(groups,
+			struct {
+				name  string
+				items []kubeObject
+			}{name: managedEnvironmentBootstrapFile, items: []kubeObject{renderManagedEnvironmentBootstrapJob(context)}},
+		)
+	}
+	groups = append(groups, struct {
+		name  string
+		items []kubeObject
+	}{name: runtimeFile, items: runtimeItems})
 	files := make([]RenderedFile, 0, len(groups)+1)
 	for _, group := range groups {
 		content, err := marshalKubernetesList(group.items)
@@ -120,21 +146,45 @@ func Render(config LoadedConfig) (Bundle, error) {
 }
 
 type renderContext struct {
-	config                LoadedConfig
-	bootstrapJSON         []byte
-	workerJSON            []byte
-	networkGuardJSON      []byte
-	bootstrapHash         string
-	harnessConfigHash     string
-	harnessDeploymentHash string
-	documentHash          string
-	migrationVersion      int64
-	bootstrapConfigName   string
-	harnessConfigName     string
-	migrationJobName      string
-	hydraMigrationJobName string
-	hydraSetupJobName     string
-	bootstrapJobName      string
+	config                       LoadedConfig
+	bootstrapJSON                []byte
+	workerJSON                   []byte
+	networkGuardJSON             []byte
+	managedEnvironmentJSON       []byte
+	bootstrapHash                string
+	harnessConfigHash            string
+	harnessDeploymentHash        string
+	documentHash                 string
+	managedEnvironmentHash       string
+	migrationVersion             int64
+	bootstrapConfigName          string
+	harnessConfigName            string
+	migrationJobName             string
+	hydraMigrationJobName        string
+	hydraSetupJobName            string
+	bootstrapJobName             string
+	managedEnvironmentConfigName string
+	managedEnvironmentJobName    string
+}
+
+type managedEnvironmentBootstrapJSON struct {
+	Version           int                                 `json:"version"`
+	WorkspaceID       string                              `json:"workspaceId"`
+	ExecutorID        string                              `json:"executorId"`
+	EnvironmentID     string                              `json:"environmentId"`
+	OwnerPolicySHA256 string                              `json:"ownerPolicySha256"`
+	Root              ManagedEnvironmentRootDocument      `json:"root"`
+	Runtime           ManagedCompatibilityRuntimeDocument `json:"runtime"`
+}
+
+func renderManagedEnvironmentBootstrapJSON(config LoadedConfig) ([]byte, error) {
+	document := config.Document
+	return marshalCanonicalDocument(managedEnvironmentBootstrapJSON{
+		Version: 1, WorkspaceID: document.Bootstrap.WorkspaceID, ExecutorID: document.Bootstrap.ExecutorID,
+		EnvironmentID:     document.Managed.Environment.EnvironmentID,
+		OwnerPolicySHA256: config.ManagedOwnerPolicySHA256,
+		Root:              document.Managed.Environment.Root, Runtime: document.Managed.Environment.Compatibility,
+	})
 }
 
 type productionBootstrapJSON struct {
@@ -164,23 +214,29 @@ func renderBootstrapJSON(config LoadedConfig) ([]byte, error) {
 }
 
 type workerDeploymentJSON struct {
-	Version                int                `json:"version"`
-	RunManifestKeyringFile string             `json:"runManifestKeyringFile"`
-	RuntimeManifestFile    string             `json:"runtimeManifestFile"`
-	RuntimeBundleRoot      string             `json:"runtimeBundleRoot"`
-	FinalExec              workerArtifactJSON `json:"finalExec"`
-	CodexConfigProfile     string             `json:"codexConfigProfile"`
-	WorkerUID              uint32             `json:"workerUid"`
-	WorkerGID              uint32             `json:"workerGid"`
-	AppUID                 uint32             `json:"appUid"`
-	AppGID                 uint32             `json:"appGid"`
-	TLS                    workerTLSJSON      `json:"tls"`
+	Version                int                     `json:"version"`
+	RunManifestKeyringFile string                  `json:"runManifestKeyringFile"`
+	RuntimeManifestFile    string                  `json:"runtimeManifestFile"`
+	RuntimeBundleRoot      string                  `json:"runtimeBundleRoot"`
+	FinalExec              workerArtifactJSON      `json:"finalExec"`
+	ManagedSkill           *workerTextArtifactJSON `json:"managedSkill,omitempty"`
+	CodexConfigProfile     string                  `json:"codexConfigProfile"`
+	WorkerUID              uint32                  `json:"workerUid"`
+	WorkerGID              uint32                  `json:"workerGid"`
+	AppUID                 uint32                  `json:"appUid"`
+	AppGID                 uint32                  `json:"appGid"`
+	TLS                    workerTLSJSON           `json:"tls"`
 }
 
 type workerArtifactJSON struct {
 	Path      string `json:"path"`
 	SHA256    string `json:"sha256"`
 	SizeBytes int64  `json:"sizeBytes"`
+}
+
+type workerTextArtifactJSON struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
 }
 
 type workerTLSJSON struct {
@@ -190,8 +246,8 @@ type workerTLSJSON struct {
 }
 
 func renderWorkerDeploymentJSON(config LoadedConfig) ([]byte, error) {
-	return marshalCanonicalDocument(workerDeploymentJSON{
-		Version:                1,
+	document := workerDeploymentJSON{
+		Version:                2,
 		RunManifestKeyringFile: workerMaterialPath("run-manifest-keyring.json"),
 		RuntimeManifestFile:    "/opt/agentserver/runtime/runtime-manifest.json",
 		RuntimeBundleRoot:      "/opt/agentserver/runtime/bundle",
@@ -205,7 +261,14 @@ func renderWorkerDeploymentJSON(config LoadedConfig) ([]byte, error) {
 			CAFile: workerMaterialPath("ca.crt"), CertificateFile: workerMaterialPath("tls.crt"),
 			KeyFile: workerMaterialPath("tls.key"),
 		},
-	})
+	}
+	if managedLarkEnabled(config.Document.Managed) {
+		document.ManagedSkill = &workerTextArtifactJSON{
+			Path:   managedLarkSkillPath,
+			SHA256: config.Document.Managed.Lark.SkillSHA256,
+		}
+	}
+	return marshalCanonicalDocument(document)
 }
 
 type networkGuardJSON struct {

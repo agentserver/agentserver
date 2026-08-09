@@ -29,6 +29,7 @@ type RunLaunchState struct {
 	PreviousCheckpoint *RunLaunchCheckpoint
 	ExecutorPolicy     ExecutorCatalogPolicy
 	LLMGateway         *RunLLMGatewayBinding
+	LarkEgress         *RunLarkEgressBinding
 }
 
 type RunLLMGatewayBinding struct {
@@ -36,6 +37,13 @@ type RunLLMGatewayBinding struct {
 	ConfigVersion int64
 	GrantUserID   string
 	Model         string
+}
+
+type RunLarkEgressBinding struct {
+	GrantID      string
+	GrantVersion int64
+	GrantUserID  string
+	PolicySHA256 string
 }
 
 type RunLaunchStateSource interface {
@@ -59,6 +67,7 @@ type RunLaunchProfile struct {
 	ControllerCallbackEndpoint string
 	ControllerCallbackIdentity string
 	ControllerCallbackAudience string
+	ManagedSandbox             *ManagedSandboxLaunchSpec
 }
 
 // ConfiguredRunLaunchInputResolver combines authority-derived mutable state
@@ -113,6 +122,13 @@ func (profile RunLaunchProfile) inputs(state RunLaunchState) (RunLaunchInputs, e
 			state.PreviousCheckpoint.Checkpoint.CheckpointAllowlistVersion != int64(profile.CheckpointAllowlistVersion) {
 			return RunLaunchInputs{}, errors.New("previous checkpoint runtime manifest or allowlist version does not match the deployment profile")
 		}
+		wantPackSetDigest := ""
+		if profile.ManagedSandbox != nil {
+			wantPackSetDigest = profile.ManagedSandbox.PackSetDigest
+		}
+		if state.PreviousCheckpoint.Checkpoint.PackSetDigest != wantPackSetDigest {
+			return RunLaunchInputs{}, errors.New("previous checkpoint pack-set digest does not match the deployment profile")
+		}
 		proposal, err := BuildExecutorCatalog(policy)
 		if err != nil {
 			return RunLaunchInputs{}, err
@@ -155,6 +171,7 @@ func (profile RunLaunchProfile) inputs(state RunLaunchState) (RunLaunchInputs, e
 		ControllerCallbackEndpoint: profile.ControllerCallbackEndpoint,
 		ControllerCallbackIdentity: profile.ControllerCallbackIdentity,
 		ControllerCallbackAudience: profile.ControllerCallbackAudience,
+		ManagedSandbox:             cloneManagedSandboxLaunchSpec(profile.ManagedSandbox),
 	}, nil
 }
 
@@ -205,6 +222,11 @@ func validateResolvedRunLaunchInputs(scheduled ScheduledRunAttempt, inputs RunLa
 	if (inputs.PreviousCheckpoint == nil) != (inputs.PreviousBrainToolCatalog == nil) {
 		return errors.New("previous checkpoint and brain tool catalog authority must be supplied together")
 	}
+	if inputs.ManagedSandbox != nil {
+		if err := validateManagedSandboxLaunch(scheduled, *inputs.ManagedSandbox); err != nil {
+			return err
+		}
+	}
 	proposal, err := BuildExecutorCatalog(inputs.ExecutorCatalogPolicy)
 	if err != nil {
 		return err
@@ -231,7 +253,8 @@ func validateResolvedRunLaunchInputs(scheduled ScheduledRunAttempt, inputs RunLa
 		ExecutorPolicy: runmanifest.ExecutorPolicy{
 			Version: proposal.PolicyVersion, ContextDigest: hex.EncodeToString(proposal.PolicyContextDigest[:]),
 		},
-		Limits: inputs.Limits, CheckpointAllowlistVersion: inputs.CheckpointAllowlistVersion,
+		ToolPack: managedToolPackAuthority(inputs.ManagedSandbox),
+		Limits:   inputs.Limits, CheckpointAllowlistVersion: inputs.CheckpointAllowlistVersion,
 		WorkerImageDigest: inputs.WorkerImageDigest, ExpectedServiceAccount: inputs.ExpectedServiceAccount,
 		ControllerCallback: runmanifest.ControllerCallback{
 			Endpoint: inputs.ControllerCallbackEndpoint, TLSIdentity: inputs.ControllerCallbackIdentity,

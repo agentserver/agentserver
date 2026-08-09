@@ -53,7 +53,8 @@ func TestUserOAuthRoleCompilationIsLeastPrivilegeAndCanonical(t *testing.T) {
 			wantWorkspace = append(wantWorkspace, permission)
 		}
 	}
-	if !slices.Equal(platformOwner, wantWorkspace) || len(global) != 2 {
+	if !slices.Equal(platformOwner, wantWorkspace) || len(global) != 3 ||
+		!containsPermission(global, PlatformOAuthCredentialsReadScope) {
 		t.Fatalf("Platform owner/global permissions = %v / %v", platformOwner, global)
 	}
 	developer, _ := PlatformOAuthWorkspacePermissions("developer")
@@ -75,6 +76,11 @@ func TestUserOAuthRoleCompilationIsLeastPrivilegeAndCanonical(t *testing.T) {
 	if _, ok := BrowserOAuthWorkspacePermissions("future-role"); ok {
 		t.Fatal("unknown workspace role received Browser permissions")
 	}
+}
+
+func containsPermission(permissions map[string]struct{}, want string) bool {
+	_, ok := permissions[want]
+	return ok
 }
 
 func assertOAuthScopeRegistry(t *testing.T, name string, scopes []string, actions map[string]UserOAuthActionAuthority) {

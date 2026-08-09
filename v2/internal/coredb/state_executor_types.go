@@ -27,8 +27,11 @@ const (
 )
 
 type ListOnlineExecutorEnvironmentsQuery struct {
-	WorkspaceID string
-	ExecutorID  string
+	WorkspaceID          string
+	SessionID            string
+	RunAttemptID         string
+	RunAttemptGeneration int64
+	ExecutorID           string
 }
 
 type OnlineExecutorEnvironment struct {
@@ -40,6 +43,9 @@ type OnlineExecutorEnvironment struct {
 	InsecureDev          bool
 	EnvironmentVersion   int64
 	ConnectionGeneration int64
+	BackendKind          string
+	TargetID             string
+	TargetGeneration     int64
 }
 
 // ExecutorEnvironmentDeclaration is the build and profile identity asserted

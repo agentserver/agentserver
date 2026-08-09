@@ -48,6 +48,13 @@ func (queries StateStoreRunLaunchStateQueries) ResolveRunLaunchState(ctx context
 			GrantUserID: resolved.LLMGateway.GrantUserID, Model: resolved.LLMGateway.Model,
 		}
 	}
+	if resolved.LarkEgress != (coredb.RunLarkEgressBinding{}) {
+		response.LarkEgress = &corecontract.RunLaunchLarkEgressState{
+			GrantID: resolved.LarkEgress.GrantID, GrantVersion: resolved.LarkEgress.GrantVersion,
+			GrantUserID:  resolved.LarkEgress.GrantUserID,
+			PolicySHA256: hex.EncodeToString(resolved.LarkEgress.PolicySHA256[:]),
+		}
+	}
 	if resolved.PreviousCheckpoint != nil {
 		checkpoint := resolved.PreviousCheckpoint
 		response.PreviousCheckpoint = &corecontract.RunLaunchCheckpointState{
@@ -60,6 +67,7 @@ func (queries StateStoreRunLaunchStateQueries) ResolveRunLaunchState(ctx context
 			Object:                     databaseRunLaunchObjectPointer(checkpoint.Object),
 			CodexRuntimeManifestDigest: hex.EncodeToString(checkpoint.CodexRuntimeManifestDigest[:]),
 			CheckpointAllowlistVersion: checkpoint.CheckpointAllowlistVersion,
+			PackSetDigest:              encodeOptionalCanonicalSHA256(checkpoint.PackSetDigest),
 		}
 	}
 	return response, nil

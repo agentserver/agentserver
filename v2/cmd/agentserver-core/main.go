@@ -25,12 +25,13 @@ const (
 type serveFunc func(context.Context, func(string) string, io.Writer, io.Writer, coreServeMode) error
 type bootstrapFunc func(context.Context, string, string) (developmentBootstrapResult, error)
 type productionBootstrapFunc func(context.Context, string, string) (productionBootstrapCommandResult, error)
-
+type managedEnvironmentBootstrapFunc func(context.Context, string, string) (managedEnvironmentProfileCommandResult, error)
 type commandFunctions struct {
-	migrate             migrateFunc
-	serve               serveFunc
-	bootstrap           bootstrapFunc
-	bootstrapProduction productionBootstrapFunc
+	migrate                     migrateFunc
+	serve                       serveFunc
+	bootstrap                   bootstrapFunc
+	bootstrapProduction         productionBootstrapFunc
+	bootstrapManagedEnvironment managedEnvironmentBootstrapFunc
 }
 
 func main() {
@@ -38,7 +39,7 @@ func main() {
 	defer stop()
 	os.Exit(run(ctx, os.Args[1:], os.Getenv, os.Stdout, os.Stderr, commandFunctions{
 		migrate: coredb.Migrate, serve: serveCore, bootstrap: bootstrapDevelopment,
-		bootstrapProduction: bootstrapProduction,
+		bootstrapProduction: bootstrapProduction, bootstrapManagedEnvironment: bootstrapManagedEnvironmentProfile,
 	}))
 }
 
@@ -112,6 +113,37 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 		}
 		return 0
 	}
+	if args[0] == "bootstrap-managed-environment" {
+		valid := len(args) == 2 && strings.HasPrefix(args[1], "--config=") && strings.TrimPrefix(args[1], "--config=") != ""
+		if !valid {
+			writeCoreUsage(stderr)
+			return 2
+		}
+		databaseURL := getenv(databaseURLEnvironment)
+		if strings.TrimSpace(databaseURL) == "" {
+			fmt.Fprintf(stderr, "agentserver-core bootstrap-managed-environment: %s is required\n", databaseURLEnvironment)
+			return 2
+		}
+		if commands.bootstrapManagedEnvironment == nil {
+			fmt.Fprintln(stderr, "agentserver-core bootstrap-managed-environment: command is unavailable")
+			return 1
+		}
+		result, err := commands.bootstrapManagedEnvironment(ctx, databaseURL, strings.TrimPrefix(args[1], "--config="))
+		if err != nil {
+			fmt.Fprintf(stderr, "agentserver-core bootstrap-managed-environment: %v\n", err)
+			return 1
+		}
+		action := "already present"
+		if result.Bootstrap.Created {
+			action = "created"
+		}
+		fmt.Fprintf(
+			stdout,
+			"agentserver-core bootstrap-managed-environment: workspace %s executor %s environment %s; schema %04d; %s\n",
+			result.WorkspaceID, result.ExecutorID, result.EnvironmentID, result.Bootstrap.SchemaVersion, action,
+		)
+		return 0
+	}
 	if args[0] != "migrate" || len(args) != 1 {
 		writeCoreUsage(stderr)
 		return 2
@@ -141,4 +173,5 @@ func writeCoreUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "       agentserver-core serve --insecure-dev")
 	fmt.Fprintln(writer, "       agentserver-core bootstrap --config=/absolute/path")
 	fmt.Fprintln(writer, "       agentserver-core bootstrap --insecure-dev --config=/absolute/path")
+	fmt.Fprintln(writer, "       agentserver-core bootstrap-managed-environment --config=/absolute/path")
 }

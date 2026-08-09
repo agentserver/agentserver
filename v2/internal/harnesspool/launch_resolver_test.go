@@ -123,6 +123,56 @@ func TestConfiguredRunLaunchInputResolverRejectsProfileAndDynamicDrift(t *testin
 	}
 }
 
+func TestConfiguredRunLaunchInputResolverBindsManagedPackAcrossResume(t *testing.T) {
+	base := testRunLaunchInputs()
+	managed := poolTestManagedSandboxSpec()
+	base.ManagedSandbox = &managed
+	profile := launchProfileFromInputs(base)
+	profile.ManagedSandbox = &managed
+	proposal, err := BuildExecutorCatalog(base.ExecutorCatalogPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := runmanifest.PreviousCheckpoint{
+		CheckpointID: "47000000-0000-4000-8000-000000000004",
+		RunID:        "4c000000-0000-4000-8000-000000000004", RunAttemptID: "4d000000-0000-4000-8000-000000000004",
+		RunAttemptGeneration: 2, ThreadID: "thread-managed", TurnID: "turn-managed",
+		ManifestDigest: strings.Repeat("d", 64), CatalogDigest: proposal.Catalog.Digest(),
+		CodexRuntimeManifestDigest: base.CodexRuntimeManifestDigest,
+		CheckpointAllowlistVersion: int64(base.CheckpointAllowlistVersion),
+		PackSetDigest:              managed.PackSetDigest,
+		Object: runmanifest.ObjectPointer{
+			ObjectID: "48000000-0000-4000-8000-000000000004", SHA256: strings.Repeat("e", 64),
+			SizeBytes: 1024, MediaType: "application/vnd.agentserver.codex-checkpoint.v1",
+		},
+	}
+	source := &recordingRunLaunchStateSource{state: RunLaunchState{
+		Prompt: base.Prompt,
+		PreviousCheckpoint: &RunLaunchCheckpoint{
+			Checkpoint: checkpoint,
+			Catalog:    resolverCheckpointCatalog(proposal, checkpoint.ThreadID),
+		},
+		ExecutorPolicy: base.ExecutorCatalogPolicy,
+	}}
+	resolver, err := NewConfiguredRunLaunchInputResolver(source, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduled := ScheduledRunAttempt{Dispatch: testControllerDispatch("starting"), Claim: testControllerClaim()}
+	resolved, err := resolver.ResolveRunLaunch(t.Context(), scheduled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.ManagedSandbox == nil || resolved.ManagedSandbox.PackSetDigest != managed.PackSetDigest {
+		t.Fatalf("resolved managed sandbox = %+v", resolved.ManagedSandbox)
+	}
+
+	source.state.PreviousCheckpoint.Checkpoint.PackSetDigest = strings.Repeat("f", 64)
+	if _, err := resolver.ResolveRunLaunch(t.Context(), scheduled); err == nil || !strings.Contains(err.Error(), "pack-set digest") {
+		t.Fatalf("changed pack-set resume error = %v", err)
+	}
+}
+
 func resolverCheckpointCatalog(proposal ExecutorCatalogProposal, threadID string) BrainToolCatalog {
 	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	return BrainToolCatalog{

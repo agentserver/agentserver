@@ -432,7 +432,7 @@ FROM %s WHERE id = $1 FOR UPDATE`, s.table("executors"))
 
 func (s *StateStore) insertExecutorEnrollmentEnvironments(ctx context.Context, transaction pgx.Tx, operation string, command ClaimExecutorEnrollmentCommand) error {
 	var count int
-	countQuery := fmt.Sprintf("SELECT pg_catalog.count(*) FROM %s WHERE executor_id = $1", s.table("executor_environments"))
+	countQuery := fmt.Sprintf("SELECT pg_catalog.count(*) FROM %s WHERE executor_id = $1 AND backend_kind = 'agentx'", s.table("executor_environments"))
 	if err := transaction.QueryRow(ctx, countQuery, command.ExecutorID).Scan(&count); err != nil {
 		return databaseError(operation+" count existing environments", err)
 	}

@@ -27,6 +27,10 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 		OpenAPI  string                `json:"openapi"`
 		Security []map[string][]string `json:"security"`
 		Paths    map[string]struct {
+			Get struct {
+				OperationID string                `json:"operationId"`
+				Security    []map[string][]string `json:"security"`
+			} `json:"get"`
 			Post struct {
 				OperationID string                `json:"operationId"`
 				Security    []map[string][]string `json:"security"`
@@ -51,7 +55,7 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 	if document.OpenAPI != "3.1.0" || len(document.Security) != 1 {
 		t.Fatalf("internal OpenAPI identity/security = %q / %+v", document.OpenAPI, document.Security)
 	}
-	want := map[string]string{
+	wantPost := map[string]string{
 		CompleteExecutorEnrollmentPath:                               "completeExecutorEnrollment",
 		AuthorizeExecutorConnectionPath:                              "authorizeExecutorConnection",
 		ClaimRunDispatchesPath:                                       "claimRunDispatches",
@@ -90,15 +94,35 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 		IssueRunCapabilitiesPath:                                     "issueRunCapabilities",
 		AuthorizeExecutorRunCapabilityPath:                           "authorizeExecutorRunCapability",
 		AuthorizeLLMProxyRunCapabilityPath:                           "authorizeLLMProxyRunCapability",
+		ReserveManagedSandboxPath:                                    "reserveManagedSandbox",
+		ListManagedSandboxesForReconcilePath:                         "listManagedSandboxesForReconcile",
+		BeginManagedSandboxCreatePath("{sandboxId}"):                 "beginManagedSandboxCreate",
+		ObserveManagedSandboxPath("{sandboxId}"):                     "observeManagedSandbox",
+		RenewManagedSandboxActivityPath("{sandboxId}"):               "renewManagedSandboxActivity",
+		ReleaseManagedSandboxActivityPath("{sandboxId}"):             "releaseManagedSandboxActivity",
+		BeginManagedSandboxDeletePath("{sandboxId}"):                 "beginManagedSandboxDelete",
+		AuthorizeManagedSandboxOperationPath:                         "authorizeManagedSandboxOperation",
+		ResolveEgressCredentialAuthorityPath:                         "resolveEgressCredentialAuthority",
+		ResolveEgressCredentialPath:                                  "resolveEgressCredential",
+		RecordEgressCredentialAuditPath:                              "recordEgressCredentialAuditEvent",
 	}
-	for path, operationID := range want {
+	for path, operationID := range wantPost {
 		operation, found := document.Paths[path]
 		if !found || operation.Post.OperationID != operationID {
 			t.Errorf("internal OpenAPI path %q = %+v, want operationId %q", path, operation, operationID)
 		}
 	}
-	if len(document.Paths) != len(want) {
-		t.Fatalf("internal OpenAPI path count = %d, want %d", len(document.Paths), len(want))
+	wantGet := map[string]string{
+		ManagedSandboxPath("{sandboxId}"): "getManagedSandbox",
+	}
+	for path, operationID := range wantGet {
+		operation, found := document.Paths[path]
+		if !found || operation.Get.OperationID != operationID {
+			t.Errorf("internal OpenAPI GET path %q = %+v, want operationId %q", path, operation, operationID)
+		}
+	}
+	if len(document.Paths) != len(wantPost)+len(wantGet) {
+		t.Fatalf("internal OpenAPI path count = %d, want %d", len(document.Paths), len(wantPost)+len(wantGet))
 	}
 	if len(document.Components.SecuritySchemes) != 4 || document.Components.SecuritySchemes["workloadMTLS"] == nil ||
 		document.Components.SecuritySchemes["runCapabilityBearer"] == nil ||
@@ -141,11 +165,38 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "AuthorizeLLMProxyRunCapabilityRequest", reflect.TypeFor[AuthorizeLLMProxyRunCapabilityRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "AuthorizeRunCapabilityResponse", reflect.TypeFor[AuthorizeRunCapabilityResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "AuthorizeLLMProxyRunCapabilityResponse", reflect.TypeFor[AuthorizeLLMProxyRunCapabilityResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "ManagedSandboxState", reflect.TypeFor[ManagedSandboxState]())
+	assertSchemaFields(t, document.Components.Schemas, "ReserveManagedSandboxRequest", reflect.TypeFor[ReserveManagedSandboxRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "ReserveManagedSandboxResponse", reflect.TypeFor[ReserveManagedSandboxResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "GetManagedSandboxResponse", reflect.TypeFor[GetManagedSandboxResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "BeginManagedSandboxCreateRequest", reflect.TypeFor[BeginManagedSandboxCreateRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "ObserveManagedSandboxRequest", reflect.TypeFor[ObserveManagedSandboxRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "RenewManagedSandboxActivityRequest", reflect.TypeFor[RenewManagedSandboxActivityRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "ReleaseManagedSandboxActivityRequest", reflect.TypeFor[ReleaseManagedSandboxActivityRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "BeginManagedSandboxDeleteRequest", reflect.TypeFor[BeginManagedSandboxDeleteRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "ManagedSandboxMutationResponse", reflect.TypeFor[ManagedSandboxMutationResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "ListManagedSandboxesForReconcileRequest", reflect.TypeFor[ListManagedSandboxesForReconcileRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "ListManagedSandboxesForReconcileResponse", reflect.TypeFor[ListManagedSandboxesForReconcileResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "AuthorizeManagedSandboxOperationRequest", reflect.TypeFor[AuthorizeManagedSandboxOperationRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "AuthorizeManagedSandboxOperationResponse", reflect.TypeFor[AuthorizeManagedSandboxOperationResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "EgressCredentialOperation", reflect.TypeFor[EgressCredentialOperation]())
+	assertSchemaFields(t, document.Components.Schemas, "ResolveEgressCredentialAuthorityRequest", reflect.TypeFor[ResolveEgressCredentialAuthorityRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "ResolveEgressCredentialAuthorityResponse", reflect.TypeFor[ResolveEgressCredentialAuthorityResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "ResolveEgressCredentialRequest", reflect.TypeFor[ResolveEgressCredentialRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "ResolveEgressCredentialResponse", reflect.TypeFor[ResolveEgressCredentialResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "RecordEgressCredentialAuditRequest", reflect.TypeFor[RecordEgressCredentialAuditRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "RecordEgressCredentialAuditResponse", reflect.TypeFor[RecordEgressCredentialAuditResponse]())
 	var upstreamAuthorizationProperty struct {
 		Sensitive bool `json:"x-agentserver-sensitive"`
 	}
 	if err := json.Unmarshal(document.Components.Schemas["AuthorizeLLMProxyRunCapabilityResponse"].Properties["upstreamAuthorization"], &upstreamAuthorizationProperty); err != nil || !upstreamAuthorizationProperty.Sensitive {
 		t.Errorf("llmproxy upstream authorization sensitivity contract = %+v, %v", upstreamAuthorizationProperty, err)
+	}
+	var credentialHeadersProperty struct {
+		Sensitive bool `json:"x-agentserver-sensitive"`
+	}
+	if err := json.Unmarshal(document.Components.Schemas["ResolveEgressCredentialResponse"].Properties["headers"], &credentialHeadersProperty); err != nil || !credentialHeadersProperty.Sensitive {
+		t.Errorf("egress credential header sensitivity contract = %+v, %v", credentialHeadersProperty, err)
 	}
 	assertSchemaFields(t, document.Components.Schemas, "AcquireExecutorConnectionRequest", reflect.TypeFor[AcquireExecutorConnectionRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "RenewExecutorConnectionRequest", reflect.TypeFor[RenewExecutorConnectionRequest]())
@@ -194,6 +245,8 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "RunLaunchObjectPointer", reflect.TypeFor[RunLaunchObjectPointer]())
 	assertSchemaFields(t, document.Components.Schemas, "RunLaunchCheckpointState", reflect.TypeFor[RunLaunchCheckpointState]())
 	assertSchemaFields(t, document.Components.Schemas, "RunLaunchExecutorPolicyState", reflect.TypeFor[RunLaunchExecutorPolicyState]())
+	assertSchemaFields(t, document.Components.Schemas, "RunLaunchLLMGatewayState", reflect.TypeFor[RunLaunchLLMGatewayState]())
+	assertSchemaFields(t, document.Components.Schemas, "RunLaunchLarkEgressState", reflect.TypeFor[RunLaunchLarkEgressState]())
 	assertSchemaFields(t, document.Components.Schemas, "ResolveRunLaunchStateResponse", reflect.TypeFor[ResolveRunLaunchStateResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "BrainToolCatalogState", reflect.TypeFor[BrainToolCatalogState]())
 	assertSchemaFields(t, document.Components.Schemas, "FreezeBrainToolCatalogRequest", reflect.TypeFor[FreezeBrainToolCatalogRequest]())
@@ -315,7 +368,14 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	llmGatewayCompletePath := CompleteLLMGatewayAuthorizationPath("{workspaceId}", "{gatewayId}")
 	llmGatewayRevokePath := RevokeLLMGatewayGrantPath("{workspaceId}", "{gatewayId}")
 	llmGatewayDisablePath := DisableLLMGatewayPath("{workspaceId}", "{gatewayId}")
-	if len(document.Paths) != 22 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
+	credentialSchemasPath := WorkspaceCredentialProviderSchemasPath
+	credentialCollectionPath := WorkspaceCredentialCollectionRoutePattern
+	credentialResourcePath := WorkspaceCredentialResourceRoutePattern
+	credentialRotatePath := "/v2/workspaces/{workspaceId}/credentials/{kind}/{bindingId}:rotate"
+	credentialRevokePath := "/v2/workspaces/{workspaceId}/credentials/{kind}/{bindingId}:revoke"
+	credentialDeletePath := "/v2/workspaces/{workspaceId}/credentials/{kind}/{bindingId}:delete"
+	credentialDefaultPath := "/v2/workspaces/{workspaceId}/credentials/{kind}/{bindingId}:setDefault"
+	if len(document.Paths) != 29 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
 		document.Paths[cancelPath].Post.OperationID != "cancelUserRun" || document.Paths[readPath].Get.OperationID != "readUserRunEvents" {
 		t.Fatalf("public OpenAPI paths = %+v", document.Paths)
 	}
@@ -382,6 +442,16 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 		document.Paths[llmGatewayDisablePath].Post.OperationID != "disableWorkspaceLLMGateway" {
 		t.Fatalf("public workspace LLM Gateway paths = %+v", document.Paths)
 	}
+	if document.Paths[credentialSchemasPath].Get.OperationID != "listCredentialProviderSchemas" ||
+		document.Paths[credentialCollectionPath].Get.OperationID != "listWorkspaceCredentials" ||
+		document.Paths[credentialCollectionPath].Post.OperationID != "createWorkspaceCredential" ||
+		document.Paths[credentialResourcePath].Patch.OperationID != "renameWorkspaceCredential" ||
+		document.Paths[credentialRotatePath].Post.OperationID != "rotateWorkspaceCredential" ||
+		document.Paths[credentialRevokePath].Post.OperationID != "revokeWorkspaceCredential" ||
+		document.Paths[credentialDeletePath].Post.OperationID != "deleteWorkspaceCredential" ||
+		document.Paths[credentialDefaultPath].Post.OperationID != "setDefaultWorkspaceCredential" {
+		t.Fatalf("public workspace credential paths = %+v", document.Paths)
+	}
 	for _, authority := range []struct {
 		security   []map[string][]string
 		permission string
@@ -397,6 +467,24 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 		if len(authority.security) != 1 || len(authority.security[0]) != 2 || authority.security[0]["platformGatewayMTLS"] == nil ||
 			!slices.Equal(authority.security[0]["platformOAuth"], []string{authority.permission}) {
 			t.Errorf("public workspace LLM Gateway security = %+v", authority.security)
+		}
+	}
+	for _, authority := range []struct {
+		security   []map[string][]string
+		permission string
+	}{
+		{document.Paths[credentialSchemasPath].Get.Security, PlatformOAuthCredentialsReadScope},
+		{document.Paths[credentialCollectionPath].Get.Security, PlatformOAuthCredentialsReadScope},
+		{document.Paths[credentialCollectionPath].Post.Security, PlatformOAuthCredentialsManageScope},
+		{document.Paths[credentialResourcePath].Patch.Security, PlatformOAuthCredentialsManageScope},
+		{document.Paths[credentialRotatePath].Post.Security, PlatformOAuthCredentialsManageScope},
+		{document.Paths[credentialRevokePath].Post.Security, PlatformOAuthCredentialsManageScope},
+		{document.Paths[credentialDeletePath].Post.Security, PlatformOAuthCredentialsManageScope},
+		{document.Paths[credentialDefaultPath].Post.Security, PlatformOAuthCredentialsManageScope},
+	} {
+		if len(authority.security) != 1 || len(authority.security[0]) != 2 || authority.security[0]["platformGatewayMTLS"] == nil ||
+			!slices.Equal(authority.security[0]["platformOAuth"], []string{authority.permission}) {
+			t.Errorf("public workspace credential security = %+v", authority.security)
 		}
 	}
 	for _, authority := range []struct {
@@ -456,6 +544,38 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "CompleteWorkspaceLLMGatewayAuthorizationResponse", reflect.TypeFor[CompleteWorkspaceLLMGatewayAuthorizationResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "RevokeWorkspaceLLMGatewayGrantResponse", reflect.TypeFor[RevokeWorkspaceLLMGatewayGrantResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "DisableWorkspaceLLMGatewayResponse", reflect.TypeFor[DisableWorkspaceLLMGatewayResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "WorkspaceCredentialProviderSchema", reflect.TypeFor[WorkspaceCredentialProviderSchema]())
+	assertSchemaFields(t, document.Components.Schemas, "ListWorkspaceCredentialProviderSchemasResponse", reflect.TypeFor[ListWorkspaceCredentialProviderSchemasResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "WorkspaceCredentialMetadata", reflect.TypeFor[WorkspaceCredentialMetadata]())
+	assertSchemaFields(t, document.Components.Schemas, "ListWorkspaceCredentialsResponse", reflect.TypeFor[ListWorkspaceCredentialsResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "CreateWorkspaceCredentialRequest", reflect.TypeFor[CreateWorkspaceCredentialRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "CreateWorkspaceCredentialResponse", reflect.TypeFor[CreateWorkspaceCredentialResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "RotateWorkspaceCredentialRequest", reflect.TypeFor[RotateWorkspaceCredentialRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "RotateWorkspaceCredentialResponse", reflect.TypeFor[RotateWorkspaceCredentialResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "RenameWorkspaceCredentialRequest", reflect.TypeFor[RenameWorkspaceCredentialRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "RenameWorkspaceCredentialResponse", reflect.TypeFor[RenameWorkspaceCredentialResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "RevokeWorkspaceCredentialRequest", reflect.TypeFor[RevokeWorkspaceCredentialRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "RevokeWorkspaceCredentialResponse", reflect.TypeFor[RevokeWorkspaceCredentialResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "DeleteWorkspaceCredentialRequest", reflect.TypeFor[DeleteWorkspaceCredentialRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "DeleteWorkspaceCredentialResponse", reflect.TypeFor[DeleteWorkspaceCredentialResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "SetDefaultWorkspaceCredentialRequest", reflect.TypeFor[SetDefaultWorkspaceCredentialRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "SetDefaultWorkspaceCredentialResponse", reflect.TypeFor[SetDefaultWorkspaceCredentialResponse]())
+	var rawDocument struct {
+		Components struct {
+			Schemas map[string]json.RawMessage `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(raw, &rawDocument); err != nil {
+		t.Fatalf("decode public OpenAPI raw credential schema: %v", err)
+	}
+	var workspaceCredentialSecret struct {
+		WriteOnly bool `json:"writeOnly"`
+		Sensitive bool `json:"x-agentserver-sensitive"`
+	}
+	if err := json.Unmarshal(rawDocument.Components.Schemas["WorkspaceCredentialSecret"], &workspaceCredentialSecret); err != nil ||
+		!workspaceCredentialSecret.WriteOnly || !workspaceCredentialSecret.Sensitive {
+		t.Errorf("workspace credential secret sensitivity contract = %+v, %v", workspaceCredentialSecret, err)
+	}
 	assertSchemaFields(t, document.Components.Schemas, "UserSessionState", reflect.TypeFor[UserSessionState]())
 	assertSchemaFields(t, document.Components.Schemas, "ListUserSessionsResponse", reflect.TypeFor[ListUserSessionsResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "CreateUserSessionRequest", reflect.TypeFor[CreateUserSessionRequest]())

@@ -234,6 +234,7 @@ type CheckpointCommit struct {
 	Object                     EventObjectPointer
 	CodexRuntimeManifestDigest [32]byte
 	CheckpointAllowlistVersion int64
+	PackSetDigest              *[32]byte
 }
 
 type CommitCheckpointRequest struct {
@@ -262,6 +263,7 @@ type CommittedCheckpoint struct {
 	Object                     EventObjectPointer
 	CodexRuntimeManifestDigest [32]byte
 	CheckpointAllowlistVersion int64
+	PackSetDigest              *[32]byte
 	CreatedAt                  time.Time
 }
 
@@ -546,6 +548,25 @@ func (client *CoreClient) ResolveRunLaunchState(ctx context.Context, scheduled S
 			GrantUserID: gateway.GrantUserID, Model: gateway.Model,
 		}
 	}
+	if response.LarkEgress != nil {
+		binding := response.LarkEgress
+		if err := validateUUIDIdentity("Lark grant ID", binding.GrantID); err != nil {
+			return RunLaunchState{}, fmt.Errorf("validate core launch-state response: %w", err)
+		}
+		if err := validateUUIDIdentity("Lark grant user ID", binding.GrantUserID); err != nil {
+			return RunLaunchState{}, fmt.Errorf("validate core launch-state response: %w", err)
+		}
+		if binding.GrantVersion < 1 || binding.GrantVersion > 1<<53-1 {
+			return RunLaunchState{}, errors.New("validate core launch-state response: Lark grant version is invalid")
+		}
+		if _, err := decodeClientSHA256(binding.PolicySHA256); err != nil {
+			return RunLaunchState{}, errors.New("validate core launch-state response: Lark policy digest is invalid")
+		}
+		state.LarkEgress = &RunLarkEgressBinding{
+			GrantID: binding.GrantID, GrantVersion: binding.GrantVersion,
+			GrantUserID: binding.GrantUserID, PolicySHA256: binding.PolicySHA256,
+		}
+	}
 	if response.PreviousCheckpoint == nil {
 		return state, nil
 	}
@@ -588,6 +609,10 @@ func (client *CoreClient) ResolveRunLaunchState(ctx context.Context, scheduled S
 	if err != nil {
 		return RunLaunchState{}, fmt.Errorf("validate core launch-state response runtime digest: %w", err)
 	}
+	packSetDigest, err := decodeOptionalClientSHA256(checkpoint.PackSetDigest)
+	if err != nil {
+		return RunLaunchState{}, fmt.Errorf("validate core launch-state response pack-set digest: %w", err)
+	}
 	object, err := clientRunLaunchObjectPointer("previous checkpoint object", checkpoint.Object)
 	if err != nil {
 		return RunLaunchState{}, fmt.Errorf("validate core launch-state response: %w", err)
@@ -606,6 +631,7 @@ func (client *CoreClient) ResolveRunLaunchState(ctx context.Context, scheduled S
 			ManifestDigest: hex.EncodeToString(manifestDigest[:]), CatalogDigest: hex.EncodeToString(catalogDigest[:]),
 			CodexRuntimeManifestDigest: hex.EncodeToString(runtimeDigest[:]),
 			CheckpointAllowlistVersion: checkpoint.CheckpointAllowlistVersion,
+			PackSetDigest:              encodeOptionalSHA256(packSetDigest),
 			Object:                     object,
 		},
 		Catalog: catalog,
@@ -803,6 +829,7 @@ func (client *CoreClient) CommitCheckpoint(ctx context.Context, request CommitCh
 			},
 			CodexRuntimeManifestDigest: hex.EncodeToString(checkpoint.CodexRuntimeManifestDigest[:]),
 			CheckpointAllowlistVersion: checkpoint.CheckpointAllowlistVersion,
+			PackSetDigest:              encodeOptionalSHA256(checkpoint.PackSetDigest),
 		},
 		Record: contractTransitionRecord(request.Record),
 	}
@@ -1179,6 +1206,10 @@ func clientCommittedCheckpoint(source corecontract.CheckpointState) (CommittedCh
 	if err != nil {
 		return CommittedCheckpoint{}, fmt.Errorf("runtime manifest digest: %w", err)
 	}
+	packSetDigest, err := decodeOptionalClientSHA256(source.PackSetDigest)
+	if err != nil {
+		return CommittedCheckpoint{}, fmt.Errorf("pack-set digest: %w", err)
+	}
 	for field, value := range map[string]string{
 		"checkpoint ID": source.CheckpointID, "workspace ID": source.WorkspaceID,
 		"session ID": source.SessionID, "run ID": source.RunID,
@@ -1206,7 +1237,8 @@ func clientCommittedCheckpoint(source corecontract.CheckpointState) (CommittedCh
 			Size: source.Object.Size, MediaType: source.Object.MediaType,
 		},
 		CodexRuntimeManifestDigest: runtimeDigest,
-		CheckpointAllowlistVersion: source.CheckpointAllowlistVersion, CreatedAt: source.CreatedAt,
+		CheckpointAllowlistVersion: source.CheckpointAllowlistVersion,
+		PackSetDigest:              packSetDigest, CreatedAt: source.CreatedAt,
 	}, nil
 }
 
@@ -1217,7 +1249,33 @@ func committedCheckpointMatchesRequest(checkpoint CommittedCheckpoint, request C
 		checkpoint.ThreadID == want.ThreadID && checkpoint.TurnID == want.TurnID &&
 		checkpoint.ManifestDigest == want.ManifestDigest && checkpoint.CatalogDigest == want.CatalogDigest &&
 		checkpoint.Object == want.Object && checkpoint.CodexRuntimeManifestDigest == want.CodexRuntimeManifestDigest &&
-		checkpoint.CheckpointAllowlistVersion == want.CheckpointAllowlistVersion
+		checkpoint.CheckpointAllowlistVersion == want.CheckpointAllowlistVersion &&
+		optionalSHA256Equal(checkpoint.PackSetDigest, want.PackSetDigest)
+}
+
+func encodeOptionalSHA256(value *[32]byte) string {
+	if value == nil {
+		return ""
+	}
+	return hex.EncodeToString(value[:])
+}
+
+func decodeOptionalClientSHA256(value string) (*[32]byte, error) {
+	if value == "" {
+		return nil, nil
+	}
+	decoded, err := decodeClientSHA256(value)
+	if err != nil {
+		return nil, err
+	}
+	return &decoded, nil
+}
+
+func optionalSHA256Equal(left, right *[32]byte) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 func contractLease(source corecontract.LeaseState) Lease {

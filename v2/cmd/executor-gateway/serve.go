@@ -23,44 +23,58 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 	"github.com/agentserver/agentserver/v2/internal/executorgateway"
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
 )
 
 const (
-	gatewayListenAddressEnvironment           = "AGENTSERVER_V2_EXECUTOR_GATEWAY_LISTEN_ADDR"
-	gatewayPublicListenAddressEnvironment     = "AGENTSERVER_V2_EXECUTOR_GATEWAY_PUBLIC_LISTEN_ADDR"
-	gatewayTLSCertificateEnvironment          = "AGENTSERVER_V2_EXECUTOR_GATEWAY_TLS_CERT_FILE"
-	gatewayTLSKeyEnvironment                  = "AGENTSERVER_V2_EXECUTOR_GATEWAY_TLS_KEY_FILE"
-	gatewayCoreURLEnvironment                 = "AGENTSERVER_V2_CORE_URL"
-	gatewayCoreCAEnvironment                  = "AGENTSERVER_V2_CORE_CA_FILE"
-	gatewayCoreClientCertificateEnvironment   = "AGENTSERVER_V2_CORE_CLIENT_CERT_FILE"
-	gatewayCoreClientKeyEnvironment           = "AGENTSERVER_V2_CORE_CLIENT_KEY_FILE"
-	gatewayCoreServerNameEnvironment          = "AGENTSERVER_V2_CORE_SERVER_NAME"
-	gatewaySPIFFEIdentityEnvironment          = "AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID"
-	gatewayExecutorIDEnvironment              = "AGENTSERVER_V2_EXECUTOR_ID"
-	gatewayCapabilityIssuerEnvironment        = "AGENTSERVER_V2_RUN_CAPABILITY_ISSUER"
-	gatewayCapabilityKeyringEnvironment       = "AGENTSERVER_V2_RUN_CAPABILITY_KEYRING_FILE"
-	gatewayDevExecutorIDEnvironment           = "AGENTSERVER_V2_DEV_EXECUTOR_ID"
-	gatewayDevWorkspaceIDEnvironment          = "AGENTSERVER_V2_DEV_WORKSPACE_ID"
-	gatewayDevActorIDEnvironment              = "AGENTSERVER_V2_DEV_ACTOR_ID"
-	gatewayDevRunIDEnvironment                = "AGENTSERVER_V2_DEV_RUN_ID"
-	gatewayDevRunAttemptIDEnvironment         = "AGENTSERVER_V2_DEV_RUN_ATTEMPT_ID"
-	gatewayDevRunAttemptGenerationEnvironment = "AGENTSERVER_V2_DEV_RUN_ATTEMPT_GENERATION"
-	gatewayDevRunHolderIDEnvironment          = "AGENTSERVER_V2_DEV_RUN_HOLDER_ID"
-	gatewayDevRunVersionEnvironment           = "AGENTSERVER_V2_DEV_RUN_VERSION"
-	gatewayDevRunAttemptVersionEnvironment    = "AGENTSERVER_V2_DEV_RUN_ATTEMPT_VERSION"
-	gatewayDevMaxApprovalTTLEnvironment       = "AGENTSERVER_V2_DEV_MAX_APPROVAL_TTL_MS"
-	gatewayDevToolCatalogDigestEnvironment    = "AGENTSERVER_V2_DEV_TOOL_CATALOG_DIGEST"
-	gatewayDevMCPBearerEnvironment            = "AGENTSERVER_V2_DEV_MCP_BEARER_TOKEN"
-	gatewayDevRunCapabilityKeyEnvironment     = "AGENTSERVER_V2_DEV_RUN_CAPABILITY_KEY"
-	gatewayExecutionPolicyVersionEnvironment  = "AGENTSERVER_V2_EXECUTION_POLICY_VERSION"
-	gatewayShellPolicyDecisionEnvironment     = "AGENTSERVER_V2_SHELL_POLICY_DECISION"
-	gatewayReadPolicyDecisionEnvironment      = "AGENTSERVER_V2_READ_FILE_POLICY_DECISION"
-	gatewayDevExecutorHeader                  = "X-Agentserver-Dev-Executor-Id"
-	maximumDevMCPBearerBytes                  = 16 * 1024
-	maximumGatewayTLSFileBytes                = int64(1024 * 1024)
-	gatewayStartupRecoveryTimeout             = 2 * time.Minute
+	gatewayListenAddressEnvironment            = "AGENTSERVER_V2_EXECUTOR_GATEWAY_LISTEN_ADDR"
+	gatewayPublicListenAddressEnvironment      = "AGENTSERVER_V2_EXECUTOR_GATEWAY_PUBLIC_LISTEN_ADDR"
+	gatewayTLSCertificateEnvironment           = "AGENTSERVER_V2_EXECUTOR_GATEWAY_TLS_CERT_FILE"
+	gatewayTLSKeyEnvironment                   = "AGENTSERVER_V2_EXECUTOR_GATEWAY_TLS_KEY_FILE"
+	gatewayCoreURLEnvironment                  = "AGENTSERVER_V2_CORE_URL"
+	gatewayCoreCAEnvironment                   = "AGENTSERVER_V2_CORE_CA_FILE"
+	gatewayCoreClientCertificateEnvironment    = "AGENTSERVER_V2_CORE_CLIENT_CERT_FILE"
+	gatewayCoreClientKeyEnvironment            = "AGENTSERVER_V2_CORE_CLIENT_KEY_FILE"
+	gatewayCoreServerNameEnvironment           = "AGENTSERVER_V2_CORE_SERVER_NAME"
+	gatewaySPIFFEIdentityEnvironment           = "AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID"
+	gatewayExecutorIDEnvironment               = "AGENTSERVER_V2_EXECUTOR_ID"
+	gatewayCapabilityIssuerEnvironment         = "AGENTSERVER_V2_RUN_CAPABILITY_ISSUER"
+	gatewayCapabilityKeyringEnvironment        = "AGENTSERVER_V2_RUN_CAPABILITY_KEYRING_FILE"
+	gatewayDevExecutorIDEnvironment            = "AGENTSERVER_V2_DEV_EXECUTOR_ID"
+	gatewayDevWorkspaceIDEnvironment           = "AGENTSERVER_V2_DEV_WORKSPACE_ID"
+	gatewayDevSessionIDEnvironment             = "AGENTSERVER_V2_DEV_SESSION_ID"
+	gatewayDevActorIDEnvironment               = "AGENTSERVER_V2_DEV_ACTOR_ID"
+	gatewayDevRunIDEnvironment                 = "AGENTSERVER_V2_DEV_RUN_ID"
+	gatewayDevRunAttemptIDEnvironment          = "AGENTSERVER_V2_DEV_RUN_ATTEMPT_ID"
+	gatewayDevRunAttemptGenerationEnvironment  = "AGENTSERVER_V2_DEV_RUN_ATTEMPT_GENERATION"
+	gatewayDevRunHolderIDEnvironment           = "AGENTSERVER_V2_DEV_RUN_HOLDER_ID"
+	gatewayDevRunVersionEnvironment            = "AGENTSERVER_V2_DEV_RUN_VERSION"
+	gatewayDevRunAttemptVersionEnvironment     = "AGENTSERVER_V2_DEV_RUN_ATTEMPT_VERSION"
+	gatewayDevMaxApprovalTTLEnvironment        = "AGENTSERVER_V2_DEV_MAX_APPROVAL_TTL_MS"
+	gatewayDevToolCatalogDigestEnvironment     = "AGENTSERVER_V2_DEV_TOOL_CATALOG_DIGEST"
+	gatewayDevMCPBearerEnvironment             = "AGENTSERVER_V2_DEV_MCP_BEARER_TOKEN"
+	gatewayDevRunCapabilityKeyEnvironment      = "AGENTSERVER_V2_DEV_RUN_CAPABILITY_KEY"
+	gatewayExecutionPolicyVersionEnvironment   = "AGENTSERVER_V2_EXECUTION_POLICY_VERSION"
+	gatewayShellPolicyDecisionEnvironment      = "AGENTSERVER_V2_SHELL_POLICY_DECISION"
+	gatewayReadPolicyDecisionEnvironment       = "AGENTSERVER_V2_READ_FILE_POLICY_DECISION"
+	gatewaySandboxGatewayURLEnvironment        = "AGENTSERVER_V2_SANDBOX_GATEWAY_URL"
+	gatewaySandboxGatewayCAEnvironment         = "AGENTSERVER_V2_SANDBOX_GATEWAY_CA_FILE"
+	gatewaySandboxGatewayServerNameEnvironment = "AGENTSERVER_V2_SANDBOX_GATEWAY_SERVER_NAME"
+	gatewaySandboxCapabilityIssuerEnvironment  = "AGENTSERVER_V2_SANDBOX_BACKEND_CAPABILITY_ISSUER"
+	gatewaySandboxCapabilityKeyIDEnvironment   = "AGENTSERVER_V2_SANDBOX_BACKEND_CAPABILITY_KEY_ID"
+	gatewaySandboxCapabilityKeyEnvironment     = "AGENTSERVER_V2_SANDBOX_BACKEND_CAPABILITY_SIGNING_KEY_FILE"
+	gatewaySandboxFencerIssuerEnvironment      = "AGENTSERVER_V2_SANDBOX_FENCER_CAPABILITY_ISSUER"
+	gatewaySandboxFencerKeyIDEnvironment       = "AGENTSERVER_V2_SANDBOX_FENCER_CAPABILITY_KEY_ID"
+	gatewaySandboxFencerKeyEnvironment         = "AGENTSERVER_V2_SANDBOX_FENCER_CAPABILITY_SIGNING_KEY_FILE"
+	gatewayEgressPlaceholderIssuerEnvironment  = "AGENTSERVER_V2_EGRESS_PLACEHOLDER_ISSUER"
+	gatewayEgressPlaceholderKeyIDEnvironment   = "AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEY_ID"
+	gatewayEgressPlaceholderKeyEnvironment     = "AGENTSERVER_V2_EGRESS_PLACEHOLDER_SIGNING_KEY_FILE"
+	gatewayDevExecutorHeader                   = "X-Agentserver-Dev-Executor-Id"
+	maximumDevMCPBearerBytes                   = 16 * 1024
+	maximumGatewayTLSFileBytes                 = int64(1024 * 1024)
+	gatewayStartupRecoveryTimeout              = 2 * time.Minute
 )
 
 var canonicalUUIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -220,6 +234,33 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	if err != nil {
 		return err
 	}
+	agentxBackend, err := executorgateway.NewAgentXBackend(agentxHandler, agentxHandler, time.Now)
+	if err != nil {
+		return err
+	}
+	backends := []executionbackend.Backend{agentxBackend}
+	taeBackend, sandboxGatewayHTTPClient, err := configureTAEBackend(
+		getenv, mode, coreClientCertificateFile, coreClientKeyFile, gatewaySPIFFEIdentity,
+	)
+	if err != nil {
+		return err
+	}
+	if sandboxGatewayHTTPClient != nil {
+		defer sandboxGatewayHTTPClient.CloseIdleConnections()
+	}
+	if taeBackend != nil {
+		backends = append(backends, taeBackend)
+	}
+	managedEnvironmentIssuer, managedTargetFencer, err := configureManagedExecutionSecurity(
+		getenv, mode, taeBackend, sandboxGatewayHTTPClient, coreClient,
+	)
+	if err != nil {
+		return err
+	}
+	backendRouter, err := executionbackend.NewRouter(backends...)
+	if err != nil {
+		return err
+	}
 	environmentResolver, err := executorgateway.NewEnvironmentResolver(coreClient)
 	if err != nil {
 		return err
@@ -261,6 +302,9 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	shellConfig := executorgateway.DefaultShellExecutorConfig(ctx)
 	shellConfig.PolicyResolver = policyResolver
 	shellConfig.ApprovalGate = approvalGate
+	shellConfig.BackendRouter = backendRouter
+	shellConfig.ManagedEnvironmentIssuer = managedEnvironmentIssuer
+	shellConfig.ManagedTargetFencer = managedTargetFencer
 	shellExecutor, err := executorgateway.NewShellExecutor(
 		environmentResolver,
 		coreClient,
@@ -275,6 +319,8 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	readFileConfig := executorgateway.DefaultReadFileExecutorConfig(ctx)
 	readFileConfig.PolicyResolver = policyResolver
 	readFileConfig.ApprovalGate = approvalGate
+	readFileConfig.BackendRouter = backendRouter
+	readFileConfig.ManagedTargetFencer = managedTargetFencer
 	readFileExecutor, err := executorgateway.NewReadFileExecutor(
 		environmentResolver,
 		coreClient,
@@ -543,6 +589,13 @@ func configuredDevMCPAuthenticator(getenv func(string) string, executorID string
 	if workspaceID == "00000000-0000-0000-0000-000000000000" || !canonicalUUIDPattern.MatchString(workspaceID) {
 		return nil, errors.New("AGENTSERVER_V2_DEV_WORKSPACE_ID must be a non-zero canonical lowercase UUID")
 	}
+	sessionID, err := requiredGatewayConfiguration(getenv, gatewayDevSessionIDEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	if sessionID == "00000000-0000-0000-0000-000000000000" || !canonicalUUIDPattern.MatchString(sessionID) {
+		return nil, errors.New("AGENTSERVER_V2_DEV_SESSION_ID must be a non-zero canonical lowercase UUID")
+	}
 	actorID, err := requiredGatewayConfiguration(getenv, gatewayDevActorIDEnvironment)
 	if err != nil {
 		return nil, err
@@ -606,7 +659,7 @@ func configuredDevMCPAuthenticator(getenv func(string) string, executorID string
 	if err != nil {
 		return nil, err
 	}
-	return newDevMCPAuthenticator(bearer, workspaceID, actorID, executorID, toolCatalogDigest, time.Duration(maxApprovalTTLMillis)*time.Millisecond, executorgateway.ExecutorMCPRunContext{
+	return newDevMCPAuthenticator(bearer, workspaceID, sessionID, actorID, executorID, toolCatalogDigest, time.Duration(maxApprovalTTLMillis)*time.Millisecond, executorgateway.ExecutorMCPRunContext{
 		RunID: runID, RunAttemptID: runAttemptID, RunAttemptGeneration: runAttemptGeneration,
 		HolderID: holderID, ExpectedRunVersion: runVersion, ExpectedRunAttemptVersion: runAttemptVersion,
 	})
@@ -629,7 +682,7 @@ func newDevRunCapabilityAuthenticator(
 	return devRunCapabilityAuthenticator{codec: codec, executorID: executorID, now: now}, nil
 }
 
-func newDevMCPAuthenticator(bearer, workspaceID, actorID, executorID, toolCatalogDigest string, maxApprovalTTL time.Duration, run executorgateway.ExecutorMCPRunContext) (devMCPAuthenticator, error) {
+func newDevMCPAuthenticator(bearer, workspaceID, sessionID, actorID, executorID, toolCatalogDigest string, maxApprovalTTL time.Duration, run executorgateway.ExecutorMCPRunContext) (devMCPAuthenticator, error) {
 	if len(bearer) < 32 || len(bearer) > maximumDevMCPBearerBytes {
 		return devMCPAuthenticator{}, fmt.Errorf("%s must contain between 32 and %d bytes", gatewayDevMCPBearerEnvironment, maximumDevMCPBearerBytes)
 	}
@@ -653,6 +706,7 @@ func newDevMCPAuthenticator(bearer, workspaceID, actorID, executorID, toolCatalo
 		principal: executorgateway.ExecutorMCPPrincipal{
 			CapabilityID:        "insecure-dev:" + hex.EncodeToString(digest[:]),
 			WorkspaceID:         workspaceID,
+			SessionID:           sessionID,
 			ActorID:             actorID,
 			ExecutorID:          executorID,
 			ToolCatalogDigest:   toolCatalogDigest,
@@ -693,7 +747,7 @@ func (authenticator devRunCapabilityAuthenticator) AuthenticateExecutorMCP(reque
 	}
 	return executorgateway.ExecutorMCPPrincipal{
 		CapabilityID: "insecure-dev:" + claims.CapabilityID,
-		WorkspaceID:  claims.WorkspaceID, ActorID: claims.ActorID, ExecutorID: claims.ExecutorID,
+		WorkspaceID:  claims.WorkspaceID, SessionID: claims.SessionID, ActorID: claims.ActorID, ExecutorID: claims.ExecutorID,
 		ToolCatalogDigest:   claims.ToolCatalogDigest,
 		MaxApprovalTTL:      time.Duration(claims.MaxApprovalTTLMillis) * time.Millisecond,
 		RunDeadline:         time.UnixMilli(claims.RunDeadlineUnixMS).UTC(),

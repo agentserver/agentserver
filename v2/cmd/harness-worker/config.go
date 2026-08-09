@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/codexwire"
 	"github.com/agentserver/agentserver/v2/internal/harnessworker"
@@ -26,34 +27,41 @@ import (
 )
 
 const (
-	workerDeploymentConfigVersion = 1
+	workerDeploymentConfigVersion = 2
 	maximumWorkerDeploymentBytes  = 64 * 1024
 	maximumWorkerKeyringBytes     = 64 * 1024
 	maximumWorkerRuntimeBytes     = 1024 * 1024
 	maximumWorkerCABundleBytes    = 1024 * 1024
 	maximumWorkerTLSIdentityBytes = 1024 * 1024
+	maximumWorkerSkillBytes       = 256 * 1024
 )
 
 var workerDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 type workerDeploymentDocument struct {
-	Version                int                    `json:"version"`
-	RunManifestKeyringFile string                 `json:"runManifestKeyringFile"`
-	RuntimeManifestFile    string                 `json:"runtimeManifestFile"`
-	RuntimeBundleRoot      string                 `json:"runtimeBundleRoot"`
-	FinalExec              workerArtifactDocument `json:"finalExec"`
-	CodexConfigProfile     string                 `json:"codexConfigProfile"`
-	WorkerUID              uint32                 `json:"workerUid"`
-	WorkerGID              uint32                 `json:"workerGid"`
-	AppUID                 uint32                 `json:"appUid"`
-	AppGID                 uint32                 `json:"appGid"`
-	TLS                    workerTLSDocument      `json:"tls"`
+	Version                int                         `json:"version"`
+	RunManifestKeyringFile string                      `json:"runManifestKeyringFile"`
+	RuntimeManifestFile    string                      `json:"runtimeManifestFile"`
+	RuntimeBundleRoot      string                      `json:"runtimeBundleRoot"`
+	FinalExec              workerArtifactDocument      `json:"finalExec"`
+	ManagedSkill           *workerTextArtifactDocument `json:"managedSkill,omitempty"`
+	CodexConfigProfile     string                      `json:"codexConfigProfile"`
+	WorkerUID              uint32                      `json:"workerUid"`
+	WorkerGID              uint32                      `json:"workerGid"`
+	AppUID                 uint32                      `json:"appUid"`
+	AppGID                 uint32                      `json:"appGid"`
+	TLS                    workerTLSDocument           `json:"tls"`
 }
 
 type workerArtifactDocument struct {
 	Path      string `json:"path"`
 	SHA256    string `json:"sha256"`
 	SizeBytes int64  `json:"sizeBytes"`
+}
+
+type workerTextArtifactDocument struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
 }
 
 type workerTLSDocument struct {
@@ -63,10 +71,11 @@ type workerTLSDocument struct {
 }
 
 type loadedWorkerDeployment struct {
-	keyring        *runmanifest.VerificationKeyring
-	preparer       *harnessworker.LocalWorkerRuntimePreparer
-	controlClient  *http.Client
-	executorClient *http.Client
+	keyring          *runmanifest.VerificationKeyring
+	preparer         *harnessworker.LocalWorkerRuntimePreparer
+	controlClient    *http.Client
+	executorClient   *http.Client
+	baseInstructions string
 }
 
 func parseWorkerArguments(arguments []string) (configPath string, checkpoint bool, ok bool) {
@@ -111,7 +120,8 @@ func executeWorker(ctx context.Context, configPath string, bootstrap, prompt, ch
 		BootstrapPipe: bootstrap, PromptPipe: prompt, CheckpointPipe: checkpoint,
 		VerificationKeyring: deployment.keyring, RuntimePreparer: deployment.preparer,
 		ControlHTTPClient: deployment.controlClient, ExecutorHTTPClient: deployment.executorClient,
-		ProgressHandler: func(context.Context, harnessworker.ProgressEvent) error { return nil },
+		BaseInstructions: deployment.baseInstructions,
+		ProgressHandler:  func(context.Context, harnessworker.ProgressEvent) error { return nil },
 		NotificationHandler: func(context.Context, codexwire.Message) error {
 			// Runtime notifications and progress are forwarded to control by the
 			// worker before these optional observers run. The production command
@@ -167,6 +177,10 @@ func loadWorkerDeployment(configPath, attemptRoot string) (loadedWorkerDeploymen
 	if err != nil {
 		return loadedWorkerDeployment{}, err
 	}
+	baseInstructions, err := verifyManagedSkill(document.ManagedSkill)
+	if err != nil {
+		return loadedWorkerDeployment{}, err
+	}
 	preparer, err := harnessworker.NewLocalWorkerRuntimePreparer(harnessworker.LocalWorkerRuntimePreparerConfig{
 		AttemptRoot: attemptRoot, RuntimeManifest: runtimeManifest,
 		RuntimeManifestSHA256: hex.EncodeToString(runtimeDigest[:]), VerifiedRuntime: verifiedRuntime,
@@ -189,6 +203,7 @@ func loadWorkerDeployment(configPath, attemptRoot string) (loadedWorkerDeploymen
 	}
 	return loadedWorkerDeployment{
 		keyring: keyring, preparer: preparer, controlClient: controlClient, executorClient: executorClient,
+		baseInstructions: baseInstructions,
 	}, nil
 }
 
@@ -209,6 +224,15 @@ func validateWorkerDeploymentDocument(document workerDeploymentDocument) error {
 			return fmt.Errorf("worker deployment %s path must be absolute and clean", label)
 		}
 	}
+	if document.ManagedSkill != nil {
+		if document.ManagedSkill.Path == "" || !filepath.IsAbs(document.ManagedSkill.Path) ||
+			filepath.Clean(document.ManagedSkill.Path) != document.ManagedSkill.Path || strings.ContainsRune(document.ManagedSkill.Path, 0) {
+			return errors.New("worker deployment managed skill path must be absolute and clean")
+		}
+		if !workerDigestPattern.MatchString(document.ManagedSkill.SHA256) {
+			return errors.New("worker deployment managed skill must have a canonical SHA-256")
+		}
+	}
 	if !workerDigestPattern.MatchString(document.FinalExec.SHA256) || document.FinalExec.SizeBytes < 1 {
 		return errors.New("worker deployment final-exec artifact must have canonical SHA-256 and positive size")
 	}
@@ -227,6 +251,24 @@ func validateWorkerDeploymentDocument(document workerDeploymentDocument) error {
 		return errors.New("worker deployment worker and app identities must be distinct")
 	}
 	return nil
+}
+
+func verifyManagedSkill(document *workerTextArtifactDocument) (string, error) {
+	if document == nil {
+		return "", nil
+	}
+	contents, err := readBoundedWorkerFile("managed Lark skill", document.Path, maximumWorkerSkillBytes)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(contents)
+	if hex.EncodeToString(digest[:]) != document.SHA256 {
+		return "", errors.New("managed Lark skill does not match its deployment digest")
+	}
+	if !utf8.Valid(contents) || bytes.IndexByte(contents, 0) >= 0 {
+		return "", errors.New("managed Lark skill must be NUL-free UTF-8 text")
+	}
+	return string(contents), nil
 }
 
 func readBoundedWorkerFile(label, path string, maximum int64) ([]byte, error) {

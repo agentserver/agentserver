@@ -10,17 +10,24 @@ import (
 )
 
 type deployCommands struct {
-	load       func(string) (productiondeploy.LoadedConfig, error)
-	render     func(productiondeploy.LoadedConfig) (productiondeploy.Bundle, error)
-	write      func(productiondeploy.Bundle, string) error
-	chart      func(productiondeploy.LoadedConfig) (productiondeploy.HelmChart, error)
-	writeChart func(productiondeploy.HelmChart, string) error
+	load                    func(string) (productiondeploy.LoadedConfig, error)
+	render                  func(productiondeploy.LoadedConfig) (productiondeploy.Bundle, error)
+	write                   func(productiondeploy.Bundle, string) error
+	chart                   func(productiondeploy.LoadedConfig) (productiondeploy.HelmChart, error)
+	writeChart              func(productiondeploy.HelmChart, string) error
+	lock                    func(productiondeploy.LoadedConfig, productiondeploy.ReleaseLock) ([]byte, error)
+	writeLock               func([]byte, string) error
+	preparePolicyBootstrap  func(string, string) error
+	activateManagedExecutor func(string, string, string, string, string, string) error
 }
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, deployCommands{
 		load: productiondeploy.LoadConfig, render: productiondeploy.Render, write: productiondeploy.WriteBundle,
 		chart: productiondeploy.RenderHelmChart, writeChart: productiondeploy.WriteHelmChart,
+		lock: productiondeploy.LockRelease, writeLock: productiondeploy.WriteReleaseConfig,
+		preparePolicyBootstrap:  productiondeploy.PreparePolicyBootstrapFile,
+		activateManagedExecutor: productiondeploy.ActivateManagedExecutorFile,
 	}))
 }
 
@@ -30,6 +37,70 @@ func run(arguments []string, stdout, stderr io.Writer, commands deployCommands) 
 		return 2
 	}
 	switch arguments[0] {
+	case "activate-managed-executor":
+		values, ok := exactArguments(arguments[1:], "config", "output", "network-report", "policy-revision", "policy-evidence-ref", "network-evidence-ref")
+		if !ok {
+			writeUsage(stderr)
+			return 2
+		}
+		if commands.activateManagedExecutor == nil {
+			fmt.Fprintln(stderr, "agentserver-deploy activate-managed-executor: command is unavailable")
+			return 1
+		}
+		if err := commands.activateManagedExecutor(
+			values["config"], values["output"], values["network-report"], values["policy-revision"],
+			values["policy-evidence-ref"], values["network-evidence-ref"],
+		); err != nil {
+			fmt.Fprintf(stderr, "agentserver-deploy activate-managed-executor: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "agentserver-deploy activate-managed-executor: wrote evidence-bound active config to %s\n", values["output"])
+		return 0
+	case "prepare-policy-bootstrap":
+		values, ok := exactArguments(arguments[1:], "config", "output")
+		if !ok {
+			writeUsage(stderr)
+			return 2
+		}
+		if commands.preparePolicyBootstrap == nil {
+			fmt.Fprintln(stderr, "agentserver-deploy prepare-policy-bootstrap: command is unavailable")
+			return 1
+		}
+		if err := commands.preparePolicyBootstrap(values["config"], values["output"]); err != nil {
+			fmt.Fprintf(stderr, "agentserver-deploy prepare-policy-bootstrap: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "agentserver-deploy prepare-policy-bootstrap: wrote fail-closed bootstrap config to %s\n", values["output"])
+		return 0
+	case "lock-release":
+		values, ok := exactArguments(arguments[1:], "config", "output", "service-image", "harness-image", "hydra-image", "managed-sandbox-image", "lark-cli-sha256", "lark-skill-sha256")
+		if !ok {
+			writeUsage(stderr)
+			return 2
+		}
+		if commands.load == nil || commands.lock == nil || commands.writeLock == nil {
+			fmt.Fprintln(stderr, "agentserver-deploy lock-release: command is unavailable")
+			return 1
+		}
+		config, err := commands.load(values["config"])
+		if err != nil {
+			fmt.Fprintf(stderr, "agentserver-deploy lock-release: %v\n", err)
+			return 1
+		}
+		raw, err := commands.lock(config, productiondeploy.ReleaseLock{
+			ServiceImage: values["service-image"], HarnessImage: values["harness-image"],
+			HydraImage: values["hydra-image"], ManagedSandboxImage: values["managed-sandbox-image"],
+			LarkCLISHA256: values["lark-cli-sha256"], LarkSkillSHA256: values["lark-skill-sha256"],
+		})
+		if err == nil {
+			err = commands.writeLock(raw, values["output"])
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "agentserver-deploy lock-release: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "agentserver-deploy lock-release: wrote locked production config to %s\n", values["output"])
+		return 0
 	case "validate":
 		values, ok := exactArguments(arguments[1:], "config")
 		if !ok {
@@ -137,7 +208,10 @@ func exactArguments(arguments []string, names ...string) (map[string]string, boo
 }
 
 func writeUsage(writer io.Writer) {
-	fmt.Fprintln(writer, "usage: agentserver-deploy validate --config=/absolute/path")
+	fmt.Fprintln(writer, "usage: agentserver-deploy activate-managed-executor --config=/absolute/bootstrap.json --output=/absolute/new-active.json --network-report=/absolute/canonical-report.json --policy-revision=<published-revision> --policy-evidence-ref=<immutable-ticket> --network-evidence-ref=<immutable-report-reference>")
+	fmt.Fprintln(writer, "usage: agentserver-deploy prepare-policy-bootstrap --config=/absolute/active-template.json --output=/absolute/new-bootstrap.json")
+	fmt.Fprintln(writer, "usage: agentserver-deploy lock-release --config=/absolute/template.json --output=/absolute/new-production.json --service-image=IMAGE@sha256:DIGEST --harness-image=IMAGE@sha256:DIGEST --hydra-image=IMAGE@sha256:DIGEST --managed-sandbox-image=IMAGE@sha256:DIGEST --lark-cli-sha256=DIGEST --lark-skill-sha256=DIGEST")
+	fmt.Fprintln(writer, "       agentserver-deploy validate --config=/absolute/path")
 	fmt.Fprintln(writer, "       agentserver-deploy render --config=/absolute/path --output=/absolute/directory")
 	fmt.Fprintln(writer, "       agentserver-deploy chart --config=/absolute/path --output=/absolute/new-chart")
 }

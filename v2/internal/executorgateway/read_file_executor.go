@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/codexwire"
+	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 )
 
 const MaxReadFileV1ResultBytes = 2 * 1024 * 1024
@@ -27,9 +29,11 @@ type ReadFileV1Result struct {
 }
 
 type ReadFileExecutorConfig struct {
-	Lifecycle      context.Context
-	PolicyResolver ExecutionPolicyResolver
-	ApprovalGate   ExecutionApprovalGate
+	Lifecycle           context.Context
+	PolicyResolver      ExecutionPolicyResolver
+	ApprovalGate        ExecutionApprovalGate
+	BackendRouter       *executionbackend.Router
+	ManagedTargetFencer ManagedTargetFencer
 }
 
 func DefaultReadFileExecutorConfig(lifecycle context.Context) ReadFileExecutorConfig {
@@ -85,7 +89,7 @@ func (executor *ReadFileExecutor) Execute(ctx context.Context, request ReadFileE
 	if err := validateRegistryIdentity("read_file environment ID", arguments.EnvironmentID); err != nil {
 		return ReadFileV1Result{}, err
 	}
-	environment, err := executor.resolver.Resolve(ctx, request.Principal.WorkspaceID, arguments.EnvironmentID)
+	environment, err := executor.resolver.ResolveForPrincipal(ctx, request.Principal, arguments.EnvironmentID)
 	if err != nil {
 		return ReadFileV1Result{}, fmt.Errorf("resolve read_file environment: %w", err)
 	}
@@ -141,6 +145,9 @@ func (executor *ReadFileExecutor) Execute(ctx context.Context, request ReadFileE
 	}
 	if !begin.Began {
 		return ReadFileV1Result{}, fmt.Errorf("core did not grant the one-shot read-file dispatch; operation status is %q", begin.Operation.Status)
+	}
+	if environment.Target.Kind == executionbackend.KindTAE {
+		return executor.executeManaged(request, plan, state)
 	}
 
 	executionCtx := executor.config.Lifecycle
@@ -213,6 +220,118 @@ func (executor *ReadFileExecutor) Execute(ctx context.Context, request ReadFileE
 		return ReadFileV1Result{}, err
 	}
 	return result, nil
+}
+
+func (executor *ReadFileExecutor) executeManaged(
+	request ReadFileExecuteRequest,
+	plan ReadFileV1Plan,
+	state *readFileExecutionState,
+) (ReadFileV1Result, error) {
+	executionCtx := executor.config.Lifecycle
+	if executor.config.BackendRouter == nil {
+		result, err := executor.closeUnknown(executionCtx, state, plan, readFileTerminalEvidence{
+			Version: "read-file-terminal-evidence-v1", Kind: ReadFileV1OperationRead,
+			Status: "unknown", FailureClass: "backend_router_unavailable",
+		}, errors.New("managed execution backend router is not configured"))
+		return result, err
+	}
+	exchange, dispatchErr := executor.config.BackendRouter.ReadFile(executionCtx, executionbackend.ReadFileRequest{
+		Target:    plan.Environment.Target,
+		Operation: backendOperationContext(request.Principal, plan.Read.Routing),
+		RequestID: plan.RPCRequestID, Path: plan.AbsolutePath,
+		Offset: plan.Offset, Limit: plan.Limit,
+	})
+	if exchange == nil {
+		result, closeErr := executor.closeUnknown(executionCtx, state, plan, readFileTerminalEvidence{
+			Version: "read-file-terminal-evidence-v1", Kind: ReadFileV1OperationRead,
+			Status: "unknown", FailureClass: "dispatch_unknown",
+		}, dispatchErr)
+		executor.fenceManagedReadUnknown(executionCtx, request.Principal, plan.Environment.Target, "read_file_dispatch_unknown")
+		return result, closeErr
+	}
+	acknowledgement, err := exchange.AwaitAcknowledgement(executionCtx)
+	if err != nil || dispatchErr != nil {
+		result, closeErr := executor.closeUnknown(executionCtx, state, plan, readFileTerminalEvidence{
+			Version: "read-file-terminal-evidence-v1", Kind: ReadFileV1OperationRead,
+			Status: "unknown", FailureClass: "acknowledgement_unknown",
+		}, errors.Join(dispatchErr, err))
+		executor.fenceManagedReadUnknown(executionCtx, request.Principal, plan.Environment.Target, "read_file_acknowledgement_unknown")
+		return result, closeErr
+	}
+	acknowledgementJSON, err := marshalBackendAcknowledgement(plan.RPCRequestID, acknowledgement)
+	if err != nil {
+		return ReadFileV1Result{}, err
+	}
+	if _, err := state.Acknowledge(executionCtx, acknowledgementJSON); err != nil {
+		return ReadFileV1Result{}, err
+	}
+
+	content := make([]byte, 0, min(int(plan.Limit), 64*1024))
+	nextSequence := uint64(1)
+	for {
+		event, eventErr := exchange.NextEvent(executionCtx)
+		if errors.Is(eventErr, io.EOF) {
+			break
+		}
+		if eventErr != nil || event.Sequence != nextSequence || event.Kind != executionbackend.EventFileBytes || uint64(len(content))+uint64(len(event.Data)) > plan.Limit {
+			if eventErr == nil {
+				eventErr = errors.New("managed read-file event stream is invalid or exceeds the frozen limit")
+			}
+			result, closeErr := executor.closeUnknown(executionCtx, state, plan, readFileTerminalEvidence{
+				Version: "read-file-terminal-evidence-v1", Kind: ReadFileV1OperationRead,
+				Status: "unknown", Acknowledged: true, FailureClass: "exchange_failed",
+			}, eventErr)
+			executor.fenceManagedReadUnknown(executionCtx, request.Principal, plan.Environment.Target, "read_file_stream_unknown")
+			return result, closeErr
+		}
+		nextSequence++
+		content = append(content, event.Data...)
+	}
+	terminal, err := exchange.AwaitTerminal(executionCtx)
+	if err != nil {
+		result, closeErr := executor.closeUnknown(executionCtx, state, plan, readFileTerminalEvidence{
+			Version: "read-file-terminal-evidence-v1", Kind: ReadFileV1OperationRead,
+			Status: "unknown", Acknowledged: true, FailureClass: "terminal_unknown",
+		}, err)
+		executor.fenceManagedReadUnknown(executionCtx, request.Principal, plan.Environment.Target, "read_file_terminal_unknown")
+		return result, closeErr
+	}
+	status := "failed"
+	if terminal.Status == executionbackend.TerminalUnknown || !terminal.OutputComplete {
+		status = "unknown"
+	} else if terminal.Status == executionbackend.TerminalSucceeded {
+		status = "succeeded"
+	}
+	terminalJSON, err := json.Marshal(readFileTerminalEvidence{
+		Version: "read-file-terminal-evidence-v1", Kind: ReadFileV1OperationRead,
+		Status: status, Acknowledged: true, ResponseKind: "backend_terminal",
+		ContentSHA256: digestHex(content), BytesRead: uint64(len(content)),
+		EOF: uint64(len(content)) < plan.Limit,
+	})
+	if err != nil {
+		return ReadFileV1Result{}, err
+	}
+	if _, err := state.CompleteOperation(executionCtx, status, terminalJSON); err != nil {
+		return ReadFileV1Result{}, err
+	}
+	if _, err := state.CompleteExecution(executionCtx, status, terminalJSON); err != nil {
+		return ReadFileV1Result{}, err
+	}
+	if status == "unknown" {
+		executor.fenceManagedReadUnknown(executionCtx, request.Principal, plan.Environment.Target, "read_file_outcome_unknown")
+		return emptyReadFileResult(plan, "unknown"), nil
+	}
+	if status == "failed" {
+		return emptyReadFileResult(plan, "failed"), nil
+	}
+	canonicalBase64 := base64.StdEncoding.EncodeToString(content)
+	return projectReadFileResult(plan, content, canonicalBase64, uint64(len(content)) < plan.Limit)
+}
+
+func (executor *ReadFileExecutor) fenceManagedReadUnknown(ctx context.Context, principal ExecutorMCPPrincipal, target executionbackend.Target, reason string) {
+	if executor.config.ManagedTargetFencer != nil {
+		_ = executor.config.ManagedTargetFencer.FenceManagedTarget(ctx, principal, target, reason)
+	}
 }
 
 func (executor *ReadFileExecutor) closeUnknown(ctx context.Context, state *readFileExecutionState, plan ReadFileV1Plan, evidence readFileTerminalEvidence, cause error) (ReadFileV1Result, error) {

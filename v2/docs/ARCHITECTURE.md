@@ -55,7 +55,9 @@
 
 ### 1.2 非目标
 
-- Phase 1 不提供托管 executor；`managed` 仅作为复用同一 agentx 协议的 Phase 2 扩展。
+- Phase 1 不提供托管 executor；Phase 2 的 `managed` 设计由
+  [ADR 0012](adr/0012-unified-execution-gateway-tae-backend.md) 定义为统一 execution gateway 后的
+  TAE backend，不复用 agentx transport。
 - 不提供 IM、notebook/Jupyter 或其他 harness 实现。
 - 不把工作区文件系统挂载到 harness，也不建设共享 RWX workspace drive。
 - 不复用 `codex exec` CLI 作为双手。该 CLI 接收 prompt 并运行模型，不符合确定性执行端的定义。
@@ -917,7 +919,7 @@ agentx 的实现不放入上述 Go module。`github.com/agentserver/agentx` v2 �
 | D3 | executor-gateway 是 harness-worker 的 MCP server，同时是 agentx 远程 client/router | app-server 不直接连接 MCP；工具授权、审批和执行协议仍在一个清晰边界完成 |
 | D4 | 大脑只用 app-server v2，executor 只用 process/fs JSON-RPC | 避免 thread/item 与 process/output 事件语义混淆 |
 | D5 | core 持有 session/run/event 事实 | browser gateway 和 harness 均可无状态恢复 |
-| D6 | Phase 1 只做 remote/BYO executor | managed sandbox 生命周期和存储尚未完整设计 |
+| D6 | Phase 1 只做 remote/BYO executor；Phase 2 managed 由 ADR 0012 增量设计 | Phase 1 基线不承担 managed lifecycle/provider；后续仍复用统一 execution policy 与 Core operation authority |
 | D7 | 用户 token 不沿内部链透传 | 降低 bearer 泄漏与 confused-deputy 风险 |
 | D8 | 不自动重放结果不明的副作用 | 网络重试不能保证进程/fs 操作恰好一次 |
 | D9 | Phase 1 harness 采用常驻 pool + per-attempt 本地 fork/exec，run 热路径不创建 Kubernetes workload | harness 本地不执行任意用户代码；以小的共享 Pod 故障域换取稳定的毫秒级 launcher 延迟，同时仍不复用 Codex 进程和临时状态 |

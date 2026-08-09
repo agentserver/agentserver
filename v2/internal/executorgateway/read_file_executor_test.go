@@ -293,7 +293,7 @@ func (authority *fakeReadFileAuthority) PrepareExecution(_ context.Context, requ
 	authority.execution = ExecutionState{
 		ExecutionID: request.ExecutionID, RunID: request.RunID, RunAttemptID: request.RunAttemptID,
 		RunAttemptGeneration: request.RunAttemptGeneration, AppServerToolCallID: request.AppServerToolCallID,
-		ExecutorID: request.ExecutorID, EnvironmentID: request.EnvironmentID,
+		ExecutorID: request.ExecutorID, EnvironmentID: request.EnvironmentID, Target: request.Target,
 		ToolName: request.ToolName, ToolVersion: request.ToolVersion, MapperVersion: request.MapperVersion,
 		PolicyVersion: request.PolicyVersion, PolicyDecision: request.PolicyDecision, OperationCount: request.OperationCount,
 		Status: status, Version: 1,
@@ -312,7 +312,7 @@ func (authority *fakeReadFileAuthority) PrepareOperation(_ context.Context, requ
 	authority.operation = ExecutionOperationState{
 		OperationID: request.OperationID, ExecutionID: request.ExecutionID, Ordinal: request.Ordinal,
 		Kind: request.Kind, EffectClass: request.EffectClass, MutationKey: request.MutationKey,
-		Status: "prepared", Version: 1,
+		Status: "prepared", Version: 1, Target: authority.execution.Target,
 	}
 	return PrepareOperationResult{Execution: authority.execution, Operation: authority.operation, Created: true}, nil
 }
@@ -326,6 +326,7 @@ func (authority *fakeReadFileAuthority) BeginOperationDispatch(_ context.Context
 	authority.record(request.Record)
 	authority.operation.Status = "dispatching"
 	authority.operation.ConnectionGeneration = request.ConnectionGeneration
+	authority.operation.Target = request.Target
 	authority.operation.Version++
 	authority.execution.Status = "dispatching"
 	authority.execution.Version++

@@ -12,7 +12,11 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 	document := config.Document
 	port := func(value uint16) []any { return []any{kubeObject{"protocol": "TCP", "port": int(value)}} }
 
-	coreIngress := ingressFromComponents([]string{platformComponent, browserComponent, executorComponent, harnessComponent, llmproxyComponent}, document.Services.Core.Port)
+	coreIngressComponents := []string{platformComponent, browserComponent, executorComponent, harnessComponent, llmproxyComponent}
+	if managedExecutionActive(document.Managed) {
+		coreIngressComponents = append(coreIngressComponents, sandboxComponent, egressComponent)
+	}
+	coreIngress := ingressFromComponents(coreIngressComponents, document.Services.Core.Port)
 	platformIngress := ingressFromGateway(document.Ingress, document.Services.PlatformGateway.Port)
 	browserIngress := ingressFromGateway(document.Ingress, document.Services.BrowserGateway.Port)
 	executorIngress := append(
@@ -51,8 +55,12 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 	llmEgress = append(llmEgress, publicHTTPSEgress()...)
 	hydraEgress := append(append([]any(nil), dns...), postgresEgress()...)
 	hydraSetupEgress := append(append([]any(nil), dns...), componentTCPEgress(hydraComponent, document.Services.Hydra.AdminPort))
+	if managedExecutionActive(document.Managed) {
+		executorEgress = append(executorEgress, componentTCPEgress(sandboxComponent, document.Services.SandboxGateway.Port))
+		harnessEgress = append(harnessEgress, componentTCPEgress(sandboxComponent, document.Services.SandboxGateway.Port))
+	}
 
-	return []kubeObject{
+	items := []kubeObject{
 		networkPolicy(config, "agentserver-default-deny", managedNetworkSelector(), nil, nil),
 		networkPolicy(config, "hydra-migrate-egress", matchComponent(hydraMigrationComponent), nil, databaseEgress),
 		networkPolicy(config, "agentserver-migrate-egress", matchComponent(migrationComponent), nil, databaseEgress),
@@ -66,6 +74,33 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 		networkPolicy(config, llmproxyComponent, matchComponent(llmproxyComponent), llmIngress, llmEgress),
 		networkPolicy(config, hydraComponent, matchComponent(hydraComponent), hydraIngress, hydraEgress),
 	}
+	if managedExecutionActive(document.Managed) {
+		sandboxIngress := ingressFromComponents([]string{executorComponent, harnessComponent}, document.Services.SandboxGateway.Port)
+		sandboxEgress := []any{componentTCPEgress(coreComponent, document.Services.Core.Port)}
+		sandboxEgress = append(sandboxEgress, dns...)
+		sandboxEgress = append(sandboxEgress, namespacedPodTCPEgress(
+			ProductionTAEProxyNamespace,
+			map[string]string{"app": ProductionTAEProxyPodApp},
+			ProductionTAEProxyPort,
+		))
+		sandboxEgress = append(sandboxEgress, externalEgress(document.Network.SandboxExternalEgress)...)
+		egressIngress := ingressFromCIDRs(document.Network.EgressAuthorizerIngress, document.Services.EgressAuthorizer.Port)
+		egressIngress = append(egressIngress, ingressFromGateway(document.Ingress, document.Services.EgressAuthorizer.Port)...)
+		egressEgress := []any{componentTCPEgress(coreComponent, document.Services.Core.Port)}
+		egressEgress = append(egressEgress, dns...)
+		egressEgress = append(egressEgress, externalEgress(document.Network.EgressAuthorizerExternalEgress)...)
+		items = append(items,
+			networkPolicy(config, "agentserver-managed-environment-bootstrap-egress", matchComponent(managedEnvironmentBootstrapComponent), nil, databaseEgress),
+			networkPolicy(config, sandboxComponent, matchComponent(sandboxComponent), sandboxIngress, sandboxEgress),
+			networkPolicy(config, egressComponent, matchComponent(egressComponent), egressIngress, egressEgress),
+		)
+	} else if managedPolicyBootstrap(document.Managed) {
+		egressIngress := ingressFromGateway(document.Ingress, document.Services.EgressAuthorizer.Port)
+		items = append(items,
+			networkPolicy(config, egressComponent, matchComponent(egressComponent), egressIngress, nil),
+		)
+	}
+	return items
 }
 
 func publicHTTPSEgress() []any {
@@ -151,6 +186,20 @@ func ingressFromGateway(document IngressDocument, port uint16) []any {
 	}}
 }
 
+func ingressFromCIDRs(prefixes []string, port uint16) []any {
+	if len(prefixes) == 0 {
+		return nil
+	}
+	from := make([]any, len(prefixes))
+	for index, prefix := range prefixes {
+		from[index] = kubeObject{"ipBlock": kubeObject{"cidr": prefix}}
+	}
+	return []any{kubeObject{
+		"from":  from,
+		"ports": []any{kubeObject{"protocol": "TCP", "port": int(port)}},
+	}}
+}
+
 func dnsEgress(document NetworkDocument) []any {
 	return []any{kubeObject{
 		"to": []any{
@@ -176,6 +225,18 @@ func componentTCPEgress(component string, port uint16) kubeObject {
 	return kubeObject{
 		"to": []any{kubeObject{
 			"podSelector": kubeObject{"matchLabels": selectorLabels(component)},
+		}},
+		"ports": []any{kubeObject{"protocol": "TCP", "port": int(port)}},
+	}
+}
+
+func namespacedPodTCPEgress(namespace string, labels map[string]string, port uint16) kubeObject {
+	return kubeObject{
+		"to": []any{kubeObject{
+			"namespaceSelector": kubeObject{"matchLabels": kubeObject{
+				"kubernetes.io/metadata.name": namespace,
+			}},
+			"podSelector": kubeObject{"matchLabels": labels},
 		}},
 		"ports": []any{kubeObject{"protocol": "TCP", "port": int(port)}},
 	}

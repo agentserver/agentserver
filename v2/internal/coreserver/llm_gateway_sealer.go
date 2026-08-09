@@ -8,6 +8,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/braincatalog"
 )
@@ -32,6 +34,8 @@ const (
 	llmGatewaySealingAADDomain        = "agentserver-v2/workspace-llm-gateway/aes-256-gcm/v1\x00"
 	llmGatewayAuthorizationPurpose    = "authorization-transaction"
 	llmGatewayGrantTokenSetPurpose    = "grant-token-set"
+	larkGrantTokenSetPurpose          = "lark-grant-token-set"
+	larkGrantSealingAADDomain         = "agentserver-v2/workspace-lark-grant/aes-256-gcm/v1\x00"
 	minimumLLMGatewaySealedCiphertext = 4 + 1 + 1 + 12 + 16 + 1
 )
 
@@ -59,6 +63,21 @@ type LLMGatewaySealScope struct {
 	UserID         string
 	GatewayVersion int64
 	TransactionID  string
+}
+
+type LarkGrantSealScope struct {
+	WorkspaceID  string
+	GrantID      string
+	UserID       string
+	PolicySHA256 [32]byte
+}
+
+type LarkGrantTokenSet struct {
+	Version          int        `json:"version"`
+	AccessToken      string     `json:"accessToken"`
+	RefreshToken     string     `json:"refreshToken,omitempty"`
+	AccessExpiresAt  time.Time  `json:"accessExpiresAt"`
+	RefreshExpiresAt *time.Time `json:"refreshExpiresAt,omitempty"`
 }
 
 type LLMGatewayGrantSealer struct {
@@ -187,6 +206,52 @@ func (sealer *LLMGatewayGrantSealer) OpenGrantTokenSet(scope LLMGatewaySealScope
 	return sealer.open(scope, llmGatewayGrantTokenSetPurpose, sealed)
 }
 
+func (sealer *LLMGatewayGrantSealer) SealLarkGrantTokenSet(scope LarkGrantSealScope, tokens LarkGrantTokenSet) ([]byte, error) {
+	if err := validateLarkGrantSealScope(scope); err != nil {
+		return nil, err
+	}
+	if err := validateLarkGrantTokenSet(tokens); err != nil {
+		return nil, err
+	}
+	plaintext, err := json.Marshal(tokens)
+	if err != nil {
+		return nil, fmt.Errorf("encode Lark grant token set: %w", err)
+	}
+	defer clear(plaintext)
+	return sealer.sealEnvelope(plaintext, larkGrantSealAAD(scope))
+}
+
+func (sealer *LLMGatewayGrantSealer) OpenLarkGrantTokenSet(scope LarkGrantSealScope, sealed []byte) (LarkGrantTokenSet, error) {
+	if err := validateLarkGrantSealScope(scope); err != nil {
+		return LarkGrantTokenSet{}, err
+	}
+	plaintext, err := sealer.openEnvelope(sealed, larkGrantSealAAD(scope))
+	if err != nil {
+		return LarkGrantTokenSet{}, err
+	}
+	defer clear(plaintext)
+	decoder := json.NewDecoder(bytes.NewReader(plaintext))
+	decoder.DisallowUnknownFields()
+	var tokens LarkGrantTokenSet
+	if err := decoder.Decode(&tokens); err != nil {
+		return LarkGrantTokenSet{}, errors.New("sealed Lark grant token set is invalid")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return LarkGrantTokenSet{}, errors.New("sealed Lark grant token set contains trailing JSON")
+	}
+	canonical, err := json.Marshal(tokens)
+	if err != nil || !bytes.Equal(canonical, plaintext) {
+		clear(canonical)
+		return LarkGrantTokenSet{}, errors.New("sealed Lark grant token set is not canonical")
+	}
+	clear(canonical)
+	if err := validateLarkGrantTokenSet(tokens); err != nil {
+		return LarkGrantTokenSet{}, err
+	}
+	return tokens, nil
+}
+
 func (sealer *LLMGatewayGrantSealer) seal(scope LLMGatewaySealScope, purpose string, plaintext []byte) ([]byte, error) {
 	if sealer == nil || sealer.random == nil || sealer.activeKeyID == "" || len(sealer.keys) == 0 {
 		return nil, errors.New("LLM gateway grant sealer is not initialized")
@@ -196,6 +261,16 @@ func (sealer *LLMGatewayGrantSealer) seal(scope LLMGatewaySealScope, purpose str
 	}
 	if len(plaintext) < 1 || len(plaintext) > maximumLLMGatewaySealedPlaintext {
 		return nil, errors.New("LLM gateway sealing plaintext is outside protocol bounds")
+	}
+	return sealer.sealEnvelope(plaintext, llmGatewaySealAAD(scope, purpose))
+}
+
+func (sealer *LLMGatewayGrantSealer) sealEnvelope(plaintext, aad []byte) ([]byte, error) {
+	if sealer == nil || sealer.random == nil || sealer.activeKeyID == "" || len(sealer.keys) == 0 {
+		return nil, errors.New("grant sealer is not initialized")
+	}
+	if len(plaintext) < 1 || len(plaintext) > maximumLLMGatewaySealedPlaintext {
+		return nil, errors.New("grant sealing plaintext is outside protocol bounds")
 	}
 	aead := sealer.keys[sealer.activeKeyID]
 	nonce := make([]byte, aead.NonceSize())
@@ -207,7 +282,7 @@ func (sealer *LLMGatewayGrantSealer) seal(scope LLMGatewaySealScope, purpose str
 	result = append(result, llmGatewaySealedEnvelopeVersion, byte(len(sealer.activeKeyID)))
 	result = append(result, sealer.activeKeyID...)
 	result = append(result, nonce...)
-	result = aead.Seal(result, nonce, plaintext, llmGatewaySealAAD(scope, purpose))
+	result = aead.Seal(result, nonce, plaintext, aad)
 	return result, nil
 }
 
@@ -217,6 +292,13 @@ func (sealer *LLMGatewayGrantSealer) open(scope LLMGatewaySealScope, purpose str
 	}
 	if err := validateLLMGatewaySealScope(scope); err != nil {
 		return nil, err
+	}
+	return sealer.openEnvelope(sealed, llmGatewaySealAAD(scope, purpose))
+}
+
+func (sealer *LLMGatewayGrantSealer) openEnvelope(sealed, aad []byte) ([]byte, error) {
+	if sealer == nil || len(sealer.keys) == 0 {
+		return nil, errors.New("grant sealer is not initialized")
 	}
 	if len(sealed) < minimumLLMGatewaySealedCiphertext || len(sealed) > maximumLLMGatewaySealedPlaintext+512 ||
 		!bytes.Equal(sealed[:4], llmGatewaySealedMagic[:]) || sealed[4] != llmGatewaySealedEnvelopeVersion {
@@ -235,7 +317,7 @@ func (sealer *LLMGatewayGrantSealer) open(scope LLMGatewaySealScope, purpose str
 	if nonceEnd+aead.Overhead()+1 > len(sealed) {
 		return nil, errors.New("sealed LLM gateway value is truncated")
 	}
-	plaintext, err := aead.Open(nil, sealed[keyIDEnd:nonceEnd], sealed[nonceEnd:], llmGatewaySealAAD(scope, purpose))
+	plaintext, err := aead.Open(nil, sealed[keyIDEnd:nonceEnd], sealed[nonceEnd:], aad)
 	if err != nil {
 		return nil, errors.New("sealed LLM gateway value failed authentication")
 	}
@@ -244,6 +326,79 @@ func (sealer *LLMGatewayGrantSealer) open(scope LLMGatewaySealScope, purpose str
 		return nil, errors.New("opened LLM gateway value is outside protocol bounds")
 	}
 	return plaintext, nil
+}
+
+func validateLarkGrantSealScope(scope LarkGrantSealScope) error {
+	for name, value := range map[string]string{
+		"workspace ID": scope.WorkspaceID, "grant ID": scope.GrantID, "user ID": scope.UserID,
+	} {
+		if !canonicalPublicUUID(value) {
+			return fmt.Errorf("Lark grant sealing %s is invalid", name)
+		}
+	}
+	var zero [32]byte
+	if subtle.ConstantTimeCompare(scope.PolicySHA256[:], zero[:]) == 1 {
+		return errors.New("Lark grant sealing policy digest is required")
+	}
+	return nil
+}
+
+func validateLarkGrantTokenSet(tokens LarkGrantTokenSet) error {
+	if tokens.Version != 1 || !validLarkCredential(tokens.AccessToken) || tokens.AccessExpiresAt.IsZero() {
+		return errors.New("Lark grant token set version, access token, or expiry is invalid")
+	}
+	if tokens.RefreshToken == "" {
+		if tokens.RefreshExpiresAt != nil {
+			return errors.New("Lark grant refresh expiry exists without a refresh token")
+		}
+		return nil
+	}
+	if !validLarkCredential(tokens.RefreshToken) {
+		return errors.New("Lark grant refresh token is invalid")
+	}
+	if tokens.RefreshExpiresAt != nil &&
+		(tokens.RefreshExpiresAt.IsZero() || !tokens.RefreshExpiresAt.After(tokens.AccessExpiresAt)) {
+		return errors.New("Lark grant refresh expiry must follow access expiry")
+	}
+	return nil
+}
+
+// ValidateLarkGrantTokenSet lets deployment bootstrap validate a plaintext
+// secret document before opening a database connection. The token values are
+// never returned or formatted into an error.
+func ValidateLarkGrantTokenSet(tokens LarkGrantTokenSet) error {
+	return validateLarkGrantTokenSet(tokens)
+}
+
+func validLarkCredential(value string) bool {
+	if value == "" || len(value) > 16*1024 || strings.TrimSpace(value) != value || strings.ContainsAny(value, " \t\r\n") {
+		return false
+	}
+	for _, character := range value {
+		if character < 0x20 || character == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+func larkGrantSealAAD(scope LarkGrantSealScope) []byte {
+	fields := []string{
+		larkGrantSealingAADDomain, larkGrantTokenSetPurpose, scope.WorkspaceID,
+		scope.GrantID, scope.UserID, hex.EncodeToString(scope.PolicySHA256[:]),
+	}
+	capacity := 0
+	for _, field := range fields {
+		capacity += 4 + len(field)
+	}
+	result := make([]byte, 0, capacity)
+	for _, field := range fields {
+		var length [4]byte
+		binary.BigEndian.PutUint32(length[:], uint32(len(field)))
+		result = append(result, length[:]...)
+		result = append(result, field...)
+	}
+	return result
 }
 
 func validateLLMGatewaySealScope(scope LLMGatewaySealScope) error {

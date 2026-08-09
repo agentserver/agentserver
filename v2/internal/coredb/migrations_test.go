@@ -11,8 +11,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 19 {
-		t.Fatalf("migration count = %d, want 19", len(migrations))
+	if len(migrations) != 25 {
+		t.Fatalf("migration count = %d, want 25", len(migrations))
 	}
 	migration := migrations[0]
 	if migration.Version != 1 || migration.Name != "session_run_kernel" {
@@ -74,6 +74,24 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	if migrations[18].Version != 19 || migrations[18].Name != "user_sessions" {
 		t.Fatalf("nineteenth migration identity = %04d_%s, want 0019_user_sessions", migrations[18].Version, migrations[18].Name)
+	}
+	if migrations[19].Version != 20 || migrations[19].Name != "managed_execution_targets" {
+		t.Fatalf("twentieth migration identity = %04d_%s, want 0020_managed_execution_targets", migrations[19].Version, migrations[19].Name)
+	}
+	if migrations[20].Version != 21 || migrations[20].Name != "managed_lark_egress_authority" {
+		t.Fatalf("twenty-first migration identity = %04d_%s, want 0021_managed_lark_egress_authority", migrations[20].Version, migrations[20].Name)
+	}
+	if migrations[21].Version != 22 || migrations[21].Name != "managed_lark_grant_refresh" {
+		t.Fatalf("twenty-second migration identity = %04d_%s, want 0022_managed_lark_grant_refresh", migrations[21].Version, migrations[21].Name)
+	}
+	if migrations[22].Version != 23 || migrations[22].Name != "checkpoint_tool_pack_authority" {
+		t.Fatalf("twenty-third migration identity = %04d_%s, want 0023_checkpoint_tool_pack_authority", migrations[22].Version, migrations[22].Name)
+	}
+	if migrations[23].Version != 24 || migrations[23].Name != "workspace_credential_bindings" {
+		t.Fatalf("twenty-fourth migration identity = %04d_%s, want 0024_workspace_credential_bindings", migrations[23].Version, migrations[23].Name)
+	}
+	if migrations[24].Version != 25 || migrations[24].Name != "workspace_credential_audit_context" {
+		t.Fatalf("twenty-fifth migration identity = %04d_%s, want 0025_workspace_credential_audit_context", migrations[24].Version, migrations[24].Name)
 	}
 }
 

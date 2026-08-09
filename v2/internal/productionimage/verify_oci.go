@@ -97,18 +97,31 @@ type ociRootFS struct {
 	DiffIDs []string `json:"diff_ids"`
 }
 
+type OCIImageEvidence struct {
+	ImageManifestDigest string
+}
+
 // VerifyImageOCI proves the saved OCI image itself has one manifest for the
 // platform named by the external manifest, the locked runtime configuration,
 // exact descriptor digests, and
 // only manifest-declared rootfs entries. It intentionally avoids a container
 // export because runtimes inject dev, proc, sys, hostname, and hosts entries.
 func VerifyImageOCI(reader io.Reader, manifestBytes []byte) error {
+	_, err := VerifyImageOCIWithEvidence(reader, manifestBytes)
+	return err
+}
+
+// VerifyImageOCIWithEvidence performs the same closed-world verification and
+// returns the digest of the exact single-platform OCI image manifest. A
+// production deployment may pin that digest only after this verification has
+// succeeded; the digest is never inferred from a tag or builder output.
+func VerifyImageOCIWithEvidence(reader io.Reader, manifestBytes []byte) (OCIImageEvidence, error) {
 	if reader == nil {
-		return errors.New("production OCI archive reader is required")
+		return OCIImageEvidence{}, errors.New("production OCI archive reader is required")
 	}
 	manifest, err := ParseManifest(manifestBytes)
 	if err != nil {
-		return err
+		return OCIImageEvidence{}, err
 	}
 	directories := make(map[string]DirectoryEntry, len(manifest.Directories))
 	for _, entry := range manifest.Directories {
@@ -118,83 +131,88 @@ func VerifyImageOCI(reader io.Reader, manifestBytes []byte) error {
 	files[ManifestPath] = FileEntry{
 		Path: ManifestPath, SHA256: sha256Hex(manifestBytes), SizeBytes: int64(len(manifestBytes)), Mode: 0o444,
 	}
-	return verifyOCIArchive(reader, manifest, directories, files)
+	return verifyOCIArchiveWithEvidence(reader, manifest, directories, files)
 }
 
 func verifyOCIArchive(reader io.Reader, manifest Manifest, directories map[string]DirectoryEntry, files map[string]FileEntry) error {
+	_, err := verifyOCIArchiveWithEvidence(reader, manifest, directories, files)
+	return err
+}
+
+func verifyOCIArchiveWithEvidence(reader io.Reader, manifest Manifest, directories map[string]DirectoryEntry, files map[string]FileEntry) (OCIImageEvidence, error) {
 	archive, err := readOCIArchive(reader)
 	if err != nil {
-		return err
+		return OCIImageEvidence{}, err
 	}
 	var layout ociLayoutDocument
 	if err := decodeOCIDocument("OCI layout", archive.layout, &layout); err != nil {
-		return err
+		return OCIImageEvidence{}, err
 	}
 	if layout.ImageLayoutVersion != "1.0.0" {
-		return errors.New("production OCI archive has unsupported image layout version")
+		return OCIImageEvidence{}, errors.New("production OCI archive has unsupported image layout version")
 	}
 
 	referenced := make(map[string]struct{}, len(archive.blobs))
 	var rootIndex ociIndexDocument
 	if err := decodeOCIDocument("OCI root index", archive.index, &rootIndex); err != nil {
-		return err
+		return OCIImageEvidence{}, err
 	}
 	architecture := platformArchitecture(manifest.Platform)
 	manifestBytes, err := resolveOCIImageManifest(rootIndex, architecture, archive.blobs, referenced)
 	if err != nil {
-		return err
+		return OCIImageEvidence{}, err
 	}
 
 	var imageManifest ociManifestDocument
 	if err := decodeOCIDocument("OCI image manifest", manifestBytes, &imageManifest); err != nil {
-		return err
+		return OCIImageEvidence{}, err
 	}
 	if imageManifest.SchemaVersion != 2 || imageManifest.MediaType != ociImageManifestMediaType || len(imageManifest.Layers) != 2 {
-		return errors.New("production OCI image manifest must contain exactly two layers")
+		return OCIImageEvidence{}, errors.New("production OCI image manifest must contain exactly two layers")
 	}
 	if imageManifest.Config.Platform != nil || len(imageManifest.Config.Annotations) != 0 {
-		return errors.New("production OCI config descriptor contains unexpected metadata")
+		return OCIImageEvidence{}, errors.New("production OCI config descriptor contains unexpected metadata")
 	}
 	configBytes, err := resolveOCIDescriptor(imageManifest.Config, ociImageConfigMediaType, archive.blobs, referenced)
 	if err != nil {
-		return fmt.Errorf("resolve OCI image config: %w", err)
+		return OCIImageEvidence{}, fmt.Errorf("resolve OCI image config: %w", err)
 	}
 
 	var config ociImageConfig
 	if err := decodeOCIDocument("OCI image config", configBytes, &config); err != nil {
-		return err
+		return OCIImageEvidence{}, err
 	}
 	if err := validateOCIImageConfig(config, manifest); err != nil {
-		return err
+		return OCIImageEvidence{}, err
 	}
 	if len(config.RootFS.DiffIDs) != len(imageManifest.Layers) {
-		return errors.New("production OCI config diff ID count differs from layer count")
+		return OCIImageEvidence{}, errors.New("production OCI config diff ID count differs from layer count")
 	}
 
 	entryVerifier := newTarEntryVerifier(directories, files)
 	for index, descriptor := range imageManifest.Layers {
 		if descriptor.Platform != nil || len(descriptor.Annotations) != 0 {
-			return fmt.Errorf("production OCI layer %d contains unexpected metadata", index)
+			return OCIImageEvidence{}, fmt.Errorf("production OCI layer %d contains unexpected metadata", index)
 		}
 		layerBytes, err := resolveOCIDescriptor(descriptor, ociGzipLayerMediaType, archive.blobs, referenced)
 		if err != nil {
-			return fmt.Errorf("resolve OCI layer %d: %w", index, err)
+			return OCIImageEvidence{}, fmt.Errorf("resolve OCI layer %d: %w", index, err)
 		}
 		diffID, err := verifyOCILayer(layerBytes, entryVerifier)
 		if err != nil {
-			return fmt.Errorf("verify OCI layer %d: %w", index, err)
+			return OCIImageEvidence{}, fmt.Errorf("verify OCI layer %d: %w", index, err)
 		}
 		if config.RootFS.DiffIDs[index] != diffID {
-			return fmt.Errorf("production OCI layer %d uncompressed digest differs from config", index)
+			return OCIImageEvidence{}, fmt.Errorf("production OCI layer %d uncompressed digest differs from config", index)
 		}
 	}
 	if err := entryVerifier.complete(); err != nil {
-		return err
+		return OCIImageEvidence{}, err
 	}
 	if len(referenced) != len(archive.blobs) {
-		return errors.New("production OCI archive contains unreferenced blobs")
+		return OCIImageEvidence{}, errors.New("production OCI archive contains unreferenced blobs")
 	}
-	return nil
+	return OCIImageEvidence{ImageManifestDigest: "sha256:" + sha256Hex(manifestBytes)}, nil
 }
 
 // resolveOCIImageManifest accepts both OCI archive layouts emitted by the
@@ -415,12 +433,17 @@ func validateOCIImageConfig(config ociImageConfig, manifest Manifest) error {
 		}
 	}
 	expectedUser := "65534:65534"
+	expectedWorkingDirectory := "/"
 	expectedTitle := "agentserver v2 production services"
 	expectedDescription := "Closed-world service binaries for agentserver v2"
 	if manifest.Kind == KindHarness {
 		expectedUser = "65530:65530"
 		expectedTitle = "agentserver v2 production harness"
 		expectedDescription = "Fork-based stateless harness with pinned stock Codex app-server"
+	} else if manifest.Kind == KindManagedSandbox {
+		expectedWorkingDirectory = "/workspace"
+		expectedTitle = "agentserver v2 managed sandbox"
+		expectedDescription = "Closed-world TAE sandbox with pinned Lark CLI and skill"
 	}
 	expectedLabels := map[string]string{
 		"org.opencontainers.image.description": expectedDescription,
@@ -429,7 +452,7 @@ func validateOCIImageConfig(config ociImageConfig, manifest Manifest) error {
 		"org.opencontainers.image.title":       expectedTitle,
 	}
 	if config.Config.User != expectedUser || !slices.Equal(config.Config.Env, []string{ociDefaultPath}) ||
-		len(config.Config.Entrypoint) != 0 || len(config.Config.Cmd) != 0 || config.Config.WorkingDir != "/" ||
+		len(config.Config.Entrypoint) != 0 || len(config.Config.Cmd) != 0 || config.Config.WorkingDir != expectedWorkingDirectory ||
 		config.Config.StopSignal != "SIGTERM" || !maps.Equal(config.Config.Labels, expectedLabels) {
 		return errors.New("production OCI runtime configuration differs from the locked profile")
 	}

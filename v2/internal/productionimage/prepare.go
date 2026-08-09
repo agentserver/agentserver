@@ -1,6 +1,7 @@
 package productionimage
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -10,10 +11,13 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/runtimelock"
 	"github.com/agentserver/agentserver/v2/internal/stockruntime"
 )
+
+const maximumManagedLarkSkillBytes = 256 * 1024
 
 type PrepareConfig struct {
 	Kind             string
@@ -23,6 +27,7 @@ type PrepareConfig struct {
 	CodexExecutable  string
 	BwrapExecutable  string
 	RequirementsFile string
+	LarkSkillFile    string
 	OutputDirectory  string
 }
 
@@ -65,10 +70,27 @@ func Prepare(config PrepareConfig) (_ PrepareResult, returnErr error) {
 	}}
 	for _, binary := range ExpectedBinaries(config.Kind) {
 		source := filepath.Join(config.BinaryDirectory, binary)
-		if err := validateLinuxGoExecutable(source, binary, config.Platform); err != nil {
-			return PrepareResult{}, err
+		var validationErr error
+		if config.Kind == KindManagedSandbox {
+			validationErr = validateExternalLinuxExecutable(source, binary, config.Platform)
+		} else {
+			validationErr = validateLinuxGoExecutable(source, binary, config.Platform)
 		}
-		entry, err := copyArtifact(source, rootfs, "usr/local/bin/"+binary, 0o555, "production Go executable "+binary)
+		if validationErr != nil {
+			return PrepareResult{}, validationErr
+		}
+		var (
+			entry FileEntry
+			err   error
+		)
+		if config.Kind == KindManagedSandbox && binary == "lark-cli" {
+			entry, err = copyPinnedArtifact(
+				source, rootfs, "usr/local/bin/"+binary, 0o555,
+				ManagedLarkCLISHA256, ManagedLarkCLISizeBytes, "managed Lark CLI",
+			)
+		} else {
+			entry, err = copyArtifact(source, rootfs, "usr/local/bin/"+binary, 0o555, "production Go executable "+binary)
+		}
 		if err != nil {
 			return PrepareResult{}, err
 		}
@@ -111,6 +133,21 @@ func Prepare(config PrepareConfig) (_ PrepareResult, returnErr error) {
 			return PrepareResult{}, err
 		}
 		files = append(files, bwrap)
+		skill, err := copyArtifact(
+			config.LarkSkillFile, rootfs, ManagedLarkSkillPath, 0o444, "managed Lark skill",
+		)
+		if err != nil {
+			return PrepareResult{}, err
+		}
+		files = append(files, skill)
+	} else if config.Kind == KindManagedSandbox {
+		skill, err := copyArtifact(
+			config.LarkSkillFile, rootfs, ManagedLarkSkillPath, 0o444, "managed Lark skill",
+		)
+		if err != nil {
+			return PrepareResult{}, err
+		}
+		files = append(files, skill)
 	}
 	slices.SortFunc(files, func(left, right FileEntry) int { return strings.Compare(left.Path, right.Path) })
 	manifest := Manifest{
@@ -149,11 +186,14 @@ func Prepare(config PrepareConfig) (_ PrepareResult, returnErr error) {
 }
 
 func validatePrepareConfig(config PrepareConfig) error {
-	if config.Kind != KindService && config.Kind != KindHarness {
-		return errors.New("production image kind must be service or harness")
+	if config.Kind != KindService && config.Kind != KindHarness && config.Kind != KindManagedSandbox {
+		return errors.New("production image kind must be service, harness, or managed-sandbox")
 	}
 	if !supportedPlatform(config.Platform) {
 		return fmt.Errorf("production image platform must be %s or %s", PlatformLinuxAMD64, PlatformLinuxARM64)
+	}
+	if config.Kind == KindManagedSandbox && config.Platform != PlatformLinuxAMD64 {
+		return errors.New("managed sandbox image preparation requires linux-amd64")
 	}
 	if !revisionPattern.MatchString(config.SourceRevision) {
 		return errors.New("production image source revision must be a lowercase 40-character Git SHA")
@@ -182,15 +222,57 @@ func validatePrepareConfig(config PrepareConfig) error {
 			"stock Codex":               config.CodexExecutable,
 			"stock bwrap":               config.BwrapExecutable,
 			"Codex system requirements": config.RequirementsFile,
+			"managed Lark skill":        config.LarkSkillFile,
 		} {
 			if err := validateCanonicalFile(label, path); err != nil {
 				return err
 			}
 		}
-	} else if config.CodexExecutable != "" || config.BwrapExecutable != "" || config.RequirementsFile != "" {
-		return errors.New("service image preparation must not receive harness runtime inputs")
+		if err := validateManagedLarkSkill(config.LarkSkillFile); err != nil {
+			return err
+		}
+	} else if config.Kind == KindManagedSandbox {
+		if err := validateCanonicalFile("managed Lark skill", config.LarkSkillFile); err != nil {
+			return err
+		}
+		if err := validateManagedLarkSkill(config.LarkSkillFile); err != nil {
+			return err
+		}
+		if config.CodexExecutable != "" || config.BwrapExecutable != "" || config.RequirementsFile != "" {
+			return errors.New("managed sandbox image preparation must not receive harness runtime inputs")
+		}
+	} else if config.CodexExecutable != "" || config.BwrapExecutable != "" || config.RequirementsFile != "" || config.LarkSkillFile != "" {
+		return errors.New("service image preparation must not receive harness or managed-sandbox runtime inputs")
 	}
 	return validateNewOutputDirectory(config.OutputDirectory)
+}
+
+func validateManagedLarkSkill(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("inspect managed Lark skill: %w", err)
+	}
+	if info.Size() < 1 || info.Size() > maximumManagedLarkSkillBytes {
+		return fmt.Errorf("managed Lark skill must contain between 1 and %d bytes", maximumManagedLarkSkillBytes)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open managed Lark skill: %w", err)
+	}
+	opened, statErr := file.Stat()
+	if statErr != nil || !os.SameFile(info, opened) || opened.Size() != info.Size() {
+		_ = file.Close()
+		return errors.Join(errors.New("managed Lark skill identity changed while opening"), statErr)
+	}
+	contents, readErr := io.ReadAll(io.LimitReader(file, maximumManagedLarkSkillBytes+1))
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil || int64(len(contents)) != info.Size() {
+		return errors.Join(errors.New("read stable managed Lark skill"), readErr, closeErr)
+	}
+	if !utf8.Valid(contents) || bytes.IndexByte(contents, 0) >= 0 {
+		return errors.New("managed Lark skill must be NUL-free UTF-8 text")
+	}
+	return nil
 }
 
 func validateNewOutputDirectory(path string) error {

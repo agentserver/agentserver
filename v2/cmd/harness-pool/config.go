@@ -14,47 +14,60 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/harnesspool"
+	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
 	"github.com/agentserver/agentserver/v2/internal/runtimelock"
 )
 
 const (
-	poolListenAddressEnvironment         = "AGENTSERVER_V2_HARNESS_POOL_LISTEN_ADDR"
-	poolTLSCertificateEnvironment        = "AGENTSERVER_V2_HARNESS_POOL_TLS_CERT_FILE"
-	poolTLSKeyEnvironment                = "AGENTSERVER_V2_HARNESS_POOL_TLS_KEY_FILE"
-	poolWorkerClientCAEnvironment        = "AGENTSERVER_V2_HARNESS_POOL_WORKER_CA_FILE"
-	poolTLSIdentityEnvironment           = "AGENTSERVER_V2_HARNESS_POOL_SPIFFE_ID"
-	poolWorkerTLSIdentityEnvironment     = "AGENTSERVER_V2_HARNESS_WORKER_SPIFFE_ID"
-	poolCoreURLEnvironment               = "AGENTSERVER_V2_CORE_URL"
-	poolCoreCAEnvironment                = "AGENTSERVER_V2_CORE_CA_FILE"
-	poolCoreServerNameEnvironment        = "AGENTSERVER_V2_CORE_SERVER_NAME"
-	poolExecutorIDEnvironment            = "AGENTSERVER_V2_EXECUTOR_ID"
-	poolDevExecutorIDEnvironment         = "AGENTSERVER_V2_DEV_EXECUTOR_ID"
-	poolDevRunCapabilityKeyEnvironment   = "AGENTSERVER_V2_DEV_RUN_CAPABILITY_KEY"
-	poolDevObjectRootEnvironment         = "AGENTSERVER_V2_DEV_PROMPT_OBJECT_DIR"
-	poolRuntimeRootEnvironment           = "AGENTSERVER_V2_HARNESS_RUNTIME_DIR"
-	poolCheckpointStagingRootEnvironment = "AGENTSERVER_V2_CHECKPOINT_STAGING_DIR"
-	poolWorkerExecutableEnvironment      = "AGENTSERVER_V2_HARNESS_WORKER_BIN"
-	poolWorkerConfigEnvironment          = "AGENTSERVER_V2_HARNESS_WORKER_CONFIG_FILE"
-	poolManifestSigningKeyIDEnvironment  = "AGENTSERVER_V2_RUN_MANIFEST_SIGNING_KEY_ID"
-	poolManifestSigningKeyEnvironment    = "AGENTSERVER_V2_RUN_MANIFEST_SIGNING_KEY_FILE"
-	poolRuntimeManifestDigestEnvironment = "AGENTSERVER_V2_CODEX_RUNTIME_MANIFEST_SHA256"
-	poolCheckpointAllowlistEnvironment   = "AGENTSERVER_V2_CHECKPOINT_ALLOWLIST_VERSION"
-	poolWorkerServiceAccountEnvironment  = "AGENTSERVER_V2_HARNESS_WORKER_SERVICE_ACCOUNT"
-	poolPrivilegedForkEnvironment        = "AGENTSERVER_V2_HARNESS_PRIVILEGED_FORK"
-	poolWorkerUIDEnvironment             = "AGENTSERVER_V2_HARNESS_WORKER_UID"
-	poolWorkerGIDEnvironment             = "AGENTSERVER_V2_HARNESS_WORKER_GID"
-	poolAppUIDEnvironment                = "AGENTSERVER_V2_HARNESS_APP_UID"
-	poolAppGIDEnvironment                = "AGENTSERVER_V2_HARNESS_APP_GID"
-	poolExecutorMCPEndpointEnvironment   = "AGENTSERVER_V2_EXECUTOR_MCP_ENDPOINT"
-	poolExecutorMCPIdentityEnvironment   = "AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID"
-	poolModelEnvironment                 = "AGENTSERVER_V2_MODEL"
-	poolModelProviderEnvironment         = "AGENTSERVER_V2_MODEL_PROVIDER"
-	poolModelEndpointEnvironment         = "AGENTSERVER_V2_LLMPROXY_ENDPOINT"
-	poolModelTLSIdentityEnvironment      = "AGENTSERVER_V2_LLMPROXY_SPIFFE_ID"
-	poolMaxConcurrentEnvironment         = "AGENTSERVER_V2_HARNESS_MAX_CONCURRENT_ATTEMPTS"
-	poolMaxRunDurationEnvironment        = "AGENTSERVER_V2_MAX_RUN_DURATION"
-	poolMaxApprovalTTLEnvironment        = "AGENTSERVER_V2_MAX_APPROVAL_TTL"
+	poolListenAddressEnvironment           = "AGENTSERVER_V2_HARNESS_POOL_LISTEN_ADDR"
+	poolTLSCertificateEnvironment          = "AGENTSERVER_V2_HARNESS_POOL_TLS_CERT_FILE"
+	poolTLSKeyEnvironment                  = "AGENTSERVER_V2_HARNESS_POOL_TLS_KEY_FILE"
+	poolWorkerClientCAEnvironment          = "AGENTSERVER_V2_HARNESS_POOL_WORKER_CA_FILE"
+	poolTLSIdentityEnvironment             = "AGENTSERVER_V2_HARNESS_POOL_SPIFFE_ID"
+	poolWorkerTLSIdentityEnvironment       = "AGENTSERVER_V2_HARNESS_WORKER_SPIFFE_ID"
+	poolCoreURLEnvironment                 = "AGENTSERVER_V2_CORE_URL"
+	poolCoreCAEnvironment                  = "AGENTSERVER_V2_CORE_CA_FILE"
+	poolCoreServerNameEnvironment          = "AGENTSERVER_V2_CORE_SERVER_NAME"
+	poolExecutorIDEnvironment              = "AGENTSERVER_V2_EXECUTOR_ID"
+	poolDevExecutorIDEnvironment           = "AGENTSERVER_V2_DEV_EXECUTOR_ID"
+	poolDevRunCapabilityKeyEnvironment     = "AGENTSERVER_V2_DEV_RUN_CAPABILITY_KEY"
+	poolDevObjectRootEnvironment           = "AGENTSERVER_V2_DEV_PROMPT_OBJECT_DIR"
+	poolRuntimeRootEnvironment             = "AGENTSERVER_V2_HARNESS_RUNTIME_DIR"
+	poolCheckpointStagingRootEnvironment   = "AGENTSERVER_V2_CHECKPOINT_STAGING_DIR"
+	poolWorkerExecutableEnvironment        = "AGENTSERVER_V2_HARNESS_WORKER_BIN"
+	poolWorkerConfigEnvironment            = "AGENTSERVER_V2_HARNESS_WORKER_CONFIG_FILE"
+	poolManifestSigningKeyIDEnvironment    = "AGENTSERVER_V2_RUN_MANIFEST_SIGNING_KEY_ID"
+	poolManifestSigningKeyEnvironment      = "AGENTSERVER_V2_RUN_MANIFEST_SIGNING_KEY_FILE"
+	poolRuntimeManifestDigestEnvironment   = "AGENTSERVER_V2_CODEX_RUNTIME_MANIFEST_SHA256"
+	poolCheckpointAllowlistEnvironment     = "AGENTSERVER_V2_CHECKPOINT_ALLOWLIST_VERSION"
+	poolWorkerServiceAccountEnvironment    = "AGENTSERVER_V2_HARNESS_WORKER_SERVICE_ACCOUNT"
+	poolPrivilegedForkEnvironment          = "AGENTSERVER_V2_HARNESS_PRIVILEGED_FORK"
+	poolWorkerUIDEnvironment               = "AGENTSERVER_V2_HARNESS_WORKER_UID"
+	poolWorkerGIDEnvironment               = "AGENTSERVER_V2_HARNESS_WORKER_GID"
+	poolAppUIDEnvironment                  = "AGENTSERVER_V2_HARNESS_APP_UID"
+	poolAppGIDEnvironment                  = "AGENTSERVER_V2_HARNESS_APP_GID"
+	poolExecutorMCPEndpointEnvironment     = "AGENTSERVER_V2_EXECUTOR_MCP_ENDPOINT"
+	poolExecutorMCPIdentityEnvironment     = "AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID"
+	poolModelEnvironment                   = "AGENTSERVER_V2_MODEL"
+	poolModelProviderEnvironment           = "AGENTSERVER_V2_MODEL_PROVIDER"
+	poolModelEndpointEnvironment           = "AGENTSERVER_V2_LLMPROXY_ENDPOINT"
+	poolModelTLSIdentityEnvironment        = "AGENTSERVER_V2_LLMPROXY_SPIFFE_ID"
+	poolMaxConcurrentEnvironment           = "AGENTSERVER_V2_HARNESS_MAX_CONCURRENT_ATTEMPTS"
+	poolMaxRunDurationEnvironment          = "AGENTSERVER_V2_MAX_RUN_DURATION"
+	poolMaxApprovalTTLEnvironment          = "AGENTSERVER_V2_MAX_APPROVAL_TTL"
+	poolManagedEnvironmentIDEnvironment    = "AGENTSERVER_V2_MANAGED_ENVIRONMENT_ID"
+	poolManagedRuntimeDigestEnvironment    = "AGENTSERVER_V2_MANAGED_RUNTIME_PROFILE_SHA256"
+	poolManagedPackSetDigestEnvironment    = "AGENTSERVER_V2_MANAGED_PACK_SET_SHA256"
+	poolManagedSkillDigestEnvironment      = "AGENTSERVER_V2_MANAGED_LARK_SKILL_SHA256"
+	poolManagedSandboxTTLEnvironment       = "AGENTSERVER_V2_MANAGED_SANDBOX_TTL"
+	poolManagedActivityTTLEnvironment      = "AGENTSERVER_V2_MANAGED_ACTIVITY_TTL"
+	poolSandboxGatewayURLEnvironment       = "AGENTSERVER_V2_SANDBOX_GATEWAY_URL"
+	poolSandboxGatewayCAEnvironment        = "AGENTSERVER_V2_SANDBOX_GATEWAY_CA_FILE"
+	poolSandboxGatewayServerEnvironment    = "AGENTSERVER_V2_SANDBOX_GATEWAY_SERVER_NAME"
+	poolSandboxCapabilityIssuerEnvironment = "AGENTSERVER_V2_SANDBOX_LIFECYCLE_CAPABILITY_ISSUER"
+	poolSandboxCapabilityKeyIDEnvironment  = "AGENTSERVER_V2_SANDBOX_LIFECYCLE_CAPABILITY_KEY_ID"
+	poolSandboxCapabilityKeyEnvironment    = "AGENTSERVER_V2_SANDBOX_LIFECYCLE_CAPABILITY_SIGNING_KEY_FILE"
 
 	developmentControlAudience     = "harness-pool-control"
 	developmentExecutorMCPAudience = runcapability.AudienceExecutorMCP
@@ -108,6 +121,14 @@ type harnessPoolConfig struct {
 	maxConcurrent       int
 	maxRunDuration      time.Duration
 	maxApprovalTTL      time.Duration
+
+	managedSandbox          *harnesspool.ManagedSandboxLaunchSpec
+	sandboxGatewayURL       string
+	sandboxGatewayCA        string
+	sandboxGatewayServer    string
+	sandboxCapabilityIssuer string
+	sandboxCapabilityKeyID  string
+	sandboxCapabilityKey    string
 }
 
 func loadHarnessPoolDevelopmentConfig(getenv func(string) string) (harnessPoolConfig, error) {
@@ -258,6 +279,9 @@ func loadHarnessPoolConfig(getenv func(string) string, production bool) (harness
 	if config.maxApprovalTTL > config.maxRunDuration {
 		return harnessPoolConfig{}, fmt.Errorf("%s must not exceed %s", poolMaxApprovalTTLEnvironment, poolMaxRunDurationEnvironment)
 	}
+	if err := loadOptionalManagedSandboxConfig(getenv, production, &config); err != nil {
+		return harnessPoolConfig{}, err
+	}
 	if err := validateDirectConfigurationFile(config.workerConfig); err != nil {
 		return harnessPoolConfig{}, fmt.Errorf("%s: %w", poolWorkerConfigEnvironment, err)
 	}
@@ -267,6 +291,137 @@ func loadHarnessPoolConfig(getenv func(string) string, production bool) (harness
 	}
 	config.workerDigest = workerDigest
 	return config, nil
+}
+
+func loadOptionalManagedSandboxConfig(getenv func(string) string, production bool, config *harnessPoolConfig) error {
+	if getenv == nil || config == nil {
+		return errors.New("managed sandbox configuration source and destination are required")
+	}
+	names := []string{
+		poolManagedEnvironmentIDEnvironment,
+		poolManagedRuntimeDigestEnvironment,
+		poolManagedPackSetDigestEnvironment,
+		poolManagedSkillDigestEnvironment,
+		poolManagedSandboxTTLEnvironment,
+		poolManagedActivityTTLEnvironment,
+		poolSandboxGatewayURLEnvironment,
+		poolSandboxGatewayCAEnvironment,
+		poolSandboxGatewayServerEnvironment,
+		poolSandboxCapabilityIssuerEnvironment,
+		poolSandboxCapabilityKeyIDEnvironment,
+		poolSandboxCapabilityKeyEnvironment,
+	}
+	configured := false
+	for _, name := range names {
+		if strings.TrimSpace(getenv(name)) != "" {
+			configured = true
+			break
+		}
+	}
+	if !configured {
+		return nil
+	}
+	required := func(name string) (string, error) {
+		value := strings.TrimSpace(getenv(name))
+		if value == "" {
+			return "", fmt.Errorf("%s is required when managed execution is enabled", name)
+		}
+		return value, nil
+	}
+	var err error
+	if config.sandboxGatewayURL, err = required(poolSandboxGatewayURLEnvironment); err != nil {
+		return err
+	}
+	parsed, err := url.Parse(config.sandboxGatewayURL)
+	if err != nil || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil || parsed.RawPath != "" ||
+		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Opaque != "" || parsed.ForceQuery ||
+		(parsed.Path != "" && parsed.Path != "/") {
+		return fmt.Errorf("%s must be an absolute canonical HTTP(S) origin", poolSandboxGatewayURLEnvironment)
+	}
+	if parsed.Scheme == "https" {
+		if config.sandboxGatewayCA, err = required(poolSandboxGatewayCAEnvironment); err != nil {
+			return err
+		}
+		if config.sandboxGatewayServer, err = required(poolSandboxGatewayServerEnvironment); err != nil {
+			return err
+		}
+	} else if parsed.Scheme != "http" || production || !poolLoopbackHost(parsed.Hostname()) {
+		return fmt.Errorf("%s permits cleartext HTTP only on loopback in insecure development", poolSandboxGatewayURLEnvironment)
+	} else if strings.TrimSpace(getenv(poolSandboxGatewayCAEnvironment)) != "" || strings.TrimSpace(getenv(poolSandboxGatewayServerEnvironment)) != "" {
+		return errors.New("cleartext managed sandbox-gateway configuration must not include TLS CA or server-name settings")
+	}
+
+	environmentID, err := required(poolManagedEnvironmentIDEnvironment)
+	if err != nil {
+		return err
+	}
+	if !validPoolUUID(environmentID) {
+		return fmt.Errorf("%s must be a non-zero canonical lowercase UUID", poolManagedEnvironmentIDEnvironment)
+	}
+	runtimeDigest, err := required(poolManagedRuntimeDigestEnvironment)
+	if err != nil {
+		return err
+	}
+	if !poolDigestPattern.MatchString(runtimeDigest) {
+		return fmt.Errorf("%s must be a lowercase SHA-256 digest", poolManagedRuntimeDigestEnvironment)
+	}
+	packSetDigest, err := required(poolManagedPackSetDigestEnvironment)
+	if err != nil {
+		return err
+	}
+	if !poolDigestPattern.MatchString(packSetDigest) {
+		return fmt.Errorf("%s must be a lowercase SHA-256 digest", poolManagedPackSetDigestEnvironment)
+	}
+	skillDigest, err := required(poolManagedSkillDigestEnvironment)
+	if err != nil {
+		return err
+	}
+	if !poolDigestPattern.MatchString(skillDigest) {
+		return fmt.Errorf("%s must be a lowercase SHA-256 digest", poolManagedSkillDigestEnvironment)
+	}
+	sandboxTTL, err := requiredManagedDuration(getenv, poolManagedSandboxTTLEnvironment, 30*time.Second, 24*time.Hour)
+	if err != nil {
+		return err
+	}
+	activityTTL, err := requiredManagedDuration(getenv, poolManagedActivityTTLEnvironment, 3*time.Second, 24*time.Hour)
+	if err != nil {
+		return err
+	}
+	if activityTTL > sandboxTTL {
+		return fmt.Errorf("%s must not exceed %s", poolManagedActivityTTLEnvironment, poolManagedSandboxTTLEnvironment)
+	}
+	if config.sandboxCapabilityIssuer, err = required(poolSandboxCapabilityIssuerEnvironment); err != nil {
+		return err
+	}
+	if config.sandboxCapabilityKeyID, err = required(poolSandboxCapabilityKeyIDEnvironment); err != nil {
+		return err
+	}
+	if config.sandboxCapabilityKey, err = required(poolSandboxCapabilityKeyEnvironment); err != nil {
+		return err
+	}
+	config.managedSandbox = &harnesspool.ManagedSandboxLaunchSpec{
+		EnvironmentID: environmentID, RuntimeProfileDigest: runtimeDigest,
+		PackID: larkegresspolicy.PackID, PackSetDigest: packSetDigest, SkillSHA256: skillDigest,
+		SandboxTTL: sandboxTTL, ActivityTTL: activityTTL,
+	}
+	return nil
+}
+
+func requiredManagedDuration(getenv func(string) string, name string, minimum, maximum time.Duration) (time.Duration, error) {
+	value := strings.TrimSpace(getenv(name))
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed < minimum || parsed > maximum || parsed%time.Second != 0 {
+		return 0, fmt.Errorf("%s must be a whole-second Go duration between %s and %s", name, minimum, maximum)
+	}
+	return parsed, nil
+}
+
+func poolLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	address := net.ParseIP(host)
+	return address != nil && address.IsLoopback()
 }
 
 func requireDevelopmentLoopbackAddress(address string) error {

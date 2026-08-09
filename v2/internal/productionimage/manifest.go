@@ -28,8 +28,9 @@ const (
 	Platform    = PlatformLinuxARM64
 	GoToolchain = "go1.26.5"
 
-	KindService = "service"
-	KindHarness = "harness"
+	KindService        = "service"
+	KindHarness        = "harness"
+	KindManagedSandbox = "managed-sandbox"
 
 	ManifestPath = "usr/share/agentserver/image-manifest.json"
 
@@ -42,8 +43,12 @@ const (
 	RequirementsSHA256    = "10a47c661234f111aa57ac11b9e2e97078b2c6ac5d3cd9a4a306f7d2f6a40917"
 	RequirementsSizeBytes = int64(53)
 
-	RuntimeManifestPath = "opt/agentserver/runtime/runtime-manifest.json"
-	RuntimeBundleRoot   = "opt/agentserver/runtime/bundle"
+	RuntimeManifestPath     = "opt/agentserver/runtime/runtime-manifest.json"
+	RuntimeBundleRoot       = "opt/agentserver/runtime/bundle"
+	ManagedLarkSkillPath    = "opt/agentserver/packs/lark-readonly/SKILL.md"
+	ManagedLarkCLIVersion   = "1.0.69"
+	ManagedLarkCLISHA256    = "faee6cf3f4d87194e079820ff7809182cbda1d815bc902700649c737ac0ed943"
+	ManagedLarkCLISizeBytes = int64(42463384)
 
 	maximumManifestBytes = 1024 * 1024
 	maximumManifestFiles = 32
@@ -107,11 +112,14 @@ func (manifest Manifest) Validate() error {
 	if manifest.Version != ManifestVersion {
 		return fmt.Errorf("production image manifest version must be %d", ManifestVersion)
 	}
-	if manifest.Kind != KindService && manifest.Kind != KindHarness {
-		return errors.New("production image manifest kind must be service or harness")
+	if manifest.Kind != KindService && manifest.Kind != KindHarness && manifest.Kind != KindManagedSandbox {
+		return errors.New("production image manifest kind must be service, harness, or managed-sandbox")
 	}
 	if !supportedPlatform(manifest.Platform) {
 		return fmt.Errorf("production image manifest platform must be %s or %s", PlatformLinuxAMD64, PlatformLinuxARM64)
+	}
+	if manifest.Kind == KindManagedSandbox && manifest.Platform != PlatformLinuxAMD64 {
+		return errors.New("managed sandbox image must be linux-amd64")
 	}
 	if !revisionPattern.MatchString(manifest.SourceRevision) {
 		return errors.New("production image source revision must be a lowercase 40-character Git SHA")
@@ -163,6 +171,16 @@ func (manifest Manifest) Validate() error {
 			return err
 		}
 		if err := requirePinnedFile(files, RuntimeBundleRoot+"/codex-resources/bwrap", bwrapDigest, bwrapSize, 0o555); err != nil {
+			return err
+		}
+	}
+	if manifest.Kind == KindHarness || manifest.Kind == KindManagedSandbox {
+		if entry, found := files[ManagedLarkSkillPath]; !found || entry.Mode != 0o444 {
+			return errors.New("managed execution image must contain the immutable Lark skill artifact")
+		}
+	}
+	if manifest.Kind == KindManagedSandbox {
+		if err := requirePinnedFile(files, "usr/local/bin/lark-cli", ManagedLarkCLISHA256, ManagedLarkCLISizeBytes, 0o555); err != nil {
 			return err
 		}
 	}
@@ -231,6 +249,17 @@ func expectedDirectories(kind string) []DirectoryEntry {
 			DirectoryEntry{Path: RuntimeBundleRoot, Mode: 0o711},
 			DirectoryEntry{Path: RuntimeBundleRoot + "/bin", Mode: 0o555},
 			DirectoryEntry{Path: RuntimeBundleRoot + "/codex-resources", Mode: 0o555},
+			DirectoryEntry{Path: "opt/agentserver/packs", Mode: 0o555},
+			DirectoryEntry{Path: "opt/agentserver/packs/lark-readonly", Mode: 0o555},
+		)
+	} else if kind == KindManagedSandbox {
+		directories = append(directories,
+			DirectoryEntry{Path: "opt", Mode: 0o555},
+			DirectoryEntry{Path: "opt/agentserver", Mode: 0o555},
+			DirectoryEntry{Path: "opt/agentserver/packs", Mode: 0o555},
+			DirectoryEntry{Path: "opt/agentserver/packs/lark-readonly", Mode: 0o555},
+			DirectoryEntry{Path: "tmp", Mode: 0o777},
+			DirectoryEntry{Path: "workspace", Mode: 0o777},
 		)
 	}
 	slices.SortFunc(directories, func(left, right DirectoryEntry) int { return strings.Compare(left.Path, right.Path) })
@@ -248,7 +277,10 @@ func expectedFilePaths(kind string) []string {
 			RuntimeManifestPath,
 			RuntimeBundleRoot+"/bin/codex",
 			RuntimeBundleRoot+"/codex-resources/bwrap",
+			ManagedLarkSkillPath,
 		)
+	} else if kind == KindManagedSandbox {
+		paths = append(paths, ManagedLarkSkillPath)
 	}
 	slices.Sort(paths)
 	return paths
@@ -260,13 +292,15 @@ func ExpectedBinaries(kind string) []string {
 	case KindService:
 		binaries = []string{
 			"agentserver-core", "agentserver-probe",
-			"browser-gateway", "executor-gateway", "llmproxy", "platform-gateway",
+			"browser-gateway", "egress-authorizer", "executor-gateway", "llmproxy", "platform-gateway", "sandbox-gateway",
 		}
 	case KindHarness:
 		binaries = []string{
 			"agentserver-init", "agentserver-probe", "harness-final-exec",
 			"harness-pool", "harness-worker",
 		}
+	case KindManagedSandbox:
+		binaries = []string{"lark-cli"}
 	}
 	slices.Sort(binaries)
 	return binaries

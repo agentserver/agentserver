@@ -34,6 +34,7 @@
     "codexRuntimeManifestDigest": {"$ref": "#/$defs/sha256"},
     "checkpointAllowlistVersion": {"const": 1},
     "catalogDigest": {"$ref": "#/$defs/sha256"},
+    "packSetDigest": {"$ref": "#/$defs/sha256"},
     "files": {
       "type": "array",
       "minItems": 1,

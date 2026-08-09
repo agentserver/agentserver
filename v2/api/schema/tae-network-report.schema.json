@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentserver.dev/schema/v2/tae-network-report.schema.json",
+  "title": "AgentServer SG TAE network evidence report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "startedAt",
+    "finishedAt",
+    "passed",
+    "cleanupConfirmed",
+    "source",
+    "configuration",
+    "checks"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "agentserver.tae.sg-network-report" },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "finishedAt": { "type": "string", "format": "date-time" },
+    "passed": { "type": "boolean" },
+    "cleanupConfirmed": { "type": "boolean" },
+    "source": { "$ref": "#/$defs/source" },
+    "configuration": { "$ref": "#/$defs/configuration" },
+    "checks": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/check" }
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "boundedText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[^\\x00-\\x1f\\x7f]+$"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespace", "podName", "podUid", "nodeName", "serviceAccount"],
+      "properties": {
+        "namespace": { "$ref": "#/$defs/boundedText" },
+        "podName": { "$ref": "#/$defs/boundedText" },
+        "podUid": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "nodeName": { "$ref": "#/$defs/boundedText" },
+        "serviceAccount": { "$ref": "#/$defs/boundedText" }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deploymentConfigSha256",
+        "region",
+        "psm",
+        "policyRevision",
+        "bytecloudSite",
+        "jwtEndpoint",
+        "proxyUrl",
+        "controlPlaneHost",
+        "dataPlaneDomainSuffix",
+        "sandboxImage",
+        "larkCliVersion",
+        "larkCliSha256",
+        "larkSkillSha256",
+        "connectivityAttempts",
+        "lifecycleAttempts"
+      ],
+      "properties": {
+        "deploymentConfigSha256": { "$ref": "#/$defs/digest" },
+        "region": { "$ref": "#/$defs/boundedText" },
+        "psm": { "$ref": "#/$defs/boundedText" },
+        "policyRevision": { "$ref": "#/$defs/boundedText" },
+        "bytecloudSite": { "$ref": "#/$defs/boundedText" },
+        "jwtEndpoint": { "$ref": "#/$defs/boundedText" },
+        "proxyUrl": { "$ref": "#/$defs/boundedText" },
+        "controlPlaneHost": { "$ref": "#/$defs/boundedText" },
+        "dataPlaneDomainSuffix": { "$ref": "#/$defs/boundedText" },
+        "sandboxImage": {
+          "type": "string",
+          "pattern": "^[^\\s@]+@sha256:[0-9a-f]{64}$"
+        },
+        "larkCliVersion": { "$ref": "#/$defs/boundedText" },
+        "larkCliSha256": { "$ref": "#/$defs/digest" },
+        "larkSkillSha256": { "$ref": "#/$defs/digest" },
+        "connectivityAttempts": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "lifecycleAttempts": { "type": "integer", "minimum": 1, "maximum": 5 }
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "attempts", "succeeded", "failed", "durationsMillis"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "attempts": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "succeeded": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "failed": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "durationsMillis": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": { "type": "integer", "minimum": 0, "maximum": 900000 }
+        },
+        "errors": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": { "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+          "additionalProperties": { "type": "integer", "minimum": 1, "maximum": 100 }
+        },
+        "bytesRead": { "type": "integer", "minimum": 0, "maximum": 1073741824 }
+      }
+    }
+  }
+}

@@ -35,7 +35,16 @@ const (
 
 	OperationEffectRead     = "read"
 	OperationEffectMutation = "mutation"
+
+	DispatchTargetAgentX = "agentx"
+	DispatchTargetTAE    = "tae"
 )
+
+type DispatchTarget struct {
+	Kind       string
+	ID         string
+	Generation int64
+}
 
 type Execution struct {
 	ID                   string
@@ -45,6 +54,7 @@ type Execution struct {
 	AppServerToolCallID  string
 	ExecutorID           string
 	EnvID                string
+	Target               DispatchTarget
 	ToolName             string
 	ToolVersion          string
 	MapperVersion        string
@@ -74,6 +84,7 @@ type ExecutionOperation struct {
 	ParamsHash           CanonicalJSONHash
 	Status               string
 	ConnectionGeneration int64
+	Target               DispatchTarget
 	AcknowledgementHash  *CanonicalJSONHash
 	TerminalResultHash   *CanonicalJSONHash
 	DispatchedAt         *time.Time
@@ -95,6 +106,7 @@ type PrepareExecutionCommand struct {
 	AppServerToolCallID    string
 	ExecutorID             string
 	EnvID                  string
+	Target                 DispatchTarget
 	ToolName               string
 	ToolVersion            string
 	MapperVersion          string
@@ -143,6 +155,7 @@ type BeginOperationDispatchCommand struct {
 	HolderID                 string
 	Generation               int64
 	ConnectionGeneration     int64
+	Target                   DispatchTarget
 	ExpectedExecutionVersion int64
 	ExpectedOperationVersion int64
 	PolicyContextHash        CanonicalJSONHash
@@ -167,6 +180,7 @@ type AcknowledgeOperationCommand struct {
 	AttemptID                string
 	Generation               int64
 	ConnectionGeneration     int64
+	Target                   DispatchTarget
 	ExpectedExecutionVersion int64
 	ExpectedOperationVersion int64
 	AcknowledgementHash      CanonicalJSONHash
@@ -186,6 +200,7 @@ type CompleteOperationCommand struct {
 	AttemptID                string
 	Generation               int64
 	ConnectionGeneration     int64
+	Target                   DispatchTarget
 	ExpectedExecutionVersion int64
 	ExpectedOperationVersion int64
 	TerminalStatus           string

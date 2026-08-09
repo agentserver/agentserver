@@ -20,13 +20,15 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/braincatalog"
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
+	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 )
 
 const maxCoreCommandResponseBytes = 512 * 1024
 
 type CoreConnectionClient struct {
-	baseURL    *url.URL
-	httpClient *http.Client
+	baseURL          *url.URL
+	httpClient       *http.Client
+	authorizationNow func() time.Time
 }
 
 // CoreCommandError preserves the stable core rejection code and retry hints.
@@ -67,6 +69,13 @@ type RegisteredEnvironment struct {
 	InsecureDev          bool
 	EnvironmentVersion   int64
 	ConnectionGeneration int64
+	// BackendKind and the target fields are empty for legacy Core responses.
+	// resolveRegisteredEnvironment projects that representation to the exact
+	// agentx executor/connection target. Managed environment projections set
+	// all three fields and never put a provider session reference here.
+	BackendKind      executionbackend.Kind
+	TargetID         string
+	TargetGeneration int64
 }
 
 func NewCoreConnectionClient(baseURL string, httpClient *http.Client) (*CoreConnectionClient, error) {
@@ -90,7 +99,7 @@ func NewCoreConnectionClient(baseURL string, httpClient *http.Client) (*CoreConn
 	parsed.Path = ""
 	clientCopy := *httpClient
 	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &CoreConnectionClient{baseURL: parsed, httpClient: &clientCopy}, nil
+	return &CoreConnectionClient{baseURL: parsed, httpClient: &clientCopy, authorizationNow: time.Now}, nil
 }
 
 func isLoopbackHost(host string) bool {
@@ -217,6 +226,19 @@ func validateSensitiveCoreBearer(bearer, kind string) error {
 
 func (client *CoreConnectionClient) ListEnvironments(ctx context.Context, workspaceID, executorID string) ([]RegisteredEnvironment, error) {
 	request := corecontract.ListExecutorEnvironmentsRequest{WorkspaceID: workspaceID, ExecutorID: executorID}
+	return client.listEnvironments(ctx, request)
+}
+
+func (client *CoreConnectionClient) ListScopedEnvironments(ctx context.Context, scope EnvironmentRegistryScope) ([]RegisteredEnvironment, error) {
+	request := corecontract.ListExecutorEnvironmentsRequest{
+		WorkspaceID: scope.WorkspaceID, SessionID: scope.SessionID,
+		RunAttemptID: scope.RunAttemptID, RunAttemptGeneration: scope.RunAttemptGeneration,
+		ExecutorID: scope.ExecutorID,
+	}
+	return client.listEnvironments(ctx, request)
+}
+
+func (client *CoreConnectionClient) listEnvironments(ctx context.Context, request corecontract.ListExecutorEnvironmentsRequest) ([]RegisteredEnvironment, error) {
 	var response corecontract.ListExecutorEnvironmentsResponse
 	if err := client.post(ctx, corecontract.ListExecutorEnvironmentsPath, request, &response, http.StatusOK); err != nil {
 		return nil, err
@@ -235,10 +257,15 @@ func (client *CoreConnectionClient) ListEnvironments(ctx context.Context, worksp
 			InsecureDev:          environment.InsecureDev,
 			EnvironmentVersion:   environment.EnvironmentVersion,
 			ConnectionGeneration: environment.ConnectionGeneration,
+			BackendKind:          executionbackend.Kind(environment.BackendKind),
+			TargetID:             environment.TargetID,
+			TargetGeneration:     environment.TargetGeneration,
 		}
 	}
 	return result, nil
 }
+
+var _ ScopedEnvironmentRegistry = (*CoreConnectionClient)(nil)
 
 func (client *CoreConnectionClient) AuthorizeExecutorRunCapability(
 	ctx context.Context,

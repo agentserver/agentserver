@@ -61,7 +61,7 @@ func renderRuntime(context renderContext) ([]kubeObject, error) {
 	}
 	hydra := renderHydraDeployment(context)
 	config := context.config
-	return []kubeObject{
+	items := []kubeObject{
 		core,
 		platform,
 		browser,
@@ -75,7 +75,32 @@ func renderRuntime(context renderContext) ([]kubeObject, error) {
 		podDisruptionBudget(config, harnessComponent, config.Document.Replicas.HarnessPool),
 		podDisruptionBudget(config, llmproxyComponent, config.Document.Replicas.LLMProxy),
 		podDisruptionBudget(config, hydraComponent, config.Document.Replicas.Hydra),
-	}, nil
+	}
+	if managedExecutionActive(config.Document.Managed) {
+		sandbox, err := renderSandboxDeployment(context)
+		if err != nil {
+			return nil, err
+		}
+		egress, err := renderEgressAuthorizerDeployment(context)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items,
+			sandbox, egress,
+			podDisruptionBudget(config, sandboxComponent, config.Document.Replicas.SandboxGateway),
+			podDisruptionBudget(config, egressComponent, config.Document.Replicas.EgressAuthorizer),
+		)
+	} else if managedPolicyBootstrap(config.Document.Managed) {
+		egress, err := renderEgressAuthorizerDeployment(context)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items,
+			egress,
+			podDisruptionBudget(config, egressComponent, config.Document.Replicas.EgressAuthorizer),
+		)
+	}
+	return items, nil
 }
 
 func renderHydraDeployment(context renderContext) kubeObject {
@@ -196,11 +221,15 @@ func hydraHealthProbe(path string, port uint16, failures int) kubeObject {
 func renderCoreDeployment(context renderContext) (kubeObject, error) {
 	config := context.config
 	document := config.Document
-	material, err := secretMaterialVolume("material", document.Secrets.Core, materialProfileCore, groupReadableSecretMode)
+	materialProfile := materialProfileCore
+	if managedExecutionActive(document.Managed) {
+		materialProfile = materialProfileCoreManaged
+	}
+	material, err := secretMaterialVolume("material", document.Secrets.Core, materialProfile, groupReadableSecretMode)
 	if err != nil {
 		return nil, err
 	}
-	materialMounts, err := secretMaterialMounts("material", "/var/run/agentserver/material", materialProfileCore)
+	materialMounts, err := secretMaterialMounts("material", "/var/run/agentserver/material", materialProfile)
 	if err != nil {
 		return nil, err
 	}
@@ -243,6 +272,15 @@ func renderCoreDeployment(context renderContext) (kubeObject, error) {
 		valueEnvironment("AGENTSERVER_V2_RUN_CAPABILITY_EXPIRY_GRACE", document.Runtime.CapabilityExpiryGrace),
 		valueEnvironment("AGENTSERVER_V2_EXECUTOR_ENROLLMENT_TOKEN_KEY_FILE", serviceMaterialPath("executor-enrollment.key")),
 		valueEnvironment("AGENTSERVER_V2_EXECUTOR_ENROLLMENT_TOKEN_TTL", document.Runtime.EnrollmentTokenTTL),
+		valueEnvironment("AGENTSERVER_V2_MANAGED_EXECUTOR_ENABLED", strconv.FormatBool(managedExecutionActive(document.Managed))),
+	}
+	if managedExecutionActive(document.Managed) {
+		environment = append(environment,
+			valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_SPIFFE_ID", spiffeIdentity(config, sandboxComponent)),
+			valueEnvironment("AGENTSERVER_V2_EGRESS_AUTHORIZER_SPIFFE_ID", spiffeIdentity(config, egressComponent)),
+			valueEnvironment("AGENTSERVER_V2_CREDENTIAL_SEALING_KEYRING_FILE", serviceMaterialPath("credential-sealing-keyring.json")),
+			valueEnvironment("AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEYRING_FILE", serviceMaterialPath("egress-placeholder-keyring.json")),
+		)
 	}
 	environment = append(environment, objectStoreEnvironment(document)...)
 	return deployment(deploymentInput{
@@ -341,11 +379,15 @@ func renderBrowserDeployment(context renderContext) (kubeObject, error) {
 func renderExecutorDeployment(context renderContext) (kubeObject, error) {
 	config := context.config
 	document := config.Document
-	material, err := secretMaterialVolume("material", document.Secrets.ExecutorGateway, materialProfileExecutorGateway, groupReadableSecretMode)
+	materialProfile := materialProfileExecutorGateway
+	if managedExecutionActive(document.Managed) {
+		materialProfile = materialProfileExecutorManaged
+	}
+	material, err := secretMaterialVolume("material", document.Secrets.ExecutorGateway, materialProfile, groupReadableSecretMode)
 	if err != nil {
 		return nil, err
 	}
-	materialMounts, err := secretMaterialMounts("material", "/var/run/agentserver/material", materialProfileExecutorGateway)
+	materialMounts, err := secretMaterialMounts("material", "/var/run/agentserver/material", materialProfile)
 	if err != nil {
 		return nil, err
 	}
@@ -367,6 +409,25 @@ func renderExecutorDeployment(context renderContext) (kubeObject, error) {
 		valueEnvironment("AGENTSERVER_V2_SHELL_POLICY_DECISION", document.Runtime.ShellPolicyDecision),
 		valueEnvironment("AGENTSERVER_V2_READ_FILE_POLICY_DECISION", document.Runtime.ReadFilePolicyDecision),
 	}
+	hosts := map[string]string{CoreInternalHost: document.Services.Core.ClusterIP}
+	if managedExecutionActive(document.Managed) {
+		issuer := spiffeIdentity(config, executorComponent)
+		environment = append(environment,
+			valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_URL", internalOrigin(SandboxInternalHost, document.Services.SandboxGateway.Port)),
+			valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_CA_FILE", serviceMaterialPath("ca.crt")),
+			valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_SERVER_NAME", SandboxInternalHost),
+			valueEnvironment("AGENTSERVER_V2_SANDBOX_BACKEND_CAPABILITY_ISSUER", issuer),
+			valueEnvironment("AGENTSERVER_V2_SANDBOX_BACKEND_CAPABILITY_KEY_ID", ProductionSandboxBackendKeyID),
+			valueEnvironment("AGENTSERVER_V2_SANDBOX_BACKEND_CAPABILITY_SIGNING_KEY_FILE", serviceMaterialPath("sandbox-backend-capability.key")),
+			valueEnvironment("AGENTSERVER_V2_SANDBOX_FENCER_CAPABILITY_ISSUER", issuer),
+			valueEnvironment("AGENTSERVER_V2_SANDBOX_FENCER_CAPABILITY_KEY_ID", ProductionSandboxFencerKeyID),
+			valueEnvironment("AGENTSERVER_V2_SANDBOX_FENCER_CAPABILITY_SIGNING_KEY_FILE", serviceMaterialPath("sandbox-fencer-capability.key")),
+			valueEnvironment("AGENTSERVER_V2_EGRESS_PLACEHOLDER_ISSUER", issuer),
+			valueEnvironment("AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEY_ID", ProductionEgressPlaceholderKeyID),
+			valueEnvironment("AGENTSERVER_V2_EGRESS_PLACEHOLDER_SIGNING_KEY_FILE", serviceMaterialPath("egress-placeholder.key")),
+		)
+		hosts[SandboxInternalHost] = document.Services.SandboxGateway.ClusterIP
+	}
 	return deployment(deploymentInput{
 		namespace: document.Namespace, platform: document.Platform, component: executorComponent, replicas: 1,
 		image: document.Images.Service, serviceAccount: executorComponent,
@@ -378,7 +439,7 @@ func renderExecutorDeployment(context renderContext) (kubeObject, error) {
 			kubeObject{"name": "https-mcp", "containerPort": int(document.Services.ExecutorGateway.InternalPort), "protocol": "TCP"},
 		},
 		probePort:   document.Services.ExecutorGateway.PublicPort,
-		hostAliases: map[string]string{CoreInternalHost: document.Services.Core.ClusterIP},
+		hostAliases: hosts,
 		resources:   document.Resources.ExecutorGateway, uid: ServiceUID, gid: ServiceGID, fsGroup: ServiceGID,
 		strategy: "Recreate", configHash: context.documentHash, termination: 30,
 	}), nil
@@ -387,7 +448,11 @@ func renderExecutorDeployment(context renderContext) (kubeObject, error) {
 func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 	config := context.config
 	document := config.Document
-	poolMaterial, err := secretMaterialVolume("pool-material", document.Secrets.HarnessPool, materialProfileHarnessPool, groupReadableSecretMode)
+	poolProfile := materialProfileHarnessPool
+	if managedExecutionActive(document.Managed) {
+		poolProfile = materialProfileHarnessPoolManaged
+	}
+	poolMaterial, err := secretMaterialVolume("pool-material", document.Secrets.HarnessPool, poolProfile, groupReadableSecretMode)
 	if err != nil {
 		return nil, err
 	}
@@ -395,7 +460,7 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 	if err != nil {
 		return nil, err
 	}
-	poolMaterialMounts, err := secretMaterialMounts("pool-material", "/var/run/agentserver/pool", materialProfileHarnessPool)
+	poolMaterialMounts, err := secretMaterialMounts("pool-material", "/var/run/agentserver/pool", poolProfile)
 	if err != nil {
 		return nil, err
 	}
@@ -439,11 +504,37 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 		valueEnvironment("AGENTSERVER_V2_MAX_RUN_DURATION", document.Runtime.MaxRunDuration),
 		valueEnvironment("AGENTSERVER_V2_MAX_APPROVAL_TTL", document.Runtime.MaxApprovalTTL),
 	}
+	if managedExecutionActive(document.Managed) {
+		environment = append(environment,
+			valueEnvironment("AGENTSERVER_V2_MANAGED_ENVIRONMENT_ID", document.Managed.Environment.EnvironmentID),
+			valueEnvironment("AGENTSERVER_V2_MANAGED_RUNTIME_PROFILE_SHA256", document.Managed.Environment.RuntimeProfileSHA256),
+			valueEnvironment("AGENTSERVER_V2_MANAGED_PACK_SET_SHA256", document.Managed.Environment.PackSetSHA256),
+			valueEnvironment("AGENTSERVER_V2_MANAGED_SANDBOX_TTL", document.Managed.Environment.SandboxTTL),
+			valueEnvironment("AGENTSERVER_V2_MANAGED_ACTIVITY_TTL", document.Managed.Environment.ActivityTTL),
+			valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_URL", internalOrigin(SandboxInternalHost, document.Services.SandboxGateway.Port)),
+			valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_CA_FILE", poolMaterialPath("ca.crt")),
+			valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_SERVER_NAME", SandboxInternalHost),
+			valueEnvironment("AGENTSERVER_V2_SANDBOX_LIFECYCLE_CAPABILITY_ISSUER", spiffeIdentity(config, harnessComponent)),
+			valueEnvironment("AGENTSERVER_V2_SANDBOX_LIFECYCLE_CAPABILITY_KEY_ID", ProductionSandboxLifecycleKeyID),
+			valueEnvironment("AGENTSERVER_V2_SANDBOX_LIFECYCLE_CAPABILITY_SIGNING_KEY_FILE", poolMaterialPath("sandbox-lifecycle-capability.key")),
+		)
+		if managedLarkEnabled(document.Managed) {
+			environment = append(environment, valueEnvironment("AGENTSERVER_V2_MANAGED_LARK_SKILL_SHA256", document.Managed.Lark.SkillSHA256))
+		}
+	}
 	environment = append(environment, objectStoreEnvironment(document)...)
 	configVolume := configMapVolume("harness-config", context.harnessConfigName, map[string]string{
 		"worker-deployment.json": "worker-deployment.json",
 		"network-guard.json":     "network-guard.json",
 	})
+	hosts := map[string]string{
+		CoreInternalHost:     document.Services.Core.ClusterIP,
+		ExecutorInternalHost: document.Services.ExecutorGateway.ClusterIP,
+		LLMProxyInternalHost: document.Services.LLMProxy.ClusterIP,
+	}
+	if managedExecutionActive(document.Managed) {
+		hosts[SandboxInternalHost] = document.Services.SandboxGateway.ClusterIP
+	}
 	return deployment(deploymentInput{
 		namespace: document.Namespace, platform: document.Platform, component: harnessComponent, replicas: document.Replicas.HarnessPool,
 		image: document.Images.Harness, serviceAccount: harnessComponent,
@@ -464,11 +555,7 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 			kubeObject{"name": "checkpoint", "mountPath": "/var/lib/agentserver/checkpoint"},
 			kubeObject{"name": "scratch", "mountPath": "/tmp"},
 		),
-		hostAliases: map[string]string{
-			CoreInternalHost:     document.Services.Core.ClusterIP,
-			ExecutorInternalHost: document.Services.ExecutorGateway.ClusterIP,
-			LLMProxyInternalHost: document.Services.LLMProxy.ClusterIP,
-		},
+		hostAliases: hosts,
 		// The pool is fixed platform code and must retain these effective
 		// capabilities across runtimes that discard added capabilities for a
 		// non-root container entrypoint. Workers and app processes still switch
@@ -476,6 +563,141 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 		resources: document.Resources.HarnessPool, uid: 0, gid: 0, fsGroup: PoolGID,
 		capabilities: []string{"CHOWN", "SETUID", "SETGID", "DAC_OVERRIDE"},
 		strategy:     "RollingUpdate", configHash: context.harnessDeploymentHash, termination: 45,
+	}), nil
+}
+
+func renderSandboxDeployment(context renderContext) (kubeObject, error) {
+	config := context.config
+	document := config.Document
+	material, err := secretMaterialVolume("material", document.Secrets.SandboxGateway, materialProfileSandboxGateway, groupReadableSecretMode)
+	if err != nil {
+		return nil, err
+	}
+	mounts, err := secretMaterialMounts("material", "/var/run/agentserver/material", materialProfileSandboxGateway)
+	if err != nil {
+		return nil, err
+	}
+	environment := []any{
+		valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_LISTEN_ADDR", listenAddress(document.Services.SandboxGateway.Port)),
+		valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_TLS_CERT_FILE", serviceMaterialPath("tls.crt")),
+		valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_TLS_KEY_FILE", serviceMaterialPath("tls.key")),
+		valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_CLIENT_CA_FILE", serviceMaterialPath("ca.crt")),
+		valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_SPIFFE_ID", spiffeIdentity(config, sandboxComponent)),
+		valueEnvironment("AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID", spiffeIdentity(config, executorComponent)),
+		valueEnvironment("AGENTSERVER_V2_HARNESS_POOL_SPIFFE_ID", spiffeIdentity(config, harnessComponent)),
+		valueEnvironment("AGENTSERVER_V2_CORE_URL", internalOrigin(CoreInternalHost, document.Services.Core.Port)),
+		valueEnvironment("AGENTSERVER_V2_CORE_CA_FILE", serviceMaterialPath("ca.crt")),
+		valueEnvironment("AGENTSERVER_V2_CORE_CLIENT_CERT_FILE", serviceMaterialPath("tls.crt")),
+		valueEnvironment("AGENTSERVER_V2_CORE_CLIENT_KEY_FILE", serviceMaterialPath("tls.key")),
+		valueEnvironment("AGENTSERVER_V2_CORE_SERVER_NAME", CoreInternalHost),
+		valueEnvironment("AGENTSERVER_V2_SANDBOX_CAPABILITY_KEYRING_FILE", serviceMaterialPath("sandbox-capability-keyring.json")),
+		valueEnvironment("AGENTSERVER_V2_SANDBOX_PROVIDER", "tae"),
+		valueEnvironment("AGENTSERVER_V2_TAE_REGION", document.Managed.TAE.Region),
+		valueEnvironment("AGENTSERVER_V2_TAE_PSM", document.Managed.TAE.PSM),
+		valueEnvironment("AGENTSERVER_V2_TAE_SANDBOX_IMAGE", document.Images.ManagedSandbox),
+		valueEnvironment("AGENTSERVER_V2_TAE_AUTH_MODE", "bytecloud-app-aksk-v1"),
+		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_SITE", "i18n-tt"),
+		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_JWT_ENDPOINT", ProductionByteCloudJWTEndpoint),
+		valueEnvironment("AGENTSERVER_V2_TAE_PROXY_URL", ProductionTAEProxyURL),
+		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_ACCESS_KEY_ID_FILE", serviceMaterialPath("bytecloud-access-key-id")),
+		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_SECRET_ACCESS_KEY_FILE", serviceMaterialPath("bytecloud-secret-access-key")),
+		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_JWT_TIMEOUT", "5s"),
+		valueEnvironment("AGENTSERVER_V2_MANAGED_IDLE_TTL", document.Managed.Environment.IdleTTL),
+		valueEnvironment("AGENTSERVER_V2_MANAGED_SANDBOX_ROOT", document.Managed.Environment.Root.Path),
+		valueEnvironment("AGENTSERVER_V2_MANAGED_SANDBOX_PLATFORM", document.Platform),
+		valueEnvironment("AGENTSERVER_V2_MANAGED_WORKSPACE_ALLOWLIST", strings.Join(document.Managed.WorkspaceAllowlist, ",")),
+		valueEnvironment("AGENTSERVER_V2_SANDBOX_ENSURE_TIMEOUT", "45s"),
+		valueEnvironment("AGENTSERVER_V2_SANDBOX_ENSURE_POLL_INTERVAL", "250ms"),
+		valueEnvironment("AGENTSERVER_V2_SANDBOX_RECONCILE_INTERVAL", "30s"),
+		valueEnvironment("AGENTSERVER_V2_SANDBOX_RECONCILE_LIMIT", "100"),
+	}
+	environment = append(environment, managedTAEPolicyEnvironment(document.Managed.TAE)...)
+	return deployment(deploymentInput{
+		namespace: document.Namespace, platform: document.Platform, component: sandboxComponent,
+		replicas: document.Replicas.SandboxGateway, image: document.Images.Service, serviceAccount: sandboxComponent,
+		command: []any{"/usr/local/bin/sandbox-gateway"}, args: []any{"serve"}, environment: environment,
+		volumes:      []any{material, emptyDirVolume("scratch", "Memory", document.Resources.ScratchTmpfs)},
+		volumeMounts: append(mounts, kubeObject{"name": "scratch", "mountPath": "/tmp"}),
+		hostAliases:  map[string]string{CoreInternalHost: document.Services.Core.ClusterIP},
+		resources:    document.Resources.SandboxGateway, uid: ServiceUID, gid: ServiceGID, fsGroup: ServiceGID,
+		strategy: "RollingUpdate", configHash: context.documentHash, termination: 45,
+	}), nil
+}
+
+func managedTAEPolicyEnvironment(tae ManagedTAEDocument) []any {
+	policy := tae.Policy
+	environment := []any{
+		valueEnvironment("AGENTSERVER_V2_TAE_POLICY_REVISION", policy.Revision),
+		valueEnvironment("AGENTSERVER_V2_TAE_POLICY_SHA256", policy.PolicySHA256),
+		valueEnvironment("AGENTSERVER_V2_TAE_POLICY_BINDING_SHA256", policy.BindingSHA256),
+		valueEnvironment("AGENTSERVER_V2_TAE_POLICY_HOST", policy.PublicHost),
+		valueEnvironment("AGENTSERVER_V2_TAE_POLICY_ACCESS", policy.PublicAccess),
+		valueEnvironment("AGENTSERVER_V2_TAE_POLICY_WEBHOOK_REQUIRED", strconv.FormatBool(policy.PublicWebhookRequired)),
+		valueEnvironment("AGENTSERVER_V2_TAE_WEBHOOK_MODE", policy.WebhookMode),
+		valueEnvironment("AGENTSERVER_V2_TAE_WEBHOOK_PATH", policy.WebhookPath),
+		valueEnvironment("AGENTSERVER_V2_TAE_POLICY_PUBLISHED", strconv.FormatBool(policy.Published)),
+		valueEnvironment("AGENTSERVER_V2_TAE_POLICY_APPROVED", strconv.FormatBool(policy.Approved)),
+		valueEnvironment("AGENTSERVER_V2_TAE_POLICY_EVIDENCE_REF", policy.EvidenceRef),
+		valueEnvironment("AGENTSERVER_V2_TAE_NETWORK_BINDING_SHA256", tae.NetworkEvidence.BindingSHA256),
+		valueEnvironment("AGENTSERVER_V2_TAE_NETWORK_REPORT_SHA256", tae.NetworkEvidence.ReportSHA256),
+		valueEnvironment("AGENTSERVER_V2_TAE_NETWORK_EVIDENCE_REF", tae.NetworkEvidence.EvidenceRef),
+	}
+	if policy.WebhookMode == "psm" {
+		environment = append(environment, valueEnvironment("AGENTSERVER_V2_TAE_WEBHOOK_PSM", policy.WebhookPSM))
+	} else {
+		environment = append(environment, valueEnvironment("AGENTSERVER_V2_TAE_WEBHOOK_URL", policy.WebhookURL))
+	}
+	return environment
+}
+
+func renderEgressAuthorizerDeployment(context renderContext) (kubeObject, error) {
+	config := context.config
+	document := config.Document
+	bootstrap := managedPolicyBootstrap(document.Managed)
+	materialProfile := materialProfileEgressAuthorizer
+	if bootstrap {
+		materialProfile = materialProfileEgressBootstrap
+	}
+	material, err := secretMaterialVolume("material", document.Secrets.EgressAuthorizer, materialProfile, groupReadableSecretMode)
+	if err != nil {
+		return nil, err
+	}
+	mounts, err := secretMaterialMounts("material", "/var/run/agentserver/material", materialProfile)
+	if err != nil {
+		return nil, err
+	}
+	environment := []any{
+		valueEnvironment("AGENTSERVER_V2_EGRESS_AUTHORIZER_LISTEN_ADDR", listenAddress(document.Services.EgressAuthorizer.Port)),
+		valueEnvironment("AGENTSERVER_V2_EGRESS_AUTHORIZER_TLS_CERT_FILE", serviceMaterialPath("tls.crt")),
+		valueEnvironment("AGENTSERVER_V2_EGRESS_AUTHORIZER_TLS_KEY_FILE", serviceMaterialPath("tls.key")),
+		valueEnvironment("AGENTSERVER_V2_EGRESS_AUTHORIZER_SPIFFE_ID", spiffeIdentity(config, egressComponent)),
+	}
+	args := []any{"serve", "--policy-bootstrap"}
+	hosts := map[string]string(nil)
+	if !bootstrap {
+		environment = append(environment,
+			valueEnvironment("AGENTSERVER_V2_CORE_URL", internalOrigin(CoreInternalHost, document.Services.Core.Port)),
+			valueEnvironment("AGENTSERVER_V2_CORE_CA_FILE", serviceMaterialPath("ca.crt")),
+			valueEnvironment("AGENTSERVER_V2_CORE_CLIENT_CERT_FILE", serviceMaterialPath("tls.crt")),
+			valueEnvironment("AGENTSERVER_V2_CORE_CLIENT_KEY_FILE", serviceMaterialPath("tls.key")),
+			valueEnvironment("AGENTSERVER_V2_CORE_SERVER_NAME", CoreInternalHost),
+			valueEnvironment("AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEYRING_FILE", serviceMaterialPath("egress-placeholder-keyring.json")),
+			valueEnvironment("AGENTSERVER_V2_EGRESS_ALLOWED_TAE_PSM", document.Managed.TAE.PSM),
+			valueEnvironment("AGENTSERVER_V2_EGRESS_DECISION_TIMEOUT", "350ms"),
+		)
+		environment = append(environment, managedTAEPolicyEnvironment(document.Managed.TAE)...)
+		args = []any{"serve"}
+		hosts = map[string]string{CoreInternalHost: document.Services.Core.ClusterIP}
+	}
+	return deployment(deploymentInput{
+		namespace: document.Namespace, platform: document.Platform, component: egressComponent,
+		replicas: document.Replicas.EgressAuthorizer, image: document.Images.Service, serviceAccount: egressComponent,
+		command: []any{"/usr/local/bin/egress-authorizer"}, args: args, environment: environment,
+		volumes:      []any{material, emptyDirVolume("scratch", "Memory", document.Resources.ScratchTmpfs)},
+		volumeMounts: append(mounts, kubeObject{"name": "scratch", "mountPath": "/tmp"}),
+		hostAliases:  hosts,
+		resources:    document.Resources.EgressAuthorizer, uid: ServiceUID, gid: ServiceGID, fsGroup: ServiceGID,
+		strategy: "RollingUpdate", configHash: context.documentHash, termination: 20,
 	}), nil
 }
 

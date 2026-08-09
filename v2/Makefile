@@ -3,9 +3,9 @@ GOFMT ?= gofmt
 NODE ?= node
 PNPM ?= pnpm
 
-.PHONY: check fmt fmt-check vet test web-check web-test postgres-test hydra-live-test import-boundary contract-check conformance conformance-live conformance-image-a04 conformance-image-a12 conformance-image-e09
+.PHONY: check fmt fmt-check vet test provider-check web-check web-test postgres-test hydra-live-test import-boundary contract-check conformance conformance-live conformance-image-a04 conformance-image-a12 conformance-image-e09
 
-check: fmt-check vet test web-check import-boundary contract-check
+check: fmt-check vet test provider-check web-check import-boundary contract-check
 
 fmt:
 	find . -name '*.go' -type f -exec $(GOFMT) -w {} +
@@ -22,6 +22,13 @@ vet:
 
 test:
 	$(GO) test ./... -count=1
+
+# providers/tae is a nested module because only the provider-linked
+# sandbox-gateway may import ByteDance-private SDKs. Root ./... does not cross
+# that module boundary, so production checks must exercise it explicitly.
+provider-check:
+	$(GO) -C providers/tae vet ./...
+	$(GO) -C providers/tae test ./... -count=1
 
 web-check:
 	$(PNPM) web:check

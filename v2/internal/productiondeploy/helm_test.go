@@ -26,7 +26,7 @@ func TestRenderHelmChartLocksNamespaceHooksAndValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first.Files) != len(requiredHelmChartFiles) || len(second.Files) != len(first.Files) {
+	if len(first.Files) != len(requiredHelmManagedChartFiles) || len(second.Files) != len(first.Files) {
 		t.Fatalf("Helm chart file count = %d / %d", len(first.Files), len(second.Files))
 	}
 	for index := range first.Files {
@@ -44,10 +44,12 @@ func TestRenderHelmChartLocksNamespaceHooksAndValues(t *testing.T) {
 	hydraMigration := parseHelmManifest(t, mustHelmFile(t, first, helmHydraMigrationManifestFile))
 	hydraSetup := parseHelmManifest(t, mustHelmFile(t, first, helmHydraSetupManifestFile))
 	bootstrap := parseHelmManifest(t, mustHelmFile(t, first, helmBootstrapManifestFile))
+	managedEnvironment := parseHelmManifest(t, mustHelmFile(t, first, helmManagedEnvironmentManifestFile))
 	assertHelmHook(t, hydraMigration, hydraMigrationComponent, "pre-install,pre-upgrade", "-20")
 	assertHelmHook(t, migration, migrationComponent, "pre-install,pre-upgrade", "-10")
 	assertHelmHook(t, hydraSetup, hydraSetupComponent, "post-install,post-upgrade", "-10")
 	assertHelmHook(t, bootstrap, bootstrapComponent, "post-install,post-upgrade", "0")
+	assertHelmHook(t, managedEnvironment, managedEnvironmentBootstrapComponent, "post-install,post-upgrade", "10")
 	migrationPodSpec := objectField(t, objectField(t, objectField(t, migration[0], "spec"), "template"), "spec")
 	if stringField(t, migrationPodSpec, "serviceAccountName") != "default" || migrationPodSpec["automountServiceAccountToken"] != false {
 		t.Fatal("migration hook depends on a chart-managed ServiceAccount or mounts an API token")
@@ -64,6 +66,7 @@ func TestRenderHelmChartLocksNamespaceHooksAndValues(t *testing.T) {
 	for _, templateName := range []string{
 		helmFoundationTemplateFile, helmHydraMigrationTemplateFile, helmMigrationTemplateFile,
 		helmHydraSetupTemplateFile, helmBootstrapTemplateFile, helmRuntimeTemplateFile,
+		helmManagedEnvironmentTemplateFile, helmTAENetworkProbeTemplateFile,
 	} {
 		template := mustHelmFile(t, first, templateName)
 		if bytes.Contains(template, []byte("template injection")) || !bytes.Contains(template, []byte(".Files.Get")) {
@@ -72,6 +75,17 @@ func TestRenderHelmChartLocksNamespaceHooksAndValues(t *testing.T) {
 	}
 	if !bytes.Contains(mustHelmFile(t, first, helmFoundationManifestFile), []byte("template injection")) {
 		t.Fatal("test fixture did not reach the static manifest")
+	}
+	var valuesSchema map[string]any
+	if err := json.Unmarshal(mustHelmFile(t, first, helmValuesSchemaFile), &valuesSchema); err != nil {
+		t.Fatal(err)
+	}
+	properties := objectField(t, valuesSchema, "properties")
+	probeSchema := objectField(t, properties, "taeNetworkProbe")
+	probeProperties := objectField(t, probeSchema, "properties")
+	enabledSchema := objectField(t, probeProperties, "enabled")
+	if enabled := enabledSchema["enum"].([]any); len(enabled) != 1 || enabled[0] != false {
+		t.Fatalf("active Chart TAE probe enablement schema = %#v", enabledSchema)
 	}
 }
 
@@ -104,6 +118,70 @@ func TestWriteHelmChartPublishesReadOnlyExactRetry(t *testing.T) {
 	}
 	if err := WriteHelmChart(chart, destination); err == nil {
 		t.Fatal("tampered production Helm chart was accepted on retry")
+	}
+}
+
+func TestRenderHelmChartRejectsTemplateManagedEvidence(t *testing.T) {
+	document := validConfigDocument()
+	document.Managed.TAE.Policy.EvidenceRef = "REPLACE_WITH_TAE_CHANGE"
+	document.Managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(document.Managed.TAE).DigestHex()
+	document.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(document)
+	document.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(document, document.Managed)
+	document.Managed.Environment.PackSetSHA256 = managedPackSetDigest(document.Managed)
+	loaded, err := ValidateConfig(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RenderHelmChart(loaded); err == nil || !strings.Contains(err.Error(), "evidence-backed") {
+		t.Fatalf("template managed evidence was accepted: %v", err)
+	}
+}
+
+func TestRenderHelmChartAcceptsEvidenceFreePolicyBootstrap(t *testing.T) {
+	loaded, err := ValidateConfig(policyBootstrapConfigDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	chart, err := RenderHelmChart(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chart.Files) != len(requiredHelmBaseChartFiles) {
+		t.Fatalf("policy bootstrap Helm files = %d, want %d", len(chart.Files), len(requiredHelmBaseChartFiles))
+	}
+	if _, found := chart.File(helmManagedEnvironmentManifestFile); found {
+		t.Fatal("policy bootstrap Helm chart contains managed environment activation")
+	}
+	probe := parseHelmManifest(t, mustHelmFile(t, chart, helmTAENetworkProbeManifestFile))
+	if len(probe) != 3 || probe[0]["kind"] != "ServiceAccount" || probe[1]["kind"] != "NetworkPolicy" || probe[2]["kind"] != "Job" {
+		t.Fatalf("policy bootstrap TAE probe manifest = %#v", probe)
+	}
+	probeTemplate := mustHelmFile(t, chart, helmTAENetworkProbeTemplateFile)
+	for _, required := range [][]byte{
+		[]byte("if .Values.taeNetworkProbe.enabled"), []byte("kind: ConfigMap"),
+		[]byte("sha256sum"), []byte("replace"), []byte(taeNetworkProbeJobPlaceholder),
+		[]byte(taeNetworkProbeInputPlaceholder),
+	} {
+		if !bytes.Contains(probeTemplate, required) {
+			t.Fatalf("policy bootstrap TAE probe template is missing %q", required)
+		}
+	}
+	if bytes.Contains(probeTemplate, []byte("tpl ")) {
+		t.Fatal("TAE probe template evaluates static deployment content with tpl")
+	}
+	var valuesSchema map[string]any
+	if err := json.Unmarshal(mustHelmFile(t, chart, helmValuesSchemaFile), &valuesSchema); err != nil {
+		t.Fatal(err)
+	}
+	properties := objectField(t, valuesSchema, "properties")
+	probeSchema := objectField(t, properties, "taeNetworkProbe")
+	if _, disabledOnly := objectField(t, objectField(t, probeSchema, "properties"), "enabled")["enum"]; disabledOnly {
+		t.Fatalf("policy bootstrap Chart unexpectedly disables the TAE probe: %#v", probeSchema)
+	}
+	runtime := parseHelmManifest(t, mustHelmFile(t, chart, helmRuntimeManifestFile))
+	if findResourceOptional(runtime, "Deployment", sandboxComponent) != nil ||
+		findResourceOptional(runtime, "Deployment", egressComponent) == nil {
+		t.Fatal("policy bootstrap Helm runtime does not contain exactly the intended managed boundary")
 	}
 }
 
@@ -147,7 +225,7 @@ func assertHelmHook(t *testing.T, resources []map[string]any, component, hook, w
 }
 
 func TestRequiredHelmChartFileListIsCanonical(t *testing.T) {
-	for _, name := range requiredHelmChartFiles {
+	for _, name := range requiredHelmManagedChartFiles {
 		if filepath.ToSlash(name) != name || strings.HasPrefix(name, "/") || strings.Contains(name, "..") {
 			t.Fatalf("non-canonical required Helm chart path %q", name)
 		}

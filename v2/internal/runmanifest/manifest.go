@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	CurrentVersion     = 2
+	CurrentVersion     = 3
 	Canonicalizer      = "rfc8785-v1"
 	SignatureAlgorithm = "ed25519-v1"
 	MCPProtocolProfile = "2025-11-25"
@@ -42,6 +42,7 @@ var (
 	uuidPattern           = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	digestPattern         = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	serviceAccountPattern = regexp.MustCompile(`^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$`)
+	packIDPattern         = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}@v[1-9][0-9]{0,8}$`)
 )
 
 type ObjectPointer struct {
@@ -62,7 +63,14 @@ type PreviousCheckpoint struct {
 	CatalogDigest              string        `json:"catalogDigest"`
 	CodexRuntimeManifestDigest string        `json:"codexRuntimeManifestDigest"`
 	CheckpointAllowlistVersion int64         `json:"checkpointAllowlistVersion"`
+	PackSetDigest              string        `json:"packSetDigest,omitempty"`
 	Object                     ObjectPointer `json:"object"`
+}
+
+type ToolPackAuthority struct {
+	PackID        string `json:"packId"`
+	PackSetDigest string `json:"packSetDigest"`
+	SkillSHA256   string `json:"skillSha256"`
 }
 
 type ModelRoute struct {
@@ -136,6 +144,7 @@ type Manifest struct {
 	Model                      ModelRoute          `json:"model"`
 	ExecutorMCP                ExecutorMCP         `json:"executorMcp"`
 	ExecutorPolicy             ExecutorPolicy      `json:"executorPolicy"`
+	ToolPack                   *ToolPackAuthority  `json:"toolPack,omitempty"`
 	Limits                     RunLimits           `json:"limits"`
 	CheckpointAllowlistVersion int                 `json:"checkpointAllowlistVersion"`
 	WorkerImageDigest          string              `json:"workerImageDigest"`
@@ -217,6 +226,18 @@ func (manifest Manifest) Validate() error {
 			manifest.PreviousCheckpoint.CheckpointAllowlistVersion != int64(manifest.CheckpointAllowlistVersion)) {
 		return errors.New("previousCheckpoint runtime manifest and allowlist version must match the current run manifest")
 	}
+	if err := manifest.ToolPack.validate(); err != nil {
+		return err
+	}
+	if manifest.PreviousCheckpoint != nil {
+		wantPackSet := ""
+		if manifest.ToolPack != nil {
+			wantPackSet = manifest.ToolPack.PackSetDigest
+		}
+		if manifest.PreviousCheckpoint.PackSetDigest != wantPackSet {
+			return errors.New("previousCheckpoint.packSetDigest must match the current toolPack authority")
+		}
+	}
 	if err := validateText("executorPolicy.version", manifest.ExecutorPolicy.Version, 128, true); err != nil {
 		return err
 	}
@@ -242,6 +263,19 @@ func (manifest Manifest) Validate() error {
 		return errors.New("controllerCallback.holderId must match holderId")
 	}
 	return nil
+}
+
+func (authority *ToolPackAuthority) validate() error {
+	if authority == nil {
+		return nil
+	}
+	if !packIDPattern.MatchString(authority.PackID) {
+		return errors.New("toolPack.packId must be a canonical versioned pack ID")
+	}
+	if err := validateDigest("toolPack.packSetDigest", authority.PackSetDigest); err != nil {
+		return err
+	}
+	return validateDigest("toolPack.skillSha256", authority.SkillSHA256)
 }
 
 func CanonicalBytes(manifest Manifest) ([]byte, error) {
@@ -481,6 +515,11 @@ func (checkpoint PreviousCheckpoint) validate() error {
 	}
 	if checkpoint.CheckpointAllowlistVersion < 1 || checkpoint.CheckpointAllowlistVersion > maxJSONInteger {
 		return fmt.Errorf("previousCheckpoint.checkpointAllowlistVersion must be between 1 and %d", maxJSONInteger)
+	}
+	if checkpoint.PackSetDigest != "" {
+		if err := validateDigest("previousCheckpoint.packSetDigest", checkpoint.PackSetDigest); err != nil {
+			return err
+		}
 	}
 	if err := checkpoint.Object.validate("previousCheckpoint.object"); err != nil {
 		return err

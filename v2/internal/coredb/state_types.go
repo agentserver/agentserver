@@ -88,6 +88,7 @@ type CreateRunCommand struct {
 	Prompt                 ObjectPointer
 	ExecutorPolicy         RunExecutorPolicy
 	LLMGateway             RunLLMGatewayBinding
+	LarkEgress             RunLarkEgressBinding
 	ExpectedSessionVersion int64
 	Record                 TransitionRecord
 }
@@ -231,6 +232,7 @@ type CommitCheckpointAndTerminalRunCommand struct {
 	Object                     ObjectPointer
 	CodexRuntimeManifestDigest [32]byte
 	CheckpointAllowlistVersion int64
+	PackSetDigest              *[32]byte
 	Record                     TransitionRecord
 }
 
@@ -385,6 +387,7 @@ type Checkpoint struct {
 	Object                     ObjectPointer
 	CodexRuntimeManifestDigest [32]byte
 	CheckpointAllowlistVersion int64
+	PackSetDigest              *[32]byte
 	Catalog                    BrainToolCatalog
 	CreatedAt                  time.Time
 }
@@ -402,6 +405,7 @@ type ResolvedRunLaunchState struct {
 	PreviousCheckpoint *Checkpoint
 	ExecutorPolicy     RunExecutorPolicy
 	LLMGateway         RunLLMGatewayBinding
+	LarkEgress         RunLarkEgressBinding
 }
 
 type AttemptEvent struct {

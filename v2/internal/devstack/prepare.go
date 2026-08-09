@@ -23,8 +23,9 @@ import (
 )
 
 const (
-	manifestSigningKeyID = "insecure-dev-manifest-v1"
-	workerServiceAccount = "harness-worker"
+	manifestSigningKeyID    = "insecure-dev-manifest-v1"
+	workerServiceAccount    = "harness-worker"
+	workerDeploymentVersion = 2
 
 	coreEnvironmentFile             = "env/agentserver-core.env"
 	browserEnvironmentFile          = "env/browser-gateway.env"
@@ -416,7 +417,7 @@ func renderOutputFiles(
 
 	identities := config.Document.Identities
 	worker := workerDeploymentDocument{
-		Version: CurrentConfigVersion, RunManifestKeyringFile: paths.keyring,
+		Version: workerDeploymentVersion, RunManifestKeyringFile: paths.keyring,
 		RuntimeManifestFile: config.Document.Runtime.ManifestFile, RuntimeBundleRoot: config.Document.Runtime.BundleRoot,
 		FinalExec:          workerArtifactDocument{Path: config.Document.Runtime.HarnessFinalExecBinary, SHA256: finalExecDigest, SizeBytes: finalExecSize},
 		CodexConfigProfile: harnessworker.CodexConfigProfileStable0146,

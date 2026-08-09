@@ -28,6 +28,10 @@ func (s *StateStore) BeginOperationDispatch(ctx context.Context, command BeginOp
 		if err := verifyPersistedAttemptGeneration(operation, execution, attempt, command.Generation); err != nil {
 			return BeginOperationDispatchResult{}, err
 		}
+		target, err := resolveDispatchTarget(execution, command.Target, command.ConnectionGeneration)
+		if err != nil {
+			return BeginOperationDispatchResult{}, commandError(ErrorInvalidArgument, operation, "operation", executionOperation.ID, err.Error())
+		}
 		if !execution.PolicyContextHash.equal(command.PolicyContextHash) ||
 			!execution.OperationPlanHash.equal(command.OperationPlanHash) ||
 			!executionOperation.ParamsHash.equal(command.ParamsHash) {
@@ -38,8 +42,8 @@ func (s *StateStore) BeginOperationDispatch(ctx context.Context, command BeginOp
 			return BeginOperationDispatchResult{Execution: execution, Operation: executionOperation, Began: false}, nil
 		}
 		if executionOperation.Status != OperationStatusPrepared {
-			if executionOperation.ConnectionGeneration != command.ConnectionGeneration {
-				return BeginOperationDispatchResult{}, connectionFencedError(operation, executionOperation.ID, executionOperation.ConnectionGeneration)
+			if executionOperation.Target != target {
+				return BeginOperationDispatchResult{}, targetFencedError(operation, executionOperation.ID, executionOperation.Target)
 			}
 			return BeginOperationDispatchResult{Execution: execution, Operation: executionOperation, Began: false}, nil
 		}
@@ -64,7 +68,7 @@ func (s *StateStore) BeginOperationDispatch(ctx context.Context, command BeginOp
 		if operationCount != execution.OperationCount {
 			return BeginOperationDispatchResult{}, commandError(ErrorInvalidState, operation, "execution", execution.ID, "all frozen operations must be prepared before the first dispatch")
 		}
-		if err := s.requireLiveExecutorConnection(ctx, transaction, operation, execution, command.ConnectionGeneration); err != nil {
+		if err := s.requireLiveDispatchTarget(ctx, transaction, operation, run, attempt, execution, target); err != nil {
 			return BeginOperationDispatchResult{}, err
 		}
 
@@ -72,14 +76,20 @@ func (s *StateStore) BeginOperationDispatch(ctx context.Context, command BeginOp
 UPDATE %s
 SET status = $1,
     connection_generation = $2,
+	target_kind = $3,
+	target_id = $4,
+	target_generation = $5,
     dispatched_at = pg_catalog.clock_timestamp(),
     version = version + 1,
     updated_at = pg_catalog.clock_timestamp()
-WHERE id = $3 AND version = $4 AND status = $5
+WHERE id = $6 AND version = $7 AND status = $8
 RETURNING %s`, s.table("execution_operations"), executionOperationColumns(""))
 		dispatchingOperation, err := scanExecutionOperation(transaction.QueryRow(ctx, updateOperation,
 			OperationStatusDispatching,
-			command.ConnectionGeneration,
+			connectionGenerationForTarget(target),
+			target.Kind,
+			target.ID,
+			target.Generation,
 			executionOperation.ID,
 			executionOperation.Version,
 			OperationStatusPrepared,
@@ -98,13 +108,19 @@ RETURNING %s`, s.table("execution_operations"), executionOperationColumns(""))
 		updateExecution := fmt.Sprintf(`
 UPDATE %s
 SET status = $1,
+    target_kind = $2,
+    target_id = $3,
+    target_generation = $4,
     dispatched_at = COALESCE(dispatched_at, pg_catalog.clock_timestamp()),
     version = version + 1,
     updated_at = pg_catalog.clock_timestamp()
-WHERE id = $2 AND version = $3
+WHERE id = $5 AND version = $6
 RETURNING %s`, s.table("executions"), executionColumns(""))
 		updatedExecution, err := scanExecution(transaction.QueryRow(ctx, updateExecution,
 			nextExecutionStatus,
+			target.Kind,
+			target.ID,
+			target.Generation,
 			execution.ID,
 			execution.Version,
 		))
@@ -146,8 +162,12 @@ func (s *StateStore) AcknowledgeOperation(ctx context.Context, command Acknowled
 		if err := verifyPersistedAttemptGeneration(operation, execution, attempt, command.Generation); err != nil {
 			return AcknowledgeOperationResult{}, err
 		}
-		if executionOperation.ConnectionGeneration != command.ConnectionGeneration {
-			return AcknowledgeOperationResult{}, connectionFencedError(operation, executionOperation.ID, executionOperation.ConnectionGeneration)
+		target, err := resolveDispatchTarget(execution, command.Target, command.ConnectionGeneration)
+		if err != nil {
+			return AcknowledgeOperationResult{}, commandError(ErrorInvalidArgument, operation, "operation", executionOperation.ID, err.Error())
+		}
+		if executionOperation.Target != target {
+			return AcknowledgeOperationResult{}, targetFencedError(operation, executionOperation.ID, executionOperation.Target)
 		}
 
 		if executionOperation.Status == OperationStatusAcknowledged || isTerminalOperationStatus(executionOperation.Status) {
@@ -168,7 +188,7 @@ func (s *StateStore) AcknowledgeOperation(ctx context.Context, command Acknowled
 		if execution.Status != ExecutionStatusDispatching && execution.Status != ExecutionStatusRunning && execution.Status != ExecutionStatusCancelling {
 			return AcknowledgeOperationResult{}, commandError(ErrorInvalidState, operation, "execution", execution.ID, "execution is not awaiting operation acknowledgement")
 		}
-		if err := s.requireLiveExecutorConnection(ctx, transaction, operation, execution, command.ConnectionGeneration); err != nil {
+		if err := s.requireLiveDispatchTarget(ctx, transaction, operation, run, attempt, execution, target); err != nil {
 			return AcknowledgeOperationResult{}, err
 		}
 
@@ -250,8 +270,12 @@ func (s *StateStore) CompleteOperation(ctx context.Context, command CompleteOper
 		if err := verifyPersistedAttemptGeneration(operation, execution, attempt, command.Generation); err != nil {
 			return CompleteOperationResult{}, err
 		}
-		if executionOperation.ConnectionGeneration != command.ConnectionGeneration {
-			return CompleteOperationResult{}, connectionFencedError(operation, executionOperation.ID, executionOperation.ConnectionGeneration)
+		target, err := resolveDispatchTarget(execution, command.Target, command.ConnectionGeneration)
+		if err != nil {
+			return CompleteOperationResult{}, commandError(ErrorInvalidArgument, operation, "operation", executionOperation.ID, err.Error())
+		}
+		if executionOperation.Target != target {
+			return CompleteOperationResult{}, targetFencedError(operation, executionOperation.ID, executionOperation.Target)
 		}
 
 		if isTerminalOperationStatus(executionOperation.Status) {
@@ -275,7 +299,7 @@ func (s *StateStore) CompleteOperation(ctx context.Context, command CompleteOper
 		if execution.Status != ExecutionStatusDispatching && execution.Status != ExecutionStatusRunning && execution.Status != ExecutionStatusCancelling {
 			return CompleteOperationResult{}, commandError(ErrorInvalidState, operation, "execution", execution.ID, "execution is not accepting operation terminal evidence")
 		}
-		if err := s.requireLiveExecutorConnection(ctx, transaction, operation, execution, command.ConnectionGeneration); err != nil {
+		if err := s.requireLiveDispatchTarget(ctx, transaction, operation, run, attempt, execution, target); err != nil {
 			return CompleteOperationResult{}, err
 		}
 
@@ -518,7 +542,7 @@ RETURNING %s`, s.table("executions"), executionColumns(""))
 }
 
 func validateBeginOperationDispatch(command BeginOperationDispatchCommand) error {
-	if err := validateOperationTransitionIdentity(command.OperationID, command.ExecutionID, command.RunID, command.AttemptID, command.Generation, command.ConnectionGeneration, command.ExpectedExecutionVersion, command.ExpectedOperationVersion); err != nil {
+	if err := validateOperationTransitionIdentity(command.OperationID, command.ExecutionID, command.RunID, command.AttemptID, command.Generation, command.ConnectionGeneration, command.Target, command.ExpectedExecutionVersion, command.ExpectedOperationVersion); err != nil {
 		return err
 	}
 	if err := validateBoundedText("holder_id", command.HolderID, 256); err != nil {
@@ -542,7 +566,7 @@ func validateBeginOperationDispatch(command BeginOperationDispatchCommand) error
 }
 
 func validateAcknowledgeOperation(command AcknowledgeOperationCommand) error {
-	if err := validateOperationTransitionIdentity(command.OperationID, command.ExecutionID, command.RunID, command.AttemptID, command.Generation, command.ConnectionGeneration, command.ExpectedExecutionVersion, command.ExpectedOperationVersion); err != nil {
+	if err := validateOperationTransitionIdentity(command.OperationID, command.ExecutionID, command.RunID, command.AttemptID, command.Generation, command.ConnectionGeneration, command.Target, command.ExpectedExecutionVersion, command.ExpectedOperationVersion); err != nil {
 		return err
 	}
 	if err := validateCanonicalHash("acknowledgement_hash", command.AcknowledgementHash, HashDomainOperationAck); err != nil {
@@ -552,7 +576,7 @@ func validateAcknowledgeOperation(command AcknowledgeOperationCommand) error {
 }
 
 func validateCompleteOperation(command CompleteOperationCommand) error {
-	if err := validateOperationTransitionIdentity(command.OperationID, command.ExecutionID, command.RunID, command.AttemptID, command.Generation, command.ConnectionGeneration, command.ExpectedExecutionVersion, command.ExpectedOperationVersion); err != nil {
+	if err := validateOperationTransitionIdentity(command.OperationID, command.ExecutionID, command.RunID, command.AttemptID, command.Generation, command.ConnectionGeneration, command.Target, command.ExpectedExecutionVersion, command.ExpectedOperationVersion); err != nil {
 		return err
 	}
 	if !isDispatchedTerminalOperationStatus(command.TerminalStatus) {
@@ -617,7 +641,7 @@ func validateCompleteExecution(command CompleteExecutionCommand) error {
 	return validateTransitionRecord(command.Record)
 }
 
-func validateOperationTransitionIdentity(operationID, executionID, runID, attemptID string, generation, connectionGeneration, expectedExecutionVersion, expectedOperationVersion int64) error {
+func validateOperationTransitionIdentity(operationID, executionID, runID, attemptID string, generation, connectionGeneration int64, target DispatchTarget, expectedExecutionVersion, expectedOperationVersion int64) error {
 	identifiers := []struct {
 		field string
 		value string
@@ -632,8 +656,23 @@ func validateOperationTransitionIdentity(operationID, executionID, runID, attemp
 			return err
 		}
 	}
-	if generation < 1 || connectionGeneration < 1 || expectedExecutionVersion < 1 || expectedOperationVersion < 1 {
-		return errors.New("generation, connection_generation, and expected versions must be positive")
+	if generation < 1 || expectedExecutionVersion < 1 || expectedOperationVersion < 1 {
+		return errors.New("generation and expected versions must be positive")
+	}
+	if target.Kind == "" {
+		if connectionGeneration < 1 {
+			return errors.New("legacy agentx connection_generation must be positive")
+		}
+		return nil
+	}
+	if err := validateDispatchTarget(target, true); err != nil {
+		return err
+	}
+	if target.Kind == DispatchTargetAgentX && connectionGeneration != target.Generation {
+		return errors.New("agentx connection_generation must equal target_generation")
+	}
+	if target.Kind == DispatchTargetTAE && connectionGeneration != 0 {
+		return errors.New("TAE target must not carry connection_generation")
 	}
 	return nil
 }

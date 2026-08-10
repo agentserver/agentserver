@@ -11,6 +11,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
 	"github.com/agentserver/agentserver/v2/internal/productionimage"
 	"github.com/agentserver/agentserver/v2/internal/stockruntime"
+	"github.com/agentserver/agentserver/v2/internal/taeimage"
 	"github.com/agentserver/agentserver/v2/internal/taenetworkreport"
 )
 
@@ -371,6 +372,10 @@ func validActivationNetworkReport(document ConfigDocument, revision string) taen
 		checks = append(checks, check)
 	}
 	started := time.Date(2026, 8, 9, 1, 2, 3, 0, time.UTC)
+	taeSandboxImage, err := taeimage.ContentTagForDigestReference(document.Images.ManagedSandbox)
+	if err != nil {
+		panic(err)
+	}
 	return taenetworkreport.Report{
 		SchemaVersion: taenetworkreport.CurrentVersion, Kind: taenetworkreport.Kind,
 		StartedAt: started, FinishedAt: started.Add(time.Minute), Passed: true, CleanupConfirmed: true,
@@ -382,7 +387,7 @@ func validActivationNetworkReport(document ConfigDocument, revision string) taen
 			DeploymentConfigSHA256: canonicalDigest(document), Region: ProductionRegion, PSM: ProductionTAEPSM,
 			PolicyRevision: revision, ByteCloudSite: "i18n-tt", JWTEndpoint: ProductionByteCloudJWTEndpoint,
 			ProxyURL: ProductionTAEProxyURL, ControlPlaneHost: ProductionTAEControlPlaneHost,
-			DataPlaneDomainSuffix: ProductionTAEDataPlaneSuffix, SandboxImage: document.Images.ManagedSandbox,
+			DataPlaneDomainSuffix: ProductionTAEDataPlaneSuffix, SandboxImage: taeSandboxImage,
 			LarkCLIVersion: productionimage.ManagedLarkCLIVersion, LarkCLISHA256: document.Managed.Lark.CLISHA256,
 			LarkSkillSHA256:      document.Managed.Lark.SkillSHA256,
 			ConnectivityAttempts: connectivityAttempts, LifecycleAttempts: lifecycleAttempts,

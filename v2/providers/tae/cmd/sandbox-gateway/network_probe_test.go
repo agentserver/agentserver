@@ -128,7 +128,7 @@ func testNetworkProbeConfig(cli, skill []byte) networkProbeConfig {
 	return networkProbeConfig{
 		provider: providerConfig{
 			controlTimeout: time.Second, jwtRequestTimeout: time.Second,
-			sandboxImage: "registry.example/sandbox@sha256:" + strings.Repeat("1", 64),
+			sandboxImage: "registry.example/sandbox:sha256-" + strings.Repeat("1", 64),
 		},
 		deploymentSHA256: strings.Repeat("2", 64), policyRevision: "revision-1",
 		larkCLIVersion: "test", larkCLISHA256: digest(cli), larkCLISize: int64(len(cli)),

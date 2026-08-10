@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
+	"github.com/agentserver/agentserver/v2/internal/taeimage"
 )
 
 type deploymentInput struct {
@@ -574,6 +575,10 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 func renderSandboxDeployment(context renderContext) (kubeObject, error) {
 	config := context.config
 	document := config.Document
+	taeSandboxImage, err := taeimage.ContentTagForDigestReference(document.Images.ManagedSandbox)
+	if err != nil {
+		return nil, err
+	}
 	material, err := secretMaterialVolume("material", document.Secrets.SandboxGateway, materialProfileSandboxGateway, groupReadableSecretMode)
 	if err != nil {
 		return nil, err
@@ -599,7 +604,7 @@ func renderSandboxDeployment(context renderContext) (kubeObject, error) {
 		valueEnvironment("AGENTSERVER_V2_SANDBOX_PROVIDER", "tae"),
 		valueEnvironment("AGENTSERVER_V2_TAE_REGION", document.Managed.TAE.Region),
 		valueEnvironment("AGENTSERVER_V2_TAE_PSM", document.Managed.TAE.PSM),
-		valueEnvironment("AGENTSERVER_V2_TAE_SANDBOX_IMAGE", document.Images.ManagedSandbox),
+		valueEnvironment("AGENTSERVER_V2_TAE_SANDBOX_IMAGE", taeSandboxImage),
 		valueEnvironment("AGENTSERVER_V2_TAE_AUTH_MODE", "bytecloud-app-aksk-v1"),
 		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_SITE", "i18n-tt"),
 		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_JWT_ENDPOINT", ProductionByteCloudJWTEndpoint),

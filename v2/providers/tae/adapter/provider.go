@@ -13,6 +13,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
 	"github.com/agentserver/agentserver/v2/internal/sandboxgateway"
+	"github.com/agentserver/agentserver/v2/internal/taeimage"
 	"github.com/agentserver/agentserver/v2/internal/taepolicy"
 )
 
@@ -79,8 +80,8 @@ func NewProvider(config Config) (*Provider, error) {
 	if strings.TrimSpace(config.PSM) != config.PSM || config.PSM == "" || len(config.PSM) > 256 {
 		return nil, errors.New("TAE provider PSM is invalid")
 	}
-	if !immutableTAEImage(config.Image) {
-		return nil, errors.New("TAE provider image must be an immutable OCI reference ending in @sha256:<64 lowercase hex>")
+	if err := taeimage.ValidateContentTag(config.Image); err != nil {
+		return nil, fmt.Errorf("TAE provider image: %w", err)
 	}
 	if err := config.Policy.Validate(config.Region, config.PSM, larkegresspolicy.SHA256Hex()); err != nil {
 		return nil, fmt.Errorf("TAE policy binding is invalid: %w", err)
@@ -436,23 +437,6 @@ func (provider *Provider) providerSandbox(session ControlSession) (sandboxgatewa
 		result.Root = provider.root
 	}
 	return result, nil
-}
-
-func immutableTAEImage(value string) bool {
-	if value == "" || len(value) > 2048 || strings.TrimSpace(value) != value || strings.ContainsAny(value, "\x00\r\n\t ") {
-		return false
-	}
-	const marker = "@sha256:"
-	index := strings.LastIndex(value, marker)
-	if index < 1 || index+len(marker)+64 != len(value) {
-		return false
-	}
-	for _, character := range value[index+len(marker):] {
-		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
-			return false
-		}
-	}
-	return true
 }
 
 func providerState(session ControlSession) sandboxgateway.ProviderSandboxState {

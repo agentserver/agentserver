@@ -17,17 +17,18 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/agentserver/agentserver/v2/internal/taeimage"
 )
 
 const (
-	CurrentVersion = 1
+	CurrentVersion = 2
 	Kind           = "agentserver.tae.sg-network-report"
 	maximumBytes   = int64(256 * 1024)
 )
 
 var (
 	digestPattern    = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	imagePattern     = regexp.MustCompile(`^[^[:space:]@]+@sha256:[0-9a-f]{64}$`)
 	checkNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 	errorCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 	podUIDPattern    = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -196,8 +197,8 @@ func Validate(report Report) error {
 			return fmt.Errorf("TAE network report configuration.%s must be a non-zero lowercase SHA-256", name)
 		}
 	}
-	if !imagePattern.MatchString(report.Configuration.SandboxImage) {
-		return errors.New("TAE network report configuration.sandboxImage must be an immutable OCI reference")
+	if err := taeimage.ValidateContentTag(report.Configuration.SandboxImage); err != nil {
+		return fmt.Errorf("TAE network report configuration.sandboxImage: %w", err)
 	}
 	if report.Configuration.ConnectivityAttempts < 1 || report.Configuration.ConnectivityAttempts > 100 ||
 		report.Configuration.LifecycleAttempts < 1 || report.Configuration.LifecycleAttempts > 5 {

@@ -16,7 +16,7 @@
     "checks"
   ],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "const": 2 },
     "kind": { "const": "agentserver.tae.sg-network-report" },
     "startedAt": { "type": "string", "format": "date-time" },
     "finishedAt": { "type": "string", "format": "date-time" },
@@ -89,7 +89,7 @@
         "dataPlaneDomainSuffix": { "$ref": "#/$defs/boundedText" },
         "sandboxImage": {
           "type": "string",
-          "pattern": "^[^\\s@]+@sha256:[0-9a-f]{64}$"
+          "pattern": "^[^\\s@]+:sha256-[0-9a-f]{64}$"
         },
         "larkCliVersion": { "$ref": "#/$defs/boundedText" },
         "larkCliSha256": { "$ref": "#/$defs/digest" },

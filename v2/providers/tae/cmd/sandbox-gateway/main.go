@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/sandboxgatewayapp"
+	"github.com/agentserver/agentserver/v2/internal/taeimage"
 	"github.com/agentserver/agentserver/v2/providers/tae/adapter"
 )
 
@@ -182,8 +183,8 @@ func loadProviderConfig(getenv func(string) string) (providerConfig, error) {
 		return providerConfig{}, err
 	}
 	sandboxImage := strings.TrimSpace(getenv(sandboxImageEnvironment))
-	if sandboxImage == "" {
-		return providerConfig{}, fmt.Errorf("%s is required", sandboxImageEnvironment)
+	if err := taeimage.ValidateContentTag(sandboxImage); err != nil {
+		return providerConfig{}, fmt.Errorf("%s: %w", sandboxImageEnvironment, err)
 	}
 	controlTimeout, err := optionalDuration(getenv(controlTimeoutEnvironment), 45*time.Second, time.Second, time.Minute, controlTimeoutEnvironment)
 	if err != nil {

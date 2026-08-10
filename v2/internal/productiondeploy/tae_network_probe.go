@@ -1,6 +1,10 @@
 package productiondeploy
 
-import "strconv"
+import (
+	"strconv"
+
+	"github.com/agentserver/agentserver/v2/internal/taeimage"
+)
 
 const (
 	taeProbeConnectivityAttempts    = 20
@@ -21,6 +25,10 @@ func taeNetworkProbeResources(config LoadedConfig) ([]kubeObject, error) {
 	}
 	config = validated
 	document := config.Document
+	taeSandboxImage, err := taeimage.ContentTagForDigestReference(document.Images.ManagedSandbox)
+	if err != nil {
+		return nil, err
+	}
 	configSHA256 := canonicalDigest(document)
 	jobName := taeNetworkProbeJobPlaceholder
 	labels := componentLabels(taeNetworkProbeComponent)
@@ -35,7 +43,7 @@ func taeNetworkProbeResources(config LoadedConfig) ([]kubeObject, error) {
 		return nil, err
 	}
 	environment := []any{
-		valueEnvironment("AGENTSERVER_V2_TAE_SANDBOX_IMAGE", document.Images.ManagedSandbox),
+		valueEnvironment("AGENTSERVER_V2_TAE_SANDBOX_IMAGE", taeSandboxImage),
 		valueEnvironment("AGENTSERVER_V2_TAE_AUTH_MODE", "bytecloud-app-aksk-v1"),
 		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_SITE", "i18n-tt"),
 		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_JWT_ENDPOINT", ProductionByteCloudJWTEndpoint),

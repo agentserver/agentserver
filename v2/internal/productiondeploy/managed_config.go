@@ -15,6 +15,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
 	"github.com/agentserver/agentserver/v2/internal/productionimage"
 	"github.com/agentserver/agentserver/v2/internal/stockruntime"
+	"github.com/agentserver/agentserver/v2/internal/taeimage"
 	"github.com/agentserver/agentserver/v2/internal/taenetworkreport"
 	"github.com/agentserver/agentserver/v2/internal/taepolicy"
 )
@@ -284,6 +285,10 @@ func validateTAENetworkReportForActivation(document ConfigDocument, policyRevisi
 	if !report.Passed || !report.CleanupConfirmed {
 		return errors.New("TAE network report did not pass or did not confirm cleanup")
 	}
+	taeSandboxImage, err := taeimage.ContentTagForDigestReference(document.Images.ManagedSandbox)
+	if err != nil {
+		return err
+	}
 	configuration := report.Configuration
 	for name, values := range map[string][2]string{
 		"source.namespace":       {report.Source.Namespace, document.Namespace},
@@ -297,7 +302,7 @@ func validateTAENetworkReportForActivation(document ConfigDocument, policyRevisi
 		"proxyUrl":               {configuration.ProxyURL, ProductionTAEProxyURL},
 		"controlPlaneHost":       {configuration.ControlPlaneHost, ProductionTAEControlPlaneHost},
 		"dataPlaneDomainSuffix":  {configuration.DataPlaneDomainSuffix, ProductionTAEDataPlaneSuffix},
-		"sandboxImage":           {configuration.SandboxImage, document.Images.ManagedSandbox},
+		"sandboxImage":           {configuration.SandboxImage, taeSandboxImage},
 		"larkCliVersion":         {configuration.LarkCLIVersion, productionimage.ManagedLarkCLIVersion},
 		"larkCliSha256":          {configuration.LarkCLISHA256, document.Managed.Lark.CLISHA256},
 		"larkSkillSha256":        {configuration.LarkSkillSHA256, document.Managed.Lark.SkillSHA256},

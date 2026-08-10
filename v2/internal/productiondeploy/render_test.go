@@ -12,6 +12,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/executorgateway"
 	"github.com/agentserver/agentserver/v2/internal/sandboxgatewayapp"
+	"github.com/agentserver/agentserver/v2/internal/taeimage"
 	"github.com/agentserver/agentserver/v2/internal/taepolicy"
 )
 
@@ -409,9 +410,13 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("provider-linked sandbox-gateway rejected rendered production environment: %v", err)
 	}
+	wantTAEImage, err := taeimage.ContentTagForDigestReference(loaded.Document.Images.ManagedSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if sandboxConfig.ProviderRegion != "sg" || sandboxConfig.ProviderPSM != loaded.Document.Managed.TAE.PSM ||
 		len(sandboxConfig.WorkspaceAllowlist) != len(loaded.Document.Managed.WorkspaceAllowlist) ||
-		sandboxEnvironment("AGENTSERVER_V2_TAE_SANDBOX_IMAGE") != loaded.Document.Images.ManagedSandbox {
+		sandboxEnvironment("AGENTSERVER_V2_TAE_SANDBOX_IMAGE") != wantTAEImage {
 		t.Fatalf("rendered sandbox-gateway authority = %+v", sandboxConfig)
 	}
 	for name, want := range map[string]string{

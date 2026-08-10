@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/agentserver/agentserver/v2/internal/taeimage"
 )
 
 func TestTAENetworkProbeResourcesAreOneShotClosedWorldAuthority(t *testing.T) {
@@ -54,7 +56,12 @@ func TestTAENetworkProbeResourcesAreOneShotClosedWorldAuthority(t *testing.T) {
 		t.Fatalf("probe container = %#v", container)
 	}
 	environment := environmentByName(container["env"].([]any))
+	wantTAEImage, err := taeimage.ContentTagForDigestReference(loaded.Document.Images.ManagedSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for name, want := range map[string]string{
+		"AGENTSERVER_V2_TAE_SANDBOX_IMAGE":                    wantTAEImage,
 		"AGENTSERVER_V2_TAE_PROXY_URL":                        ProductionTAEProxyURL,
 		"AGENTSERVER_V2_TAE_BYTECLOUD_JWT_ENDPOINT":           ProductionByteCloudJWTEndpoint,
 		"AGENTSERVER_V2_TAE_PROBE_DEPLOYMENT_CONFIG_SHA256":   canonicalDigest(loaded.Document),

@@ -52,6 +52,8 @@ func TestLoadProviderConfigFailsClosedOnUnsafeRuntime(t *testing.T) {
 		"bad-timeout":          {controlTimeoutEnvironment: "5m"},
 		"too-many-reconnects":  {reconnectAttemptsEnvironment: "100"},
 		"unbounded-file":       {maxReadBytesEnvironment: "999999999"},
+		"digest-image":         {sandboxImageEnvironment: "registry.example/sandbox@sha256:" + strings.Repeat("a", 64)},
+		"mutable-image":        {sandboxImageEnvironment: "registry.example/sandbox:latest"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			values := validProviderEnvironment()
@@ -85,7 +87,7 @@ func TestLoadProviderConfigDefaultsAreBounded(t *testing.T) {
 
 func validProviderEnvironment() map[string]string {
 	return map[string]string{
-		sandboxImageEnvironment:         "registry-sg.byted.cs.ac.cn/agentserver/managed-sandbox@sha256:" + strings.Repeat("a", 64),
+		sandboxImageEnvironment:         "registry-sg.byted.cs.ac.cn/agentserver/managed-sandbox:sha256-" + strings.Repeat("a", 64),
 		authModeEnvironment:             byteCloudAppAKSKAuthMode,
 		byteCloudSiteEnvironment:        adapter.ByteCloudSiteI18NTT,
 		byteCloudJWTEndpointEnvironment: adapter.ByteCloudJWTEndpointSG,

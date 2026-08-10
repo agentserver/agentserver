@@ -215,6 +215,17 @@ jobs:
           harness_digest=$(skopeo inspect --format '{{.Digest}}' "docker://${harness_tag}")
           managed_sandbox_digest=$(skopeo inspect --format '{{.Digest}}' "docker://${managed_sandbox_tag}")
           hydra_digest=$(skopeo inspect --format '{{.Digest}}' "docker://${HYDRA_REPOSITORY}:26.2.0-amd64")
+          managed_sandbox_tae_tag="sha256-${managed_sandbox_digest#sha256:}"
+          test "${#managed_sandbox_tae_tag}" = '71'
+          # TAE currently rejects OCI @sha256 references and accepts only a
+          # registry/repository:tag image. Publish a deterministic tag that
+          # embeds the complete manifest digest, then prove the mapping before
+          # allowing the release to advance.
+          skopeo copy --retry-times 3 \
+            "oci-archive:${evidence}/managed-sandbox-image.oci.tar" \
+            "docker://${MANAGED_SANDBOX_REPOSITORY}:${managed_sandbox_tae_tag}"
+          test "$(skopeo inspect --format '{{.Digest}}' \
+            "docker://${MANAGED_SANDBOX_REPOSITORY}:${managed_sandbox_tae_tag}")" = "${managed_sandbox_digest}"
           test "$(skopeo inspect --format '{{.Os}}/{{.Architecture}}' "docker://${service_tag}")" = 'linux/amd64'
           test "$(skopeo inspect --format '{{.Os}}/{{.Architecture}}' "docker://${harness_tag}")" = 'linux/amd64'
           test "$(skopeo inspect --format '{{.Os}}/{{.Architecture}}' "docker://${managed_sandbox_tag}")" = 'linux/amd64'
@@ -223,6 +234,7 @@ jobs:
           printf 'service_digest=%s\n' "${service_digest}" >>"${GITHUB_OUTPUT}"
           printf 'harness_digest=%s\n' "${harness_digest}" >>"${GITHUB_OUTPUT}"
           printf 'managed_sandbox_digest=%s\n' "${managed_sandbox_digest}" >>"${GITHUB_OUTPUT}"
+          printf 'managed_sandbox_tae_tag=%s\n' "${managed_sandbox_tae_tag}" >>"${GITHUB_OUTPUT}"
           printf 'hydra_digest=%s\n' "${hydra_digest}" >>"${GITHUB_OUTPUT}"
 
       - name: Generate and publish environment-locked Helm chart
@@ -319,6 +331,7 @@ jobs:
           SERVICE_DIGEST: ${{ steps.images.outputs.service_digest }}
           HARNESS_DIGEST: ${{ steps.images.outputs.harness_digest }}
           MANAGED_SANDBOX_DIGEST: ${{ steps.images.outputs.managed_sandbox_digest }}
+          MANAGED_SANDBOX_TAE_TAG: ${{ steps.images.outputs.managed_sandbox_tae_tag }}
           PUBLISHED_HYDRA_DIGEST: ${{ steps.images.outputs.hydra_digest }}
           CHART_VERSION: ${{ steps.chart.outputs.version }}
         run: |
@@ -329,6 +342,10 @@ jobs:
             "docker://${HARNESS_REPOSITORY}@${HARNESS_DIGEST}")" = 'linux/amd64'
           test "$(skopeo inspect --no-creds --format '{{.Os}}/{{.Architecture}}' \
             "docker://${MANAGED_SANDBOX_REPOSITORY}@${MANAGED_SANDBOX_DIGEST}")" = 'linux/amd64'
+          test "$(skopeo inspect --no-creds --format '{{.Digest}}' \
+            "docker://${MANAGED_SANDBOX_REPOSITORY}:${MANAGED_SANDBOX_TAE_TAG}")" = "${MANAGED_SANDBOX_DIGEST}"
+          test "$(skopeo inspect --no-creds --format '{{.Digest}}' \
+            "docker://registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-managed-sandbox:${MANAGED_SANDBOX_TAE_TAG}")" = "${MANAGED_SANDBOX_DIGEST}"
           test "$(skopeo inspect --no-creds --format '{{.Os}}/{{.Architecture}}' \
             "docker://${HYDRA_REPOSITORY}@${PUBLISHED_HYDRA_DIGEST}")" = 'linux/amd64'
           anonymous_helm_config="${RUNNER_TEMP}/anonymous-helm-registry.json"
@@ -341,6 +358,7 @@ jobs:
           SERVICE_DIGEST: ${{ steps.images.outputs.service_digest }}
           HARNESS_DIGEST: ${{ steps.images.outputs.harness_digest }}
           MANAGED_SANDBOX_DIGEST: ${{ steps.images.outputs.managed_sandbox_digest }}
+          MANAGED_SANDBOX_TAE_TAG: ${{ steps.images.outputs.managed_sandbox_tae_tag }}
           PUBLISHED_HYDRA_DIGEST: ${{ steps.images.outputs.hydra_digest }}
           CHART_VERSION: ${{ steps.chart.outputs.version }}
           DEPLOYMENT_SHA: ${{ steps.chart.outputs.deployment_sha }}
@@ -352,6 +370,8 @@ jobs:
             printf -- '- Service: `%s@%s`\n' "${SERVICE_REPOSITORY}" "${SERVICE_DIGEST}"
             printf -- '- Harness: `%s@%s`\n' "${HARNESS_REPOSITORY}" "${HARNESS_DIGEST}"
             printf -- '- Managed sandbox: `%s@%s`\n' "${MANAGED_SANDBOX_REPOSITORY}" "${MANAGED_SANDBOX_DIGEST}"
+            printf -- '- TAE session image: `registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-managed-sandbox:%s` (verified as `%s`)\n' \
+              "${MANAGED_SANDBOX_TAE_TAG}" "${MANAGED_SANDBOX_DIGEST}"
             printf -- '- Lark CLI SHA-256: `%s`\n' "${LARK_CLI_SHA256}"
             printf -- '- Lark Skill SHA-256: `%s`\n' "${LARK_SKILL_SHA256}"
             printf -- '- Hydra: `%s@%s`\n' "${HYDRA_REPOSITORY}" "${PUBLISHED_HYDRA_DIGEST}"

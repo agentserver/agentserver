@@ -17,7 +17,7 @@ import (
 
 var testNow = time.Date(2026, 8, 6, 20, 0, 0, 0, time.UTC)
 
-const testTAEImage = "registry-sg.byted.cs.ac.cn/agentserver/managed-sandbox@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+const testTAEImage = "registry-sg.byted.cs.ac.cn/agentserver/managed-sandbox:sha256-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 type fakeControlPlane struct {
 	create func(context.Context, CreateInput) (ControlSession, error)

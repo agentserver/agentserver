@@ -19,7 +19,7 @@ func TestReportCanonicalRoundTripAndDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Count(raw, []byte{'\n'}) != 1 || raw[len(raw)-1] != '\n' || !bytes.HasPrefix(raw, []byte(`{"schemaVersion":1,"kind":"agentserver.tae.sg-network-report"`)) {
+	if bytes.Count(raw, []byte{'\n'}) != 1 || raw[len(raw)-1] != '\n' || !bytes.HasPrefix(raw, []byte(`{"schemaVersion":2,"kind":"agentserver.tae.sg-network-report"`)) {
 		t.Fatalf("report is not one canonical line: %q", raw)
 	}
 	parsed, err := Parse(raw)
@@ -131,7 +131,7 @@ func validReport() Report {
 			DeploymentConfigSHA256: strings.Repeat("1", 64), Region: "sg", PSM: "bytedance.sandbox.agentserver",
 			PolicyRevision: "revision-1", ByteCloudSite: "i18n-tt", JWTEndpoint: "https://cloud-i18n-sg.bytedance.net",
 			ProxyURL: "socks5h://proxy.example:1080", ControlPlaneHost: "controlplane.sg.example",
-			DataPlaneDomainSuffix: "sg.example", SandboxImage: "registry.example/sandbox@sha256:" + strings.Repeat("2", 64),
+			DataPlaneDomainSuffix: "sg.example", SandboxImage: "registry.example/sandbox:sha256-" + strings.Repeat("2", 64),
 			LarkCLIVersion: "1.0.69", LarkCLISHA256: strings.Repeat("3", 64), LarkSkillSHA256: strings.Repeat("4", 64),
 			ConnectivityAttempts: 2, LifecycleAttempts: 1,
 		},

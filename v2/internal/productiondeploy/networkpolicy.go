@@ -39,6 +39,11 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 	databaseEgress := append(append([]any(nil), dns...), postgresEgress()...)
 	coreEgress := append(append([]any(nil), dns...), postgresEgress()...)
 	coreEgress = append(coreEgress, externalEgress(document.Network.CoreExternalEgress)...)
+	coreEgress = append(coreEgress, namespacedPodTCPEgress(
+		document.Ingress.GatewayNamespace,
+		document.Ingress.GatewayPodSelector,
+		443,
+	))
 	coreEgress = append(coreEgress, publicHTTPSEgress()...)
 	coreEgress = append(coreEgress, componentTCPEgress(hydraComponent, document.Services.Hydra.AdminPort))
 	platformEgress := []any{componentTCPEgress(coreComponent, document.Services.Core.Port)}

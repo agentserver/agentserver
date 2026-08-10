@@ -516,6 +516,9 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 		t.Fatal("default-deny unexpectedly contains an egress allowance")
 	}
 	assertDNSPolicySupportsServiceAndPodDestinations(t, findResource(t, foundation, "NetworkPolicy", coreComponent))
+	coreNetworkPolicy := findResource(t, foundation, "NetworkPolicy", coreComponent)
+	assertNamespacedPodPeerPresent(t, objectField(t, coreNetworkPolicy, "spec"), "egress",
+		loaded.Document.Ingress.GatewayNamespace, loaded.Document.Ingress.GatewayPodSelector, 443)
 	for _, name := range []string{
 		"hydra-migrate-egress", "agentserver-migrate-egress", "agentserver-bootstrap-egress",
 		"agentserver-managed-environment-bootstrap-egress",

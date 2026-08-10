@@ -575,7 +575,7 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 func renderSandboxDeployment(context renderContext) (kubeObject, error) {
 	config := context.config
 	document := config.Document
-	taeSandboxImage, err := taeimage.ContentTagForDigestReference(document.Images.ManagedSandbox)
+	taeSandboxImage, err := taeimage.ContentTagForRepository(ProductionTAEManagedSandboxImage, document.Images.ManagedSandbox)
 	if err != nil {
 		return nil, err
 	}

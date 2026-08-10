@@ -56,7 +56,7 @@ func TestTAENetworkProbeResourcesAreOneShotClosedWorldAuthority(t *testing.T) {
 		t.Fatalf("probe container = %#v", container)
 	}
 	environment := environmentByName(container["env"].([]any))
-	wantTAEImage, err := taeimage.ContentTagForDigestReference(loaded.Document.Images.ManagedSandbox)
+	wantTAEImage, err := taeimage.ContentTagForRepository(ProductionTAEManagedSandboxImage, loaded.Document.Images.ManagedSandbox)
 	if err != nil {
 		t.Fatal(err)
 	}

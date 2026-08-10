@@ -17,6 +17,18 @@ func TestContentTagForDigestReference(t *testing.T) {
 	}
 }
 
+func TestContentTagForRepositoryPreservesDigest(t *testing.T) {
+	digest := strings.Repeat("c", 64)
+	got, err := ContentTagForRepository(
+		"aliyun-sin-hub.byted.org/agentserver/tae-sandbox",
+		"registry-sg.example/agentserver/v2-managed-sandbox@sha256:"+digest,
+	)
+	want := "aliyun-sin-hub.byted.org/agentserver/tae-sandbox:sha256-" + digest
+	if err != nil || got != want {
+		t.Fatalf("ContentTagForRepository() = %q, %v; want %q", got, err, want)
+	}
+}
+
 func TestContentTagRejectsMutableOrMalformedReferences(t *testing.T) {
 	digest := strings.Repeat("b", 64)
 	for _, reference := range []string{
@@ -36,6 +48,11 @@ func TestContentTagRejectsMutableOrMalformedReferences(t *testing.T) {
 	} {
 		if _, err := ContentTagForDigestReference(reference); err == nil {
 			t.Fatalf("ContentTagForDigestReference(%q) accepted invalid reference", reference)
+		}
+	}
+	for _, repository := range []string{"", "sandbox", "registry.example/team/sandbox:latest", "registry.example/team/"} {
+		if _, err := ContentTagForRepository(repository, "registry.example/team/sandbox@sha256:"+digest); err == nil {
+			t.Fatalf("ContentTagForRepository(%q) accepted invalid repository", repository)
 		}
 	}
 }

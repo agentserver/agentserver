@@ -285,7 +285,7 @@ func validateTAENetworkReportForActivation(document ConfigDocument, policyRevisi
 	if !report.Passed || !report.CleanupConfirmed {
 		return errors.New("TAE network report did not pass or did not confirm cleanup")
 	}
-	taeSandboxImage, err := taeimage.ContentTagForDigestReference(document.Images.ManagedSandbox)
+	taeSandboxImage, err := taeimage.ContentTagForRepository(ProductionTAEManagedSandboxImage, document.Images.ManagedSandbox)
 	if err != nil {
 		return err
 	}

@@ -410,7 +410,7 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("provider-linked sandbox-gateway rejected rendered production environment: %v", err)
 	}
-	wantTAEImage, err := taeimage.ContentTagForDigestReference(loaded.Document.Images.ManagedSandbox)
+	wantTAEImage, err := taeimage.ContentTagForRepository(ProductionTAEManagedSandboxImage, loaded.Document.Images.ManagedSandbox)
 	if err != nil {
 		t.Fatal(err)
 	}

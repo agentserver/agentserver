@@ -372,7 +372,7 @@ func validActivationNetworkReport(document ConfigDocument, revision string) taen
 		checks = append(checks, check)
 	}
 	started := time.Date(2026, 8, 9, 1, 2, 3, 0, time.UTC)
-	taeSandboxImage, err := taeimage.ContentTagForDigestReference(document.Images.ManagedSandbox)
+	taeSandboxImage, err := taeimage.ContentTagForRepository(ProductionTAEManagedSandboxImage, document.Images.ManagedSandbox)
 	if err != nil {
 		panic(err)
 	}

@@ -25,7 +25,7 @@ func taeNetworkProbeResources(config LoadedConfig) ([]kubeObject, error) {
 	}
 	config = validated
 	document := config.Document
-	taeSandboxImage, err := taeimage.ContentTagForDigestReference(document.Images.ManagedSandbox)
+	taeSandboxImage, err := taeimage.ContentTagForRepository(ProductionTAEManagedSandboxImage, document.Images.ManagedSandbox)
 	if err != nil {
 		return nil, err
 	}

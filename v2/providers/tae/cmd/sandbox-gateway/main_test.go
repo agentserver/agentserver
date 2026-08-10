@@ -87,7 +87,7 @@ func TestLoadProviderConfigDefaultsAreBounded(t *testing.T) {
 
 func validProviderEnvironment() map[string]string {
 	return map[string]string{
-		sandboxImageEnvironment:         "registry-sg.byted.cs.ac.cn/agentserver/managed-sandbox:sha256-" + strings.Repeat("a", 64),
+		sandboxImageEnvironment:         "aliyun-sin-hub.byted.org/agentserver/tae-sandbox:sha256-" + strings.Repeat("a", 64),
 		authModeEnvironment:             byteCloudAppAKSKAuthMode,
 		byteCloudSiteEnvironment:        adapter.ByteCloudSiteI18NTT,
 		byteCloudJWTEndpointEnvironment: adapter.ByteCloudJWTEndpointSG,

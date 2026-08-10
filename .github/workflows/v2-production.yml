@@ -20,6 +20,7 @@ env:
   SERVICE_REPOSITORY: ghcr.io/agentserver/v2-service
   HARNESS_REPOSITORY: ghcr.io/agentserver/v2-harness
   MANAGED_SANDBOX_REPOSITORY: ghcr.io/agentserver/v2-managed-sandbox
+  TAE_MANAGED_SANDBOX_REPOSITORY: aliyun-sin-hub.byted.org/agentserver/tae-sandbox
   HYDRA_REPOSITORY: ghcr.io/agentserver/hydra
   CHART_REPOSITORY: ghcr.io/agentserver/agentserver-v2
   CODEX_URL: https://github.com/openai/codex/releases/download/rust-v0.146.0/codex-x86_64-unknown-linux-musl.tar.gz
@@ -93,6 +94,13 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to SG ICM registry
+        uses: docker/login-action@v4
+        with:
+          registry: aliyun-sin-hub.byted.org
+          username: ${{ secrets.ICM_USERNAME }}
+          password: ${{ secrets.ICM_PASSWORD }}
 
       - uses: azure/setup-helm@v4
         with:
@@ -226,6 +234,11 @@ jobs:
             "docker://${MANAGED_SANDBOX_REPOSITORY}:${managed_sandbox_tae_tag}"
           test "$(skopeo inspect --format '{{.Digest}}' \
             "docker://${MANAGED_SANDBOX_REPOSITORY}:${managed_sandbox_tae_tag}")" = "${managed_sandbox_digest}"
+          skopeo copy --retry-times 3 \
+            "oci-archive:${evidence}/managed-sandbox-image.oci.tar" \
+            "docker://${TAE_MANAGED_SANDBOX_REPOSITORY}:${managed_sandbox_tae_tag}"
+          test "$(skopeo inspect --format '{{.Digest}}' \
+            "docker://${TAE_MANAGED_SANDBOX_REPOSITORY}:${managed_sandbox_tae_tag}")" = "${managed_sandbox_digest}"
           test "$(skopeo inspect --format '{{.Os}}/{{.Architecture}}' "docker://${service_tag}")" = 'linux/amd64'
           test "$(skopeo inspect --format '{{.Os}}/{{.Architecture}}' "docker://${harness_tag}")" = 'linux/amd64'
           test "$(skopeo inspect --format '{{.Os}}/{{.Architecture}}' "docker://${managed_sandbox_tag}")" = 'linux/amd64'
@@ -346,6 +359,8 @@ jobs:
             "docker://${MANAGED_SANDBOX_REPOSITORY}:${MANAGED_SANDBOX_TAE_TAG}")" = "${MANAGED_SANDBOX_DIGEST}"
           test "$(skopeo inspect --no-creds --format '{{.Digest}}' \
             "docker://registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-managed-sandbox:${MANAGED_SANDBOX_TAE_TAG}")" = "${MANAGED_SANDBOX_DIGEST}"
+          test "$(skopeo inspect --format '{{.Digest}}' \
+            "docker://${TAE_MANAGED_SANDBOX_REPOSITORY}:${MANAGED_SANDBOX_TAE_TAG}")" = "${MANAGED_SANDBOX_DIGEST}"
           test "$(skopeo inspect --no-creds --format '{{.Os}}/{{.Architecture}}' \
             "docker://${HYDRA_REPOSITORY}@${PUBLISHED_HYDRA_DIGEST}")" = 'linux/amd64'
           anonymous_helm_config="${RUNNER_TEMP}/anonymous-helm-registry.json"
@@ -370,7 +385,8 @@ jobs:
             printf -- '- Service: `%s@%s`\n' "${SERVICE_REPOSITORY}" "${SERVICE_DIGEST}"
             printf -- '- Harness: `%s@%s`\n' "${HARNESS_REPOSITORY}" "${HARNESS_DIGEST}"
             printf -- '- Managed sandbox: `%s@%s`\n' "${MANAGED_SANDBOX_REPOSITORY}" "${MANAGED_SANDBOX_DIGEST}"
-            printf -- '- TAE session image: `registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-managed-sandbox:%s` (verified as `%s`)\n' \
+            printf -- '- TAE session image: `%s:%s` (verified as `%s`)\n' \
+              "${TAE_MANAGED_SANDBOX_REPOSITORY}" \
               "${MANAGED_SANDBOX_TAE_TAG}" "${MANAGED_SANDBOX_DIGEST}"
             printf -- '- Lark CLI SHA-256: `%s`\n' "${LARK_CLI_SHA256}"
             printf -- '- Lark Skill SHA-256: `%s`\n' "${LARK_SKILL_SHA256}"

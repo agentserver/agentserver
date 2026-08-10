@@ -55,6 +55,7 @@ const (
 	ProductionHarnessImage             = "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-harness"
 	ProductionHydraImage               = "registry-sg.byted.cs.ac.cn/ghcr/agentserver/hydra"
 	ProductionManagedSandboxImage      = "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-managed-sandbox"
+	ProductionTAEManagedSandboxImage   = "aliyun-sin-hub.byted.org/agentserver/tae-sandbox"
 	ProductionSandboxBackendKeyID      = "sandbox-backend-sg-v1"
 	ProductionSandboxFencerKeyID       = "sandbox-fencer-sg-v1"
 	ProductionSandboxLifecycleKeyID    = "sandbox-lifecycle-sg-v1"

@@ -170,6 +170,7 @@
       "k8s-app": "kube-dns"
     },
     "coreExternalEgress": [
+      {"cidr": "10.251.224.152/32", "ports": [443]},
       {"cidr": "10.8.103.160/32", "ports": [443]},
       {"cidr": "fdbd:dc51:fe:200d::1/128", "ports": [443]}
     ],

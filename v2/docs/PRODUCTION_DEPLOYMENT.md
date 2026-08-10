@@ -351,8 +351,10 @@ production config，也不要再从开发机手工构建上传生产镜像。
 
 当前 SG 模板已经锁定 owner `sub=3506220589`、平台 OIDC、S3 endpoint/region/bucket/prefix/path-style、
 Chart 内置 Hydra 合同，以及从 SG Pod 解析得到的 TOS 地址 `10.8.103.160/32` 和
-`fdbd:dc51:fe:200d::1/128`。平台 OIDC 当前解析为公网地址，由受 SSRF 保留网段约束的
-public-HTTPS egress 规则覆盖；TOS 内网地址分别显式写入 core 和 harness-pool 的 TCP 443 白名单。
+`fdbd:dc51:fe:200d::1/128`。平台 OIDC `connect.byted.bps.dev` 在 SG 内同时解析到
+`10.251.224.152`（DevBox-SG4）和公网 IPv6；public-HTTPS 规则覆盖公网地址，Core 另以
+`10.251.224.152/32:443` 精确放行私网地址，不允许扩大为 `10.0.0.0/8`。TOS 内网地址分别显式写入
+core 和 harness-pool 的 TCP 443 白名单。
 这里必须保持 `s3Endpoint=https://s3-sg.byted.cs.ac.cn`、`s3Region=sg-devbox-1` 与
 `s3UsePathStyle=true`，以 Pulumi 管理的 SeaweedFS bucket-scoped 身份访问 `agentserver` bucket。
 DNS 地址变化时必须重新生成 Chart。新代码提交后仍须重新构建、远端核验和

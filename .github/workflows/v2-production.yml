@@ -237,8 +237,13 @@ jobs:
           skopeo copy --retry-times 3 \
             "oci-archive:${evidence}/managed-sandbox-image.oci.tar" \
             "docker://${TAE_MANAGED_SANDBOX_REPOSITORY}:${managed_sandbox_tae_tag}"
-          test "$(skopeo inspect --format '{{.Digest}}' \
-            "docker://${TAE_MANAGED_SANDBOX_REPOSITORY}:${managed_sandbox_tae_tag}")" = "${managed_sandbox_digest}"
+          # Full skopeo inspect also calls /tags/list, which ICM can reject
+          # independently of a successful manifest push. Fetch the exact raw
+          # manifest addressed by the tag and verify its content digest.
+          tae_manifest_digest="sha256:$(skopeo inspect --raw \
+            "docker://${TAE_MANAGED_SANDBOX_REPOSITORY}:${managed_sandbox_tae_tag}" | \
+            sha256sum | cut -d ' ' -f 1)"
+          test "${tae_manifest_digest}" = "${managed_sandbox_digest}"
           test "$(skopeo inspect --format '{{.Os}}/{{.Architecture}}' "docker://${service_tag}")" = 'linux/amd64'
           test "$(skopeo inspect --format '{{.Os}}/{{.Architecture}}' "docker://${harness_tag}")" = 'linux/amd64'
           test "$(skopeo inspect --format '{{.Os}}/{{.Architecture}}' "docker://${managed_sandbox_tag}")" = 'linux/amd64'
@@ -359,8 +364,10 @@ jobs:
             "docker://${MANAGED_SANDBOX_REPOSITORY}:${MANAGED_SANDBOX_TAE_TAG}")" = "${MANAGED_SANDBOX_DIGEST}"
           test "$(skopeo inspect --no-creds --format '{{.Digest}}' \
             "docker://registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-managed-sandbox:${MANAGED_SANDBOX_TAE_TAG}")" = "${MANAGED_SANDBOX_DIGEST}"
-          test "$(skopeo inspect --format '{{.Digest}}' \
-            "docker://${TAE_MANAGED_SANDBOX_REPOSITORY}:${MANAGED_SANDBOX_TAE_TAG}")" = "${MANAGED_SANDBOX_DIGEST}"
+          tae_manifest_digest="sha256:$(skopeo inspect --raw \
+            "docker://${TAE_MANAGED_SANDBOX_REPOSITORY}:${MANAGED_SANDBOX_TAE_TAG}" | \
+            sha256sum | cut -d ' ' -f 1)"
+          test "${tae_manifest_digest}" = "${MANAGED_SANDBOX_DIGEST}"
           test "$(skopeo inspect --no-creds --format '{{.Os}}/{{.Architecture}}' \
             "docker://${HYDRA_REPOSITORY}@${PUBLISHED_HYDRA_DIGEST}")" = 'linux/amd64'
           anonymous_helm_config="${RUNNER_TEMP}/anonymous-helm-registry.json"

@@ -51,7 +51,6 @@
     "workspaceId": "9271bfe5-68a4-484b-a2d3-e9f450a42d0c",
     "sessionId": "4847b054-ebf9-4f0b-9db8-c2fba1d57226",
     "ownerUserId": "d8c5c377-31b4-4660-8b0d-d5a0bcf57407",
-    "externalOidcSubject": "3506220589",
     "executorId": "1eeb5890-7556-431f-b4e5-c4e40b2c9f29"
   },
   "spiffeTrustDomain": "agentserver.byted.bps.dev",
@@ -65,8 +64,6 @@
       "browserClientId": "agentserver-browser"
     },
     "externalOidc": {
-      "issuer": "https://connect.cs.ac.cn",
-      "clientId": "f47a1f3a-f92b-43ba-bc7f-76409612e106",
       "redirectUrl": "https://auth-sg.byted.bps.dev/auth/oidc/callback"
     }
   },
@@ -106,8 +103,8 @@
         "codexCommit": "e363b08c9175ac1cbe5893615dd2cb9ddf95043b",
         "codexSha256": "2e863156ed35ecc5253b1e2f907a9143077b9f7cb51942070c61996471ff6e04"
       },
-      "runtimeProfileSha256": "d5fee538c7c61ac2b21789deaecaca48835ba8f71df6dcf23b54369c4efe1a15",
-      "packSetSha256": "84441b312f80c848f6ffc3b161b1916c4baa3c9217f51479dea9aa92f655aaaf",
+      "runtimeProfileSha256": "30cb1067bc9a1083e827c8bbcf5d523fbe09427d3db91f99db7a082d2a06c261",
+      "packSetSha256": "5d61534ed63b67532794bde797cf8bdec0b463ee98199c8d9f7d4dd9ac2de350",
       "sandboxTtl": "30m",
       "activityTtl": "5m",
       "idleTtl": "5m"
@@ -132,9 +129,9 @@
         "evidenceRef": "REPLACE_WITH_TAE_CHANGE_OR_SECURITY_TICKET"
       },
       "networkEvidence": {
-        "version": 1,
+        "version": 3,
         "reportSha256": "47d34822e5249f822ebb4b3d26d39e1704917fc39403c4ff94e77722626c4008",
-        "bindingSha256": "dcee82bf5cc7af80a2d80f03806cc4d1e4eda1339bd144074db087d55d20fa54",
+        "bindingSha256": "eaf2301d26d94863bb29a927a17e091bab200f1c9fde6d7d60bf43fcf9365260",
         "evidenceRef": "REPLACE_WITH_SG_NETWORK_TEST_REPORT"
       }
     },

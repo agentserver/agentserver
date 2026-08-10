@@ -309,7 +309,7 @@ func requireCurrentProductionBootstrapSchema(ctx context.Context, transaction pg
 }
 
 func insertProductionWorkspace(ctx context.Context, transaction pgx.Tx, schema string, bootstrap ProductionBootstrap) (int, error) {
-	insert := fmt.Sprintf("INSERT INTO %s.workspaces (id, status) VALUES ($1, 'active') ON CONFLICT DO NOTHING", schema)
+	insert := fmt.Sprintf("INSERT INTO %s.workspaces (id, status, managed_lark_credential_mode) VALUES ($1, 'active', 'webhook_swap') ON CONFLICT DO NOTHING", schema)
 	created, err := productionInsert(ctx, transaction, "insert production workspace", insert, bootstrap.WorkspaceID)
 	if err != nil {
 		return 0, err

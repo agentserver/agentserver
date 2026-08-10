@@ -155,8 +155,6 @@ func LoadProductionConfig(getenv func(string) string) (Config, error) {
 	if config.TAEPolicy.WebhookPath, policyErr = policyText(TAEPolicyWebhookPathEnv); policyErr != nil {
 		return Config{}, policyErr
 	}
-	config.TAEPolicy.WebhookPSM = strings.TrimSpace(getenv(TAEPolicyWebhookPSMEnv))
-	config.TAEPolicy.WebhookURL = strings.TrimSpace(getenv(TAEPolicyWebhookURLEnv))
 	if config.TAEPolicy.EvidenceRef, policyErr = policyText(TAEPolicyEvidenceEnv); policyErr != nil {
 		return Config{}, policyErr
 	}
@@ -167,6 +165,8 @@ func LoadProductionConfig(getenv func(string) string) (Config, error) {
 	if policyErr != nil {
 		return Config{}, policyErr
 	}
+	config.TAEPolicy.WebhookPSM = strings.TrimSpace(getenv(TAEPolicyWebhookPSMEnv))
+	config.TAEPolicy.WebhookURL = strings.TrimSpace(getenv(TAEPolicyWebhookURLEnv))
 	config.TAEPolicy.Published, policyErr = requiredBool(getenv(TAEPolicyPublishedEnv), TAEPolicyPublishedEnv)
 	if policyErr != nil {
 		return Config{}, policyErr

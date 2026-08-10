@@ -57,7 +57,7 @@ func TestPostgreSQLManagedEnvironmentProfileBootstrapIsExactAndIdempotent(t *tes
 	connection := openPostgresTestConnection(t, connectionConfig)
 	quotedSchema := quoteIdentifier(schema)
 	if _, err := connection.Exec(t.Context(), fmt.Sprintf(
-		"INSERT INTO %s.workspaces (id, status) VALUES ($1, 'active')", quotedSchema,
+		"INSERT INTO %s.workspaces (id, status, managed_lark_credential_mode) VALUES ($1, 'active', 'webhook_swap')", quotedSchema,
 	), profile.WorkspaceID); err != nil {
 		connection.Close(t.Context())
 		t.Fatal(err)

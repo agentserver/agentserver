@@ -3,7 +3,10 @@ package corecredentials
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
+
+	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
 const (
@@ -117,8 +120,8 @@ type Service struct {
 
 func NewService(config ServiceConfig) (*Service, error) {
 	if config.Registry == nil || config.Bindings == nil || config.LiveAuthorizer == nil ||
-		config.Placeholders == nil || config.Sealer == nil || config.Now == nil {
-		return nil, errors.New("corecredentials registry, binding store, live authorizer, placeholder verifier, sealer, and clock are required")
+		config.Sealer == nil || config.Now == nil {
+		return nil, errors.New("corecredentials registry, binding store, live authorizer, sealer, and clock are required")
 	}
 	if config.Audit == nil {
 		config.Audit = noopAuditSink{}
@@ -129,40 +132,84 @@ func NewService(config ServiceConfig) (*Service, error) {
 	}, nil
 }
 
-// ResolveInjection is the only method that can turn a workspace binding into
-// a provider header. Every caller must present the operation-bound
-// placeholder; a workspace/binding lookup alone is never sufficient.
+// ResolveInjection is the placeholder-authenticated method that turns a
+// workspace binding into a provider header for webhook_swap. A
+// workspace/binding lookup alone is never sufficient; the separate trusted
+// method below still requires an exact live operation and authenticated Core
+// workload boundary.
 func (service *Service) ResolveInjection(ctx context.Context, request UseRequest) (HeaderMutation, ResolveResult, error) {
 	if service == nil || ctx == nil || service.registry == nil || service.bindings == nil ||
-		service.liveAuthorizer == nil || service.placeholders == nil || service.sealer == nil || service.now == nil {
+		service.liveAuthorizer == nil || service.sealer == nil || service.now == nil || service.placeholders == nil {
 		return HeaderMutation{}, ResolveResult{}, resolveError(ReasonCoreUnavailable, "Core workspace credential service is not configured", true, 503, nil)
 	}
 	if err := ctx.Err(); err != nil {
 		return HeaderMutation{}, ResolveResult{}, resolveError(ReasonCoreUnavailable, "Core workspace credential resolution was cancelled", true, 503, err)
 	}
+	request.CredentialMode = managedcredential.ModeWebhookSwap
+	request.ExpectedCredentialVersion = 0
 	if err := request.Validate(); err != nil {
 		return HeaderMutation{}, ResolveResult{}, resolveError(ReasonCredentialInvalid, "credential use request is invalid", false, 400, err)
 	}
 	now := service.now().UTC()
 	claims, err := service.placeholders.Verify(request.Placeholder, now)
 	if err != nil || !claimsMatchRequest(claims, request, now) {
-		return service.fail(ctx, request, ResolveResult{}, resolveError(ReasonCredentialUnauthorized, "credential placeholder is not authorized", false, 403, err))
+		return service.fail(ctx, request, ResolveResult{}, "materialize", resolveError(ReasonCredentialUnauthorized, "credential placeholder is not authorized", false, 403, err))
 	}
 	request.CapabilityID = claims.CapabilityID
+	return service.resolveAuthorized(ctx, request, now, "materialize")
+}
+
+// ResolveTrustedInjection materializes a credential for an exact live
+// operation after the caller has been authenticated as a trusted Core
+// workload. Unlike ResolveInjection it does not accept or verify a sandbox
+// placeholder; callers must supply a bounded audit identity and an explicit
+// audit stage. The database live-authority check is still mandatory.
+func (service *Service) ResolveTrustedInjection(
+	ctx context.Context,
+	request UseRequest,
+	capabilityID, auditStage string,
+) (HeaderMutation, ResolveResult, error) {
+	if service == nil || ctx == nil || service.registry == nil || service.bindings == nil ||
+		service.liveAuthorizer == nil || service.sealer == nil || service.now == nil {
+		return HeaderMutation{}, ResolveResult{}, resolveError(ReasonCoreUnavailable, "Core workspace credential service is not configured", true, 503, nil)
+	}
+	if err := ctx.Err(); err != nil {
+		return HeaderMutation{}, ResolveResult{}, resolveError(ReasonCoreUnavailable, "Core workspace credential resolution was cancelled", true, 503, err)
+	}
+	if err := request.ValidateLiveAuthorityScope(); err != nil {
+		return HeaderMutation{}, ResolveResult{}, resolveError(ReasonCredentialInvalid, "credential use request is invalid", false, 400, err)
+	}
+	if capabilityID == "" || len(capabilityID) > 256 || strings.TrimSpace(capabilityID) != capabilityID || strings.ContainsAny(capabilityID, "\x00\r\n") {
+		return HeaderMutation{}, ResolveResult{}, resolveError(ReasonCredentialInvalid, "credential audit identity is invalid", false, 400, nil)
+	}
+	if auditStage != "process_env" && auditStage != "egress" {
+		return HeaderMutation{}, ResolveResult{}, resolveError(ReasonCredentialInvalid, "credential audit stage is invalid", false, 400, nil)
+	}
+	request.CapabilityID = capabilityID
+	return service.resolveAuthorized(ctx, request, service.now().UTC(), auditStage)
+}
+
+func (service *Service) resolveAuthorized(
+	ctx context.Context,
+	request UseRequest,
+	now time.Time,
+	auditStage string,
+) (HeaderMutation, ResolveResult, error) {
 	ref, err := service.liveAuthorizer.AuthorizeCredentialUse(ctx, request)
 	if err != nil {
-		return service.fail(ctx, request, ResolveResult{}, resolveError(ReasonCredentialUnauthorized, "credential operation is not authorized", true, 403, err))
+		return service.fail(ctx, request, ResolveResult{}, auditStage, resolveError(ReasonCredentialUnauthorized, "credential operation is not authorized", true, 403, err))
 	}
 	if ref.WorkspaceID != request.WorkspaceID || ref.Kind != request.ProviderKind || ref.BindingID != request.BindingID ||
-		ref.AuthorityVersion != request.AuthorityVersion {
-		return service.fail(ctx, request, ResolveResult{}, resolveError(ReasonCredentialUnauthorized, "credential authority version is stale", false, 409, nil))
+		ref.AuthorityVersion != request.AuthorityVersion || ref.CredentialMode != request.CredentialMode ||
+		(request.ExpectedCredentialVersion > 0 && ref.CredentialVersion != request.ExpectedCredentialVersion) {
+		return service.fail(ctx, request, ResolveResult{}, auditStage, resolveError(ReasonCredentialUnauthorized, "credential authority version is stale", false, 409, nil))
 	}
 	binding, err := service.bindings.Get(ctx, request.WorkspaceID, request.ProviderKind, request.BindingID)
 	if err != nil {
-		return service.fail(ctx, request, ResolveResult{}, resolveError(ReasonCoreUnavailable, "Core credential binding store is unavailable", true, 503, err))
+		return service.fail(ctx, request, ResolveResult{}, auditStage, resolveError(ReasonCoreUnavailable, "Core credential binding store is unavailable", true, 503, err))
 	}
 	if binding.ID == "" {
-		return service.fail(ctx, request, ResolveResult{}, resolveError(ReasonCredentialNotConfigured, "workspace credential is not configured", false, 404, nil))
+		return service.fail(ctx, request, ResolveResult{}, auditStage, resolveError(ReasonCredentialNotConfigured, "workspace credential is not configured", false, 404, nil))
 	}
 	if err := validateBindingForUse(binding, request, now); err != nil {
 		code := ReasonCredentialNotReady
@@ -170,35 +217,35 @@ func (service *Service) ResolveInjection(ctx context.Context, request UseRequest
 		if binding.Status == StatusRevoked {
 			code, status = ReasonCredentialRevoked, 403
 		}
-		return service.fail(ctx, request, bindingResult(binding, now), resolveError(code, "workspace credential is not ready", false, status, err))
+		return service.fail(ctx, request, bindingResult(binding, now), auditStage, resolveError(code, "workspace credential is not ready", false, status, err))
 	}
 	provider, ok := service.registry.Lookup(request.ProviderKind)
 	if !ok {
-		return service.fail(ctx, request, bindingResult(binding, now), resolveError(ReasonCredentialInvalid, "credential provider is not installed", false, 400, nil))
+		return service.fail(ctx, request, bindingResult(binding, now), auditStage, resolveError(ReasonCredentialInvalid, "credential provider is not installed", false, 400, nil))
 	}
 	plaintext, err := service.sealer.Open(BindingSealScope{
 		WorkspaceID: request.WorkspaceID, BindingID: binding.ID, CredentialVersion: binding.CredentialVersion,
 	}, binding.SealedSecret)
 	if err != nil {
-		return service.fail(ctx, request, bindingResult(binding, now), resolveError(ReasonCredentialNotReady, "workspace credential cannot be opened", true, 503, err))
+		return service.fail(ctx, request, bindingResult(binding, now), auditStage, resolveError(ReasonCredentialNotReady, "workspace credential cannot be opened", true, 503, err))
 	}
 	defer clear(plaintext)
 	mutation, providerErr := provider.Materialize(ctx, binding, plaintext, request)
 	if providerErr != nil {
-		return service.fail(ctx, request, bindingResult(binding, now), resolveError(ReasonProviderDenied, "provider credential could not be materialized", true, 502, providerErr))
+		return service.fail(ctx, request, bindingResult(binding, now), auditStage, resolveError(ReasonProviderDenied, "provider credential could not be materialized", true, 502, providerErr))
 	}
 	if err := mutation.Validate(provider); err != nil {
-		return service.fail(ctx, request, bindingResult(binding, now), resolveError(ReasonProviderDenied, "provider returned an invalid credential mutation", false, 502, err))
+		return service.fail(ctx, request, bindingResult(binding, now), auditStage, resolveError(ReasonProviderDenied, "provider returned an invalid credential mutation", false, 502, err))
 	}
 	result := bindingResult(binding, now)
-	if resolveErr := service.finish(ctx, request, result, nil); resolveErr != nil {
+	if resolveErr := service.finish(ctx, request, result, auditStage, nil); resolveErr != nil {
 		return HeaderMutation{}, result, resolveErr
 	}
 	return mutation, result, nil
 }
 
-func (service *Service) fail(ctx context.Context, request UseRequest, result ResolveResult, err *ResolveError) (HeaderMutation, ResolveResult, error) {
-	return HeaderMutation{}, result, service.finish(ctx, request, result, err)
+func (service *Service) fail(ctx context.Context, request UseRequest, result ResolveResult, auditStage string, err *ResolveError) (HeaderMutation, ResolveResult, error) {
+	return HeaderMutation{}, result, service.finish(ctx, request, result, auditStage, err)
 }
 
 func validateBindingForUse(binding Binding, request UseRequest, now time.Time) error {
@@ -250,12 +297,12 @@ func bindingResult(binding Binding, now time.Time) ResolveResult {
 	return result
 }
 
-func (service *Service) finish(ctx context.Context, request UseRequest, result ResolveResult, resolveErr *ResolveError) *ResolveError {
+func (service *Service) finish(ctx context.Context, request UseRequest, result ResolveResult, auditStage string, resolveErr *ResolveError) *ResolveError {
 	if service == nil || service.audit == nil {
 		return resolveErr
 	}
 	record := CredentialUseAudit{
-		At: service.now().UTC(), Stage: "materialize", CapabilityID: request.CapabilityID,
+		At: service.now().UTC(), Stage: auditStage, CapabilityID: request.CapabilityID,
 		WorkspaceID: request.WorkspaceID, SessionID: request.SessionID,
 		ActorID: request.ActorID, EnvironmentID: request.EnvironmentID,
 		RunID: request.RunID, RunAttemptID: request.RunAttemptID, RunAttemptGeneration: request.RunAttemptGeneration,

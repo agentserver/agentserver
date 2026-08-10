@@ -3,6 +3,7 @@ package coreserver
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -14,6 +15,9 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/corecredentials"
 	"github.com/agentserver/agentserver/v2/internal/coredb"
+	"github.com/agentserver/agentserver/v2/internal/egresscapability"
+	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
+	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
 // EgressCredentialService is the v2 Core-owned credential resolver. It is a
@@ -22,17 +26,32 @@ import (
 // WorkspaceCredentialHandler, while this service performs the final
 // operation-bound materialization.
 type EgressCredentialService struct {
-	resolver *corecredentials.Service
-	store    *coredb.StateStore
-	now      func() time.Time
+	resolver                 *corecredentials.Service
+	store                    EgressCredentialStore
+	processProofs            *egresscapability.Verifier
+	processEnvironmentTAEPSM string
+	now                      func() time.Time
+}
+
+// EgressCredentialStore is the narrow Core persistence surface required by
+// credential resolution. StateStore implements it in production; keeping the
+// boundary explicit lets the sensitive direct-delivery path be exercised
+// without a networked database in unit tests.
+type EgressCredentialStore interface {
+	corecredentials.BindingStore
+	corecredentials.LiveAuthorizer
+	ResolveCredentialAuthority(context.Context, corecredentials.AuthorityRequest) (corecredentials.BindingReference, error)
+	RecordWorkspaceCredentialUseEvent(context.Context, coredb.WorkspaceCredentialUseEvent) error
 }
 
 type EgressCredentialServiceConfig struct {
-	Store        *coredb.StateStore
-	Registry     *corecredentials.ProviderRegistry
-	Sealer       *corecredentials.Keyring
-	Placeholders corecredentials.PlaceholderVerifier
-	Now          func() time.Time
+	Store                    EgressCredentialStore
+	Registry                 *corecredentials.ProviderRegistry
+	Sealer                   *corecredentials.Keyring
+	Placeholders             corecredentials.PlaceholderVerifier
+	ProcessProofs            *egresscapability.Verifier
+	ProcessEnvironmentTAEPSM string
+	Now                      func() time.Time
 }
 
 func (service *EgressCredentialService) ResolveAuthority(ctx context.Context, request corecontract.ResolveEgressCredentialAuthorityRequest) (corecontract.ResolveEgressCredentialAuthorityResponse, error) {
@@ -50,15 +69,22 @@ func (service *EgressCredentialService) ResolveAuthority(ctx context.Context, re
 	if err != nil {
 		return corecontract.ResolveEgressCredentialAuthorityResponse{}, err
 	}
+	if !managedcredential.ValidMode(ref.CredentialMode) {
+		return corecontract.ResolveEgressCredentialAuthorityResponse{}, errors.New("workspace returned an invalid managed credential mode")
+	}
 	return corecontract.ResolveEgressCredentialAuthorityResponse{
-		ProviderKind: request.ProviderKind, BindingID: ref.BindingID, AuthorityVersion: ref.AuthorityVersion,
+		CredentialMode: ref.CredentialMode,
+		ProviderKind:   request.ProviderKind, BindingID: ref.BindingID, AuthorityVersion: ref.AuthorityVersion,
 		CredentialVersion: ref.CredentialVersion, PolicySHA256: request.PolicySHA256, AuthorizedAt: service.now().UTC(),
 	}, nil
 }
 
 func NewEgressCredentialService(config EgressCredentialServiceConfig) (*EgressCredentialService, error) {
-	if config.Store == nil || config.Registry == nil || config.Sealer == nil || config.Placeholders == nil || config.Now == nil {
-		return nil, errors.New("v2 egress credential store, provider registry, sealer, placeholder verifier, and clock are required")
+	if config.Store == nil || config.Registry == nil || config.Sealer == nil || config.Placeholders == nil ||
+		config.ProcessProofs == nil || config.Now == nil || config.ProcessEnvironmentTAEPSM == "" ||
+		len(config.ProcessEnvironmentTAEPSM) > 256 || strings.TrimSpace(config.ProcessEnvironmentTAEPSM) != config.ProcessEnvironmentTAEPSM ||
+		strings.ContainsAny(config.ProcessEnvironmentTAEPSM, "\x00\r\n") {
+		return nil, errors.New("v2 egress credential store, provider registry, sealer, both proof verifiers, TAE PSM, and clock are required")
 	}
 	resolver, err := corecredentials.NewService(corecredentials.ServiceConfig{
 		Registry: config.Registry, Bindings: config.Store, LiveAuthorizer: config.Store,
@@ -67,7 +93,209 @@ func NewEgressCredentialService(config EgressCredentialServiceConfig) (*EgressCr
 	if err != nil {
 		return nil, err
 	}
-	return &EgressCredentialService{resolver: resolver, store: config.Store, now: config.Now}, nil
+	return &EgressCredentialService{
+		resolver: resolver, store: config.Store, processProofs: config.ProcessProofs,
+		processEnvironmentTAEPSM: config.ProcessEnvironmentTAEPSM,
+		now:                      config.Now,
+	}, nil
+}
+
+// ResolveExecutionLarkCredential performs direct, operation-scoped Lark token
+// delivery for process_env mode. The endpoint caller is authenticated
+// separately as executor-gateway; this method still checks the live Core
+// operation twice (default binding selection followed by exact versioned use)
+// so revocation or rotation between the reads fails closed.
+func (service *EgressCredentialService) ResolveExecutionLarkCredential(
+	ctx context.Context,
+	request corecontract.ResolveExecutionLarkCredentialRequest,
+) (corecontract.ResolveExecutionLarkCredentialResponse, error) {
+	if service == nil || service.resolver == nil || service.store == nil || service.now == nil || ctx == nil ||
+		service.processEnvironmentTAEPSM == "" {
+		return corecontract.ResolveExecutionLarkCredentialResponse{}, errors.New("v2 process environment credential resolver is unavailable")
+	}
+	policySHA256 := larkegresspolicy.SHA256Hex()
+	if request.ToolName != "shell" || request.Executable != "lark-cli" || request.TAEPSM != service.processEnvironmentTAEPSM ||
+		request.PolicySHA256 != policySHA256 {
+		return corecontract.ResolveExecutionLarkCredentialResponse{}, &coredb.StateError{
+			Code: coredb.ErrorInvalidArgument, Operation: "ResolveExecutionLarkCredential",
+			Resource: "credential_use", ResourceID: request.Operation.OperationID,
+			Message: "process environment credential request is outside the managed Lark contract",
+		}
+	}
+	operation := request.Operation
+	authorityRequest := corecontract.ResolveEgressCredentialAuthorityRequest{
+		Operation: operation, ProviderKind: "lark", PolicySHA256: policySHA256,
+	}
+	authority, err := service.ResolveAuthority(ctx, authorityRequest)
+	if err != nil {
+		return corecontract.ResolveExecutionLarkCredentialResponse{}, err
+	}
+	base := corecontract.ResolveExecutionLarkCredentialResponse{
+		Configured: false, CredentialMode: authority.CredentialMode,
+		ProviderKind: "lark", PolicySHA256: policySHA256,
+		TAEPSM: request.TAEPSM, ResolvedAt: service.now().UTC(),
+	}
+	if authority.CredentialMode != managedcredential.ModeProcessEnv ||
+		request.BindingID != authority.BindingID || request.AuthorityVersion != authority.AuthorityVersion ||
+		request.CredentialVersion != authority.CredentialVersion {
+		return corecontract.ResolveExecutionLarkCredentialResponse{}, &coredb.StateError{
+			Code: coredb.ErrorForbidden, Operation: "ResolveExecutionLarkCredential",
+			Resource: "credential_use", ResourceID: request.Operation.OperationID,
+			Message: "workspace credential delivery mode or version changed before process launch",
+		}
+	}
+	if authority.BindingID == "" {
+		return base, nil
+	}
+	auditID, err := newCredentialEventID()
+	if err != nil {
+		return corecontract.ResolveExecutionLarkCredentialResponse{}, err
+	}
+	mutation, result, err := service.resolver.ResolveTrustedInjection(ctx, corecredentials.UseRequest{
+		WorkspaceID: operation.WorkspaceID, SessionID: operation.SessionID, ActorID: operation.ActorID,
+		EnvironmentID: operation.EnvironmentID, RunID: operation.RunID, RunAttemptID: operation.RunAttemptID,
+		RunAttemptGeneration: operation.RunAttemptGeneration, ExecutionID: operation.ExecutionID,
+		OperationID: operation.OperationID, SandboxID: operation.SandboxID, TargetGeneration: operation.TargetGeneration,
+		ProviderKind: "lark", BindingID: authority.BindingID, AuthorityVersion: authority.AuthorityVersion,
+		ExpectedCredentialVersion: authority.CredentialVersion,
+		CredentialMode:            managedcredential.ModeProcessEnv,
+		PolicySHA256:              policySHA256, TAEPSM: request.TAEPSM,
+		Host: larkegresspolicy.OpenAPIHost, Path: "/", Method: "PROCESS_ENV",
+	}, auditID, "process_env")
+	if err != nil {
+		return corecontract.ResolveExecutionLarkCredentialResponse{}, err
+	}
+	token, err := exactBearerToken(mutation.Headers)
+	if err != nil {
+		return corecontract.ResolveExecutionLarkCredentialResponse{}, errors.New("v2 Lark provider returned an invalid process credential")
+	}
+	return corecontract.ResolveExecutionLarkCredentialResponse{
+		Configured: true, AccessToken: token, CredentialMode: managedcredential.ModeProcessEnv,
+		ProviderKind: result.ProviderKind,
+		BindingID:    result.Binding.ID, AuthorityVersion: result.AuthorityVersion,
+		CredentialVersion: result.CredentialVersion, PolicySHA256: policySHA256,
+		TAEPSM: request.TAEPSM, ResolvedAt: result.ResolvedAt.UTC(),
+		AccessExpiresAt: copyCredentialTime(result.AccessExpiresAt),
+	}, nil
+}
+
+func (service *EgressCredentialService) AuthorizeProcessEnvironmentEgress(
+	ctx context.Context,
+	request corecontract.AuthorizeProcessEnvironmentEgressRequest,
+) (corecontract.ResolveEgressCredentialResponse, error) {
+	if service == nil || service.resolver == nil || service.processProofs == nil || service.now == nil || ctx == nil ||
+		service.processEnvironmentTAEPSM == "" {
+		return corecontract.ResolveEgressCredentialResponse{}, errors.New("v2 process environment egress resolver is unavailable")
+	}
+	now := service.now().UTC()
+	claims, err := service.processProofs.VerifyProcessEnvironment(request.ProcessProof, now)
+	if err != nil || !processEnvironmentClaimsMatchRequest(claims, request) {
+		return corecontract.ResolveEgressCredentialResponse{}, processEnvironmentDenied(request.Operation.OperationID, "process environment egress proof is invalid")
+	}
+	if request.TAEPSM != service.processEnvironmentTAEPSM || request.ProviderKind != "lark" ||
+		request.PolicySHA256 != larkegresspolicy.SHA256Hex() ||
+		!larkegresspolicy.Allows(request.Host, request.Path, request.Method) {
+		return corecontract.ResolveEgressCredentialResponse{}, &coredb.StateError{
+			Code: coredb.ErrorForbidden, Operation: "AuthorizeProcessEnvironmentEgress",
+			Resource: "credential_use", ResourceID: request.Operation.OperationID,
+			Message: "process environment egress request is outside the managed Lark policy",
+		}
+	}
+	authorization, ok := exactCredentialHeader(request.Headers, "Authorization")
+	proofHeader, proofOK := exactCredentialHeader(request.Headers, managedcredential.LarkAgentTraceHeader)
+	if !ok || !proofOK || proofHeader != request.ProcessProof || !strings.HasPrefix(authorization, "Bearer ") ||
+		strings.Count(authorization, " ") != 1 {
+		return corecontract.ResolveEgressCredentialResponse{}, &coredb.StateError{
+			Code: coredb.ErrorForbidden, Operation: "AuthorizeProcessEnvironmentEgress",
+			Resource: "credential_use", ResourceID: request.Operation.OperationID,
+			Message: "process environment egress proof or bearer is missing",
+		}
+	}
+	operation := request.Operation
+	mutation, result, err := service.resolver.ResolveTrustedInjection(ctx, corecredentials.UseRequest{
+		WorkspaceID: operation.WorkspaceID, SessionID: operation.SessionID, ActorID: operation.ActorID,
+		EnvironmentID: operation.EnvironmentID, RunID: operation.RunID, RunAttemptID: operation.RunAttemptID,
+		RunAttemptGeneration: operation.RunAttemptGeneration, ExecutionID: operation.ExecutionID,
+		OperationID: operation.OperationID, SandboxID: operation.SandboxID, TargetGeneration: operation.TargetGeneration,
+		ProviderKind: request.ProviderKind, BindingID: request.BindingID, AuthorityVersion: request.AuthorityVersion,
+		ExpectedCredentialVersion: request.CredentialVersion, CredentialMode: managedcredential.ModeProcessEnv,
+		PolicySHA256: request.PolicySHA256, TAEPSM: request.TAEPSM,
+		Host: request.Host, Path: request.Path, Method: request.Method,
+	}, claims.CapabilityID, "egress")
+	if err != nil {
+		return corecontract.ResolveEgressCredentialResponse{}, err
+	}
+	expectedAuthorization, ok := exactCredentialHeader(mutation.Headers, "Authorization")
+	if !ok || !equalCredentialSecret(expectedAuthorization, authorization) || result.CredentialVersion != request.CredentialVersion {
+		return corecontract.ResolveEgressCredentialResponse{}, processEnvironmentDenied(request.Operation.OperationID, "process environment bearer no longer matches the workspace binding")
+	}
+	return corecontract.ResolveEgressCredentialResponse{
+		Headers: map[string]string{
+			"Authorization":                        authorization,
+			managedcredential.LarkAgentTraceHeader: managedcredential.LarkSanitizedAgentTrace,
+		},
+		ProviderKind: result.ProviderKind, BindingID: result.Binding.ID,
+		AuthorityVersion: result.AuthorityVersion, CredentialVersion: result.CredentialVersion,
+		ResolvedAt: result.ResolvedAt.UTC(), AccessExpiresAt: copyCredentialTime(result.AccessExpiresAt),
+	}, nil
+}
+
+func processEnvironmentDenied(operationID, message string) error {
+	return &coredb.StateError{
+		Code: coredb.ErrorForbidden, Operation: "AuthorizeProcessEnvironmentEgress",
+		Resource: "credential_use", ResourceID: operationID, Message: message,
+	}
+}
+
+func processEnvironmentClaimsMatchRequest(
+	claims egresscapability.ProcessEnvironmentClaims,
+	request corecontract.AuthorizeProcessEnvironmentEgressRequest,
+) bool {
+	operation := request.Operation
+	return claims.WorkspaceID == operation.WorkspaceID && claims.SessionID == operation.SessionID &&
+		claims.ActorID == operation.ActorID && claims.EnvironmentID == operation.EnvironmentID &&
+		claims.RunID == operation.RunID && claims.RunAttemptID == operation.RunAttemptID &&
+		claims.RunAttemptGeneration == operation.RunAttemptGeneration && claims.ExecutionID == operation.ExecutionID &&
+		claims.OperationID == operation.OperationID && claims.SandboxID == operation.SandboxID &&
+		claims.TargetGeneration == operation.TargetGeneration && claims.ProviderKind == request.ProviderKind &&
+		claims.BindingID == request.BindingID && claims.AuthorityVersion == request.AuthorityVersion &&
+		claims.CredentialVersion == request.CredentialVersion && claims.PolicySHA256 == request.PolicySHA256
+}
+
+func exactCredentialHeader(headers map[string]string, wanted string) (string, bool) {
+	var result string
+	found := false
+	for name, value := range headers {
+		if !strings.EqualFold(name, wanted) {
+			continue
+		}
+		if found || value == "" || len(value) > 32*1024 || strings.ContainsAny(value, "\x00\r\n") {
+			return "", false
+		}
+		result, found = value, true
+	}
+	return result, found
+}
+
+func equalCredentialSecret(left, right string) bool {
+	return len(left) == len(right) && subtle.ConstantTimeCompare([]byte(left), []byte(right)) == 1
+}
+
+func exactBearerToken(headers map[string]string) (string, error) {
+	if len(headers) != 1 {
+		return "", errors.New("Lark process credential mutation must contain exactly one header")
+	}
+	for name, value := range headers {
+		if !strings.EqualFold(name, "Authorization") || !strings.HasPrefix(value, "Bearer ") {
+			return "", errors.New("Lark process credential mutation is not a bearer token")
+		}
+		token := strings.TrimPrefix(value, "Bearer ")
+		if token == "" || len(token) > 32*1024 || strings.TrimSpace(token) != token || strings.ContainsAny(token, "\x00\r\n") {
+			return "", errors.New("Lark process credential token is invalid")
+		}
+		return token, nil
+	}
+	return "", errors.New("Lark process credential mutation is empty")
 }
 
 func (service *EgressCredentialService) Resolve(ctx context.Context, request corecontract.ResolveEgressCredentialRequest) (corecontract.ResolveEgressCredentialResponse, error) {
@@ -228,7 +456,7 @@ func canonicalAuditTarget(host, requestPath, method string) bool {
 		(len(requestPath) == 1 || !strings.HasSuffix(requestPath, "/")) && boundedAuditText(method, 16) && strings.ToUpper(method) == method
 }
 
-type workspaceCredentialAuditSink struct{ store *coredb.StateStore }
+type workspaceCredentialAuditSink struct{ store EgressCredentialStore }
 
 func (sink workspaceCredentialAuditSink) RecordCredentialUse(ctx context.Context, audit corecredentials.CredentialUseAudit) error {
 	eventID, err := newCredentialEventID()

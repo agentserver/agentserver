@@ -219,12 +219,11 @@
     "bootstrap": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["workspaceId", "sessionId", "ownerUserId", "externalOidcSubject", "executorId"],
+      "required": ["workspaceId", "sessionId", "ownerUserId", "executorId"],
       "properties": {
         "workspaceId": {"$ref": "#/$defs/uuid"},
         "sessionId": {"$ref": "#/$defs/uuid"},
         "ownerUserId": {"$ref": "#/$defs/uuid"},
-        "externalOidcSubject": {"type": "string", "minLength": 1, "maxLength": 2048},
         "executorId": {"$ref": "#/$defs/uuid"}
       }
     },
@@ -244,10 +243,8 @@
     "externalOidc": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["issuer", "clientId", "redirectUrl"],
+      "required": ["redirectUrl"],
       "properties": {
-        "issuer": {"$ref": "#/$defs/httpsUrl"},
-        "clientId": {"type": "string", "minLength": 1, "maxLength": 256},
         "redirectUrl": {"$ref": "#/$defs/httpsUrl"}
       }
     },
@@ -373,7 +370,7 @@
       "additionalProperties": false,
       "required": ["version", "reportSha256", "bindingSha256", "evidenceRef"],
       "properties": {
-        "version": {"type": "integer", "minimum": 0, "maximum": 1},
+        "version": {"type": "integer", "minimum": 0, "maximum": 3},
         "reportSha256": {"$ref": "#/$defs/optionalSha256"},
         "bindingSha256": {"$ref": "#/$defs/optionalSha256"},
         "evidenceRef": {"type": "string", "maxLength": 1024}
@@ -402,7 +399,17 @@
         "published": {"type": "boolean"},
         "approved": {"type": "boolean"},
         "evidenceRef": {"type": "string", "maxLength": 1024}
-      }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"webhookMode": {"const": "psm"}}, "required": ["webhookMode"]},
+          "then": {"properties": {"webhookPsm": {"minLength": 1}, "webhookUrl": {"const": ""}}}
+        },
+        {
+          "if": {"properties": {"webhookMode": {"const": "url"}}, "required": ["webhookMode"]},
+          "then": {"properties": {"webhookPsm": {"const": ""}, "webhookUrl": {"minLength": 1}}}
+        }
+      ]
     },
     "managedLark": {
       "type": "object",
@@ -486,7 +493,7 @@
                   },
                   "networkEvidence": {
                     "properties": {
-                      "version": {"const": 1},
+                      "version": {"const": 3},
                       "reportSha256": {"$ref": "#/$defs/sha256"},
                       "bindingSha256": {"$ref": "#/$defs/sha256"},
                       "evidenceRef": {"type": "string", "minLength": 1, "maxLength": 1024}

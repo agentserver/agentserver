@@ -71,6 +71,7 @@ const (
 	gatewayEgressPlaceholderIssuerEnvironment  = "AGENTSERVER_V2_EGRESS_PLACEHOLDER_ISSUER"
 	gatewayEgressPlaceholderKeyIDEnvironment   = "AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEY_ID"
 	gatewayEgressPlaceholderKeyEnvironment     = "AGENTSERVER_V2_EGRESS_PLACEHOLDER_SIGNING_KEY_FILE"
+	gatewayManagedTAEPSMEnvironment            = "AGENTSERVER_V2_MANAGED_TAE_PSM"
 	gatewayDevExecutorHeader                   = "X-Agentserver-Dev-Executor-Id"
 	maximumDevMCPBearerBytes                   = 16 * 1024
 	maximumGatewayTLSFileBytes                 = int64(1024 * 1024)
@@ -252,7 +253,7 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 		backends = append(backends, taeBackend)
 	}
 	managedEnvironmentIssuer, managedTargetFencer, err := configureManagedExecutionSecurity(
-		getenv, mode, taeBackend, sandboxGatewayHTTPClient, coreClient,
+		getenv, mode, taeBackend, sandboxGatewayHTTPClient, coreClient, coreClient,
 	)
 	if err != nil {
 		return err

@@ -584,6 +584,8 @@ export interface components {
             status: "active" | "suspended" | "archived";
             /** @enum {unknown} */
             currentUserRole: "owner" | "developer" | "viewer";
+            /** @enum {unknown} */
+            managedLarkCredentialMode: "webhook_swap" | "process_env";
             version: number;
             /** Format: date-time */
             createdAt: string;
@@ -700,6 +702,8 @@ export interface components {
         CreateWorkspaceRequest: {
             workspaceId: components["schemas"]["UUID"];
             name: string;
+            /** @enum {unknown} */
+            managedLarkCredentialMode: "webhook_swap" | "process_env";
         };
         CreateWorkspaceResponse: {
             workspace: components["schemas"]["WorkspaceState"];
@@ -707,6 +711,8 @@ export interface components {
         };
         UpdateWorkspaceRequest: {
             name: string;
+            /** @enum {unknown} */
+            managedLarkCredentialMode: "webhook_swap" | "process_env";
             expectedVersion: number;
         };
         UpdateWorkspaceResponse: {

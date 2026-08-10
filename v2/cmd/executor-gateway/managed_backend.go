@@ -32,6 +32,7 @@ func configureTAEBackend(
 		gatewaySandboxFencerKeyEnvironment,
 		gatewayEgressPlaceholderIssuerEnvironment, gatewayEgressPlaceholderKeyIDEnvironment,
 		gatewayEgressPlaceholderKeyEnvironment,
+		gatewayManagedTAEPSMEnvironment,
 	}
 	if baseURL == "" {
 		for _, name := range configuredNames {
@@ -118,6 +119,7 @@ func configureManagedExecutionSecurity(
 	backend *executorgateway.TAEBackend,
 	httpClient *http.Client,
 	coreAuthorities executorgateway.ManagedLarkEgressAuthoritySource,
+	coreProcessCredentials executorgateway.ManagedLarkProcessCredentialSource,
 ) (executorgateway.ManagedProcessEnvironmentIssuer, executorgateway.ManagedTargetFencer, error) {
 	if getenv == nil {
 		return nil, nil, errors.New("managed execution security configuration source is required")
@@ -174,22 +176,22 @@ func configureManagedExecutionSecurity(
 		return nil, nil, err
 	}
 
+	taePSM, err := required(gatewayManagedTAEPSMEnvironment)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(taePSM) > 256 || strings.ContainsAny(taePSM, "\x00\r\n") {
+		return nil, nil, fmt.Errorf("%s is invalid", gatewayManagedTAEPSMEnvironment)
+	}
+
 	egressNames := []string{
 		gatewayEgressPlaceholderIssuerEnvironment, gatewayEgressPlaceholderKeyIDEnvironment,
 		gatewayEgressPlaceholderKeyEnvironment,
 	}
-	egressEnabled := false
 	for _, name := range egressNames {
-		if strings.TrimSpace(getenv(name)) != "" {
-			egressEnabled = true
-			break
+		if strings.TrimSpace(getenv(name)) == "" {
+			return nil, nil, fmt.Errorf("%s is required for workspace-managed Lark credential delivery", name)
 		}
-	}
-	if !egressEnabled {
-		if mode == gatewayServeProduction {
-			return nil, nil, errors.New("production TAE execution requires credential egress placeholder signing")
-		}
-		return nil, fencer, nil
 	}
 	egressIssuer, err := required(gatewayEgressPlaceholderIssuerEnvironment)
 	if err != nil {
@@ -213,10 +215,16 @@ func configureManagedExecutionSecurity(
 	if coreAuthorities == nil {
 		return nil, nil, errors.New("managed credential authority source must be v2 Core")
 	}
+	if coreProcessCredentials == nil {
+		return nil, nil, errors.New("managed process credential source must be v2 Core")
+	}
 	// The CLI application identity is a non-secret runtime hint. Workspace
 	// Lark/ByteCloud/GitHub credentials are selected by Platform and resolved
 	// by corecredentials; no client ID or token is deployment configuration.
-	issuer, err := executorgateway.NewDefaultSignedManagedLarkEnvironmentIssuer(egressSigner, coreAuthorities, executorgateway.ManagedCredentialApplicationID)
+	issuer, err := executorgateway.NewDefaultWorkspaceManagedLarkEnvironmentIssuer(
+		egressSigner, coreAuthorities, coreProcessCredentials,
+		executorgateway.ManagedCredentialApplicationID, taePSM,
+	)
 	if err != nil {
 		return nil, nil, err
 	}

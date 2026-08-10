@@ -43,6 +43,7 @@ func TestProductionRendererExecutorEnvironmentMatchesCommandContract(t *testing.
 		gatewayEgressPlaceholderIssuerEnvironment,
 		gatewayEgressPlaceholderKeyIDEnvironment,
 		gatewayEgressPlaceholderKeyEnvironment,
+		gatewayManagedTAEPSMEnvironment,
 	}
 	slices.Sort(want)
 	if got := environment.Names(); !slices.Equal(got, want) {

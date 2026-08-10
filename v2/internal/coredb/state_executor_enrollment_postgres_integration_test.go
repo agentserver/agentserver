@@ -23,7 +23,7 @@ func TestPostgreSQLExecutorEnrollmentIsIdempotentKeyBoundAndRevocable(t *testing
 	executorID := stateTestUUID(210_003)
 	environmentID := stateTestUUID(210_004)
 	quotedSchema := quoteIdentifier(schema)
-	if _, err := pool.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.workspaces (id, status) VALUES ($1, 'active')", quotedSchema), workspaceID); err != nil {
+	if _, err := pool.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.workspaces (id, status, managed_lark_credential_mode) VALUES ($1, 'active', 'webhook_swap')", quotedSchema), workspaceID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.users (id, status) VALUES ($1, 'active'), ($2, 'active')", quotedSchema), ownerID, developerID); err != nil {
@@ -164,7 +164,7 @@ func TestPostgreSQLExecutorEnrollmentUsesOneLockOrderAcrossIssueAndClaim(t *test
 	executorID := stateTestUUID(211_002)
 	environmentID := stateTestUUID(211_003)
 	quotedSchema := quoteIdentifier(schema)
-	if _, err := pool.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.workspaces (id, status) VALUES ($1, 'active')", quotedSchema), workspaceID); err != nil {
+	if _, err := pool.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.workspaces (id, status, managed_lark_credential_mode) VALUES ($1, 'active', 'webhook_swap')", quotedSchema), workspaceID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.users (id, status) VALUES ($1, 'active')", quotedSchema), ownerID); err != nil {

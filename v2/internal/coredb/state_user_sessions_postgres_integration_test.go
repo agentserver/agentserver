@@ -15,7 +15,7 @@ func TestPostgreSQLUserSessionLifecycleIsOwnerPrivateAndVersioned(t *testing.T) 
 
 	if _, err := pool.Exec(
 		t.Context(),
-		fmt.Sprintf("INSERT INTO %s.workspaces (id, status) VALUES ($1, 'active')", quotedSchema),
+		fmt.Sprintf("INSERT INTO %s.workspaces (id, status, managed_lark_credential_mode) VALUES ($1, 'active', 'webhook_swap')", quotedSchema),
 		workspaceID,
 	); err != nil {
 		t.Fatal(err)

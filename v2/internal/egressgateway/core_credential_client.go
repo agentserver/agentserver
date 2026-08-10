@@ -22,6 +22,7 @@ const maximumCoreCredentialResponseBytes = 128 * 1024
 // is no intermediate credential service or credential-proxy HTTP hop.
 type CredentialInjectionResolver interface {
 	ResolveInjection(context.Context, corecredentials.UseRequest) (corecredentials.HeaderMutation, corecredentials.ResolveResult, error)
+	AuthorizeProcessEnvironmentEgress(context.Context, corecontract.AuthorizeProcessEnvironmentEgressRequest) (corecredentials.HeaderMutation, corecredentials.ResolveResult, error)
 }
 
 // CoreCredentialClient calls the v2 Core egress contract over the existing
@@ -110,6 +111,66 @@ func (client *CoreCredentialClient) ResolveInjection(ctx context.Context, use co
 	if err := corecredentials.ValidateClosedHeaderMutation(mutation); err != nil || result.ProviderKind != use.ProviderKind ||
 		result.BindingID != use.BindingID || result.AuthorityVersion != use.AuthorityVersion || result.CredentialVersion < 1 || result.ResolvedAt.IsZero() {
 		return corecredentials.HeaderMutation{}, corecredentials.ResolveResult{}, errors.New("v2 Core returned an out-of-scope credential mutation")
+	}
+	metadata := corecredentials.BindingMetadata{ID: result.BindingID, Kind: result.ProviderKind,
+		AuthorityVersion: result.AuthorityVersion, CredentialVersion: result.CredentialVersion}
+	return mutation, corecredentials.ResolveResult{
+		ProviderKind: result.ProviderKind, Binding: metadata, AuthorityVersion: result.AuthorityVersion,
+		CredentialVersion: result.CredentialVersion, AccessExpiresAt: result.AccessExpiresAt, ResolvedAt: result.ResolvedAt,
+	}, nil
+}
+
+func (client *CoreCredentialClient) AuthorizeProcessEnvironmentEgress(
+	ctx context.Context,
+	command corecontract.AuthorizeProcessEnvironmentEgressRequest,
+) (corecredentials.HeaderMutation, corecredentials.ResolveResult, error) {
+	if client == nil || client.baseURL == nil || client.httpClient == nil || ctx == nil {
+		return corecredentials.HeaderMutation{}, corecredentials.ResolveResult{}, errors.New("v2 Core credential client is not configured")
+	}
+	var raw bytes.Buffer
+	encoder := json.NewEncoder(&raw)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(command); err != nil || raw.Len() > maximumCoreCredentialResponseBytes {
+		return corecredentials.HeaderMutation{}, corecredentials.ResolveResult{}, errors.New("encode bounded v2 Core process environment request")
+	}
+	endpoint := *client.baseURL
+	endpoint.Path = corecontract.AuthorizeProcessEnvironmentEgressPath
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(raw.Bytes()))
+	if err != nil {
+		return corecredentials.HeaderMutation{}, corecredentials.ResolveResult{}, errors.New("construct v2 Core process environment request")
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json")
+	response, err := client.httpClient.Do(request)
+	if err != nil {
+		return corecredentials.HeaderMutation{}, corecredentials.ResolveResult{}, errors.New("execute v2 Core process environment request")
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, maximumCoreCredentialResponseBytes+1))
+	if err != nil || len(body) > maximumCoreCredentialResponseBytes {
+		return corecredentials.HeaderMutation{}, corecredentials.ResolveResult{}, errors.New("read bounded v2 Core process environment response")
+	}
+	mediaType, _, mediaErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if mediaErr != nil || mediaType != "application/json" || response.Header.Get("Cache-Control") != "no-store" {
+		return corecredentials.HeaderMutation{}, corecredentials.ResolveResult{}, errors.New("v2 Core process environment response has unsafe metadata")
+	}
+	if response.StatusCode != http.StatusOK {
+		var failure corecontract.ErrorResponse
+		if decodeCoreCredentialJSON(body, &failure) != nil || failure.Code == "" {
+			return corecredentials.HeaderMutation{}, corecredentials.ResolveResult{}, errors.New("v2 Core process environment response is invalid")
+		}
+		return corecredentials.HeaderMutation{}, corecredentials.ResolveResult{}, fmt.Errorf("v2 Core process environment egress denied: %s", failure.Code)
+	}
+	var result corecontract.ResolveEgressCredentialResponse
+	if err := decodeCoreCredentialJSON(body, &result); err != nil {
+		return corecredentials.HeaderMutation{}, corecredentials.ResolveResult{}, errors.New("decode v2 Core process environment response")
+	}
+	mutation := corecredentials.HeaderMutation{Headers: result.Headers}
+	if err := corecredentials.ValidateClosedHeaderMutation(mutation); err != nil ||
+		result.ProviderKind != command.ProviderKind || result.BindingID != command.BindingID ||
+		result.AuthorityVersion != command.AuthorityVersion || result.CredentialVersion != command.CredentialVersion ||
+		result.ResolvedAt.IsZero() {
+		return corecredentials.HeaderMutation{}, corecredentials.ResolveResult{}, errors.New("v2 Core returned an out-of-scope process environment mutation")
 	}
 	metadata := corecredentials.BindingMetadata{ID: result.BindingID, Kind: result.ProviderKind,
 		AuthorityVersion: result.AuthorityVersion, CredentialVersion: result.CredentialVersion}

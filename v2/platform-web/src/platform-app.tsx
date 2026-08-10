@@ -146,11 +146,17 @@ function CreateWorkspaceDialog({ api, onCreated }: { api: ResourceAPI; onCreated
     event.preventDefault(); setBusy(true); setError("")
     try {
       const form = new FormData(event.currentTarget)
-      const result = await api.createWorkspace({ workspaceId: newID(), name: boundedText("workspace name", String(form.get("name") ?? ""), 256) })
+      const mode = String(form.get("managedLarkCredentialMode") ?? "")
+      if (mode !== "webhook_swap" && mode !== "process_env") throw new Error("Managed Lark credential mode is invalid.")
+      const result = await api.createWorkspace({
+        workspaceId: newID(),
+        name: boundedText("workspace name", String(form.get("name") ?? ""), 256),
+        managedLarkCredentialMode: mode,
+      })
       setOpen(false); onCreated(result.workspace)
     } catch (requestError) { setError(safeError(requestError)) } finally { setBusy(false) }
   }
-  return <Dialog open={open} onOpenChange={setOpen}><DialogTrigger asChild><Button><Plus size={16} />{t("platform.createWorkspace")}</Button></DialogTrigger><DialogContent title={t("platform.createWorkspace")} description={t("platform.homeDescription")}><form onSubmit={(event) => void submit(event)}><Label htmlFor="workspace-name">{t("platform.workspaceName")}</Label><Input id="workspace-name" name="name" autoFocus maxLength={256} required />{error ? <div className="error-banner inline-error">{error}</div> : null}<div className="form-actions"><DialogClose asChild><Button type="button" variant="ghost">{t("common.cancel")}</Button></DialogClose><Button type="submit" disabled={busy}>{busy ? t("common.loading") : t("common.create")}</Button></div></form></DialogContent></Dialog>
+  return <Dialog open={open} onOpenChange={setOpen}><DialogTrigger asChild><Button><Plus size={16} />{t("platform.createWorkspace")}</Button></DialogTrigger><DialogContent title={t("platform.createWorkspace")} description={t("platform.homeDescription")}><form onSubmit={(event) => void submit(event)}><Label htmlFor="workspace-name">{t("platform.workspaceName")}</Label><Input id="workspace-name" name="name" autoFocus maxLength={256} required /><Label htmlFor="workspace-managed-lark-mode">{t("platform.managedLarkMode")}</Label><NativeSelect id="workspace-managed-lark-mode" name="managedLarkCredentialMode" defaultValue="webhook_swap"><option value="webhook_swap">{t("platform.managedLarkWebhookSwap")}</option><option value="process_env">{t("platform.managedLarkProcessEnv")}</option></NativeSelect><p className="form-help">{t("platform.managedLarkModeHelp")}</p>{error ? <div className="error-banner inline-error">{error}</div> : null}<div className="form-actions"><DialogClose asChild><Button type="button" variant="ghost">{t("common.cancel")}</Button></DialogClose><Button type="submit" disabled={busy}>{busy ? t("common.loading") : t("common.create")}</Button></div></form></DialogContent></Dialog>
 }
 
 function WorkspaceRoute({ workspaces, loading, api, pendingGrant, onReauthorize, replaceWorkspace, onArchived }: { workspaces: Workspace[]; loading: boolean; api: ResourceAPI; pendingGrant: boolean; onReauthorize: () => Promise<void>; replaceWorkspace: (workspace: Workspace) => void; onArchived: () => Promise<void> }) {
@@ -176,12 +182,14 @@ function WorkspaceOverview({ workspace, api, onChanged, onArchived }: { workspac
   const { locale } = useLocale()
   const navigate = useNavigate()
   const [name, setName] = useState(workspace.name)
+  const [managedLarkCredentialMode, setManagedLarkCredentialMode] = useState(workspace.managedLarkCredentialMode)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
   useEffect(() => setName(workspace.name), [workspace.name])
-  const rename = async (event: FormEvent) => {
+  useEffect(() => setManagedLarkCredentialMode(workspace.managedLarkCredentialMode), [workspace.managedLarkCredentialMode])
+  const saveSettings = async (event: FormEvent) => {
     event.preventDefault(); setBusy(true); setError("")
-    try { onChanged((await api.updateWorkspace(workspace.workspaceId, { name: boundedText("workspace name", name, 256), expectedVersion: workspace.version })).workspace) } catch (requestError) { setError(safeError(requestError)) } finally { setBusy(false) }
+    try { onChanged((await api.updateWorkspace(workspace.workspaceId, { name: boundedText("workspace name", name, 256), managedLarkCredentialMode, expectedVersion: workspace.version })).workspace) } catch (requestError) { setError(safeError(requestError)) } finally { setBusy(false) }
   }
   const archive = async () => {
     if (!window.confirm(t("platform.archiveWorkspaceConfirm"))) return
@@ -190,8 +198,8 @@ function WorkspaceOverview({ workspace, api, onChanged, onArchived }: { workspac
   }
   return <><PageHeader eyebrow={shortID(workspace.workspaceId)} title={workspace.name} description={`${workspace.currentUserRole} · ${workspace.status}`} actions={<Button onClick={() => { window.location.href = `https://browser.byted.bps.dev/workspaces/${workspace.workspaceId}` }}><Bot size={16} />{t("platform.openBrowser")}</Button>} />
     {error ? <div className="error-banner">{error}</div> : null}
-    <div className="facts-grid"><Fact label={t("platform.workspaceId")} value={workspace.workspaceId} /><Fact label={t("platform.yourRole")} value={workspace.currentUserRole} /><Fact label={t("common.status")} value={workspace.status} /><Fact label={t("common.version")} value={String(workspace.version)} /><Fact label={t("common.created")} value={formatDate(workspace.createdAt, locale)} /><Fact label={t("common.updated")} value={formatDate(workspace.updatedAt, locale)} /></div>
-    {workspace.currentUserRole === "owner" && workspace.status === "active" ? <Card className="settings-card"><div><h2>{t("platform.renameWorkspace")}</h2><p>{t("platform.homeDescription")}</p></div><form onSubmit={(event) => void rename(event)}><Input value={name} maxLength={256} onChange={(event) => setName(event.target.value)} /><Button type="submit" disabled={busy || name === workspace.name}>{t("common.save")}</Button></form><div className="danger-zone"><div><h3>{t("platform.archiveWorkspace")}</h3><p>{t("platform.archiveWorkspaceConfirm")}</p></div><Button variant="destructive" disabled={busy} onClick={() => void archive()}><Archive size={15} />{t("common.archive")}</Button></div></Card> : null}
+    <div className="facts-grid"><Fact label={t("platform.workspaceId")} value={workspace.workspaceId} /><Fact label={t("platform.yourRole")} value={workspace.currentUserRole} /><Fact label={t("platform.managedLarkMode")} value={workspace.managedLarkCredentialMode} /><Fact label={t("common.status")} value={workspace.status} /><Fact label={t("common.version")} value={String(workspace.version)} /><Fact label={t("common.created")} value={formatDate(workspace.createdAt, locale)} /><Fact label={t("common.updated")} value={formatDate(workspace.updatedAt, locale)} /></div>
+    {workspace.currentUserRole === "owner" && workspace.status === "active" ? <Card className="settings-card"><div><h2>{t("platform.workspaceSettings")}</h2><p>{t("platform.managedLarkModeHelp")}</p></div><form onSubmit={(event) => void saveSettings(event)}><div><Label htmlFor="workspace-settings-name">{t("platform.workspaceName")}</Label><Input id="workspace-settings-name" value={name} maxLength={256} onChange={(event) => setName(event.target.value)} /></div><div><Label htmlFor="workspace-settings-lark-mode">{t("platform.managedLarkMode")}</Label><NativeSelect id="workspace-settings-lark-mode" value={managedLarkCredentialMode} onChange={(event) => setManagedLarkCredentialMode(event.target.value as Workspace["managedLarkCredentialMode"])}><option value="webhook_swap">{t("platform.managedLarkWebhookSwap")}</option><option value="process_env">{t("platform.managedLarkProcessEnv")}</option></NativeSelect></div>{managedLarkCredentialMode === "process_env" ? <p className="form-help">{t("platform.managedLarkProcessEnvWarning")}</p> : null}<Button type="submit" disabled={busy || (name === workspace.name && managedLarkCredentialMode === workspace.managedLarkCredentialMode)}>{t("common.save")}</Button></form><div className="danger-zone"><div><h3>{t("platform.archiveWorkspace")}</h3><p>{t("platform.archiveWorkspaceConfirm")}</p></div><Button variant="destructive" disabled={busy} onClick={() => void archive()}><Archive size={15} />{t("common.archive")}</Button></div></Card> : null}
   </>
 }
 

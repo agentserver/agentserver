@@ -57,6 +57,7 @@ func TestProductionRendererCoreEnvironmentMatchesCommandContract(t *testing.T) {
 		coreEnrollmentTTLEnvironment,
 		coreCredentialSealingKeyringEnvironment,
 		coreEgressPlaceholderKeyringEnvironment,
+		coreManagedTAEPSMEnvironment,
 		"AGENTSERVER_V2_OBJECT_PREFIX",
 		"AGENTSERVER_V2_S3_BUCKET",
 		"AGENTSERVER_V2_S3_REGION",

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/egresscapability"
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 	"github.com/agentserver/agentserver/v2/internal/executorgateway"
+	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
 func TestConfigureManagedExecutionSecurityLoadsSeparatedSigners(t *testing.T) {
@@ -27,7 +29,10 @@ func TestConfigureManagedExecutionSecurityLoadsSeparatedSigners(t *testing.T) {
 	t.Cleanup(client.CloseIdleConnections)
 	authority := testManagedCredentialAuthority(t)
 
-	issuer, fencer, err := configureManagedExecutionSecurity(getenv, gatewayServeInsecureDevelopment, backend, client, authority)
+	issuer, fencer, err := configureManagedExecutionSecurity(
+		getenv, gatewayServeInsecureDevelopment, backend, client, authority,
+		staticManagedProcessCredentialSource{},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,8 +73,8 @@ func TestConfigureManagedExecutionSecurityLoadsSeparatedSigners(t *testing.T) {
 	}
 }
 
-func TestConfigureManagedExecutionSecurityCanDisableOnlyLarkProjection(t *testing.T) {
-	configuration, _ := validManagedBackendConfiguration(t, false)
+func TestConfigureManagedExecutionSecuritySelectsWorkspaceProcessEnvironment(t *testing.T) {
+	configuration, egressPublicKey := validManagedBackendConfiguration(t, true)
 	getenv := func(name string) string { return configuration[name] }
 	backend, client, err := configureTAEBackend(getenv, gatewayServeInsecureDevelopment, "", "", "")
 	if err != nil {
@@ -79,12 +84,45 @@ func TestConfigureManagedExecutionSecurityCanDisableOnlyLarkProjection(t *testin
 		t.Fatal("configured TAE backend or HTTP client is nil")
 	}
 	t.Cleanup(client.CloseIdleConnections)
-	issuer, fencer, err := configureManagedExecutionSecurity(getenv, gatewayServeInsecureDevelopment, backend, client, nil)
+	issuer, fencer, err := configureManagedExecutionSecurity(
+		getenv, gatewayServeInsecureDevelopment, backend, client,
+		testManagedCredentialAuthorityForMode(t, managedcredential.ModeProcessEnv),
+		staticManagedProcessCredentialSource{credential: executorgateway.ManagedLarkProcessCredential{
+			Configured: true, CredentialMode: managedcredential.ModeProcessEnv,
+			AccessToken: "real-lark-token", BindingID: "90000000-0000-4000-8000-000000000009",
+			AuthorityVersion: 9, CredentialVersion: 1, PolicySHA256: strings.Repeat("a", 64),
+			TAEPSM: "bytedance.sandbox.agentserver",
+		}},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if issuer != nil || fencer == nil {
+	if issuer == nil || fencer == nil {
 		t.Fatalf("managed security = issuer %T fencer %T", issuer, fencer)
+	}
+	now := time.Now().UTC()
+	request := managedBackendEnvironmentRequest(now)
+	environment, err := issuer.IssueManagedProcessEnvironment(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof := environment[executorgateway.ManagedLarkAgentTraceEnvironment]
+	if environment[executorgateway.ManagedLarkUserAccessTokenEnvironment] != "real-lark-token" ||
+		!egresscapability.IsProcessEnvironmentProof(proof) {
+		t.Fatalf("direct process environment = %#v", environment)
+	}
+	verifier, err := egresscapability.NewVerifier([]egresscapability.TrustedKey{{
+		Issuer:   configuration[gatewayEgressPlaceholderIssuerEnvironment],
+		Audience: egresscapability.AudienceForProvider("lark"),
+		KeyID:    configuration[gatewayEgressPlaceholderKeyIDEnvironment], PublicKey: egressPublicKey,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := verifier.VerifyProcessEnvironment(proof, now)
+	if err != nil || claims.WorkspaceID != request.Principal.WorkspaceID ||
+		claims.OperationID != request.Operation.OperationID || claims.CredentialVersion != 1 {
+		t.Fatalf("process environment proof = %#v, %v", claims, err)
 	}
 }
 
@@ -114,8 +152,38 @@ func TestConfigureManagedExecutionSecurityRejectsPartialOrConfusedAuthority(t *t
 			if client != nil {
 				defer client.CloseIdleConnections()
 			}
-			if _, _, err := configureManagedExecutionSecurity(getenv, gatewayServeInsecureDevelopment, backend, client, testManagedCredentialAuthority(t)); err == nil {
+			if _, _, err := configureManagedExecutionSecurity(
+				getenv, gatewayServeInsecureDevelopment, backend, client,
+				testManagedCredentialAuthority(t), staticManagedProcessCredentialSource{},
+			); err == nil {
 				t.Fatal("unsafe managed security configuration was accepted")
+			}
+		})
+	}
+}
+
+func TestConfigureManagedExecutionSecurityRequiresBothCoreCredentialSources(t *testing.T) {
+	for name, sources := range map[string]struct {
+		authority   executorgateway.ManagedLarkEgressAuthoritySource
+		credentials executorgateway.ManagedLarkProcessCredentialSource
+	}{
+		"missing authority":                 {credentials: staticManagedProcessCredentialSource{}},
+		"missing process credential source": {authority: testManagedCredentialAuthority(t)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			configuration, _ := validManagedBackendConfiguration(t, true)
+			getenv := func(name string) string { return configuration[name] }
+			backend, client, err := configureTAEBackend(getenv, gatewayServeInsecureDevelopment, "", "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if client != nil {
+				defer client.CloseIdleConnections()
+			}
+			if _, _, err := configureManagedExecutionSecurity(
+				getenv, gatewayServeInsecureDevelopment, backend, client, sources.authority, sources.credentials,
+			); err == nil {
+				t.Fatal("managed execution accepted a missing Core credential source")
 			}
 		})
 	}
@@ -186,6 +254,7 @@ func validManagedBackendConfiguration(t *testing.T, includeEgress bool) (map[str
 		gatewaySandboxFencerIssuerEnvironment:     "executor-gateway/lifecycle",
 		gatewaySandboxFencerKeyIDEnvironment:      "sandbox-fencer-key-1",
 		gatewaySandboxFencerKeyEnvironment:        fencerKey,
+		gatewayManagedTAEPSMEnvironment:           "bytedance.sandbox.agentserver",
 	}
 	if includeEgress {
 		configuration[gatewayEgressPlaceholderIssuerEnvironment] = "executor-gateway/egress"
@@ -195,10 +264,28 @@ func validManagedBackendConfiguration(t *testing.T, includeEgress bool) (map[str
 	return configuration, egressPublicKey
 }
 
+type staticManagedProcessCredentialSource struct {
+	credential executorgateway.ManagedLarkProcessCredential
+}
+
+func (source staticManagedProcessCredentialSource) ResolveManagedLarkProcessCredential(
+	_ context.Context,
+	_ executorgateway.ManagedProcessEnvironmentRequest,
+	_ string,
+	_ executorgateway.ManagedLarkEgressAuthority,
+) (executorgateway.ManagedLarkProcessCredential, error) {
+	return source.credential, nil
+}
+
 func testManagedCredentialAuthority(t *testing.T) executorgateway.ManagedLarkEgressAuthoritySource {
+	return testManagedCredentialAuthorityForMode(t, managedcredential.ModeWebhookSwap)
+}
+
+func testManagedCredentialAuthorityForMode(t *testing.T, mode string) executorgateway.ManagedLarkEgressAuthoritySource {
 	t.Helper()
 	authority, err := executorgateway.NewFrozenManagedLarkEgressAuthoritySource(executorgateway.ManagedLarkEgressAuthority{
-		BindingID: "90000000-0000-4000-8000-000000000009", AuthorityVersion: 9,
+		CredentialMode: mode,
+		BindingID:      "90000000-0000-4000-8000-000000000009", AuthorityVersion: 9,
 		CredentialVersion: 1, PolicySHA256: strings.Repeat("a", 64),
 	})
 	if err != nil {

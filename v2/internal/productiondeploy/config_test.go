@@ -63,6 +63,12 @@ func TestParseConfigRejectsUnknownDuplicateAndSecretFields(t *testing.T) {
 	if _, err := ParseConfig([]byte(withPullSecret)); err == nil {
 		t.Fatal("public SG registry config accepted an image pull credential")
 	}
+	withGlobalCredentialMode := strings.Replace(
+		string(raw), `"lark":{`, `"lark":{"credentialMode":"process_env",`, 1,
+	)
+	if _, err := ParseConfig([]byte(withGlobalCredentialMode)); err == nil {
+		t.Fatal("production config accepted a deployment-wide managed Lark credential mode")
+	}
 	if _, err := ParseConfig([]byte(`{"version":1,"version":1}`)); err == nil || !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("duplicate-key error = %v", err)
 	}
@@ -425,11 +431,10 @@ func validConfigDocument() ConfigDocument {
 			HydraHostname:    ProductionHydraHostname,
 		},
 		Bootstrap: BootstrapDocument{
-			WorkspaceID:         "40000000-0000-4000-8000-000000000004",
-			SessionID:           "50000000-0000-4000-8000-000000000005",
-			OwnerUserID:         "10000000-0000-4000-8000-000000000001",
-			ExternalOIDCSubject: "production-owner",
-			ExecutorID:          "20000000-0000-4000-8000-000000000002",
+			WorkspaceID: "40000000-0000-4000-8000-000000000004",
+			SessionID:   "50000000-0000-4000-8000-000000000005",
+			OwnerUserID: "10000000-0000-4000-8000-000000000001",
+			ExecutorID:  "20000000-0000-4000-8000-000000000002",
 		},
 		TrustDomain: ProductionTrustDomain,
 		OAuth: OAuthDocument{
@@ -440,7 +445,6 @@ func validConfigDocument() ConfigDocument {
 				PlatformClientID: "agentserver-platform", BrowserClientID: "agentserver-browser",
 			},
 			ExternalOIDC: ExternalOIDCDocument{
-				Issuer: "https://idp.example.test/oidc", ClientID: "agentserver-production",
 				RedirectURL: "https://auth-sg.byted.bps.dev/auth/oidc/callback",
 			},
 		},
@@ -484,7 +488,8 @@ func validConfigDocument() ConfigDocument {
 				},
 			},
 			Lark: ManagedLarkDocument{
-				Enabled: true, CLISHA256: productionimage.ManagedLarkCLISHA256,
+				Enabled:     true,
+				CLISHA256:   productionimage.ManagedLarkCLISHA256,
 				SkillSHA256: digest("8"), PolicySHA256: larkegresspolicy.SHA256Hex(),
 			},
 		},

@@ -347,7 +347,7 @@ func TestPostgreSQLMigration0002RejectsAmbiguousDevelopmentEvents(t *testing.T) 
 	workspaceID := "71000000-0000-0000-0000-000000000001"
 	sessionID := "72000000-0000-0000-0000-000000000001"
 	runID := "73000000-0000-0000-0000-000000000001"
-	if _, err := connection.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.workspaces (id, status) VALUES ($1, 'active')", quotedSchema), workspaceID); err != nil {
+	if _, err := connection.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.workspaces (id, status, managed_lark_credential_mode) VALUES ($1, 'active', 'webhook_swap')", quotedSchema), workspaceID); err != nil {
 		connection.Close(context.Background())
 		t.Fatal(err)
 	}
@@ -894,7 +894,7 @@ func assertKernelConstraints(t *testing.T, connection *pgx.Conn, schema string) 
 	runID := "30000000-0000-0000-0000-000000000001"
 	actorID := "40000000-0000-0000-0000-000000000001"
 
-	if _, err := connection.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.workspaces (id, status) VALUES ($1, 'active'), ($2, 'active')", quotedSchema), workspaceID, secondWorkspaceID); err != nil {
+	if _, err := connection.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.workspaces (id, status, managed_lark_credential_mode) VALUES ($1, 'active', 'webhook_swap'), ($2, 'active', 'webhook_swap')", quotedSchema), workspaceID, secondWorkspaceID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := connection.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.users (id, status) VALUES ($1, 'active')", quotedSchema), actorID); err != nil {

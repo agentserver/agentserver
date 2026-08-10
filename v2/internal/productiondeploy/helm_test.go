@@ -13,7 +13,11 @@ import (
 
 func TestRenderHelmChartLocksNamespaceHooksAndValues(t *testing.T) {
 	document := validConfigDocument()
-	document.Bootstrap.ExternalOIDCSubject = `{{ fail "template injection" }}`
+	document.Managed.TAE.Policy.EvidenceRef = `{{ fail "template injection" }}`
+	document.Managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(document.Managed.TAE).DigestHex()
+	document.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(document)
+	document.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(document, document.Managed)
+	document.Managed.Environment.PackSetSHA256 = managedPackSetDigest(document.Managed)
 	loaded, err := ValidateConfig(document)
 	if err != nil {
 		t.Fatal(err)
@@ -73,7 +77,7 @@ func TestRenderHelmChartLocksNamespaceHooksAndValues(t *testing.T) {
 			t.Fatalf("template %s evaluates rendered deployment content as Helm source", templateName)
 		}
 	}
-	if !bytes.Contains(mustHelmFile(t, first, helmFoundationManifestFile), []byte("template injection")) {
+	if !bytes.Contains(mustHelmFile(t, first, helmRuntimeManifestFile), []byte("template injection")) {
 		t.Fatal("test fixture did not reach the static manifest")
 	}
 	var valuesSchema map[string]any

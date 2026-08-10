@@ -29,13 +29,14 @@ func WorkspaceMemberPath(workspaceID, userID string) string {
 }
 
 type WorkspaceState struct {
-	WorkspaceID     string    `json:"workspaceId"`
-	Name            string    `json:"name"`
-	Status          string    `json:"status"`
-	CurrentUserRole string    `json:"currentUserRole"`
-	Version         int64     `json:"version"`
-	CreatedAt       time.Time `json:"createdAt"`
-	UpdatedAt       time.Time `json:"updatedAt"`
+	WorkspaceID               string    `json:"workspaceId"`
+	Name                      string    `json:"name"`
+	Status                    string    `json:"status"`
+	CurrentUserRole           string    `json:"currentUserRole"`
+	ManagedLarkCredentialMode string    `json:"managedLarkCredentialMode"`
+	Version                   int64     `json:"version"`
+	CreatedAt                 time.Time `json:"createdAt"`
+	UpdatedAt                 time.Time `json:"updatedAt"`
 }
 
 type ListWorkspacesResponse struct {
@@ -43,8 +44,9 @@ type ListWorkspacesResponse struct {
 }
 
 type CreateWorkspaceRequest struct {
-	WorkspaceID string `json:"workspaceId"`
-	Name        string `json:"name"`
+	WorkspaceID               string `json:"workspaceId"`
+	Name                      string `json:"name"`
+	ManagedLarkCredentialMode string `json:"managedLarkCredentialMode"`
 }
 
 type CreateWorkspaceResponse struct {
@@ -53,8 +55,9 @@ type CreateWorkspaceResponse struct {
 }
 
 type UpdateWorkspaceRequest struct {
-	Name            string `json:"name"`
-	ExpectedVersion int64  `json:"expectedVersion"`
+	Name                      string `json:"name"`
+	ManagedLarkCredentialMode string `json:"managedLarkCredentialMode"`
+	ExpectedVersion           int64  `json:"expectedVersion"`
 }
 
 type UpdateWorkspaceResponse struct {

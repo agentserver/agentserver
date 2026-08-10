@@ -154,6 +154,8 @@ func renderBootstrapJob(context renderContext) kubeObject {
 		volumes,
 		mounts,
 		map[string]string{"agentserver.dev/bootstrap-sha256": context.bootstrapHash},
+		secretEnvironment("AGENTSERVER_V2_EXTERNAL_OIDC_ISSUER", context.config.Document.Secrets.Core, "external-oidc-issuer"),
+		secretEnvironment("AGENTSERVER_V2_EXTERNAL_OIDC_SUBJECT", context.config.Document.Secrets.Core, "external-oidc-subject"),
 	)
 }
 
@@ -180,6 +182,7 @@ func renderOneShotJob(
 	command, args []any,
 	extraVolumes, extraMounts []any,
 	annotations map[string]string,
+	extraEnv ...any,
 ) kubeObject {
 	config := context.config
 	labels := componentLabels(component)
@@ -216,7 +219,7 @@ func renderOneShotJob(
 					"containers": []any{kubeObject{
 						"name": component, "image": config.Document.Images.Service,
 						"command": command, "args": args,
-						"env":             []any{secretEnvironment("AGENTSERVER_V2_DATABASE_URL", config.Document.Secrets.Core, "database-url")},
+						"env":             append([]any{secretEnvironment("AGENTSERVER_V2_DATABASE_URL", config.Document.Secrets.Core, "database-url")}, extraEnv...),
 						"resources":       resources(config.Document.Resources.Core),
 						"securityContext": runtimeSecurityContext(ServiceUID, ServiceGID),
 						"volumeMounts":    mounts,

@@ -81,16 +81,19 @@ func renderRuntime(context renderContext) ([]kubeObject, error) {
 		if err != nil {
 			return nil, err
 		}
-		egress, err := renderEgressAuthorizerDeployment(context)
-		if err != nil {
-			return nil, err
-		}
 		items = append(items,
-			sandbox, egress,
+			sandbox,
 			podDisruptionBudget(config, sandboxComponent, config.Document.Replicas.SandboxGateway),
-			podDisruptionBudget(config, egressComponent, config.Document.Replicas.EgressAuthorizer),
 		)
-	} else if managedPolicyBootstrap(config.Document.Managed) {
+		if managedEgressAuthorizerEnabled(config.Document.Managed) {
+			egress, err := renderEgressAuthorizerDeployment(context)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, egress,
+				podDisruptionBudget(config, egressComponent, config.Document.Replicas.EgressAuthorizer))
+		}
+	} else if managedEgressAuthorizerEnabled(config.Document.Managed) {
 		egress, err := renderEgressAuthorizerDeployment(context)
 		if err != nil {
 			return nil, err
@@ -252,8 +255,8 @@ func renderCoreDeployment(context renderContext) (kubeObject, error) {
 		valueEnvironment("AGENTSERVER_V2_HYDRA_BROWSER_CLIENT_ID", document.OAuth.Hydra.BrowserClientID),
 		valueEnvironment("AGENTSERVER_V2_HYDRA_CA_FILE", serviceMaterialPath("ca.crt")),
 		valueEnvironment("AGENTSERVER_V2_HYDRA_SERVER_NAME", HydraInternalHost),
-		valueEnvironment("AGENTSERVER_V2_EXTERNAL_OIDC_ISSUER", document.OAuth.ExternalOIDC.Issuer),
-		valueEnvironment("AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_ID", document.OAuth.ExternalOIDC.ClientID),
+		secretEnvironment("AGENTSERVER_V2_EXTERNAL_OIDC_ISSUER", document.Secrets.Core, "external-oidc-issuer"),
+		secretEnvironment("AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_ID", document.Secrets.Core, "external-oidc-client-id"),
 		secretEnvironment("AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_SECRET", document.Secrets.Core, "external-oidc-client-secret"),
 		valueEnvironment("AGENTSERVER_V2_EXTERNAL_OIDC_REDIRECT_URL", document.OAuth.ExternalOIDC.RedirectURL),
 		secretEnvironment("AGENTSERVER_V2_LOGIN_TRANSACTION_KEY", document.Secrets.Core, "login-transaction-key"),
@@ -277,8 +280,9 @@ func renderCoreDeployment(context renderContext) (kubeObject, error) {
 	if managedExecutionActive(document.Managed) {
 		environment = append(environment,
 			valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_SPIFFE_ID", spiffeIdentity(config, sandboxComponent)),
-			valueEnvironment("AGENTSERVER_V2_EGRESS_AUTHORIZER_SPIFFE_ID", spiffeIdentity(config, egressComponent)),
 			valueEnvironment("AGENTSERVER_V2_CREDENTIAL_SEALING_KEYRING_FILE", serviceMaterialPath("credential-sealing-keyring.json")),
+			valueEnvironment("AGENTSERVER_V2_MANAGED_TAE_PSM", document.Managed.TAE.PSM),
+			valueEnvironment("AGENTSERVER_V2_EGRESS_AUTHORIZER_SPIFFE_ID", spiffeIdentity(config, egressComponent)),
 			valueEnvironment("AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEYRING_FILE", serviceMaterialPath("egress-placeholder-keyring.json")),
 		)
 	}
@@ -422,6 +426,7 @@ func renderExecutorDeployment(context renderContext) (kubeObject, error) {
 			valueEnvironment("AGENTSERVER_V2_SANDBOX_FENCER_CAPABILITY_ISSUER", issuer),
 			valueEnvironment("AGENTSERVER_V2_SANDBOX_FENCER_CAPABILITY_KEY_ID", ProductionSandboxFencerKeyID),
 			valueEnvironment("AGENTSERVER_V2_SANDBOX_FENCER_CAPABILITY_SIGNING_KEY_FILE", serviceMaterialPath("sandbox-fencer-capability.key")),
+			valueEnvironment("AGENTSERVER_V2_MANAGED_TAE_PSM", document.Managed.TAE.PSM),
 			valueEnvironment("AGENTSERVER_V2_EGRESS_PLACEHOLDER_ISSUER", issuer),
 			valueEnvironment("AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEY_ID", ProductionEgressPlaceholderKeyID),
 			valueEnvironment("AGENTSERVER_V2_EGRESS_PLACEHOLDER_SIGNING_KEY_FILE", serviceMaterialPath("egress-placeholder.key")),
@@ -633,8 +638,6 @@ func managedTAEPolicyEnvironment(tae ManagedTAEDocument) []any {
 		valueEnvironment("AGENTSERVER_V2_TAE_POLICY_HOST", policy.PublicHost),
 		valueEnvironment("AGENTSERVER_V2_TAE_POLICY_ACCESS", policy.PublicAccess),
 		valueEnvironment("AGENTSERVER_V2_TAE_POLICY_WEBHOOK_REQUIRED", strconv.FormatBool(policy.PublicWebhookRequired)),
-		valueEnvironment("AGENTSERVER_V2_TAE_WEBHOOK_MODE", policy.WebhookMode),
-		valueEnvironment("AGENTSERVER_V2_TAE_WEBHOOK_PATH", policy.WebhookPath),
 		valueEnvironment("AGENTSERVER_V2_TAE_POLICY_PUBLISHED", strconv.FormatBool(policy.Published)),
 		valueEnvironment("AGENTSERVER_V2_TAE_POLICY_APPROVED", strconv.FormatBool(policy.Approved)),
 		valueEnvironment("AGENTSERVER_V2_TAE_POLICY_EVIDENCE_REF", policy.EvidenceRef),
@@ -642,10 +645,16 @@ func managedTAEPolicyEnvironment(tae ManagedTAEDocument) []any {
 		valueEnvironment("AGENTSERVER_V2_TAE_NETWORK_REPORT_SHA256", tae.NetworkEvidence.ReportSHA256),
 		valueEnvironment("AGENTSERVER_V2_TAE_NETWORK_EVIDENCE_REF", tae.NetworkEvidence.EvidenceRef),
 	}
-	if policy.WebhookMode == "psm" {
-		environment = append(environment, valueEnvironment("AGENTSERVER_V2_TAE_WEBHOOK_PSM", policy.WebhookPSM))
-	} else {
-		environment = append(environment, valueEnvironment("AGENTSERVER_V2_TAE_WEBHOOK_URL", policy.WebhookURL))
+	if policy.PublicWebhookRequired {
+		environment = append(environment,
+			valueEnvironment("AGENTSERVER_V2_TAE_WEBHOOK_MODE", policy.WebhookMode),
+			valueEnvironment("AGENTSERVER_V2_TAE_WEBHOOK_PATH", policy.WebhookPath),
+		)
+		if policy.WebhookMode == "psm" {
+			environment = append(environment, valueEnvironment("AGENTSERVER_V2_TAE_WEBHOOK_PSM", policy.WebhookPSM))
+		} else {
+			environment = append(environment, valueEnvironment("AGENTSERVER_V2_TAE_WEBHOOK_URL", policy.WebhookURL))
+		}
 	}
 	return environment
 }

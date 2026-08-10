@@ -116,6 +116,10 @@ func AudienceForProvider(kind string) string {
 	return AudienceCredentialPrefix + kind
 }
 
+func IsPlaceholderToken(token string) bool {
+	return strings.HasPrefix(token, tokenPrefix+".")
+}
+
 func validProviderKind(kind string) bool {
 	if kind == "" || len(kind) > 128 {
 		return false

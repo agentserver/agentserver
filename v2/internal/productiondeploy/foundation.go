@@ -60,17 +60,21 @@ func renderFoundation(context renderContext) []kubeObject {
 	if managedExecutionActive(config.Document.Managed) {
 		managedItems := []kubeObject{
 			serviceAccountResource(config, sandboxComponent),
-			serviceAccountResource(config, egressComponent),
 			configMapResource(config, context.managedEnvironmentConfigName, map[string]string{
 				"managed-environment.json": string(context.managedEnvironmentJSON),
 			}),
 			internalService(config, sandboxComponent, config.Document.Services.SandboxGateway),
-			internalService(config, egressComponent, config.Document.Services.EgressAuthorizer),
-			egressAuthorizerHTTPRoute(config),
-			egressAuthorizerBackendTLSPolicy(config),
+		}
+		if managedEgressAuthorizerEnabled(config.Document.Managed) {
+			managedItems = append(managedItems,
+				serviceAccountResource(config, egressComponent),
+				internalService(config, egressComponent, config.Document.Services.EgressAuthorizer),
+				egressAuthorizerHTTPRoute(config),
+				egressAuthorizerBackendTLSPolicy(config),
+			)
 		}
 		items = append(items, managedItems...)
-	} else if managedPolicyBootstrap(config.Document.Managed) {
+	} else if managedEgressAuthorizerEnabled(config.Document.Managed) {
 		items = append(items,
 			serviceAccountResource(config, egressComponent),
 			internalService(config, egressComponent, config.Document.Services.EgressAuthorizer),

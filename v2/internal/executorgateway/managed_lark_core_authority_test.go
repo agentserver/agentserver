@@ -9,6 +9,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
+	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
 func TestCoreManagedLarkAuthorityUsesInjectedAuthorizationClock(t *testing.T) {
@@ -30,7 +31,8 @@ func TestCoreManagedLarkAuthorityUsesInjectedAuthorizationClock(t *testing.T) {
 				response.Header().Set("Content-Type", "application/json")
 				response.Header().Set("Cache-Control", "no-store")
 				_ = json.NewEncoder(response).Encode(corecontract.ResolveEgressCredentialAuthorityResponse{
-					ProviderKind: "lark", BindingID: "90000000-0000-4000-8000-000000000009",
+					CredentialMode: managedcredential.ModeWebhookSwap,
+					ProviderKind:   "lark", BindingID: "90000000-0000-4000-8000-000000000009",
 					AuthorityVersion: 7, CredentialVersion: 11,
 					PolicySHA256: larkegresspolicy.SHA256Hex(), AuthorizedAt: test.authorizedAt,
 				})

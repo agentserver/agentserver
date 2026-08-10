@@ -18,6 +18,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/egresscapability"
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
+	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 	"github.com/agentserver/agentserver/v2/internal/sandboxcontract"
 	"github.com/agentserver/agentserver/v2/internal/sandboxgateway"
 	"github.com/agentserver/agentserver/v2/internal/sandboxgateway/fakeprovider"
@@ -99,7 +100,8 @@ func TestManagedShellLarkCLIThroughTAEHTTPAndSandboxGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	authorities, err := NewFrozenManagedLarkEgressAuthoritySource(ManagedLarkEgressAuthority{
-		BindingID: "90000000-0000-4000-8000-000000000009", AuthorityVersion: 11, CredentialVersion: 13,
+		CredentialMode: managedcredential.ModeWebhookSwap,
+		BindingID:      "90000000-0000-4000-8000-000000000009", AuthorityVersion: 11, CredentialVersion: 13,
 		PolicySHA256: strings.Repeat("a", 64),
 	})
 	if err != nil {

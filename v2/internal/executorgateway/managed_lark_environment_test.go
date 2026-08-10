@@ -8,6 +8,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/egresscapability"
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
+	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
 func TestSignedManagedLarkEnvironmentIssuerBindsExactOperation(t *testing.T) {
@@ -20,7 +21,8 @@ func TestSignedManagedLarkEnvironmentIssuerBindsExactOperation(t *testing.T) {
 		t.Fatal(err)
 	}
 	authorities, err := NewFrozenManagedLarkEgressAuthoritySource(ManagedLarkEgressAuthority{
-		BindingID: "90000000-0000-4000-8000-000000000009", AuthorityVersion: 7, CredentialVersion: 11,
+		CredentialMode: managedcredential.ModeWebhookSwap,
+		BindingID:      "90000000-0000-4000-8000-000000000009", AuthorityVersion: 7, CredentialVersion: 11,
 		PolicySHA256: strings.Repeat("a", 64),
 	})
 	if err != nil {
@@ -79,7 +81,8 @@ func TestSignedManagedLarkEnvironmentIssuerWithholdsPlaceholderFromOtherCommands
 		t.Fatal(err)
 	}
 	authorities, err := NewFrozenManagedLarkEgressAuthoritySource(ManagedLarkEgressAuthority{
-		BindingID: "90000000-0000-4000-8000-000000000009", AuthorityVersion: 1, CredentialVersion: 1,
+		CredentialMode: managedcredential.ModeWebhookSwap,
+		BindingID:      "90000000-0000-4000-8000-000000000009", AuthorityVersion: 1, CredentialVersion: 1,
 		PolicySHA256: strings.Repeat("b", 64),
 	})
 	if err != nil {

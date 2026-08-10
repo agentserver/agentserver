@@ -148,7 +148,7 @@ LIMIT 256`, s.table("workspace_credential_bindings"))
 // corecredentials. It deliberately returns only versioned binding identity.
 func (s *StateStore) AuthorizeCredentialUse(ctx context.Context, request corecredentials.UseRequest) (corecredentials.BindingReference, error) {
 	const operation = "AuthorizeCredentialUse"
-	if err := request.Validate(); err != nil {
+	if err := request.ValidateLiveAuthorityScope(); err != nil {
 		return corecredentials.BindingReference{}, commandError(ErrorInvalidArgument, operation, "credential_use", request.OperationID, err.Error())
 	}
 	if err := validateUUIDFieldsForCredentialUse(request); err != nil {
@@ -164,6 +164,7 @@ FROM authority_time
 JOIN %s AS workspace
   ON workspace.id = $1
  AND workspace.status = 'active'
+ AND workspace.managed_lark_credential_mode = $16
 JOIN %s AS member
   ON member.workspace_id = workspace.id
  AND member.user_id = $3
@@ -243,6 +244,7 @@ JOIN %s AS binding
  AND binding.kind = $12
  AND binding.id = $13
  AND binding.authority_version = $14
+ AND ($17 = 0 OR binding.credential_version = $17)
  AND binding.status = 'active'
  AND (binding.owner_scope = 'workspace' OR binding.owner_user_id = member.user_id)
 LIMIT 1`,
@@ -256,6 +258,7 @@ LIMIT 1`,
 			request.RunID, request.RunAttemptID, request.RunAttemptGeneration,
 			request.ExecutionID, request.OperationID, request.SandboxID, request.TargetGeneration,
 			request.ProviderKind, request.BindingID, request.AuthorityVersion, request.TAEPSM,
+			request.CredentialMode, request.ExpectedCredentialVersion,
 		).Scan(&authorityVersion, &credentialVersion)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return corecredentials.BindingReference{}, commandError(ErrorForbidden, operation, "credential_use", request.OperationID, "live operation authority is not active")
@@ -266,6 +269,7 @@ LIMIT 1`,
 		return corecredentials.BindingReference{
 			WorkspaceID: request.WorkspaceID, Kind: request.ProviderKind, BindingID: request.BindingID,
 			AuthorityVersion: authorityVersion, CredentialVersion: credentialVersion,
+			CredentialMode: request.CredentialMode,
 		}, nil
 	})
 }
@@ -289,7 +293,8 @@ WITH authority_time AS MATERIALIZED (
 )
 SELECT COALESCE(binding.id::text, ''),
        COALESCE(binding.authority_version, 0),
-       COALESCE(binding.credential_version, 0)
+       COALESCE(binding.credential_version, 0),
+       workspace.managed_lark_credential_mode
 FROM authority_time
 JOIN %s AS workspace
   ON workspace.id = $1
@@ -378,14 +383,14 @@ LIMIT 1`, s.table("workspaces"), s.table("workspace_members"), s.table("users"),
 			s.table("runs"), s.table("run_attempts"), s.table("session_leases"), s.table("attempt_leases"),
 			s.table("executions"), s.table("execution_operations"), s.table("managed_sandboxes"),
 			s.table("managed_sandbox_activities"), s.table("workspace_credential_bindings"))
-		var bindingID string
+		var bindingID, credentialMode string
 		var authorityVersion, credentialVersion int64
 		err := transaction.QueryRow(ctx, query,
 			request.WorkspaceID, request.SessionID, request.ActorID, request.EnvironmentID,
 			request.RunID, request.RunAttemptID, request.RunAttemptGeneration,
 			request.ExecutionID, request.OperationID, request.SandboxID, request.TargetGeneration,
 			request.ProviderKind,
-		).Scan(&bindingID, &authorityVersion, &credentialVersion)
+		).Scan(&bindingID, &authorityVersion, &credentialVersion, &credentialMode)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return corecredentials.BindingReference{}, commandError(ErrorForbidden, operation, "credential_use", request.OperationID, "live operation authority is not active")
 		}
@@ -393,7 +398,8 @@ LIMIT 1`, s.table("workspaces"), s.table("workspace_members"), s.table("users"),
 			return corecredentials.BindingReference{}, databaseError(operation+" query", err)
 		}
 		return corecredentials.BindingReference{WorkspaceID: request.WorkspaceID, Kind: request.ProviderKind,
-			BindingID: bindingID, AuthorityVersion: authorityVersion, CredentialVersion: credentialVersion}, nil
+			BindingID: bindingID, AuthorityVersion: authorityVersion, CredentialVersion: credentialVersion,
+			CredentialMode: credentialMode}, nil
 	})
 }
 

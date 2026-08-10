@@ -659,12 +659,13 @@
       "UUID": {"type": "string", "format": "uuid", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "not": {"const": "00000000-0000-0000-0000-000000000000"}},
       "WorkspaceState": {
         "type": "object", "additionalProperties": false,
-        "required": ["workspaceId", "name", "status", "currentUserRole", "version", "createdAt", "updatedAt"],
+        "required": ["workspaceId", "name", "status", "currentUserRole", "managedLarkCredentialMode", "version", "createdAt", "updatedAt"],
         "properties": {
           "workspaceId": {"$ref": "#/components/schemas/UUID"},
           "name": {"type": "string", "minLength": 1, "maxLength": 256},
           "status": {"enum": ["active", "suspended", "archived"]},
           "currentUserRole": {"enum": ["owner", "developer", "viewer"]},
+          "managedLarkCredentialMode": {"enum": ["webhook_swap", "process_env"]},
           "version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
           "createdAt": {"type": "string", "format": "date-time"},
           "updatedAt": {"type": "string", "format": "date-time"}
@@ -780,16 +781,24 @@
         "properties": {"binding": {"$ref": "#/components/schemas/WorkspaceCredentialMetadata"}, "changed": {"type": "boolean"}}
       },
       "CreateWorkspaceRequest": {
-        "type": "object", "additionalProperties": false, "required": ["workspaceId", "name"],
-        "properties": {"workspaceId": {"$ref": "#/components/schemas/UUID"}, "name": {"type": "string", "minLength": 1, "maxLength": 256}}
+        "type": "object", "additionalProperties": false, "required": ["workspaceId", "name", "managedLarkCredentialMode"],
+        "properties": {
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "name": {"type": "string", "minLength": 1, "maxLength": 256},
+          "managedLarkCredentialMode": {"enum": ["webhook_swap", "process_env"]}
+        }
       },
       "CreateWorkspaceResponse": {
         "type": "object", "additionalProperties": false, "required": ["workspace", "created"],
         "properties": {"workspace": {"$ref": "#/components/schemas/WorkspaceState"}, "created": {"type": "boolean"}}
       },
       "UpdateWorkspaceRequest": {
-        "type": "object", "additionalProperties": false, "required": ["name", "expectedVersion"],
-        "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 256}, "expectedVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}}
+        "type": "object", "additionalProperties": false, "required": ["name", "managedLarkCredentialMode", "expectedVersion"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "maxLength": 256},
+          "managedLarkCredentialMode": {"enum": ["webhook_swap", "process_env"]},
+          "expectedVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+        }
       },
       "UpdateWorkspaceResponse": {
         "type": "object", "additionalProperties": false, "required": ["workspace", "changed"],

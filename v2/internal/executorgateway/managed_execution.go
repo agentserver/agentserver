@@ -7,6 +7,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 	"github.com/agentserver/agentserver/v2/internal/executorgateway/agentxconn"
+	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
 const (
@@ -18,6 +19,7 @@ const (
 	ManagedLarkUserAccessTokenEnvironment  = "LARKSUITE_CLI_USER_ACCESS_TOKEN"
 	ManagedLarkNoUpdateNotifierEnvironment = "LARKSUITE_CLI_NO_UPDATE_NOTIFIER"
 	ManagedLarkNoSkillsNotifierEnvironment = "LARKSUITE_CLI_NO_SKILLS_NOTIFIER"
+	ManagedLarkAgentTraceEnvironment       = managedcredential.LarkAgentTraceEnvironment
 	// The TAE process API accepts an executable name. PATH is therefore a
 	// reserved, non-secret projection so the name resolves to the immutable
 	// image artifact instead of a workspace-provided binary.
@@ -26,9 +28,11 @@ const (
 )
 
 // ManagedProcessEnvironmentIssuer returns operation-scoped reserved process
-// values. Returned values must be short-lived placeholders rather than real
-// third-party credentials. The execution gateway injects them after the
-// model-controlled environment has been validated and rejects collisions.
+// values. The target workspace's current credential mode determines whether the
+// Lark token value is a short-lived egress placeholder or a real credential
+// resolved immediately before process_start. The execution gateway injects
+// values after the model-controlled environment has been validated and
+// rejects collisions.
 type ManagedProcessEnvironmentIssuer interface {
 	IssueManagedProcessEnvironment(context.Context, ManagedProcessEnvironmentRequest) (map[string]string, error)
 }

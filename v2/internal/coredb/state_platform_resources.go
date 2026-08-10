@@ -9,6 +9,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -23,19 +24,21 @@ const (
 )
 
 type PlatformWorkspace struct {
-	ID        string
-	Name      string
-	Status    string
-	Role      string
-	Version   int64
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID                        string
+	Name                      string
+	Status                    string
+	Role                      string
+	ManagedLarkCredentialMode string
+	Version                   int64
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
 }
 
 type CreatePlatformWorkspaceCommand struct {
-	WorkspaceID string
-	ActorID     string
-	Name        string
+	WorkspaceID               string
+	ActorID                   string
+	Name                      string
+	ManagedLarkCredentialMode string
 }
 
 type CreatePlatformWorkspaceResult struct {
@@ -44,10 +47,12 @@ type CreatePlatformWorkspaceResult struct {
 }
 
 type UpdatePlatformWorkspaceCommand struct {
-	WorkspaceID     string
-	ActorID         string
-	Name            string
-	ExpectedVersion int64
+	WorkspaceID               string
+	ActorID                   string
+	Name                      string
+	ManagedLarkCredentialMode string
+	ExpectedVersion           int64
+	AuditEventID              string
 }
 
 type UpdatePlatformWorkspaceResult struct {
@@ -129,6 +134,7 @@ func (s *StateStore) ListPlatformWorkspaces(ctx context.Context, actorID string)
 	return withStateReadTransaction(ctx, s, operation, func(transaction pgx.Tx) ([]PlatformWorkspace, error) {
 		query := fmt.Sprintf(`
 SELECT workspace.id::text, workspace.name, workspace.status, member.role,
+       workspace.managed_lark_credential_mode,
        workspace.version, workspace.created_at, workspace.updated_at
 FROM %s AS workspace
 JOIN %s AS member
@@ -176,6 +182,9 @@ func (s *StateStore) CreatePlatformWorkspace(ctx context.Context, command Create
 	if err := validateWorkspaceName(command.Name); err != nil {
 		return CreatePlatformWorkspaceResult{}, commandError(ErrorInvalidArgument, operation, "workspace", command.WorkspaceID, err.Error())
 	}
+	if !managedcredential.ValidMode(command.ManagedLarkCredentialMode) {
+		return CreatePlatformWorkspaceResult{}, commandError(ErrorInvalidArgument, operation, "workspace", command.WorkspaceID, "managed_lark_credential_mode must be webhook_swap or process_env")
+	}
 	return withStateTransaction(ctx, s, operation, func(transaction pgx.Tx) (CreatePlatformWorkspaceResult, error) {
 		userQuery := fmt.Sprintf("SELECT 1 FROM %s WHERE id = $1 AND status = 'active' FOR SHARE", s.table("users"))
 		var present int
@@ -185,10 +194,10 @@ func (s *StateStore) CreatePlatformWorkspace(ctx context.Context, command Create
 			return CreatePlatformWorkspaceResult{}, databaseError(operation+" read actor", err)
 		}
 		insert := fmt.Sprintf(`
-INSERT INTO %s (id, name, status)
-VALUES ($1, $2, 'active')
+INSERT INTO %s (id, name, status, managed_lark_credential_mode)
+VALUES ($1, $2, 'active', $3)
 ON CONFLICT (id) DO NOTHING`, s.table("workspaces"))
-		tag, err := transaction.Exec(ctx, insert, command.WorkspaceID, command.Name)
+		tag, err := transaction.Exec(ctx, insert, command.WorkspaceID, command.Name, command.ManagedLarkCredentialMode)
 		if err != nil {
 			return CreatePlatformWorkspaceResult{}, databaseError(operation+" insert workspace", err)
 		}
@@ -205,7 +214,8 @@ VALUES ($1, $2, 'owner')`, s.table("workspace_members"))
 		if err != nil {
 			return CreatePlatformWorkspaceResult{}, err
 		}
-		if workspace.Name != command.Name || workspace.Status != WorkspaceStatusActive || workspace.Role != WorkspaceRoleOwner {
+		if workspace.Name != command.Name || workspace.Status != WorkspaceStatusActive || workspace.Role != WorkspaceRoleOwner ||
+			workspace.ManagedLarkCredentialMode != command.ManagedLarkCredentialMode {
 			return CreatePlatformWorkspaceResult{}, commandError(ErrorConflict, operation, "workspace", command.WorkspaceID, "workspace identity is already in use by different authority")
 		}
 		return CreatePlatformWorkspaceResult{Workspace: workspace, Created: created}, nil
@@ -220,6 +230,9 @@ func (s *StateStore) UpdatePlatformWorkspace(ctx context.Context, command Update
 	if err := validateWorkspaceName(command.Name); err != nil {
 		return UpdatePlatformWorkspaceResult{}, commandError(ErrorInvalidArgument, operation, "workspace", command.WorkspaceID, err.Error())
 	}
+	if !managedcredential.ValidMode(command.ManagedLarkCredentialMode) {
+		return UpdatePlatformWorkspaceResult{}, commandError(ErrorInvalidArgument, operation, "workspace", command.WorkspaceID, "managed_lark_credential_mode must be webhook_swap or process_env")
+	}
 	if command.ExpectedVersion < 1 {
 		return UpdatePlatformWorkspaceResult{}, commandError(ErrorInvalidArgument, operation, "workspace", command.WorkspaceID, "expected_version must be positive")
 	}
@@ -231,15 +244,33 @@ func (s *StateStore) UpdatePlatformWorkspace(ctx context.Context, command Update
 		if workspace.Version != command.ExpectedVersion {
 			return UpdatePlatformWorkspaceResult{}, versionConflict(operation, "workspace", command.WorkspaceID, workspace.Version)
 		}
-		if workspace.Name == command.Name {
+		if workspace.Name == command.Name && workspace.ManagedLarkCredentialMode == command.ManagedLarkCredentialMode {
 			return UpdatePlatformWorkspaceResult{Workspace: workspace, Changed: false}, nil
+		}
+		modeChanged := workspace.ManagedLarkCredentialMode != command.ManagedLarkCredentialMode
+		if modeChanged {
+			if err := validateUUID("audit_event_id", command.AuditEventID); err != nil {
+				return UpdatePlatformWorkspaceResult{}, commandError(ErrorInvalidArgument, operation, "workspace", command.WorkspaceID, err.Error())
+			}
 		}
 		update := fmt.Sprintf(`
 UPDATE %s
-SET name = $2, version = version + 1, updated_at = pg_catalog.clock_timestamp()
+SET name = $2, managed_lark_credential_mode = $3,
+    version = version + 1, updated_at = pg_catalog.clock_timestamp()
 WHERE id = $1`, s.table("workspaces"))
-		if _, err := transaction.Exec(ctx, update, command.WorkspaceID, command.Name); err != nil {
+		if _, err := transaction.Exec(ctx, update, command.WorkspaceID, command.Name, command.ManagedLarkCredentialMode); err != nil {
 			return UpdatePlatformWorkspaceResult{}, databaseError(operation+" update workspace", err)
+		}
+		if modeChanged {
+			audit := fmt.Sprintf(`
+INSERT INTO %s (
+    event_id, workspace_id, actor_id, previous_mode, current_mode, workspace_version
+)
+VALUES ($1, $2, $3, $4, $5, $6)`, s.table("workspace_managed_credential_mode_events"))
+			if _, err := transaction.Exec(ctx, audit, command.AuditEventID, command.WorkspaceID, command.ActorID,
+				workspace.ManagedLarkCredentialMode, command.ManagedLarkCredentialMode, workspace.Version+1); err != nil {
+				return UpdatePlatformWorkspaceResult{}, databaseError(operation+" audit managed credential mode", err)
+			}
 		}
 		workspace, err = s.readPlatformWorkspace(ctx, transaction, operation, command.WorkspaceID, command.ActorID, false)
 		if err != nil {
@@ -551,6 +582,7 @@ WHERE id = $1`, s.table("executors"))
 func (s *StateStore) readPlatformWorkspace(ctx context.Context, transaction pgx.Tx, operation, workspaceID, actorID string, lock bool) (PlatformWorkspace, error) {
 	query := fmt.Sprintf(`
 SELECT workspace.id::text, workspace.name, workspace.status, member.role,
+       workspace.managed_lark_credential_mode,
        workspace.version, workspace.created_at, workspace.updated_at
 FROM %s AS workspace
 JOIN %s AS member
@@ -635,7 +667,7 @@ type platformRowScanner interface {
 
 func scanPlatformWorkspace(row platformRowScanner) (PlatformWorkspace, error) {
 	var workspace PlatformWorkspace
-	err := row.Scan(&workspace.ID, &workspace.Name, &workspace.Status, &workspace.Role,
+	err := row.Scan(&workspace.ID, &workspace.Name, &workspace.Status, &workspace.Role, &workspace.ManagedLarkCredentialMode,
 		&workspace.Version, &workspace.CreatedAt, &workspace.UpdatedAt)
 	return workspace, err
 }

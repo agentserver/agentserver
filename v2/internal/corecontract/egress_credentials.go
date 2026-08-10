@@ -8,8 +8,10 @@ import "time"
 // one-hop header mutation after it has checked the TAE request and the
 // operation-bound placeholder.
 const (
-	ResolveEgressCredentialAuthorityPath = "/internal/v2/egress/credentials:resolve-authority"
-	ResolveEgressCredentialPath          = "/internal/v2/egress/credentials:resolve"
+	ResolveEgressCredentialAuthorityPath  = "/internal/v2/egress/credentials:resolve-authority"
+	ResolveEgressCredentialPath           = "/internal/v2/egress/credentials:resolve"
+	AuthorizeProcessEnvironmentEgressPath = "/internal/v2/egress/credentials:authorize-process-env"
+	ResolveExecutionLarkCredentialPath    = "/internal/v2/execution/credentials/lark:resolve"
 )
 
 // RecordEgressCredentialAuditPath is kept separate from the legacy
@@ -55,6 +57,7 @@ type ResolveEgressCredentialAuthorityRequest struct {
 }
 
 type ResolveEgressCredentialAuthorityResponse struct {
+	CredentialMode    string    `json:"credentialMode"`
 	ProviderKind      string    `json:"providerKind"`
 	BindingID         string    `json:"bindingId"`
 	AuthorityVersion  int64     `json:"authorityVersion"`
@@ -63,9 +66,61 @@ type ResolveEgressCredentialAuthorityResponse struct {
 	AuthorizedAt      time.Time `json:"authorizedAt"`
 }
 
-// ResolveEgressCredentialResponse is the only credential-bearing response in
-// v2. Headers are a closed-world mutation consumed immediately by
-// egress-authorizer; Core never returns a token field, a refresh token, or a
+// ResolveExecutionLarkCredentialRequest is the narrow process-environment
+// delivery contract used only by executor-gateway. Core rechecks the exact
+// live process_start operation and TAE sandbox authority before returning a
+// real Lark access token. ToolName and Executable close the endpoint to the
+// one supported shell/lark-cli launch shape.
+type ResolveExecutionLarkCredentialRequest struct {
+	Operation         EgressCredentialOperation `json:"operation"`
+	TAEPSM            string                    `json:"taePsm"`
+	PolicySHA256      string                    `json:"policySha256"`
+	ToolName          string                    `json:"toolName"`
+	Executable        string                    `json:"executable"`
+	BindingID         string                    `json:"bindingId"`
+	AuthorityVersion  int64                     `json:"authorityVersion"`
+	CredentialVersion int64                     `json:"credentialVersion"`
+}
+
+type ResolveExecutionLarkCredentialResponse struct {
+	Configured        bool       `json:"configured"`
+	CredentialMode    string     `json:"credentialMode"`
+	AccessToken       string     `json:"accessToken,omitempty"`
+	ProviderKind      string     `json:"providerKind"`
+	BindingID         string     `json:"bindingId,omitempty"`
+	AuthorityVersion  int64      `json:"authorityVersion,omitempty"`
+	CredentialVersion int64      `json:"credentialVersion,omitempty"`
+	PolicySHA256      string     `json:"policySha256"`
+	TAEPSM            string     `json:"taePsm"`
+	ResolvedAt        time.Time  `json:"resolvedAt"`
+	AccessExpiresAt   *time.Time `json:"accessExpiresAt,omitempty"`
+}
+
+// AuthorizeProcessEnvironmentEgressRequest is sent only by the TAE Policy
+// Webhook after it has verified the compact X-Agent-Trace companion proof.
+// Core verifies the proof independently, rechecks the workspace's current
+// process_env setting and live operation, then compares the presented bearer
+// to the current sealed binding before returning a sanitized pass-through
+// mutation.
+type AuthorizeProcessEnvironmentEgressRequest struct {
+	ProcessProof      string                    `json:"processProof"`
+	Operation         EgressCredentialOperation `json:"operation"`
+	ProviderKind      string                    `json:"providerKind"`
+	BindingID         string                    `json:"bindingId"`
+	AuthorityVersion  int64                     `json:"authorityVersion"`
+	CredentialVersion int64                     `json:"credentialVersion"`
+	PolicySHA256      string                    `json:"policySha256"`
+	TAEPSM            string                    `json:"taePsm"`
+	Host              string                    `json:"host"`
+	Path              string                    `json:"path"`
+	Method            string                    `json:"method"`
+	Headers           map[string]string         `json:"headers"`
+}
+
+// ResolveEgressCredentialResponse is the credential-bearing response consumed
+// immediately by egress-authorizer. webhook_swap receives a replacement
+// Authorization; process_env receives a validated pass-through Authorization
+// and sanitized trace. Neither path returns a token field, refresh token, or
 // sealed envelope to a sandbox, harness, or Platform client.
 type ResolveEgressCredentialResponse struct {
 	Headers           map[string]string `json:"headers"`

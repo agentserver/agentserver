@@ -12,7 +12,7 @@ func TestPostgreSQLWorkspaceLLMGatewayUpdateFencesAllActiveGrantsAtomically(t *t
 	developerID := stateTestUUID(220_002)
 	gatewayID := stateTestUUID(220_003)
 	quotedSchema := quoteIdentifier(schema)
-	if _, err := pool.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.workspaces (id, status) VALUES ($1, 'active')", quotedSchema), workspaceID); err != nil {
+	if _, err := pool.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.workspaces (id, status, managed_lark_credential_mode) VALUES ($1, 'active', 'webhook_swap')", quotedSchema), workspaceID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.users (id, status) VALUES ($1, 'active'), ($2, 'active')", quotedSchema), ownerID, developerID); err != nil {

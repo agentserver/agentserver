@@ -257,10 +257,10 @@ export class OAuthAPI {
 }
 
 function validateWorkspace(value: Workspace): Workspace {
-  exactKeys(value, ["workspaceId", "name", "status", "currentUserRole", "version", "createdAt", "updatedAt"], "workspace")
+  exactKeys(value, ["workspaceId", "name", "status", "currentUserRole", "managedLarkCredentialMode", "version", "createdAt", "updatedAt"], "workspace")
   canonicalID("workspace ID", value.workspaceId)
   boundedProtocolText(value.name, 256)
-  if (!["active", "suspended", "archived"].includes(value.status) || !["owner", "developer", "viewer"].includes(value.currentUserRole) || !positiveVersion(value.version) || !validTimestamp(value.createdAt) || !validTimestamp(value.updatedAt)) throw new Error("The workspace response is invalid.")
+  if (!["active", "suspended", "archived"].includes(value.status) || !["owner", "developer", "viewer"].includes(value.currentUserRole) || !["webhook_swap", "process_env"].includes(value.managedLarkCredentialMode) || !positiveVersion(value.version) || !validTimestamp(value.createdAt) || !validTimestamp(value.updatedAt)) throw new Error("The workspace response is invalid.")
   return value
 }
 

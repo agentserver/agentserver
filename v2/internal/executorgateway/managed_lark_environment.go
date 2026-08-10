@@ -9,6 +9,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/egresscapability"
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
+	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
 var (
@@ -17,6 +18,7 @@ var (
 )
 
 type ManagedLarkEgressAuthority struct {
+	CredentialMode    string
 	BindingID         string
 	AuthorityVersion  int64
 	CredentialVersion int64
@@ -24,14 +26,20 @@ type ManagedLarkEgressAuthority struct {
 }
 
 func (authority ManagedLarkEgressAuthority) Validate() error {
-	if authority.BindingID == "" || authority.AuthorityVersion < 1 || authority.CredentialVersion < 1 {
+	if !managedcredential.ValidMode(authority.CredentialMode) || !managedLarkPolicyDigestPattern.MatchString(authority.PolicySHA256) {
+		return errors.New("managed Lark credential delivery mode or policy is invalid")
+	}
+	if authority.BindingID == "" {
+		if authority.AuthorityVersion != 0 || authority.CredentialVersion != 0 {
+			return errors.New("managed Lark empty credential authority is partial")
+		}
+		return nil
+	}
+	if authority.AuthorityVersion < 1 || authority.CredentialVersion < 1 {
 		return errors.New("managed Lark credential binding identity or authority version is invalid")
 	}
 	if err := validateRegistryIdentity("managed Lark credential binding ID", authority.BindingID); err != nil {
 		return err
-	}
-	if !managedLarkPolicyDigestPattern.MatchString(authority.PolicySHA256) {
-		return errors.New("managed Lark grant version or policy digest is invalid")
 	}
 	return nil
 }
@@ -40,9 +48,11 @@ type ManagedLarkEgressAuthoritySource interface {
 	ResolveManagedLarkEgressAuthority(context.Context, ManagedProcessEnvironmentRequest) (ManagedLarkEgressAuthority, error)
 }
 
-// FrozenManagedLarkEgressAuthoritySource projects deployment/run authority
-// that was already frozen by Core. Revocation and live operation checks are
-// repeated by the egress authorizer before any real credential is injected.
+// FrozenManagedLarkEgressAuthoritySource is a deterministic source for tests
+// and already-resolved operation snapshots. Production process starts use the
+// Core-backed source so the workspace mode is never frozen in deployment
+// configuration. Revocation and live operation checks are repeated by the
+// egress authorizer before any real credential is used.
 type FrozenManagedLarkEgressAuthoritySource struct {
 	authority ManagedLarkEgressAuthority
 }
@@ -111,46 +121,31 @@ func (issuer *SignedManagedLarkEnvironmentIssuer) IssueManagedProcessEnvironment
 	if issuer == nil || issuer.signer == nil || issuer.authorities == nil || issuer.idGenerator == nil || issuer.now == nil || ctx == nil {
 		return nil, errors.New("managed Lark environment issuer and context are required")
 	}
-	if request.Target.Kind != executionbackend.KindTAE {
-		return nil, errors.New("managed Lark placeholder requires a TAE target")
+	applies, err := validateManagedLarkProcessRequest(request)
+	if err != nil {
+		return nil, err
 	}
-	// Non-Lark commands deliberately receive no placeholder. TAE's network
-	// policy remains default-deny, so curl or another binary cannot acquire a
-	// real credential merely by running in the same sandbox.
-	if request.ToolName != "shell" || request.Executable != "lark-cli" {
+	if !applies {
 		return map[string]string{}, nil
-	}
-	if err := validateExecutorMCPPrincipal(request.Principal); err != nil {
-		return nil, err
-	}
-	if err := request.Target.Validate(); err != nil {
-		return nil, err
-	}
-	if err := request.Operation.Validate(); err != nil {
-		return nil, err
-	}
-	principal := request.Principal
-	if request.Operation.WorkspaceID != principal.WorkspaceID || request.Operation.SessionID != principal.SessionID ||
-		request.Operation.RunID != principal.Run.RunID || request.Operation.RunAttemptID != principal.Run.RunAttemptID ||
-		request.Operation.RunAttemptGeneration != principal.Run.RunAttemptGeneration ||
-		request.Target.EnvironmentID == "" {
-		return nil, errors.New("managed Lark placeholder operation differs from the MCP principal")
 	}
 	authority, err := issuer.authorities.ResolveManagedLarkEgressAuthority(ctx, request)
 	if err != nil {
 		return nil, fmt.Errorf("resolve managed Lark egress authority: %w", err)
 	}
+	return issueManagedLarkPlaceholder(issuer, request, authority)
+}
+
+func (issuer *SignedManagedLarkEnvironmentIssuer) issueWithAuthority(
+	request ManagedProcessEnvironmentRequest,
+	authority ManagedLarkEgressAuthority,
+) (map[string]string, error) {
+	principal := request.Principal
 	// No workspace binding is a valid state. Keep the non-sensitive runtime
 	// projection (PATH and app hint) so lark-cli can report a normal
 	// credential-not-configured error, but never mint a placeholder that could
 	// be confused with a credential authority.
 	if authority.BindingID == "" {
-		return map[string]string{
-			ManagedLarkApplicationIDEnvironment:    issuer.applicationID,
-			ManagedLarkNoUpdateNotifierEnvironment: "1",
-			ManagedLarkNoSkillsNotifierEnvironment: "1",
-			ManagedLarkPathEnvironment:             ManagedLarkPathValue,
-		}, nil
+		return managedLarkBaseEnvironment(issuer.applicationID), nil
 	}
 	if err := authority.Validate(); err != nil {
 		return nil, err
@@ -189,13 +184,59 @@ func (issuer *SignedManagedLarkEnvironmentIssuer) IssueManagedProcessEnvironment
 	if err != nil {
 		return nil, err
 	}
+	environment := managedLarkBaseEnvironment(issuer.applicationID)
+	environment[ManagedLarkUserAccessTokenEnvironment] = placeholder
+	return environment, nil
+}
+
+func issueManagedLarkPlaceholder(
+	issuer *SignedManagedLarkEnvironmentIssuer,
+	request ManagedProcessEnvironmentRequest,
+	authority ManagedLarkEgressAuthority,
+) (map[string]string, error) {
+	if authority.CredentialMode != managedcredential.ModeWebhookSwap {
+		return nil, errors.New("managed Lark placeholder requires webhook_swap workspace mode")
+	}
+	return issuer.issueWithAuthority(request, authority)
+}
+
+func validateManagedLarkProcessRequest(request ManagedProcessEnvironmentRequest) (bool, error) {
+	if request.Target.Kind != executionbackend.KindTAE {
+		// The issuer is installed on the unified execution gateway, so BYO
+		// AgentX operations also pass this hook. They must remain byte-for-byte
+		// unchanged and never receive managed credential material.
+		return false, nil
+	}
+	// Non-Lark commands deliberately receive no credential material. TAE's
+	// default-deny network policy remains the outer network boundary.
+	if request.ToolName != "shell" || request.Executable != "lark-cli" {
+		return false, nil
+	}
+	if err := validateExecutorMCPPrincipal(request.Principal); err != nil {
+		return false, err
+	}
+	if err := request.Target.Validate(); err != nil {
+		return false, err
+	}
+	if err := request.Operation.Validate(); err != nil {
+		return false, err
+	}
+	principal := request.Principal
+	if request.Operation.WorkspaceID != principal.WorkspaceID || request.Operation.SessionID != principal.SessionID ||
+		request.Operation.RunID != principal.Run.RunID || request.Operation.RunAttemptID != principal.Run.RunAttemptID ||
+		request.Operation.RunAttemptGeneration != principal.Run.RunAttemptGeneration || request.Target.EnvironmentID == "" {
+		return false, errors.New("managed Lark credential operation differs from the MCP principal")
+	}
+	return true, nil
+}
+
+func managedLarkBaseEnvironment(applicationID string) map[string]string {
 	return map[string]string{
-		ManagedLarkApplicationIDEnvironment:    issuer.applicationID,
-		ManagedLarkUserAccessTokenEnvironment:  placeholder,
+		ManagedLarkApplicationIDEnvironment:    applicationID,
 		ManagedLarkNoUpdateNotifierEnvironment: "1",
 		ManagedLarkNoSkillsNotifierEnvironment: "1",
 		ManagedLarkPathEnvironment:             ManagedLarkPathValue,
-	}, nil
+	}
 }
 
 var _ ManagedProcessEnvironmentIssuer = (*SignedManagedLarkEnvironmentIssuer)(nil)

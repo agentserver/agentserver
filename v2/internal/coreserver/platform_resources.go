@@ -10,6 +10,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/coredb"
+	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
 const maximumPlatformResourceRequestBytes = int64(64 * 1024)
@@ -79,6 +80,9 @@ func (handler *PlatformResourceHandler) workspaceCollection(response http.Respon
 		if !decodePlatformResourceJSON(response, request, &input) {
 			return
 		}
+		if !requireWorkspaceManagedLarkMode(response, input.ManagedLarkCredentialMode) {
+			return
+		}
 		result, err := handler.commands.CreateWorkspace(request.Context(), actorID, input)
 		if err != nil {
 			handler.writeError(response, request, err)
@@ -121,6 +125,9 @@ func (handler *PlatformResourceHandler) workspaceResource(response http.Response
 		}
 		var input corecontract.UpdateWorkspaceRequest
 		if !decodePlatformResourceJSON(response, request, &input) {
+			return
+		}
+		if !requireWorkspaceManagedLarkMode(response, input.ManagedLarkCredentialMode) {
 			return
 		}
 		result, err := handler.commands.UpdateWorkspace(request.Context(), workspaceID, actorID, input)
@@ -290,6 +297,14 @@ func platformNoStore(response http.ResponseWriter) {
 	response.Header().Set("X-Content-Type-Options", "nosniff")
 }
 
+func requireWorkspaceManagedLarkMode(response http.ResponseWriter, mode string) bool {
+	if managedcredential.ValidMode(mode) {
+		return true
+	}
+	writePublicRunError(response, http.StatusBadRequest, "invalid_argument", "managedLarkCredentialMode must be webhook_swap or process_env", "")
+	return false
+}
+
 func requireEmptyPlatformBody(response http.ResponseWriter, request *http.Request, operation string) bool {
 	if request.ContentLength == 0 && len(request.TransferEncoding) == 0 {
 		return true
@@ -342,12 +357,23 @@ func (commands StateStorePlatformResourceCommands) GetWorkspace(ctx context.Cont
 }
 
 func (commands StateStorePlatformResourceCommands) CreateWorkspace(ctx context.Context, actorID string, input corecontract.CreateWorkspaceRequest) (corecontract.CreateWorkspaceResponse, error) {
-	result, err := commands.Store.CreatePlatformWorkspace(ctx, coredb.CreatePlatformWorkspaceCommand{WorkspaceID: input.WorkspaceID, ActorID: actorID, Name: input.Name})
+	result, err := commands.Store.CreatePlatformWorkspace(ctx, coredb.CreatePlatformWorkspaceCommand{
+		WorkspaceID: input.WorkspaceID, ActorID: actorID, Name: input.Name,
+		ManagedLarkCredentialMode: input.ManagedLarkCredentialMode,
+	})
 	return corecontract.CreateWorkspaceResponse{Workspace: contractPlatformWorkspace(result.Workspace), Created: result.Created}, err
 }
 
 func (commands StateStorePlatformResourceCommands) UpdateWorkspace(ctx context.Context, workspaceID, actorID string, input corecontract.UpdateWorkspaceRequest) (corecontract.UpdateWorkspaceResponse, error) {
-	result, err := commands.Store.UpdatePlatformWorkspace(ctx, coredb.UpdatePlatformWorkspaceCommand{WorkspaceID: workspaceID, ActorID: actorID, Name: input.Name, ExpectedVersion: input.ExpectedVersion})
+	auditEventID, err := newCredentialEventID()
+	if err != nil {
+		return corecontract.UpdateWorkspaceResponse{}, err
+	}
+	result, err := commands.Store.UpdatePlatformWorkspace(ctx, coredb.UpdatePlatformWorkspaceCommand{
+		WorkspaceID: workspaceID, ActorID: actorID, Name: input.Name,
+		ManagedLarkCredentialMode: input.ManagedLarkCredentialMode,
+		ExpectedVersion:           input.ExpectedVersion, AuditEventID: auditEventID,
+	})
 	return corecontract.UpdateWorkspaceResponse{Workspace: contractPlatformWorkspace(result.Workspace), Changed: result.Changed}, err
 }
 
@@ -384,7 +410,11 @@ func (commands StateStorePlatformResourceCommands) RemoveMember(ctx context.Cont
 }
 
 func contractPlatformWorkspace(workspace coredb.PlatformWorkspace) corecontract.WorkspaceState {
-	return corecontract.WorkspaceState{WorkspaceID: workspace.ID, Name: workspace.Name, Status: workspace.Status, CurrentUserRole: workspace.Role, Version: workspace.Version, CreatedAt: workspace.CreatedAt, UpdatedAt: workspace.UpdatedAt}
+	return corecontract.WorkspaceState{
+		WorkspaceID: workspace.ID, Name: workspace.Name, Status: workspace.Status,
+		CurrentUserRole: workspace.Role, ManagedLarkCredentialMode: workspace.ManagedLarkCredentialMode,
+		Version: workspace.Version, CreatedAt: workspace.CreatedAt, UpdatedAt: workspace.UpdatedAt,
+	}
 }
 
 func contractWorkspaceMember(member coredb.WorkspaceMember) corecontract.WorkspaceMemberState {

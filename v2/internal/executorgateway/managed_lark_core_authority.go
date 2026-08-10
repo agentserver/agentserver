@@ -8,6 +8,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
+	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
 func (client *CoreConnectionClient) ResolveManagedLarkEgressAuthority(
@@ -47,7 +48,8 @@ func (client *CoreConnectionClient) ResolveManagedLarkEgressAuthority(
 		return ManagedLarkEgressAuthority{}, err
 	}
 	if response.ProviderKind != "lark" || response.PolicySHA256 != policySHA256 || response.AuthorizedAt.IsZero() ||
-		response.AuthorizedAt.After(client.authorizationNow().UTC().Add(5*time.Second)) {
+		response.AuthorizedAt.After(client.authorizationNow().UTC().Add(5*time.Second)) ||
+		!managedcredential.ValidMode(response.CredentialMode) {
 		return ManagedLarkEgressAuthority{}, errors.New("Core returned invalid managed credential authority")
 	}
 	// No active workspace binding is a supported state. Return the policy
@@ -57,10 +59,11 @@ func (client *CoreConnectionClient) ResolveManagedLarkEgressAuthority(
 		if response.AuthorityVersion != 0 || response.CredentialVersion != 0 {
 			return ManagedLarkEgressAuthority{}, errors.New("Core returned a partial empty credential authority")
 		}
-		return ManagedLarkEgressAuthority{PolicySHA256: policySHA256}, nil
+		return ManagedLarkEgressAuthority{CredentialMode: response.CredentialMode, PolicySHA256: policySHA256}, nil
 	}
 	authority := ManagedLarkEgressAuthority{
-		BindingID: response.BindingID, AuthorityVersion: response.AuthorityVersion,
+		CredentialMode: response.CredentialMode,
+		BindingID:      response.BindingID, AuthorityVersion: response.AuthorityVersion,
 		CredentialVersion: response.CredentialVersion, PolicySHA256: response.PolicySHA256,
 	}
 	if err := authority.Validate(); err != nil {

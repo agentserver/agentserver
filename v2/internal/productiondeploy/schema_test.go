@@ -57,6 +57,11 @@ func TestProductionDeploymentJSONSchemaAcceptsLoaderAndExample(t *testing.T) {
 	if err := resolved.Validate(openWorld); err == nil {
 		t.Fatal("production schema accepted an unknown nested field")
 	}
+	delete(openWorld["network"].(map[string]any), "future")
+	openWorld["managedExecutor"].(map[string]any)["lark"].(map[string]any)["credentialMode"] = "process_env"
+	if err := resolved.Validate(openWorld); err == nil {
+		t.Fatal("production schema accepted a deployment-wide managed Lark credential mode")
+	}
 }
 
 func assertProductionSchemaAccepts(t *testing.T, schema *jsonschema.Resolved, raw []byte) {

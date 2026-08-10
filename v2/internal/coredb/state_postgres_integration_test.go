@@ -284,7 +284,7 @@ func TestPostgreSQLResolveUserOAuthMembershipsProjectsOnlyActiveVersionedAuthori
 	if _, err := pool.Exec(t.Context(), users, userID); err != nil {
 		t.Fatal(err)
 	}
-	workspaces := fmt.Sprintf("INSERT INTO %s.workspaces (id, status) VALUES ($1, 'active'), ($2, 'active'), ($3, 'suspended')", quoteIdentifier(schema))
+	workspaces := fmt.Sprintf("INSERT INTO %s.workspaces (id, status, managed_lark_credential_mode) VALUES ($1, 'active', 'webhook_swap'), ($2, 'active', 'webhook_swap'), ($3, 'suspended', 'webhook_swap')", quoteIdentifier(schema))
 	if _, err := pool.Exec(t.Context(), workspaces, firstWorkspace, secondWorkspace, suspendedWorkspace); err != nil {
 		t.Fatal(err)
 	}
@@ -1151,7 +1151,7 @@ func newPostgresStateStore(t *testing.T) (*StateStore, *pgxpool.Pool, string) {
 
 func insertStateTestSession(t *testing.T, pool *pgxpool.Pool, schema, workspaceID, sessionID string) {
 	t.Helper()
-	query := fmt.Sprintf("INSERT INTO %s.workspaces (id, status) VALUES ($1, 'active')", quoteIdentifier(schema))
+	query := fmt.Sprintf("INSERT INTO %s.workspaces (id, status, managed_lark_credential_mode) VALUES ($1, 'active', 'webhook_swap')", quoteIdentifier(schema))
 	if _, err := pool.Exec(t.Context(), query, workspaceID); err != nil {
 		t.Fatal(err)
 	}

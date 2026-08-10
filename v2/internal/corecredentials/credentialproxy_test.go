@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
 type testPlaceholderVerifier struct {
@@ -24,8 +26,10 @@ type testLiveAuthorizer struct {
 	err error
 }
 
-func (authorizer testLiveAuthorizer) AuthorizeCredentialUse(context.Context, UseRequest) (BindingReference, error) {
-	return authorizer.ref, authorizer.err
+func (authorizer testLiveAuthorizer) AuthorizeCredentialUse(_ context.Context, request UseRequest) (BindingReference, error) {
+	ref := authorizer.ref
+	ref.CredentialMode = request.CredentialMode
+	return ref, authorizer.err
 }
 
 type testAudit struct {
@@ -146,6 +150,47 @@ func TestResolveInjectionMaterializesOnlyAfterLiveChecks(t *testing.T) {
 	raw, _ := json.Marshal(result)
 	if bytes.Contains(raw, []byte("opaque-token-value")) {
 		t.Fatal("resolve result contains the provider secret")
+	}
+}
+
+func TestResolveTrustedInjectionUsesSameLiveAuthorityWithoutPlaceholder(t *testing.T) {
+	service, request, _, _, audit := testService(t)
+	request.Placeholder = ""
+	request.Headers = nil
+	request.Path = "/"
+	request.Method = "PROCESS_ENV"
+	request.CredentialMode = managedcredential.ModeProcessEnv
+	request.ExpectedCredentialVersion = 7
+	mutation, result, err := service.ResolveTrustedInjection(t.Context(), request, "process-env-audit-1", "process_env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mutation.Headers["Authorization"] != "Bearer opaque-token-value" || result.CredentialVersion != 7 {
+		t.Fatalf("trusted mutation/result = %#v / %#v", mutation, result)
+	}
+	if len(audit.records) != 1 || audit.records[0].Stage != "process_env" ||
+		audit.records[0].CapabilityID != "process-env-audit-1" || audit.records[0].Method != "PROCESS_ENV" {
+		t.Fatalf("trusted audit = %#v", audit.records)
+	}
+}
+
+func TestResolveTrustedInjectionRejectsMissingAuditAuthority(t *testing.T) {
+	service, request, _, _, _ := testService(t)
+	request.Placeholder = ""
+	request.Headers = nil
+	request.Path = "/"
+	request.Method = "PROCESS_ENV"
+	request.CredentialMode = managedcredential.ModeProcessEnv
+	request.ExpectedCredentialVersion = 7
+	for name, values := range map[string][2]string{
+		"missing identity": {"", "process_env"},
+		"wrong stage":      {"process-env-audit-1", "materialize"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := service.ResolveTrustedInjection(t.Context(), request, values[0], values[1]); ResolveErrorCode(err) != ReasonCredentialInvalid {
+				t.Fatalf("trusted invalid error = %v", err)
+			}
+		})
 	}
 }
 

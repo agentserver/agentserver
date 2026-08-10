@@ -192,11 +192,10 @@ type IngressDocument struct {
 }
 
 type BootstrapDocument struct {
-	WorkspaceID         string `json:"workspaceId"`
-	SessionID           string `json:"sessionId"`
-	OwnerUserID         string `json:"ownerUserId"`
-	ExternalOIDCSubject string `json:"externalOidcSubject"`
-	ExecutorID          string `json:"executorId"`
+	WorkspaceID string `json:"workspaceId"`
+	SessionID   string `json:"sessionId"`
+	OwnerUserID string `json:"ownerUserId"`
+	ExecutorID  string `json:"executorId"`
 }
 
 type OAuthDocument struct {
@@ -214,8 +213,6 @@ type HydraDocument struct {
 }
 
 type ExternalOIDCDocument struct {
-	Issuer      string `json:"issuer"`
-	ClientID    string `json:"clientId"`
 	RedirectURL string `json:"redirectUrl"`
 }
 
@@ -434,7 +431,7 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 	if document.TrustDomain != ProductionTrustDomain {
 		return LoadedConfig{}, fmt.Errorf("spiffeTrustDomain must be exactly %s for the SG production deployment", ProductionTrustDomain)
 	}
-	if err := validateOAuth(document.OAuth, document.Bootstrap, document.Ingress); err != nil {
+	if err := validateOAuth(document.OAuth, document.Ingress); err != nil {
 		return LoadedConfig{}, err
 	}
 	loaded, err := validateRuntime(document.Runtime)
@@ -594,10 +591,10 @@ func validateBootstrap(document BootstrapDocument) error {
 			return fmt.Errorf("bootstrap.%s must be a non-zero canonical lowercase UUID", name)
 		}
 	}
-	return validateText("bootstrap.externalOidcSubject", document.ExternalOIDCSubject, 1, 2048)
+	return nil
 }
 
-func validateOAuth(document OAuthDocument, bootstrap BootstrapDocument, ingress IngressDocument) error {
+func validateOAuth(document OAuthDocument, ingress IngressDocument) error {
 	if err := validateHTTPSURL("oauth.hydra.issuer", document.Hydra.Issuer, false); err != nil {
 		return err
 	}
@@ -637,21 +634,9 @@ func validateOAuth(document OAuthDocument, bootstrap BootstrapDocument, ingress 
 	if document.Hydra.BrowserClientID != corecontract.BrowserOAuthClientID {
 		return fmt.Errorf("oauth.hydra.browserClientId must be exactly %s", corecontract.BrowserOAuthClientID)
 	}
-	if err := validateHTTPSURL("oauth.externalOidc.issuer", document.ExternalOIDC.Issuer, false); err != nil {
-		return err
-	}
-	if strings.HasSuffix(document.ExternalOIDC.Issuer, "/") {
-		return errors.New("oauth.externalOidc.issuer must not have a trailing slash")
-	}
-	if err := validateText("oauth.externalOidc.clientId", document.ExternalOIDC.ClientID, 1, 256); err != nil {
-		return err
-	}
 	wantRedirect := "https://" + ingress.HydraHostname + "/auth/oidc/callback"
 	if document.ExternalOIDC.RedirectURL != wantRedirect {
 		return fmt.Errorf("oauth.externalOidc.redirectUrl must be exactly %s", wantRedirect)
-	}
-	if bootstrap.ExternalOIDCSubject == "" {
-		return errors.New("bootstrap external OIDC subject is required")
 	}
 	return nil
 }

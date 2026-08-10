@@ -104,6 +104,8 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 		AuthorizeManagedSandboxOperationPath:                         "authorizeManagedSandboxOperation",
 		ResolveEgressCredentialAuthorityPath:                         "resolveEgressCredentialAuthority",
 		ResolveEgressCredentialPath:                                  "resolveEgressCredential",
+		AuthorizeProcessEnvironmentEgressPath:                        "authorizeProcessEnvironmentEgress",
+		ResolveExecutionLarkCredentialPath:                           "resolveExecutionLarkCredential",
 		RecordEgressCredentialAuditPath:                              "recordEgressCredentialAuditEvent",
 	}
 	for path, operationID := range wantPost {
@@ -184,6 +186,9 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "ResolveEgressCredentialAuthorityResponse", reflect.TypeFor[ResolveEgressCredentialAuthorityResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "ResolveEgressCredentialRequest", reflect.TypeFor[ResolveEgressCredentialRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "ResolveEgressCredentialResponse", reflect.TypeFor[ResolveEgressCredentialResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "ResolveExecutionLarkCredentialRequest", reflect.TypeFor[ResolveExecutionLarkCredentialRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "ResolveExecutionLarkCredentialResponse", reflect.TypeFor[ResolveExecutionLarkCredentialResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "AuthorizeProcessEnvironmentEgressRequest", reflect.TypeFor[AuthorizeProcessEnvironmentEgressRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "RecordEgressCredentialAuditRequest", reflect.TypeFor[RecordEgressCredentialAuditRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "RecordEgressCredentialAuditResponse", reflect.TypeFor[RecordEgressCredentialAuditResponse]())
 	var upstreamAuthorizationProperty struct {

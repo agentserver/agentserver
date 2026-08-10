@@ -270,7 +270,7 @@ func insertExecutorConnectionFixture(t *testing.T, pool *pgxpool.Pool, schema st
 
 	quotedSchema := quoteIdentifier(schema)
 	machineKeySHA256 := sha256.Sum256([]byte("machine-key"))
-	if _, err := pool.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.workspaces (id, status) VALUES ($1, 'active')", quotedSchema), workspaceID); err != nil {
+	if _, err := pool.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.workspaces (id, status, managed_lark_credential_mode) VALUES ($1, 'active', 'webhook_swap')", quotedSchema), workspaceID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(t.Context(), fmt.Sprintf(`

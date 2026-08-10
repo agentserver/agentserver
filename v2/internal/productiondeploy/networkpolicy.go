@@ -14,7 +14,10 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 
 	coreIngressComponents := []string{platformComponent, browserComponent, executorComponent, harnessComponent, llmproxyComponent}
 	if managedExecutionActive(document.Managed) {
-		coreIngressComponents = append(coreIngressComponents, sandboxComponent, egressComponent)
+		coreIngressComponents = append(coreIngressComponents, sandboxComponent)
+		if managedEgressAuthorizerEnabled(document.Managed) {
+			coreIngressComponents = append(coreIngressComponents, egressComponent)
+		}
 	}
 	coreIngress := ingressFromComponents(coreIngressComponents, document.Services.Core.Port)
 	platformIngress := ingressFromGateway(document.Ingress, document.Services.PlatformGateway.Port)
@@ -84,17 +87,19 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 			ProductionTAEProxyPort,
 		))
 		sandboxEgress = append(sandboxEgress, externalEgress(document.Network.SandboxExternalEgress)...)
-		egressIngress := ingressFromCIDRs(document.Network.EgressAuthorizerIngress, document.Services.EgressAuthorizer.Port)
-		egressIngress = append(egressIngress, ingressFromGateway(document.Ingress, document.Services.EgressAuthorizer.Port)...)
-		egressEgress := []any{componentTCPEgress(coreComponent, document.Services.Core.Port)}
-		egressEgress = append(egressEgress, dns...)
-		egressEgress = append(egressEgress, externalEgress(document.Network.EgressAuthorizerExternalEgress)...)
 		items = append(items,
 			networkPolicy(config, "agentserver-managed-environment-bootstrap-egress", matchComponent(managedEnvironmentBootstrapComponent), nil, databaseEgress),
 			networkPolicy(config, sandboxComponent, matchComponent(sandboxComponent), sandboxIngress, sandboxEgress),
-			networkPolicy(config, egressComponent, matchComponent(egressComponent), egressIngress, egressEgress),
 		)
-	} else if managedPolicyBootstrap(document.Managed) {
+		if managedEgressAuthorizerEnabled(document.Managed) {
+			egressIngress := ingressFromCIDRs(document.Network.EgressAuthorizerIngress, document.Services.EgressAuthorizer.Port)
+			egressIngress = append(egressIngress, ingressFromGateway(document.Ingress, document.Services.EgressAuthorizer.Port)...)
+			egressEgress := []any{componentTCPEgress(coreComponent, document.Services.Core.Port)}
+			egressEgress = append(egressEgress, dns...)
+			egressEgress = append(egressEgress, externalEgress(document.Network.EgressAuthorizerExternalEgress)...)
+			items = append(items, networkPolicy(config, egressComponent, matchComponent(egressComponent), egressIngress, egressEgress))
+		}
+	} else if managedEgressAuthorizerEnabled(document.Managed) {
 		egressIngress := ingressFromGateway(document.Ingress, document.Services.EgressAuthorizer.Port)
 		items = append(items,
 			networkPolicy(config, egressComponent, matchComponent(egressComponent), egressIngress, nil),

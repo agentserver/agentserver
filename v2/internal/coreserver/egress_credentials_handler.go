@@ -38,11 +38,35 @@ func (handler *EgressCredentialHandler) ServeHTTP(response http.ResponseWriter, 
 		handler.authority(response, request)
 	case corecontract.ResolveEgressCredentialPath:
 		handler.resolve(response, request)
+	case corecontract.AuthorizeProcessEnvironmentEgressPath:
+		handler.authorizeProcessEnvironment(response, request)
 	case corecontract.RecordEgressCredentialAuditPath:
 		handler.audit(response, request)
 	default:
 		writeError(response, http.StatusNotFound, corecontract.ErrorResponse{Code: "not_found", Message: "v2 egress credential endpoint not found"})
 	}
+}
+
+func (handler *EgressCredentialHandler) authorizeProcessEnvironment(response http.ResponseWriter, request *http.Request) {
+	if err := handler.egressAuthorizer.AuthorizeWorkload(request, "egress.credentials.authorize-process-env"); err != nil {
+		writeError(response, http.StatusForbidden, corecontract.ErrorResponse{Code: "forbidden", Message: "workload is not authorized for process environment egress"})
+		return
+	}
+	var command corecontract.AuthorizeProcessEnvironmentEgressRequest
+	if !decodeCommandWithLimit(response, request, &command, maxEgressCredentialCommandBytes) {
+		return
+	}
+	result, err := handler.service.AuthorizeProcessEnvironmentEgress(request.Context(), command)
+	if err != nil {
+		var resolved *corecredentials.ResolveError
+		if errors.As(err, &resolved) {
+			writeEgressCredentialError(response, err)
+		} else {
+			writeCommandError(response, err)
+		}
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
 }
 
 func (handler *EgressCredentialHandler) authority(response http.ResponseWriter, request *http.Request) {

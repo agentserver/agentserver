@@ -14,6 +14,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
 const (
@@ -98,29 +100,31 @@ func (binding Binding) Metadata() BindingMetadata {
 // UseRequest is the only input accepted by the Core materialization frontend.
 // Placeholder is opaque to the provider and is never a real upstream secret.
 type UseRequest struct {
-	Placeholder          string            `json:"placeholder"`
-	CapabilityID         string            `json:"-"`
-	WorkspaceID          string            `json:"workspaceId"`
-	SessionID            string            `json:"sessionId"`
-	ActorID              string            `json:"actorId"`
-	EnvironmentID        string            `json:"environmentId"`
-	RunID                string            `json:"runId"`
-	RunAttemptID         string            `json:"runAttemptId"`
-	RunAttemptGeneration int64             `json:"runAttemptGeneration"`
-	ExecutionID          string            `json:"executionId"`
-	OperationID          string            `json:"operationId"`
-	SandboxID            string            `json:"sandboxId"`
-	TargetGeneration     int64             `json:"targetGeneration"`
-	ProviderKind         string            `json:"providerKind"`
-	BindingID            string            `json:"bindingId"`
-	AuthorityVersion     int64             `json:"authorityVersion"`
-	PolicySHA256         string            `json:"policySha256"`
-	TAEPSM               string            `json:"taePsm"`
-	Host                 string            `json:"host"`
-	Path                 string            `json:"path"`
-	Method               string            `json:"method"`
-	Headers              map[string]string `json:"headers,omitempty"`
-	ApprovalProof        string            `json:"approvalProof,omitempty"`
+	Placeholder               string            `json:"placeholder"`
+	CapabilityID              string            `json:"-"`
+	WorkspaceID               string            `json:"workspaceId"`
+	SessionID                 string            `json:"sessionId"`
+	ActorID                   string            `json:"actorId"`
+	EnvironmentID             string            `json:"environmentId"`
+	RunID                     string            `json:"runId"`
+	RunAttemptID              string            `json:"runAttemptId"`
+	RunAttemptGeneration      int64             `json:"runAttemptGeneration"`
+	ExecutionID               string            `json:"executionId"`
+	OperationID               string            `json:"operationId"`
+	SandboxID                 string            `json:"sandboxId"`
+	TargetGeneration          int64             `json:"targetGeneration"`
+	ProviderKind              string            `json:"providerKind"`
+	BindingID                 string            `json:"bindingId"`
+	AuthorityVersion          int64             `json:"authorityVersion"`
+	ExpectedCredentialVersion int64             `json:"-"`
+	CredentialMode            string            `json:"-"`
+	PolicySHA256              string            `json:"policySha256"`
+	TAEPSM                    string            `json:"taePsm"`
+	Host                      string            `json:"host"`
+	Path                      string            `json:"path"`
+	Method                    string            `json:"method"`
+	Headers                   map[string]string `json:"headers,omitempty"`
+	ApprovalProof             string            `json:"approvalProof,omitempty"`
 }
 
 // AuthorityRequest is the pre-placeholder form used by execution gateway to
@@ -294,6 +298,7 @@ type BindingReference struct {
 	BindingID         string
 	AuthorityVersion  int64
 	CredentialVersion int64
+	CredentialMode    string
 }
 
 type PlaceholderVerifier interface {
@@ -323,41 +328,11 @@ type PlaceholderClaims struct {
 }
 
 func (request UseRequest) Validate() error {
-	for name, value := range map[string]string{
-		"placeholder": request.Placeholder, "workspaceId": request.WorkspaceID,
-		"sessionId": request.SessionID, "actorId": request.ActorID,
-		"environmentId": request.EnvironmentID, "runId": request.RunID,
-		"runAttemptId": request.RunAttemptID, "executionId": request.ExecutionID,
-		"operationId": request.OperationID, "sandboxId": request.SandboxID,
-		"providerKind": request.ProviderKind, "bindingId": request.BindingID,
-		"taePsm": request.TAEPSM,
-		"host":   request.Host, "path": request.Path, "method": request.Method,
-	} {
-		if value == "" || strings.TrimSpace(value) != value {
-			return fmt.Errorf("credential use %s is required", name)
-		}
+	if request.Placeholder == "" || strings.TrimSpace(request.Placeholder) != request.Placeholder {
+		return errors.New("credential use placeholder is required")
 	}
-	if !identifierPattern.MatchString(request.ProviderKind) || !identifierPattern.MatchString(request.BindingID) {
-		return errors.New("credential use provider or binding ID is invalid")
-	}
-	if !identifierPattern.MatchString(request.TAEPSM) || !digestPattern.MatchString(request.PolicySHA256) {
-		return errors.New("credential use TAE identity or policy digest is invalid")
-	}
-	if request.RunAttemptGeneration < 1 || request.TargetGeneration < 1 || request.AuthorityVersion < 1 {
-		return errors.New("credential use generations and authority version must be positive")
-	}
-	if len(request.Host) > maximumHostBytes || request.Host != strings.ToLower(request.Host) ||
-		net.ParseIP(request.Host) != nil || strings.ContainsAny(request.Host, "/:@[]") ||
-		strings.HasPrefix(request.Host, ".") || strings.HasSuffix(request.Host, ".") || strings.Contains(request.Host, "..") {
-		return errors.New("credential use host is not a canonical provider DNS name")
-	}
-	if len(request.Path) > maximumPathBytes || !strings.HasPrefix(request.Path, "/") ||
-		strings.ContainsAny(request.Path, "\\%?#\x00") || strings.Contains(request.Path, "//") ||
-		path.Clean(request.Path) != request.Path || (len(request.Path) > 1 && strings.HasSuffix(request.Path, "/")) {
-		return errors.New("credential use path is not canonical")
-	}
-	if len(request.Method) > 16 || strings.ToUpper(request.Method) != request.Method {
-		return errors.New("credential use request target is invalid")
+	if err := request.ValidateLiveAuthorityScope(); err != nil {
+		return err
 	}
 	if len(request.Headers) > 128 {
 		return errors.New("credential use headers exceed limit")
@@ -376,6 +351,57 @@ func (request UseRequest) Validate() error {
 	authorization, ok := exactHeader(request.Headers, "authorization")
 	if !ok || authorization != "Bearer "+request.Placeholder {
 		return errors.New("credential use authorization placeholder is invalid")
+	}
+	return nil
+}
+
+// ValidateLiveAuthorityScope validates the operation, provider, binding and
+// target tuple consumed by the database live-authority check. It deliberately
+// excludes the transport-specific placeholder and request headers so Core can
+// use the same exact operation check for its workload-authenticated
+// process-environment delivery mode.
+func (request UseRequest) ValidateLiveAuthorityScope() error {
+	for name, value := range map[string]string{
+		"workspaceId": request.WorkspaceID, "sessionId": request.SessionID, "actorId": request.ActorID,
+		"environmentId": request.EnvironmentID, "runId": request.RunID,
+		"runAttemptId": request.RunAttemptID, "executionId": request.ExecutionID,
+		"operationId": request.OperationID, "sandboxId": request.SandboxID,
+		"providerKind": request.ProviderKind, "bindingId": request.BindingID,
+		"taePsm": request.TAEPSM,
+		"host":   request.Host, "path": request.Path, "method": request.Method,
+	} {
+		if value == "" || strings.TrimSpace(value) != value {
+			return fmt.Errorf("credential use %s is required", name)
+		}
+	}
+	if !identifierPattern.MatchString(request.ProviderKind) || !identifierPattern.MatchString(request.BindingID) {
+		return errors.New("credential use provider or binding ID is invalid")
+	}
+	if !identifierPattern.MatchString(request.TAEPSM) || !digestPattern.MatchString(request.PolicySHA256) {
+		return errors.New("credential use TAE identity or policy digest is invalid")
+	}
+	if !managedcredential.ValidMode(request.CredentialMode) {
+		return errors.New("credential use delivery mode is invalid")
+	}
+	if request.RunAttemptGeneration < 1 || request.TargetGeneration < 1 || request.AuthorityVersion < 1 {
+		return errors.New("credential use generations and authority version must be positive")
+	}
+	if request.ExpectedCredentialVersion < 0 ||
+		(request.CredentialMode == managedcredential.ModeProcessEnv && request.ExpectedCredentialVersion < 1) {
+		return errors.New("credential use expected credential version is invalid")
+	}
+	if len(request.Host) > maximumHostBytes || request.Host != strings.ToLower(request.Host) ||
+		net.ParseIP(request.Host) != nil || strings.ContainsAny(request.Host, "/:@[]") ||
+		strings.HasPrefix(request.Host, ".") || strings.HasSuffix(request.Host, ".") || strings.Contains(request.Host, "..") {
+		return errors.New("credential use host is not a canonical provider DNS name")
+	}
+	if len(request.Path) > maximumPathBytes || !strings.HasPrefix(request.Path, "/") ||
+		strings.ContainsAny(request.Path, "\\%?#\x00") || strings.Contains(request.Path, "//") ||
+		path.Clean(request.Path) != request.Path || (len(request.Path) > 1 && strings.HasSuffix(request.Path, "/")) {
+		return errors.New("credential use path is not canonical")
+	}
+	if len(request.Method) > 16 || strings.ToUpper(request.Method) != request.Method {
+		return errors.New("credential use request target is invalid")
 	}
 	return nil
 }

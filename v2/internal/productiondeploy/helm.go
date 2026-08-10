@@ -303,7 +303,7 @@ annotations:
 `, helmChartName, version, configSHA256, runtimeSHA256))
 }
 
-func renderValuesSchema(configSHA256 string, managedLarkEnabled, taeNetworkProbeAllowed bool) []byte {
+func renderValuesSchema(configSHA256 string, managedLarkEnabled bool, taeNetworkProbeAllowed bool) []byte {
 	probeProperties := map[string]any{
 		"enabled":        map[string]any{"type": "boolean"},
 		"policyRevision": map[string]any{"type": "string", "maxLength": 128},
@@ -352,7 +352,7 @@ func renderValuesSchema(configSHA256 string, managedLarkEnabled, taeNetworkProbe
 	return append(content, '\n')
 }
 
-func renderHelmGuard(namespace, configSHA256 string, managedLarkEnabled, taeNetworkProbeAllowed bool) []byte {
+func renderHelmGuard(namespace, configSHA256 string, managedLarkEnabled bool, taeNetworkProbeAllowed bool) []byte {
 	return []byte(fmt.Sprintf(`{{- define "agentserver-v2.guard" -}}
 {{- if ne .Release.Namespace %q -}}
 {{- fail (printf "agentserver v2 chart is locked to namespace %s, got %%s" .Release.Namespace) -}}

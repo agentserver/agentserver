@@ -20,7 +20,8 @@ const (
 func TestPlatformResourceHandlerDispatchesGlobalAndWorkspaceAuthority(t *testing.T) {
 	now := time.Date(2026, 8, 4, 1, 0, 0, 0, time.UTC)
 	commands := &recordingPlatformResourceCommands{list: corecontract.ListWorkspacesResponse{Workspaces: []corecontract.WorkspaceState{{
-		WorkspaceID: platformResourceTestWorkspace, Name: "SG", Status: "active", CurrentUserRole: "owner", Version: 1, CreatedAt: now, UpdatedAt: now,
+		WorkspaceID: platformResourceTestWorkspace, Name: "SG", Status: "active", CurrentUserRole: "owner",
+		ManagedLarkCredentialMode: "webhook_swap", Version: 1, CreatedAt: now, UpdatedAt: now,
 	}}}}
 	workload := &identityCapabilityAuthorizer{identity: "platform-gateway"}
 	users := &recordingUserAuthorizer{actorID: platformResourceTestActor}
@@ -61,6 +62,33 @@ func TestPlatformResourceHandlerRejectsUnknownJSONBeforeCommand(t *testing.T) {
 	handler.Routes().ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest || commands.createCalls != 0 || response.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("unknown JSON response = %d %s calls=%d", response.Code, response.Body.String(), commands.createCalls)
+	}
+}
+
+func TestPlatformResourceHandlerRequiresExplicitWorkspaceCredentialMode(t *testing.T) {
+	for name, body := range map[string]string{
+		"missing": `{"workspaceId":"` + platformResourceTestWorkspace + `","name":"SG"}`,
+		"unknown": `{"workspaceId":"` + platformResourceTestWorkspace + `","name":"SG","managedLarkCredentialMode":"global"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			commands := &recordingPlatformResourceCommands{}
+			handler, err := NewPlatformResourceHandler(
+				&identityCapabilityAuthorizer{identity: "platform-gateway"},
+				&recordingUserAuthorizer{actorID: platformResourceTestActor}, commands,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, corecontract.WorkspacesPath(), strings.NewReader(body))
+			request.Header.Set("X-Test-Identity", "platform-gateway")
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			handler.Routes().ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest || commands.createCalls != 0 ||
+				!strings.Contains(response.Body.String(), "managedLarkCredentialMode") {
+				t.Fatalf("mode response = %d %s calls=%d", response.Code, response.Body.String(), commands.createCalls)
+			}
+		})
 	}
 }
 

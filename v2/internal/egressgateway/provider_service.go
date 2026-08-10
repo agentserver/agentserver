@@ -8,8 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/corecredentials"
 	"github.com/agentserver/agentserver/v2/internal/egresscapability"
+	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
 type ProviderEgressPolicy interface {
@@ -88,6 +90,9 @@ func (service *ProviderService) Authorize(ctx context.Context, request OriginalR
 		return service.deny(ctx, baseAudit, "placeholder_missing")
 	}
 	placeholder := strings.TrimPrefix(authorization, "Bearer ")
+	if !egresscapability.IsPlaceholderToken(placeholder) {
+		return service.authorizeProcessEnvironment(ctx, request, principal, baseAudit, authorization, now)
+	}
 	claims, err := service.placeholders.Verify(placeholder, now)
 	if err != nil || claims.ProviderKind == "" || claims.BindingID == "" || claims.AuthorityVersion < 1 {
 		return service.deny(ctx, baseAudit, "placeholder_invalid")
@@ -133,6 +138,66 @@ func (service *ProviderService) Authorize(ctx context.Context, request OriginalR
 	return Decision{Allow: true, ReasonCode: "allowed", Headers: mutation.Headers}
 }
 
+func (service *ProviderService) authorizeProcessEnvironment(
+	ctx context.Context,
+	request OriginalRequest,
+	principal ZTIPrincipal,
+	baseAudit AuditRecord,
+	authorization string,
+	now time.Time,
+) Decision {
+	proof, ok := exactHeader(request.Headers, managedcredential.LarkAgentTraceHeader)
+	if !ok || !egresscapability.IsProcessEnvironmentProof(proof) {
+		return service.deny(ctx, baseAudit, "process_environment_proof_missing")
+	}
+	claims, err := service.placeholders.VerifyProcessEnvironment(proof, now)
+	if err != nil {
+		return service.deny(ctx, baseAudit, "process_environment_proof_invalid")
+	}
+	baseAudit = bindProcessEnvironmentClaimsAudit(baseAudit, claims)
+	if !service.policy.Allows(claims.ProviderKind, request.Host, request.Path, request.Method, claims.PolicySHA256) {
+		return service.deny(ctx, baseAudit, "provider_policy_denied")
+	}
+	credentialHeaders := cloneOriginalHeaders(request.Headers)
+	for name := range credentialHeaders {
+		if strings.EqualFold(name, ZTIHeader) {
+			delete(credentialHeaders, name)
+		}
+	}
+	mutation, resolved, err := service.resolver.AuthorizeProcessEnvironmentEgress(ctx, corecontract.AuthorizeProcessEnvironmentEgressRequest{
+		ProcessProof: proof,
+		Operation: corecontract.EgressCredentialOperation{
+			WorkspaceID: claims.WorkspaceID, SessionID: claims.SessionID, ActorID: claims.ActorID,
+			EnvironmentID: claims.EnvironmentID, RunID: claims.RunID, RunAttemptID: claims.RunAttemptID,
+			RunAttemptGeneration: claims.RunAttemptGeneration, ExecutionID: claims.ExecutionID,
+			OperationID: claims.OperationID, SandboxID: claims.SandboxID, TargetGeneration: claims.TargetGeneration,
+		},
+		ProviderKind: claims.ProviderKind, BindingID: claims.BindingID,
+		AuthorityVersion: claims.AuthorityVersion, CredentialVersion: claims.CredentialVersion,
+		PolicySHA256: claims.PolicySHA256, TAEPSM: principal.PSM,
+		Host: request.Host, Path: request.Path, Method: request.Method, Headers: credentialHeaders,
+	})
+	if err != nil || corecredentials.ValidateClosedHeaderMutation(mutation) != nil || len(mutation.Headers) != 2 {
+		return service.deny(ctx, baseAudit, "core_process_environment_denied")
+	}
+	mutatedAuthorization, authorizationOK := exactHeader(mutation.Headers, AuthorizationHeader)
+	mutatedTrace, traceOK := exactHeader(mutation.Headers, managedcredential.LarkAgentTraceHeader)
+	if !authorizationOK || !traceOK || !equalSecret(mutatedAuthorization, authorization) ||
+		mutatedTrace != managedcredential.LarkSanitizedAgentTrace || resolved.ProviderKind != claims.ProviderKind ||
+		resolved.Binding.ID != claims.BindingID || resolved.AuthorityVersion != claims.AuthorityVersion ||
+		resolved.CredentialVersion != claims.CredentialVersion {
+		return service.deny(ctx, baseAudit, "core_process_environment_denied")
+	}
+	allowAudit := baseAudit
+	allowAudit.Decision = "allow"
+	allowAudit.ReasonCode = "allowed"
+	allowAudit.CredentialVersion = resolved.CredentialVersion
+	if err := service.audit.RecordEgressDecision(ctx, allowAudit); err != nil {
+		return Decision{ReasonCode: "audit_unavailable"}
+	}
+	return Decision{Allow: true, ReasonCode: "allowed", Headers: mutation.Headers}
+}
+
 func (service *ProviderService) deny(ctx context.Context, record AuditRecord, reason string) Decision {
 	record.Decision = "deny"
 	record.ReasonCode = reason
@@ -144,6 +209,25 @@ func (service *ProviderService) deny(ctx context.Context, record AuditRecord, re
 
 func bindProviderClaimsAudit(record AuditRecord, claims egresscapability.Claims) AuditRecord {
 	record = bindClaimsAudit(record, claims)
+	record.ProviderKind = claims.ProviderKind
+	record.BindingID = claims.BindingID
+	record.AuthorityVersion = claims.AuthorityVersion
+	return record
+}
+
+func bindProcessEnvironmentClaimsAudit(record AuditRecord, claims egresscapability.ProcessEnvironmentClaims) AuditRecord {
+	record.CapabilityID = claims.CapabilityID
+	record.WorkspaceID = claims.WorkspaceID
+	record.SessionID = claims.SessionID
+	record.ActorID = claims.ActorID
+	record.EnvironmentID = claims.EnvironmentID
+	record.RunID = claims.RunID
+	record.RunAttemptID = claims.RunAttemptID
+	record.RunAttemptGeneration = claims.RunAttemptGeneration
+	record.ExecutionID = claims.ExecutionID
+	record.OperationID = claims.OperationID
+	record.SandboxID = claims.SandboxID
+	record.TargetGeneration = claims.TargetGeneration
 	record.ProviderKind = claims.ProviderKind
 	record.BindingID = claims.BindingID
 	record.AuthorityVersion = claims.AuthorityVersion

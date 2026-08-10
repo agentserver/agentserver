@@ -188,17 +188,11 @@ func renderManagedEnvironmentBootstrapJSON(config LoadedConfig) ([]byte, error) 
 }
 
 type productionBootstrapJSON struct {
-	Version     int                             `json:"version"`
-	WorkspaceID string                          `json:"workspaceId"`
-	SessionID   string                          `json:"sessionId"`
-	UserID      string                          `json:"userId"`
-	Identity    productionBootstrapIdentityJSON `json:"identity"`
-	ExecutorID  string                          `json:"executorId"`
-}
-
-type productionBootstrapIdentityJSON struct {
-	Issuer  string `json:"issuer"`
-	Subject string `json:"subject"`
+	Version     int    `json:"version"`
+	WorkspaceID string `json:"workspaceId"`
+	SessionID   string `json:"sessionId"`
+	UserID      string `json:"userId"`
+	ExecutorID  string `json:"executorId"`
 }
 
 func renderBootstrapJSON(config LoadedConfig) ([]byte, error) {
@@ -206,9 +200,6 @@ func renderBootstrapJSON(config LoadedConfig) ([]byte, error) {
 	return marshalCanonicalDocument(productionBootstrapJSON{
 		Version: 1, WorkspaceID: document.Bootstrap.WorkspaceID,
 		SessionID: document.Bootstrap.SessionID, UserID: document.Bootstrap.OwnerUserID,
-		Identity: productionBootstrapIdentityJSON{
-			Issuer: document.OAuth.ExternalOIDC.Issuer, Subject: document.Bootstrap.ExternalOIDCSubject,
-		},
 		ExecutorID: document.Bootstrap.ExecutorID,
 	})
 }

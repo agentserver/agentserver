@@ -25,17 +25,11 @@ const (
 var productionBootstrapUUIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 type productionBootstrapDocument struct {
-	Version     int                                 `json:"version"`
-	WorkspaceID string                              `json:"workspaceId"`
-	SessionID   string                              `json:"sessionId"`
-	UserID      string                              `json:"userId"`
-	Identity    productionBootstrapIdentityDocument `json:"identity"`
-	ExecutorID  string                              `json:"executorId"`
-}
-
-type productionBootstrapIdentityDocument struct {
-	Issuer  string `json:"issuer"`
-	Subject string `json:"subject"`
+	Version     int    `json:"version"`
+	WorkspaceID string `json:"workspaceId"`
+	SessionID   string `json:"sessionId"`
+	UserID      string `json:"userId"`
+	ExecutorID  string `json:"executorId"`
 }
 
 type productionBootstrapCommandResult struct {
@@ -84,9 +78,17 @@ func loadProductionBootstrap(configPath string) (coredb.ProductionBootstrap, err
 	if err := validateProductionBootstrapDocument(document); err != nil {
 		return coredb.ProductionBootstrap{}, err
 	}
+	// The external OIDC issuer and the seed owner's subject are deploy-time inputs
+	// (Pulumi config -> agentserver-core-secrets -> env), not baked into the locked
+	// bootstrap document, so the owner is seeded against exactly the issuer the core
+	// serve process validates tokens against.
+	issuer, subject, err := externalOIDCBootstrapIdentityFromEnvironment()
+	if err != nil {
+		return coredb.ProductionBootstrap{}, err
+	}
 	return coredb.ProductionBootstrap{
 		WorkspaceID: document.WorkspaceID, SessionID: document.SessionID, UserID: document.UserID,
-		ExternalOIDCIssuer: document.Identity.Issuer, ExternalOIDCSubject: document.Identity.Subject,
+		ExternalOIDCIssuer: issuer, ExternalOIDCSubject: subject,
 		ExecutorID: document.ExecutorID,
 	}, nil
 }
@@ -103,19 +105,29 @@ func validateProductionBootstrapDocument(document productionBootstrapDocument) e
 			return fmt.Errorf("production bootstrap %s must be a non-zero canonical lowercase UUID", name)
 		}
 	}
-	if len(document.Identity.Issuer) < 8 || len(document.Identity.Issuer) > 2048 ||
-		strings.TrimSpace(document.Identity.Issuer) != document.Identity.Issuer || strings.HasSuffix(document.Identity.Issuer, "/") {
-		return errors.New("production bootstrap identity.issuer must be bounded canonical URL text without a trailing slash")
-	}
-	issuer, err := url.Parse(document.Identity.Issuer)
-	if err != nil || issuer.Scheme != "https" || issuer.Host == "" || issuer.Hostname() == "" || issuer.User != nil ||
-		issuer.RawQuery != "" || issuer.Fragment != "" || issuer.Opaque != "" {
-		return errors.New("production bootstrap identity.issuer must be an absolute HTTPS URL without credentials, query, or fragment")
-	}
-	if document.Identity.Subject == "" || len(document.Identity.Subject) > 2048 || strings.ContainsRune(document.Identity.Subject, 0) {
-		return errors.New("production bootstrap identity.subject must contain between 1 and 2048 bytes without NUL")
-	}
 	return nil
+}
+
+// externalOIDCBootstrapIdentityFromEnvironment reads and validates the external
+// OIDC issuer and seed-owner subject that the deploy-time environment injects
+// (from the Pulumi-managed core Secret). The rules mirror the core serve issuer
+// validation and the former baked bootstrap identity checks.
+func externalOIDCBootstrapIdentityFromEnvironment() (string, string, error) {
+	issuer := os.Getenv(coreExternalOIDCIssuerEnvironment)
+	if len(issuer) < 8 || len(issuer) > 2048 ||
+		strings.TrimSpace(issuer) != issuer || strings.HasSuffix(issuer, "/") {
+		return "", "", fmt.Errorf("%s must be bounded canonical URL text without a trailing slash", coreExternalOIDCIssuerEnvironment)
+	}
+	parsed, err := url.Parse(issuer)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil ||
+		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Opaque != "" {
+		return "", "", fmt.Errorf("%s must be an absolute HTTPS URL without credentials, query, or fragment", coreExternalOIDCIssuerEnvironment)
+	}
+	subject := os.Getenv(coreExternalOIDCSubjectEnvironment)
+	if subject == "" || len(subject) > 2048 || strings.ContainsRune(subject, 0) {
+		return "", "", fmt.Errorf("%s must contain between 1 and 2048 bytes without NUL", coreExternalOIDCSubjectEnvironment)
+	}
+	return issuer, subject, nil
 }
 
 func readProductionBootstrapFile(filePath string) ([]byte, error) {

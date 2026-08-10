@@ -23,7 +23,7 @@ const (
 	managedLarkCLIPath             = "/usr/local/bin/lark-cli"
 	managedLarkSkillPath           = "/opt/agentserver/packs/lark-readonly/SKILL.md"
 	managedSandboxRootPath         = "/workspace"
-	managedNetworkEvidenceVersion  = 1
+	managedNetworkEvidenceVersion  = 3
 	ProductionTAEPSM               = "bytedance.sandbox.agentserver"
 	ProductionByteCloudJWTEndpoint = "https://cloud-i18n-sg.bytedance.net"
 	ProductionTAEControlPlaneHost  = "controlplane.sg.ai-sandbox-i18n.byted.org"
@@ -103,14 +103,17 @@ type ManagedTAENetworkEvidenceDocument struct {
 // PreparePolicyBootstrapDocument derives the only pre-approval production
 // stage from an otherwise valid SG document. It deliberately removes every
 // field that could claim an approved policy, verified TAE network path, or
-// active managed runtime. The resulting chart can expose only the deny-only
-// policy Webhook while the ordinary platform remains available.
+// active managed runtime. The resulting chart exposes only the deny-only
+// policy Webhook; the ordinary platform remains available.
 func PreparePolicyBootstrapDocument(document ConfigDocument) (ConfigDocument, error) {
 	loaded, err := ValidateConfig(document)
 	if err != nil {
 		return ConfigDocument{}, fmt.Errorf("validate policy bootstrap source: %w", err)
 	}
-	document = loaded.Document
+	return preparePolicyBootstrapDocument(loaded.Document)
+}
+
+func preparePolicyBootstrapDocument(document ConfigDocument) (ConfigDocument, error) {
 	if !document.Managed.Enabled {
 		return ConfigDocument{}, errors.New("managed executor must be enabled before preparing policy bootstrap")
 	}
@@ -518,6 +521,9 @@ func validateManagedExecutor(managed ManagedExecutorDocument, document ConfigDoc
 		Published: managed.TAE.Policy.Published, Approved: managed.TAE.Policy.Approved,
 		EvidenceRef: managed.TAE.Policy.EvidenceRef,
 	}
+	if !managed.TAE.Policy.PublicWebhookRequired {
+		return LoadedConfig{}, errors.New("managedExecutor.tae.policy must require the shared credential-policy webhook")
+	}
 	if managed.TAE.Policy.WebhookMode == "url" {
 		if managed.TAE.Policy.WebhookURL != ProductionEgressAuthorizerURL || managed.TAE.Policy.WebhookPSM != "" {
 			return LoadedConfig{}, fmt.Errorf("managedExecutor.tae.policy URL webhook must be exactly %s", ProductionEgressAuthorizerURL)
@@ -606,7 +612,7 @@ func managedRuntimeProfileDigest(document ConfigDocument, managed ManagedExecuto
 		TAENetworkBindingSHA256 string `json:"taeNetworkBindingSha256"`
 		TAEPolicyRevision       string `json:"taePolicyRevision"`
 	}{
-		Version: 1, Platform: document.Platform, Image: document.Images.ManagedSandbox,
+		Version: 3, Platform: document.Platform, Image: document.Images.ManagedSandbox,
 		Root: managed.Environment.Root.Path, CodexRelease: managed.Environment.Compatibility.CodexRelease,
 		CodexCommit: managed.Environment.Compatibility.CodexCommit, CodexSHA256: managed.Environment.Compatibility.CodexSHA256,
 		LarkEnabled: larkEnabled,
@@ -641,7 +647,7 @@ func managedPackSetDigest(managed ManagedExecutorDocument) string {
 		TAEPolicyBindingSHA256  string `json:"taePolicyBindingSha256"`
 		TAENetworkBindingSHA256 string `json:"taeNetworkBindingSha256"`
 	}{
-		Version: 1, LarkEnabled: managed.Lark.Enabled,
+		Version: 3, LarkEnabled: managed.Lark.Enabled,
 		PackID: func() string {
 			if managed.Lark.Enabled {
 				return larkegresspolicy.PackID
@@ -683,7 +689,8 @@ func managedOwnerPolicyDigest(managed ManagedExecutorDocument) string {
 		TAEPolicyBindingSHA256  string   `json:"taePolicyBindingSha256"`
 		TAENetworkBindingSHA256 string   `json:"taeNetworkBindingSha256"`
 	}{
-		Version: 1, LarkEnabled: managed.Lark.Enabled, WorkspaceAllowlist: managed.WorkspaceAllowlist,
+		Version: 3, LarkEnabled: managed.Lark.Enabled,
+		WorkspaceAllowlist:      managed.WorkspaceAllowlist,
 		EnvironmentID:           managed.Environment.EnvironmentID,
 		RuntimeProfileSHA256:    managed.Environment.RuntimeProfileSHA256,
 		PackSetSHA256:           managed.Environment.PackSetSHA256,

@@ -9,6 +9,8 @@ import (
 )
 
 func TestLoadProductionBootstrapAcceptsClosedProjectedConfig(t *testing.T) {
+	t.Setenv(coreExternalOIDCIssuerEnvironment, "https://idp.example.test/oidc")
+	t.Setenv(coreExternalOIDCSubjectEnvironment, "production-owner")
 	document := validProductionBootstrapDocument()
 	raw, err := json.Marshal(document)
 	if err != nil {
@@ -34,19 +36,18 @@ func TestLoadProductionBootstrapAcceptsClosedProjectedConfig(t *testing.T) {
 	}
 	if bootstrap.WorkspaceID != document.WorkspaceID || bootstrap.SessionID != document.SessionID ||
 		bootstrap.UserID != document.UserID || bootstrap.ExecutorID != document.ExecutorID ||
-		bootstrap.ExternalOIDCIssuer != document.Identity.Issuer || bootstrap.ExternalOIDCSubject != document.Identity.Subject {
+		bootstrap.ExternalOIDCIssuer != "https://idp.example.test/oidc" || bootstrap.ExternalOIDCSubject != "production-owner" {
 		t.Fatalf("production bootstrap = %+v", bootstrap)
 	}
 }
 
 func TestLoadProductionBootstrapRejectsOpenWorldOrInsecureConfig(t *testing.T) {
+	t.Setenv(coreExternalOIDCIssuerEnvironment, "https://idp.example.test/oidc")
+	t.Setenv(coreExternalOIDCSubjectEnvironment, "production-owner")
 	valid := validProductionBootstrapDocument()
 	for name, mutate := range map[string]func(*productionBootstrapDocument){
-		"version":               func(value *productionBootstrapDocument) { value.Version = 2 },
-		"workspace":             func(value *productionBootstrapDocument) { value.WorkspaceID = "not-a-uuid" },
-		"http issuer":           func(value *productionBootstrapDocument) { value.Identity.Issuer = "http://idp.example.test" },
-		"issuer trailing slash": func(value *productionBootstrapDocument) { value.Identity.Issuer += "/" },
-		"empty subject":         func(value *productionBootstrapDocument) { value.Identity.Subject = "" },
+		"version":   func(value *productionBootstrapDocument) { value.Version = 2 },
+		"workspace": func(value *productionBootstrapDocument) { value.WorkspaceID = "not-a-uuid" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			document := valid
@@ -74,13 +75,28 @@ func TestLoadProductionBootstrapRejectsOpenWorldOrInsecureConfig(t *testing.T) {
 	}
 }
 
+func TestLoadProductionBootstrapRejectsInvalidEnvironmentIdentity(t *testing.T) {
+	for name, identity := range map[string][2]string{
+		"http issuer":           {"http://idp.example.test", "production-owner"},
+		"issuer trailing slash": {"https://idp.example.test/", "production-owner"},
+		"empty subject":         {"https://idp.example.test", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(coreExternalOIDCIssuerEnvironment, identity[0])
+			t.Setenv(coreExternalOIDCSubjectEnvironment, identity[1])
+			if _, err := loadProductionBootstrap(writeProductionBootstrapDocument(t, validProductionBootstrapDocument())); err == nil {
+				t.Fatal("unsafe production bootstrap environment was accepted")
+			}
+		})
+	}
+}
+
 func validProductionBootstrapDocument() productionBootstrapDocument {
 	return productionBootstrapDocument{
 		Version:     1,
 		WorkspaceID: "40000000-0000-4000-8000-000000000004",
 		SessionID:   "50000000-0000-4000-8000-000000000005",
 		UserID:      "10000000-0000-4000-8000-000000000001",
-		Identity:    productionBootstrapIdentityDocument{Issuer: "https://idp.example.test/oidc", Subject: "production-owner"},
 		ExecutorID:  "20000000-0000-4000-8000-000000000002",
 	}
 }

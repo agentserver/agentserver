@@ -22,7 +22,8 @@ Platform user
 Platform gateway ───────────────► v2 Core
                                   │ sealed binding + audit
 execution gateway ──────────────►│ resolve authority (operation scope)
-                                  │ short-lived placeholder
+                                  │ workspace mode + binding/version
+                                  │ placeholder or process token+proof
 TAE Agent Gateway ─► egress-authorizer ─► Core resolve
                                       │ one-hop header mutation
                                       ▼
@@ -32,6 +33,18 @@ TAE Agent Gateway ─► egress-authorizer ─► Core resolve
 Core 是唯一持有 credential sealing keyring、读取 sealed secret、执行 provider
 adapter 的组件。egress-authorizer 只持有 placeholder verification keyring，
 负责 ZTI、TAE policy 和最终请求 tuple 校验；它不会持有 workspace secret。
+
+Managed Lark credential delivery 是 workspace 级配置。mode 的唯一事实源是 Core workspace row；创建
+workspace 时必须显式选择，owner 通过 workspace version CAS 切换并产生独立审计：
+
+- `webhook_swap` 保持上述 placeholder → Policy Webhook → Core header mutation 数据流；
+- `process_env` 由 executor-gateway 在精确 TAE `lark-cli` process start 前通过 mTLS 调 Core，Core
+  live-authorize、解封后把真实 access token 返回给 executor-gateway，由后者只注入该进程环境并附带
+  operation-bound proof。请求仍经 Policy Webhook；egress-authorizer/Core 验 proof、重查 workspace
+  mode/binding/version，并常量时间比较 bearer。
+
+两种模式互斥，不存在部署默认、自动探测或 fallback。managed deployment 始终部署 egress-authorizer，
+并装载两种 mode 共用的 placeholder/proof 签名与验签材料。
 
 ## API 边界
 
@@ -46,11 +59,15 @@ Platform 使用以下资源路由：
 
 - executor gateway 调 `...:resolve-authority`，取得 binding/version reference；
 - egress-authorizer 调 `...:resolve`，取得 closed-world provider header mutation；
+- egress-authorizer 调 `...:authorize-process-env`，验证真实 bearer + operation proof 并取得清洗后的 pass-through mutation；
 - egress-authorizer 调 `credential-use-events`，写入最小化审计事件。
+- workspace 当前为 `process_env` 时 executor-gateway 调
+  `POST /internal/v2/execution/credentials/lark:resolve`，只为 live `shell + lark-cli + TAE process_start`
+  取得真实 access token，并以 `Cache-Control: no-store` 传输。
 
-resolve response 不包含 token、AK/SK、refresh token、sealed bytes 或 provider
-response body。缺少 binding 是正常 deny（`credential_not_configured`），不阻塞
-managed sandbox 或部署启动。
+egress resolve response 不包含 token、AK/SK、refresh token、sealed bytes 或 provider response body；direct
+Lark resolve 是唯一返回真实 access token 的窄接口，绝不返回 refresh token、sealed bytes 或任意 provider
+header。缺少 binding 以 `configured=false` 表达，不阻塞 managed sandbox 或部署启动，也不回退到另一 mode。
 
 ## Provider 规则
 
@@ -68,10 +85,14 @@ host、method、path 或 header 一律拒绝；header mutation 只允许 provide
 
 ## 部署约束
 
-生产 deployment config 只包含 Core sealing/placeholder keyring 的 Secret 名称
+生产 deployment config 只包含 Core sealing keyring、共用 placeholder/proof keyring 的 Secret 名称
 和 provider policy lock，不包含任何 workspace token、client secret、AK/SK、grant
 或 expiry。managed executor 的 Helm bundle 不创建 Lark bootstrap Job/Secret；
 管理员在 Platform 配置 credential 后即可动态生效。
+
+production schema、generated Helm values/schema/guard、Pulumi 与 workload environment 都不接受 mode。
+切换 workspace mode 不改变 TAE policy/network evidence、runtime profile、pack set 或 owner policy digest，
+也不要求发布 Chart；execution gateway 在每次进程启动时从 Core 获取当前值。
 
 ## 安全与故障语义
 
@@ -80,8 +101,10 @@ host、method、path 或 header 一律拒绝；header mutation 只允许 provide
 - 任何 Core、audit、provider exchange 或 policy 依赖超时都 fail closed；
 - 审计只记录 scope、provider、target、decision/reason，不记录 Authorization、
   token、AK/SK、sealed secret 或响应体；
-- secret 轮换推进 `credentialVersion`，已有短期 placeholder 会 materialize 最新版本；撤销、owner/
-  policy authority 变化推进 `authorityVersion`，立即 fence 旧 placeholder。
+- secret 轮换推进 `credentialVersion`；撤销、owner/policy authority 变化推进 `authorityVersion`。旧
+  placeholder 或 process proof 会在逐请求 live check 中立即 fail closed；
+- `process_env` 的真实 token 对目标 `lark-cli` 及其子进程可见，已经进入进程内存的字节无法远程擦除；
+  但每个 managed egress 请求仍需要短期 proof，并受与 `webhook_swap` 相同的 host/path/method/revoke enforcement。
 
 这使凭据配置成为 v2 Core 的一部分，同时保留统一 execution gateway 和现有
 egress gateway 的职责分离。

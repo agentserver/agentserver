@@ -43,6 +43,32 @@ func TestRenderProducesDeterministicStagedProductionBundle(t *testing.T) {
 	}
 }
 
+func TestRenderContainsNoDeploymentWideManagedCredentialMode(t *testing.T) {
+	loaded, err := ValidateConfig(validConfigDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := Render(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chart, err := RenderHelmChart(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range append(append([]RenderedFile(nil), bundle.Files...), chart.Files...) {
+		for _, forbidden := range [][]byte{
+			[]byte("AGENTSERVER_V2_MANAGED_LARK_CREDENTIAL_MODE"),
+			[]byte("managedLarkCredentialMode"),
+			[]byte(`"credentialMode"`),
+		} {
+			if bytes.Contains(file.Content, forbidden) {
+				t.Fatalf("rendered deployment file %s contains deployment-wide mode %q", file.Name, forbidden)
+			}
+		}
+	}
+}
+
 func TestRenderManagedExecutorKillSwitchOmitsManagedRuntimeAndAuthorities(t *testing.T) {
 	document := validConfigDocument()
 	document.Managed.Enabled = false
@@ -589,7 +615,10 @@ func TestRenderEmbedsExactBootstrapAndWorkerContracts(t *testing.T) {
 	if err := json.Unmarshal([]byte(bootstrapConfig), &bootstrapDocument); err != nil {
 		t.Fatal(err)
 	}
-	if bootstrapDocument.ExecutorID != loaded.Document.Bootstrap.ExecutorID || bootstrapDocument.Identity.Issuer != loaded.Document.OAuth.ExternalOIDC.Issuer {
+	if bootstrapDocument.ExecutorID != loaded.Document.Bootstrap.ExecutorID ||
+		bootstrapDocument.WorkspaceID != loaded.Document.Bootstrap.WorkspaceID ||
+		bootstrapDocument.SessionID != loaded.Document.Bootstrap.SessionID ||
+		bootstrapDocument.UserID != loaded.Document.Bootstrap.OwnerUserID {
 		t.Fatalf("bootstrap document = %+v", bootstrapDocument)
 	}
 	var workerDocument workerDeploymentJSON

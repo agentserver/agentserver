@@ -537,6 +537,35 @@
         }
       }
     },
+    "/internal/v2/egress/credentials:authorize-process-env": {
+      "post": {
+        "operationId": "authorizeProcessEnvironmentEgress",
+        "description": "Egress-authorizer-only validation of a real process_env bearer. Core independently verifies the compact operation proof, rechecks the workspace's current mode and exact live binding version, compares the bearer in constant time, and returns a sanitized pass-through mutation.",
+        "requestBody": {"required": true, "x-agentserver-maxBytes": 131072, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AuthorizeProcessEnvironmentEgressRequest"}}}},
+        "responses": {
+          "200": {"description": "Closed-world bearer pass-through with the sensitive proof header sanitized", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ResolveEgressCredentialResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"},
+          "503": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
+    "/internal/v2/execution/credentials/lark:resolve": {
+      "post": {
+        "operationId": "resolveExecutionLarkCredential",
+        "description": "Executor-gateway-only process_env delivery for one exact live TAE shell/lark-cli process_start. The returned workspace token is never exposed to Platform, harness, or any non-Lark process.",
+        "requestBody": {"required": true, "x-agentserver-maxBytes": 131072, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ResolveExecutionLarkCredentialRequest"}}}},
+        "responses": {
+          "200": {"description": "Current workspace mode and exact version-fenced Lark process credential", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ResolveExecutionLarkCredentialResponse"}}}},
+          "400": {"$ref": "#/components/responses/CommandError"},
+          "403": {"$ref": "#/components/responses/CommandError"},
+          "404": {"$ref": "#/components/responses/CommandError"},
+          "409": {"$ref": "#/components/responses/CommandError"},
+          "503": {"$ref": "#/components/responses/CommandError"}
+        }
+      }
+    },
     "/internal/v2/egress/credential-use-events": {
       "post": {
         "operationId": "recordEgressCredentialAuditEvent",
@@ -2064,8 +2093,9 @@
       "ResolveEgressCredentialAuthorityResponse": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["providerKind", "bindingId", "authorityVersion", "credentialVersion", "policySha256", "authorizedAt"],
+        "required": ["credentialMode", "providerKind", "bindingId", "authorityVersion", "credentialVersion", "policySha256", "authorizedAt"],
         "properties": {
+          "credentialMode": {"enum": ["webhook_swap", "process_env"]},
           "providerKind": {"type": "string", "minLength": 1, "maxLength": 128},
           "bindingId": {"oneOf": [{"$ref": "#/components/schemas/UUID"}, {"const": ""}]},
           "authorityVersion": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
@@ -2104,6 +2134,58 @@
           "accessExpiresAt": {"type": "string", "format": "date-time"},
           "credentialVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
           "resolvedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "ResolveExecutionLarkCredentialRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["operation", "taePsm", "policySha256", "toolName", "executable", "bindingId", "authorityVersion", "credentialVersion"],
+        "properties": {
+          "operation": {"$ref": "#/components/schemas/EgressCredentialOperation"},
+          "taePsm": {"type": "string", "minLength": 1, "maxLength": 256},
+          "policySha256": {"$ref": "#/components/schemas/SHA256"},
+          "toolName": {"const": "shell"},
+          "executable": {"const": "lark-cli"},
+          "bindingId": {"$ref": "#/components/schemas/UUID"},
+          "authorityVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "credentialVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+        }
+      },
+      "ResolveExecutionLarkCredentialResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["configured", "credentialMode", "providerKind", "policySha256", "taePsm", "resolvedAt"],
+        "properties": {
+          "configured": {"type": "boolean"},
+          "credentialMode": {"const": "process_env"},
+          "accessToken": {"type": "string", "minLength": 1, "maxLength": 32768, "x-agentserver-sensitive": true},
+          "providerKind": {"const": "lark"},
+          "bindingId": {"$ref": "#/components/schemas/UUID"},
+          "authorityVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "credentialVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "policySha256": {"$ref": "#/components/schemas/SHA256"},
+          "taePsm": {"type": "string", "minLength": 1, "maxLength": 256},
+          "resolvedAt": {"type": "string", "format": "date-time"},
+          "accessExpiresAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "AuthorizeProcessEnvironmentEgressRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["processProof", "operation", "providerKind", "bindingId", "authorityVersion", "credentialVersion", "policySha256", "taePsm", "host", "path", "method", "headers"],
+        "properties": {
+          "processProof": {"type": "string", "minLength": 1, "maxLength": 1024, "x-agentserver-sensitive": true},
+          "operation": {"$ref": "#/components/schemas/EgressCredentialOperation"},
+          "providerKind": {"const": "lark"},
+          "bindingId": {"$ref": "#/components/schemas/UUID"},
+          "authorityVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "credentialVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "policySha256": {"$ref": "#/components/schemas/SHA256"},
+          "taePsm": {"type": "string", "minLength": 1, "maxLength": 256},
+          "host": {"type": "string", "minLength": 1, "maxLength": 512},
+          "path": {"type": "string", "minLength": 1, "maxLength": 4096},
+          "method": {"type": "string", "minLength": 1, "maxLength": 16},
+          "headers": {"type": "object", "minProperties": 2, "maxProperties": 128, "additionalProperties": {"type": "string", "maxLength": 32768}, "x-agentserver-sensitive": true}
         }
       },
       "RecordEgressCredentialAuditRequest": {

@@ -52,6 +52,7 @@ const (
 	coreHydraServerNameEnvironment          = "AGENTSERVER_V2_HYDRA_SERVER_NAME"
 	coreHydraInsecureHTTPEnvironment        = "AGENTSERVER_V2_HYDRA_ALLOW_INSECURE_HTTP"
 	coreExternalOIDCIssuerEnvironment       = "AGENTSERVER_V2_EXTERNAL_OIDC_ISSUER"
+	coreExternalOIDCSubjectEnvironment      = "AGENTSERVER_V2_EXTERNAL_OIDC_SUBJECT"
 	coreExternalOIDCClientEnvironment       = "AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_ID"
 	coreExternalOIDCSecretEnvironment       = "AGENTSERVER_V2_EXTERNAL_OIDC_CLIENT_SECRET"
 	coreExternalOIDCRedirectEnvironment     = "AGENTSERVER_V2_EXTERNAL_OIDC_REDIRECT_URL"
@@ -77,6 +78,7 @@ const (
 	coreManagedExecutorEnabledEnvironment   = "AGENTSERVER_V2_MANAGED_EXECUTOR_ENABLED"
 	coreEgressPlaceholderKeyringEnvironment = "AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEYRING_FILE"
 	coreCredentialSealingKeyringEnvironment = "AGENTSERVER_V2_CREDENTIAL_SEALING_KEYRING_FILE"
+	coreManagedTAEPSMEnvironment            = "AGENTSERVER_V2_MANAGED_TAE_PSM"
 )
 
 type coreProductionRunCapabilityConfig struct {
@@ -132,6 +134,18 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	}
 	if mode == coreServeProduction && strings.TrimSpace(getenv(coreManagedExecutorEnabledEnvironment)) == "" {
 		return fmt.Errorf("%s is required in production", coreManagedExecutorEnabledEnvironment)
+	}
+	managedTAEPSM := ""
+	if managedExecutorEnabled {
+		managedTAEPSM, err = requiredConfiguration(getenv, coreManagedTAEPSMEnvironment)
+		if err != nil {
+			return err
+		}
+		if len(managedTAEPSM) > 256 || strings.ContainsAny(managedTAEPSM, "\x00\r\n") {
+			return fmt.Errorf("%s is invalid", coreManagedTAEPSMEnvironment)
+		}
+	} else if strings.TrimSpace(getenv(coreManagedTAEPSMEnvironment)) != "" {
+		return errors.New("managed TAE PSM requires the managed executor")
 	}
 	sandboxGatewayIdentity := ""
 	if managedExecutorEnabled {
@@ -410,14 +424,15 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	store := coredb.NewStateStore(pool)
 	var workspaceCredentialHandler *coreserver.WorkspaceCredentialHandler
 	var egressCredentialHandler *coreserver.EgressCredentialHandler
+	var executionCredentialHandler *coreserver.ExecutionCredentialHandler
 	if managedExecutorEnabled {
-		placeholderKeyringFile, keyringErr := requiredConfiguration(getenv, coreEgressPlaceholderKeyringEnvironment)
-		if keyringErr != nil {
-			return keyringErr
-		}
 		sealingKeyringFile, sealingErr := requiredConfiguration(getenv, coreCredentialSealingKeyringEnvironment)
 		if sealingErr != nil {
 			return sealingErr
+		}
+		placeholderKeyringFile, keyringErr := requiredConfiguration(getenv, coreEgressPlaceholderKeyringEnvironment)
+		if keyringErr != nil {
+			return keyringErr
 		}
 		placeholderVerifier, loadErr := egresscapability.LoadVerifier(placeholderKeyringFile)
 		if loadErr != nil {
@@ -441,12 +456,16 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 			return err
 		}
 		egressCredentialService, serviceErr := coreserver.NewEgressCredentialService(coreserver.EgressCredentialServiceConfig{
-			Store: store, Registry: registry, Sealer: sealer, Placeholders: capabilityVerifier, Now: time.Now,
+			Store: store, Registry: registry, Sealer: sealer, Placeholders: capabilityVerifier,
+			ProcessProofs: placeholderVerifier, ProcessEnvironmentTAEPSM: managedTAEPSM, Now: time.Now,
 		})
 		if serviceErr != nil {
 			return fmt.Errorf("configure v2 egress credential resolver: %w", serviceErr)
 		}
 		egressCredentialHandler, err = coreserver.NewEgressCredentialHandler(authorizer, egressAuthorizer, egressCredentialService)
+		if err == nil {
+			executionCredentialHandler, err = coreserver.NewExecutionCredentialHandler(authorizer, egressCredentialService)
+		}
 		if err != nil {
 			return err
 		}
@@ -672,7 +691,11 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	if egressCredentialHandler != nil {
 		handler.Handle(corecontract.ResolveEgressCredentialAuthorityPath, egressCredentialHandler)
 		handler.Handle(corecontract.ResolveEgressCredentialPath, egressCredentialHandler)
+		handler.Handle(corecontract.AuthorizeProcessEnvironmentEgressPath, egressCredentialHandler)
 		handler.Handle(corecontract.RecordEgressCredentialAuditPath, egressCredentialHandler)
+	}
+	if executionCredentialHandler != nil {
+		handler.Handle(corecontract.ResolveExecutionLarkCredentialPath, executionCredentialHandler)
 	}
 	handler.Handle(corecontract.ListExecutorEnvironmentsPath, environmentHandler)
 	handler.Handle(corecontract.PrepareExecutionPath, executionHandler)

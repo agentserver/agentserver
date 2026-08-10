@@ -2,6 +2,7 @@ package coredb
 
 import (
 	"crypto/sha256"
+	"strings"
 	"testing"
 	"testing/fstest"
 )
@@ -11,8 +12,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 25 {
-		t.Fatalf("migration count = %d, want 25", len(migrations))
+	if len(migrations) != 27 {
+		t.Fatalf("migration count = %d, want 27", len(migrations))
 	}
 	migration := migrations[0]
 	if migration.Version != 1 || migration.Name != "session_run_kernel" {
@@ -92,6 +93,25 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	if migrations[24].Version != 25 || migrations[24].Name != "workspace_credential_audit_context" {
 		t.Fatalf("twenty-fifth migration identity = %04d_%s, want 0025_workspace_credential_audit_context", migrations[24].Version, migrations[24].Name)
+	}
+	if migrations[25].Version != 26 || migrations[25].Name != "workspace_credential_process_env_audit" {
+		t.Fatalf("twenty-sixth migration identity = %04d_%s, want 0026_workspace_credential_process_env_audit", migrations[25].Version, migrations[25].Name)
+	}
+	if migrations[26].Version != 27 || migrations[26].Name != "workspace_managed_credential_mode" {
+		t.Fatalf("twenty-seventh migration identity = %04d_%s, want 0027_workspace_managed_credential_mode", migrations[26].Version, migrations[26].Name)
+	}
+	if !strings.Contains(migrations[25].SQL, "'process_env'") {
+		t.Fatal("process environment audit migration does not admit the process_env stage")
+	}
+	for _, required := range []string{
+		"ADD COLUMN managed_lark_credential_mode",
+		"ALTER COLUMN managed_lark_credential_mode DROP DEFAULT",
+		"CREATE TABLE workspace_managed_credential_mode_events",
+		"previous_mode <> current_mode",
+	} {
+		if !strings.Contains(migrations[26].SQL, required) {
+			t.Fatalf("workspace mode migration is missing %q", required)
+		}
 	}
 }
 

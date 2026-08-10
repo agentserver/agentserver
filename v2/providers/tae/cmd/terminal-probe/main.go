@@ -292,7 +292,7 @@ func waitReady(ctx context.Context, control adapter.ControlPlane, sessionID stri
 			return adapter.ControlSession{}, errors.New("terminal session was deleted before becoming ready")
 		}
 		if session.SandboxdEnabled {
-			if session.Command != managedruntime.ExecutablePath {
+			if adapter.RuntimeCommandConflicts(session.Command) {
 				return adapter.ControlSession{}, errors.New("terminal session retained an unexpected startup command")
 			}
 			return session, nil

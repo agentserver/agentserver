@@ -93,7 +93,7 @@ func TestSDKControlPlaneCreateSelectsManagedRuntimeAndOmitsTerminalSessionImage(
 			Code: 0,
 			Data: &sandbox.CreateSessionResponseData{SessionInfoResponseData: sandbox.SessionInfoResponseData{
 				SessionID: "session-1", Status: "running", ExpiresAt: "2026-08-06T21:00:00Z",
-				SandboxdEnabled: true, Command: managedruntime.ExecutablePath, Metadata: metadata,
+				SandboxdEnabled: true, Metadata: metadata,
 			}},
 		})
 	})
@@ -112,7 +112,7 @@ func TestSDKControlPlaneCreateSelectsManagedRuntimeAndOmitsTerminalSessionImage(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.ID != "session-1" || !created.SandboxdEnabled || created.Command != managedruntime.ExecutablePath ||
+	if created.ID != "session-1" || !created.SandboxdEnabled || created.Command != "" ||
 		!reflect.DeepEqual(created.Metadata, metadata) {
 		t.Fatalf("created Terminal Session = %+v", created)
 	}

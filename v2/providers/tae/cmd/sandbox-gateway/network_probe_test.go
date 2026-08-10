@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -37,6 +38,7 @@ func TestExecuteNetworkProbeCoversJWTControlDataAndCleanup(t *testing.T) {
 	checks := checksByName(report.Checks)
 	if checks["jwt_force_refresh"].Attempts != config.connectivityAttempts ||
 		checks["control_search_missing"].Attempts != config.connectivityAttempts ||
+		checks["data_exec_terminal"].Succeeded != config.lifecycleAttempts ||
 		checks["data_read_lark_cli"].BytesRead != int64(len(cli)) ||
 		checks["data_read_lark_skill"].BytesRead != int64(len(skill)) ||
 		checks["control_cleanup"].Failed != 0 {
@@ -50,6 +52,24 @@ func TestExecuteNetworkProbeCoversJWTControlDataAndCleanup(t *testing.T) {
 		if bytes.Contains(bytes.ToLower(raw), []byte(forbidden)) {
 			t.Fatalf("report contains forbidden material label %q: %s", forbidden, raw)
 		}
+	}
+}
+
+func TestExecuteNetworkProbeAcceptsTAEOmittedCommandAndProvesRuntimeThroughDataPlane(t *testing.T) {
+	cli := []byte("fake pinned lark cli")
+	skill := []byte("# fake pinned skill\n")
+	control := &probeControl{omitCommand: true}
+	data := &probeData{cli: cli, skill: skill}
+	report, err := executeNetworkProbe(t.Context(), testNetworkProbeConfig(cli, skill), &taeClients{
+		refresh: func(context.Context) error { return nil }, control: control, data: data, close: func() {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks := checksByName(report.Checks)
+	if !report.Passed || checks["control_wait_ready"].Failed != 0 || checks["data_exec_terminal"].Succeeded != 1 ||
+		checks["data_exec_lark_version"].Succeeded != 1 {
+		t.Fatalf("report=%+v checks=%+v", report, checks)
 	}
 }
 
@@ -179,6 +199,7 @@ type probeControl struct {
 	session     adapter.ControlSession
 	deleted     bool
 	createError error
+	omitCommand bool
 }
 
 func (control *probeControl) Create(_ context.Context, input adapter.CreateInput) (adapter.ControlSession, error) {
@@ -189,9 +210,13 @@ func (control *probeControl) Create(_ context.Context, input adapter.CreateInput
 		return adapter.ControlSession{}, &adapter.RequestError{Code: "bad_request", Cause: errors.New("unexpected managed runtime command")}
 	}
 	control.deleted = false
+	command := input.Command
+	if control.omitCommand {
+		command = ""
+	}
 	control.session = adapter.ControlSession{
 		ID: "tae-probe-session", Status: "running", ExpiresAt: time.Now().Add(input.TTL),
-		SandboxdEnabled: true, Command: input.Command, Metadata: cloneTestStrings(input.Metadata),
+		SandboxdEnabled: true, Command: command, Metadata: cloneTestStrings(input.Metadata),
 	}
 	return control.session, nil
 }
@@ -232,13 +257,28 @@ type probeData struct {
 	startError error
 }
 
-func (data *probeData) StartProcess(context.Context, string, adapter.StartProcessInput) (adapter.EventStream, error) {
+func (data *probeData) StartProcess(_ context.Context, _ string, input adapter.StartProcessInput) (adapter.EventStream, error) {
 	if data.startError != nil {
 		return nil, data.startError
 	}
+	var stdout string
+	switch input.Executable {
+	case "/bin/sh":
+		if !reflect.DeepEqual(input.Arguments, []string{"-lc", "printf terminal-ok"}) || input.WorkingDirectory != probeWorkspacePath {
+			return nil, errors.New("unexpected terminal probe request")
+		}
+		stdout = "terminal-ok"
+	case probeLarkCLIPath:
+		if !reflect.DeepEqual(input.Arguments, []string{"--version"}) || input.WorkingDirectory != probeWorkspacePath {
+			return nil, errors.New("unexpected lark version probe request")
+		}
+		stdout = "lark-cli version test\n"
+	default:
+		return nil, errors.New("unexpected probe executable")
+	}
 	return &probeEventStream{events: []adapter.StreamEvent{
 		{Name: "process.start", Data: map[string]any{"pid": 123}},
-		{Name: "process.data", Data: map[string]any{"stdout": "lark-cli version test\n"}},
+		{Name: "process.data", Data: map[string]any{"stdout": stdout}},
 		{Name: "process.exit", Data: map[string]any{"exit_code": 0}},
 	}}, nil
 }

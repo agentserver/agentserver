@@ -349,10 +349,10 @@ func validActivationNetworkReport(document ConfigDocument, revision string) taen
 	document = loaded.Document
 	const connectivityAttempts = 20
 	const lifecycleAttempts = 1
-	checks := make([]taenetworkreport.Check, 0, 14)
+	checks := make([]taenetworkreport.Check, 0, 15)
 	for _, name := range []string{
 		"jwt_force_refresh", "control_search_missing", "control_create", "control_search_created",
-		"control_wait_ready", "control_update_ttl", "data_exec_lark_version", "data_stat_lark_cli",
+		"control_wait_ready", "control_update_ttl", "data_exec_terminal", "data_exec_lark_version", "data_stat_lark_cli",
 		"data_read_lark_cli", "data_stat_lark_skill", "data_read_lark_skill", "control_delete",
 		"control_confirm_deleted", "control_cleanup",
 	} {

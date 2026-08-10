@@ -431,7 +431,7 @@ func (provider *Provider) providerSandbox(session ControlSession) (sandboxgatewa
 		if !session.SandboxdEnabled {
 			return sandboxgateway.ProviderSandbox{}, &sandboxgateway.ProviderError{Code: "sandboxd_not_enabled", Cause: errors.New("TAE Terminal session does not expose sandboxd")}
 		}
-		if session.Command != managedruntime.ExecutablePath {
+		if RuntimeCommandConflicts(session.Command) {
 			return sandboxgateway.ProviderSandbox{}, &sandboxgateway.ProviderError{Code: "runtime_command_mismatch", Cause: errors.New("TAE Terminal session did not retain the managed runtime command")}
 		}
 		result.Root = provider.root

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"time"
+
+	"github.com/agentserver/agentserver/v2/internal/managedruntime"
 )
 
 // ControlSession is the deliberately small projection of a TAE Session used
@@ -18,6 +20,15 @@ type ControlSession struct {
 	Command         string
 	Metadata        map[string]string
 	RequestID       string
+}
+
+// RuntimeCommandConflicts reports an authoritative provider conflict. TAE's
+// Session create/get/search responses do not consistently echo the optional
+// command field, so an empty value means "not reported" rather than "the
+// process started without a command". The SDK adapter separately rejects any
+// create request that does not carry the exact managed runtime executable.
+func RuntimeCommandConflicts(command string) bool {
+	return command != "" && command != managedruntime.ExecutablePath
 }
 
 type CreateInput struct {

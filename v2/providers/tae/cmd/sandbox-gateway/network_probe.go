@@ -240,6 +240,9 @@ func runProbeLifecycle(ctx context.Context, config networkProbeConfig, clients *
 		if created.ID == "" || created.Deleted || created.Metadata[adapter.MetadataSandboxID] != metadata[adapter.MetadataSandboxID] {
 			return newProbeFailure("invalid_create_response")
 		}
+		if adapter.RuntimeCommandConflicts(created.Command) {
+			return newProbeFailure("runtime_command_mismatch")
+		}
 		session = created
 		return nil
 	})
@@ -268,6 +271,9 @@ func runProbeLifecycle(ctx context.Context, config networkProbeConfig, clients *
 				requestContext, cancel := context.WithTimeout(ctx, config.provider.controlTimeout)
 				defer cancel()
 				return clients.control.UpdateTTL(requestContext, session.ID, probeSessionTTL)
+			})
+			_ = recorder.run("data_exec_terminal", func() error {
+				return probeTerminalCommand(ctx, clients.data, session.ID, probeID, attempt)
 			})
 			_ = recorder.run("data_exec_lark_version", func() error {
 				return probeLarkVersion(ctx, clients.data, session.ID, probeID, attempt, config.larkCLIVersion)
@@ -348,7 +354,7 @@ func waitForProbeReady(ctx context.Context, control adapter.ControlPlane, sessio
 			return adapter.ControlSession{}, newProbeFailure("session_deleted_before_ready")
 		}
 		if session.SandboxdEnabled {
-			if session.Command != managedruntime.ExecutablePath {
+			if adapter.RuntimeCommandConflicts(session.Command) {
 				return adapter.ControlSession{}, newProbeFailure("runtime_command_mismatch")
 			}
 			return session, nil
@@ -409,6 +415,21 @@ func cleanupProbeSessions(ctx context.Context, control adapter.ControlPlane, met
 	return nil
 }
 
+func probeTerminalCommand(ctx context.Context, data adapter.DataPlane, sessionID, probeID string, attempt int) error {
+	requestContext, cancel := context.WithTimeout(ctx, probeProcessTimeout+15*time.Second)
+	defer cancel()
+	stream, err := data.StartProcess(requestContext, sessionID, adapter.StartProcessInput{
+		RequestID:  "agentserver-tae-terminal-probe-" + probeID + "-" + strconv.Itoa(attempt),
+		Executable: "/bin/sh", Arguments: []string{"-lc", "printf terminal-ok"}, WorkingDirectory: probeWorkspacePath,
+		Environment: map[string]string{}, Timeout: probeProcessTimeout,
+	})
+	if err != nil {
+		return err
+	}
+	defer stream.Close()
+	return probeProcessResult(requestContext, stream, "terminal-ok", "terminal_process_failed", "terminal_output_mismatch")
+}
+
 func probeLarkVersion(ctx context.Context, data adapter.DataPlane, sessionID, probeID string, attempt int, version string) error {
 	requestContext, cancel := context.WithTimeout(ctx, probeProcessTimeout+15*time.Second)
 	defer cancel()
@@ -421,11 +442,15 @@ func probeLarkVersion(ctx context.Context, data adapter.DataPlane, sessionID, pr
 		return err
 	}
 	defer stream.Close()
+	return probeProcessResult(requestContext, stream, "lark-cli version "+version, "lark_version_process_failed", "lark_version_output_mismatch")
+}
+
+func probeProcessResult(ctx context.Context, stream adapter.EventStream, expectedOutput, processFailure, outputMismatch string) error {
 	started := false
 	exited := false
 	var stdout, stderr strings.Builder
 	for !exited {
-		event, err := stream.Next(requestContext)
+		event, err := stream.Next(ctx)
 		if err != nil {
 			return err
 		}
@@ -456,13 +481,13 @@ func probeLarkVersion(ctx context.Context, data adapter.DataPlane, sessionID, pr
 				exitCode, ok = probeInteger(event.Data["exitCode"])
 			}
 			if !started || !ok || exitCode != 0 {
-				return newProbeFailure("lark_version_process_failed")
+				return newProbeFailure(processFailure)
 			}
 			exited = true
 		}
 	}
-	if strings.TrimSpace(stdout.String()) != "lark-cli version "+version || strings.TrimSpace(stderr.String()) != "" {
-		return newProbeFailure("lark_version_output_mismatch")
+	if strings.TrimSpace(stdout.String()) != expectedOutput || strings.TrimSpace(stderr.String()) != "" {
+		return newProbeFailure(outputMismatch)
 	}
 	return nil
 }

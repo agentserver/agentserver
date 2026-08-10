@@ -187,6 +187,40 @@ func TestProviderRejectsReadySessionWithDifferentRuntimeCommand(t *testing.T) {
 	}
 }
 
+func TestProviderAcceptsReadySessionWhenTAEOmitsRuntimeCommand(t *testing.T) {
+	control := defaultFakeControl()
+	control.create = func(_ context.Context, input CreateInput) (ControlSession, error) {
+		session := readyControlSession("tae-session-unreported-command", input.Metadata)
+		session.Command = ""
+		return session, nil
+	}
+	provider := newTestProvider(t, control, defaultFakeData())
+	created, err := provider.CreateSandbox(t.Context(), validCreateRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.State != sandboxgateway.ProviderSandboxReady || created.Root != "/workspace" {
+		t.Fatalf("created sandbox = %+v", created)
+	}
+}
+
+func TestRuntimeCommandConflictsOnlyOnReportedDifferentValue(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		command string
+		want    bool
+	}{
+		"unreported": {command: "", want: false},
+		"exact":      {command: managedruntime.ExecutablePath, want: false},
+		"different":  {command: "/opt/tiger/run.sh", want: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := RuntimeCommandConflicts(testCase.command); got != testCase.want {
+				t.Fatalf("RuntimeCommandConflicts(%q) = %v, want %v", testCase.command, got, testCase.want)
+			}
+		})
+	}
+}
+
 func TestNewProviderRejectsMissingOrMismatchedPolicyBinding(t *testing.T) {
 	base := Config{
 		Control: defaultFakeControl(), Data: defaultFakeData(), Region: "sg", PSM: "psm.agentserver.tae",

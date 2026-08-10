@@ -22,7 +22,8 @@
   authority 的预审批 Chart 配置。
 - bootstrap Chart 内含默认关闭、仅能由 closed values schema 启用的 SG 探针资源；审批后由 Pulumi
   注入实际 policy revision，并管理一次性 ConfigMap、ServiceAccount、DNS+syd2a-only NetworkPolicy
-  和 Job。报告覆盖强制 JWT 刷新、control/data lifecycle、42MB pinned CLI 读取和资源清理，且不输出凭据。
+  和 Job。报告覆盖强制 JWT 刷新、control/data lifecycle、`printf terminal-ok`、`lark-cli --version`、
+  42MB pinned CLI/skill 摘要读取和资源清理，且不输出凭据。
 - `agentserver-deploy activate-managed-executor`：只接受 bootstrap 输入和 canonical passing probe 报告，
   核对实际 policy revision/配置/镜像/检查集合后自行计算报告 SHA，并将 policy 审批与 SG
   JWT/control/data evidence 原子绑定为 active 配置。

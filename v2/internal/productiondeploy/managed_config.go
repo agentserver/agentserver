@@ -325,6 +325,7 @@ func validateTAENetworkReportForActivation(document ConfigDocument, policyRevisi
 		"control_search_created":  configuration.LifecycleAttempts,
 		"control_wait_ready":      configuration.LifecycleAttempts,
 		"control_update_ttl":      configuration.LifecycleAttempts,
+		"data_exec_terminal":      configuration.LifecycleAttempts,
 		"data_exec_lark_version":  configuration.LifecycleAttempts,
 		"data_stat_lark_cli":      configuration.LifecycleAttempts,
 		"data_read_lark_cli":      configuration.LifecycleAttempts,

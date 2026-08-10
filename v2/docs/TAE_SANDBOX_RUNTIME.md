@@ -121,6 +121,11 @@ managed-sandbox 不继承 1.74 GiB 的 `faas/bytedance.sandbox.terminal_faas`。
 路径，并且禁止 Terminal Session 的 image override。runtime 使用 IPv6 wildcard 监听
 `_BYTEFAAS_RUNTIME_PORT`，变量缺失时使用当前 revision 的 8080，并且只暴露：
 
+TAE 的 Session create/get/search 响应不保证回显可选的 `command` 字段。空值因此只表示“控制面未报告”，
+不能反推实际入口为空；任何非空且不同的值仍立即失败。入口证据由三条独立门禁组成：SDK adapter 在发出
+请求前只接受上述精确命令，发布流程锁定 OCI `Cmd` 和 runtime profile，真实 session smoke 再通过
+SandboxD 执行命令并核对镜像内的 CLI/skill 摘要。不能用缺失的响应字段替代数据面验证。
+
 ```text
 GET  /v1/ping -> 200 application/json "pong"
 HEAD /v1/ping -> 200 application/json
@@ -153,7 +158,7 @@ verifier 同时锁定 base layer descriptor/diff ID/history、root/Cmd、静态 
 镜像级单测只证明静态契约。发布后还必须用一次性 terminal session 验证以下事实，并在结束后删除
 session：
 
-1. CreateSession 请求携带 direct runtime command，session 进入 ready，而不是 `function_exited`；
+1. CreateSession 请求携带 direct runtime command；响应若回显则必须精确一致，session 进入 ready，而不是 `function_exited`；
 2. `sandboxd_enabled=true`，`/api/process/start` 可执行 `printf terminal-ok` 并取得有序终态；
 3. `lark-cli` 与 skill pack 存在，workspace 选择的 credential mode 能完成只读 smoke；
 4. SIGTERM、TTL/delete 和失败清理不会留下 session 或额外环境副作用。

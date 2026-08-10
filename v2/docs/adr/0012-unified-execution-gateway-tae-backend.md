@@ -112,9 +112,11 @@ agentx wire protocol 或现有 BYO fixture。
 它不负责 MCP catalog、tool policy、approval，也不拥有第二套 execution/operation 状态机。它没有独立的
 durable authority database；重启后从 Core 取 managed sandbox 记录，再用 TAE `GetSession` reconcile。
 
-TAE 已经注入并维护 Terminal Sandbox/SandboxD。managed image 只安装被批准的 CLI、skill pack runtime
-文件与支持 per-process placeholder 的非敏感配置；placeholder 值按 operation 短期注入、不写入 session
-文件。镜像不运行 agentx，也不构建 agentserver 自有 sandboxd。
+TAE 已经注入并维护 Terminal Sandbox/SandboxD。managed image 安装被批准的 CLI、skill pack runtime
+文件与支持 per-process placeholder 的非敏感配置，并包含只负责 FaaS 存活和 `/v1/ping` 的最小 keeper；
+placeholder 值按 operation 短期注入、不写入 session 文件。镜像不运行 agentx，不复制官方 Python
+Terminal server，也不构建 agentserver 自有 sandboxd。镜像启动边界见
+[TAE_SANDBOX_RUNTIME.md](../TAE_SANDBOX_RUNTIME.md)。
 
 ### 4. 只承诺 E2B semantic subset
 

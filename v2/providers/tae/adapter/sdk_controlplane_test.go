@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"code.byted.org/inf/bytedai-go/sandbox"
+	"github.com/agentserver/agentserver/v2/internal/managedruntime"
 )
 
 func TestSDKControlPlaneInjectsApplicationJWTIntoEveryControlRequest(t *testing.T) {
@@ -63,7 +64,7 @@ func TestSDKControlPlaneInjectsApplicationJWTIntoEveryControlRequest(t *testing.
 	}
 }
 
-func TestSDKControlPlaneCreateOmitsTerminalSessionImage(t *testing.T) {
+func TestSDKControlPlaneCreateSelectsManagedRuntimeAndOmitsTerminalSessionImage(t *testing.T) {
 	metadata := map[string]string{MetadataSandboxID: "managed-sandbox-1"}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/sandboxes/psm.agentserver.tae", func(response http.ResponseWriter, _ *http.Request) {
@@ -84,11 +85,15 @@ func TestSDKControlPlaneCreateOmitsTerminalSessionImage(t *testing.T) {
 		if _, present := payload["image"]; present {
 			t.Fatalf("Terminal Session create carried forbidden image override: %s", payload["image"])
 		}
+		var command string
+		if err := json.Unmarshal(payload["command"], &command); err != nil || command != managedruntime.ExecutablePath {
+			t.Fatalf("Terminal Session create command = %q, %v", command, err)
+		}
 		_ = json.NewEncoder(response).Encode(sandbox.CreateSessionResponse{
 			Code: 0,
 			Data: &sandbox.CreateSessionResponseData{SessionInfoResponseData: sandbox.SessionInfoResponseData{
 				SessionID: "session-1", Status: "running", ExpiresAt: "2026-08-06T21:00:00Z",
-				SandboxdEnabled: true, Metadata: metadata,
+				SandboxdEnabled: true, Command: managedruntime.ExecutablePath, Metadata: metadata,
 			}},
 		})
 	})
@@ -101,12 +106,19 @@ func TestSDKControlPlaneCreateOmitsTerminalSessionImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := control.Create(t.Context(), CreateInput{TTL: time.Minute, Metadata: metadata})
+	created, err := control.Create(t.Context(), CreateInput{
+		TTL: time.Minute, Metadata: metadata, Command: managedruntime.ExecutablePath,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.ID != "session-1" || !created.SandboxdEnabled || !reflect.DeepEqual(created.Metadata, metadata) {
+	if created.ID != "session-1" || !created.SandboxdEnabled || created.Command != managedruntime.ExecutablePath ||
+		!reflect.DeepEqual(created.Metadata, metadata) {
 		t.Fatalf("created Terminal Session = %+v", created)
+	}
+	if _, err := control.Create(t.Context(), CreateInput{TTL: time.Minute, Metadata: metadata}); err == nil ||
+		!strings.Contains(err.Error(), "session command differs") {
+		t.Fatalf("missing managed runtime command error = %v", err)
 	}
 }
 
@@ -141,7 +153,7 @@ func TestConvertSDKSearchResultCarriesTotalAndAllowsDeletedEmptyExpiry(t *testin
 	result, err := convertSDKSearchResult(&sandbox.SessionsSearchResponseData{
 		Total: 2,
 		Sessions: []*sandbox.SessionInfoResponseData{
-			{SessionID: "session-1", Status: "running", ExpiresAt: "2026-08-06T21:00:00Z", Image: testTAEImage, Metadata: metadata, SandboxdEnabled: true},
+			{SessionID: "session-1", Status: "running", ExpiresAt: "2026-08-06T21:00:00Z", Image: testTAEImage, Metadata: metadata, SandboxdEnabled: true, Command: managedruntime.ExecutablePath},
 			{SessionID: "session-2", Status: "terminated", Deleted: true, Metadata: metadata},
 		},
 	})
@@ -151,7 +163,8 @@ func TestConvertSDKSearchResultCarriesTotalAndAllowsDeletedEmptyExpiry(t *testin
 	if result.Total != 2 || len(result.Sessions) != 2 {
 		t.Fatalf("search result = %+v", result)
 	}
-	if result.Sessions[0].ExpiresAt.IsZero() || !result.Sessions[1].Deleted || !result.Sessions[1].ExpiresAt.IsZero() {
+	if result.Sessions[0].ExpiresAt.IsZero() || result.Sessions[0].Command != managedruntime.ExecutablePath ||
+		!result.Sessions[1].Deleted || !result.Sessions[1].ExpiresAt.IsZero() {
 		t.Fatalf("converted sessions = %+v", result.Sessions)
 	}
 	if !reflect.DeepEqual(result.Sessions[0].Metadata, metadata) {
@@ -194,9 +207,10 @@ func TestConvertSDKSessionRejectsMalformedLiveExpiryButAcceptsDeletedEmptyExpiry
 	}
 	full, err := convertSDKSession(&sandbox.Session{
 		SessionID: "session-1", ExpiresAt: "2026-08-06T21:00:00+00:00",
-		AdvancedInfo: &sandbox.AdvancedInfo{Status: "running", Image: testTAEImage, SandboxdEnabled: true},
+		AdvancedInfo: &sandbox.AdvancedInfo{Status: "running", Image: testTAEImage, SandboxdEnabled: true, Command: managedruntime.ExecutablePath},
 	})
-	if err != nil || !full.ExpiresAt.Equal(time.Date(2026, 8, 6, 21, 0, 0, 0, time.UTC)) {
+	if err != nil || full.Command != managedruntime.ExecutablePath ||
+		!full.ExpiresAt.Equal(time.Date(2026, 8, 6, 21, 0, 0, 0, time.UTC)) {
 		t.Fatalf("full session conversion = %+v, %v", full, err)
 	}
 }

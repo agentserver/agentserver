@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/agentserver/agentserver/v2/internal/managedruntime"
 )
 
 func TestOCIImageVerifierAcceptsExactTwoLayerImage(t *testing.T) {
@@ -84,6 +86,30 @@ func TestOCIImageVerifierRejectsManagedSandboxBaseDrift(t *testing.T) {
 	})
 }
 
+func TestOCIImageVerifierRejectsManagedSandboxRuntimeContractDrift(t *testing.T) {
+	for name, mutate := range map[string]func(*ociRuntimeConfig){
+		"non-root user": func(config *ociRuntimeConfig) {
+			config.User = "65534:65534"
+		},
+		"missing command": func(config *ociRuntimeConfig) {
+			config.Cmd = nil
+		},
+		"wrong command": func(config *ociRuntimeConfig) {
+			config.Cmd = []string{"/opt/tiger/run.sh"}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			archive, manifest, directories, files, managedBase := testOCIImageForKindWithRuntimeMutation(
+				t, false, testOCINestedIndex, KindManagedSandbox, nil, managedWorkdirHistory, mutate,
+			)
+			err := verifyOCIArchiveWithTestBase(archive, manifest, directories, files, managedBase)
+			if err == nil || !strings.Contains(err.Error(), "runtime configuration differs from the locked profile") {
+				t.Fatalf("managed sandbox runtime contract error = %v", err)
+			}
+		})
+	}
+}
+
 func TestOCIImageVerifierRejectsUnreferencedBlob(t *testing.T) {
 	archive, manifest, directories, files := testOCIImage(t, true, testOCINestedIndex)
 	err := verifyOCIArchive(bytes.NewReader(archive), manifest, directories, files)
@@ -131,17 +157,35 @@ func testOCIImageForKind(
 	managedWorkdirCreatedBy string,
 ) ([]byte, Manifest, map[string]DirectoryEntry, map[string]FileEntry, managedSandboxBaseProfile) {
 	t.Helper()
+	return testOCIImageForKindWithRuntimeMutation(
+		t, extraBlob, layout, kind, managedWorkdirEntries, managedWorkdirCreatedBy, nil,
+	)
+}
+
+func testOCIImageForKindWithRuntimeMutation(
+	t *testing.T,
+	extraBlob bool,
+	layout testOCIRootLayout,
+	kind string,
+	managedWorkdirEntries []testLayerEntry,
+	managedWorkdirCreatedBy string,
+	mutateRuntime func(*ociRuntimeConfig),
+) ([]byte, Manifest, map[string]DirectoryEntry, map[string]FileEntry, managedSandboxBaseProfile) {
+	t.Helper()
 	revision := strings.Repeat("a", 40)
 	platform := PlatformLinuxARM64
 	architecture := "arm64"
 	user := "65534:65534"
 	workingDirectory := "/"
+	var command []string
 	title := "agentserver v2 production services"
 	description := "Closed-world service binaries for agentserver v2"
 	if kind == KindManagedSandbox {
 		platform = PlatformLinuxAMD64
 		architecture = "amd64"
+		user = "0:0"
 		workingDirectory = "/workspace"
+		command = []string{managedruntime.ExecutablePath}
 		title = "agentserver v2 managed sandbox"
 		description = managedSandboxDescription
 	}
@@ -224,7 +268,7 @@ func testOCIImageForKind(
 		Architecture: architecture,
 		Config: ociRuntimeConfig{
 			User: user, Env: []string{ociDefaultPath}, ArgsEscaped: kind == KindManagedSandbox,
-			WorkingDir: workingDirectory, StopSignal: "SIGTERM",
+			Cmd: command, WorkingDir: workingDirectory, StopSignal: "SIGTERM",
 			Labels: map[string]string{
 				"org.opencontainers.image.description": description,
 				"org.opencontainers.image.revision":    revision,
@@ -236,6 +280,9 @@ func testOCIImageForKind(
 		History: history,
 		OS:      "linux",
 		RootFS:  ociRootFS{Type: "layers", DiffIDs: diffIDs},
+	}
+	if mutateRuntime != nil {
+		mutateRuntime(&config.Config)
 	}
 	configBytes := testOCIJSON(t, config)
 	imageManifest := ociManifestDocument{

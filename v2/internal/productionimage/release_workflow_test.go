@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/agentserver/agentserver/v2/internal/managedruntime"
 )
 
 func TestProductionWorkflowPublishesAndLocksManagedSandbox(t *testing.T) {
@@ -51,13 +53,16 @@ func TestProductionWorkflowPublishesAndLocksManagedSandbox(t *testing.T) {
 	for _, required := range []string{
 		"FROM " + managedSandboxBaseImageReference,
 		`LABEL org.opencontainers.image.description="` + managedSandboxDescription + `"`,
-		"WORKDIR /workspace\nCMD []\nSTOPSIGNAL SIGTERM",
+		"USER 0:0\nWORKDIR /workspace\nCMD [\"" + managedruntime.ExecutablePath + "\"]\nSTOPSIGNAL SIGTERM",
 	} {
 		if !strings.Contains(string(managedContainerfile), required) {
 			t.Fatalf("managed sandbox Containerfile is missing runtime contract %q", required)
 		}
 	}
 	if strings.Contains(string(managedContainerfile), "FROM scratch") {
-		t.Fatal("managed sandbox Containerfile must retain the digest-pinned Terminal base")
+		t.Fatal("managed sandbox Containerfile must retain the digest-pinned minimal Debian base")
+	}
+	if strings.Contains(string(managedContainerfile), "FROM aliyun-sin-hub.byted.org/faas/bytedance.sandbox.terminal_faas") {
+		t.Fatal("managed sandbox Containerfile must not inherit the official terminal_faas image")
 	}
 }

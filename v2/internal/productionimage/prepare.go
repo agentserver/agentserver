@@ -71,7 +71,7 @@ func Prepare(config PrepareConfig) (_ PrepareResult, returnErr error) {
 	for _, binary := range ExpectedBinaries(config.Kind) {
 		source := filepath.Join(config.BinaryDirectory, binary)
 		var validationErr error
-		if config.Kind == KindManagedSandbox {
+		if config.Kind == KindManagedSandbox && binary == "lark-cli" {
 			validationErr = validateExternalLinuxExecutable(source, binary, config.Platform)
 		} else {
 			validationErr = validateLinuxGoExecutable(source, binary, config.Platform)

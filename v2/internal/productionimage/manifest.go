@@ -300,15 +300,18 @@ func ExpectedBinaries(kind string) []string {
 			"harness-pool", "harness-worker",
 		}
 	case KindManagedSandbox:
-		binaries = []string{"lark-cli"}
+		binaries = []string{"agentserver-tae-runtime", "lark-cli"}
 	}
 	slices.Sort(binaries)
 	return binaries
 }
 
 func sourceCommand(binary string) string {
-	if binary == "agentserver-init" {
+	switch binary {
+	case "agentserver-init":
 		return "harness-init"
+	case "agentserver-tae-runtime":
+		return "tae-runtime"
 	}
 	return binary
 }

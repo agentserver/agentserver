@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agentserver/agentserver/v2/internal/managedruntime"
 	"github.com/agentserver/agentserver/v2/internal/stockruntime"
 )
 
@@ -71,13 +72,18 @@ func TestHarnessManifestPinsSelectedArchitectureArtifacts(t *testing.T) {
 	}
 }
 
-func TestManagedSandboxManifestLocksAMD64CLIAndSkill(t *testing.T) {
+func TestManagedSandboxManifestLocksAMD64RuntimeCLIAndSkill(t *testing.T) {
 	manifest := validManagedSandboxManifest()
 	if err := manifest.Validate(); err != nil {
 		t.Fatal(err)
 	}
 	files := fileMap(manifest.Files)
-	for _, path := range []string{"usr/local/bin/lark-cli", ManagedLarkSkillPath, CABundlePath} {
+	for _, path := range []string{
+		managedruntime.ExecutableImagePath,
+		"usr/local/bin/lark-cli",
+		ManagedLarkSkillPath,
+		CABundlePath,
+	} {
 		if _, found := files[path]; !found {
 			t.Fatalf("managed sandbox manifest is missing %s", path)
 		}
@@ -95,6 +101,17 @@ func TestManagedSandboxManifestLocksAMD64CLIAndSkill(t *testing.T) {
 	}
 	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "pinned release artifact") {
 		t.Fatalf("managed Lark CLI drift error = %v", err)
+	}
+
+	manifest = validManagedSandboxManifest()
+	for index := range manifest.Files {
+		if manifest.Files[index].Path == managedruntime.ExecutableImagePath {
+			manifest.Files = append(manifest.Files[:index], manifest.Files[index+1:]...)
+			break
+		}
+	}
+	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "file set is incomplete") {
+		t.Fatalf("missing managed FaaS runtime error = %v", err)
 	}
 }
 

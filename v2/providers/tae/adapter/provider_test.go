@@ -11,6 +11,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
+	"github.com/agentserver/agentserver/v2/internal/managedruntime"
 	"github.com/agentserver/agentserver/v2/internal/sandboxgateway"
 	"github.com/agentserver/agentserver/v2/internal/taepolicy"
 )
@@ -139,7 +140,8 @@ func TestProviderLifecycleUsesProviderAssignedIdentityAndExactMetadata(t *testin
 	want := provider.createMetadata(request.SandboxID, request.IdempotencyKey, request.WorkspaceID, request.SessionID,
 		request.EnvironmentID, request.RuntimeProfileSHA256, request.PackSetSHA256)
 	if !metadataEqual(captured.Metadata, want) || len(captured.Metadata) != 8 ||
-		captured.Metadata[MetadataTAEPolicySHA256] != provider.policy.BindingSHA256 {
+		captured.Metadata[MetadataTAEPolicySHA256] != provider.policy.BindingSHA256 ||
+		captured.Command != managedruntime.ExecutablePath {
 		t.Fatalf("create metadata = %#v, want %#v", captured.Metadata, want)
 	}
 
@@ -166,6 +168,21 @@ func TestProviderRejectsSessionWithoutExactPolicyBindingMetadata(t *testing.T) {
 	_, err := provider.CreateSandbox(t.Context(), validCreateRequest())
 	var providerError *sandboxgateway.ProviderError
 	if !errors.As(err, &providerError) || providerError.Code != "provider_metadata_mismatch" || !providerError.Ambiguous {
+		t.Fatalf("CreateSandbox() error = %#v", err)
+	}
+}
+
+func TestProviderRejectsReadySessionWithDifferentRuntimeCommand(t *testing.T) {
+	control := defaultFakeControl()
+	control.create = func(_ context.Context, input CreateInput) (ControlSession, error) {
+		session := readyControlSession("tae-session-drifted", input.Metadata)
+		session.Command = "/opt/tiger/run.sh"
+		return session, nil
+	}
+	provider := newTestProvider(t, control, defaultFakeData())
+	_, err := provider.CreateSandbox(t.Context(), validCreateRequest())
+	var providerError *sandboxgateway.ProviderError
+	if !errors.As(err, &providerError) || providerError.Code != "runtime_command_mismatch" {
 		t.Fatalf("CreateSandbox() error = %#v", err)
 	}
 }
@@ -524,7 +541,7 @@ func defaultFakeData() *fakeDataPlane {
 func readyControlSession(id string, metadata map[string]string) ControlSession {
 	return ControlSession{
 		ID: id, Status: "running", ExpiresAt: testNow.Add(time.Hour), SandboxdEnabled: true,
-		Metadata: cloneStrings(metadata),
+		Command: managedruntime.ExecutablePath, Metadata: cloneStrings(metadata),
 	}
 }
 

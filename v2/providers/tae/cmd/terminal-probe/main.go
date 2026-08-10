@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/managedruntime"
 	"github.com/agentserver/agentserver/v2/providers/tae/adapter"
 )
 
@@ -128,7 +129,7 @@ func run() (result report) {
 	metadata := map[string]string{adapter.MetadataSandboxID: "agentserver-tae-terminal-probe-" + id}
 	createContext, cancelCreate := context.WithTimeout(ctx, 60*time.Second)
 	session, err := control.Create(createContext, adapter.CreateInput{
-		TTL: 15 * time.Minute, Metadata: metadata,
+		TTL: 15 * time.Minute, Metadata: metadata, Command: managedruntime.ExecutablePath,
 	})
 	cancelCreate()
 	if err != nil {
@@ -291,6 +292,9 @@ func waitReady(ctx context.Context, control adapter.ControlPlane, sessionID stri
 			return adapter.ControlSession{}, errors.New("terminal session was deleted before becoming ready")
 		}
 		if session.SandboxdEnabled {
+			if session.Command != managedruntime.ExecutablePath {
+				return adapter.ControlSession{}, errors.New("terminal session retained an unexpected startup command")
+			}
 			return session, nil
 		}
 		select {

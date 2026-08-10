@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/agentserver/agentserver/v2/internal/managedruntime"
 )
 
 const (
@@ -34,7 +36,7 @@ const (
 	managedSandboxBaseHistoryCreated   = "2026-08-03T00:00:00Z"
 	managedSandboxBaseHistoryCreatedBy = "# debian.sh --arch 'amd64' out/ 'trixie' '@1785715200'"
 	managedSandboxBaseHistoryComment   = "debuerreotype 0.17"
-	managedSandboxDescription          = "Digest-pinned Debian TAE sandbox with closed-world Lark runtime"
+	managedSandboxDescription          = "Agentserver-owned minimal Debian TAE runtime with closed-world Lark tooling"
 
 	maximumOCIDocumentBytes = int64(1024 * 1024)
 	maximumOCIBlobBytes     = int64(512 * 1024 * 1024)
@@ -138,7 +140,8 @@ func lockedManagedSandboxBaseProfile() managedSandboxBaseProfile {
 // VerifyImageOCI proves the saved OCI image itself has one manifest for the
 // platform named by the external manifest, the locked runtime configuration,
 // exact descriptor digests, and only manifest-declared rootfs entries. The
-// managed-sandbox profile additionally locks an opaque Debian Terminal base
+// managed-sandbox profile additionally locks an opaque, agentserver-owned
+// minimal Debian base
 // layer by compressed digest, size, diff ID, and history, then applies the
 // closed-world verifier to every managed overlay layer. It also locks the
 // canonical empty WORKDIR layer emitted by Apple container 1.2.2. It
@@ -510,6 +513,7 @@ func validateOCIImageConfig(config ociImageConfig, manifest Manifest, managedBas
 	}
 	expectedUser := "65534:65534"
 	expectedWorkingDirectory := "/"
+	var expectedCommand []string
 	expectedTitle := "agentserver v2 production services"
 	expectedDescription := "Closed-world service binaries for agentserver v2"
 	if manifest.Kind == KindHarness {
@@ -517,7 +521,9 @@ func validateOCIImageConfig(config ociImageConfig, manifest Manifest, managedBas
 		expectedTitle = "agentserver v2 production harness"
 		expectedDescription = "Fork-based stateless harness with pinned stock Codex app-server"
 	} else if manifest.Kind == KindManagedSandbox {
+		expectedUser = "0:0"
 		expectedWorkingDirectory = "/workspace"
+		expectedCommand = []string{managedruntime.ExecutablePath}
 		expectedTitle = "agentserver v2 managed sandbox"
 		expectedDescription = managedSandboxDescription
 	}
@@ -528,7 +534,8 @@ func validateOCIImageConfig(config ociImageConfig, manifest Manifest, managedBas
 		"org.opencontainers.image.title":       expectedTitle,
 	}
 	if config.Config.User != expectedUser || !slices.Equal(config.Config.Env, []string{ociDefaultPath}) ||
-		len(config.Config.Entrypoint) != 0 || len(config.Config.Cmd) != 0 || config.Config.WorkingDir != expectedWorkingDirectory ||
+		len(config.Config.Entrypoint) != 0 || !slices.Equal(config.Config.Cmd, expectedCommand) ||
+		config.Config.WorkingDir != expectedWorkingDirectory ||
 		config.Config.ArgsEscaped != (manifest.Kind == KindManagedSandbox) ||
 		config.Config.StopSignal != "SIGTERM" || !maps.Equal(config.Config.Labels, expectedLabels) {
 		return errors.New("production OCI runtime configuration differs from the locked profile")

@@ -6,15 +6,18 @@
   发布 Chart。
 - `build-images.sh`：生产发布只使用 `linux-amd64` 和 Apple Container `1.2.2`，并逐文件验证
   service/harness/managed-sandbox 镜像。service/harness 固定为两层；managed-sandbox 固定为四层：
-  digest/size/diff ID/history 全部锁定的 Debian Terminal base、closed-world managed rootfs、固定 CA，
+  digest/size/diff ID/history 全部锁定的 agentserver 自有单层 Debian base、closed-world managed rootfs、固定 CA，
   以及 `1.2.2` 为 `WORKDIR /workspace` 生成的 canonical 空层。base 作为 opaque trusted layer，不会
   被误拿去和 managed 文件清单比较；后面三层仍逐 entry 校验 owner/mode/size/SHA-256。
 - `service.Containerfile`、`harness.Containerfile`：digest-pinned build base 与 scratch runtime；
   `managed-sandbox.Containerfile` 则基于
   `aliyun-sin-hub.byted.org/agentserver/tae-sandbox@sha256:e4255f02c1feceb168848fc6b7ea934cdc3f944ebc8dda51d2b77d00fbf28f6f`
-  的 Debian trixie Terminal rootfs，并显式以 `CMD []` 清除继承的 `bash`。service image 内含
-  provider-linked `sandbox-gateway` 和 `egress-authorizer` binary；managed overlay 只增加 pinned
-  `lark-cli`、skill、manifest 和 CA，平台继续自动注入 SandboxD。
+  的单层 Debian Trixie rootfs；它不是官方 `terminal_faas`。managed overlay 增加自有静态 FaaS
+  keeper、pinned `lark-cli`、skill、manifest 和 CA。创建 TAE session 时显式配置
+  `command=/usr/local/bin/agentserver-tae-runtime`；同一命令也是 OCI fallback `CMD`，平台继续自动注入
+  SandboxD。官方镜像审计和边界见
+  [`../../docs/TAE_SANDBOX_RUNTIME.md`](../../docs/TAE_SANDBOX_RUNTIME.md)。service image 内含
+  provider-linked `sandbox-gateway` 和 `egress-authorizer` binary。
 - `agentserver-deploy prepare-policy-bootstrap`：生成只暴露生产 TLS deny-only Webhook、没有 TAE/sandbox
   authority 的预审批 Chart 配置。
 - bootstrap Chart 内含默认关闭、仅能由 closed values schema 启用的 SG 探针资源；审批后由 Pulumi

@@ -14,6 +14,7 @@ import (
 
 	"code.byted.org/inf/bytedai-go/region"
 	"code.byted.org/inf/bytedai-go/sandbox"
+	"github.com/agentserver/agentserver/v2/internal/managedruntime"
 )
 
 const defaultControlRequestTimeout = 45 * time.Second
@@ -146,13 +147,16 @@ func (control *SDKControlPlane) DescribeSandbox(ctx context.Context) (SandboxDes
 }
 
 func (control *SDKControlPlane) Create(ctx context.Context, input CreateInput) (ControlSession, error) {
+	if input.Command != managedruntime.ExecutablePath {
+		return ControlSession{}, &RequestError{Code: "bad_request", Cause: errors.New("TAE session command differs from the managed runtime contract")}
+	}
 	seconds, err := wholeSeconds(input.TTL)
 	if err != nil {
 		return ControlSession{}, &RequestError{Code: "bad_request", Cause: err}
 	}
 	traced, wrote := traceRequest(ctx)
 	session, err := control.client.CreateSessionWithOpts(traced, &sandbox.CreateSessionOpts{
-		TTL: seconds, Metadata: cloneStrings(input.Metadata),
+		TTL: seconds, Metadata: cloneStrings(input.Metadata), Command: input.Command,
 		Timeout: control.requestTimeout,
 	})
 	if err != nil {
@@ -263,7 +267,7 @@ func convertSDKSession(session *sandbox.Session) (ControlSession, error) {
 	return ControlSession{
 		ID: session.SessionID, Status: session.AdvancedInfo.Status, ExpiresAt: expiresAt,
 		Deleted: session.AdvancedInfo.Deleted, SandboxdEnabled: session.AdvancedInfo.SandboxdEnabled,
-		Metadata: cloneStrings(session.AdvancedInfo.Metadata),
+		Command: session.AdvancedInfo.Command, Metadata: cloneStrings(session.AdvancedInfo.Metadata),
 	}, nil
 }
 
@@ -277,7 +281,7 @@ func convertSDKSessionInfo(session *sandbox.SessionInfoResponseData) (ControlSes
 	}
 	return ControlSession{
 		ID: session.SessionID, Status: session.Status, ExpiresAt: expiresAt, Deleted: session.Deleted,
-		SandboxdEnabled: session.SandboxdEnabled, Metadata: cloneStrings(session.Metadata),
+		SandboxdEnabled: session.SandboxdEnabled, Command: session.Command, Metadata: cloneStrings(session.Metadata),
 	}, nil
 }
 

@@ -15,6 +15,7 @@ type ControlSession struct {
 	ExpiresAt       time.Time
 	Deleted         bool
 	SandboxdEnabled bool
+	Command         string
 	Metadata        map[string]string
 	RequestID       string
 }
@@ -22,6 +23,7 @@ type ControlSession struct {
 type CreateInput struct {
 	TTL      time.Duration
 	Metadata map[string]string
+	Command  string
 }
 
 type SearchInput struct {

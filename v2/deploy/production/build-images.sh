@@ -162,6 +162,7 @@ build_root_binary llmproxy llmproxy
 build_root_binary harness-final-exec harness-final-exec
 build_root_binary harness-pool harness-pool
 build_root_binary harness-worker harness-worker
+build_root_binary tae-runtime agentserver-tae-runtime
 build_tae_binary sandbox-gateway sandbox-gateway
 
 for binary in agentserver-core agentserver-probe platform-gateway browser-gateway executor-gateway egress-authorizer llmproxy sandbox-gateway; do
@@ -170,11 +171,12 @@ done
 for binary in agentserver-init agentserver-probe harness-final-exec harness-pool harness-worker; do
     cp "${work_directory}/all-bin/${binary}" "${work_directory}/harness-bin/${binary}"
 done
+cp "${work_directory}/all-bin/agentserver-tae-runtime" "${work_directory}/managed-sandbox-bin/agentserver-tae-runtime"
 cp "${lark_cli_artifact}" "${work_directory}/managed-sandbox-bin/lark-cli"
 chmod 0555 \
     "${work_directory}/service-bin"/* \
     "${work_directory}/harness-bin"/* \
-    "${work_directory}/managed-sandbox-bin/lark-cli"
+    "${work_directory}/managed-sandbox-bin"/*
 
 printf '%s\n' "build-images.sh: compiling the host-side closed-world image verifier"
 (

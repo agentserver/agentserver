@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/managedruntime"
 	"github.com/agentserver/agentserver/v2/internal/taenetworkreport"
 	"github.com/agentserver/agentserver/v2/providers/tae/adapter"
 )
@@ -184,10 +185,13 @@ func (control *probeControl) Create(_ context.Context, input adapter.CreateInput
 	if control.createError != nil {
 		return adapter.ControlSession{}, control.createError
 	}
+	if input.Command != managedruntime.ExecutablePath {
+		return adapter.ControlSession{}, &adapter.RequestError{Code: "bad_request", Cause: errors.New("unexpected managed runtime command")}
+	}
 	control.deleted = false
 	control.session = adapter.ControlSession{
 		ID: "tae-probe-session", Status: "running", ExpiresAt: time.Now().Add(input.TTL),
-		SandboxdEnabled: true, Metadata: cloneTestStrings(input.Metadata),
+		SandboxdEnabled: true, Command: input.Command, Metadata: cloneTestStrings(input.Metadata),
 	}
 	return control.session, nil
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
+	"github.com/agentserver/agentserver/v2/internal/managedruntime"
 	"github.com/agentserver/agentserver/v2/internal/productionimage"
 	"github.com/agentserver/agentserver/v2/internal/stockruntime"
 	"github.com/agentserver/agentserver/v2/internal/taeimage"
@@ -606,6 +607,7 @@ func managedRuntimeProfileDigest(document ConfigDocument, managed ManagedExecuto
 		Platform                string `json:"platform"`
 		Image                   string `json:"image"`
 		Root                    string `json:"root"`
+		KeeperCommand           string `json:"keeperCommand"`
 		CodexRelease            string `json:"codexRelease"`
 		CodexCommit             string `json:"codexCommit"`
 		CodexSHA256             string `json:"codexSha256"`
@@ -617,9 +619,10 @@ func managedRuntimeProfileDigest(document ConfigDocument, managed ManagedExecuto
 		TAENetworkBindingSHA256 string `json:"taeNetworkBindingSha256"`
 		TAEPolicyRevision       string `json:"taePolicyRevision"`
 	}{
-		Version: 3, Platform: document.Platform, Image: document.Images.ManagedSandbox,
-		Root: managed.Environment.Root.Path, CodexRelease: managed.Environment.Compatibility.CodexRelease,
-		CodexCommit: managed.Environment.Compatibility.CodexCommit, CodexSHA256: managed.Environment.Compatibility.CodexSHA256,
+		Version: 4, Platform: document.Platform, Image: document.Images.ManagedSandbox,
+		Root: managed.Environment.Root.Path, KeeperCommand: managedruntime.ExecutablePath,
+		CodexRelease: managed.Environment.Compatibility.CodexRelease,
+		CodexCommit:  managed.Environment.Compatibility.CodexCommit, CodexSHA256: managed.Environment.Compatibility.CodexSHA256,
 		LarkEnabled: larkEnabled,
 		LarkCLIPath: func() string {
 			if larkEnabled {

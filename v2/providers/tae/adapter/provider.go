@@ -12,6 +12,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
+	"github.com/agentserver/agentserver/v2/internal/managedruntime"
 	"github.com/agentserver/agentserver/v2/internal/sandboxgateway"
 	"github.com/agentserver/agentserver/v2/internal/taepolicy"
 )
@@ -151,7 +152,9 @@ func (provider *Provider) CreateSandbox(ctx context.Context, request sandboxgate
 	// Terminal Sandbox images are fixed by the published Sandbox version. The
 	// Session API must not receive an image override; that field is only valid
 	// for image-collection sandboxes.
-	session, err := provider.control.Create(ctx, CreateInput{TTL: request.TTL, Metadata: metadata})
+	session, err := provider.control.Create(ctx, CreateInput{
+		TTL: request.TTL, Metadata: metadata, Command: managedruntime.ExecutablePath,
+	})
 	if err != nil {
 		return sandboxgateway.ProviderSandbox{}, provider.createError(err)
 	}
@@ -427,6 +430,9 @@ func (provider *Provider) providerSandbox(session ControlSession) (sandboxgatewa
 	if state == sandboxgateway.ProviderSandboxReady {
 		if !session.SandboxdEnabled {
 			return sandboxgateway.ProviderSandbox{}, &sandboxgateway.ProviderError{Code: "sandboxd_not_enabled", Cause: errors.New("TAE Terminal session does not expose sandboxd")}
+		}
+		if session.Command != managedruntime.ExecutablePath {
+			return sandboxgateway.ProviderSandbox{}, &sandboxgateway.ProviderError{Code: "runtime_command_mismatch", Cause: errors.New("TAE Terminal session did not retain the managed runtime command")}
 		}
 		result.Root = provider.root
 	}

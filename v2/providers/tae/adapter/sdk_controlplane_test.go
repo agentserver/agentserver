@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -49,12 +50,89 @@ func TestSDKControlPlaneInjectsApplicationJWTIntoEveryControlRequest(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	descriptor, err := control.DescribeSandbox(nil)
+	if err != nil || descriptor.ID != "sandbox-1" || descriptor.PSM != "psm.agentserver.tae" || descriptor.Type != "terminal" {
+		t.Fatalf("sandbox descriptor = %+v, %v", descriptor, err)
+	}
 	result, err := control.Search(t.Context(), SearchInput{Metadata: map[string]string{"probe": "never"}, Limit: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Total != 0 || len(result.Sessions) != 0 || requestCount < 2 {
 		t.Fatalf("control-plane search = %+v, requests=%d", result, requestCount)
+	}
+}
+
+func TestSDKControlPlaneCreateOmitsTerminalSessionImage(t *testing.T) {
+	metadata := map[string]string{MetadataSandboxID: "managed-sandbox-1"}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/sandboxes/psm.agentserver.tae", func(response http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(response).Encode(sandbox.SandboxMetaResponse{
+			Code: 0,
+			Data: &sandbox.SandboxMeta{SandboxID: "sandbox-1", SandboxType: sandbox.SandboxTypeTerminal,
+				Name: "agentserver", Psm: "psm.agentserver.tae"},
+		})
+	})
+	mux.HandleFunc("/api/v1/sandboxes/sandbox-1/sessions", func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost {
+			t.Fatalf("create method = %s", request.Method)
+		}
+		var payload map[string]json.RawMessage
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if _, present := payload["image"]; present {
+			t.Fatalf("Terminal Session create carried forbidden image override: %s", payload["image"])
+		}
+		_ = json.NewEncoder(response).Encode(sandbox.CreateSessionResponse{
+			Code: 0,
+			Data: &sandbox.CreateSessionResponseData{SessionInfoResponseData: sandbox.SessionInfoResponseData{
+				SessionID: "session-1", Status: "running", ExpiresAt: "2026-08-06T21:00:00Z",
+				SandboxdEnabled: true, Metadata: metadata,
+			}},
+		})
+	})
+	server := httptest.NewTLSServer(mux)
+	defer server.Close()
+	control, err := NewSGSDKControlPlane(t.Context(), SDKControlPlaneConfig{
+		PSM: "psm.agentserver.tae", HTTPClient: server.Client(), Headers: staticJWTSource(),
+		ControlPlaneURL: server.URL, RequestTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := control.Create(t.Context(), CreateInput{TTL: time.Minute, Metadata: metadata})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.ID != "session-1" || !created.SandboxdEnabled || !reflect.DeepEqual(created.Metadata, metadata) {
+		t.Fatalf("created Terminal Session = %+v", created)
+	}
+}
+
+func TestDescribeSandboxRejectsTrailingOrOversizedJSON(t *testing.T) {
+	for name, body := range map[string]string{
+		"trailing":  `{"code":0,"data":{"id":"sandbox-1","type":"terminal","name":"agentserver","psm":"psm.agentserver.tae"}} {}`,
+		"oversized": `{"code":0,"data":{"id":"sandbox-1","type":"terminal","name":"` + strings.Repeat("x", int(defaultMaxErrorBytes)) + `","psm":"psm.agentserver.tae"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+				_, _ = response.Write([]byte(body))
+			}))
+			defer server.Close()
+			control, err := NewSGSDKControlPlane(t.Context(), SDKControlPlaneConfig{
+				PSM: "psm.agentserver.tae", HTTPClient: server.Client(), Headers: staticJWTSource(),
+				ControlPlaneURL: server.URL, RequestTimeout: time.Second,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = control.DescribeSandbox(t.Context())
+			var requestError *RequestError
+			if !errors.As(err, &requestError) || requestError.Code != "invalid_response" {
+				t.Fatalf("DescribeSandbox() error = %#v", err)
+			}
+		})
 	}
 }
 

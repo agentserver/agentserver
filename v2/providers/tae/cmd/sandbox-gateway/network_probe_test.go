@@ -187,7 +187,7 @@ func (control *probeControl) Create(_ context.Context, input adapter.CreateInput
 	control.deleted = false
 	control.session = adapter.ControlSession{
 		ID: "tae-probe-session", Status: "running", ExpiresAt: time.Now().Add(input.TTL),
-		SandboxdEnabled: true, Image: input.Image, Metadata: cloneTestStrings(input.Metadata),
+		SandboxdEnabled: true, Metadata: cloneTestStrings(input.Metadata),
 	}
 	return control.session, nil
 }

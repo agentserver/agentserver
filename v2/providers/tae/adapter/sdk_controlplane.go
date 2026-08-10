@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
@@ -27,7 +28,16 @@ type SDKControlPlaneConfig struct {
 
 type SDKControlPlane struct {
 	client         *sandbox.SandboxClient
+	identityClient *http.Client
+	metadataURL    string
+	psm            string
 	requestTimeout time.Duration
+}
+
+type SandboxDescriptor struct {
+	ID   string
+	PSM  string
+	Type string
 }
 
 // NewSGSDKControlPlane pins the official SDK to I18N production. Region
@@ -56,6 +66,7 @@ func NewSGSDKControlPlane(ctx context.Context, config SDKControlPlaneConfig) (*S
 			(endpoint.Path != "" && endpoint.Path != "/") {
 			return nil, errors.New("TAE SDK control-plane override must be a canonical HTTPS origin")
 		}
+		controlPlaneOrigin = strings.TrimSuffix(config.ControlPlaneURL, "/")
 	}
 	identityClient, err := NewIdentityHTTPClient(config.HTTPClient, config.Headers)
 	if err != nil {
@@ -68,7 +79,70 @@ func NewSGSDKControlPlane(ctx context.Context, config SDKControlPlaneConfig) (*S
 	if err != nil {
 		return nil, fmt.Errorf("create pinned TAE SDK client: %w", err)
 	}
-	return &SDKControlPlane{client: client, requestTimeout: config.RequestTimeout}, nil
+	metadataURL := controlPlaneOrigin + "/api/v1/sandboxes/" + url.PathEscape(config.PSM)
+	return &SDKControlPlane{
+		client: client, identityClient: identityClient, metadataURL: metadataURL,
+		psm: config.PSM, requestTimeout: config.RequestTimeout,
+	}, nil
+}
+
+// DescribeSandbox resolves the immutable management-plane identity needed by
+// the sandboxd gateway's X-Forwarded-Prefix. It deliberately uses the same
+// pinned control-plane client and provider identity as lifecycle operations;
+// callers cannot supply an alternate authority or sandbox ID.
+func (control *SDKControlPlane) DescribeSandbox(ctx context.Context) (SandboxDescriptor, error) {
+	if control == nil || control.identityClient == nil || control.metadataURL == "" || control.psm == "" {
+		return SandboxDescriptor{}, &RequestError{Code: "provider_unavailable", Cause: errors.New("TAE sandbox descriptor client is unavailable")}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestContext, cancel := context.WithTimeout(ctx, control.requestTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, control.metadataURL, nil)
+	if err != nil {
+		return SandboxDescriptor{}, &RequestError{Code: "bad_request", Cause: errors.New("TAE sandbox descriptor request is invalid")}
+	}
+	traced, wrote := traceRequest(request.Context())
+	response, err := control.identityClient.Do(request.WithContext(traced))
+	if err != nil {
+		code := "provider_unavailable"
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(requestContext.Err(), context.DeadlineExceeded) {
+			code = "request_timeout"
+		}
+		return SandboxDescriptor{}, &RequestError{WroteRequest: wrote.Load(), Code: code, Cause: errors.New("TAE sandbox descriptor request failed")}
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		boundedBody, _ := io.ReadAll(io.LimitReader(response.Body, defaultMaxErrorBytes+1))
+		providerCode, bodyRequestID := responseErrorMetadata(boundedBody, defaultMaxErrorBytes)
+		requestID := providerRequestID(response.Header)
+		if requestID == "" {
+			requestID = bodyRequestID
+		}
+		return SandboxDescriptor{}, &RequestError{
+			WroteRequest: wrote.Load(), StatusCode: response.StatusCode,
+			Code: responseCode(response.StatusCode, boundedBody, defaultMaxErrorBytes), ProviderCode: providerCode, RequestID: requestID,
+			Cause: errors.New("TAE sandbox descriptor returned a non-success response"),
+		}
+	}
+	var envelope sandbox.SandboxMetaResponse
+	boundedBody, err := io.ReadAll(io.LimitReader(response.Body, defaultMaxErrorBytes+1))
+	if err != nil || int64(len(boundedBody)) > defaultMaxErrorBytes || decodeSingleJSON(boundedBody, &envelope) != nil {
+		return SandboxDescriptor{}, &RequestError{
+			WroteRequest: true, StatusCode: response.StatusCode, Code: "invalid_response",
+			RequestID: providerRequestID(response.Header), Cause: errors.New("TAE sandbox descriptor response was invalid"),
+		}
+	}
+	if envelope.Code != 0 || envelope.Data == nil || envelope.Data.Psm != control.psm ||
+		envelope.Data.SandboxType != sandbox.SandboxTypeTerminal ||
+		!sessionDNSLabelPattern.MatchString(envelope.Data.SandboxID) || strings.ToLower(envelope.Data.SandboxID) != envelope.Data.SandboxID {
+		return SandboxDescriptor{}, &RequestError{
+			WroteRequest: true, StatusCode: response.StatusCode, Code: "invalid_response",
+			RequestID: providerRequestID(response.Header), Cause: errors.New("TAE sandbox descriptor did not match the configured terminal PSM"),
+		}
+	}
+	return SandboxDescriptor{ID: envelope.Data.SandboxID, PSM: envelope.Data.Psm, Type: string(envelope.Data.SandboxType)}, nil
 }
 
 func (control *SDKControlPlane) Create(ctx context.Context, input CreateInput) (ControlSession, error) {
@@ -78,7 +152,7 @@ func (control *SDKControlPlane) Create(ctx context.Context, input CreateInput) (
 	}
 	traced, wrote := traceRequest(ctx)
 	session, err := control.client.CreateSessionWithOpts(traced, &sandbox.CreateSessionOpts{
-		TTL: seconds, Image: input.Image, Metadata: cloneStrings(input.Metadata),
+		TTL: seconds, Metadata: cloneStrings(input.Metadata),
 		Timeout: control.requestTimeout,
 	})
 	if err != nil {
@@ -189,7 +263,6 @@ func convertSDKSession(session *sandbox.Session) (ControlSession, error) {
 	return ControlSession{
 		ID: session.SessionID, Status: session.AdvancedInfo.Status, ExpiresAt: expiresAt,
 		Deleted: session.AdvancedInfo.Deleted, SandboxdEnabled: session.AdvancedInfo.SandboxdEnabled,
-		Image:    session.AdvancedInfo.Image,
 		Metadata: cloneStrings(session.AdvancedInfo.Metadata),
 	}, nil
 }
@@ -204,7 +277,7 @@ func convertSDKSessionInfo(session *sandbox.SessionInfoResponseData) (ControlSes
 	}
 	return ControlSession{
 		ID: session.SessionID, Status: session.Status, ExpiresAt: expiresAt, Deleted: session.Deleted,
-		SandboxdEnabled: session.SandboxdEnabled, Image: session.Image, Metadata: cloneStrings(session.Metadata),
+		SandboxdEnabled: session.SandboxdEnabled, Metadata: cloneStrings(session.Metadata),
 	}, nil
 }
 

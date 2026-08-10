@@ -231,7 +231,7 @@ func runProbeLifecycle(ctx context.Context, config networkProbeConfig, clients *
 		requestContext, cancel := context.WithTimeout(ctx, config.provider.controlTimeout)
 		defer cancel()
 		created, err := clients.control.Create(requestContext, adapter.CreateInput{
-			TTL: probeSessionTTL, Image: config.provider.sandboxImage, Metadata: metadata,
+			TTL: probeSessionTTL, Metadata: metadata,
 		})
 		if err != nil {
 			return err

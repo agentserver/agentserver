@@ -13,7 +13,6 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
 	"github.com/agentserver/agentserver/v2/internal/sandboxgateway"
-	"github.com/agentserver/agentserver/v2/internal/taeimage"
 	"github.com/agentserver/agentserver/v2/internal/taepolicy"
 )
 
@@ -40,7 +39,6 @@ type Config struct {
 	Data               DataPlane
 	Region             string
 	PSM                string
-	Image              string
 	Root               string
 	Now                func() time.Time
 	StreamGrace        time.Duration
@@ -56,7 +54,6 @@ type Provider struct {
 	data               DataPlane
 	region             string
 	psm                string
-	image              string
 	root               string
 	now                func() time.Time
 	streamGrace        time.Duration
@@ -79,9 +76,6 @@ func NewProvider(config Config) (*Provider, error) {
 	}
 	if strings.TrimSpace(config.PSM) != config.PSM || config.PSM == "" || len(config.PSM) > 256 {
 		return nil, errors.New("TAE provider PSM is invalid")
-	}
-	if err := taeimage.ValidateContentTag(config.Image); err != nil {
-		return nil, fmt.Errorf("TAE provider image: %w", err)
 	}
 	if err := config.Policy.Validate(config.Region, config.PSM, larkegresspolicy.SHA256Hex()); err != nil {
 		return nil, fmt.Errorf("TAE policy binding is invalid: %w", err)
@@ -126,7 +120,7 @@ func NewProvider(config Config) (*Provider, error) {
 		return nil, fmt.Errorf("TAE source-file limit must be between 1 and %d bytes", executionbackend.MaxReadFileBytes)
 	}
 	return &Provider{
-		control: config.Control, data: config.Data, region: config.Region, psm: config.PSM, image: config.Image,
+		control: config.Control, data: config.Data, region: config.Region, psm: config.PSM,
 		root: config.Root, now: config.Now, streamGrace: config.StreamGrace,
 		reconnectAttempts: config.ReconnectAttempts, reconnectDelay: config.ReconnectDelay,
 		signalTimeout: config.SignalTimeout, maxReadSourceBytes: config.MaxReadSourceBytes, policy: config.Policy,
@@ -154,7 +148,10 @@ func (provider *Provider) CreateSandbox(ctx context.Context, request sandboxgate
 		}
 		return provider.providerSandbox(existing)
 	}
-	session, err := provider.control.Create(ctx, CreateInput{TTL: request.TTL, Image: provider.image, Metadata: metadata})
+	// Terminal Sandbox images are fixed by the published Sandbox version. The
+	// Session API must not receive an image override; that field is only valid
+	// for image-collection sandboxes.
+	session, err := provider.control.Create(ctx, CreateInput{TTL: request.TTL, Metadata: metadata})
 	if err != nil {
 		return sandboxgateway.ProviderSandbox{}, provider.createError(err)
 	}
@@ -424,9 +421,6 @@ func (provider *Provider) validateCreate(region, psm string, ttl time.Duration) 
 func (provider *Provider) providerSandbox(session ControlSession) (sandboxgateway.ProviderSandbox, error) {
 	if session.ID == "" || len(session.ID) > 1024 {
 		return sandboxgateway.ProviderSandbox{}, &sandboxgateway.ProviderError{Code: "invalid_provider_identity", Cause: errors.New("TAE returned an invalid session ID")}
-	}
-	if session.Image != provider.image {
-		return sandboxgateway.ProviderSandbox{}, &sandboxgateway.ProviderError{Code: "provider_image_mismatch", Cause: errors.New("TAE session does not use the exact configured immutable image")}
 	}
 	state := providerState(session)
 	result := sandboxgateway.ProviderSandbox{SessionRef: session.ID, State: state, ExpiresAt: session.ExpiresAt, RequestID: session.RequestID}

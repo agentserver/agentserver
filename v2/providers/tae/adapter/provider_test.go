@@ -173,7 +173,7 @@ func TestProviderRejectsSessionWithoutExactPolicyBindingMetadata(t *testing.T) {
 func TestNewProviderRejectsMissingOrMismatchedPolicyBinding(t *testing.T) {
 	base := Config{
 		Control: defaultFakeControl(), Data: defaultFakeData(), Region: "sg", PSM: "psm.agentserver.tae",
-		Image: testTAEImage, Root: "/workspace",
+		Root: "/workspace",
 	}
 	if _, err := NewProvider(base); err == nil {
 		t.Fatal("provider accepted a missing TAE policy binding")
@@ -468,7 +468,7 @@ func TestProviderReadFileRejectsSymlinkBeforeDownload(t *testing.T) {
 func newTestProvider(t *testing.T, control ControlPlane, data DataPlane) *Provider {
 	t.Helper()
 	provider, err := NewProvider(Config{
-		Control: control, Data: data, Region: "sg", PSM: "psm.agentserver.tae", Image: testTAEImage, Root: "/workspace",
+		Control: control, Data: data, Region: "sg", PSM: "psm.agentserver.tae", Root: "/workspace",
 		Now: func() time.Time { return testNow }, ReconnectDelay: 10 * time.Millisecond, Policy: validProviderPolicy(),
 	})
 	if err != nil {
@@ -524,7 +524,7 @@ func defaultFakeData() *fakeDataPlane {
 func readyControlSession(id string, metadata map[string]string) ControlSession {
 	return ControlSession{
 		ID: id, Status: "running", ExpiresAt: testNow.Add(time.Hour), SandboxdEnabled: true,
-		Image: testTAEImage, Metadata: cloneStrings(metadata),
+		Metadata: cloneStrings(metadata),
 	}
 }
 

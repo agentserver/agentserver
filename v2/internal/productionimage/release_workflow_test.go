@@ -24,6 +24,10 @@ func TestProductionWorkflowPublishesAndLocksManagedSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	managedContainerfile, err := os.ReadFile(filepath.Join(v2Root, "deploy", "production", "managed-sandbox.Containerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	skillDigest := sha256.Sum256(skill)
 	for _, required := range []string{
 		"MANAGED_SANDBOX_REPOSITORY: ghcr.io/agentserver/v2-managed-sandbox",
@@ -43,5 +47,17 @@ func TestProductionWorkflowPublishesAndLocksManagedSandbox(t *testing.T) {
 		if !strings.Contains(string(workflow), required) {
 			t.Fatalf("production workflow is missing managed release contract %q", required)
 		}
+	}
+	for _, required := range []string{
+		"FROM " + managedSandboxBaseImageReference,
+		`LABEL org.opencontainers.image.description="` + managedSandboxDescription + `"`,
+		"WORKDIR /workspace\nCMD []\nSTOPSIGNAL SIGTERM",
+	} {
+		if !strings.Contains(string(managedContainerfile), required) {
+			t.Fatalf("managed sandbox Containerfile is missing runtime contract %q", required)
+		}
+	}
+	if strings.Contains(string(managedContainerfile), "FROM scratch") {
+		t.Fatal("managed sandbox Containerfile must retain the digest-pinned Terminal base")
 	}
 }

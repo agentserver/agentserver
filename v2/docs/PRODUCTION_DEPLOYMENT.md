@@ -303,8 +303,10 @@ keyring。不得用伪造 `published=true` 或模板 evidence 绕过这个阶段
 
 1. 运行 `make -C v2 check`；
 2. 下载并校验固定的 stock Codex `0.146.0` 与 bwrap amd64 artifact；
-3. 使用 Docker buildx 构建 service/harness 的 `linux/amd64` OCI archive，并调用
-   `agentserver-image verify-oci` 校验 manifest、descriptor、diff ID 以及镜像文件合同；
+3. 使用 Docker buildx 构建 service/harness/managed-sandbox 的 `linux/amd64` OCI archive，并调用
+   `agentserver-image verify-oci` 校验 manifest、descriptor、diff ID 以及镜像文件合同。managed-sandbox
+   以 digest-pinned Debian Terminal 镜像为第一层，校验器精确锁定其 compressed digest、size、diff ID
+   和 debuerreotype history；后续 managed rootfs、CA、canonical WORKDIR 空层继续 closed-world 校验；
 4. 推送 `ghcr.io/agentserver/v2-service`、`ghcr.io/agentserver/v2-harness` 和 managed-sandbox；
 5. 将固定的 Hydra 26.2.0 amd64 manifest 镜像到 `ghcr.io/agentserver/hydra`，并要求 digest 精确为
    `sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b`；

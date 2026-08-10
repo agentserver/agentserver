@@ -24,6 +24,8 @@ var sessionDNSLabelPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,6
 
 var requestCorrelationIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`)
 
+var providerErrorCodePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._-]{0,127}$`)
+
 type HeaderSource interface {
 	Headers(context.Context) (http.Header, error)
 }
@@ -63,6 +65,7 @@ type HTTPDataPlaneConfig struct {
 	Client        *http.Client
 	Headers       HeaderSource
 	Endpoint      EndpointResolver
+	SandboxID     string
 	RequireHTTPS  bool
 	MaxErrorBytes int64
 	MaxEventBytes int
@@ -72,6 +75,7 @@ type HTTPDataPlane struct {
 	client        *http.Client
 	headers       HeaderSource
 	endpoint      EndpointResolver
+	sandboxID     string
 	requireHTTPS  bool
 	maxErrorBytes int64
 	maxEventBytes int
@@ -80,6 +84,9 @@ type HTTPDataPlane struct {
 func NewHTTPDataPlane(config HTTPDataPlaneConfig) (*HTTPDataPlane, error) {
 	if config.Client == nil || config.Client.Transport == nil || config.Headers == nil || config.Endpoint == nil {
 		return nil, errors.New("TAE data-plane HTTP client, header source, and endpoint resolver are required")
+	}
+	if !sessionDNSLabelPattern.MatchString(config.SandboxID) || strings.ToLower(config.SandboxID) != config.SandboxID {
+		return nil, errors.New("TAE data-plane terminal sandbox ID is invalid")
 	}
 	if config.Client.Timeout != 0 {
 		return nil, errors.New("TAE streaming HTTP client must not have a client-wide timeout")
@@ -99,7 +106,7 @@ func NewHTTPDataPlane(config HTTPDataPlaneConfig) (*HTTPDataPlane, error) {
 	client := *config.Client
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	return &HTTPDataPlane{
-		client: &client, headers: config.Headers, endpoint: config.Endpoint,
+		client: &client, headers: config.Headers, endpoint: config.Endpoint, sandboxID: config.SandboxID,
 		requireHTTPS: config.RequireHTTPS, maxErrorBytes: config.MaxErrorBytes, maxEventBytes: config.MaxEventBytes,
 	}, nil
 }
@@ -219,6 +226,11 @@ func (dataPlane *HTTPDataPlane) do(ctx context.Context, sessionID, method, reque
 	if err := copyIdentityHeaders(request.Header, headers); err != nil {
 		return nil, &RequestError{Code: "identity_unavailable", Cause: errors.New("TAE data-plane provider identity header is invalid")}
 	}
+	forwardedPrefix, err := terminalForwardedPrefix(dataPlane.sandboxID, sessionID)
+	if err != nil {
+		return nil, &RequestError{Code: "bad_request", Cause: err}
+	}
+	request.Header.Set("X-Forwarded-Prefix", forwardedPrefix)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", accept)
 	request.Header.Set("Cache-Control", "no-store")
@@ -246,19 +258,73 @@ func (dataPlane *HTTPDataPlane) do(ctx context.Context, sessionID, method, reque
 		return nil, &RequestError{WroteRequest: wroteRequest, Code: code, Cause: errors.New("TAE transport failed")}
 	}
 	if response.StatusCode != http.StatusOK {
-		requestID := responseRequestID(response.Header, correlationID)
 		boundedBody, _ := io.ReadAll(io.LimitReader(response.Body, dataPlane.maxErrorBytes+1))
 		response.Body.Close()
+		providerCode, bodyRequestID := responseErrorMetadata(boundedBody, dataPlane.maxErrorBytes)
+		requestID := providerRequestID(response.Header)
+		if requestID == "" {
+			requestID = bodyRequestID
+		}
+		if requestID == "" && requestCorrelationIDPattern.MatchString(correlationID) {
+			requestID = correlationID
+		}
 		if response.StatusCode == http.StatusUnauthorized {
 			refreshRejectedProviderIdentity(dataPlane.headers, ctx, headers)
 		}
 		return nil, &RequestError{
 			WroteRequest: wroteRequest, StatusCode: response.StatusCode,
-			Code: responseCode(response.StatusCode, boundedBody, dataPlane.maxErrorBytes), RequestID: requestID,
+			Code:         responseCode(response.StatusCode, boundedBody, dataPlane.maxErrorBytes),
+			ProviderCode: providerCode, RequestID: requestID,
 			Cause: errors.New("TAE returned a non-success response"),
 		}
 	}
 	return response, nil
+}
+
+func responseErrorMetadata(body []byte, maximum int64) (string, string) {
+	if len(body) == 0 || int64(len(body)) > maximum {
+		return "", ""
+	}
+	var envelope struct {
+		ErrorCode any    `json:"error_code"`
+		LogID     string `json:"log_id"`
+	}
+	if decodeSingleJSON(body, &envelope) != nil {
+		return "", ""
+	}
+	providerCode := strings.TrimSpace(fmt.Sprint(envelope.ErrorCode))
+	if envelope.ErrorCode == nil || !providerErrorCodePattern.MatchString(providerCode) {
+		providerCode = ""
+	}
+	requestID := strings.TrimSpace(envelope.LogID)
+	if !requestCorrelationIDPattern.MatchString(requestID) {
+		requestID = ""
+	}
+	return providerCode, requestID
+}
+
+func decodeSingleJSON(body []byte, destination any) error {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := decoder.Decode(destination); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("JSON response contained trailing data")
+		}
+		return err
+	}
+	return nil
+}
+
+func terminalForwardedPrefix(sandboxID, sessionID string) (string, error) {
+	if !sessionDNSLabelPattern.MatchString(sandboxID) || strings.ToLower(sandboxID) != sandboxID ||
+		!sessionDNSLabelPattern.MatchString(sessionID) || strings.ToLower(sessionID) != sessionID {
+		return "", errors.New("TAE terminal sandbox route identity is invalid")
+	}
+	return "/api/v1/terminal_sandbox/sandboxes/" + sandboxID + "/sessions/" + sessionID + "/bash_server", nil
 }
 
 func validateEndpoint(endpoint *url.URL, requireHTTPS bool) error {

@@ -5,11 +5,16 @@
   内置 Hydra、TAE policy/proxy binding、S3 与当前 TOS egress 地址；这些环境值变化时必须重新生成和
   发布 Chart。
 - `build-images.sh`：生产发布只使用 `linux-amd64` 和 Apple Container `1.2.2`，并逐文件验证
-  service/harness/managed-sandbox 镜像。service/harness 固定为两层；managed-sandbox 额外只接受
-  `1.2.2` 为 `WORKDIR /workspace` 生成的 canonical 空层，所有非空文件仍属于相同 closed-world 清单。
-- `service.Containerfile`、`harness.Containerfile`、`managed-sandbox.Containerfile`：digest-pinned
-  base、scratch runtime 镜像；service image 内含 provider-linked `sandbox-gateway` 和
-  `egress-authorizer` binary，managed-sandbox image 只含 pinned `lark-cli`/skill runtime。
+  service/harness/managed-sandbox 镜像。service/harness 固定为两层；managed-sandbox 固定为四层：
+  digest/size/diff ID/history 全部锁定的 Debian Terminal base、closed-world managed rootfs、固定 CA，
+  以及 `1.2.2` 为 `WORKDIR /workspace` 生成的 canonical 空层。base 作为 opaque trusted layer，不会
+  被误拿去和 managed 文件清单比较；后面三层仍逐 entry 校验 owner/mode/size/SHA-256。
+- `service.Containerfile`、`harness.Containerfile`：digest-pinned build base 与 scratch runtime；
+  `managed-sandbox.Containerfile` 则基于
+  `aliyun-sin-hub.byted.org/agentserver/tae-sandbox@sha256:e4255f02c1feceb168848fc6b7ea934cdc3f944ebc8dda51d2b77d00fbf28f6f`
+  的 Debian trixie Terminal rootfs，并显式以 `CMD []` 清除继承的 `bash`。service image 内含
+  provider-linked `sandbox-gateway` 和 `egress-authorizer` binary；managed overlay 只增加 pinned
+  `lark-cli`、skill、manifest 和 CA，平台继续自动注入 SandboxD。
 - `agentserver-deploy prepare-policy-bootstrap`：生成只暴露生产 TLS deny-only Webhook、没有 TAE/sandbox
   authority 的预审批 Chart 配置。
 - bootstrap Chart 内含默认关闭、仅能由 closed values schema 启用的 SG 探针资源；审批后由 Pulumi

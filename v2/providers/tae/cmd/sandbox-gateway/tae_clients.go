@@ -50,6 +50,11 @@ func newTAEClients(ctx context.Context, config providerConfig, psm string) (*tae
 		closeClients()
 		return nil, err
 	}
+	descriptor, err := control.DescribeSandbox(ctx)
+	if err != nil {
+		closeClients()
+		return nil, fmt.Errorf("resolve TAE terminal sandbox descriptor: %w", err)
+	}
 	domainSuffix, err := adapter.SGDataplaneDomainSuffix()
 	if err != nil {
 		closeClients()
@@ -72,7 +77,8 @@ func newTAEClients(ctx context.Context, config providerConfig, psm string) (*tae
 		dataHTTPClient.CloseIdleConnections()
 	}
 	data, err := adapter.NewHTTPDataPlane(adapter.HTTPDataPlaneConfig{
-		Client: dataHTTPClient, Headers: headerSource, Endpoint: endpoint, RequireHTTPS: true,
+		Client: dataHTTPClient, Headers: headerSource, Endpoint: endpoint,
+		SandboxID: descriptor.ID, RequireHTTPS: true,
 	})
 	if err != nil {
 		closeClients()

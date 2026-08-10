@@ -122,7 +122,7 @@ func serve(ctx context.Context, getenv func(string) string, stdout, stderr io.Wr
 	defer clients.Close()
 	provider, err := adapter.NewProvider(adapter.Config{
 		Control: clients.control, Data: clients.data, Region: appConfig.ProviderRegion, PSM: appConfig.ProviderPSM,
-		Image: providerConfig.sandboxImage, Root: appConfig.Root, StreamGrace: providerConfig.streamGrace,
+		Root: appConfig.Root, StreamGrace: providerConfig.streamGrace,
 		ReconnectAttempts: providerConfig.reconnectAttempts, ReconnectDelay: providerConfig.reconnectDelay,
 		SignalTimeout: providerConfig.signalTimeout, MaxReadSourceBytes: providerConfig.maxReadBytes,
 		Policy: appConfig.TAEPolicy,

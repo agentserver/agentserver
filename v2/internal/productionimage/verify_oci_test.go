@@ -23,34 +23,65 @@ func TestOCIImageVerifierAcceptsExactTwoLayerImage(t *testing.T) {
 }
 
 func TestOCIImageVerifierAcceptsLockedManagedSandboxWorkdirLayer(t *testing.T) {
-	archive, manifest, directories, files := testOCIImageForKind(
+	archive, manifest, directories, files, managedBase := testOCIImageForKind(
 		t, false, testOCINestedIndex, KindManagedSandbox, nil, managedWorkdirHistory,
 	)
-	if err := verifyOCIArchive(bytes.NewReader(archive), manifest, directories, files); err != nil {
+	if err := verifyOCIArchiveWithTestBase(archive, manifest, directories, files, managedBase); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestOCIImageVerifierRejectsManagedSandboxWorkdirLayerWithContents(t *testing.T) {
-	archive, manifest, directories, files := testOCIImageForKind(
+	archive, manifest, directories, files, managedBase := testOCIImageForKind(
 		t, false, testOCINestedIndex, KindManagedSandbox,
 		[]testLayerEntry{{name: "unexpected", mode: 0o444, contents: []byte("unexpected")}},
 		managedWorkdirHistory,
 	)
-	err := verifyOCIArchive(bytes.NewReader(archive), manifest, directories, files)
+	err := verifyOCIArchiveWithTestBase(archive, manifest, directories, files, managedBase)
 	if err == nil || !strings.Contains(err.Error(), "locked empty WORKDIR layer") {
 		t.Fatalf("managed sandbox non-empty WORKDIR layer error = %v", err)
 	}
 }
 
 func TestOCIImageVerifierRejectsManagedSandboxWithoutWorkdirHistory(t *testing.T) {
-	archive, manifest, directories, files := testOCIImageForKind(
+	archive, manifest, directories, files, managedBase := testOCIImageForKind(
 		t, false, testOCINestedIndex, KindManagedSandbox, nil, "RUN true",
 	)
-	err := verifyOCIArchive(bytes.NewReader(archive), manifest, directories, files)
+	err := verifyOCIArchiveWithTestBase(archive, manifest, directories, files, managedBase)
 	if err == nil || !strings.Contains(err.Error(), "locked WORKDIR instruction") {
 		t.Fatalf("managed sandbox WORKDIR history error = %v", err)
 	}
+}
+
+func TestOCIImageVerifierRejectsManagedSandboxBaseDrift(t *testing.T) {
+	archive, manifest, directories, files, managedBase := testOCIImageForKind(
+		t, false, testOCINestedIndex, KindManagedSandbox, nil, managedWorkdirHistory,
+	)
+
+	t.Run("compressed descriptor", func(t *testing.T) {
+		drifted := managedBase
+		drifted.LayerDigest = "sha256:" + strings.Repeat("f", 64)
+		err := verifyOCIArchiveWithTestBase(archive, manifest, directories, files, drifted)
+		if err == nil || !strings.Contains(err.Error(), "locked Debian base layer") {
+			t.Fatalf("managed sandbox base layer error = %v", err)
+		}
+	})
+	t.Run("diff ID", func(t *testing.T) {
+		drifted := managedBase
+		drifted.LayerDiffID = "sha256:" + strings.Repeat("f", 64)
+		err := verifyOCIArchiveWithTestBase(archive, manifest, directories, files, drifted)
+		if err == nil || !strings.Contains(err.Error(), "locked Debian base diff ID") {
+			t.Fatalf("managed sandbox base diff ID error = %v", err)
+		}
+	})
+	t.Run("history", func(t *testing.T) {
+		drifted := managedBase
+		drifted.History.Comment = "drifted"
+		err := verifyOCIArchiveWithTestBase(archive, manifest, directories, files, drifted)
+		if err == nil || !strings.Contains(err.Error(), "locked Debian base history") {
+			t.Fatalf("managed sandbox base history error = %v", err)
+		}
+	})
 }
 
 func TestOCIImageVerifierRejectsUnreferencedBlob(t *testing.T) {
@@ -87,7 +118,8 @@ const (
 
 func testOCIImage(t *testing.T, extraBlob bool, layout testOCIRootLayout) ([]byte, Manifest, map[string]DirectoryEntry, map[string]FileEntry) {
 	t.Helper()
-	return testOCIImageForKind(t, extraBlob, layout, KindService, nil, "")
+	archive, manifest, directories, files, _ := testOCIImageForKind(t, extraBlob, layout, KindService, nil, "")
+	return archive, manifest, directories, files
 }
 
 func testOCIImageForKind(
@@ -97,7 +129,7 @@ func testOCIImageForKind(
 	kind string,
 	managedWorkdirEntries []testLayerEntry,
 	managedWorkdirCreatedBy string,
-) ([]byte, Manifest, map[string]DirectoryEntry, map[string]FileEntry) {
+) ([]byte, Manifest, map[string]DirectoryEntry, map[string]FileEntry, managedSandboxBaseProfile) {
 	t.Helper()
 	revision := strings.Repeat("a", 40)
 	platform := PlatformLinuxARM64
@@ -111,7 +143,7 @@ func testOCIImageForKind(
 		architecture = "amd64"
 		workingDirectory = "/workspace"
 		title = "agentserver v2 managed sandbox"
-		description = "Closed-world TAE sandbox with pinned Lark CLI and skill"
+		description = managedSandboxDescription
 	}
 	manifest := Manifest{Kind: kind, Platform: platform, SourceRevision: revision}
 	directories := map[string]DirectoryEntry{
@@ -149,7 +181,28 @@ func testOCIImageForKind(
 		{Created: created, CreatedBy: "COPY ca", Comment: "buildkit.dockerfile.v0"},
 	}
 	blobs := [][]byte{firstLayer, secondLayer}
+	managedBase := lockedManagedSandboxBaseProfile()
 	if kind == KindManagedSandbox {
+		baseTar := testOCILayerTar(t, []testLayerEntry{
+			{name: "bin/", mode: 0o755, directory: true},
+			{name: "bin/sh", mode: 0o755, contents: []byte("test shell")},
+		})
+		baseLayer := testGzip(t, baseTar)
+		managedBase = managedSandboxBaseProfile{
+			LayerDigest: "sha256:" + testSHA256(baseLayer),
+			LayerSize:   int64(len(baseLayer)),
+			LayerDiffID: "sha256:" + testSHA256(baseTar),
+			History: ociHistory{
+				Created:   "2026-08-03T00:00:00Z",
+				CreatedBy: managedSandboxBaseHistoryCreatedBy,
+				Comment:   managedSandboxBaseHistoryComment,
+			},
+		}
+		layers = append([]ociDescriptor{testOCIDescriptor(ociGzipLayerMediaType, baseLayer)}, layers...)
+		diffIDs = append([]string{managedBase.LayerDiffID}, diffIDs...)
+		history = append([]ociHistory{managedBase.History}, history...)
+		blobs = append([][]byte{baseLayer}, blobs...)
+
 		workdirTar := testOCILayerTar(t, managedWorkdirEntries)
 		workdirLayer := testGzip(t, workdirTar)
 		if len(managedWorkdirEntries) == 0 {
@@ -170,7 +223,8 @@ func testOCIImageForKind(
 	config := ociImageConfig{
 		Architecture: architecture,
 		Config: ociRuntimeConfig{
-			User: user, Env: []string{ociDefaultPath}, WorkingDir: workingDirectory, StopSignal: "SIGTERM",
+			User: user, Env: []string{ociDefaultPath}, ArgsEscaped: kind == KindManagedSandbox,
+			WorkingDir: workingDirectory, StopSignal: "SIGTERM",
 			Labels: map[string]string{
 				"org.opencontainers.image.description": description,
 				"org.opencontainers.image.revision":    revision,
@@ -227,7 +281,20 @@ func testOCIImageForKind(
 	if extraBlob {
 		blobs = append(blobs, []byte("unreferenced"))
 	}
-	return testOCIOuterTar(t, testOCIJSON(t, rootIndex), blobs), manifest, directories, files
+	return testOCIOuterTar(t, testOCIJSON(t, rootIndex), blobs), manifest, directories, files, managedBase
+}
+
+func verifyOCIArchiveWithTestBase(
+	archive []byte,
+	manifest Manifest,
+	directories map[string]DirectoryEntry,
+	files map[string]FileEntry,
+	managedBase managedSandboxBaseProfile,
+) error {
+	_, err := verifyOCIArchiveWithBaseProfile(
+		bytes.NewReader(archive), manifest, directories, files, managedBase,
+	)
+	return err
 }
 
 func testOCIFileEntry(name string, contents []byte, mode uint32) FileEntry {

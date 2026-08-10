@@ -24,9 +24,8 @@ func TestHTTPDataPlaneNeverReturnsSecretPayloadOrResponse(t *testing.T) {
 		if request.Header.Get("X-Zti-Token") != "test-zti" {
 			t.Fatalf("X-Zti-Token = %q", request.Header.Get("X-Zti-Token"))
 		}
-		response.Header().Set("X-Tt-Logid", "provider-log-1")
 		response.WriteHeader(http.StatusInternalServerError)
-		_, _ = io.WriteString(response, `{"message":"`+placeholder+`","authorization":"Bearer real-token"}`)
+		_, _ = io.WriteString(response, `{"error_code":"Internal.SecretFailure","log_id":"provider-log-1","message":"`+placeholder+`","authorization":"Bearer real-token"}`)
 	}))
 	defer server.Close()
 	dataPlane := newHTTPTestDataPlane(t, server)
@@ -41,15 +40,34 @@ func TestHTTPDataPlaneNeverReturnsSecretPayloadOrResponse(t *testing.T) {
 		t.Fatalf("secret leaked through error: %v", err)
 	}
 	var requestError *RequestError
-	if !errors.As(err, &requestError) || !requestError.WroteRequest || requestError.StatusCode != 500 || requestError.RequestID != "provider-log-1" {
+	if !errors.As(err, &requestError) || !requestError.WroteRequest || requestError.StatusCode != 500 ||
+		requestError.ProviderCode != "Internal.SecretFailure" || requestError.RequestID != "provider-log-1" {
 		t.Fatalf("request error = %#v", err)
+	}
+}
+
+func TestResponseErrorMetadataRejectsUnboundedOrUnsafeFields(t *testing.T) {
+	code, requestID := responseErrorMetadata([]byte(`{"error_code":"UnauthorizedOperation.NoPermission","log_id":"provider-log-2","message":"ignored"}`), 1024)
+	if code != "UnauthorizedOperation.NoPermission" || requestID != "provider-log-2" {
+		t.Fatalf("metadata = %q, %q", code, requestID)
+	}
+	for _, body := range [][]byte{
+		[]byte(`{"error_code":"bad code with spaces","log_id":"bad id with spaces"}`),
+		[]byte(`{"error_code":"Safe.Code","log_id":"provider-log-3"}` + strings.Repeat("x", 1024)),
+		[]byte(`{"error_code":"Safe.Code","log_id":"provider-log-3"} {}`),
+		[]byte(`not-json`),
+	} {
+		if code, requestID := responseErrorMetadata(body, 1024); code != "" || requestID != "" {
+			t.Fatalf("unsafe metadata accepted: %q, %q", code, requestID)
+		}
 	}
 }
 
 func TestHTTPDataPlaneParsesDocumentedProcessSSE(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/api/process/start" || request.Method != http.MethodPost ||
-			request.Header.Get("Accept") != "text/event-stream" || request.Header.Get("X-Tt-Logid") != "request-2" {
+			request.Header.Get("Accept") != "text/event-stream" || request.Header.Get("X-Tt-Logid") != "request-2" ||
+			request.Header.Get("X-Forwarded-Prefix") != "/api/v1/terminal_sandbox/sandboxes/sandbox-1/sessions/session-1/bash_server" {
 			t.Fatalf("request = %s %s Accept=%q", request.Method, request.URL.Path, request.Header.Get("Accept"))
 		}
 		var payload struct {
@@ -182,7 +200,7 @@ func TestHTTPDataPlaneRefreshesRejectedJWTWithoutReplaying(t *testing.T) {
 	client := server.Client()
 	client.Timeout = 0
 	dataPlane, err := NewHTTPDataPlane(HTTPDataPlaneConfig{
-		Client: client, Headers: source, RequireHTTPS: true,
+		Client: client, Headers: source, SandboxID: "sandbox-1", RequireHTTPS: true,
 		Endpoint: EndpointResolverFunc(func(string) (*url.URL, error) {
 			clone := *base
 			return &clone, nil
@@ -248,6 +266,7 @@ func newHTTPTestDataPlane(t *testing.T, server *httptest.Server) *HTTPDataPlane 
 			clone := *base
 			return &clone, nil
 		}),
+		SandboxID:    "sandbox-1",
 		RequireHTTPS: true,
 	})
 	if err != nil {

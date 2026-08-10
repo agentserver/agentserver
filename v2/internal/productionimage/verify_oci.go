@@ -27,6 +27,15 @@ const (
 	ociEmptyTarDiffID         = "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef"
 	managedWorkdirHistory     = "WORKDIR /workspace"
 
+	managedSandboxBaseImageReference   = "aliyun-sin-hub.byted.org/agentserver/tae-sandbox@sha256:e4255f02c1feceb168848fc6b7ea934cdc3f944ebc8dda51d2b77d00fbf28f6f"
+	managedSandboxBaseLayerDigest      = "sha256:1da3cb2f93f2ca3c5bdaf4c024a7f1ebd717938d20c858e4be4b9aa81fc8608c"
+	managedSandboxBaseLayerSize        = int64(49312314)
+	managedSandboxBaseLayerDiffID      = "sha256:035cd7d3804a752eeecd4b7c854615080ca7e254f399188c2e25ff08928b6e7d"
+	managedSandboxBaseHistoryCreated   = "2026-08-03T00:00:00Z"
+	managedSandboxBaseHistoryCreatedBy = "# debian.sh --arch 'amd64' out/ 'trixie' '@1785715200'"
+	managedSandboxBaseHistoryComment   = "debuerreotype 0.17"
+	managedSandboxDescription          = "Digest-pinned Debian TAE sandbox with closed-world Lark runtime"
+
 	maximumOCIDocumentBytes = int64(1024 * 1024)
 	maximumOCIBlobBytes     = int64(512 * 1024 * 1024)
 	maximumOCITotalBytes    = int64(768 * 1024 * 1024)
@@ -80,13 +89,14 @@ type ociImageConfig struct {
 }
 
 type ociRuntimeConfig struct {
-	User       string            `json:"User"`
-	Env        []string          `json:"Env"`
-	Entrypoint []string          `json:"Entrypoint,omitempty"`
-	Cmd        []string          `json:"Cmd,omitempty"`
-	WorkingDir string            `json:"WorkingDir"`
-	Labels     map[string]string `json:"Labels"`
-	StopSignal string            `json:"StopSignal"`
+	User        string            `json:"User"`
+	Env         []string          `json:"Env"`
+	Entrypoint  []string          `json:"Entrypoint,omitempty"`
+	Cmd         []string          `json:"Cmd,omitempty"`
+	ArgsEscaped bool              `json:"ArgsEscaped,omitempty"`
+	WorkingDir  string            `json:"WorkingDir"`
+	Labels      map[string]string `json:"Labels"`
+	StopSignal  string            `json:"StopSignal"`
 }
 
 type ociHistory struct {
@@ -105,12 +115,35 @@ type OCIImageEvidence struct {
 	ImageManifestDigest string
 }
 
+type managedSandboxBaseProfile struct {
+	LayerDigest string
+	LayerSize   int64
+	LayerDiffID string
+	History     ociHistory
+}
+
+func lockedManagedSandboxBaseProfile() managedSandboxBaseProfile {
+	return managedSandboxBaseProfile{
+		LayerDigest: managedSandboxBaseLayerDigest,
+		LayerSize:   managedSandboxBaseLayerSize,
+		LayerDiffID: managedSandboxBaseLayerDiffID,
+		History: ociHistory{
+			Created:   managedSandboxBaseHistoryCreated,
+			CreatedBy: managedSandboxBaseHistoryCreatedBy,
+			Comment:   managedSandboxBaseHistoryComment,
+		},
+	}
+}
+
 // VerifyImageOCI proves the saved OCI image itself has one manifest for the
 // platform named by the external manifest, the locked runtime configuration,
 // exact descriptor digests, and only manifest-declared rootfs entries. The
-// managed-sandbox profile additionally locks the canonical empty WORKDIR layer
-// emitted by Apple container 1.2.2. It intentionally avoids a container
-// export because runtimes inject dev, proc, sys, hostname, and hosts entries.
+// managed-sandbox profile additionally locks an opaque Debian Terminal base
+// layer by compressed digest, size, diff ID, and history, then applies the
+// closed-world verifier to every managed overlay layer. It also locks the
+// canonical empty WORKDIR layer emitted by Apple container 1.2.2. It
+// intentionally avoids a container export because runtimes inject dev, proc,
+// sys, hostname, and hosts entries.
 func VerifyImageOCI(reader io.Reader, manifestBytes []byte) error {
 	_, err := VerifyImageOCIWithEvidence(reader, manifestBytes)
 	return err
@@ -145,6 +178,18 @@ func verifyOCIArchive(reader io.Reader, manifest Manifest, directories map[strin
 }
 
 func verifyOCIArchiveWithEvidence(reader io.Reader, manifest Manifest, directories map[string]DirectoryEntry, files map[string]FileEntry) (OCIImageEvidence, error) {
+	return verifyOCIArchiveWithBaseProfile(
+		reader, manifest, directories, files, lockedManagedSandboxBaseProfile(),
+	)
+}
+
+func verifyOCIArchiveWithBaseProfile(
+	reader io.Reader,
+	manifest Manifest,
+	directories map[string]DirectoryEntry,
+	files map[string]FileEntry,
+	managedBase managedSandboxBaseProfile,
+) (OCIImageEvidence, error) {
 	archive, err := readOCIArchive(reader)
 	if err != nil {
 		return OCIImageEvidence{}, err
@@ -177,6 +222,10 @@ func verifyOCIArchiveWithEvidence(reader io.Reader, manifest Manifest, directori
 		return OCIImageEvidence{}, fmt.Errorf("production OCI %s image manifest must contain exactly %d layers", manifest.Kind, expectedLayers)
 	}
 	if manifest.Kind == KindManagedSandbox {
+		baseLayer := imageManifest.Layers[0]
+		if baseLayer.Digest != managedBase.LayerDigest || baseLayer.Size != managedBase.LayerSize {
+			return OCIImageEvidence{}, errors.New("production managed-sandbox OCI image lacks the locked Debian base layer")
+		}
 		workdirLayer := imageManifest.Layers[expectedLayers-1]
 		if workdirLayer.Digest != ociBuildkitEmptyLayer || workdirLayer.Size != ociBuildkitEmptyLayerSize {
 			return OCIImageEvidence{}, errors.New("production managed-sandbox OCI image lacks the locked empty WORKDIR layer")
@@ -194,7 +243,7 @@ func verifyOCIArchiveWithEvidence(reader io.Reader, manifest Manifest, directori
 	if err := decodeOCIDocument("OCI image config", configBytes, &config); err != nil {
 		return OCIImageEvidence{}, err
 	}
-	if err := validateOCIImageConfig(config, manifest); err != nil {
+	if err := validateOCIImageConfig(config, manifest, managedBase); err != nil {
 		return OCIImageEvidence{}, err
 	}
 	if len(config.RootFS.DiffIDs) != len(imageManifest.Layers) {
@@ -209,6 +258,12 @@ func verifyOCIArchiveWithEvidence(reader io.Reader, manifest Manifest, directori
 		layerBytes, err := resolveOCIDescriptor(descriptor, ociGzipLayerMediaType, archive.blobs, referenced)
 		if err != nil {
 			return OCIImageEvidence{}, fmt.Errorf("resolve OCI layer %d: %w", index, err)
+		}
+		if manifest.Kind == KindManagedSandbox && index == 0 {
+			if config.RootFS.DiffIDs[index] != managedBase.LayerDiffID {
+				return OCIImageEvidence{}, errors.New("production managed-sandbox OCI config lacks the locked Debian base diff ID")
+			}
+			continue
 		}
 		diffID, err := verifyOCILayer(layerBytes, entryVerifier)
 		if err != nil {
@@ -431,7 +486,7 @@ func resolveOCIDescriptor(descriptor ociDescriptor, mediaType string, blobs map[
 	return contents, nil
 }
 
-func validateOCIImageConfig(config ociImageConfig, manifest Manifest) error {
+func validateOCIImageConfig(config ociImageConfig, manifest Manifest, managedBase managedSandboxBaseProfile) error {
 	architecture := platformArchitecture(manifest.Platform)
 	expectedLayers := expectedOCILayerCount(manifest.Kind)
 	if config.Architecture != architecture || config.OS != "linux" || config.RootFS.Type != "layers" || len(config.RootFS.DiffIDs) != expectedLayers {
@@ -445,8 +500,13 @@ func validateOCIImageConfig(config ociImageConfig, manifest Manifest) error {
 			return errors.New("production OCI config has invalid diff ID")
 		}
 	}
-	if manifest.Kind == KindManagedSandbox && config.RootFS.DiffIDs[expectedLayers-1] != ociEmptyTarDiffID {
-		return errors.New("production managed-sandbox OCI config lacks the locked empty WORKDIR diff ID")
+	if manifest.Kind == KindManagedSandbox {
+		if config.RootFS.DiffIDs[0] != managedBase.LayerDiffID {
+			return errors.New("production managed-sandbox OCI config lacks the locked Debian base diff ID")
+		}
+		if config.RootFS.DiffIDs[expectedLayers-1] != ociEmptyTarDiffID {
+			return errors.New("production managed-sandbox OCI config lacks the locked empty WORKDIR diff ID")
+		}
 	}
 	expectedUser := "65534:65534"
 	expectedWorkingDirectory := "/"
@@ -459,7 +519,7 @@ func validateOCIImageConfig(config ociImageConfig, manifest Manifest) error {
 	} else if manifest.Kind == KindManagedSandbox {
 		expectedWorkingDirectory = "/workspace"
 		expectedTitle = "agentserver v2 managed sandbox"
-		expectedDescription = "Closed-world TAE sandbox with pinned Lark CLI and skill"
+		expectedDescription = managedSandboxDescription
 	}
 	expectedLabels := map[string]string{
 		"org.opencontainers.image.description": expectedDescription,
@@ -469,12 +529,20 @@ func validateOCIImageConfig(config ociImageConfig, manifest Manifest) error {
 	}
 	if config.Config.User != expectedUser || !slices.Equal(config.Config.Env, []string{ociDefaultPath}) ||
 		len(config.Config.Entrypoint) != 0 || len(config.Config.Cmd) != 0 || config.Config.WorkingDir != expectedWorkingDirectory ||
+		config.Config.ArgsEscaped != (manifest.Kind == KindManagedSandbox) ||
 		config.Config.StopSignal != "SIGTERM" || !maps.Equal(config.Config.Labels, expectedLabels) {
 		return errors.New("production OCI runtime configuration differs from the locked profile")
 	}
 	nonEmptyHistory := make([]string, 0, expectedLayers)
-	for _, history := range config.History {
-		if _, err := time.Parse(time.RFC3339Nano, history.Created); err != nil || history.CreatedBy == "" || history.Comment != "buildkit.dockerfile.v0" {
+	for index, history := range config.History {
+		if _, err := time.Parse(time.RFC3339Nano, history.Created); err != nil || history.CreatedBy == "" {
+			return errors.New("production OCI config contains invalid history")
+		}
+		if manifest.Kind == KindManagedSandbox && index == 0 {
+			if history != managedBase.History || history.EmptyLayer {
+				return errors.New("production managed-sandbox OCI config lacks the locked Debian base history")
+			}
+		} else if history.Comment != "buildkit.dockerfile.v0" {
 			return errors.New("production OCI config contains invalid history")
 		}
 		if !history.EmptyLayer {
@@ -492,7 +560,7 @@ func validateOCIImageConfig(config ociImageConfig, manifest Manifest) error {
 
 func expectedOCILayerCount(kind string) int {
 	if kind == KindManagedSandbox {
-		return 3
+		return 4
 	}
 	return 2
 }

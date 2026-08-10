@@ -15,14 +15,12 @@ type ControlSession struct {
 	ExpiresAt       time.Time
 	Deleted         bool
 	SandboxdEnabled bool
-	Image           string
 	Metadata        map[string]string
 	RequestID       string
 }
 
 type CreateInput struct {
 	TTL      time.Duration
-	Image    string
 	Metadata map[string]string
 }
 
@@ -101,6 +99,7 @@ type RequestError struct {
 	WroteRequest bool
 	StatusCode   int
 	Code         string
+	ProviderCode string
 	RequestID    string
 	Cause        error
 }
@@ -115,6 +114,9 @@ func (requestError *RequestError) Error() string {
 	}
 	if requestError.StatusCode != 0 {
 		message += ": http status " + statusText(requestError.StatusCode)
+	}
+	if requestError.ProviderCode != "" {
+		message += ": provider code " + requestError.ProviderCode
 	}
 	if requestError.Cause != nil {
 		message += ": " + requestError.Cause.Error()

@@ -287,7 +287,7 @@ credential 完全不同；后者只能由 v2 Core 内置 credential service 读�
   `AGENTSERVER_V2_TAE_BYTECLOUD_JWT_ENDPOINT` 显式注入并在启动时精确校验，避免 SDK 默认 I18N host
   列表先访问跨地域地址导致 SG exchange deadline 被耗尽；
 - JWT exchange、TAE control-plane 与 sandboxd data-plane 的 provider transport 全部固定使用
-  `socks5h://ssh-egress-merlin-i18nbd-syd2a-83092.ssh-egress.svc.cluster.local:1080`，并由
+  `socks5h://ssh-egress-merlin-i18nbd-syd2a-83092-headless.ssh-egress.svc.cluster.local:1080`，并由
   `AGENTSERVER_V2_TAE_PROXY_URL` exact-match；不能配置 proxy userinfo、其他 egress 或直连 fallback。
   标准 proxy 环境变量继续 fail closed。control-plane transport 只允许
   `controlplane.sg.ai-sandbox-i18n.byted.org:443`，data-plane transport 只允许一个 canonical session DNS

@@ -28,7 +28,7 @@ const (
 	ProductionByteCloudJWTEndpoint = "https://cloud-i18n-sg.bytedance.net"
 	ProductionTAEControlPlaneHost  = "controlplane.sg.ai-sandbox-i18n.byted.org"
 	ProductionTAEDataPlaneSuffix   = "sg.ai-sandbox-i18n.byted.org"
-	ProductionTAEProxyURL          = "socks5h://ssh-egress-merlin-i18nbd-syd2a-83092.ssh-egress.svc.cluster.local:1080"
+	ProductionTAEProxyURL          = "socks5h://ssh-egress-merlin-i18nbd-syd2a-83092-headless.ssh-egress.svc.cluster.local:1080"
 	ProductionTAEProxyNamespace    = "ssh-egress"
 	ProductionTAEProxyPodApp       = "ssh-egress-merlin-i18nbd-syd2a-83092"
 	ProductionTAEProxyPort         = uint16(1080)

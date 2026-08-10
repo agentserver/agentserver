@@ -30,7 +30,7 @@ HTTPS listener 暴露，后端 TLS 由 `agentserver-egress-backend-ca` ConfigMap
 `bytecloud-secret-access-key`，以 `i18n-tt` 应用身份换取短期 JWT；execution gateway、harness 和 TAE
 sandbox 均不接触 AK/SK。JWT exchange origin 固定为 `https://cloud-i18n-sg.bytedance.net`；JWT exchange、
 TAE control-plane 与 sandboxd data-plane 全部只通过
-`socks5h://ssh-egress-merlin-i18nbd-syd2a-83092.ssh-egress.svc.cluster.local:1080` 访问，分别由
+`socks5h://ssh-egress-merlin-i18nbd-syd2a-83092-headless.ssh-egress.svc.cluster.local:1080` 访问，分别由
 `AGENTSERVER_V2_TAE_BYTECLOUD_JWT_ENDPOINT` 和 `AGENTSERVER_V2_TAE_PROXY_URL` 锁定。
 `sandboxExternalEgress` 为空；跨 namespace Pod selector 只精确放行 syd2a TCP 1080。
 不能依赖 SDK 跨地域 fallback，也不能设置全局 proxy 环境变量。

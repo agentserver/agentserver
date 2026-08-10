@@ -26,7 +26,7 @@ const (
 	// TAEProxyURLSG is the only reviewed network path for SG TAE traffic. The
 	// socks5h scheme is mandatory: the proxy resolves both the fixed control
 	// plane and per-session data-plane names on the syd2a side.
-	TAEProxyURLSG = "socks5h://ssh-egress-merlin-i18nbd-syd2a-83092.ssh-egress.svc.cluster.local:1080"
+	TAEProxyURLSG = "socks5h://ssh-egress-merlin-i18nbd-syd2a-83092-headless.ssh-egress.svc.cluster.local:1080"
 )
 
 type StrictHTTPClientConfig struct {

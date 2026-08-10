@@ -112,7 +112,7 @@ func TestNewByteCloudJWTHeaderSourceValidatesApplicationIdentity(t *testing.T) {
 	}
 	for _, proxyURL := range []string{
 		"",
-		"socks5://ssh-egress-merlin-i18nbd-syd2a-83092.ssh-egress.svc.cluster.local:1080",
+		"socks5://ssh-egress-merlin-i18nbd-syd2a-83092-headless.ssh-egress.svc.cluster.local:1080",
 		"socks5h://ssh-egress-merlin-i18nbd-useast14a-83093.ssh-egress.svc.cluster.local:1080",
 	} {
 		_, err := NewByteCloudJWTHeaderSource(ByteCloudJWTHeaderSourceConfig{

@@ -166,7 +166,7 @@ egress-authorizer Service 使用 BackendTLSPolicy 和 `agentserver-egress-backen
 SG 生产 exchange origin 固定为 `https://cloud-i18n-sg.bytedance.net`，通过
 `AGENTSERVER_V2_TAE_BYTECLOUD_JWT_ENDPOINT` 显式注入并精确校验；JWT exchange、TAE control-plane 与
 sandboxd data-plane 的 transport 全部固定使用
-`socks5h://ssh-egress-merlin-i18nbd-syd2a-83092.ssh-egress.svc.cluster.local:1080`，由
+`socks5h://ssh-egress-merlin-i18nbd-syd2a-83092-headless.ssh-egress.svc.cluster.local:1080`，由
 `AGENTSERVER_V2_TAE_PROXY_URL` 精确校验。标准 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 仍被拒绝。
 control/data transport 在 dial 前分别校验固定 control host 和 canonical per-session data host，DNS 在
 syd2a 侧完成。sandbox-gateway NetworkPolicy 只允许访问 `ssh-egress` namespace 中

@@ -11,10 +11,6 @@ import (
 )
 
 const (
-	// ManagedCredentialApplicationID is deliberately provider-neutral. It is
-	// only a non-secret CLI runtime hint; workspace credentials never enter the
-	// deployment environment.
-	ManagedCredentialApplicationID         = "agentserver-managed"
 	ManagedLarkApplicationIDEnvironment    = "LARKSUITE_CLI_APP_ID"
 	ManagedLarkUserAccessTokenEnvironment  = "LARKSUITE_CLI_USER_ACCESS_TOKEN"
 	ManagedLarkNoUpdateNotifierEnvironment = "LARKSUITE_CLI_NO_UPDATE_NOTIFIER"

@@ -1,4 +1,4 @@
-import { Archive, Bot, Boxes, ChevronRight, CircleUserRound, Home, KeyRound, Network, Pencil, Plus, RefreshCw, Search, Settings2, Users, Workflow } from "lucide-react"
+import { Archive, Bot, Boxes, ChevronRight, CircleUserRound, Home, KeyRound, Network, Pencil, Plus, RefreshCw, Search, Settings2, ShieldCheck, Users, Workflow } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react"
 import { useTranslation } from "react-i18next"
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom"
@@ -39,8 +39,9 @@ import {
   type WorkspaceMember,
 } from "@agentserver/v2-web-shared"
 import { buildGatewayRequest, buildGatewayUpdateRequest, callbackState, gatewayBrowserBinding, gatewayCallbackChannelName, gatewayTone, validateGatewayCallback } from "./gateway-oauth"
+import { CredentialsPage } from "./credentials-page"
 
-type WorkspaceSection = "overview" | "members" | "executors" | "gateways"
+type WorkspaceSection = "overview" | "members" | "executors" | "gateways" | "credentials"
 
 export function PlatformApp() {
   const { t } = useTranslation()
@@ -95,6 +96,7 @@ function AuthenticatedPlatform({ token, onSignOut, onReauthorize }: { token: str
       {activeWorkspace.currentUserRole !== "viewer" ? <><SidebarNavButton icon={<Users size={17} />} label={t("nav.members")} active={location.pathname.endsWith("/members")} onClick={() => navigate(`/workspaces/${activeWorkspace.workspaceId}/members`)} />
       <SidebarNavButton icon={<Network size={17} />} label={t("nav.executors")} active={location.pathname.endsWith("/executors")} onClick={() => navigate(`/workspaces/${activeWorkspace.workspaceId}/executors`)} />
       <SidebarNavButton icon={<KeyRound size={17} />} label={t("nav.gateways")} active={location.pathname.endsWith("/gateways")} onClick={() => navigate(`/workspaces/${activeWorkspace.workspaceId}/gateways`)} /></> : null}
+      {activeWorkspace.currentUserRole === "owner" ? <SidebarNavButton icon={<ShieldCheck size={17} />} label={t("nav.credentials")} active={location.pathname.endsWith("/credentials")} onClick={() => navigate(`/workspaces/${activeWorkspace.workspaceId}/credentials`)} /> : null}
     </SidebarSection> : null}
   </>
 
@@ -166,7 +168,8 @@ function WorkspaceRoute({ workspaces, loading, api, pendingGrant, onReauthorize,
   try { canonicalID("workspace ID", workspaceId) } catch { return <Navigate to="/workspaces" replace /> }
   const workspace = workspaces.find((item) => item.workspaceId === workspaceId)
   if (!workspace) return <div className="page"><EmptyState title={t("platform.noWorkspaces")} action={<Button asChild><a href="/workspaces">{t("nav.workspaces")}</a></Button>} /></div>
-  if (!(["overview", "members", "executors", "gateways"] as string[]).includes(section)) return <Navigate to={`/workspaces/${workspaceId}/overview`} replace />
+  if (!(["overview", "members", "executors", "gateways", "credentials"] as WorkspaceSection[]).includes(section as WorkspaceSection)) return <Navigate to={`/workspaces/${workspaceId}/overview`} replace />
+  if (section === "credentials" && workspace.currentUserRole !== "owner") return <Navigate to={`/workspaces/${workspaceId}/overview`} replace />
   const shared = { workspace, api }
   return <div className="page">
     {pendingGrant ? <div className="notice-banner"><span>{t("platform.newGrantNotice")}</span><Button size="sm" variant="outline" onClick={() => void onReauthorize()}>{t("common.reauthorize")}</Button></div> : null}
@@ -174,6 +177,7 @@ function WorkspaceRoute({ workspaces, loading, api, pendingGrant, onReauthorize,
     {section === "members" ? <MembersPage {...shared} /> : null}
     {section === "executors" ? <ExecutorsPage {...shared} /> : null}
     {section === "gateways" ? <GatewaysPage {...shared} /> : null}
+    {section === "credentials" ? <CredentialsPage {...shared} /> : null}
   </div>
 }
 

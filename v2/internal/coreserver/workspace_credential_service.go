@@ -30,10 +30,11 @@ func (commands StateStoreWorkspaceCredentialCommands) ListSchemas(context.Contex
 	for index, schema := range schemas {
 		result[index] = corecontract.WorkspaceCredentialProviderSchema{
 			Kind: schema.Kind, DisplayName: schema.DisplayName,
-			AuthTypes:      append([]string(nil), schema.AuthTypes...),
-			AllowedHosts:   append([]string(nil), schema.AllowedHosts...),
-			AllowedHeaders: append([]string(nil), schema.AllowedHeaders...),
-			SecretFormat:   schema.SecretFormat,
+			AuthTypes:            append([]string(nil), schema.AuthTypes...),
+			AllowedHosts:         append([]string(nil), schema.AllowedHosts...),
+			AllowedHeaders:       append([]string(nil), schema.AllowedHeaders...),
+			SecretFormat:         schema.SecretFormat,
+			AuthorizationMethods: append([]string(nil), schema.AuthorizationMethods...),
 		}
 	}
 	return corecontract.ListWorkspaceCredentialProviderSchemasResponse{Providers: result}, nil

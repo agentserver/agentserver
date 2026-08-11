@@ -11,6 +11,10 @@ export type EnrollmentToken = PublicComponents["schemas"]["IssueExecutorEnrollme
 export type LLMGateway = PublicComponents["schemas"]["WorkspaceLLMGatewayState"]
 export type CreateLLMGateway = PublicComponents["schemas"]["CreateWorkspaceLLMGatewayRequest"]
 export type UpdateLLMGateway = PublicComponents["schemas"]["UpdateWorkspaceLLMGatewayRequest"]
+export type CredentialProvider = PublicComponents["schemas"]["WorkspaceCredentialProviderSchema"]
+export type WorkspaceCredential = PublicComponents["schemas"]["WorkspaceCredentialMetadata"]
+export type CredentialAuthorization = PublicComponents["schemas"]["WorkspaceCredentialAuthorization"]
+export type BeginCredentialAuthorization = PublicComponents["schemas"]["BeginWorkspaceCredentialAuthorizationRequest"]
 export type UserSession = PublicComponents["schemas"]["UserSessionState"]
 export type SessionTranscript = PublicComponents["schemas"]["GetUserSessionTranscriptResponse"]
 export type Approval = PublicComponents["schemas"]["ApprovalState"]
@@ -175,6 +179,96 @@ export class ResourceAPI {
     return take(await this.#client.POST("/v2/workspaces/{workspaceId}/llm-gateways/{gatewayId}:disable", { params: { path: { workspaceId, gatewayId } } }))
   }
 
+  async listCredentialProviders() {
+    return take(await this.#client.GET("/v2/credential-providers")).providers.map(validateCredentialProvider)
+  }
+
+  async listCredentials(workspaceId: string, kind: string) {
+    return take(await this.#client.GET("/v2/workspaces/{workspaceId}/credentials/{kind}", {
+      params: { path: { workspaceId, kind } },
+    })).bindings.map((value) => validateCredential(value, workspaceId, kind))
+  }
+
+  async createCredential(workspaceId: string, kind: string, body: PublicComponents["schemas"]["CreateWorkspaceCredentialRequest"]) {
+    const result = take(await this.#client.POST("/v2/workspaces/{workspaceId}/credentials/{kind}", {
+      params: { path: { workspaceId, kind } }, body,
+    }))
+    validateCredential(result.binding, workspaceId, kind)
+    return result
+  }
+
+  async renameCredential(workspaceId: string, kind: string, bindingId: string, displayName: string, expectedAuthorityVersion: number) {
+    const result = take(await this.#client.PATCH("/v2/workspaces/{workspaceId}/credentials/{kind}/{bindingId}", {
+      params: { path: { workspaceId, kind, bindingId } }, body: { displayName, expectedAuthorityVersion },
+    }))
+    validateCredential(result.binding, workspaceId, kind, bindingId)
+    return result
+  }
+
+  async rotateCredential(workspaceId: string, kind: string, bindingId: string, body: PublicComponents["schemas"]["RotateWorkspaceCredentialRequest"]) {
+    const result = take(await this.#client.POST("/v2/workspaces/{workspaceId}/credentials/{kind}/{bindingId}:rotate", {
+      params: { path: { workspaceId, kind, bindingId } }, body,
+    }))
+    validateCredential(result.binding, workspaceId, kind, bindingId)
+    return result
+  }
+
+  async revokeCredential(workspaceId: string, kind: string, bindingId: string, expectedAuthorityVersion: number) {
+    const result = take(await this.#client.POST("/v2/workspaces/{workspaceId}/credentials/{kind}/{bindingId}:revoke", {
+      params: { path: { workspaceId, kind, bindingId } }, body: { expectedAuthorityVersion },
+    }))
+    validateCredential(result.binding, workspaceId, kind, bindingId)
+    return result
+  }
+
+  async deleteCredential(workspaceId: string, kind: string, bindingId: string, expectedAuthorityVersion: number) {
+    const result = take(await this.#client.POST("/v2/workspaces/{workspaceId}/credentials/{kind}/{bindingId}:delete", {
+      params: { path: { workspaceId, kind, bindingId } }, body: { expectedAuthorityVersion },
+    }))
+    if (result.bindingId !== canonicalID("credential binding ID", bindingId) || typeof result.deleted !== "boolean") throw new Error("The credential deletion response escaped its requested scope.")
+    return result
+  }
+
+  async setDefaultCredential(workspaceId: string, kind: string, bindingId: string, expectedAuthorityVersion: number) {
+    const result = take(await this.#client.POST("/v2/workspaces/{workspaceId}/credentials/{kind}/{bindingId}:setDefault", {
+      params: { path: { workspaceId, kind, bindingId } }, body: { expectedAuthorityVersion },
+    }))
+    validateCredential(result.binding, workspaceId, kind, bindingId)
+    return result
+  }
+
+  async beginCredentialAuthorization(workspaceId: string, kind: string, body: BeginCredentialAuthorization) {
+    const result = take(await this.#client.POST("/v2/workspaces/{workspaceId}/credential-authorizations/{kind}", {
+      params: { path: { workspaceId, kind } }, body,
+    }))
+    validateCredentialAuthorization(result.authorization, workspaceId, kind)
+    return result
+  }
+
+  async getCredentialAuthorization(workspaceId: string, kind: string, authorizationId: string) {
+    const result = take(await this.#client.GET("/v2/workspaces/{workspaceId}/credential-authorizations/{kind}/{authorizationId}", {
+      params: { path: { workspaceId, kind, authorizationId } },
+    }))
+    validateCredentialAuthorization(result.authorization, workspaceId, kind, authorizationId)
+    return result
+  }
+
+  async pollCredentialAuthorization(workspaceId: string, kind: string, authorizationId: string) {
+    const result = take(await this.#client.POST("/v2/workspaces/{workspaceId}/credential-authorizations/{kind}/{authorizationId}:poll", {
+      params: { path: { workspaceId, kind, authorizationId } },
+    }))
+    validateCredentialAuthorization(result.authorization, workspaceId, kind, authorizationId)
+    return result
+  }
+
+  async cancelCredentialAuthorization(workspaceId: string, kind: string, authorizationId: string, expectedVersion: number) {
+    const result = take(await this.#client.POST("/v2/workspaces/{workspaceId}/credential-authorizations/{kind}/{authorizationId}:cancel", {
+      params: { path: { workspaceId, kind, authorizationId } }, body: { expectedVersion },
+    }))
+    validateCredentialAuthorization(result.authorization, workspaceId, kind, authorizationId)
+    return result
+  }
+
   async listSessions(workspaceId: string) {
     return take(await this.#client.GET("/v2/workspaces/{workspaceId}/sessions", { params: { path: { workspaceId } } })).sessions.map((value) => validateSession(value, workspaceId))
   }
@@ -288,6 +382,59 @@ function validateGateway(value: LLMGateway, workspaceId: string): LLMGateway {
   return value
 }
 
+function validateCredentialProvider(value: CredentialProvider): CredentialProvider {
+  exactKeys(value, ["kind", "displayName", "authTypes", "allowedHosts", "allowedHeaders", "secretFormat", "authorizationMethods"], "credential provider")
+  providerKind(value.kind); boundedProtocolText(value.displayName, 256); boundedProtocolText(value.secretFormat, 256)
+  boundedStringList(value.authTypes, 64, 128); boundedStringList(value.allowedHosts, 64, 512)
+  boundedStringList(value.allowedHeaders, 64, 256); boundedStringList(value.authorizationMethods, 8, 64)
+  if (value.authorizationMethods.some((method) => method !== "manual" && method !== "device_flow")) throw new Error("The credential provider response is invalid.")
+  return value
+}
+
+function validateCredential(value: WorkspaceCredential, workspaceId: string, kind: string, bindingId = ""): WorkspaceCredential {
+  const keys = ["id", "workspaceId", "kind", "displayName", "ownerScope", "publicMetadata", "authType", "authorityVersion", "credentialVersion", "status", "isDefault"]
+  if (value.ownerUserId !== undefined) keys.push("ownerUserId")
+  if (value.accessExpiresAt !== undefined) keys.push("accessExpiresAt")
+  if (value.refreshExpiresAt !== undefined) keys.push("refreshExpiresAt")
+  exactKeys(value, keys, "credential")
+  const canonicalWorkspace = canonicalID("workspace ID", workspaceId)
+  const canonicalBinding = canonicalID("credential binding ID", value.id)
+  if (value.workspaceId !== canonicalWorkspace || value.kind !== providerKind(kind) || (bindingId && canonicalBinding !== canonicalID("credential binding ID", bindingId)) ||
+      !positiveVersion(value.authorityVersion) || !positiveVersion(value.credentialVersion) || typeof value.isDefault !== "boolean" ||
+      !["active", "reauth_required", "revoked", "disabled"].includes(value.status) || !["workspace", "user"].includes(value.ownerScope)) throw new Error("The credential response escaped its requested scope.")
+  boundedProtocolText(value.displayName, 256); boundedProtocolText(value.authType, 128)
+  if (!value.publicMetadata || typeof value.publicMetadata !== "object" || Array.isArray(value.publicMetadata)) throw new Error("The credential public metadata is invalid.")
+  if (value.ownerScope === "user") canonicalID("credential owner user ID", value.ownerUserId ?? "")
+  if (value.ownerScope === "workspace" && value.ownerUserId !== undefined) throw new Error("The credential owner scope is invalid.")
+  if ((value.accessExpiresAt !== undefined && !validTimestamp(value.accessExpiresAt)) || (value.refreshExpiresAt !== undefined && !validTimestamp(value.refreshExpiresAt))) throw new Error("The credential expiry is invalid.")
+  return value
+}
+
+function validateCredentialAuthorization(value: CredentialAuthorization, workspaceId: string, kind: string, authorizationId = ""): CredentialAuthorization {
+  const keys = ["id", "workspaceId", "kind", "targetBindingId", "status", "userCode", "verificationUri", "verificationUriComplete", "pollIntervalSeconds", "nextPollAt", "expiresAt", "version"]
+  if (value.lastErrorCode !== undefined) keys.push("lastErrorCode")
+  if (value.binding !== undefined) keys.push("binding")
+  exactKeys(value, keys, "credential authorization")
+  const canonicalWorkspace = canonicalID("workspace ID", workspaceId)
+  const canonicalAuthorization = canonicalID("credential authorization ID", value.id)
+  if (value.workspaceId !== canonicalWorkspace || value.kind !== providerKind(kind) ||
+      (authorizationId && canonicalAuthorization !== canonicalID("credential authorization ID", authorizationId)) ||
+      !["pending", "succeeded", "denied", "expired", "cancelled", "failed"].includes(value.status) ||
+      !positiveVersion(value.version) || !Number.isInteger(value.pollIntervalSeconds) || value.pollIntervalSeconds < 1 || value.pollIntervalSeconds > 60 ||
+      !validTimestamp(value.nextPollAt) || !validTimestamp(value.expiresAt)) throw new Error("The credential authorization response escaped its requested scope.")
+  canonicalID("target credential binding ID", value.targetBindingId)
+  if (typeof value.userCode !== "string" || value.userCode.length > 1024 || /[\0\r\n]/u.test(value.userCode)) throw new Error("The credential authorization user code is invalid.")
+  for (const raw of [value.verificationUri, value.verificationUriComplete]) {
+    let parsed: URL
+    try { parsed = new URL(raw) } catch { throw new Error("The credential authorization verification URL is invalid.") }
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password || raw.length > 8192) throw new Error("The credential authorization verification URL is invalid.")
+  }
+  if (value.lastErrorCode !== undefined) boundedProtocolText(value.lastErrorCode, 128)
+  if (value.binding !== undefined) validateCredential(value.binding, workspaceId, kind, value.targetBindingId)
+  if ((value.status === "succeeded") !== (value.binding !== undefined)) throw new Error("The credential authorization terminal response is invalid.")
+  return value
+}
+
 function validateSession(value: UserSession, workspaceId: string): UserSession {
   const keys = ["sessionId", "workspaceId", "title", "status", "version", "createdAt", "updatedAt"]
   if (value.activeRunId !== undefined) keys.push("activeRunId")
@@ -320,6 +467,8 @@ function exactKeys(value: unknown, expected: string[], label: string) {
   const actual = Object.keys(value).sort(); const wanted = [...expected].sort()
   if (actual.length !== wanted.length || actual.some((name, index) => name !== wanted[index])) throw new Error(`The ${label} response contains missing or unknown fields.`)
 }
+function providerKind(value: string) { if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value)) throw new Error("The credential provider kind is invalid."); return value }
+function boundedStringList(value: string[], maximumItems: number, maximumLength: number) { if (!Array.isArray(value) || value.length > maximumItems || new Set(value).size !== value.length || value.some((item) => typeof item !== "string" || !item || item.length > maximumLength || /[\0\r\n]/u.test(item))) throw new Error("A credential provider list is invalid.") }
 function boundedProtocolText(value: string, maximum: number) { if (typeof value !== "string" || !value || value.length > maximum || value.trim() !== value || /[\0\r\n]/u.test(value)) throw new Error("A response text value is invalid.") }
 function positiveVersion(value: number) { return Number.isSafeInteger(value) && value > 0 }
 function validTimestamp(value: string) { return typeof value === "string" && value.length <= 64 && Number.isFinite(Date.parse(value)) }

@@ -48,7 +48,7 @@ func TestConfigureManagedExecutionSecurityLoadsSeparatedSigners(t *testing.T) {
 	}
 	placeholder := environment[executorgateway.ManagedLarkUserAccessTokenEnvironment]
 	if len(environment) != 5 || placeholder == "" ||
-		environment[executorgateway.ManagedLarkApplicationIDEnvironment] != executorgateway.ManagedCredentialApplicationID ||
+		environment[executorgateway.ManagedLarkApplicationIDEnvironment] != "cli_agentserver_sg" ||
 		environment[executorgateway.ManagedLarkNoUpdateNotifierEnvironment] != "1" ||
 		environment[executorgateway.ManagedLarkNoSkillsNotifierEnvironment] != "1" ||
 		environment[executorgateway.ManagedLarkPathEnvironment] != executorgateway.ManagedLarkPathValue {
@@ -89,7 +89,7 @@ func TestConfigureManagedExecutionSecuritySelectsWorkspaceProcessEnvironment(t *
 		testManagedCredentialAuthorityForMode(t, managedcredential.ModeProcessEnv),
 		staticManagedProcessCredentialSource{credential: executorgateway.ManagedLarkProcessCredential{
 			Configured: true, CredentialMode: managedcredential.ModeProcessEnv,
-			AccessToken: "real-lark-token", BindingID: "90000000-0000-4000-8000-000000000009",
+			AccessToken: "real-lark-token", ApplicationID: "cli_agentserver_sg", BindingID: "90000000-0000-4000-8000-000000000009",
 			AuthorityVersion: 9, CredentialVersion: 1, PolicySHA256: strings.Repeat("a", 64),
 			TAEPSM: "bytedance.sandbox.agentserver",
 		}},
@@ -108,6 +108,7 @@ func TestConfigureManagedExecutionSecuritySelectsWorkspaceProcessEnvironment(t *
 	}
 	proof := environment[executorgateway.ManagedLarkAgentTraceEnvironment]
 	if environment[executorgateway.ManagedLarkUserAccessTokenEnvironment] != "real-lark-token" ||
+		environment[executorgateway.ManagedLarkApplicationIDEnvironment] != "cli_agentserver_sg" ||
 		!egresscapability.IsProcessEnvironmentProof(proof) {
 		t.Fatalf("direct process environment = %#v", environment)
 	}
@@ -285,6 +286,7 @@ func testManagedCredentialAuthorityForMode(t *testing.T, mode string) executorga
 	t.Helper()
 	authority, err := executorgateway.NewFrozenManagedLarkEgressAuthoritySource(executorgateway.ManagedLarkEgressAuthority{
 		CredentialMode: mode,
+		ApplicationID:  "cli_agentserver_sg",
 		BindingID:      "90000000-0000-4000-8000-000000000009", AuthorityVersion: 9,
 		CredentialVersion: 1, PolicySHA256: strings.Repeat("a", 64),
 	})

@@ -32,7 +32,8 @@ func TestCoreManagedLarkAuthorityUsesInjectedAuthorizationClock(t *testing.T) {
 				response.Header().Set("Cache-Control", "no-store")
 				_ = json.NewEncoder(response).Encode(corecontract.ResolveEgressCredentialAuthorityResponse{
 					CredentialMode: managedcredential.ModeWebhookSwap,
-					ProviderKind:   "lark", BindingID: "90000000-0000-4000-8000-000000000009",
+					ProviderKind:   "lark", ApplicationID: "cli_agentserver_sg",
+					BindingID:        "90000000-0000-4000-8000-000000000009",
 					AuthorityVersion: 7, CredentialVersion: 11,
 					PolicySHA256: larkegresspolicy.SHA256Hex(), AuthorizedAt: test.authorizedAt,
 				})
@@ -50,7 +51,7 @@ func TestCoreManagedLarkAuthorityUsesInjectedAuthorizationClock(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || authority.AuthorityVersion != 7 || authority.CredentialVersion != 11 {
+			if err != nil || authority.ApplicationID != "cli_agentserver_sg" || authority.AuthorityVersion != 7 || authority.CredentialVersion != 11 {
 				t.Fatalf("ResolveManagedLarkEgressAuthority() = %+v, %v", authority, err)
 			}
 		})

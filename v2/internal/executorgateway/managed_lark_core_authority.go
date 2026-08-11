@@ -56,13 +56,14 @@ func (client *CoreConnectionClient) ResolveManagedLarkEgressAuthority(
 	// reference without a binding so the caller can project only non-secret
 	// process settings and let the CLI report credential_not_configured.
 	if response.BindingID == "" {
-		if response.AuthorityVersion != 0 || response.CredentialVersion != 0 {
+		if response.ApplicationID != "" || response.AuthorityVersion != 0 || response.CredentialVersion != 0 {
 			return ManagedLarkEgressAuthority{}, errors.New("Core returned a partial empty credential authority")
 		}
 		return ManagedLarkEgressAuthority{CredentialMode: response.CredentialMode, PolicySHA256: policySHA256}, nil
 	}
 	authority := ManagedLarkEgressAuthority{
 		CredentialMode: response.CredentialMode,
+		ApplicationID:  response.ApplicationID,
 		BindingID:      response.BindingID, AuthorityVersion: response.AuthorityVersion,
 		CredentialVersion: response.CredentialVersion, PolicySHA256: response.PolicySHA256,
 	}

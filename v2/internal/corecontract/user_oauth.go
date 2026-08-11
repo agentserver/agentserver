@@ -137,6 +137,10 @@ func PlatformOAuthActionPermissions() map[string]UserOAuthActionAuthority {
 		"credentials.revoke":                  {Resource: UserOAuthWorkspaceResource, Permissions: []string{PlatformOAuthCredentialsManageScope}},
 		"credentials.delete":                  {Resource: UserOAuthWorkspaceResource, Permissions: []string{PlatformOAuthCredentialsManageScope}},
 		"credentials.set-default":             {Resource: UserOAuthWorkspaceResource, Permissions: []string{PlatformOAuthCredentialsManageScope}},
+		"credentials.authorizations.begin":    {Resource: UserOAuthWorkspaceResource, Permissions: []string{PlatformOAuthCredentialsManageScope}},
+		"credentials.authorizations.get":      {Resource: UserOAuthWorkspaceResource, Permissions: []string{PlatformOAuthCredentialsReadScope}},
+		"credentials.authorizations.poll":     {Resource: UserOAuthWorkspaceResource, Permissions: []string{PlatformOAuthCredentialsManageScope}},
+		"credentials.authorizations.cancel":   {Resource: UserOAuthWorkspaceResource, Permissions: []string{PlatformOAuthCredentialsManageScope}},
 	}
 }
 

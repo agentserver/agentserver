@@ -140,6 +140,87 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v2/workspaces/{workspaceId}/credential-authorizations/{kind}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                kind: components["parameters"]["CredentialKind"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Begins one provider device-flow transaction. Core seals and persists the provider ticket; Platform receives only the user-facing verification link and code. */
+        post: operations["beginWorkspaceCredentialAuthorization"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/workspaces/{workspaceId}/credential-authorizations/{kind}/{authorizationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                kind: components["parameters"]["CredentialKind"];
+                authorizationId: components["parameters"]["CredentialAuthorizationId"];
+            };
+            cookie?: never;
+        };
+        get: operations["getWorkspaceCredentialAuthorization"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/workspaces/{workspaceId}/credential-authorizations/{kind}/{authorizationId}:poll": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                kind: components["parameters"]["CredentialKind"];
+                authorizationId: components["parameters"]["CredentialAuthorizationId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Performs at most one upstream provider poll. Core enforces the provider interval and a cross-replica poll lease. */
+        post: operations["pollWorkspaceCredentialAuthorization"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v2/workspaces/{workspaceId}/credential-authorizations/{kind}/{authorizationId}:cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                kind: components["parameters"]["CredentialKind"];
+                authorizationId: components["parameters"]["CredentialAuthorizationId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["cancelWorkspaceCredentialAuthorization"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v2/workspaces": {
         parameters: {
             query?: never;
@@ -602,6 +683,7 @@ export interface components {
             allowedHosts: string[];
             allowedHeaders: string[];
             secretFormat: string;
+            authorizationMethods: ("manual" | "device_flow")[];
         };
         ListWorkspaceCredentialProviderSchemasResponse: {
             providers: components["schemas"]["WorkspaceCredentialProviderSchema"][];
@@ -697,6 +779,56 @@ export interface components {
         };
         SetDefaultWorkspaceCredentialResponse: {
             binding: components["schemas"]["WorkspaceCredentialMetadata"];
+            changed: boolean;
+        };
+        BeginWorkspaceCredentialAuthorizationRequest: {
+            displayName: string;
+            /** @enum {unknown} */
+            ownerScope: "workspace" | "user";
+            ownerUserId?: components["schemas"]["UUID"];
+            makeDefault: boolean;
+            bindingId?: components["schemas"]["UUID"];
+            expectedAuthorityVersion?: number;
+            expectedCredentialVersion?: number;
+            providerParameters?: {
+                [key: string]: unknown;
+            };
+        };
+        WorkspaceCredentialAuthorization: {
+            id: components["schemas"]["UUID"];
+            workspaceId: components["schemas"]["UUID"];
+            kind: string;
+            targetBindingId: components["schemas"]["UUID"];
+            /** @enum {unknown} */
+            status: "pending" | "succeeded" | "denied" | "expired" | "cancelled" | "failed";
+            userCode: string;
+            /** Format: uri */
+            verificationUri: string;
+            /** Format: uri */
+            verificationUriComplete: string;
+            pollIntervalSeconds: number;
+            /** Format: date-time */
+            nextPollAt: string;
+            /** Format: date-time */
+            expiresAt: string;
+            lastErrorCode?: string;
+            version: number;
+            binding?: components["schemas"]["WorkspaceCredentialMetadata"];
+        };
+        BeginWorkspaceCredentialAuthorizationResponse: {
+            authorization: components["schemas"]["WorkspaceCredentialAuthorization"];
+        };
+        GetWorkspaceCredentialAuthorizationResponse: {
+            authorization: components["schemas"]["WorkspaceCredentialAuthorization"];
+        };
+        PollWorkspaceCredentialAuthorizationResponse: {
+            authorization: components["schemas"]["WorkspaceCredentialAuthorization"];
+        };
+        CancelWorkspaceCredentialAuthorizationRequest: {
+            expectedVersion: number;
+        };
+        CancelWorkspaceCredentialAuthorizationResponse: {
+            authorization: components["schemas"]["WorkspaceCredentialAuthorization"];
             changed: boolean;
         };
         CreateWorkspaceRequest: {
@@ -1301,6 +1433,7 @@ export interface components {
         WorkspaceId: components["schemas"]["UUID"];
         CredentialKind: string;
         CredentialBindingId: components["schemas"]["UUID"];
+        CredentialAuthorizationId: components["schemas"]["UUID"];
         SessionId: components["schemas"]["UUID"];
         RunId: components["schemas"]["UUID"];
         IdempotencyKey: string;
@@ -1546,6 +1679,126 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SetDefaultWorkspaceCredentialResponse"];
+                };
+            };
+            400: components["responses"]["PublicError"];
+            401: components["responses"]["PublicError"];
+            403: components["responses"]["PublicError"];
+            404: components["responses"]["PublicError"];
+            409: components["responses"]["PublicError"];
+        };
+    };
+    beginWorkspaceCredentialAuthorization: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                kind: components["parameters"]["CredentialKind"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BeginWorkspaceCredentialAuthorizationRequest"];
+            };
+        };
+        responses: {
+            /** @description Device authorization started */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BeginWorkspaceCredentialAuthorizationResponse"];
+                };
+            };
+            400: components["responses"]["PublicError"];
+            401: components["responses"]["PublicError"];
+            403: components["responses"]["PublicError"];
+            409: components["responses"]["PublicError"];
+            503: components["responses"]["PublicError"];
+        };
+    };
+    getWorkspaceCredentialAuthorization: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                kind: components["parameters"]["CredentialKind"];
+                authorizationId: components["parameters"]["CredentialAuthorizationId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current device authorization state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GetWorkspaceCredentialAuthorizationResponse"];
+                };
+            };
+            401: components["responses"]["PublicError"];
+            403: components["responses"]["PublicError"];
+            404: components["responses"]["PublicError"];
+        };
+    };
+    pollWorkspaceCredentialAuthorization: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                kind: components["parameters"]["CredentialKind"];
+                authorizationId: components["parameters"]["CredentialAuthorizationId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Updated device authorization state */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PollWorkspaceCredentialAuthorizationResponse"];
+                };
+            };
+            401: components["responses"]["PublicError"];
+            403: components["responses"]["PublicError"];
+            404: components["responses"]["PublicError"];
+            409: components["responses"]["PublicError"];
+        };
+    };
+    cancelWorkspaceCredentialAuthorization: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                kind: components["parameters"]["CredentialKind"];
+                authorizationId: components["parameters"]["CredentialAuthorizationId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CancelWorkspaceCredentialAuthorizationRequest"];
+            };
+        };
+        responses: {
+            /** @description Device authorization cancelled or already terminal */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CancelWorkspaceCredentialAuthorizationResponse"];
                 };
             };
             400: components["responses"]["PublicError"];

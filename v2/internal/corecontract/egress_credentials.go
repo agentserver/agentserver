@@ -59,6 +59,7 @@ type ResolveEgressCredentialAuthorityRequest struct {
 type ResolveEgressCredentialAuthorityResponse struct {
 	CredentialMode    string    `json:"credentialMode"`
 	ProviderKind      string    `json:"providerKind"`
+	ApplicationID     string    `json:"applicationId,omitempty"`
 	BindingID         string    `json:"bindingId"`
 	AuthorityVersion  int64     `json:"authorityVersion"`
 	CredentialVersion int64     `json:"credentialVersion"`
@@ -86,6 +87,7 @@ type ResolveExecutionLarkCredentialResponse struct {
 	Configured        bool       `json:"configured"`
 	CredentialMode    string     `json:"credentialMode"`
 	AccessToken       string     `json:"accessToken,omitempty"`
+	ApplicationID     string     `json:"applicationId,omitempty"`
 	ProviderKind      string     `json:"providerKind"`
 	BindingID         string     `json:"bindingId,omitempty"`
 	AuthorityVersion  int64      `json:"authorityVersion,omitempty"`

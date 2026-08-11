@@ -43,6 +43,7 @@ func TestWorkspaceManagedLarkEnvironmentIssuerSelectsModePerProcessStart(t *test
 	}
 	authority := ManagedLarkEgressAuthority{
 		CredentialMode:   managedcredential.ModeWebhookSwap,
+		ApplicationID:    "cli_agentserver_sg",
 		BindingID:        "90000000-0000-4000-8000-000000000009",
 		AuthorityVersion: 7, CredentialVersion: 11, PolicySHA256: strings.Repeat("a", 64),
 	}
@@ -60,7 +61,7 @@ func TestWorkspaceManagedLarkEnvironmentIssuerSelectsModePerProcessStart(t *test
 		credentialCalls++
 		return ManagedLarkProcessCredential{
 			Configured: true, CredentialMode: managedcredential.ModeProcessEnv,
-			AccessToken: "real-workspace-token", BindingID: selected.BindingID,
+			AccessToken: "real-workspace-token", ApplicationID: selected.ApplicationID, BindingID: selected.BindingID,
 			AuthorityVersion: selected.AuthorityVersion, CredentialVersion: selected.CredentialVersion,
 			PolicySHA256: selected.PolicySHA256, TAEPSM: taePSM, ResolvedAt: now,
 		}, nil
@@ -71,7 +72,7 @@ func TestWorkspaceManagedLarkEnvironmentIssuerSelectsModePerProcessStart(t *test
 		"92000000-0000-4000-8000-000000000009",
 	}
 	issuer, err := NewWorkspaceManagedLarkEnvironmentIssuer(
-		signer, authorities, credentials, "cli_agentserver_sg", "bytedance.sandbox.agentserver",
+		signer, authorities, credentials, "bytedance.sandbox.agentserver",
 		func() (string, error) {
 			if capabilityIndex >= len(capabilityIDs) {
 				return "", errors.New("test capability IDs exhausted")
@@ -92,7 +93,8 @@ func TestWorkspaceManagedLarkEnvironmentIssuerSelectsModePerProcessStart(t *test
 		t.Fatal(err)
 	}
 	placeholder := webhookEnvironment[ManagedLarkUserAccessTokenEnvironment]
-	if !egresscapability.IsPlaceholderToken(placeholder) || webhookEnvironment[ManagedLarkAgentTraceEnvironment] != "" || credentialCalls != 0 {
+	if !egresscapability.IsPlaceholderToken(placeholder) || webhookEnvironment[ManagedLarkApplicationIDEnvironment] != authority.ApplicationID ||
+		webhookEnvironment[ManagedLarkAgentTraceEnvironment] != "" || credentialCalls != 0 {
 		t.Fatalf("webhook workspace environment/calls = %#v / %d", webhookEnvironment, credentialCalls)
 	}
 
@@ -103,6 +105,7 @@ func TestWorkspaceManagedLarkEnvironmentIssuerSelectsModePerProcessStart(t *test
 	}
 	proof := processEnvironment[ManagedLarkAgentTraceEnvironment]
 	if processEnvironment[ManagedLarkUserAccessTokenEnvironment] != "real-workspace-token" ||
+		processEnvironment[ManagedLarkApplicationIDEnvironment] != authority.ApplicationID ||
 		!egresscapability.IsProcessEnvironmentProof(proof) || credentialCalls != 1 || authorityCalls != 2 {
 		t.Fatalf("process workspace environment/calls = %#v / authority=%d credential=%d", processEnvironment, authorityCalls, credentialCalls)
 	}
@@ -136,27 +139,29 @@ func TestWorkspaceManagedLarkEnvironmentIssuerFailsClosedAcrossModeAndVersionCha
 	}
 	authority := ManagedLarkEgressAuthority{
 		CredentialMode:   managedcredential.ModeProcessEnv,
+		ApplicationID:    "cli_agentserver_sg",
 		BindingID:        "90000000-0000-4000-8000-000000000009",
 		AuthorityVersion: 7, CredentialVersion: 11, PolicySHA256: strings.Repeat("b", 64),
 	}
 	authorities := workspaceAuthoritySourceFunc(func(context.Context, ManagedProcessEnvironmentRequest) (ManagedLarkEgressAuthority, error) {
 		return authority, nil
 	})
+	credential := ManagedLarkProcessCredential{
+		Configured: true, CredentialMode: managedcredential.ModeProcessEnv,
+		AccessToken: "stale-token", ApplicationID: authority.ApplicationID, BindingID: authority.BindingID,
+		AuthorityVersion: authority.AuthorityVersion, CredentialVersion: authority.CredentialVersion - 1,
+		PolicySHA256: authority.PolicySHA256, TAEPSM: "bytedance.sandbox.agentserver", ResolvedAt: now,
+	}
 	credentials := workspaceProcessCredentialSourceFunc(func(
 		context.Context,
 		ManagedProcessEnvironmentRequest,
 		string,
 		ManagedLarkEgressAuthority,
 	) (ManagedLarkProcessCredential, error) {
-		return ManagedLarkProcessCredential{
-			Configured: true, CredentialMode: managedcredential.ModeProcessEnv,
-			AccessToken: "stale-token", BindingID: authority.BindingID,
-			AuthorityVersion: authority.AuthorityVersion, CredentialVersion: authority.CredentialVersion - 1,
-			PolicySHA256: authority.PolicySHA256, TAEPSM: "bytedance.sandbox.agentserver", ResolvedAt: now,
-		}, nil
+		return credential, nil
 	})
 	issuer, err := NewWorkspaceManagedLarkEnvironmentIssuer(
-		signer, authorities, credentials, "cli_agentserver_sg", "bytedance.sandbox.agentserver",
+		signer, authorities, credentials, "bytedance.sandbox.agentserver",
 		func() (string, error) { return "91000000-0000-4000-8000-000000000009", nil },
 		func() time.Time { return now }, time.Minute,
 	)
@@ -165,6 +170,12 @@ func TestWorkspaceManagedLarkEnvironmentIssuerFailsClosedAcrossModeAndVersionCha
 	}
 	if environment, err := issuer.IssueManagedProcessEnvironment(t.Context(), testManagedLarkEnvironmentRequest(now)); err == nil || len(environment) != 0 {
 		t.Fatalf("stale workspace credential was injected: %#v, %v", environment, err)
+	}
+
+	credential.CredentialVersion = authority.CredentialVersion
+	credential.ApplicationID = "cli_another_app"
+	if environment, err := issuer.IssueManagedProcessEnvironment(t.Context(), testManagedLarkEnvironmentRequest(now)); err == nil || len(environment) != 0 {
+		t.Fatalf("cross-application workspace credential was injected: %#v, %v", environment, err)
 	}
 
 	authority.CredentialMode = "global"

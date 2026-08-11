@@ -196,12 +196,13 @@ type Provider interface {
 // contract and the closed-world egress surface; it never contains a credential
 // instance or a provider access token.
 type ProviderSchema struct {
-	Kind           string   `json:"kind"`
-	DisplayName    string   `json:"displayName"`
-	AuthTypes      []string `json:"authTypes"`
-	AllowedHosts   []string `json:"allowedHosts"`
-	AllowedHeaders []string `json:"allowedHeaders"`
-	SecretFormat   string   `json:"secretFormat"`
+	Kind                 string   `json:"kind"`
+	DisplayName          string   `json:"displayName"`
+	AuthTypes            []string `json:"authTypes"`
+	AllowedHosts         []string `json:"allowedHosts"`
+	AllowedHeaders       []string `json:"allowedHeaders"`
+	SecretFormat         string   `json:"secretFormat"`
+	AuthorizationMethods []string `json:"authorizationMethods"`
 }
 
 type SchemaProvider interface {
@@ -264,6 +265,7 @@ func (registry *ProviderRegistry) Schemas() []ProviderSchema {
 			schema.AuthTypes = append([]string(nil), schema.AuthTypes...)
 			schema.AllowedHosts = append([]string(nil), schema.AllowedHosts...)
 			schema.AllowedHeaders = append([]string(nil), schema.AllowedHeaders...)
+			schema.AuthorizationMethods = append([]string(nil), schema.AuthorizationMethods...)
 			result = append(result, schema)
 			continue
 		}

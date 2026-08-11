@@ -79,6 +79,10 @@ const (
 	coreEgressPlaceholderKeyringEnvironment = "AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEYRING_FILE"
 	coreCredentialSealingKeyringEnvironment = "AGENTSERVER_V2_CREDENTIAL_SEALING_KEYRING_FILE"
 	coreManagedTAEPSMEnvironment            = "AGENTSERVER_V2_MANAGED_TAE_PSM"
+	coreLarkDeviceAppIDEnvironment          = "AGENTSERVER_V2_LARK_DEVICE_APP_ID"
+	coreLarkDeviceAppSecretEnvironment      = "AGENTSERVER_V2_LARK_DEVICE_APP_SECRET"
+	coreLarkDeviceScopesEnvironment         = "AGENTSERVER_V2_LARK_DEVICE_SCOPES"
+	coreByteCloudDeviceAPIEnvironment       = "AGENTSERVER_V2_BYTECLOUD_DEVICE_API_BASE_URL"
 )
 
 type coreProductionRunCapabilityConfig struct {
@@ -423,6 +427,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	}
 	store := coredb.NewStateStore(pool)
 	var workspaceCredentialHandler *coreserver.WorkspaceCredentialHandler
+	var workspaceCredentialAuthorizationHandler *coreserver.WorkspaceCredentialAuthorizationHandler
 	var egressCredentialHandler *coreserver.EgressCredentialHandler
 	var executionCredentialHandler *coreserver.ExecutionCredentialHandler
 	if managedExecutorEnabled {
@@ -446,7 +451,33 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		if loadErr != nil {
 			return fmt.Errorf("configure v2 workspace credential sealing keyring: %w", loadErr)
 		}
-		registry, registryErr := corecredentials.NewDefaultRegistry("", nil)
+		providerHTTPClient, clientErr := publichttps.NewClient(publichttps.ClientConfig{
+			Timeout: 25 * time.Second, ResponseHeaderTimeout: 15 * time.Second,
+			MaxIdleConns: 32, MaxIdleConnsPerHost: 8,
+		})
+		if clientErr != nil {
+			return fmt.Errorf("configure v2 credential provider HTTPS: %w", clientErr)
+		}
+		defer providerHTTPClient.CloseIdleConnections()
+		registryConfig := corecredentials.DefaultRegistryConfig{
+			ByteCloudDeviceFlow: &corecredentials.ByteCloudDeviceFlowConfig{
+				APIBaseURL: strings.TrimSpace(getenv(coreByteCloudDeviceAPIEnvironment)),
+				HTTPClient: providerHTTPClient, Now: time.Now,
+			},
+		}
+		larkAppID := strings.TrimSpace(getenv(coreLarkDeviceAppIDEnvironment))
+		larkAppSecret := strings.TrimSpace(getenv(coreLarkDeviceAppSecretEnvironment))
+		if (larkAppID == "") != (larkAppSecret == "") {
+			return errors.New("Lark device-flow app ID and app secret must be configured together")
+		}
+		if larkAppID != "" {
+			registryConfig.LarkDeviceFlow = &corecredentials.LarkDeviceFlowConfig{
+				AppID: larkAppID, AppSecret: larkAppSecret,
+				Scopes:     strings.TrimSpace(getenv(coreLarkDeviceScopesEnvironment)),
+				HTTPClient: providerHTTPClient, Now: time.Now,
+			}
+		}
+		registry, registryErr := corecredentials.NewConfiguredRegistry(registryConfig)
 		if registryErr != nil {
 			return fmt.Errorf("configure v2 workspace credential providers: %w", registryErr)
 		}
@@ -455,9 +486,18 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		if err != nil {
 			return err
 		}
+		workspaceCredentialAuthorizationHandler, err = coreserver.NewWorkspaceCredentialAuthorizationHandler(platformAuthorizer, platformUserAuthorizer, credentialCommands)
+		if err != nil {
+			return err
+		}
+		credentialRefresher, refreshErr := coreserver.NewWorkspaceCredentialRefresher(store, registry, sealer, time.Now)
+		if refreshErr != nil {
+			return fmt.Errorf("configure v2 workspace credential refresh: %w", refreshErr)
+		}
 		egressCredentialService, serviceErr := coreserver.NewEgressCredentialService(coreserver.EgressCredentialServiceConfig{
 			Store: store, Registry: registry, Sealer: sealer, Placeholders: capabilityVerifier,
 			ProcessProofs: placeholderVerifier, ProcessEnvironmentTAEPSM: managedTAEPSM, Now: time.Now,
+			CredentialRefresher: credentialRefresher,
 		})
 		if serviceErr != nil {
 			return fmt.Errorf("configure v2 egress credential resolver: %w", serviceErr)
@@ -675,6 +715,11 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		handler.Handle(corecontract.WorkspaceCredentialProviderSchemasPath, credentialRoutes)
 		handler.Handle(corecontract.WorkspaceCredentialCollectionRoutePattern, credentialRoutes)
 		handler.Handle(corecontract.WorkspaceCredentialResourceRoutePattern, credentialRoutes)
+	}
+	if workspaceCredentialAuthorizationHandler != nil {
+		authorizationRoutes := workspaceCredentialAuthorizationHandler.Routes()
+		handler.Handle(corecontract.WorkspaceCredentialAuthorizationCollectionRoutePattern, authorizationRoutes)
+		handler.Handle(corecontract.WorkspaceCredentialAuthorizationResourceRoutePattern, authorizationRoutes)
 	}
 	mountCoreUserSessionRoutes(handler, userSessionHandler)
 	handler.Handle("/v2/", userRunHandler.Routes())

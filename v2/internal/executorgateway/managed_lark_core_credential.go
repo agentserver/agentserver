@@ -19,6 +19,7 @@ type ManagedLarkProcessCredential struct {
 	Configured        bool
 	CredentialMode    string
 	AccessToken       string
+	ApplicationID     string
 	BindingID         string
 	AuthorityVersion  int64
 	CredentialVersion int64
@@ -78,7 +79,7 @@ func (client *CoreConnectionClient) ResolveManagedLarkProcessCredential(
 		return ManagedLarkProcessCredential{}, errors.New("Core returned an invalid managed Lark process credential scope")
 	}
 	if !response.Configured {
-		if response.AccessToken != "" || response.BindingID != "" || response.AuthorityVersion != 0 || response.CredentialVersion != 0 || response.AccessExpiresAt != nil {
+		if response.AccessToken != "" || response.ApplicationID != "" || response.BindingID != "" || response.AuthorityVersion != 0 || response.CredentialVersion != 0 || response.AccessExpiresAt != nil {
 			return ManagedLarkProcessCredential{}, errors.New("Core returned a partial unconfigured managed Lark process credential")
 		}
 		return ManagedLarkProcessCredential{
@@ -87,6 +88,7 @@ func (client *CoreConnectionClient) ResolveManagedLarkProcessCredential(
 		}, nil
 	}
 	if response.BindingID == "" || response.AuthorityVersion < 1 || response.CredentialVersion < 1 ||
+		response.ApplicationID != authority.ApplicationID || !managedLarkApplicationIDPattern.MatchString(response.ApplicationID) ||
 		response.BindingID != authority.BindingID || response.AuthorityVersion != authority.AuthorityVersion ||
 		response.CredentialVersion != authority.CredentialVersion ||
 		response.AccessToken == "" || len(response.AccessToken) > 32*1024 ||
@@ -96,7 +98,7 @@ func (client *CoreConnectionClient) ResolveManagedLarkProcessCredential(
 	}
 	return ManagedLarkProcessCredential{
 		Configured: true, CredentialMode: response.CredentialMode,
-		AccessToken: response.AccessToken, BindingID: response.BindingID,
+		AccessToken: response.AccessToken, ApplicationID: response.ApplicationID, BindingID: response.BindingID,
 		AuthorityVersion: response.AuthorityVersion, CredentialVersion: response.CredentialVersion,
 		PolicySHA256: response.PolicySHA256, TAEPSM: response.TAEPSM, ResolvedAt: response.ResolvedAt,
 		AccessExpiresAt: response.AccessExpiresAt,

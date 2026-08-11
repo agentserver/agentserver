@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
+	"github.com/agentserver/agentserver/v2/internal/corecredentials"
 	"github.com/agentserver/agentserver/v2/internal/taeimage"
 )
 
@@ -283,6 +284,10 @@ func renderCoreDeployment(context renderContext) (kubeObject, error) {
 			valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_SPIFFE_ID", spiffeIdentity(config, sandboxComponent)),
 			valueEnvironment("AGENTSERVER_V2_CREDENTIAL_SEALING_KEYRING_FILE", serviceMaterialPath("credential-sealing-keyring.json")),
 			valueEnvironment("AGENTSERVER_V2_MANAGED_TAE_PSM", document.Managed.TAE.PSM),
+			secretEnvironment("AGENTSERVER_V2_LARK_DEVICE_APP_ID", document.Secrets.Core, "lark-device-app-id"),
+			secretEnvironment("AGENTSERVER_V2_LARK_DEVICE_APP_SECRET", document.Secrets.Core, "lark-device-app-secret"),
+			valueEnvironment("AGENTSERVER_V2_LARK_DEVICE_SCOPES", corecredentials.DefaultManagedLarkScopes),
+			valueEnvironment("AGENTSERVER_V2_BYTECLOUD_DEVICE_API_BASE_URL", corecredentials.DefaultByteCloudDeviceAPIBaseURL),
 			valueEnvironment("AGENTSERVER_V2_EGRESS_AUTHORIZER_SPIFFE_ID", spiffeIdentity(config, egressComponent)),
 			valueEnvironment("AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEYRING_FILE", serviceMaterialPath("egress-placeholder-keyring.json")),
 		)

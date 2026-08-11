@@ -25,7 +25,7 @@ func NewWorkspaceManagedLarkEnvironmentIssuer(
 	signer *egresscapability.Signer,
 	authorities ManagedLarkEgressAuthoritySource,
 	credentials ManagedLarkProcessCredentialSource,
-	applicationID, taePSM string,
+	taePSM string,
 	idGenerator IDGenerator,
 	now func() time.Time,
 	ttl time.Duration,
@@ -33,7 +33,7 @@ func NewWorkspaceManagedLarkEnvironmentIssuer(
 	if credentials == nil || !managedLarkApplicationIDPattern.MatchString(taePSM) {
 		return nil, errors.New("workspace managed Lark credential source or TAE PSM is invalid")
 	}
-	placeholder, err := NewSignedManagedLarkEnvironmentIssuer(signer, authorities, applicationID, idGenerator, now, ttl)
+	placeholder, err := NewSignedManagedLarkEnvironmentIssuer(signer, authorities, idGenerator, now, ttl)
 	if err != nil {
 		return nil, err
 	}
@@ -44,10 +44,10 @@ func NewDefaultWorkspaceManagedLarkEnvironmentIssuer(
 	signer *egresscapability.Signer,
 	authorities ManagedLarkEgressAuthoritySource,
 	credentials ManagedLarkProcessCredentialSource,
-	applicationID, taePSM string,
+	taePSM string,
 ) (*WorkspaceManagedLarkEnvironmentIssuer, error) {
 	return NewWorkspaceManagedLarkEnvironmentIssuer(
-		signer, authorities, credentials, applicationID, taePSM,
+		signer, authorities, credentials, taePSM,
 		newRandomUUID, time.Now, 60*time.Second,
 	)
 }
@@ -88,21 +88,22 @@ func (issuer *WorkspaceManagedLarkEnvironmentIssuer) issueProcessEnvironment(
 	request ManagedProcessEnvironmentRequest,
 	authority ManagedLarkEgressAuthority,
 ) (map[string]string, error) {
-	environment := managedLarkBaseEnvironment(issuer.placeholder.applicationID)
 	if authority.BindingID == "" {
-		return environment, nil
+		return managedLarkBaseEnvironment(""), nil
 	}
 	credential, err := issuer.credentials.ResolveManagedLarkProcessCredential(ctx, request, issuer.taePSM, authority)
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace managed Lark process credential: %w", err)
 	}
 	if !credential.Configured || credential.CredentialMode != managedcredential.ModeProcessEnv ||
+		credential.ApplicationID != authority.ApplicationID || !managedLarkApplicationIDPattern.MatchString(credential.ApplicationID) ||
 		credential.BindingID != authority.BindingID || credential.AuthorityVersion != authority.AuthorityVersion ||
 		credential.CredentialVersion != authority.CredentialVersion || credential.PolicySHA256 != authority.PolicySHA256 ||
 		credential.TAEPSM != issuer.taePSM || credential.AccessToken == "" || len(credential.AccessToken) > 32*1024 ||
 		strings.TrimSpace(credential.AccessToken) != credential.AccessToken || strings.ContainsAny(credential.AccessToken, "\x00\r\n") {
 		return nil, errors.New("Core returned an inconsistent workspace managed Lark process credential")
 	}
+	environment := managedLarkBaseEnvironment(credential.ApplicationID)
 	capabilityID, err := issuer.placeholder.idGenerator()
 	if err != nil {
 		return nil, fmt.Errorf("allocate managed Lark process proof identity: %w", err)

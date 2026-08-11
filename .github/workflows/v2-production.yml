@@ -7,6 +7,12 @@ on:
       - "v2/**"
       - ".github/workflows/v2-production.yml"
   workflow_dispatch:
+    inputs:
+      active_chart_only:
+        description: Promote the already-probed evidence-bound active Chart without rebuilding images
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -36,6 +42,7 @@ env:
 
 jobs:
   publish-linux-amd64:
+    if: ${{ !inputs.active_chart_only }}
     runs-on: k8s-sg
     timeout-minutes: 90
     steps:
@@ -412,3 +419,114 @@ jobs:
             ${{ steps.chart.outputs.release_dir }}/production.json
             ${{ steps.chart.outputs.release_dir }}/managed-release-verification.txt
             ${{ steps.chart.outputs.release_dir }}/agentserver-v2-*.tgz
+
+  promote-active-chart:
+    if: ${{ inputs.active_chart_only }}
+    runs-on: k8s-sg
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: v2/go.mod
+          cache: false
+
+      - name: Configure code.byted.org read access
+        env:
+          CODE_BYTED_USERNAME: ${{ secrets.CODE_BYTED_USERNAME }}
+          CODE_BYTED_TOKEN: ${{ secrets.CODE_BYTED_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${CODE_BYTED_USERNAME}" && test -n "${CODE_BYTED_TOKEN}"
+          credential_file="${RUNNER_TEMP}/code-byted.credentials"
+          umask 077
+          git config --global credential.helper "store --file=${credential_file}"
+          printf 'protocol=https\nhost=code.byted.org\nusername=%s\npassword=%s\n\n' \
+            "${CODE_BYTED_USERNAME}" "${CODE_BYTED_TOKEN}" | git credential approve
+          printf '%s\n' \
+            'GIT_TERMINAL_PROMPT=0' \
+            'GOPRIVATE=code.byted.org' \
+            'GONOSUMDB=code.byted.org' >>"${GITHUB_ENV}"
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.18.4
+
+      - name: Validate and publish the evidence-bound active chart
+        id: active_chart
+        env:
+          SG_PRODUCTION_CONFIG_B64: ${{ secrets.V2_SG_PRODUCTION_CONFIG_B64 }}
+        run: |
+          set -euo pipefail
+          test -n "${SG_PRODUCTION_CONFIG_B64:-}"
+          release_dir="${RUNNER_TEMP}/agentserver-v2-active-release"
+          chart_dir="${release_dir}/agentserver-v2"
+          install -d -m 0700 "${release_dir}"
+          umask 077
+          production_template="${release_dir}/sg-production-template.json"
+          printf '%s' "${SG_PRODUCTION_CONFIG_B64}" | base64 --decode >"${production_template}"
+          chmod 0600 "${production_template}"
+          test "$(jq -r '.managedExecutor.stage' "${production_template}")" = active
+          go -C v2 run ./cmd/agentserver-deploy validate --config="${production_template}"
+
+          service_image=$(jq -er '.images.service' "${production_template}")
+          harness_image=$(jq -er '.images.harness' "${production_template}")
+          hydra_image=$(jq -er '.images.hydra' "${production_template}")
+          managed_sandbox_image=$(jq -er '.images.managedSandbox' "${production_template}")
+          lark_cli_sha=$(jq -er '.managedExecutor.lark.cliSha256' "${production_template}")
+          lark_skill_sha=$(jq -er '.managedExecutor.lark.skillSha256' "${production_template}")
+          go -C v2 run ./cmd/agentserver-deploy lock-release \
+            --config="${production_template}" \
+            --output="${release_dir}/production.json" \
+            --service-image="${service_image}" \
+            --harness-image="${harness_image}" \
+            --hydra-image="${hydra_image}" \
+            --managed-sandbox-image="${managed_sandbox_image}" \
+            --lark-cli-sha256="${lark_cli_sha}" \
+            --lark-skill-sha256="${lark_skill_sha}"
+          go -C v2 run ./cmd/agentserver-deploy chart \
+            --config="${release_dir}/production.json" \
+            --output="${chart_dir}"
+          helm lint --strict --namespace agentserver "${chart_dir}"
+          helm template agentserver-v2 "${chart_dir}" --namespace agentserver >/dev/null
+          if helm template agentserver-v2 "${chart_dir}" --namespace agentserver \
+              --set taeNetworkProbe.enabled=true \
+              --set-string taeNetworkProbe.policyRevision=forbidden-active-probe \
+              >/dev/null 2>&1; then
+            echo 'active Chart unexpectedly enabled the TAE network probe' >&2
+            exit 1
+          fi
+
+          deployment_sha=$(sed -n 's/^deploymentConfigSHA256: "\([0-9a-f]\{64\}\)"$/\1/p' "${chart_dir}/values.yaml")
+          chart_version=$(sed -n 's/^version: \([^[:space:]]*\)$/\1/p' "${chart_dir}/Chart.yaml")
+          test "${#deployment_sha}" = 64
+          test "${chart_version}" = "0.1.0-config.d$(printf '%s' "${deployment_sha}" | cut -c1-12)"
+          helm package "${chart_dir}" --destination "${release_dir}"
+          printf '%s' "${{ secrets.GITHUB_TOKEN }}" | \
+            helm registry login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin
+          helm push "${release_dir}/agentserver-v2-${chart_version}.tgz" oci://ghcr.io/agentserver
+          helm show chart "oci://${CHART_REPOSITORY}" --version "${chart_version}" >/dev/null
+          printf 'deployment_sha=%s\n' "${deployment_sha}" >>"${GITHUB_OUTPUT}"
+          printf 'version=%s\n' "${chart_version}" >>"${GITHUB_OUTPUT}"
+          printf 'release_dir=%s\n' "${release_dir}" >>"${GITHUB_OUTPUT}"
+
+      - name: Record promoted contract
+        env:
+          CHART_VERSION: ${{ steps.active_chart.outputs.version }}
+          DEPLOYMENT_SHA: ${{ steps.active_chart.outputs.deployment_sha }}
+        run: |
+          {
+            printf '## Evidence-bound AgentServer v2 active Chart\n\n'
+            printf -- '- Chart: `oci://%s:%s`\n' "${CHART_REPOSITORY}" "${CHART_VERSION}"
+            printf -- '- Deployment config SHA-256: `%s`\n' "${DEPLOYMENT_SHA}"
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agentserver-v2-active-chart-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            ${{ steps.active_chart.outputs.release_dir }}/production.json
+            ${{ steps.active_chart.outputs.release_dir }}/agentserver-v2-*.tgz

@@ -75,6 +75,27 @@ func TestConfigureCoreLarkDeviceApplicationRequiresProductionIdentity(t *testing
 	}
 }
 
+func TestWorkspaceCredentialControlPlanePrecedesManagedExecutionActivation(t *testing.T) {
+	tests := []struct {
+		name    string
+		mode    coreServeMode
+		managed bool
+		want    bool
+	}{
+		{name: "production policy bootstrap", mode: coreServeProduction, managed: false, want: true},
+		{name: "production active", mode: coreServeProduction, managed: true, want: true},
+		{name: "development disabled", mode: coreServeInsecureDevelopment, managed: false, want: false},
+		{name: "development managed", mode: coreServeInsecureDevelopment, managed: true, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := workspaceCredentialControlPlaneEnabled(test.mode, test.managed); got != test.want {
+				t.Fatalf("workspace credential control plane enabled = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
 func TestConfigureCoreByteCloudDeviceAPISeparatesFixedInternalProvider(t *testing.T) {
 	configuration := map[string]string{}
 	getenv := func(name string) string { return configuration[name] }

@@ -110,7 +110,7 @@ var materialProfileFiles = map[string][]string{
 	materialProfileCore: {
 		"ca.crt", "tls.crt", "tls.key", "run-capability.key",
 		"run-capability-keyring.json", "executor-enrollment.key",
-		"llm-gateway-sealing-keyring.json",
+		"llm-gateway-sealing-keyring.json", "credential-sealing-keyring.json",
 	},
 	materialProfilePlatformGateway: {"ca.crt", "tls.crt", "tls.key"},
 	materialProfileBrowserGateway:  {"ca.crt", "tls.crt", "tls.key"},

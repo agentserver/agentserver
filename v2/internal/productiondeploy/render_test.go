@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
+	"github.com/agentserver/agentserver/v2/internal/corecredentials"
 	"github.com/agentserver/agentserver/v2/internal/executorgateway"
 	"github.com/agentserver/agentserver/v2/internal/sandboxgatewayapp"
 	"github.com/agentserver/agentserver/v2/internal/taeimage"
@@ -206,6 +207,20 @@ func TestRenderPolicyBootstrapExposesOnlyDenyWebhook(t *testing.T) {
 	if literalEnvironment(t, coreContainer, "AGENTSERVER_V2_MANAGED_EXECUTOR_ENABLED") != "false" {
 		t.Fatal("policy bootstrap activated managed execution in Core")
 	}
+	if got := literalEnvironment(t, coreContainer, "AGENTSERVER_V2_CREDENTIAL_SEALING_KEYRING_FILE"); got != serviceMaterialPath("credential-sealing-keyring.json") {
+		t.Fatalf("policy bootstrap credential sealing keyring = %q", got)
+	}
+	if got := literalEnvironment(t, coreContainer, "AGENTSERVER_V2_LARK_DEVICE_SCOPES"); got != corecredentials.DefaultManagedLarkScopes {
+		t.Fatalf("policy bootstrap Lark device scopes = %q", got)
+	}
+	if got := literalEnvironment(t, coreContainer, "AGENTSERVER_V2_BYTECLOUD_DEVICE_API_BASE_URL"); got != corecredentials.DefaultByteCloudDeviceAPIBaseURL {
+		t.Fatalf("policy bootstrap ByteCloud device API = %q", got)
+	}
+	assertSecretEnvironment(t, coreContainer, "AGENTSERVER_V2_LARK_DEVICE_APP_ID", loaded.Document.Secrets.Core, "lark-device-app-id")
+	assertSecretEnvironment(t, coreContainer, "AGENTSERVER_V2_LARK_DEVICE_APP_SECRET", loaded.Document.Secrets.Core, "lark-device-app-secret")
+	assertSecretMaterialMounts(t, core, "material", loaded.Document.Secrets.Core,
+		"/var/run/agentserver/material", groupReadableSecretMode,
+		[]string{"ca.crt", "tls.crt", "tls.key", "run-capability.key", "run-capability-keyring.json", "executor-enrollment.key", "llm-gateway-sealing-keyring.json", "credential-sealing-keyring.json"})
 }
 
 func TestRenderManagedExecutorWithoutLarkToolPackKeepsTAE(t *testing.T) {

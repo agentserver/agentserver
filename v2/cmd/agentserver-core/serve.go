@@ -451,37 +451,46 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		if loadErr != nil {
 			return fmt.Errorf("configure v2 workspace credential sealing keyring: %w", loadErr)
 		}
-		providerHTTPClient, clientErr := publichttps.NewClient(publichttps.ClientConfig{
+		publicProviderHTTPClient, clientErr := publichttps.NewClient(publichttps.ClientConfig{
 			Timeout: 25 * time.Second, ResponseHeaderTimeout: 15 * time.Second,
 			MaxIdleConns: 32, MaxIdleConnsPerHost: 8,
 		})
 		if clientErr != nil {
 			return fmt.Errorf("configure v2 credential provider HTTPS: %w", clientErr)
 		}
-		defer providerHTTPClient.CloseIdleConnections()
+		defer publicProviderHTTPClient.CloseIdleConnections()
+		byteCloudDeviceAPI, byteCloudConfigErr := configureCoreByteCloudDeviceAPI(getenv, mode)
+		if byteCloudConfigErr != nil {
+			return byteCloudConfigErr
+		}
+		byteCloudProviderHTTPClient := newCoreByteCloudDeviceHTTPClient()
+		defer byteCloudProviderHTTPClient.CloseIdleConnections()
 		registryConfig := corecredentials.DefaultRegistryConfig{
 			ByteCloudDeviceFlow: &corecredentials.ByteCloudDeviceFlowConfig{
-				APIBaseURL: strings.TrimSpace(getenv(coreByteCloudDeviceAPIEnvironment)),
-				HTTPClient: providerHTTPClient, Now: time.Now,
+				APIBaseURL: byteCloudDeviceAPI,
+				HTTPClient: byteCloudProviderHTTPClient, Now: time.Now,
 			},
 		}
-		larkAppID := strings.TrimSpace(getenv(coreLarkDeviceAppIDEnvironment))
-		larkAppSecret := strings.TrimSpace(getenv(coreLarkDeviceAppSecretEnvironment))
-		if (larkAppID == "") != (larkAppSecret == "") {
-			return errors.New("Lark device-flow app ID and app secret must be configured together")
+		larkAppID, larkAppSecret, larkConfigErr := configureCoreLarkDeviceApplication(
+			getenv, mode == coreServeProduction,
+		)
+		if larkConfigErr != nil {
+			return larkConfigErr
 		}
 		if larkAppID != "" {
 			registryConfig.LarkDeviceFlow = &corecredentials.LarkDeviceFlowConfig{
 				AppID: larkAppID, AppSecret: larkAppSecret,
 				Scopes:     strings.TrimSpace(getenv(coreLarkDeviceScopesEnvironment)),
-				HTTPClient: providerHTTPClient, Now: time.Now,
+				HTTPClient: publicProviderHTTPClient, Now: time.Now,
 			}
 		}
 		registry, registryErr := corecredentials.NewConfiguredRegistry(registryConfig)
 		if registryErr != nil {
 			return fmt.Errorf("configure v2 workspace credential providers: %w", registryErr)
 		}
-		credentialCommands := coreserver.StateStoreWorkspaceCredentialCommands{Store: store, Registry: registry, Sealer: sealer, Now: time.Now}
+		credentialCommands := coreserver.StateStoreWorkspaceCredentialCommands{
+			Store: store, Registry: registry, Sealer: sealer, Now: time.Now, Logger: logger,
+		}
 		workspaceCredentialHandler, err = coreserver.NewWorkspaceCredentialHandler(platformAuthorizer, platformUserAuthorizer, credentialCommands)
 		if err != nil {
 			return err
@@ -1078,10 +1087,67 @@ func newCoreHydraHTTPClient(caFile, serverName string) (*http.Client, error) {
 	return &http.Client{Transport: transport, Timeout: 5 * time.Second}, nil
 }
 
+// newCoreByteCloudDeviceHTTPClient is intentionally separate from the
+// public-provider client. The fixed i18n-tt production gateway can resolve to
+// ByteCloud-internal addresses, while user-configurable public providers must
+// continue to reject all private DNS answers. The deployment pins the only
+// accepted origin before this transport is constructed.
+func newCoreByteCloudDeviceHTTPClient() *http.Client {
+	transport := &http.Transport{
+		Proxy:                 nil,
+		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          16,
+		MaxIdleConnsPerHost:   8,
+		IdleConnTimeout:       60 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 15 * time.Second,
+		ExpectContinueTimeout: time.Second,
+		DisableCompression:    true,
+		TLSClientConfig:       &tls.Config{MinVersion: tls.VersionTLS12},
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   25 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return errors.New("ByteCloud provider redirects are forbidden")
+		},
+	}
+}
+
 func requiredConfiguration(getenv func(string) string, name string) (string, error) {
 	value := strings.TrimSpace(getenv(name))
 	if value == "" {
 		return "", fmt.Errorf("%s is required", name)
 	}
 	return value, nil
+}
+
+func configureCoreLarkDeviceApplication(getenv func(string) string, required bool) (string, string, error) {
+	appID := strings.TrimSpace(getenv(coreLarkDeviceAppIDEnvironment))
+	appSecret := strings.TrimSpace(getenv(coreLarkDeviceAppSecretEnvironment))
+	if (appID == "") != (appSecret == "") {
+		return "", "", errors.New("Lark device-flow app ID and app secret must be configured together")
+	}
+	if required && appID == "" {
+		return "", "", fmt.Errorf(
+			"%s and %s are required for production workspace credential device flow",
+			coreLarkDeviceAppIDEnvironment, coreLarkDeviceAppSecretEnvironment,
+		)
+	}
+	return appID, appSecret, nil
+}
+
+func configureCoreByteCloudDeviceAPI(getenv func(string) string, mode coreServeMode) (string, error) {
+	origin := strings.TrimSpace(getenv(coreByteCloudDeviceAPIEnvironment))
+	if origin == "" {
+		origin = corecredentials.DefaultByteCloudDeviceAPIBaseURL
+	}
+	if mode == coreServeProduction && origin != corecredentials.DefaultByteCloudDeviceAPIBaseURL {
+		return "", fmt.Errorf(
+			"%s must be the pinned i18n-tt production origin %s",
+			coreByteCloudDeviceAPIEnvironment, corecredentials.DefaultByteCloudDeviceAPIBaseURL,
+		)
+	}
+	return origin, nil
 }

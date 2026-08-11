@@ -119,10 +119,17 @@ Kubernetes Secret：
 | `externalOidcClientSecret` | 外部 OIDC 中已注册的 AgentServer client |
 | `s3AccessKeyId` / `s3SecretAccessKey` | 目标 S3-compatible bucket 的真实 credential |
 | `byteCloudAccessKeyId` / `byteCloudSecretAccessKey` | 仅用于一次性 TAE 网络探针和 active sandbox-gateway 调 TAE control/data plane 的基础设施应用账号；workspace ByteCloud credential 不在 Pulumi 中配置 |
+| Lark device-flow app ID / app secret | 平台用于发起 workspace 用户授权的 Lark OAuth 应用身份；不是 workspace token。SG 可从 Connect 已注册的 Lark 应用接入，但该应用必须开通 managed Lark 所需 scopes |
 
 如果这些外部系统由 Pulumi provider 管理，应直接把对应资源 Output 传给 AgentServer 模块；当前
 模块也保留加密 Pulumi config 接口作为接入点。不要生成一个外部系统从未注册的随机密码并把它
 当成可用 credential。模块会拒绝空值、首尾空白、控制字符和超出协议上限的 credential。
+
+active SG Core 必须配置成对出现的 Lark device-flow app ID/app secret；缺失时生产启动 fail closed，
+不能静默把 provider catalog 降级为 `manual`。用户通过 Platform 完成 device flow 后得到的 access/refresh
+token 仍只按 workspace binding 加密存入 Core，不写入 Pulumi、Kubernetes Secret 或 deployment document。
+ByteCloud workspace device flow 同样不需要 Pulumi 保存用户 token；Core 在 `site=i18n-tt` 的生产网络中固定
+请求 `https://paas-gw-i18n.byted.org`。`https://cloud.tiktok-row.net` 是办公网入口，不得作为集群内默认值。
 
 PostgreSQL 不再是外部输入。Pulumi 自动生成：
 

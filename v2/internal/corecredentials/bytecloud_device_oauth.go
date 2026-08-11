@@ -17,9 +17,13 @@ import (
 )
 
 const (
-	byteCloudDeviceOAuthAuthType     = "device_oauth"
-	byteCloudDefaultSite             = "i18n-tt"
-	DefaultByteCloudDeviceAPIBaseURL = "https://cloud.tiktok-row.net"
+	byteCloudDeviceOAuthAuthType = "device_oauth"
+	byteCloudDefaultSite         = "i18n-tt"
+	// DefaultByteCloudDeviceAPIBaseURL is the i18n-tt production-network
+	// gateway selected by bytecloud-cli. Core runs inside the SG production
+	// network, so the office gateway (cloud.tiktok-row.net) is not a valid
+	// default for this server-side flow.
+	DefaultByteCloudDeviceAPIBaseURL = "https://paas-gw-i18n.byted.org"
 	byteCloudCLIRegistrationPath     = "/api/v1/ai_auth/ai/auth/service_account_app/cli_registration"
 	byteCloudCLIPollingPath          = "/api/v1/ai_auth/ai/auth/service_account_app/cli_login_polling"
 	byteCloudRefreshPath             = "/api/v1/ai_auth/ai/auth/service_account_app/get_user_access_token"

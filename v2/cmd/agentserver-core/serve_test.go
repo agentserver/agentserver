@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/ed25519"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
+	"github.com/agentserver/agentserver/v2/internal/corecredentials"
 	"github.com/agentserver/agentserver/v2/internal/objectruntime"
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
 )
@@ -49,6 +51,50 @@ func TestServeCoreRequiresDistinctHarnessPoolIdentityBeforeOpeningDatabase(t *te
 	err = serveCore(t.Context(), getenv, io.Discard, io.Discard, coreServeInsecureDevelopment)
 	if err == nil || !strings.Contains(err.Error(), "browser-gateway, executor-gateway, and harness-pool") {
 		t.Fatalf("shared browser workload identity error = %v", err)
+	}
+}
+
+func TestConfigureCoreLarkDeviceApplicationRequiresProductionIdentity(t *testing.T) {
+	configuration := map[string]string{}
+	getenv := func(name string) string { return configuration[name] }
+	if _, _, err := configureCoreLarkDeviceApplication(getenv, true); err == nil ||
+		!strings.Contains(err.Error(), coreLarkDeviceAppIDEnvironment) ||
+		!strings.Contains(err.Error(), coreLarkDeviceAppSecretEnvironment) {
+		t.Fatalf("missing production Lark device application error = %v", err)
+	}
+	if appID, secret, err := configureCoreLarkDeviceApplication(getenv, false); err != nil || appID != "" || secret != "" {
+		t.Fatalf("optional development Lark device application = %q, %q, %v", appID, secret, err)
+	}
+	configuration[coreLarkDeviceAppIDEnvironment] = "cli_agentserver_sg"
+	if _, _, err := configureCoreLarkDeviceApplication(getenv, true); err == nil || !strings.Contains(err.Error(), "configured together") {
+		t.Fatalf("partial Lark device application error = %v", err)
+	}
+	configuration[coreLarkDeviceAppSecretEnvironment] = "app-secret"
+	if appID, secret, err := configureCoreLarkDeviceApplication(getenv, true); err != nil || appID != "cli_agentserver_sg" || secret != "app-secret" {
+		t.Fatalf("configured production Lark device application = %q, %q, %v", appID, secret, err)
+	}
+}
+
+func TestConfigureCoreByteCloudDeviceAPISeparatesFixedInternalProvider(t *testing.T) {
+	configuration := map[string]string{}
+	getenv := func(name string) string { return configuration[name] }
+	if origin, err := configureCoreByteCloudDeviceAPI(getenv, coreServeProduction); err != nil || origin != corecredentials.DefaultByteCloudDeviceAPIBaseURL {
+		t.Fatalf("default production ByteCloud device API = %q, %v", origin, err)
+	}
+	configuration[coreByteCloudDeviceAPIEnvironment] = "https://cloud.tiktok-row.net"
+	if _, err := configureCoreByteCloudDeviceAPI(getenv, coreServeProduction); err == nil || !strings.Contains(err.Error(), "pinned i18n-tt production origin") {
+		t.Fatalf("office ByteCloud origin production error = %v", err)
+	}
+	if origin, err := configureCoreByteCloudDeviceAPI(getenv, coreServeInsecureDevelopment); err != nil || origin != "https://cloud.tiktok-row.net" {
+		t.Fatalf("development ByteCloud device API override = %q, %v", origin, err)
+	}
+
+	client := newCoreByteCloudDeviceHTTPClient()
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok || transport.Proxy != nil || transport.DialContext == nil || transport.TLSClientConfig == nil ||
+		transport.TLSClientConfig.MinVersion != tls.VersionTLS12 || !transport.DisableCompression ||
+		client.Timeout != 25*time.Second || client.CheckRedirect == nil {
+		t.Fatalf("fixed ByteCloud device transport = %#v, client timeout %s", transport, client.Timeout)
 	}
 }
 

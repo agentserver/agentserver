@@ -281,6 +281,39 @@ func policyBootstrapConfigDocument() ConfigDocument {
 	return document
 }
 
+func TestPinManagedTerminalRevisionIsBootstrapOnlyAndFailClosed(t *testing.T) {
+	bootstrap := policyBootstrapConfigDocument()
+	originalRevision := bootstrap.Managed.TAE.RevisionID
+	pinned, err := PinManagedTerminalRevisionDocument(bootstrap, bootstrap.Managed.TAE.SandboxID, "revision-v8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pinned.Managed.TAE.RevisionID != "revision-v8" ||
+		pinned.Managed.Stage != ManagedExecutorStageBootstrap ||
+		pinned.Managed.Environment.RuntimeProfileSHA256 != "" ||
+		pinned.Managed.Environment.PackSetSHA256 != "" ||
+		pinned.Managed.TAE.NetworkEvidence != (ManagedTAENetworkEvidenceDocument{}) ||
+		bootstrap.Managed.TAE.RevisionID != originalRevision {
+		t.Fatalf("pinned Terminal bootstrap = %+v; original revision = %q", pinned.Managed, bootstrap.Managed.TAE.RevisionID)
+	}
+	for name, input := range map[string]struct {
+		document   ConfigDocument
+		sandboxID  string
+		revisionID string
+	}{
+		"active source":     {document: validConfigDocument(), sandboxID: bootstrap.Managed.TAE.SandboxID, revisionID: "revision-v8"},
+		"sandbox mismatch":  {document: bootstrap, sandboxID: "sandbox-2", revisionID: "revision-v8"},
+		"invalid revision":  {document: bootstrap, sandboxID: bootstrap.Managed.TAE.SandboxID, revisionID: "Revision_V8"},
+		"sentinel revision": {document: bootstrap, sandboxID: bootstrap.Managed.TAE.SandboxID, revisionID: "replace-me"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := PinManagedTerminalRevisionDocument(input.document, input.sandboxID, input.revisionID); err == nil {
+				t.Fatal("unsafe Terminal revision pin was accepted")
+			}
+		})
+	}
+}
+
 func TestActivateManagedExecutorBindsAllExternalEvidence(t *testing.T) {
 	bootstrap := policyBootstrapConfigDocument()
 	revision := "lark-readonly-v2"

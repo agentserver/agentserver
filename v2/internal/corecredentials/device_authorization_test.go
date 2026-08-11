@@ -159,6 +159,12 @@ func TestByteCloudDeviceAuthorizationLifecycle(t *testing.T) {
 	}
 }
 
+func TestDefaultByteCloudDeviceAPIUsesI18NTTProductionGateway(t *testing.T) {
+	if DefaultByteCloudDeviceAPIBaseURL != "https://paas-gw-i18n.byted.org" {
+		t.Fatalf("default ByteCloud device API = %q", DefaultByteCloudDeviceAPIBaseURL)
+	}
+}
+
 func TestAuthorizationCiphertextCannotBeOpenedAsBindingSecret(t *testing.T) {
 	keyring, err := NewKeyring("key-1", map[string][]byte{"key-1": bytes.Repeat([]byte{7}, 32)})
 	if err != nil {

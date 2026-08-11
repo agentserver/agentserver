@@ -12,17 +12,16 @@ import (
 
 func releaseDigest(character string) string { return strings.Repeat(character, 64) }
 
-func TestLockReleaseRecomputesManagedAuthority(t *testing.T) {
+func TestLockReleasePreservesEvidenceBoundActiveArtifacts(t *testing.T) {
 	base, err := ValidateConfig(validConfigDocument())
 	if err != nil {
 		t.Fatal(err)
 	}
+	document := base.Document
 	lock := ReleaseLock{
-		ServiceImage:        ProductionServiceImage + "@sha256:" + releaseDigest("a"),
-		HarnessImage:        ProductionHarnessImage + "@sha256:" + releaseDigest("b"),
-		HydraImage:          ProductionHydraImage + "@sha256:" + releaseDigest("c"),
-		ManagedSandboxImage: ProductionManagedSandboxImage + "@sha256:" + releaseDigest("d"),
-		LarkCLISHA256:       productionimage.ManagedLarkCLISHA256, LarkSkillSHA256: releaseDigest("f"),
+		ServiceImage: document.Images.Service, HarnessImage: document.Images.Harness,
+		HydraImage: document.Images.Hydra, ManagedSandboxImage: document.Images.ManagedSandbox,
+		LarkCLISHA256: document.Managed.Lark.CLISHA256, LarkSkillSHA256: document.Managed.Lark.SkillSHA256,
 	}
 	raw, err := LockRelease(base, lock)
 	if err != nil {
@@ -32,17 +31,53 @@ func TestLockReleaseRecomputesManagedAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	document := locked.Document
-	if document.Images.Service != lock.ServiceImage || document.Images.Harness != lock.HarnessImage ||
-		document.Images.Hydra != lock.HydraImage || document.Images.ManagedSandbox != lock.ManagedSandboxImage ||
-		document.Managed.Lark.CLISHA256 != lock.LarkCLISHA256 || document.Managed.Lark.SkillSHA256 != lock.LarkSkillSHA256 ||
-		document.Managed.Environment.RuntimeProfileSHA256 != managedRuntimeProfileDigest(document, document.Managed) ||
-		document.Managed.Environment.PackSetSHA256 != managedPackSetDigest(document.Managed) {
-		t.Fatalf("locked release = %+v", document)
+	lockedDocument := locked.Document
+	if !releaseLockMatches(lockedDocument, lock) ||
+		lockedDocument.Managed.Environment.RuntimeProfileSHA256 != managedRuntimeProfileDigest(lockedDocument, lockedDocument.Managed) ||
+		lockedDocument.Managed.Environment.PackSetSHA256 != managedPackSetDigest(lockedDocument.Managed) {
+		t.Fatalf("locked release = %+v", lockedDocument)
 	}
-	if bytes.Contains(raw, []byte(base.Document.Managed.Environment.RuntimeProfileSHA256)) ||
-		bytes.Contains(raw, []byte(base.Document.Managed.Environment.PackSetSHA256)) {
-		t.Fatal("locked release retained a stale derived digest")
+	if !bytes.Contains(raw, []byte(base.Document.Managed.Environment.RuntimeProfileSHA256)) ||
+		!bytes.Contains(raw, []byte(base.Document.Managed.Environment.PackSetSHA256)) {
+		t.Fatal("locked active release changed its evidence-bound derived digests")
+	}
+}
+
+func TestLockReleaseRejectsEvidenceBoundActiveArtifactDrift(t *testing.T) {
+	base, err := ValidateConfig(validConfigDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := base.Document
+	valid := ReleaseLock{
+		ServiceImage: document.Images.Service, HarnessImage: document.Images.Harness,
+		HydraImage: document.Images.Hydra, ManagedSandboxImage: document.Images.ManagedSandbox,
+		LarkCLISHA256: document.Managed.Lark.CLISHA256, LarkSkillSHA256: document.Managed.Lark.SkillSHA256,
+	}
+	for name, mutate := range map[string]func(*ReleaseLock){
+		"service image": func(lock *ReleaseLock) {
+			lock.ServiceImage = ProductionServiceImage + "@sha256:" + releaseDigest("a")
+		},
+		"harness image": func(lock *ReleaseLock) {
+			lock.HarnessImage = ProductionHarnessImage + "@sha256:" + releaseDigest("b")
+		},
+		"hydra image": func(lock *ReleaseLock) {
+			lock.HydraImage = ProductionHydraImage + "@sha256:" + releaseDigest("c")
+		},
+		"managed sandbox image": func(lock *ReleaseLock) {
+			lock.ManagedSandboxImage = ProductionManagedSandboxImage + "@sha256:" + releaseDigest("d")
+		},
+		"lark cli":   func(lock *ReleaseLock) { lock.LarkCLISHA256 = releaseDigest("e") },
+		"lark skill": func(lock *ReleaseLock) { lock.LarkSkillSHA256 = releaseDigest("f") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			lock := valid
+			mutate(&lock)
+			_, err := LockRelease(base, lock)
+			if err == nil || !strings.Contains(err.Error(), "active managed executor artifacts are immutable") {
+				t.Fatalf("active artifact drift error = %v", err)
+			}
+		})
 	}
 }
 
@@ -75,7 +110,7 @@ func TestLockReleasePreservesEvidenceFreePolicyBootstrap(t *testing.T) {
 }
 
 func TestLockReleaseRejectsUnverifiedInputs(t *testing.T) {
-	base, err := ValidateConfig(validConfigDocument())
+	base, err := ValidateConfig(policyBootstrapConfigDocument())
 	if err != nil {
 		t.Fatal(err)
 	}

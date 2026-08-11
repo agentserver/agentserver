@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
@@ -19,6 +20,7 @@ type StateStoreWorkspaceCredentialCommands struct {
 	Registry *corecredentials.ProviderRegistry
 	Sealer   *corecredentials.Keyring
 	Now      func() time.Time
+	Logger   *slog.Logger
 }
 
 func (commands StateStoreWorkspaceCredentialCommands) ListSchemas(context.Context) (corecontract.ListWorkspaceCredentialProviderSchemasResponse, error) {

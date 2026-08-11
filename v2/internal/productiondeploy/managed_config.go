@@ -168,6 +168,69 @@ func PreparePolicyBootstrapFile(input, output string) error {
 	return WriteReleaseConfig(prepared, output)
 }
 
+// PinManagedTerminalRevisionDocument changes only the management-plane
+// Terminal revision selected by a fail-closed policy-bootstrap document. The
+// caller must repeat the already-pinned Sandbox ID so a typo cannot silently
+// retarget production to another Sandbox. Active documents are immutable:
+// their revision is already bound into SG network evidence and runtime locks.
+func PinManagedTerminalRevisionDocument(
+	document ConfigDocument, sandboxID, revisionID string,
+) (ConfigDocument, error) {
+	loaded, err := ValidateConfig(document)
+	if err != nil {
+		return ConfigDocument{}, fmt.Errorf("validate Terminal revision source: %w", err)
+	}
+	document = loaded.Document
+	if !managedPolicyBootstrap(document.Managed) {
+		return ConfigDocument{}, errors.New("Terminal revision can be pinned only in the policy-bootstrap stage")
+	}
+	if !dnsLabelPattern.MatchString(sandboxID) || sandboxID != document.Managed.TAE.SandboxID {
+		return ConfigDocument{}, errors.New("Terminal Sandbox ID does not match the policy-bootstrap configuration")
+	}
+	if !dnsLabelPattern.MatchString(revisionID) || containsReleaseSentinel(revisionID) ||
+		strings.Contains(strings.ToUpper(revisionID), "PENDING") {
+		return ConfigDocument{}, errors.New("Terminal Sandbox revision ID must be a concrete canonical lowercase TAE identity")
+	}
+	document.Managed.TAE.RevisionID = revisionID
+	pinned, err := ValidateConfig(document)
+	if err != nil {
+		return ConfigDocument{}, fmt.Errorf("validate pinned Terminal revision: %w", err)
+	}
+	return pinned.Document, nil
+}
+
+func PinManagedTerminalRevisionJSON(raw []byte, sandboxID, revisionID string) ([]byte, error) {
+	document, err := decodeConfigDocument(raw)
+	if err != nil {
+		return nil, err
+	}
+	document, err = PinManagedTerminalRevisionDocument(document, sandboxID, revisionID)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode pinned Terminal revision config: %w", err)
+	}
+	encoded = append(encoded, '\n')
+	if _, err := ParseConfig(encoded); err != nil {
+		return nil, fmt.Errorf("verify pinned Terminal revision config: %w", err)
+	}
+	return encoded, nil
+}
+
+func PinManagedTerminalRevisionFile(input, output, sandboxID, revisionID string) error {
+	raw, err := readProductionConfigFile(input)
+	if err != nil {
+		return err
+	}
+	pinned, err := PinManagedTerminalRevisionJSON(raw, sandboxID, revisionID)
+	if err != nil {
+		return err
+	}
+	return WriteReleaseConfig(pinned, output)
+}
+
 // ActivateManagedExecutorDocument is the single promotion edge out of the
 // deny-only bootstrap. Every externally issued policy/network evidence value
 // is explicit, and all dependent bindings are recomputed atomically.

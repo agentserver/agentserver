@@ -18,6 +18,7 @@ type deployCommands struct {
 	lock                    func(productiondeploy.LoadedConfig, productiondeploy.ReleaseLock) ([]byte, error)
 	writeLock               func([]byte, string) error
 	preparePolicyBootstrap  func(string, string) error
+	pinManagedTerminal      func(string, string, string, string) error
 	activateManagedExecutor func(string, string, string, string, string, string) error
 }
 
@@ -27,6 +28,7 @@ func main() {
 		chart: productiondeploy.RenderHelmChart, writeChart: productiondeploy.WriteHelmChart,
 		lock: productiondeploy.LockRelease, writeLock: productiondeploy.WriteReleaseConfig,
 		preparePolicyBootstrap:  productiondeploy.PreparePolicyBootstrapFile,
+		pinManagedTerminal:      productiondeploy.PinManagedTerminalRevisionFile,
 		activateManagedExecutor: productiondeploy.ActivateManagedExecutorFile,
 	}))
 }
@@ -71,6 +73,24 @@ func run(arguments []string, stdout, stderr io.Writer, commands deployCommands) 
 			return 1
 		}
 		fmt.Fprintf(stdout, "agentserver-deploy prepare-policy-bootstrap: wrote fail-closed bootstrap config to %s\n", values["output"])
+		return 0
+	case "pin-terminal-revision":
+		values, ok := exactArguments(arguments[1:], "config", "output", "sandbox-id", "revision-id")
+		if !ok {
+			writeUsage(stderr)
+			return 2
+		}
+		if commands.pinManagedTerminal == nil {
+			fmt.Fprintln(stderr, "agentserver-deploy pin-terminal-revision: command is unavailable")
+			return 1
+		}
+		if err := commands.pinManagedTerminal(
+			values["config"], values["output"], values["sandbox-id"], values["revision-id"],
+		); err != nil {
+			fmt.Fprintf(stderr, "agentserver-deploy pin-terminal-revision: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "agentserver-deploy pin-terminal-revision: wrote fail-closed Terminal revision config to %s\n", values["output"])
 		return 0
 	case "lock-release":
 		values, ok := exactArguments(arguments[1:], "config", "output", "service-image", "harness-image", "hydra-image", "managed-sandbox-image", "lark-cli-sha256", "lark-skill-sha256")
@@ -210,6 +230,7 @@ func exactArguments(arguments []string, names ...string) (map[string]string, boo
 func writeUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "usage: agentserver-deploy activate-managed-executor --config=/absolute/bootstrap.json --output=/absolute/new-active.json --network-report=/absolute/canonical-report.json --policy-revision=<published-revision> --policy-evidence-ref=<immutable-ticket> --network-evidence-ref=<immutable-report-reference>")
 	fmt.Fprintln(writer, "usage: agentserver-deploy prepare-policy-bootstrap --config=/absolute/active-template.json --output=/absolute/new-bootstrap.json")
+	fmt.Fprintln(writer, "usage: agentserver-deploy pin-terminal-revision --config=/absolute/bootstrap.json --output=/absolute/new-bootstrap.json --sandbox-id=<expected-sandbox-id> --revision-id=<published-terminal-revision-id>")
 	fmt.Fprintln(writer, "usage: agentserver-deploy lock-release --config=/absolute/template.json --output=/absolute/new-production.json --service-image=IMAGE@sha256:DIGEST --harness-image=IMAGE@sha256:DIGEST --hydra-image=IMAGE@sha256:DIGEST --managed-sandbox-image=IMAGE@sha256:DIGEST --lark-cli-sha256=DIGEST --lark-skill-sha256=DIGEST")
 	fmt.Fprintln(writer, "       agentserver-deploy validate --config=/absolute/path")
 	fmt.Fprintln(writer, "       agentserver-deploy render --config=/absolute/path --output=/absolute/directory")

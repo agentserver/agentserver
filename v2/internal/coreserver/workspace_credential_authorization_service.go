@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/url"
 	"strings"
 	"time"
@@ -73,6 +74,7 @@ func (commands StateStoreWorkspaceCredentialCommands) BeginAuthorization(
 	}
 	challenge, err := provider.BeginDeviceAuthorization(ctx, input.ProviderParameters)
 	if err != nil {
+		commands.logCredentialAuthorizationProviderFailure(ctx, kind, "begin", err)
 		return corecontract.BeginWorkspaceCredentialAuthorizationResponse{}, credentialAuthorizationError(coredb.ErrorConflict, "BeginWorkspaceCredentialAuthorization", authorizationID, "provider could not begin device authorization")
 	}
 	defer clearCredentialBytes(challenge.ProviderState)
@@ -176,6 +178,7 @@ func (commands StateStoreWorkspaceCredentialCommands) PollAuthorization(ctx cont
 	defer clearCredentialBytes(state)
 	poll, pollErr := provider.PollDeviceAuthorization(ctx, state)
 	if pollErr != nil {
+		commands.logCredentialAuthorizationProviderFailure(ctx, kind, "poll", pollErr)
 		return commands.finishAuthorizationPending(ctx, claimed, actorID, leaseToken, "provider_unavailable", nil, 0)
 	}
 	if err := validateCredentialAuthorizationPoll(poll); err != nil {
@@ -398,4 +401,44 @@ func firstNonemptyCode(value, fallback string) string {
 
 func credentialAuthorizationError(code coredb.StateErrorCode, operation, authorizationID, message string) error {
 	return &coredb.StateError{Code: code, Operation: operation, Resource: "credential_authorization", ResourceID: authorizationID, Message: message}
+}
+
+// logCredentialAuthorizationProviderFailure deliberately records only fixed
+// classifications. Provider errors can contain URLs or upstream response
+// details, and authorization state can contain tickets, device codes, or
+// credentials, so none of those values cross this logging boundary.
+func (commands StateStoreWorkspaceCredentialCommands) logCredentialAuthorizationProviderFailure(
+	ctx context.Context,
+	kind, stage string,
+	err error,
+) {
+	if commands.Logger == nil || err == nil {
+		return
+	}
+	commands.Logger.WarnContext(ctx, "workspace credential provider authorization did not complete",
+		"provider_kind", kind,
+		"stage", stage,
+		"failure_class", credentialAuthorizationProviderFailureClass(err),
+	)
+}
+
+func credentialAuthorizationProviderFailureClass(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) {
+		if networkError.Timeout() {
+			return "timeout"
+		}
+		return "network"
+	}
+	var providerURL *url.Error
+	if errors.As(err, &providerURL) {
+		return "network"
+	}
+	return "rejected_or_invalid_response"
 }

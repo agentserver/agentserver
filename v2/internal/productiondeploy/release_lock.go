@@ -28,6 +28,16 @@ func LockRelease(base LoadedConfig, lock ReleaseLock) ([]byte, error) {
 	if err := validateManagedReleaseEvidence(document); err != nil {
 		return nil, err
 	}
+	// An active configuration's probe report binds the complete bootstrap
+	// deployment, including every executable artifact. In particular, a
+	// Terminal Sandbox Session now selects a pinned management-plane revision;
+	// changing the config image digest cannot change the image that revision
+	// actually runs. Never let the generic release locker create that split-
+	// brain state. Artifact upgrades must return to policy-bootstrap, publish a
+	// new Terminal revision, run the real SG probe, and activate its report.
+	if managedExecutionActive(document.Managed) && !releaseLockMatches(document, lock) {
+		return nil, errors.New("active managed executor artifacts are immutable; prepare policy-bootstrap and rerun TAE terminal probe activation")
+	}
 	document.Images = ImagesDocument{
 		Service: lock.ServiceImage, Harness: lock.HarnessImage,
 		Hydra: lock.HydraImage, ManagedSandbox: lock.ManagedSandboxImage,
@@ -52,6 +62,15 @@ func LockRelease(base LoadedConfig, lock ReleaseLock) ([]byte, error) {
 		return nil, fmt.Errorf("verify locked production release: %w", err)
 	}
 	return raw, nil
+}
+
+func releaseLockMatches(document ConfigDocument, lock ReleaseLock) bool {
+	return document.Images.Service == lock.ServiceImage &&
+		document.Images.Harness == lock.HarnessImage &&
+		document.Images.Hydra == lock.HydraImage &&
+		document.Images.ManagedSandbox == lock.ManagedSandboxImage &&
+		document.Managed.Lark.CLISHA256 == lock.LarkCLISHA256 &&
+		document.Managed.Lark.SkillSHA256 == lock.LarkSkillSHA256
 }
 
 // validateManagedReleaseEvidence is intentionally stricter than ordinary

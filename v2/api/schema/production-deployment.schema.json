@@ -25,7 +25,7 @@
     "resources"
   ],
   "properties": {
-    "version": {"const": 3},
+    "version": {"const": 4},
     "region": {"const": "sg"},
     "namespace": {"const": "agentserver"},
     "clusterDomain": {"$ref": "#/$defs/dnsName"},
@@ -357,10 +357,12 @@
     "managedTAE": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["region", "psm", "policy", "networkEvidence"],
+      "required": ["region", "psm", "sandboxId", "sandboxRevisionId", "policy", "networkEvidence"],
       "properties": {
         "region": {"const": "sg"},
         "psm": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^ /:@]+$"},
+        "sandboxId": {"$ref": "#/$defs/dnsLabel"},
+        "sandboxRevisionId": {"$ref": "#/$defs/dnsLabel"},
         "policy": {"$ref": "#/$defs/managedTAEPolicy"},
         "networkEvidence": {"$ref": "#/$defs/managedTAENetworkEvidence"}
       }
@@ -370,7 +372,7 @@
       "additionalProperties": false,
       "required": ["version", "reportSha256", "bindingSha256", "evidenceRef"],
       "properties": {
-        "version": {"type": "integer", "minimum": 0, "maximum": 3},
+        "version": {"type": "integer", "minimum": 0, "maximum": 4},
         "reportSha256": {"$ref": "#/$defs/optionalSha256"},
         "bindingSha256": {"$ref": "#/$defs/optionalSha256"},
         "evidenceRef": {"type": "string", "maxLength": 1024}
@@ -493,7 +495,7 @@
                   },
                   "networkEvidence": {
                     "properties": {
-                      "version": {"const": 3},
+                      "version": {"const": 4},
                       "reportSha256": {"$ref": "#/$defs/sha256"},
                       "bindingSha256": {"$ref": "#/$defs/sha256"},
                       "evidenceRef": {"type": "string", "minLength": 1, "maxLength": 1024}

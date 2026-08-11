@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/agentserver/agentserver/v2/internal/managedruntime"
 	"github.com/agentserver/agentserver/v2/providers/tae/adapter"
 )
 
@@ -23,6 +22,8 @@ const (
 	serviceAccount = "sa_g_eadce90936c71c1e"
 	accessPath     = "/var/run/agentserver/material/bytecloud-access-key-id"
 	secretPath     = "/var/run/agentserver/material/bytecloud-secret-access-key"
+	sandboxIDEnv   = "AGENTSERVER_V2_TAE_SANDBOX_ID"
+	revisionIDEnv  = "AGENTSERVER_V2_TAE_SANDBOX_REVISION_ID"
 )
 
 type report struct {
@@ -33,7 +34,10 @@ type report struct {
 	Passed                                bool      `json:"passed"`
 	Region                                string    `json:"region"`
 	PSM                                   string    `json:"psm"`
+	SandboxID                             string    `json:"sandboxId"`
+	SandboxRevisionID                     string    `json:"sandboxRevisionId"`
 	ImageOmitted                          bool      `json:"imageOmitted"`
+	CommandOmitted                        bool      `json:"commandOmitted"`
 	SessionID                             string    `json:"sessionId,omitempty"`
 	Created                               bool      `json:"created"`
 	Ready                                 bool      `json:"ready"`
@@ -60,12 +64,13 @@ func main() {
 
 func run() (result report) {
 	result = report{
-		SchemaVersion: 1,
-		Kind:          "agentserver.tae.sg-terminal-probe",
-		StartedAt:     time.Now().UTC(),
-		Region:        "sg",
-		PSM:           psm,
-		ImageOmitted:  true,
+		SchemaVersion:  1,
+		Kind:           "agentserver.tae.sg-terminal-probe",
+		StartedAt:      time.Now().UTC(),
+		Region:         "sg",
+		PSM:            psm,
+		ImageOmitted:   true,
+		CommandOmitted: true,
 	}
 	defer func() { result.FinishedAt = time.Now().UTC() }()
 
@@ -81,6 +86,18 @@ func run() (result report) {
 		result.Error = "load ByteCloud application secret key"
 		return result
 	}
+	sandboxID := os.Getenv(sandboxIDEnv)
+	if !adapter.ValidTerminalIdentity(sandboxID) {
+		result.Error = sandboxIDEnv + " is invalid"
+		return result
+	}
+	revisionID := os.Getenv(revisionIDEnv)
+	if !adapter.ValidTerminalIdentity(revisionID) {
+		result.Error = revisionIDEnv + " is invalid"
+		return result
+	}
+	result.SandboxID = sandboxID
+	result.SandboxRevisionID = revisionID
 
 	controlHTTP, err := adapter.NewSGTAEControlHTTPClient(adapter.StrictHTTPClientConfig{
 		TotalTimeout: 60 * time.Second, ResponseHeaderTimeout: 30 * time.Second,
@@ -107,7 +124,8 @@ func run() (result report) {
 		return result
 	}
 	control, err := adapter.NewSGSDKControlPlane(ctx, adapter.SDKControlPlaneConfig{
-		PSM: psm, HTTPClient: controlHTTP, Headers: headerSource, RequestTimeout: 60 * time.Second,
+		PSM: psm, SandboxID: sandboxID, RevisionID: revisionID,
+		HTTPClient: controlHTTP, Headers: headerSource, RequestTimeout: 60 * time.Second,
 	})
 	if err != nil {
 		result.Error = err.Error()
@@ -128,9 +146,7 @@ func run() (result report) {
 	}
 	metadata := map[string]string{adapter.MetadataSandboxID: "agentserver-tae-terminal-probe-" + id}
 	createContext, cancelCreate := context.WithTimeout(ctx, 60*time.Second)
-	session, err := control.Create(createContext, adapter.CreateInput{
-		TTL: 15 * time.Minute, Metadata: metadata, Command: managedruntime.ExecutablePath,
-	})
+	session, err := control.Create(createContext, adapter.CreateInput{TTL: 15 * time.Minute, Metadata: metadata})
 	cancelCreate()
 	if err != nil {
 		result.Error = err.Error()

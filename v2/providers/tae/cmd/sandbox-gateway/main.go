@@ -26,6 +26,8 @@ const (
 	signalTimeoutEnvironment        = "AGENTSERVER_V2_TAE_SIGNAL_TIMEOUT"
 	maxReadBytesEnvironment         = "AGENTSERVER_V2_TAE_MAX_READ_SOURCE_BYTES"
 	sandboxImageEnvironment         = "AGENTSERVER_V2_TAE_SANDBOX_IMAGE"
+	sandboxIDEnvironment            = "AGENTSERVER_V2_TAE_SANDBOX_ID"
+	sandboxRevisionIDEnvironment    = "AGENTSERVER_V2_TAE_SANDBOX_REVISION_ID"
 	authModeEnvironment             = "AGENTSERVER_V2_TAE_AUTH_MODE"
 	byteCloudSiteEnvironment        = "AGENTSERVER_V2_TAE_BYTECLOUD_SITE"
 	byteCloudAccessKeyEnvironment   = "AGENTSERVER_V2_TAE_BYTECLOUD_ACCESS_KEY_ID_FILE"
@@ -48,6 +50,8 @@ type providerConfig struct {
 	signalTimeout     time.Duration
 	maxReadBytes      int64
 	sandboxImage      string
+	sandboxID         string
+	sandboxRevisionID string
 	authMode          string
 	byteCloudSite     string
 	accessKeyFile     string
@@ -186,6 +190,14 @@ func loadProviderConfig(getenv func(string) string) (providerConfig, error) {
 	if err := taeimage.ValidateContentTag(sandboxImage); err != nil {
 		return providerConfig{}, fmt.Errorf("%s: %w", sandboxImageEnvironment, err)
 	}
+	sandboxID := getenv(sandboxIDEnvironment)
+	if !adapter.ValidTerminalIdentity(sandboxID) {
+		return providerConfig{}, fmt.Errorf("%s must be a canonical lowercase TAE identity", sandboxIDEnvironment)
+	}
+	sandboxRevisionID := getenv(sandboxRevisionIDEnvironment)
+	if !adapter.ValidTerminalIdentity(sandboxRevisionID) {
+		return providerConfig{}, fmt.Errorf("%s must be a canonical lowercase TAE identity", sandboxRevisionIDEnvironment)
+	}
 	controlTimeout, err := optionalDuration(getenv(controlTimeoutEnvironment), 45*time.Second, time.Second, time.Minute, controlTimeoutEnvironment)
 	if err != nil {
 		return providerConfig{}, err
@@ -218,6 +230,7 @@ func loadProviderConfig(getenv func(string) string) (providerConfig, error) {
 		controlTimeout: controlTimeout, headerTimeout: headerTimeout, streamGrace: streamGrace,
 		reconnectAttempts: reconnectAttempts, reconnectDelay: reconnectDelay,
 		signalTimeout: signalTimeout, maxReadBytes: maxReadBytes, sandboxImage: sandboxImage,
+		sandboxID: sandboxID, sandboxRevisionID: sandboxRevisionID,
 		authMode: byteCloudAppAKSKAuthMode, byteCloudSite: byteCloudSite,
 		accessKeyFile: accessKeyFile, secretKeyFile: secretKeyFile,
 		jwtEndpoint: jwtEndpoint, proxyURL: proxyURL, jwtRequestTimeout: jwtRequestTimeout,

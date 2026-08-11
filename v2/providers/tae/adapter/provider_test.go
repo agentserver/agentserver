@@ -140,8 +140,7 @@ func TestProviderLifecycleUsesProviderAssignedIdentityAndExactMetadata(t *testin
 	want := provider.createMetadata(request.SandboxID, request.IdempotencyKey, request.WorkspaceID, request.SessionID,
 		request.EnvironmentID, request.RuntimeProfileSHA256, request.PackSetSHA256)
 	if !metadataEqual(captured.Metadata, want) || len(captured.Metadata) != 8 ||
-		captured.Metadata[MetadataTAEPolicySHA256] != provider.policy.BindingSHA256 ||
-		captured.Command != managedruntime.ExecutablePath {
+		captured.Metadata[MetadataTAEPolicySHA256] != provider.policy.BindingSHA256 {
 		t.Fatalf("create metadata = %#v, want %#v", captured.Metadata, want)
 	}
 

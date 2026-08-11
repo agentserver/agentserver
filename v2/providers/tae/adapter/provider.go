@@ -12,7 +12,6 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
-	"github.com/agentserver/agentserver/v2/internal/managedruntime"
 	"github.com/agentserver/agentserver/v2/internal/sandboxgateway"
 	"github.com/agentserver/agentserver/v2/internal/taepolicy"
 )
@@ -149,11 +148,11 @@ func (provider *Provider) CreateSandbox(ctx context.Context, request sandboxgate
 		}
 		return provider.providerSandbox(existing)
 	}
-	// Terminal Sandbox images are fixed by the published Sandbox version. The
-	// Session API must not receive an image override; that field is only valid
-	// for image-collection sandboxes.
+	// Terminal Sandbox images and startup commands are fixed by the pinned TAE
+	// Sandbox revision. The Session API must not receive image or command
+	// overrides; those fields are not the release boundary for Terminal.
 	session, err := provider.control.Create(ctx, CreateInput{
-		TTL: request.TTL, Metadata: metadata, Command: managedruntime.ExecutablePath,
+		TTL: request.TTL, Metadata: metadata,
 	})
 	if err != nil {
 		return sandboxgateway.ProviderSandbox{}, provider.createError(err)

@@ -45,7 +45,8 @@ func TestSDKControlPlaneInjectsApplicationJWTIntoEveryControlRequest(t *testing.
 	server := httptest.NewTLSServer(mux)
 	defer server.Close()
 	control, err := NewSGSDKControlPlane(context.Background(), SDKControlPlaneConfig{
-		PSM: "psm.agentserver.tae", HTTPClient: server.Client(), Headers: staticJWTSource(),
+		PSM: "psm.agentserver.tae", SandboxID: "sandbox-1", RevisionID: "revision-1",
+		HTTPClient: server.Client(), Headers: staticJWTSource(),
 		ControlPlaneURL: server.URL, RequestTimeout: time.Second,
 	})
 	if err != nil {
@@ -64,7 +65,7 @@ func TestSDKControlPlaneInjectsApplicationJWTIntoEveryControlRequest(t *testing.
 	}
 }
 
-func TestSDKControlPlaneCreateSelectsManagedRuntimeAndOmitsTerminalSessionImage(t *testing.T) {
+func TestSDKControlPlaneCreatePinsRevisionAndOmitsTerminalOverrides(t *testing.T) {
 	metadata := map[string]string{MetadataSandboxID: "managed-sandbox-1"}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/sandboxes/psm.agentserver.tae", func(response http.ResponseWriter, _ *http.Request) {
@@ -85,9 +86,12 @@ func TestSDKControlPlaneCreateSelectsManagedRuntimeAndOmitsTerminalSessionImage(
 		if _, present := payload["image"]; present {
 			t.Fatalf("Terminal Session create carried forbidden image override: %s", payload["image"])
 		}
-		var command string
-		if err := json.Unmarshal(payload["command"], &command); err != nil || command != managedruntime.ExecutablePath {
-			t.Fatalf("Terminal Session create command = %q, %v", command, err)
+		if _, present := payload["command"]; present {
+			t.Fatalf("Terminal Session create carried forbidden command override: %s", payload["command"])
+		}
+		var revisionID string
+		if err := json.Unmarshal(payload["revision_id"], &revisionID); err != nil || revisionID != "revision-1" {
+			t.Fatalf("Terminal Session create revision_id = %q, %v", revisionID, err)
 		}
 		_ = json.NewEncoder(response).Encode(sandbox.CreateSessionResponse{
 			Code: 0,
@@ -100,15 +104,14 @@ func TestSDKControlPlaneCreateSelectsManagedRuntimeAndOmitsTerminalSessionImage(
 	server := httptest.NewTLSServer(mux)
 	defer server.Close()
 	control, err := NewSGSDKControlPlane(t.Context(), SDKControlPlaneConfig{
-		PSM: "psm.agentserver.tae", HTTPClient: server.Client(), Headers: staticJWTSource(),
+		PSM: "psm.agentserver.tae", SandboxID: "sandbox-1", RevisionID: "revision-1",
+		HTTPClient: server.Client(), Headers: staticJWTSource(),
 		ControlPlaneURL: server.URL, RequestTimeout: time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := control.Create(t.Context(), CreateInput{
-		TTL: time.Minute, Metadata: metadata, Command: managedruntime.ExecutablePath,
-	})
+	created, err := control.Create(t.Context(), CreateInput{TTL: time.Minute, Metadata: metadata})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,9 +119,34 @@ func TestSDKControlPlaneCreateSelectsManagedRuntimeAndOmitsTerminalSessionImage(
 		!reflect.DeepEqual(created.Metadata, metadata) {
 		t.Fatalf("created Terminal Session = %+v", created)
 	}
-	if _, err := control.Create(t.Context(), CreateInput{TTL: time.Minute, Metadata: metadata}); err == nil ||
-		!strings.Contains(err.Error(), "session command differs") {
-		t.Fatalf("missing managed runtime command error = %v", err)
+}
+
+func TestSDKControlPlaneFailsClosedWhenPSMResolvesToDifferentSandboxID(t *testing.T) {
+	requests := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		requests++
+		if request.URL.Path != "/api/v1/sandboxes/psm.agentserver.tae" {
+			t.Fatalf("unexpected request escaped configured Sandbox ID scope: %s", request.URL.Path)
+		}
+		_ = json.NewEncoder(response).Encode(sandbox.SandboxMetaResponse{
+			Code: 0,
+			Data: &sandbox.SandboxMeta{SandboxID: "sandbox-2", SandboxType: sandbox.SandboxTypeTerminal,
+				Name: "drifted", Psm: "psm.agentserver.tae"},
+		})
+	}))
+	defer server.Close()
+	control, err := NewSGSDKControlPlane(t.Context(), SDKControlPlaneConfig{
+		PSM: "psm.agentserver.tae", SandboxID: "sandbox-1", RevisionID: "revision-1",
+		HTTPClient: server.Client(), Headers: staticJWTSource(),
+		ControlPlaneURL: server.URL, RequestTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = control.Create(t.Context(), CreateInput{TTL: time.Minute})
+	var requestError *RequestError
+	if !errors.As(err, &requestError) || requestError.Code != "provider_unavailable" || requests != 1 {
+		t.Fatalf("Create() with drifted Sandbox ID error=%#v requests=%d", err, requests)
 	}
 }
 
@@ -133,7 +161,8 @@ func TestDescribeSandboxRejectsTrailingOrOversizedJSON(t *testing.T) {
 			}))
 			defer server.Close()
 			control, err := NewSGSDKControlPlane(t.Context(), SDKControlPlaneConfig{
-				PSM: "psm.agentserver.tae", HTTPClient: server.Client(), Headers: staticJWTSource(),
+				PSM: "psm.agentserver.tae", SandboxID: "sandbox-1", RevisionID: "revision-1",
+				HTTPClient: server.Client(), Headers: staticJWTSource(),
 				ControlPlaneURL: server.URL, RequestTimeout: time.Second,
 			})
 			if err != nil {

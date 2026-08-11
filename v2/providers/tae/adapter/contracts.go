@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/managedruntime"
@@ -23,18 +24,21 @@ type ControlSession struct {
 }
 
 // RuntimeCommandConflicts reports an authoritative provider conflict. TAE's
-// Session create/get/search responses do not consistently echo the optional
-// command field, so an empty value means "not reported" rather than "the
-// process started without a command". The SDK adapter separately rejects any
-// create request that does not carry the exact managed runtime executable.
+// Session create/get/search responses do not consistently echo the command
+// fixed by the Terminal Sandbox revision, so an empty value means "not
+// reported" rather than "the process started without a command". Session
+// creation deliberately cannot supply a command override.
 func RuntimeCommandConflicts(command string) bool {
 	return command != "" && command != managedruntime.ExecutablePath
+}
+
+func ValidTerminalIdentity(value string) bool {
+	return sessionDNSLabelPattern.MatchString(value) && strings.ToLower(value) == value
 }
 
 type CreateInput struct {
 	TTL      time.Duration
 	Metadata map[string]string
-	Command  string
 }
 
 type SearchInput struct {

@@ -44,6 +44,8 @@ func taeNetworkProbeResources(config LoadedConfig) ([]kubeObject, error) {
 	}
 	environment := []any{
 		valueEnvironment("AGENTSERVER_V2_TAE_SANDBOX_IMAGE", taeSandboxImage),
+		valueEnvironment("AGENTSERVER_V2_TAE_SANDBOX_ID", document.Managed.TAE.SandboxID),
+		valueEnvironment("AGENTSERVER_V2_TAE_SANDBOX_REVISION_ID", document.Managed.TAE.RevisionID),
 		valueEnvironment("AGENTSERVER_V2_TAE_AUTH_MODE", "bytecloud-app-aksk-v1"),
 		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_SITE", "i18n-tt"),
 		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_JWT_ENDPOINT", ProductionByteCloudJWTEndpoint),

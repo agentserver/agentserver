@@ -43,7 +43,8 @@ func newTAEClients(ctx context.Context, config providerConfig, psm string) (*tae
 		return nil, fmt.Errorf("configure ByteCloud application identity: %w", err)
 	}
 	control, err := adapter.NewSGSDKControlPlane(ctx, adapter.SDKControlPlaneConfig{
-		PSM: psm, HTTPClient: controlHTTPClient, Headers: headerSource,
+		PSM: psm, SandboxID: config.sandboxID, RevisionID: config.sandboxRevisionID,
+		HTTPClient: controlHTTPClient, Headers: headerSource,
 		RequestTimeout: config.controlTimeout,
 	})
 	if err != nil {

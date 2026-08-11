@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "region": "sg",
   "namespace": "agentserver",
   "clusterDomain": "cluster.local",
@@ -103,8 +103,8 @@
         "codexCommit": "e363b08c9175ac1cbe5893615dd2cb9ddf95043b",
         "codexSha256": "2e863156ed35ecc5253b1e2f907a9143077b9f7cb51942070c61996471ff6e04"
       },
-      "runtimeProfileSha256": "7e7c97546b2e5f9a7d712ba44a55b6030db1595ffa72dfaf304e5e1321f7d702",
-      "packSetSha256": "d12de65e35ce74bbd3fbf88035c501caebeb4bd8dd8f4d4072d0c607fa4ee6b5",
+      "runtimeProfileSha256": "36e18c077b06a581a5d51253b39afa85ac69d8f3ef553a910b8201fafb0c2123",
+      "packSetSha256": "7d9cdca22f02d52912411b2ee1b0d0e08b60b8208ec075f39ff7c9a0c0cf8957",
       "sandboxTtl": "30m",
       "activityTtl": "5m",
       "idleTtl": "5m"
@@ -112,6 +112,8 @@
     "tae": {
       "region": "sg",
       "psm": "bytedance.sandbox.agentserver",
+      "sandboxId": "orbiryz0",
+      "sandboxRevisionId": "049daew1i5",
       "policy": {
         "version": 1,
         "revision": "lark-readonly-v1",
@@ -129,9 +131,9 @@
         "evidenceRef": "REPLACE_WITH_TAE_CHANGE_OR_SECURITY_TICKET"
       },
       "networkEvidence": {
-        "version": 3,
+        "version": 4,
         "reportSha256": "47d34822e5249f822ebb4b3d26d39e1704917fc39403c4ff94e77722626c4008",
-        "bindingSha256": "b490570eefd9012d4c171b9684bf1fbe56761d157241f777eb1fe61b204e622c",
+        "bindingSha256": "ec793ef26d8429af0f30c3b6e5bfc5e1e95aeefb07b905dcec643f9d9e41cfb3",
         "evidenceRef": "REPLACE_WITH_SG_NETWORK_TEST_REPORT"
       }
     },

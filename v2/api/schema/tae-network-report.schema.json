@@ -16,7 +16,7 @@
     "checks"
   ],
   "properties": {
-    "schemaVersion": { "const": 2 },
+    "schemaVersion": { "const": 3 },
     "kind": { "const": "agentserver.tae.sg-network-report" },
     "startedAt": { "type": "string", "format": "date-time" },
     "finishedAt": { "type": "string", "format": "date-time" },
@@ -71,6 +71,8 @@
         "controlPlaneHost",
         "dataPlaneDomainSuffix",
         "sandboxImage",
+        "sandboxId",
+        "sandboxRevisionId",
         "larkCliVersion",
         "larkCliSha256",
         "larkSkillSha256",
@@ -91,12 +93,20 @@
           "type": "string",
           "pattern": "^[^\\s@]+:sha256-[0-9a-f]{64}$"
         },
+        "sandboxId": { "$ref": "#/$defs/taeIdentity" },
+        "sandboxRevisionId": { "$ref": "#/$defs/taeIdentity" },
         "larkCliVersion": { "$ref": "#/$defs/boundedText" },
         "larkCliSha256": { "$ref": "#/$defs/digest" },
         "larkSkillSha256": { "$ref": "#/$defs/digest" },
         "connectivityAttempts": { "type": "integer", "minimum": 1, "maximum": 100 },
         "lifecycleAttempts": { "type": "integer", "minimum": 1, "maximum": 5 }
       }
+    },
+    "taeIdentity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
     },
     "check": {
       "type": "object",

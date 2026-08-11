@@ -19,7 +19,7 @@ func TestReportCanonicalRoundTripAndDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Count(raw, []byte{'\n'}) != 1 || raw[len(raw)-1] != '\n' || !bytes.HasPrefix(raw, []byte(`{"schemaVersion":2,"kind":"agentserver.tae.sg-network-report"`)) {
+	if bytes.Count(raw, []byte{'\n'}) != 1 || raw[len(raw)-1] != '\n' || !bytes.HasPrefix(raw, []byte(`{"schemaVersion":3,"kind":"agentserver.tae.sg-network-report"`)) {
 		t.Fatalf("report is not one canonical line: %q", raw)
 	}
 	parsed, err := Parse(raw)
@@ -53,6 +53,12 @@ func TestValidateRejectsInconsistentEvidence(t *testing.T) {
 			value.Configuration.DeploymentConfigSHA256 = strings.Repeat("0", 64)
 		},
 		"mutable image": func(value *Report) { value.Configuration.SandboxImage = "sandbox:latest" },
+		"invalid sandbox ID": func(value *Report) {
+			value.Configuration.SandboxID = "Sandbox-1"
+		},
+		"missing sandbox revision ID": func(value *Report) {
+			value.Configuration.SandboxRevisionID = ""
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			report := validReport()
@@ -132,6 +138,7 @@ func validReport() Report {
 			PolicyRevision: "revision-1", ByteCloudSite: "i18n-tt", JWTEndpoint: "https://cloud-i18n-sg.bytedance.net",
 			ProxyURL: "socks5h://proxy.example:1080", ControlPlaneHost: "controlplane.sg.example",
 			DataPlaneDomainSuffix: "sg.example", SandboxImage: "registry.example/sandbox:sha256-" + strings.Repeat("2", 64),
+			SandboxID: "sandbox-1", SandboxRevisionID: "revision-1",
 			LarkCLIVersion: "1.0.69", LarkCLISHA256: strings.Repeat("3", 64), LarkSkillSHA256: strings.Repeat("4", 64),
 			ConnectivityAttempts: 2, LifecycleAttempts: 1,
 		},

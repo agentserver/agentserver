@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/agentserver/agentserver/v2/internal/managedruntime"
 	"github.com/agentserver/agentserver/v2/internal/productionimage"
 	"github.com/agentserver/agentserver/v2/internal/taenetworkreport"
 	"github.com/agentserver/agentserver/v2/providers/tae/adapter"
@@ -213,7 +212,8 @@ func executeNetworkProbe(ctx context.Context, config networkProbeConfig, clients
 			PolicyRevision: config.policyRevision, ByteCloudSite: adapter.ByteCloudSiteI18NTT,
 			JWTEndpoint: adapter.ByteCloudJWTEndpointSG, ProxyURL: adapter.TAEProxyURLSG,
 			ControlPlaneHost: adapter.SGTAEControlPlaneHost, DataPlaneDomainSuffix: domainSuffix,
-			SandboxImage: config.provider.sandboxImage, LarkCLIVersion: config.larkCLIVersion,
+			SandboxImage: config.provider.sandboxImage, SandboxID: config.provider.sandboxID,
+			SandboxRevisionID: config.provider.sandboxRevisionID, LarkCLIVersion: config.larkCLIVersion,
 			LarkCLISHA256: config.larkCLISHA256, LarkSkillSHA256: config.larkSkillSHA256,
 			ConnectivityAttempts: config.connectivityAttempts, LifecycleAttempts: config.lifecycleAttempts,
 		},
@@ -232,7 +232,7 @@ func runProbeLifecycle(ctx context.Context, config networkProbeConfig, clients *
 		requestContext, cancel := context.WithTimeout(ctx, config.provider.controlTimeout)
 		defer cancel()
 		created, err := clients.control.Create(requestContext, adapter.CreateInput{
-			TTL: probeSessionTTL, Metadata: metadata, Command: managedruntime.ExecutablePath,
+			TTL: probeSessionTTL, Metadata: metadata,
 		})
 		if err != nil {
 			return err

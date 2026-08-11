@@ -416,7 +416,9 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 	}
 	if sandboxConfig.ProviderRegion != "sg" || sandboxConfig.ProviderPSM != loaded.Document.Managed.TAE.PSM ||
 		len(sandboxConfig.WorkspaceAllowlist) != len(loaded.Document.Managed.WorkspaceAllowlist) ||
-		sandboxEnvironment("AGENTSERVER_V2_TAE_SANDBOX_IMAGE") != wantTAEImage {
+		sandboxEnvironment("AGENTSERVER_V2_TAE_SANDBOX_IMAGE") != wantTAEImage ||
+		sandboxEnvironment("AGENTSERVER_V2_TAE_SANDBOX_ID") != loaded.Document.Managed.TAE.SandboxID ||
+		sandboxEnvironment("AGENTSERVER_V2_TAE_SANDBOX_REVISION_ID") != loaded.Document.Managed.TAE.RevisionID {
 		t.Fatalf("rendered sandbox-gateway authority = %+v", sandboxConfig)
 	}
 	for name, want := range map[string]string{

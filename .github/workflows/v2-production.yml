@@ -392,7 +392,7 @@ jobs:
             printf -- '- Service: `%s@%s`\n' "${SERVICE_REPOSITORY}" "${SERVICE_DIGEST}"
             printf -- '- Harness: `%s@%s`\n' "${HARNESS_REPOSITORY}" "${HARNESS_DIGEST}"
             printf -- '- Managed sandbox: `%s@%s`\n' "${MANAGED_SANDBOX_REPOSITORY}" "${MANAGED_SANDBOX_DIGEST}"
-            printf -- '- TAE session image: `%s:%s` (verified as `%s`)\n' \
+            printf -- '- TAE terminal revision image: `%s:%s` (verified as `%s`)\n' \
               "${TAE_MANAGED_SANDBOX_REPOSITORY}" \
               "${MANAGED_SANDBOX_TAE_TAG}" "${MANAGED_SANDBOX_DIGEST}"
             printf -- '- Lark CLI SHA-256: `%s`\n' "${LARK_CLI_SHA256}"

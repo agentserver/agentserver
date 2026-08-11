@@ -2,8 +2,9 @@ FROM docker.io/library/postgres@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac9
 
 # Agentserver-owned, single-layer Debian runtime base. This is intentionally
 # not faas/bytedance.sandbox.terminal_faas: the managed overlay below owns the
-# FaaS keeper while the session create request selects it as the command and
-# TAE injects SandboxD at runtime.
+# FaaS keeper selected by the pinned Terminal Sandbox revision's run_cmd. A
+# Session create supplies only that revision_id; TAE injects SandboxD at
+# runtime.
 FROM aliyun-sin-hub.byted.org/agentserver/tae-sandbox@sha256:e4255f02c1feceb168848fc6b7ea934cdc3f944ebc8dda51d2b77d00fbf28f6f
 
 ARG SOURCE_REVISION

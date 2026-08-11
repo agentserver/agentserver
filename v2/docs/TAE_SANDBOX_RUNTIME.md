@@ -111,20 +111,23 @@ managed-sandbox 不继承 1.74 GiB 的 `faas/bytedance.sandbox.terminal_faas`。
 - 静态 `agentserver-tae-runtime`；
 - pinned `lark-cli`、只读 skill pack、CA bundle 和 image manifest。
 
-创建 session 时，sandbox-gateway 通过官方 SDK `CreateSessionOpts.Command` 显式发送：
+镜像和启动入口在 TAE Terminal Sandbox 的管理面 revision 中发布。生产配置同时锁定 Sandbox ID 和
+revision ID；sandbox-gateway 通过官方 SDK 创建 Session 时只发送：
 
 ```json
-{"command":"/usr/local/bin/agentserver-tae-runtime"}
+{"revision_id":"<pinned-terminal-revision-id>"}
 ```
 
-因此控制面配置而不是 `/opt/tiger/run.sh` 路径决定实际入口。SDK adapter 只接受这一个 canonical 绝对
-路径，并且禁止 Terminal Session 的 image override。runtime 使用 IPv6 wildcard 监听
+请求不包含 `image` 或 `command`。管理面 revision 固定 agentserver 镜像及
+`run_cmd=/usr/local/bin/agentserver-tae-runtime`，SDK transport 同时把所有生命周期请求限制在配置的
+Sandbox ID，避免 PSM 查询把操作重定向到其他资源。runtime 使用 IPv6 wildcard 监听
 `_BYTEFAAS_RUNTIME_PORT`，变量缺失时使用当前 revision 的 8080，并且只暴露：
 
 TAE 的 Session create/get/search 响应不保证回显可选的 `command` 字段。空值因此只表示“控制面未报告”，
 不能反推实际入口为空；任何非空且不同的值仍立即失败。入口证据由三条独立门禁组成：SDK adapter 在发出
-请求前只接受上述精确命令，发布流程锁定 OCI `Cmd` 和 runtime profile，真实 session smoke 再通过
-SandboxD 执行命令并核对镜像内的 CLI/skill 摘要。不能用缺失的响应字段替代数据面验证。
+请求前固定 Sandbox ID/revision ID 且只填 `revision_id`，发布流程锁定管理面 revision、镜像 tag、OCI
+`Cmd` 和 runtime profile，真实 session smoke 再通过 SandboxD 执行命令并核对镜像内的 CLI/skill 摘要。
+不能用缺失的响应字段替代数据面验证。
 
 ```text
 GET  /v1/ping -> 200 application/json "pong"
@@ -144,21 +147,22 @@ Cmd=["/usr/local/bin/agentserver-tae-runtime"]
 StopSignal=SIGTERM
 ```
 
-这里的 OCI `Cmd` 只是与 session create command 一致的安全 fallback；TAE 运行时以创建 session 时显式
-提交的 `command` 为准。该命令同时进入 canonical managed runtime profile digest，避免控制面选择的入口
-与镜像/环境锁脱节。
+这里的 OCI `Cmd` 是安全 fallback；TAE 运行时以 pinned Terminal Sandbox revision 的 `run_cmd` 为准。
+Sandbox ID、revision ID、镜像和 runtime contract 一起进入 canonical managed runtime profile digest，
+避免管理面选择的入口与镜像/环境锁脱节。
 
 使用 root 与官方镜像保持一致，并为 TAE 注入和管理 SandboxD 留出它需要的进程权限；安全边界由 TAE
 sandbox、统一 execution gateway 和 egress policy 提供，不能靠把 keeper 改成 `nobody` 冒充。镜像
 verifier 同时锁定 base layer descriptor/diff ID/history、root/Cmd、静态 runtime ELF、managed 文件集合
-以及每层 owner/mode/size/SHA-256；SDK adapter 另行锁定 create command。任何入口漂移都会在发布前失败。
+以及每层 owner/mode/size/SHA-256；SDK adapter 另行锁定 Sandbox ID、revision ID 和 Session create 字段
+集合。任何入口漂移都会在发布前失败。
 
 ## 4. 上线验证
 
 镜像级单测只证明静态契约。发布后还必须用一次性 terminal session 验证以下事实，并在结束后删除
 session：
 
-1. CreateSession 请求携带 direct runtime command；响应若回显则必须精确一致，session 进入 ready，而不是 `function_exited`；
+1. CreateSession 请求只携带 pinned `revision_id`，明确不含 `image`/`command`；响应若回显 command 则必须精确一致，session 进入 ready，而不是 `function_exited`；
 2. `sandboxd_enabled=true`，`/api/process/start` 可执行 `printf terminal-ok` 并取得有序终态；
 3. `lark-cli` 与 skill pack 存在，workspace 选择的 credential mode 能完成只读 smoke；
 4. SIGTERM、TTL/delete 和失败清理不会留下 session 或额外环境副作用。

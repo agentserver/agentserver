@@ -13,9 +13,9 @@
   `managed-sandbox.Containerfile` 则基于
   `aliyun-sin-hub.byted.org/agentserver/tae-sandbox@sha256:e4255f02c1feceb168848fc6b7ea934cdc3f944ebc8dda51d2b77d00fbf28f6f`
   的单层 Debian Trixie rootfs；它不是官方 `terminal_faas`。managed overlay 增加自有静态 FaaS
-  keeper、pinned `lark-cli`、skill、manifest 和 CA。创建 TAE session 时显式配置
-  `command=/usr/local/bin/agentserver-tae-runtime`；同一命令也是 OCI fallback `CMD`，平台继续自动注入
-  SandboxD。官方镜像审计和边界见
+  keeper、pinned `lark-cli`、skill、manifest 和 CA。TAE Terminal Sandbox revision 在管理面固定该镜像
+  和 `run_cmd=/usr/local/bin/agentserver-tae-runtime`；创建 Session 时只发送固定 `revision_id`，不发送
+  `image` 或 `command`。同一命令也是 OCI fallback `CMD`，平台继续自动注入 SandboxD。官方镜像审计和边界见
   [`../../docs/TAE_SANDBOX_RUNTIME.md`](../../docs/TAE_SANDBOX_RUNTIME.md)。service image 内含
   provider-linked `sandbox-gateway` 和 `egress-authorizer` binary。
 - `agentserver-deploy prepare-policy-bootstrap`：生成只暴露生产 TLS deny-only Webhook、没有 TAE/sandbox
@@ -33,6 +33,8 @@
 executor 额外部署 `sandbox-gateway`（TAE SDK boundary）和 `egress-authorizer`（TAE Policy Webhook），
 两者只接受生产 mTLS/capability，TAE 网络策略和 policy binding 必须在控制面先发布并核验。
 SG Terminal Sandbox PSM 固定为 `bytedance.sandbox.agentserver`；配置渲染器会拒绝其他 PSM。
+生产配置还固定并交叉校验 `sandboxId` 与 `sandboxRevisionId`；SDK 被限制在该 Sandbox ID 下，Session
+创建请求只能引用配置中的 revision，不能把工作负载提供的 image/command 变成第二条发布路径。
 TAE Policy Webhook 固定为 `https://egress-authorizer-sg.byted.bps.dev/v1/policy`，由现有 Istio
 HTTPS listener 暴露，后端 TLS 由 `agentserver-egress-backend-ca` ConfigMap 验证。
 `sandbox-gateway` 独占 `agentserver-sandbox-secrets` 中的 `bytecloud-access-key-id` /

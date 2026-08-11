@@ -96,6 +96,10 @@ type coreProductionEnrollmentConfig struct {
 	ttl    time.Duration
 }
 
+func workspaceCredentialControlPlaneEnabled(mode coreServeMode, managedExecutorEnabled bool) bool {
+	return mode == coreServeProduction || managedExecutorEnabled
+}
+
 func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr io.Writer, mode coreServeMode) error {
 	if mode != coreServeProduction && mode != coreServeInsecureDevelopment {
 		return errors.New("Core serve mode is invalid")
@@ -430,27 +434,22 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	var workspaceCredentialAuthorizationHandler *coreserver.WorkspaceCredentialAuthorizationHandler
 	var egressCredentialHandler *coreserver.EgressCredentialHandler
 	var executionCredentialHandler *coreserver.ExecutionCredentialHandler
-	if managedExecutorEnabled {
+	var credentialRegistry *corecredentials.ProviderRegistry
+	var credentialSealer *corecredentials.Keyring
+	// Workspace credential configuration is a production control-plane feature:
+	// owners must be able to authorize providers before managed execution is
+	// activated. The managed-executor flag remains the kill switch for runtime
+	// resolution and sandbox authority only.
+	if workspaceCredentialControlPlaneEnabled(mode, managedExecutorEnabled) {
 		sealingKeyringFile, sealingErr := requiredConfiguration(getenv, coreCredentialSealingKeyringEnvironment)
 		if sealingErr != nil {
 			return sealingErr
-		}
-		placeholderKeyringFile, keyringErr := requiredConfiguration(getenv, coreEgressPlaceholderKeyringEnvironment)
-		if keyringErr != nil {
-			return keyringErr
-		}
-		placeholderVerifier, loadErr := egresscapability.LoadVerifier(placeholderKeyringFile)
-		if loadErr != nil {
-			return fmt.Errorf("configure v2 egress placeholder verifier: %w", loadErr)
-		}
-		capabilityVerifier, adapterErr := egressgateway.NewCapabilityPlaceholderVerifier(placeholderVerifier)
-		if adapterErr != nil {
-			return adapterErr
 		}
 		sealer, loadErr := corecredentials.LoadKeyring(sealingKeyringFile)
 		if loadErr != nil {
 			return fmt.Errorf("configure v2 workspace credential sealing keyring: %w", loadErr)
 		}
+		credentialSealer = sealer
 		publicProviderHTTPClient, clientErr := publichttps.NewClient(publichttps.ClientConfig{
 			Timeout: 25 * time.Second, ResponseHeaderTimeout: 15 * time.Second,
 			MaxIdleConns: 32, MaxIdleConnsPerHost: 8,
@@ -488,6 +487,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		if registryErr != nil {
 			return fmt.Errorf("configure v2 workspace credential providers: %w", registryErr)
 		}
+		credentialRegistry = registry
 		credentialCommands := coreserver.StateStoreWorkspaceCredentialCommands{
 			Store: store, Registry: registry, Sealer: sealer, Now: time.Now, Logger: logger,
 		}
@@ -499,12 +499,28 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		if err != nil {
 			return err
 		}
-		credentialRefresher, refreshErr := coreserver.NewWorkspaceCredentialRefresher(store, registry, sealer, time.Now)
+	}
+	if managedExecutorEnabled {
+		placeholderKeyringFile, keyringErr := requiredConfiguration(getenv, coreEgressPlaceholderKeyringEnvironment)
+		if keyringErr != nil {
+			return keyringErr
+		}
+		placeholderVerifier, loadErr := egresscapability.LoadVerifier(placeholderKeyringFile)
+		if loadErr != nil {
+			return fmt.Errorf("configure v2 egress placeholder verifier: %w", loadErr)
+		}
+		capabilityVerifier, adapterErr := egressgateway.NewCapabilityPlaceholderVerifier(placeholderVerifier)
+		if adapterErr != nil {
+			return adapterErr
+		}
+		credentialRefresher, refreshErr := coreserver.NewWorkspaceCredentialRefresher(
+			store, credentialRegistry, credentialSealer, time.Now,
+		)
 		if refreshErr != nil {
 			return fmt.Errorf("configure v2 workspace credential refresh: %w", refreshErr)
 		}
 		egressCredentialService, serviceErr := coreserver.NewEgressCredentialService(coreserver.EgressCredentialServiceConfig{
-			Store: store, Registry: registry, Sealer: sealer, Placeholders: capabilityVerifier,
+			Store: store, Registry: credentialRegistry, Sealer: credentialSealer, Placeholders: capabilityVerifier,
 			ProcessProofs: placeholderVerifier, ProcessEnvironmentTAEPSM: managedTAEPSM, Now: time.Now,
 			CredentialRefresher: credentialRefresher,
 		})

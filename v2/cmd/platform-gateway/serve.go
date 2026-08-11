@@ -223,6 +223,8 @@ func platformGatewayRoutes(
 	platformMux.Handle(corecontract.WorkspaceCredentialProviderSchemasPath, credentials)
 	platformMux.Handle(corecontract.WorkspaceCredentialCollectionRoutePattern, credentials)
 	platformMux.Handle(corecontract.WorkspaceCredentialResourceRoutePattern, credentials)
+	platformMux.Handle(corecontract.WorkspaceCredentialAuthorizationCollectionRoutePattern, credentials)
+	platformMux.Handle(corecontract.WorkspaceCredentialAuthorizationResourceRoutePattern, credentials)
 	platformMux.Handle("GET "+corecontract.ExecutorManagementRoutePattern, executors)
 	platformMux.Handle("POST "+corecontract.ExecutorManagementRoutePattern, executors)
 	platformMux.Handle("POST "+corecontract.ExecutorEnrollmentTokenRoutePattern, executors)

@@ -7,9 +7,11 @@ import (
 )
 
 const (
-	WorkspaceCredentialProviderSchemasPath    = "/v2/credential-providers"
-	WorkspaceCredentialCollectionRoutePattern = "/v2/workspaces/{workspaceId}/credentials/{kind}"
-	WorkspaceCredentialResourceRoutePattern   = "/v2/workspaces/{workspaceId}/credentials/{kind}/{bindingId}"
+	WorkspaceCredentialProviderSchemasPath                 = "/v2/credential-providers"
+	WorkspaceCredentialCollectionRoutePattern              = "/v2/workspaces/{workspaceId}/credentials/{kind}"
+	WorkspaceCredentialResourceRoutePattern                = "/v2/workspaces/{workspaceId}/credentials/{kind}/{bindingId}"
+	WorkspaceCredentialAuthorizationCollectionRoutePattern = "/v2/workspaces/{workspaceId}/credential-authorizations/{kind}"
+	WorkspaceCredentialAuthorizationResourceRoutePattern   = "/v2/workspaces/{workspaceId}/credential-authorizations/{kind}/{authorizationId}"
 )
 
 func WorkspaceCredentialCollectionPath(workspaceID, kind string) string {
@@ -36,13 +38,30 @@ func DefaultWorkspaceCredentialPath(workspaceID, kind, bindingID string) string 
 	return WorkspaceCredentialPath(workspaceID, kind, bindingID) + ":setDefault"
 }
 
+func WorkspaceCredentialAuthorizationCollectionPath(workspaceID, kind string) string {
+	return "/v2/workspaces/" + url.PathEscape(workspaceID) + "/credential-authorizations/" + url.PathEscape(kind)
+}
+
+func WorkspaceCredentialAuthorizationPath(workspaceID, kind, authorizationID string) string {
+	return WorkspaceCredentialAuthorizationCollectionPath(workspaceID, kind) + "/" + url.PathEscape(authorizationID)
+}
+
+func PollWorkspaceCredentialAuthorizationPath(workspaceID, kind, authorizationID string) string {
+	return WorkspaceCredentialAuthorizationPath(workspaceID, kind, authorizationID) + ":poll"
+}
+
+func CancelWorkspaceCredentialAuthorizationPath(workspaceID, kind, authorizationID string) string {
+	return WorkspaceCredentialAuthorizationPath(workspaceID, kind, authorizationID) + ":cancel"
+}
+
 type WorkspaceCredentialProviderSchema struct {
-	Kind           string   `json:"kind"`
-	DisplayName    string   `json:"displayName"`
-	AuthTypes      []string `json:"authTypes"`
-	AllowedHosts   []string `json:"allowedHosts"`
-	AllowedHeaders []string `json:"allowedHeaders"`
-	SecretFormat   string   `json:"secretFormat"`
+	Kind                 string   `json:"kind"`
+	DisplayName          string   `json:"displayName"`
+	AuthTypes            []string `json:"authTypes"`
+	AllowedHosts         []string `json:"allowedHosts"`
+	AllowedHeaders       []string `json:"allowedHeaders"`
+	SecretFormat         string   `json:"secretFormat"`
+	AuthorizationMethods []string `json:"authorizationMethods"`
 }
 
 type ListWorkspaceCredentialProviderSchemasResponse struct {
@@ -139,4 +158,53 @@ type SetDefaultWorkspaceCredentialRequest struct {
 type SetDefaultWorkspaceCredentialResponse struct {
 	Binding WorkspaceCredentialMetadata `json:"binding"`
 	Changed bool                        `json:"changed"`
+}
+
+type BeginWorkspaceCredentialAuthorizationRequest struct {
+	DisplayName               string          `json:"displayName"`
+	OwnerScope                string          `json:"ownerScope"`
+	OwnerUserID               string          `json:"ownerUserId,omitempty"`
+	MakeDefault               bool            `json:"makeDefault"`
+	BindingID                 string          `json:"bindingId,omitempty"`
+	ExpectedAuthorityVersion  int64           `json:"expectedAuthorityVersion,omitempty"`
+	ExpectedCredentialVersion int64           `json:"expectedCredentialVersion,omitempty"`
+	ProviderParameters        json.RawMessage `json:"providerParameters,omitempty"`
+}
+
+type WorkspaceCredentialAuthorization struct {
+	ID                      string                       `json:"id"`
+	WorkspaceID             string                       `json:"workspaceId"`
+	Kind                    string                       `json:"kind"`
+	TargetBindingID         string                       `json:"targetBindingId"`
+	Status                  string                       `json:"status"`
+	UserCode                string                       `json:"userCode"`
+	VerificationURI         string                       `json:"verificationUri"`
+	VerificationURIComplete string                       `json:"verificationUriComplete"`
+	PollIntervalSeconds     int                          `json:"pollIntervalSeconds"`
+	NextPollAt              time.Time                    `json:"nextPollAt"`
+	ExpiresAt               time.Time                    `json:"expiresAt"`
+	LastErrorCode           string                       `json:"lastErrorCode,omitempty"`
+	Version                 int64                        `json:"version"`
+	Binding                 *WorkspaceCredentialMetadata `json:"binding,omitempty"`
+}
+
+type BeginWorkspaceCredentialAuthorizationResponse struct {
+	Authorization WorkspaceCredentialAuthorization `json:"authorization"`
+}
+
+type GetWorkspaceCredentialAuthorizationResponse struct {
+	Authorization WorkspaceCredentialAuthorization `json:"authorization"`
+}
+
+type PollWorkspaceCredentialAuthorizationResponse struct {
+	Authorization WorkspaceCredentialAuthorization `json:"authorization"`
+}
+
+type CancelWorkspaceCredentialAuthorizationRequest struct {
+	ExpectedVersion int64 `json:"expectedVersion"`
+}
+
+type CancelWorkspaceCredentialAuthorizationResponse struct {
+	Authorization WorkspaceCredentialAuthorization `json:"authorization"`
+	Changed       bool                             `json:"changed"`
 }

@@ -52,6 +52,8 @@ func (routes *WorkspaceCredentialRoutes) Routes() http.Handler {
 	mux.Handle(corecontract.WorkspaceCredentialProviderSchemasPath, routes)
 	mux.Handle(corecontract.WorkspaceCredentialCollectionRoutePattern, routes)
 	mux.Handle(corecontract.WorkspaceCredentialResourceRoutePattern, routes)
+	mux.Handle(corecontract.WorkspaceCredentialAuthorizationCollectionRoutePattern, routes)
+	mux.Handle(corecontract.WorkspaceCredentialAuthorizationResourceRoutePattern, routes)
 	return mux
 }
 
@@ -142,11 +144,29 @@ func workspaceCredentialMethods(path string) []string {
 		return []string{http.MethodGet}
 	case strings.HasSuffix(path, ":rotate"), strings.HasSuffix(path, ":revoke"), strings.HasSuffix(path, ":delete"), strings.HasSuffix(path, ":setDefault"):
 		return []string{http.MethodPost}
+	case strings.Contains(path, "/credential-authorizations/") && (strings.HasSuffix(path, ":poll") || strings.HasSuffix(path, ":cancel")):
+		return []string{http.MethodPost}
+	case strings.Contains(path, "/credential-authorizations/") && workspaceCredentialAuthorizationPathSegmentCount(path) == 5:
+		return []string{http.MethodPost}
+	case strings.Contains(path, "/credential-authorizations/") && workspaceCredentialAuthorizationPathSegmentCount(path) == 6:
+		return []string{http.MethodGet}
 	case workspaceCredentialPathSegmentCount(path) == 5:
 		return []string{http.MethodGet, http.MethodPost}
 	default:
 		return []string{http.MethodPatch}
 	}
+}
+
+func workspaceCredentialAuthorizationPathSegmentCount(value string) int {
+	if value == "" || strings.HasSuffix(value, "/") {
+		return 0
+	}
+	parts := strings.Split(strings.TrimPrefix(value, "/"), "/")
+	if len(parts) < 5 || parts[0] != "v2" || parts[1] != "workspaces" || parts[2] == "" ||
+		parts[3] != "credential-authorizations" || parts[4] == "" {
+		return 0
+	}
+	return len(parts)
 }
 
 func workspaceCredentialPathSegmentCount(value string) int {

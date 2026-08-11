@@ -34,7 +34,10 @@ func (store *testExecutionCredentialStore) Get(_ context.Context, workspaceID, k
 	if store.withoutBinding || workspaceID != store.binding.WorkspaceID || kind != store.binding.Kind || bindingID != store.binding.ID {
 		return corecredentials.Binding{}, nil
 	}
-	return store.binding, nil
+	result := store.binding
+	result.SealedSecret = append([]byte(nil), store.binding.SealedSecret...)
+	result.PublicMetadata = append(json.RawMessage(nil), store.binding.PublicMetadata...)
+	return result, nil
 }
 
 func (*testExecutionCredentialStore) List(context.Context, string, string) ([]corecredentials.BindingMetadata, error) {
@@ -84,7 +87,7 @@ func TestResolveExecutionLarkCredentialMaterializesExactLiveBinding(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Configured || result.AccessToken != "real-workspace-token" ||
+	if !result.Configured || result.AccessToken != "real-workspace-token" || result.ApplicationID != "cli_agentserver_sg" ||
 		result.BindingID != store.binding.ID || result.AuthorityVersion != store.binding.AuthorityVersion ||
 		result.CredentialVersion != store.binding.CredentialVersion || store.authorityCalls != 1 || store.useCalls != 1 {
 		t.Fatalf("direct credential result/store = %#v / %#v", result, store)
@@ -177,7 +180,7 @@ func TestExecutionCredentialHandlerRequiresWorkloadAndReturnsNoStore(t *testing.
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if !result.Configured || result.AccessToken != "real-workspace-token" || store.useCalls != 1 {
+	if !result.Configured || result.AccessToken != "real-workspace-token" || result.ApplicationID != "cli_agentserver_sg" || store.useCalls != 1 {
 		t.Fatalf("handler direct credential result/store = %#v / %#v", result, store)
 	}
 
@@ -202,7 +205,7 @@ func testExecutionCredentialService(t *testing.T) (*EgressCredentialService, *te
 		ID: "b0000000-0000-4000-8000-00000000000b", WorkspaceID: "20000000-0000-4000-8000-000000000002", Kind: "lark", DisplayName: "Lark docs",
 		OwnerScope: corecredentials.OwnerScopeWorkspace, AuthType: "static", Status: corecredentials.StatusActive,
 		AuthorityVersion: 3, CredentialVersion: 7, IsDefault: true, AccessExpiresAt: now.Add(time.Hour),
-		PublicMetadata: json.RawMessage(`{}`),
+		PublicMetadata: json.RawMessage(`{"appId":"cli_agentserver_sg"}`),
 	}
 	binding.SealedSecret, err = keyring.Seal(corecredentials.BindingSealScope{
 		WorkspaceID: binding.WorkspaceID, BindingID: binding.ID, CredentialVersion: binding.CredentialVersion,

@@ -31,6 +31,7 @@ func (provider BearerProvider) Schema() ProviderSchema {
 		AuthTypes:      []string{"static"},
 		AllowedHosts:   []string{provider.HostValue},
 		AllowedHeaders: provider.AllowedHeaders(), SecretFormat: "opaque-token-or-json",
+		AuthorizationMethods: []string{AuthorizationMethodManual},
 	}
 }
 
@@ -58,15 +59,6 @@ func (provider BearerProvider) Materialize(_ context.Context, binding Binding, s
 		return HeaderMutation{}, err
 	}
 	return HeaderMutation{Headers: map[string]string{"Authorization": "Bearer " + value}}, nil
-}
-
-// LarkProvider is explicit rather than relying on a magic global policy. The
-// host/path policy remains owned by the pack/egress-authorizer; this adapter
-// only handles the credential format and header mutation.
-type LarkProvider struct{ BearerProvider }
-
-func NewLarkProvider() LarkProvider {
-	return LarkProvider{BearerProvider: BearerProvider{KindValue: "lark", HostValue: "open.feishu.cn"}}
 }
 
 // GitHubProvider supports PAT/OAuth bearer material. GitHub App installation
@@ -129,6 +121,7 @@ func (provider GitHubProvider) ValidateUpload(authType string, raw []byte) (Uplo
 type ByteCloudProvider struct {
 	HostValue      string
 	TokenExchanger func(context.Context, string, string) (token string, expiry time.Time, err error)
+	device         *byteCloudDeviceFlowClient
 }
 
 // NewDefaultRegistry returns the provider catalog used by the SG deployment.
@@ -137,6 +130,19 @@ type ByteCloudProvider struct {
 // corecredentials service; workspace AK/SK remain sealed and are exchanged
 // only for the one-hop header mutation.
 func NewDefaultRegistry(byteCloudHost string, exchanger func(context.Context, string, string) (string, time.Time, error)) (*ProviderRegistry, error) {
+	return NewConfiguredRegistry(DefaultRegistryConfig{ByteCloudHost: byteCloudHost, ByteCloudTokenExchanger: exchanger})
+}
+
+type DefaultRegistryConfig struct {
+	ByteCloudHost           string
+	ByteCloudTokenExchanger func(context.Context, string, string) (string, time.Time, error)
+	LarkDeviceFlow          *LarkDeviceFlowConfig
+	ByteCloudDeviceFlow     *ByteCloudDeviceFlowConfig
+}
+
+func NewConfiguredRegistry(config DefaultRegistryConfig) (*ProviderRegistry, error) {
+	byteCloudHost := config.ByteCloudHost
+	exchanger := config.ByteCloudTokenExchanger
 	if byteCloudHost == "" {
 		byteCloudHost = "cloud-i18n-sg.bytedance.net"
 	}
@@ -147,7 +153,22 @@ func NewDefaultRegistry(byteCloudHost string, exchanger func(context.Context, st
 		}
 		exchanger = defaultExchanger.Exchange
 	}
-	return NewRegistry(NewLarkProvider(), NewGitHubProvider(), NewByteCloudProvider(byteCloudHost, exchanger))
+	lark := NewLarkProvider()
+	var err error
+	if config.LarkDeviceFlow != nil {
+		lark, err = NewLarkDeviceFlowProvider(*config.LarkDeviceFlow)
+		if err != nil {
+			return nil, err
+		}
+	}
+	byteCloud := NewByteCloudProvider(byteCloudHost, exchanger)
+	if config.ByteCloudDeviceFlow != nil {
+		byteCloud, err = NewByteCloudDeviceFlowProvider(byteCloudHost, exchanger, *config.ByteCloudDeviceFlow)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return NewRegistry(lark, NewGitHubProvider(), byteCloud)
 }
 
 func NewByteCloudProvider(host string, exchanger func(context.Context, string, string) (string, time.Time, error)) ByteCloudProvider {
@@ -159,17 +180,27 @@ func (provider ByteCloudProvider) Kind() string { return "bytecloud" }
 func (provider ByteCloudProvider) AllowedHeaders() []string { return []string{"X-Jwt-Token"} }
 
 func (provider ByteCloudProvider) Schema() ProviderSchema {
-	return ProviderSchema{
+	schema := ProviderSchema{
 		Kind: provider.Kind(), DisplayName: "ByteCloud",
 		AuthTypes:      []string{"aksk"},
 		AllowedHosts:   []string{provider.HostValue},
 		AllowedHeaders: provider.AllowedHeaders(), SecretFormat: "json-access-key-secret-key",
+		AuthorizationMethods: []string{AuthorizationMethodManual},
 	}
+	if provider.device != nil {
+		schema.AuthTypes = append(schema.AuthTypes, byteCloudDeviceOAuthAuthType)
+		schema.AuthorizationMethods = append(schema.AuthorizationMethods, AuthorizationMethodDeviceFlow)
+		schema.SecretFormat = "json-aksk-or-bytecloud-device-oauth-envelope"
+	}
+	return schema
 }
 
 func (provider ByteCloudProvider) ValidateUpload(authType string, raw []byte) (UploadResult, error) {
 	if strings.TrimSpace(authType) == "" {
 		authType = "aksk"
+	}
+	if authType == byteCloudDeviceOAuthAuthType && provider.device != nil {
+		return provider.validateByteCloudOAuthCredential(raw)
 	}
 	if authType != "aksk" {
 		return UploadResult{}, errors.New("ByteCloud provider requires the aksk auth type")
@@ -188,6 +219,19 @@ func (provider ByteCloudProvider) ValidateUpload(authType string, raw []byte) (U
 func (provider ByteCloudProvider) Materialize(ctx context.Context, binding Binding, secret []byte, request UseRequest) (HeaderMutation, error) {
 	if request.Host != provider.HostValue || binding.Kind != provider.Kind() || provider.TokenExchanger == nil {
 		return HeaderMutation{}, errors.New("ByteCloud provider is not configured for this host")
+	}
+	if binding.AuthType == byteCloudDeviceOAuthAuthType {
+		if provider.device == nil {
+			return HeaderMutation{}, errors.New("ByteCloud device OAuth is not configured")
+		}
+		credential, err := parseByteCloudOAuthCredential(secret, provider.device.site)
+		if err != nil {
+			return HeaderMutation{}, errors.New("ByteCloud OAuth credential envelope is invalid")
+		}
+		return HeaderMutation{Headers: map[string]string{"X-Jwt-Token": credential.AccessToken}}, nil
+	}
+	if binding.AuthType != "aksk" {
+		return HeaderMutation{}, errors.New("ByteCloud credential auth type is not supported")
 	}
 	var document struct {
 		AccessKeyID     string `json:"accessKeyId"`

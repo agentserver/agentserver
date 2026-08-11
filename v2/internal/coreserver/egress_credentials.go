@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 
@@ -30,6 +32,7 @@ type EgressCredentialService struct {
 	store                    EgressCredentialStore
 	processProofs            *egresscapability.Verifier
 	processEnvironmentTAEPSM string
+	credentialRefresher      CredentialReferenceRefresher
 	now                      func() time.Time
 }
 
@@ -52,7 +55,10 @@ type EgressCredentialServiceConfig struct {
 	ProcessProofs            *egresscapability.Verifier
 	ProcessEnvironmentTAEPSM string
 	Now                      func() time.Time
+	CredentialRefresher      CredentialReferenceRefresher
 }
+
+var managedLarkApplicationIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`)
 
 func (service *EgressCredentialService) ResolveAuthority(ctx context.Context, request corecontract.ResolveEgressCredentialAuthorityRequest) (corecontract.ResolveEgressCredentialAuthorityResponse, error) {
 	if service == nil || service.store == nil || service.now == nil || ctx == nil {
@@ -69,12 +75,52 @@ func (service *EgressCredentialService) ResolveAuthority(ctx context.Context, re
 	if err != nil {
 		return corecontract.ResolveEgressCredentialAuthorityResponse{}, err
 	}
+	if service.credentialRefresher != nil && ref.BindingID != "" {
+		if err := service.credentialRefresher.RefreshCredentialReference(ctx, ref); err != nil {
+			return corecontract.ResolveEgressCredentialAuthorityResponse{}, err
+		}
+		ref, err = service.store.ResolveCredentialAuthority(ctx, corecredentials.AuthorityRequest{
+			WorkspaceID: operation.WorkspaceID, SessionID: operation.SessionID, ActorID: operation.ActorID,
+			EnvironmentID: operation.EnvironmentID, RunID: operation.RunID, RunAttemptID: operation.RunAttemptID,
+			RunAttemptGeneration: operation.RunAttemptGeneration, ExecutionID: operation.ExecutionID,
+			OperationID: operation.OperationID, SandboxID: operation.SandboxID, TargetGeneration: operation.TargetGeneration,
+			ProviderKind: request.ProviderKind, PolicySHA256: request.PolicySHA256,
+		})
+		if err != nil {
+			return corecontract.ResolveEgressCredentialAuthorityResponse{}, err
+		}
+	}
 	if !managedcredential.ValidMode(ref.CredentialMode) {
 		return corecontract.ResolveEgressCredentialAuthorityResponse{}, errors.New("workspace returned an invalid managed credential mode")
 	}
+	applicationID := ""
+	if request.ProviderKind == "lark" && ref.BindingID != "" {
+		binding, getErr := service.store.Get(ctx, operation.WorkspaceID, request.ProviderKind, ref.BindingID)
+		if getErr != nil {
+			return corecontract.ResolveEgressCredentialAuthorityResponse{}, getErr
+		}
+		defer clearCredentialBytes(binding.SealedSecret)
+		if binding.ID != ref.BindingID || binding.WorkspaceID != operation.WorkspaceID || binding.Kind != request.ProviderKind ||
+			binding.AuthorityVersion != ref.AuthorityVersion || binding.CredentialVersion != ref.CredentialVersion {
+			return corecontract.ResolveEgressCredentialAuthorityResponse{}, &coredb.StateError{
+				Code: coredb.ErrorVersionConflict, Operation: "ResolveEgressCredentialAuthority",
+				Resource: "credential", ResourceID: ref.BindingID,
+				Message: "workspace credential changed while resolving its application identity",
+			}
+		}
+		applicationID, err = larkCredentialApplicationID(binding.PublicMetadata)
+		if err != nil {
+			return corecontract.ResolveEgressCredentialAuthorityResponse{}, &coredb.StateError{
+				Code: coredb.ErrorConflict, Operation: "ResolveEgressCredentialAuthority",
+				Resource: "credential", ResourceID: ref.BindingID,
+				Message: "workspace Lark credential has no valid application identity; authorize it again",
+			}
+		}
+	}
 	return corecontract.ResolveEgressCredentialAuthorityResponse{
 		CredentialMode: ref.CredentialMode,
-		ProviderKind:   request.ProviderKind, BindingID: ref.BindingID, AuthorityVersion: ref.AuthorityVersion,
+		ProviderKind:   request.ProviderKind, ApplicationID: applicationID,
+		BindingID: ref.BindingID, AuthorityVersion: ref.AuthorityVersion,
 		CredentialVersion: ref.CredentialVersion, PolicySHA256: request.PolicySHA256, AuthorizedAt: service.now().UTC(),
 	}, nil
 }
@@ -96,6 +142,7 @@ func NewEgressCredentialService(config EgressCredentialServiceConfig) (*EgressCr
 	return &EgressCredentialService{
 		resolver: resolver, store: config.Store, processProofs: config.ProcessProofs,
 		processEnvironmentTAEPSM: config.ProcessEnvironmentTAEPSM,
+		credentialRefresher:      config.CredentialRefresher,
 		now:                      config.Now,
 	}, nil
 }
@@ -132,7 +179,7 @@ func (service *EgressCredentialService) ResolveExecutionLarkCredential(
 	}
 	base := corecontract.ResolveExecutionLarkCredentialResponse{
 		Configured: false, CredentialMode: authority.CredentialMode,
-		ProviderKind: "lark", PolicySHA256: policySHA256,
+		ApplicationID: authority.ApplicationID, ProviderKind: "lark", PolicySHA256: policySHA256,
 		TAEPSM: request.TAEPSM, ResolvedAt: service.now().UTC(),
 	}
 	if authority.CredentialMode != managedcredential.ModeProcessEnv ||
@@ -169,14 +216,31 @@ func (service *EgressCredentialService) ResolveExecutionLarkCredential(
 	if err != nil {
 		return corecontract.ResolveExecutionLarkCredentialResponse{}, errors.New("v2 Lark provider returned an invalid process credential")
 	}
+	applicationID, err := larkCredentialApplicationID(result.Binding.PublicMetadata)
+	if err != nil || applicationID != authority.ApplicationID {
+		return corecontract.ResolveExecutionLarkCredentialResponse{}, errors.New("v2 Lark credential application identity changed during process credential resolution")
+	}
 	return corecontract.ResolveExecutionLarkCredentialResponse{
 		Configured: true, AccessToken: token, CredentialMode: managedcredential.ModeProcessEnv,
-		ProviderKind: result.ProviderKind,
-		BindingID:    result.Binding.ID, AuthorityVersion: result.AuthorityVersion,
+		ApplicationID: applicationID, ProviderKind: result.ProviderKind,
+		BindingID: result.Binding.ID, AuthorityVersion: result.AuthorityVersion,
 		CredentialVersion: result.CredentialVersion, PolicySHA256: policySHA256,
 		TAEPSM: request.TAEPSM, ResolvedAt: result.ResolvedAt.UTC(),
 		AccessExpiresAt: copyCredentialTime(result.AccessExpiresAt),
 	}, nil
+}
+
+func larkCredentialApplicationID(metadata json.RawMessage) (string, error) {
+	if len(metadata) == 0 || len(metadata) > 64*1024 {
+		return "", errors.New("Lark credential public metadata is missing")
+	}
+	var document struct {
+		ApplicationID string `json:"appId"`
+	}
+	if err := json.Unmarshal(metadata, &document); err != nil || !managedLarkApplicationIDPattern.MatchString(document.ApplicationID) {
+		return "", errors.New("Lark credential application identity is invalid")
+	}
+	return document.ApplicationID, nil
 }
 
 func (service *EgressCredentialService) AuthorizeProcessEnvironmentEgress(

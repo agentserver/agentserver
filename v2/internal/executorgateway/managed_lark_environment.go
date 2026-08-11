@@ -19,6 +19,7 @@ var (
 
 type ManagedLarkEgressAuthority struct {
 	CredentialMode    string
+	ApplicationID     string
 	BindingID         string
 	AuthorityVersion  int64
 	CredentialVersion int64
@@ -30,13 +31,16 @@ func (authority ManagedLarkEgressAuthority) Validate() error {
 		return errors.New("managed Lark credential delivery mode or policy is invalid")
 	}
 	if authority.BindingID == "" {
-		if authority.AuthorityVersion != 0 || authority.CredentialVersion != 0 {
+		if authority.ApplicationID != "" || authority.AuthorityVersion != 0 || authority.CredentialVersion != 0 {
 			return errors.New("managed Lark empty credential authority is partial")
 		}
 		return nil
 	}
 	if authority.AuthorityVersion < 1 || authority.CredentialVersion < 1 {
 		return errors.New("managed Lark credential binding identity or authority version is invalid")
+	}
+	if !managedLarkApplicationIDPattern.MatchString(authority.ApplicationID) {
+		return errors.New("managed Lark credential application identity is invalid")
 	}
 	if err := validateRegistryIdentity("managed Lark credential binding ID", authority.BindingID); err != nil {
 		return err
@@ -75,18 +79,16 @@ func (source *FrozenManagedLarkEgressAuthoritySource) ResolveManagedLarkEgressAu
 }
 
 type SignedManagedLarkEnvironmentIssuer struct {
-	signer        *egresscapability.Signer
-	authorities   ManagedLarkEgressAuthoritySource
-	applicationID string
-	idGenerator   IDGenerator
-	now           func() time.Time
-	ttl           time.Duration
+	signer      *egresscapability.Signer
+	authorities ManagedLarkEgressAuthoritySource
+	idGenerator IDGenerator
+	now         func() time.Time
+	ttl         time.Duration
 }
 
 func NewSignedManagedLarkEnvironmentIssuer(
 	signer *egresscapability.Signer,
 	authorities ManagedLarkEgressAuthoritySource,
-	applicationID string,
 	idGenerator IDGenerator,
 	now func() time.Time,
 	ttl time.Duration,
@@ -94,14 +96,11 @@ func NewSignedManagedLarkEnvironmentIssuer(
 	if signer == nil || authorities == nil || idGenerator == nil || now == nil {
 		return nil, errors.New("managed Lark environment signer, authority source, identity generator, and clock are required")
 	}
-	if !managedLarkApplicationIDPattern.MatchString(applicationID) {
-		return nil, errors.New("managed Lark application ID must be bounded canonical text")
-	}
 	if ttl < time.Second || ttl > 115*time.Second || ttl%time.Millisecond != 0 {
 		return nil, errors.New("managed Lark placeholder TTL must be whole milliseconds between one and 115 seconds")
 	}
 	return &SignedManagedLarkEnvironmentIssuer{
-		signer: signer, authorities: authorities, applicationID: applicationID,
+		signer: signer, authorities: authorities,
 		idGenerator: idGenerator, now: now, ttl: ttl,
 	}, nil
 }
@@ -109,9 +108,8 @@ func NewSignedManagedLarkEnvironmentIssuer(
 func NewDefaultSignedManagedLarkEnvironmentIssuer(
 	signer *egresscapability.Signer,
 	authorities ManagedLarkEgressAuthoritySource,
-	applicationID string,
 ) (*SignedManagedLarkEnvironmentIssuer, error) {
-	return NewSignedManagedLarkEnvironmentIssuer(signer, authorities, applicationID, newRandomUUID, time.Now, 60*time.Second)
+	return NewSignedManagedLarkEnvironmentIssuer(signer, authorities, newRandomUUID, time.Now, 60*time.Second)
 }
 
 func (issuer *SignedManagedLarkEnvironmentIssuer) IssueManagedProcessEnvironment(
@@ -145,7 +143,7 @@ func (issuer *SignedManagedLarkEnvironmentIssuer) issueWithAuthority(
 	// credential-not-configured error, but never mint a placeholder that could
 	// be confused with a credential authority.
 	if authority.BindingID == "" {
-		return managedLarkBaseEnvironment(issuer.applicationID), nil
+		return managedLarkBaseEnvironment(""), nil
 	}
 	if err := authority.Validate(); err != nil {
 		return nil, err
@@ -184,7 +182,7 @@ func (issuer *SignedManagedLarkEnvironmentIssuer) issueWithAuthority(
 	if err != nil {
 		return nil, err
 	}
-	environment := managedLarkBaseEnvironment(issuer.applicationID)
+	environment := managedLarkBaseEnvironment(authority.ApplicationID)
 	environment[ManagedLarkUserAccessTokenEnvironment] = placeholder
 	return environment, nil
 }
@@ -231,12 +229,15 @@ func validateManagedLarkProcessRequest(request ManagedProcessEnvironmentRequest)
 }
 
 func managedLarkBaseEnvironment(applicationID string) map[string]string {
-	return map[string]string{
-		ManagedLarkApplicationIDEnvironment:    applicationID,
+	environment := map[string]string{
 		ManagedLarkNoUpdateNotifierEnvironment: "1",
 		ManagedLarkNoSkillsNotifierEnvironment: "1",
 		ManagedLarkPathEnvironment:             ManagedLarkPathValue,
 	}
+	if applicationID != "" {
+		environment[ManagedLarkApplicationIDEnvironment] = applicationID
+	}
+	return environment
 }
 
 var _ ManagedProcessEnvironmentIssuer = (*SignedManagedLarkEnvironmentIssuer)(nil)

@@ -218,12 +218,10 @@ func configureManagedExecutionSecurity(
 	if coreProcessCredentials == nil {
 		return nil, nil, errors.New("managed process credential source must be v2 Core")
 	}
-	// The CLI application identity is a non-secret runtime hint. Workspace
-	// Lark/ByteCloud/GitHub credentials are selected by Platform and resolved
-	// by corecredentials; no client ID or token is deployment configuration.
+	// The CLI application identity is returned with the exact versioned
+	// workspace credential. It is never taken from deployment configuration.
 	issuer, err := executorgateway.NewDefaultWorkspaceManagedLarkEnvironmentIssuer(
-		egressSigner, coreAuthorities, coreProcessCredentials,
-		executorgateway.ManagedCredentialApplicationID, taePSM,
+		egressSigner, coreAuthorities, coreProcessCredentials, taePSM,
 	)
 	if err != nil {
 		return nil, nil, err

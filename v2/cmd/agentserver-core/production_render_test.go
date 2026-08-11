@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agentserver/agentserver/v2/internal/corecredentials"
 	"github.com/agentserver/agentserver/v2/internal/productiondeploytest"
 )
 
@@ -58,6 +59,10 @@ func TestProductionRendererCoreEnvironmentMatchesCommandContract(t *testing.T) {
 		coreCredentialSealingKeyringEnvironment,
 		coreEgressPlaceholderKeyringEnvironment,
 		coreManagedTAEPSMEnvironment,
+		coreLarkDeviceAppIDEnvironment,
+		coreLarkDeviceAppSecretEnvironment,
+		coreLarkDeviceScopesEnvironment,
+		coreByteCloudDeviceAPIEnvironment,
 		"AGENTSERVER_V2_OBJECT_PREFIX",
 		"AGENTSERVER_V2_S3_BUCKET",
 		"AGENTSERVER_V2_S3_REGION",
@@ -80,11 +85,19 @@ func TestProductionRendererCoreEnvironmentMatchesCommandContract(t *testing.T) {
 		coreExternalOIDCSecretEnvironment,
 		coreLoginTransactionKeyEnvironment,
 		coreRunCursorKeyEnvironment,
+		coreLarkDeviceAppIDEnvironment,
+		coreLarkDeviceAppSecretEnvironment,
 		"AGENTSERVER_V2_S3_ACCESS_KEY_ID",
 		"AGENTSERVER_V2_S3_SECRET_ACCESS_KEY",
 	} {
 		if environment.Secrets[name].Name == "" || environment.Secrets[name].Key == "" {
 			t.Fatalf("Core secret environment %s is not sourced from one exact Secret key", name)
 		}
+	}
+	if got := environment.Get(coreLarkDeviceScopesEnvironment); got != corecredentials.DefaultManagedLarkScopes {
+		t.Fatalf("rendered Lark device scopes = %q, want %q", got, corecredentials.DefaultManagedLarkScopes)
+	}
+	if got := environment.Get(coreByteCloudDeviceAPIEnvironment); got != corecredentials.DefaultByteCloudDeviceAPIBaseURL {
+		t.Fatalf("rendered ByteCloud device API = %q, want %q", got, corecredentials.DefaultByteCloudDeviceAPIBaseURL)
 	}
 }

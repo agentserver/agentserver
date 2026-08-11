@@ -31,7 +31,7 @@ func TestCoreManagedLarkProcessCredentialUsesNoStoreClosedContract(t *testing.T)
 		}
 		raw, _ := json.Marshal(corecontract.ResolveExecutionLarkCredentialResponse{
 			Configured: true, CredentialMode: managedcredential.ModeProcessEnv,
-			AccessToken: "real-workspace-token", ProviderKind: "lark",
+			AccessToken: "real-workspace-token", ApplicationID: "cli_agentserver_sg", ProviderKind: "lark",
 			BindingID: "90000000-0000-4000-8000-000000000009", AuthorityVersion: 7, CredentialVersion: 11,
 			PolicySHA256: larkegresspolicy.SHA256Hex(), TAEPSM: "bytedance.sandbox.agentserver", ResolvedAt: now,
 		})
@@ -48,11 +48,13 @@ func TestCoreManagedLarkProcessCredentialUsesNoStoreClosedContract(t *testing.T)
 	client.authorizationNow = func() time.Time { return now }
 	authority := ManagedLarkEgressAuthority{
 		CredentialMode: managedcredential.ModeProcessEnv,
+		ApplicationID:  "cli_agentserver_sg",
 		BindingID:      "90000000-0000-4000-8000-000000000009", AuthorityVersion: 7,
 		CredentialVersion: 11, PolicySHA256: larkegresspolicy.SHA256Hex(),
 	}
 	credential, err := client.ResolveManagedLarkProcessCredential(t.Context(), request, "bytedance.sandbox.agentserver", authority)
-	if err != nil || !credential.Configured || credential.AccessToken != "real-workspace-token" || credential.CredentialVersion != 11 {
+	if err != nil || !credential.Configured || credential.AccessToken != "real-workspace-token" ||
+		credential.ApplicationID != "cli_agentserver_sg" || credential.CredentialVersion != 11 {
 		t.Fatalf("process credential = %#v, %v", credential, err)
 	}
 }

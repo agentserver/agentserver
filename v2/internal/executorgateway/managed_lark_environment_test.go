@@ -22,6 +22,7 @@ func TestSignedManagedLarkEnvironmentIssuerBindsExactOperation(t *testing.T) {
 	}
 	authorities, err := NewFrozenManagedLarkEgressAuthoritySource(ManagedLarkEgressAuthority{
 		CredentialMode: managedcredential.ModeWebhookSwap,
+		ApplicationID:  "cli_agentserver_sg",
 		BindingID:      "90000000-0000-4000-8000-000000000009", AuthorityVersion: 7, CredentialVersion: 11,
 		PolicySHA256: strings.Repeat("a", 64),
 	})
@@ -29,7 +30,7 @@ func TestSignedManagedLarkEnvironmentIssuerBindsExactOperation(t *testing.T) {
 		t.Fatal(err)
 	}
 	issuer, err := NewSignedManagedLarkEnvironmentIssuer(
-		signer, authorities, "cli_agentserver_sg",
+		signer, authorities,
 		func() (string, error) { return "91000000-0000-4000-8000-000000000009", nil },
 		func() time.Time { return now }, 60*time.Second,
 	)
@@ -82,13 +83,14 @@ func TestSignedManagedLarkEnvironmentIssuerWithholdsPlaceholderFromOtherCommands
 	}
 	authorities, err := NewFrozenManagedLarkEgressAuthoritySource(ManagedLarkEgressAuthority{
 		CredentialMode: managedcredential.ModeWebhookSwap,
+		ApplicationID:  "cli_agentserver_sg",
 		BindingID:      "90000000-0000-4000-8000-000000000009", AuthorityVersion: 1, CredentialVersion: 1,
 		PolicySHA256: strings.Repeat("b", 64),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	issuer, err := NewSignedManagedLarkEnvironmentIssuer(signer, authorities, "cli_agentserver_sg",
+	issuer, err := NewSignedManagedLarkEnvironmentIssuer(signer, authorities,
 		func() (string, error) { return "91000000-0000-4000-8000-000000000009", nil }, func() time.Time { return now }, time.Minute)
 	if err != nil {
 		t.Fatal(err)

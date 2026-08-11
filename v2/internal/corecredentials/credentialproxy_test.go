@@ -221,3 +221,37 @@ func TestResolveInjectionAuditFailureFailsClosed(t *testing.T) {
 		t.Fatalf("error = %v, code %q", err, ResolveErrorCode(err))
 	}
 }
+
+func TestProviderRegistrySchemasDefensivelyCopiesProviderSlices(t *testing.T) {
+	provider := &sharedSchemaTestProvider{
+		BearerProvider: BearerProvider{KindValue: "shared", HostValue: "shared.example"},
+		shared: ProviderSchema{
+			Kind: "shared", DisplayName: "Shared", AuthTypes: []string{"device_oauth"},
+			AllowedHosts: []string{"shared.example"}, AllowedHeaders: []string{"Authorization"},
+			AuthorizationMethods: []string{AuthorizationMethodDeviceFlow},
+		},
+	}
+	registry, err := NewRegistry(provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schemas := registry.Schemas()
+	if len(schemas) != 1 {
+		t.Fatalf("schemas = %#v", schemas)
+	}
+	schemas[0].AuthTypes[0] = "mutated"
+	schemas[0].AllowedHosts[0] = "mutated.example"
+	schemas[0].AllowedHeaders[0] = "X-Mutated"
+	schemas[0].AuthorizationMethods[0] = "mutated"
+	if provider.shared.AuthTypes[0] != "device_oauth" || provider.shared.AllowedHosts[0] != "shared.example" ||
+		provider.shared.AllowedHeaders[0] != "Authorization" || provider.shared.AuthorizationMethods[0] != AuthorizationMethodDeviceFlow {
+		t.Fatalf("registry exposed provider-owned schema slices: %#v", provider.shared)
+	}
+}
+
+type sharedSchemaTestProvider struct {
+	BearerProvider
+	shared ProviderSchema
+}
+
+func (provider *sharedSchemaTestProvider) Schema() ProviderSchema { return provider.shared }

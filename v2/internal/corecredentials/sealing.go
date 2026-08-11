@@ -47,6 +47,23 @@ type BindingSealScope struct {
 	CredentialVersion int64
 }
 
+// AuthorizationSealScope authenticates the short-lived provider authority
+// held while a user completes a device flow. It uses a distinct AAD domain so
+// transaction state can never be replayed as a live credential binding.
+type AuthorizationSealScope struct {
+	WorkspaceID          string
+	AuthorizationID      string
+	ProviderStateVersion int64
+}
+
+func (scope AuthorizationSealScope) validate() error {
+	if !identifierPattern.MatchString(scope.WorkspaceID) ||
+		!identifierPattern.MatchString(scope.AuthorizationID) || scope.ProviderStateVersion < 1 {
+		return errors.New("credential authorization sealing scope is invalid")
+	}
+	return nil
+}
+
 func (scope BindingSealScope) validate() error {
 	if !identifierPattern.MatchString(scope.WorkspaceID) ||
 		!identifierPattern.MatchString(scope.BindingID) || scope.CredentialVersion < 1 {
@@ -117,11 +134,22 @@ func (keyring *Keyring) ActiveKeyID() string {
 }
 
 func (keyring *Keyring) Seal(scope BindingSealScope, plaintext []byte) ([]byte, error) {
-	if keyring == nil || keyring.random == nil || len(keyring.keys) == 0 {
-		return nil, errors.New("credential sealing keyring is not initialized")
-	}
 	if err := scope.validate(); err != nil {
 		return nil, err
+	}
+	return keyring.seal(plaintext, bindingSealAAD(scope))
+}
+
+func (keyring *Keyring) SealAuthorization(scope AuthorizationSealScope, plaintext []byte) ([]byte, error) {
+	if err := scope.validate(); err != nil {
+		return nil, err
+	}
+	return keyring.seal(plaintext, authorizationSealAAD(scope))
+}
+
+func (keyring *Keyring) seal(plaintext, aad []byte) ([]byte, error) {
+	if keyring == nil || keyring.random == nil || len(keyring.keys) == 0 {
+		return nil, errors.New("credential sealing keyring is not initialized")
 	}
 	if len(plaintext) == 0 || len(plaintext) > maximumSecretBytes {
 		return nil, errors.New("credential secret is outside sealing bounds")
@@ -143,16 +171,27 @@ func (keyring *Keyring) Seal(scope BindingSealScope, plaintext []byte) ([]byte, 
 	result = append(result, envelopeVersion, byte(len(keyID)))
 	result = append(result, keyID...)
 	result = append(result, nonce...)
-	result = aead.Seal(result, nonce, plaintext, bindingSealAAD(scope))
+	result = aead.Seal(result, nonce, plaintext, aad)
 	return result, nil
 }
 
 func (keyring *Keyring) Open(scope BindingSealScope, sealed []byte) ([]byte, error) {
-	if keyring == nil || len(keyring.keys) == 0 {
-		return nil, errors.New("credential sealing keyring is not initialized")
-	}
 	if err := scope.validate(); err != nil {
 		return nil, err
+	}
+	return keyring.open(sealed, bindingSealAAD(scope))
+}
+
+func (keyring *Keyring) OpenAuthorization(scope AuthorizationSealScope, sealed []byte) ([]byte, error) {
+	if err := scope.validate(); err != nil {
+		return nil, err
+	}
+	return keyring.open(sealed, authorizationSealAAD(scope))
+}
+
+func (keyring *Keyring) open(sealed, aad []byte) ([]byte, error) {
+	if keyring == nil || len(keyring.keys) == 0 {
+		return nil, errors.New("credential sealing keyring is not initialized")
 	}
 	if len(sealed) < minimumEnvelopeBytes || len(sealed) > maximumSecretBytes+512 ||
 		!bytes.Equal(sealed[:4], envelopeMagic[:]) || sealed[4] != envelopeVersion {
@@ -171,7 +210,7 @@ func (keyring *Keyring) Open(scope BindingSealScope, sealed []byte) ([]byte, err
 	if nonceEnd+aead.Overhead()+1 > len(sealed) {
 		return nil, errors.New("sealed credential is truncated")
 	}
-	plaintext, err := aead.Open(nil, sealed[keyIDEnd:nonceEnd], sealed[nonceEnd:], bindingSealAAD(scope))
+	plaintext, err := aead.Open(nil, sealed[keyIDEnd:nonceEnd], sealed[nonceEnd:], aad)
 	if err != nil || len(plaintext) == 0 || len(plaintext) > maximumSecretBytes {
 		clear(plaintext)
 		return nil, errors.New("sealed credential authentication failed")
@@ -195,6 +234,25 @@ func bindingSealAAD(scope BindingSealScope) []byte {
 	appendField(scope.BindingID)
 	var version [8]byte
 	binary.BigEndian.PutUint64(version[:], uint64(scope.CredentialVersion))
+	result = append(result, version[:]...)
+	return result
+}
+
+func authorizationSealAAD(scope AuthorizationSealScope) []byte {
+	const domain = "agentserver-v2/corecredentials/device-authorization/aes-256-gcm/v1"
+	result := make([]byte, 0, len(domain)+64+len(scope.WorkspaceID)+len(scope.AuthorizationID))
+	result = append(result, domain...)
+	result = append(result, 0)
+	appendField := func(value string) {
+		var size [4]byte
+		binary.BigEndian.PutUint32(size[:], uint32(len(value)))
+		result = append(result, size[:]...)
+		result = append(result, value...)
+	}
+	appendField(scope.WorkspaceID)
+	appendField(scope.AuthorizationID)
+	var version [8]byte
+	binary.BigEndian.PutUint64(version[:], uint64(scope.ProviderStateVersion))
 	result = append(result, version[:]...)
 	return result
 }

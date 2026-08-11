@@ -12,8 +12,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 27 {
-		t.Fatalf("migration count = %d, want 27", len(migrations))
+	if len(migrations) != 28 {
+		t.Fatalf("migration count = %d, want 28", len(migrations))
 	}
 	migration := migrations[0]
 	if migration.Version != 1 || migration.Name != "session_run_kernel" {
@@ -99,6 +99,9 @@ func TestEmbeddedMigrations(t *testing.T) {
 	}
 	if migrations[26].Version != 27 || migrations[26].Name != "workspace_managed_credential_mode" {
 		t.Fatalf("twenty-seventh migration identity = %04d_%s, want 0027_workspace_managed_credential_mode", migrations[26].Version, migrations[26].Name)
+	}
+	if migrations[27].Version != 28 || migrations[27].Name != "workspace_credential_authorizations" {
+		t.Fatalf("twenty-eighth migration identity = %04d_%s, want 0028_workspace_credential_authorizations", migrations[27].Version, migrations[27].Name)
 	}
 	if !strings.Contains(migrations[25].SQL, "'process_env'") {
 		t.Fatal("process environment audit migration does not admit the process_env stage")

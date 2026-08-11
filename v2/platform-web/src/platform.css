@@ -16,5 +16,33 @@
 .resource-actions .ui-select { width: auto; min-width: 120px; }
 .gateway-dialog { width: min(680px, calc(100vw - 2rem)); }
 .gateway-dialog code { overflow-wrap: anywhere; }
+.credential-provider-list { display: grid; gap: .9rem; }
+.credential-provider { overflow: hidden; }
+.credential-provider-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 1.05rem .7rem; }
+.credential-provider-title { display: flex; align-items: center; gap: .75rem; min-width: 0; }
+.credential-provider-title h2 { margin: 0; font-size: 1rem; }
+.credential-provider-title p { margin: .18rem 0 0; color: var(--muted-foreground); font-size: .74rem; overflow-wrap: anywhere; }
+.credential-provider-mark { width: 2.25rem; height: 2.25rem; flex: 0 0 auto; display: grid; place-items: center; border-radius: .65rem; background: var(--muted); color: var(--foreground); }
+.credential-provider-meta { display: flex; align-items: center; gap: .6rem; padding: 0 1.05rem .8rem; color: var(--muted-foreground); font-size: .72rem; border-bottom: 1px solid var(--border); }
+.credential-empty { padding: 1rem 1.05rem; color: var(--muted-foreground); font-size: .8rem; }
+.credential-binding-list { display: grid; }
+.credential-binding { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .9rem 1.05rem; }
+.credential-binding + .credential-binding { border-top: 1px solid var(--border); }
+.credential-binding-main { min-width: 0; }
+.credential-binding-name { display: flex; align-items: center; flex-wrap: wrap; gap: .45rem; }
+.credential-binding-name strong { font-size: .9rem; }
+.credential-binding-main > p { margin: .2rem 0 .4rem; color: var(--muted-foreground); font-size: .75rem; overflow-wrap: anywhere; }
+.credential-default-check { margin-top: .8rem; }
+.credential-flow-dialog { width: min(520px, calc(100vw - 2rem)); }
+.credential-flow-state { display: flex; align-items: center; gap: .7rem; padding: .8rem; border-radius: .65rem; background: var(--muted); }
+.credential-flow-state.success { color: var(--success-foreground, var(--foreground)); }
+.credential-flow-state.failed { color: var(--destructive); }
+.credential-flow-state > div { display: flex; flex-direction: column; gap: .15rem; }
+.credential-flow-state span { color: var(--muted-foreground); font-size: .74rem; }
+.credential-code { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: .7rem; padding: .9rem; border: 1px solid var(--border); border-radius: .65rem; }
+.credential-code > span { color: var(--muted-foreground); font-size: .75rem; }
+.credential-code > strong { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1rem; letter-spacing: .09em; }
+.credential-result { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .85rem; border: 1px solid var(--border); border-radius: .65rem; }
 @media (max-width: 850px) { .workspace-grid { grid-template-columns: 1fr; } }
-@media (max-width: 620px) { .inline-create form { grid-template-columns: 1fr; } .settings-card form { grid-template-columns: 1fr; } .danger-zone { align-items: flex-start; flex-direction: column; } }
+@media (max-width: 760px) { .credential-binding { align-items: flex-start; flex-direction: column; } .credential-binding .resource-actions { width: 100%; } }
+@media (max-width: 620px) { .inline-create form { grid-template-columns: 1fr; } .settings-card form { grid-template-columns: 1fr; } .danger-zone, .credential-provider-header { align-items: flex-start; flex-direction: column; } .credential-code { grid-template-columns: 1fr auto; } .credential-code > span { grid-column: 1 / -1; } }

@@ -101,6 +101,7 @@ func TestManagedShellLarkCLIThroughTAEHTTPAndSandboxGateway(t *testing.T) {
 	}
 	authorities, err := NewFrozenManagedLarkEgressAuthoritySource(ManagedLarkEgressAuthority{
 		CredentialMode: managedcredential.ModeWebhookSwap,
+		ApplicationID:  "cli_agentserver_sg",
 		BindingID:      "90000000-0000-4000-8000-000000000009", AuthorityVersion: 11, CredentialVersion: 13,
 		PolicySHA256: strings.Repeat("a", 64),
 	})
@@ -108,7 +109,7 @@ func TestManagedShellLarkCLIThroughTAEHTTPAndSandboxGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	placeholderIssuer, err := NewSignedManagedLarkEnvironmentIssuer(
-		signer, authorities, "cli_agentserver_sg",
+		signer, authorities,
 		func() (string, error) { return "91000000-0000-4000-8000-000000000009", nil },
 		func() time.Time { return now }, time.Minute,
 	)

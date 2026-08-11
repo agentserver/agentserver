@@ -125,6 +125,67 @@
         }
       }
     },
+    "/v2/workspaces/{workspaceId}/credential-authorizations/{kind}": {
+      "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/CredentialKind"}],
+      "post": {
+        "operationId": "beginWorkspaceCredentialAuthorization",
+        "description": "Begins one provider device-flow transaction. Core seals and persists the provider ticket; Platform receives only the user-facing verification link and code.",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["credentials:manage"]}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BeginWorkspaceCredentialAuthorizationRequest"}}}},
+        "responses": {
+          "201": {"description": "Device authorization started", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BeginWorkspaceCredentialAuthorizationResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"},
+          "503": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
+    "/v2/workspaces/{workspaceId}/credential-authorizations/{kind}/{authorizationId}": {
+      "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/CredentialKind"}, {"$ref": "#/components/parameters/CredentialAuthorizationId"}],
+      "get": {
+        "operationId": "getWorkspaceCredentialAuthorization",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["credentials:read"]}],
+        "responses": {
+          "200": {"description": "Current device authorization state", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GetWorkspaceCredentialAuthorizationResponse"}}}},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
+    "/v2/workspaces/{workspaceId}/credential-authorizations/{kind}/{authorizationId}:poll": {
+      "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/CredentialKind"}, {"$ref": "#/components/parameters/CredentialAuthorizationId"}],
+      "post": {
+        "operationId": "pollWorkspaceCredentialAuthorization",
+        "description": "Performs at most one upstream provider poll. Core enforces the provider interval and a cross-replica poll lease.",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["credentials:manage"]}],
+        "responses": {
+          "200": {"description": "Updated device authorization state", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PollWorkspaceCredentialAuthorizationResponse"}}}},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
+    "/v2/workspaces/{workspaceId}/credential-authorizations/{kind}/{authorizationId}:cancel": {
+      "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/CredentialKind"}, {"$ref": "#/components/parameters/CredentialAuthorizationId"}],
+      "post": {
+        "operationId": "cancelWorkspaceCredentialAuthorization",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["credentials:manage"]}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CancelWorkspaceCredentialAuthorizationRequest"}}}},
+        "responses": {
+          "200": {"description": "Device authorization cancelled or already terminal", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CancelWorkspaceCredentialAuthorizationResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
     "/v2/workspaces": {
       "get": {
         "operationId": "listWorkspaces",
@@ -648,6 +709,7 @@
       "WorkspaceId": {"name": "workspaceId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "CredentialKind": {"name": "kind", "in": "path", "required": true, "schema": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"}},
       "CredentialBindingId": {"name": "bindingId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
+      "CredentialAuthorizationId": {"name": "authorizationId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "SessionId": {"name": "sessionId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "RunId": {"name": "runId", "in": "path", "required": true, "schema": {"$ref": "#/components/schemas/UUID"}},
       "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": true, "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[!-~]+$"}}
@@ -677,14 +739,15 @@
       },
       "WorkspaceCredentialProviderSchema": {
         "type": "object", "additionalProperties": false,
-        "required": ["kind", "displayName", "authTypes", "allowedHosts", "allowedHeaders", "secretFormat"],
+        "required": ["kind", "displayName", "authTypes", "allowedHosts", "allowedHeaders", "secretFormat", "authorizationMethods"],
         "properties": {
           "kind": {"type": "string", "minLength": 1, "maxLength": 128},
           "displayName": {"type": "string", "minLength": 1, "maxLength": 256},
           "authTypes": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string", "minLength": 1, "maxLength": 128}},
           "allowedHosts": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string", "minLength": 1, "maxLength": 512}},
           "allowedHeaders": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string", "minLength": 1, "maxLength": 256}},
-          "secretFormat": {"type": "string", "minLength": 1, "maxLength": 256}
+          "secretFormat": {"type": "string", "minLength": 1, "maxLength": 256},
+          "authorizationMethods": {"type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": {"enum": ["manual", "device_flow"]}}
         }
       },
       "ListWorkspaceCredentialProviderSchemasResponse": {
@@ -779,6 +842,63 @@
       "SetDefaultWorkspaceCredentialResponse": {
         "type": "object", "additionalProperties": false, "required": ["binding", "changed"],
         "properties": {"binding": {"$ref": "#/components/schemas/WorkspaceCredentialMetadata"}, "changed": {"type": "boolean"}}
+      },
+      "BeginWorkspaceCredentialAuthorizationRequest": {
+        "type": "object", "additionalProperties": false,
+        "required": ["displayName", "ownerScope", "makeDefault"],
+        "properties": {
+          "displayName": {"type": "string", "minLength": 1, "maxLength": 256},
+          "ownerScope": {"enum": ["workspace", "user"]},
+          "ownerUserId": {"$ref": "#/components/schemas/UUID"},
+          "makeDefault": {"type": "boolean"},
+          "bindingId": {"$ref": "#/components/schemas/UUID"},
+          "expectedAuthorityVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "expectedCredentialVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "providerParameters": {"type": "object", "maxProperties": 32, "additionalProperties": true}
+        }
+      },
+      "WorkspaceCredentialAuthorization": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "workspaceId", "kind", "targetBindingId", "status", "userCode", "verificationUri", "verificationUriComplete", "pollIntervalSeconds", "nextPollAt", "expiresAt", "version"],
+        "properties": {
+          "id": {"$ref": "#/components/schemas/UUID"},
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "kind": {"type": "string", "minLength": 1, "maxLength": 128},
+          "targetBindingId": {"$ref": "#/components/schemas/UUID"},
+          "status": {"enum": ["pending", "succeeded", "denied", "expired", "cancelled", "failed"]},
+          "userCode": {"type": "string", "maxLength": 1024},
+          "verificationUri": {"type": "string", "format": "uri", "minLength": 8, "maxLength": 8192},
+          "verificationUriComplete": {"type": "string", "format": "uri", "minLength": 8, "maxLength": 8192},
+          "pollIntervalSeconds": {"type": "integer", "minimum": 1, "maximum": 60},
+          "nextPollAt": {"type": "string", "format": "date-time"},
+          "expiresAt": {"type": "string", "format": "date-time"},
+          "lastErrorCode": {"type": "string", "minLength": 1, "maxLength": 128},
+          "version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "binding": {"$ref": "#/components/schemas/WorkspaceCredentialMetadata"}
+        }
+      },
+      "BeginWorkspaceCredentialAuthorizationResponse": {
+        "type": "object", "additionalProperties": false, "required": ["authorization"],
+        "properties": {"authorization": {"$ref": "#/components/schemas/WorkspaceCredentialAuthorization"}}
+      },
+      "GetWorkspaceCredentialAuthorizationResponse": {
+        "type": "object", "additionalProperties": false, "required": ["authorization"],
+        "properties": {"authorization": {"$ref": "#/components/schemas/WorkspaceCredentialAuthorization"}}
+      },
+      "PollWorkspaceCredentialAuthorizationResponse": {
+        "type": "object", "additionalProperties": false, "required": ["authorization"],
+        "properties": {"authorization": {"$ref": "#/components/schemas/WorkspaceCredentialAuthorization"}}
+      },
+      "CancelWorkspaceCredentialAuthorizationRequest": {
+        "type": "object", "additionalProperties": false, "required": ["expectedVersion"],
+        "properties": {"expectedVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}}
+      },
+      "CancelWorkspaceCredentialAuthorizationResponse": {
+        "type": "object", "additionalProperties": false, "required": ["authorization", "changed"],
+        "properties": {
+          "authorization": {"$ref": "#/components/schemas/WorkspaceCredentialAuthorization"},
+          "changed": {"type": "boolean"}
+        }
       },
       "CreateWorkspaceRequest": {
         "type": "object", "additionalProperties": false, "required": ["workspaceId", "name", "managedLarkCredentialMode"],

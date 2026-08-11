@@ -380,7 +380,11 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	credentialRevokePath := "/v2/workspaces/{workspaceId}/credentials/{kind}/{bindingId}:revoke"
 	credentialDeletePath := "/v2/workspaces/{workspaceId}/credentials/{kind}/{bindingId}:delete"
 	credentialDefaultPath := "/v2/workspaces/{workspaceId}/credentials/{kind}/{bindingId}:setDefault"
-	if len(document.Paths) != 29 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
+	credentialAuthorizationCollectionPath := WorkspaceCredentialAuthorizationCollectionRoutePattern
+	credentialAuthorizationResourcePath := WorkspaceCredentialAuthorizationResourceRoutePattern
+	credentialAuthorizationPollPath := "/v2/workspaces/{workspaceId}/credential-authorizations/{kind}/{authorizationId}:poll"
+	credentialAuthorizationCancelPath := "/v2/workspaces/{workspaceId}/credential-authorizations/{kind}/{authorizationId}:cancel"
+	if len(document.Paths) != 33 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
 		document.Paths[cancelPath].Post.OperationID != "cancelUserRun" || document.Paths[readPath].Get.OperationID != "readUserRunEvents" {
 		t.Fatalf("public OpenAPI paths = %+v", document.Paths)
 	}
@@ -454,7 +458,11 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 		document.Paths[credentialRotatePath].Post.OperationID != "rotateWorkspaceCredential" ||
 		document.Paths[credentialRevokePath].Post.OperationID != "revokeWorkspaceCredential" ||
 		document.Paths[credentialDeletePath].Post.OperationID != "deleteWorkspaceCredential" ||
-		document.Paths[credentialDefaultPath].Post.OperationID != "setDefaultWorkspaceCredential" {
+		document.Paths[credentialDefaultPath].Post.OperationID != "setDefaultWorkspaceCredential" ||
+		document.Paths[credentialAuthorizationCollectionPath].Post.OperationID != "beginWorkspaceCredentialAuthorization" ||
+		document.Paths[credentialAuthorizationResourcePath].Get.OperationID != "getWorkspaceCredentialAuthorization" ||
+		document.Paths[credentialAuthorizationPollPath].Post.OperationID != "pollWorkspaceCredentialAuthorization" ||
+		document.Paths[credentialAuthorizationCancelPath].Post.OperationID != "cancelWorkspaceCredentialAuthorization" {
 		t.Fatalf("public workspace credential paths = %+v", document.Paths)
 	}
 	for _, authority := range []struct {
@@ -486,6 +494,10 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 		{document.Paths[credentialRevokePath].Post.Security, PlatformOAuthCredentialsManageScope},
 		{document.Paths[credentialDeletePath].Post.Security, PlatformOAuthCredentialsManageScope},
 		{document.Paths[credentialDefaultPath].Post.Security, PlatformOAuthCredentialsManageScope},
+		{document.Paths[credentialAuthorizationCollectionPath].Post.Security, PlatformOAuthCredentialsManageScope},
+		{document.Paths[credentialAuthorizationResourcePath].Get.Security, PlatformOAuthCredentialsReadScope},
+		{document.Paths[credentialAuthorizationPollPath].Post.Security, PlatformOAuthCredentialsManageScope},
+		{document.Paths[credentialAuthorizationCancelPath].Post.Security, PlatformOAuthCredentialsManageScope},
 	} {
 		if len(authority.security) != 1 || len(authority.security[0]) != 2 || authority.security[0]["platformGatewayMTLS"] == nil ||
 			!slices.Equal(authority.security[0]["platformOAuth"], []string{authority.permission}) {
@@ -565,6 +577,13 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "DeleteWorkspaceCredentialResponse", reflect.TypeFor[DeleteWorkspaceCredentialResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "SetDefaultWorkspaceCredentialRequest", reflect.TypeFor[SetDefaultWorkspaceCredentialRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "SetDefaultWorkspaceCredentialResponse", reflect.TypeFor[SetDefaultWorkspaceCredentialResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "BeginWorkspaceCredentialAuthorizationRequest", reflect.TypeFor[BeginWorkspaceCredentialAuthorizationRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "WorkspaceCredentialAuthorization", reflect.TypeFor[WorkspaceCredentialAuthorization]())
+	assertSchemaFields(t, document.Components.Schemas, "BeginWorkspaceCredentialAuthorizationResponse", reflect.TypeFor[BeginWorkspaceCredentialAuthorizationResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "GetWorkspaceCredentialAuthorizationResponse", reflect.TypeFor[GetWorkspaceCredentialAuthorizationResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "PollWorkspaceCredentialAuthorizationResponse", reflect.TypeFor[PollWorkspaceCredentialAuthorizationResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "CancelWorkspaceCredentialAuthorizationRequest", reflect.TypeFor[CancelWorkspaceCredentialAuthorizationRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "CancelWorkspaceCredentialAuthorizationResponse", reflect.TypeFor[CancelWorkspaceCredentialAuthorizationResponse]())
 	var rawDocument struct {
 		Components struct {
 			Schemas map[string]json.RawMessage `json:"schemas"`

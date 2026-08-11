@@ -10,6 +10,40 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+func TestPostgreSQLManagedSandboxReservationPersistsTypedTTLs(t *testing.T) {
+	store, pool, schema := newPostgresStateStore(t)
+	running := startExecutionTestRun(t, store, pool, schema, 800_000)
+	reserve := managedSandboxTestReserve(801_000, running)
+
+	beforeReserve := time.Now().UTC()
+	result, err := store.ReserveManagedSandbox(t.Context(), reserve)
+	afterReserve := time.Now().UTC()
+	if err != nil {
+		t.Fatalf("ReserveManagedSandbox() error = %v", err)
+	}
+	if !result.Created {
+		t.Fatal("ReserveManagedSandbox() did not create the initial reservation")
+	}
+	if result.Sandbox.RequestedTTL != reserve.RequestedTTL || result.Sandbox.IdleTTL != reserve.RequestedIdleTTL {
+		t.Fatalf(
+			"reserved TTLs = (%s, %s), want (%s, %s)",
+			result.Sandbox.RequestedTTL, result.Sandbox.IdleTTL,
+			reserve.RequestedTTL, reserve.RequestedIdleTTL,
+		)
+	}
+	if result.Sandbox.IdleExpiresAt == nil {
+		t.Fatal("reserved sandbox has no idle expiry")
+	}
+	wantEarliestExpiry := beforeReserve.Add(reserve.RequestedIdleTTL)
+	wantLatestExpiry := afterReserve.Add(reserve.RequestedIdleTTL)
+	if result.Sandbox.IdleExpiresAt.Before(wantEarliestExpiry) || result.Sandbox.IdleExpiresAt.After(wantLatestExpiry) {
+		t.Fatalf(
+			"reserved idle expiry = %s, want between %s and %s",
+			result.Sandbox.IdleExpiresAt, wantEarliestExpiry, wantLatestExpiry,
+		)
+	}
+}
+
 func TestPostgreSQLManagedSandboxLifecycleActivityAndTAEDispatch(t *testing.T) {
 	store, pool, schema := newPostgresStateStore(t)
 	running := startExecutionTestRun(t, store, pool, schema, 810_000)

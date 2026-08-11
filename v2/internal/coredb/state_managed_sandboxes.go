@@ -74,8 +74,8 @@ INSERT INTO %s
      requested_ttl_seconds, idle_ttl_seconds, idle_expires_at)
 VALUES
     ($1, $2, $3, $4, 'tae', $5, 'ready', 'reserved',
-     $6, $7, $8, $9, $10, $11, $12, $13,
-     pg_catalog.clock_timestamp() + ($13 * interval '1 second'))
+     $6, $7, $8, $9, $10, $11, $12::bigint, $13::bigint,
+     pg_catalog.clock_timestamp() + ($13::bigint * interval '1 second'))
 RETURNING %s`, s.table("managed_sandboxes"), managedSandboxColumns(""))
 		sandbox, err := scanManagedSandbox(transaction.QueryRow(ctx, insertQuery,
 			command.SandboxID, command.WorkspaceID, command.SessionID, command.EnvironmentID,

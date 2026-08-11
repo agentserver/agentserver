@@ -57,6 +57,27 @@ func TestRunPreparePolicyBootstrapUsesExactClosedArguments(t *testing.T) {
 	}
 }
 
+func TestRunPinTerminalRevisionUsesExactClosedArguments(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	called := ""
+	exitCode := run(
+		[]string{
+			"pin-terminal-revision", "--revision-id=revision-v8", "--sandbox-id=sandbox-1",
+			"--output=/absolute/pinned.json", "--config=/absolute/bootstrap.json",
+		},
+		&stdout, &stderr,
+		deployCommands{pinManagedTerminal: func(config, output, sandboxID, revisionID string) error {
+			called = strings.Join([]string{config, output, sandboxID, revisionID}, "|")
+			return nil
+		}},
+	)
+	want := "/absolute/bootstrap.json|/absolute/pinned.json|sandbox-1|revision-v8"
+	if exitCode != 0 || stderr.Len() != 0 || called != want ||
+		!strings.Contains(stdout.String(), "fail-closed Terminal revision") {
+		t.Fatalf("run = %d, called %q, stdout %q, stderr %q", exitCode, called, stdout.String(), stderr.String())
+	}
+}
+
 func TestRunActivateManagedExecutorUsesExactEvidenceArguments(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	called := ""

@@ -610,6 +610,8 @@ func renderSandboxDeployment(context renderContext) (kubeObject, error) {
 		valueEnvironment("AGENTSERVER_V2_TAE_REGION", document.Managed.TAE.Region),
 		valueEnvironment("AGENTSERVER_V2_TAE_PSM", document.Managed.TAE.PSM),
 		valueEnvironment("AGENTSERVER_V2_TAE_SANDBOX_IMAGE", taeSandboxImage),
+		valueEnvironment("AGENTSERVER_V2_TAE_SANDBOX_ID", document.Managed.TAE.SandboxID),
+		valueEnvironment("AGENTSERVER_V2_TAE_SANDBOX_REVISION_ID", document.Managed.TAE.RevisionID),
 		valueEnvironment("AGENTSERVER_V2_TAE_AUTH_MODE", "bytecloud-app-aksk-v1"),
 		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_SITE", "i18n-tt"),
 		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_JWT_ENDPOINT", ProductionByteCloudJWTEndpoint),

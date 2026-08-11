@@ -62,6 +62,8 @@ func TestTAENetworkProbeResourcesAreOneShotClosedWorldAuthority(t *testing.T) {
 	}
 	for name, want := range map[string]string{
 		"AGENTSERVER_V2_TAE_SANDBOX_IMAGE":                    wantTAEImage,
+		"AGENTSERVER_V2_TAE_SANDBOX_ID":                       loaded.Document.Managed.TAE.SandboxID,
+		"AGENTSERVER_V2_TAE_SANDBOX_REVISION_ID":              loaded.Document.Managed.TAE.RevisionID,
 		"AGENTSERVER_V2_TAE_PROXY_URL":                        ProductionTAEProxyURL,
 		"AGENTSERVER_V2_TAE_BYTECLOUD_JWT_ENDPOINT":           ProductionByteCloudJWTEndpoint,
 		"AGENTSERVER_V2_TAE_PROBE_DEPLOYMENT_CONFIG_SHA256":   canonicalDigest(loaded.Document),

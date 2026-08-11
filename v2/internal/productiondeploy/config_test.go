@@ -162,6 +162,8 @@ func TestValidateConfigRejectsUnsafeProductionShapes(t *testing.T) {
 		"manifest key mismatch":       func(value *ConfigDocument) { value.Runtime.ManifestSigningKeyID = "other" },
 		"runtime allowlist drift":     func(value *ConfigDocument) { value.Runtime.CheckpointAllowlistVersion++ },
 		"shared secret":               func(value *ConfigDocument) { value.Secrets.HarnessWorker = value.Secrets.HarnessPool },
+		"missing TAE sandbox ID":      func(value *ConfigDocument) { value.Managed.TAE.SandboxID = "" },
+		"uppercase TAE revision ID":   func(value *ConfigDocument) { value.Managed.TAE.RevisionID = "Revision-1" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			document := validConfigDocument()
@@ -210,6 +212,9 @@ func TestValidateConfigBindsManagedNetworkEvidenceToNormalizedFacts(t *testing.T
 		},
 		"report digest": func(value *ConfigDocument) {
 			value.Managed.TAE.NetworkEvidence.ReportSHA256 = canonicalDigest("different-report")
+		},
+		"terminal sandbox revision": func(value *ConfigDocument) {
+			value.Managed.TAE.RevisionID = "revision-2"
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -388,6 +393,7 @@ func validActivationNetworkReport(document ConfigDocument, revision string) taen
 			PolicyRevision: revision, ByteCloudSite: "i18n-tt", JWTEndpoint: ProductionByteCloudJWTEndpoint,
 			ProxyURL: ProductionTAEProxyURL, ControlPlaneHost: ProductionTAEControlPlaneHost,
 			DataPlaneDomainSuffix: ProductionTAEDataPlaneSuffix, SandboxImage: taeSandboxImage,
+			SandboxID: document.Managed.TAE.SandboxID, SandboxRevisionID: document.Managed.TAE.RevisionID,
 			LarkCLIVersion: productionimage.ManagedLarkCLIVersion, LarkCLISHA256: document.Managed.Lark.CLISHA256,
 			LarkSkillSHA256:      document.Managed.Lark.SkillSHA256,
 			ConnectivityAttempts: connectivityAttempts, LifecycleAttempts: lifecycleAttempts,
@@ -480,6 +486,7 @@ func validConfigDocument() ConfigDocument {
 			},
 			TAE: ManagedTAEDocument{
 				Region: ProductionRegion, PSM: ProductionTAEPSM,
+				SandboxID: "sandbox-1", RevisionID: "revision-1",
 				Policy: ManagedTAEPolicyDocument{
 					Version: 1, Revision: "lark-readonly-v1",
 					PolicySHA256: larkegresspolicy.SHA256Hex(),

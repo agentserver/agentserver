@@ -25,7 +25,7 @@ const (
 	managedLarkCLIPath             = "/usr/local/bin/lark-cli"
 	managedLarkSkillPath           = "/opt/agentserver/packs/lark-readonly/SKILL.md"
 	managedSandboxRootPath         = "/workspace"
-	managedNetworkEvidenceVersion  = 3
+	managedNetworkEvidenceVersion  = 4
 	ProductionTAEPSM               = "bytedance.sandbox.agentserver"
 	ProductionByteCloudJWTEndpoint = "https://cloud-i18n-sg.bytedance.net"
 	ProductionTAEControlPlaneHost  = "controlplane.sg.ai-sandbox-i18n.byted.org"
@@ -87,6 +87,8 @@ type ManagedCompatibilityRuntimeDocument struct {
 type ManagedTAEDocument struct {
 	Region          string                            `json:"region"`
 	PSM             string                            `json:"psm"`
+	SandboxID       string                            `json:"sandboxId"`
+	RevisionID      string                            `json:"sandboxRevisionId"`
 	Policy          ManagedTAEPolicyDocument          `json:"policy"`
 	NetworkEvidence ManagedTAENetworkEvidenceDocument `json:"networkEvidence"`
 }
@@ -304,6 +306,8 @@ func validateTAENetworkReportForActivation(document ConfigDocument, policyRevisi
 		"controlPlaneHost":       {configuration.ControlPlaneHost, ProductionTAEControlPlaneHost},
 		"dataPlaneDomainSuffix":  {configuration.DataPlaneDomainSuffix, ProductionTAEDataPlaneSuffix},
 		"sandboxImage":           {configuration.SandboxImage, taeSandboxImage},
+		"sandboxId":              {configuration.SandboxID, document.Managed.TAE.SandboxID},
+		"sandboxRevisionId":      {configuration.SandboxRevisionID, document.Managed.TAE.RevisionID},
 		"larkCliVersion":         {configuration.LarkCLIVersion, productionimage.ManagedLarkCLIVersion},
 		"larkCliSha256":          {configuration.LarkCLISHA256, document.Managed.Lark.CLISHA256},
 		"larkSkillSha256":        {configuration.LarkSkillSHA256, document.Managed.Lark.SkillSHA256},
@@ -424,6 +428,12 @@ func validateManagedExecutor(managed ManagedExecutorDocument, document ConfigDoc
 	}
 	if managed.TAE.PSM != ProductionTAEPSM {
 		return LoadedConfig{}, fmt.Errorf("managedExecutor.tae.psm must be exactly %s", ProductionTAEPSM)
+	}
+	if !dnsLabelPattern.MatchString(managed.TAE.SandboxID) {
+		return LoadedConfig{}, errors.New("managedExecutor.tae.sandboxId must be a canonical lowercase TAE identity")
+	}
+	if !dnsLabelPattern.MatchString(managed.TAE.RevisionID) {
+		return LoadedConfig{}, errors.New("managedExecutor.tae.sandboxRevisionId must be a canonical lowercase TAE identity")
 	}
 	if !validUUID(managed.Environment.EnvironmentID) {
 		return LoadedConfig{}, errors.New("managedExecutor.environment.environmentId must be a non-zero canonical lowercase UUID")
@@ -619,8 +629,10 @@ func managedRuntimeProfileDigest(document ConfigDocument, managed ManagedExecuto
 		TAEPolicyBindingSHA256  string `json:"taePolicyBindingSha256"`
 		TAENetworkBindingSHA256 string `json:"taeNetworkBindingSha256"`
 		TAEPolicyRevision       string `json:"taePolicyRevision"`
+		TAESandboxID            string `json:"taeSandboxId"`
+		TAESandboxRevisionID    string `json:"taeSandboxRevisionId"`
 	}{
-		Version: 4, Platform: document.Platform, Image: document.Images.ManagedSandbox,
+		Version: 5, Platform: document.Platform, Image: document.Images.ManagedSandbox,
 		Root: managed.Environment.Root.Path, KeeperCommand: managedruntime.ExecutablePath,
 		CodexRelease: managed.Environment.Compatibility.CodexRelease,
 		CodexCommit:  managed.Environment.Compatibility.CodexCommit, CodexSHA256: managed.Environment.Compatibility.CodexSHA256,
@@ -640,6 +652,7 @@ func managedRuntimeProfileDigest(document ConfigDocument, managed ManagedExecuto
 		PolicySHA256:           managed.TAE.Policy.PolicySHA256,
 		TAEPolicyBindingSHA256: managed.TAE.Policy.BindingSHA256, TAEPolicyRevision: managed.TAE.Policy.Revision,
 		TAENetworkBindingSHA256: managed.TAE.NetworkEvidence.BindingSHA256,
+		TAESandboxID:            managed.TAE.SandboxID, TAESandboxRevisionID: managed.TAE.RevisionID,
 	}
 	return canonicalDigest(lock)
 }
@@ -720,6 +733,8 @@ func managedTAENetworkEvidenceDigest(document ConfigDocument) string {
 		Version                          int                  `json:"version"`
 		Region                           string               `json:"region"`
 		SandboxPSM                       string               `json:"sandboxPsm"`
+		SandboxID                        string               `json:"sandboxId"`
+		SandboxRevisionID                string               `json:"sandboxRevisionId"`
 		ClusterDomain                    string               `json:"clusterDomain"`
 		DNSClusterIP                     string               `json:"dnsClusterIp"`
 		DNSNamespace                     string               `json:"dnsNamespace"`
@@ -746,6 +761,7 @@ func managedTAENetworkEvidenceDigest(document ConfigDocument) string {
 		EvidenceRef                      string               `json:"evidenceRef"`
 	}{
 		Version: evidence.Version, Region: managed.TAE.Region, SandboxPSM: managed.TAE.PSM,
+		SandboxID: managed.TAE.SandboxID, SandboxRevisionID: managed.TAE.RevisionID,
 		ClusterDomain: document.ClusterDomain, DNSClusterIP: document.Network.DNSClusterIP,
 		DNSNamespace: document.Network.DNSNamespace, DNSPodSelector: document.Network.DNSPodSelector,
 		SandboxServiceClusterIP:          document.Services.SandboxGateway.ClusterIP,

@@ -14,13 +14,14 @@ import (
 
 	"code.byted.org/inf/bytedai-go/region"
 	"code.byted.org/inf/bytedai-go/sandbox"
-	"github.com/agentserver/agentserver/v2/internal/managedruntime"
 )
 
 const defaultControlRequestTimeout = 45 * time.Second
 
 type SDKControlPlaneConfig struct {
 	PSM             string
+	SandboxID       string
+	RevisionID      string
 	HTTPClient      *http.Client
 	Headers         HeaderSource
 	ControlPlaneURL string
@@ -32,6 +33,8 @@ type SDKControlPlane struct {
 	identityClient *http.Client
 	metadataURL    string
 	psm            string
+	sandboxID      string
+	revisionID     string
 	requestTimeout time.Duration
 }
 
@@ -49,6 +52,12 @@ func NewSGSDKControlPlane(ctx context.Context, config SDKControlPlaneConfig) (*S
 	}
 	if strings.TrimSpace(config.PSM) != config.PSM || config.PSM == "" || len(config.PSM) > 256 {
 		return nil, errors.New("TAE SDK PSM is invalid")
+	}
+	if !ValidTerminalIdentity(config.SandboxID) {
+		return nil, errors.New("TAE SDK terminal sandbox ID is invalid")
+	}
+	if !ValidTerminalIdentity(config.RevisionID) {
+		return nil, errors.New("TAE SDK terminal sandbox revision ID is invalid")
 	}
 	if config.RequestTimeout == 0 {
 		config.RequestTimeout = defaultControlRequestTimeout
@@ -73,8 +82,12 @@ func NewSGSDKControlPlane(ctx context.Context, config SDKControlPlaneConfig) (*S
 	if err != nil {
 		return nil, fmt.Errorf("configure TAE SDK identity transport: %w", err)
 	}
+	identityClient, err = newTerminalSandboxControlClient(identityClient, config.PSM, config.SandboxID)
+	if err != nil {
+		return nil, fmt.Errorf("scope TAE SDK terminal sandbox transport: %w", err)
+	}
 	client, err := sandbox.NewSandboxClientWithOptions(
-		ctx, config.PSM, "", region.AIPaaSGatewayRegionI18nProd,
+		ctx, config.PSM, config.SandboxID, region.AIPaaSGatewayRegionI18nProd,
 		&sandbox.SandboxClientOptions{LegacyHTTPClient: identityClient, ControlPlaneURL: config.ControlPlaneURL}, false,
 	)
 	if err != nil {
@@ -83,8 +96,45 @@ func NewSGSDKControlPlane(ctx context.Context, config SDKControlPlaneConfig) (*S
 	metadataURL := controlPlaneOrigin + "/api/v1/sandboxes/" + url.PathEscape(config.PSM)
 	return &SDKControlPlane{
 		client: client, identityClient: identityClient, metadataURL: metadataURL,
-		psm: config.PSM, requestTimeout: config.RequestTimeout,
+		psm: config.PSM, sandboxID: config.SandboxID, revisionID: config.RevisionID,
+		requestTimeout: config.RequestTimeout,
 	}, nil
+}
+
+// newTerminalSandboxControlClient prevents the SDK's internal PSM lookup from
+// redirecting lifecycle operations to a different Sandbox resource. The SDK
+// still resolves the Terminal type through the metadata endpoint, but every
+// session request is constrained to the configured immutable Sandbox ID.
+func newTerminalSandboxControlClient(client *http.Client, psm, sandboxID string) (*http.Client, error) {
+	if client == nil || client.Transport == nil || psm == "" || sandboxID == "" {
+		return nil, errors.New("TAE terminal sandbox control scope is incomplete")
+	}
+	clone := *client
+	clone.Transport = &terminalSandboxControlRoundTripper{
+		base:         client.Transport,
+		metadataPath: "/api/v1/sandboxes/" + url.PathEscape(psm),
+		sessionsPath: "/api/v1/sandboxes/" + url.PathEscape(sandboxID) + "/sessions",
+	}
+	return &clone, nil
+}
+
+type terminalSandboxControlRoundTripper struct {
+	base         http.RoundTripper
+	metadataPath string
+	sessionsPath string
+}
+
+func (transport *terminalSandboxControlRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	if transport == nil || transport.base == nil || request == nil || request.URL == nil {
+		return nil, errors.New("TAE terminal sandbox control transport is unavailable")
+	}
+	requestPath := request.URL.EscapedPath()
+	metadataRequest := request.Method == http.MethodGet && requestPath == transport.metadataPath
+	sessionRequest := requestPath == transport.sessionsPath || strings.HasPrefix(requestPath, transport.sessionsPath+"/")
+	if !metadataRequest && !sessionRequest {
+		return nil, errors.New("TAE terminal sandbox control request is outside the configured Sandbox ID")
+	}
+	return transport.base.RoundTrip(request)
 }
 
 // DescribeSandbox resolves the immutable management-plane identity needed by
@@ -92,7 +142,8 @@ func NewSGSDKControlPlane(ctx context.Context, config SDKControlPlaneConfig) (*S
 // pinned control-plane client and provider identity as lifecycle operations;
 // callers cannot supply an alternate authority or sandbox ID.
 func (control *SDKControlPlane) DescribeSandbox(ctx context.Context) (SandboxDescriptor, error) {
-	if control == nil || control.identityClient == nil || control.metadataURL == "" || control.psm == "" {
+	if control == nil || control.identityClient == nil || control.metadataURL == "" || control.psm == "" ||
+		control.sandboxID == "" || control.revisionID == "" {
 		return SandboxDescriptor{}, &RequestError{Code: "provider_unavailable", Cause: errors.New("TAE sandbox descriptor client is unavailable")}
 	}
 	if ctx == nil {
@@ -136,8 +187,7 @@ func (control *SDKControlPlane) DescribeSandbox(ctx context.Context) (SandboxDes
 		}
 	}
 	if envelope.Code != 0 || envelope.Data == nil || envelope.Data.Psm != control.psm ||
-		envelope.Data.SandboxType != sandbox.SandboxTypeTerminal ||
-		!sessionDNSLabelPattern.MatchString(envelope.Data.SandboxID) || strings.ToLower(envelope.Data.SandboxID) != envelope.Data.SandboxID {
+		envelope.Data.SandboxType != sandbox.SandboxTypeTerminal || envelope.Data.SandboxID != control.sandboxID {
 		return SandboxDescriptor{}, &RequestError{
 			WroteRequest: true, StatusCode: response.StatusCode, Code: "invalid_response",
 			RequestID: providerRequestID(response.Header), Cause: errors.New("TAE sandbox descriptor did not match the configured terminal PSM"),
@@ -147,16 +197,14 @@ func (control *SDKControlPlane) DescribeSandbox(ctx context.Context) (SandboxDes
 }
 
 func (control *SDKControlPlane) Create(ctx context.Context, input CreateInput) (ControlSession, error) {
-	if input.Command != managedruntime.ExecutablePath {
-		return ControlSession{}, &RequestError{Code: "bad_request", Cause: errors.New("TAE session command differs from the managed runtime contract")}
-	}
 	seconds, err := wholeSeconds(input.TTL)
 	if err != nil {
 		return ControlSession{}, &RequestError{Code: "bad_request", Cause: err}
 	}
 	traced, wrote := traceRequest(ctx)
+	revisionID := control.revisionID
 	session, err := control.client.CreateSessionWithOpts(traced, &sandbox.CreateSessionOpts{
-		TTL: seconds, Metadata: cloneStrings(input.Metadata), Command: input.Command,
+		TTL: seconds, Metadata: cloneStrings(input.Metadata), RevisionID: &revisionID,
 		Timeout: control.requestTimeout,
 	})
 	if err != nil {

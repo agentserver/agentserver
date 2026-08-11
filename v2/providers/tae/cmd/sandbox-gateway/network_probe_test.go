@@ -150,6 +150,7 @@ func testNetworkProbeConfig(cli, skill []byte) networkProbeConfig {
 		provider: providerConfig{
 			controlTimeout: time.Second, jwtRequestTimeout: time.Second,
 			sandboxImage: "registry.example/sandbox:sha256-" + strings.Repeat("1", 64),
+			sandboxID:    "sandbox-1", sandboxRevisionID: "revision-1",
 		},
 		deploymentSHA256: strings.Repeat("2", 64), policyRevision: "revision-1",
 		larkCLIVersion: "test", larkCLISHA256: digest(cli), larkCLISize: int64(len(cli)),
@@ -206,11 +207,8 @@ func (control *probeControl) Create(_ context.Context, input adapter.CreateInput
 	if control.createError != nil {
 		return adapter.ControlSession{}, control.createError
 	}
-	if input.Command != managedruntime.ExecutablePath {
-		return adapter.ControlSession{}, &adapter.RequestError{Code: "bad_request", Cause: errors.New("unexpected managed runtime command")}
-	}
 	control.deleted = false
-	command := input.Command
+	command := managedruntime.ExecutablePath
 	if control.omitCommand {
 		command = ""
 	}

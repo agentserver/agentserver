@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	CurrentVersion = 2
+	CurrentVersion = 3
 	Kind           = "agentserver.tae.sg-network-report"
 	maximumBytes   = int64(256 * 1024)
 )
@@ -32,6 +32,7 @@ var (
 	checkNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 	errorCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 	podUIDPattern    = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	taeIDPattern     = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 )
 
 type Report struct {
@@ -65,6 +66,8 @@ type Configuration struct {
 	ControlPlaneHost       string `json:"controlPlaneHost"`
 	DataPlaneDomainSuffix  string `json:"dataPlaneDomainSuffix"`
 	SandboxImage           string `json:"sandboxImage"`
+	SandboxID              string `json:"sandboxId"`
+	SandboxRevisionID      string `json:"sandboxRevisionId"`
 	LarkCLIVersion         string `json:"larkCliVersion"`
 	LarkCLISHA256          string `json:"larkCliSha256"`
 	LarkSkillSHA256        string `json:"larkSkillSha256"`
@@ -199,6 +202,12 @@ func Validate(report Report) error {
 	}
 	if err := taeimage.ValidateContentTag(report.Configuration.SandboxImage); err != nil {
 		return fmt.Errorf("TAE network report configuration.sandboxImage: %w", err)
+	}
+	if !taeIDPattern.MatchString(report.Configuration.SandboxID) {
+		return errors.New("TAE network report configuration.sandboxId must be a canonical lowercase TAE identity")
+	}
+	if !taeIDPattern.MatchString(report.Configuration.SandboxRevisionID) {
+		return errors.New("TAE network report configuration.sandboxRevisionId must be a canonical lowercase TAE identity")
 	}
 	if report.Configuration.ConnectivityAttempts < 1 || report.Configuration.ConnectivityAttempts > 100 ||
 		report.Configuration.LifecycleAttempts < 1 || report.Configuration.LifecycleAttempts > 5 {

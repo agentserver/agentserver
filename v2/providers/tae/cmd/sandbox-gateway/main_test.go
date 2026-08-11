@@ -54,6 +54,11 @@ func TestLoadProviderConfigFailsClosedOnUnsafeRuntime(t *testing.T) {
 		"unbounded-file":       {maxReadBytesEnvironment: "999999999"},
 		"digest-image":         {sandboxImageEnvironment: "registry.example/sandbox@sha256:" + strings.Repeat("a", 64)},
 		"mutable-image":        {sandboxImageEnvironment: "registry.example/sandbox:latest"},
+		"missing-sandbox-id":   {sandboxIDEnvironment: ""},
+		"padded-sandbox-id":    {sandboxIDEnvironment: " sandbox-1"},
+		"uppercase-sandbox-id": {sandboxIDEnvironment: "Sandbox-1"},
+		"missing-revision-id":  {sandboxRevisionIDEnvironment: ""},
+		"invalid-revision-id":  {sandboxRevisionIDEnvironment: "revision_1"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			values := validProviderEnvironment()
@@ -75,7 +80,8 @@ func TestLoadProviderConfigDefaultsAreBounded(t *testing.T) {
 	}
 	if config.controlTimeout != 45*time.Second || config.headerTimeout != 15*time.Second ||
 		config.streamGrace != 30*time.Second || config.reconnectAttempts != 2 ||
-		config.signalTimeout != 3*time.Second || config.maxReadBytes != 8*1024*1024 || config.sandboxImage == "" {
+		config.signalTimeout != 3*time.Second || config.maxReadBytes != 8*1024*1024 || config.sandboxImage == "" ||
+		config.sandboxID != "sandbox-1" || config.sandboxRevisionID != "revision-1" {
 		t.Fatalf("defaults = %+v", config)
 	}
 	if config.authMode != byteCloudAppAKSKAuthMode || config.byteCloudSite != adapter.ByteCloudSiteI18NTT ||
@@ -88,6 +94,8 @@ func TestLoadProviderConfigDefaultsAreBounded(t *testing.T) {
 func validProviderEnvironment() map[string]string {
 	return map[string]string{
 		sandboxImageEnvironment:         "aliyun-sin-hub.byted.org/agentserver/tae-sandbox:sha256-" + strings.Repeat("a", 64),
+		sandboxIDEnvironment:            "sandbox-1",
+		sandboxRevisionIDEnvironment:    "revision-1",
 		authModeEnvironment:             byteCloudAppAKSKAuthMode,
 		byteCloudSiteEnvironment:        adapter.ByteCloudSiteI18NTT,
 		byteCloudJWTEndpointEnvironment: adapter.ByteCloudJWTEndpointSG,

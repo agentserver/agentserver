@@ -16,6 +16,7 @@ type deployCommands struct {
 	chart                   func(productiondeploy.LoadedConfig) (productiondeploy.HelmChart, error)
 	writeChart              func(productiondeploy.HelmChart, string) error
 	lock                    func(productiondeploy.LoadedConfig, productiondeploy.ReleaseLock) ([]byte, error)
+	lockDeveloperService    func(productiondeploy.LoadedConfig, string) ([]byte, error)
 	writeLock               func([]byte, string) error
 	preparePolicyBootstrap  func(string, string) error
 	pinManagedTerminal      func(string, string, string, string) error
@@ -26,7 +27,8 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, deployCommands{
 		load: productiondeploy.LoadConfig, render: productiondeploy.Render, write: productiondeploy.WriteBundle,
 		chart: productiondeploy.RenderHelmChart, writeChart: productiondeploy.WriteHelmChart,
-		lock: productiondeploy.LockRelease, writeLock: productiondeploy.WriteReleaseConfig,
+		lock: productiondeploy.LockRelease, lockDeveloperService: productiondeploy.LockDeveloperServiceRelease,
+		writeLock:               productiondeploy.WriteReleaseConfig,
 		preparePolicyBootstrap:  productiondeploy.PreparePolicyBootstrapFile,
 		pinManagedTerminal:      productiondeploy.PinManagedTerminalRevisionFile,
 		activateManagedExecutor: productiondeploy.ActivateManagedExecutorFile,
@@ -120,6 +122,31 @@ func run(arguments []string, stdout, stderr io.Writer, commands deployCommands) 
 			return 1
 		}
 		fmt.Fprintf(stdout, "agentserver-deploy lock-release: wrote locked production config to %s\n", values["output"])
+		return 0
+	case "lock-developer-service":
+		values, ok := exactArguments(arguments[1:], "config", "output", "service-image")
+		if !ok {
+			writeUsage(stderr)
+			return 2
+		}
+		if commands.load == nil || commands.lockDeveloperService == nil || commands.writeLock == nil {
+			fmt.Fprintln(stderr, "agentserver-deploy lock-developer-service: command is unavailable")
+			return 1
+		}
+		config, err := commands.load(values["config"])
+		if err != nil {
+			fmt.Fprintf(stderr, "agentserver-deploy lock-developer-service: %v\n", err)
+			return 1
+		}
+		raw, err := commands.lockDeveloperService(config, values["service-image"])
+		if err == nil {
+			err = commands.writeLock(raw, values["output"])
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "agentserver-deploy lock-developer-service: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "agentserver-deploy lock-developer-service: wrote service-only development config to %s\n", values["output"])
 		return 0
 	case "validate":
 		values, ok := exactArguments(arguments[1:], "config")
@@ -232,6 +259,7 @@ func writeUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "usage: agentserver-deploy prepare-policy-bootstrap --config=/absolute/active-template.json --output=/absolute/new-bootstrap.json")
 	fmt.Fprintln(writer, "usage: agentserver-deploy pin-terminal-revision --config=/absolute/bootstrap.json --output=/absolute/new-bootstrap.json --sandbox-id=<expected-sandbox-id> --revision-id=<published-terminal-revision-id>")
 	fmt.Fprintln(writer, "usage: agentserver-deploy lock-release --config=/absolute/template.json --output=/absolute/new-production.json --service-image=IMAGE@sha256:DIGEST --harness-image=IMAGE@sha256:DIGEST --hydra-image=IMAGE@sha256:DIGEST --managed-sandbox-image=IMAGE@sha256:DIGEST --lark-cli-sha256=DIGEST --lark-skill-sha256=DIGEST")
+	fmt.Fprintln(writer, "       agentserver-deploy lock-developer-service --config=/absolute/active.json --output=/absolute/new-production.json --service-image=registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-service@sha256:DIGEST")
 	fmt.Fprintln(writer, "       agentserver-deploy validate --config=/absolute/path")
 	fmt.Fprintln(writer, "       agentserver-deploy render --config=/absolute/path --output=/absolute/directory")
 	fmt.Fprintln(writer, "       agentserver-deploy chart --config=/absolute/path --output=/absolute/new-chart")

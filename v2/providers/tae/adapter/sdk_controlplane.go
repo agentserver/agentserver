@@ -214,6 +214,14 @@ func (control *SDKControlPlane) Create(ctx context.Context, input CreateInput) (
 	if err != nil {
 		return ControlSession{}, &RequestError{WroteRequest: true, Code: "invalid_response", Cause: err}
 	}
+	// bytedai-go v1.1.63 sends Metadata in the Terminal create request but
+	// drops result.Data.Metadata while constructing the returned Session's
+	// AdvancedInfo. Preserve the exact sent identity only when the SDK reports
+	// no metadata at all. A non-empty partial/conflicting provider value is
+	// deliberately left untouched and remains fail-closed in Provider.
+	if len(converted.Metadata) == 0 {
+		converted.Metadata = cloneStrings(input.Metadata)
+	}
 	return converted, nil
 }
 

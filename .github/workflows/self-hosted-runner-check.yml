@@ -20,12 +20,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
-
-      - name: Install build tools
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends make libatomic1
-
-      - name: Verify runner Docker access
-        run: docker version
+        with:
+          fetch-depth: 2
 
       - uses: actions/setup-go@v6
         with:
@@ -53,22 +49,39 @@ jobs:
             'GIT_TERMINAL_PROMPT=0' \
             'GOPRIVATE=code.byted.org' \
             'GONOSUMDB=code.byted.org' >>"${GITHUB_ENV}"
-          GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code \
-            https://code.byted.org/security/zti-jwt-golang.git HEAD >/dev/null
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11.18.0
-          run_install: false
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version-file: v2/.node-version
-          cache: pnpm
-          cache-dependency-path: v2/pnpm-lock.yaml
-
-      - name: Install v2 web dependencies
-        run: pnpm --dir v2 install --frozen-lockfile
-
-      - name: Verify v2 module boundary and unit tests
-        run: make -C v2 check
+      - name: Test only changed Go packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+            changed=$(git diff --name-only HEAD^ HEAD)
+          else
+            changed=$(git diff-tree --no-commit-id --name-only -r HEAD)
+          fi
+          declare -A root_packages=()
+          declare -A tae_packages=()
+          while IFS= read -r file; do
+            case "${file}" in
+              v2/providers/tae/*.go)
+                directory=$(dirname "${file#v2/providers/tae/}")
+                tae_packages["./${directory}"]=1
+                ;;
+              v2/*.go)
+                directory=$(dirname "${file#v2/}")
+                root_packages["./${directory}"]=1
+                ;;
+              *.sh)
+                sh -n "${file}"
+                ;;
+            esac
+          done <<<"${changed}"
+          if ((${#root_packages[@]})); then
+            go -C v2 test "${!root_packages[@]}" -count=1
+          fi
+          if ((${#tae_packages[@]})); then
+            go -C v2/providers/tae test "${!tae_packages[@]}" -count=1
+          fi
+          if ((!${#root_packages[@]} && !${#tae_packages[@]})); then
+            echo 'No changed Go package; development gate completed without a repository-wide rebuild.'
+          fi

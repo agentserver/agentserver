@@ -64,6 +64,50 @@ func LockRelease(base LoadedConfig, lock ReleaseLock) ([]byte, error) {
 	return raw, nil
 }
 
+// LockDeveloperServiceRelease changes only the Kubernetes service image in an
+// active release. It intentionally keeps the existing harness, managed
+// sandbox, Hydra, runtime, pack, and TAE evidence locks byte-for-byte intact.
+// Final production promotion still uses LockRelease and its full verification.
+func LockDeveloperServiceRelease(base LoadedConfig, serviceImage string) ([]byte, error) {
+	document := base.Document
+	if err := validateManagedReleaseEvidence(document); err != nil {
+		return nil, err
+	}
+	if !managedExecutionActive(document.Managed) {
+		return nil, errors.New("developer service release requires an active managed executor configuration")
+	}
+	if !imagePattern.MatchString(serviceImage) || !strings.HasPrefix(serviceImage, ProductionServiceImage+"@sha256:") {
+		return nil, errors.New("developer service release requires a digest-pinned SG service mirror image")
+	}
+	harnessImage := document.Images.Harness
+	hydraImage := document.Images.Hydra
+	managedSandboxImage := document.Images.ManagedSandbox
+	runtimeProfileSHA256 := document.Managed.Environment.RuntimeProfileSHA256
+	packSetSHA256 := document.Managed.Environment.PackSetSHA256
+	networkBindingSHA256 := document.Managed.TAE.NetworkEvidence.BindingSHA256
+	document.Images.Service = serviceImage
+	loaded, err := ValidateConfig(document)
+	if err != nil {
+		return nil, fmt.Errorf("validate developer service release: %w", err)
+	}
+	if loaded.Document.Images.Harness != harnessImage || loaded.Document.Images.Hydra != hydraImage ||
+		loaded.Document.Images.ManagedSandbox != managedSandboxImage ||
+		loaded.Document.Managed.Environment.RuntimeProfileSHA256 != runtimeProfileSHA256 ||
+		loaded.Document.Managed.Environment.PackSetSHA256 != packSetSHA256 ||
+		loaded.Document.Managed.TAE.NetworkEvidence.BindingSHA256 != networkBindingSHA256 {
+		return nil, errors.New("developer service release changed a TAE runtime, pack, or network evidence lock")
+	}
+	raw, err := json.MarshalIndent(loaded.Document, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode developer service release: %w", err)
+	}
+	raw = append(raw, '\n')
+	if _, err := ParseConfig(raw); err != nil {
+		return nil, fmt.Errorf("verify developer service release: %w", err)
+	}
+	return raw, nil
+}
+
 func releaseLockMatches(document ConfigDocument, lock ReleaseLock) bool {
 	return document.Images.Service == lock.ServiceImage &&
 		document.Images.Harness == lock.HarnessImage &&

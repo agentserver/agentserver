@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -76,6 +77,54 @@ func TestLockReleaseRejectsEvidenceBoundActiveArtifactDrift(t *testing.T) {
 			_, err := LockRelease(base, lock)
 			if err == nil || !strings.Contains(err.Error(), "active managed executor artifacts are immutable") {
 				t.Fatalf("active artifact drift error = %v", err)
+			}
+		})
+	}
+}
+
+func TestLockDeveloperServiceReleaseChangesOnlyServiceImage(t *testing.T) {
+	base, err := ValidateConfig(validConfigDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantImage := ProductionServiceImage + "@sha256:" + releaseDigest("a")
+	raw, err := LockDeveloperServiceRelease(base, wantImage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked, err := ParseConfig(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := base.Document
+	want.Images.Service = wantImage
+	if !reflect.DeepEqual(locked.Document, want) {
+		t.Fatal("developer service release changed facts outside images.service")
+	}
+}
+
+func TestLockDeveloperServiceReleaseFailsClosed(t *testing.T) {
+	active, err := ValidateConfig(validConfigDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, testCase := range map[string]struct {
+		config LoadedConfig
+		image  string
+	}{
+		"mutable image": {active, ProductionServiceImage + ":main"},
+		"wrong mirror":  {active, "ghcr.io/agentserver/v2-service@sha256:" + releaseDigest("a")},
+		"bootstrap stage": {func() LoadedConfig {
+			loaded, loadErr := ValidateConfig(policyBootstrapConfigDocument())
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
+			return loaded
+		}(), ProductionServiceImage + "@sha256:" + releaseDigest("a")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, lockErr := LockDeveloperServiceRelease(testCase.config, testCase.image); lockErr == nil {
+				t.Fatal("unsafe developer service release was accepted")
 			}
 		})
 	}

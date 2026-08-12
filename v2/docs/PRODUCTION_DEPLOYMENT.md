@@ -330,6 +330,13 @@ keyring。不得用伪造 `published=true` 或模板 evidence 绕过这个阶段
 8. 在 workflow summary 和 artifact 中记录四个镜像 digest、Chart version、完整
    `deploymentConfigSHA256`、生产配置和镜像验证报告。
 
+开发阶段的 service-only 变更使用同一个 workflow 的 `service_only` 通道（`main` 上的 v2 push 默认走
+该通道）。它只运行改动包测试并重建 service 镜像，复用当前 active 配置中已经发布和验证过的
+harness、managed-sandbox、Hydra、runtime/pack lock 与 TAE evidence；不会安装 pnpm、下载
+Codex/bwrap/Lark 或重建未变化镜像。service 构建使用 GHA BuildKit cache。该通道只允许修改
+`images.service`，并在发布 Chart 前对删除该字段后的 JSON 做逐字节比较。最终生产晋级仍需通过
+`workflow_dispatch(release_mode=full)` 执行上述完整 closed-world 门禁。
+
 SG 配置始终引用 mirror 路径：
 
 ```text

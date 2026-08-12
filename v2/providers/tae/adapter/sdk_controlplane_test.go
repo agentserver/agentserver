@@ -121,6 +121,90 @@ func TestSDKControlPlaneCreatePinsRevisionAndOmitsTerminalOverrides(t *testing.T
 	}
 }
 
+func TestSDKControlPlaneCreateRestoresMetadataOmittedFromResponse(t *testing.T) {
+	metadata := map[string]string{MetadataSandboxID: "managed-sandbox-1"}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/sandboxes/psm.agentserver.tae", func(response http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(response).Encode(sandbox.SandboxMetaResponse{
+			Code: 0,
+			Data: &sandbox.SandboxMeta{SandboxID: "sandbox-1", SandboxType: sandbox.SandboxTypeTerminal,
+				Name: "agentserver", Psm: "psm.agentserver.tae"},
+		})
+	})
+	mux.HandleFunc("/api/v1/sandboxes/sandbox-1/sessions", func(response http.ResponseWriter, request *http.Request) {
+		var payload sandbox.CreateSessionRequest
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(payload.Metadata, metadata) {
+			t.Fatalf("create metadata = %#v, want %#v", payload.Metadata, metadata)
+		}
+		_ = json.NewEncoder(response).Encode(sandbox.CreateSessionResponse{
+			Code: 0,
+			Data: &sandbox.CreateSessionResponseData{SessionInfoResponseData: sandbox.SessionInfoResponseData{
+				SessionID: "session-1", Status: "running", ExpiresAt: "2026-08-06T21:00:00Z",
+				SandboxdEnabled: true,
+			}},
+		})
+	})
+	server := httptest.NewTLSServer(mux)
+	defer server.Close()
+	control, err := NewSGSDKControlPlane(t.Context(), SDKControlPlaneConfig{
+		PSM: "psm.agentserver.tae", SandboxID: "sandbox-1", RevisionID: "revision-1",
+		HTTPClient: server.Client(), Headers: staticJWTSource(),
+		ControlPlaneURL: server.URL, RequestTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := control.Create(t.Context(), CreateInput{TTL: time.Minute, Metadata: metadata})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.ID != "session-1" || !reflect.DeepEqual(created.Metadata, metadata) {
+		t.Fatalf("created Terminal Session = %+v", created)
+	}
+}
+
+func TestSDKControlPlaneCreateDoesNotReplaceConflictingMetadata(t *testing.T) {
+	want := map[string]string{MetadataSandboxID: "managed-sandbox-1"}
+	got := map[string]string{MetadataSandboxID: "different"}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/sandboxes/psm.agentserver.tae", func(response http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(response).Encode(sandbox.SandboxMetaResponse{
+			Code: 0,
+			Data: &sandbox.SandboxMeta{SandboxID: "sandbox-1", SandboxType: sandbox.SandboxTypeTerminal,
+				Name: "agentserver", Psm: "psm.agentserver.tae"},
+		})
+	})
+	mux.HandleFunc("/api/v1/sandboxes/sandbox-1/sessions", func(response http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(response).Encode(sandbox.CreateSessionResponse{
+			Code: 0,
+			Data: &sandbox.CreateSessionResponseData{SessionInfoResponseData: sandbox.SessionInfoResponseData{
+				SessionID: "session-1", Status: "running", ExpiresAt: "2026-08-06T21:00:00Z",
+				SandboxdEnabled: true, Metadata: got,
+			}},
+		})
+	})
+	server := httptest.NewTLSServer(mux)
+	defer server.Close()
+	control, err := NewSGSDKControlPlane(t.Context(), SDKControlPlaneConfig{
+		PSM: "psm.agentserver.tae", SandboxID: "sandbox-1", RevisionID: "revision-1",
+		HTTPClient: server.Client(), Headers: staticJWTSource(),
+		ControlPlaneURL: server.URL, RequestTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := control.Create(t.Context(), CreateInput{TTL: time.Minute, Metadata: want})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(created.Metadata, got) {
+		t.Fatalf("created metadata = %#v, want provider value %#v", created.Metadata, got)
+	}
+}
+
 func TestSDKControlPlaneFailsClosedWhenPSMResolvesToDifferentSandboxID(t *testing.T) {
 	requests := 0
 	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

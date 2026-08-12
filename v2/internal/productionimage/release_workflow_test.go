@@ -66,3 +66,41 @@ func TestProductionWorkflowPublishesAndLocksManagedSandbox(t *testing.T) {
 		t.Fatal("managed sandbox Containerfile must not inherit the official terminal_faas image")
 	}
 }
+
+func TestProductionWorkflowHasBoundedServiceOnlyDevelopmentPath(t *testing.T) {
+	_, source, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate production workflow contract test")
+	}
+	v2Root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
+	workflow, err := os.ReadFile(filepath.Join(v2Root, "..", ".github", "workflows", "v2-production.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fastPath := string(workflow)
+	start := strings.Index(fastPath, "  publish-service-only:")
+	end := strings.Index(fastPath, "  promote-active-chart:")
+	if start < 0 || end <= start {
+		t.Fatal("production workflow is missing the service-only job boundary")
+	}
+	fastPath = fastPath[start:end]
+	for _, required := range []string{
+		"build-service-image.sh",
+		"--cache=gha",
+		"lock-developer-service",
+		"del(.images.service)",
+		"cmp \"${release_dir}/before.json\" \"${release_dir}/after.json\"",
+	} {
+		if !strings.Contains(fastPath, required) {
+			t.Fatalf("service-only workflow is missing fast-path contract %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"pnpm", "make -C v2 check", "CODEX_URL", "LARK_CLI_URL",
+		"build-images.sh", "MANAGED_SANDBOX_REPOSITORY", "HARNESS_REPOSITORY",
+	} {
+		if strings.Contains(fastPath, forbidden) {
+			t.Fatalf("service-only workflow retained redundant work %q", forbidden)
+		}
+	}
+}

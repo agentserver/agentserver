@@ -139,6 +139,38 @@ func TestRunLockReleasePassesExactAuthorityAndWritesOnce(t *testing.T) {
 	}
 }
 
+func TestRunLockDeveloperServicePassesOnlyServiceAuthority(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	called := []string{}
+	wantRaw := []byte("locked\n")
+	digest := strings.Repeat("a", 64)
+	exitCode := run([]string{
+		"lock-developer-service", "--config=/absolute/active.json", "--output=/absolute/production.json",
+		"--service-image=registry/service@sha256:" + digest,
+	}, &stdout, &stderr, deployCommands{
+		load: func(path string) (productiondeploy.LoadedConfig, error) {
+			called = append(called, "load:"+path)
+			return productiondeploy.LoadedConfig{}, nil
+		},
+		lockDeveloperService: func(_ productiondeploy.LoadedConfig, image string) ([]byte, error) {
+			called = append(called, "lock:"+image)
+			return wantRaw, nil
+		},
+		writeLock: func(raw []byte, path string) error {
+			if !bytes.Equal(raw, wantRaw) {
+				t.Fatalf("locked bytes = %q", raw)
+			}
+			called = append(called, "write:"+path)
+			return nil
+		},
+	})
+	if exitCode != 0 || stderr.Len() != 0 || strings.Join(called, ",") !=
+		"load:/absolute/active.json,lock:registry/service@sha256:"+digest+",write:/absolute/production.json" ||
+		!strings.Contains(stdout.String(), "service-only development config") {
+		t.Fatalf("run = %d, calls %v, stdout %q, stderr %q", exitCode, called, stdout.String(), stderr.String())
+	}
+}
+
 func TestRunRejectsDuplicateUnknownAndMissingArguments(t *testing.T) {
 	for _, arguments := range [][]string{
 		{}, {"render"},

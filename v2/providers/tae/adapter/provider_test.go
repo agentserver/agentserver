@@ -118,7 +118,7 @@ func (stream *scriptedStream) IsClosed() bool {
 	return stream.closed
 }
 
-func TestProviderLifecycleUsesProviderAssignedIdentityAndExactMetadata(t *testing.T) {
+func TestProviderLifecycleUsesProviderAssignedIdentityAndCompleteMetadata(t *testing.T) {
 	var captured CreateInput
 	control := defaultFakeControl()
 	control.create = func(_ context.Context, input CreateInput) (ControlSession, error) {
@@ -139,13 +139,13 @@ func TestProviderLifecycleUsesProviderAssignedIdentityAndExactMetadata(t *testin
 	}
 	want := provider.createMetadata(request.SandboxID, request.IdempotencyKey, request.WorkspaceID, request.SessionID,
 		request.EnvironmentID, request.RuntimeProfileSHA256, request.PackSetSHA256)
-	if !metadataEqual(captured.Metadata, want) || len(captured.Metadata) != 8 ||
+	if !metadataContainsIdentity(captured.Metadata, want) || len(captured.Metadata) != 8 ||
 		captured.Metadata[MetadataTAEPolicySHA256] != provider.policy.BindingSHA256 {
 		t.Fatalf("create metadata = %#v, want %#v", captured.Metadata, want)
 	}
 
 	control.search = func(_ context.Context, input SearchInput) (SearchResult, error) {
-		if input.Limit != 2 || !metadataEqual(input.Metadata, want) {
+		if input.Limit != 2 || !metadataContainsIdentity(input.Metadata, want) || len(input.Metadata) != 8 {
 			t.Fatalf("search input = %+v", input)
 		}
 		return SearchResult{Sessions: []ControlSession{readyControlSession("tae-session-1", want)}, Total: 1}, nil
@@ -156,12 +156,79 @@ func TestProviderLifecycleUsesProviderAssignedIdentityAndExactMetadata(t *testin
 	}
 }
 
+func TestProviderAcceptsTAEAddedMetadataWhileRequiringCompleteIdentity(t *testing.T) {
+	control := defaultFakeControl()
+	var deleted string
+	control.create = func(_ context.Context, input CreateInput) (ControlSession, error) {
+		metadata := cloneStrings(input.Metadata)
+		metadata["tae_provider_field"] = "provider-owned"
+		return readyControlSession("tae-session-with-provider-metadata", metadata), nil
+	}
+	control.get = func(_ context.Context, sessionID string) (ControlSession, error) {
+		metadata := providerIdentityMetadataForTest(t)
+		metadata["tae_provider_field"] = "provider-owned"
+		return readyControlSession(sessionID, metadata), nil
+	}
+	control.delete = func(_ context.Context, sessionID string) error {
+		deleted = sessionID
+		return nil
+	}
+	provider := newTestProvider(t, control, defaultFakeData())
+	created, err := provider.CreateSandbox(t.Context(), validCreateRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.SessionRef != "tae-session-with-provider-metadata" || created.State != sandboxgateway.ProviderSandboxReady {
+		t.Fatalf("CreateSandbox() = %+v", created)
+	}
+
+	control.search = func(_ context.Context, input SearchInput) (SearchResult, error) {
+		metadata := cloneStrings(input.Metadata)
+		metadata["tae_provider_field"] = "provider-owned"
+		return SearchResult{Sessions: []ControlSession{
+			readyControlSession("tae-session-with-provider-metadata", metadata),
+		}, Total: 1}, nil
+	}
+	found, err := provider.FindSandbox(t.Context(), validFindRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found.SessionRef != created.SessionRef || found.State != sandboxgateway.ProviderSandboxReady {
+		t.Fatalf("FindSandbox() = %+v", found)
+	}
+	if err := provider.DeleteSandbox(t.Context(), sandboxgateway.DeleteSandboxProviderRequest{
+		SessionRef: created.SessionRef,
+		Identity:   validFindRequest(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if deleted != created.SessionRef {
+		t.Fatalf("deleted session = %q, want %q", deleted, created.SessionRef)
+	}
+}
+
 func TestProviderRejectsSessionWithoutExactPolicyBindingMetadata(t *testing.T) {
 	control := defaultFakeControl()
 	control.create = func(_ context.Context, input CreateInput) (ControlSession, error) {
 		metadata := cloneStrings(input.Metadata)
 		delete(metadata, MetadataTAEPolicySHA256)
 		return readyControlSession("tae-session-drifted", metadata), nil
+	}
+	provider := newTestProvider(t, control, defaultFakeData())
+	_, err := provider.CreateSandbox(t.Context(), validCreateRequest())
+	var providerError *sandboxgateway.ProviderError
+	if !errors.As(err, &providerError) || providerError.Code != "provider_metadata_mismatch" || !providerError.Ambiguous {
+		t.Fatalf("CreateSandbox() error = %#v", err)
+	}
+}
+
+func TestProviderRejectsSessionWithConflictingIdentityAndProviderMetadata(t *testing.T) {
+	control := defaultFakeControl()
+	control.create = func(_ context.Context, input CreateInput) (ControlSession, error) {
+		metadata := cloneStrings(input.Metadata)
+		metadata[MetadataSessionID] = "different-session"
+		metadata["tae_provider_field"] = "provider-owned"
+		return readyControlSession("tae-session-conflicting", metadata), nil
 	}
 	provider := newTestProvider(t, control, defaultFakeData())
 	_, err := provider.CreateSandbox(t.Context(), validCreateRequest())
@@ -593,6 +660,14 @@ func validFindRequest() sandboxgateway.FindSandboxRequest {
 		SessionID: create.SessionID, EnvironmentID: create.EnvironmentID, Region: create.Region, PSM: create.PSM,
 		RuntimeProfileSHA256: create.RuntimeProfileSHA256, PackSetSHA256: create.PackSetSHA256,
 	}
+}
+
+func providerIdentityMetadataForTest(t *testing.T) map[string]string {
+	t.Helper()
+	provider := newTestProvider(t, defaultFakeControl(), defaultFakeData())
+	request := validCreateRequest()
+	return provider.createMetadata(request.SandboxID, request.IdempotencyKey, request.WorkspaceID, request.SessionID,
+		request.EnvironmentID, request.RuntimeProfileSHA256, request.PackSetSHA256)
 }
 
 func validStartRequest(outputLimit int64) executionbackend.StartProcessRequest {

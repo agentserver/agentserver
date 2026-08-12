@@ -1,12 +1,17 @@
 package sandboxgateway_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 	"github.com/agentserver/agentserver/v2/internal/sandboxcontract"
 	"github.com/agentserver/agentserver/v2/internal/sandboxgateway"
@@ -32,6 +37,26 @@ type scriptedLifecycleProvider struct {
 
 	deleteErrors []error
 	deleteCalls  []sandboxgateway.DeleteSandboxProviderRequest
+}
+
+type deadlineReadyCore struct {
+	*fakeCore
+	readyResult sandboxgateway.ProviderSandbox
+}
+
+func (core *deadlineReadyCore) ObserveManagedSandbox(ctx context.Context, request corecontract.ObserveManagedSandboxRequest) (corecontract.ManagedSandboxMutationResponse, error) {
+	if request.ObservedState == "failed" && request.ErrorCode == "provider_ready_timeout" {
+		core.mu.Lock()
+		if core.state != nil {
+			core.state.ObservedState = "ready"
+			core.state.ProviderSessionRef = core.readyResult.SessionRef
+			core.state.ExpiresAt = ptrTime(core.readyResult.ExpiresAt)
+			core.bump()
+		}
+		core.mu.Unlock()
+		return corecontract.ManagedSandboxMutationResponse{}, errors.New("sandbox version conflict")
+	}
+	return core.fakeCore.ObserveManagedSandbox(ctx, request)
 }
 
 func (provider *scriptedLifecycleProvider) CreateSandbox(context.Context, sandboxgateway.CreateSandboxRequest) (sandboxgateway.ProviderSandbox, error) {
@@ -386,14 +411,153 @@ func TestManagedSandboxInvalidProviderReferenceIsFailedForReconciliation(t *test
 	}
 }
 
+func TestManagedSandboxEnsureTimeoutFailsExactCreatingGenerationForCleanup(t *testing.T) {
+	now := time.Date(2026, 8, 6, 20, 0, 0, 0, time.UTC)
+	core := newFakeCore(now)
+	provider := &scriptedLifecycleProvider{
+		createResult: sandboxgateway.ProviderSandbox{
+			SessionRef: "tae-never-ready-1", State: sandboxgateway.ProviderSandboxCreating,
+			ProviderStatusClass: "ready", ExecutionReady: false,
+		},
+		getResults: []sandboxgateway.ProviderSandbox{{
+			SessionRef: "tae-never-ready-1", State: sandboxgateway.ProviderSandboxCreating,
+			ProviderStatusClass: "ready", ExecutionReady: false,
+		}},
+	}
+	clockNow := now
+	service := newLifecycleServiceWithClock(t, core, provider, func() time.Time {
+		clockNow = clockNow.Add(100 * time.Millisecond)
+		return clockNow
+	}, nil)
+
+	_, err := service.EnsureSandbox(t.Context(), lifecyclePrincipal(), lifecycleEnsureRequest())
+	var serviceError *sandboxgateway.Error
+	if !errors.As(err, &serviceError) || serviceError.Code != "provider_ready_timeout" {
+		t.Fatalf("EnsureSandbox() error = %#v", err)
+	}
+	core.mu.Lock()
+	failed := *core.state
+	core.mu.Unlock()
+	if failed.ObservedState != "failed" || failed.LastErrorCode != "provider_ready_timeout" || failed.ProviderSessionRef != "tae-never-ready-1" {
+		t.Fatalf("timed out Core state = %+v", failed)
+	}
+
+	report, reconcileErr := service.ReconcileOnce(t.Context(), 10)
+	if reconcileErr != nil || report.Failed != 0 {
+		t.Fatalf("cleanup reconcile = %+v/%v", report, reconcileErr)
+	}
+	core.mu.Lock()
+	deleted := *core.state
+	core.mu.Unlock()
+	provider.mu.Lock()
+	deleteCalls := append([]sandboxgateway.DeleteSandboxProviderRequest(nil), provider.deleteCalls...)
+	provider.mu.Unlock()
+	if deleted.ObservedState != "deleted" || deleted.DesiredState != "deleted" || len(deleteCalls) != 1 ||
+		deleteCalls[0].SessionRef != "tae-never-ready-1" {
+		t.Fatalf("cleanup result state=%+v calls=%+v", deleted, deleteCalls)
+	}
+}
+
+func TestManagedSandboxEnsureDeadlineDoesNotFailConcurrentReadyGeneration(t *testing.T) {
+	now := time.Date(2026, 8, 6, 20, 0, 0, 0, time.UTC)
+	baseCore := newFakeCore(now)
+	ready := sandboxgateway.ProviderSandbox{
+		SessionRef: "tae-concurrent-ready-1", State: sandboxgateway.ProviderSandboxReady,
+		Root: "/workspace", ExpiresAt: now.Add(time.Hour), ProviderStatusClass: "ready", ExecutionReady: true,
+	}
+	core := &deadlineReadyCore{fakeCore: baseCore, readyResult: ready}
+	provider := &scriptedLifecycleProvider{
+		createResult: sandboxgateway.ProviderSandbox{
+			SessionRef: ready.SessionRef, State: sandboxgateway.ProviderSandboxCreating,
+			ProviderStatusClass: "ready", ExecutionReady: false,
+		},
+		getResults: []sandboxgateway.ProviderSandbox{ready},
+	}
+	clockNow := now
+	service, err := sandboxgateway.NewService(sandboxgateway.Config{
+		Core: core, Provider: provider, Limits: sandboxcontract.DefaultLimits(),
+		ProviderRegion: "sg", ProviderPSM: "toutiao.tae.sandbox", IdleTTL: time.Minute,
+		EnsureTimeout: 250 * time.Millisecond, EnsurePollInterval: time.Millisecond,
+		IDGenerator: (&sequenceIDs{values: []string{testSandboxID, testCreateKey}}).Next,
+		Now:         func() time.Time { clockNow = clockNow.Add(100 * time.Millisecond); return clockNow },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response, ensureErr := service.EnsureSandbox(t.Context(), lifecyclePrincipal(), lifecycleEnsureRequest())
+	if ensureErr != nil || response.Sandbox.State != sandboxcontract.SandboxReady || response.Sandbox.Ref.SandboxID != testSandboxID {
+		t.Fatalf("concurrent ready EnsureSandbox() = %+v/%v", response, ensureErr)
+	}
+	baseCore.mu.Lock()
+	final := *baseCore.state
+	baseCore.mu.Unlock()
+	if final.ObservedState != "ready" || final.LastErrorCode == "provider_ready_timeout" {
+		t.Fatalf("concurrent ready Core state = %+v", final)
+	}
+}
+
+func TestManagedSandboxEnsureLogsCorrelatedLifecycleWithoutPayloads(t *testing.T) {
+	now := time.Date(2026, 8, 6, 20, 0, 0, 0, time.UTC)
+	core := newFakeCore(now)
+	provider := &scriptedLifecycleProvider{createResult: sandboxgateway.ProviderSandbox{
+		SessionRef: "tae-logged-1", State: sandboxgateway.ProviderSandboxReady,
+		Root: "/workspace", ExpiresAt: now.Add(time.Hour), ProviderStatusClass: "creating", ExecutionReady: true,
+		RequestID: "provider-log-1",
+	}}
+	var output bytes.Buffer
+	service := newLifecycleServiceWithLogger(t, core, provider, now, slog.New(slog.NewJSONHandler(&output, nil)))
+	if _, err := service.EnsureSandbox(t.Context(), lifecyclePrincipal(), lifecycleEnsureRequest()); err != nil {
+		t.Fatal(err)
+	}
+	var records []map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(output.Bytes()))
+	for {
+		var record map[string]any
+		if err := decoder.Decode(&record); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		records = append(records, record)
+	}
+	if len(records) < 4 {
+		t.Fatalf("log records = %s", output.String())
+	}
+	final := records[len(records)-1]
+	for key, want := range map[string]any{
+		"stage": "ready", "request_id": "lifecycle-ensure", "workspace_id": testWorkspaceID,
+		"run_id": testRunID, "run_attempt_id": testAttemptID, "sandbox_id": testSandboxID,
+		"provider_session_ref": "tae-logged-1", "provider_status_class": "creating",
+		"provider_execution_ready": true, "provider_request_id": "provider-log-1",
+	} {
+		if final[key] != want {
+			t.Fatalf("final log %q = %#v, want %#v; logs=%s", key, final[key], want, output.String())
+		}
+	}
+	for _, forbidden := range []string{"\"arguments\"", "\"environment\"", "authorization", "token", "secret", "\"executable\""} {
+		if bytes.Contains(bytes.ToLower(output.Bytes()), []byte(forbidden)) {
+			t.Fatalf("logs contain forbidden payload field %q: %s", forbidden, output.String())
+		}
+	}
+}
+
 func newLifecycleService(t *testing.T, core *fakeCore, provider sandboxgateway.Provider, now time.Time) *sandboxgateway.Service {
+	return newLifecycleServiceWithLogger(t, core, provider, now, nil)
+}
+
+func newLifecycleServiceWithLogger(t *testing.T, core *fakeCore, provider sandboxgateway.Provider, now time.Time, logger *slog.Logger) *sandboxgateway.Service {
+	return newLifecycleServiceWithClock(t, core, provider, func() time.Time { return now }, logger)
+}
+
+func newLifecycleServiceWithClock(t *testing.T, core *fakeCore, provider sandboxgateway.Provider, now func() time.Time, logger *slog.Logger) *sandboxgateway.Service {
 	t.Helper()
 	service, err := sandboxgateway.NewService(sandboxgateway.Config{
 		Core: core, Provider: provider, Limits: sandboxcontract.DefaultLimits(),
 		ProviderRegion: "sg", ProviderPSM: "toutiao.tae.sandbox", IdleTTL: time.Minute,
 		EnsureTimeout: 250 * time.Millisecond, EnsurePollInterval: time.Millisecond,
 		IDGenerator: (&sequenceIDs{values: []string{testSandboxID, testCreateKey}}).Next,
-		Now:         func() time.Time { return now },
+		Now:         now, Logger: logger,
 	})
 	if err != nil {
 		t.Fatal(err)

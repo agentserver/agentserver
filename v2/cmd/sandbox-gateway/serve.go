@@ -72,16 +72,17 @@ func serveSandboxGatewayWithProvider(
 	if err != nil {
 		return fmt.Errorf("configure sandbox provider: %w", err)
 	}
+	logger := slog.New(slog.NewJSONHandler(stderr, nil))
 	service, err := sandboxgateway.NewService(sandboxgateway.Config{
 		Core: coreClient, Provider: provider, Limits: sandboxcontract.DefaultLimits(),
 		ProviderRegion: config.providerRegion, ProviderPSM: config.providerPSM,
 		IdleTTL: config.idleTTL, EnsureTimeout: config.ensureTimeout,
 		EnsurePollInterval: config.ensurePoll, Root: config.root, Platform: config.platform,
+		Logger: logger,
 	})
 	if err != nil {
 		return err
 	}
-	logger := slog.New(slog.NewJSONHandler(stderr, nil))
 	handler, err := sandboxgateway.NewHandlerWithLogger(service, authorizer, 0, logger)
 	if err != nil {
 		return err

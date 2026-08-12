@@ -40,16 +40,42 @@ func (service *Service) ReconcileOnce(ctx context.Context, limit int) (Reconcile
 		changed, reconcileErr := service.reconcileSandbox(ctx, state)
 		if reconcileErr != nil {
 			report.Failed++
+			service.logReconcile("error", "failed", state, false, reconcileErr)
 			reconcileErrors = append(reconcileErrors, fmt.Errorf("sandbox %s generation %d: %w", state.SandboxID, state.Generation, reconcileErr))
 			continue
 		}
 		if changed {
 			report.Converged++
+			service.logReconcile("info", "converged", state, true, nil)
 		} else {
 			report.Unchanged++
 		}
 	}
 	return report, errors.Join(reconcileErrors...)
+}
+
+func (service *Service) logReconcile(level, stage string, state corecontract.ManagedSandboxState, changed bool, err error) {
+	if service == nil || service.logger == nil {
+		return
+	}
+	attributes := []any{
+		"stage", stage,
+		"workspace_id", state.WorkspaceID,
+		"session_id", state.SessionID,
+		"environment_id", state.EnvironmentID,
+		"sandbox_id", state.SandboxID,
+		"sandbox_generation", state.Generation,
+		"core_state", safeCoreState(state.ObservedState),
+		"provider_session_ref", state.ProviderSessionRef,
+		"last_error_code", safeProviderCode(state.LastErrorCode, "other"),
+		"changed", changed,
+	}
+	if level == "error" {
+		attributes = append(attributes, "reason_code", safeProviderErrorCode(err, safeServiceErrorCode(err, "reconcile_failed")))
+		service.logger.Error("managed sandbox reconcile", attributes...)
+		return
+	}
+	service.logger.Info("managed sandbox reconcile", attributes...)
 }
 
 func (service *Service) reconcileSandbox(ctx context.Context, state corecontract.ManagedSandboxState) (bool, error) {
@@ -115,6 +141,14 @@ func (service *Service) reconcileSandbox(ctx context.Context, state corecontract
 			return false, err
 		}
 		changed := converged.Version != state.Version
+		if !ready && converged.ObservedState == "creating" && converged.ProviderSessionRef != "" && service.readinessExpired(converged) {
+			observed, observeErr := service.observeProviderProblem(ctx, converged, "failed", "provider_ready_timeout", converged.ProviderSessionRef)
+			if observeErr != nil {
+				return changed, observeErr
+			}
+			_, deleteErr := service.reconcileDelete(ctx, observed.Sandbox)
+			return true, deleteErr
+		}
 		if !ready && converged.ObservedState == "failed" {
 			deleted, deleteErr := service.reconcileDelete(ctx, converged)
 			return changed || deleted, deleteErr

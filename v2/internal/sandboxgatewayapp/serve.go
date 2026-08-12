@@ -45,17 +45,18 @@ func Serve(ctx context.Context, config Config, provider sandboxgateway.Provider,
 	if err != nil {
 		return err
 	}
+	logger := slog.New(slog.NewJSONHandler(stderr, nil))
 	service, err := sandboxgateway.NewService(sandboxgateway.Config{
 		Core: coreClient, Provider: provider, Limits: sandboxcontract.DefaultLimits(),
 		ProviderRegion: config.ProviderRegion, ProviderPSM: config.ProviderPSM,
 		IdleTTL: config.IdleTTL, EnsureTimeout: config.EnsureTimeout, EnsurePollInterval: config.EnsurePoll,
 		Root: config.Root, Platform: config.Platform,
 		WorkspaceAllowlist: config.WorkspaceAllowlist,
+		Logger:             logger,
 	})
 	if err != nil {
 		return err
 	}
-	logger := slog.New(slog.NewJSONHandler(stderr, nil))
 	handler, err := sandboxgateway.NewHandlerWithLogger(service, authorizer, 0, logger)
 	if err != nil {
 		return err

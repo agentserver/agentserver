@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -31,6 +32,7 @@ type Config struct {
 	WorkspaceAllowlist []string
 	IDGenerator        IDGenerator
 	Now                func() time.Time
+	Logger             *slog.Logger
 }
 
 type Service struct {
@@ -47,6 +49,7 @@ type Service struct {
 	workspaceAllowlist map[string]struct{}
 	idGenerator        IDGenerator
 	now                func() time.Time
+	logger             *slog.Logger
 }
 
 type Error struct {
@@ -131,11 +134,12 @@ func NewService(config Config) (*Service, error) {
 		idleTTL: config.IdleTTL, ensureTimeout: config.EnsureTimeout,
 		ensurePollInterval: config.EnsurePollInterval, root: config.Root,
 		platform: config.Platform, workspaceAllowlist: workspaceAllowlist,
-		idGenerator: config.IDGenerator, now: config.Now,
+		idGenerator: config.IDGenerator, now: config.Now, logger: config.Logger,
 	}, nil
 }
 
 func (service *Service) EnsureSandbox(ctx context.Context, principal Principal, request sandboxcontract.EnsureSandboxRequest) (sandboxcontract.EnsureSandboxResponse, error) {
+	startedAt := time.Now()
 	if err := request.Validate(service.limits); err != nil {
 		return sandboxcontract.EnsureSandboxResponse{}, invalidRequest(err)
 	}
@@ -145,6 +149,7 @@ func (service *Service) EnsureSandbox(ctx context.Context, principal Principal, 
 	if err := bindSessionPrincipal(principal, ActionEnsure, request.Session); err != nil {
 		return sandboxcontract.EnsureSandboxResponse{}, forbidden(err)
 	}
+	service.logEnsure("info", "begin", request.RequestID, principal, corecontract.ManagedSandboxState{}, ProviderSandbox{}, 0, startedAt)
 	sandboxID, err := service.idGenerator()
 	if err != nil {
 		return sandboxcontract.EnsureSandboxResponse{}, unavailable("identity_generation_failed", err)
@@ -162,87 +167,144 @@ func (service *Service) EnsureSandbox(ctx context.Context, principal Principal, 
 		RequestedTTLSeconds: request.RequestedTTLSeconds, IdleTTLSeconds: int64(service.idleTTL / time.Second),
 	})
 	if err != nil {
+		service.logEnsure("error", "reserve_failed", request.RequestID, principal, corecontract.ManagedSandboxState{}, ProviderSandbox{}, 0, startedAt)
 		return sandboxcontract.EnsureSandboxResponse{}, coreServiceError("reserve_failed", err)
 	}
-	providerSandbox, state, err := service.ensureManagedSandbox(ctx, reserved.Sandbox)
+	service.logEnsure("info", "reserved", request.RequestID, principal, reserved.Sandbox, ProviderSandbox{}, 0, startedAt,
+		"reservation_created", reserved.Created)
+	providerSandbox, state, polls, err := service.ensureManagedSandbox(ctx, reserved.Sandbox, func(stage string, observed corecontract.ManagedSandboxState, provider ProviderSandbox, poll int) {
+		service.logEnsure("info", stage, request.RequestID, principal, observed, provider, poll, startedAt)
+	})
 	if err != nil {
+		service.logEnsure("error", safeServiceErrorCode(err, "ensure_failed"), request.RequestID, principal, state, providerSandbox, polls, startedAt)
 		return sandboxcontract.EnsureSandboxResponse{}, err
 	}
+	service.logEnsure("info", "ready", request.RequestID, principal, state, providerSandbox, polls, startedAt)
 	return sandboxcontract.EnsureSandboxResponse{Sandbox: service.contractSandbox(state, providerSandbox)}, nil
 }
 
-func (service *Service) ensureManagedSandbox(ctx context.Context, state corecontract.ManagedSandboxState) (ProviderSandbox, corecontract.ManagedSandboxState, error) {
+func (service *Service) ensureManagedSandbox(
+	ctx context.Context,
+	state corecontract.ManagedSandboxState,
+	logTransition func(string, corecontract.ManagedSandboxState, ProviderSandbox, int),
+) (ProviderSandbox, corecontract.ManagedSandboxState, int, error) {
 	deadline := service.now().Add(service.ensureTimeout)
+	polls := 0
+	lastLoggedCoreState := ""
+	lastLoggedProviderState := ProviderSandboxState("")
+	lastLoggedProviderRef := ""
+	lastLoggedProviderStatusClass := ""
+	lastLoggedExecutionReady := false
+	var lastProvider ProviderSandbox
+	logObservation := func(stage string, provider ProviderSandbox) {
+		if logTransition == nil {
+			return
+		}
+		if stage == "poll" && state.ObservedState == lastLoggedCoreState && provider.State == lastLoggedProviderState &&
+			provider.SessionRef == lastLoggedProviderRef && provider.ProviderStatusClass == lastLoggedProviderStatusClass &&
+			provider.ExecutionReady == lastLoggedExecutionReady {
+			return
+		}
+		logTransition(stage, state, provider, polls)
+		lastLoggedCoreState, lastLoggedProviderState, lastLoggedProviderRef = state.ObservedState, provider.State, provider.SessionRef
+		lastLoggedProviderStatusClass, lastLoggedExecutionReady = provider.ProviderStatusClass, provider.ExecutionReady
+	}
 	for {
 		switch state.ObservedState {
 		case "ready":
 			providerSandbox, err := service.provider.GetSandbox(ctx, state.ProviderSessionRef)
+			polls++
 			if err == nil {
+				lastProvider = providerSandbox
 				providerSandbox, observed, ready, convergeErr := service.convergeProviderSandbox(ctx, state, providerSandbox)
 				if convergeErr != nil {
-					return ProviderSandbox{}, state, convergeErr
-				}
-				if ready {
-					return providerSandbox, observed, nil
+					return providerSandbox, state, polls, convergeErr
 				}
 				state = observed
+				logObservation("poll", providerSandbox)
+				if ready {
+					return providerSandbox, observed, polls, nil
+				}
 				break
 			}
 			if errors.Is(err, ErrProviderSandboxNotFound) {
 				_, _ = service.observeProviderProblem(ctx, state, "failed", "provider_session_missing", state.ProviderSessionRef)
-				return ProviderSandbox{}, state, unavailable("provider_session_missing", err)
+				return ProviderSandbox{}, state, polls, unavailable("provider_session_missing", err)
 			}
-			return ProviderSandbox{}, state, unavailable("provider_get_failed", err)
+			return ProviderSandbox{}, state, polls, unavailable("provider_get_failed", err)
 		case "reserved":
 			begun, err := service.core.BeginManagedSandboxCreate(ctx, corecontract.BeginManagedSandboxCreateRequest{
 				SandboxID: state.SandboxID, Generation: state.Generation, ExpectedVersion: state.Version,
 			})
 			if err != nil {
-				return ProviderSandbox{}, state, coreServiceError("begin_create_failed", err)
+				return ProviderSandbox{}, state, polls, coreServiceError("begin_create_failed", err)
 			}
 			state = begun.Sandbox
+			logObservation("create_started", ProviderSandbox{})
 			if begun.Changed {
 				providerSandbox, observed, ready, createErr := service.createProviderSandbox(ctx, state)
+				polls++
+				lastProvider = providerSandbox
 				if createErr != nil {
-					return ProviderSandbox{}, state, createErr
-				}
-				if ready {
-					return providerSandbox, observed, nil
+					return providerSandbox, observed, polls, createErr
 				}
 				state = observed
+				logObservation("provider_created", providerSandbox)
+				if ready {
+					return providerSandbox, observed, polls, nil
+				}
 			}
 		case "creating", "unknown":
 			providerSandbox, err := service.findOrGetProviderSandbox(ctx, state)
+			polls++
 			if err == nil {
+				lastProvider = providerSandbox
 				providerSandbox, observed, ready, convergeErr := service.convergeProviderSandbox(ctx, state, providerSandbox)
 				if convergeErr != nil {
-					return ProviderSandbox{}, state, convergeErr
-				}
-				if ready {
-					return providerSandbox, observed, nil
+					return providerSandbox, state, polls, convergeErr
 				}
 				state = observed
+				logObservation("poll", providerSandbox)
+				if ready {
+					return providerSandbox, observed, polls, nil
+				}
 				break
 			}
 			if !errors.Is(err, ErrProviderSandboxNotFound) {
-				return ProviderSandbox{}, state, unavailable("provider_get_failed", err)
+				return ProviderSandbox{}, state, polls, unavailable("provider_get_failed", err)
 			}
 		case "failed":
-			return ProviderSandbox{}, state, conflict("sandbox_failed", errors.New("managed sandbox generation is failed and must be replaced"))
+			return ProviderSandbox{}, state, polls, conflict("sandbox_failed", errors.New("managed sandbox generation is failed and must be replaced"))
 		case "deleting", "deleted":
-			return ProviderSandbox{}, state, conflict("sandbox_deleting", errors.New("managed sandbox generation is being deleted"))
+			return ProviderSandbox{}, state, polls, conflict("sandbox_deleting", errors.New("managed sandbox generation is being deleted"))
 		default:
-			return ProviderSandbox{}, state, unavailable("invalid_core_state", fmt.Errorf("unsupported managed sandbox state %q", state.ObservedState))
+			return ProviderSandbox{}, state, polls, unavailable("invalid_core_state", fmt.Errorf("unsupported managed sandbox state %q", state.ObservedState))
 		}
 		if !service.now().Before(deadline) {
-			return ProviderSandbox{}, state, unavailable("ensure_timeout", errors.New("managed sandbox did not become ready before deadline"))
+			failed, markedFailed, failErr := service.failProviderReadyTimeout(ctx, state)
+			if failErr != nil {
+				return lastProvider, state, polls, coreServiceError("observe_provider_ready_timeout_failed", failErr)
+			}
+			state = failed
+			if !markedFailed && state.ObservedState == "ready" {
+				// A concurrent ensure won the generation fence at the deadline.
+				// Re-enter once so the ready provider observation is returned rather
+				// than converting a successful allocation into a timeout.
+				continue
+			}
+			if !markedFailed {
+				logObservation("ensure_timeout", lastProvider)
+				return lastProvider, state, polls, unavailable("ensure_timeout", errors.New("managed sandbox readiness deadline elapsed without an exact provider session"))
+			}
+			logObservation("provider_ready_timeout", lastProvider)
+			return lastProvider, state, polls, unavailable("provider_ready_timeout", errors.New("managed sandbox did not become executable before deadline"))
 		}
 		if err := waitContext(ctx, service.ensurePollInterval); err != nil {
-			return ProviderSandbox{}, state, unavailable("ensure_cancelled", err)
+			return ProviderSandbox{}, state, polls, unavailable("ensure_cancelled", err)
 		}
 		current, err := service.core.GetManagedSandbox(ctx, state.SandboxID, state.Generation)
 		if err != nil {
-			return ProviderSandbox{}, state, coreServiceError("get_failed", err)
+			return ProviderSandbox{}, state, polls, coreServiceError("get_failed", err)
 		}
 		state = current.Sandbox
 	}
@@ -769,6 +831,124 @@ func (service *Service) observeProviderProblem(ctx context.Context, state coreco
 		ObservedState: observedState, ProviderSessionRef: providerSessionRef,
 		ErrorCode: code, ErrorSHA256: hex.EncodeToString(digest[:]),
 	})
+}
+
+func (service *Service) failProviderReadyTimeout(ctx context.Context, state corecontract.ManagedSandboxState) (corecontract.ManagedSandboxState, bool, error) {
+	// A caller deadline alone is not provider failure evidence: cancellation
+	// exits through ensure_cancelled. This function is reached only after the
+	// service-owned readiness deadline and requires an exact, durably observed
+	// provider reference before marking the generation for bounded cleanup.
+	if state.ProviderSessionRef == "" {
+		return state, false, nil
+	}
+	observeContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), min(service.ensureTimeout, 5*time.Second))
+	defer cancel()
+	observed, err := service.observeProviderProblem(observeContext, state, "failed", "provider_ready_timeout", state.ProviderSessionRef)
+	if err == nil {
+		return observed.Sandbox, true, nil
+	}
+	current, getErr := service.core.GetManagedSandbox(observeContext, state.SandboxID, state.Generation)
+	if getErr == nil && current.Sandbox.ObservedState == "failed" &&
+		current.Sandbox.ProviderSessionRef == state.ProviderSessionRef && current.Sandbox.LastErrorCode == "provider_ready_timeout" {
+		return current.Sandbox, true, nil
+	}
+	if getErr == nil && current.Sandbox.ObservedState == "ready" && current.Sandbox.ProviderSessionRef == state.ProviderSessionRef {
+		return current.Sandbox, false, nil
+	}
+	return state, false, err
+}
+
+func (service *Service) readinessExpired(state corecontract.ManagedSandboxState) bool {
+	startedAt := state.CreatedAt
+	if startedAt.IsZero() {
+		startedAt = state.UpdatedAt
+	}
+	return !startedAt.IsZero() && !startedAt.Add(service.ensureTimeout).After(service.now())
+}
+
+func (service *Service) logEnsure(
+	level, stage, requestID string,
+	principal Principal,
+	state corecontract.ManagedSandboxState,
+	provider ProviderSandbox,
+	polls int,
+	startedAt time.Time,
+	extra ...any,
+) {
+	if service == nil || service.logger == nil {
+		return
+	}
+	attributes := []any{
+		"stage", stage,
+		"request_id", requestID,
+		"workspace_id", principal.WorkspaceID,
+		"session_id", principal.SessionID,
+		"environment_id", principal.EnvironmentID,
+		"run_id", principal.RunID,
+		"run_attempt_id", principal.RunAttemptID,
+		"run_attempt_generation", principal.RunAttemptGeneration,
+		"sandbox_id", state.SandboxID,
+		"sandbox_generation", state.Generation,
+		"core_state", safeCoreState(state.ObservedState),
+		"provider_session_ref", firstNonEmpty(provider.SessionRef, state.ProviderSessionRef),
+		"provider_state", safeProviderState(provider.State),
+		"provider_status_class", safeProviderStatusClass(provider.ProviderStatusClass),
+		"provider_execution_ready", provider.ExecutionReady,
+		"provider_request_id", provider.RequestID,
+		"poll_count", polls,
+		"elapsed_ms", time.Since(startedAt).Milliseconds(),
+	}
+	attributes = append(attributes, extra...)
+	if level == "error" {
+		service.logger.Error("managed sandbox ensure", attributes...)
+		return
+	}
+	service.logger.Info("managed sandbox ensure", attributes...)
+}
+
+func safeCoreState(state string) string {
+	switch state {
+	case "reserved", "creating", "ready", "deleting", "deleted", "failed", "unknown":
+		return state
+	default:
+		return "other"
+	}
+}
+
+func safeProviderState(state ProviderSandboxState) string {
+	switch state {
+	case ProviderSandboxReady, ProviderSandboxCreating, ProviderSandboxDeleting,
+		ProviderSandboxDeleted, ProviderSandboxFailed, ProviderSandboxUnknown:
+		return string(state)
+	default:
+		return "other"
+	}
+}
+
+func safeProviderStatusClass(status string) string {
+	switch status {
+	case "creating", "ready", "deleting", "deleted", "failed", "other":
+		return status
+	default:
+		return "other"
+	}
+}
+
+func safeServiceErrorCode(err error, fallback string) string {
+	var serviceError *Error
+	if errors.As(err, &serviceError) && serviceError != nil {
+		return safeProviderCode(serviceError.Code, fallback)
+	}
+	return fallback
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (service *Service) contractSandbox(state corecontract.ManagedSandboxState, providerSandbox ProviderSandbox) sandboxcontract.Sandbox {

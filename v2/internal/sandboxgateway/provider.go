@@ -28,7 +28,12 @@ type ProviderSandbox struct {
 	State      ProviderSandboxState
 	Root       string
 	ExpiresAt  time.Time
-	RequestID  string
+	// RequestID is a bounded non-secret provider correlation identifier (for
+	// example a TAE log ID). Providers must never place credentials or payloads
+	// in this field.
+	RequestID           string
+	ProviderStatusClass string
+	ExecutionReady      bool
 }
 
 type CreateSandboxRequest struct {
@@ -147,6 +152,21 @@ func validateProviderSandbox(sandbox ProviderSandbox) error {
 	case ProviderSandboxCreating, ProviderSandboxDeleting, ProviderSandboxDeleted, ProviderSandboxFailed, ProviderSandboxUnknown:
 	default:
 		return fmt.Errorf("unsupported provider sandbox state %q", sandbox.State)
+	}
+	if sandbox.ProviderStatusClass != "" {
+		switch sandbox.ProviderStatusClass {
+		case "creating", "ready", "deleting", "deleted", "failed", "other":
+		default:
+			return errors.New("provider sandbox status classification is invalid")
+		}
+	}
+	if len(sandbox.RequestID) > 1024 {
+		return errors.New("provider sandbox request identifier is invalid")
+	}
+	for _, character := range sandbox.RequestID {
+		if character == '\r' || character == '\n' || character < 0x20 || character == 0x7f {
+			return errors.New("provider sandbox request identifier is invalid")
+		}
 	}
 	return nil
 }

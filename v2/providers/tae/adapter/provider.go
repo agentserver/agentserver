@@ -424,12 +424,13 @@ func (provider *Provider) providerSandbox(session ControlSession) (sandboxgatewa
 	if session.ID == "" || len(session.ID) > 1024 {
 		return sandboxgateway.ProviderSandbox{}, &sandboxgateway.ProviderError{Code: "invalid_provider_identity", Cause: errors.New("TAE returned an invalid session ID")}
 	}
+	statusClass := providerStatusClass(session)
 	state := providerState(session)
-	result := sandboxgateway.ProviderSandbox{SessionRef: session.ID, State: state, ExpiresAt: session.ExpiresAt, RequestID: session.RequestID}
+	result := sandboxgateway.ProviderSandbox{
+		SessionRef: session.ID, State: state, ExpiresAt: session.ExpiresAt, RequestID: session.RequestID,
+		ProviderStatusClass: statusClass, ExecutionReady: session.SandboxdEnabled,
+	}
 	if state == sandboxgateway.ProviderSandboxReady {
-		if !session.SandboxdEnabled {
-			return sandboxgateway.ProviderSandbox{}, &sandboxgateway.ProviderError{Code: "sandboxd_not_enabled", Cause: errors.New("TAE Terminal session does not expose sandboxd")}
-		}
 		if RuntimeCommandConflicts(session.Command) {
 			return sandboxgateway.ProviderSandbox{}, &sandboxgateway.ProviderError{Code: "runtime_command_mismatch", Cause: errors.New("TAE Terminal session did not retain the managed runtime command")}
 		}
@@ -439,22 +440,54 @@ func (provider *Provider) providerSandbox(session ControlSession) (sandboxgatewa
 }
 
 func providerState(session ControlSession) sandboxgateway.ProviderSandboxState {
-	if session.Deleted {
+	statusClass := providerStatusClass(session)
+	switch statusClass {
+	case "deleting":
+		return sandboxgateway.ProviderSandboxDeleting
+	case "deleted":
 		return sandboxgateway.ProviderSandboxDeleted
+	case "failed":
+		return sandboxgateway.ProviderSandboxFailed
+	case "other":
+		// An unrecognized generic status is not proof of a non-terminal
+		// session. Keep it fail-closed even if an old response still reports
+		// sandboxd enabled.
+		return sandboxgateway.ProviderSandboxUnknown
+	}
+	// sandboxd_enabled is the Terminal Session execution-readiness signal.
+	// The generic TAE status can lag behind it (including remaining empty or
+	// "starting"), so non-terminal sessions become ready as soon as sandboxd
+	// is exposed. Conversely, "running" without sandboxd is not executable yet.
+	if session.SandboxdEnabled {
+		return sandboxgateway.ProviderSandboxReady
+	}
+	switch statusClass {
+	case "creating", "ready":
+		return sandboxgateway.ProviderSandboxCreating
+	default:
+		return sandboxgateway.ProviderSandboxUnknown
+	}
+}
+
+// providerStatusClass deliberately returns a small allowlisted vocabulary.
+// Raw provider status text is not propagated into logs or Core state.
+func providerStatusClass(session ControlSession) string {
+	if session.Deleted {
+		return "deleted"
 	}
 	switch strings.ToLower(strings.TrimSpace(session.Status)) {
 	case "running", "ready":
-		return sandboxgateway.ProviderSandboxReady
+		return "ready"
 	case "", "pending", "creating", "initializing", "starting":
-		return sandboxgateway.ProviderSandboxCreating
+		return "creating"
 	case "deleting", "terminating", "stopping":
-		return sandboxgateway.ProviderSandboxDeleting
+		return "deleting"
 	case "deleted", "terminated", "stopped":
-		return sandboxgateway.ProviderSandboxDeleted
+		return "deleted"
 	case "failed", "error":
-		return sandboxgateway.ProviderSandboxFailed
+		return "failed"
 	default:
-		return sandboxgateway.ProviderSandboxUnknown
+		return "other"
 	}
 }
 

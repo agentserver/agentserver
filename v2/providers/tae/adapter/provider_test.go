@@ -270,6 +270,42 @@ func TestProviderAcceptsReadySessionWhenTAEOmitsRuntimeCommand(t *testing.T) {
 	}
 }
 
+func TestProviderTerminalReadinessUsesSandboxdWithTerminalStatesTakingPrecedence(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		status          string
+		deleted         bool
+		sandboxdEnabled bool
+		wantState       sandboxgateway.ProviderSandboxState
+		wantClass       string
+	}{
+		"empty status with sandboxd":          {sandboxdEnabled: true, wantState: sandboxgateway.ProviderSandboxReady, wantClass: "creating"},
+		"starting with sandboxd":              {status: "starting", sandboxdEnabled: true, wantState: sandboxgateway.ProviderSandboxReady, wantClass: "creating"},
+		"running without sandboxd":            {status: "running", wantState: sandboxgateway.ProviderSandboxCreating, wantClass: "ready"},
+		"unknown without sandboxd":            {status: "provider-new-state", wantState: sandboxgateway.ProviderSandboxUnknown, wantClass: "other"},
+		"unknown with sandboxd stays unknown": {status: "provider-new-state", sandboxdEnabled: true, wantState: sandboxgateway.ProviderSandboxUnknown, wantClass: "other"},
+		"failed takes precedence":             {status: "failed", sandboxdEnabled: true, wantState: sandboxgateway.ProviderSandboxFailed, wantClass: "failed"},
+		"deleting takes precedence":           {status: "deleting", sandboxdEnabled: true, wantState: sandboxgateway.ProviderSandboxDeleting, wantClass: "deleting"},
+		"explicit deletion takes precedence":  {status: "running", deleted: true, sandboxdEnabled: true, wantState: sandboxgateway.ProviderSandboxDeleted, wantClass: "deleted"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			provider := newTestProvider(t, defaultFakeControl(), defaultFakeData())
+			got, err := provider.providerSandbox(ControlSession{
+				ID: "tae-readiness-1", Status: testCase.status, Deleted: testCase.deleted,
+				SandboxdEnabled: testCase.sandboxdEnabled, ExpiresAt: testNow.Add(time.Hour),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.State != testCase.wantState || got.ProviderStatusClass != testCase.wantClass || got.ExecutionReady != testCase.sandboxdEnabled {
+				t.Fatalf("provider sandbox = %+v, want state %q class %q execution-ready %v", got, testCase.wantState, testCase.wantClass, testCase.sandboxdEnabled)
+			}
+			if got.State == sandboxgateway.ProviderSandboxReady && got.Root != "/workspace" {
+				t.Fatalf("ready provider root = %q", got.Root)
+			}
+		})
+	}
+}
+
 func TestRuntimeCommandConflictsOnlyOnReportedDifferentValue(t *testing.T) {
 	for name, testCase := range map[string]struct {
 		command string

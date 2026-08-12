@@ -344,14 +344,15 @@ func TestPostgreSQLPreTurnAbandonmentAtomicallyArbitratesCancellation(t *testing
 		currentRun := created.Run
 
 		for generation := int64(1); generation <= maximumPreTurnStartupAttempts; generation++ {
-			seed := 157_020 + int(generation)*10
-			claim := mustClaimStateRun(t, store, stateClaimRunCommand(seed, currentRun.ID, currentRun.Version, fmt.Sprintf("retry-holder-%d", generation)))
+			claimSeed := 157_020 + int(generation)*20
+			abandonSeed := claimSeed + 10
+			claim := mustClaimStateRun(t, store, stateClaimRunCommand(claimSeed, currentRun.ID, currentRun.Version, fmt.Sprintf("retry-holder-%d", generation)))
 			if claim.Attempt.Generation != generation {
 				t.Fatalf("attempt generation = %d, want %d", claim.Attempt.Generation, generation)
 			}
 			command := AbandonAttemptCommand{
 				RunID: currentRun.ID, AttemptID: claim.Attempt.ID, HolderID: claim.Attempt.HolderID,
-				Generation: generation, Reason: abandonReasonStartup, Record: stateTransitionRecord(seed + 1),
+				Generation: generation, Reason: abandonReasonStartup, Record: stateTransitionRecord(abandonSeed),
 			}
 			abandoned, err := store.AbandonAttempt(t.Context(), command)
 			if err != nil {

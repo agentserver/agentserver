@@ -504,6 +504,12 @@ func dispatchError(err error, afterAccepted bool, fallback string) error {
 	}
 	dispatchError := executionbackend.NewDispatchError(outcome, code, cause)
 	dispatchError.ProviderRequestID = providerRequestID
+	if requestError != nil {
+		dispatchError.ProviderCode = requestError.ProviderCode
+		dispatchError.HTTPStatus = requestError.StatusCode
+		requestWritten := requestError.WroteRequest
+		dispatchError.RequestWritten = &requestWritten
+	}
 	return dispatchError
 }
 

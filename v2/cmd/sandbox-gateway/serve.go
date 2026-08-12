@@ -81,7 +81,8 @@ func serveSandboxGatewayWithProvider(
 	if err != nil {
 		return err
 	}
-	handler, err := sandboxgateway.NewHandler(service, authorizer, 0)
+	logger := slog.New(slog.NewJSONHandler(stderr, nil))
+	handler, err := sandboxgateway.NewHandlerWithLogger(service, authorizer, 0, logger)
 	if err != nil {
 		return err
 	}
@@ -105,7 +106,6 @@ func serveSandboxGatewayWithProvider(
 		MaxHeaderBytes:    32 * 1024,
 		ErrorLog:          httperrorlog.New(stderr),
 	}
-	logger := slog.New(slog.NewJSONHandler(stderr, nil))
 	initialContext, cancelInitial := context.WithTimeout(ctx, min(config.ensureTimeout, 30*time.Second))
 	_, err = service.ReconcileOnce(initialContext, config.reconcileLimit)
 	cancelInitial()

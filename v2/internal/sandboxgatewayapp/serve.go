@@ -55,7 +55,8 @@ func Serve(ctx context.Context, config Config, provider sandboxgateway.Provider,
 	if err != nil {
 		return err
 	}
-	handler, err := sandboxgateway.NewHandler(service, authorizer, 0)
+	logger := slog.New(slog.NewJSONHandler(stderr, nil))
+	handler, err := sandboxgateway.NewHandlerWithLogger(service, authorizer, 0, logger)
 	if err != nil {
 		return err
 	}
@@ -83,7 +84,7 @@ func Serve(ctx context.Context, config Config, provider sandboxgateway.Provider,
 	ready.ready.Store(true)
 	fmt.Fprintf(stdout, "sandbox-gateway serve: provider tae; region %s; psm %s; endpoint https://%s; reconcile %s\n",
 		config.ProviderRegion, config.ProviderPSM, listener.Addr(), config.ReconcileInterval)
-	return run(ctx, service, server, listener, ready, slog.New(slog.NewJSONHandler(stderr, nil)), config.ReconcileInterval, config.ReconcileLimit)
+	return run(ctx, service, server, listener, ready, logger, config.ReconcileInterval, config.ReconcileLimit)
 }
 
 func healthRoutes(handler http.Handler, ready *readiness) http.Handler {

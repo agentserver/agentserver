@@ -1,10 +1,14 @@
 package executorgateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -83,6 +87,62 @@ func TestManagedShellRoutesLarkCLIThroughFrozenTAETarget(t *testing.T) {
 		authority.operations[1].Status != "succeeded" || authority.operations[2].Status != "skipped" ||
 		authority.acks[ShellV1OperationProcessStart] != 1 {
 		t.Fatalf("managed Core projection = execution %+v operations %+v", authority.execution, authority.operations)
+	}
+}
+
+func TestManagedShellLogsSafePreAcknowledgementDispatchMetadata(t *testing.T) {
+	const secretArgument = "secret-command-argument"
+	environment := testManagedEnvironment(t)
+	backend, err := executionbackendtest.NewFakeBackend(executionbackend.KindTAE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend.Start = func(_ context.Context, request executionbackend.StartProcessRequest) (executionbackend.Exchange, error) {
+		requestWritten := true
+		dispatchError := executionbackend.NewDispatchError(
+			executionbackend.OutcomeUnknown, "provider_stream_lost", errors.New("safe transport summary"),
+		)
+		dispatchError.ProviderRequestID = "provider-stream-log-1"
+		dispatchError.ProviderCode = "StreamClosed"
+		dispatchError.HTTPStatus = 502
+		dispatchError.RequestWritten = &requestWritten
+		return executionbackendtest.NewScriptedExchange(executionbackendtest.ExchangeScript{
+			Target: request.Target, Operation: request.Operation,
+			AcknowledgementError: dispatchError,
+			Terminal: executionbackend.TerminalResult{
+				Status: executionbackend.TerminalUnknown, ReasonCode: "provider_stream_lost",
+				OutputComplete: false, CompletedAt: time.Now().UTC(),
+			},
+		})
+	}
+	router, err := executionbackend.NewRouter(backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	executor := newManagedShellExecutor(t, environment, newFakeShellAuthority(), router, nil)
+	executor.config.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	result, err := executor.Execute(t.Context(), ShellExecuteRequest{
+		Principal: testExecutorMCPPrincipal("managed-shell-dispatch-log"), ToolCallID: "call-managed-dispatch-log",
+		Arguments: json.RawMessage(fmt.Sprintf(
+			`{"environment_id":%q,"argv":["lark-cli",%q],"timeout_ms":10000}`,
+			environment.EnvironmentID, secretArgument,
+		)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "unknown" || result.OutputComplete {
+		t.Fatalf("managed dispatch result = %+v", result)
+	}
+	logged := logs.String()
+	for _, wanted := range []string{"managed shell dispatch failed", "start_acknowledgement", "provider-stream-log-1", "StreamClosed", `"provider_http_status":502`} {
+		if !strings.Contains(logged, wanted) {
+			t.Fatalf("managed dispatch log %q does not contain %q", logged, wanted)
+		}
+	}
+	if strings.Contains(logged, secretArgument) {
+		t.Fatalf("managed dispatch log leaked argv: %s", logged)
 	}
 }
 

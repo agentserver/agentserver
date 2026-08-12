@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/codexwire"
@@ -50,6 +51,7 @@ type ShellExecutorConfig struct {
 	BackendRouter            *executionbackend.Router
 	ManagedEnvironmentIssuer ManagedProcessEnvironmentIssuer
 	ManagedTargetFencer      ManagedTargetFencer
+	Logger                   *slog.Logger
 }
 
 func DefaultShellExecutorConfig(lifecycle context.Context) ShellExecutorConfig {
@@ -408,6 +410,7 @@ func (executor *ShellExecutor) executeManaged(
 		},
 	})
 	if startExchange == nil {
+		executor.logManagedDispatchFailure(request.Principal, environment.Target, startOperation, "start_dispatch", dispatchErr)
 		result := newUnknownShellResult(plan.ProcessID)
 		closed, closeErr := executor.closeWithoutStartExchange(executionCtx, state, plan, result, dispatchErr)
 		executor.fenceManagedUnknown(executionCtx, request.Principal, environment.Target, "process_start_dispatch_unknown")
@@ -418,6 +421,7 @@ func (executor *ShellExecutor) executeManaged(
 	startAcknowledged := false
 	var orchestrationErrors []error
 	if ackErr != nil {
+		executor.logManagedDispatchFailure(request.Principal, environment.Target, startOperation, "start_acknowledgement", ackErr)
 		forceUnknown = true
 		orchestrationErrors = append(orchestrationErrors, fmt.Errorf("await managed process acknowledgement: %w", ackErr))
 	} else if acknowledgementJSON, marshalErr := marshalBackendAcknowledgement(identities.StartRPCRequestID, acknowledgement); marshalErr != nil {
@@ -572,6 +576,38 @@ func (executor *ShellExecutor) executeManaged(
 		executor.fenceManagedUnknown(executionCtx, request.Principal, environment.Target, "managed_shell_outcome_unknown")
 	}
 	return result, nil
+}
+
+func (executor *ShellExecutor) logManagedDispatchFailure(
+	principal ExecutorMCPPrincipal,
+	target executionbackend.Target,
+	operation executionbackend.OperationContext,
+	stage string,
+	err error,
+) {
+	if executor == nil || executor.config.Logger == nil {
+		return
+	}
+	var dispatchError *executionbackend.DispatchError
+	if !errors.As(err, &dispatchError) || dispatchError == nil {
+		return
+	}
+	executor.config.Logger.Error("managed shell dispatch failed",
+		"workspace_id", principal.WorkspaceID,
+		"run_id", operation.RunID,
+		"run_attempt_id", operation.RunAttemptID,
+		"execution_id", operation.ExecutionID,
+		"operation_id", operation.OperationID,
+		"target_id", target.ID,
+		"target_generation", target.Generation,
+		"dispatch_stage", stage,
+		"dispatch_outcome", dispatchError.Outcome,
+		"reason_code", dispatchError.Code,
+		"provider_http_status", dispatchError.HTTPStatus,
+		"provider_code", dispatchError.ProviderCode,
+		"provider_request_id", dispatchError.ProviderRequestID,
+		"request_written", dispatchError.RequestWritten,
+	)
 }
 
 func (executor *ShellExecutor) dispatchManagedTerminate(

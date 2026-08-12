@@ -146,6 +146,10 @@ func TestDispatchErrorPreservesOutcomeAndCause(t *testing.T) {
 	cause := errors.New("connection refused")
 	dispatchError := NewDispatchError(OutcomeNotSent, "dial_failed", cause)
 	dispatchError.ProviderRequestID = "request-1"
+	dispatchError.ProviderCode = "Internal.Retryable"
+	dispatchError.HTTPStatus = 503
+	requestWritten := true
+	dispatchError.RequestWritten = &requestWritten
 	if err := dispatchError.Validate(); err != nil {
 		t.Fatalf("DispatchError.Validate() error = %v", err)
 	}
@@ -157,6 +161,16 @@ func TestDispatchErrorPreservesOutcomeAndCause(t *testing.T) {
 	}
 	if OutcomeOf(errors.New("plain error")) != OutcomeUnknown {
 		t.Fatal("plain error must not be treated as retry evidence")
+	}
+	unsafeMetadata := NewDispatchError(OutcomeUnknown, "provider_unavailable", cause)
+	unsafeMetadata.ProviderRequestID = "request-1\nbearer secret"
+	if err := unsafeMetadata.Validate(); err == nil {
+		t.Fatal("DispatchError.Validate() accepted log-injection metadata")
+	}
+	unsafeStatus := NewDispatchError(OutcomeUnknown, "provider_unavailable", cause)
+	unsafeStatus.HTTPStatus = 999
+	if err := unsafeStatus.Validate(); err == nil {
+		t.Fatal("DispatchError.Validate() accepted an invalid HTTP status")
 	}
 
 	acceptedError := NewDispatchError(OutcomeAccepted, "invalid", cause)

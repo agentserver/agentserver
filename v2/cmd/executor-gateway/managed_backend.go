@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -105,7 +106,7 @@ func configureTAEBackend(
 		}
 		httpClient = &http.Client{Transport: transport}
 	}
-	backend, err := executorgateway.NewTAEBackend(baseURL, httpClient, tokens)
+	backend, err := executorgateway.NewTAEBackendWithLogger(baseURL, httpClient, tokens, slog.Default())
 	if err != nil {
 		httpClient.CloseIdleConnections()
 		return nil, nil, err

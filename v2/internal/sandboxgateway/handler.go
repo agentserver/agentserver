@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"strings"
@@ -22,11 +23,16 @@ const (
 type Handler struct {
 	service         *Service
 	authorizer      Authorizer
+	logger          *slog.Logger
 	maxRequestBytes int64
 	now             func() time.Time
 }
 
 func NewHandler(service *Service, authorizer Authorizer, maxRequestBytes int64) (*Handler, error) {
+	return NewHandlerWithLogger(service, authorizer, maxRequestBytes, nil)
+}
+
+func NewHandlerWithLogger(service *Service, authorizer Authorizer, maxRequestBytes int64, logger *slog.Logger) (*Handler, error) {
 	if service == nil || authorizer == nil {
 		return nil, errors.New("sandbox gateway service and authorizer are required")
 	}
@@ -36,7 +42,7 @@ func NewHandler(service *Service, authorizer Authorizer, maxRequestBytes int64) 
 	if maxRequestBytes < 1024 || maxRequestBytes > 32*1024*1024 {
 		return nil, errors.New("sandbox gateway request size limit is invalid")
 	}
-	return &Handler{service: service, authorizer: authorizer, maxRequestBytes: maxRequestBytes, now: service.now}, nil
+	return &Handler{service: service, authorizer: authorizer, logger: logger, maxRequestBytes: maxRequestBytes, now: service.now}, nil
 }
 
 func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -235,6 +241,7 @@ func (handler *Handler) signal(response http.ResponseWriter, request *http.Reque
 func (handler *Handler) streamExchange(response http.ResponseWriter, request *http.Request, identity sandboxcontract.OperationIdentity, ref sandboxcontract.SandboxRef, exchange executionbackend.Exchange, byteLimit int64) {
 	acknowledgement, err := exchange.AwaitAcknowledgement(request.Context())
 	if err != nil {
+		handler.logProviderExchangeFailure(identity, ref, "acknowledgement", err)
 		handler.writeError(response, err)
 		return
 	}
@@ -275,6 +282,7 @@ func (handler *Handler) streamExchange(response http.ResponseWriter, request *ht
 			break
 		}
 		if eventErr != nil {
+			handler.logProviderExchangeFailure(identity, ref, "event_stream", eventErr)
 			handler.writeUnknownTerminal(writeFrame, identity, ref, "provider_stream_error")
 			return
 		}
@@ -297,6 +305,7 @@ func (handler *Handler) streamExchange(response http.ResponseWriter, request *ht
 	}
 	terminal, err := exchange.AwaitTerminal(request.Context())
 	if err != nil {
+		handler.logProviderExchangeFailure(identity, ref, "terminal", err)
 		handler.writeUnknownTerminal(writeFrame, identity, ref, "provider_terminal_unknown")
 		return
 	}
@@ -308,6 +317,37 @@ func (handler *Handler) streamExchange(response http.ResponseWriter, request *ht
 		Profile: sandboxcontract.ProfileV1, Type: sandboxcontract.OperationFrameTerminal,
 		Identity: identity, Ref: ref, Terminal: &terminal,
 	})
+}
+
+func (handler *Handler) logProviderExchangeFailure(
+	identity sandboxcontract.OperationIdentity,
+	ref sandboxcontract.SandboxRef,
+	stage string,
+	err error,
+) {
+	if handler == nil || handler.logger == nil {
+		return
+	}
+	var dispatchError *executionbackend.DispatchError
+	if !errors.As(err, &dispatchError) || dispatchError == nil {
+		return
+	}
+	handler.logger.Error("sandbox provider exchange failed",
+		"workspace_id", identity.Session.WorkspaceID,
+		"run_id", identity.RunID,
+		"run_attempt_id", identity.RunAttemptID,
+		"execution_id", identity.ExecutionID,
+		"operation_id", identity.OperationID,
+		"target_id", ref.SandboxID,
+		"target_generation", ref.TargetGeneration,
+		"dispatch_stage", stage,
+		"dispatch_outcome", dispatchError.Outcome,
+		"reason_code", dispatchError.Code,
+		"provider_http_status", dispatchError.HTTPStatus,
+		"provider_code", dispatchError.ProviderCode,
+		"provider_request_id", dispatchError.ProviderRequestID,
+		"request_written", dispatchError.RequestWritten,
+	)
 }
 
 func (handler *Handler) writeUnknownTerminal(writeFrame func(sandboxcontract.OperationFrame) bool, identity sandboxcontract.OperationIdentity, ref sandboxcontract.SandboxRef, reason string) {
@@ -377,24 +417,32 @@ func (handler *Handler) writeError(response http.ResponseWriter, err error) {
 	code := "internal_unavailable"
 	message := "sandbox request could not be completed"
 	outcome := executionbackend.OutcomeOf(err)
+	var providerRequestID, providerCode string
+	var providerHTTPStatus int
+	var requestWritten *bool
+	var dispatchError *executionbackend.DispatchError
+	hasDispatchError := errors.As(err, &dispatchError) && dispatchError != nil
+	if hasDispatchError {
+		providerRequestID = dispatchError.ProviderRequestID
+		providerCode = dispatchError.ProviderCode
+		providerHTTPStatus = dispatchError.HTTPStatus
+		requestWritten = dispatchError.RequestWritten
+	}
 	var serviceError *Error
 	if errors.As(err, &serviceError) {
 		status, code, message = serviceError.HTTPStatus, serviceError.Code, serviceError.Message
 		if serviceError.Outcome != "" {
 			outcome = serviceError.Outcome
 		}
-	} else {
-		var dispatchError *executionbackend.DispatchError
-		if errors.As(err, &dispatchError) {
-			code = dispatchError.Code
-			switch dispatchError.Outcome {
-			case executionbackend.OutcomeNotSent:
-				status = http.StatusBadRequest
-			case executionbackend.OutcomeRejected:
-				status = http.StatusConflict
-			case executionbackend.OutcomeUnknown:
-				status = http.StatusServiceUnavailable
-			}
+	} else if hasDispatchError {
+		code = dispatchError.Code
+		switch dispatchError.Outcome {
+		case executionbackend.OutcomeNotSent:
+			status = http.StatusBadRequest
+		case executionbackend.OutcomeRejected:
+			status = http.StatusConflict
+		case executionbackend.OutcomeUnknown:
+			status = http.StatusServiceUnavailable
 		}
 	}
 	if status < 400 || status > 599 {
@@ -403,12 +451,24 @@ func (handler *Handler) writeError(response http.ResponseWriter, err error) {
 	if code == "" {
 		code = "internal_unavailable"
 	}
+	if handler.logger != nil && hasDispatchError {
+		handler.logger.Error("sandbox provider dispatch failed",
+			"dispatch_outcome", outcome,
+			"reason_code", code,
+			"provider_http_status", providerHTTPStatus,
+			"provider_code", providerCode,
+			"provider_request_id", providerRequestID,
+			"request_written", requestWritten,
+		)
+	}
 	response.Header().Set("Content-Type", "application/json")
 	response.Header().Set("Cache-Control", "no-store")
 	response.Header().Set("X-Content-Type-Options", "nosniff")
 	response.WriteHeader(status)
 	_ = json.NewEncoder(response).Encode(sandboxcontract.ErrorResponse{
 		Code: code, Message: message, Outcome: string(outcome),
+		ProviderRequestID: providerRequestID, ProviderCode: providerCode,
+		ProviderHTTPStatus: providerHTTPStatus, RequestWritten: requestWritten,
 	})
 }
 

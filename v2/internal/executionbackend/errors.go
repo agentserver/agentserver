@@ -30,6 +30,9 @@ type DispatchError struct {
 	Outcome           DispatchOutcome
 	Code              string
 	ProviderRequestID string
+	ProviderCode      string
+	HTTPStatus        int
+	RequestWritten    *bool
 	Cause             error
 }
 
@@ -76,10 +79,33 @@ func (dispatchError *DispatchError) Validate() error {
 			return err
 		}
 	}
+	if dispatchError.ProviderCode != "" {
+		if err := validateText("dispatch provider code", dispatchError.ProviderCode, 1, 128); err != nil {
+			return err
+		}
+	}
+	if dispatchError.ProviderRequestID != "" && containsUnsafeLogRune(dispatchError.ProviderRequestID) {
+		return errors.New("dispatch provider request ID contains unsafe log characters")
+	}
+	if dispatchError.ProviderCode != "" && containsUnsafeLogRune(dispatchError.ProviderCode) {
+		return errors.New("dispatch provider code contains unsafe log characters")
+	}
+	if dispatchError.HTTPStatus != 0 && (dispatchError.HTTPStatus < 100 || dispatchError.HTTPStatus > 599) {
+		return fmt.Errorf("dispatch HTTP status %d is invalid", dispatchError.HTTPStatus)
+	}
 	if dispatchError.Cause == nil {
 		return errors.New("dispatch error cause is required")
 	}
 	return nil
+}
+
+func containsUnsafeLogRune(value string) bool {
+	for _, character := range value {
+		if character < 0x20 || character == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 func OutcomeOf(err error) DispatchOutcome {

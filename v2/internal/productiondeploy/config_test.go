@@ -47,6 +47,18 @@ func TestValidateConfigAcceptsCanonicalIPv6ExternalEgress(t *testing.T) {
 	}
 }
 
+func TestValidateConfigAcceptsHarnessWithoutExternalCIDRs(t *testing.T) {
+	document := validConfigDocument()
+	document.Network.HarnessExternalEgress = nil
+	loaded, err := ValidateConfig(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Document.Network.HarnessExternalEgress) != 0 {
+		t.Fatalf("harness external egress = %#v, want empty", loaded.Document.Network.HarnessExternalEgress)
+	}
+}
+
 func TestParseConfigRejectsUnknownDuplicateAndSecretFields(t *testing.T) {
 	document := validConfigDocument()
 	raw, err := json.Marshal(document)

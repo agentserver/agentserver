@@ -623,7 +623,7 @@
         "dnsPodSelector": {"$ref": "#/$defs/labelSelector"},
         "coreExternalEgress": {"$ref": "#/$defs/egressRules"},
         "browserExternalEgress": {"$ref": "#/$defs/optionalEgressRules"},
-        "harnessExternalEgress": {"$ref": "#/$defs/egressRules"},
+        "harnessExternalEgress": {"$ref": "#/$defs/optionalEgressRules"},
         "sandboxExternalEgress": {"$ref": "#/$defs/optionalEgressRules"},
         "egressAuthorizerExternalEgress": {"$ref": "#/$defs/optionalEgressRules"},
         "egressAuthorizerIngress": {"$ref": "#/$defs/ingressCidrs"}

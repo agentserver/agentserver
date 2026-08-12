@@ -369,15 +369,15 @@ production config，也不要再从开发机手工构建上传生产镜像。
   `v2-managed-sandbox` 和 `hydra`，
   且必须使用 digest。
 
-当前 SG 模板已经锁定 owner `sub=3506220589`、平台 OIDC、S3 endpoint/region/bucket/prefix/path-style、
-Chart 内置 Hydra 合同，以及从 SG Pod 解析得到的 TOS 地址 `10.8.103.160/32` 和
-`fdbd:dc51:fe:200d::1/128`。平台 OIDC `connect.byted.bps.dev` 在 SG 内同时解析到
+当前 SG 模板已经锁定 owner `sub=3506220589`、平台 OIDC、S3 endpoint/region/bucket/prefix/path-style
+以及 Chart 内置 Hydra 合同。平台 OIDC `connect.byted.bps.dev` 在 SG 内同时解析到
 DevBox-SG4 的三个轮转地址 `10.251.224.152`、`10.251.239.167`、`10.251.244.51` 和公网 IPv6；
 public-HTTPS 规则覆盖公网地址，Core 另以三个 `/32:443` 精确放行私网地址，不允许扩大为
-`10.0.0.0/8`。TOS 内网地址分别显式写入 core 和 harness-pool 的 TCP 443 白名单。
+`10.0.0.0/8`。Harness 访问 `s3-sg.byted.cs.ac.cn` 时按 `istio-ingress` Namespace 与
+Gateway Pod selector 放行 TCP 443；不把域名的轮转 LoadBalancer/节点地址写入 CIDR 白名单。
 这里必须保持 `s3Endpoint=https://s3-sg.byted.cs.ac.cn`、`s3Region=sg-devbox-1` 与
 `s3UsePathStyle=true`，以 Pulumi 管理的 SeaweedFS bucket-scoped 身份访问 `agentserver` bucket。
-DNS 地址变化时必须重新生成 Chart。新代码提交后仍须重新构建、远端核验和
+Gateway Pod 扩缩容、换节点或入口地址变化不需要重新生成 Chart。新代码提交后仍须重新构建、远端核验和
 替换 service/harness digest 及对应 runtime artifact；Hydra digest 只在升级 Hydra 版本时变化。资源配额
 可按最终容量审计调整。S3 endpoint 是必填项，不能省略后回退到
 AWS 默认 endpoint。S3 对象是明文；bucket、credential、备份、retention 和访问审计

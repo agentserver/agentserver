@@ -141,7 +141,7 @@ func (provider *Provider) CreateSandbox(ctx context.Context, request sandboxgate
 		if err != nil {
 			return sandboxgateway.ProviderSandbox{}, provider.lifecycleError("provider_get_failed", err)
 		}
-		if !metadataEqual(existing.Metadata, metadata) {
+		if !metadataContainsIdentity(existing.Metadata, metadata) {
 			return sandboxgateway.ProviderSandbox{}, &sandboxgateway.ProviderError{
 				Code: "provider_identity_mismatch", Cause: errors.New("TAE session metadata does not match the managed sandbox create identity"),
 			}
@@ -157,10 +157,10 @@ func (provider *Provider) CreateSandbox(ctx context.Context, request sandboxgate
 	if err != nil {
 		return sandboxgateway.ProviderSandbox{}, provider.createError(err)
 	}
-	if !metadataEqual(session.Metadata, metadata) {
+	if !metadataContainsIdentity(session.Metadata, metadata) {
 		return sandboxgateway.ProviderSandbox{}, &sandboxgateway.ProviderError{
 			Code: "provider_metadata_mismatch", Ambiguous: true,
-			Cause: errors.New("TAE create returned a session without the exact managed sandbox metadata"),
+			Cause: errors.New("TAE create returned a session without the complete managed sandbox identity metadata"),
 		}
 	}
 	return provider.providerSandbox(session)
@@ -187,7 +187,7 @@ func (provider *Provider) FindSandbox(ctx context.Context, request sandboxgatewa
 	}
 	matched := make([]ControlSession, 0, 2)
 	for _, session := range result.Sessions {
-		if metadataEqual(session.Metadata, metadata) && !session.Deleted {
+		if metadataContainsIdentity(session.Metadata, metadata) && !session.Deleted {
 			matched = append(matched, session)
 		}
 	}
@@ -243,10 +243,10 @@ func (provider *Provider) DeleteSandbox(ctx context.Context, request sandboxgate
 		if session.Deleted {
 			return sandboxgateway.ErrProviderSandboxNotFound
 		}
-		if session.ID != request.SessionRef || !metadataEqual(session.Metadata, metadata) {
+		if session.ID != request.SessionRef || !metadataContainsIdentity(session.Metadata, metadata) {
 			return &sandboxgateway.ProviderError{
 				Code:  "provider_identity_mismatch",
-				Cause: errors.New("TAE delete reference does not have the exact managed sandbox create identity"),
+				Cause: errors.New("TAE delete reference does not have the complete managed sandbox create identity"),
 			}
 		}
 		if err := provider.control.Delete(ctx, request.SessionRef); err != nil {
@@ -268,7 +268,7 @@ func (provider *Provider) DeleteSandbox(ctx context.Context, request sandboxgate
 	matched := make([]string, 0, len(result.Sessions))
 	seen := make(map[string]struct{}, len(result.Sessions))
 	for _, session := range result.Sessions {
-		if session.Deleted || !metadataEqual(session.Metadata, metadata) {
+		if session.Deleted || !metadataContainsIdentity(session.Metadata, metadata) {
 			continue
 		}
 		if session.ID == "" || len(session.ID) > 1024 {
@@ -548,10 +548,12 @@ func validateMetadata(metadata map[string]string) error {
 	return nil
 }
 
-func metadataEqual(actual, expected map[string]string) bool {
-	if len(actual) != len(expected) {
-		return false
-	}
+// metadataContainsIdentity verifies the complete agentserver-owned identity
+// projection while permitting TAE to append provider-owned metadata. The
+// request map is validated separately and always contains exactly the eight
+// immutable identity fields. Missing or conflicting identity fields remain a
+// hard mismatch; provider-added fields do not weaken resource ownership.
+func metadataContainsIdentity(actual, expected map[string]string) bool {
 	for name, value := range expected {
 		if actual[name] != value {
 			return false

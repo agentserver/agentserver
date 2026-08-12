@@ -166,8 +166,18 @@ func TestPostgreSQLManagedSandboxLifecycleActivityAndTAEDispatch(t *testing.T) {
 	prepareExecution.EnvID = reserve.EnvironmentID
 	prepareExecution.Target = ready.Target()
 	preparedExecution, err := store.PrepareExecution(t.Context(), prepareExecution)
-	if err != nil || !preparedExecution.Created || preparedExecution.Execution.Target != ready.Target() {
+	if err != nil || !preparedExecution.Created || preparedExecution.Execution.ExecutorID != "" || preparedExecution.Execution.Target != ready.Target() {
 		t.Fatalf("PrepareExecution(TAE) = %+v, error = %v", preparedExecution, err)
+	}
+	var executorIDIsNull bool
+	if err := pool.QueryRow(t.Context(), fmt.Sprintf(`
+SELECT executor_id IS NULL
+FROM %s.executions
+WHERE id = $1`, quoteIdentifier(schema)), preparedExecution.Execution.ID).Scan(&executorIDIsNull); err != nil {
+		t.Fatalf("read managed execution executor_id: %v", err)
+	}
+	if !executorIDIsNull {
+		t.Fatal("managed TAE execution persisted a legacy executor_id")
 	}
 	preparedOperation, err := store.PrepareOperation(t.Context(), executionTestPrepareOperationCommand(
 		t, 813_000, running, preparedExecution.Execution, 1,

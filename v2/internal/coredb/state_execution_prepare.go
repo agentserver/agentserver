@@ -87,7 +87,7 @@ RETURNING %s`, s.table("executions"), executionColumns(""))
 			command.AttemptID,
 			command.Generation,
 			command.AppServerToolCallID,
-			command.ExecutorID,
+			nullableUUID(command.ExecutorID),
 			command.EnvID,
 			target.Kind,
 			target.ID,

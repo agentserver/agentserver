@@ -2,6 +2,16 @@ package coredb
 
 import "testing"
 
+func TestNullableUUIDPreservesOptionalExecutorIdentity(t *testing.T) {
+	if got := nullableUUID(""); got != nil {
+		t.Fatalf("nullableUUID(empty) = %#v, want nil", got)
+	}
+	executorID := stateTestUUID(80_000)
+	if got := nullableUUID(executorID); got != executorID {
+		t.Fatalf("nullableUUID(valid) = %#v, want %q", got, executorID)
+	}
+}
+
 func TestAggregateExecutionStatusUsesFailClosedPrecedence(t *testing.T) {
 	tests := []struct {
 		name            string

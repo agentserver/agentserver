@@ -7,12 +7,15 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"mime"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
@@ -42,9 +45,14 @@ type TAEBackend struct {
 	baseURL    *url.URL
 	httpClient *http.Client
 	tokens     SandboxGatewayTokenSource
+	logger     *slog.Logger
 }
 
 func NewTAEBackend(baseURL string, httpClient *http.Client, tokens SandboxGatewayTokenSource) (*TAEBackend, error) {
+	return NewTAEBackendWithLogger(baseURL, httpClient, tokens, nil)
+}
+
+func NewTAEBackendWithLogger(baseURL string, httpClient *http.Client, tokens SandboxGatewayTokenSource, logger *slog.Logger) (*TAEBackend, error) {
 	parsed, err := url.Parse(baseURL)
 	if err != nil || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil || parsed.RawPath != "" ||
 		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Opaque != "" || parsed.ForceQuery ||
@@ -60,7 +68,7 @@ func NewTAEBackend(baseURL string, httpClient *http.Client, tokens SandboxGatewa
 	parsed.Path = ""
 	clientCopy := *httpClient
 	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &TAEBackend{baseURL: parsed, httpClient: &clientCopy, tokens: tokens}, nil
+	return &TAEBackend{baseURL: parsed, httpClient: &clientCopy, tokens: tokens, logger: logger}, nil
 }
 
 func taeLoopbackHost(host string) bool {
@@ -145,48 +153,56 @@ func (backend *TAEBackend) ReadFile(ctx context.Context, request executionbacken
 
 func (backend *TAEBackend) openExchange(ctx context.Context, action, path string, target executionbackend.Target, operation executionbackend.OperationContext, command any) (executionbackend.Exchange, error) {
 	if ctx == nil {
-		return nil, executionbackend.NewDispatchError(executionbackend.OutcomeNotSent, "invalid_context", errors.New("TAE backend context is required"))
+		return nil, backend.dispatchFailure(operation, target, false, 0, executionbackend.OutcomeNotSent, "invalid_context", errors.New("TAE backend context is required"))
 	}
 	token, err := backend.tokens.Token(ctx, SandboxGatewayTokenRequest{Action: action, Target: target, Operation: operation})
 	if err != nil {
-		return nil, executionbackend.NewDispatchError(executionbackend.OutcomeNotSent, "capability_unavailable", err)
+		return nil, backend.dispatchFailure(operation, target, false, 0, executionbackend.OutcomeNotSent, "capability_unavailable", err)
 	}
 	if !validBackendToken(token) {
-		return nil, executionbackend.NewDispatchError(executionbackend.OutcomeNotSent, "invalid_capability", errors.New("sandbox-gateway backend token is invalid"))
+		return nil, backend.dispatchFailure(operation, target, false, 0, executionbackend.OutcomeNotSent, "invalid_capability", errors.New("sandbox-gateway backend token is invalid"))
 	}
 	var raw bytes.Buffer
 	encoder := json.NewEncoder(&raw)
 	encoder.SetEscapeHTML(false)
 	if err := encoder.Encode(command); err != nil {
-		return nil, executionbackend.NewDispatchError(executionbackend.OutcomeNotSent, "encode_failed", err)
+		return nil, backend.dispatchFailure(operation, target, false, 0, executionbackend.OutcomeNotSent, "encode_failed", err)
 	}
 	endpoint := *backend.baseURL
 	endpoint.Path = path
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(raw.Bytes()))
 	if err != nil {
-		return nil, executionbackend.NewDispatchError(executionbackend.OutcomeNotSent, "request_construction_failed", err)
+		return nil, backend.dispatchFailure(operation, target, false, 0, executionbackend.OutcomeNotSent, "request_construction_failed", err)
 	}
 	httpRequest.Header.Set("Content-Type", "application/json")
 	httpRequest.Header.Set("Accept", "application/x-ndjson, application/json")
 	httpRequest.Header.Set("Authorization", "Bearer "+token)
+	var sandboxGatewayRequestWritten atomic.Bool
+	trace := &httptrace.ClientTrace{WroteRequest: func(httptrace.WroteRequestInfo) { sandboxGatewayRequestWritten.Store(true) }}
+	httpRequest = httpRequest.WithContext(httptrace.WithClientTrace(httpRequest.Context(), trace))
 	httpResponse, err := backend.httpClient.Do(httpRequest)
 	if err != nil {
 		// net/http cannot generally prove whether request bytes reached the
 		// peer. Treat every Do error as ambiguous unless a lower transport with
 		// stronger evidence is introduced explicitly.
-		return nil, executionbackend.NewDispatchError(executionbackend.OutcomeUnknown, "sandbox_gateway_transport", err)
+		return nil, backend.dispatchFailure(operation, target, sandboxGatewayRequestWritten.Load(), 0,
+			executionbackend.OutcomeUnknown, "sandbox_gateway_transport", err)
 	}
 	if httpResponse.StatusCode != http.StatusOK {
 		defer httpResponse.Body.Close()
-		return nil, decodeSandboxGatewayDispatchError(httpResponse)
+		dispatchErr := decodeSandboxGatewayDispatchError(httpResponse)
+		backend.logDispatchFailure(operation, target, sandboxGatewayRequestWritten.Load(), httpResponse.StatusCode, dispatchErr)
+		return nil, dispatchErr
 	}
 	mediaType, _, err := mime.ParseMediaType(httpResponse.Header.Get("Content-Type"))
 	if err != nil || mediaType != operationStreamMediaType {
 		httpResponse.Body.Close()
-		return nil, executionbackend.NewDispatchError(executionbackend.OutcomeUnknown, "invalid_stream_content_type", errors.New("sandbox-gateway returned a non-NDJSON operation stream"))
+		return nil, backend.dispatchFailure(operation, target, sandboxGatewayRequestWritten.Load(), httpResponse.StatusCode,
+			executionbackend.OutcomeUnknown, "invalid_stream_content_type", errors.New("sandbox-gateway returned a non-NDJSON operation stream"))
 	}
 	return newTAEHTTPExchange(target, operation, backendOperationIdentity(operation, target.EnvironmentID),
-		sandboxcontract.SandboxRef{SandboxID: target.ID, TargetGeneration: target.Generation}, httpResponse.Body), nil
+		sandboxcontract.SandboxRef{SandboxID: target.ID, TargetGeneration: target.Generation}, httpResponse.Body,
+		backend.logger, sandboxGatewayRequestWritten.Load(), httpResponse.StatusCode), nil
 }
 
 func decodeSandboxGatewayDispatchError(response *http.Response) error {
@@ -212,7 +228,68 @@ func decodeSandboxGatewayDispatchError(response *http.Response) error {
 	if !validReasonCode(code) {
 		code = "gateway_rejected"
 	}
-	return executionbackend.NewDispatchError(outcome, code, errors.New("sandbox-gateway rejected the operation"))
+	dispatchError := executionbackend.NewDispatchError(outcome, code, errors.New("sandbox-gateway rejected the operation"))
+	dispatchError.ProviderRequestID = contractError.ProviderRequestID
+	dispatchError.ProviderCode = contractError.ProviderCode
+	dispatchError.HTTPStatus = contractError.ProviderHTTPStatus
+	if contractError.RequestWritten != nil {
+		requestWritten := *contractError.RequestWritten
+		dispatchError.RequestWritten = &requestWritten
+	}
+	if dispatchError.Validate() != nil {
+		return executionbackend.NewDispatchError(executionbackend.OutcomeUnknown, "invalid_gateway_error", errors.New("sandbox-gateway returned unsafe dispatch metadata"))
+	}
+	if dispatchError.Outcome == executionbackend.OutcomeRejected && dispatchError.RequestWritten != nil && !*dispatchError.RequestWritten {
+		return executionbackend.NewDispatchError(executionbackend.OutcomeUnknown, "invalid_gateway_error", errors.New("sandbox-gateway returned inconsistent dispatch metadata"))
+	}
+	return dispatchError
+}
+
+func (backend *TAEBackend) dispatchFailure(
+	operation executionbackend.OperationContext,
+	target executionbackend.Target,
+	sandboxGatewayRequestWritten bool,
+	sandboxGatewayHTTPStatus int,
+	outcome executionbackend.DispatchOutcome,
+	code string,
+	cause error,
+) error {
+	dispatchError := executionbackend.NewDispatchError(outcome, code, cause)
+	backend.logDispatchFailure(operation, target, sandboxGatewayRequestWritten, sandboxGatewayHTTPStatus, dispatchError)
+	return dispatchError
+}
+
+func (backend *TAEBackend) logDispatchFailure(
+	operation executionbackend.OperationContext,
+	target executionbackend.Target,
+	sandboxGatewayRequestWritten bool,
+	sandboxGatewayHTTPStatus int,
+	err error,
+) {
+	if backend == nil || backend.logger == nil {
+		return
+	}
+	var dispatchError *executionbackend.DispatchError
+	if !errors.As(err, &dispatchError) || dispatchError == nil {
+		return
+	}
+	backend.logger.Error("managed backend dispatch failed",
+		"workspace_id", operation.WorkspaceID,
+		"run_id", operation.RunID,
+		"run_attempt_id", operation.RunAttemptID,
+		"execution_id", operation.ExecutionID,
+		"operation_id", operation.OperationID,
+		"target_id", target.ID,
+		"target_generation", target.Generation,
+		"sandbox_gateway_http_status", sandboxGatewayHTTPStatus,
+		"sandbox_gateway_request_written", sandboxGatewayRequestWritten,
+		"dispatch_outcome", dispatchError.Outcome,
+		"reason_code", dispatchError.Code,
+		"provider_http_status", dispatchError.HTTPStatus,
+		"provider_code", dispatchError.ProviderCode,
+		"provider_request_id", dispatchError.ProviderRequestID,
+		"request_written", dispatchError.RequestWritten,
+	)
 }
 
 type taeHTTPExchange struct {
@@ -231,15 +308,29 @@ type taeHTTPExchange struct {
 	err      error
 	done     chan struct{}
 	doneOnce sync.Once
+
+	logger                       *slog.Logger
+	sandboxGatewayRequestWritten bool
+	sandboxGatewayHTTPStatus     int
 }
 
-func newTAEHTTPExchange(target executionbackend.Target, operation executionbackend.OperationContext, identity sandboxcontract.OperationIdentity, ref sandboxcontract.SandboxRef, body io.ReadCloser) *taeHTTPExchange {
+func newTAEHTTPExchange(
+	target executionbackend.Target,
+	operation executionbackend.OperationContext,
+	identity sandboxcontract.OperationIdentity,
+	ref sandboxcontract.SandboxRef,
+	body io.ReadCloser,
+	logger *slog.Logger,
+	sandboxGatewayRequestWritten bool,
+	sandboxGatewayHTTPStatus int,
+) *taeHTTPExchange {
 	limited := io.LimitReader(body, maxSandboxGatewayStreamBytes)
 	decoder := json.NewDecoder(bufio.NewReader(limited))
 	decoder.DisallowUnknownFields()
 	return &taeHTTPExchange{
 		target: target, operation: operation, identity: identity, ref: ref,
-		body: body, decoder: decoder, done: make(chan struct{}),
+		body: body, decoder: decoder, done: make(chan struct{}), logger: logger,
+		sandboxGatewayRequestWritten: sandboxGatewayRequestWritten, sandboxGatewayHTTPStatus: sandboxGatewayHTTPStatus,
 	}
 }
 
@@ -380,6 +471,21 @@ func (exchange *taeHTTPExchange) decodeFrame() (sandboxcontract.OperationFrame, 
 func (exchange *taeHTTPExchange) fail(code string, cause error) error {
 	if exchange.err == nil {
 		exchange.err = executionbackend.NewDispatchError(executionbackend.OutcomeUnknown, code, cause)
+		if exchange.logger != nil {
+			exchange.logger.Error("managed backend exchange failed",
+				"workspace_id", exchange.operation.WorkspaceID,
+				"run_id", exchange.operation.RunID,
+				"run_attempt_id", exchange.operation.RunAttemptID,
+				"execution_id", exchange.operation.ExecutionID,
+				"operation_id", exchange.operation.OperationID,
+				"target_id", exchange.target.ID,
+				"target_generation", exchange.target.Generation,
+				"sandbox_gateway_http_status", exchange.sandboxGatewayHTTPStatus,
+				"sandbox_gateway_request_written", exchange.sandboxGatewayRequestWritten,
+				"dispatch_outcome", executionbackend.OutcomeUnknown,
+				"reason_code", code,
+			)
+		}
 		exchange.finish()
 	}
 	return exchange.err

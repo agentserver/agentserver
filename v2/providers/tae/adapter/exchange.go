@@ -175,14 +175,14 @@ func (current *processExchange) consume(stream EventStream) {
 			if current.tryReconnect(&stream) {
 				continue
 			}
-			current.finishStreamLoss(err)
+			current.finishStreamLoss(stream, err)
 			return
 		}
 		switch event.Name {
 		case "process.start":
 			pid, ok := positiveInteger(event.Data, "pid")
 			if !ok || (current.pid != 0 && current.pid != pid) {
-				current.finishProtocolError("provider_start_invalid")
+				current.finishProtocolError(stream, "provider_start_invalid")
 				return
 			}
 			current.pid = pid
@@ -195,13 +195,13 @@ func (current *processExchange) consume(stream EventStream) {
 			}
 		case "process.data":
 			if !current.acked {
-				current.finishProtocolError("provider_data_before_start")
+				current.finishProtocolError(stream, "provider_data_before_start")
 				return
 			}
 			stdout, stdoutPresent, stdoutValid := optionalString(event.Data, "stdout")
 			stderr, stderrPresent, stderrValid := optionalString(event.Data, "stderr")
 			if (!stdoutPresent && !stderrPresent) || !stdoutValid || !stderrValid {
-				current.finishProtocolError("provider_data_invalid")
+				current.finishProtocolError(stream, "provider_data_invalid")
 				return
 			}
 			if current.appendOutput(executionbackend.EventStdout, stdout) ||
@@ -211,7 +211,7 @@ func (current *processExchange) consume(stream EventStream) {
 			}
 		case "process.exit":
 			if !current.acked {
-				current.finishProtocolError("provider_exit_before_start")
+				current.finishProtocolError(stream, "provider_exit_before_start")
 				return
 			}
 			exitCode, ok := integer(event.Data, "exit_code")
@@ -219,7 +219,7 @@ func (current *processExchange) consume(stream EventStream) {
 				exitCode, ok = integer(event.Data, "exitCode")
 			}
 			if !ok || exitCode < -2147483648 || exitCode > 2147483647 {
-				current.finishProtocolError("provider_exit_invalid")
+				current.finishProtocolError(stream, "provider_exit_invalid")
 				return
 			}
 			converted := int32(exitCode)
@@ -300,10 +300,10 @@ func (current *processExchange) killForOutputLimit() {
 	}, nil)
 }
 
-func (current *processExchange) finishProtocolError(code string) {
+func (current *processExchange) finishProtocolError(stream EventStream, code string) {
 	if !current.acked {
-		current.setAcknowledgement(executionbackend.Acknowledgement{}, executionbackend.NewDispatchError(
-			executionbackend.OutcomeUnknown, code, errors.New("TAE process stream violated the documented event protocol")))
+		current.setAcknowledgement(executionbackend.Acknowledgement{}, current.streamDispatchError(
+			code, stream, nil, errors.New("TAE process stream violated the documented event protocol")))
 	}
 	current.finish(executionbackend.TerminalResult{
 		Status: executionbackend.TerminalUnknown, ReasonCode: code,
@@ -311,17 +311,33 @@ func (current *processExchange) finishProtocolError(code string) {
 	}, nil)
 }
 
-func (current *processExchange) finishStreamLoss(streamErr error) {
+func (current *processExchange) finishStreamLoss(stream EventStream, streamErr error) {
 	code := "provider_stream_lost"
 	if !current.acked {
-		current.setAcknowledgement(executionbackend.Acknowledgement{}, executionbackend.NewDispatchError(
-			executionbackend.OutcomeUnknown, code, errors.New("TAE process stream ended before provider acknowledgement")))
+		current.setAcknowledgement(executionbackend.Acknowledgement{}, current.streamDispatchError(
+			code, stream, streamErr, errors.New("TAE process stream ended before provider acknowledgement")))
 	}
 	_ = streamErr
 	current.finish(executionbackend.TerminalResult{
 		Status: executionbackend.TerminalUnknown, ReasonCode: code,
 		OutputComplete: false, CompletedAt: current.provider.now(),
 	}, nil)
+}
+
+func (current *processExchange) streamDispatchError(code string, stream EventStream, sourceErr, cause error) error {
+	dispatchError := executionbackend.NewDispatchError(executionbackend.OutcomeUnknown, code, cause)
+	requestWritten := true
+	dispatchError.RequestWritten = &requestWritten
+	var requestError *RequestError
+	if errors.As(sourceErr, &requestError) && requestError != nil {
+		dispatchError.ProviderRequestID = requestError.RequestID
+		dispatchError.ProviderCode = requestError.ProviderCode
+		dispatchError.HTTPStatus = requestError.StatusCode
+	}
+	if dispatchError.ProviderRequestID == "" && stream != nil {
+		dispatchError.ProviderRequestID = stream.RequestID()
+	}
+	return dispatchError
 }
 
 func positiveInteger(data map[string]any, key string) (int, bool) {

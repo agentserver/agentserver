@@ -306,6 +306,7 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	shellConfig.BackendRouter = backendRouter
 	shellConfig.ManagedEnvironmentIssuer = managedEnvironmentIssuer
 	shellConfig.ManagedTargetFencer = managedTargetFencer
+	shellConfig.Logger = slog.Default()
 	shellExecutor, err := executorgateway.NewShellExecutor(
 		environmentResolver,
 		coreClient,
@@ -322,6 +323,7 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	readFileConfig.ApprovalGate = approvalGate
 	readFileConfig.BackendRouter = backendRouter
 	readFileConfig.ManagedTargetFencer = managedTargetFencer
+	readFileConfig.Logger = slog.Default()
 	readFileExecutor, err := executorgateway.NewReadFileExecutor(
 		environmentResolver,
 		coreClient,

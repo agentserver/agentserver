@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/codexwire"
@@ -34,6 +35,7 @@ type ReadFileExecutorConfig struct {
 	ApprovalGate        ExecutionApprovalGate
 	BackendRouter       *executionbackend.Router
 	ManagedTargetFencer ManagedTargetFencer
+	Logger              *slog.Logger
 }
 
 func DefaultReadFileExecutorConfig(lifecycle context.Context) ReadFileExecutorConfig {
@@ -242,6 +244,8 @@ func (executor *ReadFileExecutor) executeManaged(
 		Offset: plan.Offset, Limit: plan.Limit,
 	})
 	if exchange == nil {
+		executor.logManagedReadDispatchFailure(request.Principal, plan.Environment.Target,
+			backendOperationContext(request.Principal, plan.Read.Routing), "read_dispatch", dispatchErr)
 		result, closeErr := executor.closeUnknown(executionCtx, state, plan, readFileTerminalEvidence{
 			Version: "read-file-terminal-evidence-v1", Kind: ReadFileV1OperationRead,
 			Status: "unknown", FailureClass: "dispatch_unknown",
@@ -251,6 +255,8 @@ func (executor *ReadFileExecutor) executeManaged(
 	}
 	acknowledgement, err := exchange.AwaitAcknowledgement(executionCtx)
 	if err != nil || dispatchErr != nil {
+		executor.logManagedReadDispatchFailure(request.Principal, plan.Environment.Target,
+			backendOperationContext(request.Principal, plan.Read.Routing), "read_acknowledgement", errors.Join(dispatchErr, err))
 		result, closeErr := executor.closeUnknown(executionCtx, state, plan, readFileTerminalEvidence{
 			Version: "read-file-terminal-evidence-v1", Kind: ReadFileV1OperationRead,
 			Status: "unknown", FailureClass: "acknowledgement_unknown",
@@ -326,6 +332,38 @@ func (executor *ReadFileExecutor) executeManaged(
 	}
 	canonicalBase64 := base64.StdEncoding.EncodeToString(content)
 	return projectReadFileResult(plan, content, canonicalBase64, uint64(len(content)) < plan.Limit)
+}
+
+func (executor *ReadFileExecutor) logManagedReadDispatchFailure(
+	principal ExecutorMCPPrincipal,
+	target executionbackend.Target,
+	operation executionbackend.OperationContext,
+	stage string,
+	err error,
+) {
+	if executor == nil || executor.config.Logger == nil {
+		return
+	}
+	var dispatchError *executionbackend.DispatchError
+	if !errors.As(err, &dispatchError) || dispatchError == nil {
+		return
+	}
+	executor.config.Logger.Error("managed read-file dispatch failed",
+		"workspace_id", principal.WorkspaceID,
+		"run_id", operation.RunID,
+		"run_attempt_id", operation.RunAttemptID,
+		"execution_id", operation.ExecutionID,
+		"operation_id", operation.OperationID,
+		"target_id", target.ID,
+		"target_generation", target.Generation,
+		"dispatch_stage", stage,
+		"dispatch_outcome", dispatchError.Outcome,
+		"reason_code", dispatchError.Code,
+		"provider_http_status", dispatchError.HTTPStatus,
+		"provider_code", dispatchError.ProviderCode,
+		"provider_request_id", dispatchError.ProviderRequestID,
+		"request_written", dispatchError.RequestWritten,
+	)
 }
 
 func (executor *ReadFileExecutor) fenceManagedReadUnknown(ctx context.Context, principal ExecutorMCPPrincipal, target executionbackend.Target, reason string) {

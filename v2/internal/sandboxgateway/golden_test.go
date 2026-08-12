@@ -6,14 +6,17 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
+	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 	"github.com/agentserver/agentserver/v2/internal/sandboxcontract"
 	"github.com/agentserver/agentserver/v2/internal/sandboxgateway"
 	"github.com/agentserver/agentserver/v2/internal/sandboxgateway/fakeprovider"
@@ -231,6 +234,135 @@ func TestWorkspaceAllowlistDeniesBeforeCoreOrProviderCalls(t *testing.T) {
 			response.Code, core.reserveCalls, core.authorizeCalls, provider.SessionCount(), response.Body.String(),
 		)
 	}
+}
+
+func TestHandlerReturnsAndLogsOnlySafeProviderDispatchMetadata(t *testing.T) {
+	const (
+		secretArgument = "secret-command-argument"
+		secretToken    = "secret-lark-token"
+		secretCause    = "secret-provider-response-body"
+	)
+	now := time.Now().UTC()
+	core := newFakeCore(now)
+	provider := &dispatchFailureProvider{err: func() error {
+		dispatchError := executionbackend.NewDispatchError(
+			executionbackend.OutcomeRejected, "forbidden", errors.New(secretCause),
+		)
+		dispatchError.ProviderRequestID = "provider-log-1"
+		dispatchError.ProviderCode = "PermissionDenied"
+		dispatchError.HTTPStatus = http.StatusForbidden
+		requestWritten := true
+		dispatchError.RequestWritten = &requestWritten
+		return dispatchError
+	}()}
+	service, err := sandboxgateway.NewService(sandboxgateway.Config{
+		Core: core, Provider: provider, Limits: sandboxcontract.DefaultLimits(),
+		ProviderRegion: "sg", ProviderPSM: "toutiao.tae.sandbox", IdleTTL: time.Minute,
+		EnsureTimeout: time.Second, EnsurePollInterval: time.Millisecond,
+		Root: "/workspace", Platform: "linux-amd64",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiresAt := now.Add(time.Hour)
+	core.state = &corecontract.ManagedSandboxState{
+		SandboxID: testSandboxID, WorkspaceID: testWorkspaceID, SessionID: testSessionID,
+		EnvironmentID: testEnvironmentID, ProviderKind: "tae", Generation: 1,
+		DesiredState: "ready", ObservedState: "ready", ProviderRegion: "sg",
+		ProviderPSM: "toutiao.tae.sandbox", ProviderSessionRef: "tae-session-1",
+		ExpiresAt: &expiresAt, Version: 1, CreatedAt: now, UpdatedAt: now,
+	}
+	core.activityLive = true
+	identity := sandboxcontract.OperationIdentity{
+		Session: sandboxcontract.SessionIdentity{WorkspaceID: testWorkspaceID, SessionID: testSessionID, EnvironmentID: testEnvironmentID},
+		RunID:   testRunID, RunAttemptID: testAttemptID, RunAttemptGeneration: 1,
+		ExecutionID: testExecutionID, OperationID: testOperationID, MutationKey: testMutationKey,
+	}
+	core.allow = corecontract.AuthorizeManagedSandboxOperationRequest{
+		WorkspaceID: testWorkspaceID, SessionID: testSessionID, RunID: testRunID,
+		RunAttemptID: testAttemptID, RunAttemptGeneration: 1,
+		ExecutionID: testExecutionID, OperationID: testOperationID, MutationKey: testMutationKey,
+		SandboxID: testSandboxID, TargetGeneration: 1, EnvironmentID: testEnvironmentID,
+		Action: corecontract.ManagedSandboxActionRunCommand,
+	}
+	authorizer := &testAuthorizer{backend: sandboxgateway.Principal{
+		Audience: sandboxgateway.AudienceBackend, WorkspaceID: testWorkspaceID, SessionID: testSessionID,
+		EnvironmentID: testEnvironmentID, RunID: testRunID, RunAttemptID: testAttemptID,
+		RunAttemptGeneration: 1, ExecutionID: testExecutionID, OperationID: testOperationID,
+		MutationKey: testMutationKey, SandboxID: testSandboxID, TargetGeneration: 1,
+	}}
+	var logs bytes.Buffer
+	handler, err := sandboxgateway.NewHandlerWithLogger(service, authorizer, 0, slog.New(slog.NewJSONHandler(&logs, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := sandboxcontract.RunCommandPath(testSandboxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := serveJSON(t, handler, http.MethodPost, path, sandboxcontract.RunCommandRequest{
+		Profile: sandboxcontract.ProfileV1, RequestID: "request-provider-failure", Identity: identity,
+		Ref: sandboxcontract.SandboxRef{SandboxID: testSandboxID, TargetGeneration: 1}, ProcessID: "process-provider-failure",
+		Executable: "lark-cli", Arguments: []string{secretArgument}, WorkingDirectory: "/workspace",
+		Environment: map[string]string{"LARK_ACCESS_TOKEN": secretToken}, TimeoutMillis: 30_000, OutputLimitBytes: 1024,
+	})
+	if response.Code != http.StatusConflict {
+		t.Fatalf("dispatch failure status = %d body = %s", response.Code, response.Body.String())
+	}
+	var contractError sandboxcontract.ErrorResponse
+	decodeResponse(t, response.Body.Bytes(), &contractError)
+	if contractError.Code != "forbidden" || contractError.Outcome != string(executionbackend.OutcomeRejected) ||
+		contractError.ProviderRequestID != "provider-log-1" || contractError.ProviderCode != "PermissionDenied" ||
+		contractError.ProviderHTTPStatus != http.StatusForbidden || contractError.RequestWritten == nil || !*contractError.RequestWritten {
+		t.Fatalf("dispatch error response = %+v", contractError)
+	}
+	combined := response.Body.String() + logs.String()
+	for _, forbidden := range []string{secretArgument, secretToken, secretCause, "Authorization"} {
+		if strings.Contains(combined, forbidden) {
+			t.Fatalf("dispatch diagnostics leaked %q: %s", forbidden, combined)
+		}
+	}
+	for _, wanted := range []string{"sandbox provider dispatch failed", "provider-log-1", "PermissionDenied", `"provider_http_status":403`, `"request_written":true`} {
+		if !strings.Contains(logs.String(), wanted) {
+			t.Fatalf("dispatch log %q does not contain %q", logs.String(), wanted)
+		}
+	}
+}
+
+type dispatchFailureProvider struct {
+	err error
+}
+
+func (*dispatchFailureProvider) CreateSandbox(context.Context, sandboxgateway.CreateSandboxRequest) (sandboxgateway.ProviderSandbox, error) {
+	return sandboxgateway.ProviderSandbox{}, errors.New("unexpected create")
+}
+
+func (*dispatchFailureProvider) FindSandbox(context.Context, sandboxgateway.FindSandboxRequest) (sandboxgateway.ProviderSandbox, error) {
+	return sandboxgateway.ProviderSandbox{}, errors.New("unexpected find")
+}
+
+func (*dispatchFailureProvider) GetSandbox(context.Context, string) (sandboxgateway.ProviderSandbox, error) {
+	return sandboxgateway.ProviderSandbox{}, errors.New("unexpected get")
+}
+
+func (*dispatchFailureProvider) SetSandboxTimeout(context.Context, sandboxgateway.SetSandboxTimeoutProviderRequest) (sandboxgateway.ProviderSandbox, error) {
+	return sandboxgateway.ProviderSandbox{}, errors.New("unexpected set timeout")
+}
+
+func (*dispatchFailureProvider) DeleteSandbox(context.Context, sandboxgateway.DeleteSandboxProviderRequest) error {
+	return errors.New("unexpected delete")
+}
+
+func (provider *dispatchFailureProvider) StartProcess(context.Context, sandboxgateway.StartProcessProviderRequest) (executionbackend.Exchange, error) {
+	return nil, provider.err
+}
+
+func (provider *dispatchFailureProvider) SignalProcess(context.Context, sandboxgateway.SignalProcessProviderRequest) (executionbackend.Exchange, error) {
+	return nil, provider.err
+}
+
+func (provider *dispatchFailureProvider) ReadFile(context.Context, sandboxgateway.ReadFileProviderRequest) (executionbackend.Exchange, error) {
+	return nil, provider.err
 }
 
 type sequenceIDs struct {

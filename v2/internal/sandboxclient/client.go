@@ -48,9 +48,13 @@ type Client struct {
 }
 
 type Error struct {
-	HTTPStatus int
-	Code       string
-	Outcome    string
+	HTTPStatus         int
+	Code               string
+	Outcome            string
+	ProviderRequestID  string
+	ProviderCode       string
+	ProviderHTTPStatus int
+	RequestWritten     *bool
 }
 
 func (err *Error) Error() string {
@@ -179,7 +183,12 @@ func (client *Client) do(ctx context.Context, method, path string, command any, 
 		if decodeStrict(body, &contractError) != nil || contractError.Code == "" {
 			return &Error{HTTPStatus: response.StatusCode, Code: "invalid_error_response"}
 		}
-		return &Error{HTTPStatus: response.StatusCode, Code: contractError.Code, Outcome: contractError.Outcome}
+		return &Error{
+			HTTPStatus: response.StatusCode, Code: contractError.Code, Outcome: contractError.Outcome,
+			ProviderRequestID: contractError.ProviderRequestID, ProviderCode: contractError.ProviderCode,
+			ProviderHTTPStatus: contractError.ProviderHTTPStatus,
+			RequestWritten:     contractError.RequestWritten,
+		}
 	}
 	return decodeStrict(body, destination)
 }

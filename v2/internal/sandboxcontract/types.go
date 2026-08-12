@@ -557,9 +557,13 @@ func (frame OperationFrame) Validate() error {
 }
 
 type ErrorResponse struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	Outcome string `json:"outcome,omitempty"`
+	Code               string `json:"code"`
+	Message            string `json:"message"`
+	Outcome            string `json:"outcome,omitempty"`
+	ProviderRequestID  string `json:"providerRequestId,omitempty"`
+	ProviderCode       string `json:"providerCode,omitempty"`
+	ProviderHTTPStatus int    `json:"providerHttpStatus,omitempty"`
+	RequestWritten     *bool  `json:"requestWritten,omitempty"`
 }
 
 func validateLimitsAndRequest(limits Limits, profile, requestID string) error {

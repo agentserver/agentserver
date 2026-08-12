@@ -582,6 +582,52 @@ func TestProviderReadFileRejectsSymlinkBeforeDownload(t *testing.T) {
 	}
 }
 
+func TestProviderStartFailurePreservesSafeDispatchMetadata(t *testing.T) {
+	data := defaultFakeData()
+	data.start = func(context.Context, string, StartProcessInput) (EventStream, error) {
+		return nil, &RequestError{
+			WroteRequest: true, StatusCode: 403, Code: "forbidden",
+			ProviderCode: "PermissionDenied", RequestID: "provider-log-start-1",
+			Cause: errors.New("TAE returned a non-success response"),
+		}
+	}
+	provider := newTestProvider(t, defaultFakeControl(), data)
+	_, err := provider.StartProcess(t.Context(), sandboxgateway.StartProcessProviderRequest{
+		SessionRef: "tae-session-1", Request: validStartRequest(1024),
+	})
+	var dispatchError *executionbackend.DispatchError
+	if !errors.As(err, &dispatchError) || dispatchError.Outcome != executionbackend.OutcomeRejected ||
+		dispatchError.Code != "forbidden" || dispatchError.ProviderCode != "PermissionDenied" ||
+		dispatchError.ProviderRequestID != "provider-log-start-1" || dispatchError.HTTPStatus != 403 ||
+		dispatchError.RequestWritten == nil || !*dispatchError.RequestWritten {
+		t.Fatalf("StartProcess() dispatch error = %#v", err)
+	}
+}
+
+func TestProviderPreAcknowledgementStreamFailurePreservesRequestID(t *testing.T) {
+	streamError := &RequestError{
+		WroteRequest: true, Code: "stream_lost", RequestID: "provider-stream-log-1",
+		Cause: errors.New("TAE SSE stream read failed"),
+	}
+	stream := &scriptedStream{finalErr: streamError, requestID: "provider-stream-log-1"}
+	data := defaultFakeData()
+	data.start = func(context.Context, string, StartProcessInput) (EventStream, error) { return stream, nil }
+	provider := newTestProvider(t, defaultFakeControl(), data)
+	exchange, err := provider.StartProcess(t.Context(), sandboxgateway.StartProcessProviderRequest{
+		SessionRef: "tae-session-1", Request: validStartRequest(1024),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = exchange.AwaitAcknowledgement(t.Context())
+	var dispatchError *executionbackend.DispatchError
+	if !errors.As(err, &dispatchError) || dispatchError.Outcome != executionbackend.OutcomeUnknown ||
+		dispatchError.Code != "provider_stream_lost" || dispatchError.ProviderRequestID != "provider-stream-log-1" ||
+		dispatchError.RequestWritten == nil || !*dispatchError.RequestWritten {
+		t.Fatalf("AwaitAcknowledgement() dispatch error = %#v", err)
+	}
+}
+
 func newTestProvider(t *testing.T, control ControlPlane, data DataPlane) *Provider {
 	t.Helper()
 	provider, err := NewProvider(Config{

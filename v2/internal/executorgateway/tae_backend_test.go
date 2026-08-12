@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -134,6 +135,122 @@ func TestTAEBackendClassifiesPreSendAndAmbiguousFailures(t *testing.T) {
 	}
 	if _, err := tokenFailure.StartProcess(t.Context(), request); !executionbackend.ProvesNotSent(err) {
 		t.Fatalf("token failure = %v, want not_sent", err)
+	}
+}
+
+func TestTAEBackendLogsOnlySafeDispatchMetadata(t *testing.T) {
+	const (
+		secretArgument = "secret-command-argument"
+		secretToken    = "secret-lark-token"
+		secretBody     = "secret-provider-response-body"
+	)
+	request := validTAEStartRequest()
+	request.Arguments = []string{secretArgument}
+	request.Environment = map[string]string{"LARK_ACCESS_TOKEN": secretToken}
+	written := true
+	var logs bytes.Buffer
+	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		body, err := json.Marshal(sandboxcontract.ErrorResponse{
+			Code: "forbidden", Message: secretBody, Outcome: string(executionbackend.OutcomeRejected),
+			ProviderRequestID: "provider-log-1", ProviderCode: "PermissionDenied",
+			ProviderHTTPStatus: http.StatusForbidden, RequestWritten: &written,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusConflict,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	})
+	backend, err := NewTAEBackendWithLogger("https://sandbox-gateway.internal", &http.Client{Transport: transport},
+		&recordingSandboxTokenSource{token: "test-backend-capability-token"}, slog.New(slog.NewJSONHandler(&logs, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = backend.StartProcess(t.Context(), request)
+	var dispatchError *executionbackend.DispatchError
+	if !errors.As(err, &dispatchError) || dispatchError.Outcome != executionbackend.OutcomeRejected ||
+		dispatchError.Code != "forbidden" || dispatchError.ProviderRequestID != "provider-log-1" ||
+		dispatchError.ProviderCode != "PermissionDenied" || dispatchError.HTTPStatus != http.StatusForbidden ||
+		dispatchError.RequestWritten == nil || !*dispatchError.RequestWritten {
+		t.Fatalf("StartProcess() dispatch error = %#v", err)
+	}
+	logged := logs.String()
+	for _, wanted := range []string{"managed backend dispatch failed", "provider-log-1", "PermissionDenied", `"provider_http_status":403`, `"request_written":true`} {
+		if !strings.Contains(logged, wanted) {
+			t.Fatalf("dispatch log %q does not contain %q", logged, wanted)
+		}
+	}
+	for _, forbidden := range []string{secretArgument, secretToken, secretBody, "Authorization"} {
+		if strings.Contains(logged, forbidden) {
+			t.Fatalf("dispatch log leaked %q: %s", forbidden, logged)
+		}
+	}
+}
+
+func TestTAEBackendRejectsUnsafeDispatchMetadata(t *testing.T) {
+	written := false
+	body, err := json.Marshal(sandboxcontract.ErrorResponse{
+		Code: "provider_unavailable", Message: "safe", Outcome: string(executionbackend.OutcomeUnknown),
+		ProviderRequestID: "provider-log\nunsafe", RequestWritten: &written,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := NewTAEBackend("https://sandbox-gateway.internal", &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: io.NopCloser(bytes.NewReader(body))}, nil
+	})}, &recordingSandboxTokenSource{token: "test-backend-capability-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = backend.StartProcess(t.Context(), validTAEStartRequest())
+	var dispatchError *executionbackend.DispatchError
+	if !errors.As(err, &dispatchError) || dispatchError.Code != "invalid_gateway_error" || dispatchError.Outcome != executionbackend.OutcomeUnknown {
+		t.Fatalf("unsafe metadata error = %#v", err)
+	}
+}
+
+func TestTAEBackendLogsStreamFailureWithoutPayload(t *testing.T) {
+	const secretStreamPayload = "secret-stream-payload"
+	var logs bytes.Buffer
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		var command sandboxcontract.RunCommandRequest
+		if err := json.NewDecoder(request.Body).Decode(&command); err != nil {
+			t.Fatal(err)
+		}
+		body := encodeOperationFrames(t, sandboxcontract.OperationFrame{
+			Profile: sandboxcontract.ProfileV1, Type: sandboxcontract.OperationFrameAcknowledgement,
+			Identity: command.Identity, Ref: command.Ref,
+			Acknowledgement: &executionbackend.Acknowledgement{AcceptedAt: time.Now().UTC()},
+		})
+		body = append(body, []byte(secretStreamPayload)...)
+		return operationHTTPResponse(body), nil
+	})
+	backend, err := NewTAEBackendWithLogger("https://sandbox-gateway.internal", &http.Client{Transport: transport},
+		&recordingSandboxTokenSource{token: "test-backend-capability-token"}, slog.New(slog.NewJSONHandler(&logs, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	exchange, err := backend.StartProcess(t.Context(), validTAEStartRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exchange.AwaitAcknowledgement(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exchange.NextEvent(t.Context()); err == nil {
+		t.Fatal("invalid stream unexpectedly produced an event")
+	}
+	logged := logs.String()
+	for _, wanted := range []string{"managed backend exchange failed", "invalid_stream_json", `"sandbox_gateway_http_status":200`} {
+		if !strings.Contains(logged, wanted) {
+			t.Fatalf("exchange log %q does not contain %q", logged, wanted)
+		}
+	}
+	if strings.Contains(logged, secretStreamPayload) {
+		t.Fatalf("exchange log leaked provider stream payload: %s", logged)
 	}
 }
 

@@ -58,6 +58,16 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 	}
 	harnessEgress = append(harnessEgress, dns...)
 	harnessEgress = append(harnessEgress, externalEgress(document.Network.HarnessExternalEgress)...)
+	// The production S3 hostname is served by the in-cluster Istio Gateway.
+	// Authorize the stable Gateway workload identity instead of pinning the
+	// rotating LoadBalancer/node addresses returned by DNS. Cilium evaluates
+	// this peer after Service/LB translation, so Pod replacement and address
+	// rotation do not require regenerating the production Chart.
+	harnessEgress = append(harnessEgress, namespacedPodTCPEgress(
+		document.Ingress.GatewayNamespace,
+		document.Ingress.GatewayPodSelector,
+		443,
+	))
 	llmEgress := []any{componentTCPEgress(coreComponent, document.Services.Core.Port)}
 	llmEgress = append(llmEgress, dns...)
 	llmEgress = append(llmEgress, publicHTTPSEgress()...)

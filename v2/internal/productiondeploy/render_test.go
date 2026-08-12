@@ -541,6 +541,9 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 	coreNetworkPolicy := findResource(t, foundation, "NetworkPolicy", coreComponent)
 	assertNamespacedPodPeerPresent(t, objectField(t, coreNetworkPolicy, "spec"), "egress",
 		loaded.Document.Ingress.GatewayNamespace, loaded.Document.Ingress.GatewayPodSelector, 443)
+	harnessNetworkPolicy := findResource(t, foundation, "NetworkPolicy", harnessComponent)
+	assertNamespacedPodPeerPresent(t, objectField(t, harnessNetworkPolicy, "spec"), "egress",
+		loaded.Document.Ingress.GatewayNamespace, loaded.Document.Ingress.GatewayPodSelector, 443)
 	for _, name := range []string{
 		"hydra-migrate-egress", "agentserver-migrate-egress", "agentserver-bootstrap-egress",
 		"agentserver-managed-environment-bootstrap-egress",

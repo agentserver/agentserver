@@ -819,7 +819,11 @@ func validateNetwork(document *NetworkDocument, services ServicesDocument) error
 	}{
 		{"coreExternalEgress", &document.CoreExternalEgress, true},
 		{"browserExternalEgress", &document.BrowserExternalEgress, false},
-		{"harnessExternalEgress", &document.HarnessExternalEgress, true},
+		// Harness reaches the production S3 endpoint through the in-cluster
+		// Gateway workload identity. External CIDRs remain available for an
+		// explicitly reviewed non-Gateway dependency, but S3 must not make this
+		// list non-empty or bind the deployment to rotating DNS answers.
+		{"harnessExternalEgress", &document.HarnessExternalEgress, false},
 		{"sandboxExternalEgress", &document.SandboxExternalEgress, false},
 		{"egressAuthorizerExternalEgress", &document.EgressAuthorizerExternalEgress, false},
 	}

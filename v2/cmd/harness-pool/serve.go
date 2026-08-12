@@ -253,7 +253,7 @@ func serveHarnessPool(
 	if managedSandboxLifecycle != nil {
 		managedDescription = "managed sandbox lifecycle enabled"
 	}
-	fmt.Fprintf(stdout, "harness-pool serve: %s; %s; %s; holder %s; control %s; max attempts %d\n",
+	fmt.Fprintf(stdout, "harness-pool serve: %s; %s; %s; holder %s; control %s; max concurrent attempts %d\n",
 		authorityDescription, objectStoreDescription, managedDescription, poolInstanceID, callbackEndpoint, config.maxConcurrent)
 	return runHarnessPoolServices(ctx, pool, controls, server, tls.NewListener(listener, controlTLS), readiness)
 }

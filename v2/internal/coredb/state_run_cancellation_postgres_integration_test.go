@@ -335,6 +335,59 @@ func TestPostgreSQLPreTurnAbandonmentAtomicallyArbitratesCancellation(t *testing
 		)
 	})
 
+	t.Run("startup retry budget is durable", func(t *testing.T) {
+		store, pool, schema := newPostgresStateStore(t)
+		workspaceID := stateTestUUID(157_000)
+		sessionID := stateTestUUID(157_001)
+		insertStateTestSession(t, pool, schema, workspaceID, sessionID)
+		created := mustCreateStateRun(t, store, stateCreateRunCommand(157_010, workspaceID, sessionID, "startup-retry-budget"))
+		currentRun := created.Run
+
+		for generation := int64(1); generation <= maximumPreTurnStartupAttempts; generation++ {
+			seed := 157_020 + int(generation)*10
+			claim := mustClaimStateRun(t, store, stateClaimRunCommand(seed, currentRun.ID, currentRun.Version, fmt.Sprintf("retry-holder-%d", generation)))
+			if claim.Attempt.Generation != generation {
+				t.Fatalf("attempt generation = %d, want %d", claim.Attempt.Generation, generation)
+			}
+			command := AbandonAttemptCommand{
+				RunID: currentRun.ID, AttemptID: claim.Attempt.ID, HolderID: claim.Attempt.HolderID,
+				Generation: generation, Reason: abandonReasonStartup, Record: stateTransitionRecord(seed + 1),
+			}
+			abandoned, err := store.AbandonAttempt(t.Context(), command)
+			if err != nil {
+				t.Fatalf("generation %d AbandonAttempt() error = %v", generation, err)
+			}
+			if generation < maximumPreTurnStartupAttempts {
+				if abandoned.Disposition != AbandonDispositionRequeued || abandoned.Run.Status != RunStatusQueued {
+					t.Fatalf("generation %d abandonment = %+v, want requeued", generation, abandoned)
+				}
+			} else {
+				if abandoned.Disposition != AbandonDispositionFailed || abandoned.Run.Status != RunStatusFailed {
+					t.Fatalf("generation %d abandonment = %+v, want failed", generation, abandoned)
+				}
+				assertAttemptAbandonmentTransition(
+					t, pool, schema, command.Record, currentRun.ID, claim.Attempt,
+					"run.failed", abandonExhaustedCode, abandonExhaustedMessage,
+					1+maximumPreTurnStartupAttempts*2,
+				)
+			}
+			currentRun = abandoned.Run
+		}
+
+		var attempts int
+		attemptCountQuery := fmt.Sprintf("SELECT pg_catalog.count(*) FROM %s.run_attempts WHERE run_id = $1", quoteIdentifier(schema))
+		if err := pool.QueryRow(t.Context(), attemptCountQuery, currentRun.ID).Scan(&attempts); err != nil {
+			t.Fatal(err)
+		}
+		if attempts != int(maximumPreTurnStartupAttempts) {
+			t.Fatalf("persisted attempts = %d, want %d", attempts, maximumPreTurnStartupAttempts)
+		}
+		assertCancellationAggregate(
+			t, pool, schema, currentRun.ID, sessionID, RunStatusFailed,
+			currentRun.Version, currentRun.NextEventSeq, false, 0, 0,
+		)
+	})
+
 	t.Run("cancel then abandon", func(t *testing.T) {
 		store, pool, schema := newPostgresStateStore(t)
 		workspaceID := stateTestUUID(154_000)

@@ -9,13 +9,20 @@ import (
 )
 
 const (
-	cancelReasonUser       = "cancelled"
-	cancelCodeUser         = "user_cancelled"
-	cancelMessage          = "the run was cancelled by a workspace member"
-	abandonReasonStartup   = "startup_failed"
-	abandonCodeStartup     = "attempt_startup_failed"
-	abandonMessage         = "the attempt stopped before accepting a turn and will be retried"
-	abandonTerminalMessage = "the attempt was rejected before accepting a turn and will not be retried"
+	cancelReasonUser        = "cancelled"
+	cancelCodeUser          = "user_cancelled"
+	cancelMessage           = "the run was cancelled by a workspace member"
+	abandonReasonStartup    = "startup_failed"
+	abandonCodeStartup      = "attempt_startup_failed"
+	abandonMessage          = "the attempt stopped before accepting a turn and will be retried"
+	abandonTerminalMessage  = "the attempt was rejected before accepting a turn and will not be retried"
+	abandonExhaustedCode    = "attempt_startup_retry_exhausted"
+	abandonExhaustedMessage = "the attempt stopped before accepting a turn after the maximum startup attempts and will not be retried"
+
+	// The generation is durable on the run, so this retry budget survives
+	// harness restarts and ownership changes. Four means one initial attempt
+	// plus at most three pre-turn retries.
+	maximumPreTurnStartupAttempts int64 = 4
 
 	AbandonDispositionRequeued            = "requeued"
 	AbandonDispositionFailed              = "failed"
@@ -461,11 +468,16 @@ func (s *StateStore) AbandonAttempt(ctx context.Context, command AbandonAttemptC
 		code := abandonCodeStartup
 		message := abandonMessage
 		disposition := AbandonDispositionRequeued
-		if command.Terminal {
+		terminal := command.Terminal || attempt.Generation >= maximumPreTurnStartupAttempts
+		if terminal {
 			runStatus = RunStatusFailed
 			kind = "run.failed"
 			message = abandonTerminalMessage
 			disposition = AbandonDispositionFailed
+		}
+		if !command.Terminal && attempt.Generation >= maximumPreTurnStartupAttempts {
+			code = abandonExhaustedCode
+			message = abandonExhaustedMessage
 		}
 		if run.Status == RunStatusCancelling {
 			attemptStatus = AttemptStatusInterrupted

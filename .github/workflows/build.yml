@@ -82,14 +82,14 @@ jobs:
       - name: Verify v2 module boundary and unit tests
         run: make -C v2 check
 
-      - name: Managed sandbox PostgreSQL reservation regression test
+      - name: V2 production PostgreSQL regressions
         working-directory: v2
         env:
           AGENTSERVER_RUN_POSTGRES_TESTS: "1"
           AGENTSERVER_V2_TEST_DATABASE_URL: postgres://test:test@localhost:5432/test?sslmode=disable
         run: >-
           go test ./internal/coredb
-          -run '^TestPostgreSQLManagedSandboxReservationPersistsTypedTTLs$'
+          -run '^TestPostgreSQL(ManagedSandboxReservationPersistsTypedTTLs|PreTurnAbandonmentAtomicallyArbitratesCancellation)$'
           -count=1 -timeout 2m -v
 
   test:

@@ -14,6 +14,11 @@ func TestPostgreSQLManagedSandboxReservationPersistsTypedTTLs(t *testing.T) {
 	store, pool, schema := newPostgresStateStore(t)
 	running := startExecutionTestRun(t, store, pool, schema, 800_000)
 	reserve := managedSandboxTestReserve(801_000, running)
+	// The gateway does not know the provider session reference until after
+	// provider create. Production reservations therefore carry the Go zero
+	// value, which must be persisted as SQL NULL to satisfy the bounded-ref
+	// constraint and scan back as an empty string.
+	reserve.ProviderSessionRef = ""
 
 	beforeReserve := time.Now().UTC()
 	result, err := store.ReserveManagedSandbox(t.Context(), reserve)
@@ -23,6 +28,9 @@ func TestPostgreSQLManagedSandboxReservationPersistsTypedTTLs(t *testing.T) {
 	}
 	if !result.Created {
 		t.Fatal("ReserveManagedSandbox() did not create the initial reservation")
+	}
+	if result.Sandbox.ProviderSessionRef != "" {
+		t.Fatalf("reserved provider session ref = %q, want empty", result.Sandbox.ProviderSessionRef)
 	}
 	if result.Sandbox.RequestedTTL != reserve.RequestedTTL || result.Sandbox.IdleTTL != reserve.RequestedIdleTTL {
 		t.Fatalf(

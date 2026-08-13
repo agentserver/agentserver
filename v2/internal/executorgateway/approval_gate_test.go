@@ -120,6 +120,51 @@ func TestCoreApprovalGateConsumesCanonicalDecisionBeforeAuthorization(t *testing
 	}
 }
 
+func TestCoreApprovalGateLeavesCrossNodeClockSkewHeadroomAtMaximumTTL(t *testing.T) {
+	now := time.Unix(1_800_000_000, 123_456_000).UTC()
+	execution := testPendingApprovalExecution(now)
+	authority := newRecordingApprovalAuthority(execution, now)
+	principal := testExecutorMCPPrincipal("capability-approval-clock-skew")
+	principal.MaxApprovalTTL = 5 * time.Minute
+	principal.RunDeadline = now.Add(20 * time.Minute)
+	principal.CapabilityExpiresAt = now.Add(21 * time.Minute)
+	gate := newTestCoreApprovalGate(t, authority, now, 100*time.Millisecond)
+
+	workerNow := now.Add(-4 * time.Second)
+	result, err := gate.AuthorizeExecution(t.Context(), ApprovalGateRequest{
+		Principal: principal, Execution: execution, ToolName: "shell", ToolCallID: execution.AppServerToolCallID,
+		Elicitor: approvalElicitorFunc(func(_ context.Context, params *mcp.ElicitParams) (*mcp.ElicitResult, error) {
+			expiresAt, parseErr := time.Parse(time.RFC3339Nano, params.Meta[executorMCPMetaExpiresAt].(string))
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			if expiresAt.After(workerNow.Add(principal.MaxApprovalTTL)) {
+				return nil, errors.New("approval expiry exceeds the signed attempt limit")
+			}
+			return acceptedApprovalResult(params, 2), nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "approved" {
+		t.Fatalf("authorization = %+v", result)
+	}
+	want := now.Add(principal.MaxApprovalTTL - maximumApprovalExpirySkewAllowance)
+	if !authority.createRequest.ExpiresAt.Equal(want) {
+		t.Fatalf("approval expiry = %s, want %s", authority.createRequest.ExpiresAt, want)
+	}
+}
+
+func TestApprovalTTLWithClockSkewHeadroomPreservesShortWindow(t *testing.T) {
+	if got, want := approvalTTLWithClockSkewHeadroom(4*time.Second), 2*time.Second; got != want {
+		t.Fatalf("short approval TTL = %s, want %s", got, want)
+	}
+	if got, want := approvalTTLWithClockSkewHeadroom(5*time.Minute), 4*time.Minute+55*time.Second; got != want {
+		t.Fatalf("production approval TTL = %s, want %s", got, want)
+	}
+}
+
 func TestCoreApprovalGateRejectsForgedAcceptWithoutConsume(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0).UTC()
 	execution := testPendingApprovalExecution(now)

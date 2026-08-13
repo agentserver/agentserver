@@ -14,16 +14,15 @@ const maxEgressCredentialCommandBytes int64 = 128 * 1024
 // endpoints. Platform users never reach these routes; they use the
 // workspace-credential routes instead.
 type EgressCredentialHandler struct {
-	executorAuthorizer WorkloadAuthorizer
-	egressAuthorizer   WorkloadAuthorizer
-	service            *EgressCredentialService
+	egressAuthorizer WorkloadAuthorizer
+	service          *EgressCredentialService
 }
 
-func NewEgressCredentialHandler(executorAuthorizer, egressAuthorizer WorkloadAuthorizer, service *EgressCredentialService) (*EgressCredentialHandler, error) {
-	if executorAuthorizer == nil || egressAuthorizer == nil || service == nil || !service.WebhookEnabled() {
-		return nil, errors.New("v2 egress credential executor/authorizer identities and service are required")
+func NewEgressCredentialHandler(egressAuthorizer WorkloadAuthorizer, service *EgressCredentialService) (*EgressCredentialHandler, error) {
+	if egressAuthorizer == nil || service == nil || !service.WebhookEnabled() {
+		return nil, errors.New("v2 egress credential authorizer identity and service are required")
 	}
-	return &EgressCredentialHandler{executorAuthorizer: executorAuthorizer, egressAuthorizer: egressAuthorizer, service: service}, nil
+	return &EgressCredentialHandler{egressAuthorizer: egressAuthorizer, service: service}, nil
 }
 
 func (handler *EgressCredentialHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -34,8 +33,6 @@ func (handler *EgressCredentialHandler) ServeHTTP(response http.ResponseWriter, 
 		return
 	}
 	switch request.URL.Path {
-	case corecontract.ResolveEgressCredentialAuthorityPath:
-		handler.authority(response, request)
 	case corecontract.ResolveEgressCredentialPath:
 		handler.resolve(response, request)
 	case corecontract.AuthorizeProcessEnvironmentEgressPath:
@@ -64,23 +61,6 @@ func (handler *EgressCredentialHandler) authorizeProcessEnvironment(response htt
 		} else {
 			writeCommandError(response, err)
 		}
-		return
-	}
-	writeJSON(response, http.StatusOK, result)
-}
-
-func (handler *EgressCredentialHandler) authority(response http.ResponseWriter, request *http.Request) {
-	if err := handler.executorAuthorizer.AuthorizeWorkload(request, "egress.credentials.resolve-authority"); err != nil {
-		writeError(response, http.StatusForbidden, corecontract.ErrorResponse{Code: "forbidden", Message: "workload is not authorized for egress credential authority"})
-		return
-	}
-	var command corecontract.ResolveEgressCredentialAuthorityRequest
-	if !decodeCommandWithLimit(response, request, &command, maxEgressCredentialCommandBytes) {
-		return
-	}
-	result, err := handler.service.ResolveAuthority(request.Context(), command)
-	if err != nil {
-		writeCommandError(response, err)
 		return
 	}
 	writeJSON(response, http.StatusOK, result)

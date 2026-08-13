@@ -102,7 +102,7 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 		ReleaseManagedSandboxActivityPath("{sandboxId}"):             "releaseManagedSandboxActivity",
 		BeginManagedSandboxDeletePath("{sandboxId}"):                 "beginManagedSandboxDelete",
 		AuthorizeManagedSandboxOperationPath:                         "authorizeManagedSandboxOperation",
-		ResolveEgressCredentialAuthorityPath:                         "resolveEgressCredentialAuthority",
+		ResolveExecutionLarkCredentialAuthorityPath:                   "resolveExecutionLarkCredentialAuthority",
 		ResolveEgressCredentialPath:                                  "resolveEgressCredential",
 		AuthorizeProcessEnvironmentEgressPath:                        "authorizeProcessEnvironmentEgress",
 		ResolveExecutionLarkCredentialPath:                           "resolveExecutionLarkCredential",

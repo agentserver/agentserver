@@ -25,7 +25,7 @@ func TestCoreManagedLarkAuthorityUsesInjectedAuthorizationClock(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, incoming *http.Request) {
-				if incoming.Method != http.MethodPost || incoming.URL.Path != corecontract.ResolveEgressCredentialAuthorityPath {
+				if incoming.Method != http.MethodPost || incoming.URL.Path != corecontract.ResolveExecutionLarkCredentialAuthorityPath {
 					t.Fatalf("managed Lark authority request = %s %s", incoming.Method, incoming.URL.Path)
 				}
 				response.Header().Set("Content-Type", "application/json")

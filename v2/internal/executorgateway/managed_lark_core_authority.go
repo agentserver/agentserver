@@ -42,7 +42,7 @@ func (client *CoreConnectionClient) ResolveManagedLarkEgressAuthority(
 	}
 	var response corecontract.ResolveEgressCredentialAuthorityResponse
 	if err := client.postWithPolicy(
-		ctx, corecontract.ResolveEgressCredentialAuthorityPath, command, &response,
+		ctx, corecontract.ResolveExecutionLarkCredentialAuthorityPath, command, &response,
 		http.StatusOK, "", true, nil,
 	); err != nil {
 		return ManagedLarkEgressAuthority{}, err

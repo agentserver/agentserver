@@ -85,17 +85,19 @@ func TestRunRetargetTerminalSandboxUsesExactClosedArguments(t *testing.T) {
 	exitCode := run(
 		[]string{
 			"retarget-terminal-sandbox", "--revision-id=revision-v9", "--sandbox-id=sandbox-new",
+			"--environment-id=60000000-0000-4000-8000-000000000006",
 			"--expected-sandbox-id=sandbox-old", "--output=/absolute/retargeted.json",
 			"--config=/absolute/bootstrap.json", "--managed-sandbox-image=sandbox@sha256:" + digest,
 		},
 		&stdout, &stderr,
-		deployCommands{retargetManagedTerminal: func(config, output, expected, sandbox, revision, image string) error {
-			called = strings.Join([]string{config, output, expected, sandbox, revision, image}, "|")
+		deployCommands{retargetManagedTerminal: func(config, output, expected, sandbox, revision, environment, image string) error {
+			called = strings.Join([]string{config, output, expected, sandbox, revision, environment, image}, "|")
 			return nil
 		}},
 	)
 	want := strings.Join([]string{
 		"/absolute/bootstrap.json", "/absolute/retargeted.json", "sandbox-old", "sandbox-new", "revision-v9",
+		"60000000-0000-4000-8000-000000000006",
 		"sandbox@sha256:" + digest,
 	}, "|")
 	if exitCode != 0 || stderr.Len() != 0 || called != want ||

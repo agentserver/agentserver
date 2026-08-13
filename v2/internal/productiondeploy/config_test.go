@@ -330,37 +330,45 @@ func TestRetargetManagedTerminalIsBootstrapOnlyAtomicAndFailClosed(t *testing.T)
 	bootstrap := policyBootstrapConfigDocument()
 	wantImage := ProductionManagedSandboxImage + "@sha256:" + releaseDigest("d")
 	retargeted, err := RetargetManagedTerminalDocument(
-		bootstrap, bootstrap.Managed.TAE.SandboxID, "sandbox-new", "revision-v9", wantImage,
+		bootstrap, bootstrap.Managed.TAE.SandboxID, "sandbox-new", "revision-v9",
+		"60000000-0000-4000-8000-000000000006", wantImage,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if retargeted.Managed.TAE.SandboxID != "sandbox-new" ||
 		retargeted.Managed.TAE.RevisionID != "revision-v9" || retargeted.Images.ManagedSandbox != wantImage ||
+		retargeted.Managed.Environment.EnvironmentID != "60000000-0000-4000-8000-000000000006" ||
 		retargeted.Managed.Stage != ManagedExecutorStageBootstrap ||
 		retargeted.Managed.Environment.RuntimeProfileSHA256 != "" ||
 		retargeted.Managed.Environment.PackSetSHA256 != "" ||
 		retargeted.Managed.TAE.NetworkEvidence != (ManagedTAENetworkEvidenceDocument{}) ||
-		bootstrap.Managed.TAE.SandboxID == retargeted.Managed.TAE.SandboxID {
+		bootstrap.Managed.TAE.SandboxID == retargeted.Managed.TAE.SandboxID ||
+		bootstrap.Managed.Environment.EnvironmentID == retargeted.Managed.Environment.EnvironmentID {
 		t.Fatalf("retargeted Terminal bootstrap = %+v", retargeted.Managed)
 	}
-	for name, mutate := range map[string]func(*ConfigDocument, *string, *string, *string, *string){
-		"active source":     func(document *ConfigDocument, _, _, _, _ *string) { *document = validConfigDocument() },
-		"stale current id":  func(_ *ConfigDocument, expected, _, _, _ *string) { *expected = "sandbox-stale" },
-		"invalid new id":    func(_ *ConfigDocument, _, sandbox, _, _ *string) { *sandbox = "Sandbox_New" },
-		"sentinel revision": func(_ *ConfigDocument, _, _, revision, _ *string) { *revision = "pending-v9" },
-		"wrong image repository": func(_ *ConfigDocument, _, _, _, image *string) {
+	for name, mutate := range map[string]func(*ConfigDocument, *string, *string, *string, *string, *string){
+		"active source":       func(document *ConfigDocument, _, _, _, _, _ *string) { *document = validConfigDocument() },
+		"stale current id":    func(_ *ConfigDocument, expected, _, _, _, _ *string) { *expected = "sandbox-stale" },
+		"invalid new id":      func(_ *ConfigDocument, _, sandbox, _, _, _ *string) { *sandbox = "Sandbox_New" },
+		"sentinel revision":   func(_ *ConfigDocument, _, _, revision, _, _ *string) { *revision = "pending-v9" },
+		"invalid environment": func(_ *ConfigDocument, _, _, _, environment, _ *string) { *environment = "not-a-uuid" },
+		"reused environment": func(document *ConfigDocument, _, _, _, environment, _ *string) {
+			*environment = document.Managed.Environment.EnvironmentID
+		},
+		"wrong image repository": func(_ *ConfigDocument, _, _, _, _, image *string) {
 			*image = "ghcr.io/agentserver/v2-managed-sandbox@sha256:" + releaseDigest("d")
 		},
-		"mutable image": func(_ *ConfigDocument, _, _, _, image *string) {
+		"mutable image": func(_ *ConfigDocument, _, _, _, _, image *string) {
 			*image = ProductionManagedSandboxImage + ":main"
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			document := bootstrap
-			expected, sandbox, revision, image := bootstrap.Managed.TAE.SandboxID, "sandbox-new", "revision-v9", wantImage
-			mutate(&document, &expected, &sandbox, &revision, &image)
-			if _, err := RetargetManagedTerminalDocument(document, expected, sandbox, revision, image); err == nil {
+			expected, sandbox, revision := bootstrap.Managed.TAE.SandboxID, "sandbox-new", "revision-v9"
+			environment, image := "60000000-0000-4000-8000-000000000006", wantImage
+			mutate(&document, &expected, &sandbox, &revision, &environment, &image)
+			if _, err := RetargetManagedTerminalDocument(document, expected, sandbox, revision, environment, image); err == nil {
 				t.Fatal("unsafe Terminal Sandbox retarget was accepted")
 			}
 		})

@@ -89,7 +89,9 @@ const (
 	materialProfileHarnessWorker      = "harness-worker"
 	materialProfileLLMProxy           = "llmproxy"
 	materialProfileCoreManaged        = "core-managed"
+	materialProfileCoreManagedWebhook = "core-managed-webhook"
 	materialProfileExecutorManaged    = "executor-gateway-managed"
+	materialProfileExecutorWebhook    = "executor-gateway-managed-webhook"
 	materialProfileHarnessPoolManaged = "harness-pool-managed"
 	materialProfileSandboxGateway     = "sandbox-gateway"
 	materialProfileTAENetworkProbe    = "tae-network-probe"
@@ -121,9 +123,18 @@ var materialProfileFiles = map[string][]string{
 	materialProfileCoreManaged: {
 		"ca.crt", "tls.crt", "tls.key", "run-capability.key",
 		"run-capability-keyring.json", "executor-enrollment.key",
+		"llm-gateway-sealing-keyring.json", "credential-sealing-keyring.json",
+	},
+	materialProfileCoreManagedWebhook: {
+		"ca.crt", "tls.crt", "tls.key", "run-capability.key",
+		"run-capability-keyring.json", "executor-enrollment.key",
 		"llm-gateway-sealing-keyring.json", "credential-sealing-keyring.json", "egress-placeholder-keyring.json",
 	},
 	materialProfileExecutorManaged: {
+		"ca.crt", "tls.crt", "tls.key", "run-capability-keyring.json",
+		"sandbox-backend-capability.key", "sandbox-fencer-capability.key",
+	},
+	materialProfileExecutorWebhook: {
 		"ca.crt", "tls.crt", "tls.key", "run-capability-keyring.json",
 		"sandbox-backend-capability.key", "sandbox-fencer-capability.key", "egress-placeholder.key",
 	},

@@ -33,7 +33,7 @@ func configureTAEBackend(
 		gatewaySandboxFencerKeyEnvironment,
 		gatewayEgressPlaceholderIssuerEnvironment, gatewayEgressPlaceholderKeyIDEnvironment,
 		gatewayEgressPlaceholderKeyEnvironment,
-		gatewayManagedTAEPSMEnvironment,
+		gatewayManagedTAEPSMEnvironment, gatewayTAEWebhookRequiredEnvironment,
 	}
 	if baseURL == "" {
 		for _, name := range configuredNames {
@@ -185,13 +185,31 @@ func configureManagedExecutionSecurity(
 		return nil, nil, fmt.Errorf("%s is invalid", gatewayManagedTAEPSMEnvironment)
 	}
 
-	egressNames := []string{
-		gatewayEgressPlaceholderIssuerEnvironment, gatewayEgressPlaceholderKeyIDEnvironment,
-		gatewayEgressPlaceholderKeyEnvironment,
+	webhookRequired, err := requiredBoolean(getenv, gatewayTAEWebhookRequiredEnvironment)
+	if err != nil {
+		return nil, nil, err
+	}
+	egressNames := []string{gatewayEgressPlaceholderIssuerEnvironment, gatewayEgressPlaceholderKeyIDEnvironment, gatewayEgressPlaceholderKeyEnvironment}
+	if !webhookRequired {
+		for _, name := range egressNames {
+			if strings.TrimSpace(getenv(name)) != "" {
+				return nil, nil, fmt.Errorf("%s must be unset for a direct TAE Sandbox profile", name)
+			}
+		}
+		if coreAuthorities == nil || coreProcessCredentials == nil {
+			return nil, nil, errors.New("direct managed credential sources must be v2 Core")
+		}
+		issuer, err := executorgateway.NewDirectWorkspaceManagedLarkEnvironmentIssuer(
+			coreAuthorities, coreProcessCredentials, taePSM, slog.Default(),
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+		return issuer, fencer, nil
 	}
 	for _, name := range egressNames {
 		if strings.TrimSpace(getenv(name)) == "" {
-			return nil, nil, fmt.Errorf("%s is required for workspace-managed Lark credential delivery", name)
+			return nil, nil, fmt.Errorf("%s is required for webhook-enabled workspace credential delivery", name)
 		}
 	}
 	egressIssuer, err := required(gatewayEgressPlaceholderIssuerEnvironment)
@@ -228,6 +246,17 @@ func configureManagedExecutionSecurity(
 		return nil, nil, err
 	}
 	return issuer, fencer, nil
+}
+
+func requiredBoolean(getenv func(string) string, name string) (bool, error) {
+	switch strings.TrimSpace(getenv(name)) {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("%s must be exactly true or false", name)
+	}
 }
 
 func loopbackGatewayHost(host string) bool {

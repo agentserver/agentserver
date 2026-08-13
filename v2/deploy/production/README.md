@@ -18,8 +18,10 @@
   `image` 或 `command`。同一命令也是 OCI fallback `CMD`，平台继续自动注入 SandboxD。官方镜像审计和边界见
   [`../../docs/TAE_SANDBOX_RUNTIME.md`](../../docs/TAE_SANDBOX_RUNTIME.md)。service image 内含
   provider-linked `sandbox-gateway` 和 `egress-authorizer` binary。
-- `agentserver-deploy prepare-policy-bootstrap`：生成只暴露生产 TLS deny-only Webhook、没有 TAE/sandbox
-  authority 的预审批 Chart 配置。
+- `agentserver-deploy prepare-policy-bootstrap`：生成没有 TAE/sandbox runtime authority 的预审批 Chart
+  配置；webhook profile 会保留 deny-only Webhook，direct profile 不渲染任何 Webhook 资源。
+- `agentserver-deploy retarget-direct-terminal-sandbox`：原子替换 Sandbox/revision/environment/image，并将
+  profile 固定为 TAE 系统 `*.feishu.cn` 白名单、无 webhook；用于当前 `process_env` 发布。
 - bootstrap Chart 内含默认关闭、仅能由 closed values schema 启用的 SG 探针资源；审批后由 Pulumi
   注入实际 policy revision，并管理一次性 ConfigMap、ServiceAccount、DNS+syd2a-only NetworkPolicy
   和 Job。报告覆盖强制 JWT 刷新、control/data lifecycle、`printf terminal-ok`、`lark-cli --version`、
@@ -30,13 +32,13 @@
 - `agentserver-deploy chart`：从生产配置生成环境锁定的 Helm Chart。
 
 当前 SG profile 由 Istio 终止公网 TLS，prompt/checkpoint 以明文写入 S3-compatible bucket；managed
-executor 额外部署 `sandbox-gateway`（TAE SDK boundary）和 `egress-authorizer`（TAE Policy Webhook），
-两者只接受生产 mTLS/capability，TAE 网络策略和 policy binding 必须在控制面先发布并核验。
+executor 部署 `sandbox-gateway`（TAE SDK boundary）。当前 direct profile 只支持 workspace
+`process_env`，使用 TAE 系统预置的 `*.feishu.cn` 白名单，不部署 `egress-authorizer`、Service、Route、
+BackendTLSPolicy 或对应 NetworkPolicy，也不配置 TAE webhook。TAE policy binding 必须从系统 policy
+只读回查并核验。未来 `webhook_swap` 必须使用另一个 webhook-enabled Sandbox profile。
 SG Terminal Sandbox PSM 固定为 `bytedance.sandbox.agentserver`；配置渲染器会拒绝其他 PSM。
 生产配置还固定并交叉校验 `sandboxId` 与 `sandboxRevisionId`；SDK 被限制在该 Sandbox ID 下，Session
 创建请求只能引用配置中的 revision，不能把工作负载提供的 image/command 变成第二条发布路径。
-TAE Policy Webhook 固定为 `https://egress-authorizer-sg.byted.bps.dev/v1/policy`，由现有 Istio
-HTTPS listener 暴露，后端 TLS 由 `agentserver-egress-backend-ca` ConfigMap 验证。
 `sandbox-gateway` 独占 `agentserver-sandbox-secrets` 中的 `bytecloud-access-key-id` /
 `bytecloud-secret-access-key`，以 `i18n-tt` 应用身份换取短期 JWT；execution gateway、harness 和 TAE
 sandbox 均不接触 AK/SK。JWT exchange origin 固定为 `https://cloud-i18n-sg.bytedance.net`；JWT exchange、

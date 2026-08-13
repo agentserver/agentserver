@@ -76,6 +76,7 @@ const (
 	coreEnrollmentKeyEnvironment            = "AGENTSERVER_V2_EXECUTOR_ENROLLMENT_TOKEN_KEY_FILE"
 	coreEnrollmentTTLEnvironment            = "AGENTSERVER_V2_EXECUTOR_ENROLLMENT_TOKEN_TTL"
 	coreManagedExecutorEnabledEnvironment   = "AGENTSERVER_V2_MANAGED_EXECUTOR_ENABLED"
+	coreTAEWebhookRequiredEnvironment       = "AGENTSERVER_V2_TAE_POLICY_WEBHOOK_REQUIRED"
 	coreEgressPlaceholderKeyringEnvironment = "AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEYRING_FILE"
 	coreCredentialSealingKeyringEnvironment = "AGENTSERVER_V2_CREDENTIAL_SEALING_KEYRING_FILE"
 	coreManagedTAEPSMEnvironment            = "AGENTSERVER_V2_MANAGED_TAE_PSM"
@@ -143,6 +144,25 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	if mode == coreServeProduction && strings.TrimSpace(getenv(coreManagedExecutorEnabledEnvironment)) == "" {
 		return fmt.Errorf("%s is required in production", coreManagedExecutorEnabledEnvironment)
 	}
+	webhookRequired := false
+	if managedExecutorEnabled {
+		webhookRequired, err = strictOptionalBoolean(getenv(coreTAEWebhookRequiredEnvironment), coreTAEWebhookRequiredEnvironment)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(getenv(coreTAEWebhookRequiredEnvironment)) == "" {
+			return fmt.Errorf("%s is required with the managed executor", coreTAEWebhookRequiredEnvironment)
+		}
+	} else if strings.TrimSpace(getenv(coreTAEWebhookRequiredEnvironment)) != "" {
+		return errors.New("TAE webhook profile requires the managed executor")
+	}
+	if managedExecutorEnabled && !webhookRequired {
+		for _, name := range []string{coreEgressAuthorizerIdentityEnvironment, coreEgressPlaceholderKeyringEnvironment} {
+			if strings.TrimSpace(getenv(name)) != "" {
+				return fmt.Errorf("%s must be unset for a direct TAE Sandbox profile", name)
+			}
+		}
+	}
 	managedTAEPSM := ""
 	if managedExecutorEnabled {
 		managedTAEPSM, err = requiredConfiguration(getenv, coreManagedTAEPSMEnvironment)
@@ -191,7 +211,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		}
 	}
 	var egressAuthorizerIdentity string
-	if managedExecutorEnabled && mode != coreServeProduction {
+	if webhookRequired && mode != coreServeProduction {
 		egressAuthorizerIdentity, err = requiredConfiguration(getenv, coreEgressAuthorizerIdentityEnvironment)
 		if err != nil {
 			return err
@@ -210,7 +230,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		if slices.Contains(identities, llmproxyIdentity) {
 			return errors.New("llmproxy, platform-gateway, browser-gateway, sandbox-gateway, executor-gateway, and harness-pool SPIFFE identities must be distinct")
 		}
-		if managedExecutorEnabled {
+		if webhookRequired {
 			egressAuthorizerIdentity, err = requiredConfiguration(getenv, coreEgressAuthorizerIdentityEnvironment)
 			if err != nil {
 				return err
@@ -378,7 +398,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 			return err
 		}
 	}
-	if managedExecutorEnabled {
+	if webhookRequired {
 		egressAuthorizer, err = coreserver.NewSPIFFEWorkloadAuthorizer(egressAuthorizerIdentity)
 		if err != nil {
 			return err
@@ -502,16 +522,21 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	}
 	if managedExecutorEnabled {
 		placeholderKeyringFile, keyringErr := requiredConfiguration(getenv, coreEgressPlaceholderKeyringEnvironment)
-		if keyringErr != nil {
+		if keyringErr != nil && webhookRequired {
 			return keyringErr
 		}
-		placeholderVerifier, loadErr := egresscapability.LoadVerifier(placeholderKeyringFile)
-		if loadErr != nil {
-			return fmt.Errorf("configure v2 egress placeholder verifier: %w", loadErr)
-		}
-		capabilityVerifier, adapterErr := egressgateway.NewCapabilityPlaceholderVerifier(placeholderVerifier)
-		if adapterErr != nil {
-			return adapterErr
+		var placeholderVerifier *egresscapability.Verifier
+		var capabilityVerifier corecredentials.PlaceholderVerifier
+		if webhookRequired {
+			var loadErr error
+			placeholderVerifier, loadErr = egresscapability.LoadVerifier(placeholderKeyringFile)
+			if loadErr != nil {
+				return fmt.Errorf("configure v2 egress placeholder verifier: %w", loadErr)
+			}
+			capabilityVerifier, loadErr = egressgateway.NewCapabilityPlaceholderVerifier(placeholderVerifier)
+			if loadErr != nil {
+				return loadErr
+			}
 		}
 		credentialRefresher, refreshErr := coreserver.NewWorkspaceCredentialRefresher(
 			store, credentialRegistry, credentialSealer, time.Now,
@@ -527,7 +552,9 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		if serviceErr != nil {
 			return fmt.Errorf("configure v2 egress credential resolver: %w", serviceErr)
 		}
-		egressCredentialHandler, err = coreserver.NewEgressCredentialHandler(authorizer, egressAuthorizer, egressCredentialService)
+		if webhookRequired {
+			egressCredentialHandler, err = coreserver.NewEgressCredentialHandler(authorizer, egressAuthorizer, egressCredentialService)
+		}
 		if err == nil {
 			executionCredentialHandler, err = coreserver.NewExecutionCredentialHandler(authorizer, egressCredentialService)
 		}

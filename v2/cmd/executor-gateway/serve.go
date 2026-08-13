@@ -72,6 +72,7 @@ const (
 	gatewayEgressPlaceholderKeyIDEnvironment   = "AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEY_ID"
 	gatewayEgressPlaceholderKeyEnvironment     = "AGENTSERVER_V2_EGRESS_PLACEHOLDER_SIGNING_KEY_FILE"
 	gatewayManagedTAEPSMEnvironment            = "AGENTSERVER_V2_MANAGED_TAE_PSM"
+	gatewayTAEWebhookRequiredEnvironment       = "AGENTSERVER_V2_TAE_POLICY_WEBHOOK_REQUIRED"
 	gatewayDevExecutorHeader                   = "X-Agentserver-Dev-Executor-Id"
 	maximumDevMCPBearerBytes                   = 16 * 1024
 	maximumGatewayTLSFileBytes                 = int64(1024 * 1024)

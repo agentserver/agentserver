@@ -13,6 +13,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/stockruntime"
 	"github.com/agentserver/agentserver/v2/internal/taeimage"
 	"github.com/agentserver/agentserver/v2/internal/taenetworkreport"
+	"github.com/agentserver/agentserver/v2/internal/taepolicy"
 )
 
 func TestValidateConfigAcceptsSupportedLinuxDeployment(t *testing.T) {
@@ -293,6 +294,64 @@ func policyBootstrapConfigDocument() ConfigDocument {
 	return document
 }
 
+func directConfigDocument() ConfigDocument {
+	document := validConfigDocument()
+	policy := &document.Managed.TAE.Policy
+	policy.Revision = "tae-system-default-feishu-v1"
+	policy.PublicHost = taepolicy.SystemDefaultHost
+	policy.PublicAccess = taepolicy.SystemDefaultAccess
+	policy.PublicWebhookRequired = false
+	policy.WebhookMode = ""
+	policy.WebhookPSM = ""
+	policy.WebhookURL = ""
+	policy.WebhookPath = ""
+	policy.EvidenceRef = "tae-system-policy/group:system.out.limit"
+	policy.BindingSHA256 = managedTAEPolicyBinding(document.Managed.TAE).DigestHex()
+	document.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(document)
+	document.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(document, document.Managed)
+	document.Managed.Environment.PackSetSHA256 = managedPackSetDigest(document.Managed)
+	return document
+}
+
+func directPolicyBootstrapConfigDocument() ConfigDocument {
+	document, err := preparePolicyBootstrapDocument(directConfigDocument())
+	if err != nil {
+		panic(err)
+	}
+	return document
+}
+
+func TestValidateConfigAcceptsDirectSystemDefaultPolicy(t *testing.T) {
+	document := directConfigDocument()
+	loaded, err := ValidateConfig(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if managedEgressAuthorizerEnabled(loaded.Document.Managed) || loaded.Document.Managed.TAE.Policy.PublicWebhookRequired {
+		t.Fatalf("direct managed executor enabled a webhook: %+v", loaded.Document.Managed.TAE.Policy)
+	}
+	for name, mutate := range map[string]func(*ManagedTAEPolicyDocument){
+		"webhook mode": func(policy *ManagedTAEPolicyDocument) { policy.WebhookMode = "url" },
+		"webhook psm":  func(policy *ManagedTAEPolicyDocument) { policy.WebhookPSM = "agentserver.egress-authorizer" },
+		"webhook url": func(policy *ManagedTAEPolicyDocument) {
+			policy.WebhookURL = ProductionEgressAuthorizerURL
+		},
+		"webhook path": func(policy *ManagedTAEPolicyDocument) { policy.WebhookPath = taepolicy.WebhookPath },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := directConfigDocument()
+			mutate(&changed.Managed.TAE.Policy)
+			changed.Managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(changed.Managed.TAE).DigestHex()
+			changed.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(changed)
+			changed.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(changed, changed.Managed)
+			changed.Managed.Environment.PackSetSHA256 = managedPackSetDigest(changed.Managed)
+			if _, err := ValidateConfig(changed); err == nil {
+				t.Fatal("direct policy with webhook configuration was accepted")
+			}
+		})
+	}
+}
+
 func TestPinManagedTerminalRevisionIsBootstrapOnlyAndFailClosed(t *testing.T) {
 	bootstrap := policyBootstrapConfigDocument()
 	originalRevision := bootstrap.Managed.TAE.RevisionID
@@ -372,6 +431,34 @@ func TestRetargetManagedTerminalIsBootstrapOnlyAtomicAndFailClosed(t *testing.T)
 				t.Fatal("unsafe Terminal Sandbox retarget was accepted")
 			}
 		})
+	}
+}
+
+func TestRetargetDirectManagedTerminalIsBootstrapOnlyAtomicAndWebhookFree(t *testing.T) {
+	bootstrap := policyBootstrapConfigDocument()
+	wantImage := ProductionManagedSandboxImage + "@sha256:" + releaseDigest("d")
+	retargeted, err := RetargetDirectManagedTerminalDocument(
+		bootstrap, bootstrap.Managed.TAE.SandboxID, "sandbox-direct", "revision-direct",
+		"60000000-0000-4000-8000-000000000006", wantImage,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := retargeted.Managed.TAE.Policy
+	if retargeted.Managed.TAE.SandboxID != "sandbox-direct" || retargeted.Managed.TAE.RevisionID != "revision-direct" ||
+		retargeted.Managed.Environment.EnvironmentID != "60000000-0000-4000-8000-000000000006" ||
+		retargeted.Images.ManagedSandbox != wantImage || !managedPolicyBootstrap(retargeted.Managed) ||
+		policy.PublicHost != taepolicy.SystemDefaultHost || policy.PublicAccess != taepolicy.SystemDefaultAccess ||
+		policy.PublicWebhookRequired || policy.WebhookMode != "" || policy.WebhookPSM != "" ||
+		policy.WebhookURL != "" || policy.WebhookPath != "" ||
+		policy.BindingSHA256 != managedTAEPolicyBinding(retargeted.Managed.TAE).DigestHex() {
+		t.Fatalf("direct retarget = %+v", retargeted.Managed)
+	}
+	if _, err := RetargetDirectManagedTerminalDocument(
+		validConfigDocument(), validConfigDocument().Managed.TAE.SandboxID, "sandbox-direct", "revision-direct",
+		"60000000-0000-4000-8000-000000000006", wantImage,
+	); err == nil {
+		t.Fatal("active config was directly retargeted")
 	}
 }
 

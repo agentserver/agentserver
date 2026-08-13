@@ -229,6 +229,9 @@ func renderCoreDeployment(context renderContext) (kubeObject, error) {
 	materialProfile := materialProfileCore
 	if managedExecutionActive(document.Managed) {
 		materialProfile = materialProfileCoreManaged
+		if managedEgressAuthorizerEnabled(document.Managed) {
+			materialProfile = materialProfileCoreManagedWebhook
+		}
 	}
 	material, err := secretMaterialVolume("material", document.Secrets.Core, materialProfile, groupReadableSecretMode)
 	if err != nil {
@@ -288,9 +291,14 @@ func renderCoreDeployment(context renderContext) (kubeObject, error) {
 		environment = append(environment,
 			valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_SPIFFE_ID", spiffeIdentity(config, sandboxComponent)),
 			valueEnvironment("AGENTSERVER_V2_MANAGED_TAE_PSM", document.Managed.TAE.PSM),
-			valueEnvironment("AGENTSERVER_V2_EGRESS_AUTHORIZER_SPIFFE_ID", spiffeIdentity(config, egressComponent)),
-			valueEnvironment("AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEYRING_FILE", serviceMaterialPath("egress-placeholder-keyring.json")),
+			valueEnvironment("AGENTSERVER_V2_TAE_POLICY_WEBHOOK_REQUIRED", strconv.FormatBool(document.Managed.TAE.Policy.PublicWebhookRequired)),
 		)
+		if managedEgressAuthorizerEnabled(document.Managed) {
+			environment = append(environment,
+				valueEnvironment("AGENTSERVER_V2_EGRESS_AUTHORIZER_SPIFFE_ID", spiffeIdentity(config, egressComponent)),
+				valueEnvironment("AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEYRING_FILE", serviceMaterialPath("egress-placeholder-keyring.json")),
+			)
+		}
 	}
 	environment = append(environment, objectStoreEnvironment(document)...)
 	return deployment(deploymentInput{
@@ -392,6 +400,9 @@ func renderExecutorDeployment(context renderContext) (kubeObject, error) {
 	materialProfile := materialProfileExecutorGateway
 	if managedExecutionActive(document.Managed) {
 		materialProfile = materialProfileExecutorManaged
+		if managedEgressAuthorizerEnabled(document.Managed) {
+			materialProfile = materialProfileExecutorWebhook
+		}
 	}
 	material, err := secretMaterialVolume("material", document.Secrets.ExecutorGateway, materialProfile, groupReadableSecretMode)
 	if err != nil {
@@ -433,10 +444,15 @@ func renderExecutorDeployment(context renderContext) (kubeObject, error) {
 			valueEnvironment("AGENTSERVER_V2_SANDBOX_FENCER_CAPABILITY_KEY_ID", ProductionSandboxFencerKeyID),
 			valueEnvironment("AGENTSERVER_V2_SANDBOX_FENCER_CAPABILITY_SIGNING_KEY_FILE", serviceMaterialPath("sandbox-fencer-capability.key")),
 			valueEnvironment("AGENTSERVER_V2_MANAGED_TAE_PSM", document.Managed.TAE.PSM),
-			valueEnvironment("AGENTSERVER_V2_EGRESS_PLACEHOLDER_ISSUER", issuer),
-			valueEnvironment("AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEY_ID", ProductionEgressPlaceholderKeyID),
-			valueEnvironment("AGENTSERVER_V2_EGRESS_PLACEHOLDER_SIGNING_KEY_FILE", serviceMaterialPath("egress-placeholder.key")),
+			valueEnvironment("AGENTSERVER_V2_TAE_POLICY_WEBHOOK_REQUIRED", strconv.FormatBool(document.Managed.TAE.Policy.PublicWebhookRequired)),
 		)
+		if managedEgressAuthorizerEnabled(document.Managed) {
+			environment = append(environment,
+				valueEnvironment("AGENTSERVER_V2_EGRESS_PLACEHOLDER_ISSUER", issuer),
+				valueEnvironment("AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEY_ID", ProductionEgressPlaceholderKeyID),
+				valueEnvironment("AGENTSERVER_V2_EGRESS_PLACEHOLDER_SIGNING_KEY_FILE", serviceMaterialPath("egress-placeholder.key")),
+			)
+		}
 		hosts[SandboxInternalHost] = document.Services.SandboxGateway.ClusterIP
 	}
 	return deployment(deploymentInput{

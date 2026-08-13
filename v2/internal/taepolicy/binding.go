@@ -28,6 +28,8 @@ const (
 	WebhookPath           = "/v1/policy"
 	PublicHost            = larkegresspolicy.OpenAPIHost
 	PublicAccessWhitelist = "whitelist"
+	SystemDefaultHost     = "*.feishu.cn"
+	SystemDefaultAccess   = "system_default"
 )
 
 var revisionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
@@ -70,9 +72,10 @@ func (binding Binding) Validate(expectedRegion, expectedSandboxPSM, expectedPoli
 	return binding.validateDigest()
 }
 
-// ValidateDraft validates the fail-closed lifecycle used while only the
-// production deny-only Webhook bootstrap is running. A draft cannot claim
-// publication or approval and cannot carry evidence from a future review.
+// ValidateDraft validates the fail-closed lifecycle before the managed
+// runtime is activated. A webhook profile may expose only its deny-only
+// bootstrap; a direct profile exposes no webhook authority. A draft cannot
+// claim publication or approval and cannot carry evidence from a future review.
 func (binding Binding) ValidateDraft(expectedRegion, expectedSandboxPSM, expectedPolicySHA256 string) error {
 	if err := binding.validateShape(expectedRegion, expectedSandboxPSM, expectedPolicySHA256); err != nil {
 		return err
@@ -99,8 +102,17 @@ func (binding Binding) validateShape(expectedRegion, expectedSandboxPSM, expecte
 	if !digest(binding.PolicySHA256) || binding.PolicySHA256 != expectedPolicySHA256 {
 		return errors.New("TAE policy binding policy digest does not match the compiled Lark policy")
 	}
-	if binding.PublicHost != PublicHost || binding.PublicAccess != PublicAccessWhitelist || !binding.PublicWebhookRequired {
-		return errors.New("TAE policy binding must whitelist the exact public Lark host and require its webhook")
+	if !binding.PublicWebhookRequired {
+		if binding.PublicHost != SystemDefaultHost || binding.PublicAccess != SystemDefaultAccess {
+			return errors.New("TAE direct policy binding must use the system-default *.feishu.cn allowlist")
+		}
+		if binding.WebhookMode != "" || binding.WebhookPSM != "" || binding.WebhookURL != "" || binding.WebhookPath != "" {
+			return errors.New("TAE direct policy binding must not contain webhook configuration")
+		}
+		return nil
+	}
+	if binding.PublicHost != PublicHost || binding.PublicAccess != PublicAccessWhitelist {
+		return errors.New("TAE webhook policy binding must whitelist the exact public Lark host")
 	}
 	if binding.WebhookPath != WebhookPath {
 		return fmt.Errorf("TAE policy webhook path must be exactly %s", WebhookPath)

@@ -20,7 +20,7 @@ type EgressCredentialHandler struct {
 }
 
 func NewEgressCredentialHandler(executorAuthorizer, egressAuthorizer WorkloadAuthorizer, service *EgressCredentialService) (*EgressCredentialHandler, error) {
-	if executorAuthorizer == nil || egressAuthorizer == nil || service == nil {
+	if executorAuthorizer == nil || egressAuthorizer == nil || service == nil || !service.WebhookEnabled() {
 		return nil, errors.New("v2 egress credential executor/authorizer identities and service are required")
 	}
 	return &EgressCredentialHandler{executorAuthorizer: executorAuthorizer, egressAuthorizer: egressAuthorizer, service: service}, nil

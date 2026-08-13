@@ -18,6 +18,7 @@ import (
 // sole mode authority at the operation boundary.
 type WorkspaceManagedLarkEnvironmentIssuer struct {
 	placeholder *SignedManagedLarkEnvironmentIssuer
+	authorities ManagedLarkEgressAuthoritySource
 	credentials ManagedLarkProcessCredentialSource
 	taePSM      string
 	logger      *slog.Logger
@@ -41,7 +42,25 @@ func NewWorkspaceManagedLarkEnvironmentIssuer(
 		return nil, err
 	}
 	return &WorkspaceManagedLarkEnvironmentIssuer{
-		placeholder: placeholder, credentials: credentials, taePSM: taePSM, logger: logger,
+		placeholder: placeholder, authorities: authorities, credentials: credentials, taePSM: taePSM, logger: logger,
+	}, nil
+}
+
+// NewDirectWorkspaceManagedLarkEnvironmentIssuer configures the exact
+// process_env delivery path without installing placeholder signing authority.
+// A workspace that selects webhook_swap fails closed and must be routed to a
+// separate webhook-enabled Sandbox profile.
+func NewDirectWorkspaceManagedLarkEnvironmentIssuer(
+	authorities ManagedLarkEgressAuthoritySource,
+	credentials ManagedLarkProcessCredentialSource,
+	taePSM string,
+	logger *slog.Logger,
+) (*WorkspaceManagedLarkEnvironmentIssuer, error) {
+	if authorities == nil || credentials == nil || !managedLarkApplicationIDPattern.MatchString(taePSM) {
+		return nil, errors.New("direct workspace managed Lark authority, credential source, or TAE PSM is invalid")
+	}
+	return &WorkspaceManagedLarkEnvironmentIssuer{
+		authorities: authorities, credentials: credentials, taePSM: taePSM, logger: logger,
 	}, nil
 }
 
@@ -62,7 +81,7 @@ func (issuer *WorkspaceManagedLarkEnvironmentIssuer) IssueManagedProcessEnvironm
 	ctx context.Context,
 	request ManagedProcessEnvironmentRequest,
 ) (map[string]string, error) {
-	if issuer == nil || issuer.placeholder == nil || issuer.credentials == nil || ctx == nil {
+	if issuer == nil || issuer.authorities == nil || issuer.credentials == nil || ctx == nil {
 		return nil, errors.New("workspace managed Lark environment issuer and context are required")
 	}
 	applies, err := validateManagedLarkProcessRequest(request)
@@ -73,7 +92,7 @@ func (issuer *WorkspaceManagedLarkEnvironmentIssuer) IssueManagedProcessEnvironm
 		return map[string]string{}, nil
 	}
 	authorityStartedAt := time.Now()
-	authority, err := issuer.placeholder.authorities.ResolveManagedLarkEgressAuthority(ctx, request)
+	authority, err := issuer.authorities.ResolveManagedLarkEgressAuthority(ctx, request)
 	if err != nil {
 		issuer.logStage(ctx, request, "authority_resolve", "failed", authorityStartedAt, err, ManagedLarkEgressAuthority{})
 		return nil, fmt.Errorf("resolve workspace managed Lark mode: %w", err)
@@ -85,6 +104,9 @@ func (issuer *WorkspaceManagedLarkEnvironmentIssuer) IssueManagedProcessEnvironm
 	issuer.logStage(ctx, request, "authority_resolve", "succeeded", authorityStartedAt, nil, authority)
 	switch authority.CredentialMode {
 	case managedcredential.ModeWebhookSwap:
+		if issuer.placeholder == nil {
+			return nil, errors.New("webhook_swap workspace requires a webhook-enabled TAE Sandbox profile")
+		}
 		return issuer.placeholder.issueWithAuthority(request, authority)
 	case managedcredential.ModeProcessEnv:
 		return issuer.issueProcessEnvironment(ctx, request, authority)
@@ -120,44 +142,7 @@ func (issuer *WorkspaceManagedLarkEnvironmentIssuer) issueProcessEnvironment(
 	}
 	issuer.logStage(ctx, request, "credential_resolve", "succeeded", credentialStartedAt, nil, authority)
 	environment := managedLarkBaseEnvironment(credential.ApplicationID)
-	capabilityID, err := issuer.placeholder.idGenerator()
-	if err != nil {
-		return nil, fmt.Errorf("allocate managed Lark process proof identity: %w", err)
-	}
-	if err := validateRegistryIdentity("managed Lark process proof ID", capabilityID); err != nil {
-		return nil, err
-	}
-	principal := request.Principal
-	now := issuer.placeholder.now().UTC().Truncate(time.Millisecond)
-	expiresAt := now.Add(issuer.placeholder.ttl)
-	if principal.RunDeadline.Before(expiresAt) {
-		expiresAt = principal.RunDeadline.UTC().Truncate(time.Millisecond)
-	}
-	if principal.CapabilityExpiresAt.Before(expiresAt) {
-		expiresAt = principal.CapabilityExpiresAt.UTC().Truncate(time.Millisecond)
-	}
-	if credential.AccessExpiresAt != nil && credential.AccessExpiresAt.Before(expiresAt) {
-		expiresAt = credential.AccessExpiresAt.UTC().Truncate(time.Millisecond)
-	}
-	if !expiresAt.After(now.Add(time.Second)) {
-		return nil, errors.New("managed Lark process proof has no safe remaining authority window")
-	}
-	proof, err := issuer.placeholder.signer.SignProcessEnvironment(egresscapability.ProcessEnvironmentClaims{
-		Version: egresscapability.ProcessEnvironmentVersion, Issuer: issuer.placeholder.signer.Issuer(),
-		CapabilityID: capabilityID, WorkspaceID: principal.WorkspaceID, SessionID: principal.SessionID,
-		ActorID: principal.ActorID, EnvironmentID: request.Target.EnvironmentID, RunID: principal.Run.RunID,
-		RunAttemptID: principal.Run.RunAttemptID, RunAttemptGeneration: principal.Run.RunAttemptGeneration,
-		ExecutionID: request.Operation.ExecutionID, OperationID: request.Operation.OperationID,
-		SandboxID: request.Target.ID, TargetGeneration: request.Target.Generation,
-		ProviderKind: "lark", BindingID: authority.BindingID, AuthorityVersion: authority.AuthorityVersion,
-		CredentialVersion: authority.CredentialVersion, PolicySHA256: authority.PolicySHA256,
-		IssuedAtUnixMS: now.Add(-5 * time.Second).UnixMilli(), ExpiresAtUnixMS: expiresAt.UnixMilli(),
-	})
-	if err != nil {
-		return nil, err
-	}
 	environment[ManagedLarkUserAccessTokenEnvironment] = credential.AccessToken
-	environment[ManagedLarkAgentTraceEnvironment] = proof
 	return environment, nil
 }
 

@@ -223,6 +223,102 @@ func TestRenderPolicyBootstrapExposesOnlyDenyWebhook(t *testing.T) {
 		[]string{"ca.crt", "tls.crt", "tls.key", "run-capability.key", "run-capability-keyring.json", "executor-enrollment.key", "llm-gateway-sealing-keyring.json", "credential-sealing-keyring.json"})
 }
 
+func TestRenderDirectManagedExecutorOmitsWebhookWorkloadAndAuthority(t *testing.T) {
+	loaded, err := ValidateConfig(directConfigDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := Render(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundation := parseKubernetesList(t, mustBundleFile(t, bundle, foundationFile))
+	runtime := parseKubernetesList(t, mustBundleFile(t, bundle, runtimeFile))
+	if findResourceOptional(foundation, "Service", egressComponent) != nil ||
+		findResourceOptional(foundation, "HTTPRoute", "agentserver-egress-authorizer-webhook") != nil ||
+		findResourceOptional(foundation, "BackendTLSPolicy", "agentserver-egress-authorizer-backend-tls") != nil ||
+		findResourceOptional(foundation, "NetworkPolicy", egressComponent) != nil ||
+		findResourceOptional(runtime, "Deployment", egressComponent) != nil {
+		t.Fatal("direct managed executor rendered egress-authorizer authority")
+	}
+	sandbox := findResource(t, runtime, "Deployment", sandboxComponent)
+	container := objectArrayFirst(t, objectField(t, objectField(t, objectField(t, sandbox, "spec"), "template"), "spec"), "containers")
+	environment := literalEnvironmentLookup(t, container)
+	if environment("AGENTSERVER_V2_TAE_POLICY_HOST") != taepolicy.SystemDefaultHost ||
+		environment("AGENTSERVER_V2_TAE_POLICY_ACCESS") != taepolicy.SystemDefaultAccess ||
+		environment("AGENTSERVER_V2_TAE_POLICY_WEBHOOK_REQUIRED") != "false" {
+		t.Fatalf("direct sandbox policy = host=%q access=%q webhook=%q",
+			environment("AGENTSERVER_V2_TAE_POLICY_HOST"), environment("AGENTSERVER_V2_TAE_POLICY_ACCESS"),
+			environment("AGENTSERVER_V2_TAE_POLICY_WEBHOOK_REQUIRED"))
+	}
+	for _, name := range []string{
+		"AGENTSERVER_V2_TAE_WEBHOOK_MODE", "AGENTSERVER_V2_TAE_WEBHOOK_PSM",
+		"AGENTSERVER_V2_TAE_WEBHOOK_URL", "AGENTSERVER_V2_TAE_WEBHOOK_PATH",
+	} {
+		if literalEnvironmentOptional(t, container, name) != "" {
+			t.Fatalf("direct sandbox rendered webhook environment %s", name)
+		}
+	}
+	if _, err := sandboxgatewayapp.LoadProductionConfig(environment); err != nil {
+		t.Fatalf("sandbox-gateway rejected rendered direct policy: %v", err)
+	}
+	core := findResource(t, runtime, "Deployment", coreComponent)
+	coreContainer := objectArrayFirst(t, objectField(t, objectField(t, objectField(t, core, "spec"), "template"), "spec"), "containers")
+	if literalEnvironmentOptional(t, coreContainer, "AGENTSERVER_V2_EGRESS_AUTHORIZER_SPIFFE_ID") != "" {
+		t.Fatal("direct Core retained the egress-authorizer workload identity")
+	}
+	if literalEnvironmentOptional(t, coreContainer, "AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEYRING_FILE") != "" {
+		t.Fatal("direct Core retained the webhook placeholder verifier")
+	}
+	executor := findResource(t, runtime, "Deployment", executorComponent)
+	executorContainer := objectArrayFirst(t, objectField(t, objectField(t, objectField(t, executor, "spec"), "template"), "spec"), "containers")
+	if literalEnvironment(t, executorContainer, "AGENTSERVER_V2_TAE_POLICY_WEBHOOK_REQUIRED") != "false" {
+		t.Fatal("direct executor did not receive the direct profile lock")
+	}
+	for _, name := range []string{
+		"AGENTSERVER_V2_EGRESS_PLACEHOLDER_ISSUER", "AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEY_ID",
+		"AGENTSERVER_V2_EGRESS_PLACEHOLDER_SIGNING_KEY_FILE",
+	} {
+		if literalEnvironmentOptional(t, executorContainer, name) != "" {
+			t.Fatalf("direct executor retained placeholder authority %s", name)
+		}
+	}
+}
+
+func TestRenderDirectPolicyBootstrapOmitsWebhookWorkloadAndAuthority(t *testing.T) {
+	loaded, err := ValidateConfig(directPolicyBootstrapConfigDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := Render(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundation := parseKubernetesList(t, mustBundleFile(t, bundle, foundationFile))
+	runtime := parseKubernetesList(t, mustBundleFile(t, bundle, runtimeFile))
+	if findResourceOptional(foundation, "Service", egressComponent) != nil ||
+		findResourceOptional(foundation, "HTTPRoute", "agentserver-egress-authorizer-webhook") != nil ||
+		findResourceOptional(foundation, "BackendTLSPolicy", "agentserver-egress-authorizer-backend-tls") != nil ||
+		findResourceOptional(foundation, "NetworkPolicy", egressComponent) != nil ||
+		findResourceOptional(runtime, "Deployment", egressComponent) != nil {
+		t.Fatal("direct policy bootstrap rendered egress-authorizer authority")
+	}
+	if findResourceOptional(foundation, "Service", sandboxComponent) != nil ||
+		findResourceOptional(runtime, "Deployment", sandboxComponent) != nil {
+		t.Fatal("direct policy bootstrap activated the sandbox provider")
+	}
+	core := findResource(t, runtime, "Deployment", coreComponent)
+	coreContainer := objectArrayFirst(t, objectField(t, objectField(t, objectField(t, core, "spec"), "template"), "spec"), "containers")
+	for _, name := range []string{
+		"AGENTSERVER_V2_EGRESS_AUTHORIZER_SPIFFE_ID",
+		"AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEYRING_FILE",
+	} {
+		if literalEnvironmentOptional(t, coreContainer, name) != "" {
+			t.Fatalf("direct policy bootstrap retained webhook authority %s", name)
+		}
+	}
+}
+
 func TestRenderManagedExecutorWithoutLarkToolPackKeepsTAE(t *testing.T) {
 	document := validConfigDocument()
 	document.Managed.Lark.Enabled = false

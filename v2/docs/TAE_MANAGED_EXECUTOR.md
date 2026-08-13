@@ -1,7 +1,7 @@
 # agentserver v2 — TAE Managed Executor 实施设计
 
 > 状态：canonical design；provider-neutral contract/fake 垂直切片、SG TAE provider module、Core-owned
-> workspace credential CRUD/materialization、workspace 级双 credential mode、生产渲染和 egress-authorizer production shell 已接入并通过
+> workspace credential CRUD/materialization、workspace 级 credential mode、direct process_env 生产渲染已接入并通过
 > 本地门禁；真实 SG TAE/ByteCloud 应用身份与 provider 网络门禁仍待执行，当前不能把本地绿灯表述为
 > 真实生产已上线
 >
@@ -23,7 +23,8 @@
 - sandbox 生命周期按 agentserver session 管理并有 TTL/fencing/reconcile；
 - credential delivery 由每个 workspace 显式选择 `webhook_swap` 或 `process_env`，每次进程启动重新查询 Core，
   不存在部署默认或自动回退；
-- `webhook_swap` 中 sandbox 只有 placeholder，`process_env` 中真实 Lark token 只注入精确的 `lark-cli` 进程及其子进程；
+- 当前 SG direct Sandbox profile 只支持 `process_env`，真实 Lark token 只注入精确的 `lark-cli` 进程及其子进程；
+- `webhook_swap` 需要未来独立的 webhook-enabled profile，不能复用 direct Sandbox；
 - 首个垂直切片让模型使用已有 Lark skill，通过 `shell` 运行 `lark-cli` 读取飞书文档。
 
 ### 1.1 首切片不做什么
@@ -46,7 +47,7 @@
 | **managed sandbox** | Core 中 session-scoped 的逻辑资源，拥有稳定 ID 和递增 generation |
 | **TAE Session** | managed sandbox 某一 generation 对应的 provider 资源 |
 | **dispatch target** | `{kind, target_id, generation}`，对一次 operation 做 fencing |
-| **egress-authorizer** | 两种 workspace mode 共用的 TAE Policy Webhook adapter，负责 ZTI、请求规范化、operation proof、网络 policy 与最终 allow/deny/header wire |
+| **egress-authorizer** | 仅 webhook-enabled profile 使用的可选 TAE Policy Webhook adapter；当前 direct profile 不部署 |
 | **Core-owned credential service** | v2 Core 内的 workspace credential control/data plane library；按 provider registry 解析 binding、live-authorize、解封并生成注入 mutation，不是独立进程 |
 
 以下不变量必须由数据库约束、API 校验和测试共同保证：
@@ -57,14 +58,13 @@
 4. 同一 `(workspace, session, environment)` 最多一个 active managed sandbox generation；
 5. provider session ID、binding ID 和真实 credential 不进入模型、app-server、worker manifest、MCP result 或 checkpoint；`process_env` 唯一例外是 access token 会进入精确 `lark-cli` 进程及其子进程环境；
 6. sandbox-gateway 不能自行把 operation 从 prepared 推到 terminal；
-7. TAE 网络规则未命中、proof/授权事实不完整或 Policy Webhook 出错时一律 deny；
+7. TAE 网络规则未命中或进程启动授权事实不完整时一律 deny；direct profile 不配置 Policy Webhook；
 8. BYO 的 agentx wire、catalog schema、approval 和 recovery fixture 在 managed 功能关闭时字节级不变。
 
 ## 3. 目标拓扑与职责
 
-下图是两种 workspace mode 共用的数据面。`process_env` 额外由 execution gateway 通过 mTLS 向 Core
-解析 token，并向目标 `lark-cli` 注入短期 operation proof；TAE Agent Gateway → egress-authorizer → Core
-逐请求授权边不会删除。
+下图是当前 SG direct `process_env` 数据面。execution gateway 通过 mTLS 向 Core 解析 token，只注入目标
+`lark-cli`；TAE 直接使用系统预置 `*.feishu.cn` 白名单，不经过 egress-authorizer。
 
 ```text
 ┌──────────────────────────── agentserver SG region ───────────────────────────┐
@@ -80,17 +80,13 @@
 │                 └─ MCP ─► execution-gateway                              │     │
 │                                ├─ agentx backend ─ WSS ─► BYO             │     │
 │                                └─ TAE backend ───────────┘                │     │
+│  Core + sealed credential bindings ── live resolve ──► execution-gateway     │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌────────────────────────────── TAE SG region ─────────────────────────────────┐
+│ managed image: approved CLI + skill runtime; exact process env               │
 │                                                                              │
-│  Core + sealed credential bindings ◄────────────── egress-authorizer ◄───────┐    │
-│       live auth/provider materialize              TAE Policy Webhook  │    │
-└──────────────────────────────────────────────────────────────────────────┼────┘
-                                                                           │
-┌────────────────────────────── TAE SG region ─────────────────────────────┼────┐
-│ managed image: approved CLI + skill runtime; per-process reserved env    │    │
-│                                                                          │    │
-│ lark-cli ─ HTTPS ─► TAE Agent Gateway ───────────────────────────────────┘    │
-│                          │ allow + injected real Authorization                 │
-│                          └──────────────────────────────► open.feishu.cn       │
+│ lark-cli ─ HTTPS with real bearer ─► system *.feishu.cn allowlist ─► Feishu  │
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -98,7 +94,7 @@
 
 | 职责 | Core | harness-pool | execution gateway | sandbox-gateway | egress-authorizer |
 |---|---:|---:|---:|---:|---:|
-| session/run/attempt authority | ✓ | 读取/持 lease | 读取/校验 | 读取/校验 | 验 placeholder 或 process proof |
+| session/run/attempt authority | ✓ | 读取/持 lease | 读取/校验 | 读取/校验 | webhook profile only |
 | managed sandbox desired state/generation | ✓ | ensure/release | 读取 target | 提交观察/CAS | — |
 | TAE SDK、PSM、region、SSE | — | — | — | ✓ | — |
 | MCP catalog/tool schema | — | — | ✓ | — | — |
@@ -107,7 +103,7 @@
 | provider backend routing | — | — | ✓ | provider adapter | — |
 | workspace credential CRUD/metadata | ✓（含 provider schema） | — | 只读 binding ref | — | — |
 | credential 密封/解封/materialize | ✓（内置 service） | — | `process_env` 只接单个 access token | — | 不持 sealing key，只接 Core mutation |
-| egress request allow/deny/header | live recheck/有界 mutation | — | — | — | 两种 mode 均逐请求执行 |
+| egress request allow/deny/header | webhook profile only | — | — | — | webhook profile only |
 
 `sandbox-gateway` 可以返回 provider observations，但不能以自身数据库作为事实真源。Core 不 import TAE
 SDK；execution gateway 只 import provider-neutral contracts。
@@ -127,8 +123,9 @@ SDK；execution gateway 只 import provider-neutral contracts。
    `GetSession` 核实，否则用稳定 idempotency key 创建 TAE Session，再 CAS 为 ready。
 5. managed image 已包含固定 hash 的 Linux/amd64 `lark-cli`；session runtime projection 只写入非敏感
    pack 配置。execution gateway 在每个已授权 `shell + lark-cli + TAE process_start` 前查询 workspace 当前 mode 并获取
-   reserved process value：`webhook_swap` 注入短期 placeholder；`process_env` 通过 mTLS 调 Core 的窄接口，
-   在 Core 再次校验 live operation/binding version 后注入真实 access token 和短期 operation proof。两种模式都拒绝模型 env
+   reserved process value：direct profile 只接受 `process_env`，通过 mTLS 调 Core 的窄接口，
+   在 Core 再次校验 live operation/binding version 后注入真实 access token。若 workspace 是
+   `webhook_swap` 则 fail closed。模型不能覆盖 reserved env，
    覆盖；任何值都不进入 TAE create 参数、session 文件、manifest、result 或 checkpoint。
 6. worker 启动 stock app-server，`baseInstructions` 含现有 Lark skill 文本。MCP catalog 仍精确是
    `list_environments`、`shell`、`read_file`。
@@ -138,10 +135,8 @@ SDK；execution gateway 只 import provider-neutral contracts。
    `PrepareExecution → PrepareOperation → BeginOperationDispatch(target=tae/ID/generation)`。
 9. TAE backend 调 sandbox-gateway `RunCommand`。后者用 TAE Terminal API 的 path+args 形式启动进程，
    不通过 shell 字符串重新解析 argv；provider 接受后 gateway 向 Core ACK。
-10. `webhook_swap` 下，`lark-cli` 携 placeholder Authorization 请求 `open.feishu.cn`；egress-authorizer
-    验证 TAE ZTI、只读 path 和 live workspace authority 后从 Core 取得真实 Authorization mutation。
-    `process_env` 下请求携真实 bearer 与 `X-Agent-Trace` operation proof；egress-authorizer 与 Core 验签、
-    重查 workspace mode/binding/version、常量时间比较 bearer，放行时把 trace 清洗为 `agentserver-managed`。
+10. `process_env` 下 `lark-cli` 携真实 bearer，经 TAE 系统 `*.feishu.cn` 白名单直连 Feishu；没有 webhook、
+    header mutation 或 `X-Agent-Trace` proof。
 11. stdout/stderr SSE 被有界、按序映射；进程 exit 映射为 operation terminal，再完成 execution。
     文档内容作为现有 MCP `shell` result 返回模型。
 12. Core 能关联 run → execution → operation → target generation → credential-use → egress audit；任何
@@ -150,9 +145,8 @@ SDK；execution gateway 只 import provider-neutral contracts。
 如果 workspace 尚未配置 `kind=lark` binding，步骤 1 仍可启用 pack，部署、Core readiness、sandbox ensure
 与纯本地命令全部正常；只有步骤 5 的 credential-required operation 以 `credential_not_configured` 拒绝。
 
-未知 host 在两种模式下都必须被 TAE whitelist 拒绝；egress-authorizer 对两者强制相同的 method/path
-只读策略与 live revoke。`process_env` 的额外安全差异是目标 `lark-cli` 及其子进程可以读取真实 token；
-proof 缺失、过期、篡改、跨 operation/workspace 或 mode/version 变化仍会在网络层拒绝请求。
+未知 host 必须被 TAE 系统 policy 拒绝。目标 `lark-cli` 及其子进程可以读取真实 token；direct profile 不做
+逐请求 live revoke，因此依赖短进程、最小 scope、短期 token，以及每次进程启动前的 live mode/version 校验。
 
 ## 5. 对 harness 暴露的能力
 
@@ -268,11 +262,9 @@ TAE backend 位于 execution gateway，但只调用 sandbox-gateway 的 provider
 ### 6.6 TAE provider 应用身份
 
 SG production 的 Terminal Sandbox PSM 固定为 `bytedance.sandbox.agentserver`。它同时是
-provider scope、TAE policy binding 的 `sandboxPsm`，并始终作为 egress-authorizer 允许
-PSM；不能由 session 请求或运行时环境覆盖。Policy Webhook 使用 HTTPS URL
-`https://egress-authorizer-sg.byted.bps.dev/v1/policy`，不把 K8s egress-authorizer 冒充成 TCE/FaaS PSM。
-Istio Gateway 终止公网 TLS，再通过 BackendTLSPolicy 使用 namespace 内
-`agentserver-egress-backend-ca` ConfigMap 对 egress-authorizer 的 workload TLS 做校验。
+provider scope 和 TAE policy binding 的 `sandboxPsm`；不能由 session 请求或运行时环境覆盖。当前 direct
+profile 精确使用系统 `*.feishu.cn` 白名单，创建 Sandbox/revision/Session 时都不配置 Webhook。未来
+webhook-enabled profile 才会使用独立 egress-authorizer URL/PSM、Route 和后端 TLS。
 
 SG 的 sandbox-gateway 无浏览器 provider workload 固定使用基础设施身份 `bytecloud-app-aksk-v1`，不依赖个人账号或本机 ZTI。
 这组 AK/SK 只用于调用 TAE control/data plane，和 workspace 管理员在 Platform 配置的 `kind=bytecloud`
@@ -501,8 +493,8 @@ sandbox generation 作为安全恢复；不能继续在可能仍运行命令的 
 - execution gateway 重启：沿用 Core recovery，按 dispatching/acknowledged 和 target kind 分派 reconciler；
 - sandbox-gateway 重启：无 durable execution state，从 Core target + provider handle/query 恢复；
 - TAE stream 断开：保留最后 sequence/handle，查询进程；不能证明 terminal 时 unknown；
-- Core 暂时不可达：sandbox-gateway 不接受新 operation；egress-authorizer 对两种 mode 都 deny，
-  `process_env` 同时无法解析新 token、不得启动新 `lark-cli`；已运行进程输出可以有界缓冲，但不能在没有
+- Core 暂时不可达：sandbox-gateway 不接受新 operation；`process_env` 无法解析新 token、不得启动新
+  `lark-cli`；已运行进程输出可以有界缓冲，但不能在没有
   Core ACK/terminal authority 时宣称成功。
 
 ## 11. Managed egress 与 Core-owned workspace credential
@@ -519,15 +511,14 @@ mode 的唯一事实源是 Core 的 workspace row；`WorkspaceState`、create/up
 environment 都没有 mode 字段。
 
 - `webhook_swap`：execution gateway 解析 binding reference 并签发短期 placeholder；Policy Webhook 在真实
-  HTTP 请求上完成 token swap；
+  HTTP 请求上完成 token swap；仅未来 webhook-enabled profile 可用；
 - `process_env`：execution gateway 在精确 `shell + lark-cli + TAE process_start` 前调用 Core
   `/internal/v2/execution/credentials/lark:resolve`，Core live-authorize 后返回真实 access token；execution
-  gateway 同时签发 operation-bound proof，Policy Webhook 再做请求级 live authorization。
+  gateway 只注入目标进程；当前 direct profile 使用 TAE 系统白名单直连。
 
-两种 mode 始终共用 placeholder/proof signer、Core verifier、egress-authorizer、Service/Route/TLS/NetworkPolicy
-和同一份 TAE policy。没有 `auto`、部署默认或运行时 fallback。切换 workspace mode 不改变 policy/network
-evidence/runtime profile/pack set/owner policy digest，也不要求发布新 Chart；下一次 process start 和后续
-HTTP 请求会从 Core 当前 workspace mode 重新判定并 fence 旧 authority。
+两种 mode 不复用 Sandbox profile。没有 `auto`、部署默认或运行时 fallback。当前 direct profile 遇到
+`webhook_swap` 必须拒绝；未来切换 profile 需要发布对应 TAE policy/network evidence，不能运行时给 direct
+Sandbox 添加 webhook。
 
 managed image/session runtime projection 只包含固定版本和 hash 的 CLI、非敏感 endpoint/config 与 TAE façade
 地址。execution gateway 在合并完模型允许的 env 后最后注入 reserved value，名称冲突直接拒绝；相关
@@ -536,9 +527,8 @@ request/body/log/trace 必须 redact，不使用 TAE ZTI `user` 替代 agentserv
 没有所需 binding 时仍可创建 sandbox 和启动 run；execution gateway 不注入 token/placeholder，具体 CLI
 会得到未配置认证的失败。Core direct resolve 用 `configured=false` 表达正常未配置状态，不回退到另一 mode。
 binding 的 secret rotation 只推进 `credentialVersion`，不要求重建 TAE Session；revoke/owner/policy 变化推进
-`authorityVersion`。`webhook_swap` 会立即 fence 旧 placeholder；`process_env` 会拒绝后续 process start，
-并在每个 HTTP 请求上因 proof/live mode/version 不匹配而拒绝已启动进程的新出网请求。已经进入进程内存的
-token 字节本身不能远程擦除。
+`authorityVersion`。`process_env` 会拒绝后续 process start；已经进入已启动进程内存的 token 字节不能远程
+擦除或逐请求撤销。
 
 ### 11.2 `process_env` 的窄接口与安全边界
 
@@ -551,33 +541,28 @@ direct resolve 路由随 managed execution 一直挂载，但只有 workspace �
 3. provider adapter 只允许得到单个 `Authorization: Bearer`，Core 提取 token 后用
    `Cache-Control: no-store` 的响应返回 executor-gateway；
 4. executor-gateway 只把 token 合并进该次 TAE StartProcess env，禁止调用方覆盖保留变量；
-5. Core 写 `stage=process_env` 的最小化 audit，audit 失败则不启动进程。
-6. executor-gateway 签发不超过 1024 字节的 Ed25519 proof，通过 `LARKSUITE_CLI_AGENT_TRACE` 只注入目标
-   进程；proof 绑定完整 operation、binding/version、policy 和短期 expiry。
+5. Core 写 `stage=process_env` 的最小化 audit，audit 失败则不启动进程；
+6. direct profile 不签发 `LARKSUITE_CLI_AGENT_TRACE`，也不投射 placeholder signer/keyring。
 
-真实 token 会对目标进程及其子进程可见，这是该模式的明确安全边界。TAE 仍强制 host whitelist，且
-Policy Webhook 对每个请求验证 proof、method/path 与 live revoke。长运行进程中的 token 字节无法擦除，
-但 proof 过期或 authority 变化后不能继续经 managed egress 使用它。
+真实 token 会对目标进程及其子进程可见，这是该模式的明确安全边界。TAE 系统 policy 强制
+`*.feishu.cn` host 白名单；长运行进程中的 token 字节无法擦除，因此 access token 必须短期、最小 scope，
+命令应保持短生命周期。
 
-### 11.3 共用 Policy Webhook 与 Core 请求判定
+### 11.3 独立 webhook-enabled profile（未来）
 
-egress-authorizer 在总预算内依次执行：
+以下逻辑只属于未来 `webhook_swap` profile，当前 direct profile 不部署或调用它。egress-authorizer 在总预算内依次执行：
 
 1. 限制 body/header 大小，严格解析 TAE Webhook v1；
 2. 用官方 SDK 验证 `X-Zti-Token`，校验 SG trust domain 和允许的固定 TAE PSM；
-3. 从原始 request headers 区分签名 placeholder 与真实 bearer + `X-Agent-Trace` proof；两种 framing 都
-   严格验签、expiry 与 operation scope，畸形 placeholder 不得落入 process path；
+3. 从原始 request headers 读取签名 placeholder，严格验签、expiry 与 operation scope；
 4. canonicalize host/path/method，拒绝 IP literal、混淆 host、未知 method、redirect 扩权和未审核 provider host；
 5. 对匿名 host 按平台+workspace egress policy 判定；对带 credential requirement 的 host，通过 mTLS 调
-   Core：placeholder 使用 `/internal/v2/egress/credentials:resolve`，process proof 使用
-   `/internal/v2/egress/credentials:authorize-process-env`；
-6. Core 再验证 placeholder/proof，并 live-authorize workspace 当前 mode、membership、run/attempt/operation、
-   binding `authorityVersion`/`credentialVersion` 与 pack policy；process path 还常量时间比较真实 bearer；
+   Core：placeholder 使用 `/internal/v2/egress/credentials:resolve`；
+6. Core 再验证 placeholder，并 live-authorize workspace 当前 mode、membership、run/attempt/operation、
+   binding `authorityVersion`/`credentialVersion` 与 pack policy；
 7. Core 从 workspace binding store 解封 credential，由 provider adapter 生成
    closed-world header mutation（例如 `Authorization`、`X-Jwt-Token`），绝不返回任意 header 名；
-8. egress-authorizer 只返回合法的 `allow|deny` wire 和 mutation；process path 将 proof trace 清洗成
-   `X-Agent-Trace: agentserver-managed`，Core
-   写入 credential-use/egress audit；
+8. egress-authorizer 只返回合法的 `allow|deny` wire 和 mutation，Core 写入 credential-use/egress audit；
 9. 任何依赖超时、版本不符、binding 缺失、refresh 未就绪或 audit 失败都 fail closed。
 
 TAE native Webhook 路径不把真实 secret 放到 sandbox。没有 TAE header mutation 能力的 provider 若需要
@@ -601,37 +586,34 @@ arbitrary `server_url` 只能作为经过 SSRF、zone 和 provider allowlist 校
 
 ### 11.5 审计与秘密驻留
 
-egress decision event 记录 workspace/run/execution/operation/target/provider kind/binding ID、policy and
-credential versions、host/method/path、decision/reason/latency；credential-use event 与其一一关联。
+direct profile 的 credential-use event 记录 workspace/run/execution/operation/target/provider kind/binding ID、
+policy/credential versions 和 process-start decision；webhook profile 另记录 host/method/path/latency。
 绝不记录 placeholder/真实 credential、Authorization 原文、AK/SK、JWT、PAT、body 或响应内容。
 `webhook_swap` 的真实值只短暂存在于 sealed DB（密文）、Core/egress-authorizer/TAE header mutation 与
-上游连接内存；`process_env` 还会存在于目标 `lark-cli` 进程及子进程的 env/内存。两种模式都不得把值
+上游连接内存；`process_env` 会存在于目标 `lark-cli` 进程及子进程的 env/内存。两种模式都不得把值
 写入 TAE Session metadata、文件、MCP result、日志或 checkpoint。
 
 ### 11.6 SG 硬门禁
 
-上线前逐项产生自动化/抓包证据：
+当前 direct profile 上线前逐项产生自动化/只读证据：
 
 | Gate | 通过条件 |
 |---|---|
-| G1 public policy | 已审核的 provider host（首个为 `open.feishu.cn`）可绑定并实际调用 Webhook |
-| G2 original header | Webhook body/header 可读取完整 placeholder Authorization |
-| G3 overwrite | allow response 的 provider header 精确替换原值，上游只收到真实 credential |
-| G4 no bypass | DNS/IP/IPv4/IPv6/redirect/CONNECT 等路径都不能绕开 Agent Gateway |
-| G5 CLI acceptance | pinned Linux/amd64 lark-cli 接受 placeholder 并成功发出请求 |
-| G6 latency/fail-close | P99 < 300ms；500ms、非 200、畸形 JSON、Core/secret 依赖故障全部 deny |
-| G7 zero-secret | env、proc、fs、stdout/stderr、TAE metadata、Pulumi/Helm、日志、rollout/checkpoint 零 workspace secret |
+| G1 system policy | TAE system policy readback 包含 `*.feishu.cn`，Sandbox/revision/Session 无 webhook |
+| G2 exact process | 只有 exact live `shell + lark-cli + TAE process_start` 能 direct resolve |
+| G3 profile fence | `webhook_swap` workspace 在 direct profile 明确拒绝，无自动 fallback |
+| G4 host boundary | 非 `*.feishu.cn` 目标被 TAE 系统 policy 拒绝 |
+| G5 CLI acceptance | pinned Linux/amd64 lark-cli 使用真实 process env 成功发出请求 |
+| G6 fail-close | Core/credential/audit 依赖故障时不启动新进程 |
+| G7 secret residency | 除目标进程/子进程 env/内存外，fs/stdout/stderr/TAE metadata/Pulumi/Helm/日志/checkpoint 零 token |
 
-G1–G7 对两种 workspace mode 都是硬门禁。`process_env` 还必须验证：非 `lark-cli`/BYO operation 零 direct
-resolve、exact live-operation 双检、目标进程成功读取 token、同一 sandbox 其他进程环境不可见、proof
-缺失/篡改/跨 workspace/mode 切换/binding rotate 全部 deny、trace 被清洗，日志/metadata/result/checkpoint
-零 token。任何门禁失败都不得自动切到另一 mode。
+任何门禁失败都不得自动切到另一 mode。未来 webhook profile 需要另行关闭 placeholder/header mutation、
+ZTI、逐请求 revoke、latency 和 no-bypass 门禁，不能引用 direct profile 的证据。
 
 ### 11.7 写操作
 
-首切片的共用 policy 只包含只读 Lark API，write method/path 在两种 mode 下一律由 Webhook deny。未来写操作
-必须在命令发出前由 execution gateway/Core 完成交互审批，并把已消费 approval 绑定进对应 placeholder 或
-process proof；在新增并验证该 versioned request-level authority 前，两种 mode 都不得宣称支持受控写操作。
+当前 direct profile 的首切片只授权只读 Lark CLI 场景。未来写操作必须在命令发出前由 execution
+gateway/Core 完成交互审批，并设计可验证的 request-level authority；在此之前不得宣称支持受控写操作。
 
 ## 12. 安全边界
 
@@ -643,7 +625,6 @@ process proof；在新增并验证该 versioned request-level authority 前，�
 | lifecycle | harness-pool | sandbox-gateway ensure/renew/release/delete；不含 commands/files |
 | backend dispatch | execution gateway | sandbox-gateway 单 operation/target generation/action |
 | egress placeholder（仅 `webhook_swap`） | sandbox process | egress-authorizer 单 actor/pack/grant/version/host class；无真实 secret |
-| process egress proof（仅 `process_env`） | 精确 `lark-cli` 及其子进程 | egress-authorizer/Core 单 operation/binding/version/policy/expiry；无真实 secret |
 | Lark access token（仅 `process_env`） | 精确 `lark-cli` 及其子进程 | 单次 live-authorized process start；是真实 secret，不是 capability |
 | TAE provider JWT | sandbox-gateway | ByteCloud application identity；不能替代产品用户身份 |
 
@@ -703,8 +684,8 @@ module/CI job。
 - lifecycle：ensure/create/get/renew/delete latency、state、unknown、orphan、active/idle sandbox；
 - dispatch：按 backend/tool/outcome 的 begin→ack、ack→terminal、unknown、fenced late response；
 - stream：bytes/events/truncation/gap/reconnect；
-- egress：按 workspace credential mode 区分 placeholder swap/process proof，记录 direct resolve 与逐请求
-  Webhook 的 allow/deny reason class、Core/Webhook latency、credential-not-ready；
+- credentials：记录 direct resolve 的 reason class、Core latency、credential-not-ready；未来 webhook profile
+  另记录逐请求 allow/deny 与 Webhook latency；
 - capacity/cost：active TAE sessions、CPU/memory profile、idle duration、create cold-start。
 
 trace 使用 run/execution/operation/internal sandbox ID/target generation/provider request log ID 关联；provider
@@ -716,7 +697,7 @@ ID 仅进入访问受限字段。日志 sanitizer 在单测中用 canary secret 
 - cold ensure ready P50/P95/P99；
 - command terminal success/error 正确率与 unknown rate；
 - orphan 最长存活时间；
-- 两种 mode 的 Webhook P99 < 300ms、timeout deny = 100%；`process_env` direct resolve 还必须在 process-start budget 内 fail closed；
+- `process_env` direct resolve 必须在 process-start budget 内 fail closed；未来 webhook profile 单独制定 P99；
 - secret residency gate = 100%：`webhook_swap` sandbox 零真实 secret；`process_env` 除目标进程/子进程外零 token。
 
 ## 15. 测试策略
@@ -731,7 +712,7 @@ ID 仅进入访问受限字段。日志 sanitizer 在单测中用 canary secret 
 - Core generic target 状态迁移、generation fencing、dual-write/backfill constraints；
 - egress webhook strict parser、ZTI verifier fake、placeholder/grant/path matrix、redaction；
 - direct resolve 的 executor mTLS、exact tool/executable/TAE target、live authority 双检、no-store、audit fail-close；
-- workspace mode create/update/CAS/audit、动态切换、proof/bearer/Webhook 矩阵、无 fallback、部署中无全局 mode 与 BYO no-op。
+- workspace mode create/update/CAS/audit、profile mismatch、无 fallback、部署中无全局 mode 与 BYO no-op。
 
 ### 15.2 Integration/fault injection
 
@@ -744,7 +725,7 @@ ID 仅进入访问受限字段。日志 sanitizer 在单测中用 canary secret 
 - timeout 与自然 exit 竞态、terminate unknown；
 - TTL renew 响应丢失、delete 404/5xx/timeout、reconciler 多副本抢 lease；
 - target generation 被替换后的迟到 ACK/output/terminal；
-- Core/credential cache 不可用；两种 mode 下 egress-authorizer/Webhook 500ms 与非 200；
+- Core/credential cache 不可用；direct resolve timeout；未来 webhook profile 的 500ms 与非 200；
 - IPv4/IPv6、DNS rebinding、redirect、IP literal、unknown Lark path 的 egress bypass 尝试。
 
 ### 15.3 Golden E2E
@@ -790,8 +771,8 @@ ID 仅进入访问受限字段。日志 sanitizer 在单测中用 canary secret 
 ### Phase E：workspace credential egress
 
 - 通用 credential binding/reference、Core-owned TAE `ResolveInjection` endpoint 与 provider registry；
-- `lark-readonly` runtime projection 只作为首个 provider fixture，placeholder 与动态 binding 选择；
-- egress-authorizer、credential-use/egress 审计；
+- `lark-readonly` runtime projection 只作为首个 provider fixture，direct process env 与动态 binding 选择；
+- direct credential-use 审计；未来 webhook profile 再接 egress-authorizer/egress 审计；
 - 完成 G1–G7 和 golden E2E，并用 ByteCloud/GitHub fake provider 验证无 Lark 特例。
 
 ### Phase F：灰度
@@ -813,10 +794,10 @@ ID 仅进入访问受限字段。日志 sanitizer 在单测中用 canary secret 
    execution gateway；
 5. sandbox-gateway 已提供 provider-neutral lifecycle/commands/files HTTP contract 和 fake TAE provider，
    `cmd/sandbox-gateway --insecure-dev` 可运行完整本地链路；
-6. 首个 Lark slice 已实现 workspace 级 `webhook_swap` placeholder 与 `process_env` exact process direct
-   injection；两者共用 Policy Webhook/Core live authorization，且无部署默认或自动 fallback。真实凭据在
-   `process_env` 中只进入目标 `lark-cli`/子进程，不进入文件或 provider metadata；
-7. fake-provider golden E2E 已覆盖 managed shell、placeholder 注入、TAE HTTP backend、sandbox-gateway、
+6. 首个 Lark slice 已实现 workspace 级 mode 与 `process_env` exact process direct injection；当前 direct
+   profile 遇到 `webhook_swap` 明确拒绝，且无部署默认或自动 fallback。真实凭据只进入目标
+   `lark-cli`/子进程，不进入文件或 provider metadata；
+7. fake-provider golden E2E 已覆盖 managed shell、process env 注入、TAE HTTP backend、sandbox-gateway、
    stdout/terminal 回传，同时保留 BYO agentx contract/regression tests。
 
 生产 provider 的依赖边界仍然有意保持在独立 module，但它已经接入发布构建：
@@ -825,14 +806,14 @@ ID 仅进入访问受限字段。日志 sanitizer 在单测中用 canary secret 
   实现 Create/Get/Search/TTL/Delete、进程流、terminate 和受限文件读取；TAE policy binding digest
   同时写入并校验 session metadata，漂移会 fail closed；process start 使用 `x-tt-logid` 透传内部关联 ID，
   断流重连后的输出不会被误标为完整；
-- `cmd/egress-authorizer` 的 production binary 已接入官方 ROW ZTI verifier、严格的 `/v1/policy` Webhook
-  parser 和 audit sink；credential materialization 必须经 mTLS 直接调用 Core，不再读取 Lark token；
+- `cmd/egress-authorizer` binary 保留供未来 webhook-enabled profile 使用；当前 direct profile 的 renderer
+  不部署它或其 Service/Route/TLS/NetworkPolicy；
 - 生产镜像构建会编译 `providers/tae/cmd/sandbox-gateway`，把该 binary 与 core/executor/egress
   service binary 一起放入 service image；主 module 中的 provider-neutral `cmd/sandbox-gateway`
   仍只允许 fake/insecure-dev，避免 production 意外退化到 fake provider；
-- production renderer 不读取 workspace mode：managed active 始终生成 sandbox-gateway、egress-authorizer、
-  共用 key material、Service/Route/TLS/NetworkPolicy；production schema/Helm/Pulumi 明确拒绝全局 mode 字段。
-- production release 使用 `disabled` / deny-only `policy-bootstrap` / `active` 三阶段；审批后的一次性
+- production renderer 不读取 workspace mode：direct active 只生成 sandbox-gateway，不生成 egress-authorizer
+  authority；production schema/Helm/Pulumi 明确拒绝全局 mode 字段。
+- production release 使用 `disabled` / fail-closed `policy-bootstrap` / `active` 三阶段；readback 后的一次性
   `tae-network-probe` 不扩大 bootstrap Chart 权限，只用专用 ServiceAccount 和临时 NetworkPolicy 经
   syd2a 执行 20 次 JWT/control 检查、完整 lifecycle、42MB pinned CLI/Skill 摘要校验与资源清理。
   activation 直接解析 canonical report 并绑定 bootstrap config SHA 和实际 policy revision，不接受人工
@@ -848,14 +829,14 @@ G1–G7 已通过真实网络和凭据链路验证。
 contract tests 不替代这些实测：
 
 - TAE SG region/PSM、SDK 版本、应用账号 AK/SK 权限和 ByteCloud JWT/TAE ACL；
-- TAE Terminal Sandbox 默认仅支持 IPv6；必须在 SG 实测 `open.feishu.cn` 的 AAAA/DNS、Agent Gateway
+- TAE Terminal Sandbox 默认仅支持 IPv6；必须在 SG 实测 `open.feishu.cn` 的 AAAA/DNS、系统 policy
   转发、PMTU/MSS 和长响应链路，不能用办公网 IPv4 或 fake provider 结果替代；
 - CreateSession 幂等/metadata 查询能力以及 provider request ID 语义；
 - streaming start 的精确 ACK 边界、process query/terminate 能力和 SDK retry 默认值；
 - TTL 最小/最大/更新语义、delete 后 GetSession 行为、list/orphan 能力；
 - Terminal file read 对 symlink/special file 的实际处理；
-- 两种 mode 的 TAE Agent Gateway/Webhook 行为都关闭 G1–G7；`process_env` 另验 direct-injection、
-  target-process residency、operation proof、bearer 比较、trace 清洗与 live mode/version fencing；
+- direct profile 关闭 G1–G7，验证 direct-injection、target-process residency、无 proof/header mutation、
+  system policy readback 与 live mode/version fencing；
 - pinned `lark-cli` 的安装，以及所选 mode 的 placeholder 或真实 token 配置；
 - regional credential materialization/cache 在 P99/撤销延迟/secret residency 之间的最终参数；
 - SG 容量、冷启动、并发 session 配额和成本基线。
@@ -864,9 +845,8 @@ contract tests 不替代这些实测：
 
 - PostgreSQL migration `0020`→`0027` 在真实库执行并可重复 bootstrap；
 - TAE SG create/adopt/reconcile/TTL/delete 在丢响应、重复资源、generation fence 和超时下的结果；
-- egress-authorizer HTTPS Webhook 从 TAE Agent Gateway 实际可达，且两端 policy binding digest 一致；
-  `webhook_swap` 完成 placeholder → real `Authorization` 抓包，`process_env` 证明 direct resolve 只发生于
-  exact live `lark-cli` start，并完成 proof + bearer → sanitized trace 的逐请求抓包；
+- Sandbox/revision/Session readback 无 webhook，TAE system policy 包含 `*.feishu.cn`，且 policy binding digest
+  一致；`process_env` 证明 direct resolve 只发生于 exact live `lark-cli` start；
 - IPv4/IPv6、DNS、redirect、CONNECT、IP literal bypass、PMTU/MTU/MSS 和错误率复测；
 - sandbox-gateway 从 SG 以 `i18n-tt` 应用身份换取 JWT、强制刷新、Secret 轮换和 AK/SK/JWT 零泄漏扫描；
 - 所选 mode 的延迟/fail-close、TAE/Lark golden E2E 与 secret residency 扫描；`process_env` 允许目标

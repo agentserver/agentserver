@@ -40,10 +40,8 @@ func TestProductionRendererExecutorEnvironmentMatchesCommandContract(t *testing.
 		gatewaySandboxFencerIssuerEnvironment,
 		gatewaySandboxFencerKeyIDEnvironment,
 		gatewaySandboxFencerKeyEnvironment,
-		gatewayEgressPlaceholderIssuerEnvironment,
-		gatewayEgressPlaceholderKeyIDEnvironment,
-		gatewayEgressPlaceholderKeyEnvironment,
 		gatewayManagedTAEPSMEnvironment,
+		gatewayTAEWebhookRequiredEnvironment,
 	}
 	slices.Sort(want)
 	if got := environment.Names(); !slices.Equal(got, want) {

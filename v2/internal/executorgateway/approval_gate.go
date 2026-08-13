@@ -21,6 +21,11 @@ var (
 const (
 	defaultApprovalSettlementGrace = 3 * time.Second
 	maximumApprovalSettlementGrace = 30 * time.Second
+	// The gateway and one-shot worker run on different nodes. Leave bounded
+	// headroom below the signed MaxApprovalTTL so a gateway clock that is a few
+	// seconds ahead cannot make an otherwise valid approval look overlong to
+	// the worker before the request is even journaled.
+	maximumApprovalExpirySkewAllowance = 5 * time.Second
 )
 
 type ApprovalElicitor interface {
@@ -112,7 +117,7 @@ func (gate *CoreApprovalGate) AuthorizeExecution(ctx context.Context, request Ap
 	}
 	now := gate.now().UTC().Truncate(time.Microsecond)
 	expiresAt := minApprovalExpiry(
-		now.Add(request.Principal.MaxApprovalTTL),
+		now.Add(approvalTTLWithClockSkewHeadroom(request.Principal.MaxApprovalTTL)),
 		request.Principal.RunDeadline,
 		request.Principal.CapabilityExpiresAt,
 	).UTC().Truncate(time.Microsecond)
@@ -378,4 +383,14 @@ func minApprovalExpiry(values ...time.Time) time.Time {
 		}
 	}
 	return result
+}
+
+func approvalTTLWithClockSkewHeadroom(ttl time.Duration) time.Duration {
+	allowance := maximumApprovalExpirySkewAllowance
+	// Preserve a useful approval window for deliberately short development and
+	// test policies while still avoiding the exact signed-limit boundary.
+	if half := ttl / 2; allowance > half {
+		allowance = half
+	}
+	return ttl - allowance
 }

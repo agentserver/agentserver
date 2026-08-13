@@ -106,6 +106,33 @@ func TestRunRetargetTerminalSandboxUsesExactClosedArguments(t *testing.T) {
 	}
 }
 
+func TestRunRetargetDirectTerminalSandboxUsesExactClosedArguments(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	called := ""
+	digest := strings.Repeat("d", 64)
+	exitCode := run(
+		[]string{
+			"retarget-direct-terminal-sandbox", "--revision-id=revision-v9", "--sandbox-id=sandbox-new",
+			"--environment-id=60000000-0000-4000-8000-000000000006",
+			"--expected-sandbox-id=sandbox-old", "--output=/absolute/retargeted.json",
+			"--config=/absolute/bootstrap.json", "--managed-sandbox-image=sandbox@sha256:" + digest,
+		},
+		&stdout, &stderr,
+		deployCommands{retargetDirectTerminal: func(config, output, expected, sandbox, revision, environment, image string) error {
+			called = strings.Join([]string{config, output, expected, sandbox, revision, environment, image}, "|")
+			return nil
+		}},
+	)
+	want := strings.Join([]string{
+		"/absolute/bootstrap.json", "/absolute/retargeted.json", "sandbox-old", "sandbox-new", "revision-v9",
+		"60000000-0000-4000-8000-000000000006", "sandbox@sha256:" + digest,
+	}, "|")
+	if exitCode != 0 || stderr.Len() != 0 || called != want ||
+		!strings.Contains(stdout.String(), "fail-closed direct Terminal Sandbox") {
+		t.Fatalf("run = %d, called %q, stdout %q, stderr %q", exitCode, called, stdout.String(), stderr.String())
+	}
+}
+
 func TestRunActivateManagedExecutorUsesExactEvidenceArguments(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	called := ""

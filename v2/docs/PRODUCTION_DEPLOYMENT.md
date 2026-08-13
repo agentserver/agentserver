@@ -21,14 +21,15 @@ grant。平台没有统一的模型 API key。
 
 `managedExecutor` 有三个显式且不兼容回退的 stage：`disabled`、`policy-bootstrap`、`active`。
 Lark credential delivery mode 不属于 release 或 Chart；它是每个 workspace 自己的配置，workspace owner
-通过 Platform/API 显式选择 `webhook_swap` 或 `process_env`。`policy-bootstrap` 只部署生产 TLS 的 deny-only
-Policy Webhook；`active` 才会部署 TAE managed executor vertical slice：
-`harness-pool → executor-gateway → sandbox-gateway → TAE`，同时保留统一的
-`TAE Agent Gateway → egress-authorizer → Core` 请求授权链。`process_env` 由 executor-gateway 在精确进程
-启动前向 Core 解析真实 Lark token，并为后续请求附带 operation-bound proof；它不会绕过 Policy Webhook。
+通过 Platform/API 显式选择 `webhook_swap` 或 `process_env`。当前 SG direct Sandbox profile 只支持
+`process_env`：`policy-bootstrap` 不部署 Webhook，`active` 才会部署 TAE managed executor vertical slice
+`harness-pool → executor-gateway → sandbox-gateway → TAE`。executor-gateway 在精确进程启动前向 Core
+解析真实 Lark token，只注入目标 `lark-cli`；TAE 使用系统预置 `*.feishu.cn` 白名单直连，不配置 webhook，
+也不经过 egress-authorizer。若 workspace 选择 `webhook_swap`，direct profile 必须 fail closed；未来需使用
+另一个 webhook-enabled Sandbox profile。
 sandbox 内运行 digest-pinned Linux/amd64 `lark-cli` 和只读 skill；模型仍
 只看到既有 `list_environments`、`shell`、`read_file` MCP catalog。TAE policy 不通过 CreateSession 参数
-伪造，而由已发布的 PSM/网络策略 binding digest 校验，并在 egress-authorizer 端逐请求复验。
+伪造，而由 PSM/system policy readback 与网络策略 binding digest 校验。
 代码和 provider-linked binary 已接入本地生产渲染，但真实 SG ByteCloud 应用 JWT/TAE/Lark、Webhook 可达性、IPv4/IPv6
 与 zero-secret 门禁仍须在目标集群执行，本文不把本地测试当作上线证据。
 
@@ -71,13 +72,12 @@ harness-pool Pod 访问。
 Chart 管理：
 
 - managed executor 关闭时有 7 个常驻 Deployment：core、platform-gateway、browser-gateway、executor-gateway、harness-pool、llmproxy、Hydra；
-- `policy-bootstrap` 只增加 deny-only `egress-authorizer`，共 8 个常驻 Deployment；它没有
-  Core egress、workspace credential、ZTI verifier、TAE provider 或 sandbox authority；
-- `active` 增加 `sandbox-gateway` 与完整 `egress-authorizer`，共 9 个常驻 Deployment；
+- direct `policy-bootstrap` 不增加常驻 Deployment；它没有 TAE provider 或 sandbox authority；
+- direct `active` 增加 `sandbox-gateway`，共 8 个常驻 Deployment；
 - executor-gateway 固定单副本、`Recreate`、无 HPA/PDB；
-- managed executor 关闭时有 6 个固定 ClusterIP Service、6 条 HTTPRoute；bootstrap/active 都增加
-  egress-authorizer Service、公开 Webhook HTTPRoute 与 BackendTLSPolicy，active 再增加 sandbox-gateway Service；
-- managed NetworkPolicy 始终包含 egress-authorizer 的闭合 ingress/egress；workspace mode 不改变部署拓扑；
+- managed executor 关闭和 direct bootstrap 都有 6 个固定 ClusterIP Service、6 条 HTTPRoute；direct active
+  只增加 sandbox-gateway Service；
+- direct profile 不渲染 egress-authorizer Deployment/Service/Route/BackendTLSPolicy/NetworkPolicy；
 - Hydra SQL migration（weight `-20`）和 AgentServer migration（weight `-10`）
   `pre-install,pre-upgrade` Job；
 - Hydra Platform/Browser 两个 public OAuth client setup（weight `-10`）和幂等 AgentServer bootstrap（weight `0`）
@@ -101,8 +101,8 @@ Job 只用于控制面安装期的数据库 migration、Hydra client setup 和 b
 - 以 `kubernetes.io/hostname` 为 topology key 的 required Pod anti-affinity，三个实例不能落在同一节点；
 - 指向 `agentserver-postgres-rw.agentserver.svc.cluster.local:5432` 的 AgentServer/Hydra 独立 DSN；
 - Hydra system/cookie secret；
-- base profile 使用 9 个应用 Secret；managed profile 额外使用 sandbox、egress-authorizer、Core workspace
-  credential keyring 与 placeholder/proof signer 相关 Secret；这些只描述组件身份、
+- base profile 使用 9 个应用 Secret；direct managed profile 额外使用 sandbox 与 Core workspace credential
+  keyring；webhook profile 才额外需要 egress-authorizer 和 placeholder/proof signer Secret；这些只描述组件身份、
   keyring 和基础设施，不承载任何 workspace Lark/ByteCloud/GitHub credential；
 - 环境锁定的 OCI Helm release。Release显式使用`atomic=false`和`cleanupOnFail=false`：失败资源会保留供排障，修复仍由下一次Pulumi更新收敛，不自动卸载现场。
 
@@ -166,10 +166,8 @@ harness-pool只保留目录准备和network guard两个init container。
 写入 Core workspace credential service 的 canonical binding。provider 用官方
 ByteCloud Auth SDK 换取短期 JWT，并以 `X-Jwt-Token` 同时访问 TAE control-plane 与 sandboxd data-plane。
 SG production 的 Terminal Sandbox PSM 固定为 `bytedance.sandbox.agentserver`，并在 provider 与 policy
-binding 做 exact-match 校验，并始终在 egress-authorizer 复验。Policy Webhook 使用
-`https://egress-authorizer-sg.byted.bps.dev/v1/policy`；Istio Gateway 终止公网 TLS，Gateway 到
-egress-authorizer Service 使用 BackendTLSPolicy 和 `agentserver-egress-backend-ca` ConfigMap 做 TLS
-校验。
+binding 做 exact-match 校验。当前 direct profile 还必须精确绑定 `publicHost=*.feishu.cn`、
+`publicAccess=system_default`、`publicWebhookRequired=false`，所有 webhook 字段为空。
 SG 生产 exchange origin 固定为 `https://cloud-i18n-sg.bytedance.net`，通过
 `AGENTSERVER_V2_TAE_BYTECLOUD_JWT_ENDPOINT` 显式注入并精确校验；JWT exchange、TAE control-plane 与
 sandboxd data-plane 的 transport 全部固定使用
@@ -189,33 +187,29 @@ mode 的唯一事实源是 Core 数据库的 `workspaces.managed_lark_credential
 `workspace_managed_credential_mode_events` 审计。生产配置、Helm values/schema、Pulumi 和 workload environment
 均不存在 mode 字段或默认/fallback。
 
-| Workspace mode | 进程启动 | TAE Policy Webhook | 安全边界 |
+| Workspace mode | 进程启动 | Sandbox profile | 安全边界 |
 | --- | --- | --- | --- |
-| `webhook_swap` | 只向精确 `lark-cli` 注入短期签名 placeholder | 验证 placeholder、live operation/mode/binding/version 后把 Authorization 换成真实 token | sandbox 中没有真实 token；每次请求强制 host/path/method 与 live revoke |
-| `process_env` | Core 复核 workspace mode 与 exact live `shell + lark-cli + TAE process_start` 后返回 access token，并同时注入短期 operation proof | 验证 proof、live workspace mode/binding/version，并常量时间比较请求 bearer；放行时清洗 trace header | 真实 token 只进入目标 `lark-cli` 及子进程；每次请求仍受相同 host/path/method policy 与 live revoke 约束 |
+| `webhook_swap` | 只向精确 `lark-cli` 注入短期签名 placeholder | 未来独立 webhook-enabled profile；当前 direct profile 明确拒绝 | sandbox 中没有真实 token；逐请求策略属于未来 profile |
+| `process_env` | Core 复核 workspace mode 与 exact live `shell + lark-cli + TAE process_start` 后返回 access token | 当前 direct profile：TAE 系统 `*.feishu.cn` 白名单，无 webhook | 真实 token 只进入目标 `lark-cli` 及子进程；每次启动重新 live-authorize |
 
-两种 mode 使用同一个 TAE PSM、同一份 `publicWebhookRequired=true` policy、同一个 egress-authorizer、同一套
-credential sealing 与 placeholder/proof key material。没有兼容、自动探测或跨 mode fallback。owner 切换 mode
-不需要修改 production document、重发 Chart 或重做 TAE evidence；executor-gateway 在每次进程启动时重新查询
-Core。切换会立即阻止旧 mode 的后续 resolve/请求：数据库 live-authority 查询同时匹配 workspace 当前 mode、
-binding authority version 和 credential version。
+两种 mode 不复用 Sandbox profile，没有兼容、自动探测或跨 mode fallback。executor-gateway 在每次进程启动
+时重新查询 Core；当前 direct profile 遇到 `webhook_swap` 会明确拒绝。未来切换 profile 必须发布对应的
+production document 和 TAE evidence，不能在运行时给 direct Sandbox 加 webhook。
 
 `process_env` 的 direct resolve 接口只允许 executor-gateway mTLS identity，响应强制
-`Cache-Control: no-store`，只返回 access token，不返回 refresh token。operation proof 不超过 1024 字节，
-绑定 workspace/session/run/attempt/execution/operation/sandbox/binding/version/policy/expiry；Webhook 与 Core
-都会验签。审计失败、Core 不可达、proof 缺失或篡改、mode/binding/version 不匹配均 fail closed。
+`Cache-Control: no-store`，只返回 access token，不返回 refresh token。审计失败、Core 不可达或
+mode/binding/version 不匹配均 fail closed。direct profile 不签发 operation proof，也不存在逐请求 Webhook
+live revoke；已启动短进程中的 token 依赖其自身过期时间，后续新进程启动会重新检查 live authority。
 
-### 2.2 TAE policy 两阶段引导
+### 2.2 TAE direct profile 两阶段引导
 
-TAE 要求 Webhook URL 先可达，才能在控制台发送测试请求、发布网络策略并发起安全
-审批；正式 managed execution 又必须在策略发布和审批完成后才能启动。发布流程因此使用同一个 Helm
-release 的两个严格阶段：
+正式 managed execution 必须在 TAE 系统 policy readback 和 SG 网络验证完成后才能启动。发布流程使用
+同一个 Helm release 的两个严格阶段：
 
 1. 从 active 模板生成 `policy-bootstrap` 配置。该转换会清空 policy 的
    `published/approved/evidenceRef`、全部 network evidence、runtime profile 与 pack lock；
-2. CI 发布并由 Pulumi 升级到 bootstrap Chart。此时公开 URL 返回合法的 `200 + v1 deny`，且只挂载
-   egress-authorizer 的 `tls.crt/tls.key`；
-3. 在 TAE 控制台测试 URL、发布并完成安全审批；
+2. CI 发布并由 Pulumi 升级到 direct bootstrap Chart。此时没有 sandbox-gateway 或 egress-authorizer authority；
+3. 从 TAE 控制面只读回查 Sandbox/PSM 的 `*.feishu.cn` 系统白名单；
 4. 通过 Pulumi 把 TAE 基础设施 AK/SK 原子写入 `agentserver-sandbox-secrets`，并把实际 policy
    revision 传给已部署的 bootstrap Chart。Chart 默认不渲染探针；显式启用后由同一个 Pulumi release
    创建一次性 `tae-network-probe`，只挂载 AK/SK，并只放行 DNS 与 syd2a TCP 1080；
@@ -227,11 +221,11 @@ release 的两个严格阶段：
 7. CI 发布 active Chart，Pulumi 对同一 release 做普通升级。只有这一步才会启动 sandbox-gateway，
    并向 Core/executor/harness 开启 managed authority。
 
-bootstrap 请求无论内容、ZTI 或 credential 如何都不能返回 allow。它不访问 Core，也不读取 placeholder
-keyring。不得用伪造 `published=true` 或模板 evidence 绕过这个阶段。
+bootstrap 不提供 managed execution，也不读取 placeholder keyring。不得用伪造 `published=true` 或模板
+evidence 绕过这个阶段。
 
-所有 workspace mode 共用这条 `policy-bootstrap → active` promotion 和同一份 TAE host/Webhook/no-bypass
-证据。bootstrap Chart 始终部署 deny-only Webhook，active Chart 始终部署完整 egress-authorizer。
+这条 `policy-bootstrap → active` promotion 只适用于当前 direct profile。bootstrap/active 都不部署
+egress-authorizer；未来 webhook profile 必须独立生成并验证 host/Webhook/no-bypass 证据。
 
 ## 3. 部署前必须准备的真实输入
 
@@ -256,14 +250,12 @@ keyring。不得用伪造 `published=true` 或模板 evidence 绕过这个阶段
    拉取三个 digest-pinned amd64 镜像和环境锁定 Chart；
 10. CoreDNS ClusterIP、Gateway Pod label selector、Service CIDR 中 6 个空闲固定 ClusterIP，以及
     S3/平台 OIDC 的实际 IPv4 CIDR/port 已确定；若启用 managed executor，还必须确认 syd2a SOCKS Pod
-    selector/TCP 1080、经代理的 JWT/control/data-plane、Policy Webhook URL/PSM 可达性，以及目标路径的
-    PMTU/MTU/MSS。
-11. `egress-authorizer-sg.byted.bps.dev` 已解析到现有 SG Istio Gateway，wildcard
-    `*.byted.bps.dev` 证书覆盖该 hostname，且 Gateway API `BackendTLSPolicy` 能使用 Pulumi 创建的
-    `agentserver-egress-backend-ca` ConfigMap 校验 egress-authorizer 后端证书；所有 workspace mode 都使用该入口。
+    selector/TCP 1080、经代理的 JWT/control/data-plane，以及目标路径的 PMTU/MTU/MSS。
+11. 当前 direct profile 不要求或创建 `egress-authorizer-sg.byted.bps.dev` Route；该入口仅属于未来
+    webhook-enabled profile，并需单独验证 DNS、证书、Gateway attach 与 backend TLS。
 12. 若部署 `policy-bootstrap`，TAE policy 必须仍是 unpublished/unapproved 且 evidence 为空；若部署
-    `active`，TAE policy 必须已经发布并完成安全审批，`open.feishu.cn` 精确 whitelist、policy SHA-256 与
-    binding SHA-256 必须和 `managedExecutor.tae.policy` 完全一致，并核对 `/v1/policy` Webhook binding。
+    `active`，TAE system policy readback 必须包含 `*.feishu.cn`，policy SHA-256 与 binding SHA-256 必须和
+    `managedExecutor.tae.policy` 完全一致，且全部 webhook 字段为空。
     CreateSession 不携带这些网络策略字段。
 
 这些非 Secret 参数写入 `production.json`，不是 Pulumi Secret：
@@ -389,8 +381,8 @@ managed executor 的 `active` 配置还必须包含：
 - `managedExecutor.tae.networkEvidence.reportSha256`：activation 从 canonical SG 网络测试报告字节自动计算的不可变摘要；
 - `managedExecutor.tae.networkEvidence.evidenceRef`：变更单/安全评审/制品报告引用；
 - `managedExecutor.tae.networkEvidence.bindingSha256`：由上述报告和当前配置的 syd2a proxy authority/
-  Pod selector/port、空的 sandbox/egress-authorizer 外部 CIDR 与额外 Webhook source CIDR、TAE region/PSM
-  及 Webhook mode/PSM/URL 共同计算的 canonical digest。
+  Pod selector/port、空的 sandbox/egress-authorizer 外部 CIDR、TAE region/PSM 及 direct system policy
+  shape 共同计算的 canonical digest。
 
 修改任意这些网络事实后必须重新执行 SG 实测、生成报告并更新摘要；不能只手工改 CIDR。`LockRelease`
 会再次计算并核对摘要，并拒绝模板 sentinel 或明显的重复字符伪摘要。
@@ -404,21 +396,23 @@ go run ./cmd/agentserver-deploy prepare-policy-bootstrap \
   --output=/absolute/policy-bootstrap.json
 ```
 
-如果轮换到另一个已发布的 Terminal Sandbox，必须在上述 fail-closed bootstrap 上用原子 retarget 命令
-同时绑定新 Sandbox ID、revision 和与 TAE registry manifest digest 相同的 SG mirror 制品。命令要求重复
-当前 Sandbox ID 作为 compare-and-swap 前置条件；它拒绝 active 配置、可变镜像和跨仓库镜像：
+如果轮换到另一个已发布的 direct Terminal Sandbox，必须在上述 fail-closed bootstrap 上用原子 direct
+retarget 命令，同时绑定新 Sandbox ID、revision、fresh environment ID 和与 TAE registry manifest digest
+相同的 SG mirror 制品。命令要求重复当前 Sandbox ID 作为 compare-and-swap 前置条件；它拒绝 active
+配置、可变镜像和跨仓库镜像，并清空全部 webhook 字段：
 
 ```bash
-go run ./cmd/agentserver-deploy retarget-terminal-sandbox \
+go run ./cmd/agentserver-deploy retarget-direct-terminal-sandbox \
   --config=/absolute/policy-bootstrap.json \
   --output=/absolute/retargeted-bootstrap.json \
   --expected-sandbox-id=<current-sandbox-id> \
   --sandbox-id=<new-sandbox-id> \
   --revision-id=<published-terminal-revision-id> \
+  --environment-id=<fresh-canonical-uuid> \
   --managed-sandbox-image=registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-managed-sandbox@sha256:<digest>
 ```
 
-不能用 `jq` 或文本替换分别修改这三个字段；正式探针和 activation 必须以 retarget 输出为唯一输入。
+不能用 `jq` 或文本替换分别修改这些字段；正式探针和 activation 必须以 retarget 输出为唯一输入。
 
 TAE 审批完成后，通过 Pulumi 在**当前已部署且已锁镜像**的 bootstrap release 中启用一次性探针；不能拿
 active 模板、另一版配置或手工 manifest 代替。Chart 的默认值为 disabled，只有 bootstrap Chart 的
@@ -587,12 +581,14 @@ kubectl --context '<sg-context>' --namespace agentserver \
 kubectl --context '<sg-context>' --namespace agentserver \
   rollout status deployment/sandbox-gateway --timeout=10m
 
-# 所有 workspace credential mode 都必须具备以下 Webhook 资源
+# direct profile 只应存在 sandbox-gateway，不应存在任何 Webhook 资源
 kubectl --context '<sg-context>' --namespace agentserver \
-  rollout status deployment/egress-authorizer --timeout=10m
-kubectl --context '<sg-context>' --namespace agentserver \
-  get service/sandbox-gateway service/egress-authorizer \
-  networkpolicy/sandbox-gateway networkpolicy/egress-authorizer
+  get service/sandbox-gateway networkpolicy/sandbox-gateway
+test "$(kubectl --context '<sg-context>' --namespace agentserver get \
+  deployment/egress-authorizer service/egress-authorizer \
+  httproute/agentserver-egress-authorizer-webhook \
+  backendtlspolicy/agentserver-egress-authorizer-backend-tls \
+  networkpolicy/egress-authorizer --ignore-not-found --output=name)" = ""
 ```
 
 公网入口：
@@ -619,23 +615,20 @@ curl --output /dev/null --write-out '%{http_code}\n' \
 Chart 相同 runtime manifest 的 agentx，完成 enrollment，并连接
 `wss://executor-gateway.byted.bps.dev/internal/v2/agentx/connect`。服务端不会在集群内伪造 executor。
 
-`policy-bootstrap` 部署后先验证公网 URL 返回 `200`、`version=v1`、`result=deny` 且
-`application_info=policy_bootstrap_inactive`；此时不应存在 sandbox-gateway Deployment。
+direct `policy-bootstrap` 部署后不应存在 sandbox-gateway 或 egress-authorizer Deployment/Service/Route。
 
 切换到 `active` 后，managed executor 的 golden path 还必须单独验证：
 
 1. `sandbox-gateway` 已用 `i18n-tt` 应用 AK/SK 成功换取 JWT并完成 TAE readiness；AK/SK/JWT 不出现在
    execution gateway、harness、sandbox/TAE metadata、env、proc、文件、stdout/stderr、checkpoint 或日志；
-2. Platform 为测试 workspace 创建 active `kind=lark` binding，Core workspace credential service 能按
-   operation 解析并 materialize；当前 static bearer 的轮换由 Platform 发起，不存在后台 OAuth refresh。无需
-   Core bootstrap Lark grant、Pulumi expiry 或 Helm release。`webhook_swap` 下 sandbox/TAE metadata、env、
-   proc、文件、stdout/stderr、checkpoint 和日志都不能出现真实 token；`process_env` 下只允许目标
+2. Platform 为测试 workspace 创建 active `kind=lark` binding，并显式设置 `process_env`；Core workspace
+   credential service 能按 operation 解析并 materialize。当前 static bearer 的轮换由 Platform 发起，不存在
+   后台 OAuth refresh。无需 Core bootstrap Lark grant、Pulumi expiry 或 Helm release。只允许目标
    `lark-cli`/子进程 env 与内存出现，其他进程、metadata、文件、result、checkpoint 和日志仍必须为零；
 3. `harness-worker` 依据既有 Lark skill 通过 MCP `shell` 调用 pinned `lark-cli`，不新增模型可见工具；
-4. TAE Agent Gateway 能从 SG 实际调用 `egress-authorizer` 的 PSM/URL Webhook，Webhook 在 500ms 内只返回
-   allow/deny；`webhook_swap` 完成 placeholder → real Authorization，`process_env` 完成 proof 验签、Core
-   live recheck、bearer 常量时间比较和 `X-Agent-Trace=agentserver-managed` 清洗。非 `lark-cli` operation
-   不触发 direct resolve，缺失/篡改/跨 workspace proof 与 mode/version 变化全部拒绝；
+4. 新 direct Sandbox 的创建 payload/revision readback 没有 webhook 或自定义 Feishu policy；TAE 系统 policy
+   readback 包含 `*.feishu.cn`。非 `lark-cli` operation 不触发 direct resolve，workspace 被切到
+   `webhook_swap` 时明确拒绝，不允许自动创建 webhook；
 5. 真实 SG 环境分别测 ByteCloud JWT endpoint、TAE control/data-plane 和 Lark 路径的 IPv4、IPv6、DNS、
    redirect、CONNECT、IP literal bypass、PMTU/MTU/MSS 和错误率，
    超时/非 200/策略漂移全部 fail closed。

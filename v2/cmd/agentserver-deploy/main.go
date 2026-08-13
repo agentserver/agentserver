@@ -21,6 +21,7 @@ type deployCommands struct {
 	preparePolicyBootstrap  func(string, string) error
 	pinManagedTerminal      func(string, string, string, string) error
 	retargetManagedTerminal func(string, string, string, string, string, string, string) error
+	retargetDirectTerminal  func(string, string, string, string, string, string, string) error
 	activateManagedExecutor func(string, string, string, string, string, string) error
 }
 
@@ -33,6 +34,7 @@ func main() {
 		preparePolicyBootstrap:  productiondeploy.PreparePolicyBootstrapFile,
 		pinManagedTerminal:      productiondeploy.PinManagedTerminalRevisionFile,
 		retargetManagedTerminal: productiondeploy.RetargetManagedTerminalFile,
+		retargetDirectTerminal:  productiondeploy.RetargetDirectManagedTerminalFile,
 		activateManagedExecutor: productiondeploy.ActivateManagedExecutorFile,
 	}))
 }
@@ -116,6 +118,27 @@ func run(arguments []string, stdout, stderr io.Writer, commands deployCommands) 
 			return 1
 		}
 		fmt.Fprintf(stdout, "agentserver-deploy retarget-terminal-sandbox: wrote fail-closed Terminal Sandbox config to %s\n", values["output"])
+		return 0
+	case "retarget-direct-terminal-sandbox":
+		values, ok := exactArguments(
+			arguments[1:], "config", "output", "expected-sandbox-id", "sandbox-id", "revision-id", "environment-id", "managed-sandbox-image",
+		)
+		if !ok {
+			writeUsage(stderr)
+			return 2
+		}
+		if commands.retargetDirectTerminal == nil {
+			fmt.Fprintln(stderr, "agentserver-deploy retarget-direct-terminal-sandbox: command is unavailable")
+			return 1
+		}
+		if err := commands.retargetDirectTerminal(
+			values["config"], values["output"], values["expected-sandbox-id"], values["sandbox-id"],
+			values["revision-id"], values["environment-id"], values["managed-sandbox-image"],
+		); err != nil {
+			fmt.Fprintf(stderr, "agentserver-deploy retarget-direct-terminal-sandbox: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "agentserver-deploy retarget-direct-terminal-sandbox: wrote fail-closed direct Terminal Sandbox config to %s\n", values["output"])
 		return 0
 	case "lock-release":
 		values, ok := exactArguments(arguments[1:], "config", "output", "service-image", "harness-image", "hydra-image", "managed-sandbox-image", "lark-cli-sha256", "lark-skill-sha256")
@@ -282,6 +305,7 @@ func writeUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "usage: agentserver-deploy prepare-policy-bootstrap --config=/absolute/active-template.json --output=/absolute/new-bootstrap.json")
 	fmt.Fprintln(writer, "usage: agentserver-deploy pin-terminal-revision --config=/absolute/bootstrap.json --output=/absolute/new-bootstrap.json --sandbox-id=<expected-sandbox-id> --revision-id=<published-terminal-revision-id>")
 	fmt.Fprintln(writer, "usage: agentserver-deploy retarget-terminal-sandbox --config=/absolute/bootstrap.json --output=/absolute/new-bootstrap.json --expected-sandbox-id=<current-sandbox-id> --sandbox-id=<new-sandbox-id> --revision-id=<published-terminal-revision-id> --environment-id=<fresh-managed-environment-uuid> --managed-sandbox-image=registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-managed-sandbox@sha256:<digest>")
+	fmt.Fprintln(writer, "usage: agentserver-deploy retarget-direct-terminal-sandbox --config=/absolute/bootstrap.json --output=/absolute/new-bootstrap.json --expected-sandbox-id=<current-sandbox-id> --sandbox-id=<new-sandbox-id> --revision-id=<published-terminal-revision-id> --environment-id=<fresh-managed-environment-uuid> --managed-sandbox-image=registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-managed-sandbox@sha256:<digest>")
 	fmt.Fprintln(writer, "usage: agentserver-deploy lock-release --config=/absolute/template.json --output=/absolute/new-production.json --service-image=IMAGE@sha256:DIGEST --harness-image=IMAGE@sha256:DIGEST --hydra-image=IMAGE@sha256:DIGEST --managed-sandbox-image=IMAGE@sha256:DIGEST --lark-cli-sha256=DIGEST --lark-skill-sha256=DIGEST")
 	fmt.Fprintln(writer, "       agentserver-deploy lock-developer-service --config=/absolute/active.json --output=/absolute/new-production.json --service-image=registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-service@sha256:DIGEST")
 	fmt.Fprintln(writer, "       agentserver-deploy validate --config=/absolute/path")

@@ -149,12 +149,6 @@ func LoadProductionConfig(getenv func(string) string) (Config, error) {
 	if config.TAEPolicy.PublicAccess, policyErr = policyText(TAEPolicyAccessEnvironment); policyErr != nil {
 		return Config{}, policyErr
 	}
-	if config.TAEPolicy.WebhookMode, policyErr = policyText(TAEPolicyWebhookModeEnv); policyErr != nil {
-		return Config{}, policyErr
-	}
-	if config.TAEPolicy.WebhookPath, policyErr = policyText(TAEPolicyWebhookPathEnv); policyErr != nil {
-		return Config{}, policyErr
-	}
 	if config.TAEPolicy.EvidenceRef, policyErr = policyText(TAEPolicyEvidenceEnv); policyErr != nil {
 		return Config{}, policyErr
 	}
@@ -165,8 +159,21 @@ func LoadProductionConfig(getenv func(string) string) (Config, error) {
 	if policyErr != nil {
 		return Config{}, policyErr
 	}
-	config.TAEPolicy.WebhookPSM = strings.TrimSpace(getenv(TAEPolicyWebhookPSMEnv))
-	config.TAEPolicy.WebhookURL = strings.TrimSpace(getenv(TAEPolicyWebhookURLEnv))
+	if config.TAEPolicy.PublicWebhookRequired {
+		if config.TAEPolicy.WebhookMode, policyErr = policyText(TAEPolicyWebhookModeEnv); policyErr != nil {
+			return Config{}, policyErr
+		}
+		if config.TAEPolicy.WebhookPath, policyErr = policyText(TAEPolicyWebhookPathEnv); policyErr != nil {
+			return Config{}, policyErr
+		}
+		config.TAEPolicy.WebhookPSM = strings.TrimSpace(getenv(TAEPolicyWebhookPSMEnv))
+		config.TAEPolicy.WebhookURL = strings.TrimSpace(getenv(TAEPolicyWebhookURLEnv))
+	} else if strings.TrimSpace(getenv(TAEPolicyWebhookModeEnv)) != "" ||
+		strings.TrimSpace(getenv(TAEPolicyWebhookPSMEnv)) != "" ||
+		strings.TrimSpace(getenv(TAEPolicyWebhookURLEnv)) != "" ||
+		strings.TrimSpace(getenv(TAEPolicyWebhookPathEnv)) != "" {
+		return Config{}, errors.New("TAE direct policy must not configure a webhook")
+	}
 	config.TAEPolicy.Published, policyErr = requiredBool(getenv(TAEPolicyPublishedEnv), TAEPolicyPublishedEnv)
 	if policyErr != nil {
 		return Config{}, policyErr

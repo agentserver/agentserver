@@ -1,7 +1,7 @@
 # ADR 0013：v2 Core-owned workspace credentials
 
 状态：accepted
-范围：Platform、v2 Core、execution gateway、TAE egress-authorizer、生产部署
+范围：Platform、v2 Core、execution gateway、TAE Sandbox profile、可选 TAE egress-authorizer、生产部署
 
 ## 决策
 
@@ -21,30 +21,33 @@ Platform user
     ▼
 Platform gateway ───────────────► v2 Core
                                   │ sealed binding + audit
-execution gateway ──────────────►│ resolve authority (operation scope)
-                                  │ workspace mode + binding/version
-                                  │ placeholder or process token+proof
-TAE Agent Gateway ─► egress-authorizer ─► Core resolve
-                                      │ one-hop header mutation
-                                      ▼
-                                    upstream
+execution gateway ──────────────►│ resolve authority + process token
+                                  │ (process_env direct profile)
+                                  ▼
+                         exact lark-cli process ─► TAE system *.feishu.cn allowlist ─► upstream
+
+future webhook profile:
+TAE Agent Gateway ─► egress-authorizer ─► Core resolve ─► one-hop header mutation
 ```
 
 Core 是唯一持有 credential sealing keyring、读取 sealed secret、执行 provider
-adapter 的组件。egress-authorizer 只持有 placeholder verification keyring，
-负责 ZTI、TAE policy 和最终请求 tuple 校验；它不会持有 workspace secret。
+adapter 的组件。当前 SG direct profile 不部署 egress-authorizer；未来 webhook profile 中，
+egress-authorizer 只持有 placeholder verification keyring，负责 ZTI、TAE policy 和最终请求 tuple 校验，
+不会持有 workspace secret。
 
 Managed Lark credential delivery 是 workspace 级配置。mode 的唯一事实源是 Core workspace row；创建
 workspace 时必须显式选择，owner 通过 workspace version CAS 切换并产生独立审计：
 
-- `webhook_swap` 保持上述 placeholder → Policy Webhook → Core header mutation 数据流；
+- `webhook_swap` 只允许在独立 webhook-enabled Sandbox profile 中使用 placeholder → Policy Webhook → Core header mutation 数据流；
 - `process_env` 由 executor-gateway 在精确 TAE `lark-cli` process start 前通过 mTLS 调 Core，Core
-  live-authorize、解封后把真实 access token 返回给 executor-gateway，由后者只注入该进程环境并附带
-  operation-bound proof。请求仍经 Policy Webhook；egress-authorizer/Core 验 proof、重查 workspace
-  mode/binding/version，并常量时间比较 bearer。
+  live-authorize、解封后把真实 access token 返回给 executor-gateway，由后者只注入该进程环境。网络请求
+  直接使用 TAE 系统预置的 `*.feishu.cn` 白名单，不配置 webhook、不经过 egress-authorizer，也不签发
+  `LARKSUITE_CLI_AGENT_TRACE` proof。
 
-两种模式互斥，不存在部署默认、自动探测或 fallback。managed deployment 始终部署 egress-authorizer，
-并装载两种 mode 共用的 placeholder/proof 签名与验签材料。
+两种模式互斥，不存在部署默认、自动探测或 fallback，而且不能复用同一个 Sandbox profile。当前 SG
+direct profile 只支持 `process_env`；如果 workspace 被切成 `webhook_swap`，进程启动必须 fail closed，直到
+它被路由到未来独立的 webhook-enabled profile。direct profile 不部署 egress-authorizer，也不装载
+placeholder/proof 签名与验签材料。
 
 ## API 边界
 
@@ -59,7 +62,6 @@ Platform 使用以下资源路由：
 
 - executor gateway 调 `...:resolve-authority`，取得 binding/version reference；
 - egress-authorizer 调 `...:resolve`，取得 closed-world provider header mutation；
-- egress-authorizer 调 `...:authorize-process-env`，验证真实 bearer + operation proof 并取得清洗后的 pass-through mutation；
 - egress-authorizer 调 `credential-use-events`，写入最小化审计事件。
 - workspace 当前为 `process_env` 时 executor-gateway 调
   `POST /internal/v2/execution/credentials/lark:resolve`，只为 live `shell + lark-cli + TAE process_start`
@@ -85,14 +87,14 @@ host、method、path 或 header 一律拒绝；header mutation 只允许 provide
 
 ## 部署约束
 
-生产 deployment config 只包含 Core sealing keyring、共用 placeholder/proof keyring 的 Secret 名称
-和 provider policy lock，不包含任何 workspace token、client secret、AK/SK、grant
+生产 deployment config 只包含 Core sealing keyring 和 provider policy lock；只有 webhook-enabled profile
+才包含 placeholder/proof keyring Secret 名称。配置不包含任何 workspace token、client secret、AK/SK、grant
 或 expiry。managed executor 的 Helm bundle 不创建 Lark bootstrap Job/Secret；
 管理员在 Platform 配置 credential 后即可动态生效。
 
-production schema、generated Helm values/schema/guard、Pulumi 与 workload environment 都不接受 mode。
-切换 workspace mode 不改变 TAE policy/network evidence、runtime profile、pack set 或 owner policy digest，
-也不要求发布 Chart；execution gateway 在每次进程启动时从 Core 获取当前值。
+production schema、generated Helm values/schema/guard、Pulumi 与 workload environment 都不接受 workspace
+mode。execution gateway 在每次进程启动时从 Core 获取当前值；mode 与当前 Sandbox profile 不匹配时拒绝，
+不能用运行时 fallback 改写 TAE policy。
 
 ## 安全与故障语义
 
@@ -101,10 +103,11 @@ production schema、generated Helm values/schema/guard、Pulumi 与 workload env
 - 任何 Core、audit、provider exchange 或 policy 依赖超时都 fail closed；
 - 审计只记录 scope、provider、target、decision/reason，不记录 Authorization、
   token、AK/SK、sealed secret 或响应体；
-- secret 轮换推进 `credentialVersion`；撤销、owner/policy authority 变化推进 `authorityVersion`。旧
-  placeholder 或 process proof 会在逐请求 live check 中立即 fail closed；
+- secret 轮换推进 `credentialVersion`；撤销、owner/policy authority 变化推进 `authorityVersion`。下一次
+  process start 必须重新解析 live authority；
 - `process_env` 的真实 token 对目标 `lark-cli` 及其子进程可见，已经进入进程内存的字节无法远程擦除；
-  但每个 managed egress 请求仍需要短期 proof，并受与 `webhook_swap` 相同的 host/path/method/revoke enforcement。
+  已启动进程不会被逐请求远程撤销，因此 direct profile 依赖短进程、最小 scope、短期 token、TAE 系统
+  `*.feishu.cn` host 白名单和每次启动前的 live authorization。
 
 这使凭据配置成为 v2 Core 的一部分，同时保留统一 execution gateway 和现有
 egress gateway 的职责分离。

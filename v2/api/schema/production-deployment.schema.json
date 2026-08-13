@@ -391,18 +391,38 @@
         "revision": {"$ref": "#/$defs/versionText"},
         "policySha256": {"const": "d086154a58d7f805ad95ee0842a7b63020394e2ba35aa881838eec1d97d16331"},
         "bindingSha256": {"$ref": "#/$defs/sha256"},
-        "publicHost": {"const": "open.feishu.cn"},
-        "publicAccess": {"const": "whitelist"},
-        "publicWebhookRequired": {"const": true},
-        "webhookMode": {"enum": ["psm", "url"]},
+        "publicHost": {"enum": ["open.feishu.cn", "*.feishu.cn"]},
+        "publicAccess": {"enum": ["whitelist", "system_default"]},
+        "publicWebhookRequired": {"type": "boolean"},
+        "webhookMode": {"enum": ["", "psm", "url"]},
         "webhookPsm": {"type": "string", "maxLength": 256, "pattern": "^[^ /:@]*$"},
         "webhookUrl": {"type": "string", "maxLength": 2048},
-        "webhookPath": {"const": "/v1/policy"},
+        "webhookPath": {"enum": ["", "/v1/policy"]},
         "published": {"type": "boolean"},
         "approved": {"type": "boolean"},
         "evidenceRef": {"type": "string", "maxLength": 1024}
       },
       "allOf": [
+        {
+          "if": {"properties": {"publicWebhookRequired": {"const": false}}, "required": ["publicWebhookRequired"]},
+          "then": {"properties": {
+            "publicHost": {"const": "*.feishu.cn"},
+            "publicAccess": {"const": "system_default"},
+            "webhookMode": {"const": ""},
+            "webhookPsm": {"const": ""},
+            "webhookUrl": {"const": ""},
+            "webhookPath": {"const": ""}
+          }}
+        },
+        {
+          "if": {"properties": {"publicWebhookRequired": {"const": true}}, "required": ["publicWebhookRequired"]},
+          "then": {"properties": {
+            "publicHost": {"const": "open.feishu.cn"},
+            "publicAccess": {"const": "whitelist"},
+            "webhookMode": {"enum": ["psm", "url"]},
+            "webhookPath": {"const": "/v1/policy"}
+          }}
+        },
         {
           "if": {"properties": {"webhookMode": {"const": "psm"}}, "required": ["webhookMode"]},
           "then": {"properties": {"webhookPsm": {"minLength": 1}, "webhookUrl": {"const": ""}}}

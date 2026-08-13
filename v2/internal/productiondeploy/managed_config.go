@@ -57,7 +57,8 @@ func managedPolicyBootstrap(managed ManagedExecutorDocument) bool {
 }
 
 func managedEgressAuthorizerEnabled(managed ManagedExecutorDocument) bool {
-	return managedExecutionActive(managed) || managedPolicyBootstrap(managed)
+	return managed.Enabled && managed.TAE.Policy.PublicWebhookRequired &&
+		(managed.Stage == ManagedExecutorStageBootstrap || managed.Stage == ManagedExecutorStageActive)
 }
 
 type ManagedEnvironmentDocument struct {
@@ -107,8 +108,9 @@ type ManagedTAENetworkEvidenceDocument struct {
 // PreparePolicyBootstrapDocument derives the only pre-approval production
 // stage from an otherwise valid SG document. It deliberately removes every
 // field that could claim an approved policy, verified TAE network path, or
-// active managed runtime. The resulting chart exposes only the deny-only
-// policy Webhook; the ordinary platform remains available.
+// active managed runtime. A webhook profile retains only its deny-only policy
+// endpoint; a direct profile exposes no webhook authority. The ordinary
+// platform remains available.
 func PreparePolicyBootstrapDocument(document ConfigDocument) (ConfigDocument, error) {
 	loaded, err := ValidateConfig(document)
 	if err != nil {
@@ -311,6 +313,77 @@ func RetargetManagedTerminalFile(
 		return err
 	}
 	retargeted, err := RetargetManagedTerminalJSON(
+		raw, expectedSandboxID, sandboxID, revisionID, environmentID, managedSandboxImage,
+	)
+	if err != nil {
+		return err
+	}
+	return WriteReleaseConfig(retargeted, output)
+}
+
+// RetargetDirectManagedTerminalDocument performs the same atomic Terminal
+// identity rotation as RetargetManagedTerminalDocument and also binds the
+// target to TAE's system-default *.feishu.cn allowlist. The resulting
+// fail-closed bootstrap contains no webhook authority. It is the promotion
+// source for process_env workspaces; a future webhook_swap profile must use a
+// different webhook-enabled Sandbox instead of weakening this binding.
+func RetargetDirectManagedTerminalDocument(
+	document ConfigDocument, expectedSandboxID, sandboxID, revisionID, environmentID, managedSandboxImage string,
+) (ConfigDocument, error) {
+	retargeted, err := RetargetManagedTerminalDocument(
+		document, expectedSandboxID, sandboxID, revisionID, environmentID, managedSandboxImage,
+	)
+	if err != nil {
+		return ConfigDocument{}, err
+	}
+	policy := &retargeted.Managed.TAE.Policy
+	policy.PublicHost = taepolicy.SystemDefaultHost
+	policy.PublicAccess = taepolicy.SystemDefaultAccess
+	policy.PublicWebhookRequired = false
+	policy.WebhookMode = ""
+	policy.WebhookPSM = ""
+	policy.WebhookURL = ""
+	policy.WebhookPath = ""
+	policy.BindingSHA256 = managedTAEPolicyBinding(retargeted.Managed.TAE).DigestHex()
+	validated, err := ValidateConfig(retargeted)
+	if err != nil {
+		return ConfigDocument{}, fmt.Errorf("validate direct Terminal Sandbox retarget: %w", err)
+	}
+	return validated.Document, nil
+}
+
+func RetargetDirectManagedTerminalJSON(
+	raw []byte, expectedSandboxID, sandboxID, revisionID, environmentID, managedSandboxImage string,
+) ([]byte, error) {
+	document, err := decodeConfigDocument(raw)
+	if err != nil {
+		return nil, err
+	}
+	document, err = RetargetDirectManagedTerminalDocument(
+		document, expectedSandboxID, sandboxID, revisionID, environmentID, managedSandboxImage,
+	)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode direct Terminal Sandbox config: %w", err)
+	}
+	encoded = append(encoded, '\n')
+	if _, err := ParseConfig(encoded); err != nil {
+		return nil, fmt.Errorf("verify direct Terminal Sandbox config: %w", err)
+	}
+	return encoded, nil
+}
+
+func RetargetDirectManagedTerminalFile(
+	input, output, expectedSandboxID, sandboxID, revisionID, environmentID, managedSandboxImage string,
+) error {
+	raw, err := readProductionConfigFile(input)
+	if err != nil {
+		return err
+	}
+	retargeted, err := RetargetDirectManagedTerminalJSON(
 		raw, expectedSandboxID, sandboxID, revisionID, environmentID, managedSandboxImage,
 	)
 	if err != nil {
@@ -689,10 +762,7 @@ func validateManagedExecutor(managed ManagedExecutorDocument, document ConfigDoc
 		Published: managed.TAE.Policy.Published, Approved: managed.TAE.Policy.Approved,
 		EvidenceRef: managed.TAE.Policy.EvidenceRef,
 	}
-	if !managed.TAE.Policy.PublicWebhookRequired {
-		return LoadedConfig{}, errors.New("managedExecutor.tae.policy must require the shared credential-policy webhook")
-	}
-	if managed.TAE.Policy.WebhookMode == "url" {
+	if managed.TAE.Policy.PublicWebhookRequired && managed.TAE.Policy.WebhookMode == "url" {
 		if managed.TAE.Policy.WebhookURL != ProductionEgressAuthorizerURL || managed.TAE.Policy.WebhookPSM != "" {
 			return LoadedConfig{}, fmt.Errorf("managedExecutor.tae.policy URL webhook must be exactly %s", ProductionEgressAuthorizerURL)
 		}
@@ -874,7 +944,7 @@ func managedOwnerPolicyDigest(managed ManagedExecutorDocument) string {
 }
 
 // managedTAENetworkEvidenceDigest binds the exact, normalized SG network
-// facts relied upon by both the provider and Policy Webhook. Config validation
+// facts relied upon by the provider and, only for a webhook profile, its Policy Webhook. Config validation
 // runs after NetworkDocument normalization so semantically identical rule
 // ordering produces one canonical digest.
 func managedTAENetworkEvidenceDigest(document ConfigDocument) string {

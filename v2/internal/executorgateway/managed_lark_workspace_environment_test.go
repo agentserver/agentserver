@@ -103,23 +103,11 @@ func TestWorkspaceManagedLarkEnvironmentIssuerSelectsModePerProcessStart(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	proof := processEnvironment[ManagedLarkAgentTraceEnvironment]
 	if processEnvironment[ManagedLarkUserAccessTokenEnvironment] != "real-workspace-token" ||
 		processEnvironment[ManagedLarkApplicationIDEnvironment] != authority.ApplicationID ||
-		!egresscapability.IsProcessEnvironmentProof(proof) || credentialCalls != 1 || authorityCalls != 2 {
+		processEnvironment[ManagedLarkAgentTraceEnvironment] != "" ||
+		len(processEnvironment) != 5 || credentialCalls != 1 || authorityCalls != 2 {
 		t.Fatalf("process workspace environment/calls = %#v / authority=%d credential=%d", processEnvironment, authorityCalls, credentialCalls)
-	}
-	verifier, err := egresscapability.NewVerifier([]egresscapability.TrustedKey{{
-		Issuer: signer.Issuer(), Audience: egresscapability.AudienceForProvider("lark"), KeyID: "workspace-mode-key-1",
-		PublicKey: privateKey.Public().(ed25519.PublicKey),
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	claims, err := verifier.VerifyProcessEnvironment(proof, now)
-	if err != nil || claims.WorkspaceID != request.Principal.WorkspaceID ||
-		claims.BindingID != authority.BindingID || claims.CredentialVersion != authority.CredentialVersion {
-		t.Fatalf("workspace process proof = %#v, %v", claims, err)
 	}
 
 	request.Executable = "curl"
@@ -181,5 +169,30 @@ func TestWorkspaceManagedLarkEnvironmentIssuerFailsClosedAcrossModeAndVersionCha
 	authority.CredentialMode = "global"
 	if environment, err := issuer.IssueManagedProcessEnvironment(t.Context(), testManagedLarkEnvironmentRequest(now)); err == nil || len(environment) != 0 {
 		t.Fatalf("unknown workspace mode was accepted: %#v, %v", environment, err)
+	}
+}
+
+func TestDirectWorkspaceManagedLarkEnvironmentIssuerRejectsWebhookMode(t *testing.T) {
+	now := time.Now().UTC()
+	authority := ManagedLarkEgressAuthority{
+		CredentialMode: managedcredential.ModeWebhookSwap, ApplicationID: "cli_agentserver_sg",
+		BindingID: "90000000-0000-4000-8000-000000000009", AuthorityVersion: 9,
+		CredentialVersion: 1, PolicySHA256: strings.Repeat("a", 64),
+	}
+	issuer, err := NewDirectWorkspaceManagedLarkEnvironmentIssuer(
+		workspaceAuthoritySourceFunc(func(context.Context, ManagedProcessEnvironmentRequest) (ManagedLarkEgressAuthority, error) {
+			return authority, nil
+		}),
+		workspaceProcessCredentialSourceFunc(func(context.Context, ManagedProcessEnvironmentRequest, string, ManagedLarkEgressAuthority) (ManagedLarkProcessCredential, error) {
+			t.Fatal("direct profile resolved a process credential for webhook mode")
+			return ManagedLarkProcessCredential{}, nil
+		}),
+		"bytedance.sandbox.agentserver", nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if environment, err := issuer.IssueManagedProcessEnvironment(t.Context(), testManagedLarkEnvironmentRequest(now)); err == nil || len(environment) != 0 {
+		t.Fatalf("direct profile accepted webhook mode: %#v, %v", environment, err)
 	}
 }

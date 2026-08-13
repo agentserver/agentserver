@@ -34,6 +34,7 @@ type EgressCredentialService struct {
 	processEnvironmentTAEPSM string
 	credentialRefresher      CredentialReferenceRefresher
 	now                      func() time.Time
+	webhookEnabled           bool
 }
 
 // EgressCredentialStore is the narrow Core persistence surface required by
@@ -126,11 +127,11 @@ func (service *EgressCredentialService) ResolveAuthority(ctx context.Context, re
 }
 
 func NewEgressCredentialService(config EgressCredentialServiceConfig) (*EgressCredentialService, error) {
-	if config.Store == nil || config.Registry == nil || config.Sealer == nil || config.Placeholders == nil ||
-		config.ProcessProofs == nil || config.Now == nil || config.ProcessEnvironmentTAEPSM == "" ||
+	if config.Store == nil || config.Registry == nil || config.Sealer == nil || config.Now == nil ||
+		(config.Placeholders == nil) != (config.ProcessProofs == nil) || config.ProcessEnvironmentTAEPSM == "" ||
 		len(config.ProcessEnvironmentTAEPSM) > 256 || strings.TrimSpace(config.ProcessEnvironmentTAEPSM) != config.ProcessEnvironmentTAEPSM ||
 		strings.ContainsAny(config.ProcessEnvironmentTAEPSM, "\x00\r\n") {
-		return nil, errors.New("v2 egress credential store, provider registry, sealer, both proof verifiers, TAE PSM, and clock are required")
+		return nil, errors.New("v2 credential store, provider registry, sealer, paired optional webhook proof verifiers, TAE PSM, and clock are required")
 	}
 	resolver, err := corecredentials.NewService(corecredentials.ServiceConfig{
 		Registry: config.Registry, Bindings: config.Store, LiveAuthorizer: config.Store,
@@ -143,8 +144,12 @@ func NewEgressCredentialService(config EgressCredentialServiceConfig) (*EgressCr
 		resolver: resolver, store: config.Store, processProofs: config.ProcessProofs,
 		processEnvironmentTAEPSM: config.ProcessEnvironmentTAEPSM,
 		credentialRefresher:      config.CredentialRefresher,
-		now:                      config.Now,
+		now:                      config.Now, webhookEnabled: config.Placeholders != nil,
 	}, nil
+}
+
+func (service *EgressCredentialService) WebhookEnabled() bool {
+	return service != nil && service.webhookEnabled
 }
 
 // ResolveExecutionLarkCredential performs direct, operation-scoped Lark token
@@ -247,7 +252,7 @@ func (service *EgressCredentialService) AuthorizeProcessEnvironmentEgress(
 	ctx context.Context,
 	request corecontract.AuthorizeProcessEnvironmentEgressRequest,
 ) (corecontract.ResolveEgressCredentialResponse, error) {
-	if service == nil || service.resolver == nil || service.processProofs == nil || service.now == nil || ctx == nil ||
+	if service == nil || !service.webhookEnabled || service.resolver == nil || service.processProofs == nil || service.now == nil || ctx == nil ||
 		service.processEnvironmentTAEPSM == "" {
 		return corecontract.ResolveEgressCredentialResponse{}, errors.New("v2 process environment egress resolver is unavailable")
 	}

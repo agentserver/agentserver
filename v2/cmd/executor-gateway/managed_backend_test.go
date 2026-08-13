@@ -74,7 +74,7 @@ func TestConfigureManagedExecutionSecurityLoadsSeparatedSigners(t *testing.T) {
 }
 
 func TestConfigureManagedExecutionSecuritySelectsWorkspaceProcessEnvironment(t *testing.T) {
-	configuration, egressPublicKey := validManagedBackendConfiguration(t, true)
+	configuration, _ := validManagedBackendConfiguration(t, true)
 	getenv := func(name string) string { return configuration[name] }
 	backend, client, err := configureTAEBackend(getenv, gatewayServeInsecureDevelopment, "", "", "")
 	if err != nil {
@@ -106,24 +106,51 @@ func TestConfigureManagedExecutionSecuritySelectsWorkspaceProcessEnvironment(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	proof := environment[executorgateway.ManagedLarkAgentTraceEnvironment]
 	if environment[executorgateway.ManagedLarkUserAccessTokenEnvironment] != "real-lark-token" ||
 		environment[executorgateway.ManagedLarkApplicationIDEnvironment] != "cli_agentserver_sg" ||
-		!egresscapability.IsProcessEnvironmentProof(proof) {
+		environment[executorgateway.ManagedLarkAgentTraceEnvironment] != "" || len(environment) != 5 {
 		t.Fatalf("direct process environment = %#v", environment)
 	}
-	verifier, err := egresscapability.NewVerifier([]egresscapability.TrustedKey{{
-		Issuer:   configuration[gatewayEgressPlaceholderIssuerEnvironment],
-		Audience: egresscapability.AudienceForProvider("lark"),
-		KeyID:    configuration[gatewayEgressPlaceholderKeyIDEnvironment], PublicKey: egressPublicKey,
-	}})
+}
+
+func TestConfigureManagedExecutionSecurityDirectProfileHasNoPlaceholderAuthority(t *testing.T) {
+	configuration, _ := validManagedBackendConfiguration(t, false)
+	configuration[gatewayTAEWebhookRequiredEnvironment] = "false"
+	getenv := func(name string) string { return configuration[name] }
+	backend, client, err := configureTAEBackend(getenv, gatewayServeInsecureDevelopment, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	claims, err := verifier.VerifyProcessEnvironment(proof, now)
-	if err != nil || claims.WorkspaceID != request.Principal.WorkspaceID ||
-		claims.OperationID != request.Operation.OperationID || claims.CredentialVersion != 1 {
-		t.Fatalf("process environment proof = %#v, %v", claims, err)
+	if client == nil {
+		t.Fatal("direct TAE backend client is nil")
+	}
+	t.Cleanup(client.CloseIdleConnections)
+	issuer, fencer, err := configureManagedExecutionSecurity(
+		getenv, gatewayServeInsecureDevelopment, backend, client,
+		testManagedCredentialAuthorityForMode(t, managedcredential.ModeProcessEnv),
+		staticManagedProcessCredentialSource{credential: executorgateway.ManagedLarkProcessCredential{
+			Configured: true, CredentialMode: managedcredential.ModeProcessEnv, AccessToken: "real-lark-token",
+			ApplicationID: "cli_agentserver_sg", BindingID: "90000000-0000-4000-8000-000000000009",
+			AuthorityVersion: 9, CredentialVersion: 1, PolicySHA256: strings.Repeat("a", 64),
+			TAEPSM: "bytedance.sandbox.agentserver",
+		}},
+	)
+	if err != nil || issuer == nil || fencer == nil {
+		t.Fatalf("direct managed security = %T/%T, %v", issuer, fencer, err)
+	}
+	environment, err := issuer.IssueManagedProcessEnvironment(t.Context(), managedBackendEnvironmentRequest(time.Now().UTC()))
+	if err != nil || environment[executorgateway.ManagedLarkUserAccessTokenEnvironment] != "real-lark-token" || len(environment) != 5 {
+		t.Fatalf("direct process environment = %#v, %v", environment, err)
+	}
+	webhookAuthority := testManagedCredentialAuthorityForMode(t, managedcredential.ModeWebhookSwap)
+	directIssuer, err := executorgateway.NewDirectWorkspaceManagedLarkEnvironmentIssuer(
+		webhookAuthority, staticManagedProcessCredentialSource{}, "bytedance.sandbox.agentserver", nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if environment, err := directIssuer.IssueManagedProcessEnvironment(t.Context(), managedBackendEnvironmentRequest(time.Now().UTC())); err == nil || len(environment) != 0 {
+		t.Fatalf("direct profile accepted webhook workspace: %#v, %v", environment, err)
 	}
 }
 
@@ -256,6 +283,7 @@ func validManagedBackendConfiguration(t *testing.T, includeEgress bool) (map[str
 		gatewaySandboxFencerKeyIDEnvironment:      "sandbox-fencer-key-1",
 		gatewaySandboxFencerKeyEnvironment:        fencerKey,
 		gatewayManagedTAEPSMEnvironment:           "bytedance.sandbox.agentserver",
+		gatewayTAEWebhookRequiredEnvironment:      "true",
 	}
 	if includeEgress {
 		configuration[gatewayEgressPlaceholderIssuerEnvironment] = "executor-gateway/egress"

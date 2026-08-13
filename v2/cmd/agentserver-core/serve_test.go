@@ -132,6 +132,7 @@ func TestServeCoreProductionRequiresDistinctLLMProxyIdentity(t *testing.T) {
 		coreBrowserIdentityEnvironment:        "spiffe://agentserver.local/ns/agentserver/sa/browser-gateway",
 		corePlatformIdentityEnvironment:       "spiffe://agentserver.local/ns/agentserver/sa/platform-gateway",
 		coreManagedExecutorEnabledEnvironment: "true",
+		coreTAEWebhookRequiredEnvironment:     "true",
 		coreManagedTAEPSMEnvironment:          "bytedance.sandbox.agentserver",
 	}
 	getenv := func(name string) string { return configuration[name] }
@@ -153,6 +154,32 @@ func TestServeCoreProductionRequiresDistinctLLMProxyIdentity(t *testing.T) {
 	configuration[coreEgressAuthorizerIdentityEnvironment] = "spiffe://agentserver.local/ns/agentserver/sa/egress-authorizer"
 	if err := serveCore(t.Context(), getenv, io.Discard, io.Discard, coreServeProduction); err == nil || !strings.Contains(err.Error(), coreHydraIntrospectionEnvironment+" is required") {
 		t.Fatalf("distinct llmproxy identity next-boundary error = %v", err)
+	}
+}
+
+func TestServeCoreDirectProfileRejectsWebhookAuthority(t *testing.T) {
+	configuration := map[string]string{
+		databaseURLEnvironment:                  "postgres://unused",
+		coreListenAddressEnvironment:            "127.0.0.1:0",
+		coreTLSCertificateEnvironment:           "/unused/server.crt",
+		coreTLSKeyEnvironment:                   "/unused/server.key",
+		coreClientCAEnvironment:                 "/unused/client-ca.crt",
+		coreGatewayIdentityEnvironment:          "spiffe://agentserver.local/ns/agentserver/sa/executor-gateway",
+		coreHarnessPoolIdentityEnvironment:      "spiffe://agentserver.local/ns/agentserver/sa/harness-pool",
+		coreManagedExecutorEnabledEnvironment:   "true",
+		coreTAEWebhookRequiredEnvironment:       "false",
+		coreEgressAuthorizerIdentityEnvironment: "spiffe://agentserver.local/ns/agentserver/sa/egress-authorizer",
+	}
+	getenv := func(name string) string { return configuration[name] }
+	if err := serveCore(t.Context(), getenv, io.Discard, io.Discard, coreServeProduction); err == nil ||
+		!strings.Contains(err.Error(), coreEgressAuthorizerIdentityEnvironment+" must be unset") {
+		t.Fatalf("direct profile egress-authorizer identity error = %v", err)
+	}
+	delete(configuration, coreEgressAuthorizerIdentityEnvironment)
+	configuration[coreEgressPlaceholderKeyringEnvironment] = "/unused/egress-placeholder-keyring.json"
+	if err := serveCore(t.Context(), getenv, io.Discard, io.Discard, coreServeProduction); err == nil ||
+		!strings.Contains(err.Error(), coreEgressPlaceholderKeyringEnvironment+" must be unset") {
+		t.Fatalf("direct profile placeholder keyring error = %v", err)
 	}
 }
 

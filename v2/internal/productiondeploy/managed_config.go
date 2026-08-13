@@ -231,14 +231,17 @@ func PinManagedTerminalRevisionFile(input, output, sandboxID, revisionID string)
 	return WriteReleaseConfig(pinned, output)
 }
 
-// RetargetManagedTerminalDocument atomically replaces the three identities
+// RetargetManagedTerminalDocument atomically replaces the four identities
 // that describe one published Terminal runtime: the TAE Sandbox, its revision,
-// and the digest-pinned managed sandbox artifact. This edge is deliberately
+// the deployment-owned environment, and the digest-pinned managed sandbox
+// artifact. A fresh environment identity prevents a new Sandbox authority from
+// colliding with an immutable executor_environments row left by its predecessor.
+// This edge is deliberately
 // restricted to policy-bootstrap, where no active runtime, policy approval, or
 // network evidence exists. Callers must repeat the current Sandbox ID so a
 // stale production document or typo cannot silently select another service.
 func RetargetManagedTerminalDocument(
-	document ConfigDocument, expectedSandboxID, sandboxID, revisionID, managedSandboxImage string,
+	document ConfigDocument, expectedSandboxID, sandboxID, revisionID, environmentID, managedSandboxImage string,
 ) (ConfigDocument, error) {
 	loaded, err := ValidateConfig(document)
 	if err != nil {
@@ -258,12 +261,16 @@ func RetargetManagedTerminalDocument(
 		strings.Contains(strings.ToUpper(revisionID), "PENDING") {
 		return ConfigDocument{}, errors.New("Terminal Sandbox revision ID must be a concrete canonical lowercase TAE identity")
 	}
+	if !validUUID(environmentID) || environmentID == document.Managed.Environment.EnvironmentID {
+		return ConfigDocument{}, errors.New("new managed environment ID must be a fresh non-zero canonical lowercase UUID")
+	}
 	if !imagePattern.MatchString(managedSandboxImage) ||
 		!strings.HasPrefix(managedSandboxImage, ProductionManagedSandboxImage+"@sha256:") {
 		return ConfigDocument{}, errors.New("managed Terminal artifact must be a digest-pinned SG managed sandbox mirror image")
 	}
 	document.Managed.TAE.SandboxID = sandboxID
 	document.Managed.TAE.RevisionID = revisionID
+	document.Managed.Environment.EnvironmentID = environmentID
 	document.Images.ManagedSandbox = managedSandboxImage
 	retargeted, err := ValidateConfig(document)
 	if err != nil {
@@ -273,14 +280,14 @@ func RetargetManagedTerminalDocument(
 }
 
 func RetargetManagedTerminalJSON(
-	raw []byte, expectedSandboxID, sandboxID, revisionID, managedSandboxImage string,
+	raw []byte, expectedSandboxID, sandboxID, revisionID, environmentID, managedSandboxImage string,
 ) ([]byte, error) {
 	document, err := decodeConfigDocument(raw)
 	if err != nil {
 		return nil, err
 	}
 	document, err = RetargetManagedTerminalDocument(
-		document, expectedSandboxID, sandboxID, revisionID, managedSandboxImage,
+		document, expectedSandboxID, sandboxID, revisionID, environmentID, managedSandboxImage,
 	)
 	if err != nil {
 		return nil, err
@@ -297,14 +304,14 @@ func RetargetManagedTerminalJSON(
 }
 
 func RetargetManagedTerminalFile(
-	input, output, expectedSandboxID, sandboxID, revisionID, managedSandboxImage string,
+	input, output, expectedSandboxID, sandboxID, revisionID, environmentID, managedSandboxImage string,
 ) error {
 	raw, err := readProductionConfigFile(input)
 	if err != nil {
 		return err
 	}
 	retargeted, err := RetargetManagedTerminalJSON(
-		raw, expectedSandboxID, sandboxID, revisionID, managedSandboxImage,
+		raw, expectedSandboxID, sandboxID, revisionID, environmentID, managedSandboxImage,
 	)
 	if err != nil {
 		return err

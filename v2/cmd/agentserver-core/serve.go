@@ -553,7 +553,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 			return fmt.Errorf("configure v2 egress credential resolver: %w", serviceErr)
 		}
 		if webhookRequired {
-			egressCredentialHandler, err = coreserver.NewEgressCredentialHandler(authorizer, egressAuthorizer, egressCredentialService)
+			egressCredentialHandler, err = coreserver.NewEgressCredentialHandler(egressAuthorizer, egressCredentialService)
 		}
 		if err == nil {
 			executionCredentialHandler, err = coreserver.NewExecutionCredentialHandler(authorizer, egressCredentialService)
@@ -785,15 +785,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	handler.Handle(corecontract.ClaimRunAttemptPath, runAttemptHandler)
 	handler.Handle(corecontract.RunAttemptPathPrefix, runAttemptHandler)
 	handler.Handle(corecontract.ResolveRunLaunchStatePath, runLaunchStateHandler)
-	if egressCredentialHandler != nil {
-		handler.Handle(corecontract.ResolveEgressCredentialAuthorityPath, egressCredentialHandler)
-		handler.Handle(corecontract.ResolveEgressCredentialPath, egressCredentialHandler)
-		handler.Handle(corecontract.AuthorizeProcessEnvironmentEgressPath, egressCredentialHandler)
-		handler.Handle(corecontract.RecordEgressCredentialAuditPath, egressCredentialHandler)
-	}
-	if executionCredentialHandler != nil {
-		handler.Handle(corecontract.ResolveExecutionLarkCredentialPath, executionCredentialHandler)
-	}
+	mountCoreCredentialRoutes(handler, egressCredentialHandler, executionCredentialHandler)
 	handler.Handle(corecontract.ListExecutorEnvironmentsPath, environmentHandler)
 	handler.Handle(corecontract.PrepareExecutionPath, executionHandler)
 	handler.Handle(corecontract.ExecutionPathPrefix, executionHandler)

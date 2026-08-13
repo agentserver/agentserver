@@ -184,6 +184,30 @@ func TestExecutionCredentialHandlerRequiresWorkloadAndReturnsNoStore(t *testing.
 		t.Fatalf("handler direct credential result/store = %#v / %#v", result, store)
 	}
 
+	authorityCommand := corecontract.ResolveEgressCredentialAuthorityRequest{
+		Operation: command.Operation, ProviderKind: "lark", PolicySHA256: command.PolicySHA256,
+	}
+	authorityRaw, err := json.Marshal(authorityCommand)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityRequest := httptest.NewRequest(http.MethodPost, corecontract.ResolveExecutionLarkCredentialAuthorityPath, bytes.NewReader(authorityRaw))
+	authorityRequest.Header.Set("Content-Type", "application/json")
+	authorityResponse := httptest.NewRecorder()
+	handler.ServeHTTP(authorityResponse, authorityRequest)
+	if authorityResponse.Code != http.StatusOK || authorityResponse.Header().Get("Cache-Control") != "no-store" ||
+		len(authorizer.actions) != 2 || authorizer.actions[1] != "execution.credentials.lark.resolve-authority" {
+		t.Fatalf("authority response/action = %d %#v / %#v", authorityResponse.Code, authorityResponse.Header(), authorizer.actions)
+	}
+	var authority corecontract.ResolveEgressCredentialAuthorityResponse
+	if err := json.Unmarshal(authorityResponse.Body.Bytes(), &authority); err != nil {
+		t.Fatal(err)
+	}
+	if authority.CredentialMode != managedcredential.ModeProcessEnv || authority.BindingID != store.binding.ID ||
+		authority.AuthorityVersion != store.binding.AuthorityVersion || authority.CredentialVersion != store.binding.CredentialVersion {
+		t.Fatalf("handler authority result = %#v", authority)
+	}
+
 	authorizer.err = errors.New("wrong workload")
 	denied := httptest.NewRecorder()
 	handler.ServeHTTP(denied, httptest.NewRequest(http.MethodPost, corecontract.ResolveExecutionLarkCredentialPath, bytes.NewReader(raw)))

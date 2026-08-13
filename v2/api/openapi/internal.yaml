@@ -509,9 +509,9 @@
         }
       }
     },
-    "/internal/v2/egress/credentials:resolve-authority": {
+    "/internal/v2/execution/credentials/lark:resolve-authority": {
       "post": {
-        "operationId": "resolveEgressCredentialAuthority",
+        "operationId": "resolveExecutionLarkCredentialAuthority",
         "description": "Executor-gateway-only selection of the active default workspace credential for one live dispatching TAE process_start operation. An empty binding is valid product state and never blocks sandbox startup.",
         "requestBody": {"required": true, "x-agentserver-maxBytes": 131072, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ResolveEgressCredentialAuthorityRequest"}}}},
         "responses": {

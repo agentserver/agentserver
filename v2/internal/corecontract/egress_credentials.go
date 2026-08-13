@@ -8,10 +8,10 @@ import "time"
 // one-hop header mutation after it has checked the TAE request and the
 // operation-bound placeholder.
 const (
-	ResolveEgressCredentialAuthorityPath  = "/internal/v2/egress/credentials:resolve-authority"
-	ResolveEgressCredentialPath           = "/internal/v2/egress/credentials:resolve"
-	AuthorizeProcessEnvironmentEgressPath = "/internal/v2/egress/credentials:authorize-process-env"
-	ResolveExecutionLarkCredentialPath    = "/internal/v2/execution/credentials/lark:resolve"
+	ResolveEgressCredentialPath                 = "/internal/v2/egress/credentials:resolve"
+	AuthorizeProcessEnvironmentEgressPath       = "/internal/v2/egress/credentials:authorize-process-env"
+	ResolveExecutionLarkCredentialAuthorityPath = "/internal/v2/execution/credentials/lark:resolve-authority"
+	ResolveExecutionLarkCredentialPath          = "/internal/v2/execution/credentials/lark:resolve"
 )
 
 // RecordEgressCredentialAuditPath is kept separate from the legacy

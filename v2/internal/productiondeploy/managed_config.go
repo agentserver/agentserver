@@ -231,6 +231,87 @@ func PinManagedTerminalRevisionFile(input, output, sandboxID, revisionID string)
 	return WriteReleaseConfig(pinned, output)
 }
 
+// RetargetManagedTerminalDocument atomically replaces the three identities
+// that describe one published Terminal runtime: the TAE Sandbox, its revision,
+// and the digest-pinned managed sandbox artifact. This edge is deliberately
+// restricted to policy-bootstrap, where no active runtime, policy approval, or
+// network evidence exists. Callers must repeat the current Sandbox ID so a
+// stale production document or typo cannot silently select another service.
+func RetargetManagedTerminalDocument(
+	document ConfigDocument, expectedSandboxID, sandboxID, revisionID, managedSandboxImage string,
+) (ConfigDocument, error) {
+	loaded, err := ValidateConfig(document)
+	if err != nil {
+		return ConfigDocument{}, fmt.Errorf("validate Terminal retarget source: %w", err)
+	}
+	document = loaded.Document
+	if !managedPolicyBootstrap(document.Managed) {
+		return ConfigDocument{}, errors.New("Terminal Sandbox can be retargeted only in the policy-bootstrap stage")
+	}
+	if !dnsLabelPattern.MatchString(expectedSandboxID) || expectedSandboxID != document.Managed.TAE.SandboxID {
+		return ConfigDocument{}, errors.New("current Terminal Sandbox ID does not match the policy-bootstrap configuration")
+	}
+	if !dnsLabelPattern.MatchString(sandboxID) || containsReleaseSentinel(sandboxID) {
+		return ConfigDocument{}, errors.New("new Terminal Sandbox ID must be a concrete canonical lowercase TAE identity")
+	}
+	if !dnsLabelPattern.MatchString(revisionID) || containsReleaseSentinel(revisionID) ||
+		strings.Contains(strings.ToUpper(revisionID), "PENDING") {
+		return ConfigDocument{}, errors.New("Terminal Sandbox revision ID must be a concrete canonical lowercase TAE identity")
+	}
+	if !imagePattern.MatchString(managedSandboxImage) ||
+		!strings.HasPrefix(managedSandboxImage, ProductionManagedSandboxImage+"@sha256:") {
+		return ConfigDocument{}, errors.New("managed Terminal artifact must be a digest-pinned SG managed sandbox mirror image")
+	}
+	document.Managed.TAE.SandboxID = sandboxID
+	document.Managed.TAE.RevisionID = revisionID
+	document.Images.ManagedSandbox = managedSandboxImage
+	retargeted, err := ValidateConfig(document)
+	if err != nil {
+		return ConfigDocument{}, fmt.Errorf("validate retargeted Terminal Sandbox: %w", err)
+	}
+	return retargeted.Document, nil
+}
+
+func RetargetManagedTerminalJSON(
+	raw []byte, expectedSandboxID, sandboxID, revisionID, managedSandboxImage string,
+) ([]byte, error) {
+	document, err := decodeConfigDocument(raw)
+	if err != nil {
+		return nil, err
+	}
+	document, err = RetargetManagedTerminalDocument(
+		document, expectedSandboxID, sandboxID, revisionID, managedSandboxImage,
+	)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode retargeted Terminal Sandbox config: %w", err)
+	}
+	encoded = append(encoded, '\n')
+	if _, err := ParseConfig(encoded); err != nil {
+		return nil, fmt.Errorf("verify retargeted Terminal Sandbox config: %w", err)
+	}
+	return encoded, nil
+}
+
+func RetargetManagedTerminalFile(
+	input, output, expectedSandboxID, sandboxID, revisionID, managedSandboxImage string,
+) error {
+	raw, err := readProductionConfigFile(input)
+	if err != nil {
+		return err
+	}
+	retargeted, err := RetargetManagedTerminalJSON(
+		raw, expectedSandboxID, sandboxID, revisionID, managedSandboxImage,
+	)
+	if err != nil {
+		return err
+	}
+	return WriteReleaseConfig(retargeted, output)
+}
+
 // ActivateManagedExecutorDocument is the single promotion edge out of the
 // deny-only bootstrap. Every externally issued policy/network evidence value
 // is explicit, and all dependent bindings are recomputed atomically.

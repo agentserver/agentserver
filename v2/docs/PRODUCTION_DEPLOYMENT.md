@@ -404,6 +404,22 @@ go run ./cmd/agentserver-deploy prepare-policy-bootstrap \
   --output=/absolute/policy-bootstrap.json
 ```
 
+如果轮换到另一个已发布的 Terminal Sandbox，必须在上述 fail-closed bootstrap 上用原子 retarget 命令
+同时绑定新 Sandbox ID、revision 和与 TAE registry manifest digest 相同的 SG mirror 制品。命令要求重复
+当前 Sandbox ID 作为 compare-and-swap 前置条件；它拒绝 active 配置、可变镜像和跨仓库镜像：
+
+```bash
+go run ./cmd/agentserver-deploy retarget-terminal-sandbox \
+  --config=/absolute/policy-bootstrap.json \
+  --output=/absolute/retargeted-bootstrap.json \
+  --expected-sandbox-id=<current-sandbox-id> \
+  --sandbox-id=<new-sandbox-id> \
+  --revision-id=<published-terminal-revision-id> \
+  --managed-sandbox-image=registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-managed-sandbox@sha256:<digest>
+```
+
+不能用 `jq` 或文本替换分别修改这三个字段；正式探针和 activation 必须以 retarget 输出为唯一输入。
+
 TAE 审批完成后，通过 Pulumi 在**当前已部署且已锁镜像**的 bootstrap release 中启用一次性探针；不能拿
 active 模板、另一版配置或手工 manifest 代替。Chart 的默认值为 disabled，只有 bootstrap Chart 的
 closed values schema 接受实际 revision。Pulumi 会在同一次更新中先写入 AK/SK，再创建 immutable

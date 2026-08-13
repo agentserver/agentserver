@@ -81,7 +81,7 @@ func TestWorkspaceManagedLarkEnvironmentIssuerSelectsModePerProcessStart(t *test
 			capabilityIndex++
 			return value, nil
 		},
-		func() time.Time { return now }, time.Minute,
+		func() time.Time { return now }, time.Minute, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +163,7 @@ func TestWorkspaceManagedLarkEnvironmentIssuerFailsClosedAcrossModeAndVersionCha
 	issuer, err := NewWorkspaceManagedLarkEnvironmentIssuer(
 		signer, authorities, credentials, "bytedance.sandbox.agentserver",
 		func() (string, error) { return "91000000-0000-4000-8000-000000000009", nil },
-		func() time.Time { return now }, time.Minute,
+		func() time.Time { return now }, time.Minute, nil,
 	)
 	if err != nil {
 		t.Fatal(err)

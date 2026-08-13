@@ -146,6 +146,47 @@ func TestManagedShellLogsSafePreAcknowledgementDispatchMetadata(t *testing.T) {
 	}
 }
 
+func TestManagedShellLogsSafeProcessEnvironmentFailureBeforeBackendDispatch(t *testing.T) {
+	const secret = "secret-token-that-must-not-be-logged"
+	environment := testManagedEnvironment(t)
+	backend, err := executionbackendtest.NewFakeBackend(executionbackend.KindTAE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := executionbackend.NewRouter(backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuer := managedEnvironmentIssuerFunc(func(context.Context, ManagedProcessEnvironmentRequest) (map[string]string, error) {
+		return nil, errors.New("credential audit rejected " + secret)
+	})
+	var logs bytes.Buffer
+	executor := newManagedShellExecutor(t, environment, newFakeShellAuthority(), router, issuer)
+	executor.config.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	result, err := executor.Execute(t.Context(), ShellExecuteRequest{
+		Principal: testExecutorMCPPrincipal("managed-shell-environment-log"), ToolCallID: "call-managed-environment-log",
+		Arguments: json.RawMessage(fmt.Sprintf(
+			`{"environment_id":%q,"argv":["lark-cli","skills","read","lark-doc"],"timeout_ms":10000}`,
+			environment.EnvironmentID,
+		)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "unknown" || result.OutputComplete || len(backend.StartCalls()) != 0 {
+		t.Fatalf("managed environment failure result/calls = %+v / %d", result, len(backend.StartCalls()))
+	}
+	logged := logs.String()
+	for _, wanted := range []string{"managed shell stage", "environment_inject", "internal_error", "operation_id", "elapsed_ms"} {
+		if !strings.Contains(logged, wanted) {
+			t.Fatalf("managed environment failure log %q does not contain %q", logged, wanted)
+		}
+	}
+	if strings.Contains(logged, secret) {
+		t.Fatalf("managed environment failure log leaked credential error: %s", logged)
+	}
+}
+
 func TestManagedShellTerminalObservedAtDeadlineDispatchesTimeout(t *testing.T) {
 	environment := testManagedEnvironment(t)
 	backend, err := executionbackendtest.NewFakeBackend(executionbackend.KindTAE)
@@ -361,4 +402,13 @@ func (issuer staticManagedEnvironmentIssuer) IssueManagedProcessEnvironment(
 		result[name] = value
 	}
 	return result, nil
+}
+
+type managedEnvironmentIssuerFunc func(context.Context, ManagedProcessEnvironmentRequest) (map[string]string, error)
+
+func (issuer managedEnvironmentIssuerFunc) IssueManagedProcessEnvironment(
+	ctx context.Context,
+	request ManagedProcessEnvironmentRequest,
+) (map[string]string, error) {
+	return issuer(ctx, request)
 }

@@ -385,16 +385,22 @@ func (executor *ShellExecutor) executeManaged(
 	defer cancelProcess()
 
 	startOperation := backendOperationContext(request.Principal, plan.Start.Routing)
+	environmentStartedAt := time.Now()
 	environmentValues, err := injectManagedProcessEnvironment(processCtx, executor.config.ManagedEnvironmentIssuer,
 		ManagedProcessEnvironmentRequest{
 			Principal: request.Principal, Target: environment.Target, Operation: startOperation,
 			ToolName: "shell", Executable: plan.Argv[0],
 		}, plan.ExplicitEnvironment)
 	if err != nil {
+		executor.logManagedStage(processCtx, request.Principal, environment.Target, startOperation,
+			"environment_inject", "failed", environmentStartedAt, err)
 		result := newUnknownShellResult(plan.ProcessID)
 		closed, closeErr := executor.closeWithoutStartExchange(executionCtx, state, plan, result, err)
 		return closed, closeErr
 	}
+	executor.logManagedStage(processCtx, request.Principal, environment.Target, startOperation,
+		"environment_inject", "succeeded", environmentStartedAt, nil)
+	dispatchStartedAt := time.Now()
 	startExchange, dispatchErr := executor.config.BackendRouter.StartProcess(processCtx, executionbackend.StartProcessRequest{
 		Target: environment.Target, Operation: startOperation,
 		RequestID: identities.StartRPCRequestID, ProcessID: plan.ProcessID,
@@ -410,28 +416,45 @@ func (executor *ShellExecutor) executeManaged(
 		},
 	})
 	if startExchange == nil {
+		executor.logManagedStage(processCtx, request.Principal, environment.Target, startOperation,
+			"start_dispatch", "failed", dispatchStartedAt, dispatchErr)
 		executor.logManagedDispatchFailure(request.Principal, environment.Target, startOperation, "start_dispatch", dispatchErr)
 		result := newUnknownShellResult(plan.ProcessID)
 		closed, closeErr := executor.closeWithoutStartExchange(executionCtx, state, plan, result, dispatchErr)
 		executor.fenceManagedUnknown(executionCtx, request.Principal, environment.Target, "process_start_dispatch_unknown")
 		return closed, closeErr
 	}
+	dispatchStatus := "succeeded"
+	if dispatchErr != nil {
+		dispatchStatus = "ambiguous"
+	}
+	executor.logManagedStage(processCtx, request.Principal, environment.Target, startOperation,
+		"start_dispatch", dispatchStatus, dispatchStartedAt, dispatchErr)
 	forceUnknown := dispatchErr != nil
+	acknowledgementStartedAt := time.Now()
 	acknowledgement, ackErr := startExchange.AwaitAcknowledgement(processCtx)
 	startAcknowledged := false
 	var orchestrationErrors []error
 	if ackErr != nil {
+		executor.logManagedStage(processCtx, request.Principal, environment.Target, startOperation,
+			"start_acknowledgement", "failed", acknowledgementStartedAt, ackErr)
 		executor.logManagedDispatchFailure(request.Principal, environment.Target, startOperation, "start_acknowledgement", ackErr)
 		forceUnknown = true
 		orchestrationErrors = append(orchestrationErrors, fmt.Errorf("await managed process acknowledgement: %w", ackErr))
 	} else if acknowledgementJSON, marshalErr := marshalBackendAcknowledgement(identities.StartRPCRequestID, acknowledgement); marshalErr != nil {
+		executor.logManagedStage(processCtx, request.Principal, environment.Target, startOperation,
+			"start_acknowledgement", "failed", acknowledgementStartedAt, marshalErr)
 		forceUnknown = true
 		orchestrationErrors = append(orchestrationErrors, marshalErr)
 	} else if _, acknowledgeErr := state.Acknowledge(executionCtx, plan.Start, acknowledgementJSON); acknowledgeErr != nil {
+		executor.logManagedStage(processCtx, request.Principal, environment.Target, startOperation,
+			"start_acknowledgement", "failed", acknowledgementStartedAt, acknowledgeErr)
 		forceUnknown = true
 		orchestrationErrors = append(orchestrationErrors, acknowledgeErr)
 	} else {
 		startAcknowledged = true
+		executor.logManagedStage(processCtx, request.Principal, environment.Target, startOperation,
+			"start_acknowledgement", "succeeded", acknowledgementStartedAt, nil)
 	}
 
 	evidenceCh := make(chan managedShellEvidence, 1)
@@ -576,6 +599,43 @@ func (executor *ShellExecutor) executeManaged(
 		executor.fenceManagedUnknown(executionCtx, request.Principal, environment.Target, "managed_shell_outcome_unknown")
 	}
 	return result, nil
+}
+
+func (executor *ShellExecutor) logManagedStage(
+	ctx context.Context,
+	principal ExecutorMCPPrincipal,
+	target executionbackend.Target,
+	operation executionbackend.OperationContext,
+	stage, status string,
+	startedAt time.Time,
+	err error,
+) {
+	if executor == nil || executor.config.Logger == nil {
+		return
+	}
+	reasonCode, coreHTTPStatus := managedExecutionErrorMetadata(err)
+	contextState, deadlineRemainingMillis := managedContextMetadata(ctx)
+	level := slog.LevelInfo
+	if err != nil {
+		level = slog.LevelError
+	}
+	executor.config.Logger.Log(ctx, level, "managed shell stage",
+		"stage", stage,
+		"status", status,
+		"workspace_id", principal.WorkspaceID,
+		"session_id", principal.SessionID,
+		"run_id", operation.RunID,
+		"run_attempt_id", operation.RunAttemptID,
+		"execution_id", operation.ExecutionID,
+		"operation_id", operation.OperationID,
+		"target_id", target.ID,
+		"target_generation", target.Generation,
+		"reason_code", reasonCode,
+		"core_http_status", coreHTTPStatus,
+		"context_state", contextState,
+		"deadline_remaining_ms", deadlineRemainingMillis,
+		"elapsed_ms", time.Since(startedAt).Milliseconds(),
+	)
 }
 
 func (executor *ShellExecutor) logManagedDispatchFailure(

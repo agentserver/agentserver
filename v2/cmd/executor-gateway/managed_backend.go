@@ -222,7 +222,7 @@ func configureManagedExecutionSecurity(
 	// The CLI application identity is returned with the exact versioned
 	// workspace credential. It is never taken from deployment configuration.
 	issuer, err := executorgateway.NewDefaultWorkspaceManagedLarkEnvironmentIssuer(
-		egressSigner, coreAuthorities, coreProcessCredentials, taePSM,
+		egressSigner, coreAuthorities, coreProcessCredentials, taePSM, slog.Default(),
 	)
 	if err != nil {
 		return nil, nil, err

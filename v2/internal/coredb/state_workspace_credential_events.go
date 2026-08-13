@@ -96,7 +96,7 @@ func validateWorkspaceCredentialUseEvent(event WorkspaceCredentialUseEvent) erro
 			}
 		}
 	}
-	if event.Stage != "materialize" && event.Stage != "egress" {
+	if event.Stage != "materialize" && event.Stage != "egress" && event.Stage != "process_env" {
 		return errors.New("credential use audit stage is invalid")
 	}
 	if event.CapabilityID != "" {

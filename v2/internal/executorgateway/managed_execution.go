@@ -4,11 +4,62 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 	"github.com/agentserver/agentserver/v2/internal/executorgateway/agentxconn"
 	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
+
+func managedExecutionErrorMetadata(err error) (reasonCode string, coreHTTPStatus int) {
+	if err == nil {
+		return "", 0
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "context_deadline_exceeded", 0
+	}
+	if errors.Is(err, context.Canceled) {
+		return "context_canceled", 0
+	}
+	var coreError *CoreCommandError
+	if errors.As(err, &coreError) && coreError != nil {
+		if coreError.Code == "" {
+			return "core_command_failed", coreError.HTTPStatus
+		}
+		return coreError.Code, coreError.HTTPStatus
+	}
+	var dispatchError *executionbackend.DispatchError
+	if errors.As(err, &dispatchError) && dispatchError != nil {
+		if dispatchError.Code == "" {
+			return "backend_dispatch_failed", 0
+		}
+		return dispatchError.Code, 0
+	}
+	return "internal_error", 0
+}
+
+func managedContextMetadata(ctx context.Context) (state string, deadlineRemainingMillis int64) {
+	if ctx == nil {
+		return "missing", -1
+	}
+	switch ctx.Err() {
+	case context.Canceled:
+		state = "canceled"
+	case context.DeadlineExceeded:
+		state = "deadline_exceeded"
+	default:
+		state = "active"
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return state, -1
+	}
+	remaining := time.Until(deadline).Milliseconds()
+	if remaining < 0 {
+		remaining = 0
+	}
+	return state, remaining
+}
 
 const (
 	ManagedLarkApplicationIDEnvironment    = "LARKSUITE_CLI_APP_ID"

@@ -75,11 +75,9 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: v2/go.mod
-          # Ephemeral k8s-sg runners have no local Actions-cache data path.
-          # Restoring the combined GOMODCACHE/GOCACHE currently attempts a
-          # ~577 MB remote transfer that remains at 0 B/s and blocks releases.
-          # Let Go fetch only the modules required by this build; the pinned
-          # bkectl build cache below remains independently content-addressed.
+          # The GitHub Actions cache data plane is unreachable from ephemeral
+          # k8s-sg runners: restores remain at 0 B/s and block releases. Fetch
+          # only the dependencies required by this reproducible build.
           cache: false
 
       - name: Configure code.byted.org read access
@@ -117,14 +115,6 @@ jobs:
           test -z "$(git -C "${checkout}" status --short)"
           printf 'checkout=%s\n' "${checkout}" >>"${GITHUB_OUTPUT}"
 
-      - name: Restore pinned bkectl build cache
-        uses: actions/cache@v5
-        with:
-          path: |
-            ${{ runner.temp }}/agentserver-bkectl-gocache
-            ${{ runner.temp }}/agentserver-bkectl-gomodcache
-          key: bkectl-linux-amd64-go1.26.5-${{ env.BKECTL_SOURCE_REVISION }}
-
       - uses: pnpm/action-setup@v4
         with:
           version: 11.18.0
@@ -133,8 +123,6 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version-file: v2/.node-version
-          cache: pnpm
-          cache-dependency-path: v2/pnpm-lock.yaml
 
       - uses: docker/setup-buildx-action@v4
 
@@ -555,7 +543,7 @@ jobs:
           ./v2/deploy/production/build-service-image.sh \
             --platform=linux-amd64 \
             --service-image="${SERVICE_REPOSITORY}:sha-${GITHUB_SHA}" \
-            --cache=gha \
+            --cache=none \
             --output-dir="${evidence}"
           service_digest=$(tr -d '\n' <"${evidence}/service-image-digest.txt")
           test "${#service_digest}" = 71

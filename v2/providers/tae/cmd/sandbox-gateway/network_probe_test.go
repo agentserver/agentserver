@@ -77,6 +77,33 @@ func TestExecuteNetworkProbeAcceptsTAEOmittedCommandAndProvesRuntimeThroughDataP
 	}
 }
 
+func TestValidateBkectlVersionOutputUsesTheJSONContract(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		valid  bool
+	}{
+		{
+			name:   "field order and whitespace do not matter",
+			output: `{ "data": { "version": "` + testBkectlRevision + `", "build_time": "1970-01-01T00:00:00Z" }, "success": true, "error": null }`,
+			valid:  true,
+		},
+		{name: "human output is rejected", output: "bkectl version " + testBkectlRevision},
+		{name: "wrong version is rejected", output: `{"success":true,"data":{"version":"wrong","build_time":"1970-01-01T00:00:00Z"}}`},
+		{name: "wrong build time is rejected", output: `{"success":true,"data":{"version":"` + testBkectlRevision + `","build_time":"now"}}`},
+		{name: "failed response is rejected", output: `{"success":false,"data":{"version":"` + testBkectlRevision + `","build_time":"1970-01-01T00:00:00Z"}}`},
+		{name: "trailing output is rejected", output: `{"success":true,"data":{"version":"` + testBkectlRevision + `","build_time":"1970-01-01T00:00:00Z"}} trailing`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateBkectlVersionOutput(test.output, testBkectlRevision)
+			if (err == nil) != test.valid {
+				t.Fatalf("validateBkectlVersionOutput() error = %v, valid = %t", err, test.valid)
+			}
+		})
+	}
+}
+
 func TestExecuteNetworkProbeRecordsSanitizedFailureAndStillCleansUp(t *testing.T) {
 	cli := []byte("fake pinned lark cli")
 	skill := []byte("# fake pinned skill\n")
@@ -300,10 +327,10 @@ func (data *probeData) StartProcess(_ context.Context, _ string, input adapter.S
 		}
 		stdout = "lark-cli version test\n"
 	case probeBkectlCLIPath:
-		if !reflect.DeepEqual(input.Arguments, []string{"version"}) || input.WorkingDirectory != probeWorkspacePath {
+		if !reflect.DeepEqual(input.Arguments, []string{"--json", "version"}) || input.WorkingDirectory != probeWorkspacePath {
 			return nil, errors.New("unexpected bkectl version probe request")
 		}
-		stdout = `{"success":true,"data":{"build_time":"1970-01-01T00:00:00Z","version":"` + testBkectlRevision + `"},"error":null}` + "\n"
+		stdout = `{ "data": { "version": "` + testBkectlRevision + `", "build_time": "1970-01-01T00:00:00Z" }, "success": true, "error": null }` + "\n"
 	default:
 		return nil, errors.New("unexpected probe executable")
 	}

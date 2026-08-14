@@ -556,7 +556,7 @@ jobs:
           test "${#service_digest}" = 71
           printf 'service_digest=%s\n' "${service_digest}" >>"${GITHUB_OUTPUT}"
 
-      - name: Generate active chart with reused runtime artifacts
+      - name: Generate image-locked chart with reused runtime artifacts
         id: chart
         env:
           SERVICE_DIGEST: ${{ steps.service.outputs.service_digest }}
@@ -568,19 +568,53 @@ jobs:
           chart_dir="${release_dir}/agentserver-v2"
           install -d -m 0700 "${release_dir}"
           umask 077
-          active_config="${release_dir}/sg-active.json"
-          printf '%s' "${SG_PRODUCTION_CONFIG_B64}" | base64 --decode >"${active_config}"
-          chmod 0600 "${active_config}"
-          test "$(jq -r '.managedExecutor.stage' "${active_config}")" = active
+          release_config="${release_dir}/sg-production.json"
+          printf '%s' "${SG_PRODUCTION_CONFIG_B64}" | base64 --decode >"${release_config}"
+          chmod 0600 "${release_config}"
+          managed_stage=$(jq -er '.managedExecutor.stage' "${release_config}")
           go -C v2 build -o "${release_dir}/agentserver-deploy" ./cmd/agentserver-deploy
-          "${release_dir}/agentserver-deploy" lock-developer-service \
-            --config="${active_config}" \
-            --output="${release_dir}/production.json" \
-            --service-image="registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-service@${SERVICE_DIGEST}"
+          case "${managed_stage}" in
+            active)
+              "${release_dir}/agentserver-deploy" lock-developer-service \
+                --config="${release_config}" \
+                --output="${release_dir}/production.json" \
+                --service-image="registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-service@${SERVICE_DIGEST}"
+              ;;
+            policy-bootstrap)
+              harness_image=$(jq -er '.images.harness' "${release_config}")
+              hydra_image=$(jq -er '.images.hydra' "${release_config}")
+              managed_sandbox_image=$(jq -er '.images.managedSandbox' "${release_config}")
+              managed_skill_sha=$(jq -er '.managedExecutor.baseInstructionsSha256' "${release_config}")
+              lark_cli_sha=$(jq -er '.managedExecutor.lark.cliSha256' "${release_config}")
+              lark_skill_sha=$(jq -er '.managedExecutor.lark.skillSha256' "${release_config}")
+              bkectl_source_revision=$(jq -er '.managedExecutor.bkectl.sourceRevision' "${release_config}")
+              bkectl_cli_sha=$(jq -er '.managedExecutor.bkectl.cliSha256' "${release_config}")
+              bkectl_skill_pack_sha=$(jq -er '.managedExecutor.bkectl.skillPackSha256' "${release_config}")
+              bkectl_policy_sha=$(jq -er '.managedExecutor.bkectl.policySha256' "${release_config}")
+              "${release_dir}/agentserver-deploy" lock-release \
+                --config="${release_config}" \
+                --output="${release_dir}/production.json" \
+                --service-image="registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-service@${SERVICE_DIGEST}" \
+                --harness-image="${harness_image}" \
+                --hydra-image="${hydra_image}" \
+                --managed-sandbox-image="${managed_sandbox_image}" \
+                --managed-skill-sha256="${managed_skill_sha}" \
+                --lark-cli-sha256="${lark_cli_sha}" \
+                --lark-skill-sha256="${lark_skill_sha}" \
+                --bkectl-source-revision="${bkectl_source_revision}" \
+                --bkectl-cli-sha256="${bkectl_cli_sha}" \
+                --bkectl-skill-pack-sha256="${bkectl_skill_pack_sha}" \
+                --bkectl-policy-sha256="${bkectl_policy_sha}"
+              ;;
+            *)
+              echo "unsupported managed executor stage for service-only publication: ${managed_stage}" >&2
+              exit 1
+              ;;
+          esac
           # Prove that the fast path changed only images.service. The selected
-          # harness, managed sandbox, Hydra, and all TAE evidence remain the
-          # already-probed active production authority.
-          jq --sort-keys 'del(.images.service)' "${active_config}" >"${release_dir}/before.json"
+          # harness, managed sandbox, Hydra, and the current fail-closed or
+          # evidence-bound TAE authority remain unchanged.
+          jq --sort-keys 'del(.images.service)' "${release_config}" >"${release_dir}/before.json"
           jq --sort-keys 'del(.images.service)' "${release_dir}/production.json" >"${release_dir}/after.json"
           cmp "${release_dir}/before.json" "${release_dir}/after.json"
           "${release_dir}/agentserver-deploy" chart \
@@ -597,6 +631,7 @@ jobs:
           helm push "${release_dir}/agentserver-v2-${chart_version}.tgz" oci://ghcr.io/agentserver
           printf 'deployment_sha=%s\n' "${deployment_sha}" >>"${GITHUB_OUTPUT}"
           printf 'version=%s\n' "${chart_version}" >>"${GITHUB_OUTPUT}"
+          printf 'managed_stage=%s\n' "${managed_stage}" >>"${GITHUB_OUTPUT}"
           printf 'release_dir=%s\n' "${release_dir}" >>"${GITHUB_OUTPUT}"
 
       - name: Record service-only development release
@@ -604,13 +639,15 @@ jobs:
           SERVICE_DIGEST: ${{ steps.service.outputs.service_digest }}
           CHART_VERSION: ${{ steps.chart.outputs.version }}
           DEPLOYMENT_SHA: ${{ steps.chart.outputs.deployment_sha }}
+          MANAGED_STAGE: ${{ steps.chart.outputs.managed_stage }}
         run: |
           {
             printf '## AgentServer v2 service-only development release\n\n'
             printf -- '- Service: `%s@%s`\n' "${SERVICE_REPOSITORY}" "${SERVICE_DIGEST}"
             printf -- '- Chart: `oci://%s:%s`\n' "${CHART_REPOSITORY}" "${CHART_VERSION}"
             printf -- '- Deployment config SHA-256: `%s`\n' "${DEPLOYMENT_SHA}"
-            printf -- '- Reused: active harness, managed sandbox, Hydra, runtime/pack locks, and TAE evidence\n'
+            printf -- '- Managed executor stage: `%s`\n' "${MANAGED_STAGE}"
+            printf -- '- Reused: harness, managed sandbox, Hydra, runtime/pack locks, and the current TAE gate state\n'
             printf -- '- Skipped: web dependency install, full repository check, Codex/bwrap/Lark downloads, and unchanged image builds\n'
           } >>"${GITHUB_STEP_SUMMARY}"
 

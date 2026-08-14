@@ -511,15 +511,44 @@ func probeBkectlVersion(ctx context.Context, data adapter.DataPlane, sessionID, 
 	defer cancel()
 	stream, err := data.StartProcess(requestContext, sessionID, adapter.StartProcessInput{
 		RequestID:  "agentserver-tae-probe-bkectl-" + probeID + "-" + strconv.Itoa(attempt),
-		Executable: probeBkectlCLIPath, Arguments: []string{"version"}, WorkingDirectory: probeWorkspacePath,
+		Executable: probeBkectlCLIPath, Arguments: []string{"--json", "version"}, WorkingDirectory: probeWorkspacePath,
 		Environment: map[string]string{}, Timeout: probeProcessTimeout,
 	})
 	if err != nil {
 		return err
 	}
 	defer stream.Close()
-	expected := `{"success":true,"data":{"build_time":"1970-01-01T00:00:00Z","version":"` + version + `"},"error":null}`
-	return probeProcessResult(requestContext, stream, expected, "bkectl_version_process_failed", "bkectl_version_output_mismatch")
+	stdout, stderr, err := collectProbeProcessResult(requestContext, stream, "bkectl_version_process_failed")
+	if err != nil {
+		return err
+	}
+	if stderr != "" {
+		return newProbeFailure("bkectl_version_output_mismatch")
+	}
+	return validateBkectlVersionOutput(stdout, version)
+}
+
+func validateBkectlVersionOutput(output, expectedVersion string) error {
+	var response struct {
+		Success bool `json:"success"`
+		Data    *struct {
+			BuildTime string `json:"build_time"`
+			Version   string `json:"version"`
+		} `json:"data"`
+	}
+	decoder := json.NewDecoder(strings.NewReader(output))
+	if err := decoder.Decode(&response); err != nil {
+		return newProbeFailure("bkectl_version_output_mismatch")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return newProbeFailure("bkectl_version_output_mismatch")
+	}
+	if !response.Success || response.Data == nil || response.Data.Version != expectedVersion ||
+		response.Data.BuildTime != "1970-01-01T00:00:00Z" {
+		return newProbeFailure("bkectl_version_output_mismatch")
+	}
+	return nil
 }
 
 type managedProbeArtifact struct {
@@ -541,32 +570,43 @@ func managedProbeArtifacts(config networkProbeConfig) []managedProbeArtifact {
 }
 
 func probeProcessResult(ctx context.Context, stream adapter.EventStream, expectedOutput, processFailure, outputMismatch string) error {
+	stdout, stderr, err := collectProbeProcessResult(ctx, stream, processFailure)
+	if err != nil {
+		return err
+	}
+	if stdout != expectedOutput || stderr != "" {
+		return newProbeFailure(outputMismatch)
+	}
+	return nil
+}
+
+func collectProbeProcessResult(ctx context.Context, stream adapter.EventStream, processFailure string) (string, string, error) {
 	started := false
 	exited := false
 	var stdout, stderr strings.Builder
 	for !exited {
 		event, err := stream.Next(ctx)
 		if err != nil {
-			return err
+			return "", "", err
 		}
 		switch event.Name {
 		case "process.start":
 			pid, ok := probeInteger(event.Data["pid"])
 			if started || !ok || pid < 1 {
-				return newProbeFailure("invalid_process_start")
+				return "", "", newProbeFailure("invalid_process_start")
 			}
 			started = true
 		case "process.data":
 			if !started {
-				return newProbeFailure("process_data_before_start")
+				return "", "", newProbeFailure("process_data_before_start")
 			}
 			out, outOK := event.Data["stdout"].(string)
 			errOut, errOK := event.Data["stderr"].(string)
 			if !outOK && !errOK {
-				return newProbeFailure("invalid_process_data")
+				return "", "", newProbeFailure("invalid_process_data")
 			}
 			if stdout.Len()+stderr.Len()+len(out)+len(errOut) > probeMaximumProcessOutput {
-				return newProbeFailure("process_output_too_large")
+				return "", "", newProbeFailure("process_output_too_large")
 			}
 			stdout.WriteString(out)
 			stderr.WriteString(errOut)
@@ -576,15 +616,12 @@ func probeProcessResult(ctx context.Context, stream adapter.EventStream, expecte
 				exitCode, ok = probeInteger(event.Data["exitCode"])
 			}
 			if !started || !ok || exitCode != 0 {
-				return newProbeFailure(processFailure)
+				return "", "", newProbeFailure(processFailure)
 			}
 			exited = true
 		}
 	}
-	if strings.TrimSpace(stdout.String()) != expectedOutput || strings.TrimSpace(stderr.String()) != "" {
-		return newProbeFailure(outputMismatch)
-	}
-	return nil
+	return strings.TrimSpace(stdout.String()), strings.TrimSpace(stderr.String()), nil
 }
 
 func probeDownloadDigest(ctx context.Context, data adapter.DataPlane, sessionID, path string, size int64, expectedDigest string) (int64, error) {

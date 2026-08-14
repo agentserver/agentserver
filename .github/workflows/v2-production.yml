@@ -17,7 +17,7 @@ on:
           - full
           - service_only
       active_chart_only:
-        description: Promote the already-probed evidence-bound active Chart without rebuilding images
+        description: Publish the image-locked active or fail-closed bootstrap Chart without rebuilding images
         required: false
         default: false
         type: boolean
@@ -624,7 +624,7 @@ jobs:
             ${{ steps.chart.outputs.release_dir }}/production.json
             ${{ steps.chart.outputs.release_dir }}/agentserver-v2-*.tgz
 
-  promote-active-chart:
+  promote-locked-chart:
     if: ${{ inputs.active_chart_only }}
     runs-on: k8s-sg
     timeout-minutes: 30
@@ -657,7 +657,7 @@ jobs:
         with:
           version: v3.18.4
 
-      - name: Validate and publish the evidence-bound active chart
+      - name: Validate and publish the image-locked chart
         id: active_chart
         env:
           SG_PRODUCTION_CONFIG_B64: ${{ secrets.V2_SG_PRODUCTION_CONFIG_B64 }}
@@ -671,7 +671,7 @@ jobs:
           production_template="${release_dir}/sg-production-template.json"
           printf '%s' "${SG_PRODUCTION_CONFIG_B64}" | base64 --decode >"${production_template}"
           chmod 0600 "${production_template}"
-          test "$(jq -r '.managedExecutor.stage' "${production_template}")" = active
+          managed_stage=$(jq -er '.managedExecutor.stage' "${production_template}")
           go -C v2 run ./cmd/agentserver-deploy validate --config="${production_template}"
 
           service_image=$(jq -er '.images.service' "${production_template}")
@@ -704,13 +704,31 @@ jobs:
             --output="${chart_dir}"
           helm lint --strict --namespace agentserver "${chart_dir}"
           helm template agentserver-v2 "${chart_dir}" --namespace agentserver >/dev/null
-          if helm template agentserver-v2 "${chart_dir}" --namespace agentserver \
-              --set taeNetworkProbe.enabled=true \
-              --set-string taeNetworkProbe.policyRevision=forbidden-active-probe \
-              >/dev/null 2>&1; then
-            echo 'active Chart unexpectedly enabled the TAE network probe' >&2
-            exit 1
-          fi
+          case "${managed_stage}" in
+            policy-bootstrap)
+              helm lint --strict --namespace agentserver \
+                --set taeNetworkProbe.enabled=true \
+                --set-string taeNetworkProbe.policyRevision=ci-published-revision-1 \
+                "${chart_dir}"
+              helm template agentserver-v2 "${chart_dir}" --namespace agentserver \
+                --set taeNetworkProbe.enabled=true \
+                --set-string taeNetworkProbe.policyRevision=ci-published-revision-1 \
+                --show-only templates/25-tae-network-probe.yaml >/dev/null
+              ;;
+            active)
+              if helm template agentserver-v2 "${chart_dir}" --namespace agentserver \
+                  --set taeNetworkProbe.enabled=true \
+                  --set-string taeNetworkProbe.policyRevision=forbidden-active-probe \
+                  >/dev/null 2>&1; then
+                echo 'active Chart unexpectedly enabled the TAE network probe' >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "unsupported managed executor stage for locked Chart publication: ${managed_stage}" >&2
+              exit 1
+              ;;
+          esac
 
           deployment_sha=$(sed -n 's/^deploymentConfigSHA256: "\([0-9a-f]\{64\}\)"$/\1/p' "${chart_dir}/values.yaml")
           chart_version=$(sed -n 's/^version: \([^[:space:]]*\)$/\1/p' "${chart_dir}/Chart.yaml")
@@ -723,22 +741,25 @@ jobs:
           helm show chart "oci://${CHART_REPOSITORY}" --version "${chart_version}" >/dev/null
           printf 'deployment_sha=%s\n' "${deployment_sha}" >>"${GITHUB_OUTPUT}"
           printf 'version=%s\n' "${chart_version}" >>"${GITHUB_OUTPUT}"
+          printf 'managed_stage=%s\n' "${managed_stage}" >>"${GITHUB_OUTPUT}"
           printf 'release_dir=%s\n' "${release_dir}" >>"${GITHUB_OUTPUT}"
 
       - name: Record promoted contract
         env:
           CHART_VERSION: ${{ steps.active_chart.outputs.version }}
           DEPLOYMENT_SHA: ${{ steps.active_chart.outputs.deployment_sha }}
+          MANAGED_STAGE: ${{ steps.active_chart.outputs.managed_stage }}
         run: |
           {
-            printf '## Evidence-bound AgentServer v2 active Chart\n\n'
+            printf '## Image-locked AgentServer v2 Chart\n\n'
+            printf -- '- Managed executor stage: `%s`\n' "${MANAGED_STAGE}"
             printf -- '- Chart: `oci://%s:%s`\n' "${CHART_REPOSITORY}" "${CHART_VERSION}"
             printf -- '- Deployment config SHA-256: `%s`\n' "${DEPLOYMENT_SHA}"
           } >>"${GITHUB_STEP_SUMMARY}"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: agentserver-v2-active-chart-${{ github.sha }}
+          name: agentserver-v2-locked-chart-${{ github.sha }}
           if-no-files-found: error
           retention-days: 30
           path: |

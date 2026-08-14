@@ -253,10 +253,10 @@ func renderWorkerDeploymentJSON(config LoadedConfig) ([]byte, error) {
 			KeyFile: workerMaterialPath("tls.key"),
 		},
 	}
-	if managedLarkEnabled(config.Document.Managed) {
+	if managedToolsEnabled(config.Document.Managed) {
 		document.ManagedSkill = &workerTextArtifactJSON{
-			Path:   managedLarkSkillPath,
-			SHA256: config.Document.Managed.Lark.SkillSHA256,
+			Path:   managedBaseInstructionsPath,
+			SHA256: config.Document.Managed.BaseInstructionsSHA256,
 		}
 	}
 	return marshalCanonicalDocument(document)

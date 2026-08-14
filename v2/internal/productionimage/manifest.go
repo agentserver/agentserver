@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/agentserver/agentserver/v2/internal/bkectlpolicy"
 	"github.com/agentserver/agentserver/v2/internal/stockruntime"
 )
 
@@ -45,10 +46,30 @@ const (
 
 	RuntimeManifestPath     = "opt/agentserver/runtime/runtime-manifest.json"
 	RuntimeBundleRoot       = "opt/agentserver/runtime/bundle"
+	ManagedSkillPath        = "opt/agentserver/packs/managed-cli-readonly/SKILL.md"
+	ManagedSkillSHA256      = "9a377446f5a966193ad54efe72b0ae84410bdc1ff22df40701384da30c96fcb1"
+	ManagedSkillSizeBytes   = int64(2989)
 	ManagedLarkSkillPath    = "opt/agentserver/packs/lark-readonly/SKILL.md"
 	ManagedLarkCLIVersion   = "1.0.69"
 	ManagedLarkCLISHA256    = "faee6cf3f4d87194e079820ff7809182cbda1d815bc902700649c737ac0ed943"
 	ManagedLarkCLISizeBytes = int64(42463384)
+
+	ManagedBkectlSkillPath               = "opt/agentserver/packs/bkectl/SKILL.md"
+	ManagedBkectlCommandSurfacePath      = "opt/agentserver/packs/bkectl/references/command-surface.md"
+	ManagedBkectlDomainGuidesPath        = "opt/agentserver/packs/bkectl/references/domain-guides.md"
+	ManagedBkectlInvocationPath          = "opt/agentserver/packs/bkectl/references/invocation.md"
+	ManagedBkectlSkillSHA256             = "f2b4bb30db93c8dacc2bc34c87f567d1e554fa71da4a91f37eea5962661d43d0"
+	ManagedBkectlSkillSizeBytes          = int64(12070)
+	ManagedBkectlCommandSurfaceSHA256    = "2a157aae24edc283704b4b80902ffb1d5898b1adc95f5e9776908fab56c92ce9"
+	ManagedBkectlCommandSurfaceSizeBytes = int64(606501)
+	ManagedBkectlDomainGuidesSHA256      = "78e33eb0e9fa83bea7c78cc781471d3614ed9c0aeee03fd603f970a0aea63e19"
+	ManagedBkectlDomainGuidesSizeBytes   = int64(11390)
+	ManagedBkectlInvocationSHA256        = "371efb54b4141f3898abd971536a996f54087b33074232024731f47544312010"
+	ManagedBkectlInvocationSizeBytes     = int64(1492)
+	ManagedBkectlSourceRevision          = bkectlpolicy.SourceRevision
+	ManagedBkectlCLISHA256               = bkectlpolicy.CLISHA256
+	ManagedBkectlCLISizeBytes            = bkectlpolicy.CLISizeBytes
+	ManagedBkectlSkillPackSHA256         = bkectlpolicy.SkillPackSHA256
 
 	maximumManifestBytes = 1024 * 1024
 	maximumManifestFiles = 32
@@ -175,12 +196,29 @@ func (manifest Manifest) Validate() error {
 		}
 	}
 	if manifest.Kind == KindHarness || manifest.Kind == KindManagedSandbox {
+		for path, pin := range map[string]struct {
+			digest string
+			size   int64
+		}{
+			ManagedSkillPath:                {ManagedSkillSHA256, ManagedSkillSizeBytes},
+			ManagedBkectlSkillPath:          {ManagedBkectlSkillSHA256, ManagedBkectlSkillSizeBytes},
+			ManagedBkectlCommandSurfacePath: {ManagedBkectlCommandSurfaceSHA256, ManagedBkectlCommandSurfaceSizeBytes},
+			ManagedBkectlDomainGuidesPath:   {ManagedBkectlDomainGuidesSHA256, ManagedBkectlDomainGuidesSizeBytes},
+			ManagedBkectlInvocationPath:     {ManagedBkectlInvocationSHA256, ManagedBkectlInvocationSizeBytes},
+		} {
+			if err := requirePinnedFile(files, path, pin.digest, pin.size, 0o444); err != nil {
+				return err
+			}
+		}
 		if entry, found := files[ManagedLarkSkillPath]; !found || entry.Mode != 0o444 {
 			return errors.New("managed execution image must contain the immutable Lark skill artifact")
 		}
 	}
 	if manifest.Kind == KindManagedSandbox {
 		if err := requirePinnedFile(files, "usr/local/bin/lark-cli", ManagedLarkCLISHA256, ManagedLarkCLISizeBytes, 0o555); err != nil {
+			return err
+		}
+		if err := requirePinnedFile(files, "usr/local/bin/bkectl", ManagedBkectlCLISHA256, ManagedBkectlCLISizeBytes, 0o555); err != nil {
 			return err
 		}
 	}
@@ -250,14 +288,20 @@ func expectedDirectories(kind string) []DirectoryEntry {
 			DirectoryEntry{Path: RuntimeBundleRoot + "/bin", Mode: 0o555},
 			DirectoryEntry{Path: RuntimeBundleRoot + "/codex-resources", Mode: 0o555},
 			DirectoryEntry{Path: "opt/agentserver/packs", Mode: 0o555},
+			DirectoryEntry{Path: "opt/agentserver/packs/bkectl", Mode: 0o555},
+			DirectoryEntry{Path: "opt/agentserver/packs/bkectl/references", Mode: 0o555},
 			DirectoryEntry{Path: "opt/agentserver/packs/lark-readonly", Mode: 0o555},
+			DirectoryEntry{Path: "opt/agentserver/packs/managed-cli-readonly", Mode: 0o555},
 		)
 	} else if kind == KindManagedSandbox {
 		directories = append(directories,
 			DirectoryEntry{Path: "opt", Mode: 0o555},
 			DirectoryEntry{Path: "opt/agentserver", Mode: 0o555},
 			DirectoryEntry{Path: "opt/agentserver/packs", Mode: 0o555},
+			DirectoryEntry{Path: "opt/agentserver/packs/bkectl", Mode: 0o555},
+			DirectoryEntry{Path: "opt/agentserver/packs/bkectl/references", Mode: 0o555},
 			DirectoryEntry{Path: "opt/agentserver/packs/lark-readonly", Mode: 0o555},
+			DirectoryEntry{Path: "opt/agentserver/packs/managed-cli-readonly", Mode: 0o555},
 			DirectoryEntry{Path: "tmp", Mode: 0o777},
 			DirectoryEntry{Path: "workspace", Mode: 0o777},
 		)
@@ -277,10 +321,17 @@ func expectedFilePaths(kind string) []string {
 			RuntimeManifestPath,
 			RuntimeBundleRoot+"/bin/codex",
 			RuntimeBundleRoot+"/codex-resources/bwrap",
+			ManagedSkillPath,
 			ManagedLarkSkillPath,
+			ManagedBkectlSkillPath,
+			ManagedBkectlCommandSurfacePath,
+			ManagedBkectlDomainGuidesPath,
+			ManagedBkectlInvocationPath,
 		)
 	} else if kind == KindManagedSandbox {
-		paths = append(paths, ManagedLarkSkillPath)
+		paths = append(paths, ManagedSkillPath, ManagedLarkSkillPath,
+			ManagedBkectlSkillPath, ManagedBkectlCommandSurfacePath,
+			ManagedBkectlDomainGuidesPath, ManagedBkectlInvocationPath)
 	}
 	slices.Sort(paths)
 	return paths
@@ -300,7 +351,7 @@ func ExpectedBinaries(kind string) []string {
 			"harness-pool", "harness-worker",
 		}
 	case KindManagedSandbox:
-		binaries = []string{"agentserver-tae-runtime", "lark-cli"}
+		binaries = []string{"agentserver-tae-runtime", "bkectl", "lark-cli"}
 	}
 	slices.Sort(binaries)
 	return binaries

@@ -3,6 +3,8 @@ package productionimage
 import (
 	"strings"
 	"testing"
+
+	"github.com/agentserver/agentserver/v2/internal/bkectlpolicy"
 )
 
 func TestManagedReleaseLockBindsImageCLIAndSkillDigests(t *testing.T) {
@@ -13,11 +15,16 @@ func TestManagedReleaseLockBindsImageCLIAndSkillDigests(t *testing.T) {
 	harnessDigest := "sha256:" + strings.Repeat("c", 64)
 	sandboxDigest := "sha256:" + strings.Repeat("d", 64)
 	lock := ManagedReleaseLock{
-		Platform:            sandbox.Platform,
-		HarnessImage:        "registry.example.test/harness@" + harnessDigest,
-		ManagedSandboxImage: "registry.example.test/managed@" + sandboxDigest,
-		CLISHA256:           sandboxFiles["usr/local/bin/lark-cli"].SHA256,
-		SkillSHA256:         harnessFiles[ManagedLarkSkillPath].SHA256,
+		Platform:              sandbox.Platform,
+		HarnessImage:          "registry.example.test/harness@" + harnessDigest,
+		ManagedSandboxImage:   "registry.example.test/managed@" + sandboxDigest,
+		ManagedSkillSHA256:    harnessFiles[ManagedSkillPath].SHA256,
+		LarkCLISHA256:         sandboxFiles["usr/local/bin/lark-cli"].SHA256,
+		LarkSkillSHA256:       harnessFiles[ManagedLarkSkillPath].SHA256,
+		BkectlSourceRevision:  bkectlpolicy.SourceRevision,
+		BkectlCLISHA256:       sandboxFiles["usr/local/bin/bkectl"].SHA256,
+		BkectlSkillPackSHA256: bkectlpolicy.SkillPackSHA256,
+		BkectlPolicySHA256:    bkectlpolicy.SHA256Hex(),
 	}
 	artifacts := ManagedReleaseArtifacts{
 		HarnessManifest: harness, HarnessEvidence: OCIImageEvidence{ImageManifestDigest: harnessDigest},
@@ -34,9 +41,14 @@ func TestManagedReleaseLockBindsImageCLIAndSkillDigests(t *testing.T) {
 		"sandbox image": func(value *ManagedReleaseLock) {
 			value.ManagedSandboxImage = "registry.example.test/managed@sha256:" + strings.Repeat("e", 64)
 		},
-		"platform": func(value *ManagedReleaseLock) { value.Platform = PlatformLinuxARM64 },
-		"CLI":      func(value *ManagedReleaseLock) { value.CLISHA256 = strings.Repeat("e", 64) },
-		"skill":    func(value *ManagedReleaseLock) { value.SkillSHA256 = strings.Repeat("e", 64) },
+		"platform":      func(value *ManagedReleaseLock) { value.Platform = PlatformLinuxARM64 },
+		"managed skill": func(value *ManagedReleaseLock) { value.ManagedSkillSHA256 = strings.Repeat("e", 64) },
+		"lark CLI":      func(value *ManagedReleaseLock) { value.LarkCLISHA256 = strings.Repeat("e", 64) },
+		"lark skill":    func(value *ManagedReleaseLock) { value.LarkSkillSHA256 = strings.Repeat("e", 64) },
+		"bkectl source": func(value *ManagedReleaseLock) { value.BkectlSourceRevision = strings.Repeat("e", 40) },
+		"bkectl CLI":    func(value *ManagedReleaseLock) { value.BkectlCLISHA256 = strings.Repeat("e", 64) },
+		"bkectl skill":  func(value *ManagedReleaseLock) { value.BkectlSkillPackSHA256 = strings.Repeat("e", 64) },
+		"bkectl policy": func(value *ManagedReleaseLock) { value.BkectlPolicySHA256 = strings.Repeat("e", 64) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			changed := lock
@@ -58,7 +70,7 @@ func TestManagedReleaseLockBindsImageCLIAndSkillDigests(t *testing.T) {
 			drifted.ManagedSandboxManifest.Files[index].SHA256 = strings.Repeat("f", 64)
 		}
 	}
-	if err := VerifyManagedReleaseLock(drifted, lock); err == nil || !strings.Contains(err.Error(), "cross-image skill") {
+	if err := VerifyManagedReleaseLock(drifted, lock); err == nil || !strings.Contains(err.Error(), "cross-image artifact") {
 		t.Fatalf("cross-image skill drift error = %v", err)
 	}
 }

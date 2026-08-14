@@ -77,7 +77,7 @@ func RenderHelmChart(config LoadedConfig) (HelmChart, error) {
 	}
 	configContent = append(configContent, '\n')
 	configSHA256 := sha256Hex(configContent)
-	managedLarkEnabledValue := managedLarkEnabled(config.Document.Managed)
+	managedToolsEnabledValue := managedToolsEnabled(config.Document.Managed)
 	taeNetworkProbeAllowed := managedPolicyBootstrap(config.Document.Managed)
 
 	foundation, err := helmResources(bundle, foundationFile)
@@ -192,11 +192,11 @@ func RenderHelmChart(config LoadedConfig) (HelmChart, error) {
 	files := []RenderedFile{
 		renderedFile(helmChartFile, renderChartYAML(configSHA256, config.Document.Runtime.RuntimeManifestSHA256)),
 		renderedFile(helmValuesFile, []byte(fmt.Sprintf(
-			"deploymentConfigSHA256: \"%s\"\nmanagedLarkEnabled: %t\ntaeNetworkProbe:\n  enabled: false\n  policyRevision: \"\"\n",
-			configSHA256, managedLarkEnabledValue,
+			"deploymentConfigSHA256: \"%s\"\nmanagedToolsEnabled: %t\ntaeNetworkProbe:\n  enabled: false\n  policyRevision: \"\"\n",
+			configSHA256, managedToolsEnabledValue,
 		))),
-		renderedFile(helmValuesSchemaFile, renderValuesSchema(configSHA256, managedLarkEnabledValue, taeNetworkProbeAllowed)),
-		renderedFile(helmHelpersFile, renderHelmGuard(config.Document.Namespace, configSHA256, managedLarkEnabledValue, taeNetworkProbeAllowed)),
+		renderedFile(helmValuesSchemaFile, renderValuesSchema(configSHA256, managedToolsEnabledValue, taeNetworkProbeAllowed)),
+		renderedFile(helmHelpersFile, renderHelmGuard(config.Document.Namespace, configSHA256, managedToolsEnabledValue, taeNetworkProbeAllowed)),
 		renderedFile(helmFoundationTemplateFile, renderManifestTemplate(helmFoundationManifestFile)),
 		renderedFile(helmHydraMigrationTemplateFile, renderManifestTemplate(helmHydraMigrationManifestFile)),
 		renderedFile(helmMigrationTemplateFile, renderManifestTemplate(helmMigrationManifestFile)),
@@ -303,7 +303,7 @@ annotations:
 `, helmChartName, version, configSHA256, runtimeSHA256))
 }
 
-func renderValuesSchema(configSHA256 string, managedLarkEnabled bool, taeNetworkProbeAllowed bool) []byte {
+func renderValuesSchema(configSHA256 string, managedToolsEnabled bool, taeNetworkProbeAllowed bool) []byte {
 	probeProperties := map[string]any{
 		"enabled":        map[string]any{"type": "boolean"},
 		"policyRevision": map[string]any{"type": "string", "maxLength": 128},
@@ -337,13 +337,13 @@ func renderValuesSchema(configSHA256 string, managedLarkEnabled bool, taeNetwork
 		"$schema":              "http://json-schema.org/draft-07/schema#",
 		"type":                 "object",
 		"additionalProperties": false,
-		"required":             []string{"deploymentConfigSHA256", "managedLarkEnabled", "taeNetworkProbe"},
+		"required":             []string{"deploymentConfigSHA256", "managedToolsEnabled", "taeNetworkProbe"},
 		"properties": map[string]any{
 			"deploymentConfigSHA256": map[string]any{
 				"type": "string", "enum": []string{configSHA256},
 			},
-			"managedLarkEnabled": map[string]any{
-				"type": "boolean", "enum": []bool{managedLarkEnabled},
+			"managedToolsEnabled": map[string]any{
+				"type": "boolean", "enum": []bool{managedToolsEnabled},
 			},
 			"taeNetworkProbe": probeSchema,
 		},
@@ -352,7 +352,7 @@ func renderValuesSchema(configSHA256 string, managedLarkEnabled bool, taeNetwork
 	return append(content, '\n')
 }
 
-func renderHelmGuard(namespace, configSHA256 string, managedLarkEnabled bool, taeNetworkProbeAllowed bool) []byte {
+func renderHelmGuard(namespace, configSHA256 string, managedToolsEnabled bool, taeNetworkProbeAllowed bool) []byte {
 	return []byte(fmt.Sprintf(`{{- define "agentserver-v2.guard" -}}
 {{- if ne .Release.Namespace %q -}}
 {{- fail (printf "agentserver v2 chart is locked to namespace %s, got %%s" .Release.Namespace) -}}
@@ -360,8 +360,8 @@ func renderHelmGuard(namespace, configSHA256 string, managedLarkEnabled bool, ta
 {{- if ne (toString (default "" .Values.deploymentConfigSHA256)) %q -}}
 {{- fail "agentserver v2 deploymentConfigSHA256 does not match this generated chart" -}}
 {{- end -}}
-{{- if ne .Values.managedLarkEnabled %t -}}
-{{- fail "agentserver v2 managedLarkEnabled does not match this generated chart" -}}
+{{- if ne .Values.managedToolsEnabled %t -}}
+{{- fail "agentserver v2 managedToolsEnabled does not match this generated chart" -}}
 {{- end -}}
 {{- $probeRevision := toString (default "" .Values.taeNetworkProbe.policyRevision) -}}
 {{- if .Values.taeNetworkProbe.enabled -}}
@@ -378,7 +378,7 @@ func renderHelmGuard(namespace, configSHA256 string, managedLarkEnabled bool, ta
 {{- fail "agentserver v2 TAE network probe policy revision must be empty while disabled" -}}
 {{- end -}}
 {{- end -}}
-`, namespace, namespace, configSHA256, managedLarkEnabled, taeNetworkProbeAllowed))
+`, namespace, namespace, configSHA256, managedToolsEnabled, taeNetworkProbeAllowed))
 }
 
 func renderManifestTemplate(path string) []byte {

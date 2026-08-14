@@ -7,8 +7,10 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/bkectlpolicy"
 	"github.com/agentserver/agentserver/v2/internal/egresscapability"
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
+	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
 	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
@@ -17,8 +19,9 @@ var (
 	managedLarkApplicationIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`)
 )
 
-type ManagedLarkEgressAuthority struct {
+type ManagedCredentialAuthority struct {
 	CredentialMode    string
+	ProviderKind      string
 	ApplicationID     string
 	BindingID         string
 	AuthorityVersion  int64
@@ -26,61 +29,67 @@ type ManagedLarkEgressAuthority struct {
 	PolicySHA256      string
 }
 
-func (authority ManagedLarkEgressAuthority) Validate() error {
+func (authority ManagedCredentialAuthority) Validate() error {
 	if !managedcredential.ValidMode(authority.CredentialMode) || !managedLarkPolicyDigestPattern.MatchString(authority.PolicySHA256) {
-		return errors.New("managed Lark credential delivery mode or policy is invalid")
+		return errors.New("managed credential delivery mode or policy is invalid")
+	}
+	if authority.ProviderKind != "lark" && authority.ProviderKind != bkectlpolicy.CredentialKind {
+		return errors.New("managed credential provider is invalid")
 	}
 	if authority.BindingID == "" {
 		if authority.ApplicationID != "" || authority.AuthorityVersion != 0 || authority.CredentialVersion != 0 {
-			return errors.New("managed Lark empty credential authority is partial")
+			return errors.New("managed empty credential authority is partial")
 		}
 		return nil
 	}
 	if authority.AuthorityVersion < 1 || authority.CredentialVersion < 1 {
-		return errors.New("managed Lark credential binding identity or authority version is invalid")
+		return errors.New("managed credential binding identity or authority version is invalid")
 	}
-	if !managedLarkApplicationIDPattern.MatchString(authority.ApplicationID) {
+	if authority.ProviderKind == "lark" && !managedLarkApplicationIDPattern.MatchString(authority.ApplicationID) {
 		return errors.New("managed Lark credential application identity is invalid")
 	}
-	if err := validateRegistryIdentity("managed Lark credential binding ID", authority.BindingID); err != nil {
+	if authority.ProviderKind != "lark" && authority.ApplicationID != "" {
+		return errors.New("managed non-Lark credential contains an application identity")
+	}
+	if err := validateRegistryIdentity("managed credential binding ID", authority.BindingID); err != nil {
 		return err
 	}
 	return nil
 }
 
-type ManagedLarkEgressAuthoritySource interface {
-	ResolveManagedLarkEgressAuthority(context.Context, ManagedProcessEnvironmentRequest) (ManagedLarkEgressAuthority, error)
+type ManagedCredentialAuthoritySource interface {
+	ResolveManagedCredentialAuthority(context.Context, ManagedProcessEnvironmentRequest) (ManagedCredentialAuthority, error)
 }
 
-// FrozenManagedLarkEgressAuthoritySource is a deterministic source for tests
+// FrozenManagedCredentialAuthoritySource is a deterministic source for tests
 // and already-resolved operation snapshots. Production process starts use the
 // Core-backed source so the workspace mode is never frozen in deployment
-// configuration. Revocation and live operation checks are repeated by the
-// egress authorizer before any real credential is used.
-type FrozenManagedLarkEgressAuthoritySource struct {
-	authority ManagedLarkEgressAuthority
+// configuration. Revocation and live operation checks are repeated by Core
+// before any real credential is used.
+type FrozenManagedCredentialAuthoritySource struct {
+	authority ManagedCredentialAuthority
 }
 
-func NewFrozenManagedLarkEgressAuthoritySource(authority ManagedLarkEgressAuthority) (*FrozenManagedLarkEgressAuthoritySource, error) {
+func NewFrozenManagedCredentialAuthoritySource(authority ManagedCredentialAuthority) (*FrozenManagedCredentialAuthoritySource, error) {
 	if err := authority.Validate(); err != nil {
 		return nil, err
 	}
-	return &FrozenManagedLarkEgressAuthoritySource{authority: authority}, nil
+	return &FrozenManagedCredentialAuthoritySource{authority: authority}, nil
 }
 
-func (source *FrozenManagedLarkEgressAuthoritySource) ResolveManagedLarkEgressAuthority(ctx context.Context, _ ManagedProcessEnvironmentRequest) (ManagedLarkEgressAuthority, error) {
+func (source *FrozenManagedCredentialAuthoritySource) ResolveManagedCredentialAuthority(ctx context.Context, _ ManagedProcessEnvironmentRequest) (ManagedCredentialAuthority, error) {
 	if source == nil || ctx == nil {
-		return ManagedLarkEgressAuthority{}, errors.New("managed Lark egress authority source is required")
+		return ManagedCredentialAuthority{}, errors.New("managed credential authority source is required")
 	}
 	if err := ctx.Err(); err != nil {
-		return ManagedLarkEgressAuthority{}, err
+		return ManagedCredentialAuthority{}, err
 	}
 	return source.authority, nil
 }
 
 type SignedManagedLarkEnvironmentIssuer struct {
 	signer      *egresscapability.Signer
-	authorities ManagedLarkEgressAuthoritySource
+	authorities ManagedCredentialAuthoritySource
 	idGenerator IDGenerator
 	now         func() time.Time
 	ttl         time.Duration
@@ -88,7 +97,7 @@ type SignedManagedLarkEnvironmentIssuer struct {
 
 func NewSignedManagedLarkEnvironmentIssuer(
 	signer *egresscapability.Signer,
-	authorities ManagedLarkEgressAuthoritySource,
+	authorities ManagedCredentialAuthoritySource,
 	idGenerator IDGenerator,
 	now func() time.Time,
 	ttl time.Duration,
@@ -107,7 +116,7 @@ func NewSignedManagedLarkEnvironmentIssuer(
 
 func NewDefaultSignedManagedLarkEnvironmentIssuer(
 	signer *egresscapability.Signer,
-	authorities ManagedLarkEgressAuthoritySource,
+	authorities ManagedCredentialAuthoritySource,
 ) (*SignedManagedLarkEnvironmentIssuer, error) {
 	return NewSignedManagedLarkEnvironmentIssuer(signer, authorities, newRandomUUID, time.Now, 60*time.Second)
 }
@@ -119,14 +128,20 @@ func (issuer *SignedManagedLarkEnvironmentIssuer) IssueManagedProcessEnvironment
 	if issuer == nil || issuer.signer == nil || issuer.authorities == nil || issuer.idGenerator == nil || issuer.now == nil || ctx == nil {
 		return nil, errors.New("managed Lark environment issuer and context are required")
 	}
-	applies, err := validateManagedLarkProcessRequest(request)
+	tool, credentialRequired, applies, err := validateManagedProcessRequest(request)
 	if err != nil {
 		return nil, err
 	}
 	if !applies {
 		return map[string]string{}, nil
 	}
-	authority, err := issuer.authorities.ResolveManagedLarkEgressAuthority(ctx, request)
+	if !credentialRequired {
+		return managedDiscoveryEnvironment(), nil
+	}
+	if tool.ProviderKind != "lark" {
+		return nil, errors.New("managed bkectl does not support webhook credential delivery")
+	}
+	authority, err := issuer.authorities.ResolveManagedCredentialAuthority(ctx, request)
 	if err != nil {
 		return nil, fmt.Errorf("resolve managed Lark egress authority: %w", err)
 	}
@@ -135,15 +150,20 @@ func (issuer *SignedManagedLarkEnvironmentIssuer) IssueManagedProcessEnvironment
 
 func (issuer *SignedManagedLarkEnvironmentIssuer) issueWithAuthority(
 	request ManagedProcessEnvironmentRequest,
-	authority ManagedLarkEgressAuthority,
+	authority ManagedCredentialAuthority,
 ) (map[string]string, error) {
+	tool, credentialRequired, applies, err := validateManagedProcessRequest(request)
+	if err != nil || !applies || !credentialRequired || tool.ProviderKind != "lark" ||
+		authority.ProviderKind != tool.ProviderKind || authority.PolicySHA256 != tool.PolicySHA256 {
+		return nil, errors.New("managed Lark placeholder request or authority is invalid")
+	}
 	principal := request.Principal
 	// No workspace binding is a valid state. Keep the non-sensitive runtime
 	// projection (PATH and app hint) so lark-cli can report a normal
 	// credential-not-configured error, but never mint a placeholder that could
 	// be confused with a credential authority.
 	if authority.BindingID == "" {
-		return managedLarkBaseEnvironment(""), nil
+		return managedToolBaseEnvironment(tool, ""), nil
 	}
 	if err := authority.Validate(); err != nil {
 		return nil, err
@@ -175,14 +195,14 @@ func (issuer *SignedManagedLarkEnvironmentIssuer) issueWithAuthority(
 		ExecutionID: request.Operation.ExecutionID, OperationID: request.Operation.OperationID,
 		SandboxID: request.Target.ID, TargetGeneration: request.Target.Generation,
 		PackID: egresscapability.PackLarkReadOnly, ProviderKind: "lark", BindingID: authority.BindingID,
-		AuthorityVersion: authority.AuthorityVersion, PolicySHA256: authority.PolicySHA256, Executable: "lark-cli",
+		AuthorityVersion: authority.AuthorityVersion, PolicySHA256: authority.PolicySHA256, Executable: tool.Executable,
 		IssuedAtUnixMS: now.Add(-5 * time.Second).UnixMilli(), ExpiresAtUnixMS: expiresAt.UnixMilli(),
 	}
 	placeholder, err := issuer.signer.Sign(claims)
 	if err != nil {
 		return nil, err
 	}
-	environment := managedLarkBaseEnvironment(authority.ApplicationID)
+	environment := managedToolBaseEnvironment(tool, authority.ApplicationID)
 	environment[ManagedLarkUserAccessTokenEnvironment] = placeholder
 	return environment, nil
 }
@@ -190,7 +210,7 @@ func (issuer *SignedManagedLarkEnvironmentIssuer) issueWithAuthority(
 func issueManagedLarkPlaceholder(
 	issuer *SignedManagedLarkEnvironmentIssuer,
 	request ManagedProcessEnvironmentRequest,
-	authority ManagedLarkEgressAuthority,
+	authority ManagedCredentialAuthority,
 ) (map[string]string, error) {
 	if authority.CredentialMode != managedcredential.ModeWebhookSwap {
 		return nil, errors.New("managed Lark placeholder requires webhook_swap workspace mode")
@@ -198,47 +218,87 @@ func issueManagedLarkPlaceholder(
 	return issuer.issueWithAuthority(request, authority)
 }
 
-func validateManagedLarkProcessRequest(request ManagedProcessEnvironmentRequest) (bool, error) {
+type managedProcessTool struct {
+	Executable            string
+	ProviderKind          string
+	PolicySHA256          string
+	CredentialEnvironment string
+	WebhookSupported      bool
+}
+
+func validateManagedProcessRequest(request ManagedProcessEnvironmentRequest) (managedProcessTool, bool, bool, error) {
 	if request.Target.Kind != executionbackend.KindTAE {
 		// The issuer is installed on the unified execution gateway, so BYO
 		// AgentX operations also pass this hook. They must remain byte-for-byte
 		// unchanged and never receive managed credential material.
-		return false, nil
+		return managedProcessTool{}, false, false, nil
 	}
-	// Non-Lark commands deliberately receive no credential material. TAE's
-	// default-deny network policy remains the outer network boundary.
-	if request.ToolName != "shell" || request.Executable != "lark-cli" {
-		return false, nil
+	if request.ToolName != "shell" {
+		return managedProcessTool{}, false, false, nil
+	}
+	var (
+		tool               managedProcessTool
+		credentialRequired bool
+	)
+	switch request.Executable {
+	case "lark-cli":
+		tool = managedProcessTool{
+			Executable: "lark-cli", ProviderKind: "lark", PolicySHA256: larkegresspolicy.SHA256Hex(),
+			CredentialEnvironment: ManagedLarkUserAccessTokenEnvironment, WebhookSupported: true,
+		}
+		credentialRequired = true
+	case bkectlpolicy.Executable:
+		tool = managedProcessTool{
+			Executable: bkectlpolicy.Executable, ProviderKind: bkectlpolicy.CredentialKind,
+			PolicySHA256: bkectlpolicy.SHA256Hex(), CredentialEnvironment: ManagedBkectlJWTEnvironment,
+		}
+		var err error
+		credentialRequired, err = bkectlpolicy.CredentialRequired(request.Arguments)
+		if err != nil {
+			return managedProcessTool{}, false, true, err
+		}
+	default:
+		return managedProcessTool{}, false, false, nil
 	}
 	if err := validateExecutorMCPPrincipal(request.Principal); err != nil {
-		return false, err
+		return managedProcessTool{}, false, true, err
 	}
 	if err := request.Target.Validate(); err != nil {
-		return false, err
+		return managedProcessTool{}, false, true, err
 	}
 	if err := request.Operation.Validate(); err != nil {
-		return false, err
+		return managedProcessTool{}, false, true, err
 	}
 	principal := request.Principal
 	if request.Operation.WorkspaceID != principal.WorkspaceID || request.Operation.SessionID != principal.SessionID ||
 		request.Operation.RunID != principal.Run.RunID || request.Operation.RunAttemptID != principal.Run.RunAttemptID ||
 		request.Operation.RunAttemptGeneration != principal.Run.RunAttemptGeneration || request.Target.EnvironmentID == "" {
-		return false, errors.New("managed Lark credential operation differs from the MCP principal")
+		return managedProcessTool{}, false, true, errors.New("managed credential operation differs from the MCP principal")
 	}
-	return true, nil
+	return tool, credentialRequired, true, nil
 }
 
-func managedLarkBaseEnvironment(applicationID string) map[string]string {
+func managedToolBaseEnvironment(tool managedProcessTool, applicationID string) map[string]string {
 	environment := map[string]string{
-		ManagedLarkNoUpdateNotifierEnvironment: "1",
-		ManagedLarkNoSkillsNotifierEnvironment: "1",
-		ManagedLarkPathEnvironment:             ManagedLarkPathValue,
+		ManagedToolPathEnvironment: ManagedToolPathValue,
 	}
-	if applicationID != "" {
-		environment[ManagedLarkApplicationIDEnvironment] = applicationID
+	switch tool.ProviderKind {
+	case "lark":
+		environment[ManagedLarkNoUpdateNotifierEnvironment] = "1"
+		environment[ManagedLarkNoSkillsNotifierEnvironment] = "1"
+		if applicationID != "" {
+			environment[ManagedLarkApplicationIDEnvironment] = applicationID
+		}
+	case bkectlpolicy.CredentialKind:
+		environment[ManagedBkectlAuthModeEnvironment] = ManagedBkectlAuthModeValue
+		environment[ManagedBkectlRegionEnvironment] = ManagedBkectlRegionValue
 	}
 	return environment
 }
 
+func managedDiscoveryEnvironment() map[string]string {
+	return map[string]string{ManagedToolPathEnvironment: ManagedToolPathValue}
+}
+
 var _ ManagedProcessEnvironmentIssuer = (*SignedManagedLarkEnvironmentIssuer)(nil)
-var _ ManagedLarkEgressAuthoritySource = (*FrozenManagedLarkEgressAuthoritySource)(nil)
+var _ ManagedCredentialAuthoritySource = (*FrozenManagedCredentialAuthoritySource)(nil)

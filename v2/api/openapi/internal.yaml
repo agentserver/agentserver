@@ -509,10 +509,10 @@
         }
       }
     },
-    "/internal/v2/execution/credentials/lark:resolve-authority": {
+    "/internal/v2/execution/credentials:resolve-authority": {
       "post": {
-        "operationId": "resolveExecutionLarkCredentialAuthority",
-        "description": "Executor-gateway-only selection of the active default workspace credential for one live dispatching TAE process_start operation. An empty binding is valid product state and never blocks sandbox startup.",
+        "operationId": "resolveExecutionCredentialAuthority",
+        "description": "Executor-gateway-only selection of the active default workspace credential for one live dispatching TAE managed-CLI process_start operation. An empty binding is valid product state; credential-requiring tools may still fail closed at process launch.",
         "requestBody": {"required": true, "x-agentserver-maxBytes": 131072, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ResolveEgressCredentialAuthorityRequest"}}}},
         "responses": {
           "200": {"description": "Versioned binding reference, or an explicit empty reference when the workspace has no matching credential", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ResolveEgressCredentialAuthorityResponse"}}}},
@@ -551,13 +551,13 @@
         }
       }
     },
-    "/internal/v2/execution/credentials/lark:resolve": {
+    "/internal/v2/execution/credentials:resolve": {
       "post": {
-        "operationId": "resolveExecutionLarkCredential",
-        "description": "Executor-gateway-only process_env delivery for one exact live TAE shell/lark-cli process_start. The returned workspace token is never exposed to Platform, harness, or any non-Lark process.",
-        "requestBody": {"required": true, "x-agentserver-maxBytes": 131072, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ResolveExecutionLarkCredentialRequest"}}}},
+        "operationId": "resolveExecutionCredential",
+        "description": "Executor-gateway-only process_env delivery for one exact live TAE managed-CLI process_start. Core validates the executable and argv policy before returning a workspace credential.",
+        "requestBody": {"required": true, "x-agentserver-maxBytes": 131072, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ResolveExecutionCredentialRequest"}}}},
         "responses": {
-          "200": {"description": "Current workspace mode and exact version-fenced Lark process credential", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ResolveExecutionLarkCredentialResponse"}}}},
+          "200": {"description": "Current workspace mode and exact version-fenced managed process credential", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ResolveExecutionCredentialResponse"}}}},
           "400": {"$ref": "#/components/responses/CommandError"},
           "403": {"$ref": "#/components/responses/CommandError"},
           "404": {"$ref": "#/components/responses/CommandError"},
@@ -2137,31 +2137,33 @@
           "resolvedAt": {"type": "string", "format": "date-time"}
         }
       },
-      "ResolveExecutionLarkCredentialRequest": {
+      "ResolveExecutionCredentialRequest": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["operation", "taePsm", "policySha256", "toolName", "executable", "bindingId", "authorityVersion", "credentialVersion"],
+        "required": ["operation", "taePsm", "policySha256", "providerKind", "toolName", "executable", "arguments", "bindingId", "authorityVersion", "credentialVersion"],
         "properties": {
           "operation": {"$ref": "#/components/schemas/EgressCredentialOperation"},
           "taePsm": {"type": "string", "minLength": 1, "maxLength": 256},
           "policySha256": {"$ref": "#/components/schemas/SHA256"},
+          "providerKind": {"type": "string", "enum": ["lark", "bytecloud"]},
           "toolName": {"const": "shell"},
-          "executable": {"const": "lark-cli"},
+          "executable": {"type": "string", "enum": ["lark-cli", "bkectl"]},
+          "arguments": {"type": "array", "maxItems": 512, "items": {"type": "string", "maxLength": 32768}},
           "bindingId": {"$ref": "#/components/schemas/UUID"},
           "authorityVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
           "credentialVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
         }
       },
-      "ResolveExecutionLarkCredentialResponse": {
+      "ResolveExecutionCredentialResponse": {
         "type": "object",
         "additionalProperties": false,
         "required": ["configured", "credentialMode", "providerKind", "policySha256", "taePsm", "resolvedAt"],
         "properties": {
           "configured": {"type": "boolean"},
           "credentialMode": {"const": "process_env"},
-          "accessToken": {"type": "string", "minLength": 1, "maxLength": 32768, "x-agentserver-sensitive": true},
+          "credential": {"type": "string", "minLength": 1, "maxLength": 32768, "x-agentserver-sensitive": true},
           "applicationId": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"},
-          "providerKind": {"const": "lark"},
+          "providerKind": {"type": "string", "enum": ["lark", "bytecloud"]},
           "bindingId": {"$ref": "#/components/schemas/UUID"},
           "authorityVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
           "credentialVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},

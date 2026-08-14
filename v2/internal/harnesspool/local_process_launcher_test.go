@@ -32,6 +32,7 @@ const (
 	localWorkerHelperMode        = "AGENTSERVER_V2_LOCAL_WORKER_MODE"
 	localWorkerExpectedAttempt   = "AGENTSERVER_V2_LOCAL_WORKER_ATTEMPT"
 	localWorkerDescendant        = "AGENTSERVER_V2_LOCAL_WORKER_DESCENDANT"
+	localWorkerDiagnostic        = "AGENTSERVER_V2_LOCAL_WORKER_DIAGNOSTIC"
 )
 
 func TestLocalProcessLauncherRetainsStoppedRuntimeUntilExplicitCleanup(t *testing.T) {
@@ -75,6 +76,29 @@ func TestLocalProcessLauncherRetainsStoppedRuntimeUntilExplicitCleanup(t *testin
 	}
 	if len(entries) != 0 {
 		t.Fatalf("runtime root retained %d entries", len(entries))
+	}
+}
+
+func TestLocalProcessLauncherForwardsWorkerDiagnostics(t *testing.T) {
+	prepared := poolTestPreparedLaunch(t)
+	launcher, _ := newLocalProcessLauncherForTest(t, prepared, "exit")
+	var diagnostics bytes.Buffer
+	launcher.config.WorkerDiagnosticWriter = &diagnostics
+	launcher.config.Environment = append(launcher.config.Environment, localWorkerDiagnostic+"=detailed stock app-server failure")
+	workload, err := launcher.Launch(t.Context(), AttemptWorkloadLaunch{
+		Prepared: prepared, ControlCapability: testLocalControlCapability(), RuntimeCapabilities: testLocalRuntimeCapabilities(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workload.Wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := workload.Cleanup(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(diagnostics.String(), "detailed stock app-server failure") {
+		t.Fatalf("worker diagnostics were not forwarded to the pool log: %q", diagnostics.String())
 	}
 }
 
@@ -222,7 +246,8 @@ func TestLocalProcessLauncherConfigRejectsAmbientOrUnsafeInputs(t *testing.T) {
 	}
 	valid := LocalProcessLauncherConfig{
 		WorkerExecutable: executable, WorkerArguments: []string{"-test.run=none", "--"},
-		RuntimeRoot: secureLocalRuntimeRoot(t), Environment: []string{}, ObjectSource: localTestObjectSource{},
+		RuntimeRoot: secureLocalRuntimeRoot(t), Environment: []string{}, WorkerDiagnosticWriter: io.Discard,
+		ObjectSource:              localTestObjectSource{},
 		ExpectedAppCredential:     &LocalProcessCredential{UID: 65532, GID: 65532},
 		ExpectedWorkerImageDigest: strings.Repeat("c", 64), ExpectedServiceAccount: "harness-worker",
 		InputWriteTimeout: time.Second, TerminateGrace: 10 * time.Millisecond,
@@ -235,6 +260,7 @@ func TestLocalProcessLauncherConfigRejectsAmbientOrUnsafeInputs(t *testing.T) {
 	}{
 		{name: "relative executable", mutate: func(c *LocalProcessLauncherConfig) { c.WorkerExecutable = "worker" }, want: "absolute"},
 		{name: "implicit environment", mutate: func(c *LocalProcessLauncherConfig) { c.Environment = nil }, want: "explicit"},
+		{name: "missing diagnostic writer", mutate: func(c *LocalProcessLauncherConfig) { c.WorkerDiagnosticWriter = nil }, want: "diagnostic writer"},
 		{name: "missing object source", mutate: func(c *LocalProcessLauncherConfig) { c.ObjectSource = nil }, want: "object source"},
 		{name: "duplicate environment", mutate: func(c *LocalProcessLauncherConfig) { c.Environment = []string{"A=1", "A=2"} }, want: "duplicate"},
 		{name: "bootstrap override", mutate: func(c *LocalProcessLauncherConfig) { c.WorkerArguments = []string{"--bootstrap-fd=9"} }, want: "must not override"},
@@ -317,6 +343,9 @@ func TestLocalProcessWorkerHelper(t *testing.T) {
 	if os.Getenv(localWorkerDescendant) == "1" {
 		ignoreLocalWorkerTermination()
 		blockLocalWorkerHelper()
+	}
+	if diagnostic := os.Getenv(localWorkerDiagnostic); diagnostic != "" {
+		_, _ = fmt.Fprintln(os.Stderr, diagnostic)
 	}
 	bootstrapFile := os.NewFile(localWorkerBootstrapDescriptor, "harness-bootstrap")
 	if bootstrapFile == nil {
@@ -426,6 +455,7 @@ func newLocalProcessLauncherWithSourceForTest(t *testing.T, prepared PreparedRun
 			localWorkerHelperMode + "=" + mode,
 			localWorkerExpectedAttempt + "=" + prepared.Manifest.RunAttemptID,
 		},
+		WorkerDiagnosticWriter:     io.Discard,
 		ObjectSource:               source,
 		ExpectedAppCredential:      &LocalProcessCredential{UID: 65532, GID: 65532},
 		ExpectedWorkerImageDigest:  prepared.Manifest.WorkerImageDigest,

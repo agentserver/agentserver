@@ -8,10 +8,23 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agentserver/agentserver/v2/internal/bkectlpolicy"
 	"github.com/agentserver/agentserver/v2/internal/productionimage"
 )
 
 func releaseDigest(character string) string { return strings.Repeat(character, 64) }
+
+func releaseLockForDocument(document ConfigDocument) ReleaseLock {
+	return ReleaseLock{
+		ServiceImage: document.Images.Service, HarnessImage: document.Images.Harness,
+		HydraImage: document.Images.Hydra, ManagedSandboxImage: document.Images.ManagedSandbox,
+		ManagedSkillSHA256: document.Managed.BaseInstructionsSHA256,
+		LarkCLISHA256:      document.Managed.Lark.CLISHA256, LarkSkillSHA256: document.Managed.Lark.SkillSHA256,
+		BkectlSourceRevision: document.Managed.Bkectl.SourceRevision,
+		BkectlCLISHA256:      document.Managed.Bkectl.CLISHA256, BkectlSkillPackSHA256: document.Managed.Bkectl.SkillPackSHA256,
+		BkectlPolicySHA256: document.Managed.Bkectl.PolicySHA256,
+	}
+}
 
 func TestLockReleasePreservesEvidenceBoundActiveArtifacts(t *testing.T) {
 	base, err := ValidateConfig(validConfigDocument())
@@ -19,11 +32,7 @@ func TestLockReleasePreservesEvidenceBoundActiveArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	document := base.Document
-	lock := ReleaseLock{
-		ServiceImage: document.Images.Service, HarnessImage: document.Images.Harness,
-		HydraImage: document.Images.Hydra, ManagedSandboxImage: document.Images.ManagedSandbox,
-		LarkCLISHA256: document.Managed.Lark.CLISHA256, LarkSkillSHA256: document.Managed.Lark.SkillSHA256,
-	}
+	lock := releaseLockForDocument(document)
 	raw, err := LockRelease(base, lock)
 	if err != nil {
 		t.Fatal(err)
@@ -50,11 +59,7 @@ func TestLockReleaseRejectsEvidenceBoundActiveArtifactDrift(t *testing.T) {
 		t.Fatal(err)
 	}
 	document := base.Document
-	valid := ReleaseLock{
-		ServiceImage: document.Images.Service, HarnessImage: document.Images.Harness,
-		HydraImage: document.Images.Hydra, ManagedSandboxImage: document.Images.ManagedSandbox,
-		LarkCLISHA256: document.Managed.Lark.CLISHA256, LarkSkillSHA256: document.Managed.Lark.SkillSHA256,
-	}
+	valid := releaseLockForDocument(document)
 	for name, mutate := range map[string]func(*ReleaseLock){
 		"service image": func(lock *ReleaseLock) {
 			lock.ServiceImage = ProductionServiceImage + "@sha256:" + releaseDigest("a")
@@ -68,8 +73,13 @@ func TestLockReleaseRejectsEvidenceBoundActiveArtifactDrift(t *testing.T) {
 		"managed sandbox image": func(lock *ReleaseLock) {
 			lock.ManagedSandboxImage = ProductionManagedSandboxImage + "@sha256:" + releaseDigest("d")
 		},
-		"lark cli":   func(lock *ReleaseLock) { lock.LarkCLISHA256 = releaseDigest("e") },
-		"lark skill": func(lock *ReleaseLock) { lock.LarkSkillSHA256 = releaseDigest("f") },
+		"lark cli":      func(lock *ReleaseLock) { lock.LarkCLISHA256 = releaseDigest("e") },
+		"lark skill":    func(lock *ReleaseLock) { lock.LarkSkillSHA256 = releaseDigest("f") },
+		"managed skill": func(lock *ReleaseLock) { lock.ManagedSkillSHA256 = releaseDigest("1") },
+		"bkectl source": func(lock *ReleaseLock) { lock.BkectlSourceRevision = strings.Repeat("2", 40) },
+		"bkectl cli":    func(lock *ReleaseLock) { lock.BkectlCLISHA256 = releaseDigest("3") },
+		"bkectl skill":  func(lock *ReleaseLock) { lock.BkectlSkillPackSHA256 = releaseDigest("4") },
+		"bkectl policy": func(lock *ReleaseLock) { lock.BkectlPolicySHA256 = releaseDigest("5") },
 	} {
 		t.Run(name, func(t *testing.T) {
 			lock := valid
@@ -136,11 +146,7 @@ func TestLockReleasePreservesEvidenceFreePolicyBootstrap(t *testing.T) {
 		t.Fatal(err)
 	}
 	document := base.Document
-	raw, err := LockRelease(base, ReleaseLock{
-		ServiceImage: document.Images.Service, HarnessImage: document.Images.Harness,
-		HydraImage: document.Images.Hydra, ManagedSandboxImage: document.Images.ManagedSandbox,
-		LarkCLISHA256: document.Managed.Lark.CLISHA256, LarkSkillSHA256: document.Managed.Lark.SkillSHA256,
-	})
+	raw, err := LockRelease(base, releaseLockForDocument(document))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +174,10 @@ func TestLockReleaseRejectsUnverifiedInputs(t *testing.T) {
 		HarnessImage:        ProductionHarnessImage + "@sha256:" + releaseDigest("b"),
 		HydraImage:          ProductionHydraImage + "@sha256:" + releaseDigest("c"),
 		ManagedSandboxImage: ProductionManagedSandboxImage + "@sha256:" + releaseDigest("d"),
+		ManagedSkillSHA256:  productionimage.ManagedSkillSHA256,
 		LarkCLISHA256:       productionimage.ManagedLarkCLISHA256, LarkSkillSHA256: releaseDigest("f"),
+		BkectlSourceRevision: bkectlpolicy.SourceRevision, BkectlCLISHA256: bkectlpolicy.CLISHA256,
+		BkectlSkillPackSHA256: bkectlpolicy.SkillPackSHA256, BkectlPolicySHA256: bkectlpolicy.SHA256Hex(),
 	}
 	for name, mutate := range map[string]func(*ReleaseLock){
 		"wrong image repository": func(lock *ReleaseLock) {
@@ -219,11 +228,7 @@ func TestLockReleaseRejectsTemplateEvidence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := LockRelease(base, ReleaseLock{
-				ServiceImage: document.Images.Service, HarnessImage: document.Images.Harness,
-				HydraImage: document.Images.Hydra, ManagedSandboxImage: document.Images.ManagedSandbox,
-				LarkCLISHA256: document.Managed.Lark.CLISHA256, LarkSkillSHA256: document.Managed.Lark.SkillSHA256,
-			}); err == nil {
+			if _, err := LockRelease(base, releaseLockForDocument(document)); err == nil {
 				t.Fatal("template evidence was promoted into a release")
 			}
 		})
@@ -236,11 +241,7 @@ func TestWriteReleaseConfigIsExclusiveAndOwnerReadable(t *testing.T) {
 		t.Fatal(err)
 	}
 	document := base.Document
-	raw, err := LockRelease(base, ReleaseLock{
-		ServiceImage: document.Images.Service, HarnessImage: document.Images.Harness,
-		HydraImage: document.Images.Hydra, ManagedSandboxImage: document.Images.ManagedSandbox,
-		LarkCLISHA256: document.Managed.Lark.CLISHA256, LarkSkillSHA256: document.Managed.Lark.SkillSHA256,
-	})
+	raw, err := LockRelease(base, releaseLockForDocument(document))
 	if err != nil {
 		t.Fatal(err)
 	}

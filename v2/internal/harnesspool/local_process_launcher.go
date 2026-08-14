@@ -50,6 +50,7 @@ type LocalProcessLauncherConfig struct {
 	RuntimeRoot                string
 	RuntimeCleaner             LocalAttemptRuntimeCleaner
 	Environment                []string
+	WorkerDiagnosticWriter     io.Writer
 	ObjectSource               AttemptObjectSource
 	Credential                 *LocalProcessCredential
 	ExpectedAppCredential      *LocalProcessCredential
@@ -234,6 +235,11 @@ func (launcher *LocalProcessLauncher) Launch(ctx context.Context, launch Attempt
 	command := exec.Command(launcher.config.WorkerExecutable, arguments...)
 	command.Dir = runtimeDirectory
 	command.Env = append([]string(nil), launcher.config.Environment...)
+	// The worker owns the only detailed copy of stock app-server turn errors
+	// and bounded stderr. Forward its stderr to the pool's container log; a nil
+	// os/exec stderr would silently discard the diagnostics after emitting only
+	// a terminal fingerprint over the control stream.
+	command.Stderr = launcher.config.WorkerDiagnosticWriter
 	command.ExtraFiles = []*os.File{bootstrapReader, promptReader}
 	if checkpointReader != nil {
 		command.ExtraFiles = append(command.ExtraFiles, checkpointReader)
@@ -563,6 +569,9 @@ func validateLocalProcessLauncherConfig(config LocalProcessLauncherConfig) error
 	}
 	if config.Environment == nil {
 		return errors.New("local worker environment must be explicit")
+	}
+	if config.WorkerDiagnosticWriter == nil {
+		return errors.New("local worker diagnostic writer is required")
 	}
 	if config.ObjectSource == nil {
 		return errors.New("local worker object source is required")

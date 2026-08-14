@@ -25,7 +25,7 @@
     "resources"
   ],
   "properties": {
-    "version": {"const": 4},
+    "version": {"const": 5},
     "region": {"const": "sg"},
     "namespace": {"const": "agentserver"},
     "clusterDomain": {"$ref": "#/$defs/dnsName"},
@@ -372,7 +372,7 @@
       "additionalProperties": false,
       "required": ["version", "reportSha256", "bindingSha256", "evidenceRef"],
       "properties": {
-        "version": {"type": "integer", "minimum": 0, "maximum": 4},
+        "version": {"type": "integer", "minimum": 0, "maximum": 5},
         "reportSha256": {"$ref": "#/$defs/optionalSha256"},
         "bindingSha256": {"$ref": "#/$defs/optionalSha256"},
         "evidenceRef": {"type": "string", "maxLength": 1024}
@@ -444,10 +444,22 @@
         "policySha256": {"const": "d086154a58d7f805ad95ee0842a7b63020394e2ba35aa881838eec1d97d16331"}
       }
     },
+    "managedBkectl": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "sourceRevision", "cliSha256", "skillPackSha256", "policySha256"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "sourceRevision": {"const": "d813842ab03b24f2ac7a5b374507c273f41cbf21"},
+        "cliSha256": {"const": "0331eb9836e46034d07bc88c52fa7af738dff7ad0b2b83d85ffe7cd6dfb7a590"},
+        "skillPackSha256": {"const": "b752c88857ca7035580e9a9d51e9c63a09fd1bda28ce290c4e71b351c3779e51"},
+        "policySha256": {"const": "7f6bd3ce588dcc9c43aff603eb4d784c9dc78283fc6db16d83589e99f74f1cb9"}
+      }
+    },
     "managedExecutor": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "stage", "workspaceAllowlist", "environment", "tae", "lark"],
+      "required": ["enabled", "stage", "workspaceAllowlist", "baseInstructionsSha256", "environment", "tae", "lark", "bkectl"],
       "properties": {
         "enabled": {"type": "boolean"},
         "stage": {"enum": ["disabled", "policy-bootstrap", "active"]},
@@ -455,9 +467,11 @@
           "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true,
           "items": {"$ref": "#/$defs/uuid"}
         },
+        "baseInstructionsSha256": {"const": "9a377446f5a966193ad54efe72b0ae84410bdc1ff22df40701384da30c96fcb1"},
         "environment": {"$ref": "#/$defs/managedEnvironment"},
         "tae": {"$ref": "#/$defs/managedTAE"},
-        "lark": {"$ref": "#/$defs/managedLark"}
+        "lark": {"$ref": "#/$defs/managedLark"},
+        "bkectl": {"$ref": "#/$defs/managedBkectl"}
       },
       "allOf": [
         {
@@ -515,7 +529,7 @@
                   },
                   "networkEvidence": {
                     "properties": {
-                      "version": {"const": 4},
+                      "version": {"const": 5},
                       "reportSha256": {"$ref": "#/$defs/sha256"},
                       "bindingSha256": {"$ref": "#/$defs/sha256"},
                       "evidenceRef": {"type": "string", "minLength": 1, "maxLength": 1024}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/egresscapability"
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
+	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
 	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
@@ -20,11 +21,12 @@ func TestSignedManagedLarkEnvironmentIssuerBindsExactOperation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	authorities, err := NewFrozenManagedLarkEgressAuthoritySource(ManagedLarkEgressAuthority{
+	authorities, err := NewFrozenManagedCredentialAuthoritySource(ManagedCredentialAuthority{
 		CredentialMode: managedcredential.ModeWebhookSwap,
+		ProviderKind:   "lark",
 		ApplicationID:  "cli_agentserver_sg",
 		BindingID:      "90000000-0000-4000-8000-000000000009", AuthorityVersion: 7, CredentialVersion: 11,
-		PolicySHA256: strings.Repeat("a", 64),
+		PolicySHA256: larkegresspolicy.SHA256Hex(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -47,10 +49,10 @@ func TestSignedManagedLarkEnvironmentIssuerBindsExactOperation(t *testing.T) {
 		environment[ManagedLarkApplicationIDEnvironment] != "cli_agentserver_sg" ||
 		environment[ManagedLarkNoUpdateNotifierEnvironment] != "1" ||
 		environment[ManagedLarkNoSkillsNotifierEnvironment] != "1" ||
-		environment[ManagedLarkPathEnvironment] != ManagedLarkPathValue {
+		environment[ManagedToolPathEnvironment] != ManagedToolPathValue {
 		t.Fatalf("managed environment = %+v", environment)
 	}
-	if _, err := injectManagedProcessEnvironment(t.Context(), issuer, request, map[string]string{ManagedLarkPathEnvironment: "/workspace"}); err == nil {
+	if _, err := injectManagedProcessEnvironment(t.Context(), issuer, request, map[string]string{ManagedToolPathEnvironment: "/workspace"}); err == nil {
 		t.Fatal("managed Lark caller was allowed to override the pinned PATH")
 	}
 	verifier, err := egresscapability.NewVerifier([]egresscapability.TrustedKey{{
@@ -81,11 +83,12 @@ func TestSignedManagedLarkEnvironmentIssuerWithholdsPlaceholderFromOtherCommands
 	if err != nil {
 		t.Fatal(err)
 	}
-	authorities, err := NewFrozenManagedLarkEgressAuthoritySource(ManagedLarkEgressAuthority{
+	authorities, err := NewFrozenManagedCredentialAuthoritySource(ManagedCredentialAuthority{
 		CredentialMode: managedcredential.ModeWebhookSwap,
+		ProviderKind:   "lark",
 		ApplicationID:  "cli_agentserver_sg",
 		BindingID:      "90000000-0000-4000-8000-000000000009", AuthorityVersion: 1, CredentialVersion: 1,
-		PolicySHA256: strings.Repeat("b", 64),
+		PolicySHA256: larkegresspolicy.SHA256Hex(),
 	})
 	if err != nil {
 		t.Fatal(err)

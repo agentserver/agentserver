@@ -72,7 +72,7 @@ func TestHarnessManifestPinsSelectedArchitectureArtifacts(t *testing.T) {
 	}
 }
 
-func TestManagedSandboxManifestLocksAMD64RuntimeCLIAndSkill(t *testing.T) {
+func TestManagedSandboxManifestLocksAMD64RuntimeCLIsAndSkills(t *testing.T) {
 	manifest := validManagedSandboxManifest()
 	if err := manifest.Validate(); err != nil {
 		t.Fatal(err)
@@ -80,8 +80,12 @@ func TestManagedSandboxManifestLocksAMD64RuntimeCLIAndSkill(t *testing.T) {
 	files := fileMap(manifest.Files)
 	for _, path := range []string{
 		managedruntime.ExecutableImagePath,
+		"usr/local/bin/bkectl",
 		"usr/local/bin/lark-cli",
+		ManagedSkillPath,
 		ManagedLarkSkillPath,
+		ManagedBkectlSkillPath,
+		ManagedBkectlCommandSurfacePath,
 		CABundlePath,
 	} {
 		if _, found := files[path]; !found {
@@ -101,6 +105,16 @@ func TestManagedSandboxManifestLocksAMD64RuntimeCLIAndSkill(t *testing.T) {
 	}
 	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "pinned release artifact") {
 		t.Fatalf("managed Lark CLI drift error = %v", err)
+	}
+
+	manifest = validManagedSandboxManifest()
+	for index := range manifest.Files {
+		if manifest.Files[index].Path == "usr/local/bin/bkectl" {
+			manifest.Files[index].SHA256 = strings.Repeat("f", 64)
+		}
+	}
+	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "pinned release artifact") {
+		t.Fatalf("managed bkectl CLI drift error = %v", err)
 	}
 
 	manifest = validManagedSandboxManifest()
@@ -181,8 +195,18 @@ func validHarnessManifest(platform string) Manifest {
 			entry.SHA256, entry.SizeBytes = codexDigest, codexSize
 		case RuntimeBundleRoot + "/codex-resources/bwrap":
 			entry.SHA256, entry.SizeBytes = bwrapDigest, bwrapSize
+		case ManagedSkillPath:
+			entry.SHA256, entry.SizeBytes, entry.Mode = ManagedSkillSHA256, ManagedSkillSizeBytes, 0o444
 		case ManagedLarkSkillPath:
 			entry.Mode = 0o444
+		case ManagedBkectlSkillPath:
+			entry.SHA256, entry.SizeBytes, entry.Mode = ManagedBkectlSkillSHA256, ManagedBkectlSkillSizeBytes, 0o444
+		case ManagedBkectlCommandSurfacePath:
+			entry.SHA256, entry.SizeBytes, entry.Mode = ManagedBkectlCommandSurfaceSHA256, ManagedBkectlCommandSurfaceSizeBytes, 0o444
+		case ManagedBkectlDomainGuidesPath:
+			entry.SHA256, entry.SizeBytes, entry.Mode = ManagedBkectlDomainGuidesSHA256, ManagedBkectlDomainGuidesSizeBytes, 0o444
+		case ManagedBkectlInvocationPath:
+			entry.SHA256, entry.SizeBytes, entry.Mode = ManagedBkectlInvocationSHA256, ManagedBkectlInvocationSizeBytes, 0o444
 		}
 		files = append(files, entry)
 	}
@@ -201,8 +225,20 @@ func validManagedSandboxManifest() Manifest {
 		switch path {
 		case CABundlePath:
 			entry.SHA256, entry.SizeBytes, entry.Mode = CABundleSHA256, CABundleSizeBytes, 0o444
+		case ManagedSkillPath:
+			entry.SHA256, entry.SizeBytes, entry.Mode = ManagedSkillSHA256, ManagedSkillSizeBytes, 0o444
 		case ManagedLarkSkillPath:
 			entry.Mode = 0o444
+		case ManagedBkectlSkillPath:
+			entry.SHA256, entry.SizeBytes, entry.Mode = ManagedBkectlSkillSHA256, ManagedBkectlSkillSizeBytes, 0o444
+		case ManagedBkectlCommandSurfacePath:
+			entry.SHA256, entry.SizeBytes, entry.Mode = ManagedBkectlCommandSurfaceSHA256, ManagedBkectlCommandSurfaceSizeBytes, 0o444
+		case ManagedBkectlDomainGuidesPath:
+			entry.SHA256, entry.SizeBytes, entry.Mode = ManagedBkectlDomainGuidesSHA256, ManagedBkectlDomainGuidesSizeBytes, 0o444
+		case ManagedBkectlInvocationPath:
+			entry.SHA256, entry.SizeBytes, entry.Mode = ManagedBkectlInvocationSHA256, ManagedBkectlInvocationSizeBytes, 0o444
+		case "usr/local/bin/bkectl":
+			entry.SHA256, entry.SizeBytes = ManagedBkectlCLISHA256, ManagedBkectlCLISizeBytes
 		case "usr/local/bin/lark-cli":
 			entry.SHA256, entry.SizeBytes = ManagedLarkCLISHA256, ManagedLarkCLISizeBytes
 		}

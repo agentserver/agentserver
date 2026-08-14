@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -202,6 +203,72 @@ func TestWorkerRuntimeFailureMessageContainsOnlySafeDiagnostics(t *testing.T) {
 	}
 }
 
+func TestOneShotWorkerLogsDetailedRedactedStockTurnFailure(t *testing.T) {
+	fixture := newOneShotWorkerFixture(t)
+	fixture.runner.terminalStatus = "failed"
+	fixture.runner.terminalError = json.RawMessage(`{"message":"model request failed: upstream returned 503","token":"turn-secret-must-not-leak"}`)
+	fixture.process.stderr = []byte("transport detail: connection reset by peer; Authorization: Bearer stderr-secret-must-not-leak")
+	fixture.process.stderrTruncated = true
+	var output bytes.Buffer
+	fixture.config.Logger = slog.New(slog.NewJSONHandler(&output, nil))
+
+	if err := runOneShotWorker(t.Context(), fixture.config, fixture.dependencies()); err != nil {
+		t.Fatal(err)
+	}
+	terminal := fixture.control.terminalSnapshot()
+	if terminal.Status != "failed" || terminal.ErrorCode != "turn_failed" ||
+		!strings.Contains(terminal.ErrorMessage, "turn_error_sha256=") ||
+		strings.Contains(terminal.ErrorMessage, "upstream returned 503") {
+		t.Fatalf("safe terminal summary = %+v", terminal)
+	}
+	var record map[string]any
+	if err := json.Unmarshal(output.Bytes(), &record); err != nil {
+		t.Fatalf("decode worker diagnostic log: %v; log=%s", err, output.String())
+	}
+	for key, wanted := range map[string]string{
+		"msg": "harness worker turn failed", "run_id": fixture.manifest.RunID,
+		"run_attempt_id": fixture.manifest.RunAttemptID, "thread_id": oneShotThreadID,
+		"turn_id": oneShotTurnID, "error_code": "turn_failed", "failure_category": "model_transport_failure",
+	} {
+		if record[key] != wanted {
+			t.Fatalf("worker diagnostic %q = %#v, want %q; log=%s", key, record[key], wanted, output.String())
+		}
+	}
+	if turnError, _ := record["turn_error"].(string); !strings.Contains(turnError, "upstream returned 503") {
+		t.Fatalf("detailed turn error missing from log: %s", output.String())
+	}
+	if stderr, _ := record["stderr"].(string); !strings.Contains(stderr, "connection reset by peer") {
+		t.Fatalf("detailed stderr missing from log: %s", output.String())
+	}
+	for _, secret := range []string{"turn-secret-must-not-leak", "stderr-secret-must-not-leak"} {
+		if strings.Contains(output.String(), secret) {
+			t.Fatalf("worker diagnostic log leaked %q: %s", secret, output.String())
+		}
+	}
+	if record["turn_error_redacted"] != true || record["stderr_redacted"] != true || record["stderr_capture_truncated"] != true {
+		t.Fatalf("worker diagnostic redaction/truncation metadata missing: %s", output.String())
+	}
+}
+
+func TestOneShotWorkerLogsDetailedCleanupFailure(t *testing.T) {
+	fixture := newOneShotWorkerFixture(t)
+	fixture.process.waitErr = errors.New("stock app-server exited with status 17 after closing stdout")
+	var output bytes.Buffer
+	fixture.config.Logger = slog.New(slog.NewJSONHandler(&output, nil))
+
+	if err := runOneShotWorker(t.Context(), fixture.config, fixture.dependencies()); err != nil {
+		t.Fatal(err)
+	}
+	terminal := fixture.control.terminalSnapshot()
+	if terminal.Status != "failed" || terminal.ErrorCode != "worker_runtime_failed" {
+		t.Fatalf("cleanup terminal = %+v", terminal)
+	}
+	if !strings.Contains(output.String(), "stock app-server exited with status 17") ||
+		!strings.Contains(output.String(), `"process_wait_error"`) {
+		t.Fatalf("cleanup details missing from worker log: %s", output.String())
+	}
+}
+
 func TestWorkerRunnerOptionsUseSignedAggregateByteLimit(t *testing.T) {
 	manifest := runmanifest.Manifest{Limits: runmanifest.RunLimits{
 		MaxEventBufferBytes:   8 * 1024 * 1024,
@@ -270,6 +337,7 @@ func newOneShotWorkerFixture(t *testing.T) *oneShotWorkerFixture {
 		BootstrapPipe: pipeWithWorkerBytes(t, bootstrap), PromptPipe: pipeWithWorkerBytes(t, []byte(oneShotPrompt)),
 		VerificationKeyring: keyring, RuntimePreparer: fakeWorkerRuntimePreparer{runtime: runtime},
 		ControlHTTPClient: &http.Client{}, ExecutorHTTPClient: &http.Client{},
+		Logger: slog.New(slog.NewJSONHandler(io.Discard, nil)),
 		WorkerInstanceIDGenerator: func() (string, error) {
 			return "71000000-0000-4000-8000-000000000007", nil
 		},
@@ -595,10 +663,12 @@ func (mcp *fakeOneShotWorkerMCP) Close() error {
 }
 
 type fakeOneShotWorkerProcess struct {
-	order     *workerOrder
-	closeOnce sync.Once
-	waitOnce  sync.Once
-	waitErr   error
+	order           *workerOrder
+	closeOnce       sync.Once
+	waitOnce        sync.Once
+	waitErr         error
+	stderr          []byte
+	stderrTruncated bool
 }
 
 func (*fakeOneShotWorkerProcess) Send(any) error { return errors.New("unexpected fake process send") }
@@ -617,7 +687,9 @@ func (process *fakeOneShotWorkerProcess) Wait(context.Context) error {
 	return process.waitErr
 }
 
-func (process *fakeOneShotWorkerProcess) Stderr() ([]byte, bool) { return nil, false }
+func (process *fakeOneShotWorkerProcess) Stderr() ([]byte, bool) {
+	return append([]byte(nil), process.stderr...), process.stderrTruncated
+}
 
 func TestStockTurnFailureMessageIsClassifiedBoundedAndSecretFree(t *testing.T) {
 	turnError := json.RawMessage(`{"message":"error sending request: invalid peer certificate: UnknownIssuer","token":"must-not-leak"}`)
@@ -644,6 +716,8 @@ type fakeOneShotWorkerRunner struct {
 	cancellationCount    int
 	codexHome            string
 	rolloutPath          string
+	terminalStatus       string
+	terminalError        json.RawMessage
 }
 
 func newFakeOneShotWorkerRunner(order *workerOrder, codexHome string) *fakeOneShotWorkerRunner {
@@ -679,7 +753,10 @@ func (runner *fakeOneShotWorkerRunner) Run(ctx context.Context, request AppServe
 	for _, notification := range runner.notifications {
 		runner.events <- notification
 	}
-	terminalStatus := "completed"
+	terminalStatus := runner.terminalStatus
+	if terminalStatus == "" {
+		terminalStatus = "completed"
+	}
 	var runErr error
 	if runner.waitForCancellation {
 		<-ctx.Done()
@@ -692,8 +769,10 @@ func (runner *fakeOneShotWorkerRunner) Run(ctx context.Context, request AppServe
 		Thread: AppServerThreadResult{Thread: AppServerThread{
 			ID: oneShotThreadID, Path: runner.rolloutPath,
 		}},
-		Turn:     AppServerTurn{ID: oneShotTurnID, Status: "inProgress"},
-		Terminal: AppServerTerminal{ThreadID: oneShotThreadID, Turn: AppServerTurn{ID: oneShotTurnID, Status: terminalStatus}},
+		Turn: AppServerTurn{ID: oneShotTurnID, Status: "inProgress"},
+		Terminal: AppServerTerminal{ThreadID: oneShotThreadID, Turn: AppServerTurn{
+			ID: oneShotTurnID, Status: terminalStatus, Error: append(json.RawMessage(nil), runner.terminalError...),
+		}},
 	}, runErr
 }
 

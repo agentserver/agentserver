@@ -4,31 +4,31 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/egresscapability"
+	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
 	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
-type workspaceAuthoritySourceFunc func(context.Context, ManagedProcessEnvironmentRequest) (ManagedLarkEgressAuthority, error)
+type workspaceAuthoritySourceFunc func(context.Context, ManagedProcessEnvironmentRequest) (ManagedCredentialAuthority, error)
 
-func (function workspaceAuthoritySourceFunc) ResolveManagedLarkEgressAuthority(
+func (function workspaceAuthoritySourceFunc) ResolveManagedCredentialAuthority(
 	ctx context.Context,
 	request ManagedProcessEnvironmentRequest,
-) (ManagedLarkEgressAuthority, error) {
+) (ManagedCredentialAuthority, error) {
 	return function(ctx, request)
 }
 
-type workspaceProcessCredentialSourceFunc func(context.Context, ManagedProcessEnvironmentRequest, string, ManagedLarkEgressAuthority) (ManagedLarkProcessCredential, error)
+type workspaceProcessCredentialSourceFunc func(context.Context, ManagedProcessEnvironmentRequest, string, ManagedCredentialAuthority) (ManagedProcessCredential, error)
 
-func (function workspaceProcessCredentialSourceFunc) ResolveManagedLarkProcessCredential(
+func (function workspaceProcessCredentialSourceFunc) ResolveManagedProcessCredential(
 	ctx context.Context,
 	request ManagedProcessEnvironmentRequest,
 	taePSM string,
-	authority ManagedLarkEgressAuthority,
-) (ManagedLarkProcessCredential, error) {
+	authority ManagedCredentialAuthority,
+) (ManagedProcessCredential, error) {
 	return function(ctx, request, taePSM, authority)
 }
 
@@ -41,14 +41,15 @@ func TestWorkspaceManagedLarkEnvironmentIssuerSelectsModePerProcessStart(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	authority := ManagedLarkEgressAuthority{
+	authority := ManagedCredentialAuthority{
 		CredentialMode:   managedcredential.ModeWebhookSwap,
+		ProviderKind:     "lark",
 		ApplicationID:    "cli_agentserver_sg",
 		BindingID:        "90000000-0000-4000-8000-000000000009",
-		AuthorityVersion: 7, CredentialVersion: 11, PolicySHA256: strings.Repeat("a", 64),
+		AuthorityVersion: 7, CredentialVersion: 11, PolicySHA256: larkegresspolicy.SHA256Hex(),
 	}
 	authorityCalls, credentialCalls := 0, 0
-	authorities := workspaceAuthoritySourceFunc(func(context.Context, ManagedProcessEnvironmentRequest) (ManagedLarkEgressAuthority, error) {
+	authorities := workspaceAuthoritySourceFunc(func(context.Context, ManagedProcessEnvironmentRequest) (ManagedCredentialAuthority, error) {
 		authorityCalls++
 		return authority, nil
 	})
@@ -56,12 +57,13 @@ func TestWorkspaceManagedLarkEnvironmentIssuerSelectsModePerProcessStart(t *test
 		_ context.Context,
 		_ ManagedProcessEnvironmentRequest,
 		taePSM string,
-		selected ManagedLarkEgressAuthority,
-	) (ManagedLarkProcessCredential, error) {
+		selected ManagedCredentialAuthority,
+	) (ManagedProcessCredential, error) {
 		credentialCalls++
-		return ManagedLarkProcessCredential{
+		return ManagedProcessCredential{
 			Configured: true, CredentialMode: managedcredential.ModeProcessEnv,
-			AccessToken: "real-workspace-token", ApplicationID: selected.ApplicationID, BindingID: selected.BindingID,
+			ProviderKind: selected.ProviderKind, Credential: "real-workspace-token",
+			ApplicationID: selected.ApplicationID, BindingID: selected.BindingID,
 			AuthorityVersion: selected.AuthorityVersion, CredentialVersion: selected.CredentialVersion,
 			PolicySHA256: selected.PolicySHA256, TAEPSM: taePSM, ResolvedAt: now,
 		}, nil
@@ -71,7 +73,7 @@ func TestWorkspaceManagedLarkEnvironmentIssuerSelectsModePerProcessStart(t *test
 		"91000000-0000-4000-8000-000000000009",
 		"92000000-0000-4000-8000-000000000009",
 	}
-	issuer, err := NewWorkspaceManagedLarkEnvironmentIssuer(
+	issuer, err := NewWorkspaceManagedEnvironmentIssuer(
 		signer, authorities, credentials, "bytedance.sandbox.agentserver",
 		func() (string, error) {
 			if capabilityIndex >= len(capabilityIDs) {
@@ -125,18 +127,20 @@ func TestWorkspaceManagedLarkEnvironmentIssuerFailsClosedAcrossModeAndVersionCha
 	if err != nil {
 		t.Fatal(err)
 	}
-	authority := ManagedLarkEgressAuthority{
+	authority := ManagedCredentialAuthority{
 		CredentialMode:   managedcredential.ModeProcessEnv,
+		ProviderKind:     "lark",
 		ApplicationID:    "cli_agentserver_sg",
 		BindingID:        "90000000-0000-4000-8000-000000000009",
-		AuthorityVersion: 7, CredentialVersion: 11, PolicySHA256: strings.Repeat("b", 64),
+		AuthorityVersion: 7, CredentialVersion: 11, PolicySHA256: larkegresspolicy.SHA256Hex(),
 	}
-	authorities := workspaceAuthoritySourceFunc(func(context.Context, ManagedProcessEnvironmentRequest) (ManagedLarkEgressAuthority, error) {
+	authorities := workspaceAuthoritySourceFunc(func(context.Context, ManagedProcessEnvironmentRequest) (ManagedCredentialAuthority, error) {
 		return authority, nil
 	})
-	credential := ManagedLarkProcessCredential{
+	credential := ManagedProcessCredential{
 		Configured: true, CredentialMode: managedcredential.ModeProcessEnv,
-		AccessToken: "stale-token", ApplicationID: authority.ApplicationID, BindingID: authority.BindingID,
+		ProviderKind: authority.ProviderKind, Credential: "stale-token",
+		ApplicationID: authority.ApplicationID, BindingID: authority.BindingID,
 		AuthorityVersion: authority.AuthorityVersion, CredentialVersion: authority.CredentialVersion - 1,
 		PolicySHA256: authority.PolicySHA256, TAEPSM: "bytedance.sandbox.agentserver", ResolvedAt: now,
 	}
@@ -144,11 +148,11 @@ func TestWorkspaceManagedLarkEnvironmentIssuerFailsClosedAcrossModeAndVersionCha
 		context.Context,
 		ManagedProcessEnvironmentRequest,
 		string,
-		ManagedLarkEgressAuthority,
-	) (ManagedLarkProcessCredential, error) {
+		ManagedCredentialAuthority,
+	) (ManagedProcessCredential, error) {
 		return credential, nil
 	})
-	issuer, err := NewWorkspaceManagedLarkEnvironmentIssuer(
+	issuer, err := NewWorkspaceManagedEnvironmentIssuer(
 		signer, authorities, credentials, "bytedance.sandbox.agentserver",
 		func() (string, error) { return "91000000-0000-4000-8000-000000000009", nil },
 		func() time.Time { return now }, time.Minute, nil,
@@ -174,18 +178,18 @@ func TestWorkspaceManagedLarkEnvironmentIssuerFailsClosedAcrossModeAndVersionCha
 
 func TestDirectWorkspaceManagedLarkEnvironmentIssuerRejectsWebhookMode(t *testing.T) {
 	now := time.Now().UTC()
-	authority := ManagedLarkEgressAuthority{
-		CredentialMode: managedcredential.ModeWebhookSwap, ApplicationID: "cli_agentserver_sg",
+	authority := ManagedCredentialAuthority{
+		CredentialMode: managedcredential.ModeWebhookSwap, ProviderKind: "lark", ApplicationID: "cli_agentserver_sg",
 		BindingID: "90000000-0000-4000-8000-000000000009", AuthorityVersion: 9,
-		CredentialVersion: 1, PolicySHA256: strings.Repeat("a", 64),
+		CredentialVersion: 1, PolicySHA256: larkegresspolicy.SHA256Hex(),
 	}
-	issuer, err := NewDirectWorkspaceManagedLarkEnvironmentIssuer(
-		workspaceAuthoritySourceFunc(func(context.Context, ManagedProcessEnvironmentRequest) (ManagedLarkEgressAuthority, error) {
+	issuer, err := NewDirectWorkspaceManagedEnvironmentIssuer(
+		workspaceAuthoritySourceFunc(func(context.Context, ManagedProcessEnvironmentRequest) (ManagedCredentialAuthority, error) {
 			return authority, nil
 		}),
-		workspaceProcessCredentialSourceFunc(func(context.Context, ManagedProcessEnvironmentRequest, string, ManagedLarkEgressAuthority) (ManagedLarkProcessCredential, error) {
+		workspaceProcessCredentialSourceFunc(func(context.Context, ManagedProcessEnvironmentRequest, string, ManagedCredentialAuthority) (ManagedProcessCredential, error) {
 			t.Fatal("direct profile resolved a process credential for webhook mode")
-			return ManagedLarkProcessCredential{}, nil
+			return ManagedProcessCredential{}, nil
 		}),
 		"bytedance.sandbox.agentserver", nil,
 	)

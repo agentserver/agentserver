@@ -165,7 +165,11 @@ func TestRunLockReleasePassesExactAuthorityAndWritesOnce(t *testing.T) {
 		"lock-release", "--config=/absolute/template.json", "--output=/absolute/production.json",
 		"--service-image=service@sha256:" + digest, "--harness-image=harness@sha256:" + digest,
 		"--hydra-image=hydra@sha256:" + digest, "--managed-sandbox-image=sandbox@sha256:" + digest,
+		"--managed-skill-sha256=" + digest,
 		"--lark-cli-sha256=" + digest, "--lark-skill-sha256=" + digest,
+		"--bkectl-source-revision=" + strings.Repeat("b", 40),
+		"--bkectl-cli-sha256=" + digest, "--bkectl-skill-pack-sha256=" + digest,
+		"--bkectl-policy-sha256=" + digest,
 	}
 	exitCode := run(arguments, &stdout, &stderr, deployCommands{
 		load: func(path string) (productiondeploy.LoadedConfig, error) {
@@ -175,7 +179,8 @@ func TestRunLockReleasePassesExactAuthorityAndWritesOnce(t *testing.T) {
 		lock: func(_ productiondeploy.LoadedConfig, lock productiondeploy.ReleaseLock) ([]byte, error) {
 			called = append(called, strings.Join([]string{
 				lock.ServiceImage, lock.HarnessImage, lock.HydraImage, lock.ManagedSandboxImage,
-				lock.LarkCLISHA256, lock.LarkSkillSHA256,
+				lock.ManagedSkillSHA256, lock.LarkCLISHA256, lock.LarkSkillSHA256,
+				lock.BkectlSourceRevision, lock.BkectlCLISHA256, lock.BkectlSkillPackSHA256, lock.BkectlPolicySHA256,
 			}, ","))
 			return wantRaw, nil
 		},

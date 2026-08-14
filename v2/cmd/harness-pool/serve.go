@@ -182,6 +182,7 @@ func serveHarnessPool(
 		Environment: []string{
 			"LANG=C", "LC_ALL=C", "NO_COLOR=1", "PATH=/usr/bin:/bin", "TMPDIR=/tmp",
 		},
+		WorkerDiagnosticWriter:     stderr,
 		ObjectSource:               objects,
 		Credential:                 config.workerCredential,
 		ExpectedAppCredential:      &config.appCredential,

@@ -16,7 +16,7 @@
     "checks"
   ],
   "properties": {
-    "schemaVersion": { "const": 3 },
+    "schemaVersion": { "const": 4 },
     "kind": { "const": "agentserver.tae.sg-network-report" },
     "startedAt": { "type": "string", "format": "date-time" },
     "finishedAt": { "type": "string", "format": "date-time" },
@@ -76,6 +76,10 @@
         "larkCliVersion",
         "larkCliSha256",
         "larkSkillSha256",
+        "managedSkillSha256",
+        "bkectlSourceRevision",
+        "bkectlCliSha256",
+        "bkectlSkillPackSha256",
         "connectivityAttempts",
         "lifecycleAttempts"
       ],
@@ -98,6 +102,13 @@
         "larkCliVersion": { "$ref": "#/$defs/boundedText" },
         "larkCliSha256": { "$ref": "#/$defs/digest" },
         "larkSkillSha256": { "$ref": "#/$defs/digest" },
+        "managedSkillSha256": { "$ref": "#/$defs/digest" },
+        "bkectlSourceRevision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "bkectlCliSha256": { "$ref": "#/$defs/digest" },
+        "bkectlSkillPackSha256": { "$ref": "#/$defs/digest" },
         "connectivityAttempts": { "type": "integer", "minimum": 1, "maximum": 100 },
         "lifecycleAttempts": { "type": "integer", "minimum": 1, "maximum": 5 }
       }

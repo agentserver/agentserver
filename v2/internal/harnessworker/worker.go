@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -72,6 +73,7 @@ type OneShotWorkerConfig struct {
 	ControlHTTPClient   *http.Client
 	ExecutorHTTPClient  *http.Client
 	BaseInstructions    string
+	Logger              *slog.Logger
 
 	WorkerInstanceIDGenerator WorkerInstanceIDGenerator
 	ProgressHandler           ProgressHandler
@@ -339,6 +341,13 @@ func runOneShotWorker(ctx context.Context, config OneShotWorkerConfig, dependenc
 		// accepted turn as interrupted rather than accepting a fabricated worker
 		// terminal while app-server may still be alive.
 		cleanupErr = errors.Join(ErrAppServerShutdownUnconfirmed, cleanupErr)
+		logWorkerFailureDiagnostics(
+			context.WithoutCancel(ctx), config.Logger, bootstrap.Manifest,
+			"process_shutdown", "", "", result, cleanupFailures,
+			context.Cause(runCtx), appServerStderr, appServerStderrTruncated,
+			harnesscontrol.TurnTerminalEvent{Status: "failed", ErrorCode: "app_server_shutdown_unconfirmed"},
+			ErrAppServerShutdownUnconfirmed,
+		)
 		closeControl(cleanupErr)
 		return cleanupErr
 	}
@@ -348,6 +357,13 @@ func runOneShotWorker(ctx context.Context, config OneShotWorkerConfig, dependenc
 		if cleanupErr == nil {
 			cleanupErr = errors.New("app-server ended before authoritative turn acceptance")
 		}
+		logWorkerFailureDiagnostics(
+			context.WithoutCancel(ctx), config.Logger, bootstrap.Manifest,
+			"before_turn_acceptance", threadID, turnID, result, cleanupFailures,
+			context.Cause(runCtx), appServerStderr, appServerStderrTruncated,
+			harnesscontrol.TurnTerminalEvent{Status: "failed", ErrorCode: "turn_not_accepted"},
+			cleanupErr,
+		)
 		closeControl(cleanupErr)
 		return cleanupErr
 	}
@@ -361,15 +377,25 @@ func runOneShotWorker(ctx context.Context, config OneShotWorkerConfig, dependenc
 			appServerStderr, appServerStderrTruncated,
 		)
 	}
+	var terminalCause error
 	if terminal.Status == "completed" {
 		locator, err := completedRolloutLocator(appRuntime, result)
 		if err != nil {
 			terminal.Status = "interrupted"
 			terminal.ErrorCode = "checkpoint_locator_invalid"
 			terminal.ErrorMessage = "the completed turn did not yield an authorized rollout locator"
+			terminalCause = err
 		} else {
 			terminal.RolloutLocator = locator
 		}
+	}
+	if terminal.Status == "failed" || cleanupErr != nil || terminalCause != nil {
+		logWorkerFailureDiagnostics(
+			context.WithoutCancel(ctx), config.Logger, bootstrap.Manifest,
+			"turn_terminal", threadID, turnID, result, cleanupFailures,
+			context.Cause(runCtx), appServerStderr, appServerStderrTruncated,
+			terminal, terminalCause,
+		)
 	}
 	terminalCtx, cancelTerminal := context.WithTimeout(
 		context.Background(),
@@ -437,6 +463,9 @@ func validateOneShotWorkerConfig(ctx context.Context, config OneShotWorkerConfig
 	}
 	if config.RuntimePreparer == nil {
 		return errors.New("one-shot worker runtime preparer is required")
+	}
+	if config.Logger == nil {
+		return errors.New("one-shot worker diagnostic logger is required")
 	}
 	if config.ControlHTTPClient == nil || config.ExecutorHTTPClient == nil {
 		return errors.New("one-shot worker control and executor HTTP clients are required")
@@ -795,9 +824,9 @@ func (failures workerCleanupFailures) joined() error {
 	)
 }
 
-// workerRuntimeFailureMessage retains fixed cleanup stage names and bounded
-// fingerprints only. Raw errors and stderr can contain model content, provider
-// URLs, or capabilities and must never cross the worker boundary.
+// workerRuntimeFailureMessage is the bounded, user-visible control summary.
+// logWorkerFailureDiagnostics emits the corresponding redacted details to the
+// internal worker log before this summary is acknowledged by the holder.
 func workerRuntimeFailureMessage(
 	failures workerCleanupFailures,
 	runCause error,
@@ -866,9 +895,9 @@ func appServerProcessStderr(process oneShotWorkerProcess) ([]byte, bool) {
 	return append([]byte(nil), contents...), truncated
 }
 
-// stockTurnFailureMessage retains only a bounded classification and content
-// fingerprints. Raw app-server errors and stderr can contain provider URLs,
-// capabilities, or user content, so they never cross the worker boundary.
+// stockTurnFailureMessage is the bounded, user-visible control summary. The
+// redacted turn error and stderr are retained by logWorkerFailureDiagnostics;
+// they are deliberately not copied into durable session/transcript state.
 func stockTurnFailureMessage(turnError json.RawMessage, stderr []byte, stderrTruncated bool) string {
 	const prefix = "stock app-server confirmed that the turn failed"
 	category := classifyStockTurnFailure(turnError, stderr)

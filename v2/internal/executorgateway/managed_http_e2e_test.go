@@ -15,9 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/bkectlpolicy"
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/egresscapability"
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
+	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
 	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 	"github.com/agentserver/agentserver/v2/internal/sandboxcontract"
 	"github.com/agentserver/agentserver/v2/internal/sandboxgateway"
@@ -99,11 +101,12 @@ func TestManagedShellLarkCLIThroughTAEHTTPAndSandboxGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	authorities, err := NewFrozenManagedLarkEgressAuthoritySource(ManagedLarkEgressAuthority{
+	authorities, err := NewFrozenManagedCredentialAuthoritySource(ManagedCredentialAuthority{
 		CredentialMode: managedcredential.ModeWebhookSwap,
+		ProviderKind:   "lark",
 		ApplicationID:  "cli_agentserver_sg",
 		BindingID:      "90000000-0000-4000-8000-000000000009", AuthorityVersion: 11, CredentialVersion: 13,
-		PolicySHA256: strings.Repeat("a", 64),
+		PolicySHA256: larkegresspolicy.SHA256Hex(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -175,6 +178,186 @@ func TestManagedShellLarkCLIThroughTAEHTTPAndSandboxGateway(t *testing.T) {
 	if calls := tokenAuthority.snapshot(); len(calls) != 1 || calls[0].Action != taeActionRunCommand ||
 		calls[0].Target != environment.Target || calls[0].Operation.OperationID != operationState.OperationID {
 		t.Fatalf("sandbox backend capability calls = %+v", calls)
+	}
+}
+
+func TestManagedShellBkectlThroughCoreTAEHTTPAndSandboxGateway(t *testing.T) {
+	now := time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC)
+	environment := testManagedEnvironment(t)
+	principal := testExecutorMCPPrincipal("managed-http-bkectl-e2e")
+	providerSessionRef := "tae-provider-session-managed-http-bkectl-e2e"
+	expiresAt := now.Add(time.Hour)
+	sandboxCore := &managedHTTPE2ECore{state: corecontract.ManagedSandboxState{
+		SandboxID: environment.Target.ID, WorkspaceID: principal.WorkspaceID, SessionID: principal.SessionID,
+		EnvironmentID: environment.EnvironmentID, ProviderKind: "tae", Generation: environment.Target.Generation,
+		DesiredState: "ready", ObservedState: "ready", ProviderRegion: "sg", ProviderPSM: "prod.tae.sandbox",
+		ProviderSessionRef: providerSessionRef, CreateIdempotencyKey: "managed-http-bkectl-e2e-create",
+		RuntimeProfileSHA256: strings.Repeat("1", 64), PackSetSHA256: strings.Repeat("2", 64),
+		RequestedTTLSeconds: 3600, IdleTTLSeconds: 300, ExpiresAt: &expiresAt,
+		Version: 3, CreatedAt: now, UpdatedAt: now,
+	}}
+
+	arguments := []string{"bytetree", "node", "get", "--id", "4428303", "--region", "i18nbd", "--json"}
+	var providerMu sync.Mutex
+	var providerRequest sandboxgateway.StartProcessProviderRequest
+	provider := fakeprovider.New(func() time.Time { return now }, func(request sandboxgateway.StartProcessProviderRequest) (fakeprovider.CommandResult, error) {
+		providerMu.Lock()
+		providerRequest = request
+		providerMu.Unlock()
+		wantEnvironment := map[string]string{
+			ManagedBkectlJWTEnvironment:      "workspace-bytecloud-jwt",
+			ManagedBkectlAuthModeEnvironment: ManagedBkectlAuthModeValue,
+			ManagedBkectlRegionEnvironment:   ManagedBkectlRegionValue,
+			ManagedToolPathEnvironment:       ManagedToolPathValue,
+		}
+		if request.Request.Executable != bkectlpolicy.Executable ||
+			!reflect.DeepEqual(request.Request.Arguments, arguments) ||
+			!reflect.DeepEqual(request.Request.Environment, wantEnvironment) {
+			return fakeprovider.CommandResult{}, errors.New("provider received an incorrect bkectl process contract")
+		}
+		return fakeprovider.CommandResult{
+			Stdout:   []byte("{\"success\":true,\"data\":{\"id\":4428303}}\n"),
+			ExitCode: 0, Status: executionbackend.TerminalSucceeded, OutputComplete: true,
+		}, nil
+	})
+	if _, err := provider.CreateSandbox(t.Context(), sandboxgateway.CreateSandboxRequest{
+		SessionRef: providerSessionRef, IdempotencyKey: "managed-http-bkectl-e2e-create",
+		WorkspaceID: principal.WorkspaceID, SessionID: principal.SessionID, EnvironmentID: environment.EnvironmentID,
+		Region: "sg", PSM: "prod.tae.sandbox", RuntimeProfileSHA256: strings.Repeat("1", 64),
+		PackSetSHA256: strings.Repeat("2", 64), TTL: time.Hour,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sandboxService, err := sandboxgateway.NewService(sandboxgateway.Config{
+		Core: sandboxCore, Provider: provider, Limits: sandboxcontract.DefaultLimits(),
+		ProviderRegion: "sg", ProviderPSM: "prod.tae.sandbox", IdleTTL: 5 * time.Minute,
+		EnsureTimeout: time.Second, EnsurePollInterval: time.Millisecond,
+		Root: "/workspace", Platform: "linux-amd64", Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenAuthority := &managedHTTPE2ETokenAuthority{token: "managed-http-bkectl-backend-capability"}
+	sandboxHandler, err := sandboxgateway.NewHandler(sandboxService, tokenAuthority, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := NewTAEBackend(
+		"http://127.0.0.1",
+		&http.Client{Transport: managedHTTPE2ETransport{handler: sandboxHandler}},
+		tokenAuthority,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := executionbackend.NewRouter(backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const bindingID = "92000000-0000-4000-8000-000000000009"
+	var coreMu sync.Mutex
+	var authorityRequests []corecontract.ResolveEgressCredentialAuthorityRequest
+	var credentialRequests []corecontract.ResolveExecutionCredentialRequest
+	credentialCoreHandler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		response.Header().Set("Cache-Control", "no-store")
+		switch request.URL.Path {
+		case corecontract.ResolveExecutionCredentialAuthorityPath:
+			var command corecontract.ResolveEgressCredentialAuthorityRequest
+			if err := json.NewDecoder(request.Body).Decode(&command); err != nil {
+				t.Errorf("decode bkectl authority request: %v", err)
+				response.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			coreMu.Lock()
+			authorityRequests = append(authorityRequests, command)
+			coreMu.Unlock()
+			_ = json.NewEncoder(response).Encode(corecontract.ResolveEgressCredentialAuthorityResponse{
+				CredentialMode: managedcredential.ModeProcessEnv, ProviderKind: bkectlpolicy.CredentialKind,
+				BindingID: bindingID, AuthorityVersion: 5, CredentialVersion: 9,
+				PolicySHA256: bkectlpolicy.SHA256Hex(), AuthorizedAt: now,
+			})
+		case corecontract.ResolveExecutionCredentialPath:
+			var command corecontract.ResolveExecutionCredentialRequest
+			if err := json.NewDecoder(request.Body).Decode(&command); err != nil {
+				t.Errorf("decode bkectl credential request: %v", err)
+				response.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			coreMu.Lock()
+			credentialRequests = append(credentialRequests, command)
+			coreMu.Unlock()
+			credentialExpiry := now.Add(time.Hour)
+			_ = json.NewEncoder(response).Encode(corecontract.ResolveExecutionCredentialResponse{
+				Configured: true, CredentialMode: managedcredential.ModeProcessEnv,
+				Credential: "workspace-bytecloud-jwt", ProviderKind: bkectlpolicy.CredentialKind,
+				BindingID: bindingID, AuthorityVersion: 5, CredentialVersion: 9,
+				PolicySHA256: bkectlpolicy.SHA256Hex(), TAEPSM: "bytedance.sandbox.agentserver",
+				ResolvedAt: now, AccessExpiresAt: &credentialExpiry,
+			})
+		default:
+			response.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(response).Encode(corecontract.ErrorResponse{Code: "not_found", Message: "unexpected Core path"})
+		}
+	})
+	credentialCore, err := NewCoreConnectionClient(
+		"http://127.0.0.1",
+		&http.Client{Transport: managedHTTPE2ETransport{handler: credentialCoreHandler}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentialCore.authorizationNow = func() time.Time { return now }
+	issuer, err := NewDirectWorkspaceManagedEnvironmentIssuer(
+		credentialCore, credentialCore, "bytedance.sandbox.agentserver", nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	executionAuthority := newFakeShellAuthority()
+	executor := newManagedShellExecutor(t, environment, executionAuthority, router, issuer)
+	result, err := executor.Execute(t.Context(), ShellExecuteRequest{
+		Principal: principal, ToolCallID: "call-managed-http-bkectl-e2e",
+		Arguments: json.RawMessage(`{"environment_id":"` + environment.EnvironmentID + `","argv":["bkectl","bytetree","node","get","--id","4428303","--region","i18nbd","--json"],"timeout_ms":10000}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOutput := []byte("{\"success\":true,\"data\":{\"id\":4428303}}\n")
+	if result.Status != "succeeded" || result.ExitCode == nil || *result.ExitCode != 0 || !result.OutputComplete ||
+		len(result.Chunks) != 1 || result.Chunks[0].ChunkBase64 != base64.StdEncoding.EncodeToString(wantOutput) {
+		t.Fatalf("managed bkectl HTTP E2E result = %+v", result)
+	}
+
+	executionAuthority.mu.Lock()
+	executionState := executionAuthority.execution
+	operationState := executionAuthority.operations[1]
+	executionAuthority.mu.Unlock()
+	coreMu.Lock()
+	resolvedAuthorities := append([]corecontract.ResolveEgressCredentialAuthorityRequest(nil), authorityRequests...)
+	resolvedCredentials := append([]corecontract.ResolveExecutionCredentialRequest(nil), credentialRequests...)
+	coreMu.Unlock()
+	if len(resolvedAuthorities) != 1 || len(resolvedCredentials) != 1 ||
+		resolvedAuthorities[0].ProviderKind != bkectlpolicy.CredentialKind ||
+		resolvedAuthorities[0].PolicySHA256 != bkectlpolicy.SHA256Hex() ||
+		resolvedAuthorities[0].Operation.OperationID != operationState.OperationID ||
+		resolvedCredentials[0].Executable != bkectlpolicy.Executable ||
+		resolvedCredentials[0].ProviderKind != bkectlpolicy.CredentialKind ||
+		!reflect.DeepEqual(resolvedCredentials[0].Arguments, arguments) ||
+		resolvedCredentials[0].BindingID != bindingID ||
+		resolvedCredentials[0].Operation.ExecutionID != executionState.ExecutionID ||
+		resolvedCredentials[0].Operation.OperationID != operationState.OperationID {
+		t.Fatalf("bkectl Core authority/credential requests = %+v / %+v", resolvedAuthorities, resolvedCredentials)
+	}
+	providerMu.Lock()
+	started := providerRequest
+	providerMu.Unlock()
+	if started.SessionRef != providerSessionRef || started.Request.Target != environment.Target ||
+		started.Request.Operation.ExecutionID != executionState.ExecutionID ||
+		started.Request.Operation.OperationID != operationState.OperationID {
+		t.Fatalf("fake TAE bkectl provider request = %+v", started)
 	}
 }
 

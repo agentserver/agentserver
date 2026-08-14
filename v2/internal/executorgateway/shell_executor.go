@@ -389,7 +389,7 @@ func (executor *ShellExecutor) executeManaged(
 	environmentValues, err := injectManagedProcessEnvironment(processCtx, executor.config.ManagedEnvironmentIssuer,
 		ManagedProcessEnvironmentRequest{
 			Principal: request.Principal, Target: environment.Target, Operation: startOperation,
-			ToolName: "shell", Executable: plan.Argv[0],
+			ToolName: "shell", Executable: plan.Argv[0], Arguments: append([]string(nil), plan.Argv[1:]...),
 		}, plan.ExplicitEnvironment)
 	if err != nil {
 		executor.logManagedStage(processCtx, request.Principal, environment.Target, startOperation,

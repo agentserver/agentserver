@@ -36,6 +36,12 @@ const (
 	probeMetadataPrefix                  = "agentserver-tae-network-probe-"
 	probeLarkCLIPath                     = "/usr/local/bin/lark-cli"
 	probeLarkSkillPath                   = "/opt/agentserver/packs/lark-readonly/SKILL.md"
+	probeManagedSkillPath                = "/opt/agentserver/packs/managed-cli-readonly/SKILL.md"
+	probeBkectlCLIPath                   = "/usr/local/bin/bkectl"
+	probeBkectlSkillPath                 = "/opt/agentserver/packs/bkectl/SKILL.md"
+	probeBkectlCommandSurfacePath        = "/opt/agentserver/packs/bkectl/references/command-surface.md"
+	probeBkectlDomainGuidesPath          = "/opt/agentserver/packs/bkectl/references/domain-guides.md"
+	probeBkectlInvocationPath            = "/opt/agentserver/packs/bkectl/references/invocation.md"
 	probeWorkspacePath                   = "/workspace"
 	probeMaximumSkillBytes         int64 = 256 * 1024
 	probeMaximumProcessOutput            = 4096
@@ -47,19 +53,33 @@ const (
 var probeRevisionPattern = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._:-]{0,127}$`)
 
 type networkProbeConfig struct {
-	provider             providerConfig
-	deploymentSHA256     string
-	policyRevision       string
-	larkCLIVersion       string
-	larkCLISHA256        string
-	larkCLISize          int64
-	larkSkillSHA256      string
-	connectivityAttempts int
-	lifecycleAttempts    int
-	readyTimeout         time.Duration
-	source               taenetworkreport.Source
-	newID                func() (string, error)
-	now                  func() time.Time
+	provider                   providerConfig
+	deploymentSHA256           string
+	policyRevision             string
+	larkCLIVersion             string
+	larkCLISHA256              string
+	larkCLISize                int64
+	larkSkillSHA256            string
+	managedSkillSHA256         string
+	managedSkillSize           int64
+	bkectlSourceRevision       string
+	bkectlCLISHA256            string
+	bkectlCLISize              int64
+	bkectlSkillPackSHA256      string
+	bkectlSkillSHA256          string
+	bkectlSkillSize            int64
+	bkectlCommandSurfaceSHA256 string
+	bkectlCommandSurfaceSize   int64
+	bkectlDomainGuidesSHA256   string
+	bkectlDomainGuidesSize     int64
+	bkectlInvocationSHA256     string
+	bkectlInvocationSize       int64
+	connectivityAttempts       int
+	lifecycleAttempts          int
+	readyTimeout               time.Duration
+	source                     taenetworkreport.Source
+	newID                      func() (string, error)
+	now                        func() time.Time
 }
 
 type taeClientsFactory func(context.Context, providerConfig, string) (*taeClients, error)
@@ -145,8 +165,20 @@ func loadNetworkProbeConfig(getenv func(string) string) (networkProbeConfig, err
 		provider: provider, deploymentSHA256: deploymentSHA256, policyRevision: policyRevision,
 		larkCLIVersion: productionimage.ManagedLarkCLIVersion,
 		larkCLISHA256:  productionimage.ManagedLarkCLISHA256, larkCLISize: productionimage.ManagedLarkCLISizeBytes,
-		larkSkillSHA256: larkSkillSHA256, connectivityAttempts: connectivityAttempts,
-		lifecycleAttempts: lifecycleAttempts, readyTimeout: readyTimeout, source: source,
+		larkSkillSHA256:    larkSkillSHA256,
+		managedSkillSHA256: productionimage.ManagedSkillSHA256, managedSkillSize: productionimage.ManagedSkillSizeBytes,
+		bkectlSourceRevision: productionimage.ManagedBkectlSourceRevision,
+		bkectlCLISHA256:      productionimage.ManagedBkectlCLISHA256, bkectlCLISize: productionimage.ManagedBkectlCLISizeBytes,
+		bkectlSkillPackSHA256: productionimage.ManagedBkectlSkillPackSHA256,
+		bkectlSkillSHA256:     productionimage.ManagedBkectlSkillSHA256, bkectlSkillSize: productionimage.ManagedBkectlSkillSizeBytes,
+		bkectlCommandSurfaceSHA256: productionimage.ManagedBkectlCommandSurfaceSHA256,
+		bkectlCommandSurfaceSize:   productionimage.ManagedBkectlCommandSurfaceSizeBytes,
+		bkectlDomainGuidesSHA256:   productionimage.ManagedBkectlDomainGuidesSHA256,
+		bkectlDomainGuidesSize:     productionimage.ManagedBkectlDomainGuidesSizeBytes,
+		bkectlInvocationSHA256:     productionimage.ManagedBkectlInvocationSHA256,
+		bkectlInvocationSize:       productionimage.ManagedBkectlInvocationSizeBytes,
+		connectivityAttempts:       connectivityAttempts,
+		lifecycleAttempts:          lifecycleAttempts, readyTimeout: readyTimeout, source: source,
 		newID: newProbeID, now: func() time.Time { return time.Now().UTC() },
 	}, nil
 }
@@ -215,6 +247,8 @@ func executeNetworkProbe(ctx context.Context, config networkProbeConfig, clients
 			SandboxImage: config.provider.sandboxImage, SandboxID: config.provider.sandboxID,
 			SandboxRevisionID: config.provider.sandboxRevisionID, LarkCLIVersion: config.larkCLIVersion,
 			LarkCLISHA256: config.larkCLISHA256, LarkSkillSHA256: config.larkSkillSHA256,
+			ManagedSkillSHA256: config.managedSkillSHA256, BkectlSourceRevision: config.bkectlSourceRevision,
+			BkectlCLISHA256: config.bkectlCLISHA256, BkectlSkillPackSHA256: config.bkectlSkillPackSHA256,
 			ConnectivityAttempts: config.connectivityAttempts, LifecycleAttempts: config.lifecycleAttempts,
 		},
 		Checks: checks,
@@ -278,6 +312,9 @@ func runProbeLifecycle(ctx context.Context, config networkProbeConfig, clients *
 			_ = recorder.run("data_exec_lark_version", func() error {
 				return probeLarkVersion(ctx, clients.data, session.ID, probeID, attempt, config.larkCLIVersion)
 			})
+			_ = recorder.run("data_exec_bkectl_version", func() error {
+				return probeBkectlVersion(ctx, clients.data, session.ID, probeID, attempt, config.bkectlSourceRevision)
+			})
 			_ = recorder.run("data_stat_lark_cli", func() error {
 				requestContext, cancel := context.WithTimeout(ctx, config.provider.controlTimeout)
 				defer cancel()
@@ -319,6 +356,30 @@ func runProbeLifecycle(ctx context.Context, config networkProbeConfig, clients *
 					return readErr
 				})
 				recorder.addBytes("data_read_lark_skill", skillBytes)
+			}
+			for _, artifact := range managedProbeArtifacts(config) {
+				artifact := artifact
+				_ = recorder.run("data_stat_"+artifact.name, func() error {
+					requestContext, cancel := context.WithTimeout(ctx, config.provider.controlTimeout)
+					defer cancel()
+					info, _, err := clients.data.Stat(requestContext, session.ID, artifact.path)
+					if err != nil {
+						return err
+					}
+					if info.Type != "file" || info.Size != artifact.size || info.SymlinkTarget != "" {
+						return newProbeFailure(artifact.name + "_stat_mismatch")
+					}
+					return nil
+				})
+				var artifactBytes int64
+				_ = recorder.run("data_read_"+artifact.name, func() error {
+					var readErr error
+					artifactBytes, readErr = probeDownloadDigest(
+						ctx, clients.data, session.ID, artifact.path, artifact.size, artifact.sha256,
+					)
+					return readErr
+				})
+				recorder.addBytes("data_read_"+artifact.name, artifactBytes)
 			}
 		}
 		deleteErr := recorder.run("control_delete", func() error {
@@ -443,6 +504,40 @@ func probeLarkVersion(ctx context.Context, data adapter.DataPlane, sessionID, pr
 	}
 	defer stream.Close()
 	return probeProcessResult(requestContext, stream, "lark-cli version "+version, "lark_version_process_failed", "lark_version_output_mismatch")
+}
+
+func probeBkectlVersion(ctx context.Context, data adapter.DataPlane, sessionID, probeID string, attempt int, version string) error {
+	requestContext, cancel := context.WithTimeout(ctx, probeProcessTimeout+15*time.Second)
+	defer cancel()
+	stream, err := data.StartProcess(requestContext, sessionID, adapter.StartProcessInput{
+		RequestID:  "agentserver-tae-probe-bkectl-" + probeID + "-" + strconv.Itoa(attempt),
+		Executable: probeBkectlCLIPath, Arguments: []string{"version"}, WorkingDirectory: probeWorkspacePath,
+		Environment: map[string]string{}, Timeout: probeProcessTimeout,
+	})
+	if err != nil {
+		return err
+	}
+	defer stream.Close()
+	expected := `{"success":true,"data":{"build_time":"1970-01-01T00:00:00Z","version":"` + version + `"},"error":null}`
+	return probeProcessResult(requestContext, stream, expected, "bkectl_version_process_failed", "bkectl_version_output_mismatch")
+}
+
+type managedProbeArtifact struct {
+	name   string
+	path   string
+	sha256 string
+	size   int64
+}
+
+func managedProbeArtifacts(config networkProbeConfig) []managedProbeArtifact {
+	return []managedProbeArtifact{
+		{name: "managed_skill", path: probeManagedSkillPath, sha256: config.managedSkillSHA256, size: config.managedSkillSize},
+		{name: "bkectl_cli", path: probeBkectlCLIPath, sha256: config.bkectlCLISHA256, size: config.bkectlCLISize},
+		{name: "bkectl_skill", path: probeBkectlSkillPath, sha256: config.bkectlSkillSHA256, size: config.bkectlSkillSize},
+		{name: "bkectl_command_surface", path: probeBkectlCommandSurfacePath, sha256: config.bkectlCommandSurfaceSHA256, size: config.bkectlCommandSurfaceSize},
+		{name: "bkectl_domain_guides", path: probeBkectlDomainGuidesPath, sha256: config.bkectlDomainGuidesSHA256, size: config.bkectlDomainGuidesSize},
+		{name: "bkectl_invocation", path: probeBkectlInvocationPath, sha256: config.bkectlInvocationSHA256, size: config.bkectlInvocationSize},
+	}
 }
 
 func probeProcessResult(ctx context.Context, stream adapter.EventStream, expectedOutput, processFailure, outputMismatch string) error {

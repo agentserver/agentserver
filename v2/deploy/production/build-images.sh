@@ -11,6 +11,9 @@ codex_artifact=""
 bwrap_artifact=""
 lark_cli_artifact=""
 lark_skill_artifact=""
+bkectl_artifact=""
+bkectl_skill_root=""
+managed_skill_artifact=""
 platform=""
 service_image=""
 harness_image=""
@@ -25,6 +28,9 @@ usage() {
         '                       --bwrap=/absolute/bwrap-ARCH-unknown-linux-musl' \
         '                       --lark-cli=/absolute/lark-cli' \
         '                       --lark-skill=/absolute/SKILL.md' \
+        '                       --bkectl=/absolute/bkectl' \
+        '                       --bkectl-skill-root=/absolute/bkectl-skill' \
+        '                       --managed-skill=/absolute/SKILL.md' \
         '                       --service-image=registry/name:tag' \
         '                       --harness-image=registry/name:tag' \
         '                       --managed-sandbox-image=registry/name:tag' \
@@ -44,6 +50,9 @@ for argument in "$@"; do
         --bwrap=*) bwrap_artifact=${argument#--bwrap=} ;;
         --lark-cli=*) lark_cli_artifact=${argument#--lark-cli=} ;;
         --lark-skill=*) lark_skill_artifact=${argument#--lark-skill=} ;;
+        --bkectl=*) bkectl_artifact=${argument#--bkectl=} ;;
+        --bkectl-skill-root=*) bkectl_skill_root=${argument#--bkectl-skill-root=} ;;
+        --managed-skill=*) managed_skill_artifact=${argument#--managed-skill=} ;;
         --service-image=*) service_image=${argument#--service-image=} ;;
         --harness-image=*) harness_image=${argument#--harness-image=} ;;
         --managed-sandbox-image=*) managed_sandbox_image=${argument#--managed-sandbox-image=} ;;
@@ -65,6 +74,9 @@ case "${codex_artifact}" in /*) ;; *) usage >&2; exit 2 ;; esac
 case "${bwrap_artifact}" in /*) ;; *) usage >&2; exit 2 ;; esac
 case "${lark_cli_artifact}" in /*) ;; *) usage >&2; exit 2 ;; esac
 case "${lark_skill_artifact}" in /*) ;; *) usage >&2; exit 2 ;; esac
+case "${bkectl_artifact}" in /*) ;; *) usage >&2; exit 2 ;; esac
+case "${bkectl_skill_root}" in /*) ;; *) usage >&2; exit 2 ;; esac
+case "${managed_skill_artifact}" in /*) ;; *) usage >&2; exit 2 ;; esac
 case "${output_directory}" in /*) ;; *) usage >&2; exit 2 ;; esac
 [ -n "${service_image}" ] || { usage >&2; exit 2; }
 [ -n "${harness_image}" ] || { usage >&2; exit 2; }
@@ -172,6 +184,7 @@ for binary in agentserver-init agentserver-probe harness-final-exec harness-pool
     cp "${work_directory}/all-bin/${binary}" "${work_directory}/harness-bin/${binary}"
 done
 cp "${work_directory}/all-bin/agentserver-tae-runtime" "${work_directory}/managed-sandbox-bin/agentserver-tae-runtime"
+cp "${bkectl_artifact}" "${work_directory}/managed-sandbox-bin/bkectl"
 cp "${lark_cli_artifact}" "${work_directory}/managed-sandbox-bin/lark-cli"
 chmod 0555 \
     "${work_directory}/service-bin"/* \
@@ -199,14 +212,18 @@ chmod 0500 "${work_directory}/agentserver-image"
     --codex="${codex_artifact}" \
     --bwrap="${bwrap_artifact}" \
     --requirements="${v2_root}/packaging/stockruntime/requirements.toml" \
+    --managed-skill="${managed_skill_artifact}" \
     --lark-skill="${lark_skill_artifact}" \
+    --bkectl-skill-root="${bkectl_skill_root}" \
     --output="${work_directory}/harness-payload"
 "${work_directory}/agentserver-image" prepare \
     --kind=managed-sandbox \
     --platform="${platform}" \
     --source-revision="${source_revision}" \
     --binary-dir="${work_directory}/managed-sandbox-bin" \
+    --managed-skill="${managed_skill_artifact}" \
     --lark-skill="${lark_skill_artifact}" \
+    --bkectl-skill-root="${bkectl_skill_root}" \
     --output="${work_directory}/managed-sandbox-payload"
 
 # Both builders consume a regular archive so the already verified rootfs is

@@ -16,8 +16,8 @@ func TestMountCoreCredentialRoutesKeepsDirectExecutionWithoutEgressHandler(t *te
 	mountCoreCredentialRoutes(mux, nil, execution)
 
 	for _, path := range []string{
-		corecontract.ResolveExecutionLarkCredentialAuthorityPath,
-		corecontract.ResolveExecutionLarkCredentialPath,
+		corecontract.ResolveExecutionCredentialAuthorityPath,
+		corecontract.ResolveExecutionCredentialPath,
 	} {
 		response := httptest.NewRecorder()
 		mux.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, nil))

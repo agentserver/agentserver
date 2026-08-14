@@ -505,48 +505,66 @@ tool pack 只声明 provider requirement，不携带 credential 实例。run/ses
 artifact digest、`credentialKind`、可选 `bindingId`、`authorityVersion` 和 egress rule digest；冻结对象中
 永远没有 sealed secret、access/refresh token、AK/SK、PAT 或 provider session ID。
 
-mode 的唯一事实源是 Core 的 workspace row；`WorkspaceState`、create/update API 与 Platform owner 设置页
-显式暴露 `managedLarkCredentialMode`。新 workspace 必须选择 `webhook_swap` 或 `process_env`，owner 切换时
-使用 workspace version CAS 并写独立审计。production config、Helm values/schema/guard、Pulumi 和 workload
-environment 都没有 mode 字段。
+credential kind 和 CLI 是两个独立维度。Platform 按 workspace 管理 `lark`、`bytecloud`、`github` 等
+provider binding；`bkectl` 不是 credential kind，而是 `bytecloud` 的一个 consumer。后续 `bytedcli` 等 CLI
+可以复用同一个 active/default `bytecloud` binding，但必须各自增加固定版本、argv policy 和环境变量投影，
+不能复制 credential 或重新发起登录。
+
+Lark mode 的唯一事实源是 Core 的 workspace row；`WorkspaceState`、create/update API 与 Platform owner 设置页
+显式暴露 `managedLarkCredentialMode`。新 workspace 必须为 Lark 选择 `webhook_swap` 或 `process_env`，owner
+切换时使用 workspace version CAS 并写独立审计。ByteCloud 不读取这个 Lark 设置：managed CLI consumer
+固定使用 `process_env`。production config、Helm values/schema/guard、Pulumi 和 workload environment 都没有
+用户 credential 或 refresh token。
 
 - `webhook_swap`：execution gateway 解析 binding reference 并签发短期 placeholder；Policy Webhook 在真实
   HTTP 请求上完成 token swap；仅未来 webhook-enabled profile 可用；
-- `process_env`：execution gateway 在精确 `shell + lark-cli + TAE process_start` 前调用 Core
-  `/internal/v2/execution/credentials/lark:resolve`，Core live-authorize 后返回真实 access token；execution
-  gateway 只注入目标进程；当前 direct profile 使用 TAE 系统白名单直连。
+- `process_env`：execution gateway 在精确 `shell + managed CLI + TAE process_start` 前先调用 Core
+  `/internal/v2/execution/credentials:resolve-authority`，再调用
+  `/internal/v2/execution/credentials:resolve`；Core 会复核 live operation、workspace binding、credential
+  version、可执行文件和 argv policy 后返回对应 credential。`lark-cli` 注入
+  `LARKSUITE_CLI_USER_ACCESS_TOKEN`，`bkectl` 注入 `BKECTL_JWT_TOKEN`；credential 只存在于该目标进程。
+  当前 direct profile 使用 TAE 预置网络策略，不经过 egress-authorizer。
 
-两种 mode 不复用 Sandbox profile。没有 `auto`、部署默认或运行时 fallback。当前 direct profile 遇到
-`webhook_swap` 必须拒绝；未来切换 profile 需要发布对应 TAE policy/network evidence，不能运行时给 direct
-Sandbox 添加 webhook。
+ByteCloud 授权由 Platform 的 `bytecloud` provider device flow 发起和轮询。Core 密封存储 OIDC JWT/access
+token、refresh token 及各自 expiry，并在解析 binding 时于 Core 内刷新；sandbox 既不执行 `bkectl auth`，
+也永远看不到 refresh token。一次合法 `bkectl` 进程只得到当前 access JWT 的副本。
+
+Lark 的两种 mode 不复用 Sandbox profile。没有 `auto`、部署默认或运行时 fallback。当前 direct profile
+遇到 Lark `webhook_swap` 必须拒绝；ByteCloud/bkectl 不支持 webhook。未来切换 profile 需要发布对应 TAE
+policy/network evidence，不能运行时给 direct Sandbox 添加 webhook。
 
 managed image/session runtime projection 只包含固定版本和 hash 的 CLI、非敏感 endpoint/config 与 TAE façade
 地址。execution gateway 在合并完模型允许的 env 后最后注入 reserved value，名称冲突直接拒绝；相关
 request/body/log/trace 必须 redact，不使用 TAE ZTI `user` 替代 agentserver actor。
 
-没有所需 binding 时仍可创建 sandbox 和启动 run；execution gateway 不注入 token/placeholder，具体 CLI
-会得到未配置认证的失败。Core direct resolve 用 `configured=false` 表达正常未配置状态，不回退到另一 mode。
+没有所需 binding 时仍可创建 sandbox 和启动 run；`lark-cli` 可以在无 token 环境中返回未配置认证，
+需要 ByteCloud JWT 的 `bkectl` 业务查询则在 process start 前 fail closed。Core direct resolve 用
+`configured=false` 表达正常未配置状态，不回退到另一 mode。
 binding 的 secret rotation 只推进 `credentialVersion`，不要求重建 TAE Session；revoke/owner/policy 变化推进
 `authorityVersion`。`process_env` 会拒绝后续 process start；已经进入已启动进程内存的 token 字节不能远程
 擦除或逐请求撤销。
 
 ### 11.2 `process_env` 的窄接口与安全边界
 
-direct resolve 路由随 managed execution 一直挂载，但只有 workspace 当前选择 `process_env` 时才成功；
-它只接受 executor-gateway 的精确 mTLS SPIFFE identity，并要求：
+direct resolve 路由随 managed execution 一直挂载，只接受 executor-gateway 的精确 mTLS SPIFFE identity，
+并要求：
 
-1. 请求工具必须是 `shell`、executable 必须是裸 `lark-cli`，target 必须是配置的 TAE PSM；
-2. Core 先从 live operation 选择 default `kind=lark` binding，再以该 binding/version 重做一次
+1. 请求工具必须是 `shell`，executable/argv 必须命中固定策略：`lark-cli` 或只读 `bkectl` leaf command；
+   target 必须是配置的 TAE PSM；
+2. Core 按 consumer 映射选择 binding：`lark-cli -> kind=lark`，`bkectl -> kind=bytecloud`；ByteCloud binding
+   必须来自 Platform OIDC device flow，不能用 `bkectl` kind、sandbox 本地登录或 managed AK/SK 代替；
+3. Core 以该 binding/version 重做一次
    workspace membership、session/run/attempt lease、execution、`process_start`、sandbox generation 和 activity 校验；
-3. provider adapter 只允许得到单个 `Authorization: Bearer`，Core 提取 token 后用
+4. provider adapter 只能返回对应的单个 header：Lark 为 `Authorization: Bearer`，ByteCloud 为
+   `X-Jwt-Token`；Core 提取 token 后用
    `Cache-Control: no-store` 的响应返回 executor-gateway；
-4. executor-gateway 只把 token 合并进该次 TAE StartProcess env，禁止调用方覆盖保留变量；
-5. Core 写 `stage=process_env` 的最小化 audit，audit 失败则不启动进程；
-6. direct profile 不签发 `LARKSUITE_CLI_AGENT_TRACE`，也不投射 placeholder signer/keyring。
+5. executor-gateway 只把 access token/JWT 合并进该次 TAE StartProcess env，禁止调用方覆盖保留变量；
+6. Core 写 `stage=process_env` 的最小化 audit，audit 失败则不启动进程；
+7. direct profile 不签发 `LARKSUITE_CLI_AGENT_TRACE`，也不投射 placeholder signer/keyring。
 
-真实 token 会对目标进程及其子进程可见，这是该模式的明确安全边界。TAE 系统 policy 强制
-`*.feishu.cn` host 白名单；长运行进程中的 token 字节无法擦除，因此 access token 必须短期、最小 scope，
-命令应保持短生命周期。
+真实 token 会对目标进程及其子进程可见，这是该模式的明确安全边界。TAE 系统 policy 使用预置的
+Lark/ByteCloud 网络边界；长运行进程中的 token 字节无法擦除，因此 access token 必须短期、最小 scope，
+命令应保持短生命周期。refresh token 始终只驻留 Core。
 
 ### 11.3 独立 webhook-enabled profile（未来）
 
@@ -577,8 +595,8 @@ materialization/refresh 和审计 redaction 接口。首批实现：
 
 | kind | 注入方式 | 说明 |
 |---|---|---|
-| `lark` | `Authorization: Bearer` | 当前 adapter 接受 Platform 写入的静态 bearer；OAuth refresh 需显式 adapter 后才能宣称支持 |
-| `bytecloud` | `X-Jwt-Token` | workspace AK/SK 仅在 Core 内换 JWT；TAE control-plane AK/SK 不复用 |
+| `lark` | `Authorization: Bearer` / `LARKSUITE_CLI_USER_ACCESS_TOKEN` | Platform device flow；Core 密封并刷新 access/refresh token |
+| `bytecloud` | `X-Jwt-Token` / `BKECTL_JWT_TOKEN` | Platform OIDC device flow；Core 密封并刷新 JWT/refresh token；`bkectl` 只是 consumer |
 | `github` | bearer/PAT | 当前 production registry 只启用 static；App installation 需要配置显式 minter 后才会出现在 schema |
 
 provider adapter 不能扩大网络 host；新增 host 需要平台审核 TAE policy/egress zone。workspace 上传的
@@ -590,7 +608,8 @@ direct profile 的 credential-use event 记录 workspace/run/execution/operation
 policy/credential versions 和 process-start decision；webhook profile 另记录 host/method/path/latency。
 绝不记录 placeholder/真实 credential、Authorization 原文、AK/SK、JWT、PAT、body 或响应内容。
 `webhook_swap` 的真实值只短暂存在于 sealed DB（密文）、Core/egress-authorizer/TAE header mutation 与
-上游连接内存；`process_env` 会存在于目标 `lark-cli` 进程及子进程的 env/内存。两种模式都不得把值
+上游连接内存；`process_env` access token 会存在于目标 `lark-cli` 或 `bkectl` 进程及子进程的 env/内存，
+refresh token 不离开 Core。两种模式都不得把值
 写入 TAE Session metadata、文件、MCP result、日志或 checkpoint。
 
 ### 11.6 SG 硬门禁
@@ -599,11 +618,11 @@ policy/credential versions 和 process-start decision；webhook profile 另记�
 
 | Gate | 通过条件 |
 |---|---|
-| G1 system policy | TAE system policy readback 包含 `*.feishu.cn`，Sandbox/revision/Session 无 webhook |
-| G2 exact process | 只有 exact live `shell + lark-cli + TAE process_start` 能 direct resolve |
-| G3 profile fence | `webhook_swap` workspace 在 direct profile 明确拒绝，无自动 fallback |
-| G4 host boundary | 非 `*.feishu.cn` 目标被 TAE 系统 policy 拒绝 |
-| G5 CLI acceptance | pinned Linux/amd64 lark-cli 使用真实 process env 成功发出请求 |
+| G1 system policy | TAE system policy readback 覆盖审核过的 Lark/ByteCloud endpoint，Sandbox/revision/Session 无 webhook |
+| G2 exact process | 只有 exact live `shell + approved managed CLI argv + TAE process_start` 能 direct resolve |
+| G3 profile fence | Lark `webhook_swap` 在 direct profile 明确拒绝；ByteCloud 只允许 `process_env`，无自动 fallback |
+| G4 host boundary | 非审核目标被 TAE 系统 policy 拒绝，CLI/credential 不能扩大网络边界 |
+| G5 CLI acceptance | pinned Linux/amd64 lark-cli 与 bkectl artifact 校验通过；真实 workspace 验收包含 ByteCloud 查询 |
 | G6 fail-close | Core/credential/audit 依赖故障时不启动新进程 |
 | G7 secret residency | 除目标进程/子进程 env/内存外，fs/stdout/stderr/TAE metadata/Pulumi/Helm/日志/checkpoint 零 token |
 
@@ -612,7 +631,7 @@ ZTI、逐请求 revoke、latency 和 no-bypass 门禁，不能引用 direct prof
 
 ### 11.7 写操作
 
-当前 direct profile 的首切片只授权只读 Lark CLI 场景。未来写操作必须在命令发出前由 execution
+当前 direct profile 只授权固定的只读 Lark CLI 与 bkectl leaf command。未来写操作必须在命令发出前由 execution
 gateway/Core 完成交互审批，并设计可验证的 request-level authority；在此之前不得宣称支持受控写操作。
 
 ## 12. 安全边界
@@ -690,6 +709,13 @@ module/CI job。
 
 trace 使用 run/execution/operation/internal sandbox ID/target generation/provider request log ID 关联；provider
 ID 仅进入访问受限字段。日志 sanitizer 在单测中用 canary secret 验证。
+
+stock app-server 或 worker cleanup 失败时，user-visible `turn_terminal` 只携带分类和诊断 SHA，避免把模型
+内容或 credential 写入 durable transcript；但 SHA 不能成为唯一诊断。worker 必须在 terminal ACK 前写一条
+结构化 ERROR 日志，包含 workspace/session/run/attempt/thread/turn、失败 phase、原始 `turn.error`、每个失败的
+cleanup stage 和 bounded app-server stderr。文本按字段限制长度并标记 `*_bytes`、`*_log_truncated`、
+`*_redacted`，credential/JWT/Bearer 必须脱敏。harness-pool 必须显式转发 worker stderr 到容器日志；不得依赖
+`os/exec` 的 nil stderr（该配置会把唯一详细诊断丢弃）。
 
 首批 SLO 候选（上线前用 SG PoC 数据定最终值）：
 

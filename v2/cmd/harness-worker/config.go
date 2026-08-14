@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -116,11 +117,13 @@ func executeWorker(ctx context.Context, configPath string, bootstrap, prompt, ch
 	}
 	defer deployment.controlClient.CloseIdleConnections()
 	defer deployment.executorClient.CloseIdleConnections()
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	return harnessworker.RunOneShotWorker(ctx, harnessworker.OneShotWorkerConfig{
 		BootstrapPipe: bootstrap, PromptPipe: prompt, CheckpointPipe: checkpoint,
 		VerificationKeyring: deployment.keyring, RuntimePreparer: deployment.preparer,
 		ControlHTTPClient: deployment.controlClient, ExecutorHTTPClient: deployment.executorClient,
 		BaseInstructions: deployment.baseInstructions,
+		Logger:           logger,
 		ProgressHandler:  func(context.Context, harnessworker.ProgressEvent) error { return nil },
 		NotificationHandler: func(context.Context, codexwire.Message) error {
 			// Runtime notifications and progress are forwarded to control by the
@@ -257,16 +260,16 @@ func verifyManagedSkill(document *workerTextArtifactDocument) (string, error) {
 	if document == nil {
 		return "", nil
 	}
-	contents, err := readBoundedWorkerFile("managed Lark skill", document.Path, maximumWorkerSkillBytes)
+	contents, err := readBoundedWorkerFile("managed CLI instructions", document.Path, maximumWorkerSkillBytes)
 	if err != nil {
 		return "", err
 	}
 	digest := sha256.Sum256(contents)
 	if hex.EncodeToString(digest[:]) != document.SHA256 {
-		return "", errors.New("managed Lark skill does not match its deployment digest")
+		return "", errors.New("managed CLI instructions do not match their deployment digest")
 	}
 	if !utf8.Valid(contents) || bytes.IndexByte(contents, 0) >= 0 {
-		return "", errors.New("managed Lark skill must be NUL-free UTF-8 text")
+		return "", errors.New("managed CLI instructions must be NUL-free UTF-8 text")
 	}
 	return string(contents), nil
 }

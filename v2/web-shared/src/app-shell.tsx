@@ -15,11 +15,12 @@ export interface CommandItem {
   run: () => void
 }
 
-export function AppShell({ sidebar, children, commands = [], accountLabel, onSignOut }: {
+export function AppShell({ sidebar, children, commands = [], accountLabel, className, onSignOut }: {
   sidebar: ReactNode
   children: ReactNode
   commands?: CommandItem[]
   accountLabel?: string
+  className?: string
   onSignOut: () => void
 }) {
   const { t } = useTranslation()
@@ -38,7 +39,7 @@ export function AppShell({ sidebar, children, commands = [], accountLabel, onSig
     return () => window.removeEventListener("keydown", handler)
   }, [])
 
-  return <div className={cn("app-shell", collapsed && "sidebar-collapsed", mobileOpen && "sidebar-mobile-open")}>
+  return <div className={cn("app-shell", className, collapsed && "sidebar-collapsed", mobileOpen && "sidebar-mobile-open")}>
     <aside className="app-sidebar" aria-label="Application navigation" onClick={() => setMobileOpen(false)}>
       <div className="sidebar-collapse-row">
         <Tooltip label={collapsed ? t("common.expand") : t("common.collapse")}>

@@ -100,7 +100,7 @@ func TestProductionWorkflowHasBoundedServiceOnlyDevelopmentPath(t *testing.T) {
 	fastPath = fastPath[start:end]
 	for _, required := range []string{
 		"build-service-image.sh",
-		"--cache=gha",
+		"--cache=none",
 		"lock-developer-service",
 		"del(.images.service)",
 		"cmp \"${release_dir}/before.json\" \"${release_dir}/after.json\"",
@@ -112,6 +112,7 @@ func TestProductionWorkflowHasBoundedServiceOnlyDevelopmentPath(t *testing.T) {
 	for _, forbidden := range []string{
 		"pnpm", "make -C v2 check", "CODEX_URL", "LARK_CLI_URL",
 		"build-images.sh", "MANAGED_SANDBOX_REPOSITORY", "HARNESS_REPOSITORY",
+		"--cache=gha",
 	} {
 		if strings.Contains(fastPath, forbidden) {
 			t.Fatalf("service-only workflow retained redundant work %q", forbidden)

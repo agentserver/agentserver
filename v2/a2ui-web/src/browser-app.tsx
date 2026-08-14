@@ -1,4 +1,4 @@
-import { Archive, Bot, Check, ChevronDown, CircleStop, Code2, Ellipsis, KeyRound, MessageSquare, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Send, Sparkles, SquareTerminal, Wrench } from "lucide-react"
+import { Archive, ChevronDown, CircleStop, Code2, KeyRound, MessageSquare, Pencil, Plus, RefreshCw, Search, Send, Sparkles, SquareTerminal } from "lucide-react"
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react"
 import { useTranslation } from "react-i18next"
 import { useLocation, useNavigate } from "react-router-dom"
@@ -16,8 +16,6 @@ import {
   ResourceAPI,
   SSEDecoder,
   SidebarBrand,
-  SidebarNavButton,
-  SidebarSearchButton,
   SidebarSection,
   SignedOutShell,
   Textarea,
@@ -266,12 +264,9 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
 
   const filtered = sessions.filter((session) => !query.trim() || session.title.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
   const sidebar = <>
-    <SidebarBrand title={t("browser.title")} subtitle={shortID(workspaceId)} />
+    <SidebarBrand mark="A" title={t("browser.title")} subtitle="Browser" />
     <div className="browser-workspace"><span className="workspace-avatar">W</span><span className="sidebar-copy"><small>{t("browser.workspace")}</small><strong>{shortID(workspaceId)}</strong></span></div>
-    <SidebarSection>
-      <SidebarNavButton icon={<Plus size={17} />} label={t("browser.newChat")} onClick={() => void createSession()} />
-      <SidebarSearchButton onClick={() => document.getElementById("session-search")?.focus()} />
-    </SidebarSection>
+    <button className="browser-new-chat" type="button" onClick={() => void createSession()}><Plus size={17} /><span className="sidebar-copy">{t("browser.newChat")}</span></button>
     <div className="session-search sidebar-copy"><Search size={14} /><input id="session-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("browser.searchChats")} /></div>
     <SidebarSection label={t("browser.today")}>
       {sessionLoading ? <div className="session-loading sidebar-copy">{t("common.loading")}</div> : filtered.map((session) => <SessionButton key={session.sessionId} session={session} active={session.sessionId === selectedId} onSelect={() => selectSession(session.sessionId)} onRename={() => void renameSession(session)} onArchive={() => void archiveSession(session)} />)}
@@ -285,11 +280,13 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
     ...sessions.map((session) => ({ id: session.sessionId, label: session.title, keywords: session.sessionId, icon: <MessageSquare size={16} />, run: () => selectSession(session.sessionId) })),
   ], [createSession, sessions, t])
 
-  return <AppShell sidebar={sidebar} commands={commands} accountLabel={shortID(workspaceId)} onSignOut={onSignOut}>
-    <div className="browser-main">
+  const emptyConversation = !transcriptLoading && !conversation.error && conversation.messages.length === 0 && conversation.tools.length === 0 && conversation.surfaceOrder.length === 0
+
+  return <AppShell className="browser-shell" sidebar={sidebar} commands={commands} accountLabel={shortID(workspaceId)} onSignOut={onSignOut}>
+    <div className={`browser-main${emptyConversation ? " browser-main-empty" : ""}`} data-run-status={conversation.status}>
       <header className="conversation-header"><div><strong>{sessions.find((item) => item.sessionId === selectedId)?.title ?? t("browser.newChat")}</strong><small>{shortID(workspaceId)}</small></div><Button variant="ghost" size="icon" onClick={() => { void loadSessions(selectedId); if (selectedId) void loadTranscript(selectedId) }} aria-label={t("common.refresh")}><RefreshCw size={16} /></Button></header>
       <ConversationView state={conversation} loading={transcriptLoading} truncated={transcriptTruncated} onDecision={decide} onConfigure={() => { window.location.href = `https://agent.byted.bps.dev/workspaces/${workspaceId}/gateways` }} />
-      <Composer value={prompt} onChange={setPrompt} onSubmit={sendPrompt} onCancel={cancelRun} onReconnect={() => void stream(true)} state={conversation} inputRef={composerRef} />
+      <Composer centered={emptyConversation} value={prompt} onChange={setPrompt} onSubmit={sendPrompt} onCancel={cancelRun} onReconnect={() => void stream(true)} state={conversation} inputRef={composerRef} />
     </div>
   </AppShell>
 }
@@ -302,14 +299,14 @@ function SessionButton({ session, active, onSelect, onRename, onArchive }: { ses
 function ConversationView({ state, loading, truncated, onDecision, onConfigure }: { state: ConversationState; loading: boolean; truncated: boolean; onDecision: (approval: ApprovalView, decision: "approve" | "deny") => Promise<void>; onConfigure: () => void }) {
   const { t } = useTranslation()
   if (loading) return <div className="conversation-scroll"><div className="session-loading">{t("common.loading")}</div></div>
-  const empty = state.messages.length === 0 && state.tools.length === 0 && state.surfaceOrder.length === 0
+  const empty = !state.error && state.messages.length === 0 && state.tools.length === 0 && state.surfaceOrder.length === 0
   const missingGrant = Boolean(state.error && /gateway|grant|credential|model_authority/iu.test(`${state.error.code} ${state.error.message}`))
   return <div className="conversation-scroll"><div className="conversation-timeline">
     {truncated ? <div className="notice-banner">{t("browser.historyTruncated")}</div> : null}
     {empty ? <div className="browser-welcome"><div className="welcome-mark"><Sparkles size={22} /></div><h1>{t("browser.welcomeTitle")}</h1><p>{t("browser.welcomeDescription")}</p></div> : null}
-    {state.messages.map((message) => <article key={message.id} className={`message message-${message.role}`}><div className="message-avatar">{message.role === "user" ? <CircleUser /> : <Bot size={17} />}</div><div className="message-body"><div className="message-role">{message.role === "user" ? t("browser.you") : t("browser.assistant")}</div><div className="message-copy">{message.text}{!message.complete && ["connecting", "running", "cancelling"].includes(state.status) ? <span className="stream-caret" /> : null}</div></div></article>)}
+    {state.messages.map((message) => <article key={message.id} className={`message message-${message.role}`}><div className="message-body"><span className="sr-only">{message.role === "user" ? t("browser.you") : t("browser.assistant")}</span><div className="message-copy">{message.text}{!message.complete && ["connecting", "running", "cancelling"].includes(state.status) ? <span className="stream-caret" /> : null}</div></div></article>)}
     {state.reasoning.length ? <details className="reasoning-card"><summary><Sparkles size={14} />{t("browser.reasoning")}<ChevronDown size={14} /></summary>{state.reasoning.map((item) => <pre key={item.id}>{item.text}</pre>)}</details> : null}
-    {state.tools.map((tool) => <Card className="tool-card" key={tool.id}><div className="tool-header"><span><SquareTerminal size={15} />{tool.name}</span><Badge tone={tool.status === "completed" ? "success" : "neutral"}>{tool.status}</Badge></div>{tool.arguments ? <pre>{prettyJSON(tool.arguments)}</pre> : null}{tool.progress ? <div className="tool-progress">{tool.progress.total && tool.progress.value !== null ? <progress max={tool.progress.total} value={tool.progress.value} /> : null}<span>{tool.progress.message}</span></div> : null}{tool.result ? <pre className="tool-result">{tool.result}</pre> : null}</Card>)}
+    {state.tools.map((tool) => <details className={`tool-card tool-card-${tool.status}`} key={tool.id} open={tool.status !== "completed" || undefined}><summary className="tool-header"><span><SquareTerminal size={15} /><strong>{tool.name}</strong></span><span className="tool-header-meta"><Badge tone={tool.status === "completed" ? "success" : tool.status === "failed" ? "danger" : "neutral"}>{tool.status}</Badge><ChevronDown className="tool-chevron" size={14} /></span></summary><div className="tool-content">{tool.arguments ? <pre>{prettyJSON(tool.arguments)}</pre> : null}{tool.progress ? <div className="tool-progress">{tool.progress.total && tool.progress.value !== null ? <progress max={tool.progress.total} value={tool.progress.value} /> : null}<span>{tool.progress.message}</span></div> : null}{tool.result ? <pre className="tool-result">{tool.result}</pre> : null}</div></details>)}
     {state.approvalOrder.map((id) => state.approvals[id]).filter((item): item is ApprovalView => Boolean(item)).map((approval) => <Card className="approval-card" key={approval.approvalId}><div className="approval-icon"><KeyRound size={17} /></div><div><h3>{t("browser.approval")}</h3><p>{approval.toolName} · {shortID(approval.executionId)}</p><Badge tone={approval.status === "pending" ? "warning" : approval.status === "approved" || approval.status === "consumed" ? "success" : "neutral"}>{approval.status}</Badge></div>{approval.status === "pending" ? <div className="approval-actions"><Button variant="outline" size="sm" onClick={() => void onDecision(approval, "deny")}>{t("browser.deny")}</Button><Button size="sm" onClick={() => void onDecision(approval, "approve")}>{t("browser.approve")}</Button></div> : null}</Card>)}
     {state.surfaceOrder.map((id) => state.surfaces[id]).filter((item): item is A2UISurface => Boolean(item)).map((surface) => <Card className="a2ui-surface" key={surface.id}><div className="surface-label"><Code2 size={14} />{t("browser.a2ui")}</div><Surface surface={surface} componentId="root" ancestors={new Set()} depth={0} /></Card>)}
     {state.error ? <div className="run-error"><strong>{state.error.code}</strong><p>{state.error.message}</p>{missingGrant ? <Button variant="outline" onClick={onConfigure}><KeyRound size={14} />{t("browser.configureGateway")}</Button> : null}</div> : null}
@@ -329,11 +326,17 @@ function Surface({ surface, componentId, ancestors, depth }: { surface: A2UISurf
   return value.includes("\n") ? <pre>{value}</pre> : <p>{value}</p>
 }
 
-function Composer({ value, onChange, onSubmit, onCancel, onReconnect, state, inputRef }: { value: string; onChange: (value: string) => void; onSubmit: (event: FormEvent) => Promise<void>; onCancel: () => Promise<void>; onReconnect: () => void; state: ConversationState; inputRef: React.RefObject<HTMLTextAreaElement | null> }) {
+function Composer({ centered, value, onChange, onSubmit, onCancel, onReconnect, state, inputRef }: { centered: boolean; value: string; onChange: (value: string) => void; onSubmit: (event: FormEvent) => Promise<void>; onCancel: () => Promise<void>; onReconnect: () => void; state: ConversationState; inputRef: React.RefObject<HTMLTextAreaElement | null> }) {
   const { t } = useTranslation()
   const busy = ["connecting", "running", "cancelling"].includes(state.status)
+  useEffect(() => {
+    const input = inputRef.current
+    if (!input) return
+    input.style.height = "auto"
+    input.style.height = `${Math.min(input.scrollHeight, 280)}px`
+  }, [inputRef, value])
   const keyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit() } }
-  return <div className="composer-wrap"><form className="composer" onSubmit={(event) => void onSubmit(event)}><Textarea ref={inputRef} rows={1} value={value} disabled={busy} onChange={(event) => onChange(event.target.value)} onKeyDown={keyDown} placeholder={t("browser.prompt")} aria-label={t("browser.prompt")} /><div className="composer-footer"><span className={`run-status status-${state.status}`}>{statusLabel(t, state.status)}</span><div>{state.status === "disconnected" ? <Button type="button" variant="outline" size="sm" onClick={onReconnect}><RefreshCw size={14} />{t("browser.reconnect")}</Button> : null}{busy && state.runId ? <Button type="button" size="icon" onClick={() => void onCancel()} aria-label={t("browser.stop")}><CircleStop size={17} /></Button> : <Button type="submit" size="icon" disabled={!value.trim() || busy} aria-label={t("browser.send")}><Send size={17} /></Button>}</div></div></form><p className="composer-note">{t("browser.disclaimer")}</p></div>
+  return <div className={`composer-wrap${centered ? " composer-centered" : ""}`}><form className="composer" onSubmit={(event) => void onSubmit(event)}><Textarea className="composer-input" ref={inputRef} rows={1} value={value} disabled={busy} onChange={(event) => onChange(event.target.value)} onKeyDown={keyDown} placeholder={t("browser.prompt")} aria-label={t("browser.prompt")} /><div className="composer-footer"><span className={`run-status status-${state.status}`}>{statusLabel(t, state.status)}</span><div>{state.status === "disconnected" ? <Button type="button" variant="outline" size="sm" onClick={onReconnect}><RefreshCw size={14} />{t("browser.reconnect")}</Button> : null}{busy && state.runId ? <Button type="button" size="icon" onClick={() => void onCancel()} aria-label={t("browser.stop")}><CircleStop size={17} /></Button> : <Button type="submit" size="icon" disabled={!value.trim() || busy} aria-label={t("browser.send")}><Send size={17} /></Button>}</div></div></form><p className="composer-note">{t("browser.disclaimer")}</p></div>
 }
 
 function LabelledInput({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (value: string) => void; placeholder?: string }) {
@@ -348,7 +351,6 @@ function workspaceFromLocation(pathname: string, search: string): string {
 }
 
 function prettyJSON(raw: string): string { try { return JSON.stringify(JSON.parse(raw), null, 2) } catch { return raw } }
-function CircleUser() { return <span className="user-glyph">U</span> }
 function statusLabel(t: (key: string) => string, status: ConversationState["status"]): string {
   if (status === "idle") return ""
   const key: Record<string, string> = { connecting: "browser.connecting", running: "browser.running", cancelling: "browser.running", completed: "browser.completed", failed: "browser.failed", cancelled: "browser.cancelled", disconnected: "browser.disconnected" }

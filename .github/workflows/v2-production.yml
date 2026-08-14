@@ -75,9 +75,12 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: v2/go.mod
-          cache-dependency-path: |
-            v2/go.sum
-            v2/providers/tae/go.sum
+          # Ephemeral k8s-sg runners have no local Actions-cache data path.
+          # Restoring the combined GOMODCACHE/GOCACHE currently attempts a
+          # ~577 MB remote transfer that remains at 0 B/s and blocks releases.
+          # Let Go fetch only the modules required by this build; the pinned
+          # bkectl build cache below remains independently content-addressed.
+          cache: false
 
       - name: Configure code.byted.org read access
         env:

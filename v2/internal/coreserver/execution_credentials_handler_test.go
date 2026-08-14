@@ -81,13 +81,13 @@ func (authorizer *testExecutionCredentialAuthorizer) AuthorizeWorkload(_ *http.R
 	return authorizer.err
 }
 
-func TestResolveExecutionLarkCredentialMaterializesExactLiveBinding(t *testing.T) {
+func TestResolveExecutionCredentialMaterializesExactLiveBinding(t *testing.T) {
 	service, store, request := testExecutionCredentialService(t)
-	result, err := service.ResolveExecutionLarkCredential(t.Context(), request)
+	result, err := service.ResolveExecutionCredential(t.Context(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Configured || result.AccessToken != "real-workspace-token" || result.ApplicationID != "cli_agentserver_sg" ||
+	if !result.Configured || result.Credential != "real-workspace-token" || result.ApplicationID != "cli_agentserver_sg" ||
 		result.BindingID != store.binding.ID || result.AuthorityVersion != store.binding.AuthorityVersion ||
 		result.CredentialVersion != store.binding.CredentialVersion || store.authorityCalls != 1 || store.useCalls != 1 {
 		t.Fatalf("direct credential result/store = %#v / %#v", result, store)
@@ -99,10 +99,10 @@ func TestResolveExecutionLarkCredentialMaterializesExactLiveBinding(t *testing.T
 	}
 }
 
-func TestResolveExecutionLarkCredentialRejectsBindingRevokedAfterAuthoritySelection(t *testing.T) {
+func TestResolveExecutionCredentialRejectsBindingRevokedAfterAuthoritySelection(t *testing.T) {
 	service, store, request := testExecutionCredentialService(t)
 	store.withoutBinding = true
-	if _, err := service.ResolveExecutionLarkCredential(t.Context(), request); err == nil {
+	if _, err := service.ResolveExecutionCredential(t.Context(), request); err == nil {
 		t.Fatal("process credential survived removal of the selected workspace binding")
 	}
 	if store.authorityCalls != 1 || store.useCalls != 0 || len(store.events) != 0 {
@@ -168,19 +168,19 @@ func TestExecutionCredentialHandlerRequiresWorkloadAndReturnsNoStore(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, corecontract.ResolveExecutionLarkCredentialPath, bytes.NewReader(raw))
+	request := httptest.NewRequest(http.MethodPost, corecontract.ResolveExecutionCredentialPath, bytes.NewReader(raw))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" ||
-		len(authorizer.actions) != 1 || authorizer.actions[0] != "execution.credentials.lark.resolve" {
+		len(authorizer.actions) != 1 || authorizer.actions[0] != "execution.credentials.resolve" {
 		t.Fatalf("handler response/action = %d %#v / %#v", response.Code, response.Header(), authorizer.actions)
 	}
-	var result corecontract.ResolveExecutionLarkCredentialResponse
+	var result corecontract.ResolveExecutionCredentialResponse
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if !result.Configured || result.AccessToken != "real-workspace-token" || result.ApplicationID != "cli_agentserver_sg" || store.useCalls != 1 {
+	if !result.Configured || result.Credential != "real-workspace-token" || result.ApplicationID != "cli_agentserver_sg" || store.useCalls != 1 {
 		t.Fatalf("handler direct credential result/store = %#v / %#v", result, store)
 	}
 
@@ -191,12 +191,12 @@ func TestExecutionCredentialHandlerRequiresWorkloadAndReturnsNoStore(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	authorityRequest := httptest.NewRequest(http.MethodPost, corecontract.ResolveExecutionLarkCredentialAuthorityPath, bytes.NewReader(authorityRaw))
+	authorityRequest := httptest.NewRequest(http.MethodPost, corecontract.ResolveExecutionCredentialAuthorityPath, bytes.NewReader(authorityRaw))
 	authorityRequest.Header.Set("Content-Type", "application/json")
 	authorityResponse := httptest.NewRecorder()
 	handler.ServeHTTP(authorityResponse, authorityRequest)
 	if authorityResponse.Code != http.StatusOK || authorityResponse.Header().Get("Cache-Control") != "no-store" ||
-		len(authorizer.actions) != 2 || authorizer.actions[1] != "execution.credentials.lark.resolve-authority" {
+		len(authorizer.actions) != 2 || authorizer.actions[1] != "execution.credentials.resolve-authority" {
 		t.Fatalf("authority response/action = %d %#v / %#v", authorityResponse.Code, authorityResponse.Header(), authorizer.actions)
 	}
 	var authority corecontract.ResolveEgressCredentialAuthorityResponse
@@ -210,13 +210,13 @@ func TestExecutionCredentialHandlerRequiresWorkloadAndReturnsNoStore(t *testing.
 
 	authorizer.err = errors.New("wrong workload")
 	denied := httptest.NewRecorder()
-	handler.ServeHTTP(denied, httptest.NewRequest(http.MethodPost, corecontract.ResolveExecutionLarkCredentialPath, bytes.NewReader(raw)))
+	handler.ServeHTTP(denied, httptest.NewRequest(http.MethodPost, corecontract.ResolveExecutionCredentialPath, bytes.NewReader(raw)))
 	if denied.Code != http.StatusForbidden || store.useCalls != 1 {
 		t.Fatalf("unauthorized handler response/store = %d / %#v", denied.Code, store)
 	}
 }
 
-func testExecutionCredentialService(t *testing.T) (*EgressCredentialService, *testExecutionCredentialStore, corecontract.ResolveExecutionLarkCredentialRequest) {
+func testExecutionCredentialService(t *testing.T) (*EgressCredentialService, *testExecutionCredentialStore, corecontract.ResolveExecutionCredentialRequest) {
 	t.Helper()
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 	keyring, err := corecredentials.NewKeyring("credential-key-1", map[string][]byte{
@@ -267,7 +267,7 @@ func testExecutionCredentialService(t *testing.T) (*EgressCredentialService, *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := corecontract.ResolveExecutionLarkCredentialRequest{
+	command := corecontract.ResolveExecutionCredentialRequest{
 		Operation: corecontract.EgressCredentialOperation{
 			WorkspaceID: binding.WorkspaceID, SessionID: "30000000-0000-4000-8000-000000000003",
 			ActorID:              "40000000-0000-4000-8000-000000000004",
@@ -279,7 +279,7 @@ func testExecutionCredentialService(t *testing.T) (*EgressCredentialService, *te
 			SandboxID:   "a0000000-0000-4000-8000-00000000000a", TargetGeneration: 4,
 		},
 		TAEPSM: "bytedance.sandbox.agentserver", PolicySHA256: larkegresspolicy.SHA256Hex(),
-		ToolName: "shell", Executable: "lark-cli",
+		ProviderKind: "lark", ToolName: "shell", Executable: "lark-cli", Arguments: []string{},
 		BindingID: binding.ID, AuthorityVersion: binding.AuthorityVersion,
 		CredentialVersion: binding.CredentialVersion,
 	}
@@ -291,7 +291,7 @@ func testExecutionCredentialService(t *testing.T) (*EgressCredentialService, *te
 
 func testExecutionProcessProof(
 	t *testing.T,
-	command corecontract.ResolveExecutionLarkCredentialRequest,
+	command corecontract.ResolveExecutionCredentialRequest,
 	now time.Time,
 ) string {
 	t.Helper()
@@ -319,7 +319,7 @@ func testExecutionProcessProof(
 }
 
 func testAuthorizeProcessEnvironmentRequest(
-	command corecontract.ResolveExecutionLarkCredentialRequest,
+	command corecontract.ResolveExecutionCredentialRequest,
 	proof, token string,
 ) corecontract.AuthorizeProcessEnvironmentEgressRequest {
 	return corecontract.AuthorizeProcessEnvironmentEgressRequest{

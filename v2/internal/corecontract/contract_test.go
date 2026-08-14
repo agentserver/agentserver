@@ -102,10 +102,10 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 		ReleaseManagedSandboxActivityPath("{sandboxId}"):             "releaseManagedSandboxActivity",
 		BeginManagedSandboxDeletePath("{sandboxId}"):                 "beginManagedSandboxDelete",
 		AuthorizeManagedSandboxOperationPath:                         "authorizeManagedSandboxOperation",
-		ResolveExecutionLarkCredentialAuthorityPath:                   "resolveExecutionLarkCredentialAuthority",
+		ResolveExecutionCredentialAuthorityPath:                      "resolveExecutionCredentialAuthority",
 		ResolveEgressCredentialPath:                                  "resolveEgressCredential",
 		AuthorizeProcessEnvironmentEgressPath:                        "authorizeProcessEnvironmentEgress",
-		ResolveExecutionLarkCredentialPath:                           "resolveExecutionLarkCredential",
+		ResolveExecutionCredentialPath:                               "resolveExecutionCredential",
 		RecordEgressCredentialAuditPath:                              "recordEgressCredentialAuditEvent",
 	}
 	for path, operationID := range wantPost {
@@ -186,8 +186,8 @@ func TestInternalOpenAPIPathsMatchClientContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "ResolveEgressCredentialAuthorityResponse", reflect.TypeFor[ResolveEgressCredentialAuthorityResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "ResolveEgressCredentialRequest", reflect.TypeFor[ResolveEgressCredentialRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "ResolveEgressCredentialResponse", reflect.TypeFor[ResolveEgressCredentialResponse]())
-	assertSchemaFields(t, document.Components.Schemas, "ResolveExecutionLarkCredentialRequest", reflect.TypeFor[ResolveExecutionLarkCredentialRequest]())
-	assertSchemaFields(t, document.Components.Schemas, "ResolveExecutionLarkCredentialResponse", reflect.TypeFor[ResolveExecutionLarkCredentialResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "ResolveExecutionCredentialRequest", reflect.TypeFor[ResolveExecutionCredentialRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "ResolveExecutionCredentialResponse", reflect.TypeFor[ResolveExecutionCredentialResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "AuthorizeProcessEnvironmentEgressRequest", reflect.TypeFor[AuthorizeProcessEnvironmentEgressRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "RecordEgressCredentialAuditRequest", reflect.TypeFor[RecordEgressCredentialAuditRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "RecordEgressCredentialAuditResponse", reflect.TypeFor[RecordEgressCredentialAuditResponse]())

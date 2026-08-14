@@ -24,7 +24,7 @@ Platform gateway ───────────────► v2 Core
 execution gateway ──────────────►│ resolve authority + process token
                                   │ (process_env direct profile)
                                   ▼
-                         exact lark-cli process ─► TAE system *.feishu.cn allowlist ─► upstream
+                         exact managed CLI process ─► TAE preset/private network policy ─► upstream
 
 future webhook profile:
 TAE Agent Gateway ─► egress-authorizer ─► Core resolve ─► one-hop header mutation
@@ -64,12 +64,15 @@ Platform 使用以下资源路由：
 - egress-authorizer 调 `...:resolve`，取得 closed-world provider header mutation；
 - egress-authorizer 调 `credential-use-events`，写入最小化审计事件。
 - workspace 当前为 `process_env` 时 executor-gateway 调
-  `POST /internal/v2/execution/credentials/lark:resolve`，只为 live `shell + lark-cli + TAE process_start`
-  取得真实 access token，并以 `Cache-Control: no-store` 传输。
+  `POST /internal/v2/execution/credentials:resolve`，只为通过 provider-specific argv policy 的 live
+  `shell + managed CLI + TAE process_start` 取得真实 credential，并以 `Cache-Control: no-store` 传输。
+  当前支持 `lark-cli` 的 user access token 和 `bkectl` 的 ByteCloud JWT；Core 会再次拒绝 `bkectl auth`、
+  write/risky、未知命令以及 `--debug`、`--confirm-write`。
 
 egress resolve response 不包含 token、AK/SK、refresh token、sealed bytes 或 provider response body；direct
-Lark resolve 是唯一返回真实 access token 的窄接口，绝不返回 refresh token、sealed bytes 或任意 provider
-header。缺少 binding 以 `configured=false` 表达，不阻塞 managed sandbox 或部署启动，也不回退到另一 mode。
+execution credential resolve 是唯一返回真实 process credential 的窄接口，绝不返回 refresh token、sealed
+bytes 或任意未声明 provider header。缺少 binding 以 `configured=false` 表达，不阻塞 managed sandbox 或
+部署启动，也不回退到另一 mode。
 
 ## Provider 规则
 

@@ -13,6 +13,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/egresscapability"
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 	"github.com/agentserver/agentserver/v2/internal/executorgateway"
+	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
 	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
@@ -51,7 +52,7 @@ func TestConfigureManagedExecutionSecurityLoadsSeparatedSigners(t *testing.T) {
 		environment[executorgateway.ManagedLarkApplicationIDEnvironment] != "cli_agentserver_sg" ||
 		environment[executorgateway.ManagedLarkNoUpdateNotifierEnvironment] != "1" ||
 		environment[executorgateway.ManagedLarkNoSkillsNotifierEnvironment] != "1" ||
-		environment[executorgateway.ManagedLarkPathEnvironment] != executorgateway.ManagedLarkPathValue {
+		environment[executorgateway.ManagedToolPathEnvironment] != executorgateway.ManagedToolPathValue {
 		t.Fatalf("managed process environment = %#v", environment)
 	}
 	verifier, err := egresscapability.NewVerifier([]egresscapability.TrustedKey{{
@@ -68,7 +69,7 @@ func TestConfigureManagedExecutionSecurityLoadsSeparatedSigners(t *testing.T) {
 	}
 	if claims.OperationID != request.Operation.OperationID || claims.SandboxID != request.Target.ID ||
 		claims.TargetGeneration != request.Target.Generation || claims.BindingID != "90000000-0000-4000-8000-000000000009" ||
-		claims.AuthorityVersion != 9 || claims.PolicySHA256 != strings.Repeat("a", 64) {
+		claims.AuthorityVersion != 9 || claims.PolicySHA256 != larkegresspolicy.SHA256Hex() {
 		t.Fatalf("configured placeholder claims = %#v", claims)
 	}
 }
@@ -87,10 +88,10 @@ func TestConfigureManagedExecutionSecuritySelectsWorkspaceProcessEnvironment(t *
 	issuer, fencer, err := configureManagedExecutionSecurity(
 		getenv, gatewayServeInsecureDevelopment, backend, client,
 		testManagedCredentialAuthorityForMode(t, managedcredential.ModeProcessEnv),
-		staticManagedProcessCredentialSource{credential: executorgateway.ManagedLarkProcessCredential{
+		staticManagedProcessCredentialSource{credential: executorgateway.ManagedProcessCredential{
 			Configured: true, CredentialMode: managedcredential.ModeProcessEnv,
-			AccessToken: "real-lark-token", ApplicationID: "cli_agentserver_sg", BindingID: "90000000-0000-4000-8000-000000000009",
-			AuthorityVersion: 9, CredentialVersion: 1, PolicySHA256: strings.Repeat("a", 64),
+			ProviderKind: "lark", Credential: "real-lark-token", ApplicationID: "cli_agentserver_sg", BindingID: "90000000-0000-4000-8000-000000000009",
+			AuthorityVersion: 9, CredentialVersion: 1, PolicySHA256: larkegresspolicy.SHA256Hex(),
 			TAEPSM: "bytedance.sandbox.agentserver",
 		}},
 	)
@@ -128,10 +129,10 @@ func TestConfigureManagedExecutionSecurityDirectProfileHasNoPlaceholderAuthority
 	issuer, fencer, err := configureManagedExecutionSecurity(
 		getenv, gatewayServeInsecureDevelopment, backend, client,
 		testManagedCredentialAuthorityForMode(t, managedcredential.ModeProcessEnv),
-		staticManagedProcessCredentialSource{credential: executorgateway.ManagedLarkProcessCredential{
-			Configured: true, CredentialMode: managedcredential.ModeProcessEnv, AccessToken: "real-lark-token",
+		staticManagedProcessCredentialSource{credential: executorgateway.ManagedProcessCredential{
+			Configured: true, CredentialMode: managedcredential.ModeProcessEnv, ProviderKind: "lark", Credential: "real-lark-token",
 			ApplicationID: "cli_agentserver_sg", BindingID: "90000000-0000-4000-8000-000000000009",
-			AuthorityVersion: 9, CredentialVersion: 1, PolicySHA256: strings.Repeat("a", 64),
+			AuthorityVersion: 9, CredentialVersion: 1, PolicySHA256: larkegresspolicy.SHA256Hex(),
 			TAEPSM: "bytedance.sandbox.agentserver",
 		}},
 	)
@@ -143,7 +144,7 @@ func TestConfigureManagedExecutionSecurityDirectProfileHasNoPlaceholderAuthority
 		t.Fatalf("direct process environment = %#v, %v", environment, err)
 	}
 	webhookAuthority := testManagedCredentialAuthorityForMode(t, managedcredential.ModeWebhookSwap)
-	directIssuer, err := executorgateway.NewDirectWorkspaceManagedLarkEnvironmentIssuer(
+	directIssuer, err := executorgateway.NewDirectWorkspaceManagedEnvironmentIssuer(
 		webhookAuthority, staticManagedProcessCredentialSource{}, "bytedance.sandbox.agentserver", nil,
 	)
 	if err != nil {
@@ -192,8 +193,8 @@ func TestConfigureManagedExecutionSecurityRejectsPartialOrConfusedAuthority(t *t
 
 func TestConfigureManagedExecutionSecurityRequiresBothCoreCredentialSources(t *testing.T) {
 	for name, sources := range map[string]struct {
-		authority   executorgateway.ManagedLarkEgressAuthoritySource
-		credentials executorgateway.ManagedLarkProcessCredentialSource
+		authority   executorgateway.ManagedCredentialAuthoritySource
+		credentials executorgateway.ManagedProcessCredentialSource
 	}{
 		"missing authority":                 {credentials: staticManagedProcessCredentialSource{}},
 		"missing process credential source": {authority: testManagedCredentialAuthority(t)},
@@ -294,29 +295,30 @@ func validManagedBackendConfiguration(t *testing.T, includeEgress bool) (map[str
 }
 
 type staticManagedProcessCredentialSource struct {
-	credential executorgateway.ManagedLarkProcessCredential
+	credential executorgateway.ManagedProcessCredential
 }
 
-func (source staticManagedProcessCredentialSource) ResolveManagedLarkProcessCredential(
+func (source staticManagedProcessCredentialSource) ResolveManagedProcessCredential(
 	_ context.Context,
 	_ executorgateway.ManagedProcessEnvironmentRequest,
 	_ string,
-	_ executorgateway.ManagedLarkEgressAuthority,
-) (executorgateway.ManagedLarkProcessCredential, error) {
+	_ executorgateway.ManagedCredentialAuthority,
+) (executorgateway.ManagedProcessCredential, error) {
 	return source.credential, nil
 }
 
-func testManagedCredentialAuthority(t *testing.T) executorgateway.ManagedLarkEgressAuthoritySource {
+func testManagedCredentialAuthority(t *testing.T) executorgateway.ManagedCredentialAuthoritySource {
 	return testManagedCredentialAuthorityForMode(t, managedcredential.ModeWebhookSwap)
 }
 
-func testManagedCredentialAuthorityForMode(t *testing.T, mode string) executorgateway.ManagedLarkEgressAuthoritySource {
+func testManagedCredentialAuthorityForMode(t *testing.T, mode string) executorgateway.ManagedCredentialAuthoritySource {
 	t.Helper()
-	authority, err := executorgateway.NewFrozenManagedLarkEgressAuthoritySource(executorgateway.ManagedLarkEgressAuthority{
+	authority, err := executorgateway.NewFrozenManagedCredentialAuthoritySource(executorgateway.ManagedCredentialAuthority{
 		CredentialMode: mode,
+		ProviderKind:   "lark",
 		ApplicationID:  "cli_agentserver_sg",
 		BindingID:      "90000000-0000-4000-8000-000000000009", AuthorityVersion: 9,
-		CredentialVersion: 1, PolicySHA256: strings.Repeat("a", 64),
+		CredentialVersion: 1, PolicySHA256: larkegresspolicy.SHA256Hex(),
 	})
 	if err != nil {
 		t.Fatal(err)

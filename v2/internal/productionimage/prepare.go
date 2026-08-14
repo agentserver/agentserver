@@ -17,7 +17,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/stockruntime"
 )
 
-const maximumManagedLarkSkillBytes = 256 * 1024
+const maximumManagedSkillBytes = 1024 * 1024
 
 type PrepareConfig struct {
 	Kind             string
@@ -27,7 +27,9 @@ type PrepareConfig struct {
 	CodexExecutable  string
 	BwrapExecutable  string
 	RequirementsFile string
+	ManagedSkillFile string
 	LarkSkillFile    string
+	BkectlSkillRoot  string
 	OutputDirectory  string
 }
 
@@ -71,7 +73,7 @@ func Prepare(config PrepareConfig) (_ PrepareResult, returnErr error) {
 	for _, binary := range ExpectedBinaries(config.Kind) {
 		source := filepath.Join(config.BinaryDirectory, binary)
 		var validationErr error
-		if config.Kind == KindManagedSandbox && binary == "lark-cli" {
+		if config.Kind == KindManagedSandbox && (binary == "lark-cli" || binary == "bkectl") {
 			validationErr = validateExternalLinuxExecutable(source, binary, config.Platform)
 		} else {
 			validationErr = validateLinuxGoExecutable(source, binary, config.Platform)
@@ -87,6 +89,11 @@ func Prepare(config PrepareConfig) (_ PrepareResult, returnErr error) {
 			entry, err = copyPinnedArtifact(
 				source, rootfs, "usr/local/bin/"+binary, 0o555,
 				ManagedLarkCLISHA256, ManagedLarkCLISizeBytes, "managed Lark CLI",
+			)
+		} else if config.Kind == KindManagedSandbox && binary == "bkectl" {
+			entry, err = copyPinnedArtifact(
+				source, rootfs, "usr/local/bin/"+binary, 0o555,
+				ManagedBkectlCLISHA256, ManagedBkectlCLISizeBytes, "managed bkectl CLI",
 			)
 		} else {
 			entry, err = copyArtifact(source, rootfs, "usr/local/bin/"+binary, 0o555, "production Go executable "+binary)
@@ -133,21 +140,17 @@ func Prepare(config PrepareConfig) (_ PrepareResult, returnErr error) {
 			return PrepareResult{}, err
 		}
 		files = append(files, bwrap)
-		skill, err := copyArtifact(
-			config.LarkSkillFile, rootfs, ManagedLarkSkillPath, 0o444, "managed Lark skill",
-		)
+		skills, err := copyManagedSkillArtifacts(config, rootfs)
 		if err != nil {
 			return PrepareResult{}, err
 		}
-		files = append(files, skill)
+		files = append(files, skills...)
 	} else if config.Kind == KindManagedSandbox {
-		skill, err := copyArtifact(
-			config.LarkSkillFile, rootfs, ManagedLarkSkillPath, 0o444, "managed Lark skill",
-		)
+		skills, err := copyManagedSkillArtifacts(config, rootfs)
 		if err != nil {
 			return PrepareResult{}, err
 		}
-		files = append(files, skill)
+		files = append(files, skills...)
 	}
 	slices.SortFunc(files, func(left, right FileEntry) int { return strings.Compare(left.Path, right.Path) })
 	manifest := Manifest{
@@ -222,55 +225,180 @@ func validatePrepareConfig(config PrepareConfig) error {
 			"stock Codex":               config.CodexExecutable,
 			"stock bwrap":               config.BwrapExecutable,
 			"Codex system requirements": config.RequirementsFile,
+			"managed CLI instructions":  config.ManagedSkillFile,
 			"managed Lark skill":        config.LarkSkillFile,
 		} {
 			if err := validateCanonicalFile(label, path); err != nil {
 				return err
 			}
 		}
-		if err := validateManagedLarkSkill(config.LarkSkillFile); err != nil {
+		if err := validateManagedTextSkill("managed CLI instructions", config.ManagedSkillFile); err != nil {
+			return err
+		}
+		if err := validateManagedTextSkill("managed Lark skill", config.LarkSkillFile); err != nil {
+			return err
+		}
+		if err := validateBkectlSkillRoot(config.BkectlSkillRoot); err != nil {
 			return err
 		}
 	} else if config.Kind == KindManagedSandbox {
-		if err := validateCanonicalFile("managed Lark skill", config.LarkSkillFile); err != nil {
-			return err
+		for label, path := range map[string]string{
+			"managed CLI instructions": config.ManagedSkillFile,
+			"managed Lark skill":       config.LarkSkillFile,
+		} {
+			if err := validateCanonicalFile(label, path); err != nil {
+				return err
+			}
+			if err := validateManagedTextSkill(label, path); err != nil {
+				return err
+			}
 		}
-		if err := validateManagedLarkSkill(config.LarkSkillFile); err != nil {
+		if err := validateBkectlSkillRoot(config.BkectlSkillRoot); err != nil {
 			return err
 		}
 		if config.CodexExecutable != "" || config.BwrapExecutable != "" || config.RequirementsFile != "" {
 			return errors.New("managed sandbox image preparation must not receive harness runtime inputs")
 		}
-	} else if config.CodexExecutable != "" || config.BwrapExecutable != "" || config.RequirementsFile != "" || config.LarkSkillFile != "" {
+	} else if config.CodexExecutable != "" || config.BwrapExecutable != "" || config.RequirementsFile != "" ||
+		config.ManagedSkillFile != "" || config.LarkSkillFile != "" || config.BkectlSkillRoot != "" {
 		return errors.New("service image preparation must not receive harness or managed-sandbox runtime inputs")
 	}
 	return validateNewOutputDirectory(config.OutputDirectory)
 }
 
-func validateManagedLarkSkill(path string) error {
+func validateManagedTextSkill(label, path string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
-		return fmt.Errorf("inspect managed Lark skill: %w", err)
+		return fmt.Errorf("inspect %s: %w", label, err)
 	}
-	if info.Size() < 1 || info.Size() > maximumManagedLarkSkillBytes {
-		return fmt.Errorf("managed Lark skill must contain between 1 and %d bytes", maximumManagedLarkSkillBytes)
+	if info.Size() < 1 || info.Size() > maximumManagedSkillBytes {
+		return fmt.Errorf("%s must contain between 1 and %d bytes", label, maximumManagedSkillBytes)
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("open managed Lark skill: %w", err)
+		return fmt.Errorf("open %s: %w", label, err)
 	}
 	opened, statErr := file.Stat()
 	if statErr != nil || !os.SameFile(info, opened) || opened.Size() != info.Size() {
 		_ = file.Close()
-		return errors.Join(errors.New("managed Lark skill identity changed while opening"), statErr)
+		return errors.Join(fmt.Errorf("%s identity changed while opening", label), statErr)
 	}
-	contents, readErr := io.ReadAll(io.LimitReader(file, maximumManagedLarkSkillBytes+1))
+	contents, readErr := io.ReadAll(io.LimitReader(file, maximumManagedSkillBytes+1))
 	closeErr := file.Close()
 	if readErr != nil || closeErr != nil || int64(len(contents)) != info.Size() {
-		return errors.Join(errors.New("read stable managed Lark skill"), readErr, closeErr)
+		return errors.Join(fmt.Errorf("read stable %s", label), readErr, closeErr)
 	}
 	if !utf8.Valid(contents) || bytes.IndexByte(contents, 0) >= 0 {
-		return errors.New("managed Lark skill must be NUL-free UTF-8 text")
+		return fmt.Errorf("%s must be NUL-free UTF-8 text", label)
+	}
+	return nil
+}
+
+type managedSkillArtifact struct {
+	source string
+	target string
+	digest string
+	size   int64
+	label  string
+	pinned bool
+}
+
+func copyManagedSkillArtifacts(config PrepareConfig, rootfs string) ([]FileEntry, error) {
+	artifacts := []managedSkillArtifact{
+		{
+			source: config.ManagedSkillFile, target: ManagedSkillPath,
+			digest: ManagedSkillSHA256, size: ManagedSkillSizeBytes,
+			label: "managed CLI instructions", pinned: true,
+		},
+		{source: config.LarkSkillFile, target: ManagedLarkSkillPath, label: "managed Lark skill"},
+		{
+			source: filepath.Join(config.BkectlSkillRoot, "SKILL.md"), target: ManagedBkectlSkillPath,
+			digest: ManagedBkectlSkillSHA256, size: ManagedBkectlSkillSizeBytes,
+			label: "managed bkectl skill", pinned: true,
+		},
+		{
+			source: filepath.Join(config.BkectlSkillRoot, "references", "command-surface.md"), target: ManagedBkectlCommandSurfacePath,
+			digest: ManagedBkectlCommandSurfaceSHA256, size: ManagedBkectlCommandSurfaceSizeBytes,
+			label: "managed bkectl command surface", pinned: true,
+		},
+		{
+			source: filepath.Join(config.BkectlSkillRoot, "references", "domain-guides.md"), target: ManagedBkectlDomainGuidesPath,
+			digest: ManagedBkectlDomainGuidesSHA256, size: ManagedBkectlDomainGuidesSizeBytes,
+			label: "managed bkectl domain guides", pinned: true,
+		},
+		{
+			source: filepath.Join(config.BkectlSkillRoot, "references", "invocation.md"), target: ManagedBkectlInvocationPath,
+			digest: ManagedBkectlInvocationSHA256, size: ManagedBkectlInvocationSizeBytes,
+			label: "managed bkectl invocation guide", pinned: true,
+		},
+	}
+	entries := make([]FileEntry, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		var (
+			entry FileEntry
+			err   error
+		)
+		if artifact.pinned {
+			entry, err = copyPinnedArtifact(
+				artifact.source, rootfs, artifact.target, 0o444,
+				artifact.digest, artifact.size, artifact.label,
+			)
+		} else {
+			entry, err = copyArtifact(artifact.source, rootfs, artifact.target, 0o444, artifact.label)
+		}
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}
+
+func validateBkectlSkillRoot(root string) error {
+	if err := validateCanonicalDirectory("managed bkectl skill root", root, false); err != nil {
+		return err
+	}
+	rootEntries, err := os.ReadDir(root)
+	if err != nil {
+		return fmt.Errorf("list managed bkectl skill root: %w", err)
+	}
+	rootNames := make([]string, 0, len(rootEntries))
+	for _, entry := range rootEntries {
+		rootNames = append(rootNames, entry.Name())
+	}
+	if !slices.Equal(rootNames, []string{"SKILL.md", "references"}) || !rootEntries[1].IsDir() {
+		return errors.New("managed bkectl skill root must contain exactly SKILL.md and references")
+	}
+	references := filepath.Join(root, "references")
+	if err := validateCanonicalDirectory("managed bkectl references", references, false); err != nil {
+		return err
+	}
+	referenceEntries, err := os.ReadDir(references)
+	if err != nil {
+		return fmt.Errorf("list managed bkectl references: %w", err)
+	}
+	referenceNames := make([]string, 0, len(referenceEntries))
+	for _, entry := range referenceEntries {
+		if !entry.Type().IsRegular() {
+			return errors.New("managed bkectl references contain a non-regular file")
+		}
+		referenceNames = append(referenceNames, entry.Name())
+	}
+	if !slices.Equal(referenceNames, []string{"command-surface.md", "domain-guides.md", "invocation.md"}) {
+		return errors.New("managed bkectl references do not match the pinned closed-world set")
+	}
+	for label, path := range map[string]string{
+		"managed bkectl skill":            filepath.Join(root, "SKILL.md"),
+		"managed bkectl command surface":  filepath.Join(references, "command-surface.md"),
+		"managed bkectl domain guides":    filepath.Join(references, "domain-guides.md"),
+		"managed bkectl invocation guide": filepath.Join(references, "invocation.md"),
+	} {
+		if err := validateCanonicalFile(label, path); err != nil {
+			return err
+		}
+		if err := validateManagedTextSkill(label, path); err != nil {
+			return err
+		}
 	}
 	return nil
 }

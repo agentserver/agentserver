@@ -164,7 +164,10 @@ FROM authority_time
 JOIN %s AS workspace
   ON workspace.id = $1
  AND workspace.status = 'active'
- AND workspace.managed_lark_credential_mode = $16
+ AND (
+      ($12 = 'lark' AND workspace.managed_lark_credential_mode = $16)
+      OR ($12 = 'bytecloud' AND $16 = 'process_env')
+ )
 JOIN %s AS member
   ON member.workspace_id = workspace.id
  AND member.user_id = $3
@@ -294,11 +297,16 @@ WITH authority_time AS MATERIALIZED (
 SELECT COALESCE(binding.id::text, ''),
        COALESCE(binding.authority_version, 0),
        COALESCE(binding.credential_version, 0),
-       workspace.managed_lark_credential_mode
+       CASE
+         WHEN $12 = 'lark' THEN workspace.managed_lark_credential_mode
+         WHEN $12 = 'bytecloud' THEN 'process_env'
+         ELSE ''
+       END
 FROM authority_time
 JOIN %s AS workspace
   ON workspace.id = $1
  AND workspace.status = 'active'
+ AND $12 IN ('lark', 'bytecloud')
 JOIN %s AS member
   ON member.workspace_id = workspace.id
  AND member.user_id = $3

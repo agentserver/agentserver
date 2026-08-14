@@ -17,8 +17,7 @@ import (
 )
 
 const (
-	byteCloudDeviceOAuthAuthType = "device_oauth"
-	byteCloudDefaultSite         = "i18n-tt"
+	byteCloudDefaultSite = "i18n-tt"
 	// DefaultByteCloudDeviceAPIBaseURL is the i18n-tt production-network
 	// gateway selected by bytecloud-cli. Core runs inside the SG production
 	// network, so the office gateway (cloud.tiktok-row.net) is not a valid
@@ -230,7 +229,7 @@ func (provider ByteCloudProvider) byteCloudUploadFromPolling(state byteCloudDevi
 }
 
 func (provider ByteCloudProvider) RefreshDeviceCredential(ctx context.Context, binding Binding, raw []byte) (UploadResult, bool, error) {
-	if provider.device == nil || binding.AuthType != byteCloudDeviceOAuthAuthType {
+	if provider.device == nil || binding.AuthType != AuthTypeDeviceOAuth {
 		return UploadResult{}, true, errors.New("ByteCloud device OAuth refresh is not configured")
 	}
 	current, err := parseByteCloudOAuthCredential(raw, provider.device.site)
@@ -298,7 +297,7 @@ func (provider ByteCloudProvider) byteCloudCredentialUpload(credential byteCloud
 		return UploadResult{}, err
 	}
 	access, refresh := credential.AccessExpiresAt, credential.RefreshExpiresAt
-	return UploadResult{AuthType: byteCloudDeviceOAuthAuthType, PublicMetadata: public, Secret: raw, AccessExpiresAt: &access, RefreshExpiresAt: &refresh}, nil
+	return UploadResult{AuthType: AuthTypeDeviceOAuth, PublicMetadata: public, Secret: raw, AccessExpiresAt: &access, RefreshExpiresAt: &refresh}, nil
 }
 
 func parseByteCloudOAuthCredential(raw []byte, site string) (byteCloudOAuthCredential, error) {

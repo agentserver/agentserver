@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/corecredentials"
+	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -20,6 +22,58 @@ type managedLarkPostgresFixture struct {
 	sandbox   ManagedSandbox
 	dispatch  BeginOperationDispatchResult
 	authority ManagedLarkAuthorityQuery
+}
+
+func TestPostgreSQLByteCloudCredentialUsesProcessEnvironmentIndependentOfLarkMode(t *testing.T) {
+	fixture := newManagedLarkPostgresFixture(t, 849_000)
+	bindingID := stateTestUUID(849_600)
+	quotedSchema := quoteIdentifier(fixture.schema)
+	insertBinding := fmt.Sprintf(`INSERT INTO %s.workspace_credential_bindings (
+ id, workspace_id, kind, display_name, owner_scope, public_metadata, auth_type,
+ sealed_secret, sealing_key_id, status, is_default, access_expires_at, refresh_expires_at)
+VALUES ($1, $2, 'bytecloud', 'Workspace ByteCloud', 'workspace',
+        '{"site":"i18n-tt"}'::jsonb, 'device_oauth', $3, 'credential-key-1',
+        'active', true, pg_catalog.clock_timestamp() + interval '1 hour',
+        pg_catalog.clock_timestamp() + interval '7 days')`, quotedSchema)
+	if _, err := fixture.pool.Exec(t.Context(), insertBinding, bindingID, fixture.running.Run.WorkspaceID, bytes.Repeat([]byte{0x61}, 96)); err != nil {
+		t.Fatal(err)
+	}
+	policySHA256 := fmt.Sprintf("%x", sha256.Sum256([]byte("managed-bytecloud-policy")))
+	authorityRequest := corecredentials.AuthorityRequest{
+		WorkspaceID: fixture.running.Run.WorkspaceID, SessionID: fixture.running.Run.SessionID,
+		ActorID: fixture.running.Run.ActorID, EnvironmentID: fixture.sandbox.EnvironmentID,
+		RunID: fixture.running.Run.ID, RunAttemptID: fixture.running.Attempt.ID,
+		RunAttemptGeneration: fixture.running.Attempt.Generation,
+		ExecutionID:          fixture.dispatch.Execution.ID, OperationID: fixture.dispatch.Operation.ID,
+		SandboxID: fixture.sandbox.ID, TargetGeneration: fixture.sandbox.Generation,
+		ProviderKind: "bytecloud", PolicySHA256: policySHA256,
+	}
+	reference, err := fixture.store.ResolveCredentialAuthority(t.Context(), authorityRequest)
+	if err != nil || reference.Kind != "bytecloud" || reference.BindingID != bindingID ||
+		reference.AuthorityVersion != 1 || reference.CredentialVersion != 1 ||
+		reference.CredentialMode != managedcredential.ModeProcessEnv {
+		t.Fatalf("ByteCloud authority in Lark webhook workspace = %+v, %v", reference, err)
+	}
+	use := corecredentials.UseRequest{
+		WorkspaceID: authorityRequest.WorkspaceID, SessionID: authorityRequest.SessionID,
+		ActorID: authorityRequest.ActorID, EnvironmentID: authorityRequest.EnvironmentID,
+		RunID: authorityRequest.RunID, RunAttemptID: authorityRequest.RunAttemptID,
+		RunAttemptGeneration: authorityRequest.RunAttemptGeneration,
+		ExecutionID:          authorityRequest.ExecutionID, OperationID: authorityRequest.OperationID,
+		SandboxID: authorityRequest.SandboxID, TargetGeneration: authorityRequest.TargetGeneration,
+		ProviderKind: "bytecloud", BindingID: bindingID, AuthorityVersion: reference.AuthorityVersion,
+		ExpectedCredentialVersion: reference.CredentialVersion, CredentialMode: managedcredential.ModeProcessEnv,
+		PolicySHA256: policySHA256, TAEPSM: fixture.authority.TAEPSM,
+		Host: "cloud-i18n-sg.bytedance.net", Path: "/", Method: "PROCESS_ENV",
+	}
+	live, err := fixture.store.AuthorizeCredentialUse(t.Context(), use)
+	if err != nil || live != reference {
+		t.Fatalf("live ByteCloud process_env authority = %+v, %v; want %+v", live, err, reference)
+	}
+	use.CredentialMode = managedcredential.ModeWebhookSwap
+	if _, err := fixture.store.AuthorizeCredentialUse(t.Context(), use); !HasStateErrorCode(err, ErrorForbidden) {
+		t.Fatalf("ByteCloud webhook authority error = %v, want forbidden", err)
+	}
 }
 
 func TestPostgreSQLManagedLarkAuthorityFencesCredentialAndOperationState(t *testing.T) {

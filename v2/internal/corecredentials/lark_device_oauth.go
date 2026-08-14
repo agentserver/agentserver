@@ -16,7 +16,6 @@ import (
 )
 
 const (
-	larkDeviceOAuthAuthType           = "device_oauth"
 	larkDefaultDeviceAuthorizationURL = "https://accounts.feishu.cn/oauth/v1/device_authorization"
 	larkDefaultTokenURL               = "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
 	larkDefaultUserInfoURL            = "https://open.feishu.cn/open-apis/authen/v1/user_info"
@@ -121,7 +120,7 @@ func (provider LarkProvider) Schema() ProviderSchema {
 	schema := provider.BearerProvider.Schema()
 	schema.DisplayName = "Lark"
 	if provider.device != nil {
-		schema.AuthTypes = append(schema.AuthTypes, larkDeviceOAuthAuthType)
+		schema.AuthTypes = append(schema.AuthTypes, AuthTypeDeviceOAuth)
 		schema.AuthorizationMethods = append(schema.AuthorizationMethods, AuthorizationMethodDeviceFlow)
 		schema.SecretFormat = "opaque-token-or-lark-device-oauth-envelope"
 	}
@@ -132,7 +131,7 @@ func (provider LarkProvider) ValidateUpload(authType string, raw []byte) (Upload
 	if strings.TrimSpace(authType) == "" || authType == "static" {
 		return provider.BearerProvider.ValidateUpload(authType, raw)
 	}
-	if authType != larkDeviceOAuthAuthType || provider.device == nil {
+	if authType != AuthTypeDeviceOAuth || provider.device == nil {
 		return UploadResult{}, errors.New("Lark credential auth type is not supported")
 	}
 	credential, err := parseLarkOAuthCredential(raw, provider.device.appID)
@@ -150,7 +149,7 @@ func (provider LarkProvider) ValidateUpload(authType string, raw []byte) (Upload
 	}
 	access, refresh := credential.AccessExpiresAt.UTC(), credential.RefreshExpiresAt.UTC()
 	return UploadResult{
-		AuthType: larkDeviceOAuthAuthType, PublicMetadata: public, Secret: normalized,
+		AuthType: AuthTypeDeviceOAuth, PublicMetadata: public, Secret: normalized,
 		AccessExpiresAt: &access, RefreshExpiresAt: &refresh,
 	}, nil
 }
@@ -159,7 +158,7 @@ func (provider LarkProvider) Materialize(ctx context.Context, binding Binding, s
 	if binding.AuthType == "static" {
 		return provider.BearerProvider.Materialize(ctx, binding, secret, request)
 	}
-	if provider.device == nil || binding.AuthType != larkDeviceOAuthAuthType || binding.Kind != "lark" || request.Host != "open.feishu.cn" {
+	if provider.device == nil || binding.AuthType != AuthTypeDeviceOAuth || binding.Kind != "lark" || request.Host != "open.feishu.cn" {
 		return HeaderMutation{}, errors.New("Lark OAuth credential binding or host mismatch")
 	}
 	credential, err := parseLarkOAuthCredential(secret, provider.device.appID)
@@ -273,7 +272,7 @@ func (provider LarkProvider) PollDeviceAuthorization(ctx context.Context, raw []
 }
 
 func (provider LarkProvider) RefreshDeviceCredential(ctx context.Context, binding Binding, raw []byte) (UploadResult, bool, error) {
-	if provider.device == nil || binding.AuthType != larkDeviceOAuthAuthType {
+	if provider.device == nil || binding.AuthType != AuthTypeDeviceOAuth {
 		return UploadResult{}, true, errors.New("Lark device OAuth refresh is not configured")
 	}
 	current, err := parseLarkOAuthCredential(raw, provider.device.appID)
@@ -366,7 +365,7 @@ func (provider LarkProvider) larkUploadFromToken(ctx context.Context, response l
 	}
 	access, refreshAt := credential.AccessExpiresAt, credential.RefreshExpiresAt
 	return credential, UploadResult{
-		AuthType: larkDeviceOAuthAuthType, PublicMetadata: public, Secret: raw,
+		AuthType: AuthTypeDeviceOAuth, PublicMetadata: public, Secret: raw,
 		AccessExpiresAt: &access, RefreshExpiresAt: &refreshAt,
 	}, nil
 }

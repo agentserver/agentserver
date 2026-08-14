@@ -8,10 +8,10 @@ import "time"
 // one-hop header mutation after it has checked the TAE request and the
 // operation-bound placeholder.
 const (
-	ResolveEgressCredentialPath                 = "/internal/v2/egress/credentials:resolve"
-	AuthorizeProcessEnvironmentEgressPath       = "/internal/v2/egress/credentials:authorize-process-env"
-	ResolveExecutionLarkCredentialAuthorityPath = "/internal/v2/execution/credentials/lark:resolve-authority"
-	ResolveExecutionLarkCredentialPath          = "/internal/v2/execution/credentials/lark:resolve"
+	ResolveEgressCredentialPath             = "/internal/v2/egress/credentials:resolve"
+	AuthorizeProcessEnvironmentEgressPath   = "/internal/v2/egress/credentials:authorize-process-env"
+	ResolveExecutionCredentialAuthorityPath = "/internal/v2/execution/credentials:resolve-authority"
+	ResolveExecutionCredentialPath          = "/internal/v2/execution/credentials:resolve"
 )
 
 // RecordEgressCredentialAuditPath is kept separate from the legacy
@@ -67,26 +67,27 @@ type ResolveEgressCredentialAuthorityResponse struct {
 	AuthorizedAt      time.Time `json:"authorizedAt"`
 }
 
-// ResolveExecutionLarkCredentialRequest is the narrow process-environment
+// ResolveExecutionCredentialRequest is the narrow process-environment
 // delivery contract used only by executor-gateway. Core rechecks the exact
-// live process_start operation and TAE sandbox authority before returning a
-// real Lark access token. ToolName and Executable close the endpoint to the
-// one supported shell/lark-cli launch shape.
-type ResolveExecutionLarkCredentialRequest struct {
+// live process_start operation, executable, argv policy, provider, and TAE
+// sandbox authority before returning credential material for one process.
+type ResolveExecutionCredentialRequest struct {
 	Operation         EgressCredentialOperation `json:"operation"`
 	TAEPSM            string                    `json:"taePsm"`
 	PolicySHA256      string                    `json:"policySha256"`
+	ProviderKind      string                    `json:"providerKind"`
 	ToolName          string                    `json:"toolName"`
 	Executable        string                    `json:"executable"`
+	Arguments         []string                  `json:"arguments"`
 	BindingID         string                    `json:"bindingId"`
 	AuthorityVersion  int64                     `json:"authorityVersion"`
 	CredentialVersion int64                     `json:"credentialVersion"`
 }
 
-type ResolveExecutionLarkCredentialResponse struct {
+type ResolveExecutionCredentialResponse struct {
 	Configured        bool       `json:"configured"`
 	CredentialMode    string     `json:"credentialMode"`
-	AccessToken       string     `json:"accessToken,omitempty"`
+	Credential        string     `json:"credential,omitempty"`
 	ApplicationID     string     `json:"applicationId,omitempty"`
 	ProviderKind      string     `json:"providerKind"`
 	BindingID         string     `json:"bindingId,omitempty"`

@@ -12,8 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/bkectlpolicy"
 	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
 	"github.com/agentserver/agentserver/v2/internal/managedruntime"
+	"github.com/agentserver/agentserver/v2/internal/managedtools"
 	"github.com/agentserver/agentserver/v2/internal/productionimage"
 	"github.com/agentserver/agentserver/v2/internal/stockruntime"
 	"github.com/agentserver/agentserver/v2/internal/taeimage"
@@ -24,8 +26,10 @@ import (
 const (
 	managedLarkCLIPath             = "/usr/local/bin/lark-cli"
 	managedLarkSkillPath           = "/opt/agentserver/packs/lark-readonly/SKILL.md"
+	managedBkectlCLIPath           = "/usr/local/bin/bkectl"
+	managedBaseInstructionsPath    = "/opt/agentserver/packs/managed-cli-readonly/SKILL.md"
 	managedSandboxRootPath         = "/workspace"
-	managedNetworkEvidenceVersion  = 4
+	managedNetworkEvidenceVersion  = 5
 	ProductionTAEPSM               = "bytedance.sandbox.agentserver"
 	ProductionByteCloudJWTEndpoint = "https://cloud-i18n-sg.bytedance.net"
 	ProductionTAEControlPlaneHost  = "controlplane.sg.ai-sandbox-i18n.byted.org"
@@ -40,12 +44,14 @@ const (
 )
 
 type ManagedExecutorDocument struct {
-	Enabled            bool                       `json:"enabled"`
-	Stage              string                     `json:"stage"`
-	WorkspaceAllowlist []string                   `json:"workspaceAllowlist"`
-	Environment        ManagedEnvironmentDocument `json:"environment"`
-	TAE                ManagedTAEDocument         `json:"tae"`
-	Lark               ManagedLarkDocument        `json:"lark"`
+	Enabled                bool                       `json:"enabled"`
+	Stage                  string                     `json:"stage"`
+	WorkspaceAllowlist     []string                   `json:"workspaceAllowlist"`
+	BaseInstructionsSHA256 string                     `json:"baseInstructionsSha256"`
+	Environment            ManagedEnvironmentDocument `json:"environment"`
+	TAE                    ManagedTAEDocument         `json:"tae"`
+	Lark                   ManagedLarkDocument        `json:"lark"`
+	Bkectl                 ManagedBkectlDocument      `json:"bkectl"`
 }
 
 func managedExecutionActive(managed ManagedExecutorDocument) bool {
@@ -535,6 +541,10 @@ func validateTAENetworkReportForActivation(document ConfigDocument, policyRevisi
 		"larkCliVersion":         {configuration.LarkCLIVersion, productionimage.ManagedLarkCLIVersion},
 		"larkCliSha256":          {configuration.LarkCLISHA256, document.Managed.Lark.CLISHA256},
 		"larkSkillSha256":        {configuration.LarkSkillSHA256, document.Managed.Lark.SkillSHA256},
+		"managedSkillSha256":     {configuration.ManagedSkillSHA256, document.Managed.BaseInstructionsSHA256},
+		"bkectlSourceRevision":   {configuration.BkectlSourceRevision, document.Managed.Bkectl.SourceRevision},
+		"bkectlCliSha256":        {configuration.BkectlCLISHA256, document.Managed.Bkectl.CLISHA256},
+		"bkectlSkillPackSha256":  {configuration.BkectlSkillPackSHA256, document.Managed.Bkectl.SkillPackSHA256},
 	} {
 		if values[0] != values[1] {
 			return fmt.Errorf("TAE network report %s does not match the activation source", name)
@@ -547,21 +557,34 @@ func validateTAENetworkReportForActivation(document ConfigDocument, policyRevisi
 		return errors.New("TAE network report lifecycle attempt count is invalid")
 	}
 	required := map[string]int{
-		"jwt_force_refresh":       configuration.ConnectivityAttempts,
-		"control_search_missing":  configuration.ConnectivityAttempts,
-		"control_create":          configuration.LifecycleAttempts,
-		"control_search_created":  configuration.LifecycleAttempts,
-		"control_wait_ready":      configuration.LifecycleAttempts,
-		"control_update_ttl":      configuration.LifecycleAttempts,
-		"data_exec_terminal":      configuration.LifecycleAttempts,
-		"data_exec_lark_version":  configuration.LifecycleAttempts,
-		"data_stat_lark_cli":      configuration.LifecycleAttempts,
-		"data_read_lark_cli":      configuration.LifecycleAttempts,
-		"data_stat_lark_skill":    configuration.LifecycleAttempts,
-		"data_read_lark_skill":    configuration.LifecycleAttempts,
-		"control_delete":          configuration.LifecycleAttempts,
-		"control_confirm_deleted": configuration.LifecycleAttempts,
-		"control_cleanup":         configuration.LifecycleAttempts,
+		"jwt_force_refresh":                configuration.ConnectivityAttempts,
+		"control_search_missing":           configuration.ConnectivityAttempts,
+		"control_create":                   configuration.LifecycleAttempts,
+		"control_search_created":           configuration.LifecycleAttempts,
+		"control_wait_ready":               configuration.LifecycleAttempts,
+		"control_update_ttl":               configuration.LifecycleAttempts,
+		"data_exec_terminal":               configuration.LifecycleAttempts,
+		"data_exec_lark_version":           configuration.LifecycleAttempts,
+		"data_exec_bkectl_version":         configuration.LifecycleAttempts,
+		"data_stat_lark_cli":               configuration.LifecycleAttempts,
+		"data_read_lark_cli":               configuration.LifecycleAttempts,
+		"data_stat_lark_skill":             configuration.LifecycleAttempts,
+		"data_read_lark_skill":             configuration.LifecycleAttempts,
+		"data_stat_managed_skill":          configuration.LifecycleAttempts,
+		"data_read_managed_skill":          configuration.LifecycleAttempts,
+		"data_stat_bkectl_cli":             configuration.LifecycleAttempts,
+		"data_read_bkectl_cli":             configuration.LifecycleAttempts,
+		"data_stat_bkectl_skill":           configuration.LifecycleAttempts,
+		"data_read_bkectl_skill":           configuration.LifecycleAttempts,
+		"data_stat_bkectl_command_surface": configuration.LifecycleAttempts,
+		"data_read_bkectl_command_surface": configuration.LifecycleAttempts,
+		"data_stat_bkectl_domain_guides":   configuration.LifecycleAttempts,
+		"data_read_bkectl_domain_guides":   configuration.LifecycleAttempts,
+		"data_stat_bkectl_invocation":      configuration.LifecycleAttempts,
+		"data_read_bkectl_invocation":      configuration.LifecycleAttempts,
+		"control_delete":                   configuration.LifecycleAttempts,
+		"control_confirm_deleted":          configuration.LifecycleAttempts,
+		"control_cleanup":                  configuration.LifecycleAttempts,
 	}
 	if len(report.Checks) != len(required) {
 		return errors.New("TAE network report does not contain the exact required check set")
@@ -584,6 +607,18 @@ func validateTAENetworkReportForActivation(document ConfigDocument, policyRevisi
 	if skillBytes < int64(configuration.LifecycleAttempts) || skillBytes > int64(configuration.LifecycleAttempts)*256*1024 ||
 		skillBytes%int64(configuration.LifecycleAttempts) != 0 {
 		return errors.New("TAE network report did not read and verify one bounded Lark skill in every lifecycle")
+	}
+	for checkName, size := range map[string]int64{
+		"data_read_managed_skill":          productionimage.ManagedSkillSizeBytes,
+		"data_read_bkectl_cli":             productionimage.ManagedBkectlCLISizeBytes,
+		"data_read_bkectl_skill":           productionimage.ManagedBkectlSkillSizeBytes,
+		"data_read_bkectl_command_surface": productionimage.ManagedBkectlCommandSurfaceSizeBytes,
+		"data_read_bkectl_domain_guides":   productionimage.ManagedBkectlDomainGuidesSizeBytes,
+		"data_read_bkectl_invocation":      productionimage.ManagedBkectlInvocationSizeBytes,
+	} {
+		if checks[checkName].BytesRead != size*int64(configuration.LifecycleAttempts) {
+			return fmt.Errorf("TAE network report did not read and verify complete pinned artifact %s in every lifecycle", checkName)
+		}
 	}
 	return nil
 }
@@ -615,12 +650,18 @@ type ManagedLarkDocument struct {
 	PolicySHA256 string `json:"policySha256"`
 }
 
-// managedLarkEnabled controls only the immutable Lark CLI/skill pack shipped to
-// managed sandboxes. Workspace credentials are configured dynamically through
-// v2 Core and are intentionally absent from this deployment document. A tool
-// invocation without an active binding is denied at runtime by Core.
-func managedLarkEnabled(managed ManagedExecutorDocument) bool {
-	return managedExecutionActive(managed) && managed.Lark.Enabled
+type ManagedBkectlDocument struct {
+	Enabled         bool   `json:"enabled"`
+	SourceRevision  string `json:"sourceRevision"`
+	CLISHA256       string `json:"cliSha256"`
+	SkillPackSHA256 string `json:"skillPackSha256"`
+	PolicySHA256    string `json:"policySha256"`
+}
+
+// managedToolsEnabled controls the immutable managed CLI pack shipped to the
+// harness and sandbox images. Workspace credentials remain dynamic Core state.
+func managedToolsEnabled(managed ManagedExecutorDocument) bool {
+	return managedExecutionActive(managed) && managed.Lark.Enabled && managed.Bkectl.Enabled
 }
 
 func validateManagedExecutor(managed ManagedExecutorDocument, document ConfigDocument) (LoadedConfig, error) {
@@ -720,6 +761,15 @@ func validateManagedExecutor(managed ManagedExecutorDocument, document ConfigDoc
 			}
 		}
 	}
+	if managed.Enabled && (!managed.Lark.Enabled || !managed.Bkectl.Enabled) {
+		return LoadedConfig{}, errors.New("managedExecutor requires both the pinned lark and bkectl read-only tools while enabled")
+	}
+	if managed.BaseInstructionsSHA256 != "" && managed.BaseInstructionsSHA256 != productionimage.ManagedSkillSHA256 {
+		return LoadedConfig{}, fmt.Errorf("managedExecutor.baseInstructionsSha256 must equal pinned managed CLI instructions digest %s", productionimage.ManagedSkillSHA256)
+	}
+	if managed.Enabled && managed.BaseInstructionsSHA256 == "" {
+		return LoadedConfig{}, errors.New("managedExecutor.baseInstructionsSha256 must pin the managed CLI instructions while enabled")
+	}
 	larkEnabled := managed.Lark.Enabled
 	if larkEnabled {
 		for name, digest := range map[string]string{
@@ -751,6 +801,45 @@ func validateManagedExecutor(managed ManagedExecutorDocument, document ConfigDoc
 	}
 	if managed.Lark.PolicySHA256 != "" && managed.Lark.PolicySHA256 != larkegresspolicy.SHA256Hex() {
 		return LoadedConfig{}, fmt.Errorf("managedExecutor.lark.policySha256 must equal compiled policy %s", larkegresspolicy.SHA256Hex())
+	}
+	bkectlEnabled := managed.Bkectl.Enabled
+	if bkectlEnabled {
+		for name, digest := range map[string]string{
+			"bkectl.cliSha256":       managed.Bkectl.CLISHA256,
+			"bkectl.skillPackSha256": managed.Bkectl.SkillPackSHA256,
+			"bkectl.policySha256":    managed.Bkectl.PolicySHA256,
+		} {
+			if !nonzeroDigest(digest) {
+				return LoadedConfig{}, fmt.Errorf("managedExecutor.%s must be a non-zero lowercase SHA-256 digest", name)
+			}
+		}
+		if len(managed.Bkectl.SourceRevision) != 40 || strings.Trim(managed.Bkectl.SourceRevision, "0123456789abcdef") != "" {
+			return LoadedConfig{}, errors.New("managedExecutor.bkectl.sourceRevision must be a lowercase 40-character Git SHA")
+		}
+	} else {
+		for name, digest := range map[string]string{
+			"bkectl.cliSha256":       managed.Bkectl.CLISHA256,
+			"bkectl.skillPackSha256": managed.Bkectl.SkillPackSHA256,
+			"bkectl.policySha256":    managed.Bkectl.PolicySHA256,
+		} {
+			if digest != "" && !nonzeroDigest(digest) {
+				return LoadedConfig{}, fmt.Errorf("managedExecutor.%s must be empty or a non-zero lowercase SHA-256 digest", name)
+			}
+		}
+		if managed.Bkectl.SourceRevision != "" &&
+			(len(managed.Bkectl.SourceRevision) != 40 || strings.Trim(managed.Bkectl.SourceRevision, "0123456789abcdef") != "") {
+			return LoadedConfig{}, errors.New("managedExecutor.bkectl.sourceRevision must be empty or a lowercase 40-character Git SHA")
+		}
+	}
+	for name, values := range map[string][2]string{
+		"sourceRevision":  {managed.Bkectl.SourceRevision, bkectlpolicy.SourceRevision},
+		"cliSha256":       {managed.Bkectl.CLISHA256, bkectlpolicy.CLISHA256},
+		"skillPackSha256": {managed.Bkectl.SkillPackSHA256, bkectlpolicy.SkillPackSHA256},
+		"policySha256":    {managed.Bkectl.PolicySHA256, bkectlpolicy.SHA256Hex()},
+	} {
+		if values[0] != "" && values[0] != values[1] {
+			return LoadedConfig{}, fmt.Errorf("managedExecutor.bkectl.%s must equal pinned value %s", name, values[1])
+		}
 	}
 	policy := taepolicy.Binding{
 		Version: managed.TAE.Policy.Version, Region: managed.TAE.Region, SandboxPSM: managed.TAE.PSM,
@@ -834,6 +923,7 @@ func validateManagedExecutor(managed ManagedExecutorDocument, document ConfigDoc
 
 func managedRuntimeProfileDigest(document ConfigDocument, managed ManagedExecutorDocument) string {
 	larkEnabled := managed.Lark.Enabled
+	bkectlEnabled := managed.Bkectl.Enabled
 	lock := struct {
 		Version                 int    `json:"version"`
 		Platform                string `json:"platform"`
@@ -846,14 +936,19 @@ func managedRuntimeProfileDigest(document ConfigDocument, managed ManagedExecuto
 		LarkEnabled             bool   `json:"larkEnabled"`
 		LarkCLIPath             string `json:"larkCliPath"`
 		LarkCLISHA256           string `json:"larkCliSha256"`
-		PolicySHA256            string `json:"policySha256"`
+		LarkPolicySHA256        string `json:"larkPolicySha256"`
+		BkectlEnabled           bool   `json:"bkectlEnabled"`
+		BkectlSourceRevision    string `json:"bkectlSourceRevision"`
+		BkectlCLIPath           string `json:"bkectlCliPath"`
+		BkectlCLISHA256         string `json:"bkectlCliSha256"`
+		BkectlPolicySHA256      string `json:"bkectlPolicySha256"`
 		TAEPolicyBindingSHA256  string `json:"taePolicyBindingSha256"`
 		TAENetworkBindingSHA256 string `json:"taeNetworkBindingSha256"`
 		TAEPolicyRevision       string `json:"taePolicyRevision"`
 		TAESandboxID            string `json:"taeSandboxId"`
 		TAESandboxRevisionID    string `json:"taeSandboxRevisionId"`
 	}{
-		Version: 5, Platform: document.Platform, Image: document.Images.ManagedSandbox,
+		Version: 6, Platform: document.Platform, Image: document.Images.ManagedSandbox,
 		Root: managed.Environment.Root.Path, KeeperCommand: managedruntime.ExecutablePath,
 		CodexRelease: managed.Environment.Compatibility.CodexRelease,
 		CodexCommit:  managed.Environment.Compatibility.CodexCommit, CodexSHA256: managed.Environment.Compatibility.CodexSHA256,
@@ -870,7 +965,37 @@ func managedRuntimeProfileDigest(document ConfigDocument, managed ManagedExecuto
 			}
 			return ""
 		}(),
-		PolicySHA256:           managed.TAE.Policy.PolicySHA256,
+		LarkPolicySHA256: func() string {
+			if larkEnabled {
+				return managed.Lark.PolicySHA256
+			}
+			return ""
+		}(),
+		BkectlEnabled: bkectlEnabled,
+		BkectlSourceRevision: func() string {
+			if bkectlEnabled {
+				return managed.Bkectl.SourceRevision
+			}
+			return ""
+		}(),
+		BkectlCLIPath: func() string {
+			if bkectlEnabled {
+				return managedBkectlCLIPath
+			}
+			return ""
+		}(),
+		BkectlCLISHA256: func() string {
+			if bkectlEnabled {
+				return managed.Bkectl.CLISHA256
+			}
+			return ""
+		}(),
+		BkectlPolicySHA256: func() string {
+			if bkectlEnabled {
+				return managed.Bkectl.PolicySHA256
+			}
+			return ""
+		}(),
 		TAEPolicyBindingSHA256: managed.TAE.Policy.BindingSHA256, TAEPolicyRevision: managed.TAE.Policy.Revision,
 		TAENetworkBindingSHA256: managed.TAE.NetworkEvidence.BindingSHA256,
 		TAESandboxID:            managed.TAE.SandboxID, TAESandboxRevisionID: managed.TAE.RevisionID,
@@ -881,41 +1006,103 @@ func managedRuntimeProfileDigest(document ConfigDocument, managed ManagedExecuto
 func managedPackSetDigest(managed ManagedExecutorDocument) string {
 	lock := struct {
 		Version                 int    `json:"version"`
-		LarkEnabled             bool   `json:"larkEnabled"`
 		PackID                  string `json:"packId"`
-		SkillSHA256             string `json:"skillSha256"`
-		Executable              string `json:"executable"`
-		CLISHA256               string `json:"cliSha256"`
-		PolicySHA256            string `json:"policySha256"`
+		BaseInstructionsPath    string `json:"baseInstructionsPath"`
+		BaseInstructionsSHA256  string `json:"baseInstructionsSha256"`
+		LarkEnabled             bool   `json:"larkEnabled"`
+		LarkPackID              string `json:"larkPackId"`
+		LarkSkillPath           string `json:"larkSkillPath"`
+		LarkSkillSHA256         string `json:"larkSkillSha256"`
+		LarkExecutable          string `json:"larkExecutable"`
+		LarkCLISHA256           string `json:"larkCliSha256"`
+		LarkPolicySHA256        string `json:"larkPolicySha256"`
+		BkectlEnabled           bool   `json:"bkectlEnabled"`
+		BkectlPackID            string `json:"bkectlPackId"`
+		BkectlSkillPackSHA256   string `json:"bkectlSkillPackSha256"`
+		BkectlExecutable        string `json:"bkectlExecutable"`
+		BkectlCLISHA256         string `json:"bkectlCliSha256"`
+		BkectlSourceRevision    string `json:"bkectlSourceRevision"`
+		BkectlPolicySHA256      string `json:"bkectlPolicySha256"`
 		TAEPolicyBindingSHA256  string `json:"taePolicyBindingSha256"`
 		TAENetworkBindingSHA256 string `json:"taeNetworkBindingSha256"`
 	}{
-		Version: 3, LarkEnabled: managed.Lark.Enabled,
-		PackID: func() string {
+		Version: 4, PackID: managedtools.PackID,
+		BaseInstructionsPath: managedBaseInstructionsPath, BaseInstructionsSHA256: managed.BaseInstructionsSHA256,
+		LarkEnabled: managed.Lark.Enabled,
+		LarkPackID: func() string {
 			if managed.Lark.Enabled {
 				return larkegresspolicy.PackID
 			}
 			return ""
 		}(),
-		SkillSHA256: func() string {
+		LarkSkillPath: func() string {
+			if managed.Lark.Enabled {
+				return managedLarkSkillPath
+			}
+			return ""
+		}(),
+		LarkSkillSHA256: func() string {
 			if managed.Lark.Enabled {
 				return managed.Lark.SkillSHA256
 			}
 			return ""
 		}(),
-		Executable: func() string {
+		LarkExecutable: func() string {
 			if managed.Lark.Enabled {
 				return managedLarkCLIPath
 			}
 			return ""
 		}(),
-		CLISHA256: func() string {
+		LarkCLISHA256: func() string {
 			if managed.Lark.Enabled {
 				return managed.Lark.CLISHA256
 			}
 			return ""
 		}(),
-		PolicySHA256: managed.TAE.Policy.PolicySHA256, TAEPolicyBindingSHA256: managed.TAE.Policy.BindingSHA256,
+		LarkPolicySHA256: func() string {
+			if managed.Lark.Enabled {
+				return managed.Lark.PolicySHA256
+			}
+			return ""
+		}(),
+		BkectlEnabled: managed.Bkectl.Enabled,
+		BkectlPackID: func() string {
+			if managed.Bkectl.Enabled {
+				return bkectlpolicy.PackID
+			}
+			return ""
+		}(),
+		BkectlSkillPackSHA256: func() string {
+			if managed.Bkectl.Enabled {
+				return managed.Bkectl.SkillPackSHA256
+			}
+			return ""
+		}(),
+		BkectlExecutable: func() string {
+			if managed.Bkectl.Enabled {
+				return managedBkectlCLIPath
+			}
+			return ""
+		}(),
+		BkectlCLISHA256: func() string {
+			if managed.Bkectl.Enabled {
+				return managed.Bkectl.CLISHA256
+			}
+			return ""
+		}(),
+		BkectlSourceRevision: func() string {
+			if managed.Bkectl.Enabled {
+				return managed.Bkectl.SourceRevision
+			}
+			return ""
+		}(),
+		BkectlPolicySHA256: func() string {
+			if managed.Bkectl.Enabled {
+				return managed.Bkectl.PolicySHA256
+			}
+			return ""
+		}(),
+		TAEPolicyBindingSHA256:  managed.TAE.Policy.BindingSHA256,
 		TAENetworkBindingSHA256: managed.TAE.NetworkEvidence.BindingSHA256,
 	}
 	return canonicalDigest(lock)
@@ -924,7 +1111,12 @@ func managedPackSetDigest(managed ManagedExecutorDocument) string {
 func managedOwnerPolicyDigest(managed ManagedExecutorDocument) string {
 	lock := struct {
 		Version                 int      `json:"version"`
+		PackID                  string   `json:"packId"`
+		BaseInstructionsSHA256  string   `json:"baseInstructionsSha256"`
 		LarkEnabled             bool     `json:"larkEnabled"`
+		LarkPolicySHA256        string   `json:"larkPolicySha256"`
+		BkectlEnabled           bool     `json:"bkectlEnabled"`
+		BkectlPolicySHA256      string   `json:"bkectlPolicySha256"`
 		WorkspaceAllowlist      []string `json:"workspaceAllowlist"`
 		EnvironmentID           string   `json:"environmentId"`
 		RuntimeProfileSHA256    string   `json:"runtimeProfileSha256"`
@@ -932,7 +1124,9 @@ func managedOwnerPolicyDigest(managed ManagedExecutorDocument) string {
 		TAEPolicyBindingSHA256  string   `json:"taePolicyBindingSha256"`
 		TAENetworkBindingSHA256 string   `json:"taeNetworkBindingSha256"`
 	}{
-		Version: 3, LarkEnabled: managed.Lark.Enabled,
+		Version: 4, PackID: managedtools.PackID, BaseInstructionsSHA256: managed.BaseInstructionsSHA256,
+		LarkEnabled: managed.Lark.Enabled, LarkPolicySHA256: managed.Lark.PolicySHA256,
+		BkectlEnabled: managed.Bkectl.Enabled, BkectlPolicySHA256: managed.Bkectl.PolicySHA256,
 		WorkspaceAllowlist:      managed.WorkspaceAllowlist,
 		EnvironmentID:           managed.Environment.EnvironmentID,
 		RuntimeProfileSHA256:    managed.Environment.RuntimeProfileSHA256,

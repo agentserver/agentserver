@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/harnesspool"
-	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
+	"github.com/agentserver/agentserver/v2/internal/managedtools"
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
 	"github.com/agentserver/agentserver/v2/internal/runtimelock"
 )
@@ -59,7 +59,7 @@ const (
 	poolManagedEnvironmentIDEnvironment    = "AGENTSERVER_V2_MANAGED_ENVIRONMENT_ID"
 	poolManagedRuntimeDigestEnvironment    = "AGENTSERVER_V2_MANAGED_RUNTIME_PROFILE_SHA256"
 	poolManagedPackSetDigestEnvironment    = "AGENTSERVER_V2_MANAGED_PACK_SET_SHA256"
-	poolManagedSkillDigestEnvironment      = "AGENTSERVER_V2_MANAGED_LARK_SKILL_SHA256"
+	poolManagedSkillDigestEnvironment      = "AGENTSERVER_V2_MANAGED_SKILL_SHA256"
 	poolManagedSandboxTTLEnvironment       = "AGENTSERVER_V2_MANAGED_SANDBOX_TTL"
 	poolManagedActivityTTLEnvironment      = "AGENTSERVER_V2_MANAGED_ACTIVITY_TTL"
 	poolSandboxGatewayURLEnvironment       = "AGENTSERVER_V2_SANDBOX_GATEWAY_URL"
@@ -401,7 +401,7 @@ func loadOptionalManagedSandboxConfig(getenv func(string) string, production boo
 	}
 	config.managedSandbox = &harnesspool.ManagedSandboxLaunchSpec{
 		EnvironmentID: environmentID, RuntimeProfileDigest: runtimeDigest,
-		PackID: larkegresspolicy.PackID, PackSetDigest: packSetDigest, SkillSHA256: skillDigest,
+		PackID: managedtools.PackID, PackSetDigest: packSetDigest, SkillSHA256: skillDigest,
 		SandboxTTL: sandboxTTL, ActivityTTL: activityTTL,
 	}
 	return nil

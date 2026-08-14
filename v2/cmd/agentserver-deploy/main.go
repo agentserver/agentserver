@@ -141,7 +141,11 @@ func run(arguments []string, stdout, stderr io.Writer, commands deployCommands) 
 		fmt.Fprintf(stdout, "agentserver-deploy retarget-direct-terminal-sandbox: wrote fail-closed direct Terminal Sandbox config to %s\n", values["output"])
 		return 0
 	case "lock-release":
-		values, ok := exactArguments(arguments[1:], "config", "output", "service-image", "harness-image", "hydra-image", "managed-sandbox-image", "lark-cli-sha256", "lark-skill-sha256")
+		values, ok := exactArguments(
+			arguments[1:], "config", "output", "service-image", "harness-image", "hydra-image", "managed-sandbox-image",
+			"managed-skill-sha256", "lark-cli-sha256", "lark-skill-sha256", "bkectl-source-revision",
+			"bkectl-cli-sha256", "bkectl-skill-pack-sha256", "bkectl-policy-sha256",
+		)
 		if !ok {
 			writeUsage(stderr)
 			return 2
@@ -158,7 +162,10 @@ func run(arguments []string, stdout, stderr io.Writer, commands deployCommands) 
 		raw, err := commands.lock(config, productiondeploy.ReleaseLock{
 			ServiceImage: values["service-image"], HarnessImage: values["harness-image"],
 			HydraImage: values["hydra-image"], ManagedSandboxImage: values["managed-sandbox-image"],
-			LarkCLISHA256: values["lark-cli-sha256"], LarkSkillSHA256: values["lark-skill-sha256"],
+			ManagedSkillSHA256: values["managed-skill-sha256"],
+			LarkCLISHA256:      values["lark-cli-sha256"], LarkSkillSHA256: values["lark-skill-sha256"],
+			BkectlSourceRevision: values["bkectl-source-revision"], BkectlCLISHA256: values["bkectl-cli-sha256"],
+			BkectlSkillPackSHA256: values["bkectl-skill-pack-sha256"], BkectlPolicySHA256: values["bkectl-policy-sha256"],
 		})
 		if err == nil {
 			err = commands.writeLock(raw, values["output"])
@@ -306,7 +313,7 @@ func writeUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "usage: agentserver-deploy pin-terminal-revision --config=/absolute/bootstrap.json --output=/absolute/new-bootstrap.json --sandbox-id=<expected-sandbox-id> --revision-id=<published-terminal-revision-id>")
 	fmt.Fprintln(writer, "usage: agentserver-deploy retarget-terminal-sandbox --config=/absolute/bootstrap.json --output=/absolute/new-bootstrap.json --expected-sandbox-id=<current-sandbox-id> --sandbox-id=<new-sandbox-id> --revision-id=<published-terminal-revision-id> --environment-id=<fresh-managed-environment-uuid> --managed-sandbox-image=registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-managed-sandbox@sha256:<digest>")
 	fmt.Fprintln(writer, "usage: agentserver-deploy retarget-direct-terminal-sandbox --config=/absolute/bootstrap.json --output=/absolute/new-bootstrap.json --expected-sandbox-id=<current-sandbox-id> --sandbox-id=<new-sandbox-id> --revision-id=<published-terminal-revision-id> --environment-id=<fresh-managed-environment-uuid> --managed-sandbox-image=registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-managed-sandbox@sha256:<digest>")
-	fmt.Fprintln(writer, "usage: agentserver-deploy lock-release --config=/absolute/template.json --output=/absolute/new-production.json --service-image=IMAGE@sha256:DIGEST --harness-image=IMAGE@sha256:DIGEST --hydra-image=IMAGE@sha256:DIGEST --managed-sandbox-image=IMAGE@sha256:DIGEST --lark-cli-sha256=DIGEST --lark-skill-sha256=DIGEST")
+	fmt.Fprintln(writer, "usage: agentserver-deploy lock-release --config=/absolute/template.json --output=/absolute/new-production.json --service-image=IMAGE@sha256:DIGEST --harness-image=IMAGE@sha256:DIGEST --hydra-image=IMAGE@sha256:DIGEST --managed-sandbox-image=IMAGE@sha256:DIGEST --managed-skill-sha256=DIGEST --lark-cli-sha256=DIGEST --lark-skill-sha256=DIGEST --bkectl-source-revision=REVISION --bkectl-cli-sha256=DIGEST --bkectl-skill-pack-sha256=DIGEST --bkectl-policy-sha256=DIGEST")
 	fmt.Fprintln(writer, "       agentserver-deploy lock-developer-service --config=/absolute/active.json --output=/absolute/new-production.json --service-image=registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-service@sha256:DIGEST")
 	fmt.Fprintln(writer, "       agentserver-deploy validate --config=/absolute/path")
 	fmt.Fprintln(writer, "       agentserver-deploy render --config=/absolute/path --output=/absolute/directory")

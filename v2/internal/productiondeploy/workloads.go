@@ -545,8 +545,8 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 			valueEnvironment("AGENTSERVER_V2_SANDBOX_LIFECYCLE_CAPABILITY_KEY_ID", ProductionSandboxLifecycleKeyID),
 			valueEnvironment("AGENTSERVER_V2_SANDBOX_LIFECYCLE_CAPABILITY_SIGNING_KEY_FILE", poolMaterialPath("sandbox-lifecycle-capability.key")),
 		)
-		if managedLarkEnabled(document.Managed) {
-			environment = append(environment, valueEnvironment("AGENTSERVER_V2_MANAGED_LARK_SKILL_SHA256", document.Managed.Lark.SkillSHA256))
+		if managedToolsEnabled(document.Managed) {
+			environment = append(environment, valueEnvironment("AGENTSERVER_V2_MANAGED_SKILL_SHA256", document.Managed.BaseInstructionsSHA256))
 		}
 	}
 	environment = append(environment, objectStoreEnvironment(document)...)

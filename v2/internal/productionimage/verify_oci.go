@@ -36,7 +36,7 @@ const (
 	managedSandboxBaseHistoryCreated   = "2026-08-03T00:00:00Z"
 	managedSandboxBaseHistoryCreatedBy = "# debian.sh --arch 'amd64' out/ 'trixie' '@1785715200'"
 	managedSandboxBaseHistoryComment   = "debuerreotype 0.17"
-	managedSandboxDescription          = "Agentserver-owned minimal Debian TAE runtime with closed-world Lark tooling"
+	managedSandboxDescription          = "Agentserver-owned minimal Debian TAE runtime with closed-world managed CLI tooling"
 
 	maximumOCIDocumentBytes = int64(1024 * 1024)
 	maximumOCIBlobBytes     = int64(512 * 1024 * 1024)

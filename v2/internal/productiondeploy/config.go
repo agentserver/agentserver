@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	CurrentVersion                     = 4
+	CurrentVersion                     = 5
 	ProductionRegion                   = "sg"
 	ProductionNamespace                = "agentserver"
 	ProductionTrustDomain              = "agentserver.byted.bps.dev"

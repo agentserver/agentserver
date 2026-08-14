@@ -15,12 +15,17 @@ import (
 // valid production template. The derived managed runtime and pack digests are
 // recomputed by LockRelease; callers never supply those values independently.
 type ReleaseLock struct {
-	ServiceImage        string
-	HarnessImage        string
-	HydraImage          string
-	ManagedSandboxImage string
-	LarkCLISHA256       string
-	LarkSkillSHA256     string
+	ServiceImage          string
+	HarnessImage          string
+	HydraImage            string
+	ManagedSandboxImage   string
+	ManagedSkillSHA256    string
+	LarkCLISHA256         string
+	LarkSkillSHA256       string
+	BkectlSourceRevision  string
+	BkectlCLISHA256       string
+	BkectlSkillPackSHA256 string
+	BkectlPolicySHA256    string
 }
 
 func LockRelease(base LoadedConfig, lock ReleaseLock) ([]byte, error) {
@@ -44,6 +49,11 @@ func LockRelease(base LoadedConfig, lock ReleaseLock) ([]byte, error) {
 	}
 	document.Managed.Lark.CLISHA256 = lock.LarkCLISHA256
 	document.Managed.Lark.SkillSHA256 = lock.LarkSkillSHA256
+	document.Managed.BaseInstructionsSHA256 = lock.ManagedSkillSHA256
+	document.Managed.Bkectl.SourceRevision = lock.BkectlSourceRevision
+	document.Managed.Bkectl.CLISHA256 = lock.BkectlCLISHA256
+	document.Managed.Bkectl.SkillPackSHA256 = lock.BkectlSkillPackSHA256
+	document.Managed.Bkectl.PolicySHA256 = lock.BkectlPolicySHA256
 	if managedExecutionActive(document.Managed) {
 		document.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(document, document.Managed)
 		document.Managed.Environment.PackSetSHA256 = managedPackSetDigest(document.Managed)
@@ -113,8 +123,13 @@ func releaseLockMatches(document ConfigDocument, lock ReleaseLock) bool {
 		document.Images.Harness == lock.HarnessImage &&
 		document.Images.Hydra == lock.HydraImage &&
 		document.Images.ManagedSandbox == lock.ManagedSandboxImage &&
+		document.Managed.BaseInstructionsSHA256 == lock.ManagedSkillSHA256 &&
 		document.Managed.Lark.CLISHA256 == lock.LarkCLISHA256 &&
-		document.Managed.Lark.SkillSHA256 == lock.LarkSkillSHA256
+		document.Managed.Lark.SkillSHA256 == lock.LarkSkillSHA256 &&
+		document.Managed.Bkectl.SourceRevision == lock.BkectlSourceRevision &&
+		document.Managed.Bkectl.CLISHA256 == lock.BkectlCLISHA256 &&
+		document.Managed.Bkectl.SkillPackSHA256 == lock.BkectlSkillPackSHA256 &&
+		document.Managed.Bkectl.PolicySHA256 == lock.BkectlPolicySHA256
 }
 
 // validateManagedReleaseEvidence is intentionally stricter than ordinary

@@ -119,8 +119,8 @@ func configureManagedExecutionSecurity(
 	mode gatewayServeMode,
 	backend *executorgateway.TAEBackend,
 	httpClient *http.Client,
-	coreAuthorities executorgateway.ManagedLarkEgressAuthoritySource,
-	coreProcessCredentials executorgateway.ManagedLarkProcessCredentialSource,
+	coreAuthorities executorgateway.ManagedCredentialAuthoritySource,
+	coreProcessCredentials executorgateway.ManagedProcessCredentialSource,
 ) (executorgateway.ManagedProcessEnvironmentIssuer, executorgateway.ManagedTargetFencer, error) {
 	if getenv == nil {
 		return nil, nil, errors.New("managed execution security configuration source is required")
@@ -199,7 +199,7 @@ func configureManagedExecutionSecurity(
 		if coreAuthorities == nil || coreProcessCredentials == nil {
 			return nil, nil, errors.New("direct managed credential sources must be v2 Core")
 		}
-		issuer, err := executorgateway.NewDirectWorkspaceManagedLarkEnvironmentIssuer(
+		issuer, err := executorgateway.NewDirectWorkspaceManagedEnvironmentIssuer(
 			coreAuthorities, coreProcessCredentials, taePSM, slog.Default(),
 		)
 		if err != nil {
@@ -239,7 +239,7 @@ func configureManagedExecutionSecurity(
 	}
 	// The CLI application identity is returned with the exact versioned
 	// workspace credential. It is never taken from deployment configuration.
-	issuer, err := executorgateway.NewDefaultWorkspaceManagedLarkEnvironmentIssuer(
+	issuer, err := executorgateway.NewDefaultWorkspaceManagedEnvironmentIssuer(
 		egressSigner, coreAuthorities, coreProcessCredentials, taePSM, slog.Default(),
 	)
 	if err != nil {

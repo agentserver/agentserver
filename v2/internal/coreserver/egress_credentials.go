@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/bkectlpolicy"
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/corecredentials"
 	"github.com/agentserver/agentserver/v2/internal/coredb"
@@ -65,6 +66,14 @@ func (service *EgressCredentialService) ResolveAuthority(ctx context.Context, re
 	if service == nil || service.store == nil || service.now == nil || ctx == nil {
 		return corecontract.ResolveEgressCredentialAuthorityResponse{}, errors.New("v2 egress credential authority service is unavailable")
 	}
+	forcedMode, err := executionCredentialAuthorityMode(request.ProviderKind, request.PolicySHA256)
+	if err != nil {
+		return corecontract.ResolveEgressCredentialAuthorityResponse{}, &coredb.StateError{
+			Code: coredb.ErrorInvalidArgument, Operation: "ResolveExecutionCredentialAuthority",
+			Resource: "credential_use", ResourceID: request.Operation.OperationID,
+			Message: "credential authority request is outside the managed CLI contract",
+		}
+	}
 	operation := request.Operation
 	ref, err := service.store.ResolveCredentialAuthority(ctx, corecredentials.AuthorityRequest{
 		WorkspaceID: operation.WorkspaceID, SessionID: operation.SessionID, ActorID: operation.ActorID,
@@ -94,8 +103,11 @@ func (service *EgressCredentialService) ResolveAuthority(ctx context.Context, re
 	if !managedcredential.ValidMode(ref.CredentialMode) {
 		return corecontract.ResolveEgressCredentialAuthorityResponse{}, errors.New("workspace returned an invalid managed credential mode")
 	}
+	if forcedMode != "" && ref.CredentialMode != forcedMode {
+		return corecontract.ResolveEgressCredentialAuthorityResponse{}, errors.New("workspace returned a credential mode incompatible with the managed CLI")
+	}
 	applicationID := ""
-	if request.ProviderKind == "lark" && ref.BindingID != "" {
+	if ref.BindingID != "" {
 		binding, getErr := service.store.Get(ctx, operation.WorkspaceID, request.ProviderKind, ref.BindingID)
 		if getErr != nil {
 			return corecontract.ResolveEgressCredentialAuthorityResponse{}, getErr
@@ -106,15 +118,27 @@ func (service *EgressCredentialService) ResolveAuthority(ctx context.Context, re
 			return corecontract.ResolveEgressCredentialAuthorityResponse{}, &coredb.StateError{
 				Code: coredb.ErrorVersionConflict, Operation: "ResolveEgressCredentialAuthority",
 				Resource: "credential", ResourceID: ref.BindingID,
-				Message: "workspace credential changed while resolving its application identity",
+				Message: "workspace credential changed while resolving its managed execution authority",
 			}
 		}
-		applicationID, err = larkCredentialApplicationID(binding.PublicMetadata)
-		if err != nil {
+		switch request.ProviderKind {
+		case "lark":
+			applicationID, err = larkCredentialApplicationID(binding.PublicMetadata)
+			if err == nil {
+				break
+			}
 			return corecontract.ResolveEgressCredentialAuthorityResponse{}, &coredb.StateError{
 				Code: coredb.ErrorConflict, Operation: "ResolveEgressCredentialAuthority",
 				Resource: "credential", ResourceID: ref.BindingID,
 				Message: "workspace Lark credential has no valid application identity; authorize it again",
+			}
+		case bkectlpolicy.CredentialKind:
+			if binding.AuthType != corecredentials.AuthTypeDeviceOAuth {
+				return corecontract.ResolveEgressCredentialAuthorityResponse{}, &coredb.StateError{
+					Code: coredb.ErrorConflict, Operation: "ResolveEgressCredentialAuthority",
+					Resource: "credential", ResourceID: ref.BindingID,
+					Message: "workspace ByteCloud credential is not a Platform OIDC binding; authorize it again",
+				}
 			}
 		}
 	}
@@ -152,46 +176,46 @@ func (service *EgressCredentialService) WebhookEnabled() bool {
 	return service != nil && service.webhookEnabled
 }
 
-// ResolveExecutionLarkCredential performs direct, operation-scoped Lark token
-// delivery for process_env mode. The endpoint caller is authenticated
-// separately as executor-gateway; this method still checks the live Core
-// operation twice (default binding selection followed by exact versioned use)
-// so revocation or rotation between the reads fails closed.
-func (service *EgressCredentialService) ResolveExecutionLarkCredential(
+// ResolveExecutionCredential performs direct, operation-scoped credential
+// delivery for an exact managed CLI process in process_env mode. The endpoint
+// caller is authenticated separately as executor-gateway; this method still
+// checks the live Core operation twice (default binding selection followed by
+// exact versioned use) so revocation or rotation between the reads fails
+// closed.
+func (service *EgressCredentialService) ResolveExecutionCredential(
 	ctx context.Context,
-	request corecontract.ResolveExecutionLarkCredentialRequest,
-) (corecontract.ResolveExecutionLarkCredentialResponse, error) {
+	request corecontract.ResolveExecutionCredentialRequest,
+) (corecontract.ResolveExecutionCredentialResponse, error) {
 	if service == nil || service.resolver == nil || service.store == nil || service.now == nil || ctx == nil ||
 		service.processEnvironmentTAEPSM == "" {
-		return corecontract.ResolveExecutionLarkCredentialResponse{}, errors.New("v2 process environment credential resolver is unavailable")
+		return corecontract.ResolveExecutionCredentialResponse{}, errors.New("v2 process environment credential resolver is unavailable")
 	}
-	policySHA256 := larkegresspolicy.SHA256Hex()
-	if request.ToolName != "shell" || request.Executable != "lark-cli" || request.TAEPSM != service.processEnvironmentTAEPSM ||
-		request.PolicySHA256 != policySHA256 {
-		return corecontract.ResolveExecutionLarkCredentialResponse{}, &coredb.StateError{
-			Code: coredb.ErrorInvalidArgument, Operation: "ResolveExecutionLarkCredential",
+	tool, err := executionCredentialToolForRequest(request)
+	if err != nil || request.TAEPSM != service.processEnvironmentTAEPSM {
+		return corecontract.ResolveExecutionCredentialResponse{}, &coredb.StateError{
+			Code: coredb.ErrorInvalidArgument, Operation: "ResolveExecutionCredential",
 			Resource: "credential_use", ResourceID: request.Operation.OperationID,
-			Message: "process environment credential request is outside the managed Lark contract",
+			Message: "process environment credential request is outside the managed CLI contract",
 		}
 	}
 	operation := request.Operation
 	authorityRequest := corecontract.ResolveEgressCredentialAuthorityRequest{
-		Operation: operation, ProviderKind: "lark", PolicySHA256: policySHA256,
+		Operation: operation, ProviderKind: tool.ProviderKind, PolicySHA256: tool.PolicySHA256,
 	}
 	authority, err := service.ResolveAuthority(ctx, authorityRequest)
 	if err != nil {
-		return corecontract.ResolveExecutionLarkCredentialResponse{}, err
+		return corecontract.ResolveExecutionCredentialResponse{}, err
 	}
-	base := corecontract.ResolveExecutionLarkCredentialResponse{
+	base := corecontract.ResolveExecutionCredentialResponse{
 		Configured: false, CredentialMode: authority.CredentialMode,
-		ApplicationID: authority.ApplicationID, ProviderKind: "lark", PolicySHA256: policySHA256,
+		ApplicationID: authority.ApplicationID, ProviderKind: tool.ProviderKind, PolicySHA256: tool.PolicySHA256,
 		TAEPSM: request.TAEPSM, ResolvedAt: service.now().UTC(),
 	}
 	if authority.CredentialMode != managedcredential.ModeProcessEnv ||
 		request.BindingID != authority.BindingID || request.AuthorityVersion != authority.AuthorityVersion ||
 		request.CredentialVersion != authority.CredentialVersion {
-		return corecontract.ResolveExecutionLarkCredentialResponse{}, &coredb.StateError{
-			Code: coredb.ErrorForbidden, Operation: "ResolveExecutionLarkCredential",
+		return corecontract.ResolveExecutionCredentialResponse{}, &coredb.StateError{
+			Code: coredb.ErrorForbidden, Operation: "ResolveExecutionCredential",
 			Resource: "credential_use", ResourceID: request.Operation.OperationID,
 			Message: "workspace credential delivery mode or version changed before process launch",
 		}
@@ -201,38 +225,123 @@ func (service *EgressCredentialService) ResolveExecutionLarkCredential(
 	}
 	auditID, err := newCredentialEventID()
 	if err != nil {
-		return corecontract.ResolveExecutionLarkCredentialResponse{}, err
+		return corecontract.ResolveExecutionCredentialResponse{}, err
 	}
 	mutation, result, err := service.resolver.ResolveTrustedInjection(ctx, corecredentials.UseRequest{
 		WorkspaceID: operation.WorkspaceID, SessionID: operation.SessionID, ActorID: operation.ActorID,
 		EnvironmentID: operation.EnvironmentID, RunID: operation.RunID, RunAttemptID: operation.RunAttemptID,
 		RunAttemptGeneration: operation.RunAttemptGeneration, ExecutionID: operation.ExecutionID,
 		OperationID: operation.OperationID, SandboxID: operation.SandboxID, TargetGeneration: operation.TargetGeneration,
-		ProviderKind: "lark", BindingID: authority.BindingID, AuthorityVersion: authority.AuthorityVersion,
+		ProviderKind: tool.ProviderKind, BindingID: authority.BindingID, AuthorityVersion: authority.AuthorityVersion,
 		ExpectedCredentialVersion: authority.CredentialVersion,
 		CredentialMode:            managedcredential.ModeProcessEnv,
-		PolicySHA256:              policySHA256, TAEPSM: request.TAEPSM,
-		Host: larkegresspolicy.OpenAPIHost, Path: "/", Method: "PROCESS_ENV",
+		PolicySHA256:              tool.PolicySHA256, TAEPSM: request.TAEPSM,
+		Host: tool.CredentialHost, Path: "/", Method: "PROCESS_ENV",
 	}, auditID, "process_env")
 	if err != nil {
-		return corecontract.ResolveExecutionLarkCredentialResponse{}, err
+		return corecontract.ResolveExecutionCredentialResponse{}, err
 	}
-	token, err := exactBearerToken(mutation.Headers)
+	credential, err := exactExecutionCredential(tool, mutation.Headers)
 	if err != nil {
-		return corecontract.ResolveExecutionLarkCredentialResponse{}, errors.New("v2 Lark provider returned an invalid process credential")
+		return corecontract.ResolveExecutionCredentialResponse{}, errors.New("v2 provider returned an invalid process credential")
 	}
-	applicationID, err := larkCredentialApplicationID(result.Binding.PublicMetadata)
-	if err != nil || applicationID != authority.ApplicationID {
-		return corecontract.ResolveExecutionLarkCredentialResponse{}, errors.New("v2 Lark credential application identity changed during process credential resolution")
+	applicationID := ""
+	if tool.ProviderKind == "lark" {
+		applicationID, err = larkCredentialApplicationID(result.Binding.PublicMetadata)
+		if err != nil || applicationID != authority.ApplicationID {
+			return corecontract.ResolveExecutionCredentialResponse{}, errors.New("v2 Lark credential application identity changed during process credential resolution")
+		}
+	} else if authority.ApplicationID != "" {
+		return corecontract.ResolveExecutionCredentialResponse{}, errors.New("v2 provider returned unexpected application identity")
 	}
-	return corecontract.ResolveExecutionLarkCredentialResponse{
-		Configured: true, AccessToken: token, CredentialMode: managedcredential.ModeProcessEnv,
+	return corecontract.ResolveExecutionCredentialResponse{
+		Configured: true, Credential: credential, CredentialMode: managedcredential.ModeProcessEnv,
 		ApplicationID: applicationID, ProviderKind: result.ProviderKind,
 		BindingID: result.Binding.ID, AuthorityVersion: result.AuthorityVersion,
-		CredentialVersion: result.CredentialVersion, PolicySHA256: policySHA256,
+		CredentialVersion: result.CredentialVersion, PolicySHA256: tool.PolicySHA256,
 		TAEPSM: request.TAEPSM, ResolvedAt: result.ResolvedAt.UTC(),
 		AccessExpiresAt: copyCredentialTime(result.AccessExpiresAt),
 	}, nil
+}
+
+type executionCredentialTool struct {
+	Executable     string
+	ProviderKind   string
+	PolicySHA256   string
+	CredentialHost string
+	HeaderName     string
+	Bearer         bool
+}
+
+// executionCredentialAuthorityMode validates the provider/policy pair before
+// Core selects a workspace binding. An empty result means the provider keeps
+// its workspace-selected mode. ByteCloud credentials are provider resources,
+// not bkectl resources: every managed CLI consumer receives them only through
+// process_env, independently of the Lark webhook/process setting.
+func executionCredentialAuthorityMode(providerKind, policySHA256 string) (string, error) {
+	switch {
+	case providerKind == "lark" && policySHA256 == larkegresspolicy.SHA256Hex():
+		return "", nil
+	case providerKind == bkectlpolicy.CredentialKind && policySHA256 == bkectlpolicy.SHA256Hex():
+		return managedcredential.ModeProcessEnv, nil
+	default:
+		return "", errors.New("managed credential provider policy is not supported")
+	}
+}
+
+func executionCredentialToolForRequest(request corecontract.ResolveExecutionCredentialRequest) (executionCredentialTool, error) {
+	if request.ToolName != "shell" || len(request.Arguments) > 512 {
+		return executionCredentialTool{}, errors.New("managed CLI process shape is invalid")
+	}
+	for _, argument := range request.Arguments {
+		if len(argument) > 32*1024 || strings.ContainsAny(argument, "\x00\r\n") {
+			return executionCredentialTool{}, errors.New("managed CLI argument is invalid")
+		}
+	}
+	switch request.Executable {
+	case "lark-cli":
+		tool := executionCredentialTool{
+			Executable: "lark-cli", ProviderKind: "lark", PolicySHA256: larkegresspolicy.SHA256Hex(),
+			CredentialHost: larkegresspolicy.OpenAPIHost, HeaderName: "Authorization", Bearer: true,
+		}
+		if request.ProviderKind != tool.ProviderKind || request.PolicySHA256 != tool.PolicySHA256 {
+			return executionCredentialTool{}, errors.New("managed Lark process authority is invalid")
+		}
+		return tool, nil
+	case bkectlpolicy.Executable:
+		tool := executionCredentialTool{
+			Executable: bkectlpolicy.Executable, ProviderKind: bkectlpolicy.CredentialKind,
+			PolicySHA256: bkectlpolicy.SHA256Hex(), CredentialHost: bkectlpolicy.CredentialHost,
+			HeaderName: "X-Jwt-Token",
+		}
+		required, err := bkectlpolicy.CredentialRequired(request.Arguments)
+		if err != nil || !required || request.ProviderKind != tool.ProviderKind || request.PolicySHA256 != tool.PolicySHA256 {
+			return executionCredentialTool{}, errors.New("managed bkectl process authority is invalid")
+		}
+		return tool, nil
+	default:
+		return executionCredentialTool{}, errors.New("managed CLI executable is not supported")
+	}
+}
+
+func exactExecutionCredential(tool executionCredentialTool, headers map[string]string) (string, error) {
+	if len(headers) != 1 {
+		return "", errors.New("process credential mutation must contain exactly one header")
+	}
+	value, ok := exactCredentialHeader(headers, tool.HeaderName)
+	if !ok {
+		return "", errors.New("process credential mutation header is invalid")
+	}
+	if tool.Bearer {
+		if !strings.HasPrefix(value, "Bearer ") || strings.Count(value, " ") != 1 {
+			return "", errors.New("process credential mutation is not a bearer token")
+		}
+		value = strings.TrimPrefix(value, "Bearer ")
+	}
+	if value == "" || len(value) > 32*1024 || strings.TrimSpace(value) != value || strings.ContainsAny(value, " \t\x00\r\n") {
+		return "", errors.New("process credential value is invalid")
+	}
+	return value, nil
 }
 
 func larkCredentialApplicationID(metadata json.RawMessage) (string, error) {

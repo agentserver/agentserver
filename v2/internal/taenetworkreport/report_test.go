@@ -19,7 +19,7 @@ func TestReportCanonicalRoundTripAndDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Count(raw, []byte{'\n'}) != 1 || raw[len(raw)-1] != '\n' || !bytes.HasPrefix(raw, []byte(`{"schemaVersion":3,"kind":"agentserver.tae.sg-network-report"`)) {
+	if bytes.Count(raw, []byte{'\n'}) != 1 || raw[len(raw)-1] != '\n' || !bytes.HasPrefix(raw, []byte(`{"schemaVersion":4,"kind":"agentserver.tae.sg-network-report"`)) {
 		t.Fatalf("report is not one canonical line: %q", raw)
 	}
 	parsed, err := Parse(raw)
@@ -140,6 +140,8 @@ func validReport() Report {
 			DataPlaneDomainSuffix: "sg.example", SandboxImage: "registry.example/sandbox:sha256-" + strings.Repeat("2", 64),
 			SandboxID: "sandbox-1", SandboxRevisionID: "revision-1",
 			LarkCLIVersion: "1.0.69", LarkCLISHA256: strings.Repeat("3", 64), LarkSkillSHA256: strings.Repeat("4", 64),
+			ManagedSkillSHA256: strings.Repeat("5", 64), BkectlSourceRevision: strings.Repeat("6", 40),
+			BkectlCLISHA256: strings.Repeat("7", 64), BkectlSkillPackSHA256: strings.Repeat("8", 64),
 			ConnectivityAttempts: 2, LifecycleAttempts: 1,
 		},
 		Checks: []Check{

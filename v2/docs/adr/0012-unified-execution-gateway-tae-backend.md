@@ -266,6 +266,6 @@ reconciler 与 SG 网络策略审批；TAE Webhook 500ms 预算要求专门的�
 3. sandbox-gateway + fake TAE contract tests，再接隔离的真实 TAE SDK module；
 4. session lifecycle、TTL/reconcile 与 managed environment 目录；
 5. shell/read-file 只读执行，故障注入覆盖 create/dispatch/stream/delete ambiguity；
-6. Platform 动态 binding、Core-owned materialization、SG egress 五项硬门禁与真实 `lark-cli` read-only 垂直测试；
+6. Platform 动态 binding、Core-owned materialization、SG egress 五项硬门禁与真实 `lark-cli`/`bkectl` read-only 垂直测试；
 7. 小流量 opt-in，按 workspace/session kill switch 回退到 BYO；
 8. 达到 SLO、成本与安全门禁后再考虑 write approval、更多 tool pack 与更多 E2B 语义。

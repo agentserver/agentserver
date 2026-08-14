@@ -25,7 +25,7 @@ func TestCoreManagedLarkAuthorityUsesInjectedAuthorizationClock(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, incoming *http.Request) {
-				if incoming.Method != http.MethodPost || incoming.URL.Path != corecontract.ResolveExecutionLarkCredentialAuthorityPath {
+				if incoming.Method != http.MethodPost || incoming.URL.Path != corecontract.ResolveExecutionCredentialAuthorityPath {
 					t.Fatalf("managed Lark authority request = %s %s", incoming.Method, incoming.URL.Path)
 				}
 				response.Header().Set("Content-Type", "application/json")
@@ -44,7 +44,7 @@ func TestCoreManagedLarkAuthorityUsesInjectedAuthorizationClock(t *testing.T) {
 				t.Fatal(err)
 			}
 			client.authorizationNow = func() time.Time { return now }
-			authority, err := client.ResolveManagedLarkEgressAuthority(t.Context(), request)
+			authority, err := client.ResolveManagedCredentialAuthority(t.Context(), request)
 			if test.wantError {
 				if err == nil {
 					t.Fatalf("future Core authorization was accepted: %+v", authority)
@@ -52,7 +52,7 @@ func TestCoreManagedLarkAuthorityUsesInjectedAuthorizationClock(t *testing.T) {
 				return
 			}
 			if err != nil || authority.ApplicationID != "cli_agentserver_sg" || authority.AuthorityVersion != 7 || authority.CredentialVersion != 11 {
-				t.Fatalf("ResolveManagedLarkEgressAuthority() = %+v, %v", authority, err)
+				t.Fatalf("ResolveManagedCredentialAuthority() = %+v, %v", authority, err)
 			}
 		})
 	}

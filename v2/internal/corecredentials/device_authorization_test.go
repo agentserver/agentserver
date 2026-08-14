@@ -59,7 +59,7 @@ func TestLarkDeviceAuthorizationLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if schema := provider.Schema(); !containsText(schema.AuthorizationMethods, AuthorizationMethodDeviceFlow) || !containsText(schema.AuthTypes, larkDeviceOAuthAuthType) {
+	if schema := provider.Schema(); !containsText(schema.AuthorizationMethods, AuthorizationMethodDeviceFlow) || !containsText(schema.AuthTypes, AuthTypeDeviceOAuth) {
 		t.Fatalf("Lark device schema = %+v", schema)
 	}
 	challenge, err := provider.BeginDeviceAuthorization(t.Context(), nil)
@@ -71,18 +71,18 @@ func TestLarkDeviceAuthorizationLifecycle(t *testing.T) {
 		t.Fatalf("Lark pending poll = %+v, %v", pending, err)
 	}
 	succeeded, err := provider.PollDeviceAuthorization(t.Context(), challenge.ProviderState)
-	if err != nil || succeeded.Status != DeviceAuthorizationSucceeded || succeeded.Credential.AuthType != larkDeviceOAuthAuthType {
+	if err != nil || succeeded.Status != DeviceAuthorizationSucceeded || succeeded.Credential.AuthType != AuthTypeDeviceOAuth {
 		t.Fatalf("Lark successful poll = %+v, %v", succeeded, err)
 	}
 	credential, err := parseLarkOAuthCredential(succeeded.Credential.Secret, "cli_app")
 	if err != nil || credential.UserOpenID != "ou_agentserver" || credential.UserName != "Agent Server" {
 		t.Fatalf("Lark credential = %+v, %v", credential, err)
 	}
-	mutation, err := provider.Materialize(t.Context(), Binding{Kind: "lark", AuthType: larkDeviceOAuthAuthType}, succeeded.Credential.Secret, UseRequest{Host: "open.feishu.cn"})
+	mutation, err := provider.Materialize(t.Context(), Binding{Kind: "lark", AuthType: AuthTypeDeviceOAuth}, succeeded.Credential.Secret, UseRequest{Host: "open.feishu.cn"})
 	if err != nil || mutation.Headers["Authorization"] != "Bearer lark-access-1" {
 		t.Fatalf("Lark materialization = %+v, %v", mutation, err)
 	}
-	refreshed, terminal, err := provider.RefreshDeviceCredential(t.Context(), Binding{Kind: "lark", AuthType: larkDeviceOAuthAuthType}, succeeded.Credential.Secret)
+	refreshed, terminal, err := provider.RefreshDeviceCredential(t.Context(), Binding{Kind: "lark", AuthType: AuthTypeDeviceOAuth}, succeeded.Credential.Secret)
 	if err != nil || terminal {
 		t.Fatalf("Lark refresh = terminal %t, %v", terminal, err)
 	}
@@ -145,11 +145,11 @@ func TestByteCloudDeviceAuthorizationLifecycle(t *testing.T) {
 	if err != nil || credential.Username != "zhangyao.dev" || credential.AppID != "app-bytecloud" {
 		t.Fatalf("ByteCloud credential = %+v, %v", credential, err)
 	}
-	mutation, err := provider.Materialize(t.Context(), Binding{Kind: "bytecloud", AuthType: byteCloudDeviceOAuthAuthType}, succeeded.Credential.Secret, UseRequest{Host: "cloud-i18n-sg.bytedance.net"})
+	mutation, err := provider.Materialize(t.Context(), Binding{Kind: "bytecloud", AuthType: AuthTypeDeviceOAuth}, succeeded.Credential.Secret, UseRequest{Host: "cloud-i18n-sg.bytedance.net"})
 	if err != nil || mutation.Headers["X-Jwt-Token"] != "bytecloud-access-1" {
 		t.Fatalf("ByteCloud materialization = %+v, %v", mutation, err)
 	}
-	refreshed, terminal, err := provider.RefreshDeviceCredential(t.Context(), Binding{Kind: "bytecloud", AuthType: byteCloudDeviceOAuthAuthType}, succeeded.Credential.Secret)
+	refreshed, terminal, err := provider.RefreshDeviceCredential(t.Context(), Binding{Kind: "bytecloud", AuthType: AuthTypeDeviceOAuth}, succeeded.Credential.Secret)
 	if err != nil || terminal {
 		t.Fatalf("ByteCloud refresh = terminal %t, %v", terminal, err)
 	}

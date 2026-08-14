@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/bkectlpolicy"
 	"github.com/agentserver/agentserver/v2/internal/enrollmenttoken"
 	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
 	"github.com/agentserver/agentserver/v2/internal/productionimage"
@@ -535,11 +536,15 @@ func validActivationNetworkReport(document ConfigDocument, revision string) taen
 	document = loaded.Document
 	const connectivityAttempts = 20
 	const lifecycleAttempts = 1
-	checks := make([]taenetworkreport.Check, 0, 15)
+	checks := make([]taenetworkreport.Check, 0, 28)
 	for _, name := range []string{
 		"jwt_force_refresh", "control_search_missing", "control_create", "control_search_created",
-		"control_wait_ready", "control_update_ttl", "data_exec_terminal", "data_exec_lark_version", "data_stat_lark_cli",
-		"data_read_lark_cli", "data_stat_lark_skill", "data_read_lark_skill", "control_delete",
+		"control_wait_ready", "control_update_ttl", "data_exec_terminal", "data_exec_lark_version", "data_exec_bkectl_version",
+		"data_stat_lark_cli", "data_read_lark_cli", "data_stat_lark_skill", "data_read_lark_skill",
+		"data_stat_managed_skill", "data_read_managed_skill", "data_stat_bkectl_cli", "data_read_bkectl_cli",
+		"data_stat_bkectl_skill", "data_read_bkectl_skill", "data_stat_bkectl_command_surface", "data_read_bkectl_command_surface",
+		"data_stat_bkectl_domain_guides", "data_read_bkectl_domain_guides", "data_stat_bkectl_invocation", "data_read_bkectl_invocation",
+		"control_delete",
 		"control_confirm_deleted", "control_cleanup",
 	} {
 		attempts := lifecycleAttempts
@@ -554,6 +559,18 @@ func validActivationNetworkReport(document ConfigDocument, revision string) taen
 		}
 		if name == "data_read_lark_skill" {
 			check.BytesRead = 1024 * lifecycleAttempts
+		}
+		for checkName, size := range map[string]int64{
+			"data_read_managed_skill":          productionimage.ManagedSkillSizeBytes,
+			"data_read_bkectl_cli":             productionimage.ManagedBkectlCLISizeBytes,
+			"data_read_bkectl_skill":           productionimage.ManagedBkectlSkillSizeBytes,
+			"data_read_bkectl_command_surface": productionimage.ManagedBkectlCommandSurfaceSizeBytes,
+			"data_read_bkectl_domain_guides":   productionimage.ManagedBkectlDomainGuidesSizeBytes,
+			"data_read_bkectl_invocation":      productionimage.ManagedBkectlInvocationSizeBytes,
+		} {
+			if name == checkName {
+				check.BytesRead = size * lifecycleAttempts
+			}
 		}
 		checks = append(checks, check)
 	}
@@ -576,8 +593,12 @@ func validActivationNetworkReport(document ConfigDocument, revision string) taen
 			DataPlaneDomainSuffix: ProductionTAEDataPlaneSuffix, SandboxImage: taeSandboxImage,
 			SandboxID: document.Managed.TAE.SandboxID, SandboxRevisionID: document.Managed.TAE.RevisionID,
 			LarkCLIVersion: productionimage.ManagedLarkCLIVersion, LarkCLISHA256: document.Managed.Lark.CLISHA256,
-			LarkSkillSHA256:      document.Managed.Lark.SkillSHA256,
-			ConnectivityAttempts: connectivityAttempts, LifecycleAttempts: lifecycleAttempts,
+			LarkSkillSHA256:       document.Managed.Lark.SkillSHA256,
+			ManagedSkillSHA256:    document.Managed.BaseInstructionsSHA256,
+			BkectlSourceRevision:  document.Managed.Bkectl.SourceRevision,
+			BkectlCLISHA256:       document.Managed.Bkectl.CLISHA256,
+			BkectlSkillPackSHA256: document.Managed.Bkectl.SkillPackSHA256,
+			ConnectivityAttempts:  connectivityAttempts, LifecycleAttempts: lifecycleAttempts,
 		},
 		Checks: checks,
 	}
@@ -653,7 +674,8 @@ func validConfigDocument() ConfigDocument {
 		},
 		Managed: ManagedExecutorDocument{
 			Enabled: true, Stage: ManagedExecutorStageActive,
-			WorkspaceAllowlist: []string{"40000000-0000-4000-8000-000000000004"},
+			WorkspaceAllowlist:     []string{"40000000-0000-4000-8000-000000000004"},
+			BaseInstructionsSHA256: productionimage.ManagedSkillSHA256,
 			Environment: ManagedEnvironmentDocument{
 				EnvironmentID: "30000000-0000-4000-8000-000000000003",
 				Root: ManagedEnvironmentRootDocument{
@@ -684,6 +706,11 @@ func validConfigDocument() ConfigDocument {
 				Enabled:     true,
 				CLISHA256:   productionimage.ManagedLarkCLISHA256,
 				SkillSHA256: digest("8"), PolicySHA256: larkegresspolicy.SHA256Hex(),
+			},
+			Bkectl: ManagedBkectlDocument{
+				Enabled: true, SourceRevision: bkectlpolicy.SourceRevision,
+				CLISHA256: bkectlpolicy.CLISHA256, SkillPackSHA256: bkectlpolicy.SkillPackSHA256,
+				PolicySHA256: bkectlpolicy.SHA256Hex(),
 			},
 		},
 		Objects: ObjectStoreDocument{

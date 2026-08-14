@@ -45,6 +45,16 @@ env:
   LARK_CLI_ARCHIVE_SHA256: 224e1f8c04bb194d668c750928c5b2f4942bbffd62a118c3dc163f27ee6e5c09
   LARK_CLI_SHA256: faee6cf3f4d87194e079820ff7809182cbda1d815bc902700649c737ac0ed943
   LARK_SKILL_SHA256: 3c03773ac40132e68c406c715d69847c1f60f10e00982bac9782d7bc5ac8bd29
+  MANAGED_SKILL_SHA256: 9a377446f5a966193ad54efe72b0ae84410bdc1ff22df40701384da30c96fcb1
+  BKECTL_REPOSITORY: https://code.byted.org/bd-sre/bkectl.git
+  BKECTL_SOURCE_REVISION: d813842ab03b24f2ac7a5b374507c273f41cbf21
+  BKECTL_CLI_SHA256: 0331eb9836e46034d07bc88c52fa7af738dff7ad0b2b83d85ffe7cd6dfb7a590
+  BKECTL_SKILL_SHA256: f2b4bb30db93c8dacc2bc34c87f567d1e554fa71da4a91f37eea5962661d43d0
+  BKECTL_COMMAND_SURFACE_SHA256: 2a157aae24edc283704b4b80902ffb1d5898b1adc95f5e9776908fab56c92ce9
+  BKECTL_DOMAIN_GUIDES_SHA256: 78e33eb0e9fa83bea7c78cc781471d3614ed9c0aeee03fd603f970a0aea63e19
+  BKECTL_INVOCATION_SHA256: 371efb54b4141f3898abd971536a996f54087b33074232024731f47544312010
+  BKECTL_SKILL_PACK_SHA256: b752c88857ca7035580e9a9d51e9c63a09fd1bda28ce290c4e71b351c3779e51
+  BKECTL_POLICY_SHA256: 7f6bd3ce588dcc9c43aff603eb4d784c9dc78283fc6db16d83589e99f74f1cb9
   HYDRA_SOURCE: docker.io/oryd/hydra@sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b
   HYDRA_DIGEST: sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b
 
@@ -90,6 +100,27 @@ jobs:
             'GONOSUMDB=code.byted.org' >>"${GITHUB_ENV}"
           GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code \
             https://code.byted.org/security/zti-jwt-golang.git HEAD >/dev/null
+
+      - name: Check out pinned bkectl source
+        id: bkectl_source
+        run: |
+          set -euo pipefail
+          checkout="${RUNNER_TEMP}/agentserver-bkectl-source"
+          git init "${checkout}"
+          git -C "${checkout}" remote add origin "${BKECTL_REPOSITORY}"
+          GIT_TERMINAL_PROMPT=0 git -C "${checkout}" fetch --depth=1 origin "${BKECTL_SOURCE_REVISION}"
+          git -C "${checkout}" checkout --detach FETCH_HEAD
+          test "$(git -C "${checkout}" rev-parse HEAD)" = "${BKECTL_SOURCE_REVISION}"
+          test -z "$(git -C "${checkout}" status --short)"
+          printf 'checkout=%s\n' "${checkout}" >>"${GITHUB_OUTPUT}"
+
+      - name: Restore pinned bkectl build cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ${{ runner.temp }}/agentserver-bkectl-gocache
+            ${{ runner.temp }}/agentserver-bkectl-gomodcache
+          key: bkectl-linux-amd64-go1.26.5-${{ env.BKECTL_SOURCE_REVISION }}
 
       - uses: pnpm/action-setup@v4
         with:
@@ -174,12 +205,48 @@ jobs:
           printf 'lark_cli=%s\n' "${runtime_dir}/lark-cli" >>"${GITHUB_OUTPUT}"
           printf 'lark_skill=%s\n' "${GITHUB_WORKSPACE}/v2/deploy/production/lark-readonly.SKILL.md" >>"${GITHUB_OUTPUT}"
 
+      - name: Build and verify pinned bkectl runtime
+        id: bkectl
+        env:
+          BKECTL_CHECKOUT: ${{ steps.bkectl_source.outputs.checkout }}
+        run: |
+          set -euo pipefail
+          runtime_dir="${RUNNER_TEMP}/agentserver-bkectl-runtime"
+          install -d -m 0700 "${runtime_dir}"
+          env \
+            GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+            GOCACHE="${RUNNER_TEMP}/agentserver-bkectl-gocache" \
+            GOMODCACHE="${RUNNER_TEMP}/agentserver-bkectl-gomodcache" \
+            go -C "${BKECTL_CHECKOUT}/src" build \
+              -buildvcs=false -trimpath \
+              -ldflags="-s -w -buildid= -X code.byted.org/bd-sre/bkectl/src/pkg/buildinfo.Version=${BKECTL_SOURCE_REVISION} -X code.byted.org/bd-sre/bkectl/src/pkg/buildinfo.BuildTime=1970-01-01T00:00:00Z" \
+              -o "${runtime_dir}/bkectl" ./cmd/bkectl
+          chmod 0555 "${runtime_dir}/bkectl"
+          printf '%s  %s\n' "${BKECTL_CLI_SHA256}" "${runtime_dir}/bkectl" | sha256sum --check --strict
+          test "$(stat --format=%s "${runtime_dir}/bkectl")" = '34263166'
+          version_json=$("${runtime_dir}/bkectl" --json version)
+          test "$(jq -er '.version' <<<"${version_json}")" = "${BKECTL_SOURCE_REVISION}"
+          test "$(jq -er '.build_time' <<<"${version_json}")" = '1970-01-01T00:00:00Z'
+          skill_root="${BKECTL_CHECKOUT}/skills/bkectl"
+          printf '%s  %s\n' "${BKECTL_SKILL_SHA256}" "${skill_root}/SKILL.md" | sha256sum --check --strict
+          printf '%s  %s\n' "${BKECTL_COMMAND_SURFACE_SHA256}" "${skill_root}/references/command-surface.md" | sha256sum --check --strict
+          printf '%s  %s\n' "${BKECTL_DOMAIN_GUIDES_SHA256}" "${skill_root}/references/domain-guides.md" | sha256sum --check --strict
+          printf '%s  %s\n' "${BKECTL_INVOCATION_SHA256}" "${skill_root}/references/invocation.md" | sha256sum --check --strict
+          test "$(find "${skill_root}" -type f | wc -l | tr -d '[:space:]')" = '4'
+          printf '%s  %s\n' "${MANAGED_SKILL_SHA256}" "${GITHUB_WORKSPACE}/v2/deploy/production/managed-cli-readonly.SKILL.md" | sha256sum --check --strict
+          printf 'binary=%s\n' "${runtime_dir}/bkectl" >>"${GITHUB_OUTPUT}"
+          printf 'skill_root=%s\n' "${skill_root}" >>"${GITHUB_OUTPUT}"
+          printf 'managed_skill=%s\n' "${GITHUB_WORKSPACE}/v2/deploy/production/managed-cli-readonly.SKILL.md" >>"${GITHUB_OUTPUT}"
+
       - name: Build and verify closed-world OCI images
         env:
           CODEX_PATH: ${{ steps.runtime.outputs.codex }}
           BWRAP_PATH: ${{ steps.runtime.outputs.bwrap }}
           LARK_CLI_PATH: ${{ steps.runtime.outputs.lark_cli }}
           LARK_SKILL_PATH: ${{ steps.runtime.outputs.lark_skill }}
+          BKECTL_PATH: ${{ steps.bkectl.outputs.binary }}
+          BKECTL_SKILL_ROOT: ${{ steps.bkectl.outputs.skill_root }}
+          MANAGED_SKILL_PATH: ${{ steps.bkectl.outputs.managed_skill }}
         run: |
           set -euo pipefail
           build_log="${RUNNER_TEMP}/agentserver-v2-image-build.log"
@@ -189,6 +256,9 @@ jobs:
               --bwrap="${BWRAP_PATH}" \
               --lark-cli="${LARK_CLI_PATH}" \
               --lark-skill="${LARK_SKILL_PATH}" \
+              --bkectl="${BKECTL_PATH}" \
+              --bkectl-skill-root="${BKECTL_SKILL_ROOT}" \
+              --managed-skill="${MANAGED_SKILL_PATH}" \
               --service-image="${SERVICE_REPOSITORY}:sha-${GITHUB_SHA}" \
               --harness-image="${HARNESS_REPOSITORY}:sha-${GITHUB_SHA}" \
               --managed-sandbox-image="${MANAGED_SANDBOX_REPOSITORY}:sha-${GITHUB_SHA}" \
@@ -307,8 +377,13 @@ jobs:
             --harness-image="registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-harness@${HARNESS_DIGEST}" \
             --hydra-image="registry-sg.byted.cs.ac.cn/ghcr/agentserver/hydra@${PUBLISHED_HYDRA_DIGEST}" \
             --managed-sandbox-image="registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-managed-sandbox@${MANAGED_SANDBOX_DIGEST}" \
+            --managed-skill-sha256="${MANAGED_SKILL_SHA256}" \
             --lark-cli-sha256="${LARK_CLI_SHA256}" \
-            --lark-skill-sha256="${LARK_SKILL_SHA256}"
+            --lark-skill-sha256="${LARK_SKILL_SHA256}" \
+            --bkectl-source-revision="${BKECTL_SOURCE_REVISION}" \
+            --bkectl-cli-sha256="${BKECTL_CLI_SHA256}" \
+            --bkectl-skill-pack-sha256="${BKECTL_SKILL_PACK_SHA256}" \
+            --bkectl-policy-sha256="${BKECTL_POLICY_SHA256}"
           go -C v2 run ./cmd/agentserver-image verify-managed-release \
             --config="${release_dir}/production.json" \
             --harness-manifest="${RUNNER_TEMP}/agentserver-v2-image-evidence/harness-image-manifest.json" \
@@ -605,8 +680,13 @@ jobs:
           harness_image=$(jq -er '.images.harness' "${production_template}")
           hydra_image=$(jq -er '.images.hydra' "${production_template}")
           managed_sandbox_image=$(jq -er '.images.managedSandbox' "${production_template}")
+          managed_skill_sha=$(jq -er '.managedExecutor.baseInstructionsSha256' "${production_template}")
           lark_cli_sha=$(jq -er '.managedExecutor.lark.cliSha256' "${production_template}")
           lark_skill_sha=$(jq -er '.managedExecutor.lark.skillSha256' "${production_template}")
+          bkectl_source_revision=$(jq -er '.managedExecutor.bkectl.sourceRevision' "${production_template}")
+          bkectl_cli_sha=$(jq -er '.managedExecutor.bkectl.cliSha256' "${production_template}")
+          bkectl_skill_pack_sha=$(jq -er '.managedExecutor.bkectl.skillPackSha256' "${production_template}")
+          bkectl_policy_sha=$(jq -er '.managedExecutor.bkectl.policySha256' "${production_template}")
           go -C v2 run ./cmd/agentserver-deploy lock-release \
             --config="${production_template}" \
             --output="${release_dir}/production.json" \
@@ -614,8 +694,13 @@ jobs:
             --harness-image="${harness_image}" \
             --hydra-image="${hydra_image}" \
             --managed-sandbox-image="${managed_sandbox_image}" \
+            --managed-skill-sha256="${managed_skill_sha}" \
             --lark-cli-sha256="${lark_cli_sha}" \
-            --lark-skill-sha256="${lark_skill_sha}"
+            --lark-skill-sha256="${lark_skill_sha}" \
+            --bkectl-source-revision="${bkectl_source_revision}" \
+            --bkectl-cli-sha256="${bkectl_cli_sha}" \
+            --bkectl-skill-pack-sha256="${bkectl_skill_pack_sha}" \
+            --bkectl-policy-sha256="${bkectl_policy_sha}"
           go -C v2 run ./cmd/agentserver-deploy chart \
             --config="${release_dir}/production.json" \
             --output="${chart_dir}"

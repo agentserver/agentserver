@@ -136,7 +136,7 @@ func TestRenderManagedExecutorKillSwitchOmitsManagedRuntimeAndAuthorities(t *tes
 	harnessContainer := objectArrayFirst(t, objectField(t, objectField(t, objectField(t, harness, "spec"), "template"), "spec"), "containers")
 	for _, forbidden := range []string{
 		"AGENTSERVER_V2_MANAGED_ENVIRONMENT_ID", "AGENTSERVER_V2_MANAGED_RUNTIME_PROFILE_SHA256",
-		"AGENTSERVER_V2_MANAGED_PACK_SET_SHA256", "AGENTSERVER_V2_MANAGED_LARK_SKILL_SHA256",
+		"AGENTSERVER_V2_MANAGED_PACK_SET_SHA256", "AGENTSERVER_V2_MANAGED_SKILL_SHA256",
 		"AGENTSERVER_V2_SANDBOX_GATEWAY_URL", "AGENTSERVER_V2_SANDBOX_LIFECYCLE_CAPABILITY_SIGNING_KEY_FILE",
 	} {
 		if literalEnvironmentOptional(t, harnessContainer, forbidden) != "" {
@@ -319,67 +319,13 @@ func TestRenderDirectPolicyBootstrapOmitsWebhookWorkloadAndAuthority(t *testing.
 	}
 }
 
-func TestRenderManagedExecutorWithoutLarkToolPackKeepsTAE(t *testing.T) {
+func TestRenderRejectsPartialManagedToolPack(t *testing.T) {
 	document := validConfigDocument()
 	document.Managed.Lark.Enabled = false
 	document.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(document, document.Managed)
 	document.Managed.Environment.PackSetSHA256 = managedPackSetDigest(document.Managed)
-	loaded, err := ValidateConfig(document)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bundle, err := Render(loaded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(bundle.Files) != 8 {
-		t.Fatalf("managed executor without Lark bundle files = %d, want 8", len(bundle.Files))
-	}
-	if _, found := bundle.File(managedEnvironmentBootstrapFile); !found {
-		t.Fatal("managed executor without Lark omitted the managed environment bootstrap")
-	}
-	foundation := parseKubernetesList(t, mustBundleFile(t, bundle, foundationFile))
-	runtime := parseKubernetesList(t, mustBundleFile(t, bundle, runtimeFile))
-	for _, component := range []string{sandboxComponent, egressComponent} {
-		if findResourceOptional(foundation, "Service", component) == nil ||
-			findResourceOptional(runtime, "Deployment", component) == nil {
-			t.Fatalf("managed executor without Lark omitted TAE component %s", component)
-		}
-	}
-	core := findResource(t, runtime, "Deployment", coreComponent)
-	coreContainer := objectArrayFirst(t, objectField(t, objectField(t, objectField(t, core, "spec"), "template"), "spec"), "containers")
-	if got := literalEnvironment(t, coreContainer, "AGENTSERVER_V2_MANAGED_EXECUTOR_ENABLED"); got != "true" {
-		t.Fatalf("managed executor flag = %q", got)
-	}
-	if literalEnvironmentOptional(t, coreContainer, "AGENTSERVER_V2_MANAGED_LARK_ENABLED") != "" {
-		t.Fatal("Core retained the removed static managed-Lark bootstrap flag")
-	}
-	for _, name := range []string{
-		"AGENTSERVER_V2_LARK_CLIENT_ID", "AGENTSERVER_V2_LARK_CLIENT_SECRET_FILE", "AGENTSERVER_V2_LARK_REFRESH_WORKER_ID",
-	} {
-		if literalEnvironmentOptional(t, coreContainer, name) != "" {
-			t.Fatalf("managed executor without Lark retained Core environment %s", name)
-		}
-	}
-	if bytes.Contains(mustJSONResource(t, core), []byte("lark-client-secret")) {
-		t.Fatal("managed executor without Lark retained the Core Lark secret mount")
-	}
-	executor := findResource(t, runtime, "Deployment", executorComponent)
-	executorContainer := objectArrayFirst(t, objectField(t, objectField(t, objectField(t, executor, "spec"), "template"), "spec"), "containers")
-	if literalEnvironmentOptional(t, executorContainer, "AGENTSERVER_V2_MANAGED_LARK_CLIENT_ID") != "" {
-		t.Fatal("managed executor without Lark projected a client ID into executor-gateway")
-	}
-	harness := findResource(t, runtime, "Deployment", harnessComponent)
-	harnessContainer := objectArrayFirst(t, objectField(t, objectField(t, objectField(t, harness, "spec"), "template"), "spec"), "containers")
-	if literalEnvironmentOptional(t, harnessContainer, "AGENTSERVER_V2_MANAGED_LARK_SKILL_SHA256") != "" {
-		t.Fatal("managed executor without Lark projected a skill authority into harness-pool")
-	}
-	chart, err := RenderHelmChart(loaded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(chart.Files) != len(requiredHelmManagedChartFiles) {
-		t.Fatalf("managed executor without Lark Helm file count = %d, want %d", len(chart.Files), len(requiredHelmManagedChartFiles))
+	if _, err := ValidateConfig(document); err == nil || !strings.Contains(err.Error(), "requires both the pinned lark and bkectl") {
+		t.Fatalf("partial managed tool pack error = %v", err)
 	}
 }
 
@@ -752,8 +698,8 @@ func TestRenderEmbedsExactBootstrapAndWorkerContracts(t *testing.T) {
 	if workerDocument.WorkerUID != WorkerUID || workerDocument.AppUID != AppUID || workerDocument.CodexConfigProfile != CodexConfigProfile() ||
 		workerDocument.RunManifestKeyringFile != workerMaterialPath("run-manifest-keyring.json") ||
 		workerDocument.Version != 2 || workerDocument.ManagedSkill == nil ||
-		workerDocument.ManagedSkill.Path != managedLarkSkillPath ||
-		workerDocument.ManagedSkill.SHA256 != loaded.Document.Managed.Lark.SkillSHA256 {
+		workerDocument.ManagedSkill.Path != managedBaseInstructionsPath ||
+		workerDocument.ManagedSkill.SHA256 != loaded.Document.Managed.BaseInstructionsSHA256 {
 		t.Fatalf("worker document = %+v", workerDocument)
 	}
 	var guard networkGuardJSON

@@ -8,17 +8,17 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
-	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
 	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
-// ManagedLarkProcessCredential is the version-fenced material returned by
+// ManagedProcessCredential is the version-fenced material returned by
 // Core only after a workspace has explicitly selected process_env. It is
-// consumed immediately while constructing one lark-cli process environment.
-type ManagedLarkProcessCredential struct {
+// consumed immediately while constructing one managed CLI process environment.
+type ManagedProcessCredential struct {
 	Configured        bool
 	CredentialMode    string
-	AccessToken       string
+	ProviderKind      string
+	Credential        string
 	ApplicationID     string
 	BindingID         string
 	AuthorityVersion  int64
@@ -29,31 +29,34 @@ type ManagedLarkProcessCredential struct {
 	AccessExpiresAt   *time.Time
 }
 
-type ManagedLarkProcessCredentialSource interface {
-	ResolveManagedLarkProcessCredential(context.Context, ManagedProcessEnvironmentRequest, string, ManagedLarkEgressAuthority) (ManagedLarkProcessCredential, error)
+type ManagedProcessCredentialSource interface {
+	ResolveManagedProcessCredential(context.Context, ManagedProcessEnvironmentRequest, string, ManagedCredentialAuthority) (ManagedProcessCredential, error)
 }
 
-func (client *CoreConnectionClient) ResolveManagedLarkProcessCredential(
+func (client *CoreConnectionClient) ResolveManagedProcessCredential(
 	ctx context.Context,
 	request ManagedProcessEnvironmentRequest,
 	taePSM string,
-	authority ManagedLarkEgressAuthority,
-) (ManagedLarkProcessCredential, error) {
+	authority ManagedCredentialAuthority,
+) (ManagedProcessCredential, error) {
 	if client == nil || client.authorizationNow == nil || ctx == nil {
-		return ManagedLarkProcessCredential{}, errors.New("Core managed Lark process credential client and context are required")
+		return ManagedProcessCredential{}, errors.New("Core managed process credential client and context are required")
 	}
-	if applies, err := validateManagedLarkProcessRequest(request); err != nil || !applies {
+	tool, credentialRequired, applies, err := validateManagedProcessRequest(request)
+	if err != nil || !applies || !credentialRequired {
 		if err != nil {
-			return ManagedLarkProcessCredential{}, err
+			return ManagedProcessCredential{}, err
 		}
-		return ManagedLarkProcessCredential{}, errors.New("managed Lark process credential request is not a lark-cli launch")
+		return ManagedProcessCredential{}, errors.New("managed process credential request does not require a credential")
 	}
 	if err := authority.Validate(); err != nil || authority.CredentialMode != managedcredential.ModeProcessEnv || authority.BindingID == "" {
-		return ManagedLarkProcessCredential{}, errors.New("managed Lark process credential authority is invalid")
+		return ManagedProcessCredential{}, errors.New("managed process credential authority is invalid")
 	}
-	policySHA256 := larkegresspolicy.SHA256Hex()
+	if authority.ProviderKind != tool.ProviderKind || authority.PolicySHA256 != tool.PolicySHA256 {
+		return ManagedProcessCredential{}, errors.New("managed process credential authority differs from the executable policy")
+	}
 	principal := request.Principal
-	command := corecontract.ResolveExecutionLarkCredentialRequest{
+	command := corecontract.ResolveExecutionCredentialRequest{
 		Operation: corecontract.EgressCredentialOperation{
 			WorkspaceID: principal.WorkspaceID, SessionID: principal.SessionID, ActorID: principal.ActorID,
 			EnvironmentID: request.Target.EnvironmentID, RunID: principal.Run.RunID,
@@ -61,48 +64,55 @@ func (client *CoreConnectionClient) ResolveManagedLarkProcessCredential(
 			ExecutionID: request.Operation.ExecutionID, OperationID: request.Operation.OperationID,
 			SandboxID: request.Target.ID, TargetGeneration: request.Target.Generation,
 		},
-		TAEPSM: taePSM, PolicySHA256: policySHA256,
-		ToolName: request.ToolName, Executable: request.Executable,
+		TAEPSM: taePSM, PolicySHA256: tool.PolicySHA256, ProviderKind: tool.ProviderKind,
+		ToolName: request.ToolName, Executable: request.Executable, Arguments: append([]string(nil), request.Arguments...),
 		BindingID: authority.BindingID, AuthorityVersion: authority.AuthorityVersion,
 		CredentialVersion: authority.CredentialVersion,
 	}
-	var response corecontract.ResolveExecutionLarkCredentialResponse
+	var response corecontract.ResolveExecutionCredentialResponse
 	if err := client.postWithPolicy(
-		ctx, corecontract.ResolveExecutionLarkCredentialPath, command, &response,
+		ctx, corecontract.ResolveExecutionCredentialPath, command, &response,
 		http.StatusOK, "", true, nil,
 	); err != nil {
-		return ManagedLarkProcessCredential{}, err
+		return ManagedProcessCredential{}, err
 	}
-	if response.ProviderKind != "lark" || response.PolicySHA256 != policySHA256 || response.TAEPSM != taePSM ||
+	if response.ProviderKind != tool.ProviderKind || response.PolicySHA256 != tool.PolicySHA256 || response.TAEPSM != taePSM ||
 		response.CredentialMode != authority.CredentialMode ||
 		response.ResolvedAt.IsZero() || response.ResolvedAt.After(client.authorizationNow().UTC().Add(5*time.Second)) {
-		return ManagedLarkProcessCredential{}, errors.New("Core returned an invalid managed Lark process credential scope")
+		return ManagedProcessCredential{}, errors.New("Core returned an invalid managed process credential scope")
 	}
 	if !response.Configured {
-		if response.AccessToken != "" || response.ApplicationID != "" || response.BindingID != "" || response.AuthorityVersion != 0 || response.CredentialVersion != 0 || response.AccessExpiresAt != nil {
-			return ManagedLarkProcessCredential{}, errors.New("Core returned a partial unconfigured managed Lark process credential")
+		if response.Credential != "" || response.ApplicationID != "" || response.BindingID != "" || response.AuthorityVersion != 0 || response.CredentialVersion != 0 || response.AccessExpiresAt != nil {
+			return ManagedProcessCredential{}, errors.New("Core returned a partial unconfigured managed process credential")
 		}
-		return ManagedLarkProcessCredential{
+		return ManagedProcessCredential{
+			ProviderKind:   response.ProviderKind,
 			CredentialMode: response.CredentialMode,
-			PolicySHA256:   policySHA256, TAEPSM: taePSM, ResolvedAt: response.ResolvedAt,
+			PolicySHA256:   tool.PolicySHA256, TAEPSM: taePSM, ResolvedAt: response.ResolvedAt,
 		}, nil
 	}
+	applicationValid := response.ApplicationID == ""
+	if tool.ProviderKind == "lark" {
+		applicationValid = response.ApplicationID == authority.ApplicationID &&
+			managedLarkApplicationIDPattern.MatchString(response.ApplicationID)
+	}
 	if response.BindingID == "" || response.AuthorityVersion < 1 || response.CredentialVersion < 1 ||
-		response.ApplicationID != authority.ApplicationID || !managedLarkApplicationIDPattern.MatchString(response.ApplicationID) ||
+		!applicationValid ||
 		response.BindingID != authority.BindingID || response.AuthorityVersion != authority.AuthorityVersion ||
 		response.CredentialVersion != authority.CredentialVersion ||
-		response.AccessToken == "" || len(response.AccessToken) > 32*1024 ||
-		strings.TrimSpace(response.AccessToken) != response.AccessToken || strings.ContainsAny(response.AccessToken, "\x00\r\n") ||
+		response.Credential == "" || len(response.Credential) > 32*1024 ||
+		strings.TrimSpace(response.Credential) != response.Credential || strings.ContainsAny(response.Credential, " \t\x00\r\n") ||
 		(response.AccessExpiresAt != nil && !response.AccessExpiresAt.After(client.authorizationNow().UTC().Add(time.Second))) {
-		return ManagedLarkProcessCredential{}, errors.New("Core returned invalid managed Lark process credential material")
+		return ManagedProcessCredential{}, errors.New("Core returned invalid managed process credential material")
 	}
-	return ManagedLarkProcessCredential{
+	return ManagedProcessCredential{
 		Configured: true, CredentialMode: response.CredentialMode,
-		AccessToken: response.AccessToken, ApplicationID: response.ApplicationID, BindingID: response.BindingID,
+		ProviderKind: response.ProviderKind, Credential: response.Credential,
+		ApplicationID: response.ApplicationID, BindingID: response.BindingID,
 		AuthorityVersion: response.AuthorityVersion, CredentialVersion: response.CredentialVersion,
 		PolicySHA256: response.PolicySHA256, TAEPSM: response.TAEPSM, ResolvedAt: response.ResolvedAt,
 		AccessExpiresAt: response.AccessExpiresAt,
 	}, nil
 }
 
-var _ ManagedLarkProcessCredentialSource = (*CoreConnectionClient)(nil)
+var _ ManagedProcessCredentialSource = (*CoreConnectionClient)(nil)

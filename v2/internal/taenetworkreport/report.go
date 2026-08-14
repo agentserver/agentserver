@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	CurrentVersion = 3
+	CurrentVersion = 4
 	Kind           = "agentserver.tae.sg-network-report"
 	maximumBytes   = int64(256 * 1024)
 )
@@ -71,6 +71,10 @@ type Configuration struct {
 	LarkCLIVersion         string `json:"larkCliVersion"`
 	LarkCLISHA256          string `json:"larkCliSha256"`
 	LarkSkillSHA256        string `json:"larkSkillSha256"`
+	ManagedSkillSHA256     string `json:"managedSkillSha256"`
+	BkectlSourceRevision   string `json:"bkectlSourceRevision"`
+	BkectlCLISHA256        string `json:"bkectlCliSha256"`
+	BkectlSkillPackSHA256  string `json:"bkectlSkillPackSha256"`
 	ConnectivityAttempts   int    `json:"connectivityAttempts"`
 	LifecycleAttempts      int    `json:"lifecycleAttempts"`
 }
@@ -183,6 +187,7 @@ func Validate(report Report) error {
 		"configuration.controlPlaneHost":      report.Configuration.ControlPlaneHost,
 		"configuration.dataPlaneDomainSuffix": report.Configuration.DataPlaneDomainSuffix,
 		"configuration.larkCliVersion":        report.Configuration.LarkCLIVersion,
+		"configuration.bkectlSourceRevision":  report.Configuration.BkectlSourceRevision,
 	} {
 		if !boundedText(value, 1, 1024) {
 			return fmt.Errorf("TAE network report %s is invalid", name)
@@ -195,10 +200,17 @@ func Validate(report Report) error {
 		"deploymentConfigSha256": report.Configuration.DeploymentConfigSHA256,
 		"larkCliSha256":          report.Configuration.LarkCLISHA256,
 		"larkSkillSha256":        report.Configuration.LarkSkillSHA256,
+		"managedSkillSha256":     report.Configuration.ManagedSkillSHA256,
+		"bkectlCliSha256":        report.Configuration.BkectlCLISHA256,
+		"bkectlSkillPackSha256":  report.Configuration.BkectlSkillPackSHA256,
 	} {
 		if !digestPattern.MatchString(value) || strings.Trim(value, "0") == "" {
 			return fmt.Errorf("TAE network report configuration.%s must be a non-zero lowercase SHA-256", name)
 		}
+	}
+	if len(report.Configuration.BkectlSourceRevision) != 40 ||
+		strings.Trim(report.Configuration.BkectlSourceRevision, "0123456789abcdef") != "" {
+		return errors.New("TAE network report configuration.bkectlSourceRevision must be a lowercase 40-character Git SHA")
 	}
 	if err := taeimage.ValidateContentTag(report.Configuration.SandboxImage); err != nil {
 		return fmt.Errorf("TAE network report configuration.sandboxImage: %w", err)

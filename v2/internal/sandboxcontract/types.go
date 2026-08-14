@@ -336,8 +336,9 @@ type RunCommandRequest struct {
 	WorkingDirectory string            `json:"workingDirectory"`
 	// Environment is the final clean environment assembled by the execution
 	// gateway after policy validation. A webhook_swap workspace carries only a
-	// short-lived placeholder; a process_env workspace carries the live token
-	// only for the exact lark-cli process start. Transports and logs must redact
+	// short-lived placeholder; a process_env workspace carries the live
+	// provider credential only for an exact policy-approved managed CLI process
+	// start. Transports and logs must redact
 	// every value and must never persist this map.
 	Environment      map[string]string `json:"environment,omitempty"`
 	TimeoutMillis    int64             `json:"timeoutMillis"`

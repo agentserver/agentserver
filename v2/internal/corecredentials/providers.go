@@ -188,7 +188,7 @@ func (provider ByteCloudProvider) Schema() ProviderSchema {
 		AuthorizationMethods: []string{AuthorizationMethodManual},
 	}
 	if provider.device != nil {
-		schema.AuthTypes = append(schema.AuthTypes, byteCloudDeviceOAuthAuthType)
+		schema.AuthTypes = append(schema.AuthTypes, AuthTypeDeviceOAuth)
 		schema.AuthorizationMethods = append(schema.AuthorizationMethods, AuthorizationMethodDeviceFlow)
 		schema.SecretFormat = "json-aksk-or-bytecloud-device-oauth-envelope"
 	}
@@ -199,7 +199,7 @@ func (provider ByteCloudProvider) ValidateUpload(authType string, raw []byte) (U
 	if strings.TrimSpace(authType) == "" {
 		authType = "aksk"
 	}
-	if authType == byteCloudDeviceOAuthAuthType && provider.device != nil {
+	if authType == AuthTypeDeviceOAuth && provider.device != nil {
 		return provider.validateByteCloudOAuthCredential(raw)
 	}
 	if authType != "aksk" {
@@ -220,7 +220,7 @@ func (provider ByteCloudProvider) Materialize(ctx context.Context, binding Bindi
 	if request.Host != provider.HostValue || binding.Kind != provider.Kind() || provider.TokenExchanger == nil {
 		return HeaderMutation{}, errors.New("ByteCloud provider is not configured for this host")
 	}
-	if binding.AuthType == byteCloudDeviceOAuthAuthType {
+	if binding.AuthType == AuthTypeDeviceOAuth {
 		if provider.device == nil {
 			return HeaderMutation{}, errors.New("ByteCloud device OAuth is not configured")
 		}

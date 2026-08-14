@@ -67,11 +67,16 @@ const (
 	ManagedLarkNoUpdateNotifierEnvironment = "LARKSUITE_CLI_NO_UPDATE_NOTIFIER"
 	ManagedLarkNoSkillsNotifierEnvironment = "LARKSUITE_CLI_NO_SKILLS_NOTIFIER"
 	ManagedLarkAgentTraceEnvironment       = managedcredential.LarkAgentTraceEnvironment
+	ManagedBkectlJWTEnvironment            = "BKECTL_JWT_TOKEN"
+	ManagedBkectlAuthModeEnvironment       = "BKECTL_AUTH_MODE"
+	ManagedBkectlAuthModeValue             = "user_only"
+	ManagedBkectlRegionEnvironment         = "BKECTL_REGION"
+	ManagedBkectlRegionValue               = "i18nbd"
 	// The TAE process API accepts an executable name. PATH is therefore a
 	// reserved, non-secret projection so the name resolves to the immutable
 	// image artifact instead of a workspace-provided binary.
-	ManagedLarkPathEnvironment = "PATH"
-	ManagedLarkPathValue       = "/usr/local/bin:/usr/bin:/bin"
+	ManagedToolPathEnvironment = "PATH"
+	ManagedToolPathValue       = "/usr/local/bin:/usr/bin:/bin"
 )
 
 // ManagedProcessEnvironmentIssuer returns operation-scoped reserved process
@@ -90,6 +95,7 @@ type ManagedProcessEnvironmentRequest struct {
 	Operation  executionbackend.OperationContext
 	ToolName   string
 	Executable string
+	Arguments  []string
 }
 
 // ManagedTargetFencer is the exceptional recovery boundary for an ambiguous

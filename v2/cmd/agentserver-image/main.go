@@ -82,7 +82,12 @@ func runVerifyManagedRelease(arguments []string, stdout, stderr io.Writer) error
 	}, productionimage.ManagedReleaseLock{
 		Platform: document.Platform, HarnessImage: document.Images.Harness,
 		ManagedSandboxImage: document.Images.ManagedSandbox,
-		CLISHA256:           document.Managed.Lark.CLISHA256, SkillSHA256: document.Managed.Lark.SkillSHA256,
+		ManagedSkillSHA256:  document.Managed.BaseInstructionsSHA256,
+		LarkCLISHA256:       document.Managed.Lark.CLISHA256, LarkSkillSHA256: document.Managed.Lark.SkillSHA256,
+		BkectlSourceRevision:  document.Managed.Bkectl.SourceRevision,
+		BkectlCLISHA256:       document.Managed.Bkectl.CLISHA256,
+		BkectlSkillPackSHA256: document.Managed.Bkectl.SkillPackSHA256,
+		BkectlPolicySHA256:    document.Managed.Bkectl.PolicySHA256,
 	}); err != nil {
 		return err
 	}
@@ -162,7 +167,9 @@ func runPrepare(arguments []string, stdout, stderr io.Writer) error {
 	flags.StringVar(&config.CodexExecutable, "codex", "", "pinned stock Codex artifact")
 	flags.StringVar(&config.BwrapExecutable, "bwrap", "", "pinned stock bwrap artifact")
 	flags.StringVar(&config.RequirementsFile, "requirements", "", "reviewed Codex system requirements")
+	flags.StringVar(&config.ManagedSkillFile, "managed-skill", "", "reviewed managed CLI base instructions")
 	flags.StringVar(&config.LarkSkillFile, "lark-skill", "", "reviewed managed Lark skill")
+	flags.StringVar(&config.BkectlSkillRoot, "bkectl-skill-root", "", "pinned bkectl aggregate skill directory")
 	flags.StringVar(&config.OutputDirectory, "output", "", "new image payload directory")
 	if err := flags.Parse(arguments); err != nil {
 		return err
@@ -266,8 +273,8 @@ func writeUsage(writer io.Writer) {
 		return
 	}
 	fmt.Fprintln(writer, "usage: agentserver-image prepare --kind=service --platform=linux-amd64|linux-arm64 --source-revision=GIT_SHA --binary-dir=/absolute/path --output=/absolute/new-directory")
-	fmt.Fprintln(writer, "       agentserver-image prepare --kind=harness --platform=linux-amd64|linux-arm64 --source-revision=GIT_SHA --binary-dir=/absolute/path --codex=/absolute/path --bwrap=/absolute/path --requirements=/absolute/path --lark-skill=/absolute/SKILL.md --output=/absolute/new-directory")
-	fmt.Fprintln(writer, "       agentserver-image prepare --kind=managed-sandbox --platform=linux-amd64 --source-revision=GIT_SHA --binary-dir=/absolute/path --lark-skill=/absolute/SKILL.md --output=/absolute/new-directory")
+	fmt.Fprintln(writer, "       agentserver-image prepare --kind=harness --platform=linux-amd64|linux-arm64 --source-revision=GIT_SHA --binary-dir=/absolute/path --codex=/absolute/path --bwrap=/absolute/path --requirements=/absolute/path --managed-skill=/absolute/SKILL.md --lark-skill=/absolute/SKILL.md --bkectl-skill-root=/absolute/bkectl --output=/absolute/new-directory")
+	fmt.Fprintln(writer, "       agentserver-image prepare --kind=managed-sandbox --platform=linux-amd64 --source-revision=GIT_SHA --binary-dir=/absolute/path --managed-skill=/absolute/SKILL.md --lark-skill=/absolute/SKILL.md --bkectl-skill-root=/absolute/bkectl --output=/absolute/new-directory")
 	fmt.Fprintln(writer, "       agentserver-image verify-oci --manifest=/absolute/image-manifest.json --archive=/absolute/image.oci.tar")
 	fmt.Fprintln(writer, "       agentserver-image verify-managed-release --config=/absolute/production-config.json --harness-manifest=/absolute/harness-image-manifest.json --harness-archive=/absolute/harness-image.oci.tar --manifest=/absolute/managed-sandbox-image-manifest.json --archive=/absolute/managed-sandbox-image.oci.tar")
 	fmt.Fprintln(writer, "       agentserver-image verify-tar --manifest=/absolute/image-manifest.json --tar=/absolute/rootfs.tar")

@@ -11,7 +11,7 @@ import (
 // ExecutionCredentialHandler is intentionally separate from the Policy
 // Webhook handler. It is always mounted for managed execution, accepts only
 // the executor-gateway workload identity, and exposes the two calls needed at
-// an exact lark-cli process boundary: resolve the workspace mode/binding
+// an exact managed CLI process boundary: resolve the workspace mode/binding
 // authority, then materialize the process_env credential. Neither route is a
 // Policy Webhook or egress-authorizer surface.
 type ExecutionCredentialHandler struct {
@@ -35,9 +35,9 @@ func (handler *ExecutionCredentialHandler) ServeHTTP(response http.ResponseWrite
 		return
 	}
 	switch request.URL.Path {
-	case corecontract.ResolveExecutionLarkCredentialAuthorityPath:
+	case corecontract.ResolveExecutionCredentialAuthorityPath:
 		handler.authority(response, request)
-	case corecontract.ResolveExecutionLarkCredentialPath:
+	case corecontract.ResolveExecutionCredentialPath:
 		handler.resolve(response, request)
 	default:
 		writeError(response, http.StatusNotFound, corecontract.ErrorResponse{Code: "not_found", Message: "v2 execution credential endpoint not found"})
@@ -45,7 +45,7 @@ func (handler *ExecutionCredentialHandler) ServeHTTP(response http.ResponseWrite
 }
 
 func (handler *ExecutionCredentialHandler) authority(response http.ResponseWriter, request *http.Request) {
-	if err := handler.authorizer.AuthorizeWorkload(request, "execution.credentials.lark.resolve-authority"); err != nil {
+	if err := handler.authorizer.AuthorizeWorkload(request, "execution.credentials.resolve-authority"); err != nil {
 		writeError(response, http.StatusForbidden, corecontract.ErrorResponse{Code: "forbidden", Message: "workload is not authorized for credential authority resolution"})
 		return
 	}
@@ -62,15 +62,15 @@ func (handler *ExecutionCredentialHandler) authority(response http.ResponseWrite
 }
 
 func (handler *ExecutionCredentialHandler) resolve(response http.ResponseWriter, request *http.Request) {
-	if err := handler.authorizer.AuthorizeWorkload(request, "execution.credentials.lark.resolve"); err != nil {
+	if err := handler.authorizer.AuthorizeWorkload(request, "execution.credentials.resolve"); err != nil {
 		writeError(response, http.StatusForbidden, corecontract.ErrorResponse{Code: "forbidden", Message: "workload is not authorized for execution credential resolution"})
 		return
 	}
-	var command corecontract.ResolveExecutionLarkCredentialRequest
+	var command corecontract.ResolveExecutionCredentialRequest
 	if !decodeCommandWithLimit(response, request, &command, maxEgressCredentialCommandBytes) {
 		return
 	}
-	result, err := handler.service.ResolveExecutionLarkCredential(request.Context(), command)
+	result, err := handler.service.ResolveExecutionCredential(request.Context(), command)
 	if err != nil {
 		var resolved *corecredentials.ResolveError
 		if errors.As(err, &resolved) {

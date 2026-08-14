@@ -9,7 +9,7 @@ FROM aliyun-sin-hub.byted.org/agentserver/tae-sandbox@sha256:e4255f02c1feceb1688
 
 ARG SOURCE_REVISION
 LABEL org.opencontainers.image.title="agentserver v2 managed sandbox"
-LABEL org.opencontainers.image.description="Agentserver-owned minimal Debian TAE runtime with closed-world Lark tooling"
+LABEL org.opencontainers.image.description="Agentserver-owned minimal Debian TAE runtime with closed-world managed CLI tooling"
 LABEL org.opencontainers.image.revision="${SOURCE_REVISION}"
 LABEL org.opencontainers.image.source="https://github.com/agentserver/agentserver"
 

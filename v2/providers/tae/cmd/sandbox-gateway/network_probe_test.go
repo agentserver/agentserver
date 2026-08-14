@@ -20,14 +20,15 @@ import (
 func TestExecuteNetworkProbeCoversJWTControlDataAndCleanup(t *testing.T) {
 	cli := []byte("fake pinned lark cli")
 	skill := []byte("# fake pinned skill\n")
+	files := testProbeFiles(cli, skill)
 	control := &probeControl{}
-	data := &probeData{cli: cli, skill: skill}
+	data := &probeData{files: files}
 	refreshes := 0
 	clients := &taeClients{
 		refresh: func(context.Context) error { refreshes++; return nil },
 		control: control, data: data, close: func() {},
 	}
-	config := testNetworkProbeConfig(cli, skill)
+	config := testNetworkProbeConfig(files)
 	report, err := executeNetworkProbe(t.Context(), config, clients)
 	if err != nil {
 		t.Fatal(err)
@@ -41,6 +42,8 @@ func TestExecuteNetworkProbeCoversJWTControlDataAndCleanup(t *testing.T) {
 		checks["data_exec_terminal"].Succeeded != config.lifecycleAttempts ||
 		checks["data_read_lark_cli"].BytesRead != int64(len(cli)) ||
 		checks["data_read_lark_skill"].BytesRead != int64(len(skill)) ||
+		checks["data_exec_bkectl_version"].Succeeded != config.lifecycleAttempts ||
+		checks["data_read_bkectl_cli"].BytesRead != int64(len(files[probeBkectlCLIPath])) ||
 		checks["control_cleanup"].Failed != 0 {
 		t.Fatalf("checks = %+v", checks)
 	}
@@ -58,9 +61,10 @@ func TestExecuteNetworkProbeCoversJWTControlDataAndCleanup(t *testing.T) {
 func TestExecuteNetworkProbeAcceptsTAEOmittedCommandAndProvesRuntimeThroughDataPlane(t *testing.T) {
 	cli := []byte("fake pinned lark cli")
 	skill := []byte("# fake pinned skill\n")
+	files := testProbeFiles(cli, skill)
 	control := &probeControl{omitCommand: true}
-	data := &probeData{cli: cli, skill: skill}
-	report, err := executeNetworkProbe(t.Context(), testNetworkProbeConfig(cli, skill), &taeClients{
+	data := &probeData{files: files}
+	report, err := executeNetworkProbe(t.Context(), testNetworkProbeConfig(files), &taeClients{
 		refresh: func(context.Context) error { return nil }, control: control, data: data, close: func() {},
 	})
 	if err != nil {
@@ -68,7 +72,7 @@ func TestExecuteNetworkProbeAcceptsTAEOmittedCommandAndProvesRuntimeThroughDataP
 	}
 	checks := checksByName(report.Checks)
 	if !report.Passed || checks["control_wait_ready"].Failed != 0 || checks["data_exec_terminal"].Succeeded != 1 ||
-		checks["data_exec_lark_version"].Succeeded != 1 {
+		checks["data_exec_lark_version"].Succeeded != 1 || checks["data_exec_bkectl_version"].Succeeded != 1 {
 		t.Fatalf("report=%+v checks=%+v", report, checks)
 	}
 }
@@ -76,12 +80,13 @@ func TestExecuteNetworkProbeAcceptsTAEOmittedCommandAndProvesRuntimeThroughDataP
 func TestExecuteNetworkProbeRecordsSanitizedFailureAndStillCleansUp(t *testing.T) {
 	cli := []byte("fake pinned lark cli")
 	skill := []byte("# fake pinned skill\n")
+	files := testProbeFiles(cli, skill)
 	control := &probeControl{}
-	data := &probeData{cli: cli, skill: skill, startError: &adapter.RequestError{
+	data := &probeData{files: files, startError: &adapter.RequestError{
 		WroteRequest: true, Code: "request_timeout", Cause: errors.New("must not appear in report"),
 	}}
 	clients := &taeClients{refresh: func(context.Context) error { return nil }, control: control, data: data, close: func() {}}
-	report, err := executeNetworkProbe(t.Context(), testNetworkProbeConfig(cli, skill), clients)
+	report, err := executeNetworkProbe(t.Context(), testNetworkProbeConfig(files), clients)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +145,22 @@ func TestLoadNetworkProbeConfigFailsClosedOnUnboundEvidence(t *testing.T) {
 	}
 }
 
-func testNetworkProbeConfig(cli, skill []byte) networkProbeConfig {
+const testBkectlRevision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+func testProbeFiles(cli, skill []byte) map[string][]byte {
+	return map[string][]byte{
+		probeLarkCLIPath:              cli,
+		probeLarkSkillPath:            skill,
+		probeManagedSkillPath:         []byte("# managed CLI skill\n"),
+		probeBkectlCLIPath:            []byte("fake pinned bkectl"),
+		probeBkectlSkillPath:          []byte("# bkectl skill\n"),
+		probeBkectlCommandSurfacePath: []byte("# command surface\n"),
+		probeBkectlDomainGuidesPath:   []byte("# domain guides\n"),
+		probeBkectlInvocationPath:     []byte("# invocation\n"),
+	}
+}
+
+func testNetworkProbeConfig(files map[string][]byte) networkProbeConfig {
 	sequence := 0
 	digest := func(value []byte) string {
 		sum := sha256.Sum256(value)
@@ -153,8 +173,17 @@ func testNetworkProbeConfig(cli, skill []byte) networkProbeConfig {
 			sandboxID:    "sandbox-1", sandboxRevisionID: "revision-1",
 		},
 		deploymentSHA256: strings.Repeat("2", 64), policyRevision: "revision-1",
-		larkCLIVersion: "test", larkCLISHA256: digest(cli), larkCLISize: int64(len(cli)),
-		larkSkillSHA256: digest(skill), connectivityAttempts: 2, lifecycleAttempts: 1,
+		larkCLIVersion: "test", larkCLISHA256: digest(files[probeLarkCLIPath]), larkCLISize: int64(len(files[probeLarkCLIPath])),
+		larkSkillSHA256:    digest(files[probeLarkSkillPath]),
+		managedSkillSHA256: digest(files[probeManagedSkillPath]), managedSkillSize: int64(len(files[probeManagedSkillPath])),
+		bkectlSourceRevision: testBkectlRevision,
+		bkectlCLISHA256:      digest(files[probeBkectlCLIPath]), bkectlCLISize: int64(len(files[probeBkectlCLIPath])),
+		bkectlSkillPackSHA256: digest([]byte("test bkectl skill pack")),
+		bkectlSkillSHA256:     digest(files[probeBkectlSkillPath]), bkectlSkillSize: int64(len(files[probeBkectlSkillPath])),
+		bkectlCommandSurfaceSHA256: digest(files[probeBkectlCommandSurfacePath]), bkectlCommandSurfaceSize: int64(len(files[probeBkectlCommandSurfacePath])),
+		bkectlDomainGuidesSHA256: digest(files[probeBkectlDomainGuidesPath]), bkectlDomainGuidesSize: int64(len(files[probeBkectlDomainGuidesPath])),
+		bkectlInvocationSHA256: digest(files[probeBkectlInvocationPath]), bkectlInvocationSize: int64(len(files[probeBkectlInvocationPath])),
+		connectivityAttempts: 2, lifecycleAttempts: 1,
 		readyTimeout: time.Second,
 		source: taenetworkreport.Source{
 			Namespace: "agentserver", PodName: "probe-pod", PodUID: "12345678-1234-4234-8234-123456789abc",
@@ -250,8 +279,7 @@ func (control *probeControl) Delete(context.Context, string) error {
 }
 
 type probeData struct {
-	cli        []byte
-	skill      []byte
+	files      map[string][]byte
 	startError error
 }
 
@@ -271,6 +299,11 @@ func (data *probeData) StartProcess(_ context.Context, _ string, input adapter.S
 			return nil, errors.New("unexpected lark version probe request")
 		}
 		stdout = "lark-cli version test\n"
+	case probeBkectlCLIPath:
+		if !reflect.DeepEqual(input.Arguments, []string{"version"}) || input.WorkingDirectory != probeWorkspacePath {
+			return nil, errors.New("unexpected bkectl version probe request")
+		}
+		stdout = `{"success":true,"data":{"build_time":"1970-01-01T00:00:00Z","version":"` + testBkectlRevision + `"},"error":null}` + "\n"
 	default:
 		return nil, errors.New("unexpected probe executable")
 	}
@@ -290,24 +323,16 @@ func (data *probeData) SignalProcess(context.Context, string, int, int) (string,
 }
 
 func (data *probeData) Stat(_ context.Context, _ string, path string) (adapter.FileInfo, string, error) {
-	switch path {
-	case probeLarkCLIPath:
-		return adapter.FileInfo{Type: "file", Size: int64(len(data.cli))}, "", nil
-	case probeLarkSkillPath:
-		return adapter.FileInfo{Type: "file", Size: int64(len(data.skill))}, "", nil
-	default:
+	contents, found := data.files[path]
+	if !found {
 		return adapter.FileInfo{}, "", errors.New("unexpected path")
 	}
+	return adapter.FileInfo{Type: "file", Size: int64(len(contents))}, "", nil
 }
 
 func (data *probeData) Download(_ context.Context, _ string, path string) (adapter.Download, error) {
-	var contents []byte
-	switch path {
-	case probeLarkCLIPath:
-		contents = data.cli
-	case probeLarkSkillPath:
-		contents = data.skill
-	default:
+	contents, found := data.files[path]
+	if !found {
 		return adapter.Download{}, errors.New("unexpected path")
 	}
 	return adapter.Download{Body: io.NopCloser(bytes.NewReader(contents)), ContentLength: int64(len(contents))}, nil

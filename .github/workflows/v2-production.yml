@@ -216,8 +216,15 @@ jobs:
           printf '%s  %s\n' "${BKECTL_CLI_SHA256}" "${runtime_dir}/bkectl" | sha256sum --check --strict
           test "$(stat --format=%s "${runtime_dir}/bkectl")" = '34263166'
           version_json=$("${runtime_dir}/bkectl" --json version)
-          test "$(jq -er '.version' <<<"${version_json}")" = "${BKECTL_SOURCE_REVISION}"
-          test "$(jq -er '.build_time' <<<"${version_json}")" = '1970-01-01T00:00:00Z'
+          if ! jq -e \
+            --arg version "${BKECTL_SOURCE_REVISION}" \
+            --arg build_time '1970-01-01T00:00:00Z' \
+            '.success == true and .data.version == $version and .data.build_time == $build_time' \
+            <<<"${version_json}" >/dev/null; then
+            printf 'bkectl version contract mismatch: expected version=%s build_time=%s; response=%s\n' \
+              "${BKECTL_SOURCE_REVISION}" '1970-01-01T00:00:00Z' "${version_json}" >&2
+            exit 1
+          fi
           skill_root="${BKECTL_CHECKOUT}/skills/bkectl"
           printf '%s  %s\n' "${BKECTL_SKILL_SHA256}" "${skill_root}/SKILL.md" | sha256sum --check --strict
           printf '%s  %s\n' "${BKECTL_COMMAND_SURFACE_SHA256}" "${skill_root}/references/command-surface.md" | sha256sum --check --strict

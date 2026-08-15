@@ -82,6 +82,66 @@ describe("product web contracts", () => {
     for (const event of events) state = reduceAGUIEvent(state, event)
     expect(state.status).toBe("running")
     expect(state.messages.at(-1)?.text).toBe("hello")
+    expect(state.timeline).toEqual([{ kind: "message", id: "u1" }, { kind: "message", id: "m1" }])
+  })
+
+  it("projects messages, approvals, and executions into one stable event timeline", () => {
+    const runId = "9271bfe5-68a4-484b-a2d3-e9f450a42d0c"
+    const approvalId = "70000000-0000-4000-8000-000000000007"
+    const executionId = "71000000-0000-4000-8000-000000000007"
+    const attemptId = "72000000-0000-4000-8000-000000000007"
+    const nonce = "73000000-0000-4000-8000-000000000007"
+    const approval = (status: "pending" | "approved", version: number) => ({
+      type: "CUSTOM", name: "agentserver.approval", value: {
+        approvalId, executionId, runId, runAttemptId: attemptId, runAttemptGeneration: 1, nonce,
+        contextDigest: { domain: "approval-context", canonicalizerVersion: "rfc8785-v1", sha256: "a".repeat(64) },
+        toolName: "executor.shell", status, decision: status === "approved" ? "approve" : "",
+        approverId: status === "approved" ? "user-1" : "", expiresAt: "2026-08-15T03:00:00Z", version,
+      },
+    })
+    const surface = (id: string, title: string) => ({
+      type: "CUSTOM", name: "a2ui.operations", value: [
+        { version: "v0.9", createSurface: { surfaceId: id, catalogId: "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json" } },
+        { version: "v0.9", updateComponents: { surfaceId: id, components: [
+          { id: "root", component: "Card", child: "title" }, { id: "title", component: "Text", text: { path: "/title" } },
+        ] } },
+        { version: "v0.9", updateDataModel: { surfaceId: id, value: { title } } },
+      ],
+    })
+
+    let state = appendUserMessage(createConversationState(), "user-1", "run it")
+    for (const event of [
+      { type: "RUN_STARTED", runId },
+      { type: "TEXT_MESSAGE_START", messageId: "assistant-1", role: "assistant" },
+      { type: "TEXT_MESSAGE_CONTENT", messageId: "assistant-1", delta: "I'll run it." },
+      { type: "TEXT_MESSAGE_END", messageId: "assistant-1" },
+      { type: "TOOL_CALL_START", toolCallId: "tool-1", toolCallName: "executor.shell" },
+      { type: "TOOL_CALL_ARGS", toolCallId: "tool-1", delta: "{\"command\":\"pwd\"}" },
+      approval("pending", 1),
+      surface("approval-event-1", "Approval"),
+      approval("approved", 2),
+      surface("approval-event-2", "Approved"),
+      { type: "TOOL_CALL_END", toolCallId: "tool-1" },
+      { type: "TOOL_CALL_RESULT", toolCallId: "tool-1", content: "/workspace\n" },
+      surface("command-event-1", "Command"),
+      { type: "TEXT_MESSAGE_START", messageId: "assistant-2", role: "assistant" },
+      surface("standalone-event-1", "Independent UI"),
+    ]) state = reduceAGUIEvent(state, event)
+
+    expect(state.timeline).toEqual([
+      { kind: "message", id: "user-1" },
+      { kind: "message", id: "assistant-1" },
+      { kind: "tool", id: "tool-1" },
+      { kind: "approval", id: approvalId },
+      { kind: "tool-result", id: "tool-1" },
+      { kind: "message", id: "assistant-2" },
+      { kind: "surface", id: "standalone-event-1" },
+    ])
+    expect(state.approvals[approvalId]?.status).toBe("approved")
+    expect(state.surfaces["approval-event-1"]?.owner).toEqual({ kind: "approval", id: approvalId })
+    expect(state.surfaces["approval-event-2"]?.owner).toEqual({ kind: "approval", id: approvalId })
+    expect(state.surfaces["command-event-1"]?.owner).toEqual({ kind: "tool", id: "tool-1" })
+    expect(state.surfaces["standalone-event-1"]?.owner).toBeNull()
   })
 
   it("restores durable user and assistant messages from a session transcript", () => {
@@ -100,6 +160,7 @@ describe("product web contracts", () => {
       ["user", "你好", true], ["assistant", "你好！", true],
     ])
     expect(new Set(state.messages.map((message) => message.id)).size).toBe(2)
+    expect(state.timeline).toEqual(state.messages.map((message) => ({ kind: "message", id: message.id })))
   })
 
   it("accepts only scoped, bounded, closed-world session trajectories", () => {

@@ -13,6 +13,9 @@ export type RunStatus = "idle" | "connecting" | "running" | "cancelling" | "comp
 export interface ConversationMessage { id: string; role: string; text: string; complete: boolean }
 export interface ReasoningMessage { id: string; text: string; complete: boolean }
 export interface ToolView { id: string; name: string; arguments: string; result: string; status: string; progress: { value: number | null; total: number | null; message: string } | null }
+export type ConversationItemKind = "message" | "reasoning" | "tool" | "approval" | "tool-result" | "surface"
+export interface ConversationTimelineItem { kind: ConversationItemKind; id: string }
+export interface ConversationSurfaceOwner { kind: "tool" | "approval"; id: string }
 export interface ApprovalView {
   approvalId: string; executionId: string; runId: string; runAttemptId: string; runAttemptGeneration: number; nonce: string
   contextDigest: { domain: "approval-context"; canonicalizerVersion: "rfc8785-v1"; sha256: string }
@@ -20,15 +23,16 @@ export interface ApprovalView {
   approverId: string; expiresAt: string; version: number
 }
 export interface A2UIComponent { id: string; component: "Card" | "Column" | "Text"; child?: string; children?: string[]; text?: unknown }
-export interface A2UISurface { id: string; components: A2UIComponent[]; dataModel: unknown }
+export interface A2UISurface { id: string; components: A2UIComponent[]; dataModel: unknown; owner: ConversationSurfaceOwner | null }
 export interface ConversationState {
   status: RunStatus; runId: string; cursor: string; cursorSequence: number; messages: ConversationMessage[]; reasoning: ReasoningMessage[]
   tools: ToolView[]; approvals: Record<string, ApprovalView>; approvalOrder: string[]; surfaces: Record<string, A2UISurface>; surfaceOrder: string[]
+  timeline: ConversationTimelineItem[]; pendingSurfaceOwner: ConversationSurfaceOwner | null
   error: { code: string; message: string } | null; eventCount: number
 }
 
 export function createConversationState(): ConversationState {
-  return { status: "idle", runId: "", cursor: "", cursorSequence: 0, messages: [], reasoning: [], tools: [], approvals: {}, approvalOrder: [], surfaces: {}, surfaceOrder: [], error: null, eventCount: 0 }
+  return { status: "idle", runId: "", cursor: "", cursorSequence: 0, messages: [], reasoning: [], tools: [], approvals: {}, approvalOrder: [], surfaces: {}, surfaceOrder: [], timeline: [], pendingSurfaceOwner: null, error: null, eventCount: 0 }
 }
 
 export function conversationFromTranscript(transcript: SessionTranscript): ConversationState {
@@ -39,13 +43,15 @@ export function conversationFromTranscript(transcript: SessionTranscript): Conve
     text: message.content,
     complete: message.complete,
   }))
+  state.timeline = state.messages.map((message) => ({ kind: "message", id: message.id }))
   return state
 }
 
 export function cloneConversationState(state: ConversationState): ConversationState { return structuredClone(state) }
 
 export function appendUserMessage(state: ConversationState, id: string, text: string): ConversationState {
-  return { ...state, messages: [...state.messages, { id: requiredText("message ID", id), role: "user", text: requiredText("message", text), complete: true }], error: null }
+  const message = { id: requiredText("message ID", id), role: "user", text: requiredText("message", text), complete: true }
+  return appendTimeline({ ...state, messages: [...state.messages, message], error: null }, "message", message.id)
 }
 
 export class SSEDecoder {
@@ -92,31 +98,35 @@ export class SSEDecoder {
 }
 
 export function reduceAGUIEvent(state: ConversationState, event: Record<string, unknown>): ConversationState {
-  let next: ConversationState = { ...state, eventCount: state.eventCount + 1 }
+  const surfaceContinuation = event.type === "CUSTOM" && event.name === A2UI_OPERATIONS_NAME
+  let next: ConversationState = { ...state, eventCount: state.eventCount + 1, pendingSurfaceOwner: surfaceContinuation ? state.pendingSurfaceOwner : null }
   switch (event.type) {
     case "RUN_STARTED": next = { ...next, status: "running", runId: requiredText("run ID", event.runId), error: null }; break
     case "TEXT_MESSAGE_START": {
       const id = requiredText("message ID", event.messageId)
       if (next.messages.some((message) => message.id === id)) throw new Error("A message was started twice.")
-      next = { ...next, messages: [...next.messages, { id, role: typeof event.role === "string" ? event.role : "assistant", text: "", complete: false }] }; break
+      next = appendTimeline({ ...next, messages: [...next.messages, { id, role: typeof event.role === "string" ? event.role : "assistant", text: "", complete: false }] }, "message", id); break
     }
     case "TEXT_MESSAGE_CONTENT": next = { ...next, messages: update(next.messages, event.messageId, (message) => ({ ...message, text: message.text + requiredString("message delta", event.delta) })) }; break
     case "TEXT_MESSAGE_END": next = { ...next, messages: update(next.messages, event.messageId, (message) => ({ ...message, complete: true })) }; break
     case "REASONING_MESSAGE_START": {
       const id = requiredText("reasoning ID", event.messageId)
       if (next.reasoning.some((message) => message.id === id)) throw new Error("A reasoning message was started twice.")
-      next = { ...next, reasoning: [...next.reasoning, { id, text: "", complete: false }] }; break
+      next = appendTimeline({ ...next, reasoning: [...next.reasoning, { id, text: "", complete: false }] }, "reasoning", id); break
     }
     case "REASONING_MESSAGE_CONTENT": next = { ...next, reasoning: update(next.reasoning, event.messageId, (message) => ({ ...message, text: message.text + requiredString("reasoning delta", event.delta) })) }; break
     case "REASONING_MESSAGE_END": next = { ...next, reasoning: update(next.reasoning, event.messageId, (message) => ({ ...message, complete: true })) }; break
     case "TOOL_CALL_START": {
       const id = requiredText("tool call ID", event.toolCallId)
       if (next.tools.some((tool) => tool.id === id)) throw new Error("A tool call was started twice.")
-      next = { ...next, tools: [...next.tools, { id, name: requiredText("tool name", event.toolCallName), arguments: "", result: "", status: "arguments", progress: null }] }; break
+      next = appendTimeline({ ...next, tools: [...next.tools, { id, name: requiredText("tool name", event.toolCallName), arguments: "", result: "", status: "arguments", progress: null }] }, "tool", id); break
     }
     case "TOOL_CALL_ARGS": next = { ...next, tools: update(next.tools, event.toolCallId, (tool) => ({ ...tool, arguments: tool.arguments + requiredString("tool arguments", event.delta) })) }; break
     case "TOOL_CALL_END": next = { ...next, tools: update(next.tools, event.toolCallId, (tool) => ({ ...tool, status: "awaiting-result" })) }; break
-    case "TOOL_CALL_RESULT": next = { ...next, tools: update(next.tools, event.toolCallId, (tool) => ({ ...tool, result: requiredString("tool result", event.content), status: "completed" })) }; break
+    case "TOOL_CALL_RESULT": {
+      const id = requiredText("event ID", event.toolCallId)
+      next = appendTimeline({ ...next, tools: update(next.tools, id, (tool) => ({ ...tool, result: requiredString("tool result", event.content), status: "completed" })), pendingSurfaceOwner: { kind: "tool", id } }, "tool-result", id); break
+    }
     case "CUSTOM": next = reduceCustom(next, event); break
     case "RUN_FINISHED": if (event.runId && next.runId && event.runId !== next.runId) throw new Error("A terminal event escaped the active run."); next = { ...next, status: "completed", error: null }; break
     case "RUN_ERROR": if (event.runId && next.runId && event.runId !== next.runId) throw new Error("A terminal event escaped the active run."); next = { ...next, status: event.code === "user_cancelled" || event.code === "run.cancelled" ? "cancelled" : "failed", error: { code: typeof event.code === "string" ? event.code : "run_error", message: requiredText("run error", event.message) } }; break
@@ -161,13 +171,20 @@ function reduceApproval(state: ConversationState, raw: unknown): ConversationSta
   if (!Number.isFinite(Date.parse(approval.expiresAt))) throw new Error("The approval expiry is invalid.")
   const existing = state.approvals[approval.approvalId]
   if (existing && approval.version < existing.version) throw new Error("The approval version moved backwards.")
-  return { ...state, approvals: { ...state.approvals, [approval.approvalId]: approval }, approvalOrder: existing ? state.approvalOrder : [...state.approvalOrder, approval.approvalId] }
+  const next = {
+    ...state,
+    approvals: { ...state.approvals, [approval.approvalId]: approval },
+    approvalOrder: existing ? state.approvalOrder : [...state.approvalOrder, approval.approvalId],
+    pendingSurfaceOwner: { kind: "approval", id: approval.approvalId } as ConversationSurfaceOwner,
+  }
+  return existing ? next : appendTimeline(next, "approval", approval.approvalId)
 }
 
 function reduceA2UI(state: ConversationState, raw: unknown): ConversationState {
   if (!Array.isArray(raw) || !raw.length) throw new Error("A2UI operations are invalid.")
   const surfaces = structuredClone(state.surfaces)
   const order = [...state.surfaceOrder]
+  let timeline = state.timeline
   for (const message of raw) {
     if (!isRecord(message) || message.version !== "v0.9") throw new Error("The A2UI version is unsupported.")
     const names = ["createSurface", "updateComponents", "updateDataModel", "deleteSurface"].filter((name) => message[name] !== undefined)
@@ -178,15 +195,17 @@ function reduceA2UI(state: ConversationState, raw: unknown): ConversationState {
     const id = safeKey(requiredText("surface ID", operation.surfaceId))
     if (name === "createSurface") {
       if (surfaces[id] || operation.catalogId !== basicCatalog || operation.sendDataModel === true) throw new Error("The A2UI surface authority is invalid.")
-      surfaces[id] = { id, components: [], dataModel: {} }; order.push(id); continue
+      surfaces[id] = { id, components: [], dataModel: {}, owner: state.pendingSurfaceOwner }; order.push(id)
+      if (!state.pendingSurfaceOwner) timeline = appendTimelineItems(timeline, "surface", id)
+      continue
     }
     const surface = surfaces[id]
     if (!surface) throw new Error("An A2UI surface was updated before creation.")
-    if (name === "deleteSurface") { delete surfaces[id]; order.splice(order.indexOf(id), 1); continue }
+    if (name === "deleteSurface") { delete surfaces[id]; order.splice(order.indexOf(id), 1); timeline = timeline.filter((item) => item.kind !== "surface" || item.id !== id); continue }
     if (name === "updateComponents") surfaces[id] = { ...surface, components: validateComponents(operation.components) }
     else surfaces[id] = { ...surface, dataModel: updatePointer(surface.dataModel, typeof operation.path === "string" ? operation.path : "", operation.value) }
   }
-  return { ...state, surfaces, surfaceOrder: order }
+  return { ...state, surfaces, surfaceOrder: order, timeline, pendingSurfaceOwner: null }
 }
 
 function validateComponents(raw: unknown): A2UIComponent[] {
@@ -228,6 +247,14 @@ function update<T extends { id: string }>(items: T[], rawId: unknown, callback: 
   const result = items.map((item) => { if (item.id !== id) return item; found = true; return callback(item) })
   if (!found) throw new Error("An AG-UI event referenced state before its start event.")
   return result
+}
+function appendTimeline(state: ConversationState, kind: ConversationItemKind, id: string): ConversationState {
+  const timeline = appendTimelineItems(state.timeline, kind, id)
+  return timeline === state.timeline ? state : { ...state, timeline }
+}
+function appendTimelineItems(items: ConversationTimelineItem[], kind: ConversationItemKind, id: string): ConversationTimelineItem[] {
+  if (items.some((item) => item.kind === kind && item.id === id)) return items
+  return [...items, { kind, id }]
 }
 function isRecord(value: unknown): value is Record<string, any> { return Boolean(value) && typeof value === "object" && !Array.isArray(value) }
 function requiredText(label: string, value: unknown): string { if (typeof value !== "string" || !value || /[\0\r\n]/u.test(value)) throw new Error(`${label} is invalid.`); return value }

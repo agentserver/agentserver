@@ -668,8 +668,6 @@ func genericTrajectoryEvent(run coredb.Run, event runevent.Event) projectedTraje
 		status = "failed"
 	} else if strings.HasSuffix(event.Kind, ".ready") || strings.HasSuffix(event.Kind, ".accepted") || strings.HasSuffix(event.Kind, ".succeeded") {
 		status = "succeeded"
-	} else if strings.HasSuffix(event.Kind, ".starting") || strings.HasSuffix(event.Kind, ".dispatching") || strings.HasSuffix(event.Kind, ".finalizing") {
-		status = "running"
 	}
 	record := corecontract.UserSessionTrajectoryRecord{
 		ID: "event:" + event.EventID, ParentID: trajectoryAttemptParent(run.ID, event.RunAttemptID, event.RunAttemptGeneration),

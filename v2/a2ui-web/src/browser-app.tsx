@@ -1,5 +1,5 @@
-import { Activity, AlertTriangle, Archive, Box, CheckCircle2, ChevronDown, CircleStop, Clock3, Code2, KeyRound, LoaderCircle, MessageSquare, Pencil, Plus, RefreshCw, Search, Send, Sparkles, SquareTerminal, Wrench, XCircle } from "lucide-react"
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type ReactNode } from "react"
+import { Archive, ChevronDown, CircleStop, Code2, KeyRound, MessageSquare, Pencil, Plus, RefreshCw, Search, Send, Sparkles, SquareTerminal } from "lucide-react"
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react"
 import { useTranslation } from "react-i18next"
 import { useLocation, useNavigate } from "react-router-dom"
 import {
@@ -42,6 +42,7 @@ import {
   type SessionTrajectoryRecord,
   type UserSession,
 } from "@agentserver/v2-web-shared"
+import { TrajectoryView } from "./trajectory-view"
 
 interface ActiveRun {
   sessionId: string
@@ -165,9 +166,7 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
         }
         return merged
       })
-      setSelectedTrajectoryRecord((current) => current && next?.records.some((record) => record.id === current)
-        ? current
-        : next?.records.at(-1)?.id ?? "")
+      setSelectedTrajectoryRecord((current) => current && next?.records.some((record) => record.id === current) ? current : "")
     } catch (error) {
       if (trajectoryRevisionRef.current === revision && selectedIdRef.current === sessionId) setTrajectoryError(safeError(error))
     } finally {
@@ -404,6 +403,7 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
         <ConversationView state={conversation} loading={transcriptLoading} truncated={transcriptTruncated} onDecision={decide} onConfigure={() => { window.location.href = `https://agent.byted.bps.dev/workspaces/${workspaceId}/gateways` }} />
         <Composer centered={emptyConversation} value={prompt} onChange={setPrompt} onSubmit={sendPrompt} onCancel={cancelRun} onReconnect={() => void stream(true)} state={conversation} inputRef={composerRef} />
       </> : <TrajectoryView
+        key={selectedId}
         records={trajectory?.records ?? []}
         activeRunId={trajectory?.activeRunId ?? ""}
         readAt={trajectory?.readAt ?? ""}
@@ -441,152 +441,6 @@ function ConversationView({ state, loading, truncated, onDecision, onConfigure }
     {state.surfaceOrder.map((id) => state.surfaces[id]).filter((item): item is A2UISurface => Boolean(item)).map((surface) => <Card className="a2ui-surface" key={surface.id}><div className="surface-label"><Code2 size={14} />{t("browser.a2ui")}</div><Surface surface={surface} componentId="root" ancestors={new Set()} depth={0} /></Card>)}
     {state.error ? <div className="run-error"><strong>{state.error.code}</strong><p>{state.error.message}</p>{missingGrant ? <Button variant="outline" onClick={onConfigure}><KeyRound size={14} />{t("browser.configureGateway")}</Button> : null}</div> : null}
   </div></div>
-}
-
-function TrajectoryView({ records, activeRunId, readAt, hasMore, truncated, loading, loadingEarlier, error, selectedId, onSelect, onLoadEarlier, onRetry }: {
-  records: SessionTrajectoryRecord[]
-  activeRunId: string
-  readAt: string
-  hasMore: boolean
-  truncated: boolean
-  loading: boolean
-  loadingEarlier: boolean
-  error: string
-  selectedId: string
-  onSelect: (id: string) => void
-  onLoadEarlier: () => void
-  onRetry: () => void
-}) {
-  const { t } = useTranslation()
-  const ledgerRef = useRef<HTMLDivElement | null>(null)
-  const followTailRef = useRef(true)
-  const prependHeightRef = useRef<number | null>(null)
-  const selected = records.find((record) => record.id === selectedId) ?? null
-  const runs = useMemo(() => records.filter((record) => record.kind === "run"), [records])
-  const readTime = readAt ? Date.parse(readAt) : Date.now()
-  const totalRunDuration = Math.max(1, runs.reduce((total, run) => total + trajectoryDuration(run, readTime), 0))
-
-  useEffect(() => {
-    if (!followTailRef.current) return
-    const frame = requestAnimationFrame(() => {
-      const ledger = ledgerRef.current
-      if (ledger) ledger.scrollTop = ledger.scrollHeight
-    })
-    return () => cancelAnimationFrame(frame)
-  }, [readAt, records.length])
-
-  useLayoutEffect(() => {
-    if (loadingEarlier || prependHeightRef.current === null) return
-    const ledger = ledgerRef.current
-    if (ledger) ledger.scrollTop += ledger.scrollHeight - prependHeightRef.current
-    prependHeightRef.current = null
-  }, [loadingEarlier, records.length])
-
-  return <section className="trajectory-view" aria-label={t("browser.trajectoryTimeline")}>
-    <div className="trajectory-overview">
-      <div className="trajectory-overview-heading">
-        <div><Activity size={15} /><strong>{t("browser.runTimeline")}</strong></div>
-        <span>{records.length} {t("browser.records")} · {readAt ? formatTrajectoryTime(readAt) : t("common.loading")}</span>
-      </div>
-      <div className="trajectory-run-bars" role="list" aria-label={t("browser.runTimeline")}>
-        {runs.length ? runs.map((run) => {
-          const duration = trajectoryDuration(run, readTime)
-          return <button
-            key={run.id}
-            type="button"
-            role="listitem"
-            className={`trajectory-run-bar trajectory-status-${run.status}${run.runId === activeRunId ? " active" : ""}`}
-            style={{ flexGrow: duration / totalRunDuration }}
-            title={`${shortID(run.runId)} · ${formatTrajectoryDuration(duration)} · ${run.summary}`}
-            onClick={() => onSelect(run.id)}
-          ><span>{shortID(run.runId)}</span></button>
-        }) : <div className="trajectory-run-empty">{loading ? t("common.loading") : t("browser.noTrajectory")}</div>}
-      </div>
-    </div>
-
-    {truncated ? <div className="trajectory-notice"><AlertTriangle size={14} />{t("browser.trajectoryTruncated")}</div> : null}
-    {error ? <div className="trajectory-error"><div><AlertTriangle size={15} /><span>{error}</span></div><Button size="sm" variant="outline" onClick={onRetry}>{t("common.retry")}</Button></div> : null}
-
-    <div className="trajectory-workbench">
-      <div className="trajectory-ledger-column">
-        <div className="trajectory-column-header"><div><strong>{t("browser.eventLedger")}</strong><span>{activeRunId ? t("browser.live") : t("browser.settled")}</span></div></div>
-        <div
-          className="trajectory-ledger"
-          ref={ledgerRef}
-          data-trajectory-scroll
-          onScroll={(event) => {
-            const target = event.currentTarget
-            followTailRef.current = target.scrollHeight - target.scrollTop - target.clientHeight < 48
-          }}
-        >
-          {hasMore ? <div className="trajectory-load-earlier"><Button size="sm" variant="outline" disabled={loadingEarlier} onClick={() => {
-            prependHeightRef.current = ledgerRef.current?.scrollHeight ?? null
-            onLoadEarlier()
-          }}>{loadingEarlier ? t("common.loading") : t("browser.loadEarlier")}</Button></div> : null}
-          {loading && records.length === 0 ? <div className="trajectory-state"><LoaderCircle className="trajectory-spin" size={17} />{t("common.loading")}</div> : null}
-          {!loading && records.length === 0 && !error ? <div className="trajectory-state"><Activity size={18} />{t("browser.noTrajectory")}</div> : null}
-          <div className="trajectory-records" role="list">
-            {records.map((record) => {
-              const depth = trajectoryRecordDepth(record, records)
-              const style = { "--trajectory-depth": depth } as CSSProperties
-              return <button
-                type="button"
-                role="listitem"
-                key={record.id}
-                className={`trajectory-record trajectory-status-${record.status}${record.id === selected?.id ? " selected" : ""}`}
-                style={style}
-                onClick={() => onSelect(record.id)}
-                data-trajectory-record={record.id}
-              >
-                <span className="trajectory-tree-guide" />
-                <span className="trajectory-kind-icon">{trajectoryKindIcon(record.kind)}</span>
-                <span className="trajectory-record-copy"><span><strong>{record.title}</strong><Badge tone={trajectoryTone(record.status)}>{record.status}</Badge></span><small>{record.summary || record.kind}</small></span>
-                <span className="trajectory-record-time">{record.durationMillis !== undefined ? formatTrajectoryDuration(record.durationMillis) : formatTrajectoryTime(record.startedAt)}</span>
-              </button>
-            })}
-          </div>
-        </div>
-      </div>
-
-      <aside className="trajectory-inspector" aria-label={t("browser.inspector")}>
-        <div className="trajectory-column-header"><div><strong>{t("browser.inspector")}</strong><span>{selected ? selected.kind : t("browser.selectRecord")}</span></div></div>
-        {selected ? <div className="trajectory-inspector-scroll">
-          <div className="trajectory-inspector-title">
-            <span className={`trajectory-large-icon trajectory-status-${selected.status}`}>{trajectoryStatusIcon(selected.status)}</span>
-            <div><span>{selected.kind}</span><h2>{selected.title}</h2><p>{selected.summary}</p></div>
-          </div>
-          <TrajectoryInspectorSection title={t("browser.overview")}>
-            <dl className="trajectory-facts">
-              <div><dt>{t("common.status")}</dt><dd><Badge tone={trajectoryTone(selected.status)}>{selected.status}</Badge></dd></div>
-              <div><dt>{t("browser.started")}</dt><dd>{formatTrajectoryTime(selected.startedAt, true)}</dd></div>
-              {selected.completedAt ? <div><dt>{t("browser.completedAt")}</dt><dd>{formatTrajectoryTime(selected.completedAt, true)}</dd></div> : null}
-              <div><dt>{t("browser.duration")}</dt><dd>{selected.durationMillis !== undefined ? formatTrajectoryDuration(selected.durationMillis) : t("browser.inProgress")}</dd></div>
-              <div><dt>Run</dt><dd title={selected.runId}>{shortID(selected.runId)}</dd></div>
-              {selected.runAttemptId ? <div><dt>Attempt</dt><dd title={selected.runAttemptId}>{shortID(selected.runAttemptId)} · {selected.runAttemptGeneration}</dd></div> : null}
-              {selected.executionId ? <div><dt>Execution</dt><dd title={selected.executionId}>{shortID(selected.executionId)}</dd></div> : null}
-              {selected.operationId ? <div><dt>Operation</dt><dd title={selected.operationId}>{shortID(selected.operationId)}</dd></div> : null}
-              {selected.sandboxId ? <div><dt>Sandbox</dt><dd title={selected.sandboxId}>{shortID(selected.sandboxId)}</dd></div> : null}
-            </dl>
-          </TrajectoryInspectorSection>
-          {selected.failure ? <TrajectoryInspectorSection title={t("browser.failure")} danger>
-            <div className="trajectory-failure"><strong>{selected.failure.category}</strong><p>{selected.failure.message}</p><dl>
-              <div><dt>Code</dt><dd>{selected.failure.code}</dd></div><div><dt>Component</dt><dd>{selected.failure.component}</dd></div>
-              <div><dt>Phase</dt><dd>{selected.failure.phase}</dd></div><div><dt>Retryable</dt><dd>{String(selected.failure.retryable)}</dd></div>
-              {selected.failure.fingerprint ? <div><dt>Fingerprint</dt><dd>{selected.failure.fingerprint}</dd></div> : null}
-            </dl></div>
-          </TrajectoryInspectorSection> : null}
-          {selected.input !== undefined ? <TrajectoryInspectorSection title={t("browser.input")}><pre>{selected.input}{selected.inputTruncated ? `\n\n${t("browser.contentTruncated")}` : ""}</pre></TrajectoryInspectorSection> : null}
-          {selected.output !== undefined ? <TrajectoryInspectorSection title={t("browser.output")}><pre>{selected.output}{selected.outputTruncated ? `\n\n${t("browser.contentTruncated")}` : ""}</pre></TrajectoryInspectorSection> : null}
-          {selected.details.length ? <TrajectoryInspectorSection title={t("browser.details")}><dl className="trajectory-details">{selected.details.map((detail) => <div key={`${detail.name}:${detail.value}`}><dt>{detail.name}</dt><dd>{detail.value}</dd></div>)}</dl></TrajectoryInspectorSection> : null}
-          <TrajectoryInspectorSection title="Identity"><code className="trajectory-record-id">{selected.id}</code></TrajectoryInspectorSection>
-        </div> : <div className="trajectory-state"><Activity size={20} />{t("browser.selectRecord")}</div>}
-      </aside>
-    </div>
-  </section>
-}
-
-function TrajectoryInspectorSection({ title, danger = false, children }: { title: string; danger?: boolean; children: ReactNode }) {
-  return <section className={`trajectory-inspector-section${danger ? " danger" : ""}`}><h3>{title}</h3>{children}</section>
 }
 
 function Surface({ surface, componentId, ancestors, depth }: { surface: A2UISurface; componentId: string; ancestors: Set<string>; depth: number }): ReactNode {
@@ -638,55 +492,6 @@ function trajectoryWindowsOverlap(current: SessionTrajectoryRecord[], tail: Sess
 export function prependTrajectoryRecords(earlier: SessionTrajectoryRecord[], current: SessionTrajectoryRecord[]): SessionTrajectoryRecord[] {
   const currentIDs = new Set(current.map((record) => record.id))
   return [...earlier.filter((record) => !currentIDs.has(record.id)), ...current]
-}
-function trajectoryRecordDepth(record: SessionTrajectoryRecord, records: SessionTrajectoryRecord[]): number {
-  const byID = new Map(records.map((candidate) => [candidate.id, candidate]))
-  const seen = new Set<string>([record.id])
-  let parentID = record.parentId
-  let depth = 0
-  while (parentID && depth < 5 && !seen.has(parentID)) {
-    depth += 1; seen.add(parentID); parentID = byID.get(parentID)?.parentId
-  }
-  if (depth > 0) return depth
-  const fallback: Record<string, number> = { run: 0, attempt: 1, model: 2, assistant: 2, reasoning: 2, tool: 2, sandbox: 2, execution: 3, approval: 3, operation: 4, credential: 5, checkpoint: 2, event: 2 }
-  return fallback[record.kind] ?? 0
-}
-function trajectoryDuration(record: SessionTrajectoryRecord, readTime: number): number {
-  if (record.durationMillis !== undefined) return Math.max(1, record.durationMillis)
-  return Math.max(1, readTime - Date.parse(record.startedAt))
-}
-function formatTrajectoryDuration(milliseconds: number): string {
-  if (milliseconds < 1000) return `${Math.round(milliseconds)} ms`
-  if (milliseconds < 60_000) return `${(milliseconds / 1000).toFixed(milliseconds < 10_000 ? 1 : 0)} s`
-  const minutes = Math.floor(milliseconds / 60_000)
-  const seconds = Math.floor((milliseconds % 60_000) / 1000)
-  return `${minutes}m ${seconds}s`
-}
-function formatTrajectoryTime(value: string, complete = false): string {
-  const date = new Date(value)
-  return new Intl.DateTimeFormat(undefined, complete
-    ? { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit", fractionalSecondDigits: 3 }
-    : { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(date)
-}
-function trajectoryTone(status: SessionTrajectoryRecord["status"]): "neutral" | "success" | "danger" | "warning" {
-  if (status === "succeeded") return "success"
-  if (status === "failed" || status === "unknown") return "danger"
-  if (status === "running" || status === "queued") return "warning"
-  return "neutral"
-}
-function trajectoryStatusIcon(status: SessionTrajectoryRecord["status"]): ReactNode {
-  if (status === "succeeded") return <CheckCircle2 size={19} />
-  if (status === "failed" || status === "unknown") return <XCircle size={19} />
-  if (status === "running") return <LoaderCircle className="trajectory-spin" size={19} />
-  if (status === "queued") return <Clock3 size={19} />
-  return <Activity size={19} />
-}
-function trajectoryKindIcon(kind: SessionTrajectoryRecord["kind"]): ReactNode {
-  if (kind === "sandbox") return <Box size={14} />
-  if (["tool", "execution", "operation"].includes(kind)) return <Wrench size={14} />
-  if (kind === "assistant" || kind === "reasoning" || kind === "model") return <Sparkles size={14} />
-  if (kind === "credential" || kind === "approval") return <KeyRound size={14} />
-  return <Activity size={14} />
 }
 function statusLabel(t: (key: string) => string, status: ConversationState["status"]): string {
   if (status === "idle") return ""

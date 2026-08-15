@@ -93,7 +93,7 @@ func TestProductionWorkflowHasBoundedServiceOnlyDevelopmentPath(t *testing.T) {
 	}
 	fastPath := string(workflow)
 	start := strings.Index(fastPath, "  publish-service-only:")
-	end := strings.Index(fastPath, "  promote-active-chart:")
+	end := strings.Index(fastPath, "  promote-locked-chart:")
 	if start < 0 || end <= start {
 		t.Fatal("production workflow is missing the service-only job boundary")
 	}

@@ -339,7 +339,7 @@ name = "agentserver v2 llmproxy"
 base_url = %s
 env_key = %q
 wire_api = "responses"
-request_max_retries = 0
+request_max_retries = 2
 stream_max_retries = 0
 
 [tools.update_plan]

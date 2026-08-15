@@ -154,6 +154,7 @@ func BrowserOAuthActionPermissions() map[string]UserOAuthActionAuthority {
 		"sessions.update":     {Resource: UserOAuthWorkspaceResource, Permissions: []string{BrowserOAuthSessionsUpdateScope}},
 		"sessions.archive":    {Resource: UserOAuthWorkspaceResource, Permissions: []string{BrowserOAuthSessionsArchiveScope}},
 		"sessions.transcript": {Resource: UserOAuthWorkspaceResource, Permissions: []string{BrowserOAuthSessionsReadScope, BrowserOAuthRunsReadScope}},
+		"sessions.trajectory": {Resource: UserOAuthWorkspaceResource, Permissions: []string{BrowserOAuthSessionsReadScope, BrowserOAuthRunsReadScope}},
 		"runs.read":           {Resource: UserOAuthWorkspaceResource, Permissions: []string{BrowserOAuthRunsReadScope}},
 		"runs.create":         {Resource: UserOAuthWorkspaceResource, Permissions: []string{BrowserOAuthRunsCreateScope}},
 		"runs.cancel":         {Resource: UserOAuthWorkspaceResource, Permissions: []string{BrowserOAuthRunsCancelScope}},

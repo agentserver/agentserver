@@ -104,6 +104,38 @@ func TestUserSessionHandlerReadsTranscriptWithCombinedAuthorityAction(t *testing
 	}
 }
 
+func TestUserSessionHandlerReadsTrajectoryWithBoundedQuery(t *testing.T) {
+	now := time.Date(2026, 8, 15, 1, 0, 0, 0, time.UTC)
+	commands := &recordingUserSessionCommands{trajectoryResult: corecontract.GetUserSessionTrajectoryResponse{
+		SchemaVersion: 1, WorkspaceID: userSessionTestWorkspace, SessionID: userSessionTestSession,
+		Records: []corecontract.UserSessionTrajectoryRecord{}, ReadAt: now,
+	}}
+	workload := &recordingRunAttemptAuthorizer{}
+	users := &recordingUserAuthorizer{actorID: userSessionTestActor}
+	handler, err := NewUserSessionHandler(workload, users, commands)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := corecontract.UserSessionTrajectoryPath(userSessionTestWorkspace, userSessionTestSession)
+	request := httptest.NewRequest(http.MethodGet, path+"?before=v1.cursor&limit=40", nil)
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || commands.trajectoryActor != userSessionTestActor ||
+		commands.trajectorySession != userSessionTestSession || commands.trajectoryBefore != "v1.cursor" || commands.trajectoryLimit != 40 ||
+		users.action != "sessions.trajectory" || workload.action != "sessions.trajectory" {
+		t.Fatalf("trajectory response = %d %s command=%+v actions=%q/%q", response.Code, response.Body.String(), commands, users.action, workload.action)
+	}
+
+	for _, query := range []string{"?future=true", "?before=", "?before=%0A", "?before=v1.a&before=v1.b", "?limit=1&limit=2", "?limit=0", "?limit="} {
+		rejected := httptest.NewRequest(http.MethodGet, path+query, nil)
+		rejectedResponse := httptest.NewRecorder()
+		handler.Routes().ServeHTTP(rejectedResponse, rejected)
+		if rejectedResponse.Code != http.StatusBadRequest {
+			t.Fatalf("query %q response = %d %s", query, rejectedResponse.Code, rejectedResponse.Body.String())
+		}
+	}
+}
+
 type recordingUserSessionCommands struct {
 	listResult        corecontract.ListUserSessionsResponse
 	createResult      corecontract.CreateUserSessionResponse
@@ -115,6 +147,11 @@ type recordingUserSessionCommands struct {
 	transcriptResult  corecontract.GetUserSessionTranscriptResponse
 	transcriptActor   string
 	transcriptSession string
+	trajectoryResult  corecontract.GetUserSessionTrajectoryResponse
+	trajectoryActor   string
+	trajectorySession string
+	trajectoryBefore  string
+	trajectoryLimit   int
 }
 
 func (commands *recordingUserSessionCommands) ListSessions(_ context.Context, _ string, actorID string) (corecontract.ListUserSessionsResponse, error) {
@@ -129,6 +166,12 @@ func (*recordingUserSessionCommands) GetSession(context.Context, string, string,
 func (commands *recordingUserSessionCommands) GetTranscript(_ context.Context, _ string, sessionID, actorID string) (corecontract.GetUserSessionTranscriptResponse, error) {
 	commands.transcriptActor, commands.transcriptSession = actorID, sessionID
 	return commands.transcriptResult, nil
+}
+
+func (commands *recordingUserSessionCommands) GetTrajectory(_ context.Context, _ string, sessionID, actorID, before string, limit int) (corecontract.GetUserSessionTrajectoryResponse, error) {
+	commands.trajectoryActor, commands.trajectorySession = actorID, sessionID
+	commands.trajectoryBefore, commands.trajectoryLimit = before, limit
+	return commands.trajectoryResult, nil
 }
 
 func (commands *recordingUserSessionCommands) CreateSession(_ context.Context, workspaceID, actorID string, input corecontract.CreateUserSessionRequest) (corecontract.CreateUserSessionResponse, error) {

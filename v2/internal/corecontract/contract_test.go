@@ -366,6 +366,7 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	sessionsPath := UserSessionsPath("{workspaceId}")
 	sessionPath := UserSessionPath("{workspaceId}", "{sessionId}")
 	transcriptPath := UserSessionTranscriptPath("{workspaceId}", "{sessionId}")
+	trajectoryPath := UserSessionTrajectoryPath("{workspaceId}", "{sessionId}")
 	archiveSessionPath := ArchiveUserSessionPath("{workspaceId}", "{sessionId}")
 	llmGatewayCollectionPath := WorkspaceLLMGatewaysPath("{workspaceId}")
 	llmGatewayResourcePath := WorkspaceLLMGatewayPath("{workspaceId}", "{gatewayId}")
@@ -384,7 +385,7 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	credentialAuthorizationResourcePath := WorkspaceCredentialAuthorizationResourceRoutePattern
 	credentialAuthorizationPollPath := "/v2/workspaces/{workspaceId}/credential-authorizations/{kind}/{authorizationId}:poll"
 	credentialAuthorizationCancelPath := "/v2/workspaces/{workspaceId}/credential-authorizations/{kind}/{authorizationId}:cancel"
-	if len(document.Paths) != 33 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
+	if len(document.Paths) != 34 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
 		document.Paths[cancelPath].Post.OperationID != "cancelUserRun" || document.Paths[readPath].Get.OperationID != "readUserRunEvents" {
 		t.Fatalf("public OpenAPI paths = %+v", document.Paths)
 	}
@@ -394,6 +395,7 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	if document.Paths[sessionsPath].Get.OperationID != "listUserSessions" || document.Paths[sessionsPath].Post.OperationID != "createUserSession" ||
 		document.Paths[sessionPath].Get.OperationID != "getUserSession" || document.Paths[sessionPath].Patch.OperationID != "updateUserSession" ||
 		document.Paths[transcriptPath].Get.OperationID != "getUserSessionTranscript" ||
+		document.Paths[trajectoryPath].Get.OperationID != "getUserSessionTrajectory" ||
 		document.Paths[archiveSessionPath].Post.OperationID != "archiveUserSession" {
 		t.Fatalf("public Browser session paths = %+v", document.Paths)
 	}
@@ -528,6 +530,11 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 		!slices.Equal(transcriptSecurity[0]["browserOAuth"], []string{BrowserOAuthSessionsReadScope, BrowserOAuthRunsReadScope}) {
 		t.Errorf("public Browser transcript security = %+v", transcriptSecurity)
 	}
+	trajectorySecurity := document.Paths[trajectoryPath].Get.Security
+	if len(trajectorySecurity) != 1 || len(trajectorySecurity[0]) != 2 || trajectorySecurity[0]["browserGatewayMTLS"] == nil ||
+		!slices.Equal(trajectorySecurity[0]["browserOAuth"], []string{BrowserOAuthSessionsReadScope, BrowserOAuthRunsReadScope}) {
+		t.Errorf("public Browser trajectory security = %+v", trajectorySecurity)
+	}
 	assertSchemaFields(t, document.Components.Schemas, "CreateExecutorResourceRequest", reflect.TypeFor[CreateExecutorResourceRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "ExecutorResourceState", reflect.TypeFor[ExecutorResourceState]())
 	assertSchemaFields(t, document.Components.Schemas, "CreateExecutorResourceResponse", reflect.TypeFor[CreateExecutorResourceResponse]())
@@ -610,6 +617,10 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "ArchiveUserSessionResponse", reflect.TypeFor[ArchiveUserSessionResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "UserSessionTranscriptMessage", reflect.TypeFor[UserSessionTranscriptMessage]())
 	assertSchemaFields(t, document.Components.Schemas, "GetUserSessionTranscriptResponse", reflect.TypeFor[GetUserSessionTranscriptResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "UserSessionTrajectoryDetail", reflect.TypeFor[UserSessionTrajectoryDetail]())
+	assertSchemaFields(t, document.Components.Schemas, "UserSessionTrajectoryFailure", reflect.TypeFor[UserSessionTrajectoryFailure]())
+	assertSchemaFields(t, document.Components.Schemas, "UserSessionTrajectoryRecord", reflect.TypeFor[UserSessionTrajectoryRecord]())
+	assertSchemaFields(t, document.Components.Schemas, "GetUserSessionTrajectoryResponse", reflect.TypeFor[GetUserSessionTrajectoryResponse]())
 	var enrollmentTokenProperty struct {
 		WriteOnly bool `json:"writeOnly"`
 		Sensitive bool `json:"x-agentserver-sensitive"`

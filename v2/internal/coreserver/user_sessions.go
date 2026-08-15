@@ -7,9 +7,13 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/coredb"
+	"github.com/agentserver/agentserver/v2/internal/trajectorycursor"
 )
 
 const maximumUserSessionRequestBytes = int64(64 * 1024)
@@ -18,6 +22,7 @@ type UserSessionCommands interface {
 	ListSessions(context.Context, string, string) (corecontract.ListUserSessionsResponse, error)
 	GetSession(context.Context, string, string, string) (corecontract.UserSessionState, error)
 	GetTranscript(context.Context, string, string, string) (corecontract.GetUserSessionTranscriptResponse, error)
+	GetTrajectory(context.Context, string, string, string, string, int) (corecontract.GetUserSessionTrajectoryResponse, error)
 	CreateSession(context.Context, string, string, corecontract.CreateUserSessionRequest) (corecontract.CreateUserSessionResponse, error)
 	UpdateSession(context.Context, string, string, string, corecontract.UpdateUserSessionRequest) (corecontract.UpdateUserSessionResponse, error)
 	ArchiveSession(context.Context, string, string, string, corecontract.ArchiveUserSessionRequest) (corecontract.ArchiveUserSessionResponse, error)
@@ -41,6 +46,7 @@ func (handler *UserSessionHandler) Routes() http.Handler {
 	mux.HandleFunc(corecontract.UserSessionCollectionRoutePattern, handler.collection)
 	mux.HandleFunc(corecontract.UserSessionResourceRoutePattern, handler.resource)
 	mux.HandleFunc(corecontract.UserSessionTranscriptRoutePattern, handler.transcript)
+	mux.HandleFunc(corecontract.UserSessionTrajectoryRoutePattern, handler.trajectory)
 	mux.HandleFunc(corecontract.UserSessionArchiveRoutePattern, handler.archive)
 	return mux
 }
@@ -68,6 +74,63 @@ func (handler *UserSessionHandler) transcript(response http.ResponseWriter, requ
 		return
 	}
 	writeJSON(response, http.StatusOK, result)
+}
+
+func (handler *UserSessionHandler) trajectory(response http.ResponseWriter, request *http.Request) {
+	userSessionNoStore(response)
+	if request.Method != http.MethodGet {
+		response.Header().Set("Allow", http.MethodGet)
+		writePublicRunError(response, http.StatusMethodNotAllowed, "method_not_allowed", "session trajectory requires GET", "")
+		return
+	}
+	before, limit, ok := parseUserSessionTrajectoryQuery(response, request.URL.RawQuery)
+	if !ok {
+		return
+	}
+	actorID, ok := handler.authorize(response, request, "sessions.trajectory")
+	if !ok || !requireEmptyUserSessionBody(response, request, "session trajectory") {
+		return
+	}
+	result, err := handler.commands.GetTrajectory(
+		request.Context(), request.PathValue("workspaceId"), request.PathValue("sessionId"), actorID, before, limit,
+	)
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func parseUserSessionTrajectoryQuery(response http.ResponseWriter, rawQuery string) (string, int, bool) {
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		writePublicRunError(response, http.StatusBadRequest, "invalid_argument", "session trajectory query is malformed", "")
+		return "", 0, false
+	}
+	for key, current := range values {
+		if (key != "before" && key != "limit") || len(current) != 1 {
+			writePublicRunError(response, http.StatusBadRequest, "invalid_argument", "session trajectory accepts one before and one limit parameter", "")
+			return "", 0, false
+		}
+	}
+	before := ""
+	if cursors, present := values["before"]; present {
+		before = cursors[0]
+		if before == "" || len(before) > 4096 || strings.ContainsAny(before, "\x00\r\n") {
+			writePublicRunError(response, http.StatusBadRequest, "invalid_argument", "session trajectory before cursor is invalid", "")
+			return "", 0, false
+		}
+	}
+	limit := defaultUserTrajectoryLimit
+	if limits, present := values["limit"]; present {
+		raw := limits[0]
+		limit, err = strconv.Atoi(raw)
+		if err != nil || limit < 1 || limit > maximumUserTrajectoryLimit {
+			writePublicRunError(response, http.StatusBadRequest, "invalid_argument", "session trajectory limit must be between 1 and 200", "")
+			return "", 0, false
+		}
+	}
+	return before, limit, true
 }
 
 func (handler *UserSessionHandler) collection(response http.ResponseWriter, request *http.Request) {
@@ -257,8 +320,9 @@ func decodeUserSessionJSON(response http.ResponseWriter, request *http.Request, 
 }
 
 type StateStoreUserSessionCommands struct {
-	Store   *coredb.StateStore
-	Prompts UserPromptReader
+	Store             *coredb.StateStore
+	Prompts           UserPromptReader
+	TrajectoryCursors *trajectorycursor.Codec
 }
 
 func (commands StateStoreUserSessionCommands) ListSessions(ctx context.Context, workspaceID, actorID string) (corecontract.ListUserSessionsResponse, error) {

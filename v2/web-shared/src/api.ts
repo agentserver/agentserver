@@ -17,6 +17,9 @@ export type CredentialAuthorization = PublicComponents["schemas"]["WorkspaceCred
 export type BeginCredentialAuthorization = PublicComponents["schemas"]["BeginWorkspaceCredentialAuthorizationRequest"]
 export type UserSession = PublicComponents["schemas"]["UserSessionState"]
 export type SessionTranscript = PublicComponents["schemas"]["GetUserSessionTranscriptResponse"]
+export type SessionTrajectory = PublicComponents["schemas"]["GetUserSessionTrajectoryResponse"]
+export type SessionTrajectoryRecord = PublicComponents["schemas"]["UserSessionTrajectoryRecord"]
+export type SessionTrajectoryFailure = PublicComponents["schemas"]["UserSessionTrajectoryFailure"]
 export type Approval = PublicComponents["schemas"]["ApprovalState"]
 export type ApprovalDecision = PublicComponents["schemas"]["DecideUserApprovalRequest"]
 export type AuthorizationConfig = EdgeComponents["schemas"]["PlatformAuthorizationConfig"] | EdgeComponents["schemas"]["BrowserAuthorizationConfig"]
@@ -284,6 +287,15 @@ export class ResourceAPI {
     return validateSessionTranscript(result, workspaceId, sessionId)
   }
 
+  async getSessionTrajectory(workspaceId: string, sessionId: string, before?: string, limit = 100) {
+    const query: { before?: string; limit?: number } = { limit }
+    if (before !== undefined) query.before = before
+    const result = take(await this.#client.GET("/v2/workspaces/{workspaceId}/sessions/{sessionId}/trajectory", {
+      params: { path: { workspaceId, sessionId }, query },
+    }))
+    return validateSessionTrajectory(result, workspaceId, sessionId)
+  }
+
   async updateSession(workspaceId: string, sessionId: string, body: PublicComponents["schemas"]["UpdateUserSessionRequest"]) {
     const result = take(await this.#client.PATCH("/v2/workspaces/{workspaceId}/sessions/{sessionId}", { params: { path: { workspaceId, sessionId } }, body }))
     if (validateSession(result.session, workspaceId).sessionId !== canonicalID("session ID", sessionId)) throw new Error("The session update response escaped its requested scope.")
@@ -462,6 +474,79 @@ function validateSessionTranscript(value: SessionTranscript, workspaceId: string
   return value
 }
 
+export function validateSessionTrajectory(value: SessionTrajectory, workspaceId: string, sessionId: string): SessionTrajectory {
+  const keys = ["schemaVersion", "workspaceId", "sessionId", "records", "hasMore", "truncated", "readAt"]
+  if (value.activeRunId !== undefined) keys.push("activeRunId")
+  if (value.nextBefore !== undefined) keys.push("nextBefore")
+  exactKeys(value, keys, "session trajectory")
+  if (value.schemaVersion !== 1 || value.workspaceId !== canonicalID("workspace ID", workspaceId) ||
+      value.sessionId !== canonicalID("session ID", sessionId) || !Array.isArray(value.records) || value.records.length > 200 ||
+      typeof value.hasMore !== "boolean" || typeof value.truncated !== "boolean" || !validTimestamp(value.readAt)) {
+    throw new Error("The session trajectory escaped its requested scope.")
+  }
+  if (value.activeRunId !== undefined) canonicalID("active run ID", value.activeRunId)
+  if (value.hasMore !== (value.nextBefore !== undefined)) throw new Error("The session trajectory pagination state is invalid.")
+  if (value.nextBefore !== undefined) boundedOpaqueIdentifier(value.nextBefore, 4096)
+
+  const identifiers = new Set<string>()
+  let contentBytes = 0
+  for (const record of value.records) {
+    validateSessionTrajectoryRecord(record)
+    if (identifiers.has(record.id)) throw new Error("The session trajectory contains duplicate records.")
+    identifiers.add(record.id)
+    contentBytes += utf8Bytes(record.input ?? "") + utf8Bytes(record.output ?? "") + utf8Bytes(record.summary)
+    contentBytes += record.details.reduce((total, detail) => total + utf8Bytes(detail.name) + utf8Bytes(detail.value), 0)
+    if (record.failure !== undefined) contentBytes += utf8Bytes(record.failure.message)
+    if (contentBytes > 1024 * 1024) throw new Error("The session trajectory exceeded its content bound.")
+  }
+  return value
+}
+
+function validateSessionTrajectoryRecord(record: SessionTrajectoryRecord) {
+  const keys = ["id", "kind", "status", "title", "summary", "runId", "startedAt", "details"]
+  for (const optional of ["parentId", "runAttemptId", "runAttemptGeneration", "toolCallId", "executionId", "operationId", "sandboxId", "targetGeneration", "completedAt", "durationMillis", "input", "output", "inputTruncated", "outputTruncated", "failure"] as const) {
+    if (record[optional] !== undefined) keys.push(optional)
+  }
+  exactKeys(record, keys, "session trajectory record")
+  boundedOpaqueIdentifier(record.id, 512); canonicalID("trajectory run ID", record.runId)
+  if (record.parentId !== undefined) boundedOpaqueIdentifier(record.parentId, 512)
+  if (!["run", "attempt", "model", "assistant", "reasoning", "tool", "approval", "execution", "operation", "sandbox", "credential", "checkpoint", "event"].includes(record.kind) ||
+      !["queued", "running", "succeeded", "failed", "cancelled", "unknown", "info"].includes(record.status) ||
+      !validTimestamp(record.startedAt) || !Array.isArray(record.details) || record.details.length > 32) {
+    throw new Error("A session trajectory record is invalid.")
+  }
+  boundedOpaqueText(record.title, 1024); boundedOpaqueText(record.summary, 4096, true)
+  if (record.runAttemptId !== undefined) canonicalID("trajectory attempt ID", record.runAttemptId)
+  for (const identifier of [record.toolCallId, record.executionId, record.operationId, record.sandboxId]) {
+    if (identifier !== undefined) boundedOpaqueIdentifier(identifier, 512)
+  }
+  for (const generation of [record.runAttemptGeneration, record.targetGeneration]) {
+    if (generation !== undefined && (!Number.isSafeInteger(generation) || generation < 0)) throw new Error("A session trajectory generation is invalid.")
+  }
+  if (record.completedAt !== undefined && (!validTimestamp(record.completedAt) || Date.parse(record.completedAt) < Date.parse(record.startedAt))) throw new Error("A session trajectory completion time is invalid.")
+  if (record.durationMillis !== undefined && (!Number.isSafeInteger(record.durationMillis) || record.durationMillis < 0)) throw new Error("A session trajectory duration is invalid.")
+  if ((record.completedAt === undefined) !== (record.durationMillis === undefined)) throw new Error("A session trajectory timing pair is invalid.")
+  if (record.input !== undefined) boundedContent(record.input, 16 * 1024)
+  if (record.output !== undefined) boundedContent(record.output, 16 * 1024)
+  if (record.inputTruncated !== undefined && typeof record.inputTruncated !== "boolean") throw new Error("A session trajectory truncation marker is invalid.")
+  if (record.outputTruncated !== undefined && typeof record.outputTruncated !== "boolean") throw new Error("A session trajectory truncation marker is invalid.")
+  for (const detail of record.details) {
+    exactKeys(detail, ["name", "value"], "session trajectory detail")
+    boundedOpaqueText(detail.name, 128); boundedOpaqueText(detail.value, 1024, true)
+  }
+  if (record.failure !== undefined) validateSessionTrajectoryFailure(record.failure)
+}
+
+function validateSessionTrajectoryFailure(failure: SessionTrajectoryFailure) {
+  const keys = ["code", "category", "message", "component", "phase", "retryable"]
+  if (failure.fingerprint !== undefined) keys.push("fingerprint")
+  exactKeys(failure, keys, "session trajectory failure")
+  boundedOpaqueText(failure.code, 128); boundedOpaqueText(failure.category, 128)
+  boundedOpaqueText(failure.message, 4096); boundedOpaqueText(failure.component, 128); boundedOpaqueText(failure.phase, 128)
+  if (typeof failure.retryable !== "boolean") throw new Error("A session trajectory failure is invalid.")
+  if (failure.fingerprint !== undefined) boundedOpaqueText(failure.fingerprint, 256)
+}
+
 function exactKeys(value: unknown, expected: string[], label: string) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`The ${label} response is invalid.`)
   const actual = Object.keys(value).sort(); const wanted = [...expected].sort()
@@ -470,5 +555,9 @@ function exactKeys(value: unknown, expected: string[], label: string) {
 function providerKind(value: string) { if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value)) throw new Error("The credential provider kind is invalid."); return value }
 function boundedStringList(value: string[], maximumItems: number, maximumLength: number) { if (!Array.isArray(value) || value.length > maximumItems || new Set(value).size !== value.length || value.some((item) => typeof item !== "string" || !item || item.length > maximumLength || /[\0\r\n]/u.test(item))) throw new Error("A credential provider list is invalid.") }
 function boundedProtocolText(value: string, maximum: number) { if (typeof value !== "string" || !value || value.length > maximum || value.trim() !== value || /[\0\r\n]/u.test(value)) throw new Error("A response text value is invalid.") }
+function boundedOpaqueText(value: string, maximumBytes: number, allowEmpty = false) { if (typeof value !== "string" || (!allowEmpty && !value) || utf8Bytes(value) > maximumBytes || /\0/u.test(value)) throw new Error("A trajectory text value is invalid.") }
+function boundedOpaqueIdentifier(value: string, maximumBytes: number) { boundedOpaqueText(value, maximumBytes); if (/[\r\n]/u.test(value)) throw new Error("A trajectory identifier is invalid.") }
+function boundedContent(value: string, maximumBytes: number) { if (typeof value !== "string" || utf8Bytes(value) > maximumBytes || /\0/u.test(value)) throw new Error("A trajectory content value is invalid.") }
+function utf8Bytes(value: string) { return new TextEncoder().encode(value).byteLength }
 function positiveVersion(value: number) { return Number.isSafeInteger(value) && value > 0 }
 function validTimestamp(value: string) { return typeof value === "string" && value.length <= 64 && Number.isFinite(Date.parse(value)) }

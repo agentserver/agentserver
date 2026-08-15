@@ -572,6 +572,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v2/workspaces/{workspaceId}/sessions/{sessionId}/trajectory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        /** @description Returns a creator-only, redacted lifecycle projection for the session. Records cover runs, attempts, model failures, tool calls, executions, operations, managed sandboxes, credential resolution, and checkpoints. Pagination walks backward from the newest retained records. */
+        get: operations["getUserSessionTrajectory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v2/workspaces/{workspaceId}/sessions/{sessionId}/runs": {
         parameters: {
             query?: never;
@@ -1081,6 +1101,61 @@ export interface components {
             sessionId: components["schemas"]["UUID"];
             messages: components["schemas"]["UserSessionTranscriptMessage"][];
             truncated: boolean;
+        };
+        UserSessionTrajectoryDetail: {
+            name: string;
+            value: string;
+        };
+        UserSessionTrajectoryFailure: {
+            code: string;
+            category: string;
+            message: string;
+            component: string;
+            phase: string;
+            retryable: boolean;
+            fingerprint?: string;
+        };
+        UserSessionTrajectoryRecord: {
+            id: string;
+            parentId?: string;
+            /** @enum {unknown} */
+            kind: "run" | "attempt" | "model" | "assistant" | "reasoning" | "tool" | "approval" | "execution" | "operation" | "sandbox" | "credential" | "checkpoint" | "event";
+            /** @enum {unknown} */
+            status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "unknown" | "info";
+            title: string;
+            summary: string;
+            runId: components["schemas"]["UUID"];
+            runAttemptId?: components["schemas"]["UUID"];
+            runAttemptGeneration?: number;
+            toolCallId?: string;
+            executionId?: string;
+            operationId?: string;
+            sandboxId?: string;
+            targetGeneration?: number;
+            /** Format: date-time */
+            startedAt: string;
+            /** Format: date-time */
+            completedAt?: string;
+            durationMillis?: number;
+            input?: string;
+            output?: string;
+            inputTruncated?: boolean;
+            outputTruncated?: boolean;
+            details: components["schemas"]["UserSessionTrajectoryDetail"][];
+            failure?: components["schemas"]["UserSessionTrajectoryFailure"];
+        };
+        GetUserSessionTrajectoryResponse: {
+            /** @constant */
+            schemaVersion: 1;
+            workspaceId: components["schemas"]["UUID"];
+            sessionId: components["schemas"]["UUID"];
+            activeRunId?: components["schemas"]["UUID"];
+            records: components["schemas"]["UserSessionTrajectoryRecord"][];
+            nextBefore?: string;
+            hasMore: boolean;
+            truncated: boolean;
+            /** Format: date-time */
+            readAt: string;
         };
         CreateUserRunRequest: {
             /** @description Untrusted AG-UI correlation value; it is not the server run identity or part of the idempotency request hash. */
@@ -2594,6 +2669,36 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GetUserSessionTranscriptResponse"];
+                };
+            };
+            400: components["responses"]["PublicError"];
+            401: components["responses"]["PublicError"];
+            403: components["responses"]["PublicError"];
+            404: components["responses"]["PublicError"];
+        };
+    };
+    getUserSessionTrajectory: {
+        parameters: {
+            query?: {
+                before?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded session trajectory */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GetUserSessionTrajectoryResponse"];
                 };
             };
             400: components["responses"]["PublicError"];

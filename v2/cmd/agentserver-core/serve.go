@@ -28,6 +28,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/publichttps"
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
 	"github.com/agentserver/agentserver/v2/internal/runcursor"
+	"github.com/agentserver/agentserver/v2/internal/trajectorycursor"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -349,6 +350,10 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		return fmt.Errorf("configure user run policy: %w", err)
 	}
 	cursorCodec, err := runcursor.NewCodec(cursorKey)
+	if err != nil {
+		return err
+	}
+	trajectoryCursorCodec, err := trajectorycursor.NewCodec(cursorKey)
 	if err != nil {
 		return err
 	}
@@ -682,7 +687,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	userSessionHandler, err := coreserver.NewUserSessionHandler(
 		browserAuthorizer,
 		browserUserAuthorizer,
-		coreserver.StateStoreUserSessionCommands{Store: store, Prompts: promptReader},
+		coreserver.StateStoreUserSessionCommands{Store: store, Prompts: promptReader, TrajectoryCursors: trajectoryCursorCodec},
 	)
 	if err != nil {
 		return err
@@ -859,6 +864,7 @@ func mountCoreUserSessionRoutes(mux *http.ServeMux, handler *coreserver.UserSess
 	mux.Handle(corecontract.UserSessionCollectionRoutePattern, routes)
 	mux.Handle(corecontract.UserSessionResourceRoutePattern, routes)
 	mux.Handle(corecontract.UserSessionTranscriptRoutePattern, routes)
+	mux.Handle(corecontract.UserSessionTrajectoryRoutePattern, routes)
 	mux.Handle(corecontract.UserSessionArchiveRoutePattern, routes)
 }
 

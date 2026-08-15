@@ -177,28 +177,30 @@ func TestOneShotWorkerDoesNotReportTerminalBeforeChildShutdownIsConfirmed(t *tes
 }
 
 func TestWorkerRuntimeFailureMessageContainsOnlySafeDiagnostics(t *testing.T) {
-	secret := "https://provider.example/v1/responses bearer-secret user-prompt"
+	secret := "runtime-secret-must-not-leak"
+	detail := "runner failed while waiting for stock app-server; Authorization: Bearer " + secret
 	message := workerRuntimeFailureMessage(
 		workerCleanupFailures{
-			runner:      errors.New("runner failed: " + secret),
+			runner:      errors.New(detail),
 			processWait: errors.New("exit status 1"),
 		},
-		errors.New("run cause: "+secret),
+		errors.New("run cause: "+detail),
 		"",
-		[]byte("stderr: "+secret),
+		[]byte("stderr: "+detail),
 		true,
 	)
 	for _, want := range []string{
 		"category=unclassified", "stages=runner,process_wait,run_cause",
 		"terminal_status=missing",
 		"runner_error_sha256=", "process_wait_error_sha256=", "run_cause_error_sha256=",
-		"stderr_sha256=", "stderr_truncated=true",
+		"stderr_sha256=", "stderr_truncated=true", "message_stage=runner",
+		"runner failed while waiting for stock app-server", "<redacted>",
 	} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("runtime diagnostic %q omitted %q", message, want)
 		}
 	}
-	if strings.Contains(message, secret) || strings.Contains(message, "provider.example") || strings.Contains(message, "user-prompt") {
+	if strings.Contains(message, secret) {
 		t.Fatalf("runtime diagnostic leaked sensitive contents: %q", message)
 	}
 }
@@ -218,7 +220,7 @@ func TestOneShotWorkerLogsDetailedRedactedStockTurnFailure(t *testing.T) {
 	terminal := fixture.control.terminalSnapshot()
 	if terminal.Status != "failed" || terminal.ErrorCode != "turn_failed" ||
 		!strings.Contains(terminal.ErrorMessage, "turn_error_sha256=") ||
-		strings.Contains(terminal.ErrorMessage, "upstream returned 503") {
+		!strings.Contains(terminal.ErrorMessage, "upstream returned 503") || strings.Contains(terminal.ErrorMessage, "turn-secret-must-not-leak") {
 		t.Fatalf("safe terminal summary = %+v", terminal)
 	}
 	var record map[string]any
@@ -694,13 +696,23 @@ func (process *fakeOneShotWorkerProcess) Stderr() ([]byte, bool) {
 func TestStockTurnFailureMessageIsClassifiedBoundedAndSecretFree(t *testing.T) {
 	turnError := json.RawMessage(`{"message":"error sending request: invalid peer certificate: UnknownIssuer","token":"must-not-leak"}`)
 	message := stockTurnFailureMessage(turnError, []byte("Bearer must-not-leak either"), true)
-	for _, wanted := range []string{"category=tls_trust_failure", "turn_error_sha256=", "stderr_sha256=", "stderr_truncated=true"} {
+	for _, wanted := range []string{"category=tls_trust_failure", "message=", "invalid peer certificate", "turn_error_sha256=", "stderr_sha256=", "stderr_truncated=true"} {
 		if !strings.Contains(message, wanted) {
 			t.Fatalf("stock turn failure message %q omits %q", message, wanted)
 		}
 	}
 	if strings.Contains(message, "must-not-leak") || len(message) > 512 {
 		t.Fatalf("stock turn failure message is unsafe: %q", message)
+	}
+}
+
+func TestClassifyStockTurnFailureRecognizesModelOverload(t *testing.T) {
+	turnError := json.RawMessage(`{"message":"Selected model is at capacity. Please try a different model.","codexErrorInfo":"serverOverloaded","additionalDetails":null}`)
+	if category := classifyStockTurnFailure(turnError, nil); category != "model_overloaded" {
+		t.Fatalf("overload category = %q, want model_overloaded", category)
+	}
+	if message := stockTurnFailureMessage(turnError, nil, false); !strings.Contains(message, "Selected model is at capacity") {
+		t.Fatalf("overload diagnostic is not durable: %q", message)
 	}
 }
 

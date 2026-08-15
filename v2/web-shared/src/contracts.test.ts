@@ -9,7 +9,7 @@ import {
   restoreAuthorizationSession,
   validateAuthorizationConfig,
 } from "./oauth"
-import type { AuthorizationConfig } from "./api"
+import { validateSessionTrajectory, type AuthorizationConfig, type SessionTrajectory } from "./api"
 import { randomSecret } from "./utils"
 
 describe("product web contracts", () => {
@@ -100,6 +100,33 @@ describe("product web contracts", () => {
       ["user", "你好", true], ["assistant", "你好！", true],
     ])
     expect(new Set(state.messages.map((message) => message.id)).size).toBe(2)
+  })
+
+  it("accepts only scoped, bounded, closed-world session trajectories", () => {
+    const workspaceId = "50000000-0000-4000-8000-000000000005"
+    const sessionId = "60000000-0000-4000-8000-000000000006"
+    const runId = "9271bfe5-68a4-484b-a2d3-e9f450a42d0c"
+    const trajectory: SessionTrajectory = {
+      schemaVersion: 1, workspaceId, sessionId, activeRunId: runId,
+      records: [{
+        id: `operation:${runId}`, parentId: `execution:${runId}`, kind: "operation", status: "failed",
+        title: "run command", summary: "The dispatched operation has no confirmed terminal result", runId,
+        startedAt: "2026-08-15T01:00:00Z", completedAt: "2026-08-15T01:00:01Z", durationMillis: 1000,
+        input: "lark-cli skills read lark-doc", output: "", outputTruncated: true,
+        details: [{ name: "target", value: "tae" }],
+        failure: {
+          code: "output_incomplete", category: "output_incomplete", message: "TAE session ended before a terminal response",
+          component: "executor-gateway", phase: "operation", retryable: true,
+        },
+      }],
+      nextBefore: "v1.cursor", hasMore: true, truncated: false, readAt: "2026-08-15T01:00:02Z",
+    }
+    expect(validateSessionTrajectory(trajectory, workspaceId, sessionId)).toBe(trajectory)
+    expect(() => validateSessionTrajectory({ ...trajectory, workspaceId: sessionId }, workspaceId, sessionId)).toThrow(/scope/u)
+    expect(() => validateSessionTrajectory({ ...trajectory, hasMore: false }, workspaceId, sessionId)).toThrow(/pagination/u)
+    expect(() => validateSessionTrajectory({ ...trajectory, nextBefore: "v1.\r\ncursor" }, workspaceId, sessionId)).toThrow(/identifier/u)
+    expect(() => validateSessionTrajectory({ ...trajectory, records: [{ ...trajectory.records[0]!, id: "operation:\ninvalid" }] }, workspaceId, sessionId)).toThrow(/identifier/u)
+    expect(() => validateSessionTrajectory({ ...trajectory, future: true } as unknown as SessionTrajectory, workspaceId, sessionId)).toThrow(/unknown fields/u)
   })
 
   it("keeps feature code behind generated OpenAPI transports", () => {

@@ -22,6 +22,8 @@ func TestRenderCodexConfigContainsOnlyFrozenModelRouteAndDisabledLocalTools(t *t
 		`model_provider = "llmproxy"`,
 		`base_url = "https://llmproxy.agentserver.test/v1"`,
 		`env_key = "` + AppServerModelCapabilityEnvironment + `"`,
+		`request_max_retries = 2`,
+		`stream_max_retries = 0`,
 		`approval_policy = "never"`,
 		`[tools.update_plan]`,
 		`[tools.experimental_request_user_input]`,

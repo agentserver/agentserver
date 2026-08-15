@@ -3,23 +3,13 @@ package harnessworker
 import (
 	"context"
 	"log/slog"
-	"regexp"
-	"strings"
-	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/harnesscontrol"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
+	"github.com/agentserver/agentserver/v2/internal/safediagnostic"
 )
 
 const maximumWorkerDiagnosticFieldBytes = 16 * 1024
-
-var (
-	workerDiagnosticJSONSecret     = regexp.MustCompile(`(?i)("(?:access[_-]?token|refresh[_-]?token|id[_-]?token|x[_-]?jwt[_-]?token|authorization|api[_-]?key|client[_-]?secret|secret[_-]?access[_-]?key|password|credential|capability|token|secret)"\s*:\s*")[^"]*(")`)
-	workerDiagnosticKeyValueSecret = regexp.MustCompile(`(?i)\b(access[_-]?token|refresh[_-]?token|id[_-]?token|x[_-]?jwt[_-]?token|authorization|api[_-]?key|client[_-]?secret|secret[_-]?access[_-]?key|password|credential|capability|token|secret)(\s*[:=]\s*)([^\s,;]+)`)
-	workerDiagnosticBearerSecret   = regexp.MustCompile(`(?i)\b(bearer)(\s+)[A-Za-z0-9._~+/=-]{8,}`)
-	workerDiagnosticJWTSecret      = regexp.MustCompile(`\b[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`)
-	workerDiagnosticANSI           = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
-)
 
 type workerDiagnosticText struct {
 	value         string
@@ -103,26 +93,8 @@ func appendWorkerDiagnostic(attributes *[]slog.Attr, name string, contents []byt
 }
 
 func safeWorkerDiagnosticText(contents []byte) workerDiagnosticText {
-	if len(contents) == 0 {
-		return workerDiagnosticText{}
-	}
-	value := strings.ToValidUTF8(string(contents), "�")
-	value = strings.ReplaceAll(value, "\x00", "�")
-	value = workerDiagnosticANSI.ReplaceAllString(value, "")
-	redacted := workerDiagnosticJSONSecret.ReplaceAllString(value, `${1}<redacted>${2}`)
-	redacted = workerDiagnosticBearerSecret.ReplaceAllString(redacted, `${1}${2}<redacted>`)
-	redacted = workerDiagnosticKeyValueSecret.ReplaceAllString(redacted, `${1}${2}<redacted>`)
-	redacted = workerDiagnosticJWTSecret.ReplaceAllString(redacted, `<redacted-jwt>`)
-	changed := redacted != value
-	truncated := len(redacted) > maximumWorkerDiagnosticFieldBytes
-	if truncated {
-		limit := maximumWorkerDiagnosticFieldBytes
-		for limit > 0 && !utf8.ValidString(redacted[:limit]) {
-			limit--
-		}
-		redacted = redacted[:limit] + "…(truncated)"
-	}
+	value := safediagnostic.Sanitize(contents, maximumWorkerDiagnosticFieldBytes)
 	return workerDiagnosticText{
-		value: redacted, originalBytes: len(contents), truncated: truncated, redacted: changed,
+		value: value.Value, originalBytes: value.OriginalBytes, truncated: value.Truncated, redacted: value.Redacted,
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/codexwire"
 	"github.com/agentserver/agentserver/v2/internal/harnesscontrol"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
+	"github.com/agentserver/agentserver/v2/internal/safediagnostic"
 )
 
 const (
@@ -850,6 +852,8 @@ func workerRuntimeFailureMessage(
 	stages := make([]string, 0, len(staged))
 	details := make([]string, 0, len(staged)+3)
 	var classificationText []byte
+	primaryMessage := ""
+	primaryStage := ""
 	for _, failure := range staged {
 		if failure.err == nil {
 			continue
@@ -858,6 +862,10 @@ func workerRuntimeFailureMessage(
 		raw := []byte(failure.err.Error())
 		classificationText = append(classificationText, raw...)
 		classificationText = append(classificationText, '\n')
+		if primaryMessage == "" {
+			primaryMessage = safeWorkerDiagnostic(raw, 2048)
+			primaryStage = failure.stage
+		}
 		if digest := diagnosticFingerprint(raw); digest != "" {
 			details = append(details, failure.stage+"_error_sha256="+digest)
 		}
@@ -876,6 +884,13 @@ func workerRuntimeFailureMessage(
 		"stages=" + strings.Join(stages, ","),
 		"terminal_status=" + terminalStatus,
 	}, details...)
+	if primaryMessage == "" {
+		primaryMessage = safeWorkerDiagnostic(stderr, 2048)
+		primaryStage = "stderr"
+	}
+	if primaryMessage != "" {
+		details = append(details, "message_stage="+primaryStage, "message="+strconv.Quote(primaryMessage))
+	}
 	clear(classificationText)
 	if digest := diagnosticFingerprint(stderr); digest != "" {
 		details = append(details, "stderr_sha256="+digest)
@@ -895,13 +910,17 @@ func appServerProcessStderr(process oneShotWorkerProcess) ([]byte, bool) {
 	return append([]byte(nil), contents...), truncated
 }
 
-// stockTurnFailureMessage is the bounded, user-visible control summary. The
-// redacted turn error and stderr are retained by logWorkerFailureDiagnostics;
-// they are deliberately not copied into durable session/transcript state.
+// stockTurnFailureMessage is the bounded, creator-visible durable summary.
+// It preserves one useful upstream diagnostic after shared credential
+// redaction; fingerprints remain as correlation aids, not as replacements for
+// the error itself.
 func stockTurnFailureMessage(turnError json.RawMessage, stderr []byte, stderrTruncated bool) string {
 	const prefix = "stock app-server confirmed that the turn failed"
 	category := classifyStockTurnFailure(turnError, stderr)
 	details := "category=" + category
+	if message := stockTurnDiagnostic(turnError, stderr); message != "" {
+		details += " message=" + strconv.Quote(message)
+	}
 	if digest := diagnosticFingerprint(turnError); digest != "" {
 		details += " turn_error_sha256=" + digest
 	}
@@ -914,9 +933,42 @@ func stockTurnFailureMessage(turnError json.RawMessage, stderr []byte, stderrTru
 	return prefix + "; " + details
 }
 
+func stockTurnDiagnostic(turnError json.RawMessage, stderr []byte) string {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(turnError, &fields) == nil {
+		for _, name := range []string{"message", "error", "codexErrorInfo"} {
+			var value string
+			if raw := fields[name]; len(raw) != 0 && json.Unmarshal(raw, &value) == nil && strings.TrimSpace(value) != "" {
+				return safeWorkerDiagnostic([]byte(value), 2048)
+			}
+		}
+		if raw := fields["error"]; len(raw) != 0 {
+			var nested map[string]json.RawMessage
+			if json.Unmarshal(raw, &nested) == nil {
+				var value string
+				if json.Unmarshal(nested["message"], &value) == nil && strings.TrimSpace(value) != "" {
+					return safeWorkerDiagnostic([]byte(value), 2048)
+				}
+			}
+		}
+	}
+	if value := safeWorkerDiagnostic(turnError, 2048); value != "" && value != "null" && value != "{}" {
+		return value
+	}
+	return safeWorkerDiagnostic(stderr, 2048)
+}
+
+func safeWorkerDiagnostic(raw []byte, maximumBytes int) string {
+	return strings.TrimSpace(safediagnostic.Sanitize(raw, maximumBytes).Value)
+}
+
 func classifyStockTurnFailure(turnError, stderr []byte) string {
 	contents := strings.ToLower(string(turnError) + "\n" + string(stderr))
 	switch {
+	case containsAny(contents,
+		"serveroverloaded", "server overloaded", "selected model is at capacity",
+		"model is at capacity"):
+		return "model_overloaded"
 	case containsAny(contents,
 		"unknownissuer", "unknown issuer", "certificate verify", "certificate_verify",
 		"invalid peer certificate", "self signed certificate", "unable to get local issuer"):

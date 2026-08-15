@@ -100,3 +100,38 @@ func TestSessionResourceProxyForwardsTranscriptAsReadOnly(t *testing.T) {
 		t.Fatalf("transcript mutation response = %d headers=%v calls=%d", patchResponse.Code, patchResponse.Header(), called)
 	}
 }
+
+func TestSessionResourceProxyForwardsOnlyReviewedTrajectoryQuery(t *testing.T) {
+	called := 0
+	client := &http.Client{Transport: browserRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		called++
+		if request.Method != http.MethodGet || request.URL.Path != corecontract.UserSessionTrajectoryPath(projectorWorkspaceID, projectorSessionID) ||
+			request.URL.RawQuery != "before=v1.cursor&limit=40" || request.Header.Get("Authorization") != "Bearer user-token" {
+			t.Fatalf("Core trajectory request = %s %s headers=%v", request.Method, request.URL, request.Header)
+		}
+		return browserJSONResponse(request, http.StatusOK, corecontract.GetUserSessionTrajectoryResponse{
+			SchemaVersion: 1, WorkspaceID: projectorWorkspaceID, SessionID: projectorSessionID,
+			Records: []corecontract.UserSessionTrajectoryRecord{}, ReadAt: time.Now().UTC(),
+		}), nil
+	})}
+	backend, _ := NewCoreRunBackend("https://core.agentserver.local", client)
+	proxy, _ := NewSessionResourceProxy(backend)
+	path := corecontract.UserSessionTrajectoryPath(projectorWorkspaceID, projectorSessionID)
+	request := httptest.NewRequest(http.MethodGet, path+"?limit=40&before=v1.cursor", nil)
+	request.Header.Set("Authorization", "Bearer user-token")
+	response := httptest.NewRecorder()
+	proxy.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || called != 1 || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("trajectory response = %d %s calls=%d", response.Code, response.Body.String(), called)
+	}
+
+	for _, query := range []string{"?future=true", "?before=", "?before=%0A", "?before=v1.a&before=v1.b", "?limit=1&limit=2", "?limit=0", "?limit="} {
+		rejected := httptest.NewRequest(http.MethodGet, path+query, nil)
+		rejected.Header.Set("Authorization", "Bearer user-token")
+		rejectedResponse := httptest.NewRecorder()
+		proxy.Routes().ServeHTTP(rejectedResponse, rejected)
+		if rejectedResponse.Code != http.StatusBadRequest || called != 1 {
+			t.Fatalf("query %q response = %d %s calls=%d", query, rejectedResponse.Code, rejectedResponse.Body.String(), called)
+		}
+	}
+}

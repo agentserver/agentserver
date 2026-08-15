@@ -36,6 +36,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v2/workspaces/{workspaceId}/sessions/{sessionId}/trajectory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Returns the creator-only, redacted lifecycle trajectory proxied from Core. Pagination walks backward from the newest retained records. */
+        get: operations["getBrowserSessionTrajectory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v2/workspaces/{workspaceId}/sessions/{sessionId}/agui": {
         parameters: {
             query?: never;
@@ -96,6 +113,61 @@ export interface components {
             agentserver: {
                 eventCursor: string;
             };
+        };
+        UserSessionTrajectoryDetail: {
+            name: string;
+            value: string;
+        };
+        UserSessionTrajectoryFailure: {
+            code: string;
+            category: string;
+            message: string;
+            component: string;
+            phase: string;
+            retryable: boolean;
+            fingerprint?: string;
+        };
+        UserSessionTrajectoryRecord: {
+            id: string;
+            parentId?: string;
+            /** @enum {unknown} */
+            kind: "run" | "attempt" | "model" | "assistant" | "reasoning" | "tool" | "approval" | "execution" | "operation" | "sandbox" | "credential" | "checkpoint" | "event";
+            /** @enum {unknown} */
+            status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "unknown" | "info";
+            title: string;
+            summary: string;
+            runId: components["schemas"]["UUID"];
+            runAttemptId?: components["schemas"]["UUID"];
+            runAttemptGeneration?: number;
+            toolCallId?: string;
+            executionId?: string;
+            operationId?: string;
+            sandboxId?: string;
+            targetGeneration?: number;
+            /** Format: date-time */
+            startedAt: string;
+            /** Format: date-time */
+            completedAt?: string;
+            durationMillis?: number;
+            input?: string;
+            output?: string;
+            inputTruncated?: boolean;
+            outputTruncated?: boolean;
+            details: components["schemas"]["UserSessionTrajectoryDetail"][];
+            failure?: components["schemas"]["UserSessionTrajectoryFailure"];
+        };
+        GetUserSessionTrajectoryResponse: {
+            /** @constant */
+            schemaVersion: 1;
+            workspaceId: components["schemas"]["UUID"];
+            sessionId: components["schemas"]["UUID"];
+            activeRunId?: components["schemas"]["UUID"];
+            records: components["schemas"]["UserSessionTrajectoryRecord"][];
+            nextBefore?: string;
+            hasMore: boolean;
+            truncated: boolean;
+            /** Format: date-time */
+            readAt: string;
         };
         WebError: {
             error: string;
@@ -177,6 +249,37 @@ export interface operations {
                     "application/json": components["schemas"]["Readiness"];
                 };
             };
+        };
+    };
+    getBrowserSessionTrajectory: {
+        parameters: {
+            query?: {
+                before?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded session trajectory */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GetUserSessionTrajectoryResponse"];
+                };
+            };
+            400: components["responses"]["WebError"];
+            401: components["responses"]["WebError"];
+            403: components["responses"]["WebError"];
+            404: components["responses"]["WebError"];
+            502: components["responses"]["WebError"];
         };
     };
     streamBrowserAGUIRun: {

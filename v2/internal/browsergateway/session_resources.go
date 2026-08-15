@@ -6,6 +6,8 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
@@ -35,6 +37,7 @@ func (proxy *SessionResourceProxy) Routes() http.Handler {
 	mux.Handle(corecontract.UserSessionCollectionRoutePattern, proxy)
 	mux.Handle(corecontract.UserSessionResourceRoutePattern, proxy)
 	mux.Handle(corecontract.UserSessionTranscriptRoutePattern, proxy)
+	mux.Handle(corecontract.UserSessionTrajectoryRoutePattern, proxy)
 	mux.Handle(corecontract.UserSessionArchiveRoutePattern, proxy)
 	return mux
 }
@@ -57,8 +60,13 @@ func (proxy *SessionResourceProxy) ServeHTTP(response http.ResponseWriter, reque
 			return
 		}
 	}
-	if request.URL.RawQuery != "" || request.URL.RawPath != "" || request.URL.Fragment != "" {
+	if request.URL.RawPath != "" || request.URL.Fragment != "" {
 		writeHTTPError(response, http.StatusBadRequest, "invalid_argument", "session resource proxy accepts only canonical paths")
+		return
+	}
+	query, err := canonicalSessionResourceQuery(request)
+	if err != nil {
+		writeHTTPError(response, http.StatusBadRequest, "invalid_argument", err.Error())
 		return
 	}
 	allowed := allowedSessionResourceMethods(request)
@@ -79,6 +87,7 @@ func (proxy *SessionResourceProxy) ServeHTTP(response http.ResponseWriter, reque
 		return
 	}
 	endpoint := proxy.backend.endpoint(request.URL.Path)
+	endpoint.RawQuery = query
 	upstream, err := http.NewRequestWithContext(request.Context(), request.Method, endpoint.String(), bytes.NewReader(body))
 	if err != nil {
 		writeHTTPError(response, http.StatusBadGateway, "core_unavailable", "could not construct the Core session request")
@@ -110,10 +119,41 @@ func allowedSessionResourceMethods(request *http.Request) []string {
 	if strings.HasSuffix(request.URL.Path, "/transcript") {
 		return []string{http.MethodGet}
 	}
+	if strings.HasSuffix(request.URL.Path, "/trajectory") {
+		return []string{http.MethodGet}
+	}
 	if request.PathValue("sessionId") != "" {
 		return []string{http.MethodGet, http.MethodPatch}
 	}
 	return []string{http.MethodGet, http.MethodPost}
+}
+
+func canonicalSessionResourceQuery(request *http.Request) (string, error) {
+	if !strings.HasSuffix(request.URL.Path, "/trajectory") {
+		if request.URL.RawQuery != "" {
+			return "", errors.New("session resource proxy accepts only canonical paths")
+		}
+		return "", nil
+	}
+	values, err := url.ParseQuery(request.URL.RawQuery)
+	if err != nil {
+		return "", errors.New("session trajectory query is malformed")
+	}
+	for key, current := range values {
+		if (key != "before" && key != "limit") || len(current) != 1 {
+			return "", errors.New("session trajectory accepts one before and one limit parameter")
+		}
+	}
+	if before, present := values["before"]; present && (before[0] == "" || len(before[0]) > 4096 || strings.ContainsAny(before[0], "\x00\r\n")) {
+		return "", errors.New("session trajectory before cursor is invalid")
+	}
+	if limits, present := values["limit"]; present {
+		limit, parseErr := strconv.Atoi(limits[0])
+		if parseErr != nil || limit < 1 || limit > 200 {
+			return "", errors.New("session trajectory limit must be between 1 and 200")
+		}
+	}
+	return values.Encode(), nil
 }
 
 func sessionResourceMethodAllowed(method string, allowed []string) bool {

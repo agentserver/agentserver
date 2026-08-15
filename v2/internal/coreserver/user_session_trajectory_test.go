@@ -162,6 +162,18 @@ func TestProjectUserSessionTrajectoryMarksUnfinishedToolAsOutputIncomplete(t *te
 	}
 }
 
+func TestCompleteTrajectoryRecordClampsCrossComponentClockSkew(t *testing.T) {
+	started := time.Date(2026, 8, 15, 2, 6, 3, 665502000, time.UTC)
+	record := corecontract.UserSessionTrajectoryRecord{StartedAt: started}
+
+	completeTrajectoryRecord(&record, started.Add(-7973*time.Microsecond))
+
+	if record.CompletedAt == nil || !record.CompletedAt.Equal(started) ||
+		record.DurationMillis == nil || *record.DurationMillis != 0 {
+		t.Fatalf("clamped trajectory timing = completedAt=%v duration=%v, want %s/0", record.CompletedAt, record.DurationMillis, started)
+	}
+}
+
 func trajectoryTestSource(now time.Time, runStatus string) coredb.ReadUserSessionTrajectoryResult {
 	return coredb.ReadUserSessionTrajectoryResult{
 		Session: coredb.UserSession{ID: trajectorySessionID, WorkspaceID: trajectoryWorkspaceID, CreatorID: trajectoryActorID, Status: coredb.UserSessionStatusActive, CreatedAt: now, UpdatedAt: now},

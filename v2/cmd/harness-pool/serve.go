@@ -112,13 +112,6 @@ func serveHarnessPool(
 	if err != nil {
 		return err
 	}
-	managedSandboxLifecycle, sandboxGatewayHTTPClient, err := configureHarnessPoolManagedSandbox(config, mode)
-	if err != nil {
-		return err
-	}
-	if sandboxGatewayHTTPClient != nil {
-		defer sandboxGatewayHTTPClient.CloseIdleConnections()
-	}
 	objects, objectStoreDescription, err := configureHarnessPoolObjectStore(ctx, getenv, mode, config.objectRoot)
 	if err != nil {
 		return err
@@ -221,8 +214,7 @@ func serveHarnessPool(
 		controller, preparer, coreClient, identities, supervisor,
 		&harnessPoolFailureReporter{writer: stderr},
 		harnesspool.PoolConfig{
-			MaxConcurrentAttempts:   config.maxConcurrent,
-			ManagedSandboxLifecycle: managedSandboxLifecycle,
+			MaxConcurrentAttempts: config.maxConcurrent,
 			// Renewal is also the current phase's durable cancellation
 			// observation path. Keep it well below the minimum approval TTL so
 			// an explicit run cancellation interrupts a pending elicitation
@@ -251,8 +243,8 @@ func serveHarnessPool(
 		authorityDescription = "INSECURE DEV capabilities"
 	}
 	managedDescription := "BYO-only"
-	if managedSandboxLifecycle != nil {
-		managedDescription = "managed sandbox lifecycle enabled"
+	if config.managedSandbox != nil {
+		managedDescription = "managed tools enabled; sandbox acquisition deferred to executor-gateway"
 	}
 	fmt.Fprintf(stdout, "harness-pool serve: %s; %s; %s; holder %s; control %s; max concurrent attempts %d\n",
 		authorityDescription, objectStoreDescription, managedDescription, poolInstanceID, callbackEndpoint, config.maxConcurrent)

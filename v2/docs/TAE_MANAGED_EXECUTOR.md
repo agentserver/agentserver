@@ -73,11 +73,9 @@
 │    ▲                                      │                                   │
 │    │ launch state                         │                                   │
 │    │                                      ▼                                   │
-│ harness-pool ─ lifecycle ─────────► sandbox-gateway ── TAE SDK/JWT ─────┐     │
-│    │                                      ▲                              │     │
-│    └─ starts harness-worker               │ backend calls                │     │
+│ harness-pool ── starts harness-worker     │                              │     │
 │                 │                         │                              │     │
-│                 └─ MCP ─► execution-gateway                              │     │
+│                 └─ MCP ─► execution-gateway ─ lifecycle/backend calls ───┤     │
 │                                ├─ agentx backend ─ WSS ─► BYO             │     │
 │                                └─ TAE backend ───────────┘                │     │
 │  Core + sealed credential bindings ── live resolve ──► execution-gateway     │
@@ -95,7 +93,7 @@
 | 职责 | Core | harness-pool | execution gateway | sandbox-gateway | egress-authorizer |
 |---|---:|---:|---:|---:|---:|
 | session/run/attempt authority | ✓ | 读取/持 lease | 读取/校验 | 读取/校验 | webhook profile only |
-| managed sandbox desired state/generation | ✓ | ensure/release | 读取 target | 提交观察/CAS | — |
+| managed sandbox desired state/generation | ✓ | — | 首次工具调用时 ensure/renew/release；读取 target | 提交观察/CAS | — |
 | TAE SDK、PSM、region、SSE | — | — | — | ✓ | — |
 | MCP catalog/tool schema | — | — | ✓ | — | — |
 | tool policy/approval | ✓ authority | approval bridge | ✓ orchestration | — | egress rule |
@@ -118,8 +116,10 @@ SDK；execution gateway 只 import provider-neutral contracts。
    TAE 专用 grant 表，也不要求 Helm/Pulumi 更新 workspace secret。
 2. session 选择 `execution_mode=managed` 与该 pack。Core launch state 冻结 environment、pack digest、
    skill digest 和 egress policy digest。
-3. harness-pool 在启动 attempt 前，以 lifecycle capability 调用 sandbox-gateway `EnsureSandbox`。
-4. sandbox-gateway 向 Core reserve `(workspace, session, environment)`；若已有 ready generation 则用 TAE
+3. harness-pool 直接启动 attempt 和 stock app-server，不创建 sandbox。纯模型对话到此不会访问
+   sandbox-gateway，也不会产生 TAE Session。
+4. 模型首次实际调用 `list_environments`、`shell` 或 `read_file` 时，execution gateway 才以 lifecycle
+   capability 调用 `EnsureSandbox`。sandbox-gateway 向 Core reserve `(workspace, session, environment)`；若已有 ready generation 则用 TAE
    `GetSession` 核实，否则用稳定 idempotency key 创建 TAE Session，再 CAS 为 ready。
 5. managed image 已包含固定 hash 的 Linux/amd64 `lark-cli`；session runtime projection 只写入非敏感
    pack 配置。execution gateway 在每个已授权 `shell + lark-cli + TAE process_start` 前查询 workspace 当前 mode 并获取
@@ -163,7 +163,7 @@ SDK；execution gateway 只 import provider-neutral contracts。
 managed environment 的 display metadata 可以说明它是托管环境，但 tool schema、namespace 和调用方式不
 因 backend 改变。run manifest 冻结所选 environment ID 和 catalog digest，不冻结 TAE provider ID。
 
-### 5.2 harness-pool 的生命周期 API
+### 5.2 execution gateway 的按需生命周期 API
 
 这些调用不进入模型 catalog，语义属于 `e2b-semantic-subset/v1`：
 
@@ -184,7 +184,7 @@ DeleteSandbox(sandbox_id, target_generation, reason)
 `EnsureSandbox` 是幂等 ensure，不等价于每次都 create。`Release` 只释放 attempt activity lease；session
 资源进入 idle TTL，不立即删除。显式 session reset/delete 可以调用 `DeleteSandbox`。
 
-pool capability 至少绑定：audience、workspace、session、run/attempt、environment、允许 action、过期时间
+execution gateway 的 lifecycle capability 至少绑定：audience、workspace、session、run/attempt、environment、允许 action、过期时间
 和 nonce。它不能调用 commands/files，也不能选择任意 template/PSM/region；这些由 Core environment
 profile 决定。
 
@@ -425,7 +425,7 @@ delete/fence 后的迟到 response 只能作为审计 observation，不能改变
 
 ### 9.1 Ensure 流程
 
-1. pool 带 session launch identity 调 sandbox-gateway；
+1. execution gateway 在首个 executor tool call 上带 session/run-attempt identity 调 sandbox-gateway；
 2. gateway 向 Core reserve/读取 active row；
 3. ready row：调用 TAE GetSession，核对存在、状态和 expiry；
 4. reserved/creating：由持有 lifecycle lease 的 gateway 执行 create；其他 caller 等待 Core 观察；
@@ -435,7 +435,7 @@ delete/fence 后的迟到 response 只能作为审计 observation，不能改变
 
 ### 9.2 TTL
 
-- requested TTL 由 Core environment policy 给出，pool 只能请求更短值；
+- requested TTL 由部署冻结的 Core environment policy 给出，execution gateway 只能请求该受控值；
 - provider 支持范围通过 TAE adapter capability discovery/config 校验，不在主模块写死；
 - activity lease 心跳与 TAE TTL 更新分开：Core lease 是并发 authority，TAE TTL 是资源兜底；
 - 在 expiry 前带 jitter 续 TTL，只在 Core row 仍 desired ready 且有活动/未到 idle deadline 时执行；
@@ -641,7 +641,7 @@ gateway/Core 完成交互审批，并设计可验证的 request-level authority�
 | Capability | 持有者 | Audience / scope |
 |---|---|---|
 | execution MCP | worker | execution gateway；冻结 run/attempt/environment/catalog |
-| lifecycle | harness-pool | sandbox-gateway ensure/renew/release/delete；不含 commands/files |
+| lifecycle | execution gateway | sandbox-gateway ensure/renew/release/delete；绑定当前 MCP run-attempt，不含任意 provider 参数 |
 | backend dispatch | execution gateway | sandbox-gateway 单 operation/target generation/action |
 | egress placeholder（仅 `webhook_swap`） | sandbox process | egress-authorizer 单 actor/pack/grant/version/host class；无真实 secret |
 | Lark access token（仅 `process_env`） | 精确 `lark-cli` 及其子进程 | 单次 live-authorized process start；是真实 secret，不是 capability |
@@ -816,8 +816,9 @@ cleanup stage 和 bounded app-server stderr。文本按字段限制长度并标�
 2. Core 已提供 managed sandbox reserve/create observation/activity/delete/reconcile authority；
 3. execution gateway 已接入 agentx/TAE backend router，`shell`/`read_file` 仍使用原 MCP catalog 和 policy
    路径，ambiguous dispatch 不会换 provider fallback 或 replay；
-4. harness-pool 已在 managed launch 前 ensure/renew，并在 attempt 结束时 release activity；worker 仍只连接
-   execution gateway；
+4. harness-pool 不再持有 sandbox lifecycle 密钥，也不在 managed launch 前创建资源；execution gateway
+   仅在该 MCP session 第一次实际使用 executor tool 时 ensure/renew，并在 MCP session 结束时 release activity；
+   worker 仍只连接 execution gateway；
 5. sandbox-gateway 已提供 provider-neutral lifecycle/commands/files HTTP contract 和 fake TAE provider，
    `cmd/sandbox-gateway --insecure-dev` 可运行完整本地链路；
 6. 首个 Lark slice 已实现 workspace 级 mode 与 `process_env` exact process direct injection；当前 direct

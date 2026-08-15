@@ -445,6 +445,11 @@ func renderExecutorDeployment(context renderContext) (kubeObject, error) {
 			valueEnvironment("AGENTSERVER_V2_SANDBOX_FENCER_CAPABILITY_SIGNING_KEY_FILE", serviceMaterialPath("sandbox-fencer-capability.key")),
 			valueEnvironment("AGENTSERVER_V2_MANAGED_TAE_PSM", document.Managed.TAE.PSM),
 			valueEnvironment("AGENTSERVER_V2_TAE_POLICY_WEBHOOK_REQUIRED", strconv.FormatBool(document.Managed.TAE.Policy.PublicWebhookRequired)),
+			valueEnvironment("AGENTSERVER_V2_MANAGED_ENVIRONMENT_ID", document.Managed.Environment.EnvironmentID),
+			valueEnvironment("AGENTSERVER_V2_MANAGED_RUNTIME_PROFILE_SHA256", document.Managed.Environment.RuntimeProfileSHA256),
+			valueEnvironment("AGENTSERVER_V2_MANAGED_PACK_SET_SHA256", document.Managed.Environment.PackSetSHA256),
+			valueEnvironment("AGENTSERVER_V2_MANAGED_SANDBOX_TTL", document.Managed.Environment.SandboxTTL),
+			valueEnvironment("AGENTSERVER_V2_MANAGED_ACTIVITY_TTL", document.Managed.Environment.ActivityTTL),
 		)
 		if managedEgressAuthorizerEnabled(document.Managed) {
 			environment = append(environment,
@@ -476,9 +481,6 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 	config := context.config
 	document := config.Document
 	poolProfile := materialProfileHarnessPool
-	if managedExecutionActive(document.Managed) {
-		poolProfile = materialProfileHarnessPoolManaged
-	}
 	poolMaterial, err := secretMaterialVolume("pool-material", document.Secrets.HarnessPool, poolProfile, groupReadableSecretMode)
 	if err != nil {
 		return nil, err
@@ -538,12 +540,6 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 			valueEnvironment("AGENTSERVER_V2_MANAGED_PACK_SET_SHA256", document.Managed.Environment.PackSetSHA256),
 			valueEnvironment("AGENTSERVER_V2_MANAGED_SANDBOX_TTL", document.Managed.Environment.SandboxTTL),
 			valueEnvironment("AGENTSERVER_V2_MANAGED_ACTIVITY_TTL", document.Managed.Environment.ActivityTTL),
-			valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_URL", internalOrigin(SandboxInternalHost, document.Services.SandboxGateway.Port)),
-			valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_CA_FILE", poolMaterialPath("ca.crt")),
-			valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_SERVER_NAME", SandboxInternalHost),
-			valueEnvironment("AGENTSERVER_V2_SANDBOX_LIFECYCLE_CAPABILITY_ISSUER", spiffeIdentity(config, harnessComponent)),
-			valueEnvironment("AGENTSERVER_V2_SANDBOX_LIFECYCLE_CAPABILITY_KEY_ID", ProductionSandboxLifecycleKeyID),
-			valueEnvironment("AGENTSERVER_V2_SANDBOX_LIFECYCLE_CAPABILITY_SIGNING_KEY_FILE", poolMaterialPath("sandbox-lifecycle-capability.key")),
 		)
 		if managedToolsEnabled(document.Managed) {
 			environment = append(environment, valueEnvironment("AGENTSERVER_V2_MANAGED_SKILL_SHA256", document.Managed.BaseInstructionsSHA256))
@@ -558,9 +554,6 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 		CoreInternalHost:     document.Services.Core.ClusterIP,
 		ExecutorInternalHost: document.Services.ExecutorGateway.ClusterIP,
 		LLMProxyInternalHost: document.Services.LLMProxy.ClusterIP,
-	}
-	if managedExecutionActive(document.Managed) {
-		hosts[SandboxInternalHost] = document.Services.SandboxGateway.ClusterIP
 	}
 	return deployment(deploymentInput{
 		namespace: document.Namespace, platform: document.Platform, component: harnessComponent, replicas: document.Replicas.HarnessPool,

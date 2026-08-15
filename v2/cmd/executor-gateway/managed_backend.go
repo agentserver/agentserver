@@ -34,6 +34,9 @@ func configureTAEBackend(
 		gatewayEgressPlaceholderIssuerEnvironment, gatewayEgressPlaceholderKeyIDEnvironment,
 		gatewayEgressPlaceholderKeyEnvironment,
 		gatewayManagedTAEPSMEnvironment, gatewayTAEWebhookRequiredEnvironment,
+		gatewayManagedEnvironmentIDEnvironment, gatewayManagedRuntimeDigestEnvironment,
+		gatewayManagedPackSetDigestEnvironment, gatewayManagedSandboxTTLEnvironment,
+		gatewayManagedActivityTTLEnvironment,
 	}
 	if baseURL == "" {
 		for _, name := range configuredNames {
@@ -115,6 +118,27 @@ func configureTAEBackend(
 }
 
 func configureManagedExecutionSecurity(
+	getenv func(string) string,
+	mode gatewayServeMode,
+	backend *executorgateway.TAEBackend,
+	httpClient *http.Client,
+	coreAuthorities executorgateway.ManagedCredentialAuthoritySource,
+	coreProcessCredentials executorgateway.ManagedProcessCredentialSource,
+) (executorgateway.ManagedProcessEnvironmentIssuer, executorgateway.ManagedTargetFencer, executorgateway.ManagedSandboxSessionAcquirer, error) {
+	issuer, fencer, err := configureManagedExecutionAuthorities(
+		getenv, mode, backend, httpClient, coreAuthorities, coreProcessCredentials,
+	)
+	if err != nil || backend == nil {
+		return issuer, fencer, nil, err
+	}
+	acquirer, err := configureLazyManagedSandboxAcquirer(getenv, httpClient)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return issuer, fencer, acquirer, nil
+}
+
+func configureManagedExecutionAuthorities(
 	getenv func(string) string,
 	mode gatewayServeMode,
 	backend *executorgateway.TAEBackend,
@@ -246,6 +270,94 @@ func configureManagedExecutionSecurity(
 		return nil, nil, err
 	}
 	return issuer, fencer, nil
+}
+
+func configureLazyManagedSandboxAcquirer(
+	getenv func(string) string,
+	httpClient *http.Client,
+) (executorgateway.ManagedSandboxSessionAcquirer, error) {
+	if getenv == nil || httpClient == nil {
+		return nil, errors.New("lazy managed sandbox configuration and HTTP client are required")
+	}
+	required := func(name string) (string, error) {
+		value := strings.TrimSpace(getenv(name))
+		if value == "" {
+			return "", fmt.Errorf("%s is required when the TAE backend is enabled", name)
+		}
+		return value, nil
+	}
+	fencerIssuer, err := required(gatewaySandboxFencerIssuerEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	fencerKeyID, err := required(gatewaySandboxFencerKeyIDEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	fencerKeyFile, err := required(gatewaySandboxFencerKeyEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	signer, err := sandboxcapability.LoadSigner(
+		fencerIssuer, sandboxcapability.AudienceLifecycle, fencerKeyID, fencerKeyFile,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("configure lazy sandbox lifecycle capability signer: %w", err)
+	}
+	tokens, err := sandboxclient.NewSignedTokenSource(signer, time.Now, 30*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	baseURL := strings.TrimSuffix(strings.TrimSpace(getenv(gatewaySandboxGatewayURLEnvironment)), "/")
+	client, err := sandboxclient.New(baseURL, httpClient, tokens)
+	if err != nil {
+		return nil, err
+	}
+	environmentID, err := required(gatewayManagedEnvironmentIDEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	runtimeDigest, err := required(gatewayManagedRuntimeDigestEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	packSetDigest, err := required(gatewayManagedPackSetDigestEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	sandboxTTL, err := requiredManagedSandboxDuration(
+		getenv, gatewayManagedSandboxTTLEnvironment, 30*time.Second, 24*time.Hour,
+	)
+	if err != nil {
+		return nil, err
+	}
+	activityTTL, err := requiredManagedSandboxDuration(
+		getenv, gatewayManagedActivityTTLEnvironment, 3*time.Second, sandboxTTL,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return executorgateway.NewDefaultGatewayManagedSandboxSessionAcquirer(
+		client,
+		executorgateway.ManagedSandboxProvisioningSpec{
+			EnvironmentID: environmentID, RuntimeProfileDigest: runtimeDigest,
+			PackSetDigest: packSetDigest, SandboxTTL: sandboxTTL, ActivityTTL: activityTTL,
+		},
+		slog.Default(),
+	)
+}
+
+func requiredManagedSandboxDuration(
+	getenv func(string) string,
+	name string,
+	minimum, maximum time.Duration,
+) (time.Duration, error) {
+	value := strings.TrimSpace(getenv(name))
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed < minimum || parsed > maximum || parsed%time.Second != 0 {
+		return 0, fmt.Errorf("%s must be a whole-second Go duration between %s and %s", name, minimum, maximum)
+	}
+	return parsed, nil
 }
 
 func requiredBoolean(getenv func(string) string, name string) (bool, error) {

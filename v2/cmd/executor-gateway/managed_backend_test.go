@@ -30,15 +30,15 @@ func TestConfigureManagedExecutionSecurityLoadsSeparatedSigners(t *testing.T) {
 	t.Cleanup(client.CloseIdleConnections)
 	authority := testManagedCredentialAuthority(t)
 
-	issuer, fencer, err := configureManagedExecutionSecurity(
+	issuer, fencer, acquirer, err := configureManagedExecutionSecurity(
 		getenv, gatewayServeInsecureDevelopment, backend, client, authority,
 		staticManagedProcessCredentialSource{},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if issuer == nil || fencer == nil {
-		t.Fatalf("managed security = issuer %T fencer %T", issuer, fencer)
+	if issuer == nil || fencer == nil || acquirer == nil {
+		t.Fatalf("managed security = issuer %T fencer %T acquirer %T", issuer, fencer, acquirer)
 	}
 
 	now := time.Now().UTC()
@@ -85,7 +85,7 @@ func TestConfigureManagedExecutionSecuritySelectsWorkspaceProcessEnvironment(t *
 		t.Fatal("configured TAE backend or HTTP client is nil")
 	}
 	t.Cleanup(client.CloseIdleConnections)
-	issuer, fencer, err := configureManagedExecutionSecurity(
+	issuer, fencer, acquirer, err := configureManagedExecutionSecurity(
 		getenv, gatewayServeInsecureDevelopment, backend, client,
 		testManagedCredentialAuthorityForMode(t, managedcredential.ModeProcessEnv),
 		staticManagedProcessCredentialSource{credential: executorgateway.ManagedProcessCredential{
@@ -98,8 +98,8 @@ func TestConfigureManagedExecutionSecuritySelectsWorkspaceProcessEnvironment(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if issuer == nil || fencer == nil {
-		t.Fatalf("managed security = issuer %T fencer %T", issuer, fencer)
+	if issuer == nil || fencer == nil || acquirer == nil {
+		t.Fatalf("managed security = issuer %T fencer %T acquirer %T", issuer, fencer, acquirer)
 	}
 	now := time.Now().UTC()
 	request := managedBackendEnvironmentRequest(now)
@@ -126,7 +126,7 @@ func TestConfigureManagedExecutionSecurityDirectProfileHasNoPlaceholderAuthority
 		t.Fatal("direct TAE backend client is nil")
 	}
 	t.Cleanup(client.CloseIdleConnections)
-	issuer, fencer, err := configureManagedExecutionSecurity(
+	issuer, fencer, acquirer, err := configureManagedExecutionSecurity(
 		getenv, gatewayServeInsecureDevelopment, backend, client,
 		testManagedCredentialAuthorityForMode(t, managedcredential.ModeProcessEnv),
 		staticManagedProcessCredentialSource{credential: executorgateway.ManagedProcessCredential{
@@ -136,8 +136,8 @@ func TestConfigureManagedExecutionSecurityDirectProfileHasNoPlaceholderAuthority
 			TAEPSM: "bytedance.sandbox.agentserver",
 		}},
 	)
-	if err != nil || issuer == nil || fencer == nil {
-		t.Fatalf("direct managed security = %T/%T, %v", issuer, fencer, err)
+	if err != nil || issuer == nil || fencer == nil || acquirer == nil {
+		t.Fatalf("direct managed security = %T/%T/%T, %v", issuer, fencer, acquirer, err)
 	}
 	environment, err := issuer.IssueManagedProcessEnvironment(t.Context(), managedBackendEnvironmentRequest(time.Now().UTC()))
 	if err != nil || environment[executorgateway.ManagedLarkUserAccessTokenEnvironment] != "real-lark-token" || len(environment) != 5 {
@@ -181,7 +181,7 @@ func TestConfigureManagedExecutionSecurityRejectsPartialOrConfusedAuthority(t *t
 			if client != nil {
 				defer client.CloseIdleConnections()
 			}
-			if _, _, err := configureManagedExecutionSecurity(
+			if _, _, _, err := configureManagedExecutionSecurity(
 				getenv, gatewayServeInsecureDevelopment, backend, client,
 				testManagedCredentialAuthority(t), staticManagedProcessCredentialSource{},
 			); err == nil {
@@ -209,7 +209,7 @@ func TestConfigureManagedExecutionSecurityRequiresBothCoreCredentialSources(t *t
 			if client != nil {
 				defer client.CloseIdleConnections()
 			}
-			if _, _, err := configureManagedExecutionSecurity(
+			if _, _, _, err := configureManagedExecutionSecurity(
 				getenv, gatewayServeInsecureDevelopment, backend, client, sources.authority, sources.credentials,
 			); err == nil {
 				t.Fatal("managed execution accepted a missing Core credential source")
@@ -285,6 +285,11 @@ func validManagedBackendConfiguration(t *testing.T, includeEgress bool) (map[str
 		gatewaySandboxFencerKeyEnvironment:        fencerKey,
 		gatewayManagedTAEPSMEnvironment:           "bytedance.sandbox.agentserver",
 		gatewayTAEWebhookRequiredEnvironment:      "true",
+		gatewayManagedEnvironmentIDEnvironment:    "a38f69c6-996b-4c8d-8e2a-e97ee69c4b10",
+		gatewayManagedRuntimeDigestEnvironment:    strings.Repeat("a", 64),
+		gatewayManagedPackSetDigestEnvironment:    strings.Repeat("b", 64),
+		gatewayManagedSandboxTTLEnvironment:       "30m",
+		gatewayManagedActivityTTLEnvironment:      "45s",
 	}
 	if includeEgress {
 		configuration[gatewayEgressPlaceholderIssuerEnvironment] = "executor-gateway/egress"

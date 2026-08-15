@@ -97,13 +97,14 @@ type ExecutorMCPAuthenticator interface {
 }
 
 type ExecutorMCPConfig struct {
-	MaxSessions         int
-	SessionTimeout      time.Duration
-	MaxRequestBodyBytes int64
-	IDGenerator         IDGenerator
-	Logger              *slog.Logger
-	ShellExecutor       *ShellExecutor
-	ReadFileExecutor    *ReadFileExecutor
+	MaxSessions            int
+	SessionTimeout         time.Duration
+	MaxRequestBodyBytes    int64
+	IDGenerator            IDGenerator
+	Logger                 *slog.Logger
+	ShellExecutor          *ShellExecutor
+	ReadFileExecutor       *ReadFileExecutor
+	ManagedSandboxAcquirer ManagedSandboxSessionAcquirer
 }
 
 func DefaultExecutorMCPConfig() ExecutorMCPConfig {
@@ -122,6 +123,9 @@ type executorMCPSession struct {
 	principal ExecutorMCPPrincipal
 	server    *mcp.Server
 	pending   bool
+
+	managedMu    sync.Mutex
+	managedLease ManagedSandboxSessionLease
 }
 
 // ExecutorMCPHandler exposes the implemented executor tools over one bounded,
@@ -348,7 +352,20 @@ func (handler *ExecutorMCPHandler) newScopedServer(session *executorMCPSession) 
 			}
 			executorID = session.principal.ExecutorID
 		}
-		result, err := handler.resolver.ListForPrincipal(ctx, session.principal, executorID, session.principal.Production)
+		toolContext, finishManaged, err := handler.managedToolContext(ctx, session)
+		if err != nil {
+			if handler.config.Logger != nil {
+				handler.config.Logger.ErrorContext(ctx, "acquire managed sandbox for list_environments",
+					"workspace_id", session.principal.WorkspaceID,
+					"session_id", session.principal.SessionID,
+					"run_id", session.principal.Run.RunID,
+					"error", err,
+				)
+			}
+			return nil, ListEnvironmentsResult{}, errors.New("list_environments is temporarily unavailable")
+		}
+		defer finishManaged()
+		result, err := handler.resolver.ListForPrincipal(toolContext, session.principal, executorID, session.principal.Production)
 		if err != nil {
 			if handler.config.Logger != nil {
 				handler.config.Logger.ErrorContext(ctx, "list executor MCP environments",
@@ -385,7 +402,19 @@ func (handler *ExecutorMCPHandler) newScopedServer(session *executorMCPSession) 
 			if err != nil {
 				return nil, ShellV1Result{}, err
 			}
-			result, err := handler.shell.Execute(ctx, ShellExecuteRequest{
+			toolContext, finishManaged, err := handler.managedToolContext(ctx, session)
+			if err != nil {
+				if handler.config.Logger != nil {
+					handler.config.Logger.ErrorContext(ctx, "acquire managed sandbox for shell",
+						"run_id", session.principal.Run.RunID,
+						"call_id", call.CallID,
+						"error", err,
+					)
+				}
+				return nil, ShellV1Result{}, errors.New("shell execution is temporarily unavailable")
+			}
+			defer finishManaged()
+			result, err := handler.shell.Execute(toolContext, ShellExecuteRequest{
 				Principal: session.principal, ToolCallID: call.CallID,
 				Arguments: append(json.RawMessage(nil), request.Params.Arguments...),
 				Elicitor:  request.Session,
@@ -424,7 +453,19 @@ func (handler *ExecutorMCPHandler) newScopedServer(session *executorMCPSession) 
 			if err != nil {
 				return nil, ReadFileV1Result{}, err
 			}
-			result, err := handler.readFile.Execute(ctx, ReadFileExecuteRequest{
+			toolContext, finishManaged, err := handler.managedToolContext(ctx, session)
+			if err != nil {
+				if handler.config.Logger != nil {
+					handler.config.Logger.ErrorContext(ctx, "acquire managed sandbox for read_file",
+						"run_id", session.principal.Run.RunID,
+						"call_id", call.CallID,
+						"error", err,
+					)
+				}
+				return nil, ReadFileV1Result{}, errors.New("read_file execution is temporarily unavailable")
+			}
+			defer finishManaged()
+			result, err := handler.readFile.Execute(toolContext, ReadFileExecuteRequest{
 				Principal: session.principal, ToolCallID: call.CallID,
 				Arguments: append(json.RawMessage(nil), request.Params.Arguments...),
 				Elicitor:  request.Session,
@@ -443,6 +484,151 @@ func (handler *ExecutorMCPHandler) newScopedServer(session *executorMCPSession) 
 		})
 	}
 	return server
+}
+
+func (handler *ExecutorMCPHandler) managedToolContext(
+	ctx context.Context,
+	session *executorMCPSession,
+) (context.Context, func(), error) {
+	if handler.config.ManagedSandboxAcquirer == nil {
+		return ctx, func() {}, nil
+	}
+	lease, err := session.acquireManagedSandbox(ctx, handler.config.ManagedSandboxAcquirer)
+	if err != nil {
+		return nil, nil, err
+	}
+	select {
+	case <-lease.Done():
+		if err := lease.Err(); err != nil {
+			return nil, nil, err
+		}
+		return nil, nil, errors.New("managed sandbox activity ended before executor dispatch")
+	default:
+	}
+	toolContext, cancel := context.WithCancelCause(ctx)
+	go func() {
+		select {
+		case <-lease.Done():
+			cause := lease.Err()
+			if cause == nil {
+				cause = errors.New("managed sandbox activity ended during executor dispatch")
+			}
+			cancel(cause)
+		case <-toolContext.Done():
+		}
+	}()
+	return toolContext, func() { cancel(context.Canceled) }, nil
+}
+
+func (session *executorMCPSession) acquireManagedSandbox(
+	ctx context.Context,
+	acquirer ManagedSandboxSessionAcquirer,
+) (ManagedSandboxSessionLease, error) {
+	if session == nil || acquirer == nil || ctx == nil {
+		return nil, errors.New("managed sandbox MCP session, acquirer, and context are required")
+	}
+	for {
+		session.managedMu.Lock()
+		lease := session.managedLease
+		if lease != nil {
+			select {
+			case <-lease.Done():
+				session.managedLease = nil
+				session.managedMu.Unlock()
+				releaseManagedSandboxLeaseAsync(lease, nil)
+				continue
+			default:
+				session.managedMu.Unlock()
+				return lease, nil
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			session.managedMu.Unlock()
+			return nil, err
+		}
+		// Serialize the first actual tool call. This keeps concurrent MCP calls
+		// from creating multiple provider sessions for the same attempt while
+		// leaving model-only turns entirely untouched.
+		lease, err := acquirer.Acquire(ctx, session.principal)
+		if err == nil {
+			session.managedLease = lease
+		}
+		session.managedMu.Unlock()
+		return lease, err
+	}
+}
+
+func (session *executorMCPSession) detachManagedSandboxLease() ManagedSandboxSessionLease {
+	if session == nil {
+		return nil
+	}
+	session.managedMu.Lock()
+	defer session.managedMu.Unlock()
+	lease := session.managedLease
+	session.managedLease = nil
+	return lease
+}
+
+func releaseManagedSandboxLease(lease ManagedSandboxSessionLease, logger *slog.Logger) {
+	if lease == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_ = releaseManagedSandboxLeaseWithContext(ctx, lease, logger)
+}
+
+func releaseManagedSandboxLeaseWithContext(
+	ctx context.Context,
+	lease ManagedSandboxSessionLease,
+	logger *slog.Logger,
+) error {
+	if lease == nil {
+		return nil
+	}
+	if err := lease.Release(ctx); err != nil {
+		if logger != nil {
+			logger.Error("release lazy managed sandbox activity", "error", err)
+		}
+		return err
+	}
+	return nil
+}
+
+func releaseManagedSandboxLeases(
+	ctx context.Context,
+	leases []ManagedSandboxSessionLease,
+	logger *slog.Logger,
+) error {
+	if len(leases) == 0 {
+		return nil
+	}
+	errorsByLease := make(chan error, len(leases))
+	var releases sync.WaitGroup
+	releases.Add(len(leases))
+	for _, lease := range leases {
+		go func(lease ManagedSandboxSessionLease) {
+			defer releases.Done()
+			releaseCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			if err := releaseManagedSandboxLeaseWithContext(releaseCtx, lease, logger); err != nil {
+				errorsByLease <- err
+			}
+		}(lease)
+	}
+	releases.Wait()
+	close(errorsByLease)
+	var releaseErrors []error
+	for err := range errorsByLease {
+		releaseErrors = append(releaseErrors, err)
+	}
+	return errors.Join(releaseErrors...)
+}
+
+func releaseManagedSandboxLeaseAsync(lease ManagedSandboxSessionLease, logger *slog.Logger) {
+	if lease != nil {
+		go releaseManagedSandboxLease(lease, logger)
+	}
 }
 
 type listEnvironmentsInput struct {
@@ -562,15 +748,19 @@ func requireExecutorMCPProtocol(next mcp.MethodHandler) mcp.MethodHandler {
 
 func (handler *ExecutorMCPHandler) finishPreparedSession(session *executorMCPSession) {
 	handler.mu.Lock()
-	defer handler.mu.Unlock()
 	current := handler.sessions[session.id]
 	if current != session {
+		handler.mu.Unlock()
 		return
 	}
 	session.pending = false
+	var lease ManagedSandboxSessionLease
 	if !mcpServerHasSessions(session.server) {
 		delete(handler.sessions, session.id)
+		lease = session.detachManagedSandboxLease()
 	}
+	handler.mu.Unlock()
+	releaseManagedSandboxLeaseAsync(lease, handler.config.Logger)
 }
 
 func (handler *ExecutorMCPHandler) authorizeSession(sessionID string, principal ExecutorMCPPrincipal) (*executorMCPSession, error) {
@@ -589,19 +779,24 @@ func (handler *ExecutorMCPHandler) authorizeSession(sessionID string, principal 
 
 func (handler *ExecutorMCPHandler) finishExistingSession(sessionID string, session *executorMCPSession) {
 	handler.mu.Lock()
-	defer handler.mu.Unlock()
 	// Only forget a DELETE after the SDK actually removed its session. A
 	// malformed DELETE must not detach our authorization record from a still
 	// live SDK session and thereby bypass MaxSessions accounting.
+	var lease ManagedSandboxSessionLease
 	if handler.sessions[sessionID] == session && !mcpServerHasSessions(session.server) {
 		delete(handler.sessions, sessionID)
+		lease = session.detachManagedSandboxLease()
 	}
+	handler.mu.Unlock()
+	releaseManagedSandboxLeaseAsync(lease, handler.config.Logger)
 }
 
 func (handler *ExecutorMCPHandler) sweepClosedSessionsLocked() {
 	for sessionID, session := range handler.sessions {
 		if !session.pending && !mcpServerHasSessions(session.server) {
 			delete(handler.sessions, sessionID)
+			lease := session.detachManagedSandboxLease()
+			releaseManagedSandboxLeaseAsync(lease, handler.config.Logger)
 		}
 	}
 }
@@ -640,9 +835,16 @@ func (handler *ExecutorMCPHandler) Shutdown(ctx context.Context) error {
 	select {
 	case err := <-closed:
 		handler.mu.Lock()
+		leases := make([]ManagedSandboxSessionLease, 0, len(handler.sessions))
+		for _, session := range handler.sessions {
+			if lease := session.detachManagedSandboxLease(); lease != nil {
+				leases = append(leases, lease)
+			}
+		}
 		clear(handler.sessions)
 		handler.mu.Unlock()
-		return err
+		releaseErr := releaseManagedSandboxLeases(ctx, leases, handler.config.Logger)
+		return errors.Join(err, releaseErr)
 	case <-ctx.Done():
 		return fmt.Errorf("shutdown executor MCP sessions: %w", ctx.Err())
 	}

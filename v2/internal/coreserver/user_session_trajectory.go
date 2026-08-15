@@ -853,6 +853,13 @@ func trajectoryStatusTerminal(status string) bool {
 
 func completeTrajectoryRecord(record *corecontract.UserSessionTrajectoryRecord, completed time.Time) {
 	completed = completed.UTC()
+	// Lifecycle timestamps can originate on different components. A sandbox
+	// that was already ready, for example, may carry a provider observation a
+	// few milliseconds before Core committed the run activity. Preserve the
+	// terminal fact while keeping the public interval internally consistent.
+	if completed.Before(record.StartedAt) {
+		completed = record.StartedAt.UTC()
+	}
 	record.CompletedAt = &completed
 	duration := completed.Sub(record.StartedAt).Milliseconds()
 	if duration < 0 {

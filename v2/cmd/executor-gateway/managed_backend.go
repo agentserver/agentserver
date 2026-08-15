@@ -34,9 +34,6 @@ func configureTAEBackend(
 		gatewayEgressPlaceholderIssuerEnvironment, gatewayEgressPlaceholderKeyIDEnvironment,
 		gatewayEgressPlaceholderKeyEnvironment,
 		gatewayManagedTAEPSMEnvironment, gatewayTAEWebhookRequiredEnvironment,
-		gatewayManagedEnvironmentIDEnvironment, gatewayManagedRuntimeDigestEnvironment,
-		gatewayManagedPackSetDigestEnvironment, gatewayManagedSandboxTTLEnvironment,
-		gatewayManagedActivityTTLEnvironment,
 	}
 	if baseURL == "" {
 		for _, name := range configuredNames {

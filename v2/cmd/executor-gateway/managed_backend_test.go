@@ -237,6 +237,24 @@ func TestConfigureTAEBackendIsOptionalButAllConfiguredValuesRequireIt(t *testing
 	}
 }
 
+func TestConfigureTAEBackendIgnoresProvisioningMetadataWithoutAuthority(t *testing.T) {
+	configuration := map[string]string{
+		gatewayManagedEnvironmentIDEnvironment: "a38f69c6-996b-4c8d-8e2a-e97ee69c4b10",
+		gatewayManagedRuntimeDigestEnvironment: strings.Repeat("a", 64),
+		gatewayManagedPackSetDigestEnvironment: strings.Repeat("b", 64),
+		gatewayManagedSandboxTTLEnvironment:    "30m",
+		gatewayManagedActivityTTLEnvironment:   "5m",
+	}
+	backend, client, err := configureTAEBackend(
+		func(name string) string { return configuration[name] },
+		gatewayServeProduction,
+		"", "", "",
+	)
+	if err != nil || backend != nil || client != nil {
+		t.Fatalf("orphaned provisioning metadata configured TAE backend = %T %T, %v", backend, client, err)
+	}
+}
+
 func TestConfigureTAEBackendRejectsUnsafeOrigins(t *testing.T) {
 	for name, origin := range map[string]string{
 		"remote cleartext": "http://sandbox-gateway.internal",

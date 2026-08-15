@@ -22,6 +22,23 @@ const (
 	trajectorySandboxID   = "c1000000-0000-4000-8000-00000000000c"
 )
 
+func TestProjectUserSessionTrajectoryAddsBoundedUserInputRecord(t *testing.T) {
+	now := time.Date(2026, 8, 15, 1, 0, 0, 0, time.UTC)
+	source := trajectoryTestSource(now, coredb.RunStatusCompleted)
+	records, err := projectUserSessionTrajectory(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := trajectoryRecordsByID(records)["input:"+trajectoryRunID]
+	populateTrajectoryInput(&input, "Inspect the cluster.\nAuthorization: Bearer must-not-leak")
+	if input.Kind != "input" || input.ParentID != "run:"+trajectoryRunID || input.Status != "succeeded" ||
+		input.CompletedAt == nil || !input.CompletedAt.Equal(now) || input.DurationMillis == nil || *input.DurationMillis != 0 ||
+		!strings.Contains(input.Input, "Inspect the cluster") || strings.Contains(input.Input, "must-not-leak") ||
+		!strings.Contains(input.Input, "<redacted>") {
+		t.Fatalf("input trajectory = %+v", input)
+	}
+}
+
 func TestProjectUserSessionTrajectoryConnectsManagedExecutionAndProcessEnvironment(t *testing.T) {
 	now := time.Date(2026, 8, 15, 2, 0, 0, 0, time.UTC)
 	terminal := now.Add(5 * time.Second)

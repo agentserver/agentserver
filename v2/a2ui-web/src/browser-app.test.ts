@@ -57,6 +57,8 @@ describe("Browser product source", () => {
     expect(trajectorySource).toContain('data-trajectory-scroll')
     expect(trajectorySource).toContain("trajectory-lane-track")
     expect(trajectorySource).toContain("trajectory-run-groups")
+    expect(trajectorySource).toContain('t("browser.inputLane")')
+    expect(trajectorySource).not.toContain('t("browser.controlLane")')
     expect(trajectorySource).toContain("function TrajectoryInspectorSection")
     expect(trajectorySource).toContain("record.failure.message")
   })
@@ -86,11 +88,26 @@ describe("Browser product source", () => {
     const records = [run, attempt, event, tool]
 
     expect(filterTrajectoryRecords(records, { query: "transport", showLifecycle: false, problemsOnly: false }).map(({ id }) => id))
-      .toEqual(["run:r", "attempt:a", "tool:t"])
+      .toEqual(["run:r", "tool:t"])
     expect(filterTrajectoryRecords(records, { query: "", showLifecycle: false, problemsOnly: true }).map(({ id }) => id))
-      .toEqual(["run:r", "attempt:a", "tool:t"])
+      .toEqual(["run:r", "tool:t"])
     expect(filterTrajectoryRecords(records, { query: "finalizing", showLifecycle: true, problemsOnly: false }).map(({ id }) => id))
       .toEqual(["run:r", "attempt:a", "event:e"])
+  })
+
+  it("shows only input, model, and tool records in the default ledger", () => {
+    const run = trajectoryRecord("run:r", "Run completed", { kind: "run", status: "succeeded" })
+    const input = trajectoryRecord("input:r", "User input", { kind: "input", status: "succeeded", parentId: run.id })
+    const attempt = trajectoryRecord("attempt:a", "Attempt succeeded", { kind: "attempt", status: "succeeded", parentId: run.id })
+    const assistant = trajectoryRecord("assistant:m", "Assistant response", { kind: "assistant", status: "succeeded", parentId: attempt.id })
+    const tool = trajectoryRecord("tool:t", "Tool completed", { kind: "tool", status: "succeeded", parentId: attempt.id })
+    const execution = trajectoryRecord("execution:e", "Execution succeeded", { kind: "execution", status: "succeeded", parentId: tool.id })
+    const sandbox = trajectoryRecord("sandbox:s", "Sandbox ready", { kind: "sandbox", status: "succeeded", parentId: attempt.id })
+    const records = [run, input, attempt, sandbox, assistant, tool, execution]
+
+    expect(filterTrajectoryRecords(records, { query: "", showLifecycle: false, problemsOnly: false }).map(({ id }) => id))
+      .toEqual(["run:r", "input:r", "assistant:m", "tool:t"])
+    expect(filterTrajectoryRecords(records, { query: "", showLifecycle: true, problemsOnly: false })).toEqual(records)
   })
 
   it("groups records by run and derives actual-time and sequence swimlanes", () => {
@@ -103,7 +120,13 @@ describe("Browser product source", () => {
     const tool = trajectoryRecord("tool:t", "Tool completed", {
       kind: "tool", status: "succeeded", parentId: attempt.id, startedAt: "2026-08-15T01:00:03Z", completedAt: "2026-08-15T01:00:02.990Z",
     })
-    const records = [attempt, tool, run]
+    const input = trajectoryRecord("input:r", "User input", {
+      kind: "input", status: "succeeded", parentId: run.id, startedAt: "2026-08-15T01:00:00Z", completedAt: "2026-08-15T01:00:00Z",
+    })
+    const model = trajectoryRecord("assistant:m", "Assistant response", {
+      kind: "assistant", status: "succeeded", parentId: attempt.id, startedAt: "2026-08-15T01:00:02Z", completedAt: "2026-08-15T01:00:08Z",
+    })
+    const records = [run, input, attempt, model, tool]
 
     const groups = groupTrajectoryRecords(records, "2026-08-15T01:00:20Z")
     expect(groups).toHaveLength(1)
@@ -113,15 +136,15 @@ describe("Browser product source", () => {
 
     const actual = deriveTrajectoryTimeline(records, "2026-08-15T01:00:20Z", "actual")
     expect(actual?.start).toBe(Date.parse("2026-08-15T01:00:00Z"))
-    expect(actual?.end).toBe(Date.parse("2026-08-15T01:00:10Z"))
+    expect(actual?.end).toBe(Date.parse("2026-08-15T01:00:08Z"))
     expect(actual?.spans.find(({ record }) => record.id === tool.id)).toMatchObject({ lane: 2, start: Date.parse(tool.startedAt), end: Date.parse(tool.startedAt) })
 
     const sequence = deriveTrajectoryTimeline(records, "2026-08-15T01:00:20Z", "sequence")
     expect(sequence).toMatchObject({ start: 0, end: 3 })
     expect(sequence?.spans.map(({ lane, start, end }) => ({ lane, start, end }))).toEqual([
       { lane: 0, start: 0, end: 1 },
-      { lane: 2, start: 1, end: 2 },
-      { lane: 0, start: 2, end: 3 },
+      { lane: 1, start: 1, end: 2 },
+      { lane: 2, start: 2, end: 3 },
     ])
   })
 })

@@ -388,6 +388,7 @@
 .trajectory-timeline-span.trajectory-kind-model,
 .trajectory-timeline-span.trajectory-kind-assistant,
 .trajectory-timeline-span.trajectory-kind-reasoning { --trajectory-span-color: #8a63d2; }
+.trajectory-timeline-span.trajectory-kind-input { --trajectory-span-color: #397aa8; }
 .trajectory-timeline-span.trajectory-kind-tool,
 .trajectory-timeline-span.trajectory-kind-execution,
 .trajectory-timeline-span.trajectory-kind-operation { --trajectory-span-color: #2d8ca8; }
@@ -598,6 +599,7 @@
 .trajectory-kind-tag.trajectory-kind-model,
 .trajectory-kind-tag.trajectory-kind-assistant,
 .trajectory-kind-tag.trajectory-kind-reasoning { color: #8056c7; }
+.trajectory-kind-tag.trajectory-kind-input { color: #397aa8; }
 .trajectory-kind-tag.trajectory-kind-tool,
 .trajectory-kind-tag.trajectory-kind-execution,
 .trajectory-kind-tag.trajectory-kind-operation { color: #217e99; }

@@ -4,7 +4,7 @@
 >
 > 目标：为 Browser 中的每个 session 提供可持久化、可分页、可实时更新的运行轨迹，并让一次失败能够直接定位到 model、credential、managed sandbox、execution、operation 或 checkpoint 阶段。
 >
-> 参考：`../deepseek-harness/packages/client/ui-trajectory` 及其 session projection/query/telemetry 设计。本文借鉴其 lifecycle projection、稳定行身份、尾部加载、虚拟化和 timeline 交互，但不复制其实现。
+> 参考：`../deepseek-harness/packages/client/ui-trajectory` 及其 session projection/query/telemetry 设计。产品行为与其 Input / Model / Tools 三条 lane、按 turn 分组、稳定行身份、尾部加载和 timeline 交互对齐；AgentServer 仅因安全边界不同而在 Core 完成投影和脱敏。
 
 ## 1. 背景与问题
 
@@ -38,12 +38,13 @@ Trajectory 的目标是让用户或获得诊断权限的运维人员在一个页
 
 DeepSeek 的实现有四个值得保留的核心约束：
 
-1. **Trajectory 是 session event 的独立 projection，不是第二套日志。** 各业务域通过 Definition 把 started/delta/completed 事件归并成一个 lifecycle record。
-2. **稳定身份优先。** Snapshot Builder 以稳定 key 做 replace/apply；streaming 更新不会改变行 key、选择状态或虚拟列表测量结果。
-3. **长会话从尾部进入。** 首次只读最近窗口，向上触顶后用 cursor 加载历史；prepend 后保持 scroll anchor；只有用户仍在尾部时才跟随实时数据。
-4. **时间不能被伪造。** 未完成记录不展示虚构的 duration；未加载的历史不在 timeline 中假装存在；TTFT 与 decoding 分开显示。
+1. **用户可见结构只有 Input / Model / Tools 三条 lane。** 每个 turn 先展示真正送入本轮的用户输入，再按发生顺序展示模型输出和工具调用；run、attempt、checkpoint 等内部状态不是第四条 Control lane。
+2. **Trajectory 是 session event 的独立 projection，不是第二套日志。** 各业务域通过 Definition 把 started/delta/completed 事件归并成一个 lifecycle record。
+3. **稳定身份优先。** Snapshot Builder 以稳定 key 做 replace/apply；streaming 更新不会改变行 key、选择状态或虚拟列表测量结果。
+4. **长会话从尾部进入。** 首次只读最近窗口，向上触顶后用 cursor 加载历史；prepend 后保持 scroll anchor；只有用户仍在尾部时才跟随实时数据。
+5. **时间不能被伪造。** 未完成记录不展示虚构的 duration；未加载的历史不在 timeline 中假装存在；TTFT 与 decoding 分开显示。
 
-AgentServer 需要作一处有意的调整：DeepSeek 可以在共享 client session event window 上做纯前端 projection；AgentServer 的 canonical ledger 按 run 存储，并且 session 内容受 creator-only 授权、工具输出和凭据元数据还需要服务端脱敏。因此这里采用 **Core 侧 Definition + 可重建 read model**，Browser 不接触未审查的 canonical payload。
+DeepSeek 可以在共享 client session event window 上做纯前端 projection；AgentServer 的 canonical ledger 按 run 存储，并且 session 内容受 creator-only 授权、工具输出和凭据元数据还需要服务端脱敏。因此 AgentServer 在 **Core 侧完成相同行为的可重建 read model**，Browser 不接触未审查的 canonical payload。这个安全实现差异不能改变用户看到的 turn 与三条 lane 语义。
 
 ## 3. 总体架构
 
@@ -206,6 +207,7 @@ span_id
 当前 reducer 位于 `internal/coreserver/user_session_trajectory.go`，以稳定领域 ID 聚合事件，并与权威状态表补充的 lifecycle record 合并：
 
 - assistant/reasoning 的 started/delta/completed 合成同一行；
+- 每个 run 的不可变 prompt authority 读取并脱敏后投影为 turn 开头的 Input 行；
 - tool arguments/progress/completion/result 合成同一行，并分别限制 input/output preview；
 - attempt、execution、operation、managed sandbox activity、credential use audit 和 checkpoint 从现有权威表投影；
 - run 已终止但 assistant/tool 缺少 completion 时，显式生成 `output_incomplete`；

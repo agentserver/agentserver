@@ -510,7 +510,7 @@ function validateSessionTrajectoryRecord(record: SessionTrajectoryRecord) {
   exactKeys(record, keys, "session trajectory record")
   boundedOpaqueIdentifier(record.id, 512); canonicalID("trajectory run ID", record.runId)
   if (record.parentId !== undefined) boundedOpaqueIdentifier(record.parentId, 512)
-  if (!["run", "attempt", "model", "assistant", "reasoning", "tool", "approval", "execution", "operation", "sandbox", "credential", "checkpoint", "event"].includes(record.kind) ||
+  if (!["run", "input", "attempt", "model", "assistant", "reasoning", "tool", "approval", "execution", "operation", "sandbox", "credential", "checkpoint", "event"].includes(record.kind) ||
       !["queued", "running", "succeeded", "failed", "cancelled", "unknown", "info"].includes(record.status) ||
       !validTimestamp(record.startedAt) || !Array.isArray(record.details) || record.details.length > 32) {
     throw new Error("A session trajectory record is invalid.")

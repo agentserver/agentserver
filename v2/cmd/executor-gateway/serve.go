@@ -73,6 +73,11 @@ const (
 	gatewayEgressPlaceholderKeyEnvironment     = "AGENTSERVER_V2_EGRESS_PLACEHOLDER_SIGNING_KEY_FILE"
 	gatewayManagedTAEPSMEnvironment            = "AGENTSERVER_V2_MANAGED_TAE_PSM"
 	gatewayTAEWebhookRequiredEnvironment       = "AGENTSERVER_V2_TAE_POLICY_WEBHOOK_REQUIRED"
+	gatewayManagedEnvironmentIDEnvironment     = "AGENTSERVER_V2_MANAGED_ENVIRONMENT_ID"
+	gatewayManagedRuntimeDigestEnvironment     = "AGENTSERVER_V2_MANAGED_RUNTIME_PROFILE_SHA256"
+	gatewayManagedPackSetDigestEnvironment     = "AGENTSERVER_V2_MANAGED_PACK_SET_SHA256"
+	gatewayManagedSandboxTTLEnvironment        = "AGENTSERVER_V2_MANAGED_SANDBOX_TTL"
+	gatewayManagedActivityTTLEnvironment       = "AGENTSERVER_V2_MANAGED_ACTIVITY_TTL"
 	gatewayDevExecutorHeader                   = "X-Agentserver-Dev-Executor-Id"
 	maximumDevMCPBearerBytes                   = 16 * 1024
 	maximumGatewayTLSFileBytes                 = int64(1024 * 1024)
@@ -253,7 +258,7 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	if taeBackend != nil {
 		backends = append(backends, taeBackend)
 	}
-	managedEnvironmentIssuer, managedTargetFencer, err := configureManagedExecutionSecurity(
+	managedEnvironmentIssuer, managedTargetFencer, managedSandboxAcquirer, err := configureManagedExecutionSecurity(
 		getenv, mode, taeBackend, sandboxGatewayHTTPClient, coreClient, coreClient,
 	)
 	if err != nil {
@@ -340,6 +345,7 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	mcpConfig.Logger = slog.Default()
 	mcpConfig.ShellExecutor = shellExecutor
 	mcpConfig.ReadFileExecutor = readFileExecutor
+	mcpConfig.ManagedSandboxAcquirer = managedSandboxAcquirer
 	mcpHandler, err := executorgateway.NewExecutorMCPHandler(
 		mcpAuthenticator,
 		environmentResolver,

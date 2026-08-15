@@ -58,7 +58,6 @@ const (
 	ProductionTAEManagedSandboxImage   = "aliyun-sin-hub.byted.org/agentserver/tae-sandbox"
 	ProductionSandboxBackendKeyID      = "sandbox-backend-sg-v1"
 	ProductionSandboxFencerKeyID       = "sandbox-fencer-sg-v1"
-	ProductionSandboxLifecycleKeyID    = "sandbox-lifecycle-sg-v1"
 	ProductionEgressPlaceholderKeyID   = "egress-placeholder-sg-v1"
 	ProductionEgressBackendCAConfigMap = "agentserver-egress-backend-ca"
 

@@ -210,6 +210,64 @@ func TestProjectUserSessionTrajectoryTreatsLifecycleTransitionAsCompletedPoint(t
 	}
 }
 
+func TestProjectUserSessionTrajectoryPreservesDispatchLifecycleBeforeTurn(t *testing.T) {
+	now := time.Date(2026, 8, 15, 9, 17, 15, 356274000, time.UTC)
+	turnStarted := now.Add(5288129 * time.Microsecond)
+	source := trajectoryTestSource(now, coredb.RunStatusCompleted)
+	source.Attempts[0].CreatedAt = now.Add(30377 * time.Microsecond)
+	source.Attempts[0].TurnStartedAt = &turnStarted
+	queued := trajectoryTestEvent(1, "run.queued", `{}`, now.Add(3320*time.Microsecond))
+	queued.Event.RunAttemptID = nil
+	queued.Event.RunAttemptGeneration = nil
+	leased := trajectoryTestEvent(2, "attempt.leased", `{}`, now.Add(32801*time.Microsecond))
+	accepted := trajectoryTestEvent(3, "turn.accepted", `{}`, turnStarted.Add(1150*time.Microsecond))
+	source.Events = []coredb.UserSessionTrajectoryEvent{queued, leased, accepted}
+
+	records, err := projectUserSessionTrajectory(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := trajectoryRecordsByID(records)
+	attempt := byID["attempt:"+trajectoryAttemptID+":1"]
+	if !attempt.StartedAt.Equal(source.Attempts[0].CreatedAt) {
+		t.Fatalf("attempt startedAt = %s, want claim creation %s", attempt.StartedAt, source.Attempts[0].CreatedAt)
+	}
+	for _, event := range []coredb.UserSessionTrajectoryEvent{queued, leased, accepted} {
+		if record, ok := byID["event:"+event.Event.EventID]; !ok || record.CompletedAt == nil {
+			t.Fatalf("lifecycle event %s was not projected as a completed point: %+v", event.Event.Kind, record)
+		}
+	}
+}
+
+func TestProjectUserSessionTrajectoryShowsFirstSandboxEnsureLatency(t *testing.T) {
+	now := time.Date(2026, 8, 15, 9, 17, 15, 356274000, time.UTC)
+	reservedAt := now.Add(66 * time.Millisecond)
+	readyAt := now.Add(4510 * time.Millisecond)
+	activityAt := readyAt.Add(8 * time.Millisecond)
+	source := trajectoryTestSource(now, coredb.RunStatusCompleted)
+	source.Sandboxes = []coredb.ManagedSandbox{{
+		ID: trajectorySandboxID, WorkspaceID: trajectoryWorkspaceID, SessionID: trajectorySessionID,
+		ProviderKind: "tae", ProviderRegion: "sg", ProviderPSM: "bytedance.sandbox.agentserver",
+		Generation: 1, ObservedState: coredb.ManagedSandboxReady, LastObservedAt: &readyAt,
+		CreatedAt: reservedAt, UpdatedAt: readyAt,
+	}}
+	source.Activities = []coredb.UserSessionTrajectorySandboxActivity{{
+		SandboxID: trajectorySandboxID, TargetGeneration: 1, RunID: trajectoryRunID,
+		RunAttemptID: trajectoryAttemptID, RunAttemptGeneration: 1,
+		CreatedAt: activityAt, UpdatedAt: activityAt,
+	}}
+
+	records, err := projectUserSessionTrajectory(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sandbox := trajectoryRecordsByID(records)["sandbox:"+trajectorySandboxID+":"+trajectoryAttemptID]
+	if !sandbox.StartedAt.Equal(reservedAt) || sandbox.CompletedAt == nil || !sandbox.CompletedAt.Equal(readyAt) ||
+		sandbox.DurationMillis == nil || *sandbox.DurationMillis != readyAt.Sub(reservedAt).Milliseconds() {
+		t.Fatalf("first sandbox readiness trajectory = %+v", sandbox)
+	}
+}
+
 func trajectoryTestSource(now time.Time, runStatus string) coredb.ReadUserSessionTrajectoryResult {
 	return coredb.ReadUserSessionTrajectoryResult{
 		Session: coredb.UserSession{ID: trajectorySessionID, WorkspaceID: trajectoryWorkspaceID, CreatorID: trajectoryActorID, Status: coredb.UserSessionStatusActive, CreatedAt: now, UpdatedAt: now},

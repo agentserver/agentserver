@@ -1,6 +1,6 @@
-// Package sandboxclient is the provider-neutral lifecycle client shared by
-// harness-pool and exceptional managed-target recovery paths. It has no TAE
-// SDK dependency.
+// Package sandboxclient is the provider-neutral lifecycle client used by
+// executor-gateway on-demand acquisition and exceptional managed-target
+// recovery paths. It has no TAE SDK dependency.
 package sandboxclient
 
 import (

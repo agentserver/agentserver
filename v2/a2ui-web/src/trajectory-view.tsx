@@ -100,8 +100,6 @@ const HIDDEN_LIFECYCLE_KINDS = new Set<SessionTrajectoryRecord["kind"]>([
 const TIMELINE_OMITTED_KINDS = new Set<SessionTrajectoryRecord["kind"]>([
   "run",
   "attempt",
-  "checkpoint",
-  "event",
 ])
 
 export function groupTrajectoryRecords(records: SessionTrajectoryRecord[], readAt: string): TrajectoryRunGroup[] {
@@ -210,8 +208,13 @@ export function TrajectoryView({
     showLifecycle,
     problemsOnly,
   }), [problemsOnly, records, searchQuery, showLifecycle])
+  const timelineRecords = useMemo(() => filterTrajectoryRecords(records, {
+    query: searchQuery,
+    showLifecycle: true,
+    problemsOnly,
+  }), [problemsOnly, records, searchQuery])
   const groups = useMemo(() => groupTrajectoryRecords(visibleRecords, readAt), [readAt, visibleRecords])
-  const timeline = useMemo(() => deriveTrajectoryTimeline(visibleRecords, readAt, timelineMode), [readAt, timelineMode, visibleRecords])
+  const timeline = useMemo(() => deriveTrajectoryTimeline(timelineRecords, readAt, timelineMode), [readAt, timelineMode, timelineRecords])
   const selectedVisible = selected === null || visibleRecords.some((record) => record.id === selected.id)
   const allCollapsed = groups.length > 0 && groups.every((group) => collapsedRuns.has(group.runId))
 

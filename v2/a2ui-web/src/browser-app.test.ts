@@ -126,7 +126,10 @@ describe("Browser product source", () => {
     const model = trajectoryRecord("assistant:m", "Assistant response", {
       kind: "assistant", status: "succeeded", parentId: attempt.id, startedAt: "2026-08-15T01:00:02Z", completedAt: "2026-08-15T01:00:08Z",
     })
-    const records = [run, input, attempt, model, tool]
+    const lifecycle = trajectoryRecord("event:leased", "attempt.leased", {
+      kind: "event", status: "info", parentId: attempt.id, startedAt: "2026-08-15T01:00:01Z", completedAt: "2026-08-15T01:00:01Z",
+    })
+    const records = [run, input, lifecycle, attempt, model, tool]
 
     const groups = groupTrajectoryRecords(records, "2026-08-15T01:00:20Z")
     expect(groups).toHaveLength(1)
@@ -140,11 +143,14 @@ describe("Browser product source", () => {
     expect(actual?.spans.find(({ record }) => record.id === tool.id)).toMatchObject({ lane: 2, start: Date.parse(tool.startedAt), end: Date.parse(tool.startedAt) })
 
     const sequence = deriveTrajectoryTimeline(records, "2026-08-15T01:00:20Z", "sequence")
-    expect(sequence).toMatchObject({ start: 0, end: 3 })
+    expect(actual?.spans.find(({ record }) => record.id === lifecycle.id)).toMatchObject({ lane: 2 })
+
+    expect(sequence).toMatchObject({ start: 0, end: 4 })
     expect(sequence?.spans.map(({ lane, start, end }) => ({ lane, start, end }))).toEqual([
       { lane: 0, start: 0, end: 1 },
-      { lane: 1, start: 1, end: 2 },
-      { lane: 2, start: 2, end: 3 },
+      { lane: 2, start: 1, end: 2 },
+      { lane: 1, start: 2, end: 3 },
+      { lane: 2, start: 3, end: 4 },
     ])
   })
 })

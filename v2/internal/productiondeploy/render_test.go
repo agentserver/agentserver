@@ -448,7 +448,7 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 			"sandbox-fencer-capability.key", "egress-placeholder.key",
 		})
 	assertSecretMaterialMounts(t, pool, "pool-material", loaded.Document.Secrets.HarnessPool,
-		"/var/run/agentserver/pool", groupReadableSecretMode, []string{"ca.crt", "tls.crt", "tls.key", "run-manifest.key", "sandbox-lifecycle-capability.key"})
+		"/var/run/agentserver/pool", groupReadableSecretMode, []string{"ca.crt", "tls.crt", "tls.key", "run-manifest.key"})
 	assertSecretMaterialMounts(t, pool, "worker-material", loaded.Document.Secrets.HarnessWorker,
 		"/var/run/agentserver/worker", workerReadableSecretMode, []string{"ca.crt", "tls.crt", "tls.key", "run-manifest-keyring.json"})
 	assertSecretMaterialMounts(t, findResource(t, runtime, "Deployment", llmproxyComponent), "material", loaded.Document.Secrets.LLMProxy,
@@ -1200,21 +1200,13 @@ func assertManagedNetworkPolicyShape(t *testing.T, foundation []map[string]any, 
 		t.Fatalf("sandbox-gateway ingress port is not the service port")
 	}
 	from := arrayField(t, ingressRule, "from")
-	if len(from) != 2 {
-		t.Fatalf("sandbox-gateway ingress peer count = %d, want executor and harness-pool", len(from))
+	if len(from) != 1 {
+		t.Fatalf("sandbox-gateway ingress peer count = %d, want executor-gateway only", len(from))
 	}
-	seenComponents := make(map[string]bool, 2)
-	for _, raw := range from {
-		peer := raw.(map[string]any)
-		labels := objectField(t, objectField(t, peer, "podSelector"), "matchLabels")
-		for _, component := range []string{executorComponent, harnessComponent} {
-			if labels["app.kubernetes.io/name"] == component {
-				seenComponents[component] = true
-			}
-		}
-	}
-	if len(seenComponents) != 2 {
-		t.Fatalf("sandbox-gateway ingress peers = %#v, want only executor-gateway and harness-pool", from)
+	peer := from[0].(map[string]any)
+	labels := objectField(t, objectField(t, peer, "podSelector"), "matchLabels")
+	if labels["app.kubernetes.io/name"] != executorComponent {
+		t.Fatalf("sandbox-gateway ingress peer = %#v, want executor-gateway only", from)
 	}
 	assertPodPeerPresent(t, sandboxSpec, "egress", coreComponent, document.Services.Core.Port)
 	assertNamespacedPodPeerPresent(t, sandboxSpec, "egress", ProductionTAEProxyNamespace,

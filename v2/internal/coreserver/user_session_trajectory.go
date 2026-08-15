@@ -377,10 +377,6 @@ func projectUserSessionTrajectory(source coredb.ReadUserSessionTrajectoryResult)
 		if !ok {
 			continue
 		}
-		started := attempt.CreatedAt
-		if attempt.TurnStartedAt != nil {
-			started = *attempt.TurnStartedAt
-		}
 		record := projectedTrajectoryRecord{
 			record: corecontract.UserSessionTrajectoryRecord{
 				ID:       "attempt:" + attempt.ID + ":" + strconv.FormatInt(attempt.Generation, 10),
@@ -388,7 +384,7 @@ func projectUserSessionTrajectory(source coredb.ReadUserSessionTrajectoryResult)
 				Title:   "Attempt " + strconv.FormatInt(attempt.Generation, 10),
 				Summary: "Attempt " + strings.ReplaceAll(attempt.Status, "_", " "), RunID: run.ID,
 				RunAttemptID: attempt.ID, RunAttemptGeneration: attempt.Generation,
-				StartedAt: started, Details: []corecontract.UserSessionTrajectoryDetail{},
+				StartedAt: attempt.CreatedAt, Details: []corecontract.UserSessionTrajectoryDetail{},
 			},
 			runCreatedAt: run.CreatedAt, anchorSeq: attemptAnchors[attempt.ID], rank: trajectoryRankAttempt,
 		}
@@ -529,6 +525,12 @@ func projectUserSessionTrajectory(source coredb.ReadUserSessionTrajectoryResult)
 	for _, sandbox := range source.Sandboxes {
 		sandboxes[sandbox.ID] = sandbox
 	}
+	firstSandboxActivity := make(map[string]time.Time, len(source.Sandboxes))
+	for _, activity := range source.Activities {
+		if first, ok := firstSandboxActivity[activity.SandboxID]; !ok || activity.CreatedAt.Before(first) {
+			firstSandboxActivity[activity.SandboxID] = activity.CreatedAt
+		}
+	}
 	for _, activity := range source.Activities {
 		sandbox, ok := sandboxes[activity.SandboxID]
 		run, runOK := runs[activity.RunID]
@@ -536,6 +538,15 @@ func projectUserSessionTrajectory(source coredb.ReadUserSessionTrajectoryResult)
 			continue
 		}
 		status := normalizeTrajectoryStatus("sandbox", sandbox.ObservedState)
+		startedAt := activity.CreatedAt
+		firstActivity := firstSandboxActivity[activity.SandboxID].Equal(activity.CreatedAt)
+		// The first activity is acquired only after Ensure has converged. Use
+		// the managed sandbox reservation timestamp to expose the real provider
+		// create/readiness latency; reused session generations remain point-in-
+		// time acquisitions for their later attempts.
+		if firstActivity && !sandbox.CreatedAt.IsZero() && !sandbox.CreatedAt.Before(run.CreatedAt) && sandbox.CreatedAt.Before(activity.CreatedAt) {
+			startedAt = sandbox.CreatedAt
+		}
 		record := projectedTrajectoryRecord{
 			record: corecontract.UserSessionTrajectoryRecord{
 				ID:       "sandbox:" + sandbox.ID + ":" + activity.RunAttemptID,
@@ -545,7 +556,7 @@ func projectUserSessionTrajectory(source coredb.ReadUserSessionTrajectoryResult)
 				RunID:   activity.RunID, RunAttemptID: activity.RunAttemptID,
 				RunAttemptGeneration: activity.RunAttemptGeneration,
 				SandboxID:            sandbox.ID, TargetGeneration: activity.TargetGeneration,
-				StartedAt: activity.CreatedAt,
+				StartedAt: startedAt,
 				Details: []corecontract.UserSessionTrajectoryDetail{
 					{Name: "provider", Value: sandbox.ProviderKind},
 					{Name: "region", Value: sandbox.ProviderRegion},
@@ -554,8 +565,12 @@ func projectUserSessionTrajectory(source coredb.ReadUserSessionTrajectoryResult)
 			},
 			runCreatedAt: run.CreatedAt, anchorSeq: attemptAnchors[activity.RunAttemptID], rank: trajectoryRankSandbox,
 		}
-		if sandbox.ObservedState == coredb.ManagedSandboxReady && sandbox.LastObservedAt != nil {
-			completeTrajectoryRecord(&record.record, *sandbox.LastObservedAt)
+		if sandbox.ObservedState == coredb.ManagedSandboxReady {
+			completedAt := activity.CreatedAt
+			if firstActivity && sandbox.LastObservedAt != nil && !sandbox.LastObservedAt.Before(startedAt) && !sandbox.LastObservedAt.After(activity.CreatedAt) {
+				completedAt = *sandbox.LastObservedAt
+			}
+			completeTrajectoryRecord(&record.record, completedAt)
 		}
 		if activity.ReleasedAt != nil {
 			record.record.Details = appendTrajectoryDetail(record.record.Details, "releasedAt", activity.ReleasedAt.UTC().Format(time.RFC3339Nano))
@@ -741,7 +756,7 @@ func objectBackedTrajectoryEvent(run coredb.Run, event runevent.Event) projected
 }
 
 func shouldProjectGenericTrajectoryEvent(kind string) bool {
-	if strings.HasPrefix(kind, "execution.") || strings.HasPrefix(kind, "operation.") || kind == "run.queued" || kind == "attempt.leased" {
+	if strings.HasPrefix(kind, "execution.") || strings.HasPrefix(kind, "operation.") {
 		return false
 	}
 	return strings.HasPrefix(kind, "run.") || strings.HasPrefix(kind, "attempt.") || strings.HasPrefix(kind, "turn.") || strings.HasPrefix(kind, "runtime.") || strings.HasPrefix(kind, "sandbox.") || strings.HasPrefix(kind, "checkpoint.") || strings.HasPrefix(kind, "model.")

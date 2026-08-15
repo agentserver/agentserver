@@ -92,7 +92,6 @@ const (
 	materialProfileCoreManagedWebhook = "core-managed-webhook"
 	materialProfileExecutorManaged    = "executor-gateway-managed"
 	materialProfileExecutorWebhook    = "executor-gateway-managed-webhook"
-	materialProfileHarnessPoolManaged = "harness-pool-managed"
 	materialProfileSandboxGateway     = "sandbox-gateway"
 	materialProfileTAENetworkProbe    = "tae-network-probe"
 	materialProfileEgressAuthorizer   = "egress-authorizer"
@@ -137,9 +136,6 @@ var materialProfileFiles = map[string][]string{
 	materialProfileExecutorWebhook: {
 		"ca.crt", "tls.crt", "tls.key", "run-capability-keyring.json",
 		"sandbox-backend-capability.key", "sandbox-fencer-capability.key", "egress-placeholder.key",
-	},
-	materialProfileHarnessPoolManaged: {
-		"ca.crt", "tls.crt", "tls.key", "run-manifest.key", "sandbox-lifecycle-capability.key",
 	},
 	materialProfileSandboxGateway: {
 		"ca.crt", "tls.crt", "tls.key", "sandbox-capability-keyring.json",

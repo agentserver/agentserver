@@ -75,7 +75,6 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 	hydraSetupEgress := append(append([]any(nil), dns...), componentTCPEgress(hydraComponent, document.Services.Hydra.AdminPort))
 	if managedExecutionActive(document.Managed) {
 		executorEgress = append(executorEgress, componentTCPEgress(sandboxComponent, document.Services.SandboxGateway.Port))
-		harnessEgress = append(harnessEgress, componentTCPEgress(sandboxComponent, document.Services.SandboxGateway.Port))
 	}
 
 	items := []kubeObject{
@@ -93,7 +92,7 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 		networkPolicy(config, hydraComponent, matchComponent(hydraComponent), hydraIngress, hydraEgress),
 	}
 	if managedExecutionActive(document.Managed) {
-		sandboxIngress := ingressFromComponents([]string{executorComponent, harnessComponent}, document.Services.SandboxGateway.Port)
+		sandboxIngress := ingressFromComponents([]string{executorComponent}, document.Services.SandboxGateway.Port)
 		sandboxEgress := []any{componentTCPEgress(coreComponent, document.Services.Core.Port)}
 		sandboxEgress = append(sandboxEgress, dns...)
 		sandboxEgress = append(sandboxEgress, namespacedPodTCPEgress(

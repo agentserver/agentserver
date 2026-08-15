@@ -31,6 +31,18 @@ describe("Browser product source", () => {
     expect(source).toContain("void loadTranscript(selectedId)")
   })
 
+  it("renders one ordered conversation projection and moves pending approvals into the composer", () => {
+    const source = readFileSync(new URL("./browser-app.tsx", import.meta.url), "utf8")
+    expect(source).toContain("state.timeline.map((item)")
+    expect(source).toContain('item.kind === "tool-result"')
+    expect(source).toContain('data-conversation-kind="execution"')
+    expect(source).toContain("ownedSurfaces(state, \"tool\", item.id)")
+    expect(source).toContain("<ApprovalPanel approval={approval} onDecision={onDecision} />")
+    expect(source).toContain("<MarkdownText text={message.text}")
+    expect(source).not.toContain("state.messages.map((message) => <article")
+    expect(source).not.toContain("state.approvalOrder.map((id) => state.approvals[id]).filter")
+  })
+
   it("renders a tail-paged session Trajectory with live polling and an inspector", () => {
     const source = readFileSync(new URL("./browser-app.tsx", import.meta.url), "utf8")
     const trajectorySource = readFileSync(new URL("./trajectory-view.tsx", import.meta.url), "utf8")

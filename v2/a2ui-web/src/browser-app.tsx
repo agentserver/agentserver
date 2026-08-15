@@ -1,14 +1,12 @@
-import { Archive, ChevronDown, CircleStop, Code2, KeyRound, MessageSquare, Pencil, Plus, RefreshCw, Search, Send, Sparkles, SquareTerminal } from "lucide-react"
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react"
+import { Archive, ArrowDown, CheckCircle2, ChevronDown, CircleStop, Clock3, Code2, KeyRound, LoaderCircle, MessageSquare, Pencil, Plus, RefreshCw, Search, Send, ShieldCheck, Sparkles, SquareTerminal, XCircle } from "lucide-react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react"
 import { useTranslation } from "react-i18next"
 import { useLocation, useNavigate } from "react-router-dom"
 import {
   APIError,
-  APPROVAL_NAME,
   AppShell,
   Badge,
   Button,
-  Card,
   EdgeAPI,
   EVENT_CURSOR_NAME,
   Input,
@@ -37,11 +35,15 @@ import {
   type A2UISurface,
   type ApprovalView,
   type CommandItem,
+  type ConversationMessage,
   type ConversationState,
+  type ReasoningMessage,
   type SessionTrajectory,
   type SessionTrajectoryRecord,
+  type ToolView,
   type UserSession,
 } from "@agentserver/v2-web-shared"
+import { MarkdownText } from "./markdown-text"
 import { TrajectoryView } from "./trajectory-view"
 
 interface ActiveRun {
@@ -349,7 +351,7 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
   const decide = async (approval: ApprovalView, decision: "approve" | "deny") => {
     try {
       await api.decideApproval(workspaceId, approval.approvalId, { decision, nonce: approval.nonce, contextDigest: approval.contextDigest, expectedApprovalVersion: approval.version })
-    } catch (error) { commit((current) => ({ ...current, error: { code: "approval_failed", message: safeError(error) } })) }
+    } catch (error) { commit((current) => ({ ...current, error: { code: "approval_failed", message: safeError(error) } })); throw error }
   }
 
   const renameSession = async (session: UserSession) => {
@@ -380,8 +382,9 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
     ...sessions.map((session) => ({ id: session.sessionId, label: session.title, keywords: session.sessionId, icon: <MessageSquare size={16} />, run: () => selectSession(session.sessionId) })),
   ], [createSession, sessions, t])
 
-  const emptyConversation = view === "conversation" && !transcriptLoading && !conversation.error && conversation.messages.length === 0 && conversation.tools.length === 0 && conversation.surfaceOrder.length === 0
+  const emptyConversation = view === "conversation" && !transcriptLoading && !conversation.error && conversation.timeline.length === 0
   const selectedSessionTitle = sessions.find((item) => item.sessionId === selectedId)?.title ?? t("browser.newChat")
+  const pendingApproval = conversation.approvalOrder.map((id) => conversation.approvals[id]).find((approval) => approval?.status === "pending") ?? null
 
   return <AppShell className="browser-shell" sidebar={sidebar} commands={commands} accountLabel={shortID(workspaceId)} onSignOut={onSignOut}>
     <div className={`browser-main${emptyConversation ? " browser-main-empty" : ""}${view === "trajectory" ? " browser-main-trajectory" : ""}`} data-run-status={conversation.status}>
@@ -400,8 +403,8 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
         }} aria-label={t("common.refresh")}><RefreshCw size={16} /></Button>
       </header>
       {view === "conversation" ? <>
-        <ConversationView state={conversation} loading={transcriptLoading} truncated={transcriptTruncated} onDecision={decide} onConfigure={() => { window.location.href = `https://agent.byted.bps.dev/workspaces/${workspaceId}/gateways` }} />
-        <Composer centered={emptyConversation} value={prompt} onChange={setPrompt} onSubmit={sendPrompt} onCancel={cancelRun} onReconnect={() => void stream(true)} state={conversation} inputRef={composerRef} />
+        <ConversationView state={conversation} loading={transcriptLoading} truncated={transcriptTruncated} onConfigure={() => { window.location.href = `https://agent.byted.bps.dev/workspaces/${workspaceId}/gateways` }} />
+        <Composer centered={emptyConversation} value={prompt} onChange={setPrompt} onSubmit={sendPrompt} onCancel={cancelRun} onReconnect={() => void stream(true)} state={conversation} approval={pendingApproval} onDecision={decide} inputRef={composerRef} />
       </> : <TrajectoryView
         key={selectedId}
         records={trajectory?.records ?? []}
@@ -426,21 +429,213 @@ function SessionButton({ session, active, onSelect, onRename, onArchive }: { ses
   return <div className={`session-row${active ? " active" : ""}`}><button type="button" className="session-select" onClick={onSelect}><MessageSquare size={15} /><span className="sidebar-copy">{session.title}</span></button><div className="session-actions sidebar-copy"><Button variant="ghost" size="icon" aria-label={t("common.actions")} onClick={(event) => { event.stopPropagation(); onRename() }}><Pencil size={13} /></Button><Button variant="ghost" size="icon" aria-label={t("browser.archive")} onClick={(event) => { event.stopPropagation(); onArchive() }}><Archive size={13} /></Button></div></div>
 }
 
-function ConversationView({ state, loading, truncated, onDecision, onConfigure }: { state: ConversationState; loading: boolean; truncated: boolean; onDecision: (approval: ApprovalView, decision: "approve" | "deny") => Promise<void>; onConfigure: () => void }) {
+function ConversationView({ state, loading, truncated, onConfigure }: { state: ConversationState; loading: boolean; truncated: boolean; onConfigure: () => void }) {
   const { t } = useTranslation()
-  if (loading) return <div className="conversation-scroll"><div className="session-loading">{t("common.loading")}</div></div>
-  const empty = !state.error && state.messages.length === 0 && state.tools.length === 0 && state.surfaceOrder.length === 0
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const atBottomRef = useRef(true)
+  const [atBottom, setAtBottom] = useState(true)
+  useLayoutEffect(() => {
+    const scroll = scrollRef.current
+    if (!scroll) return
+    if (state.eventCount === 0) atBottomRef.current = true
+    if (!atBottomRef.current) return
+    scroll.scrollTop = scroll.scrollHeight
+    setAtBottom(true)
+  }, [loading, state.eventCount, state.timeline.length])
+  const onScroll = () => {
+    const scroll = scrollRef.current
+    if (!scroll) return
+    const next = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight <= 28
+    atBottomRef.current = next
+    setAtBottom(next)
+  }
+  const scrollToBottom = () => {
+    const scroll = scrollRef.current
+    if (!scroll) return
+    scroll.scrollTop = scroll.scrollHeight
+    atBottomRef.current = true
+    setAtBottom(true)
+  }
+  if (loading) return <div className="conversation-scroll"><div className="conversation-loading"><LoaderCircle size={16} />{t("common.loading")}</div></div>
+  const empty = !state.error && state.timeline.length === 0
   const missingGrant = Boolean(state.error && /gateway|grant|credential|model_authority/iu.test(`${state.error.code} ${state.error.message}`))
-  return <div className="conversation-scroll"><div className="conversation-timeline">
+  const messages = new Map(state.messages.map((message) => [message.id, message]))
+  const reasoning = new Map(state.reasoning.map((message) => [message.id, message]))
+  const tools = new Map(state.tools.map((tool) => [tool.id, tool]))
+  const busy = ["connecting", "running", "cancelling"].includes(state.status)
+  return <div ref={scrollRef} className="conversation-scroll" data-conversation-scroll onScroll={onScroll}><div className="conversation-timeline" data-conversation-timeline>
     {truncated ? <div className="notice-banner">{t("browser.historyTruncated")}</div> : null}
     {empty ? <div className="browser-welcome"><div className="welcome-mark"><Sparkles size={22} /></div><h1>{t("browser.welcomeTitle")}</h1><p>{t("browser.welcomeDescription")}</p></div> : null}
-    {state.messages.map((message) => <article key={message.id} className={`message message-${message.role}`}><div className="message-body"><span className="sr-only">{message.role === "user" ? t("browser.you") : t("browser.assistant")}</span><div className="message-copy">{message.text}{!message.complete && ["connecting", "running", "cancelling"].includes(state.status) ? <span className="stream-caret" /> : null}</div></div></article>)}
-    {state.reasoning.length ? <details className="reasoning-card"><summary><Sparkles size={14} />{t("browser.reasoning")}<ChevronDown size={14} /></summary>{state.reasoning.map((item) => <pre key={item.id}>{item.text}</pre>)}</details> : null}
-    {state.tools.map((tool) => <details className={`tool-card tool-card-${tool.status}`} key={tool.id} open={tool.status !== "completed" || undefined}><summary className="tool-header"><span><SquareTerminal size={15} /><strong>{tool.name}</strong></span><span className="tool-header-meta"><Badge tone={tool.status === "completed" ? "success" : tool.status === "failed" ? "danger" : "neutral"}>{tool.status}</Badge><ChevronDown className="tool-chevron" size={14} /></span></summary><div className="tool-content">{tool.arguments ? <pre>{prettyJSON(tool.arguments)}</pre> : null}{tool.progress ? <div className="tool-progress">{tool.progress.total && tool.progress.value !== null ? <progress max={tool.progress.total} value={tool.progress.value} /> : null}<span>{tool.progress.message}</span></div> : null}{tool.result ? <pre className="tool-result">{tool.result}</pre> : null}</div></details>)}
-    {state.approvalOrder.map((id) => state.approvals[id]).filter((item): item is ApprovalView => Boolean(item)).map((approval) => <Card className="approval-card" key={approval.approvalId}><div className="approval-icon"><KeyRound size={17} /></div><div><h3>{t("browser.approval")}</h3><p>{approval.toolName} · {shortID(approval.executionId)}</p><Badge tone={approval.status === "pending" ? "warning" : approval.status === "approved" || approval.status === "consumed" ? "success" : "neutral"}>{approval.status}</Badge></div>{approval.status === "pending" ? <div className="approval-actions"><Button variant="outline" size="sm" onClick={() => void onDecision(approval, "deny")}>{t("browser.deny")}</Button><Button size="sm" onClick={() => void onDecision(approval, "approve")}>{t("browser.approve")}</Button></div> : null}</Card>)}
-    {state.surfaceOrder.map((id) => state.surfaces[id]).filter((item): item is A2UISurface => Boolean(item)).map((surface) => <Card className="a2ui-surface" key={surface.id}><div className="surface-label"><Code2 size={14} />{t("browser.a2ui")}</div><Surface surface={surface} componentId="root" ancestors={new Set()} depth={0} /></Card>)}
-    {state.error ? <div className="run-error"><strong>{state.error.code}</strong><p>{state.error.message}</p>{missingGrant ? <Button variant="outline" onClick={onConfigure}><KeyRound size={14} />{t("browser.configureGateway")}</Button> : null}</div> : null}
-  </div></div>
+    {state.timeline.map((item) => {
+      const key = `${item.kind}:${item.id}`
+      if (item.kind === "message") {
+        const message = messages.get(item.id)
+        return message ? <ConversationMessageItem key={key} message={message} running={busy} /> : null
+      }
+      if (item.kind === "reasoning") {
+        const message = reasoning.get(item.id)
+        return message ? <ReasoningItem key={key} message={message} /> : null
+      }
+      if (item.kind === "tool") {
+        const tool = tools.get(item.id)
+        return tool ? <ToolCallItem key={key} tool={tool} runStatus={state.status} /> : null
+      }
+      if (item.kind === "approval") {
+        const approval = state.approvals[item.id]
+        return approval ? <ApprovalAuditItem key={key} approval={approval} /> : null
+      }
+      if (item.kind === "tool-result") {
+        const tool = tools.get(item.id)
+        return tool ? <ToolResultItem key={key} tool={tool} surfaces={ownedSurfaces(state, "tool", item.id)} /> : null
+      }
+      const surface = state.surfaces[item.id]
+      return surface ? <StandaloneSurfaceItem key={key} surface={surface} /> : null
+    })}
+    {busy && state.timeline.length > 0 ? <div className="turn-activity" role="status"><LoaderCircle size={14} />{t("browser.deepDiving")}</div> : null}
+    {state.error ? <div className="run-error"><div className="run-error-title"><XCircle size={15} /><strong>{state.error.code}</strong></div><p>{state.error.message}</p>{missingGrant ? <Button variant="outline" onClick={onConfigure}><KeyRound size={14} />{t("browser.configureGateway")}</Button> : null}</div> : null}
+  </div>{!atBottom ? <div className="conversation-to-bottom-slot"><button type="button" onClick={scrollToBottom} aria-label={t("browser.toBottom")}><ArrowDown size={16} /></button></div> : null}</div>
+}
+
+function ConversationMessageItem({ message, running }: { message: ConversationMessage; running: boolean }) {
+  const { t } = useTranslation()
+  const user = message.role === "user"
+  const streaming = !message.complete && running
+  return <article className={`message ${user ? "message-user" : "message-assistant"}`} data-conversation-kind="message" data-message-role={message.role}>
+    <div className="message-body">
+      <span className="sr-only">{user ? t("browser.you") : t("browser.assistant")}</span>
+      <div className="message-copy"><MarkdownText text={message.text} streaming={streaming} copyLabel={t("common.copy")} copiedLabel={t("common.copied")} /></div>
+    </div>
+  </article>
+}
+
+function ReasoningItem({ message }: { message: ReasoningMessage }) {
+  const { t } = useTranslation()
+  return <details className="reasoning-card" data-conversation-kind="reasoning" open={!message.complete || undefined}>
+    <summary><span className="reasoning-leading"><Sparkles size={14} /></span><span>{message.complete ? t("browser.reasoning") : t("browser.reasoningActive")}</span><ChevronDown className="reasoning-chevron" size={14} /></summary>
+    <div className="reasoning-body"><MarkdownText text={message.text} streaming={!message.complete} copyLabel={t("common.copy")} copiedLabel={t("common.copied")} /></div>
+  </details>
+}
+
+function ToolCallItem({ tool, runStatus }: { tool: ToolView; runStatus: ConversationState["status"] }) {
+  const { t } = useTranslation()
+  const unsettled = tool.status !== "completed" && tool.status !== "failed"
+  const active = unsettled && ["connecting", "running", "cancelling"].includes(runStatus)
+  const paused = unsettled && runStatus === "disconnected"
+  const interrupted = unsettled && (runStatus === "failed" || runStatus === "cancelled")
+  return <details className="tool-card" data-conversation-kind="tool" data-state={active ? "running" : paused ? "paused" : interrupted ? "interrupted" : tool.status} open={active || paused || undefined}>
+    <summary className="tool-header">
+      <span className="tool-leading"><SquareTerminal size={15} /></span>
+      <strong>{friendlyToolName(tool.name)}</strong><span className="tool-separator" />
+      <span className="tool-summary">{toolSummary(tool) || t("browser.preparingExecution")}</span>
+      <span className="tool-state">{active ? <LoaderCircle size={13} /> : paused ? <Clock3 size={13} /> : interrupted ? <XCircle size={13} /> : <CheckCircle2 size={13} />}<span className="sr-only">{tool.status}</span></span>
+      <ChevronDown className="tool-chevron" size={14} />
+    </summary>
+    <div className="tool-content">
+      {tool.arguments ? <div className="tool-io-section"><span>{t("browser.input")}</span><pre>{prettyJSON(tool.arguments)}</pre></div> : null}
+      {tool.progress ? <div className="tool-progress">{tool.progress.total && tool.progress.value !== null ? <progress max={tool.progress.total} value={tool.progress.value} /> : <LoaderCircle size={13} />}<span>{tool.progress.message || t("browser.running")}</span></div> : null}
+    </div>
+  </details>
+}
+
+function ToolResultItem({ tool, surfaces }: { tool: ToolView; surfaces: A2UISurface[] }) {
+  const { t } = useTranslation()
+  const summary = executionSummary(tool, surfaces)
+  return <details className="execution-node" data-conversation-kind="execution">
+    <summary className="execution-header"><span className="execution-leading"><CheckCircle2 size={15} /></span><strong>{t("browser.execution")}</strong><span className="tool-separator" /><span className="tool-summary">{summary}</span><Badge tone="success">{t("browser.completed")}</Badge><ChevronDown className="tool-chevron" size={14} /></summary>
+    <div className="execution-body">
+      {surfaces.length ? surfaces.map((surface) => <ExecutionSurface key={surface.id} surface={surface} />) : <RawExecutionResult result={tool.result} />}
+    </div>
+  </details>
+}
+
+function ApprovalAuditItem({ approval }: { approval: ApprovalView }) {
+  const { t } = useTranslation()
+  if (approval.status === "pending") return null
+  const success = approval.status === "approved" || approval.status === "consumed"
+  const danger = approval.status === "denied" || approval.status === "expired" || approval.status === "cancelled"
+  return <div className="approval-audit" data-conversation-kind="approval" data-state={approval.status}>
+    <span className="approval-audit-icon">{success ? <ShieldCheck size={15} /> : <XCircle size={15} />}</span>
+    <strong>{t("browser.approval")}</strong><span className="tool-separator" /><span className="approval-audit-summary">{friendlyToolName(approval.toolName)} · {shortID(approval.executionId)}</span>
+    <Badge tone={success ? "success" : danger ? "danger" : "neutral"}>{approvalStatusLabel(t, approval.status)}</Badge>
+  </div>
+}
+
+function StandaloneSurfaceItem({ surface }: { surface: A2UISurface }) {
+  const { t } = useTranslation()
+  return <details className="execution-node" data-conversation-kind="execution">
+    <summary className="execution-header"><span className="execution-leading"><Code2 size={15} /></span><strong>{t("browser.execution")}</strong><span className="tool-separator" /><span className="tool-summary">{surfaceSummary(surface) || t("browser.a2ui")}</span><ChevronDown className="tool-chevron" size={14} /></summary>
+    <div className="execution-body"><ExecutionSurface surface={surface} /></div>
+  </details>
+}
+
+function RawExecutionResult({ result }: { result: string }) {
+  const { t } = useTranslation()
+  return <div className="terminal-card"><div className="terminal-toolbar"><span className="terminal-dots"><i /><i /><i /></span><span>{t("browser.output")}</span></div><pre>{result || t("browser.noOutput")}</pre></div>
+}
+
+function ExecutionSurface({ surface }: { surface: A2UISurface }) {
+  const { t } = useTranslation()
+  const presentation = commandPresentation(surface)
+  if (presentation) return <div className="terminal-card">
+    <div className="terminal-toolbar"><span className="terminal-dots"><i /><i /><i /></span><code>{presentation.command || t("browser.command")}</code></div>
+    <pre>{presentation.output || t("browser.noOutput")}</pre>
+    {presentation.status ? <div className="terminal-status"><CheckCircle2 size={12} />{presentation.status}</div> : null}
+  </div>
+  return <div className="a2ui-generic"><div className="surface-label"><Code2 size={14} />{t("browser.a2ui")}</div><Surface surface={surface} componentId="root" ancestors={new Set()} depth={0} /></div>
+}
+
+function ownedSurfaces(state: ConversationState, kind: "tool" | "approval", id: string): A2UISurface[] {
+  return state.surfaceOrder.map((surfaceId) => state.surfaces[surfaceId]).filter((surface): surface is A2UISurface => surface?.owner?.kind === kind && surface.owner.id === id)
+}
+
+function commandPresentation(surface: A2UISurface): { command: string; output: string; status: string } | null {
+  if (!surface.dataModel || typeof surface.dataModel !== "object" || Array.isArray(surface.dataModel)) return null
+  const model = surface.dataModel as Record<string, unknown>
+  const command = typeof model.command === "string" ? model.command : ""
+  const output = typeof model.output === "string" ? model.output : ""
+  const status = typeof model.status === "string" ? model.status : ""
+  return command || output || status ? { command, output, status } : null
+}
+
+function surfaceSummary(surface: A2UISurface): string {
+  const presentation = commandPresentation(surface)
+  return presentation?.status || presentation?.command || ""
+}
+
+function executionSummary(tool: ToolView, surfaces: A2UISurface[]): string {
+  for (const surface of surfaces) {
+    const summary = surfaceSummary(surface)
+    if (summary) return summary
+  }
+  const first = tool.result.trim().split("\n", 1)[0] ?? ""
+  return first || friendlyToolName(tool.name)
+}
+
+function friendlyToolName(name: string): string {
+  const leaf = name.split(/[./]/u).filter(Boolean).at(-1) ?? name
+  return leaf.replace(/[_-]+/gu, " ").replace(/\b\w/gu, (value) => value.toLocaleUpperCase())
+}
+
+function toolSummary(tool: ToolView): string {
+  if (tool.progress?.message) return tool.progress.message
+  if (!tool.arguments) return ""
+  try {
+    const value = JSON.parse(tool.arguments) as unknown
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const command = (value as Record<string, unknown>).command
+      if (typeof command === "string") return command
+      if (Array.isArray(command)) return command.filter((part): part is string => typeof part === "string").join(" ")
+    }
+  } catch { /* preserve the bounded raw preview below */ }
+  return tool.arguments.length > 160 ? `${tool.arguments.slice(0, 157)}…` : tool.arguments
+}
+
+function approvalStatusLabel(t: (key: string) => string, status: ApprovalView["status"]): string {
+  const keys: Record<ApprovalView["status"], string> = {
+    pending: "browser.approvalPending", approved: "browser.approvalApproved", denied: "browser.approvalDenied",
+    expired: "browser.approvalExpired", cancelled: "browser.approvalCancelled", consumed: "browser.approvalConsumed",
+  }
+  return t(keys[status])
 }
 
 function Surface({ surface, componentId, ancestors, depth }: { surface: A2UISurface; componentId: string; ancestors: Set<string>; depth: number }): ReactNode {
@@ -456,7 +651,7 @@ function Surface({ surface, componentId, ancestors, depth }: { surface: A2UISurf
   return value.includes("\n") ? <pre>{value}</pre> : <p>{value}</p>
 }
 
-function Composer({ centered, value, onChange, onSubmit, onCancel, onReconnect, state, inputRef }: { centered: boolean; value: string; onChange: (value: string) => void; onSubmit: (event: FormEvent) => Promise<void>; onCancel: () => Promise<void>; onReconnect: () => void; state: ConversationState; inputRef: React.RefObject<HTMLTextAreaElement | null> }) {
+function Composer({ centered, value, onChange, onSubmit, onCancel, onReconnect, state, approval, onDecision, inputRef }: { centered: boolean; value: string; onChange: (value: string) => void; onSubmit: (event: FormEvent) => Promise<void>; onCancel: () => Promise<void>; onReconnect: () => void; state: ConversationState; approval: ApprovalView | null; onDecision: (approval: ApprovalView, decision: "approve" | "deny") => Promise<void>; inputRef: React.RefObject<HTMLTextAreaElement | null> }) {
   const { t } = useTranslation()
   const busy = ["connecting", "running", "cancelling"].includes(state.status)
   useEffect(() => {
@@ -466,7 +661,23 @@ function Composer({ centered, value, onChange, onSubmit, onCancel, onReconnect, 
     input.style.height = `${Math.min(input.scrollHeight, 280)}px`
   }, [inputRef, value])
   const keyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit() } }
+  if (approval) return <div className="composer-wrap approval-composer-wrap"><ApprovalPanel approval={approval} onDecision={onDecision} /><p className="composer-note">{t("browser.disclaimer")}</p></div>
   return <div className={`composer-wrap${centered ? " composer-centered" : ""}`}><form className="composer" onSubmit={(event) => void onSubmit(event)}><Textarea className="composer-input" ref={inputRef} rows={1} value={value} disabled={busy} onChange={(event) => onChange(event.target.value)} onKeyDown={keyDown} placeholder={t("browser.prompt")} aria-label={t("browser.prompt")} /><div className="composer-footer"><span className={`run-status status-${state.status}`}>{statusLabel(t, state.status)}</span><div>{state.status === "disconnected" ? <Button type="button" variant="outline" size="sm" onClick={onReconnect}><RefreshCw size={14} />{t("browser.reconnect")}</Button> : null}{busy && state.runId ? <Button type="button" size="icon" onClick={() => void onCancel()} aria-label={t("browser.stop")}><CircleStop size={17} /></Button> : <Button type="submit" size="icon" disabled={!value.trim() || busy} aria-label={t("browser.send")}><Send size={17} /></Button>}</div></div></form><p className="composer-note">{t("browser.disclaimer")}</p></div>
+}
+
+function ApprovalPanel({ approval, onDecision }: { approval: ApprovalView; onDecision: (approval: ApprovalView, decision: "approve" | "deny") => Promise<void> }) {
+  const { t } = useTranslation()
+  const [submitting, setSubmitting] = useState<"approve" | "deny" | "">("")
+  useEffect(() => { setSubmitting("") }, [approval.approvalId, approval.version])
+  const decideApproval = async (decision: "approve" | "deny") => {
+    setSubmitting(decision)
+    try { await onDecision(approval, decision) } catch { setSubmitting("") }
+  }
+  return <section className="approval-panel" aria-live="polite">
+    <div className="approval-strip"><Clock3 size={14} /><span>{t("browser.approvalWaiting")}</span></div>
+    <div className="approval-panel-body"><div className="approval-panel-title"><span className="approval-panel-icon"><KeyRound size={17} /></span><div><h2>{t("browser.approval")}</h2><p>{t("browser.approvalDescription", { tool: friendlyToolName(approval.toolName) })}</p></div></div><code>{approval.toolName} · {shortID(approval.executionId)}</code></div>
+    <div className="approval-panel-actions"><Button variant="outline" disabled={Boolean(submitting)} onClick={() => void decideApproval("deny")}>{submitting === "deny" ? <LoaderCircle className="spin" size={14} /> : null}{t("browser.deny")}</Button><Button disabled={Boolean(submitting)} onClick={() => void decideApproval("approve")}>{submitting === "approve" ? <LoaderCircle className="spin" size={14} /> : <ShieldCheck size={14} />}{t("browser.approve")}</Button></div>
+  </section>
 }
 
 function LabelledInput({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (value: string) => void; placeholder?: string }) {

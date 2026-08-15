@@ -26,7 +26,7 @@ const (
 	// TAEProxyURLSG is the legacy single-profile i18n-tt route. The socks5h
 	// scheme is mandatory: the configured Merlin proxy resolves both the fixed
 	// control plane and per-session data-plane names on the remote side.
-	TAEProxyURLSG = "socks5h://ssh-egress-merlin-i18ntt-maliva-62204-headless.ssh-egress.svc.cluster.local:1080"
+	TAEProxyURLSG = "socks5h://ssh-egress-merlin-i18nbd-syd2a-83092-headless.ssh-egress.svc.cluster.local:1080"
 )
 
 type StrictHTTPClientConfig struct {

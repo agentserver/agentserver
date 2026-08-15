@@ -275,7 +275,7 @@ workspace、session 请求或运行时环境覆盖。当前 direct profiles 精�
 | `cn` | `merlin-hl-1` |
 | `boe` | direct，必须有明确 IPv4/IPv6 allowlist |
 | `i18n-bd` | `merlin-useast14a-1` |
-| `i18n-tt` | `merlin-maliva-1` |
+| `i18n-tt` | `merlin-i18nbd-syd2a` |
 
 Merlin 名称是逻辑 profile，不编码实际 Service 地址。production config 必须显式给出完整、无 userinfo 的
 `socks5h://` URL、namespace、exact Pod selector 与 port；provider 和 NetworkPolicy 使用同一份经过

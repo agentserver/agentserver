@@ -488,6 +488,92 @@ func TestRetargetDirectManagedTerminalIsBootstrapOnlyAtomicAndWebhookFree(t *tes
 	}
 }
 
+func legacyMalivaPolicyBootstrapConfigDocument() ConfigDocument {
+	document := directPolicyBootstrapConfigDocument()
+	document.ProxyProfiles[0] = ManagedSandboxProxyProfileDocument{
+		Name:      managedSandboxProxyI18NTTLegacy,
+		URL:       managedSandboxProxyLegacyURL,
+		Namespace: ProductionTAEProxyNamespace, PodSelector: map[string]string{"app": managedSandboxProxyLegacyApp},
+		Port: ProductionTAEProxyPort,
+	}
+	managed := document.Managed
+	managed.TAE.ProxyProfile = managedSandboxProxyI18NTTLegacy
+	managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(managed.TAE).DigestHex()
+	if err := refreshManagedSandboxProfileFromManaged(&document, 0, managed); err != nil {
+		panic(err)
+	}
+	if _, err := ValidateConfig(document); err != nil {
+		panic(err)
+	}
+	return document
+}
+
+func syd2aProxyRetarget(document ConfigDocument) ManagedSandboxProxyRetarget {
+	return ManagedSandboxProxyRetarget{
+		Region:       managedsandboxprofile.RegionI18NTT,
+		ExpectedName: document.Managed.TAE.ProxyProfile,
+		ExpectedURL:  document.ProxyProfiles[0].URL,
+		Proxy: ManagedSandboxProxyProfileDocument{
+			Name: ManagedSandboxProxyI18NTT, URL: ProductionTAEProxyURL,
+			Namespace:   ProductionTAEProxyNamespace,
+			PodSelector: map[string]string{"app": ProductionTAEProxyPodApp}, Port: ProductionTAEProxyPort,
+		},
+	}
+}
+
+func TestRetargetManagedSandboxProxyIsBootstrapOnlyAtomicAndFailClosed(t *testing.T) {
+	bootstrap := legacyMalivaPolicyBootstrapConfigDocument()
+	originalProfileID := bootstrap.SandboxProfiles[0].ProfileID
+	originalBinding := bootstrap.SandboxProfiles[0].BindingSHA256
+	retargeted, err := RetargetManagedSandboxProxyDocument(bootstrap, syd2aProxyRetarget(bootstrap))
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := retargeted.ProxyProfiles[0]
+	profile := retargeted.SandboxProfiles[0]
+	if proxy.Name != ManagedSandboxProxyI18NTT || proxy.URL != ProductionTAEProxyURL ||
+		proxy.Namespace != ProductionTAEProxyNamespace || proxy.PodSelector["app"] != ProductionTAEProxyPodApp ||
+		profile.TAE.ProxyProfile != ManagedSandboxProxyI18NTT || retargeted.Managed.TAE.ProxyProfile != ManagedSandboxProxyI18NTT ||
+		profile.ProfileID == originalProfileID || profile.BindingSHA256 == originalBinding ||
+		!managedPolicyBootstrap(retargeted.Managed) || profile.TAE.NetworkEvidence != (ManagedTAENetworkEvidenceDocument{}) ||
+		bootstrap.ProxyProfiles[0].Name != managedSandboxProxyI18NTTLegacy {
+		t.Fatalf("retargeted proxy = %+v, profile = %+v, original profile/binding = %s/%s", proxy, profile, originalProfileID, originalBinding)
+	}
+	if _, err := ValidateConfig(retargeted); err != nil {
+		t.Fatalf("retargeted config is invalid: %v", err)
+	}
+
+	for name, mutate := range map[string]func(*ConfigDocument, *ManagedSandboxProxyRetarget){
+		"active source": func(document *ConfigDocument, _ *ManagedSandboxProxyRetarget) {
+			*document = directConfigDocument()
+		},
+		"direct region": func(_ *ConfigDocument, retarget *ManagedSandboxProxyRetarget) {
+			retarget.Region = managedsandboxprofile.RegionBOE
+		},
+		"stale name": func(_ *ConfigDocument, retarget *ManagedSandboxProxyRetarget) {
+			retarget.ExpectedName = "merlin-stale"
+		},
+		"stale URL": func(_ *ConfigDocument, retarget *ManagedSandboxProxyRetarget) {
+			retarget.ExpectedURL = "socks5h://stale.example.internal:1080"
+		},
+		"invalid replacement": func(_ *ConfigDocument, retarget *ManagedSandboxProxyRetarget) {
+			retarget.Proxy.Name = "merlin-unreviewed"
+		},
+		"unchanged authority": func(document *ConfigDocument, retarget *ManagedSandboxProxyRetarget) {
+			retarget.Proxy = document.ProxyProfiles[0]
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			document := bootstrap
+			retarget := syd2aProxyRetarget(bootstrap)
+			mutate(&document, &retarget)
+			if _, err := RetargetManagedSandboxProxyDocument(document, retarget); err == nil {
+				t.Fatal("unsafe managed sandbox proxy retarget was accepted")
+			}
+		})
+	}
+}
+
 func TestActivateManagedExecutorBindsAllExternalEvidence(t *testing.T) {
 	bootstrap := policyBootstrapConfigDocument()
 	revision := "lark-readonly-v2"

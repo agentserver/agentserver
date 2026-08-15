@@ -15,9 +15,12 @@ import (
 )
 
 const (
-	ManagedSandboxProxyCN     = "merlin-hl-1"
-	ManagedSandboxProxyI18NBD = "merlin-useast14a-1"
-	ManagedSandboxProxyI18NTT = "merlin-maliva-1"
+	ManagedSandboxProxyCN           = "merlin-hl-1"
+	ManagedSandboxProxyI18NBD       = "merlin-useast14a-1"
+	ManagedSandboxProxyI18NTT       = "merlin-i18nbd-syd2a"
+	managedSandboxProxyI18NTTLegacy = "merlin-maliva-1"
+	managedSandboxProxyLegacyURL    = "socks5h://ssh-egress-merlin-i18ntt-maliva-62204-headless.ssh-egress.svc.cluster.local:1080"
+	managedSandboxProxyLegacyApp    = "ssh-egress-merlin-i18ntt-maliva-62204"
 )
 
 // ManagedSandboxRegionsDocument is the public, stable region catalog exposed
@@ -238,7 +241,13 @@ func validateManagedSandboxProxyProfiles(source []ManagedSandboxProxyProfileDocu
 	if len(source) > 3 {
 		return nil, errors.New("proxyProfiles may contain at most three reviewed Merlin routes")
 	}
-	allowed := map[string]struct{}{ManagedSandboxProxyCN: {}, ManagedSandboxProxyI18NBD: {}, ManagedSandboxProxyI18NTT: {}}
+	allowed := map[string]struct{}{
+		ManagedSandboxProxyCN: {}, ManagedSandboxProxyI18NBD: {}, ManagedSandboxProxyI18NTT: {},
+		// Kept read-compatible so a locked bootstrap can be migrated through
+		// RetargetManagedSandboxProxyDocument. New templates and upgrades use
+		// ManagedSandboxProxyI18NTT exclusively.
+		managedSandboxProxyI18NTTLegacy: {},
+	}
 	result := make(map[string]ManagedSandboxProxyProfileDocument, len(source))
 	for index, proxy := range source {
 		path := fmt.Sprintf("proxyProfiles[%d]", index)
@@ -266,6 +275,12 @@ func validateManagedSandboxProxyProfiles(source []ManagedSandboxProxyProfileDocu
 		}
 		if err := validateManagedSandboxPodSelector(path+".podSelector", proxy.PodSelector); err != nil {
 			return nil, err
+		}
+		if proxy.Name == managedSandboxProxyI18NTTLegacy &&
+			(proxy.URL != managedSandboxProxyLegacyURL || proxy.Namespace != ProductionTAEProxyNamespace ||
+				proxy.Port != ProductionTAEProxyPort || len(proxy.PodSelector) != 1 ||
+				proxy.PodSelector["app"] != managedSandboxProxyLegacyApp) {
+			return nil, fmt.Errorf("%s legacy i18n-tt proxy must match the retired locked authority exactly", path)
 		}
 		proxy.PodSelector = cloneStringMap(proxy.PodSelector)
 		result[proxy.Name] = proxy
@@ -341,7 +356,8 @@ func validateManagedSandboxTAEAuthority(path string, tae ManagedTAEDocument, pro
 		managedsandboxprofile.RegionI18NBD: ManagedSandboxProxyI18NBD,
 		managedsandboxprofile.RegionI18NTT: ManagedSandboxProxyI18NTT,
 	}[tae.Region]
-	if tae.ProxyProfile != wantProxy {
+	legacyI18NTT := tae.Region == managedsandboxprofile.RegionI18NTT && tae.ProxyProfile == managedSandboxProxyI18NTTLegacy
+	if tae.ProxyProfile != wantProxy && !legacyI18NTT {
 		if wantProxy == "" {
 			return nil, fmt.Errorf("%s.proxyProfile must be empty for direct BOE routing", path)
 		}
@@ -350,9 +366,13 @@ func validateManagedSandboxTAEAuthority(path string, tae ManagedTAEDocument, pro
 	if wantProxy == "" {
 		return nil, nil
 	}
-	proxy, ok := proxies[wantProxy]
+	selectedProxy := wantProxy
+	if legacyI18NTT {
+		selectedProxy = managedSandboxProxyI18NTTLegacy
+	}
+	proxy, ok := proxies[selectedProxy]
 	if !ok {
-		return nil, fmt.Errorf("%s.proxyProfile %q is not configured", path, wantProxy)
+		return nil, fmt.Errorf("%s.proxyProfile %q is not configured", path, selectedProxy)
 	}
 	return &proxy, nil
 }

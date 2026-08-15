@@ -184,7 +184,7 @@ webhook 字段为空。地域与路由映射为：
 | `cn` | `merlin-hl-1` |
 | `boe` | direct；`sandboxExternalEgress` 必须显式提供 IPv4 与 IPv6 CIDR |
 | `i18n-bd` | `merlin-useast14a-1` |
-| `i18n-tt` | `merlin-maliva-1` |
+| `i18n-tt` | `merlin-i18nbd-syd2a` |
 
 Merlin 名称不携带网络地址。完整 credential-free `socks5h://` URL、namespace、exact Pod selector 和 port
 全部由 `proxyProfiles` 配置，URL port 必须与显式 port 相等；未使用或重复 proxy 会被拒绝。每个
@@ -421,7 +421,7 @@ v6 managed sandbox catalog 必须包含：
 
 - `sandboxRegions.defaultRegion/regions`：`defaultRegion` 固定为 `i18n-tt`；`regions` 仅列出本 release 实际
   安装、可供 workspace 选择的地域，且必须包含 `i18n-tt`；
-- `proxyProfiles`：`merlin-hl-1`、`merlin-useast14a-1`、`merlin-maliva-1` 中实际使用项的完整 URL、namespace、
+- `proxyProfiles`：`merlin-hl-1`、`merlin-useast14a-1`、`merlin-i18nbd-syd2a` 中实际使用项的完整 URL、namespace、
   Pod selector 和 port；BOE 不在这里配置；
 - 每个 `sandboxProfiles[]`：唯一 profile/environment/Gateway authority、TAE Sandbox/revision、官方
   control/data authority、ByteCloud site/JWT endpoint、proxy name 或 BOE 双栈 CIDR，以及独立 policy/network
@@ -461,6 +461,25 @@ go run ./cmd/agentserver-deploy retarget-direct-terminal-sandbox \
 
 不能用 `jq` 或文本替换分别修改 identity/binding 字段；正式探针和 activation 必须以经过 loader 校验的
 bootstrap 输出为唯一输入。
+
+已锁定 bootstrap 的地域代理发生变更时，必须用原子重定向命令重算 profile identity/binding；命令只接受
+`policy-bootstrap`，并要求调用者重复旧 name/URL 作为 stale-config fence：
+
+```bash
+go run ./cmd/agentserver-deploy retarget-managed-sandbox-proxy \
+  --config=/absolute/policy-bootstrap.json \
+  --output=/absolute/retargeted-bootstrap.json \
+  --region=i18n-tt \
+  --expected-proxy-name=merlin-maliva-1 \
+  --expected-proxy-url=socks5h://ssh-egress-merlin-i18ntt-maliva-62204-headless.ssh-egress.svc.cluster.local:1080 \
+  --proxy-name=merlin-i18nbd-syd2a \
+  --proxy-url=socks5h://ssh-egress-merlin-i18nbd-syd2a-83092-headless.ssh-egress.svc.cluster.local:1080 \
+  --proxy-namespace=ssh-egress \
+  --proxy-pod-app=ssh-egress-merlin-i18nbd-syd2a-83092 \
+  --proxy-port=1080
+```
+
+`merlin-maliva-1` 仅保留为旧锁定配置的迁移输入；新模板和新 activation 不得继续选择它。
 
 TAE 审批完成后，通过 Pulumi 在**当前已部署且已锁镜像**的 bootstrap release 中启用一次性探针；不能拿
 active 模板、另一版配置或手工 manifest 代替。Chart 默认值如下，只有 bootstrap Chart 的 closed values

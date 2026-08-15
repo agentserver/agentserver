@@ -410,7 +410,7 @@
         "dataPlaneSuffix": {"$ref": "#/$defs/dnsName"},
         "bytecloudSite": {"type": "string", "minLength": 1, "maxLength": 128},
         "bytecloudJwtEndpoint": {"$ref": "#/$defs/httpsUrl"},
-        "proxyProfile": {"enum": ["", "merlin-hl-1", "merlin-useast14a-1", "merlin-maliva-1"]},
+        "proxyProfile": {"enum": ["", "merlin-hl-1", "merlin-useast14a-1", "merlin-i18nbd-syd2a"]},
         "policy": {"$ref": "#/$defs/managedTAEPolicy"},
         "networkEvidence": {"$ref": "#/$defs/managedTAENetworkEvidence"}
       }
@@ -455,7 +455,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["name", "url", "namespace", "podSelector", "port"],
       "properties": {
-        "name": {"enum": ["merlin-hl-1", "merlin-useast14a-1", "merlin-maliva-1"]},
+        "name": {"enum": ["merlin-hl-1", "merlin-useast14a-1", "merlin-i18nbd-syd2a"]},
         "url": {"type": "string", "minLength": 12, "maxLength": 2048, "pattern": "^socks5h://[^/]+:[0-9]+$"},
         "namespace": {"$ref": "#/$defs/dnsLabel"},
         "podSelector": {"$ref": "#/$defs/labelSelector"},

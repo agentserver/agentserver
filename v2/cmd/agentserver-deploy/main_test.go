@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -130,6 +131,55 @@ func TestRunRetargetDirectTerminalSandboxUsesExactClosedArguments(t *testing.T) 
 	if exitCode != 0 || stderr.Len() != 0 || called != want ||
 		!strings.Contains(stdout.String(), "fail-closed direct Terminal Sandbox") {
 		t.Fatalf("run = %d, called %q, stdout %q, stderr %q", exitCode, called, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunRetargetManagedSandboxProxyUsesExactClosedArguments(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	called := ""
+	exitCode := run(
+		[]string{
+			"retarget-managed-sandbox-proxy", "--region=i18n-tt",
+			"--expected-proxy-name=merlin-maliva-1",
+			"--expected-proxy-url=socks5h://legacy.example.internal:1080",
+			"--proxy-name=merlin-i18nbd-syd2a",
+			"--proxy-url=socks5h://syd2a.example.internal:1080", "--proxy-namespace=ssh-egress",
+			"--proxy-pod-app=ssh-egress-merlin-i18nbd-syd2a-83092", "--proxy-port=1080",
+			"--output=/absolute/retargeted.json", "--config=/absolute/bootstrap.json",
+		},
+		&stdout, &stderr,
+		deployCommands{retargetManagedProxy: func(config, output string, retarget productiondeploy.ManagedSandboxProxyRetarget) error {
+			called = strings.Join([]string{
+				config, output, retarget.Region, retarget.ExpectedName, retarget.ExpectedURL,
+				retarget.Proxy.Name, retarget.Proxy.URL, retarget.Proxy.Namespace,
+				retarget.Proxy.PodSelector["app"], fmt.Sprint(retarget.Proxy.Port),
+			}, "|")
+			return nil
+		}},
+	)
+	want := strings.Join([]string{
+		"/absolute/bootstrap.json", "/absolute/retargeted.json", "i18n-tt", "merlin-maliva-1",
+		"socks5h://legacy.example.internal:1080", "merlin-i18nbd-syd2a",
+		"socks5h://syd2a.example.internal:1080", "ssh-egress",
+		"ssh-egress-merlin-i18nbd-syd2a-83092", "1080",
+	}, "|")
+	if exitCode != 0 || stderr.Len() != 0 || called != want ||
+		!strings.Contains(stdout.String(), "fail-closed regional proxy") {
+		t.Fatalf("run = %d, called %q, stdout %q, stderr %q", exitCode, called, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunRetargetManagedSandboxProxyRejectsInvalidPort(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	exitCode := run([]string{
+		"retarget-managed-sandbox-proxy", "--config=/absolute/bootstrap.json", "--output=/absolute/output.json",
+		"--region=i18n-tt", "--expected-proxy-name=merlin-maliva-1",
+		"--expected-proxy-url=socks5h://legacy.example.internal:1080", "--proxy-name=merlin-i18nbd-syd2a",
+		"--proxy-url=socks5h://syd2a.example.internal:1080", "--proxy-namespace=ssh-egress",
+		"--proxy-pod-app=syd2a", "--proxy-port=0",
+	}, &stdout, &stderr, deployCommands{})
+	if exitCode != 1 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "proxy port") {
+		t.Fatalf("run = %d, stdout %q, stderr %q", exitCode, stdout.String(), stderr.String())
 	}
 }
 

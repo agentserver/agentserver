@@ -319,7 +319,7 @@ func fourRegionConfigDocument() ConfigDocument {
 	document.ProxyProfiles = []ManagedSandboxProxyProfileDocument{
 		{Name: ManagedSandboxProxyCN, URL: "socks5h://merlin-hl-1.proxy-system.svc.cluster.local:1081", Namespace: "proxy-system", PodSelector: map[string]string{"app": "merlin-hl-1"}, Port: 1081},
 		{Name: ManagedSandboxProxyI18NBD, URL: "socks5h://merlin-useast14a-1.proxy-system.svc.cluster.local:1082", Namespace: "proxy-system", PodSelector: map[string]string{"app": "merlin-useast14a-1"}, Port: 1082},
-		{Name: ManagedSandboxProxyI18NTT, URL: "socks5h://merlin-maliva-1.proxy-system.svc.cluster.local:1083", Namespace: "proxy-system", PodSelector: map[string]string{"app": "merlin-maliva-1"}, Port: 1083},
+		{Name: ManagedSandboxProxyI18NTT, URL: "socks5h://merlin-i18nbd-syd2a.proxy-system.svc.cluster.local:1083", Namespace: "proxy-system", PodSelector: map[string]string{"app": "merlin-i18nbd-syd2a"}, Port: 1083},
 	}
 	document.SandboxRegions = ManagedSandboxRegionsDocument{
 		DefaultRegion: managedsandboxprofile.RegionI18NTT,

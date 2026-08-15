@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/agentserver/agentserver/v2/internal/productiondeploy"
@@ -22,6 +23,7 @@ type deployCommands struct {
 	pinManagedTerminal      func(string, string, string, string) error
 	retargetManagedTerminal func(string, string, string, string, string, string, string) error
 	retargetDirectTerminal  func(string, string, string, string, string, string, string) error
+	retargetManagedProxy    func(string, string, productiondeploy.ManagedSandboxProxyRetarget) error
 	activateManagedExecutor func(string, string, string, string, string, string) error
 	activateManagedProfiles func(string, string, string) error
 }
@@ -36,6 +38,7 @@ func main() {
 		pinManagedTerminal:      productiondeploy.PinManagedTerminalRevisionFile,
 		retargetManagedTerminal: productiondeploy.RetargetManagedTerminalFile,
 		retargetDirectTerminal:  productiondeploy.RetargetDirectManagedTerminalFile,
+		retargetManagedProxy:    productiondeploy.RetargetManagedSandboxProxyFile,
 		activateManagedExecutor: productiondeploy.ActivateManagedExecutorFile,
 		activateManagedProfiles: productiondeploy.ActivateManagedSandboxProfilesFile,
 	}))
@@ -157,6 +160,37 @@ func run(arguments []string, stdout, stderr io.Writer, commands deployCommands) 
 			return 1
 		}
 		fmt.Fprintf(stdout, "agentserver-deploy retarget-direct-terminal-sandbox: wrote fail-closed direct Terminal Sandbox config to %s\n", values["output"])
+		return 0
+	case "retarget-managed-sandbox-proxy":
+		values, ok := exactArguments(
+			arguments[1:], "config", "output", "region", "expected-proxy-name", "expected-proxy-url",
+			"proxy-name", "proxy-url", "proxy-namespace", "proxy-pod-app", "proxy-port",
+		)
+		if !ok {
+			writeUsage(stderr)
+			return 2
+		}
+		port, err := strconv.ParseUint(values["proxy-port"], 10, 16)
+		if err != nil || port == 0 {
+			fmt.Fprintln(stderr, "agentserver-deploy retarget-managed-sandbox-proxy: proxy port must be an integer between 1 and 65535")
+			return 1
+		}
+		if commands.retargetManagedProxy == nil {
+			fmt.Fprintln(stderr, "agentserver-deploy retarget-managed-sandbox-proxy: command is unavailable")
+			return 1
+		}
+		retarget := productiondeploy.ManagedSandboxProxyRetarget{
+			Region: values["region"], ExpectedName: values["expected-proxy-name"], ExpectedURL: values["expected-proxy-url"],
+			Proxy: productiondeploy.ManagedSandboxProxyProfileDocument{
+				Name: values["proxy-name"], URL: values["proxy-url"], Namespace: values["proxy-namespace"],
+				PodSelector: map[string]string{"app": values["proxy-pod-app"]}, Port: uint16(port),
+			},
+		}
+		if err := commands.retargetManagedProxy(values["config"], values["output"], retarget); err != nil {
+			fmt.Fprintf(stderr, "agentserver-deploy retarget-managed-sandbox-proxy: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "agentserver-deploy retarget-managed-sandbox-proxy: wrote fail-closed regional proxy config to %s\n", values["output"])
 		return 0
 	case "lock-release":
 		values, ok := exactArguments(
@@ -332,6 +366,7 @@ func writeUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "usage: agentserver-deploy pin-terminal-revision --config=/absolute/bootstrap.json --output=/absolute/new-bootstrap.json --sandbox-id=<expected-sandbox-id> --revision-id=<published-terminal-revision-id>")
 	fmt.Fprintln(writer, "usage: agentserver-deploy retarget-terminal-sandbox --config=/absolute/bootstrap.json --output=/absolute/new-bootstrap.json --expected-sandbox-id=<current-sandbox-id> --sandbox-id=<new-sandbox-id> --revision-id=<published-terminal-revision-id> --environment-id=<fresh-managed-environment-uuid> --managed-sandbox-image=registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-managed-sandbox@sha256:<digest>")
 	fmt.Fprintln(writer, "usage: agentserver-deploy retarget-direct-terminal-sandbox --config=/absolute/bootstrap.json --output=/absolute/new-bootstrap.json --expected-sandbox-id=<current-sandbox-id> --sandbox-id=<new-sandbox-id> --revision-id=<published-terminal-revision-id> --environment-id=<fresh-managed-environment-uuid> --managed-sandbox-image=registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-managed-sandbox@sha256:<digest>")
+	fmt.Fprintln(writer, "usage: agentserver-deploy retarget-managed-sandbox-proxy --config=/absolute/bootstrap.json --output=/absolute/new-bootstrap.json --region=<installed-region> --expected-proxy-name=<current-name> --expected-proxy-url=<current-socks5h-url> --proxy-name=<reviewed-name> --proxy-url=<replacement-socks5h-url> --proxy-namespace=<namespace> --proxy-pod-app=<exact-app-label> --proxy-port=<port>")
 	fmt.Fprintln(writer, "usage: agentserver-deploy lock-release --config=/absolute/template.json --output=/absolute/new-production.json --service-image=IMAGE@sha256:DIGEST --harness-image=IMAGE@sha256:DIGEST --hydra-image=IMAGE@sha256:DIGEST --managed-sandbox-image=IMAGE@sha256:DIGEST --managed-skill-sha256=DIGEST --lark-cli-sha256=DIGEST --lark-skill-sha256=DIGEST --bkectl-source-revision=REVISION --bkectl-cli-sha256=DIGEST --bkectl-skill-pack-sha256=DIGEST --bkectl-policy-sha256=DIGEST")
 	fmt.Fprintln(writer, "       agentserver-deploy lock-developer-service --config=/absolute/active.json --output=/absolute/new-production.json --service-image=registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-service@sha256:DIGEST")
 	fmt.Fprintln(writer, "       agentserver-deploy validate --config=/absolute/path")

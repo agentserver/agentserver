@@ -31,7 +31,7 @@ setting 的统一初值，owner 之后仍可切换到其他已安装地域。
 | `cn` | `merlin-hl-1` |
 | `boe` | direct；必须配置明确的 IPv4 与 IPv6 CIDR allowlist |
 | `i18n-bd` | `merlin-useast14a-1` |
-| `i18n-tt` | `merlin-maliva-1` |
+| `i18n-tt` | `merlin-i18nbd-syd2a` |
 
 Merlin 名称只是受审计的逻辑 profile。完整 `socks5h://` URL、namespace、exact Pod selector 和 port
 全部来自 `proxyProfiles`，代码不会从名称推导地址，也不提供跨地域 fallback。BOE 不配置 proxy；

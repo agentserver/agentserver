@@ -37,9 +37,9 @@ const (
 	ProductionByteCloudJWTEndpoint = "https://cloud-i18n-sg.bytedance.net"
 	ProductionTAEControlPlaneHost  = "controlplane.sg.ai-sandbox-i18n.byted.org"
 	ProductionTAEDataPlaneSuffix   = "sg.ai-sandbox-i18n.byted.org"
-	ProductionTAEProxyURL          = "socks5h://ssh-egress-merlin-i18ntt-maliva-62204-headless.ssh-egress.svc.cluster.local:1080"
+	ProductionTAEProxyURL          = "socks5h://ssh-egress-merlin-i18nbd-syd2a-83092-headless.ssh-egress.svc.cluster.local:1080"
 	ProductionTAEProxyNamespace    = "ssh-egress"
-	ProductionTAEProxyPodApp       = "ssh-egress-merlin-i18ntt-maliva-62204"
+	ProductionTAEProxyPodApp       = "ssh-egress-merlin-i18nbd-syd2a-83092"
 	ProductionTAEProxyPort         = uint16(1080)
 	ManagedExecutorStageDisabled   = "disabled"
 	ManagedExecutorStageBootstrap  = "policy-bootstrap"
@@ -419,6 +419,139 @@ func RetargetDirectManagedTerminalFile(
 	retargeted, err := RetargetDirectManagedTerminalJSON(
 		raw, expectedSandboxID, sandboxID, revisionID, environmentID, managedSandboxImage,
 	)
+	if err != nil {
+		return err
+	}
+	return WriteReleaseConfig(retargeted, output)
+}
+
+// ManagedSandboxProxyRetarget is an operator-confirmed replacement of one
+// installed regional proxy authority. ExpectedName and ExpectedURL fence the
+// source bootstrap; Proxy is the complete replacement authority used by both
+// the runtime environment and the rendered NetworkPolicy.
+type ManagedSandboxProxyRetarget struct {
+	Region       string
+	ExpectedName string
+	ExpectedURL  string
+	Proxy        ManagedSandboxProxyProfileDocument
+}
+
+// RetargetManagedSandboxProxyDocument atomically replaces one regional proxy
+// authority and recomputes the affected immutable profile identity and
+// binding. Active configurations are immutable because their network evidence
+// describes the old route; callers must first derive and deploy a fail-closed
+// policy bootstrap, probe the replacement, and activate it with fresh evidence.
+func RetargetManagedSandboxProxyDocument(
+	document ConfigDocument, retarget ManagedSandboxProxyRetarget,
+) (ConfigDocument, error) {
+	document.ProxyProfiles = append([]ManagedSandboxProxyProfileDocument(nil), document.ProxyProfiles...)
+	for index := range document.ProxyProfiles {
+		document.ProxyProfiles[index].PodSelector = cloneStringMap(document.ProxyProfiles[index].PodSelector)
+	}
+	document.SandboxProfiles = append([]ManagedSandboxProfileDocument(nil), document.SandboxProfiles...)
+	retarget.Proxy.PodSelector = cloneStringMap(retarget.Proxy.PodSelector)
+	loaded, err := ValidateConfig(document)
+	if err != nil {
+		return ConfigDocument{}, fmt.Errorf("validate managed sandbox proxy retarget source: %w", err)
+	}
+	document = loaded.Document
+	if !managedPolicyBootstrap(document.Managed) {
+		return ConfigDocument{}, errors.New("managed sandbox proxy can be retargeted only in the policy-bootstrap stage")
+	}
+	if !managedsandboxprofile.ValidRegion(retarget.Region) || retarget.Region == managedsandboxprofile.RegionBOE {
+		return ConfigDocument{}, errors.New("managed sandbox proxy retarget region must be a supported proxied TAE region")
+	}
+	if retarget.ExpectedName == "" || retarget.ExpectedURL == "" {
+		return ConfigDocument{}, errors.New("expected managed sandbox proxy name and URL are required")
+	}
+
+	profileIndex := -1
+	for index := range document.SandboxProfiles {
+		if document.SandboxProfiles[index].Region == retarget.Region {
+			if profileIndex != -1 {
+				return ConfigDocument{}, errors.New("managed sandbox proxy retarget region is repeated")
+			}
+			profileIndex = index
+		}
+	}
+	if profileIndex == -1 {
+		return ConfigDocument{}, errors.New("managed sandbox proxy retarget region is not installed")
+	}
+	profile := document.SandboxProfiles[profileIndex]
+	if profile.TAE.ProxyProfile != retarget.ExpectedName {
+		return ConfigDocument{}, errors.New("current managed sandbox proxy name does not match the policy-bootstrap configuration")
+	}
+
+	proxyIndex := -1
+	for index := range document.ProxyProfiles {
+		proxy := document.ProxyProfiles[index]
+		if proxy.Name == retarget.ExpectedName {
+			if proxyIndex != -1 {
+				return ConfigDocument{}, errors.New("current managed sandbox proxy is repeated")
+			}
+			proxyIndex = index
+		}
+		if index != proxyIndex && proxy.Name == retarget.Proxy.Name && retarget.Proxy.Name != retarget.ExpectedName {
+			return ConfigDocument{}, errors.New("replacement managed sandbox proxy name is already configured")
+		}
+	}
+	if proxyIndex == -1 || document.ProxyProfiles[proxyIndex].URL != retarget.ExpectedURL {
+		return ConfigDocument{}, errors.New("current managed sandbox proxy URL does not match the policy-bootstrap configuration")
+	}
+	for index := range document.SandboxProfiles {
+		if index != profileIndex && document.SandboxProfiles[index].TAE.ProxyProfile == retarget.ExpectedName {
+			return ConfigDocument{}, errors.New("current managed sandbox proxy is shared by another installed region")
+		}
+	}
+	if canonicalDigest(document.ProxyProfiles[proxyIndex]) == canonicalDigest(retarget.Proxy) {
+		return ConfigDocument{}, errors.New("replacement managed sandbox proxy authority is unchanged")
+	}
+
+	document.ProxyProfiles[proxyIndex] = retarget.Proxy
+	managed := document.Managed
+	managed.Stage = ManagedExecutorStageBootstrap
+	managed.Environment = profile.Environment
+	managed.TAE = profile.TAE
+	managed.TAE.ProxyProfile = retarget.Proxy.Name
+	managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(managed.TAE).DigestHex()
+	if err := refreshManagedSandboxProfileFromManaged(&document, profileIndex, managed); err != nil {
+		return ConfigDocument{}, err
+	}
+	retargeted, err := ValidateConfig(document)
+	if err != nil {
+		return ConfigDocument{}, fmt.Errorf("validate retargeted managed sandbox proxy: %w", err)
+	}
+	return retargeted.Document, nil
+}
+
+func RetargetManagedSandboxProxyJSON(raw []byte, retarget ManagedSandboxProxyRetarget) ([]byte, error) {
+	document, err := decodeConfigDocument(raw)
+	if err != nil {
+		return nil, err
+	}
+	document, err = RetargetManagedSandboxProxyDocument(document, retarget)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode retargeted managed sandbox proxy config: %w", err)
+	}
+	encoded = append(encoded, '\n')
+	if _, err := ParseConfig(encoded); err != nil {
+		return nil, fmt.Errorf("verify retargeted managed sandbox proxy config: %w", err)
+	}
+	return encoded, nil
+}
+
+func RetargetManagedSandboxProxyFile(
+	input, output string, retarget ManagedSandboxProxyRetarget,
+) error {
+	raw, err := readProductionConfigFile(input)
+	if err != nil {
+		return err
+	}
+	retargeted, err := RetargetManagedSandboxProxyJSON(raw, retarget)
 	if err != nil {
 		return err
 	}

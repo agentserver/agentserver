@@ -201,7 +201,7 @@
         "properties": {
           "id": {"type": "string", "minLength": 1, "maxLength": 512},
           "parentId": {"type": "string", "minLength": 1, "maxLength": 512},
-          "kind": {"enum": ["run", "attempt", "model", "assistant", "reasoning", "tool", "approval", "execution", "operation", "sandbox", "credential", "checkpoint", "event"]},
+          "kind": {"enum": ["run", "input", "attempt", "model", "assistant", "reasoning", "tool", "approval", "execution", "operation", "sandbox", "credential", "checkpoint", "event"]},
           "status": {"enum": ["queued", "running", "succeeded", "failed", "cancelled", "unknown", "info"]},
           "title": {"type": "string", "minLength": 1, "maxLength": 1024},
           "summary": {"type": "string", "maxLength": 4096},

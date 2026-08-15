@@ -131,7 +131,7 @@ export interface components {
             id: string;
             parentId?: string;
             /** @enum {unknown} */
-            kind: "run" | "attempt" | "model" | "assistant" | "reasoning" | "tool" | "approval" | "execution" | "operation" | "sandbox" | "credential" | "checkpoint" | "event";
+            kind: "run" | "input" | "attempt" | "model" | "assistant" | "reasoning" | "tool" | "approval" | "execution" | "operation" | "sandbox" | "credential" | "checkpoint" | "event";
             /** @enum {unknown} */
             status: "queued" | "running" | "succeeded" | "failed" | "cancelled" | "unknown" | "info";
             title: string;

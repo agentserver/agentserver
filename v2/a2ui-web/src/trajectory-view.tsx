@@ -8,6 +8,7 @@ import {
   Clock3,
   KeyRound,
   LoaderCircle,
+  MessageSquare,
   Search,
   Sparkles,
   Timer,
@@ -86,6 +87,22 @@ interface TrajectoryRecordRowProps {
 }
 
 const PROBLEM_STATUSES = new Set<SessionTrajectoryRecord["status"]>(["failed", "unknown"])
+const HIDDEN_LIFECYCLE_KINDS = new Set<SessionTrajectoryRecord["kind"]>([
+  "attempt",
+  "approval",
+  "checkpoint",
+  "credential",
+  "event",
+  "execution",
+  "operation",
+  "sandbox",
+])
+const TIMELINE_OMITTED_KINDS = new Set<SessionTrajectoryRecord["kind"]>([
+  "run",
+  "attempt",
+  "checkpoint",
+  "event",
+])
 
 export function groupTrajectoryRecords(records: SessionTrajectoryRecord[], readAt: string): TrajectoryRunGroup[] {
   const groups = new Map<string, TrajectoryRunGroup>()
@@ -113,7 +130,7 @@ export function filterTrajectoryRecords(records: SessionTrajectoryRecord[], opti
   const included = new Set<string>()
 
   for (const record of records) {
-    if (!options.showLifecycle && record.kind === "event") continue
+    if (!options.showLifecycle && HIDDEN_LIFECYCLE_KINDS.has(record.kind) && !PROBLEM_STATUSES.has(record.status)) continue
     if (options.problemsOnly && !PROBLEM_STATUSES.has(record.status)) continue
     if (query && !trajectoryRecordSearchText(record).includes(query)) continue
     included.add(record.id)
@@ -128,8 +145,12 @@ export function filterTrajectoryRecords(records: SessionTrajectoryRecord[], opti
     const seen = new Set<string>()
     while (parentID && !seen.has(parentID)) {
       seen.add(parentID)
-      included.add(parentID)
-      parentID = byID.get(parentID)?.parentId
+      const parent = byID.get(parentID)
+      if (!parent) break
+      if (parent.kind === "run" || options.showLifecycle || !HIDDEN_LIFECYCLE_KINDS.has(parent.kind) || PROBLEM_STATUSES.has(parent.status)) {
+        included.add(parentID)
+      }
+      parentID = parent.parentId
     }
   }
 
@@ -138,7 +159,7 @@ export function filterTrajectoryRecords(records: SessionTrajectoryRecord[], opti
 
 export function deriveTrajectoryTimeline(records: SessionTrajectoryRecord[], readAt: string, mode: TimelineMode): TrajectoryTimelineModel | null {
   const readTime = timestamp(readAt) ?? Date.now()
-  const timed = records.filter((record) => timestamp(record.startedAt) !== null)
+  const timed = records.filter((record) => !TIMELINE_OMITTED_KINDS.has(record.kind) && timestamp(record.startedAt) !== null)
   if (!timed.length) return null
   if (mode === "sequence") {
     return {
@@ -183,7 +204,7 @@ export function TrajectoryView({
   const selected = records.find((record) => record.id === selectedId) ?? null
   const byID = useMemo(() => new Map(records.map((record) => [record.id, record])), [records])
   const problemCount = useMemo(() => records.filter((record) => PROBLEM_STATUSES.has(record.status)).length, [records])
-  const lifecycleCount = useMemo(() => records.filter((record) => record.kind === "event").length, [records])
+  const lifecycleCount = useMemo(() => records.filter((record) => HIDDEN_LIFECYCLE_KINDS.has(record.kind)).length, [records])
   const visibleRecords = useMemo(() => filterTrajectoryRecords(records, {
     query: searchQuery,
     showLifecycle,
@@ -318,11 +339,11 @@ export function TrajectoryView({
           {!loading && records.length === 0 && !error ? <div className="trajectory-state"><Activity size={18} />{t("browser.noTrajectory")}</div> : null}
           {!loading && records.length > 0 && groups.length === 0 ? <div className="trajectory-state"><Search size={18} />{t("browser.noMatchingTrajectory")}</div> : null}
           <div className="trajectory-run-groups">
-            {groups.map((group) => {
+            {groups.map((group, groupIndex) => {
               const run = group.run
               const collapsed = collapsedRuns.has(group.runId)
               const children = group.records.filter((record) => record.kind !== "run")
-              const attempts = children.filter((record) => record.kind === "attempt").length
+              const models = children.filter((record) => record.kind === "model" || record.kind === "assistant" || record.kind === "reasoning").length
               const tools = children.filter((record) => record.kind === "tool").length
               const problems = children.filter((record) => PROBLEM_STATUSES.has(record.status)).length
               const status = run?.status ?? (problems ? "failed" : activeRunId === group.runId ? "running" : "info")
@@ -333,9 +354,9 @@ export function TrajectoryView({
                   </button>
                   <button type="button" className="trajectory-run-select" onClick={() => run && onSelect(run.id)} disabled={!run}>
                     <span className="trajectory-run-status">{trajectoryStatusIcon(status)}</span>
-                    <span className="trajectory-run-copy"><strong>{t("browser.run")} {shortID(group.runId)}</strong><small>{run?.summary || (activeRunId === group.runId ? t("browser.inProgress") : t("browser.runTimeline"))}</small></span>
+                    <span className="trajectory-run-copy"><strong>{t("browser.turn")} {groupIndex + 1}</strong><small>{run?.summary || (activeRunId === group.runId ? t("browser.inProgress") : t("browser.runTimeline"))}</small></span>
                     <span className="trajectory-run-stats">
-                      <span>{attempts} {t("browser.attempts")}</span>
+                      <span>{models} {t("browser.modelSteps")}</span>
                       <span>{tools} {t("browser.toolCalls")}</span>
                       {problems ? <span className="danger">{problems} {t("browser.problems")}</span> : null}
                     </span>
@@ -392,7 +413,7 @@ function TrajectoryTimeline({ model, mode, selectedId, hasMore, loadingEarlier, 
       <span>{mode === "actual" ? t("browser.trajectoryActualTime") : t("browser.trajectorySequence")}{extent ? ` · ${extent}` : ""}</span>
     </div>
     <div className="trajectory-timeline-plot">
-      <div className="trajectory-lane-labels" aria-hidden="true"><span>{t("browser.controlLane")}</span><span>{t("browser.modelLane")}</span><span>{t("browser.toolsLane")}</span></div>
+      <div className="trajectory-lane-labels" aria-hidden="true"><span>{t("browser.inputLane")}</span><span>{t("browser.modelLane")}</span><span>{t("browser.toolsLane")}</span></div>
       <div className="trajectory-lane-track">
         {hasMore ? <button type="button" className="trajectory-earlier-marker" disabled={loadingEarlier} onClick={onLoadEarlier} title={t("browser.loadEarlier")}>…</button> : null}
         {!model ? <span className="trajectory-run-empty">{t("browser.noTrajectory")}</span> : model.spans.map((span) => {
@@ -562,6 +583,7 @@ function trajectoryRecordDepth(record: SessionTrajectoryRecord, byID: Map<string
   if (depth) return depth
   const fallback: Record<SessionTrajectoryRecord["kind"], number> = {
     run: 0,
+    input: 1,
     attempt: 1,
     model: 2,
     assistant: 2,
@@ -579,9 +601,9 @@ function trajectoryRecordDepth(record: SessionTrajectoryRecord, byID: Map<string
 }
 
 function trajectoryLane(kind: SessionTrajectoryRecord["kind"]): number {
+  if (kind === "input") return 0
   if (kind === "model" || kind === "assistant" || kind === "reasoning") return 1
-  if (kind === "tool" || kind === "execution" || kind === "operation") return 2
-  return 0
+  return 2
 }
 
 function trajectoryRecordEnd(record: SessionTrajectoryRecord, readTime: number): number {
@@ -647,6 +669,7 @@ function trajectoryStatusIcon(status: SessionTrajectoryRecord["status"]): ReactN
 }
 
 function trajectoryKindIcon(kind: SessionTrajectoryRecord["kind"]): ReactNode {
+  if (kind === "input") return <MessageSquare size={13} />
   if (kind === "sandbox") return <Box size={13} />
   if (kind === "tool" || kind === "execution" || kind === "operation") return <Wrench size={13} />
   if (kind === "assistant" || kind === "reasoning" || kind === "model") return <Sparkles size={13} />

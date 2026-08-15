@@ -40,6 +40,8 @@ const (
 	trajectoryRankEvent
 )
 
+const trajectoryRankInput = 5
+
 type projectedTrajectoryRecord struct {
 	record       corecontract.UserSessionTrajectoryRecord
 	runCreatedAt time.Time
@@ -74,8 +76,8 @@ func (commands StateStoreUserSessionCommands) GetTrajectory(
 	workspaceID, sessionID, actorID, before string,
 	limit int,
 ) (corecontract.GetUserSessionTrajectoryResponse, error) {
-	if commands.Store == nil || commands.TrajectoryCursors == nil {
-		return corecontract.GetUserSessionTrajectoryResponse{}, errors.New("user trajectory state and cursor authority are required")
+	if commands.Store == nil || commands.Prompts == nil || commands.TrajectoryCursors == nil {
+		return corecontract.GetUserSessionTrajectoryResponse{}, errors.New("user trajectory state, prompt reader, and cursor authority are required")
 	}
 	if limit == 0 {
 		limit = defaultUserTrajectoryLimit
@@ -133,6 +135,23 @@ func (commands StateStoreUserSessionCommands) GetTrajectory(
 	if len(projected) > limit {
 		hasMore = true
 		projected = projected[len(projected)-limit:]
+	}
+	for index := range projected {
+		if projected[index].record.Kind != "input" {
+			continue
+		}
+		pointer, ok := source.PromptPointers[projected[index].record.RunID]
+		if !ok {
+			return corecontract.GetUserSessionTrajectoryResponse{}, errors.New("trajectory source omitted immutable prompt authority")
+		}
+		prompt, err := commands.Prompts.ReadUserPrompt(ctx, UserPromptReadRequest{
+			WorkspaceID: workspaceID,
+			Pointer:     pointer,
+		})
+		if err != nil {
+			return corecontract.GetUserSessionTrajectoryResponse{}, fmt.Errorf("read trajectory prompt for run %s: %w", projected[index].record.RunID, err)
+		}
+		populateTrajectoryInput(&projected[index].record, prompt)
 	}
 	response := corecontract.GetUserSessionTrajectoryResponse{
 		SchemaVersion: 1, WorkspaceID: source.Session.WorkspaceID,
@@ -327,6 +346,17 @@ func projectUserSessionTrajectory(source coredb.ReadUserSessionTrajectoryResult)
 			}
 		}
 		result = append(result, record)
+		inputRecord := projectedTrajectoryRecord{
+			record: corecontract.UserSessionTrajectoryRecord{
+				ID: "input:" + run.ID, ParentID: record.record.ID, Kind: "input", Status: "succeeded",
+				Title: "User input", Summary: "",
+				RunID: run.ID, StartedAt: run.CreatedAt, CompletedAt: timePointer(run.CreatedAt),
+				DurationMillis: trajectoryInt64Pointer(0),
+				Details:        []corecontract.UserSessionTrajectoryDetail{},
+			},
+			runCreatedAt: run.CreatedAt, anchorSeq: 0, rank: trajectoryRankInput,
+		}
+		result = append(result, inputRecord)
 		if terminal, ok := terminals[run.ID]; ok && record.record.Failure != nil && trajectoryModelFailure(record.record.Failure.Category) {
 			failure := *record.record.Failure
 			result = append(result, projectedTrajectoryRecord{
@@ -611,6 +641,13 @@ func projectUserSessionTrajectory(source coredb.ReadUserSessionTrajectoryResult)
 	}
 	sort.SliceStable(result, func(left, right int) bool { return compareProjectedTrajectory(result[left], result[right]) < 0 })
 	return result, nil
+}
+
+func populateTrajectoryInput(record *corecontract.UserSessionTrajectoryRecord, prompt string) {
+	input := safediagnostic.Sanitize([]byte(prompt), trajectoryTextPreviewBytes)
+	record.Summary = trajectorySafeString(input.Value, trajectoryDetailBytes)
+	record.Input = input.Value
+	record.InputTruncated = input.Truncated
 }
 
 func trajectoryMessage(builders map[string]*trajectoryMessageBuilder, run coredb.Run, event runevent.Event, messageID string) *trajectoryMessageBuilder {

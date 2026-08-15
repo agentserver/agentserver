@@ -66,6 +66,7 @@ type UserSessionTrajectoryCheckpoint struct {
 type ReadUserSessionTrajectoryResult struct {
 	Session        UserSession
 	Runs           []Run
+	PromptPointers map[string]ObjectPointer
 	Attempts       []RunAttempt
 	Events         []UserSessionTrajectoryEvent
 	Executions     []Execution
@@ -109,6 +110,9 @@ func (s *StateStore) ReadUserSessionTrajectory(
 			return result, err
 		}
 		runClause, arguments := trajectoryRunClause(result.Runs)
+		if result.PromptPointers, err = s.readUserTrajectoryPromptPointers(ctx, transaction, runClause, arguments); err != nil {
+			return ReadUserSessionTrajectoryResult{}, err
+		}
 		var truncated bool
 		if result.Attempts, truncated, err = s.readUserTrajectoryAttempts(ctx, transaction, runClause, arguments); err != nil {
 			return ReadUserSessionTrajectoryResult{}, err
@@ -144,6 +148,52 @@ func (s *StateStore) ReadUserSessionTrajectory(
 		result.Truncated = result.Truncated || truncated
 		return result, nil
 	})
+}
+
+func (s *StateStore) readUserTrajectoryPromptPointers(
+	ctx context.Context,
+	transaction pgx.Tx,
+	runClause string,
+	arguments []any,
+) (map[string]ObjectPointer, error) {
+	statement := fmt.Sprintf(`
+SELECT launch.run_id::text, launch.prompt_object_id::text,
+       launch.prompt_sha256, launch.prompt_size, launch.prompt_media_type
+FROM %s AS launch
+WHERE launch.run_id IN (%s)`, s.table("run_launch_states"), runClause)
+	rows, err := transaction.Query(ctx, statement, arguments...)
+	if err != nil {
+		return nil, databaseError("ReadUserSessionTrajectory query prompt pointers", err)
+	}
+	defer rows.Close()
+	result := make(map[string]ObjectPointer, len(arguments))
+	for rows.Next() {
+		var runID string
+		var pointer ObjectPointer
+		var digest []byte
+		if err := rows.Scan(
+			&runID, &pointer.ObjectID, &digest, &pointer.Size, &pointer.MediaType,
+		); err != nil {
+			return nil, databaseError("ReadUserSessionTrajectory scan prompt pointer", err)
+		}
+		if err := copyStoredSHA256(&pointer.SHA256, digest); err != nil {
+			return nil, databaseError("ReadUserSessionTrajectory decode prompt digest", err)
+		}
+		if err := validateRunObjectPointer("prompt", pointer); err != nil || pointer.MediaType != userPromptTranscriptMediaType {
+			if err == nil {
+				err = errors.New("stored prompt media type is unsupported")
+			}
+			return nil, databaseError("ReadUserSessionTrajectory validate prompt authority", err)
+		}
+		result[runID] = pointer
+	}
+	if err := rows.Err(); err != nil {
+		return nil, databaseError("ReadUserSessionTrajectory iterate prompt pointers", err)
+	}
+	if len(result) != len(arguments) {
+		return nil, databaseError("ReadUserSessionTrajectory validate prompt pointers", errors.New("selected run has no immutable prompt authority"))
+	}
+	return result, nil
 }
 
 func (s *StateStore) readUserTrajectoryRuns(

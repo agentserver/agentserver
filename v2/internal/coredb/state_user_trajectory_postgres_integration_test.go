@@ -39,6 +39,7 @@ func TestPostgreSQLReadUserSessionTrajectoryIsCreatorScopedAndQueriesAllSources(
 		t.Fatalf("ReadUserSessionTrajectory() error = %v", err)
 	}
 	if result.Session.ID != sessionID || len(result.Runs) != 1 || result.Runs[0].ID != created.Run.ID ||
+		result.PromptPointers[created.Run.ID] != command.Prompt ||
 		len(result.Events) != 1 || result.Events[0].RunID != created.Run.ID || result.HasOlderRuns || result.Truncated {
 		t.Fatalf("ReadUserSessionTrajectory() = %+v", result)
 	}

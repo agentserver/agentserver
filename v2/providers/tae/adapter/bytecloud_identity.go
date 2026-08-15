@@ -5,14 +5,15 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 
 	"code.byted.org/paas/cloud-sdk-go/aksk"
 	cloudjwt "code.byted.org/paas/cloud-sdk-go/jwt"
+	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 )
 
 const (
@@ -43,6 +44,7 @@ type ByteCloudJWTHeaderSourceConfig struct {
 	AccessKeyID     string
 	SecretAccessKey string
 	Site            string
+	Region          string
 	JWTEndpoint     string
 	ProxyURL        string
 	RequestTimeout  time.Duration
@@ -73,14 +75,43 @@ func NewByteCloudJWTHeaderSource(config ByteCloudJWTHeaderSourceConfig) (*ByteCl
 	if err := validateByteCloudCredential(config.AccessKeyID, config.SecretAccessKey); err != nil {
 		return nil, err
 	}
-	if config.Site != ByteCloudSiteI18NTT {
-		return nil, fmt.Errorf("ByteCloud application JWT site must be exactly %s for SG", ByteCloudSiteI18NTT)
-	}
-	if config.JWTEndpoint != ByteCloudJWTEndpointSG {
-		return nil, fmt.Errorf("ByteCloud application JWT endpoint must be exactly %s for SG", ByteCloudJWTEndpointSG)
-	}
-	if config.ProxyURL != TAEProxyURLSG {
-		return nil, fmt.Errorf("ByteCloud application JWT proxy must be exactly %s for SG", TAEProxyURLSG)
+	legacySG := config.Region == ""
+	if legacySG {
+		if config.Site != ByteCloudSiteI18NTT || config.JWTEndpoint != ByteCloudJWTEndpointSG || config.ProxyURL != TAEProxyURLSG {
+			return nil, errors.New("legacy SG ByteCloud identity must use its pinned site, endpoint, and proxy")
+		}
+		config.Region = managedsandboxprofile.RegionI18NTT
+	} else {
+		if !managedsandboxprofile.ValidRegion(config.Region) {
+			return nil, errors.New("ByteCloud application JWT region is unsupported")
+		}
+		if !aksk.IsValidSite(config.Site) {
+			return nil, errors.New("ByteCloud application JWT site is unsupported by the SDK")
+		}
+		wantSite := map[string]string{
+			managedsandboxprofile.RegionCN:     aksk.SiteCN,
+			managedsandboxprofile.RegionBOE:    aksk.SiteCN,
+			managedsandboxprofile.RegionI18NBD: aksk.SiteI18NBD,
+			managedsandboxprofile.RegionI18NTT: aksk.SiteI18NTT,
+		}[config.Region]
+		if config.Site != wantSite {
+			return nil, errors.New("ByteCloud application JWT site does not match the configured TAE region")
+		}
+		endpoint, err := url.Parse(config.JWTEndpoint)
+		if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.Hostname() == "" ||
+			endpoint.User != nil || endpoint.Opaque != "" || endpoint.RawPath != "" || endpoint.RawQuery != "" ||
+			endpoint.ForceQuery || endpoint.Fragment != "" || (endpoint.Path != "" && endpoint.Path != "/") {
+			return nil, errors.New("ByteCloud application JWT endpoint must be a canonical HTTPS origin")
+		}
+		if config.Region == managedsandboxprofile.RegionBOE {
+			if config.ProxyURL != "" {
+				return nil, errors.New("BOE ByteCloud application JWT exchange must use direct routing")
+			}
+		} else if config.ProxyURL == "" {
+			return nil, errors.New("non-BOE ByteCloud application JWT exchange requires the configured regional proxy")
+		} else if err := ValidateTAEProxyURL(config.ProxyURL); err != nil {
+			return nil, err
+		}
 	}
 	if config.RequestTimeout == 0 {
 		config.RequestTimeout = defaultByteCloudJWTRequestTimeout
@@ -92,14 +123,16 @@ func NewByteCloudJWTHeaderSource(config ByteCloudJWTHeaderSourceConfig) (*ByteCl
 	attemptTimeout := config.RequestTimeout / 2
 	if generator == nil {
 		requestTimeout := attemptTimeout
-		generator = cloudjwt.NewAKSKGenerator(
-			cloudjwt.WithReqTimeout(&requestTimeout),
-			// Agent traffic must be identified as such by the official SDK.
-			cloudjwt.WithAgentUse(true),
-			// Keep proxying scoped to the JWT exchange. TAE control/data-plane
-			// clients deliberately retain their direct, separately audited paths.
-			cloudjwt.WithProxyURL(config.ProxyURL),
-		)
+		if config.ProxyURL == "" {
+			generator = cloudjwt.NewAKSKGenerator(
+				cloudjwt.WithReqTimeout(&requestTimeout), cloudjwt.WithAgentUse(true),
+			)
+		} else {
+			generator = cloudjwt.NewAKSKGenerator(
+				cloudjwt.WithReqTimeout(&requestTimeout), cloudjwt.WithAgentUse(true),
+				cloudjwt.WithProxyURL(config.ProxyURL),
+			)
+		}
 	}
 	return &ByteCloudJWTHeaderSource{
 		credential: aksk.Credential{AccessKeyID: config.AccessKeyID, SecretAccessKey: config.SecretAccessKey},
@@ -193,7 +226,7 @@ func (source *ByteCloudJWTHeaderSource) forceRefreshLocked(ctx context.Context) 
 	return jwtHeader(token), nil
 }
 
-// exchangeJWT makes two bounded attempts against the same pinned SG origin.
+// exchangeJWT makes two bounded attempts against the same pinned profile origin.
 // The operation is a signed GET and is safe to retry; this policy must not be
 // generalized to TAE create/process operations. The parent timeout remains the
 // total exchange budget, while each attempt receives half of that budget.

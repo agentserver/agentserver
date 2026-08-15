@@ -15,24 +15,25 @@ const (
 // itself. Executor availability is checked only when a tool is actually
 // dispatched, not while these audience-separated tokens are issued.
 type IssueRunCapabilitiesRequest struct {
-	WorkspaceID               string `json:"workspaceId"`
-	SessionID                 string `json:"sessionId"`
-	RunID                     string `json:"runId"`
-	RunAttemptID              string `json:"runAttemptId"`
-	HolderID                  string `json:"holderId"`
-	RunAttemptGeneration      int64  `json:"runAttemptGeneration"`
-	ExpectedRunVersion        int64  `json:"expectedRunVersion"`
-	ExpectedRunAttemptVersion int64  `json:"expectedRunAttemptVersion"`
-	ExecutorID                string `json:"executorId"`
-	BrainToolCatalogID        string `json:"brainToolCatalogId"`
-	ToolCatalogDigest         string `json:"toolCatalogDigest"`
-	Model                     string `json:"model"`
-	Provider                  string `json:"provider"`
-	LLMGatewayID              string `json:"llmGatewayId"`
-	LLMGatewayVersion         int64  `json:"llmGatewayVersion"`
-	LLMGatewayGrantUserID     string `json:"llmGatewayGrantUserId"`
-	MaxRunDurationMillis      int64  `json:"maxRunDurationMs"`
-	MaxApprovalTTLMillis      int64  `json:"maxApprovalTtlMs"`
+	WorkspaceID               string                        `json:"workspaceId"`
+	SessionID                 string                        `json:"sessionId"`
+	RunID                     string                        `json:"runId"`
+	RunAttemptID              string                        `json:"runAttemptId"`
+	HolderID                  string                        `json:"holderId"`
+	RunAttemptGeneration      int64                         `json:"runAttemptGeneration"`
+	ExpectedRunVersion        int64                         `json:"expectedRunVersion"`
+	ExpectedRunAttemptVersion int64                         `json:"expectedRunAttemptVersion"`
+	ExecutorID                string                        `json:"executorId"`
+	BrainToolCatalogID        string                        `json:"brainToolCatalogId"`
+	ToolCatalogDigest         string                        `json:"toolCatalogDigest"`
+	Model                     string                        `json:"model"`
+	Provider                  string                        `json:"provider"`
+	LLMGatewayID              string                        `json:"llmGatewayId"`
+	LLMGatewayVersion         int64                         `json:"llmGatewayVersion"`
+	LLMGatewayGrantUserID     string                        `json:"llmGatewayGrantUserId"`
+	MaxRunDurationMillis      int64                         `json:"maxRunDurationMs"`
+	MaxApprovalTTLMillis      int64                         `json:"maxApprovalTtlMs"`
+	ManagedSandbox            *RunLaunchManagedSandboxState `json:"managedSandbox,omitempty"`
 }
 
 type IssuedRunCapability struct {

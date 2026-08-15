@@ -21,9 +21,13 @@ func (clients *taeClients) Close() {
 }
 
 func newTAEClients(ctx context.Context, config providerConfig, psm string) (*taeClients, error) {
-	controlHTTPClient, err := adapter.NewSGTAEControlHTTPClient(adapter.StrictHTTPClientConfig{
+	route := adapter.TAENetworkRoute{
+		ControlPlaneHost: config.controlPlaneHost, DataPlaneDomainSuffix: config.dataPlaneSuffix,
+		ProxyURL: config.proxyURL,
+	}
+	controlHTTPClient, err := adapter.NewTAEControlHTTPClient(adapter.StrictHTTPClientConfig{
 		TotalTimeout: config.controlTimeout, ResponseHeaderTimeout: config.headerTimeout,
-	}, config.proxyURL)
+	}, route)
 	if err != nil {
 		return nil, fmt.Errorf("configure TAE control-plane HTTP client: %w", err)
 	}
@@ -35,17 +39,18 @@ func newTAEClients(ctx context.Context, config providerConfig, psm string) (*tae
 	}
 	headerSource, err := adapter.NewByteCloudJWTHeaderSource(adapter.ByteCloudJWTHeaderSourceConfig{
 		AccessKeyID: credentials.accessKeyID, SecretAccessKey: credentials.secretAccessKey,
-		Site: config.byteCloudSite, JWTEndpoint: config.jwtEndpoint, ProxyURL: config.proxyURL,
+		Region: config.region, Site: config.byteCloudSite, JWTEndpoint: config.jwtEndpoint, ProxyURL: config.proxyURL,
 		RequestTimeout: config.jwtRequestTimeout,
 	})
 	if err != nil {
 		closeClients()
 		return nil, fmt.Errorf("configure ByteCloud application identity: %w", err)
 	}
-	control, err := adapter.NewSGSDKControlPlane(ctx, adapter.SDKControlPlaneConfig{
-		PSM: psm, SandboxID: config.sandboxID, RevisionID: config.sandboxRevisionID,
+	control, err := adapter.NewSDKControlPlane(ctx, adapter.SDKControlPlaneConfig{
+		Region: config.region,
+		PSM:    psm, SandboxID: config.sandboxID, RevisionID: config.sandboxRevisionID,
 		HTTPClient: controlHTTPClient, Headers: headerSource,
-		RequestTimeout: config.controlTimeout,
+		ControlPlaneURL: config.controlPlaneURL, RequestTimeout: config.controlTimeout,
 	})
 	if err != nil {
 		closeClients()
@@ -56,19 +61,14 @@ func newTAEClients(ctx context.Context, config providerConfig, psm string) (*tae
 		closeClients()
 		return nil, fmt.Errorf("resolve TAE terminal sandbox descriptor: %w", err)
 	}
-	domainSuffix, err := adapter.SGDataplaneDomainSuffix()
-	if err != nil {
-		closeClients()
-		return nil, fmt.Errorf("resolve pinned SG TAE data-plane domain: %w", err)
-	}
-	endpoint, err := adapter.NewSandboxdEndpointResolver(domainSuffix)
+	endpoint, err := adapter.NewSandboxdEndpointResolver(config.dataPlaneSuffix)
 	if err != nil {
 		closeClients()
 		return nil, err
 	}
-	dataHTTPClient, err := adapter.NewSGTAEDataHTTPClient(adapter.StrictHTTPClientConfig{
+	dataHTTPClient, err := adapter.NewTAEDataHTTPClient(adapter.StrictHTTPClientConfig{
 		ResponseHeaderTimeout: config.headerTimeout,
-	}, config.proxyURL)
+	}, route)
 	if err != nil {
 		closeClients()
 		return nil, fmt.Errorf("configure TAE data-plane HTTP client: %w", err)

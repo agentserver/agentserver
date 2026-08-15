@@ -23,6 +23,7 @@ type deployCommands struct {
 	retargetManagedTerminal func(string, string, string, string, string, string, string) error
 	retargetDirectTerminal  func(string, string, string, string, string, string, string) error
 	activateManagedExecutor func(string, string, string, string, string, string) error
+	activateManagedProfiles func(string, string, string) error
 }
 
 func main() {
@@ -36,6 +37,7 @@ func main() {
 		retargetManagedTerminal: productiondeploy.RetargetManagedTerminalFile,
 		retargetDirectTerminal:  productiondeploy.RetargetDirectManagedTerminalFile,
 		activateManagedExecutor: productiondeploy.ActivateManagedExecutorFile,
+		activateManagedProfiles: productiondeploy.ActivateManagedSandboxProfilesFile,
 	}))
 }
 
@@ -45,6 +47,22 @@ func run(arguments []string, stdout, stderr io.Writer, commands deployCommands) 
 		return 2
 	}
 	switch arguments[0] {
+	case "activate-managed-sandbox-profiles":
+		values, ok := exactArguments(arguments[1:], "config", "output", "evidence-manifest")
+		if !ok {
+			writeUsage(stderr)
+			return 2
+		}
+		if commands.activateManagedProfiles == nil {
+			fmt.Fprintln(stderr, "agentserver-deploy activate-managed-sandbox-profiles: command is unavailable")
+			return 1
+		}
+		if err := commands.activateManagedProfiles(values["config"], values["output"], values["evidence-manifest"]); err != nil {
+			fmt.Fprintf(stderr, "agentserver-deploy activate-managed-sandbox-profiles: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "agentserver-deploy activate-managed-sandbox-profiles: wrote evidence-bound active config to %s\n", values["output"])
+		return 0
 	case "activate-managed-executor":
 		values, ok := exactArguments(arguments[1:], "config", "output", "network-report", "policy-revision", "policy-evidence-ref", "network-evidence-ref")
 		if !ok {
@@ -308,6 +326,7 @@ func exactArguments(arguments []string, names ...string) (map[string]string, boo
 }
 
 func writeUsage(writer io.Writer) {
+	fmt.Fprintln(writer, "usage: agentserver-deploy activate-managed-sandbox-profiles --config=/absolute/bootstrap.json --output=/absolute/new-active.json --evidence-manifest=/absolute/managed-sandbox-evidence.json")
 	fmt.Fprintln(writer, "usage: agentserver-deploy activate-managed-executor --config=/absolute/bootstrap.json --output=/absolute/new-active.json --network-report=/absolute/canonical-report.json --policy-revision=<published-revision> --policy-evidence-ref=<immutable-ticket> --network-evidence-ref=<immutable-report-reference>")
 	fmt.Fprintln(writer, "usage: agentserver-deploy prepare-policy-bootstrap --config=/absolute/active-template.json --output=/absolute/new-bootstrap.json")
 	fmt.Fprintln(writer, "usage: agentserver-deploy pin-terminal-revision --config=/absolute/bootstrap.json --output=/absolute/new-bootstrap.json --sandbox-id=<expected-sandbox-id> --revision-id=<published-terminal-revision-id>")

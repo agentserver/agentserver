@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
+	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/taepolicy"
 )
 
@@ -124,8 +125,8 @@ func LoadProductionConfig(getenv func(string) string) (Config, error) {
 	if strings.TrimSpace(getenv(ProviderModeEnvironment)) != "tae" {
 		return Config{}, fmt.Errorf("%s must be exactly tae", ProviderModeEnvironment)
 	}
-	if config.ProviderRegion != "sg" {
-		return Config{}, fmt.Errorf("%s must be exactly sg", ProviderRegionEnvironment)
+	if !managedsandboxprofile.ValidRegion(config.ProviderRegion) {
+		return Config{}, fmt.Errorf("%s is unsupported", ProviderRegionEnvironment)
 	}
 	if len(config.ProviderPSM) > 256 || strings.ContainsAny(config.ProviderPSM, "\x00\r\n") {
 		return Config{}, errors.New("TAE provider PSM is invalid")

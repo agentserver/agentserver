@@ -1,6 +1,7 @@
 package coredb
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"testing"
 )
@@ -27,6 +28,13 @@ func TestPostgreSQLReadUserSessionTrajectoryIsCreatorScopedAndQueriesAllSources(
 
 	command := stateCreateRunCommand(210_010, workspaceID, sessionID, "trajectory")
 	command.ActorID = actorID
+	command.ManagedSandbox = RunManagedSandboxBinding{
+		SettingVersion: 3,
+		Region:         "i18n-tt",
+		ProfileID:      "tae-i18n-tt-release-v1",
+		BindingSHA256:  sha256.Sum256([]byte("trajectory-managed-sandbox-binding")),
+		EnvironmentID:  stateTestUUID(210_020),
+	}
 	created, err := store.CreateAuthorizedRun(t.Context(), command)
 	if err != nil || !created.Created {
 		t.Fatalf("CreateAuthorizedRun() = %+v, %v", created, err)
@@ -40,6 +48,7 @@ func TestPostgreSQLReadUserSessionTrajectoryIsCreatorScopedAndQueriesAllSources(
 	}
 	if result.Session.ID != sessionID || len(result.Runs) != 1 || result.Runs[0].ID != created.Run.ID ||
 		result.PromptPointers[created.Run.ID] != command.Prompt ||
+		result.ManagedSandboxBindings[created.Run.ID] != command.ManagedSandbox ||
 		len(result.Events) != 1 || result.Events[0].RunID != created.Run.ID || result.HasOlderRuns || result.Truncated {
 		t.Fatalf("ReadUserSessionTrajectory() = %+v", result)
 	}

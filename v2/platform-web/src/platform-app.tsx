@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next"
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom"
 import {
   AppShell,
+  APIError,
   Badge,
   Button,
   Card,
@@ -35,7 +36,9 @@ import {
   type EnrollmentToken,
   type Executor,
   type LLMGateway,
+  type ManagedSandboxRegion,
   type Workspace,
+  type WorkspaceManagedSandboxSetting,
   type WorkspaceMember,
 } from "@agentserver/v2-web-shared"
 import { buildGatewayRequest, buildGatewayUpdateRequest, callbackState, gatewayBrowserBinding, gatewayCallbackChannelName, gatewayTone, validateGatewayCallback } from "./gateway-oauth"
@@ -189,20 +192,85 @@ function WorkspaceOverview({ workspace, api, onChanged, onArchived }: { workspac
   const [managedLarkCredentialMode, setManagedLarkCredentialMode] = useState(workspace.managedLarkCredentialMode)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
+  const [sandboxSetting, setSandboxSetting] = useState<WorkspaceManagedSandboxSetting | null>(null)
+  const [sandboxRegions, setSandboxRegions] = useState<ManagedSandboxRegion[]>([])
+  const [sandboxRegion, setSandboxRegion] = useState<ManagedSandboxRegion | "">("")
+  const [sandboxLoading, setSandboxLoading] = useState(true)
+  const [sandboxBusy, setSandboxBusy] = useState(false)
+  const [sandboxError, setSandboxError] = useState("")
   useEffect(() => setName(workspace.name), [workspace.name])
   useEffect(() => setManagedLarkCredentialMode(workspace.managedLarkCredentialMode), [workspace.managedLarkCredentialMode])
+  const loadSandboxSetting = useCallback(async () => {
+    setSandboxLoading(true)
+    setSandboxError("")
+    try {
+      const result = await api.getManagedSandboxSetting(workspace.workspaceId)
+      setSandboxSetting(result.setting)
+      setSandboxRegions([...result.availableRegions])
+      setSandboxRegion(result.setting.region)
+    } catch (requestError) {
+      setSandboxSetting(null)
+      setSandboxRegions([])
+      setSandboxRegion("")
+      setSandboxError(safeError(requestError))
+    } finally {
+      setSandboxLoading(false)
+    }
+  }, [api, workspace.workspaceId])
+  useEffect(() => { void loadSandboxSetting() }, [loadSandboxSetting])
   const saveSettings = async (event: FormEvent) => {
     event.preventDefault(); setBusy(true); setError("")
     try { onChanged((await api.updateWorkspace(workspace.workspaceId, { name: boundedText("workspace name", name, 256), managedLarkCredentialMode, expectedVersion: workspace.version })).workspace) } catch (requestError) { setError(safeError(requestError)) } finally { setBusy(false) }
+  }
+  const saveSandboxSetting = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!sandboxSetting || !sandboxRegion) return
+    setSandboxBusy(true)
+    setSandboxError("")
+    try {
+      const result = await api.updateManagedSandboxSetting(workspace.workspaceId, {
+        region: sandboxRegion,
+        expectedVersion: sandboxSetting.version,
+      })
+      setSandboxSetting(result.setting)
+      setSandboxRegion(result.setting.region)
+    } catch (requestError) {
+      if (requestError instanceof APIError && requestError.status === 409) {
+        await loadSandboxSetting()
+        setSandboxError(t("platform.managedSandboxConflict"))
+      } else {
+        setSandboxError(safeError(requestError))
+      }
+    } finally {
+      setSandboxBusy(false)
+    }
   }
   const archive = async () => {
     if (!window.confirm(t("platform.archiveWorkspaceConfirm"))) return
     setBusy(true); setError("")
     try { await api.archiveWorkspace(workspace.workspaceId, workspace.version); await onArchived(); navigate("/workspaces") } catch (requestError) { setError(safeError(requestError)); setBusy(false) }
   }
+  const sandboxRegionLabels: Record<ManagedSandboxRegion, string> = {
+    cn: t("platform.managedSandboxRegionCN"),
+    boe: t("platform.managedSandboxRegionBOE"),
+    "i18n-bd": t("platform.managedSandboxRegionI18NBD"),
+    "i18n-tt": t("platform.managedSandboxRegionI18NTT"),
+  }
+  const sandboxSettingInstalled = sandboxSetting ? sandboxRegions.includes(sandboxSetting.region) : false
   return <><PageHeader eyebrow={shortID(workspace.workspaceId)} title={workspace.name} description={`${workspace.currentUserRole} · ${workspace.status}`} actions={<Button onClick={() => { window.location.href = `https://browser.byted.bps.dev/workspaces/${workspace.workspaceId}` }}><Bot size={16} />{t("platform.openBrowser")}</Button>} />
     {error ? <div className="error-banner">{error}</div> : null}
     <div className="facts-grid"><Fact label={t("platform.workspaceId")} value={workspace.workspaceId} /><Fact label={t("platform.yourRole")} value={workspace.currentUserRole} /><Fact label={t("platform.managedLarkMode")} value={workspace.managedLarkCredentialMode} /><Fact label={t("common.status")} value={workspace.status} /><Fact label={t("common.version")} value={String(workspace.version)} /><Fact label={t("common.created")} value={formatDate(workspace.createdAt, locale)} /><Fact label={t("common.updated")} value={formatDate(workspace.updatedAt, locale)} /></div>
+    <Card className="settings-card">
+      <div><h2>{t("platform.managedSandboxTitle")}</h2><p>{t("platform.managedSandboxHelp")}</p></div>
+      {sandboxError ? <div className="error-banner inline-error">{sandboxError}</div> : null}
+      {sandboxLoading ? <div className="skeleton" /> : sandboxSetting ? <>
+        {workspace.currentUserRole === "owner" && workspace.status === "active" ? <form onSubmit={(event) => void saveSandboxSetting(event)}>
+          <div><Label htmlFor="workspace-managed-sandbox-region">{t("platform.managedSandboxRegion")}</Label><NativeSelect id="workspace-managed-sandbox-region" value={sandboxRegion} onChange={(event) => setSandboxRegion(event.target.value as ManagedSandboxRegion)}>{!sandboxSettingInstalled ? <option value={sandboxSetting.region} disabled>{sandboxRegionLabels[sandboxSetting.region]} · {t("platform.managedSandboxUnavailable")}</option> : null}{sandboxRegions.map((region) => <option key={region} value={region}>{sandboxRegionLabels[region]}</option>)}</NativeSelect></div>
+          <p className="form-help">{t("platform.managedSandboxNewRunsOnly")}</p>
+          <Button type="submit" disabled={sandboxBusy || sandboxRegion === sandboxSetting.region}>{sandboxBusy ? t("common.loading") : t("common.save")}</Button>
+        </form> : <div className="facts-grid"><Fact label={t("platform.managedSandboxRegion")} value={`${sandboxRegionLabels[sandboxSetting.region]}${sandboxSettingInstalled ? "" : ` · ${t("platform.managedSandboxUnavailable")}`}`} /><Fact label={t("common.version")} value={String(sandboxSetting.version)} /><Fact label={t("common.updated")} value={formatDate(sandboxSetting.updatedAt, locale)} /></div>}
+      </> : <Button variant="outline" onClick={() => void loadSandboxSetting()}><RefreshCw size={15} />{t("common.retry")}</Button>}
+    </Card>
     {workspace.currentUserRole === "owner" && workspace.status === "active" ? <Card className="settings-card"><div><h2>{t("platform.workspaceSettings")}</h2><p>{t("platform.managedLarkModeHelp")}</p></div><form onSubmit={(event) => void saveSettings(event)}><div><Label htmlFor="workspace-settings-name">{t("platform.workspaceName")}</Label><Input id="workspace-settings-name" value={name} maxLength={256} onChange={(event) => setName(event.target.value)} /></div><div><Label htmlFor="workspace-settings-lark-mode">{t("platform.managedLarkMode")}</Label><NativeSelect id="workspace-settings-lark-mode" value={managedLarkCredentialMode} onChange={(event) => setManagedLarkCredentialMode(event.target.value as Workspace["managedLarkCredentialMode"])}><option value="webhook_swap">{t("platform.managedLarkWebhookSwap")}</option><option value="process_env">{t("platform.managedLarkProcessEnv")}</option></NativeSelect></div>{managedLarkCredentialMode === "process_env" ? <p className="form-help">{t("platform.managedLarkProcessEnvWarning")}</p> : null}<Button type="submit" disabled={busy || (name === workspace.name && managedLarkCredentialMode === workspace.managedLarkCredentialMode)}>{t("common.save")}</Button></form><div className="danger-zone"><div><h3>{t("platform.archiveWorkspace")}</h3><p>{t("platform.archiveWorkspaceConfirm")}</p></div><Button variant="destructive" disabled={busy} onClick={() => void archive()}><Archive size={15} />{t("common.archive")}</Button></div></Card> : null}
   </>
 }

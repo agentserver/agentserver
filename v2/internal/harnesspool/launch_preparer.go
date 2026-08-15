@@ -144,8 +144,9 @@ func (preparer *LaunchPreparer) Prepare(ctx context.Context, scheduled Scheduled
 		ExecutorPolicy: runmanifest.ExecutorPolicy{
 			Version: proposal.PolicyVersion, ContextDigest: hex.EncodeToString(proposal.PolicyContextDigest[:]),
 		},
-		ToolPack: toolPack,
-		Limits:   inputs.Limits, CheckpointAllowlistVersion: inputs.CheckpointAllowlistVersion,
+		ToolPack:       toolPack,
+		ManagedSandbox: managedSandboxAuthority(inputs.ManagedSandbox),
+		Limits:         inputs.Limits, CheckpointAllowlistVersion: inputs.CheckpointAllowlistVersion,
 		WorkerImageDigest: inputs.WorkerImageDigest, ExpectedServiceAccount: inputs.ExpectedServiceAccount,
 		ControllerCallback: runmanifest.ControllerCallback{
 			Endpoint: inputs.ControllerCallbackEndpoint, TLSIdentity: inputs.ControllerCallbackIdentity,

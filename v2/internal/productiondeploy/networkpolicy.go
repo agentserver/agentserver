@@ -14,7 +14,9 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 
 	coreIngressComponents := []string{platformComponent, browserComponent, executorComponent, harnessComponent, llmproxyComponent}
 	if managedExecutionActive(document.Managed) {
-		coreIngressComponents = append(coreIngressComponents, sandboxComponent)
+		for _, profile := range config.ManagedSandboxProfiles {
+			coreIngressComponents = append(coreIngressComponents, profile.Document.Gateway.Component)
+		}
 		if managedEgressAuthorizerEnabled(document.Managed) {
 			coreIngressComponents = append(coreIngressComponents, egressComponent)
 		}
@@ -74,7 +76,9 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 	hydraEgress := append(append([]any(nil), dns...), postgresEgress()...)
 	hydraSetupEgress := append(append([]any(nil), dns...), componentTCPEgress(hydraComponent, document.Services.Hydra.AdminPort))
 	if managedExecutionActive(document.Managed) {
-		executorEgress = append(executorEgress, componentTCPEgress(sandboxComponent, document.Services.SandboxGateway.Port))
+		for _, profile := range config.ManagedSandboxProfiles {
+			executorEgress = append(executorEgress, componentTCPEgress(profile.Document.Gateway.Component, profile.Document.Gateway.Port))
+		}
 	}
 
 	items := []kubeObject{
@@ -92,19 +96,20 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 		networkPolicy(config, hydraComponent, matchComponent(hydraComponent), hydraIngress, hydraEgress),
 	}
 	if managedExecutionActive(document.Managed) {
-		sandboxIngress := ingressFromComponents([]string{executorComponent}, document.Services.SandboxGateway.Port)
-		sandboxEgress := []any{componentTCPEgress(coreComponent, document.Services.Core.Port)}
-		sandboxEgress = append(sandboxEgress, dns...)
-		sandboxEgress = append(sandboxEgress, namespacedPodTCPEgress(
-			ProductionTAEProxyNamespace,
-			map[string]string{"app": ProductionTAEProxyPodApp},
-			ProductionTAEProxyPort,
-		))
-		sandboxEgress = append(sandboxEgress, externalEgress(document.Network.SandboxExternalEgress)...)
-		items = append(items,
-			networkPolicy(config, "agentserver-managed-environment-bootstrap-egress", matchComponent(managedEnvironmentBootstrapComponent), nil, databaseEgress),
-			networkPolicy(config, sandboxComponent, matchComponent(sandboxComponent), sandboxIngress, sandboxEgress),
-		)
+		items = append(items, networkPolicy(config, "agentserver-managed-environment-bootstrap-egress", matchComponent(managedEnvironmentBootstrapComponent), nil, databaseEgress))
+		for _, profile := range config.ManagedSandboxProfiles {
+			gateway := profile.Document.Gateway
+			sandboxIngress := ingressFromComponents([]string{executorComponent}, gateway.Port)
+			sandboxEgress := []any{componentTCPEgress(coreComponent, document.Services.Core.Port)}
+			sandboxEgress = append(sandboxEgress, dns...)
+			if profile.Proxy != nil {
+				sandboxEgress = append(sandboxEgress, namespacedPodTCPEgress(
+					profile.Proxy.Namespace, profile.Proxy.PodSelector, profile.Proxy.Port,
+				))
+			}
+			sandboxEgress = append(sandboxEgress, externalEgress(profile.Document.SandboxExternalEgress)...)
+			items = append(items, networkPolicy(config, gateway.Component, matchComponent(gateway.Component), sandboxIngress, sandboxEgress))
+		}
 		if managedEgressAuthorizerEnabled(document.Managed) {
 			egressIngress := ingressFromCIDRs(document.Network.EgressAuthorizerIngress, document.Services.EgressAuthorizer.Port)
 			egressIngress = append(egressIngress, ingressFromGateway(document.Ingress, document.Services.EgressAuthorizer.Port)...)

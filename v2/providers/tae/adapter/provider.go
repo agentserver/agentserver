@@ -12,6 +12,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
+	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/sandboxgateway"
 	"github.com/agentserver/agentserver/v2/internal/taepolicy"
 )
@@ -68,11 +69,8 @@ func NewProvider(config Config) (*Provider, error) {
 	if config.Control == nil || config.Data == nil {
 		return nil, errors.New("TAE control plane and data plane are required")
 	}
-	// The first production rollout is deliberately SG-only. Do not silently
-	// infer a region from the host process: a wrong trust/network domain must
-	// fail during startup rather than creating a sandbox elsewhere.
-	if config.Region != "sg" {
-		return nil, errors.New("TAE provider region must be exactly sg")
+	if !managedsandboxprofile.ValidRegion(config.Region) {
+		return nil, errors.New("TAE provider region is unsupported")
 	}
 	if strings.TrimSpace(config.PSM) != config.PSM || config.PSM == "" || len(config.PSM) > 256 {
 		return nil, errors.New("TAE provider PSM is invalid")

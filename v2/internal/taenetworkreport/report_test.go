@@ -19,7 +19,7 @@ func TestReportCanonicalRoundTripAndDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Count(raw, []byte{'\n'}) != 1 || raw[len(raw)-1] != '\n' || !bytes.HasPrefix(raw, []byte(`{"schemaVersion":4,"kind":"agentserver.tae.sg-network-report"`)) {
+	if bytes.Count(raw, []byte{'\n'}) != 1 || raw[len(raw)-1] != '\n' || !bytes.HasPrefix(raw, []byte(`{"schemaVersion":5,"kind":"agentserver.tae.network-report"`)) {
 		t.Fatalf("report is not one canonical line: %q", raw)
 	}
 	parsed, err := Parse(raw)
@@ -134,7 +134,7 @@ func validReport() Report {
 			NodeName: "sg-node-1", ServiceAccount: "sandbox-gateway",
 		},
 		Configuration: Configuration{
-			DeploymentConfigSHA256: strings.Repeat("1", 64), Region: "sg", PSM: "bytedance.sandbox.agentserver",
+			DeploymentConfigSHA256: strings.Repeat("1", 64), Region: "i18n-tt", PSM: "bytedance.sandbox.agentserver",
 			PolicyRevision: "revision-1", ByteCloudSite: "i18n-tt", JWTEndpoint: "https://cloud-i18n-sg.bytedance.net",
 			ProxyURL: "socks5h://proxy.example:1080", ControlPlaneHost: "controlplane.sg.example",
 			DataPlaneDomainSuffix: "sg.example", SandboxImage: "registry.example/sandbox:sha256-" + strings.Repeat("2", 64),

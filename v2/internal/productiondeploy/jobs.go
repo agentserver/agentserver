@@ -159,20 +159,20 @@ func renderBootstrapJob(context renderContext) kubeObject {
 	)
 }
 
-func renderManagedEnvironmentBootstrapJob(context renderContext) kubeObject {
+func renderManagedEnvironmentBootstrapJob(context renderContext, environment managedEnvironmentRender) kubeObject {
 	volumes := []any{configMapVolume("managed-environment-config", context.managedEnvironmentConfigName, map[string]string{
-		"managed-environment.json": "managed-environment.json",
+		environment.FileName: environment.FileName,
 	})}
 	mounts := []any{kubeObject{
 		"name": "managed-environment-config", "mountPath": "/etc/agentserver/managed-environment.json",
-		"subPath": "managed-environment.json", "readOnly": true,
+		"subPath": environment.FileName, "readOnly": true,
 	}}
 	return renderOneShotJob(
-		context, context.managedEnvironmentJobName, managedEnvironmentBootstrapComponent,
+		context, environment.JobName, managedEnvironmentBootstrapComponent,
 		[]any{"/usr/local/bin/agentserver-core"},
 		[]any{"bootstrap-managed-environment", "--config=/etc/agentserver/managed-environment.json"},
 		volumes, mounts,
-		map[string]string{"agentserver.dev/managed-environment-sha256": context.managedEnvironmentHash},
+		map[string]string{"agentserver.dev/managed-environment-sha256": environment.Hash},
 	)
 }
 

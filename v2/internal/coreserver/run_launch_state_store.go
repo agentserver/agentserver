@@ -55,6 +55,14 @@ func (queries StateStoreRunLaunchStateQueries) ResolveRunLaunchState(ctx context
 			PolicySHA256: hex.EncodeToString(resolved.LarkEgress.PolicySHA256[:]),
 		}
 	}
+	if resolved.ManagedSandbox != (coredb.RunManagedSandboxBinding{}) {
+		binding := resolved.ManagedSandbox
+		response.ManagedSandbox = &corecontract.RunLaunchManagedSandboxState{
+			SettingVersion: binding.SettingVersion, Region: binding.Region,
+			ProfileID: binding.ProfileID, BindingSHA256: hex.EncodeToString(binding.BindingSHA256[:]),
+			EnvironmentID: binding.EnvironmentID,
+		}
+	}
 	if resolved.PreviousCheckpoint != nil {
 		checkpoint := resolved.PreviousCheckpoint
 		response.PreviousCheckpoint = &corecontract.RunLaunchCheckpointState{

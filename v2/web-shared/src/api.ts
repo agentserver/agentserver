@@ -5,6 +5,8 @@ import type { paths as OAuthPaths, components as OAuthComponents } from "./gener
 import { canonicalID } from "./utils"
 
 export type Workspace = PublicComponents["schemas"]["WorkspaceState"]
+export type WorkspaceManagedSandboxSetting = PublicComponents["schemas"]["WorkspaceManagedSandboxSettingState"]
+export type ManagedSandboxRegion = PublicComponents["schemas"]["ManagedSandboxRegion"]
 export type WorkspaceMember = PublicComponents["schemas"]["WorkspaceMemberState"]
 export type Executor = PublicComponents["schemas"]["ExecutorResourceState"]
 export type EnrollmentToken = PublicComponents["schemas"]["IssueExecutorEnrollmentTokenResponse"]
@@ -109,6 +111,25 @@ export class ResourceAPI {
   async archiveWorkspace(workspaceId: string, expectedVersion: number) {
     const result = take(await this.#client.POST("/v2/workspaces/{workspaceId}/actions/archive", { params: { path: { workspaceId } }, body: { expectedVersion } }))
     if (validateWorkspace(result.workspace).workspaceId !== canonicalID("workspace ID", workspaceId)) throw new Error("The workspace response escaped its requested scope.")
+    return result
+  }
+
+  async getManagedSandboxSetting(workspaceId: string) {
+    const canonicalWorkspace = canonicalID("workspace ID", workspaceId)
+    const result = take(await this.#client.GET("/v2/workspaces/{workspaceId}/managed-sandbox-settings", {
+      params: { path: { workspaceId: canonicalWorkspace } },
+    }))
+    validateManagedSandboxSetting(result.setting, canonicalWorkspace)
+    validateManagedSandboxRegions(result.availableRegions)
+    return result
+  }
+
+  async updateManagedSandboxSetting(workspaceId: string, body: PublicComponents["schemas"]["UpdateWorkspaceManagedSandboxSettingRequest"]) {
+    const canonicalWorkspace = canonicalID("workspace ID", workspaceId)
+    const result = take(await this.#client.PATCH("/v2/workspaces/{workspaceId}/managed-sandbox-settings", {
+      params: { path: { workspaceId: canonicalWorkspace } }, body,
+    }))
+    validateManagedSandboxSetting(result.setting, canonicalWorkspace)
     return result
   }
 
@@ -368,6 +389,24 @@ function validateWorkspace(value: Workspace): Workspace {
   boundedProtocolText(value.name, 256)
   if (!["active", "suspended", "archived"].includes(value.status) || !["owner", "developer", "viewer"].includes(value.currentUserRole) || !["webhook_swap", "process_env"].includes(value.managedLarkCredentialMode) || !positiveVersion(value.version) || !validTimestamp(value.createdAt) || !validTimestamp(value.updatedAt)) throw new Error("The workspace response is invalid.")
   return value
+}
+
+function validateManagedSandboxSetting(value: WorkspaceManagedSandboxSetting, workspaceId: string): WorkspaceManagedSandboxSetting {
+  exactKeys(value, ["workspaceId", "region", "version", "updatedBy", "createdAt", "updatedAt"], "managed sandbox setting")
+  if (value.workspaceId !== workspaceId || !managedSandboxRegion(value.region) || !positiveVersion(value.version) ||
+      !validTimestamp(value.createdAt) || !validTimestamp(value.updatedAt)) throw new Error("The managed sandbox setting response escaped its requested scope.")
+  canonicalID("managed sandbox setting updater", value.updatedBy)
+  return value
+}
+
+function validateManagedSandboxRegions(value: ManagedSandboxRegion[]): ManagedSandboxRegion[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 4 || new Set(value).size !== value.length ||
+      value.some((region) => !managedSandboxRegion(region))) throw new Error("The managed sandbox region catalog is invalid.")
+  return value
+}
+
+function managedSandboxRegion(value: unknown): value is ManagedSandboxRegion {
+  return value === "cn" || value === "boe" || value === "i18n-bd" || value === "i18n-tt"
 }
 
 function validateMember(value: WorkspaceMember): WorkspaceMember {

@@ -361,6 +361,7 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	workspacesPath := WorkspacesPath()
 	workspacePath := WorkspacePath("{workspaceId}")
 	archiveWorkspacePath := ArchiveWorkspacePath("{workspaceId}")
+	managedSandboxSettingPath := WorkspaceManagedSandboxPath("{workspaceId}")
 	membersPath := WorkspaceMembersPath("{workspaceId}")
 	memberPath := WorkspaceMemberPath("{workspaceId}", "{memberId}")
 	sessionsPath := UserSessionsPath("{workspaceId}")
@@ -385,7 +386,7 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	credentialAuthorizationResourcePath := WorkspaceCredentialAuthorizationResourceRoutePattern
 	credentialAuthorizationPollPath := "/v2/workspaces/{workspaceId}/credential-authorizations/{kind}/{authorizationId}:poll"
 	credentialAuthorizationCancelPath := "/v2/workspaces/{workspaceId}/credential-authorizations/{kind}/{authorizationId}:cancel"
-	if len(document.Paths) != 34 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
+	if len(document.Paths) != 35 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
 		document.Paths[cancelPath].Post.OperationID != "cancelUserRun" || document.Paths[readPath].Get.OperationID != "readUserRunEvents" {
 		t.Fatalf("public OpenAPI paths = %+v", document.Paths)
 	}
@@ -408,6 +409,8 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	if document.Paths[workspacesPath].Get.OperationID != "listWorkspaces" || document.Paths[workspacesPath].Post.OperationID != "createWorkspace" ||
 		document.Paths[workspacePath].Get.OperationID != "getWorkspace" || document.Paths[workspacePath].Patch.OperationID != "updateWorkspace" ||
 		document.Paths[archiveWorkspacePath].Post.OperationID != "archiveWorkspace" ||
+		document.Paths[managedSandboxSettingPath].Get.OperationID != "getWorkspaceManagedSandboxSetting" ||
+		document.Paths[managedSandboxSettingPath].Patch.OperationID != "updateWorkspaceManagedSandboxSetting" ||
 		document.Paths[membersPath].Get.OperationID != "listWorkspaceMembers" || document.Paths[membersPath].Post.OperationID != "addWorkspaceMember" ||
 		document.Paths[memberPath].Patch.OperationID != "updateWorkspaceMember" || document.Paths[memberPath].Delete.OperationID != "removeWorkspaceMember" {
 		t.Fatalf("public Platform workspace paths = %+v", document.Paths)
@@ -434,6 +437,8 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 		{document.Paths[workspacePath].Get.Security, PlatformOAuthWorkspacesReadScope},
 		{document.Paths[workspacePath].Patch.Security, PlatformOAuthWorkspacesUpdateScope},
 		{document.Paths[archiveWorkspacePath].Post.Security, PlatformOAuthWorkspacesArchiveScope},
+		{document.Paths[managedSandboxSettingPath].Get.Security, PlatformOAuthWorkspacesReadScope},
+		{document.Paths[managedSandboxSettingPath].Patch.Security, PlatformOAuthWorkspacesUpdateScope},
 		{document.Paths[membersPath].Get.Security, PlatformOAuthMembersReadScope},
 		{document.Paths[membersPath].Post.Security, PlatformOAuthMembersAddScope},
 		{document.Paths[memberPath].Patch.Security, PlatformOAuthMembersUpdateScope},
@@ -549,6 +554,10 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "UpdateWorkspaceResponse", reflect.TypeFor[UpdateWorkspaceResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "ArchiveWorkspaceRequest", reflect.TypeFor[ArchiveWorkspaceRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "ArchiveWorkspaceResponse", reflect.TypeFor[ArchiveWorkspaceResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "WorkspaceManagedSandboxSettingState", reflect.TypeFor[WorkspaceManagedSandboxSettingState]())
+	assertSchemaFields(t, document.Components.Schemas, "GetWorkspaceManagedSandboxSettingResponse", reflect.TypeFor[GetWorkspaceManagedSandboxSettingResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "UpdateWorkspaceManagedSandboxSettingRequest", reflect.TypeFor[UpdateWorkspaceManagedSandboxSettingRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "UpdateWorkspaceManagedSandboxSettingResponse", reflect.TypeFor[UpdateWorkspaceManagedSandboxSettingResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "WorkspaceMemberState", reflect.TypeFor[WorkspaceMemberState]())
 	assertSchemaFields(t, document.Components.Schemas, "ListWorkspaceMembersResponse", reflect.TypeFor[ListWorkspaceMembersResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "AddWorkspaceMemberRequest", reflect.TypeFor[AddWorkspaceMemberRequest]())

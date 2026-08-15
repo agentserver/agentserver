@@ -355,6 +355,29 @@ func TestCoreBrowserConfigurationParsersFailClosed(t *testing.T) {
 	}
 }
 
+func TestLoadSandboxGatewayIdentitiesSupportsProfileCatalogAndLegacyFallback(t *testing.T) {
+	values := map[string]string{
+		coreSandboxGatewayIdentitiesEnvironment: `[
+			"spiffe://agentserver.local/ns/agentserver/sa/sandbox-gateway-cn",
+			"spiffe://agentserver.local/ns/agentserver/sa/sandbox-gateway-i18n-bd"
+		]`,
+	}
+	getenv := func(name string) string { return values[name] }
+	identities, err := loadSandboxGatewayIdentities(getenv)
+	if err != nil || len(identities) != 2 || !strings.HasSuffix(identities[1], "/sandbox-gateway-i18n-bd") {
+		t.Fatalf("loadSandboxGatewayIdentities() = %v, %v", identities, err)
+	}
+	values[coreSandboxGatewayIdentityEnvironment] = "spiffe://agentserver.local/ns/agentserver/sa/sandbox-gateway"
+	if _, err := loadSandboxGatewayIdentities(getenv); err == nil {
+		t.Fatal("loadSandboxGatewayIdentities() accepted legacy and catalog settings together")
+	}
+	delete(values, coreSandboxGatewayIdentitiesEnvironment)
+	identities, err = loadSandboxGatewayIdentities(getenv)
+	if err != nil || len(identities) != 1 || identities[0] != values[coreSandboxGatewayIdentityEnvironment] {
+		t.Fatalf("legacy loadSandboxGatewayIdentities() = %v, %v", identities, err)
+	}
+}
+
 func productionRunCapabilityEnvironment(t *testing.T, includeActiveKey bool) map[string]string {
 	t.Helper()
 	root := t.TempDir()

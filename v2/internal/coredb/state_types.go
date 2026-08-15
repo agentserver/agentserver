@@ -89,8 +89,20 @@ type CreateRunCommand struct {
 	ExecutorPolicy         RunExecutorPolicy
 	LLMGateway             RunLLMGatewayBinding
 	LarkEgress             RunLarkEgressBinding
+	ManagedSandbox         RunManagedSandboxBinding
 	ExpectedSessionVersion int64
 	Record                 TransitionRecord
+}
+
+// RunManagedSandboxBinding is the exact immutable deployment profile selected
+// from the workspace setting for one run. An all-zero value means that the
+// deployment does not expose managed execution (for example insecure dev).
+type RunManagedSandboxBinding struct {
+	SettingVersion int64
+	Region         string
+	ProfileID      string
+	BindingSHA256  [32]byte
+	EnvironmentID  string
 }
 
 type CreateRunResult struct {
@@ -406,6 +418,7 @@ type ResolvedRunLaunchState struct {
 	ExecutorPolicy     RunExecutorPolicy
 	LLMGateway         RunLLMGatewayBinding
 	LarkEgress         RunLarkEgressBinding
+	ManagedSandbox     RunManagedSandboxBinding
 }
 
 type AttemptEvent struct {

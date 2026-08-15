@@ -3,9 +3,12 @@ package coredb
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 
+	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -48,18 +51,22 @@ func (s *StateStore) createRun(ctx context.Context, command CreateRunCommand, re
 	return withStateTransaction(ctx, s, operation, func(transaction pgx.Tx) (CreateRunResult, error) {
 		sessionQuery := fmt.Sprintf(`
 SELECT s.workspace_id::text, s.creator_id::text, s.status,
-       s.active_run_id::text, s.version, w.status
+       s.active_run_id::text, s.version, w.status,
+       managed.region, managed.version
 FROM %s AS s
 JOIN %s AS w ON w.id = s.workspace_id
+LEFT JOIN %s AS managed ON managed.workspace_id = w.id
 WHERE s.id = $1
 FOR UPDATE OF s
-FOR SHARE OF w`, s.table("sessions"), s.table("workspaces"))
+FOR SHARE OF w`, s.table("sessions"), s.table("workspaces"), s.table("workspace_managed_sandbox_settings"))
 		var sessionWorkspaceID string
 		var sessionCreatorID string
 		var sessionStatus string
 		var activeRunID *string
 		var sessionVersion int64
 		var workspaceStatus string
+		var managedSandboxRegion *string
+		var managedSandboxSettingVersion *int64
 		if err := transaction.QueryRow(ctx, sessionQuery, command.SessionID).Scan(
 			&sessionWorkspaceID,
 			&sessionCreatorID,
@@ -67,6 +74,8 @@ FOR SHARE OF w`, s.table("sessions"), s.table("workspaces"))
 			&activeRunID,
 			&sessionVersion,
 			&workspaceStatus,
+			&managedSandboxRegion,
+			&managedSandboxSettingVersion,
 		); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return CreateRunResult{}, commandError(ErrorNotFound, operation, "session", command.SessionID, "session does not exist")
@@ -127,7 +136,11 @@ WHERE r.workspace_id = $1
 				if launchErr != nil {
 					return CreateRunResult{}, launchErr
 				}
-				if !runLaunchInputMatches(prompt, policy, llmGateway, larkEgress, command) {
+				managedSandbox, launchErr := s.readRunManagedSandboxBinding(ctx, transaction, operation, existing.ID)
+				if launchErr != nil {
+					return CreateRunResult{}, launchErr
+				}
+				if !runLaunchInputMatches(prompt, policy, llmGateway, larkEgress, managedSandbox, command) {
 					return CreateRunResult{}, &StateError{
 						Code:         ErrorIdempotencyConflict,
 						Operation:    operation,
@@ -157,6 +170,14 @@ WHERE r.workspace_id = $1
 		}
 		if workspaceStatus != "active" {
 			return CreateRunResult{}, commandError(ErrorInvalidState, operation, "workspace", command.WorkspaceID, "workspace is not active")
+		}
+		if command.ManagedSandbox != (RunManagedSandboxBinding{}) {
+			if managedSandboxRegion == nil || managedSandboxSettingVersion == nil {
+				return CreateRunResult{}, commandError(ErrorInvalidState, operation, "workspace", command.WorkspaceID, "workspace has no managed sandbox setting")
+			}
+			if command.ManagedSandbox.Region != *managedSandboxRegion || command.ManagedSandbox.SettingVersion != *managedSandboxSettingVersion {
+				return CreateRunResult{}, commandError(ErrorVersionConflict, operation, "workspace_managed_sandbox_setting", command.WorkspaceID, "managed sandbox setting changed while creating run")
+			}
 		}
 		if sessionVersion != command.ExpectedSessionVersion {
 			return CreateRunResult{}, &StateError{
@@ -295,7 +316,26 @@ func validateCreateRunBase(command CreateRunCommand) error {
 			return errors.New("Lark egress grant user must be the run actor")
 		}
 	}
+	if command.ManagedSandbox != (RunManagedSandboxBinding{}) {
+		if err := validateRunManagedSandboxBinding(command.ManagedSandbox); err != nil {
+			return err
+		}
+	}
 	return validateTransitionRecord(command.Record)
+}
+
+func validateRunManagedSandboxBinding(binding RunManagedSandboxBinding) error {
+	if binding.SettingVersion < 1 || binding.SettingVersion >= maxSafeJSONInteger {
+		return errors.New("managed sandbox setting version must be a positive safe integer")
+	}
+	profile := managedsandboxprofile.Binding{
+		Region: binding.Region, ProfileID: binding.ProfileID,
+		BindingSHA256: hex.EncodeToString(binding.BindingSHA256[:]), EnvironmentID: binding.EnvironmentID,
+	}
+	if binding.BindingSHA256 == ([sha256.Size]byte{}) {
+		return errors.New("managed sandbox binding digest is required")
+	}
+	return profile.Validate()
 }
 
 func (s *StateStore) ClaimQueuedRun(ctx context.Context, command ClaimQueuedRunCommand) (ClaimQueuedRunResult, error) {

@@ -49,6 +49,10 @@ func (s *StateStore) ResolveRunLaunchState(ctx context.Context, command ResolveR
 		if err != nil {
 			return ResolvedRunLaunchState{}, err
 		}
+		managedSandbox, err := s.readRunManagedSandboxBinding(ctx, transaction, operation, run.ID)
+		if err != nil {
+			return ResolvedRunLaunchState{}, err
+		}
 		checkpoint, err := s.readLatestCheckpoint(ctx, transaction, operation, run.SessionID)
 		if err != nil {
 			return ResolvedRunLaunchState{}, err
@@ -58,7 +62,7 @@ func (s *StateStore) ResolveRunLaunchState(ctx context.Context, command ResolveR
 			AttemptID: attempt.ID, HolderID: attempt.HolderID, Generation: attempt.Generation,
 			RunVersion: run.Version, AttemptVersion: attempt.Version,
 			Prompt: prompt, PreviousCheckpoint: checkpoint, ExecutorPolicy: policy,
-			LLMGateway: llmGateway, LarkEgress: larkEgress,
+			LLMGateway: llmGateway, LarkEgress: larkEgress, ManagedSandbox: managedSandbox,
 		}, nil
 	})
 }
@@ -159,16 +163,27 @@ func (s *StateStore) insertRunLaunchInput(ctx context.Context, transaction pgx.T
 		larkGrantUserID = command.LarkEgress.GrantUserID
 		larkPolicySHA256 = command.LarkEgress.PolicySHA256[:]
 	}
+	var managedSettingVersion, managedRegion, managedProfileID, managedBindingSHA256, managedEnvironmentID any
+	if command.ManagedSandbox != (RunManagedSandboxBinding{}) {
+		managedSettingVersion = command.ManagedSandbox.SettingVersion
+		managedRegion = command.ManagedSandbox.Region
+		managedProfileID = command.ManagedSandbox.ProfileID
+		managedBindingSHA256 = command.ManagedSandbox.BindingSHA256[:]
+		managedEnvironmentID = command.ManagedSandbox.EnvironmentID
+	}
 	query := fmt.Sprintf(`
 INSERT INTO %s
     (run_id, workspace_id, session_id,
      prompt_object_id, prompt_sha256, prompt_size, prompt_media_type,
      executor_policy_version, executor_policy_context_digest,
      llm_gateway_id, llm_gateway_version, llm_gateway_grant_user_id, model,
-     lark_grant_id, lark_grant_version, lark_grant_user_id, lark_policy_sha256)
+     lark_grant_id, lark_grant_version, lark_grant_user_id, lark_policy_sha256,
+     managed_sandbox_setting_version, managed_sandbox_region,
+     managed_sandbox_profile_id, managed_sandbox_binding_sha256,
+     managed_sandbox_environment_id)
 VALUES
-    ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-     $14, $15, $16, $17)`, s.table("run_launch_states"))
+	($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+	 $14, $15, $16, $17, $18, $19, $20, $21, $22)`, s.table("run_launch_states"))
 	if _, err := transaction.Exec(ctx, query,
 		command.RunID,
 		command.WorkspaceID,
@@ -187,6 +202,11 @@ VALUES
 		larkGrantVersion,
 		larkGrantUserID,
 		larkPolicySHA256,
+		managedSettingVersion,
+		managedRegion,
+		managedProfileID,
+		managedBindingSHA256,
+		managedEnvironmentID,
 	); err != nil {
 		var postgresError *pgconn.PgError
 		if pgxErrorAs(err, &postgresError) && postgresError.Code == "23505" {
@@ -204,6 +224,46 @@ VALUES ($1, $2, $3)`, s.table("run_launch_allowed_tools"))
 		}
 	}
 	return nil
+}
+
+func (s *StateStore) readRunManagedSandboxBinding(
+	ctx context.Context,
+	transaction pgx.Tx,
+	operation, runID string,
+) (RunManagedSandboxBinding, error) {
+	query := fmt.Sprintf(`
+SELECT managed_sandbox_setting_version, managed_sandbox_region,
+       managed_sandbox_profile_id, managed_sandbox_binding_sha256,
+       managed_sandbox_environment_id::text
+FROM %s
+WHERE run_id = $1`, s.table("run_launch_states"))
+	var settingVersion *int64
+	var region, profileID, environmentID *string
+	var rawDigest []byte
+	if err := transaction.QueryRow(ctx, query, runID).Scan(
+		&settingVersion, &region, &profileID, &rawDigest, &environmentID,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return RunManagedSandboxBinding{}, commandError(ErrorInvalidState, operation, "run", runID, "run has no immutable launch authority")
+		}
+		return RunManagedSandboxBinding{}, databaseError(operation+" read managed sandbox binding", err)
+	}
+	if settingVersion == nil && region == nil && profileID == nil && rawDigest == nil && environmentID == nil {
+		return RunManagedSandboxBinding{}, nil
+	}
+	if settingVersion == nil || region == nil || profileID == nil || rawDigest == nil || environmentID == nil {
+		return RunManagedSandboxBinding{}, databaseError(operation+" decode managed sandbox binding", errors.New("stored binding is incomplete"))
+	}
+	binding := RunManagedSandboxBinding{
+		SettingVersion: *settingVersion, Region: *region, ProfileID: *profileID, EnvironmentID: *environmentID,
+	}
+	if err := copyStoredSHA256(&binding.BindingSHA256, rawDigest); err != nil {
+		return RunManagedSandboxBinding{}, databaseError(operation+" decode managed sandbox binding digest", err)
+	}
+	if err := validateRunManagedSandboxBinding(binding); err != nil {
+		return RunManagedSandboxBinding{}, databaseError(operation+" validate managed sandbox binding", err)
+	}
+	return binding, nil
 }
 
 func (s *StateStore) readRunLaunchInput(ctx context.Context, transaction pgx.Tx, operation, runID string) (ObjectPointer, RunExecutorPolicy, RunLLMGatewayBinding, RunLarkEgressBinding, error) {
@@ -484,7 +544,7 @@ func optionalSHA256Equal(left, right *[sha256.Size]byte) bool {
 	return *left == *right
 }
 
-func runLaunchInputMatches(prompt ObjectPointer, policy RunExecutorPolicy, llmGateway RunLLMGatewayBinding, larkEgress RunLarkEgressBinding, command CreateRunCommand) bool {
+func runLaunchInputMatches(prompt ObjectPointer, policy RunExecutorPolicy, llmGateway RunLLMGatewayBinding, larkEgress RunLarkEgressBinding, managedSandbox RunManagedSandboxBinding, command CreateRunCommand) bool {
 	return prompt.ObjectID == command.Prompt.ObjectID &&
 		subtle.ConstantTimeCompare(prompt.SHA256[:], command.Prompt.SHA256[:]) == 1 &&
 		prompt.Size == command.Prompt.Size &&
@@ -492,5 +552,5 @@ func runLaunchInputMatches(prompt ObjectPointer, policy RunExecutorPolicy, llmGa
 		policy.Version == command.ExecutorPolicy.Version &&
 		subtle.ConstantTimeCompare(policy.ContextDigest[:], command.ExecutorPolicy.ContextDigest[:]) == 1 &&
 		slices.Equal(policy.AllowedTools, command.ExecutorPolicy.AllowedTools) &&
-		llmGateway == command.LLMGateway && larkEgress == command.LarkEgress
+		llmGateway == command.LLMGateway && larkEgress == command.LarkEgress && managedSandbox == command.ManagedSandbox
 }

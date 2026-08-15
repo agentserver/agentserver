@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/sandboxclient"
 	"github.com/agentserver/agentserver/v2/internal/sandboxcontract"
 )
@@ -20,6 +21,9 @@ var managedSandboxSHA256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // session identity is stored here; the sandbox-gateway allocates and fences
 // that identity when the first executor tool is actually called.
 type ManagedSandboxProvisioningSpec struct {
+	Region               string
+	ProfileID            string
+	ProfileBindingSHA256 string
 	EnvironmentID        string
 	RuntimeProfileDigest string
 	PackSetDigest        string
@@ -93,6 +97,15 @@ func (acquirer *GatewayManagedSandboxSessionAcquirer) Acquire(
 	if err := validateExecutorMCPPrincipal(principal); err != nil {
 		return nil, err
 	}
+	if acquirer.spec.ProfileID != "" {
+		authority := principal.ManagedSandbox
+		if authority == nil || authority.Region != acquirer.spec.Region ||
+			authority.ProfileID != acquirer.spec.ProfileID ||
+			authority.BindingSHA256 != acquirer.spec.ProfileBindingSHA256 ||
+			authority.EnvironmentID != acquirer.spec.EnvironmentID {
+			return nil, errors.New("managed sandbox run authority does not match the provisioning profile")
+		}
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -139,6 +152,49 @@ func (acquirer *GatewayManagedSandboxSessionAcquirer) Acquire(
 	go lease.keepAlive()
 	acquirer.logAcquire(ctx, principal, "ready", ref.SandboxID, ref.TargetGeneration, startedAt, nil)
 	return lease, nil
+}
+
+// ManagedSandboxSessionAcquirerRouter selects the one immutable provisioning
+// profile carried by the Core-issued run authority. It never reads a tool
+// argument or request header to choose a region.
+type ManagedSandboxSessionAcquirerRouter struct {
+	byProfile map[string]ManagedSandboxSessionAcquirer
+}
+
+func NewManagedSandboxSessionAcquirerRouter(
+	profiles map[string]ManagedSandboxSessionAcquirer,
+) (*ManagedSandboxSessionAcquirerRouter, error) {
+	if len(profiles) < 1 || len(profiles) > 32 {
+		return nil, errors.New("managed sandbox acquirer router requires between 1 and 32 profiles")
+	}
+	copy := make(map[string]ManagedSandboxSessionAcquirer, len(profiles))
+	for profileID, acquirer := range profiles {
+		if acquirer == nil {
+			return nil, errors.New("managed sandbox acquirer router contains a nil profile")
+		}
+		if !managedsandboxprofile.ValidProfileID(profileID) {
+			return nil, errors.New("managed sandbox acquirer profile ID must be canonical bounded text")
+		}
+		if _, duplicate := copy[profileID]; duplicate {
+			return nil, errors.New("managed sandbox acquirer profile is repeated")
+		}
+		copy[profileID] = acquirer
+	}
+	return &ManagedSandboxSessionAcquirerRouter{byProfile: copy}, nil
+}
+
+func (router *ManagedSandboxSessionAcquirerRouter) Acquire(
+	ctx context.Context,
+	principal ExecutorMCPPrincipal,
+) (ManagedSandboxSessionLease, error) {
+	if router == nil || principal.ManagedSandbox == nil {
+		return nil, errors.New("managed sandbox run authority is required")
+	}
+	acquirer := router.byProfile[principal.ManagedSandbox.ProfileID]
+	if acquirer == nil {
+		return nil, errors.New("managed sandbox run profile is not configured")
+	}
+	return acquirer.Acquire(ctx, principal)
 }
 
 func (acquirer *GatewayManagedSandboxSessionAcquirer) requestID() (string, error) {
@@ -367,7 +423,10 @@ func (lease *gatewayManagedSandboxSessionLease) setError(err error) {
 }
 
 func validateManagedSandboxProvisioningSpec(spec ManagedSandboxProvisioningSpec) error {
-	if err := validateRegistryIdentity("managed environment ID", spec.EnvironmentID); err != nil {
+	if err := (managedsandboxprofile.Binding{
+		Region: spec.Region, ProfileID: spec.ProfileID,
+		BindingSHA256: spec.ProfileBindingSHA256, EnvironmentID: spec.EnvironmentID,
+	}).Validate(); err != nil {
 		return err
 	}
 	if !managedSandboxSHA256Pattern.MatchString(spec.RuntimeProfileDigest) ||
@@ -381,6 +440,12 @@ func validateManagedSandboxProvisioningSpec(spec ManagedSandboxProvisioningSpec)
 		return errors.New("managed sandbox activity TTL must be whole seconds between 3 seconds and the sandbox TTL")
 	}
 	return nil
+}
+
+// ValidateManagedSandboxProvisioningSpec validates deployment-owned routing
+// and runtime authority without constructing a lifecycle client.
+func ValidateManagedSandboxProvisioningSpec(spec ManagedSandboxProvisioningSpec) error {
+	return validateManagedSandboxProvisioningSpec(spec)
 }
 
 var _ ManagedSandboxSessionAcquirer = (*GatewayManagedSandboxSessionAcquirer)(nil)

@@ -107,7 +107,7 @@ func (authenticator *ProductionExecutorMCPAuthenticator) AuthenticateExecutorMCP
 	if !authorizedExecutorCapabilityResponseMatchesClaims(authorized, claims) {
 		return ExecutorMCPPrincipal{}, errors.New("Core returned inconsistent production executor MCP authority")
 	}
-	return ExecutorMCPPrincipal{
+	principal := ExecutorMCPPrincipal{
 		CapabilityID: claims.CapabilityID, WorkspaceID: claims.WorkspaceID, SessionID: claims.SessionID,
 		ActorID: claims.ActorID, ExecutorID: claims.ExecutorID,
 		ToolCatalogDigest:   claims.ToolCatalogDigest,
@@ -121,7 +121,15 @@ func (authenticator *ProductionExecutorMCPAuthenticator) AuthenticateExecutorMCP
 			ExpectedRunVersion:        claims.ExpectedRunVersion,
 			ExpectedRunAttemptVersion: claims.ExpectedRunAttemptVersion,
 		},
-	}, nil
+	}
+	if claims.ManagedSandboxProfileID != "" {
+		principal.ManagedSandbox = &ExecutorManagedSandboxAuthority{
+			SettingVersion: claims.ManagedSandboxSettingVersion, Region: claims.ManagedSandboxRegion,
+			ProfileID: claims.ManagedSandboxProfileID, BindingSHA256: claims.ManagedSandboxBindingSHA256,
+			EnvironmentID: claims.ManagedSandboxEnvironmentID,
+		}
+	}
+	return principal, nil
 }
 
 func exactExecutorMCPBearer(request *http.Request) (string, error) {

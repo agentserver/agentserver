@@ -64,19 +64,20 @@ type UserSessionTrajectoryCheckpoint struct {
 }
 
 type ReadUserSessionTrajectoryResult struct {
-	Session        UserSession
-	Runs           []Run
-	PromptPointers map[string]ObjectPointer
-	Attempts       []RunAttempt
-	Events         []UserSessionTrajectoryEvent
-	Executions     []Execution
-	Operations     []ExecutionOperation
-	Sandboxes      []ManagedSandbox
-	Activities     []UserSessionTrajectorySandboxActivity
-	CredentialUses []UserSessionTrajectoryCredentialUse
-	Checkpoints    []UserSessionTrajectoryCheckpoint
-	HasOlderRuns   bool
-	Truncated      bool
+	Session                UserSession
+	Runs                   []Run
+	PromptPointers         map[string]ObjectPointer
+	ManagedSandboxBindings map[string]RunManagedSandboxBinding
+	Attempts               []RunAttempt
+	Events                 []UserSessionTrajectoryEvent
+	Executions             []Execution
+	Operations             []ExecutionOperation
+	Sandboxes              []ManagedSandbox
+	Activities             []UserSessionTrajectorySandboxActivity
+	CredentialUses         []UserSessionTrajectoryCredentialUse
+	Checkpoints            []UserSessionTrajectoryCheckpoint
+	HasOlderRuns           bool
+	Truncated              bool
 }
 
 // ReadUserSessionTrajectory returns a bounded repeatable-read source for the
@@ -111,6 +112,9 @@ func (s *StateStore) ReadUserSessionTrajectory(
 		}
 		runClause, arguments := trajectoryRunClause(result.Runs)
 		if result.PromptPointers, err = s.readUserTrajectoryPromptPointers(ctx, transaction, runClause, arguments); err != nil {
+			return ReadUserSessionTrajectoryResult{}, err
+		}
+		if result.ManagedSandboxBindings, err = s.readUserTrajectoryManagedSandboxBindings(ctx, transaction, runClause, arguments); err != nil {
 			return ReadUserSessionTrajectoryResult{}, err
 		}
 		var truncated bool
@@ -148,6 +152,63 @@ func (s *StateStore) ReadUserSessionTrajectory(
 		result.Truncated = result.Truncated || truncated
 		return result, nil
 	})
+}
+
+func (s *StateStore) readUserTrajectoryManagedSandboxBindings(
+	ctx context.Context,
+	transaction pgx.Tx,
+	runClause string,
+	arguments []any,
+) (map[string]RunManagedSandboxBinding, error) {
+	statement := fmt.Sprintf(`
+SELECT launch.run_id::text, launch.managed_sandbox_setting_version,
+       launch.managed_sandbox_region, launch.managed_sandbox_profile_id,
+       launch.managed_sandbox_binding_sha256,
+       launch.managed_sandbox_environment_id::text
+FROM %s AS launch
+WHERE launch.run_id IN (%s)`, s.table("run_launch_states"), runClause)
+	rows, err := transaction.Query(ctx, statement, arguments...)
+	if err != nil {
+		return nil, databaseError("ReadUserSessionTrajectory query managed sandbox bindings", err)
+	}
+	defer rows.Close()
+	result := make(map[string]RunManagedSandboxBinding, len(arguments))
+	for rows.Next() {
+		var runID string
+		var settingVersion *int64
+		var region, profileID, environmentID *string
+		var rawDigest []byte
+		if err := rows.Scan(&runID, &settingVersion, &region, &profileID, &rawDigest, &environmentID); err != nil {
+			return nil, databaseError("ReadUserSessionTrajectory scan managed sandbox binding", err)
+		}
+		if settingVersion == nil && region == nil && profileID == nil && rawDigest == nil && environmentID == nil {
+			result[runID] = RunManagedSandboxBinding{}
+			continue
+		}
+		if settingVersion == nil || region == nil || profileID == nil || rawDigest == nil || environmentID == nil {
+			return nil, databaseError("ReadUserSessionTrajectory decode managed sandbox binding", errors.New("stored binding is incomplete"))
+		}
+		binding := RunManagedSandboxBinding{
+			SettingVersion: *settingVersion,
+			Region:         *region,
+			ProfileID:      *profileID,
+			EnvironmentID:  *environmentID,
+		}
+		if err := copyStoredSHA256(&binding.BindingSHA256, rawDigest); err != nil {
+			return nil, databaseError("ReadUserSessionTrajectory decode managed sandbox binding digest", err)
+		}
+		if err := validateRunManagedSandboxBinding(binding); err != nil {
+			return nil, databaseError("ReadUserSessionTrajectory validate managed sandbox binding", err)
+		}
+		result[runID] = binding
+	}
+	if err := rows.Err(); err != nil {
+		return nil, databaseError("ReadUserSessionTrajectory iterate managed sandbox bindings", err)
+	}
+	if len(result) != len(arguments) {
+		return nil, databaseError("ReadUserSessionTrajectory validate managed sandbox bindings", errors.New("selected run has no immutable launch authority"))
+	}
+	return result, nil
 }
 
 func (s *StateStore) readUserTrajectoryPromptPointers(

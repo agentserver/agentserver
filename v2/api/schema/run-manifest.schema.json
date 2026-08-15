@@ -70,6 +70,18 @@
         "skillSha256": {"$ref": "#/$defs/sha256"}
       }
     },
+    "managedSandbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["settingVersion", "region", "profileId", "bindingSha256", "environmentId"],
+      "properties": {
+        "settingVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "region": {"enum": ["cn", "boe", "i18n-bd", "i18n-tt"]},
+        "profileId": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$"},
+        "bindingSha256": {"$ref": "#/$defs/sha256"},
+        "environmentId": {"$ref": "#/$defs/uuid"}
+      }
+    },
     "modelRoute": {
       "type": "object",
       "additionalProperties": false,
@@ -173,7 +185,7 @@
       "additionalProperties": false,
       "required": ["manifestVersion", "canonicalizerVersion", "workspaceId", "sessionId", "runId", "runAttemptId", "runAttemptGeneration", "holderId", "prompt", "codexRuntimeManifestDigest", "model", "executorMcp", "executorPolicy", "limits", "checkpointAllowlistVersion", "workerImageDigest", "expectedServiceAccount", "controllerCallback"],
       "properties": {
-        "manifestVersion": {"const": 3},
+        "manifestVersion": {"const": 4},
         "canonicalizerVersion": {"const": "rfc8785-v1"},
         "workspaceId": {"$ref": "#/$defs/uuid"},
         "sessionId": {"$ref": "#/$defs/uuid"},
@@ -188,6 +200,7 @@
         "executorMcp": {"$ref": "#/$defs/executorMcp"},
         "executorPolicy": {"$ref": "#/$defs/executorPolicy"},
         "toolPack": {"$ref": "#/$defs/toolPack"},
+        "managedSandbox": {"$ref": "#/$defs/managedSandbox"},
         "limits": {"$ref": "#/$defs/runLimits"},
         "checkpointAllowlistVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
         "workerImageDigest": {"$ref": "#/$defs/sha256"},

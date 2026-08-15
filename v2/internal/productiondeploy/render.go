@@ -61,11 +61,19 @@ func Render(config LoadedConfig) (Bundle, error) {
 	if err != nil {
 		return Bundle{}, err
 	}
-	var managedEnvironmentJSON []byte
+	var managedEnvironments []managedEnvironmentRender
 	if managedExecutionActive(config.Document.Managed) {
-		managedEnvironmentJSON, err = renderManagedEnvironmentBootstrapJSON(config)
-		if err != nil {
-			return Bundle{}, err
+		managedEnvironments = make([]managedEnvironmentRender, 0, len(config.ManagedSandboxProfiles))
+		for _, profile := range config.ManagedSandboxProfiles {
+			content, renderErr := renderManagedEnvironmentBootstrapJSON(config, profile)
+			if renderErr != nil {
+				return Bundle{}, renderErr
+			}
+			hash := sha256Hex(content)
+			managedEnvironments = append(managedEnvironments, managedEnvironmentRender{
+				FileName: "managed-environment-" + profile.Document.Region + ".json",
+				JSON:     content, Hash: hash, JobName: "agentserver-managed-environment-" + hash[:12],
+			})
 		}
 	}
 	documentJSON, err := json.Marshal(config.Document)
@@ -76,7 +84,11 @@ func Render(config LoadedConfig) (Bundle, error) {
 	harnessConfigHash := sha256Framed(workerJSON, networkGuardJSON)
 	harnessDeploymentHash := sha256Framed(documentJSON, workerJSON, networkGuardJSON)
 	documentHash := sha256Hex(documentJSON)
-	managedEnvironmentHash := sha256Hex(managedEnvironmentJSON)
+	managedEnvironmentFrames := make([][]byte, 0, len(managedEnvironments))
+	for _, environment := range managedEnvironments {
+		managedEnvironmentFrames = append(managedEnvironmentFrames, environment.JSON)
+	}
+	managedEnvironmentHash := sha256Framed(managedEnvironmentFrames...)
 
 	catalog, err := coredb.EmbeddedMigrations()
 	if err != nil || len(catalog) == 0 {
@@ -87,7 +99,7 @@ func Render(config LoadedConfig) (Bundle, error) {
 	context := renderContext{
 		config: config, bootstrapJSON: bootstrapJSON, workerJSON: workerJSON,
 		networkGuardJSON: networkGuardJSON, bootstrapHash: bootstrapHash,
-		managedEnvironmentJSON: managedEnvironmentJSON,
+		managedEnvironments:    managedEnvironments,
 		managedEnvironmentHash: managedEnvironmentHash,
 		harnessConfigHash:      harnessConfigHash, harnessDeploymentHash: harnessDeploymentHash,
 		documentHash: documentHash, migrationVersion: migrationVersion,
@@ -100,7 +112,6 @@ func Render(config LoadedConfig) (Bundle, error) {
 	}
 	if managedExecutionActive(config.Document.Managed) {
 		context.managedEnvironmentConfigName = "agentserver-managed-environment-" + managedEnvironmentHash[:12]
-		context.managedEnvironmentJobName = "agentserver-managed-environment-" + managedEnvironmentHash[:12]
 	}
 
 	runtimeItems, err := renderRuntime(context)
@@ -118,11 +129,15 @@ func Render(config LoadedConfig) (Bundle, error) {
 		{name: bootstrapFile, items: []kubeObject{renderBootstrapJob(context)}},
 	}
 	if managedExecutionActive(config.Document.Managed) {
+		jobs := make([]kubeObject, 0, len(context.managedEnvironments))
+		for _, environment := range context.managedEnvironments {
+			jobs = append(jobs, renderManagedEnvironmentBootstrapJob(context, environment))
+		}
 		groups = append(groups,
 			struct {
 				name  string
 				items []kubeObject
-			}{name: managedEnvironmentBootstrapFile, items: []kubeObject{renderManagedEnvironmentBootstrapJob(context)}},
+			}{name: managedEnvironmentBootstrapFile, items: jobs},
 		)
 	}
 	groups = append(groups, struct {
@@ -150,7 +165,7 @@ type renderContext struct {
 	bootstrapJSON                []byte
 	workerJSON                   []byte
 	networkGuardJSON             []byte
-	managedEnvironmentJSON       []byte
+	managedEnvironments          []managedEnvironmentRender
 	bootstrapHash                string
 	harnessConfigHash            string
 	harnessDeploymentHash        string
@@ -164,7 +179,13 @@ type renderContext struct {
 	hydraSetupJobName            string
 	bootstrapJobName             string
 	managedEnvironmentConfigName string
-	managedEnvironmentJobName    string
+}
+
+type managedEnvironmentRender struct {
+	FileName string
+	JSON     []byte
+	Hash     string
+	JobName  string
 }
 
 type managedEnvironmentBootstrapJSON struct {
@@ -177,13 +198,13 @@ type managedEnvironmentBootstrapJSON struct {
 	Runtime           ManagedCompatibilityRuntimeDocument `json:"runtime"`
 }
 
-func renderManagedEnvironmentBootstrapJSON(config LoadedConfig) ([]byte, error) {
+func renderManagedEnvironmentBootstrapJSON(config LoadedConfig, profile LoadedManagedSandboxProfile) ([]byte, error) {
 	document := config.Document
 	return marshalCanonicalDocument(managedEnvironmentBootstrapJSON{
 		Version: 1, WorkspaceID: document.Bootstrap.WorkspaceID, ExecutorID: document.Bootstrap.ExecutorID,
-		EnvironmentID:     document.Managed.Environment.EnvironmentID,
-		OwnerPolicySHA256: config.ManagedOwnerPolicySHA256,
-		Root:              document.Managed.Environment.Root, Runtime: document.Managed.Environment.Compatibility,
+		EnvironmentID:     profile.Document.Environment.EnvironmentID,
+		OwnerPolicySHA256: profile.OwnerPolicySHA256,
+		Root:              profile.Document.Environment.Root, Runtime: profile.Document.Environment.Compatibility,
 	})
 }
 

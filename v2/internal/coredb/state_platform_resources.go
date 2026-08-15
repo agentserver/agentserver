@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/managedcredential"
+	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -208,6 +209,14 @@ INSERT INTO %s (workspace_id, user_id, role)
 VALUES ($1, $2, 'owner')`, s.table("workspace_members"))
 			if _, err := transaction.Exec(ctx, memberInsert, command.WorkspaceID, command.ActorID); err != nil {
 				return CreatePlatformWorkspaceResult{}, databaseError(operation+" insert owner membership", err)
+			}
+			settingInsert := fmt.Sprintf(`
+INSERT INTO %s (workspace_id, region, updated_by)
+VALUES ($1, $2, $3)`, s.table("workspace_managed_sandbox_settings"))
+			if _, err := transaction.Exec(
+				ctx, settingInsert, command.WorkspaceID, managedsandboxprofile.DefaultRegion, command.ActorID,
+			); err != nil {
+				return CreatePlatformWorkspaceResult{}, databaseError(operation+" insert managed sandbox setting", err)
 			}
 		}
 		workspace, err := s.readPlatformWorkspace(ctx, transaction, operation, command.WorkspaceID, command.ActorID, true)

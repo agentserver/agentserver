@@ -20,11 +20,12 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/braincatalog"
 	checkpointartifact "github.com/agentserver/agentserver/v2/internal/checkpoint"
+	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/ucarion/jcs"
 )
 
 const (
-	CurrentVersion     = 3
+	CurrentVersion     = 4
 	Canonicalizer      = "rfc8785-v1"
 	SignatureAlgorithm = "ed25519-v1"
 	MCPProtocolProfile = "2025-11-25"
@@ -71,6 +72,14 @@ type ToolPackAuthority struct {
 	PackID        string `json:"packId"`
 	PackSetDigest string `json:"packSetDigest"`
 	SkillSHA256   string `json:"skillSha256"`
+}
+
+type ManagedSandboxAuthority struct {
+	SettingVersion int64  `json:"settingVersion"`
+	Region         string `json:"region"`
+	ProfileID      string `json:"profileId"`
+	BindingSHA256  string `json:"bindingSha256"`
+	EnvironmentID  string `json:"environmentId"`
 }
 
 type ModelRoute struct {
@@ -130,26 +139,27 @@ type ControllerCallback struct {
 }
 
 type Manifest struct {
-	ManifestVersion            int                 `json:"manifestVersion"`
-	CanonicalizerVersion       string              `json:"canonicalizerVersion"`
-	WorkspaceID                string              `json:"workspaceId"`
-	SessionID                  string              `json:"sessionId"`
-	RunID                      string              `json:"runId"`
-	RunAttemptID               string              `json:"runAttemptId"`
-	RunAttemptGeneration       int64               `json:"runAttemptGeneration"`
-	HolderID                   string              `json:"holderId"`
-	Prompt                     ObjectPointer       `json:"prompt"`
-	PreviousCheckpoint         *PreviousCheckpoint `json:"previousCheckpoint,omitempty"`
-	CodexRuntimeManifestDigest string              `json:"codexRuntimeManifestDigest"`
-	Model                      ModelRoute          `json:"model"`
-	ExecutorMCP                ExecutorMCP         `json:"executorMcp"`
-	ExecutorPolicy             ExecutorPolicy      `json:"executorPolicy"`
-	ToolPack                   *ToolPackAuthority  `json:"toolPack,omitempty"`
-	Limits                     RunLimits           `json:"limits"`
-	CheckpointAllowlistVersion int                 `json:"checkpointAllowlistVersion"`
-	WorkerImageDigest          string              `json:"workerImageDigest"`
-	ExpectedServiceAccount     string              `json:"expectedServiceAccount"`
-	ControllerCallback         ControllerCallback  `json:"controllerCallback"`
+	ManifestVersion            int                      `json:"manifestVersion"`
+	CanonicalizerVersion       string                   `json:"canonicalizerVersion"`
+	WorkspaceID                string                   `json:"workspaceId"`
+	SessionID                  string                   `json:"sessionId"`
+	RunID                      string                   `json:"runId"`
+	RunAttemptID               string                   `json:"runAttemptId"`
+	RunAttemptGeneration       int64                    `json:"runAttemptGeneration"`
+	HolderID                   string                   `json:"holderId"`
+	Prompt                     ObjectPointer            `json:"prompt"`
+	PreviousCheckpoint         *PreviousCheckpoint      `json:"previousCheckpoint,omitempty"`
+	CodexRuntimeManifestDigest string                   `json:"codexRuntimeManifestDigest"`
+	Model                      ModelRoute               `json:"model"`
+	ExecutorMCP                ExecutorMCP              `json:"executorMcp"`
+	ExecutorPolicy             ExecutorPolicy           `json:"executorPolicy"`
+	ToolPack                   *ToolPackAuthority       `json:"toolPack,omitempty"`
+	ManagedSandbox             *ManagedSandboxAuthority `json:"managedSandbox,omitempty"`
+	Limits                     RunLimits                `json:"limits"`
+	CheckpointAllowlistVersion int                      `json:"checkpointAllowlistVersion"`
+	WorkerImageDigest          string                   `json:"workerImageDigest"`
+	ExpectedServiceAccount     string                   `json:"expectedServiceAccount"`
+	ControllerCallback         ControllerCallback       `json:"controllerCallback"`
 }
 
 type SignedManifest struct {
@@ -229,6 +239,12 @@ func (manifest Manifest) Validate() error {
 	if err := manifest.ToolPack.validate(); err != nil {
 		return err
 	}
+	if err := manifest.ManagedSandbox.validate(); err != nil {
+		return err
+	}
+	if manifest.ManagedSandbox != nil && manifest.ToolPack == nil {
+		return errors.New("managedSandbox requires toolPack authority")
+	}
 	if manifest.PreviousCheckpoint != nil {
 		wantPackSet := ""
 		if manifest.ToolPack != nil {
@@ -263,6 +279,19 @@ func (manifest Manifest) Validate() error {
 		return errors.New("controllerCallback.holderId must match holderId")
 	}
 	return nil
+}
+
+func (authority *ManagedSandboxAuthority) validate() error {
+	if authority == nil {
+		return nil
+	}
+	if authority.SettingVersion < 1 || authority.SettingVersion > maxJSONInteger {
+		return errors.New("managedSandbox.settingVersion must be a positive safe integer")
+	}
+	return (managedsandboxprofile.Binding{
+		Region: authority.Region, ProfileID: authority.ProfileID,
+		BindingSHA256: authority.BindingSHA256, EnvironmentID: authority.EnvironmentID,
+	}).Validate()
 }
 
 func (authority *ToolPackAuthority) validate() error {

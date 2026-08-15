@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/braincatalog"
+	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 )
 
 const (
@@ -58,11 +59,16 @@ type Claims struct {
 	RunDeadlineUnixMS    int64  `json:"runDeadlineUnixMs"`
 	ExpiresAtUnixMS      int64  `json:"expiresAtUnixMs"`
 
-	ExecutorID                string `json:"executorId,omitempty"`
-	ToolCatalogDigest         string `json:"toolCatalogDigest,omitempty"`
-	ExpectedRunVersion        int64  `json:"expectedRunVersion,omitempty"`
-	ExpectedRunAttemptVersion int64  `json:"expectedRunAttemptVersion,omitempty"`
-	MaxApprovalTTLMillis      int64  `json:"maxApprovalTtlMs,omitempty"`
+	ExecutorID                   string `json:"executorId,omitempty"`
+	ToolCatalogDigest            string `json:"toolCatalogDigest,omitempty"`
+	ExpectedRunVersion           int64  `json:"expectedRunVersion,omitempty"`
+	ExpectedRunAttemptVersion    int64  `json:"expectedRunAttemptVersion,omitempty"`
+	MaxApprovalTTLMillis         int64  `json:"maxApprovalTtlMs,omitempty"`
+	ManagedSandboxSettingVersion int64  `json:"managedSandboxSettingVersion,omitempty"`
+	ManagedSandboxRegion         string `json:"managedSandboxRegion,omitempty"`
+	ManagedSandboxProfileID      string `json:"managedSandboxProfileId,omitempty"`
+	ManagedSandboxBindingSHA256  string `json:"managedSandboxBindingSha256,omitempty"`
+	ManagedSandboxEnvironmentID  string `json:"managedSandboxEnvironmentId,omitempty"`
 
 	Model                 string `json:"model,omitempty"`
 	Provider              string `json:"provider,omitempty"`
@@ -217,6 +223,21 @@ func (claims Claims) validateAuthority(profile string) error {
 			claims.LLMGatewayVersion != 0 || claims.LLMGatewayGrantUserID != "" {
 			return fmt.Errorf("%s executor capability contains model authority", profile)
 		}
+		managedConfigured := claims.ManagedSandboxSettingVersion != 0 || claims.ManagedSandboxRegion != "" ||
+			claims.ManagedSandboxProfileID != "" || claims.ManagedSandboxBindingSHA256 != "" ||
+			claims.ManagedSandboxEnvironmentID != ""
+		if managedConfigured {
+			if claims.ManagedSandboxSettingVersion < 1 || claims.ManagedSandboxSettingVersion > maxSafeJSONInteger {
+				return fmt.Errorf("%s executor capability managed sandbox setting version is invalid", profile)
+			}
+			if err := (managedsandboxprofile.Binding{
+				Region: claims.ManagedSandboxRegion, ProfileID: claims.ManagedSandboxProfileID,
+				BindingSHA256: claims.ManagedSandboxBindingSHA256,
+				EnvironmentID: claims.ManagedSandboxEnvironmentID,
+			}).Validate(); err != nil {
+				return fmt.Errorf("%s executor capability managed sandbox authority is invalid: %w", profile, err)
+			}
+		}
 	case AudienceLLMProxy:
 		if !validDevelopmentText(claims.Model, maximumTextBytes) || !validDevelopmentText(claims.Provider, maximumTextBytes) {
 			return fmt.Errorf("%s model capability route is invalid", profile)
@@ -234,6 +255,11 @@ func (claims Claims) validateAuthority(profile string) error {
 		if claims.ExecutorID != "" || claims.ToolCatalogDigest != "" ||
 			claims.ExpectedRunVersion != 0 || claims.ExpectedRunAttemptVersion != 0 || claims.MaxApprovalTTLMillis != 0 {
 			return fmt.Errorf("%s model capability contains executor authority", profile)
+		}
+		if claims.ManagedSandboxSettingVersion != 0 || claims.ManagedSandboxRegion != "" ||
+			claims.ManagedSandboxProfileID != "" || claims.ManagedSandboxBindingSHA256 != "" ||
+			claims.ManagedSandboxEnvironmentID != "" {
+			return fmt.Errorf("%s model capability contains managed sandbox authority", profile)
 		}
 	default:
 		return fmt.Errorf("%s run capability audience is unsupported", profile)

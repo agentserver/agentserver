@@ -46,6 +46,9 @@ func TestProductionRendererHarnessPoolEnvironmentPassesCommandLoader(t *testing.
 	if err != nil {
 		t.Fatalf("harness-pool rejected rendered production environment: %v", err)
 	}
+	if len(loaded.managedSandboxProfiles) != 1 {
+		t.Fatalf("harness-pool loaded %d managed sandbox profiles, want 1", len(loaded.managedSandboxProfiles))
+	}
 	if loaded.executorID != environment.Get(poolExecutorIDEnvironment) || loaded.workerCredential == nil ||
 		loaded.workerCredential.UID != 65531 || loaded.appCredential.UID != 65532 ||
 		!strings.HasSuffix(loaded.modelEndpoint, "/v1") || strings.HasSuffix(loaded.modelEndpoint, "/v1/responses") {
@@ -87,12 +90,7 @@ func assertHarnessPoolProductionEnvironmentNames(t *testing.T, got []string) {
 		poolMaxConcurrentEnvironment,
 		poolMaxRunDurationEnvironment,
 		poolMaxApprovalTTLEnvironment,
-		poolManagedEnvironmentIDEnvironment,
-		poolManagedRuntimeDigestEnvironment,
-		poolManagedPackSetDigestEnvironment,
-		poolManagedSkillDigestEnvironment,
-		poolManagedSandboxTTLEnvironment,
-		poolManagedActivityTTLEnvironment,
+		poolManagedProfilesEnvironment,
 		"AGENTSERVER_V2_OBJECT_PREFIX",
 		"AGENTSERVER_V2_S3_BUCKET",
 		"AGENTSERVER_V2_S3_REGION",

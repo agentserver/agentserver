@@ -34,6 +34,7 @@ type IssueRunCapabilitiesRequest struct {
 	LLMGatewayGrantUserID     string
 	MaxRunDuration            time.Duration
 	MaxApprovalTTL            time.Duration
+	ManagedSandbox            *RunManagedSandboxBinding
 }
 
 type IssuedRunCapability struct {
@@ -109,6 +110,13 @@ func (source *ProductionAttemptRuntimeCapabilitySource) IssueAttemptRuntimeCapab
 		LLMGatewayGrantUserID: prepared.Manifest.Model.LLMGatewayGrantUserID,
 		MaxRunDuration:        time.Duration(prepared.Manifest.Limits.MaxRunDurationMS) * time.Millisecond,
 		MaxApprovalTTL:        time.Duration(prepared.Manifest.Limits.MaxApprovalTTLMS) * time.Millisecond,
+	}
+	if prepared.Manifest.ManagedSandbox != nil {
+		binding := prepared.Manifest.ManagedSandbox
+		request.ManagedSandbox = &RunManagedSandboxBinding{
+			SettingVersion: binding.SettingVersion, Region: binding.Region, ProfileID: binding.ProfileID,
+			BindingSHA256: binding.BindingSHA256, EnvironmentID: binding.EnvironmentID,
+		}
 	}
 	result, err := source.issueExactly(ctx, request)
 	if err != nil {

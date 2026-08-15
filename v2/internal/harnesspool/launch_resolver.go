@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
+	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
 
@@ -30,6 +31,15 @@ type RunLaunchState struct {
 	ExecutorPolicy     ExecutorCatalogPolicy
 	LLMGateway         *RunLLMGatewayBinding
 	LarkEgress         *RunLarkEgressBinding
+	ManagedSandbox     *RunManagedSandboxBinding
+}
+
+type RunManagedSandboxBinding struct {
+	SettingVersion int64
+	Region         string
+	ProfileID      string
+	BindingSHA256  string
+	EnvironmentID  string
 }
 
 type RunLLMGatewayBinding struct {
@@ -67,7 +77,11 @@ type RunLaunchProfile struct {
 	ControllerCallbackEndpoint string
 	ControllerCallbackIdentity string
 	ControllerCallbackAudience string
-	ManagedSandbox             *ManagedSandboxLaunchSpec
+	// ManagedSandboxProfiles is the immutable production launch catalog keyed
+	// by the exact profile ID frozen into a run. ManagedSandbox is retained only
+	// for insecure-development and legacy single-profile deployments.
+	ManagedSandboxProfiles map[string]ManagedSandboxLaunchSpec
+	ManagedSandbox         *ManagedSandboxLaunchSpec
 }
 
 // ConfiguredRunLaunchInputResolver combines authority-derived mutable state
@@ -85,7 +99,7 @@ func NewConfiguredRunLaunchInputResolver(source RunLaunchStateSource, profile Ru
 	if err := validateRunLaunchProfile(profile); err != nil {
 		return nil, fmt.Errorf("run launch profile: %w", err)
 	}
-	return &ConfiguredRunLaunchInputResolver{source: source, profile: profile}, nil
+	return &ConfiguredRunLaunchInputResolver{source: source, profile: cloneRunLaunchProfile(profile)}, nil
 }
 
 func (resolver *ConfiguredRunLaunchInputResolver) ResolveRunLaunch(ctx context.Context, scheduled ScheduledRunAttempt) (RunLaunchInputs, error) {
@@ -115,6 +129,10 @@ func (resolver *ConfiguredRunLaunchInputResolver) ResolveRunLaunch(ctx context.C
 func (profile RunLaunchProfile) inputs(state RunLaunchState) (RunLaunchInputs, error) {
 	policy := state.ExecutorPolicy
 	policy.AllowedTools = append([]string(nil), state.ExecutorPolicy.AllowedTools...)
+	managedSandbox, err := profile.selectManagedSandbox(state.ManagedSandbox)
+	if err != nil {
+		return RunLaunchInputs{}, err
+	}
 	var previousCheckpoint *runmanifest.PreviousCheckpoint
 	var previousCatalog *BrainToolCatalog
 	if state.PreviousCheckpoint != nil {
@@ -123,8 +141,8 @@ func (profile RunLaunchProfile) inputs(state RunLaunchState) (RunLaunchInputs, e
 			return RunLaunchInputs{}, errors.New("previous checkpoint runtime manifest or allowlist version does not match the deployment profile")
 		}
 		wantPackSetDigest := ""
-		if profile.ManagedSandbox != nil {
-			wantPackSetDigest = profile.ManagedSandbox.PackSetDigest
+		if managedSandbox != nil {
+			wantPackSetDigest = managedSandbox.PackSetDigest
 		}
 		if state.PreviousCheckpoint.Checkpoint.PackSetDigest != wantPackSetDigest {
 			return RunLaunchInputs{}, errors.New("previous checkpoint pack-set digest does not match the deployment profile")
@@ -171,13 +189,132 @@ func (profile RunLaunchProfile) inputs(state RunLaunchState) (RunLaunchInputs, e
 		ControllerCallbackEndpoint: profile.ControllerCallbackEndpoint,
 		ControllerCallbackIdentity: profile.ControllerCallbackIdentity,
 		ControllerCallbackAudience: profile.ControllerCallbackAudience,
-		ManagedSandbox:             cloneManagedSandboxLaunchSpec(profile.ManagedSandbox),
+		ManagedSandbox:             managedSandbox,
 	}, nil
 }
 
+func (profile RunLaunchProfile) selectManagedSandbox(binding *RunManagedSandboxBinding) (*ManagedSandboxLaunchSpec, error) {
+	if binding == nil {
+		if profile.ModelFromRun && (profile.ManagedSandbox != nil || len(profile.ManagedSandboxProfiles) != 0) {
+			return nil, errors.New("production run has no frozen managed sandbox profile")
+		}
+		if len(profile.ManagedSandboxProfiles) != 0 {
+			return nil, errors.New("managed sandbox profile catalog requires frozen run authority")
+		}
+		return cloneManagedSandboxLaunchSpec(profile.ManagedSandbox), nil
+	}
+
+	var selected *ManagedSandboxLaunchSpec
+	if len(profile.ManagedSandboxProfiles) != 0 {
+		spec, ok := profile.ManagedSandboxProfiles[binding.ProfileID]
+		if !ok {
+			return nil, fmt.Errorf("run selected managed sandbox profile %q which is not installed on this harness", binding.ProfileID)
+		}
+		selected = cloneManagedSandboxLaunchSpec(&spec)
+		if selected.Region != binding.Region || selected.ProfileID != binding.ProfileID ||
+			selected.ProfileBindingSHA256 != binding.BindingSHA256 || selected.EnvironmentID != binding.EnvironmentID {
+			return nil, errors.New("run managed sandbox binding does not exactly match the deployment profile")
+		}
+	} else {
+		selected = cloneManagedSandboxLaunchSpec(profile.ManagedSandbox)
+		if selected == nil {
+			return nil, errors.New("run selected a managed sandbox profile but this harness deployment has none")
+		}
+		if selected.EnvironmentID != binding.EnvironmentID {
+			return nil, errors.New("run managed sandbox environment does not match the deployment profile")
+		}
+		// A legacy single-profile spec may carry no routing authority. If it
+		// does carry authority, it must still match rather than being silently
+		// overwritten by the run projection.
+		if selected.ProfileID != "" && (selected.Region != binding.Region ||
+			selected.ProfileID != binding.ProfileID || selected.ProfileBindingSHA256 != binding.BindingSHA256) {
+			return nil, errors.New("run managed sandbox binding does not match the legacy deployment profile")
+		}
+		selected.Region = binding.Region
+		selected.ProfileID = binding.ProfileID
+		selected.ProfileBindingSHA256 = binding.BindingSHA256
+	}
+	selected.SettingVersion = binding.SettingVersion
+	return selected, nil
+}
+
 func validateRunLaunchProfile(profile RunLaunchProfile) error {
+	if profile.ManagedSandbox != nil && len(profile.ManagedSandboxProfiles) != 0 {
+		return errors.New("managed sandbox single profile and profile catalog cannot both be configured")
+	}
+	if len(profile.ManagedSandboxProfiles) > 4 {
+		return errors.New("managed sandbox profile catalog cannot contain more than four profiles")
+	}
+	seenRegions := make(map[string]struct{}, len(profile.ManagedSandboxProfiles))
+	seenEnvironments := make(map[string]struct{}, len(profile.ManagedSandboxProfiles))
+	for profileID, spec := range profile.ManagedSandboxProfiles {
+		if !managedsandboxprofile.ValidProfileID(profileID) || profileID != spec.ProfileID {
+			return errors.New("managed sandbox profile catalog key must equal its canonical profile ID")
+		}
+		if spec.SettingVersion != 0 {
+			return errors.New("deployment managed sandbox profile must not pin a workspace setting version")
+		}
+		if _, duplicate := seenRegions[spec.Region]; duplicate {
+			return errors.New("managed sandbox profile catalog repeats a region")
+		}
+		if _, duplicate := seenEnvironments[spec.EnvironmentID]; duplicate {
+			return errors.New("managed sandbox profile catalog repeats an environment")
+		}
+		seenRegions[spec.Region] = struct{}{}
+		seenEnvironments[spec.EnvironmentID] = struct{}{}
+		validationSpec := spec
+		validationSpec.SettingVersion = 1
+		if err := validateManagedSandboxLaunch(profileValidationScheduledRun(), validationSpec); err != nil {
+			return fmt.Errorf("managed sandbox profile %q: %w", profileID, err)
+		}
+	}
 	policyDigest := sha256.Sum256([]byte("agentserver-v2/run-launch-profile-validation"))
-	scheduled := ScheduledRunAttempt{
+	scheduled := profileValidationScheduledRun()
+	state := RunLaunchState{
+		Prompt: runmanifest.ObjectPointer{
+			ObjectID: "35000000-0000-4000-8000-000000000003", SHA256: strings.Repeat("a", 64),
+			SizeBytes: 1, MediaType: "application/json",
+		},
+		ExecutorPolicy: ExecutorCatalogPolicy{Version: "profile-validation-policy", ContextDigest: policyDigest},
+	}
+	if profile.ModelFromRun {
+		state.LLMGateway = &RunLLMGatewayBinding{
+			GatewayID: "37000000-0000-4000-8000-000000000003", ConfigVersion: 1,
+			GrantUserID: "38000000-0000-4000-8000-000000000003", Model: "profile-validation-model",
+		}
+		if len(profile.ManagedSandboxProfiles) != 0 {
+			for _, spec := range profile.ManagedSandboxProfiles {
+				state.ManagedSandbox = &RunManagedSandboxBinding{
+					SettingVersion: 1, Region: spec.Region, ProfileID: spec.ProfileID,
+					BindingSHA256: spec.ProfileBindingSHA256, EnvironmentID: spec.EnvironmentID,
+				}
+				break
+			}
+		} else if profile.ManagedSandbox != nil {
+			spec := profile.ManagedSandbox
+			state.ManagedSandbox = &RunManagedSandboxBinding{
+				SettingVersion: 1, Region: spec.Region, ProfileID: spec.ProfileID,
+				BindingSHA256: spec.ProfileBindingSHA256, EnvironmentID: spec.EnvironmentID,
+			}
+			if state.ManagedSandbox.Region == "" {
+				// Legacy production configuration receives its immutable routing
+				// authority from Core. Use a canonical synthetic binding only to
+				// exercise the same overwrite-and-validate path at construction.
+				state.ManagedSandbox.Region = managedsandboxprofile.DefaultRegion
+				state.ManagedSandbox.ProfileID = "profile-validation-v1"
+				state.ManagedSandbox.BindingSHA256 = strings.Repeat("d", 64)
+			}
+		}
+	}
+	inputs, err := profile.inputs(state)
+	if err != nil {
+		return err
+	}
+	return validateResolvedRunLaunchInputs(scheduled, inputs)
+}
+
+func profileValidationScheduledRun() ScheduledRunAttempt {
+	return ScheduledRunAttempt{
 		Dispatch: RunDispatch{
 			RunDispatchID: "30000000-0000-4000-8000-000000000003",
 			WorkspaceID:   "31000000-0000-4000-8000-000000000003",
@@ -198,24 +335,18 @@ func validateRunLaunchProfile(profile RunLaunchProfile) error {
 			},
 		},
 	}
-	state := RunLaunchState{
-		Prompt: runmanifest.ObjectPointer{
-			ObjectID: "35000000-0000-4000-8000-000000000003", SHA256: strings.Repeat("a", 64),
-			SizeBytes: 1, MediaType: "application/json",
-		},
-		ExecutorPolicy: ExecutorCatalogPolicy{Version: "profile-validation-policy", ContextDigest: policyDigest},
-	}
-	if profile.ModelFromRun {
-		state.LLMGateway = &RunLLMGatewayBinding{
-			GatewayID: "37000000-0000-4000-8000-000000000003", ConfigVersion: 1,
-			GrantUserID: "38000000-0000-4000-8000-000000000003", Model: "profile-validation-model",
+}
+
+func cloneRunLaunchProfile(source RunLaunchProfile) RunLaunchProfile {
+	copy := source
+	copy.ManagedSandbox = cloneManagedSandboxLaunchSpec(source.ManagedSandbox)
+	if source.ManagedSandboxProfiles != nil {
+		copy.ManagedSandboxProfiles = make(map[string]ManagedSandboxLaunchSpec, len(source.ManagedSandboxProfiles))
+		for profileID, spec := range source.ManagedSandboxProfiles {
+			copy.ManagedSandboxProfiles[profileID] = spec
 		}
 	}
-	inputs, err := profile.inputs(state)
-	if err != nil {
-		return err
-	}
-	return validateResolvedRunLaunchInputs(scheduled, inputs)
+	return copy
 }
 
 func validateResolvedRunLaunchInputs(scheduled ScheduledRunAttempt, inputs RunLaunchInputs) error {
@@ -253,8 +384,9 @@ func validateResolvedRunLaunchInputs(scheduled ScheduledRunAttempt, inputs RunLa
 		ExecutorPolicy: runmanifest.ExecutorPolicy{
 			Version: proposal.PolicyVersion, ContextDigest: hex.EncodeToString(proposal.PolicyContextDigest[:]),
 		},
-		ToolPack: managedToolPackAuthority(inputs.ManagedSandbox),
-		Limits:   inputs.Limits, CheckpointAllowlistVersion: inputs.CheckpointAllowlistVersion,
+		ToolPack:       managedToolPackAuthority(inputs.ManagedSandbox),
+		ManagedSandbox: managedSandboxAuthority(inputs.ManagedSandbox),
+		Limits:         inputs.Limits, CheckpointAllowlistVersion: inputs.CheckpointAllowlistVersion,
 		WorkerImageDigest: inputs.WorkerImageDigest, ExpectedServiceAccount: inputs.ExpectedServiceAccount,
 		ControllerCallback: runmanifest.ControllerCallback{
 			Endpoint: inputs.ControllerCallbackEndpoint, TLSIdentity: inputs.ControllerCallbackIdentity,

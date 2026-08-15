@@ -79,6 +79,10 @@ func RenderHelmChart(config LoadedConfig) (HelmChart, error) {
 	configSHA256 := sha256Hex(configContent)
 	managedToolsEnabledValue := managedToolsEnabled(config.Document.Managed)
 	taeNetworkProbeAllowed := managedPolicyBootstrap(config.Document.Managed)
+	probeRegions := make([]string, 0, len(config.ManagedSandboxProfiles))
+	for _, profile := range config.ManagedSandboxProfiles {
+		probeRegions = append(probeRegions, profile.Document.Region)
+	}
 
 	foundation, err := helmResources(bundle, foundationFile)
 	if err != nil {
@@ -191,18 +195,15 @@ func RenderHelmChart(config LoadedConfig) (HelmChart, error) {
 
 	files := []RenderedFile{
 		renderedFile(helmChartFile, renderChartYAML(configSHA256, config.Document.Runtime.RuntimeManifestSHA256)),
-		renderedFile(helmValuesFile, []byte(fmt.Sprintf(
-			"deploymentConfigSHA256: \"%s\"\nmanagedToolsEnabled: %t\ntaeNetworkProbe:\n  enabled: false\n  policyRevision: \"\"\n",
-			configSHA256, managedToolsEnabledValue,
-		))),
-		renderedFile(helmValuesSchemaFile, renderValuesSchema(configSHA256, managedToolsEnabledValue, taeNetworkProbeAllowed)),
-		renderedFile(helmHelpersFile, renderHelmGuard(config.Document.Namespace, configSHA256, managedToolsEnabledValue, taeNetworkProbeAllowed)),
+		renderedFile(helmValuesFile, renderHelmValues(configSHA256, managedToolsEnabledValue, probeRegions)),
+		renderedFile(helmValuesSchemaFile, renderValuesSchema(configSHA256, managedToolsEnabledValue, taeNetworkProbeAllowed, probeRegions)),
+		renderedFile(helmHelpersFile, renderHelmGuard(config.Document.Namespace, configSHA256, managedToolsEnabledValue, taeNetworkProbeAllowed, probeRegions)),
 		renderedFile(helmFoundationTemplateFile, renderManifestTemplate(helmFoundationManifestFile)),
 		renderedFile(helmHydraMigrationTemplateFile, renderManifestTemplate(helmHydraMigrationManifestFile)),
 		renderedFile(helmMigrationTemplateFile, renderManifestTemplate(helmMigrationManifestFile)),
 		renderedFile(helmHydraSetupTemplateFile, renderManifestTemplate(helmHydraSetupManifestFile)),
 		renderedFile(helmBootstrapTemplateFile, renderManifestTemplate(helmBootstrapManifestFile)),
-		renderedFile(helmTAENetworkProbeTemplateFile, renderTAENetworkProbeTemplate(config.Document.Namespace)),
+		renderedFile(helmTAENetworkProbeTemplateFile, renderTAENetworkProbeTemplate(config.Document.Namespace, probeRegions)),
 	}
 	if managedExecutionActive(config.Document.Managed) {
 		files = append(files, renderedFile(helmManagedEnvironmentTemplateFile, renderManifestTemplate(helmManagedEnvironmentManifestFile)))
@@ -303,35 +304,62 @@ annotations:
 `, helmChartName, version, configSHA256, runtimeSHA256))
 }
 
-func renderValuesSchema(configSHA256 string, managedToolsEnabled bool, taeNetworkProbeAllowed bool) []byte {
+func renderHelmValues(configSHA256 string, managedToolsEnabled bool, probeRegions []string) []byte {
+	var output strings.Builder
+	fmt.Fprintf(&output, "deploymentConfigSHA256: %q\nmanagedToolsEnabled: %t\ntaeNetworkProbe:\n  enabled: false\n  policyRevisions:\n", configSHA256, managedToolsEnabled)
+	if len(probeRegions) == 0 {
+		output.WriteString("    {}\n")
+	}
+	for _, region := range probeRegions {
+		fmt.Fprintf(&output, "    %s: \"\"\n", region)
+	}
+	return []byte(output.String())
+}
+
+func renderValuesSchema(configSHA256 string, managedToolsEnabled bool, taeNetworkProbeAllowed bool, probeRegions []string) []byte {
+	revisionProperties := make(map[string]any, len(probeRegions))
+	for _, region := range probeRegions {
+		revisionProperties[region] = map[string]any{"type": "string", "maxLength": 128}
+	}
 	probeProperties := map[string]any{
-		"enabled":        map[string]any{"type": "boolean"},
-		"policyRevision": map[string]any{"type": "string", "maxLength": 128},
+		"enabled": map[string]any{"type": "boolean"},
+		"policyRevisions": map[string]any{
+			"type": "object", "additionalProperties": false,
+			"required": append([]string(nil), probeRegions...), "properties": revisionProperties,
+		},
 	}
 	probeSchema := map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
-		"required":             []string{"enabled", "policyRevision"},
+		"required":             []string{"enabled", "policyRevisions"},
 		"properties":           probeProperties,
 	}
 	if taeNetworkProbeAllowed {
+		enabledRevisions := make(map[string]any, len(probeRegions))
+		disabledRevisions := make(map[string]any, len(probeRegions))
+		for _, region := range probeRegions {
+			enabledRevisions[region] = map[string]any{
+				"type": "string", "pattern": `^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$`,
+			}
+			disabledRevisions[region] = map[string]any{"enum": []string{""}}
+		}
 		probeSchema["allOf"] = []any{map[string]any{
 			"if": map[string]any{
 				"properties": map[string]any{"enabled": map[string]any{"const": true}},
 				"required":   []string{"enabled"},
 			},
 			"then": map[string]any{"properties": map[string]any{
-				"policyRevision": map[string]any{
-					"type": "string", "pattern": `^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$`,
-				},
+				"policyRevisions": map[string]any{"properties": enabledRevisions},
 			}},
 			"else": map[string]any{"properties": map[string]any{
-				"policyRevision": map[string]any{"enum": []string{""}},
+				"policyRevisions": map[string]any{"properties": disabledRevisions},
 			}},
 		}}
 	} else {
 		probeProperties["enabled"] = map[string]any{"type": "boolean", "enum": []bool{false}}
-		probeProperties["policyRevision"] = map[string]any{"type": "string", "enum": []string{""}}
+		for _, region := range probeRegions {
+			revisionProperties[region] = map[string]any{"type": "string", "enum": []string{""}}
+		}
 	}
 	document := map[string]any{
 		"$schema":              "http://json-schema.org/draft-07/schema#",
@@ -352,8 +380,9 @@ func renderValuesSchema(configSHA256 string, managedToolsEnabled bool, taeNetwor
 	return append(content, '\n')
 }
 
-func renderHelmGuard(namespace, configSHA256 string, managedToolsEnabled bool, taeNetworkProbeAllowed bool) []byte {
-	return []byte(fmt.Sprintf(`{{- define "agentserver-v2.guard" -}}
+func renderHelmGuard(namespace, configSHA256 string, managedToolsEnabled bool, taeNetworkProbeAllowed bool, probeRegions []string) []byte {
+	var output strings.Builder
+	fmt.Fprintf(&output, `{{- define "agentserver-v2.guard" -}}
 {{- if ne .Release.Namespace %q -}}
 {{- fail (printf "agentserver v2 chart is locked to namespace %s, got %%s" .Release.Namespace) -}}
 {{- end -}}
@@ -363,39 +392,51 @@ func renderHelmGuard(namespace, configSHA256 string, managedToolsEnabled bool, t
 {{- if ne .Values.managedToolsEnabled %t -}}
 {{- fail "agentserver v2 managedToolsEnabled does not match this generated chart" -}}
 {{- end -}}
-{{- $probeRevision := toString (default "" .Values.taeNetworkProbe.policyRevision) -}}
 {{- if .Values.taeNetworkProbe.enabled -}}
 {{- if not %t -}}
 {{- fail "agentserver v2 TAE network probe is available only in the policy-bootstrap stage" -}}
 {{- end -}}
-{{- if not (regexMatch "^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$" $probeRevision) -}}
-{{- fail "agentserver v2 TAE network probe policy revision is invalid" -}}
+`, namespace, namespace, configSHA256, managedToolsEnabled, taeNetworkProbeAllowed)
+	for index, region := range probeRegions {
+		fmt.Fprintf(&output, `{{- $probeRevision%d := toString (default "" (index .Values.taeNetworkProbe.policyRevisions %q)) -}}
+{{- if not (regexMatch "^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$" $probeRevision%d) -}}
+{{- fail "agentserver v2 TAE network probe policy revision for %s is invalid" -}}
 {{- end -}}
-{{- if regexMatch "(?i)(PENDING|REPLACE|TODO|TBD|EXAMPLE|PLACEHOLDER|CHANGEME|SAMPLE|DUMMY)" $probeRevision -}}
-{{- fail "agentserver v2 TAE network probe requires an actual published policy revision" -}}
+{{- if regexMatch "(?i)(PENDING|REPLACE|TODO|TBD|EXAMPLE|PLACEHOLDER|CHANGEME|SAMPLE|DUMMY)" $probeRevision%d -}}
+{{- fail "agentserver v2 TAE network probe for %s requires an actual published policy revision" -}}
 {{- end -}}
-{{- else if ne $probeRevision "" -}}
-{{- fail "agentserver v2 TAE network probe policy revision must be empty while disabled" -}}
+`, index, region, index, region, index, region)
+	}
+	output.WriteString("{{- else -}}\n")
+	for index, region := range probeRegions {
+		fmt.Fprintf(&output, `{{- $probeRevision%d := toString (default "" (index .Values.taeNetworkProbe.policyRevisions %q)) -}}
+{{- if ne $probeRevision%d "" -}}
+{{- fail "agentserver v2 TAE network probe policy revision for %s must be empty while disabled" -}}
 {{- end -}}
-{{- end -}}
-`, namespace, namespace, configSHA256, managedToolsEnabled, taeNetworkProbeAllowed))
+`, index, region, index, region)
+	}
+	output.WriteString("{{- end -}}\n{{- end -}}\n")
+	return []byte(output.String())
 }
 
 func renderManifestTemplate(path string) []byte {
 	return []byte("{{- include \"agentserver-v2.guard\" . -}}\n{{ .Files.Get \"" + path + "\" }}\n")
 }
 
-func renderTAENetworkProbeTemplate(namespace string) []byte {
-	return []byte(fmt.Sprintf(`{{- include "agentserver-v2.guard" . -}}
+func renderTAENetworkProbeTemplate(namespace string, probeRegions []string) []byte {
+	var output strings.Builder
+	output.WriteString(`{{- include "agentserver-v2.guard" . -}}
 {{- if .Values.taeNetworkProbe.enabled }}
-{{- $revision := toString .Values.taeNetworkProbe.policyRevision -}}
-{{- $identity := printf "%%s\n%%s" .Values.deploymentConfigSHA256 $revision | sha256sum | trunc 12 -}}
-{{- $jobName := printf "tae-network-probe-%%s" $identity -}}
-{{- $inputName := printf "tae-network-probe-input-%%s" $identity -}}
+`)
+	for index, region := range probeRegions {
+		fmt.Fprintf(&output, `{{- $revision%d := toString (index .Values.taeNetworkProbe.policyRevisions %q) -}}
+{{- $identity%d := printf "%%s\n%%s\n%s" .Values.deploymentConfigSHA256 $revision%d | sha256sum | trunc 12 -}}
+{{- $jobName%d := printf "agentserver-tae-network-probe-%s-%%s" $identity%d -}}
+{{- $inputName%d := printf "agentserver-tae-network-probe-input-%s-%%s" $identity%d -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ $inputName | quote }}
+  name: {{ $inputName%d | quote }}
   namespace: %q
   labels:
     app.kubernetes.io/name: %q
@@ -406,12 +447,21 @@ metadata:
     agentserver.dev/deployment-config-sha256: {{ .Values.deploymentConfigSHA256 | quote }}
 immutable: true
 data:
-  policy-revision: {{ $revision | quote }}
+  policy-revision: {{ $revision%d | quote }}
 ---
-{{ .Files.Get %q | replace %q $jobName | replace %q $inputName }}
-{{- end }}
-`, namespace, taeNetworkProbeComponent, helmTAENetworkProbeManifestFile,
-		taeNetworkProbeJobPlaceholder, taeNetworkProbeInputPlaceholder))
+`, index, region,
+			index, region, index,
+			index, region, index,
+			index, region, index,
+			index, namespace, taeNetworkProbeProfileComponent(region), index)
+	}
+	fmt.Fprintf(&output, "{{ .Files.Get %q", helmTAENetworkProbeManifestFile)
+	for index, region := range probeRegions {
+		fmt.Fprintf(&output, " | replace %q $jobName%d | replace %q $inputName%d",
+			taeNetworkProbeJobPlaceholderForRegion(region), index, taeNetworkProbeInputPlaceholderForRegion(region), index)
+	}
+	output.WriteString(" }}\n{{- end }}\n")
+	return []byte(output.String())
 }
 
 func renderHelmChecksums(configSHA256 string, files []RenderedFile) ([]byte, error) {

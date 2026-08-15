@@ -32,7 +32,8 @@ import (
 )
 
 const (
-	CurrentVersion                     = 5
+	CurrentVersion                     = 6
+	LegacyVersion                      = 5
 	ProductionRegion                   = "sg"
 	ProductionNamespace                = "agentserver"
 	ProductionTrustDomain              = "agentserver.byted.bps.dev"
@@ -113,24 +114,27 @@ var (
 )
 
 type ConfigDocument struct {
-	Version       int                     `json:"version"`
-	Region        string                  `json:"region"`
-	Namespace     string                  `json:"namespace"`
-	ClusterDomain string                  `json:"clusterDomain"`
-	Platform      string                  `json:"platform"`
-	Images        ImagesDocument          `json:"images"`
-	Replicas      ReplicasDocument        `json:"replicas"`
-	Services      ServicesDocument        `json:"services"`
-	Ingress       IngressDocument         `json:"ingress"`
-	Bootstrap     BootstrapDocument       `json:"bootstrap"`
-	TrustDomain   string                  `json:"spiffeTrustDomain"`
-	OAuth         OAuthDocument           `json:"oauth"`
-	Runtime       RuntimeDocument         `json:"runtime"`
-	Managed       ManagedExecutorDocument `json:"managedExecutor"`
-	Objects       ObjectStoreDocument     `json:"objectStore"`
-	Secrets       SecretsDocument         `json:"secrets"`
-	Network       NetworkDocument         `json:"network"`
-	Resources     ResourcesDocument       `json:"resources"`
+	Version         int                                  `json:"version"`
+	Region          string                               `json:"region"`
+	Namespace       string                               `json:"namespace"`
+	ClusterDomain   string                               `json:"clusterDomain"`
+	Platform        string                               `json:"platform"`
+	Images          ImagesDocument                       `json:"images"`
+	Replicas        ReplicasDocument                     `json:"replicas"`
+	Services        ServicesDocument                     `json:"services"`
+	Ingress         IngressDocument                      `json:"ingress"`
+	Bootstrap       BootstrapDocument                    `json:"bootstrap"`
+	TrustDomain     string                               `json:"spiffeTrustDomain"`
+	OAuth           OAuthDocument                        `json:"oauth"`
+	Runtime         RuntimeDocument                      `json:"runtime"`
+	Managed         ManagedExecutorDocument              `json:"managedExecutor"`
+	SandboxRegions  ManagedSandboxRegionsDocument        `json:"sandboxRegions"`
+	SandboxProfiles []ManagedSandboxProfileDocument      `json:"sandboxProfiles"`
+	ProxyProfiles   []ManagedSandboxProxyProfileDocument `json:"proxyProfiles"`
+	Objects         ObjectStoreDocument                  `json:"objectStore"`
+	Secrets         SecretsDocument                      `json:"secrets"`
+	Network         NetworkDocument                      `json:"network"`
+	Resources       ResourcesDocument                    `json:"resources"`
 }
 
 type ImagesDocument struct {
@@ -311,6 +315,7 @@ type LoadedConfig struct {
 	ManagedActivityTTL       time.Duration
 	ManagedIdleTTL           time.Duration
 	ManagedOwnerPolicySHA256 string
+	ManagedSandboxProfiles   []LoadedManagedSandboxProfile
 }
 
 func LoadConfig(path string) (LoadedConfig, error) {
@@ -358,7 +363,7 @@ func ParseConfig(raw []byte) (LoadedConfig, error) {
 
 func decodeConfigDocument(raw []byte) (ConfigDocument, error) {
 	limits := braincatalog.DefaultLimits()
-	limits.MaxJSONValues = 4096
+	limits.MaxJSONValues = 16384
 	limits.MaxJSONDepth = 20
 	if _, _, err := braincatalog.DecodeCanonicalJSON(raw, int(maximumConfigBytes), limits); err != nil {
 		return ConfigDocument{}, fmt.Errorf("validate production deployment JSON: %w", err)
@@ -376,10 +381,24 @@ func decodeConfigDocument(raw []byte) (ConfigDocument, error) {
 		}
 		return ConfigDocument{}, fmt.Errorf("finish production deployment config: %w", err)
 	}
+	if document.Version == LegacyVersion {
+		upgraded, err := upgradeLegacyConfig(document)
+		if err != nil {
+			return ConfigDocument{}, fmt.Errorf("upgrade production deployment version %d: %w", LegacyVersion, err)
+		}
+		document = upgraded
+	}
 	return document, nil
 }
 
 func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
+	if document.Version == LegacyVersion {
+		upgraded, err := upgradeLegacyConfig(document)
+		if err != nil {
+			return LoadedConfig{}, fmt.Errorf("upgrade production deployment version %d: %w", LegacyVersion, err)
+		}
+		document = upgraded
+	}
 	if document.Version != CurrentVersion {
 		return LoadedConfig{}, fmt.Errorf("production deployment version must be %d", CurrentVersion)
 	}
@@ -471,6 +490,11 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 	loaded.ManagedActivityTTL = managedLoaded.ManagedActivityTTL
 	loaded.ManagedIdleTTL = managedLoaded.ManagedIdleTTL
 	loaded.ManagedOwnerPolicySHA256 = managedLoaded.ManagedOwnerPolicySHA256
+	profiles, err := validateManagedSandboxProfiles(&loaded.Document)
+	if err != nil {
+		return LoadedConfig{}, err
+	}
+	loaded.ManagedSandboxProfiles = profiles
 	if err := validateResources(document.Resources); err != nil {
 		return LoadedConfig{}, err
 	}

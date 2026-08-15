@@ -259,52 +259,50 @@ TAE backend 位于 execution gateway，但只调用 sandbox-gateway 的 provider
   冒充正常 terminate，必须先过能力门禁并定义 fence/delete 的异常恢复；
 - SDK 自动或默认重试必须关闭/审计，不能绕过 Core one-shot dispatch permission。
 
-### 6.6 TAE provider 应用身份
+### 6.6 TAE provider 应用身份与地域路由
 
-SG production 的 Terminal Sandbox PSM 固定为 `bytedance.sandbox.agentserver`。它同时是
-provider scope 和 TAE policy binding 的 `sandboxPsm`；不能由 session 请求或运行时环境覆盖。当前 direct
-profile 精确使用系统 `*.feishu.cn` 白名单，创建 Sandbox/revision/Session 时都不配置 Webhook。未来
-webhook-enabled profile 才会使用独立 egress-authorizer URL/PSM、Route 和后端 TLS。
+SG production workload 支持四个独立 TAE profile，但所有 Terminal Sandbox PSM 都固定为
+`bytedance.sandbox.agentserver`。它同时是 provider scope 和 policy binding 的 `sandboxPsm`，不能由
+workspace、session 请求或运行时环境覆盖。当前 direct profiles 精确使用系统 `*.feishu.cn` 白名单，
+创建 Sandbox/revision/Session 时均不配置 Webhook。
 
-SG 的 sandbox-gateway 无浏览器 provider workload 固定使用基础设施身份 `bytecloud-app-aksk-v1`，不依赖个人账号或本机 ZTI。
-这组 AK/SK 只用于调用 TAE control/data plane，和 workspace 管理员在 Platform 配置的 `kind=bytecloud`
-credential 完全不同；后者只能由 v2 Core 内置 credential service 读取：
+每个 region-specific sandbox-gateway 使用无浏览器基础设施身份，不依赖个人账号或本机 ZTI。AK/SK 只
+用于该 profile 的 TAE control/data plane，与 workspace 管理员配置的 `kind=bytecloud` credential 完全
+不同；后者只能由 Core credential service 读取。地域映射固定为：
 
-- AK/SK 只作为两个只读 Secret 文件挂载到 `sandbox-gateway`，不得投影到 execution gateway、
-  harness、TAE Session metadata、sandbox env、Core DB、日志或错误；
-- ByteCloud site 固定为 `i18n-tt`，与 SDK 的 `AIPaaSGatewayRegionI18nProd` 选择一致；
-- `cloud-sdk-go` 使用 AK/SK 换取短期 JWT，control-plane 与 sandboxd data-plane 共用同一个
-  `HeaderSource`，请求只注入 `X-Jwt-Token`；官方 SDK 负责按 AK+site 缓存和并发刷新；
-- SG JWT exchange host 固定为 `https://cloud-i18n-sg.bytedance.net`，通过
-  `AGENTSERVER_V2_TAE_BYTECLOUD_JWT_ENDPOINT` 显式注入并在启动时精确校验，避免 SDK 默认 I18N host
-  列表先访问跨地域地址导致 SG exchange deadline 被耗尽；
-- JWT exchange、TAE control-plane 与 sandboxd data-plane 的 provider transport 全部固定使用
-  `socks5h://ssh-egress-merlin-i18nbd-syd2a-83092-headless.ssh-egress.svc.cluster.local:1080`，并由
-  `AGENTSERVER_V2_TAE_PROXY_URL` exact-match；不能配置 proxy userinfo、其他 egress 或直连 fallback。
-  标准 proxy 环境变量继续 fail closed。control-plane transport 只允许
-  `controlplane.sg.ai-sandbox-i18n.byted.org:443`，data-plane transport 只允许一个 canonical session DNS
-  label 加 `.sg.ai-sandbox-i18n.byted.org:443`，目标 DNS 均在 syd2a 侧解析；
-- 启动 readiness 使用一次 bypass-cache 强制刷新验证凭据；正常流量使用 SDK 缓存。TAE 明确返回 401 时只
-  刷新下一次请求使用的身份，不能盲目重放已经写出的 create/process-start；
-- SDK exchange 错误、TAE 错误和 readiness 日志只输出稳定 reason class，不输出 AK、SK、JWT 或响应体；
-- Secret 轮换通过更新 Kubernetes Secret 触发 Reloader rollout。单个 Pod 生命周期内不热读新凭据，
-  避免 AK/SK 两个文件跨代组合。
+| TAE region | Network route |
+| --- | --- |
+| `cn` | `merlin-hl-1` |
+| `boe` | direct，必须有明确 IPv4/IPv6 allowlist |
+| `i18n-bd` | `merlin-useast14a-1` |
+| `i18n-tt` | `merlin-maliva-1` |
 
-workspace credential 的 secret、expiry、binding ID 和 refresh state 不得出现在上述 sandbox-gateway
-Secret、TAE Session metadata、sandbox env、Core deployment document 或 Pulumi state 中；它们走
-Platform gateway → v2 Core credential API/内置 materialization 数据面。
+Merlin 名称是逻辑 profile，不编码实际 Service 地址。production config 必须显式给出完整、无 userinfo 的
+`socks5h://` URL、namespace、exact Pod selector 与 port；provider 和 NetworkPolicy 使用同一份经过
+binding 的值。BOE 的 `proxyProfile` 必须为空；其基础设施 AK/SK 按官方 SDK 别名使用 `site=cn`，其他地域
+分别固定为 `cn`、`i18n-bd`、`i18n-tt`，不得使用 direct fallback。每个 TAE profile 还显式绑定 official SDK control-plane URL、data-plane
+suffix、ByteCloud site 和 JWT endpoint，provider 在启动时独立解析并 exact-match。
 
-2026-08-09 在 SG `default/dev` 中对 JWT origin 做 50 次独立连接采样：直连 IPv4 31/50、IPv6 25/50
-成功，其余均在 connect 阶段超时；经 syd2a i18nbd SOCKS5H 为 50/50，useast14a 也是 50/50，
-但 syd2a 的 TTFB P50 为 747ms，明显优于 useast14a 的 1.59s。因此生产只选择 syd2a。
-同日对 I18N production control-plane 再做 50 次独立 TLS 连接：直连 IPv4 31/50、IPv6 26/50；
-通过 syd2a 做 20 次 SOCKS5H TCP connect 为 20/20。这证明故障不局限于 JWT origin，不能保留
-control/data-plane 直连。
+- AK/SK 只作为两个只读 Secret 文件挂载到对应 sandbox-gateway/probe，不得投影到 Executor、Harness、
+  TAE Session metadata、sandbox env、Core DB、日志或错误；
+- `cloud-sdk-go` 使用 profile 的 site/JWT endpoint 换取短期 JWT，control 与 data plane 共用同一个
+  `HeaderSource`，请求只注入 `X-Jwt-Token`；
+- proxy profile 的 JWT/control/data transport 全部使用该 profile 的 SOCKS5H route 与 remote DNS；BOE
+  只允许配置中的双栈 direct CIDR。标准 proxy 环境变量、proxy userinfo、第二条 egress 和跨地域 fallback
+  都 fail closed；
+- control transport 只允许 profile 固定 control host，data transport 只允许 canonical session DNS label
+  加固定 suffix；
+- readiness 使用一次 bypass-cache 强制刷新；TAE 明确返回 401 时只刷新下一次请求的身份，不重放已写出的
+  create/process-start；
+- SDK exchange/TAE/readiness 日志只输出稳定 reason class，不输出 AK、SK、JWT 或响应体；
+- Secret 轮换通过 Reloader rollout。单 Pod 生命周期不热读新凭据，避免 AK/SK 跨代组合。
 
-`sandbox-gateway` NetworkPolicy 只允许向 `ssh-egress` namespace 内
-`app=ssh-egress-merlin-i18nbd-syd2a-83092` Pod 的 TCP 1080 建立 TAE proxy 连接；
-`sandboxExternalEgress` 必须为空。JWT、control-plane 和 per-session data-plane 均不配置直连 CIDR，
-也没有 `0.0.0.0/0`、`::/0` 或跨地域 fallback。
+workspace credential 的 secret、expiry、binding ID 和 refresh state 不得出现在上述 Secret、TAE Session、
+sandbox env、deployment document 或 Pulumi state；它们走 Platform → Core credential API/materialization。
+
+2026-08-09 的 syd2a/useast14a 采样只记录当时 i18n-tt 单 profile 的历史网络证据，不能推导新 catalog 的
+Merlin 地址，也不能替代 `cn/boe/i18n-bd/i18n-tt` 各自的发布探针。当前 release 对每个已安装地域生成
+独立 Job、NetworkPolicy 和 canonical report，并要求 all-profile activation。
 
 ## 7. sandbox-gateway contract
 
@@ -829,7 +827,8 @@ cleanup stage 和 bounded app-server stderr。文本按字段限制长度并标�
 
 生产 provider 的依赖边界仍然有意保持在独立 module，但它已经接入发布构建：
 
-- `providers/tae` 通过官方 Sandbox SDK 固定 SG/I18N 控制面，并以严格 TLS、ByteCloud 应用 JWT、HTTP/SSE 数据面适配
+- `providers/tae` 通过官方 Sandbox SDK 固定每个 profile 的 CN/BOE/I18N-BD/I18N-TT 控制面，并以严格
+  TLS、region-scoped ByteCloud 应用 JWT、HTTP/SSE 数据面适配
   实现 Create/Get/Search/TTL/Delete、进程流、terminate 和受限文件读取；TAE policy binding digest
   同时写入并校验 session metadata，漂移会 fail closed；process start 使用 `x-tt-logid` 透传内部关联 ID，
   断流重连后的输出不会被误标为完整；
@@ -840,11 +839,11 @@ cleanup stage 和 bounded app-server stderr。文本按字段限制长度并标�
   仍只允许 fake/insecure-dev，避免 production 意外退化到 fake provider；
 - production renderer 不读取 workspace mode：direct active 只生成 sandbox-gateway，不生成 egress-authorizer
   authority；production schema/Helm/Pulumi 明确拒绝全局 mode 字段。
-- production release 使用 `disabled` / fail-closed `policy-bootstrap` / `active` 三阶段；readback 后的一次性
-  `tae-network-probe` 不扩大 bootstrap Chart 权限，只用专用 ServiceAccount 和临时 NetworkPolicy 经
-  syd2a 执行 20 次 JWT/control 检查、完整 lifecycle、42MB pinned CLI/Skill 摘要校验与资源清理。
-  activation 直接解析 canonical report 并绑定 bootstrap config SHA 和实际 policy revision，不接受人工
-  填写的报告摘要。
+- production release 使用 `disabled` / fail-closed `policy-bootstrap` / `active` 三阶段；readback 后为每个
+  已安装地域生成独立 `tae-network-probe` Job/NetworkPolicy，通过该 profile 的 Merlin 或 BOE direct route
+  执行 20 次 JWT/control 检查、完整 lifecycle、pinned CLI/Skill 摘要校验与资源清理。
+  `activate-managed-sandbox-profiles` 必须一次提交全部地域报告并原子绑定 bootstrap config SHA、policy
+  revision 与 profile authority，不接受人工填写摘要或跨地域复用报告。
 
 因此当前完成度应表述为“代码与 provider-linked production vertical slice 已完成，本地门禁通过；真实 SG
 TAE/provider/credential deployment gates 尚未关闭”。在第 18 节证据齐全前，不得宣称 production-ready，也不得宣称
@@ -855,7 +854,7 @@ G1–G7 已通过真实网络和凭据链路验证。
 以下不是开放架构选择，而是需要在目标集群/控制面产生证据后才能关闭的实施门禁。代码接入和本地
 contract tests 不替代这些实测：
 
-- TAE SG region/PSM、SDK 版本、应用账号 AK/SK 权限和 ByteCloud JWT/TAE ACL；
+- 四个 TAE region/PSM、SDK authority、应用账号 AK/SK 权限和 ByteCloud JWT/TAE ACL；
 - TAE Terminal Sandbox 默认仅支持 IPv6；必须在 SG 实测 `open.feishu.cn` 的 AAAA/DNS、系统 policy
   转发、PMTU/MSS 和长响应链路，不能用办公网 IPv4 或 fake provider 结果替代；
 - CreateSession 幂等/metadata 查询能力以及 provider request ID 语义；
@@ -871,11 +870,13 @@ contract tests 不替代这些实测：
 还必须补齐本次发布的运行证据：
 
 - PostgreSQL migration `0020`→`0027` 在真实库执行并可重复 bootstrap；
-- TAE SG create/adopt/reconcile/TTL/delete 在丢响应、重复资源、generation fence 和超时下的结果；
+- 每个已安装地域的 TAE create/adopt/reconcile/TTL/delete 在丢响应、重复资源、generation fence 和超时下的结果；
 - Sandbox/revision/Session readback 无 webhook，TAE system policy 包含 `*.feishu.cn`，且 policy binding digest
   一致；`process_env` 证明 direct resolve 只发生于 exact live `lark-cli` start；
 - IPv4/IPv6、DNS、redirect、CONNECT、IP literal bypass、PMTU/MTU/MSS 和错误率复测；
-- sandbox-gateway 从 SG 以 `i18n-tt` 应用身份换取 JWT、强制刷新、Secret 轮换和 AK/SK/JWT 零泄漏扫描；
+- CN/BOE/I18N-BD/I18N-TT sandbox-gateway 分别按 profile site/JWT endpoint 换取 JWT、强制刷新、Secret
+  轮换和 AK/SK/JWT 零泄漏扫描；CN/i18n-bd/i18n-tt 必须证明只走指定 Merlin，BOE 必须证明只走 direct
+  双栈 allowlist；
 - 所选 mode 的延迟/fail-close、TAE/Lark golden E2E 与 secret residency 扫描；`process_env` 允许目标
   `lark-cli`/子进程 env 命中，除此之外 env/proc/fs/stdout/stderr/metadata/checkpoint/log 必须零 token。
 

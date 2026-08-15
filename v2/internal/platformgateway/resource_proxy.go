@@ -50,6 +50,7 @@ func (proxy *ResourceProxy) Routes() http.Handler {
 	mux.Handle(corecontract.WorkspaceCollectionRoutePattern, proxy)
 	mux.Handle(corecontract.WorkspaceResourceRoutePattern, proxy)
 	mux.Handle(corecontract.WorkspaceArchiveRoutePattern, proxy)
+	mux.Handle(corecontract.WorkspaceManagedSandboxRoutePattern, proxy)
 	mux.Handle(corecontract.WorkspaceMembersCollectionPattern, proxy)
 	mux.Handle(corecontract.WorkspaceMemberResourceRoutePattern, proxy)
 	return mux

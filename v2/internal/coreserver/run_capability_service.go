@@ -18,6 +18,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/coredb"
+	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
 )
 
@@ -127,6 +128,12 @@ func (service *ProductionRunCapabilityService) IssueRunCapabilities(
 			coredb.ErrorInvalidArgument, "IssueRunCapabilities", request.RunAttemptID, err.Error(),
 		)
 	}
+	managedSandbox, err := decodeRunManagedSandboxBinding(request.ManagedSandbox)
+	if err != nil {
+		return corecontract.IssueRunCapabilitiesResponse{}, capabilityServiceStateError(
+			coredb.ErrorInvalidArgument, "IssueRunCapabilities", request.RunAttemptID, err.Error(),
+		)
+	}
 	if err := validateIssueRunCapabilitiesRequest(request); err != nil {
 		return corecontract.IssueRunCapabilitiesResponse{}, capabilityServiceStateError(
 			coredb.ErrorInvalidArgument, "IssueRunCapabilities", request.RunAttemptID, err.Error(),
@@ -146,6 +153,7 @@ func (service *ProductionRunCapabilityService) IssueRunCapabilities(
 			GatewayID: request.LLMGatewayID, ConfigVersion: request.LLMGatewayVersion,
 			GrantUserID: request.LLMGatewayGrantUserID, Model: request.Model,
 		},
+		ManagedSandbox: managedSandbox,
 	})
 	if err != nil {
 		return corecontract.IssueRunCapabilitiesResponse{}, err
@@ -188,6 +196,13 @@ func (service *ProductionRunCapabilityService) IssueRunCapabilities(
 	executorClaims.ExpectedRunVersion = authority.RunVersion + 1
 	executorClaims.ExpectedRunAttemptVersion = authority.AttemptVersion + 1
 	executorClaims.MaxApprovalTTLMillis = service.policy.MaxApprovalTTL.Milliseconds()
+	if authority.ManagedSandbox != (coredb.RunManagedSandboxBinding{}) {
+		executorClaims.ManagedSandboxSettingVersion = authority.ManagedSandbox.SettingVersion
+		executorClaims.ManagedSandboxRegion = authority.ManagedSandbox.Region
+		executorClaims.ManagedSandboxProfileID = authority.ManagedSandbox.ProfileID
+		executorClaims.ManagedSandboxBindingSHA256 = hex.EncodeToString(authority.ManagedSandbox.BindingSHA256[:])
+		executorClaims.ManagedSandboxEnvironmentID = authority.ManagedSandbox.EnvironmentID
+	}
 	executorCapability, err := service.issueOne(executorClaims)
 	if err != nil {
 		return corecontract.IssueRunCapabilitiesResponse{}, fmt.Errorf("issue executor MCP run capability: %w", err)
@@ -229,6 +244,10 @@ func (service *ProductionRunCapabilityService) AuthorizeExecutorRunCapability(
 	if err != nil {
 		return corecontract.AuthorizeRunCapabilityResponse{}, deniedRunCapability(claims.CapabilityID)
 	}
+	managedSandbox, err := managedSandboxBindingFromClaims(claims)
+	if err != nil {
+		return corecontract.AuthorizeRunCapabilityResponse{}, deniedRunCapability(claims.CapabilityID)
+	}
 	return service.authorizeClaims(ctx, claims, coredb.AuthorizeRunCapabilityCommand{
 		Audience: coredb.RunCapabilityAudienceExecutorMCP, CapabilityID: claims.CapabilityID,
 		WorkspaceID: claims.WorkspaceID, SessionID: claims.SessionID, RunID: claims.RunID,
@@ -236,6 +255,7 @@ func (service *ProductionRunCapabilityService) AuthorizeExecutorRunCapability(
 		Generation: claims.RunAttemptGeneration, ExecutorID: claims.ExecutorID,
 		ToolCatalogDigest: catalogDigest, ExpectedRunVersion: claims.ExpectedRunVersion,
 		ExpectedAttemptVersion: claims.ExpectedRunAttemptVersion,
+		ManagedSandbox:         managedSandbox,
 	})
 }
 
@@ -448,6 +468,10 @@ func validateRunCapabilityIssuanceProjection(
 		}) {
 		return errors.New("production run capability store returned an inconsistent issuance projection")
 	}
+	requestManagedSandbox, err := decodeRunManagedSandboxBinding(request.ManagedSandbox)
+	if err != nil || authority.ManagedSandbox != requestManagedSandbox {
+		return errors.New("production run capability store returned inconsistent managed sandbox authority")
+	}
 	if authority.ActorID == "00000000-0000-0000-0000-000000000000" ||
 		!productionCapabilityUUIDPattern.MatchString(authority.ActorID) ||
 		authority.AttemptCreatedAt.IsZero() || authority.DatabaseTime.IsZero() {
@@ -525,6 +549,44 @@ func decodeCapabilityDigest(field, value string) ([sha256.Size]byte, error) {
 		return [sha256.Size]byte{}, fmt.Errorf("%s must not be all zero", field)
 	}
 	return digest, nil
+}
+
+func decodeRunManagedSandboxBinding(source *corecontract.RunLaunchManagedSandboxState) (coredb.RunManagedSandboxBinding, error) {
+	if source == nil {
+		return coredb.RunManagedSandboxBinding{}, nil
+	}
+	digest, err := decodeCapabilityDigest("managedSandbox.bindingSha256", source.BindingSHA256)
+	if err != nil {
+		return coredb.RunManagedSandboxBinding{}, err
+	}
+	if source.SettingVersion < 1 || source.SettingVersion > maximumCapabilitySafeJSONInteger {
+		return coredb.RunManagedSandboxBinding{}, errors.New("managedSandbox.settingVersion must be a positive safe integer")
+	}
+	profile := managedsandboxprofile.Binding{
+		Region: source.Region, ProfileID: source.ProfileID,
+		BindingSHA256: source.BindingSHA256, EnvironmentID: source.EnvironmentID,
+	}
+	if err := profile.Validate(); err != nil {
+		return coredb.RunManagedSandboxBinding{}, err
+	}
+	return coredb.RunManagedSandboxBinding{
+		SettingVersion: source.SettingVersion, Region: source.Region, ProfileID: source.ProfileID,
+		BindingSHA256: digest, EnvironmentID: source.EnvironmentID,
+	}, nil
+}
+
+func managedSandboxBindingFromClaims(claims runcapability.Claims) (coredb.RunManagedSandboxBinding, error) {
+	configured := claims.ManagedSandboxSettingVersion != 0 || claims.ManagedSandboxRegion != "" ||
+		claims.ManagedSandboxProfileID != "" || claims.ManagedSandboxBindingSHA256 != "" ||
+		claims.ManagedSandboxEnvironmentID != ""
+	if !configured {
+		return coredb.RunManagedSandboxBinding{}, nil
+	}
+	return decodeRunManagedSandboxBinding(&corecontract.RunLaunchManagedSandboxState{
+		SettingVersion: claims.ManagedSandboxSettingVersion, Region: claims.ManagedSandboxRegion,
+		ProfileID: claims.ManagedSandboxProfileID, BindingSHA256: claims.ManagedSandboxBindingSHA256,
+		EnvironmentID: claims.ManagedSandboxEnvironmentID,
+	})
 }
 
 func stableProductionCapabilityID(keyID string, claims runcapability.Claims) (string, error) {

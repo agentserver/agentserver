@@ -145,16 +145,18 @@ func validateManagedReleaseEvidence(document ConfigDocument) error {
 	if !managedExecutionActive(document.Managed) {
 		return errors.New("managed executor release stage must be policy-bootstrap or active")
 	}
-	for name, reference := range map[string]string{
-		"managedExecutor.tae.policy.evidenceRef":          document.Managed.TAE.Policy.EvidenceRef,
-		"managedExecutor.tae.networkEvidence.evidenceRef": document.Managed.TAE.NetworkEvidence.EvidenceRef,
-	} {
-		if containsReleaseSentinel(reference) {
-			return fmt.Errorf("%s contains a template sentinel and is not production evidence", name)
+	for index, profile := range document.SandboxProfiles {
+		for name, reference := range map[string]string{
+			"policy.evidenceRef":          profile.TAE.Policy.EvidenceRef,
+			"networkEvidence.evidenceRef": profile.TAE.NetworkEvidence.EvidenceRef,
+		} {
+			if containsReleaseSentinel(reference) {
+				return fmt.Errorf("sandboxProfiles[%d].tae.%s contains a template sentinel and is not production evidence", index, name)
+			}
 		}
-	}
-	if repeatedDigest(document.Managed.TAE.NetworkEvidence.ReportSHA256) {
-		return errors.New("managedExecutor.tae.networkEvidence.reportSha256 is an obvious template digest")
+		if repeatedDigest(profile.TAE.NetworkEvidence.ReportSHA256) {
+			return fmt.Errorf("sandboxProfiles[%d].tae.networkEvidence.reportSha256 is an obvious template digest", index)
+		}
 	}
 	return nil
 }

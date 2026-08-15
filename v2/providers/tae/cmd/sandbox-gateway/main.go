@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -12,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"code.byted.org/paas/cloud-sdk-go/aksk"
+	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/sandboxgatewayapp"
 	"github.com/agentserver/agentserver/v2/internal/taeimage"
 	"github.com/agentserver/agentserver/v2/providers/tae/adapter"
@@ -35,6 +38,8 @@ const (
 	byteCloudJWTEndpointEnvironment = "AGENTSERVER_V2_TAE_BYTECLOUD_JWT_ENDPOINT"
 	byteCloudJWTTimeoutEnvironment  = "AGENTSERVER_V2_TAE_BYTECLOUD_JWT_TIMEOUT"
 	taeProxyEnvironment             = "AGENTSERVER_V2_TAE_PROXY_URL"
+	taeControlPlaneURLEnvironment   = "AGENTSERVER_V2_TAE_CONTROL_PLANE_URL"
+	taeDataPlaneSuffixEnvironment   = "AGENTSERVER_V2_TAE_DATA_PLANE_SUFFIX"
 	byteCloudAppAKSKAuthMode        = "bytecloud-app-aksk-v1"
 	unsafeTLSBypassEnvironment      = "BYTEDAI_NO_SSL_VERIFY"
 )
@@ -42,6 +47,10 @@ const (
 var forbiddenProxyEnvironments = []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"}
 
 type providerConfig struct {
+	region            string
+	controlPlaneURL   string
+	controlPlaneHost  string
+	dataPlaneSuffix   string
 	controlTimeout    time.Duration
 	headerTimeout     time.Duration
 	streamGrace       time.Duration
@@ -162,17 +171,49 @@ func loadProviderConfig(getenv func(string) string) (providerConfig, error) {
 	if authMode := getenv(authModeEnvironment); authMode != byteCloudAppAKSKAuthMode {
 		return providerConfig{}, fmt.Errorf("%s must be exactly %s", authModeEnvironment, byteCloudAppAKSKAuthMode)
 	}
-	byteCloudSite := getenv(byteCloudSiteEnvironment)
-	if byteCloudSite != adapter.ByteCloudSiteI18NTT {
-		return providerConfig{}, fmt.Errorf("%s must be exactly %s for the SG TAE provider", byteCloudSiteEnvironment, adapter.ByteCloudSiteI18NTT)
+	logicalRegion := strings.TrimSpace(getenv(sandboxgatewayapp.ProviderRegionEnvironment))
+	_, expectedControlPlaneURL, expectedDataPlaneSuffix, err := adapter.ResolveTAERegionAuthority(logicalRegion)
+	if err != nil {
+		return providerConfig{}, fmt.Errorf("%s: %w", sandboxgatewayapp.ProviderRegionEnvironment, err)
 	}
-	jwtEndpoint := getenv(byteCloudJWTEndpointEnvironment)
-	if jwtEndpoint != adapter.ByteCloudJWTEndpointSG {
-		return providerConfig{}, fmt.Errorf("%s must be exactly %s for the SG TAE provider", byteCloudJWTEndpointEnvironment, adapter.ByteCloudJWTEndpointSG)
+	controlPlaneURL := strings.TrimSpace(getenv(taeControlPlaneURLEnvironment))
+	if controlPlaneURL != expectedControlPlaneURL {
+		return providerConfig{}, fmt.Errorf("%s must exactly match the selected SDK region authority", taeControlPlaneURLEnvironment)
 	}
-	proxyURL := getenv(taeProxyEnvironment)
-	if proxyURL != adapter.TAEProxyURLSG {
-		return providerConfig{}, fmt.Errorf("%s must be exactly %s for the SG TAE provider", taeProxyEnvironment, adapter.TAEProxyURLSG)
+	dataPlaneSuffix := strings.TrimSpace(getenv(taeDataPlaneSuffixEnvironment))
+	if dataPlaneSuffix != expectedDataPlaneSuffix {
+		return providerConfig{}, fmt.Errorf("%s must exactly match the selected SDK region authority", taeDataPlaneSuffixEnvironment)
+	}
+	controlPlane, _ := url.Parse(controlPlaneURL)
+	byteCloudSite := strings.TrimSpace(getenv(byteCloudSiteEnvironment))
+	if !aksk.IsValidSite(byteCloudSite) {
+		return providerConfig{}, fmt.Errorf("%s is unsupported by the ByteCloud SDK", byteCloudSiteEnvironment)
+	}
+	wantSite := map[string]string{
+		managedsandboxprofile.RegionCN:     aksk.SiteCN,
+		managedsandboxprofile.RegionI18NBD: aksk.SiteI18NBD,
+		managedsandboxprofile.RegionI18NTT: aksk.SiteI18NTT,
+	}[logicalRegion]
+	if wantSite != "" && byteCloudSite != wantSite {
+		return providerConfig{}, fmt.Errorf("%s does not match the selected TAE region", byteCloudSiteEnvironment)
+	}
+	jwtEndpoint := strings.TrimSpace(getenv(byteCloudJWTEndpointEnvironment))
+	parsedJWTEndpoint, parseErr := url.Parse(jwtEndpoint)
+	if parseErr != nil || parsedJWTEndpoint.Scheme != "https" || parsedJWTEndpoint.Host == "" || parsedJWTEndpoint.Hostname() == "" ||
+		parsedJWTEndpoint.User != nil || parsedJWTEndpoint.Opaque != "" || parsedJWTEndpoint.RawPath != "" ||
+		parsedJWTEndpoint.RawQuery != "" || parsedJWTEndpoint.ForceQuery || parsedJWTEndpoint.Fragment != "" ||
+		(parsedJWTEndpoint.Path != "" && parsedJWTEndpoint.Path != "/") {
+		return providerConfig{}, fmt.Errorf("%s must be a canonical HTTPS origin", byteCloudJWTEndpointEnvironment)
+	}
+	proxyURL := strings.TrimSpace(getenv(taeProxyEnvironment))
+	if logicalRegion == managedsandboxprofile.RegionBOE {
+		if proxyURL != "" {
+			return providerConfig{}, fmt.Errorf("%s must be empty for direct BOE routing", taeProxyEnvironment)
+		}
+	} else if proxyURL == "" {
+		return providerConfig{}, fmt.Errorf("%s is required for region %s", taeProxyEnvironment, logicalRegion)
+	} else if err := adapter.ValidateTAEProxyURL(proxyURL); err != nil {
+		return providerConfig{}, fmt.Errorf("%s: %w", taeProxyEnvironment, err)
 	}
 	accessKeyFile, err := requiredAbsolutePath(getenv(byteCloudAccessKeyEnvironment), byteCloudAccessKeyEnvironment)
 	if err != nil {
@@ -227,7 +268,9 @@ func loadProviderConfig(getenv func(string) string) (providerConfig, error) {
 		return providerConfig{}, err
 	}
 	return providerConfig{
-		controlTimeout: controlTimeout, headerTimeout: headerTimeout, streamGrace: streamGrace,
+		region: logicalRegion, controlPlaneURL: controlPlaneURL, controlPlaneHost: controlPlane.Hostname(),
+		dataPlaneSuffix: dataPlaneSuffix,
+		controlTimeout:  controlTimeout, headerTimeout: headerTimeout, streamGrace: streamGrace,
 		reconnectAttempts: reconnectAttempts, reconnectDelay: reconnectDelay,
 		signalTimeout: signalTimeout, maxReadBytes: maxReadBytes, sandboxImage: sandboxImage,
 		sandboxID: sandboxID, sandboxRevisionID: sandboxRevisionID,

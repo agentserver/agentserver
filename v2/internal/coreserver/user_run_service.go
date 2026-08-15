@@ -13,6 +13,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/coredb"
+	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/runcursor"
 	"github.com/agentserver/agentserver/v2/internal/runevent"
 )
@@ -66,28 +67,36 @@ type UserRunLarkEgressResolver interface {
 	ResolveUserRunLarkEgressBinding(context.Context, coredb.ResolveUserRunLarkEgressBindingCommand) (coredb.RunLarkEgressBinding, error)
 }
 
+type UserRunManagedSandboxSettingSource interface {
+	GetWorkspaceManagedSandboxSetting(context.Context, string, string) (coredb.WorkspaceManagedSandboxSetting, error)
+}
+
 type UserRunIDGenerator func() (string, error)
 
 type UserRunServiceConfig struct {
-	Store        UserRunStateStore
-	Prompts      UserPromptStore
-	Policies     UserRunPolicyResolver
-	LLMGateways  UserRunLLMGatewayResolver
-	LarkEgress   UserRunLarkEgressResolver
-	CursorCodec  *runcursor.Codec
-	NewID        UserRunIDGenerator
-	PollInterval time.Duration
+	Store                  UserRunStateStore
+	Prompts                UserPromptStore
+	Policies               UserRunPolicyResolver
+	LLMGateways            UserRunLLMGatewayResolver
+	LarkEgress             UserRunLarkEgressResolver
+	ManagedSandboxSettings UserRunManagedSandboxSettingSource
+	ManagedSandboxProfiles *managedsandboxprofile.Catalog
+	CursorCodec            *runcursor.Codec
+	NewID                  UserRunIDGenerator
+	PollInterval           time.Duration
 }
 
 type UserRunService struct {
-	store        UserRunStateStore
-	prompts      UserPromptStore
-	policies     UserRunPolicyResolver
-	llmGateways  UserRunLLMGatewayResolver
-	larkEgress   UserRunLarkEgressResolver
-	cursors      *runcursor.Codec
-	newID        UserRunIDGenerator
-	pollInterval time.Duration
+	store                  UserRunStateStore
+	prompts                UserPromptStore
+	policies               UserRunPolicyResolver
+	llmGateways            UserRunLLMGatewayResolver
+	larkEgress             UserRunLarkEgressResolver
+	managedSandboxSettings UserRunManagedSandboxSettingSource
+	managedSandboxProfiles *managedsandboxprofile.Catalog
+	cursors                *runcursor.Codec
+	newID                  UserRunIDGenerator
+	pollInterval           time.Duration
 }
 
 type CreateUserRunCommand struct {
@@ -127,6 +136,9 @@ func NewUserRunService(config UserRunServiceConfig) (*UserRunService, error) {
 	if config.NewID == nil {
 		config.NewID = newCoreUUID
 	}
+	if (config.ManagedSandboxSettings == nil) != (config.ManagedSandboxProfiles == nil) {
+		return nil, errors.New("managed sandbox setting source and profile catalog must be configured together")
+	}
 	if config.PollInterval == 0 {
 		config.PollInterval = 100 * time.Millisecond
 	}
@@ -136,7 +148,9 @@ func NewUserRunService(config UserRunServiceConfig) (*UserRunService, error) {
 	return &UserRunService{
 		store: config.Store, prompts: config.Prompts, policies: config.Policies,
 		llmGateways: config.LLMGateways, larkEgress: config.LarkEgress,
-		cursors: config.CursorCodec, newID: config.NewID, pollInterval: config.PollInterval,
+		managedSandboxSettings: config.ManagedSandboxSettings,
+		managedSandboxProfiles: config.ManagedSandboxProfiles,
+		cursors:                config.CursorCodec, newID: config.NewID, pollInterval: config.PollInterval,
 	}, nil
 }
 
@@ -183,6 +197,31 @@ func (service *UserRunService) CreateUserRun(ctx context.Context, command Create
 			return corecontract.CreateUserRunResponse{}, err
 		}
 	}
+	var managedSandbox coredb.RunManagedSandboxBinding
+	if service.managedSandboxProfiles != nil {
+		setting, err := service.managedSandboxSettings.GetWorkspaceManagedSandboxSetting(
+			ctx, command.WorkspaceID, command.ActorID,
+		)
+		if err != nil {
+			return corecontract.CreateUserRunResponse{}, err
+		}
+		profile, ok := service.managedSandboxProfiles.Resolve(setting.Region)
+		if !ok {
+			return corecontract.CreateUserRunResponse{}, publicRunStateError(
+				coredb.ErrorInvalidState, "CreateUserRun", "workspace", command.WorkspaceID,
+				"selected managed sandbox region has no active deployment profile",
+			)
+		}
+		rawDigest, err := hex.DecodeString(profile.BindingSHA256)
+		if err != nil || len(rawDigest) != len(managedSandbox.BindingSHA256) {
+			return corecontract.CreateUserRunResponse{}, errors.New("managed sandbox catalog returned an invalid binding digest")
+		}
+		copy(managedSandbox.BindingSHA256[:], rawDigest)
+		managedSandbox.SettingVersion = setting.Version
+		managedSandbox.Region = profile.Region
+		managedSandbox.ProfileID = profile.ProfileID
+		managedSandbox.EnvironmentID = profile.EnvironmentID
+	}
 	identities := make([]string, 4)
 	seen := make(map[string]struct{}, len(identities))
 	for index := range identities {
@@ -200,6 +239,7 @@ func (service *UserRunService) CreateUserRun(ctx context.Context, command Create
 		RunID: identities[0], WorkspaceID: command.WorkspaceID, SessionID: command.SessionID,
 		ActorID: command.ActorID, RequestHash: requestHash, IdempotencyKey: command.IdempotencyKey,
 		Prompt: prompt, ExecutorPolicy: policy, LLMGateway: llmGateway, LarkEgress: larkEgress,
+		ManagedSandbox: managedSandbox,
 		Record: coredb.TransitionRecord{
 			EventID: identities[1], ProducerInstanceID: identities[2], ProducerSeq: 1, OutboxID: identities[3],
 		},

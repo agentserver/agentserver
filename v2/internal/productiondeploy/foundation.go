@@ -59,11 +59,15 @@ func renderFoundation(context renderContext) []kubeObject {
 	}
 	if managedExecutionActive(config.Document.Managed) {
 		managedItems := []kubeObject{
-			serviceAccountResource(config, sandboxComponent),
-			configMapResource(config, context.managedEnvironmentConfigName, map[string]string{
-				"managed-environment.json": string(context.managedEnvironmentJSON),
-			}),
-			internalService(config, sandboxComponent, config.Document.Services.SandboxGateway),
+			configMapResource(config, context.managedEnvironmentConfigName, managedEnvironmentConfigData(context)),
+		}
+		for _, profile := range config.ManagedSandboxProfiles {
+			managedItems = append(managedItems,
+				serviceAccountResource(config, profile.Document.Gateway.Component),
+				internalService(config, profile.Document.Gateway.Component, InternalServiceDocument{
+					ClusterIP: profile.Document.Gateway.ClusterIP, Port: profile.Document.Gateway.Port,
+				}),
+			)
 		}
 		if managedEgressAuthorizerEnabled(config.Document.Managed) {
 			managedItems = append(managedItems,
@@ -84,6 +88,14 @@ func renderFoundation(context renderContext) []kubeObject {
 	}
 	items = append(items, renderNetworkPolicies(context)...)
 	return items
+}
+
+func managedEnvironmentConfigData(context renderContext) map[string]string {
+	data := make(map[string]string, len(context.managedEnvironments))
+	for _, environment := range context.managedEnvironments {
+		data[environment.FileName] = string(environment.JSON)
+	}
+	return data
 }
 
 func hydraService(config LoadedConfig) kubeObject {

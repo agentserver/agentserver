@@ -125,7 +125,8 @@ func TestRenderManagedExecutorKillSwitchOmitsManagedRuntimeAndAuthorities(t *tes
 		t.Fatalf("Core managed kill switch = %q", got)
 	}
 	for _, forbidden := range []string{
-		"AGENTSERVER_V2_SANDBOX_GATEWAY_SPIFFE_ID", "AGENTSERVER_V2_EGRESS_AUTHORIZER_SPIFFE_ID",
+		"AGENTSERVER_V2_SANDBOX_GATEWAY_SPIFFE_ID", "AGENTSERVER_V2_SANDBOX_GATEWAY_SPIFFE_IDS",
+		"AGENTSERVER_V2_EGRESS_AUTHORIZER_SPIFFE_ID",
 		"AGENTSERVER_V2_LARK_CLIENT_ID", "AGENTSERVER_V2_LARK_CLIENT_SECRET_FILE", "AGENTSERVER_V2_LARK_REFRESH_WORKER_ID",
 	} {
 		if literalEnvironmentOptional(t, coreContainer, forbidden) != "" {
@@ -471,7 +472,7 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sandboxConfig.ProviderRegion != "sg" || sandboxConfig.ProviderPSM != loaded.Document.Managed.TAE.PSM ||
+	if sandboxConfig.ProviderRegion != loaded.Document.Managed.TAE.Region || sandboxConfig.ProviderPSM != loaded.Document.Managed.TAE.PSM ||
 		len(sandboxConfig.WorkspaceAllowlist) != len(loaded.Document.Managed.WorkspaceAllowlist) ||
 		sandboxEnvironment("AGENTSERVER_V2_TAE_SANDBOX_IMAGE") != wantTAEImage ||
 		sandboxEnvironment("AGENTSERVER_V2_TAE_SANDBOX_ID") != loaded.Document.Managed.TAE.SandboxID ||
@@ -483,6 +484,8 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 		"AGENTSERVER_V2_TAE_BYTECLOUD_SITE":                   "i18n-tt",
 		"AGENTSERVER_V2_TAE_BYTECLOUD_JWT_ENDPOINT":           ProductionByteCloudJWTEndpoint,
 		"AGENTSERVER_V2_TAE_PROXY_URL":                        ProductionTAEProxyURL,
+		"AGENTSERVER_V2_TAE_CONTROL_PLANE_URL":                loaded.Document.Managed.TAE.ControlPlaneURL,
+		"AGENTSERVER_V2_TAE_DATA_PLANE_SUFFIX":                loaded.Document.Managed.TAE.DataPlaneSuffix,
 		"AGENTSERVER_V2_TAE_BYTECLOUD_ACCESS_KEY_ID_FILE":     "/var/run/agentserver/material/bytecloud-access-key-id",
 		"AGENTSERVER_V2_TAE_BYTECLOUD_SECRET_ACCESS_KEY_FILE": "/var/run/agentserver/material/bytecloud-secret-access-key",
 		"AGENTSERVER_V2_TAE_BYTECLOUD_JWT_TIMEOUT":            "5s",
@@ -501,7 +504,8 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 	egressDeployment := findResource(t, runtime, "Deployment", egressComponent)
 	egressContainer := objectArrayFirst(t, objectField(t, objectField(t, objectField(t, egressDeployment, "spec"), "template"), "spec"), "containers")
 	egressEnvironment := literalEnvironmentLookup(t, egressContainer)
-	assertRenderedTAEPolicyEnvironment(t, sandboxEnvironment, egressEnvironment)
+	assertRenderedTAEPolicyCatalog(t, sandboxEnvironment,
+		egressEnvironment("AGENTSERVER_V2_TAE_POLICY_BINDINGS"), loaded)
 	wantWebhookPSM := loaded.Document.Managed.TAE.Policy.WebhookPSM
 	wantWebhookURL := loaded.Document.Managed.TAE.Policy.WebhookURL
 	if sandboxEnvironment("AGENTSERVER_V2_TAE_WEBHOOK_PSM") != wantWebhookPSM ||
@@ -1141,49 +1145,59 @@ func assertCNPGDatabaseEgress(t *testing.T, resource map[string]any) {
 	}
 }
 
-func assertRenderedTAEPolicyEnvironment(t *testing.T, left, right func(string) string) {
+func assertRenderedTAEPolicyCatalog(t *testing.T, sandbox func(string) string, raw string, config LoadedConfig) {
 	t.Helper()
-	for _, name := range []string{
-		"AGENTSERVER_V2_TAE_POLICY_REVISION",
-		"AGENTSERVER_V2_TAE_POLICY_SHA256",
-		"AGENTSERVER_V2_TAE_POLICY_BINDING_SHA256",
-		"AGENTSERVER_V2_TAE_POLICY_HOST",
-		"AGENTSERVER_V2_TAE_POLICY_ACCESS",
-		"AGENTSERVER_V2_TAE_POLICY_WEBHOOK_REQUIRED",
-		"AGENTSERVER_V2_TAE_WEBHOOK_MODE",
-		"AGENTSERVER_V2_TAE_WEBHOOK_PSM",
-		"AGENTSERVER_V2_TAE_WEBHOOK_URL",
-		"AGENTSERVER_V2_TAE_WEBHOOK_PATH",
-		"AGENTSERVER_V2_TAE_POLICY_PUBLISHED",
-		"AGENTSERVER_V2_TAE_POLICY_APPROVED",
-		"AGENTSERVER_V2_TAE_POLICY_EVIDENCE_REF",
-		"AGENTSERVER_V2_TAE_NETWORK_BINDING_SHA256",
-		"AGENTSERVER_V2_TAE_NETWORK_REPORT_SHA256",
-		"AGENTSERVER_V2_TAE_NETWORK_EVIDENCE_REF",
-	} {
-		if left(name) != right(name) {
-			t.Fatalf("TAE policy environment %s differs between workloads: sandbox=%q egress=%q", name, left(name), right(name))
+	var catalog struct {
+		Bindings []taepolicy.Binding `json:"bindings"`
+	}
+	if err := json.Unmarshal([]byte(raw), &catalog); err != nil {
+		t.Fatalf("decode egress-authorizer TAE policy catalog: %v", err)
+	}
+	if len(catalog.Bindings) != len(config.ManagedSandboxProfiles) {
+		t.Fatalf("egress-authorizer TAE policy bindings = %d, want %d", len(catalog.Bindings), len(config.ManagedSandboxProfiles))
+	}
+	for index, profile := range config.ManagedSandboxProfiles {
+		want := managedTAEPolicyBinding(profile.Document.TAE)
+		if catalog.Bindings[index] != want {
+			t.Fatalf("egress-authorizer TAE policy binding %d = %+v, want %+v", index, catalog.Bindings[index], want)
 		}
 	}
-	if left("AGENTSERVER_V2_TAE_POLICY_HOST") != taepolicy.PublicHost ||
-		left("AGENTSERVER_V2_TAE_POLICY_ACCESS") != taepolicy.PublicAccessWhitelist ||
-		left("AGENTSERVER_V2_TAE_WEBHOOK_PATH") != taepolicy.WebhookPath {
-		t.Fatalf("rendered TAE policy has a non-canonical public authority: host=%q access=%q path=%q",
-			left("AGENTSERVER_V2_TAE_POLICY_HOST"), left("AGENTSERVER_V2_TAE_POLICY_ACCESS"), left("AGENTSERVER_V2_TAE_WEBHOOK_PATH"))
+	defaultBinding := managedTAEPolicyBinding(config.Document.Managed.TAE)
+	for name, want := range map[string]string{
+		"AGENTSERVER_V2_TAE_POLICY_REVISION":       defaultBinding.Revision,
+		"AGENTSERVER_V2_TAE_POLICY_SHA256":         defaultBinding.PolicySHA256,
+		"AGENTSERVER_V2_TAE_POLICY_BINDING_SHA256": defaultBinding.BindingSHA256,
+		"AGENTSERVER_V2_TAE_POLICY_HOST":           defaultBinding.PublicHost,
+		"AGENTSERVER_V2_TAE_POLICY_ACCESS":         defaultBinding.PublicAccess,
+		"AGENTSERVER_V2_TAE_WEBHOOK_MODE":          defaultBinding.WebhookMode,
+		"AGENTSERVER_V2_TAE_WEBHOOK_PSM":           defaultBinding.WebhookPSM,
+		"AGENTSERVER_V2_TAE_WEBHOOK_URL":           defaultBinding.WebhookURL,
+		"AGENTSERVER_V2_TAE_WEBHOOK_PATH":          defaultBinding.WebhookPath,
+		"AGENTSERVER_V2_TAE_POLICY_EVIDENCE_REF":   defaultBinding.EvidenceRef,
+	} {
+		if sandbox(name) != want {
+			t.Fatalf("sandbox TAE policy environment %s = %q, want %q", name, sandbox(name), want)
+		}
 	}
-	switch left("AGENTSERVER_V2_TAE_WEBHOOK_MODE") {
+	if sandbox("AGENTSERVER_V2_TAE_POLICY_HOST") != taepolicy.PublicHost ||
+		sandbox("AGENTSERVER_V2_TAE_POLICY_ACCESS") != taepolicy.PublicAccessWhitelist ||
+		sandbox("AGENTSERVER_V2_TAE_WEBHOOK_PATH") != taepolicy.WebhookPath {
+		t.Fatalf("rendered TAE policy has a non-canonical public authority: host=%q access=%q path=%q",
+			sandbox("AGENTSERVER_V2_TAE_POLICY_HOST"), sandbox("AGENTSERVER_V2_TAE_POLICY_ACCESS"), sandbox("AGENTSERVER_V2_TAE_WEBHOOK_PATH"))
+	}
+	switch sandbox("AGENTSERVER_V2_TAE_WEBHOOK_MODE") {
 	case "psm":
-		if left("AGENTSERVER_V2_TAE_WEBHOOK_PSM") == "" || left("AGENTSERVER_V2_TAE_WEBHOOK_URL") != "" {
+		if sandbox("AGENTSERVER_V2_TAE_WEBHOOK_PSM") == "" || sandbox("AGENTSERVER_V2_TAE_WEBHOOK_URL") != "" {
 			t.Fatalf("PSM webhook rendered with an ambiguous authority: psm=%q url=%q",
-				left("AGENTSERVER_V2_TAE_WEBHOOK_PSM"), left("AGENTSERVER_V2_TAE_WEBHOOK_URL"))
+				sandbox("AGENTSERVER_V2_TAE_WEBHOOK_PSM"), sandbox("AGENTSERVER_V2_TAE_WEBHOOK_URL"))
 		}
 	case "url":
-		if left("AGENTSERVER_V2_TAE_WEBHOOK_URL") == "" || left("AGENTSERVER_V2_TAE_WEBHOOK_PSM") != "" {
+		if sandbox("AGENTSERVER_V2_TAE_WEBHOOK_URL") == "" || sandbox("AGENTSERVER_V2_TAE_WEBHOOK_PSM") != "" {
 			t.Fatalf("URL webhook rendered with an ambiguous authority: psm=%q url=%q",
-				left("AGENTSERVER_V2_TAE_WEBHOOK_PSM"), left("AGENTSERVER_V2_TAE_WEBHOOK_URL"))
+				sandbox("AGENTSERVER_V2_TAE_WEBHOOK_PSM"), sandbox("AGENTSERVER_V2_TAE_WEBHOOK_URL"))
 		}
 	default:
-		t.Fatalf("rendered unsupported TAE webhook mode %q", left("AGENTSERVER_V2_TAE_WEBHOOK_MODE"))
+		t.Fatalf("rendered unsupported TAE webhook mode %q", sandbox("AGENTSERVER_V2_TAE_WEBHOOK_MODE"))
 	}
 }
 
@@ -1212,7 +1226,7 @@ func assertManagedNetworkPolicyShape(t *testing.T, foundation []map[string]any, 
 	assertNamespacedPodPeerPresent(t, sandboxSpec, "egress", ProductionTAEProxyNamespace,
 		map[string]string{"app": ProductionTAEProxyPodApp}, ProductionTAEProxyPort)
 	if got := len(arrayField(t, sandboxSpec, "egress")); got != 3 {
-		t.Fatalf("sandbox-gateway egress rule count = %d, want only Core, DNS, and syd2a", got)
+		t.Fatalf("sandbox-gateway egress rule count = %d, want only Core, DNS, and maliva", got)
 	}
 	if podPeerPresent(t, sandboxSpec, "egress", egressComponent) {
 		t.Fatal("sandbox-gateway egress unexpectedly reaches egress-authorizer directly")

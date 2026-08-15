@@ -21,7 +21,6 @@ import (
 
 const (
 	probePSM                             = "bytedance.sandbox.agentserver"
-	probeRegion                          = "sg"
 	probeDeploymentSHAEnvironment        = "AGENTSERVER_V2_TAE_PROBE_DEPLOYMENT_CONFIG_SHA256"
 	probePolicyRevisionEnvironment       = "AGENTSERVER_V2_TAE_PROBE_POLICY_REVISION"
 	probeLarkSkillSHAEnvironment         = "AGENTSERVER_V2_TAE_PROBE_LARK_SKILL_SHA256"
@@ -231,19 +230,15 @@ func executeNetworkProbe(ctx context.Context, config networkProbeConfig, clients
 			passed = false
 		}
 	}
-	domainSuffix, err := adapter.SGDataplaneDomainSuffix()
-	if err != nil {
-		return taenetworkreport.Report{}, errors.New("resolve SG TAE data-plane domain for report")
-	}
 	return taenetworkreport.Report{
 		SchemaVersion: taenetworkreport.CurrentVersion, Kind: taenetworkreport.Kind,
 		StartedAt: startedAt, FinishedAt: config.now(), Passed: passed, CleanupConfirmed: cleanupConfirmed,
 		Source: config.source,
 		Configuration: taenetworkreport.Configuration{
-			DeploymentConfigSHA256: config.deploymentSHA256, Region: probeRegion, PSM: probePSM,
-			PolicyRevision: config.policyRevision, ByteCloudSite: adapter.ByteCloudSiteI18NTT,
-			JWTEndpoint: adapter.ByteCloudJWTEndpointSG, ProxyURL: adapter.TAEProxyURLSG,
-			ControlPlaneHost: adapter.SGTAEControlPlaneHost, DataPlaneDomainSuffix: domainSuffix,
+			DeploymentConfigSHA256: config.deploymentSHA256, Region: config.provider.region, PSM: probePSM,
+			PolicyRevision: config.policyRevision, ByteCloudSite: config.provider.byteCloudSite,
+			JWTEndpoint: config.provider.jwtEndpoint, ProxyURL: config.provider.proxyURL,
+			ControlPlaneHost: config.provider.controlPlaneHost, DataPlaneDomainSuffix: config.provider.dataPlaneSuffix,
 			SandboxImage: config.provider.sandboxImage, SandboxID: config.provider.sandboxID,
 			SandboxRevisionID: config.provider.sandboxRevisionID, LarkCLIVersion: config.larkCLIVersion,
 			LarkCLISHA256: config.larkCLISHA256, LarkSkillSHA256: config.larkSkillSHA256,

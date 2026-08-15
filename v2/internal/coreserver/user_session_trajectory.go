@@ -325,12 +325,22 @@ func projectUserSessionTrajectory(source coredb.ReadUserSessionTrajectoryResult)
 
 	result := make([]projectedTrajectoryRecord, 0, len(source.Runs)+len(source.Attempts)+len(source.Executions)+len(source.Operations)+len(messages)+len(tools))
 	for _, run := range source.Runs {
+		details := []corecontract.UserSessionTrajectoryDetail{{Name: "generation", Value: strconv.FormatInt(run.CurrentAttemptGeneration, 10)}}
+		if binding := source.ManagedSandboxBindings[run.ID]; binding != (coredb.RunManagedSandboxBinding{}) {
+			details = append(details,
+				corecontract.UserSessionTrajectoryDetail{Name: "managedSandboxRegion", Value: binding.Region},
+				corecontract.UserSessionTrajectoryDetail{Name: "managedSandboxProfile", Value: binding.ProfileID},
+				corecontract.UserSessionTrajectoryDetail{Name: "managedSandboxEnvironment", Value: binding.EnvironmentID},
+				corecontract.UserSessionTrajectoryDetail{Name: "managedSandboxBinding", Value: fmt.Sprintf("%x", binding.BindingSHA256[:])},
+				corecontract.UserSessionTrajectoryDetail{Name: "managedSandboxSettingVersion", Value: strconv.FormatInt(binding.SettingVersion, 10)},
+			)
+		}
 		record := projectedTrajectoryRecord{
 			record: corecontract.UserSessionTrajectoryRecord{
 				ID: "run:" + run.ID, Kind: "run", Status: normalizeTrajectoryStatus("run", run.Status),
 				Title: "Run", Summary: "Run " + strings.ReplaceAll(run.Status, "_", " "),
 				RunID: run.ID, StartedAt: run.CreatedAt,
-				Details: []corecontract.UserSessionTrajectoryDetail{{Name: "generation", Value: strconv.FormatInt(run.CurrentAttemptGeneration, 10)}},
+				Details: details,
 			},
 			runCreatedAt: run.CreatedAt, anchorSeq: 0, rank: trajectoryRankRun,
 		}

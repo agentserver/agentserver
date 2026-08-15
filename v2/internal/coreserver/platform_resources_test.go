@@ -118,6 +118,12 @@ func (*recordingPlatformResourceCommands) UpdateWorkspace(context.Context, strin
 func (*recordingPlatformResourceCommands) ArchiveWorkspace(context.Context, string, string, corecontract.ArchiveWorkspaceRequest) (corecontract.ArchiveWorkspaceResponse, error) {
 	return corecontract.ArchiveWorkspaceResponse{}, nil
 }
+func (*recordingPlatformResourceCommands) GetManagedSandboxSetting(context.Context, string, string) (corecontract.GetWorkspaceManagedSandboxSettingResponse, error) {
+	return corecontract.GetWorkspaceManagedSandboxSettingResponse{}, nil
+}
+func (*recordingPlatformResourceCommands) UpdateManagedSandboxSetting(context.Context, string, string, corecontract.UpdateWorkspaceManagedSandboxSettingRequest) (corecontract.UpdateWorkspaceManagedSandboxSettingResponse, error) {
+	return corecontract.UpdateWorkspaceManagedSandboxSettingResponse{}, nil
+}
 func (*recordingPlatformResourceCommands) ListMembers(context.Context, string, string) (corecontract.ListWorkspaceMembersResponse, error) {
 	return corecontract.ListWorkspaceMembersResponse{}, nil
 }

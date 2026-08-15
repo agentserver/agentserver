@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/sandboxgatewayapp"
 	"github.com/agentserver/agentserver/v2/providers/tae/adapter"
 )
 
@@ -42,9 +43,9 @@ func TestLoadProviderConfigFailsClosedOnUnsafeRuntime(t *testing.T) {
 		"padded-auth-mode":     {authModeEnvironment: " " + byteCloudAppAKSKAuthMode},
 		"wrong-bytecloud-site": {authModeEnvironment: byteCloudAppAKSKAuthMode, byteCloudSiteEnvironment: "cn"},
 		"missing-jwt-endpoint": {byteCloudJWTEndpointEnvironment: ""},
-		"wrong-jwt-endpoint":   {byteCloudJWTEndpointEnvironment: "https://cloud-i18n.bytedance.net"},
+		"wrong-jwt-endpoint":   {byteCloudJWTEndpointEnvironment: "http://cloud-i18n.bytedance.net"},
 		"missing-tae-proxy":    {taeProxyEnvironment: ""},
-		"wrong-tae-proxy":      {taeProxyEnvironment: "socks5h://ssh-egress.example:1080"},
+		"wrong-tae-proxy":      {taeProxyEnvironment: "http://ssh-egress.example:1080"},
 		"tls-bypass":           {unsafeTLSBypassEnvironment: "1"},
 		"proxy-bypass":         {"HTTPS_PROXY": "http://proxy.internal:8080"},
 		"relative-access-key":  {byteCloudAccessKeyEnvironment: "material/access-key"},
@@ -93,15 +94,18 @@ func TestLoadProviderConfigDefaultsAreBounded(t *testing.T) {
 
 func validProviderEnvironment() map[string]string {
 	return map[string]string{
-		sandboxImageEnvironment:         "aliyun-sin-hub.byted.org/agentserver/tae-sandbox:sha256-" + strings.Repeat("a", 64),
-		sandboxIDEnvironment:            "sandbox-1",
-		sandboxRevisionIDEnvironment:    "revision-1",
-		authModeEnvironment:             byteCloudAppAKSKAuthMode,
-		byteCloudSiteEnvironment:        adapter.ByteCloudSiteI18NTT,
-		byteCloudJWTEndpointEnvironment: adapter.ByteCloudJWTEndpointSG,
-		taeProxyEnvironment:             adapter.TAEProxyURLSG,
-		byteCloudAccessKeyEnvironment:   "/var/run/agentserver/material/bytecloud-access-key-id",
-		byteCloudSecretEnvironment:      "/var/run/agentserver/material/bytecloud-secret-access-key",
+		sandboxgatewayapp.ProviderRegionEnvironment: "i18n-tt",
+		taeControlPlaneURLEnvironment:               "https://" + adapter.SGTAEControlPlaneHost,
+		taeDataPlaneSuffixEnvironment:               adapter.SGTAEDomainSuffix,
+		sandboxImageEnvironment:                     "aliyun-sin-hub.byted.org/agentserver/tae-sandbox:sha256-" + strings.Repeat("a", 64),
+		sandboxIDEnvironment:                        "sandbox-1",
+		sandboxRevisionIDEnvironment:                "revision-1",
+		authModeEnvironment:                         byteCloudAppAKSKAuthMode,
+		byteCloudSiteEnvironment:                    adapter.ByteCloudSiteI18NTT,
+		byteCloudJWTEndpointEnvironment:             adapter.ByteCloudJWTEndpointSG,
+		taeProxyEnvironment:                         adapter.TAEProxyURLSG,
+		byteCloudAccessKeyEnvironment:               "/var/run/agentserver/material/bytecloud-access-key-id",
+		byteCloudSecretEnvironment:                  "/var/run/agentserver/material/bytecloud-secret-access-key",
 	}
 }
 

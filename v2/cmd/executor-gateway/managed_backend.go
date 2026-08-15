@@ -197,66 +197,94 @@ func configureManagedExecutionAuthorities(
 	if err != nil {
 		return nil, nil, err
 	}
-
-	taePSM, err := required(gatewayManagedTAEPSMEnvironment)
+	issuer, err := configureManagedProcessEnvironmentIssuer(
+		getenv, mode, coreAuthorities, coreProcessCredentials,
+	)
 	if err != nil {
 		return nil, nil, err
 	}
+	return issuer, fencer, nil
+}
+
+func configureManagedProcessEnvironmentIssuer(
+	getenv func(string) string,
+	mode gatewayServeMode,
+	coreAuthorities executorgateway.ManagedCredentialAuthoritySource,
+	coreProcessCredentials executorgateway.ManagedProcessCredentialSource,
+) (executorgateway.ManagedProcessEnvironmentIssuer, error) {
+	if getenv == nil {
+		return nil, errors.New("managed process environment configuration source is required")
+	}
+	if mode != gatewayServeProduction && mode != gatewayServeInsecureDevelopment {
+		return nil, errors.New("managed process environment serve mode is invalid")
+	}
+	required := func(name string) (string, error) {
+		value := strings.TrimSpace(getenv(name))
+		if value == "" {
+			return "", fmt.Errorf("%s is required when the TAE backend is enabled", name)
+		}
+		return value, nil
+	}
+	taePSM, err := required(gatewayManagedTAEPSMEnvironment)
+	if err != nil {
+		return nil, err
+	}
 	if len(taePSM) > 256 || strings.ContainsAny(taePSM, "\x00\r\n") {
-		return nil, nil, fmt.Errorf("%s is invalid", gatewayManagedTAEPSMEnvironment)
+		return nil, fmt.Errorf("%s is invalid", gatewayManagedTAEPSMEnvironment)
 	}
 
 	webhookRequired, err := requiredBoolean(getenv, gatewayTAEWebhookRequiredEnvironment)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	egressNames := []string{gatewayEgressPlaceholderIssuerEnvironment, gatewayEgressPlaceholderKeyIDEnvironment, gatewayEgressPlaceholderKeyEnvironment}
 	if !webhookRequired {
 		for _, name := range egressNames {
 			if strings.TrimSpace(getenv(name)) != "" {
-				return nil, nil, fmt.Errorf("%s must be unset for a direct TAE Sandbox profile", name)
+				return nil, fmt.Errorf("%s must be unset for a direct TAE Sandbox profile", name)
 			}
 		}
 		if coreAuthorities == nil || coreProcessCredentials == nil {
-			return nil, nil, errors.New("direct managed credential sources must be v2 Core")
+			return nil, errors.New("direct managed credential sources must be v2 Core")
 		}
 		issuer, err := executorgateway.NewDirectWorkspaceManagedEnvironmentIssuer(
 			coreAuthorities, coreProcessCredentials, taePSM, slog.Default(),
 		)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
-		return issuer, fencer, nil
+		return issuer, nil
 	}
 	for _, name := range egressNames {
 		if strings.TrimSpace(getenv(name)) == "" {
-			return nil, nil, fmt.Errorf("%s is required for webhook-enabled workspace credential delivery", name)
+			return nil, fmt.Errorf("%s is required for webhook-enabled workspace credential delivery", name)
 		}
 	}
 	egressIssuer, err := required(gatewayEgressPlaceholderIssuerEnvironment)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	egressKeyID, err := required(gatewayEgressPlaceholderKeyIDEnvironment)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	egressKeyFile, err := required(gatewayEgressPlaceholderKeyEnvironment)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	if egressKeyID == fencerKeyID || egressKeyID == strings.TrimSpace(getenv(gatewaySandboxCapabilityKeyIDEnvironment)) {
-		return nil, nil, errors.New("egress placeholder and sandbox capabilities must use distinct key IDs")
+	if egressKeyID == strings.TrimSpace(getenv(gatewaySandboxFencerKeyIDEnvironment)) ||
+		egressKeyID == strings.TrimSpace(getenv(gatewaySandboxCapabilityKeyIDEnvironment)) {
+		return nil, errors.New("egress placeholder and sandbox capabilities must use distinct key IDs")
 	}
 	egressSigner, err := egresscapability.LoadSigner(egressIssuer, egressKeyID, egressKeyFile)
 	if err != nil {
-		return nil, nil, fmt.Errorf("configure egress placeholder signer: %w", err)
+		return nil, fmt.Errorf("configure egress placeholder signer: %w", err)
 	}
 	if coreAuthorities == nil {
-		return nil, nil, errors.New("managed credential authority source must be v2 Core")
+		return nil, errors.New("managed credential authority source must be v2 Core")
 	}
 	if coreProcessCredentials == nil {
-		return nil, nil, errors.New("managed process credential source must be v2 Core")
+		return nil, errors.New("managed process credential source must be v2 Core")
 	}
 	// The CLI application identity is returned with the exact versioned
 	// workspace credential. It is never taken from deployment configuration.
@@ -264,9 +292,9 @@ func configureManagedExecutionAuthorities(
 		egressSigner, coreAuthorities, coreProcessCredentials, taePSM, slog.Default(),
 	)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return issuer, fencer, nil
+	return issuer, nil
 }
 
 func configureLazyManagedSandboxAcquirer(
@@ -314,6 +342,18 @@ func configureLazyManagedSandboxAcquirer(
 	if err != nil {
 		return nil, err
 	}
+	region, err := required(gatewayManagedSandboxRegionEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	profileID, err := required(gatewayManagedSandboxProfileIDEnvironment)
+	if err != nil {
+		return nil, err
+	}
+	bindingSHA256, err := required(gatewayManagedSandboxBindingEnvironment)
+	if err != nil {
+		return nil, err
+	}
 	runtimeDigest, err := required(gatewayManagedRuntimeDigestEnvironment)
 	if err != nil {
 		return nil, err
@@ -337,6 +377,7 @@ func configureLazyManagedSandboxAcquirer(
 	return executorgateway.NewDefaultGatewayManagedSandboxSessionAcquirer(
 		client,
 		executorgateway.ManagedSandboxProvisioningSpec{
+			Region: region, ProfileID: profileID, ProfileBindingSHA256: bindingSHA256,
 			EnvironmentID: environmentID, RuntimeProfileDigest: runtimeDigest,
 			PackSetDigest: packSetDigest, SandboxTTL: sandboxTTL, ActivityTTL: activityTTL,
 		},

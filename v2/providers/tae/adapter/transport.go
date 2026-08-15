@@ -23,10 +23,10 @@ const (
 	SGTAEDomainSuffix     = "sg.ai-sandbox-i18n.byted.org"
 	SGTAEControlPlaneHost = "controlplane." + SGTAEDomainSuffix
 
-	// TAEProxyURLSG is the only reviewed network path for SG TAE traffic. The
-	// socks5h scheme is mandatory: the proxy resolves both the fixed control
-	// plane and per-session data-plane names on the syd2a side.
-	TAEProxyURLSG = "socks5h://ssh-egress-merlin-i18nbd-syd2a-83092-headless.ssh-egress.svc.cluster.local:1080"
+	// TAEProxyURLSG is the legacy single-profile i18n-tt route. The socks5h
+	// scheme is mandatory: the configured Merlin proxy resolves both the fixed
+	// control plane and per-session data-plane names on the remote side.
+	TAEProxyURLSG = "socks5h://ssh-egress-merlin-i18ntt-maliva-62204-headless.ssh-egress.svc.cluster.local:1080"
 )
 
 type StrictHTTPClientConfig struct {
@@ -35,6 +35,15 @@ type StrictHTTPClientConfig struct {
 	TotalTimeout          time.Duration
 	ResponseHeaderTimeout time.Duration
 	MaxIdleConnections    int
+}
+
+// TAENetworkRoute is immutable deployment authority for one provider process.
+// An empty ProxyURL means direct dialing; otherwise only canonical socks5h is
+// accepted and DNS resolution is delegated to that proxy.
+type TAENetworkRoute struct {
+	ControlPlaneHost      string
+	DataPlaneDomainSuffix string
+	ProxyURL              string
 }
 
 // NewIdentityHTTPClient returns a shallow clone of client whose requests are
@@ -123,16 +132,51 @@ func NewStrictHTTPClient(config StrictHTTPClientConfig) (*http.Client, error) {
 }
 
 // NewSGTAEControlHTTPClient routes only the fixed I18N production control
-// plane through the reviewed syd2a SOCKS path. A caller cannot use this client
-// as a general-purpose proxy transport.
+// plane through the legacy reviewed i18n-tt SOCKS path. A caller cannot use
+// this client as a general-purpose proxy transport.
 func NewSGTAEControlHTTPClient(config StrictHTTPClientConfig, proxyURL string) (*http.Client, error) {
 	return newSGTAEHTTPClient(config, proxyURL, validateSGTAEControlTarget)
 }
 
 // NewSGTAEDataHTTPClient routes only canonical per-session sandboxd hosts
-// below the fixed I18N production suffix through syd2a.
+// below the fixed I18N production suffix through the same i18n-tt route.
 func NewSGTAEDataHTTPClient(config StrictHTTPClientConfig, proxyURL string) (*http.Client, error) {
 	return newSGTAEHTTPClient(config, proxyURL, validateSGTAEDataTarget)
+}
+
+func NewTAEControlHTTPClient(config StrictHTTPClientConfig, route TAENetworkRoute) (*http.Client, error) {
+	route, err := validateTAENetworkRoute(route)
+	if err != nil {
+		return nil, err
+	}
+	return newPinnedTAEHTTPClient(config, route.ProxyURL, func(network, address string) error {
+		host, err := validateTAETLSAddress(network, address)
+		if err != nil {
+			return err
+		}
+		if host != route.ControlPlaneHost {
+			return errors.New("TAE control-plane target is outside the configured route")
+		}
+		return nil
+	})
+}
+
+func NewTAEDataHTTPClient(config StrictHTTPClientConfig, route TAENetworkRoute) (*http.Client, error) {
+	route, err := validateTAENetworkRoute(route)
+	if err != nil {
+		return nil, err
+	}
+	return newPinnedTAEHTTPClient(config, route.ProxyURL, func(network, address string) error {
+		host, err := validateTAETLSAddress(network, address)
+		if err != nil {
+			return err
+		}
+		sessionID, ok := strings.CutSuffix(host, "."+route.DataPlaneDomainSuffix)
+		if !ok || sessionID == "controlplane" || !sessionDNSLabelPattern.MatchString(sessionID) || strings.ToLower(sessionID) != sessionID {
+			return errors.New("TAE data-plane target is outside the configured route")
+		}
+		return nil
+	})
 }
 
 type targetValidator func(network, address string) error
@@ -146,6 +190,58 @@ func newSGTAEHTTPClient(config StrictHTTPClientConfig, proxyURL string, validate
 		return nil, err
 	}
 	return newStrictHTTPClient(config, dialContext)
+}
+
+func newPinnedTAEHTTPClient(config StrictHTTPClientConfig, proxyURL string, validate targetValidator) (*http.Client, error) {
+	if validate == nil {
+		return nil, errors.New("TAE target validator is required")
+	}
+	if proxyURL != "" {
+		dialContext, err := newPinnedSOCKS5HDialContext(proxyURL, validate)
+		if err != nil {
+			return nil, err
+		}
+		return newStrictHTTPClient(config, dialContext)
+	}
+	direct := &net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}
+	return newStrictHTTPClient(config, func(ctx context.Context, network, address string) (net.Conn, error) {
+		if err := validate(network, address); err != nil {
+			return nil, err
+		}
+		return direct.DialContext(ctx, network, address)
+	})
+}
+
+func validateTAENetworkRoute(route TAENetworkRoute) (TAENetworkRoute, error) {
+	route.ControlPlaneHost = strings.TrimSpace(strings.ToLower(route.ControlPlaneHost))
+	route.DataPlaneDomainSuffix = strings.TrimSpace(strings.ToLower(route.DataPlaneDomainSuffix))
+	if route.ControlPlaneHost == "" || route.DataPlaneDomainSuffix == "" ||
+		route.ControlPlaneHost != "controlplane."+route.DataPlaneDomainSuffix ||
+		strings.HasSuffix(route.DataPlaneDomainSuffix, ".") || strings.ContainsAny(route.DataPlaneDomainSuffix, "\x00\r\n /:@") {
+		return TAENetworkRoute{}, errors.New("TAE control/data-plane authority is invalid")
+	}
+	if route.ProxyURL != "" {
+		if err := ValidateTAEProxyURL(route.ProxyURL); err != nil {
+			return TAENetworkRoute{}, err
+		}
+	}
+	return route, nil
+}
+
+func ValidateTAEProxyURL(rawProxyURL string) error {
+	parsed, err := url.Parse(rawProxyURL)
+	if err != nil || parsed.String() != rawProxyURL || parsed.Scheme != "socks5h" || parsed.User != nil ||
+		parsed.Opaque != "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" ||
+		parsed.Path != "" || parsed.RawPath != "" {
+		return errors.New("TAE proxy must be a canonical unauthenticated socks5h URL")
+	}
+	host, port, err := net.SplitHostPort(parsed.Host)
+	portNumber, portErr := strconv.Atoi(port)
+	if err != nil || portErr != nil || portNumber < 1 || portNumber > 65535 || host == "" || strings.ToLower(host) != host ||
+		parsed.Hostname() != host || parsed.Port() != port {
+		return errors.New("TAE proxy authority is invalid")
+	}
+	return nil
 }
 
 func newStrictHTTPClient(config StrictHTTPClientConfig, dialContext func(context.Context, string, string) (net.Conn, error)) (*http.Client, error) {
@@ -192,26 +288,18 @@ func newPinnedSOCKS5HDialContext(rawProxyURL string, validate targetValidator) (
 	if validate == nil {
 		return nil, errors.New("SOCKS5H target validator is required")
 	}
-	parsed, err := url.Parse(rawProxyURL)
-	if err != nil || parsed.String() != rawProxyURL || parsed.Scheme != "socks5h" || parsed.User != nil ||
-		parsed.Opaque != "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" ||
-		parsed.Path != "" || parsed.RawPath != "" {
-		return nil, errors.New("SG TAE proxy must be a canonical unauthenticated socks5h URL")
+	if err := ValidateTAEProxyURL(rawProxyURL); err != nil {
+		return nil, err
 	}
-	host, port, err := net.SplitHostPort(parsed.Host)
-	portNumber, portErr := strconv.Atoi(port)
-	if err != nil || portErr != nil || portNumber < 1 || portNumber > 65535 || host == "" || strings.ToLower(host) != host ||
-		parsed.Hostname() != host || parsed.Port() != port {
-		return nil, errors.New("SG TAE proxy authority is invalid")
-	}
+	parsed, _ := url.Parse(rawProxyURL)
 	forward := &net.Dialer{Timeout: 8 * time.Second, KeepAlive: 30 * time.Second}
 	dialer, err := xproxy.SOCKS5("tcp", parsed.Host, nil, forward)
 	if err != nil {
-		return nil, errors.New("configure SG TAE SOCKS5H dialer")
+		return nil, errors.New("configure TAE SOCKS5H dialer")
 	}
 	contextDialer, ok := dialer.(xproxy.ContextDialer)
 	if !ok {
-		return nil, errors.New("SG TAE SOCKS5H dialer does not support context cancellation")
+		return nil, errors.New("TAE SOCKS5H dialer does not support context cancellation")
 	}
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		if err := validate(network, address); err != nil {
@@ -245,12 +333,16 @@ func validateSGTAEDataTarget(network, address string) error {
 }
 
 func validateSGTAETLSAddress(network, address string) (string, error) {
+	return validateTAETLSAddress(network, address)
+}
+
+func validateTAETLSAddress(network, address string) (string, error) {
 	if network != "tcp" {
-		return "", errors.New("SG TAE proxy only permits TCP")
+		return "", errors.New("TAE route only permits TCP")
 	}
 	host, port, err := net.SplitHostPort(address)
 	if err != nil || host == "" || port != "443" || strings.ToLower(host) != host || strings.HasSuffix(host, ".") {
-		return "", errors.New("SG TAE proxy target must be a canonical lowercase TLS authority")
+		return "", errors.New("TAE route target must be a canonical lowercase TLS authority")
 	}
 	return host, nil
 }

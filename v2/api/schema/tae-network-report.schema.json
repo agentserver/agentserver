@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentserver.dev/schema/v2/tae-network-report.schema.json",
-  "title": "AgentServer SG TAE network evidence report",
+  "title": "AgentServer TAE regional network evidence report",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -16,8 +16,8 @@
     "checks"
   ],
   "properties": {
-    "schemaVersion": { "const": 4 },
-    "kind": { "const": "agentserver.tae.sg-network-report" },
+    "schemaVersion": { "const": 5 },
+    "kind": { "const": "agentserver.tae.network-report" },
     "startedAt": { "type": "string", "format": "date-time" },
     "finishedAt": { "type": "string", "format": "date-time" },
     "passed": { "type": "boolean" },
@@ -85,12 +85,12 @@
       ],
       "properties": {
         "deploymentConfigSha256": { "$ref": "#/$defs/digest" },
-        "region": { "$ref": "#/$defs/boundedText" },
+        "region": { "type": "string", "enum": ["cn", "boe", "i18n-bd", "i18n-tt"] },
         "psm": { "$ref": "#/$defs/boundedText" },
         "policyRevision": { "$ref": "#/$defs/boundedText" },
         "bytecloudSite": { "$ref": "#/$defs/boundedText" },
         "jwtEndpoint": { "$ref": "#/$defs/boundedText" },
-        "proxyUrl": { "$ref": "#/$defs/boundedText" },
+        "proxyUrl": { "type": "string", "maxLength": 1024, "pattern": "^[^\\x00-\\x1f\\x7f]*$" },
         "controlPlaneHost": { "$ref": "#/$defs/boundedText" },
         "dataPlaneDomainSuffix": { "$ref": "#/$defs/boundedText" },
         "sandboxImage": {

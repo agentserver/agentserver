@@ -48,6 +48,57 @@ func TestProductionDeploymentJSONSchemaAcceptsLoaderAndExample(t *testing.T) {
 	if err := json.Unmarshal(exampleBytes, &openWorld); err != nil {
 		t.Fatal(err)
 	}
+	delete(openWorld, "sandboxRegions")
+	if err := resolved.Validate(openWorld); err == nil {
+		t.Fatal("production schema accepted a version 6 document without sandboxRegions")
+	}
+	if err := json.Unmarshal(exampleBytes, &openWorld); err != nil {
+		t.Fatal(err)
+	}
+	openWorld["sandboxRegions"].(map[string]any)["defaultRegion"] = "cn"
+	if err := resolved.Validate(openWorld); err == nil {
+		t.Fatal("production schema accepted a noncanonical workspace initial sandbox region")
+	}
+	if err := json.Unmarshal(exampleBytes, &openWorld); err != nil {
+		t.Fatal(err)
+	}
+	openWorld["sandboxRegions"].(map[string]any)["regions"] = []any{"cn"}
+	if err := resolved.Validate(openWorld); err == nil {
+		t.Fatal("production schema accepted a catalog without the workspace initial sandbox region")
+	}
+	if err := json.Unmarshal(exampleBytes, &openWorld); err != nil {
+		t.Fatal(err)
+	}
+	openWorld["sandboxProfiles"].([]any)[0].(map[string]any)["region"] = "cn"
+	if err := resolved.Validate(openWorld); err == nil {
+		t.Fatal("production schema accepted profiles without the workspace initial sandbox region")
+	}
+	if err := json.Unmarshal(exampleBytes, &openWorld); err != nil {
+		t.Fatal(err)
+	}
+	managedTAE := openWorld["managedExecutor"].(map[string]any)["tae"].(map[string]any)
+	delete(managedTAE, "proxyProfile")
+	if err := resolved.Validate(openWorld); err == nil {
+		t.Fatal("production schema accepted a version 6 managed TAE authority without proxyProfile")
+	}
+	if err := json.Unmarshal(exampleBytes, &openWorld); err != nil {
+		t.Fatal(err)
+	}
+	openWorld["version"] = float64(LegacyVersion)
+	delete(openWorld, "sandboxRegions")
+	delete(openWorld, "sandboxProfiles")
+	delete(openWorld, "proxyProfiles")
+	legacyTAE := openWorld["managedExecutor"].(map[string]any)["tae"].(map[string]any)
+	legacyTAE["region"] = ProductionRegion
+	for _, name := range []string{"controlPlaneUrl", "dataPlaneSuffix", "bytecloudSite", "bytecloudJwtEndpoint", "proxyProfile"} {
+		delete(legacyTAE, name)
+	}
+	if err := resolved.Validate(openWorld); err != nil {
+		t.Fatalf("production schema rejected a compatible raw version 5 document: %v", err)
+	}
+	if err := json.Unmarshal(exampleBytes, &openWorld); err != nil {
+		t.Fatal(err)
+	}
 	openWorld["future"] = true
 	if err := resolved.Validate(openWorld); err == nil {
 		t.Fatal("production schema accepted an unknown top-level field")

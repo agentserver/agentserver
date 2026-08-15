@@ -88,6 +88,10 @@ WHERE r.status = 'starting'
 		if authority.LLMGateway != command.LLMGateway || authority.LLMGateway.GrantUserID != authority.ActorID {
 			return RunCapabilityIssuanceAuthority{}, unavailableRunCapabilityAuthority(operation, command.AttemptID)
 		}
+		managedSandbox, err := s.readRunManagedSandboxBinding(ctx, transaction, operation, command.RunID)
+		if err != nil || managedSandbox != command.ManagedSandbox {
+			return RunCapabilityIssuanceAuthority{}, unavailableRunCapabilityAuthority(operation, command.AttemptID)
+		}
 		catalogID, catalogDigest, err := s.readAuthorizedCapabilityCatalog(
 			ctx, transaction, operation, command.RunID, command.SessionID, command.AttemptID,
 			latestCheckpointID,
@@ -108,6 +112,7 @@ WHERE r.status = 'starting'
 		authority.ExecutorID = command.ExecutorID
 		authority.BrainToolCatalogID = catalogID
 		authority.ToolCatalogDigest = catalogDigest
+		authority.ManagedSandbox = managedSandbox
 		return authority, nil
 	})
 }
@@ -188,6 +193,10 @@ WHERE r.current_attempt_generation = $7
 					result.AttemptVersion+1 == command.ExpectedAttemptVersion
 			}
 			if !versionsMatch {
+				return AuthorizedRunCapability{}, unavailableRunCapabilityAuthority(operation, command.CapabilityID)
+			}
+			managedSandbox, err := s.readRunManagedSandboxBinding(ctx, transaction, operation, command.RunID)
+			if err != nil || managedSandbox != command.ManagedSandbox {
 				return AuthorizedRunCapability{}, unavailableRunCapabilityAuthority(operation, command.CapabilityID)
 			}
 			_, catalogDigest, err := s.readAuthorizedCapabilityCatalog(
@@ -316,6 +325,11 @@ func validateResolveRunCapabilityIssuance(command ResolveRunCapabilityIssuanceCo
 	if err := validateRunLLMGatewayBinding(command.LLMGateway); err != nil {
 		return err
 	}
+	if command.ManagedSandbox != (RunManagedSandboxBinding{}) {
+		if err := validateRunManagedSandboxBinding(command.ManagedSandbox); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -348,6 +362,11 @@ func validateAuthorizeRunCapability(command AuthorizeRunCapabilityCommand) error
 		if command.LLMGateway != (RunLLMGatewayBinding{}) {
 			return errors.New("executor capability contains LLM gateway authority")
 		}
+		if command.ManagedSandbox != (RunManagedSandboxBinding{}) {
+			if err := validateRunManagedSandboxBinding(command.ManagedSandbox); err != nil {
+				return err
+			}
+		}
 	case RunCapabilityAudienceLLMProxy:
 		if command.ExecutorID != "" || command.ToolCatalogDigest != ([sha256.Size]byte{}) ||
 			command.ExpectedRunVersion != 0 || command.ExpectedAttemptVersion != 0 {
@@ -355,6 +374,9 @@ func validateAuthorizeRunCapability(command AuthorizeRunCapabilityCommand) error
 		}
 		if err := validateRunLLMGatewayBinding(command.LLMGateway); err != nil {
 			return err
+		}
+		if command.ManagedSandbox != (RunManagedSandboxBinding{}) {
+			return errors.New("llmproxy capability contains managed sandbox authority")
 		}
 	default:
 		return errors.New("run capability audience is unsupported")

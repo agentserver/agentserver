@@ -25,7 +25,7 @@
     "resources"
   ],
   "properties": {
-    "version": {"const": 5},
+    "version": {"enum": [5, 6]},
     "region": {"const": "sg"},
     "namespace": {"const": "agentserver"},
     "clusterDomain": {"$ref": "#/$defs/dnsName"},
@@ -39,11 +39,54 @@
     "oauth": {"$ref": "#/$defs/oauth"},
     "runtime": {"$ref": "#/$defs/runtime"},
     "managedExecutor": {"$ref": "#/$defs/managedExecutor"},
+    "sandboxRegions": {"$ref": "#/$defs/managedSandboxRegions"},
+    "sandboxProfiles": {
+      "type": "array", "minItems": 1, "maxItems": 4,
+      "items": {"$ref": "#/$defs/managedSandboxProfile"},
+      "contains": {
+        "type": "object",
+        "required": ["region"],
+        "properties": {"region": {"const": "i18n-tt"}}
+      }
+    },
+    "proxyProfiles": {
+      "type": "array", "maxItems": 3,
+      "items": {"$ref": "#/$defs/managedSandboxProxyProfile"}
+    },
     "objectStore": {"$ref": "#/$defs/objectStore"},
     "secrets": {"$ref": "#/$defs/secrets"},
     "network": {"$ref": "#/$defs/network"},
     "resources": {"$ref": "#/$defs/resources"}
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"version": {"const": 6}},
+        "required": ["version"]
+      },
+      "then": {
+        "required": ["sandboxRegions", "sandboxProfiles", "proxyProfiles"],
+        "properties": {
+          "managedExecutor": {
+            "properties": {
+              "tae": {
+                "required": ["controlPlaneUrl", "dataPlaneSuffix", "bytecloudSite", "bytecloudJwtEndpoint", "proxyProfile"]
+              }
+            }
+          },
+          "sandboxProfiles": {
+            "items": {
+              "properties": {
+                "tae": {
+                  "required": ["controlPlaneUrl", "dataPlaneSuffix", "bytecloudSite", "bytecloudJwtEndpoint", "proxyProfile"]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "dnsLabel": {
       "type": "string",
@@ -359,12 +402,64 @@
       "additionalProperties": false,
       "required": ["region", "psm", "sandboxId", "sandboxRevisionId", "policy", "networkEvidence"],
       "properties": {
-        "region": {"const": "sg"},
+        "region": {"enum": ["sg", "cn", "boe", "i18n-bd", "i18n-tt"]},
         "psm": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^ /:@]+$"},
         "sandboxId": {"$ref": "#/$defs/dnsLabel"},
         "sandboxRevisionId": {"$ref": "#/$defs/dnsLabel"},
+        "controlPlaneUrl": {"$ref": "#/$defs/httpsUrl"},
+        "dataPlaneSuffix": {"$ref": "#/$defs/dnsName"},
+        "bytecloudSite": {"type": "string", "minLength": 1, "maxLength": 128},
+        "bytecloudJwtEndpoint": {"$ref": "#/$defs/httpsUrl"},
+        "proxyProfile": {"enum": ["", "merlin-hl-1", "merlin-useast14a-1", "merlin-maliva-1"]},
         "policy": {"$ref": "#/$defs/managedTAEPolicy"},
         "networkEvidence": {"$ref": "#/$defs/managedTAENetworkEvidence"}
+      }
+    },
+    "managedSandboxRegions": {
+      "type": "object", "additionalProperties": false,
+      "required": ["defaultRegion", "regions"],
+      "properties": {
+        "defaultRegion": {"const": "i18n-tt"},
+        "regions": {
+          "type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true,
+          "items": {"enum": ["cn", "boe", "i18n-bd", "i18n-tt"]},
+          "contains": {"const": "i18n-tt"}
+        }
+      }
+    },
+    "managedSandboxGateway": {
+      "type": "object", "additionalProperties": false,
+      "required": ["component", "clusterIp", "port", "serverName", "secret"],
+      "properties": {
+        "component": {"$ref": "#/$defs/dnsLabel"},
+        "clusterIp": {"$ref": "#/$defs/ipv4"},
+        "port": {"const": 8443},
+        "serverName": {"$ref": "#/$defs/dnsName"},
+        "secret": {"$ref": "#/$defs/dnsLabel"}
+      }
+    },
+    "managedSandboxProfile": {
+      "type": "object", "additionalProperties": false,
+      "required": ["region", "profileId", "bindingSha256", "gateway", "environment", "tae", "sandboxExternalEgress"],
+      "properties": {
+        "region": {"enum": ["cn", "boe", "i18n-bd", "i18n-tt"]},
+        "profileId": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$"},
+        "bindingSha256": {"$ref": "#/$defs/sha256"},
+        "gateway": {"$ref": "#/$defs/managedSandboxGateway"},
+        "environment": {"$ref": "#/$defs/managedEnvironment"},
+        "tae": {"$ref": "#/$defs/managedTAE"},
+        "sandboxExternalEgress": {"$ref": "#/$defs/optionalEgressRules"}
+      }
+    },
+    "managedSandboxProxyProfile": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "url", "namespace", "podSelector", "port"],
+      "properties": {
+        "name": {"enum": ["merlin-hl-1", "merlin-useast14a-1", "merlin-maliva-1"]},
+        "url": {"type": "string", "minLength": 12, "maxLength": 2048, "pattern": "^socks5h://[^/]+:[0-9]+$"},
+        "namespace": {"$ref": "#/$defs/dnsLabel"},
+        "podSelector": {"$ref": "#/$defs/labelSelector"},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535}
       }
     },
     "managedTAENetworkEvidence": {

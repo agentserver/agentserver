@@ -11,6 +11,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/coredb"
 	"github.com/agentserver/agentserver/v2/internal/managedcredential"
+	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 )
 
 const maximumPlatformResourceRequestBytes = int64(64 * 1024)
@@ -24,6 +25,8 @@ type PlatformResourceCommands interface {
 	CreateWorkspace(context.Context, string, corecontract.CreateWorkspaceRequest) (corecontract.CreateWorkspaceResponse, error)
 	UpdateWorkspace(context.Context, string, string, corecontract.UpdateWorkspaceRequest) (corecontract.UpdateWorkspaceResponse, error)
 	ArchiveWorkspace(context.Context, string, string, corecontract.ArchiveWorkspaceRequest) (corecontract.ArchiveWorkspaceResponse, error)
+	GetManagedSandboxSetting(context.Context, string, string) (corecontract.GetWorkspaceManagedSandboxSettingResponse, error)
+	UpdateManagedSandboxSetting(context.Context, string, string, corecontract.UpdateWorkspaceManagedSandboxSettingRequest) (corecontract.UpdateWorkspaceManagedSandboxSettingResponse, error)
 	ListMembers(context.Context, string, string) (corecontract.ListWorkspaceMembersResponse, error)
 	AddMember(context.Context, string, string, corecontract.AddWorkspaceMemberRequest) (corecontract.AddWorkspaceMemberResponse, error)
 	UpdateMember(context.Context, string, string, string, corecontract.UpdateWorkspaceMemberRequest) (corecontract.UpdateWorkspaceMemberResponse, error)
@@ -48,9 +51,54 @@ func (handler *PlatformResourceHandler) Routes() http.Handler {
 	mux.HandleFunc(corecontract.WorkspaceCollectionRoutePattern, handler.workspaceCollection)
 	mux.HandleFunc(corecontract.WorkspaceResourceRoutePattern, handler.workspaceResource)
 	mux.HandleFunc(corecontract.WorkspaceArchiveRoutePattern, handler.archiveWorkspace)
+	mux.HandleFunc(corecontract.WorkspaceManagedSandboxRoutePattern, handler.managedSandboxSetting)
 	mux.HandleFunc(corecontract.WorkspaceMembersCollectionPattern, handler.memberCollection)
 	mux.HandleFunc(corecontract.WorkspaceMemberResourceRoutePattern, handler.memberResource)
 	return mux
+}
+
+func (handler *PlatformResourceHandler) managedSandboxSetting(response http.ResponseWriter, request *http.Request) {
+	platformNoStore(response)
+	if request.URL.RawQuery != "" {
+		writePublicRunError(response, http.StatusBadRequest, "invalid_argument", "managed sandbox setting does not accept query parameters", "")
+		return
+	}
+	workspaceID := request.PathValue("workspaceId")
+	switch request.Method {
+	case http.MethodGet:
+		actorID, ok := handler.authorize(response, request, "workspaces.get")
+		if !ok || !requireEmptyPlatformBody(response, request, "managed sandbox setting read") {
+			return
+		}
+		result, err := handler.commands.GetManagedSandboxSetting(request.Context(), workspaceID, actorID)
+		if err != nil {
+			handler.writeError(response, request, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, result)
+	case http.MethodPatch:
+		actorID, ok := handler.authorize(response, request, "workspaces.update")
+		if !ok {
+			return
+		}
+		var input corecontract.UpdateWorkspaceManagedSandboxSettingRequest
+		if !decodePlatformResourceJSON(response, request, &input) {
+			return
+		}
+		if !managedsandboxprofile.ValidRegion(input.Region) {
+			writePublicRunError(response, http.StatusBadRequest, "invalid_argument", "region must be cn, boe, i18n-bd, or i18n-tt", "")
+			return
+		}
+		result, err := handler.commands.UpdateManagedSandboxSetting(request.Context(), workspaceID, actorID, input)
+		if err != nil {
+			handler.writeError(response, request, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, result)
+	default:
+		response.Header().Set("Allow", "GET, PATCH")
+		writePublicRunError(response, http.StatusMethodNotAllowed, "method_not_allowed", "managed sandbox setting requires GET or PATCH", "")
+	}
 }
 
 func (handler *PlatformResourceHandler) workspaceCollection(response http.ResponseWriter, request *http.Request) {
@@ -337,7 +385,10 @@ func decodePlatformResourceJSON(response http.ResponseWriter, request *http.Requ
 // StateStorePlatformResourceCommands is the Core DB adapter for the public
 // contract. It intentionally contains no authorization policy; both OAuth and
 // membership are rechecked by the handler and transactional StateStore calls.
-type StateStorePlatformResourceCommands struct{ Store *coredb.StateStore }
+type StateStorePlatformResourceCommands struct {
+	Store                          *coredb.StateStore
+	AvailableManagedSandboxRegions []string
+}
 
 func (commands StateStorePlatformResourceCommands) ListWorkspaces(ctx context.Context, actorID string) (corecontract.ListWorkspacesResponse, error) {
 	items, err := commands.Store.ListPlatformWorkspaces(ctx, actorID)
@@ -382,6 +433,45 @@ func (commands StateStorePlatformResourceCommands) ArchiveWorkspace(ctx context.
 	return corecontract.ArchiveWorkspaceResponse{Workspace: contractPlatformWorkspace(result.Workspace), Changed: result.Changed}, err
 }
 
+func (commands StateStorePlatformResourceCommands) GetManagedSandboxSetting(ctx context.Context, workspaceID, actorID string) (corecontract.GetWorkspaceManagedSandboxSettingResponse, error) {
+	setting, err := commands.Store.GetWorkspaceManagedSandboxSetting(ctx, workspaceID, actorID)
+	regions := append([]string(nil), commands.AvailableManagedSandboxRegions...)
+	if len(regions) == 0 {
+		regions = managedsandboxprofile.Regions()
+	}
+	return corecontract.GetWorkspaceManagedSandboxSettingResponse{
+		Setting: contractWorkspaceManagedSandboxSetting(setting), AvailableRegions: regions,
+	}, err
+}
+
+func (commands StateStorePlatformResourceCommands) UpdateManagedSandboxSetting(ctx context.Context, workspaceID, actorID string, input corecontract.UpdateWorkspaceManagedSandboxSettingRequest) (corecontract.UpdateWorkspaceManagedSandboxSettingResponse, error) {
+	available := commands.AvailableManagedSandboxRegions
+	if len(available) > 0 {
+		found := false
+		for _, region := range available {
+			found = found || region == input.Region
+		}
+		if !found {
+			return corecontract.UpdateWorkspaceManagedSandboxSettingResponse{}, &coredb.StateError{
+				Code: coredb.ErrorInvalidState, Operation: "UpdateWorkspaceManagedSandboxSetting",
+				Resource: "workspace", ResourceID: workspaceID,
+				Message: "managed sandbox region has no active deployment profile",
+			}
+		}
+	}
+	auditEventID, err := newCredentialEventID()
+	if err != nil {
+		return corecontract.UpdateWorkspaceManagedSandboxSettingResponse{}, err
+	}
+	result, err := commands.Store.UpdateWorkspaceManagedSandboxSetting(ctx, coredb.UpdateWorkspaceManagedSandboxSettingCommand{
+		WorkspaceID: workspaceID, ActorID: actorID, Region: input.Region,
+		ExpectedVersion: input.ExpectedVersion, AuditEventID: auditEventID,
+	})
+	return corecontract.UpdateWorkspaceManagedSandboxSettingResponse{
+		Setting: contractWorkspaceManagedSandboxSetting(result.Setting), Changed: result.Changed,
+	}, err
+}
+
 func (commands StateStorePlatformResourceCommands) ListMembers(ctx context.Context, workspaceID, actorID string) (corecontract.ListWorkspaceMembersResponse, error) {
 	items, err := commands.Store.ListWorkspaceMembers(ctx, workspaceID, actorID)
 	if err != nil {
@@ -419,6 +509,13 @@ func contractPlatformWorkspace(workspace coredb.PlatformWorkspace) corecontract.
 
 func contractWorkspaceMember(member coredb.WorkspaceMember) corecontract.WorkspaceMemberState {
 	return corecontract.WorkspaceMemberState{UserID: member.UserID, Role: member.Role, Version: member.Version, CreatedAt: member.CreatedAt, UpdatedAt: member.UpdatedAt}
+}
+
+func contractWorkspaceManagedSandboxSetting(setting coredb.WorkspaceManagedSandboxSetting) corecontract.WorkspaceManagedSandboxSettingState {
+	return corecontract.WorkspaceManagedSandboxSettingState{
+		WorkspaceID: setting.WorkspaceID, Region: setting.Region, Version: setting.Version,
+		UpdatedBy: setting.UpdatedBy, CreatedAt: setting.CreatedAt, UpdatedAt: setting.UpdatedAt,
+	}
 }
 
 var _ PlatformResourceCommands = StateStorePlatformResourceCommands{}

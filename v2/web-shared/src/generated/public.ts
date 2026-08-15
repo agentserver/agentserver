@@ -275,6 +275,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v2/workspaces/{workspaceId}/managed-sandbox-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        /** @description Returns the workspace-managed TAE sandbox region and the deployment-installed region choices. The setting is snapshotted when a new Run is created. */
+        get: operations["getWorkspaceManagedSandboxSetting"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** @description Owner-only optimistic update of the workspace-managed TAE sandbox region. Existing Runs retain their frozen region and profile binding. */
+        patch: operations["updateWorkspaceManagedSandboxSetting"];
+        trace?: never;
+    };
     "/v2/workspaces/{workspaceId}/members": {
         parameters: {
             query?: never;
@@ -876,6 +896,30 @@ export interface components {
         };
         ArchiveWorkspaceResponse: {
             workspace: components["schemas"]["WorkspaceState"];
+            changed: boolean;
+        };
+        /** @enum {string} */
+        ManagedSandboxRegion: "cn" | "boe" | "i18n-bd" | "i18n-tt";
+        WorkspaceManagedSandboxSettingState: {
+            workspaceId: components["schemas"]["UUID"];
+            region: components["schemas"]["ManagedSandboxRegion"];
+            version: number;
+            updatedBy: components["schemas"]["UUID"];
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        GetWorkspaceManagedSandboxSettingResponse: {
+            setting: components["schemas"]["WorkspaceManagedSandboxSettingState"];
+            availableRegions: components["schemas"]["ManagedSandboxRegion"][];
+        };
+        UpdateWorkspaceManagedSandboxSettingRequest: {
+            region: components["schemas"]["ManagedSandboxRegion"];
+            expectedVersion: number;
+        };
+        UpdateWorkspaceManagedSandboxSettingResponse: {
+            setting: components["schemas"]["WorkspaceManagedSandboxSettingState"];
             changed: boolean;
         };
         WorkspaceMemberState: {
@@ -2019,6 +2063,62 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ArchiveWorkspaceResponse"];
+                };
+            };
+            400: components["responses"]["PublicError"];
+            401: components["responses"]["PublicError"];
+            403: components["responses"]["PublicError"];
+            404: components["responses"]["PublicError"];
+            409: components["responses"]["PublicError"];
+        };
+    };
+    getWorkspaceManagedSandboxSetting: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Managed sandbox setting */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GetWorkspaceManagedSandboxSettingResponse"];
+                };
+            };
+            401: components["responses"]["PublicError"];
+            403: components["responses"]["PublicError"];
+            404: components["responses"]["PublicError"];
+        };
+    };
+    updateWorkspaceManagedSandboxSetting: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateWorkspaceManagedSandboxSettingRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated managed sandbox setting */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpdateWorkspaceManagedSandboxSettingResponse"];
                 };
             };
             400: components["responses"]["PublicError"];

@@ -18,12 +18,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/taeimage"
 )
 
 const (
-	CurrentVersion = 4
-	Kind           = "agentserver.tae.sg-network-report"
+	CurrentVersion = 5
+	Kind           = "agentserver.tae.network-report"
 	maximumBytes   = int64(256 * 1024)
 )
 
@@ -183,7 +184,6 @@ func Validate(report Report) error {
 		"configuration.policyRevision":        report.Configuration.PolicyRevision,
 		"configuration.bytecloudSite":         report.Configuration.ByteCloudSite,
 		"configuration.jwtEndpoint":           report.Configuration.JWTEndpoint,
-		"configuration.proxyUrl":              report.Configuration.ProxyURL,
 		"configuration.controlPlaneHost":      report.Configuration.ControlPlaneHost,
 		"configuration.dataPlaneDomainSuffix": report.Configuration.DataPlaneDomainSuffix,
 		"configuration.larkCliVersion":        report.Configuration.LarkCLIVersion,
@@ -192,6 +192,21 @@ func Validate(report Report) error {
 		if !boundedText(value, 1, 1024) {
 			return fmt.Errorf("TAE network report %s is invalid", name)
 		}
+	}
+	if report.Configuration.ProxyURL != "" && !boundedText(report.Configuration.ProxyURL, 1, 1024) {
+		return errors.New("TAE network report configuration.proxyUrl is invalid")
+	}
+	if !managedsandboxprofile.ValidRegion(report.Configuration.Region) {
+		return errors.New("TAE network report configuration.region is unsupported")
+	}
+	if report.Configuration.ControlPlaneHost != "controlplane."+report.Configuration.DataPlaneDomainSuffix {
+		return errors.New("TAE network report control/data-plane authorities do not match")
+	}
+	if report.Configuration.Region == managedsandboxprofile.RegionBOE && report.Configuration.ProxyURL != "" {
+		return errors.New("TAE BOE network report must prove direct routing")
+	}
+	if report.Configuration.Region != managedsandboxprofile.RegionBOE && report.Configuration.ProxyURL == "" {
+		return errors.New("TAE non-BOE network report must bind a regional proxy")
 	}
 	if !podUIDPattern.MatchString(report.Source.PodUID) {
 		return errors.New("TAE network report source.podUid must be a canonical lowercase UUID")

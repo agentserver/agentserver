@@ -12,8 +12,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 28 {
-		t.Fatalf("migration count = %d, want 28", len(migrations))
+	if len(migrations) != 29 {
+		t.Fatalf("migration count = %d, want 29", len(migrations))
 	}
 	migration := migrations[0]
 	if migration.Version != 1 || migration.Name != "session_run_kernel" {
@@ -103,6 +103,9 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if migrations[27].Version != 28 || migrations[27].Name != "workspace_credential_authorizations" {
 		t.Fatalf("twenty-eighth migration identity = %04d_%s, want 0028_workspace_credential_authorizations", migrations[27].Version, migrations[27].Name)
 	}
+	if migrations[28].Version != 29 || migrations[28].Name != "workspace_managed_sandbox_region" {
+		t.Fatalf("twenty-ninth migration identity = %04d_%s, want 0029_workspace_managed_sandbox_region", migrations[28].Version, migrations[28].Name)
+	}
 	if !strings.Contains(migrations[25].SQL, "'process_env'") {
 		t.Fatal("process environment audit migration does not admit the process_env stage")
 	}
@@ -114,6 +117,17 @@ func TestEmbeddedMigrations(t *testing.T) {
 	} {
 		if !strings.Contains(migrations[26].SQL, required) {
 			t.Fatalf("workspace mode migration is missing %q", required)
+		}
+	}
+	for _, required := range []string{
+		"CREATE TABLE workspace_managed_sandbox_settings",
+		"'i18n-tt'",
+		"CREATE TABLE workspace_managed_sandbox_setting_events",
+		"ADD COLUMN managed_sandbox_profile_id",
+		"run_launch_states_managed_sandbox_complete",
+	} {
+		if !strings.Contains(migrations[28].SQL, required) {
+			t.Fatalf("managed sandbox region migration is missing %q", required)
 		}
 	}
 }

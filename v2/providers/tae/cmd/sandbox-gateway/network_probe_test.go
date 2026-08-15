@@ -195,6 +195,10 @@ func testNetworkProbeConfig(files map[string][]byte) networkProbeConfig {
 	}
 	return networkProbeConfig{
 		provider: providerConfig{
+			region: "i18n-tt", controlPlaneURL: "https://" + adapter.SGTAEControlPlaneHost,
+			controlPlaneHost: adapter.SGTAEControlPlaneHost, dataPlaneSuffix: adapter.SGTAEDomainSuffix,
+			byteCloudSite: adapter.ByteCloudSiteI18NTT, jwtEndpoint: adapter.ByteCloudJWTEndpointSG,
+			proxyURL:       adapter.TAEProxyURLSG,
 			controlTimeout: time.Second, jwtRequestTimeout: time.Second,
 			sandboxImage: "registry.example/sandbox:sha256-" + strings.Repeat("1", 64),
 			sandboxID:    "sandbox-1", sandboxRevisionID: "revision-1",

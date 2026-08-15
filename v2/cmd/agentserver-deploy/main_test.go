@@ -156,6 +156,24 @@ func TestRunActivateManagedExecutorUsesExactEvidenceArguments(t *testing.T) {
 	}
 }
 
+func TestRunActivateManagedSandboxProfilesUsesExactManifestArguments(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	called := ""
+	exitCode := run([]string{
+		"activate-managed-sandbox-profiles", "--config=/absolute/bootstrap.json",
+		"--output=/absolute/active.json", "--evidence-manifest=/absolute/evidence.json",
+	}, &stdout, &stderr, deployCommands{
+		activateManagedProfiles: func(input, output, manifest string) error {
+			called = strings.Join([]string{input, output, manifest}, "|")
+			return nil
+		},
+	})
+	want := "/absolute/bootstrap.json|/absolute/active.json|/absolute/evidence.json"
+	if exitCode != 0 || stderr.Len() != 0 || called != want || !strings.Contains(stdout.String(), "evidence-bound active") {
+		t.Fatalf("run = %d, called %q, stdout %q, stderr %q", exitCode, called, stdout.String(), stderr.String())
+	}
+}
+
 func TestRunLockReleasePassesExactAuthorityAndWritesOnce(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	called := []string{}

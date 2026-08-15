@@ -243,7 +243,7 @@ func serveHarnessPool(
 		authorityDescription = "INSECURE DEV capabilities"
 	}
 	managedDescription := "BYO-only"
-	if config.managedSandbox != nil {
+	if config.managedSandbox != nil || len(config.managedSandboxProfiles) != 0 {
 		managedDescription = "managed tools enabled; sandbox acquisition deferred to executor-gateway"
 	}
 	fmt.Fprintf(stdout, "harness-pool serve: %s; %s; %s; holder %s; control %s; max concurrent attempts %d\n",
@@ -313,8 +313,20 @@ func runLaunchProfile(config harnessPoolConfig, callbackEndpoint string, modelFr
 		ControllerCallbackEndpoint: callbackEndpoint,
 		ControllerCallbackIdentity: config.poolTLSIdentity,
 		ControllerCallbackAudience: developmentControlAudience,
+		ManagedSandboxProfiles:     cloneManagedSandboxProfiles(config.managedSandboxProfiles),
 		ManagedSandbox:             cloneManagedSandboxProfile(config.managedSandbox),
 	}
+}
+
+func cloneManagedSandboxProfiles(source map[string]harnesspool.ManagedSandboxLaunchSpec) map[string]harnesspool.ManagedSandboxLaunchSpec {
+	if source == nil {
+		return nil
+	}
+	copy := make(map[string]harnesspool.ManagedSandboxLaunchSpec, len(source))
+	for profileID, spec := range source {
+		copy[profileID] = spec
+	}
+	return copy
 }
 
 func cloneManagedSandboxProfile(source *harnesspool.ManagedSandboxLaunchSpec) *harnesspool.ManagedSandboxLaunchSpec {

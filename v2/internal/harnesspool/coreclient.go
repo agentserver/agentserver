@@ -456,6 +456,13 @@ func (client *CoreClient) IssueRunCapabilities(
 		MaxRunDurationMillis:  request.MaxRunDuration.Milliseconds(),
 		MaxApprovalTTLMillis:  request.MaxApprovalTTL.Milliseconds(),
 	}
+	if request.ManagedSandbox != nil {
+		binding := request.ManagedSandbox
+		contractRequest.ManagedSandbox = &corecontract.RunLaunchManagedSandboxState{
+			SettingVersion: binding.SettingVersion, Region: binding.Region, ProfileID: binding.ProfileID,
+			BindingSHA256: binding.BindingSHA256, EnvironmentID: binding.EnvironmentID,
+		}
+	}
 	var response corecontract.IssueRunCapabilitiesResponse
 	if err := client.postNoStore(ctx, corecontract.IssueRunCapabilitiesPath, contractRequest, &response); err != nil {
 		return IssueRunCapabilitiesResult{}, err
@@ -565,6 +572,23 @@ func (client *CoreClient) ResolveRunLaunchState(ctx context.Context, scheduled S
 		state.LarkEgress = &RunLarkEgressBinding{
 			GrantID: binding.GrantID, GrantVersion: binding.GrantVersion,
 			GrantUserID: binding.GrantUserID, PolicySHA256: binding.PolicySHA256,
+		}
+	}
+	if response.ManagedSandbox != nil {
+		binding := response.ManagedSandbox
+		if binding.SettingVersion < 1 || binding.SettingVersion > 1<<53-1 ||
+			!validClientProtocolText(binding.Region, 32) || !validClientProtocolText(binding.ProfileID, 128) {
+			return RunLaunchState{}, errors.New("validate core launch-state response: managed sandbox setting authority is invalid")
+		}
+		if _, err := decodeClientSHA256(binding.BindingSHA256); err != nil {
+			return RunLaunchState{}, errors.New("validate core launch-state response: managed sandbox binding digest is invalid")
+		}
+		if err := validateUUIDIdentity("managed sandbox environment ID", binding.EnvironmentID); err != nil {
+			return RunLaunchState{}, fmt.Errorf("validate core launch-state response: %w", err)
+		}
+		state.ManagedSandbox = &RunManagedSandboxBinding{
+			SettingVersion: binding.SettingVersion, Region: binding.Region, ProfileID: binding.ProfileID,
+			BindingSHA256: binding.BindingSHA256, EnvironmentID: binding.EnvironmentID,
 		}
 	}
 	if response.PreviousCheckpoint == nil {

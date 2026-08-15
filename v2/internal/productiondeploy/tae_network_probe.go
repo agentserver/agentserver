@@ -30,10 +30,30 @@ func taeNetworkProbeResources(config LoadedConfig) ([]kubeObject, error) {
 		return nil, err
 	}
 	configSHA256 := canonicalDigest(document)
-	jobName := taeNetworkProbeJobPlaceholder
-	labels := componentLabels(taeNetworkProbeComponent)
+	items := []kubeObject{serviceAccountResource(config, taeNetworkProbeComponent)}
+	for _, profile := range config.ManagedSandboxProfiles {
+		profileItems, renderErr := taeNetworkProbeProfileResources(config, profile, taeSandboxImage, configSHA256)
+		if renderErr != nil {
+			return nil, renderErr
+		}
+		items = append(items, profileItems...)
+	}
+	return items, nil
+}
+
+func taeNetworkProbeProfileResources(
+	config LoadedConfig,
+	loaded LoadedManagedSandboxProfile,
+	taeSandboxImage, configSHA256 string,
+) ([]kubeObject, error) {
+	document := config.Document
+	profile := loaded.Document
+	jobName := taeNetworkProbeJobPlaceholderForRegion(profile.Region)
+	inputName := taeNetworkProbeInputPlaceholderForRegion(profile.Region)
+	component := taeNetworkProbeProfileComponent(profile.Region)
+	labels := componentLabels(component)
 	material, err := secretMaterialVolume(
-		"bytecloud-identity", document.Secrets.SandboxGateway, materialProfileTAENetworkProbe, groupReadableSecretMode,
+		"bytecloud-identity", profile.Gateway.Secret, materialProfileTAENetworkProbe, groupReadableSecretMode,
 	)
 	if err != nil {
 		return nil, err
@@ -42,21 +62,29 @@ func taeNetworkProbeResources(config LoadedConfig) ([]kubeObject, error) {
 	if err != nil {
 		return nil, err
 	}
+	proxyURL := ""
+	if loaded.Proxy != nil {
+		proxyURL = loaded.Proxy.URL
+	}
 	environment := []any{
+		valueEnvironment("AGENTSERVER_V2_TAE_REGION", profile.TAE.Region),
+		valueEnvironment("AGENTSERVER_V2_TAE_PSM", profile.TAE.PSM),
 		valueEnvironment("AGENTSERVER_V2_TAE_SANDBOX_IMAGE", taeSandboxImage),
-		valueEnvironment("AGENTSERVER_V2_TAE_SANDBOX_ID", document.Managed.TAE.SandboxID),
-		valueEnvironment("AGENTSERVER_V2_TAE_SANDBOX_REVISION_ID", document.Managed.TAE.RevisionID),
+		valueEnvironment("AGENTSERVER_V2_TAE_SANDBOX_ID", profile.TAE.SandboxID),
+		valueEnvironment("AGENTSERVER_V2_TAE_SANDBOX_REVISION_ID", profile.TAE.RevisionID),
+		valueEnvironment("AGENTSERVER_V2_TAE_CONTROL_PLANE_URL", profile.TAE.ControlPlaneURL),
+		valueEnvironment("AGENTSERVER_V2_TAE_DATA_PLANE_SUFFIX", profile.TAE.DataPlaneSuffix),
 		valueEnvironment("AGENTSERVER_V2_TAE_AUTH_MODE", "bytecloud-app-aksk-v1"),
-		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_SITE", "i18n-tt"),
-		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_JWT_ENDPOINT", ProductionByteCloudJWTEndpoint),
-		valueEnvironment("AGENTSERVER_V2_TAE_PROXY_URL", ProductionTAEProxyURL),
+		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_SITE", profile.TAE.ByteCloudSite),
+		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_JWT_ENDPOINT", profile.TAE.ByteCloudJWTEndpoint),
+		valueEnvironment("AGENTSERVER_V2_TAE_PROXY_URL", proxyURL),
 		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_ACCESS_KEY_ID_FILE", serviceMaterialPath("bytecloud-access-key-id")),
 		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_SECRET_ACCESS_KEY_FILE", serviceMaterialPath("bytecloud-secret-access-key")),
 		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_JWT_TIMEOUT", "10s"),
 		valueEnvironment("AGENTSERVER_V2_TAE_CONTROL_TIMEOUT", "60s"),
 		valueEnvironment("AGENTSERVER_V2_TAE_RESPONSE_HEADER_TIMEOUT", "30s"),
 		valueEnvironment("AGENTSERVER_V2_TAE_PROBE_DEPLOYMENT_CONFIG_SHA256", configSHA256),
-		configMapEnvironment("AGENTSERVER_V2_TAE_PROBE_POLICY_REVISION", taeNetworkProbeInputPlaceholder, "policy-revision"),
+		configMapEnvironment("AGENTSERVER_V2_TAE_PROBE_POLICY_REVISION", inputName, "policy-revision"),
 		valueEnvironment("AGENTSERVER_V2_TAE_PROBE_LARK_SKILL_SHA256", document.Managed.Lark.SkillSHA256),
 		valueEnvironment("AGENTSERVER_V2_TAE_PROBE_CONNECTIVITY_ATTEMPTS", strconv.Itoa(taeProbeConnectivityAttempts)),
 		valueEnvironment("AGENTSERVER_V2_TAE_PROBE_LIFECYCLE_ATTEMPTS", strconv.Itoa(taeProbeLifecycleAttempts)),
@@ -68,18 +96,16 @@ func taeNetworkProbeResources(config LoadedConfig) ([]kubeObject, error) {
 		fieldEnvironment("AGENTSERVER_V2_TAE_PROBE_SERVICE_ACCOUNT", "spec.serviceAccountName"),
 	}
 	egress := append([]any(nil), dnsEgress(document.Network)...)
-	egress = append(egress, namespacedPodTCPEgress(
-		ProductionTAEProxyNamespace,
-		map[string]string{"app": ProductionTAEProxyPodApp},
-		ProductionTAEProxyPort,
-	))
-	items := []kubeObject{
-		serviceAccountResource(config, taeNetworkProbeComponent),
-		networkPolicy(config, jobName+"-egress", matchComponent(taeNetworkProbeComponent), nil, egress),
+	if loaded.Proxy != nil {
+		egress = append(egress, namespacedPodTCPEgress(loaded.Proxy.Namespace, loaded.Proxy.PodSelector, loaded.Proxy.Port))
+	}
+	egress = append(egress, externalEgress(profile.SandboxExternalEgress)...)
+	return []kubeObject{
+		networkPolicy(config, jobName+"-egress", matchComponent(component), nil, egress),
 		{
 			"apiVersion": "batch/v1", "kind": "Job",
 			"metadata": metadata(jobName, document.Namespace, labels, map[string]string{
-				"agentserver.dev/config-sha256": configSHA256,
+				"agentserver.dev/config-sha256": configSHA256, "agentserver.dev/managed-sandbox-region": profile.Region,
 			}),
 			"spec": kubeObject{
 				"backoffLimit": 0, "activeDeadlineSeconds": 7200,
@@ -107,8 +133,19 @@ func taeNetworkProbeResources(config LoadedConfig) ([]kubeObject, error) {
 				},
 			},
 		},
-	}
-	return items, nil
+	}, nil
+}
+
+func taeNetworkProbeProfileComponent(region string) string {
+	return taeNetworkProbeComponent + "-" + region
+}
+
+func taeNetworkProbeJobPlaceholderForRegion(region string) string {
+	return taeNetworkProbeJobPlaceholder + "-" + region
+}
+
+func taeNetworkProbeInputPlaceholderForRegion(region string) string {
+	return taeNetworkProbeInputPlaceholder + "-" + region
 }
 
 func fieldEnvironment(name, fieldPath string) kubeObject {

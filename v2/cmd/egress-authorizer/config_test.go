@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
+	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/taepolicy"
 )
 
@@ -38,6 +40,47 @@ func TestLoadEgressAuthorizerProductionConfigDoesNotConsumeDevelopmentSecrets(t 
 		config.spiffeIdentity != environment[egressSPIFFEIdentityEnvironment] ||
 		config.taePolicy.BindingSHA256 != environment[egressTAEPolicyBindingEnvironment] {
 		t.Fatalf("production config = %+v", config)
+	}
+}
+
+func TestLoadEgressAuthorizerProductionConfigAcceptsFourRegionPolicyCatalog(t *testing.T) {
+	environment := validEgressProductionEnvironment(t)
+	bindings := make([]taepolicy.Binding, 0, len(managedsandboxprofile.Regions()))
+	for _, region := range managedsandboxprofile.Regions() {
+		binding := taepolicy.Binding{
+			Version: taepolicy.BindingVersion, Region: region, SandboxPSM: environment[egressAllowedTAEPSMEnvironment],
+			Revision: "lark-readonly-" + region + "-v1", PolicySHA256: larkegresspolicy.SHA256Hex(),
+			PublicHost: taepolicy.PublicHost, PublicAccess: taepolicy.PublicAccessWhitelist, PublicWebhookRequired: true,
+			WebhookMode: "psm", WebhookPSM: "agentserver.egress-authorizer", WebhookPath: taepolicy.WebhookPath,
+			Published: true, Approved: true, EvidenceRef: "tae-change/" + region + "/2026-08-15",
+		}
+		binding.BindingSHA256 = binding.DigestHex()
+		bindings = append(bindings, binding)
+	}
+	raw, err := json.Marshal(taePolicyBindingsDocument{Bindings: bindings})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		egressTAEPolicyRevisionEnvironment, egressTAEPolicySHA256Environment, egressTAEPolicyBindingEnvironment,
+		egressTAEPolicyHostEnvironment, egressTAEPolicyAccessEnvironment, egressTAEWebhookRequiredEnvironment,
+		egressTAEWebhookModeEnvironment, egressTAEWebhookPSMEnvironment, egressTAEWebhookURLEnvironment,
+		egressTAEWebhookPathEnvironment, egressTAEPolicyPublishedEnvironment,
+		egressTAEPolicyApprovedEnvironment, egressTAEPolicyEvidenceEnvironment,
+	} {
+		delete(environment, name)
+	}
+	environment[egressTAEPolicyBindingsEnvironment] = string(raw)
+	config, err := loadEgressAuthorizerConfig(func(name string) string { return environment[name] }, egressAuthorizerServeProduction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(config.taePolicies) != 4 || config.taePolicy != bindings[0] {
+		t.Fatalf("profiled TAE policies = %+v", config.taePolicies)
+	}
+	environment[egressTAEPolicyRevisionEnvironment] = "legacy-must-not-mix"
+	if _, err := loadEgressAuthorizerConfig(func(name string) string { return environment[name] }, egressAuthorizerServeProduction); err == nil {
+		t.Fatal("profiled TAE policy catalog accepted a legacy policy setting")
 	}
 }
 

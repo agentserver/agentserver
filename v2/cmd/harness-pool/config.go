@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"net/url"
@@ -14,6 +17,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/harnesspool"
+	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/managedtools"
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
 	"github.com/agentserver/agentserver/v2/internal/runtimelock"
@@ -62,6 +66,7 @@ const (
 	poolManagedSkillDigestEnvironment    = "AGENTSERVER_V2_MANAGED_SKILL_SHA256"
 	poolManagedSandboxTTLEnvironment     = "AGENTSERVER_V2_MANAGED_SANDBOX_TTL"
 	poolManagedActivityTTLEnvironment    = "AGENTSERVER_V2_MANAGED_ACTIVITY_TTL"
+	poolManagedProfilesEnvironment       = "AGENTSERVER_V2_MANAGED_SANDBOX_LAUNCH_PROFILES"
 	developmentControlAudience           = "harness-pool-control"
 	developmentExecutorMCPAudience       = runcapability.AudienceExecutorMCP
 	developmentModelAudience             = runcapability.AudienceLLMProxy
@@ -115,7 +120,24 @@ type harnessPoolConfig struct {
 	maxRunDuration      time.Duration
 	maxApprovalTTL      time.Duration
 
-	managedSandbox *harnesspool.ManagedSandboxLaunchSpec
+	managedSandbox         *harnesspool.ManagedSandboxLaunchSpec
+	managedSandboxProfiles map[string]harnesspool.ManagedSandboxLaunchSpec
+}
+
+type managedSandboxLaunchProfilesDocument struct {
+	Profiles []managedSandboxLaunchProfileDocument `json:"profiles"`
+}
+
+type managedSandboxLaunchProfileDocument struct {
+	Region               string `json:"region"`
+	ProfileID            string `json:"profileId"`
+	ProfileBindingSHA256 string `json:"bindingSha256"`
+	EnvironmentID        string `json:"environmentId"`
+	RuntimeProfileSHA256 string `json:"runtimeProfileSha256"`
+	PackSetSHA256        string `json:"packSetSha256"`
+	SkillSHA256          string `json:"skillSha256"`
+	SandboxTTL           string `json:"sandboxTtl"`
+	ActivityTTL          string `json:"activityTtl"`
 }
 
 func loadHarnessPoolDevelopmentConfig(getenv func(string) string) (harnessPoolConfig, error) {
@@ -292,6 +314,20 @@ func loadOptionalManagedSandboxConfig(getenv func(string) string, config *harnes
 		poolManagedSandboxTTLEnvironment,
 		poolManagedActivityTTLEnvironment,
 	}
+	profilesRaw := strings.TrimSpace(getenv(poolManagedProfilesEnvironment))
+	if profilesRaw != "" {
+		for _, name := range names {
+			if strings.TrimSpace(getenv(name)) != "" {
+				return fmt.Errorf("%s cannot be combined with legacy managed sandbox setting %s", poolManagedProfilesEnvironment, name)
+			}
+		}
+		profiles, err := parseManagedSandboxLaunchProfiles([]byte(profilesRaw))
+		if err != nil {
+			return fmt.Errorf("%s: %w", poolManagedProfilesEnvironment, err)
+		}
+		config.managedSandboxProfiles = profiles
+		return nil
+	}
 	configured := false
 	for _, name := range names {
 		if strings.TrimSpace(getenv(name)) != "" {
@@ -354,6 +390,75 @@ func loadOptionalManagedSandboxConfig(getenv func(string) string, config *harnes
 		SandboxTTL: sandboxTTL, ActivityTTL: activityTTL,
 	}
 	return nil
+}
+
+func parseManagedSandboxLaunchProfiles(raw []byte) (map[string]harnesspool.ManagedSandboxLaunchSpec, error) {
+	if len(raw) == 0 || len(raw) > 128*1024 {
+		return nil, errors.New("managed sandbox launch profile catalog must contain between 1 and 131072 bytes")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var document managedSandboxLaunchProfilesDocument
+	if err := decoder.Decode(&document); err != nil {
+		return nil, fmt.Errorf("decode managed sandbox launch profile catalog: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return nil, errors.New("managed sandbox launch profile catalog contains trailing data")
+	}
+	if len(document.Profiles) < 1 || len(document.Profiles) > len(managedsandboxprofile.Regions()) {
+		return nil, fmt.Errorf("managed sandbox launch profile catalog must contain between 1 and %d profiles", len(managedsandboxprofile.Regions()))
+	}
+	profiles := make(map[string]harnesspool.ManagedSandboxLaunchSpec, len(document.Profiles))
+	regions := make(map[string]struct{}, len(document.Profiles))
+	environments := make(map[string]struct{}, len(document.Profiles))
+	for _, source := range document.Profiles {
+		binding := managedsandboxprofile.Binding{
+			Region: source.Region, ProfileID: source.ProfileID,
+			BindingSHA256: source.ProfileBindingSHA256, EnvironmentID: source.EnvironmentID,
+		}
+		if err := binding.Validate(); err != nil {
+			return nil, err
+		}
+		if _, duplicate := profiles[source.ProfileID]; duplicate {
+			return nil, fmt.Errorf("managed sandbox profile %q is repeated", source.ProfileID)
+		}
+		if _, duplicate := regions[source.Region]; duplicate {
+			return nil, fmt.Errorf("managed sandbox region %q is repeated", source.Region)
+		}
+		if _, duplicate := environments[source.EnvironmentID]; duplicate {
+			return nil, fmt.Errorf("managed sandbox environment %q is repeated", source.EnvironmentID)
+		}
+		if !poolDigestPattern.MatchString(source.RuntimeProfileSHA256) ||
+			!poolDigestPattern.MatchString(source.PackSetSHA256) || !poolDigestPattern.MatchString(source.SkillSHA256) {
+			return nil, errors.New("managed sandbox runtime, pack-set, and skill digests must be lowercase SHA-256")
+		}
+		sandboxTTL, err := parseManagedDuration(source.SandboxTTL, 30*time.Second, 24*time.Hour)
+		if err != nil {
+			return nil, fmt.Errorf("managed sandbox profile %q sandboxTtl: %w", source.ProfileID, err)
+		}
+		activityTTL, err := parseManagedDuration(source.ActivityTTL, time.Second, sandboxTTL)
+		if err != nil {
+			return nil, fmt.Errorf("managed sandbox profile %q activityTtl: %w", source.ProfileID, err)
+		}
+		profiles[source.ProfileID] = harnesspool.ManagedSandboxLaunchSpec{
+			Region: source.Region, ProfileID: source.ProfileID, ProfileBindingSHA256: source.ProfileBindingSHA256,
+			EnvironmentID: source.EnvironmentID, RuntimeProfileDigest: source.RuntimeProfileSHA256,
+			PackID: managedtools.PackID, PackSetDigest: source.PackSetSHA256, SkillSHA256: source.SkillSHA256,
+			SandboxTTL: sandboxTTL, ActivityTTL: activityTTL,
+		}
+		regions[source.Region] = struct{}{}
+		environments[source.EnvironmentID] = struct{}{}
+	}
+	return profiles, nil
+}
+
+func parseManagedDuration(value string, minimum, maximum time.Duration) (time.Duration, error) {
+	parsed, err := time.ParseDuration(strings.TrimSpace(value))
+	if err != nil || parsed < minimum || parsed > maximum || parsed%time.Second != 0 {
+		return 0, fmt.Errorf("must be a whole-second Go duration between %s and %s", minimum, maximum)
+	}
+	return parsed, nil
 }
 
 func requiredManagedDuration(getenv func(string) string, name string, minimum, maximum time.Duration) (time.Duration, error) {

@@ -1,11 +1,13 @@
 package productiondeploy
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"path"
 	"slices"
@@ -15,6 +17,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/bkectlpolicy"
 	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
 	"github.com/agentserver/agentserver/v2/internal/managedruntime"
+	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/managedtools"
 	"github.com/agentserver/agentserver/v2/internal/productionimage"
 	"github.com/agentserver/agentserver/v2/internal/stockruntime"
@@ -34,9 +37,9 @@ const (
 	ProductionByteCloudJWTEndpoint = "https://cloud-i18n-sg.bytedance.net"
 	ProductionTAEControlPlaneHost  = "controlplane.sg.ai-sandbox-i18n.byted.org"
 	ProductionTAEDataPlaneSuffix   = "sg.ai-sandbox-i18n.byted.org"
-	ProductionTAEProxyURL          = "socks5h://ssh-egress-merlin-i18nbd-syd2a-83092-headless.ssh-egress.svc.cluster.local:1080"
+	ProductionTAEProxyURL          = "socks5h://ssh-egress-merlin-i18ntt-maliva-62204-headless.ssh-egress.svc.cluster.local:1080"
 	ProductionTAEProxyNamespace    = "ssh-egress"
-	ProductionTAEProxyPodApp       = "ssh-egress-merlin-i18nbd-syd2a-83092"
+	ProductionTAEProxyPodApp       = "ssh-egress-merlin-i18ntt-maliva-62204"
 	ProductionTAEProxyPort         = uint16(1080)
 	ManagedExecutorStageDisabled   = "disabled"
 	ManagedExecutorStageBootstrap  = "policy-bootstrap"
@@ -92,12 +95,17 @@ type ManagedCompatibilityRuntimeDocument struct {
 }
 
 type ManagedTAEDocument struct {
-	Region          string                            `json:"region"`
-	PSM             string                            `json:"psm"`
-	SandboxID       string                            `json:"sandboxId"`
-	RevisionID      string                            `json:"sandboxRevisionId"`
-	Policy          ManagedTAEPolicyDocument          `json:"policy"`
-	NetworkEvidence ManagedTAENetworkEvidenceDocument `json:"networkEvidence"`
+	Region               string                            `json:"region"`
+	PSM                  string                            `json:"psm"`
+	SandboxID            string                            `json:"sandboxId"`
+	RevisionID           string                            `json:"sandboxRevisionId"`
+	ControlPlaneURL      string                            `json:"controlPlaneUrl"`
+	DataPlaneSuffix      string                            `json:"dataPlaneSuffix"`
+	ByteCloudSite        string                            `json:"bytecloudSite"`
+	ByteCloudJWTEndpoint string                            `json:"bytecloudJwtEndpoint"`
+	ProxyProfile         string                            `json:"proxyProfile"`
+	Policy               ManagedTAEPolicyDocument          `json:"policy"`
+	NetworkEvidence      ManagedTAENetworkEvidenceDocument `json:"networkEvidence"`
 }
 
 // ManagedTAENetworkEvidenceDocument binds the SG network facts consumed by
@@ -130,13 +138,23 @@ func preparePolicyBootstrapDocument(document ConfigDocument) (ConfigDocument, er
 		return ConfigDocument{}, errors.New("managed executor must be enabled before preparing policy bootstrap")
 	}
 	document.Managed.Stage = ManagedExecutorStageBootstrap
-	document.Managed.Environment.RuntimeProfileSHA256 = ""
-	document.Managed.Environment.PackSetSHA256 = ""
-	document.Managed.TAE.Policy.Published = false
-	document.Managed.TAE.Policy.Approved = false
-	document.Managed.TAE.Policy.EvidenceRef = ""
-	document.Managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(document.Managed.TAE).DigestHex()
-	document.Managed.TAE.NetworkEvidence = ManagedTAENetworkEvidenceDocument{}
+	for index := range document.SandboxProfiles {
+		profile := document.SandboxProfiles[index]
+		managed := document.Managed
+		managed.Stage = ManagedExecutorStageBootstrap
+		managed.Environment = profile.Environment
+		managed.Environment.RuntimeProfileSHA256 = ""
+		managed.Environment.PackSetSHA256 = ""
+		managed.TAE = profile.TAE
+		managed.TAE.Policy.Published = false
+		managed.TAE.Policy.Approved = false
+		managed.TAE.Policy.EvidenceRef = ""
+		managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(managed.TAE).DigestHex()
+		managed.TAE.NetworkEvidence = ManagedTAENetworkEvidenceDocument{}
+		if err := refreshManagedSandboxProfileFromManaged(&document, index, managed); err != nil {
+			return ConfigDocument{}, err
+		}
+	}
 	prepared, err := ValidateConfig(document)
 	if err != nil {
 		return ConfigDocument{}, fmt.Errorf("validate prepared policy bootstrap: %w", err)
@@ -200,6 +218,9 @@ func PinManagedTerminalRevisionDocument(
 		return ConfigDocument{}, errors.New("Terminal Sandbox revision ID must be a concrete canonical lowercase TAE identity")
 	}
 	document.Managed.TAE.RevisionID = revisionID
+	if err := refreshDefaultManagedSandboxProfile(&document); err != nil {
+		return ConfigDocument{}, err
+	}
 	pinned, err := ValidateConfig(document)
 	if err != nil {
 		return ConfigDocument{}, fmt.Errorf("validate pinned Terminal revision: %w", err)
@@ -280,6 +301,9 @@ func RetargetManagedTerminalDocument(
 	document.Managed.TAE.RevisionID = revisionID
 	document.Managed.Environment.EnvironmentID = environmentID
 	document.Images.ManagedSandbox = managedSandboxImage
+	if err := refreshDefaultManagedSandboxProfile(&document); err != nil {
+		return ConfigDocument{}, err
+	}
 	retargeted, err := ValidateConfig(document)
 	if err != nil {
 		return ConfigDocument{}, fmt.Errorf("validate retargeted Terminal Sandbox: %w", err)
@@ -351,6 +375,9 @@ func RetargetDirectManagedTerminalDocument(
 	policy.WebhookURL = ""
 	policy.WebhookPath = ""
 	policy.BindingSHA256 = managedTAEPolicyBinding(retargeted.Managed.TAE).DigestHex()
+	if err := refreshDefaultManagedSandboxProfile(&retargeted); err != nil {
+		return ConfigDocument{}, err
+	}
 	validated, err := ValidateConfig(retargeted)
 	if err != nil {
 		return ConfigDocument{}, fmt.Errorf("validate direct Terminal Sandbox retarget: %w", err)
@@ -401,10 +428,34 @@ func RetargetDirectManagedTerminalFile(
 // ActivateManagedExecutorDocument is the single promotion edge out of the
 // deny-only bootstrap. Every externally issued policy/network evidence value
 // is explicit, and all dependent bindings are recomputed atomically.
+type ManagedSandboxActivationEvidence struct {
+	Region              string
+	PolicyRevision      string
+	PolicyEvidenceRef   string
+	NetworkReport       taenetworkreport.Report
+	NetworkReportSHA256 string
+	NetworkEvidenceRef  string
+}
+
 func ActivateManagedExecutorDocument(
 	document ConfigDocument,
 	policyRevision, policyEvidenceRef string,
 	networkReport taenetworkreport.Report, networkReportSHA256, networkEvidenceRef string,
+) (ConfigDocument, error) {
+	return ActivateManagedSandboxProfilesDocument(document, []ManagedSandboxActivationEvidence{{
+		Region: networkReport.Configuration.Region, PolicyRevision: policyRevision,
+		PolicyEvidenceRef: policyEvidenceRef, NetworkReport: networkReport,
+		NetworkReportSHA256: networkReportSHA256, NetworkEvidenceRef: networkEvidenceRef,
+	}})
+}
+
+// ActivateManagedSandboxProfilesDocument is the all-or-nothing promotion edge
+// for a multi-region deployment. Every installed profile must supply its own
+// canonical passing report and immutable policy/network evidence references;
+// no region can become active with evidence inherited from the default.
+func ActivateManagedSandboxProfilesDocument(
+	document ConfigDocument,
+	evidence []ManagedSandboxActivationEvidence,
 ) (ConfigDocument, error) {
 	loaded, err := ValidateConfig(document)
 	if err != nil {
@@ -414,43 +465,80 @@ func ActivateManagedExecutorDocument(
 	if !managedPolicyBootstrap(document.Managed) {
 		return ConfigDocument{}, errors.New("managed executor activation source must be the policy-bootstrap stage")
 	}
-	if err := validateText("TAE policy revision", policyRevision, 1, 128); err != nil {
-		return ConfigDocument{}, err
+	if len(evidence) != len(document.SandboxProfiles) {
+		return ConfigDocument{}, fmt.Errorf("managed executor activation requires exactly %d regional evidence entries", len(document.SandboxProfiles))
 	}
-	if containsReleaseSentinel(policyRevision) || strings.Contains(strings.ToUpper(policyRevision), "PENDING") {
-		return ConfigDocument{}, errors.New("TAE policy revision contains a template sentinel")
-	}
-	for name, value := range map[string]string{
-		"TAE policy evidence reference":  policyEvidenceRef,
-		"TAE network evidence reference": networkEvidenceRef,
-	} {
-		if err := validateText(name, value, 1, 1024); err != nil {
+	evidenceByRegion := make(map[string]ManagedSandboxActivationEvidence, len(evidence))
+	for _, entry := range evidence {
+		if !managedsandboxprofile.ValidRegion(entry.Region) {
+			return ConfigDocument{}, fmt.Errorf("managed executor activation region %q is invalid", entry.Region)
+		}
+		if _, duplicate := evidenceByRegion[entry.Region]; duplicate {
+			return ConfigDocument{}, fmt.Errorf("managed executor activation region %q is repeated", entry.Region)
+		}
+		if err := validateText("TAE policy revision", entry.PolicyRevision, 1, 128); err != nil {
 			return ConfigDocument{}, err
 		}
-		if containsReleaseSentinel(value) {
-			return ConfigDocument{}, fmt.Errorf("%s contains a template sentinel", name)
+		if containsReleaseSentinel(entry.PolicyRevision) || strings.Contains(strings.ToUpper(entry.PolicyRevision), "PENDING") {
+			return ConfigDocument{}, fmt.Errorf("TAE policy revision for %s contains a template sentinel", entry.Region)
 		}
+		for name, value := range map[string]string{
+			"TAE policy evidence reference":  entry.PolicyEvidenceRef,
+			"TAE network evidence reference": entry.NetworkEvidenceRef,
+		} {
+			if err := validateText(name, value, 1, 1024); err != nil {
+				return ConfigDocument{}, err
+			}
+			if containsReleaseSentinel(value) {
+				return ConfigDocument{}, fmt.Errorf("%s for %s contains a template sentinel", name, entry.Region)
+			}
+		}
+		if !nonzeroDigest(entry.NetworkReportSHA256) || repeatedDigest(entry.NetworkReportSHA256) {
+			return ConfigDocument{}, fmt.Errorf("computed TAE network report digest for %s is invalid", entry.Region)
+		}
+		evidenceByRegion[entry.Region] = entry
 	}
-	if err := validateTAENetworkReportForActivation(document, policyRevision, networkReport); err != nil {
-		return ConfigDocument{}, fmt.Errorf("validate TAE network report: %w", err)
-	}
-	if !nonzeroDigest(networkReportSHA256) || repeatedDigest(networkReportSHA256) {
-		return ConfigDocument{}, errors.New("computed TAE network report digest is invalid")
+	for _, profile := range document.SandboxProfiles {
+		entry, found := evidenceByRegion[profile.Region]
+		if !found {
+			return ConfigDocument{}, fmt.Errorf("managed executor activation is missing evidence for %s", profile.Region)
+		}
+		if err := validateTAENetworkReportForProfileActivation(document, profile, entry.PolicyRevision, entry.NetworkReport); err != nil {
+			return ConfigDocument{}, fmt.Errorf("validate TAE network report for %s: %w", profile.Region, err)
+		}
 	}
 
 	document.Managed.Stage = ManagedExecutorStageActive
-	document.Managed.TAE.Policy.Revision = policyRevision
-	document.Managed.TAE.Policy.Published = true
-	document.Managed.TAE.Policy.Approved = true
-	document.Managed.TAE.Policy.EvidenceRef = policyEvidenceRef
-	document.Managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(document.Managed.TAE).DigestHex()
-	document.Managed.TAE.NetworkEvidence = ManagedTAENetworkEvidenceDocument{
-		Version: managedNetworkEvidenceVersion, ReportSHA256: networkReportSHA256,
-		EvidenceRef: networkEvidenceRef,
+	for index := range document.SandboxProfiles {
+		profile := document.SandboxProfiles[index]
+		entry := evidenceByRegion[profile.Region]
+		managed := document.Managed
+		managed.Stage = ManagedExecutorStageActive
+		managed.Environment = profile.Environment
+		managed.TAE = profile.TAE
+		managed.TAE.Policy.Revision = entry.PolicyRevision
+		managed.TAE.Policy.Published = true
+		managed.TAE.Policy.Approved = true
+		managed.TAE.Policy.EvidenceRef = entry.PolicyEvidenceRef
+		managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(managed.TAE).DigestHex()
+		managed.TAE.NetworkEvidence = ManagedTAENetworkEvidenceDocument{
+			Version: managedNetworkEvidenceVersion, ReportSHA256: entry.NetworkReportSHA256,
+			EvidenceRef: entry.NetworkEvidenceRef,
+		}
+		synthetic := document
+		synthetic.Managed = managed
+		synthetic.Services.SandboxGateway = InternalServiceDocument{
+			ClusterIP: profile.Gateway.ClusterIP, Port: profile.Gateway.Port,
+		}
+		synthetic.Secrets.SandboxGateway = profile.Gateway.Secret
+		synthetic.Network.SandboxExternalEgress = append([]EgressRuleDocument{}, profile.SandboxExternalEgress...)
+		managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(synthetic)
+		managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(synthetic, managed)
+		managed.Environment.PackSetSHA256 = managedPackSetDigest(managed)
+		if err := refreshManagedSandboxProfileFromManaged(&document, index, managed); err != nil {
+			return ConfigDocument{}, err
+		}
 	}
-	document.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(document)
-	document.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(document, document.Managed)
-	document.Managed.Environment.PackSetSHA256 = managedPackSetDigest(document.Managed)
 	if err := validateManagedReleaseEvidence(document); err != nil {
 		return ConfigDocument{}, fmt.Errorf("validate managed activation evidence: %w", err)
 	}
@@ -511,7 +599,129 @@ func ActivateManagedExecutorFile(
 	return WriteReleaseConfig(activated, output)
 }
 
+type ManagedSandboxActivationManifest struct {
+	SchemaVersion int                                       `json:"schemaVersion"`
+	Profiles      []ManagedSandboxActivationProfileDocument `json:"profiles"`
+}
+
+type ManagedSandboxActivationProfileDocument struct {
+	Region             string `json:"region"`
+	PolicyRevision     string `json:"policyRevision"`
+	PolicyEvidenceRef  string `json:"policyEvidenceRef"`
+	NetworkReportPath  string `json:"networkReportPath"`
+	NetworkEvidenceRef string `json:"networkEvidenceRef"`
+}
+
+// ActivateManagedSandboxProfilesFile promotes every installed profile from a
+// single strict manifest. Report paths remain workstation-local operational
+// inputs; only their canonical digests and immutable references enter the
+// resulting production configuration.
+func ActivateManagedSandboxProfilesFile(input, output, manifestPath string) error {
+	raw, err := readProductionConfigFile(input)
+	if err != nil {
+		return err
+	}
+	document, err := decodeConfigDocument(raw)
+	if err != nil {
+		return err
+	}
+	manifestRaw, err := readProductionConfigFile(manifestPath)
+	if err != nil {
+		return fmt.Errorf("read managed sandbox activation manifest: %w", err)
+	}
+	manifest, err := parseManagedSandboxActivationManifest(manifestRaw)
+	if err != nil {
+		return err
+	}
+	evidence := make([]ManagedSandboxActivationEvidence, 0, len(manifest.Profiles))
+	for _, profile := range manifest.Profiles {
+		report, reportRaw, loadErr := taenetworkreport.Load(profile.NetworkReportPath)
+		if loadErr != nil {
+			return fmt.Errorf("load TAE network report for %s: %w", profile.Region, loadErr)
+		}
+		evidence = append(evidence, ManagedSandboxActivationEvidence{
+			Region: profile.Region, PolicyRevision: profile.PolicyRevision,
+			PolicyEvidenceRef: profile.PolicyEvidenceRef, NetworkReport: report,
+			NetworkReportSHA256: taenetworkreport.SHA256(reportRaw), NetworkEvidenceRef: profile.NetworkEvidenceRef,
+		})
+	}
+	activated, err := ActivateManagedSandboxProfilesDocument(document, evidence)
+	if err != nil {
+		return err
+	}
+	encoded, err := json.MarshalIndent(activated, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode activated managed sandbox profiles: %w", err)
+	}
+	encoded = append(encoded, '\n')
+	if _, err := ParseConfig(encoded); err != nil {
+		return fmt.Errorf("verify activated managed sandbox profiles: %w", err)
+	}
+	return WriteReleaseConfig(encoded, output)
+}
+
+func parseManagedSandboxActivationManifest(raw []byte) (ManagedSandboxActivationManifest, error) {
+	if len(raw) == 0 || len(raw) > int(maximumConfigBytes) {
+		return ManagedSandboxActivationManifest{}, errors.New("managed sandbox activation manifest has an invalid size")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var document ManagedSandboxActivationManifest
+	if err := decoder.Decode(&document); err != nil {
+		return ManagedSandboxActivationManifest{}, fmt.Errorf("decode managed sandbox activation manifest: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return ManagedSandboxActivationManifest{}, errors.New("managed sandbox activation manifest must contain exactly one JSON value")
+	}
+	if document.SchemaVersion != 1 {
+		return ManagedSandboxActivationManifest{}, errors.New("managed sandbox activation manifest schemaVersion must be 1")
+	}
+	if len(document.Profiles) < 1 || len(document.Profiles) > len(managedsandboxprofile.Regions()) {
+		return ManagedSandboxActivationManifest{}, errors.New("managed sandbox activation manifest must contain between one and four profiles")
+	}
+	regions := make(map[string]struct{}, len(document.Profiles))
+	for index, profile := range document.Profiles {
+		if !managedsandboxprofile.ValidRegion(profile.Region) {
+			return ManagedSandboxActivationManifest{}, fmt.Errorf("managed sandbox activation manifest profiles[%d].region is invalid", index)
+		}
+		if _, duplicate := regions[profile.Region]; duplicate {
+			return ManagedSandboxActivationManifest{}, fmt.Errorf("managed sandbox activation manifest region %q is repeated", profile.Region)
+		}
+		regions[profile.Region] = struct{}{}
+		if !versionPattern.MatchString(profile.PolicyRevision) || containsReleaseSentinel(profile.PolicyRevision) || strings.Contains(strings.ToUpper(profile.PolicyRevision), "PENDING") {
+			return ManagedSandboxActivationManifest{}, fmt.Errorf("managed sandbox activation manifest profiles[%d].policyRevision is invalid", index)
+		}
+		for name, value := range map[string]string{
+			"policyEvidenceRef":  profile.PolicyEvidenceRef,
+			"networkEvidenceRef": profile.NetworkEvidenceRef,
+		} {
+			if err := validateText("managed sandbox activation manifest "+name, value, 1, 1024); err != nil || containsReleaseSentinel(value) {
+				return ManagedSandboxActivationManifest{}, fmt.Errorf("managed sandbox activation manifest profiles[%d].%s is invalid", index, name)
+			}
+		}
+		if profile.NetworkReportPath == "" || !path.IsAbs(profile.NetworkReportPath) || path.Clean(profile.NetworkReportPath) != profile.NetworkReportPath {
+			return ManagedSandboxActivationManifest{}, fmt.Errorf("managed sandbox activation manifest profiles[%d].networkReportPath must be absolute and clean", index)
+		}
+	}
+	return document, nil
+}
+
 func validateTAENetworkReportForActivation(document ConfigDocument, policyRevision string, report taenetworkreport.Report) error {
+	for _, profile := range document.SandboxProfiles {
+		if profile.Region == document.SandboxRegions.DefaultRegion {
+			return validateTAENetworkReportForProfileActivation(document, profile, policyRevision, report)
+		}
+	}
+	return errors.New("default managed sandbox profile is unavailable")
+}
+
+func validateTAENetworkReportForProfileActivation(
+	document ConfigDocument,
+	profile ManagedSandboxProfileDocument,
+	policyRevision string,
+	report taenetworkreport.Report,
+) error {
 	if err := taenetworkreport.Validate(report); err != nil {
 		return err
 	}
@@ -523,21 +733,28 @@ func validateTAENetworkReportForActivation(document ConfigDocument, policyRevisi
 		return err
 	}
 	configuration := report.Configuration
+	proxyURL := ""
+	for _, proxy := range document.ProxyProfiles {
+		if proxy.Name == profile.TAE.ProxyProfile {
+			proxyURL = proxy.URL
+			break
+		}
+	}
 	for name, values := range map[string][2]string{
 		"source.namespace":       {report.Source.Namespace, document.Namespace},
 		"source.serviceAccount":  {report.Source.ServiceAccount, taeNetworkProbeComponent},
 		"deploymentConfigSha256": {configuration.DeploymentConfigSHA256, canonicalDigest(document)},
-		"region":                 {configuration.Region, ProductionRegion},
+		"region":                 {configuration.Region, profile.TAE.Region},
 		"psm":                    {configuration.PSM, ProductionTAEPSM},
 		"policyRevision":         {configuration.PolicyRevision, policyRevision},
-		"bytecloudSite":          {configuration.ByteCloudSite, "i18n-tt"},
-		"jwtEndpoint":            {configuration.JWTEndpoint, ProductionByteCloudJWTEndpoint},
-		"proxyUrl":               {configuration.ProxyURL, ProductionTAEProxyURL},
-		"controlPlaneHost":       {configuration.ControlPlaneHost, ProductionTAEControlPlaneHost},
-		"dataPlaneDomainSuffix":  {configuration.DataPlaneDomainSuffix, ProductionTAEDataPlaneSuffix},
+		"bytecloudSite":          {configuration.ByteCloudSite, profile.TAE.ByteCloudSite},
+		"jwtEndpoint":            {configuration.JWTEndpoint, profile.TAE.ByteCloudJWTEndpoint},
+		"proxyUrl":               {configuration.ProxyURL, proxyURL},
+		"controlPlaneHost":       {configuration.ControlPlaneHost, strings.TrimPrefix(profile.TAE.ControlPlaneURL, "https://")},
+		"dataPlaneDomainSuffix":  {configuration.DataPlaneDomainSuffix, profile.TAE.DataPlaneSuffix},
 		"sandboxImage":           {configuration.SandboxImage, taeSandboxImage},
-		"sandboxId":              {configuration.SandboxID, document.Managed.TAE.SandboxID},
-		"sandboxRevisionId":      {configuration.SandboxRevisionID, document.Managed.TAE.RevisionID},
+		"sandboxId":              {configuration.SandboxID, profile.TAE.SandboxID},
+		"sandboxRevisionId":      {configuration.SandboxRevisionID, profile.TAE.RevisionID},
 		"larkCliVersion":         {configuration.LarkCLIVersion, productionimage.ManagedLarkCLIVersion},
 		"larkCliSha256":          {configuration.LarkCLISHA256, document.Managed.Lark.CLISHA256},
 		"larkSkillSha256":        {configuration.LarkSkillSHA256, document.Managed.Lark.SkillSHA256},
@@ -688,11 +905,18 @@ func validateManagedExecutor(managed ManagedExecutorDocument, document ConfigDoc
 		return LoadedConfig{}, errors.New("managedExecutor.workspaceAllowlist must explicitly opt in the bootstrapped production workspace")
 	}
 	managed.WorkspaceAllowlist = allowlist
-	if managed.TAE.Region != ProductionRegion {
-		return LoadedConfig{}, fmt.Errorf("managedExecutor.tae.region must be exactly %s", ProductionRegion)
+	if !managedsandboxprofile.ValidRegion(managed.TAE.Region) {
+		return LoadedConfig{}, errors.New("managedExecutor.tae.region must be cn, boe, i18n-bd, or i18n-tt")
 	}
 	if managed.TAE.PSM != ProductionTAEPSM {
 		return LoadedConfig{}, fmt.Errorf("managedExecutor.tae.psm must be exactly %s", ProductionTAEPSM)
+	}
+	proxies, err := validateManagedSandboxProxyProfiles(document.ProxyProfiles)
+	if err != nil {
+		return LoadedConfig{}, err
+	}
+	if _, err := validateManagedSandboxTAEAuthority("managedExecutor.tae", managed.TAE, proxies); err != nil {
+		return LoadedConfig{}, err
 	}
 	if !dnsLabelPattern.MatchString(managed.TAE.SandboxID) {
 		return LoadedConfig{}, errors.New("managedExecutor.tae.sandboxId must be a canonical lowercase TAE identity")
@@ -861,9 +1085,9 @@ func validateManagedExecutor(managed ManagedExecutorDocument, document ConfigDoc
 	}
 	var policyError error
 	if bootstrap {
-		policyError = policy.ValidateDraft(ProductionRegion, managed.TAE.PSM, larkegresspolicy.SHA256Hex())
+		policyError = policy.ValidateDraft(managed.TAE.Region, managed.TAE.PSM, larkegresspolicy.SHA256Hex())
 	} else {
-		policyError = policy.Validate(ProductionRegion, managed.TAE.PSM, larkegresspolicy.SHA256Hex())
+		policyError = policy.Validate(managed.TAE.Region, managed.TAE.PSM, larkegresspolicy.SHA256Hex())
 	}
 	if policyError != nil {
 		return LoadedConfig{}, fmt.Errorf("managedExecutor.tae.policy: %w", policyError)
@@ -1137,13 +1361,22 @@ func managedOwnerPolicyDigest(managed ManagedExecutorDocument) string {
 	return canonicalDigest(lock)
 }
 
-// managedTAENetworkEvidenceDigest binds the exact, normalized SG network
-// facts relied upon by the provider and, only for a webhook profile, its Policy Webhook. Config validation
+// managedTAENetworkEvidenceDigest binds the exact, normalized per-region
+// network facts relied upon by the provider and, only for a webhook profile, its Policy Webhook. Config validation
 // runs after NetworkDocument normalization so semantically identical rule
 // ordering produces one canonical digest.
 func managedTAENetworkEvidenceDigest(document ConfigDocument) string {
 	managed := document.Managed
 	evidence := managed.TAE.NetworkEvidence
+	var proxy ManagedSandboxProxyProfileDocument
+	if managed.TAE.ProxyProfile != "" {
+		for _, candidate := range document.ProxyProfiles {
+			if candidate.Name == managed.TAE.ProxyProfile {
+				proxy = candidate
+				break
+			}
+		}
+	}
 	lock := struct {
 		Version                          int                  `json:"version"`
 		Region                           string               `json:"region"`
@@ -1164,10 +1397,14 @@ func managedTAENetworkEvidenceDigest(document ConfigDocument) string {
 		WebhookPSM                       string               `json:"webhookPsm"`
 		WebhookURL                       string               `json:"webhookUrl"`
 		WebhookPath                      string               `json:"webhookPath"`
+		TAEControlPlaneURL               string               `json:"taeControlPlaneUrl"`
+		TAEDataPlaneSuffix               string               `json:"taeDataPlaneSuffix"`
+		ByteCloudSite                    string               `json:"bytecloudSite"`
 		ByteCloudJWTEndpoint             string               `json:"bytecloudJwtEndpoint"`
+		TAEProxyProfile                  string               `json:"taeProxyProfile"`
 		TAEProxyURL                      string               `json:"taeProxyUrl"`
 		TAEProxyNamespace                string               `json:"taeProxyNamespace"`
-		TAEProxyPodApp                   string               `json:"taeProxyPodApp"`
+		TAEProxyPodSelector              map[string]string    `json:"taeProxyPodSelector"`
 		TAEProxyPort                     uint16               `json:"taeProxyPort"`
 		SandboxExternalEgress            []EgressRuleDocument `json:"sandboxExternalEgress"`
 		EgressAuthorizerExternalEgress   []EgressRuleDocument `json:"egressAuthorizerExternalEgress"`
@@ -1186,11 +1423,15 @@ func managedTAENetworkEvidenceDigest(document ConfigDocument) string {
 		PolicyRevision:                   managed.TAE.Policy.Revision, PolicyBindingSHA256: managed.TAE.Policy.BindingSHA256,
 		WebhookMode: managed.TAE.Policy.WebhookMode, WebhookPSM: managed.TAE.Policy.WebhookPSM,
 		WebhookURL: managed.TAE.Policy.WebhookURL, WebhookPath: managed.TAE.Policy.WebhookPath,
-		ByteCloudJWTEndpoint:           ProductionByteCloudJWTEndpoint,
-		TAEProxyURL:                    ProductionTAEProxyURL,
-		TAEProxyNamespace:              ProductionTAEProxyNamespace,
-		TAEProxyPodApp:                 ProductionTAEProxyPodApp,
-		TAEProxyPort:                   ProductionTAEProxyPort,
+		TAEControlPlaneURL:             managed.TAE.ControlPlaneURL,
+		TAEDataPlaneSuffix:             managed.TAE.DataPlaneSuffix,
+		ByteCloudSite:                  managed.TAE.ByteCloudSite,
+		ByteCloudJWTEndpoint:           managed.TAE.ByteCloudJWTEndpoint,
+		TAEProxyProfile:                managed.TAE.ProxyProfile,
+		TAEProxyURL:                    proxy.URL,
+		TAEProxyNamespace:              proxy.Namespace,
+		TAEProxyPodSelector:            proxy.PodSelector,
+		TAEProxyPort:                   proxy.Port,
 		SandboxExternalEgress:          document.Network.SandboxExternalEgress,
 		EgressAuthorizerExternalEgress: document.Network.EgressAuthorizerExternalEgress,
 		EgressAuthorizerIngress:        document.Network.EgressAuthorizerIngress,

@@ -14,11 +14,13 @@ import (
 
 	"code.byted.org/inf/bytedai-go/region"
 	"code.byted.org/inf/bytedai-go/sandbox"
+	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 )
 
 const defaultControlRequestTimeout = 45 * time.Second
 
 type SDKControlPlaneConfig struct {
+	Region          string
 	PSM             string
 	SandboxID       string
 	RevisionID      string
@@ -47,6 +49,16 @@ type SandboxDescriptor struct {
 // NewSGSDKControlPlane pins the official SDK to I18N production. Region
 // inference is intentionally not supported by the production adapter.
 func NewSGSDKControlPlane(ctx context.Context, config SDKControlPlaneConfig) (*SDKControlPlane, error) {
+	if config.Region != "" && config.Region != managedsandboxprofile.RegionI18NTT {
+		return nil, errors.New("legacy SG TAE SDK constructor only supports i18n-tt")
+	}
+	config.Region = managedsandboxprofile.RegionI18NTT
+	return NewSDKControlPlane(ctx, config)
+}
+
+// NewSDKControlPlane selects the official SDK region from explicit immutable
+// deployment authority. It never invokes SDK region inference.
+func NewSDKControlPlane(ctx context.Context, config SDKControlPlaneConfig) (*SDKControlPlane, error) {
 	if ctx == nil || config.HTTPClient == nil || config.HTTPClient.Transport == nil || config.Headers == nil {
 		return nil, errors.New("TAE SDK context, strict HTTP client, and identity header source are required")
 	}
@@ -65,9 +77,9 @@ func NewSGSDKControlPlane(ctx context.Context, config SDKControlPlaneConfig) (*S
 	if config.RequestTimeout < time.Second || config.RequestTimeout > time.Minute {
 		return nil, errors.New("TAE SDK request timeout must be between one second and one minute")
 	}
-	controlPlaneOrigin, err := region.AIPaaSGatewayRegionI18nProd.GetSandboxdControlPlaneDomain()
-	if err != nil || controlPlaneOrigin != "https://"+SGTAEControlPlaneHost {
-		return nil, fmt.Errorf("TAE SDK I18N production control plane drifted from https://%s", SGTAEControlPlaneHost)
+	sdkRegion, controlPlaneOrigin, _, err := ResolveTAERegionAuthority(config.Region)
+	if err != nil {
+		return nil, err
 	}
 	if config.ControlPlaneURL != "" {
 		endpoint, err := url.Parse(config.ControlPlaneURL)
@@ -87,7 +99,7 @@ func NewSGSDKControlPlane(ctx context.Context, config SDKControlPlaneConfig) (*S
 		return nil, fmt.Errorf("scope TAE SDK terminal sandbox transport: %w", err)
 	}
 	client, err := sandbox.NewSandboxClientWithOptions(
-		ctx, config.PSM, config.SandboxID, region.AIPaaSGatewayRegionI18nProd,
+		ctx, config.PSM, config.SandboxID, sdkRegion,
 		&sandbox.SandboxClientOptions{LegacyHTTPClient: identityClient, ControlPlaneURL: config.ControlPlaneURL}, false,
 	)
 	if err != nil {
@@ -388,14 +400,36 @@ func safeProviderRequestID(value string) string {
 }
 
 func SGDataplaneDomainSuffix() (string, error) {
-	suffix, err := region.AIPaaSGatewayRegionI18nProd.GetSandboxdDomainSuffix()
-	if err != nil {
-		return "", err
+	_, _, suffix, err := ResolveTAERegionAuthority(managedsandboxprofile.RegionI18NTT)
+	return suffix, err
+}
+
+// ResolveTAERegionAuthority returns the reviewed official SDK enum and its
+// exact control/data-plane authorities for a public managed sandbox region.
+func ResolveTAERegionAuthority(logicalRegion string) (region.AIPaaSGatewayRegion, string, string, error) {
+	var sdkRegion region.AIPaaSGatewayRegion
+	wantSuffix := ""
+	switch logicalRegion {
+	case managedsandboxprofile.RegionCN:
+		sdkRegion, wantSuffix = region.AIPaaSGatewayRegionCn, "cn.ai-sandbox.bytedance.net"
+	case managedsandboxprofile.RegionBOE:
+		sdkRegion, wantSuffix = region.AIPaaSGatewayRegionBoe, "cn-north.ai-sandbox-boe.byted.org"
+	case managedsandboxprofile.RegionI18NBD:
+		sdkRegion, wantSuffix = region.AIPaaSGatewayRegionI18nBD, "i18nbd.ai-sandbox.byteintl.net"
+	case managedsandboxprofile.RegionI18NTT:
+		sdkRegion, wantSuffix = region.AIPaaSGatewayRegionI18nProd, SGTAEDomainSuffix
+	default:
+		return 0, "", "", errors.New("TAE SDK logical region is unsupported")
 	}
-	if suffix != SGTAEDomainSuffix {
-		return "", fmt.Errorf("TAE SDK I18N production domain suffix drifted from %s", SGTAEDomainSuffix)
+	suffix, err := sdkRegion.GetSandboxdDomainSuffix()
+	if err != nil || suffix != wantSuffix {
+		return 0, "", "", fmt.Errorf("TAE SDK region %q data-plane authority drifted from %s", logicalRegion, wantSuffix)
 	}
-	return suffix, nil
+	control, err := sdkRegion.GetSandboxdControlPlaneDomain()
+	if err != nil || control != "https://controlplane."+wantSuffix {
+		return 0, "", "", fmt.Errorf("TAE SDK region %q control-plane authority drifted", logicalRegion)
+	}
+	return sdkRegion, control, suffix, nil
 }
 
 var _ ControlPlane = (*SDKControlPlane)(nil)

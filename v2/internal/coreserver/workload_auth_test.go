@@ -28,3 +28,37 @@ func TestSPIFFEWorkloadAuthorizerRequiresVerifiedExactIdentity(t *testing.T) {
 		t.Fatal("certificate carrying multiple workload identities was authorized")
 	}
 }
+
+func TestSPIFFEWorkloadAuthorizerAcceptsOneOfSeveralExactIdentities(t *testing.T) {
+	authorizer, err := NewSPIFFEWorkloadAuthorizer(
+		"spiffe://agentserver.local/ns/agentserver/sa/sandbox-gateway-cn",
+		"spiffe://agentserver.local/ns/agentserver/sa/sandbox-gateway-i18n-bd",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := requestWithVerifiedURI(t, "spiffe://agentserver.local/ns/agentserver/sa/sandbox-gateway-i18n-bd")
+	if err := authorizer.AuthorizeWorkload(request, "managed-sandboxes.ensure"); err != nil {
+		t.Fatalf("AuthorizeWorkload() error = %v", err)
+	}
+	request = requestWithVerifiedURI(t, "spiffe://agentserver.local/ns/agentserver/sa/sandbox-gateway-boe")
+	if err := authorizer.AuthorizeWorkload(request, "managed-sandboxes.ensure"); err == nil {
+		t.Fatal("AuthorizeWorkload() accepted an identity outside the exact set")
+	}
+}
+
+func TestSPIFFEWorkloadAuthorizerRejectsDuplicateIdentity(t *testing.T) {
+	identity := "spiffe://agentserver.local/ns/agentserver/sa/sandbox-gateway"
+	if _, err := NewSPIFFEWorkloadAuthorizer(identity, identity); err == nil {
+		t.Fatal("NewSPIFFEWorkloadAuthorizer() accepted a duplicate identity")
+	}
+}
+
+func requestWithVerifiedURI(t *testing.T, raw string) *http.Request {
+	t.Helper()
+	identity, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &http.Request{TLS: &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{{URIs: []*url.URL{identity}}}}}}
+}

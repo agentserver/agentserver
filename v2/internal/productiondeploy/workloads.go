@@ -1,13 +1,16 @@
 package productiondeploy
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/corecredentials"
+	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/taeimage"
+	"github.com/agentserver/agentserver/v2/internal/taepolicy"
 )
 
 type deploymentInput struct {
@@ -79,14 +82,16 @@ func renderRuntime(context renderContext) ([]kubeObject, error) {
 		podDisruptionBudget(config, hydraComponent, config.Document.Replicas.Hydra),
 	}
 	if managedExecutionActive(config.Document.Managed) {
-		sandbox, err := renderSandboxDeployment(context)
-		if err != nil {
-			return nil, err
+		for _, profile := range config.ManagedSandboxProfiles {
+			sandbox, err := renderSandboxDeployment(context, profile)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items,
+				sandbox,
+				podDisruptionBudget(config, profile.Document.Gateway.Component, config.Document.Replicas.SandboxGateway),
+			)
 		}
-		items = append(items,
-			sandbox,
-			podDisruptionBudget(config, sandboxComponent, config.Document.Replicas.SandboxGateway),
-		)
 		if managedEgressAuthorizerEnabled(config.Document.Managed) {
 			egress, err := renderEgressAuthorizerDeployment(context)
 			if err != nil {
@@ -241,6 +246,18 @@ func renderCoreDeployment(context renderContext) (kubeObject, error) {
 	if err != nil {
 		return nil, err
 	}
+	managedSandboxCatalog := ""
+	managedSandboxGatewayIdentities := ""
+	if managedExecutionActive(document.Managed) {
+		managedSandboxCatalog, err = managedSandboxCatalogJSON(config)
+		if err != nil {
+			return nil, err
+		}
+		managedSandboxGatewayIdentities, err = managedSandboxGatewayIdentitiesJSON(config)
+		if err != nil {
+			return nil, err
+		}
+	}
 	environment := []any{
 		secretEnvironment("AGENTSERVER_V2_DATABASE_URL", document.Secrets.Core, "database-url"),
 		valueEnvironment("AGENTSERVER_V2_CORE_LISTEN_ADDR", listenAddress(document.Services.Core.Port)),
@@ -289,9 +306,10 @@ func renderCoreDeployment(context renderContext) (kubeObject, error) {
 	}
 	if managedExecutionActive(document.Managed) {
 		environment = append(environment,
-			valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_SPIFFE_ID", spiffeIdentity(config, sandboxComponent)),
+			valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_SPIFFE_IDS", managedSandboxGatewayIdentities),
 			valueEnvironment("AGENTSERVER_V2_MANAGED_TAE_PSM", document.Managed.TAE.PSM),
 			valueEnvironment("AGENTSERVER_V2_TAE_POLICY_WEBHOOK_REQUIRED", strconv.FormatBool(document.Managed.TAE.Policy.PublicWebhookRequired)),
+			valueEnvironment("AGENTSERVER_V2_MANAGED_SANDBOX_PROFILE_CATALOG", managedSandboxCatalog),
 		)
 		if managedEgressAuthorizerEnabled(document.Managed) {
 			environment = append(environment,
@@ -312,6 +330,109 @@ func renderCoreDeployment(context renderContext) (kubeObject, error) {
 		hostAliases: map[string]string{HydraInternalHost: document.Services.Hydra.ClusterIP},
 		strategy:    "RollingUpdate", configHash: context.documentHash, termination: 20,
 	}), nil
+}
+
+func managedSandboxCatalogJSON(config LoadedConfig) (string, error) {
+	bindings := make([]managedsandboxprofile.Binding, 0, len(config.ManagedSandboxProfiles))
+	for _, loaded := range config.ManagedSandboxProfiles {
+		profile := loaded.Document
+		binding := managedsandboxprofile.Binding{
+			Region: profile.Region, ProfileID: profile.ProfileID,
+			BindingSHA256: profile.BindingSHA256, EnvironmentID: profile.Environment.EnvironmentID,
+		}
+		if err := binding.Validate(); err != nil {
+			return "", fmt.Errorf("project managed sandbox profile %q: %w", profile.ProfileID, err)
+		}
+		bindings = append(bindings, binding)
+	}
+	raw, err := json.Marshal(managedsandboxprofile.CatalogDocument{
+		DefaultRegion: config.Document.SandboxRegions.DefaultRegion,
+		Bindings:      bindings,
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode managed sandbox profile catalog: %w", err)
+	}
+	return string(raw), nil
+}
+
+func managedSandboxGatewayIdentitiesJSON(config LoadedConfig) (string, error) {
+	identities := make([]string, 0, len(config.ManagedSandboxProfiles))
+	for _, profile := range config.ManagedSandboxProfiles {
+		identities = append(identities, spiffeIdentity(config, profile.Document.Gateway.Component))
+	}
+	raw, err := json.Marshal(identities)
+	if err != nil {
+		return "", fmt.Errorf("encode managed sandbox gateway SPIFFE identities: %w", err)
+	}
+	return string(raw), nil
+}
+
+func managedSandboxLaunchProfilesJSON(config LoadedConfig) (string, error) {
+	type launchProfile struct {
+		Region               string `json:"region"`
+		ProfileID            string `json:"profileId"`
+		ProfileBindingSHA256 string `json:"bindingSha256"`
+		EnvironmentID        string `json:"environmentId"`
+		RuntimeProfileSHA256 string `json:"runtimeProfileSha256"`
+		PackSetSHA256        string `json:"packSetSha256"`
+		SkillSHA256          string `json:"skillSha256"`
+		SandboxTTL           string `json:"sandboxTtl"`
+		ActivityTTL          string `json:"activityTtl"`
+	}
+	profiles := make([]launchProfile, 0, len(config.ManagedSandboxProfiles))
+	for _, loaded := range config.ManagedSandboxProfiles {
+		profile := loaded.Document
+		profiles = append(profiles, launchProfile{
+			Region: profile.Region, ProfileID: profile.ProfileID, ProfileBindingSHA256: profile.BindingSHA256,
+			EnvironmentID:        profile.Environment.EnvironmentID,
+			RuntimeProfileSHA256: profile.Environment.RuntimeProfileSHA256,
+			PackSetSHA256:        profile.Environment.PackSetSHA256,
+			SkillSHA256:          config.Document.Managed.BaseInstructionsSHA256,
+			SandboxTTL:           profile.Environment.SandboxTTL, ActivityTTL: profile.Environment.ActivityTTL,
+		})
+	}
+	raw, err := json.Marshal(struct {
+		Profiles []launchProfile `json:"profiles"`
+	}{Profiles: profiles})
+	if err != nil {
+		return "", fmt.Errorf("encode managed sandbox launch profile catalog: %w", err)
+	}
+	return string(raw), nil
+}
+
+func managedSandboxGatewayProfilesJSON(config LoadedConfig) (string, error) {
+	type gatewayProfile struct {
+		Region                   string `json:"region"`
+		ProfileID                string `json:"profileId"`
+		BindingSHA256            string `json:"bindingSha256"`
+		EnvironmentID            string `json:"environmentId"`
+		SandboxGatewayURL        string `json:"sandboxGatewayUrl"`
+		SandboxGatewayServerName string `json:"sandboxGatewayServerName"`
+		RuntimeProfileSHA256     string `json:"runtimeProfileSha256"`
+		PackSetSHA256            string `json:"packSetSha256"`
+		SandboxTTL               string `json:"sandboxTtl"`
+		ActivityTTL              string `json:"activityTtl"`
+	}
+	profiles := make([]gatewayProfile, 0, len(config.ManagedSandboxProfiles))
+	for _, loaded := range config.ManagedSandboxProfiles {
+		profile := loaded.Document
+		profiles = append(profiles, gatewayProfile{
+			Region: profile.Region, ProfileID: profile.ProfileID, BindingSHA256: profile.BindingSHA256,
+			EnvironmentID:            profile.Environment.EnvironmentID,
+			SandboxGatewayURL:        managedSandboxGatewayOrigin(profile.Gateway),
+			SandboxGatewayServerName: profile.Gateway.ServerName,
+			RuntimeProfileSHA256:     profile.Environment.RuntimeProfileSHA256,
+			PackSetSHA256:            profile.Environment.PackSetSHA256,
+			SandboxTTL:               profile.Environment.SandboxTTL, ActivityTTL: profile.Environment.ActivityTTL,
+		})
+	}
+	raw, err := json.Marshal(struct {
+		Profiles []gatewayProfile `json:"profiles"`
+	}{Profiles: profiles})
+	if err != nil {
+		return "", fmt.Errorf("encode managed sandbox gateway profile catalog: %w", err)
+	}
+	return string(raw), nil
 }
 
 func renderPlatformDeployment(context renderContext) (kubeObject, error) {
@@ -412,6 +533,13 @@ func renderExecutorDeployment(context renderContext) (kubeObject, error) {
 	if err != nil {
 		return nil, err
 	}
+	managedProfiles := ""
+	if managedExecutionActive(document.Managed) {
+		managedProfiles, err = managedSandboxGatewayProfilesJSON(config)
+		if err != nil {
+			return nil, err
+		}
+	}
 	environment := []any{
 		valueEnvironment("AGENTSERVER_V2_EXECUTOR_GATEWAY_LISTEN_ADDR", listenAddress(document.Services.ExecutorGateway.InternalPort)),
 		valueEnvironment("AGENTSERVER_V2_EXECUTOR_GATEWAY_PUBLIC_LISTEN_ADDR", listenAddress(document.Services.ExecutorGateway.PublicPort)),
@@ -434,9 +562,8 @@ func renderExecutorDeployment(context renderContext) (kubeObject, error) {
 	if managedExecutionActive(document.Managed) {
 		issuer := spiffeIdentity(config, executorComponent)
 		environment = append(environment,
-			valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_URL", internalOrigin(SandboxInternalHost, document.Services.SandboxGateway.Port)),
 			valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_CA_FILE", serviceMaterialPath("ca.crt")),
-			valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_SERVER_NAME", SandboxInternalHost),
+			valueEnvironment("AGENTSERVER_V2_MANAGED_SANDBOX_GATEWAY_PROFILES", managedProfiles),
 			valueEnvironment("AGENTSERVER_V2_SANDBOX_BACKEND_CAPABILITY_ISSUER", issuer),
 			valueEnvironment("AGENTSERVER_V2_SANDBOX_BACKEND_CAPABILITY_KEY_ID", ProductionSandboxBackendKeyID),
 			valueEnvironment("AGENTSERVER_V2_SANDBOX_BACKEND_CAPABILITY_SIGNING_KEY_FILE", serviceMaterialPath("sandbox-backend-capability.key")),
@@ -445,11 +572,6 @@ func renderExecutorDeployment(context renderContext) (kubeObject, error) {
 			valueEnvironment("AGENTSERVER_V2_SANDBOX_FENCER_CAPABILITY_SIGNING_KEY_FILE", serviceMaterialPath("sandbox-fencer-capability.key")),
 			valueEnvironment("AGENTSERVER_V2_MANAGED_TAE_PSM", document.Managed.TAE.PSM),
 			valueEnvironment("AGENTSERVER_V2_TAE_POLICY_WEBHOOK_REQUIRED", strconv.FormatBool(document.Managed.TAE.Policy.PublicWebhookRequired)),
-			valueEnvironment("AGENTSERVER_V2_MANAGED_ENVIRONMENT_ID", document.Managed.Environment.EnvironmentID),
-			valueEnvironment("AGENTSERVER_V2_MANAGED_RUNTIME_PROFILE_SHA256", document.Managed.Environment.RuntimeProfileSHA256),
-			valueEnvironment("AGENTSERVER_V2_MANAGED_PACK_SET_SHA256", document.Managed.Environment.PackSetSHA256),
-			valueEnvironment("AGENTSERVER_V2_MANAGED_SANDBOX_TTL", document.Managed.Environment.SandboxTTL),
-			valueEnvironment("AGENTSERVER_V2_MANAGED_ACTIVITY_TTL", document.Managed.Environment.ActivityTTL),
 		)
 		if managedEgressAuthorizerEnabled(document.Managed) {
 			environment = append(environment,
@@ -458,7 +580,9 @@ func renderExecutorDeployment(context renderContext) (kubeObject, error) {
 				valueEnvironment("AGENTSERVER_V2_EGRESS_PLACEHOLDER_SIGNING_KEY_FILE", serviceMaterialPath("egress-placeholder.key")),
 			)
 		}
-		hosts[SandboxInternalHost] = document.Services.SandboxGateway.ClusterIP
+		for _, loaded := range config.ManagedSandboxProfiles {
+			hosts[loaded.Document.Gateway.ServerName] = loaded.Document.Gateway.ClusterIP
+		}
 	}
 	return deployment(deploymentInput{
 		namespace: document.Namespace, platform: document.Platform, component: executorComponent, replicas: 1,
@@ -496,6 +620,13 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 	workerMaterialMounts, err := secretMaterialMounts("worker-material", "/var/run/agentserver/worker", materialProfileHarnessWorker)
 	if err != nil {
 		return nil, err
+	}
+	managedProfiles := ""
+	if managedExecutionActive(document.Managed) {
+		managedProfiles, err = managedSandboxLaunchProfilesJSON(config)
+		if err != nil {
+			return nil, err
+		}
 	}
 	environment := []any{
 		valueEnvironment("AGENTSERVER_V2_HARNESS_POOL_LISTEN_ADDR", "127.0.0.1:"+strconv.Itoa(HarnessControlPort)),
@@ -535,15 +666,8 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 	}
 	if managedExecutionActive(document.Managed) {
 		environment = append(environment,
-			valueEnvironment("AGENTSERVER_V2_MANAGED_ENVIRONMENT_ID", document.Managed.Environment.EnvironmentID),
-			valueEnvironment("AGENTSERVER_V2_MANAGED_RUNTIME_PROFILE_SHA256", document.Managed.Environment.RuntimeProfileSHA256),
-			valueEnvironment("AGENTSERVER_V2_MANAGED_PACK_SET_SHA256", document.Managed.Environment.PackSetSHA256),
-			valueEnvironment("AGENTSERVER_V2_MANAGED_SANDBOX_TTL", document.Managed.Environment.SandboxTTL),
-			valueEnvironment("AGENTSERVER_V2_MANAGED_ACTIVITY_TTL", document.Managed.Environment.ActivityTTL),
+			valueEnvironment("AGENTSERVER_V2_MANAGED_SANDBOX_LAUNCH_PROFILES", managedProfiles),
 		)
-		if managedToolsEnabled(document.Managed) {
-			environment = append(environment, valueEnvironment("AGENTSERVER_V2_MANAGED_SKILL_SHA256", document.Managed.BaseInstructionsSHA256))
-		}
 	}
 	environment = append(environment, objectStoreEnvironment(document)...)
 	configVolume := configMapVolume("harness-config", context.harnessConfigName, map[string]string{
@@ -586,14 +710,15 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 	}), nil
 }
 
-func renderSandboxDeployment(context renderContext) (kubeObject, error) {
+func renderSandboxDeployment(context renderContext, loaded LoadedManagedSandboxProfile) (kubeObject, error) {
 	config := context.config
 	document := config.Document
+	profile := loaded.Document
 	taeSandboxImage, err := taeimage.ContentTagForRepository(ProductionTAEManagedSandboxImage, document.Images.ManagedSandbox)
 	if err != nil {
 		return nil, err
 	}
-	material, err := secretMaterialVolume("material", document.Secrets.SandboxGateway, materialProfileSandboxGateway, groupReadableSecretMode)
+	material, err := secretMaterialVolume("material", profile.Gateway.Secret, materialProfileSandboxGateway, groupReadableSecretMode)
 	if err != nil {
 		return nil, err
 	}
@@ -602,11 +727,11 @@ func renderSandboxDeployment(context renderContext) (kubeObject, error) {
 		return nil, err
 	}
 	environment := []any{
-		valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_LISTEN_ADDR", listenAddress(document.Services.SandboxGateway.Port)),
+		valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_LISTEN_ADDR", listenAddress(profile.Gateway.Port)),
 		valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_TLS_CERT_FILE", serviceMaterialPath("tls.crt")),
 		valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_TLS_KEY_FILE", serviceMaterialPath("tls.key")),
 		valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_CLIENT_CA_FILE", serviceMaterialPath("ca.crt")),
-		valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_SPIFFE_ID", spiffeIdentity(config, sandboxComponent)),
+		valueEnvironment("AGENTSERVER_V2_SANDBOX_GATEWAY_SPIFFE_ID", spiffeIdentity(config, profile.Gateway.Component)),
 		valueEnvironment("AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID", spiffeIdentity(config, executorComponent)),
 		valueEnvironment("AGENTSERVER_V2_HARNESS_POOL_SPIFFE_ID", spiffeIdentity(config, harnessComponent)),
 		valueEnvironment("AGENTSERVER_V2_CORE_URL", internalOrigin(CoreInternalHost, document.Services.Core.Port)),
@@ -616,20 +741,27 @@ func renderSandboxDeployment(context renderContext) (kubeObject, error) {
 		valueEnvironment("AGENTSERVER_V2_CORE_SERVER_NAME", CoreInternalHost),
 		valueEnvironment("AGENTSERVER_V2_SANDBOX_CAPABILITY_KEYRING_FILE", serviceMaterialPath("sandbox-capability-keyring.json")),
 		valueEnvironment("AGENTSERVER_V2_SANDBOX_PROVIDER", "tae"),
-		valueEnvironment("AGENTSERVER_V2_TAE_REGION", document.Managed.TAE.Region),
-		valueEnvironment("AGENTSERVER_V2_TAE_PSM", document.Managed.TAE.PSM),
+		valueEnvironment("AGENTSERVER_V2_TAE_REGION", profile.TAE.Region),
+		valueEnvironment("AGENTSERVER_V2_TAE_PSM", profile.TAE.PSM),
 		valueEnvironment("AGENTSERVER_V2_TAE_SANDBOX_IMAGE", taeSandboxImage),
-		valueEnvironment("AGENTSERVER_V2_TAE_SANDBOX_ID", document.Managed.TAE.SandboxID),
-		valueEnvironment("AGENTSERVER_V2_TAE_SANDBOX_REVISION_ID", document.Managed.TAE.RevisionID),
+		valueEnvironment("AGENTSERVER_V2_TAE_SANDBOX_ID", profile.TAE.SandboxID),
+		valueEnvironment("AGENTSERVER_V2_TAE_SANDBOX_REVISION_ID", profile.TAE.RevisionID),
+		valueEnvironment("AGENTSERVER_V2_TAE_CONTROL_PLANE_URL", profile.TAE.ControlPlaneURL),
+		valueEnvironment("AGENTSERVER_V2_TAE_DATA_PLANE_SUFFIX", profile.TAE.DataPlaneSuffix),
 		valueEnvironment("AGENTSERVER_V2_TAE_AUTH_MODE", "bytecloud-app-aksk-v1"),
-		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_SITE", "i18n-tt"),
-		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_JWT_ENDPOINT", ProductionByteCloudJWTEndpoint),
-		valueEnvironment("AGENTSERVER_V2_TAE_PROXY_URL", ProductionTAEProxyURL),
+		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_SITE", profile.TAE.ByteCloudSite),
+		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_JWT_ENDPOINT", profile.TAE.ByteCloudJWTEndpoint),
+		valueEnvironment("AGENTSERVER_V2_TAE_PROXY_URL", func() string {
+			if loaded.Proxy == nil {
+				return ""
+			}
+			return loaded.Proxy.URL
+		}()),
 		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_ACCESS_KEY_ID_FILE", serviceMaterialPath("bytecloud-access-key-id")),
 		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_SECRET_ACCESS_KEY_FILE", serviceMaterialPath("bytecloud-secret-access-key")),
 		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_JWT_TIMEOUT", "5s"),
-		valueEnvironment("AGENTSERVER_V2_MANAGED_IDLE_TTL", document.Managed.Environment.IdleTTL),
-		valueEnvironment("AGENTSERVER_V2_MANAGED_SANDBOX_ROOT", document.Managed.Environment.Root.Path),
+		valueEnvironment("AGENTSERVER_V2_MANAGED_IDLE_TTL", profile.Environment.IdleTTL),
+		valueEnvironment("AGENTSERVER_V2_MANAGED_SANDBOX_ROOT", profile.Environment.Root.Path),
 		valueEnvironment("AGENTSERVER_V2_MANAGED_SANDBOX_PLATFORM", document.Platform),
 		valueEnvironment("AGENTSERVER_V2_MANAGED_WORKSPACE_ALLOWLIST", strings.Join(document.Managed.WorkspaceAllowlist, ",")),
 		valueEnvironment("AGENTSERVER_V2_SANDBOX_ENSURE_TIMEOUT", "45s"),
@@ -637,10 +769,10 @@ func renderSandboxDeployment(context renderContext) (kubeObject, error) {
 		valueEnvironment("AGENTSERVER_V2_SANDBOX_RECONCILE_INTERVAL", "30s"),
 		valueEnvironment("AGENTSERVER_V2_SANDBOX_RECONCILE_LIMIT", "100"),
 	}
-	environment = append(environment, managedTAEPolicyEnvironment(document.Managed.TAE)...)
+	environment = append(environment, managedTAEPolicyEnvironment(profile.TAE)...)
 	return deployment(deploymentInput{
-		namespace: document.Namespace, platform: document.Platform, component: sandboxComponent,
-		replicas: document.Replicas.SandboxGateway, image: document.Images.Service, serviceAccount: sandboxComponent,
+		namespace: document.Namespace, platform: document.Platform, component: profile.Gateway.Component,
+		replicas: document.Replicas.SandboxGateway, image: document.Images.Service, serviceAccount: profile.Gateway.Component,
 		command: []any{"/usr/local/bin/sandbox-gateway"}, args: []any{"serve"}, environment: environment,
 		volumes:      []any{material, emptyDirVolume("scratch", "Memory", document.Resources.ScratchTmpfs)},
 		volumeMounts: append(mounts, kubeObject{"name": "scratch", "mountPath": "/tmp"}),
@@ -680,6 +812,20 @@ func managedTAEPolicyEnvironment(tae ManagedTAEDocument) []any {
 	return environment
 }
 
+func managedTAEPolicyBindingsJSON(config LoadedConfig) (string, error) {
+	bindings := make([]taepolicy.Binding, 0, len(config.ManagedSandboxProfiles))
+	for _, profile := range config.ManagedSandboxProfiles {
+		bindings = append(bindings, managedTAEPolicyBinding(profile.Document.TAE))
+	}
+	raw, err := json.Marshal(struct {
+		Bindings []taepolicy.Binding `json:"bindings"`
+	}{Bindings: bindings})
+	if err != nil {
+		return "", fmt.Errorf("encode managed TAE policy binding catalog: %w", err)
+	}
+	return string(raw), nil
+}
+
 func renderEgressAuthorizerDeployment(context renderContext) (kubeObject, error) {
 	config := context.config
 	document := config.Document
@@ -705,6 +851,10 @@ func renderEgressAuthorizerDeployment(context renderContext) (kubeObject, error)
 	args := []any{"serve", "--policy-bootstrap"}
 	hosts := map[string]string(nil)
 	if !bootstrap {
+		policyBindings, err := managedTAEPolicyBindingsJSON(config)
+		if err != nil {
+			return nil, err
+		}
 		environment = append(environment,
 			valueEnvironment("AGENTSERVER_V2_CORE_URL", internalOrigin(CoreInternalHost, document.Services.Core.Port)),
 			valueEnvironment("AGENTSERVER_V2_CORE_CA_FILE", serviceMaterialPath("ca.crt")),
@@ -714,8 +864,8 @@ func renderEgressAuthorizerDeployment(context renderContext) (kubeObject, error)
 			valueEnvironment("AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEYRING_FILE", serviceMaterialPath("egress-placeholder-keyring.json")),
 			valueEnvironment("AGENTSERVER_V2_EGRESS_ALLOWED_TAE_PSM", document.Managed.TAE.PSM),
 			valueEnvironment("AGENTSERVER_V2_EGRESS_DECISION_TIMEOUT", "350ms"),
+			valueEnvironment("AGENTSERVER_V2_TAE_POLICY_BINDINGS", policyBindings),
 		)
-		environment = append(environment, managedTAEPolicyEnvironment(document.Managed.TAE)...)
 		args = []any{"serve"}
 		hosts = map[string]string{CoreInternalHost: document.Services.Core.ClusterIP}
 	}

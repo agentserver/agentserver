@@ -31,9 +31,7 @@ func TestProductionRendererExecutorEnvironmentMatchesCommandContract(t *testing.
 		gatewayExecutionPolicyVersionEnvironment,
 		gatewayShellPolicyDecisionEnvironment,
 		gatewayReadPolicyDecisionEnvironment,
-		gatewaySandboxGatewayURLEnvironment,
 		gatewaySandboxGatewayCAEnvironment,
-		gatewaySandboxGatewayServerNameEnvironment,
 		gatewaySandboxCapabilityIssuerEnvironment,
 		gatewaySandboxCapabilityKeyIDEnvironment,
 		gatewaySandboxCapabilityKeyEnvironment,
@@ -42,11 +40,7 @@ func TestProductionRendererExecutorEnvironmentMatchesCommandContract(t *testing.
 		gatewaySandboxFencerKeyEnvironment,
 		gatewayManagedTAEPSMEnvironment,
 		gatewayTAEWebhookRequiredEnvironment,
-		gatewayManagedEnvironmentIDEnvironment,
-		gatewayManagedRuntimeDigestEnvironment,
-		gatewayManagedPackSetDigestEnvironment,
-		gatewayManagedSandboxTTLEnvironment,
-		gatewayManagedActivityTTLEnvironment,
+		gatewayManagedProfilesEnvironment,
 	}
 	slices.Sort(want)
 	if got := environment.Names(); !slices.Equal(got, want) {
@@ -74,5 +68,14 @@ func TestProductionRendererExecutorEnvironmentMatchesCommandContract(t *testing.
 		},
 	); err != nil {
 		t.Fatalf("executor-gateway rejected rendered policy: %v", err)
+	}
+	profiles, err := parseManagedSandboxGatewayProfiles(
+		[]byte(environment.Get(gatewayManagedProfilesEnvironment)), gatewayServeProduction,
+	)
+	if err != nil {
+		t.Fatalf("executor-gateway rejected rendered managed sandbox profiles: %v", err)
+	}
+	if len(profiles) != 1 {
+		t.Fatalf("executor-gateway loaded %d managed sandbox profiles, want 1", len(profiles))
 	}
 }

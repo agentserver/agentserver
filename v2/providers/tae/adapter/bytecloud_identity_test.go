@@ -112,7 +112,7 @@ func TestNewByteCloudJWTHeaderSourceValidatesApplicationIdentity(t *testing.T) {
 	}
 	for _, proxyURL := range []string{
 		"",
-		"socks5://ssh-egress-merlin-i18nbd-syd2a-83092-headless.ssh-egress.svc.cluster.local:1080",
+		"socks5://ssh-egress-merlin-i18ntt-maliva-62204-headless.ssh-egress.svc.cluster.local:1080",
 		"socks5h://ssh-egress-merlin-i18nbd-useast14a-83093.ssh-egress.svc.cluster.local:1080",
 	} {
 		_, err := NewByteCloudJWTHeaderSource(ByteCloudJWTHeaderSourceConfig{
@@ -122,6 +122,36 @@ func TestNewByteCloudJWTHeaderSourceValidatesApplicationIdentity(t *testing.T) {
 		if err == nil {
 			t.Fatalf("unsafe ByteCloud JWT proxy %q was accepted", proxyURL)
 		}
+	}
+}
+
+func TestNewByteCloudJWTHeaderSourceAcceptsCanonicalRegionalAuthorities(t *testing.T) {
+	tests := []struct {
+		name, region, site, endpoint, proxy string
+	}{
+		{name: "cn", region: "cn", site: aksk.SiteCN, endpoint: "https://jwt-cn.example.internal", proxy: "socks5h://cn.proxy.internal:1080"},
+		{name: "boe", region: "boe", site: aksk.SiteCN, endpoint: "https://jwt-boe.example.internal"},
+		{name: "i18n-bd", region: "i18n-bd", site: aksk.SiteI18NBD, endpoint: "https://jwt-i18n-bd.example.internal", proxy: "socks5h://i18n-bd.proxy.internal:1080"},
+		{name: "i18n-tt", region: "i18n-tt", site: aksk.SiteI18NTT, endpoint: "https://jwt-i18n-tt.example.internal", proxy: "socks5h://i18n-tt.proxy.internal:1080"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := NewByteCloudJWTHeaderSource(ByteCloudJWTHeaderSourceConfig{
+				AccessKeyID: "AK-example", SecretAccessKey: "SK-secret", Region: test.region,
+				Site: test.site, JWTEndpoint: test.endpoint, ProxyURL: test.proxy,
+				Generator: &fakeAKSKGenerator{},
+			}); err != nil {
+				t.Fatalf("canonical %s authority rejected: %v", test.region, err)
+			}
+		})
+	}
+
+	if _, err := NewByteCloudJWTHeaderSource(ByteCloudJWTHeaderSourceConfig{
+		AccessKeyID: "AK-example", SecretAccessKey: "SK-secret", Region: "boe",
+		Site: "boe", JWTEndpoint: "https://jwt-boe.example.internal",
+		Generator: &fakeAKSKGenerator{},
+	}); err == nil {
+		t.Fatal("BOE accepted a site unsupported by the official AK/SK SDK")
 	}
 }
 

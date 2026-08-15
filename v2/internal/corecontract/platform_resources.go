@@ -6,6 +6,7 @@ const (
 	WorkspaceCollectionRoutePattern     = "/v2/workspaces"
 	WorkspaceResourceRoutePattern       = "/v2/workspaces/{workspaceId}"
 	WorkspaceArchiveRoutePattern        = "/v2/workspaces/{workspaceId}/actions/archive"
+	WorkspaceManagedSandboxRoutePattern = "/v2/workspaces/{workspaceId}/managed-sandbox-settings"
 	WorkspaceMembersCollectionPattern   = "/v2/workspaces/{workspaceId}/members"
 	WorkspaceMemberResourceRoutePattern = "/v2/workspaces/{workspaceId}/members/{memberId}"
 )
@@ -18,6 +19,10 @@ func WorkspacePath(workspaceID string) string {
 
 func ArchiveWorkspacePath(workspaceID string) string {
 	return WorkspacePath(workspaceID) + "/actions/archive"
+}
+
+func WorkspaceManagedSandboxPath(workspaceID string) string {
+	return WorkspacePath(workspaceID) + "/managed-sandbox-settings"
 }
 
 func WorkspaceMembersPath(workspaceID string) string {
@@ -72,6 +77,30 @@ type ArchiveWorkspaceRequest struct {
 type ArchiveWorkspaceResponse struct {
 	Workspace WorkspaceState `json:"workspace"`
 	Changed   bool           `json:"changed"`
+}
+
+type WorkspaceManagedSandboxSettingState struct {
+	WorkspaceID string    `json:"workspaceId"`
+	Region      string    `json:"region"`
+	Version     int64     `json:"version"`
+	UpdatedBy   string    `json:"updatedBy"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+}
+
+type GetWorkspaceManagedSandboxSettingResponse struct {
+	Setting          WorkspaceManagedSandboxSettingState `json:"setting"`
+	AvailableRegions []string                            `json:"availableRegions"`
+}
+
+type UpdateWorkspaceManagedSandboxSettingRequest struct {
+	Region          string `json:"region"`
+	ExpectedVersion int64  `json:"expectedVersion"`
+}
+
+type UpdateWorkspaceManagedSandboxSettingResponse struct {
+	Setting WorkspaceManagedSandboxSettingState `json:"setting"`
+	Changed bool                                `json:"changed"`
 }
 
 type WorkspaceMemberState struct {

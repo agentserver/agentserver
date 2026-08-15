@@ -18,6 +18,9 @@ func TestRenderHelmChartLocksNamespaceHooksAndValues(t *testing.T) {
 	document.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(document)
 	document.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(document, document.Managed)
 	document.Managed.Environment.PackSetSHA256 = managedPackSetDigest(document.Managed)
+	if err := refreshDefaultManagedSandboxProfile(&document); err != nil {
+		t.Fatal(err)
+	}
 	loaded, err := ValidateConfig(document)
 	if err != nil {
 		t.Fatal(err)
@@ -132,6 +135,9 @@ func TestRenderHelmChartRejectsTemplateManagedEvidence(t *testing.T) {
 	document.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(document)
 	document.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(document, document.Managed)
 	document.Managed.Environment.PackSetSHA256 = managedPackSetDigest(document.Managed)
+	if err := refreshDefaultManagedSandboxProfile(&document); err != nil {
+		t.Fatal(err)
+	}
 	loaded, err := ValidateConfig(document)
 	if err != nil {
 		t.Fatal(err)

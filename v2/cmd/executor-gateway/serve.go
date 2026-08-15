@@ -74,10 +74,14 @@ const (
 	gatewayManagedTAEPSMEnvironment            = "AGENTSERVER_V2_MANAGED_TAE_PSM"
 	gatewayTAEWebhookRequiredEnvironment       = "AGENTSERVER_V2_TAE_POLICY_WEBHOOK_REQUIRED"
 	gatewayManagedEnvironmentIDEnvironment     = "AGENTSERVER_V2_MANAGED_ENVIRONMENT_ID"
+	gatewayManagedSandboxRegionEnvironment     = "AGENTSERVER_V2_MANAGED_SANDBOX_REGION"
+	gatewayManagedSandboxProfileIDEnvironment  = "AGENTSERVER_V2_MANAGED_SANDBOX_PROFILE_ID"
+	gatewayManagedSandboxBindingEnvironment    = "AGENTSERVER_V2_MANAGED_SANDBOX_BINDING_SHA256"
 	gatewayManagedRuntimeDigestEnvironment     = "AGENTSERVER_V2_MANAGED_RUNTIME_PROFILE_SHA256"
 	gatewayManagedPackSetDigestEnvironment     = "AGENTSERVER_V2_MANAGED_PACK_SET_SHA256"
 	gatewayManagedSandboxTTLEnvironment        = "AGENTSERVER_V2_MANAGED_SANDBOX_TTL"
 	gatewayManagedActivityTTLEnvironment       = "AGENTSERVER_V2_MANAGED_ACTIVITY_TTL"
+	gatewayManagedProfilesEnvironment          = "AGENTSERVER_V2_MANAGED_SANDBOX_GATEWAY_PROFILES"
 	gatewayDevExecutorHeader                   = "X-Agentserver-Dev-Executor-Id"
 	maximumDevMCPBearerBytes                   = 16 * 1024
 	maximumGatewayTLSFileBytes                 = int64(1024 * 1024)
@@ -246,23 +250,41 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 		return err
 	}
 	backends := []executionbackend.Backend{agentxBackend}
-	taeBackend, sandboxGatewayHTTPClient, err := configureTAEBackend(
-		getenv, mode, coreClientCertificateFile, coreClientKeyFile, gatewaySPIFFEIdentity,
-	)
-	if err != nil {
-		return err
-	}
-	if sandboxGatewayHTTPClient != nil {
-		defer sandboxGatewayHTTPClient.CloseIdleConnections()
-	}
-	if taeBackend != nil {
-		backends = append(backends, taeBackend)
-	}
-	managedEnvironmentIssuer, managedTargetFencer, managedSandboxAcquirer, err := configureManagedExecutionSecurity(
-		getenv, mode, taeBackend, sandboxGatewayHTTPClient, coreClient, coreClient,
-	)
-	if err != nil {
-		return err
+	var managedEnvironmentIssuer executorgateway.ManagedProcessEnvironmentIssuer
+	var managedTargetFencer executorgateway.ManagedTargetFencer
+	var managedSandboxAcquirer executorgateway.ManagedSandboxSessionAcquirer
+	if strings.TrimSpace(getenv(gatewayManagedProfilesEnvironment)) != "" {
+		profiledBackend, profiledClients, issuer, fencer, acquirer, profileErr := configureProfiledTAEExecution(
+			getenv, mode, coreClientCertificateFile, coreClientKeyFile, gatewaySPIFFEIdentity,
+			coreClient, coreClient,
+		)
+		if profileErr != nil {
+			return profileErr
+		}
+		for _, client := range profiledClients {
+			defer client.CloseIdleConnections()
+		}
+		backends = append(backends, profiledBackend)
+		managedEnvironmentIssuer, managedTargetFencer, managedSandboxAcquirer = issuer, fencer, acquirer
+	} else {
+		taeBackend, sandboxGatewayHTTPClient, legacyErr := configureTAEBackend(
+			getenv, mode, coreClientCertificateFile, coreClientKeyFile, gatewaySPIFFEIdentity,
+		)
+		if legacyErr != nil {
+			return legacyErr
+		}
+		if sandboxGatewayHTTPClient != nil {
+			defer sandboxGatewayHTTPClient.CloseIdleConnections()
+		}
+		if taeBackend != nil {
+			backends = append(backends, taeBackend)
+		}
+		managedEnvironmentIssuer, managedTargetFencer, managedSandboxAcquirer, err = configureManagedExecutionSecurity(
+			getenv, mode, taeBackend, sandboxGatewayHTTPClient, coreClient, coreClient,
+		)
+		if err != nil {
+			return err
+		}
 	}
 	backendRouter, err := executionbackend.NewRouter(backends...)
 	if err != nil {

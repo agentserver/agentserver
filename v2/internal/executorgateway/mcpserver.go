@@ -77,7 +77,16 @@ type ExecutorMCPPrincipal struct {
 	ExecutorID string
 	// Production requires every selected and listed environment to be backed
 	// by a non-insecure enrollment. Development principals leave this false.
-	Production bool
+	Production     bool
+	ManagedSandbox *ExecutorManagedSandboxAuthority
+}
+
+type ExecutorManagedSandboxAuthority struct {
+	SettingVersion int64
+	Region         string
+	ProfileID      string
+	BindingSHA256  string
+	EnvironmentID  string
 }
 
 // ExecutorMCPRunContext is the immutable, capability-derived core command

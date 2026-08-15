@@ -20,6 +20,7 @@ type ResolveRunCapabilityIssuanceCommand struct {
 	BrainToolCatalogID     string
 	ToolCatalogDigest      [32]byte
 	LLMGateway             RunLLMGatewayBinding
+	ManagedSandbox         RunManagedSandboxBinding
 }
 
 type RunCapabilityIssuanceAuthority struct {
@@ -38,6 +39,7 @@ type RunCapabilityIssuanceAuthority struct {
 	BrainToolCatalogID string
 	ToolCatalogDigest  [32]byte
 	LLMGateway         RunLLMGatewayBinding
+	ManagedSandbox     RunManagedSandboxBinding
 }
 
 type AuthorizeRunCapabilityCommand struct {
@@ -55,6 +57,7 @@ type AuthorizeRunCapabilityCommand struct {
 	ExpectedRunVersion     int64
 	ExpectedAttemptVersion int64
 	LLMGateway             RunLLMGatewayBinding
+	ManagedSandbox         RunManagedSandboxBinding
 }
 
 type AuthorizedRunCapability struct {

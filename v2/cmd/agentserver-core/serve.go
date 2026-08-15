@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +25,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/egressgateway"
 	"github.com/agentserver/agentserver/v2/internal/enrollmenttoken"
 	"github.com/agentserver/agentserver/v2/internal/httperrorlog"
+	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/objectruntime"
 	"github.com/agentserver/agentserver/v2/internal/publichttps"
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
@@ -40,6 +42,7 @@ const (
 	coreGatewayIdentityEnvironment          = "AGENTSERVER_V2_EXECUTOR_GATEWAY_SPIFFE_ID"
 	coreHarnessPoolIdentityEnvironment      = "AGENTSERVER_V2_HARNESS_POOL_SPIFFE_ID"
 	coreSandboxGatewayIdentityEnvironment   = "AGENTSERVER_V2_SANDBOX_GATEWAY_SPIFFE_ID"
+	coreSandboxGatewayIdentitiesEnvironment = "AGENTSERVER_V2_SANDBOX_GATEWAY_SPIFFE_IDS"
 	coreEgressAuthorizerIdentityEnvironment = "AGENTSERVER_V2_EGRESS_AUTHORIZER_SPIFFE_ID"
 	coreBrowserIdentityEnvironment          = "AGENTSERVER_V2_BROWSER_GATEWAY_SPIFFE_ID"
 	corePlatformIdentityEnvironment         = "AGENTSERVER_V2_PLATFORM_GATEWAY_SPIFFE_ID"
@@ -81,6 +84,7 @@ const (
 	coreEgressPlaceholderKeyringEnvironment = "AGENTSERVER_V2_EGRESS_PLACEHOLDER_KEYRING_FILE"
 	coreCredentialSealingKeyringEnvironment = "AGENTSERVER_V2_CREDENTIAL_SEALING_KEYRING_FILE"
 	coreManagedTAEPSMEnvironment            = "AGENTSERVER_V2_MANAGED_TAE_PSM"
+	coreManagedSandboxProfilesEnvironment   = "AGENTSERVER_V2_MANAGED_SANDBOX_PROFILE_CATALOG"
 	coreLarkDeviceAppIDEnvironment          = "AGENTSERVER_V2_LARK_DEVICE_APP_ID"
 	coreLarkDeviceAppSecretEnvironment      = "AGENTSERVER_V2_LARK_DEVICE_APP_SECRET"
 	coreLarkDeviceScopesEnvironment         = "AGENTSERVER_V2_LARK_DEVICE_SCOPES"
@@ -100,6 +104,30 @@ type coreProductionEnrollmentConfig struct {
 
 func workspaceCredentialControlPlaneEnabled(mode coreServeMode, managedExecutorEnabled bool) bool {
 	return mode == coreServeProduction || managedExecutorEnabled
+}
+
+func configureCoreManagedSandboxProfiles(
+	getenv func(string) string,
+	managedExecutorEnabled bool,
+) (*managedsandboxprofile.Catalog, error) {
+	if getenv == nil {
+		return nil, errors.New("managed sandbox profile configuration source is required")
+	}
+	raw := strings.TrimSpace(getenv(coreManagedSandboxProfilesEnvironment))
+	if !managedExecutorEnabled {
+		if raw != "" {
+			return nil, errors.New("managed sandbox profile catalog requires the managed executor")
+		}
+		return nil, nil
+	}
+	if raw == "" {
+		return nil, fmt.Errorf("%s is required with the managed executor", coreManagedSandboxProfilesEnvironment)
+	}
+	catalog, err := managedsandboxprofile.ParseCatalog([]byte(raw))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", coreManagedSandboxProfilesEnvironment, err)
+	}
+	return catalog, nil
 }
 
 func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr io.Writer, mode coreServeMode) error {
@@ -176,22 +204,26 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	} else if strings.TrimSpace(getenv(coreManagedTAEPSMEnvironment)) != "" {
 		return errors.New("managed TAE PSM requires the managed executor")
 	}
-	sandboxGatewayIdentity := ""
+	var sandboxGatewayIdentities []string
 	if managedExecutorEnabled {
-		sandboxGatewayIdentity, err = requiredConfiguration(getenv, coreSandboxGatewayIdentityEnvironment)
+		sandboxGatewayIdentities, err = loadSandboxGatewayIdentities(getenv)
 		if err != nil {
 			return err
 		}
-		if sandboxGatewayIdentity == gatewayIdentity || sandboxGatewayIdentity == harnessPoolIdentity {
+		if slices.Contains(sandboxGatewayIdentities, gatewayIdentity) ||
+			slices.Contains(sandboxGatewayIdentities, harnessPoolIdentity) {
 			return errors.New("sandbox-gateway must have a distinct production SPIFFE identity")
 		}
+	} else if strings.TrimSpace(getenv(coreSandboxGatewayIdentityEnvironment)) != "" ||
+		strings.TrimSpace(getenv(coreSandboxGatewayIdentitiesEnvironment)) != "" {
+		return errors.New("sandbox-gateway identity requires the managed executor")
 	}
 	browserIdentity, err := requiredConfiguration(getenv, coreBrowserIdentityEnvironment)
 	if err != nil {
 		return err
 	}
 	if browserIdentity == gatewayIdentity || browserIdentity == harnessPoolIdentity ||
-		(managedExecutorEnabled && browserIdentity == sandboxGatewayIdentity) {
+		(managedExecutorEnabled && slices.Contains(sandboxGatewayIdentities, browserIdentity)) {
 		if mode == coreServeProduction {
 			return errors.New("browser-gateway, sandbox-gateway, executor-gateway, and harness-pool SPIFFE identities must be distinct")
 		}
@@ -205,7 +237,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		}
 		identities := []string{gatewayIdentity, harnessPoolIdentity, browserIdentity}
 		if managedExecutorEnabled {
-			identities = append(identities, sandboxGatewayIdentity)
+			identities = append(identities, sandboxGatewayIdentities...)
 		}
 		if slices.Contains(identities, platformIdentity) {
 			return errors.New("platform-gateway, browser-gateway, sandbox-gateway, executor-gateway, and harness-pool SPIFFE identities must be distinct")
@@ -226,7 +258,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		}
 		identities := []string{gatewayIdentity, harnessPoolIdentity, browserIdentity, platformIdentity}
 		if managedExecutorEnabled {
-			identities = append(identities, sandboxGatewayIdentity)
+			identities = append(identities, sandboxGatewayIdentities...)
 		}
 		if slices.Contains(identities, llmproxyIdentity) {
 			return errors.New("llmproxy, platform-gateway, browser-gateway, sandbox-gateway, executor-gateway, and harness-pool SPIFFE identities must be distinct")
@@ -236,10 +268,9 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 			if err != nil {
 				return err
 			}
-			if slices.Contains([]string{
-				gatewayIdentity, harnessPoolIdentity, sandboxGatewayIdentity, browserIdentity,
-				platformIdentity, llmproxyIdentity,
-			}, egressAuthorizerIdentity) {
+			identities := []string{gatewayIdentity, harnessPoolIdentity, browserIdentity, platformIdentity, llmproxyIdentity}
+			identities = append(identities, sandboxGatewayIdentities...)
+			if slices.Contains(identities, egressAuthorizerIdentity) {
 				return errors.New("egress-authorizer must have a distinct production SPIFFE identity")
 			}
 		}
@@ -382,7 +413,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	}
 	var sandboxGatewayAuthorizer coreserver.WorkloadAuthorizer
 	if managedExecutorEnabled {
-		sandboxGatewayAuthorizer, err = coreserver.NewSPIFFEWorkloadAuthorizer(sandboxGatewayIdentity)
+		sandboxGatewayAuthorizer, err = coreserver.NewSPIFFEWorkloadAuthorizer(sandboxGatewayIdentities...)
 		if err != nil {
 			return err
 		}
@@ -567,10 +598,22 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 			return err
 		}
 	}
+	managedSandboxProfiles, err := configureCoreManagedSandboxProfiles(getenv, managedExecutorEnabled)
+	if err != nil {
+		return err
+	}
+	availableManagedSandboxRegions := []string(nil)
+	if managedSandboxProfiles != nil {
+		for _, binding := range managedSandboxProfiles.Bindings() {
+			availableManagedSandboxRegions = append(availableManagedSandboxRegions, binding.Region)
+		}
+	}
 	platformResourceHandler, err := coreserver.NewPlatformResourceHandler(
 		platformAuthorizer,
 		platformUserAuthorizer,
-		coreserver.StateStorePlatformResourceCommands{Store: store},
+		coreserver.StateStorePlatformResourceCommands{
+			Store: store, AvailableManagedSandboxRegions: availableManagedSandboxRegions,
+		},
 	)
 	if err != nil {
 		return err
@@ -676,6 +719,13 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 			}
 			return nil
 		}(),
+		ManagedSandboxSettings: func() coreserver.UserRunManagedSandboxSettingSource {
+			if managedSandboxProfiles != nil {
+				return store
+			}
+			return nil
+		}(),
+		ManagedSandboxProfiles: managedSandboxProfiles,
 	})
 	if err != nil {
 		return err
@@ -852,6 +902,7 @@ func mountCorePlatformResourceRoutes(mux *http.ServeMux, handler *coreserver.Pla
 	mux.Handle(corecontract.WorkspaceCollectionRoutePattern, routes)
 	mux.Handle(corecontract.WorkspaceResourceRoutePattern, routes)
 	mux.Handle(corecontract.WorkspaceArchiveRoutePattern, routes)
+	mux.Handle(corecontract.WorkspaceManagedSandboxRoutePattern, routes)
 	mux.Handle(corecontract.WorkspaceMembersCollectionPattern, routes)
 	mux.Handle(corecontract.WorkspaceMemberResourceRoutePattern, routes)
 }
@@ -1162,6 +1213,44 @@ func requiredConfiguration(getenv func(string) string, name string) (string, err
 		return "", fmt.Errorf("%s is required", name)
 	}
 	return value, nil
+}
+
+func loadSandboxGatewayIdentities(getenv func(string) string) ([]string, error) {
+	legacy := strings.TrimSpace(getenv(coreSandboxGatewayIdentityEnvironment))
+	raw := strings.TrimSpace(getenv(coreSandboxGatewayIdentitiesEnvironment))
+	if legacy != "" && raw != "" {
+		return nil, fmt.Errorf(
+			"%s and %s are mutually exclusive",
+			coreSandboxGatewayIdentityEnvironment, coreSandboxGatewayIdentitiesEnvironment,
+		)
+	}
+	if raw == "" {
+		if legacy == "" {
+			return nil, fmt.Errorf("%s is required", coreSandboxGatewayIdentitiesEnvironment)
+		}
+		return []string{legacy}, nil
+	}
+	if len(raw) > 16*1024 {
+		return nil, fmt.Errorf("%s is too large", coreSandboxGatewayIdentitiesEnvironment)
+	}
+	var identities []string
+	if err := json.Unmarshal([]byte(raw), &identities); err != nil {
+		return nil, fmt.Errorf("decode %s: %w", coreSandboxGatewayIdentitiesEnvironment, err)
+	}
+	if len(identities) < 1 || len(identities) > len(managedsandboxprofile.Regions()) {
+		return nil, fmt.Errorf("%s must contain between one and four identities", coreSandboxGatewayIdentitiesEnvironment)
+	}
+	seen := make(map[string]struct{}, len(identities))
+	for _, identity := range identities {
+		if identity == "" || strings.TrimSpace(identity) != identity {
+			return nil, fmt.Errorf("%s contains an invalid identity", coreSandboxGatewayIdentitiesEnvironment)
+		}
+		if _, duplicate := seen[identity]; duplicate {
+			return nil, fmt.Errorf("%s contains a duplicate identity", coreSandboxGatewayIdentitiesEnvironment)
+		}
+		seen[identity] = struct{}{}
+	}
+	return identities, nil
 }
 
 func configureCoreLarkDeviceApplication(getenv func(string) string, required bool) (string, string, error) {

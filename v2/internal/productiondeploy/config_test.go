@@ -10,6 +10,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/bkectlpolicy"
 	"github.com/agentserver/agentserver/v2/internal/enrollmenttoken"
 	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
+	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/productionimage"
 	"github.com/agentserver/agentserver/v2/internal/stockruntime"
 	"github.com/agentserver/agentserver/v2/internal/taeimage"
@@ -25,6 +26,21 @@ func TestValidateConfigAcceptsSupportedLinuxDeployment(t *testing.T) {
 	if loaded.Document.Platform != ProductionPlatform || loaded.MaxRunDuration.String() != "30m0s" ||
 		strings.Join(loaded.Document.Runtime.AllowedTools, ",") != "list_environments,read_file,shell" {
 		t.Fatalf("loaded config = %+v", loaded)
+	}
+}
+
+func TestValidateConfigRequiresFixedWorkspaceInitialSandboxRegion(t *testing.T) {
+	document := fourRegionConfigDocument()
+	document.SandboxRegions.DefaultRegion = managedsandboxprofile.RegionCN
+	if _, err := ValidateConfig(document); err == nil || !strings.Contains(err.Error(), managedsandboxprofile.DefaultRegion) {
+		t.Fatalf("noncanonical sandbox default error = %v", err)
+	}
+
+	document = fourRegionConfigDocument()
+	document.SandboxRegions.Regions = document.SandboxRegions.Regions[:3]
+	document.SandboxProfiles = document.SandboxProfiles[:3]
+	if _, err := ValidateConfig(document); err == nil || !strings.Contains(err.Error(), "no installed profile") {
+		t.Fatalf("missing initial-region profile error = %v", err)
 	}
 }
 
@@ -198,6 +214,9 @@ func TestValidateConfigBindsManagedNetworkEvidenceToNormalizedFacts(t *testing.T
 	document.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(document)
 	document.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(document, document.Managed)
 	document.Managed.Environment.PackSetSHA256 = managedPackSetDigest(document.Managed)
+	if err := refreshDefaultManagedSandboxProfile(&document); err != nil {
+		t.Fatal(err)
+	}
 	// Equivalent ordering is normalized before the evidence digest is checked.
 	slices.Reverse(document.Network.SandboxExternalEgress)
 	if _, err := ValidateConfig(document); err != nil {
@@ -292,6 +311,9 @@ func policyBootstrapConfigDocument() ConfigDocument {
 	document.Managed.TAE.Policy.EvidenceRef = ""
 	document.Managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(document.Managed.TAE).DigestHex()
 	document.Managed.TAE.NetworkEvidence = ManagedTAENetworkEvidenceDocument{}
+	if err := refreshDefaultManagedSandboxProfile(&document); err != nil {
+		panic(err)
+	}
 	return document
 }
 
@@ -311,6 +333,9 @@ func directConfigDocument() ConfigDocument {
 	document.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(document)
 	document.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(document, document.Managed)
 	document.Managed.Environment.PackSetSHA256 = managedPackSetDigest(document.Managed)
+	if err := refreshDefaultManagedSandboxProfile(&document); err != nil {
+		panic(err)
+	}
 	return document
 }
 
@@ -587,7 +612,7 @@ func validActivationNetworkReport(document ConfigDocument, revision string) taen
 			PodUID: "12345678-1234-4234-8234-123456789abc", NodeName: "sg-node-1", ServiceAccount: taeNetworkProbeComponent,
 		},
 		Configuration: taenetworkreport.Configuration{
-			DeploymentConfigSHA256: canonicalDigest(document), Region: ProductionRegion, PSM: ProductionTAEPSM,
+			DeploymentConfigSHA256: canonicalDigest(document), Region: document.Managed.TAE.Region, PSM: ProductionTAEPSM,
 			PolicyRevision: revision, ByteCloudSite: "i18n-tt", JWTEndpoint: ProductionByteCloudJWTEndpoint,
 			ProxyURL: ProductionTAEProxyURL, ControlPlaneHost: ProductionTAEControlPlaneHost,
 			DataPlaneDomainSuffix: ProductionTAEDataPlaneSuffix, SandboxImage: taeSandboxImage,
@@ -688,8 +713,13 @@ func validConfigDocument() ConfigDocument {
 				SandboxTTL: "30m", ActivityTTL: "5m", IdleTTL: "5m",
 			},
 			TAE: ManagedTAEDocument{
-				Region: ProductionRegion, PSM: ProductionTAEPSM,
+				Region: managedsandboxprofile.RegionI18NTT, PSM: ProductionTAEPSM,
 				SandboxID: "sandbox-1", RevisionID: "revision-1",
+				ControlPlaneURL:      "https://controlplane.sg.ai-sandbox-i18n.byted.org",
+				DataPlaneSuffix:      "sg.ai-sandbox-i18n.byted.org",
+				ByteCloudSite:        managedsandboxprofile.RegionI18NTT,
+				ByteCloudJWTEndpoint: ProductionByteCloudJWTEndpoint,
+				ProxyProfile:         ManagedSandboxProxyI18NTT,
 				Policy: ManagedTAEPolicyDocument{
 					Version: 1, Revision: "lark-readonly-v1",
 					PolicySHA256: larkegresspolicy.SHA256Hex(),
@@ -713,6 +743,15 @@ func validConfigDocument() ConfigDocument {
 				PolicySHA256: bkectlpolicy.SHA256Hex(),
 			},
 		},
+		SandboxRegions: ManagedSandboxRegionsDocument{
+			DefaultRegion: managedsandboxprofile.RegionI18NTT,
+			Regions:       []string{managedsandboxprofile.RegionI18NTT},
+		},
+		ProxyProfiles: []ManagedSandboxProxyProfileDocument{{
+			Name: ManagedSandboxProxyI18NTT, URL: ProductionTAEProxyURL,
+			Namespace: ProductionTAEProxyNamespace, PodSelector: map[string]string{"app": ProductionTAEProxyPodApp},
+			Port: ProductionTAEProxyPort,
+		}},
 		Objects: ObjectStoreDocument{
 			Mode: "s3-plaintext-v1", Prefix: "agentserver/v2/production",
 			S3Bucket: "agentserver-production", S3Region: "sg-central",
@@ -754,5 +793,16 @@ func validConfigDocument() ConfigDocument {
 	document.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(document)
 	document.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(document, document.Managed)
 	document.Managed.Environment.PackSetSHA256 = managedPackSetDigest(document.Managed)
+	profile := ManagedSandboxProfileDocument{
+		Region: managedsandboxprofile.RegionI18NTT, ProfileID: "tae-i18n-tt-test-v1",
+		Gateway: ManagedSandboxGatewayDocument{
+			Component: sandboxComponent, ClusterIP: document.Services.SandboxGateway.ClusterIP,
+			Port: document.Services.SandboxGateway.Port, ServerName: SandboxInternalHost, Secret: document.Secrets.SandboxGateway,
+		},
+		Environment: document.Managed.Environment, TAE: document.Managed.TAE,
+		SandboxExternalEgress: append([]EgressRuleDocument{}, document.Network.SandboxExternalEgress...),
+	}
+	profile.BindingSHA256 = managedSandboxProfileBindingSHA256(profile, &document.ProxyProfiles[0])
+	document.SandboxProfiles = []ManagedSandboxProfileDocument{profile}
 	return document
 }

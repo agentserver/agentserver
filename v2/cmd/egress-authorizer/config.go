@@ -39,6 +39,7 @@ const (
 	egressTAEPolicyPublishedEnvironment    = "AGENTSERVER_V2_TAE_POLICY_PUBLISHED"
 	egressTAEPolicyApprovedEnvironment     = "AGENTSERVER_V2_TAE_POLICY_APPROVED"
 	egressTAEPolicyEvidenceEnvironment     = "AGENTSERVER_V2_TAE_POLICY_EVIDENCE_REF"
+	egressTAEPolicyBindingsEnvironment     = "AGENTSERVER_V2_TAE_POLICY_BINDINGS"
 	egressDecisionTimeoutEnvironment       = "AGENTSERVER_V2_EGRESS_DECISION_TIMEOUT"
 	egressDevZTITokenEnvironment           = "AGENTSERVER_V2_DEV_TAE_ZTI_TOKEN"
 	egressDevLarkAccessTokenEnvironment    = "AGENTSERVER_V2_DEV_LARK_ACCESS_TOKEN"
@@ -67,6 +68,7 @@ type egressAuthorizerConfig struct {
 	placeholderKeyring string
 	allowedTAEPSM      string
 	taePolicy          taepolicy.Binding
+	taePolicies        []taepolicy.Binding
 	decisionTimeout    time.Duration
 
 	devZTIToken           string
@@ -162,37 +164,58 @@ func loadEgressAuthorizerConfig(getenv func(string) string, mode egressAuthorize
 		if !validEgressText(config.coreServerName, 253) || strings.ContainsAny(config.coreServerName, "/:@") {
 			return egressAuthorizerConfig{}, fmt.Errorf("%s is invalid", egressCoreServerNameEnvironment)
 		}
-		config.taePolicy.Version = taepolicy.BindingVersion
-		config.taePolicy.Region = "sg"
-		config.taePolicy.SandboxPSM = config.allowedTAEPSM
-		for destination, name := range map[*string]string{
-			&config.taePolicy.Revision:      egressTAEPolicyRevisionEnvironment,
-			&config.taePolicy.PolicySHA256:  egressTAEPolicySHA256Environment,
-			&config.taePolicy.BindingSHA256: egressTAEPolicyBindingEnvironment,
-			&config.taePolicy.PublicHost:    egressTAEPolicyHostEnvironment,
-			&config.taePolicy.PublicAccess:  egressTAEPolicyAccessEnvironment,
-			&config.taePolicy.WebhookMode:   egressTAEWebhookModeEnvironment,
-			&config.taePolicy.WebhookPath:   egressTAEWebhookPathEnvironment,
-			&config.taePolicy.EvidenceRef:   egressTAEPolicyEvidenceEnvironment,
-		} {
-			*destination, err = required(name)
+		bindingsRaw := strings.TrimSpace(getenv(egressTAEPolicyBindingsEnvironment))
+		if bindingsRaw != "" {
+			for _, legacyName := range []string{
+				egressTAEPolicyRevisionEnvironment, egressTAEPolicySHA256Environment, egressTAEPolicyBindingEnvironment,
+				egressTAEPolicyHostEnvironment, egressTAEPolicyAccessEnvironment, egressTAEWebhookRequiredEnvironment,
+				egressTAEWebhookModeEnvironment, egressTAEWebhookPSMEnvironment, egressTAEWebhookURLEnvironment,
+				egressTAEWebhookPathEnvironment, egressTAEPolicyPublishedEnvironment,
+				egressTAEPolicyApprovedEnvironment, egressTAEPolicyEvidenceEnvironment,
+			} {
+				if strings.TrimSpace(getenv(legacyName)) != "" {
+					return egressAuthorizerConfig{}, fmt.Errorf("%s cannot be combined with legacy setting %s", egressTAEPolicyBindingsEnvironment, legacyName)
+				}
+			}
+			config.taePolicies, err = parseTAEPolicyBindings([]byte(bindingsRaw), config.allowedTAEPSM)
 			if err != nil {
+				return egressAuthorizerConfig{}, fmt.Errorf("%s: %w", egressTAEPolicyBindingsEnvironment, err)
+			}
+			config.taePolicy = config.taePolicies[0]
+		} else {
+			config.taePolicy.Version = taepolicy.BindingVersion
+			config.taePolicy.Region = "sg"
+			config.taePolicy.SandboxPSM = config.allowedTAEPSM
+			for destination, name := range map[*string]string{
+				&config.taePolicy.Revision:      egressTAEPolicyRevisionEnvironment,
+				&config.taePolicy.PolicySHA256:  egressTAEPolicySHA256Environment,
+				&config.taePolicy.BindingSHA256: egressTAEPolicyBindingEnvironment,
+				&config.taePolicy.PublicHost:    egressTAEPolicyHostEnvironment,
+				&config.taePolicy.PublicAccess:  egressTAEPolicyAccessEnvironment,
+				&config.taePolicy.WebhookMode:   egressTAEWebhookModeEnvironment,
+				&config.taePolicy.WebhookPath:   egressTAEWebhookPathEnvironment,
+				&config.taePolicy.EvidenceRef:   egressTAEPolicyEvidenceEnvironment,
+			} {
+				*destination, err = required(name)
+				if err != nil {
+					return egressAuthorizerConfig{}, err
+				}
+			}
+			config.taePolicy.WebhookPSM = strings.TrimSpace(getenv(egressTAEWebhookPSMEnvironment))
+			config.taePolicy.WebhookURL = strings.TrimSpace(getenv(egressTAEWebhookURLEnvironment))
+			if config.taePolicy.PublicWebhookRequired, err = requiredEgressBool(getenv(egressTAEWebhookRequiredEnvironment), egressTAEWebhookRequiredEnvironment); err != nil {
 				return egressAuthorizerConfig{}, err
 			}
-		}
-		config.taePolicy.WebhookPSM = strings.TrimSpace(getenv(egressTAEWebhookPSMEnvironment))
-		config.taePolicy.WebhookURL = strings.TrimSpace(getenv(egressTAEWebhookURLEnvironment))
-		if config.taePolicy.PublicWebhookRequired, err = requiredEgressBool(getenv(egressTAEWebhookRequiredEnvironment), egressTAEWebhookRequiredEnvironment); err != nil {
-			return egressAuthorizerConfig{}, err
-		}
-		if config.taePolicy.Published, err = requiredEgressBool(getenv(egressTAEPolicyPublishedEnvironment), egressTAEPolicyPublishedEnvironment); err != nil {
-			return egressAuthorizerConfig{}, err
-		}
-		if config.taePolicy.Approved, err = requiredEgressBool(getenv(egressTAEPolicyApprovedEnvironment), egressTAEPolicyApprovedEnvironment); err != nil {
-			return egressAuthorizerConfig{}, err
-		}
-		if err := config.taePolicy.Validate("sg", config.allowedTAEPSM, larkegresspolicy.SHA256Hex()); err != nil {
-			return egressAuthorizerConfig{}, fmt.Errorf("TAE policy binding: %w", err)
+			if config.taePolicy.Published, err = requiredEgressBool(getenv(egressTAEPolicyPublishedEnvironment), egressTAEPolicyPublishedEnvironment); err != nil {
+				return egressAuthorizerConfig{}, err
+			}
+			if config.taePolicy.Approved, err = requiredEgressBool(getenv(egressTAEPolicyApprovedEnvironment), egressTAEPolicyApprovedEnvironment); err != nil {
+				return egressAuthorizerConfig{}, err
+			}
+			if err := config.taePolicy.Validate("sg", config.allowedTAEPSM, larkegresspolicy.SHA256Hex()); err != nil {
+				return egressAuthorizerConfig{}, fmt.Errorf("TAE policy binding: %w", err)
+			}
+			config.taePolicies = []taepolicy.Binding{config.taePolicy}
 		}
 	}
 	config.decisionTimeout, err = optionalEgressDuration(

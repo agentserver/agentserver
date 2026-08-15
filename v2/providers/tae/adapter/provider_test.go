@@ -325,7 +325,7 @@ func TestRuntimeCommandConflictsOnlyOnReportedDifferentValue(t *testing.T) {
 
 func TestNewProviderRejectsMissingOrMismatchedPolicyBinding(t *testing.T) {
 	base := Config{
-		Control: defaultFakeControl(), Data: defaultFakeData(), Region: "sg", PSM: "psm.agentserver.tae",
+		Control: defaultFakeControl(), Data: defaultFakeData(), Region: "i18n-tt", PSM: "psm.agentserver.tae",
 		Root: "/workspace",
 	}
 	if _, err := NewProvider(base); err == nil {
@@ -667,7 +667,7 @@ func TestProviderPreAcknowledgementStreamFailurePreservesRequestID(t *testing.T)
 func newTestProvider(t *testing.T, control ControlPlane, data DataPlane) *Provider {
 	t.Helper()
 	provider, err := NewProvider(Config{
-		Control: control, Data: data, Region: "sg", PSM: "psm.agentserver.tae", Root: "/workspace",
+		Control: control, Data: data, Region: "i18n-tt", PSM: "psm.agentserver.tae", Root: "/workspace",
 		Now: func() time.Time { return testNow }, ReconnectDelay: 10 * time.Millisecond, Policy: validProviderPolicy(),
 	})
 	if err != nil {
@@ -678,7 +678,7 @@ func newTestProvider(t *testing.T, control ControlPlane, data DataPlane) *Provid
 
 func validProviderPolicy() taepolicy.Binding {
 	policy := taepolicy.Binding{
-		Version: taepolicy.BindingVersion, Region: "sg", SandboxPSM: "psm.agentserver.tae",
+		Version: taepolicy.BindingVersion, Region: "i18n-tt", SandboxPSM: "psm.agentserver.tae",
 		Revision: "lark-readonly-v1", PolicySHA256: larkegresspolicy.SHA256Hex(),
 		PublicHost: taepolicy.PublicHost, PublicAccess: taepolicy.PublicAccessWhitelist, PublicWebhookRequired: true,
 		WebhookMode: "psm", WebhookPSM: "agentserver.egress-authorizer", WebhookPath: taepolicy.WebhookPath,
@@ -730,7 +730,7 @@ func readyControlSession(id string, metadata map[string]string) ControlSession {
 func validCreateRequest() sandboxgateway.CreateSandboxRequest {
 	return sandboxgateway.CreateSandboxRequest{
 		SandboxID: "sandbox-1", IdempotencyKey: "create-1", WorkspaceID: "workspace-1",
-		SessionID: "session-1", EnvironmentID: "environment-1", Region: "sg", PSM: "psm.agentserver.tae",
+		SessionID: "session-1", EnvironmentID: "environment-1", Region: "i18n-tt", PSM: "psm.agentserver.tae",
 		RuntimeProfileSHA256: strings.Repeat("a", 64), PackSetSHA256: strings.Repeat("b", 64), TTL: time.Hour,
 	}
 }

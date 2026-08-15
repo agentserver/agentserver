@@ -870,7 +870,8 @@
           "llmGatewayVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
           "llmGatewayGrantUserId": {"$ref": "#/components/schemas/UUID"},
           "maxRunDurationMs": {"type": "integer", "minimum": 1000, "maximum": 86400000},
-          "maxApprovalTtlMs": {"type": "integer", "minimum": 1000, "maximum": 86400000}
+          "maxApprovalTtlMs": {"type": "integer", "minimum": 1000, "maximum": 86400000},
+          "managedSandbox": {"$ref": "#/components/schemas/RunLaunchManagedSandboxState"}
         }
       },
       "IssuedRunCapability": {
@@ -1482,6 +1483,18 @@
           "policySha256": {"$ref": "#/components/schemas/SHA256"}
         }
       },
+      "RunLaunchManagedSandboxState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["settingVersion", "region", "profileId", "bindingSha256", "environmentId"],
+        "properties": {
+          "settingVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "region": {"enum": ["cn", "boe", "i18n-bd", "i18n-tt"]},
+          "profileId": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$"},
+          "bindingSha256": {"$ref": "#/components/schemas/SHA256"},
+          "environmentId": {"$ref": "#/components/schemas/UUID"}
+        }
+      },
       "ResolveRunLaunchStateResponse": {
         "type": "object",
         "additionalProperties": false,
@@ -1499,7 +1512,8 @@
           "previousCheckpoint": {"$ref": "#/components/schemas/RunLaunchCheckpointState"},
           "executorPolicy": {"$ref": "#/components/schemas/RunLaunchExecutorPolicyState"},
           "llmGateway": {"$ref": "#/components/schemas/RunLaunchLLMGatewayState"},
-          "larkEgress": {"$ref": "#/components/schemas/RunLaunchLarkEgressState"}
+          "larkEgress": {"$ref": "#/components/schemas/RunLaunchLarkEgressState"},
+          "managedSandbox": {"$ref": "#/components/schemas/RunLaunchManagedSandboxState"}
         }
       },
       "BrainToolDescriptor": {

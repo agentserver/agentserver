@@ -253,6 +253,34 @@
         }
       }
     },
+    "/v2/workspaces/{workspaceId}/managed-sandbox-settings": {
+      "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}],
+      "get": {
+        "operationId": "getWorkspaceManagedSandboxSetting",
+        "description": "Returns the workspace-managed TAE sandbox region and the deployment-installed region choices. The setting is snapshotted when a new Run is created.",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["workspaces:read"]}],
+        "responses": {
+          "200": {"description": "Managed sandbox setting", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GetWorkspaceManagedSandboxSettingResponse"}}}},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"}
+        }
+      },
+      "patch": {
+        "operationId": "updateWorkspaceManagedSandboxSetting",
+        "description": "Owner-only optimistic update of the workspace-managed TAE sandbox region. Existing Runs retain their frozen region and profile binding.",
+        "security": [{"platformGatewayMTLS": [], "platformOAuth": ["workspaces:update"]}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateWorkspaceManagedSandboxSettingRequest"}}}},
+        "responses": {
+          "200": {"description": "Updated managed sandbox setting", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateWorkspaceManagedSandboxSettingResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
     "/v2/workspaces/{workspaceId}/members": {
       "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}],
       "get": {
@@ -950,6 +978,45 @@
       "ArchiveWorkspaceResponse": {
         "type": "object", "additionalProperties": false, "required": ["workspace", "changed"],
         "properties": {"workspace": {"$ref": "#/components/schemas/WorkspaceState"}, "changed": {"type": "boolean"}}
+      },
+      "ManagedSandboxRegion": {
+        "type": "string", "enum": ["cn", "boe", "i18n-bd", "i18n-tt"]
+      },
+      "WorkspaceManagedSandboxSettingState": {
+        "type": "object", "additionalProperties": false,
+        "required": ["workspaceId", "region", "version", "updatedBy", "createdAt", "updatedAt"],
+        "properties": {
+          "workspaceId": {"$ref": "#/components/schemas/UUID"},
+          "region": {"$ref": "#/components/schemas/ManagedSandboxRegion"},
+          "version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "updatedBy": {"$ref": "#/components/schemas/UUID"},
+          "createdAt": {"type": "string", "format": "date-time"},
+          "updatedAt": {"type": "string", "format": "date-time"}
+        }
+      },
+      "GetWorkspaceManagedSandboxSettingResponse": {
+        "type": "object", "additionalProperties": false, "required": ["setting", "availableRegions"],
+        "properties": {
+          "setting": {"$ref": "#/components/schemas/WorkspaceManagedSandboxSettingState"},
+          "availableRegions": {
+            "type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true,
+            "items": {"$ref": "#/components/schemas/ManagedSandboxRegion"}
+          }
+        }
+      },
+      "UpdateWorkspaceManagedSandboxSettingRequest": {
+        "type": "object", "additionalProperties": false, "required": ["region", "expectedVersion"],
+        "properties": {
+          "region": {"$ref": "#/components/schemas/ManagedSandboxRegion"},
+          "expectedVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+        }
+      },
+      "UpdateWorkspaceManagedSandboxSettingResponse": {
+        "type": "object", "additionalProperties": false, "required": ["setting", "changed"],
+        "properties": {
+          "setting": {"$ref": "#/components/schemas/WorkspaceManagedSandboxSettingState"},
+          "changed": {"type": "boolean"}
+        }
       },
       "WorkspaceMemberState": {
         "type": "object", "additionalProperties": false, "required": ["userId", "role", "version", "createdAt", "updatedAt"],

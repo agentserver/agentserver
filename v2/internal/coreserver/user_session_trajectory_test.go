@@ -174,6 +174,25 @@ func TestCompleteTrajectoryRecordClampsCrossComponentClockSkew(t *testing.T) {
 	}
 }
 
+func TestProjectUserSessionTrajectoryTreatsLifecycleTransitionAsCompletedPoint(t *testing.T) {
+	now := time.Date(2026, 8, 15, 2, 6, 10, 495001000, time.UTC)
+	source := trajectoryTestSource(now.Add(-time.Second), coredb.RunStatusRunning)
+	source.Events = []coredb.UserSessionTrajectoryEvent{
+		trajectoryTestEvent(1, "run.finalizing", `{}`, now),
+	}
+
+	records, err := projectUserSessionTrajectory(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := trajectoryRecordsByID(records)["event:"+source.Events[0].Event.EventID]
+
+	if record.Status != "info" || record.CompletedAt == nil || !record.CompletedAt.Equal(now) ||
+		record.DurationMillis == nil || *record.DurationMillis != 0 {
+		t.Fatalf("finalizing trajectory event = %+v, want completed informational point", record)
+	}
+}
+
 func trajectoryTestSource(now time.Time, runStatus string) coredb.ReadUserSessionTrajectoryResult {
 	return coredb.ReadUserSessionTrajectoryResult{
 		Session: coredb.UserSession{ID: trajectorySessionID, WorkspaceID: trajectoryWorkspaceID, CreatorID: trajectoryActorID, Status: coredb.UserSessionStatusActive, CreatedAt: now, UpdatedAt: now},

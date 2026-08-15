@@ -144,6 +144,7 @@
       "properties": {
         "process_id": {"$ref": "#/$defs/uuid"},
         "status": {"enum": ["succeeded", "failed", "unknown"]},
+        "reason_code": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,127}$"},
         "chunks": {
           "type": "array",
           "maxItems": 50000,

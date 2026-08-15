@@ -121,8 +121,10 @@ func TestWorkspaceManagedEnvironmentIssuerRejectsBkectlWebhookAndMissingBinding(
 		ProviderKind:   bkectlpolicy.CredentialKind,
 		PolicySHA256:   bkectlpolicy.SHA256Hex(),
 	}
-	if environment, err := issuer.IssueManagedProcessEnvironment(t.Context(), request); err == nil || len(environment) != 0 ||
-		!strings.Contains(err.Error(), "no active ByteCloud credential") {
-		t.Fatalf("bkectl without workspace binding was accepted: %#v, %v", environment, err)
+	environment, resolveErr := issuer.IssueManagedProcessEnvironment(t.Context(), request)
+	reasonCode, _ := managedExecutionErrorMetadata(resolveErr)
+	if resolveErr == nil || len(environment) != 0 ||
+		!strings.Contains(resolveErr.Error(), "no active ByteCloud credential") || reasonCode != "credential_not_configured" {
+		t.Fatalf("bkectl without workspace binding was accepted: %#v, %v (%s)", environment, resolveErr, reasonCode)
 	}
 }

@@ -128,10 +128,12 @@ func (issuer *WorkspaceManagedEnvironmentIssuer) issueProcessEnvironment(
 	authority ManagedCredentialAuthority,
 ) (map[string]string, error) {
 	if authority.BindingID == "" {
-		issuer.logStage(ctx, request, tool, "credential_resolve", "skipped", time.Now(), nil, authority)
 		if tool.ProviderKind != "lark" {
-			return nil, errors.New("workspace has no active ByteCloud credential for managed bkectl")
+			err := fmt.Errorf("%w: workspace has no active ByteCloud credential for managed bkectl", errManagedCredentialNotConfigured)
+			issuer.logStage(ctx, request, tool, "credential_resolve", "failed", time.Now(), err, authority)
+			return nil, err
 		}
+		issuer.logStage(ctx, request, tool, "credential_resolve", "skipped", time.Now(), nil, authority)
 		return managedToolBaseEnvironment(tool, ""), nil
 	}
 	credentialStartedAt := time.Now()

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -96,6 +97,9 @@ func TestByteCloudDeviceAuthorizationLifecycle(t *testing.T) {
 	now := time.Date(2026, time.August, 11, 12, 0, 0, 0, time.UTC)
 	deviceCode := strings.Repeat("01", 16)
 	client := &http.Client{Transport: credentialRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Header.Get("User-Agent") != byteCloudDeviceUserAgent {
+			t.Fatalf("ByteCloud User-Agent = %q", request.Header.Get("User-Agent"))
+		}
 		if request.Header.Get("x-real-psm") != "bytecloud.auth."+deviceCode {
 			t.Fatalf("ByteCloud x-real-psm = %q", request.Header.Get("x-real-psm"))
 		}
@@ -108,7 +112,7 @@ func TestByteCloudDeviceAuthorizationLifecycle(t *testing.T) {
 			if body["device_code"] != deviceCode {
 				t.Fatalf("ByteCloud registration body = %v", body)
 			}
-			return credentialJSONResponse(http.StatusOK, `{"code":0,"message":"ok","data":{"code":"BC-CODE","ticket":"ticket-secret","expire_at":600,"service_account_create_url":"https://cloud.tiktok-row.net/device"}}`), nil
+			return credentialJSONResponse(http.StatusOK, fmt.Sprintf(`{"code":0,"message":"success","data":{"code":"BC-CODE","ticket":"ticket-secret","expire_at":%d,"service_account_create_url":"https://cloud.tiktok-row.net/device"}}`, now.Add(10*time.Minute).UnixMilli())), nil
 		case byteCloudCLIPollingPath:
 			if body["ticket"] != "ticket-secret" {
 				t.Fatalf("ByteCloud polling body = %v", body)

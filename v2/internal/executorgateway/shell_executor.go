@@ -33,6 +33,7 @@ type ShellV1OutputChunk struct {
 type ShellV1Result struct {
 	ProcessID      string               `json:"process_id"`
 	Status         string               `json:"status"`
+	ReasonCode     string               `json:"reason_code,omitempty"`
 	Chunks         []ShellV1OutputChunk `json:"chunks"`
 	NextSequence   uint64               `json:"next_sequence"`
 	ExitCode       *int32               `json:"exit_code,omitempty"`
@@ -394,7 +395,7 @@ func (executor *ShellExecutor) executeManaged(
 	if err != nil {
 		executor.logManagedStage(processCtx, request.Principal, environment.Target, startOperation,
 			"environment_inject", "failed", environmentStartedAt, err)
-		result := newUnknownShellResult(plan.ProcessID)
+		result := managedEnvironmentFailureShellResult(plan.ProcessID, err)
 		closed, closeErr := executor.closeWithoutStartExchange(executionCtx, state, plan, result, err)
 		return closed, closeErr
 	}
@@ -824,7 +825,7 @@ func marshalBackendAcknowledgement(requestID string, acknowledgement executionba
 func (executor *ShellExecutor) closeWithoutStartExchange(ctx context.Context, state *shellExecutionState, plan ShellV1Plan, result ShellV1Result, dispatchErr error) (ShellV1Result, error) {
 	operationResult, err := json.Marshal(shellOperationTerminalResult{
 		Kind: ShellV1OperationProcessStart, ProcessID: plan.ProcessID, Status: "unknown",
-		OutputComplete: false,
+		ReasonCode: result.ReasonCode, OutputComplete: result.OutputComplete,
 	})
 	if err != nil {
 		return ShellV1Result{}, err
@@ -1009,10 +1010,22 @@ func newUnknownShellResult(processID string) ShellV1Result {
 	}
 }
 
+func managedEnvironmentFailureShellResult(processID string, err error) ShellV1Result {
+	reasonCode, _ := managedExecutionErrorMetadata(err)
+	if reasonCode != "credential_not_configured" {
+		return newUnknownShellResult(processID)
+	}
+	return ShellV1Result{
+		ProcessID: processID, Status: "unknown", ReasonCode: reasonCode,
+		Chunks: []ShellV1OutputChunk{}, NextSequence: 1, OutputComplete: true,
+	}
+}
+
 type shellOperationTerminalResult struct {
 	Kind           string `json:"kind"`
 	ProcessID      string `json:"processId"`
 	Status         string `json:"status"`
+	ReasonCode     string `json:"reasonCode,omitempty"`
 	Acknowledged   bool   `json:"acknowledged"`
 	ResponseError  bool   `json:"responseError"`
 	ExitCode       *int32 `json:"exitCode"`

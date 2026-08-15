@@ -17,7 +17,8 @@ import (
 )
 
 const (
-	byteCloudDefaultSite = "i18n-tt"
+	byteCloudDefaultSite     = "i18n-tt"
+	byteCloudDeviceUserAgent = "bytecloud-cli"
 	// DefaultByteCloudDeviceAPIBaseURL is the i18n-tt production-network
 	// gateway selected by bytecloud-cli. Core runs inside the SG production
 	// network, so the office gateway (cloud.tiktok-row.net) is not a valid
@@ -325,7 +326,10 @@ func (provider ByteCloudProvider) doByteCloudJSON(ctx context.Context, path, dev
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("User-Agent", "agentserver-v2/credential-device-flow")
+	// ByteCloud's CLI registration endpoint uses the official CLI source name
+	// as an allowlisted protocol value. A product-specific User-Agent is
+	// rejected with provider code 4 (source not in support list).
+	request.Header.Set("User-Agent", byteCloudDeviceUserAgent)
 	request.Header.Set("x-real-psm", "bytecloud.auth."+deviceCode)
 	return doProviderJSON(provider.device.httpClient, request, target)
 }
@@ -344,6 +348,11 @@ func validateProviderOrigin(raw string, allowInsecure bool) error {
 func parseProviderExpiry(now time.Time, raw int64, fallback time.Duration) time.Time {
 	if raw <= 0 {
 		return now.Add(fallback)
+	}
+	// ByteCloud's registration response uses Unix milliseconds for expire_at,
+	// while token expiry fields use either Unix seconds or relative seconds.
+	if raw >= 1_000_000_000_000 {
+		return time.UnixMilli(raw).UTC()
 	}
 	if raw > now.Unix()+300 {
 		return time.Unix(raw, 0).UTC()

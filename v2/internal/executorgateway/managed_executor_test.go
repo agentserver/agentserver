@@ -187,6 +187,43 @@ func TestManagedShellLogsSafeProcessEnvironmentFailureBeforeBackendDispatch(t *t
 	}
 }
 
+func TestManagedShellReturnsCredentialNotConfiguredBeforeBackendDispatch(t *testing.T) {
+	environment := testManagedEnvironment(t)
+	backend, err := executionbackendtest.NewFakeBackend(executionbackend.KindTAE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := executionbackend.NewRouter(backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuer := managedEnvironmentIssuerFunc(func(context.Context, ManagedProcessEnvironmentRequest) (map[string]string, error) {
+		return nil, fmt.Errorf("%w: workspace ByteCloud binding is absent", errManagedCredentialNotConfigured)
+	})
+	var logs bytes.Buffer
+	executor := newManagedShellExecutor(t, environment, newFakeShellAuthority(), router, issuer)
+	executor.config.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
+	result, err := executor.Execute(t.Context(), ShellExecuteRequest{
+		Principal: testExecutorMCPPrincipal("managed-shell-credential-missing"), ToolCallID: "call-managed-credential-missing",
+		Arguments: json.RawMessage(fmt.Sprintf(
+			`{"environment_id":%q,"argv":["bkectl","bytetree","node","get","--id","4428303"],"timeout_ms":10000}`,
+			environment.EnvironmentID,
+		)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "unknown" || result.ReasonCode != "credential_not_configured" || !result.OutputComplete || len(backend.StartCalls()) != 0 {
+		t.Fatalf("managed missing credential result/calls = %+v / %d", result, len(backend.StartCalls()))
+	}
+	logged := logs.String()
+	for _, wanted := range []string{"environment_inject", "credential_not_configured", "operation_id"} {
+		if !strings.Contains(logged, wanted) {
+			t.Fatalf("managed missing credential log %q does not contain %q", logged, wanted)
+		}
+	}
+}
+
 func TestManagedShellTerminalObservedAtDeadlineDispatchesTimeout(t *testing.T) {
 	environment := testManagedEnvironment(t)
 	backend, err := executionbackendtest.NewFakeBackend(executionbackend.KindTAE)

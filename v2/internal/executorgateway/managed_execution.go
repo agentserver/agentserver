@@ -11,9 +11,14 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
+var errManagedCredentialNotConfigured = errors.New("managed credential is not configured")
+
 func managedExecutionErrorMetadata(err error) (reasonCode string, coreHTTPStatus int) {
 	if err == nil {
 		return "", 0
+	}
+	if errors.Is(err, errManagedCredentialNotConfigured) {
+		return "credential_not_configured", 0
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "context_deadline_exceeded", 0

@@ -638,8 +638,9 @@ func jsonBytesEqual(left, right json.RawMessage) bool {
 }
 
 type shellResult struct {
-	Status string `json:"status"`
-	Chunks []struct {
+	Status     string `json:"status"`
+	ReasonCode string `json:"reason_code"`
+	Chunks     []struct {
 		Sequence    uint64 `json:"sequence"`
 		Stream      string `json:"stream"`
 		ChunkBase64 string `json:"chunk_base64"`
@@ -682,6 +683,9 @@ func shellPresentation(arguments json.RawMessage, contents []dynamicToolContentI
 	}
 	command, _ := json.Marshal(input.Argv)
 	status := result.Status
+	if result.ReasonCode != "" {
+		status += " (" + result.ReasonCode + ")"
+	}
 	if result.ExitCode != nil {
 		status = fmt.Sprintf("%s (exit %d)", status, *result.ExitCode)
 	}

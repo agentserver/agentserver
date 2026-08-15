@@ -395,21 +395,26 @@ jobs:
           helm lint --strict --namespace agentserver "${chart_dir}"
           helm template agentserver-v2 "${chart_dir}" --namespace agentserver >/dev/null
           managed_stage=$(jq -r '.managedExecutor.stage' "${release_dir}/production.json")
+          probe_values=(--set taeNetworkProbe.enabled=true)
+          while IFS= read -r probe_region; do
+            probe_values+=(
+              --set-string
+              "taeNetworkProbe.policyRevisions.${probe_region}=ci-published-revision-1"
+            )
+          done < <(jq -r '.sandboxRegions.regions[]?' "${release_dir}/production.json")
           case "${managed_stage}" in
             policy-bootstrap)
+              test "${#probe_values[@]}" -gt 2
               helm lint --strict --namespace agentserver \
-                --set taeNetworkProbe.enabled=true \
-                --set-string taeNetworkProbe.policyRevision=ci-published-revision-1 \
+                "${probe_values[@]}" \
                 "${chart_dir}"
               helm template agentserver-v2 "${chart_dir}" --namespace agentserver \
-                --set taeNetworkProbe.enabled=true \
-                --set-string taeNetworkProbe.policyRevision=ci-published-revision-1 \
+                "${probe_values[@]}" \
                 --show-only templates/25-tae-network-probe.yaml >/dev/null
               ;;
             active|disabled)
               if helm template agentserver-v2 "${chart_dir}" --namespace agentserver \
-                --set taeNetworkProbe.enabled=true \
-                --set-string taeNetworkProbe.policyRevision=ci-published-revision-1 \
+                "${probe_values[@]}" \
                 >/dev/null 2>&1; then
                 echo "${managed_stage} Chart unexpectedly enabled the TAE network probe" >&2
                 exit 1
@@ -741,21 +746,26 @@ jobs:
             --output="${chart_dir}"
           helm lint --strict --namespace agentserver "${chart_dir}"
           helm template agentserver-v2 "${chart_dir}" --namespace agentserver >/dev/null
+          probe_values=(--set taeNetworkProbe.enabled=true)
+          while IFS= read -r probe_region; do
+            probe_values+=(
+              --set-string
+              "taeNetworkProbe.policyRevisions.${probe_region}=ci-published-revision-1"
+            )
+          done < <(jq -r '.sandboxRegions.regions[]?' "${release_dir}/production.json")
           case "${managed_stage}" in
             policy-bootstrap)
+              test "${#probe_values[@]}" -gt 2
               helm lint --strict --namespace agentserver \
-                --set taeNetworkProbe.enabled=true \
-                --set-string taeNetworkProbe.policyRevision=ci-published-revision-1 \
+                "${probe_values[@]}" \
                 "${chart_dir}"
               helm template agentserver-v2 "${chart_dir}" --namespace agentserver \
-                --set taeNetworkProbe.enabled=true \
-                --set-string taeNetworkProbe.policyRevision=ci-published-revision-1 \
+                "${probe_values[@]}" \
                 --show-only templates/25-tae-network-probe.yaml >/dev/null
               ;;
             active)
               if helm template agentserver-v2 "${chart_dir}" --namespace agentserver \
-                  --set taeNetworkProbe.enabled=true \
-                  --set-string taeNetworkProbe.policyRevision=forbidden-active-probe \
+                  "${probe_values[@]}" \
                   >/dev/null 2>&1; then
                 echo 'active Chart unexpectedly enabled the TAE network probe' >&2
                 exit 1

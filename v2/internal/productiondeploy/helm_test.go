@@ -96,6 +96,41 @@ func TestRenderHelmChartLocksNamespaceHooksAndValues(t *testing.T) {
 	}
 }
 
+func TestRenderHelmChartAnnotatesEveryRegionalManagedEnvironmentHook(t *testing.T) {
+	loaded, err := ValidateConfig(fourRegionConfigDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	chart, err := RenderHelmChart(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hooks := parseHelmManifest(t, mustHelmFile(t, chart, helmManagedEnvironmentManifestFile))
+	if len(hooks) != len(loaded.ManagedSandboxProfiles) {
+		t.Fatalf("managed environment Helm hooks = %d, want %d", len(hooks), len(loaded.ManagedSandboxProfiles))
+	}
+	seenNames := make(map[string]struct{}, len(hooks))
+	for _, hook := range hooks {
+		if hook["kind"] != "Job" {
+			t.Fatalf("managed environment Helm hook kind = %#v", hook["kind"])
+		}
+		metadata := objectField(t, hook, "metadata")
+		name := stringField(t, metadata, "name")
+		if _, duplicate := seenNames[name]; duplicate {
+			t.Fatalf("managed environment Helm hook repeats Job %q", name)
+		}
+		seenNames[name] = struct{}{}
+		labels := objectField(t, metadata, "labels")
+		annotations := objectField(t, metadata, "annotations")
+		if stringField(t, labels, "app.kubernetes.io/name") != managedEnvironmentBootstrapComponent ||
+			stringField(t, annotations, "helm.sh/hook") != "post-install,post-upgrade" ||
+			stringField(t, annotations, "helm.sh/hook-weight") != "10" ||
+			stringField(t, annotations, "helm.sh/hook-delete-policy") != "before-hook-creation,hook-succeeded" {
+			t.Fatalf("managed environment Helm hook metadata = labels %#v annotations %#v", labels, annotations)
+		}
+	}
+}
+
 func TestWriteHelmChartPublishesReadOnlyExactRetry(t *testing.T) {
 	loaded, err := ValidateConfig(validConfigDocument())
 	if err != nil {

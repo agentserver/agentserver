@@ -139,7 +139,13 @@ func RenderHelmChart(config LoadedConfig) (HelmChart, error) {
 		if err != nil {
 			return HelmChart{}, err
 		}
-		if err := addHelmHook(managedEnvironment, managedEnvironmentBootstrapComponent, "post-install,post-upgrade", "10"); err != nil {
+		if err := addHelmHooks(
+			managedEnvironment,
+			managedEnvironmentBootstrapComponent,
+			"post-install,post-upgrade",
+			"10",
+			len(config.ManagedSandboxProfiles),
+		); err != nil {
 			return HelmChart{}, err
 		}
 	}
@@ -242,31 +248,49 @@ func helmResources(bundle Bundle, name string) ([]kubeObject, error) {
 }
 
 func addHelmHook(resources []kubeObject, component, hook, weight string) error {
-	if len(resources) != 1 || resources[0]["kind"] != "Job" {
-		return fmt.Errorf("Helm hook %s must contain exactly one Job", component)
+	return addHelmHooks(resources, component, hook, weight, 1)
+}
+
+func addHelmHooks(resources []kubeObject, component, hook, weight string, expectedCount int) error {
+	if expectedCount < 1 || len(resources) != expectedCount {
+		return fmt.Errorf("Helm hook %s must contain exactly %d Jobs", component, expectedCount)
 	}
-	metadata, ok := resources[0]["metadata"].(map[string]any)
-	if !ok {
-		return fmt.Errorf("Helm hook %s has no metadata", component)
-	}
-	labels, _ := metadata["labels"].(map[string]any)
-	if labels["app.kubernetes.io/name"] != component {
-		return fmt.Errorf("Helm hook %s has the wrong component label", component)
-	}
-	annotations, ok := metadata["annotations"].(map[string]any)
-	if !ok {
-		annotations = make(map[string]any)
-		metadata["annotations"] = annotations
-	}
-	for key, value := range map[string]string{
-		"helm.sh/hook":               hook,
-		"helm.sh/hook-weight":        weight,
-		"helm.sh/hook-delete-policy": "before-hook-creation,hook-succeeded",
-	} {
-		if _, exists := annotations[key]; exists {
-			return fmt.Errorf("Helm hook %s already defines %s", component, key)
+	seenNames := make(map[string]struct{}, len(resources))
+	for _, resource := range resources {
+		if resource["kind"] != "Job" {
+			return fmt.Errorf("Helm hook %s must contain only Jobs", component)
 		}
-		annotations[key] = value
+		metadata, ok := resource["metadata"].(map[string]any)
+		if !ok {
+			return fmt.Errorf("Helm hook %s has no metadata", component)
+		}
+		name, ok := metadata["name"].(string)
+		if !ok || name == "" {
+			return fmt.Errorf("Helm hook %s has no name", component)
+		}
+		if _, duplicate := seenNames[name]; duplicate {
+			return fmt.Errorf("Helm hook %s repeats Job %s", component, name)
+		}
+		seenNames[name] = struct{}{}
+		labels, _ := metadata["labels"].(map[string]any)
+		if labels["app.kubernetes.io/name"] != component {
+			return fmt.Errorf("Helm hook %s has the wrong component label", component)
+		}
+		annotations, ok := metadata["annotations"].(map[string]any)
+		if !ok {
+			annotations = make(map[string]any)
+			metadata["annotations"] = annotations
+		}
+		for key, value := range map[string]string{
+			"helm.sh/hook":               hook,
+			"helm.sh/hook-weight":        weight,
+			"helm.sh/hook-delete-policy": "before-hook-creation,hook-succeeded",
+		} {
+			if _, exists := annotations[key]; exists {
+				return fmt.Errorf("Helm hook %s already defines %s", component, key)
+			}
+			annotations[key] = value
+		}
 	}
 	return nil
 }

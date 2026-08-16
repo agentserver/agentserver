@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
+	"github.com/agentserver/agentserver/v2/internal/taeimage"
 	"github.com/agentserver/agentserver/v2/internal/taenetworkreport"
 )
 
@@ -49,6 +50,17 @@ func TestRenderFourManagedSandboxProfilesKeepsRoutingCatalogsAndResourcesAligned
 		}
 		if got := sandboxEnvironment("AGENTSERVER_V2_TAE_REGION"); got != document.Region {
 			t.Fatalf("sandbox gateway %s provider region = %q", component, got)
+		}
+		repository, err := productionTAEManagedSandboxRepository(document.Region)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantImage, err := taeimage.ContentTagForRepository(repository, loaded.Document.Images.ManagedSandbox)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := sandboxEnvironment("AGENTSERVER_V2_TAE_SANDBOX_IMAGE"); got != wantImage {
+			t.Fatalf("sandbox gateway %s image = %q, want %q", component, got, wantImage)
 		}
 		wantBindings[document.Region] = managedSandboxCatalogTestBinding{
 			Region: document.Region, ProfileID: document.ProfileID,
@@ -192,6 +204,14 @@ func fourRegionActivationEvidence(t *testing.T, bootstrap ConfigDocument) []Mana
 	for _, profile := range bootstrap.SandboxProfiles {
 		revision := "lark-readonly-" + profile.Region + "-v2"
 		report := validActivationNetworkReport(bootstrap, revision)
+		repository, err := productionTAEManagedSandboxRepository(profile.Region)
+		if err != nil {
+			t.Fatal(err)
+		}
+		report.Configuration.SandboxImage, err = taeimage.ContentTagForRepository(repository, bootstrap.Images.ManagedSandbox)
+		if err != nil {
+			t.Fatal(err)
+		}
 		report.Configuration.Region = profile.Region
 		report.Configuration.ByteCloudSite = profile.TAE.ByteCloudSite
 		report.Configuration.JWTEndpoint = profile.TAE.ByteCloudJWTEndpoint

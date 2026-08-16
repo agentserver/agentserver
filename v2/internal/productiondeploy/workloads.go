@@ -714,7 +714,11 @@ func renderSandboxDeployment(context renderContext, loaded LoadedManagedSandboxP
 	config := context.config
 	document := config.Document
 	profile := loaded.Document
-	taeSandboxImage, err := taeimage.ContentTagForRepository(ProductionTAEManagedSandboxImage, document.Images.ManagedSandbox)
+	repository, err := productionTAEManagedSandboxRepository(profile.Region)
+	if err != nil {
+		return nil, err
+	}
+	taeSandboxImage, err := taeimage.ContentTagForRepository(repository, document.Images.ManagedSandbox)
 	if err != nil {
 		return nil, err
 	}

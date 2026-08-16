@@ -56,7 +56,13 @@ const (
 	ProductionHarnessImage             = "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-harness"
 	ProductionHydraImage               = "registry-sg.byted.cs.ac.cn/ghcr/agentserver/hydra"
 	ProductionManagedSandboxImage      = "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-managed-sandbox"
-	ProductionTAEManagedSandboxImage   = "aliyun-sin-hub.byted.org/agentserver/tae-sandbox"
+	ProductionTAEManagedSandboxCNImage = "hub.byted.org/agentserver/tae-sandbox"
+	ProductionTAEManagedSandboxSGImage = "aliyun-sin-hub.byted.org/agentserver/tae-sandbox"
+	ProductionTAEManagedSandboxVAImage = "aliyun-va-hub.byted.org/agentserver/tae-sandbox"
+	// ProductionTAEManagedSandboxImage is the legacy default-profile alias.
+	// The default i18n-tt profile remains in SG; regional render paths must use
+	// productionTAEManagedSandboxRepository instead of this alias.
+	ProductionTAEManagedSandboxImage   = ProductionTAEManagedSandboxSGImage
 	ProductionSandboxBackendKeyID      = "sandbox-backend-sg-v1"
 	ProductionSandboxFencerKeyID       = "sandbox-fencer-sg-v1"
 	ProductionEgressPlaceholderKeyID   = "egress-placeholder-sg-v1"

@@ -613,3 +613,21 @@ func managedSandboxTAEAuthority(region string) (string, string, error) {
 	}
 	return "https://controlplane." + suffix, suffix, nil
 }
+
+// productionTAEManagedSandboxRepository selects the registry local to the
+// reviewed TAE control plane. The release pipeline publishes one verified OCI
+// archive to CN, SG, and VA independently; this function never falls back
+// between registries at runtime. i18n-bd remains disabled in production and
+// retains the existing SG repository until that region is re-qualified.
+func productionTAEManagedSandboxRepository(region string) (string, error) {
+	repository := map[string]string{
+		managedsandboxprofile.RegionCN:     ProductionTAEManagedSandboxCNImage,
+		managedsandboxprofile.RegionBOE:    ProductionTAEManagedSandboxCNImage,
+		managedsandboxprofile.RegionI18NBD: ProductionTAEManagedSandboxSGImage,
+		managedsandboxprofile.RegionI18NTT: ProductionTAEManagedSandboxSGImage,
+	}[region]
+	if repository == "" {
+		return "", errors.New("TAE managed sandbox image region is unsupported")
+	}
+	return repository, nil
+}

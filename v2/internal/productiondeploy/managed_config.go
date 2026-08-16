@@ -861,7 +861,11 @@ func validateTAENetworkReportForProfileActivation(
 	if !report.Passed || !report.CleanupConfirmed {
 		return errors.New("TAE network report did not pass or did not confirm cleanup")
 	}
-	taeSandboxImage, err := taeimage.ContentTagForRepository(ProductionTAEManagedSandboxImage, document.Images.ManagedSandbox)
+	repository, err := productionTAEManagedSandboxRepository(profile.Region)
+	if err != nil {
+		return err
+	}
+	taeSandboxImage, err := taeimage.ContentTagForRepository(repository, document.Images.ManagedSandbox)
 	if err != nil {
 		return err
 	}

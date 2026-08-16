@@ -25,13 +25,17 @@ func taeNetworkProbeResources(config LoadedConfig) ([]kubeObject, error) {
 	}
 	config = validated
 	document := config.Document
-	taeSandboxImage, err := taeimage.ContentTagForRepository(ProductionTAEManagedSandboxImage, document.Images.ManagedSandbox)
-	if err != nil {
-		return nil, err
-	}
 	configSHA256 := canonicalDigest(document)
 	items := []kubeObject{serviceAccountResource(config, taeNetworkProbeComponent)}
 	for _, profile := range config.ManagedSandboxProfiles {
+		repository, repositoryErr := productionTAEManagedSandboxRepository(profile.Document.Region)
+		if repositoryErr != nil {
+			return nil, repositoryErr
+		}
+		taeSandboxImage, imageErr := taeimage.ContentTagForRepository(repository, document.Images.ManagedSandbox)
+		if imageErr != nil {
+			return nil, imageErr
+		}
 		profileItems, renderErr := taeNetworkProbeProfileResources(config, profile, taeSandboxImage, configSHA256)
 		if renderErr != nil {
 			return nil, renderErr

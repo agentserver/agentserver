@@ -149,11 +149,23 @@ jobs:
           password: ${{ secrets.ICM_PASSWORD }}
 
       - name: Log in to VA ICM registry
-        uses: docker/login-action@v4
-        with:
-          registry: aliyun-va-hub.byted.org
-          username: ${{ secrets.ICM_USERNAME }}
-          password: ${{ secrets.ICM_PASSWORD }}
+        env:
+          ICM_USERNAME: ${{ secrets.ICM_USERNAME }}
+          ICM_PASSWORD: ${{ secrets.ICM_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if printf '%s' "${ICM_PASSWORD}" | docker login aliyun-va-hub.byted.org \
+                --username "${ICM_USERNAME}" --password-stdin; then
+              exit 0
+            fi
+            docker logout aliyun-va-hub.byted.org >/dev/null 2>&1 || true
+            if [ "${attempt}" -lt 3 ]; then
+              sleep "$((attempt * 10))"
+            fi
+          done
+          echo 'VA ICM registry login failed after three bounded attempts' >&2
+          exit 1
 
       - uses: azure/setup-helm@v4
         with:

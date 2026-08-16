@@ -780,10 +780,26 @@ func (handler *ExecutorMCPHandler) authorizeSession(sessionID string, principal 
 	}
 	handler.sweepClosedSessionsLocked()
 	session := handler.sessions[sessionID]
-	if session == nil || session.principal != principal {
+	if session == nil || !equalExecutorMCPPrincipals(session.principal, principal) {
 		return nil, errors.New("MCP session principal mismatch")
 	}
 	return session, nil
+}
+
+// equalExecutorMCPPrincipals compares the immutable authority by value. The
+// production authenticator reconstructs ManagedSandbox on every request, so
+// comparing ExecutorMCPPrincipal directly would compare allocation addresses
+// and reject an otherwise identical principal after initialize.
+func equalExecutorMCPPrincipals(left, right ExecutorMCPPrincipal) bool {
+	if (left.ManagedSandbox == nil) != (right.ManagedSandbox == nil) {
+		return false
+	}
+	if left.ManagedSandbox != nil && *left.ManagedSandbox != *right.ManagedSandbox {
+		return false
+	}
+	left.ManagedSandbox = nil
+	right.ManagedSandbox = nil
+	return left == right
 }
 
 func (handler *ExecutorMCPHandler) finishExistingSession(sessionID string, session *executorMCPSession) {

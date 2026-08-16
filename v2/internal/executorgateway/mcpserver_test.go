@@ -409,6 +409,72 @@ func TestExecutorMCPSessionCannotBeReusedByAnotherCapability(t *testing.T) {
 	}
 }
 
+func TestExecutorMCPSessionAcceptsReconstructedManagedSandboxPrincipal(t *testing.T) {
+	principal := testExecutorMCPPrincipal("capability-managed-sandbox")
+	principal.ManagedSandbox = &ExecutorManagedSandboxAuthority{
+		SettingVersion: 2,
+		Region:         "boe",
+		ProfileID:      "tae-boe-test-profile",
+		BindingSHA256:  strings.Repeat("b", 64),
+		EnvironmentID:  "43000000-0000-4000-8000-000000000004",
+	}
+	registry := &recordingMCPEnvironmentRegistry{}
+	resolver, err := NewEnvironmentResolver(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := DefaultExecutorMCPConfig()
+	sequence := 0
+	config.IDGenerator = func() (string, error) {
+		sequence++
+		return fmtMCPTestSessionID(sequence), nil
+	}
+	handler, err := NewExecutorMCPHandler(reconstructingTestExecutorMCPAuthenticator{
+		bearer:    testMCPBearerA,
+		principal: principal,
+	}, resolver, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = handler.Shutdown(context.Background()) })
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	session := connectRawMCPClient(t, server, testMCPBearerA)
+	t.Cleanup(func() { _ = session.Close() })
+	listed, err := session.ListTools(t.Context(), nil)
+	if err != nil || len(listed.Tools) != 1 || listed.Tools[0].Name != mcpcontract.ToolListEnvironments {
+		t.Fatalf("reconstructed managed principal tools/list = %+v, %v", listed, err)
+	}
+}
+
+func TestEqualExecutorMCPPrincipalsRejectsManagedSandboxAuthorityDrift(t *testing.T) {
+	left := testExecutorMCPPrincipal("capability-managed-sandbox-equality")
+	left.ManagedSandbox = &ExecutorManagedSandboxAuthority{
+		SettingVersion: 2,
+		Region:         "boe",
+		ProfileID:      "tae-boe-test-profile",
+		BindingSHA256:  strings.Repeat("b", 64),
+		EnvironmentID:  "43000000-0000-4000-8000-000000000004",
+	}
+	right := left
+	equivalent := *left.ManagedSandbox
+	right.ManagedSandbox = &equivalent
+	if !equalExecutorMCPPrincipals(left, right) {
+		t.Fatal("equal managed sandbox authority with a distinct allocation was rejected")
+	}
+	drifted := equivalent
+	drifted.Region = "cn"
+	right.ManagedSandbox = &drifted
+	if equalExecutorMCPPrincipals(left, right) {
+		t.Fatal("managed sandbox authority drift was accepted")
+	}
+	right.ManagedSandbox = nil
+	if equalExecutorMCPPrincipals(left, right) {
+		t.Fatal("missing managed sandbox authority was accepted")
+	}
+}
+
 func TestExecutorMCPRejectsOtherProtocolProfilesAndBrowserOrigins(t *testing.T) {
 	handler := newTestExecutorMCPHandler(t, &recordingMCPEnvironmentRegistry{}, map[string]ExecutorMCPPrincipal{
 		testMCPBearerA: testExecutorMCPPrincipal("capability-a"),
@@ -560,6 +626,23 @@ func (authenticator testExecutorMCPAuthenticator) AuthenticateExecutorMCP(reques
 	principal, found := authenticator.principals[strings.TrimPrefix(values[0], prefix)]
 	if !found {
 		return ExecutorMCPPrincipal{}, errors.New("unknown bearer")
+	}
+	return principal, nil
+}
+
+type reconstructingTestExecutorMCPAuthenticator struct {
+	bearer    string
+	principal ExecutorMCPPrincipal
+}
+
+func (authenticator reconstructingTestExecutorMCPAuthenticator) AuthenticateExecutorMCP(request *http.Request) (ExecutorMCPPrincipal, error) {
+	if request.Header.Get("Authorization") != "Bearer "+authenticator.bearer {
+		return ExecutorMCPPrincipal{}, errors.New("unknown bearer")
+	}
+	principal := authenticator.principal
+	if principal.ManagedSandbox != nil {
+		managedSandbox := *principal.ManagedSandbox
+		principal.ManagedSandbox = &managedSandbox
 	}
 	return principal, nil
 }

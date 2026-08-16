@@ -136,6 +136,10 @@ func TestPreparePolicyBootstrapClearsEveryInstalledManagedSandboxProfile(t *test
 	}
 	values := string(mustHelmFile(t, chart, helmValuesFile))
 	template := string(mustHelmFile(t, chart, helmTAENetworkProbeTemplateFile))
+	if strings.Contains(template, "---\n{{- $revision") ||
+		!strings.Contains(template, "---\n{{ $revision1") {
+		t.Fatal("multi-region Helm probe template trims a YAML document separator")
+	}
 	for _, region := range managedsandboxprofile.Regions() {
 		if !strings.Contains(values, "    "+region+": \"\"") ||
 			!strings.Contains(template, "index .Values.taeNetworkProbe.policyRevisions \""+region+"\"") ||

@@ -429,10 +429,10 @@ func renderTAENetworkProbeTemplate(namespace string, probeRegions []string) []by
 {{- if .Values.taeNetworkProbe.enabled }}
 `)
 	for index, region := range probeRegions {
-		fmt.Fprintf(&output, `{{- $revision%d := toString (index .Values.taeNetworkProbe.policyRevisions %q) -}}
-{{- $identity%d := printf "%%s\n%%s\n%s" .Values.deploymentConfigSHA256 $revision%d | sha256sum | trunc 12 -}}
-{{- $jobName%d := printf "agentserver-tae-network-probe-%s-%%s" $identity%d -}}
-{{- $inputName%d := printf "agentserver-tae-network-probe-input-%s-%%s" $identity%d -}}
+		fmt.Fprintf(&output, `{{ $revision%d := toString (index .Values.taeNetworkProbe.policyRevisions %q) -}}
+{{ $identity%d := printf "%%s\n%%s\n%s" .Values.deploymentConfigSHA256 $revision%d | sha256sum | trunc 12 -}}
+{{ $jobName%d := printf "agentserver-tae-network-probe-%s-%%s" $identity%d -}}
+{{ $inputName%d := printf "agentserver-tae-network-probe-input-%s-%%s" $identity%d -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:

@@ -325,7 +325,7 @@ func TestRenderRejectsPartialManagedToolPack(t *testing.T) {
 	document.Managed.Lark.Enabled = false
 	document.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(document, document.Managed)
 	document.Managed.Environment.PackSetSHA256 = managedPackSetDigest(document.Managed)
-	if _, err := ValidateConfig(document); err == nil || !strings.Contains(err.Error(), "requires both the pinned lark and bkectl") {
+	if _, err := ValidateConfig(document); err == nil || !strings.Contains(err.Error(), "requires both the pinned lark and managed bkectl") {
 		t.Fatalf("partial managed tool pack error = %v", err)
 	}
 }

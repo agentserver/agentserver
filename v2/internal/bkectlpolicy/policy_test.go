@@ -6,11 +6,14 @@ import (
 	"testing"
 )
 
-func TestCredentialRequiredAllowsPinnedReadCommands(t *testing.T) {
+func TestCredentialRequiredDoesNotAuthorizeCommandPaths(t *testing.T) {
 	for _, arguments := range [][]string{
-		{"k8s", "pod", "get", "--cluster", "echo-hl", "--namespace", "default", "--name", "demo", "--json"},
-		{"bytebox", "host", "get", "10.0.0.1", "--region", "i18n"},
-		{"spacex", "release-orchestration", "progress", "--id", "123"},
+		{"--region", "cn", "k8s", "pod", "get", "--cluster", "echo-hl", "--name", "demo"},
+		{"future", "command", "introduced", "after", "this", "release"},
+		{"bytesd", "node", "block", "--ip", "10.0.0.1"},
+		{"--confirm-write", "quota", "resource-pool", "create"},
+		{"k8s", "pod", "get", "--debug"},
+		{"auth", "status"},
 	} {
 		required, err := CredentialRequired(arguments)
 		if err != nil || !required {
@@ -21,7 +24,8 @@ func TestCredentialRequiredAllowsPinnedReadCommands(t *testing.T) {
 
 func TestCredentialRequiredAllowsDiscoveryWithoutCredential(t *testing.T) {
 	for _, arguments := range [][]string{
-		nil, {"--help"}, {"k8s", "pod", "get", "--help"}, {"help", "quota"}, {"version"},
+		nil, {"--help"}, {"--region", "cn", "k8s", "pod", "get", "--help"},
+		{"help", "quota"}, {"version"},
 	} {
 		required, err := CredentialRequired(arguments)
 		if err != nil || required {
@@ -30,33 +34,30 @@ func TestCredentialRequiredAllowsDiscoveryWithoutCredential(t *testing.T) {
 	}
 }
 
-func TestCredentialRequiredDeniesCredentialDisclosureAndMutation(t *testing.T) {
+func TestCredentialRequiredDeniesOnlyCredentialDisclosure(t *testing.T) {
 	for _, arguments := range [][]string{
 		{"auth", "get", "jwt", "--json"},
-		{"auth", "status"},
-		{"k8s", "node", "shell", "--cluster", "echo-hl", "--name", "node-1"},
-		{"bytesd", "node", "block", "--ip", "10.0.0.1"},
-		{"--confirm-write", "quota", "resource-pool", "create"},
-		{"k8s", "pod", "get", "--debug"},
-		{"unknown", "command"},
+		{"--region", "cn", "auth", "get", "jwt"},
+		{"auth", "--json", "get", "jwt"},
 	} {
 		required, err := CredentialRequired(arguments)
-		if required || !errors.Is(err, ErrInvocationDenied) {
-			t.Fatalf("CredentialRequired(%q) = %t, %v; want denied", arguments, required, err)
+		if required || !errors.Is(err, ErrCredentialDisclosureDenied) {
+			t.Fatalf("CredentialRequired(%q) = %t, %v; want credential disclosure denied", arguments, required, err)
 		}
+	}
+
+	// Discovery of the command is harmless because no credential is injected.
+	required, err := CredentialRequired([]string{"auth", "get", "jwt", "--help"})
+	if err != nil || required {
+		t.Fatalf("credential help discovery = %t, %v; want false, nil", required, err)
 	}
 }
 
-func TestPolicyPinsExpectedUpstreamSurface(t *testing.T) {
-	if len(allowedCommandPaths) != 245 {
-		t.Fatalf("allowed command count = %d, want 245", len(allowedCommandPaths))
+func TestCredentialContractDigest(t *testing.T) {
+	if !strings.Contains(CredentialContractDocument, "command_paths=unrestricted") {
+		t.Fatal("credential contract does not explicitly leave command authorization downstream")
 	}
 	if got := SHA256Hex(); len(got) != 64 || strings.Trim(got, "0123456789abcdef") != "" {
 		t.Fatalf("SHA256Hex() = %q", got)
-	}
-	for index := 1; index < len(allowedCommandPaths); index++ {
-		if allowedCommandPaths[index-1] >= allowedCommandPaths[index] {
-			t.Fatalf("command surface is not strictly sorted at %q", allowedCommandPaths[index])
-		}
 	}
 }

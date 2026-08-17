@@ -1123,7 +1123,7 @@ func validateManagedExecutor(managed ManagedExecutorDocument, document ConfigDoc
 		}
 	}
 	if managed.Enabled && (!managed.Lark.Enabled || !managed.Bkectl.Enabled) {
-		return LoadedConfig{}, errors.New("managedExecutor requires both the pinned lark and bkectl read-only tools while enabled")
+		return LoadedConfig{}, errors.New("managedExecutor requires both the pinned lark and managed bkectl tools while enabled")
 	}
 	if managed.BaseInstructionsSHA256 != "" && managed.BaseInstructionsSHA256 != productionimage.ManagedSkillSHA256 {
 		return LoadedConfig{}, fmt.Errorf("managedExecutor.baseInstructionsSha256 must equal pinned managed CLI instructions digest %s", productionimage.ManagedSkillSHA256)

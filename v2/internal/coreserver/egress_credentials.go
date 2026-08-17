@@ -277,7 +277,9 @@ type executionCredentialTool struct {
 // Core selects a workspace binding. An empty result means the provider keeps
 // its workspace-selected mode. ByteCloud credentials are provider resources,
 // not bkectl resources: every managed CLI consumer receives them only through
-// process_env, independently of the Lark webhook/process setting.
+// process_env, independently of the Lark webhook/process setting. The digest
+// identifies the credential-delivery contract; it does not authorize bkectl
+// command paths.
 func executionCredentialAuthorityMode(providerKind, policySHA256 string) (string, error) {
 	switch {
 	case providerKind == "lark" && policySHA256 == larkegresspolicy.SHA256Hex():

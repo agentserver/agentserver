@@ -13,7 +13,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
-func TestResolveExecutionCredentialMaterializesPlatformByteCloudJWTForReadOnlyBkectl(t *testing.T) {
+func TestResolveExecutionCredentialMaterializesPlatformByteCloudJWTForBkectl(t *testing.T) {
 	service, store, request := testBkectlExecutionCredentialService(t)
 	result, err := service.ResolveExecutionCredential(t.Context(), request)
 	if err != nil {
@@ -32,21 +32,31 @@ func TestResolveExecutionCredentialMaterializesPlatformByteCloudJWTForReadOnlyBk
 	}
 }
 
-func TestResolveExecutionCredentialDeniesUnsafeBkectlBeforeCredentialLookup(t *testing.T) {
+func TestResolveExecutionCredentialDoesNotAuthorizeBkectlCommandPaths(t *testing.T) {
 	for name, arguments := range map[string][]string{
-		"credential disclosure": {"auth", "get", "jwt", "--json"},
-		"write":                 {"bytesd", "node", "block", "--ip", "10.0.0.1"},
-		"unknown":               {"future", "command", "get"},
-		"debug":                 {"bytetree", "node", "get", "--id", "4428303", "--debug"},
+		"global region before command": {"--region", "cn", "k8s", "pod", "get", "--name", "demo"},
+		"write":                        {"bytesd", "node", "block", "--ip", "10.0.0.1"},
+		"future command":               {"future", "command", "get"},
+		"debug":                        {"bytetree", "node", "get", "--id", "4428303", "--debug"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			service, store, request := testBkectlExecutionCredentialService(t)
 			request.Arguments = arguments
-			if result, err := service.ResolveExecutionCredential(t.Context(), request); err == nil || result.Credential != "" ||
-				store.authorityCalls != 0 || store.useCalls != 0 || len(store.events) != 0 {
-				t.Fatalf("unsafe bkectl request reached credential lookup: %#v, %v / %#v", result, err, store)
+			result, err := service.ResolveExecutionCredential(t.Context(), request)
+			if err != nil || !result.Configured || result.Credential != "workspace-bytecloud-jwt" ||
+				store.authorityCalls != 1 || store.useCalls != 1 || len(store.events) != 1 {
+				t.Fatalf("bkectl command was locally authorized: %#v, %v / %#v", result, err, store)
 			}
 		})
+	}
+}
+
+func TestResolveExecutionCredentialDeniesCredentialDisclosureBeforeLookup(t *testing.T) {
+	service, store, request := testBkectlExecutionCredentialService(t)
+	request.Arguments = []string{"--region", "cn", "auth", "get", "jwt", "--json"}
+	if result, err := service.ResolveExecutionCredential(t.Context(), request); err == nil || result.Credential != "" ||
+		store.authorityCalls != 0 || store.useCalls != 0 || len(store.events) != 0 {
+		t.Fatalf("credential disclosure reached credential lookup: %#v, %v / %#v", result, err, store)
 	}
 }
 
@@ -151,7 +161,7 @@ func testBkectlExecutionCredentialService(t *testing.T) (*EgressCredentialServic
 		},
 		TAEPSM: "bytedance.sandbox.agentserver", PolicySHA256: bkectlpolicy.SHA256Hex(),
 		ProviderKind: bkectlpolicy.CredentialKind, ToolName: "shell", Executable: bkectlpolicy.Executable,
-		Arguments: []string{"bytetree", "node", "get", "--id", "4428303", "--region", "i18nbd", "--json"},
+		Arguments: []string{"--region", "i18nbd", "bytetree", "node", "get", "--id", "4428303", "--json"},
 		BindingID: binding.ID, AuthorityVersion: binding.AuthorityVersion, CredentialVersion: binding.CredentialVersion,
 	}
 	return service, store, request

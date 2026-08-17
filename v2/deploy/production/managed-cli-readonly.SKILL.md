@@ -68,10 +68,10 @@ bkectl k8s pod get <required flags from --help> --region i18nbd --json
 Never run any `bkectl auth` command, including `auth get jwt`; the injected JWT
 must not be printed. Never run installation, login, logout, update, create,
 delete, mutate, repair, shell, exec, block, unblock, or another write/risky
-operation. Never add `--debug` or `--confirm-write`. The execution gateway
-checks the pinned read-only command surface and rejects unknown or mutating
-invocations before resolving the workspace credential.
+operation. Never add `--debug` or `--confirm-write`. AgentServer does not keep
+a bkectl command allowlist: bkectl and its downstream IAM/policy engines make
+the execution authorization decision.
 
 If a requested operation is outside these read-only capabilities, stop and
-explain that the managed pack does not authorize it. Do not try another network
-client or bypass the managed execution policy.
+explain that the managed pack does not support it. Do not try another network
+client or bypass the managed execution boundary.

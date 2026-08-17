@@ -10,7 +10,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
-func TestWorkspaceManagedEnvironmentIssuerInjectsByteCloudJWTOnlyForReadOnlyBkectl(t *testing.T) {
+func TestWorkspaceManagedEnvironmentIssuerInjectsByteCloudJWTForBkectl(t *testing.T) {
 	now := time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC)
 	authority := ManagedCredentialAuthority{
 		CredentialMode:   managedcredential.ModeProcessEnv,
@@ -48,7 +48,7 @@ func TestWorkspaceManagedEnvironmentIssuerInjectsByteCloudJWTOnlyForReadOnlyBkec
 
 	request := testManagedLarkEnvironmentRequest(now)
 	request.Executable = bkectlpolicy.Executable
-	request.Arguments = []string{"bytetree", "node", "get", "--id", "4428303", "--region", "i18nbd", "--json"}
+	request.Arguments = []string{"--region", "cn", "bytetree", "node", "get", "--id", "4428303", "--json"}
 	environment, err := issuer.IssueManagedProcessEnvironment(t.Context(), request)
 	if err != nil {
 		t.Fatal(err)
@@ -71,19 +71,23 @@ func TestWorkspaceManagedEnvironmentIssuerInjectsByteCloudJWTOnlyForReadOnlyBkec
 		t.Fatalf("bkectl discovery environment/calls = %#v, %v / %d/%d", discovery, err, authorityCalls, credentialCalls)
 	}
 
-	for name, arguments := range map[string][]string{
-		"credential disclosure": {"auth", "get", "jwt", "--json"},
-		"write":                 {"bytesd", "node", "block", "--ip", "10.0.0.1"},
-		"risky global flag":     {"k8s", "pod", "get", "--debug"},
-		"unknown":               {"future", "command", "get"},
+	for index, arguments := range [][]string{
+		{"bytesd", "node", "block", "--ip", "10.0.0.1"},
+		{"k8s", "pod", "get", "--debug"},
+		{"future", "command", "get"},
 	} {
-		t.Run(name, func(t *testing.T) {
-			request.Arguments = arguments
-			if environment, err := issuer.IssueManagedProcessEnvironment(t.Context(), request); err == nil || len(environment) != 0 ||
-				authorityCalls != 1 || credentialCalls != 1 {
-				t.Fatalf("unsafe bkectl invocation received environment: %#v, %v / %d/%d", environment, err, authorityCalls, credentialCalls)
-			}
-		})
+		request.Arguments = arguments
+		environment, err := issuer.IssueManagedProcessEnvironment(t.Context(), request)
+		if err != nil || environment[ManagedBkectlJWTEnvironment] != "workspace-bytecloud-jwt" ||
+			authorityCalls != index+2 || credentialCalls != index+2 {
+			t.Fatalf("bkectl invocation was locally authorized: %#v, %v / %d/%d", environment, err, authorityCalls, credentialCalls)
+		}
+	}
+
+	request.Arguments = []string{"--region", "cn", "auth", "get", "jwt", "--json"}
+	if environment, err := issuer.IssueManagedProcessEnvironment(t.Context(), request); err == nil || len(environment) != 0 ||
+		authorityCalls != 4 || credentialCalls != 4 {
+		t.Fatalf("credential disclosure received environment: %#v, %v / %d/%d", environment, err, authorityCalls, credentialCalls)
 	}
 }
 

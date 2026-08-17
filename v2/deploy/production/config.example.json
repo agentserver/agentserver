@@ -90,7 +90,7 @@
     "enabled": true,
     "stage": "active",
     "workspaceAllowlist": ["9271bfe5-68a4-484b-a2d3-e9f450a42d0c"],
-    "baseInstructionsSha256": "9a377446f5a966193ad54efe72b0ae84410bdc1ff22df40701384da30c96fcb1",
+    "baseInstructionsSha256": "63a0de0d632b446bc4b25961751742bc6930c3092e3f9d57cae8b0c472e02f3c",
     "environment": {
       "environmentId": "30000000-0000-4000-8000-000000000003",
       "root": {
@@ -104,8 +104,8 @@
         "codexCommit": "e363b08c9175ac1cbe5893615dd2cb9ddf95043b",
         "codexSha256": "2e863156ed35ecc5253b1e2f907a9143077b9f7cb51942070c61996471ff6e04"
       },
-      "runtimeProfileSha256": "2f80492f5e6cd49641a2bafa566c67daaad70499c3ac9e427136cc50c9a10dc0",
-      "packSetSha256": "0dec2e5834bccf724a282aec17768d42d11b1ef3c1c8f57534c84c63127d6c65",
+      "runtimeProfileSha256": "e81ab67f56fd83963c20e02c377d211dbb493211f8e4a342750398c1995753bd",
+      "packSetSha256": "8f9db28d5092c156fb2376a01afaccea6680da40a19702b0d07af68ad517f92b",
       "sandboxTtl": "30m",
       "activityTtl": "5m",
       "idleTtl": "5m"
@@ -154,7 +154,7 @@
       "sourceRevision": "d813842ab03b24f2ac7a5b374507c273f41cbf21",
       "cliSha256": "0331eb9836e46034d07bc88c52fa7af738dff7ad0b2b83d85ffe7cd6dfb7a590",
       "skillPackSha256": "b752c88857ca7035580e9a9d51e9c63a09fd1bda28ce290c4e71b351c3779e51",
-      "policySha256": "7f6bd3ce588dcc9c43aff603eb4d784c9dc78283fc6db16d83589e99f74f1cb9"
+      "policySha256": "642c86d38c499ae90f83223bdd7bd71eb2fe761874cb76cee5b1fecd2bb3bc99"
     }
   },
   "sandboxRegions": {
@@ -165,7 +165,7 @@
     {
       "region": "i18n-tt",
       "profileId": "tae-i18n-tt-7972bed91c4fa926",
-      "bindingSha256": "f41e11a671197046e8cdd160cc7dc5cbea9eaf359b87077284a5ab59ce06ec68",
+      "bindingSha256": "86daf7b9cc68e20af4fd1d42c6cac2777535d98663c6df55dbb9fc892a23ead7",
       "gateway": {
         "component": "sandbox-gateway",
         "clusterIp": "192.168.250.16",
@@ -186,8 +186,8 @@
           "codexCommit": "e363b08c9175ac1cbe5893615dd2cb9ddf95043b",
           "codexSha256": "2e863156ed35ecc5253b1e2f907a9143077b9f7cb51942070c61996471ff6e04"
         },
-        "runtimeProfileSha256": "2f80492f5e6cd49641a2bafa566c67daaad70499c3ac9e427136cc50c9a10dc0",
-        "packSetSha256": "0dec2e5834bccf724a282aec17768d42d11b1ef3c1c8f57534c84c63127d6c65",
+        "runtimeProfileSha256": "e81ab67f56fd83963c20e02c377d211dbb493211f8e4a342750398c1995753bd",
+        "packSetSha256": "8f9db28d5092c156fb2376a01afaccea6680da40a19702b0d07af68ad517f92b",
         "sandboxTtl": "30m",
         "activityTtl": "5m",
         "idleTtl": "5m"

@@ -312,38 +312,39 @@ jobs:
           service_tag="${SERVICE_REPOSITORY}:sha-${GITHUB_SHA}"
           harness_tag="${HARNESS_REPOSITORY}:sha-${GITHUB_SHA}"
           managed_sandbox_tag="${MANAGED_SANDBOX_REPOSITORY}:sha-${GITHUB_SHA}"
-          skopeo copy --retry-times 3 \
+          skopeo_retry=(--retry-times 10 --retry-delay 5s)
+          skopeo copy "${skopeo_retry[@]}" \
             "oci-archive:${evidence}/service-image.oci.tar" "docker://${service_tag}"
-          skopeo copy --retry-times 3 \
+          skopeo copy "${skopeo_retry[@]}" \
             "oci-archive:${evidence}/harness-image.oci.tar" "docker://${harness_tag}"
-          skopeo copy --retry-times 3 \
+          skopeo copy "${skopeo_retry[@]}" \
             "oci-archive:${evidence}/managed-sandbox-image.oci.tar" "docker://${managed_sandbox_tag}"
           # Push the convenience tags from the already-verified local archives.
           # Reading a just-created private GHCR manifest back by digest can race
           # package visibility and return a non-retryable 403 even though the
           # authenticated tag inspect and both destination pushes succeeded.
-          skopeo copy --retry-times 3 \
+          skopeo copy "${skopeo_retry[@]}" \
             "oci-archive:${evidence}/service-image.oci.tar" "docker://${SERVICE_REPOSITORY}:main"
-          skopeo copy --retry-times 3 \
+          skopeo copy "${skopeo_retry[@]}" \
             "oci-archive:${evidence}/harness-image.oci.tar" "docker://${HARNESS_REPOSITORY}:main"
-          skopeo copy --retry-times 3 \
+          skopeo copy "${skopeo_retry[@]}" \
             "oci-archive:${evidence}/managed-sandbox-image.oci.tar" "docker://${MANAGED_SANDBOX_REPOSITORY}:main"
-          skopeo copy --retry-times 3 --override-os linux --override-arch amd64 \
+          skopeo copy "${skopeo_retry[@]}" --override-os linux --override-arch amd64 \
             "docker://${HYDRA_SOURCE}" "docker://${HYDRA_REPOSITORY}:26.2.0-amd64"
-          service_digest=$(skopeo inspect --format '{{.Digest}}' "docker://${service_tag}")
-          harness_digest=$(skopeo inspect --format '{{.Digest}}' "docker://${harness_tag}")
-          managed_sandbox_digest=$(skopeo inspect --format '{{.Digest}}' "docker://${managed_sandbox_tag}")
-          hydra_digest=$(skopeo inspect --format '{{.Digest}}' "docker://${HYDRA_REPOSITORY}:26.2.0-amd64")
+          service_digest=$(skopeo inspect "${skopeo_retry[@]}" --format '{{.Digest}}' "docker://${service_tag}")
+          harness_digest=$(skopeo inspect "${skopeo_retry[@]}" --format '{{.Digest}}' "docker://${harness_tag}")
+          managed_sandbox_digest=$(skopeo inspect "${skopeo_retry[@]}" --format '{{.Digest}}' "docker://${managed_sandbox_tag}")
+          hydra_digest=$(skopeo inspect "${skopeo_retry[@]}" --format '{{.Digest}}' "docker://${HYDRA_REPOSITORY}:26.2.0-amd64")
           managed_sandbox_tae_tag="sha256-${managed_sandbox_digest#sha256:}"
           test "${#managed_sandbox_tae_tag}" = '71'
           # TAE currently rejects OCI @sha256 references and accepts only a
           # registry/repository:tag image. Publish a deterministic tag that
           # embeds the complete manifest digest, then prove the mapping before
           # allowing the release to advance.
-          skopeo copy --retry-times 3 \
+          skopeo copy "${skopeo_retry[@]}" \
             "oci-archive:${evidence}/managed-sandbox-image.oci.tar" \
             "docker://${MANAGED_SANDBOX_REPOSITORY}:${managed_sandbox_tae_tag}"
-          test "$(skopeo inspect --format '{{.Digest}}' \
+          test "$(skopeo inspect "${skopeo_retry[@]}" --format '{{.Digest}}' \
             "docker://${MANAGED_SANDBOX_REPOSITORY}:${managed_sandbox_tae_tag}")" = "${managed_sandbox_digest}"
           # Publish the same already-verified local OCI archive independently
           # to all TAE registries. There is no registry-to-registry sync path.
@@ -351,21 +352,21 @@ jobs:
               "${TAE_MANAGED_SANDBOX_CN_REPOSITORY}" \
               "${TAE_MANAGED_SANDBOX_SG_REPOSITORY}" \
               "${TAE_MANAGED_SANDBOX_VA_REPOSITORY}"; do
-            skopeo copy --retry-times 3 \
+            skopeo copy "${skopeo_retry[@]}" \
               "oci-archive:${evidence}/managed-sandbox-image.oci.tar" \
               "docker://${tae_repository}:${managed_sandbox_tae_tag}"
             # Full skopeo inspect also calls /tags/list, which ICM can reject
             # independently of a successful manifest push. Fetch the exact raw
             # manifest addressed by the tag and verify its content digest.
-            tae_manifest_digest="sha256:$(skopeo inspect --raw \
+            tae_manifest_digest="sha256:$(skopeo inspect "${skopeo_retry[@]}" --raw \
               "docker://${tae_repository}:${managed_sandbox_tae_tag}" | \
               sha256sum | cut -d ' ' -f 1)"
             test "${tae_manifest_digest}" = "${managed_sandbox_digest}"
           done
-          test "$(skopeo inspect --format '{{.Os}}/{{.Architecture}}' "docker://${service_tag}")" = 'linux/amd64'
-          test "$(skopeo inspect --format '{{.Os}}/{{.Architecture}}' "docker://${harness_tag}")" = 'linux/amd64'
-          test "$(skopeo inspect --format '{{.Os}}/{{.Architecture}}' "docker://${managed_sandbox_tag}")" = 'linux/amd64'
-          test "$(skopeo inspect --format '{{.Os}}/{{.Architecture}}' "docker://${HYDRA_REPOSITORY}:26.2.0-amd64")" = 'linux/amd64'
+          test "$(skopeo inspect "${skopeo_retry[@]}" --format '{{.Os}}/{{.Architecture}}' "docker://${service_tag}")" = 'linux/amd64'
+          test "$(skopeo inspect "${skopeo_retry[@]}" --format '{{.Os}}/{{.Architecture}}' "docker://${harness_tag}")" = 'linux/amd64'
+          test "$(skopeo inspect "${skopeo_retry[@]}" --format '{{.Os}}/{{.Architecture}}' "docker://${managed_sandbox_tag}")" = 'linux/amd64'
+          test "$(skopeo inspect "${skopeo_retry[@]}" --format '{{.Os}}/{{.Architecture}}' "docker://${HYDRA_REPOSITORY}:26.2.0-amd64")" = 'linux/amd64'
           test "${hydra_digest}" = "${HYDRA_DIGEST}"
           printf 'service_digest=%s\n' "${service_digest}" >>"${GITHUB_OUTPUT}"
           printf 'harness_digest=%s\n' "${harness_digest}" >>"${GITHUB_OUTPUT}"
@@ -482,26 +483,27 @@ jobs:
           CHART_VERSION: ${{ steps.chart.outputs.version }}
         run: |
           set -euo pipefail
-          test "$(skopeo inspect --no-creds --format '{{.Os}}/{{.Architecture}}' \
+          skopeo_retry=(--retry-times 10 --retry-delay 5s)
+          test "$(skopeo inspect "${skopeo_retry[@]}" --no-creds --format '{{.Os}}/{{.Architecture}}' \
             "docker://${SERVICE_REPOSITORY}@${SERVICE_DIGEST}")" = 'linux/amd64'
-          test "$(skopeo inspect --no-creds --format '{{.Os}}/{{.Architecture}}' \
+          test "$(skopeo inspect "${skopeo_retry[@]}" --no-creds --format '{{.Os}}/{{.Architecture}}' \
             "docker://${HARNESS_REPOSITORY}@${HARNESS_DIGEST}")" = 'linux/amd64'
-          test "$(skopeo inspect --no-creds --format '{{.Os}}/{{.Architecture}}' \
+          test "$(skopeo inspect "${skopeo_retry[@]}" --no-creds --format '{{.Os}}/{{.Architecture}}' \
             "docker://${MANAGED_SANDBOX_REPOSITORY}@${MANAGED_SANDBOX_DIGEST}")" = 'linux/amd64'
-          test "$(skopeo inspect --no-creds --format '{{.Digest}}' \
+          test "$(skopeo inspect "${skopeo_retry[@]}" --no-creds --format '{{.Digest}}' \
             "docker://${MANAGED_SANDBOX_REPOSITORY}:${MANAGED_SANDBOX_TAE_TAG}")" = "${MANAGED_SANDBOX_DIGEST}"
-          test "$(skopeo inspect --no-creds --format '{{.Digest}}' \
+          test "$(skopeo inspect "${skopeo_retry[@]}" --no-creds --format '{{.Digest}}' \
             "docker://registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-managed-sandbox:${MANAGED_SANDBOX_TAE_TAG}")" = "${MANAGED_SANDBOX_DIGEST}"
           for tae_repository in \
               "${TAE_MANAGED_SANDBOX_CN_REPOSITORY}" \
               "${TAE_MANAGED_SANDBOX_SG_REPOSITORY}" \
               "${TAE_MANAGED_SANDBOX_VA_REPOSITORY}"; do
-            tae_manifest_digest="sha256:$(skopeo inspect --raw \
+            tae_manifest_digest="sha256:$(skopeo inspect "${skopeo_retry[@]}" --raw \
               "docker://${tae_repository}:${MANAGED_SANDBOX_TAE_TAG}" | \
               sha256sum | cut -d ' ' -f 1)"
             test "${tae_manifest_digest}" = "${MANAGED_SANDBOX_DIGEST}"
           done
-          test "$(skopeo inspect --no-creds --format '{{.Os}}/{{.Architecture}}' \
+          test "$(skopeo inspect "${skopeo_retry[@]}" --no-creds --format '{{.Os}}/{{.Architecture}}' \
             "docker://${HYDRA_REPOSITORY}@${PUBLISHED_HYDRA_DIGEST}")" = 'linux/amd64'
           anonymous_helm_config="${RUNNER_TEMP}/anonymous-helm-registry.json"
           printf '%s\n' '{"auths":{}}' >"${anonymous_helm_config}"

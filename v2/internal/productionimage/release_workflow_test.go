@@ -34,6 +34,8 @@ func TestProductionWorkflowPublishesAndLocksManagedSandbox(t *testing.T) {
 	skillDigest := sha256.Sum256(skill)
 	for _, required := range []string{
 		"MANAGED_SANDBOX_REPOSITORY: ghcr.io/agentserver/v2-managed-sandbox",
+		"TAE_MANAGED_SANDBOX_CN_REPOSITORY: hub.byted.org/agentserver/tae-sandbox",
+		"TAE_MANAGED_SANDBOX_SG_REPOSITORY: aliyun-sin-hub.byted.org/agentserver/tae-sandbox",
 		"LARK_CLI_SHA256: " + ManagedLarkCLISHA256,
 		"LARK_SKILL_SHA256: " + hex.EncodeToString(skillDigest[:]),
 		"MANAGED_SKILL_SHA256: " + ManagedSkillSHA256,
@@ -48,7 +50,7 @@ func TestProductionWorkflowPublishesAndLocksManagedSandbox(t *testing.T) {
 		`--bkectl-skill-root="${BKECTL_SKILL_ROOT}"`,
 		`--managed-skill="${MANAGED_SKILL_PATH}"`,
 		`--managed-sandbox-image="${MANAGED_SANDBOX_REPOSITORY}:sha-${GITHUB_SHA}"`,
-		"skopeo_retry=(--retry-times 10 --retry-delay 5s)",
+		"skopeo_retry=(--retry-times 10)",
 		"agentserver-deploy lock-release",
 		`--bkectl-source-revision="${BKECTL_SOURCE_REVISION}"`,
 		`--bkectl-cli-sha256="${BKECTL_CLI_SHA256}"`,
@@ -63,6 +65,15 @@ func TestProductionWorkflowPublishesAndLocksManagedSandbox(t *testing.T) {
 	} {
 		if !strings.Contains(string(workflow), required) {
 			t.Fatalf("production workflow is missing managed release contract %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"TAE_MANAGED_SANDBOX_VA_REPOSITORY",
+		"aliyun-va-hub.byted.org",
+		"--retry-delay",
+	} {
+		if strings.Contains(string(workflow), forbidden) {
+			t.Fatalf("production workflow retained unsupported release contract %q", forbidden)
 		}
 	}
 	for _, required := range []string{

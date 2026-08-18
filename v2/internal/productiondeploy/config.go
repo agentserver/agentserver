@@ -58,7 +58,6 @@ const (
 	ProductionManagedSandboxImage      = "registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-managed-sandbox"
 	ProductionTAEManagedSandboxCNImage = "hub.byted.org/agentserver/tae-sandbox"
 	ProductionTAEManagedSandboxSGImage = "aliyun-sin-hub.byted.org/agentserver/tae-sandbox"
-	ProductionTAEManagedSandboxVAImage = "aliyun-va-hub.byted.org/agentserver/tae-sandbox"
 	// ProductionTAEManagedSandboxImage is the legacy default-profile alias.
 	// The default i18n-tt profile remains in SG; regional render paths must use
 	// productionTAEManagedSandboxRepository instead of this alias.

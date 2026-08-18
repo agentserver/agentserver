@@ -36,7 +36,6 @@ env:
   MANAGED_SANDBOX_REPOSITORY: ghcr.io/agentserver/v2-managed-sandbox
   TAE_MANAGED_SANDBOX_CN_REPOSITORY: hub.byted.org/agentserver/tae-sandbox
   TAE_MANAGED_SANDBOX_SG_REPOSITORY: aliyun-sin-hub.byted.org/agentserver/tae-sandbox
-  TAE_MANAGED_SANDBOX_VA_REPOSITORY: aliyun-va-hub.byted.org/agentserver/tae-sandbox
   HYDRA_REPOSITORY: ghcr.io/agentserver/hydra
   CHART_REPOSITORY: ghcr.io/agentserver/agentserver-v2
   CODEX_URL: https://github.com/openai/codex/releases/download/rust-v0.146.0/codex-x86_64-unknown-linux-musl.tar.gz
@@ -147,25 +146,6 @@ jobs:
           registry: aliyun-sin-hub.byted.org
           username: ${{ secrets.ICM_USERNAME }}
           password: ${{ secrets.ICM_PASSWORD }}
-
-      - name: Log in to VA ICM registry
-        env:
-          ICM_USERNAME: ${{ secrets.ICM_USERNAME }}
-          ICM_PASSWORD: ${{ secrets.ICM_PASSWORD }}
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3; do
-            if printf '%s' "${ICM_PASSWORD}" | docker login aliyun-va-hub.byted.org \
-                --username "${ICM_USERNAME}" --password-stdin; then
-              exit 0
-            fi
-            docker logout aliyun-va-hub.byted.org >/dev/null 2>&1 || true
-            if [ "${attempt}" -lt 3 ]; then
-              sleep "$((attempt * 10))"
-            fi
-          done
-          echo 'VA ICM registry login failed after three bounded attempts' >&2
-          exit 1
 
       - uses: azure/setup-helm@v4
         with:
@@ -350,8 +330,7 @@ jobs:
           # to all TAE registries. There is no registry-to-registry sync path.
           for tae_repository in \
               "${TAE_MANAGED_SANDBOX_CN_REPOSITORY}" \
-              "${TAE_MANAGED_SANDBOX_SG_REPOSITORY}" \
-              "${TAE_MANAGED_SANDBOX_VA_REPOSITORY}"; do
+              "${TAE_MANAGED_SANDBOX_SG_REPOSITORY}"; do
             skopeo copy "${skopeo_retry[@]}" \
               "oci-archive:${evidence}/managed-sandbox-image.oci.tar" \
               "docker://${tae_repository}:${managed_sandbox_tae_tag}"
@@ -496,8 +475,7 @@ jobs:
             "docker://registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-managed-sandbox:${MANAGED_SANDBOX_TAE_TAG}")" = "${MANAGED_SANDBOX_DIGEST}"
           for tae_repository in \
               "${TAE_MANAGED_SANDBOX_CN_REPOSITORY}" \
-              "${TAE_MANAGED_SANDBOX_SG_REPOSITORY}" \
-              "${TAE_MANAGED_SANDBOX_VA_REPOSITORY}"; do
+              "${TAE_MANAGED_SANDBOX_SG_REPOSITORY}"; do
             tae_manifest_digest="sha256:$(skopeo inspect "${skopeo_retry[@]}" --raw \
               "docker://${tae_repository}:${MANAGED_SANDBOX_TAE_TAG}" | \
               sha256sum | cut -d ' ' -f 1)"
@@ -532,9 +510,6 @@ jobs:
               "${MANAGED_SANDBOX_TAE_TAG}" "${MANAGED_SANDBOX_DIGEST}"
             printf -- '- TAE terminal revision image (SG): `%s:%s` (verified as `%s`)\n' \
               "${TAE_MANAGED_SANDBOX_SG_REPOSITORY}" \
-              "${MANAGED_SANDBOX_TAE_TAG}" "${MANAGED_SANDBOX_DIGEST}"
-            printf -- '- TAE terminal revision image (VA): `%s:%s` (verified as `%s`)\n' \
-              "${TAE_MANAGED_SANDBOX_VA_REPOSITORY}" \
               "${MANAGED_SANDBOX_TAE_TAG}" "${MANAGED_SANDBOX_DIGEST}"
             printf -- '- Lark CLI SHA-256: `%s`\n' "${LARK_CLI_SHA256}"
             printf -- '- Lark Skill SHA-256: `%s`\n' "${LARK_SKILL_SHA256}"

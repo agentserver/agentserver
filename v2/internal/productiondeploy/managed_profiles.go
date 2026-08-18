@@ -616,7 +616,7 @@ func managedSandboxTAEAuthority(region string) (string, string, error) {
 
 // productionTAEManagedSandboxRepository selects the registry local to the
 // reviewed TAE control plane. The release pipeline publishes one verified OCI
-// archive to CN, SG, and VA independently; this function never falls back
+// archive to CN and SG independently; this function never falls back
 // between registries at runtime. i18n-bd remains disabled in production and
 // retains the existing SG repository until that region is re-qualified.
 func productionTAEManagedSandboxRepository(region string) (string, error) {

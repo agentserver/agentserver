@@ -438,9 +438,6 @@ func TestRetargetManagedTerminalIsBootstrapOnlyAtomicAndFailClosed(t *testing.T)
 		"invalid new id":      func(_ *ConfigDocument, _, sandbox, _, _, _ *string) { *sandbox = "Sandbox_New" },
 		"sentinel revision":   func(_ *ConfigDocument, _, _, revision, _, _ *string) { *revision = "pending-v9" },
 		"invalid environment": func(_ *ConfigDocument, _, _, _, environment, _ *string) { *environment = "not-a-uuid" },
-		"reused environment": func(document *ConfigDocument, _, _, _, environment, _ *string) {
-			*environment = document.Managed.Environment.EnvironmentID
-		},
 		"wrong image repository": func(_ *ConfigDocument, _, _, _, _, image *string) {
 			*image = "ghcr.io/agentserver/v2-managed-sandbox@sha256:" + releaseDigest("d")
 		},
@@ -457,6 +454,17 @@ func TestRetargetManagedTerminalIsBootstrapOnlyAtomicAndFailClosed(t *testing.T)
 				t.Fatal("unsafe Terminal Sandbox retarget was accepted")
 			}
 		})
+	}
+	reusableBootstrap := policyBootstrapConfigDocument()
+	reused, err := RetargetManagedTerminalDocument(
+		reusableBootstrap, reusableBootstrap.Managed.TAE.SandboxID, "sandbox-new", "revision-v9",
+		reusableBootstrap.Managed.Environment.EnvironmentID, wantImage,
+	)
+	if err != nil {
+		t.Fatalf("retarget with retained managed environment ID failed: %v", err)
+	}
+	if reused.Managed.Environment.EnvironmentID != reusableBootstrap.Managed.Environment.EnvironmentID {
+		t.Fatalf("retarget changed retained managed environment ID to %q", reused.Managed.Environment.EnvironmentID)
 	}
 }
 

@@ -260,12 +260,11 @@ func PinManagedTerminalRevisionFile(input, output, sandboxID, revisionID string)
 	return WriteReleaseConfig(pinned, output)
 }
 
-// RetargetManagedTerminalDocument atomically replaces the four identities
+// RetargetManagedTerminalDocument atomically updates the published Terminal
 // that describe one published Terminal runtime: the TAE Sandbox, its revision,
-// the deployment-owned environment, and the digest-pinned managed sandbox
-// artifact. A fresh environment identity prevents a new Sandbox authority from
-// colliding with an immutable executor_environments row left by its predecessor.
-// This edge is deliberately
+// the deployment-owned environment metadata, and the digest-pinned managed
+// sandbox artifact. The environment identity may be retained because bootstrap
+// updates deployment-owned TAE profile metadata in place. This edge is deliberately
 // restricted to policy-bootstrap, where no active runtime, policy approval, or
 // network evidence exists. Callers must repeat the current Sandbox ID so a
 // stale production document or typo cannot silently select another service.
@@ -290,8 +289,8 @@ func RetargetManagedTerminalDocument(
 		strings.Contains(strings.ToUpper(revisionID), "PENDING") {
 		return ConfigDocument{}, errors.New("Terminal Sandbox revision ID must be a concrete canonical lowercase TAE identity")
 	}
-	if !validUUID(environmentID) || environmentID == document.Managed.Environment.EnvironmentID {
-		return ConfigDocument{}, errors.New("new managed environment ID must be a fresh non-zero canonical lowercase UUID")
+	if !validUUID(environmentID) {
+		return ConfigDocument{}, errors.New("managed environment ID must be a non-zero canonical lowercase UUID")
 	}
 	if !imagePattern.MatchString(managedSandboxImage) ||
 		!strings.HasPrefix(managedSandboxImage, ProductionManagedSandboxImage+"@sha256:") {

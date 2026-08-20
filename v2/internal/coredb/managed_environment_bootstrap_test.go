@@ -3,7 +3,6 @@ package coredb
 import (
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -41,7 +40,7 @@ func TestValidateManagedEnvironmentProfileIsClosedAndManagedOnly(t *testing.T) {
 	}
 }
 
-func TestPostgreSQLManagedEnvironmentProfileBootstrapIsExactAndIdempotent(t *testing.T) {
+func TestPostgreSQLManagedEnvironmentProfileBootstrapUpdatesDeploymentMetadata(t *testing.T) {
 	connectionConfig := postgresIntegrationConfig(t)
 	schema := newPostgresTestSchema(t, connectionConfig)
 	catalog, err := EmbeddedMigrations()
@@ -98,17 +97,20 @@ WHERE id = $1`, quotedSchema), profile.EnvironmentID).Scan(
 
 	conflicting := profile
 	conflicting.OwnerPolicySHA256 = sha256.Sum256([]byte("different managed policy"))
-	if _, err := bootstrapManagedEnvironmentProfileConfig(t.Context(), connectionConfig, schema, conflicting); !errors.Is(err, ErrManagedEnvironmentProfileConflict) {
-		t.Fatalf("conflicting managed profile bootstrap error = %v", err)
+	conflicting.RootDescriptor = json.RawMessage(`{"kind":"managed","root":"/workspace","displayName":"Managed updated","defaultCwd":"."}`)
+	updated, err := bootstrapManagedEnvironmentProfileConfig(t.Context(), connectionConfig, schema, conflicting)
+	if err != nil || updated.Created || updated.SchemaVersion != result.SchemaVersion {
+		t.Fatalf("updated managed profile bootstrap = %+v, error = %v", updated, err)
 	}
 	var storedOwner []byte
+	var storedDisplayName string
 	if err := connection.QueryRow(t.Context(), fmt.Sprintf(
-		"SELECT owner_policy_sha256 FROM %s.executor_environments WHERE id = $1", quotedSchema,
-	), profile.EnvironmentID).Scan(&storedOwner); err != nil {
+		"SELECT owner_policy_sha256, root_descriptor->>'displayName' FROM %s.executor_environments WHERE id = $1", quotedSchema,
+	), profile.EnvironmentID).Scan(&storedOwner, &storedDisplayName); err != nil {
 		t.Fatal(err)
 	}
-	if string(storedOwner) != string(profile.OwnerPolicySHA256[:]) {
-		t.Fatal("conflicting bootstrap changed the stored managed owner policy")
+	if string(storedOwner) != string(conflicting.OwnerPolicySHA256[:]) || storedDisplayName != "Managed updated" {
+		t.Fatal("managed bootstrap did not update deployment-owned profile metadata")
 	}
 }
 

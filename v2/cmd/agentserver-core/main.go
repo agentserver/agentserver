@@ -133,7 +133,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, stdout,
 			fmt.Fprintf(stderr, "agentserver-core bootstrap-managed-environment: %v\n", err)
 			return 1
 		}
-		action := "already present"
+		action := "reconciled"
 		if result.Bootstrap.Created {
 			action = "created"
 		}

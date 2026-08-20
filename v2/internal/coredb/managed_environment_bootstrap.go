@@ -17,10 +17,10 @@ import (
 
 const managedEnvironmentBootstrapAdvisoryLockKey int64 = 0x6d616e6167656465
 
-// ErrManagedEnvironmentProfileConflict means the requested immutable profile
-// identity already exists with different authority. Bootstrap never rewrites
-// or adopts that row.
-var ErrManagedEnvironmentProfileConflict = errors.New("managed environment profile bootstrap conflicts with existing authority")
+// ErrManagedEnvironmentProfileConflict means the requested environment ID is
+// already owned by a different executor. Deployment-owned metadata for an
+// environment belonging to the same executor is updated in place.
+var ErrManagedEnvironmentProfileConflict = errors.New("managed environment ID belongs to another executor")
 
 // ManagedEnvironmentProfile is deployment-owned metadata for one managed
 // execution environment. ExecutorID remains a logical catalog/capability owner;
@@ -43,7 +43,7 @@ type ManagedEnvironmentProfileBootstrapResult struct {
 	SchemaVersion int64
 }
 
-// BootstrapManagedEnvironmentProfile inserts one exact, retry-safe TAE
+// BootstrapManagedEnvironmentProfile reconciles one retry-safe TAE
 // environment profile after migrations and workspace/executor bootstrap have
 // completed. It is intentionally a deployment command rather than a serve-time
 // mutation or a model-visible management API.
@@ -231,61 +231,63 @@ func requireManagedEnvironmentExecutor(ctx context.Context, transaction pgx.Tx, 
 }
 
 func insertManagedEnvironmentProfile(ctx context.Context, transaction pgx.Tx, schema string, profile ManagedEnvironmentProfile) (int, error) {
-	insert := fmt.Sprintf(`
+	var existingExecutorID string
+	lookup := fmt.Sprintf("SELECT executor_id::text FROM %s.executor_environments WHERE id = $1 FOR UPDATE", schema)
+	err := transaction.QueryRow(ctx, lookup, profile.EnvironmentID).Scan(&existingExecutorID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return 0, databaseError("read managed environment profile", err)
+	}
+	if err == nil && existingExecutorID != profile.ExecutorID {
+		return 0, managedEnvironmentProfileConflict("environment", profile.EnvironmentID)
+	}
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		insert := fmt.Sprintf(`
 INSERT INTO %s.executor_environments
     (id, executor_id, root_descriptor, owner_policy_sha256, platform,
      codex_release, codex_commit, codex_sha256, outer_profile_version,
      process_methods, insecure_dev, status, backend_kind)
 VALUES
     ($1, $2, $3::jsonb, $4, 'linux-amd64',
-     $5, $6, $7, $8, $9, false, 'online', 'tae')
-ON CONFLICT DO NOTHING`, schema)
-	created, err := developmentInsert(
-		ctx, transaction, "insert managed environment profile", insert,
-		profile.EnvironmentID, profile.ExecutorID, string(profile.RootDescriptor), profile.OwnerPolicySHA256[:],
+	     $5, $6, $7, $8, $9, false, 'online', 'tae')`, schema)
+		created, insertErr := developmentInsert(
+			ctx, transaction, "insert managed environment profile", insert,
+			profile.EnvironmentID, profile.ExecutorID, string(profile.RootDescriptor), profile.OwnerPolicySHA256[:],
+			profile.CodexRelease, profile.CodexCommit, profile.CodexSHA256[:],
+			execprofile.FilesystemReadVersion, execprofile.ProcessMethods(),
+		)
+		if insertErr != nil {
+			return 0, insertErr
+		}
+		return created, nil
+	}
+
+	update := fmt.Sprintf(`
+UPDATE %s.executor_environments
+SET root_descriptor = $2::jsonb,
+    owner_policy_sha256 = $3,
+    platform = 'linux-amd64',
+    codex_release = $4,
+    codex_commit = $5,
+    codex_sha256 = $6,
+    outer_profile_version = $7,
+    process_methods = $8,
+    insecure_dev = false,
+    status = 'online',
+    backend_kind = 'tae'
+WHERE id = $1 AND executor_id = $9`, schema)
+	tag, err := transaction.Exec(
+		ctx, update, profile.EnvironmentID, string(profile.RootDescriptor), profile.OwnerPolicySHA256[:],
 		profile.CodexRelease, profile.CodexCommit, profile.CodexSHA256[:],
-		execprofile.FilesystemReadVersion, execprofile.ProcessMethods(),
+		execprofile.FilesystemReadVersion, execprofile.ProcessMethods(), profile.ExecutorID,
 	)
 	if err != nil {
-		return 0, err
+		return 0, databaseError("update managed environment profile", err)
 	}
-	query := fmt.Sprintf(`
-SELECT executor_id::text, root_descriptor = $2::jsonb, owner_policy_sha256,
-       platform, codex_release, codex_commit, codex_sha256,
-       outer_profile_version, process_methods, insecure_dev, status,
-       backend_kind
-FROM %s.executor_environments
-WHERE id = $1
-FOR UPDATE`, schema)
-	var executorID, platform, codexRelease, codexCommit, profileVersion, status, backendKind string
-	var rootMatches, insecureDev bool
-	var ownerPolicy, codexDigest []byte
-	var processMethods []string
-	if err := transaction.QueryRow(ctx, query, profile.EnvironmentID, string(profile.RootDescriptor)).Scan(
-		&executorID, &rootMatches, &ownerPolicy, &platform, &codexRelease, &codexCommit, &codexDigest,
-		&profileVersion, &processMethods, &insecureDev, &status, &backendKind,
-	); err != nil {
-		return 0, databaseError("verify managed environment profile", err)
-	}
-	if executorID != profile.ExecutorID || !rootMatches || !bytes.Equal(ownerPolicy, profile.OwnerPolicySHA256[:]) ||
-		platform != "linux-amd64" || codexRelease != profile.CodexRelease || codexCommit != profile.CodexCommit ||
-		!bytes.Equal(codexDigest, profile.CodexSHA256[:]) || profileVersion != execprofile.FilesystemReadVersion ||
-		!equalStrings(processMethods, execprofile.ProcessMethods()) || insecureDev || status != ExecutorEnvironmentStatusOnline || backendKind != DispatchTargetTAE {
+	if tag.RowsAffected() != 1 {
 		return 0, managedEnvironmentProfileConflict("environment", profile.EnvironmentID)
 	}
-	return created, nil
-}
-
-func equalStrings(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for index := range left {
-		if left[index] != right[index] {
-			return false
-		}
-	}
-	return true
+	return 0, nil
 }
 
 func managedEnvironmentProfileConflict(resource, resourceID string) error {

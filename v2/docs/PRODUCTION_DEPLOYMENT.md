@@ -455,7 +455,7 @@ go run ./cmd/agentserver-deploy retarget-direct-terminal-sandbox \
   --expected-sandbox-id=<current-sandbox-id> \
   --sandbox-id=<new-sandbox-id> \
   --revision-id=<published-terminal-revision-id> \
-  --environment-id=<fresh-canonical-uuid> \
+  --environment-id=<canonical-uuid> \
   --managed-sandbox-image=registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-managed-sandbox@sha256:<digest>
 ```
 

@@ -3,8 +3,6 @@ package coredb
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 
@@ -329,11 +327,7 @@ func validateRunManagedSandboxBinding(binding RunManagedSandboxBinding) error {
 		return errors.New("managed sandbox setting version must be a positive safe integer")
 	}
 	profile := managedsandboxprofile.Binding{
-		Region: binding.Region, ProfileID: binding.ProfileID,
-		BindingSHA256: hex.EncodeToString(binding.BindingSHA256[:]), EnvironmentID: binding.EnvironmentID,
-	}
-	if binding.BindingSHA256 == ([sha256.Size]byte{}) {
-		return errors.New("managed sandbox binding digest is required")
+		Region: binding.Region, EnvironmentID: binding.EnvironmentID,
 	}
 	return profile.Validate()
 }

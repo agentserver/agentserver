@@ -1,9 +1,7 @@
 package coreserver
 
 import (
-	"crypto/sha256"
 	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -41,16 +39,13 @@ func TestProjectUserSessionTrajectoryAddsBoundedUserInputRecord(t *testing.T) {
 	}
 }
 
-func TestProjectUserSessionTrajectoryShowsFrozenManagedSandboxProfile(t *testing.T) {
+func TestProjectUserSessionTrajectoryShowsManagedSandboxRouting(t *testing.T) {
 	now := time.Date(2026, 8, 15, 1, 30, 0, 0, time.UTC)
 	source := trajectoryTestSource(now, coredb.RunStatusRunning)
-	bindingDigest := sha256.Sum256([]byte("managed-sandbox-profile"))
 	source.ManagedSandboxBindings = map[string]coredb.RunManagedSandboxBinding{
 		trajectoryRunID: {
 			SettingVersion: 7,
 			Region:         "i18n-bd",
-			ProfileID:      "tae-i18n-bd-release-v3",
-			BindingSHA256:  bindingDigest,
 			EnvironmentID:  "31000000-0000-4000-8000-000000000003",
 		},
 	}
@@ -61,9 +56,7 @@ func TestProjectUserSessionTrajectoryShowsFrozenManagedSandboxProfile(t *testing
 	}
 	run := trajectoryRecordsByID(records)["run:"+trajectoryRunID]
 	if trajectoryDetail(run, "managedSandboxRegion") != "i18n-bd" ||
-		trajectoryDetail(run, "managedSandboxProfile") != "tae-i18n-bd-release-v3" ||
 		trajectoryDetail(run, "managedSandboxEnvironment") != "31000000-0000-4000-8000-000000000003" ||
-		trajectoryDetail(run, "managedSandboxBinding") != fmt.Sprintf("%x", bindingDigest[:]) ||
 		trajectoryDetail(run, "managedSandboxSettingVersion") != "7" {
 		t.Fatalf("run managed sandbox trajectory details = %+v", run.Details)
 	}

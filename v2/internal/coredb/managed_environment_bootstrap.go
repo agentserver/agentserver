@@ -31,11 +31,10 @@ type ManagedEnvironmentProfile struct {
 	ExecutorID    string
 	EnvironmentID string
 
-	RootDescriptor    json.RawMessage
-	OwnerPolicySHA256 [sha256.Size]byte
-	CodexRelease      string
-	CodexCommit       string
-	CodexSHA256       [sha256.Size]byte
+	RootDescriptor json.RawMessage
+	CodexRelease   string
+	CodexCommit    string
+	CodexSHA256    [sha256.Size]byte
 }
 
 type ManagedEnvironmentProfileBootstrapResult struct {
@@ -144,9 +143,6 @@ func validateManagedEnvironmentProfile(profile ManagedEnvironmentProfile) error 
 	if err := validateExecutorEnvironmentDeclaration(declaration); err != nil {
 		return fmt.Errorf("invalid managed environment profile: %w", err)
 	}
-	if isZeroDigest(profile.OwnerPolicySHA256) {
-		return errors.New("invalid managed environment profile: owner policy digest must not be all zeroes")
-	}
 	if err := validateManagedRootDescriptor(profile.RootDescriptor); err != nil {
 		return fmt.Errorf("invalid managed environment profile: %w", err)
 	}
@@ -252,7 +248,7 @@ VALUES
 	     $5, $6, $7, $8, $9, false, 'online', 'tae')`, schema)
 		created, insertErr := developmentInsert(
 			ctx, transaction, "insert managed environment profile", insert,
-			profile.EnvironmentID, profile.ExecutorID, string(profile.RootDescriptor), profile.OwnerPolicySHA256[:],
+			profile.EnvironmentID, profile.ExecutorID, string(profile.RootDescriptor), nil,
 			profile.CodexRelease, profile.CodexCommit, profile.CodexSHA256[:],
 			execprofile.FilesystemReadVersion, execprofile.ProcessMethods(),
 		)
@@ -277,7 +273,7 @@ SET root_descriptor = $2::jsonb,
     backend_kind = 'tae'
 WHERE id = $1 AND executor_id = $9`, schema)
 	tag, err := transaction.Exec(
-		ctx, update, profile.EnvironmentID, string(profile.RootDescriptor), profile.OwnerPolicySHA256[:],
+		ctx, update, profile.EnvironmentID, string(profile.RootDescriptor), nil,
 		profile.CodexRelease, profile.CodexCommit, profile.CodexSHA256[:],
 		execprofile.FilesystemReadVersion, execprofile.ProcessMethods(), profile.ExecutorID,
 	)

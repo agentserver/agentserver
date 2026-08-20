@@ -54,23 +54,14 @@ func (commands StateStoreManagedSandboxCommands) ReserveManagedSandbox(ctx conte
 	if commands.Store == nil {
 		return corecontract.ReserveManagedSandboxResponse{}, errors.New("nil core state store")
 	}
-	runtimeDigest, err := managedSandboxDigest("runtimeProfileSha256", request.RuntimeProfileSHA256, false)
-	if err != nil {
-		return corecontract.ReserveManagedSandboxResponse{}, managedSandboxConversionError("ReserveManagedSandbox", request.SandboxID, err)
-	}
-	packDigest, err := managedSandboxDigest("packSetSha256", request.PackSetSHA256, false)
-	if err != nil {
-		return corecontract.ReserveManagedSandboxResponse{}, managedSandboxConversionError("ReserveManagedSandbox", request.SandboxID, err)
-	}
 	result, err := commands.Store.ReserveManagedSandbox(ctx, coredb.ReserveManagedSandboxCommand{
 		SandboxID: request.SandboxID, WorkspaceID: request.WorkspaceID,
 		SessionID: request.SessionID, EnvironmentID: request.EnvironmentID,
 		ProviderRegion: request.ProviderRegion, ProviderPSM: request.ProviderPSM,
 		ProviderSessionRef:   request.ProviderSessionRef,
 		CreateIdempotencyKey: request.CreateIdempotencyKey,
-		RuntimeProfileDigest: runtimeDigest, PackSetDigest: packDigest,
-		RequestedTTL:     time.Duration(request.RequestedTTLSeconds) * time.Second,
-		RequestedIdleTTL: time.Duration(request.IdleTTLSeconds) * time.Second,
+		RequestedTTL:         time.Duration(request.RequestedTTLSeconds) * time.Second,
+		RequestedIdleTTL:     time.Duration(request.IdleTTLSeconds) * time.Second,
 	})
 	if err != nil {
 		return corecontract.ReserveManagedSandboxResponse{}, err
@@ -190,8 +181,6 @@ func contractManagedSandbox(sandbox coredb.ManagedSandbox) corecontract.ManagedS
 		ProviderRegion: sandbox.ProviderRegion, ProviderPSM: sandbox.ProviderPSM,
 		ProviderSessionRef:   sandbox.ProviderSessionRef,
 		CreateIdempotencyKey: sandbox.CreateIdempotencyKey,
-		RuntimeProfileSHA256: hex.EncodeToString(sandbox.RuntimeProfileDigest[:]),
-		PackSetSHA256:        hex.EncodeToString(sandbox.PackSetDigest[:]),
 		RequestedTTLSeconds:  int64(sandbox.RequestedTTL / time.Second),
 		IdleTTLSeconds:       int64(sandbox.IdleTTL / time.Second),
 		ExpiresAt:            sandbox.ExpiresAt, IdleExpiresAt: sandbox.IdleExpiresAt,

@@ -296,14 +296,11 @@ WHERE id = $1`, quoteIdentifier(schema)), preparedExecution.Execution.ID).Scan(&
 }
 
 func managedSandboxTestReserve(seed int, running executionTestRunningRun) ReserveManagedSandboxCommand {
-	runtimeDigest := sha256.Sum256([]byte(fmt.Sprintf("managed-runtime-%d", seed)))
-	packDigest := sha256.Sum256([]byte(fmt.Sprintf("managed-pack-%d", seed)))
 	return ReserveManagedSandboxCommand{
 		SandboxID: stateTestUUID(seed), WorkspaceID: running.Run.WorkspaceID,
 		SessionID: running.Run.SessionID, EnvironmentID: stateTestUUID(seed + 1),
 		ProviderRegion: "sg", ProviderPSM: "toutiao.tae.sandbox",
 		ProviderSessionRef: "tae-session-managed", CreateIdempotencyKey: stateTestUUID(seed + 2),
-		RuntimeProfileDigest: runtimeDigest, PackSetDigest: packDigest,
 		RequestedTTL: 30 * time.Minute, RequestedIdleTTL: 2 * time.Minute,
 	}
 }

@@ -1,7 +1,6 @@
 package productiondeploy
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -42,14 +41,8 @@ func TestLockReleasePreservesEvidenceBoundActiveArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	lockedDocument := locked.Document
-	if !releaseLockMatches(lockedDocument, lock) ||
-		lockedDocument.Managed.Environment.RuntimeProfileSHA256 != managedRuntimeProfileDigest(lockedDocument, lockedDocument.Managed) ||
-		lockedDocument.Managed.Environment.PackSetSHA256 != managedPackSetDigest(lockedDocument.Managed) {
+	if !releaseLockMatches(lockedDocument, lock) {
 		t.Fatalf("locked release = %+v", lockedDocument)
-	}
-	if !bytes.Contains(raw, []byte(base.Document.Managed.Environment.RuntimeProfileSHA256)) ||
-		!bytes.Contains(raw, []byte(base.Document.Managed.Environment.PackSetSHA256)) {
-		t.Fatal("locked active release changed its evidence-bound derived digests")
 	}
 }
 
@@ -155,8 +148,6 @@ func TestLockReleasePreservesEvidenceFreePolicyBootstrap(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !managedPolicyBootstrap(locked.Document.Managed) ||
-		locked.Document.Managed.Environment.RuntimeProfileSHA256 != "" ||
-		locked.Document.Managed.Environment.PackSetSHA256 != "" ||
 		locked.Document.Managed.TAE.NetworkEvidence != (ManagedTAENetworkEvidenceDocument{}) ||
 		locked.Document.Managed.TAE.Policy.Published || locked.Document.Managed.TAE.Policy.Approved ||
 		locked.Document.Managed.TAE.Policy.EvidenceRef != "" {
@@ -202,28 +193,21 @@ func TestLockReleaseRejectsTemplateEvidence(t *testing.T) {
 	cases := map[string]func(*ConfigDocument){
 		"policy replace sentinel": func(document *ConfigDocument) {
 			document.Managed.TAE.Policy.EvidenceRef = "REPLACE_WITH_TAE_TICKET"
-			document.Managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(document.Managed.TAE).DigestHex()
-			document.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(*document)
 		},
 		"network TODO sentinel": func(document *ConfigDocument) {
 			document.Managed.TAE.NetworkEvidence.EvidenceRef = "TODO/network-report"
-			document.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(*document)
 		},
 		"network example sentinel": func(document *ConfigDocument) {
 			document.Managed.TAE.NetworkEvidence.EvidenceRef = "artifact://EXAMPLE/report.json"
-			document.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(*document)
 		},
 		"synthetic report digest": func(document *ConfigDocument) {
 			document.Managed.TAE.NetworkEvidence.ReportSHA256 = strings.Repeat("9", 64)
-			document.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(*document)
 		},
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
 			document := valid
 			mutate(&document)
-			document.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(document, document.Managed)
-			document.Managed.Environment.PackSetSHA256 = managedPackSetDigest(document.Managed)
 			if err := refreshDefaultManagedSandboxProfile(&document); err != nil {
 				t.Fatal(err)
 			}

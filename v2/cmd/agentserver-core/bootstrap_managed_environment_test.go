@@ -20,8 +20,8 @@ func TestLoadManagedEnvironmentProfileProjectsClosedTAEProfile(t *testing.T) {
 		string(profile.RootDescriptor) != `{"defaultCwd":".","displayName":"Managed SG","kind":"managed","root":"/workspace"}` {
 		t.Fatalf("managed environment profile = %+v", profile)
 	}
-	if profile.OwnerPolicySHA256 == [32]byte{} || profile.CodexSHA256 == [32]byte{} {
-		t.Fatal("managed environment profile did not decode non-zero digests")
+	if profile.CodexSHA256 == [32]byte{} {
+		t.Fatal("managed environment profile did not decode the runtime artifact digest")
 	}
 }
 
@@ -32,9 +32,6 @@ func TestLoadManagedEnvironmentProfileRejectsOpenOrUnsafeConfig(t *testing.T) {
 		"workspace":     func(document *managedEnvironmentProfileDocument) { document.WorkspaceID = "not-a-uuid" },
 		"relative root": func(document *managedEnvironmentProfileDocument) { document.Root.Path = "workspace" },
 		"escaping cwd":  func(document *managedEnvironmentProfileDocument) { document.Root.DefaultCWD = "../escape" },
-		"uppercase digest": func(document *managedEnvironmentProfileDocument) {
-			document.OwnerPolicySHA256 = strings.Repeat("A", 64)
-		},
 		"zero digest": func(document *managedEnvironmentProfileDocument) {
 			document.Runtime.CodexSHA256 = strings.Repeat("0", 64)
 		},
@@ -70,9 +67,8 @@ func TestLoadManagedEnvironmentProfileRejectsOpenOrUnsafeConfig(t *testing.T) {
 func validManagedEnvironmentProfileDocument() managedEnvironmentProfileDocument {
 	return managedEnvironmentProfileDocument{
 		Version: 1, WorkspaceID: "40000000-0000-4000-8000-000000000004",
-		ExecutorID:        "20000000-0000-4000-8000-000000000002",
-		EnvironmentID:     "60000000-0000-4000-8000-000000000008",
-		OwnerPolicySHA256: strings.Repeat("1", 64),
+		ExecutorID:    "20000000-0000-4000-8000-000000000002",
+		EnvironmentID: "60000000-0000-4000-8000-000000000008",
 		Root: managedEnvironmentRootDocument{
 			Path: "/workspace", DisplayName: "Managed SG", DefaultCWD: ".",
 		},

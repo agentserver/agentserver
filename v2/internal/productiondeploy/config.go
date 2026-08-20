@@ -311,16 +311,15 @@ type ResourcePairDocument struct {
 }
 
 type LoadedConfig struct {
-	Document                 ConfigDocument
-	MaxRunDuration           time.Duration
-	MaxApprovalTTL           time.Duration
-	CapabilityExpiryGrace    time.Duration
-	EnrollmentTokenTTL       time.Duration
-	ManagedSandboxTTL        time.Duration
-	ManagedActivityTTL       time.Duration
-	ManagedIdleTTL           time.Duration
-	ManagedOwnerPolicySHA256 string
-	ManagedSandboxProfiles   []LoadedManagedSandboxProfile
+	Document               ConfigDocument
+	MaxRunDuration         time.Duration
+	MaxApprovalTTL         time.Duration
+	CapabilityExpiryGrace  time.Duration
+	EnrollmentTokenTTL     time.Duration
+	ManagedSandboxTTL      time.Duration
+	ManagedActivityTTL     time.Duration
+	ManagedIdleTTL         time.Duration
+	ManagedSandboxProfiles []LoadedManagedSandboxProfile
 }
 
 func LoadConfig(path string) (LoadedConfig, error) {
@@ -494,7 +493,6 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 	loaded.ManagedSandboxTTL = managedLoaded.ManagedSandboxTTL
 	loaded.ManagedActivityTTL = managedLoaded.ManagedActivityTTL
 	loaded.ManagedIdleTTL = managedLoaded.ManagedIdleTTL
-	loaded.ManagedOwnerPolicySHA256 = managedLoaded.ManagedOwnerPolicySHA256
 	profiles, err := validateManagedSandboxProfiles(&loaded.Document)
 	if err != nil {
 		return LoadedConfig{}, err

@@ -114,8 +114,7 @@ func (source *ProductionAttemptRuntimeCapabilitySource) IssueAttemptRuntimeCapab
 	if prepared.Manifest.ManagedSandbox != nil {
 		binding := prepared.Manifest.ManagedSandbox
 		request.ManagedSandbox = &RunManagedSandboxBinding{
-			SettingVersion: binding.SettingVersion, Region: binding.Region, ProfileID: binding.ProfileID,
-			BindingSHA256: binding.BindingSHA256, EnvironmentID: binding.EnvironmentID,
+			SettingVersion: binding.SettingVersion, Region: binding.Region, EnvironmentID: binding.EnvironmentID,
 		}
 	}
 	result, err := source.issueExactly(ctx, request)

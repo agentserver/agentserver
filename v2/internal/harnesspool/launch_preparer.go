@@ -198,8 +198,7 @@ func managedToolPackAuthority(source *ManagedSandboxLaunchSpec) *runmanifest.Too
 		return nil
 	}
 	return &runmanifest.ToolPackAuthority{
-		PackID: source.PackID, PackSetDigest: source.PackSetDigest,
-		SkillSHA256: source.SkillSHA256,
+		PackID: source.PackID, SkillSHA256: source.SkillSHA256,
 	}
 }
 

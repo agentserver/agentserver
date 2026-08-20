@@ -63,8 +63,7 @@ func TestRenderFourManagedSandboxProfilesKeepsRoutingCatalogsAndResourcesAligned
 			t.Fatalf("sandbox gateway %s image = %q, want %q", component, got, wantImage)
 		}
 		wantBindings[document.Region] = managedSandboxCatalogTestBinding{
-			Region: document.Region, ProfileID: document.ProfileID,
-			BindingSHA256: document.BindingSHA256, EnvironmentID: document.Environment.EnvironmentID,
+			Region: document.Region, EnvironmentID: document.Environment.EnvironmentID,
 		}
 
 		policy := findResource(t, foundation, "NetworkPolicy", component)
@@ -121,17 +120,11 @@ func TestPreparePolicyBootstrapClearsEveryInstalledManagedSandboxProfile(t *test
 	if !managedPolicyBootstrap(bootstrap.Managed) || len(bootstrap.SandboxProfiles) != 4 {
 		t.Fatalf("four-region bootstrap stage = %q with %d profiles", bootstrap.Managed.Stage, len(bootstrap.SandboxProfiles))
 	}
-	profileIDs := make(map[string]bool, len(bootstrap.SandboxProfiles))
 	for _, profile := range bootstrap.SandboxProfiles {
-		if profile.Environment.RuntimeProfileSHA256 != "" || profile.Environment.PackSetSHA256 != "" ||
-			profile.TAE.Policy.Published || profile.TAE.Policy.Approved || profile.TAE.Policy.EvidenceRef != "" ||
+		if profile.TAE.Policy.Published || profile.TAE.Policy.Approved || profile.TAE.Policy.EvidenceRef != "" ||
 			profile.TAE.NetworkEvidence != (ManagedTAENetworkEvidenceDocument{}) {
 			t.Fatalf("bootstrap profile %s retained active evidence: %+v", profile.Region, profile)
 		}
-		if profileIDs[profile.ProfileID] {
-			t.Fatalf("bootstrap profile identity %q is repeated", profile.ProfileID)
-		}
-		profileIDs[profile.ProfileID] = true
 	}
 	loaded, err := ValidateConfig(bootstrap)
 	if err != nil {
@@ -178,10 +171,7 @@ func TestActivateManagedSandboxProfilesRequiresAndBindsEveryRegion(t *testing.T)
 	for _, profile := range active.SandboxProfiles {
 		if !profile.TAE.Policy.Published || !profile.TAE.Policy.Approved ||
 			profile.TAE.Policy.EvidenceRef == "" || profile.TAE.NetworkEvidence.EvidenceRef == "" ||
-			!nonzeroDigest(profile.TAE.NetworkEvidence.ReportSHA256) ||
-			!nonzeroDigest(profile.TAE.NetworkEvidence.BindingSHA256) ||
-			!nonzeroDigest(profile.Environment.RuntimeProfileSHA256) ||
-			!nonzeroDigest(profile.Environment.PackSetSHA256) {
+			!nonzeroDigest(profile.TAE.NetworkEvidence.ReportSHA256) {
 			t.Fatalf("activated profile %s has incomplete evidence locks: %+v", profile.Region, profile)
 		}
 	}
@@ -242,8 +232,6 @@ func fourRegionActivationEvidence(t *testing.T, bootstrap ConfigDocument) []Mana
 
 type managedSandboxCatalogTestBinding struct {
 	Region        string `json:"region"`
-	ProfileID     string `json:"profileId"`
-	BindingSHA256 string `json:"bindingSha256"`
 	EnvironmentID string `json:"environmentId"`
 }
 
@@ -373,36 +361,18 @@ func fourRegionConfigDocument() ConfigDocument {
 		managed.TAE.ByteCloudJWTEndpoint = input.jwtEndpoint
 		managed.TAE.ProxyProfile = input.proxy
 		managed.TAE.ControlPlaneURL, managed.TAE.DataPlaneSuffix, _ = managedSandboxTAEAuthority(input.region)
-		managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(managed.TAE).DigestHex()
-		managed.TAE.NetworkEvidence.ReportSHA256 = canonicalDigest("network-report-" + input.region)
+		managed.TAE.NetworkEvidence.ReportSHA256 = testNetworkReportSHA256
 		managed.TAE.NetworkEvidence.EvidenceRef = "artifact://network/" + input.region + "/report.json"
-		managed.TAE.NetworkEvidence.BindingSHA256 = ""
 
 		gateway := ManagedSandboxGatewayDocument{
 			Component: input.component, ClusterIP: input.clusterIP, Port: HarnessControlPort,
 			ServerName: input.serverName, Secret: input.secret,
 		}
-		synthetic := document
-		synthetic.Managed = managed
-		synthetic.Services.SandboxGateway = InternalServiceDocument{ClusterIP: gateway.ClusterIP, Port: gateway.Port}
-		synthetic.Secrets.SandboxGateway = gateway.Secret
-		synthetic.Network.SandboxExternalEgress = append([]EgressRuleDocument{}, input.directEgress...)
-		managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(synthetic)
-		managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(synthetic, managed)
-		managed.Environment.PackSetSHA256 = managedPackSetDigest(managed)
 		profile := ManagedSandboxProfileDocument{
-			Region: input.region, ProfileID: "tae-" + input.region + "-test-v1", Gateway: gateway,
+			Region: input.region, Gateway: gateway,
 			Environment: managed.Environment, TAE: managed.TAE,
 			SandboxExternalEgress: append([]EgressRuleDocument{}, input.directEgress...),
 		}
-		var proxy *ManagedSandboxProxyProfileDocument
-		for proxyIndex := range document.ProxyProfiles {
-			if document.ProxyProfiles[proxyIndex].Name == input.proxy {
-				proxy = &document.ProxyProfiles[proxyIndex]
-				break
-			}
-		}
-		profile.BindingSHA256 = managedSandboxProfileBindingSHA256(profile, proxy)
 		document.SandboxProfiles = append(document.SandboxProfiles, profile)
 		if input.region == document.SandboxRegions.DefaultRegion {
 			document.Managed = managed

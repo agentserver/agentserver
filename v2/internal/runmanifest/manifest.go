@@ -64,21 +64,17 @@ type PreviousCheckpoint struct {
 	CatalogDigest              string        `json:"catalogDigest"`
 	CodexRuntimeManifestDigest string        `json:"codexRuntimeManifestDigest"`
 	CheckpointAllowlistVersion int64         `json:"checkpointAllowlistVersion"`
-	PackSetDigest              string        `json:"packSetDigest,omitempty"`
 	Object                     ObjectPointer `json:"object"`
 }
 
 type ToolPackAuthority struct {
-	PackID        string `json:"packId"`
-	PackSetDigest string `json:"packSetDigest"`
-	SkillSHA256   string `json:"skillSha256"`
+	PackID      string `json:"packId"`
+	SkillSHA256 string `json:"skillSha256"`
 }
 
 type ManagedSandboxAuthority struct {
 	SettingVersion int64  `json:"settingVersion"`
 	Region         string `json:"region"`
-	ProfileID      string `json:"profileId"`
-	BindingSHA256  string `json:"bindingSha256"`
 	EnvironmentID  string `json:"environmentId"`
 }
 
@@ -245,15 +241,6 @@ func (manifest Manifest) Validate() error {
 	if manifest.ManagedSandbox != nil && manifest.ToolPack == nil {
 		return errors.New("managedSandbox requires toolPack authority")
 	}
-	if manifest.PreviousCheckpoint != nil {
-		wantPackSet := ""
-		if manifest.ToolPack != nil {
-			wantPackSet = manifest.ToolPack.PackSetDigest
-		}
-		if manifest.PreviousCheckpoint.PackSetDigest != wantPackSet {
-			return errors.New("previousCheckpoint.packSetDigest must match the current toolPack authority")
-		}
-	}
 	if err := validateText("executorPolicy.version", manifest.ExecutorPolicy.Version, 128, true); err != nil {
 		return err
 	}
@@ -289,8 +276,7 @@ func (authority *ManagedSandboxAuthority) validate() error {
 		return errors.New("managedSandbox.settingVersion must be a positive safe integer")
 	}
 	return (managedsandboxprofile.Binding{
-		Region: authority.Region, ProfileID: authority.ProfileID,
-		BindingSHA256: authority.BindingSHA256, EnvironmentID: authority.EnvironmentID,
+		Region: authority.Region, EnvironmentID: authority.EnvironmentID,
 	}).Validate()
 }
 
@@ -300,9 +286,6 @@ func (authority *ToolPackAuthority) validate() error {
 	}
 	if !packIDPattern.MatchString(authority.PackID) {
 		return errors.New("toolPack.packId must be a canonical versioned pack ID")
-	}
-	if err := validateDigest("toolPack.packSetDigest", authority.PackSetDigest); err != nil {
-		return err
 	}
 	return validateDigest("toolPack.skillSha256", authority.SkillSHA256)
 }
@@ -544,11 +527,6 @@ func (checkpoint PreviousCheckpoint) validate() error {
 	}
 	if checkpoint.CheckpointAllowlistVersion < 1 || checkpoint.CheckpointAllowlistVersion > maxJSONInteger {
 		return fmt.Errorf("previousCheckpoint.checkpointAllowlistVersion must be between 1 and %d", maxJSONInteger)
-	}
-	if checkpoint.PackSetDigest != "" {
-		if err := validateDigest("previousCheckpoint.packSetDigest", checkpoint.PackSetDigest); err != nil {
-			return err
-		}
 	}
 	if err := checkpoint.Object.validate("previousCheckpoint.object"); err != nil {
 		return err

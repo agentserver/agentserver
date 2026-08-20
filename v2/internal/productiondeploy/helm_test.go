@@ -14,10 +14,6 @@ import (
 func TestRenderHelmChartLocksNamespaceHooksAndValues(t *testing.T) {
 	document := validConfigDocument()
 	document.Managed.TAE.Policy.EvidenceRef = `{{ fail "template injection" }}`
-	document.Managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(document.Managed.TAE).DigestHex()
-	document.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(document)
-	document.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(document, document.Managed)
-	document.Managed.Environment.PackSetSHA256 = managedPackSetDigest(document.Managed)
 	if err := refreshDefaultManagedSandboxProfile(&document); err != nil {
 		t.Fatal(err)
 	}
@@ -166,10 +162,6 @@ func TestWriteHelmChartPublishesReadOnlyExactRetry(t *testing.T) {
 func TestRenderHelmChartRejectsTemplateManagedEvidence(t *testing.T) {
 	document := validConfigDocument()
 	document.Managed.TAE.Policy.EvidenceRef = "REPLACE_WITH_TAE_CHANGE"
-	document.Managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(document.Managed.TAE).DigestHex()
-	document.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(document)
-	document.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(document, document.Managed)
-	document.Managed.Environment.PackSetSHA256 = managedPackSetDigest(document.Managed)
 	if err := refreshDefaultManagedSandboxProfile(&document); err != nil {
 		t.Fatal(err)
 	}

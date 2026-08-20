@@ -413,7 +413,6 @@ func TestPostgreSQLRunFinalizationCommitsCheckpointAndTerminalStateAtomically(t 
 		t.Fatalf("BeginRunFinalization() = %+v", finalizing)
 	}
 
-	packSetDigest := sha256.Sum256([]byte("managed pack set"))
 	commitCommand := CommitCheckpointAndTerminalRunCommand{
 		RunID: finalizing.Run.ID, AttemptID: finalizing.Attempt.ID, HolderID: finalizing.Attempt.HolderID,
 		Generation: finalizing.Attempt.Generation, ExpectedRunVersion: finalizing.Run.Version,
@@ -426,16 +425,15 @@ func TestPostgreSQLRunFinalizationCommitsCheckpointAndTerminalStateAtomically(t 
 			Size: 2048, MediaType: "application/vnd.agentserver.codex-checkpoint.v1",
 		},
 		CodexRuntimeManifestDigest: sha256.Sum256([]byte("finalization-runtime")),
-		CheckpointAllowlistVersion: 1, PackSetDigest: &packSetDigest,
-		Record: stateTransitionRecord(160_070),
+		CheckpointAllowlistVersion: 1,
+		Record:                     stateTransitionRecord(160_070),
 	}
 	committed, err := store.CommitCheckpointAndTerminalRun(t.Context(), commitCommand)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !committed.Created || committed.Run.Status != RunStatusCompleted || committed.Attempt.Status != AttemptStatusSucceeded ||
-		committed.Checkpoint.ID != commitCommand.CheckpointID || committed.SessionVersion != 3 ||
-		committed.Checkpoint.PackSetDigest == nil || *committed.Checkpoint.PackSetDigest != packSetDigest {
+		committed.Checkpoint.ID != commitCommand.CheckpointID || committed.SessionVersion != 3 {
 		t.Fatalf("CommitCheckpointAndTerminalRun() = %+v", committed)
 	}
 
@@ -452,13 +450,6 @@ func TestPostgreSQLRunFinalizationCommitsCheckpointAndTerminalStateAtomically(t 
 	if _, err := store.CommitCheckpointAndTerminalRun(t.Context(), conflictingRetry); !HasStateErrorCode(err, ErrorIdempotencyConflict) {
 		t.Fatalf("conflicting checkpoint retry error = %v, want idempotency_conflict", err)
 	}
-	conflictingPackRetry := commitCommand
-	changedPackSetDigest := sha256.Sum256([]byte("changed managed pack set"))
-	conflictingPackRetry.PackSetDigest = &changedPackSetDigest
-	if _, err := store.CommitCheckpointAndTerminalRun(t.Context(), conflictingPackRetry); !HasStateErrorCode(err, ErrorIdempotencyConflict) {
-		t.Fatalf("conflicting checkpoint pack-set retry error = %v, want idempotency_conflict", err)
-	}
-
 	query := fmt.Sprintf("SELECT active_run_id::text, latest_checkpoint_id::text FROM %s.sessions WHERE id = $1", quoteIdentifier(schema))
 	var activeRunID, latestCheckpointID *string
 	if err := pool.QueryRow(t.Context(), query, sessionID).Scan(&activeRunID, &latestCheckpointID); err != nil {
@@ -520,8 +511,8 @@ WHERE run_id = $1`, quoteIdentifier(schema))
 			Size: 3072, MediaType: "application/vnd.agentserver.codex-checkpoint.v1",
 		},
 		CodexRuntimeManifestDigest: sha256.Sum256([]byte("finalization-runtime")),
-		CheckpointAllowlistVersion: 1, PackSetDigest: &packSetDigest,
-		Record: stateTransitionRecord(160_130),
+		CheckpointAllowlistVersion: 1,
+		Record:                     stateTransitionRecord(160_130),
 	}
 	resumeCommitted, err := store.CommitCheckpointAndTerminalRun(t.Context(), resumeCommit)
 	if err != nil || !resumeCommitted.Created || resumeCommitted.Run.Status != RunStatusCompleted {
@@ -597,27 +588,20 @@ INSERT INTO %s.checkpoints
     (id, workspace_id, session_id, run_id, run_attempt_id, attempt_generation,
      brain_tool_catalog_id, thread_id, turn_id, manifest_digest,
      object_id, object_sha256, object_size, object_media_type,
-	     codex_runtime_manifest_digest, checkpoint_allowlist_version, pack_set_digest)
+	     codex_runtime_manifest_digest, checkpoint_allowlist_version)
 VALUES
 	    ($1, $2, $3, $4, $5, $6, $7, $8, 'turn-checkpoint-1', $9,
-	     $10, $11, 2048, 'application/vnd.agentserver.codex-checkpoint.v1', $12, 1, $13)`, quoteIdentifier(schema))
-	packSetDigest := sha256.Sum256([]byte("checkpoint managed pack set"))
+	     $10, $11, 2048, 'application/vnd.agentserver.codex-checkpoint.v1', $12, 1)`, quoteIdentifier(schema))
 	_, err = pool.Exec(t.Context(), insertCheckpoint,
 		stateTestUUID(197), workspaceID, sessionID, first.Run.ID, firstClaim.Attempt.ID,
 		firstClaim.Attempt.Generation, bound.Catalog.ID, "thread-from-another-catalog",
-		manifestDigest[:], objectID, objectDigest[:], runtimeDigest[:], packSetDigest[:],
+		manifestDigest[:], objectID, objectDigest[:], runtimeDigest[:],
 	)
 	assertPostgreSQLState(t, err, "23503")
-	_, err = pool.Exec(t.Context(), insertCheckpoint,
-		stateTestUUID(196), workspaceID, sessionID, first.Run.ID, firstClaim.Attempt.ID,
-		firstClaim.Attempt.Generation, bound.Catalog.ID, threadID,
-		manifestDigest[:], objectID, objectDigest[:], runtimeDigest[:], make([]byte, sha256.Size),
-	)
-	assertPostgreSQLState(t, err, "23514")
 	if _, err := pool.Exec(t.Context(), insertCheckpoint,
 		checkpointID, workspaceID, sessionID, first.Run.ID, firstClaim.Attempt.ID,
 		firstClaim.Attempt.Generation, bound.Catalog.ID, threadID,
-		manifestDigest[:], objectID, objectDigest[:], runtimeDigest[:], packSetDigest[:],
+		manifestDigest[:], objectID, objectDigest[:], runtimeDigest[:],
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -657,7 +641,6 @@ WHERE id = $2`, quotedSchema), checkpointID, sessionID); err != nil {
 		checkpoint.AttemptGeneration != firstClaim.Attempt.Generation || checkpoint.ThreadID != threadID ||
 		checkpoint.ManifestDigest != manifestDigest || checkpoint.Object.ObjectID != objectID ||
 		checkpoint.Object.SHA256 != objectDigest || checkpoint.CodexRuntimeManifestDigest != runtimeDigest ||
-		checkpoint.PackSetDigest == nil || *checkpoint.PackSetDigest != packSetDigest ||
 		checkpoint.CheckpointAllowlistVersion != 1 || checkpoint.Catalog.ID != bound.Catalog.ID ||
 		checkpoint.Catalog.ThreadID != threadID || checkpoint.Catalog.CatalogDigest != bound.Catalog.CatalogDigest ||
 		string(checkpoint.Catalog.CanonicalCatalog) != string(bound.Catalog.CanonicalCatalog) ||

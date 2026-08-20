@@ -40,17 +40,15 @@ type CreateSandboxRequest struct {
 	// SessionRef is empty when the provider assigns its own session identity.
 	// It is retained for providers that support caller-assigned identities and
 	// for adopting a previously observed create result.
-	SessionRef           string
-	SandboxID            string
-	IdempotencyKey       string
-	WorkspaceID          string
-	SessionID            string
-	EnvironmentID        string
-	Region               string
-	PSM                  string
-	RuntimeProfileSHA256 string
-	PackSetSHA256        string
-	TTL                  time.Duration
+	SessionRef     string
+	SandboxID      string
+	IdempotencyKey string
+	WorkspaceID    string
+	SessionID      string
+	EnvironmentID  string
+	Region         string
+	PSM            string
+	TTL            time.Duration
 }
 
 // FindSandboxRequest identifies one prior create without relying on a
@@ -58,15 +56,13 @@ type CreateSandboxRequest struct {
 // values as non-secret provider metadata and perform an exact lookup. More than
 // one match is an error: callers must never guess which sandbox to adopt.
 type FindSandboxRequest struct {
-	SandboxID            string
-	IdempotencyKey       string
-	WorkspaceID          string
-	SessionID            string
-	EnvironmentID        string
-	Region               string
-	PSM                  string
-	RuntimeProfileSHA256 string
-	PackSetSHA256        string
+	SandboxID      string
+	IdempotencyKey string
+	WorkspaceID    string
+	SessionID      string
+	EnvironmentID  string
+	Region         string
+	PSM            string
 }
 
 type SetSandboxTimeoutProviderRequest struct {

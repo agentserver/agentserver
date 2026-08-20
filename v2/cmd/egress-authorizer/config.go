@@ -28,7 +28,6 @@ const (
 	egressAllowedTAEPSMEnvironment         = "AGENTSERVER_V2_EGRESS_ALLOWED_TAE_PSM"
 	egressTAEPolicyRevisionEnvironment     = "AGENTSERVER_V2_TAE_POLICY_REVISION"
 	egressTAEPolicySHA256Environment       = "AGENTSERVER_V2_TAE_POLICY_SHA256"
-	egressTAEPolicyBindingEnvironment      = "AGENTSERVER_V2_TAE_POLICY_BINDING_SHA256"
 	egressTAEPolicyHostEnvironment         = "AGENTSERVER_V2_TAE_POLICY_HOST"
 	egressTAEPolicyAccessEnvironment       = "AGENTSERVER_V2_TAE_POLICY_ACCESS"
 	egressTAEWebhookRequiredEnvironment    = "AGENTSERVER_V2_TAE_POLICY_WEBHOOK_REQUIRED"
@@ -167,7 +166,7 @@ func loadEgressAuthorizerConfig(getenv func(string) string, mode egressAuthorize
 		bindingsRaw := strings.TrimSpace(getenv(egressTAEPolicyBindingsEnvironment))
 		if bindingsRaw != "" {
 			for _, legacyName := range []string{
-				egressTAEPolicyRevisionEnvironment, egressTAEPolicySHA256Environment, egressTAEPolicyBindingEnvironment,
+				egressTAEPolicyRevisionEnvironment, egressTAEPolicySHA256Environment,
 				egressTAEPolicyHostEnvironment, egressTAEPolicyAccessEnvironment, egressTAEWebhookRequiredEnvironment,
 				egressTAEWebhookModeEnvironment, egressTAEWebhookPSMEnvironment, egressTAEWebhookURLEnvironment,
 				egressTAEWebhookPathEnvironment, egressTAEPolicyPublishedEnvironment,
@@ -187,14 +186,13 @@ func loadEgressAuthorizerConfig(getenv func(string) string, mode egressAuthorize
 			config.taePolicy.Region = "sg"
 			config.taePolicy.SandboxPSM = config.allowedTAEPSM
 			for destination, name := range map[*string]string{
-				&config.taePolicy.Revision:      egressTAEPolicyRevisionEnvironment,
-				&config.taePolicy.PolicySHA256:  egressTAEPolicySHA256Environment,
-				&config.taePolicy.BindingSHA256: egressTAEPolicyBindingEnvironment,
-				&config.taePolicy.PublicHost:    egressTAEPolicyHostEnvironment,
-				&config.taePolicy.PublicAccess:  egressTAEPolicyAccessEnvironment,
-				&config.taePolicy.WebhookMode:   egressTAEWebhookModeEnvironment,
-				&config.taePolicy.WebhookPath:   egressTAEWebhookPathEnvironment,
-				&config.taePolicy.EvidenceRef:   egressTAEPolicyEvidenceEnvironment,
+				&config.taePolicy.Revision:     egressTAEPolicyRevisionEnvironment,
+				&config.taePolicy.PolicySHA256: egressTAEPolicySHA256Environment,
+				&config.taePolicy.PublicHost:   egressTAEPolicyHostEnvironment,
+				&config.taePolicy.PublicAccess: egressTAEPolicyAccessEnvironment,
+				&config.taePolicy.WebhookMode:  egressTAEWebhookModeEnvironment,
+				&config.taePolicy.WebhookPath:  egressTAEWebhookPathEnvironment,
+				&config.taePolicy.EvidenceRef:  egressTAEPolicyEvidenceEnvironment,
 			} {
 				*destination, err = required(name)
 				if err != nil {

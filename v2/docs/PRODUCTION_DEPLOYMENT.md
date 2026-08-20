@@ -27,7 +27,7 @@ grant。平台没有统一的模型 API key。
 `sandboxRegions` 列出本次 release 实际安装的地域；`defaultRegion` 固定为 `i18n-tt`，并且 catalog 必须
 安装该地域，以匹配数据库迁移和新 workspace 的初始 setting。workspace owner 可在 Platform/API 中选择
 其他已安装地域。修改只影响新 Run：Core 在 CreateRun 事务中冻结
-`settingVersion + region + profileId + bindingSha256 + environmentId`，后续 Harness/Executor 必须逐字段匹配。
+`settingVersion + region + environmentId`，后续 Harness/Executor 直接按地域和环境路由，不计算组合摘要。
 普通问候或纯模型回合不会创建 TAE 资源；只有首次 Executor tool call 才 lazy acquire 对应 profile 的
 sandbox，并在同一 session/environment generation 上复用。
 
@@ -39,7 +39,7 @@ Sandbox profiles 只支持 `process_env`：`policy-bootstrap` 不部署 provider
 direct profile 必须 fail closed；未来需使用独立 webhook-enabled profile。
 sandbox 内运行 digest-pinned Linux/amd64 `lark-cli` 和只读 skill；模型仍
 只看到既有 `list_environments`、`shell`、`read_file` MCP catalog。TAE policy 不通过 CreateSession 参数
-伪造，而由 PSM/system policy readback 与网络策略 binding digest 校验。
+伪造，而由 PSM/system policy readback 与显式网络配置校验。
 代码和 provider-linked binary 已接入本地生产渲染，但每个已安装地域的真实 ByteCloud JWT/TAE/Lark、
 IPv4/IPv6、代理或直连路径与 zero-secret 门禁仍须在目标集群执行；本文不把本地测试当作上线证据。
 
@@ -242,17 +242,17 @@ live revoke；已启动短进程中的 token 依赖其自身过期时间，后�
 发布流程使用同一个 Helm release 的两个严格阶段：
 
 1. 从 active v6 模板生成 `policy-bootstrap`。转换会遍历全部 `sandboxProfiles`，清空每个 profile 的
-   `published/approved/evidenceRef`、network evidence、runtime profile 和 pack lock；
+   `published/approved/evidenceRef` 与 network evidence；
 2. 发布 bootstrap Chart。此时没有可供 Run 使用的 sandbox-gateway authority；
 3. 对每个地域从 TAE 控制面只读回查该 Sandbox/PSM 的 `*.feishu.cn` system policy；
 4. 原子写入各 profile Secret 的 TAE 基础设施 AK/SK，并在 Helm values 的
    `taeNetworkProbe.policyRevisions.<region>` 中提交每个地域的实际 revision。Chart 为每个已安装地域生成
    独立 ConfigMap、Job 和 NetworkPolicy：CN/i18n-bd/i18n-tt 只走各自 Merlin，BOE 只走双栈 direct CIDR；
-5. 分别保存 canonical JSON report 并上传不可变 evidence store。每份报告都绑定 region、profile authority、
-   bootstrap config SHA、policy revision、20 次 JWT/control 尝试、完整 lifecycle、pinned artifact 摘要与清理；
+5. 分别保存 canonical JSON report。每份报告记录 region、显式 profile authority、policy revision、
+   20 次 JWT/control 尝试、完整 lifecycle、pinned artifact 校验与清理；
 6. 用一份 manifest 执行 `activate-managed-sandbox-profiles`。命令要求恰好覆盖全部已安装地域；任一报告
-   缺失、重复、串线或不匹配都会使整个 activation 失败。成功时原子重算每个 profile 的 policy、network、
-   runtime、pack 和 profile binding；
+   缺失、重复、串线或不匹配都会使整个 activation 失败。成功时写入显式 policy 与 report evidence，
+   不计算 profile/runtime/pack/network 组合摘要；
 7. 发布 active Chart。只有这一步才启动所有 region-specific sandbox-gateway，并向 Core/Harness/Executor
    注入一致的 profile catalog。
 
@@ -358,7 +358,7 @@ deployment-wide webhook topology。
    `sha256:f59c2f7f4969269b154fa34c57bc4b849263ebedbcaf8114aaeb1658a3007b4b`；
 6. 仅从 GitHub Environment Secret `V2_SG_PRODUCTION_CONFIG_B64` 解码真实 SG 配置；仓库内的
    `config.example.json` 只用于 schema/renderer 测试。`lock-release` 会校验 TAE/网络 evidence
-   引用和 canonical network binding digest，发现 `REPLACE`、`TODO`、`TBD` 或 `EXAMPLE` 等模板值时
+   引用，发现 `REPLACE`、`TODO`、`TBD` 或 `EXAMPLE` 等模板值时
    fail closed；Secret 缺失时已发布的镜像保留，但 Chart 不发布；
 7. 用刚发布的四个 digest 生成环境锁定 Chart，并发布到
    `ghcr.io/agentserver/agentserver-v2`；
@@ -367,7 +367,7 @@ deployment-wide webhook topology。
 
 开发阶段的 service-only 变更使用同一个 workflow 的 `service_only` 通道（`main` 上的 v2 push 默认走
 该通道）。它只运行改动包测试并重建 service 镜像，复用当前 active 配置中已经发布和验证过的
-harness、managed-sandbox、Hydra、runtime/pack lock 与 TAE evidence；不会安装 pnpm、下载
+harness、managed-sandbox、Hydra 与 TAE evidence；不会安装 pnpm、下载
 Codex/bwrap/Lark 或重建未变化镜像。service 构建使用 GHA BuildKit cache。该通道只允许修改
 `images.service`，并在发布 Chart 前对删除该字段后的 JSON 做逐字节比较。最终生产晋级仍需通过
 `workflow_dispatch(release_mode=full)` 执行上述完整 closed-world 门禁。
@@ -429,11 +429,9 @@ v6 managed sandbox catalog 必须包含：
 - legacy `managedExecutor.environment/tae`、`services.sandboxGateway`、`secrets.sandboxGateway` 和
   `network.sandboxExternalEgress` 必须逐字匹配 default profile，避免旧 consumer 与 catalog 分叉。
 
-active profile 的 `networkEvidence.reportSha256` 由 activation 从该地域 canonical report 字节计算；
-`evidenceRef` 指向不可变报告；`bindingSha256` 绑定 report、region、TAE authority、JWT endpoint、proxy 的
-完整 Kubernetes authority或 BOE direct CIDR、DNS、Gateway 和 policy shape。修改任何事实后必须对受影响
-catalog 重新生成全地域 bootstrap、执行每地域实测并原子激活；不能手工替换 digest 或复用旧报告。
-`LockRelease` 会再次核对每个 profile，并拒绝模板 sentinel 或明显伪摘要。
+active profile 的 `networkEvidence.reportSha256` 只校验该地域 report 文件本身；`evidenceRef` 指向报告。
+系统不再把 report、region、TAE authority、JWT endpoint、proxy、Kubernetes 或 policy 拼成二次摘要。
+修改配置后直接重新生成 Chart；需要网络实测时按地域重新执行探针并激活对应报告。
 
 第一次发布先从经过普通配置校验的 active 模板生成无权限 bootstrap 文件；输出必须是新路径：
 
@@ -550,8 +548,8 @@ closed。取得不可变报告引用后创建受 Schema 约束的 activation man
 }
 ```
 
-从同一 bootstrap 配置执行唯一 activation 边。命令读取全部 canonical reports，自行计算每个
-`reportSha256`，并同时重算 policy/network/runtime/pack/profile bindings；不接受人工填写 report SHA：
+从同一 bootstrap 配置执行 activation。命令读取全部 canonical reports，自行计算每个 report 文件的
+`reportSha256`，但不生成 policy/network/runtime/pack/profile 组合摘要：
 
 ```bash
 go run ./cmd/agentserver-deploy activate-managed-sandbox-profiles \
@@ -560,10 +558,10 @@ go run ./cmd/agentserver-deploy activate-managed-sandbox-profiles \
   --evidence-manifest=/absolute/managed-sandbox-evidence.json
 ```
 
-后续 active 网络事实、镜像或 policy revision 发生变化时，不允许直接替换摘要或重绑旧报告。必须先从
-当前有效 active 配置生成新的全地域 bootstrap，部署并重新执行全部已安装地域 probe，再通过同一个
+后续 active 网络事实、镜像或 policy revision 发生变化时，直接更新显式配置；若需要新的网络实测报告，
+则从当前 active 配置生成 bootstrap、执行对应地域 probe，再通过同一个
 `activate-managed-sandbox-profiles` 晋级。activation 是 all-or-nothing，不允许某个地域继承 default
-profile 的 evidence 或继续使用旧 lock。
+profile 的 evidence。
 
 校验：
 

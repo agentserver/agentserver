@@ -76,12 +76,10 @@ func (router *TAEBackendRouter) backend(target executionbackend.Target) (executi
 	return backend, nil
 }
 
-// ManagedTargetFencerRouter mirrors backend routing for lifecycle deletes.
-// Both the signed principal profile and the resolved target environment must
-// identify the same immutable binding before any request can leave the
-// executor-gateway.
+// ManagedTargetFencerRouter mirrors backend routing for lifecycle deletes by
+// configured region.
 type ManagedTargetFencerRouter struct {
-	byProfile map[string]ManagedTargetFencer
+	byRegion map[string]ManagedTargetFencer
 }
 
 func NewManagedTargetFencerRouter(fencers map[string]ManagedTargetFencer) (*ManagedTargetFencerRouter, error) {
@@ -89,13 +87,13 @@ func NewManagedTargetFencerRouter(fencers map[string]ManagedTargetFencer) (*Mana
 		return nil, errors.New("managed target fencer router requires between one and four profiles")
 	}
 	copy := make(map[string]ManagedTargetFencer, len(fencers))
-	for profileID, fencer := range fencers {
-		if !managedsandboxprofile.ValidProfileID(profileID) || fencer == nil {
-			return nil, errors.New("managed target fencer router contains an invalid profile")
+	for region, fencer := range fencers {
+		if !managedsandboxprofile.ValidRegion(region) || fencer == nil {
+			return nil, errors.New("managed target fencer router contains an invalid region")
 		}
-		copy[profileID] = fencer
+		copy[region] = fencer
 	}
-	return &ManagedTargetFencerRouter{byProfile: copy}, nil
+	return &ManagedTargetFencerRouter{byRegion: copy}, nil
 }
 
 func (router *ManagedTargetFencerRouter) FenceManagedTarget(
@@ -108,12 +106,9 @@ func (router *ManagedTargetFencerRouter) FenceManagedTarget(
 		return errors.New("managed target fencer requires frozen sandbox authority")
 	}
 	authority := principal.ManagedSandbox
-	if target.EnvironmentID != authority.EnvironmentID {
-		return errors.New("managed target environment does not match frozen sandbox authority")
-	}
-	fencer := router.byProfile[authority.ProfileID]
+	fencer := router.byRegion[authority.Region]
 	if fencer == nil {
-		return errors.New("managed target fencer profile is not configured")
+		return errors.New("managed target fencer region is not configured")
 	}
 	return fencer.FenceManagedTarget(ctx, principal, target, reason)
 }

@@ -1,6 +1,6 @@
 # ADR 0010：工具包（tool pack）是 skill、凭据、出口策略与运行时投影的统一版本化单元
 
-- 状态：Proposed
+- 状态：Superseded（组合摘要与冻结方案已取消）
 - 日期：2026-08-04
 - 影响范围：Core、Platform API、egress-gateway、harness-worker（instructions 注入）、sandbox 镜像构建
 
@@ -30,9 +30,8 @@
 定义 **tool pack**：一个平台管理的、版本化的、closed-world 的声明单元，同时包含上述四部分。
 pack 有单调递增的 `version`；任何一部分变更都必须递增整个 pack 的版本。
 
-run 创建时，Core 把该 session 启用的 `(packId, packVersion)` 集合及其规范摘要
-`pack_set_digest` 原子冻结进 `run_launch_states`，与既有的 LLM Gateway 绑定同样处理。
-run 执行期间 pack 变更不影响已冻结的 run；下一个 run 才使用新版本。
+run 创建时按 session 当前配置解析 `(packId, packVersion)` 集合。Core 不再计算、存储或校验 pack
+集合组合摘要，也不通过摘要 fence run 或 thread。
 
 ### 2. pack 的四个部分各自的约束
 
@@ -106,24 +105,14 @@ workspace 只能**启用/禁用**已发布的 pack，并授权自己的凭据。
 
 后续若要支持 workspace 自定义 pack，必须先有独立的审核流程与受限的 host 分类，不在首版。
 
-### 5. skill 集合必须像 tool catalog 一样绑定到 thread
+### 5. skill 集合不使用组合摘要绑定
 
-`thread/resume` 不重发 `baseInstructions`，与它不重发 `dynamicTools` 是同一个性质。
-因此 `pack_set_digest` 必须与 `tool_catalog_digest` 并列，同时进入 run manifest 与
-checkpoint 绑定（`api/schema/run-manifest.schema.json` 的 `previousCheckpoint` 目前
-已绑定 `catalogDigest`，需要并列增加）。
-
-恢复一个 thread 时，若冻结的 pack 集合摘要与 checkpoint 中的不一致，必须 fail closed 并
-创建新 thread，不能在原 thread 上静默更换模型看到的指令。否则会出现"模型以为自己有飞书能力、
-恢复后指令已被撤下"或反之的错位，而这类错位在模型行为上表现为难以归因的怪异输出。
+`thread/start` 发送实际 skill 文本；run manifest 与 checkpoint 不携带 pack 集合摘要。恢复逻辑不再进行
+pack 摘要 exact-match，也不会因为摘要变化创建新 thread。
 
 ## 后果与限制
 
-- 接入一个新 CLI 的工作量被收敛为"写一个 pack"，且四个部分的一致性由版本号和摘要强制，
-  不依赖人工记得同步四处配置。
-- pack 版本变更会 fence 绑定旧版本的未完成 run，并使存量 thread 无法直接 resume。
-  这是刻意的 fail-closed 语义，UI 在修改前必须提示影响，与 ADR 0005 对 Gateway 配置变更的
-  处理一致。
+- 接入一个新 CLI 的工作量被收敛为"写一个 pack"；不再增加组合摘要、摘要迁移或摘要 fencing。
 - `resign` 类 pack 的接入成本显著高于 `bearer_swap`，且要求 egress-gateway 持有真实签名密钥
   并实现供应商算法。这类 pack 必须逐个做安全评审，不能视为配置工作。
 - pack 的运行时投影与 sandbox 镜像强耦合：新增 pack 通常意味着重建镜像并递增 digest。

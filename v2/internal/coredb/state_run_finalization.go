@@ -271,9 +271,6 @@ func validateCommitCheckpointAndTerminalRun(command CommitCheckpointAndTerminalR
 	if command.CheckpointAllowlistVersion < 1 || command.CheckpointAllowlistVersion > maxSafeJSONInteger {
 		return errors.New("checkpoint_allowlist_version must be a positive safe integer")
 	}
-	if command.PackSetDigest != nil && *command.PackSetDigest == ([sha256.Size]byte{}) {
-		return errors.New("pack_set_digest must be a non-zero SHA-256 when present")
-	}
 	return validateTransitionRecord(command.Record)
 }
 
@@ -418,10 +415,10 @@ INSERT INTO %s
     (id, workspace_id, session_id, run_id, run_attempt_id, attempt_generation,
      brain_tool_catalog_id, thread_id, turn_id, manifest_digest,
      object_id, object_sha256, object_size, object_media_type,
-     codex_runtime_manifest_digest, checkpoint_allowlist_version, pack_set_digest)
+     codex_runtime_manifest_digest, checkpoint_allowlist_version)
 VALUES
     ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-     $11, $12, $13, $14, $15, $16, $17)
+     $11, $12, $13, $14, $15, $16)
 RETURNING created_at`, s.table("checkpoints"))
 	checkpoint := Checkpoint{
 		ID: command.CheckpointID, WorkspaceID: run.WorkspaceID, SessionID: run.SessionID,
@@ -430,7 +427,6 @@ RETURNING created_at`, s.table("checkpoints"))
 		ManifestDigest: command.ManifestDigest, CatalogDigest: catalog.CatalogDigest, Object: command.Object,
 		CodexRuntimeManifestDigest: command.CodexRuntimeManifestDigest,
 		CheckpointAllowlistVersion: command.CheckpointAllowlistVersion,
-		PackSetDigest:              cloneOptionalSHA256(command.PackSetDigest),
 	}
 	if err := transaction.QueryRow(ctx, query,
 		checkpoint.ID,
@@ -449,7 +445,6 @@ RETURNING created_at`, s.table("checkpoints"))
 		checkpoint.Object.MediaType,
 		checkpoint.CodexRuntimeManifestDigest[:],
 		checkpoint.CheckpointAllowlistVersion,
-		optionalSHA256Bytes(checkpoint.PackSetDigest),
 	).Scan(&checkpoint.CreatedAt); err != nil {
 		var postgresError *pgconn.PgError
 		if pgxErrorAs(err, &postgresError) && postgresError.Code == "23505" {
@@ -470,14 +465,14 @@ SELECT c.id::text, c.workspace_id::text, c.session_id::text,
        c.brain_tool_catalog_id::text, c.thread_id, c.turn_id,
        c.manifest_digest, b.catalog_digest,
        c.object_id::text, c.object_sha256, c.object_size, c.object_media_type,
-       c.codex_runtime_manifest_digest, c.checkpoint_allowlist_version, c.pack_set_digest,
+       c.codex_runtime_manifest_digest, c.checkpoint_allowlist_version,
        c.created_at
 FROM %s AS c
 JOIN %s AS b ON b.id = c.brain_tool_catalog_id
 WHERE c.run_id = $1
 FOR UPDATE OF c`, s.table("checkpoints"), s.table("brain_tool_catalogs"))
 	var checkpoint Checkpoint
-	var manifestDigest, catalogDigest, objectDigest, runtimeDigest, packSetDigest []byte
+	var manifestDigest, catalogDigest, objectDigest, runtimeDigest []byte
 	err := transaction.QueryRow(ctx, query, runID).Scan(
 		&checkpoint.ID,
 		&checkpoint.WorkspaceID,
@@ -496,15 +491,10 @@ FOR UPDATE OF c`, s.table("checkpoints"), s.table("brain_tool_catalogs"))
 		&checkpoint.Object.MediaType,
 		&runtimeDigest,
 		&checkpoint.CheckpointAllowlistVersion,
-		&packSetDigest,
 		&checkpoint.CreatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Checkpoint{}, false, nil
-	}
-	checkpoint.PackSetDigest, err = decodeOptionalStoredSHA256(packSetDigest)
-	if err != nil {
-		return Checkpoint{}, false, databaseError(operation+" decode committed checkpoint pack-set digest", err)
 	}
 	if err != nil {
 		return Checkpoint{}, false, databaseError(operation+" read committed checkpoint", err)
@@ -564,8 +554,7 @@ func checkpointMatchesCommit(checkpoint Checkpoint, run Run, attempt RunAttempt,
 		checkpoint.CatalogDigest == command.CatalogDigest &&
 		checkpoint.Object == command.Object &&
 		checkpoint.CodexRuntimeManifestDigest == command.CodexRuntimeManifestDigest &&
-		checkpoint.CheckpointAllowlistVersion == command.CheckpointAllowlistVersion &&
-		optionalSHA256Equal(checkpoint.PackSetDigest, command.PackSetDigest)
+		checkpoint.CheckpointAllowlistVersion == command.CheckpointAllowlistVersion
 }
 
 func (s *StateStore) deleteFinalizedLeases(ctx context.Context, transaction pgx.Tx, operation string, run Run, attempt RunAttempt, holderID string, generation int64) error {

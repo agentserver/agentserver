@@ -37,8 +37,6 @@ type RunLaunchState struct {
 type RunManagedSandboxBinding struct {
 	SettingVersion int64
 	Region         string
-	ProfileID      string
-	BindingSHA256  string
 	EnvironmentID  string
 }
 
@@ -77,8 +75,8 @@ type RunLaunchProfile struct {
 	ControllerCallbackEndpoint string
 	ControllerCallbackIdentity string
 	ControllerCallbackAudience string
-	// ManagedSandboxProfiles is the immutable production launch catalog keyed
-	// by the exact profile ID frozen into a run. ManagedSandbox is retained only
+	// ManagedSandboxProfiles is the production launch catalog keyed by region.
+	// ManagedSandbox is retained only
 	// for insecure-development and legacy single-profile deployments.
 	ManagedSandboxProfiles map[string]ManagedSandboxLaunchSpec
 	ManagedSandbox         *ManagedSandboxLaunchSpec
@@ -140,13 +138,6 @@ func (profile RunLaunchProfile) inputs(state RunLaunchState) (RunLaunchInputs, e
 			state.PreviousCheckpoint.Checkpoint.CheckpointAllowlistVersion != int64(profile.CheckpointAllowlistVersion) {
 			return RunLaunchInputs{}, errors.New("previous checkpoint runtime manifest or allowlist version does not match the deployment profile")
 		}
-		wantPackSetDigest := ""
-		if managedSandbox != nil {
-			wantPackSetDigest = managedSandbox.PackSetDigest
-		}
-		if state.PreviousCheckpoint.Checkpoint.PackSetDigest != wantPackSetDigest {
-			return RunLaunchInputs{}, errors.New("previous checkpoint pack-set digest does not match the deployment profile")
-		}
 		proposal, err := BuildExecutorCatalog(policy)
 		if err != nil {
 			return RunLaunchInputs{}, err
@@ -206,33 +197,17 @@ func (profile RunLaunchProfile) selectManagedSandbox(binding *RunManagedSandboxB
 
 	var selected *ManagedSandboxLaunchSpec
 	if len(profile.ManagedSandboxProfiles) != 0 {
-		spec, ok := profile.ManagedSandboxProfiles[binding.ProfileID]
+		spec, ok := profile.ManagedSandboxProfiles[binding.Region]
 		if !ok {
-			return nil, fmt.Errorf("run selected managed sandbox profile %q which is not installed on this harness", binding.ProfileID)
+			return nil, fmt.Errorf("run selected managed sandbox region %q which is not installed on this harness", binding.Region)
 		}
 		selected = cloneManagedSandboxLaunchSpec(&spec)
-		if selected.Region != binding.Region || selected.ProfileID != binding.ProfileID ||
-			selected.ProfileBindingSHA256 != binding.BindingSHA256 || selected.EnvironmentID != binding.EnvironmentID {
-			return nil, errors.New("run managed sandbox binding does not exactly match the deployment profile")
-		}
 	} else {
 		selected = cloneManagedSandboxLaunchSpec(profile.ManagedSandbox)
 		if selected == nil {
 			return nil, errors.New("run selected a managed sandbox profile but this harness deployment has none")
 		}
-		if selected.EnvironmentID != binding.EnvironmentID {
-			return nil, errors.New("run managed sandbox environment does not match the deployment profile")
-		}
-		// A legacy single-profile spec may carry no routing authority. If it
-		// does carry authority, it must still match rather than being silently
-		// overwritten by the run projection.
-		if selected.ProfileID != "" && (selected.Region != binding.Region ||
-			selected.ProfileID != binding.ProfileID || selected.ProfileBindingSHA256 != binding.BindingSHA256) {
-			return nil, errors.New("run managed sandbox binding does not match the legacy deployment profile")
-		}
 		selected.Region = binding.Region
-		selected.ProfileID = binding.ProfileID
-		selected.ProfileBindingSHA256 = binding.BindingSHA256
 	}
 	selected.SettingVersion = binding.SettingVersion
 	return selected, nil
@@ -247,9 +222,9 @@ func validateRunLaunchProfile(profile RunLaunchProfile) error {
 	}
 	seenRegions := make(map[string]struct{}, len(profile.ManagedSandboxProfiles))
 	seenEnvironments := make(map[string]struct{}, len(profile.ManagedSandboxProfiles))
-	for profileID, spec := range profile.ManagedSandboxProfiles {
-		if !managedsandboxprofile.ValidProfileID(profileID) || profileID != spec.ProfileID {
-			return errors.New("managed sandbox profile catalog key must equal its canonical profile ID")
+	for region, spec := range profile.ManagedSandboxProfiles {
+		if !managedsandboxprofile.ValidRegion(region) || region != spec.Region {
+			return errors.New("managed sandbox catalog key must equal its region")
 		}
 		if spec.SettingVersion != 0 {
 			return errors.New("deployment managed sandbox profile must not pin a workspace setting version")
@@ -265,7 +240,7 @@ func validateRunLaunchProfile(profile RunLaunchProfile) error {
 		validationSpec := spec
 		validationSpec.SettingVersion = 1
 		if err := validateManagedSandboxLaunch(profileValidationScheduledRun(), validationSpec); err != nil {
-			return fmt.Errorf("managed sandbox profile %q: %w", profileID, err)
+			return fmt.Errorf("managed sandbox region %q: %w", region, err)
 		}
 	}
 	policyDigest := sha256.Sum256([]byte("agentserver-v2/run-launch-profile-validation"))
@@ -285,24 +260,19 @@ func validateRunLaunchProfile(profile RunLaunchProfile) error {
 		if len(profile.ManagedSandboxProfiles) != 0 {
 			for _, spec := range profile.ManagedSandboxProfiles {
 				state.ManagedSandbox = &RunManagedSandboxBinding{
-					SettingVersion: 1, Region: spec.Region, ProfileID: spec.ProfileID,
-					BindingSHA256: spec.ProfileBindingSHA256, EnvironmentID: spec.EnvironmentID,
+					SettingVersion: 1, Region: spec.Region, EnvironmentID: spec.EnvironmentID,
 				}
 				break
 			}
 		} else if profile.ManagedSandbox != nil {
 			spec := profile.ManagedSandbox
 			state.ManagedSandbox = &RunManagedSandboxBinding{
-				SettingVersion: 1, Region: spec.Region, ProfileID: spec.ProfileID,
-				BindingSHA256: spec.ProfileBindingSHA256, EnvironmentID: spec.EnvironmentID,
+				SettingVersion: 1, Region: spec.Region, EnvironmentID: spec.EnvironmentID,
 			}
 			if state.ManagedSandbox.Region == "" {
-				// Legacy production configuration receives its immutable routing
-				// authority from Core. Use a canonical synthetic binding only to
-				// exercise the same overwrite-and-validate path at construction.
+				// Legacy production configuration receives its routing region from
+				// Core. Use the default region at construction time.
 				state.ManagedSandbox.Region = managedsandboxprofile.DefaultRegion
-				state.ManagedSandbox.ProfileID = "profile-validation-v1"
-				state.ManagedSandbox.BindingSHA256 = strings.Repeat("d", 64)
 			}
 		}
 	}
@@ -342,8 +312,8 @@ func cloneRunLaunchProfile(source RunLaunchProfile) RunLaunchProfile {
 	copy.ManagedSandbox = cloneManagedSandboxLaunchSpec(source.ManagedSandbox)
 	if source.ManagedSandboxProfiles != nil {
 		copy.ManagedSandboxProfiles = make(map[string]ManagedSandboxLaunchSpec, len(source.ManagedSandboxProfiles))
-		for profileID, spec := range source.ManagedSandboxProfiles {
-			copy.ManagedSandboxProfiles[profileID] = spec
+		for region, spec := range source.ManagedSandboxProfiles {
+			copy.ManagedSandboxProfiles[region] = spec
 		}
 	}
 	return copy

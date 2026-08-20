@@ -21,7 +21,6 @@ import (
 
 const (
 	probePSM                             = "bytedance.sandbox.agentserver"
-	probeDeploymentSHAEnvironment        = "AGENTSERVER_V2_TAE_PROBE_DEPLOYMENT_CONFIG_SHA256"
 	probePolicyRevisionEnvironment       = "AGENTSERVER_V2_TAE_PROBE_POLICY_REVISION"
 	probeLarkSkillSHAEnvironment         = "AGENTSERVER_V2_TAE_PROBE_LARK_SKILL_SHA256"
 	probeConnectivityEnvironment         = "AGENTSERVER_V2_TAE_PROBE_CONNECTIVITY_ATTEMPTS"
@@ -53,7 +52,6 @@ var probeRevisionPattern = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._:-]{0,127
 
 type networkProbeConfig struct {
 	provider                   providerConfig
-	deploymentSHA256           string
 	policyRevision             string
 	larkCLIVersion             string
 	larkCLISHA256              string
@@ -120,10 +118,6 @@ func loadNetworkProbeConfig(getenv func(string) string) (networkProbeConfig, err
 	if err != nil {
 		return networkProbeConfig{}, err
 	}
-	deploymentSHA256 := getenv(probeDeploymentSHAEnvironment)
-	if !nonzeroProbeDigest(deploymentSHA256) {
-		return networkProbeConfig{}, fmt.Errorf("%s must be a non-zero lowercase SHA-256", probeDeploymentSHAEnvironment)
-	}
 	policyRevision := getenv(probePolicyRevisionEnvironment)
 	if !probeRevisionPattern.MatchString(policyRevision) || containsProbeSentinel(policyRevision) {
 		return networkProbeConfig{}, fmt.Errorf("%s must be the actual published TAE policy revision", probePolicyRevisionEnvironment)
@@ -161,7 +155,7 @@ func loadNetworkProbeConfig(getenv func(string) string) (networkProbeConfig, err
 		}
 	}
 	return networkProbeConfig{
-		provider: provider, deploymentSHA256: deploymentSHA256, policyRevision: policyRevision,
+		provider: provider, policyRevision: policyRevision,
 		larkCLIVersion: productionimage.ManagedLarkCLIVersion,
 		larkCLISHA256:  productionimage.ManagedLarkCLISHA256, larkCLISize: productionimage.ManagedLarkCLISizeBytes,
 		larkSkillSHA256:    larkSkillSHA256,
@@ -235,7 +229,7 @@ func executeNetworkProbe(ctx context.Context, config networkProbeConfig, clients
 		StartedAt: startedAt, FinishedAt: config.now(), Passed: passed, CleanupConfirmed: cleanupConfirmed,
 		Source: config.source,
 		Configuration: taenetworkreport.Configuration{
-			DeploymentConfigSHA256: config.deploymentSHA256, Region: config.provider.region, PSM: probePSM,
+			Region: config.provider.region, PSM: probePSM,
 			PolicyRevision: config.policyRevision, ByteCloudSite: config.provider.byteCloudSite,
 			JWTEndpoint: config.provider.jwtEndpoint, ProxyURL: config.provider.proxyURL,
 			ControlPlaneHost: config.provider.controlPlaneHost, DataPlaneDomainSuffix: config.provider.dataPlaneSuffix,

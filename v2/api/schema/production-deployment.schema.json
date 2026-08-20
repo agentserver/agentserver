@@ -385,13 +385,11 @@
     "managedEnvironment": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["environmentId", "root", "compatibilityRuntime", "runtimeProfileSha256", "packSetSha256", "sandboxTtl", "activityTtl", "idleTtl"],
+      "required": ["environmentId", "root", "compatibilityRuntime", "sandboxTtl", "activityTtl", "idleTtl"],
       "properties": {
         "environmentId": {"$ref": "#/$defs/uuid"},
         "root": {"$ref": "#/$defs/managedEnvironmentRoot"},
         "compatibilityRuntime": {"$ref": "#/$defs/managedCompatibilityRuntime"},
-        "runtimeProfileSha256": {"$ref": "#/$defs/optionalSha256"},
-        "packSetSha256": {"$ref": "#/$defs/optionalSha256"},
         "sandboxTtl": {"$ref": "#/$defs/duration"},
         "activityTtl": {"$ref": "#/$defs/duration"},
         "idleTtl": {"$ref": "#/$defs/duration"}
@@ -440,11 +438,9 @@
     },
     "managedSandboxProfile": {
       "type": "object", "additionalProperties": false,
-      "required": ["region", "profileId", "bindingSha256", "gateway", "environment", "tae", "sandboxExternalEgress"],
+      "required": ["region", "gateway", "environment", "tae", "sandboxExternalEgress"],
       "properties": {
         "region": {"enum": ["cn", "boe", "i18n-bd", "i18n-tt"]},
-        "profileId": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$"},
-        "bindingSha256": {"$ref": "#/$defs/sha256"},
         "gateway": {"$ref": "#/$defs/managedSandboxGateway"},
         "environment": {"$ref": "#/$defs/managedEnvironment"},
         "tae": {"$ref": "#/$defs/managedTAE"},
@@ -465,11 +461,10 @@
     "managedTAENetworkEvidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["version", "reportSha256", "bindingSha256", "evidenceRef"],
+      "required": ["version", "reportSha256", "evidenceRef"],
       "properties": {
         "version": {"type": "integer", "minimum": 0, "maximum": 5},
         "reportSha256": {"$ref": "#/$defs/optionalSha256"},
-        "bindingSha256": {"$ref": "#/$defs/optionalSha256"},
         "evidenceRef": {"type": "string", "maxLength": 1024}
       }
     },
@@ -477,7 +472,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "version", "revision", "policySha256", "bindingSha256", "publicHost", "publicAccess",
+        "version", "revision", "policySha256", "publicHost", "publicAccess",
         "publicWebhookRequired", "webhookMode", "webhookPsm", "webhookUrl", "webhookPath",
         "published", "approved", "evidenceRef"
       ],
@@ -485,7 +480,6 @@
         "version": {"const": 1},
         "revision": {"$ref": "#/$defs/versionText"},
         "policySha256": {"const": "d086154a58d7f805ad95ee0842a7b63020394e2ba35aa881838eec1d97d16331"},
-        "bindingSha256": {"$ref": "#/$defs/sha256"},
         "publicHost": {"enum": ["open.feishu.cn", "*.feishu.cn"]},
         "publicAccess": {"enum": ["whitelist", "system_default"]},
         "publicWebhookRequired": {"type": "boolean"},
@@ -578,12 +572,6 @@
           "if": {"properties": {"stage": {"const": "policy-bootstrap"}}, "required": ["stage"]},
           "then": {
             "properties": {
-              "environment": {
-                "properties": {
-                  "runtimeProfileSha256": {"const": ""},
-                  "packSetSha256": {"const": ""}
-                }
-              },
               "tae": {
                 "properties": {
                   "policy": {
@@ -597,7 +585,6 @@
                     "properties": {
                       "version": {"const": 0},
                       "reportSha256": {"const": ""},
-                      "bindingSha256": {"const": ""},
                       "evidenceRef": {"const": ""}
                     }
                   }
@@ -607,12 +594,6 @@
           },
           "else": {
             "properties": {
-              "environment": {
-                "properties": {
-                  "runtimeProfileSha256": {"$ref": "#/$defs/sha256"},
-                  "packSetSha256": {"$ref": "#/$defs/sha256"}
-                }
-              },
               "tae": {
                 "properties": {
                   "policy": {
@@ -626,7 +607,6 @@
                     "properties": {
                       "version": {"const": 5},
                       "reportSha256": {"$ref": "#/$defs/sha256"},
-                      "bindingSha256": {"$ref": "#/$defs/sha256"},
                       "evidenceRef": {"type": "string", "minLength": 1, "maxLength": 1024}
                     }
                   }

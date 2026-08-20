@@ -25,13 +25,12 @@ const (
 )
 
 type managedEnvironmentProfileDocument struct {
-	Version           int                                     `json:"version"`
-	WorkspaceID       string                                  `json:"workspaceId"`
-	ExecutorID        string                                  `json:"executorId"`
-	EnvironmentID     string                                  `json:"environmentId"`
-	OwnerPolicySHA256 string                                  `json:"ownerPolicySha256"`
-	Root              managedEnvironmentRootDocument          `json:"root"`
-	Runtime           managedEnvironmentLegacyRuntimeDocument `json:"runtime"`
+	Version       int                                     `json:"version"`
+	WorkspaceID   string                                  `json:"workspaceId"`
+	ExecutorID    string                                  `json:"executorId"`
+	EnvironmentID string                                  `json:"environmentId"`
+	Root          managedEnvironmentRootDocument          `json:"root"`
+	Runtime       managedEnvironmentLegacyRuntimeDocument `json:"runtime"`
 }
 
 type managedEnvironmentRootDocument struct {
@@ -99,10 +98,6 @@ func loadManagedEnvironmentProfile(configPath string) (coredb.ManagedEnvironment
 	if err := validateManagedEnvironmentProfileDocument(document); err != nil {
 		return coredb.ManagedEnvironmentProfile{}, err
 	}
-	ownerPolicy, err := decodeManagedEnvironmentDigest("ownerPolicySha256", document.OwnerPolicySHA256)
-	if err != nil {
-		return coredb.ManagedEnvironmentProfile{}, err
-	}
 	codexDigest, err := decodeManagedEnvironmentDigest("runtime.codexSha256", document.Runtime.CodexSHA256)
 	if err != nil {
 		return coredb.ManagedEnvironmentProfile{}, err
@@ -114,8 +109,8 @@ func loadManagedEnvironmentProfile(configPath string) (coredb.ManagedEnvironment
 	return coredb.ManagedEnvironmentProfile{
 		WorkspaceID: document.WorkspaceID, ExecutorID: document.ExecutorID,
 		EnvironmentID: document.EnvironmentID, RootDescriptor: descriptor,
-		OwnerPolicySHA256: ownerPolicy, CodexRelease: document.Runtime.CodexRelease,
-		CodexCommit: document.Runtime.CodexCommit, CodexSHA256: codexDigest,
+		CodexRelease: document.Runtime.CodexRelease,
+		CodexCommit:  document.Runtime.CodexCommit, CodexSHA256: codexDigest,
 	}, nil
 }
 

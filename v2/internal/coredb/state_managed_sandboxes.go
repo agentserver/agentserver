@@ -70,17 +70,17 @@ INSERT INTO %s
     (id, workspace_id, session_id, environment_id, provider_kind,
      generation, desired_state, observed_state,
      provider_region, provider_psm, provider_session_ref,
-     create_idempotency_key, runtime_profile_digest, pack_set_digest,
-     requested_ttl_seconds, idle_ttl_seconds, idle_expires_at)
+	 create_idempotency_key,
+	 requested_ttl_seconds, idle_ttl_seconds, idle_expires_at)
 VALUES
     ($1, $2, $3, $4, 'tae', $5, 'ready', 'reserved',
-     $6, $7, NULLIF($8, ''), $9, $10, $11, $12::bigint, $13::bigint,
-     pg_catalog.clock_timestamp() + ($13::bigint * interval '1 second'))
+	 $6, $7, NULLIF($8, ''), $9, $10::bigint, $11::bigint,
+	 pg_catalog.clock_timestamp() + ($11::bigint * interval '1 second'))
 RETURNING %s`, s.table("managed_sandboxes"), managedSandboxColumns(""))
 		sandbox, err := scanManagedSandbox(transaction.QueryRow(ctx, insertQuery,
 			command.SandboxID, command.WorkspaceID, command.SessionID, command.EnvironmentID,
 			generation, command.ProviderRegion, command.ProviderPSM, command.ProviderSessionRef,
-			command.CreateIdempotencyKey, command.RuntimeProfileDigest[:], command.PackSetDigest[:],
+			command.CreateIdempotencyKey,
 			int64(command.RequestedTTL/time.Second), int64(command.RequestedIdleTTL/time.Second),
 		))
 		if err != nil {
@@ -596,9 +596,6 @@ func validateReserveManagedSandbox(command ReserveManagedSandboxCommand) error {
 			return err
 		}
 	}
-	if isZeroDigest(command.RuntimeProfileDigest) || isZeroDigest(command.PackSetDigest) {
-		return errors.New("runtime and pack-set digests must not be zero")
-	}
 	if command.RequestedTTL < MinManagedSandboxTTL || command.RequestedTTL > MaxManagedSandboxTTL || command.RequestedTTL%time.Second != 0 {
 		return fmt.Errorf("requested_ttl must be whole seconds between %s and %s", MinManagedSandboxTTL, MaxManagedSandboxTTL)
 	}
@@ -612,7 +609,6 @@ func managedSandboxReservationMatches(sandbox ManagedSandbox, command ReserveMan
 	return sandbox.WorkspaceID == command.WorkspaceID && sandbox.SessionID == command.SessionID &&
 		sandbox.EnvironmentID == command.EnvironmentID && sandbox.ProviderKind == DispatchTargetTAE &&
 		sandbox.ProviderRegion == command.ProviderRegion && sandbox.ProviderPSM == command.ProviderPSM &&
-		sandbox.RuntimeProfileDigest == command.RuntimeProfileDigest && sandbox.PackSetDigest == command.PackSetDigest &&
 		sandbox.RequestedTTL == command.RequestedTTL && sandbox.IdleTTL == command.RequestedIdleTTL
 }
 

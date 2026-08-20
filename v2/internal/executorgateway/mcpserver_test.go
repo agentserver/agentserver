@@ -414,8 +414,6 @@ func TestExecutorMCPSessionAcceptsReconstructedManagedSandboxPrincipal(t *testin
 	principal.ManagedSandbox = &ExecutorManagedSandboxAuthority{
 		SettingVersion: 2,
 		Region:         "boe",
-		ProfileID:      "tae-boe-test-profile",
-		BindingSHA256:  strings.Repeat("b", 64),
 		EnvironmentID:  "43000000-0000-4000-8000-000000000004",
 	}
 	registry := &recordingMCPEnvironmentRegistry{}
@@ -453,8 +451,6 @@ func TestEqualExecutorMCPPrincipalsRejectsManagedSandboxAuthorityDrift(t *testin
 	left.ManagedSandbox = &ExecutorManagedSandboxAuthority{
 		SettingVersion: 2,
 		Region:         "boe",
-		ProfileID:      "tae-boe-test-profile",
-		BindingSHA256:  strings.Repeat("b", 64),
 		EnvironmentID:  "43000000-0000-4000-8000-000000000004",
 	}
 	right := left

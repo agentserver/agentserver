@@ -163,12 +163,10 @@ func (s *StateStore) insertRunLaunchInput(ctx context.Context, transaction pgx.T
 		larkGrantUserID = command.LarkEgress.GrantUserID
 		larkPolicySHA256 = command.LarkEgress.PolicySHA256[:]
 	}
-	var managedSettingVersion, managedRegion, managedProfileID, managedBindingSHA256, managedEnvironmentID any
+	var managedSettingVersion, managedRegion, managedEnvironmentID any
 	if command.ManagedSandbox != (RunManagedSandboxBinding{}) {
 		managedSettingVersion = command.ManagedSandbox.SettingVersion
 		managedRegion = command.ManagedSandbox.Region
-		managedProfileID = command.ManagedSandbox.ProfileID
-		managedBindingSHA256 = command.ManagedSandbox.BindingSHA256[:]
 		managedEnvironmentID = command.ManagedSandbox.EnvironmentID
 	}
 	query := fmt.Sprintf(`
@@ -177,13 +175,12 @@ INSERT INTO %s
      prompt_object_id, prompt_sha256, prompt_size, prompt_media_type,
      executor_policy_version, executor_policy_context_digest,
      llm_gateway_id, llm_gateway_version, llm_gateway_grant_user_id, model,
-     lark_grant_id, lark_grant_version, lark_grant_user_id, lark_policy_sha256,
-     managed_sandbox_setting_version, managed_sandbox_region,
-     managed_sandbox_profile_id, managed_sandbox_binding_sha256,
-     managed_sandbox_environment_id)
+	 lark_grant_id, lark_grant_version, lark_grant_user_id, lark_policy_sha256,
+	 managed_sandbox_setting_version, managed_sandbox_region,
+	 managed_sandbox_environment_id)
 VALUES
 	($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-	 $14, $15, $16, $17, $18, $19, $20, $21, $22)`, s.table("run_launch_states"))
+	 $14, $15, $16, $17, $18, $19, $20)`, s.table("run_launch_states"))
 	if _, err := transaction.Exec(ctx, query,
 		command.RunID,
 		command.WorkspaceID,
@@ -204,8 +201,6 @@ VALUES
 		larkPolicySHA256,
 		managedSettingVersion,
 		managedRegion,
-		managedProfileID,
-		managedBindingSHA256,
 		managedEnvironmentID,
 	); err != nil {
 		var postgresError *pgconn.PgError
@@ -233,32 +228,27 @@ func (s *StateStore) readRunManagedSandboxBinding(
 ) (RunManagedSandboxBinding, error) {
 	query := fmt.Sprintf(`
 SELECT managed_sandbox_setting_version, managed_sandbox_region,
-       managed_sandbox_profile_id, managed_sandbox_binding_sha256,
-       managed_sandbox_environment_id::text
+	   managed_sandbox_environment_id::text
 FROM %s
 WHERE run_id = $1`, s.table("run_launch_states"))
 	var settingVersion *int64
-	var region, profileID, environmentID *string
-	var rawDigest []byte
+	var region, environmentID *string
 	if err := transaction.QueryRow(ctx, query, runID).Scan(
-		&settingVersion, &region, &profileID, &rawDigest, &environmentID,
+		&settingVersion, &region, &environmentID,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return RunManagedSandboxBinding{}, commandError(ErrorInvalidState, operation, "run", runID, "run has no immutable launch authority")
 		}
 		return RunManagedSandboxBinding{}, databaseError(operation+" read managed sandbox binding", err)
 	}
-	if settingVersion == nil && region == nil && profileID == nil && rawDigest == nil && environmentID == nil {
+	if settingVersion == nil && region == nil && environmentID == nil {
 		return RunManagedSandboxBinding{}, nil
 	}
-	if settingVersion == nil || region == nil || profileID == nil || rawDigest == nil || environmentID == nil {
+	if settingVersion == nil || region == nil || environmentID == nil {
 		return RunManagedSandboxBinding{}, databaseError(operation+" decode managed sandbox binding", errors.New("stored binding is incomplete"))
 	}
 	binding := RunManagedSandboxBinding{
-		SettingVersion: *settingVersion, Region: *region, ProfileID: *profileID, EnvironmentID: *environmentID,
-	}
-	if err := copyStoredSHA256(&binding.BindingSHA256, rawDigest); err != nil {
-		return RunManagedSandboxBinding{}, databaseError(operation+" decode managed sandbox binding digest", err)
+		SettingVersion: *settingVersion, Region: *region, EnvironmentID: *environmentID,
 	}
 	if err := validateRunManagedSandboxBinding(binding); err != nil {
 		return RunManagedSandboxBinding{}, databaseError(operation+" validate managed sandbox binding", err)
@@ -383,13 +373,13 @@ SELECT c.id::text, c.workspace_id::text, c.session_id::text,
        c.brain_tool_catalog_id::text, c.thread_id, c.turn_id,
        c.manifest_digest, b.catalog_digest,
        c.object_id::text, c.object_sha256, c.object_size, c.object_media_type,
-       c.codex_runtime_manifest_digest, c.checkpoint_allowlist_version, c.pack_set_digest,
+       c.codex_runtime_manifest_digest, c.checkpoint_allowlist_version,
        c.created_at, b.session_id::text, b.thread_id
 FROM %s AS c
 JOIN %s AS b ON b.id = c.brain_tool_catalog_id
 WHERE c.id = $1 AND c.session_id = $2`, s.table("checkpoints"), s.table("brain_tool_catalogs"))
 	var checkpoint Checkpoint
-	var manifestDigest, catalogDigest, objectDigest, runtimeDigest, packSetDigest []byte
+	var manifestDigest, catalogDigest, objectDigest, runtimeDigest []byte
 	var catalogSessionID string
 	var catalogThreadID *string
 	if err := transaction.QueryRow(ctx, query, *checkpointID, sessionID).Scan(
@@ -410,7 +400,6 @@ WHERE c.id = $1 AND c.session_id = $2`, s.table("checkpoints"), s.table("brain_t
 		&checkpoint.Object.MediaType,
 		&runtimeDigest,
 		&checkpoint.CheckpointAllowlistVersion,
-		&packSetDigest,
 		&checkpoint.CreatedAt,
 		&catalogSessionID,
 		&catalogThreadID,
@@ -420,11 +409,6 @@ WHERE c.id = $1 AND c.session_id = $2`, s.table("checkpoints"), s.table("brain_t
 		}
 		return nil, databaseError(operation+" read latest checkpoint", err)
 	}
-	decodedPackSetDigest, err := decodeOptionalStoredSHA256(packSetDigest)
-	if err != nil {
-		return nil, databaseError(operation+" decode latest checkpoint pack-set digest", err)
-	}
-	checkpoint.PackSetDigest = decodedPackSetDigest
 	for destination, source := range map[*[sha256.Size]byte][]byte{
 		&checkpoint.ManifestDigest:             manifestDigest,
 		&checkpoint.CatalogDigest:              catalogDigest,
@@ -491,9 +475,6 @@ func validateStoredCheckpoint(checkpoint Checkpoint) error {
 	if checkpoint.CheckpointAllowlistVersion < 1 || checkpoint.CheckpointAllowlistVersion > maxSafeJSONInteger {
 		return errors.New("checkpoint.checkpoint_allowlist_version must be a positive safe integer")
 	}
-	if checkpoint.PackSetDigest != nil && *checkpoint.PackSetDigest == ([sha256.Size]byte{}) {
-		return errors.New("checkpoint.pack_set_digest must be a non-zero SHA-256 when present")
-	}
 	if checkpoint.CreatedAt.IsZero() {
 		return errors.New("checkpoint.created_at is required")
 	}
@@ -506,42 +487,6 @@ func copyStoredSHA256(destination *[sha256.Size]byte, source []byte) error {
 	}
 	copy(destination[:], source)
 	return nil
-}
-
-func decodeOptionalStoredSHA256(source []byte) (*[sha256.Size]byte, error) {
-	if source == nil {
-		return nil, nil
-	}
-	var digest [sha256.Size]byte
-	if err := copyStoredSHA256(&digest, source); err != nil {
-		return nil, err
-	}
-	if digest == ([sha256.Size]byte{}) {
-		return nil, errors.New("stored optional SHA-256 must not be all zero")
-	}
-	return &digest, nil
-}
-
-func optionalSHA256Bytes(value *[sha256.Size]byte) []byte {
-	if value == nil {
-		return nil
-	}
-	return value[:]
-}
-
-func cloneOptionalSHA256(value *[sha256.Size]byte) *[sha256.Size]byte {
-	if value == nil {
-		return nil
-	}
-	copy := *value
-	return &copy
-}
-
-func optionalSHA256Equal(left, right *[sha256.Size]byte) bool {
-	if left == nil || right == nil {
-		return left == nil && right == nil
-	}
-	return *left == *right
 }
 
 func runLaunchInputMatches(prompt ObjectPointer, policy RunExecutorPolicy, llmGateway RunLLMGatewayBinding, larkEgress RunLarkEgressBinding, managedSandbox RunManagedSandboxBinding, command CreateRunCommand) bool {

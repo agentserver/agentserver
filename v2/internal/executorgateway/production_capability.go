@@ -122,10 +122,9 @@ func (authenticator *ProductionExecutorMCPAuthenticator) AuthenticateExecutorMCP
 			ExpectedRunAttemptVersion: claims.ExpectedRunAttemptVersion,
 		},
 	}
-	if claims.ManagedSandboxProfileID != "" {
+	if claims.ManagedSandboxRegion != "" {
 		principal.ManagedSandbox = &ExecutorManagedSandboxAuthority{
 			SettingVersion: claims.ManagedSandboxSettingVersion, Region: claims.ManagedSandboxRegion,
-			ProfileID: claims.ManagedSandboxProfileID, BindingSHA256: claims.ManagedSandboxBindingSHA256,
 			EnvironmentID: claims.ManagedSandboxEnvironmentID,
 		}
 	}

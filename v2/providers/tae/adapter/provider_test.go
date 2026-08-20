@@ -138,14 +138,13 @@ func TestProviderLifecycleUsesProviderAssignedIdentityAndCompleteMetadata(t *tes
 		t.Fatal("test must exercise provider-assigned identity")
 	}
 	want := provider.createMetadata(request.SandboxID, request.IdempotencyKey, request.WorkspaceID, request.SessionID,
-		request.EnvironmentID, request.RuntimeProfileSHA256, request.PackSetSHA256)
-	if !metadataContainsIdentity(captured.Metadata, want) || len(captured.Metadata) != 8 ||
-		captured.Metadata[MetadataTAEPolicySHA256] != provider.policy.BindingSHA256 {
+		request.EnvironmentID)
+	if !metadataContainsIdentity(captured.Metadata, want) || len(captured.Metadata) != 5 {
 		t.Fatalf("create metadata = %#v, want %#v", captured.Metadata, want)
 	}
 
 	control.search = func(_ context.Context, input SearchInput) (SearchResult, error) {
-		if input.Limit != 2 || !metadataContainsIdentity(input.Metadata, want) || len(input.Metadata) != 8 {
+		if input.Limit != 2 || !metadataContainsIdentity(input.Metadata, want) || len(input.Metadata) != 5 {
 			t.Fatalf("search input = %+v", input)
 		}
 		return SearchResult{Sessions: []ControlSession{readyControlSession("tae-session-1", want)}, Total: 1}, nil
@@ -207,11 +206,11 @@ func TestProviderAcceptsTAEAddedMetadataWhileRequiringCompleteIdentity(t *testin
 	}
 }
 
-func TestProviderRejectsSessionWithoutExactPolicyBindingMetadata(t *testing.T) {
+func TestProviderRejectsSessionWithoutExactIdentityMetadata(t *testing.T) {
 	control := defaultFakeControl()
 	control.create = func(_ context.Context, input CreateInput) (ControlSession, error) {
 		metadata := cloneStrings(input.Metadata)
-		delete(metadata, MetadataTAEPolicySHA256)
+		delete(metadata, MetadataEnvironmentID)
 		return readyControlSession("tae-session-drifted", metadata), nil
 	}
 	provider := newTestProvider(t, control, defaultFakeData())
@@ -323,7 +322,7 @@ func TestRuntimeCommandConflictsOnlyOnReportedDifferentValue(t *testing.T) {
 	}
 }
 
-func TestNewProviderRejectsMissingOrMismatchedPolicyBinding(t *testing.T) {
+func TestNewProviderRejectsMissingOrMismatchedPolicy(t *testing.T) {
 	base := Config{
 		Control: defaultFakeControl(), Data: defaultFakeData(), Region: "i18n-tt", PSM: "psm.agentserver.tae",
 		Root: "/workspace",
@@ -332,9 +331,9 @@ func TestNewProviderRejectsMissingOrMismatchedPolicyBinding(t *testing.T) {
 		t.Fatal("provider accepted a missing TAE policy binding")
 	}
 	base.Policy = validProviderPolicy()
-	base.Policy.BindingSHA256 = strings.Repeat("f", 64)
+	base.Policy.PolicySHA256 = strings.Repeat("f", 64)
 	if _, err := NewProvider(base); err == nil {
-		t.Fatal("provider accepted a drifted TAE policy binding digest")
+		t.Fatal("provider accepted a drifted TAE policy digest")
 	}
 }
 
@@ -684,7 +683,6 @@ func validProviderPolicy() taepolicy.Binding {
 		WebhookMode: "psm", WebhookPSM: "agentserver.egress-authorizer", WebhookPath: taepolicy.WebhookPath,
 		Published: true, Approved: true, EvidenceRef: "tae-change/sg-2026-08-06",
 	}
-	policy.BindingSHA256 = policy.DigestHex()
 	return policy
 }
 
@@ -731,7 +729,7 @@ func validCreateRequest() sandboxgateway.CreateSandboxRequest {
 	return sandboxgateway.CreateSandboxRequest{
 		SandboxID: "sandbox-1", IdempotencyKey: "create-1", WorkspaceID: "workspace-1",
 		SessionID: "session-1", EnvironmentID: "environment-1", Region: "i18n-tt", PSM: "psm.agentserver.tae",
-		RuntimeProfileSHA256: strings.Repeat("a", 64), PackSetSHA256: strings.Repeat("b", 64), TTL: time.Hour,
+		TTL: time.Hour,
 	}
 }
 
@@ -740,7 +738,6 @@ func validFindRequest() sandboxgateway.FindSandboxRequest {
 	return sandboxgateway.FindSandboxRequest{
 		SandboxID: create.SandboxID, IdempotencyKey: create.IdempotencyKey, WorkspaceID: create.WorkspaceID,
 		SessionID: create.SessionID, EnvironmentID: create.EnvironmentID, Region: create.Region, PSM: create.PSM,
-		RuntimeProfileSHA256: create.RuntimeProfileSHA256, PackSetSHA256: create.PackSetSHA256,
 	}
 }
 
@@ -749,7 +746,7 @@ func providerIdentityMetadataForTest(t *testing.T) map[string]string {
 	provider := newTestProvider(t, defaultFakeControl(), defaultFakeData())
 	request := validCreateRequest()
 	return provider.createMetadata(request.SandboxID, request.IdempotencyKey, request.WorkspaceID, request.SessionID,
-		request.EnvironmentID, request.RuntimeProfileSHA256, request.PackSetSHA256)
+		request.EnvironmentID)
 }
 
 func validStartRequest(outputLimit int64) executionbackend.StartProcessRequest {

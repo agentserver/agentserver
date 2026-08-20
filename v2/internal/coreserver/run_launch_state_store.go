@@ -59,7 +59,6 @@ func (queries StateStoreRunLaunchStateQueries) ResolveRunLaunchState(ctx context
 		binding := resolved.ManagedSandbox
 		response.ManagedSandbox = &corecontract.RunLaunchManagedSandboxState{
 			SettingVersion: binding.SettingVersion, Region: binding.Region,
-			ProfileID: binding.ProfileID, BindingSHA256: hex.EncodeToString(binding.BindingSHA256[:]),
 			EnvironmentID: binding.EnvironmentID,
 		}
 	}
@@ -75,7 +74,6 @@ func (queries StateStoreRunLaunchStateQueries) ResolveRunLaunchState(ctx context
 			Object:                     databaseRunLaunchObjectPointer(checkpoint.Object),
 			CodexRuntimeManifestDigest: hex.EncodeToString(checkpoint.CodexRuntimeManifestDigest[:]),
 			CheckpointAllowlistVersion: checkpoint.CheckpointAllowlistVersion,
-			PackSetDigest:              encodeOptionalCanonicalSHA256(checkpoint.PackSetDigest),
 		}
 	}
 	return response, nil

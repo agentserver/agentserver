@@ -37,7 +37,6 @@ func TestManagedShellLarkCLIThroughTAEHTTPAndSandboxGateway(t *testing.T) {
 		EnvironmentID: environment.EnvironmentID, ProviderKind: "tae", Generation: environment.Target.Generation,
 		DesiredState: "ready", ObservedState: "ready", ProviderRegion: "sg", ProviderPSM: "prod.tae.sandbox",
 		ProviderSessionRef: providerSessionRef, CreateIdempotencyKey: "managed-http-e2e-create",
-		RuntimeProfileSHA256: strings.Repeat("1", 64), PackSetSHA256: strings.Repeat("2", 64),
 		RequestedTTLSeconds: 3600, IdleTTLSeconds: 300, ExpiresAt: &expiresAt,
 		Version: 3, CreatedAt: now, UpdatedAt: now,
 	}}
@@ -63,8 +62,7 @@ func TestManagedShellLarkCLIThroughTAEHTTPAndSandboxGateway(t *testing.T) {
 	if _, err := provider.CreateSandbox(t.Context(), sandboxgateway.CreateSandboxRequest{
 		SessionRef: providerSessionRef, IdempotencyKey: "managed-http-e2e-create",
 		WorkspaceID: principal.WorkspaceID, SessionID: principal.SessionID, EnvironmentID: environment.EnvironmentID,
-		Region: "sg", PSM: "prod.tae.sandbox", RuntimeProfileSHA256: strings.Repeat("1", 64),
-		PackSetSHA256: strings.Repeat("2", 64), TTL: time.Hour,
+		Region: "sg", PSM: "prod.tae.sandbox", TTL: time.Hour,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +190,6 @@ func TestManagedShellBkectlThroughCoreTAEHTTPAndSandboxGateway(t *testing.T) {
 		EnvironmentID: environment.EnvironmentID, ProviderKind: "tae", Generation: environment.Target.Generation,
 		DesiredState: "ready", ObservedState: "ready", ProviderRegion: "sg", ProviderPSM: "prod.tae.sandbox",
 		ProviderSessionRef: providerSessionRef, CreateIdempotencyKey: "managed-http-bkectl-e2e-create",
-		RuntimeProfileSHA256: strings.Repeat("1", 64), PackSetSHA256: strings.Repeat("2", 64),
 		RequestedTTLSeconds: 3600, IdleTTLSeconds: 300, ExpiresAt: &expiresAt,
 		Version: 3, CreatedAt: now, UpdatedAt: now,
 	}}
@@ -223,8 +220,7 @@ func TestManagedShellBkectlThroughCoreTAEHTTPAndSandboxGateway(t *testing.T) {
 	if _, err := provider.CreateSandbox(t.Context(), sandboxgateway.CreateSandboxRequest{
 		SessionRef: providerSessionRef, IdempotencyKey: "managed-http-bkectl-e2e-create",
 		WorkspaceID: principal.WorkspaceID, SessionID: principal.SessionID, EnvironmentID: environment.EnvironmentID,
-		Region: "sg", PSM: "prod.tae.sandbox", RuntimeProfileSHA256: strings.Repeat("1", 64),
-		PackSetSHA256: strings.Repeat("2", 64), TTL: time.Hour,
+		Region: "sg", PSM: "prod.tae.sandbox", TTL: time.Hour,
 	}); err != nil {
 		t.Fatal(err)
 	}

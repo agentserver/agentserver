@@ -37,8 +37,7 @@ func TestLoadEgressAuthorizerProductionConfigDoesNotConsumeDevelopmentSecrets(t 
 	}
 	if !config.production || config.devZTIToken != "" || config.devLarkAccessToken != "" || config.devCredentialLifetime != 0 ||
 		config.tlsCertificate == "" || config.tlsKey == "" || config.coreURL != "https://core.internal" ||
-		config.spiffeIdentity != environment[egressSPIFFEIdentityEnvironment] ||
-		config.taePolicy.BindingSHA256 != environment[egressTAEPolicyBindingEnvironment] {
+		config.spiffeIdentity != environment[egressSPIFFEIdentityEnvironment] {
 		t.Fatalf("production config = %+v", config)
 	}
 }
@@ -54,7 +53,6 @@ func TestLoadEgressAuthorizerProductionConfigAcceptsFourRegionPolicyCatalog(t *t
 			WebhookMode: "psm", WebhookPSM: "agentserver.egress-authorizer", WebhookPath: taepolicy.WebhookPath,
 			Published: true, Approved: true, EvidenceRef: "tae-change/" + region + "/2026-08-15",
 		}
-		binding.BindingSHA256 = binding.DigestHex()
 		bindings = append(bindings, binding)
 	}
 	raw, err := json.Marshal(taePolicyBindingsDocument{Bindings: bindings})
@@ -62,7 +60,7 @@ func TestLoadEgressAuthorizerProductionConfigAcceptsFourRegionPolicyCatalog(t *t
 		t.Fatal(err)
 	}
 	for _, name := range []string{
-		egressTAEPolicyRevisionEnvironment, egressTAEPolicySHA256Environment, egressTAEPolicyBindingEnvironment,
+		egressTAEPolicyRevisionEnvironment, egressTAEPolicySHA256Environment,
 		egressTAEPolicyHostEnvironment, egressTAEPolicyAccessEnvironment, egressTAEWebhookRequiredEnvironment,
 		egressTAEWebhookModeEnvironment, egressTAEWebhookPSMEnvironment, egressTAEWebhookURLEnvironment,
 		egressTAEWebhookPathEnvironment, egressTAEPolicyPublishedEnvironment,
@@ -91,7 +89,7 @@ func TestLoadEgressAuthorizerPolicyBootstrapConsumesOnlyServerIdentity(t *testin
 		egressCoreKeyEnvironment, egressCoreServerNameEnvironment,
 		egressPlaceholderKeyringEnvironment, egressAllowedTAEPSMEnvironment,
 		egressTAEPolicyRevisionEnvironment, egressTAEPolicySHA256Environment,
-		egressTAEPolicyBindingEnvironment, egressTAEPolicyEvidenceEnvironment,
+		egressTAEPolicyEvidenceEnvironment,
 	} {
 		environment[name] = "deliberately invalid bootstrap input\n"
 	}
@@ -143,9 +141,6 @@ func TestLoadEgressAuthorizerConfigRejectsUnsafeValues(t *testing.T) {
 		"relative Core key": func(environment map[string]string) { environment[egressCoreKeyEnvironment] = "client.key" },
 		"unpublished TAE policy": func(environment map[string]string) {
 			environment[egressTAEPolicyPublishedEnvironment] = "false"
-		},
-		"TAE policy digest drift": func(environment map[string]string) {
-			environment[egressTAEPolicyBindingEnvironment] = strings.Repeat("f", 64)
 		},
 		"wrong TAE webhook path": func(environment map[string]string) {
 			environment[egressTAEWebhookPathEnvironment] = "/v1/other"
@@ -205,10 +200,8 @@ func validEgressProductionEnvironment(t *testing.T) map[string]string {
 		WebhookMode: "psm", WebhookPSM: "agentserver.egress-authorizer", WebhookPath: taepolicy.WebhookPath,
 		Published: true, Approved: true, EvidenceRef: "tae-change/sg-2026-08-06",
 	}
-	policy.BindingSHA256 = policy.DigestHex()
 	environment[egressTAEPolicyRevisionEnvironment] = policy.Revision
 	environment[egressTAEPolicySHA256Environment] = policy.PolicySHA256
-	environment[egressTAEPolicyBindingEnvironment] = policy.BindingSHA256
 	environment[egressTAEPolicyHostEnvironment] = policy.PublicHost
 	environment[egressTAEPolicyAccessEnvironment] = policy.PublicAccess
 	environment[egressTAEWebhookRequiredEnvironment] = strconv.FormatBool(policy.PublicWebhookRequired)

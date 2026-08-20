@@ -183,7 +183,6 @@ type CheckpointCommit struct {
 	Object                     EventObjectPointer `json:"object"`
 	CodexRuntimeManifestDigest string             `json:"codexRuntimeManifestDigest"`
 	CheckpointAllowlistVersion int64              `json:"checkpointAllowlistVersion"`
-	PackSetDigest              string             `json:"packSetDigest,omitempty"`
 }
 
 type CommitCheckpointRequest struct {
@@ -212,7 +211,6 @@ type CheckpointState struct {
 	Object                     EventObjectPointer `json:"object"`
 	CodexRuntimeManifestDigest string             `json:"codexRuntimeManifestDigest"`
 	CheckpointAllowlistVersion int64              `json:"checkpointAllowlistVersion"`
-	PackSetDigest              string             `json:"packSetDigest,omitempty"`
 	CreatedAt                  time.Time          `json:"createdAt"`
 }
 

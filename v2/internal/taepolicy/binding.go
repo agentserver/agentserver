@@ -9,8 +9,6 @@ package taepolicy
 
 import (
 	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -34,16 +32,14 @@ const (
 
 var revisionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
-// Binding is the non-secret, release-locked description of the TAE policy
-// which must already be published before managed sessions are admitted.
-// BindingSHA256 is a digest of all other fields (see DigestHex).
+// Binding is the non-secret description of the TAE policy which must already
+// be published before managed sessions are admitted.
 type Binding struct {
 	Version               int    `json:"version"`
 	Region                string `json:"region"`
 	SandboxPSM            string `json:"sandboxPsm"`
 	Revision              string `json:"revision"`
 	PolicySHA256          string `json:"policySha256"`
-	BindingSHA256         string `json:"bindingSha256"`
 	PublicHost            string `json:"publicHost"`
 	PublicAccess          string `json:"publicAccess"`
 	PublicWebhookRequired bool   `json:"publicWebhookRequired"`
@@ -69,7 +65,7 @@ func (binding Binding) Validate(expectedRegion, expectedSandboxPSM, expectedPoli
 	if !bounded(binding.EvidenceRef, 1024) {
 		return errors.New("TAE policy evidence reference is required")
 	}
-	return binding.validateDigest()
+	return nil
 }
 
 // ValidateDraft validates the fail-closed lifecycle before the managed
@@ -83,7 +79,7 @@ func (binding Binding) ValidateDraft(expectedRegion, expectedSandboxPSM, expecte
 	if binding.Published || binding.Approved || binding.EvidenceRef != "" {
 		return errors.New("TAE draft policy must be unpublished, unapproved, and have no evidence reference")
 	}
-	return binding.validateDigest()
+	return nil
 }
 
 func (binding Binding) validateShape(expectedRegion, expectedSandboxPSM, expectedPolicySHA256 string) error {
@@ -130,63 +126,6 @@ func (binding Binding) validateShape(expectedRegion, expectedSandboxPSM, expecte
 		return errors.New("TAE policy webhook mode must be psm or url")
 	}
 	return nil
-}
-
-func (binding Binding) validateDigest() error {
-	if !digest(binding.BindingSHA256) || binding.BindingSHA256 != binding.DigestHex() {
-		return errors.New("TAE policy binding digest does not match its canonical fields")
-	}
-	return nil
-}
-
-// DigestHex returns the canonical SHA-256 digest of the binding, excluding the
-// self-referential BindingSHA256 field. Struct field order is part of the
-// versioned wire contract; adding a field requires BindingVersion to advance.
-func (binding Binding) DigestHex() string {
-	canonical := bindingDigestInput{
-		Version: binding.Version, Region: binding.Region, SandboxPSM: binding.SandboxPSM,
-		Revision: binding.Revision, PolicySHA256: binding.PolicySHA256,
-		PublicHost: binding.PublicHost, PublicAccess: binding.PublicAccess,
-		PublicWebhookRequired: binding.PublicWebhookRequired,
-		WebhookMode:           binding.WebhookMode, WebhookPSM: binding.WebhookPSM,
-		WebhookURL: binding.WebhookURL, WebhookPath: binding.WebhookPath,
-		Published: binding.Published, Approved: binding.Approved, EvidenceRef: binding.EvidenceRef,
-	}
-	raw, err := json.Marshal(canonical)
-	if err != nil {
-		panic("TAE policy binding contains an unsupported JSON value")
-	}
-	digest := sha256.Sum256(raw)
-	return hex.EncodeToString(digest[:])
-}
-
-// CanonicalJSON returns the exact non-secret binding document useful for
-// release evidence. It is intentionally deterministic and never includes
-// credentials or ZTI material.
-func (binding Binding) CanonicalJSON() []byte {
-	raw, err := json.Marshal(binding)
-	if err != nil {
-		panic("TAE policy binding contains an unsupported JSON value")
-	}
-	return raw
-}
-
-type bindingDigestInput struct {
-	Version               int    `json:"version"`
-	Region                string `json:"region"`
-	SandboxPSM            string `json:"sandboxPsm"`
-	Revision              string `json:"revision"`
-	PolicySHA256          string `json:"policySha256"`
-	PublicHost            string `json:"publicHost"`
-	PublicAccess          string `json:"publicAccess"`
-	PublicWebhookRequired bool   `json:"publicWebhookRequired"`
-	WebhookMode           string `json:"webhookMode"`
-	WebhookPSM            string `json:"webhookPsm"`
-	WebhookURL            string `json:"webhookUrl"`
-	WebhookPath           string `json:"webhookPath"`
-	Published             bool   `json:"published"`
-	Approved              bool   `json:"approved"`
-	EvidenceRef           string `json:"evidenceRef"`
 }
 
 func validWebhookURL(raw string) bool {

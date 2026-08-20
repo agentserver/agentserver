@@ -240,8 +240,6 @@ func TestConfigureTAEBackendIsOptionalButAllConfiguredValuesRequireIt(t *testing
 func TestConfigureTAEBackendIgnoresProvisioningMetadataWithoutAuthority(t *testing.T) {
 	configuration := map[string]string{
 		gatewayManagedEnvironmentIDEnvironment: "a38f69c6-996b-4c8d-8e2a-e97ee69c4b10",
-		gatewayManagedRuntimeDigestEnvironment: strings.Repeat("a", 64),
-		gatewayManagedPackSetDigestEnvironment: strings.Repeat("b", 64),
 		gatewayManagedSandboxTTLEnvironment:    "30m",
 		gatewayManagedActivityTTLEnvironment:   "5m",
 	}
@@ -304,11 +302,7 @@ func validManagedBackendConfiguration(t *testing.T, includeEgress bool) (map[str
 		gatewayManagedTAEPSMEnvironment:           "bytedance.sandbox.agentserver",
 		gatewayTAEWebhookRequiredEnvironment:      "true",
 		gatewayManagedSandboxRegionEnvironment:    "i18n-tt",
-		gatewayManagedSandboxProfileIDEnvironment: "tae-i18n-tt-v1",
-		gatewayManagedSandboxBindingEnvironment:   strings.Repeat("c", 64),
 		gatewayManagedEnvironmentIDEnvironment:    "a38f69c6-996b-4c8d-8e2a-e97ee69c4b10",
-		gatewayManagedRuntimeDigestEnvironment:    strings.Repeat("a", 64),
-		gatewayManagedPackSetDigestEnvironment:    strings.Repeat("b", 64),
 		gatewayManagedSandboxTTLEnvironment:       "30m",
 		gatewayManagedActivityTTLEnvironment:      "45s",
 	}

@@ -136,16 +136,12 @@ func TestCoreClientRunAttemptRoundTrip(t *testing.T) {
 		},
 		Record: testTransitionRecord(4),
 	}
-	checkpointPackSetDigest := sha256.Sum256([]byte("managed pack set"))
-	checkpointRequest.Checkpoint.PackSetDigest = &checkpointPackSetDigest
 	committed, err := client.CommitCheckpoint(t.Context(), checkpointRequest)
 	if err != nil || !committed.Created || committed.Run.Status != "completed" || committed.Checkpoint.CheckpointID != checkpointRequest.Checkpoint.CheckpointID {
 		t.Fatalf("CommitCheckpoint() = %+v, %v", committed, err)
 	}
 	if commands.commit.Checkpoint.ManifestDigest != hex.EncodeToString(checkpointRequest.Checkpoint.ManifestDigest[:]) ||
-		commands.commit.Checkpoint.Object.SHA256 != hex.EncodeToString(checkpointRequest.Checkpoint.Object.SHA256[:]) ||
-		commands.commit.Checkpoint.PackSetDigest != hex.EncodeToString(checkpointPackSetDigest[:]) ||
-		committed.Checkpoint.PackSetDigest == nil || *committed.Checkpoint.PackSetDigest != checkpointPackSetDigest {
+		commands.commit.Checkpoint.Object.SHA256 != hex.EncodeToString(checkpointRequest.Checkpoint.Object.SHA256[:]) {
 		t.Fatalf("commit checkpoint wire request = %+v", commands.commit)
 	}
 
@@ -200,7 +196,6 @@ func TestCoreClientResolvesFencedRunLaunchState(t *testing.T) {
 			},
 			CodexRuntimeManifestDigest: base.CodexRuntimeManifestDigest,
 			CheckpointAllowlistVersion: int64(base.CheckpointAllowlistVersion),
-			PackSetDigest:              strings.Repeat("f", 64),
 		},
 		ExecutorPolicy: corecontract.RunLaunchExecutorPolicyState{
 			Version:       base.ExecutorCatalogPolicy.Version,
@@ -229,7 +224,6 @@ func TestCoreClientResolvesFencedRunLaunchState(t *testing.T) {
 		state.Prompt != base.Prompt || state.PreviousCheckpoint == nil ||
 		state.PreviousCheckpoint.Checkpoint.CatalogDigest != proposal.Catalog.Digest() ||
 		state.PreviousCheckpoint.Checkpoint.CodexRuntimeManifestDigest != base.CodexRuntimeManifestDigest ||
-		state.PreviousCheckpoint.Checkpoint.PackSetDigest != strings.Repeat("f", 64) ||
 		len(state.ExecutorPolicy.AllowedTools) != len(base.ExecutorCatalogPolicy.AllowedTools) {
 		t.Fatalf("wire request/state = %+v / %+v", commands.request, state)
 	}
@@ -612,7 +606,7 @@ func (commands *recordingContractCommands) CommitCheckpoint(_ context.Context, r
 			ManifestDigest: request.Checkpoint.ManifestDigest, CatalogDigest: request.Checkpoint.CatalogDigest,
 			Object: request.Checkpoint.Object, CodexRuntimeManifestDigest: request.Checkpoint.CodexRuntimeManifestDigest,
 			CheckpointAllowlistVersion: request.Checkpoint.CheckpointAllowlistVersion,
-			PackSetDigest:              request.Checkpoint.PackSetDigest, CreatedAt: commands.now,
+			CreatedAt:                  commands.now,
 		},
 		SessionVersion: 3, Created: true,
 	}, nil

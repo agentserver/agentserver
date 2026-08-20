@@ -123,7 +123,7 @@ func TestConfiguredRunLaunchInputResolverRejectsProfileAndDynamicDrift(t *testin
 	}
 }
 
-func TestConfiguredRunLaunchInputResolverBindsManagedPackAcrossResume(t *testing.T) {
+func TestConfiguredRunLaunchInputResolverPreservesManagedRoutingAcrossResume(t *testing.T) {
 	base := testRunLaunchInputs()
 	managed := poolTestManagedSandboxSpec()
 	base.ManagedSandbox = &managed
@@ -140,7 +140,6 @@ func TestConfiguredRunLaunchInputResolverBindsManagedPackAcrossResume(t *testing
 		ManifestDigest: strings.Repeat("d", 64), CatalogDigest: proposal.Catalog.Digest(),
 		CodexRuntimeManifestDigest: base.CodexRuntimeManifestDigest,
 		CheckpointAllowlistVersion: int64(base.CheckpointAllowlistVersion),
-		PackSetDigest:              managed.PackSetDigest,
 		Object: runmanifest.ObjectPointer{
 			ObjectID: "48000000-0000-4000-8000-000000000004", SHA256: strings.Repeat("e", 64),
 			SizeBytes: 1024, MediaType: "application/vnd.agentserver.codex-checkpoint.v1",
@@ -163,13 +162,8 @@ func TestConfiguredRunLaunchInputResolverBindsManagedPackAcrossResume(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.ManagedSandbox == nil || resolved.ManagedSandbox.PackSetDigest != managed.PackSetDigest {
+	if resolved.ManagedSandbox == nil || resolved.ManagedSandbox.EnvironmentID != managed.EnvironmentID {
 		t.Fatalf("resolved managed sandbox = %+v", resolved.ManagedSandbox)
-	}
-
-	source.state.PreviousCheckpoint.Checkpoint.PackSetDigest = strings.Repeat("f", 64)
-	if _, err := resolver.ResolveRunLaunch(t.Context(), scheduled); err == nil || !strings.Contains(err.Error(), "pack-set digest") {
-		t.Fatalf("changed pack-set resume error = %v", err)
 	}
 }
 

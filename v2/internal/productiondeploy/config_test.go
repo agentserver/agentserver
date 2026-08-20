@@ -2,7 +2,6 @@ package productiondeploy
 
 import (
 	"encoding/json"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +16,8 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/taenetworkreport"
 	"github.com/agentserver/agentserver/v2/internal/taepolicy"
 )
+
+const testNetworkReportSHA256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 func TestValidateConfigAcceptsSupportedLinuxDeployment(t *testing.T) {
 	loaded, err := ValidateConfig(validConfigDocument())
@@ -205,61 +206,6 @@ func TestValidateConfigRejectsUnsafeProductionShapes(t *testing.T) {
 	}
 }
 
-func TestValidateConfigBindsManagedNetworkEvidenceToNormalizedFacts(t *testing.T) {
-	document := validConfigDocument()
-	document.Network.SandboxExternalEgress = []EgressRuleDocument{
-		{CIDR: "10.33.0.0/24", Ports: []uint16{443}},
-		{CIDR: "fdbd:dc51:fe:3300::/64", Ports: []uint16{443}},
-	}
-	document.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(document)
-	document.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(document, document.Managed)
-	document.Managed.Environment.PackSetSHA256 = managedPackSetDigest(document.Managed)
-	if err := refreshDefaultManagedSandboxProfile(&document); err != nil {
-		t.Fatal(err)
-	}
-	// Equivalent ordering is normalized before the evidence digest is checked.
-	slices.Reverse(document.Network.SandboxExternalEgress)
-	if _, err := ValidateConfig(document); err != nil {
-		t.Fatalf("equivalent network rule order changed the binding: %v", err)
-	}
-
-	for name, mutate := range map[string]func(*ConfigDocument){
-		"sandbox egress": func(value *ConfigDocument) {
-			value.Network.SandboxExternalEgress = []EgressRuleDocument{
-				{CIDR: "10.36.0.0/24", Ports: []uint16{443}},
-				{CIDR: "fdbd:dc51:fe:3600::/64", Ports: []uint16{443}},
-			}
-		},
-		"authorizer egress": func(value *ConfigDocument) {
-			value.Network.EgressAuthorizerExternalEgress = []EgressRuleDocument{
-				{CIDR: "10.37.0.0/24", Ports: []uint16{443}},
-				{CIDR: "fdbd:dc51:fe:3700::/64", Ports: []uint16{443}},
-			}
-		},
-		"webhook NAT ingress": func(value *ConfigDocument) {
-			value.Network.EgressAuthorizerIngress = []string{"10.38.0.0/24", "fdbd:dc51:fe:3800::/64"}
-		},
-		"webhook PSM": func(value *ConfigDocument) {
-			value.Managed.TAE.Policy.WebhookPSM = "agentserver.egress-authorizer.changed"
-			value.Managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(value.Managed.TAE).DigestHex()
-		},
-		"report digest": func(value *ConfigDocument) {
-			value.Managed.TAE.NetworkEvidence.ReportSHA256 = canonicalDigest("different-report")
-		},
-		"terminal sandbox revision": func(value *ConfigDocument) {
-			value.Managed.TAE.RevisionID = "revision-2"
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			changed := validConfigDocument()
-			mutate(&changed)
-			if _, err := ValidateConfig(changed); err == nil || !strings.Contains(err.Error(), "networkEvidence.bindingSha256") {
-				t.Fatalf("network evidence drift error = %v", err)
-			}
-		})
-	}
-}
-
 func TestValidateConfigPinsProductionTAEPSM(t *testing.T) {
 	document := validConfigDocument()
 	document.Managed.TAE.PSM = "another.sandbox.psm"
@@ -274,7 +220,7 @@ func TestValidateConfigAcceptsOnlyEvidenceFreePolicyBootstrap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !managedPolicyBootstrap(loaded.Document.Managed) || loaded.ManagedOwnerPolicySHA256 != "" {
+	if !managedPolicyBootstrap(loaded.Document.Managed) {
 		t.Fatalf("bootstrap loaded config = %+v", loaded)
 	}
 	for name, mutate := range map[string]func(*ConfigDocument){
@@ -286,14 +232,10 @@ func TestValidateConfigAcceptsOnlyEvidenceFreePolicyBootstrap(t *testing.T) {
 		"network evidence": func(value *ConfigDocument) {
 			value.Managed.TAE.NetworkEvidence.Version = managedNetworkEvidenceVersion
 		},
-		"runtime lock": func(value *ConfigDocument) {
-			value.Managed.Environment.RuntimeProfileSHA256 = canonicalDigest("premature-runtime")
-		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			changed := policyBootstrapConfigDocument()
 			mutate(&changed)
-			changed.Managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(changed.Managed.TAE).DigestHex()
 			if _, err := ValidateConfig(changed); err == nil {
 				t.Fatal("policy bootstrap accepted a premature production claim")
 			}
@@ -304,12 +246,9 @@ func TestValidateConfigAcceptsOnlyEvidenceFreePolicyBootstrap(t *testing.T) {
 func policyBootstrapConfigDocument() ConfigDocument {
 	document := validConfigDocument()
 	document.Managed.Stage = ManagedExecutorStageBootstrap
-	document.Managed.Environment.RuntimeProfileSHA256 = ""
-	document.Managed.Environment.PackSetSHA256 = ""
 	document.Managed.TAE.Policy.Published = false
 	document.Managed.TAE.Policy.Approved = false
 	document.Managed.TAE.Policy.EvidenceRef = ""
-	document.Managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(document.Managed.TAE).DigestHex()
 	document.Managed.TAE.NetworkEvidence = ManagedTAENetworkEvidenceDocument{}
 	if err := refreshDefaultManagedSandboxProfile(&document); err != nil {
 		panic(err)
@@ -329,10 +268,6 @@ func directConfigDocument() ConfigDocument {
 	policy.WebhookURL = ""
 	policy.WebhookPath = ""
 	policy.EvidenceRef = "tae-system-policy/group:system.out.limit"
-	policy.BindingSHA256 = managedTAEPolicyBinding(document.Managed.TAE).DigestHex()
-	document.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(document)
-	document.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(document, document.Managed)
-	document.Managed.Environment.PackSetSHA256 = managedPackSetDigest(document.Managed)
 	if err := refreshDefaultManagedSandboxProfile(&document); err != nil {
 		panic(err)
 	}
@@ -367,10 +302,6 @@ func TestValidateConfigAcceptsDirectSystemDefaultPolicy(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			changed := directConfigDocument()
 			mutate(&changed.Managed.TAE.Policy)
-			changed.Managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(changed.Managed.TAE).DigestHex()
-			changed.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(changed)
-			changed.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(changed, changed.Managed)
-			changed.Managed.Environment.PackSetSHA256 = managedPackSetDigest(changed.Managed)
 			if _, err := ValidateConfig(changed); err == nil {
 				t.Fatal("direct policy with webhook configuration was accepted")
 			}
@@ -387,8 +318,6 @@ func TestPinManagedTerminalRevisionIsBootstrapOnlyAndFailClosed(t *testing.T) {
 	}
 	if pinned.Managed.TAE.RevisionID != "revision-v8" ||
 		pinned.Managed.Stage != ManagedExecutorStageBootstrap ||
-		pinned.Managed.Environment.RuntimeProfileSHA256 != "" ||
-		pinned.Managed.Environment.PackSetSHA256 != "" ||
 		pinned.Managed.TAE.NetworkEvidence != (ManagedTAENetworkEvidenceDocument{}) ||
 		bootstrap.Managed.TAE.RevisionID != originalRevision {
 		t.Fatalf("pinned Terminal bootstrap = %+v; original revision = %q", pinned.Managed, bootstrap.Managed.TAE.RevisionID)
@@ -425,8 +354,6 @@ func TestRetargetManagedTerminalIsBootstrapOnlyAtomicAndFailClosed(t *testing.T)
 		retargeted.Managed.TAE.RevisionID != "revision-v9" || retargeted.Images.ManagedSandbox != wantImage ||
 		retargeted.Managed.Environment.EnvironmentID != "60000000-0000-4000-8000-000000000006" ||
 		retargeted.Managed.Stage != ManagedExecutorStageBootstrap ||
-		retargeted.Managed.Environment.RuntimeProfileSHA256 != "" ||
-		retargeted.Managed.Environment.PackSetSHA256 != "" ||
 		retargeted.Managed.TAE.NetworkEvidence != (ManagedTAENetworkEvidenceDocument{}) ||
 		bootstrap.Managed.TAE.SandboxID == retargeted.Managed.TAE.SandboxID ||
 		bootstrap.Managed.Environment.EnvironmentID == retargeted.Managed.Environment.EnvironmentID {
@@ -484,8 +411,7 @@ func TestRetargetDirectManagedTerminalIsBootstrapOnlyAtomicAndWebhookFree(t *tes
 		retargeted.Images.ManagedSandbox != wantImage || !managedPolicyBootstrap(retargeted.Managed) ||
 		policy.PublicHost != taepolicy.SystemDefaultHost || policy.PublicAccess != taepolicy.SystemDefaultAccess ||
 		policy.PublicWebhookRequired || policy.WebhookMode != "" || policy.WebhookPSM != "" ||
-		policy.WebhookURL != "" || policy.WebhookPath != "" ||
-		policy.BindingSHA256 != managedTAEPolicyBinding(retargeted.Managed.TAE).DigestHex() {
+		policy.WebhookURL != "" || policy.WebhookPath != "" {
 		t.Fatalf("direct retarget = %+v", retargeted.Managed)
 	}
 	if _, err := RetargetDirectManagedTerminalDocument(
@@ -506,7 +432,6 @@ func legacyMalivaPolicyBootstrapConfigDocument() ConfigDocument {
 	}
 	managed := document.Managed
 	managed.TAE.ProxyProfile = managedSandboxProxyI18NTTLegacy
-	managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(managed.TAE).DigestHex()
 	if err := refreshManagedSandboxProfileFromManaged(&document, 0, managed); err != nil {
 		panic(err)
 	}
@@ -531,8 +456,6 @@ func syd2aProxyRetarget(document ConfigDocument) ManagedSandboxProxyRetarget {
 
 func TestRetargetManagedSandboxProxyIsBootstrapOnlyAtomicAndFailClosed(t *testing.T) {
 	bootstrap := legacyMalivaPolicyBootstrapConfigDocument()
-	originalProfileID := bootstrap.SandboxProfiles[0].ProfileID
-	originalBinding := bootstrap.SandboxProfiles[0].BindingSHA256
 	retargeted, err := RetargetManagedSandboxProxyDocument(bootstrap, syd2aProxyRetarget(bootstrap))
 	if err != nil {
 		t.Fatal(err)
@@ -542,10 +465,9 @@ func TestRetargetManagedSandboxProxyIsBootstrapOnlyAtomicAndFailClosed(t *testin
 	if proxy.Name != ManagedSandboxProxyI18NTT || proxy.URL != ProductionTAEProxyURL ||
 		proxy.Namespace != ProductionTAEProxyNamespace || proxy.PodSelector["app"] != ProductionTAEProxyPodApp ||
 		profile.TAE.ProxyProfile != ManagedSandboxProxyI18NTT || retargeted.Managed.TAE.ProxyProfile != ManagedSandboxProxyI18NTT ||
-		profile.ProfileID == originalProfileID || profile.BindingSHA256 == originalBinding ||
 		!managedPolicyBootstrap(retargeted.Managed) || profile.TAE.NetworkEvidence != (ManagedTAENetworkEvidenceDocument{}) ||
 		bootstrap.ProxyProfiles[0].Name != managedSandboxProxyI18NTTLegacy {
-		t.Fatalf("retargeted proxy = %+v, profile = %+v, original profile/binding = %s/%s", proxy, profile, originalProfileID, originalBinding)
+		t.Fatalf("retargeted proxy = %+v, profile = %+v", proxy, profile)
 	}
 	if _, err := ValidateConfig(retargeted); err != nil {
 		t.Fatalf("retargeted config is invalid: %v", err)
@@ -601,23 +523,12 @@ func TestActivateManagedExecutorBindsAllExternalEvidence(t *testing.T) {
 	}
 	if !managedExecutionActive(active.Managed) || !active.Managed.TAE.Policy.Published ||
 		!active.Managed.TAE.Policy.Approved || active.Managed.TAE.Policy.EvidenceRef == "" ||
-		active.Managed.TAE.NetworkEvidence.ReportSHA256 != reportSHA256 ||
-		active.Managed.TAE.NetworkEvidence.BindingSHA256 != managedTAENetworkEvidenceDigest(active) ||
-		active.Managed.Environment.RuntimeProfileSHA256 != managedRuntimeProfileDigest(active, active.Managed) ||
-		active.Managed.Environment.PackSetSHA256 != managedPackSetDigest(active.Managed) {
+		active.Managed.TAE.NetworkEvidence.ReportSHA256 != reportSHA256 {
 		t.Fatalf("activated managed executor = %+v", active.Managed)
 	}
 	for name, mutate := range map[string]func(*ConfigDocument, *string, *string, *taenetworkreport.Report, *string, *string){
 		"active source": func(document *ConfigDocument, _, _ *string, _ *taenetworkreport.Report, _, _ *string) {
-			document.Managed.Stage = ManagedExecutorStageActive
-			document.Managed.TAE.Policy.Published = true
-			document.Managed.TAE.Policy.Approved = true
-			document.Managed.TAE.Policy.EvidenceRef = "ticket/already-active"
-			document.Managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(document.Managed.TAE).DigestHex()
-			document.Managed.TAE.NetworkEvidence = validConfigDocument().Managed.TAE.NetworkEvidence
-			document.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(*document)
-			document.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(*document, document.Managed)
-			document.Managed.Environment.PackSetSHA256 = managedPackSetDigest(document.Managed)
+			*document = validConfigDocument()
 		},
 		"policy sentinel": func(_ *ConfigDocument, _ *string, policyRef *string, _ *taenetworkreport.Report, _, _ *string) {
 			*policyRef = "REPLACE_TICKET"
@@ -627,9 +538,6 @@ func TestActivateManagedExecutorBindsAllExternalEvidence(t *testing.T) {
 		},
 		"synthetic digest": func(_ *ConfigDocument, _, _ *string, _ *taenetworkreport.Report, digest, _ *string) {
 			*digest = strings.Repeat("9", 64)
-		},
-		"report/config mismatch": func(_ *ConfigDocument, _, _ *string, report *taenetworkreport.Report, _, _ *string) {
-			report.Configuration.DeploymentConfigSHA256 = canonicalDigest("another-bootstrap")
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -706,7 +614,7 @@ func validActivationNetworkReport(document ConfigDocument, revision string) taen
 			PodUID: "12345678-1234-4234-8234-123456789abc", NodeName: "sg-node-1", ServiceAccount: taeNetworkProbeComponent,
 		},
 		Configuration: taenetworkreport.Configuration{
-			DeploymentConfigSHA256: canonicalDigest(document), Region: document.Managed.TAE.Region, PSM: ProductionTAEPSM,
+			Region: document.Managed.TAE.Region, PSM: ProductionTAEPSM,
 			PolicyRevision: revision, ByteCloudSite: "i18n-tt", JWTEndpoint: ProductionByteCloudJWTEndpoint,
 			ProxyURL: ProductionTAEProxyURL, ControlPlaneHost: ProductionTAEControlPlaneHost,
 			DataPlaneDomainSuffix: ProductionTAEDataPlaneSuffix, SandboxImage: taeSandboxImage,
@@ -822,7 +730,7 @@ func validConfigDocument() ConfigDocument {
 					Published: true, Approved: true, EvidenceRef: "tae-change/sg-2026-08-06",
 				},
 				NetworkEvidence: ManagedTAENetworkEvidenceDocument{
-					Version: managedNetworkEvidenceVersion, ReportSHA256: canonicalDigest("sg-network-test-report"),
+					Version: managedNetworkEvidenceVersion, ReportSHA256: testNetworkReportSHA256,
 					EvidenceRef: "artifact://agentserver/sg-network-gates/2026-08-06/report.json",
 				},
 			},
@@ -883,12 +791,8 @@ func validConfigDocument() ConfigDocument {
 			RuntimeTmpfs:     "8Gi", CheckpointTmpfs: "2Gi", ScratchTmpfs: "512Mi",
 		},
 	}
-	document.Managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(document.Managed.TAE).DigestHex()
-	document.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(document)
-	document.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(document, document.Managed)
-	document.Managed.Environment.PackSetSHA256 = managedPackSetDigest(document.Managed)
 	profile := ManagedSandboxProfileDocument{
-		Region: managedsandboxprofile.RegionI18NTT, ProfileID: "tae-i18n-tt-test-v1",
+		Region: managedsandboxprofile.RegionI18NTT,
 		Gateway: ManagedSandboxGatewayDocument{
 			Component: sandboxComponent, ClusterIP: document.Services.SandboxGateway.ClusterIP,
 			Port: document.Services.SandboxGateway.Port, ServerName: SandboxInternalHost, Secret: document.Secrets.SandboxGateway,
@@ -896,7 +800,6 @@ func validConfigDocument() ConfigDocument {
 		Environment: document.Managed.Environment, TAE: document.Managed.TAE,
 		SandboxExternalEgress: append([]EgressRuleDocument{}, document.Network.SandboxExternalEgress...),
 	}
-	profile.BindingSHA256 = managedSandboxProfileBindingSHA256(profile, &document.ProxyProfiles[0])
 	document.SandboxProfiles = []ManagedSandboxProfileDocument{profile}
 	return document
 }

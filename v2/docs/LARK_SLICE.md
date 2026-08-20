@@ -22,7 +22,7 @@
 | | 验收项 |
 |---|---|
 | **M1** | workspace owner 在 Platform 创建/轮换/选择 `kind=lark` credential binding；Core 密封保存，Platform 只能看到 metadata |
-| **M2** | session 启用飞书 pack 后，run 启动时 `thread/start` 的 `baseInstructions` 实际包含飞书 skill 文本，且 `pack_set_digest` 冻结进 run manifest |
+| **M2** | session 启用飞书 pack 后，run 启动时 `thread/start` 的 `baseInstructions` 实际包含飞书 skill 文本 |
 | **M3** | 模型自主决定调用飞书能力时，发出的是 `shell` 工具调用，落到该 session 的托管 sandbox 上执行 |
 | **M4** | sandbox 内 `lark-cli` 使用**占位凭据**发出请求；沙箱内不存在任何真实飞书 token |
 | **M5** | TAE Agent Gateway 调 egress-authorizer，后者经 Core 取得一次性 header mutation；飞书 OpenAPI 返回成功，结果回到模型 |
@@ -42,7 +42,7 @@ M7 是这套设计存在的理由，权重最高。M4 与 M7 合起来才是"凭
 围绕模型工具面的门禁。切片的全部工作落在 Core、egress-gateway、sandbox 镜像和 instructions
 注入上——这几处都不在 stock Codex 的能力隔离边界上，验收面小得多。
 
-（`pack_set_digest` 变更仍会要求启用 pack 的 session 开新 thread，但那是用户显式操作的结果。）
+（启用或禁用 pack 是用户显式操作，不再通过组合摘要触发额外 fencing。）
 
 ## 2. 端到端时序
 
@@ -55,7 +55,7 @@ owner: 注册 lark pack 凭据配置（应用 client_id / scopes / 回调）
 【会话期】
 session 启用 lark pack
 CreateRun → Core 同一事务冻结:
-    LLM gateway 绑定（既有） + pack 集合 {lark@v3} 与 pack_set_digest（新增）
+    LLM gateway 绑定（既有） + pack 集合 {lark@v3}
     + sandbox profile（新增）
   → outbox: run.queued（既有） + sandbox.provision（新增，若无就绪 sandbox）
 
@@ -95,7 +95,7 @@ harness-pool 领 run → 从 Core 取 pack 的 skill 文本 → 放入签名 run
   （`AuthorizationURL` / `Exchange` / `Refresh`），保留 OIDC 实现，新增飞书实现。
   这是把 ADR 0005 的机制从"OIDC 专用"泛化为"凭据 grant 通用"的必要一步，
   也是后续所有 pack 的共用底座。
-- **run launch 冻结**：`run_launch_states` 增加 pack 集合与 `pack_set_digest`。
+- **run launch 配置**：按当前 session 配置解析 pack 集合，不存组合摘要。
 - **新内部路由 `authorize-egress`**：只接受 egress-gateway 的 SPIFFE identity，
   在同一只读快照内复核 run/attempt/lease/generation/membership/pack 版本/grant 状态，
   然后刷新或解封 bearer，返回**仅供 egress-gateway 的**响应（`Cache-Control: no-store`）。
@@ -107,7 +107,7 @@ harness-pool 领 run → 从 Core 取 pack 的 skill 文本 → 放入签名 run
 
 ### 3.2 harness 侧（唯一改动点：instructions 注入）
 
-- run manifest 增加 pack 集合与 skill 文本的 object pointer + `pack_set_digest`
+- run manifest 携带实际需要的 skill 文本，不携带 pack 集合摘要
   （`api/schema/run-manifest.schema.json` 的 manifest 定义；大文本走对象存储 pointer，
   与 `prompt` 同样由 pool 按签名 size/SHA-256 双端校验，不进 argv/env）。
 - worker 在 `thread/start` 填入 `baseInstructions` / `developerInstructions`
@@ -298,8 +298,8 @@ Kubernetes egress 只开放公网 TCP/443 并用 `ipBlock.except` 排除私网�
   `interception` 取 `host_remap` 还是 `proxy_mitm`。这是写 pack 定义的前置条件。
 - **S-L1 grant 生命周期**：授权、刷新、撤销、`reauth_required`；provider 抽象后
   OIDC 与飞书两种实现都通过同一套状态机测试。
-- **S-L2 skill 注入与冻结**：`thread/start` 实际携带 skill 文本；`pack_set_digest` 进入
-  manifest 与 checkpoint；摘要不一致时 resume fail closed 并开新 thread。
+- **S-L2 skill 注入**：`thread/start` 实际携带 skill 文本；manifest 与 checkpoint 不携带 pack 集合摘要，
+  resume 也不执行摘要 exact-match。
 - **S-L3 端到端替换**：M3→M5 全链路；断言飞书侧收到真实 token、沙箱侧发出的是 capability、
   3xx 不被跟随、header 白名单生效。
 - **S-L4 零凭据泄漏**（= M7）：沿用 A11 的扫描方法论，覆盖 env、`/proc/*/environ`、

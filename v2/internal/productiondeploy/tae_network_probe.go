@@ -25,7 +25,6 @@ func taeNetworkProbeResources(config LoadedConfig) ([]kubeObject, error) {
 	}
 	config = validated
 	document := config.Document
-	configSHA256 := canonicalDigest(document)
 	items := []kubeObject{serviceAccountResource(config, taeNetworkProbeComponent)}
 	for _, profile := range config.ManagedSandboxProfiles {
 		repository, repositoryErr := productionTAEManagedSandboxRepository(profile.Document.Region)
@@ -36,7 +35,7 @@ func taeNetworkProbeResources(config LoadedConfig) ([]kubeObject, error) {
 		if imageErr != nil {
 			return nil, imageErr
 		}
-		profileItems, renderErr := taeNetworkProbeProfileResources(config, profile, taeSandboxImage, configSHA256)
+		profileItems, renderErr := taeNetworkProbeProfileResources(config, profile, taeSandboxImage)
 		if renderErr != nil {
 			return nil, renderErr
 		}
@@ -48,7 +47,7 @@ func taeNetworkProbeResources(config LoadedConfig) ([]kubeObject, error) {
 func taeNetworkProbeProfileResources(
 	config LoadedConfig,
 	loaded LoadedManagedSandboxProfile,
-	taeSandboxImage, configSHA256 string,
+	taeSandboxImage string,
 ) ([]kubeObject, error) {
 	document := config.Document
 	profile := loaded.Document
@@ -87,7 +86,6 @@ func taeNetworkProbeProfileResources(
 		valueEnvironment("AGENTSERVER_V2_TAE_BYTECLOUD_JWT_TIMEOUT", "10s"),
 		valueEnvironment("AGENTSERVER_V2_TAE_CONTROL_TIMEOUT", "60s"),
 		valueEnvironment("AGENTSERVER_V2_TAE_RESPONSE_HEADER_TIMEOUT", "30s"),
-		valueEnvironment("AGENTSERVER_V2_TAE_PROBE_DEPLOYMENT_CONFIG_SHA256", configSHA256),
 		configMapEnvironment("AGENTSERVER_V2_TAE_PROBE_POLICY_REVISION", inputName, "policy-revision"),
 		valueEnvironment("AGENTSERVER_V2_TAE_PROBE_LARK_SKILL_SHA256", document.Managed.Lark.SkillSHA256),
 		valueEnvironment("AGENTSERVER_V2_TAE_PROBE_CONNECTIVITY_ATTEMPTS", strconv.Itoa(taeProbeConnectivityAttempts)),
@@ -109,7 +107,7 @@ func taeNetworkProbeProfileResources(
 		{
 			"apiVersion": "batch/v1", "kind": "Job",
 			"metadata": metadata(jobName, document.Namespace, labels, map[string]string{
-				"agentserver.dev/config-sha256": configSHA256, "agentserver.dev/managed-sandbox-region": profile.Region,
+				"agentserver.dev/managed-sandbox-region": profile.Region,
 			}),
 			"spec": kubeObject{
 				"backoffLimit": 0, "activeDeadlineSeconds": 7200,

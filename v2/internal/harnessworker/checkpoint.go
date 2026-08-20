@@ -82,10 +82,6 @@ func LoadCheckpoint(checkpointPipe *os.File, current runmanifest.Manifest, codex
 
 	var restored RestoredCheckpoint
 	err = checkpoint.ReadArtifact(staged, previous.Object.SizeBytes, func(manifest checkpoint.Manifest, canonical []byte, rollout io.Reader) error {
-		packSetDigest := ""
-		if current.ToolPack != nil {
-			packSetDigest = current.ToolPack.PackSetDigest
-		}
 		authority := checkpoint.ResumeAuthority{
 			ManifestDigest: previous.ManifestDigest, CheckpointID: previous.CheckpointID,
 			WorkspaceID: current.WorkspaceID, SessionID: current.SessionID,
@@ -95,7 +91,6 @@ func LoadCheckpoint(checkpointPipe *os.File, current runmanifest.Manifest, codex
 			CodexRuntimeManifestDigest: current.CodexRuntimeManifestDigest,
 			CheckpointAllowlistVersion: int64(current.CheckpointAllowlistVersion),
 			CatalogDigest:              current.ExecutorMCP.CatalogDigest,
-			PackSetDigest:              packSetDigest,
 		}
 		if err := checkpoint.VerifyResume(manifest, canonical, authority); err != nil {
 			return err

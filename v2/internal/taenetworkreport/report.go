@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	CurrentVersion = 5
+	CurrentVersion = 6
 	Kind           = "agentserver.tae.network-report"
 	maximumBytes   = int64(256 * 1024)
 )
@@ -57,27 +57,26 @@ type Source struct {
 }
 
 type Configuration struct {
-	DeploymentConfigSHA256 string `json:"deploymentConfigSha256"`
-	Region                 string `json:"region"`
-	PSM                    string `json:"psm"`
-	PolicyRevision         string `json:"policyRevision"`
-	ByteCloudSite          string `json:"bytecloudSite"`
-	JWTEndpoint            string `json:"jwtEndpoint"`
-	ProxyURL               string `json:"proxyUrl"`
-	ControlPlaneHost       string `json:"controlPlaneHost"`
-	DataPlaneDomainSuffix  string `json:"dataPlaneDomainSuffix"`
-	SandboxImage           string `json:"sandboxImage"`
-	SandboxID              string `json:"sandboxId"`
-	SandboxRevisionID      string `json:"sandboxRevisionId"`
-	LarkCLIVersion         string `json:"larkCliVersion"`
-	LarkCLISHA256          string `json:"larkCliSha256"`
-	LarkSkillSHA256        string `json:"larkSkillSha256"`
-	ManagedSkillSHA256     string `json:"managedSkillSha256"`
-	BkectlSourceRevision   string `json:"bkectlSourceRevision"`
-	BkectlCLISHA256        string `json:"bkectlCliSha256"`
-	BkectlSkillPackSHA256  string `json:"bkectlSkillPackSha256"`
-	ConnectivityAttempts   int    `json:"connectivityAttempts"`
-	LifecycleAttempts      int    `json:"lifecycleAttempts"`
+	Region                string `json:"region"`
+	PSM                   string `json:"psm"`
+	PolicyRevision        string `json:"policyRevision"`
+	ByteCloudSite         string `json:"bytecloudSite"`
+	JWTEndpoint           string `json:"jwtEndpoint"`
+	ProxyURL              string `json:"proxyUrl"`
+	ControlPlaneHost      string `json:"controlPlaneHost"`
+	DataPlaneDomainSuffix string `json:"dataPlaneDomainSuffix"`
+	SandboxImage          string `json:"sandboxImage"`
+	SandboxID             string `json:"sandboxId"`
+	SandboxRevisionID     string `json:"sandboxRevisionId"`
+	LarkCLIVersion        string `json:"larkCliVersion"`
+	LarkCLISHA256         string `json:"larkCliSha256"`
+	LarkSkillSHA256       string `json:"larkSkillSha256"`
+	ManagedSkillSHA256    string `json:"managedSkillSha256"`
+	BkectlSourceRevision  string `json:"bkectlSourceRevision"`
+	BkectlCLISHA256       string `json:"bkectlCliSha256"`
+	BkectlSkillPackSHA256 string `json:"bkectlSkillPackSha256"`
+	ConnectivityAttempts  int    `json:"connectivityAttempts"`
+	LifecycleAttempts     int    `json:"lifecycleAttempts"`
 }
 
 type Check struct {
@@ -212,12 +211,11 @@ func Validate(report Report) error {
 		return errors.New("TAE network report source.podUid must be a canonical lowercase UUID")
 	}
 	for name, value := range map[string]string{
-		"deploymentConfigSha256": report.Configuration.DeploymentConfigSHA256,
-		"larkCliSha256":          report.Configuration.LarkCLISHA256,
-		"larkSkillSha256":        report.Configuration.LarkSkillSHA256,
-		"managedSkillSha256":     report.Configuration.ManagedSkillSHA256,
-		"bkectlCliSha256":        report.Configuration.BkectlCLISHA256,
-		"bkectlSkillPackSha256":  report.Configuration.BkectlSkillPackSHA256,
+		"larkCliSha256":         report.Configuration.LarkCLISHA256,
+		"larkSkillSha256":       report.Configuration.LarkSkillSHA256,
+		"managedSkillSha256":    report.Configuration.ManagedSkillSHA256,
+		"bkectlCliSha256":       report.Configuration.BkectlCLISHA256,
+		"bkectlSkillPackSha256": report.Configuration.BkectlSkillPackSHA256,
 	} {
 		if !digestPattern.MatchString(value) || strings.Trim(value, "0") == "" {
 			return fmt.Errorf("TAE network report configuration.%s must be a non-zero lowercase SHA-256", name)

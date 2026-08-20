@@ -212,14 +212,8 @@ func (service *UserRunService) CreateUserRun(ctx context.Context, command Create
 				"selected managed sandbox region has no active deployment profile",
 			)
 		}
-		rawDigest, err := hex.DecodeString(profile.BindingSHA256)
-		if err != nil || len(rawDigest) != len(managedSandbox.BindingSHA256) {
-			return corecontract.CreateUserRunResponse{}, errors.New("managed sandbox catalog returned an invalid binding digest")
-		}
-		copy(managedSandbox.BindingSHA256[:], rawDigest)
 		managedSandbox.SettingVersion = setting.Version
 		managedSandbox.Region = profile.Region
-		managedSandbox.ProfileID = profile.ProfileID
 		managedSandbox.EnvironmentID = profile.EnvironmentID
 	}
 	identities := make([]string, 4)

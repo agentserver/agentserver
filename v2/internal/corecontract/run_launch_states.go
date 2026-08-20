@@ -33,7 +33,6 @@ type RunLaunchCheckpointState struct {
 	Object                     RunLaunchObjectPointer `json:"object"`
 	CodexRuntimeManifestDigest string                 `json:"codexRuntimeManifestDigest"`
 	CheckpointAllowlistVersion int64                  `json:"checkpointAllowlistVersion"`
-	PackSetDigest              string                 `json:"packSetDigest,omitempty"`
 }
 
 type RunLaunchExecutorPolicyState struct {
@@ -59,8 +58,6 @@ type RunLaunchLarkEgressState struct {
 type RunLaunchManagedSandboxState struct {
 	SettingVersion int64  `json:"settingVersion"`
 	Region         string `json:"region"`
-	ProfileID      string `json:"profileId"`
-	BindingSHA256  string `json:"bindingSha256"`
 	EnvironmentID  string `json:"environmentId"`
 }
 

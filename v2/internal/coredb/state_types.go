@@ -94,14 +94,12 @@ type CreateRunCommand struct {
 	Record                 TransitionRecord
 }
 
-// RunManagedSandboxBinding is the exact immutable deployment profile selected
+// RunManagedSandboxBinding is the regional managed execution target selected
 // from the workspace setting for one run. An all-zero value means that the
 // deployment does not expose managed execution (for example insecure dev).
 type RunManagedSandboxBinding struct {
 	SettingVersion int64
 	Region         string
-	ProfileID      string
-	BindingSHA256  [32]byte
 	EnvironmentID  string
 }
 
@@ -244,7 +242,6 @@ type CommitCheckpointAndTerminalRunCommand struct {
 	Object                     ObjectPointer
 	CodexRuntimeManifestDigest [32]byte
 	CheckpointAllowlistVersion int64
-	PackSetDigest              *[32]byte
 	Record                     TransitionRecord
 }
 
@@ -399,7 +396,6 @@ type Checkpoint struct {
 	Object                     ObjectPointer
 	CodexRuntimeManifestDigest [32]byte
 	CheckpointAllowlistVersion int64
-	PackSetDigest              *[32]byte
 	Catalog                    BrainToolCatalog
 	CreatedAt                  time.Time
 }

@@ -80,7 +80,7 @@ func TestOneShotWorkerForwardsExactSignedManagedSkillToThreadStart(t *testing.T)
 	instructions := "---\nname: lark-readonly\n---\nUse lark-cli for the approved document query.\n"
 	digest := sha256.Sum256([]byte(instructions))
 	fixture.manifest.ToolPack = &runmanifest.ToolPackAuthority{
-		PackID: "lark-readonly@v1", PackSetDigest: strings.Repeat("d", 64),
+		PackID:      "lark-readonly@v1",
 		SkillSHA256: hex.EncodeToString(digest[:]),
 	}
 	seed := sha256.Sum256([]byte("one-shot-worker-signing-key"))
@@ -353,7 +353,7 @@ func TestAuthorizedBaseInstructionsRequireExactSignedSkillDigest(t *testing.T) {
 	instructions := "Use lark-cli only for approved read-only document queries."
 	digest := sha256.Sum256([]byte(instructions))
 	manifest := runmanifest.Manifest{ToolPack: &runmanifest.ToolPackAuthority{
-		PackID: "lark-readonly@v1", PackSetDigest: strings.Repeat("a", 64),
+		PackID:      "lark-readonly@v1",
 		SkillSHA256: hex.EncodeToString(digest[:]),
 	}}
 	if got, err := authorizedBaseInstructions(manifest, instructions); err != nil || got != instructions {

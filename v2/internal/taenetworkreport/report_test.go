@@ -19,7 +19,7 @@ func TestReportCanonicalRoundTripAndDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Count(raw, []byte{'\n'}) != 1 || raw[len(raw)-1] != '\n' || !bytes.HasPrefix(raw, []byte(`{"schemaVersion":5,"kind":"agentserver.tae.network-report"`)) {
+	if bytes.Count(raw, []byte{'\n'}) != 1 || raw[len(raw)-1] != '\n' || !bytes.HasPrefix(raw, []byte(`{"schemaVersion":6,"kind":"agentserver.tae.network-report"`)) {
 		t.Fatalf("report is not one canonical line: %q", raw)
 	}
 	parsed, err := Parse(raw)
@@ -49,10 +49,7 @@ func TestValidateRejectsInconsistentEvidence(t *testing.T) {
 		"failed mismatch": func(value *Report) { value.Checks[0].Failed = 1 },
 		"missing cleanup": func(value *Report) { value.CleanupConfirmed = false },
 		"duplicate check": func(value *Report) { value.Checks[1].Name = value.Checks[0].Name },
-		"zero digest": func(value *Report) {
-			value.Configuration.DeploymentConfigSHA256 = strings.Repeat("0", 64)
-		},
-		"mutable image": func(value *Report) { value.Configuration.SandboxImage = "sandbox:latest" },
+		"mutable image":   func(value *Report) { value.Configuration.SandboxImage = "sandbox:latest" },
 		"invalid sandbox ID": func(value *Report) {
 			value.Configuration.SandboxID = "Sandbox-1"
 		},
@@ -134,7 +131,7 @@ func validReport() Report {
 			NodeName: "sg-node-1", ServiceAccount: "sandbox-gateway",
 		},
 		Configuration: Configuration{
-			DeploymentConfigSHA256: strings.Repeat("1", 64), Region: "i18n-tt", PSM: "bytedance.sandbox.agentserver",
+			Region: "i18n-tt", PSM: "bytedance.sandbox.agentserver",
 			PolicyRevision: "revision-1", ByteCloudSite: "i18n-tt", JWTEndpoint: "https://cloud-i18n-sg.bytedance.net",
 			ProxyURL: "socks5h://proxy.example:1080", ControlPlaneHost: "controlplane.sg.example",
 			DataPlaneDomainSuffix: "sg.example", SandboxImage: "registry.example/sandbox:sha256-" + strings.Repeat("2", 64),

@@ -21,8 +21,8 @@
 ## Managed sandbox region catalog
 
 workspace owner 可在设置中选择以下已安装地域；选择只影响新 Run。Core 在创建 Run 时固化
-`settingVersion + region + profileId + bindingSha256 + environmentId`，Harness 与 Executor 只能按这份
-不可变 binding 路由。普通对话不会创建 TAE sandbox；首次实际调用 Executor 工具时才 lazy acquire。
+`settingVersion + region + environmentId`，Harness 与 Executor 按地域和环境路由，不再计算或传递组合摘要。
+普通对话不会创建 TAE sandbox；首次实际调用 Executor 工具时才 lazy acquire。
 `sandboxRegions.defaultRegion` 固定为 `i18n-tt`，catalog 必须安装该 profile；这是数据库迁移与新 workspace
 setting 的统一初值，owner 之后仍可切换到其他已安装地域。
 
@@ -40,7 +40,7 @@ Merlin 名称只是受审计的逻辑 profile。完整 `socks5h://` URL、namesp
 每个 `sandboxProfiles[]` 都有独立的：
 
 - TAE Sandbox ID/revision、official SDK control/data authority、ByteCloud site/JWT endpoint；
-- environment ID、runtime/pack lock；
+- environment ID 与 runtime metadata；
 - sandbox-gateway Service/Deployment/PDB/NetworkPolicy、TLS server name 与 Secret；
 - region-specific policy/network evidence。
 

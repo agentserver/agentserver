@@ -15,7 +15,6 @@ func TestValidateManagedEnvironmentProfileIsClosedAndManagedOnly(t *testing.T) {
 	}
 	for name, mutate := range map[string]func(*ManagedEnvironmentProfile){
 		"workspace":    func(profile *ManagedEnvironmentProfile) { profile.WorkspaceID = "not-a-uuid" },
-		"owner digest": func(profile *ManagedEnvironmentProfile) { profile.OwnerPolicySHA256 = [sha256.Size]byte{} },
 		"codex commit": func(profile *ManagedEnvironmentProfile) { profile.CodexCommit = strings.Repeat("z", 40) },
 		"local kind": func(profile *ManagedEnvironmentProfile) {
 			profile.RootDescriptor = json.RawMessage(`{"kind":"local","root":"/workspace"}`)
@@ -96,7 +95,6 @@ WHERE id = $1`, quotedSchema), profile.EnvironmentID).Scan(
 	}
 
 	conflicting := profile
-	conflicting.OwnerPolicySHA256 = sha256.Sum256([]byte("different managed policy"))
 	conflicting.RootDescriptor = json.RawMessage(`{"kind":"managed","root":"/workspace","displayName":"Managed updated","defaultCwd":"."}`)
 	updated, err := bootstrapManagedEnvironmentProfileConfig(t.Context(), connectionConfig, schema, conflicting)
 	if err != nil || updated.Created || updated.SchemaVersion != result.SchemaVersion {
@@ -109,7 +107,7 @@ WHERE id = $1`, quotedSchema), profile.EnvironmentID).Scan(
 	), profile.EnvironmentID).Scan(&storedOwner, &storedDisplayName); err != nil {
 		t.Fatal(err)
 	}
-	if string(storedOwner) != string(conflicting.OwnerPolicySHA256[:]) || storedDisplayName != "Managed updated" {
+	if storedOwner != nil || storedDisplayName != "Managed updated" {
 		t.Fatal("managed bootstrap did not update deployment-owned profile metadata")
 	}
 }
@@ -122,9 +120,8 @@ func validManagedEnvironmentProfile() ManagedEnvironmentProfile {
 		RootDescriptor: json.RawMessage(
 			`{"kind":"managed","root":"/workspace","displayName":"Managed SG","defaultCwd":"."}`,
 		),
-		OwnerPolicySHA256: sha256.Sum256([]byte("managed owner policy")),
-		CodexRelease:      "0.146.0-managed",
-		CodexCommit:       strings.Repeat("a", 40),
-		CodexSHA256:       sha256.Sum256([]byte("managed runtime codex")),
+		CodexRelease: "0.146.0-managed",
+		CodexCommit:  strings.Repeat("a", 40),
+		CodexSHA256:  sha256.Sum256([]byte("managed runtime codex")),
 	}
 }

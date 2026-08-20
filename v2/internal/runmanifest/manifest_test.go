@@ -125,7 +125,7 @@ func TestRunManifestValidatesCatalogProjectionAndEndpoints(t *testing.T) {
 	}
 }
 
-func TestRunManifestV3BindsCheckpointToolPackAndArtifactProfile(t *testing.T) {
+func TestRunManifestBindsCheckpointArtifactProfileAndToolPack(t *testing.T) {
 	manifest := validManifest(t)
 	manifest.PreviousCheckpoint.RunAttemptID = ""
 	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "runAttemptId") {
@@ -143,21 +143,14 @@ func TestRunManifestV3BindsCheckpointToolPackAndArtifactProfile(t *testing.T) {
 	}
 	manifest = validManifest(t)
 	manifest.ToolPack = &ToolPackAuthority{
-		PackID: "lark-readonly@v1", PackSetDigest: strings.Repeat("1", 64),
-		SkillSHA256: strings.Repeat("2", 64),
+		PackID: "lark-readonly@v1", SkillSHA256: strings.Repeat("2", 64),
 	}
-	manifest.PreviousCheckpoint.PackSetDigest = manifest.ToolPack.PackSetDigest
 	if err := manifest.Validate(); err != nil {
 		t.Fatalf("valid tool-pack resume authority rejected: %v", err)
 	}
-	manifest.PreviousCheckpoint.PackSetDigest = strings.Repeat("3", 64)
-	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "must match") {
-		t.Fatalf("checkpoint pack-set drift error = %v", err)
-	}
 	manifest = validManifest(t)
 	manifest.ToolPack = &ToolPackAuthority{
-		PackID: "Lark/latest", PackSetDigest: strings.Repeat("1", 64),
-		SkillSHA256: strings.Repeat("2", 64),
+		PackID: "Lark/latest", SkillSHA256: strings.Repeat("2", 64),
 	}
 	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "versioned pack ID") {
 		t.Fatalf("invalid pack ID error = %v", err)
@@ -184,10 +177,8 @@ func TestRunManifestJSONSchemaAcceptsSignedEnvelope(t *testing.T) {
 	seed := sha256.Sum256([]byte("run-manifest-schema-key"))
 	manifest := validManifest(t)
 	manifest.ToolPack = &ToolPackAuthority{
-		PackID: "lark-readonly@v1", PackSetDigest: strings.Repeat("1", 64),
-		SkillSHA256: strings.Repeat("2", 64),
+		PackID: "lark-readonly@v1", SkillSHA256: strings.Repeat("2", 64),
 	}
-	manifest.PreviousCheckpoint.PackSetDigest = manifest.ToolPack.PackSetDigest
 	signed, err := Sign(manifest, "cluster-key-1", ed25519.NewKeyFromSeed(seed[:]))
 	if err != nil {
 		t.Fatal(err)

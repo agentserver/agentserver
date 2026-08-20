@@ -148,8 +148,8 @@ StopSignal=SIGTERM
 ```
 
 这里的 OCI `Cmd` 是安全 fallback；TAE 运行时以 pinned Terminal Sandbox revision 的 `run_cmd` 为准。
-Sandbox ID、revision ID、镜像和 runtime contract 一起进入 canonical managed runtime profile digest，
-避免管理面选择的入口与镜像/环境锁脱节。
+Sandbox ID、revision ID、镜像和 runtime contract 都作为显式配置校验，不再拼装 managed runtime
+profile 摘要。
 
 使用 root 与官方镜像保持一致，并为 TAE 注入和管理 SandboxD 留出它需要的进程权限；安全边界由 TAE
 sandbox、统一 execution gateway 和 egress policy 提供，不能靠把 keeper 改成 `nobody` 冒充。镜像

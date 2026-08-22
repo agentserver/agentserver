@@ -90,6 +90,7 @@ func assertHarnessPoolProductionEnvironmentNames(t *testing.T, got []string) {
 		poolMaxConcurrentEnvironment,
 		poolMaxRunDurationEnvironment,
 		poolMaxApprovalTTLEnvironment,
+		poolCodexPermissionModeEnvironment,
 		poolManagedProfilesEnvironment,
 		"AGENTSERVER_V2_OBJECT_PREFIX",
 		"AGENTSERVER_V2_S3_BUCKET",

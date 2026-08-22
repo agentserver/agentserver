@@ -54,6 +54,8 @@ describe("Browser product source", () => {
     expect(source).toContain("window.setTimeout(() => { void poll() }, 1200)")
     expect(source).toContain('role="tab" aria-selected={view === "trajectory"}')
     expect(source).toContain("<TrajectoryView")
+    expect(source).toContain("permissionControl={<PermissionModeSelector")
+    expect(trajectorySource).toContain("permissionControl?: ReactNode")
     expect(trajectorySource).toContain('data-trajectory-scroll')
     expect(trajectorySource).toContain("trajectory-lane-track")
     expect(trajectorySource).toContain("trajectory-run-groups")
@@ -61,6 +63,16 @@ describe("Browser product source", () => {
     expect(trajectorySource).not.toContain('t("browser.controlLane")')
     expect(trajectorySource).toContain("function TrajectoryInspectorSection")
     expect(trajectorySource).toContain("record.failure.message")
+  })
+
+  it("restores a prompt after a permission-mode CAS race", () => {
+    const source = readFileSync(new URL("./browser-app.tsx", import.meta.url), "utf8")
+    expect(source).toContain('error.status === 409 && error.code === "version_conflict" && run.permissionModeVersion > 0')
+    expect(source).toContain("const promptToRestore = run.prompt")
+    expect(source).toContain("activeRun.current = null")
+    expect(source).toContain("setPrompt(promptToRestore)")
+    expect(source).toContain("await loadSessions(sessionId)")
+    expect(source).toContain("await loadTranscript(sessionId)")
   })
 
   it("keeps historical records while accepting authoritative tail order and updates", () => {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/codexwire"
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
 
 const (
@@ -64,12 +65,18 @@ type AppServerClientInfo struct {
 
 // AppServerThreadStart contains only the production dynamic-tool-only profile.
 // Approval policy, sandbox, environments, capability roots, and dynamic tools
-// are fixed by the runner and cannot be supplied as arbitrary wire payloads.
+// are fixed by the verified run authority and cannot be supplied as arbitrary
+// wire payloads.
 type AppServerThreadStart struct {
 	Model                 string
 	CWD                   string
 	BaseInstructions      string
 	DeveloperInstructions string
+	// PermissionMode is copied from the verified run authority for a fresh
+	// thread. AppServerRunRequest remains the authoritative location for both
+	// fresh and resumed runs; a start-only value is rejected so a caller cannot
+	// silently bypass the run authority boundary.
+	PermissionMode runmanifest.CodexPermissionMode
 }
 
 // AppServerThreadResume binds a native rollout resume to the already-frozen
@@ -84,11 +91,15 @@ type AppServerThreadResume struct {
 type AppServerRunRequest struct {
 	RunID                string
 	RunAttemptGeneration int64
-	ClientInfo           AppServerClientInfo
-	Catalog              *Catalog
-	Start                *AppServerThreadStart
-	Resume               *AppServerThreadResume
-	UserText             string
+	// PermissionMode is copied from the verified run manifest. An empty value
+	// is accepted only for old callers and retains the legacy approval-never,
+	// read-only behavior.
+	PermissionMode runmanifest.CodexPermissionMode
+	ClientInfo     AppServerClientInfo
+	Catalog        *Catalog
+	Start          *AppServerThreadStart
+	Resume         *AppServerThreadResume
+	UserText       string
 }
 
 type AppServerInitializeResult struct {
@@ -283,7 +294,8 @@ type appServerThreadStartParams struct {
 	Model                   string             `json:"model"`
 	CWD                     string             `json:"cwd"`
 	ApprovalPolicy          string             `json:"approvalPolicy"`
-	Sandbox                 string             `json:"sandbox"`
+	ApprovalsReviewer       string             `json:"approvalsReviewer,omitempty"`
+	Sandbox                 string             `json:"sandbox,omitempty"`
 	BaseInstructions        string             `json:"baseInstructions,omitempty"`
 	DeveloperInstructions   string             `json:"developerInstructions,omitempty"`
 	Ephemeral               bool               `json:"ephemeral"`
@@ -300,11 +312,110 @@ type appServerThreadResumeParams struct {
 }
 
 type appServerTurnStartParams struct {
-	ThreadID       string               `json:"threadId"`
-	CWD            string               `json:"cwd,omitempty"`
-	ApprovalPolicy string               `json:"approvalPolicy,omitempty"`
-	Environments   []any                `json:"environments"`
-	Input          []appServerTextInput `json:"input"`
+	ThreadID          string                  `json:"threadId"`
+	CWD               string                  `json:"cwd,omitempty"`
+	ApprovalPolicy    string                  `json:"approvalPolicy,omitempty"`
+	ApprovalsReviewer string                  `json:"approvalsReviewer,omitempty"`
+	SandboxPolicy     *appServerSandboxPolicy `json:"sandboxPolicy,omitempty"`
+	Environments      []any                   `json:"environments"`
+	Input             []appServerTextInput    `json:"input"`
+}
+
+// appServerSandboxPolicy is the v2 turn/start object form.  thread/start uses
+// the legacy string SandboxMode field, while turn/start calls the equivalent
+// object SandboxPolicy field.
+type appServerSandboxPolicy struct {
+	Type string `json:"type"`
+}
+
+type codexThreadPermissionProjection struct {
+	ApprovalPolicy    string
+	ApprovalsReviewer string
+	Sandbox           string
+}
+
+type codexTurnPermissionProjection struct {
+	ApprovalPolicy    string
+	ApprovalsReviewer string
+	SandboxPolicy     *appServerSandboxPolicy
+}
+
+// codexThreadPermissionParams maps Codex's built-in preset IDs to the native
+// thread/start fields.  Agentserver has no interactive Codex approval client,
+// so the two on-request presets use Codex's own automatic reviewer.  The empty
+// case is reserved for old manifests and preserves their stricter wire policy.
+func codexThreadPermissionParams(mode runmanifest.CodexPermissionMode) codexThreadPermissionProjection {
+	switch mode {
+	case runmanifest.CodexPermissionModeReadOnly:
+		return codexThreadPermissionProjection{
+			ApprovalPolicy:    "on-request",
+			ApprovalsReviewer: "auto_review",
+			Sandbox:           "read-only",
+		}
+	case runmanifest.CodexPermissionModeAuto:
+		return codexThreadPermissionProjection{
+			ApprovalPolicy:    "on-request",
+			ApprovalsReviewer: "auto_review",
+			Sandbox:           "workspace-write",
+		}
+	case runmanifest.CodexPermissionModeFullAccess:
+		return codexThreadPermissionProjection{
+			ApprovalPolicy: "never",
+			Sandbox:        "danger-full-access",
+		}
+	case "":
+		return codexThreadPermissionProjection{ApprovalPolicy: "never", Sandbox: "read-only"}
+	default:
+		// Requests are validated before this helper is called.  Returning the
+		// legacy projection here keeps this function fail-closed if a future
+		// caller forgets that ordering.
+		return codexThreadPermissionProjection{ApprovalPolicy: "never", Sandbox: "read-only"}
+	}
+}
+
+// codexTurnPermissionParams maps the same authority for a native resume.  The
+// runner keeps thread/resume limited to checkpoint identity and path, then
+// re-asserts the signed mode on the first new turn.
+func codexTurnPermissionParams(mode runmanifest.CodexPermissionMode) codexTurnPermissionProjection {
+	switch mode {
+	case runmanifest.CodexPermissionModeReadOnly:
+		return codexTurnPermissionProjection{
+			ApprovalPolicy:    "on-request",
+			ApprovalsReviewer: "auto_review",
+			SandboxPolicy:     &appServerSandboxPolicy{Type: "readOnly"},
+		}
+	case runmanifest.CodexPermissionModeAuto:
+		return codexTurnPermissionProjection{
+			ApprovalPolicy:    "on-request",
+			ApprovalsReviewer: "auto_review",
+			SandboxPolicy:     &appServerSandboxPolicy{Type: "workspaceWrite"},
+		}
+	case runmanifest.CodexPermissionModeFullAccess:
+		return codexTurnPermissionProjection{
+			ApprovalPolicy: "never",
+			SandboxPolicy:  &appServerSandboxPolicy{Type: "dangerFullAccess"},
+		}
+	case "":
+		return codexTurnPermissionProjection{ApprovalPolicy: "never"}
+	default:
+		return codexTurnPermissionProjection{ApprovalPolicy: "never"}
+	}
+}
+
+func effectiveAppServerPermissionMode(request AppServerRunRequest) (runmanifest.CodexPermissionMode, error) {
+	mode := request.PermissionMode
+	if request.Start != nil && request.Start.PermissionMode != "" {
+		if mode == "" {
+			return "", errors.New("app-server thread start permission mode requires the run permission mode authority")
+		}
+		if mode != request.Start.PermissionMode {
+			return "", fmt.Errorf("app-server permission mode conflicts between run and thread start: %q vs %q", mode, request.Start.PermissionMode)
+		}
+	}
+	if mode == "" {
+		return "", nil
+	}
+	return mode.Effective()
 }
 
 type appServerTextInput struct {
@@ -352,6 +463,10 @@ func (r *AppServerRunner) Run(ctx context.Context, request AppServerRunRequest) 
 	if err := r.validateRequest(request); err != nil {
 		return AppServerRunResult{}, err
 	}
+	permissionMode, err := effectiveAppServerPermissionMode(request)
+	if err != nil {
+		return AppServerRunResult{}, err
+	}
 
 	readCtx, cancelRead := context.WithCancel(context.Background())
 	defer cancelRead()
@@ -390,11 +505,13 @@ func (r *AppServerRunner) Run(ctx context.Context, request AppServerRunRequest) 
 
 	if request.Start != nil {
 		start := request.Start
+		threadPermissions := codexThreadPermissionParams(permissionMode)
 		if err := state.sendRequest(2, "thread/start", appServerThreadStartParams{
 			Model:                   start.Model,
 			CWD:                     start.CWD,
-			ApprovalPolicy:          "never",
-			Sandbox:                 "read-only",
+			ApprovalPolicy:          threadPermissions.ApprovalPolicy,
+			ApprovalsReviewer:       threadPermissions.ApprovalsReviewer,
+			Sandbox:                 threadPermissions.Sandbox,
 			BaseInstructions:        start.BaseInstructions,
 			DeveloperInstructions:   start.DeveloperInstructions,
 			Ephemeral:               false,
@@ -457,7 +574,10 @@ func (r *AppServerRunner) Run(ctx context.Context, request AppServerRunRequest) 
 	}
 	if request.Resume != nil {
 		turnParams.CWD = request.Resume.CWD
-		turnParams.ApprovalPolicy = "never"
+		turnPermissions := codexTurnPermissionParams(permissionMode)
+		turnParams.ApprovalPolicy = turnPermissions.ApprovalPolicy
+		turnParams.ApprovalsReviewer = turnPermissions.ApprovalsReviewer
+		turnParams.SandboxPolicy = turnPermissions.SandboxPolicy
 	}
 	if err := state.sendRequest(3, "turn/start", turnParams); err != nil {
 		return AppServerRunResult{}, err
@@ -497,6 +617,9 @@ func (r *AppServerRunner) Run(ctx context.Context, request AppServerRunRequest) 
 
 func (r *AppServerRunner) validateRequest(request AppServerRunRequest) error {
 	if err := validateNameText("run id", request.RunID, maxIdentityBytes); err != nil {
+		return err
+	}
+	if _, err := effectiveAppServerPermissionMode(request); err != nil {
 		return err
 	}
 	if request.RunAttemptGeneration < 1 {

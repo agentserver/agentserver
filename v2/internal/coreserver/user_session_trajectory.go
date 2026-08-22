@@ -329,9 +329,7 @@ func projectUserSessionTrajectory(source coredb.ReadUserSessionTrajectoryResult)
 		if binding := source.ManagedSandboxBindings[run.ID]; binding != (coredb.RunManagedSandboxBinding{}) {
 			details = append(details,
 				corecontract.UserSessionTrajectoryDetail{Name: "managedSandboxRegion", Value: binding.Region},
-				corecontract.UserSessionTrajectoryDetail{Name: "managedSandboxProfile", Value: binding.ProfileID},
 				corecontract.UserSessionTrajectoryDetail{Name: "managedSandboxEnvironment", Value: binding.EnvironmentID},
-				corecontract.UserSessionTrajectoryDetail{Name: "managedSandboxBinding", Value: fmt.Sprintf("%x", binding.BindingSHA256[:])},
 				corecontract.UserSessionTrajectoryDetail{Name: "managedSandboxSettingVersion", Value: strconv.FormatInt(binding.SettingVersion, 10)},
 			)
 		}

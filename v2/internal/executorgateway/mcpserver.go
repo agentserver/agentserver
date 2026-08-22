@@ -84,8 +84,6 @@ type ExecutorMCPPrincipal struct {
 type ExecutorManagedSandboxAuthority struct {
 	SettingVersion int64
 	Region         string
-	ProfileID      string
-	BindingSHA256  string
 	EnvironmentID  string
 }
 

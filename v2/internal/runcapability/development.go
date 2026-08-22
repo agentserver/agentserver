@@ -66,8 +66,6 @@ type Claims struct {
 	MaxApprovalTTLMillis         int64  `json:"maxApprovalTtlMs,omitempty"`
 	ManagedSandboxSettingVersion int64  `json:"managedSandboxSettingVersion,omitempty"`
 	ManagedSandboxRegion         string `json:"managedSandboxRegion,omitempty"`
-	ManagedSandboxProfileID      string `json:"managedSandboxProfileId,omitempty"`
-	ManagedSandboxBindingSHA256  string `json:"managedSandboxBindingSha256,omitempty"`
 	ManagedSandboxEnvironmentID  string `json:"managedSandboxEnvironmentId,omitempty"`
 
 	Model                 string `json:"model,omitempty"`
@@ -224,16 +222,13 @@ func (claims Claims) validateAuthority(profile string) error {
 			return fmt.Errorf("%s executor capability contains model authority", profile)
 		}
 		managedConfigured := claims.ManagedSandboxSettingVersion != 0 || claims.ManagedSandboxRegion != "" ||
-			claims.ManagedSandboxProfileID != "" || claims.ManagedSandboxBindingSHA256 != "" ||
 			claims.ManagedSandboxEnvironmentID != ""
 		if managedConfigured {
 			if claims.ManagedSandboxSettingVersion < 1 || claims.ManagedSandboxSettingVersion > maxSafeJSONInteger {
 				return fmt.Errorf("%s executor capability managed sandbox setting version is invalid", profile)
 			}
 			if err := (managedsandboxprofile.Binding{
-				Region: claims.ManagedSandboxRegion, ProfileID: claims.ManagedSandboxProfileID,
-				BindingSHA256: claims.ManagedSandboxBindingSHA256,
-				EnvironmentID: claims.ManagedSandboxEnvironmentID,
+				Region: claims.ManagedSandboxRegion, EnvironmentID: claims.ManagedSandboxEnvironmentID,
 			}).Validate(); err != nil {
 				return fmt.Errorf("%s executor capability managed sandbox authority is invalid: %w", profile, err)
 			}
@@ -257,7 +252,6 @@ func (claims Claims) validateAuthority(profile string) error {
 			return fmt.Errorf("%s model capability contains executor authority", profile)
 		}
 		if claims.ManagedSandboxSettingVersion != 0 || claims.ManagedSandboxRegion != "" ||
-			claims.ManagedSandboxProfileID != "" || claims.ManagedSandboxBindingSHA256 != "" ||
 			claims.ManagedSandboxEnvironmentID != "" {
 			return fmt.Errorf("%s model capability contains managed sandbox authority", profile)
 		}

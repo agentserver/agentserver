@@ -3,10 +3,11 @@ package corecontract
 import "time"
 
 const (
-	UserSessionCollectionRoutePattern = "/v2/workspaces/{workspaceId}/sessions"
-	UserSessionResourceRoutePattern   = "/v2/workspaces/{workspaceId}/sessions/{sessionId}"
-	UserSessionTranscriptRoutePattern = "/v2/workspaces/{workspaceId}/sessions/{sessionId}/transcript"
-	UserSessionArchiveRoutePattern    = "/v2/workspaces/{workspaceId}/sessions/{sessionId}/actions/archive"
+	UserSessionCollectionRoutePattern     = "/v2/workspaces/{workspaceId}/sessions"
+	UserSessionResourceRoutePattern       = "/v2/workspaces/{workspaceId}/sessions/{sessionId}"
+	UserSessionPermissionModeRoutePattern = "/v2/workspaces/{workspaceId}/sessions/{sessionId}/permission-mode"
+	UserSessionTranscriptRoutePattern     = "/v2/workspaces/{workspaceId}/sessions/{sessionId}/transcript"
+	UserSessionArchiveRoutePattern        = "/v2/workspaces/{workspaceId}/sessions/{sessionId}/actions/archive"
 )
 
 func UserSessionsPath(workspaceID string) string {
@@ -21,19 +22,25 @@ func UserSessionTranscriptPath(workspaceID, sessionID string) string {
 	return UserSessionPath(workspaceID, sessionID) + "/transcript"
 }
 
+func UserSessionPermissionModePath(workspaceID, sessionID string) string {
+	return UserSessionPath(workspaceID, sessionID) + "/permission-mode"
+}
+
 func ArchiveUserSessionPath(workspaceID, sessionID string) string {
 	return UserSessionPath(workspaceID, sessionID) + "/actions/archive"
 }
 
 type UserSessionState struct {
-	SessionID   string    `json:"sessionId"`
-	WorkspaceID string    `json:"workspaceId"`
-	Title       string    `json:"title"`
-	Status      string    `json:"status"`
-	ActiveRunID string    `json:"activeRunId,omitempty"`
-	Version     int64     `json:"version"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	SessionID             string    `json:"sessionId"`
+	WorkspaceID           string    `json:"workspaceId"`
+	Title                 string    `json:"title"`
+	Status                string    `json:"status"`
+	ActiveRunID           string    `json:"activeRunId,omitempty"`
+	Version               int64     `json:"version"`
+	PermissionMode        string    `json:"permissionMode"`
+	PermissionModeVersion int64     `json:"permissionModeVersion"`
+	CreatedAt             time.Time `json:"createdAt"`
+	UpdatedAt             time.Time `json:"updatedAt"`
 }
 
 type ListUserSessionsResponse struct {
@@ -72,6 +79,19 @@ type UpdateUserSessionRequest struct {
 }
 
 type UpdateUserSessionResponse struct {
+	Session UserSessionState `json:"session"`
+	Changed bool             `json:"changed"`
+}
+
+// UpdateUserSessionPermissionModeRequest changes the mode used by the next
+// run/turn. The independent version is a CAS token and is intentionally not
+// the general session version, which also advances for run lifecycle events.
+type UpdateUserSessionPermissionModeRequest struct {
+	PermissionMode                string `json:"permissionMode"`
+	ExpectedPermissionModeVersion int64  `json:"expectedPermissionModeVersion"`
+}
+
+type UpdateUserSessionPermissionModeResponse struct {
 	Session UserSessionState `json:"session"`
 	Changed bool             `json:"changed"`
 }

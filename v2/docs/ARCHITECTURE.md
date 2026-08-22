@@ -351,7 +351,7 @@ dynamic-tool-only不是prompt约定，而是pinned Codex build上必须同时成
 - 清洗后的 `config.toml` 禁用所有目标 stock release实际支持关闭的builtin tool source，包括 `request_user_input`、Web、apps、plugins、multi-agent、browser/computer use、hooks；不提供 capability roots；对 `update_plan`这类stock内建utility，所pin release也必须提供经过tool capture验证的真实禁用机制，不能在文档中虚构配置键；
 - stock app-server不配置任何MCP server。pool 镜像在任何 child启动前已把管理员控制的`/etc/codex/requirements.toml`以只读 mount 固定为至少`mcp_servers = {}`，使user/project配置也不能注入MCP；A04必须从零MCP bootstrap请求与精确dynamic tool surface证明deny-all真实生效；
 - run manifest冻结MCP protocol profile、namespace及其description、tool name/description/input schema、固定`deferLoading=false`、逐tool schema hash和catalog digest。MCP annotation不作为授权事实也不投影给模型。worker从executor-gateway `tools/list`得到的catalog必须与其完全一致，再机械生成`dynamicTools`；模型伪造未发布tool、builtin或另一个namespace时必须在stock路由层得到`unsupported call`，不能到达worker/MCP；
-- production thread使用`approvalPolicy = "never"`。这只关闭stock app-server自身的通用审批；executor产品审批发生在worker作为MCP client收到的`elicitation/create`上，不经过app-server，所以不会被`never`自动拒绝；
+- production session 默认 Codex `permissionMode = "read-only"`，用户可通过独立 CAS API 随时修改下一轮为 `read-only | auto | full-access`。Core 在创建 run 的事务中锁住 session 并冻结当时的 mode/version；active run 不受后续切换影响，pool 只能把这份 immutable authority 写入签名 manifest。worker 再把三个 Codex 内置 preset ID 机械映射为原生 `approvalPolicy` / `approvalsReviewer` / `sandbox` 字段，AG-UI prompt、模型和普通 worker wire 输入不能改变它。deployment profile 只为没有显式 Core authority 的 launch source 提供 fallback；旧 manifest 缺少该字段时保留历史的 `approvalPolicy: never` + `read-only` 严格投影。无论选择哪种 Codex mode，executor 产品审批仍发生在 worker 作为 MCP client 收到的 `elicitation/create` 上，不经过 app-server；
 - `thread/resume`没有`dynamicTools` override，native rollout会恢复原tool schema。checkpoint必须绑定catalog digest；同一brain thread的schema不可变，catalog变化时创建新thread。gateway仍在每次`tools/call`实时校验RBAC、capability和policy，目录冻结不等于永久授权；
 - conformance test使用fake model endpoint捕获实际Responses请求，断言模型可见工具集合精确等于冻结dynamic catalog。只检查配置文件内容不构成隔离证明。
 
@@ -763,7 +763,7 @@ Phase 2 若需要多副本和跨 pod resume，必须先实现以下 owner routin
 
 策略值为 `deny | ask | allow`，至少按workspace、executor、env、tool、tool schema/version、path root、network、run actor和policy version配置。Phase 1的唯一工具入口是executor-gateway MCP，worker不直连第三方MCP；未来第三方工具也必须先经过同一policy proxy/core approval，不能依赖server自报annotation。
 
-executor-gateway/core是产品审批的唯一策略权威。app-server以`approvalPolicy=never`运行，只产生dynamic callback，不产生executor通用approval prompt。需要用户决定时，executor-gateway在worker发起的原MCP `tools/call`上发送标准`elicitation/create`；harness-worker作为MCP client把该request与core approval record双向关联。approval record必须持久化绝对`expires_at`，core用CAS决定`approved|denied|expired|cancelled`，worker依据同一deadline设置本地兜底timer，不能让MCP elicitation或对应dynamic callback无限悬挂。
+executor-gateway/core是产品审批的唯一策略权威。app-server默认以 Codex `permissionMode=read-only` 运行；session 可为下一轮选择另外两个 Codex preset，但它们只影响 Codex 自身的审批与 sandbox，不接管 executor 产品审批。需要用户决定时，executor-gateway在worker发起的原MCP `tools/call`上发送标准`elicitation/create`；harness-worker作为MCP client把该request与core approval record双向关联。approval record必须持久化绝对`expires_at`，core用CAS决定`approved|denied|expired|cancelled`，worker依据同一deadline设置本地兜底timer，不能让MCP elicitation或对应dynamic callback无限悬挂。
 
 批准本身不是dispatch authority。Core从完整冻结execution fingerprint派生`approval-context` digest，并为每个execution只允许一个approval、每个nonce全局只允许一个record。浏览器决定只执行`pending → approved|denied`：`approve`后execution仍为`pending_approval`；精确live gateway必须携带同一approval/execution/run/attempt/generation/nonce/digest和各自CAS version调用consume，Core在该事务中重新检查expiry、holder/generation及approver当前RBAC，成功后才原子执行`approval → consumed`与`execution → approved`。批准后撤权、降为viewer、attempt被fence或context变化都必须fail closed，不能把曾经的UI点击当成永久能力。
 
@@ -926,7 +926,7 @@ agentx 的实现不放入上述 Go module。`github.com/agentserver/agentx` v2 �
 | D10 | execution 在副作用 dispatch 前持久化，`dispatching` 是不可回退边界 | gateway/transport crash 后才能诚实区分未发送、已确认与 unknown，兑现不重放承诺 |
 | D11 | native checkpoint 只在 completed turn 提交，UI/审计事件与模型可见历史分离 | 过滤展示内容不能破坏 app-server thread 恢复语义，mid-turn 不能伪恢复 |
 | D12 | Phase 1只有executor-gateway向worker暴露工具，不允许app-server或worker直连第三方MCP | 第三方annotation不是可信授权事实；未来必须先进入内部policy proxy再走同一dynamic bridge |
-| D13 | executor-gateway/core 是唯一产品审批权威；gateway向作为MCP client的worker发elicitation，app-server使用`approvalPolicy=never` | 避免app-server与gateway双重审批，并给timeout/cancel/fence明确语义 |
+| D13 | executor-gateway/core 是唯一产品审批权威；gateway向作为 MCP client 的 worker 发 elicitation，app-server 的签名 Codex `permissionMode` 只控制 Codex 自身权限且默认 `read-only` | 避免 Codex 权限模式与 gateway 产品审批混为一层，并给 timeout/cancel/fence 明确语义 |
 | D14 | Pod内按UID默认拒绝OUTPUT：worker只到pool+executor MCP，app-server只到llmproxy | NetworkPolicy无法区分同Pod worker/child；MCP bearer和可达性都不能进入app-server域 |
 | D15 | Phase 1 executor-gateway 单副本，resume 只覆盖同进程短时断线 | 跨 pod resume 需要 durable frame journal 与 owner routing，不能只凭 connection lease 声称恢复 |
 | D16 | agentx 保持独立仓库并从零改写为 stock exec-server supervisor | 现有 hard-fork 把执行引擎复制进 agentx，与 v2 的 stock stdio 边界冲突 |

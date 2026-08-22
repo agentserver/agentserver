@@ -337,11 +337,10 @@ func managedSandboxCatalogJSON(config LoadedConfig) (string, error) {
 	for _, loaded := range config.ManagedSandboxProfiles {
 		profile := loaded.Document
 		binding := managedsandboxprofile.Binding{
-			Region: profile.Region, ProfileID: profile.ProfileID,
-			BindingSHA256: profile.BindingSHA256, EnvironmentID: profile.Environment.EnvironmentID,
+			Region: profile.Region, EnvironmentID: profile.Environment.EnvironmentID,
 		}
 		if err := binding.Validate(); err != nil {
-			return "", fmt.Errorf("project managed sandbox profile %q: %w", profile.ProfileID, err)
+			return "", fmt.Errorf("project managed sandbox region %q: %w", profile.Region, err)
 		}
 		bindings = append(bindings, binding)
 	}
@@ -369,26 +368,19 @@ func managedSandboxGatewayIdentitiesJSON(config LoadedConfig) (string, error) {
 
 func managedSandboxLaunchProfilesJSON(config LoadedConfig) (string, error) {
 	type launchProfile struct {
-		Region               string `json:"region"`
-		ProfileID            string `json:"profileId"`
-		ProfileBindingSHA256 string `json:"bindingSha256"`
-		EnvironmentID        string `json:"environmentId"`
-		RuntimeProfileSHA256 string `json:"runtimeProfileSha256"`
-		PackSetSHA256        string `json:"packSetSha256"`
-		SkillSHA256          string `json:"skillSha256"`
-		SandboxTTL           string `json:"sandboxTtl"`
-		ActivityTTL          string `json:"activityTtl"`
+		Region        string `json:"region"`
+		EnvironmentID string `json:"environmentId"`
+		SkillSHA256   string `json:"skillSha256"`
+		SandboxTTL    string `json:"sandboxTtl"`
+		ActivityTTL   string `json:"activityTtl"`
 	}
 	profiles := make([]launchProfile, 0, len(config.ManagedSandboxProfiles))
 	for _, loaded := range config.ManagedSandboxProfiles {
 		profile := loaded.Document
 		profiles = append(profiles, launchProfile{
-			Region: profile.Region, ProfileID: profile.ProfileID, ProfileBindingSHA256: profile.BindingSHA256,
-			EnvironmentID:        profile.Environment.EnvironmentID,
-			RuntimeProfileSHA256: profile.Environment.RuntimeProfileSHA256,
-			PackSetSHA256:        profile.Environment.PackSetSHA256,
-			SkillSHA256:          config.Document.Managed.BaseInstructionsSHA256,
-			SandboxTTL:           profile.Environment.SandboxTTL, ActivityTTL: profile.Environment.ActivityTTL,
+			Region: profile.Region, EnvironmentID: profile.Environment.EnvironmentID,
+			SkillSHA256: config.Document.Managed.BaseInstructionsSHA256,
+			SandboxTTL:  profile.Environment.SandboxTTL, ActivityTTL: profile.Environment.ActivityTTL,
 		})
 	}
 	raw, err := json.Marshal(struct {
@@ -403,13 +395,9 @@ func managedSandboxLaunchProfilesJSON(config LoadedConfig) (string, error) {
 func managedSandboxGatewayProfilesJSON(config LoadedConfig) (string, error) {
 	type gatewayProfile struct {
 		Region                   string `json:"region"`
-		ProfileID                string `json:"profileId"`
-		BindingSHA256            string `json:"bindingSha256"`
 		EnvironmentID            string `json:"environmentId"`
 		SandboxGatewayURL        string `json:"sandboxGatewayUrl"`
 		SandboxGatewayServerName string `json:"sandboxGatewayServerName"`
-		RuntimeProfileSHA256     string `json:"runtimeProfileSha256"`
-		PackSetSHA256            string `json:"packSetSha256"`
 		SandboxTTL               string `json:"sandboxTtl"`
 		ActivityTTL              string `json:"activityTtl"`
 	}
@@ -417,12 +405,10 @@ func managedSandboxGatewayProfilesJSON(config LoadedConfig) (string, error) {
 	for _, loaded := range config.ManagedSandboxProfiles {
 		profile := loaded.Document
 		profiles = append(profiles, gatewayProfile{
-			Region: profile.Region, ProfileID: profile.ProfileID, BindingSHA256: profile.BindingSHA256,
+			Region:                   profile.Region,
 			EnvironmentID:            profile.Environment.EnvironmentID,
 			SandboxGatewayURL:        managedSandboxGatewayOrigin(profile.Gateway),
 			SandboxGatewayServerName: profile.Gateway.ServerName,
-			RuntimeProfileSHA256:     profile.Environment.RuntimeProfileSHA256,
-			PackSetSHA256:            profile.Environment.PackSetSHA256,
 			SandboxTTL:               profile.Environment.SandboxTTL, ActivityTTL: profile.Environment.ActivityTTL,
 		})
 	}
@@ -663,6 +649,7 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 		valueEnvironment("AGENTSERVER_V2_HARNESS_MAX_CONCURRENT_ATTEMPTS", strconv.Itoa(document.Runtime.MaxConcurrentAttempts)),
 		valueEnvironment("AGENTSERVER_V2_MAX_RUN_DURATION", document.Runtime.MaxRunDuration),
 		valueEnvironment("AGENTSERVER_V2_MAX_APPROVAL_TTL", document.Runtime.MaxApprovalTTL),
+		valueEnvironment("AGENTSERVER_V2_CODEX_PERMISSION_MODE", document.Runtime.CodexPermissionMode),
 	}
 	if managedExecutionActive(document.Managed) {
 		environment = append(environment,
@@ -791,14 +778,12 @@ func managedTAEPolicyEnvironment(tae ManagedTAEDocument) []any {
 	environment := []any{
 		valueEnvironment("AGENTSERVER_V2_TAE_POLICY_REVISION", policy.Revision),
 		valueEnvironment("AGENTSERVER_V2_TAE_POLICY_SHA256", policy.PolicySHA256),
-		valueEnvironment("AGENTSERVER_V2_TAE_POLICY_BINDING_SHA256", policy.BindingSHA256),
 		valueEnvironment("AGENTSERVER_V2_TAE_POLICY_HOST", policy.PublicHost),
 		valueEnvironment("AGENTSERVER_V2_TAE_POLICY_ACCESS", policy.PublicAccess),
 		valueEnvironment("AGENTSERVER_V2_TAE_POLICY_WEBHOOK_REQUIRED", strconv.FormatBool(policy.PublicWebhookRequired)),
 		valueEnvironment("AGENTSERVER_V2_TAE_POLICY_PUBLISHED", strconv.FormatBool(policy.Published)),
 		valueEnvironment("AGENTSERVER_V2_TAE_POLICY_APPROVED", strconv.FormatBool(policy.Approved)),
 		valueEnvironment("AGENTSERVER_V2_TAE_POLICY_EVIDENCE_REF", policy.EvidenceRef),
-		valueEnvironment("AGENTSERVER_V2_TAE_NETWORK_BINDING_SHA256", tae.NetworkEvidence.BindingSHA256),
 		valueEnvironment("AGENTSERVER_V2_TAE_NETWORK_REPORT_SHA256", tae.NetworkEvidence.ReportSHA256),
 		valueEnvironment("AGENTSERVER_V2_TAE_NETWORK_EVIDENCE_REF", tae.NetworkEvidence.EvidenceRef),
 	}

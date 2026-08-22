@@ -577,7 +577,7 @@ func lifecycleEnsureRequest() sandboxcontract.EnsureSandboxRequest {
 	return sandboxcontract.EnsureSandboxRequest{
 		Profile: sandboxcontract.ProfileV1, RequestID: "lifecycle-ensure",
 		Session:             sandboxcontract.SessionIdentity{WorkspaceID: testWorkspaceID, SessionID: testSessionID, EnvironmentID: testEnvironmentID},
-		RequestedTTLSeconds: 600, RuntimeProfileDigest: repeatHex("1"), PackSetDigest: repeatHex("2"),
+		RequestedTTLSeconds: 600,
 	}
 }
 

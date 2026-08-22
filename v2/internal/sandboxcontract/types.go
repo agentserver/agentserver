@@ -16,7 +16,6 @@ const ProfileV1 = "e2b-semantic-subset/v1"
 
 var (
 	contractIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$`)
-	sha256Pattern     = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	executablePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,255}$`)
 )
 
@@ -163,12 +162,10 @@ func (sandbox Sandbox) Validate() error {
 }
 
 type EnsureSandboxRequest struct {
-	Profile              string          `json:"profile"`
-	RequestID            string          `json:"requestId"`
-	Session              SessionIdentity `json:"session"`
-	RequestedTTLSeconds  int64           `json:"requestedTtlSeconds"`
-	RuntimeProfileDigest string          `json:"runtimeProfileDigest"`
-	PackSetDigest        string          `json:"packSetDigest"`
+	Profile             string          `json:"profile"`
+	RequestID           string          `json:"requestId"`
+	Session             SessionIdentity `json:"session"`
+	RequestedTTLSeconds int64           `json:"requestedTtlSeconds"`
 }
 
 func (request EnsureSandboxRequest) Validate(limits Limits) error {
@@ -180,12 +177,6 @@ func (request EnsureSandboxRequest) Validate(limits Limits) error {
 	}
 	if request.RequestedTTLSeconds < limits.MinSandboxTTLSeconds || request.RequestedTTLSeconds > limits.MaxSandboxTTLSeconds {
 		return fmt.Errorf("requested sandbox TTL must be between %d and %d seconds", limits.MinSandboxTTLSeconds, limits.MaxSandboxTTLSeconds)
-	}
-	if !sha256Pattern.MatchString(request.RuntimeProfileDigest) {
-		return errors.New("runtime profile digest must be 64 lowercase hexadecimal characters")
-	}
-	if !sha256Pattern.MatchString(request.PackSetDigest) {
-		return errors.New("pack set digest must be 64 lowercase hexadecimal characters")
 	}
 	return nil
 }

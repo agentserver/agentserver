@@ -70,6 +70,7 @@ func TestPrepareBuildsClosedDevelopmentStackWithoutWorkerSecrets(t *testing.T) {
 		browserEnvironment["AGENTSERVER_V2_DEVELOPMENT_OIDC_AUTHORIZATION_UPSTREAM"] != loaded.HydraFixtureOrigin ||
 		executorEnvironment["AGENTSERVER_V2_DEV_EXECUTOR_ID"] != fixture.document.Authority.ExecutorID ||
 		poolEnvironment["AGENTSERVER_V2_CODEX_RUNTIME_MANIFEST_SHA256"] != loaded.ManifestSHA256 ||
+		poolEnvironment["AGENTSERVER_V2_CODEX_PERMISSION_MODE"] != "read-only" ||
 		poolEnvironment["AGENTSERVER_V2_MAX_APPROVAL_TTL"] != fixture.document.Harness.MaxApprovalTTL ||
 		poolEnvironment["AGENTSERVER_V2_HARNESS_PRIVILEGED_FORK"] != "true" ||
 		poolEnvironment["AGENTSERVER_V2_HARNESS_WORKER_UID"] != "65531" ||
@@ -431,6 +432,13 @@ func TestValidateConfigRejectsUnlaunchableDevelopmentFixtures(t *testing.T) {
 				document.Harness.MaxApprovalTTL = "6s"
 			},
 			want: "must not exceed",
+		},
+		{
+			name: "unknown Codex permission mode",
+			mutate: func(document *ConfigDocument) {
+				document.Harness.CodexPermissionMode = "future-mode"
+			},
+			want: "codexPermissionMode",
 		},
 	}
 	for _, test := range tests {

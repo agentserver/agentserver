@@ -116,10 +116,12 @@ func TestBrowserConversationRoutesDispatchSessionsBeforeAGUIFallback(t *testing.
 
 	sessionResponse := httptest.NewRecorder()
 	handler.ServeHTTP(sessionResponse, httptest.NewRequest(http.MethodGet, corecontract.UserSessionsPath(workspaceID), nil))
+	permissionModeResponse := httptest.NewRecorder()
+	handler.ServeHTTP(permissionModeResponse, httptest.NewRequest(http.MethodPatch, corecontract.UserSessionPermissionModePath(workspaceID, sessionID), nil))
 	aguiResponse := httptest.NewRecorder()
 	handler.ServeHTTP(aguiResponse, httptest.NewRequest(http.MethodPost, "/v2/workspaces/"+workspaceID+"/sessions/"+sessionID+"/agui", nil))
-	if sessionResponse.Code != http.StatusOK || aguiResponse.Code != http.StatusAccepted || sessionCalls != 1 || aguiCalls != 1 {
-		t.Fatalf("conversation routing = session:%d/%d agui:%d/%d", sessionResponse.Code, sessionCalls, aguiResponse.Code, aguiCalls)
+	if sessionResponse.Code != http.StatusOK || permissionModeResponse.Code != http.StatusOK || aguiResponse.Code != http.StatusAccepted || sessionCalls != 2 || aguiCalls != 1 {
+		t.Fatalf("conversation routing = session:%d/%d permission-mode:%d agui:%d/%d", sessionResponse.Code, sessionCalls, permissionModeResponse.Code, aguiResponse.Code, aguiCalls)
 	}
 }
 

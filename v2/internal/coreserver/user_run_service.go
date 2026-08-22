@@ -100,12 +100,13 @@ type UserRunService struct {
 }
 
 type CreateUserRunCommand struct {
-	ActorID        string
-	WorkspaceID    string
-	SessionID      string
-	IdempotencyKey string
-	ClientRunID    string
-	Prompt         string
+	ActorID                       string
+	WorkspaceID                   string
+	SessionID                     string
+	IdempotencyKey                string
+	ClientRunID                   string
+	Prompt                        string
+	ExpectedPermissionModeVersion int64
 }
 
 type ReadUserRunEventsQuery struct {
@@ -212,14 +213,8 @@ func (service *UserRunService) CreateUserRun(ctx context.Context, command Create
 				"selected managed sandbox region has no active deployment profile",
 			)
 		}
-		rawDigest, err := hex.DecodeString(profile.BindingSHA256)
-		if err != nil || len(rawDigest) != len(managedSandbox.BindingSHA256) {
-			return corecontract.CreateUserRunResponse{}, errors.New("managed sandbox catalog returned an invalid binding digest")
-		}
-		copy(managedSandbox.BindingSHA256[:], rawDigest)
 		managedSandbox.SettingVersion = setting.Version
 		managedSandbox.Region = profile.Region
-		managedSandbox.ProfileID = profile.ProfileID
 		managedSandbox.EnvironmentID = profile.EnvironmentID
 	}
 	identities := make([]string, 4)
@@ -239,7 +234,8 @@ func (service *UserRunService) CreateUserRun(ctx context.Context, command Create
 		RunID: identities[0], WorkspaceID: command.WorkspaceID, SessionID: command.SessionID,
 		ActorID: command.ActorID, RequestHash: requestHash, IdempotencyKey: command.IdempotencyKey,
 		Prompt: prompt, ExecutorPolicy: policy, LLMGateway: llmGateway, LarkEgress: larkEgress,
-		ManagedSandbox: managedSandbox,
+		ManagedSandbox:                managedSandbox,
+		ExpectedPermissionModeVersion: command.ExpectedPermissionModeVersion,
 		Record: coredb.TransitionRecord{
 			EventID: identities[1], ProducerInstanceID: identities[2], ProducerSeq: 1, OutboxID: identities[3],
 		},
@@ -445,6 +441,9 @@ func validateCreateUserRunCommand(command CreateUserRunCommand) error {
 	}
 	if len(command.ClientRunID) > 256 || strings.ContainsAny(command.ClientRunID, "\x00\r\n") {
 		return errors.New("clientRunId must be bounded text without NUL or line breaks")
+	}
+	if command.ExpectedPermissionModeVersion < 0 || command.ExpectedPermissionModeVersion > 1<<53-1 {
+		return errors.New("expectedPermissionModeVersion must be zero or a positive JSON-safe integer")
 	}
 	return nil
 }

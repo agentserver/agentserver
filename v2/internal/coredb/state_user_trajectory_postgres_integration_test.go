@@ -1,7 +1,6 @@
 package coredb
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"testing"
 )
@@ -31,8 +30,6 @@ func TestPostgreSQLReadUserSessionTrajectoryIsCreatorScopedAndQueriesAllSources(
 	command.ManagedSandbox = RunManagedSandboxBinding{
 		SettingVersion: 3,
 		Region:         "i18n-tt",
-		ProfileID:      "tae-i18n-tt-release-v1",
-		BindingSHA256:  sha256.Sum256([]byte("trajectory-managed-sandbox-binding")),
 		EnvironmentID:  stateTestUUID(210_020),
 	}
 	created, err := store.CreateAuthorizedRun(t.Context(), command)

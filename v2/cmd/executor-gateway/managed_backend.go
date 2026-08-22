@@ -346,22 +346,6 @@ func configureLazyManagedSandboxAcquirer(
 	if err != nil {
 		return nil, err
 	}
-	profileID, err := required(gatewayManagedSandboxProfileIDEnvironment)
-	if err != nil {
-		return nil, err
-	}
-	bindingSHA256, err := required(gatewayManagedSandboxBindingEnvironment)
-	if err != nil {
-		return nil, err
-	}
-	runtimeDigest, err := required(gatewayManagedRuntimeDigestEnvironment)
-	if err != nil {
-		return nil, err
-	}
-	packSetDigest, err := required(gatewayManagedPackSetDigestEnvironment)
-	if err != nil {
-		return nil, err
-	}
 	sandboxTTL, err := requiredManagedSandboxDuration(
 		getenv, gatewayManagedSandboxTTLEnvironment, 30*time.Second, 24*time.Hour,
 	)
@@ -377,9 +361,8 @@ func configureLazyManagedSandboxAcquirer(
 	return executorgateway.NewDefaultGatewayManagedSandboxSessionAcquirer(
 		client,
 		executorgateway.ManagedSandboxProvisioningSpec{
-			Region: region, ProfileID: profileID, ProfileBindingSHA256: bindingSHA256,
-			EnvironmentID: environmentID, RuntimeProfileDigest: runtimeDigest,
-			PackSetDigest: packSetDigest, SandboxTTL: sandboxTTL, ActivityTTL: activityTTL,
+			Region: region, EnvironmentID: environmentID,
+			SandboxTTL: sandboxTTL, ActivityTTL: activityTTL,
 		},
 		slog.Default(),
 	)

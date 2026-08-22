@@ -199,8 +199,6 @@ func (service *ProductionRunCapabilityService) IssueRunCapabilities(
 	if authority.ManagedSandbox != (coredb.RunManagedSandboxBinding{}) {
 		executorClaims.ManagedSandboxSettingVersion = authority.ManagedSandbox.SettingVersion
 		executorClaims.ManagedSandboxRegion = authority.ManagedSandbox.Region
-		executorClaims.ManagedSandboxProfileID = authority.ManagedSandbox.ProfileID
-		executorClaims.ManagedSandboxBindingSHA256 = hex.EncodeToString(authority.ManagedSandbox.BindingSHA256[:])
 		executorClaims.ManagedSandboxEnvironmentID = authority.ManagedSandbox.EnvironmentID
 	}
 	executorCapability, err := service.issueOne(executorClaims)
@@ -555,36 +553,28 @@ func decodeRunManagedSandboxBinding(source *corecontract.RunLaunchManagedSandbox
 	if source == nil {
 		return coredb.RunManagedSandboxBinding{}, nil
 	}
-	digest, err := decodeCapabilityDigest("managedSandbox.bindingSha256", source.BindingSHA256)
-	if err != nil {
-		return coredb.RunManagedSandboxBinding{}, err
-	}
 	if source.SettingVersion < 1 || source.SettingVersion > maximumCapabilitySafeJSONInteger {
 		return coredb.RunManagedSandboxBinding{}, errors.New("managedSandbox.settingVersion must be a positive safe integer")
 	}
 	profile := managedsandboxprofile.Binding{
-		Region: source.Region, ProfileID: source.ProfileID,
-		BindingSHA256: source.BindingSHA256, EnvironmentID: source.EnvironmentID,
+		Region: source.Region, EnvironmentID: source.EnvironmentID,
 	}
 	if err := profile.Validate(); err != nil {
 		return coredb.RunManagedSandboxBinding{}, err
 	}
 	return coredb.RunManagedSandboxBinding{
-		SettingVersion: source.SettingVersion, Region: source.Region, ProfileID: source.ProfileID,
-		BindingSHA256: digest, EnvironmentID: source.EnvironmentID,
+		SettingVersion: source.SettingVersion, Region: source.Region, EnvironmentID: source.EnvironmentID,
 	}, nil
 }
 
 func managedSandboxBindingFromClaims(claims runcapability.Claims) (coredb.RunManagedSandboxBinding, error) {
 	configured := claims.ManagedSandboxSettingVersion != 0 || claims.ManagedSandboxRegion != "" ||
-		claims.ManagedSandboxProfileID != "" || claims.ManagedSandboxBindingSHA256 != "" ||
 		claims.ManagedSandboxEnvironmentID != ""
 	if !configured {
 		return coredb.RunManagedSandboxBinding{}, nil
 	}
 	return decodeRunManagedSandboxBinding(&corecontract.RunLaunchManagedSandboxState{
 		SettingVersion: claims.ManagedSandboxSettingVersion, Region: claims.ManagedSandboxRegion,
-		ProfileID: claims.ManagedSandboxProfileID, BindingSHA256: claims.ManagedSandboxBindingSHA256,
 		EnvironmentID: claims.ManagedSandboxEnvironmentID,
 	})
 }

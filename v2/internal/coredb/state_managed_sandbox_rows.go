@@ -1,7 +1,6 @@
 package coredb
 
 import (
-	"errors"
 	"fmt"
 	"time"
 )
@@ -22,8 +21,6 @@ func managedSandboxColumns(alias string) string {
 		alias + "provider_psm, " +
 		alias + "provider_session_ref, " +
 		alias + "create_idempotency_key::text, " +
-		alias + "runtime_profile_digest, " +
-		alias + "pack_set_digest, " +
 		alias + "requested_ttl_seconds, " +
 		alias + "idle_ttl_seconds, " +
 		alias + "expires_at, " +
@@ -40,8 +37,6 @@ func managedSandboxColumns(alias string) string {
 func scanManagedSandbox(scanner rowScanner) (ManagedSandbox, error) {
 	var sandbox ManagedSandbox
 	var providerSessionRef *string
-	var runtimeDigest []byte
-	var packDigest []byte
 	var requestedTTLSeconds int64
 	var idleTTLSeconds int64
 	var expiresAt *time.Time
@@ -54,7 +49,7 @@ func scanManagedSandbox(scanner rowScanner) (ManagedSandbox, error) {
 		&sandbox.ID, &sandbox.WorkspaceID, &sandbox.SessionID, &sandbox.EnvironmentID,
 		&sandbox.ProviderKind, &sandbox.Generation, &sandbox.DesiredState, &sandbox.ObservedState,
 		&sandbox.ProviderRegion, &sandbox.ProviderPSM, &providerSessionRef,
-		&sandbox.CreateIdempotencyKey, &runtimeDigest, &packDigest,
+		&sandbox.CreateIdempotencyKey,
 		&requestedTTLSeconds, &idleTTLSeconds,
 		&expiresAt, &idleExpiresAt, &lastObservedAt,
 		&sandbox.Version, &sandbox.CreatedAt, &sandbox.UpdatedAt, &deletedAt,
@@ -63,11 +58,6 @@ func scanManagedSandbox(scanner rowScanner) (ManagedSandbox, error) {
 	if err != nil {
 		return ManagedSandbox{}, err
 	}
-	if len(runtimeDigest) != 32 || len(packDigest) != 32 {
-		return ManagedSandbox{}, errors.New("managed sandbox row contains an invalid profile digest")
-	}
-	copy(sandbox.RuntimeProfileDigest[:], runtimeDigest)
-	copy(sandbox.PackSetDigest[:], packDigest)
 	sandbox.RequestedTTL = time.Duration(requestedTTLSeconds) * time.Second
 	sandbox.IdleTTL = time.Duration(idleTTLSeconds) * time.Second
 	if providerSessionRef != nil {

@@ -64,21 +64,17 @@ type PreviousCheckpoint struct {
 	CatalogDigest              string        `json:"catalogDigest"`
 	CodexRuntimeManifestDigest string        `json:"codexRuntimeManifestDigest"`
 	CheckpointAllowlistVersion int64         `json:"checkpointAllowlistVersion"`
-	PackSetDigest              string        `json:"packSetDigest,omitempty"`
 	Object                     ObjectPointer `json:"object"`
 }
 
 type ToolPackAuthority struct {
-	PackID        string `json:"packId"`
-	PackSetDigest string `json:"packSetDigest"`
-	SkillSHA256   string `json:"skillSha256"`
+	PackID      string `json:"packId"`
+	SkillSHA256 string `json:"skillSha256"`
 }
 
 type ManagedSandboxAuthority struct {
 	SettingVersion int64  `json:"settingVersion"`
 	Region         string `json:"region"`
-	ProfileID      string `json:"profileId"`
-	BindingSHA256  string `json:"bindingSha256"`
 	EnvironmentID  string `json:"environmentId"`
 }
 
@@ -139,18 +135,24 @@ type ControllerCallback struct {
 }
 
 type Manifest struct {
-	ManifestVersion            int                      `json:"manifestVersion"`
-	CanonicalizerVersion       string                   `json:"canonicalizerVersion"`
-	WorkspaceID                string                   `json:"workspaceId"`
-	SessionID                  string                   `json:"sessionId"`
-	RunID                      string                   `json:"runId"`
-	RunAttemptID               string                   `json:"runAttemptId"`
-	RunAttemptGeneration       int64                    `json:"runAttemptGeneration"`
-	HolderID                   string                   `json:"holderId"`
-	Prompt                     ObjectPointer            `json:"prompt"`
-	PreviousCheckpoint         *PreviousCheckpoint      `json:"previousCheckpoint,omitempty"`
-	CodexRuntimeManifestDigest string                   `json:"codexRuntimeManifestDigest"`
-	Model                      ModelRoute               `json:"model"`
+	ManifestVersion            int                 `json:"manifestVersion"`
+	CanonicalizerVersion       string              `json:"canonicalizerVersion"`
+	WorkspaceID                string              `json:"workspaceId"`
+	SessionID                  string              `json:"sessionId"`
+	RunID                      string              `json:"runId"`
+	RunAttemptID               string              `json:"runAttemptId"`
+	RunAttemptGeneration       int64               `json:"runAttemptGeneration"`
+	HolderID                   string              `json:"holderId"`
+	Prompt                     ObjectPointer       `json:"prompt"`
+	PreviousCheckpoint         *PreviousCheckpoint `json:"previousCheckpoint,omitempty"`
+	CodexRuntimeManifestDigest string              `json:"codexRuntimeManifestDigest"`
+	Model                      ModelRoute          `json:"model"`
+	// PermissionMode is deployment/run authority for the native Codex
+	// app-server approval and sandbox fields.  It is optional only so a
+	// pre-permission-mode signed manifest can be read safely; omitted means the
+	// read-only, approval-never default.
+	PermissionMode             CodexPermissionMode      `json:"permissionMode,omitempty"`
+	PermissionModeVersion      int64                    `json:"permissionModeVersion,omitempty"`
 	ExecutorMCP                ExecutorMCP              `json:"executorMcp"`
 	ExecutorPolicy             ExecutorPolicy           `json:"executorPolicy"`
 	ToolPack                   *ToolPackAuthority       `json:"toolPack,omitempty"`
@@ -225,6 +227,16 @@ func (manifest Manifest) Validate() error {
 	if err := manifest.Model.validate(); err != nil {
 		return err
 	}
+	if err := manifest.PermissionMode.Validate(); err != nil {
+		return err
+	}
+	if manifest.PermissionMode == "" {
+		if manifest.PermissionModeVersion != 0 {
+			return errors.New("permission mode version cannot be set when permission mode is omitted")
+		}
+	} else if manifest.PermissionModeVersion < 1 || manifest.PermissionModeVersion > maxJSONInteger {
+		return errors.New("permission mode version must be a positive JSON-safe integer")
+	}
 	if err := manifest.ExecutorMCP.validate(); err != nil {
 		return err
 	}
@@ -244,15 +256,6 @@ func (manifest Manifest) Validate() error {
 	}
 	if manifest.ManagedSandbox != nil && manifest.ToolPack == nil {
 		return errors.New("managedSandbox requires toolPack authority")
-	}
-	if manifest.PreviousCheckpoint != nil {
-		wantPackSet := ""
-		if manifest.ToolPack != nil {
-			wantPackSet = manifest.ToolPack.PackSetDigest
-		}
-		if manifest.PreviousCheckpoint.PackSetDigest != wantPackSet {
-			return errors.New("previousCheckpoint.packSetDigest must match the current toolPack authority")
-		}
 	}
 	if err := validateText("executorPolicy.version", manifest.ExecutorPolicy.Version, 128, true); err != nil {
 		return err
@@ -281,6 +284,12 @@ func (manifest Manifest) Validate() error {
 	return nil
 }
 
+// EffectivePermissionMode returns the canonical permission mode that the
+// worker must apply to this verified manifest.
+func (manifest Manifest) EffectivePermissionMode() (CodexPermissionMode, error) {
+	return manifest.PermissionMode.Effective()
+}
+
 func (authority *ManagedSandboxAuthority) validate() error {
 	if authority == nil {
 		return nil
@@ -289,8 +298,7 @@ func (authority *ManagedSandboxAuthority) validate() error {
 		return errors.New("managedSandbox.settingVersion must be a positive safe integer")
 	}
 	return (managedsandboxprofile.Binding{
-		Region: authority.Region, ProfileID: authority.ProfileID,
-		BindingSHA256: authority.BindingSHA256, EnvironmentID: authority.EnvironmentID,
+		Region: authority.Region, EnvironmentID: authority.EnvironmentID,
 	}).Validate()
 }
 
@@ -300,9 +308,6 @@ func (authority *ToolPackAuthority) validate() error {
 	}
 	if !packIDPattern.MatchString(authority.PackID) {
 		return errors.New("toolPack.packId must be a canonical versioned pack ID")
-	}
-	if err := validateDigest("toolPack.packSetDigest", authority.PackSetDigest); err != nil {
-		return err
 	}
 	return validateDigest("toolPack.skillSha256", authority.SkillSHA256)
 }
@@ -544,11 +549,6 @@ func (checkpoint PreviousCheckpoint) validate() error {
 	}
 	if checkpoint.CheckpointAllowlistVersion < 1 || checkpoint.CheckpointAllowlistVersion > maxJSONInteger {
 		return fmt.Errorf("previousCheckpoint.checkpointAllowlistVersion must be between 1 and %d", maxJSONInteger)
-	}
-	if checkpoint.PackSetDigest != "" {
-		if err := validateDigest("previousCheckpoint.packSetDigest", checkpoint.PackSetDigest); err != nil {
-			return err
-		}
 	}
 	if err := checkpoint.Object.validate("previousCheckpoint.object"); err != nil {
 		return err

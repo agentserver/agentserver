@@ -10,8 +10,9 @@ import (
 const PublicRunPathPrefix = "/v2/workspaces/"
 
 type CreateUserRunRequest struct {
-	ClientRunID string `json:"clientRunId,omitempty"`
-	Prompt      string `json:"prompt"`
+	ClientRunID                   string `json:"clientRunId,omitempty"`
+	Prompt                        string `json:"prompt"`
+	ExpectedPermissionModeVersion int64  `json:"expectedPermissionModeVersion,omitempty"`
 }
 
 type CreateUserRunResponse struct {

@@ -33,7 +33,7 @@ func TestCoreRunBackendCreatesRunAndReadsScopedCommittedEvents(t *testing.T) {
 				t.Fatalf("CreateRun request = %s %s headers=%v", request.Method, request.URL, request.Header)
 			}
 			var body corecontract.CreateUserRunRequest
-			if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body.Prompt != "hello" || body.ClientRunID != "client-1" {
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil || body.Prompt != "hello" || body.ClientRunID != "client-1" || body.ExpectedPermissionModeVersion != 3 {
 				t.Fatalf("CreateRun body = %+v, %v", body, err)
 			}
 			return browserJSONResponse(request, http.StatusCreated, corecontract.CreateUserRunResponse{
@@ -59,7 +59,7 @@ func TestCoreRunBackendCreatesRunAndReadsScopedCommittedEvents(t *testing.T) {
 	}
 	started, err := backend.StartRun(t.Context(), StartRunRequest{
 		BearerToken: "user-token", WorkspaceID: projectorWorkspaceID, SessionID: projectorSessionID,
-		IdempotencyKey: "request-1", ClientRunID: "client-1", Prompt: "hello",
+		IdempotencyKey: "request-1", ClientRunID: "client-1", Prompt: "hello", ExpectedPermissionModeVersion: 3,
 	})
 	if err != nil || started.RunID != projectorRunID || started.Cursor != "v1.initial" {
 		t.Fatalf("StartRun() = %+v, %v", started, err)

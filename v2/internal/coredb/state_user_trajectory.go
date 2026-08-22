@@ -162,9 +162,8 @@ func (s *StateStore) readUserTrajectoryManagedSandboxBindings(
 ) (map[string]RunManagedSandboxBinding, error) {
 	statement := fmt.Sprintf(`
 SELECT launch.run_id::text, launch.managed_sandbox_setting_version,
-       launch.managed_sandbox_region, launch.managed_sandbox_profile_id,
-       launch.managed_sandbox_binding_sha256,
-       launch.managed_sandbox_environment_id::text
+	   launch.managed_sandbox_region,
+	   launch.managed_sandbox_environment_id::text
 FROM %s AS launch
 WHERE launch.run_id IN (%s)`, s.table("run_launch_states"), runClause)
 	rows, err := transaction.Query(ctx, statement, arguments...)
@@ -176,26 +175,21 @@ WHERE launch.run_id IN (%s)`, s.table("run_launch_states"), runClause)
 	for rows.Next() {
 		var runID string
 		var settingVersion *int64
-		var region, profileID, environmentID *string
-		var rawDigest []byte
-		if err := rows.Scan(&runID, &settingVersion, &region, &profileID, &rawDigest, &environmentID); err != nil {
+		var region, environmentID *string
+		if err := rows.Scan(&runID, &settingVersion, &region, &environmentID); err != nil {
 			return nil, databaseError("ReadUserSessionTrajectory scan managed sandbox binding", err)
 		}
-		if settingVersion == nil && region == nil && profileID == nil && rawDigest == nil && environmentID == nil {
+		if settingVersion == nil && region == nil && environmentID == nil {
 			result[runID] = RunManagedSandboxBinding{}
 			continue
 		}
-		if settingVersion == nil || region == nil || profileID == nil || rawDigest == nil || environmentID == nil {
+		if settingVersion == nil || region == nil || environmentID == nil {
 			return nil, databaseError("ReadUserSessionTrajectory decode managed sandbox binding", errors.New("stored binding is incomplete"))
 		}
 		binding := RunManagedSandboxBinding{
 			SettingVersion: *settingVersion,
 			Region:         *region,
-			ProfileID:      *profileID,
 			EnvironmentID:  *environmentID,
-		}
-		if err := copyStoredSHA256(&binding.BindingSHA256, rawDigest); err != nil {
-			return nil, databaseError("ReadUserSessionTrajectory decode managed sandbox binding digest", err)
 		}
 		if err := validateRunManagedSandboxBinding(binding); err != nil {
 			return nil, databaseError("ReadUserSessionTrajectory validate managed sandbox binding", err)

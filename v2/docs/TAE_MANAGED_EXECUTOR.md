@@ -168,7 +168,7 @@ managed environment 的 display metadata 可以说明它是托管环境，但 to
 这些调用不进入模型 catalog，语义属于 `e2b-semantic-subset/v1`：
 
 ```text
-EnsureSandbox(workspace, session, environment, requested_ttl, pack_set_digest)
+EnsureSandbox(workspace, session, environment, requested_ttl)
   -> sandbox_id, target_generation, state, expires_at, root
 
 RenewSandboxActivity(sandbox_id, target_generation, attempt_id, lease_ttl)
@@ -326,7 +326,7 @@ execution gateway 调用至少绑定：
 operation_id
 workspace_id / session_id / run_id / attempt_id
 target_id / target_generation
-environment_id / pack_set_digest
+environment_id
 executable + argv + cwd + explicit env
 deadline + stdout/stderr/result byte limits
 ```
@@ -388,7 +388,7 @@ managed_sandboxes
   generation
   desired_state, observed_state
   provider_region, provider_psm, provider_session_ref
-  create_idempotency_key, runtime_profile_digest, pack_set_digest
+  create_idempotency_key
   expires_at, idle_expires_at, last_observed_at
   lease_holder, lease_generation, lease_expires_at
   version, created_at, updated_at, deleted_at
@@ -829,8 +829,8 @@ cleanup stage 和 bounded app-server stderr。文本按字段限制长度并标�
 
 - `providers/tae` 通过官方 Sandbox SDK 固定每个 profile 的 CN/BOE/I18N-BD/I18N-TT 控制面，并以严格
   TLS、region-scoped ByteCloud 应用 JWT、HTTP/SSE 数据面适配
-  实现 Create/Get/Search/TTL/Delete、进程流、terminate 和受限文件读取；TAE policy binding digest
-  同时写入并校验 session metadata，漂移会 fail closed；process start 使用 `x-tt-logid` 透传内部关联 ID，
+  实现 Create/Get/Search/TTL/Delete、进程流、terminate 和受限文件读取；process start 使用
+  `x-tt-logid` 透传内部关联 ID，
   断流重连后的输出不会被误标为完整；
 - `cmd/egress-authorizer` binary 保留供未来 webhook-enabled profile 使用；当前 direct profile 的 renderer
   不部署它或其 Service/Route/TLS/NetworkPolicy；
@@ -842,8 +842,8 @@ cleanup stage 和 bounded app-server stderr。文本按字段限制长度并标�
 - production release 使用 `disabled` / fail-closed `policy-bootstrap` / `active` 三阶段；readback 后为每个
   已安装地域生成独立 `tae-network-probe` Job/NetworkPolicy，通过该 profile 的 Merlin 或 BOE direct route
   执行 20 次 JWT/control 检查、完整 lifecycle、pinned CLI/Skill 摘要校验与资源清理。
-  `activate-managed-sandbox-profiles` 必须一次提交全部地域报告并原子绑定 bootstrap config SHA、policy
-  revision 与 profile authority，不接受人工填写摘要或跨地域复用报告。
+  `activate-managed-sandbox-profiles` 必须一次提交全部地域报告并核对 policy revision 与显式 profile
+  authority；报告文件 SHA 由命令读取文件后计算，不生成组合摘要。
 
 因此当前完成度应表述为“代码与 provider-linked production vertical slice 已完成，本地门禁通过；真实 SG
 TAE/provider/credential deployment gates 尚未关闭”。在第 18 节证据齐全前，不得宣称 production-ready，也不得宣称
@@ -871,8 +871,8 @@ contract tests 不替代这些实测：
 
 - PostgreSQL migration `0020`→`0027` 在真实库执行并可重复 bootstrap；
 - 每个已安装地域的 TAE create/adopt/reconcile/TTL/delete 在丢响应、重复资源、generation fence 和超时下的结果；
-- Sandbox/revision/Session readback 无 webhook，TAE system policy 包含 `*.feishu.cn`，且 policy binding digest
-  一致；`process_env` 证明 direct resolve 只发生于 exact live `lark-cli` start；
+- Sandbox/revision/Session readback 无 webhook，TAE system policy 包含 `*.feishu.cn`；`process_env` 证明
+  direct resolve 只发生于 exact live `lark-cli` start；
 - IPv4/IPv6、DNS、redirect、CONNECT、IP literal bypass、PMTU/MTU/MSS 和错误率复测；
 - CN/BOE/I18N-BD/I18N-TT sandbox-gateway 分别按 profile site/JWT endpoint 换取 JWT、强制刷新、Secret
   轮换和 AK/SK/JWT 零泄漏扫描；CN/i18n-bd/i18n-tt 必须证明只走指定 Merlin，BOE 必须证明只走 direct

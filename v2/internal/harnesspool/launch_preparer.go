@@ -35,6 +35,8 @@ type RunLaunchInputs struct {
 	PreviousCheckpoint         *runmanifest.PreviousCheckpoint
 	PreviousBrainToolCatalog   *BrainToolCatalog
 	CodexRuntimeManifestDigest string
+	PermissionMode             runmanifest.CodexPermissionMode
+	PermissionModeVersion      int64
 	Model                      runmanifest.ModelRoute
 	ExecutorCatalogPolicy      ExecutorCatalogPolicy
 	ExecutorMCPEndpoint        string
@@ -92,6 +94,18 @@ func (preparer *LaunchPreparer) Prepare(ctx context.Context, scheduled Scheduled
 	if err != nil {
 		return PreparedRunLaunch{}, fmt.Errorf("resolve run launch inputs: %w", err)
 	}
+	permissionMode := inputs.PermissionMode
+	if permissionMode != "" {
+		permissionMode, err = permissionMode.Effective()
+		if err != nil {
+			return PreparedRunLaunch{}, fmt.Errorf("validate Codex permission mode: %w", err)
+		}
+		if inputs.PermissionModeVersion < 1 {
+			return PreparedRunLaunch{}, errors.New("explicit Codex permission mode requires a positive permission mode version")
+		}
+	} else if inputs.PermissionModeVersion != 0 {
+		return PreparedRunLaunch{}, errors.New("permission mode version cannot be set without an explicit mode")
+	}
 	proposal, err := BuildExecutorCatalog(inputs.ExecutorCatalogPolicy)
 	if err != nil {
 		return PreparedRunLaunch{}, err
@@ -140,7 +154,7 @@ func (preparer *LaunchPreparer) Prepare(ctx context.Context, scheduled Scheduled
 		RunAttemptID: claim.RunAttempt.RunAttemptID, RunAttemptGeneration: claim.RunAttempt.Generation,
 		HolderID: claim.RunAttempt.HolderID, Prompt: inputs.Prompt,
 		PreviousCheckpoint: previousCheckpoint, CodexRuntimeManifestDigest: inputs.CodexRuntimeManifestDigest,
-		Model: inputs.Model, ExecutorMCP: executorMCP,
+		PermissionMode: permissionMode, PermissionModeVersion: inputs.PermissionModeVersion, Model: inputs.Model, ExecutorMCP: executorMCP,
 		ExecutorPolicy: runmanifest.ExecutorPolicy{
 			Version: proposal.PolicyVersion, ContextDigest: hex.EncodeToString(proposal.PolicyContextDigest[:]),
 		},
@@ -198,8 +212,7 @@ func managedToolPackAuthority(source *ManagedSandboxLaunchSpec) *runmanifest.Too
 		return nil
 	}
 	return &runmanifest.ToolPackAuthority{
-		PackID: source.PackID, PackSetDigest: source.PackSetDigest,
-		SkillSHA256: source.SkillSHA256,
+		PackID: source.PackID, SkillSHA256: source.SkillSHA256,
 	}
 }
 

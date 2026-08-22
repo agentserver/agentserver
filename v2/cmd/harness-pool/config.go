@@ -20,6 +20,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/managedtools"
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 	"github.com/agentserver/agentserver/v2/internal/runtimelock"
 )
 
@@ -60,9 +61,8 @@ const (
 	poolMaxConcurrentEnvironment         = "AGENTSERVER_V2_HARNESS_MAX_CONCURRENT_ATTEMPTS"
 	poolMaxRunDurationEnvironment        = "AGENTSERVER_V2_MAX_RUN_DURATION"
 	poolMaxApprovalTTLEnvironment        = "AGENTSERVER_V2_MAX_APPROVAL_TTL"
+	poolCodexPermissionModeEnvironment   = "AGENTSERVER_V2_CODEX_PERMISSION_MODE"
 	poolManagedEnvironmentIDEnvironment  = "AGENTSERVER_V2_MANAGED_ENVIRONMENT_ID"
-	poolManagedRuntimeDigestEnvironment  = "AGENTSERVER_V2_MANAGED_RUNTIME_PROFILE_SHA256"
-	poolManagedPackSetDigestEnvironment  = "AGENTSERVER_V2_MANAGED_PACK_SET_SHA256"
 	poolManagedSkillDigestEnvironment    = "AGENTSERVER_V2_MANAGED_SKILL_SHA256"
 	poolManagedSandboxTTLEnvironment     = "AGENTSERVER_V2_MANAGED_SANDBOX_TTL"
 	poolManagedActivityTTLEnvironment    = "AGENTSERVER_V2_MANAGED_ACTIVITY_TTL"
@@ -119,6 +119,7 @@ type harnessPoolConfig struct {
 	maxConcurrent       int
 	maxRunDuration      time.Duration
 	maxApprovalTTL      time.Duration
+	codexPermissionMode runmanifest.CodexPermissionMode
 
 	managedSandbox         *harnesspool.ManagedSandboxLaunchSpec
 	managedSandboxProfiles map[string]harnesspool.ManagedSandboxLaunchSpec
@@ -129,15 +130,11 @@ type managedSandboxLaunchProfilesDocument struct {
 }
 
 type managedSandboxLaunchProfileDocument struct {
-	Region               string `json:"region"`
-	ProfileID            string `json:"profileId"`
-	ProfileBindingSHA256 string `json:"bindingSha256"`
-	EnvironmentID        string `json:"environmentId"`
-	RuntimeProfileSHA256 string `json:"runtimeProfileSha256"`
-	PackSetSHA256        string `json:"packSetSha256"`
-	SkillSHA256          string `json:"skillSha256"`
-	SandboxTTL           string `json:"sandboxTtl"`
-	ActivityTTL          string `json:"activityTtl"`
+	Region        string `json:"region"`
+	EnvironmentID string `json:"environmentId"`
+	SkillSHA256   string `json:"skillSha256"`
+	SandboxTTL    string `json:"sandboxTtl"`
+	ActivityTTL   string `json:"activityTtl"`
 }
 
 func loadHarnessPoolDevelopmentConfig(getenv func(string) string) (harnessPoolConfig, error) {
@@ -288,6 +285,11 @@ func loadHarnessPoolConfig(getenv func(string) string, production bool) (harness
 	if config.maxApprovalTTL > config.maxRunDuration {
 		return harnessPoolConfig{}, fmt.Errorf("%s must not exceed %s", poolMaxApprovalTTLEnvironment, poolMaxRunDurationEnvironment)
 	}
+	permissionMode, err := runmanifest.CodexPermissionMode(strings.TrimSpace(getenv(poolCodexPermissionModeEnvironment))).Effective()
+	if err != nil {
+		return harnessPoolConfig{}, fmt.Errorf("%s: %w", poolCodexPermissionModeEnvironment, err)
+	}
+	config.codexPermissionMode = permissionMode
 	if err := loadOptionalManagedSandboxConfig(getenv, &config); err != nil {
 		return harnessPoolConfig{}, err
 	}
@@ -308,8 +310,6 @@ func loadOptionalManagedSandboxConfig(getenv func(string) string, config *harnes
 	}
 	names := []string{
 		poolManagedEnvironmentIDEnvironment,
-		poolManagedRuntimeDigestEnvironment,
-		poolManagedPackSetDigestEnvironment,
 		poolManagedSkillDigestEnvironment,
 		poolManagedSandboxTTLEnvironment,
 		poolManagedActivityTTLEnvironment,
@@ -352,20 +352,6 @@ func loadOptionalManagedSandboxConfig(getenv func(string) string, config *harnes
 	if !validPoolUUID(environmentID) {
 		return fmt.Errorf("%s must be a non-zero canonical lowercase UUID", poolManagedEnvironmentIDEnvironment)
 	}
-	runtimeDigest, err := required(poolManagedRuntimeDigestEnvironment)
-	if err != nil {
-		return err
-	}
-	if !poolDigestPattern.MatchString(runtimeDigest) {
-		return fmt.Errorf("%s must be a lowercase SHA-256 digest", poolManagedRuntimeDigestEnvironment)
-	}
-	packSetDigest, err := required(poolManagedPackSetDigestEnvironment)
-	if err != nil {
-		return err
-	}
-	if !poolDigestPattern.MatchString(packSetDigest) {
-		return fmt.Errorf("%s must be a lowercase SHA-256 digest", poolManagedPackSetDigestEnvironment)
-	}
 	skillDigest, err := required(poolManagedSkillDigestEnvironment)
 	if err != nil {
 		return err
@@ -385,8 +371,7 @@ func loadOptionalManagedSandboxConfig(getenv func(string) string, config *harnes
 		return fmt.Errorf("%s must not exceed %s", poolManagedActivityTTLEnvironment, poolManagedSandboxTTLEnvironment)
 	}
 	config.managedSandbox = &harnesspool.ManagedSandboxLaunchSpec{
-		EnvironmentID: environmentID, RuntimeProfileDigest: runtimeDigest,
-		PackID: managedtools.PackID, PackSetDigest: packSetDigest, SkillSHA256: skillDigest,
+		EnvironmentID: environmentID, PackID: managedtools.PackID, SkillSHA256: skillDigest,
 		SandboxTTL: sandboxTTL, ActivityTTL: activityTTL,
 	}
 	return nil
@@ -414,14 +399,10 @@ func parseManagedSandboxLaunchProfiles(raw []byte) (map[string]harnesspool.Manag
 	environments := make(map[string]struct{}, len(document.Profiles))
 	for _, source := range document.Profiles {
 		binding := managedsandboxprofile.Binding{
-			Region: source.Region, ProfileID: source.ProfileID,
-			BindingSHA256: source.ProfileBindingSHA256, EnvironmentID: source.EnvironmentID,
+			Region: source.Region, EnvironmentID: source.EnvironmentID,
 		}
 		if err := binding.Validate(); err != nil {
 			return nil, err
-		}
-		if _, duplicate := profiles[source.ProfileID]; duplicate {
-			return nil, fmt.Errorf("managed sandbox profile %q is repeated", source.ProfileID)
 		}
 		if _, duplicate := regions[source.Region]; duplicate {
 			return nil, fmt.Errorf("managed sandbox region %q is repeated", source.Region)
@@ -429,22 +410,20 @@ func parseManagedSandboxLaunchProfiles(raw []byte) (map[string]harnesspool.Manag
 		if _, duplicate := environments[source.EnvironmentID]; duplicate {
 			return nil, fmt.Errorf("managed sandbox environment %q is repeated", source.EnvironmentID)
 		}
-		if !poolDigestPattern.MatchString(source.RuntimeProfileSHA256) ||
-			!poolDigestPattern.MatchString(source.PackSetSHA256) || !poolDigestPattern.MatchString(source.SkillSHA256) {
-			return nil, errors.New("managed sandbox runtime, pack-set, and skill digests must be lowercase SHA-256")
+		if !poolDigestPattern.MatchString(source.SkillSHA256) {
+			return nil, errors.New("managed sandbox skill digest must be lowercase SHA-256")
 		}
 		sandboxTTL, err := parseManagedDuration(source.SandboxTTL, 30*time.Second, 24*time.Hour)
 		if err != nil {
-			return nil, fmt.Errorf("managed sandbox profile %q sandboxTtl: %w", source.ProfileID, err)
+			return nil, fmt.Errorf("managed sandbox region %q sandboxTtl: %w", source.Region, err)
 		}
 		activityTTL, err := parseManagedDuration(source.ActivityTTL, time.Second, sandboxTTL)
 		if err != nil {
-			return nil, fmt.Errorf("managed sandbox profile %q activityTtl: %w", source.ProfileID, err)
+			return nil, fmt.Errorf("managed sandbox region %q activityTtl: %w", source.Region, err)
 		}
-		profiles[source.ProfileID] = harnesspool.ManagedSandboxLaunchSpec{
-			Region: source.Region, ProfileID: source.ProfileID, ProfileBindingSHA256: source.ProfileBindingSHA256,
-			EnvironmentID: source.EnvironmentID, RuntimeProfileDigest: source.RuntimeProfileSHA256,
-			PackID: managedtools.PackID, PackSetDigest: source.PackSetSHA256, SkillSHA256: source.SkillSHA256,
+		profiles[source.Region] = harnesspool.ManagedSandboxLaunchSpec{
+			Region: source.Region, EnvironmentID: source.EnvironmentID,
+			PackID: managedtools.PackID, SkillSHA256: source.SkillSHA256,
 			SandboxTTL: sandboxTTL, ActivityTTL: activityTTL,
 		}
 		regions[source.Region] = struct{}{}

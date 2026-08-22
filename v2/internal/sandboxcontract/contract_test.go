@@ -2,7 +2,6 @@ package sandboxcontract
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -39,8 +38,7 @@ func TestDefaultLimitsValidate(t *testing.T) {
 func TestEnsureSandboxRequestAndReadyResponseValidate(t *testing.T) {
 	request := EnsureSandboxRequest{
 		Profile: ProfileV1, RequestID: "request-123", Session: validSessionIdentity(),
-		RequestedTTLSeconds:  600,
-		RuntimeProfileDigest: strings.Repeat("a", 64), PackSetDigest: strings.Repeat("b", 64),
+		RequestedTTLSeconds: 600,
 	}
 	if err := request.Validate(DefaultLimits()); err != nil {
 		t.Fatalf("EnsureSandboxRequest.Validate() error = %v", err)
@@ -62,11 +60,6 @@ func TestEnsureSandboxRequestAndReadyResponseValidate(t *testing.T) {
 	request.RequestedTTLSeconds = DefaultLimits().MaxSandboxTTLSeconds + 1
 	if err := request.Validate(DefaultLimits()); err == nil {
 		t.Fatal("EnsureSandboxRequest.Validate() accepted excessive TTL")
-	}
-	request.RequestedTTLSeconds = 600
-	request.PackSetDigest = "not-a-digest"
-	if err := request.Validate(DefaultLimits()); err == nil {
-		t.Fatal("EnsureSandboxRequest.Validate() accepted invalid digest")
 	}
 }
 

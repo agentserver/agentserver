@@ -264,7 +264,7 @@ conformance test 是 Go subprocess test，不依赖 v1 gateway：
 | A02 | experimental gating | initialize 开启 experimentalApi 后 environments: [] 被接受；未开启时明确失败 |
 | A03 | dynamic-tool-only surface | 无Codex MCP配置；fake model捕获的tools精确等于冻结`dynamicTools`；builtin、未发布tool和通用MCP resource handler不可见/不可dispatch，真实批准call成为`item/tool/call` |
 | A04 | Codex MCP deny-all | system requirements固定`mcp_servers = {}`；direct executor、user和trusted-project MCP均零请求，dynamic tool surface不受影响 |
-| A05 | 无双重审批 | production thread使用`approvalPolicy=never`仍产生批准dynamic callback，且不产生Codex通用approval request；产品审批只在worker MCP client侧 |
+| A05 | 无双重审批 | Codex preset mode 只产生其自身的 approval/reviewer 行为；executor 产品审批仍只在 worker MCP client 侧产生批准 dynamic callback，不经过 app-server |
 | A06 | worker MCP elicitation | reference/real worker调用fake gateway MCP；`elicitation/create`经pool/core决定并回到gateway，覆盖accept/decline/cancel、主动TTL、nonce/generation和断线，不经过app-server |
 | A07 | typed interrupt cleanup | 单reader/writer loop中`turn/interrupt`产生terminal interrupted；未回复dynamic call以所属turn terminal清理并取消MCP，正常call以response写入清理；有界event overflow fail closed，两者都不等待`serverRequest/resolved` |
 | A08 | graceful shutdown | turn terminal、typed callback cleanup及execution/process收口后关闭stdin，child有界正常退出；rollout、SQLite/WAL状态稳定，无固定sleep |
@@ -925,6 +925,9 @@ Phase 0根据pinned schema生成两份只读文件；两者都不包含executor 
 ~~~toml
 approval_policy = "never"
 
+# thread/start 的受信 permissionMode 可按 run 选择 Codex 的 read-only、auto
+# 或 full-access preset；此文件仍保持旧的最安全基础默认。
+
 # 仅在所 pin release 的 schema 与 tool capture 均证明该键真实生效时加入。
 [tools.update_plan]
 enabled = false
@@ -946,7 +949,7 @@ worker的run-manifest validator对executor MCP独立要求`https` scheme、规�
 
 worker先把checkpoint allowlist恢复到全新`CODEX_HOME`，断言staging严格匹配manifest，再写入本attempt新config；checkpoint无权覆盖配置。对当前已验证build，allowlist就是该brain thread的单个rollout JSONL，SQLite/WAL/SHM均不恢复。worker随后用自身credential初始化executor MCP，规范化`tools/list`并与manifest/catalog digest逐字节比较；不一致则在启动turn前失败。最后以manifest中的绝对路径启动`harness-final-exec`，由它固定exec `codex app-server --listen stdio:// --strict-config`。strict-config只拒绝未知字段，不能替代tool capture、final-exec和OS/网络隔离。
 
-新thread的`thread/start`显式发送`environments: []`、`approvalPolicy: "never"`、从冻结catalog机械生成的`dynamicTools`和空`selectedCapabilityRoots`；每次`turn/start`也发送空environments。当前`ThreadResumeParams`没有environments或dynamicTools字段，cold resume固定发送rollout path与`excludeTurns: true`，收到RPC response后直接进入turn/start，不等待`thread/started` notification。resume前必须确认catalog digest与checkpoint相同；变化时创建新thread。cwd指向空、只读的非工作树目录。
+新thread的`thread/start`显式发送`environments: []`、从签名 `permissionMode` 机械映射的 Codex 权限字段、从冻结catalog机械生成的`dynamicTools`和空`selectedCapabilityRoots`；每次`turn/start`也发送空environments。当前`ThreadResumeParams`没有environments或dynamicTools字段，cold resume固定发送rollout path与`excludeTurns: true`，收到RPC response后直接进入turn/start，并在该 turn 上重申签名 permission mode，不等待`thread/started` notification。resume前必须确认catalog digest与checkpoint相同；变化时创建新thread。cwd指向空、只读的非工作树目录。
 
 ### 8.4 tool catalog 与 MCP bridge
 
@@ -1064,7 +1067,7 @@ browser-gateway运行配置为：public listener使用`AGENTSERVER_V2_BROWSER_GA
 7. core到期CAS为`expired`后主动下发，worker以`decline`回复pending MCP elicitation；若无法确认或送达，则取消MCP并在cleanup grace内`turn/interrupt`。
 8. 显式cancel、worker control/MCP断线和elicitation异常清理同样cancel MCP、interrupt并按typed outstanding规则收口；浏览器断线本身不取消。
 
-app-server使用`approvalPolicy=never`，因此不会出现第二张Codex tool approval卡。gateway active-execution deadline在pending approval期间由我们自己的状态机暂停；MCP transport timeout不能充当approval expiry timer。
+app-server 默认使用签名 run manifest 的 Codex `permissionMode=read-only`（`on-request` + `auto_review` + `read-only`）；session 可通过独立 CAS API 为下一轮选择 `auto`（`on-request` + `auto_review` + `workspace-write`）或 `full-access`（`never` + `danger-full-access`）。Core 创建 run 时原子冻结 mode/version，所以 active run 不会被后续切换改变；deployment profile 仅是缺少显式 Core authority 时的 fallback。旧 manifest 缺少字段时仍使用历史 `never` + `read-only` 投影。这些 mode 只控制 Codex 自身权限，executor 产品审批仍由 worker MCP client 与 Core/gateway 的 `elicitation/create` 链路负责。gateway active-execution deadline在pending approval期间由我们自己的状态机暂停；MCP transport timeout不能充当approval expiry timer。
 
 Hydra login/consent bridge和reference Web的Code + PKCE入口现已在executor+harness主链稳定后接入；后续产品Web UI仍复用同一browser-gateway协议边界，不引入codex app-server直连。
 
@@ -1272,7 +1275,7 @@ gateway restart切片增加migration 0015及startup-only recovery API。producti
 
 示例配置已经同时通过Go loader、JSON Schema、两次immutable render和`kubectl create --dry-run=client`。renderer生成的worker文档由`cmd/harness-worker`真实validator复核，harness-pool/llmproxy环境通过真实production loader，Core/browser/executor环境名与命令合同逐项比对且全bundle禁止`AGENTSERVER_V2_DEV_*`和静态AWS credential；完整`make check`通过。这关闭的是确定性Kubernetes清单生成和本地client结构门禁，尚未替代生产镜像构建、真实IAM/Secret/Hydra/OIDC配置、PostgreSQL bootstrap真库、Kubernetes server-side admission、全拓扑E2E及故障注入，因此Phase 5仍未满足退出条件。
 
-后续部署打包切片已经补齐service/harness scratch runtime、基于digest-pinned agentserver自有单层Debian rootfs的managed-sandbox `linux/amd64`生产镜像和环境锁定的Helm Chart。官方`terminal_faas`的36层与真实启动链已独立审计；自有镜像不继承其1.74 GiB开发环境，只实现IPv6 runtime port与`/v1/ping`，而`/api/process/*`和`/api/fs/*`继续由TAE注入的SandboxD负责。`/opt/tiger/run.sh`只是官方镜像的可配置入口，不是TAE协议；管理面Terminal Sandbox revision固定自有镜像和`run_cmd=/usr/local/bin/agentserver-tae-runtime`，provider在CreateSession时只通过SDK提交固定`revision_id`，不提交`image`或`command`，并把Sandbox ID、revision ID与同一runtime合同纳入managed runtime profile digest。镜像构建固定Go 1.26.5、Apple container 1.2.2、stock Codex 0.146.0与审核过的bwrap，保存OCI archive后递归验证唯一platform manifest、descriptor digest、runtime config、service/harness两层diff ID；managed-sandbox则固定为四层，第一层按compressed digest、size、diff ID与debuerreotype history作为opaque base锁定，后续自有keeper/managed rootfs、CA与canonical空WORKDIR层继续closed-world逐文件验证owner/mode/size/SHA-256，并锁定root和direct-runtime fallback CMD。这样保留运行所需的`/bin/sh`，同时不把未声明的Debian或官方IDE/toolchain文件混入managed overlay合同；也不再用会注入`dev/proc/sys`与host文件的运行后container export冒充镜像内容。Chart把Namespace和workload Secret外置，锁定Namespace、生产配置摘要、镜像digest、migration `pre-install,pre-upgrade`与bootstrap `post-install,post-upgrade`顺序。SG registry后来确认为公开拉取面，因此closed-world配置拒绝`pullSecret`，两个hook和五个Deployment均不生成`imagePullSecrets`；发布写凭据不进入Pulumi或运行时。完整Go/Node门禁、真实镜像构建、`helm lint --strict`和`helm template`已经通过。该切片形成了可执行的部署产物与说明，但真实远程安装的完成证据仍必须包含目标registry远端digest、实际IAM/OIDC/Hydra/PostgreSQL/S3/KMS/Secret材料、Kubernetes server-side dry-run、rollout、浏览器登录/AG-UI以及agentx端到端；没有这些环境证据时不能把本地Chart绿灯表述为生产已经上线。
+后续部署打包切片已经补齐service/harness scratch runtime、基于digest-pinned agentserver自有单层Debian rootfs的managed-sandbox `linux/amd64`生产镜像和环境锁定的Helm Chart。官方`terminal_faas`的36层与真实启动链已独立审计；自有镜像不继承其1.74 GiB开发环境，只实现IPv6 runtime port与`/v1/ping`，而`/api/process/*`和`/api/fs/*`继续由TAE注入的SandboxD负责。`/opt/tiger/run.sh`只是官方镜像的可配置入口，不是TAE协议；管理面Terminal Sandbox revision固定自有镜像和`run_cmd=/usr/local/bin/agentserver-tae-runtime`，provider在CreateSession时只通过SDK提交固定`revision_id`，不提交`image`或`command`。Sandbox ID、revision ID与runtime合同按显式字段校验，不再生成managed runtime profile摘要。镜像构建固定Go 1.26.5、Apple container 1.2.2、stock Codex 0.146.0与审核过的bwrap，保存OCI archive后递归验证唯一platform manifest、descriptor digest、runtime config、service/harness两层diff ID；managed-sandbox则固定为四层，第一层按compressed digest、size、diff ID与debuerreotype history作为opaque base锁定，后续自有keeper/managed rootfs、CA与canonical空WORKDIR层继续closed-world逐文件验证owner/mode/size/SHA-256，并锁定root和direct-runtime fallback CMD。这样保留运行所需的`/bin/sh`，同时不把未声明的Debian或官方IDE/toolchain文件混入managed overlay合同；也不再用会注入`dev/proc/sys`与host文件的运行后container export冒充镜像内容。Chart把Namespace和workload Secret外置，锁定Namespace、生产配置摘要、镜像digest、migration `pre-install,pre-upgrade`与bootstrap `post-install,post-upgrade`顺序。SG registry后来确认为公开拉取面，因此closed-world配置拒绝`pullSecret`，两个hook和五个Deployment均不生成`imagePullSecrets`；发布写凭据不进入Pulumi或运行时。完整Go/Node门禁、真实镜像构建、`helm lint --strict`和`helm template`已经通过。该切片形成了可执行的部署产物与说明，但真实远程安装的完成证据仍必须包含目标registry远端digest、实际IAM/OIDC/Hydra/PostgreSQL/S3/KMS/Secret材料、Kubernetes server-side dry-run、rollout、浏览器登录/AG-UI以及agentx端到端；没有这些环境证据时不能把本地Chart绿灯表述为生产已经上线。
 
 ## 13. 建议的首批 PR
 

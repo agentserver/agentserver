@@ -7,6 +7,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/coredb"
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
 
 type RunLaunchStateStore interface {
@@ -42,6 +43,21 @@ func (queries StateStoreRunLaunchStateQueries) ResolveRunLaunchState(ctx context
 			AllowedTools: append([]string(nil), resolved.ExecutorPolicy.AllowedTools...),
 		},
 	}
+	if resolved.PermissionModeExplicit {
+		modeValue, err := runmanifest.CodexPermissionMode(resolved.PermissionMode).Effective()
+		if err != nil || resolved.PermissionMode == "" || resolved.PermissionModeVersion < 1 || resolved.PermissionModeVersion > 1<<53-1 {
+			if err == nil {
+				err = errors.New("permission mode authority is invalid")
+			}
+			return corecontract.ResolveRunLaunchStateResponse{}, err
+		}
+		mode := string(modeValue)
+		version := resolved.PermissionModeVersion
+		response.PermissionMode = &mode
+		response.PermissionModeVersion = &version
+	} else if resolved.PermissionMode != "" || resolved.PermissionModeVersion != 0 {
+		return corecontract.ResolveRunLaunchStateResponse{}, errors.New("permission mode authority is set without an explicit marker")
+	}
 	if resolved.LLMGateway != (coredb.RunLLMGatewayBinding{}) {
 		response.LLMGateway = &corecontract.RunLaunchLLMGatewayState{
 			GatewayID: resolved.LLMGateway.GatewayID, ConfigVersion: resolved.LLMGateway.ConfigVersion,
@@ -59,7 +75,6 @@ func (queries StateStoreRunLaunchStateQueries) ResolveRunLaunchState(ctx context
 		binding := resolved.ManagedSandbox
 		response.ManagedSandbox = &corecontract.RunLaunchManagedSandboxState{
 			SettingVersion: binding.SettingVersion, Region: binding.Region,
-			ProfileID: binding.ProfileID, BindingSHA256: hex.EncodeToString(binding.BindingSHA256[:]),
 			EnvironmentID: binding.EnvironmentID,
 		}
 	}
@@ -75,7 +90,6 @@ func (queries StateStoreRunLaunchStateQueries) ResolveRunLaunchState(ctx context
 			Object:                     databaseRunLaunchObjectPointer(checkpoint.Object),
 			CodexRuntimeManifestDigest: hex.EncodeToString(checkpoint.CodexRuntimeManifestDigest[:]),
 			CheckpointAllowlistVersion: checkpoint.CheckpointAllowlistVersion,
-			PackSetDigest:              encodeOptionalCanonicalSHA256(checkpoint.PackSetDigest),
 		}
 	}
 	return response, nil

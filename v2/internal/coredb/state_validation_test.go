@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
 
 func TestValidateAppendAttemptEventsBounds(t *testing.T) {
@@ -197,6 +199,44 @@ func TestRunLaunchAuthorityValidationAndPolicyNormalization(t *testing.T) {
 	command.Generation = 1 << 53
 	if err := validateResolveRunLaunchState(command); err == nil || !strings.Contains(err.Error(), "safe integer") {
 		t.Fatalf("unsafe generation error = %v", err)
+	}
+}
+
+func TestRunPermissionModeIdempotencyAuthorityFailsClosedAcrossLegacyMarker(t *testing.T) {
+	incomplete := stateCreateRunCommand(1350, stateTestUUID(1351), stateTestUUID(1352), "permission-mode-incomplete")
+	incomplete.PermissionMode = runmanifest.CodexPermissionModeReadOnly
+	if err := validateCreateRun(incomplete); err == nil || !strings.Contains(err.Error(), "must be positive when permission_mode is set") {
+		t.Fatalf("explicit permission mode without version error = %v", err)
+	}
+	versionOnly := incomplete
+	versionOnly.PermissionMode = ""
+	versionOnly.ExpectedPermissionModeVersion = 1
+	if err := validateCreateRun(versionOnly); err != nil {
+		t.Fatalf("expected version without caller-selected mode was rejected: %v", err)
+	}
+
+	explicit := CreateRunCommand{
+		PermissionMode:                runmanifest.CodexPermissionModeReadOnly,
+		ExpectedPermissionModeVersion: 3,
+	}
+	if !runPermissionModeInputMatches(runmanifest.CodexPermissionModeReadOnly, 3, true, explicit) {
+		t.Fatal("matching explicit permission authority was rejected")
+	}
+	if runPermissionModeInputMatches("", 0, false, explicit) {
+		t.Fatal("explicit retry matched a legacy launch authority")
+	}
+	if runPermissionModeInputMatches(runmanifest.CodexPermissionModeAuto, 3, true, explicit) ||
+		runPermissionModeInputMatches(runmanifest.CodexPermissionModeReadOnly, 4, true, explicit) {
+		t.Fatal("explicit retry matched different permission authority")
+	}
+
+	// An omitted mode means the component caller delegated the selection to
+	// Core. This is the backwards-compatible retry path used by pre-mode
+	// callers; the committed run remains authoritative regardless of the
+	// session's current preference.
+	if !runPermissionModeInputMatches(runmanifest.CodexPermissionModeAuto, 9, true, CreateRunCommand{}) ||
+		!runPermissionModeInputMatches("", 0, false, CreateRunCommand{}) {
+		t.Fatal("server-resolved permission mode retry was rejected")
 	}
 }
 

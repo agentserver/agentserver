@@ -11,6 +11,7 @@ import {
   EVENT_CURSOR_NAME,
   Input,
   MAXIMUM_EVENT_STREAM_BYTES,
+  NativeSelect,
   ResourceAPI,
   SSEDecoder,
   SidebarBrand,
@@ -37,6 +38,7 @@ import {
   type CommandItem,
   type ConversationMessage,
   type ConversationState,
+  type PermissionMode,
   type ReasoningMessage,
   type SessionTrajectory,
   type SessionTrajectoryRecord,
@@ -52,6 +54,8 @@ interface ActiveRun {
   clientRunId: string
   messageId: string
   prompt: string
+  permissionMode: PermissionMode
+  permissionModeVersion: number
   cursor: string
   checkpoint: ConversationState
   controller: AbortController | null
@@ -96,6 +100,7 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
   const [selectedId, setSelectedId] = useState("")
   const [sessionLoading, setSessionLoading] = useState(true)
   const [sessionError, setSessionError] = useState("")
+  const [permissionModeUpdating, setPermissionModeUpdating] = useState(false)
   const [transcriptLoading, setTranscriptLoading] = useState(false)
   const [transcriptTruncated, setTranscriptTruncated] = useState(false)
   const [view, setView] = useState<BrowserView>("conversation")
@@ -279,6 +284,30 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
     } catch { /* the stream result remains visible */ }
   }, [api, workspaceId])
 
+  const updatePermissionMode = useCallback(async (mode: PermissionMode) => {
+    const session = sessions.find((item) => item.sessionId === selectedIdRef.current)
+    if (!session || session.permissionMode === mode || permissionModeUpdating) return
+    if (mode === "full-access" && !window.confirm(t("browser.permissionFullAccessConfirm"))) return
+    setSessionError("")
+    setPermissionModeUpdating(true)
+    try {
+      const result = await api.updateSessionPermissionMode(workspaceId, session.sessionId, {
+        permissionMode: mode,
+        expectedPermissionModeVersion: session.permissionModeVersion,
+      })
+      setSessions((current) => current.map((item) => item.sessionId === result.session.sessionId ? result.session : item))
+    } catch (error) {
+      if (error instanceof APIError && error.status === 409) {
+        await loadSessions(session.sessionId)
+        setSessionError(t("browser.permissionModeConflict"))
+      } else {
+        setSessionError(`${t("browser.permissionModeUpdateFailed")} ${safeError(error)}`)
+      }
+    } finally {
+      setPermissionModeUpdating(false)
+    }
+  }, [api, loadSessions, permissionModeUpdating, sessions, t, workspaceId])
+
   const applyEvent = useCallback((run: ActiveRun, event: Record<string, unknown>) => {
     if (activeRun.current !== run) return
     const next = commit((current) => reduceAGUIEvent(current, event))
@@ -298,7 +327,12 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
         messages: [{ id: run.messageId, role: "user" as const, content: run.prompt }],
         tools: [],
         context: [],
-        ...(run.cursor ? { forwardedProps: { agentserver: { eventCursor: run.cursor } } } : {}),
+        ...((run.cursor || run.permissionModeVersion > 0) ? {
+          forwardedProps: { agentserver: {
+            ...(run.cursor ? { eventCursor: run.cursor } : {}),
+            ...(run.permissionModeVersion > 0 ? { expectedPermissionModeVersion: run.permissionModeVersion } : {}),
+          } },
+        } : {}),
       }
       const response = await edge.streamRun(workspaceId, sessionId, run.idempotencyKey, body, controller.signal)
       if (!response) throw new Error("The browser did not expose the AG-UI response stream.")
@@ -318,19 +352,40 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
       run.controller = null
       if (activeRun.current !== run || controller.signal.aborted) return
       if (["completed", "failed", "cancelled"].includes(stateRef.current.status)) { activeRun.current = null; return }
+      if (error instanceof APIError && error.status === 409 && error.code === "version_conflict" && run.permissionModeVersion > 0) {
+        // CreateRun checks the session mode/version atomically. If another
+        // tab changed it between the optimistic session snapshot and this
+        // request, no run exists and the optimistic user message must not be
+        // left in the conversation. Keep the exact prompt so it can be sent
+        // again with the freshly loaded mode/version.
+        const promptToRestore = run.prompt
+        activeRun.current = null
+        transcriptRevisionRef.current += 1
+        setPrompt(promptToRestore)
+        await loadSessions(sessionId)
+        if (activeRun.current !== null || selectedIdRef.current !== sessionId) return
+        await loadTranscript(sessionId)
+        if (activeRun.current === null && selectedIdRef.current === sessionId) setSessionError(t("browser.permissionModeConflict"))
+        return
+      }
       const message = safeError(error)
       commit((current) => ({ ...current, status: "disconnected", error: { code: error instanceof APIError ? error.code : "stream_disconnected", message } }))
     }
-  }, [applyEvent, commit, edge, refreshSession, workspaceId])
+  }, [applyEvent, commit, edge, loadSessions, loadTranscript, refreshSession, t, workspaceId])
 
   const sendPrompt = async (event: FormEvent) => {
     event.preventDefault()
     if (activeRun.current || !prompt.trim()) return
     const canonicalPrompt = prompt.trim()
     let sessionId = selectedIdRef.current
+    let session = sessions.find((item) => item.sessionId === sessionId)
     if (!sessionId) {
-      try { sessionId = (await createSession(titleFromPrompt(canonicalPrompt))).sessionId } catch { return }
+      try {
+        session = await createSession(titleFromPrompt(canonicalPrompt))
+        sessionId = session.sessionId
+      } catch { return }
     }
+    if (!session || session.sessionId !== sessionId) return
     const nonce = randomSecret("turn")
     const messageId = `user-${nonce}`
     let next: ConversationState = { ...stateRef.current, status: "connecting", runId: "", cursor: "", cursorSequence: 0, error: null }
@@ -338,7 +393,11 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
     commit(next)
     transcriptRevisionRef.current += 1
     setTranscriptLoading(false)
-    activeRun.current = { sessionId, idempotencyKey: randomSecret("run"), clientRunId: `browser-${nonce}`, messageId, prompt: canonicalPrompt, cursor: "", checkpoint: cloneConversationState(next), controller: null }
+    activeRun.current = { sessionId,
+      idempotencyKey: randomSecret("run"), clientRunId: `browser-${nonce}`, messageId,
+      prompt: canonicalPrompt, permissionMode: session.permissionMode, permissionModeVersion: session.permissionModeVersion,
+      cursor: "", checkpoint: cloneConversationState(next), controller: null,
+    }
     setPrompt("")
     void stream(false)
   }
@@ -384,6 +443,7 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
 
   const emptyConversation = view === "conversation" && !transcriptLoading && !conversation.error && conversation.timeline.length === 0
   const selectedSessionTitle = sessions.find((item) => item.sessionId === selectedId)?.title ?? t("browser.newChat")
+  const selectedSession = sessions.find((item) => item.sessionId === selectedId) ?? null
   const pendingApproval = conversation.approvalOrder.map((id) => conversation.approvals[id]).find((approval) => approval?.status === "pending") ?? null
 
   return <AppShell className="browser-shell" sidebar={sidebar} commands={commands} accountLabel={shortID(workspaceId)} onSignOut={onSignOut}>
@@ -404,7 +464,7 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
       </header>
       {view === "conversation" ? <>
         <ConversationView state={conversation} loading={transcriptLoading} truncated={transcriptTruncated} onConfigure={() => { window.location.href = `https://agent.byted.bps.dev/workspaces/${workspaceId}/gateways` }} />
-        <Composer centered={emptyConversation} value={prompt} onChange={setPrompt} onSubmit={sendPrompt} onCancel={cancelRun} onReconnect={() => void stream(true)} state={conversation} approval={pendingApproval} onDecision={decide} inputRef={composerRef} />
+        <Composer centered={emptyConversation} value={prompt} onChange={setPrompt} onSubmit={sendPrompt} onCancel={cancelRun} onReconnect={() => void stream(true)} state={conversation} approval={pendingApproval} onDecision={decide} inputRef={composerRef} session={selectedSession} activeRun={activeRun.current} permissionModeUpdating={permissionModeUpdating} onPermissionModeChange={(mode) => void updatePermissionMode(mode)} />
       </> : <TrajectoryView
         key={selectedId}
         records={trajectory?.records ?? []}
@@ -419,6 +479,7 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
         onSelect={setSelectedTrajectoryRecord}
         onLoadEarlier={() => void loadEarlierTrajectory()}
         onRetry={() => { if (selectedId) void loadTrajectoryTail(selectedId, true) }}
+        permissionControl={<PermissionModeSelector session={selectedSession} activeRun={activeRun.current} updating={permissionModeUpdating} onChange={(mode) => void updatePermissionMode(mode)} />}
       />}
     </div>
   </AppShell>
@@ -651,7 +712,7 @@ function Surface({ surface, componentId, ancestors, depth }: { surface: A2UISurf
   return value.includes("\n") ? <pre>{value}</pre> : <p>{value}</p>
 }
 
-function Composer({ centered, value, onChange, onSubmit, onCancel, onReconnect, state, approval, onDecision, inputRef }: { centered: boolean; value: string; onChange: (value: string) => void; onSubmit: (event: FormEvent) => Promise<void>; onCancel: () => Promise<void>; onReconnect: () => void; state: ConversationState; approval: ApprovalView | null; onDecision: (approval: ApprovalView, decision: "approve" | "deny") => Promise<void>; inputRef: React.RefObject<HTMLTextAreaElement | null> }) {
+function Composer({ centered, value, onChange, onSubmit, onCancel, onReconnect, state, approval, onDecision, inputRef, session, activeRun, permissionModeUpdating, onPermissionModeChange }: { centered: boolean; value: string; onChange: (value: string) => void; onSubmit: (event: FormEvent) => Promise<void>; onCancel: () => Promise<void>; onReconnect: () => void; state: ConversationState; approval: ApprovalView | null; onDecision: (approval: ApprovalView, decision: "approve" | "deny") => Promise<void>; inputRef: React.RefObject<HTMLTextAreaElement | null>; session: UserSession | null; activeRun: ActiveRun | null; permissionModeUpdating: boolean; onPermissionModeChange: (mode: PermissionMode) => void }) {
   const { t } = useTranslation()
   const busy = ["connecting", "running", "cancelling"].includes(state.status)
   useEffect(() => {
@@ -661,8 +722,26 @@ function Composer({ centered, value, onChange, onSubmit, onCancel, onReconnect, 
     input.style.height = `${Math.min(input.scrollHeight, 280)}px`
   }, [inputRef, value])
   const keyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit() } }
-  if (approval) return <div className="composer-wrap approval-composer-wrap"><ApprovalPanel approval={approval} onDecision={onDecision} /><p className="composer-note">{t("browser.disclaimer")}</p></div>
-  return <div className={`composer-wrap${centered ? " composer-centered" : ""}`}><form className="composer" onSubmit={(event) => void onSubmit(event)}><Textarea className="composer-input" ref={inputRef} rows={1} value={value} disabled={busy} onChange={(event) => onChange(event.target.value)} onKeyDown={keyDown} placeholder={t("browser.prompt")} aria-label={t("browser.prompt")} /><div className="composer-footer"><span className={`run-status status-${state.status}`}>{statusLabel(t, state.status)}</span><div>{state.status === "disconnected" ? <Button type="button" variant="outline" size="sm" onClick={onReconnect}><RefreshCw size={14} />{t("browser.reconnect")}</Button> : null}{busy && state.runId ? <Button type="button" size="icon" onClick={() => void onCancel()} aria-label={t("browser.stop")}><CircleStop size={17} /></Button> : <Button type="submit" size="icon" disabled={!value.trim() || busy} aria-label={t("browser.send")}><Send size={17} /></Button>}</div></div></form><p className="composer-note">{t("browser.disclaimer")}</p></div>
+  const selector = <PermissionModeSelector session={session} activeRun={activeRun} updating={permissionModeUpdating} onChange={onPermissionModeChange} />
+  if (approval) return <div className="composer-wrap approval-composer-wrap"><ApprovalPanel approval={approval} onDecision={onDecision} />{selector}<p className="composer-note">{t("browser.disclaimer")}</p></div>
+  return <div className={`composer-wrap${centered ? " composer-centered" : ""}`}><form className="composer" onSubmit={(event) => void onSubmit(event)}><Textarea className="composer-input" ref={inputRef} rows={1} value={value} disabled={busy} onChange={(event) => onChange(event.target.value)} onKeyDown={keyDown} placeholder={t("browser.prompt")} aria-label={t("browser.prompt")} /><div className="composer-footer"><span className={`run-status status-${state.status}`}>{statusLabel(t, state.status)}</span><div className="composer-footer-actions">{selector}{state.status === "disconnected" ? <Button type="button" variant="outline" size="sm" onClick={onReconnect}><RefreshCw size={14} />{t("browser.reconnect")}</Button> : null}{busy && state.runId ? <Button type="button" size="icon" onClick={() => void onCancel()} aria-label={t("browser.stop")}><CircleStop size={17} /></Button> : <Button type="submit" size="icon" disabled={!value.trim() || busy} aria-label={t("browser.send")}><Send size={17} /></Button>}</div></div></form><p className="composer-note">{t("browser.disclaimer")}</p></div>
+}
+
+function PermissionModeSelector({ session, activeRun, updating, onChange }: { session: UserSession | null; activeRun: ActiveRun | null; updating: boolean; onChange: (mode: PermissionMode) => void }) {
+  const { t } = useTranslation()
+  const mode = session?.permissionMode ?? "read-only"
+  const activeMode = activeRun?.permissionMode
+  const label = (value: PermissionMode) => value === "auto" ? t("browser.permissionAuto") : value === "full-access" ? t("browser.permissionFullAccess") : t("browser.permissionReadOnly")
+  return <div className="permission-mode-control" title={t("browser.permissionModeHelp")}>
+    <ShieldCheck size={14} aria-hidden="true" />
+    <label className="permission-mode-label" htmlFor="permission-mode-select"><span>{t("browser.permissionMode")}</span>{activeMode && activeMode !== mode ? <small>{t("browser.permissionCurrentRun")}: {label(activeMode)} · {t("browser.permissionNextTurn")}: {label(mode)}</small> : null}</label>
+    <NativeSelect id="permission-mode-select" aria-label={t("browser.permissionMode")} value={mode} disabled={!session || updating} onChange={(event) => onChange(event.target.value as PermissionMode)}>
+      <option value="read-only">{label("read-only")}</option>
+      <option value="auto">{label("auto")}</option>
+      <option value="full-access">{label("full-access")}</option>
+    </NativeSelect>
+    {updating ? <LoaderCircle className="spin" size={14} aria-label={t("common.loading")} /> : null}
+  </div>
 }
 
 function ApprovalPanel({ approval, onDecision }: { approval: ApprovalView; onDecision: (approval: ApprovalView, decision: "approve" | "deny") => Promise<void> }) {

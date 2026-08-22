@@ -26,13 +26,9 @@ type managedSandboxGatewayProfilesDocument struct {
 
 type managedSandboxGatewayProfileDocument struct {
 	Region                   string `json:"region"`
-	ProfileID                string `json:"profileId"`
-	BindingSHA256            string `json:"bindingSha256"`
 	EnvironmentID            string `json:"environmentId"`
 	SandboxGatewayURL        string `json:"sandboxGatewayUrl"`
 	SandboxGatewayServerName string `json:"sandboxGatewayServerName,omitempty"`
-	RuntimeProfileSHA256     string `json:"runtimeProfileSha256"`
-	PackSetSHA256            string `json:"packSetSha256"`
 	SandboxTTL               string `json:"sandboxTtl"`
 	ActivityTTL              string `json:"activityTtl"`
 }
@@ -70,9 +66,7 @@ func configureProfiledTAEExecution(
 	}
 	for _, legacyName := range []string{
 		gatewaySandboxGatewayURLEnvironment, gatewaySandboxGatewayServerNameEnvironment,
-		gatewayManagedSandboxRegionEnvironment, gatewayManagedSandboxProfileIDEnvironment,
-		gatewayManagedSandboxBindingEnvironment, gatewayManagedEnvironmentIDEnvironment,
-		gatewayManagedRuntimeDigestEnvironment, gatewayManagedPackSetDigestEnvironment,
+		gatewayManagedSandboxRegionEnvironment, gatewayManagedEnvironmentIDEnvironment,
 		gatewayManagedSandboxTTLEnvironment, gatewayManagedActivityTTLEnvironment,
 	} {
 		if strings.TrimSpace(getenv(legacyName)) != "" {
@@ -155,8 +149,8 @@ func configureProfiledTAEExecution(
 		}
 	}
 	backendByEnvironment := make(map[string]executionbackend.Backend, len(profiles))
-	fencerByProfile := make(map[string]executorgateway.ManagedTargetFencer, len(profiles))
-	acquirerByProfile := make(map[string]executorgateway.ManagedSandboxSessionAcquirer, len(profiles))
+	fencerByRegion := make(map[string]executorgateway.ManagedTargetFencer, len(profiles))
+	acquirerByRegion := make(map[string]executorgateway.ManagedSandboxSessionAcquirer, len(profiles))
 	for _, profile := range profiles {
 		httpClient, clientErr := newManagedSandboxGatewayHTTPClient(
 			profile, mode, caFile, clientCertificateFile, clientKeyFile, clientSPIFFEIdentity,
@@ -189,20 +183,20 @@ func configureProfiledTAEExecution(
 			return nil, nil, nil, nil, nil, clientErr
 		}
 		backendByEnvironment[profile.binding.EnvironmentID] = backend
-		fencerByProfile[profile.binding.ProfileID] = fencer
-		acquirerByProfile[profile.binding.ProfileID] = acquirer
+		fencerByRegion[profile.binding.Region] = fencer
+		acquirerByRegion[profile.binding.Region] = acquirer
 	}
 	backendRouter, err := executorgateway.NewTAEBackendRouter(backendByEnvironment)
 	if err != nil {
 		closeClients()
 		return nil, nil, nil, nil, nil, err
 	}
-	fencerRouter, err := executorgateway.NewManagedTargetFencerRouter(fencerByProfile)
+	fencerRouter, err := executorgateway.NewManagedTargetFencerRouter(fencerByRegion)
 	if err != nil {
 		closeClients()
 		return nil, nil, nil, nil, nil, err
 	}
-	acquirerRouter, err := executorgateway.NewManagedSandboxSessionAcquirerRouter(acquirerByProfile)
+	acquirerRouter, err := executorgateway.NewManagedSandboxSessionAcquirerRouter(acquirerByRegion)
 	if err != nil {
 		closeClients()
 		return nil, nil, nil, nil, nil, err
@@ -231,19 +225,14 @@ func parseManagedSandboxGatewayProfiles(raw []byte, mode gatewayServeMode) ([]co
 		return nil, errors.New("managed sandbox gateway profile catalog must contain between one and four profiles")
 	}
 	profiles := make([]configuredManagedSandboxGatewayProfile, 0, len(document.Profiles))
-	profileIDs := make(map[string]struct{}, len(document.Profiles))
 	regions := make(map[string]struct{}, len(document.Profiles))
 	environments := make(map[string]struct{}, len(document.Profiles))
 	for _, source := range document.Profiles {
 		binding := managedsandboxprofile.Binding{
-			Region: source.Region, ProfileID: source.ProfileID,
-			BindingSHA256: source.BindingSHA256, EnvironmentID: source.EnvironmentID,
+			Region: source.Region, EnvironmentID: source.EnvironmentID,
 		}
 		if err := binding.Validate(); err != nil {
 			return nil, err
-		}
-		if _, duplicate := profileIDs[binding.ProfileID]; duplicate {
-			return nil, fmt.Errorf("managed sandbox profile %q is repeated", binding.ProfileID)
 		}
 		if _, duplicate := regions[binding.Region]; duplicate {
 			return nil, fmt.Errorf("managed sandbox region %q is repeated", binding.Region)
@@ -255,28 +244,26 @@ func parseManagedSandboxGatewayProfiles(raw []byte, mode gatewayServeMode) ([]co
 			source.SandboxGatewayURL, source.SandboxGatewayServerName, mode,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("managed sandbox profile %q: %w", binding.ProfileID, err)
+			return nil, fmt.Errorf("managed sandbox region %q: %w", binding.Region, err)
 		}
 		sandboxTTL, err := parseProfiledManagedDuration(source.SandboxTTL, 30*time.Second, 24*time.Hour)
 		if err != nil {
-			return nil, fmt.Errorf("managed sandbox profile %q sandboxTtl: %w", binding.ProfileID, err)
+			return nil, fmt.Errorf("managed sandbox region %q sandboxTtl: %w", binding.Region, err)
 		}
 		activityTTL, err := parseProfiledManagedDuration(source.ActivityTTL, 3*time.Second, sandboxTTL)
 		if err != nil {
-			return nil, fmt.Errorf("managed sandbox profile %q activityTtl: %w", binding.ProfileID, err)
+			return nil, fmt.Errorf("managed sandbox region %q activityTtl: %w", binding.Region, err)
 		}
 		provisioning := executorgateway.ManagedSandboxProvisioningSpec{
-			Region: binding.Region, ProfileID: binding.ProfileID, ProfileBindingSHA256: binding.BindingSHA256,
-			EnvironmentID: binding.EnvironmentID, RuntimeProfileDigest: source.RuntimeProfileSHA256,
-			PackSetDigest: source.PackSetSHA256, SandboxTTL: sandboxTTL, ActivityTTL: activityTTL,
+			Region: binding.Region, EnvironmentID: binding.EnvironmentID,
+			SandboxTTL: sandboxTTL, ActivityTTL: activityTTL,
 		}
 		if err := executorgateway.ValidateManagedSandboxProvisioningSpec(provisioning); err != nil {
-			return nil, fmt.Errorf("managed sandbox profile %q: %w", binding.ProfileID, err)
+			return nil, fmt.Errorf("managed sandbox region %q: %w", binding.Region, err)
 		}
 		profiles = append(profiles, configuredManagedSandboxGatewayProfile{
 			binding: binding, baseURL: baseURL, serverName: serverName, provisioning: provisioning,
 		})
-		profileIDs[binding.ProfileID] = struct{}{}
 		regions[binding.Region] = struct{}{}
 		environments[binding.EnvironmentID] = struct{}{}
 	}
@@ -317,7 +304,7 @@ func newManagedSandboxGatewayHTTPClient(
 			caFile, clientCertificateFile, clientKeyFile, profile.serverName, clientSPIFFEIdentity,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("configure sandbox-gateway client for profile %q: %w", profile.binding.ProfileID, err)
+			return nil, fmt.Errorf("configure sandbox-gateway client for region %q: %w", profile.binding.Region, err)
 		}
 		return client, nil
 	}

@@ -66,7 +66,7 @@ func TestFakeProviderLarkCLIGoldenPathThroughHTTPHandler(t *testing.T) {
 	ensureRequest := sandboxcontract.EnsureSandboxRequest{
 		Profile: sandboxcontract.ProfileV1, RequestID: "ensure-request-1",
 		Session:             sandboxcontract.SessionIdentity{WorkspaceID: testWorkspaceID, SessionID: testSessionID, EnvironmentID: testEnvironmentID},
-		RequestedTTLSeconds: 600, RuntimeProfileDigest: repeatHex("1"), PackSetDigest: repeatHex("2"),
+		RequestedTTLSeconds: 600,
 	}
 	ensure := serveJSON(t, handler, http.MethodPost, sandboxcontract.EnsureSandboxPath, ensureRequest)
 	if ensure.Code != http.StatusOK {
@@ -191,7 +191,7 @@ func TestHandlerRejectsUnknownJSONBeforeService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw := []byte(`{"profile":"e2b-semantic-subset/v1","requestId":"request-1","session":{"workspaceId":"10000000-0000-4000-8000-000000000001","sessionId":"20000000-0000-4000-8000-000000000001","environmentId":"30000000-0000-4000-8000-000000000001"},"requestedTtlSeconds":600,"runtimeProfileDigest":"` + repeatHex("1") + `","packSetDigest":"` + repeatHex("2") + `","future":true}`)
+	raw := []byte(`{"profile":"e2b-semantic-subset/v1","requestId":"request-1","session":{"workspaceId":"10000000-0000-4000-8000-000000000001","sessionId":"20000000-0000-4000-8000-000000000001","environmentId":"30000000-0000-4000-8000-000000000001"},"requestedTtlSeconds":600,"future":true}`)
 	request := httptest.NewRequest(http.MethodPost, sandboxcontract.EnsureSandboxPath, bytes.NewReader(raw))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -226,7 +226,7 @@ func TestWorkspaceAllowlistDeniesBeforeCoreOrProviderCalls(t *testing.T) {
 		Session: sandboxcontract.SessionIdentity{
 			WorkspaceID: testWorkspaceID, SessionID: testSessionID, EnvironmentID: testEnvironmentID,
 		},
-		RequestedTTLSeconds: 600, RuntimeProfileDigest: repeatHex("1"), PackSetDigest: repeatHex("2"),
+		RequestedTTLSeconds: 600,
 	})
 	if response.Code != http.StatusForbidden || core.reserveCalls != 0 || core.authorizeCalls != 0 || provider.SessionCount() != 0 {
 		t.Fatalf(
@@ -432,7 +432,6 @@ func (core *fakeCore) ReserveManagedSandbox(_ context.Context, request corecontr
 		ProviderKind: "tae", Generation: generation, DesiredState: "ready", ObservedState: "reserved",
 		ProviderRegion: request.ProviderRegion, ProviderPSM: request.ProviderPSM,
 		ProviderSessionRef: request.ProviderSessionRef, CreateIdempotencyKey: request.CreateIdempotencyKey,
-		RuntimeProfileSHA256: request.RuntimeProfileSHA256, PackSetSHA256: request.PackSetSHA256,
 		RequestedTTLSeconds: request.RequestedTTLSeconds, IdleTTLSeconds: request.IdleTTLSeconds,
 		Version: 1, CreatedAt: core.now, UpdatedAt: core.now,
 	}
@@ -598,17 +597,6 @@ func decodeFrames(t *testing.T, raw []byte) []sandboxcontract.OperationFrame {
 		frames = append(frames, frame)
 	}
 	return frames
-}
-
-func repeatHex(character string) string {
-	return character + character + character + character + character + character + character + character +
-		character + character + character + character + character + character + character + character +
-		character + character + character + character + character + character + character + character +
-		character + character + character + character + character + character + character + character +
-		character + character + character + character + character + character + character + character +
-		character + character + character + character + character + character + character + character +
-		character + character + character + character + character + character + character + character +
-		character + character + character + character + character + character + character + character
 }
 
 var _ sandboxgateway.Core = (*fakeCore)(nil)

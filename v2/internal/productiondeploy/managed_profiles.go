@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -49,13 +50,10 @@ type ManagedSandboxGatewayDocument struct {
 	Secret     string `json:"secret"`
 }
 
-// ManagedSandboxProfileDocument is one immutable provider/network/runtime
-// shard. BindingSHA256 changes whenever any gateway, TAE, proxy, environment,
-// or direct-egress fact changes.
+// ManagedSandboxProfileDocument is one regional provider/network/runtime
+// configuration.
 type ManagedSandboxProfileDocument struct {
 	Region                string                        `json:"region"`
-	ProfileID             string                        `json:"profileId"`
-	BindingSHA256         string                        `json:"bindingSha256"`
 	Gateway               ManagedSandboxGatewayDocument `json:"gateway"`
 	Environment           ManagedEnvironmentDocument    `json:"environment"`
 	TAE                   ManagedTAEDocument            `json:"tae"`
@@ -63,12 +61,11 @@ type ManagedSandboxProfileDocument struct {
 }
 
 type LoadedManagedSandboxProfile struct {
-	Document          ManagedSandboxProfileDocument
-	Proxy             *ManagedSandboxProxyProfileDocument
-	SandboxTTL        time.Duration
-	ActivityTTL       time.Duration
-	IdleTTL           time.Duration
-	OwnerPolicySHA256 string
+	Document    ManagedSandboxProfileDocument
+	Proxy       *ManagedSandboxProxyProfileDocument
+	SandboxTTL  time.Duration
+	ActivityTTL time.Duration
+	IdleTTL     time.Duration
 }
 
 func validateManagedSandboxProfiles(document *ConfigDocument) ([]LoadedManagedSandboxProfile, error) {
@@ -96,7 +93,6 @@ func validateManagedSandboxProfiles(document *ConfigDocument) ([]LoadedManagedSa
 		return nil, err
 	}
 	regions := make(map[string]struct{}, len(document.SandboxProfiles))
-	profiles := make(map[string]struct{}, len(document.SandboxProfiles))
 	environments := make(map[string]struct{}, len(document.SandboxProfiles))
 	usedProxies := make(map[string]struct{}, len(proxies))
 	serviceIPs := configuredServiceIPs(document.Services)
@@ -108,8 +104,7 @@ func validateManagedSandboxProfiles(document *ConfigDocument) ([]LoadedManagedSa
 		profile := document.SandboxProfiles[index]
 		path := fmt.Sprintf("sandboxProfiles[%d]", index)
 		binding := managedsandboxprofile.Binding{
-			Region: profile.Region, ProfileID: profile.ProfileID,
-			BindingSHA256: profile.BindingSHA256, EnvironmentID: profile.Environment.EnvironmentID,
+			Region: profile.Region, EnvironmentID: profile.Environment.EnvironmentID,
 		}
 		if err := binding.Validate(); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
@@ -120,14 +115,10 @@ func validateManagedSandboxProfiles(document *ConfigDocument) ([]LoadedManagedSa
 		if _, duplicate := regions[profile.Region]; duplicate {
 			return nil, fmt.Errorf("sandbox region %q is repeated", profile.Region)
 		}
-		if _, duplicate := profiles[profile.ProfileID]; duplicate {
-			return nil, fmt.Errorf("sandbox profile %q is repeated", profile.ProfileID)
-		}
 		if _, duplicate := environments[profile.Environment.EnvironmentID]; duplicate {
 			return nil, fmt.Errorf("sandbox environment %q is repeated", profile.Environment.EnvironmentID)
 		}
 		regions[profile.Region] = struct{}{}
-		profiles[profile.ProfileID] = struct{}{}
 		environments[profile.Environment.EnvironmentID] = struct{}{}
 
 		if err := validateManagedSandboxGateway(path+".gateway", profile.Region, profile.Gateway); err != nil {
@@ -181,15 +172,11 @@ func validateManagedSandboxProfiles(document *ConfigDocument) ([]LoadedManagedSa
 		}
 		profile.Environment = managedLoaded.Document.Managed.Environment
 		profile.TAE = managedLoaded.Document.Managed.TAE
-		wantBinding := managedSandboxProfileBindingSHA256(profile, proxy)
-		if profile.BindingSHA256 != wantBinding {
-			return nil, fmt.Errorf("%s.bindingSha256 must equal the canonical profile lock %s", path, wantBinding)
-		}
 		document.SandboxProfiles[index] = profile
 		loaded = append(loaded, LoadedManagedSandboxProfile{
 			Document: profile, Proxy: cloneManagedSandboxProxy(proxy),
 			SandboxTTL: managedLoaded.ManagedSandboxTTL, ActivityTTL: managedLoaded.ManagedActivityTTL,
-			IdleTTL: managedLoaded.ManagedIdleTTL, OwnerPolicySHA256: managedLoaded.ManagedOwnerPolicySHA256,
+			IdleTTL: managedLoaded.ManagedIdleTTL,
 		})
 		if profile.Region == document.SandboxRegions.DefaultRegion {
 			copy := profile
@@ -215,14 +202,14 @@ func validateManagedSandboxProfiles(document *ConfigDocument) ([]LoadedManagedSa
 	if len(usedProxies) != len(proxies) {
 		return nil, errors.New("proxyProfiles must not contain an unused proxy authority")
 	}
-	if canonicalDigest(defaultProfile.Environment) != canonicalDigest(document.Managed.Environment) ||
-		canonicalDigest(defaultProfile.TAE) != canonicalDigest(document.Managed.TAE) {
+	if !reflect.DeepEqual(defaultProfile.Environment, document.Managed.Environment) ||
+		!reflect.DeepEqual(defaultProfile.TAE, document.Managed.TAE) {
 		return nil, errors.New("managedExecutor environment and TAE fields must exactly mirror the default sandbox profile")
 	}
 	if defaultProfile.Gateway.ClusterIP != document.Services.SandboxGateway.ClusterIP ||
 		defaultProfile.Gateway.Port != document.Services.SandboxGateway.Port ||
 		defaultProfile.Gateway.Secret != document.Secrets.SandboxGateway ||
-		canonicalDigest(defaultProfile.SandboxExternalEgress) != canonicalDigest(document.Network.SandboxExternalEgress) {
+		!reflect.DeepEqual(defaultProfile.SandboxExternalEgress, document.Network.SandboxExternalEgress) {
 		return nil, errors.New("legacy sandbox service, secret, and egress fields must exactly mirror the default sandbox profile")
 	}
 	slices.SortFunc(loaded, func(left, right LoadedManagedSandboxProfile) int {
@@ -377,15 +364,6 @@ func validateManagedSandboxTAEAuthority(path string, tae ManagedTAEDocument, pro
 	return &proxy, nil
 }
 
-func managedSandboxProfileBindingSHA256(profile ManagedSandboxProfileDocument, proxy *ManagedSandboxProxyProfileDocument) string {
-	profile.BindingSHA256 = ""
-	return canonicalDigest(struct {
-		Version int                                 `json:"version"`
-		Profile ManagedSandboxProfileDocument       `json:"profile"`
-		Proxy   *ManagedSandboxProxyProfileDocument `json:"proxy,omitempty"`
-	}{Version: 1, Profile: profile, Proxy: proxy})
-}
-
 func refreshDefaultManagedSandboxProfile(document *ConfigDocument) error {
 	if document == nil || len(document.SandboxProfiles) == 0 {
 		return errors.New("default managed sandbox profile is unavailable")
@@ -404,60 +382,22 @@ func refreshDefaultManagedSandboxProfile(document *ConfigDocument) error {
 	profile.Environment = document.Managed.Environment
 	profile.TAE = document.Managed.TAE
 	profile.SandboxExternalEgress = append([]EgressRuleDocument{}, document.Network.SandboxExternalEgress...)
-	identityDigest := canonicalDigest(struct {
-		Region      string                     `json:"region"`
-		Environment ManagedEnvironmentDocument `json:"environment"`
-		TAE         ManagedTAEDocument         `json:"tae"`
-	}{Region: profile.Region, Environment: profile.Environment, TAE: profile.TAE})
-	profile.ProfileID = "tae-" + profile.Region + "-" + identityDigest[:16]
-	var proxy *ManagedSandboxProxyProfileDocument
-	for proxyIndex := range document.ProxyProfiles {
-		if document.ProxyProfiles[proxyIndex].Name == profile.TAE.ProxyProfile {
-			copy := document.ProxyProfiles[proxyIndex]
-			proxy = &copy
-			break
-		}
-	}
-	if profile.TAE.ProxyProfile != "" && proxy == nil {
-		return fmt.Errorf("default managed sandbox proxy profile %q is unavailable", profile.TAE.ProxyProfile)
-	}
-	profile.BindingSHA256 = managedSandboxProfileBindingSHA256(profile, proxy)
 	document.SandboxProfiles[index] = profile
 	return nil
 }
 
-// refreshManagedSandboxProfileFromManaged rewrites one immutable profile from
-// a region-scoped managed executor document. It is used by the all-profile
-// bootstrap/activation edges so no installed region can retain stale policy,
-// network-evidence, runtime, or pack locks while the global stage changes.
+// refreshManagedSandboxProfileFromManaged rewrites one regional profile from
+// a region-scoped managed executor document.
 func refreshManagedSandboxProfileFromManaged(document *ConfigDocument, index int, managed ManagedExecutorDocument) error {
 	if document == nil || index < 0 || index >= len(document.SandboxProfiles) {
 		return errors.New("managed sandbox profile is unavailable")
 	}
 	profile := document.SandboxProfiles[index]
 	if managed.TAE.Region != profile.Region {
-		return fmt.Errorf("managed sandbox profile %q region does not match its TAE authority", profile.ProfileID)
+		return fmt.Errorf("managed sandbox region %q does not match its TAE authority", profile.Region)
 	}
 	profile.Environment = managed.Environment
 	profile.TAE = managed.TAE
-	identityDigest := canonicalDigest(struct {
-		Region      string                     `json:"region"`
-		Environment ManagedEnvironmentDocument `json:"environment"`
-		TAE         ManagedTAEDocument         `json:"tae"`
-	}{Region: profile.Region, Environment: profile.Environment, TAE: profile.TAE})
-	profile.ProfileID = "tae-" + profile.Region + "-" + identityDigest[:16]
-	var proxy *ManagedSandboxProxyProfileDocument
-	for proxyIndex := range document.ProxyProfiles {
-		if document.ProxyProfiles[proxyIndex].Name == profile.TAE.ProxyProfile {
-			copy := document.ProxyProfiles[proxyIndex]
-			proxy = &copy
-			break
-		}
-	}
-	if profile.TAE.ProxyProfile != "" && proxy == nil {
-		return fmt.Errorf("managed sandbox proxy profile %q is unavailable", profile.TAE.ProxyProfile)
-	}
-	profile.BindingSHA256 = managedSandboxProfileBindingSHA256(profile, proxy)
 	document.SandboxProfiles[index] = profile
 	if profile.Region == document.SandboxRegions.DefaultRegion {
 		document.Managed = managed
@@ -494,7 +434,6 @@ func upgradeLegacyConfig(document ConfigDocument) (ConfigDocument, error) {
 	document.Managed.TAE.ByteCloudSite = managedsandboxprofile.RegionI18NTT
 	document.Managed.TAE.ByteCloudJWTEndpoint = ProductionByteCloudJWTEndpoint
 	document.Managed.TAE.ProxyProfile = ManagedSandboxProxyI18NTT
-	document.Managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(document.Managed.TAE).DigestHex()
 	document.ProxyProfiles = []ManagedSandboxProxyProfileDocument{{
 		Name: ManagedSandboxProxyI18NTT, URL: ProductionTAEProxyURL,
 		Namespace: ProductionTAEProxyNamespace, PodSelector: map[string]string{"app": ProductionTAEProxyPodApp}, Port: ProductionTAEProxyPort,
@@ -502,14 +441,8 @@ func upgradeLegacyConfig(document ConfigDocument) (ConfigDocument, error) {
 	document.SandboxRegions = ManagedSandboxRegionsDocument{
 		DefaultRegion: managedsandboxprofile.RegionI18NTT, Regions: []string{managedsandboxprofile.RegionI18NTT},
 	}
-	if !managedPolicyBootstrap(document.Managed) {
-		document.Managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(document)
-		document.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(document, document.Managed)
-		document.Managed.Environment.PackSetSHA256 = managedPackSetDigest(document.Managed)
-	}
 	profile := ManagedSandboxProfileDocument{
-		Region:    managedsandboxprofile.RegionI18NTT,
-		ProfileID: "tae-i18n-tt-" + document.Managed.TAE.NetworkEvidence.BindingSHA256,
+		Region: managedsandboxprofile.RegionI18NTT,
 		Gateway: ManagedSandboxGatewayDocument{
 			Component: sandboxComponent, ClusterIP: document.Services.SandboxGateway.ClusterIP,
 			Port: document.Services.SandboxGateway.Port, ServerName: SandboxInternalHost, Secret: document.Secrets.SandboxGateway,
@@ -517,11 +450,6 @@ func upgradeLegacyConfig(document ConfigDocument) (ConfigDocument, error) {
 		Environment: document.Managed.Environment, TAE: document.Managed.TAE,
 		SandboxExternalEgress: append([]EgressRuleDocument{}, document.Network.SandboxExternalEgress...),
 	}
-	if managedPolicyBootstrap(document.Managed) {
-		profile.ProfileID = "tae-i18n-tt-policy-bootstrap"
-	}
-	proxy := document.ProxyProfiles[0]
-	profile.BindingSHA256 = managedSandboxProfileBindingSHA256(profile, &proxy)
 	document.SandboxProfiles = []ManagedSandboxProfileDocument{profile}
 	return document, nil
 }

@@ -553,11 +553,13 @@ func appServerRequest(
 ) AppServerRunRequest {
 	request := AppServerRunRequest{
 		RunID: manifest.RunID, RunAttemptGeneration: manifest.RunAttemptGeneration,
-		ClientInfo: clientInfo, Catalog: catalog, UserText: prompt,
+		PermissionMode: manifest.PermissionMode,
+		ClientInfo:     clientInfo, Catalog: catalog, UserText: prompt,
 	}
 	if restored == nil {
 		request.Start = &AppServerThreadStart{
 			Model: manifest.Model.Model, CWD: runtime.ThreadCWD, BaseInstructions: baseInstructions,
+			PermissionMode: manifest.PermissionMode,
 		}
 		return request
 	}

@@ -369,6 +369,7 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	transcriptPath := UserSessionTranscriptPath("{workspaceId}", "{sessionId}")
 	trajectoryPath := UserSessionTrajectoryPath("{workspaceId}", "{sessionId}")
 	archiveSessionPath := ArchiveUserSessionPath("{workspaceId}", "{sessionId}")
+	permissionModePath := UserSessionPermissionModePath("{workspaceId}", "{sessionId}")
 	llmGatewayCollectionPath := WorkspaceLLMGatewaysPath("{workspaceId}")
 	llmGatewayResourcePath := WorkspaceLLMGatewayPath("{workspaceId}", "{gatewayId}")
 	llmGatewayAuthorizePath := AuthorizeLLMGatewayPath("{workspaceId}", "{gatewayId}")
@@ -386,7 +387,7 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	credentialAuthorizationResourcePath := WorkspaceCredentialAuthorizationResourceRoutePattern
 	credentialAuthorizationPollPath := "/v2/workspaces/{workspaceId}/credential-authorizations/{kind}/{authorizationId}:poll"
 	credentialAuthorizationCancelPath := "/v2/workspaces/{workspaceId}/credential-authorizations/{kind}/{authorizationId}:cancel"
-	if len(document.Paths) != 35 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
+	if len(document.Paths) != 36 || document.Paths[createPath].Post.OperationID != "createUserRun" ||
 		document.Paths[cancelPath].Post.OperationID != "cancelUserRun" || document.Paths[readPath].Get.OperationID != "readUserRunEvents" {
 		t.Fatalf("public OpenAPI paths = %+v", document.Paths)
 	}
@@ -395,6 +396,7 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	}
 	if document.Paths[sessionsPath].Get.OperationID != "listUserSessions" || document.Paths[sessionsPath].Post.OperationID != "createUserSession" ||
 		document.Paths[sessionPath].Get.OperationID != "getUserSession" || document.Paths[sessionPath].Patch.OperationID != "updateUserSession" ||
+		document.Paths[permissionModePath].Patch.OperationID != "updateUserSessionPermissionMode" ||
 		document.Paths[transcriptPath].Get.OperationID != "getUserSessionTranscript" ||
 		document.Paths[trajectoryPath].Get.OperationID != "getUserSessionTrajectory" ||
 		document.Paths[archiveSessionPath].Post.OperationID != "archiveUserSession" {
@@ -622,6 +624,8 @@ func TestPublicOpenAPIMatchesBrowserRunContract(t *testing.T) {
 	assertSchemaFields(t, document.Components.Schemas, "CreateUserSessionResponse", reflect.TypeFor[CreateUserSessionResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "UpdateUserSessionRequest", reflect.TypeFor[UpdateUserSessionRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "UpdateUserSessionResponse", reflect.TypeFor[UpdateUserSessionResponse]())
+	assertSchemaFields(t, document.Components.Schemas, "UpdateUserSessionPermissionModeRequest", reflect.TypeFor[UpdateUserSessionPermissionModeRequest]())
+	assertSchemaFields(t, document.Components.Schemas, "UpdateUserSessionPermissionModeResponse", reflect.TypeFor[UpdateUserSessionPermissionModeResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "ArchiveUserSessionRequest", reflect.TypeFor[ArchiveUserSessionRequest]())
 	assertSchemaFields(t, document.Components.Schemas, "ArchiveUserSessionResponse", reflect.TypeFor[ArchiveUserSessionResponse]())
 	assertSchemaFields(t, document.Components.Schemas, "UserSessionTranscriptMessage", reflect.TypeFor[UserSessionTranscriptMessage]())

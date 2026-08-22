@@ -28,6 +28,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/harnessworker"
 	"github.com/agentserver/agentserver/v2/internal/objectstore"
 	"github.com/agentserver/agentserver/v2/internal/objectstore/awsprovider"
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 	"github.com/agentserver/agentserver/v2/internal/stockruntime"
 )
 
@@ -236,6 +237,7 @@ type RuntimeDocument struct {
 	ReadFilePolicyDecision     string   `json:"readFilePolicyDecision"`
 	MaxRunDuration             string   `json:"maxRunDuration"`
 	MaxApprovalTTL             string   `json:"maxApprovalTtl"`
+	CodexPermissionMode        string   `json:"codexPermissionMode,omitempty"`
 	CapabilityExpiryGrace      string   `json:"capabilityExpiryGrace"`
 	EnrollmentTokenTTL         string   `json:"enrollmentTokenTtl"`
 	MaxConcurrentAttempts      int      `json:"maxConcurrentAttempts"`
@@ -311,16 +313,15 @@ type ResourcePairDocument struct {
 }
 
 type LoadedConfig struct {
-	Document                 ConfigDocument
-	MaxRunDuration           time.Duration
-	MaxApprovalTTL           time.Duration
-	CapabilityExpiryGrace    time.Duration
-	EnrollmentTokenTTL       time.Duration
-	ManagedSandboxTTL        time.Duration
-	ManagedActivityTTL       time.Duration
-	ManagedIdleTTL           time.Duration
-	ManagedOwnerPolicySHA256 string
-	ManagedSandboxProfiles   []LoadedManagedSandboxProfile
+	Document               ConfigDocument
+	MaxRunDuration         time.Duration
+	MaxApprovalTTL         time.Duration
+	CapabilityExpiryGrace  time.Duration
+	EnrollmentTokenTTL     time.Duration
+	ManagedSandboxTTL      time.Duration
+	ManagedActivityTTL     time.Duration
+	ManagedIdleTTL         time.Duration
+	ManagedSandboxProfiles []LoadedManagedSandboxProfile
 }
 
 func LoadConfig(path string) (LoadedConfig, error) {
@@ -474,7 +475,12 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 	if document.Runtime.ManifestSigningKeyID != ProductionManifestKeyID {
 		return LoadedConfig{}, fmt.Errorf("runtime.manifestSigningKeyId must be exactly %s", ProductionManifestKeyID)
 	}
+	permissionMode, err := runmanifest.CodexPermissionMode(document.Runtime.CodexPermissionMode).Effective()
+	if err != nil {
+		return LoadedConfig{}, fmt.Errorf("runtime.codexPermissionMode: %w", err)
+	}
 	loaded.Document = document
+	loaded.Document.Runtime.CodexPermissionMode = string(permissionMode)
 	loaded.Document.Runtime.AllowedTools = append([]string(nil), document.Runtime.AllowedTools...)
 	slices.Sort(loaded.Document.Runtime.AllowedTools)
 	if err := validateObjects(document.Objects); err != nil {
@@ -494,7 +500,6 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 	loaded.ManagedSandboxTTL = managedLoaded.ManagedSandboxTTL
 	loaded.ManagedActivityTTL = managedLoaded.ManagedActivityTTL
 	loaded.ManagedIdleTTL = managedLoaded.ManagedIdleTTL
-	loaded.ManagedOwnerPolicySHA256 = managedLoaded.ManagedOwnerPolicySHA256
 	profiles, err := validateManagedSandboxProfiles(&loaded.Document)
 	if err != nil {
 		return LoadedConfig{}, err
@@ -671,6 +676,9 @@ func validateOAuth(document OAuthDocument, ingress IngressDocument) error {
 }
 
 func validateRuntime(document RuntimeDocument) (LoadedConfig, error) {
+	if _, err := runmanifest.CodexPermissionMode(document.CodexPermissionMode).Effective(); err != nil {
+		return LoadedConfig{}, fmt.Errorf("runtime.codexPermissionMode: %w", err)
+	}
 	for name, value := range map[string]string{
 		"capabilityIssuer":       document.CapabilityIssuer,
 		"capabilitySigningKeyId": document.CapabilitySigningKeyID,

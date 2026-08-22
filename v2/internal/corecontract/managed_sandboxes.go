@@ -30,8 +30,6 @@ type ManagedSandboxState struct {
 	ProviderPSM          string     `json:"providerPsm"`
 	ProviderSessionRef   string     `json:"providerSessionRef,omitempty"`
 	CreateIdempotencyKey string     `json:"createIdempotencyKey"`
-	RuntimeProfileSHA256 string     `json:"runtimeProfileSha256"`
-	PackSetSHA256        string     `json:"packSetSha256"`
 	RequestedTTLSeconds  int64      `json:"requestedTtlSeconds"`
 	IdleTTLSeconds       int64      `json:"idleTtlSeconds"`
 	ExpiresAt            *time.Time `json:"expiresAt,omitempty"`
@@ -54,8 +52,6 @@ type ReserveManagedSandboxRequest struct {
 	ProviderPSM          string `json:"providerPsm"`
 	ProviderSessionRef   string `json:"providerSessionRef"`
 	CreateIdempotencyKey string `json:"createIdempotencyKey"`
-	RuntimeProfileSHA256 string `json:"runtimeProfileSha256"`
-	PackSetSHA256        string `json:"packSetSha256"`
 	RequestedTTLSeconds  int64  `json:"requestedTtlSeconds"`
 	IdleTTLSeconds       int64  `json:"idleTtlSeconds"`
 }

@@ -155,7 +155,6 @@ func TestProbeNetworkEmitsCanonicalFailureReportInsteadOfRuntimeDiagnostics(t *t
 
 func TestLoadNetworkProbeConfigFailsClosedOnUnboundEvidence(t *testing.T) {
 	for name, change := range map[string]string{
-		probeDeploymentSHAEnvironment:  strings.Repeat("0", 64),
 		probePolicyRevisionEnvironment: "PENDING-APPROVAL",
 		probeLarkSkillSHAEnvironment:   "",
 		probePodUIDEnvironment:         "",
@@ -203,7 +202,7 @@ func testNetworkProbeConfig(files map[string][]byte) networkProbeConfig {
 			sandboxImage: "registry.example/sandbox:sha256-" + strings.Repeat("1", 64),
 			sandboxID:    "sandbox-1", sandboxRevisionID: "revision-1",
 		},
-		deploymentSHA256: strings.Repeat("2", 64), policyRevision: "revision-1",
+		policyRevision: "revision-1",
 		larkCLIVersion: "test", larkCLISHA256: digest(files[probeLarkCLIPath]), larkCLISize: int64(len(files[probeLarkCLIPath])),
 		larkSkillSHA256:    digest(files[probeLarkSkillPath]),
 		managedSkillSHA256: digest(files[probeManagedSkillPath]), managedSkillSize: int64(len(files[probeManagedSkillPath])),
@@ -235,7 +234,6 @@ func strconvHex(value int) string {
 
 func validNetworkProbeEnvironment() map[string]string {
 	values := validProviderEnvironment()
-	values[probeDeploymentSHAEnvironment] = strings.Repeat("1", 64)
 	values[probePolicyRevisionEnvironment] = "revision-1"
 	values[probeLarkSkillSHAEnvironment] = strings.Repeat("2", 64)
 	values[probeConnectivityEnvironment] = "1"

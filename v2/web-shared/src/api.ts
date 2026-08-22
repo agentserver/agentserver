@@ -18,6 +18,7 @@ export type WorkspaceCredential = PublicComponents["schemas"]["WorkspaceCredenti
 export type CredentialAuthorization = PublicComponents["schemas"]["WorkspaceCredentialAuthorization"]
 export type BeginCredentialAuthorization = PublicComponents["schemas"]["BeginWorkspaceCredentialAuthorizationRequest"]
 export type UserSession = PublicComponents["schemas"]["UserSessionState"]
+export type PermissionMode = UserSession["permissionMode"]
 export type SessionTranscript = PublicComponents["schemas"]["GetUserSessionTranscriptResponse"]
 export type SessionTrajectory = PublicComponents["schemas"]["GetUserSessionTrajectoryResponse"]
 export type SessionTrajectoryRecord = PublicComponents["schemas"]["UserSessionTrajectoryRecord"]
@@ -323,6 +324,18 @@ export class ResourceAPI {
     return result
   }
 
+  async updateSessionPermissionMode(workspaceId: string, sessionId: string, body: {
+    permissionMode: PermissionMode
+    expectedPermissionModeVersion: number
+  }) {
+    const result = take(await this.#client.PATCH("/v2/workspaces/{workspaceId}/sessions/{sessionId}/permission-mode", {
+      params: { path: { workspaceId, sessionId } }, body,
+    }))
+    const session = validateSession(result.session, workspaceId)
+    if (session.sessionId !== canonicalID("session ID", sessionId)) throw new Error("The session permission mode response escaped its requested scope.")
+    return result
+  }
+
   async archiveSession(workspaceId: string, sessionId: string, expectedVersion: number) {
     const result = take(await this.#client.POST("/v2/workspaces/{workspaceId}/sessions/{sessionId}/actions/archive", {
       params: { path: { workspaceId, sessionId } }, body: { expectedVersion },
@@ -487,14 +500,18 @@ function validateCredentialAuthorization(value: CredentialAuthorization, workspa
 }
 
 function validateSession(value: UserSession, workspaceId: string): UserSession {
-  const keys = ["sessionId", "workspaceId", "title", "status", "version", "createdAt", "updatedAt"]
+  const keys = ["sessionId", "workspaceId", "title", "status", "version", "permissionMode", "permissionModeVersion", "createdAt", "updatedAt"]
   if (value.activeRunId !== undefined) keys.push("activeRunId")
   exactKeys(value, keys, "session")
   canonicalID("session ID", value.sessionId)
-  if (value.workspaceId !== canonicalID("workspace ID", workspaceId) || value.status !== "active" || !positiveVersion(value.version) || !validTimestamp(value.createdAt) || !validTimestamp(value.updatedAt)) throw new Error("The session response escaped its requested scope.")
+  if (value.workspaceId !== canonicalID("workspace ID", workspaceId) || value.status !== "active" || !positiveVersion(value.version) || !permissionMode(value.permissionMode) || !positiveVersion(value.permissionModeVersion) || !validTimestamp(value.createdAt) || !validTimestamp(value.updatedAt)) throw new Error("The session response escaped its requested scope.")
   if (value.activeRunId !== undefined) canonicalID("active run ID", value.activeRunId)
   boundedProtocolText(value.title, 256)
   return value
+}
+
+function permissionMode(value: unknown): value is PermissionMode {
+  return value === "read-only" || value === "auto" || value === "full-access"
 }
 
 function validateSessionTranscript(value: SessionTranscript, workspaceId: string, sessionId: string): SessionTranscript {

@@ -33,7 +33,6 @@ type RunLaunchCheckpointState struct {
 	Object                     RunLaunchObjectPointer `json:"object"`
 	CodexRuntimeManifestDigest string                 `json:"codexRuntimeManifestDigest"`
 	CheckpointAllowlistVersion int64                  `json:"checkpointAllowlistVersion"`
-	PackSetDigest              string                 `json:"packSetDigest,omitempty"`
 }
 
 type RunLaunchExecutorPolicyState struct {
@@ -59,24 +58,26 @@ type RunLaunchLarkEgressState struct {
 type RunLaunchManagedSandboxState struct {
 	SettingVersion int64  `json:"settingVersion"`
 	Region         string `json:"region"`
-	ProfileID      string `json:"profileId"`
-	BindingSHA256  string `json:"bindingSha256"`
 	EnvironmentID  string `json:"environmentId"`
 }
 
 type ResolveRunLaunchStateResponse struct {
-	WorkspaceID          string                        `json:"workspaceId"`
-	SessionID            string                        `json:"sessionId"`
-	RunID                string                        `json:"runId"`
-	RunAttemptID         string                        `json:"runAttemptId"`
-	HolderID             string                        `json:"holderId"`
-	RunAttemptGeneration int64                         `json:"runAttemptGeneration"`
-	RunVersion           int64                         `json:"runVersion"`
-	RunAttemptVersion    int64                         `json:"runAttemptVersion"`
-	Prompt               RunLaunchObjectPointer        `json:"prompt"`
-	PreviousCheckpoint   *RunLaunchCheckpointState     `json:"previousCheckpoint,omitempty"`
-	ExecutorPolicy       RunLaunchExecutorPolicyState  `json:"executorPolicy"`
-	LLMGateway           *RunLaunchLLMGatewayState     `json:"llmGateway,omitempty"`
-	LarkEgress           *RunLaunchLarkEgressState     `json:"larkEgress,omitempty"`
-	ManagedSandbox       *RunLaunchManagedSandboxState `json:"managedSandbox,omitempty"`
+	WorkspaceID          string `json:"workspaceId"`
+	SessionID            string `json:"sessionId"`
+	RunID                string `json:"runId"`
+	RunAttemptID         string `json:"runAttemptId"`
+	HolderID             string `json:"holderId"`
+	RunAttemptGeneration int64  `json:"runAttemptGeneration"`
+	RunVersion           int64  `json:"runVersion"`
+	RunAttemptVersion    int64  `json:"runAttemptVersion"`
+	// PermissionMode and its version are pointers so a legacy launch row can
+	// remain distinguishable from an explicit read-only selection.
+	PermissionMode        *string                       `json:"permissionMode,omitempty"`
+	PermissionModeVersion *int64                        `json:"permissionModeVersion,omitempty"`
+	Prompt                RunLaunchObjectPointer        `json:"prompt"`
+	PreviousCheckpoint    *RunLaunchCheckpointState     `json:"previousCheckpoint,omitempty"`
+	ExecutorPolicy        RunLaunchExecutorPolicyState  `json:"executorPolicy"`
+	LLMGateway            *RunLaunchLLMGatewayState     `json:"llmGateway,omitempty"`
+	LarkEgress            *RunLaunchLarkEgressState     `json:"larkEgress,omitempty"`
+	ManagedSandbox        *RunLaunchManagedSandboxState `json:"managedSandbox,omitempty"`
 }

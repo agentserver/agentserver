@@ -2,23 +2,20 @@ package productiondeploy
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/netip"
 	"path"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/bkectlpolicy"
 	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
-	"github.com/agentserver/agentserver/v2/internal/managedruntime"
 	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
-	"github.com/agentserver/agentserver/v2/internal/managedtools"
 	"github.com/agentserver/agentserver/v2/internal/productionimage"
 	"github.com/agentserver/agentserver/v2/internal/stockruntime"
 	"github.com/agentserver/agentserver/v2/internal/taeimage"
@@ -27,9 +24,6 @@ import (
 )
 
 const (
-	managedLarkCLIPath             = "/usr/local/bin/lark-cli"
-	managedLarkSkillPath           = "/opt/agentserver/packs/lark-readonly/SKILL.md"
-	managedBkectlCLIPath           = "/usr/local/bin/bkectl"
 	managedBaseInstructionsPath    = "/opt/agentserver/packs/managed-cli-readonly/SKILL.md"
 	managedSandboxRootPath         = "/workspace"
 	managedNetworkEvidenceVersion  = 5
@@ -71,14 +65,12 @@ func managedEgressAuthorizerEnabled(managed ManagedExecutorDocument) bool {
 }
 
 type ManagedEnvironmentDocument struct {
-	EnvironmentID        string                              `json:"environmentId"`
-	Root                 ManagedEnvironmentRootDocument      `json:"root"`
-	Compatibility        ManagedCompatibilityRuntimeDocument `json:"compatibilityRuntime"`
-	RuntimeProfileSHA256 string                              `json:"runtimeProfileSha256"`
-	PackSetSHA256        string                              `json:"packSetSha256"`
-	SandboxTTL           string                              `json:"sandboxTtl"`
-	ActivityTTL          string                              `json:"activityTtl"`
-	IdleTTL              string                              `json:"idleTtl"`
+	EnvironmentID string                              `json:"environmentId"`
+	Root          ManagedEnvironmentRootDocument      `json:"root"`
+	Compatibility ManagedCompatibilityRuntimeDocument `json:"compatibilityRuntime"`
+	SandboxTTL    string                              `json:"sandboxTtl"`
+	ActivityTTL   string                              `json:"activityTtl"`
+	IdleTTL       string                              `json:"idleTtl"`
 }
 
 type ManagedEnvironmentRootDocument struct {
@@ -108,15 +100,12 @@ type ManagedTAEDocument struct {
 	NetworkEvidence      ManagedTAENetworkEvidenceDocument `json:"networkEvidence"`
 }
 
-// ManagedTAENetworkEvidenceDocument binds the SG network facts consumed by
-// the rendered NetworkPolicies to an immutable verification
-// report. The report itself can contain operational details; production.json
-// contains only its reference and SHA-256 digest.
+// ManagedTAENetworkEvidenceDocument records the reviewed network report used
+// to activate a regional managed sandbox configuration.
 type ManagedTAENetworkEvidenceDocument struct {
-	Version       int    `json:"version"`
-	ReportSHA256  string `json:"reportSha256"`
-	BindingSHA256 string `json:"bindingSha256"`
-	EvidenceRef   string `json:"evidenceRef"`
+	Version      int    `json:"version"`
+	ReportSHA256 string `json:"reportSha256"`
+	EvidenceRef  string `json:"evidenceRef"`
 }
 
 // PreparePolicyBootstrapDocument derives the only pre-approval production
@@ -143,13 +132,10 @@ func preparePolicyBootstrapDocument(document ConfigDocument) (ConfigDocument, er
 		managed := document.Managed
 		managed.Stage = ManagedExecutorStageBootstrap
 		managed.Environment = profile.Environment
-		managed.Environment.RuntimeProfileSHA256 = ""
-		managed.Environment.PackSetSHA256 = ""
 		managed.TAE = profile.TAE
 		managed.TAE.Policy.Published = false
 		managed.TAE.Policy.Approved = false
 		managed.TAE.Policy.EvidenceRef = ""
-		managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(managed.TAE).DigestHex()
 		managed.TAE.NetworkEvidence = ManagedTAENetworkEvidenceDocument{}
 		if err := refreshManagedSandboxProfileFromManaged(&document, index, managed); err != nil {
 			return ConfigDocument{}, err
@@ -260,12 +246,11 @@ func PinManagedTerminalRevisionFile(input, output, sandboxID, revisionID string)
 	return WriteReleaseConfig(pinned, output)
 }
 
-// RetargetManagedTerminalDocument atomically replaces the four identities
+// RetargetManagedTerminalDocument atomically updates the published Terminal
 // that describe one published Terminal runtime: the TAE Sandbox, its revision,
-// the deployment-owned environment, and the digest-pinned managed sandbox
-// artifact. A fresh environment identity prevents a new Sandbox authority from
-// colliding with an immutable executor_environments row left by its predecessor.
-// This edge is deliberately
+// the deployment-owned environment metadata, and the digest-pinned managed
+// sandbox artifact. The environment identity may be retained because bootstrap
+// updates deployment-owned TAE profile metadata in place. This edge is deliberately
 // restricted to policy-bootstrap, where no active runtime, policy approval, or
 // network evidence exists. Callers must repeat the current Sandbox ID so a
 // stale production document or typo cannot silently select another service.
@@ -290,8 +275,8 @@ func RetargetManagedTerminalDocument(
 		strings.Contains(strings.ToUpper(revisionID), "PENDING") {
 		return ConfigDocument{}, errors.New("Terminal Sandbox revision ID must be a concrete canonical lowercase TAE identity")
 	}
-	if !validUUID(environmentID) || environmentID == document.Managed.Environment.EnvironmentID {
-		return ConfigDocument{}, errors.New("new managed environment ID must be a fresh non-zero canonical lowercase UUID")
+	if !validUUID(environmentID) {
+		return ConfigDocument{}, errors.New("managed environment ID must be a non-zero canonical lowercase UUID")
 	}
 	if !imagePattern.MatchString(managedSandboxImage) ||
 		!strings.HasPrefix(managedSandboxImage, ProductionManagedSandboxImage+"@sha256:") {
@@ -374,7 +359,6 @@ func RetargetDirectManagedTerminalDocument(
 	policy.WebhookPSM = ""
 	policy.WebhookURL = ""
 	policy.WebhookPath = ""
-	policy.BindingSHA256 = managedTAEPolicyBinding(retargeted.Managed.TAE).DigestHex()
 	if err := refreshDefaultManagedSandboxProfile(&retargeted); err != nil {
 		return ConfigDocument{}, err
 	}
@@ -503,7 +487,7 @@ func RetargetManagedSandboxProxyDocument(
 			return ConfigDocument{}, errors.New("current managed sandbox proxy is shared by another installed region")
 		}
 	}
-	if canonicalDigest(document.ProxyProfiles[proxyIndex]) == canonicalDigest(retarget.Proxy) {
+	if reflect.DeepEqual(document.ProxyProfiles[proxyIndex], retarget.Proxy) {
 		return ConfigDocument{}, errors.New("replacement managed sandbox proxy authority is unchanged")
 	}
 
@@ -513,7 +497,6 @@ func RetargetManagedSandboxProxyDocument(
 	managed.Environment = profile.Environment
 	managed.TAE = profile.TAE
 	managed.TAE.ProxyProfile = retarget.Proxy.Name
-	managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(managed.TAE).DigestHex()
 	if err := refreshManagedSandboxProfileFromManaged(&document, profileIndex, managed); err != nil {
 		return ConfigDocument{}, err
 	}
@@ -653,7 +636,6 @@ func ActivateManagedSandboxProfilesDocument(
 		managed.TAE.Policy.Published = true
 		managed.TAE.Policy.Approved = true
 		managed.TAE.Policy.EvidenceRef = entry.PolicyEvidenceRef
-		managed.TAE.Policy.BindingSHA256 = managedTAEPolicyBinding(managed.TAE).DigestHex()
 		managed.TAE.NetworkEvidence = ManagedTAENetworkEvidenceDocument{
 			Version: managedNetworkEvidenceVersion, ReportSHA256: entry.NetworkReportSHA256,
 			EvidenceRef: entry.NetworkEvidenceRef,
@@ -665,9 +647,6 @@ func ActivateManagedSandboxProfilesDocument(
 		}
 		synthetic.Secrets.SandboxGateway = profile.Gateway.Secret
 		synthetic.Network.SandboxExternalEgress = append([]EgressRuleDocument{}, profile.SandboxExternalEgress...)
-		managed.TAE.NetworkEvidence.BindingSHA256 = managedTAENetworkEvidenceDigest(synthetic)
-		managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(synthetic, managed)
-		managed.Environment.PackSetSHA256 = managedPackSetDigest(managed)
 		if err := refreshManagedSandboxProfileFromManaged(&document, index, managed); err != nil {
 			return ConfigDocument{}, err
 		}
@@ -878,27 +857,26 @@ func validateTAENetworkReportForProfileActivation(
 		}
 	}
 	for name, values := range map[string][2]string{
-		"source.namespace":       {report.Source.Namespace, document.Namespace},
-		"source.serviceAccount":  {report.Source.ServiceAccount, taeNetworkProbeComponent},
-		"deploymentConfigSha256": {configuration.DeploymentConfigSHA256, canonicalDigest(document)},
-		"region":                 {configuration.Region, profile.TAE.Region},
-		"psm":                    {configuration.PSM, ProductionTAEPSM},
-		"policyRevision":         {configuration.PolicyRevision, policyRevision},
-		"bytecloudSite":          {configuration.ByteCloudSite, profile.TAE.ByteCloudSite},
-		"jwtEndpoint":            {configuration.JWTEndpoint, profile.TAE.ByteCloudJWTEndpoint},
-		"proxyUrl":               {configuration.ProxyURL, proxyURL},
-		"controlPlaneHost":       {configuration.ControlPlaneHost, strings.TrimPrefix(profile.TAE.ControlPlaneURL, "https://")},
-		"dataPlaneDomainSuffix":  {configuration.DataPlaneDomainSuffix, profile.TAE.DataPlaneSuffix},
-		"sandboxImage":           {configuration.SandboxImage, taeSandboxImage},
-		"sandboxId":              {configuration.SandboxID, profile.TAE.SandboxID},
-		"sandboxRevisionId":      {configuration.SandboxRevisionID, profile.TAE.RevisionID},
-		"larkCliVersion":         {configuration.LarkCLIVersion, productionimage.ManagedLarkCLIVersion},
-		"larkCliSha256":          {configuration.LarkCLISHA256, document.Managed.Lark.CLISHA256},
-		"larkSkillSha256":        {configuration.LarkSkillSHA256, document.Managed.Lark.SkillSHA256},
-		"managedSkillSha256":     {configuration.ManagedSkillSHA256, document.Managed.BaseInstructionsSHA256},
-		"bkectlSourceRevision":   {configuration.BkectlSourceRevision, document.Managed.Bkectl.SourceRevision},
-		"bkectlCliSha256":        {configuration.BkectlCLISHA256, document.Managed.Bkectl.CLISHA256},
-		"bkectlSkillPackSha256":  {configuration.BkectlSkillPackSHA256, document.Managed.Bkectl.SkillPackSHA256},
+		"source.namespace":      {report.Source.Namespace, document.Namespace},
+		"source.serviceAccount": {report.Source.ServiceAccount, taeNetworkProbeComponent},
+		"region":                {configuration.Region, profile.TAE.Region},
+		"psm":                   {configuration.PSM, ProductionTAEPSM},
+		"policyRevision":        {configuration.PolicyRevision, policyRevision},
+		"bytecloudSite":         {configuration.ByteCloudSite, profile.TAE.ByteCloudSite},
+		"jwtEndpoint":           {configuration.JWTEndpoint, profile.TAE.ByteCloudJWTEndpoint},
+		"proxyUrl":              {configuration.ProxyURL, proxyURL},
+		"controlPlaneHost":      {configuration.ControlPlaneHost, strings.TrimPrefix(profile.TAE.ControlPlaneURL, "https://")},
+		"dataPlaneDomainSuffix": {configuration.DataPlaneDomainSuffix, profile.TAE.DataPlaneSuffix},
+		"sandboxImage":          {configuration.SandboxImage, taeSandboxImage},
+		"sandboxId":             {configuration.SandboxID, profile.TAE.SandboxID},
+		"sandboxRevisionId":     {configuration.SandboxRevisionID, profile.TAE.RevisionID},
+		"larkCliVersion":        {configuration.LarkCLIVersion, productionimage.ManagedLarkCLIVersion},
+		"larkCliSha256":         {configuration.LarkCLISHA256, document.Managed.Lark.CLISHA256},
+		"larkSkillSha256":       {configuration.LarkSkillSHA256, document.Managed.Lark.SkillSHA256},
+		"managedSkillSha256":    {configuration.ManagedSkillSHA256, document.Managed.BaseInstructionsSHA256},
+		"bkectlSourceRevision":  {configuration.BkectlSourceRevision, document.Managed.Bkectl.SourceRevision},
+		"bkectlCliSha256":       {configuration.BkectlCLISHA256, document.Managed.Bkectl.CLISHA256},
+		"bkectlSkillPackSha256": {configuration.BkectlSkillPackSHA256, document.Managed.Bkectl.SkillPackSHA256},
 	} {
 		if values[0] != values[1] {
 			return fmt.Errorf("TAE network report %s does not match the activation source", name)
@@ -984,7 +962,6 @@ type ManagedTAEPolicyDocument struct {
 	Version               int    `json:"version"`
 	Revision              string `json:"revision"`
 	PolicySHA256          string `json:"policySha256"`
-	BindingSHA256         string `json:"bindingSha256"`
 	PublicHost            string `json:"publicHost"`
 	PublicAccess          string `json:"publicAccess"`
 	PublicWebhookRequired bool   `json:"publicWebhookRequired"`
@@ -1101,27 +1078,12 @@ func validateManagedExecutor(managed ManagedExecutorDocument, document ConfigDoc
 	}
 	for name, digest := range map[string]string{
 		"environment.compatibilityRuntime.codexSha256": compatibility.CodexSHA256,
-		"tae.policy.bindingSha256":                     managed.TAE.Policy.BindingSHA256,
 	} {
 		if !nonzeroDigest(digest) {
 			return LoadedConfig{}, fmt.Errorf("managedExecutor.%s must be a non-zero lowercase SHA-256 digest", name)
 		}
 	}
 	bootstrap := managedPolicyBootstrap(managed)
-	if bootstrap {
-		if managed.Environment.RuntimeProfileSHA256 != "" || managed.Environment.PackSetSHA256 != "" {
-			return LoadedConfig{}, errors.New("managedExecutor policy-bootstrap stage must not claim active runtime or pack locks")
-		}
-	} else {
-		for name, digest := range map[string]string{
-			"environment.runtimeProfileSha256": managed.Environment.RuntimeProfileSHA256,
-			"environment.packSetSha256":        managed.Environment.PackSetSHA256,
-		} {
-			if !nonzeroDigest(digest) {
-				return LoadedConfig{}, fmt.Errorf("managedExecutor.%s must be a non-zero lowercase SHA-256 digest", name)
-			}
-		}
-	}
 	if managed.Enabled && (!managed.Lark.Enabled || !managed.Bkectl.Enabled) {
 		return LoadedConfig{}, errors.New("managedExecutor requires both the pinned lark and managed bkectl tools while enabled")
 	}
@@ -1205,7 +1167,7 @@ func validateManagedExecutor(managed ManagedExecutorDocument, document ConfigDoc
 	policy := taepolicy.Binding{
 		Version: managed.TAE.Policy.Version, Region: managed.TAE.Region, SandboxPSM: managed.TAE.PSM,
 		Revision: managed.TAE.Policy.Revision, PolicySHA256: managed.TAE.Policy.PolicySHA256,
-		BindingSHA256: managed.TAE.Policy.BindingSHA256, PublicHost: managed.TAE.Policy.PublicHost,
+		PublicHost:   managed.TAE.Policy.PublicHost,
 		PublicAccess: managed.TAE.Policy.PublicAccess, PublicWebhookRequired: managed.TAE.Policy.PublicWebhookRequired,
 		WebhookMode: managed.TAE.Policy.WebhookMode, WebhookPSM: managed.TAE.Policy.WebhookPSM,
 		WebhookURL: managed.TAE.Policy.WebhookURL, WebhookPath: managed.TAE.Policy.WebhookPath,
@@ -1238,16 +1200,8 @@ func validateManagedExecutor(managed ManagedExecutorDocument, document ConfigDoc
 		return LoadedConfig{}, fmt.Errorf("managedExecutor.tae.networkEvidence.version must be %d", managedNetworkEvidenceVersion)
 	} else if !nonzeroDigest(evidence.ReportSHA256) {
 		return LoadedConfig{}, errors.New("managedExecutor.tae.networkEvidence.reportSha256 must be a non-zero lowercase SHA-256 digest")
-	} else if !nonzeroDigest(evidence.BindingSHA256) {
-		return LoadedConfig{}, errors.New("managedExecutor.tae.networkEvidence.bindingSha256 must be a non-zero lowercase SHA-256 digest")
 	} else if err := validateText("managedExecutor.tae.networkEvidence.evidenceRef", evidence.EvidenceRef, 1, 1024); err != nil {
 		return LoadedConfig{}, err
-	}
-	if !bootstrap {
-		wantNetworkBinding := managedTAENetworkEvidenceDigest(document)
-		if evidence.BindingSHA256 != wantNetworkBinding {
-			return LoadedConfig{}, fmt.Errorf("managedExecutor.tae.networkEvidence.bindingSha256 must equal the canonical SG network evidence lock %s", wantNetworkBinding)
-		}
 	}
 	sandboxTTL, err := parseManagedDuration("managedExecutor.environment.sandboxTtl", managed.Environment.SandboxTTL, 30*time.Second, 24*time.Hour)
 	if err != nil {
@@ -1264,333 +1218,17 @@ func validateManagedExecutor(managed ManagedExecutorDocument, document ConfigDoc
 	if activityTTL > sandboxTTL || idleTTL > sandboxTTL {
 		return LoadedConfig{}, errors.New("managed executor activityTtl and idleTtl must not exceed sandboxTtl")
 	}
-	ownerPolicy := ""
-	if !bootstrap {
-		wantRuntime := managedRuntimeProfileDigest(document, managed)
-		if managed.Environment.RuntimeProfileSHA256 != wantRuntime {
-			return LoadedConfig{}, fmt.Errorf("managedExecutor.environment.runtimeProfileSha256 must equal the canonical deployment lock %s", wantRuntime)
-		}
-		wantPack := managedPackSetDigest(managed)
-		if managed.Environment.PackSetSHA256 != wantPack {
-			return LoadedConfig{}, fmt.Errorf("managedExecutor.environment.packSetSha256 must equal the canonical managed pack lock %s", wantPack)
-		}
-		ownerPolicy = managedOwnerPolicyDigest(managed)
-	}
 	return LoadedConfig{
 		Document: ConfigDocument{Managed: managed}, ManagedSandboxTTL: sandboxTTL,
-		ManagedActivityTTL: activityTTL, ManagedIdleTTL: idleTTL, ManagedOwnerPolicySHA256: ownerPolicy,
+		ManagedActivityTTL: activityTTL, ManagedIdleTTL: idleTTL,
 	}, nil
-}
-
-func managedRuntimeProfileDigest(document ConfigDocument, managed ManagedExecutorDocument) string {
-	larkEnabled := managed.Lark.Enabled
-	bkectlEnabled := managed.Bkectl.Enabled
-	lock := struct {
-		Version                 int    `json:"version"`
-		Platform                string `json:"platform"`
-		Image                   string `json:"image"`
-		Root                    string `json:"root"`
-		KeeperCommand           string `json:"keeperCommand"`
-		CodexRelease            string `json:"codexRelease"`
-		CodexCommit             string `json:"codexCommit"`
-		CodexSHA256             string `json:"codexSha256"`
-		LarkEnabled             bool   `json:"larkEnabled"`
-		LarkCLIPath             string `json:"larkCliPath"`
-		LarkCLISHA256           string `json:"larkCliSha256"`
-		LarkPolicySHA256        string `json:"larkPolicySha256"`
-		BkectlEnabled           bool   `json:"bkectlEnabled"`
-		BkectlSourceRevision    string `json:"bkectlSourceRevision"`
-		BkectlCLIPath           string `json:"bkectlCliPath"`
-		BkectlCLISHA256         string `json:"bkectlCliSha256"`
-		BkectlPolicySHA256      string `json:"bkectlPolicySha256"`
-		TAEPolicyBindingSHA256  string `json:"taePolicyBindingSha256"`
-		TAENetworkBindingSHA256 string `json:"taeNetworkBindingSha256"`
-		TAEPolicyRevision       string `json:"taePolicyRevision"`
-		TAESandboxID            string `json:"taeSandboxId"`
-		TAESandboxRevisionID    string `json:"taeSandboxRevisionId"`
-	}{
-		Version: 6, Platform: document.Platform, Image: document.Images.ManagedSandbox,
-		Root: managed.Environment.Root.Path, KeeperCommand: managedruntime.ExecutablePath,
-		CodexRelease: managed.Environment.Compatibility.CodexRelease,
-		CodexCommit:  managed.Environment.Compatibility.CodexCommit, CodexSHA256: managed.Environment.Compatibility.CodexSHA256,
-		LarkEnabled: larkEnabled,
-		LarkCLIPath: func() string {
-			if larkEnabled {
-				return managedLarkCLIPath
-			}
-			return ""
-		}(),
-		LarkCLISHA256: func() string {
-			if larkEnabled {
-				return managed.Lark.CLISHA256
-			}
-			return ""
-		}(),
-		LarkPolicySHA256: func() string {
-			if larkEnabled {
-				return managed.Lark.PolicySHA256
-			}
-			return ""
-		}(),
-		BkectlEnabled: bkectlEnabled,
-		BkectlSourceRevision: func() string {
-			if bkectlEnabled {
-				return managed.Bkectl.SourceRevision
-			}
-			return ""
-		}(),
-		BkectlCLIPath: func() string {
-			if bkectlEnabled {
-				return managedBkectlCLIPath
-			}
-			return ""
-		}(),
-		BkectlCLISHA256: func() string {
-			if bkectlEnabled {
-				return managed.Bkectl.CLISHA256
-			}
-			return ""
-		}(),
-		BkectlPolicySHA256: func() string {
-			if bkectlEnabled {
-				return managed.Bkectl.PolicySHA256
-			}
-			return ""
-		}(),
-		TAEPolicyBindingSHA256: managed.TAE.Policy.BindingSHA256, TAEPolicyRevision: managed.TAE.Policy.Revision,
-		TAENetworkBindingSHA256: managed.TAE.NetworkEvidence.BindingSHA256,
-		TAESandboxID:            managed.TAE.SandboxID, TAESandboxRevisionID: managed.TAE.RevisionID,
-	}
-	return canonicalDigest(lock)
-}
-
-func managedPackSetDigest(managed ManagedExecutorDocument) string {
-	lock := struct {
-		Version                 int    `json:"version"`
-		PackID                  string `json:"packId"`
-		BaseInstructionsPath    string `json:"baseInstructionsPath"`
-		BaseInstructionsSHA256  string `json:"baseInstructionsSha256"`
-		LarkEnabled             bool   `json:"larkEnabled"`
-		LarkPackID              string `json:"larkPackId"`
-		LarkSkillPath           string `json:"larkSkillPath"`
-		LarkSkillSHA256         string `json:"larkSkillSha256"`
-		LarkExecutable          string `json:"larkExecutable"`
-		LarkCLISHA256           string `json:"larkCliSha256"`
-		LarkPolicySHA256        string `json:"larkPolicySha256"`
-		BkectlEnabled           bool   `json:"bkectlEnabled"`
-		BkectlPackID            string `json:"bkectlPackId"`
-		BkectlSkillPackSHA256   string `json:"bkectlSkillPackSha256"`
-		BkectlExecutable        string `json:"bkectlExecutable"`
-		BkectlCLISHA256         string `json:"bkectlCliSha256"`
-		BkectlSourceRevision    string `json:"bkectlSourceRevision"`
-		BkectlPolicySHA256      string `json:"bkectlPolicySha256"`
-		TAEPolicyBindingSHA256  string `json:"taePolicyBindingSha256"`
-		TAENetworkBindingSHA256 string `json:"taeNetworkBindingSha256"`
-	}{
-		Version: 4, PackID: managedtools.PackID,
-		BaseInstructionsPath: managedBaseInstructionsPath, BaseInstructionsSHA256: managed.BaseInstructionsSHA256,
-		LarkEnabled: managed.Lark.Enabled,
-		LarkPackID: func() string {
-			if managed.Lark.Enabled {
-				return larkegresspolicy.PackID
-			}
-			return ""
-		}(),
-		LarkSkillPath: func() string {
-			if managed.Lark.Enabled {
-				return managedLarkSkillPath
-			}
-			return ""
-		}(),
-		LarkSkillSHA256: func() string {
-			if managed.Lark.Enabled {
-				return managed.Lark.SkillSHA256
-			}
-			return ""
-		}(),
-		LarkExecutable: func() string {
-			if managed.Lark.Enabled {
-				return managedLarkCLIPath
-			}
-			return ""
-		}(),
-		LarkCLISHA256: func() string {
-			if managed.Lark.Enabled {
-				return managed.Lark.CLISHA256
-			}
-			return ""
-		}(),
-		LarkPolicySHA256: func() string {
-			if managed.Lark.Enabled {
-				return managed.Lark.PolicySHA256
-			}
-			return ""
-		}(),
-		BkectlEnabled: managed.Bkectl.Enabled,
-		BkectlPackID: func() string {
-			if managed.Bkectl.Enabled {
-				return bkectlpolicy.PackID
-			}
-			return ""
-		}(),
-		BkectlSkillPackSHA256: func() string {
-			if managed.Bkectl.Enabled {
-				return managed.Bkectl.SkillPackSHA256
-			}
-			return ""
-		}(),
-		BkectlExecutable: func() string {
-			if managed.Bkectl.Enabled {
-				return managedBkectlCLIPath
-			}
-			return ""
-		}(),
-		BkectlCLISHA256: func() string {
-			if managed.Bkectl.Enabled {
-				return managed.Bkectl.CLISHA256
-			}
-			return ""
-		}(),
-		BkectlSourceRevision: func() string {
-			if managed.Bkectl.Enabled {
-				return managed.Bkectl.SourceRevision
-			}
-			return ""
-		}(),
-		BkectlPolicySHA256: func() string {
-			if managed.Bkectl.Enabled {
-				return managed.Bkectl.PolicySHA256
-			}
-			return ""
-		}(),
-		TAEPolicyBindingSHA256:  managed.TAE.Policy.BindingSHA256,
-		TAENetworkBindingSHA256: managed.TAE.NetworkEvidence.BindingSHA256,
-	}
-	return canonicalDigest(lock)
-}
-
-func managedOwnerPolicyDigest(managed ManagedExecutorDocument) string {
-	lock := struct {
-		Version                 int      `json:"version"`
-		PackID                  string   `json:"packId"`
-		BaseInstructionsSHA256  string   `json:"baseInstructionsSha256"`
-		LarkEnabled             bool     `json:"larkEnabled"`
-		LarkPolicySHA256        string   `json:"larkPolicySha256"`
-		BkectlEnabled           bool     `json:"bkectlEnabled"`
-		BkectlPolicySHA256      string   `json:"bkectlPolicySha256"`
-		WorkspaceAllowlist      []string `json:"workspaceAllowlist"`
-		EnvironmentID           string   `json:"environmentId"`
-		RuntimeProfileSHA256    string   `json:"runtimeProfileSha256"`
-		PackSetSHA256           string   `json:"packSetSha256"`
-		TAEPolicyBindingSHA256  string   `json:"taePolicyBindingSha256"`
-		TAENetworkBindingSHA256 string   `json:"taeNetworkBindingSha256"`
-	}{
-		Version: 4, PackID: managedtools.PackID, BaseInstructionsSHA256: managed.BaseInstructionsSHA256,
-		LarkEnabled: managed.Lark.Enabled, LarkPolicySHA256: managed.Lark.PolicySHA256,
-		BkectlEnabled: managed.Bkectl.Enabled, BkectlPolicySHA256: managed.Bkectl.PolicySHA256,
-		WorkspaceAllowlist:      managed.WorkspaceAllowlist,
-		EnvironmentID:           managed.Environment.EnvironmentID,
-		RuntimeProfileSHA256:    managed.Environment.RuntimeProfileSHA256,
-		PackSetSHA256:           managed.Environment.PackSetSHA256,
-		TAEPolicyBindingSHA256:  managed.TAE.Policy.BindingSHA256,
-		TAENetworkBindingSHA256: managed.TAE.NetworkEvidence.BindingSHA256,
-	}
-	return canonicalDigest(lock)
-}
-
-// managedTAENetworkEvidenceDigest binds the exact, normalized per-region
-// network facts relied upon by the provider and, only for a webhook profile, its Policy Webhook. Config validation
-// runs after NetworkDocument normalization so semantically identical rule
-// ordering produces one canonical digest.
-func managedTAENetworkEvidenceDigest(document ConfigDocument) string {
-	managed := document.Managed
-	evidence := managed.TAE.NetworkEvidence
-	var proxy ManagedSandboxProxyProfileDocument
-	if managed.TAE.ProxyProfile != "" {
-		for _, candidate := range document.ProxyProfiles {
-			if candidate.Name == managed.TAE.ProxyProfile {
-				proxy = candidate
-				break
-			}
-		}
-	}
-	lock := struct {
-		Version                          int                  `json:"version"`
-		Region                           string               `json:"region"`
-		SandboxPSM                       string               `json:"sandboxPsm"`
-		SandboxID                        string               `json:"sandboxId"`
-		SandboxRevisionID                string               `json:"sandboxRevisionId"`
-		ClusterDomain                    string               `json:"clusterDomain"`
-		DNSClusterIP                     string               `json:"dnsClusterIp"`
-		DNSNamespace                     string               `json:"dnsNamespace"`
-		DNSPodSelector                   map[string]string    `json:"dnsPodSelector"`
-		SandboxServiceClusterIP          string               `json:"sandboxServiceClusterIp"`
-		SandboxServicePort               uint16               `json:"sandboxServicePort"`
-		EgressAuthorizerServiceClusterIP string               `json:"egressAuthorizerServiceClusterIp"`
-		EgressAuthorizerServicePort      uint16               `json:"egressAuthorizerServicePort"`
-		PolicyRevision                   string               `json:"policyRevision"`
-		PolicyBindingSHA256              string               `json:"policyBindingSha256"`
-		WebhookMode                      string               `json:"webhookMode"`
-		WebhookPSM                       string               `json:"webhookPsm"`
-		WebhookURL                       string               `json:"webhookUrl"`
-		WebhookPath                      string               `json:"webhookPath"`
-		TAEControlPlaneURL               string               `json:"taeControlPlaneUrl"`
-		TAEDataPlaneSuffix               string               `json:"taeDataPlaneSuffix"`
-		ByteCloudSite                    string               `json:"bytecloudSite"`
-		ByteCloudJWTEndpoint             string               `json:"bytecloudJwtEndpoint"`
-		TAEProxyProfile                  string               `json:"taeProxyProfile"`
-		TAEProxyURL                      string               `json:"taeProxyUrl"`
-		TAEProxyNamespace                string               `json:"taeProxyNamespace"`
-		TAEProxyPodSelector              map[string]string    `json:"taeProxyPodSelector"`
-		TAEProxyPort                     uint16               `json:"taeProxyPort"`
-		SandboxExternalEgress            []EgressRuleDocument `json:"sandboxExternalEgress"`
-		EgressAuthorizerExternalEgress   []EgressRuleDocument `json:"egressAuthorizerExternalEgress"`
-		EgressAuthorizerIngress          []string             `json:"egressAuthorizerIngress"`
-		ReportSHA256                     string               `json:"reportSha256"`
-		EvidenceRef                      string               `json:"evidenceRef"`
-	}{
-		Version: evidence.Version, Region: managed.TAE.Region, SandboxPSM: managed.TAE.PSM,
-		SandboxID: managed.TAE.SandboxID, SandboxRevisionID: managed.TAE.RevisionID,
-		ClusterDomain: document.ClusterDomain, DNSClusterIP: document.Network.DNSClusterIP,
-		DNSNamespace: document.Network.DNSNamespace, DNSPodSelector: document.Network.DNSPodSelector,
-		SandboxServiceClusterIP:          document.Services.SandboxGateway.ClusterIP,
-		SandboxServicePort:               document.Services.SandboxGateway.Port,
-		EgressAuthorizerServiceClusterIP: document.Services.EgressAuthorizer.ClusterIP,
-		EgressAuthorizerServicePort:      document.Services.EgressAuthorizer.Port,
-		PolicyRevision:                   managed.TAE.Policy.Revision, PolicyBindingSHA256: managed.TAE.Policy.BindingSHA256,
-		WebhookMode: managed.TAE.Policy.WebhookMode, WebhookPSM: managed.TAE.Policy.WebhookPSM,
-		WebhookURL: managed.TAE.Policy.WebhookURL, WebhookPath: managed.TAE.Policy.WebhookPath,
-		TAEControlPlaneURL:             managed.TAE.ControlPlaneURL,
-		TAEDataPlaneSuffix:             managed.TAE.DataPlaneSuffix,
-		ByteCloudSite:                  managed.TAE.ByteCloudSite,
-		ByteCloudJWTEndpoint:           managed.TAE.ByteCloudJWTEndpoint,
-		TAEProxyProfile:                managed.TAE.ProxyProfile,
-		TAEProxyURL:                    proxy.URL,
-		TAEProxyNamespace:              proxy.Namespace,
-		TAEProxyPodSelector:            proxy.PodSelector,
-		TAEProxyPort:                   proxy.Port,
-		SandboxExternalEgress:          document.Network.SandboxExternalEgress,
-		EgressAuthorizerExternalEgress: document.Network.EgressAuthorizerExternalEgress,
-		EgressAuthorizerIngress:        document.Network.EgressAuthorizerIngress,
-		ReportSHA256:                   evidence.ReportSHA256, EvidenceRef: evidence.EvidenceRef,
-	}
-	return canonicalDigest(lock)
-}
-
-func canonicalDigest(value any) string {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		panic("production managed lock contains an unsupported JSON value")
-	}
-	digest := sha256.Sum256(raw)
-	return hex.EncodeToString(digest[:])
 }
 
 func managedTAEPolicyBinding(managed ManagedTAEDocument) taepolicy.Binding {
 	return taepolicy.Binding{
 		Version: managed.Policy.Version, Region: managed.Region, SandboxPSM: managed.PSM,
 		Revision: managed.Policy.Revision, PolicySHA256: managed.Policy.PolicySHA256,
-		BindingSHA256: managed.Policy.BindingSHA256, PublicHost: managed.Policy.PublicHost,
+		PublicHost:   managed.Policy.PublicHost,
 		PublicAccess: managed.Policy.PublicAccess, PublicWebhookRequired: managed.Policy.PublicWebhookRequired,
 		WebhookMode: managed.Policy.WebhookMode, WebhookPSM: managed.Policy.WebhookPSM,
 		WebhookURL: managed.Policy.WebhookURL, WebhookPath: managed.Policy.WebhookPath,

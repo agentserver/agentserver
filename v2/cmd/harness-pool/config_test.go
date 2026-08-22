@@ -19,9 +19,34 @@ func TestLoadHarnessPoolDevelopmentConfig(t *testing.T) {
 	if config.listenAddress != "127.0.0.1:0" || config.executorID != configuration[poolDevExecutorIDEnvironment] ||
 		config.workerDigest == "" || config.maxConcurrent != defaultPoolMaxConcurrent ||
 		config.maxRunDuration != defaultMaxRunDuration || config.maxApprovalTTL != defaultMaxApprovalTTL || config.allowlistVersion != 1 ||
+		config.codexPermissionMode != "read-only" ||
 		config.appCredential.UID != 65532 || config.appCredential.GID != 65532 ||
 		config.workerCredential != nil || config.capabilityCodec == nil || config.managedSandbox != nil {
 		t.Fatalf("loaded development config = %+v", config)
+	}
+}
+
+func TestLoadHarnessPoolConfigSelectsCodexPermissionMode(t *testing.T) {
+	configuration := validHarnessPoolConfiguration(t)
+	configuration[poolCodexPermissionModeEnvironment] = "auto"
+	config, err := loadHarnessPoolDevelopmentConfig(func(name string) string { return configuration[name] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.codexPermissionMode != "auto" {
+		t.Fatalf("Codex permission mode = %q", config.codexPermissionMode)
+	}
+	profile := runLaunchProfile(config, "https://127.0.0.1:9999/internal/v2/harness-control", false)
+	if profile.PermissionMode != "auto" {
+		t.Fatalf("launch profile permission mode = %q", profile.PermissionMode)
+	}
+}
+
+func TestLoadHarnessPoolConfigRejectsUnknownCodexPermissionMode(t *testing.T) {
+	configuration := validHarnessPoolConfiguration(t)
+	configuration[poolCodexPermissionModeEnvironment] = "future-mode"
+	if _, err := loadHarnessPoolDevelopmentConfig(func(name string) string { return configuration[name] }); err == nil || !strings.Contains(err.Error(), "permission mode") {
+		t.Fatalf("unknown Codex permission mode error = %v", err)
 	}
 }
 
@@ -34,8 +59,6 @@ func TestLoadHarnessPoolDevelopmentConfigEnablesManagedSandboxExactly(t *testing
 	}
 	if config.managedSandbox == nil ||
 		config.managedSandbox.EnvironmentID != configuration[poolManagedEnvironmentIDEnvironment] ||
-		config.managedSandbox.RuntimeProfileDigest != configuration[poolManagedRuntimeDigestEnvironment] ||
-		config.managedSandbox.PackSetDigest != configuration[poolManagedPackSetDigestEnvironment] ||
 		config.managedSandbox.SandboxTTL != 30*time.Minute || config.managedSandbox.ActivityTTL != 45*time.Second {
 		t.Fatalf("managed development config = %+v", config)
 	}
@@ -62,9 +85,9 @@ func TestLoadHarnessPoolManagedSandboxConfigRejectsPartialAndInvalidValues(t *te
 		"partial": func(config map[string]string) {
 			config[poolManagedEnvironmentIDEnvironment] = "22000000-0000-4000-8000-000000000002"
 		},
-		"bad-runtime-digest": func(config map[string]string) {
+		"bad-skill-digest": func(config map[string]string) {
 			addValidManagedSandboxConfiguration(t, config)
-			config[poolManagedRuntimeDigestEnvironment] = strings.Repeat("A", 64)
+			config[poolManagedSkillDigestEnvironment] = strings.Repeat("A", 64)
 		},
 		"activity-too-short": func(config map[string]string) {
 			addValidManagedSandboxConfiguration(t, config)
@@ -266,8 +289,6 @@ func validHarnessPoolProductionConfiguration(t *testing.T) map[string]string {
 func addValidManagedSandboxConfiguration(t *testing.T, configuration map[string]string) {
 	t.Helper()
 	configuration[poolManagedEnvironmentIDEnvironment] = "22000000-0000-4000-8000-000000000002"
-	configuration[poolManagedRuntimeDigestEnvironment] = strings.Repeat("b", 64)
-	configuration[poolManagedPackSetDigestEnvironment] = strings.Repeat("c", 64)
 	configuration[poolManagedSkillDigestEnvironment] = strings.Repeat("d", 64)
 	configuration[poolManagedSandboxTTLEnvironment] = "30m"
 	configuration[poolManagedActivityTTLEnvironment] = "45s"

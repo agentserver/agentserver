@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/braincatalog"
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -43,6 +44,46 @@ func TestPostgreSQLCreateRunIdempotencyAndAtomicity(t *testing.T) {
 	assertStateTableCount(t, pool, schema, "run_launch_states", 1)
 	assertStateTableCount(t, pool, schema, "run_launch_allowed_tools", 1)
 	assertStateTableCount(t, pool, schema, "outbox", 1)
+	var frozenPermissionMode string
+	var frozenPermissionModeVersion int64
+	permissionQuery := fmt.Sprintf("SELECT permission_mode, permission_mode_version FROM %s.run_launch_states WHERE run_id = $1", quoteIdentifier(schema))
+	if err := pool.QueryRow(t.Context(), permissionQuery, command.RunID).Scan(&frozenPermissionMode, &frozenPermissionModeVersion); err != nil {
+		t.Fatal(err)
+	}
+	if frozenPermissionMode != string(runmanifest.CodexPermissionModeReadOnly) || frozenPermissionModeVersion != 1 {
+		t.Fatalf("frozen run permission authority = %q/%d, want read-only/1", frozenPermissionMode, frozenPermissionModeVersion)
+	}
+
+	// A mode change after commit affects the next run only. Losing the original
+	// response and retrying the same server-resolved command must recover the
+	// original run and its frozen authority.
+	modeUpdate := fmt.Sprintf("UPDATE %s.sessions SET permission_mode = 'auto', permission_mode_version = 2 WHERE id = $1", quoteIdentifier(schema))
+	if _, err := pool.Exec(t.Context(), modeUpdate, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	retryAfterModeChange, err := store.CreateRun(t.Context(), command)
+	if err != nil || retryAfterModeChange.Created || retryAfterModeChange.Run.ID != result.Run.ID {
+		t.Fatalf("permission-independent idempotency retry = %+v, %v", retryAfterModeChange, err)
+	}
+	if err := pool.QueryRow(t.Context(), permissionQuery, command.RunID).Scan(&frozenPermissionMode, &frozenPermissionModeVersion); err != nil {
+		t.Fatal(err)
+	}
+	if frozenPermissionMode != string(runmanifest.CodexPermissionModeReadOnly) || frozenPermissionModeVersion != 1 {
+		t.Fatalf("retry changed frozen permission authority = %q/%d", frozenPermissionMode, frozenPermissionModeVersion)
+	}
+
+	// Simulate a pre-migration launch row. An explicitly-authorized component
+	// retry must not reinterpret the legacy NULL marker as an explicit preset.
+	legacyUpdate := fmt.Sprintf("UPDATE %s.run_launch_states SET permission_mode = NULL, permission_mode_version = NULL WHERE run_id = $1", quoteIdentifier(schema))
+	if _, err := pool.Exec(t.Context(), legacyUpdate, command.RunID); err != nil {
+		t.Fatal(err)
+	}
+	explicitRetry := command
+	explicitRetry.PermissionMode = runmanifest.CodexPermissionModeReadOnly
+	explicitRetry.ExpectedPermissionModeVersion = 1
+	if _, err := store.CreateRun(t.Context(), explicitRetry); !HasStateErrorCode(err, ErrorIdempotencyConflict) {
+		t.Fatalf("explicit retry of legacy launch error = %v, want idempotency_conflict", err)
+	}
 
 	var eventPayloadText string
 	var outboxPayloadText string
@@ -177,6 +218,109 @@ func TestPostgreSQLConcurrentCreateRunSerializesSession(t *testing.T) {
 	assertStateTableCount(t, pool, schema, "run_events", 1)
 	assertStateTableCount(t, pool, schema, "run_launch_states", 1)
 	assertStateTableCount(t, pool, schema, "outbox", 1)
+}
+
+func TestPostgreSQLPermissionModeUpdateAndAuthorizedRunFreezeAtomically(t *testing.T) {
+	store, pool, schema := newPostgresStateStore(t)
+	workspaceID := stateTestUUID(130_000)
+	sessionID := stateTestUUID(130_001)
+	actorID := stateTestUUID(130_002)
+	insertStateTestSession(t, pool, schema, workspaceID, sessionID)
+	quotedSchema := quoteIdentifier(schema)
+	if _, err := pool.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.users (id, status) VALUES ($1, 'active')", quotedSchema), actorID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), fmt.Sprintf("UPDATE %s.sessions SET creator_id = $1 WHERE id = $2", quotedSchema), actorID, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(t.Context(), fmt.Sprintf("INSERT INTO %s.workspace_members (workspace_id, user_id, role) VALUES ($1, $2, 'developer')", quotedSchema), workspaceID, actorID); err != nil {
+		t.Fatal(err)
+	}
+
+	createCommand := stateCreateRunCommand(130_010, workspaceID, sessionID, "permission-race-create")
+	createCommand.ActorID = actorID
+	createCommand.ExpectedSessionVersion = 0
+	createCommand.ExpectedPermissionModeVersion = 1
+	modeCommand := UpdateUserSessionPermissionModeCommand{
+		WorkspaceID: workspaceID, SessionID: sessionID, ActorID: actorID,
+		PermissionMode: runmanifest.CodexPermissionModeAuto, ExpectedPermissionModeVersion: 1,
+	}
+	type createOutcome struct {
+		result CreateRunResult
+		err    error
+	}
+	type modeOutcome struct {
+		result UpdateUserSessionPermissionModeResult
+		err    error
+	}
+	createResults := make(chan createOutcome, 1)
+	modeResults := make(chan modeOutcome, 1)
+	start := make(chan struct{})
+	go func() {
+		<-start
+		result, err := store.CreateAuthorizedRun(t.Context(), createCommand)
+		createResults <- createOutcome{result: result, err: err}
+	}()
+	go func() {
+		<-start
+		result, err := store.UpdateUserSessionPermissionMode(t.Context(), modeCommand)
+		modeResults <- modeOutcome{result: result, err: err}
+	}()
+	close(start)
+	created := <-createResults
+	modeUpdated := <-modeResults
+	if modeUpdated.err != nil || !modeUpdated.result.Changed ||
+		modeUpdated.result.Session.PermissionMode != runmanifest.CodexPermissionModeAuto || modeUpdated.result.Session.PermissionModeVersion != 2 {
+		t.Fatalf("concurrent permission update = %+v, %v", modeUpdated.result, modeUpdated.err)
+	}
+
+	var sessionMode string
+	var sessionModeVersion, sessionVersion int64
+	if err := pool.QueryRow(t.Context(), fmt.Sprintf("SELECT permission_mode, permission_mode_version, version FROM %s.sessions WHERE id = $1", quotedSchema), sessionID).Scan(
+		&sessionMode, &sessionModeVersion, &sessionVersion,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if sessionMode != string(runmanifest.CodexPermissionModeAuto) || sessionModeVersion != 2 {
+		t.Fatalf("session permission authority after race = %q/%d", sessionMode, sessionModeVersion)
+	}
+
+	assertFrozen := func(runID string, wantMode runmanifest.CodexPermissionMode, wantVersion int64) {
+		t.Helper()
+		var mode string
+		var version int64
+		if err := pool.QueryRow(t.Context(), fmt.Sprintf("SELECT permission_mode, permission_mode_version FROM %s.run_launch_states WHERE run_id = $1", quotedSchema), runID).Scan(&mode, &version); err != nil {
+			t.Fatal(err)
+		}
+		if mode != string(wantMode) || version != wantVersion {
+			t.Fatalf("run %s frozen permission authority = %q/%d, want %q/%d", runID, mode, version, wantMode, wantVersion)
+		}
+	}
+	if created.err == nil {
+		if !created.result.Created || sessionVersion != 2 {
+			t.Fatalf("concurrent CreateAuthorizedRun() = %+v; session version = %d", created.result, sessionVersion)
+		}
+		// CreateRun won the row lock, so it froze the old preference before the
+		// successful update changed only the next turn.
+		assertFrozen(created.result.Run.ID, runmanifest.CodexPermissionModeReadOnly, 1)
+		return
+	}
+	if !HasStateErrorCode(created.err, ErrorVersionConflict) || sessionVersion != 1 {
+		t.Fatalf("concurrent CreateAuthorizedRun() error = %v; session version = %d", created.err, sessionVersion)
+	}
+	assertStateTableCount(t, pool, schema, "runs", 0)
+
+	// The update won the row lock. Retrying with the refreshed CAS token must
+	// freeze the new mode, never a mixed old-mode/new-version pair.
+	retry := stateCreateRunCommand(130_020, workspaceID, sessionID, "permission-race-retry")
+	retry.ActorID = actorID
+	retry.ExpectedSessionVersion = 0
+	retry.ExpectedPermissionModeVersion = 2
+	retried, err := store.CreateAuthorizedRun(t.Context(), retry)
+	if err != nil || !retried.Created {
+		t.Fatalf("refreshed CreateAuthorizedRun() = %+v, %v", retried, err)
+	}
+	assertFrozen(retried.Run.ID, runmanifest.CodexPermissionModeAuto, 2)
 }
 
 func TestPostgreSQLAuthorizedCreateRunAndCommittedEventReadRecheckMembership(t *testing.T) {
@@ -413,7 +557,6 @@ func TestPostgreSQLRunFinalizationCommitsCheckpointAndTerminalStateAtomically(t 
 		t.Fatalf("BeginRunFinalization() = %+v", finalizing)
 	}
 
-	packSetDigest := sha256.Sum256([]byte("managed pack set"))
 	commitCommand := CommitCheckpointAndTerminalRunCommand{
 		RunID: finalizing.Run.ID, AttemptID: finalizing.Attempt.ID, HolderID: finalizing.Attempt.HolderID,
 		Generation: finalizing.Attempt.Generation, ExpectedRunVersion: finalizing.Run.Version,
@@ -426,16 +569,15 @@ func TestPostgreSQLRunFinalizationCommitsCheckpointAndTerminalStateAtomically(t 
 			Size: 2048, MediaType: "application/vnd.agentserver.codex-checkpoint.v1",
 		},
 		CodexRuntimeManifestDigest: sha256.Sum256([]byte("finalization-runtime")),
-		CheckpointAllowlistVersion: 1, PackSetDigest: &packSetDigest,
-		Record: stateTransitionRecord(160_070),
+		CheckpointAllowlistVersion: 1,
+		Record:                     stateTransitionRecord(160_070),
 	}
 	committed, err := store.CommitCheckpointAndTerminalRun(t.Context(), commitCommand)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !committed.Created || committed.Run.Status != RunStatusCompleted || committed.Attempt.Status != AttemptStatusSucceeded ||
-		committed.Checkpoint.ID != commitCommand.CheckpointID || committed.SessionVersion != 3 ||
-		committed.Checkpoint.PackSetDigest == nil || *committed.Checkpoint.PackSetDigest != packSetDigest {
+		committed.Checkpoint.ID != commitCommand.CheckpointID || committed.SessionVersion != 3 {
 		t.Fatalf("CommitCheckpointAndTerminalRun() = %+v", committed)
 	}
 
@@ -452,13 +594,6 @@ func TestPostgreSQLRunFinalizationCommitsCheckpointAndTerminalStateAtomically(t 
 	if _, err := store.CommitCheckpointAndTerminalRun(t.Context(), conflictingRetry); !HasStateErrorCode(err, ErrorIdempotencyConflict) {
 		t.Fatalf("conflicting checkpoint retry error = %v, want idempotency_conflict", err)
 	}
-	conflictingPackRetry := commitCommand
-	changedPackSetDigest := sha256.Sum256([]byte("changed managed pack set"))
-	conflictingPackRetry.PackSetDigest = &changedPackSetDigest
-	if _, err := store.CommitCheckpointAndTerminalRun(t.Context(), conflictingPackRetry); !HasStateErrorCode(err, ErrorIdempotencyConflict) {
-		t.Fatalf("conflicting checkpoint pack-set retry error = %v, want idempotency_conflict", err)
-	}
-
 	query := fmt.Sprintf("SELECT active_run_id::text, latest_checkpoint_id::text FROM %s.sessions WHERE id = $1", quoteIdentifier(schema))
 	var activeRunID, latestCheckpointID *string
 	if err := pool.QueryRow(t.Context(), query, sessionID).Scan(&activeRunID, &latestCheckpointID); err != nil {
@@ -520,8 +655,8 @@ WHERE run_id = $1`, quoteIdentifier(schema))
 			Size: 3072, MediaType: "application/vnd.agentserver.codex-checkpoint.v1",
 		},
 		CodexRuntimeManifestDigest: sha256.Sum256([]byte("finalization-runtime")),
-		CheckpointAllowlistVersion: 1, PackSetDigest: &packSetDigest,
-		Record: stateTransitionRecord(160_130),
+		CheckpointAllowlistVersion: 1,
+		Record:                     stateTransitionRecord(160_130),
 	}
 	resumeCommitted, err := store.CommitCheckpointAndTerminalRun(t.Context(), resumeCommit)
 	if err != nil || !resumeCommitted.Created || resumeCommitted.Run.Status != RunStatusCompleted {
@@ -597,27 +732,20 @@ INSERT INTO %s.checkpoints
     (id, workspace_id, session_id, run_id, run_attempt_id, attempt_generation,
      brain_tool_catalog_id, thread_id, turn_id, manifest_digest,
      object_id, object_sha256, object_size, object_media_type,
-	     codex_runtime_manifest_digest, checkpoint_allowlist_version, pack_set_digest)
+	     codex_runtime_manifest_digest, checkpoint_allowlist_version)
 VALUES
 	    ($1, $2, $3, $4, $5, $6, $7, $8, 'turn-checkpoint-1', $9,
-	     $10, $11, 2048, 'application/vnd.agentserver.codex-checkpoint.v1', $12, 1, $13)`, quoteIdentifier(schema))
-	packSetDigest := sha256.Sum256([]byte("checkpoint managed pack set"))
+	     $10, $11, 2048, 'application/vnd.agentserver.codex-checkpoint.v1', $12, 1)`, quoteIdentifier(schema))
 	_, err = pool.Exec(t.Context(), insertCheckpoint,
 		stateTestUUID(197), workspaceID, sessionID, first.Run.ID, firstClaim.Attempt.ID,
 		firstClaim.Attempt.Generation, bound.Catalog.ID, "thread-from-another-catalog",
-		manifestDigest[:], objectID, objectDigest[:], runtimeDigest[:], packSetDigest[:],
+		manifestDigest[:], objectID, objectDigest[:], runtimeDigest[:],
 	)
 	assertPostgreSQLState(t, err, "23503")
-	_, err = pool.Exec(t.Context(), insertCheckpoint,
-		stateTestUUID(196), workspaceID, sessionID, first.Run.ID, firstClaim.Attempt.ID,
-		firstClaim.Attempt.Generation, bound.Catalog.ID, threadID,
-		manifestDigest[:], objectID, objectDigest[:], runtimeDigest[:], make([]byte, sha256.Size),
-	)
-	assertPostgreSQLState(t, err, "23514")
 	if _, err := pool.Exec(t.Context(), insertCheckpoint,
 		checkpointID, workspaceID, sessionID, first.Run.ID, firstClaim.Attempt.ID,
 		firstClaim.Attempt.Generation, bound.Catalog.ID, threadID,
-		manifestDigest[:], objectID, objectDigest[:], runtimeDigest[:], packSetDigest[:],
+		manifestDigest[:], objectID, objectDigest[:], runtimeDigest[:],
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -657,7 +785,6 @@ WHERE id = $2`, quotedSchema), checkpointID, sessionID); err != nil {
 		checkpoint.AttemptGeneration != firstClaim.Attempt.Generation || checkpoint.ThreadID != threadID ||
 		checkpoint.ManifestDigest != manifestDigest || checkpoint.Object.ObjectID != objectID ||
 		checkpoint.Object.SHA256 != objectDigest || checkpoint.CodexRuntimeManifestDigest != runtimeDigest ||
-		checkpoint.PackSetDigest == nil || *checkpoint.PackSetDigest != packSetDigest ||
 		checkpoint.CheckpointAllowlistVersion != 1 || checkpoint.Catalog.ID != bound.Catalog.ID ||
 		checkpoint.Catalog.ThreadID != threadID || checkpoint.Catalog.CatalogDigest != bound.Catalog.CatalogDigest ||
 		string(checkpoint.Catalog.CanonicalCatalog) != string(bound.Catalog.CanonicalCatalog) ||

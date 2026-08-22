@@ -44,7 +44,7 @@
 | tool pack 注册表 + Platform 配置入口 | **硬编码配置**（一段 skill 文本 + 一条出口规则） | P1/P2 |
 | 飞书 OAuth grant（每人授权自己） | **Secret 里一个静态 token** | P1（这是用户成功指标 M1，必须补） |
 | 审批 + effect class + 审计表 | 全 `allow` + 结构化日志 | P2 |
-| `pack_set_digest` 绑定 checkpoint | 不做（PoC 不测 resume） | P2 |
+| tool pack 与 checkpoint 的组合摘要 | 已取消，不计算 | — |
 | agentx loopback 代理持 capability | **占位 token 直接进子进程环境**（[ADR 0009 §2](adr/0009-sandbox-egress-credential-proxy.md) 里记录的简化变体） | P2 |
 | 分 UID nftables 出口管控 | P0 先只靠 NetworkPolicy | P2 |
 | 无状态池 / suspend-resume / warm pool | 不做 | 视需要 |
@@ -194,7 +194,6 @@ P0 从 Kubernetes Secret 读一个静态飞书 token，egress-gateway 启动时�
 - **P1**：飞书 OAuth grant 接入 Platform，补齐成功指标 M1。复用
   `internal/coreserver/workspace_llm_gateway_service.go` 的 grant 生命周期，
   需先把 provider 从 OIDC discovery 抽象出来（[`LARK_SLICE.md` §3.1](LARK_SLICE.md)）。
-- **P2**：审批与 effect class、审计、agentx 侧注入与 loopback 代理、分 UID 网络管控、
-  `pack_set_digest` 绑定。
+- **P2**：审批与 effect class、审计、agentx 侧注入与 loopback 代理、分 UID 网络管控。
 - **P3**：tool pack 注册表（接入第二个 CLI 时才真正体现价值）、sandbox-controller、
   attestation 身份、跨集群、runtimeClass 复评。

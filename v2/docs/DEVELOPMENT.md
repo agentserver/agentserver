@@ -101,7 +101,8 @@ agentx 仍从独立的 `github.com/agentserver/agentx` 仓库构建。它只监�
   "harness": {
     "maxConcurrentAttempts": 2,
     "maxRunDuration": "30m",
-    "maxApprovalTtl": "10s"
+    "maxApprovalTtl": "10s",
+    "codexPermissionMode": "read-only"
   },
   "identities": {
     "workerUid": 65531,
@@ -113,6 +114,22 @@ agentx 仍从独立的 `github.com/agentserver/agentx` 仓库构建。它只监�
 ```
 
 `platform`、Codex release/commit/digest、exec protocol digest 和 checkpoint allowlist不能在这里另填一份；命令从 runtime manifest 的原始字节派生它们。当前 harness config profile只接受 stock `0.146.0`。`maxApprovalTtl` 会进入签名 run manifest，且不能超过 `maxRunDuration`；insecure-dev 用 10 秒让真实 expiry smoke 可重复完成，生产值不由这个开发配置决定。四个服务和两个 fixture 监听地址必须全部不同、端口非零且显式指向规范的 loopback host。Hydra 开发 endpoint 固定为 cleartext loopback HTTP；llmproxy endpoint 固定为 loopback HTTPS。当前确定性模型脚本会调用 `executor.list_environments`，因此 `policy.allowedTools` 必须包含 `list_environments`。
+
+`codexPermissionMode` 是 launch source 没有提供显式 Core authority 时的 deployment fallback，使用 Codex 的三个内置 permission preset ID，默认是 v2 为了 fail-closed 选择的 `read-only`。正常的 Core-backed 用户链路以 session 为权威：新 session 固定从 `read-only` / version `1` 开始，浏览器可随时调用 `PATCH /v2/workspaces/{workspaceId}/sessions/{sessionId}/permission-mode` 修改下一轮偏好。该接口使用独立的 `expectedPermissionModeVersion` CAS，不复用也不推进通用 `session.version`。
+
+创建 run 时，Core 在同一事务中锁住 session、核对可选的 `expectedPermissionModeVersion`，并把当时的 mode/version 冻结进 immutable run launch state；pool 再把它写入签名 manifest。因此 active run 不会被中途切换，mode 更新只影响下一轮，丢失响应后的同 idempotency retry 仍恢复原 run authority。AG-UI prompt、模型输出和 worker wire payload 都不能直接选择 mode。
+
+Codex app-server v2 本身没有一个名为 `permissionMode` 的 wire 字段，worker 会按 pinned release 的 `thread/start` 与 `turn/start` 原生字段做机械投影。
+
+| 值 | Codex app-server 投影 |
+|---|---|
+| `read-only` | `approvalPolicy: on-request`、`approvalsReviewer: auto_review`、`sandbox: read-only` |
+| `auto` | `approvalPolicy: on-request`、`approvalsReviewer: auto_review`、`sandbox: workspace-write` |
+| `full-access` | `approvalPolicy: never`、`sandbox: danger-full-access` |
+
+`auto_review` 是 v2 无交互 app-server 的 reviewer 选择；它不改变 Codex preset 的 approval/sandbox 语义。mode 只控制 Codex 自身权限，不会替代 executor-gateway/Core 的产品审批链路。旧 run launch row 和旧 signed manifest 如果没有 permission authority，worker 继续使用历史的 `approvalPolicy: never` + `read-only` 严格投影；deployment fallback 只服务于没有显式 Core authority 的开发或兼容 launch source。
+
+其中 `auto` 的无交互投影等价于 Codex CLI 的 `--approve-for-me`，`full-access` 对应 Codex 的 full-access / `--dangerously-bypass-approvals-and-sandbox` 组合；配置面仍只接受上表的 canonical preset ID。
 
 `workerUid/workerGid` 是运行 harness-worker 的 Linux identity，`appUid/appGid` 是 stock app-server 的固定 Linux identity；UID 和 GID都必须分别不同。生成的 harness-pool 环境显式启用 privileged-fork backend：常驻 pool保留 `CHOWN/DAC_OVERRIDE/SETUID/SETGID`，每个 attempt直接 fork固定worker identity，worker再 fork固定app identity并在启动后封死自身 capability；热路径不创建容器、Job或Pod。开发 attempt anchor使用execute-only traversal，不允许app列目录或读pool/worker文件。
 

@@ -55,6 +55,28 @@ func TestLaunchPreparerSignsBeforeFreezingCatalog(t *testing.T) {
 	}
 }
 
+func TestLaunchPreparerCarriesCodexPermissionModeIntoSignedManifest(t *testing.T) {
+	inputs := testRunLaunchInputs()
+	inputs.PermissionMode = runmanifest.CodexPermissionModeAuto
+	inputs.PermissionModeVersion = 1
+	core := &recordingLaunchCore{}
+	preparer := newTestLaunchPreparer(t, core, &fixedCatalogAllocator{id: "45000000-0000-4000-8000-000000000004"}, &fixedLaunchResolver{inputs: inputs})
+	prepared, err := preparer.Prepare(t.Context(), ScheduledRunAttempt{Dispatch: testControllerDispatch("starting"), Claim: testControllerClaim()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Manifest.PermissionMode != runmanifest.CodexPermissionModeAuto {
+		t.Fatalf("manifest permission mode = %q", prepared.Manifest.PermissionMode)
+	}
+	if prepared.Manifest.PermissionModeVersion != 1 {
+		t.Fatalf("manifest permission mode version = %d", prepared.Manifest.PermissionModeVersion)
+	}
+	seed := sha256.Sum256([]byte("launch-preparer-key"))
+	if _, err := prepared.SignedManifest.Verify("cluster-key-1", ed25519.NewKeyFromSeed(seed[:]).Public().(ed25519.PublicKey)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLaunchPreparerReusesCheckpointCatalogWithoutAllocatingOrFreezing(t *testing.T) {
 	inputs := testRunLaunchInputs()
 	proposal, err := BuildExecutorCatalog(inputs.ExecutorCatalogPolicy)

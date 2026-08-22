@@ -37,8 +37,6 @@ type ManagedSandbox struct {
 	ProviderPSM          string
 	ProviderSessionRef   string
 	CreateIdempotencyKey string
-	RuntimeProfileDigest [32]byte
-	PackSetDigest        [32]byte
 	RequestedTTL         time.Duration
 	IdleTTL              time.Duration
 	ExpiresAt            *time.Time
@@ -65,8 +63,6 @@ type ReserveManagedSandboxCommand struct {
 	ProviderPSM          string
 	ProviderSessionRef   string
 	CreateIdempotencyKey string
-	RuntimeProfileDigest [32]byte
-	PackSetDigest        [32]byte
 	RequestedTTL         time.Duration
 	RequestedIdleTTL     time.Duration
 }

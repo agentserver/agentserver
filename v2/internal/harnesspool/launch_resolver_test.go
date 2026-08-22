@@ -14,6 +14,7 @@ import (
 
 func TestConfiguredRunLaunchInputResolverCombinesAndCopiesAuthorityState(t *testing.T) {
 	base := testRunLaunchInputs()
+	base.PermissionMode = runmanifest.CodexPermissionModeAuto
 	proposal, err := BuildExecutorCatalog(base.ExecutorCatalogPolicy)
 	if err != nil {
 		t.Fatal(err)
@@ -50,6 +51,8 @@ func TestConfiguredRunLaunchInputResolverCombinesAndCopiesAuthorityState(t *test
 	if source.calls != 1 || source.scheduled.Claim.RunAttempt.RunAttemptID != testRunAttemptID ||
 		inputs.PreviousCheckpoint == checkpoint || inputs.PreviousCheckpoint.ThreadID != checkpoint.ThreadID ||
 		inputs.PreviousBrainToolCatalog == nil ||
+		inputs.PermissionMode != runmanifest.CodexPermissionModeAuto ||
+		inputs.PermissionModeVersion != 1 ||
 		inputs.ExecutorMCPEndpoint != base.ExecutorMCPEndpoint ||
 		len(inputs.ExecutorCatalogPolicy.AllowedTools) != len(base.ExecutorCatalogPolicy.AllowedTools) {
 		t.Fatalf("resolved inputs/source = %+v / %+v", inputs, source)
@@ -64,9 +67,78 @@ func TestConfiguredRunLaunchInputResolverCombinesAndCopiesAuthorityState(t *test
 	}
 }
 
+func TestResolveRunPermissionModeFailsClosedOnAmbiguousAuthority(t *testing.T) {
+	tests := []struct {
+		name  string
+		state RunLaunchState
+		want  string
+	}{
+		{
+			name: "legacy and explicit",
+			state: RunLaunchState{
+				PermissionMode:         runmanifest.CodexPermissionModeAuto,
+				PermissionModeVersion:  2,
+				PermissionModeLegacy:   true,
+				PermissionModeExplicit: true,
+			},
+			want: "both legacy and explicit",
+		},
+		{
+			name: "legacy with values",
+			state: RunLaunchState{
+				PermissionMode:        runmanifest.CodexPermissionModeAuto,
+				PermissionModeVersion: 2,
+				PermissionModeLegacy:  true,
+			},
+			want: "legacy permission mode authority",
+		},
+		{
+			name:  "explicit without mode",
+			state: RunLaunchState{PermissionModeVersion: 2, PermissionModeExplicit: true},
+			want:  "requires a mode",
+		},
+		{
+			name:  "explicit without marker",
+			state: RunLaunchState{PermissionMode: runmanifest.CodexPermissionModeAuto, PermissionModeVersion: 2},
+			want:  "require an explicit or legacy marker",
+		},
+		{
+			name: "explicit version overflow",
+			state: RunLaunchState{
+				PermissionMode:         runmanifest.CodexPermissionModeAuto,
+				PermissionModeVersion:  1 << 53,
+				PermissionModeExplicit: true,
+			},
+			want: "JSON-safe version",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, _, err := resolveRunPermissionMode(runmanifest.CodexPermissionModeReadOnly, test.state); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("resolveRunPermissionMode() error = %v, want substring %q", err, test.want)
+			}
+		})
+	}
+
+	mode, version, err := resolveRunPermissionMode(runmanifest.CodexPermissionModeAuto, RunLaunchState{})
+	if err != nil || mode != runmanifest.CodexPermissionModeAuto || version != deploymentPermissionModeVersion {
+		t.Fatalf("deployment fallback = %q/%d, %v", mode, version, err)
+	}
+	mode, version, err = resolveRunPermissionMode(runmanifest.CodexPermissionModeFullAccess, RunLaunchState{PermissionModeLegacy: true})
+	if err != nil || mode != "" || version != 0 {
+		t.Fatalf("legacy projection = %q/%d, %v", mode, version, err)
+	}
+}
+
 func TestConfiguredRunLaunchInputResolverRejectsProfileAndDynamicDrift(t *testing.T) {
 	base := testRunLaunchInputs()
 	profile := launchProfileFromInputs(base)
+	profile.PermissionMode = "future-mode"
+	if _, err := NewConfiguredRunLaunchInputResolver(&recordingRunLaunchStateSource{}, profile); err == nil || !strings.Contains(err.Error(), "permission mode") {
+		t.Fatalf("invalid permission mode error = %v", err)
+	}
+
+	profile = launchProfileFromInputs(base)
 	profile.ExecutorMCPEndpoint = "http://executor.invalid/mcp"
 	if _, err := NewConfiguredRunLaunchInputResolver(&recordingRunLaunchStateSource{}, profile); err == nil || !strings.Contains(err.Error(), "HTTPS") {
 		t.Fatalf("invalid profile error = %v", err)
@@ -123,7 +195,7 @@ func TestConfiguredRunLaunchInputResolverRejectsProfileAndDynamicDrift(t *testin
 	}
 }
 
-func TestConfiguredRunLaunchInputResolverBindsManagedPackAcrossResume(t *testing.T) {
+func TestConfiguredRunLaunchInputResolverPreservesManagedRoutingAcrossResume(t *testing.T) {
 	base := testRunLaunchInputs()
 	managed := poolTestManagedSandboxSpec()
 	base.ManagedSandbox = &managed
@@ -140,7 +212,6 @@ func TestConfiguredRunLaunchInputResolverBindsManagedPackAcrossResume(t *testing
 		ManifestDigest: strings.Repeat("d", 64), CatalogDigest: proposal.Catalog.Digest(),
 		CodexRuntimeManifestDigest: base.CodexRuntimeManifestDigest,
 		CheckpointAllowlistVersion: int64(base.CheckpointAllowlistVersion),
-		PackSetDigest:              managed.PackSetDigest,
 		Object: runmanifest.ObjectPointer{
 			ObjectID: "48000000-0000-4000-8000-000000000004", SHA256: strings.Repeat("e", 64),
 			SizeBytes: 1024, MediaType: "application/vnd.agentserver.codex-checkpoint.v1",
@@ -163,13 +234,8 @@ func TestConfiguredRunLaunchInputResolverBindsManagedPackAcrossResume(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.ManagedSandbox == nil || resolved.ManagedSandbox.PackSetDigest != managed.PackSetDigest {
+	if resolved.ManagedSandbox == nil || resolved.ManagedSandbox.EnvironmentID != managed.EnvironmentID {
 		t.Fatalf("resolved managed sandbox = %+v", resolved.ManagedSandbox)
-	}
-
-	source.state.PreviousCheckpoint.Checkpoint.PackSetDigest = strings.Repeat("f", 64)
-	if _, err := resolver.ResolveRunLaunch(t.Context(), scheduled); err == nil || !strings.Contains(err.Error(), "pack-set digest") {
-		t.Fatalf("changed pack-set resume error = %v", err)
 	}
 }
 
@@ -191,7 +257,7 @@ func resolverCheckpointCatalog(proposal ExecutorCatalogProposal, threadID string
 
 func launchProfileFromInputs(inputs RunLaunchInputs) RunLaunchProfile {
 	return RunLaunchProfile{
-		CodexRuntimeManifestDigest: inputs.CodexRuntimeManifestDigest, Model: inputs.Model,
+		CodexRuntimeManifestDigest: inputs.CodexRuntimeManifestDigest, PermissionMode: inputs.PermissionMode, Model: inputs.Model,
 		ExecutorMCPEndpoint: inputs.ExecutorMCPEndpoint, ExecutorMCPTLSIdentity: inputs.ExecutorMCPTLSIdentity,
 		ExecutorMCPAudience: inputs.ExecutorMCPAudience, Limits: inputs.Limits,
 		CheckpointAllowlistVersion: inputs.CheckpointAllowlistVersion,

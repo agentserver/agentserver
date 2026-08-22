@@ -38,7 +38,6 @@ const (
 	ProviderPSMEnvironment        = "AGENTSERVER_V2_TAE_PSM"
 	TAEPolicyRevisionEnvironment  = "AGENTSERVER_V2_TAE_POLICY_REVISION"
 	TAEPolicySHA256Environment    = "AGENTSERVER_V2_TAE_POLICY_SHA256"
-	TAEPolicyBindingEnvironment   = "AGENTSERVER_V2_TAE_POLICY_BINDING_SHA256"
 	TAEPolicyHostEnvironment      = "AGENTSERVER_V2_TAE_POLICY_HOST"
 	TAEPolicyAccessEnvironment    = "AGENTSERVER_V2_TAE_POLICY_ACCESS"
 	TAEPolicyWebhookRequiredEnv   = "AGENTSERVER_V2_TAE_POLICY_WEBHOOK_REQUIRED"
@@ -139,9 +138,6 @@ func LoadProductionConfig(getenv func(string) string) (Config, error) {
 		return Config{}, policyErr
 	}
 	if config.TAEPolicy.PolicySHA256, policyErr = policyText(TAEPolicySHA256Environment); policyErr != nil {
-		return Config{}, policyErr
-	}
-	if config.TAEPolicy.BindingSHA256, policyErr = policyText(TAEPolicyBindingEnvironment); policyErr != nil {
 		return Config{}, policyErr
 	}
 	if config.TAEPolicy.PublicHost, policyErr = policyText(TAEPolicyHostEnvironment); policyErr != nil {

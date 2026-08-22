@@ -3,12 +3,11 @@ package coredb
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 
 	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -51,7 +50,8 @@ func (s *StateStore) createRun(ctx context.Context, command CreateRunCommand, re
 	return withStateTransaction(ctx, s, operation, func(transaction pgx.Tx) (CreateRunResult, error) {
 		sessionQuery := fmt.Sprintf(`
 SELECT s.workspace_id::text, s.creator_id::text, s.status,
-       s.active_run_id::text, s.version, w.status,
+       s.active_run_id::text, s.version, s.permission_mode,
+       s.permission_mode_version, w.status,
        managed.region, managed.version
 FROM %s AS s
 JOIN %s AS w ON w.id = s.workspace_id
@@ -64,6 +64,8 @@ FOR SHARE OF w`, s.table("sessions"), s.table("workspaces"), s.table("workspace_
 		var sessionStatus string
 		var activeRunID *string
 		var sessionVersion int64
+		var sessionPermissionMode string
+		var sessionPermissionModeVersion int64
 		var workspaceStatus string
 		var managedSandboxRegion *string
 		var managedSandboxSettingVersion *int64
@@ -73,6 +75,8 @@ FOR SHARE OF w`, s.table("sessions"), s.table("workspaces"), s.table("workspace_
 			&sessionStatus,
 			&activeRunID,
 			&sessionVersion,
+			&sessionPermissionMode,
+			&sessionPermissionModeVersion,
 			&workspaceStatus,
 			&managedSandboxRegion,
 			&managedSandboxSettingVersion,
@@ -87,6 +91,13 @@ FOR SHARE OF w`, s.table("sessions"), s.table("workspaces"), s.table("workspace_
 		}
 		if sessionStatus != UserSessionStatusActive {
 			return CreateRunResult{}, commandError(ErrorInvalidState, operation, "session", command.SessionID, "session is not active")
+		}
+		effectiveSessionPermissionMode, modeErr := runmanifest.CodexPermissionMode(sessionPermissionMode).Effective()
+		if modeErr != nil || sessionPermissionModeVersion < 1 || sessionPermissionModeVersion > maxSafeJSONInteger {
+			if modeErr == nil {
+				modeErr = errors.New("stored session permission mode version is invalid")
+			}
+			return CreateRunResult{}, databaseError(operation+" validate session permission mode", modeErr)
 		}
 		if requireUserMembership {
 			role, err := s.readWorkspaceMemberRole(ctx, transaction, command.WorkspaceID, command.ActorID)
@@ -140,7 +151,12 @@ WHERE r.workspace_id = $1
 				if launchErr != nil {
 					return CreateRunResult{}, launchErr
 				}
-				if !runLaunchInputMatches(prompt, policy, llmGateway, larkEgress, managedSandbox, command) {
+				existingMode, existingModeVersion, existingModeExplicit, launchErr := s.readRunPermissionMode(ctx, transaction, operation, existing.ID)
+				if launchErr != nil {
+					return CreateRunResult{}, launchErr
+				}
+				if !runLaunchInputMatches(prompt, policy, llmGateway, larkEgress, managedSandbox, command) ||
+					!runPermissionModeInputMatches(existingMode, existingModeVersion, existingModeExplicit, command) {
 					return CreateRunResult{}, &StateError{
 						Code:         ErrorIdempotencyConflict,
 						Operation:    operation,
@@ -189,6 +205,30 @@ WHERE r.workspace_id = $1
 				Message:        "session version does not match",
 			}
 		}
+		if command.ExpectedPermissionModeVersion > 0 && command.ExpectedPermissionModeVersion != sessionPermissionModeVersion {
+			return CreateRunResult{}, &StateError{
+				Code:           ErrorVersionConflict,
+				Operation:      operation,
+				Resource:       "session_permission_mode",
+				ResourceID:     command.SessionID,
+				CurrentVersion: sessionPermissionModeVersion,
+				Message:        "session permission mode version does not match",
+			}
+		}
+		if command.PermissionMode != "" {
+			requestedMode, err := command.PermissionMode.Effective()
+			if err != nil {
+				return CreateRunResult{}, commandError(ErrorInvalidArgument, operation, "run", command.RunID, err.Error())
+			}
+			if requestedMode != effectiveSessionPermissionMode {
+				return CreateRunResult{}, commandError(ErrorVersionConflict, operation, "session_permission_mode", command.SessionID, "requested permission mode is not the current session mode")
+			}
+		}
+		// The mode is read from the locked session row, never trusted from a
+		// browser or model payload. The version is carried into launch authority
+		// for audit/recovery and to distinguish legacy rows.
+		command.PermissionMode = effectiveSessionPermissionMode
+		command.ExpectedPermissionModeVersion = sessionPermissionModeVersion
 
 		insertRunQuery := fmt.Sprintf(`
 INSERT INTO %s
@@ -321,6 +361,17 @@ func validateCreateRunBase(command CreateRunCommand) error {
 			return err
 		}
 	}
+	if command.PermissionMode != "" {
+		if _, err := command.PermissionMode.Effective(); err != nil {
+			return err
+		}
+		if command.ExpectedPermissionModeVersion < 1 {
+			return errors.New("expected_permission_mode_version must be positive when permission_mode is set")
+		}
+	}
+	if command.ExpectedPermissionModeVersion < 0 || command.ExpectedPermissionModeVersion > maxSafeJSONInteger {
+		return errors.New("expected_permission_mode_version must be zero or a JSON-safe positive integer")
+	}
 	return validateTransitionRecord(command.Record)
 }
 
@@ -329,11 +380,7 @@ func validateRunManagedSandboxBinding(binding RunManagedSandboxBinding) error {
 		return errors.New("managed sandbox setting version must be a positive safe integer")
 	}
 	profile := managedsandboxprofile.Binding{
-		Region: binding.Region, ProfileID: binding.ProfileID,
-		BindingSHA256: hex.EncodeToString(binding.BindingSHA256[:]), EnvironmentID: binding.EnvironmentID,
-	}
-	if binding.BindingSHA256 == ([sha256.Size]byte{}) {
-		return errors.New("managed sandbox binding digest is required")
+		Region: binding.Region, EnvironmentID: binding.EnvironmentID,
 	}
 	return profile.Validate()
 }

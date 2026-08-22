@@ -49,6 +49,7 @@ interface TrajectoryViewProps {
   onSelect: (id: string) => void
   onLoadEarlier: () => void
   onRetry: () => void
+  permissionControl?: ReactNode
 }
 
 export interface TrajectoryRunGroup {
@@ -188,6 +189,7 @@ export function TrajectoryView({
   onSelect,
   onLoadEarlier,
   onRetry,
+  permissionControl,
 }: TrajectoryViewProps) {
   const { t } = useTranslation()
   const [searchQuery, setSearchQuery] = useState("")
@@ -303,6 +305,7 @@ export function TrajectoryView({
           {allCollapsed ? t("browser.expandRuns") : t("browser.collapseRuns")}
         </button>
       </div>
+      {permissionControl ? <div className="trajectory-permission-control">{permissionControl}</div> : null}
       <span className="trajectory-toolbar-count">{visibleRecords.length}/{records.length} {t("browser.records")}</span>
     </div>
 

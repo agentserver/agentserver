@@ -350,21 +350,20 @@ func sameCreate(left, right sandboxgateway.CreateSandboxRequest) bool {
 	return left.SessionRef == right.SessionRef && left.SandboxID == right.SandboxID && left.IdempotencyKey == right.IdempotencyKey &&
 		left.WorkspaceID == right.WorkspaceID && left.SessionID == right.SessionID &&
 		left.EnvironmentID == right.EnvironmentID && left.Region == right.Region && left.PSM == right.PSM &&
-		left.RuntimeProfileSHA256 == right.RuntimeProfileSHA256 && left.PackSetSHA256 == right.PackSetSHA256 && left.TTL == right.TTL
+		left.TTL == right.TTL
 }
 
 func sameCreateIdentity(left, right sandboxgateway.CreateSandboxRequest) bool {
 	return left.SandboxID == right.SandboxID && left.IdempotencyKey == right.IdempotencyKey &&
 		left.WorkspaceID == right.WorkspaceID && left.SessionID == right.SessionID &&
 		left.EnvironmentID == right.EnvironmentID && left.Region == right.Region && left.PSM == right.PSM &&
-		left.RuntimeProfileSHA256 == right.RuntimeProfileSHA256 && left.PackSetSHA256 == right.PackSetSHA256 && left.TTL == right.TTL
+		left.TTL == right.TTL
 }
 
 func matchesFind(create sandboxgateway.CreateSandboxRequest, request sandboxgateway.FindSandboxRequest) bool {
 	return create.SandboxID == request.SandboxID && create.IdempotencyKey == request.IdempotencyKey && create.WorkspaceID == request.WorkspaceID &&
 		create.SessionID == request.SessionID && create.EnvironmentID == request.EnvironmentID &&
-		create.Region == request.Region && create.PSM == request.PSM &&
-		create.RuntimeProfileSHA256 == request.RuntimeProfileSHA256 && create.PackSetSHA256 == request.PackSetSHA256
+		create.Region == request.Region && create.PSM == request.PSM
 }
 
 type exchange struct {

@@ -163,7 +163,6 @@ func (service *Service) EnsureSandbox(ctx context.Context, principal Principal, 
 		SessionID: request.Session.SessionID, EnvironmentID: request.Session.EnvironmentID,
 		ProviderRegion: service.providerRegion, ProviderPSM: service.providerPSM,
 		ProviderSessionRef: "", CreateIdempotencyKey: createKey,
-		RuntimeProfileSHA256: request.RuntimeProfileDigest, PackSetSHA256: request.PackSetDigest,
 		RequestedTTLSeconds: request.RequestedTTLSeconds, IdleTTLSeconds: int64(service.idleTTL / time.Second),
 	})
 	if err != nil {
@@ -315,7 +314,6 @@ func (service *Service) createProviderSandbox(ctx context.Context, state corecon
 		SessionRef: state.ProviderSessionRef, SandboxID: state.SandboxID, IdempotencyKey: state.CreateIdempotencyKey,
 		WorkspaceID: state.WorkspaceID, SessionID: state.SessionID, EnvironmentID: state.EnvironmentID,
 		Region: state.ProviderRegion, PSM: state.ProviderPSM,
-		RuntimeProfileSHA256: state.RuntimeProfileSHA256, PackSetSHA256: state.PackSetSHA256,
 		TTL: time.Duration(state.RequestedTTLSeconds) * time.Second,
 	})
 	if err != nil {
@@ -477,8 +475,7 @@ func (service *Service) providerFindRequest(state corecontract.ManagedSandboxSta
 		SandboxID: state.SandboxID, IdempotencyKey: state.CreateIdempotencyKey,
 		WorkspaceID: state.WorkspaceID, SessionID: state.SessionID,
 		EnvironmentID: state.EnvironmentID, Region: state.ProviderRegion,
-		PSM: state.ProviderPSM, RuntimeProfileSHA256: state.RuntimeProfileSHA256,
-		PackSetSHA256: state.PackSetSHA256,
+		PSM: state.ProviderPSM,
 	}
 }
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,9 +19,7 @@ func TestGatewayManagedSandboxSessionAcquirerEnsuresOnDemandAndReleases(t *testi
 	acquirer, err := NewGatewayManagedSandboxSessionAcquirer(
 		client,
 		ManagedSandboxProvisioningSpec{
-			Region: "i18n-tt", ProfileID: "tae-i18n-tt-v1", ProfileBindingSHA256: strings.Repeat("c", 64),
-			EnvironmentID:        "a38f69c6-996b-4c8d-8e2a-e97ee69c4b10",
-			RuntimeProfileDigest: strings.Repeat("a", 64), PackSetDigest: strings.Repeat("b", 64),
+			Region: "i18n-tt", EnvironmentID: "a38f69c6-996b-4c8d-8e2a-e97ee69c4b10",
 			SandboxTTL: time.Hour, ActivityTTL: 30 * time.Second,
 		},
 		func() (string, error) { return "90000000-0000-4000-8000-000000000009", nil },
@@ -34,8 +31,7 @@ func TestGatewayManagedSandboxSessionAcquirerEnsuresOnDemandAndReleases(t *testi
 	}
 	principal := testExecutorMCPPrincipal("lazy-sandbox-capability")
 	principal.ManagedSandbox = &ExecutorManagedSandboxAuthority{
-		SettingVersion: 1, Region: "i18n-tt", ProfileID: "tae-i18n-tt-v1",
-		BindingSHA256: strings.Repeat("c", 64), EnvironmentID: "a38f69c6-996b-4c8d-8e2a-e97ee69c4b10",
+		SettingVersion: 1, Region: "i18n-tt", EnvironmentID: "a38f69c6-996b-4c8d-8e2a-e97ee69c4b10",
 	}
 	lease, err := acquirer.Acquire(t.Context(), principal)
 	if err != nil {

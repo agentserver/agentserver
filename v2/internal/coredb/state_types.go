@@ -3,6 +3,8 @@ package coredb
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
 
 const (
@@ -79,29 +81,32 @@ type Lease struct {
 }
 
 type CreateRunCommand struct {
-	RunID                  string
-	WorkspaceID            string
-	SessionID              string
-	ActorID                string
-	RequestHash            [32]byte
-	IdempotencyKey         string
-	Prompt                 ObjectPointer
-	ExecutorPolicy         RunExecutorPolicy
-	LLMGateway             RunLLMGatewayBinding
-	LarkEgress             RunLarkEgressBinding
-	ManagedSandbox         RunManagedSandboxBinding
-	ExpectedSessionVersion int64
-	Record                 TransitionRecord
+	RunID          string
+	WorkspaceID    string
+	SessionID      string
+	ActorID        string
+	RequestHash    [32]byte
+	IdempotencyKey string
+	Prompt         ObjectPointer
+	ExecutorPolicy RunExecutorPolicy
+	LLMGateway     RunLLMGatewayBinding
+	LarkEgress     RunLarkEgressBinding
+	ManagedSandbox RunManagedSandboxBinding
+	// PermissionMode is optional for component callers. Authorized user
+	// callers never get to choose this value; CreateAuthorizedRun reads the
+	// locked session row and freezes that authority atomically.
+	PermissionMode                runmanifest.CodexPermissionMode
+	ExpectedPermissionModeVersion int64
+	ExpectedSessionVersion        int64
+	Record                        TransitionRecord
 }
 
-// RunManagedSandboxBinding is the exact immutable deployment profile selected
+// RunManagedSandboxBinding is the regional managed execution target selected
 // from the workspace setting for one run. An all-zero value means that the
 // deployment does not expose managed execution (for example insecure dev).
 type RunManagedSandboxBinding struct {
 	SettingVersion int64
 	Region         string
-	ProfileID      string
-	BindingSHA256  [32]byte
 	EnvironmentID  string
 }
 
@@ -129,11 +134,13 @@ type CancelRunResult struct {
 // in the write transaction; callers must not treat this preliminary read as
 // lasting authorization.
 type AuthorizedSession struct {
-	WorkspaceID    string
-	SessionID      string
-	ActorID        string
-	Role           string
-	SessionVersion int64
+	WorkspaceID           string
+	SessionID             string
+	ActorID               string
+	Role                  string
+	SessionVersion        int64
+	PermissionMode        runmanifest.CodexPermissionMode
+	PermissionModeVersion int64
 }
 
 type RunEvent struct {
@@ -244,7 +251,6 @@ type CommitCheckpointAndTerminalRunCommand struct {
 	Object                     ObjectPointer
 	CodexRuntimeManifestDigest [32]byte
 	CheckpointAllowlistVersion int64
-	PackSetDigest              *[32]byte
 	Record                     TransitionRecord
 }
 
@@ -399,26 +405,28 @@ type Checkpoint struct {
 	Object                     ObjectPointer
 	CodexRuntimeManifestDigest [32]byte
 	CheckpointAllowlistVersion int64
-	PackSetDigest              *[32]byte
 	Catalog                    BrainToolCatalog
 	CreatedAt                  time.Time
 }
 
 type ResolvedRunLaunchState struct {
-	WorkspaceID        string
-	SessionID          string
-	RunID              string
-	AttemptID          string
-	HolderID           string
-	Generation         int64
-	RunVersion         int64
-	AttemptVersion     int64
-	Prompt             ObjectPointer
-	PreviousCheckpoint *Checkpoint
-	ExecutorPolicy     RunExecutorPolicy
-	LLMGateway         RunLLMGatewayBinding
-	LarkEgress         RunLarkEgressBinding
-	ManagedSandbox     RunManagedSandboxBinding
+	WorkspaceID            string
+	SessionID              string
+	RunID                  string
+	AttemptID              string
+	HolderID               string
+	Generation             int64
+	RunVersion             int64
+	AttemptVersion         int64
+	Prompt                 ObjectPointer
+	PreviousCheckpoint     *Checkpoint
+	ExecutorPolicy         RunExecutorPolicy
+	LLMGateway             RunLLMGatewayBinding
+	LarkEgress             RunLarkEgressBinding
+	ManagedSandbox         RunManagedSandboxBinding
+	PermissionMode         runmanifest.CodexPermissionMode
+	PermissionModeVersion  int64
+	PermissionModeExplicit bool
 }
 
 type AttemptEvent struct {

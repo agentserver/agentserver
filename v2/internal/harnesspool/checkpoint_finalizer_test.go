@@ -231,10 +231,6 @@ func TestCheckpointFinalizerRejectsCommittedCheckpointFingerprintDrift(t *testin
 		"allowlist": func(result *CommitCheckpointResult) {
 			result.Checkpoint.CheckpointAllowlistVersion++
 		},
-		"pack set": func(result *CommitCheckpointResult) {
-			changed := sha256.Sum256([]byte("changed pack set"))
-			result.Checkpoint.PackSetDigest = &changed
-		},
 		"source generation": func(result *CommitCheckpointResult) {
 			result.Checkpoint.RunAttemptGeneration++
 		},
@@ -324,20 +320,11 @@ func assertCheckpointArtifactForTest(
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantPackSetDigest := ""
-	if prepared.Manifest.ToolPack != nil {
-		wantPackSetDigest = prepared.Manifest.ToolPack.PackSetDigest
-	}
-	gotCommitPackSetDigest := ""
-	if commit.Checkpoint.PackSetDigest != nil {
-		gotCommitPackSetDigest = hex.EncodeToString(commit.Checkpoint.PackSetDigest[:])
-	}
 	if hex.EncodeToString(commit.Checkpoint.ManifestDigest[:]) != manifestDigest ||
 		gotManifest.CheckpointID != commit.Checkpoint.CheckpointID || gotManifest.WorkspaceID != prepared.Manifest.WorkspaceID ||
 		gotManifest.SessionID != prepared.Manifest.SessionID || gotManifest.RunID != prepared.Manifest.RunID ||
 		gotManifest.RunAttemptID != prepared.Manifest.RunAttemptID || gotManifest.RunAttemptGeneration != prepared.Manifest.RunAttemptGeneration ||
 		gotManifest.BrainThreadID != terminal.ThreadID || gotManifest.TerminalTurnID != terminal.TurnID ||
-		gotManifest.PackSetDigest != wantPackSetDigest || gotCommitPackSetDigest != wantPackSetDigest ||
 		gotManifest.CatalogDigest != prepared.Manifest.ExecutorMCP.CatalogDigest || len(gotRollout) == 0 {
 		t.Fatalf("checkpoint manifest/rollout = %+v / %q", gotManifest, gotRollout)
 	}
@@ -496,7 +483,7 @@ func (core *checkpointFinalizerTestCore) CommitCheckpoint(_ context.Context, req
 		ManifestDigest: request.Checkpoint.ManifestDigest, CatalogDigest: request.Checkpoint.CatalogDigest,
 		Object: request.Checkpoint.Object, CodexRuntimeManifestDigest: request.Checkpoint.CodexRuntimeManifestDigest,
 		CheckpointAllowlistVersion: request.Checkpoint.CheckpointAllowlistVersion,
-		PackSetDigest:              request.Checkpoint.PackSetDigest, CreatedAt: now,
+		CreatedAt:                  now,
 	}
 	result := CommitCheckpointResult{
 		Run: run, RunAttempt: attempt, Checkpoint: checkpointResult, SessionVersion: 2, Created: true,

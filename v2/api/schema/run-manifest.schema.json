@@ -46,7 +46,6 @@
         "catalogDigest": {"$ref": "#/$defs/sha256"},
         "codexRuntimeManifestDigest": {"$ref": "#/$defs/sha256"},
         "checkpointAllowlistVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
-        "packSetDigest": {"$ref": "#/$defs/sha256"},
         "object": {
           "allOf": [
             {"$ref": "#/$defs/objectPointer"},
@@ -63,22 +62,19 @@
     "toolPack": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["packId", "packSetDigest", "skillSha256"],
+      "required": ["packId", "skillSha256"],
       "properties": {
         "packId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}@v[1-9][0-9]{0,8}$"},
-        "packSetDigest": {"$ref": "#/$defs/sha256"},
         "skillSha256": {"$ref": "#/$defs/sha256"}
       }
     },
     "managedSandbox": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["settingVersion", "region", "profileId", "bindingSha256", "environmentId"],
+      "required": ["settingVersion", "region", "environmentId"],
       "properties": {
         "settingVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
         "region": {"enum": ["cn", "boe", "i18n-bd", "i18n-tt"]},
-        "profileId": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?$"},
-        "bindingSha256": {"$ref": "#/$defs/sha256"},
         "environmentId": {"$ref": "#/$defs/uuid"}
       }
     },
@@ -197,6 +193,15 @@
         "previousCheckpoint": {"$ref": "#/$defs/previousCheckpoint"},
         "codexRuntimeManifestDigest": {"$ref": "#/$defs/sha256"},
         "model": {"$ref": "#/$defs/modelRoute"},
+        "permissionMode": {
+          "enum": ["read-only", "auto", "full-access"],
+          "default": "read-only"
+        },
+        "permissionModeVersion": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
         "executorMcp": {"$ref": "#/$defs/executorMcp"},
         "executorPolicy": {"$ref": "#/$defs/executorPolicy"},
         "toolPack": {"$ref": "#/$defs/toolPack"},
@@ -206,7 +211,17 @@
         "workerImageDigest": {"$ref": "#/$defs/sha256"},
         "expectedServiceAccount": {"type": "string", "pattern": "^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$"},
         "controllerCallback": {"$ref": "#/$defs/controllerCallback"}
-      }
+      },
+      "allOf": [
+        {
+          "if": {"required": ["permissionMode"]},
+          "then": {"required": ["permissionModeVersion"]}
+        },
+        {
+          "if": {"required": ["permissionModeVersion"]},
+          "then": {"required": ["permissionMode"]}
+        }
+      ]
     }
   }
 }

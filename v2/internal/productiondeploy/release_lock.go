@@ -12,8 +12,7 @@ import (
 )
 
 // ReleaseLock replaces every published artifact authority in an already
-// valid production template. The derived managed runtime and pack digests are
-// recomputed by LockRelease; callers never supply those values independently.
+// valid production template.
 type ReleaseLock struct {
 	ServiceImage          string
 	HarnessImage          string
@@ -54,11 +53,6 @@ func LockRelease(base LoadedConfig, lock ReleaseLock) ([]byte, error) {
 	document.Managed.Bkectl.CLISHA256 = lock.BkectlCLISHA256
 	document.Managed.Bkectl.SkillPackSHA256 = lock.BkectlSkillPackSHA256
 	document.Managed.Bkectl.PolicySHA256 = lock.BkectlPolicySHA256
-	if managedExecutionActive(document.Managed) {
-		document.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(document, document.Managed)
-		document.Managed.Environment.PackSetSHA256 = managedPackSetDigest(document.Managed)
-	}
-
 	loaded, err := ValidateConfig(document)
 	if err != nil {
 		return nil, fmt.Errorf("validate locked production release: %w", err)
@@ -92,20 +86,14 @@ func LockDeveloperServiceRelease(base LoadedConfig, serviceImage string) ([]byte
 	harnessImage := document.Images.Harness
 	hydraImage := document.Images.Hydra
 	managedSandboxImage := document.Images.ManagedSandbox
-	runtimeProfileSHA256 := document.Managed.Environment.RuntimeProfileSHA256
-	packSetSHA256 := document.Managed.Environment.PackSetSHA256
-	networkBindingSHA256 := document.Managed.TAE.NetworkEvidence.BindingSHA256
 	document.Images.Service = serviceImage
 	loaded, err := ValidateConfig(document)
 	if err != nil {
 		return nil, fmt.Errorf("validate developer service release: %w", err)
 	}
 	if loaded.Document.Images.Harness != harnessImage || loaded.Document.Images.Hydra != hydraImage ||
-		loaded.Document.Images.ManagedSandbox != managedSandboxImage ||
-		loaded.Document.Managed.Environment.RuntimeProfileSHA256 != runtimeProfileSHA256 ||
-		loaded.Document.Managed.Environment.PackSetSHA256 != packSetSHA256 ||
-		loaded.Document.Managed.TAE.NetworkEvidence.BindingSHA256 != networkBindingSHA256 {
-		return nil, errors.New("developer service release changed a TAE runtime, pack, or network evidence lock")
+		loaded.Document.Images.ManagedSandbox != managedSandboxImage {
+		return nil, errors.New("developer service release changed a managed runtime artifact")
 	}
 	raw, err := json.MarshalIndent(loaded.Document, "", "  ")
 	if err != nil {

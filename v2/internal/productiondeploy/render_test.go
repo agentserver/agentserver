@@ -323,8 +323,6 @@ func TestRenderDirectPolicyBootstrapOmitsWebhookWorkloadAndAuthority(t *testing.
 func TestRenderRejectsPartialManagedToolPack(t *testing.T) {
 	document := validConfigDocument()
 	document.Managed.Lark.Enabled = false
-	document.Managed.Environment.RuntimeProfileSHA256 = managedRuntimeProfileDigest(document, document.Managed)
-	document.Managed.Environment.PackSetSHA256 = managedPackSetDigest(document.Managed)
 	if _, err := ValidateConfig(document); err == nil || !strings.Contains(err.Error(), "requires both the pinned lark and managed bkectl") {
 		t.Fatalf("partial managed tool pack error = %v", err)
 	}
@@ -1164,16 +1162,15 @@ func assertRenderedTAEPolicyCatalog(t *testing.T, sandbox func(string) string, r
 	}
 	defaultBinding := managedTAEPolicyBinding(config.Document.Managed.TAE)
 	for name, want := range map[string]string{
-		"AGENTSERVER_V2_TAE_POLICY_REVISION":       defaultBinding.Revision,
-		"AGENTSERVER_V2_TAE_POLICY_SHA256":         defaultBinding.PolicySHA256,
-		"AGENTSERVER_V2_TAE_POLICY_BINDING_SHA256": defaultBinding.BindingSHA256,
-		"AGENTSERVER_V2_TAE_POLICY_HOST":           defaultBinding.PublicHost,
-		"AGENTSERVER_V2_TAE_POLICY_ACCESS":         defaultBinding.PublicAccess,
-		"AGENTSERVER_V2_TAE_WEBHOOK_MODE":          defaultBinding.WebhookMode,
-		"AGENTSERVER_V2_TAE_WEBHOOK_PSM":           defaultBinding.WebhookPSM,
-		"AGENTSERVER_V2_TAE_WEBHOOK_URL":           defaultBinding.WebhookURL,
-		"AGENTSERVER_V2_TAE_WEBHOOK_PATH":          defaultBinding.WebhookPath,
-		"AGENTSERVER_V2_TAE_POLICY_EVIDENCE_REF":   defaultBinding.EvidenceRef,
+		"AGENTSERVER_V2_TAE_POLICY_REVISION":     defaultBinding.Revision,
+		"AGENTSERVER_V2_TAE_POLICY_SHA256":       defaultBinding.PolicySHA256,
+		"AGENTSERVER_V2_TAE_POLICY_HOST":         defaultBinding.PublicHost,
+		"AGENTSERVER_V2_TAE_POLICY_ACCESS":       defaultBinding.PublicAccess,
+		"AGENTSERVER_V2_TAE_WEBHOOK_MODE":        defaultBinding.WebhookMode,
+		"AGENTSERVER_V2_TAE_WEBHOOK_PSM":         defaultBinding.WebhookPSM,
+		"AGENTSERVER_V2_TAE_WEBHOOK_URL":         defaultBinding.WebhookURL,
+		"AGENTSERVER_V2_TAE_WEBHOOK_PATH":        defaultBinding.WebhookPath,
+		"AGENTSERVER_V2_TAE_POLICY_EVIDENCE_REF": defaultBinding.EvidenceRef,
 	} {
 		if sandbox(name) != want {
 			t.Fatalf("sandbox TAE policy environment %s = %q, want %q", name, sandbox(name), want)

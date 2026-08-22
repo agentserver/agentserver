@@ -707,7 +707,6 @@ WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, schema)
 		"checkpoints_attempt_scope_fk":                            false,
 		"checkpoints_catalog_scope_thread_fk":                     false,
 		"checkpoints_digests_sha256":                              false,
-		"checkpoints_pack_set_digest_sha256":                      false,
 		"checkpoints_object_media_type_bounded":                   false,
 		"checkpoints_object_size_bounded":                         false,
 		"checkpoints_run_scope_fk":                                false,
@@ -740,7 +739,7 @@ WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, schema)
 		"managed_sandboxes_generation_positive":                   false,
 		"managed_sandboxes_desired_state_valid":                   false,
 		"managed_sandboxes_observed_state_valid":                  false,
-		"managed_sandboxes_digests_sha256":                        false,
+		"managed_sandboxes_last_error_digest_sha256":              false,
 		"managed_sandboxes_ttls_valid":                            false,
 		"managed_sandboxes_ready_projection":                      false,
 		"managed_sandboxes_deleted_projection":                    false,
@@ -791,6 +790,8 @@ WHERE table_schema = $1 AND table_type = 'BASE TABLE'`, schema)
 		"executor_enrollment_tokens_version_positive":             false,
 		"workspace_members_role_valid":                            false,
 		"executor_environments_process_profile_valid":             false,
+		"executor_environments_owner_policy_sha256_optional":      false,
+		"run_launch_states_managed_sandbox_complete":              false,
 		"executor_connections_session_id_unique":                  false,
 		"executor_connections_build_hashes_sha256":                false,
 		"executor_connections_status_valid":                       false,
@@ -853,6 +854,7 @@ WHERE constraint_schema = $1`, schema)
 		"workspace_lark_grants_refresh_claim_idx":             false,
 		"workspace_lark_grants_refresh_orphan_idx":            false,
 		"run_launch_states_lark_grant_idx":                    false,
+		"run_launch_states_managed_sandbox_region_idx":        false,
 		"managed_egress_audit_run_time_idx":                   false,
 		"managed_egress_audit_capability_idx":                 false,
 		"managed_egress_audit_time_idx":                       false,
@@ -881,6 +883,35 @@ WHERE constraint_schema = $1`, schema)
 		if !found {
 			t.Errorf("expected index %s was not created", name)
 		}
+	}
+
+	for table, columns := range map[string][]string{
+		"managed_sandboxes": {"runtime_profile_digest", "pack_set_digest"},
+		"checkpoints":       {"pack_set_digest"},
+		"run_launch_states": {"managed_sandbox_profile_id", "managed_sandbox_binding_sha256"},
+	} {
+		for _, column := range columns {
+			var count int
+			if err := connection.QueryRow(t.Context(), `
+SELECT pg_catalog.count(*)
+FROM information_schema.columns
+WHERE table_schema = $1 AND table_name = $2 AND column_name = $3`, schema, table, column).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count != 0 {
+				t.Errorf("removed managed summary column %s.%s still exists", table, column)
+			}
+		}
+	}
+	var ownerPolicyNullable string
+	if err := connection.QueryRow(t.Context(), `
+SELECT is_nullable
+FROM information_schema.columns
+WHERE table_schema = $1 AND table_name = 'executor_environments' AND column_name = 'owner_policy_sha256'`, schema).Scan(&ownerPolicyNullable); err != nil {
+		t.Fatal(err)
+	}
+	if ownerPolicyNullable != "YES" {
+		t.Errorf("executor_environments.owner_policy_sha256 nullability = %q, want YES", ownerPolicyNullable)
 	}
 }
 

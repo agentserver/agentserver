@@ -189,22 +189,20 @@ type managedEnvironmentRender struct {
 }
 
 type managedEnvironmentBootstrapJSON struct {
-	Version           int                                 `json:"version"`
-	WorkspaceID       string                              `json:"workspaceId"`
-	ExecutorID        string                              `json:"executorId"`
-	EnvironmentID     string                              `json:"environmentId"`
-	OwnerPolicySHA256 string                              `json:"ownerPolicySha256"`
-	Root              ManagedEnvironmentRootDocument      `json:"root"`
-	Runtime           ManagedCompatibilityRuntimeDocument `json:"runtime"`
+	Version       int                                 `json:"version"`
+	WorkspaceID   string                              `json:"workspaceId"`
+	ExecutorID    string                              `json:"executorId"`
+	EnvironmentID string                              `json:"environmentId"`
+	Root          ManagedEnvironmentRootDocument      `json:"root"`
+	Runtime       ManagedCompatibilityRuntimeDocument `json:"runtime"`
 }
 
 func renderManagedEnvironmentBootstrapJSON(config LoadedConfig, profile LoadedManagedSandboxProfile) ([]byte, error) {
 	document := config.Document
 	return marshalCanonicalDocument(managedEnvironmentBootstrapJSON{
 		Version: 1, WorkspaceID: document.Bootstrap.WorkspaceID, ExecutorID: document.Bootstrap.ExecutorID,
-		EnvironmentID:     profile.Document.Environment.EnvironmentID,
-		OwnerPolicySHA256: profile.OwnerPolicySHA256,
-		Root:              profile.Document.Environment.Root, Runtime: profile.Document.Environment.Compatibility,
+		EnvironmentID: profile.Document.Environment.EnvironmentID,
+		Root:          profile.Document.Environment.Root, Runtime: profile.Document.Environment.Compatibility,
 	})
 }
 

@@ -64,6 +64,49 @@ func TestRunManifestCanonicalSignVerifyAndDigest(t *testing.T) {
 	}
 }
 
+func TestRunManifestSignsAndVerifiesCodexPermissionMode(t *testing.T) {
+	manifest := validManifest(t)
+	manifest.PermissionMode = CodexPermissionModeAuto
+	manifest.PermissionModeVersion = 1
+	seed := sha256.Sum256([]byte("run-manifest-permission-mode-key"))
+	privateKey := ed25519.NewKeyFromSeed(seed[:])
+	signed, err := Sign(manifest, "cluster-key-1", privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(signed.Manifest, []byte(`"permissionMode":"auto"`)) {
+		t.Fatalf("signed manifest omitted permission mode: %s", signed.Manifest)
+	}
+	verified, err := signed.Verify("cluster-key-1", privateKey.Public().(ed25519.PublicKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verified.PermissionMode != CodexPermissionModeAuto {
+		t.Fatalf("verified permission mode = %q", verified.PermissionMode)
+	}
+
+	legacy := validManifest(t)
+	legacy.PermissionMode = ""
+	canonical, err := CanonicalBytes(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(canonical, []byte(`"permissionMode"`)) {
+		t.Fatalf("legacy manifest unexpectedly emitted permission mode: %s", canonical)
+	}
+	if mode, err := legacy.EffectivePermissionMode(); err != nil || mode != CodexPermissionModeReadOnly {
+		t.Fatalf("legacy effective permission mode = %q, %v", mode, err)
+	}
+}
+
+func TestRunManifestRejectsUnknownCodexPermissionMode(t *testing.T) {
+	manifest := validManifest(t)
+	manifest.PermissionMode = "future-mode"
+	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "permission mode") {
+		t.Fatalf("unknown permission mode error = %v", err)
+	}
+}
+
 func TestRunManifestRejectsTamperUnknownAndMissingSecurityField(t *testing.T) {
 	manifest := validManifest(t)
 	seed := sha256.Sum256([]byte("run-manifest-test-key"))
@@ -125,7 +168,7 @@ func TestRunManifestValidatesCatalogProjectionAndEndpoints(t *testing.T) {
 	}
 }
 
-func TestRunManifestV3BindsCheckpointToolPackAndArtifactProfile(t *testing.T) {
+func TestRunManifestBindsCheckpointArtifactProfileAndToolPack(t *testing.T) {
 	manifest := validManifest(t)
 	manifest.PreviousCheckpoint.RunAttemptID = ""
 	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "runAttemptId") {
@@ -143,21 +186,14 @@ func TestRunManifestV3BindsCheckpointToolPackAndArtifactProfile(t *testing.T) {
 	}
 	manifest = validManifest(t)
 	manifest.ToolPack = &ToolPackAuthority{
-		PackID: "lark-readonly@v1", PackSetDigest: strings.Repeat("1", 64),
-		SkillSHA256: strings.Repeat("2", 64),
+		PackID: "lark-readonly@v1", SkillSHA256: strings.Repeat("2", 64),
 	}
-	manifest.PreviousCheckpoint.PackSetDigest = manifest.ToolPack.PackSetDigest
 	if err := manifest.Validate(); err != nil {
 		t.Fatalf("valid tool-pack resume authority rejected: %v", err)
 	}
-	manifest.PreviousCheckpoint.PackSetDigest = strings.Repeat("3", 64)
-	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "must match") {
-		t.Fatalf("checkpoint pack-set drift error = %v", err)
-	}
 	manifest = validManifest(t)
 	manifest.ToolPack = &ToolPackAuthority{
-		PackID: "Lark/latest", PackSetDigest: strings.Repeat("1", 64),
-		SkillSHA256: strings.Repeat("2", 64),
+		PackID: "Lark/latest", SkillSHA256: strings.Repeat("2", 64),
 	}
 	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "versioned pack ID") {
 		t.Fatalf("invalid pack ID error = %v", err)
@@ -184,10 +220,8 @@ func TestRunManifestJSONSchemaAcceptsSignedEnvelope(t *testing.T) {
 	seed := sha256.Sum256([]byte("run-manifest-schema-key"))
 	manifest := validManifest(t)
 	manifest.ToolPack = &ToolPackAuthority{
-		PackID: "lark-readonly@v1", PackSetDigest: strings.Repeat("1", 64),
-		SkillSHA256: strings.Repeat("2", 64),
+		PackID: "lark-readonly@v1", SkillSHA256: strings.Repeat("2", 64),
 	}
-	manifest.PreviousCheckpoint.PackSetDigest = manifest.ToolPack.PackSetDigest
 	signed, err := Sign(manifest, "cluster-key-1", ed25519.NewKeyFromSeed(seed[:]))
 	if err != nil {
 		t.Fatal(err)
@@ -202,6 +236,50 @@ func TestRunManifestJSONSchemaAcceptsSignedEnvelope(t *testing.T) {
 	}
 	if err := resolved.Validate(value); err != nil {
 		t.Fatalf("valid signed run manifest rejected by schema: %v", err)
+	}
+
+	// The permission mode authority is optional only for legacy manifests, but
+	// its mode and CAS version must be emitted as a pair for new manifests.
+	withMode := validManifest(t)
+	withMode.PermissionMode = CodexPermissionModeAuto
+	withMode.PermissionModeVersion = 7
+	withModeSigned, err := Sign(withMode, "cluster-key-1", ed25519.NewKeyFromSeed(seed[:]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	withModeRaw, err := json.Marshal(withModeSigned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var withModeValue map[string]any
+	if err := json.Unmarshal(withModeRaw, &withModeValue); err != nil {
+		t.Fatal(err)
+	}
+	if err := resolved.Validate(withModeValue); err != nil {
+		t.Fatalf("signed run manifest with permission mode rejected by schema: %v", err)
+	}
+	for name, field := range map[string]string{
+		"mode without version": "permissionModeVersion",
+		"version without mode": "permissionMode",
+	} {
+		t.Run(name, func(t *testing.T) {
+			encoded, err := json.Marshal(withModeValue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var candidate map[string]any
+			if err := json.Unmarshal(encoded, &candidate); err != nil {
+				t.Fatal(err)
+			}
+			manifestValue, ok := candidate["manifest"].(map[string]any)
+			if !ok {
+				t.Fatal("signed manifest envelope has no manifest object")
+			}
+			delete(manifestValue, field)
+			if err := resolved.Validate(candidate); err == nil {
+				t.Fatalf("schema accepted permission authority with %s omitted", field)
+			}
+		})
 	}
 }
 

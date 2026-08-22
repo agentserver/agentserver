@@ -70,7 +70,6 @@ func TestTAENetworkProbeResourcesAreOneShotClosedWorldAuthority(t *testing.T) {
 		"AGENTSERVER_V2_TAE_DATA_PLANE_SUFFIX":                loaded.Document.Managed.TAE.DataPlaneSuffix,
 		"AGENTSERVER_V2_TAE_PROXY_URL":                        loaded.Document.ProxyProfiles[0].URL,
 		"AGENTSERVER_V2_TAE_BYTECLOUD_JWT_ENDPOINT":           loaded.Document.Managed.TAE.ByteCloudJWTEndpoint,
-		"AGENTSERVER_V2_TAE_PROBE_DEPLOYMENT_CONFIG_SHA256":   canonicalDigest(loaded.Document),
 		"AGENTSERVER_V2_TAE_PROBE_CONNECTIVITY_ATTEMPTS":      "20",
 		"AGENTSERVER_V2_TAE_PROBE_LIFECYCLE_ATTEMPTS":         "1",
 		"AGENTSERVER_V2_TAE_BYTECLOUD_ACCESS_KEY_ID_FILE":     serviceMaterialPath("bytecloud-access-key-id"),

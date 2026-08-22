@@ -23,9 +23,6 @@ const (
 	MetadataWorkspaceID     = "agentserver_workspace_id"
 	MetadataSessionID       = "agentserver_session_id"
 	MetadataEnvironmentID   = "agentserver_environment_id"
-	MetadataRuntimeSHA256   = "agentserver_runtime_sha256"
-	MetadataPackSetSHA256   = "agentserver_pack_sha256"
-	MetadataTAEPolicySHA256 = "agentserver_tae_policy_sha256"
 	defaultStreamGrace      = 30 * time.Second
 	defaultReconnectDelay   = 100 * time.Millisecond
 	defaultReconnectCount   = 2
@@ -130,7 +127,7 @@ func (provider *Provider) CreateSandbox(ctx context.Context, request sandboxgate
 		return sandboxgateway.ProviderSandbox{}, &sandboxgateway.ProviderError{Code: "invalid_create_request", Cause: err}
 	}
 	metadata := provider.createMetadata(request.SandboxID, request.IdempotencyKey, request.WorkspaceID, request.SessionID,
-		request.EnvironmentID, request.RuntimeProfileSHA256, request.PackSetSHA256)
+		request.EnvironmentID)
 	if err := validateMetadata(metadata); err != nil {
 		return sandboxgateway.ProviderSandbox{}, &sandboxgateway.ProviderError{Code: "invalid_create_metadata", Cause: err}
 	}
@@ -169,7 +166,7 @@ func (provider *Provider) FindSandbox(ctx context.Context, request sandboxgatewa
 		return sandboxgateway.ProviderSandbox{}, &sandboxgateway.ProviderError{Code: "provider_scope_mismatch", Cause: errors.New("TAE lookup differs from configured region or PSM")}
 	}
 	metadata := provider.createMetadata(request.SandboxID, request.IdempotencyKey, request.WorkspaceID, request.SessionID,
-		request.EnvironmentID, request.RuntimeProfileSHA256, request.PackSetSHA256)
+		request.EnvironmentID)
 	if err := validateMetadata(metadata); err != nil {
 		return sandboxgateway.ProviderSandbox{}, &sandboxgateway.ProviderError{Code: "invalid_find_metadata", Cause: err}
 	}
@@ -229,7 +226,7 @@ func (provider *Provider) DeleteSandbox(ctx context.Context, request sandboxgate
 		return &sandboxgateway.ProviderError{Code: "provider_scope_mismatch", Cause: errors.New("TAE delete differs from configured region or PSM")}
 	}
 	metadata := provider.createMetadata(identity.SandboxID, identity.IdempotencyKey, identity.WorkspaceID, identity.SessionID,
-		identity.EnvironmentID, identity.RuntimeProfileSHA256, identity.PackSetSHA256)
+		identity.EnvironmentID)
 	if err := validateMetadata(metadata); err != nil {
 		return &sandboxgateway.ProviderError{Code: "invalid_delete_metadata", Cause: err}
 	}
@@ -564,18 +561,16 @@ func safeRequestCause(requestError *RequestError) error {
 	return errors.New("TAE transport failed without a provider response")
 }
 
-func (provider *Provider) createMetadata(sandboxID, createID, workspaceID, sessionID, environmentID, runtimeDigest, packDigest string) map[string]string {
+func (provider *Provider) createMetadata(sandboxID, createID, workspaceID, sessionID, environmentID string) map[string]string {
 	return map[string]string{
 		MetadataSandboxID: sandboxID, MetadataCreateID: createID, MetadataWorkspaceID: workspaceID,
 		MetadataSessionID: sessionID, MetadataEnvironmentID: environmentID,
-		MetadataRuntimeSHA256: runtimeDigest, MetadataPackSetSHA256: packDigest,
-		MetadataTAEPolicySHA256: provider.policy.BindingSHA256,
 	}
 }
 
 func validateMetadata(metadata map[string]string) error {
-	if len(metadata) != 8 {
-		return errors.New("managed sandbox metadata must contain exactly eight identity fields")
+	if len(metadata) != 5 {
+		return errors.New("managed sandbox metadata must contain exactly five identity fields")
 	}
 	for name, value := range metadata {
 		if value == "" || len(value) > 512 || strings.ContainsAny(value, "\x00\r\n") {
@@ -587,7 +582,7 @@ func validateMetadata(metadata map[string]string) error {
 
 // metadataContainsIdentity verifies the complete agentserver-owned identity
 // projection while permitting TAE to append provider-owned metadata. The
-// request map is validated separately and always contains exactly the eight
+// request map is validated separately and always contains exactly the five
 // immutable identity fields. Missing or conflicting identity fields remain a
 // hard mismatch; provider-added fields do not weaken resource ownership.
 func metadataContainsIdentity(actual, expected map[string]string) bool {

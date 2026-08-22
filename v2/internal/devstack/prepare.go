@@ -674,6 +674,7 @@ func renderServiceEnvironments(
 			"AGENTSERVER_V2_HARNESS_MAX_CONCURRENT_ATTEMPTS": strconv.Itoa(document.Harness.MaxConcurrentAttempts),
 			"AGENTSERVER_V2_MAX_RUN_DURATION":                document.Harness.MaxRunDuration,
 			"AGENTSERVER_V2_MAX_APPROVAL_TTL":                document.Harness.MaxApprovalTTL,
+			"AGENTSERVER_V2_CODEX_PERMISSION_MODE":           document.Harness.CodexPermissionMode,
 		},
 	}, nil
 }

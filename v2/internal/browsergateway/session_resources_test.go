@@ -101,6 +101,33 @@ func TestSessionResourceProxyForwardsTranscriptAsReadOnly(t *testing.T) {
 	}
 }
 
+func TestSessionResourceProxyForwardsPermissionModePatch(t *testing.T) {
+	client := &http.Client{Transport: browserRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodPatch || request.URL.Path != corecontract.UserSessionPermissionModePath(projectorWorkspaceID, projectorSessionID) ||
+			request.Header.Get("Authorization") != "Bearer user-token" || request.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("Core permission mode request = %s %s headers=%v", request.Method, request.URL, request.Header)
+		}
+		var input corecontract.UpdateUserSessionPermissionModeRequest
+		if err := json.NewDecoder(request.Body).Decode(&input); err != nil || input.PermissionMode != "auto" || input.ExpectedPermissionModeVersion != 1 {
+			t.Fatalf("Core permission mode input = %+v, %v", input, err)
+		}
+		return browserJSONResponse(request, http.StatusOK, corecontract.UpdateUserSessionPermissionModeResponse{
+			Session: corecontract.UserSessionState{SessionID: projectorSessionID, WorkspaceID: projectorWorkspaceID, Title: "Mode", Status: "active", Version: 2, PermissionMode: "auto", PermissionModeVersion: 2},
+			Changed: true,
+		}), nil
+	})}
+	backend, _ := NewCoreRunBackend("https://core.agentserver.local", client)
+	proxy, _ := NewSessionResourceProxy(backend)
+	request := httptest.NewRequest(http.MethodPatch, corecontract.UserSessionPermissionModePath(projectorWorkspaceID, projectorSessionID), strings.NewReader(`{"permissionMode":"auto","expectedPermissionModeVersion":1}`))
+	request.Header.Set("Authorization", "Bearer user-token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	proxy.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"permissionMode":"auto"`) {
+		t.Fatalf("permission mode proxy response = %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestSessionResourceProxyForwardsOnlyReviewedTrajectoryQuery(t *testing.T) {
 	called := 0
 	client := &http.Client{Transport: browserRoundTripFunc(func(request *http.Request) (*http.Response, error) {

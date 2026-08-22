@@ -26,19 +26,21 @@ type RunLaunchCheckpoint struct {
 // the exact attempt has been claimed; it must not read model-controlled
 // endpoint, image, callback, or runtime configuration.
 type RunLaunchState struct {
-	Prompt             runmanifest.ObjectPointer
-	PreviousCheckpoint *RunLaunchCheckpoint
-	ExecutorPolicy     ExecutorCatalogPolicy
-	LLMGateway         *RunLLMGatewayBinding
-	LarkEgress         *RunLarkEgressBinding
-	ManagedSandbox     *RunManagedSandboxBinding
+	Prompt                 runmanifest.ObjectPointer
+	PreviousCheckpoint     *RunLaunchCheckpoint
+	ExecutorPolicy         ExecutorCatalogPolicy
+	LLMGateway             *RunLLMGatewayBinding
+	LarkEgress             *RunLarkEgressBinding
+	ManagedSandbox         *RunManagedSandboxBinding
+	PermissionMode         runmanifest.CodexPermissionMode
+	PermissionModeVersion  int64
+	PermissionModeExplicit bool
+	PermissionModeLegacy   bool
 }
 
 type RunManagedSandboxBinding struct {
 	SettingVersion int64
 	Region         string
-	ProfileID      string
-	BindingSHA256  string
 	EnvironmentID  string
 }
 
@@ -65,6 +67,9 @@ type RunLaunchStateSource interface {
 // holder instance rather than a load-balanced Service.
 type RunLaunchProfile struct {
 	CodexRuntimeManifestDigest string
+	// PermissionMode is deployment-owned Codex approval/sandbox authority.
+	// Empty is normalized to the safe read-only preset for legacy profiles.
+	PermissionMode             runmanifest.CodexPermissionMode
 	Model                      runmanifest.ModelRoute
 	ModelFromRun               bool
 	ExecutorMCPEndpoint        string
@@ -77,12 +82,21 @@ type RunLaunchProfile struct {
 	ControllerCallbackEndpoint string
 	ControllerCallbackIdentity string
 	ControllerCallbackAudience string
-	// ManagedSandboxProfiles is the immutable production launch catalog keyed
-	// by the exact profile ID frozen into a run. ManagedSandbox is retained only
+	// ManagedSandboxProfiles is the production launch catalog keyed by region.
+	// ManagedSandbox is retained only
 	// for insecure-development and legacy single-profile deployments.
 	ManagedSandboxProfiles map[string]ManagedSandboxLaunchSpec
 	ManagedSandbox         *ManagedSandboxLaunchSpec
 }
+
+// deploymentPermissionModeVersion is the epoch used when a launch source
+// does not provide Core's per-session permission-mode authority.  New Core
+// session rows always take the explicit branch below and carry their own CAS
+// version; this value only makes a static development/legacy deployment
+// profile's mode and version a valid, paired manifest projection.
+const deploymentPermissionModeVersion int64 = 1
+
+const maxPermissionModeVersion int64 = 1<<53 - 1
 
 // ConfiguredRunLaunchInputResolver combines authority-derived mutable state
 // with an immutable deployment profile. It validates the complete result
@@ -127,6 +141,10 @@ func (resolver *ConfiguredRunLaunchInputResolver) ResolveRunLaunch(ctx context.C
 }
 
 func (profile RunLaunchProfile) inputs(state RunLaunchState) (RunLaunchInputs, error) {
+	permissionMode, permissionModeVersion, err := resolveRunPermissionMode(profile.PermissionMode, state)
+	if err != nil {
+		return RunLaunchInputs{}, err
+	}
 	policy := state.ExecutorPolicy
 	policy.AllowedTools = append([]string(nil), state.ExecutorPolicy.AllowedTools...)
 	managedSandbox, err := profile.selectManagedSandbox(state.ManagedSandbox)
@@ -139,13 +157,6 @@ func (profile RunLaunchProfile) inputs(state RunLaunchState) (RunLaunchInputs, e
 		if state.PreviousCheckpoint.Checkpoint.CodexRuntimeManifestDigest != profile.CodexRuntimeManifestDigest ||
 			state.PreviousCheckpoint.Checkpoint.CheckpointAllowlistVersion != int64(profile.CheckpointAllowlistVersion) {
 			return RunLaunchInputs{}, errors.New("previous checkpoint runtime manifest or allowlist version does not match the deployment profile")
-		}
-		wantPackSetDigest := ""
-		if managedSandbox != nil {
-			wantPackSetDigest = managedSandbox.PackSetDigest
-		}
-		if state.PreviousCheckpoint.Checkpoint.PackSetDigest != wantPackSetDigest {
-			return RunLaunchInputs{}, errors.New("previous checkpoint pack-set digest does not match the deployment profile")
 		}
 		proposal, err := BuildExecutorCatalog(policy)
 		if err != nil {
@@ -182,6 +193,7 @@ func (profile RunLaunchProfile) inputs(state RunLaunchState) (RunLaunchInputs, e
 	return RunLaunchInputs{
 		Prompt: state.Prompt, PreviousCheckpoint: previousCheckpoint, PreviousBrainToolCatalog: previousCatalog,
 		CodexRuntimeManifestDigest: profile.CodexRuntimeManifestDigest, Model: model,
+		PermissionMode: permissionMode, PermissionModeVersion: permissionModeVersion,
 		ExecutorCatalogPolicy: policy, ExecutorMCPEndpoint: profile.ExecutorMCPEndpoint,
 		ExecutorMCPTLSIdentity: profile.ExecutorMCPTLSIdentity, ExecutorMCPAudience: profile.ExecutorMCPAudience,
 		Limits: profile.Limits, CheckpointAllowlistVersion: profile.CheckpointAllowlistVersion,
@@ -191,6 +203,45 @@ func (profile RunLaunchProfile) inputs(state RunLaunchState) (RunLaunchInputs, e
 		ControllerCallbackAudience: profile.ControllerCallbackAudience,
 		ManagedSandbox:             managedSandbox,
 	}, nil
+}
+
+// resolveRunPermissionMode validates the marker/value relationship carried by
+// a launch-state source before any deployment fallback is applied.  A source
+// that accidentally combines legacy and explicit authority, or supplies mode
+// values without declaring which branch they belong to, must fail closed;
+// otherwise a malformed response could silently select a different preset.
+func resolveRunPermissionMode(profileMode runmanifest.CodexPermissionMode, state RunLaunchState) (runmanifest.CodexPermissionMode, int64, error) {
+	if state.PermissionModeLegacy && state.PermissionModeExplicit {
+		return "", 0, errors.New("permission mode authority cannot be both legacy and explicit")
+	}
+	if state.PermissionModeLegacy {
+		if state.PermissionMode != "" || state.PermissionModeVersion != 0 {
+			return "", 0, errors.New("legacy permission mode authority must omit mode and version")
+		}
+		// Preserve the pre-mode manifest semantics for old launch rows.
+		return "", 0, nil
+	}
+	if state.PermissionModeExplicit {
+		if state.PermissionMode == "" {
+			return "", 0, errors.New("explicit permission mode authority requires a mode")
+		}
+		mode, err := state.PermissionMode.Effective()
+		if err != nil {
+			return "", 0, err
+		}
+		if state.PermissionModeVersion < 1 || state.PermissionModeVersion > maxPermissionModeVersion {
+			return "", 0, errors.New("explicit permission mode authority requires a positive JSON-safe version")
+		}
+		return mode, state.PermissionModeVersion, nil
+	}
+	if state.PermissionMode != "" || state.PermissionModeVersion != 0 {
+		return "", 0, errors.New("permission mode authority values require an explicit or legacy marker")
+	}
+	mode, err := profileMode.Effective()
+	if err != nil {
+		return "", 0, err
+	}
+	return mode, deploymentPermissionModeVersion, nil
 }
 
 func (profile RunLaunchProfile) selectManagedSandbox(binding *RunManagedSandboxBinding) (*ManagedSandboxLaunchSpec, error) {
@@ -206,39 +257,26 @@ func (profile RunLaunchProfile) selectManagedSandbox(binding *RunManagedSandboxB
 
 	var selected *ManagedSandboxLaunchSpec
 	if len(profile.ManagedSandboxProfiles) != 0 {
-		spec, ok := profile.ManagedSandboxProfiles[binding.ProfileID]
+		spec, ok := profile.ManagedSandboxProfiles[binding.Region]
 		if !ok {
-			return nil, fmt.Errorf("run selected managed sandbox profile %q which is not installed on this harness", binding.ProfileID)
+			return nil, fmt.Errorf("run selected managed sandbox region %q which is not installed on this harness", binding.Region)
 		}
 		selected = cloneManagedSandboxLaunchSpec(&spec)
-		if selected.Region != binding.Region || selected.ProfileID != binding.ProfileID ||
-			selected.ProfileBindingSHA256 != binding.BindingSHA256 || selected.EnvironmentID != binding.EnvironmentID {
-			return nil, errors.New("run managed sandbox binding does not exactly match the deployment profile")
-		}
 	} else {
 		selected = cloneManagedSandboxLaunchSpec(profile.ManagedSandbox)
 		if selected == nil {
 			return nil, errors.New("run selected a managed sandbox profile but this harness deployment has none")
 		}
-		if selected.EnvironmentID != binding.EnvironmentID {
-			return nil, errors.New("run managed sandbox environment does not match the deployment profile")
-		}
-		// A legacy single-profile spec may carry no routing authority. If it
-		// does carry authority, it must still match rather than being silently
-		// overwritten by the run projection.
-		if selected.ProfileID != "" && (selected.Region != binding.Region ||
-			selected.ProfileID != binding.ProfileID || selected.ProfileBindingSHA256 != binding.BindingSHA256) {
-			return nil, errors.New("run managed sandbox binding does not match the legacy deployment profile")
-		}
 		selected.Region = binding.Region
-		selected.ProfileID = binding.ProfileID
-		selected.ProfileBindingSHA256 = binding.BindingSHA256
 	}
 	selected.SettingVersion = binding.SettingVersion
 	return selected, nil
 }
 
 func validateRunLaunchProfile(profile RunLaunchProfile) error {
+	if _, err := profile.PermissionMode.Effective(); err != nil {
+		return err
+	}
 	if profile.ManagedSandbox != nil && len(profile.ManagedSandboxProfiles) != 0 {
 		return errors.New("managed sandbox single profile and profile catalog cannot both be configured")
 	}
@@ -247,9 +285,9 @@ func validateRunLaunchProfile(profile RunLaunchProfile) error {
 	}
 	seenRegions := make(map[string]struct{}, len(profile.ManagedSandboxProfiles))
 	seenEnvironments := make(map[string]struct{}, len(profile.ManagedSandboxProfiles))
-	for profileID, spec := range profile.ManagedSandboxProfiles {
-		if !managedsandboxprofile.ValidProfileID(profileID) || profileID != spec.ProfileID {
-			return errors.New("managed sandbox profile catalog key must equal its canonical profile ID")
+	for region, spec := range profile.ManagedSandboxProfiles {
+		if !managedsandboxprofile.ValidRegion(region) || region != spec.Region {
+			return errors.New("managed sandbox catalog key must equal its region")
 		}
 		if spec.SettingVersion != 0 {
 			return errors.New("deployment managed sandbox profile must not pin a workspace setting version")
@@ -265,7 +303,7 @@ func validateRunLaunchProfile(profile RunLaunchProfile) error {
 		validationSpec := spec
 		validationSpec.SettingVersion = 1
 		if err := validateManagedSandboxLaunch(profileValidationScheduledRun(), validationSpec); err != nil {
-			return fmt.Errorf("managed sandbox profile %q: %w", profileID, err)
+			return fmt.Errorf("managed sandbox region %q: %w", region, err)
 		}
 	}
 	policyDigest := sha256.Sum256([]byte("agentserver-v2/run-launch-profile-validation"))
@@ -285,24 +323,19 @@ func validateRunLaunchProfile(profile RunLaunchProfile) error {
 		if len(profile.ManagedSandboxProfiles) != 0 {
 			for _, spec := range profile.ManagedSandboxProfiles {
 				state.ManagedSandbox = &RunManagedSandboxBinding{
-					SettingVersion: 1, Region: spec.Region, ProfileID: spec.ProfileID,
-					BindingSHA256: spec.ProfileBindingSHA256, EnvironmentID: spec.EnvironmentID,
+					SettingVersion: 1, Region: spec.Region, EnvironmentID: spec.EnvironmentID,
 				}
 				break
 			}
 		} else if profile.ManagedSandbox != nil {
 			spec := profile.ManagedSandbox
 			state.ManagedSandbox = &RunManagedSandboxBinding{
-				SettingVersion: 1, Region: spec.Region, ProfileID: spec.ProfileID,
-				BindingSHA256: spec.ProfileBindingSHA256, EnvironmentID: spec.EnvironmentID,
+				SettingVersion: 1, Region: spec.Region, EnvironmentID: spec.EnvironmentID,
 			}
 			if state.ManagedSandbox.Region == "" {
-				// Legacy production configuration receives its immutable routing
-				// authority from Core. Use a canonical synthetic binding only to
-				// exercise the same overwrite-and-validate path at construction.
+				// Legacy production configuration receives its routing region from
+				// Core. Use the default region at construction time.
 				state.ManagedSandbox.Region = managedsandboxprofile.DefaultRegion
-				state.ManagedSandbox.ProfileID = "profile-validation-v1"
-				state.ManagedSandbox.BindingSHA256 = strings.Repeat("d", 64)
 			}
 		}
 	}
@@ -342,14 +375,27 @@ func cloneRunLaunchProfile(source RunLaunchProfile) RunLaunchProfile {
 	copy.ManagedSandbox = cloneManagedSandboxLaunchSpec(source.ManagedSandbox)
 	if source.ManagedSandboxProfiles != nil {
 		copy.ManagedSandboxProfiles = make(map[string]ManagedSandboxLaunchSpec, len(source.ManagedSandboxProfiles))
-		for profileID, spec := range source.ManagedSandboxProfiles {
-			copy.ManagedSandboxProfiles[profileID] = spec
+		for region, spec := range source.ManagedSandboxProfiles {
+			copy.ManagedSandboxProfiles[region] = spec
 		}
 	}
 	return copy
 }
 
 func validateResolvedRunLaunchInputs(scheduled ScheduledRunAttempt, inputs RunLaunchInputs) error {
+	permissionMode := inputs.PermissionMode
+	if permissionMode != "" {
+		var err error
+		permissionMode, err = permissionMode.Effective()
+		if err != nil {
+			return err
+		}
+		if inputs.PermissionModeVersion < 1 {
+			return errors.New("explicit permission mode requires a positive version")
+		}
+	} else if inputs.PermissionModeVersion != 0 {
+		return errors.New("permission mode version cannot be set without a mode")
+	}
 	if (inputs.PreviousCheckpoint == nil) != (inputs.PreviousBrainToolCatalog == nil) {
 		return errors.New("previous checkpoint and brain tool catalog authority must be supplied together")
 	}
@@ -381,6 +427,7 @@ func validateResolvedRunLaunchInputs(scheduled ScheduledRunAttempt, inputs RunLa
 		HolderID: claim.RunAttempt.HolderID, Prompt: inputs.Prompt,
 		PreviousCheckpoint:         clonePreviousCheckpoint(inputs.PreviousCheckpoint),
 		CodexRuntimeManifestDigest: inputs.CodexRuntimeManifestDigest, Model: inputs.Model, ExecutorMCP: executorMCP,
+		PermissionMode: permissionMode, PermissionModeVersion: inputs.PermissionModeVersion,
 		ExecutorPolicy: runmanifest.ExecutorPolicy{
 			Version: proposal.PolicyVersion, ContextDigest: hex.EncodeToString(proposal.PolicyContextDigest[:]),
 		},

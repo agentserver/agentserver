@@ -18,12 +18,10 @@ func TestManagedSandboxLaunchRejectsActivityBeyondSandboxLifetime(t *testing.T) 
 
 func poolTestManagedSandboxSpec() ManagedSandboxLaunchSpec {
 	return ManagedSandboxLaunchSpec{
-		EnvironmentID:        "64000000-0000-4000-8000-000000000006",
-		RuntimeProfileDigest: strings.Repeat("a", 64),
-		PackID:               "lark-readonly@v1",
-		PackSetDigest:        strings.Repeat("b", 64),
-		SkillSHA256:          strings.Repeat("c", 64),
-		SandboxTTL:           time.Hour,
-		ActivityTTL:          time.Second,
+		EnvironmentID: "64000000-0000-4000-8000-000000000006",
+		PackID:        "lark-readonly@v1",
+		SkillSHA256:   strings.Repeat("c", 64),
+		SandboxTTL:    time.Hour,
+		ActivityTTL:   time.Second,
 	}
 }

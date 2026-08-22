@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"sync"
 	"time"
 
@@ -14,21 +13,15 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/sandboxcontract"
 )
 
-var managedSandboxSHA256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
-
 // ManagedSandboxProvisioningSpec is deployment-owned authority for the one
 // managed environment advertised by this executor-gateway. No provider
 // session identity is stored here; the sandbox-gateway allocates and fences
 // that identity when the first executor tool is actually called.
 type ManagedSandboxProvisioningSpec struct {
-	Region               string
-	ProfileID            string
-	ProfileBindingSHA256 string
-	EnvironmentID        string
-	RuntimeProfileDigest string
-	PackSetDigest        string
-	SandboxTTL           time.Duration
-	ActivityTTL          time.Duration
+	Region        string
+	EnvironmentID string
+	SandboxTTL    time.Duration
+	ActivityTTL   time.Duration
 }
 
 // ManagedSandboxSessionLease keeps one attempt's managed sandbox activity
@@ -97,13 +90,10 @@ func (acquirer *GatewayManagedSandboxSessionAcquirer) Acquire(
 	if err := validateExecutorMCPPrincipal(principal); err != nil {
 		return nil, err
 	}
-	if acquirer.spec.ProfileID != "" {
+	if acquirer.spec.Region != "" {
 		authority := principal.ManagedSandbox
-		if authority == nil || authority.Region != acquirer.spec.Region ||
-			authority.ProfileID != acquirer.spec.ProfileID ||
-			authority.BindingSHA256 != acquirer.spec.ProfileBindingSHA256 ||
-			authority.EnvironmentID != acquirer.spec.EnvironmentID {
-			return nil, errors.New("managed sandbox run authority does not match the provisioning profile")
+		if authority == nil || authority.Region != acquirer.spec.Region {
+			return nil, errors.New("managed sandbox run region does not match the provisioning configuration")
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -126,9 +116,7 @@ func (acquirer *GatewayManagedSandboxSessionAcquirer) Acquire(
 	startedAt := acquirer.now()
 	response, err := acquirer.client.Ensure(ctx, sandboxcontract.EnsureSandboxRequest{
 		Profile: sandboxcontract.ProfileV1, RequestID: requestID, Session: session,
-		RequestedTTLSeconds:  int64(acquirer.spec.SandboxTTL / time.Second),
-		RuntimeProfileDigest: acquirer.spec.RuntimeProfileDigest,
-		PackSetDigest:        acquirer.spec.PackSetDigest,
+		RequestedTTLSeconds: int64(acquirer.spec.SandboxTTL / time.Second),
 	}, authority)
 	if err != nil {
 		acquirer.logAcquire(ctx, principal, "ensure_failed", "", 0, startedAt, err)
@@ -154,11 +142,11 @@ func (acquirer *GatewayManagedSandboxSessionAcquirer) Acquire(
 	return lease, nil
 }
 
-// ManagedSandboxSessionAcquirerRouter selects the one immutable provisioning
-// profile carried by the Core-issued run authority. It never reads a tool
+// ManagedSandboxSessionAcquirerRouter selects the regional provisioning
+// configuration carried by the Core-issued run authority. It never reads a tool
 // argument or request header to choose a region.
 type ManagedSandboxSessionAcquirerRouter struct {
-	byProfile map[string]ManagedSandboxSessionAcquirer
+	byRegion map[string]ManagedSandboxSessionAcquirer
 }
 
 func NewManagedSandboxSessionAcquirerRouter(
@@ -168,19 +156,19 @@ func NewManagedSandboxSessionAcquirerRouter(
 		return nil, errors.New("managed sandbox acquirer router requires between 1 and 32 profiles")
 	}
 	copy := make(map[string]ManagedSandboxSessionAcquirer, len(profiles))
-	for profileID, acquirer := range profiles {
+	for region, acquirer := range profiles {
 		if acquirer == nil {
 			return nil, errors.New("managed sandbox acquirer router contains a nil profile")
 		}
-		if !managedsandboxprofile.ValidProfileID(profileID) {
-			return nil, errors.New("managed sandbox acquirer profile ID must be canonical bounded text")
+		if !managedsandboxprofile.ValidRegion(region) {
+			return nil, errors.New("managed sandbox acquirer region is unsupported")
 		}
-		if _, duplicate := copy[profileID]; duplicate {
-			return nil, errors.New("managed sandbox acquirer profile is repeated")
+		if _, duplicate := copy[region]; duplicate {
+			return nil, errors.New("managed sandbox acquirer region is repeated")
 		}
-		copy[profileID] = acquirer
+		copy[region] = acquirer
 	}
-	return &ManagedSandboxSessionAcquirerRouter{byProfile: copy}, nil
+	return &ManagedSandboxSessionAcquirerRouter{byRegion: copy}, nil
 }
 
 func (router *ManagedSandboxSessionAcquirerRouter) Acquire(
@@ -190,9 +178,9 @@ func (router *ManagedSandboxSessionAcquirerRouter) Acquire(
 	if router == nil || principal.ManagedSandbox == nil {
 		return nil, errors.New("managed sandbox run authority is required")
 	}
-	acquirer := router.byProfile[principal.ManagedSandbox.ProfileID]
+	acquirer := router.byRegion[principal.ManagedSandbox.Region]
 	if acquirer == nil {
-		return nil, errors.New("managed sandbox run profile is not configured")
+		return nil, errors.New("managed sandbox run region is not configured")
 	}
 	return acquirer.Acquire(ctx, principal)
 }
@@ -424,14 +412,9 @@ func (lease *gatewayManagedSandboxSessionLease) setError(err error) {
 
 func validateManagedSandboxProvisioningSpec(spec ManagedSandboxProvisioningSpec) error {
 	if err := (managedsandboxprofile.Binding{
-		Region: spec.Region, ProfileID: spec.ProfileID,
-		BindingSHA256: spec.ProfileBindingSHA256, EnvironmentID: spec.EnvironmentID,
+		Region: spec.Region, EnvironmentID: spec.EnvironmentID,
 	}).Validate(); err != nil {
 		return err
-	}
-	if !managedSandboxSHA256Pattern.MatchString(spec.RuntimeProfileDigest) ||
-		!managedSandboxSHA256Pattern.MatchString(spec.PackSetDigest) {
-		return errors.New("managed sandbox runtime profile and pack-set digests must be lowercase SHA-256")
 	}
 	if spec.SandboxTTL < 30*time.Second || spec.SandboxTTL > 24*time.Hour || spec.SandboxTTL%time.Second != 0 {
 		return errors.New("managed sandbox TTL must be whole seconds between 30 seconds and 24 hours")

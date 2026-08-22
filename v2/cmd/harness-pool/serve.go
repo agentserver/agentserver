@@ -293,6 +293,7 @@ func runLaunchProfile(config harnessPoolConfig, callbackEndpoint string, modelFr
 	maxExecution := min(config.maxRunDuration, 10*time.Minute)
 	return harnesspool.RunLaunchProfile{
 		CodexRuntimeManifestDigest: config.runtimeDigest,
+		PermissionMode:             config.codexPermissionMode,
 		Model: runmanifest.ModelRoute{
 			Model: config.model, Provider: config.modelProvider, Endpoint: config.modelEndpoint,
 			TLSIdentity: config.modelTLSIdentity, Audience: developmentModelAudience,

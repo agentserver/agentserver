@@ -9,6 +9,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -19,15 +20,17 @@ const (
 )
 
 type UserSession struct {
-	ID          string
-	WorkspaceID string
-	CreatorID   string
-	Title       string
-	Status      string
-	ActiveRunID string
-	Version     int64
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID                    string
+	WorkspaceID           string
+	CreatorID             string
+	Title                 string
+	Status                string
+	ActiveRunID           string
+	Version               int64
+	PermissionMode        runmanifest.CodexPermissionMode
+	PermissionModeVersion int64
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 type CreateUserSessionCommand struct {
@@ -51,6 +54,19 @@ type UpdateUserSessionCommand struct {
 }
 
 type UpdateUserSessionResult struct {
+	Session UserSession
+	Changed bool
+}
+
+type UpdateUserSessionPermissionModeCommand struct {
+	WorkspaceID                   string
+	SessionID                     string
+	ActorID                       string
+	PermissionMode                runmanifest.CodexPermissionMode
+	ExpectedPermissionModeVersion int64
+}
+
+type UpdateUserSessionPermissionModeResult struct {
 	Session UserSession
 	Changed bool
 }
@@ -79,7 +95,8 @@ func (s *StateStore) ListUserSessions(ctx context.Context, workspaceID, actorID 
 		query := fmt.Sprintf(`
 SELECT session.id::text, session.workspace_id::text, session.creator_id::text,
        session.title, session.status, session.active_run_id::text,
-       session.version, session.created_at, session.updated_at
+       session.version, session.permission_mode, session.permission_mode_version,
+       session.created_at, session.updated_at
 FROM %s AS session
 WHERE session.workspace_id = $1
   AND session.creator_id = $2
@@ -156,6 +173,62 @@ ON CONFLICT (id) DO NOTHING`, s.table("sessions"))
 			return CreateUserSessionResult{}, commandError(ErrorConflict, operation, "session", command.SessionID, "session identity is already in use with different state")
 		}
 		return CreateUserSessionResult{Session: session, Created: created}, nil
+	})
+}
+
+// UpdateUserSessionPermissionMode changes only the next-turn preference. It
+// deliberately leaves sessions.version untouched so an unrelated title/run
+// CAS token cannot make a mode switch fail (or vice versa).
+func (s *StateStore) UpdateUserSessionPermissionMode(ctx context.Context, command UpdateUserSessionPermissionModeCommand) (UpdateUserSessionPermissionModeResult, error) {
+	const operation = "UpdateUserSessionPermissionMode"
+	if err := validateUserSessionScope(command.WorkspaceID, command.SessionID, command.ActorID); err != nil {
+		return UpdateUserSessionPermissionModeResult{}, commandError(ErrorInvalidArgument, operation, "session", command.SessionID, err.Error())
+	}
+	mode, err := command.PermissionMode.Effective()
+	if err != nil || command.PermissionMode == "" {
+		if err == nil {
+			err = errors.New("permission_mode must be explicit")
+		}
+		return UpdateUserSessionPermissionModeResult{}, commandError(ErrorInvalidArgument, operation, "session", command.SessionID, err.Error())
+	}
+	if command.ExpectedPermissionModeVersion < 1 || command.ExpectedPermissionModeVersion > maxSafeJSONInteger {
+		return UpdateUserSessionPermissionModeResult{}, commandError(ErrorInvalidArgument, operation, "session", command.SessionID, "expected_permission_mode_version must be a positive JSON-safe integer")
+	}
+	return withStateTransaction(ctx, s, operation, func(transaction pgx.Tx) (UpdateUserSessionPermissionModeResult, error) {
+		session, err := s.readUserSession(ctx, transaction, operation, command.WorkspaceID, command.SessionID, command.ActorID, true)
+		if err != nil {
+			return UpdateUserSessionPermissionModeResult{}, err
+		}
+		role, err := s.readWorkspaceMemberRole(ctx, transaction, command.WorkspaceID, command.ActorID)
+		if err != nil {
+			return UpdateUserSessionPermissionModeResult{}, err
+		}
+		if role == WorkspaceRoleViewer {
+			return UpdateUserSessionPermissionModeResult{}, commandError(ErrorForbidden, operation, "workspace", command.WorkspaceID, "workspace role cannot change session permission mode")
+		}
+		if session.Status != UserSessionStatusActive {
+			return UpdateUserSessionPermissionModeResult{}, commandError(ErrorInvalidState, operation, "session", command.SessionID, "only an active session can change permission mode")
+		}
+		if session.PermissionModeVersion != command.ExpectedPermissionModeVersion {
+			return UpdateUserSessionPermissionModeResult{}, versionConflict(operation, "session_permission_mode", command.SessionID, session.PermissionModeVersion)
+		}
+		if session.PermissionModeVersion >= maxSafeJSONInteger {
+			return UpdateUserSessionPermissionModeResult{}, commandError(ErrorInvalidState, operation, "session_permission_mode", command.SessionID, "permission mode version is exhausted")
+		}
+		if session.PermissionMode == mode {
+			return UpdateUserSessionPermissionModeResult{Session: session, Changed: false}, nil
+		}
+		update := fmt.Sprintf(`
+UPDATE %s
+SET permission_mode = $2,
+    permission_mode_version = permission_mode_version + 1,
+    updated_at = pg_catalog.clock_timestamp()
+WHERE id = $1`, s.table("sessions"))
+		if _, err := transaction.Exec(ctx, update, command.SessionID, string(mode)); err != nil {
+			return UpdateUserSessionPermissionModeResult{}, databaseError(operation+" update session permission mode", err)
+		}
+		session, err = s.readUserSession(ctx, transaction, operation, command.WorkspaceID, command.SessionID, command.ActorID, false)
+		return UpdateUserSessionPermissionModeResult{Session: session, Changed: true}, err
 	})
 }
 
@@ -239,7 +312,8 @@ func (s *StateStore) readUserSession(
 	query := fmt.Sprintf(`
 SELECT session.id::text, session.workspace_id::text, session.creator_id::text,
        session.title, session.status, session.active_run_id::text,
-       session.version, session.created_at, session.updated_at
+       session.version, session.permission_mode, session.permission_mode_version,
+       session.created_at, session.updated_at
 FROM %s AS session
 JOIN %s AS workspace
   ON workspace.id = session.workspace_id AND workspace.status = 'active'
@@ -273,7 +347,8 @@ func scanUserSession(row userSessionRowScanner) (UserSession, error) {
 	var activeRunID *string
 	err := row.Scan(
 		&session.ID, &session.WorkspaceID, &session.CreatorID, &session.Title,
-		&session.Status, &activeRunID, &session.Version, &session.CreatedAt, &session.UpdatedAt,
+		&session.Status, &activeRunID, &session.Version, &session.PermissionMode,
+		&session.PermissionModeVersion, &session.CreatedAt, &session.UpdatedAt,
 	)
 	if activeRunID != nil {
 		session.ActiveRunID = *activeRunID

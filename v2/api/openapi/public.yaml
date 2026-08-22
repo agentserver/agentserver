@@ -565,6 +565,23 @@
         }
       }
     },
+    "/v2/workspaces/{workspaceId}/sessions/{sessionId}/permission-mode": {
+      "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/SessionId"}],
+      "patch": {
+        "operationId": "updateUserSessionPermissionMode",
+        "description": "Changes the Codex permission preset used by the next run/turn. The independent permission-mode version is a compare-and-swap token and does not interrupt an active run.",
+        "security": [{"browserGatewayMTLS": [], "browserOAuth": ["sessions:update"]}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateUserSessionPermissionModeRequest"}}}},
+        "responses": {
+          "200": {"description": "Updated permission mode", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateUserSessionPermissionModeResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
     "/v2/workspaces/{workspaceId}/sessions/{sessionId}/actions/archive": {
       "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/SessionId"}],
       "post": {
@@ -1206,7 +1223,7 @@
       },
       "UserSessionState": {
         "type": "object", "additionalProperties": false,
-        "required": ["sessionId", "workspaceId", "title", "status", "version", "createdAt", "updatedAt"],
+        "required": ["sessionId", "workspaceId", "title", "status", "version", "permissionMode", "permissionModeVersion", "createdAt", "updatedAt"],
         "properties": {
           "sessionId": {"$ref": "#/components/schemas/UUID"},
           "workspaceId": {"$ref": "#/components/schemas/UUID"},
@@ -1214,6 +1231,8 @@
           "status": {"enum": ["active", "archived"]},
           "activeRunId": {"$ref": "#/components/schemas/UUID"},
           "version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "permissionMode": {"type": "string", "enum": ["read-only", "auto", "full-access"]},
+          "permissionModeVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
           "createdAt": {"type": "string", "format": "date-time"},
           "updatedAt": {"type": "string", "format": "date-time"}
         }
@@ -1235,6 +1254,17 @@
         "properties": {"title": {"type": "string", "minLength": 1, "maxLength": 256}, "expectedVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}}
       },
       "UpdateUserSessionResponse": {
+        "type": "object", "additionalProperties": false, "required": ["session", "changed"],
+        "properties": {"session": {"$ref": "#/components/schemas/UserSessionState"}, "changed": {"type": "boolean"}}
+      },
+      "UpdateUserSessionPermissionModeRequest": {
+        "type": "object", "additionalProperties": false, "required": ["permissionMode", "expectedPermissionModeVersion"],
+        "properties": {
+          "permissionMode": {"type": "string", "enum": ["read-only", "auto", "full-access"]},
+          "expectedPermissionModeVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+        }
+      },
+      "UpdateUserSessionPermissionModeResponse": {
         "type": "object", "additionalProperties": false, "required": ["session", "changed"],
         "properties": {"session": {"$ref": "#/components/schemas/UserSessionState"}, "changed": {"type": "boolean"}}
       },
@@ -1336,7 +1366,8 @@
         "type": "object", "additionalProperties": false, "required": ["prompt"],
         "properties": {
           "clientRunId": {"type": "string", "maxLength": 256, "description": "Untrusted AG-UI correlation value; it is not the server run identity or part of the idempotency request hash."},
-          "prompt": {"type": "string", "minLength": 1, "maxLength": 262144, "x-agentserver-maxBytes": 262144}
+          "prompt": {"type": "string", "minLength": 1, "maxLength": 262144, "x-agentserver-maxBytes": 262144},
+          "expectedPermissionModeVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991, "description": "CAS token for the session's next-turn Codex permission mode."}
         }
       },
       "CreateUserRunResponse": {

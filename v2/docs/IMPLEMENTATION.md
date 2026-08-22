@@ -264,7 +264,7 @@ conformance test 是 Go subprocess test，不依赖 v1 gateway：
 | A02 | experimental gating | initialize 开启 experimentalApi 后 environments: [] 被接受；未开启时明确失败 |
 | A03 | dynamic-tool-only surface | 无Codex MCP配置；fake model捕获的tools精确等于冻结`dynamicTools`；builtin、未发布tool和通用MCP resource handler不可见/不可dispatch，真实批准call成为`item/tool/call` |
 | A04 | Codex MCP deny-all | system requirements固定`mcp_servers = {}`；direct executor、user和trusted-project MCP均零请求，dynamic tool surface不受影响 |
-| A05 | 无双重审批 | production thread使用`approvalPolicy=never`仍产生批准dynamic callback，且不产生Codex通用approval request；产品审批只在worker MCP client侧 |
+| A05 | 无双重审批 | Codex preset mode 只产生其自身的 approval/reviewer 行为；executor 产品审批仍只在 worker MCP client 侧产生批准 dynamic callback，不经过 app-server |
 | A06 | worker MCP elicitation | reference/real worker调用fake gateway MCP；`elicitation/create`经pool/core决定并回到gateway，覆盖accept/decline/cancel、主动TTL、nonce/generation和断线，不经过app-server |
 | A07 | typed interrupt cleanup | 单reader/writer loop中`turn/interrupt`产生terminal interrupted；未回复dynamic call以所属turn terminal清理并取消MCP，正常call以response写入清理；有界event overflow fail closed，两者都不等待`serverRequest/resolved` |
 | A08 | graceful shutdown | turn terminal、typed callback cleanup及execution/process收口后关闭stdin，child有界正常退出；rollout、SQLite/WAL状态稳定，无固定sleep |
@@ -925,6 +925,9 @@ Phase 0根据pinned schema生成两份只读文件；两者都不包含executor 
 ~~~toml
 approval_policy = "never"
 
+# thread/start 的受信 permissionMode 可按 run 选择 Codex 的 read-only、auto
+# 或 full-access preset；此文件仍保持旧的最安全基础默认。
+
 # 仅在所 pin release 的 schema 与 tool capture 均证明该键真实生效时加入。
 [tools.update_plan]
 enabled = false
@@ -946,7 +949,7 @@ worker的run-manifest validator对executor MCP独立要求`https` scheme、规�
 
 worker先把checkpoint allowlist恢复到全新`CODEX_HOME`，断言staging严格匹配manifest，再写入本attempt新config；checkpoint无权覆盖配置。对当前已验证build，allowlist就是该brain thread的单个rollout JSONL，SQLite/WAL/SHM均不恢复。worker随后用自身credential初始化executor MCP，规范化`tools/list`并与manifest/catalog digest逐字节比较；不一致则在启动turn前失败。最后以manifest中的绝对路径启动`harness-final-exec`，由它固定exec `codex app-server --listen stdio:// --strict-config`。strict-config只拒绝未知字段，不能替代tool capture、final-exec和OS/网络隔离。
 
-新thread的`thread/start`显式发送`environments: []`、`approvalPolicy: "never"`、从冻结catalog机械生成的`dynamicTools`和空`selectedCapabilityRoots`；每次`turn/start`也发送空environments。当前`ThreadResumeParams`没有environments或dynamicTools字段，cold resume固定发送rollout path与`excludeTurns: true`，收到RPC response后直接进入turn/start，不等待`thread/started` notification。resume前必须确认catalog digest与checkpoint相同；变化时创建新thread。cwd指向空、只读的非工作树目录。
+新thread的`thread/start`显式发送`environments: []`、从签名 `permissionMode` 机械映射的 Codex 权限字段、从冻结catalog机械生成的`dynamicTools`和空`selectedCapabilityRoots`；每次`turn/start`也发送空environments。当前`ThreadResumeParams`没有environments或dynamicTools字段，cold resume固定发送rollout path与`excludeTurns: true`，收到RPC response后直接进入turn/start，并在该 turn 上重申签名 permission mode，不等待`thread/started` notification。resume前必须确认catalog digest与checkpoint相同；变化时创建新thread。cwd指向空、只读的非工作树目录。
 
 ### 8.4 tool catalog 与 MCP bridge
 
@@ -1064,7 +1067,7 @@ browser-gateway运行配置为：public listener使用`AGENTSERVER_V2_BROWSER_GA
 7. core到期CAS为`expired`后主动下发，worker以`decline`回复pending MCP elicitation；若无法确认或送达，则取消MCP并在cleanup grace内`turn/interrupt`。
 8. 显式cancel、worker control/MCP断线和elicitation异常清理同样cancel MCP、interrupt并按typed outstanding规则收口；浏览器断线本身不取消。
 
-app-server使用`approvalPolicy=never`，因此不会出现第二张Codex tool approval卡。gateway active-execution deadline在pending approval期间由我们自己的状态机暂停；MCP transport timeout不能充当approval expiry timer。
+app-server 默认使用签名 run manifest 的 Codex `permissionMode=read-only`（`on-request` + `auto_review` + `read-only`）；session 可通过独立 CAS API 为下一轮选择 `auto`（`on-request` + `auto_review` + `workspace-write`）或 `full-access`（`never` + `danger-full-access`）。Core 创建 run 时原子冻结 mode/version，所以 active run 不会被后续切换改变；deployment profile 仅是缺少显式 Core authority 时的 fallback。旧 manifest 缺少字段时仍使用历史 `never` + `read-only` 投影。这些 mode 只控制 Codex 自身权限，executor 产品审批仍由 worker MCP client 与 Core/gateway 的 `elicitation/create` 链路负责。gateway active-execution deadline在pending approval期间由我们自己的状态机暂停；MCP transport timeout不能充当approval expiry timer。
 
 Hydra login/consent bridge和reference Web的Code + PKCE入口现已在executor+harness主链稳定后接入；后续产品Web UI仍复用同一browser-gateway协议边界，不引入codex app-server直连。
 

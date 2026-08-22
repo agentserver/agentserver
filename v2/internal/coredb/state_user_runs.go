@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -27,7 +28,7 @@ func (s *StateStore) AuthorizeRunSession(ctx context.Context, workspaceID, sessi
 		}
 	}
 	query := fmt.Sprintf(`
-SELECT wm.role, s.version
+	SELECT wm.role, s.version, s.permission_mode, s.permission_mode_version
 FROM %s AS s
 JOIN %s AS w ON w.id = s.workspace_id
 JOIN %s AS wm ON wm.workspace_id = s.workspace_id AND wm.user_id = $3
@@ -36,7 +37,9 @@ WHERE s.id = $1 AND s.workspace_id = $2 AND s.creator_id = $3
 		s.table("sessions"), s.table("workspaces"), s.table("workspace_members"))
 	var role string
 	var version int64
-	if err := s.queryRow(ctx, query, sessionID, workspaceID, actorID).Scan(&role, &version); err != nil {
+	var permissionMode string
+	var permissionModeVersion int64
+	if err := s.queryRow(ctx, query, sessionID, workspaceID, actorID).Scan(&role, &version, &permissionMode, &permissionModeVersion); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return AuthorizedSession{}, commandError(ErrorNotFound, operation, "session", sessionID, "active authorized session does not exist")
 		}
@@ -45,7 +48,15 @@ WHERE s.id = $1 AND s.workspace_id = $2 AND s.creator_id = $3
 	if role == "viewer" {
 		return AuthorizedSession{}, commandError(ErrorForbidden, operation, "workspace", workspaceID, "workspace role cannot create runs")
 	}
-	return AuthorizedSession{WorkspaceID: workspaceID, SessionID: sessionID, ActorID: actorID, Role: role, SessionVersion: version}, nil
+	mode, err := runmanifest.CodexPermissionMode(permissionMode).Effective()
+	if err != nil || permissionModeVersion < 1 || permissionModeVersion > maxSafeJSONInteger {
+		if err == nil {
+			err = errors.New("stored session permission mode version is invalid")
+		}
+		return AuthorizedSession{}, databaseError(operation+" validate session permission mode", err)
+	}
+	return AuthorizedSession{WorkspaceID: workspaceID, SessionID: sessionID, ActorID: actorID, Role: role, SessionVersion: version,
+		PermissionMode: mode, PermissionModeVersion: permissionModeVersion}, nil
 }
 
 // ReadAuthorizedRunEvents returns one transactionally consistent committed

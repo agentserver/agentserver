@@ -1503,6 +1503,8 @@
           "runAttemptGeneration": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
           "runVersion": {"type": "integer", "minimum": 1},
           "runAttemptVersion": {"type": "integer", "minimum": 1},
+          "permissionMode": {"type": "string", "enum": ["read-only", "auto", "full-access"]},
+          "permissionModeVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
           "prompt": {"$ref": "#/components/schemas/RunLaunchObjectPointer"},
           "previousCheckpoint": {"$ref": "#/components/schemas/RunLaunchCheckpointState"},
           "executorPolicy": {"$ref": "#/components/schemas/RunLaunchExecutorPolicyState"},

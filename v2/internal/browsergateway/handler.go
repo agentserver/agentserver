@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"mime"
 	"net/http"
 	"regexp"
@@ -157,20 +158,21 @@ func (handler *AGUIHandler) ServeHTTP(response http.ResponseWriter, request *htt
 		writeHTTPError(response, http.StatusBadRequest, "invalid_agui_input", err.Error())
 		return
 	}
-	prompt, resumeCursor, err := validateRunAgentInput(input, sessionID)
+	prompt, resumeCursor, expectedPermissionModeVersion, err := validateRunAgentInput(input, sessionID)
 	if err != nil {
 		writeHTTPError(response, http.StatusBadRequest, "invalid_agui_input", err.Error())
 		return
 	}
 
 	started, err := handler.backend.StartRun(request.Context(), StartRunRequest{
-		BearerToken:    bearer,
-		WorkspaceID:    workspaceID,
-		SessionID:      sessionID,
-		IdempotencyKey: idempotencyKey,
-		ClientRunID:    input.RunID,
-		Prompt:         prompt,
-		ResumeCursor:   resumeCursor,
+		BearerToken:                   bearer,
+		WorkspaceID:                   workspaceID,
+		SessionID:                     sessionID,
+		IdempotencyKey:                idempotencyKey,
+		ClientRunID:                   input.RunID,
+		Prompt:                        prompt,
+		ResumeCursor:                  resumeCursor,
+		ExpectedPermissionModeVersion: expectedPermissionModeVersion,
 	})
 	if err != nil {
 		handler.writeStartError(response, request, err)
@@ -601,75 +603,92 @@ func validateRunAgentInputKeys(object map[string]any) error {
 	return nil
 }
 
-func validateRunAgentInput(input aguitypes.RunAgentInput, sessionID string) (string, string, error) {
+func validateRunAgentInput(input aguitypes.RunAgentInput, sessionID string) (string, string, int64, error) {
 	if input.ThreadID != "" && input.ThreadID != sessionID {
-		return "", "", errors.New("threadId must be empty or match the sessionId path")
+		return "", "", 0, errors.New("threadId must be empty or match the sessionId path")
 	}
 	if input.ParentRunID != nil {
-		return "", "", errors.New("parentRunId is not supported by this endpoint")
+		return "", "", 0, errors.New("parentRunId is not supported by this endpoint")
 	}
 	if len(input.Tools) != 0 {
-		return "", "", errors.New("client-declared tools are forbidden; the server freezes the tool catalog")
+		return "", "", 0, errors.New("client-declared tools are forbidden; the server freezes the tool catalog")
 	}
 	if len(input.Context) != 0 {
-		return "", "", errors.New("client-declared agent context is not supported")
+		return "", "", 0, errors.New("client-declared agent context is not supported")
 	}
 	if len(input.Resume) != 0 {
-		return "", "", errors.New("AG-UI interrupt resume is not implemented in this phase")
+		return "", "", 0, errors.New("AG-UI interrupt resume is not implemented in this phase")
 	}
 	if input.State != nil {
-		return "", "", errors.New("client-declared state is not supported")
+		return "", "", 0, errors.New("client-declared state is not supported")
 	}
 	if len(input.Messages) != 1 {
-		return "", "", errors.New("messages must contain exactly one new user message")
+		return "", "", 0, errors.New("messages must contain exactly one new user message")
 	}
 	message := input.Messages[len(input.Messages)-1]
 	if message.Role != aguitypes.RoleUser {
-		return "", "", errors.New("the message must have role user")
+		return "", "", 0, errors.New("the message must have role user")
 	}
 	prompt, ok := message.ContentString()
 	if !ok {
-		return "", "", errors.New("the user message must contain text in this phase")
+		return "", "", 0, errors.New("the user message must contain text in this phase")
 	}
 	if !utf8.ValidString(prompt) || strings.ContainsRune(prompt, '\x00') || prompt == "" || len(prompt) > maxPromptBytes {
-		return "", "", fmt.Errorf("user prompt must contain between 1 and %d bytes of UTF-8 text without NUL", maxPromptBytes)
+		return "", "", 0, fmt.Errorf("user prompt must contain between 1 and %d bytes of UTF-8 text without NUL", maxPromptBytes)
 	}
 	if input.RunID != "" && (len(input.RunID) > 256 || strings.ContainsAny(input.RunID, "\x00\r\n")) {
-		return "", "", errors.New("client runId must be bounded text without NUL or line breaks")
+		return "", "", 0, errors.New("client runId must be bounded text without NUL or line breaks")
 	}
-	resumeCursor, err := eventCursorFromForwardedProps(input.ForwardedProps)
+	resumeCursor, expectedPermissionModeVersion, err := eventCursorFromForwardedProps(input.ForwardedProps)
 	if err != nil {
-		return "", "", err
+		return "", "", 0, err
 	}
-	return prompt, resumeCursor, nil
+	return prompt, resumeCursor, expectedPermissionModeVersion, nil
 }
 
-func eventCursorFromForwardedProps(value any) (string, error) {
+func eventCursorFromForwardedProps(value any) (string, int64, error) {
 	if value == nil {
-		return "", nil
+		return "", 0, nil
 	}
 	root, ok := value.(map[string]any)
 	if !ok {
-		return "", errors.New("forwardedProps must be an object")
+		return "", 0, errors.New("forwardedProps must be an object")
 	}
 	if len(root) == 0 {
-		return "", nil
+		return "", 0, nil
 	}
 	if len(root) != 1 {
-		return "", errors.New("forwardedProps may contain only the agentserver extension")
+		return "", 0, errors.New("forwardedProps may contain only the agentserver extension")
 	}
 	extension, ok := root["agentserver"].(map[string]any)
-	if !ok || len(extension) != 1 {
-		return "", errors.New("forwardedProps.agentserver must contain exactly eventCursor")
+	if !ok || len(extension) == 0 || len(extension) > 2 {
+		return "", 0, errors.New("forwardedProps.agentserver must contain eventCursor and/or expectedPermissionModeVersion")
 	}
-	cursor, ok := extension["eventCursor"].(string)
-	if !ok {
-		return "", errors.New("forwardedProps.agentserver.eventCursor must be a string")
+	cursor := ""
+	if raw, present := extension["eventCursor"]; present {
+		var ok bool
+		cursor, ok = raw.(string)
+		if !ok {
+			return "", 0, errors.New("forwardedProps.agentserver.eventCursor must be a string")
+		}
+		if err := validateCursor("forwarded event cursor", cursor); err != nil {
+			return "", 0, err
+		}
 	}
-	if err := validateCursor("forwarded event cursor", cursor); err != nil {
-		return "", err
+	expectedVersion := int64(0)
+	if raw, present := extension["expectedPermissionModeVersion"]; present {
+		number, ok := raw.(float64)
+		if !ok || number < 1 || number > float64(1<<53-1) || number != math.Trunc(number) {
+			return "", 0, errors.New("forwardedProps.agentserver.expectedPermissionModeVersion must be a positive JSON-safe integer")
+		}
+		expectedVersion = int64(number)
 	}
-	return cursor, nil
+	for key := range extension {
+		if key != "eventCursor" && key != "expectedPermissionModeVersion" {
+			return "", 0, fmt.Errorf("unknown forwardedProps.agentserver field %q", key)
+		}
+	}
+	return cursor, expectedVersion, nil
 }
 
 func extractBearer(header http.Header) (string, error) {

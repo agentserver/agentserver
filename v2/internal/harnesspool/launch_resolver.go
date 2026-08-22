@@ -26,12 +26,16 @@ type RunLaunchCheckpoint struct {
 // the exact attempt has been claimed; it must not read model-controlled
 // endpoint, image, callback, or runtime configuration.
 type RunLaunchState struct {
-	Prompt             runmanifest.ObjectPointer
-	PreviousCheckpoint *RunLaunchCheckpoint
-	ExecutorPolicy     ExecutorCatalogPolicy
-	LLMGateway         *RunLLMGatewayBinding
-	LarkEgress         *RunLarkEgressBinding
-	ManagedSandbox     *RunManagedSandboxBinding
+	Prompt                 runmanifest.ObjectPointer
+	PreviousCheckpoint     *RunLaunchCheckpoint
+	ExecutorPolicy         ExecutorCatalogPolicy
+	LLMGateway             *RunLLMGatewayBinding
+	LarkEgress             *RunLarkEgressBinding
+	ManagedSandbox         *RunManagedSandboxBinding
+	PermissionMode         runmanifest.CodexPermissionMode
+	PermissionModeVersion  int64
+	PermissionModeExplicit bool
+	PermissionModeLegacy   bool
 }
 
 type RunManagedSandboxBinding struct {
@@ -63,6 +67,9 @@ type RunLaunchStateSource interface {
 // holder instance rather than a load-balanced Service.
 type RunLaunchProfile struct {
 	CodexRuntimeManifestDigest string
+	// PermissionMode is deployment-owned Codex approval/sandbox authority.
+	// Empty is normalized to the safe read-only preset for legacy profiles.
+	PermissionMode             runmanifest.CodexPermissionMode
 	Model                      runmanifest.ModelRoute
 	ModelFromRun               bool
 	ExecutorMCPEndpoint        string
@@ -81,6 +88,15 @@ type RunLaunchProfile struct {
 	ManagedSandboxProfiles map[string]ManagedSandboxLaunchSpec
 	ManagedSandbox         *ManagedSandboxLaunchSpec
 }
+
+// deploymentPermissionModeVersion is the epoch used when a launch source
+// does not provide Core's per-session permission-mode authority.  New Core
+// session rows always take the explicit branch below and carry their own CAS
+// version; this value only makes a static development/legacy deployment
+// profile's mode and version a valid, paired manifest projection.
+const deploymentPermissionModeVersion int64 = 1
+
+const maxPermissionModeVersion int64 = 1<<53 - 1
 
 // ConfiguredRunLaunchInputResolver combines authority-derived mutable state
 // with an immutable deployment profile. It validates the complete result
@@ -125,6 +141,10 @@ func (resolver *ConfiguredRunLaunchInputResolver) ResolveRunLaunch(ctx context.C
 }
 
 func (profile RunLaunchProfile) inputs(state RunLaunchState) (RunLaunchInputs, error) {
+	permissionMode, permissionModeVersion, err := resolveRunPermissionMode(profile.PermissionMode, state)
+	if err != nil {
+		return RunLaunchInputs{}, err
+	}
 	policy := state.ExecutorPolicy
 	policy.AllowedTools = append([]string(nil), state.ExecutorPolicy.AllowedTools...)
 	managedSandbox, err := profile.selectManagedSandbox(state.ManagedSandbox)
@@ -173,6 +193,7 @@ func (profile RunLaunchProfile) inputs(state RunLaunchState) (RunLaunchInputs, e
 	return RunLaunchInputs{
 		Prompt: state.Prompt, PreviousCheckpoint: previousCheckpoint, PreviousBrainToolCatalog: previousCatalog,
 		CodexRuntimeManifestDigest: profile.CodexRuntimeManifestDigest, Model: model,
+		PermissionMode: permissionMode, PermissionModeVersion: permissionModeVersion,
 		ExecutorCatalogPolicy: policy, ExecutorMCPEndpoint: profile.ExecutorMCPEndpoint,
 		ExecutorMCPTLSIdentity: profile.ExecutorMCPTLSIdentity, ExecutorMCPAudience: profile.ExecutorMCPAudience,
 		Limits: profile.Limits, CheckpointAllowlistVersion: profile.CheckpointAllowlistVersion,
@@ -182,6 +203,45 @@ func (profile RunLaunchProfile) inputs(state RunLaunchState) (RunLaunchInputs, e
 		ControllerCallbackAudience: profile.ControllerCallbackAudience,
 		ManagedSandbox:             managedSandbox,
 	}, nil
+}
+
+// resolveRunPermissionMode validates the marker/value relationship carried by
+// a launch-state source before any deployment fallback is applied.  A source
+// that accidentally combines legacy and explicit authority, or supplies mode
+// values without declaring which branch they belong to, must fail closed;
+// otherwise a malformed response could silently select a different preset.
+func resolveRunPermissionMode(profileMode runmanifest.CodexPermissionMode, state RunLaunchState) (runmanifest.CodexPermissionMode, int64, error) {
+	if state.PermissionModeLegacy && state.PermissionModeExplicit {
+		return "", 0, errors.New("permission mode authority cannot be both legacy and explicit")
+	}
+	if state.PermissionModeLegacy {
+		if state.PermissionMode != "" || state.PermissionModeVersion != 0 {
+			return "", 0, errors.New("legacy permission mode authority must omit mode and version")
+		}
+		// Preserve the pre-mode manifest semantics for old launch rows.
+		return "", 0, nil
+	}
+	if state.PermissionModeExplicit {
+		if state.PermissionMode == "" {
+			return "", 0, errors.New("explicit permission mode authority requires a mode")
+		}
+		mode, err := state.PermissionMode.Effective()
+		if err != nil {
+			return "", 0, err
+		}
+		if state.PermissionModeVersion < 1 || state.PermissionModeVersion > maxPermissionModeVersion {
+			return "", 0, errors.New("explicit permission mode authority requires a positive JSON-safe version")
+		}
+		return mode, state.PermissionModeVersion, nil
+	}
+	if state.PermissionMode != "" || state.PermissionModeVersion != 0 {
+		return "", 0, errors.New("permission mode authority values require an explicit or legacy marker")
+	}
+	mode, err := profileMode.Effective()
+	if err != nil {
+		return "", 0, err
+	}
+	return mode, deploymentPermissionModeVersion, nil
 }
 
 func (profile RunLaunchProfile) selectManagedSandbox(binding *RunManagedSandboxBinding) (*ManagedSandboxLaunchSpec, error) {
@@ -214,6 +274,9 @@ func (profile RunLaunchProfile) selectManagedSandbox(binding *RunManagedSandboxB
 }
 
 func validateRunLaunchProfile(profile RunLaunchProfile) error {
+	if _, err := profile.PermissionMode.Effective(); err != nil {
+		return err
+	}
 	if profile.ManagedSandbox != nil && len(profile.ManagedSandboxProfiles) != 0 {
 		return errors.New("managed sandbox single profile and profile catalog cannot both be configured")
 	}
@@ -320,6 +383,19 @@ func cloneRunLaunchProfile(source RunLaunchProfile) RunLaunchProfile {
 }
 
 func validateResolvedRunLaunchInputs(scheduled ScheduledRunAttempt, inputs RunLaunchInputs) error {
+	permissionMode := inputs.PermissionMode
+	if permissionMode != "" {
+		var err error
+		permissionMode, err = permissionMode.Effective()
+		if err != nil {
+			return err
+		}
+		if inputs.PermissionModeVersion < 1 {
+			return errors.New("explicit permission mode requires a positive version")
+		}
+	} else if inputs.PermissionModeVersion != 0 {
+		return errors.New("permission mode version cannot be set without a mode")
+	}
 	if (inputs.PreviousCheckpoint == nil) != (inputs.PreviousBrainToolCatalog == nil) {
 		return errors.New("previous checkpoint and brain tool catalog authority must be supplied together")
 	}
@@ -351,6 +427,7 @@ func validateResolvedRunLaunchInputs(scheduled ScheduledRunAttempt, inputs RunLa
 		HolderID: claim.RunAttempt.HolderID, Prompt: inputs.Prompt,
 		PreviousCheckpoint:         clonePreviousCheckpoint(inputs.PreviousCheckpoint),
 		CodexRuntimeManifestDigest: inputs.CodexRuntimeManifestDigest, Model: inputs.Model, ExecutorMCP: executorMCP,
+		PermissionMode: permissionMode, PermissionModeVersion: inputs.PermissionModeVersion,
 		ExecutorPolicy: runmanifest.ExecutorPolicy{
 			Version: proposal.PolicyVersion, ContextDigest: hex.EncodeToString(proposal.PolicyContextDigest[:]),
 		},

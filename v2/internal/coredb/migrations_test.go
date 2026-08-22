@@ -12,8 +12,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations() error = %v", err)
 	}
-	if len(migrations) != 30 {
-		t.Fatalf("migration count = %d, want 30", len(migrations))
+	if len(migrations) != 31 {
+		t.Fatalf("migration count = %d, want 31", len(migrations))
 	}
 	migration := migrations[0]
 	if migration.Version != 1 || migration.Name != "session_run_kernel" {
@@ -109,6 +109,9 @@ func TestEmbeddedMigrations(t *testing.T) {
 	if migrations[29].Version != 30 || migrations[29].Name != "remove_managed_summary_locks" {
 		t.Fatalf("thirtieth migration identity = %04d_%s, want 0030_remove_managed_summary_locks", migrations[29].Version, migrations[29].Name)
 	}
+	if migrations[30].Version != 31 || migrations[30].Name != "session_codex_permission_mode" {
+		t.Fatalf("thirty-first migration identity = %04d_%s, want 0031_session_codex_permission_mode", migrations[30].Version, migrations[30].Name)
+	}
 	if !strings.Contains(migrations[25].SQL, "'process_env'") {
 		t.Fatal("process environment audit migration does not admit the process_env stage")
 	}
@@ -142,6 +145,19 @@ func TestEmbeddedMigrations(t *testing.T) {
 	} {
 		if !strings.Contains(migrations[29].SQL, required) {
 			t.Fatalf("managed summary removal migration is missing %q", required)
+		}
+	}
+	for _, required := range []string{
+		"ADD COLUMN permission_mode",
+		"permission_mode_version",
+		"run_launch_states_permission_mode_pair",
+		"permission_mode IS NOT NULL",
+		"permission_mode_version IS NOT NULL",
+		"9007199254740991",
+		"'full-access'",
+	} {
+		if !strings.Contains(migrations[30].SQL, required) {
+			t.Fatalf("permission mode migration is missing %q", required)
 		}
 	}
 }

@@ -36,6 +36,7 @@ func (proxy *SessionResourceProxy) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle(corecontract.UserSessionCollectionRoutePattern, proxy)
 	mux.Handle(corecontract.UserSessionResourceRoutePattern, proxy)
+	mux.Handle(corecontract.UserSessionPermissionModeRoutePattern, proxy)
 	mux.Handle(corecontract.UserSessionTranscriptRoutePattern, proxy)
 	mux.Handle(corecontract.UserSessionTrajectoryRoutePattern, proxy)
 	mux.Handle(corecontract.UserSessionArchiveRoutePattern, proxy)
@@ -113,6 +114,9 @@ func (proxy *SessionResourceProxy) ServeHTTP(response http.ResponseWriter, reque
 }
 
 func allowedSessionResourceMethods(request *http.Request) []string {
+	if strings.HasSuffix(request.URL.Path, "/permission-mode") {
+		return []string{http.MethodPatch}
+	}
 	if strings.HasSuffix(request.URL.Path, "/actions/archive") {
 		return []string{http.MethodPost}
 	}

@@ -119,6 +119,7 @@ func (handler *UserRunHandler) create(response http.ResponseWriter, request *htt
 	result, err := handler.commands.CreateUserRun(request.Context(), CreateUserRunCommand{
 		ActorID: actorID, WorkspaceID: workspaceID, SessionID: sessionID,
 		IdempotencyKey: idempotencyKey, ClientRunID: input.ClientRunID, Prompt: input.Prompt,
+		ExpectedPermissionModeVersion: input.ExpectedPermissionModeVersion,
 	})
 	if err != nil {
 		handler.writeServiceError(response, request, err)

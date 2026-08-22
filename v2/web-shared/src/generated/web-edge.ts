@@ -111,7 +111,8 @@ export interface components {
         };
         AGUIForwardedProps: {
             agentserver: {
-                eventCursor: string;
+                eventCursor?: string;
+                expectedPermissionModeVersion?: number;
             };
         };
         UserSessionTrajectoryDetail: {

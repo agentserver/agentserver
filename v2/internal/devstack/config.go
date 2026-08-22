@@ -25,6 +25,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/braincatalog"
 	"github.com/agentserver/agentserver/v2/internal/harnessworker"
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 	"github.com/agentserver/agentserver/v2/internal/runtimelock"
 )
 
@@ -100,6 +101,7 @@ type HarnessDocument struct {
 	MaxConcurrentAttempts int    `json:"maxConcurrentAttempts"`
 	MaxRunDuration        string `json:"maxRunDuration"`
 	MaxApprovalTTL        string `json:"maxApprovalTtl"`
+	CodexPermissionMode   string `json:"codexPermissionMode,omitempty"`
 }
 
 type IdentitiesDocument struct {
@@ -188,6 +190,11 @@ func ValidateConfig(document ConfigDocument) (LoadedConfig, error) {
 	if maxApprovalTTL > maxRunDuration {
 		return LoadedConfig{}, errors.New("harness.maxApprovalTtl must not exceed harness.maxRunDuration")
 	}
+	permissionMode, err := runmanifest.CodexPermissionMode(document.Harness.CodexPermissionMode).Effective()
+	if err != nil {
+		return LoadedConfig{}, fmt.Errorf("harness.codexPermissionMode: %w", err)
+	}
+	document.Harness.CodexPermissionMode = string(permissionMode)
 
 	addresses := []struct {
 		name  string

@@ -25,8 +25,26 @@ func TestValidateConfigAcceptsSupportedLinuxDeployment(t *testing.T) {
 		t.Fatal(err)
 	}
 	if loaded.Document.Platform != ProductionPlatform || loaded.MaxRunDuration.String() != "30m0s" ||
+		loaded.Document.Runtime.CodexPermissionMode != "read-only" ||
 		strings.Join(loaded.Document.Runtime.AllowedTools, ",") != "list_environments,read_file,shell" {
 		t.Fatalf("loaded config = %+v", loaded)
+	}
+}
+
+func TestValidateConfigSelectsAndRejectsCodexPermissionMode(t *testing.T) {
+	document := validConfigDocument()
+	document.Runtime.CodexPermissionMode = "auto"
+	loaded, err := ValidateConfig(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Document.Runtime.CodexPermissionMode != "auto" {
+		t.Fatalf("loaded Codex permission mode = %q", loaded.Document.Runtime.CodexPermissionMode)
+	}
+
+	document.Runtime.CodexPermissionMode = "future-mode"
+	if _, err := ValidateConfig(document); err == nil || !strings.Contains(err.Error(), "codexPermissionMode") {
+		t.Fatalf("unknown Codex permission mode error = %v", err)
 	}
 }
 

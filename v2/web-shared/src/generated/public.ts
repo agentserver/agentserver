@@ -552,6 +552,26 @@ export interface paths {
         patch: operations["updateUserSession"];
         trace?: never;
     };
+    "/v2/workspaces/{workspaceId}/sessions/{sessionId}/permission-mode": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** @description Changes the Codex permission preset used by the next run/turn. The independent permission-mode version is a compare-and-swap token and does not interrupt an active run. */
+        patch: operations["updateUserSessionPermissionMode"];
+        trace?: never;
+    };
     "/v2/workspaces/{workspaceId}/sessions/{sessionId}/actions/archive": {
         parameters: {
             query?: never;
@@ -1099,6 +1119,9 @@ export interface components {
             status: "active" | "archived";
             activeRunId?: components["schemas"]["UUID"];
             version: number;
+            /** @enum {string} */
+            permissionMode: "read-only" | "auto" | "full-access";
+            permissionModeVersion: number;
             /** Format: date-time */
             createdAt: string;
             /** Format: date-time */
@@ -1120,6 +1143,15 @@ export interface components {
             expectedVersion: number;
         };
         UpdateUserSessionResponse: {
+            session: components["schemas"]["UserSessionState"];
+            changed: boolean;
+        };
+        UpdateUserSessionPermissionModeRequest: {
+            /** @enum {string} */
+            permissionMode: "read-only" | "auto" | "full-access";
+            expectedPermissionModeVersion: number;
+        };
+        UpdateUserSessionPermissionModeResponse: {
             session: components["schemas"]["UserSessionState"];
             changed: boolean;
         };
@@ -1205,6 +1237,8 @@ export interface components {
             /** @description Untrusted AG-UI correlation value; it is not the server run identity or part of the idempotency request hash. */
             clientRunId?: string;
             prompt: string;
+            /** @description CAS token for the session's next-turn Codex permission mode. */
+            expectedPermissionModeVersion?: number;
         };
         CreateUserRunResponse: {
             workspaceId: components["schemas"]["UUID"];
@@ -2709,6 +2743,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UpdateUserSessionResponse"];
+                };
+            };
+            400: components["responses"]["PublicError"];
+            401: components["responses"]["PublicError"];
+            403: components["responses"]["PublicError"];
+            404: components["responses"]["PublicError"];
+            409: components["responses"]["PublicError"];
+        };
+    };
+    updateUserSessionPermissionMode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateUserSessionPermissionModeRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated permission mode */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpdateUserSessionPermissionModeResponse"];
                 };
             };
             400: components["responses"]["PublicError"];

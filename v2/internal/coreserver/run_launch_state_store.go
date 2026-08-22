@@ -7,6 +7,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/coredb"
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
 
 type RunLaunchStateStore interface {
@@ -41,6 +42,21 @@ func (queries StateStoreRunLaunchStateQueries) ResolveRunLaunchState(ctx context
 			Version: resolved.ExecutorPolicy.Version, ContextDigest: hex.EncodeToString(resolved.ExecutorPolicy.ContextDigest[:]),
 			AllowedTools: append([]string(nil), resolved.ExecutorPolicy.AllowedTools...),
 		},
+	}
+	if resolved.PermissionModeExplicit {
+		modeValue, err := runmanifest.CodexPermissionMode(resolved.PermissionMode).Effective()
+		if err != nil || resolved.PermissionMode == "" || resolved.PermissionModeVersion < 1 || resolved.PermissionModeVersion > 1<<53-1 {
+			if err == nil {
+				err = errors.New("permission mode authority is invalid")
+			}
+			return corecontract.ResolveRunLaunchStateResponse{}, err
+		}
+		mode := string(modeValue)
+		version := resolved.PermissionModeVersion
+		response.PermissionMode = &mode
+		response.PermissionModeVersion = &version
+	} else if resolved.PermissionMode != "" || resolved.PermissionModeVersion != 0 {
+		return corecontract.ResolveRunLaunchStateResponse{}, errors.New("permission mode authority is set without an explicit marker")
 	}
 	if resolved.LLMGateway != (coredb.RunLLMGatewayBinding{}) {
 		response.LLMGateway = &corecontract.RunLaunchLLMGatewayState{

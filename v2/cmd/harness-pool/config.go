@@ -20,6 +20,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/managedtools"
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 	"github.com/agentserver/agentserver/v2/internal/runtimelock"
 )
 
@@ -60,6 +61,7 @@ const (
 	poolMaxConcurrentEnvironment         = "AGENTSERVER_V2_HARNESS_MAX_CONCURRENT_ATTEMPTS"
 	poolMaxRunDurationEnvironment        = "AGENTSERVER_V2_MAX_RUN_DURATION"
 	poolMaxApprovalTTLEnvironment        = "AGENTSERVER_V2_MAX_APPROVAL_TTL"
+	poolCodexPermissionModeEnvironment   = "AGENTSERVER_V2_CODEX_PERMISSION_MODE"
 	poolManagedEnvironmentIDEnvironment  = "AGENTSERVER_V2_MANAGED_ENVIRONMENT_ID"
 	poolManagedSkillDigestEnvironment    = "AGENTSERVER_V2_MANAGED_SKILL_SHA256"
 	poolManagedSandboxTTLEnvironment     = "AGENTSERVER_V2_MANAGED_SANDBOX_TTL"
@@ -117,6 +119,7 @@ type harnessPoolConfig struct {
 	maxConcurrent       int
 	maxRunDuration      time.Duration
 	maxApprovalTTL      time.Duration
+	codexPermissionMode runmanifest.CodexPermissionMode
 
 	managedSandbox         *harnesspool.ManagedSandboxLaunchSpec
 	managedSandboxProfiles map[string]harnesspool.ManagedSandboxLaunchSpec
@@ -282,6 +285,11 @@ func loadHarnessPoolConfig(getenv func(string) string, production bool) (harness
 	if config.maxApprovalTTL > config.maxRunDuration {
 		return harnessPoolConfig{}, fmt.Errorf("%s must not exceed %s", poolMaxApprovalTTLEnvironment, poolMaxRunDurationEnvironment)
 	}
+	permissionMode, err := runmanifest.CodexPermissionMode(strings.TrimSpace(getenv(poolCodexPermissionModeEnvironment))).Effective()
+	if err != nil {
+		return harnessPoolConfig{}, fmt.Errorf("%s: %w", poolCodexPermissionModeEnvironment, err)
+	}
+	config.codexPermissionMode = permissionMode
 	if err := loadOptionalManagedSandboxConfig(getenv, &config); err != nil {
 		return harnessPoolConfig{}, err
 	}

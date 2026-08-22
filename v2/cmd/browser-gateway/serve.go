@@ -308,6 +308,7 @@ func browserConversationRoutes(agui, sessions http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle(corecontract.UserSessionCollectionRoutePattern, sessions)
 	mux.Handle(corecontract.UserSessionResourceRoutePattern, sessions)
+	mux.Handle(corecontract.UserSessionPermissionModeRoutePattern, sessions)
 	mux.Handle(corecontract.UserSessionTranscriptRoutePattern, sessions)
 	mux.Handle(corecontract.UserSessionTrajectoryRoutePattern, sessions)
 	mux.Handle(corecontract.UserSessionArchiveRoutePattern, sessions)

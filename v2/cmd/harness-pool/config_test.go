@@ -19,9 +19,34 @@ func TestLoadHarnessPoolDevelopmentConfig(t *testing.T) {
 	if config.listenAddress != "127.0.0.1:0" || config.executorID != configuration[poolDevExecutorIDEnvironment] ||
 		config.workerDigest == "" || config.maxConcurrent != defaultPoolMaxConcurrent ||
 		config.maxRunDuration != defaultMaxRunDuration || config.maxApprovalTTL != defaultMaxApprovalTTL || config.allowlistVersion != 1 ||
+		config.codexPermissionMode != "read-only" ||
 		config.appCredential.UID != 65532 || config.appCredential.GID != 65532 ||
 		config.workerCredential != nil || config.capabilityCodec == nil || config.managedSandbox != nil {
 		t.Fatalf("loaded development config = %+v", config)
+	}
+}
+
+func TestLoadHarnessPoolConfigSelectsCodexPermissionMode(t *testing.T) {
+	configuration := validHarnessPoolConfiguration(t)
+	configuration[poolCodexPermissionModeEnvironment] = "auto"
+	config, err := loadHarnessPoolDevelopmentConfig(func(name string) string { return configuration[name] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.codexPermissionMode != "auto" {
+		t.Fatalf("Codex permission mode = %q", config.codexPermissionMode)
+	}
+	profile := runLaunchProfile(config, "https://127.0.0.1:9999/internal/v2/harness-control", false)
+	if profile.PermissionMode != "auto" {
+		t.Fatalf("launch profile permission mode = %q", profile.PermissionMode)
+	}
+}
+
+func TestLoadHarnessPoolConfigRejectsUnknownCodexPermissionMode(t *testing.T) {
+	configuration := validHarnessPoolConfiguration(t)
+	configuration[poolCodexPermissionModeEnvironment] = "future-mode"
+	if _, err := loadHarnessPoolDevelopmentConfig(func(name string) string { return configuration[name] }); err == nil || !strings.Contains(err.Error(), "permission mode") {
+		t.Fatalf("unknown Codex permission mode error = %v", err)
 	}
 }
 

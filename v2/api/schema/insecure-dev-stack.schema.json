@@ -119,7 +119,12 @@
       "properties": {
         "maxConcurrentAttempts": {"type": "integer", "minimum": 1, "maximum": 64},
         "maxRunDuration": {"type": "string", "minLength": 2, "maxLength": 64},
-        "maxApprovalTtl": {"type": "string", "minLength": 2, "maxLength": 64}
+        "maxApprovalTtl": {"type": "string", "minLength": 2, "maxLength": 64},
+        "codexPermissionMode": {
+          "enum": ["read-only", "auto", "full-access"],
+          "default": "read-only",
+          "description": "Fallback for launch sources without explicit Core session permission authority."
+        }
       }
     },
     "identities": {

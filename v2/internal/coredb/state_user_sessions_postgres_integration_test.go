@@ -3,6 +3,8 @@ package coredb
 import (
 	"fmt"
 	"testing"
+
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
 
 func TestPostgreSQLUserSessionLifecycleIsOwnerPrivateAndVersioned(t *testing.T) {
@@ -43,11 +45,13 @@ func TestPostgreSQLUserSessionLifecycleIsOwnerPrivateAndVersioned(t *testing.T) 
 	}
 	created, err := store.CreateUserSession(t.Context(), create)
 	if err != nil || !created.Created || created.Session.Version != 1 ||
+		created.Session.PermissionMode != runmanifest.CodexPermissionModeReadOnly || created.Session.PermissionModeVersion != 1 ||
 		created.Session.CreatorID != actorID || created.Session.Status != UserSessionStatusActive {
 		t.Fatalf("CreateUserSession() = %+v, %v", created, err)
 	}
 	retry, err := store.CreateUserSession(t.Context(), create)
-	if err != nil || retry.Created || retry.Session.ID != sessionID || retry.Session.Version != 1 {
+	if err != nil || retry.Created || retry.Session.ID != sessionID || retry.Session.Version != 1 ||
+		retry.Session.PermissionMode != runmanifest.CodexPermissionModeReadOnly || retry.Session.PermissionModeVersion != 1 {
 		t.Fatalf("idempotent CreateUserSession() = %+v, %v", retry, err)
 	}
 
@@ -77,8 +81,42 @@ func TestPostgreSQLUserSessionLifecycleIsOwnerPrivateAndVersioned(t *testing.T) 
 	}); !HasStateErrorCode(err, ErrorVersionConflict) {
 		t.Fatalf("stale UpdateUserSession() error = %v, want version_conflict", err)
 	}
+	modeUpdated, err := store.UpdateUserSessionPermissionMode(t.Context(), UpdateUserSessionPermissionModeCommand{
+		WorkspaceID: workspaceID, SessionID: sessionID, ActorID: actorID,
+		PermissionMode: runmanifest.CodexPermissionModeAuto, ExpectedPermissionModeVersion: 1,
+	})
+	if err != nil || !modeUpdated.Changed || modeUpdated.Session.Version != 2 ||
+		modeUpdated.Session.PermissionMode != runmanifest.CodexPermissionModeAuto || modeUpdated.Session.PermissionModeVersion != 2 {
+		t.Fatalf("UpdateUserSessionPermissionMode() = %+v, %v", modeUpdated, err)
+	}
+	modeRetry, err := store.UpdateUserSessionPermissionMode(t.Context(), UpdateUserSessionPermissionModeCommand{
+		WorkspaceID: workspaceID, SessionID: sessionID, ActorID: actorID,
+		PermissionMode: runmanifest.CodexPermissionModeAuto, ExpectedPermissionModeVersion: 2,
+	})
+	if err != nil || modeRetry.Changed || modeRetry.Session.Version != 2 || modeRetry.Session.PermissionModeVersion != 2 {
+		t.Fatalf("idempotent UpdateUserSessionPermissionMode() = %+v, %v", modeRetry, err)
+	}
+	if _, err := store.UpdateUserSessionPermissionMode(t.Context(), UpdateUserSessionPermissionModeCommand{
+		WorkspaceID: workspaceID, SessionID: sessionID, ActorID: actorID,
+		PermissionMode: runmanifest.CodexPermissionModeFullAccess, ExpectedPermissionModeVersion: 1,
+	}); !HasStateErrorCode(err, ErrorVersionConflict) {
+		t.Fatalf("stale UpdateUserSessionPermissionMode() error = %v, want version_conflict", err)
+	}
+	if _, err := pool.Exec(t.Context(), fmt.Sprintf("UPDATE %s.workspace_members SET role = 'viewer' WHERE workspace_id = $1 AND user_id = $2", quotedSchema), workspaceID, actorID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateUserSessionPermissionMode(t.Context(), UpdateUserSessionPermissionModeCommand{
+		WorkspaceID: workspaceID, SessionID: sessionID, ActorID: actorID,
+		PermissionMode: runmanifest.CodexPermissionModeFullAccess, ExpectedPermissionModeVersion: 2,
+	}); !HasStateErrorCode(err, ErrorForbidden) {
+		t.Fatalf("viewer UpdateUserSessionPermissionMode() error = %v, want forbidden", err)
+	}
+	if _, err := pool.Exec(t.Context(), fmt.Sprintf("UPDATE %s.workspace_members SET role = 'developer' WHERE workspace_id = $1 AND user_id = $2", quotedSchema), workspaceID, actorID); err != nil {
+		t.Fatal(err)
+	}
 	authorized, err := store.AuthorizeRunSession(t.Context(), workspaceID, sessionID, actorID)
-	if err != nil || authorized.SessionVersion != 2 || authorized.ActorID != actorID {
+	if err != nil || authorized.SessionVersion != 2 || authorized.ActorID != actorID ||
+		authorized.PermissionMode != runmanifest.CodexPermissionModeAuto || authorized.PermissionModeVersion != 2 {
 		t.Fatalf("AuthorizeRunSession() = %+v, %v", authorized, err)
 	}
 

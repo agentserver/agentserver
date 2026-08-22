@@ -71,6 +71,33 @@ func TestUserSessionHandlerRejectsUnknownMutationJSON(t *testing.T) {
 	}
 }
 
+func TestUserSessionHandlerUpdatesPermissionModeWithIndependentCAS(t *testing.T) {
+	now := time.Date(2026, 8, 5, 2, 0, 0, 0, time.UTC)
+	state := corecontract.UserSessionState{
+		SessionID: userSessionTestSession, WorkspaceID: userSessionTestWorkspace,
+		Title: "Mode", Status: "active", Version: 7, PermissionMode: "auto", PermissionModeVersion: 2,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	commands := &recordingUserSessionCommands{permissionModeResult: corecontract.UpdateUserSessionPermissionModeResponse{Session: state, Changed: true}}
+	workload := &recordingRunAttemptAuthorizer{}
+	users := &recordingUserAuthorizer{actorID: userSessionTestActor}
+	handler, err := NewUserSessionHandler(workload, users, commands)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPatch, corecontract.UserSessionPermissionModePath(userSessionTestWorkspace, userSessionTestSession), strings.NewReader(
+		`{"permissionMode":"auto","expectedPermissionModeVersion":1}`,
+	))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || commands.permissionModeActor != userSessionTestActor ||
+		commands.permissionModeInput.PermissionMode != "auto" || commands.permissionModeInput.ExpectedPermissionModeVersion != 1 ||
+		users.action != "sessions.update" || workload.action != "sessions.update" {
+		t.Fatalf("permission mode response = %d %s command=%+v actions=%q/%q", response.Code, response.Body.String(), commands.permissionModeInput, users.action, workload.action)
+	}
+}
+
 func TestUserSessionHandlerReadsTranscriptWithCombinedAuthorityAction(t *testing.T) {
 	now := time.Date(2026, 8, 5, 1, 0, 0, 0, time.UTC)
 	commands := &recordingUserSessionCommands{transcriptResult: corecontract.GetUserSessionTranscriptResponse{
@@ -137,21 +164,25 @@ func TestUserSessionHandlerReadsTrajectoryWithBoundedQuery(t *testing.T) {
 }
 
 type recordingUserSessionCommands struct {
-	listResult        corecontract.ListUserSessionsResponse
-	createResult      corecontract.CreateUserSessionResponse
-	listActor         string
-	createActor       string
-	createWorkspace   string
-	createInput       corecontract.CreateUserSessionRequest
-	createCalls       int
-	transcriptResult  corecontract.GetUserSessionTranscriptResponse
-	transcriptActor   string
-	transcriptSession string
-	trajectoryResult  corecontract.GetUserSessionTrajectoryResponse
-	trajectoryActor   string
-	trajectorySession string
-	trajectoryBefore  string
-	trajectoryLimit   int
+	listResult            corecontract.ListUserSessionsResponse
+	createResult          corecontract.CreateUserSessionResponse
+	listActor             string
+	createActor           string
+	createWorkspace       string
+	createInput           corecontract.CreateUserSessionRequest
+	createCalls           int
+	transcriptResult      corecontract.GetUserSessionTranscriptResponse
+	transcriptActor       string
+	transcriptSession     string
+	trajectoryResult      corecontract.GetUserSessionTrajectoryResponse
+	trajectoryActor       string
+	trajectorySession     string
+	trajectoryBefore      string
+	trajectoryLimit       int
+	permissionModeResult  corecontract.UpdateUserSessionPermissionModeResponse
+	permissionModeActor   string
+	permissionModeSession string
+	permissionModeInput   corecontract.UpdateUserSessionPermissionModeRequest
 }
 
 func (commands *recordingUserSessionCommands) ListSessions(_ context.Context, _ string, actorID string) (corecontract.ListUserSessionsResponse, error) {
@@ -182,6 +213,11 @@ func (commands *recordingUserSessionCommands) CreateSession(_ context.Context, w
 
 func (*recordingUserSessionCommands) UpdateSession(context.Context, string, string, string, corecontract.UpdateUserSessionRequest) (corecontract.UpdateUserSessionResponse, error) {
 	return corecontract.UpdateUserSessionResponse{}, nil
+}
+
+func (commands *recordingUserSessionCommands) UpdatePermissionMode(_ context.Context, _ string, sessionID, actorID string, input corecontract.UpdateUserSessionPermissionModeRequest) (corecontract.UpdateUserSessionPermissionModeResponse, error) {
+	commands.permissionModeActor, commands.permissionModeSession, commands.permissionModeInput = actorID, sessionID, input
+	return commands.permissionModeResult, nil
 }
 
 func (*recordingUserSessionCommands) ArchiveSession(context.Context, string, string, string, corecontract.ArchiveUserSessionRequest) (corecontract.ArchiveUserSessionResponse, error) {

@@ -269,6 +269,9 @@
 }
 .trajectory-search input::placeholder { color: var(--muted-foreground); }
 .trajectory-toolbar-actions { min-width: 0; display: flex; align-items: center; gap: .3rem; }
+.trajectory-permission-control { min-width: 0; margin-left: auto; }
+.trajectory-permission-control .permission-mode-control { height: 2rem; }
+.trajectory-permission-control .permission-mode-label small { display: none; }
 .trajectory-toolbar-button {
   height: 2rem;
   display: inline-flex;
@@ -303,7 +306,7 @@
   text-align: center;
 }
 .trajectory-toolbar-count {
-  margin-left: auto;
+  margin-left: 0;
   color: var(--muted-foreground);
   font: .59rem ui-monospace, SFMono-Regular, Menlo, monospace;
   white-space: nowrap;
@@ -854,6 +857,15 @@
 .composer .composer-input::placeholder { color: color-mix(in srgb, var(--muted-foreground) 84%, transparent); }
 .composer-footer { display: flex; align-items: center; justify-content: space-between; min-height: 2.25rem; padding: .15rem .48rem 0 .85rem; }
 .composer-footer > div { display: flex; align-items: center; gap: .4rem; }
+.composer-footer-actions { min-width: 0; }
+.permission-mode-control { display: inline-flex; align-items: center; gap: .35rem; min-width: 0; color: var(--muted-foreground); }
+.permission-mode-control > svg { flex: 0 0 auto; color: var(--browser-accent); }
+.permission-mode-label { display: inline-flex; flex-direction: column; min-width: 0; max-width: 13rem; font-size: .68rem; line-height: 1.15; }
+.permission-mode-label small { overflow: hidden; margin-top: .08rem; color: var(--muted-foreground); font-size: .58rem; text-overflow: ellipsis; white-space: nowrap; }
+.permission-mode-control .ui-select { width: auto; min-width: 6.7rem; height: 1.95rem; padding: 0 1.7rem 0 .5rem; border-color: transparent; background: var(--muted); box-shadow: none; font-size: .7rem; }
+.permission-mode-control .ui-select:disabled { cursor: wait; opacity: .7; }
+.approval-composer-wrap .permission-mode-control { width: min(736px, 100%); margin: .55rem auto 0; padding: 0 .2rem; }
+.approval-composer-wrap .permission-mode-control .ui-select { margin-left: auto; }
 .composer-footer .ui-button-icon { width: 2rem; height: 2rem; border-radius: 50%; }
 .composer-footer .ui-button-default { background: var(--foreground); color: var(--background); }
 .composer-footer .ui-button-default:disabled { background: var(--accent); color: var(--muted-foreground); opacity: 1; }
@@ -900,6 +912,7 @@
   .trajectory-toolbar { min-height: auto; flex-wrap: wrap; padding: .4rem .5rem; }
   .trajectory-search { width: min(100%, 15rem); flex: 1 1 10rem; }
   .trajectory-toolbar-actions { order: 3; width: 100%; overflow-x: auto; }
+  .trajectory-permission-control { margin-left: auto; }
   .trajectory-toolbar-count { flex: 0 0 auto; }
   .trajectory-timeline { padding-inline: .55rem; }
   .trajectory-timeline-plot { grid-template-columns: 3.5rem minmax(0, 1fr); }
@@ -929,6 +942,9 @@
   .tool-header .tool-state, .execution-header .ui-badge { display: none; }
   .approval-panel { border-radius: 1rem; }
   .composer { border-radius: 1.15rem; }
+  .permission-mode-label { max-width: 8rem; }
+  .permission-mode-label small { display: none; }
+  .permission-mode-control .ui-select { min-width: 5.8rem; }
   .composer-centered::before { height: 180px; }
 }
 

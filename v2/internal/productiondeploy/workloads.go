@@ -649,6 +649,7 @@ func renderHarnessDeployment(context renderContext) (kubeObject, error) {
 		valueEnvironment("AGENTSERVER_V2_HARNESS_MAX_CONCURRENT_ATTEMPTS", strconv.Itoa(document.Runtime.MaxConcurrentAttempts)),
 		valueEnvironment("AGENTSERVER_V2_MAX_RUN_DURATION", document.Runtime.MaxRunDuration),
 		valueEnvironment("AGENTSERVER_V2_MAX_APPROVAL_TTL", document.Runtime.MaxApprovalTTL),
+		valueEnvironment("AGENTSERVER_V2_CODEX_PERMISSION_MODE", document.Runtime.CodexPermissionMode),
 	}
 	if managedExecutionActive(document.Managed) {
 		environment = append(environment,

@@ -135,18 +135,24 @@ type ControllerCallback struct {
 }
 
 type Manifest struct {
-	ManifestVersion            int                      `json:"manifestVersion"`
-	CanonicalizerVersion       string                   `json:"canonicalizerVersion"`
-	WorkspaceID                string                   `json:"workspaceId"`
-	SessionID                  string                   `json:"sessionId"`
-	RunID                      string                   `json:"runId"`
-	RunAttemptID               string                   `json:"runAttemptId"`
-	RunAttemptGeneration       int64                    `json:"runAttemptGeneration"`
-	HolderID                   string                   `json:"holderId"`
-	Prompt                     ObjectPointer            `json:"prompt"`
-	PreviousCheckpoint         *PreviousCheckpoint      `json:"previousCheckpoint,omitempty"`
-	CodexRuntimeManifestDigest string                   `json:"codexRuntimeManifestDigest"`
-	Model                      ModelRoute               `json:"model"`
+	ManifestVersion            int                 `json:"manifestVersion"`
+	CanonicalizerVersion       string              `json:"canonicalizerVersion"`
+	WorkspaceID                string              `json:"workspaceId"`
+	SessionID                  string              `json:"sessionId"`
+	RunID                      string              `json:"runId"`
+	RunAttemptID               string              `json:"runAttemptId"`
+	RunAttemptGeneration       int64               `json:"runAttemptGeneration"`
+	HolderID                   string              `json:"holderId"`
+	Prompt                     ObjectPointer       `json:"prompt"`
+	PreviousCheckpoint         *PreviousCheckpoint `json:"previousCheckpoint,omitempty"`
+	CodexRuntimeManifestDigest string              `json:"codexRuntimeManifestDigest"`
+	Model                      ModelRoute          `json:"model"`
+	// PermissionMode is deployment/run authority for the native Codex
+	// app-server approval and sandbox fields.  It is optional only so a
+	// pre-permission-mode signed manifest can be read safely; omitted means the
+	// read-only, approval-never default.
+	PermissionMode             CodexPermissionMode      `json:"permissionMode,omitempty"`
+	PermissionModeVersion      int64                    `json:"permissionModeVersion,omitempty"`
 	ExecutorMCP                ExecutorMCP              `json:"executorMcp"`
 	ExecutorPolicy             ExecutorPolicy           `json:"executorPolicy"`
 	ToolPack                   *ToolPackAuthority       `json:"toolPack,omitempty"`
@@ -221,6 +227,16 @@ func (manifest Manifest) Validate() error {
 	if err := manifest.Model.validate(); err != nil {
 		return err
 	}
+	if err := manifest.PermissionMode.Validate(); err != nil {
+		return err
+	}
+	if manifest.PermissionMode == "" {
+		if manifest.PermissionModeVersion != 0 {
+			return errors.New("permission mode version cannot be set when permission mode is omitted")
+		}
+	} else if manifest.PermissionModeVersion < 1 || manifest.PermissionModeVersion > maxJSONInteger {
+		return errors.New("permission mode version must be a positive JSON-safe integer")
+	}
 	if err := manifest.ExecutorMCP.validate(); err != nil {
 		return err
 	}
@@ -266,6 +282,12 @@ func (manifest Manifest) Validate() error {
 		return errors.New("controllerCallback.holderId must match holderId")
 	}
 	return nil
+}
+
+// EffectivePermissionMode returns the canonical permission mode that the
+// worker must apply to this verified manifest.
+func (manifest Manifest) EffectivePermissionMode() (CodexPermissionMode, error) {
+	return manifest.PermissionMode.Effective()
 }
 
 func (authority *ManagedSandboxAuthority) validate() error {

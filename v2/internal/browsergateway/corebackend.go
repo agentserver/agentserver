@@ -46,7 +46,10 @@ func NewCoreRunBackend(baseURL string, httpClient *http.Client) (*CoreRunBackend
 }
 
 func (backend *CoreRunBackend) StartRun(ctx context.Context, request StartRunRequest) (StartRunResult, error) {
-	body, err := json.Marshal(corecontract.CreateUserRunRequest{ClientRunID: request.ClientRunID, Prompt: request.Prompt})
+	body, err := json.Marshal(corecontract.CreateUserRunRequest{
+		ClientRunID: request.ClientRunID, Prompt: request.Prompt,
+		ExpectedPermissionModeVersion: request.ExpectedPermissionModeVersion,
+	})
 	if err != nil {
 		return StartRunResult{}, fmt.Errorf("encode core CreateRun request: %w", err)
 	}

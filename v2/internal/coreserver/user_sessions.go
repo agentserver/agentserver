@@ -13,6 +13,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/coredb"
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 	"github.com/agentserver/agentserver/v2/internal/trajectorycursor"
 )
 
@@ -26,6 +27,13 @@ type UserSessionCommands interface {
 	CreateSession(context.Context, string, string, corecontract.CreateUserSessionRequest) (corecontract.CreateUserSessionResponse, error)
 	UpdateSession(context.Context, string, string, string, corecontract.UpdateUserSessionRequest) (corecontract.UpdateUserSessionResponse, error)
 	ArchiveSession(context.Context, string, string, string, corecontract.ArchiveUserSessionRequest) (corecontract.ArchiveUserSessionResponse, error)
+}
+
+// UserSessionPermissionModeCommands is kept separate from the historical
+// session command interface so embedders that only implement title/archive
+// operations remain source-compatible while the new route is rolled out.
+type UserSessionPermissionModeCommands interface {
+	UpdatePermissionMode(context.Context, string, string, string, corecontract.UpdateUserSessionPermissionModeRequest) (corecontract.UpdateUserSessionPermissionModeResponse, error)
 }
 
 type UserSessionHandler struct {
@@ -45,10 +53,43 @@ func (handler *UserSessionHandler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(corecontract.UserSessionCollectionRoutePattern, handler.collection)
 	mux.HandleFunc(corecontract.UserSessionResourceRoutePattern, handler.resource)
+	mux.HandleFunc(corecontract.UserSessionPermissionModeRoutePattern, handler.permissionMode)
 	mux.HandleFunc(corecontract.UserSessionTranscriptRoutePattern, handler.transcript)
 	mux.HandleFunc(corecontract.UserSessionTrajectoryRoutePattern, handler.trajectory)
 	mux.HandleFunc(corecontract.UserSessionArchiveRoutePattern, handler.archive)
 	return mux
+}
+
+func (handler *UserSessionHandler) permissionMode(response http.ResponseWriter, request *http.Request) {
+	userSessionNoStore(response)
+	if request.Method != http.MethodPatch {
+		response.Header().Set("Allow", http.MethodPatch)
+		writePublicRunError(response, http.StatusMethodNotAllowed, "method_not_allowed", "session permission mode requires PATCH", "")
+		return
+	}
+	if request.URL.RawQuery != "" {
+		writePublicRunError(response, http.StatusBadRequest, "invalid_argument", "session permission mode does not accept query parameters", "")
+		return
+	}
+	commands, ok := handler.commands.(UserSessionPermissionModeCommands)
+	if !ok {
+		writePublicRunError(response, http.StatusServiceUnavailable, "unavailable", "session permission mode is unavailable", "")
+		return
+	}
+	actorID, ok := handler.authorize(response, request, "sessions.update")
+	if !ok {
+		return
+	}
+	var input corecontract.UpdateUserSessionPermissionModeRequest
+	if !decodeUserSessionJSON(response, request, &input) {
+		return
+	}
+	result, err := commands.UpdatePermissionMode(request.Context(), request.PathValue("workspaceId"), request.PathValue("sessionId"), actorID, input)
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
 }
 
 func (handler *UserSessionHandler) transcript(response http.ResponseWriter, request *http.Request) {
@@ -342,6 +383,15 @@ func (commands StateStoreUserSessionCommands) GetSession(ctx context.Context, wo
 	return contractUserSession(session), err
 }
 
+func (commands StateStoreUserSessionCommands) UpdatePermissionMode(ctx context.Context, workspaceID, sessionID, actorID string, input corecontract.UpdateUserSessionPermissionModeRequest) (corecontract.UpdateUserSessionPermissionModeResponse, error) {
+	result, err := commands.Store.UpdateUserSessionPermissionMode(ctx, coredb.UpdateUserSessionPermissionModeCommand{
+		WorkspaceID: workspaceID, SessionID: sessionID, ActorID: actorID,
+		PermissionMode:                runmanifest.CodexPermissionMode(input.PermissionMode),
+		ExpectedPermissionModeVersion: input.ExpectedPermissionModeVersion,
+	})
+	return corecontract.UpdateUserSessionPermissionModeResponse{Session: contractUserSession(result.Session), Changed: result.Changed}, err
+}
+
 func (commands StateStoreUserSessionCommands) CreateSession(ctx context.Context, workspaceID, actorID string, input corecontract.CreateUserSessionRequest) (corecontract.CreateUserSessionResponse, error) {
 	result, err := commands.Store.CreateUserSession(ctx, coredb.CreateUserSessionCommand{
 		WorkspaceID: workspaceID, SessionID: input.SessionID, ActorID: actorID, Title: input.Title,
@@ -368,6 +418,7 @@ func contractUserSession(session coredb.UserSession) corecontract.UserSessionSta
 	return corecontract.UserSessionState{
 		SessionID: session.ID, WorkspaceID: session.WorkspaceID, Title: session.Title,
 		Status: session.Status, ActiveRunID: session.ActiveRunID, Version: session.Version,
+		PermissionMode: string(session.PermissionMode), PermissionModeVersion: session.PermissionModeVersion,
 		CreatedAt: session.CreatedAt, UpdatedAt: session.UpdatedAt,
 	}
 }

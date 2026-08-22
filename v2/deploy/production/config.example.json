@@ -78,6 +78,7 @@
     "readFilePolicyDecision": "allow",
     "maxRunDuration": "30m",
     "maxApprovalTtl": "5m",
+    "codexPermissionMode": "read-only",
     "capabilityExpiryGrace": "30s",
     "enrollmentTokenTtl": "5m",
     "maxConcurrentAttempts": 4,

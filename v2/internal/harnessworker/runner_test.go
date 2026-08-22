@@ -868,7 +868,7 @@ func serveRunnerStartLifecycle(ctx context.Context, server *codexwire.Peer, cata
 	if err := start.DecodeParams(&params); err != nil {
 		return err
 	}
-	if params.ApprovalPolicy != "never" || params.Sandbox != "read-only" || params.Ephemeral ||
+	if params.ApprovalPolicy != "never" || params.ApprovalsReviewer != "" || params.Sandbox != "read-only" || params.Ephemeral ||
 		len(params.Environments) != 0 || len(params.SelectedCapabilityRoots) != 0 {
 		return fmt.Errorf("thread/start profile = %+v", params)
 	}

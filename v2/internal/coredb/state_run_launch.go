@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	checkpointartifact "github.com/agentserver/agentserver/v2/internal/checkpoint"
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -49,6 +50,10 @@ func (s *StateStore) ResolveRunLaunchState(ctx context.Context, command ResolveR
 		if err != nil {
 			return ResolvedRunLaunchState{}, err
 		}
+		permissionMode, permissionModeVersion, permissionModeExplicit, err := s.readRunPermissionMode(ctx, transaction, operation, run.ID)
+		if err != nil {
+			return ResolvedRunLaunchState{}, err
+		}
 		managedSandbox, err := s.readRunManagedSandboxBinding(ctx, transaction, operation, run.ID)
 		if err != nil {
 			return ResolvedRunLaunchState{}, err
@@ -63,6 +68,8 @@ func (s *StateStore) ResolveRunLaunchState(ctx context.Context, command ResolveR
 			RunVersion: run.Version, AttemptVersion: attempt.Version,
 			Prompt: prompt, PreviousCheckpoint: checkpoint, ExecutorPolicy: policy,
 			LLMGateway: llmGateway, LarkEgress: larkEgress, ManagedSandbox: managedSandbox,
+			PermissionMode: permissionMode, PermissionModeVersion: permissionModeVersion,
+			PermissionModeExplicit: permissionModeExplicit,
 		}, nil
 	})
 }
@@ -169,6 +176,14 @@ func (s *StateStore) insertRunLaunchInput(ctx context.Context, transaction pgx.T
 		managedRegion = command.ManagedSandbox.Region
 		managedEnvironmentID = command.ManagedSandbox.EnvironmentID
 	}
+	// Keep the nullable pair genuinely NULL for a legacy component command.
+	// Passing Go's zero string/int values would create an invalid non-null pair
+	// and be rejected by run_launch_states_permission_mode_pair.
+	var permissionMode, permissionModeVersion any
+	if command.PermissionMode != "" {
+		permissionMode = string(command.PermissionMode)
+		permissionModeVersion = command.ExpectedPermissionModeVersion
+	}
 	query := fmt.Sprintf(`
 INSERT INTO %s
     (run_id, workspace_id, session_id,
@@ -177,10 +192,10 @@ INSERT INTO %s
      llm_gateway_id, llm_gateway_version, llm_gateway_grant_user_id, model,
 	 lark_grant_id, lark_grant_version, lark_grant_user_id, lark_policy_sha256,
 	 managed_sandbox_setting_version, managed_sandbox_region,
-	 managed_sandbox_environment_id)
+	 managed_sandbox_environment_id, permission_mode, permission_mode_version)
 VALUES
 	($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-	 $14, $15, $16, $17, $18, $19, $20)`, s.table("run_launch_states"))
+	 $14, $15, $16, $17, $18, $19, $20, $21, $22)`, s.table("run_launch_states"))
 	if _, err := transaction.Exec(ctx, query,
 		command.RunID,
 		command.WorkspaceID,
@@ -202,6 +217,8 @@ VALUES
 		managedSettingVersion,
 		managedRegion,
 		managedEnvironmentID,
+		permissionMode,
+		permissionModeVersion,
 	); err != nil {
 		var postgresError *pgconn.PgError
 		if pgxErrorAs(err, &postgresError) && postgresError.Code == "23505" {
@@ -219,6 +236,36 @@ VALUES ($1, $2, $3)`, s.table("run_launch_allowed_tools"))
 		}
 	}
 	return nil
+}
+
+// readRunPermissionMode preserves the nullable legacy representation. A
+// non-null pair is explicit authority frozen at CreateRun; a null pair means
+// the run predates session permission modes and must retain the old worker
+// projection.
+func (s *StateStore) readRunPermissionMode(ctx context.Context, transaction pgx.Tx, operation, runID string) (runmanifest.CodexPermissionMode, int64, bool, error) {
+	query := fmt.Sprintf(`
+SELECT permission_mode, permission_mode_version
+FROM %s
+WHERE run_id = $1`, s.table("run_launch_states"))
+	var rawMode *string
+	var rawVersion *int64
+	if err := transaction.QueryRow(ctx, query, runID).Scan(&rawMode, &rawVersion); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", 0, false, commandError(ErrorInvalidState, operation, "run", runID, "run has no immutable launch authority")
+		}
+		return "", 0, false, databaseError(operation+" read run permission mode", err)
+	}
+	if rawMode == nil && rawVersion == nil {
+		return "", 0, false, nil
+	}
+	if rawMode == nil || rawVersion == nil || *rawVersion < 1 || *rawVersion > maxSafeJSONInteger {
+		return "", 0, false, databaseError(operation+" decode run permission mode", errors.New("stored permission mode authority is incomplete"))
+	}
+	mode, err := runmanifest.CodexPermissionMode(*rawMode).Effective()
+	if err != nil {
+		return "", 0, false, databaseError(operation+" validate run permission mode", err)
+	}
+	return mode, *rawVersion, true, nil
 }
 
 func (s *StateStore) readRunManagedSandboxBinding(
@@ -498,4 +545,25 @@ func runLaunchInputMatches(prompt ObjectPointer, policy RunExecutorPolicy, llmGa
 		subtle.ConstantTimeCompare(policy.ContextDigest[:], command.ExecutorPolicy.ContextDigest[:]) == 1 &&
 		slices.Equal(policy.AllowedTools, command.ExecutorPolicy.AllowedTools) &&
 		llmGateway == command.LLMGateway && larkEgress == command.LarkEgress && managedSandbox == command.ManagedSandbox
+}
+
+// runPermissionModeInputMatches keeps old component callers retryable when
+// they omit permission authority and let Core resolve it from the session.
+// Once a caller supplies an explicit mode, however, both its value/version and
+// the stored explicit-vs-legacy marker are immutable idempotency authority.
+// Treating a legacy NULL pair as an explicit read-only selection would erase
+// the compatibility distinction used by the worker and could change the wire
+// approval policy on retry.
+func runPermissionModeInputMatches(
+	existingMode runmanifest.CodexPermissionMode,
+	existingVersion int64,
+	existingExplicit bool,
+	command CreateRunCommand,
+) bool {
+	if command.PermissionMode == "" {
+		return true
+	}
+	return existingExplicit &&
+		existingMode == command.PermissionMode &&
+		existingVersion == command.ExpectedPermissionModeVersion
 }

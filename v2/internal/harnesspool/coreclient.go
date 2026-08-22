@@ -536,6 +536,26 @@ func (client *CoreClient) ResolveRunLaunchState(ctx context.Context, scheduled S
 	}
 
 	state := RunLaunchState{Prompt: prompt, ExecutorPolicy: policy}
+	if (response.PermissionMode == nil) != (response.PermissionModeVersion == nil) {
+		return RunLaunchState{}, errors.New("validate core launch-state response: permission mode authority is incomplete")
+	}
+	if response.PermissionMode == nil {
+		state.PermissionModeLegacy = true
+	} else {
+		mode, err := runmanifest.CodexPermissionMode(*response.PermissionMode).Effective()
+		if err != nil || *response.PermissionMode == "" {
+			if err == nil {
+				err = errors.New("permission mode must be explicit")
+			}
+			return RunLaunchState{}, fmt.Errorf("validate core launch-state response permission mode: %w", err)
+		}
+		if *response.PermissionModeVersion < 1 || *response.PermissionModeVersion > 1<<53-1 {
+			return RunLaunchState{}, errors.New("validate core launch-state response: permission mode version is invalid")
+		}
+		state.PermissionMode = mode
+		state.PermissionModeVersion = *response.PermissionModeVersion
+		state.PermissionModeExplicit = true
+	}
 	if response.LLMGateway != nil {
 		gateway := response.LLMGateway
 		if err := validateUUIDIdentity("LLM gateway ID", gateway.GatewayID); err != nil {

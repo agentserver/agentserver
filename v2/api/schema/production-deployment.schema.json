@@ -348,6 +348,11 @@
         "readFilePolicyDecision": {"enum": ["allow", "ask", "deny"]},
         "maxRunDuration": {"$ref": "#/$defs/duration"},
         "maxApprovalTtl": {"$ref": "#/$defs/duration"},
+        "codexPermissionMode": {
+          "enum": ["read-only", "auto", "full-access"],
+          "default": "read-only",
+          "description": "Fallback for launch sources without explicit Core session permission authority."
+        },
         "capabilityExpiryGrace": {"$ref": "#/$defs/duration"},
         "enrollmentTokenTtl": {"$ref": "#/$defs/duration"},
         "maxConcurrentAttempts": {"type": "integer", "minimum": 1, "maximum": 64},

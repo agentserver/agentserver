@@ -67,12 +67,15 @@ describe("Browser product source", () => {
 
   it("restores a prompt after a permission-mode CAS race", () => {
     const source = readFileSync(new URL("./browser-app.tsx", import.meta.url), "utf8")
-    expect(source).toContain('error.status === 409 && error.code === "version_conflict" && run.permissionModeVersion > 0')
+    expect(source).toContain('error.status === 409 && error.code === "version_conflict" && (run.permissionModeVersion > 0 || run.workingDirectoryVersion > 0)')
     expect(source).toContain("const promptToRestore = run.prompt")
     expect(source).toContain("activeRun.current = null")
     expect(source).toContain("setPrompt(promptToRestore)")
     expect(source).toContain("await loadSessions(sessionId)")
     expect(source).toContain("await loadTranscript(sessionId)")
+    expect(source).toContain("expectedWorkingDirectoryVersion: run.workingDirectoryVersion")
+    expect(source).toContain('className="working-directory-popover"')
+    expect(source).not.toContain("<form onSubmit={submit}>")
   })
 
   it("keeps historical records while accepting authoritative tail order and updates", () => {

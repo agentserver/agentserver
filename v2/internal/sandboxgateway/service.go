@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
@@ -705,8 +707,22 @@ func (service *Service) RunCommand(ctx context.Context, principal Principal, req
 	if err := request.Validate(service.limits); err != nil {
 		return nil, dispatchRequestError(err)
 	}
+	if err := service.pathWithinRoot("command working directory", request.WorkingDirectory); err != nil {
+		return nil, dispatchRequestError(err)
+	}
 	if err := bindOperationPrincipal(principal, ActionRunCommand, request.Identity, request.Ref); err != nil {
 		return nil, forbidden(err)
+	}
+	requestedAccess := request.WorkspaceAccess
+	if requestedAccess == "" {
+		requestedAccess = "write"
+	}
+	capabilityAccess := principal.WorkspaceAccess
+	if capabilityAccess == "" {
+		capabilityAccess = "write"
+	}
+	if requestedAccess != capabilityAccess {
+		return nil, forbidden(errors.New("backend capability workspace access does not match the command"))
 	}
 	state, err := service.authorizeOperation(ctx, request.Identity, request.Ref, corecontract.ManagedSandboxActionRunCommand)
 	if err != nil {
@@ -717,7 +733,8 @@ func (service *Service) RunCommand(ctx context.Context, principal Principal, req
 		RequestID: request.RequestID, ProcessID: request.ProcessID,
 		Executable: request.Executable, Arguments: append([]string(nil), request.Arguments...),
 		WorkingDirectory: request.WorkingDirectory, WorkspaceRoot: service.root,
-		Platform: service.platform, Environment: cloneEnvironment(request.Environment),
+		WorkspaceAccess: requestedAccess,
+		Platform:        service.platform, Environment: cloneEnvironment(request.Environment),
 		Timeout:          time.Duration(request.TimeoutMillis) * time.Millisecond,
 		OutputLimitBytes: request.OutputLimitBytes,
 	}
@@ -753,6 +770,9 @@ func (service *Service) SignalCommand(ctx context.Context, principal Principal, 
 
 func (service *Service) ReadFile(ctx context.Context, principal Principal, request sandboxcontract.ReadFileRequest) (executionbackend.Exchange, error) {
 	if err := request.Validate(service.limits); err != nil {
+		return nil, dispatchRequestError(err)
+	}
+	if err := service.pathWithinRoot("read-file path", request.Path); err != nil {
 		return nil, dispatchRequestError(err)
 	}
 	if err := bindOperationPrincipal(principal, ActionReadFile, request.Identity, request.Ref); err != nil {
@@ -814,6 +834,20 @@ func (service *Service) workspaceAllowed(workspaceID string) bool {
 	}
 	_, allowed := service.workspaceAllowlist[workspaceID]
 	return allowed
+}
+
+func (service *Service) pathWithinRoot(name, value string) error {
+	if service == nil || service.root == "" {
+		return errors.New("managed workspace root is unavailable")
+	}
+	root := path.Clean(service.root)
+	if path.Clean(value) != value {
+		return fmt.Errorf("%s must be a clean absolute path", name)
+	}
+	if value != root && !strings.HasPrefix(value, strings.TrimSuffix(root, "/")+"/") {
+		return fmt.Errorf("%s must remain beneath the managed workspace root", name)
+	}
+	return nil
 }
 
 func (service *Service) observeProblem(ctx context.Context, state corecontract.ManagedSandboxState, observedState, code string) error {

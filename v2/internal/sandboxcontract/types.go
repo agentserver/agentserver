@@ -325,6 +325,9 @@ type RunCommandRequest struct {
 	Executable       string            `json:"executable"`
 	Arguments        []string          `json:"arguments"`
 	WorkingDirectory string            `json:"workingDirectory"`
+	// WorkspaceAccess is the signed run permission projection. Empty is the
+	// legacy representation of write access; read-only runs must carry "read".
+	WorkspaceAccess string `json:"workspaceAccess,omitempty"`
 	// Environment is the final clean environment assembled by the execution
 	// gateway after policy validation. A webhook_swap workspace carries only a
 	// short-lived placeholder; a process_env workspace carries the live
@@ -352,6 +355,9 @@ func (request RunCommandRequest) Validate(limits Limits) error {
 	if err := validateAbsolutePath("command working directory", request.WorkingDirectory); err != nil {
 		return err
 	}
+	if request.WorkspaceAccess != "" && request.WorkspaceAccess != "read" && request.WorkspaceAccess != "write" {
+		return errors.New("command workspace access must be read or write")
+	}
 	if request.TimeoutMillis < 1 || request.TimeoutMillis > limits.MaxCommandTimeoutMillis {
 		return fmt.Errorf("command timeout must be between 1 and %d milliseconds", limits.MaxCommandTimeoutMillis)
 	}
@@ -363,7 +369,7 @@ func (request RunCommandRequest) Validate(limits Limits) error {
 		Operation: request.Identity.BackendContext(), ProcessID: request.ProcessID,
 		RequestID:  request.RequestID,
 		Executable: request.Executable, Arguments: request.Arguments,
-		WorkingDirectory: request.WorkingDirectory, WorkspaceRoot: "/workspace", Platform: "linux-amd64",
+		WorkingDirectory: request.WorkingDirectory, WorkspaceRoot: "/workspace", WorkspaceAccess: request.WorkspaceAccess, Platform: "linux-amd64",
 		Environment:      request.Environment,
 		Timeout:          time.Duration(request.TimeoutMillis) * time.Millisecond,
 		OutputLimitBytes: request.OutputLimitBytes,

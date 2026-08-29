@@ -20,6 +20,8 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/coredb"
 	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
+	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 )
 
 const (
@@ -134,6 +136,18 @@ func (service *ProductionRunCapabilityService) IssueRunCapabilities(
 			coredb.ErrorInvalidArgument, "IssueRunCapabilities", request.RunAttemptID, err.Error(),
 		)
 	}
+	workspace, err := decodeRunWorkspaceBinding(request.Workspace)
+	if err != nil {
+		return corecontract.IssueRunCapabilitiesResponse{}, capabilityServiceStateError(
+			coredb.ErrorInvalidArgument, "IssueRunCapabilities", request.RunAttemptID, err.Error(),
+		)
+	}
+	permissionMode, permissionModeVersion, err := decodePermissionModeProjection(request.PermissionMode, request.PermissionModeVersion)
+	if err != nil {
+		return corecontract.IssueRunCapabilitiesResponse{}, capabilityServiceStateError(
+			coredb.ErrorInvalidArgument, "IssueRunCapabilities", request.RunAttemptID, err.Error(),
+		)
+	}
 	if err := validateIssueRunCapabilitiesRequest(request); err != nil {
 		return corecontract.IssueRunCapabilitiesResponse{}, capabilityServiceStateError(
 			coredb.ErrorInvalidArgument, "IssueRunCapabilities", request.RunAttemptID, err.Error(),
@@ -154,6 +168,8 @@ func (service *ProductionRunCapabilityService) IssueRunCapabilities(
 			GrantUserID: request.LLMGatewayGrantUserID, Model: request.Model,
 		},
 		ManagedSandbox: managedSandbox,
+		Workspace:      workspace,
+		PermissionMode: permissionMode, PermissionModeVersion: permissionModeVersion,
 	})
 	if err != nil {
 		return corecontract.IssueRunCapabilitiesResponse{}, err
@@ -201,6 +217,17 @@ func (service *ProductionRunCapabilityService) IssueRunCapabilities(
 		executorClaims.ManagedSandboxRegion = authority.ManagedSandbox.Region
 		executorClaims.ManagedSandboxEnvironmentID = authority.ManagedSandbox.EnvironmentID
 	}
+	if authority.Workspace != nil {
+		executorClaims.WorkspaceEnvironmentID = authority.Workspace.EnvironmentID
+		executorClaims.WorkspaceEnvironmentVersion = authority.Workspace.EnvironmentVersion
+		executorClaims.WorkspaceRootSHA256 = hex.EncodeToString(authority.Workspace.RootSHA256[:])
+		executorClaims.WorkspaceWorkingDirectory = authority.Workspace.WorkingDirectory
+		executorClaims.WorkspaceWorkingDirectoryVersion = authority.Workspace.WorkingDirectoryVersion
+	}
+	if authority.PermissionModeExplicit {
+		executorClaims.PermissionMode = string(authority.PermissionMode)
+		executorClaims.PermissionModeVersion = authority.PermissionModeVersion
+	}
 	executorCapability, err := service.issueOne(executorClaims)
 	if err != nil {
 		return corecontract.IssueRunCapabilitiesResponse{}, fmt.Errorf("issue executor MCP run capability: %w", err)
@@ -246,6 +273,10 @@ func (service *ProductionRunCapabilityService) AuthorizeExecutorRunCapability(
 	if err != nil {
 		return corecontract.AuthorizeRunCapabilityResponse{}, deniedRunCapability(claims.CapabilityID)
 	}
+	workspace, err := workspaceBindingFromClaims(claims)
+	if err != nil {
+		return corecontract.AuthorizeRunCapabilityResponse{}, deniedRunCapability(claims.CapabilityID)
+	}
 	return service.authorizeClaims(ctx, claims, coredb.AuthorizeRunCapabilityCommand{
 		Audience: coredb.RunCapabilityAudienceExecutorMCP, CapabilityID: claims.CapabilityID,
 		WorkspaceID: claims.WorkspaceID, SessionID: claims.SessionID, RunID: claims.RunID,
@@ -254,6 +285,9 @@ func (service *ProductionRunCapabilityService) AuthorizeExecutorRunCapability(
 		ToolCatalogDigest: catalogDigest, ExpectedRunVersion: claims.ExpectedRunVersion,
 		ExpectedAttemptVersion: claims.ExpectedRunAttemptVersion,
 		ManagedSandbox:         managedSandbox,
+		Workspace:              workspace,
+		PermissionMode:         runmanifest.CodexPermissionMode(claims.PermissionMode),
+		PermissionModeVersion:  claims.PermissionModeVersion,
 	})
 }
 
@@ -446,6 +480,16 @@ func validateIssueRunCapabilitiesRequest(request corecontract.IssueRunCapabiliti
 		request.MaxApprovalTTLMillis > request.MaxRunDurationMillis {
 		return errors.New("maxApprovalTtlMs must be at least one second and not exceed maxRunDurationMs")
 	}
+	if request.PermissionMode == "" {
+		if request.PermissionModeVersion != 0 {
+			return errors.New("permissionModeVersion requires permissionMode")
+		}
+	} else {
+		mode, err := runmanifest.CodexPermissionMode(request.PermissionMode).Effective()
+		if err != nil || string(mode) != request.PermissionMode || request.PermissionModeVersion < 1 || request.PermissionModeVersion > maximumCapabilitySafeJSONInteger {
+			return errors.New("permission mode authority is invalid")
+		}
+	}
 	return nil
 }
 
@@ -470,12 +514,34 @@ func validateRunCapabilityIssuanceProjection(
 	if err != nil || authority.ManagedSandbox != requestManagedSandbox {
 		return errors.New("production run capability store returned inconsistent managed sandbox authority")
 	}
+	requestWorkspace, err := decodeRunWorkspaceBinding(request.Workspace)
+	if err != nil || !sameWorkspaceBinding(authority.Workspace, requestWorkspace) {
+		return errors.New("production run capability store returned inconsistent workspace authority")
+	}
+	requestPermissionMode, requestPermissionModeVersion, err := decodePermissionModeProjection(request.PermissionMode, request.PermissionModeVersion)
+	if err != nil || !permissionModeAuthorityMatchesCore(authority, requestPermissionMode, requestPermissionModeVersion) {
+		return errors.New("production run capability store returned inconsistent permission mode authority")
+	}
 	if authority.ActorID == "00000000-0000-0000-0000-000000000000" ||
 		!productionCapabilityUUIDPattern.MatchString(authority.ActorID) ||
 		authority.AttemptCreatedAt.IsZero() || authority.DatabaseTime.IsZero() {
 		return errors.New("production run capability store returned an invalid issuance projection")
 	}
 	return nil
+}
+
+func sameWorkspaceBinding(left, right *workspaceauthority.Binding) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func permissionModeAuthorityMatchesCore(authority coredb.RunCapabilityIssuanceAuthority, mode runmanifest.CodexPermissionMode, version int64) bool {
+	if !authority.PermissionModeExplicit {
+		return authority.PermissionMode == "" && authority.PermissionModeVersion == 0 && mode == "" && version == 0
+	}
+	return authority.PermissionMode != "" && authority.PermissionMode == mode && authority.PermissionModeVersion == version
 }
 
 func (service *ProductionRunCapabilityService) requireIssuePolicy(request corecontract.IssueRunCapabilitiesRequest) error {
@@ -565,6 +631,68 @@ func decodeRunManagedSandboxBinding(source *corecontract.RunLaunchManagedSandbox
 	return coredb.RunManagedSandboxBinding{
 		SettingVersion: source.SettingVersion, Region: source.Region, EnvironmentID: source.EnvironmentID,
 	}, nil
+}
+
+func decodeRunWorkspaceBinding(source *corecontract.RunLaunchWorkspaceState) (*workspaceauthority.Binding, error) {
+	if source == nil {
+		return nil, nil
+	}
+	digest, err := decodeCapabilityDigest("workspace.rootSha256", source.RootSHA256)
+	if err != nil {
+		return nil, err
+	}
+	binding := &workspaceauthority.Binding{
+		EnvironmentID: source.EnvironmentID, EnvironmentVersion: source.EnvironmentVersion,
+		RootSHA256: digest, WorkingDirectory: source.WorkingDirectory,
+		WorkingDirectoryVersion: source.WorkingDirectoryVersion,
+	}
+	if err := binding.Validate(); err != nil {
+		return nil, err
+	}
+	return binding, nil
+}
+
+func decodePermissionModeProjection(value string, version int64) (runmanifest.CodexPermissionMode, int64, error) {
+	if value == "" {
+		if version != 0 {
+			return "", 0, errors.New("permission mode version requires permission mode")
+		}
+		return "", 0, nil
+	}
+	mode := runmanifest.CodexPermissionMode(value)
+	effective, err := mode.Effective()
+	if err != nil {
+		return "", 0, err
+	}
+	if effective != mode {
+		return "", 0, errors.New("permission mode must be canonical")
+	}
+	if version < 1 || version > maximumCapabilitySafeJSONInteger {
+		return "", 0, errors.New("permission mode version must be a positive JSON-safe integer")
+	}
+	return mode, version, nil
+}
+
+func workspaceBindingFromClaims(claims runcapability.Claims) (*workspaceauthority.Binding, error) {
+	configured := claims.WorkspaceEnvironmentID != "" || claims.WorkspaceEnvironmentVersion != 0 ||
+		claims.WorkspaceRootSHA256 != "" || claims.WorkspaceWorkingDirectory != "" ||
+		claims.WorkspaceWorkingDirectoryVersion != 0
+	if !configured {
+		return nil, nil
+	}
+	digest, err := decodeCapabilityDigest("workspace root digest", claims.WorkspaceRootSHA256)
+	if err != nil {
+		return nil, err
+	}
+	binding := &workspaceauthority.Binding{
+		EnvironmentID: claims.WorkspaceEnvironmentID, EnvironmentVersion: claims.WorkspaceEnvironmentVersion,
+		RootSHA256: digest, WorkingDirectory: claims.WorkspaceWorkingDirectory,
+		WorkingDirectoryVersion: claims.WorkspaceWorkingDirectoryVersion,
+	}
+	if err := binding.Validate(); err != nil {
+		return nil, err
+	}
+	return binding, nil
 }
 
 func managedSandboxBindingFromClaims(claims runcapability.Claims) (coredb.RunManagedSandboxBinding, error) {

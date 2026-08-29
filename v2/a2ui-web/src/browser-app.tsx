@@ -1,4 +1,4 @@
-import { Archive, ArrowDown, CheckCircle2, ChevronDown, CircleStop, Clock3, Code2, KeyRound, LoaderCircle, MessageSquare, Pencil, Plus, RefreshCw, Search, Send, ShieldCheck, Sparkles, SquareTerminal, XCircle } from "lucide-react"
+import { Archive, ArrowDown, CheckCircle2, ChevronDown, CircleStop, Clock3, Code2, FolderOpen, KeyRound, LoaderCircle, MessageSquare, Pencil, Plus, RefreshCw, Search, Send, ShieldCheck, Sparkles, SquareTerminal, XCircle } from "lucide-react"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react"
 import { useTranslation } from "react-i18next"
 import { useLocation, useNavigate } from "react-router-dom"
@@ -56,6 +56,9 @@ interface ActiveRun {
   prompt: string
   permissionMode: PermissionMode
   permissionModeVersion: number
+  workingDirectory: string
+  workingDirectoryVersion: number
+  environmentId?: string
   cursor: string
   checkpoint: ConversationState
   controller: AbortController | null
@@ -101,6 +104,7 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
   const [sessionLoading, setSessionLoading] = useState(true)
   const [sessionError, setSessionError] = useState("")
   const [permissionModeUpdating, setPermissionModeUpdating] = useState(false)
+  const [workingDirectoryUpdating, setWorkingDirectoryUpdating] = useState(false)
   const [transcriptLoading, setTranscriptLoading] = useState(false)
   const [transcriptTruncated, setTranscriptTruncated] = useState(false)
   const [view, setView] = useState<BrowserView>("conversation")
@@ -308,6 +312,32 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
     }
   }, [api, loadSessions, permissionModeUpdating, sessions, t, workspaceId])
 
+  const updateWorkingDirectory = useCallback(async (environmentId: string, workingDirectory: string) => {
+    const session = sessions.find((item) => item.sessionId === selectedIdRef.current)
+    if (!session || workingDirectoryUpdating) return
+    const normalizedDirectory = workingDirectory.trim() || "."
+    const normalizedEnvironment = environmentId.trim()
+    setSessionError("")
+    setWorkingDirectoryUpdating(true)
+    try {
+      const result = await api.updateSessionWorkingDirectory(workspaceId, session.sessionId, {
+        ...(normalizedEnvironment ? { environmentId: normalizedEnvironment } : {}),
+        workingDirectory: normalizedDirectory,
+        expectedWorkingDirectoryVersion: session.workingDirectoryVersion,
+      })
+      setSessions((current) => current.map((item) => item.sessionId === result.session.sessionId ? result.session : item))
+    } catch (error) {
+      if (error instanceof APIError && error.status === 409) {
+        await loadSessions(session.sessionId)
+        setSessionError(t("browser.workingDirectoryConflict"))
+      } else {
+        setSessionError(`${t("browser.workingDirectoryUpdateFailed")} ${safeError(error)}`)
+      }
+    } finally {
+      setWorkingDirectoryUpdating(false)
+    }
+  }, [api, loadSessions, sessions, t, workingDirectoryUpdating, workspaceId])
+
   const applyEvent = useCallback((run: ActiveRun, event: Record<string, unknown>) => {
     if (activeRun.current !== run) return
     const next = commit((current) => reduceAGUIEvent(current, event))
@@ -327,10 +357,11 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
         messages: [{ id: run.messageId, role: "user" as const, content: run.prompt }],
         tools: [],
         context: [],
-        ...((run.cursor || run.permissionModeVersion > 0) ? {
+        ...((run.cursor || run.permissionModeVersion > 0 || run.workingDirectoryVersion > 0) ? {
           forwardedProps: { agentserver: {
             ...(run.cursor ? { eventCursor: run.cursor } : {}),
             ...(run.permissionModeVersion > 0 ? { expectedPermissionModeVersion: run.permissionModeVersion } : {}),
+            ...(run.workingDirectoryVersion > 0 ? { expectedWorkingDirectoryVersion: run.workingDirectoryVersion } : {}),
           } },
         } : {}),
       }
@@ -352,12 +383,12 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
       run.controller = null
       if (activeRun.current !== run || controller.signal.aborted) return
       if (["completed", "failed", "cancelled"].includes(stateRef.current.status)) { activeRun.current = null; return }
-      if (error instanceof APIError && error.status === 409 && error.code === "version_conflict" && run.permissionModeVersion > 0) {
-        // CreateRun checks the session mode/version atomically. If another
-        // tab changed it between the optimistic session snapshot and this
-        // request, no run exists and the optimistic user message must not be
-        // left in the conversation. Keep the exact prompt so it can be sent
-        // again with the freshly loaded mode/version.
+      if (error instanceof APIError && error.status === 409 && error.code === "version_conflict" && (run.permissionModeVersion > 0 || run.workingDirectoryVersion > 0)) {
+        // CreateRun checks both session authorities atomically. If another
+        // tab changed either one between the optimistic session snapshot and
+        // this request, no run exists and the optimistic user message must
+        // not be left in the conversation. Keep the exact prompt so it can be
+        // sent again with freshly loaded versions.
         const promptToRestore = run.prompt
         activeRun.current = null
         transcriptRevisionRef.current += 1
@@ -365,7 +396,7 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
         await loadSessions(sessionId)
         if (activeRun.current !== null || selectedIdRef.current !== sessionId) return
         await loadTranscript(sessionId)
-        if (activeRun.current === null && selectedIdRef.current === sessionId) setSessionError(t("browser.permissionModeConflict"))
+        if (activeRun.current === null && selectedIdRef.current === sessionId) setSessionError(t("browser.sessionAuthorityConflict"))
         return
       }
       const message = safeError(error)
@@ -396,6 +427,8 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
     activeRun.current = { sessionId,
       idempotencyKey: randomSecret("run"), clientRunId: `browser-${nonce}`, messageId,
       prompt: canonicalPrompt, permissionMode: session.permissionMode, permissionModeVersion: session.permissionModeVersion,
+      workingDirectory: session.workingDirectory, workingDirectoryVersion: session.workingDirectoryVersion,
+      ...(session.environmentId ? { environmentId: session.environmentId } : {}),
       cursor: "", checkpoint: cloneConversationState(next), controller: null,
     }
     setPrompt("")
@@ -464,7 +497,7 @@ function AuthenticatedBrowser({ workspaceId, token, apiOrigin, onSignOut }: { wo
       </header>
       {view === "conversation" ? <>
         <ConversationView state={conversation} loading={transcriptLoading} truncated={transcriptTruncated} onConfigure={() => { window.location.href = `https://agent.byted.bps.dev/workspaces/${workspaceId}/gateways` }} />
-        <Composer centered={emptyConversation} value={prompt} onChange={setPrompt} onSubmit={sendPrompt} onCancel={cancelRun} onReconnect={() => void stream(true)} state={conversation} approval={pendingApproval} onDecision={decide} inputRef={composerRef} session={selectedSession} activeRun={activeRun.current} permissionModeUpdating={permissionModeUpdating} onPermissionModeChange={(mode) => void updatePermissionMode(mode)} />
+        <Composer centered={emptyConversation} value={prompt} onChange={setPrompt} onSubmit={sendPrompt} onCancel={cancelRun} onReconnect={() => void stream(true)} state={conversation} approval={pendingApproval} onDecision={decide} inputRef={composerRef} session={selectedSession} activeRun={activeRun.current} permissionModeUpdating={permissionModeUpdating} onPermissionModeChange={(mode) => void updatePermissionMode(mode)} workingDirectoryUpdating={workingDirectoryUpdating} onWorkingDirectoryChange={(environmentId, directory) => void updateWorkingDirectory(environmentId, directory)} />
       </> : <TrajectoryView
         key={selectedId}
         records={trajectory?.records ?? []}
@@ -712,7 +745,7 @@ function Surface({ surface, componentId, ancestors, depth }: { surface: A2UISurf
   return value.includes("\n") ? <pre>{value}</pre> : <p>{value}</p>
 }
 
-function Composer({ centered, value, onChange, onSubmit, onCancel, onReconnect, state, approval, onDecision, inputRef, session, activeRun, permissionModeUpdating, onPermissionModeChange }: { centered: boolean; value: string; onChange: (value: string) => void; onSubmit: (event: FormEvent) => Promise<void>; onCancel: () => Promise<void>; onReconnect: () => void; state: ConversationState; approval: ApprovalView | null; onDecision: (approval: ApprovalView, decision: "approve" | "deny") => Promise<void>; inputRef: React.RefObject<HTMLTextAreaElement | null>; session: UserSession | null; activeRun: ActiveRun | null; permissionModeUpdating: boolean; onPermissionModeChange: (mode: PermissionMode) => void }) {
+function Composer({ centered, value, onChange, onSubmit, onCancel, onReconnect, state, approval, onDecision, inputRef, session, activeRun, permissionModeUpdating, onPermissionModeChange, workingDirectoryUpdating, onWorkingDirectoryChange }: { centered: boolean; value: string; onChange: (value: string) => void; onSubmit: (event: FormEvent) => Promise<void>; onCancel: () => Promise<void>; onReconnect: () => void; state: ConversationState; approval: ApprovalView | null; onDecision: (approval: ApprovalView, decision: "approve" | "deny") => Promise<void>; inputRef: React.RefObject<HTMLTextAreaElement | null>; session: UserSession | null; activeRun: ActiveRun | null; permissionModeUpdating: boolean; onPermissionModeChange: (mode: PermissionMode) => void; workingDirectoryUpdating: boolean; onWorkingDirectoryChange: (environmentId: string, directory: string) => void }) {
   const { t } = useTranslation()
   const busy = ["connecting", "running", "cancelling"].includes(state.status)
   useEffect(() => {
@@ -723,8 +756,33 @@ function Composer({ centered, value, onChange, onSubmit, onCancel, onReconnect, 
   }, [inputRef, value])
   const keyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit() } }
   const selector = <PermissionModeSelector session={session} activeRun={activeRun} updating={permissionModeUpdating} onChange={onPermissionModeChange} />
-  if (approval) return <div className="composer-wrap approval-composer-wrap"><ApprovalPanel approval={approval} onDecision={onDecision} />{selector}<p className="composer-note">{t("browser.disclaimer")}</p></div>
-  return <div className={`composer-wrap${centered ? " composer-centered" : ""}`}><form className="composer" onSubmit={(event) => void onSubmit(event)}><Textarea className="composer-input" ref={inputRef} rows={1} value={value} disabled={busy} onChange={(event) => onChange(event.target.value)} onKeyDown={keyDown} placeholder={t("browser.prompt")} aria-label={t("browser.prompt")} /><div className="composer-footer"><span className={`run-status status-${state.status}`}>{statusLabel(t, state.status)}</span><div className="composer-footer-actions">{selector}{state.status === "disconnected" ? <Button type="button" variant="outline" size="sm" onClick={onReconnect}><RefreshCw size={14} />{t("browser.reconnect")}</Button> : null}{busy && state.runId ? <Button type="button" size="icon" onClick={() => void onCancel()} aria-label={t("browser.stop")}><CircleStop size={17} /></Button> : <Button type="submit" size="icon" disabled={!value.trim() || busy} aria-label={t("browser.send")}><Send size={17} /></Button>}</div></div></form><p className="composer-note">{t("browser.disclaimer")}</p></div>
+  const directoryControl = <WorkingDirectoryControl session={session} activeRun={activeRun} updating={workingDirectoryUpdating} onSave={onWorkingDirectoryChange} />
+  if (approval) return <div className="composer-wrap approval-composer-wrap"><ApprovalPanel approval={approval} onDecision={onDecision} /><div className="approval-session-controls">{directoryControl}{selector}</div><p className="composer-note">{t("browser.disclaimer")}</p></div>
+  return <div className={`composer-wrap${centered ? " composer-centered" : ""}`}><form className="composer" onSubmit={(event) => void onSubmit(event)}><Textarea className="composer-input" ref={inputRef} rows={1} value={value} disabled={busy} onChange={(event) => onChange(event.target.value)} onKeyDown={keyDown} placeholder={t("browser.prompt")} aria-label={t("browser.prompt")} /><div className="composer-footer"><span className={`run-status status-${state.status}`}>{statusLabel(t, state.status)}</span><div className="composer-footer-actions">{directoryControl}{selector}{state.status === "disconnected" ? <Button type="button" variant="outline" size="sm" onClick={onReconnect}><RefreshCw size={14} />{t("browser.reconnect")}</Button> : null}{busy && state.runId ? <Button type="button" size="icon" onClick={() => void onCancel()} aria-label={t("browser.stop")}><CircleStop size={17} /></Button> : <Button type="submit" size="icon" disabled={!value.trim() || busy} aria-label={t("browser.send")}><Send size={17} /></Button>}</div></div></form><p className="composer-note">{t("browser.disclaimer")}</p></div>
+}
+
+function WorkingDirectoryControl({ session, activeRun, updating, onSave }: { session: UserSession | null; activeRun: ActiveRun | null; updating: boolean; onSave: (environmentId: string, directory: string) => void }) {
+  const { t } = useTranslation()
+  const [environmentId, setEnvironmentId] = useState("")
+  const [directory, setDirectory] = useState(".")
+  useEffect(() => {
+    setEnvironmentId(session?.environmentId ?? "")
+    setDirectory(session?.workingDirectory ?? ".")
+  }, [session?.sessionId, session?.workingDirectoryVersion, session?.environmentId, session?.workingDirectory])
+  const canSave = Boolean(session && !updating && directory.trim())
+  const save = () => { if (canSave) onSave(environmentId, directory) }
+  const keyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Enter" && event.target instanceof HTMLInputElement && !event.nativeEvent.isComposing) { event.preventDefault(); save() }
+  }
+  const summary = session?.environmentId ? `${shortID(session.environmentId)}:${session.workingDirectory}` : (session?.workingDirectory ?? ".")
+  return <details className="working-directory-control">
+    <summary title={t("browser.workingDirectoryHelp")}><FolderOpen size={14} aria-hidden="true" /><span>{summary}</span></summary>
+    <div className="working-directory-popover" onKeyDown={keyDown}>
+      <label><span>{t("browser.environmentId")}</span><Input value={environmentId} onChange={(event) => setEnvironmentId(event.target.value)} placeholder={t("browser.environmentIdPlaceholder")} disabled={!session || updating} /></label>
+      <label><span>{t("browser.workingDirectory")}</span><Input value={directory} onChange={(event) => setDirectory(event.target.value)} placeholder="." disabled={!session || updating} /></label>
+      <div className="working-directory-actions"><small>{activeRun ? t("browser.workingDirectoryNextRun") : t("browser.workingDirectoryHelp")}</small><Button type="button" size="sm" disabled={!canSave} onClick={save}>{updating ? <LoaderCircle className="spin" size={13} /> : null}{t("common.save")}</Button></div>
+    </div>
+  </details>
 }
 
 function PermissionModeSelector({ session, activeRun, updating, onChange }: { session: UserSession | null; activeRun: ActiveRun | null; updating: boolean; onChange: (mode: PermissionMode) => void }) {

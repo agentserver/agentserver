@@ -8,6 +8,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
+	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -27,8 +28,9 @@ func (s *StateStore) CreateRun(ctx context.Context, command CreateRunCommand) (C
 
 // CreateAuthorizedRun is the user-facing CreateRun boundary. Unlike the
 // component-level command it obtains the session version while holding the
-// session lock and rechecks current workspace membership in the same
-// transaction that writes the run, event, outbox, and launch authority.
+// session lock, checks optional permission/working-directory CAS tokens, and
+// rechecks current workspace membership in the same transaction that writes
+// the run, event, outbox, and launch authority.
 func (s *StateStore) CreateAuthorizedRun(ctx context.Context, command CreateRunCommand) (CreateRunResult, error) {
 	const operation = "CreateAuthorizedRun"
 	normalizedPolicy, err := normalizeRunExecutorPolicy(command.ExecutorPolicy)
@@ -51,7 +53,8 @@ func (s *StateStore) createRun(ctx context.Context, command CreateRunCommand, re
 		sessionQuery := fmt.Sprintf(`
 SELECT s.workspace_id::text, s.creator_id::text, s.status,
        s.active_run_id::text, s.version, s.permission_mode,
-       s.permission_mode_version, w.status,
+       s.permission_mode_version, s.working_environment_id::text,
+       s.working_directory, s.working_directory_version, w.status,
        managed.region, managed.version
 FROM %s AS s
 JOIN %s AS w ON w.id = s.workspace_id
@@ -66,9 +69,13 @@ FOR SHARE OF w`, s.table("sessions"), s.table("workspaces"), s.table("workspace_
 		var sessionVersion int64
 		var sessionPermissionMode string
 		var sessionPermissionModeVersion int64
+		var sessionWorkingEnvironmentID *string
+		var sessionWorkingDirectory string
+		var sessionWorkingDirectoryVersion int64
 		var workspaceStatus string
 		var managedSandboxRegion *string
 		var managedSandboxSettingVersion *int64
+		var err error
 		if err := transaction.QueryRow(ctx, sessionQuery, command.SessionID).Scan(
 			&sessionWorkspaceID,
 			&sessionCreatorID,
@@ -77,6 +84,9 @@ FOR SHARE OF w`, s.table("sessions"), s.table("workspaces"), s.table("workspace_
 			&sessionVersion,
 			&sessionPermissionMode,
 			&sessionPermissionModeVersion,
+			&sessionWorkingEnvironmentID,
+			&sessionWorkingDirectory,
+			&sessionWorkingDirectoryVersion,
 			&workspaceStatus,
 			&managedSandboxRegion,
 			&managedSandboxSettingVersion,
@@ -91,6 +101,22 @@ FOR SHARE OF w`, s.table("sessions"), s.table("workspaces"), s.table("workspace_
 		}
 		if sessionStatus != UserSessionStatusActive {
 			return CreateRunResult{}, commandError(ErrorInvalidState, operation, "session", command.SessionID, "session is not active")
+		}
+		var workspaceBinding *workspaceauthority.Binding
+		if !requireUserMembership {
+			workspaceBinding, err = s.resolveSessionWorkspaceBinding(ctx, transaction, operation, command.WorkspaceID,
+				sessionWorkingEnvironmentID, sessionWorkingDirectory, sessionWorkingDirectoryVersion)
+			if err != nil {
+				return CreateRunResult{}, err
+			}
+			if !workspaceBindingsEqual(command.Workspace, workspaceBinding) {
+				if command.Workspace != nil {
+					return CreateRunResult{}, commandError(ErrorVersionConflict, operation, "session_working_directory", command.SessionID, "requested workspace binding is not the current session binding")
+				}
+				// A component caller that omitted the optional projection adopts the
+				// locked session authority; it is never allowed to replace it.
+			}
+			command.Workspace = workspaceBinding
 		}
 		effectiveSessionPermissionMode, modeErr := runmanifest.CodexPermissionMode(sessionPermissionMode).Effective()
 		if modeErr != nil || sessionPermissionModeVersion < 1 || sessionPermissionModeVersion > maxSafeJSONInteger {
@@ -155,7 +181,12 @@ WHERE r.workspace_id = $1
 				if launchErr != nil {
 					return CreateRunResult{}, launchErr
 				}
-				if !runLaunchInputMatches(prompt, policy, llmGateway, larkEgress, managedSandbox, command) ||
+				existingWorkspace, launchErr := s.readRunWorkspaceBinding(ctx, transaction, operation, existing.ID)
+				if launchErr != nil {
+					return CreateRunResult{}, launchErr
+				}
+				if !workspaceBindingsEqual(existingWorkspace, command.Workspace) ||
+					!runLaunchInputMatches(prompt, policy, llmGateway, larkEgress, managedSandbox, command) ||
 					!runPermissionModeInputMatches(existingMode, existingModeVersion, existingModeExplicit, command) {
 					return CreateRunResult{}, &StateError{
 						Code:         ErrorIdempotencyConflict,
@@ -187,6 +218,22 @@ WHERE r.workspace_id = $1
 		if workspaceStatus != "active" {
 			return CreateRunResult{}, commandError(ErrorInvalidState, operation, "workspace", command.WorkspaceID, "workspace is not active")
 		}
+		if requireUserMembership {
+			// Resolve the mutable session binding only after the idempotency lookup
+			// above. A user retry must recover an already committed run even if the
+			// selected environment was disabled or revoked after that run started.
+			workspaceBinding, err = s.resolveSessionWorkspaceBinding(ctx, transaction, operation, command.WorkspaceID,
+				sessionWorkingEnvironmentID, sessionWorkingDirectory, sessionWorkingDirectoryVersion)
+			if err != nil {
+				return CreateRunResult{}, err
+			}
+			if !workspaceBindingsEqual(command.Workspace, workspaceBinding) {
+				if command.Workspace != nil {
+					return CreateRunResult{}, commandError(ErrorVersionConflict, operation, "session_working_directory", command.SessionID, "requested workspace binding is not the current session binding")
+				}
+			}
+			command.Workspace = workspaceBinding
+		}
 		if command.ManagedSandbox != (RunManagedSandboxBinding{}) {
 			if managedSandboxRegion == nil || managedSandboxSettingVersion == nil {
 				return CreateRunResult{}, commandError(ErrorInvalidState, operation, "workspace", command.WorkspaceID, "workspace has no managed sandbox setting")
@@ -213,6 +260,16 @@ WHERE r.workspace_id = $1
 				ResourceID:     command.SessionID,
 				CurrentVersion: sessionPermissionModeVersion,
 				Message:        "session permission mode version does not match",
+			}
+		}
+		if command.ExpectedWorkingDirectoryVersion > 0 && command.ExpectedWorkingDirectoryVersion != sessionWorkingDirectoryVersion {
+			return CreateRunResult{}, &StateError{
+				Code:           ErrorVersionConflict,
+				Operation:      operation,
+				Resource:       "session_working_directory",
+				ResourceID:     command.SessionID,
+				CurrentVersion: sessionWorkingDirectoryVersion,
+				Message:        "session working directory version does not match",
 			}
 		}
 		if command.PermissionMode != "" {
@@ -361,6 +418,11 @@ func validateCreateRunBase(command CreateRunCommand) error {
 			return err
 		}
 	}
+	if command.Workspace != nil {
+		if err := command.Workspace.Validate(); err != nil {
+			return fmt.Errorf("workspace binding: %w", err)
+		}
+	}
 	if command.PermissionMode != "" {
 		if _, err := command.PermissionMode.Effective(); err != nil {
 			return err
@@ -372,7 +434,73 @@ func validateCreateRunBase(command CreateRunCommand) error {
 	if command.ExpectedPermissionModeVersion < 0 || command.ExpectedPermissionModeVersion > maxSafeJSONInteger {
 		return errors.New("expected_permission_mode_version must be zero or a JSON-safe positive integer")
 	}
+	if command.ExpectedWorkingDirectoryVersion < 0 || command.ExpectedWorkingDirectoryVersion > maxSafeJSONInteger {
+		return errors.New("expected_working_directory_version must be zero or a JSON-safe positive integer")
+	}
 	return validateTransitionRecord(command.Record)
+}
+
+// resolveSessionWorkspaceBinding converts the mutable session projection into
+// a complete run authority while the session row is locked. The executor root
+// is represented only by its descriptor digest; absolute host paths never
+// cross the Core/run boundary.
+func (s *StateStore) resolveSessionWorkspaceBinding(
+	ctx context.Context,
+	transaction pgx.Tx,
+	operation, workspaceID string,
+	environmentID *string, workingDirectory string, workingDirectoryVersion int64,
+) (*workspaceauthority.Binding, error) {
+	if workingDirectory == "" {
+		return nil, databaseError(operation+" validate session working directory", errors.New("stored working directory is empty"))
+	}
+	if err := workspaceauthority.ValidateWorkingDirectory(workingDirectory); err != nil {
+		return nil, databaseError(operation+" validate session working directory", err)
+	}
+	if workingDirectoryVersion < 1 || workingDirectoryVersion > maxSafeJSONInteger {
+		return nil, databaseError(operation+" validate session working directory version", errors.New("stored working-directory version is invalid"))
+	}
+	if environmentID == nil {
+		if workingDirectory != "." {
+			return nil, databaseError(operation+" validate session workspace binding", errors.New("unbound session has a non-root working directory"))
+		}
+		return nil, nil
+	}
+	if err := validateUUID("working_environment_id", *environmentID); err != nil {
+		return nil, databaseError(operation+" validate session environment", err)
+	}
+	environment, err := s.readWorkspaceBindingEnvironment(ctx, transaction, operation, workspaceID, *environmentID)
+	if err != nil {
+		if HasStateErrorCode(err, ErrorNotFound) {
+			return nil, commandError(ErrorInvalidState, operation, "environment", *environmentID, "session working environment is no longer registered in this workspace")
+		}
+		return nil, err
+	}
+	if environment.Status == ExecutorEnvironmentStatusDisabled || environment.ExecutorStatus == ExecutorStatusRevoked {
+		return nil, commandError(ErrorInvalidState, operation, "environment", *environmentID, "session working environment is disabled or revoked")
+	}
+	if environment.Version < 1 || environment.Version > maxSafeJSONInteger {
+		return nil, databaseError(operation+" validate session environment version", errors.New("registered environment version is invalid"))
+	}
+	rootSHA256, err := workspaceauthority.RootDescriptorSHA256(environment.RootDescriptor)
+	if err != nil {
+		return nil, databaseError(operation+" validate session root descriptor", err)
+	}
+	binding := &workspaceauthority.Binding{
+		EnvironmentID: *environmentID, EnvironmentVersion: environment.Version,
+		RootSHA256: rootSHA256, WorkingDirectory: workingDirectory,
+		WorkingDirectoryVersion: workingDirectoryVersion,
+	}
+	if err := binding.Validate(); err != nil {
+		return nil, databaseError(operation+" validate session workspace binding", err)
+	}
+	return binding, nil
+}
+
+func workspaceBindingsEqual(left, right *workspaceauthority.Binding) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 func validateRunManagedSandboxBinding(binding RunManagedSandboxBinding) error {

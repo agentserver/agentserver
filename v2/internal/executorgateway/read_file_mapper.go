@@ -90,10 +90,12 @@ type ReadFileV1Operation struct {
 	Routing     agentxconn.RoutingContext
 }
 
-// ReadFileV1Plan is the immutable projection of one bounded read. RelativePath
-// is retained for the MCP result while PathURI is the only path sent to agentx.
-// The outer request remains one core operation even though agentx composes it
-// from a disposable stock fs/open, fs/readBlock, and fs/close sequence.
+// ReadFileV1Plan is the immutable projection of one bounded read. RequestedPath
+// is the caller-facing path returned to the model; RelativePath is the
+// environment-relative path after applying the frozen session directory and
+// is the only path sent to the backend. The outer request remains one core
+// operation even though agentx composes it from a disposable stock fs/open,
+// fs/readBlock, and fs/close sequence.
 type ReadFileV1Plan struct {
 	Arguments      json.RawMessage
 	ToolSchema     json.RawMessage
@@ -103,6 +105,7 @@ type ReadFileV1Plan struct {
 	PolicyVersion  string
 	ToolCallID     string
 	Environment    ResolvedEnvironment
+	RequestedPath  string
 	RelativePath   string
 	RootURI        string
 	PathURI        string
@@ -130,8 +133,7 @@ func MapReadFileV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal,
 	if err != nil {
 		return ReadFileV1Plan{}, fmt.Errorf("read-file environment: %w", err)
 	}
-	if resolved.Root != environment.Root || resolved.DefaultCWD != environment.DefaultCWD ||
-		resolved.DisplayName != environment.DisplayName || resolved.Description != environment.Description {
+	if !equalResolvedEnvironmentProjection(resolved, environment) {
 		return ReadFileV1Plan{}, errors.New("read-file environment projection differs from its registered descriptor")
 	}
 	if principal.ExecutorID != "" && environment.ExecutorID != principal.ExecutorID {
@@ -139,6 +141,11 @@ func MapReadFileV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal,
 	}
 	if principal.Production && environment.InsecureDev {
 		return ReadFileV1Plan{}, errors.New("production read-file environment cannot be insecure-development")
+	}
+	if principal.Workspace != nil {
+		if err := validateWorkspaceEnvironment(*principal.Workspace, resolved); err != nil {
+			return ReadFileV1Plan{}, err
+		}
 	}
 	if !execprofile.SupportsFilesystemRead(environment.OuterProfileVersion) {
 		return ReadFileV1Plan{}, errors.New("read-file environment does not advertise the bounded filesystem-read profile")
@@ -153,6 +160,13 @@ func MapReadFileV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal,
 	}
 	if err := validateReadFileRelativePath(arguments.Path); err != nil {
 		return ReadFileV1Plan{}, fmt.Errorf("read_file path: %w", err)
+	}
+	relativePath := arguments.Path
+	if principal.Workspace != nil {
+		relativePath = path.Join(principal.Workspace.WorkingDirectory, arguments.Path)
+		if err := validateReadFileRelativePath(relativePath); err != nil {
+			return ReadFileV1Plan{}, fmt.Errorf("read_file path escapes frozen working directory: %w", err)
+		}
 	}
 	offset := uint64(0)
 	if arguments.Offset != nil {
@@ -169,11 +183,11 @@ func MapReadFileV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal,
 		return ReadFileV1Plan{}, fmt.Errorf("read_file limit must be between 1 and %d", execprofile.MaxFilesystemReadLength)
 	}
 
-	rootURI, pathURI, err := readFileEnvironmentURIs(environment.Platform, environment.Root, arguments.Path)
+	rootURI, pathURI, err := readFileEnvironmentURIs(environment.Platform, environment.Root, relativePath)
 	if err != nil {
 		return ReadFileV1Plan{}, err
 	}
-	absolutePath, err := readFileEnvironmentPath(environment.Platform, environment.Root, arguments.Path)
+	absolutePath, err := readFileEnvironmentPath(environment.Platform, environment.Root, relativePath)
 	if err != nil {
 		return ReadFileV1Plan{}, err
 	}
@@ -222,7 +236,7 @@ func MapReadFileV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal,
 		Platform:             environment.Platform,
 		OuterProfileVersion:  environment.OuterProfileVersion,
 		RootURI:              rootURI,
-		RelativePath:         arguments.Path,
+		RelativePath:         relativePath,
 		PathURI:              pathURI,
 		Offset:               offset,
 		Limit:                limit,
@@ -247,7 +261,8 @@ func MapReadFileV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal,
 		PolicyVersion:  policy.Version,
 		ToolCallID:     toolCallID,
 		Environment:    environment,
-		RelativePath:   arguments.Path,
+		RequestedPath:  arguments.Path,
+		RelativePath:   relativePath,
 		RootURI:        rootURI,
 		PathURI:        pathURI,
 		AbsolutePath:   absolutePath,
@@ -265,6 +280,9 @@ func MapReadFileV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal,
 func validateReadFileRelativePath(value string) error {
 	if err := validateRegistryText("environment-relative file path", value, 1, 4096); err != nil {
 		return err
+	}
+	if containsPathControl(value) {
+		return errors.New("environment-relative file path must not contain control characters")
 	}
 	if strings.Contains(value, "\\") || strings.HasPrefix(value, "/") || path.Clean(value) != value || value == "." {
 		return errors.New("path must be a clean slash-separated relative file path without dot segments")

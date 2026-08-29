@@ -3,11 +3,12 @@ package corecontract
 import "time"
 
 const (
-	UserSessionCollectionRoutePattern     = "/v2/workspaces/{workspaceId}/sessions"
-	UserSessionResourceRoutePattern       = "/v2/workspaces/{workspaceId}/sessions/{sessionId}"
-	UserSessionPermissionModeRoutePattern = "/v2/workspaces/{workspaceId}/sessions/{sessionId}/permission-mode"
-	UserSessionTranscriptRoutePattern     = "/v2/workspaces/{workspaceId}/sessions/{sessionId}/transcript"
-	UserSessionArchiveRoutePattern        = "/v2/workspaces/{workspaceId}/sessions/{sessionId}/actions/archive"
+	UserSessionCollectionRoutePattern       = "/v2/workspaces/{workspaceId}/sessions"
+	UserSessionResourceRoutePattern         = "/v2/workspaces/{workspaceId}/sessions/{sessionId}"
+	UserSessionPermissionModeRoutePattern   = "/v2/workspaces/{workspaceId}/sessions/{sessionId}/permission-mode"
+	UserSessionWorkingDirectoryRoutePattern = "/v2/workspaces/{workspaceId}/sessions/{sessionId}/working-directory"
+	UserSessionTranscriptRoutePattern       = "/v2/workspaces/{workspaceId}/sessions/{sessionId}/transcript"
+	UserSessionArchiveRoutePattern          = "/v2/workspaces/{workspaceId}/sessions/{sessionId}/actions/archive"
 )
 
 func UserSessionsPath(workspaceID string) string {
@@ -26,21 +27,28 @@ func UserSessionPermissionModePath(workspaceID, sessionID string) string {
 	return UserSessionPath(workspaceID, sessionID) + "/permission-mode"
 }
 
+func UserSessionWorkingDirectoryPath(workspaceID, sessionID string) string {
+	return UserSessionPath(workspaceID, sessionID) + "/working-directory"
+}
+
 func ArchiveUserSessionPath(workspaceID, sessionID string) string {
 	return UserSessionPath(workspaceID, sessionID) + "/actions/archive"
 }
 
 type UserSessionState struct {
-	SessionID             string    `json:"sessionId"`
-	WorkspaceID           string    `json:"workspaceId"`
-	Title                 string    `json:"title"`
-	Status                string    `json:"status"`
-	ActiveRunID           string    `json:"activeRunId,omitempty"`
-	Version               int64     `json:"version"`
-	PermissionMode        string    `json:"permissionMode"`
-	PermissionModeVersion int64     `json:"permissionModeVersion"`
-	CreatedAt             time.Time `json:"createdAt"`
-	UpdatedAt             time.Time `json:"updatedAt"`
+	SessionID               string    `json:"sessionId"`
+	WorkspaceID             string    `json:"workspaceId"`
+	Title                   string    `json:"title"`
+	Status                  string    `json:"status"`
+	ActiveRunID             string    `json:"activeRunId,omitempty"`
+	Version                 int64     `json:"version"`
+	PermissionMode          string    `json:"permissionMode"`
+	PermissionModeVersion   int64     `json:"permissionModeVersion"`
+	EnvironmentID           string    `json:"environmentId,omitempty"`
+	WorkingDirectory        string    `json:"workingDirectory"`
+	WorkingDirectoryVersion int64     `json:"workingDirectoryVersion"`
+	CreatedAt               time.Time `json:"createdAt"`
+	UpdatedAt               time.Time `json:"updatedAt"`
 }
 
 type ListUserSessionsResponse struct {
@@ -92,6 +100,20 @@ type UpdateUserSessionPermissionModeRequest struct {
 }
 
 type UpdateUserSessionPermissionModeResponse struct {
+	Session UserSessionState `json:"session"`
+	Changed bool             `json:"changed"`
+}
+
+// UpdateUserSessionWorkingDirectoryRequest changes the executor environment
+// and path used by the next run. An empty environmentId means an unbound
+// session and therefore requires workingDirectory ".".
+type UpdateUserSessionWorkingDirectoryRequest struct {
+	EnvironmentID                   string `json:"environmentId,omitempty"`
+	WorkingDirectory                string `json:"workingDirectory"`
+	ExpectedWorkingDirectoryVersion int64  `json:"expectedWorkingDirectoryVersion"`
+}
+
+type UpdateUserSessionWorkingDirectoryResponse struct {
 	Session UserSessionState `json:"session"`
 	Changed bool             `json:"changed"`
 }

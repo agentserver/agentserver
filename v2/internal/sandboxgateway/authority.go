@@ -43,6 +43,7 @@ type Principal struct {
 	MutationKey          string
 	SandboxID            string
 	TargetGeneration     int64
+	WorkspaceAccess      string
 }
 
 type Authorizer interface {
@@ -75,6 +76,13 @@ func bindOperationPrincipal(principal Principal, action string, identity sandbox
 		principal.MutationKey != identity.MutationKey || principal.SandboxID != ref.SandboxID ||
 		principal.TargetGeneration != ref.TargetGeneration {
 		return errors.New("backend capability does not match the requested operation target")
+	}
+	if action == ActionRunCommand {
+		if principal.WorkspaceAccess != "" && principal.WorkspaceAccess != "read" && principal.WorkspaceAccess != "write" {
+			return errors.New("backend capability workspace access is invalid")
+		}
+	} else if principal.WorkspaceAccess != "" {
+		return errors.New("non-command backend capability contains workspace access")
 	}
 	return nil
 }

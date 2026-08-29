@@ -115,6 +115,19 @@ func (source *DevelopmentAttemptRuntimeCapabilitySource) IssueAttemptRuntimeCapa
 	executorClaims.ExpectedRunVersion = claim.Run.Version + 1
 	executorClaims.ExpectedRunAttemptVersion = claim.RunAttempt.Version + 1
 	executorClaims.MaxApprovalTTLMillis = prepared.Manifest.Limits.MaxApprovalTTLMS
+	executorClaims.PermissionMode = string(prepared.Manifest.PermissionMode)
+	executorClaims.PermissionModeVersion = prepared.Manifest.PermissionModeVersion
+	if prepared.Manifest.Workspace != nil {
+		workspace, err := prepared.Manifest.Workspace.Binding()
+		if err != nil {
+			return harnessbootstrap.RuntimeCapabilities{}, fmt.Errorf("decode manifest workspace authority: %w", err)
+		}
+		executorClaims.WorkspaceEnvironmentID = workspace.EnvironmentID
+		executorClaims.WorkspaceEnvironmentVersion = workspace.EnvironmentVersion
+		executorClaims.WorkspaceRootSHA256 = prepared.Manifest.Workspace.RootSHA256
+		executorClaims.WorkspaceWorkingDirectory = workspace.WorkingDirectory
+		executorClaims.WorkspaceWorkingDirectoryVersion = workspace.WorkingDirectoryVersion
+	}
 	executorCapability, err := source.codec.Sign(executorClaims)
 	if err != nil {
 		return harnessbootstrap.RuntimeCapabilities{}, fmt.Errorf("sign development executor capability: %w", err)

@@ -78,6 +78,18 @@
         "environmentId": {"$ref": "#/$defs/uuid"}
       }
     },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["environmentId", "environmentVersion", "rootSha256", "workingDirectory", "workingDirectoryVersion"],
+      "properties": {
+        "environmentId": {"$ref": "#/$defs/uuid"},
+        "environmentVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "rootSha256": {"$ref": "#/$defs/sha256"},
+        "workingDirectory": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^(?:\\.|(?:[^./\\\\\\x00-\\x1f\\x7f-\\x9f][^/\\\\\\x00-\\x1f\\x7f-\\x9f]*|\\.[^./\\\\\\x00-\\x1f\\x7f-\\x9f][^/\\\\\\x00-\\x1f\\x7f-\\x9f]*|\\.\\.[^/\\\\\\x00-\\x1f\\x7f-\\x9f]+)(?:/(?:[^./\\\\\\x00-\\x1f\\x7f-\\x9f][^/\\\\\\x00-\\x1f\\x7f-\\x9f]*|\\.[^./\\\\\\x00-\\x1f\\x7f-\\x9f][^/\\\\\\x00-\\x1f\\x7f-\\x9f]*|\\.\\.[^/\\\\\\x00-\\x1f\\x7f-\\x9f]+))*)$"},
+        "workingDirectoryVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+      }
+    },
     "modelRoute": {
       "type": "object",
       "additionalProperties": false,
@@ -206,6 +218,7 @@
         "executorPolicy": {"$ref": "#/$defs/executorPolicy"},
         "toolPack": {"$ref": "#/$defs/toolPack"},
         "managedSandbox": {"$ref": "#/$defs/managedSandbox"},
+        "workspace": {"$ref": "#/$defs/workspace"},
         "limits": {"$ref": "#/$defs/runLimits"},
         "checkpointAllowlistVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
         "workerImageDigest": {"$ref": "#/$defs/sha256"},

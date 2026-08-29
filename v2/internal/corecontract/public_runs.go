@@ -13,6 +13,10 @@ type CreateUserRunRequest struct {
 	ClientRunID                   string `json:"clientRunId,omitempty"`
 	Prompt                        string `json:"prompt"`
 	ExpectedPermissionModeVersion int64  `json:"expectedPermissionModeVersion,omitempty"`
+	// ExpectedWorkingDirectoryVersion is an optional CAS token for the
+	// session's next-run executor workspace binding. It is a precondition for
+	// creating a new run, not part of the idempotency identity.
+	ExpectedWorkingDirectoryVersion int64 `json:"expectedWorkingDirectoryVersion,omitempty"`
 }
 
 type CreateUserRunResponse struct {

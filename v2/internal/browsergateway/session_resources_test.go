@@ -128,6 +128,36 @@ func TestSessionResourceProxyForwardsPermissionModePatch(t *testing.T) {
 	}
 }
 
+func TestSessionResourceProxyForwardsWorkingDirectoryPatch(t *testing.T) {
+	client := &http.Client{Transport: browserRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodPatch || request.URL.Path != corecontract.UserSessionWorkingDirectoryPath(projectorWorkspaceID, projectorSessionID) ||
+			request.Header.Get("Authorization") != "Bearer user-token" || request.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("Core working-directory request = %s %s headers=%v", request.Method, request.URL, request.Header)
+		}
+		var input corecontract.UpdateUserSessionWorkingDirectoryRequest
+		if err := json.NewDecoder(request.Body).Decode(&input); err != nil || input.EnvironmentID != "94000000-0000-4000-8000-000000000004" ||
+			input.WorkingDirectory != "rtm-aihub" || input.ExpectedWorkingDirectoryVersion != 1 {
+			t.Fatalf("Core working-directory input = %+v, %v", input, err)
+		}
+		return browserJSONResponse(request, http.StatusOK, corecontract.UpdateUserSessionWorkingDirectoryResponse{
+			Session: corecontract.UserSessionState{SessionID: projectorSessionID, WorkspaceID: projectorWorkspaceID, Title: "Workspace", Status: "active", Version: 2, WorkingDirectory: "rtm-aihub", WorkingDirectoryVersion: 2},
+			Changed: true,
+		}), nil
+	})}
+	backend, _ := NewCoreRunBackend("https://core.agentserver.local", client)
+	proxy, _ := NewSessionResourceProxy(backend)
+	request := httptest.NewRequest(http.MethodPatch, corecontract.UserSessionWorkingDirectoryPath(projectorWorkspaceID, projectorSessionID), strings.NewReader(
+		`{"environmentId":"94000000-0000-4000-8000-000000000004","workingDirectory":"rtm-aihub","expectedWorkingDirectoryVersion":1}`,
+	))
+	request.Header.Set("Authorization", "Bearer user-token")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	proxy.Routes().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"workingDirectory":"rtm-aihub"`) {
+		t.Fatalf("working-directory proxy response = %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestSessionResourceProxyForwardsOnlyReviewedTrajectoryQuery(t *testing.T) {
 	called := 0
 	client := &http.Client{Transport: browserRoundTripFunc(func(request *http.Request) (*http.Response, error) {

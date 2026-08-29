@@ -69,8 +69,17 @@ type StartProcessInput struct {
 	Executable       string
 	Arguments        []string
 	WorkingDirectory string
-	Environment      map[string]string
-	Timeout          time.Duration
+	// WorkspaceAccess is the run-frozen filesystem authority projected by the
+	// provider-neutral execution contract. TAE's documented process API does
+	// not currently expose a per-process sandbox flag, so this value is retained
+	// at the adapter boundary for a runtime/enforcement implementation. The
+	// current HTTP data-plane transport deliberately does not serialize an
+	// undocumented field; callers must not treat this projection as OS-level
+	// enforcement until a TAE runtime advertises that capability. Empty is
+	// preserved as the legacy write representation.
+	WorkspaceAccess string
+	Environment     map[string]string
+	Timeout         time.Duration
 }
 
 type StreamEvent struct {

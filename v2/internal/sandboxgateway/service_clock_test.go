@@ -28,3 +28,17 @@ func TestMatchReadySessionStateUsesSuppliedClock(t *testing.T) {
 		t.Fatal("state expiring exactly at the supplied clock was accepted")
 	}
 }
+
+func TestServicePathWithinRootUsesCanonicalManagedRoot(t *testing.T) {
+	service := &Service{root: "/custom/workspace"}
+	for _, value := range []string{"/custom/workspace", "/custom/workspace/project/file"} {
+		if err := service.pathWithinRoot("path", value); err != nil {
+			t.Fatalf("pathWithinRoot(%q) error = %v", value, err)
+		}
+	}
+	for _, value := range []string{"/custom/workspace2/file", "/tmp/file", "/custom/workspace/../secret"} {
+		if err := service.pathWithinRoot("path", value); err == nil {
+			t.Fatalf("pathWithinRoot(%q) unexpectedly succeeded", value)
+		}
+	}
+}

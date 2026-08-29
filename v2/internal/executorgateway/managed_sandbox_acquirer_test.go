@@ -2,6 +2,7 @@ package executorgateway
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"net/http/httptest"
 	"sync"
@@ -11,8 +12,32 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/executorgateway/mcpcontract"
 	"github.com/agentserver/agentserver/v2/internal/sandboxclient"
 	"github.com/agentserver/agentserver/v2/internal/sandboxcontract"
+	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+func TestManagedSandboxRequiredFollowsFrozenWorkspaceTarget(t *testing.T) {
+	principal := testExecutorMCPPrincipal("managed-target-selection")
+	if managedSandboxRequired(principal) {
+		t.Fatal("managed sandbox was required without a managed authority")
+	}
+	principal.ManagedSandbox = &ExecutorManagedSandboxAuthority{EnvironmentID: "61000000-0000-4000-8000-000000000006", Region: "i18n-tt", SettingVersion: 1}
+	if !managedSandboxRequired(principal) {
+		t.Fatal("unbound run did not retain managed sandbox acquisition")
+	}
+	digest := sha256.Sum256([]byte(`{"kind":"local","root":"/workspace"}`))
+	principal.Workspace = &workspaceauthority.Binding{
+		EnvironmentID: testEnvironmentID, EnvironmentVersion: 1, RootSHA256: digest,
+		WorkingDirectory: ".", WorkingDirectoryVersion: 1,
+	}
+	if managedSandboxRequired(principal) {
+		t.Fatal("local AgentX workspace incorrectly required a managed sandbox")
+	}
+	principal.Workspace.EnvironmentID = principal.ManagedSandbox.EnvironmentID
+	if !managedSandboxRequired(principal) {
+		t.Fatal("managed workspace did not require the matching TAE sandbox")
+	}
+}
 
 func TestGatewayManagedSandboxSessionAcquirerEnsuresOnDemandAndReleases(t *testing.T) {
 	client := &recordingManagedSandboxLifecycleClient{}

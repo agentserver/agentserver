@@ -55,6 +55,7 @@ type Claims struct {
 	MutationKey      string `json:"mutationKey,omitempty"`
 	SandboxID        string `json:"sandboxId,omitempty"`
 	TargetGeneration int64  `json:"targetGeneration,omitempty"`
+	WorkspaceAccess  string `json:"workspaceAccess,omitempty"`
 
 	IssuedAtUnixMS  int64 `json:"issuedAtUnixMs"`
 	ExpiresAtUnixMS int64 `json:"expiresAtUnixMs"`
@@ -240,7 +241,7 @@ func (claims Claims) Validate() error {
 	}
 	switch claims.Audience {
 	case AudienceLifecycle:
-		if !validText(claims.HolderID, maximumTextBytes) || claims.ExecutionID != "" || claims.OperationID != "" || claims.MutationKey != "" {
+		if !validText(claims.HolderID, maximumTextBytes) || claims.ExecutionID != "" || claims.OperationID != "" || claims.MutationKey != "" || claims.WorkspaceAccess != "" {
 			return errors.New("sandbox lifecycle capability holder or operation projection is invalid")
 		}
 		switch claims.Action {
@@ -262,7 +263,14 @@ func (claims Claims) Validate() error {
 			return errors.New("sandbox backend capability operation target binding is invalid")
 		}
 		switch claims.Action {
-		case "run_command", "signal_command", "read_file":
+		case "run_command":
+			if claims.WorkspaceAccess != "" && claims.WorkspaceAccess != "read" && claims.WorkspaceAccess != "write" {
+				return errors.New("sandbox backend workspace access is invalid")
+			}
+		case "signal_command", "read_file":
+			if claims.WorkspaceAccess != "" {
+				return errors.New("non-command sandbox capability contains workspace access")
+			}
 		default:
 			return errors.New("sandbox backend capability action is unsupported")
 		}

@@ -171,7 +171,7 @@ func mapAgentXStartRequest(request executionbackend.StartProcessRequest) (json.R
 				Type: "managed",
 				FileSystem: shellSandboxFileSystem{Type: "restricted", Entries: []shellSandboxEntry{
 					{Path: shellSandboxPath{Type: "special", Value: &shellSandboxSpecialPath{Kind: "minimal"}}, Access: "read"},
-					{Path: shellSandboxPath{Type: "path", Path: rootURI}, Access: "write"},
+					{Path: shellSandboxPath{Type: "path", Path: rootURI}, Access: request.EffectiveWorkspaceAccess()},
 				}},
 				Network: "restricted",
 			},

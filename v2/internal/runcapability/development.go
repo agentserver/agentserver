@@ -21,6 +21,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/braincatalog"
 	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
+	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 )
 
 const (
@@ -59,14 +60,21 @@ type Claims struct {
 	RunDeadlineUnixMS    int64  `json:"runDeadlineUnixMs"`
 	ExpiresAtUnixMS      int64  `json:"expiresAtUnixMs"`
 
-	ExecutorID                   string `json:"executorId,omitempty"`
-	ToolCatalogDigest            string `json:"toolCatalogDigest,omitempty"`
-	ExpectedRunVersion           int64  `json:"expectedRunVersion,omitempty"`
-	ExpectedRunAttemptVersion    int64  `json:"expectedRunAttemptVersion,omitempty"`
-	MaxApprovalTTLMillis         int64  `json:"maxApprovalTtlMs,omitempty"`
-	ManagedSandboxSettingVersion int64  `json:"managedSandboxSettingVersion,omitempty"`
-	ManagedSandboxRegion         string `json:"managedSandboxRegion,omitempty"`
-	ManagedSandboxEnvironmentID  string `json:"managedSandboxEnvironmentId,omitempty"`
+	ExecutorID                       string `json:"executorId,omitempty"`
+	ToolCatalogDigest                string `json:"toolCatalogDigest,omitempty"`
+	ExpectedRunVersion               int64  `json:"expectedRunVersion,omitempty"`
+	ExpectedRunAttemptVersion        int64  `json:"expectedRunAttemptVersion,omitempty"`
+	MaxApprovalTTLMillis             int64  `json:"maxApprovalTtlMs,omitempty"`
+	ManagedSandboxSettingVersion     int64  `json:"managedSandboxSettingVersion,omitempty"`
+	ManagedSandboxRegion             string `json:"managedSandboxRegion,omitempty"`
+	ManagedSandboxEnvironmentID      string `json:"managedSandboxEnvironmentId,omitempty"`
+	WorkspaceEnvironmentID           string `json:"workspaceEnvironmentId,omitempty"`
+	WorkspaceEnvironmentVersion      int64  `json:"workspaceEnvironmentVersion,omitempty"`
+	WorkspaceRootSHA256              string `json:"workspaceRootSha256,omitempty"`
+	WorkspaceWorkingDirectory        string `json:"workspaceWorkingDirectory,omitempty"`
+	WorkspaceWorkingDirectoryVersion int64  `json:"workspaceWorkingDirectoryVersion,omitempty"`
+	PermissionMode                   string `json:"permissionMode,omitempty"`
+	PermissionModeVersion            int64  `json:"permissionModeVersion,omitempty"`
 
 	Model                 string `json:"model,omitempty"`
 	Provider              string `json:"provider,omitempty"`
@@ -233,6 +241,31 @@ func (claims Claims) validateAuthority(profile string) error {
 				return fmt.Errorf("%s executor capability managed sandbox authority is invalid: %w", profile, err)
 			}
 		}
+		workspaceConfigured := claims.WorkspaceEnvironmentID != "" || claims.WorkspaceEnvironmentVersion != 0 ||
+			claims.WorkspaceRootSHA256 != "" || claims.WorkspaceWorkingDirectory != "" || claims.WorkspaceWorkingDirectoryVersion != 0
+		if workspaceConfigured {
+			if !validDevelopmentUUID(claims.WorkspaceEnvironmentID) ||
+				claims.WorkspaceEnvironmentVersion < 1 || claims.WorkspaceEnvironmentVersion > maxSafeJSONInteger ||
+				!validNonZeroDevelopmentDigest(claims.WorkspaceRootSHA256) || claims.WorkspaceWorkingDirectoryVersion < 1 ||
+				claims.WorkspaceWorkingDirectoryVersion > maxSafeJSONInteger {
+				return fmt.Errorf("%s executor capability workspace authority is invalid", profile)
+			}
+			if err := workspaceauthority.ValidateWorkingDirectory(claims.WorkspaceWorkingDirectory); err != nil {
+				return fmt.Errorf("%s executor capability workspace working directory is invalid: %w", profile, err)
+			}
+		} else if claims.WorkspaceEnvironmentVersion != 0 || claims.WorkspaceWorkingDirectoryVersion != 0 {
+			return fmt.Errorf("%s executor capability workspace authority is incomplete", profile)
+		}
+		if claims.PermissionMode == "" {
+			if claims.PermissionModeVersion != 0 {
+				return fmt.Errorf("%s executor capability permission mode version is incomplete", profile)
+			}
+		} else {
+			mode, err := permissionModeEffective(claims.PermissionMode)
+			if err != nil || mode != claims.PermissionMode || claims.PermissionModeVersion < 1 || claims.PermissionModeVersion > maxSafeJSONInteger {
+				return fmt.Errorf("%s executor capability permission mode authority is invalid", profile)
+			}
+		}
 	case AudienceLLMProxy:
 		if !validDevelopmentText(claims.Model, maximumTextBytes) || !validDevelopmentText(claims.Provider, maximumTextBytes) {
 			return fmt.Errorf("%s model capability route is invalid", profile)
@@ -254,6 +287,10 @@ func (claims Claims) validateAuthority(profile string) error {
 		if claims.ManagedSandboxSettingVersion != 0 || claims.ManagedSandboxRegion != "" ||
 			claims.ManagedSandboxEnvironmentID != "" {
 			return fmt.Errorf("%s model capability contains managed sandbox authority", profile)
+		}
+		if claims.WorkspaceEnvironmentID != "" || claims.WorkspaceEnvironmentVersion != 0 || claims.WorkspaceRootSHA256 != "" ||
+			claims.WorkspaceWorkingDirectory != "" || claims.WorkspaceWorkingDirectoryVersion != 0 || claims.PermissionMode != "" || claims.PermissionModeVersion != 0 {
+			return fmt.Errorf("%s model capability contains executor workspace authority", profile)
 		}
 	default:
 		return fmt.Errorf("%s run capability audience is unsupported", profile)
@@ -301,6 +338,19 @@ func validDevelopmentUUID(value string) bool {
 
 func validDevelopmentText(value string, maximum int) bool {
 	return value != "" && len(value) <= maximum && utf8.ValidString(value) && !strings.ContainsRune(value, 0)
+}
+
+func validNonZeroDevelopmentDigest(value string) bool {
+	return developmentDigestPattern.MatchString(value) && strings.Trim(value, "0") != ""
+}
+
+func permissionModeEffective(value string) (string, error) {
+	switch value {
+	case "read-only", "auto", "full-access":
+		return value, nil
+	default:
+		return "", errors.New("unsupported permission mode")
+	}
 }
 
 func finishClaimsJSON(decoder *json.Decoder) error {

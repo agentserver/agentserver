@@ -56,6 +56,7 @@ func (source *SignedSandboxGatewayTokenSource) Token(ctx context.Context, reques
 		ExecutionID: request.Operation.ExecutionID, OperationID: request.Operation.OperationID,
 		MutationKey: request.Operation.MutationKey, SandboxID: request.Target.ID,
 		TargetGeneration: request.Target.Generation,
+		WorkspaceAccess:  request.WorkspaceAccess,
 		IssuedAtUnixMS:   now.Add(-5 * time.Second).UnixMilli(), ExpiresAtUnixMS: now.Add(source.ttl).UnixMilli(),
 	}
 	return source.signer.Sign(claims)

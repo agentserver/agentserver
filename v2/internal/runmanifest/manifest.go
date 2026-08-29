@@ -21,6 +21,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/braincatalog"
 	checkpointartifact "github.com/agentserver/agentserver/v2/internal/checkpoint"
 	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
+	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 	"github.com/ucarion/jcs"
 )
 
@@ -76,6 +77,18 @@ type ManagedSandboxAuthority struct {
 	SettingVersion int64  `json:"settingVersion"`
 	Region         string `json:"region"`
 	EnvironmentID  string `json:"environmentId"`
+}
+
+// WorkspaceAuthority freezes the executor environment generation and logical
+// working directory selected by the session. It deliberately contains no
+// absolute host path; executor-gateway resolves that from its registered
+// environment and verifies RootSHA256 before use.
+type WorkspaceAuthority struct {
+	EnvironmentID           string `json:"environmentId"`
+	EnvironmentVersion      int64  `json:"environmentVersion"`
+	RootSHA256              string `json:"rootSha256"`
+	WorkingDirectory        string `json:"workingDirectory"`
+	WorkingDirectoryVersion int64  `json:"workingDirectoryVersion"`
 }
 
 type ModelRoute struct {
@@ -157,6 +170,7 @@ type Manifest struct {
 	ExecutorPolicy             ExecutorPolicy           `json:"executorPolicy"`
 	ToolPack                   *ToolPackAuthority       `json:"toolPack,omitempty"`
 	ManagedSandbox             *ManagedSandboxAuthority `json:"managedSandbox,omitempty"`
+	Workspace                  *WorkspaceAuthority      `json:"workspace,omitempty"`
 	Limits                     RunLimits                `json:"limits"`
 	CheckpointAllowlistVersion int                      `json:"checkpointAllowlistVersion"`
 	WorkerImageDigest          string                   `json:"workerImageDigest"`
@@ -254,6 +268,24 @@ func (manifest Manifest) Validate() error {
 	if err := manifest.ManagedSandbox.validate(); err != nil {
 		return err
 	}
+	if err := manifest.Workspace.validate(); err != nil {
+		return err
+	}
+	if manifest.Workspace != nil {
+		hasEnvironmentDiscovery := false
+		requiresEnvironmentDiscovery := false
+		for _, tool := range manifest.ExecutorMCP.Tools {
+			switch tool.Name {
+			case "list_environments":
+				hasEnvironmentDiscovery = true
+			case "shell", "read_file":
+				requiresEnvironmentDiscovery = true
+			}
+		}
+		if requiresEnvironmentDiscovery && !hasEnvironmentDiscovery {
+			return errors.New("workspace executor tools require list_environments discovery")
+		}
+	}
 	if manifest.ManagedSandbox != nil && manifest.ToolPack == nil {
 		return errors.New("managedSandbox requires toolPack authority")
 	}
@@ -282,6 +314,53 @@ func (manifest Manifest) Validate() error {
 		return errors.New("controllerCallback.holderId must match holderId")
 	}
 	return nil
+}
+
+func (authority *WorkspaceAuthority) validate() error {
+	if authority == nil {
+		return nil
+	}
+	_, err := authority.Binding()
+	return err
+}
+
+// WorkspaceAuthorityFromBinding projects a validated internal binding into
+// the path-free signed wire representation.
+func WorkspaceAuthorityFromBinding(binding *workspaceauthority.Binding) (*WorkspaceAuthority, error) {
+	if binding == nil {
+		return nil, nil
+	}
+	if err := binding.Validate(); err != nil {
+		return nil, err
+	}
+	return &WorkspaceAuthority{
+		EnvironmentID: binding.EnvironmentID, EnvironmentVersion: binding.EnvironmentVersion,
+		RootSHA256: hex.EncodeToString(binding.RootSHA256[:]), WorkingDirectory: binding.WorkingDirectory,
+		WorkingDirectoryVersion: binding.WorkingDirectoryVersion,
+	}, nil
+}
+
+// Binding decodes and validates the signed authority for executor-capability
+// issuance and gateway enforcement.
+func (authority *WorkspaceAuthority) Binding() (workspaceauthority.Binding, error) {
+	if authority == nil {
+		return workspaceauthority.Binding{}, nil
+	}
+	digest, err := hex.DecodeString(authority.RootSHA256)
+	if err != nil || len(digest) != sha256.Size || hex.EncodeToString(digest) != authority.RootSHA256 {
+		return workspaceauthority.Binding{}, errors.New("workspace.rootSha256 must be lowercase 64-character SHA-256 hex")
+	}
+	var rootSHA256 [sha256.Size]byte
+	copy(rootSHA256[:], digest)
+	binding := workspaceauthority.Binding{
+		EnvironmentID: authority.EnvironmentID, EnvironmentVersion: authority.EnvironmentVersion,
+		RootSHA256: rootSHA256, WorkingDirectory: authority.WorkingDirectory,
+		WorkingDirectoryVersion: authority.WorkingDirectoryVersion,
+	}
+	if err := binding.Validate(); err != nil {
+		return workspaceauthority.Binding{}, err
+	}
+	return binding, nil
 }
 
 // EffectivePermissionMode returns the canonical permission mode that the

@@ -10,14 +10,15 @@ import (
 )
 
 type StartRunRequest struct {
-	BearerToken                   string
-	WorkspaceID                   string
-	SessionID                     string
-	IdempotencyKey                string
-	ClientRunID                   string
-	Prompt                        string
-	ResumeCursor                  string
-	ExpectedPermissionModeVersion int64
+	BearerToken                     string
+	WorkspaceID                     string
+	SessionID                       string
+	IdempotencyKey                  string
+	ClientRunID                     string
+	Prompt                          string
+	ResumeCursor                    string
+	ExpectedPermissionModeVersion   int64
+	ExpectedWorkingDirectoryVersion int64
 }
 
 type StartRunResult struct {

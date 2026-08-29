@@ -2,12 +2,15 @@ package executorgateway
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
+	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 )
 
 type ExecutorRunCapabilityAuthorizationRequest struct {
@@ -110,11 +113,13 @@ func (authenticator *ProductionExecutorMCPAuthenticator) AuthenticateExecutorMCP
 	principal := ExecutorMCPPrincipal{
 		CapabilityID: claims.CapabilityID, WorkspaceID: claims.WorkspaceID, SessionID: claims.SessionID,
 		ActorID: claims.ActorID, ExecutorID: claims.ExecutorID,
-		ToolCatalogDigest:   claims.ToolCatalogDigest,
-		MaxApprovalTTL:      time.Duration(claims.MaxApprovalTTLMillis) * time.Millisecond,
-		RunDeadline:         time.UnixMilli(claims.RunDeadlineUnixMS).UTC(),
-		CapabilityExpiresAt: time.UnixMilli(claims.ExpiresAtUnixMS).UTC(),
-		Production:          true,
+		ToolCatalogDigest:     claims.ToolCatalogDigest,
+		MaxApprovalTTL:        time.Duration(claims.MaxApprovalTTLMillis) * time.Millisecond,
+		RunDeadline:           time.UnixMilli(claims.RunDeadlineUnixMS).UTC(),
+		CapabilityExpiresAt:   time.UnixMilli(claims.ExpiresAtUnixMS).UTC(),
+		Production:            true,
+		PermissionMode:        claims.PermissionMode,
+		PermissionModeVersion: claims.PermissionModeVersion,
 		Run: ExecutorMCPRunContext{
 			RunID: claims.RunID, RunAttemptID: claims.RunAttemptID,
 			RunAttemptGeneration: claims.RunAttemptGeneration, HolderID: claims.HolderID,
@@ -122,6 +127,11 @@ func (authenticator *ProductionExecutorMCPAuthenticator) AuthenticateExecutorMCP
 			ExpectedRunAttemptVersion: claims.ExpectedRunAttemptVersion,
 		},
 	}
+	workspace, err := WorkspaceBindingFromClaims(claims)
+	if err != nil {
+		return ExecutorMCPPrincipal{}, errors.New("production executor MCP workspace authority is invalid")
+	}
+	principal.Workspace = workspace
 	if claims.ManagedSandboxRegion != "" {
 		principal.ManagedSandbox = &ExecutorManagedSandboxAuthority{
 			SettingVersion: claims.ManagedSandboxSettingVersion, Region: claims.ManagedSandboxRegion,
@@ -129,6 +139,33 @@ func (authenticator *ProductionExecutorMCPAuthenticator) AuthenticateExecutorMCP
 		}
 	}
 	return principal, nil
+}
+
+// WorkspaceBindingFromClaims decodes the optional frozen workspace authority
+// carried by an executor capability. It is shared by production and explicit
+// insecure-development authenticators.
+func WorkspaceBindingFromClaims(claims runcapability.Claims) (*workspaceauthority.Binding, error) {
+	configured := claims.WorkspaceEnvironmentID != "" || claims.WorkspaceEnvironmentVersion != 0 ||
+		claims.WorkspaceRootSHA256 != "" || claims.WorkspaceWorkingDirectory != "" ||
+		claims.WorkspaceWorkingDirectoryVersion != 0
+	if !configured {
+		return nil, nil
+	}
+	raw, err := hex.DecodeString(claims.WorkspaceRootSHA256)
+	if err != nil || len(raw) != sha256.Size || hex.EncodeToString(raw) != claims.WorkspaceRootSHA256 {
+		return nil, errors.New("workspace root digest is invalid")
+	}
+	var digest [sha256.Size]byte
+	copy(digest[:], raw)
+	binding := &workspaceauthority.Binding{
+		EnvironmentID: claims.WorkspaceEnvironmentID, EnvironmentVersion: claims.WorkspaceEnvironmentVersion,
+		RootSHA256: digest, WorkingDirectory: claims.WorkspaceWorkingDirectory,
+		WorkingDirectoryVersion: claims.WorkspaceWorkingDirectoryVersion,
+	}
+	if err := binding.Validate(); err != nil {
+		return nil, err
+	}
+	return binding, nil
 }
 
 func exactExecutorMCPBearer(request *http.Request) (string, error) {

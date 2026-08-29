@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/agentserver/agentserver/v2/internal/execprofile"
+	"github.com/agentserver/agentserver/v2/internal/executionbackend"
+	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 )
 
 func TestEnvironmentResolverListsFrozenOnlineProjection(t *testing.T) {
@@ -39,6 +41,8 @@ func TestEnvironmentResolverRejectsUnsafeRootDescriptor(t *testing.T) {
 	tests := []string{
 		`{"kind":"local","root":"relative"}`,
 		`{"kind":"local","root":"/work","defaultCwd":"../escape"}`,
+		`{"kind":"local","root":"/work\nsecret"}`,
+		`{"kind":"local","root":"/work","defaultCwd":"src\n"}`,
 		`{"kind":"local","root":"/work","future":true}`,
 	}
 	for _, descriptor := range tests {
@@ -92,6 +96,63 @@ func TestEnvironmentResolverRejectsRegistryResponseOutsideExecutorFilter(t *test
 	}
 	if _, err := resolver.List(t.Context(), "40000000-0000-4000-8000-000000000004", "20000000-0000-4000-8000-000000000099"); err == nil {
 		t.Fatal("registry response outside requested executor filter was accepted")
+	}
+}
+
+func TestEnvironmentResolverRejectsFrozenWorkspaceDrift(t *testing.T) {
+	descriptor := json.RawMessage(`{"kind":"local","root":"/workspace/projects"}`)
+	digest, err := workspaceauthority.RootDescriptorSHA256(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := testExecutorMCPPrincipal("workspace-resolver-drift")
+	principal.Workspace = &workspaceauthority.Binding{
+		EnvironmentID: testEnvironmentID, EnvironmentVersion: 1, RootSHA256: digest,
+		WorkingDirectory: "rtm-aihub", WorkingDirectoryVersion: 1,
+	}
+	for name, environment := range map[string]RegisteredEnvironment{
+		"generation": func() RegisteredEnvironment {
+			value := testRegisteredEnvironment(testEnvironmentID, string(descriptor))
+			value.EnvironmentVersion = 2
+			return value
+		}(),
+		"root": testRegisteredEnvironment(testEnvironmentID, `{"kind":"local","root":"/workspace/other"}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			resolver, err := NewEnvironmentResolver(&fakeEnvironmentRegistry{environments: []RegisteredEnvironment{environment}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := resolver.ResolveForPrincipal(t.Context(), principal, testEnvironmentID); err == nil {
+				t.Fatal("frozen workspace drift was accepted")
+			}
+		})
+	}
+}
+
+func TestEnvironmentResolverRejectsTAEAsGenericWorkspaceAuthority(t *testing.T) {
+	descriptor := json.RawMessage(`{"kind":"managed","root":"/workspace"}`)
+	digest, err := workspaceauthority.RootDescriptorSHA256(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment := testRegisteredEnvironment(testEnvironmentID, string(descriptor))
+	environment.Platform = "linux-amd64"
+	environment.ConnectionGeneration = 0
+	environment.BackendKind = executionbackend.KindTAE
+	environment.TargetID = "managed-sandbox-1"
+	environment.TargetGeneration = 1
+	principal := testExecutorMCPPrincipal("tae-workspace-rejected")
+	principal.Workspace = &workspaceauthority.Binding{
+		EnvironmentID: testEnvironmentID, EnvironmentVersion: 1, RootSHA256: digest,
+		WorkingDirectory: ".", WorkingDirectoryVersion: 1,
+	}
+	resolver, err := NewEnvironmentResolver(&fakeEnvironmentRegistry{environments: []RegisteredEnvironment{environment}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolver.ResolveForPrincipal(t.Context(), principal, testEnvironmentID); err == nil || !strings.Contains(err.Error(), "AgentX") {
+		t.Fatalf("TAE workspace authority error = %v", err)
 	}
 }
 

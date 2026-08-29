@@ -394,9 +394,9 @@ harness-pool、browser-gateway 与 executor-gateway 使用内部 workload identi
 | schema_migrations | version PK、name、sha256、applied_at；已应用文件 checksum 变化时拒绝启动 migration |
 | workspaces | id、status、version |
 | workspace_members | workspace_id + user_id PK、role、version |
-| sessions | id、workspace_id、active_run_id、latest_checkpoint_id、version |
+| sessions | id、workspace_id、active_run_id、latest_checkpoint_id、version；permission_mode/version 与 working_environment_id/working_directory/version 使用独立 CAS，后两者只影响下一次 Run |
 | runs | id、session_id、actor_id、status、request_hash、idempotency_key、current_attempt_generation、next_event_seq、version |
-| run_launch_states | run_id PK、workspace/session、不可变prompt完整object pointer、executor policy version/context digest；与CreateRun同事务写入 |
+| run_launch_states | run_id PK、workspace/session、不可变 prompt object pointer、executor policy version/context digest、permission mode authority、environment generation/root digest/relative working directory；与 CreateRun 同事务写入并冻结 |
 | run_launch_allowed_tools | run_id + ordinal PK、tool name；每run最多64项，name在run内唯一，按ordinal保存规范化排序 |
 | run_attempts | id、run_id、generation、status、turn_started_at、holder_id、version；unique(run_id,generation) |
 | session_leases | session_id PK、run_id、holder_id、generation、expires_at |
@@ -949,7 +949,7 @@ worker的run-manifest validator对executor MCP独立要求`https` scheme、规�
 
 worker先把checkpoint allowlist恢复到全新`CODEX_HOME`，断言staging严格匹配manifest，再写入本attempt新config；checkpoint无权覆盖配置。对当前已验证build，allowlist就是该brain thread的单个rollout JSONL，SQLite/WAL/SHM均不恢复。worker随后用自身credential初始化executor MCP，规范化`tools/list`并与manifest/catalog digest逐字节比较；不一致则在启动turn前失败。最后以manifest中的绝对路径启动`harness-final-exec`，由它固定exec `codex app-server --listen stdio:// --strict-config`。strict-config只拒绝未知字段，不能替代tool capture、final-exec和OS/网络隔离。
 
-新thread的`thread/start`显式发送`environments: []`、从签名 `permissionMode` 机械映射的 Codex 权限字段、从冻结catalog机械生成的`dynamicTools`和空`selectedCapabilityRoots`；每次`turn/start`也发送空environments。当前`ThreadResumeParams`没有environments或dynamicTools字段，cold resume固定发送rollout path与`excludeTurns: true`，收到RPC response后直接进入turn/start，并在该 turn 上重申签名 permission mode，不等待`thread/started` notification。resume前必须确认catalog digest与checkpoint相同；变化时创建新thread。cwd指向空、只读的非工作树目录。
+新thread的`thread/start`显式发送`environments: []`、从签名 `permissionMode` 机械映射的 Codex 权限字段、从冻结catalog机械生成的`dynamicTools`和空`selectedCapabilityRoots`；每次`turn/start`也发送空environments。当前`ThreadResumeParams`没有environments或dynamicTools字段，cold resume固定发送rollout path与`excludeTurns: true`，收到RPC response后直接进入turn/start，并在该 turn 上重申签名 permission mode，不等待`thread/started` notification。resume前必须确认catalog digest与checkpoint相同；变化时创建新thread。cwd指向空、只读的非工作树目录；需要访问代码时，模型只能通过 executor MCP 使用 manifest 冻结的 environment/working-directory，不能把 workspace bind mount 回 harness。
 
 ### 8.4 tool catalog 与 MCP bridge
 

@@ -15,6 +15,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/execprofile"
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
+	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 )
 
 var registryUUIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -38,6 +39,7 @@ type EnvironmentRegistryScope struct {
 	RunAttemptID         string
 	RunAttemptGeneration int64
 	ExecutorID           string
+	Workspace            *workspaceauthority.Binding
 }
 
 type EnvironmentSummary struct {
@@ -87,7 +89,7 @@ func (resolver *EnvironmentResolver) ListForPrincipal(ctx context.Context, princ
 	return resolver.list(ctx, EnvironmentRegistryScope{
 		WorkspaceID: principal.WorkspaceID, SessionID: principal.SessionID,
 		RunAttemptID: principal.Run.RunAttemptID, RunAttemptGeneration: principal.Run.RunAttemptGeneration,
-		ExecutorID: executorID,
+		ExecutorID: executorID, Workspace: principal.Workspace,
 	}, production)
 }
 
@@ -98,6 +100,11 @@ func (resolver *EnvironmentResolver) list(ctx context.Context, scope Environment
 	if scope.ExecutorID != "" {
 		if err := validateRegistryIdentity("executor ID", scope.ExecutorID); err != nil {
 			return ListEnvironmentsResult{}, err
+		}
+	}
+	if scope.Workspace != nil {
+		if err := scope.Workspace.Validate(); err != nil {
+			return ListEnvironmentsResult{}, fmt.Errorf("workspace authority: %w", err)
 		}
 	}
 	if scope.SessionID != "" || scope.RunAttemptID != "" || scope.RunAttemptGeneration != 0 {
@@ -128,6 +135,14 @@ func (resolver *EnvironmentResolver) list(ctx context.Context, scope Environment
 		if scope.ExecutorID != "" && resolved.ExecutorID != scope.ExecutorID {
 			return ListEnvironmentsResult{}, fmt.Errorf("environment registry returned executor %s outside requested executor %s", resolved.ExecutorID, scope.ExecutorID)
 		}
+		if scope.Workspace != nil {
+			if resolved.EnvironmentID != scope.Workspace.EnvironmentID {
+				continue
+			}
+			if err := validateWorkspaceEnvironment(*scope.Workspace, resolved); err != nil {
+				return ListEnvironmentsResult{}, err
+			}
+		}
 		if production && resolved.InsecureDev {
 			continue
 		}
@@ -135,13 +150,17 @@ func (resolver *EnvironmentResolver) list(ctx context.Context, scope Environment
 			return ListEnvironmentsResult{}, fmt.Errorf("environment registry duplicated environment %s", resolved.EnvironmentID)
 		}
 		seen[resolved.EnvironmentID] = struct{}{}
+		defaultCWD := resolved.DefaultCWD
+		if scope.Workspace != nil {
+			defaultCWD = scope.Workspace.WorkingDirectory
+		}
 		result.Environments = append(result.Environments, EnvironmentSummary{
 			EnvironmentID: resolved.EnvironmentID,
 			ExecutorID:    resolved.ExecutorID,
 			DisplayName:   resolved.DisplayName,
 			Description:   resolved.Description,
 			Platform:      resolved.Platform,
-			DefaultCWD:    resolved.DefaultCWD,
+			DefaultCWD:    defaultCWD,
 		})
 	}
 	sort.Slice(result.Environments, func(left, right int) bool {
@@ -168,7 +187,7 @@ func (resolver *EnvironmentResolver) ResolveForPrincipal(ctx context.Context, pr
 	return resolver.resolve(ctx, EnvironmentRegistryScope{
 		WorkspaceID: principal.WorkspaceID, SessionID: principal.SessionID,
 		RunAttemptID: principal.Run.RunAttemptID, RunAttemptGeneration: principal.Run.RunAttemptGeneration,
-		ExecutorID: principal.ExecutorID,
+		ExecutorID: principal.ExecutorID, Workspace: principal.Workspace,
 	}, environmentID)
 }
 
@@ -179,6 +198,14 @@ func (resolver *EnvironmentResolver) resolve(ctx context.Context, scope Environm
 	}
 	if err := validateRegistryIdentity("environment ID", environmentID); err != nil {
 		return ResolvedEnvironment{}, err
+	}
+	if scope.Workspace != nil {
+		if err := scope.Workspace.Validate(); err != nil {
+			return ResolvedEnvironment{}, fmt.Errorf("workspace authority: %w", err)
+		}
+		if environmentID != scope.Workspace.EnvironmentID {
+			return ResolvedEnvironment{}, errors.New("environment is outside the frozen workspace authority")
+		}
 	}
 	registered, err := resolver.listRegistered(ctx, scope)
 	if err != nil {
@@ -198,7 +225,57 @@ func (resolver *EnvironmentResolver) resolve(ctx context.Context, scope Environm
 	if matched == nil {
 		return ResolvedEnvironment{}, ErrExecutorUnavailable
 	}
-	return resolveRegisteredEnvironment(*matched)
+	resolved, err := resolveRegisteredEnvironment(*matched)
+	if err != nil {
+		return ResolvedEnvironment{}, err
+	}
+	if scope.Workspace != nil {
+		if err := validateWorkspaceEnvironment(*scope.Workspace, resolved); err != nil {
+			return ResolvedEnvironment{}, err
+		}
+	}
+	return resolved, nil
+}
+
+func validateWorkspaceEnvironment(binding workspaceauthority.Binding, environment ResolvedEnvironment) error {
+	if environment.Target.Kind != executionbackend.KindAgentX {
+		return errors.New("frozen workspace authority requires an AgentX environment with enforced filesystem isolation")
+	}
+	if environment.EnvironmentID != binding.EnvironmentID || environment.EnvironmentVersion != binding.EnvironmentVersion {
+		return errors.New("registered environment generation differs from frozen workspace authority")
+	}
+	digest, err := workspaceauthority.RootDescriptorSHA256(environment.RootDescriptor)
+	if err != nil {
+		return fmt.Errorf("fingerprint registered environment root: %w", err)
+	}
+	if digest != binding.RootSHA256 {
+		return errors.New("registered environment root descriptor differs from frozen workspace authority")
+	}
+	return nil
+}
+
+// equalResolvedEnvironmentProjection makes mapper inputs self-authenticating
+// even when an internal caller passes a ResolvedEnvironment that was copied
+// and mutated after the registry lookup. The backend target and all registry
+// facts are authority, not merely display metadata.
+func equalResolvedEnvironmentProjection(left, right ResolvedEnvironment) bool {
+	canonicalTarget, err := registeredEnvironmentTarget(right.RegisteredEnvironment)
+	if err != nil || canonicalTarget != right.Target {
+		return false
+	}
+	// Legacy agentx responses do not carry the managed target fields. Any
+	// caller-supplied values there are an attempted projection override.
+	if right.BackendKind == "" && (right.TargetID != "" || right.TargetGeneration != 0) {
+		return false
+	}
+	return left.EnvironmentID == right.EnvironmentID && left.ExecutorID == right.ExecutorID &&
+		bytes.Equal(left.RootDescriptor, right.RootDescriptor) && left.Platform == right.Platform &&
+		left.OuterProfileVersion == right.OuterProfileVersion && left.InsecureDev == right.InsecureDev &&
+		left.EnvironmentVersion == right.EnvironmentVersion && left.ConnectionGeneration == right.ConnectionGeneration &&
+		left.BackendKind == right.BackendKind && left.TargetID == right.TargetID &&
+		left.TargetGeneration == right.TargetGeneration && left.Root == right.Root &&
+		left.DefaultCWD == right.DefaultCWD && left.DisplayName == right.DisplayName &&
+		left.Description == right.Description && left.Target == right.Target
 }
 
 func (resolver *EnvironmentResolver) listRegistered(ctx context.Context, scope EnvironmentRegistryScope) ([]RegisteredEnvironment, error) {
@@ -332,6 +409,9 @@ func validateRegisteredRoot(platform, root string) error {
 	if err := validateRegistryText("environment root", root, 1, 4096); err != nil {
 		return err
 	}
+	if containsPathControl(root) {
+		return errors.New("environment root must not contain control characters")
+	}
 	if strings.HasPrefix(platform, "windows-") {
 		return validateWindowsEnvironmentRoot(root)
 	}
@@ -373,6 +453,9 @@ func validateRelativeEnvironmentPath(value string) error {
 	if err := validateRegistryText("environment-relative path", value, 1, 4096); err != nil {
 		return err
 	}
+	if containsPathControl(value) {
+		return errors.New("environment-relative path must not contain control characters")
+	}
 	if strings.Contains(value, "\\") || strings.HasPrefix(value, "/") || path.Clean(value) != value || value == ".." || strings.HasPrefix(value, "../") {
 		return errors.New("path must be a clean slash-separated relative path without parent traversal")
 	}
@@ -404,4 +487,13 @@ func validateRegistryText(name, value string, minimum, maximum int) error {
 		return fmt.Errorf("%s must contain between %d and %d characters", name, minimum, maximum)
 	}
 	return nil
+}
+
+func containsPathControl(value string) bool {
+	for _, character := range value {
+		if character == 0 || character < 0x20 || (character >= 0x7f && character <= 0x9f) {
+			return true
+		}
+	}
+	return false
 }

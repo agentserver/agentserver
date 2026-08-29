@@ -34,6 +34,9 @@ type IssueRunCapabilitiesRequest struct {
 	MaxRunDurationMillis      int64                         `json:"maxRunDurationMs"`
 	MaxApprovalTTLMillis      int64                         `json:"maxApprovalTtlMs"`
 	ManagedSandbox            *RunLaunchManagedSandboxState `json:"managedSandbox,omitempty"`
+	Workspace                 *RunLaunchWorkspaceState      `json:"workspace,omitempty"`
+	PermissionMode            string                        `json:"permissionMode,omitempty"`
+	PermissionModeVersion     int64                         `json:"permissionModeVersion,omitempty"`
 }
 
 type IssuedRunCapability struct {

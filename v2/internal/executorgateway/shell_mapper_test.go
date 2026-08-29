@@ -2,11 +2,14 @@ package executorgateway
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"testing"
 
 	"github.com/agentserver/agentserver/v2/internal/executorgateway/agentxconn"
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
+	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 )
 
 func TestMapShellV1BuildsDeterministicRestrictedProcessPlan(t *testing.T) {
@@ -154,6 +157,123 @@ func TestMapShellV1RejectsUnmappedOrEscapingInputs(t *testing.T) {
 	); err == nil {
 		t.Fatal("mismatched environment identity was accepted")
 	}
+}
+
+func TestMapShellV1ProjectsFrozenWorkspaceAndCodexPermissionModes(t *testing.T) {
+	descriptor := json.RawMessage(`{"kind":"local","root":"/workspace/projects"}`)
+	digest, err := workspaceauthority.RootDescriptorSHA256(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment, err := resolveRegisteredEnvironment(testRegisteredEnvironment(testEnvironmentID, string(descriptor)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		mode    runmanifest.CodexPermissionMode
+		access  string
+		version int64
+	}{
+		{mode: runmanifest.CodexPermissionModeReadOnly, access: "read", version: 1},
+		{mode: runmanifest.CodexPermissionModeAuto, access: "write", version: 2},
+		{mode: runmanifest.CodexPermissionModeFullAccess, access: "write", version: 3},
+	} {
+		t.Run(string(test.mode), func(t *testing.T) {
+			principal := testExecutorMCPPrincipal("workspace-shell-" + string(test.mode))
+			principal.PermissionMode = string(test.mode)
+			principal.PermissionModeVersion = test.version
+			principal.Workspace = &workspaceauthority.Binding{
+				EnvironmentID: testEnvironmentID, EnvironmentVersion: environment.EnvironmentVersion,
+				RootSHA256: digest, WorkingDirectory: "rtm-aihub", WorkingDirectoryVersion: 4,
+			}
+			plan, err := MapShellV1(
+				json.RawMessage(`{"environment_id":"60000000-0000-4000-8000-000000000006","argv":["/bin/pwd"]}`),
+				principal, "call-workspace-shell-"+string(test.mode), environment, testShellPolicy(), testShellV1Identities(),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantPlanAccess := "write"
+			if test.mode == runmanifest.CodexPermissionModeReadOnly {
+				wantPlanAccess = "read"
+			}
+			if plan.WorkspaceRoot != "/workspace/projects" || plan.WorkingDirectory != "/workspace/projects/rtm-aihub" ||
+				plan.CWDURI != "file:///workspace/projects/rtm-aihub" || plan.WorkspaceAccess != wantPlanAccess {
+				t.Fatalf("workspace projection = root %q cwd %q uri %q access %q, want access %q", plan.WorkspaceRoot, plan.WorkingDirectory, plan.CWDURI, plan.WorkspaceAccess, wantPlanAccess)
+			}
+			var params struct {
+				Sandbox struct {
+					Permissions struct {
+						FileSystem struct {
+							Entries []struct {
+								Access string `json:"access"`
+							} `json:"entries"`
+						} `json:"file_system"`
+					} `json:"permissions"`
+				} `json:"sandbox"`
+			}
+			if err := json.Unmarshal(plan.Start.Params, &params); err != nil {
+				t.Fatal(err)
+			}
+			entries := params.Sandbox.Permissions.FileSystem.Entries
+			if len(entries) != 2 || entries[1].Access != test.access {
+				t.Fatalf("permission mode %q filesystem entries = %+v, want workspace access %q", test.mode, entries, test.access)
+			}
+		})
+	}
+	if _, err := MapShellV1(
+		json.RawMessage(`{"environment_id":"60000000-0000-4000-8000-000000000006","argv":["/bin/pwd"],"cwd":"../escape"}`),
+		func() ExecutorMCPPrincipal {
+			principal := testExecutorMCPPrincipal("workspace-shell-escape")
+			principal.PermissionMode = "read-only"
+			principal.PermissionModeVersion = 1
+			principal.Workspace = &workspaceauthority.Binding{EnvironmentID: testEnvironmentID, EnvironmentVersion: 1, RootSHA256: digest, WorkingDirectory: "rtm-aihub", WorkingDirectoryVersion: 4}
+			return principal
+		}(), "call-workspace-shell-escape", environment, testShellPolicy(), testShellV1Identities(),
+	); err == nil {
+		t.Fatal("shell cwd escaped frozen working directory")
+	}
+}
+
+func TestMapShellV1RejectsWorkspaceRootDigestOrGenerationDrift(t *testing.T) {
+	descriptor := json.RawMessage(`{"kind":"local","root":"/workspace/projects"}`)
+	digest := sha256.Sum256(descriptor)
+	principal := testExecutorMCPPrincipal("workspace-shell-drift")
+	principal.PermissionMode = "read-only"
+	principal.PermissionModeVersion = 1
+	principal.Workspace = &workspaceauthority.Binding{EnvironmentID: testEnvironmentID, EnvironmentVersion: 1, RootSHA256: digest, WorkingDirectory: "rtm-aihub", WorkingDirectoryVersion: 1}
+	for name, registered := range map[string]RegisteredEnvironment{
+		"generation": func() RegisteredEnvironment {
+			value := testRegisteredEnvironment(testEnvironmentID, string(descriptor))
+			value.EnvironmentVersion = 2
+			return value
+		}(),
+		"root": testRegisteredEnvironment(testEnvironmentID, `{"kind":"local","root":"/workspace/other"}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			environment, err := resolveRegisteredEnvironment(registered)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := MapShellV1(json.RawMessage(`{"environment_id":"60000000-0000-4000-8000-000000000006","argv":["/bin/true"]}`), principal, "call-workspace-shell-drift-"+name, environment, testShellPolicy(), testShellV1Identities()); err == nil {
+				t.Fatal("workspace drift was accepted")
+			}
+		})
+	}
+	mutatedProjection := environmentForWorkspaceTest(t, descriptor)
+	mutatedProjection.TargetID = "different-target"
+	if _, err := MapShellV1(json.RawMessage(`{"environment_id":"60000000-0000-4000-8000-000000000006","argv":["/bin/true"]}`), principal, "call-workspace-shell-target-drift", mutatedProjection, testShellPolicy(), testShellV1Identities()); err == nil {
+		t.Fatal("mutated backend target projection was accepted")
+	}
+}
+
+func environmentForWorkspaceTest(t *testing.T, descriptor json.RawMessage) ResolvedEnvironment {
+	t.Helper()
+	resolved, err := resolveRegisteredEnvironment(testRegisteredEnvironment(testEnvironmentID, string(descriptor)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }
 
 func testShellPolicy() ExecutionPolicyResolution {

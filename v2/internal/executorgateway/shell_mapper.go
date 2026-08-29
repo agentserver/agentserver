@@ -124,6 +124,7 @@ type ShellV1Plan struct {
 	CWDURI              string
 	WorkspaceRoot       string
 	WorkingDirectory    string
+	WorkspaceAccess     string
 	Argv                []string
 	ExplicitEnvironment map[string]string
 	TTY                 bool
@@ -151,8 +152,7 @@ func MapShellV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal, to
 	}
 	// Do not accept caller-constructed projections whose parsed descriptor was
 	// replaced after resolution.
-	if resolved.Root != environment.Root || resolved.DefaultCWD != environment.DefaultCWD ||
-		resolved.DisplayName != environment.DisplayName || resolved.Description != environment.Description {
+	if !equalResolvedEnvironmentProjection(resolved, environment) {
 		return ShellV1Plan{}, errors.New("shell environment projection differs from its registered descriptor")
 	}
 	if principal.ExecutorID != "" && environment.ExecutorID != principal.ExecutorID {
@@ -160,6 +160,11 @@ func MapShellV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal, to
 	}
 	if principal.Production && environment.InsecureDev {
 		return ShellV1Plan{}, errors.New("production shell environment cannot be insecure-development")
+	}
+	if principal.Workspace != nil {
+		if err := validateWorkspaceEnvironment(*principal.Workspace, resolved); err != nil {
+			return ShellV1Plan{}, err
+		}
 	}
 
 	var arguments ShellV1Arguments
@@ -169,9 +174,9 @@ func MapShellV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal, to
 	if err := validateShellV1Arguments(arguments, environment); err != nil {
 		return ShellV1Plan{}, err
 	}
-	cwd := arguments.CWD
-	if cwd == "" {
-		cwd = environment.DefaultCWD
+	cwd, err := resolveShellWorkingDirectory(principal, arguments.CWD, environment.DefaultCWD)
+	if err != nil {
+		return ShellV1Plan{}, err
 	}
 	timeoutMillis := ShellV1DefaultTimeoutMillis
 	if arguments.TimeoutMillis != nil {
@@ -224,7 +229,7 @@ func MapShellV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal, to
 							},
 							Access: "read",
 						},
-						{Path: shellSandboxPath{Type: "path", Path: rootURI}, Access: "write"},
+						{Path: shellSandboxPath{Type: "path", Path: rootURI}, Access: shellFilesystemAccess(principal.PermissionMode)},
 					},
 				},
 				Network: "restricted",
@@ -333,6 +338,7 @@ func MapShellV1(rawArguments json.RawMessage, principal ExecutorMCPPrincipal, to
 		CWDURI:              cwdURI,
 		WorkspaceRoot:       workspaceRoot,
 		WorkingDirectory:    workingDirectory,
+		WorkspaceAccess:     shellWorkspaceAccess(principal.PermissionMode),
 		Argv:                slices.Clone(arguments.Argv),
 		ExplicitEnvironment: cloneStringMap(explicitEnvironment),
 		TTY:                 tty,
@@ -386,6 +392,51 @@ func validateShellV1Arguments(arguments ShellV1Arguments, environment ResolvedEn
 		return errors.New("shell timeout_ms must be between 1 and 3600000")
 	}
 	return nil
+}
+
+// resolveShellWorkingDirectory projects tool-relative cwd against the frozen
+// session directory. Explicit cwd values may only descend from that base;
+// parent traversal is rejected before path.Join can normalize it away.
+func resolveShellWorkingDirectory(principal ExecutorMCPPrincipal, requested, environmentDefault string) (string, error) {
+	base := environmentDefault
+	if principal.Workspace != nil {
+		base = principal.Workspace.WorkingDirectory
+	}
+	if err := validateRelativeEnvironmentPath(base); err != nil {
+		return "", fmt.Errorf("frozen working directory: %w", err)
+	}
+	if requested == "" {
+		return base, nil
+	}
+	if err := validateRelativeEnvironmentPath(requested); err != nil {
+		return "", fmt.Errorf("shell cwd: %w", err)
+	}
+	joined := path.Join(base, requested)
+	if err := validateRelativeEnvironmentPath(joined); err != nil {
+		return "", fmt.Errorf("shell cwd escapes frozen working directory: %w", err)
+	}
+	return joined, nil
+}
+
+func shellFilesystemAccess(mode string) string {
+	if mode == "read-only" {
+		return "read"
+	}
+	return "write"
+}
+
+func shellWorkspaceAccess(mode string) string {
+	switch mode {
+	case "read-only":
+		return executionbackend.WorkspaceAccessRead
+	case "auto", "full-access":
+		// New explicit permission authorities use the canonical write value so
+		// the TAE capability and command carry the same projection. Empty is
+		// reserved for pre-mode callers that historically implied write.
+		return executionbackend.WorkspaceAccessWrite
+	default:
+		return ""
+	}
 }
 
 func validateShellString(name, value string, maximumRunes int) error {

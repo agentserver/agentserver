@@ -10,6 +10,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/executorgateway/mcpcontract"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
+	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 )
 
 func TestConfiguredRunLaunchInputResolverCombinesAndCopiesAuthorityState(t *testing.T) {
@@ -38,6 +39,11 @@ func TestConfiguredRunLaunchInputResolverCombinesAndCopiesAuthorityState(t *test
 			Catalog:    resolverCheckpointCatalog(proposal, checkpoint.ThreadID),
 		},
 		ExecutorPolicy: base.ExecutorCatalogPolicy,
+		Workspace: &workspaceauthority.Binding{
+			EnvironmentID: "60000000-0000-4000-8000-000000000006", EnvironmentVersion: 2,
+			RootSHA256:       sha256.Sum256([]byte(`{"kind":"local","root":"/workspace/projects"}`)),
+			WorkingDirectory: "rtm-aihub", WorkingDirectoryVersion: 3,
+		},
 	}}
 	resolver, err := NewConfiguredRunLaunchInputResolver(source, launchProfileFromInputs(base))
 	if err != nil {
@@ -53,6 +59,7 @@ func TestConfiguredRunLaunchInputResolverCombinesAndCopiesAuthorityState(t *test
 		inputs.PreviousBrainToolCatalog == nil ||
 		inputs.PermissionMode != runmanifest.CodexPermissionModeAuto ||
 		inputs.PermissionModeVersion != 1 ||
+		inputs.Workspace == source.state.Workspace || inputs.Workspace == nil || inputs.Workspace.WorkingDirectory != "rtm-aihub" ||
 		inputs.ExecutorMCPEndpoint != base.ExecutorMCPEndpoint ||
 		len(inputs.ExecutorCatalogPolicy.AllowedTools) != len(base.ExecutorCatalogPolicy.AllowedTools) {
 		t.Fatalf("resolved inputs/source = %+v / %+v", inputs, source)
@@ -62,7 +69,8 @@ func TestConfiguredRunLaunchInputResolverCombinesAndCopiesAuthorityState(t *test
 	inputs.ExecutorCatalogPolicy.AllowedTools[0] = mcpcontract.ToolShell
 	if checkpoint.ThreadID != "thread-previous" || source.state.PreviousCheckpoint.Checkpoint.ThreadID != "thread-previous" ||
 		source.state.PreviousCheckpoint.Catalog.CanonicalCatalog[0] == '!' ||
-		source.state.ExecutorPolicy.AllowedTools[0] != base.ExecutorCatalogPolicy.AllowedTools[0] {
+		source.state.ExecutorPolicy.AllowedTools[0] != base.ExecutorCatalogPolicy.AllowedTools[0] ||
+		source.state.Workspace.WorkingDirectory != "rtm-aihub" {
 		t.Fatal("resolved launch inputs alias authority state")
 	}
 }

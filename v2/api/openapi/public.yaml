@@ -582,6 +582,23 @@
         }
       }
     },
+    "/v2/workspaces/{workspaceId}/sessions/{sessionId}/working-directory": {
+      "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/SessionId"}],
+      "patch": {
+        "operationId": "updateUserSessionWorkingDirectory",
+        "description": "Changes the registered AgentX executor environment and relative working directory used by the next run. The binding is versioned independently; the same version may be supplied as expectedWorkingDirectoryVersion when starting a run, and an already active run never changes. TAE managed-CLI environments are not eligible for this binding until they advertise filesystem access enforcement.",
+        "security": [{"browserGatewayMTLS": [], "browserOAuth": ["sessions:update"]}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateUserSessionWorkingDirectoryRequest"}}}},
+        "responses": {
+          "200": {"description": "Updated working-directory binding", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/UpdateUserSessionWorkingDirectoryResponse"}}}},
+          "400": {"$ref": "#/components/responses/PublicError"},
+          "401": {"$ref": "#/components/responses/PublicError"},
+          "403": {"$ref": "#/components/responses/PublicError"},
+          "404": {"$ref": "#/components/responses/PublicError"},
+          "409": {"$ref": "#/components/responses/PublicError"}
+        }
+      }
+    },
     "/v2/workspaces/{workspaceId}/sessions/{sessionId}/actions/archive": {
       "parameters": [{"$ref": "#/components/parameters/WorkspaceId"}, {"$ref": "#/components/parameters/SessionId"}],
       "post": {
@@ -1223,7 +1240,7 @@
       },
       "UserSessionState": {
         "type": "object", "additionalProperties": false,
-        "required": ["sessionId", "workspaceId", "title", "status", "version", "permissionMode", "permissionModeVersion", "createdAt", "updatedAt"],
+        "required": ["sessionId", "workspaceId", "title", "status", "version", "permissionMode", "permissionModeVersion", "workingDirectory", "workingDirectoryVersion", "createdAt", "updatedAt"],
         "properties": {
           "sessionId": {"$ref": "#/components/schemas/UUID"},
           "workspaceId": {"$ref": "#/components/schemas/UUID"},
@@ -1233,6 +1250,9 @@
           "version": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
           "permissionMode": {"type": "string", "enum": ["read-only", "auto", "full-access"]},
           "permissionModeVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "environmentId": {"$ref": "#/components/schemas/UUID"},
+          "workingDirectory": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^(?:\\.|(?:[^./\\\\\\x00-\\x1f\\x7f-\\x9f][^/\\\\\\x00-\\x1f\\x7f-\\x9f]*|\\.[^./\\\\\\x00-\\x1f\\x7f-\\x9f][^/\\\\\\x00-\\x1f\\x7f-\\x9f]*|\\.\\.[^/\\\\\\x00-\\x1f\\x7f-\\x9f]+)(?:/(?:[^./\\\\\\x00-\\x1f\\x7f-\\x9f][^/\\\\\\x00-\\x1f\\x7f-\\x9f]*|\\.[^./\\\\\\x00-\\x1f\\x7f-\\x9f][^/\\\\\\x00-\\x1f\\x7f-\\x9f]*|\\.\\.[^/\\\\\\x00-\\x1f\\x7f-\\x9f]+))*)$"},
+          "workingDirectoryVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
           "createdAt": {"type": "string", "format": "date-time"},
           "updatedAt": {"type": "string", "format": "date-time"}
         }
@@ -1265,6 +1285,18 @@
         }
       },
       "UpdateUserSessionPermissionModeResponse": {
+        "type": "object", "additionalProperties": false, "required": ["session", "changed"],
+        "properties": {"session": {"$ref": "#/components/schemas/UserSessionState"}, "changed": {"type": "boolean"}}
+      },
+      "UpdateUserSessionWorkingDirectoryRequest": {
+        "type": "object", "additionalProperties": false, "required": ["workingDirectory", "expectedWorkingDirectoryVersion"],
+        "properties": {
+          "environmentId": {"$ref": "#/components/schemas/UUID"},
+          "workingDirectory": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^(?:\\.|(?:[^./\\\\\\x00-\\x1f\\x7f-\\x9f][^/\\\\\\x00-\\x1f\\x7f-\\x9f]*|\\.[^./\\\\\\x00-\\x1f\\x7f-\\x9f][^/\\\\\\x00-\\x1f\\x7f-\\x9f]*|\\.\\.[^/\\\\\\x00-\\x1f\\x7f-\\x9f]+)(?:/(?:[^./\\\\\\x00-\\x1f\\x7f-\\x9f][^/\\\\\\x00-\\x1f\\x7f-\\x9f]*|\\.[^./\\\\\\x00-\\x1f\\x7f-\\x9f][^/\\\\\\x00-\\x1f\\x7f-\\x9f]*|\\.\\.[^/\\\\\\x00-\\x1f\\x7f-\\x9f]+))*)$"},
+          "expectedWorkingDirectoryVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+        }
+      },
+      "UpdateUserSessionWorkingDirectoryResponse": {
         "type": "object", "additionalProperties": false, "required": ["session", "changed"],
         "properties": {"session": {"$ref": "#/components/schemas/UserSessionState"}, "changed": {"type": "boolean"}}
       },
@@ -1367,7 +1399,8 @@
         "properties": {
           "clientRunId": {"type": "string", "maxLength": 256, "description": "Untrusted AG-UI correlation value; it is not the server run identity or part of the idempotency request hash."},
           "prompt": {"type": "string", "minLength": 1, "maxLength": 262144, "x-agentserver-maxBytes": 262144},
-          "expectedPermissionModeVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991, "description": "CAS token for the session's next-turn Codex permission mode."}
+          "expectedPermissionModeVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991, "description": "CAS token for the session's next-turn Codex permission mode."},
+          "expectedWorkingDirectoryVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991, "description": "CAS token for the session's next-run executor working directory."}
         }
       },
       "CreateUserRunResponse": {

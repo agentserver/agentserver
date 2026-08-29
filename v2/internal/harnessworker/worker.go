@@ -559,13 +559,15 @@ func appServerRequest(
 	if restored == nil {
 		request.Start = &AppServerThreadStart{
 			Model: manifest.Model.Model, CWD: runtime.ThreadCWD, BaseInstructions: baseInstructions,
-			PermissionMode: manifest.PermissionMode,
+			DeveloperInstructions: workspaceDeveloperInstructions(manifest, catalog),
+			PermissionMode:        manifest.PermissionMode,
 		}
 		return request
 	}
 	request.Resume = &AppServerThreadResume{
 		ThreadID: restored.Manifest.BrainThreadID, RolloutPath: runtime.RolloutPath,
 		CWD: runtime.ThreadCWD, CheckpointCatalogDigest: restored.Manifest.CatalogDigest,
+		DeveloperInstructions: workspaceDeveloperInstructions(manifest, catalog),
 	}
 	return request
 }

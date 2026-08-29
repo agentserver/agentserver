@@ -214,6 +214,14 @@ func TestRunPermissionModeIdempotencyAuthorityFailsClosedAcrossLegacyMarker(t *t
 	if err := validateCreateRun(versionOnly); err != nil {
 		t.Fatalf("expected version without caller-selected mode was rejected: %v", err)
 	}
+	versionOnly.ExpectedWorkingDirectoryVersion = 4
+	if err := validateCreateRun(versionOnly); err != nil {
+		t.Fatalf("expected working-directory version was rejected: %v", err)
+	}
+	versionOnly.ExpectedWorkingDirectoryVersion = -1
+	if err := validateCreateRun(versionOnly); err == nil || !strings.Contains(err.Error(), "expected_working_directory_version") {
+		t.Fatalf("negative working-directory version error = %v", err)
+	}
 
 	explicit := CreateRunCommand{
 		PermissionMode:                runmanifest.CodexPermissionModeReadOnly,

@@ -3,12 +3,16 @@ package harnesspool
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/harnessbootstrap"
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
 
 func TestDevelopmentAttemptRuntimeCapabilitySourceIssuesBoundAudienceSeparatedTokens(t *testing.T) {
@@ -82,6 +86,50 @@ func TestDevelopmentAttemptRuntimeCapabilitySourceIssuesBoundAudienceSeparatedTo
 	}
 	if _, err := codec.Verify(capabilities.LLMProxy, runcapability.AudienceExecutorMCP, now); err == nil {
 		t.Fatal("model capability crossed into the executor audience")
+	}
+}
+
+func TestDevelopmentAttemptRuntimeCapabilitySourceCarriesWorkspaceAuthority(t *testing.T) {
+	now := time.UnixMilli(1_800_000_000_000).UTC()
+	prepared := developmentCapabilityPreparedLaunch(t)
+	rootDigest := sha256.Sum256([]byte(`{"kind":"local","root":"/workspace/projects"}`))
+	prepared.Manifest.Workspace = &runmanifest.WorkspaceAuthority{
+		EnvironmentID: "90000000-0000-4000-8000-000000000009", EnvironmentVersion: 2,
+		RootSHA256: fmt.Sprintf("%x", rootDigest), WorkingDirectory: "rtm-aihub", WorkingDirectoryVersion: 3,
+	}
+	seed := sha256.Sum256([]byte("launch-preparer-key"))
+	signer, err := NewEd25519ManifestSigner("cluster-key-1", ed25519.NewKeyFromSeed(seed[:]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared.SignedManifest, err = signer.SignRunManifest(prepared.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := prepared.Manifest.Workspace.Binding(); err != nil {
+		t.Fatal(err)
+	}
+	config := DefaultDevelopmentAttemptRuntimeCapabilitySourceConfig("83000000-0000-4000-8000-000000000003")
+	config.Now = func() time.Time { return now }
+	config.IDGenerator = developmentCapabilityIdentitySequence(
+		"91000000-0000-4000-8000-000000000001", "91000000-0000-4000-8000-000000000002",
+	)
+	codec := developmentCapabilityTestCodec(t)
+	source, err := NewDevelopmentAttemptRuntimeCapabilitySource(codec, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities, err := source.IssueAttemptRuntimeCapabilities(t.Context(), prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := codec.Verify(capabilities.ExecutorMCP, runcapability.AudienceExecutorMCP, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.WorkspaceEnvironmentID != prepared.Manifest.Workspace.EnvironmentID || claims.WorkspaceEnvironmentVersion != 2 ||
+		claims.WorkspaceRootSHA256 != prepared.Manifest.Workspace.RootSHA256 || claims.WorkspaceWorkingDirectory != "rtm-aihub" || claims.WorkspaceWorkingDirectoryVersion != 3 {
+		t.Fatalf("workspace capability claims = %+v", claims)
 	}
 }
 

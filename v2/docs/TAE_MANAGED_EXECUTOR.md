@@ -188,6 +188,29 @@ execution gateway 的 lifecycle capability 至少绑定：audience、workspace�
 和 nonce。它不能调用 commands/files，也不能选择任意 template/PSM/region；这些由 Core environment
 profile 决定。
 
+### 5.3 Session working directory 映射
+
+TAE managed environment 与 BYO agentx environment 在协议层共享 workspace authority 的表示，但当前 TAE profile 不具备
+承载通用 session workspace binding 的资格。session 只保存环境 UUID、环境 root 下的相对目录和独立 CAS 版本；TAE
+provider 的 session/ref、宿主路径和 provider PSM 不进入 manifest 或模型上下文。
+Run launch 时 Core 冻结 environment generation 与 root descriptor digest，gateway 在每个 `list_environments`、`shell`、
+`read_file` 调用重新核对它们。`shell` 省略 `cwd` 时使用 frozen directory，显式 `cwd` 只能向下进入；`read_file.path`
+会在 gateway 内前缀 frozen directory 后再转换成 TAE 的 clean absolute path。TAE sandbox root 仍是 provider 分配的
+`/workspace`，因此命令内部的任意 `cd`/symlink 语义必须继续由 TAE profile 和 backend sandbox enforcement 负责，不能把
+相对路径校验误称为 provider root 隔离。
+
+当前 TAE Terminal `/api/process/start` 合同没有 per-process filesystem access 字段；adapter 会把 run 的
+`WorkspaceAccess` 原样保留到 `StartProcessInput`，但这本身不是只读 enforcement。只有经过单独 runtime/镜像门禁、能够
+证明 `read` 与 `write` 边界的 TAE profile 才能承载通用 workspace 读写；现有固定 managed-CLI profile 的网络/命令策略不能
+被当作任意 workspace 的 OS 级只读证明。当前 Core 因而拒绝把 TAE environment 写入 session working-directory binding，
+executor gateway 也拒绝旧数据或伪造 authority 形成的 TAE workspace projection；未绑定 session 仍可按既有固定
+managed-CLI profile 使用 TAE。
+
+如果用户的本地目录是 `../rtm-aihub`，部署时应把 executor environment root 注册为共同父目录并选择 `rtm-aihub`；API
+明确拒绝 `..`，不会把宿主路径或 root 外目录写入 authority。workspace skills 只按 worker 的固定 roots（`skills`、
+`.agents/skills`、`.codex/skills`、`.dsh/skills`）查找精确 `SKILL.md`，代码和 skill 内容通过 executor MCP 读写，
+不会复制到 harness 的本地 cwd。
+
 ## 6. Provider-neutral execution backend contract
 
 contract 放在主模块 `internal/executionbackend`，不得出现 agentx RPC 或 TAE SDK 类型。

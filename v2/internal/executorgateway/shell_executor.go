@@ -407,7 +407,8 @@ func (executor *ShellExecutor) executeManaged(
 		RequestID: identities.StartRPCRequestID, ProcessID: plan.ProcessID,
 		Executable: plan.Argv[0], Arguments: append([]string(nil), plan.Argv[1:]...),
 		WorkingDirectory: plan.WorkingDirectory, WorkspaceRoot: plan.WorkspaceRoot,
-		Platform: environment.Platform, Environment: environmentValues, TTY: plan.TTY,
+		WorkspaceAccess: plan.WorkspaceAccess,
+		Platform:        environment.Platform, Environment: environmentValues, TTY: plan.TTY,
 		Timeout:          time.Duration(plan.TimeoutMillis) * time.Millisecond,
 		OutputLimitBytes: int64(executor.config.MaxOutputBytes),
 		DeadlineNotification: &executionbackend.DeadlineNotification{

@@ -15,6 +15,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/executorgateway/mcpcontract"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
+	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 )
 
 func TestLaunchPreparerSignsBeforeFreezingCatalog(t *testing.T) {
@@ -74,6 +75,29 @@ func TestLaunchPreparerCarriesCodexPermissionModeIntoSignedManifest(t *testing.T
 	seed := sha256.Sum256([]byte("launch-preparer-key"))
 	if _, err := prepared.SignedManifest.Verify("cluster-key-1", ed25519.NewKeyFromSeed(seed[:]).Public().(ed25519.PublicKey)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLaunchPreparerCarriesFrozenWorkspaceAuthorityIntoSignedManifest(t *testing.T) {
+	inputs := testRunLaunchInputs()
+	inputs.Workspace = &workspaceauthority.Binding{
+		EnvironmentID: "60000000-0000-4000-8000-000000000006", EnvironmentVersion: 4,
+		RootSHA256:       sha256.Sum256([]byte(`{"kind":"local","root":"/workspace/projects"}`)),
+		WorkingDirectory: "rtm-aihub", WorkingDirectoryVersion: 5,
+	}
+	core := &recordingLaunchCore{}
+	preparer := newTestLaunchPreparer(t, core, &fixedCatalogAllocator{id: "45000000-0000-4000-8000-000000000004"}, &fixedLaunchResolver{inputs: inputs})
+	prepared, err := preparer.Prepare(t.Context(), ScheduledRunAttempt{Dispatch: testControllerDispatch("starting"), Claim: testControllerClaim()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Manifest.Workspace == nil || prepared.Manifest.Workspace.EnvironmentID != inputs.Workspace.EnvironmentID ||
+		prepared.Manifest.Workspace.WorkingDirectory != "rtm-aihub" || prepared.Manifest.Workspace.WorkingDirectoryVersion != 5 {
+		t.Fatalf("manifest workspace authority = %+v", prepared.Manifest.Workspace)
+	}
+	seed := sha256.Sum256([]byte("launch-preparer-key"))
+	if _, err := prepared.SignedManifest.Verify("cluster-key-1", ed25519.NewKeyFromSeed(seed[:]).Public().(ed25519.PublicKey)); err != nil {
+		t.Fatalf("workspace manifest signature verification: %v", err)
 	}
 }
 

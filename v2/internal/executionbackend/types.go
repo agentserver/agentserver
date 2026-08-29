@@ -19,6 +19,11 @@ const (
 	MaxOutputBytes        = 16 * 1024 * 1024
 	MaxReadFileBytes      = 8 * 1024 * 1024
 	MaxOperationTimeout   = 24 * time.Hour
+	// WorkspaceAccessRead and WorkspaceAccessWrite are the only filesystem
+	// authority projections a process backend may receive. An empty value is
+	// the legacy wire representation of write access.
+	WorkspaceAccessRead  = "read"
+	WorkspaceAccessWrite = "write"
 )
 
 var (
@@ -114,6 +119,10 @@ type StartProcessRequest struct {
 	Arguments        []string
 	WorkingDirectory string
 	WorkspaceRoot    string
+	// WorkspaceAccess is optional for backwards-compatible callers. Empty is
+	// normalized to WorkspaceAccessWrite; read-only runs carry "read" and the
+	// backend must enforce that mode at its sandbox boundary.
+	WorkspaceAccess  string
 	Platform         string
 	Environment      map[string]string
 	TTY              bool
@@ -124,6 +133,13 @@ type StartProcessRequest struct {
 	// it is never permission to send SignalProcess; Core Begin remains the only
 	// dispatch authority for that second operation.
 	DeadlineNotification *DeadlineNotification
+}
+
+func (request StartProcessRequest) EffectiveWorkspaceAccess() string {
+	if request.WorkspaceAccess == WorkspaceAccessRead {
+		return WorkspaceAccessRead
+	}
+	return WorkspaceAccessWrite
 }
 
 func (request StartProcessRequest) Validate() error {
@@ -152,6 +168,9 @@ func (request StartProcessRequest) Validate() error {
 	}
 	if err := validateText("process workspace root", request.WorkspaceRoot, 1, MaxPathRunes); err != nil {
 		return err
+	}
+	if request.WorkspaceAccess != "" && request.WorkspaceAccess != WorkspaceAccessRead && request.WorkspaceAccess != WorkspaceAccessWrite {
+		return errors.New("process workspace access must be read or write")
 	}
 	if err := validateOpaqueID("process platform", request.Platform); err != nil {
 		return err

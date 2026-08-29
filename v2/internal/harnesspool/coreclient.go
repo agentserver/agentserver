@@ -23,6 +23,7 @@ import (
 	checkpointartifact "github.com/agentserver/agentserver/v2/internal/checkpoint"
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
+	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 )
 
 const (
@@ -460,6 +461,18 @@ func (client *CoreClient) IssueRunCapabilities(
 			SettingVersion: binding.SettingVersion, Region: binding.Region, EnvironmentID: binding.EnvironmentID,
 		}
 	}
+	if request.Workspace != nil {
+		if err := request.Workspace.Validate(); err != nil {
+			return IssueRunCapabilitiesResult{}, fmt.Errorf("validate workspace capability authority: %w", err)
+		}
+		contractRequest.Workspace = &corecontract.RunLaunchWorkspaceState{
+			EnvironmentID: request.Workspace.EnvironmentID, EnvironmentVersion: request.Workspace.EnvironmentVersion,
+			RootSHA256:       hex.EncodeToString(request.Workspace.RootSHA256[:]),
+			WorkingDirectory: request.Workspace.WorkingDirectory, WorkingDirectoryVersion: request.Workspace.WorkingDirectoryVersion,
+		}
+	}
+	contractRequest.PermissionMode = request.PermissionMode
+	contractRequest.PermissionModeVersion = request.PermissionModeVersion
 	var response corecontract.IssueRunCapabilitiesResponse
 	if err := client.postNoStore(ctx, corecontract.IssueRunCapabilitiesPath, contractRequest, &response); err != nil {
 		return IssueRunCapabilitiesResult{}, err
@@ -603,6 +616,26 @@ func (client *CoreClient) ResolveRunLaunchState(ctx context.Context, scheduled S
 		state.ManagedSandbox = &RunManagedSandboxBinding{
 			SettingVersion: binding.SettingVersion, Region: binding.Region, EnvironmentID: binding.EnvironmentID,
 		}
+	}
+	if response.Workspace != nil {
+		binding := response.Workspace
+		rootSHA256, err := decodeClientSHA256(binding.RootSHA256)
+		if err != nil {
+			return RunLaunchState{}, fmt.Errorf("validate core launch-state response workspace root digest: %w", err)
+		}
+		if binding.EnvironmentVersion < 1 || binding.EnvironmentVersion > 1<<53-1 ||
+			binding.WorkingDirectoryVersion < 1 || binding.WorkingDirectoryVersion > 1<<53-1 {
+			return RunLaunchState{}, errors.New("validate core launch-state response: workspace versions are invalid")
+		}
+		workspace := &workspaceauthority.Binding{
+			EnvironmentID: binding.EnvironmentID, EnvironmentVersion: binding.EnvironmentVersion,
+			RootSHA256: rootSHA256, WorkingDirectory: binding.WorkingDirectory,
+			WorkingDirectoryVersion: binding.WorkingDirectoryVersion,
+		}
+		if err := workspace.Validate(); err != nil {
+			return RunLaunchState{}, fmt.Errorf("validate core launch-state response workspace authority: %w", err)
+		}
+		state.Workspace = workspace
 	}
 	if response.PreviousCheckpoint == nil {
 		return state, nil

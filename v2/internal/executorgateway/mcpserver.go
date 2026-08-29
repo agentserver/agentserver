@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/executorgateway/mcpcontract"
+	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -77,8 +78,11 @@ type ExecutorMCPPrincipal struct {
 	ExecutorID string
 	// Production requires every selected and listed environment to be backed
 	// by a non-insecure enrollment. Development principals leave this false.
-	Production     bool
-	ManagedSandbox *ExecutorManagedSandboxAuthority
+	Production            bool
+	ManagedSandbox        *ExecutorManagedSandboxAuthority
+	Workspace             *workspaceauthority.Binding
+	PermissionMode        string
+	PermissionModeVersion int64
 }
 
 type ExecutorManagedSandboxAuthority struct {
@@ -497,7 +501,7 @@ func (handler *ExecutorMCPHandler) managedToolContext(
 	ctx context.Context,
 	session *executorMCPSession,
 ) (context.Context, func(), error) {
-	if handler.config.ManagedSandboxAcquirer == nil {
+	if handler.config.ManagedSandboxAcquirer == nil || session == nil || !managedSandboxRequired(session.principal) {
 		return ctx, func() {}, nil
 	}
 	lease, err := session.acquireManagedSandbox(ctx, handler.config.ManagedSandboxAcquirer)
@@ -525,6 +529,23 @@ func (handler *ExecutorMCPHandler) managedToolContext(
 		}
 	}()
 	return toolContext, func() { cancel(context.Canceled) }, nil
+}
+
+// managedSandboxRequired keeps the regional TAE lifecycle off the hot path for
+// a run whose frozen workspace is a local AgentX environment. A production
+// run can carry both a managed-sandbox deployment profile and an independent
+// AgentX workspace binding; only the selected managed environment needs the
+// TAE session/activity lease. Runs without a workspace binding retain the
+// historical behaviour and acquire the configured managed profile on first
+// tool use.
+func managedSandboxRequired(principal ExecutorMCPPrincipal) bool {
+	if principal.ManagedSandbox == nil {
+		return false
+	}
+	if principal.Workspace == nil {
+		return true
+	}
+	return principal.Workspace.EnvironmentID == principal.ManagedSandbox.EnvironmentID
 }
 
 func (session *executorMCPSession) acquireManagedSandbox(
@@ -797,6 +818,14 @@ func equalExecutorMCPPrincipals(left, right ExecutorMCPPrincipal) bool {
 	}
 	left.ManagedSandbox = nil
 	right.ManagedSandbox = nil
+	if (left.Workspace == nil) != (right.Workspace == nil) {
+		return false
+	}
+	if left.Workspace != nil && *left.Workspace != *right.Workspace {
+		return false
+	}
+	left.Workspace = nil
+	right.Workspace = nil
 	return left == right
 }
 
@@ -932,6 +961,23 @@ func validateExecutorMCPPrincipal(principal ExecutorMCPPrincipal) error {
 		if err := validateRegistryIdentity("executor ID", principal.ExecutorID); err != nil {
 			return err
 		}
+	}
+	if principal.Workspace != nil {
+		if err := principal.Workspace.Validate(); err != nil {
+			return fmt.Errorf("MCP workspace authority: %w", err)
+		}
+	}
+	if principal.PermissionMode != "" {
+		switch principal.PermissionMode {
+		case "read-only", "auto", "full-access":
+		default:
+			return errors.New("MCP permission mode is unsupported")
+		}
+		if principal.PermissionModeVersion < 1 || principal.PermissionModeVersion > 1<<53-1 {
+			return errors.New("MCP permission mode version is invalid")
+		}
+	} else if principal.PermissionModeVersion != 0 {
+		return errors.New("MCP permission mode version is incomplete")
 	}
 	if len(principal.ToolCatalogDigest) != 64 || strings.ToLower(principal.ToolCatalogDigest) != principal.ToolCatalogDigest {
 		return errors.New("MCP tool catalog digest must be 64 lowercase hexadecimal characters")

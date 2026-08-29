@@ -18,6 +18,7 @@ import (
 
 func TestTAEBackendMapsArgvAndConsumesFencedStream(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
+	const requestWorkspaceAccess = "read"
 	tokens := &recordingSandboxTokenSource{token: "test-backend-capability-token"}
 	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.Path != "/internal/v2/sandboxes/tae-sandbox-1/commands:run" {
@@ -35,6 +36,9 @@ func TestTAEBackendMapsArgvAndConsumesFencedStream(t *testing.T) {
 		if command.Executable != "lark-cli" || len(command.Arguments) != 3 ||
 			command.Arguments[0] != "doc" || command.Arguments[1] != "get" || command.Arguments[2] != "a value with spaces" {
 			t.Fatalf("mapped command = %+v", command)
+		}
+		if command.WorkspaceAccess != requestWorkspaceAccess {
+			t.Fatalf("mapped workspace access = %q, want %q", command.WorkspaceAccess, requestWorkspaceAccess)
 		}
 		if command.Environment["LARK_AUTHORIZATION"] != "placeholder-value" {
 			t.Fatalf("mapped environment = %+v", command.Environment)
@@ -54,6 +58,7 @@ func TestTAEBackendMapsArgvAndConsumesFencedStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := validTAEStartRequest()
+	request.WorkspaceAccess = requestWorkspaceAccess
 	exchange, err := backend.StartProcess(t.Context(), request)
 	if err != nil {
 		t.Fatal(err)

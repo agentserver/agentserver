@@ -65,7 +65,7 @@ func TestUserRunHandlerCreatesRunWithBothAuthorizationLayers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, corecontract.CreateUserRunPath(userRunWorkspaceID, userRunSessionID), strings.NewReader(`{"clientRunId":"client-1","prompt":"hello"}`))
+	request := httptest.NewRequest(http.MethodPost, corecontract.CreateUserRunPath(userRunWorkspaceID, userRunSessionID), strings.NewReader(`{"clientRunId":"client-1","prompt":"hello","expectedWorkingDirectoryVersion":7}`))
 	request.Header.Set("Authorization", "Bearer user-token")
 	request.Header.Set("Idempotency-Key", "request-1")
 	request.Header.Set("Content-Type", "application/json")
@@ -76,7 +76,7 @@ func TestUserRunHandlerCreatesRunWithBothAuthorizationLayers(t *testing.T) {
 	if response.Code != http.StatusCreated || response.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("response = %d %s", response.Code, response.Body.String())
 	}
-	if users.calls != 1 || commands.create.ActorID != userRunActorID || commands.create.IdempotencyKey != "request-1" || commands.create.Prompt != "hello" {
+	if users.calls != 1 || commands.create.ActorID != userRunActorID || commands.create.IdempotencyKey != "request-1" || commands.create.Prompt != "hello" || commands.create.ExpectedWorkingDirectoryVersion != 7 {
 		t.Fatalf("CreateUserRun command = %+v, user calls = %d", commands.create, users.calls)
 	}
 }

@@ -773,11 +773,16 @@ func (authenticator devRunCapabilityAuthenticator) AuthenticateExecutorMCP(reque
 	if claims.ExecutorID != authenticator.executorID {
 		return executorgateway.ExecutorMCPPrincipal{}, errors.New("development MCP run capability belongs to another executor")
 	}
+	workspace, err := executorgateway.WorkspaceBindingFromClaims(claims)
+	if err != nil {
+		return executorgateway.ExecutorMCPPrincipal{}, errors.New("development MCP workspace authority is invalid")
+	}
 	return executorgateway.ExecutorMCPPrincipal{
 		CapabilityID: "insecure-dev:" + claims.CapabilityID,
 		WorkspaceID:  claims.WorkspaceID, SessionID: claims.SessionID, ActorID: claims.ActorID, ExecutorID: claims.ExecutorID,
-		ToolCatalogDigest:   claims.ToolCatalogDigest,
-		MaxApprovalTTL:      time.Duration(claims.MaxApprovalTTLMillis) * time.Millisecond,
+		ToolCatalogDigest: claims.ToolCatalogDigest,
+		MaxApprovalTTL:    time.Duration(claims.MaxApprovalTTLMillis) * time.Millisecond,
+		Workspace:         workspace, PermissionMode: claims.PermissionMode, PermissionModeVersion: claims.PermissionModeVersion,
 		RunDeadline:         time.UnixMilli(claims.RunDeadlineUnixMS).UTC(),
 		CapabilityExpiresAt: time.UnixMilli(claims.ExpiresAtUnixMS).UTC(),
 		Run: executorgateway.ExecutorMCPRunContext{

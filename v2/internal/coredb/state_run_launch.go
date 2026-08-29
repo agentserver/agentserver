@@ -12,6 +12,7 @@ import (
 
 	checkpointartifact "github.com/agentserver/agentserver/v2/internal/checkpoint"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
+	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -58,6 +59,10 @@ func (s *StateStore) ResolveRunLaunchState(ctx context.Context, command ResolveR
 		if err != nil {
 			return ResolvedRunLaunchState{}, err
 		}
+		workspace, err := s.readRunWorkspaceBinding(ctx, transaction, operation, run.ID)
+		if err != nil {
+			return ResolvedRunLaunchState{}, err
+		}
 		checkpoint, err := s.readLatestCheckpoint(ctx, transaction, operation, run.SessionID)
 		if err != nil {
 			return ResolvedRunLaunchState{}, err
@@ -70,6 +75,7 @@ func (s *StateStore) ResolveRunLaunchState(ctx context.Context, command ResolveR
 			LLMGateway: llmGateway, LarkEgress: larkEgress, ManagedSandbox: managedSandbox,
 			PermissionMode: permissionMode, PermissionModeVersion: permissionModeVersion,
 			PermissionModeExplicit: permissionModeExplicit,
+			Workspace:              workspace,
 		}, nil
 	})
 }
@@ -184,6 +190,18 @@ func (s *StateStore) insertRunLaunchInput(ctx context.Context, transaction pgx.T
 		permissionMode = string(command.PermissionMode)
 		permissionModeVersion = command.ExpectedPermissionModeVersion
 	}
+	var workspaceEnvironmentID, workspaceEnvironmentVersion, workspaceRootSHA256 any
+	var workspaceWorkingDirectory, workspaceWorkingDirectoryVersion any
+	if command.Workspace != nil {
+		if err := command.Workspace.Validate(); err != nil {
+			return commandError(ErrorInvalidArgument, "CreateRun", "workspace", command.RunID, err.Error())
+		}
+		workspaceEnvironmentID = command.Workspace.EnvironmentID
+		workspaceEnvironmentVersion = command.Workspace.EnvironmentVersion
+		workspaceRootSHA256 = command.Workspace.RootSHA256[:]
+		workspaceWorkingDirectory = command.Workspace.WorkingDirectory
+		workspaceWorkingDirectoryVersion = command.Workspace.WorkingDirectoryVersion
+	}
 	query := fmt.Sprintf(`
 INSERT INTO %s
     (run_id, workspace_id, session_id,
@@ -192,10 +210,12 @@ INSERT INTO %s
      llm_gateway_id, llm_gateway_version, llm_gateway_grant_user_id, model,
 	 lark_grant_id, lark_grant_version, lark_grant_user_id, lark_policy_sha256,
 	 managed_sandbox_setting_version, managed_sandbox_region,
-	 managed_sandbox_environment_id, permission_mode, permission_mode_version)
+	 managed_sandbox_environment_id, permission_mode, permission_mode_version,
+	 workspace_environment_id, workspace_environment_version, workspace_root_sha256,
+	 workspace_working_directory, workspace_working_directory_version)
 VALUES
 	($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-	 $14, $15, $16, $17, $18, $19, $20, $21, $22)`, s.table("run_launch_states"))
+	 $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)`, s.table("run_launch_states"))
 	if _, err := transaction.Exec(ctx, query,
 		command.RunID,
 		command.WorkspaceID,
@@ -219,6 +239,11 @@ VALUES
 		managedEnvironmentID,
 		permissionMode,
 		permissionModeVersion,
+		workspaceEnvironmentID,
+		workspaceEnvironmentVersion,
+		workspaceRootSHA256,
+		workspaceWorkingDirectory,
+		workspaceWorkingDirectoryVersion,
 	); err != nil {
 		var postgresError *pgconn.PgError
 		if pgxErrorAs(err, &postgresError) && postgresError.Code == "23505" {
@@ -236,6 +261,46 @@ VALUES ($1, $2, $3)`, s.table("run_launch_allowed_tools"))
 		}
 	}
 	return nil
+}
+
+// readRunWorkspaceBinding preserves NULL for legacy runs created before the
+// workspace authority migration. New bound rows must contain all five fields;
+// an unbound session/run is represented by an all-NULL compatibility value.
+func (s *StateStore) readRunWorkspaceBinding(ctx context.Context, transaction pgx.Tx, operation, runID string) (*workspaceauthority.Binding, error) {
+	query := fmt.Sprintf(`
+SELECT workspace_environment_id::text, workspace_environment_version,
+       workspace_root_sha256, workspace_working_directory,
+       workspace_working_directory_version
+FROM %s
+WHERE run_id = $1`, s.table("run_launch_states"))
+	var environmentID, workingDirectory *string
+	var environmentVersion, workingDirectoryVersion *int64
+	var rootSHA256 []byte
+	if err := transaction.QueryRow(ctx, query, runID).Scan(
+		&environmentID, &environmentVersion, &rootSHA256, &workingDirectory, &workingDirectoryVersion,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, commandError(ErrorInvalidState, operation, "run", runID, "run has no immutable launch authority")
+		}
+		return nil, databaseError(operation+" read run workspace binding", err)
+	}
+	if environmentID == nil && environmentVersion == nil && rootSHA256 == nil && workingDirectory == nil && workingDirectoryVersion == nil {
+		return nil, nil
+	}
+	if environmentID == nil || environmentVersion == nil || len(rootSHA256) != sha256.Size || workingDirectory == nil || workingDirectoryVersion == nil {
+		return nil, databaseError(operation+" decode run workspace binding", errors.New("stored workspace binding is incomplete"))
+	}
+	var digest [sha256.Size]byte
+	copy(digest[:], rootSHA256)
+	binding := &workspaceauthority.Binding{
+		EnvironmentID: *environmentID, EnvironmentVersion: *environmentVersion,
+		RootSHA256: digest, WorkingDirectory: *workingDirectory,
+		WorkingDirectoryVersion: *workingDirectoryVersion,
+	}
+	if err := binding.Validate(); err != nil {
+		return nil, databaseError(operation+" validate run workspace binding", err)
+	}
+	return binding, nil
 }
 
 // readRunPermissionMode preserves the nullable legacy representation. A

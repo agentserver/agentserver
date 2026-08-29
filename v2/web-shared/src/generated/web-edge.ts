@@ -112,7 +112,10 @@ export interface components {
         AGUIForwardedProps: {
             agentserver: {
                 eventCursor?: string;
+                /** @description CAS token for the session's next-turn permission mode. */
                 expectedPermissionModeVersion?: number;
+                /** @description CAS token for the session's next-run executor working directory. */
+                expectedWorkingDirectoryVersion?: number;
             };
         };
         UserSessionTrajectoryDetail: {

@@ -7,15 +7,18 @@ import (
 	"math"
 
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
+	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 	"github.com/jackc/pgx/v5"
 )
 
 const maxAuthorizedRunEventPage = 1024
 
 // AuthorizeRunSession performs an early membership check before a caller
-// writes a prompt object. CreateAuthorizedRun repeats the security decision in
-// its transaction, so a membership revocation between these calls fails
-// closed and leaves at most an unreferenced object for the retention cleaner.
+// writes a prompt object. The returned permission and working-directory values
+// are an early snapshot only; CreateAuthorizedRun repeats the security
+// decision and freezes the actual authority in its transaction, so a
+// membership or session-setting change between these calls fails closed and
+// leaves at most an unreferenced object for the retention cleaner.
 func (s *StateStore) AuthorizeRunSession(ctx context.Context, workspaceID, sessionID, actorID string) (AuthorizedSession, error) {
 	const operation = "AuthorizeRunSession"
 	for field, value := range map[string]string{
@@ -28,7 +31,9 @@ func (s *StateStore) AuthorizeRunSession(ctx context.Context, workspaceID, sessi
 		}
 	}
 	query := fmt.Sprintf(`
-	SELECT wm.role, s.version, s.permission_mode, s.permission_mode_version
+	SELECT wm.role, s.version, s.permission_mode, s.permission_mode_version,
+	       s.working_environment_id::text, s.working_directory,
+	       s.working_directory_version
 FROM %s AS s
 JOIN %s AS w ON w.id = s.workspace_id
 JOIN %s AS wm ON wm.workspace_id = s.workspace_id AND wm.user_id = $3
@@ -39,7 +44,13 @@ WHERE s.id = $1 AND s.workspace_id = $2 AND s.creator_id = $3
 	var version int64
 	var permissionMode string
 	var permissionModeVersion int64
-	if err := s.queryRow(ctx, query, sessionID, workspaceID, actorID).Scan(&role, &version, &permissionMode, &permissionModeVersion); err != nil {
+	var workingEnvironmentID *string
+	var workingDirectory string
+	var workingDirectoryVersion int64
+	if err := s.queryRow(ctx, query, sessionID, workspaceID, actorID).Scan(
+		&role, &version, &permissionMode, &permissionModeVersion,
+		&workingEnvironmentID, &workingDirectory, &workingDirectoryVersion,
+	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return AuthorizedSession{}, commandError(ErrorNotFound, operation, "session", sessionID, "active authorized session does not exist")
 		}
@@ -55,8 +66,28 @@ WHERE s.id = $1 AND s.workspace_id = $2 AND s.creator_id = $3
 		}
 		return AuthorizedSession{}, databaseError(operation+" validate session permission mode", err)
 	}
+	if err := workspaceauthority.ValidateWorkingDirectory(workingDirectory); err != nil {
+		return AuthorizedSession{}, databaseError(operation+" validate session working directory", err)
+	}
+	if workingDirectoryVersion < 1 || workingDirectoryVersion > maxSafeJSONInteger {
+		return AuthorizedSession{}, databaseError(operation+" validate session working directory version", errors.New("stored session working-directory version is invalid"))
+	}
+	if workingEnvironmentID == nil && workingDirectory != "." {
+		return AuthorizedSession{}, databaseError(operation+" validate session workspace binding", errors.New("unbound session has a non-root working directory"))
+	}
+	if workingEnvironmentID != nil {
+		if err := validateUUID("working_environment_id", *workingEnvironmentID); err != nil {
+			return AuthorizedSession{}, databaseError(operation+" validate session environment", err)
+		}
+	}
+	workingEnvironment := ""
+	if workingEnvironmentID != nil {
+		workingEnvironment = *workingEnvironmentID
+	}
 	return AuthorizedSession{WorkspaceID: workspaceID, SessionID: sessionID, ActorID: actorID, Role: role, SessionVersion: version,
-		PermissionMode: mode, PermissionModeVersion: permissionModeVersion}, nil
+		PermissionMode: mode, PermissionModeVersion: permissionModeVersion,
+		WorkingEnvironmentID: workingEnvironment,
+		WorkingDirectory:     workingDirectory, WorkingDirectoryVersion: workingDirectoryVersion}, nil
 }
 
 // ReadAuthorizedRunEvents returns one transactionally consistent committed

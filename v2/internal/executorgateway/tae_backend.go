@@ -32,9 +32,10 @@ const (
 )
 
 type SandboxGatewayTokenRequest struct {
-	Action    string
-	Target    executionbackend.Target
-	Operation executionbackend.OperationContext
+	Action          string
+	Target          executionbackend.Target
+	Operation       executionbackend.OperationContext
+	WorkspaceAccess string
 }
 
 type SandboxGatewayTokenSource interface {
@@ -104,10 +105,11 @@ func (backend *TAEBackend) StartProcess(ctx context.Context, request executionba
 		Ref:       sandboxcontract.SandboxRef{SandboxID: request.Target.ID, TargetGeneration: request.Target.Generation},
 		ProcessID: request.ProcessID, Executable: request.Executable,
 		Arguments: append([]string(nil), request.Arguments...), WorkingDirectory: request.WorkingDirectory,
-		Environment: cloneTAEEnvironment(request.Environment), TimeoutMillis: request.Timeout.Milliseconds(),
+		WorkspaceAccess: request.WorkspaceAccess,
+		Environment:     cloneTAEEnvironment(request.Environment), TimeoutMillis: request.Timeout.Milliseconds(),
 		OutputLimitBytes: request.OutputLimitBytes,
 	}
-	return backend.openExchange(ctx, taeActionRunCommand, path, request.Target, request.Operation, contractRequest)
+	return backend.openExchange(ctx, taeActionRunCommand, path, request.Target, request.Operation, request.WorkspaceAccess, contractRequest)
 }
 
 func (backend *TAEBackend) SignalProcess(ctx context.Context, request executionbackend.SignalProcessRequest) (executionbackend.Exchange, error) {
@@ -128,7 +130,7 @@ func (backend *TAEBackend) SignalProcess(ctx context.Context, request executionb
 		ProcessID: request.ProcessID, ProviderHandle: request.ProviderHandle,
 		Signal: request.Signal, Reason: request.Reason,
 	}
-	return backend.openExchange(ctx, taeActionSignalCommand, path, request.Target, request.Operation, contractRequest)
+	return backend.openExchange(ctx, taeActionSignalCommand, path, request.Target, request.Operation, "", contractRequest)
 }
 
 func (backend *TAEBackend) ReadFile(ctx context.Context, request executionbackend.ReadFileRequest) (executionbackend.Exchange, error) {
@@ -148,14 +150,14 @@ func (backend *TAEBackend) ReadFile(ctx context.Context, request executionbacken
 		Ref:      sandboxcontract.SandboxRef{SandboxID: request.Target.ID, TargetGeneration: request.Target.Generation},
 		Path:     request.Path, Offset: request.Offset, Limit: request.Limit,
 	}
-	return backend.openExchange(ctx, taeActionReadFile, path, request.Target, request.Operation, contractRequest)
+	return backend.openExchange(ctx, taeActionReadFile, path, request.Target, request.Operation, "", contractRequest)
 }
 
-func (backend *TAEBackend) openExchange(ctx context.Context, action, path string, target executionbackend.Target, operation executionbackend.OperationContext, command any) (executionbackend.Exchange, error) {
+func (backend *TAEBackend) openExchange(ctx context.Context, action, path string, target executionbackend.Target, operation executionbackend.OperationContext, workspaceAccess string, command any) (executionbackend.Exchange, error) {
 	if ctx == nil {
 		return nil, backend.dispatchFailure(operation, target, false, 0, executionbackend.OutcomeNotSent, "invalid_context", errors.New("TAE backend context is required"))
 	}
-	token, err := backend.tokens.Token(ctx, SandboxGatewayTokenRequest{Action: action, Target: target, Operation: operation})
+	token, err := backend.tokens.Token(ctx, SandboxGatewayTokenRequest{Action: action, Target: target, Operation: operation, WorkspaceAccess: workspaceAccess})
 	if err != nil {
 		return nil, backend.dispatchFailure(operation, target, false, 0, executionbackend.OutcomeNotSent, "capability_unavailable", err)
 	}

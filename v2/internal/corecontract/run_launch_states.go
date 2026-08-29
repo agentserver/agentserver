@@ -61,6 +61,17 @@ type RunLaunchManagedSandboxState struct {
 	EnvironmentID  string `json:"environmentId"`
 }
 
+// RunLaunchWorkspaceState is the complete frozen executor workspace
+// authority. RootSHA256 fingerprints the registered root descriptor; no host
+// filesystem path is exposed to the worker.
+type RunLaunchWorkspaceState struct {
+	EnvironmentID           string `json:"environmentId"`
+	EnvironmentVersion      int64  `json:"environmentVersion"`
+	RootSHA256              string `json:"rootSha256"`
+	WorkingDirectory        string `json:"workingDirectory"`
+	WorkingDirectoryVersion int64  `json:"workingDirectoryVersion"`
+}
+
 type ResolveRunLaunchStateResponse struct {
 	WorkspaceID          string `json:"workspaceId"`
 	SessionID            string `json:"sessionId"`
@@ -80,4 +91,5 @@ type ResolveRunLaunchStateResponse struct {
 	LLMGateway            *RunLaunchLLMGatewayState     `json:"llmGateway,omitempty"`
 	LarkEgress            *RunLaunchLarkEgressState     `json:"larkEgress,omitempty"`
 	ManagedSandbox        *RunLaunchManagedSandboxState `json:"managedSandbox,omitempty"`
+	Workspace             *RunLaunchWorkspaceState      `json:"workspace,omitempty"`
 }

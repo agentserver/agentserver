@@ -8,6 +8,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/execprofile"
 	"github.com/agentserver/agentserver/v2/internal/executorgateway/agentxconn"
+	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 )
 
 func TestMapReadFileV1BuildsOneBoundedReadOperation(t *testing.T) {
@@ -138,6 +139,56 @@ func TestMapReadFileV1RejectsUnsupportedProfileAndUnsafeInputs(t *testing.T) {
 	wrongEnvironment := fmt.Sprintf(`{"environment_id":"%s","path":"data.bin"}`, "30000000-0000-4000-8000-000000000099")
 	if _, err := MapReadFileV1(json.RawMessage(wrongEnvironment), testExecutorMCPPrincipal("capability-read-file"), "call-read-file-invalid", environment, testReadFilePolicy(), testReadFileV1Identities()); err == nil {
 		t.Fatal("mismatched read_file environment identity was accepted")
+	}
+}
+
+func TestMapReadFileV1PrependsFrozenWorkingDirectory(t *testing.T) {
+	descriptor := json.RawMessage(`{"kind":"local","root":"/workspace/projects"}`)
+	digest, err := workspaceauthority.RootDescriptorSHA256(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered := testRegisteredEnvironment(testEnvironmentID, string(descriptor))
+	registered.OuterProfileVersion = execprofile.FilesystemReadVersion
+	environment, err := resolveRegisteredEnvironment(registered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal := testExecutorMCPPrincipal("workspace-read-file")
+	principal.Workspace = &workspaceauthority.Binding{
+		EnvironmentID: testEnvironmentID, EnvironmentVersion: 1, RootSHA256: digest,
+		WorkingDirectory: ".agents/skills", WorkingDirectoryVersion: 8,
+	}
+	plan, err := MapReadFileV1(
+		json.RawMessage(`{"environment_id":"60000000-0000-4000-8000-000000000006","path":"lark-doc/SKILL.md","limit":64}`),
+		principal, "call-workspace-read-file", environment, testReadFilePolicy(), testReadFileV1Identities(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.RelativePath != ".agents/skills/lark-doc/SKILL.md" || plan.AbsolutePath != "/workspace/projects/.agents/skills/lark-doc/SKILL.md" ||
+		plan.PathURI != "file:///workspace/projects/.agents/skills/lark-doc/SKILL.md" {
+		t.Fatalf("frozen working-directory read projection = %+v", plan)
+	}
+	if _, err := MapReadFileV1(
+		json.RawMessage(`{"environment_id":"60000000-0000-4000-8000-000000000006","path":"../secrets.txt"}`),
+		principal, "call-workspace-read-file-escape", environment, testReadFilePolicy(), testReadFileV1Identities(),
+	); err == nil {
+		t.Fatal("read_file accepted a path outside the frozen working directory")
+	}
+}
+
+func TestReadFileResultKeepsModelPathRelativeToFrozenDirectory(t *testing.T) {
+	plan := ReadFileV1Plan{
+		RequestedPath: "lark-doc/SKILL.md", RelativePath: ".agents/skills/lark-doc/SKILL.md",
+		Limit: 64,
+	}
+	result, err := projectReadFileResult(plan, []byte("ok"), "b2s=", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Path != plan.RequestedPath {
+		t.Fatalf("model-facing read path = %q, want %q (internal path %q)", result.Path, plan.RequestedPath, plan.RelativePath)
 	}
 }
 

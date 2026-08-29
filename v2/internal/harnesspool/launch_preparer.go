@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
+	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 )
 
 type LaunchPreparationCore interface {
@@ -50,6 +51,7 @@ type RunLaunchInputs struct {
 	ControllerCallbackIdentity string
 	ControllerCallbackAudience string
 	ManagedSandbox             *ManagedSandboxLaunchSpec
+	Workspace                  *workspaceauthority.Binding
 }
 
 type PreparedRunLaunch struct {
@@ -148,6 +150,10 @@ func (preparer *LaunchPreparer) Prepare(ctx context.Context, scheduled Scheduled
 	claim := scheduled.Claim
 	previousCheckpoint := clonePreviousCheckpoint(inputs.PreviousCheckpoint)
 	toolPack := managedToolPackAuthority(inputs.ManagedSandbox)
+	workspace, err := runmanifest.WorkspaceAuthorityFromBinding(inputs.Workspace)
+	if err != nil {
+		return PreparedRunLaunch{}, fmt.Errorf("validate workspace authority: %w", err)
+	}
 	manifest := runmanifest.Manifest{
 		ManifestVersion: runmanifest.CurrentVersion, CanonicalizerVersion: runmanifest.Canonicalizer,
 		WorkspaceID: claim.Run.WorkspaceID, SessionID: claim.Run.SessionID, RunID: claim.Run.RunID,
@@ -160,6 +166,7 @@ func (preparer *LaunchPreparer) Prepare(ctx context.Context, scheduled Scheduled
 		},
 		ToolPack:       toolPack,
 		ManagedSandbox: managedSandboxAuthority(inputs.ManagedSandbox),
+		Workspace:      workspace,
 		Limits:         inputs.Limits, CheckpointAllowlistVersion: inputs.CheckpointAllowlistVersion,
 		WorkerImageDigest: inputs.WorkerImageDigest, ExpectedServiceAccount: inputs.ExpectedServiceAccount,
 		ControllerCallback: runmanifest.ControllerCallback{

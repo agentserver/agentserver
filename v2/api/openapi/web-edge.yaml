@@ -173,9 +173,10 @@
         "type": "object",
         "additionalProperties": false,
         "required": ["agentserver"],
-        "properties": {"agentserver": {"type": "object", "additionalProperties": false, "minProperties": 1, "maxProperties": 2, "properties": {
+        "properties": {"agentserver": {"type": "object", "additionalProperties": false, "minProperties": 1, "maxProperties": 3, "properties": {
           "eventCursor": {"type": "string", "minLength": 1, "maxLength": 4096},
-          "expectedPermissionModeVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
+          "expectedPermissionModeVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991, "description": "CAS token for the session's next-turn permission mode."},
+          "expectedWorkingDirectoryVersion": {"type": "integer", "minimum": 1, "maximum": 9007199254740991, "description": "CAS token for the session's next-run executor working directory."}
         }}}
       },
       "UserSessionTrajectoryDetail": {

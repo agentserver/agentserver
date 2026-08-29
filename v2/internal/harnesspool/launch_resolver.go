@@ -12,6 +12,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
+	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 )
 
 // RunLaunchCheckpoint carries both the signed-manifest projection and the
@@ -36,6 +37,7 @@ type RunLaunchState struct {
 	PermissionModeVersion  int64
 	PermissionModeExplicit bool
 	PermissionModeLegacy   bool
+	Workspace              *workspaceauthority.Binding
 }
 
 type RunManagedSandboxBinding struct {
@@ -202,7 +204,16 @@ func (profile RunLaunchProfile) inputs(state RunLaunchState) (RunLaunchInputs, e
 		ControllerCallbackIdentity: profile.ControllerCallbackIdentity,
 		ControllerCallbackAudience: profile.ControllerCallbackAudience,
 		ManagedSandbox:             managedSandbox,
+		Workspace:                  cloneWorkspaceBinding(state.Workspace),
 	}, nil
+}
+
+func cloneWorkspaceBinding(source *workspaceauthority.Binding) *workspaceauthority.Binding {
+	if source == nil {
+		return nil
+	}
+	copy := *source
+	return &copy
 }
 
 // resolveRunPermissionMode validates the marker/value relationship carried by
@@ -404,6 +415,15 @@ func validateResolvedRunLaunchInputs(scheduled ScheduledRunAttempt, inputs RunLa
 			return err
 		}
 	}
+	if inputs.Workspace != nil {
+		if err := inputs.Workspace.Validate(); err != nil {
+			return fmt.Errorf("workspace authority: %w", err)
+		}
+	}
+	workspaceAuthority, err := runmanifest.WorkspaceAuthorityFromBinding(inputs.Workspace)
+	if err != nil {
+		return fmt.Errorf("workspace authority: %w", err)
+	}
 	proposal, err := BuildExecutorCatalog(inputs.ExecutorCatalogPolicy)
 	if err != nil {
 		return err
@@ -433,6 +453,7 @@ func validateResolvedRunLaunchInputs(scheduled ScheduledRunAttempt, inputs RunLa
 		},
 		ToolPack:       managedToolPackAuthority(inputs.ManagedSandbox),
 		ManagedSandbox: managedSandboxAuthority(inputs.ManagedSandbox),
+		Workspace:      workspaceAuthority,
 		Limits:         inputs.Limits, CheckpointAllowlistVersion: inputs.CheckpointAllowlistVersion,
 		WorkerImageDigest: inputs.WorkerImageDigest, ExpectedServiceAccount: inputs.ExpectedServiceAccount,
 		ControllerCallback: runmanifest.ControllerCallback{

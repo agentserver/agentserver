@@ -381,10 +381,54 @@ func TestAGUIHandlerForwardsPermissionModeCASAlongsideCursor(t *testing.T) {
 	}
 }
 
+func TestAGUIHandlerForwardsWorkingDirectoryCASAlongsideCursor(t *testing.T) {
+	backend := &fakeRunBackend{
+		startResult: validStartRunResult(),
+		reads: []fakeReadResult{{result: ReadRunEventsResult{
+			NextCursor: "cursor-2", EventCursors: []string{"cursor-2"},
+			Events: []runevent.Event{projectorEvent(t, 2, runevent.KindRunCompleted, runevent.RunTerminalPayload{})},
+		}}},
+	}
+	body := strings.Replace(validAGUIBody(), `"tools":[]`, `"forwardedProps":{"agentserver":{"eventCursor":"cursor-1","expectedWorkingDirectoryVersion":7}},"tools":[]`, 1)
+	handler := newTestHandler(t, backend)
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, validAGUIRequest(t, body))
+	if response.Code != http.StatusOK || len(backend.startRequests) != 1 {
+		t.Fatalf("response = %d %s; StartRun = %+v", response.Code, response.Body.String(), backend.startRequests)
+	}
+	request := backend.startRequests[0]
+	if request.ResumeCursor != "cursor-1" || request.ExpectedWorkingDirectoryVersion != 7 {
+		t.Fatalf("StartRun request = %+v", request)
+	}
+}
+
+func TestAGUIHandlerForwardsBothSessionAuthorities(t *testing.T) {
+	backend := &fakeRunBackend{
+		startResult: validStartRunResult(),
+		reads: []fakeReadResult{{result: ReadRunEventsResult{
+			NextCursor: "cursor-2", EventCursors: []string{"cursor-2"},
+			Events: []runevent.Event{projectorEvent(t, 2, runevent.KindRunCompleted, runevent.RunTerminalPayload{})},
+		}}},
+	}
+	body := strings.Replace(validAGUIBody(), `"tools":[]`, `"forwardedProps":{"agentserver":{"eventCursor":"cursor-1","expectedPermissionModeVersion":3,"expectedWorkingDirectoryVersion":7}},"tools":[]`, 1)
+	handler := newTestHandler(t, backend)
+	response := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(response, validAGUIRequest(t, body))
+	if response.Code != http.StatusOK || len(backend.startRequests) != 1 {
+		t.Fatalf("response = %d %s; StartRun = %+v", response.Code, response.Body.String(), backend.startRequests)
+	}
+	request := backend.startRequests[0]
+	if request.ResumeCursor != "cursor-1" || request.ExpectedPermissionModeVersion != 3 || request.ExpectedWorkingDirectoryVersion != 7 {
+		t.Fatalf("StartRun request = %+v", request)
+	}
+}
+
 func TestAGUIHandlerRejectsInvalidPermissionModeForwardedProps(t *testing.T) {
 	for _, forwarded := range []string{
 		`{"agentserver":{"expectedPermissionModeVersion":0}}`,
 		`{"agentserver":{"expectedPermissionModeVersion":1.5}}`,
+		`{"agentserver":{"expectedWorkingDirectoryVersion":0}}`,
+		`{"agentserver":{"expectedWorkingDirectoryVersion":1.5}}`,
 		`{"agentserver":{"future":true}}`,
 	} {
 		t.Run(forwarded, func(t *testing.T) {

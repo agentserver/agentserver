@@ -336,6 +336,15 @@ export class ResourceAPI {
     return result
   }
 
+  async updateSessionWorkingDirectory(workspaceId: string, sessionId: string, body: PublicComponents["schemas"]["UpdateUserSessionWorkingDirectoryRequest"]) {
+    const result = take(await this.#client.PATCH("/v2/workspaces/{workspaceId}/sessions/{sessionId}/working-directory", {
+      params: { path: { workspaceId, sessionId } }, body,
+    }))
+    const session = validateSession(result.session, workspaceId)
+    if (session.sessionId !== canonicalID("session ID", sessionId)) throw new Error("The session working-directory response escaped its requested scope.")
+    return result
+  }
+
   async archiveSession(workspaceId: string, sessionId: string, expectedVersion: number) {
     const result = take(await this.#client.POST("/v2/workspaces/{workspaceId}/sessions/{sessionId}/actions/archive", {
       params: { path: { workspaceId, sessionId } }, body: { expectedVersion },
@@ -500,14 +509,24 @@ function validateCredentialAuthorization(value: CredentialAuthorization, workspa
 }
 
 function validateSession(value: UserSession, workspaceId: string): UserSession {
-  const keys = ["sessionId", "workspaceId", "title", "status", "version", "permissionMode", "permissionModeVersion", "createdAt", "updatedAt"]
+  const keys = ["sessionId", "workspaceId", "title", "status", "version", "permissionMode", "permissionModeVersion", "workingDirectory", "workingDirectoryVersion", "createdAt", "updatedAt"]
+  if (value.environmentId !== undefined) keys.push("environmentId")
   if (value.activeRunId !== undefined) keys.push("activeRunId")
   exactKeys(value, keys, "session")
   canonicalID("session ID", value.sessionId)
-  if (value.workspaceId !== canonicalID("workspace ID", workspaceId) || value.status !== "active" || !positiveVersion(value.version) || !permissionMode(value.permissionMode) || !positiveVersion(value.permissionModeVersion) || !validTimestamp(value.createdAt) || !validTimestamp(value.updatedAt)) throw new Error("The session response escaped its requested scope.")
+  if (value.workspaceId !== canonicalID("workspace ID", workspaceId) || value.status !== "active" || !positiveVersion(value.version) || !permissionMode(value.permissionMode) || !positiveVersion(value.permissionModeVersion) ||
+      !validWorkingDirectory(value.workingDirectory) || !positiveVersion(value.workingDirectoryVersion) ||
+      (value.workingDirectory !== "." && value.environmentId === undefined) || !validTimestamp(value.createdAt) || !validTimestamp(value.updatedAt)) throw new Error("The session response escaped its requested scope.")
   if (value.activeRunId !== undefined) canonicalID("active run ID", value.activeRunId)
+  if (value.environmentId !== undefined) canonicalID("session environment ID", value.environmentId)
   boundedProtocolText(value.title, 256)
   return value
+}
+
+function validWorkingDirectory(value: unknown): value is string {
+  if (typeof value !== "string" || value.length < 1 || value.length > 4096 || new TextEncoder().encode(value).byteLength > 4096 || value.includes("\\") || value.startsWith("/") || /[\u0000-\u001f\u007f-\u009f]/u.test(value)) return false
+  if (value === ".") return true
+  return value.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..")
 }
 
 function permissionMode(value: unknown): value is PermissionMode {

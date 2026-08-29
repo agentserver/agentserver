@@ -306,7 +306,11 @@ func (provider *Provider) StartProcess(ctx context.Context, request sandboxgatew
 	stream, err := provider.data.StartProcess(operationContext, request.SessionRef, StartProcessInput{
 		RequestID: request.Request.RequestID, Executable: request.Request.Executable,
 		Arguments: append([]string(nil), request.Request.Arguments...), WorkingDirectory: request.Request.WorkingDirectory,
-		Environment: cloneStrings(request.Request.Environment), Timeout: request.Request.Timeout,
+		// Preserve the exact signed projection. The empty value is a meaningful
+		// legacy wire form (equivalent to write), and a future TAE runtime guard
+		// may need to distinguish it from an explicit mode.
+		WorkspaceAccess: request.Request.WorkspaceAccess,
+		Environment:     cloneStrings(request.Request.Environment), Timeout: request.Request.Timeout,
 	})
 	if err != nil {
 		cancel()

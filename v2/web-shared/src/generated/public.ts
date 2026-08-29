@@ -572,6 +572,26 @@ export interface paths {
         patch: operations["updateUserSessionPermissionMode"];
         trace?: never;
     };
+    "/v2/workspaces/{workspaceId}/sessions/{sessionId}/working-directory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** @description Changes the registered AgentX executor environment and relative working directory used by the next run. The binding is versioned independently; the same version may be supplied as expectedWorkingDirectoryVersion when starting a run, and an already active run never changes. TAE managed-CLI environments are not eligible for this binding until they advertise filesystem access enforcement. */
+        patch: operations["updateUserSessionWorkingDirectory"];
+        trace?: never;
+    };
     "/v2/workspaces/{workspaceId}/sessions/{sessionId}/actions/archive": {
         parameters: {
             query?: never;
@@ -1122,6 +1142,9 @@ export interface components {
             /** @enum {string} */
             permissionMode: "read-only" | "auto" | "full-access";
             permissionModeVersion: number;
+            environmentId?: components["schemas"]["UUID"];
+            workingDirectory: string;
+            workingDirectoryVersion: number;
             /** Format: date-time */
             createdAt: string;
             /** Format: date-time */
@@ -1152,6 +1175,15 @@ export interface components {
             expectedPermissionModeVersion: number;
         };
         UpdateUserSessionPermissionModeResponse: {
+            session: components["schemas"]["UserSessionState"];
+            changed: boolean;
+        };
+        UpdateUserSessionWorkingDirectoryRequest: {
+            environmentId?: components["schemas"]["UUID"];
+            workingDirectory: string;
+            expectedWorkingDirectoryVersion: number;
+        };
+        UpdateUserSessionWorkingDirectoryResponse: {
             session: components["schemas"]["UserSessionState"];
             changed: boolean;
         };
@@ -1239,6 +1271,8 @@ export interface components {
             prompt: string;
             /** @description CAS token for the session's next-turn Codex permission mode. */
             expectedPermissionModeVersion?: number;
+            /** @description CAS token for the session's next-run executor working directory. */
+            expectedWorkingDirectoryVersion?: number;
         };
         CreateUserRunResponse: {
             workspaceId: components["schemas"]["UUID"];
@@ -2775,6 +2809,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UpdateUserSessionPermissionModeResponse"];
+                };
+            };
+            400: components["responses"]["PublicError"];
+            401: components["responses"]["PublicError"];
+            403: components["responses"]["PublicError"];
+            404: components["responses"]["PublicError"];
+            409: components["responses"]["PublicError"];
+        };
+    };
+    updateUserSessionWorkingDirectory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workspaceId: components["parameters"]["WorkspaceId"];
+                sessionId: components["parameters"]["SessionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateUserSessionWorkingDirectoryRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated working-directory binding */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpdateUserSessionWorkingDirectoryResponse"];
                 };
             };
             400: components["responses"]["PublicError"];

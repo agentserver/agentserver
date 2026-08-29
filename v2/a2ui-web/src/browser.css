@@ -864,7 +864,20 @@
 .permission-mode-label small { overflow: hidden; margin-top: .08rem; color: var(--muted-foreground); font-size: .58rem; text-overflow: ellipsis; white-space: nowrap; }
 .permission-mode-control .ui-select { width: auto; min-width: 6.7rem; height: 1.95rem; padding: 0 1.7rem 0 .5rem; border-color: transparent; background: var(--muted); box-shadow: none; font-size: .7rem; }
 .permission-mode-control .ui-select:disabled { cursor: wait; opacity: .7; }
-.approval-composer-wrap .permission-mode-control { width: min(736px, 100%); margin: .55rem auto 0; padding: 0 .2rem; }
+.working-directory-control { position: relative; min-width: 0; color: var(--muted-foreground); }
+.working-directory-control > summary { display: inline-flex; align-items: center; gap: .35rem; max-width: 13rem; height: 1.95rem; padding: 0 .5rem; border-radius: .5rem; background: var(--muted); color: var(--muted-foreground); cursor: pointer; font-size: .68rem; list-style: none; }
+.working-directory-control > summary::-webkit-details-marker { display: none; }
+.working-directory-control > summary:hover { color: var(--foreground); }
+.working-directory-control > summary span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.working-directory-control[open] > summary { color: var(--foreground); }
+.working-directory-popover { position: absolute; z-index: 20; right: 0; bottom: calc(100% + .5rem); display: grid; gap: .5rem; width: min(23rem, calc(100vw - 1.5rem)); padding: .75rem; border: 1px solid var(--border); border-radius: .8rem; background: var(--card); box-shadow: 0 12px 34px rgb(15 17 21 / 16%); }
+.working-directory-control label { display: grid; gap: .22rem; min-width: 0; color: var(--muted-foreground); font-size: .63rem; }
+.working-directory-control label .ui-input { height: 2rem; min-width: 0; font-size: .7rem; }
+.working-directory-actions { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
+.working-directory-actions small { min-width: 0; color: var(--muted-foreground); font-size: .59rem; line-height: 1.35; }
+.working-directory-actions .ui-button { flex: 0 0 auto; }
+.approval-session-controls { display: flex; align-items: center; justify-content: space-between; width: min(736px, 100%); margin: .55rem auto 0; padding: 0 .2rem; }
+.approval-composer-wrap .permission-mode-control { width: auto; margin: 0; padding: 0; }
 .approval-composer-wrap .permission-mode-control .ui-select { margin-left: auto; }
 .composer-footer .ui-button-icon { width: 2rem; height: 2rem; border-radius: 50%; }
 .composer-footer .ui-button-default { background: var(--foreground); color: var(--background); }
@@ -945,6 +958,10 @@
   .permission-mode-label { max-width: 8rem; }
   .permission-mode-label small { display: none; }
   .permission-mode-control .ui-select { min-width: 5.8rem; }
+  .working-directory-control > summary { max-width: 9rem; }
+  .working-directory-popover { right: auto; left: 0; }
+  .approval-session-controls { align-items: flex-start; gap: .45rem; }
+  .approval-composer-wrap .permission-mode-control { width: auto; margin: 0; padding: 0; }
   .composer-centered::before { height: 180px; }
 }
 

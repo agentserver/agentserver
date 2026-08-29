@@ -49,6 +49,7 @@ func (authorizer *CapabilityAuthorizer) Authorize(request *http.Request, action 
 		RunID: claims.RunID, RunAttemptID: claims.RunAttemptID, RunAttemptGeneration: claims.RunAttemptGeneration,
 		HolderID: claims.HolderID, ExecutionID: claims.ExecutionID, OperationID: claims.OperationID,
 		MutationKey: claims.MutationKey, SandboxID: claims.SandboxID, TargetGeneration: claims.TargetGeneration,
+		WorkspaceAccess: claims.WorkspaceAccess,
 	}, nil
 }
 

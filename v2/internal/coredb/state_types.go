@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
+	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 )
 
 const (
@@ -92,13 +93,20 @@ type CreateRunCommand struct {
 	LLMGateway     RunLLMGatewayBinding
 	LarkEgress     RunLarkEgressBinding
 	ManagedSandbox RunManagedSandboxBinding
+	// Workspace is derived from the locked session row for authorized callers.
+	// Component callers may provide it only when retrying a command; Core still
+	// compares it with the persisted session binding.
+	Workspace *workspaceauthority.Binding
 	// PermissionMode is optional for component callers. Authorized user
 	// callers never get to choose this value; CreateAuthorizedRun reads the
 	// locked session row and freezes that authority atomically.
 	PermissionMode                runmanifest.CodexPermissionMode
 	ExpectedPermissionModeVersion int64
-	ExpectedSessionVersion        int64
-	Record                        TransitionRecord
+	// ExpectedWorkingDirectoryVersion is an optional user-side CAS token. The
+	// locked session row remains the authority for the actual binding.
+	ExpectedWorkingDirectoryVersion int64
+	ExpectedSessionVersion          int64
+	Record                          TransitionRecord
 }
 
 // RunManagedSandboxBinding is the regional managed execution target selected
@@ -134,13 +142,16 @@ type CancelRunResult struct {
 // in the write transaction; callers must not treat this preliminary read as
 // lasting authorization.
 type AuthorizedSession struct {
-	WorkspaceID           string
-	SessionID             string
-	ActorID               string
-	Role                  string
-	SessionVersion        int64
-	PermissionMode        runmanifest.CodexPermissionMode
-	PermissionModeVersion int64
+	WorkspaceID             string
+	SessionID               string
+	ActorID                 string
+	Role                    string
+	SessionVersion          int64
+	PermissionMode          runmanifest.CodexPermissionMode
+	PermissionModeVersion   int64
+	WorkingEnvironmentID    string
+	WorkingDirectory        string
+	WorkingDirectoryVersion int64
 }
 
 type RunEvent struct {
@@ -427,6 +438,7 @@ type ResolvedRunLaunchState struct {
 	PermissionMode         runmanifest.CodexPermissionMode
 	PermissionModeVersion  int64
 	PermissionModeExplicit bool
+	Workspace              *workspaceauthority.Binding
 }
 
 type AttemptEvent struct {

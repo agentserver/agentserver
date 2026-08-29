@@ -454,8 +454,14 @@ func classifyReadFileResponse(raw json.RawMessage, expectedRequestID string, max
 }
 
 func projectReadFileResult(plan ReadFileV1Plan, content []byte, canonicalBase64 string, eof bool) (ReadFileV1Result, error) {
+	resultPath := plan.RequestedPath
+	if resultPath == "" {
+		// Keep direct unit/legacy callers that construct a plan by hand
+		// compatible while all mapped requests carry RequestedPath explicitly.
+		resultPath = plan.RelativePath
+	}
 	result := ReadFileV1Result{
-		Status: "succeeded", Path: plan.RelativePath, Offset: plan.Offset, RequestedBytes: plan.Limit,
+		Status: "succeeded", Path: resultPath, Offset: plan.Offset, RequestedBytes: plan.Limit,
 		BytesRead: uint64(len(content)), EOF: eof,
 	}
 	if utf8.Valid(content) {
@@ -478,8 +484,12 @@ func projectReadFileResult(plan ReadFileV1Plan, content []byte, canonicalBase64 
 }
 
 func emptyReadFileResult(plan ReadFileV1Plan, status string) ReadFileV1Result {
+	resultPath := plan.RequestedPath
+	if resultPath == "" {
+		resultPath = plan.RelativePath
+	}
 	return ReadFileV1Result{
-		Status: status, Path: plan.RelativePath, Offset: plan.Offset, RequestedBytes: plan.Limit,
+		Status: status, Path: resultPath, Offset: plan.Offset, RequestedBytes: plan.Limit,
 		Encoding: "utf-8", Content: "",
 	}
 }

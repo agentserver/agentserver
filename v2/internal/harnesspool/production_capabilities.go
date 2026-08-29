@@ -8,6 +8,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/harnessbootstrap"
 	"github.com/agentserver/agentserver/v2/internal/runcapability"
+	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 )
 
 const maximumPoolProductionCapabilityExpiryGrace = 10 * time.Minute
@@ -35,6 +36,9 @@ type IssueRunCapabilitiesRequest struct {
 	MaxRunDuration            time.Duration
 	MaxApprovalTTL            time.Duration
 	ManagedSandbox            *RunManagedSandboxBinding
+	Workspace                 *workspaceauthority.Binding
+	PermissionMode            string
+	PermissionModeVersion     int64
 }
 
 type IssuedRunCapability struct {
@@ -110,6 +114,15 @@ func (source *ProductionAttemptRuntimeCapabilitySource) IssueAttemptRuntimeCapab
 		LLMGatewayGrantUserID: prepared.Manifest.Model.LLMGatewayGrantUserID,
 		MaxRunDuration:        time.Duration(prepared.Manifest.Limits.MaxRunDurationMS) * time.Millisecond,
 		MaxApprovalTTL:        time.Duration(prepared.Manifest.Limits.MaxApprovalTTLMS) * time.Millisecond,
+		PermissionMode:        string(prepared.Manifest.PermissionMode),
+		PermissionModeVersion: prepared.Manifest.PermissionModeVersion,
+	}
+	if prepared.Manifest.Workspace != nil {
+		workspace, err := prepared.Manifest.Workspace.Binding()
+		if err != nil {
+			return harnessbootstrap.RuntimeCapabilities{}, fmt.Errorf("decode manifest workspace authority: %w", err)
+		}
+		request.Workspace = &workspace
 	}
 	if prepared.Manifest.ManagedSandbox != nil {
 		binding := prepared.Manifest.ManagedSandbox

@@ -9,6 +9,7 @@ import (
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/coredb"
+	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 )
 
 func TestStateStoreRunLaunchStateQueriesMapAuthorityProjection(t *testing.T) {
@@ -32,7 +33,10 @@ func TestStateStoreRunLaunchStateQueriesMapAuthorityProjection(t *testing.T) {
 		response.PreviousCheckpoint.RunID != "4a000000-0000-4000-8000-000000000004" ||
 		response.PreviousCheckpoint.RunAttemptID != "4b000000-0000-4000-8000-000000000004" ||
 		response.PreviousCheckpoint.RunAttemptGeneration != 2 || response.PreviousCheckpoint.TurnID != "turn-previous" ||
-		response.PreviousCheckpoint.CheckpointAllowlistVersion != 7 {
+		response.PreviousCheckpoint.CheckpointAllowlistVersion != 7 || response.Workspace == nil ||
+		response.Workspace.EnvironmentID != "50000000-0000-0000-0000-000000000005" || response.Workspace.EnvironmentVersion != 2 ||
+		response.Workspace.WorkingDirectory != "rtm-aihub" || response.Workspace.WorkingDirectoryVersion != 3 ||
+		response.Workspace.RootSHA256 != hex.EncodeToString(store.workspaceDigest[:]) {
 		t.Fatalf("store command/response = %+v / %+v", store.command, response)
 	}
 	response.ExecutorPolicy.AllowedTools[0] = "mutated"
@@ -42,11 +46,12 @@ func TestStateStoreRunLaunchStateQueriesMapAuthorityProjection(t *testing.T) {
 }
 
 type recordingRunLaunchStateStore struct {
-	command       coredb.ResolveRunLaunchStateCommand
-	promptDigest  [32]byte
-	policyDigest  [32]byte
-	catalogDigest [32]byte
-	allowedTools  []string
+	command         coredb.ResolveRunLaunchStateCommand
+	promptDigest    [32]byte
+	policyDigest    [32]byte
+	catalogDigest   [32]byte
+	allowedTools    []string
+	workspaceDigest [32]byte
 }
 
 func (store *recordingRunLaunchStateStore) ResolveRunLaunchState(_ context.Context, command coredb.ResolveRunLaunchStateCommand) (coredb.ResolvedRunLaunchState, error) {
@@ -58,6 +63,7 @@ func (store *recordingRunLaunchStateStore) ResolveRunLaunchState(_ context.Conte
 	manifestDigest := sha256.Sum256([]byte("manifest"))
 	objectDigest := sha256.Sum256([]byte("checkpoint-object"))
 	runtimeDigest := sha256.Sum256([]byte("runtime"))
+	store.workspaceDigest = sha256.Sum256([]byte("workspace-root"))
 	return coredb.ResolvedRunLaunchState{
 		WorkspaceID: command.WorkspaceID, SessionID: command.SessionID, RunID: command.RunID,
 		AttemptID: command.AttemptID, HolderID: command.HolderID, Generation: command.Generation,
@@ -84,6 +90,10 @@ func (store *recordingRunLaunchStateStore) ResolveRunLaunchState(_ context.Conte
 		ExecutorPolicy: coredb.RunExecutorPolicy{
 			Version: "executor-policy/1", ContextDigest: store.policyDigest,
 			AllowedTools: store.allowedTools,
+		},
+		Workspace: &workspaceauthority.Binding{
+			EnvironmentID: "50000000-0000-0000-0000-000000000005", EnvironmentVersion: 2,
+			RootSHA256: store.workspaceDigest, WorkingDirectory: "rtm-aihub", WorkingDirectoryVersion: 3,
 		},
 	}, nil
 }

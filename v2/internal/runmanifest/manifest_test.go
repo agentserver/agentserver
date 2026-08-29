@@ -99,6 +99,52 @@ func TestRunManifestSignsAndVerifiesCodexPermissionMode(t *testing.T) {
 	}
 }
 
+func TestRunManifestSignsAndVerifiesWorkspaceAuthority(t *testing.T) {
+	manifest := validManifest(t)
+	manifest.Workspace = &WorkspaceAuthority{
+		EnvironmentID: "50000000-0000-4000-8000-000000000005", EnvironmentVersion: 3,
+		RootSHA256: strings.Repeat("1", 64), WorkingDirectory: "rtm-aihub", WorkingDirectoryVersion: 4,
+	}
+	seed := sha256.Sum256([]byte("run-manifest-workspace-key"))
+	signed, err := Sign(manifest, "cluster-key-1", ed25519.NewKeyFromSeed(seed[:]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := signed.Verify("cluster-key-1", ed25519.NewKeyFromSeed(seed[:]).Public().(ed25519.PublicKey))
+	if err != nil || verified.Workspace == nil || verified.Workspace.WorkingDirectory != "rtm-aihub" {
+		t.Fatalf("verified workspace authority = %+v, %v", verified.Workspace, err)
+	}
+	if _, err := verified.Workspace.Binding(); err != nil {
+		t.Fatalf("verified workspace binding = %v", err)
+	}
+	invalid := manifest
+	invalid.Workspace = &WorkspaceAuthority{
+		EnvironmentID: manifest.Workspace.EnvironmentID, EnvironmentVersion: 3,
+		RootSHA256: strings.Repeat("1", 64), WorkingDirectory: "../rtm-aihub", WorkingDirectoryVersion: 4,
+	}
+	if err := invalid.Validate(); err == nil || !strings.Contains(err.Error(), "working directory") {
+		t.Fatalf("unsafe workspace directory validation error = %v", err)
+	}
+	readOnlyCatalog, err := braincatalog.BuildCatalog("executor", "Executor tools.", []braincatalog.ToolDescriptor{{
+		Name: "read_file", Description: "Read one file.", InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false}`),
+	}}, braincatalog.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutDiscovery := manifest
+	withoutDiscovery.ExecutorMCP, err = ExecutorMCPFromCatalog(
+		manifest.ExecutorMCP.Endpoint, manifest.ExecutorMCP.TLSIdentity, manifest.ExecutorMCP.Audience,
+		manifest.ExecutorMCP.ContractVersion, manifest.ExecutorMCP.CatalogID, readOnlyCatalog,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutDiscovery.PreviousCheckpoint = nil
+	if err := withoutDiscovery.Validate(); err == nil || !strings.Contains(err.Error(), "list_environments") {
+		t.Fatalf("workspace tool catalog without environment discovery error = %v", err)
+	}
+}
+
 func TestRunManifestRejectsUnknownCodexPermissionMode(t *testing.T) {
 	manifest := validManifest(t)
 	manifest.PermissionMode = "future-mode"
@@ -285,10 +331,16 @@ func TestRunManifestJSONSchemaAcceptsSignedEnvelope(t *testing.T) {
 
 func validManifest(t *testing.T) Manifest {
 	t.Helper()
-	catalog, err := braincatalog.BuildCatalog("executor", "Deterministic executor tools.", []braincatalog.ToolDescriptor{{
-		Name: "read_file", Description: "Read one file.",
-		InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false}`),
-	}}, braincatalog.DefaultLimits())
+	catalog, err := braincatalog.BuildCatalog("executor", "Deterministic executor tools.", []braincatalog.ToolDescriptor{
+		{
+			Name: "list_environments", Description: "List environments.",
+			InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false}`),
+		},
+		{
+			Name: "read_file", Description: "Read one file.",
+			InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false}`),
+		},
+	}, braincatalog.DefaultLimits())
 	if err != nil {
 		t.Fatal(err)
 	}

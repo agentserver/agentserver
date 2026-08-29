@@ -62,6 +62,27 @@ func TestProductionExecutorMCPAuthenticatorVerifiesAndLiveAuthorizesEveryRequest
 			t.Fatalf("live authorization request = %+v", call)
 		}
 	}
+	workspaceClaims := claims
+	workspaceClaims.WorkspaceEnvironmentID = testEnvironmentID
+	workspaceClaims.WorkspaceEnvironmentVersion = 2
+	workspaceClaims.WorkspaceRootSHA256 = strings.Repeat("b", 64)
+	workspaceClaims.WorkspaceWorkingDirectory = "rtm-aihub"
+	workspaceClaims.WorkspaceWorkingDirectoryVersion = 3
+	workspaceToken, workspaceVerifier := signProductionExecutorClaims(t, workspaceClaims)
+	workspaceAuthorizer := &recordingExecutorRunCapabilityAuthorizer{result: productionExecutorAuthorization(workspaceClaims, now, true)}
+	workspaceAuthenticator, err := NewProductionExecutorMCPAuthenticator(
+		workspaceVerifier, workspaceAuthorizer, testProductionCapabilityExecutor, func() time.Time { return now },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceRequest := httptest.NewRequest("POST", "https://executor-gateway.test/mcp", nil)
+	workspaceRequest.Header.Set("Authorization", "Bearer "+workspaceToken)
+	principal, err := workspaceAuthenticator.AuthenticateExecutorMCP(workspaceRequest)
+	if err != nil || principal.Workspace == nil || principal.Workspace.EnvironmentID != testEnvironmentID ||
+		principal.Workspace.WorkingDirectory != "rtm-aihub" || principal.Workspace.WorkingDirectoryVersion != 3 {
+		t.Fatalf("production workspace principal = %+v, %v", principal.Workspace, err)
+	}
 }
 
 func TestProductionExecutorMCPAuthenticatorFailsClosedBeforeAndAfterCore(t *testing.T) {

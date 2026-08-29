@@ -202,6 +202,10 @@ func TestCoreClientResolvesFencedRunLaunchState(t *testing.T) {
 			ContextDigest: hex.EncodeToString(base.ExecutorCatalogPolicy.ContextDigest[:]),
 			AllowedTools:  append([]string(nil), base.ExecutorCatalogPolicy.AllowedTools...),
 		},
+		Workspace: &corecontract.RunLaunchWorkspaceState{
+			EnvironmentID: "50000000-0000-0000-0000-000000000005", EnvironmentVersion: 2,
+			RootSHA256: strings.Repeat("1", 64), WorkingDirectory: "rtm-aihub", WorkingDirectoryVersion: 3,
+		},
 	}}
 	handler, err := coreserver.NewRunLaunchStateHandler(allowWorkload{}, commands)
 	if err != nil {
@@ -224,7 +228,8 @@ func TestCoreClientResolvesFencedRunLaunchState(t *testing.T) {
 		state.Prompt != base.Prompt || state.PreviousCheckpoint == nil ||
 		state.PreviousCheckpoint.Checkpoint.CatalogDigest != proposal.Catalog.Digest() ||
 		state.PreviousCheckpoint.Checkpoint.CodexRuntimeManifestDigest != base.CodexRuntimeManifestDigest ||
-		len(state.ExecutorPolicy.AllowedTools) != len(base.ExecutorCatalogPolicy.AllowedTools) {
+		len(state.ExecutorPolicy.AllowedTools) != len(base.ExecutorCatalogPolicy.AllowedTools) || state.Workspace == nil ||
+		state.Workspace.EnvironmentID != "50000000-0000-0000-0000-000000000005" || state.Workspace.WorkingDirectory != "rtm-aihub" || state.Workspace.WorkingDirectoryVersion != 3 {
 		t.Fatalf("wire request/state = %+v / %+v", commands.request, state)
 	}
 	state.ExecutorPolicy.AllowedTools[0] = "mutated"

@@ -131,6 +131,22 @@ Codex app-server v2 本身没有一个名为 `permissionMode` 的 wire 字段，
 
 其中 `auto` 的无交互投影等价于 Codex CLI 的 `--approve-for-me`，`full-access` 对应 Codex 的 full-access / `--dangerously-bypass-approvals-and-sandbox` 组合；配置面仍只接受上表的 canonical preset ID。
 
+### 3.1 Session 工作目录与 workspace skills
+
+session 的工作目录是一个 executor-backed 的逻辑绑定，而不是 harness 容器里的本地目录：
+
+- `environmentId` 必须指向该 workspace 已注册的 AgentX executor environment；`workingDirectory` 是环境 root 下的规范相对路径，`.` 表示 root。绝对路径、反斜杠、`.`/`..` segment、空 segment 和控制字符都会被 API、数据库约束和 executor gateway 拒绝。当前 TAE Terminal API 没有逐进程 filesystem-access enforcement，因此固定 managed-CLI 环境不能被 session 绑定为通用工作目录；Core 和 executor gateway 都会 fail closed。
+- 例如本机目录是 `../rtm-aihub` 时，不能把这个宿主绝对/父级路径直接写入 session。应把 executor environment 的 root 注册为 `.../projects`（共同父目录），再把 session 的 `workingDirectory` 设为 `rtm-aihub`。这样 authority 中永远没有宿主路径，也不会通过 `..` 越过 root。
+- insecure-dev 场景可以用 `./deploy/insecure-dev/run.sh --workspace=/absolute/path/to/projects` 把共同父目录挂载为 `/workspace`；随后在 Browser 的工作目录控件中填入已注册的 `environmentId` 和 `rtm-aihub`。不要把 `../rtm-aihub` 直接填入 API，`..` 会被拒绝。
+- 浏览器通过 `PATCH /v2/workspaces/{workspaceId}/sessions/{sessionId}/working-directory` 更新环境和路径，使用独立的 `expectedWorkingDirectoryVersion` CAS。发起下一次 Run 时，AG-UI 同时携带该版本；如果另一个标签页刚切换了目录，Core 会在同一事务中返回 `version_conflict`，不会在未确认的目录中启动新 Run。
+- 例如把 session 绑定到 `rtm-aihub`：`{"environmentId":"<registered-environment-uuid>","workingDirectory":"rtm-aihub","expectedWorkingDirectoryVersion":1}`。`environmentId` 必须是该 workspace 已注册的 executor environment；不填写它时只能选择根目录 `.`（用于解除绑定）。
+- Run 创建时 Core 冻结 environment version、root descriptor SHA-256、相对目录和目录版本；之后的 session 修改只影响下一次 Run。executor gateway 每次工具调用重新校验这些值，`shell` 的默认 cwd 和 `read_file` 的路径前缀都来自 frozen binding。写入只能经 `executor.shell`，并受该 Run 的 Codex permission mode 和 backend sandbox access 控制；read-only Run 不能写。
+- workspace skills 不通过 stock Codex 的本地 skill 搜索或新的 MCP `skills.*` 工具注入。worker 注入受控 developer instructions，只允许 agent 在 frozen working directory 下检查固定 roots：`skills`、`.agents/skills`、`.codex/skills`、`.dsh/skills`，并且只把精确的 `SKILL.md` 当作候选说明。skill 文本和脚本都是不可信项目数据，不能提升权限或要求泄露凭证；脚本执行仍须显式经过 `executor.shell` 和当前 permission mode。
+
+这套设计保持“手脑分离”：app-server/harness 只持有短生命周期的控制与 capability，代码读取和写入在 executor environment 内完成；工作目录中的源码、`.agents/skills` 等内容不会被复制进 worker 的本地 cwd。
+
+当 session 冻结到 BYO AgentX environment 时，executor MCP 不会为无关的 managed TAE profile 申请 sandbox activity；只有实际指向 managed environment 的 run 才会建立对应的 TAE lease。
+
 `workerUid/workerGid` 是运行 harness-worker 的 Linux identity，`appUid/appGid` 是 stock app-server 的固定 Linux identity；UID 和 GID都必须分别不同。生成的 harness-pool 环境显式启用 privileged-fork backend：常驻 pool保留 `CHOWN/DAC_OVERRIDE/SETUID/SETGID`，每个 attempt直接 fork固定worker identity，worker再 fork固定app identity并在启动后封死自身 capability；热路径不创建容器、Job或Pod。开发 attempt anchor使用execute-only traversal，不允许app列目录或读pool/worker文件。
 
 ## 4. 生成

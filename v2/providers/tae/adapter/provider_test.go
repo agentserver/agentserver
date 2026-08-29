@@ -663,6 +663,32 @@ func TestProviderPreAcknowledgementStreamFailurePreservesRequestID(t *testing.T)
 	}
 }
 
+func TestProviderStartProcessPreservesWorkspaceAccessProjection(t *testing.T) {
+	data := defaultFakeData()
+	stream := &scriptedStream{events: []StreamEvent{
+		{Name: "process.start", Data: map[string]any{"pid": 42}},
+		{Name: "process.exit", Data: map[string]any{"exit_code": 0}},
+	}}
+	data.start = func(_ context.Context, _ string, input StartProcessInput) (EventStream, error) {
+		if input.WorkspaceAccess != executionbackend.WorkspaceAccessRead {
+			t.Fatalf("provider data-plane workspace access = %q, want %q", input.WorkspaceAccess, executionbackend.WorkspaceAccessRead)
+		}
+		return stream, nil
+	}
+	provider := newTestProvider(t, defaultFakeControl(), data)
+	request := validStartRequest(1024)
+	request.WorkspaceAccess = executionbackend.WorkspaceAccessRead
+	exchange, err := provider.StartProcess(t.Context(), sandboxgateway.StartProcessProviderRequest{
+		SessionRef: "tae-session-1", Request: request,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exchange.AwaitTerminal(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func newTestProvider(t *testing.T, control ControlPlane, data DataPlane) *Provider {
 	t.Helper()
 	provider, err := NewProvider(Config{

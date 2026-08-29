@@ -915,6 +915,7 @@ func mountCoreUserSessionRoutes(mux *http.ServeMux, handler *coreserver.UserSess
 	mux.Handle(corecontract.UserSessionCollectionRoutePattern, routes)
 	mux.Handle(corecontract.UserSessionResourceRoutePattern, routes)
 	mux.Handle(corecontract.UserSessionPermissionModeRoutePattern, routes)
+	mux.Handle(corecontract.UserSessionWorkingDirectoryRoutePattern, routes)
 	mux.Handle(corecontract.UserSessionTranscriptRoutePattern, routes)
 	mux.Handle(corecontract.UserSessionTrajectoryRoutePattern, routes)
 	mux.Handle(corecontract.UserSessionArchiveRoutePattern, routes)

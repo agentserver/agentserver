@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -92,6 +93,14 @@ WHERE r.status = 'starting'
 		if err != nil || managedSandbox != command.ManagedSandbox {
 			return RunCapabilityIssuanceAuthority{}, unavailableRunCapabilityAuthority(operation, command.AttemptID)
 		}
+		permissionMode, permissionModeVersion, permissionModeExplicit, err := s.readRunPermissionMode(ctx, transaction, operation, command.RunID)
+		if err != nil || !permissionModeAuthorityMatches(permissionMode, permissionModeVersion, permissionModeExplicit, command.PermissionMode, command.PermissionModeVersion) {
+			return RunCapabilityIssuanceAuthority{}, unavailableRunCapabilityAuthority(operation, command.AttemptID)
+		}
+		workspace, err := s.readRunWorkspaceBinding(ctx, transaction, operation, command.RunID)
+		if err != nil || !workspaceBindingsEqual(workspace, command.Workspace) {
+			return RunCapabilityIssuanceAuthority{}, unavailableRunCapabilityAuthority(operation, command.AttemptID)
+		}
 		catalogID, catalogDigest, err := s.readAuthorizedCapabilityCatalog(
 			ctx, transaction, operation, command.RunID, command.SessionID, command.AttemptID,
 			latestCheckpointID,
@@ -113,6 +122,10 @@ WHERE r.status = 'starting'
 		authority.BrainToolCatalogID = catalogID
 		authority.ToolCatalogDigest = catalogDigest
 		authority.ManagedSandbox = managedSandbox
+		authority.Workspace = workspace
+		authority.PermissionMode = permissionMode
+		authority.PermissionModeVersion = permissionModeVersion
+		authority.PermissionModeExplicit = permissionModeExplicit
 		return authority, nil
 	})
 }
@@ -197,6 +210,14 @@ WHERE r.current_attempt_generation = $7
 			}
 			managedSandbox, err := s.readRunManagedSandboxBinding(ctx, transaction, operation, command.RunID)
 			if err != nil || managedSandbox != command.ManagedSandbox {
+				return AuthorizedRunCapability{}, unavailableRunCapabilityAuthority(operation, command.CapabilityID)
+			}
+			workspace, err := s.readRunWorkspaceBinding(ctx, transaction, operation, command.RunID)
+			if err != nil || !workspaceBindingsEqual(workspace, command.Workspace) {
+				return AuthorizedRunCapability{}, unavailableRunCapabilityAuthority(operation, command.CapabilityID)
+			}
+			permissionMode, permissionModeVersion, permissionModeExplicit, err := s.readRunPermissionMode(ctx, transaction, operation, command.RunID)
+			if err != nil || !permissionModeAuthorityMatches(permissionMode, permissionModeVersion, permissionModeExplicit, command.PermissionMode, command.PermissionModeVersion) {
 				return AuthorizedRunCapability{}, unavailableRunCapabilityAuthority(operation, command.CapabilityID)
 			}
 			_, catalogDigest, err := s.readAuthorizedCapabilityCatalog(
@@ -330,6 +351,14 @@ func validateResolveRunCapabilityIssuance(command ResolveRunCapabilityIssuanceCo
 			return err
 		}
 	}
+	if command.Workspace != nil {
+		if err := command.Workspace.Validate(); err != nil {
+			return err
+		}
+	}
+	if err := validatePermissionModeProjection(command.PermissionMode, command.PermissionModeVersion); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -367,6 +396,14 @@ func validateAuthorizeRunCapability(command AuthorizeRunCapabilityCommand) error
 				return err
 			}
 		}
+		if command.Workspace != nil {
+			if err := command.Workspace.Validate(); err != nil {
+				return err
+			}
+		}
+		if err := validatePermissionModeProjection(command.PermissionMode, command.PermissionModeVersion); err != nil {
+			return err
+		}
 	case RunCapabilityAudienceLLMProxy:
 		if command.ExecutorID != "" || command.ToolCatalogDigest != ([sha256.Size]byte{}) ||
 			command.ExpectedRunVersion != 0 || command.ExpectedAttemptVersion != 0 {
@@ -378,10 +415,53 @@ func validateAuthorizeRunCapability(command AuthorizeRunCapabilityCommand) error
 		if command.ManagedSandbox != (RunManagedSandboxBinding{}) {
 			return errors.New("llmproxy capability contains managed sandbox authority")
 		}
+		if command.Workspace != nil {
+			return errors.New("llmproxy capability contains workspace authority")
+		}
+		if command.PermissionMode != "" || command.PermissionModeVersion != 0 {
+			return errors.New("llmproxy capability contains permission mode authority")
+		}
 	default:
 		return errors.New("run capability audience is unsupported")
 	}
 	return nil
+}
+
+// validatePermissionModeProjection validates the optional request-side
+// projection. Empty/zero is the explicit compatibility representation for a
+// launch row created before session permission modes existed.
+func validatePermissionModeProjection(mode runmanifest.CodexPermissionMode, version int64) error {
+	if mode == "" {
+		if version != 0 {
+			return errors.New("permission mode version requires a mode")
+		}
+		return nil
+	}
+	effective, err := mode.Effective()
+	if err != nil || effective != mode {
+		if err == nil {
+			err = errors.New("permission mode must be canonical")
+		}
+		return err
+	}
+	if version < 1 || version > maxSafeJSONInteger {
+		return errors.New("permission mode version must be a positive JSON-safe integer")
+	}
+	return nil
+}
+
+func permissionModeAuthorityMatches(
+	frozenMode runmanifest.CodexPermissionMode,
+	frozenVersion int64,
+	frozenExplicit bool,
+	requestedMode runmanifest.CodexPermissionMode,
+	requestedVersion int64,
+) bool {
+	if !frozenExplicit {
+		return frozenMode == "" && frozenVersion == 0 && requestedMode == "" && requestedVersion == 0
+	}
+	return frozenMode != "" && frozenVersion >= 1 &&
+		frozenMode == requestedMode && frozenVersion == requestedVersion
 }
 
 func unavailableRunCapabilityAuthority(operation, resourceID string) error {

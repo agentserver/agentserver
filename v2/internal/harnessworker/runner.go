@@ -86,6 +86,11 @@ type AppServerThreadResume struct {
 	RolloutPath             string
 	CWD                     string
 	CheckpointCatalogDigest string
+	// DeveloperInstructions is an attempt-local trusted contract.  Supplying
+	// it on resume is important when a session's first run predates its
+	// executor-backed workspace binding; stock Codex 0.146 accepts the same
+	// field on thread/resume and applies it to the resumed thread.
+	DeveloperInstructions string
 }
 
 type AppServerRunRequest struct {
@@ -306,9 +311,10 @@ type appServerThreadStartParams struct {
 }
 
 type appServerThreadResumeParams struct {
-	ThreadID     string `json:"threadId"`
-	Path         string `json:"path"`
-	ExcludeTurns bool   `json:"excludeTurns"`
+	ThreadID              string `json:"threadId"`
+	Path                  string `json:"path"`
+	ExcludeTurns          bool   `json:"excludeTurns"`
+	DeveloperInstructions string `json:"developerInstructions,omitempty"`
 }
 
 type appServerTurnStartParams struct {
@@ -525,9 +531,10 @@ func (r *AppServerRunner) Run(ctx context.Context, request AppServerRunRequest) 
 	} else {
 		resume := request.Resume
 		if err := state.sendRequest(2, "thread/resume", appServerThreadResumeParams{
-			ThreadID:     resume.ThreadID,
-			Path:         resume.RolloutPath,
-			ExcludeTurns: true,
+			ThreadID:              resume.ThreadID,
+			Path:                  resume.RolloutPath,
+			ExcludeTurns:          true,
+			DeveloperInstructions: resume.DeveloperInstructions,
 		}); err != nil {
 			return AppServerRunResult{}, err
 		}
@@ -666,6 +673,9 @@ func (r *AppServerRunner) validateRequest(request AppServerRunRequest) error {
 		return err
 	}
 	if err := validateAbsolutePath("resumed turn cwd", resume.CWD); err != nil {
+		return err
+	}
+	if err := validateText("developer instructions", resume.DeveloperInstructions, r.options.MaxPromptTextBytes); err != nil {
 		return err
 	}
 	if !equalDigest(request.Catalog.Digest(), resume.CheckpointCatalogDigest) {

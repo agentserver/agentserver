@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/agentserver/agentserver/v2/internal/runmanifest"
+	"github.com/agentserver/agentserver/v2/internal/workspaceauthority"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -20,17 +21,20 @@ const (
 )
 
 type UserSession struct {
-	ID                    string
-	WorkspaceID           string
-	CreatorID             string
-	Title                 string
-	Status                string
-	ActiveRunID           string
-	Version               int64
-	PermissionMode        runmanifest.CodexPermissionMode
-	PermissionModeVersion int64
-	CreatedAt             time.Time
-	UpdatedAt             time.Time
+	ID                      string
+	WorkspaceID             string
+	CreatorID               string
+	Title                   string
+	Status                  string
+	ActiveRunID             string
+	Version                 int64
+	PermissionMode          runmanifest.CodexPermissionMode
+	PermissionModeVersion   int64
+	WorkingEnvironmentID    string
+	WorkingDirectory        string
+	WorkingDirectoryVersion int64
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
 }
 
 type CreateUserSessionCommand struct {
@@ -71,6 +75,23 @@ type UpdateUserSessionPermissionModeResult struct {
 	Changed bool
 }
 
+// UpdateUserSessionWorkingDirectoryCommand changes only the next-run
+// executor workspace binding. Its independent CAS version lets a UI switch
+// directories while an unrelated run/session version is changing.
+type UpdateUserSessionWorkingDirectoryCommand struct {
+	WorkspaceID                     string
+	SessionID                       string
+	ActorID                         string
+	EnvironmentID                   string
+	WorkingDirectory                string
+	ExpectedWorkingDirectoryVersion int64
+}
+
+type UpdateUserSessionWorkingDirectoryResult struct {
+	Session UserSession
+	Changed bool
+}
+
 type ArchiveUserSessionCommand struct {
 	WorkspaceID     string
 	SessionID       string
@@ -96,6 +117,8 @@ func (s *StateStore) ListUserSessions(ctx context.Context, workspaceID, actorID 
 SELECT session.id::text, session.workspace_id::text, session.creator_id::text,
        session.title, session.status, session.active_run_id::text,
        session.version, session.permission_mode, session.permission_mode_version,
+       session.working_environment_id::text, session.working_directory,
+       session.working_directory_version,
        session.created_at, session.updated_at
 FROM %s AS session
 WHERE session.workspace_id = $1
@@ -232,6 +255,87 @@ WHERE id = $1`, s.table("sessions"))
 	})
 }
 
+// UpdateUserSessionWorkingDirectory changes the logical path used by future
+// runs. The path is always relative to an enrolled executor environment root;
+// absolute host paths are intentionally impossible to persist.
+func (s *StateStore) UpdateUserSessionWorkingDirectory(ctx context.Context, command UpdateUserSessionWorkingDirectoryCommand) (UpdateUserSessionWorkingDirectoryResult, error) {
+	const operation = "UpdateUserSessionWorkingDirectory"
+	if err := validateUserSessionScope(command.WorkspaceID, command.SessionID, command.ActorID); err != nil {
+		return UpdateUserSessionWorkingDirectoryResult{}, commandError(ErrorInvalidArgument, operation, "session", command.SessionID, err.Error())
+	}
+	if command.EnvironmentID != "" {
+		if err := validateUUID("environment_id", command.EnvironmentID); err != nil {
+			return UpdateUserSessionWorkingDirectoryResult{}, commandError(ErrorInvalidArgument, operation, "environment", command.EnvironmentID, err.Error())
+		}
+	} else if command.WorkingDirectory != "." {
+		return UpdateUserSessionWorkingDirectoryResult{}, commandError(ErrorInvalidArgument, operation, "working_directory", command.WorkingDirectory, "an unbound session can use only the root directory '.'")
+	}
+	if err := workspaceauthority.ValidateWorkingDirectory(command.WorkingDirectory); err != nil {
+		return UpdateUserSessionWorkingDirectoryResult{}, commandError(ErrorInvalidArgument, operation, "working_directory", command.WorkingDirectory, err.Error())
+	}
+	if command.ExpectedWorkingDirectoryVersion < 1 || command.ExpectedWorkingDirectoryVersion > maxSafeJSONInteger {
+		return UpdateUserSessionWorkingDirectoryResult{}, commandError(ErrorInvalidArgument, operation, "session_working_directory", command.SessionID, "expected_working_directory_version must be a positive JSON-safe integer")
+	}
+	return withStateTransaction(ctx, s, operation, func(transaction pgx.Tx) (UpdateUserSessionWorkingDirectoryResult, error) {
+		session, err := s.readUserSession(ctx, transaction, operation, command.WorkspaceID, command.SessionID, command.ActorID, true)
+		if err != nil {
+			return UpdateUserSessionWorkingDirectoryResult{}, err
+		}
+		role, err := s.readWorkspaceMemberRole(ctx, transaction, command.WorkspaceID, command.ActorID)
+		if err != nil {
+			return UpdateUserSessionWorkingDirectoryResult{}, err
+		}
+		if role == WorkspaceRoleViewer {
+			return UpdateUserSessionWorkingDirectoryResult{}, commandError(ErrorForbidden, operation, "workspace", command.WorkspaceID, "workspace role cannot change session working directory")
+		}
+		if session.Status != UserSessionStatusActive {
+			return UpdateUserSessionWorkingDirectoryResult{}, commandError(ErrorInvalidState, operation, "session", command.SessionID, "only an active session can change working directory")
+		}
+		if session.WorkingDirectoryVersion != command.ExpectedWorkingDirectoryVersion {
+			return UpdateUserSessionWorkingDirectoryResult{}, versionConflict(operation, "session_working_directory", command.SessionID, session.WorkingDirectoryVersion)
+		}
+		if session.WorkingDirectoryVersion >= maxSafeJSONInteger {
+			return UpdateUserSessionWorkingDirectoryResult{}, commandError(ErrorInvalidState, operation, "session_working_directory", command.SessionID, "working-directory version is exhausted")
+		}
+
+		if command.EnvironmentID != "" {
+			// The shared helper keeps the environment lookup in the same
+			// transaction and follows the executor -> environment lock order used
+			// by connection acquire/revoke paths.
+			environment, err := s.readWorkspaceBindingEnvironment(ctx, transaction, operation, command.WorkspaceID, command.EnvironmentID)
+			if err != nil {
+				return UpdateUserSessionWorkingDirectoryResult{}, err
+			}
+			if environment.Status == ExecutorEnvironmentStatusDisabled || environment.ExecutorStatus == ExecutorStatusRevoked {
+				return UpdateUserSessionWorkingDirectoryResult{}, commandError(ErrorInvalidState, operation, "environment", command.EnvironmentID, "environment is disabled or its executor is revoked")
+			}
+			if environment.Version < 1 || environment.Version > maxSafeJSONInteger {
+				return UpdateUserSessionWorkingDirectoryResult{}, databaseError(operation+" validate environment", errors.New("registered environment version is invalid"))
+			}
+		}
+
+		if session.WorkingEnvironmentID == command.EnvironmentID && session.WorkingDirectory == command.WorkingDirectory {
+			return UpdateUserSessionWorkingDirectoryResult{Session: session, Changed: false}, nil
+		}
+		var environment any
+		if command.EnvironmentID != "" {
+			environment = command.EnvironmentID
+		}
+		update := fmt.Sprintf(`
+UPDATE %s
+SET working_environment_id = $2::uuid,
+    working_directory = $3,
+    working_directory_version = working_directory_version + 1,
+    updated_at = pg_catalog.clock_timestamp()
+WHERE id = $1`, s.table("sessions"))
+		if _, err := transaction.Exec(ctx, update, command.SessionID, environment, command.WorkingDirectory); err != nil {
+			return UpdateUserSessionWorkingDirectoryResult{}, databaseError(operation+" update session working directory", err)
+		}
+		session, err = s.readUserSession(ctx, transaction, operation, command.WorkspaceID, command.SessionID, command.ActorID, false)
+		return UpdateUserSessionWorkingDirectoryResult{Session: session, Changed: true}, err
+	})
+}
+
 func (s *StateStore) UpdateUserSession(ctx context.Context, command UpdateUserSessionCommand) (UpdateUserSessionResult, error) {
 	const operation = "UpdateUserSession"
 	if err := validateUserSessionScope(command.WorkspaceID, command.SessionID, command.ActorID); err != nil {
@@ -313,6 +417,8 @@ func (s *StateStore) readUserSession(
 SELECT session.id::text, session.workspace_id::text, session.creator_id::text,
        session.title, session.status, session.active_run_id::text,
        session.version, session.permission_mode, session.permission_mode_version,
+       session.working_environment_id::text, session.working_directory,
+       session.working_directory_version,
        session.created_at, session.updated_at
 FROM %s AS session
 JOIN %s AS workspace
@@ -345,13 +451,18 @@ type userSessionRowScanner interface {
 func scanUserSession(row userSessionRowScanner) (UserSession, error) {
 	var session UserSession
 	var activeRunID *string
+	var workingEnvironmentID *string
 	err := row.Scan(
 		&session.ID, &session.WorkspaceID, &session.CreatorID, &session.Title,
 		&session.Status, &activeRunID, &session.Version, &session.PermissionMode,
-		&session.PermissionModeVersion, &session.CreatedAt, &session.UpdatedAt,
+		&session.PermissionModeVersion, &workingEnvironmentID, &session.WorkingDirectory,
+		&session.WorkingDirectoryVersion, &session.CreatedAt, &session.UpdatedAt,
 	)
 	if activeRunID != nil {
 		session.ActiveRunID = *activeRunID
+	}
+	if workingEnvironmentID != nil {
+		session.WorkingEnvironmentID = *workingEnvironmentID
 	}
 	return session, err
 }

@@ -54,10 +54,18 @@ func (handler *UserSessionHandler) Routes() http.Handler {
 	mux.HandleFunc(corecontract.UserSessionCollectionRoutePattern, handler.collection)
 	mux.HandleFunc(corecontract.UserSessionResourceRoutePattern, handler.resource)
 	mux.HandleFunc(corecontract.UserSessionPermissionModeRoutePattern, handler.permissionMode)
+	mux.HandleFunc(corecontract.UserSessionWorkingDirectoryRoutePattern, handler.workingDirectory)
 	mux.HandleFunc(corecontract.UserSessionTranscriptRoutePattern, handler.transcript)
 	mux.HandleFunc(corecontract.UserSessionTrajectoryRoutePattern, handler.trajectory)
 	mux.HandleFunc(corecontract.UserSessionArchiveRoutePattern, handler.archive)
 	return mux
+}
+
+// UserSessionWorkingDirectoryCommands is separate from the historical
+// interface so downstream embedders can roll out the workspace binding route
+// independently.
+type UserSessionWorkingDirectoryCommands interface {
+	UpdateWorkingDirectory(context.Context, string, string, string, corecontract.UpdateUserSessionWorkingDirectoryRequest) (corecontract.UpdateUserSessionWorkingDirectoryResponse, error)
 }
 
 func (handler *UserSessionHandler) permissionMode(response http.ResponseWriter, request *http.Request) {
@@ -85,6 +93,38 @@ func (handler *UserSessionHandler) permissionMode(response http.ResponseWriter, 
 		return
 	}
 	result, err := commands.UpdatePermissionMode(request.Context(), request.PathValue("workspaceId"), request.PathValue("sessionId"), actorID, input)
+	if err != nil {
+		handler.writeError(response, request, err)
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
+}
+
+func (handler *UserSessionHandler) workingDirectory(response http.ResponseWriter, request *http.Request) {
+	userSessionNoStore(response)
+	if request.Method != http.MethodPatch {
+		response.Header().Set("Allow", http.MethodPatch)
+		writePublicRunError(response, http.StatusMethodNotAllowed, "method_not_allowed", "session working directory requires PATCH", "")
+		return
+	}
+	if request.URL.RawQuery != "" {
+		writePublicRunError(response, http.StatusBadRequest, "invalid_argument", "session working directory does not accept query parameters", "")
+		return
+	}
+	commands, ok := handler.commands.(UserSessionWorkingDirectoryCommands)
+	if !ok {
+		writePublicRunError(response, http.StatusServiceUnavailable, "unavailable", "session working directory is unavailable", "")
+		return
+	}
+	actorID, ok := handler.authorize(response, request, "sessions.update")
+	if !ok {
+		return
+	}
+	var input corecontract.UpdateUserSessionWorkingDirectoryRequest
+	if !decodeUserSessionJSON(response, request, &input) {
+		return
+	}
+	result, err := commands.UpdateWorkingDirectory(request.Context(), request.PathValue("workspaceId"), request.PathValue("sessionId"), actorID, input)
 	if err != nil {
 		handler.writeError(response, request, err)
 		return
@@ -392,6 +432,15 @@ func (commands StateStoreUserSessionCommands) UpdatePermissionMode(ctx context.C
 	return corecontract.UpdateUserSessionPermissionModeResponse{Session: contractUserSession(result.Session), Changed: result.Changed}, err
 }
 
+func (commands StateStoreUserSessionCommands) UpdateWorkingDirectory(ctx context.Context, workspaceID, sessionID, actorID string, input corecontract.UpdateUserSessionWorkingDirectoryRequest) (corecontract.UpdateUserSessionWorkingDirectoryResponse, error) {
+	result, err := commands.Store.UpdateUserSessionWorkingDirectory(ctx, coredb.UpdateUserSessionWorkingDirectoryCommand{
+		WorkspaceID: workspaceID, SessionID: sessionID, ActorID: actorID,
+		EnvironmentID: input.EnvironmentID, WorkingDirectory: input.WorkingDirectory,
+		ExpectedWorkingDirectoryVersion: input.ExpectedWorkingDirectoryVersion,
+	})
+	return corecontract.UpdateUserSessionWorkingDirectoryResponse{Session: contractUserSession(result.Session), Changed: result.Changed}, err
+}
+
 func (commands StateStoreUserSessionCommands) CreateSession(ctx context.Context, workspaceID, actorID string, input corecontract.CreateUserSessionRequest) (corecontract.CreateUserSessionResponse, error) {
 	result, err := commands.Store.CreateUserSession(ctx, coredb.CreateUserSessionCommand{
 		WorkspaceID: workspaceID, SessionID: input.SessionID, ActorID: actorID, Title: input.Title,
@@ -419,8 +468,12 @@ func contractUserSession(session coredb.UserSession) corecontract.UserSessionSta
 		SessionID: session.ID, WorkspaceID: session.WorkspaceID, Title: session.Title,
 		Status: session.Status, ActiveRunID: session.ActiveRunID, Version: session.Version,
 		PermissionMode: string(session.PermissionMode), PermissionModeVersion: session.PermissionModeVersion,
-		CreatedAt: session.CreatedAt, UpdatedAt: session.UpdatedAt,
+		EnvironmentID: session.WorkingEnvironmentID, WorkingDirectory: session.WorkingDirectory,
+		WorkingDirectoryVersion: session.WorkingDirectoryVersion,
+		CreatedAt:               session.CreatedAt, UpdatedAt: session.UpdatedAt,
 	}
 }
 
 var _ UserSessionCommands = StateStoreUserSessionCommands{}
+var _ UserSessionPermissionModeCommands = StateStoreUserSessionCommands{}
+var _ UserSessionWorkingDirectoryCommands = StateStoreUserSessionCommands{}

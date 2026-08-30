@@ -12,7 +12,7 @@ ALTER TABLE sessions
 		AND working_directory !~ '[[:cntrl:]]'
 		AND pg_catalog.strpos(working_directory, '//') = 0
 		AND (working_directory = '.' OR pg_catalog.right(working_directory, 1) <> '/')
-		AND working_directory !~ E'(^|/)(\\.|\\.\\.)(/|$)'
+		AND (working_directory = '.' OR working_directory !~ E'(^|/)(\\.|\\.\\.)(/|$)')
     ),
     ADD CONSTRAINT sessions_working_directory_version_positive CHECK (
         working_directory_version BETWEEN 1 AND 9007199254740991
@@ -52,7 +52,7 @@ ALTER TABLE run_launch_states
 			AND workspace_working_directory !~ '[[:cntrl:]]'
 			AND pg_catalog.strpos(workspace_working_directory, '//') = 0
 			AND (workspace_working_directory = '.' OR pg_catalog.right(workspace_working_directory, 1) <> '/')
-			AND workspace_working_directory !~ E'(^|/)(\\.|\\.\\.)(/|$)'
+			AND (workspace_working_directory = '.' OR workspace_working_directory !~ E'(^|/)(\\.|\\.\\.)(/|$)')
         )
     ),
     ADD CONSTRAINT run_launch_states_workspace_root_sha256_exact CHECK (

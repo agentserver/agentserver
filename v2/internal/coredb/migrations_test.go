@@ -168,6 +168,8 @@ func TestEmbeddedMigrations(t *testing.T) {
 		"working_directory_version",
 		"run_launch_states_workspace_binding_pair",
 		"workspace_root_sha256",
+		"(working_directory = '.' OR working_directory !~",
+		"(workspace_working_directory = '.' OR workspace_working_directory !~",
 	} {
 		if !strings.Contains(migrations[31].SQL, required) {
 			t.Fatalf("workspace binding migration is missing %q", required)

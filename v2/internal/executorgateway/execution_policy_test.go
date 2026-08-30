@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
 
 func testAllowPolicyResolver(t *testing.T) ExecutionPolicyResolver {
@@ -67,6 +69,69 @@ func TestStaticExecutionPolicyResolverIsExplicitAndFailClosed(t *testing.T) {
 	} {
 		if _, err := NewStaticExecutionPolicyResolver("policy-v1", decisions); err == nil {
 			t.Fatalf("invalid static policy was accepted: %#v", decisions)
+		}
+	}
+}
+
+func TestPermissionModeExecutionPolicyResolverCouplesCodexAndExecutorPolicy(t *testing.T) {
+	resolver, err := NewPermissionModeExecutionPolicyResolver("execution-policy-v2", map[string]string{
+		"shell": PolicyDecisionAsk, "read_file": PolicyDecisionAllow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name     string
+		tool     string
+		mode     runmanifest.CodexPermissionMode
+		version  int64
+		decision string
+	}{
+		{name: "legacy shell", tool: "shell", decision: PolicyDecisionAsk},
+		{name: "read-only shell", tool: "shell", mode: runmanifest.CodexPermissionModeReadOnly, version: 1, decision: PolicyDecisionAsk},
+		{name: "auto shell", tool: "shell", mode: runmanifest.CodexPermissionModeAuto, version: 2, decision: PolicyDecisionAllow},
+		{name: "full-access shell", tool: "shell", mode: runmanifest.CodexPermissionModeFullAccess, version: 3, decision: PolicyDecisionAllow},
+		{name: "read-only file", tool: "read_file", mode: runmanifest.CodexPermissionModeReadOnly, version: 1, decision: PolicyDecisionAllow},
+		{name: "auto file", tool: "read_file", mode: runmanifest.CodexPermissionModeAuto, version: 2, decision: PolicyDecisionAllow},
+		{name: "full-access file", tool: "read_file", mode: runmanifest.CodexPermissionModeFullAccess, version: 3, decision: PolicyDecisionAllow},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resolution, err := resolver.ResolveExecutionPolicy(t.Context(), ExecutionPolicyInput{
+				ToolName: test.tool,
+				Principal: ExecutorMCPPrincipal{
+					PermissionMode: string(test.mode), PermissionModeVersion: test.version,
+				},
+			})
+			if err != nil || resolution.Version != "execution-policy-v2" || resolution.Decision != test.decision {
+				t.Fatalf("ResolveExecutionPolicy(%s/%s) = %+v, %v", test.tool, test.mode, resolution, err)
+			}
+		})
+	}
+}
+
+func TestPermissionModeExecutionPolicyResolverPreservesDeploymentDenyAndRejectsInvalidAuthority(t *testing.T) {
+	resolver, err := NewPermissionModeExecutionPolicyResolver("execution-policy-v2", map[string]string{
+		"shell": PolicyDecisionDeny,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolution, err := resolver.ResolveExecutionPolicy(t.Context(), ExecutionPolicyInput{
+		ToolName: "shell",
+		Principal: ExecutorMCPPrincipal{
+			PermissionMode: string(runmanifest.CodexPermissionModeFullAccess), PermissionModeVersion: 1,
+		},
+	})
+	if err != nil || resolution.Decision != PolicyDecisionDeny {
+		t.Fatalf("full-access deployment deny = %+v, %v", resolution, err)
+	}
+	for _, principal := range []ExecutorMCPPrincipal{
+		{PermissionMode: "future-mode", PermissionModeVersion: 1},
+		{PermissionMode: string(runmanifest.CodexPermissionModeFullAccess)},
+		{PermissionMode: string(runmanifest.CodexPermissionModeFullAccess), PermissionModeVersion: 1 << 53},
+	} {
+		if _, err := resolver.ResolveExecutionPolicy(t.Context(), ExecutionPolicyInput{ToolName: "shell", Principal: principal}); err == nil {
+			t.Fatalf("invalid permission authority was accepted: %+v", principal)
 		}
 	}
 }

@@ -264,7 +264,7 @@ conformance test 是 Go subprocess test，不依赖 v1 gateway：
 | A02 | experimental gating | initialize 开启 experimentalApi 后 environments: [] 被接受；未开启时明确失败 |
 | A03 | dynamic-tool-only surface | 无Codex MCP配置；fake model捕获的tools精确等于冻结`dynamicTools`；builtin、未发布tool和通用MCP resource handler不可见/不可dispatch，真实批准call成为`item/tool/call` |
 | A04 | Codex MCP deny-all | system requirements固定`mcp_servers = {}`；direct executor、user和trusted-project MCP均零请求，dynamic tool surface不受影响 |
-| A05 | 无双重审批 | Codex preset mode 只产生其自身的 approval/reviewer 行为；executor 产品审批仍只在 worker MCP client 侧产生批准 dynamic callback，不经过 app-server |
+| A05 | 联动且无双重审批 | 同一签名 Codex preset mode 同时驱动 executor policy：`read-only` 保留 shell 产品 ask，`auto`/`full-access` 对 bounded executor tool allow，显式 deployment deny 优先；只有最终仍为 ask 时才由 worker MCP client 产生 approval dynamic callback，不经过 app-server |
 | A06 | worker MCP elicitation | reference/real worker调用fake gateway MCP；`elicitation/create`经pool/core决定并回到gateway，覆盖accept/decline/cancel、主动TTL、nonce/generation和断线，不经过app-server |
 | A07 | typed interrupt cleanup | 单reader/writer loop中`turn/interrupt`产生terminal interrupted；未回复dynamic call以所属turn terminal清理并取消MCP，正常call以response写入清理；有界event overflow fail closed，两者都不等待`serverRequest/resolved` |
 | A08 | graceful shutdown | turn terminal、typed callback cleanup及execution/process收口后关闭stdin，child有界正常退出；rollout、SQLite/WAL状态稳定，无固定sleep |
@@ -1067,7 +1067,7 @@ browser-gateway运行配置为：public listener使用`AGENTSERVER_V2_BROWSER_GA
 7. core到期CAS为`expired`后主动下发，worker以`decline`回复pending MCP elicitation；若无法确认或送达，则取消MCP并在cleanup grace内`turn/interrupt`。
 8. 显式cancel、worker control/MCP断线和elicitation异常清理同样cancel MCP、interrupt并按typed outstanding规则收口；浏览器断线本身不取消。
 
-app-server 默认使用签名 run manifest 的 Codex `permissionMode=read-only`（`on-request` + `auto_review` + `read-only`）；session 可通过独立 CAS API 为下一轮选择 `auto`（`on-request` + `auto_review` + `workspace-write`）或 `full-access`（`never` + `danger-full-access`）。Core 创建 run 时原子冻结 mode/version，所以 active run 不会被后续切换改变；deployment profile 仅是缺少显式 Core authority 时的 fallback。旧 manifest 缺少字段时仍使用历史 `never` + `read-only` 投影。这些 mode 只控制 Codex 自身权限，executor 产品审批仍由 worker MCP client 与 Core/gateway 的 `elicitation/create` 链路负责。gateway active-execution deadline在pending approval期间由我们自己的状态机暂停；MCP transport timeout不能充当approval expiry timer。
+app-server 默认使用签名 run manifest 的 Codex `permissionMode=read-only`（`on-request` + `auto_review` + `read-only`）；session 可通过独立 CAS API 为下一轮选择 `auto`（`on-request` + `auto_review` + `workspace-write`）或 `full-access`（`never` + `danger-full-access`）。Core 创建 run 时原子冻结 mode/version，所以 active run 不会被后续切换改变；executor-gateway 从同一签名 capability 读取该 mode，并将 `read-only` 的 shell policy 保持为 `ask`、将 `auto`/`full-access` 的 bounded executor tool policy 提升为 `allow`，显式 deployment `deny` 仍优先。这样一个用户 mode 同时作用于 Codex 与 AgentServer，只有最终 policy 仍为 ask 时才进入 worker MCP approval 链路；backend sandbox、网络、capability 和 Core live-authority 校验始终执行。deployment profile 仅是缺少显式 Core authority 时的 fallback。旧 manifest 缺少字段时仍使用历史 `never` + `read-only` 投影。gateway active-execution deadline在pending approval期间由我们自己的状态机暂停；MCP transport timeout不能充当approval expiry timer。
 
 Hydra login/consent bridge和reference Web的Code + PKCE入口现已在executor+harness主链稳定后接入；后续产品Web UI仍复用同一browser-gateway协议边界，不引入codex app-server直连。
 

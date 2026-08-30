@@ -314,7 +314,7 @@ func serveGateway(ctx context.Context, getenv func(string) string, stdout io.Wri
 	if err != nil {
 		return err
 	}
-	policyResolver, err := executorgateway.NewStaticExecutionPolicyResolver(policyVersion, map[string]string{
+	policyResolver, err := executorgateway.NewPermissionModeExecutionPolicyResolver(policyVersion, map[string]string{
 		"shell": shellPolicyDecision, "read_file": readPolicyDecision,
 	})
 	if err != nil {

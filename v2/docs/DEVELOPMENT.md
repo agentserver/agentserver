@@ -127,7 +127,7 @@ Codex app-server v2 本身没有一个名为 `permissionMode` 的 wire 字段，
 | `auto` | `approvalPolicy: on-request`、`approvalsReviewer: auto_review`、`sandbox: workspace-write` |
 | `full-access` | `approvalPolicy: never`、`sandbox: danger-full-access` |
 
-`auto_review` 是 v2 无交互 app-server 的 reviewer 选择；它不改变 Codex preset 的 approval/sandbox 语义。mode 只控制 Codex 自身权限，不会替代 executor-gateway/Core 的产品审批链路。旧 run launch row 和旧 signed manifest 如果没有 permission authority，worker 继续使用历史的 `approvalPolicy: never` + `read-only` 严格投影；deployment fallback 只服务于没有显式 Core authority 的开发或兼容 launch source。
+`auto_review` 是 v2 无交互 app-server 的 reviewer 选择；它不改变 Codex preset 的 approval/sandbox 语义。相同的冻结 mode 也会传给 executor-gateway：`read-only` 保留 shell 的产品审批，`auto` 和 `full-access` 对受 backend sandbox/capability 约束的 executor 工具自动放行；deployment 中显式的 `deny` 仍优先。这样 Codex 与 AgentServer 不会对同一个 shell 操作各自再弹一层不一致的询问。文件系统、网络、身份和 Core live-authority 校验始终保留。旧 run launch row 和旧 signed manifest 如果没有 permission authority，worker 继续使用历史的 `approvalPolicy: never` + `read-only` 严格投影，gateway 也使用部署基线；deployment fallback 只服务于没有显式 Core authority 的开发或兼容 launch source。
 
 其中 `auto` 的无交互投影等价于 Codex CLI 的 `--approve-for-me`，`full-access` 对应 Codex 的 full-access / `--dangerously-bypass-approvals-and-sandbox` 组合；配置面仍只接受上表的 canonical preset ID。
 

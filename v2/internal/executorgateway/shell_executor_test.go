@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/executorgateway/agentxconn"
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
 
 func TestShellExecutorCompletesSuccessfulProcessAndSkipsTimeout(t *testing.T) {
@@ -39,6 +40,39 @@ func TestShellExecutorCompletesSuccessfulProcessAndSkipsTimeout(t *testing.T) {
 		t.Fatalf("core terminal states = operations %v execution %q", got, authority.executionStatus())
 	}
 	authority.assertMonotonicRecords(t)
+}
+
+func TestShellExecutorFullAccessSkipsProductApproval(t *testing.T) {
+	authority := newFakeShellAuthority()
+	dispatcher := &fakeShellDispatcher{start: func(request ProcessDispatchRequest) (*ProcessExchange, error) {
+		exchange := testShellStartExchange(request, 8)
+		exchange.response <- shellStartResponse(request.RPC, testProcessID)
+		exchange.events <- json.RawMessage(`{"method":"process/exited","params":{"processId":"80000000-0000-4000-8000-000000000008","seq":1,"exitCode":0,"sandboxDenied":false}}`)
+		exchange.events <- json.RawMessage(`{"method":"process/closed","params":{"processId":"80000000-0000-4000-8000-000000000008","seq":2}}`)
+		closeShellStartExchange(exchange)
+		return exchange, nil
+	}}
+	executor := newTestShellExecutor(t, authority, dispatcher)
+	policy, err := NewPermissionModeExecutionPolicyResolver("execution-policy-v2", map[string]string{
+		"shell": PolicyDecisionAsk, "read_file": PolicyDecisionAllow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor.config.PolicyResolver = policy
+	request := testShellExecuteRequest(10_000)
+	request.Principal.PermissionMode = string(runmanifest.CodexPermissionModeFullAccess)
+	request.Principal.PermissionModeVersion = 1
+	result, err := executor.Execute(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "succeeded" || authority.executionStatus() != "succeeded" || dispatcher.count() != 1 {
+		t.Fatalf("full-access shell result=%+v execution=%q dispatches=%d", result, authority.executionStatus(), dispatcher.count())
+	}
+	if got := authority.operationStatuses(); got[0] != "succeeded" || got[1] != "skipped" {
+		t.Fatalf("full-access operation states = %v", got)
+	}
 }
 
 func TestShellExecutorTimeoutBeginsTerminateAndWaitsForRealTerminal(t *testing.T) {

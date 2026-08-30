@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/agentserver/agentserver/v2/internal/executorgateway/mcpcontract"
+	"github.com/agentserver/agentserver/v2/internal/runmanifest"
 )
 
 const (
@@ -42,6 +45,34 @@ type StaticExecutionPolicyResolver struct {
 	decisions map[string]string
 }
 
+// PermissionModeExecutionPolicyResolver couples the executor product policy
+// to the same per-run Codex permission authority carried by the signed run
+// capability.  The deployment decision remains the fail-closed baseline:
+// explicit deny always wins, read-only keeps the configured decision, and the
+// auto/full-access presets may promote an ask for the bounded executor tools
+// to allow.  The filesystem, network, capability, and Core live-authority
+// checks still run for every call; this resolver only decides whether the
+// separate human approval round-trip is needed.
+type PermissionModeExecutionPolicyResolver struct {
+	version   string
+	decisions map[string]string
+}
+
+// NewPermissionModeExecutionPolicyResolver builds the production resolver
+// from an explicit deployment baseline.  Keeping the baseline in the locked
+// production document preserves an operator kill switch (deny) while making
+// session permission-mode changes effective in both Codex and AgentServer.
+func NewPermissionModeExecutionPolicyResolver(version string, decisions map[string]string) (*PermissionModeExecutionPolicyResolver, error) {
+	static, err := NewStaticExecutionPolicyResolver(version, decisions)
+	if err != nil {
+		return nil, err
+	}
+	return &PermissionModeExecutionPolicyResolver{
+		version:   static.version,
+		decisions: cloneExecutionPolicyDecisions(static.decisions),
+	}, nil
+}
+
 func NewStaticExecutionPolicyResolver(version string, decisions map[string]string) (*StaticExecutionPolicyResolver, error) {
 	if err := validateExecutionPolicyResolution(ExecutionPolicyResolution{Version: version, Decision: PolicyDecisionDeny}); err != nil {
 		return nil, fmt.Errorf("static execution policy version: %w", err)
@@ -63,6 +94,14 @@ func NewStaticExecutionPolicyResolver(version string, decisions map[string]strin
 	return &StaticExecutionPolicyResolver{version: version, decisions: cloned}, nil
 }
 
+func cloneExecutionPolicyDecisions(source map[string]string) map[string]string {
+	cloned := make(map[string]string, len(source))
+	for tool, decision := range source {
+		cloned[tool] = decision
+	}
+	return cloned
+}
+
 func (resolver *StaticExecutionPolicyResolver) ResolveExecutionPolicy(ctx context.Context, input ExecutionPolicyInput) (ExecutionPolicyResolution, error) {
 	if ctx == nil {
 		return ExecutionPolicyResolution{}, errors.New("execution policy context is required")
@@ -82,6 +121,50 @@ func (resolver *StaticExecutionPolicyResolver) ResolveExecutionPolicy(ctx contex
 		return ExecutionPolicyResolution{}, err
 	}
 	return result, nil
+}
+
+func (resolver *PermissionModeExecutionPolicyResolver) ResolveExecutionPolicy(ctx context.Context, input ExecutionPolicyInput) (ExecutionPolicyResolution, error) {
+	if ctx == nil {
+		return ExecutionPolicyResolution{}, errors.New("execution policy context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return ExecutionPolicyResolution{}, err
+	}
+	if resolver == nil {
+		return ExecutionPolicyResolution{}, errors.New("permission-mode execution policy resolver is required")
+	}
+	decision, found := resolver.decisions[input.ToolName]
+	if !found {
+		return ExecutionPolicyResolution{}, fmt.Errorf("tool %q has no explicit execution policy", input.ToolName)
+	}
+	if input.Principal.PermissionMode != "" {
+		mode, err := runmanifest.CodexPermissionMode(input.Principal.PermissionMode).Effective()
+		if err != nil {
+			return ExecutionPolicyResolution{}, fmt.Errorf("permission mode: %w", err)
+		}
+		if input.Principal.PermissionModeVersion < 1 || input.Principal.PermissionModeVersion > 1<<53-1 {
+			return ExecutionPolicyResolution{}, errors.New("explicit permission mode requires a positive JSON-safe version")
+		}
+		decision = permissionModeExecutionDecision(input.ToolName, mode, decision)
+	}
+	result := ExecutionPolicyResolution{Version: resolver.version, Decision: decision}
+	if err := validateExecutionPolicyResolution(result); err != nil {
+		return ExecutionPolicyResolution{}, err
+	}
+	return result, nil
+}
+
+func permissionModeExecutionDecision(tool string, mode runmanifest.CodexPermissionMode, baseline string) string {
+	if baseline == PolicyDecisionDeny || baseline == PolicyDecisionAllow {
+		return baseline
+	}
+	if baseline == PolicyDecisionAsk && (mode == runmanifest.CodexPermissionModeAuto || mode == runmanifest.CodexPermissionModeFullAccess) {
+		switch tool {
+		case mcpcontract.ToolShell, mcpcontract.ToolReadFile:
+			return PolicyDecisionAllow
+		}
+	}
+	return baseline
 }
 
 func validateExecutionPolicyResolution(resolution ExecutionPolicyResolution) error {

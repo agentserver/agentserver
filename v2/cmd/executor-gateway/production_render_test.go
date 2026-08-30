@@ -60,7 +60,7 @@ func TestProductionRendererExecutorEnvironmentMatchesCommandContract(t *testing.
 	if err := validateGatewayExecutorID(gatewayExecutorIDEnvironment, environment.Get(gatewayExecutorIDEnvironment)); err != nil {
 		t.Fatalf("executor-gateway rejected rendered executor ID: %v", err)
 	}
-	if _, err := executorgateway.NewStaticExecutionPolicyResolver(
+	if _, err := executorgateway.NewPermissionModeExecutionPolicyResolver(
 		environment.Get(gatewayExecutionPolicyVersionEnvironment),
 		map[string]string{
 			"shell":     environment.Get(gatewayShellPolicyDecisionEnvironment),

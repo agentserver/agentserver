@@ -129,10 +129,12 @@ func TestExecutorMCPAcquiresManagedSandboxOnlyOnFirstExecutorToolCall(t *testing
 		sequence++
 		return fmtMCPTestSessionID(sequence), nil
 	}
+	principal := testExecutorMCPPrincipal("lazy-managed-capability")
+	principal.ManagedSandbox = &ExecutorManagedSandboxAuthority{
+		SettingVersion: 1, Region: "i18n-tt", EnvironmentID: "61000000-0000-0000-0000-000000000006",
+	}
 	handler, err := NewExecutorMCPHandler(
-		testExecutorMCPAuthenticator{principals: map[string]ExecutorMCPPrincipal{
-			testMCPBearerA: testExecutorMCPPrincipal("lazy-managed-capability"),
-		}},
+		testExecutorMCPAuthenticator{principals: map[string]ExecutorMCPPrincipal{testMCPBearerA: principal}},
 		resolver,
 		config,
 	)

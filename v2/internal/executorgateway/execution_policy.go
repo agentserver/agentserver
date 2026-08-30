@@ -48,11 +48,12 @@ type StaticExecutionPolicyResolver struct {
 // PermissionModeExecutionPolicyResolver couples the executor product policy
 // to the same per-run Codex permission authority carried by the signed run
 // capability.  The deployment decision remains the fail-closed baseline:
-// explicit deny always wins, read-only keeps the configured decision, and the
-// auto/full-access presets may promote an ask for the bounded executor tools
-// to allow.  The filesystem, network, capability, and Core live-authority
-// checks still run for every call; this resolver only decides whether the
-// separate human approval round-trip is needed.
+// explicit deny always wins, read-only never inherits an allow for the
+// mutation-capable shell tool, and the auto/full-access presets may remove the
+// redundant approval for bounded executor tools.  The filesystem, network,
+// capability, and Core live-authority checks still run for every call; this
+// resolver only decides whether the separate human approval round-trip is
+// needed.
 type PermissionModeExecutionPolicyResolver struct {
 	version   string
 	decisions map[string]string
@@ -155,14 +156,31 @@ func (resolver *PermissionModeExecutionPolicyResolver) ResolveExecutionPolicy(ct
 }
 
 func permissionModeExecutionDecision(tool string, mode runmanifest.CodexPermissionMode, baseline string) string {
-	if baseline == PolicyDecisionDeny || baseline == PolicyDecisionAllow {
-		return baseline
+	if baseline == PolicyDecisionDeny {
+		return PolicyDecisionDeny
 	}
-	if baseline == PolicyDecisionAsk && (mode == runmanifest.CodexPermissionModeAuto || mode == runmanifest.CodexPermissionModeFullAccess) {
-		switch tool {
-		case mcpcontract.ToolShell, mcpcontract.ToolReadFile:
+	switch tool {
+	case mcpcontract.ToolShell:
+		// Shell is the mutation-capable executor tool.  A read-only session
+		// must never inherit an operator-level allow, while auto/full-access
+		// can remove the redundant product approval when the deployment did
+		// not explicitly deny the tool.  The backend still enforces the
+		// corresponding Codex/AgentX filesystem and network profile.
+		if mode == runmanifest.CodexPermissionModeReadOnly {
+			return PolicyDecisionAsk
+		}
+		if mode == runmanifest.CodexPermissionModeAuto || mode == runmanifest.CodexPermissionModeFullAccess {
 			return PolicyDecisionAllow
 		}
+	case mcpcontract.ToolReadFile:
+		// Reading a bounded file does not need a stronger sandbox profile.  A
+		// deployment-level ask is still honored for read-only/legacy calls,
+		// while auto/full-access removes that redundant prompt just like the
+		// shell path.
+		if baseline == PolicyDecisionAsk && (mode == runmanifest.CodexPermissionModeAuto || mode == runmanifest.CodexPermissionModeFullAccess) {
+			return PolicyDecisionAllow
+		}
+		return baseline
 	}
 	return baseline
 }

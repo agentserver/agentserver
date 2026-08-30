@@ -135,3 +135,39 @@ func TestPermissionModeExecutionPolicyResolverPreservesDeploymentDenyAndRejectsI
 		}
 	}
 }
+
+func TestPermissionModeExecutionPolicyResolverDoesNotLetReadOnlyInheritShellAllow(t *testing.T) {
+	resolver, err := NewPermissionModeExecutionPolicyResolver("execution-policy-v2", map[string]string{
+		"shell": PolicyDecisionAllow, "read_file": PolicyDecisionAsk,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readOnly, err := resolver.ResolveExecutionPolicy(t.Context(), ExecutionPolicyInput{
+		ToolName: "shell",
+		Principal: ExecutorMCPPrincipal{
+			PermissionMode: string(runmanifest.CodexPermissionModeReadOnly), PermissionModeVersion: 1,
+		},
+	})
+	if err != nil || readOnly.Decision != PolicyDecisionAsk {
+		t.Fatalf("read-only shell inherited deployment allow = %+v, %v", readOnly, err)
+	}
+	full, err := resolver.ResolveExecutionPolicy(t.Context(), ExecutionPolicyInput{
+		ToolName: "read_file",
+		Principal: ExecutorMCPPrincipal{
+			PermissionMode: string(runmanifest.CodexPermissionModeFullAccess), PermissionModeVersion: 1,
+		},
+	})
+	if err != nil || full.Decision != PolicyDecisionAllow {
+		t.Fatalf("full-access bounded read_file did not allow = %+v, %v", full, err)
+	}
+	readOnlyFile, err := resolver.ResolveExecutionPolicy(t.Context(), ExecutionPolicyInput{
+		ToolName: "read_file",
+		Principal: ExecutorMCPPrincipal{
+			PermissionMode: string(runmanifest.CodexPermissionModeReadOnly), PermissionModeVersion: 1,
+		},
+	})
+	if err != nil || readOnlyFile.Decision != PolicyDecisionAsk {
+		t.Fatalf("read-only deployment ask for read_file was not preserved = %+v, %v", readOnlyFile, err)
+	}
+}

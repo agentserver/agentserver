@@ -62,6 +62,9 @@ func TestProductionWorkflowPublishesAndLocksManagedSandbox(t *testing.T) {
 		`--manifest="${RUNNER_TEMP}/agentserver-v2-image-evidence/managed-sandbox-image-manifest.json"`,
 		`--archive="${RUNNER_TEMP}/agentserver-v2-image-evidence/managed-sandbox-image.oci.tar"`,
 		"managed-release-verification.txt",
+		"inputs.release_mode == 'bootstrap'",
+		"agentserver-deploy prepare-policy-bootstrap",
+		"bootstrap publication requires active or policy-bootstrap input",
 	} {
 		if !strings.Contains(string(workflow), required) {
 			t.Fatalf("production workflow is missing managed release contract %q", required)

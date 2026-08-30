@@ -9,12 +9,13 @@ on:
   workflow_dispatch:
     inputs:
       release_mode:
-        description: Developer service-only release reuses the active harness, managed sandbox, Hydra, and TAE evidence
+        description: Full artifact build, fail-closed bootstrap transition, or developer service-only release
         required: false
         default: service_only
         type: choice
         options:
           - full
+          - bootstrap
           - service_only
       active_chart_only:
         description: Publish the image-locked active or fail-closed bootstrap Chart without rebuilding images
@@ -61,7 +62,7 @@ env:
 
 jobs:
   publish-linux-amd64:
-    if: ${{ (github.event_name == 'workflow_dispatch' && !inputs.active_chart_only && inputs.release_mode == 'full') || (github.event_name == 'push' && contains(github.event.head_commit.message, '[full release]')) }}
+    if: ${{ (github.event_name == 'workflow_dispatch' && !inputs.active_chart_only && (inputs.release_mode == 'full' || inputs.release_mode == 'bootstrap')) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[full release]')) }}
     runs-on: k8s-sg
     timeout-minutes: 90
     steps:
@@ -361,6 +362,7 @@ jobs:
           MANAGED_SANDBOX_DIGEST: ${{ steps.images.outputs.managed_sandbox_digest }}
           PUBLISHED_HYDRA_DIGEST: ${{ steps.images.outputs.hydra_digest }}
           SG_PRODUCTION_CONFIG_B64: ${{ secrets.V2_SG_PRODUCTION_CONFIG_B64 }}
+          RELEASE_MODE: ${{ inputs.release_mode }}
         run: |
           set -euo pipefail
           release_dir="${RUNNER_TEMP}/agentserver-v2-release"
@@ -383,8 +385,26 @@ jobs:
           chmod 0600 "${production_template}"
           go -C v2 run ./cmd/agentserver-deploy validate \
             --config="${production_template}"
+          release_template="${production_template}"
+          if [ "${RELEASE_MODE:-}" = 'bootstrap' ]; then
+            current_stage=$(jq -er '.managedExecutor.stage' "${production_template}")
+            case "${current_stage}" in
+              active)
+                release_template="${release_dir}/policy-bootstrap-template.json"
+                go -C v2 run ./cmd/agentserver-deploy prepare-policy-bootstrap \
+                  --config="${production_template}" \
+                  --output="${release_template}"
+                ;;
+              policy-bootstrap)
+                ;;
+              *)
+                echo "bootstrap publication requires active or policy-bootstrap input, got ${current_stage}" >&2
+                exit 1
+                ;;
+            esac
+          fi
           go -C v2 run ./cmd/agentserver-deploy lock-release \
-            --config="${production_template}" \
+            --config="${release_template}" \
             --output="${release_dir}/production.json" \
             --service-image="registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-service@${SERVICE_DIGEST}" \
             --harness-image="registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-harness@${HARNESS_DIGEST}" \

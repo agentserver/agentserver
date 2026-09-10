@@ -411,8 +411,21 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 			t.Fatalf("Hydra user client setup is missing scope %q", scope)
 		}
 	}
-	if strings.Contains(setupScript, "client-secret") || strings.Contains(setupScript, "refresh_token") {
-		t.Fatal("Hydra browser client setup contains a client secret or refresh-token grant")
+	if strings.Contains(setupScript, "client-secret") {
+		t.Fatal("public OAuth client setup contains a client secret")
+	}
+	var nativeLine string
+	for _, line := range strings.Split(setupScript, "\n") {
+		if strings.HasPrefix(line, "reconcile_client 'agentserver-botmux'") {
+			nativeLine = line
+		} else if strings.HasPrefix(line, "reconcile_client '") && strings.Contains(line, "refresh_token") {
+			t.Fatal("native refresh permission leaked to a web client")
+		}
+	}
+	for _, required := range []string{"--grant-type authorization_code", "--grant-type refresh_token", "--scope offline_access", "--redirect-uri 'http://127.0.0.1:39647/oauth/callback'", "--audience agentserver-browser-api"} {
+		if !strings.Contains(nativeLine, required) {
+			t.Fatalf("native client missing %s", required)
+		}
 	}
 
 	pool := findResource(t, runtime, "Deployment", harnessComponent)

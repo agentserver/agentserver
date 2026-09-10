@@ -296,3 +296,25 @@ Phase 1 可以安全地采用较粗粒度撤销：撤销该 subject 的全部 `a
 6. Browser token 不能访问第二个 workspace，Platform token 不能调用 Browser endpoint，反之亦然；
 7. Hydra revoke live test 证明权限降低后 introspection 立即 inactive；
 8. 每一个用户 API endpoint 都有 permission matrix contract test，新增 endpoint 未登记权限时构建失败。
+
+
+## Botmux native OAuth client
+
+`agentserver-botmux` is a public Authorization Code + PKCE client under Browser
+workspace authority. It uses the same unique `agentserver-browser-api` audience
+and one `urn:agentserver:workspace:<uuid>` resource. Its only registered callback
+is `http://127.0.0.1:39647/oauth/callback`; the login bridge requires `prompt=consent`.
+Public-client PKCE enforcement remains enabled.
+
+Only this native client adds `offline_access` and the `refresh_token` grant.
+`offline_access` controls refresh issuance; it is never inserted into a workspace
+permission grant or allowed to authorize a business operation. Existing Platform
+and Browser web clients retain their original scopes, callbacks and grant types.
+Core must explicitly opt into the native client under the exact Browser authority
+profile; other clients, audiences, mixed workspaces and expanded permission grants
+remain rejected. Refresh-token rotation has zero grace, so clients must serialize
+refreshes across processes and persist the replacement token atomically.
+
+The production client-setup Job reconciles all three fixed public clients. Deploy
+Core support and the generated Chart together through the normal service-only
+release / Pulumi flow before running `botmux agentserver login`.

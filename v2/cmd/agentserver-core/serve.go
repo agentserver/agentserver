@@ -469,7 +469,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 	}
 	browserUserAuthorizer, err := coreserver.NewIntrospectedUserAuthorizer(coreserver.IntrospectedUserAuthorizerConfig{
 		Introspector: hydraIntrospector, ExpectedIssuer: hydraIssuer,
-		ExpectedClientID: corecontract.BrowserOAuthClientID, ExpectedAudience: corecontract.BrowserOAuthAudience,
+		AcceptBotmuxClient: true, ExpectedClientID: corecontract.BrowserOAuthClientID, ExpectedAudience: corecontract.BrowserOAuthAudience,
 		ExpectedAuthority: corecontract.UserOAuthBrowserAuthority, AllowedScopes: corecontract.BrowserOAuthScopes(),
 		ActionPermissions: corecontract.BrowserOAuthActionPermissions(),
 	})
@@ -701,6 +701,7 @@ func serveCore(ctx context.Context, getenv func(string) string, stdout, stderr i
 		OAuthProfiles: []coreserver.LoginBridgeOAuthProfile{
 			{Authority: corecontract.UserOAuthPlatformAuthority, ClientID: hydraPlatformClientID, Scopes: corecontract.PlatformOAuthScopes(), Audience: []string{corecontract.PlatformOAuthAudience}},
 			{Authority: corecontract.UserOAuthBrowserAuthority, ClientID: hydraBrowserClientID, Scopes: corecontract.BrowserOAuthScopes(), Audience: []string{corecontract.BrowserOAuthAudience}},
+			{Authority: corecontract.UserOAuthBrowserAuthority, ClientID: corecontract.BotmuxOAuthClientID, Scopes: corecontract.BotmuxOAuthScopes(), Audience: []string{corecontract.BrowserOAuthAudience}},
 		},
 		HydraPublicOrigin: hydraPublicOrigin,
 	})

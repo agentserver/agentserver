@@ -41,25 +41,28 @@ type UserTokenIntrospector interface {
 }
 
 type IntrospectedUserAuthorizerConfig struct {
-	Introspector      UserTokenIntrospector
-	ExpectedIssuer    string
-	ExpectedClientID  string
-	ExpectedAudience  string
-	ExpectedAuthority string
-	AllowedScopes     []string
-	ActionPermissions map[string]corecontract.UserOAuthActionAuthority
-	Now               func() time.Time
+	Introspector   UserTokenIntrospector
+	ExpectedIssuer string
+	// AcceptBotmuxClient admits only the fixed native client under Browser authority.
+	AcceptBotmuxClient bool
+	ExpectedClientID   string
+	ExpectedAudience   string
+	ExpectedAuthority  string
+	AllowedScopes      []string
+	ActionPermissions  map[string]corecontract.UserOAuthActionAuthority
+	Now                func() time.Time
 }
 
 type IntrospectedUserAuthorizer struct {
-	introspector      UserTokenIntrospector
-	issuer            string
-	clientID          string
-	audience          string
-	authority         string
-	allowedScopes     map[string]struct{}
-	actionPermissions map[string]corecontract.UserOAuthActionAuthority
-	now               func() time.Time
+	introspector       UserTokenIntrospector
+	issuer             string
+	acceptBotmuxClient bool
+	clientID           string
+	audience           string
+	authority          string
+	allowedScopes      map[string]struct{}
+	actionPermissions  map[string]corecontract.UserOAuthActionAuthority
+	now                func() time.Time
 }
 
 func NewIntrospectedUserAuthorizer(config IntrospectedUserAuthorizerConfig) (*IntrospectedUserAuthorizer, error) {
@@ -77,6 +80,11 @@ func NewIntrospectedUserAuthorizer(config IntrospectedUserAuthorizerConfig) (*In
 	if config.ExpectedAuthority != corecontract.UserOAuthPlatformAuthority &&
 		config.ExpectedAuthority != corecontract.UserOAuthBrowserAuthority {
 		return nil, errors.New("expected user token authority is unsupported")
+	}
+	if config.AcceptBotmuxClient && (config.ExpectedClientID != corecontract.BrowserOAuthClientID ||
+		config.ExpectedAuthority != corecontract.UserOAuthBrowserAuthority || config.ExpectedAudience != corecontract.BrowserOAuthAudience ||
+		!sameUniqueTextSet(config.AllowedScopes, corecontract.BrowserOAuthScopes())) {
+		return nil, errors.New("Botmux client requires the exact Browser authority profile")
 	}
 	if len(config.AllowedScopes) == 0 {
 		return nil, errors.New("at least one allowed user OAuth scope is required")
@@ -121,7 +129,7 @@ func NewIntrospectedUserAuthorizer(config IntrospectedUserAuthorizerConfig) (*In
 	}
 	return &IntrospectedUserAuthorizer{
 		introspector: config.Introspector,
-		issuer:       config.ExpectedIssuer, clientID: config.ExpectedClientID,
+		issuer:       config.ExpectedIssuer, clientID: config.ExpectedClientID, acceptBotmuxClient: config.AcceptBotmuxClient,
 		audience: config.ExpectedAudience, authority: config.ExpectedAuthority,
 		allowedScopes: allowedScopes, actionPermissions: actions, now: config.Now,
 	}, nil
@@ -144,7 +152,8 @@ func (authorizer *IntrospectedUserAuthorizer) AuthorizeUser(request *http.Reques
 		return "", fmt.Errorf("%w: %v", ErrUserAuthUnavailable, err)
 	}
 	if !introspection.Active || !canonicalPublicUUID(introspection.Subject) ||
-		introspection.Issuer != authorizer.issuer || introspection.ClientID != authorizer.clientID ||
+		introspection.Issuer != authorizer.issuer || (introspection.ClientID != authorizer.clientID &&
+		!(authorizer.acceptBotmuxClient && introspection.ClientID == corecontract.BotmuxOAuthClientID)) ||
 		!strings.EqualFold(introspection.TokenType, "Bearer") ||
 		(introspection.TokenUse != "" && introspection.TokenUse != "access_token") {
 		return "", ErrInvalidUserAccessToken
@@ -159,6 +168,10 @@ func (authorizer *IntrospectedUserAuthorizer) AuthorizeUser(request *http.Reques
 		return "", ErrInvalidUserAccessToken
 	}
 	scopes, err := parseCanonicalOAuthScope(introspection.Scope)
+	if err == nil && authorizer.acceptBotmuxClient && introspection.ClientID == corecontract.BotmuxOAuthClientID {
+		// offline_access governs refresh issuance, never a business permission.
+		delete(scopes, corecontract.OAuthOfflineAccessScope)
+	}
 	if err != nil || !sameTextKeys(scopes, authorityPermissionSet(introspection.Authority)) {
 		return "", ErrInvalidUserAccessToken
 	}

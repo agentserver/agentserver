@@ -131,6 +131,12 @@ func compileUserOAuthConsentGrant(
 	grantScope := make([]string, 1, len(permissions)+1)
 	grantScope[0] = corecontract.OAuthOpenIDScope
 	grantScope = append(grantScope, permissions...)
+	if _, requestedOffline := requested[corecontract.OAuthOfflineAccessScope]; requestedOffline {
+		if profile.ClientID != corecontract.BotmuxOAuthClientID {
+			return HydraConsentGrant{}, errors.New("offline consent is only supported for Botmux")
+		}
+		grantScope = append(grantScope, corecontract.OAuthOfflineAccessScope)
+	}
 	return HydraConsentGrant{
 		Scope: grantScope, Audience: append([]string(nil), profile.Audience...), Authority: authority,
 	}, nil

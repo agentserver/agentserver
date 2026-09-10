@@ -4,6 +4,8 @@ import "sort"
 
 const (
 	OAuthOpenIDScope          = "openid"
+	OAuthOfflineAccessScope   = "offline_access"
+	BotmuxOAuthClientID       = "agentserver-botmux"
 	UserOAuthAuthorityVersion = 1
 
 	UserOAuthPlatformAuthority  = "platform"
@@ -252,4 +254,9 @@ func permissionsForResource(actions map[string]UserOAuthActionAuthority, resourc
 	}
 	sort.Strings(permissions)
 	return permissions
+}
+
+// Botmux is a native, workspace-bound Browser client with explicit offline consent.
+func BotmuxOAuthScopes() []string {
+	return append(BrowserOAuthScopes(), OAuthOfflineAccessScope)
 }

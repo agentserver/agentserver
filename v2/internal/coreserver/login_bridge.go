@@ -571,11 +571,10 @@ func (bridge *LoginBridge) oauthProfileForAuthorizationRequest(
 }
 
 func validateLoginBridgeOAuthProfiles(profiles []LoginBridgeOAuthProfile) (map[string]LoginBridgeOAuthProfile, error) {
-	if len(profiles) != 2 {
-		return nil, errors.New("login bridge requires exactly the Platform and Browser OAuth profiles")
+	if len(profiles) != 2 && len(profiles) != 3 {
+		return nil, errors.New("login bridge requires the Platform and Browser profiles plus optional Botmux")
 	}
 	validated := make(map[string]LoginBridgeOAuthProfile, len(profiles))
-	authorities := make(map[string]struct{}, len(profiles))
 	for _, profile := range profiles {
 		if profile.ClientID == "" || len(profile.ClientID) > 512 || strings.TrimSpace(profile.ClientID) != profile.ClientID ||
 			strings.ContainsAny(profile.ClientID, " \t\r\n\x00") {
@@ -584,9 +583,6 @@ func validateLoginBridgeOAuthProfiles(profiles []LoginBridgeOAuthProfile) (map[s
 		if _, exists := validated[profile.ClientID]; exists {
 			return nil, errors.New("login bridge OAuth client IDs must be unique")
 		}
-		if _, exists := authorities[profile.Authority]; exists {
-			return nil, errors.New("login bridge OAuth authorities must be unique")
-		}
 		var expectedClientID, expectedAudience string
 		var expectedScopes []string
 		switch profile.Authority {
@@ -594,6 +590,9 @@ func validateLoginBridgeOAuthProfiles(profiles []LoginBridgeOAuthProfile) (map[s
 			expectedClientID, expectedAudience, expectedScopes = corecontract.PlatformOAuthClientID, corecontract.PlatformOAuthAudience, corecontract.PlatformOAuthScopes()
 		case corecontract.UserOAuthBrowserAuthority:
 			expectedClientID, expectedAudience, expectedScopes = corecontract.BrowserOAuthClientID, corecontract.BrowserOAuthAudience, corecontract.BrowserOAuthScopes()
+			if profile.ClientID == corecontract.BotmuxOAuthClientID {
+				expectedClientID, expectedScopes = corecontract.BotmuxOAuthClientID, corecontract.BotmuxOAuthScopes()
+			}
 		default:
 			return nil, errors.New("login bridge OAuth authority is unsupported")
 		}
@@ -615,7 +614,12 @@ func validateLoginBridgeOAuthProfiles(profiles []LoginBridgeOAuthProfile) (map[s
 			Audience:  append([]string(nil), profile.Audience...),
 		}
 		validated[clone.ClientID] = clone
-		authorities[clone.Authority] = struct{}{}
+	}
+	if _, ok := validated[corecontract.PlatformOAuthClientID]; !ok {
+		return nil, errors.New("Platform OAuth profile is required")
+	}
+	if _, ok := validated[corecontract.BrowserOAuthClientID]; !ok {
+		return nil, errors.New("Browser OAuth profile is required")
 	}
 	return validated, nil
 }
@@ -668,6 +672,7 @@ func (bridge *LoginBridge) validateHydraRedirect(raw, verifierQuery string) erro
 		allowed[name] = struct{}{}
 	}
 	allowed["resource"] = struct{}{}
+	allowed["prompt"] = struct{}{}
 	allowed[verifierQuery] = struct{}{}
 	for name, values := range query {
 		_, permitted := allowed[name]
@@ -711,7 +716,11 @@ func (bridge *LoginBridge) validateHydraRedirect(raw, verifierQuery string) erro
 		return fmt.Errorf("Hydra continuation redirect has invalid OAuth PKCE challenge authority (%s)", shape)
 	}
 	redirectURI, err := url.Parse(query.Get("redirect_uri"))
-	if err != nil || redirectURI.Scheme != "https" || redirectURI.Host == "" || redirectURI.Hostname() == "" ||
+	if profile.ClientID == corecontract.BotmuxOAuthClientID {
+		if err != nil || query.Get("redirect_uri") != "http://127.0.0.1:39647/oauth/callback" || query.Get("prompt") != "consent" {
+			return fmt.Errorf("Hydra continuation has invalid Botmux loopback callback or consent prompt (%s)", shape)
+		}
+	} else if err != nil || redirectURI.Scheme != "https" || redirectURI.Host == "" || redirectURI.Hostname() == "" ||
 		redirectURI.User != nil || redirectURI.Opaque != "" || redirectURI.Path != "/" || redirectURI.RawPath != "" ||
 		redirectURI.RawQuery != "" || redirectURI.Fragment != "" || redirectURI.RawFragment != "" || redirectURI.ForceQuery {
 		return fmt.Errorf("Hydra continuation redirect has invalid client callback authority (%s)", shape)
@@ -720,6 +729,9 @@ func (bridge *LoginBridge) validateHydraRedirect(raw, verifierQuery string) erro
 		return fmt.Errorf("Hydra continuation redirect has invalid resource authority (%s)", shape)
 	}
 	expectedParameters := len(hydraAuthorizationQuery) + 1
+	if profile.ClientID == corecontract.BotmuxOAuthClientID {
+		expectedParameters++
+	}
 	if profile.Authority == corecontract.UserOAuthBrowserAuthority {
 		expectedParameters++
 	}

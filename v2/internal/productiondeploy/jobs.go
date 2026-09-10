@@ -54,6 +54,10 @@ func renderHydraClientSetupJob(context renderContext) kubeObject {
 		"AgentServer Browser", corecontract.BrowserOAuthScopes(), corecontract.BrowserOAuthAudience,
 		"https://"+document.Ingress.BrowserFrontendHostname+"/",
 	)
+	botmuxFlags := hydraPublicClientFlags(
+		"Botmux", corecontract.BotmuxOAuthScopes(), corecontract.BrowserOAuthAudience,
+		"http://127.0.0.1:39647/oauth/callback",
+	) + " --grant-type refresh_token"
 	script := "set -eu\n" +
 		"endpoint='" + adminOrigin + "'\n" +
 		"reconcile_client() {\n" +
@@ -65,11 +69,12 @@ func renderHydraClientSetupJob(context renderContext) kubeObject {
 		"  /usr/bin/hydra create oauth2-client --endpoint \"$endpoint\" --id \"$client_id\" \"$@\"\n" +
 		"}\n" +
 		"reconcile_client '" + document.OAuth.Hydra.PlatformClientID + "' " + platformFlags + "\n" +
-		"reconcile_client '" + document.OAuth.Hydra.BrowserClientID + "' " + browserFlags + "\n"
+		"reconcile_client '" + document.OAuth.Hydra.BrowserClientID + "' " + browserFlags + "\n" +
+		"reconcile_client '" + corecontract.BotmuxOAuthClientID + "' " + botmuxFlags + "\n"
 	return kubeObject{
 		"apiVersion": "batch/v1", "kind": "Job",
 		"metadata": metadata(context.hydraSetupJobName, document.Namespace, labels, map[string]string{
-			"agentserver.dev/hydra-client-profile": "platform-browser-v1",
+			"agentserver.dev/hydra-client-profile": "platform-browser-botmux-v2",
 		}),
 		"spec": kubeObject{
 			"backoffLimit": 5, "activeDeadlineSeconds": 300,

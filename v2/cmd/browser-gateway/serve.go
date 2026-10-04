@@ -17,6 +17,7 @@ import (
 	"time"
 
 	a2uiweb "github.com/agentserver/agentserver/v2/a2ui-web"
+	dshweb "github.com/agentserver/agentserver/v2/dsh-web"
 	"github.com/agentserver/agentserver/v2/internal/browsergateway"
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 )
@@ -41,6 +42,10 @@ const (
 	browserOAuthTokenEndpointEnvironment         = "AGENTSERVER_V2_BROWSER_OAUTH_TOKEN_ENDPOINT"
 	browserFrontendOriginEnvironment             = "AGENTSERVER_V2_BROWSER_FRONTEND_ORIGIN"
 	browserAPIOriginEnvironment                  = "AGENTSERVER_V2_BROWSER_API_ORIGIN"
+	browserDSHWorkspaceIDEnvironment             = browsergateway.DSHWorkspaceIDEnvironment
+	browserDSHWorkspacePathEnvironment           = browsergateway.DSHWorkspacePathEnvironment
+	browserDSHWorkspaceTitleEnvironment          = browsergateway.DSHWorkspaceTitleEnvironment
+	browserDSHHomeEnvironment                    = browsergateway.DSHHomeEnvironment
 )
 
 const browserShutdownTimeout = 10 * time.Second
@@ -130,6 +135,27 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 	if err != nil {
 		return err
 	}
+	dshHandler := http.NotFoundHandler()
+	dshSite := http.NotFoundHandler()
+	if workspaceID := strings.TrimSpace(getenv(browserDSHWorkspaceIDEnvironment)); workspaceID != "" {
+		dsh, dshErr := browsergateway.NewDSHGateway(backend, browsergateway.DSHGatewayConfig{
+			WorkspaceID:    workspaceID,
+			WorkspacePath:  strings.TrimSpace(getenv(browserDSHWorkspacePathEnvironment)),
+			WorkspaceTitle: strings.TrimSpace(getenv(browserDSHWorkspaceTitleEnvironment)),
+			Home:           strings.TrimSpace(getenv(browserDSHHomeEnvironment)),
+			AllowedOrigins: func() []string {
+				if splitPublicOrigins {
+					return []string{frontendOrigin}
+				}
+				return nil
+			}(),
+		})
+		if dshErr != nil {
+			return dshErr
+		}
+		dshHandler = dsh.Routes()
+		dshSite = dshBrowserSite(dshHandler)
+	}
 	authConfig, err := browsergateway.NewBrowserAuthorizationConfigHandlerWithEndpoints(
 		browserOAuthClientID, browserOAuthAudience, canonicalBrowserScopes, apiOrigin,
 		authorizationEndpoint, tokenEndpoint,
@@ -160,8 +186,8 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 	}
 	var handler http.Handler
 	if splitPublicOrigins {
-		handler = browserGatewaySplitRoutes(
-			conversationAPI, authConfig, readiness, referenceHandler, frontendOrigin, apiOrigin,
+		handler = browserGatewaySplitRoutesWithDSHSite(
+			conversationAPI, authConfig, readiness, referenceHandler, frontendOrigin, apiOrigin, dshHandler, dshSite,
 		)
 	} else {
 		hydraPublicUpstream, err := requiredBrowserConfiguration(getenv, browserHydraPublicUpstreamEnvironment)
@@ -194,9 +220,9 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 		if err != nil {
 			return err
 		}
-		handler = browserGatewayRoutesWithReference(
+		handler = browserGatewayRoutesWithReferenceAndDSHSite(
 			conversationAPI, executorHandler.Routes(), llmGatewayProxy.Routes(), authProxy.Routes(), authConfig,
-			hydraProxy.Routes(), developmentOIDCHandler, readiness, referenceHandler,
+			hydraProxy.Routes(), developmentOIDCHandler, readiness, referenceHandler, dshHandler, dshSite,
 		)
 	}
 	var tlsConfig *tls.Config
@@ -278,8 +304,31 @@ func browserGatewayRoutesWithReference(
 	readiness *browserReadiness,
 	reference http.Handler,
 ) http.Handler {
+	return browserGatewayRoutesWithReferenceAndDSH(agui, executors, llmGateways, auth, authConfig, hydra, developmentOIDC, readiness, reference, http.NotFoundHandler())
+}
+
+func browserGatewayRoutesWithReferenceAndDSH(
+	agui, executors, llmGateways, auth, authConfig, hydra, developmentOIDC http.Handler,
+	readiness *browserReadiness,
+	reference, dsh http.Handler,
+) http.Handler {
+	return browserGatewayRoutesWithReferenceAndDSHSite(
+		agui, executors, llmGateways, auth, authConfig, hydra, developmentOIDC,
+		readiness, reference, dsh, http.NotFoundHandler(),
+	)
+}
+
+func browserGatewayRoutesWithReferenceAndDSHSite(
+	agui, executors, llmGateways, auth, authConfig, hydra, developmentOIDC http.Handler,
+	readiness *browserReadiness,
+	reference, dsh, dshSite http.Handler,
+) http.Handler {
 	mux := http.NewServeMux()
 	mountBrowserAPIRoutes(mux, agui, executors, llmGateways)
+	mux.Handle("/api/", dsh)
+	if dshSite != nil {
+		mux.Handle("/dsh/", http.StripPrefix("/dsh", dshSite))
+	}
 	mountBrowserFrontendRoutes(mux, auth, authConfig, hydra, developmentOIDC)
 	mountBrowserHealthRoutes(mux, readiness)
 	mux.Handle("/", reference)
@@ -369,14 +418,40 @@ func browserGatewaySplitRoutes(
 	reference http.Handler,
 	frontendOrigin, apiOrigin string,
 ) http.Handler {
+	return browserGatewaySplitRoutesWithDSH(agui, authConfig, readiness, reference, frontendOrigin, apiOrigin, http.NotFoundHandler())
+}
+
+func browserGatewaySplitRoutesWithDSH(
+	agui, authConfig http.Handler,
+	readiness *browserReadiness,
+	reference http.Handler,
+	frontendOrigin, apiOrigin string,
+	dsh http.Handler,
+) http.Handler {
+	return browserGatewaySplitRoutesWithDSHSite(
+		agui, authConfig, readiness, reference, frontendOrigin, apiOrigin, dsh, http.NotFoundHandler(),
+	)
+}
+
+func browserGatewaySplitRoutesWithDSHSite(
+	agui, authConfig http.Handler,
+	readiness *browserReadiness,
+	reference http.Handler,
+	frontendOrigin, apiOrigin string,
+	dsh, dshSite http.Handler,
+) http.Handler {
 	frontendURL, _ := url.Parse(frontendOrigin)
 	apiURL, _ := url.Parse(apiOrigin)
 	frontend := http.NewServeMux()
 	frontend.Handle("GET /auth/config", authConfig)
 	mountBrowserHealthRoutes(frontend, readiness)
+	if dshSite != nil {
+		frontend.Handle("/dsh/", http.StripPrefix("/dsh", dshSite))
+	}
 	frontend.Handle("/", reference)
 	api := http.NewServeMux()
 	mountBrowserConversationAPIRoutes(api, agui)
+	api.Handle("/api/", dsh)
 	apiHandler := browserCORSMiddleware(api, frontendOrigin)
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		host := canonicalRequestHostname(request)
@@ -389,6 +464,13 @@ func browserGatewaySplitRoutes(
 			writeBrowserRouteError(response, http.StatusNotFound, "not_found", "browser route is not exposed on this host")
 		}
 	})
+}
+
+func dshBrowserSite(api http.Handler) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/api/", api)
+	mux.Handle("/", dshweb.Handler())
+	return mux
 }
 
 func canonicalRequestHostname(request *http.Request) string {
@@ -414,6 +496,9 @@ func browserCORSMiddleware(next http.Handler, allowedOrigin string) http.Handler
 		}
 		if len(origins) == 1 {
 			response.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+			if strings.HasPrefix(request.URL.Path, "/api/") {
+				response.Header().Set("Access-Control-Allow-Credentials", "true")
+			}
 			response.Header().Add("Vary", "Origin")
 		}
 		if request.Method == http.MethodOptions {

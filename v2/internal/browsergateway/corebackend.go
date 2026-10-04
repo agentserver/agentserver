@@ -25,6 +25,112 @@ type CoreRunBackend struct {
 	httpClient *http.Client
 }
 
+// The DSH compatibility facade uses the same Core user-session authority as
+// the native v2 Browser API.  These methods intentionally stay on the typed
+// backend instead of turning browser-gateway into a generic Core proxy.
+func (backend *CoreRunBackend) ListSessions(ctx context.Context, bearer, workspaceID string) (corecontract.ListUserSessionsResponse, error) {
+	var result corecontract.ListUserSessionsResponse
+	err := backend.sessionJSON(ctx, http.MethodGet, corecontract.UserSessionsPath(workspaceID), bearer, nil, &result)
+	return result, err
+}
+
+func (backend *CoreRunBackend) GetSession(ctx context.Context, bearer, workspaceID, sessionID string) (corecontract.UserSessionState, error) {
+	var result corecontract.UserSessionState
+	err := backend.sessionJSON(ctx, http.MethodGet, corecontract.UserSessionPath(workspaceID, sessionID), bearer, nil, &result)
+	return result, err
+}
+
+func (backend *CoreRunBackend) CreateSession(ctx context.Context, bearer, workspaceID string, input corecontract.CreateUserSessionRequest) (corecontract.CreateUserSessionResponse, error) {
+	var result corecontract.CreateUserSessionResponse
+	err := backend.sessionJSON(ctx, http.MethodPost, corecontract.UserSessionsPath(workspaceID), bearer, input, &result)
+	return result, err
+}
+
+func (backend *CoreRunBackend) UpdateSession(ctx context.Context, bearer, workspaceID, sessionID string, input corecontract.UpdateUserSessionRequest) (corecontract.UpdateUserSessionResponse, error) {
+	var result corecontract.UpdateUserSessionResponse
+	err := backend.sessionJSON(ctx, http.MethodPatch, corecontract.UserSessionPath(workspaceID, sessionID), bearer, input, &result)
+	return result, err
+}
+
+func (backend *CoreRunBackend) ArchiveSession(ctx context.Context, bearer, workspaceID, sessionID string, input corecontract.ArchiveUserSessionRequest) (corecontract.ArchiveUserSessionResponse, error) {
+	var result corecontract.ArchiveUserSessionResponse
+	err := backend.sessionJSON(ctx, http.MethodPost, corecontract.ArchiveUserSessionPath(workspaceID, sessionID), bearer, input, &result)
+	return result, err
+}
+
+func (backend *CoreRunBackend) UpdatePermissionMode(ctx context.Context, bearer, workspaceID, sessionID string, input corecontract.UpdateUserSessionPermissionModeRequest) (corecontract.UpdateUserSessionPermissionModeResponse, error) {
+	var result corecontract.UpdateUserSessionPermissionModeResponse
+	err := backend.sessionJSON(ctx, http.MethodPatch, corecontract.UserSessionPermissionModePath(workspaceID, sessionID), bearer, input, &result)
+	return result, err
+}
+
+func (backend *CoreRunBackend) UpdateWorkingDirectory(ctx context.Context, bearer, workspaceID, sessionID string, input corecontract.UpdateUserSessionWorkingDirectoryRequest) (corecontract.UpdateUserSessionWorkingDirectoryResponse, error) {
+	var result corecontract.UpdateUserSessionWorkingDirectoryResponse
+	err := backend.sessionJSON(ctx, http.MethodPatch, corecontract.UserSessionWorkingDirectoryPath(workspaceID, sessionID), bearer, input, &result)
+	return result, err
+}
+
+func (backend *CoreRunBackend) GetTranscript(ctx context.Context, bearer, workspaceID, sessionID string) (corecontract.GetUserSessionTranscriptResponse, error) {
+	var result corecontract.GetUserSessionTranscriptResponse
+	err := backend.sessionJSON(ctx, http.MethodGet, corecontract.UserSessionTranscriptPath(workspaceID, sessionID), bearer, nil, &result)
+	return result, err
+}
+
+func (backend *CoreRunBackend) GetTrajectory(ctx context.Context, bearer, workspaceID, sessionID, before string, limit int) (corecontract.GetUserSessionTrajectoryResponse, error) {
+	path := corecontract.UserSessionTrajectoryPath(workspaceID, sessionID)
+	endpoint := backend.endpoint(path)
+	query := endpoint.Query()
+	if before != "" {
+		query.Set("before", before)
+	}
+	if limit > 0 {
+		query.Set("limit", strconv.Itoa(limit))
+	}
+	endpoint.RawQuery = query.Encode()
+	var result corecontract.GetUserSessionTrajectoryResponse
+	err := backend.sessionURLJSON(ctx, http.MethodGet, endpoint, bearer, nil, &result)
+	return result, err
+}
+
+func (backend *CoreRunBackend) sessionJSON(ctx context.Context, method, path, bearer string, input, output any) error {
+	return backend.sessionURLJSON(ctx, method, backend.endpoint(path), bearer, input, output)
+}
+
+func (backend *CoreRunBackend) sessionURLJSON(ctx context.Context, method string, endpoint url.URL, bearer string, input, output any) error {
+	var body io.Reader
+	if input != nil {
+		raw, err := json.Marshal(input)
+		if err != nil {
+			return fmt.Errorf("encode Core session request: %w", err)
+		}
+		body = bytes.NewReader(raw)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, endpoint.String(), body)
+	if err != nil {
+		return fmt.Errorf("construct Core session request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+bearer)
+	request.Header.Set("Accept", "application/json")
+	if input != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response, raw, err := backend.doBounded(request, maxCoreRunResponseBytes)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return decodePublicCoreError(response.StatusCode, raw)
+	}
+	if output == nil {
+		return nil
+	}
+	if err := decodeStrictCoreJSON(raw, output); err != nil {
+		return fmt.Errorf("decode Core session response: %w", err)
+	}
+	return nil
+}
+
 func NewCoreRunBackend(baseURL string, httpClient *http.Client) (*CoreRunBackend, error) {
 	if httpClient == nil {
 		return nil, errors.New("core run HTTP client is required")

@@ -177,6 +177,7 @@ func browserFrontendHTTPRoute(config LoadedConfig) kubeObject {
 		config.Document.Services.BrowserGateway.Port, []kubeObject{
 			pathMatch("Exact", "/"), pathMatch("Exact", "/index.html"), pathMatch("Exact", "/readyz"),
 			pathMatch("PathPrefix", "/assets"), pathMatch("PathPrefix", "/workspaces"), pathMatch("Exact", "/auth/config"),
+			pathMatch("PathPrefix", "/dsh"),
 		})
 }
 

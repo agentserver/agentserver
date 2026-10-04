@@ -27,6 +27,10 @@ func TestProductionRendererBrowserEnvironmentMatchesCommandContract(t *testing.T
 		browserOAuthScopesEnvironment,
 		browserOAuthAuthorizationEndpointEnvironment,
 		browserOAuthTokenEndpointEnvironment,
+		browserDSHWorkspaceIDEnvironment,
+		browserDSHWorkspacePathEnvironment,
+		browserDSHWorkspaceTitleEnvironment,
+		browserDSHHomeEnvironment,
 	}
 	slices.Sort(want)
 	if got := environment.Names(); !slices.Equal(got, want) {

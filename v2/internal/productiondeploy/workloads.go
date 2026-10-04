@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/agentserver/agentserver/v2/internal/browsergateway"
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
 	"github.com/agentserver/agentserver/v2/internal/corecredentials"
 	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
@@ -486,6 +487,10 @@ func renderBrowserDeployment(context renderContext) (kubeObject, error) {
 		valueEnvironment("AGENTSERVER_V2_BROWSER_OAUTH_SCOPES", strings.Join(BrowserOAuthScopes(), ",")),
 		valueEnvironment("AGENTSERVER_V2_BROWSER_OAUTH_AUTHORIZATION_ENDPOINT", document.OAuth.Hydra.PublicOrigin+"/oauth2/auth"),
 		valueEnvironment("AGENTSERVER_V2_BROWSER_OAUTH_TOKEN_ENDPOINT", document.OAuth.Hydra.PublicOrigin+"/oauth2/token"),
+		valueEnvironment(browsergateway.DSHWorkspaceIDEnvironment, document.Bootstrap.WorkspaceID),
+		valueEnvironment(browsergateway.DSHWorkspacePathEnvironment, "/workspace"),
+		valueEnvironment(browsergateway.DSHWorkspaceTitleEnvironment, "AgentServer"),
+		valueEnvironment(browsergateway.DSHHomeEnvironment, "/home/agent"),
 	}
 	return deployment(deploymentInput{
 		namespace: document.Namespace, platform: document.Platform, component: browserComponent, replicas: document.Replicas.BrowserGateway,

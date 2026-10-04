@@ -19,4 +19,7 @@ func TestHandlerAllowsDSHRuntimeAssets(t *testing.T) {
 			t.Fatalf("CSP %q missing %q", policy, directive)
 		}
 	}
+	if !strings.Contains(response.Body.String(), "__DSH_AUTH_READY__") {
+		t.Fatal("DSH authentication bootstrap is missing")
+	}
 }

@@ -45,7 +45,7 @@ func mustBundle() staticBundle {
 		}
 		return walkErr
 	})
-	return staticBundle{files: files, index: index, count: count}
+	return staticBundle{files: files, index: withAuthenticationBootstrap(index), count: count}
 }
 
 // Handler returns the DSH static bundle. API and WebSocket paths are mounted

@@ -9,6 +9,7 @@ const (
 	coreComponent                        = "agentserver-core"
 	platformComponent                    = "platform-gateway"
 	browserComponent                     = "browser-gateway"
+	dshComponent                         = "dsh-frontend"
 	executorComponent                    = "executor-gateway"
 	harnessComponent                     = "harness-pool"
 	llmproxyComponent                    = "llmproxy"
@@ -31,6 +32,7 @@ func renderFoundation(context renderContext) []kubeObject {
 		serviceAccountResource(config, coreComponent),
 		serviceAccountResource(config, platformComponent),
 		serviceAccountResource(config, browserComponent),
+		serviceAccountResource(config, dshComponent),
 		serviceAccountResource(config, executorComponent),
 		serviceAccountResource(config, harnessComponent),
 		serviceAccountResource(config, llmproxyComponent),
@@ -47,11 +49,13 @@ func renderFoundation(context renderContext) []kubeObject {
 		internalService(config, coreComponent, config.Document.Services.Core),
 		publicHTTPService(config, platformComponent, config.Document.Services.PlatformGateway),
 		browserService(config),
+		dshService(config),
 		executorService(config),
 		internalService(config, llmproxyComponent, config.Document.Services.LLMProxy),
 		hydraService(config),
 		frontendHTTPRoute(config),
 		browserFrontendHTTPRoute(config),
+		dshFrontendHTTPRoute(config),
 		browserHTTPRoute(config),
 		executorHTTPRoute(config),
 		authUIHTTPRoute(config),
@@ -132,6 +136,17 @@ func browserService(config LoadedConfig) kubeObject {
 	return publicHTTPService(config, browserComponent, config.Document.Services.BrowserGateway)
 }
 
+func dshService(config LoadedConfig) kubeObject {
+	service := publicHTTPService(config, dshComponent, InternalServiceDocument{Port: PublicHTTPPort})
+	delete(service["spec"].(kubeObject), "clusterIP") // allocated by Kubernetes; no internal DNS consumers
+	return service
+}
+
+func dshFrontendHTTPRoute(config LoadedConfig) kubeObject {
+	return httpRoute(config, "agentserver-dsh", ProductionDSHFrontendHostname, dshComponent,
+		PublicHTTPPort, []kubeObject{pathMatch("PathPrefix", "/")})
+}
+
 func publicHTTPService(config LoadedConfig, component string, service InternalServiceDocument) kubeObject {
 	return kubeObject{
 		"apiVersion": "v1", "kind": "Service",
@@ -177,7 +192,6 @@ func browserFrontendHTTPRoute(config LoadedConfig) kubeObject {
 		config.Document.Services.BrowserGateway.Port, []kubeObject{
 			pathMatch("Exact", "/"), pathMatch("Exact", "/index.html"), pathMatch("Exact", "/readyz"),
 			pathMatch("PathPrefix", "/assets"), pathMatch("PathPrefix", "/workspaces"), pathMatch("Exact", "/auth/config"),
-			pathMatch("PathPrefix", "/dsh"),
 		})
 }
 

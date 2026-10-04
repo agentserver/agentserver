@@ -49,11 +49,12 @@ IPv4/IPv6、代理或直连路径与 zero-secret 门禁仍须在目标集群执�
 | --- | --- | --- |
 | `agent.byted.bps.dev` | Platform SPA、`/auth/config`、LLM Gateway callback、Platform `/v2*`、`/readyz` | platform-gateway HTTP `8080` |
 | `browser.byted.bps.dev` | Browser SPA、`/reference*`、`/auth/config`、`/readyz` | browser-gateway HTTP `8080` |
+| `dsh.byted.bps.dev` | DSH Web SPA、`/api`、`/auth/config`、`/readyz` | dedicated dsh-frontend HTTP `8080` |
 | `browser-gateway.byted.bps.dev` | `/v2*` | browser-gateway HTTP `8080` |
 | `executor-gateway.byted.bps.dev` | `/internal/v2/agentx/enrollments`、`/internal/v2/agentx/challenges`、`/internal/v2/agentx/connect` | executor-gateway HTTP `8080` |
 | `auth-sg.byted.bps.dev` | Hydra public issuer：`/oauth2/*`、discovery、JWKS；以及三个精确 login/consent/callback 路径 | 协议路径到 Hydra public HTTP `4444`；`/auth/hydra/login`、`/auth/hydra/consent`、`/auth/oidc/callback` 到 platform-gateway HTTP `8080` |
 
-六条 `HTTPRoute`（五个 host；auth host 按路径使用两条 Route）都挂到：
+七条 `HTTPRoute`（六个 host；auth host 按路径使用两条 Route）都挂到：
 
 ```text
 namespace:   istio-ingress

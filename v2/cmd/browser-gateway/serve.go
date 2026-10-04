@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -42,6 +43,7 @@ const (
 	browserOAuthTokenEndpointEnvironment         = "AGENTSERVER_V2_BROWSER_OAUTH_TOKEN_ENDPOINT"
 	browserFrontendOriginEnvironment             = "AGENTSERVER_V2_BROWSER_FRONTEND_ORIGIN"
 	browserAPIOriginEnvironment                  = "AGENTSERVER_V2_BROWSER_API_ORIGIN"
+	browserDSHOriginEnvironment                  = browsergateway.DSHOriginEnvironment
 	browserDSHWorkspaceIDEnvironment             = browsergateway.DSHWorkspaceIDEnvironment
 	browserDSHWorkspacePathEnvironment           = browsergateway.DSHWorkspacePathEnvironment
 	browserDSHWorkspaceTitleEnvironment          = browsergateway.DSHWorkspaceTitleEnvironment
@@ -60,6 +62,10 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 		return err
 	}
 	frontendOrigin, apiOrigin, splitPublicOrigins, err := browserPublicOrigins(getenv)
+	if err != nil {
+		return err
+	}
+	dshOrigin, err := browserDSHOrigin(getenv, frontendOrigin, apiOrigin)
 	if err != nil {
 		return err
 	}
@@ -144,6 +150,9 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 			WorkspaceTitle: strings.TrimSpace(getenv(browserDSHWorkspaceTitleEnvironment)),
 			Home:           strings.TrimSpace(getenv(browserDSHHomeEnvironment)),
 			AllowedOrigins: func() []string {
+				if dshOrigin != "" {
+					return []string{dshOrigin}
+				}
 				if splitPublicOrigins {
 					return []string{frontendOrigin}
 				}
@@ -185,7 +194,21 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 		}
 	}
 	var handler http.Handler
-	if splitPublicOrigins {
+	if dshOrigin != "" {
+		dshAuthConfig, configErr := browsergateway.NewBrowserAuthorizationConfigHandlerWithEndpoints(
+			browserOAuthClientID, browserOAuthAudience, canonicalBrowserScopes, "",
+			authorizationEndpoint, tokenEndpoint,
+		)
+		if configErr != nil {
+			return configErr
+		}
+		oauthURL, _ := url.Parse(tokenEndpoint)
+		assets, assetErr := dshweb.HandlerForOAuthOrigin(oauthURL.Scheme + "://" + oauthURL.Host)
+		if assetErr != nil {
+			return assetErr
+		}
+		handler = dshGatewayRoutes(dshOrigin, strings.TrimSpace(getenv(browserDSHWorkspaceIDEnvironment)), dshAuthConfig, dshHandler, assets, readiness)
+	} else if splitPublicOrigins {
 		handler = browserGatewaySplitRoutesWithDSHSite(
 			conversationAPI, authConfig, readiness, referenceHandler, frontendOrigin, apiOrigin, dshHandler, dshSite,
 		)
@@ -471,6 +494,52 @@ func dshBrowserSite(api http.Handler) http.Handler {
 	mux.Handle("/api/", api)
 	mux.Handle("/", dshweb.Handler())
 	return mux
+}
+
+// A dedicated DSH workload exposes only its exact host. Core, executor and
+// the original Browser API authority are not exposed through this origin.
+func dshGatewayRoutes(origin, workspaceID string, auth, api, assets http.Handler, readiness *browserReadiness) http.Handler {
+	parsed, _ := url.Parse(origin)
+	mux := http.NewServeMux()
+	mux.Handle("GET /auth/config", auth)
+	mux.HandleFunc("GET /auth/dsh/config", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"workspaceId": workspaceID})
+	})
+	mux.HandleFunc("POST /auth/dsh/logout", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Origin") != origin {
+			http.Error(w, "origin not allowed", http.StatusForbidden)
+			return
+		}
+		http.SetCookie(w, &http.Cookie{Name: "agentserver-bearer", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.Handle("/api/", api)
+	mountBrowserHealthRoutes(mux, readiness)
+	mux.Handle("/", assets)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != parsed.Host {
+			http.NotFound(w, r)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
+func browserDSHOrigin(getenv func(string) string, frontend, api string) (string, error) {
+	raw := strings.TrimSpace(getenv(browsergateway.DSHOriginEnvironment))
+	if raw == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.Path != "" ||
+		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.String() != raw ||
+		raw == frontend || raw == api || frontend == "" || api == "" || strings.TrimSpace(getenv(browserDSHWorkspaceIDEnvironment)) == "" {
+		return "", errors.New("DSH origin requires a distinct exact HTTPS origin, production browser origins and a workspace ID")
+	}
+	return raw, nil
 }
 
 func canonicalRequestHostname(request *http.Request) string {

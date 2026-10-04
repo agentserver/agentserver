@@ -26,6 +26,7 @@ import (
 )
 
 const (
+	DSHOriginEnvironment         = "AGENTSERVER_V2_DSH_ORIGIN"
 	DSHWorkspaceIDEnvironment    = "AGENTSERVER_V2_DSH_WORKSPACE_ID"
 	DSHWorkspacePathEnvironment  = "AGENTSERVER_V2_DSH_WORKSPACE_PATH"
 	DSHWorkspaceTitleEnvironment = "AGENTSERVER_V2_DSH_WORKSPACE_TITLE"

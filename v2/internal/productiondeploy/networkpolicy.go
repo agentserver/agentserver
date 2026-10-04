@@ -12,7 +12,7 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 	document := config.Document
 	port := func(value uint16) []any { return []any{kubeObject{"protocol": "TCP", "port": int(value)}} }
 
-	coreIngressComponents := []string{platformComponent, browserComponent, executorComponent, harnessComponent, llmproxyComponent}
+	coreIngressComponents := []string{platformComponent, browserComponent, dshComponent, executorComponent, harnessComponent, llmproxyComponent}
 	if managedExecutionActive(document.Managed) {
 		for _, profile := range config.ManagedSandboxProfiles {
 			coreIngressComponents = append(coreIngressComponents, profile.Document.Gateway.Component)
@@ -90,6 +90,8 @@ func renderNetworkPolicies(context renderContext) []kubeObject {
 		networkPolicy(config, coreComponent, matchComponent(coreComponent), coreIngress, coreEgress),
 		networkPolicy(config, platformComponent, matchComponent(platformComponent), platformIngress, platformEgress),
 		networkPolicy(config, browserComponent, matchComponent(browserComponent), browserIngress, browserEgress),
+		networkPolicy(config, dshComponent, matchComponent(dshComponent), browserIngress,
+			[]any{componentTCPEgress(coreComponent, document.Services.Core.Port)}),
 		networkPolicy(config, executorComponent, matchComponent(executorComponent), executorIngress, executorEgress),
 		networkPolicy(config, harnessComponent, matchComponent(harnessComponent), nil, harnessEgress),
 		networkPolicy(config, llmproxyComponent, matchComponent(llmproxyComponent), llmIngress, llmEgress),

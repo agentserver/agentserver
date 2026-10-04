@@ -55,6 +55,35 @@ func TestBrowserGatewayHealthAndReadiness(t *testing.T) {
 	}
 }
 
+func TestDedicatedDSHGatewayRoutesStaticAPIAndHostFence(t *testing.T) {
+	auth := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	api := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusAccepted) })
+	assets := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	handler := dshGatewayRoutes("https://dsh.byted.bps.dev", "40000000-0000-4000-8000-000000000004", auth, api, assets, &browserReadiness{})
+
+	page := httptest.NewRequest(http.MethodGet, "https://dsh.byted.bps.dev/", nil)
+	pageResponse := httptest.NewRecorder()
+	handler.ServeHTTP(pageResponse, page)
+	if pageResponse.Code != http.StatusOK {
+		t.Fatalf("DSH page status = %d", pageResponse.Code)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "https://dsh.byted.bps.dev/api/session/list", nil)
+	request.Header.Set("Origin", "https://dsh.byted.bps.dev")
+	apiResponse := httptest.NewRecorder()
+	handler.ServeHTTP(apiResponse, request)
+	if apiResponse.Code != http.StatusAccepted {
+		t.Fatalf("DSH API status = %d", apiResponse.Code)
+	}
+
+	wrongHost := httptest.NewRequest(http.MethodGet, "https://browser.byted.bps.dev/", nil)
+	wrongHostResponse := httptest.NewRecorder()
+	handler.ServeHTTP(wrongHostResponse, wrongHost)
+	if wrongHostResponse.Code != http.StatusNotFound {
+		t.Fatalf("DSH wrong-host status = %d", wrongHostResponse.Code)
+	}
+}
+
 func TestBrowserGatewayExecutorRoutesAreClosedBeforeAGUIFallback(t *testing.T) {
 	executorCalls := 0
 	aguiCalls := 0

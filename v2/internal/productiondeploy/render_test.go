@@ -353,7 +353,7 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 	if countKind(runtime, "Job") != 0 || countKind(runtime, "HorizontalPodAutoscaler") != 0 {
 		t.Fatal("runtime stage contains a per-run Job or HPA")
 	}
-	if countKind(runtime, "Deployment") != 9 || countKind(runtime, "PodDisruptionBudget") != 8 {
+	if countKind(runtime, "Deployment") != 10 || countKind(runtime, "PodDisruptionBudget") != 8 {
 		t.Fatalf("runtime topology = %d deployments, %d PDBs", countKind(runtime, "Deployment"), countKind(runtime, "PodDisruptionBudget"))
 	}
 	gateway := findResource(t, runtime, "Deployment", executorComponent)
@@ -374,7 +374,7 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 		"SERVE_PUBLIC_TLS_ENABLED":                         "false",
 		"SERVE_ADMIN_TLS_ENABLED":                          "true",
 		"SERVE_PUBLIC_CORS_ENABLED":                        "true",
-		"SERVE_PUBLIC_CORS_ALLOWED_ORIGINS":                "https://agent.byted.bps.dev,https://browser.byted.bps.dev",
+		"SERVE_PUBLIC_CORS_ALLOWED_ORIGINS":                "https://agent.byted.bps.dev,https://browser.byted.bps.dev,https://dsh.byted.bps.dev",
 		"SERVE_PUBLIC_CORS_ALLOW_CREDENTIALS":              "false",
 		"SERVE_COOKIES_SAME_SITE_MODE":                     "Lax",
 		"OAUTH2_PKCE_ENFORCED_FOR_PUBLIC_CLIENTS":          "true",
@@ -399,6 +399,7 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 		"--grant-type authorization_code", "--token-endpoint-auth-method none",
 		"reconcile_client 'agentserver-platform'", "reconcile_client 'agentserver-browser'",
 		"--redirect-uri 'https://agent.byted.bps.dev/'", "--redirect-uri 'https://browser.byted.bps.dev/'",
+		"--redirect-uri 'https://dsh.byted.bps.dev/'",
 		"--audience " + corecontract.PlatformOAuthAudience, "--audience " + corecontract.BrowserOAuthAudience,
 		"--access-token-strategy opaque",
 	} {
@@ -539,10 +540,10 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 		t.Fatal("harness runtime retained network administration capability")
 	}
 
-	if countKind(foundation, "NetworkPolicy") != 15 {
+	if countKind(foundation, "NetworkPolicy") != 16 {
 		t.Fatalf("foundation NetworkPolicy count = %d", countKind(foundation, "NetworkPolicy"))
 	}
-	if countKind(foundation, "HTTPRoute") != 7 {
+	if countKind(foundation, "HTTPRoute") != 8 {
 		t.Fatalf("foundation HTTPRoute count = %d", countKind(foundation, "HTTPRoute"))
 	}
 	for _, resource := range foundation {
@@ -553,7 +554,9 @@ func TestRenderLocksProductionTopologyAndSecurityShape(t *testing.T) {
 	assertHTTPRoute(t, foundation, "agentserver-platform", ProductionFrontendHostname, platformComponent, PublicHTTPPort,
 		[]string{"/", "/assets", "/auth/config", "/auth/llm-gateway/callback", "/index.html", "/readyz", "/v2", "/workspaces"})
 	assertHTTPRoute(t, foundation, "agentserver-browser", ProductionBrowserFrontendHostname, browserComponent, PublicHTTPPort,
-		[]string{"/", "/assets", "/auth/config", "/dsh", "/index.html", "/readyz", "/workspaces"})
+		[]string{"/", "/assets", "/auth/config", "/index.html", "/readyz", "/workspaces"})
+	assertHTTPRoute(t, foundation, "agentserver-dsh", ProductionDSHFrontendHostname, dshComponent, PublicHTTPPort,
+		[]string{"/"})
 	assertHTTPRoute(t, foundation, "agentserver-browser-api", ProductionBrowserHostname, browserComponent, PublicHTTPPort,
 		[]string{"/v2"})
 	assertHTTPRoute(t, foundation, "agentserver-executor-agentx", ProductionExecutorHostname, executorComponent, PublicHTTPPort,

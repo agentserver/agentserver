@@ -53,6 +53,10 @@ func renderRuntime(context renderContext) ([]kubeObject, error) {
 	if err != nil {
 		return nil, err
 	}
+	dsh, err := renderDSHDeployment(context)
+	if err != nil {
+		return nil, err
+	}
 	executor, err := renderExecutorDeployment(context)
 	if err != nil {
 		return nil, err
@@ -71,6 +75,7 @@ func renderRuntime(context renderContext) ([]kubeObject, error) {
 		core,
 		platform,
 		browser,
+		dsh,
 		executor,
 		harness,
 		llmproxy,
@@ -138,6 +143,7 @@ func renderHydraDeployment(context renderContext) kubeObject {
 			valueEnvironment("SERVE_PUBLIC_CORS_ALLOWED_ORIGINS", strings.Join([]string{
 				"https://" + document.Ingress.FrontendHostname,
 				"https://" + document.Ingress.BrowserFrontendHostname,
+				"https://" + ProductionDSHFrontendHostname,
 			}, ",")),
 			valueEnvironment("SERVE_PUBLIC_CORS_ALLOWED_METHODS", "POST,OPTIONS"),
 			valueEnvironment("SERVE_PUBLIC_CORS_ALLOWED_HEADERS", "Accept,Content-Type"),
@@ -463,6 +469,14 @@ func renderPlatformDeployment(context renderContext) (kubeObject, error) {
 }
 
 func renderBrowserDeployment(context renderContext) (kubeObject, error) {
+	return renderBrowserWorkload(context, false)
+}
+
+func renderDSHDeployment(context renderContext) (kubeObject, error) {
+	return renderBrowserWorkload(context, true)
+}
+
+func renderBrowserWorkload(context renderContext, dsh bool) (kubeObject, error) {
 	config := context.config
 	document := config.Document
 	material, err := secretMaterialVolume("material", document.Secrets.BrowserGateway, materialProfileBrowserGateway, groupReadableSecretMode)
@@ -487,14 +501,28 @@ func renderBrowserDeployment(context renderContext) (kubeObject, error) {
 		valueEnvironment("AGENTSERVER_V2_BROWSER_OAUTH_SCOPES", strings.Join(BrowserOAuthScopes(), ",")),
 		valueEnvironment("AGENTSERVER_V2_BROWSER_OAUTH_AUTHORIZATION_ENDPOINT", document.OAuth.Hydra.PublicOrigin+"/oauth2/auth"),
 		valueEnvironment("AGENTSERVER_V2_BROWSER_OAUTH_TOKEN_ENDPOINT", document.OAuth.Hydra.PublicOrigin+"/oauth2/token"),
-		valueEnvironment(browsergateway.DSHWorkspaceIDEnvironment, document.Bootstrap.WorkspaceID),
-		valueEnvironment(browsergateway.DSHWorkspacePathEnvironment, "/workspace"),
-		valueEnvironment(browsergateway.DSHWorkspaceTitleEnvironment, "AgentServer"),
-		valueEnvironment(browsergateway.DSHHomeEnvironment, "/home/agent"),
+	}
+	component, replicas, strategy := browserComponent, document.Replicas.BrowserGateway, "RollingUpdate"
+	if dsh {
+		// DSH's projection is process-local. Keep HTTP and WebSocket on one
+		// process, without reducing the existing Browser gateway's availability.
+		component, replicas, strategy = dshComponent, 1, "Recreate"
+		environment = append(environment,
+			valueEnvironment(browsergateway.DSHOriginEnvironment, "https://"+ProductionDSHFrontendHostname),
+			valueEnvironment(browsergateway.DSHWorkspaceIDEnvironment, document.Bootstrap.WorkspaceID),
+			valueEnvironment(browsergateway.DSHWorkspacePathEnvironment, "/workspace"),
+			valueEnvironment(browsergateway.DSHWorkspaceTitleEnvironment, "AgentServer"),
+			valueEnvironment(browsergateway.DSHHomeEnvironment, "/home/agent"),
+		)
 	}
 	return deployment(deploymentInput{
-		namespace: document.Namespace, platform: document.Platform, component: browserComponent, replicas: document.Replicas.BrowserGateway,
-		image: document.Images.Service, serviceAccount: browserComponent,
+		namespace: document.Namespace, platform: document.Platform, component: component, replicas: replicas,
+		image: document.Images.Service, serviceAccount: func() string {
+			if dsh {
+				return dshComponent
+			}
+			return browserComponent
+		}(),
 		command: []any{"/usr/local/bin/browser-gateway"}, args: []any{"serve"}, environment: environment,
 		volumes:      []any{material, emptyDirVolume("scratch", "Memory", document.Resources.ScratchTmpfs)},
 		volumeMounts: append(materialMounts, kubeObject{"name": "scratch", "mountPath": "/tmp"}),
@@ -502,7 +530,7 @@ func renderBrowserDeployment(context renderContext) (kubeObject, error) {
 		probePort:    document.Services.BrowserGateway.Port,
 		hostAliases:  map[string]string{CoreInternalHost: document.Services.Core.ClusterIP},
 		resources:    document.Resources.BrowserGateway, uid: ServiceUID, gid: ServiceGID, fsGroup: ServiceGID,
-		strategy: "RollingUpdate", configHash: context.documentHash, termination: 20,
+		strategy: strategy, configHash: context.documentHash, termination: 20,
 	}), nil
 }
 

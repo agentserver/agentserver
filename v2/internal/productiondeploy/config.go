@@ -95,6 +95,7 @@ const (
 	ProductionGatewaySection           = "https-byted-bps"
 	ProductionFrontendHostname         = "agent.byted.bps.dev"
 	ProductionBrowserFrontendHostname  = "browser.byted.bps.dev"
+	ProductionDSHFrontendHostname      = "dsh.byted.bps.dev"
 	ProductionBrowserHostname          = "browser-gateway.byted.bps.dev"
 	ProductionExecutorHostname         = "executor-gateway.byted.bps.dev"
 	ProductionHydraHostname            = "auth-sg.byted.bps.dev"

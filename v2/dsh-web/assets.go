@@ -1,5 +1,6 @@
 // Package dshweb embeds the DSH Web production bundle into the v2
-// browser-gateway. The gateway mounts the handler below at /dsh/ and keeps
+// browser-gateway. The gateway mounts the handler below at the dedicated DSH
+// host and keeps
 // the DSH RPC/WebSocket facade on the same origin.
 package dshweb
 
@@ -49,12 +50,21 @@ func mustBundle() staticBundle {
 
 // Handler returns the DSH static bundle. API and WebSocket paths are mounted
 // by the browser-gateway caller so this handler remains a pure asset server.
-func Handler() http.Handler { return assetHandler{} }
+func Handler() http.Handler { return assetHandler{contentSecurityPolicy: contentSecurityPolicy} }
 
-type assetHandler struct{}
+// HandlerForOAuthOrigin adds the exact Hydra origin used by the browser PKCE
+// exchange to connect-src while keeping all other connection authorities out.
+func HandlerForOAuthOrigin(origin string) (http.Handler, error) {
+	if origin == "" {
+		return nil, fmt.Errorf("DSH OAuth origin is required")
+	}
+	return assetHandler{contentSecurityPolicy: contentSecurityPolicy + " " + origin}, nil
+}
 
-func (assetHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
-	setSecurityHeaders(response.Header())
+type assetHandler struct{ contentSecurityPolicy string }
+
+func (handler assetHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
+	setSecurityHeaders(response.Header(), handler.contentSecurityPolicy)
 	if request.Method != http.MethodGet && request.Method != http.MethodHead {
 		response.Header().Set("Allow", "GET, HEAD")
 		http.Error(response, "method not allowed", http.StatusMethodNotAllowed)
@@ -114,8 +124,8 @@ func assetContentType(name string) string {
 	}
 }
 
-func setSecurityHeaders(header http.Header) {
-	header.Set("Content-Security-Policy", contentSecurityPolicy)
+func setSecurityHeaders(header http.Header, policy string) {
+	header.Set("Content-Security-Policy", policy)
 	header.Set("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
 	header.Set("Cross-Origin-Resource-Policy", "same-origin")
 	header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")

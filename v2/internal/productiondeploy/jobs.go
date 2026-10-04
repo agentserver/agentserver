@@ -53,7 +53,7 @@ func renderHydraClientSetupJob(context renderContext) kubeObject {
 	browserFlags := hydraPublicClientFlags(
 		"AgentServer Browser", corecontract.BrowserOAuthScopes(), corecontract.BrowserOAuthAudience,
 		"https://"+document.Ingress.BrowserFrontendHostname+"/",
-	)
+	) + " --redirect-uri 'https://" + ProductionDSHFrontendHostname + "/'"
 	botmuxFlags := hydraPublicClientFlags(
 		"Botmux", corecontract.BotmuxOAuthScopes(), corecontract.BrowserOAuthAudience,
 		"http://127.0.0.1:39647/oauth/callback",

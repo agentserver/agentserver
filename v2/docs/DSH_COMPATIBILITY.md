@@ -12,7 +12,7 @@ The facade implements the DSH Connection protocol:
 
 The facade never accepts credentials in a query parameter. It accepts the normal bearer header and the narrowly named bearer-cookie forms needed for a browser WebSocket (`agentserver-bearer`, `agentserver_access_token`, and `access_token`).
 
-The production v2 chart embeds the DSH Web client at `/dsh/` on the browser frontend origin. Its `/dsh/api/*` HTTP and `/dsh/api/remote.mux` WebSocket routes are stripped back to the same facade, so the page stays same-origin. The embedded page also projects the v2 browser OAuth session from `agentserver-v2.auth.browser.v1` into bearer headers; the first unary call mints the HttpOnly bearer cookie used by the WebSocket.
+The production v2 chart runs a dedicated `dsh-frontend` browser-gateway workload at `https://dsh.byted.bps.dev/`. Its `/api/*` HTTP and `/api/remote.mux` WebSocket routes are same-origin with the embedded page. The embedded page performs its own v2 browser OAuth PKCE flow and projects the resulting access token into bearer headers; the first unary call mints the HttpOnly bearer cookie used by the WebSocket.
 
 Because a browser WebSocket cannot set `Authorization`, a DSH browser page connecting to a separately hosted AgentServer must provision `agentserver-bearer` before opening its Remote stream (for example, by making one credentialed unary request through the same origin or by having the hosting auth adapter set the cookie). Cross-origin browser transports must use a credentialed fetch configuration; a Node/Desktop DSH carrier may send the bearer header directly on the WebSocket handshake.
 

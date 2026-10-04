@@ -3,6 +3,7 @@ package browsergateway
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
@@ -117,26 +118,71 @@ func (state *dshSessionState) mapCanonical(event runevent.Event) {
 	switch event.Kind {
 	case runevent.KindAssistantMessageStarted, runevent.KindAssistantReasoningStarted:
 		value := payload.(runevent.MessageStartedPayload)
-		state.builders[value.MessageID] = &dshAssistantBuilder{id: value.MessageID, reasoning: event.Kind == runevent.KindAssistantReasoningStarted}
+		builder := &dshAssistantBuilder{
+			id: value.MessageID, attemptID: dshAssistantAttemptID(event, value.MessageID),
+			reasoning: event.Kind == runevent.KindAssistantReasoningStarted, turn: turn, step: step,
+			startedAfterSeq: state.nextSeq - 1,
+		}
+		state.builders[value.MessageID] = builder
+		state.emitAssistantStartLocked(builder)
+		state.emitAssistantChunkLocked(builder, event.CreatedAt.UnixMilli(), map[string]any{
+			"type": "block-start", "index": 0, "blockType": assistantBlockType(builder),
+		})
 	case runevent.KindAssistantMessageDelta, runevent.KindAssistantReasoningDelta:
 		value := payload.(runevent.MessageDeltaPayload)
 		builder := state.builders[value.MessageID]
 		if builder == nil {
-			builder = &dshAssistantBuilder{id: value.MessageID, reasoning: event.Kind == runevent.KindAssistantReasoningDelta}
+			builder = &dshAssistantBuilder{
+				id: value.MessageID, attemptID: dshAssistantAttemptID(event, value.MessageID),
+				reasoning: event.Kind == runevent.KindAssistantReasoningDelta, turn: turn, step: step,
+				startedAfterSeq: state.nextSeq - 1,
+			}
 			state.builders[value.MessageID] = builder
+			state.emitAssistantStartLocked(builder)
+			state.emitAssistantChunkLocked(builder, event.CreatedAt.UnixMilli(), map[string]any{
+				"type": "block-start", "index": 0, "blockType": assistantBlockType(builder),
+			})
 		}
 		builder.text.WriteString(value.Delta)
+		chunkType := "text-delta"
+		if builder.reasoning {
+			chunkType = "reasoning-delta"
+		}
+		state.emitAssistantChunkLocked(builder, event.CreatedAt.UnixMilli(), map[string]any{
+			"type": chunkType, "index": 0, "text": value.Delta,
+		})
 	case runevent.KindAssistantMessageCompleted, runevent.KindAssistantReasoningDone:
 		value := payload.(runevent.MessageCompletedPayload)
 		builder := state.builders[value.MessageID]
 		if builder == nil {
-			return
+			builder = &dshAssistantBuilder{
+				id: value.MessageID, attemptID: dshAssistantAttemptID(event, value.MessageID),
+				reasoning: event.Kind == runevent.KindAssistantReasoningDone, turn: turn, step: step,
+				startedAfterSeq: state.nextSeq - 1,
+			}
+			state.builders[value.MessageID] = builder
+			state.emitAssistantStartLocked(builder)
+			state.emitAssistantChunkLocked(builder, event.CreatedAt.UnixMilli(), map[string]any{
+				"type": "block-start", "index": 0, "blockType": assistantBlockType(builder),
+			})
 		}
 		contentType := "text"
 		if builder.reasoning {
 			contentType = "reasoning"
 		}
-		state.appendLocked("assistant/message", timeMS, map[string]any{"turn": turn, "step": step, "message": map[string]any{"role": "assistant", "content": []any{map[string]any{"type": contentType, "text": builder.text.String()}}, "source": map[string]any{"kind": "model", "provider": "agentserver", "model": "codex"}, "id": builder.id}, "stream": []any{}})
+		state.emitAssistantChunkLocked(builder, timeMS, map[string]any{
+			"type": "block-end", "index": 0,
+			"block": map[string]any{"type": contentType, "text": builder.text.String()},
+		})
+		state.emitAssistantChunkLocked(builder, timeMS, map[string]any{
+			"type": "finish", "reason": map[string]any{"kind": "stop"},
+		})
+		stream := make([]any, 0, len(builder.stream))
+		for _, record := range builder.stream {
+			stream = append(stream, record)
+		}
+		settlement := state.appendLocked("assistant/message", timeMS, map[string]any{"turn": turn, "step": step, "message": map[string]any{"role": "assistant", "content": []any{map[string]any{"type": contentType, "text": builder.text.String()}}, "source": map[string]any{"kind": "model", "provider": "agentserver", "model": "codex"}, "id": builder.id}, "stream": stream})
+		state.emitAssistantEndLocked(builder, "committed", settlement.Seq, "assistant/message")
 		delete(state.builders, value.MessageID)
 	case runevent.KindToolCallStarted:
 		value := payload.(runevent.ToolCallStartedPayload)
@@ -168,6 +214,7 @@ func (state *dshSessionState) mapCanonical(event runevent.Event) {
 		}
 		state.appendLocked("tool/result", timeMS, map[string]any{"turn": turn, "step": step, "message": map[string]any{"id": value.MessageID, "role": "tool", "content": []any{map[string]any{"type": "text", "text": value.Content}}, "source": map[string]any{"kind": "tool", "callId": value.ToolCallID}, "toolCallId": value.ToolCallID}})
 	case runevent.KindRunCompleted, runevent.KindRunFailed, runevent.KindRunInterrupted, runevent.KindRunCancelled:
+		state.abandonAssistantStreamsLocked()
 		state.appendLocked("step/end", timeMS, map[string]any{"turn": turn, "step": step})
 		reason := map[string]any{"kind": "completed"}
 		if event.Kind != runevent.KindRunCompleted {
@@ -178,6 +225,67 @@ func (state *dshSessionState) mapCanonical(event runevent.Event) {
 	case runevent.KindRunCancelling:
 		// Keep the turn open until Core commits its terminal cancelled or
 		// interrupted event; DSH's journal must not close the same turn twice.
+	}
+}
+
+func dshAssistantAttemptID(event runevent.Event, messageID string) string {
+	// DSH only requires a stable opaque attempt identity within one stream. A
+	// message-scoped identity keeps reasoning and answer settlements independent
+	// even when Core reports several Assistant items under one run attempt.
+	if messageID != "" {
+		return "agentserver-" + messageID
+	}
+	if event.RunAttemptID != nil && *event.RunAttemptID != "" {
+		return "agentserver-" + *event.RunAttemptID
+	}
+	return "agentserver-" + event.EventID
+}
+
+func assistantBlockType(builder *dshAssistantBuilder) string {
+	if builder.reasoning {
+		return "reasoning"
+	}
+	return "text"
+}
+
+func (state *dshSessionState) emitAssistantStartLocked(builder *dshAssistantBuilder) {
+	state.emitAssistantFrameLocked(map[string]any{
+		"type": "start", "attemptId": builder.attemptID,
+		"startedAfterSeq": builder.startedAfterSeq, "turn": builder.turn, "step": builder.step,
+	})
+}
+
+func (state *dshSessionState) emitAssistantChunkLocked(builder *dshAssistantBuilder, timeMS int64, chunk map[string]any) {
+	index := builder.nextIndex
+	builder.nextIndex++
+	record := map[string]any{"type": "chunk", "time": timeMS, "chunk": chunk}
+	builder.stream = append(builder.stream, record)
+	state.emitAssistantFrameLocked(map[string]any{
+		"type": "chunk", "attemptId": builder.attemptID, "index": index, "time": timeMS, "chunk": chunk,
+	})
+}
+
+func (state *dshSessionState) emitAssistantEndLocked(builder *dshAssistantBuilder, outcomeKind string, seq int64, eventType string) {
+	outcome := map[string]any{"kind": outcomeKind}
+	if outcomeKind == "committed" {
+		outcome["eventType"] = eventType
+		outcome["seq"] = seq
+	}
+	state.emitAssistantFrameLocked(map[string]any{
+		"type": "end", "attemptId": builder.attemptID, "index": builder.nextIndex, "outcome": outcome,
+	})
+}
+
+func (state *dshSessionState) abandonAssistantStreamsLocked() {
+	ids := make([]string, 0, len(state.builders))
+	for id := range state.builders {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		builder := state.builders[id]
+		state.emitAssistantEndLocked(builder, "abandoned", 0, "")
+		delete(state.builders, id)
 	}
 }
 
@@ -192,7 +300,7 @@ func validToolArguments(raw string) string {
 	return raw
 }
 
-func (state *dshSessionState) appendLocked(kind string, timeMS int64, data any) {
+func (state *dshSessionState) appendLocked(kind string, timeMS int64, data any) dshEvent {
 	event := dshEvent{Type: kind, Seq: state.nextSeq, Time: timeMS, Data: data}
 	if kind == "user/message" || kind == "assistant/message" || kind == "tool/result" {
 		event.SurfaceOp = "append"
@@ -201,10 +309,51 @@ func (state *dshSessionState) appendLocked(kind string, timeMS int64, data any) 
 	state.events = append(state.events, event)
 	for _, subscriber := range state.subs {
 		select {
-		case subscriber <- event:
+		case subscriber <- dshSessionUpdate{event: &event}:
 		default:
 		}
 	}
+	return event
+}
+
+func (state *dshSessionState) emitAssistantFrameLocked(frame map[string]any) {
+	// Revisions are process-local and monotonically increasing.  This is the
+	// continuity token used by DSH followers to detect a dropped frame and
+	// request a fresh baseline.
+	state.assistantRevision++
+	frame["revision"] = state.assistantRevision
+	update := dshSessionUpdate{assistantFrame: frame}
+	for _, subscriber := range state.subs {
+		select {
+		case subscriber <- update:
+		default:
+		}
+	}
+}
+
+func (state *dshSessionState) assistantBaseline() map[string]any {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	baseline := map[string]any{"revision": state.assistantRevision}
+	if len(state.builders) == 0 {
+		return baseline
+	}
+	ids := make([]string, 0, len(state.builders))
+	for id := range state.builders {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	builder := state.builders[ids[len(ids)-1]]
+	stream := make([]any, 0, len(builder.stream))
+	for _, record := range builder.stream {
+		stream = append(stream, record)
+	}
+	baseline["activeAttempt"] = map[string]any{
+		"attemptId": builder.attemptID, "startedAfterSeq": builder.startedAfterSeq,
+		"turn": builder.turn, "step": builder.step, "nextIndex": builder.nextIndex,
+		"stream": stream,
+	}
+	return baseline
 }
 
 func (state *dshSessionState) page(before, through *int64, max int) ([]map[string]any, bool) {
@@ -248,11 +397,11 @@ func (state *dshSessionState) snapshot() ([]dshEvent, dshSessionHeader, int64) {
 	return events, header, cursor
 }
 
-func (state *dshSessionState) subscribe(ctx context.Context) (<-chan dshEvent, func()) {
+func (state *dshSessionState) subscribe(ctx context.Context) (<-chan dshSessionUpdate, func()) {
 	state.mu.Lock()
 	id := state.nextSub
 	state.nextSub++
-	channel := make(chan dshEvent, 128)
+	channel := make(chan dshSessionUpdate, 256)
 	state.subs[id] = channel
 	state.mu.Unlock()
 	stop := func() {

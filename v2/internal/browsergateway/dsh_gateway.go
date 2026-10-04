@@ -78,17 +78,18 @@ type DSHGateway struct {
 }
 
 type dshSessionState struct {
-	mu        sync.Mutex
-	session   corecontract.UserSessionState
-	events    []dshEvent
-	nextSeq   int64
-	subs      map[int]chan dshEvent
-	nextSub   int
-	runCancel context.CancelFunc
-	builders  map[string]*dshAssistantBuilder
-	tools     map[string]*dshToolBuilder
-	loaded    bool
-	pending   []dshPendingPrompt
+	mu                sync.Mutex
+	session           corecontract.UserSessionState
+	events            []dshEvent
+	nextSeq           int64
+	subs              map[int]chan dshSessionUpdate
+	nextSub           int
+	assistantRevision int64
+	runCancel         context.CancelFunc
+	builders          map[string]*dshAssistantBuilder
+	tools             map[string]*dshToolBuilder
+	loaded            bool
+	pending           []dshPendingPrompt
 }
 
 type dshPendingPrompt struct {
@@ -98,9 +99,24 @@ type dshPendingPrompt struct {
 }
 
 type dshAssistantBuilder struct {
-	id        string
-	reasoning bool
-	text      strings.Builder
+	id              string
+	attemptID       string
+	reasoning       bool
+	text            strings.Builder
+	turn            int
+	step            int
+	startedAfterSeq int64
+	nextIndex       int
+	stream          []map[string]any
+}
+
+// dshSessionUpdate preserves the ordering between durable Session events and
+// process-local Assistant stream frames.  In particular, a committed
+// assistant/message must reach the client before the matching stream/end
+// frame, otherwise the DSH client has to rebaseline the stream.
+type dshSessionUpdate struct {
+	event          *dshEvent
+	assistantFrame map[string]any
 }
 
 type dshToolBuilder struct {
@@ -811,7 +827,7 @@ func (gateway *DSHGateway) installSession(session corecontract.UserSessionState)
 	defer gateway.mu.Unlock()
 	state := gateway.sessions[session.SessionID]
 	if state == nil {
-		state = &dshSessionState{session: session, nextSeq: 0, subs: map[int]chan dshEvent{}, builders: map[string]*dshAssistantBuilder{}, tools: map[string]*dshToolBuilder{}}
+		state = &dshSessionState{session: session, nextSeq: 0, subs: map[int]chan dshSessionUpdate{}, builders: map[string]*dshAssistantBuilder{}, tools: map[string]*dshToolBuilder{}}
 		gateway.sessions[session.SessionID] = state
 	} else {
 		state.mu.Lock()
@@ -984,6 +1000,18 @@ func stringField(object map[string]any, key string) string {
 		return value
 	}
 	return ""
+}
+func numberField(object map[string]any, key string) int64 {
+	switch value := object[key].(type) {
+	case int:
+		return int64(value)
+	case int64:
+		return value
+	case float64:
+		return int64(value)
+	default:
+		return 0
+	}
 }
 func boundedIdempotency(value string) string {
 	if value == "" {

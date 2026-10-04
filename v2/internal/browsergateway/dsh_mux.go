@@ -243,21 +243,36 @@ func (gateway *DSHGateway) openStream(ctx context.Context, bearer string, args m
 			}
 			snapshot := map[string]any{"type": "snapshot", "header": header, "cursor": cursor, "records": records, "hasMore": hasMore, "projections": map[string]any{"asOfSeq": cursor, "values": map[string]any{"permissions": map[string]any{"currentValue": state.permissionMode()}}}}
 			if request.AssistantStream {
-				snapshot["assistantStream"] = map[string]any{"revision": 0}
+				snapshot["assistantStream"] = state.assistantBaseline()
 			}
 			out <- snapshot
+			assistantRevision := int64(0)
+			if request.AssistantStream {
+				if baseline, ok := snapshot["assistantStream"].(map[string]any); ok {
+					assistantRevision = numberField(baseline, "revision")
+				}
+			}
 			for {
 				select {
 				case <-ctx.Done():
 					return
-				case event, ok := <-updates:
+				case update, ok := <-updates:
 					if !ok {
 						return
 					}
-					if event.Seq <= cursor {
-						continue
+					if update.event != nil {
+						event := *update.event
+						if event.Seq > cursor {
+							out <- eventValue(event)
+						}
 					}
-					out <- eventValue(event)
+					if request.AssistantStream && update.assistantFrame != nil {
+						revision := numberField(update.assistantFrame, "revision")
+						if revision > assistantRevision {
+							assistantRevision = revision
+							out <- map[string]any{"type": "assistant-stream", "frame": update.assistantFrame}
+						}
+					}
 				}
 			}
 		}()

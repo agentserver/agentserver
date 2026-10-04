@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
+	"github.com/agentserver/agentserver/v2/internal/runevent"
 )
 
 type dshFakeBackend struct {
@@ -181,5 +182,57 @@ func TestDSHGatewayFollowIncludesAssistantBaselineWhenRequested(t *testing.T) {
 	snapshot, ok := value.(map[string]any)
 	if !ok || snapshot["assistantStream"] == nil {
 		t.Fatalf("follow snapshot = %#v", value)
+	}
+}
+
+func TestDSHGatewayAssistantStreamPublishesDeltasBeforeSettlement(t *testing.T) {
+	fake := &dshFakeBackend{sessions: []corecontract.UserSessionState{{
+		SessionID: projectorSessionID, Version: 1, PermissionMode: "read-only", UpdatedAt: time.Now().UTC(),
+	}}}
+	gateway := newDSHTestGateway(t, fake)
+	state := gateway.installSession(fake.sessions[0])
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	updates, stop := state.subscribe(ctx)
+	defer stop()
+
+	state.mapCanonical(projectorEvent(t, 1, runevent.KindAssistantMessageStarted, runevent.MessageStartedPayload{MessageID: "message-stream", Role: "assistant"}))
+	state.mapCanonical(projectorEvent(t, 2, runevent.KindAssistantMessageDelta, runevent.MessageDeltaPayload{MessageID: "message-stream", Delta: "hello"}))
+	start := <-updates
+	if start.assistantFrame == nil || start.assistantFrame["type"] != "start" {
+		t.Fatalf("assistant start update = %#v", start)
+	}
+	blockStart := <-updates
+	if blockStart.assistantFrame == nil || blockStart.assistantFrame["type"] != "chunk" {
+		t.Fatalf("assistant block-start update = %#v", blockStart)
+	}
+	delta := <-updates
+	if delta.assistantFrame == nil || delta.assistantFrame["type"] != "chunk" {
+		t.Fatalf("assistant delta update = %#v", delta)
+	}
+	deltaChunk := delta.assistantFrame["chunk"].(map[string]any)
+	if deltaChunk["type"] != "text-delta" || deltaChunk["text"] != "hello" {
+		t.Fatalf("assistant delta = %#v", deltaChunk)
+	}
+	baseline := state.assistantBaseline()
+	active, ok := baseline["activeAttempt"].(map[string]any)
+	if !ok || active["nextIndex"] != 2 || len(active["stream"].([]any)) != 2 {
+		t.Fatalf("assistant baseline = %#v", baseline)
+	}
+
+	state.mapCanonical(projectorEvent(t, 3, runevent.KindAssistantMessageCompleted, runevent.MessageCompletedPayload{MessageID: "message-stream"}))
+	blockEnd := <-updates
+	finish := <-updates
+	settlement := <-updates
+	end := <-updates
+	if blockEnd.assistantFrame == nil || finish.assistantFrame == nil || settlement.event == nil || end.assistantFrame == nil {
+		t.Fatalf("completion update order = %#v %#v %#v %#v", blockEnd, finish, settlement, end)
+	}
+	if settlement.event.Type != "assistant/message" || end.assistantFrame["type"] != "end" {
+		t.Fatalf("completion updates = %#v %#v", settlement, end)
+	}
+	endOutcome := end.assistantFrame["outcome"].(map[string]any)
+	if endOutcome["kind"] != "committed" || endOutcome["eventType"] != "assistant/message" || endOutcome["seq"] != int64(0) {
+		t.Fatalf("assistant end outcome = %#v", endOutcome)
 	}
 }

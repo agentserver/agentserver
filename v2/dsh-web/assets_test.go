@@ -22,4 +22,9 @@ func TestHandlerAllowsDSHRuntimeAssets(t *testing.T) {
 	if !strings.Contains(response.Body.String(), "__DSH_AUTH_READY__") {
 		t.Fatal("DSH authentication bootstrap is missing")
 	}
+	for _, disabled := range []string{"@deepseek-ai/dsh-client-ui-directory-picker-native", "@deepseek-ai/dsh-client-hmr"} {
+		if strings.Contains(response.Body.String(), disabled) {
+			t.Fatalf("production DSH graph still contains disabled entry %q", disabled)
+		}
+	}
 }

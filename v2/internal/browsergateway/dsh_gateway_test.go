@@ -137,6 +137,28 @@ func TestDSHGatewaySetsBearerCookieForBrowserWebSocketBootstrap(t *testing.T) {
 	}
 }
 
+func TestDSHGatewayProvidesNoopInspectionCatalogAndPickerCapabilityError(t *testing.T) {
+	gateway := newDSHTestGateway(t, &dshFakeBackend{})
+	for _, test := range []struct {
+		method string
+		want   any
+	}{
+		{method: "dynamicCordisRunner/syncInspectManifest", want: nil},
+		{method: "dynamicCordisRunner/inventory", want: []any{}},
+	} {
+		envelope := dshRequest(t, gateway, test.method, `{}`)
+		result := envelope["result"].(map[string]any)
+		if result["ok"] != true {
+			t.Fatalf("%s result = %#v", test.method, result)
+		}
+	}
+	envelope := dshRequest(t, gateway, "directoryPicker/list", `{"path":"/workspace"}`)
+	result := envelope["result"].(map[string]any)
+	if result["ok"] != false || result["error"].(map[string]any)["code"] != "directory-picker/unavailable" {
+		t.Fatalf("directory picker result = %#v", result)
+	}
+}
+
 func TestDSHGatewayRejectsMalformedAllowedOrigin(t *testing.T) {
 	if _, err := NewDSHGateway(&dshFakeBackend{}, DSHGatewayConfig{WorkspaceID: "40000000-0000-4000-8000-000000000004", AllowedOrigins: []string{"https://example.test/path"}}); err == nil {
 		t.Fatal("malformed DSH origin was accepted")

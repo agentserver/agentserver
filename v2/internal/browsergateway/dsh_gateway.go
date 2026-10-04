@@ -486,6 +486,16 @@ func (gateway *DSHGateway) dispatch(ctx context.Context, bearer, endpoint string
 		return []any{map[string]any{"name": "permission", "description": "Switch the permission mode", "input": map[string]any{"hint": "<read-only|auto|full-access>"}}}, true, "", "", nil
 	case "commands/execute":
 		return gateway.executeCommand(ctx, bearer, args)
+	case "dynamicCordisRunner/syncInspectManifest":
+		return nil, true, "", "", nil
+	case "dynamicCordisRunner/inventory":
+		return []any{}, true, "", "", nil
+	case "directoryPicker/pick", "directoryPicker/list", "directoryPicker/createDirectory":
+		return nil, false, "directory-picker/unavailable", "the AgentServer DSH facade does not expose a local filesystem picker", map[string]any{"capability": "none"}
+	case "dynamicCordisRunner/resolveInspectQuery", "dynamicCordisRunner/invoke", "dynamicCordisRunner/reportRenderFailure",
+		"dynamicCordisRunner/reportClientGuardFailure", "dynamicCordisRunner/runHostHalf", "dynamicCordisRunner/getClientCode",
+		"dynamicCordisRunner/resolveRequestRun", "dynamicCordisRunner/settleUserRun":
+		return nil, false, "gateway/service-unavailable", "dynamic Cordis plugins are not available in the AgentServer facade", nil
 	default:
 		return nil, false, "gateway/service-unavailable", "DSH endpoint is not implemented by this AgentServer facade", map[string]any{"endpoint": endpoint}
 	}

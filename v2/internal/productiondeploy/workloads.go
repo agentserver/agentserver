@@ -513,6 +513,8 @@ func renderBrowserWorkload(context renderContext, dsh bool) (kubeObject, error) 
 			valueEnvironment(browsergateway.DSHWorkspacePathEnvironment, "/workspace"),
 			valueEnvironment(browsergateway.DSHWorkspaceTitleEnvironment, "AgentServer"),
 			valueEnvironment(browsergateway.DSHHomeEnvironment, "/home/agent"),
+			valueEnvironment(browsergateway.DSHModelProviderEnvironment, corecontract.WorkspaceLLMGatewayProvider),
+			valueEnvironment(browsergateway.DSHModelEnvironment, "gpt-5.6-sol"),
 		)
 	}
 	return deployment(deploymentInput{

@@ -48,6 +48,8 @@ const (
 	browserDSHWorkspacePathEnvironment           = browsergateway.DSHWorkspacePathEnvironment
 	browserDSHWorkspaceTitleEnvironment          = browsergateway.DSHWorkspaceTitleEnvironment
 	browserDSHHomeEnvironment                    = browsergateway.DSHHomeEnvironment
+	browserDSHModelProviderEnvironment           = browsergateway.DSHModelProviderEnvironment
+	browserDSHModelEnvironment                   = browsergateway.DSHModelEnvironment
 )
 
 const browserShutdownTimeout = 10 * time.Second
@@ -149,6 +151,8 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 			WorkspacePath:  strings.TrimSpace(getenv(browserDSHWorkspacePathEnvironment)),
 			WorkspaceTitle: strings.TrimSpace(getenv(browserDSHWorkspaceTitleEnvironment)),
 			Home:           strings.TrimSpace(getenv(browserDSHHomeEnvironment)),
+			ModelProvider:  strings.TrimSpace(getenv(browserDSHModelProviderEnvironment)),
+			Model:          strings.TrimSpace(getenv(browserDSHModelEnvironment)),
 			AllowedOrigins: func() []string {
 				if dshOrigin != "" {
 					return []string{dshOrigin}

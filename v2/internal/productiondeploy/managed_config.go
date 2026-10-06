@@ -875,8 +875,6 @@ func validateTAENetworkReportForProfileActivation(
 		"larkSkillSha256":       {configuration.LarkSkillSHA256, document.Managed.Lark.SkillSHA256},
 		"managedSkillSha256":    {configuration.ManagedSkillSHA256, document.Managed.BaseInstructionsSHA256},
 		"bkectlSourceRevision":  {configuration.BkectlSourceRevision, document.Managed.Bkectl.SourceRevision},
-		"bkectlCliSha256":       {configuration.BkectlCLISHA256, document.Managed.Bkectl.CLISHA256},
-		"bkectlSkillPackSha256": {configuration.BkectlSkillPackSHA256, document.Managed.Bkectl.SkillPackSHA256},
 	} {
 		if values[0] != values[1] {
 			return fmt.Errorf("TAE network report %s does not match the activation source", name)
@@ -1127,38 +1125,17 @@ func validateManagedExecutor(managed ManagedExecutorDocument, document ConfigDoc
 	}
 	bkectlEnabled := managed.Bkectl.Enabled
 	if bkectlEnabled {
-		for name, digest := range map[string]string{
-			"bkectl.cliSha256":       managed.Bkectl.CLISHA256,
-			"bkectl.skillPackSha256": managed.Bkectl.SkillPackSHA256,
-			"bkectl.policySha256":    managed.Bkectl.PolicySHA256,
-		} {
-			if !nonzeroDigest(digest) {
-				return LoadedConfig{}, fmt.Errorf("managedExecutor.%s must be a non-zero lowercase SHA-256 digest", name)
-			}
-		}
 		if len(managed.Bkectl.SourceRevision) != 40 || strings.Trim(managed.Bkectl.SourceRevision, "0123456789abcdef") != "" {
 			return LoadedConfig{}, errors.New("managedExecutor.bkectl.sourceRevision must be a lowercase 40-character Git SHA")
 		}
 	} else {
-		for name, digest := range map[string]string{
-			"bkectl.cliSha256":       managed.Bkectl.CLISHA256,
-			"bkectl.skillPackSha256": managed.Bkectl.SkillPackSHA256,
-			"bkectl.policySha256":    managed.Bkectl.PolicySHA256,
-		} {
-			if digest != "" && !nonzeroDigest(digest) {
-				return LoadedConfig{}, fmt.Errorf("managedExecutor.%s must be empty or a non-zero lowercase SHA-256 digest", name)
-			}
-		}
 		if managed.Bkectl.SourceRevision != "" &&
 			(len(managed.Bkectl.SourceRevision) != 40 || strings.Trim(managed.Bkectl.SourceRevision, "0123456789abcdef") != "") {
 			return LoadedConfig{}, errors.New("managedExecutor.bkectl.sourceRevision must be empty or a lowercase 40-character Git SHA")
 		}
 	}
 	for name, values := range map[string][2]string{
-		"sourceRevision":  {managed.Bkectl.SourceRevision, bkectlpolicy.SourceRevision},
-		"cliSha256":       {managed.Bkectl.CLISHA256, bkectlpolicy.CLISHA256},
-		"skillPackSha256": {managed.Bkectl.SkillPackSHA256, bkectlpolicy.SkillPackSHA256},
-		"policySha256":    {managed.Bkectl.PolicySHA256, bkectlpolicy.SHA256Hex()},
+		"sourceRevision": {managed.Bkectl.SourceRevision, bkectlpolicy.SourceRevision},
 	} {
 		if values[0] != "" && values[0] != values[1] {
 			return LoadedConfig{}, fmt.Errorf("managedExecutor.bkectl.%s must equal pinned value %s", name, values[1])

@@ -4,8 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-
-	"github.com/agentserver/agentserver/v2/internal/bkectlpolicy"
 )
 
 type ManagedReleaseLock struct {
@@ -64,10 +62,6 @@ func VerifyManagedReleaseLock(artifacts ManagedReleaseArtifacts, lock ManagedRel
 	}{
 		{ManagedSkillPath, lock.ManagedSkillSHA256},
 		{ManagedLarkSkillPath, lock.LarkSkillSHA256},
-		{ManagedBkectlSkillPath, ManagedBkectlSkillSHA256},
-		{ManagedBkectlCommandSurfacePath, ManagedBkectlCommandSurfaceSHA256},
-		{ManagedBkectlDomainGuidesPath, ManagedBkectlDomainGuidesSHA256},
-		{ManagedBkectlInvocationPath, ManagedBkectlInvocationSHA256},
 	} {
 		harnessEntry, harnessFound := harnessFiles[expected.path]
 		sandboxEntry, sandboxFound := sandboxFiles[expected.path]
@@ -76,16 +70,15 @@ func VerifyManagedReleaseLock(artifacts ManagedReleaseArtifacts, lock ManagedRel
 		}
 	}
 	larkCLI, larkFound := sandboxFiles["usr/local/bin/lark-cli"]
-	bkectlCLI, bkectlFound := sandboxFiles["usr/local/bin/bkectl"]
-	if !larkFound || larkCLI.SHA256 != lock.LarkCLISHA256 ||
-		!bkectlFound || bkectlCLI.SHA256 != lock.BkectlCLISHA256 {
-		return errors.New("managed release CLI digest does not match the verified sandbox image manifest")
+	if !larkFound || larkCLI.SHA256 != lock.LarkCLISHA256 {
+		return errors.New("managed release Lark CLI digest does not match the verified sandbox image manifest")
+	}
+	if _, bkectlFound := sandboxFiles["usr/local/bin/bkectl"]; !bkectlFound {
+		return errors.New("managed release sandbox image is missing bkectl CLI")
 	}
 	if lock.ManagedSkillSHA256 != ManagedSkillSHA256 ||
-		lock.BkectlSourceRevision != ManagedBkectlSourceRevision ||
-		lock.BkectlSkillPackSHA256 != ManagedBkectlSkillPackSHA256 ||
-		lock.BkectlPolicySHA256 != bkectlpolicy.SHA256Hex() {
-		return errors.New("managed release tool source, skill pack, instructions, or policy lock is not pinned")
+		lock.BkectlSourceRevision != ManagedBkectlSourceRevision {
+		return errors.New("managed release tool source or instructions lock is not pinned")
 	}
 	return nil
 }

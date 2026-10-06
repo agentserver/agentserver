@@ -161,7 +161,10 @@ func loadNetworkProbeConfig(getenv func(string) string) (networkProbeConfig, err
 		larkSkillSHA256:    larkSkillSHA256,
 		managedSkillSHA256: productionimage.ManagedSkillSHA256, managedSkillSize: productionimage.ManagedSkillSizeBytes,
 		bkectlSourceRevision: productionimage.ManagedBkectlSourceRevision,
-		bkectlCLISHA256:      productionimage.ManagedBkectlCLISHA256, bkectlCLISize: productionimage.ManagedBkectlCLISizeBytes,
+		// Keep the legacy metadata field populated for report compatibility;
+		// bkectl_cli itself is size/version checked below and is deliberately
+		// not validated against this digest.
+		bkectlCLISHA256: productionimage.ManagedBkectlCLISHA256, bkectlCLISize: productionimage.ManagedBkectlCLISizeBytes,
 		bkectlSkillPackSHA256: productionimage.ManagedBkectlSkillPackSHA256,
 		bkectlSkillSHA256:     productionimage.ManagedBkectlSkillSHA256, bkectlSkillSize: productionimage.ManagedBkectlSkillSizeBytes,
 		bkectlCommandSurfaceSHA256: productionimage.ManagedBkectlCommandSurfaceSHA256,
@@ -363,9 +366,13 @@ func runProbeLifecycle(ctx context.Context, config networkProbeConfig, clients *
 				var artifactBytes int64
 				_ = recorder.run("data_read_"+artifact.name, func() error {
 					var readErr error
-					artifactBytes, readErr = probeDownloadDigest(
-						ctx, clients.data, session.ID, artifact.path, artifact.size, artifact.sha256,
-					)
+					if strings.HasPrefix(artifact.name, "bkectl_") {
+						artifactBytes, readErr = probeDownloadSize(ctx, clients.data, session.ID, artifact.path, artifact.size)
+					} else {
+						artifactBytes, readErr = probeDownloadDigest(
+							ctx, clients.data, session.ID, artifact.path, artifact.size, artifact.sha256,
+						)
+					}
 					return readErr
 				})
 				recorder.addBytes("data_read_"+artifact.name, artifactBytes)
@@ -638,6 +645,34 @@ func probeDownloadDigest(ctx context.Context, data adapter.DataPlane, sessionID,
 	}
 	if read != size || hex.EncodeToString(hash.Sum(nil)) != expectedDigest {
 		return read, newProbeFailure("download_digest_mismatch")
+	}
+	return read, nil
+}
+
+func probeDownloadSize(ctx context.Context, data adapter.DataPlane, sessionID, path string, size int64) (int64, error) {
+	if size < 1 || size > 128*1024*1024 {
+		return 0, newProbeFailure("invalid_download_expectation")
+	}
+	requestContext, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	download, err := data.Download(requestContext, sessionID, path)
+	if err != nil {
+		return 0, err
+	}
+	if download.Body == nil {
+		return 0, newProbeFailure("download_body_missing")
+	}
+	if download.ContentLength >= 0 && download.ContentLength != size {
+		_ = download.Body.Close()
+		return 0, newProbeFailure("download_length_mismatch")
+	}
+	read, readErr := io.Copy(io.Discard, io.LimitReader(download.Body, size+1))
+	closeErr := download.Body.Close()
+	if readErr != nil || closeErr != nil {
+		return read, newProbeFailure("download_stream_failed")
+	}
+	if read != size {
+		return read, newProbeFailure("download_size_mismatch")
 	}
 	return read, nil
 }

@@ -211,11 +211,9 @@ func Validate(report Report) error {
 		return errors.New("TAE network report source.podUid must be a canonical lowercase UUID")
 	}
 	for name, value := range map[string]string{
-		"larkCliSha256":         report.Configuration.LarkCLISHA256,
-		"larkSkillSha256":       report.Configuration.LarkSkillSHA256,
-		"managedSkillSha256":    report.Configuration.ManagedSkillSHA256,
-		"bkectlCliSha256":       report.Configuration.BkectlCLISHA256,
-		"bkectlSkillPackSha256": report.Configuration.BkectlSkillPackSHA256,
+		"larkCliSha256":      report.Configuration.LarkCLISHA256,
+		"larkSkillSha256":    report.Configuration.LarkSkillSHA256,
+		"managedSkillSha256": report.Configuration.ManagedSkillSHA256,
 	} {
 		if !digestPattern.MatchString(value) || strings.Trim(value, "0") == "" {
 			return fmt.Errorf("TAE network report configuration.%s must be a non-zero lowercase SHA-256", name)

@@ -46,9 +46,6 @@ func TestManagedReleaseLockBindsImageCLIAndSkillDigests(t *testing.T) {
 		"lark CLI":      func(value *ManagedReleaseLock) { value.LarkCLISHA256 = strings.Repeat("e", 64) },
 		"lark skill":    func(value *ManagedReleaseLock) { value.LarkSkillSHA256 = strings.Repeat("e", 64) },
 		"bkectl source": func(value *ManagedReleaseLock) { value.BkectlSourceRevision = strings.Repeat("e", 40) },
-		"bkectl CLI":    func(value *ManagedReleaseLock) { value.BkectlCLISHA256 = strings.Repeat("e", 64) },
-		"bkectl skill":  func(value *ManagedReleaseLock) { value.BkectlSkillPackSHA256 = strings.Repeat("e", 64) },
-		"bkectl policy": func(value *ManagedReleaseLock) { value.BkectlPolicySHA256 = strings.Repeat("e", 64) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			changed := lock

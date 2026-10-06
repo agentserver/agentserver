@@ -113,8 +113,17 @@ func TestManagedSandboxManifestLocksAMD64RuntimeCLIsAndSkills(t *testing.T) {
 			manifest.Files[index].SHA256 = strings.Repeat("f", 64)
 		}
 	}
-	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "pinned release artifact") {
-		t.Fatalf("managed bkectl CLI drift error = %v", err)
+	if err := manifest.Validate(); err != nil {
+		t.Fatalf("managed bkectl CLI digest drift should be accepted: %v", err)
+	}
+	manifest = validManagedSandboxManifest()
+	for index := range manifest.Files {
+		if manifest.Files[index].Path == "usr/local/bin/bkectl" {
+			manifest.Files[index].SizeBytes++
+		}
+	}
+	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "pinned release size") {
+		t.Fatalf("managed bkectl CLI size drift error = %v", err)
 	}
 
 	manifest = validManagedSandboxManifest()

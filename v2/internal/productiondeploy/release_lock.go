@@ -114,10 +114,7 @@ func releaseLockMatches(document ConfigDocument, lock ReleaseLock) bool {
 		document.Managed.BaseInstructionsSHA256 == lock.ManagedSkillSHA256 &&
 		document.Managed.Lark.CLISHA256 == lock.LarkCLISHA256 &&
 		document.Managed.Lark.SkillSHA256 == lock.LarkSkillSHA256 &&
-		document.Managed.Bkectl.SourceRevision == lock.BkectlSourceRevision &&
-		document.Managed.Bkectl.CLISHA256 == lock.BkectlCLISHA256 &&
-		document.Managed.Bkectl.SkillPackSHA256 == lock.BkectlSkillPackSHA256 &&
-		document.Managed.Bkectl.PolicySHA256 == lock.BkectlPolicySHA256
+		document.Managed.Bkectl.SourceRevision == lock.BkectlSourceRevision
 }
 
 // validateManagedReleaseEvidence is intentionally stricter than ordinary

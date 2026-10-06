@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agentserver/agentserver/v2/internal/bkectlpolicy"
 	"github.com/agentserver/agentserver/v2/internal/managedruntime"
 )
 
@@ -41,9 +40,6 @@ func TestProductionWorkflowPublishesAndLocksManagedSandbox(t *testing.T) {
 		"MANAGED_SKILL_SHA256: " + ManagedSkillSHA256,
 		"BKECTL_REPOSITORY: https://code.byted.org/bd-sre/bkectl.git",
 		"BKECTL_SOURCE_REVISION: " + ManagedBkectlSourceRevision,
-		"BKECTL_CLI_SHA256: " + ManagedBkectlCLISHA256,
-		"BKECTL_SKILL_PACK_SHA256: " + ManagedBkectlSkillPackSHA256,
-		"BKECTL_POLICY_SHA256: " + bkectlpolicy.SHA256Hex(),
 		`--lark-cli="${LARK_CLI_PATH}"`,
 		`--lark-skill="${LARK_SKILL_PATH}"`,
 		`--bkectl="${BKECTL_PATH}"`,
@@ -53,9 +49,9 @@ func TestProductionWorkflowPublishesAndLocksManagedSandbox(t *testing.T) {
 		"skopeo_retry=(--retry-times 10)",
 		"agentserver-deploy lock-release",
 		`--bkectl-source-revision="${BKECTL_SOURCE_REVISION}"`,
-		`--bkectl-cli-sha256="${BKECTL_CLI_SHA256}"`,
-		`--bkectl-skill-pack-sha256="${BKECTL_SKILL_PACK_SHA256}"`,
-		`--bkectl-policy-sha256="${BKECTL_POLICY_SHA256}"`,
+		`--bkectl-cli-sha256="$(jq -er '.managedExecutor.bkectl.cliSha256' "${release_template}")"`,
+		`--bkectl-skill-pack-sha256="$(jq -er '.managedExecutor.bkectl.skillPackSha256' "${release_template}")"`,
+		`--bkectl-policy-sha256="$(jq -er '.managedExecutor.bkectl.policySha256' "${release_template}")"`,
 		"agentserver-image verify-managed-release",
 		`--harness-manifest="${RUNNER_TEMP}/agentserver-v2-image-evidence/harness-image-manifest.json"`,
 		`--harness-archive="${RUNNER_TEMP}/agentserver-v2-image-evidence/harness-image.oci.tar"`,

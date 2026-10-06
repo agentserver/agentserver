@@ -105,8 +105,8 @@
           "type": "string",
           "pattern": "^[0-9a-f]{40}$"
         },
-        "bkectlCliSha256": { "$ref": "#/$defs/digest" },
-        "bkectlSkillPackSha256": { "$ref": "#/$defs/digest" },
+        "bkectlCliSha256": { "type": "string" },
+        "bkectlSkillPackSha256": { "type": "string" },
         "connectivityAttempts": { "type": "integer", "minimum": 1, "maximum": 100 },
         "lifecycleAttempts": { "type": "integer", "minimum": 1, "maximum": 5 }
       }

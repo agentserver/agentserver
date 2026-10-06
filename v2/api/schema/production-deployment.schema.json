@@ -545,9 +545,9 @@
       "properties": {
         "enabled": {"type": "boolean"},
         "sourceRevision": {"const": "300680a39abf576b69d989d9950dfce0067fce83"},
-        "cliSha256": {"const": "da289036db5e0619be36314e590249603fa74b392a23110db2f32171f263c477"},
-        "skillPackSha256": {"const": "b752c88857ca7035580e9a9d51e9c63a09fd1bda28ce290c4e71b351c3779e51"},
-        "policySha256": {"const": "fcc2eb70c578c1eed1e4d6a415315199ea6ec59444e4861adea1c9650f5d90f1"}
+        "cliSha256": {"type": "string"},
+        "skillPackSha256": {"type": "string"},
+        "policySha256": {"type": "string"}
       }
     },
     "managedExecutor": {

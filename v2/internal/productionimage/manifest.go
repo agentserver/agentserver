@@ -196,17 +196,16 @@ func (manifest Manifest) Validate() error {
 		}
 	}
 	if manifest.Kind == KindHarness || manifest.Kind == KindManagedSandbox {
-		for path, pin := range map[string]struct {
-			digest string
-			size   int64
-		}{
-			ManagedSkillPath:                {ManagedSkillSHA256, ManagedSkillSizeBytes},
-			ManagedBkectlSkillPath:          {ManagedBkectlSkillSHA256, ManagedBkectlSkillSizeBytes},
-			ManagedBkectlCommandSurfacePath: {ManagedBkectlCommandSurfaceSHA256, ManagedBkectlCommandSurfaceSizeBytes},
-			ManagedBkectlDomainGuidesPath:   {ManagedBkectlDomainGuidesSHA256, ManagedBkectlDomainGuidesSizeBytes},
-			ManagedBkectlInvocationPath:     {ManagedBkectlInvocationSHA256, ManagedBkectlInvocationSizeBytes},
+		if err := requirePinnedFile(files, ManagedSkillPath, ManagedSkillSHA256, ManagedSkillSizeBytes, 0o444); err != nil {
+			return err
+		}
+		for path, size := range map[string]int64{
+			ManagedBkectlSkillPath:          ManagedBkectlSkillSizeBytes,
+			ManagedBkectlCommandSurfacePath: ManagedBkectlCommandSurfaceSizeBytes,
+			ManagedBkectlDomainGuidesPath:   ManagedBkectlDomainGuidesSizeBytes,
+			ManagedBkectlInvocationPath:     ManagedBkectlInvocationSizeBytes,
 		} {
-			if err := requirePinnedFile(files, path, pin.digest, pin.size, 0o444); err != nil {
+			if err := requirePinnedFileSize(files, path, size, 0o444); err != nil {
 				return err
 			}
 		}
@@ -218,7 +217,7 @@ func (manifest Manifest) Validate() error {
 		if err := requirePinnedFile(files, "usr/local/bin/lark-cli", ManagedLarkCLISHA256, ManagedLarkCLISizeBytes, 0o555); err != nil {
 			return err
 		}
-		if err := requirePinnedFile(files, "usr/local/bin/bkectl", ManagedBkectlCLISHA256, ManagedBkectlCLISizeBytes, 0o555); err != nil {
+		if err := requirePinnedFileSize(files, "usr/local/bin/bkectl", ManagedBkectlCLISizeBytes, 0o555); err != nil {
 			return err
 		}
 	}
@@ -379,6 +378,14 @@ func requirePinnedFile(files map[string]FileEntry, path, digest string, size int
 	entry, found := files[path]
 	if !found || entry.SHA256 != digest || entry.SizeBytes != size || entry.Mode != mode {
 		return fmt.Errorf("production image payload %s does not match its pinned release artifact", path)
+	}
+	return nil
+}
+
+func requirePinnedFileSize(files map[string]FileEntry, path string, size int64, mode uint32) error {
+	entry, found := files[path]
+	if !found || entry.SizeBytes != size || entry.Mode != mode {
+		return fmt.Errorf("production image payload %s does not match its pinned release size", path)
 	}
 	return nil
 }

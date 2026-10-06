@@ -41,8 +41,7 @@ func TestManagedReleaseLockBindsImageCLIAndSkillDigests(t *testing.T) {
 		"sandbox image": func(value *ManagedReleaseLock) {
 			value.ManagedSandboxImage = "registry.example.test/managed@sha256:" + strings.Repeat("e", 64)
 		},
-		"platform":      func(value *ManagedReleaseLock) { value.Platform = PlatformLinuxARM64 },
-		"bkectl source": func(value *ManagedReleaseLock) { value.BkectlSourceRevision = strings.Repeat("e", 40) },
+		"platform": func(value *ManagedReleaseLock) { value.Platform = PlatformLinuxARM64 },
 	} {
 		t.Run(name, func(t *testing.T) {
 			changed := lock

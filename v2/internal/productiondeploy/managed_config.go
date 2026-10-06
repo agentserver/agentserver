@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/agentserver/agentserver/v2/internal/bkectlpolicy"
 	"github.com/agentserver/agentserver/v2/internal/larkegresspolicy"
 	"github.com/agentserver/agentserver/v2/internal/managedsandboxprofile"
 	"github.com/agentserver/agentserver/v2/internal/productionimage"
@@ -871,7 +870,6 @@ func validateTAENetworkReportForProfileActivation(
 		"sandboxId":             {configuration.SandboxID, profile.TAE.SandboxID},
 		"sandboxRevisionId":     {configuration.SandboxRevisionID, profile.TAE.RevisionID},
 		"larkCliVersion":        {configuration.LarkCLIVersion, productionimage.ManagedLarkCLIVersion},
-		"bkectlSourceRevision":  {configuration.BkectlSourceRevision, document.Managed.Bkectl.SourceRevision},
 	} {
 		if values[0] != values[1] {
 			return fmt.Errorf("TAE network report %s does not match the activation source", name)
@@ -1075,13 +1073,6 @@ func validateManagedExecutor(managed ManagedExecutorDocument, document ConfigDoc
 		if managed.Bkectl.SourceRevision != "" &&
 			(len(managed.Bkectl.SourceRevision) != 40 || strings.Trim(managed.Bkectl.SourceRevision, "0123456789abcdef") != "") {
 			return LoadedConfig{}, errors.New("managedExecutor.bkectl.sourceRevision must be empty or a lowercase 40-character Git SHA")
-		}
-	}
-	for name, values := range map[string][2]string{
-		"sourceRevision": {managed.Bkectl.SourceRevision, bkectlpolicy.SourceRevision},
-	} {
-		if values[0] != "" && values[0] != values[1] {
-			return LoadedConfig{}, fmt.Errorf("managedExecutor.bkectl.%s must equal pinned value %s", name, values[1])
 		}
 	}
 	policy := taepolicy.Binding{

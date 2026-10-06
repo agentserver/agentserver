@@ -113,8 +113,7 @@ func releaseLockMatches(document ConfigDocument, lock ReleaseLock) bool {
 		document.Images.ManagedSandbox == lock.ManagedSandboxImage &&
 		document.Managed.BaseInstructionsSHA256 == lock.ManagedSkillSHA256 &&
 		document.Managed.Lark.CLISHA256 == lock.LarkCLISHA256 &&
-		document.Managed.Lark.SkillSHA256 == lock.LarkSkillSHA256 &&
-		document.Managed.Bkectl.SourceRevision == lock.BkectlSourceRevision
+		document.Managed.Lark.SkillSHA256 == lock.LarkSkillSHA256
 }
 
 // validateManagedReleaseEvidence is intentionally stricter than ordinary

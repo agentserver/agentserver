@@ -69,7 +69,6 @@ func TestLockReleaseRejectsEvidenceBoundActiveArtifactDrift(t *testing.T) {
 		"lark cli":      func(lock *ReleaseLock) { lock.LarkCLISHA256 = releaseDigest("e") },
 		"lark skill":    func(lock *ReleaseLock) { lock.LarkSkillSHA256 = releaseDigest("f") },
 		"managed skill": func(lock *ReleaseLock) { lock.ManagedSkillSHA256 = releaseDigest("1") },
-		"bkectl source": func(lock *ReleaseLock) { lock.BkectlSourceRevision = strings.Repeat("2", 40) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			lock := valid

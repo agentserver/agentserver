@@ -70,9 +70,6 @@ func VerifyManagedReleaseLock(artifacts ManagedReleaseArtifacts, lock ManagedRel
 	if _, bkectlFound := sandboxFiles["usr/local/bin/bkectl"]; !bkectlFound {
 		return errors.New("managed release sandbox image is missing bkectl CLI")
 	}
-	if lock.BkectlSourceRevision != ManagedBkectlSourceRevision {
-		return errors.New("managed release tool source lock is not pinned")
-	}
 	return nil
 }
 

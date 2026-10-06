@@ -241,7 +241,7 @@ func (gateway *DSHGateway) openStream(ctx context.Context, bearer string, args m
 				records = records[len(records)-request.MaxMessages:]
 				hasMore = true
 			}
-			snapshot := map[string]any{"type": "snapshot", "header": header, "cursor": cursor, "records": records, "hasMore": hasMore, "projections": map[string]any{"asOfSeq": cursor, "values": map[string]any{"permissions": map[string]any{"currentValue": state.permissionMode()}}}}
+			snapshot := map[string]any{"type": "snapshot", "header": header, "cursor": cursor, "records": records, "hasMore": hasMore, "projections": map[string]any{"asOfSeq": cursor, "values": dshProjectionValues(state.permissionMode())}}
 			if request.AssistantStream {
 				snapshot["assistantStream"] = state.assistantBaseline()
 			}
@@ -351,7 +351,7 @@ func (gateway *DSHGateway) projectionBaseline() map[string]any {
 		if len(state.events) == 0 {
 			asOfSeq = -1
 		}
-		result[state.session.SessionID] = map[string]any{"asOfSeq": asOfSeq, "values": map[string]any{"permissions": map[string]any{"currentValue": state.session.PermissionMode}}}
+		result[state.session.SessionID] = map[string]any{"asOfSeq": asOfSeq, "values": dshProjectionValues(state.session.PermissionMode)}
 		state.mu.Unlock()
 	}
 	return result

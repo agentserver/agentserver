@@ -438,7 +438,7 @@ func (gateway *DSHGateway) dispatch(ctx context.Context, bearer, endpoint string
 		state.mu.Lock()
 		permissionMode := state.session.PermissionMode
 		state.mu.Unlock()
-		return map[string]any{"asOfSeq": state.lastSeq(), "values": map[string]any{"permissions": map[string]any{"currentValue": permissionMode}}}, true, "", "", nil
+		return map[string]any{"asOfSeq": state.lastSeq(), "values": dshProjectionValues(permissionMode)}, true, "", "", nil
 	case "session/page":
 		var request struct {
 			Address     map[string]any `json:"address"`
@@ -871,6 +871,16 @@ func nonEmptyDSHText(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func dshProjectionValues(permissionMode string) map[string]any {
+	return map[string]any{
+		"permissions": map[string]any{"currentValue": permissionMode},
+		// ui-model-selection waits for this registered projection before it
+		// leaves its trigger in "Loading models…".  Keep both fields present so
+		// an unconfigured Session still resolves to the catalog default.
+		"modelSelection": map[string]any{"lastUsed": nil, "pending": nil},
+	}
 }
 
 func (gateway *DSHGateway) installSession(session corecontract.UserSessionState) *dshSessionState {

@@ -1,7 +1,7 @@
 import { readFile, readdir, writeFile } from "node:fs/promises"
 import { extname, join } from "node:path"
 
-for (const root of ["platform-web/dist", "a2ui-web/dist"]) await normalizeTree(root)
+for (const root of ["platform-web/dist"]) await normalizeTree(root)
 
 async function normalizeTree(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {

@@ -159,8 +159,7 @@ jobs:
           make -C v2 check
           git diff --exit-code -- \
             v2/web-shared/src/generated \
-            v2/platform-web/dist \
-            v2/a2ui-web/dist
+            v2/platform-web/dist
 
       - name: Download and verify pinned runtime artifacts
         id: runtime

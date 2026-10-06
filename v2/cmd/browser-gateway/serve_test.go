@@ -42,16 +42,14 @@ func TestBrowserGatewayHealthAndReadiness(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "https://gateway.test/healthz", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusMethodNotAllowed {
+	if response.Code != http.StatusNotFound {
 		t.Fatalf("POST /healthz status = %d", response.Code)
 	}
 	referenceRequest := httptest.NewRequest(http.MethodGet, "https://gateway.test/", nil)
 	referenceResponse := httptest.NewRecorder()
 	handler.ServeHTTP(referenceResponse, referenceRequest)
-	if referenceResponse.Code != http.StatusOK ||
-		!strings.Contains(referenceResponse.Body.String(), `data-agentserver-browser-web="v2"`) ||
-		referenceResponse.Header().Get("Content-Security-Policy") == "" {
-		t.Fatalf("GET / reference web = %d %q headers=%v", referenceResponse.Code, referenceResponse.Body.String(), referenceResponse.Header())
+	if referenceResponse.Code != http.StatusNotFound {
+		t.Fatalf("GET / retired browser web = %d %q", referenceResponse.Code, referenceResponse.Body.String())
 	}
 }
 

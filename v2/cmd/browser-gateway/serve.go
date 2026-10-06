@@ -17,7 +17,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	a2uiweb "github.com/agentserver/agentserver/v2/a2ui-web"
 	dshweb "github.com/agentserver/agentserver/v2/dsh-web"
 	"github.com/agentserver/agentserver/v2/internal/browsergateway"
 	"github.com/agentserver/agentserver/v2/internal/corecontract"
@@ -186,17 +185,9 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 	}
 	conversationAPI := browserConversationRoutes(aguiHandler.Routes(), sessionProxy.Routes())
 	readiness := &browserReadiness{}
-	referenceHandler := a2uiweb.Handler()
-	if splitPublicOrigins {
-		oauthURL, parseErr := url.Parse(tokenEndpoint)
-		if parseErr != nil {
-			return parseErr
-		}
-		referenceHandler, err = a2uiweb.HandlerForConnectionOrigins(apiOrigin, oauthURL.Scheme+"://"+oauthURL.Host)
-		if err != nil {
-			return err
-		}
-	}
+	// The legacy A2UI reference frontend has been retired. DSH is the only
+	// supported web frontend; keep the old browser origin API-only.
+	referenceHandler := http.NotFoundHandler()
 	var handler http.Handler
 	if dshOrigin != "" {
 		dshAuthConfig, configErr := browsergateway.NewBrowserAuthorizationConfigHandlerWithEndpoints(
@@ -296,7 +287,7 @@ func serveBrowserGateway(ctx context.Context, getenv func(string) string, stdout
 	fmt.Fprintf(
 		stdout,
 		"browser-gateway serve: listening with %s on %s; AG-UI endpoint /v2/workspaces/{workspaceId}/sessions/{sessionId}/agui; %s at /\n",
-		listenerDescription, listener.Addr(), a2uiweb.AssetSummary(),
+		listenerDescription, listener.Addr(), "DSH frontend",
 	)
 	if splitPublicOrigins {
 		err = server.Serve(listener)
@@ -323,7 +314,7 @@ func validateBrowserOAuthAuthority(audience, commaSeparatedScopes string) ([]str
 }
 
 func browserGatewayRoutes(agui, executors, llmGateways, auth, authConfig, hydra, developmentOIDC http.Handler, readiness *browserReadiness) http.Handler {
-	return browserGatewayRoutesWithReference(agui, executors, llmGateways, auth, authConfig, hydra, developmentOIDC, readiness, a2uiweb.Handler())
+	return browserGatewayRoutesWithReference(agui, executors, llmGateways, auth, authConfig, hydra, developmentOIDC, readiness, http.NotFoundHandler())
 }
 
 func browserGatewayRoutesWithReference(

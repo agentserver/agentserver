@@ -137,9 +137,9 @@
 |---|---|---|
 | **platform-web** | Platform 静态 SPA；以 `agentserver-platform` 完成 Code + PKCE；管理 workspace、成员、executor 与 LLM Gateway | 不承载对话，不持有 Browser token，不绕过 platform-gateway |
 | **platform-gateway** | 托管 Platform SPA；在 `auth-sg` 的三个精确 `/auth/*` 路径承载 Hydra login/consent bridge；以独立 workload identity 转发 Platform 管理 API | 不代理 Hydra public，不接受 Browser token，不承载 session/run/AG-UI API，不拥有业务状态 |
-| **Browser SPA**（源码目录 `a2ui-web`） | 以 `agentserver-browser` 为单一 workspace 完成 Code + PKCE；session 导航、AG-UI client 与 A2UI 渲染 | 不管理 workspace/executor/LLM Gateway，不持久化 access token |
+| **DSH frontend**（源码目录 `dsh-web`） | 以 DSH Web API 完成 workspace session、模型选择和对话交互 | 不管理 workspace/executor/LLM Gateway，不持久化 access token |
 | **agentserver-core** | workspace/RBAC；session/run；事件；审批；executor/credential/LLM authorization 控制面；Hydra login/consent bridge | 不运行 Codex，不代理模型，不托管 SPA |
-| **browser-gateway** | 托管 Browser SPA；workspace 显式的 session/run/AG-UI/SSE 边缘；规范事件到 AG-UI/A2UI 的映射 | 不接受 Platform token，不暴露管理 API，不拥有运行状态 |
+| **browser-gateway** | 托管 DSH API/协议边缘及 legacy Browser API；规范事件到 AG-UI 的映射 | 不接受 Platform token，不暴露管理 API，不拥有运行状态 |
 | **harness-pool controller** | 从 core 的`run.queued`专用durable delivery lane领取任务；持有 session/run-attempt lease；有界地 fork/exec 并回收 per-attempt worker 进程；汇聚事件，并在进程组停止后以受信本地finalizer生成、上传和提交 checkpoint | 不消费其他event outbox kind，不复用已运行过 turn 的 worker/app-server 进程，不拥有 session/run/event 事实 |
 | **harness-worker**（per-run） | 作为 app-server stdio client 驱动 thread/turn；校验冻结的 executor tool catalog并生成 `dynamicTools`；把 `item/tool/call` 转成 MCP `tools/call`；转接 MCP elicitation；执行 cancel/fence和child监管；child退出后上报受限rollout locator | 不推理、不选工具、不改写 prompt、不在本地执行工具、不读取app UID私有rollout、不拥有持久状态 |
 | **stock app-server**（worker 子进程） | 运行模型循环；调用 llmproxy；对 client-hosted `dynamicTools` 发出结构化 callback | 不访问 MCP、工作树、core、对象存储或 harness-pool 控制接口，不执行本地工具 |
@@ -870,7 +870,7 @@ v2/
 │  ├─ asyncapi/                  # SSE/WSS；含 harness-control.yaml 与 agentx-wss.yaml
 │  └─ schema/                    # closed-world JSON Schema；含 harness-control/bootstrap schema
 ├─ platform-web/                  # Platform 管理 SPA
-├─ a2ui-web/                      # Browser 对话 SPA（历史目录名）
+├─ dsh-web/                       # DSH 对话前端
 ├─ deploy/helm/
 ├─ images/harness/               # harness-worker + pinned stock Codex app-server
 ├─ packaging/agentx/

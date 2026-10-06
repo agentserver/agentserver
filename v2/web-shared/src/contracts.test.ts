@@ -191,7 +191,7 @@ describe("product web contracts", () => {
   })
 
   it("keeps feature code behind generated OpenAPI transports", () => {
-    for (const source of ["../../platform-web/src/platform-app.tsx", "../../a2ui-web/src/browser-app.tsx"]) {
+    for (const source of ["../../platform-web/src/platform-app.tsx"]) {
       const contents = readFileSync(new URL(source, import.meta.url), "utf8")
       expect(contents).not.toMatch(/\bfetch\s*\(/u)
       expect(contents).not.toMatch(/XMLHttpRequest/u)

@@ -6,7 +6,7 @@
 
 ## 背景
 
-当前生产 v2 的 `platform-web` 与 `a2ui-web` 是直接嵌入 Go binary 的无依赖 HTML/CSS/JavaScript。
+当前生产 v2 的 `platform-web` 与 DSH frontend 是直接嵌入 Go binary 的无依赖 HTML/CSS/JavaScript。
 它们验证了 OAuth、workspace resource、session 和 AG-UI 链路，但 API path、`fetch`、request/response
 shape 与 DOM 状态机大多手写，不能形成稳定的产品前端基线。根目录已有的 `web/` 与 `browserweb/`
 属于 v1 authority 和旧 token profile，不能把其业务代码接入 v2；它们只能作为 React/Vite 构建经验参考。
@@ -29,7 +29,7 @@ shape 与 DOM 状态机大多手写，不能形成稳定的产品前端基线。
 v2/
 ├─ web-shared/       # generated clients、OAuth、theme、i18n、shadcn/ui primitives
 ├─ platform-web/     # Platform React/Vite app + Go static asset package
-└─ a2ui-web/         # Browser React/Vite app + Go static asset package
+└─ dsh-web/          # DSH frontend + Go static asset package
 ```
 
 两套 app 独立构建和生成 bundle，不共享 access token 或 React state；各自使用独立、版本化的
@@ -90,7 +90,7 @@ theme 值为 `light | dark | system`，locale 值为 `zh-CN | en-US`。它们是
 
 ### 5. 静态资源与路由
 
-Vite 分别输出到 `platform-web/dist` 与 `a2ui-web/dist`，Go 使用 `embed.FS` 托管闭合集合。hashed asset
+Vite 输出 `platform-web/dist`；DSH frontend 使用独立的 DSH asset pipeline。Go 使用 `embed.FS` 托管闭合集合。hashed asset
 可以长期缓存；HTML 与 OAuth callback 继续 `no-store`。静态 handler 只对已登记的产品 route 返回 SPA
 index，未知 `/v2`、`/auth` 或 asset path 保持可见 404。
 

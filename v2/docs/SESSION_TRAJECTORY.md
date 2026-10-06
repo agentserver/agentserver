@@ -666,8 +666,7 @@ internal/coreserver/user_session_trajectory.go# server-side safe projection
 internal/browsergateway/session_resources.go  # reviewed GET proxy
 api/openapi/{public,web-edge}.yaml             # transport contract
 web-shared/src/api.ts                          # strict response validator/client
-a2ui-web/src/browser-app.tsx                   # tabs、polling、ledger、timeline、inspector
-a2ui-web/src/browser.css                       # responsive presentation
+dsh-web/                                       # DSH 对话前端；Trajectory 不再由 legacy A2UI SPA 展示
 docs/SESSION_TRAJECTORY.md
 ```
 

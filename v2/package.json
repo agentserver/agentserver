@@ -5,10 +5,10 @@
   "packageManager": "pnpm@11.18.0",
   "scripts": {
     "web:generate": "openapi-typescript api/openapi/public.yaml -o web-shared/src/generated/public.ts && openapi-typescript api/openapi/web-edge.yaml -o web-shared/src/generated/web-edge.ts && openapi-typescript api/openapi/oauth-public.yaml -o web-shared/src/generated/oauth-public.ts",
-    "web:build": "pnpm web:generate && pnpm --filter @agentserver/v2-platform-web build && pnpm --filter @agentserver/v2-browser-web build && pnpm web:normalize",
+    "web:build": "pnpm web:generate && pnpm --filter @agentserver/v2-platform-web build && pnpm web:normalize",
     "web:normalize": "node web-shared/scripts/normalize-dist.mjs",
-    "web:typecheck": "pnpm --filter @agentserver/v2-web-shared typecheck && pnpm --filter @agentserver/v2-platform-web typecheck && pnpm --filter @agentserver/v2-browser-web typecheck",
-    "web:test": "pnpm --filter @agentserver/v2-web-shared test && pnpm --filter @agentserver/v2-platform-web test && pnpm --filter @agentserver/v2-browser-web test",
+    "web:typecheck": "pnpm --filter @agentserver/v2-web-shared typecheck && pnpm --filter @agentserver/v2-platform-web typecheck",
+    "web:test": "pnpm --filter @agentserver/v2-web-shared test && pnpm --filter @agentserver/v2-platform-web test",
     "web:check": "pnpm web:generate && pnpm web:typecheck && pnpm web:test && pnpm web:build"
   },
   "devDependencies": {

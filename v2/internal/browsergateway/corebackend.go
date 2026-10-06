@@ -34,6 +34,12 @@ func (backend *CoreRunBackend) ListSessions(ctx context.Context, bearer, workspa
 	return result, err
 }
 
+func (backend *CoreRunBackend) ListLLMGateways(ctx context.Context, bearer, workspaceID string) (corecontract.ListWorkspaceLLMGatewaysResponse, error) {
+	var result corecontract.ListWorkspaceLLMGatewaysResponse
+	err := backend.sessionJSON(ctx, http.MethodGet, corecontract.WorkspaceLLMGatewaysPath(workspaceID), bearer, nil, &result)
+	return result, err
+}
+
 func (backend *CoreRunBackend) GetSession(ctx context.Context, bearer, workspaceID, sessionID string) (corecontract.UserSessionState, error) {
 	var result corecontract.UserSessionState
 	err := backend.sessionJSON(ctx, http.MethodGet, corecontract.UserSessionPath(workspaceID, sessionID), bearer, nil, &result)

@@ -46,6 +46,7 @@ type DSHGatewayConfig struct {
 // compatibility layer.  It deliberately excludes unrelated Core endpoints.
 type DSHSessionBackend interface {
 	ListSessions(context.Context, string, string) (corecontract.ListUserSessionsResponse, error)
+	ListLLMGateways(context.Context, string, string) (corecontract.ListWorkspaceLLMGatewaysResponse, error)
 	GetSession(context.Context, string, string, string) (corecontract.UserSessionState, error)
 	CreateSession(context.Context, string, string, corecontract.CreateUserSessionRequest) (corecontract.CreateUserSessionResponse, error)
 	UpdateSession(context.Context, string, string, string, corecontract.UpdateUserSessionRequest) (corecontract.UpdateUserSessionResponse, error)
@@ -413,7 +414,7 @@ func (gateway *DSHGateway) dispatch(ctx context.Context, bearer, endpoint string
 		}
 		return map[string]any{"selected": selected}, true, "", "", nil
 	case "session/modelCatalog":
-		return map[string]any{"default": map[string]any{"provider": "codex", "model": "codex"}, "routableProviders": []string{"codex"}, "groups": []any{map[string]any{"id": "codex", "name": "Codex", "models": []any{map[string]any{"id": "codex", "name": "Codex"}}}}, "failures": []any{}}, true, "", "", nil
+		return gateway.modelCatalog(ctx, bearer)
 	case "session/projections":
 		var request struct {
 			SessionID string `json:"sessionId"`
@@ -480,7 +481,20 @@ func (gateway *DSHGateway) dispatch(ctx context.Context, bearer, endpoint string
 		return map[string]any{"writable": false, "hasDocument": false, "namespaces": []any{}}, true, "", "", nil
 	case "credentials/describe":
 		return map[string]any{}, true, "", "", nil
-	case "llm/listProviders", "llm/listConfigurableProviders", "llm/discoverModels":
+	case "llm/listProviders":
+		catalog, ok, code, message, details := gateway.modelCatalog(ctx, bearer)
+		if !ok {
+			return nil, ok, code, message, details
+		}
+		value, _ := catalog.(map[string]any)
+		groups, _ := value["groups"].([]any)
+		providers := make([]any, 0, len(groups))
+		for _, raw := range groups {
+			group, _ := raw.(map[string]any)
+			providers = append(providers, map[string]any{"id": group["id"], "name": group["name"]})
+		}
+		return providers, true, "", "", nil
+	case "llm/listConfigurableProviders", "llm/discoverModels":
 		return []any{}, true, "", "", nil
 	case "skills/list":
 		return map[string]any{"skills": []any{}}, true, "", "", nil
@@ -820,6 +834,55 @@ func (gateway *DSHGateway) summary(session corecontract.UserSessionState) map[st
 		row["cwd"] = session.WorkingDirectory
 	}
 	return row
+}
+
+// modelCatalog projects the one Core workspace LLM route that DSH can use.
+// Core freezes the gateway and model into each run, so advertising the live
+// workspace default is both more useful and more honest than the old
+// codex/codex placeholder. The DSH client still gets the standard provider
+// group shape and can render its model selector without knowing Core's
+// workspace-gateway implementation detail.
+func (gateway *DSHGateway) modelCatalog(ctx context.Context, bearer string) (any, bool, string, string, map[string]any) {
+	gateways, err := gateway.backend.ListLLMGateways(ctx, bearer, gateway.config.WorkspaceID)
+	if err != nil {
+		return gateway.dshError(err)
+	}
+	var selected *corecontract.WorkspaceLLMGatewayState
+	for index := range gateways.Gateways {
+		candidate := &gateways.Gateways[index]
+		if candidate.Status == "active" && candidate.Default && candidate.GrantStatus == "active" && candidate.DefaultModel != "" {
+			selected = candidate
+			break
+		}
+	}
+	base := map[string]any{
+		"default":           map[string]any{"provider": corecontract.WorkspaceLLMGatewayProvider, "model": ""},
+		"routableProviders": []string{},
+		"groups":            []any{},
+		"failures":          []any{},
+	}
+	if selected == nil {
+		base["failures"] = []any{map[string]any{
+			"id": "workspace-gateway", "name": "Workspace Gateway",
+			"message": "workspace has no active default LLM gateway model",
+		}}
+		return base, true, "", "", nil
+	}
+	base["default"] = map[string]any{"provider": corecontract.WorkspaceLLMGatewayProvider, "model": selected.DefaultModel}
+	base["routableProviders"] = []string{corecontract.WorkspaceLLMGatewayProvider}
+	base["groups"] = []any{map[string]any{
+		"id":     corecontract.WorkspaceLLMGatewayProvider,
+		"name":   nonEmptyDSHText(selected.Name, "Workspace Gateway"),
+		"models": []any{map[string]any{"id": selected.DefaultModel, "name": selected.DefaultModel}},
+	}}
+	return base, true, "", "", nil
+}
+
+func nonEmptyDSHText(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func (gateway *DSHGateway) installSession(session corecontract.UserSessionState) *dshSessionState {

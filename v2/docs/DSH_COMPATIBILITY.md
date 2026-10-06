@@ -20,7 +20,7 @@ Because a browser WebSocket cannot set `Authorization`, a DSH browser page conne
 
 The configured workspace id is the DSH workspace presented to the browser. DSH session operations map to Core user-session and user-run operations:
 
-- `session/list`, `session/create`, `session/rename`, `session/cancel`, `session/prompt`, `session/page`, `session/follow`, `session/projections`, and `session/modelCatalog` are backed by Core session/run resources.
+- `session/list`, `session/create`, `session/rename`, `session/cancel`, `session/prompt`, `session/page`, `session/follow`, `session/projections`, and `session/modelCatalog` are backed by Core session/run resources. The model catalog projects the active default workspace LLM gateway as the DSH `workspace-gateway` provider and advertises its configured default model; it no longer exposes the old placeholder `codex/codex` route.
 - `commands/list` and `commands/execute` expose the `permission` command and update Core's versioned Codex permission mode (`read-only`, `auto`, or `full-access`).
 - Core approval-request events are projected through the DSH `approval/request` Remote waterfall; an `allowed-once` answer is translated back to the Core approval CAS command, while cancellation and non-allow outcomes fail closed.
 - `workspace/follow` presents the configured workspace and its Core sessions; workspace ordering, pinning, and archive mutations are compatibility no-ops until a durable DSH workspace projection is introduced, while workspace deletion is rejected as immutable.

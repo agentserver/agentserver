@@ -15,12 +15,16 @@ import (
 
 type dshFakeBackend struct {
 	sessions []corecontract.UserSessionState
+	gateways []corecontract.WorkspaceLLMGatewayState
 	created  corecontract.CreateUserSessionResponse
 	mode     corecontract.UpdateUserSessionPermissionModeResponse
 }
 
 func (fake *dshFakeBackend) ListSessions(context.Context, string, string) (corecontract.ListUserSessionsResponse, error) {
 	return corecontract.ListUserSessionsResponse{Sessions: append([]corecontract.UserSessionState(nil), fake.sessions...)}, nil
+}
+func (fake *dshFakeBackend) ListLLMGateways(context.Context, string, string) (corecontract.ListWorkspaceLLMGatewaysResponse, error) {
+	return corecontract.ListWorkspaceLLMGatewaysResponse{Gateways: append([]corecontract.WorkspaceLLMGatewayState(nil), fake.gateways...)}, nil
 }
 func (fake *dshFakeBackend) GetSession(context.Context, string, string, string) (corecontract.UserSessionState, error) {
 	if len(fake.sessions) == 0 {
@@ -102,6 +106,36 @@ func TestDSHGatewayServesConnectionEnvelopeAndSessionList(t *testing.T) {
 	value := result["value"].(map[string]any)
 	if len(value["items"].([]any)) != 1 {
 		t.Fatalf("session/list value = %#v", value)
+	}
+}
+
+func TestDSHGatewayModelCatalogProjectsActiveWorkspaceGateway(t *testing.T) {
+	fake := &dshFakeBackend{gateways: []corecontract.WorkspaceLLMGatewayState{{
+		GatewayID: "41000000-0000-4000-8000-000000000004", Name: "Model Server",
+		DefaultModel: "gpt-5.6-sol", Status: "active", Default: true, GrantStatus: "active",
+	}}}
+	gateway := newDSHTestGateway(t, fake)
+	envelope := dshRequest(t, gateway, "session/modelCatalog", `{}`)
+	result := envelope["result"].(map[string]any)
+	if result["ok"] != true {
+		t.Fatalf("model catalog result = %#v", result)
+	}
+	catalog := result["value"].(map[string]any)
+	if catalog["default"].(map[string]any)["provider"] != corecontract.WorkspaceLLMGatewayProvider ||
+		catalog["default"].(map[string]any)["model"] != "gpt-5.6-sol" {
+		t.Fatalf("model catalog default = %#v", catalog["default"])
+	}
+	groups := catalog["groups"].([]any)
+	if len(groups) != 1 || groups[0].(map[string]any)["id"] != corecontract.WorkspaceLLMGatewayProvider {
+		t.Fatalf("model catalog groups = %#v", groups)
+	}
+	models := groups[0].(map[string]any)["models"].([]any)
+	if len(models) != 1 || models[0].(map[string]any)["id"] != "gpt-5.6-sol" {
+		t.Fatalf("model catalog models = %#v", models)
+	}
+	providers := dshRequest(t, gateway, "llm/listProviders", `{}`)["result"].(map[string]any)["value"].([]any)
+	if len(providers) != 1 || providers[0].(map[string]any)["id"] != corecontract.WorkspaceLLMGatewayProvider {
+		t.Fatalf("llm providers = %#v", providers)
 	}
 }
 

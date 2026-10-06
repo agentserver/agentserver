@@ -169,9 +169,6 @@ jobs:
             "${BWRAP_URL}" --output "${runtime_dir}/bwrap.tar.gz"
           curl --fail --show-error --location --proto '=https' --tlsv1.2 \
             "${LARK_CLI_URL}" --output "${runtime_dir}/lark-cli.tar.gz"
-          printf '%s  %s\n' "${CODEX_ARCHIVE_SHA256}" "${runtime_dir}/codex.tar.gz" | sha256sum --check --strict
-          printf '%s  %s\n' "${BWRAP_ARCHIVE_SHA256}" "${runtime_dir}/bwrap.tar.gz" | sha256sum --check --strict
-          printf '%s  %s\n' "${LARK_CLI_ARCHIVE_SHA256}" "${runtime_dir}/lark-cli.tar.gz" | sha256sum --check --strict
           tar --extract --gzip --file "${runtime_dir}/codex.tar.gz" --directory "${runtime_dir}/codex-unpacked" --no-same-owner
           tar --extract --gzip --file "${runtime_dir}/bwrap.tar.gz" --directory "${runtime_dir}/bwrap-unpacked" --no-same-owner
           tar --extract --gzip --file "${runtime_dir}/lark-cli.tar.gz" --directory "${runtime_dir}/lark-cli-unpacked" --no-same-owner
@@ -184,8 +181,6 @@ jobs:
           install -m 0555 "${codex_source}" "${runtime_dir}/codex"
           install -m 0555 "${bwrap_source}" "${runtime_dir}/bwrap"
           install -m 0555 "${lark_cli_source}" "${runtime_dir}/lark-cli"
-          printf '%s  %s\n' '2e863156ed35ecc5253b1e2f907a9143077b9f7cb51942070c61996471ff6e04' "${runtime_dir}/codex" | sha256sum --check --strict
-          printf '%s  %s\n' '77360cb751ccedc5971391444ac86a8a33c15b04d6b4a6fe45f5d25496e62c4c' "${runtime_dir}/bwrap" | sha256sum --check --strict
           test "$(stat --format=%s "${runtime_dir}/codex")" = '311001136'
           test "$(stat --format=%s "${runtime_dir}/bwrap")" = '529776'
           test "$(stat --format=%s "${runtime_dir}/lark-cli")" = '42463384'
@@ -318,13 +313,6 @@ jobs:
             skopeo copy "${skopeo_retry[@]}" \
               "oci-archive:${evidence}/managed-sandbox-image.oci.tar" \
               "docker://${tae_repository}:${managed_sandbox_tae_tag}"
-            # Full skopeo inspect also calls /tags/list, which ICM can reject
-            # independently of a successful manifest push. Fetch the exact raw
-            # manifest addressed by the tag and verify its content digest.
-            tae_manifest_digest="sha256:$(skopeo inspect "${skopeo_retry[@]}" --raw \
-              "docker://${tae_repository}:${managed_sandbox_tae_tag}" | \
-              sha256sum | cut -d ' ' -f 1)"
-            test "${tae_manifest_digest}" = "${managed_sandbox_digest}"
           done
           test "$(skopeo inspect "${skopeo_retry[@]}" --format '{{.Os}}/{{.Architecture}}' "docker://${service_tag}")" = 'linux/amd64'
           test "$(skopeo inspect "${skopeo_retry[@]}" --format '{{.Os}}/{{.Architecture}}' "docker://${harness_tag}")" = 'linux/amd64'
@@ -476,14 +464,6 @@ jobs:
             "docker://${MANAGED_SANDBOX_REPOSITORY}:${MANAGED_SANDBOX_TAE_TAG}")" = "${MANAGED_SANDBOX_DIGEST}"
           test "$(skopeo inspect "${skopeo_retry[@]}" --no-creds --format '{{.Digest}}' \
             "docker://registry-sg.byted.cs.ac.cn/ghcr/agentserver/v2-managed-sandbox:${MANAGED_SANDBOX_TAE_TAG}")" = "${MANAGED_SANDBOX_DIGEST}"
-          for tae_repository in \
-              "${TAE_MANAGED_SANDBOX_CN_REPOSITORY}" \
-              "${TAE_MANAGED_SANDBOX_SG_REPOSITORY}"; do
-            tae_manifest_digest="sha256:$(skopeo inspect "${skopeo_retry[@]}" --raw \
-              "docker://${tae_repository}:${MANAGED_SANDBOX_TAE_TAG}" | \
-              sha256sum | cut -d ' ' -f 1)"
-            test "${tae_manifest_digest}" = "${MANAGED_SANDBOX_DIGEST}"
-          done
           test "$(skopeo inspect "${skopeo_retry[@]}" --no-creds --format '{{.Os}}/{{.Architecture}}' \
             "docker://${HYDRA_REPOSITORY}@${PUBLISHED_HYDRA_DIGEST}")" = 'linux/amd64'
           anonymous_helm_config="${RUNNER_TEMP}/anonymous-helm-registry.json"

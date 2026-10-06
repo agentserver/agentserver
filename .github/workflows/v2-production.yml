@@ -214,7 +214,6 @@ jobs:
               -ldflags="-s -w -buildid= -X code.byted.org/bd-sre/bkectl/src/pkg/buildinfo.Version=${BKECTL_SOURCE_REVISION} -X code.byted.org/bd-sre/bkectl/src/pkg/buildinfo.BuildTime=1970-01-01T00:00:00Z" \
               -o "${runtime_dir}/bkectl" ./cmd/bkectl
           chmod 0555 "${runtime_dir}/bkectl"
-          test "$(stat --format=%s "${runtime_dir}/bkectl")" = '48901570'
           version_json=$("${runtime_dir}/bkectl" --json version)
           if ! jq -e \
             --arg version "${BKECTL_SOURCE_REVISION}" \

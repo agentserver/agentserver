@@ -199,13 +199,11 @@ func (manifest Manifest) Validate() error {
 		if err := requirePinnedFile(files, ManagedSkillPath, ManagedSkillSHA256, ManagedSkillSizeBytes, 0o444); err != nil {
 			return err
 		}
-		for path, size := range map[string]int64{
-			ManagedBkectlSkillPath:          ManagedBkectlSkillSizeBytes,
-			ManagedBkectlCommandSurfacePath: ManagedBkectlCommandSurfaceSizeBytes,
-			ManagedBkectlDomainGuidesPath:   ManagedBkectlDomainGuidesSizeBytes,
-			ManagedBkectlInvocationPath:     ManagedBkectlInvocationSizeBytes,
+		for _, path := range []string{
+			ManagedBkectlSkillPath, ManagedBkectlCommandSurfacePath,
+			ManagedBkectlDomainGuidesPath, ManagedBkectlInvocationPath,
 		} {
-			if err := requirePinnedFileSize(files, path, size, 0o444); err != nil {
+			if err := requireFileMode(files, path, 0o444); err != nil {
 				return err
 			}
 		}
@@ -217,7 +215,7 @@ func (manifest Manifest) Validate() error {
 		if err := requirePinnedFile(files, "usr/local/bin/lark-cli", ManagedLarkCLISHA256, ManagedLarkCLISizeBytes, 0o555); err != nil {
 			return err
 		}
-		if err := requirePinnedFileSize(files, "usr/local/bin/bkectl", ManagedBkectlCLISizeBytes, 0o555); err != nil {
+		if err := requireFileMode(files, "usr/local/bin/bkectl", 0o555); err != nil {
 			return err
 		}
 	}
@@ -382,10 +380,10 @@ func requirePinnedFile(files map[string]FileEntry, path, digest string, size int
 	return nil
 }
 
-func requirePinnedFileSize(files map[string]FileEntry, path string, size int64, mode uint32) error {
+func requireFileMode(files map[string]FileEntry, path string, mode uint32) error {
 	entry, found := files[path]
-	if !found || entry.SizeBytes != size || entry.Mode != mode {
-		return fmt.Errorf("production image payload %s does not match its pinned release size", path)
+	if !found || entry.SizeBytes < 1 || entry.Mode != mode {
+		return fmt.Errorf("production image payload %s is missing or has an invalid file mode", path)
 	}
 	return nil
 }

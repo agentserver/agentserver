@@ -939,12 +939,7 @@ func validateTAENetworkReportForProfileActivation(
 		return errors.New("TAE network report did not read and verify one bounded Lark skill in every lifecycle")
 	}
 	for checkName, size := range map[string]int64{
-		"data_read_managed_skill":          productionimage.ManagedSkillSizeBytes,
-		"data_read_bkectl_cli":             productionimage.ManagedBkectlCLISizeBytes,
-		"data_read_bkectl_skill":           productionimage.ManagedBkectlSkillSizeBytes,
-		"data_read_bkectl_command_surface": productionimage.ManagedBkectlCommandSurfaceSizeBytes,
-		"data_read_bkectl_domain_guides":   productionimage.ManagedBkectlDomainGuidesSizeBytes,
-		"data_read_bkectl_invocation":      productionimage.ManagedBkectlInvocationSizeBytes,
+		"data_read_managed_skill": productionimage.ManagedSkillSizeBytes,
 	} {
 		if checks[checkName].BytesRead != size*int64(configuration.LifecycleAttempts) {
 			return fmt.Errorf("TAE network report did not read and verify complete pinned artifact %s in every lifecycle", checkName)

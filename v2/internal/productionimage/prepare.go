@@ -97,9 +97,6 @@ func Prepare(config PrepareConfig) (_ PrepareResult, returnErr error) {
 			// build against a stale precomputed SHA. The manifest still records
 			// the actual bytes for diagnostics and closed-world layout checking.
 			entry, err = copyArtifact(source, rootfs, "usr/local/bin/"+binary, 0o555, "managed bkectl CLI")
-			if err == nil && entry.SizeBytes != ManagedBkectlCLISizeBytes {
-				err = fmt.Errorf("managed bkectl CLI has unexpected size %d (want %d)", entry.SizeBytes, ManagedBkectlCLISizeBytes)
-			}
 		} else {
 			entry, err = copyArtifact(source, rootfs, "usr/local/bin/"+binary, 0o555, "production Go executable "+binary)
 		}

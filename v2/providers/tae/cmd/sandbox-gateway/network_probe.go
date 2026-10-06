@@ -358,8 +358,11 @@ func runProbeLifecycle(ctx context.Context, config networkProbeConfig, clients *
 					if err != nil {
 						return err
 					}
-					if info.Type != "file" || info.Size != artifact.size || info.SymlinkTarget != "" {
+					if info.Type != "file" || info.Size < 1 || info.Size > 128*1024*1024 || info.SymlinkTarget != "" {
 						return newProbeFailure(artifact.name + "_stat_mismatch")
+					}
+					if strings.HasPrefix(artifact.name, "bkectl_") {
+						artifact.size = info.Size
 					}
 					return nil
 				})

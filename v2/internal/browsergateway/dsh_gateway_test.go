@@ -132,6 +132,24 @@ func TestDSHGatewayModelCatalogProjectsActiveWorkspaceGateway(t *testing.T) {
 	}
 }
 
+func TestDSHGatewaySessionProjectionsSeedModelSelection(t *testing.T) {
+	fake := &dshFakeBackend{sessions: []corecontract.UserSessionState{{
+		SessionID: "41000000-0000-4000-8000-000000000004", Version: 1,
+		PermissionMode: "read-only", UpdatedAt: time.Now().UTC(),
+	}}}
+	gateway := newDSHTestGateway(t, fake)
+	envelope := dshRequest(t, gateway, "session/projections", `{"request":{"sessionId":"41000000-0000-4000-8000-000000000004"}}`)
+	result := envelope["result"].(map[string]any)
+	if result["ok"] != true {
+		t.Fatalf("session projections failed: %#v", result)
+	}
+	values := result["value"].(map[string]any)["values"].(map[string]any)
+	selection := values["modelSelection"].(map[string]any)["next"].(map[string]any)
+	if selection["provider"] != corecontract.WorkspaceLLMGatewayProvider || selection["model"] != "gpt-5.6-sol" {
+		t.Fatalf("model selection projection = %#v", selection)
+	}
+}
+
 func TestDSHGatewayPermissionCommandUsesCoreCAS(t *testing.T) {
 	fake := &dshFakeBackend{sessions: []corecontract.UserSessionState{{SessionID: "41000000-0000-4000-8000-000000000004", Version: 1, PermissionMode: "read-only", PermissionModeVersion: 1, UpdatedAt: time.Now().UTC()}}}
 	gateway := newDSHTestGateway(t, fake)

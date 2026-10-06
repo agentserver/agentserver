@@ -404,6 +404,7 @@ func (gateway *DSHGateway) dispatch(ctx context.Context, bearer, endpoint string
 		return map[string]any{"accepted": true}, true, "", "", nil
 	case "session/selectModel":
 		var request struct {
+			SessionID       string `json:"sessionId"`
 			Provider        string `json:"provider"`
 			Model           string `json:"model"`
 			ReasoningEffort string `json:"reasoningEffort"`
@@ -411,17 +412,20 @@ func (gateway *DSHGateway) dispatch(ctx context.Context, bearer, endpoint string
 		if err := decodeDSHArg(args, "request", &request); err != nil {
 			return nil, false, "gateway/bad-request", err.Error(), nil
 		}
-		if request.Provider == "" {
-			request.Provider = "codex"
+		if err := validateCanonicalUUID("sessionId", request.SessionID); err != nil {
+			return nil, false, "gateway/bad-request", err.Error(), nil
 		}
-		if request.Model == "" {
-			request.Model = "codex"
+		// Revalidate even cached sessions; selecting a model must not bypass
+		// Core's current browser-user/workspace authority.
+		if _, err := gateway.backend.GetSession(ctx, bearer, gateway.config.WorkspaceID, request.SessionID); err != nil {
+			return gateway.dshError(err)
 		}
-		selected := map[string]any{"provider": request.Provider, "model": request.Model}
-		if request.ReasoningEffort != "" {
-			selected["reasoningEffort"] = request.ReasoningEffort
+		// Core still owns the run's model route. Until session-scoped model
+		// changes exist there, accept only the advertised default as a no-op.
+		if request.Provider != gateway.config.ModelProvider || request.Model != gateway.config.Model || request.ReasoningEffort != "" {
+			return nil, false, "session/model-unavailable", "only the configured workspace default model is supported; model and reasoning changes are not yet supported", map[string]any{"provider": request.Provider, "model": request.Model}
 		}
-		return map[string]any{"selected": selected}, true, "", "", nil
+		return map[string]any{"selected": gateway.defaultModelSelection()}, true, "", "", nil
 	case "session/modelCatalog":
 		return gateway.modelCatalog(ctx, bearer)
 	case "session/projections":
@@ -435,10 +439,8 @@ func (gateway *DSHGateway) dispatch(ctx context.Context, bearer, endpoint string
 		if err != nil {
 			return gateway.dshError(err)
 		}
-		state.mu.Lock()
-		permissionMode := state.session.PermissionMode
-		state.mu.Unlock()
-		return map[string]any{"asOfSeq": state.lastSeq(), "values": dshProjectionValues(permissionMode)}, true, "", "", nil
+		_, permissionMode, seq := state.projection()
+		return gateway.sessionProjection(permissionMode, seq), true, "", "", nil
 	case "session/page":
 		var request struct {
 			Address     map[string]any `json:"address"`
@@ -837,15 +839,12 @@ func (gateway *DSHGateway) summary(session corecontract.UserSessionState) map[st
 	return row
 }
 
-// modelCatalog projects the one Core workspace LLM route that DSH can use.
-// Core freezes the gateway and model into each run, so advertising the live
-// workspace default is both more useful and more honest than the old
-// codex/codex placeholder. The DSH client still gets the standard provider
-// group shape and can render its model selector without knowing Core's
-// workspace-gateway implementation detail.
+// modelCatalog advertises deployment metadata, not a live Core model lookup.
+// Keep this configuration aligned with the workspace default. Platform-only
+// gateway management routes must not be called with Browser credentials.
 func (gateway *DSHGateway) modelCatalog(_ context.Context, _ string) (any, bool, string, string, map[string]any) {
 	base := map[string]any{
-		"default":           map[string]any{"provider": gateway.config.ModelProvider, "model": gateway.config.Model},
+		"default":           gateway.defaultModelSelection(),
 		"routableProviders": []string{},
 		"groups":            []any{},
 		"failures":          []any{},
@@ -866,20 +865,20 @@ func (gateway *DSHGateway) modelCatalog(_ context.Context, _ string) (any, bool,
 	return base, true, "", "", nil
 }
 
-func nonEmptyDSHText(value, fallback string) string {
-	if strings.TrimSpace(value) == "" {
-		return fallback
-	}
-	return value
+func (gateway *DSHGateway) defaultModelSelection() map[string]any {
+	return map[string]any{"provider": gateway.config.ModelProvider, "model": gateway.config.Model}
 }
 
-func dshProjectionValues(permissionMode string) map[string]any {
+func (gateway *DSHGateway) sessionProjection(permissionMode string, seq int64) map[string]any {
 	return map[string]any{
-		"permissions": map[string]any{"currentValue": permissionMode},
-		// ui-model-selection waits for this registered projection before it
-		// leaves its trigger in "Loading models…".  Keep both fields present so
-		// an unconfigured Session still resolves to the catalog default.
-		"modelSelection": map[string]any{"lastUsed": nil, "pending": nil},
+		"asOfSeq": seq,
+		"values": map[string]any{
+			"permissions": map[string]any{"currentValue": permissionMode},
+			// The client contract uses lastUsed/next, not the Host's internal
+			// pending field. Catalog alone leaves ModelDirectory loading forever.
+			// Do not invent lastUsed: the transcript has no model-route evidence.
+			"modelSelection": map[string]any{"lastUsed": nil, "next": gateway.defaultModelSelection()},
+		},
 	}
 }
 

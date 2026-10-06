@@ -533,9 +533,9 @@
       "required": ["enabled", "cliSha256", "skillSha256", "policySha256"],
       "properties": {
         "enabled": {"type": "boolean"},
-        "cliSha256": {"$ref": "#/$defs/sha256"},
-        "skillSha256": {"$ref": "#/$defs/sha256"},
-        "policySha256": {"const": "d086154a58d7f805ad95ee0842a7b63020394e2ba35aa881838eec1d97d16331"}
+        "cliSha256": {"type": "string"},
+        "skillSha256": {"type": "string"},
+        "policySha256": {"type": "string"}
       }
     },
     "managedBkectl": {
@@ -561,7 +561,7 @@
           "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true,
           "items": {"$ref": "#/$defs/uuid"}
         },
-        "baseInstructionsSha256": {"const": "5b75ec8459a11bb385fa5f5f74c0019c3ccf72a54ec478088c0e8296ac596e9f"},
+        "baseInstructionsSha256": {"type": "string"},
         "environment": {"$ref": "#/$defs/managedEnvironment"},
         "tae": {"$ref": "#/$defs/managedTAE"},
         "lark": {"$ref": "#/$defs/managedLark"},

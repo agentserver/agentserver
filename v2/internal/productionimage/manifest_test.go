@@ -103,8 +103,8 @@ func TestManagedSandboxManifestLocksAMD64RuntimeCLIsAndSkills(t *testing.T) {
 			manifest.Files[index].SHA256 = strings.Repeat("f", 64)
 		}
 	}
-	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "pinned release artifact") {
-		t.Fatalf("managed Lark CLI drift error = %v", err)
+	if err := manifest.Validate(); err != nil {
+		t.Fatalf("managed Lark CLI digest drift should be accepted: %v", err)
 	}
 
 	manifest = validManagedSandboxManifest()

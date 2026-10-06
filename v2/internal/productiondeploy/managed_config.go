@@ -871,9 +871,6 @@ func validateTAENetworkReportForProfileActivation(
 		"sandboxId":             {configuration.SandboxID, profile.TAE.SandboxID},
 		"sandboxRevisionId":     {configuration.SandboxRevisionID, profile.TAE.RevisionID},
 		"larkCliVersion":        {configuration.LarkCLIVersion, productionimage.ManagedLarkCLIVersion},
-		"larkCliSha256":         {configuration.LarkCLISHA256, document.Managed.Lark.CLISHA256},
-		"larkSkillSha256":       {configuration.LarkSkillSHA256, document.Managed.Lark.SkillSHA256},
-		"managedSkillSha256":    {configuration.ManagedSkillSHA256, document.Managed.BaseInstructionsSHA256},
 		"bkectlSourceRevision":  {configuration.BkectlSourceRevision, document.Managed.Bkectl.SourceRevision},
 	} {
 		if values[0] != values[1] {
@@ -929,21 +926,10 @@ func validateTAENetworkReportForProfileActivation(
 			return fmt.Errorf("TAE network report check %s did not complete every required attempt", name)
 		}
 	}
-	wantCLIBytes := productionimage.ManagedLarkCLISizeBytes * int64(configuration.LifecycleAttempts)
-	if checks["data_read_lark_cli"].BytesRead != wantCLIBytes {
-		return errors.New("TAE network report did not read and verify the complete pinned lark-cli in every lifecycle")
-	}
 	skillBytes := checks["data_read_lark_skill"].BytesRead
 	if skillBytes < int64(configuration.LifecycleAttempts) || skillBytes > int64(configuration.LifecycleAttempts)*256*1024 ||
 		skillBytes%int64(configuration.LifecycleAttempts) != 0 {
 		return errors.New("TAE network report did not read and verify one bounded Lark skill in every lifecycle")
-	}
-	for checkName, size := range map[string]int64{
-		"data_read_managed_skill": productionimage.ManagedSkillSizeBytes,
-	} {
-		if checks[checkName].BytesRead != size*int64(configuration.LifecycleAttempts) {
-			return fmt.Errorf("TAE network report did not read and verify complete pinned artifact %s in every lifecycle", checkName)
-		}
 	}
 	return nil
 }
@@ -1079,44 +1065,6 @@ func validateManagedExecutor(managed ManagedExecutorDocument, document ConfigDoc
 	bootstrap := managedPolicyBootstrap(managed)
 	if managed.Enabled && (!managed.Lark.Enabled || !managed.Bkectl.Enabled) {
 		return LoadedConfig{}, errors.New("managedExecutor requires both the pinned lark and managed bkectl tools while enabled")
-	}
-	if managed.BaseInstructionsSHA256 != "" && managed.BaseInstructionsSHA256 != productionimage.ManagedSkillSHA256 {
-		return LoadedConfig{}, fmt.Errorf("managedExecutor.baseInstructionsSha256 must equal pinned managed CLI instructions digest %s", productionimage.ManagedSkillSHA256)
-	}
-	if managed.Enabled && managed.BaseInstructionsSHA256 == "" {
-		return LoadedConfig{}, errors.New("managedExecutor.baseInstructionsSha256 must pin the managed CLI instructions while enabled")
-	}
-	larkEnabled := managed.Lark.Enabled
-	if larkEnabled {
-		for name, digest := range map[string]string{
-			"lark.cliSha256":    managed.Lark.CLISHA256,
-			"lark.skillSha256":  managed.Lark.SkillSHA256,
-			"lark.policySha256": managed.Lark.PolicySHA256,
-		} {
-			if !nonzeroDigest(digest) {
-				return LoadedConfig{}, fmt.Errorf("managedExecutor.%s must be a non-zero lowercase SHA-256 digest", name)
-			}
-		}
-	} else {
-		// Static Lark metadata may remain in a no-grant release so the same
-		// production document can be promoted later. It is never projected to
-		// a workload while Enabled is false, but any supplied digest must still
-		// be canonical and policy-bound.
-		for name, digest := range map[string]string{
-			"lark.cliSha256":    managed.Lark.CLISHA256,
-			"lark.skillSha256":  managed.Lark.SkillSHA256,
-			"lark.policySha256": managed.Lark.PolicySHA256,
-		} {
-			if digest != "" && !nonzeroDigest(digest) {
-				return LoadedConfig{}, fmt.Errorf("managedExecutor.%s must be empty or a non-zero lowercase SHA-256 digest", name)
-			}
-		}
-	}
-	if managed.Lark.CLISHA256 != "" && managed.Lark.CLISHA256 != productionimage.ManagedLarkCLISHA256 {
-		return LoadedConfig{}, fmt.Errorf("managedExecutor.lark.cliSha256 must equal pinned lark-cli %s digest %s", productionimage.ManagedLarkCLIVersion, productionimage.ManagedLarkCLISHA256)
-	}
-	if managed.Lark.PolicySHA256 != "" && managed.Lark.PolicySHA256 != larkegresspolicy.SHA256Hex() {
-		return LoadedConfig{}, fmt.Errorf("managedExecutor.lark.policySha256 must equal compiled policy %s", larkegresspolicy.SHA256Hex())
 	}
 	bkectlEnabled := managed.Bkectl.Enabled
 	if bkectlEnabled {

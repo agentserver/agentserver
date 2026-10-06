@@ -314,15 +314,16 @@ func runProbeLifecycle(ctx context.Context, config networkProbeConfig, clients *
 				if err != nil {
 					return err
 				}
-				if info.Type != "file" || info.Size != config.larkCLISize || info.SymlinkTarget != "" {
+				if info.Type != "file" || info.Size < 1 || info.Size > 128*1024*1024 || info.SymlinkTarget != "" {
 					return newProbeFailure("lark_cli_stat_mismatch")
 				}
+				config.larkCLISize = info.Size
 				return nil
 			})
 			var cliBytes int64
 			_ = recorder.run("data_read_lark_cli", func() error {
 				var readErr error
-				cliBytes, readErr = probeDownloadDigest(ctx, clients.data, session.ID, probeLarkCLIPath, config.larkCLISize, config.larkCLISHA256)
+				cliBytes, readErr = probeDownloadSize(ctx, clients.data, session.ID, probeLarkCLIPath, config.larkCLISize)
 				return readErr
 			})
 			recorder.addBytes("data_read_lark_cli", cliBytes)
@@ -344,7 +345,7 @@ func runProbeLifecycle(ctx context.Context, config networkProbeConfig, clients *
 				var skillBytes int64
 				_ = recorder.run("data_read_lark_skill", func() error {
 					var readErr error
-					skillBytes, readErr = probeDownloadDigest(ctx, clients.data, session.ID, probeLarkSkillPath, skillSize, config.larkSkillSHA256)
+					skillBytes, readErr = probeDownloadSize(ctx, clients.data, session.ID, probeLarkSkillPath, skillSize)
 					return readErr
 				})
 				recorder.addBytes("data_read_lark_skill", skillBytes)

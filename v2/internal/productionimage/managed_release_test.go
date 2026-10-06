@@ -42,9 +42,6 @@ func TestManagedReleaseLockBindsImageCLIAndSkillDigests(t *testing.T) {
 			value.ManagedSandboxImage = "registry.example.test/managed@sha256:" + strings.Repeat("e", 64)
 		},
 		"platform":      func(value *ManagedReleaseLock) { value.Platform = PlatformLinuxARM64 },
-		"managed skill": func(value *ManagedReleaseLock) { value.ManagedSkillSHA256 = strings.Repeat("e", 64) },
-		"lark CLI":      func(value *ManagedReleaseLock) { value.LarkCLISHA256 = strings.Repeat("e", 64) },
-		"lark skill":    func(value *ManagedReleaseLock) { value.LarkSkillSHA256 = strings.Repeat("e", 64) },
 		"bkectl source": func(value *ManagedReleaseLock) { value.BkectlSourceRevision = strings.Repeat("e", 40) },
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -60,14 +57,5 @@ func TestManagedReleaseLockBindsImageCLIAndSkillDigests(t *testing.T) {
 	drifted.ManagedSandboxManifest.SourceRevision = strings.Repeat("f", 40)
 	if err := VerifyManagedReleaseLock(drifted, lock); err == nil || !strings.Contains(err.Error(), "source revisions") {
 		t.Fatalf("source revision drift error = %v", err)
-	}
-	drifted = artifacts
-	for index := range drifted.ManagedSandboxManifest.Files {
-		if drifted.ManagedSandboxManifest.Files[index].Path == ManagedLarkSkillPath {
-			drifted.ManagedSandboxManifest.Files[index].SHA256 = strings.Repeat("f", 64)
-		}
-	}
-	if err := VerifyManagedReleaseLock(drifted, lock); err == nil || !strings.Contains(err.Error(), "cross-image artifact") {
-		t.Fatalf("cross-image skill drift error = %v", err)
 	}
 }

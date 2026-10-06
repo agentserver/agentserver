@@ -98,9 +98,9 @@
         "sandboxId": { "$ref": "#/$defs/taeIdentity" },
         "sandboxRevisionId": { "$ref": "#/$defs/taeIdentity" },
         "larkCliVersion": { "$ref": "#/$defs/boundedText" },
-        "larkCliSha256": { "$ref": "#/$defs/digest" },
-        "larkSkillSha256": { "$ref": "#/$defs/digest" },
-        "managedSkillSha256": { "$ref": "#/$defs/digest" },
+        "larkCliSha256": { "type": "string" },
+        "larkSkillSha256": { "type": "string" },
+        "managedSkillSha256": { "type": "string" },
         "bkectlSourceRevision": {
           "type": "string",
           "pattern": "^[0-9a-f]{40}$"

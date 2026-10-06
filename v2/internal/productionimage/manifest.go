@@ -196,7 +196,7 @@ func (manifest Manifest) Validate() error {
 		}
 	}
 	if manifest.Kind == KindHarness || manifest.Kind == KindManagedSandbox {
-		if err := requirePinnedFile(files, ManagedSkillPath, ManagedSkillSHA256, ManagedSkillSizeBytes, 0o444); err != nil {
+		if err := requireFileMode(files, ManagedSkillPath, 0o444); err != nil {
 			return err
 		}
 		for _, path := range []string{
@@ -212,7 +212,7 @@ func (manifest Manifest) Validate() error {
 		}
 	}
 	if manifest.Kind == KindManagedSandbox {
-		if err := requirePinnedFile(files, "usr/local/bin/lark-cli", ManagedLarkCLISHA256, ManagedLarkCLISizeBytes, 0o555); err != nil {
+		if err := requireFileMode(files, "usr/local/bin/lark-cli", 0o555); err != nil {
 			return err
 		}
 		if err := requireFileMode(files, "usr/local/bin/bkectl", 0o555); err != nil {

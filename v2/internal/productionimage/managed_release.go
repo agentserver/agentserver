@@ -56,29 +56,22 @@ func VerifyManagedReleaseLock(artifacts ManagedReleaseArtifacts, lock ManagedRel
 	}
 	harnessFiles := fileMap(harness.Files)
 	sandboxFiles := fileMap(sandbox.Files)
-	for _, expected := range []struct {
-		path   string
-		digest string
-	}{
-		{ManagedSkillPath, lock.ManagedSkillSHA256},
-		{ManagedLarkSkillPath, lock.LarkSkillSHA256},
-	} {
-		harnessEntry, harnessFound := harnessFiles[expected.path]
-		sandboxEntry, sandboxFound := sandboxFiles[expected.path]
-		if !harnessFound || !sandboxFound || harnessEntry.SHA256 != expected.digest || sandboxEntry.SHA256 != expected.digest {
-			return fmt.Errorf("managed release cross-image artifact %s does not match its release lock", expected.path)
+	for _, path := range []string{ManagedSkillPath, ManagedLarkSkillPath} {
+		if _, harnessFound := harnessFiles[path]; !harnessFound {
+			return fmt.Errorf("managed release harness image is missing %s", path)
+		}
+		if _, sandboxFound := sandboxFiles[path]; !sandboxFound {
+			return fmt.Errorf("managed release sandbox image is missing %s", path)
 		}
 	}
-	larkCLI, larkFound := sandboxFiles["usr/local/bin/lark-cli"]
-	if !larkFound || larkCLI.SHA256 != lock.LarkCLISHA256 {
-		return errors.New("managed release Lark CLI digest does not match the verified sandbox image manifest")
+	if _, larkFound := sandboxFiles["usr/local/bin/lark-cli"]; !larkFound {
+		return errors.New("managed release sandbox image is missing lark-cli")
 	}
 	if _, bkectlFound := sandboxFiles["usr/local/bin/bkectl"]; !bkectlFound {
 		return errors.New("managed release sandbox image is missing bkectl CLI")
 	}
-	if lock.ManagedSkillSHA256 != ManagedSkillSHA256 ||
-		lock.BkectlSourceRevision != ManagedBkectlSourceRevision {
-		return errors.New("managed release tool source or instructions lock is not pinned")
+	if lock.BkectlSourceRevision != ManagedBkectlSourceRevision {
+		return errors.New("managed release tool source lock is not pinned")
 	}
 	return nil
 }

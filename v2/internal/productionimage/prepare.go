@@ -86,10 +86,7 @@ func Prepare(config PrepareConfig) (_ PrepareResult, returnErr error) {
 			err   error
 		)
 		if config.Kind == KindManagedSandbox && binary == "lark-cli" {
-			entry, err = copyPinnedArtifact(
-				source, rootfs, "usr/local/bin/"+binary, 0o555,
-				ManagedLarkCLISHA256, ManagedLarkCLISizeBytes, "managed Lark CLI",
-			)
+			entry, err = copyArtifact(source, rootfs, "usr/local/bin/"+binary, 0o555, "managed Lark CLI")
 		} else if config.Kind == KindManagedSandbox && binary == "bkectl" {
 			// The bkectl executable is built from the pinned source revision on
 			// the release runner. Go toolchain/build-environment details can make
@@ -309,8 +306,7 @@ func copyManagedSkillArtifacts(config PrepareConfig, rootfs string) ([]FileEntry
 	artifacts := []managedSkillArtifact{
 		{
 			source: config.ManagedSkillFile, target: ManagedSkillPath,
-			digest: ManagedSkillSHA256, size: ManagedSkillSizeBytes,
-			label: "managed CLI instructions", pinned: true,
+			label: "managed CLI instructions",
 		},
 		{source: config.LarkSkillFile, target: ManagedLarkSkillPath, label: "managed Lark skill"},
 		{

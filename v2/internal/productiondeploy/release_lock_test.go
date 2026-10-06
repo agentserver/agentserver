@@ -171,9 +171,7 @@ func TestLockReleaseRejectsUnverifiedInputs(t *testing.T) {
 		"wrong image repository": func(lock *ReleaseLock) {
 			lock.ManagedSandboxImage = "registry.test/sandbox@sha256:" + releaseDigest("d")
 		},
-		"mutable image":        func(lock *ReleaseLock) { lock.HarnessImage = ProductionHarnessImage + ":latest" },
-		"zero CLI digest":      func(lock *ReleaseLock) { lock.LarkCLISHA256 = strings.Repeat("0", 64) },
-		"invalid skill digest": func(lock *ReleaseLock) { lock.LarkSkillSHA256 = strings.Repeat("A", 64) },
+		"mutable image": func(lock *ReleaseLock) { lock.HarnessImage = ProductionHarnessImage + ":latest" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			lock := valid

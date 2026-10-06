@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/bkectlpolicy"
 	"github.com/agentserver/agentserver/v2/internal/executionbackend"
 	"github.com/agentserver/agentserver/v2/internal/executorgateway/agentxconn"
 	"github.com/agentserver/agentserver/v2/internal/managedcredential"
@@ -72,11 +73,12 @@ const (
 	ManagedLarkNoUpdateNotifierEnvironment = "LARKSUITE_CLI_NO_UPDATE_NOTIFIER"
 	ManagedLarkNoSkillsNotifierEnvironment = "LARKSUITE_CLI_NO_SKILLS_NOTIFIER"
 	ManagedLarkAgentTraceEnvironment       = managedcredential.LarkAgentTraceEnvironment
-	ManagedBkectlJWTEnvironment            = "BKECTL_JWT_TOKEN"
-	ManagedBkectlAuthModeEnvironment       = "BKECTL_AUTH_MODE"
-	ManagedBkectlAuthModeValue             = "user_only"
-	ManagedBkectlRegionEnvironment         = "BKECTL_REGION"
-	ManagedBkectlRegionValue               = "i18nbd"
+	ManagedBkectlAccessKeyEnvironment      = bkectlpolicy.AccessKeyEnvironment
+	ManagedBkectlSecretKeyEnvironment      = bkectlpolicy.SecretKeyEnvironment
+	ManagedBkectlAuthModeEnvironment       = bkectlpolicy.AuthModeEnvironment
+	ManagedBkectlAuthModeValue             = bkectlpolicy.AuthModeValue
+	ManagedBkectlRegionEnvironment         = bkectlpolicy.RegionEnvironment
+	ManagedBkectlRegionValue               = bkectlpolicy.RegionValue
 	// The TAE process API accepts an executable name. PATH is therefore a
 	// reserved, non-secret projection so the name resolves to the immutable
 	// image artifact instead of a workspace-provided binary.

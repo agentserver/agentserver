@@ -167,9 +167,19 @@ func (request AuthorityRequest) Validate() error {
 }
 
 // HeaderMutation is deliberately closed-world. Providers may only return
-// headers declared by their adapter; arbitrary request rewrites are rejected.
+// headers or process-environment keys declared by their adapter; arbitrary
+// request rewrites or environment injection are rejected.
 type HeaderMutation struct {
-	Headers map[string]string `json:"headers"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	Environment map[string]string `json:"environment,omitempty"`
+}
+
+// ProcessEnvironmentProvider is implemented by providers that can materialize
+// operation-scoped process environment values. It is deliberately separate
+// from the HTTP header allowlist: environment credentials must never become
+// arbitrary outbound headers.
+type ProcessEnvironmentProvider interface {
+	AllowedEnvironment() []string
 }
 
 type UploadResult struct {
@@ -434,19 +444,50 @@ func exactHeader(headers map[string]string, wanted string) (string, bool) {
 }
 
 func (mutation HeaderMutation) Validate(provider Provider) error {
-	if provider == nil || len(mutation.Headers) == 0 || len(mutation.Headers) > 8 {
+	if provider == nil || (len(mutation.Headers) == 0 && len(mutation.Environment) == 0) ||
+		(len(mutation.Headers) > 0 && len(mutation.Environment) > 0) || len(mutation.Headers) > 8 || len(mutation.Environment) > 8 {
 		return errors.New("credential header mutation is empty or excessive")
 	}
-	allowed := make(map[string]struct{})
-	for _, name := range provider.AllowedHeaders() {
-		allowed[strings.ToLower(name)] = struct{}{}
+	if len(mutation.Headers) > 0 {
+		allowed := make(map[string]struct{})
+		for _, name := range provider.AllowedHeaders() {
+			allowed[strings.ToLower(name)] = struct{}{}
+		}
+		for name, value := range mutation.Headers {
+			if _, ok := allowed[strings.ToLower(name)]; !ok || value == "" || len(value) > maximumHeaderValueBytes || strings.ContainsAny(value, "\r\n") {
+				return errors.New("credential provider returned a forbidden header mutation")
+			}
+		}
 	}
-	for name, value := range mutation.Headers {
-		if _, ok := allowed[strings.ToLower(name)]; !ok || value == "" || len(value) > maximumHeaderValueBytes || strings.ContainsAny(value, "\r\n") {
-			return errors.New("credential provider returned a forbidden header mutation")
+	if len(mutation.Environment) > 0 {
+		environmentProvider, ok := provider.(ProcessEnvironmentProvider)
+		if !ok {
+			return errors.New("credential provider does not support process environment delivery")
+		}
+		allowed := make(map[string]struct{})
+		for _, name := range environmentProvider.AllowedEnvironment() {
+			allowed[name] = struct{}{}
+		}
+		for name, value := range mutation.Environment {
+			if _, ok := allowed[name]; !ok || !validEnvironmentName(name) || value == "" || len(value) > maximumHeaderValueBytes || strings.ContainsAny(value, "\r\n\x00") {
+				return errors.New("credential provider returned a forbidden process environment mutation")
+			}
 		}
 	}
 	return nil
+}
+
+func validEnvironmentName(value string) bool {
+	if value == "" {
+		return false
+	}
+	for index, character := range []byte(value) {
+		if (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') || character == '_' || (index > 0 && character >= '0' && character <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // ValidateClosedHeaderMutation performs the transport-side checks available

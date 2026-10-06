@@ -10,7 +10,7 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
-func TestWorkspaceManagedEnvironmentIssuerInjectsByteCloudJWTForBkectl(t *testing.T) {
+func TestWorkspaceManagedEnvironmentIssuerInjectsByteCloudAKSKForBkectl(t *testing.T) {
 	now := time.Date(2026, 8, 14, 8, 0, 0, 0, time.UTC)
 	authority := ManagedCredentialAuthority{
 		CredentialMode:   managedcredential.ModeProcessEnv,
@@ -33,7 +33,10 @@ func TestWorkspaceManagedEnvironmentIssuerInjectsByteCloudJWTForBkectl(t *testin
 		credentialCalls++
 		return ManagedProcessCredential{
 			Configured: true, CredentialMode: managedcredential.ModeProcessEnv,
-			ProviderKind: selected.ProviderKind, Credential: "workspace-bytecloud-jwt",
+			ProviderKind: selected.ProviderKind, Environment: map[string]string{
+				bkectlpolicy.AccessKeyEnvironment: "workspace-bytecloud-ak",
+				bkectlpolicy.SecretKeyEnvironment: "workspace-bytecloud-sk",
+			},
 			BindingID: selected.BindingID, AuthorityVersion: selected.AuthorityVersion,
 			CredentialVersion: selected.CredentialVersion, PolicySHA256: selected.PolicySHA256,
 			TAEPSM: taePSM, ResolvedAt: now,
@@ -53,7 +56,7 @@ func TestWorkspaceManagedEnvironmentIssuerInjectsByteCloudJWTForBkectl(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(environment) != 4 || environment[ManagedBkectlJWTEnvironment] != "workspace-bytecloud-jwt" ||
+	if len(environment) != 5 || environment[ManagedBkectlAccessKeyEnvironment] != "workspace-bytecloud-ak" || environment[ManagedBkectlSecretKeyEnvironment] != "workspace-bytecloud-sk" ||
 		environment[ManagedBkectlAuthModeEnvironment] != ManagedBkectlAuthModeValue ||
 		environment[ManagedBkectlRegionEnvironment] != ManagedBkectlRegionValue ||
 		environment[ManagedToolPathEnvironment] != ManagedToolPathValue ||
@@ -78,7 +81,7 @@ func TestWorkspaceManagedEnvironmentIssuerInjectsByteCloudJWTForBkectl(t *testin
 	} {
 		request.Arguments = arguments
 		environment, err := issuer.IssueManagedProcessEnvironment(t.Context(), request)
-		if err != nil || environment[ManagedBkectlJWTEnvironment] != "workspace-bytecloud-jwt" ||
+		if err != nil || environment[ManagedBkectlAccessKeyEnvironment] != "workspace-bytecloud-ak" || environment[ManagedBkectlSecretKeyEnvironment] != "workspace-bytecloud-sk" ||
 			authorityCalls != index+2 || credentialCalls != index+2 {
 			t.Fatalf("bkectl invocation was locally authorized: %#v, %v / %d/%d", environment, err, authorityCalls, credentialCalls)
 		}

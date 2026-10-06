@@ -65,8 +65,11 @@ bkectl bytebox host get <ip> --region i18nbd --json
 bkectl k8s pod get <required flags from --help> --region i18nbd --json
 ```
 
-Never run any `bkectl auth` command, including `auth get jwt`; the injected JWT
-must not be printed. Never run installation, login, logout, update, create,
+Never run any `bkectl auth` command, including `auth get jwt`; the managed
+AK/SK application identity must not be converted into or printed as a JWT.
+The executor supplies `BKECTL_AUTH_MODE=app_only`,
+`BYTECLOUD_AUTH_ACCESS_KEY_ID`, and `BYTECLOUD_AUTH_SECRET_ACCESS_KEY` only to
+the exact bkectl process. Never run installation, login, logout, update, create,
 delete, mutate, repair, shell, exec, block, unblock, or another write/risky
 operation. Never add `--debug` or `--confirm-write`. AgentServer does not keep
 a bkectl command allowlist: bkectl and its downstream IAM/policy engines make

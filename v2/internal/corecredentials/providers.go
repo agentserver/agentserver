@@ -115,9 +115,10 @@ func (provider GitHubProvider) ValidateUpload(authType string, raw []byte) (Uplo
 	return provider.BearerProvider.ValidateUpload(authType, raw)
 }
 
-// ByteCloudProvider intentionally requires a TokenExchanger. It never sends
-// workspace AK/SK to a sandbox and never treats the TAE control-plane
-// application identity as a workspace credential.
+// ByteCloudProvider exchanges AK/SK for a JWT for HTTP egress, and materializes
+// the same sealed AK/SK as a closed environment pair for the managed bkectl
+// process contract. It never treats the TAE control-plane application identity
+// as a workspace credential.
 type ByteCloudProvider struct {
 	HostValue      string
 	TokenExchanger func(context.Context, string, string) (token string, expiry time.Time, err error)
@@ -179,10 +180,14 @@ func (provider ByteCloudProvider) Kind() string { return "bytecloud" }
 
 func (provider ByteCloudProvider) AllowedHeaders() []string { return []string{"X-Jwt-Token"} }
 
+func (provider ByteCloudProvider) AllowedEnvironment() []string {
+	return []string{"BYTECLOUD_AUTH_ACCESS_KEY_ID", "BYTECLOUD_AUTH_SECRET_ACCESS_KEY"}
+}
+
 func (provider ByteCloudProvider) Schema() ProviderSchema {
 	schema := ProviderSchema{
 		Kind: provider.Kind(), DisplayName: "ByteCloud",
-		AuthTypes:      []string{"aksk"},
+		AuthTypes:      []string{AuthTypeAKSK},
 		AllowedHosts:   []string{provider.HostValue},
 		AllowedHeaders: provider.AllowedHeaders(), SecretFormat: "json-access-key-secret-key",
 		AuthorizationMethods: []string{AuthorizationMethodManual},
@@ -197,12 +202,12 @@ func (provider ByteCloudProvider) Schema() ProviderSchema {
 
 func (provider ByteCloudProvider) ValidateUpload(authType string, raw []byte) (UploadResult, error) {
 	if strings.TrimSpace(authType) == "" {
-		authType = "aksk"
+		authType = AuthTypeAKSK
 	}
 	if authType == AuthTypeDeviceOAuth && provider.device != nil {
 		return provider.validateByteCloudOAuthCredential(raw)
 	}
-	if authType != "aksk" {
+	if authType != AuthTypeAKSK {
 		return UploadResult{}, errors.New("ByteCloud provider requires the aksk auth type")
 	}
 	var document struct {
@@ -213,12 +218,28 @@ func (provider ByteCloudProvider) ValidateUpload(authType string, raw []byte) (U
 		return UploadResult{}, err
 	}
 	public, _ := json.Marshal(map[string]string{"site": "i18n-tt"})
-	return UploadResult{AuthType: "aksk", PublicMetadata: public, Secret: append([]byte(nil), raw...)}, nil
+	return UploadResult{AuthType: AuthTypeAKSK, PublicMetadata: public, Secret: append([]byte(nil), raw...)}, nil
 }
 
 func (provider ByteCloudProvider) Materialize(ctx context.Context, binding Binding, secret []byte, request UseRequest) (HeaderMutation, error) {
-	if request.Host != provider.HostValue || binding.Kind != provider.Kind() || provider.TokenExchanger == nil {
+	if request.Host != provider.HostValue || binding.Kind != provider.Kind() || (request.Method != "PROCESS_ENV" && provider.TokenExchanger == nil) {
 		return HeaderMutation{}, errors.New("ByteCloud provider is not configured for this host")
+	}
+	if request.Method == "PROCESS_ENV" {
+		if binding.AuthType != AuthTypeAKSK {
+			return HeaderMutation{}, errors.New("ByteCloud process environment delivery requires an aksk binding")
+		}
+		var document struct {
+			AccessKeyID     string `json:"accessKeyId"`
+			SecretAccessKey string `json:"secretAccessKey"`
+		}
+		if err := decodeByteCloudSecret(secret, &document); err != nil {
+			return HeaderMutation{}, errors.New("ByteCloud credential envelope is invalid")
+		}
+		return HeaderMutation{Environment: map[string]string{
+			"BYTECLOUD_AUTH_ACCESS_KEY_ID":     document.AccessKeyID,
+			"BYTECLOUD_AUTH_SECRET_ACCESS_KEY": document.SecretAccessKey,
+		}}, nil
 	}
 	if binding.AuthType == AuthTypeDeviceOAuth {
 		if provider.device == nil {
@@ -230,7 +251,7 @@ func (provider ByteCloudProvider) Materialize(ctx context.Context, binding Bindi
 		}
 		return HeaderMutation{Headers: map[string]string{"X-Jwt-Token": credential.AccessToken}}, nil
 	}
-	if binding.AuthType != "aksk" {
+	if binding.AuthType != AuthTypeAKSK {
 		return HeaderMutation{}, errors.New("ByteCloud credential auth type is not supported")
 	}
 	var document struct {

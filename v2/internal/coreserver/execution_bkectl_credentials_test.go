@@ -13,14 +13,14 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
-func TestResolveExecutionCredentialMaterializesPlatformByteCloudJWTForBkectl(t *testing.T) {
+func TestResolveExecutionCredentialMaterializesWorkspaceByteCloudAKSKForBkectl(t *testing.T) {
 	service, store, request := testBkectlExecutionCredentialService(t)
 	result, err := service.ResolveExecutionCredential(t.Context(), request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !result.Configured || result.ProviderKind != bkectlpolicy.CredentialKind ||
-		result.Credential != "workspace-bytecloud-jwt" || result.ApplicationID != "" ||
+		result.Credential != "" || result.Environment[bkectlpolicy.AccessKeyEnvironment] != "workspace-bytecloud-ak" || result.Environment[bkectlpolicy.SecretKeyEnvironment] != "workspace-bytecloud-sk" || result.ApplicationID != "" ||
 		result.BindingID != store.binding.ID || result.AuthorityVersion != store.binding.AuthorityVersion ||
 		result.CredentialVersion != store.binding.CredentialVersion || result.PolicySHA256 != bkectlpolicy.SHA256Hex() ||
 		store.authorityCalls != 1 || store.useCalls != 1 {
@@ -43,7 +43,7 @@ func TestResolveExecutionCredentialDoesNotAuthorizeBkectlCommandPaths(t *testing
 			service, store, request := testBkectlExecutionCredentialService(t)
 			request.Arguments = arguments
 			result, err := service.ResolveExecutionCredential(t.Context(), request)
-			if err != nil || !result.Configured || result.Credential != "workspace-bytecloud-jwt" ||
+			if err != nil || !result.Configured || result.Credential != "" || result.Environment[bkectlpolicy.AccessKeyEnvironment] != "workspace-bytecloud-ak" || result.Environment[bkectlpolicy.SecretKeyEnvironment] != "workspace-bytecloud-sk" ||
 				store.authorityCalls != 1 || store.useCalls != 1 || len(store.events) != 1 {
 				t.Fatalf("bkectl command was locally authorized: %#v, %v / %#v", result, err, store)
 			}
@@ -69,12 +69,12 @@ func TestResolveExecutionCredentialRejectsRotatedByteCloudBinding(t *testing.T) 
 	}
 }
 
-func TestResolveExecutionCredentialRejectsNonOIDCByteCloudBinding(t *testing.T) {
+func TestResolveExecutionCredentialRejectsNonAKSKByteCloudBinding(t *testing.T) {
 	service, store, request := testBkectlExecutionCredentialService(t)
-	store.binding.AuthType = "aksk"
+	store.binding.AuthType = corecredentials.AuthTypeDeviceOAuth
 	if result, err := service.ResolveExecutionCredential(t.Context(), request); err == nil || result.Credential != "" ||
 		store.authorityCalls != 1 || store.useCalls != 0 || len(store.events) != 0 {
-		t.Fatalf("non-OIDC ByteCloud binding reached process materialization: %#v, %v / %#v", result, err, store)
+		t.Fatalf("non-AKSK ByteCloud binding reached process materialization: %#v, %v / %#v", result, err, store)
 	}
 }
 
@@ -92,29 +92,14 @@ func testBkectlExecutionCredentialService(t *testing.T) (*EgressCredentialServic
 	binding := corecredentials.Binding{
 		ID: "b1000000-0000-4000-8000-00000000000b", WorkspaceID: "20000000-0000-4000-8000-000000000002",
 		Kind: bkectlpolicy.CredentialKind, DisplayName: "ByteCloud user", OwnerScope: corecredentials.OwnerScopeWorkspace,
-		AuthType: corecredentials.AuthTypeDeviceOAuth, Status: corecredentials.StatusActive, AuthorityVersion: 5, CredentialVersion: 9,
+		AuthType: corecredentials.AuthTypeAKSK, Status: corecredentials.StatusActive, AuthorityVersion: 5, CredentialVersion: 9,
 		IsDefault: true, AccessExpiresAt: accessExpiry, RefreshExpiresAt: &refreshExpiry,
 		PublicMetadata: json.RawMessage(`{"site":"i18n-tt","appId":"app-bytecloud","username":"workspace-owner"}`),
 	}
 	credentialEnvelope, err := json.Marshal(struct {
-		Version          int       `json:"version"`
-		Site             string    `json:"site"`
-		AppID            string    `json:"appId"`
-		DeviceCode       string    `json:"deviceCode"`
-		AccessToken      string    `json:"accessToken"`
-		RefreshToken     string    `json:"refreshToken"`
-		TokenType        string    `json:"tokenType"`
-		Scope            string    `json:"scope"`
-		Username         string    `json:"username"`
-		GrantedAt        time.Time `json:"grantedAt"`
-		AccessExpiresAt  time.Time `json:"accessExpiresAt"`
-		RefreshExpiresAt time.Time `json:"refreshExpiresAt"`
-	}{
-		Version: 1, Site: "i18n-tt", AppID: "app-bytecloud", DeviceCode: "platform-device-code",
-		AccessToken: "workspace-bytecloud-jwt", RefreshToken: "workspace-bytecloud-refresh-token",
-		TokenType: "Bearer", Scope: "openid", Username: "workspace-owner", GrantedAt: now.Add(-time.Minute),
-		AccessExpiresAt: accessExpiry, RefreshExpiresAt: refreshExpiry,
-	})
+		AccessKeyID     string `json:"accessKeyId"`
+		SecretAccessKey string `json:"secretAccessKey"`
+	}{AccessKeyID: "workspace-bytecloud-ak", SecretAccessKey: "workspace-bytecloud-sk"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,16 +114,11 @@ func testBkectlExecutionCredentialService(t *testing.T) (*EgressCredentialServic
 		AuthorityVersion: binding.AuthorityVersion, CredentialVersion: binding.CredentialVersion,
 		CredentialMode: managedcredential.ModeProcessEnv,
 	}}
-	provider, err := corecredentials.NewByteCloudDeviceFlowProvider(
+	provider := corecredentials.NewByteCloudProvider(
 		bkectlpolicy.CredentialHost, func(context.Context, string, string) (string, time.Time, error) {
-			t.Fatal("Platform OIDC credential unexpectedly attempted an AK/SK exchange")
+			t.Fatal("ByteCloud JWT exchange unexpectedly attempted for bkectl process environment")
 			return "", time.Time{}, nil
-		},
-		corecredentials.ByteCloudDeviceFlowConfig{Now: func() time.Time { return now }},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+		})
 	registry, err := corecredentials.NewRegistry(provider)
 	if err != nil {
 		t.Fatal(err)

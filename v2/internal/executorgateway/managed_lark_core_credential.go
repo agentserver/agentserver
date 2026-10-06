@@ -11,14 +11,16 @@ import (
 	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
 
-// ManagedProcessCredential is the version-fenced material returned by
-// Core only after a workspace has explicitly selected process_env. It is
-// consumed immediately while constructing one managed CLI process environment.
+// ManagedProcessCredential is the version-fenced material returned by Core
+// only after a workspace has explicitly selected process_env. It is consumed
+// immediately while constructing one managed CLI process environment. Lark
+// uses Credential; bkectl uses the closed Environment AK/SK pair.
 type ManagedProcessCredential struct {
 	Configured        bool
 	CredentialMode    string
 	ProviderKind      string
 	Credential        string
+	Environment       map[string]string
 	ApplicationID     string
 	BindingID         string
 	AuthorityVersion  int64
@@ -82,7 +84,7 @@ func (client *CoreConnectionClient) ResolveManagedProcessCredential(
 		return ManagedProcessCredential{}, errors.New("Core returned an invalid managed process credential scope")
 	}
 	if !response.Configured {
-		if response.Credential != "" || response.ApplicationID != "" || response.BindingID != "" || response.AuthorityVersion != 0 || response.CredentialVersion != 0 || response.AccessExpiresAt != nil {
+		if response.Credential != "" || len(response.Environment) != 0 || response.ApplicationID != "" || response.BindingID != "" || response.AuthorityVersion != 0 || response.CredentialVersion != 0 || response.AccessExpiresAt != nil {
 			return ManagedProcessCredential{}, errors.New("Core returned a partial unconfigured managed process credential")
 		}
 		return ManagedProcessCredential{
@@ -100,14 +102,27 @@ func (client *CoreConnectionClient) ResolveManagedProcessCredential(
 		!applicationValid ||
 		response.BindingID != authority.BindingID || response.AuthorityVersion != authority.AuthorityVersion ||
 		response.CredentialVersion != authority.CredentialVersion ||
-		response.Credential == "" || len(response.Credential) > 32*1024 ||
-		strings.TrimSpace(response.Credential) != response.Credential || strings.ContainsAny(response.Credential, " \t\x00\r\n") ||
 		(response.AccessExpiresAt != nil && !response.AccessExpiresAt.After(client.authorizationNow().UTC().Add(time.Second))) {
 		return ManagedProcessCredential{}, errors.New("Core returned invalid managed process credential material")
+	}
+	if tool.ProviderKind == "lark" {
+		if response.Credential == "" || len(response.Credential) > 32*1024 || strings.TrimSpace(response.Credential) != response.Credential || strings.ContainsAny(response.Credential, " \t\x00\r\n") || len(response.Environment) != 0 {
+			return ManagedProcessCredential{}, errors.New("Core returned invalid managed Lark process credential material")
+		}
+	} else {
+		if response.Credential != "" || len(response.Environment) != 2 || response.Environment["BYTECLOUD_AUTH_ACCESS_KEY_ID"] == "" || response.Environment["BYTECLOUD_AUTH_SECRET_ACCESS_KEY"] == "" {
+			return ManagedProcessCredential{}, errors.New("Core returned invalid managed ByteCloud process environment material")
+		}
+		for name, value := range response.Environment {
+			if name != "BYTECLOUD_AUTH_ACCESS_KEY_ID" && name != "BYTECLOUD_AUTH_SECRET_ACCESS_KEY" || len(value) > 32*1024 || strings.TrimSpace(value) != value || strings.ContainsAny(value, " \t\x00\r\n") {
+				return ManagedProcessCredential{}, errors.New("Core returned invalid managed ByteCloud process environment material")
+			}
+		}
 	}
 	return ManagedProcessCredential{
 		Configured: true, CredentialMode: response.CredentialMode,
 		ProviderKind: response.ProviderKind, Credential: response.Credential,
+		Environment:   cloneStringMap(response.Environment),
 		ApplicationID: response.ApplicationID, BindingID: response.BindingID,
 		AuthorityVersion: response.AuthorityVersion, CredentialVersion: response.CredentialVersion,
 		PolicySHA256: response.PolicySHA256, TAEPSM: response.TAEPSM, ResolvedAt: response.ResolvedAt,

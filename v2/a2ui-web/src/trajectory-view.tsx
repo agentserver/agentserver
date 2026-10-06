@@ -73,6 +73,44 @@ export interface TrajectoryTimelineModel {
   spans: TrajectoryTimelineSpan[]
 }
 
+// The API returns records in stable chronological order. Keep the browser
+// defensive, though: initial, refreshed, and prepended pages are merged in the
+// browser and must not be allowed to render in reverse order. The public
+// record does not expose the server cursor tuple, so use its safe timestamp
+// plus a deterministic kind order for ties. This is only a presentation
+// safeguard; it never changes the record identity or pagination cursor.
+const TRAJECTORY_KIND_ORDER: Record<SessionTrajectoryRecord["kind"], number> = {
+  run: 0,
+  input: 10,
+  attempt: 20,
+  model: 30,
+  assistant: 30,
+  reasoning: 30,
+  tool: 40,
+  approval: 50,
+  execution: 60,
+  operation: 70,
+  sandbox: 80,
+  credential: 90,
+  checkpoint: 100,
+  event: 110,
+}
+
+export function orderTrajectoryRecords(records: SessionTrajectoryRecord[]): SessionTrajectoryRecord[] {
+  return records
+    .map((record, index) => ({ record, index, startedAt: timestamp(record.startedAt) ?? Number.POSITIVE_INFINITY }))
+    .sort((left, right) => {
+      if (left.startedAt !== right.startedAt) return left.startedAt - right.startedAt
+      const kindOrder = TRAJECTORY_KIND_ORDER[left.record.kind] - TRAJECTORY_KIND_ORDER[right.record.kind]
+      if (kindOrder !== 0) return kindOrder
+      // Preserve the API's stable tie-breaker when records have the same
+      // timestamp and kind (for example, two lifecycle points in one seq).
+      const idOrder = left.record.id < right.record.id ? -1 : left.record.id > right.record.id ? 1 : 0
+      return idOrder !== 0 ? idOrder : left.index - right.index
+    })
+    .map(({ record }) => record)
+}
+
 interface TrajectoryFilterOptions {
   query: string
   showLifecycle: boolean
@@ -106,7 +144,7 @@ const TIMELINE_OMITTED_KINDS = new Set<SessionTrajectoryRecord["kind"]>([
 export function groupTrajectoryRecords(records: SessionTrajectoryRecord[], readAt: string): TrajectoryRunGroup[] {
   const groups = new Map<string, TrajectoryRunGroup>()
   const readTime = timestamp(readAt) ?? Date.now()
-  for (const record of records) {
+  for (const record of orderTrajectoryRecords(records)) {
     let group = groups.get(record.runId)
     if (!group) {
       const startedAt = timestamp(record.startedAt) ?? readTime
@@ -158,7 +196,7 @@ export function filterTrajectoryRecords(records: SessionTrajectoryRecord[], opti
 
 export function deriveTrajectoryTimeline(records: SessionTrajectoryRecord[], readAt: string, mode: TimelineMode): TrajectoryTimelineModel | null {
   const readTime = timestamp(readAt) ?? Date.now()
-  const timed = records.filter((record) => !TIMELINE_OMITTED_KINDS.has(record.kind) && timestamp(record.startedAt) !== null)
+  const timed = orderTrajectoryRecords(records).filter((record) => !TIMELINE_OMITTED_KINDS.has(record.kind) && timestamp(record.startedAt) !== null)
   if (!timed.length) return null
   if (mode === "sequence") {
     return {

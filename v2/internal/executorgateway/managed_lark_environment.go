@@ -250,7 +250,7 @@ func validateManagedProcessRequest(request ManagedProcessEnvironmentRequest) (ma
 	case bkectlpolicy.Executable:
 		tool = managedProcessTool{
 			Executable: bkectlpolicy.Executable, ProviderKind: bkectlpolicy.CredentialKind,
-			PolicySHA256: bkectlpolicy.SHA256Hex(), CredentialEnvironment: ManagedBkectlJWTEnvironment,
+			PolicySHA256: bkectlpolicy.SHA256Hex(), CredentialEnvironment: ManagedBkectlAccessKeyEnvironment,
 		}
 		var err error
 		credentialRequired, err = bkectlpolicy.CredentialRequired(request.Arguments)

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 import type { SessionTrajectoryRecord } from "@agentserver/v2-web-shared"
 import { mergeTrajectoryTailRecords, prependTrajectoryRecords } from "./browser-app"
-import { deriveTrajectoryTimeline, filterTrajectoryRecords, groupTrajectoryRecords } from "./trajectory-view"
+import { deriveTrajectoryTimeline, filterTrajectoryRecords, groupTrajectoryRecords, orderTrajectoryRecords } from "./trajectory-view"
 
 describe("Browser product source", () => {
   it("uses generated SDKs instead of hand-written HTTP paths", () => {
@@ -93,6 +93,23 @@ describe("Browser product source", () => {
     const history = prependTrajectoryRecords([a, b], [updatedB, updatedC, d])
     expect(history.map((record) => record.id)).toEqual(["event:a", "event:b", "event:c", "event:d"])
     expect(history[1]?.summary).toBe("updated b")
+  })
+
+  it("keeps Trajectory oldest-first when a page arrives newest-first", () => {
+    const oldInput = trajectoryRecord("input:old", "old input", {
+      kind: "input", startedAt: "2026-08-15T01:00:00Z",
+    })
+    const oldTool = trajectoryRecord("tool:old", "old tool", {
+      kind: "tool", startedAt: "2026-08-15T01:00:01Z",
+    })
+    const latest = trajectoryRecord("assistant:latest", "latest response", {
+      kind: "assistant", startedAt: "2026-08-15T01:00:02Z",
+    })
+    const reversed = [latest, oldTool, oldInput]
+
+    expect(orderTrajectoryRecords(reversed).map(({ id }) => id)).toEqual(["input:old", "tool:old", "assistant:latest"])
+    expect(groupTrajectoryRecords(reversed, "2026-08-15T01:00:03Z")[0]?.records.map(({ id }) => id))
+      .toEqual(["input:old", "tool:old", "assistant:latest"])
   })
 
   it("filters lifecycle noise while preserving the hierarchy needed to explain a match", () => {

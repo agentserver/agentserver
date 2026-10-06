@@ -2189,6 +2189,7 @@
           "configured": {"type": "boolean"},
           "credentialMode": {"const": "process_env"},
           "credential": {"type": "string", "minLength": 1, "maxLength": 32768, "x-agentserver-sensitive": true},
+          "environment": {"type": "object", "maxProperties": 8, "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 32768, "x-agentserver-sensitive": true}, "x-agentserver-sensitive": true},
           "applicationId": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"},
           "providerKind": {"type": "string", "enum": ["lark", "bytecloud"]},
           "bindingId": {"$ref": "#/components/schemas/UUID"},

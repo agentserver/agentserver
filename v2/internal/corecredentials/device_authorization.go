@@ -10,6 +10,7 @@ import (
 const (
 	AuthorizationMethodManual     = "manual"
 	AuthorizationMethodDeviceFlow = "device_flow"
+	AuthTypeAKSK                  = "aksk"
 	AuthTypeDeviceOAuth           = "device_oauth"
 
 	DeviceAuthorizationPending   = "pending"

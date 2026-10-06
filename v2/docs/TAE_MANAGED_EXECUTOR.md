@@ -543,12 +543,13 @@ Lark mode 的唯一事实源是 Core 的 workspace row；`WorkspaceState`、crea
   `/internal/v2/execution/credentials:resolve-authority`，再调用
   `/internal/v2/execution/credentials:resolve`；Core 会复核 live operation、workspace binding、credential
   version、可执行文件和 argv policy 后返回对应 credential。`lark-cli` 注入
-  `LARKSUITE_CLI_USER_ACCESS_TOKEN`，`bkectl` 注入 `BKECTL_JWT_TOKEN`；credential 只存在于该目标进程。
+	  `LARKSUITE_CLI_USER_ACCESS_TOKEN`，`bkectl` 以 `BKECTL_AUTH_MODE=app_only` 注入
+	  `BYTECLOUD_AUTH_ACCESS_KEY_ID` / `BYTECLOUD_AUTH_SECRET_ACCESS_KEY`；credential 只存在于该目标进程。
   当前 direct profile 使用 TAE 预置网络策略，不经过 egress-authorizer。
 
-ByteCloud 授权由 Platform 的 `bytecloud` provider device flow 发起和轮询。Core 密封存储 OIDC JWT/access
-token、refresh token 及各自 expiry，并在解析 binding 时于 Core 内刷新；sandbox 既不执行 `bkectl auth`，
-也永远看不到 refresh token。一次合法 `bkectl` 进程只得到当前 access JWT 的副本。
+ByteCloud 的 managed bkectl 授权使用 Platform 的 `bytecloud` AK/SK binding。Core 密封存储 AK/SK，
+executor 只在进程启动的瞬间将其注入 app-only 环境；sandbox 既不执行 `bkectl auth`，也永远看不到
+Core 的 sealed envelope。一次合法 `bkectl` 进程只得到当前 AK/SK 的副本。
 
 Lark 的两种 mode 不复用 Sandbox profile。没有 `auto`、部署默认或运行时 fallback。当前 direct profile
 遇到 Lark `webhook_swap` 必须拒绝；ByteCloud/bkectl 不支持 webhook。未来切换 profile 需要发布对应 TAE
@@ -559,7 +560,7 @@ managed image/session runtime projection 只包含固定版本和 hash 的 CLI�
 request/body/log/trace 必须 redact，不使用 TAE ZTI `user` 替代 agentserver actor。
 
 没有所需 binding 时仍可创建 sandbox 和启动 run；`lark-cli` 可以在无 token 环境中返回未配置认证，
-需要 ByteCloud JWT 的 `bkectl` 业务查询则在 process start 前 fail closed。Core direct resolve 用
+需要 ByteCloud AK/SK 的 `bkectl` 业务查询则在 process start 前 fail closed。Core direct resolve 用
 `configured=false` 表达正常未配置状态，不回退到另一 mode。
 binding 的 secret rotation 只推进 `credentialVersion`，不要求重建 TAE Session；revoke/owner/policy 变化推进
 `authorityVersion`。`process_env` 会拒绝后续 process start；已经进入已启动进程内存的 token 字节不能远程
@@ -573,19 +574,17 @@ direct resolve 路由随 managed execution 一直挂载，只接受 executor-gat
 1. 请求工具必须是 `shell`，executable/argv 必须命中固定策略：`lark-cli` 或只读 `bkectl` leaf command；
    target 必须是配置的 TAE PSM；
 2. Core 按 consumer 映射选择 binding：`lark-cli -> kind=lark`，`bkectl -> kind=bytecloud`；ByteCloud binding
-   必须来自 Platform OIDC device flow，不能用 `bkectl` kind、sandbox 本地登录或 managed AK/SK 代替；
+   必须是 Platform 的 ByteCloud AK/SK binding，不能用 sandbox 本地登录或运行时 JWT 代替；
 3. Core 以该 binding/version 重做一次
    workspace membership、session/run/attempt lease、execution、`process_start`、sandbox generation 和 activity 校验；
-4. provider adapter 只能返回对应的单个 header：Lark 为 `Authorization: Bearer`，ByteCloud 为
-   `X-Jwt-Token`；Core 提取 token 后用
-   `Cache-Control: no-store` 的响应返回 executor-gateway；
-5. executor-gateway 只把 access token/JWT 合并进该次 TAE StartProcess env，禁止调用方覆盖保留变量；
+4. provider adapter 只能返回对应的闭集凭据：Lark 为 `Authorization: Bearer`，ByteCloud 为
+   AK/SK process environment；Core 用 `Cache-Control: no-store` 的响应返回 executor-gateway；
+5. executor-gateway 只把 app-only AK/SK 合并进该次 TAE StartProcess env，禁止调用方覆盖保留变量；
 6. Core 写 `stage=process_env` 的最小化 audit，audit 失败则不启动进程；
 7. direct profile 不签发 `LARKSUITE_CLI_AGENT_TRACE`，也不投射 placeholder signer/keyring。
 
-真实 token 会对目标进程及其子进程可见，这是该模式的明确安全边界。TAE 系统 policy 使用预置的
-Lark/ByteCloud 网络边界；长运行进程中的 token 字节无法擦除，因此 access token 必须短期、最小 scope，
-命令应保持短生命周期。refresh token 始终只驻留 Core。
+真实 token 或 AK/SK 会对目标进程及其子进程可见，这是该模式的明确安全边界。TAE 系统 policy 使用预置的
+Lark/ByteCloud 网络边界；长运行进程中的凭据字节无法擦除，因此凭据必须最小 scope，命令应保持短生命周期。
 
 ### 11.3 独立 webhook-enabled profile（未来）
 
@@ -617,7 +616,7 @@ materialization/refresh 和审计 redaction 接口。首批实现：
 | kind | 注入方式 | 说明 |
 |---|---|---|
 | `lark` | `Authorization: Bearer` / `LARKSUITE_CLI_USER_ACCESS_TOKEN` | Platform device flow；Core 密封并刷新 access/refresh token |
-| `bytecloud` | `X-Jwt-Token` / `BKECTL_JWT_TOKEN` | Platform OIDC device flow；Core 密封并刷新 JWT/refresh token；`bkectl` 只是 consumer |
+| `bytecloud` | `BYTECLOUD_AUTH_ACCESS_KEY_ID` / `BYTECLOUD_AUTH_SECRET_ACCESS_KEY` | Platform AK/SK binding；`bkectl` 使用 `app_only`，不复用运行时 JWT |
 | `github` | bearer/PAT | 当前 production registry 只启用 static；App installation 需要配置显式 minter 后才会出现在 schema |
 
 provider adapter 不能扩大网络 host；新增 host 需要平台审核 TAE policy/egress zone。workspace 上传的

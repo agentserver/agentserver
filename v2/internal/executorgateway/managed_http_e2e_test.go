@@ -202,10 +202,11 @@ func TestManagedShellBkectlThroughCoreTAEHTTPAndSandboxGateway(t *testing.T) {
 		providerRequest = request
 		providerMu.Unlock()
 		wantEnvironment := map[string]string{
-			ManagedBkectlJWTEnvironment:      "workspace-bytecloud-jwt",
-			ManagedBkectlAuthModeEnvironment: ManagedBkectlAuthModeValue,
-			ManagedBkectlRegionEnvironment:   ManagedBkectlRegionValue,
-			ManagedToolPathEnvironment:       ManagedToolPathValue,
+			ManagedBkectlAccessKeyEnvironment: "workspace-bytecloud-ak",
+			ManagedBkectlSecretKeyEnvironment: "workspace-bytecloud-sk",
+			ManagedBkectlAuthModeEnvironment:  ManagedBkectlAuthModeValue,
+			ManagedBkectlRegionEnvironment:    ManagedBkectlRegionValue,
+			ManagedToolPathEnvironment:        ManagedToolPathValue,
 		}
 		if request.Request.Executable != bkectlpolicy.Executable ||
 			!reflect.DeepEqual(request.Request.Arguments, arguments) ||
@@ -287,7 +288,10 @@ func TestManagedShellBkectlThroughCoreTAEHTTPAndSandboxGateway(t *testing.T) {
 			credentialExpiry := now.Add(time.Hour)
 			_ = json.NewEncoder(response).Encode(corecontract.ResolveExecutionCredentialResponse{
 				Configured: true, CredentialMode: managedcredential.ModeProcessEnv,
-				Credential: "workspace-bytecloud-jwt", ProviderKind: bkectlpolicy.CredentialKind,
+				Environment: map[string]string{
+					bkectlpolicy.AccessKeyEnvironment: "workspace-bytecloud-ak",
+					bkectlpolicy.SecretKeyEnvironment: "workspace-bytecloud-sk",
+				}, ProviderKind: bkectlpolicy.CredentialKind,
 				BindingID: bindingID, AuthorityVersion: 5, CredentialVersion: 9,
 				PolicySHA256: bkectlpolicy.SHA256Hex(), TAEPSM: "bytedance.sandbox.agentserver",
 				ResolvedAt: now, AccessExpiresAt: &credentialExpiry,

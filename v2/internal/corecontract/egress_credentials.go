@@ -85,18 +85,19 @@ type ResolveExecutionCredentialRequest struct {
 }
 
 type ResolveExecutionCredentialResponse struct {
-	Configured        bool       `json:"configured"`
-	CredentialMode    string     `json:"credentialMode"`
-	Credential        string     `json:"credential,omitempty"`
-	ApplicationID     string     `json:"applicationId,omitempty"`
-	ProviderKind      string     `json:"providerKind"`
-	BindingID         string     `json:"bindingId,omitempty"`
-	AuthorityVersion  int64      `json:"authorityVersion,omitempty"`
-	CredentialVersion int64      `json:"credentialVersion,omitempty"`
-	PolicySHA256      string     `json:"policySha256"`
-	TAEPSM            string     `json:"taePsm"`
-	ResolvedAt        time.Time  `json:"resolvedAt"`
-	AccessExpiresAt   *time.Time `json:"accessExpiresAt,omitempty"`
+	Configured        bool              `json:"configured"`
+	CredentialMode    string            `json:"credentialMode"`
+	Credential        string            `json:"credential,omitempty"`
+	Environment       map[string]string `json:"environment,omitempty"`
+	ApplicationID     string            `json:"applicationId,omitempty"`
+	ProviderKind      string            `json:"providerKind"`
+	BindingID         string            `json:"bindingId,omitempty"`
+	AuthorityVersion  int64             `json:"authorityVersion,omitempty"`
+	CredentialVersion int64             `json:"credentialVersion,omitempty"`
+	PolicySHA256      string            `json:"policySha256"`
+	TAEPSM            string            `json:"taePsm"`
+	ResolvedAt        time.Time         `json:"resolvedAt"`
+	AccessExpiresAt   *time.Time        `json:"accessExpiresAt,omitempty"`
 }
 
 // AuthorizeProcessEnvironmentEgressRequest is sent only by the TAE Policy

@@ -85,7 +85,12 @@ func (service *EgressCredentialService) ResolveAuthority(ctx context.Context, re
 	if err != nil {
 		return corecontract.ResolveEgressCredentialAuthorityResponse{}, err
 	}
-	if service.credentialRefresher != nil && ref.BindingID != "" {
+	// Lark device-OAuth bindings may need a Core-side refresh. Managed bkectl
+	// deliberately uses AK/SK bindings now, so never attempt the legacy
+	// ByteCloud OAuth refresh path; an old device_oauth binding is rejected
+	// below with an actionable reconfiguration error instead of surfacing a
+	// provider refresh failure as an opaque process unknown.
+	if service.credentialRefresher != nil && ref.BindingID != "" && request.ProviderKind == "lark" {
 		if err := service.credentialRefresher.RefreshCredentialReference(ctx, ref); err != nil {
 			return corecontract.ResolveEgressCredentialAuthorityResponse{}, err
 		}
@@ -133,11 +138,11 @@ func (service *EgressCredentialService) ResolveAuthority(ctx context.Context, re
 				Message: "workspace Lark credential has no valid application identity; authorize it again",
 			}
 		case bkectlpolicy.CredentialKind:
-			if binding.AuthType != corecredentials.AuthTypeDeviceOAuth {
+			if binding.AuthType != corecredentials.AuthTypeAKSK {
 				return corecontract.ResolveEgressCredentialAuthorityResponse{}, &coredb.StateError{
 					Code: coredb.ErrorConflict, Operation: "ResolveEgressCredentialAuthority",
 					Resource: "credential", ResourceID: ref.BindingID,
-					Message: "workspace ByteCloud credential is not a Platform OIDC binding; authorize it again",
+					Message: "workspace ByteCloud credential is not an AK/SK binding; configure it again",
 				}
 			}
 		}
@@ -241,9 +246,18 @@ func (service *EgressCredentialService) ResolveExecutionCredential(
 	if err != nil {
 		return corecontract.ResolveExecutionCredentialResponse{}, err
 	}
-	credential, err := exactExecutionCredential(tool, mutation.Headers)
-	if err != nil {
-		return corecontract.ResolveExecutionCredentialResponse{}, errors.New("v2 provider returned an invalid process credential")
+	var credential string
+	var environment map[string]string
+	if tool.ProviderKind == bkectlpolicy.CredentialKind {
+		environment, err = exactExecutionEnvironment(mutation.Environment)
+		if err != nil {
+			return corecontract.ResolveExecutionCredentialResponse{}, errors.New("v2 provider returned an invalid process environment credential")
+		}
+	} else {
+		credential, err = exactExecutionCredential(tool, mutation.Headers)
+		if err != nil {
+			return corecontract.ResolveExecutionCredentialResponse{}, errors.New("v2 provider returned an invalid process credential")
+		}
 	}
 	applicationID := ""
 	if tool.ProviderKind == "lark" {
@@ -255,7 +269,7 @@ func (service *EgressCredentialService) ResolveExecutionCredential(
 		return corecontract.ResolveExecutionCredentialResponse{}, errors.New("v2 provider returned unexpected application identity")
 	}
 	return corecontract.ResolveExecutionCredentialResponse{
-		Configured: true, Credential: credential, CredentialMode: managedcredential.ModeProcessEnv,
+		Configured: true, Credential: credential, Environment: environment, CredentialMode: managedcredential.ModeProcessEnv,
 		ApplicationID: applicationID, ProviderKind: result.ProviderKind,
 		BindingID: result.Binding.ID, AuthorityVersion: result.AuthorityVersion,
 		CredentialVersion: result.CredentialVersion, PolicySHA256: tool.PolicySHA256,
@@ -344,6 +358,22 @@ func exactExecutionCredential(tool executionCredentialTool, headers map[string]s
 		return "", errors.New("process credential value is invalid")
 	}
 	return value, nil
+}
+
+func exactExecutionEnvironment(environment map[string]string) (map[string]string, error) {
+	if len(environment) != 2 {
+		return nil, errors.New("process environment mutation must contain exactly the ByteCloud AK/SK pair")
+	}
+	wanted := []string{bkectlpolicy.AccessKeyEnvironment, bkectlpolicy.SecretKeyEnvironment}
+	result := make(map[string]string, len(wanted))
+	for _, name := range wanted {
+		value, ok := environment[name]
+		if !ok || value == "" || len(value) > 32*1024 || strings.TrimSpace(value) != value || strings.ContainsAny(value, " \t\x00\r\n") {
+			return nil, errors.New("process environment mutation contains an invalid ByteCloud credential")
+		}
+		result[name] = value
+	}
+	return result, nil
 }
 
 func larkCredentialApplicationID(metadata json.RawMessage) (string, error) {

@@ -69,6 +69,13 @@ func TestByteCloudProviderRequiresStrictAKSKEnvelope(t *testing.T) {
 	if err != nil || mutation.Headers["X-Jwt-Token"] != "jwt-value" {
 		t.Fatalf("ByteCloud mutation = %#v, %v", mutation, err)
 	}
+	processMutation, err := provider.Materialize(context.Background(), Binding{Kind: "bytecloud", AuthType: "aksk"}, upload.Secret, UseRequest{Host: "cloud-i18n-sg.bytedance.net", Method: "PROCESS_ENV"})
+	if err != nil || processMutation.Environment["BYTECLOUD_AUTH_ACCESS_KEY_ID"] != "ak" || processMutation.Environment["BYTECLOUD_AUTH_SECRET_ACCESS_KEY"] != "sk" || len(processMutation.Headers) != 0 {
+		t.Fatalf("ByteCloud process environment mutation = %#v, %v", processMutation, err)
+	}
+	if err := processMutation.Validate(provider); err != nil {
+		t.Fatalf("ByteCloud process environment mutation validation = %v", err)
+	}
 }
 
 func TestGitHubAppEnvelopeRequiresKnownFields(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentserver/agentserver/v2/internal/bkectlpolicy"
 	"github.com/agentserver/agentserver/v2/internal/egresscapability"
 	"github.com/agentserver/agentserver/v2/internal/managedcredential"
 )
@@ -146,8 +147,7 @@ func (issuer *WorkspaceManagedEnvironmentIssuer) issueProcessEnvironment(
 		credential.ProviderKind != tool.ProviderKind || credential.ApplicationID != authority.ApplicationID ||
 		credential.BindingID != authority.BindingID || credential.AuthorityVersion != authority.AuthorityVersion ||
 		credential.CredentialVersion != authority.CredentialVersion || credential.PolicySHA256 != authority.PolicySHA256 ||
-		credential.TAEPSM != issuer.taePSM || credential.Credential == "" || len(credential.Credential) > 32*1024 ||
-		strings.TrimSpace(credential.Credential) != credential.Credential || strings.ContainsAny(credential.Credential, " \t\x00\r\n") ||
+		credential.TAEPSM != issuer.taePSM ||
 		(tool.ProviderKind == "lark" && !managedLarkApplicationIDPattern.MatchString(credential.ApplicationID)) {
 		err := errors.New("Core returned an inconsistent workspace managed process credential")
 		issuer.logStage(ctx, request, tool, "credential_resolve", "failed", credentialStartedAt, err, authority)
@@ -155,7 +155,18 @@ func (issuer *WorkspaceManagedEnvironmentIssuer) issueProcessEnvironment(
 	}
 	issuer.logStage(ctx, request, tool, "credential_resolve", "succeeded", credentialStartedAt, nil, authority)
 	environment := managedToolBaseEnvironment(tool, credential.ApplicationID)
-	environment[tool.CredentialEnvironment] = credential.Credential
+	if tool.ProviderKind == bkectlpolicy.CredentialKind {
+		for name, value := range credential.Environment {
+			environment[name] = value
+		}
+	} else {
+		if credential.Credential == "" || len(credential.Credential) > 32*1024 || strings.TrimSpace(credential.Credential) != credential.Credential || strings.ContainsAny(credential.Credential, " \t\x00\r\n") {
+			err := errors.New("Core returned an inconsistent workspace managed process credential")
+			issuer.logStage(ctx, request, tool, "credential_resolve", "failed", credentialStartedAt, err, authority)
+			return nil, err
+		}
+		environment[tool.CredentialEnvironment] = credential.Credential
+	}
 	return environment, nil
 }
 

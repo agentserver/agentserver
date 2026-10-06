@@ -10,31 +10,38 @@ import (
 )
 
 const (
-	PackID         = "bkectl-managed@v1"
-	Executable     = "bkectl"
-	CredentialKind = "bytecloud"
-	CredentialHost = "cloud-i18n-sg.bytedance.net"
-	SourceRevision = "d813842ab03b24f2ac7a5b374507c273f41cbf21"
-	CLIVersion     = SourceRevision
-	CLISHA256      = "0331eb9836e46034d07bc88c52fa7af738dff7ad0b2b83d85ffe7cd6dfb7a590"
-	CLISizeBytes   = int64(34263166)
+	PackID               = "bkectl-managed@v1"
+	Executable           = "bkectl"
+	CredentialKind       = "bytecloud"
+	CredentialHost       = "cloud-i18n-sg.bytedance.net"
+	AccessKeyEnvironment = "BYTECLOUD_AUTH_ACCESS_KEY_ID"
+	SecretKeyEnvironment = "BYTECLOUD_AUTH_SECRET_ACCESS_KEY"
+	AuthModeEnvironment  = "BKECTL_AUTH_MODE"
+	AuthModeValue        = "app_only"
+	RegionEnvironment    = "BKECTL_REGION"
+	RegionValue          = "i18nbd"
+	SourceRevision       = "300680a39abf576b69d989d9950dfce0067fce83"
+	CLIVersion           = SourceRevision
+	CLISHA256            = "da289036db5e0619be36314e590249603fa74b392a23110db2f32171f263c477"
+	CLISizeBytes         = int64(48901570)
 
 	SkillPackSHA256 = "b752c88857ca7035580e9a9d51e9c63a09fd1bda28ce290c4e71b351c3779e51"
 
 	// CredentialContractDocument is hashed into the generic policySha256
 	// contract field shared by managed credential providers. It records that
 	// AgentServer does not maintain a bkectl command allowlist.
-	CredentialContractDocument = "agentserver-v2/bkectl-process-credential/v1\n" +
+	CredentialContractDocument = "agentserver-v2/bkectl-process-credential/v2\n" +
 		"command_paths=unrestricted\n" +
 		"authorization=downstream\n" +
 		"discovery=without-credential\n" +
+		"credential_delivery=bytecloud-aksk-environment\n" +
 		"credential_disclosure=auth-get-jwt-denied\n"
 )
 
 var (
 	// ErrCredentialDisclosureDenied is the sole bkectl-specific command guard.
-	// The injected workspace JWT must never be returned to the model as command
-	// output. It is not a business-command authorization policy.
+	// The injected workspace AK/SK must never be returned to the model as
+	// command output. It is not a business-command authorization policy.
 	ErrCredentialDisclosureDenied = errors.New("managed bkectl may not export the injected workspace credential")
 	policySHA256                  = sha256.Sum256([]byte(CredentialContractDocument))
 )

@@ -544,10 +544,10 @@
       "required": ["enabled", "sourceRevision", "cliSha256", "skillPackSha256", "policySha256"],
       "properties": {
         "enabled": {"type": "boolean"},
-        "sourceRevision": {"const": "d813842ab03b24f2ac7a5b374507c273f41cbf21"},
-        "cliSha256": {"const": "0331eb9836e46034d07bc88c52fa7af738dff7ad0b2b83d85ffe7cd6dfb7a590"},
+        "sourceRevision": {"const": "300680a39abf576b69d989d9950dfce0067fce83"},
+        "cliSha256": {"const": "da289036db5e0619be36314e590249603fa74b392a23110db2f32171f263c477"},
         "skillPackSha256": {"const": "b752c88857ca7035580e9a9d51e9c63a09fd1bda28ce290c4e71b351c3779e51"},
-        "policySha256": {"const": "642c86d38c499ae90f83223bdd7bd71eb2fe761874cb76cee5b1fecd2bb3bc99"}
+        "policySha256": {"const": "fcc2eb70c578c1eed1e4d6a415315199ea6ec59444e4861adea1c9650f5d90f1"}
       }
     },
     "managedExecutor": {
@@ -561,7 +561,7 @@
           "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true,
           "items": {"$ref": "#/$defs/uuid"}
         },
-        "baseInstructionsSha256": {"const": "63a0de0d632b446bc4b25961751742bc6930c3092e3f9d57cae8b0c472e02f3c"},
+        "baseInstructionsSha256": {"const": "5b75ec8459a11bb385fa5f5f74c0019c3ccf72a54ec478088c0e8296ac596e9f"},
         "environment": {"$ref": "#/$defs/managedEnvironment"},
         "tae": {"$ref": "#/$defs/managedTAE"},
         "lark": {"$ref": "#/$defs/managedLark"},

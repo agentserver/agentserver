@@ -46,7 +46,7 @@ import {
   type UserSession,
 } from "@agentserver/v2-web-shared"
 import { MarkdownText } from "./markdown-text"
-import { TrajectoryView } from "./trajectory-view"
+import { orderTrajectoryRecords, TrajectoryView } from "./trajectory-view"
 
 interface ActiveRun {
   sessionId: string
@@ -831,7 +831,7 @@ function workspaceFromLocation(pathname: string, search: string): string {
 function prettyJSON(raw: string): string { try { return JSON.stringify(JSON.parse(raw), null, 2) } catch { return raw } }
 export function mergeTrajectoryTailRecords(current: SessionTrajectoryRecord[], tail: SessionTrajectoryRecord[]): SessionTrajectoryRecord[] {
   const tailIDs = new Set(tail.map((record) => record.id))
-  return [...current.filter((record) => !tailIDs.has(record.id)), ...tail]
+  return orderTrajectoryRecords([...current.filter((record) => !tailIDs.has(record.id)), ...tail])
 }
 function trajectoryWindowsOverlap(current: SessionTrajectoryRecord[], tail: SessionTrajectoryRecord[]): boolean {
   const currentIDs = new Set(current.map((record) => record.id))
@@ -839,7 +839,7 @@ function trajectoryWindowsOverlap(current: SessionTrajectoryRecord[], tail: Sess
 }
 export function prependTrajectoryRecords(earlier: SessionTrajectoryRecord[], current: SessionTrajectoryRecord[]): SessionTrajectoryRecord[] {
   const currentIDs = new Set(current.map((record) => record.id))
-  return [...earlier.filter((record) => !currentIDs.has(record.id)), ...current]
+  return orderTrajectoryRecords([...earlier.filter((record) => !currentIDs.has(record.id)), ...current])
 }
 function statusLabel(t: (key: string) => string, status: ConversationState["status"]): string {
   if (status === "idle") return ""

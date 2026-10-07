@@ -5,6 +5,7 @@ package k8sruntime
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -107,6 +108,35 @@ func TestLinuxLiveWorkspaceAccessAndSecretDescriptor(t *testing.T) {
 	request.Environment = map[string]string{"PATH": "/workspace"}
 	if _, err := sandboxCommand(c, request); err == nil {
 		t.Fatal("caller overrode trusted executable search path")
+	}
+}
+
+func TestLinuxLiveManagedCLIArtifacts(t *testing.T) {
+	c := liveConfig(t)
+	for _, test := range []struct {
+		name, executable string
+		args             []string
+		want             string
+	}{
+		{"bkectl", "/usr/local/bin/bkectl", []string{"--json", "version"}, "version"},
+		{"lark-version", "/usr/local/bin/lark-cli", []string{"--version"}, "lark-cli version"},
+		{"lark-embedded-skill", "/usr/local/bin/lark-cli", []string{"skills", "read", "lark-doc", "references/lark-doc-fetch.md"}, "fetch"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := sandboxcontract.RunCommandRequest{Executable: test.executable, Arguments: test.args, WorkspaceAccess: "read", Environment: map[string]string{"LARKSUITE_CLI_NO_UPDATE_NOTIFIER": "1", "LARKSUITE_CLI_NO_SKILLS_NOTIFIER": "1"}}
+			out, err := runLive(t, c, request)
+			if test.name == "bkectl" {
+				var result struct {
+					Success bool `json:"success"`
+				}
+				if json.Unmarshal([]byte(out), &result) != nil || !result.Success {
+					t.Fatalf("bkectl did not return a successful JSON envelope: %s", out)
+				}
+			}
+			if err != nil || !strings.Contains(out, test.want) {
+				t.Fatalf("managed CLI under real isolation: %v\n%s", err, out)
+			}
+		})
 	}
 }
 
